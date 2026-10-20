@@ -114,6 +114,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 from werkzeug.security import check_password_hash, generate_password_hash  # noqa: E402
 
 from web.services import limits as _limits  # noqa: E402
+from web.services import notify_mail as _notify_mail  # noqa: E402
 from yiban.adapters.config import account_crypto  # noqa: E402
 from yiban.adapters.notifier.notify import (  # noqa: E402
     ledger as notify_ledger,  # 账本内部态走子模块
@@ -672,7 +673,7 @@ class _B14AlertGateBase(unittest.TestCase):
         self.alerts = []
         if self.PATCH_NOTIFY:
             p = mock.patch.object(
-                self.webapp, "send_notification",
+                _notify_mail, "send_notification",
                 # send_notification 新增 force=（先告警后落盘），假实现同步接收
                 # 新增 ledger=（M8 登录失败告警独立账本），假实现同步接收
                 # 返回 True = "送达"：MF-44 后日报的去重标记只在 send_notification 返回
@@ -1221,7 +1222,7 @@ class ChannelHealthReportB14Test(_B14AlertGateBase):
             "type": "", "confirm_password": ADMIN_PASS}).status_code, 200)
         self.alerts.clear()
         with mock.patch.object(self.webapp.notify, "pop_exhaustion_notice", return_value=[]), \
-             mock.patch.object(self.webapp, "send_notification",
+             mock.patch.object(_notify_mail, "send_notification",
                                side_effect=RuntimeError("模拟两条通道同时失效")), \
              self.assertRaises(RuntimeError):
             self.webapp._send_channel_health_report()
@@ -1308,7 +1309,7 @@ class ChannelHealthReportB14Test(_B14AlertGateBase):
         """
         meta_key = self.webapp._HEALTH_REPORT_META_KEY
         with mock.patch.object(self.webapp.notify, "pop_exhaustion_notice", return_value=[]), \
-             mock.patch.object(self.webapp, "send_notification",
+             mock.patch.object(_notify_mail, "send_notification",
                                side_effect=RuntimeError("模拟 SMTP 瞬断")), \
              self.assertRaises(RuntimeError):
             self.webapp._send_channel_health_report()
@@ -1570,7 +1571,7 @@ class ExhaustionNoticeWiringB14Test(_B14AlertGateBase):
              mock.patch.object(self.webapp.mailer, "send_admin_alert",
                                side_effect=lambda s, t, to=None: mails.append((s, t, to))), \
              mock.patch.object(self.webapp, "_mail_alert_due", return_value=True):
-            self.webapp.send_notification("测试告警一", "正文一")
+            _notify_mail.send_notification("测试告警一", "正文一")
             ns.assert_called_once()
         self.assertEqual([m[0] for m in mails], ["测试告警一"],
                          f"告警路径不该再补发耗尽告知，实际 {[m[0] for m in mails]}")

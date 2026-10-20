@@ -112,7 +112,7 @@ def api_me_password():
                 _login_fails()[fail_key] = (0, now + _security.LOGIN_LOCK_SECONDS, now)
             m.logger.warning("改密失败次数过多，IP %s 锁定 %s 秒", db.hash_ip(ip), _security.LOGIN_LOCK_SECONDS)
         if nfails == _limits.LOGIN_FAIL_NOTIFY:
-            m.send_notification(
+            _notify_mail.send_notification(
                 "改密失败告警",
                 mail_layout.Mail(
                     summary=f"IP {_notify_mail._nl_safe(ip)} 连续 {nfails} 次修改密码失败。",
@@ -136,7 +136,7 @@ def api_me_password():
         # 递增值——一次递增被吞，本应随版本失效的旧会话继续有效。
         new_hash = generate_password_hash(new_password, method=_security.SCRYPT_METHOD)
         with _env_io_svc._env_write_lock(m.ENV_FILE):
-            m.write_env_batch(
+            _env_io_svc.write_env_batch(
                 m.ENV_FILE,
                 {
                     "YIBAN_ADMIN_PASSWORD_HASH": new_hash,
@@ -159,7 +159,7 @@ def api_me_password():
         )
         # 主管理员即时告警——改密是「被盗号接管」最强信号
         #（本人会话随 PW_VERSION 失效，攻击者以新密重登），须与注册用户分支同口径接通告警渠道
-        m.send_notification(
+        _notify_mail.send_notification(
             "账号安全事件告警",
             mail_layout.Mail(
                 summary=f"内置主管理员（{_accounts_data._mask_email(username) if username else 'builtin-admin'}）"
@@ -215,7 +215,7 @@ def api_me_password():
                 ),
             )
             _locks.run_after_file_lock(
-                m.send_notification,
+                _notify_mail.send_notification,
                 "账号安全事件告警",
                 mail_layout.Mail(
                     summary=f"用户 {_accounts_data._mask_email(username)} 自助修改密码。",
@@ -297,7 +297,7 @@ def api_me_delete():
                 _login_fails()[fail_key] = (0, now + _security.LOGIN_LOCK_SECONDS, now)
             m.logger.warning("注销密码失败次数过多，IP %s 锁定 %s 秒", db.hash_ip(ip), _security.LOGIN_LOCK_SECONDS)
         if nfails == _limits.LOGIN_FAIL_NOTIFY:
-            m.send_notification(
+            _notify_mail.send_notification(
                 "注销密码失败告警",
                 mail_layout.Mail(
                     summary=f"IP {_notify_mail._nl_safe(ip)} 连续 {nfails} 次注销密码验证失败。",
@@ -423,7 +423,7 @@ def api_me_restore():
             m.logger.warning("恢复密码失败次数过多，IP %s 锁定 %s 秒", db.hash_ip(ip), _security.LOGIN_LOCK_SECONDS)
         # 告警排在锁定之前（同阈值时两者都要发生，见 api_me_password 的说明）
         if nfails == _limits.LOGIN_FAIL_NOTIFY:
-            m.send_notification(
+            _notify_mail.send_notification(
                 "恢复密码失败告警",
                 mail_layout.Mail(
                     summary=f"IP {_notify_mail._nl_safe(ip)} 连续 {nfails} 次恢复密码验证失败。",

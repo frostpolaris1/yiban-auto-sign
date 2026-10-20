@@ -200,14 +200,16 @@ def _render_md(md_text):
     return "\n".join(out)
 
 
-def _read_doc_html(filename, repo_root, cache):
+def _read_doc_html(filename):
     """读取仓库根目录的合规文档并渲染为 HTML；缺失/空模板/出错均回退兜底提示。
 
-    渲染结果按 (mtime_ns, size) 缓存在调用方传入的 cache 里：登录页为公开高频入口，
+    渲染结果按 (mtime_ns, size) 缓存在宿主登记的 cache 里：登录页为公开高频入口，
     每次请求读盘+全量正则渲染会放大 I/O 与 DoS 面；部署者更新文件后 key 变化自动失效。
-    repo_root / cache 由调用方按调用时刻传入——它们是 web.app 上可被测试或运行方式
-    改写的模块级名字，另持绑定会让改写静默失效。
+    文档根与缓存都按调用时刻从 `_hooks` 取——它们是可被测试或运行方式改写的模块级
+    名字，另持绑定会让改写静默失效。
     """
+    repo_root = _host("repo_root")
+    cache = _host("doc_cache")
     if filename not in _DOC_FILES:
         return "<p>未知文档。</p>"
     path = os.path.join(repo_root, filename)
@@ -235,7 +237,7 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path="", polic
     """把渲染后的合规文档包成独立 HTML 页面（footer / 链接用）。
     base_path：挂载前缀（子路径部署如 /tools/yiban-auto-sign/demo，根路径为空串），
     由调用方（路由内 request.script_root）传入，避免本函数脱离请求上下文时访问 request。
-    description：分享/搜索摘要（调用方负责在留空时取 site_description() 默认文案）。
+    description：分享/搜索摘要（留空时本函数取 site_description() 默认文案）。
 
     （反射型 XSS 防护）：base_path 来自 request.script_root——攻击者可构造
     形如 /x"><script>…/privacy 的任意前缀路径，未转义时脚本原样落进 href 与正文；
@@ -251,6 +253,7 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path="", polic
     /terms 与 /privacy）只传"用户协议""隐私政策"两个字面量，若将来把 title 改成用户可控来源，
     必须先按上面同一口径转义。police_link 在本函数与 footer 模板两条出口上都被转义过，
     协议白名单在 `police_link()` 源头，两回事。"""
+    description = description or site_description()
     base_path = html.escape(str(base_path), quote=True)
     icp_text = html.escape(str(icp_text), quote=True)
     police_text = html.escape(str(police_text), quote=True)
@@ -310,13 +313,14 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path="", polic
 </html>"""
 
 
-def email_domain_error(email, env):
+def email_domain_error(email):
     """邮箱域名可用性审查（白名单/黑名单）。通过返回 None，否则返回用户可读错误。
 
     名单配置走 .env：YIBAN_EMAIL_DOMAIN_ALLOWLIST（可选白名单，逗号分隔，
     非空则仅名单内域名可注册）、YIBAN_EMAIL_DOMAIN_BLOCKLIST_EXTRA（追加
     黑名单）。内置保留域名与一次性邮箱域名数据在 email_policy 模块内维护。
     """
+    env = _env()
     return email_policy.review_email(
         email,
         allowlist=env.get("YIBAN_EMAIL_DOMAIN_ALLOWLIST", ""),
@@ -324,24 +328,24 @@ def email_domain_error(email, env):
     )
 
 
-def icp_info(env):
+def icp_info():
     """网站 ICP 备案信息（可选）：.env 的 YIBAN_ICP_INFO，留空不显示。
 
     解耦设计：未配置时模板 `{% if icp_info %}` 块不输出，footer 保持旧样式；
     配置后所有页面底部显示该文本（模板经 Jinja autoescape 转义，无 XSS）。
     """
-    return env.get("YIBAN_ICP_INFO", "").strip()
+    return _env().get("YIBAN_ICP_INFO", "").strip()
 
 
-def police_info(env):
+def police_info():
     """公安备案信息（可选）：.env 的 YIBAN_POLICE_INFO，留空不显示。
 
     与 ICP 备案分开独立预留位；未配置时模板 `{% if police_info %}` 块不输出。
     """
-    return env.get("YIBAN_POLICE_INFO", "").strip()
+    return _env().get("YIBAN_POLICE_INFO", "").strip()
 
 
-def police_link(env):
+def police_link():
     """公安备案查询链接（可选）：.env 的 YIBAN_POLICE_LINK。
 
     备案号属于运营者身份信息，不入仓库：模板与文档页外壳回落到公安部通用
@@ -352,28 +356,29 @@ def police_link(env):
     破坏标签结构，**挡不住协议**：`javascript:` 转义后照样是可执行链接，所以协议只能在源头判——
     不在白名单（含空值）一律回落公安部通用门户。
     """
-    link = env.get("YIBAN_POLICE_LINK", "").strip()
+    link = _env().get("YIBAN_POLICE_LINK", "").strip()
     if link and link.lower().startswith(_SAFE_LINK_SCHEMES):
         return link
     return "https://beian.mps.gov.cn/"
 
 
-def site_description(env, default):
+def site_description():
     """站点简介（分享预览/搜索引擎摘要用）：.env 的 YIBAN_SITE_DESCRIPTION 优先。
 
     全站此前无 meta description 与 og:* 标签，分享链接解析出的卡片只有标题、
-    没有摘要。本值经 Jinja autoescape 进 content 属性，无注入面。
+    没有摘要。本值经 Jinja autoescape 进 content 属性，无注入面。默认文案由宿主登记。
     """
-    return env.get("YIBAN_SITE_DESCRIPTION", "").strip() or default
+    return _env().get("YIBAN_SITE_DESCRIPTION", "").strip() or _host(
+        "site_description_default")
 
 
-def site_image(env):
+def site_image():
     """分享预览配图绝对地址（可选）：.env 的 YIBAN_SITE_IMAGE，留空不输出 og:image。
 
     必须为绝对 https 地址（分享抓取方无法解析相对路径）；不在 https 白名单
     一律忽略——该值进公开页 meta content，配置 javascript:/data: 无意义且有害。
     """
-    url = env.get("YIBAN_SITE_IMAGE", "").strip()
+    url = _env().get("YIBAN_SITE_IMAGE", "").strip()
     return url if url.lower().startswith("https://") else ""
 
 

@@ -44,6 +44,7 @@ from flask import jsonify, request, session
 from werkzeug.security import generate_password_hash
 
 # A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
+from web import render as _render
 from web import security as _security
 from web.routes import admin_delete_limited as _admin_delete_limited
 from web.routes import appmod as _appmod
@@ -298,7 +299,7 @@ def api_account_add():
             return jsonify({"error": "内置管理员邮箱不可注册"}), 400
         # 域名预筛：注定被拒的占位/一次性域名不消耗易班验证配额
         if email_screen:
-            dom_err = m.email_domain_error(email_screen)
+            dom_err = _render.email_domain_error(email_screen)
             if dom_err:
                 return jsonify({"error": dom_err}), 400
     # 添加账号即时验证（管理员开启 YIBAN_ACCOUNT_VERIFY 后生效，验证失败当场打回）；
@@ -359,7 +360,7 @@ def api_account_add():
             if not _limits.EMAIL_RE.match(email) or len(email) > 64:
                 return jsonify({"error": "用户邮箱格式不正确"}), 400
             # 邮箱域名审查：与开放注册同规则，防自动注册路径绕过
-            dom_err = m.email_domain_error(email)
+            dom_err = _render.email_domain_error(email)
             if dom_err:
                 return jsonify({"error": dom_err}), 400
             # 内置管理员邮箱不可被自动注册占用
@@ -617,7 +618,7 @@ def api_account_update(idx):
         if (creds_written and not (gated_creds and
                                    _security._pw_gate_tier() == _security.PW_GATE_FULL)):
             _locks.run_after_file_lock(
-                m.send_notification,
+                _notify_mail.send_notification,
                 "高危管理操作告警",
                 _notify_mail._change_mail(
                     "改写他人易班凭据。",

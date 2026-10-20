@@ -10,9 +10,9 @@
 开关的中文名表 `_MAIL_FLAG_NAMES`、推送"是否曾配置过"的判据 `_push_ever_configured`。
 
 **归属**
-原 `web/app.py` 的模块级通知与邮件辅助，唯一真源在本模块；`web/app.py` 只保留名字面与
-转发，把它自己持有、而本模块需要的模块级名字——`.env` 路径 `ENV_FILE`、读取器
-`read_env`、同类型告警邮件节流 `_mail_alert_due`——在调用时刻现取后注入。
+原 `web/app.py` 的模块级通知与邮件辅助，唯一真源在本模块。批 3-d 删除 `web/app.py`
+的转发包装：路由与测试直取本模块。同类型告警邮件节流 `_mail_alert_due` 经
+`configure(...)` 登记进 `_hooks`，按调用时刻解析。
 
 **复用**
 `_alert_mail_recipients` 只留一份实现，由 `send_notification` 与
@@ -21,10 +21,10 @@
 
 **通信**
 本模块不反向导入 `web.app`（本仓测试以别名加载 `app.py`，普通 import 会再执行一份副本
-模块）。`.env` 路径与读取器由调用方传入；同类型告警邮件节流 `_mail_alert_due` 同样作为
-显式参数接收：它在 `web.app` 上会被测试打桩（`mock.patch.object(webapp, "_mail_alert_due")`），
-本模块另持一份绑定会让这个桩静默失效。段落净化的行分隔符字符集与转义实现都取自
-`yiban.infra.env_io`（真源 `escape_line_breaks`），与本仓 `.env` 写入侧同源，不另抄一份。
+模块）。同类型告警邮件节流经 `configure(...)` 登记，按调用时刻解析：测试打桩
+`_mail_alert_due` 仍然生效。未登记即 `RuntimeError`（fail-closed）。段落净化的行分隔符
+字符集与转义实现都取自 `yiban.infra.env_io`（真源 `escape_line_breaks`），与本仓
+`.env` 写入侧同源，不另抄一份。
 """
 
 import logging
@@ -41,6 +41,32 @@ from yiban.core.masking import mask_email
 
 # 与 web.app 同名的日志通道：本族的告警落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")
+
+# ---------------------------------------------------------------------------
+# 宿主注入登记点（批 3-d）
+# ---------------------------------------------------------------------------
+# 本模块原由 `web/app.py` 的转发包装在调用时刻现取 `_mail_alert_due` 后注入。批 3-d
+# 删除那层包装，改由宿主登记 lambda；本模块按调用时刻从 `_hooks` 取。
+# 未登记即 fail-closed（抛 `RuntimeError`）。
+_hooks = {}
+
+
+def configure(mail_alert_due=None):
+    """注入宿主侧依赖（登记 lambda，见上方说明）。可重复调用（测试用）。"""
+    if mail_alert_due is not None:
+        _hooks["mail_alert_due"] = mail_alert_due
+
+
+def _host(key):
+    """取宿主登记的依赖。未登记即 fail-closed；`try` 只包取键、不包调用。"""
+    try:
+        fn = _hooks[key]
+    except KeyError:
+        raise RuntimeError(
+            "web.services.notify_mail 尚未登记宿主依赖 %r：请确认 web/app.py 的 import "
+            "末尾调用了 web.services.notify_mail.configure(...)" % (key,)
+        ) from None
+    return fn()
 
 
 def _nl_safe(value):
@@ -160,8 +186,7 @@ def _alert_mail_recipients():
     return db.admin_mail_recipients(extra)
 
 
-def send_notification(title, content, urgent=False, force=False, ledger=None, *,
-                      mail_alert_due):
+def send_notification(title, content, urgent=False, force=False, ledger=None):
     """发送告警通知（A 线邮件 + Webhook 双通道，任一失败不影响另一路）。
 
     `content` 可以是 `mail_layout.Mail`（邮件出纯文本+HTML 两版、推送取 Markdown 出口，
@@ -183,14 +208,14 @@ def send_notification(title, content, urgent=False, force=False, ledger=None, *,
       （默认 3，0=不限），与 general/urgent 互不挤占——登录失败是公网最高频的
       告警源，独占账本后喷洒类攻击烧不光紧急账的额度。
 
-    同类型告警邮件节流 `mail_alert_due` 由调用方传入（`web.app` 的 `_mail_alert_due`）：
-    它是既有测试的打桩点（`mock.patch.object(webapp, "_mail_alert_due")`），本模块另持一份
-    绑定会让那个桩静默失效。
+    同类型告警邮件节流从宿主取（`_mail_alert_due`）：它是既有测试的打桩点，
+    本模块另持一份绑定会让那个桩静默失效。
 
     **返回值**：本次是否**任一通道真的送达**（邮件 `mailer.send_admin_alert` 或推送
     `notify.send` 返回 True）。两路都不返回 True（含未配置、节流命中、发送失败）时返回
     False。调用方据此决定"告警基线是否推进"：只有送达才推进，否则保持待发、下一轮重试。
     """
+    mail_alert_due = _host("mail_alert_due")
     recipients = _alert_mail_recipients()
     # 高危告警邮件节流：同类标题在窗口内只发一封（防被盗会话反复触发高危操作耗尽
     # SMTP 额度）；webhook 由 yiban.notify 独立节流。force=True 时绕过（必须送达场景）
