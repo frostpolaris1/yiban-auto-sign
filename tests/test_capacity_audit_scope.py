@@ -29,6 +29,8 @@ import sys
 import tempfile
 import unittest
 
+from web.services import capacity as _capacity
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -186,13 +188,13 @@ class CapacityExcludesAuditTest(_Base):
         self._add("13930000002", status="rejected")
         self._add("13930000003", status="rejected")
         # 计容量只有 1 个 → 还能再加 2 个（含本次新增）而不超上限
-        self.assertFalse(self.webapp._accounts_at_capacity(2))
-        self.assertTrue(self.webapp._accounts_at_capacity(3), "超过上限必须为 True")
+        self.assertFalse(_capacity._accounts_at_capacity(2))
+        self.assertTrue(_capacity._accounts_at_capacity(3), "超过上限必须为 True")
         # 暂停类账号仍占容量（那是用户主动、一键可恢复的状态）
         paused = self._add("13930000004")
         self.db.set_user_paused(paused, 1)
         self.assertEqual(self.webapp._capacity_account_count(), 2)
-        self.assertTrue(self.webapp._accounts_at_capacity(2))
+        self.assertTrue(_capacity._accounts_at_capacity(2))
 
     def test_estimate_counts_signing_accounts(self):
         """`capacity_estimate.current_accounts` 与 accounts 同口径（保存闸门要比它）。"""

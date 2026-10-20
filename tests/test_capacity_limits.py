@@ -34,6 +34,7 @@ from unittest import mock
 from werkzeug.security import generate_password_hash
 
 from web import render as _render
+from web.services import capacity as _capacity
 from web.services import signstatus as _signstatus
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -184,9 +185,9 @@ class AccountsAtCapacityTest(_Base):
         self.webapp.write_env_key(self.env_file, "YIBAN_MAX_ACCOUNTS", "1")
         try:
             # 占用 1（裸账号计入）+ 本次新增 1 = 2 > 1 → True
-            self.assertTrue(self.webapp._accounts_at_capacity(1))
+            self.assertTrue(_capacity._accounts_at_capacity(1))
             # 已满但本次不新增（extra=0）：1 > 1 不成立 → False
-            self.assertFalse(self.webapp._accounts_at_capacity(0))
+            self.assertFalse(_capacity._accounts_at_capacity(0))
         finally:
             self.webapp.write_env_key(self.env_file, "YIBAN_MAX_ACCOUNTS", "")
 
@@ -195,7 +196,7 @@ class AccountsAtCapacityTest(_Base):
                              "status": "active", "owner": "admin"})
         self.webapp.write_env_key(self.env_file, "YIBAN_MAX_ACCOUNTS", "0")
         try:
-            self.assertFalse(self.webapp._accounts_at_capacity(1))
+            self.assertFalse(_capacity._accounts_at_capacity(1))
         finally:
             self.webapp.write_env_key(self.env_file, "YIBAN_MAX_ACCOUNTS", "")
 
@@ -530,11 +531,11 @@ class CapacityFormulaTest(_Base_B19):
              mock.patch.object(_render, "edge_config", return_value=(0, 0)), \
              mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
             # 4800s 窗口、无间隔：(4800-8)/8+1 = 600（单档返回单值 int）
-            self.assertEqual(self.webapp._capacity_estimate(0), 600)
+            self.assertEqual(_capacity._capacity_estimate(0), 600)
             # gap=10：(4800-8)/18+1 = 267
-            self.assertEqual(self.webapp._capacity_estimate(10), (4800 - 8) // 18 + 1)
+            self.assertEqual(_capacity._capacity_estimate(10), (4800 - 8) // 18 + 1)
             # gap=3600：4792/3608+1 = 2
-            self.assertEqual(self.webapp._capacity_estimate(3600), 2)
+            self.assertEqual(_capacity._capacity_estimate(3600), 2)
 
     def test_edge_shrinks_capacity(self):
         # 掐头去尾计入有效窗口：前后各裁 60s → 有效 4680s，容量较 4800s 变小
@@ -542,9 +543,9 @@ class CapacityFormulaTest(_Base_B19):
                                return_value=((6, 30), (7, 50))), \
              mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
             with mock.patch.object(_render, "edge_config", return_value=(0, 0)):
-                full = self.webapp._capacity_estimate(10)
+                full = _capacity._capacity_estimate(10)
             with mock.patch.object(_render, "edge_config", return_value=(60, 60)):
-                trimmed = self.webapp._capacity_estimate(10)
+                trimmed = _capacity._capacity_estimate(10)
             self.assertEqual(full, (4800 - 8) // 18 + 1)
             self.assertEqual(trimmed, (4680 - 8) // 18 + 1)
             self.assertLess(trimmed, full)
@@ -558,7 +559,7 @@ class CapacityFormulaTest(_Base_B19):
                                return_value=((7, 50), (7, 50))), \
              mock.patch.object(_render, "edge_config", return_value=(0, 0)), \
              mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
-            self.assertEqual(self.webapp._capacity_estimate(0), (4680 - 8) // 8 + 1)
+            self.assertEqual(_capacity._capacity_estimate(0), (4680 - 8) // 8 + 1)
 
     def test_trimmed_empty_window_matches_engine_plan(self):
         """缓冲过大 → 只收缩缓冲（窗口 1 分钟保留）；网页容量与引擎计划同源。
@@ -571,7 +572,7 @@ class CapacityFormulaTest(_Base_B19):
                                return_value=((7, 0), (7, 1))), \
              mock.patch.object(_render, "edge_config", return_value=(300, 300)), \
              mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
-            self.assertEqual(self.webapp._capacity_estimate(0), 5)
+            self.assertEqual(_capacity._capacity_estimate(0), 5)
 
     def test_engine_and_web_share_one_formula(self):
         """引擎容量预检与 web 容量预估必须同口径（同概念不得两套阈值）。"""
@@ -581,7 +582,7 @@ class CapacityFormulaTest(_Base_B19):
              mock.patch.object(_render, "edge_config", return_value=(60, 60)):
             for gap in (0, 10, 60):
                 self.assertEqual(
-                    self.webapp._capacity_estimate(gap),
+                    _capacity._capacity_estimate(gap),
                     signin.capacity_accounts(4680, gap),
                 )
 
@@ -612,13 +613,13 @@ class CapacityFormulaTest(_Base_B19):
             os.environ.pop("YIBAN_SCHEDULER_V3", None)
             # 有效窗口 4800s、gap=10：avg=12 → (4800-12)//22+1 = 218
             _write_env_avg("12")
-            self.assertEqual(self.webapp._capacity_estimate(10), (4800 - 12) // 22 + 1)
+            self.assertEqual(_capacity._capacity_estimate(10), (4800 - 12) // 22 + 1)
             # 陈旧环境值压不住 `.env` 真值（.env 覆盖优先级与 run.sh 一致）
             os.environ["YIBAN_AVG_ATTEMPT_SEC"] = "3"
-            self.assertEqual(self.webapp._capacity_estimate(10), (4800 - 12) // 22 + 1)
+            self.assertEqual(_capacity._capacity_estimate(10), (4800 - 12) // 22 + 1)
             # 改 `.env` ⇒ 两侧共同的这个出口同步变化：avg=3 → (4800-3)//13+1 = 370
             _write_env_avg("3")
-            self.assertEqual(self.webapp._capacity_estimate(10), (4800 - 3) // 13 + 1)
+            self.assertEqual(_capacity._capacity_estimate(10), (4800 - 3) // 13 + 1)
 
 
 def _load_webapp_CAP():
@@ -765,7 +766,7 @@ class CapacityBreakdownTest(_Base_CAP):
         try:
             # 2 个非删除账号（含 1 个自暂停）已到上限 → 再新增 1 个应被拒
             self.assertTrue(
-                self.webapp._accounts_at_capacity(1),
+                _capacity._accounts_at_capacity(1),
                 "暂停账号必须仍占名额（配额判定口径未变）",
             )
             cap = self._capacity()
@@ -838,7 +839,7 @@ class CapacityBreakdownTest(_Base_CAP):
             side_effect=AssertionError("计数不应触发解密"),
         ):
             self.assertEqual(self.webapp._capacity_account_count(), len(live))
-            self.assertFalse(self.webapp._accounts_at_capacity(0))
+            self.assertFalse(_capacity._accounts_at_capacity(0))
 
 
 class BatchApproveCapacityTest(_Base):

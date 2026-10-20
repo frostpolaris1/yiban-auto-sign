@@ -10,8 +10,9 @@
 （`_executors_window` / `_last_executors` / `_executor_row_payload` / `_executor_activity`）。
 
 **归属**
-原 `web/app.py` 的模块级执行体辅助，唯一真源在本模块；`web.app` 只保留名字面与转发
-（清单写回用的 `write_env_batch`、窗口族用的 `.env` 路径与 `_sign_window` 由转发处注入）。
+原 `web/app.py` 的模块级执行体辅助，唯一真源在本模块。批 3-d 删除 `web/app.py` 的
+转发包装：路由与测试直取本模块。清单写回用的 `write_env_batch`、窗口族用的 `.env`
+路径与 `_sign_window` 经 `configure(...)` 登记进 `_hooks`，按调用时刻解析。
 
 **复用**
 三个写入接口共用 `_mutate_executor_rows` 的"写锁内读-应用-写回"骨架，`_save_slot_egress`
@@ -20,9 +21,9 @@
 
 **通信**
 本模块不反向导入 `web.app`（本仓测试以别名加载 `app.py`，普通 import 会再执行一份副本
-模块）。凡写 `.env` 的入口都接收调用方传入的 `write_batch`（即 `web.app` 的
-`write_env_batch`）：它是既有测试观测每一次落盘的打桩点，本模块另持绑定会让打桩静默失效；
-同理 `_executors_window` 的 `.env` 路径与签到窗口解析器由调用方现取传入。读路径
+模块）。凡写 `.env` 的入口都从宿主取 `write_env_batch`：它是既有测试观测每一次落盘的
+打桩点，本模块另持绑定会让打桩静默失效；同理 `_executors_window` 的 `.env` 路径与签到
+窗口解析器也按调用时刻解析。未登记即 `RuntimeError`（fail-closed）。读路径
 （`read_env` / `_env_write_lock` / `_is_http_proxy_url`）复用
 `web.services.env_io` 的同域实现，行分隔符判定取 `yiban.infra.env_io` 真源。
 """
@@ -47,20 +48,58 @@ from yiban.core.masking import mask_url_userinfo as _mask_url_userinfo
 # 与 web.app 同名的日志通道：清单迁移的告警落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")
 
+# ---------------------------------------------------------------------------
+# 宿主注入登记点（批 3-d）
+# ---------------------------------------------------------------------------
+# 本模块原由 `web/app.py` 的转发包装在调用时刻现取宿主名字后注入。批 3-d 删除那层
+# 包装，改由宿主在 import 末尾登记 lambda；本模块按调用时刻从 `_hooks` 取。
+# 登记 lambda 而不是值：`--env-file` 改写 `ENV_FILE`、测试打桩 `write_env_batch` /
+# `_sign_window` 都必须在调用时刻生效。未登记即 fail-closed（抛 `RuntimeError`）。
+_hooks = {}
+
+
+def configure(env_file=None, write_env_batch=None, sign_window=None):
+    """注入宿主侧依赖（登记 lambda，见上方说明）。可重复调用（测试用）。
+
+    只覆盖显式传入的键：未传的保持上一次登记。
+    """
+    if env_file is not None:
+        _hooks["env_file"] = env_file
+    if write_env_batch is not None:
+        _hooks["write_env_batch"] = write_env_batch
+    if sign_window is not None:
+        _hooks["sign_window"] = sign_window
+
+
+def _host(key):
+    """取宿主登记的依赖。未登记即 fail-closed。
+
+    **`try` 只包住取键，不包住调用**：宿主 lambda 内部抛的 `KeyError` 是真实业务
+    错误，必须原样传出。
+    """
+    try:
+        fn = _hooks[key]
+    except KeyError:
+        raise RuntimeError(
+            "web.services.executor_env 尚未登记宿主依赖 %r：请确认 web/app.py 的 import "
+            "末尾调用了 web.services.executor_env.configure(...)" % (key,)
+        ) from None
+    return fn()
+
 
 # ---------------------------------------------------------------------------
 # 展示族（执行体接口读侧）
 # ---------------------------------------------------------------------------
-def _executors_window(env_file, sign_window):
+def _executors_window():
     """执行体接口口径的**有效签到窗口**（`window.effective_sec` 即容量换算的分母）。
 
     容量估算与"窗口内不做实测"的拦截都用这个窗口，保证页面显示与这两个判断同源。
-    参数注入口径见模块头「通信」。
+    宿主注入口径见模块头「通信」。
     """
-    start, end = sign_window()
+    start, end = _host("sign_window")()
     # 缺省 60s 而不是 0（与引擎同一份缺省与旧键映射）：示例 .env 把这两个键注释掉了，
     # 缺省 0 会让页面窗口、容量分母与拦截都比引擎宽 1 分钟
-    front, back = yb_window.parse_edges(read_env(env_file))
+    front, back = yb_window.parse_edges(read_env(_host("env_file")))
     return yb_window.bounds({
         "sign_start": start, "sign_end": end,
         "edge_front_sec": front, "edge_back_sec": back,
@@ -299,11 +338,11 @@ def _validated_name(raw):
 # ---------------------------------------------------------------------------
 # 清单读写（`YIBAN_EXECUTORS`）
 # ---------------------------------------------------------------------------
-def _save_slot_egress(env_path, key, index, value, write_batch):
+def _save_slot_egress(env_path, key, index, value):
     """读-改-写 `.env` 里**一段**出口（`index=None` = 该键只有一段，兜底）。
 
-    读与写在**同一把** `.env` 写锁内完成（复用整条写入用的 `_env_write_lock` 与调用方传入的
-    `write_batch`，不另造一套）：否则并发保存时"读到的旧串"会把别人刚写的段盖掉。
+    读与写在**同一把** `.env` 写锁内完成（复用整条写入用的 `_env_write_lock` 与宿主登记的
+    `write_env_batch`，不另造一套）：否则并发保存时"读到的旧串"会把别人刚写的段盖掉。
     其余段**逐字保留**（切分与合并见 `yiban.egress.replace_slot`）——本接口只改一段，
     不重新校验也不规范化别人的段，免得把"这一段直连"的刻意空位改写成别的意思。
 
@@ -316,6 +355,7 @@ def _save_slot_egress(env_path, key, index, value, write_batch):
         # 回显能让用户看出是哪一段写错了，但出口串按契约允许带 `user:pass@`：
         # 必须抹掉 userinfo 再回显（错误文案会进响应、DOM 与日志）。
         return f"代理地址格式不正确: {_mask_url_userinfo(value)[:40]}", 400
+    write_batch = _host("write_env_batch")
     with _env_write_lock(env_path):
         raw = read_env(env_path).get(key, "")
         updated = value if index is None else yb_egress.replace_slot(raw, index, value)
@@ -334,14 +374,16 @@ def _save_slot_egress(env_path, key, index, value, write_batch):
     return None, None
 
 
-def _executor_rows(env_path, write_batch):
+def _executor_rows(env_path=None):
     """读执行体清单（`YIBAN_EXECUTORS`）；清单缺失且存在旧三键时**一次性迁移写回**。
 
-    迁移不是另造一套写盘：读-判-写在同一把 `.env` 写锁内完成，写回走调用方传入的
-    `write_batch`（键值校验、行折叠、原子替换都在那里）。**旧键不删**——保留
+    迁移不是另造一套写盘：读-判-写在同一把 `.env` 写锁内完成，写回走宿主登记的
+    `write_env_batch`（键值校验、行折叠、原子替换都在那里）。**旧键不删**——保留
     一个版本周期，回退读取与手工比对都还靠它们；迁移只"多写一个键"。
     写回失败（只读挂载等）只告警并继续按内存结果服务：读一次配置不该让整个接口 500。
     """
+    env_path = _host("env_file") if env_path is None else env_path
+    write_batch = _host("write_env_batch")
     env = read_env(env_path)
     rows, needs_write = yb_egress.manifest_state(env)
     if not needs_write:
@@ -360,13 +402,15 @@ def _executor_rows(env_path, write_batch):
     return rows
 
 
-def _mutate_executor_rows(mutator, env_path, write_batch):
+def _mutate_executor_rows(mutator, env_path=None):
     """在 `.env` 写锁内读清单 → 应用 `mutator(rows)` → 写回清单键（读-改-写原子）。
 
     `mutator` 返回 `(新行, 结果)`；校验失败抛 ValueError（消息可直接回前端 400）。
     清单缺失时 `manifest_state` 先按旧三键给出行，改动后的整份清单一次写回
     （顺带完成迁移；旧键仍保留）。只按槽位动目标行，其余行逐字保留。
     """
+    env_path = _host("env_file") if env_path is None else env_path
+    write_batch = _host("write_env_batch")
     with _env_write_lock(env_path):
         rows, _ = yb_egress.manifest_state(read_env(env_path))
         new_rows, result = mutator(rows)
@@ -395,7 +439,7 @@ def _next_executor_slot(rows):
     return max(yb_egress.next_slot(rows), floor)
 
 
-def _save_row_egress(env_path, slot, value, write_batch):
+def _save_row_egress(env_path, slot, value):
     """清单模式下只改该行的出口：**其余行逐字保留**，写回清单键（同一把写锁/同一写入函数）。
 
     与 `_save_slot_egress`（旧逗号列表模式）同纪律：只动目标行，不重排、不规范化
@@ -405,7 +449,7 @@ def _save_row_egress(env_path, slot, value, write_batch):
         return yb_egress.update_row(rows, slot, proxy=value), None
 
     try:
-        _mutate_executor_rows(_apply, env_path, write_batch)
+        _mutate_executor_rows(_apply, env_path)
     except _yiban_env_io.EnvWriteRefused:
         raise  # 统一 409：交 Flask errorhandler，不在这里改报 400
     except ValueError as e:
@@ -413,7 +457,7 @@ def _save_row_egress(env_path, slot, value, write_batch):
     return None, None
 
 
-def _save_fallback_egress(env_path, value, write_batch):
+def _save_fallback_egress(env_path, value):
     """清单模式下改兜底行的出口；清单里没有兜底行则**追加一行**（旧接口的写入要生效）。"""
     def _apply(rows):
         fb = yb_egress.fallback_row(rows)
@@ -422,7 +466,7 @@ def _save_fallback_egress(env_path, value, write_batch):
         return yb_egress.update_row(rows, fb["slot"], proxy=value), None
 
     try:
-        _mutate_executor_rows(_apply, env_path, write_batch)
+        _mutate_executor_rows(_apply, env_path)
     except _yiban_env_io.EnvWriteRefused:
         raise  # 统一 409：交 Flask errorhandler，不在这里改报 400
     except ValueError as e:

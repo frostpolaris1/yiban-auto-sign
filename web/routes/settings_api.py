@@ -181,12 +181,12 @@ def _reply_slot_egress(env_key, index):
     if denied:
         return denied
     if rows is not None:
-        err, code = (m._save_fallback_egress(m.ENV_FILE, value) if index is None
-                     else m._save_row_egress(m.ENV_FILE, index, value))
+        err, code = (_executor_env._save_fallback_egress(m.ENV_FILE, value) if index is None
+                     else _executor_env._save_row_egress(m.ENV_FILE, index, value))
         # 清单模式下该行的出口**就是刚提交的值**（不经过旧键），故不能拿 resolve 读
         desc = yb_egress.describe(value)
     else:
-        err, code = m._save_slot_egress(m.ENV_FILE, env_key, index, value)
+        err, code = _executor_env._save_slot_egress(m.ENV_FILE, env_key, index, value)
         # 回"该槽位此刻生效的描述串"：与 GET 的 assignments[i].egress 同走
         # yiban.egress.resolve，故 PUT 之后 GET 读到的与这里回的**是同一个值**
         role = yb_egress.ROLE_FALLBACK if index is None else yb_egress.ROLE_WORKER
@@ -259,7 +259,7 @@ def api_settings():
     # gap 缺省取 DEFAULT_ACCOUNT_GAP_MAX（10），与设置页展示一致
     _est_start = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_START_DELAY_MAX", 0)
     _est_gap = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", _limits.DEFAULT_ACCOUNT_GAP_MAX)
-    _est_accounts = m._capacity_estimate(_est_gap)
+    _est_accounts = _capacity._capacity_estimate(_est_gap)
     return jsonify(
         {
             "ok": True,
@@ -394,7 +394,7 @@ def api_settings_save():
         # /api/settings 的 gap_max 展示同源（0 是合法间隔，即不留间隔）。
         gate_gap = gap if has_gap else _env_io_svc.load_env_int(
             m.ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", _limits.DEFAULT_ACCOUNT_GAP_MAX)
-        est_accounts = m._capacity_estimate(gate_gap)
+        est_accounts = _capacity._capacity_estimate(gate_gap)
         cur_accounts = _capacity._capacity_account_count()
         if cur_accounts > est_accounts:
             return jsonify({
@@ -885,7 +885,7 @@ def api_executors():
     env = _env_io_svc.read_env(m.ENV_FILE)
     # 执行体清单（唯一口径 yiban.egress）：清单缺失时按旧三键回退读，并在首次读到
     # 旧键时一次性迁移写回（旧键保留）。清单存在时**以清单为准**。
-    rows = m._executor_rows()
+    rows = _executor_env._executor_rows()
     # `workers.configured` 只数 `worker` 行（disabled 与 fallback 都不计，
     # 与"建议值分母只数 worker"同一口径）；列表项 index 就是清单槽位号。
     active = yb_egress.worker_rows(rows)
@@ -927,7 +927,7 @@ def api_executors():
     fallback_proxy = (fb_row["proxy"] if fb_row is not None
                       else yb_egress.resolve(yb_egress.ROLE_FALLBACK, env=env))
     # 窗口：`_executors_window()`（与引擎同一份解析：_sign_window + window.bounds）
-    bounds = m._executors_window()
+    bounds = _executor_env._executors_window()
     measured = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_CAPACITY_MEASURED", 0)
     cur_accounts = _capacity._capacity_account_count()
     fallback_interval = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_FALLBACK_INTERVAL", 60)
@@ -1164,7 +1164,6 @@ def api_scheduler_executor_row_add():
     不计数、失败 403 + 审计）；同规矩：**只写 `.env`，不重启也不拉起进程**；
     审计只落槽位名，不记凭据、不记自定义名。
     """
-    m = _appmod()
     if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
     data = _http._json_body()
@@ -1184,7 +1183,7 @@ def api_scheduler_executor_row_add():
         return yb_egress.add_row(rows, rtype, value, min_slot=slot, name=name), slot
 
     try:
-        slot = m._mutate_executor_rows(_apply)
+        slot = _executor_env._mutate_executor_rows(_apply)
     except _EnvWriteRefused:
         raise  # .env 写拒绝交 Flask 统一 409（须在 ValueError 之前，否则被吞成 400）
     except ValueError as e:
@@ -1210,7 +1209,6 @@ def api_scheduler_executor_row_update(slot):
     响应：`{"ok": true, "slot": <int>, "type": ..., "egress": "<脱敏描述串>",
     "name": <自定义名或 null>}`。
     """
-    m = _appmod()
     if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
     data = _http._json_body()
@@ -1228,7 +1226,7 @@ def api_scheduler_executor_row_update(slot):
         if err:
             return jsonify({"error": err}), 400
     # 现值（用于"真的会变吗"的判断）：读一次清单，找不到该行由写路径给 400。
-    _cur = yb_egress.row_by_slot(m._executor_rows(), slot)
+    _cur = yb_egress.row_by_slot(_executor_env._executor_rows(), slot)
     _changed = _cur is None or (
         (rtype is not None and rtype != _cur["type"])
         or (value is not None and value != str(_cur.get("proxy") or ""))
@@ -1242,7 +1240,7 @@ def api_scheduler_executor_row_update(slot):
         return new_rows, yb_egress.row_by_slot(new_rows, slot)
 
     try:
-        row = m._mutate_executor_rows(_apply)
+        row = _executor_env._mutate_executor_rows(_apply)
     except _EnvWriteRefused:
         raise  # .env 写拒绝交 Flask 统一 409（须在 ValueError 之前，否则被吞成 400）
     except ValueError as e:
@@ -1265,7 +1263,6 @@ def api_scheduler_executor_row_delete(slot):
     只比对不计数、失败 403 + 审计，且此时行不会被删）。
     响应：`{"ok": true, "slot": <int>, "type": "<被删行的类型>", "deleted": true}`。
     """
-    m = _appmod()
     if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
     data = _http._json_body()
@@ -1280,7 +1277,7 @@ def api_scheduler_executor_row_delete(slot):
         return yb_egress.delete_row(rows, slot), row["type"]
 
     try:
-        rtype = m._mutate_executor_rows(_apply)
+        rtype = _executor_env._mutate_executor_rows(_apply)
     except _EnvWriteRefused:
         raise  # .env 写拒绝交 Flask 统一 409（须在 ValueError 之前，否则被吞成 400）
     except ValueError as e:
@@ -1320,7 +1317,7 @@ def api_scheduler_executors_measure():
     m = _appmod()
     if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可做耗时实测"}), 403
-    bounds = m._executors_window()
+    bounds = _executor_env._executors_window()
     if _signstatus._in_sign_window(bounds):
         return jsonify({"error": "签到窗口内不做实测（避免抢占本轮资源）"}), 409
     data = _http._json_body()
@@ -1330,7 +1327,7 @@ def api_scheduler_executors_measure():
 
     sample = _masking.mask_phone(acc.get("phone", ""))
     cooldown_sec = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MEASURE_COOLDOWN", _limits.MEASURE_COOLDOWN_SEC)
-    state_path = m._measure_state_path()
+    state_path = _measure._measure_state_path()
     # 冷却**先占位再联网**：连点/多管理员同时点也只有一次真实登录（占位在锁内
     # 判定并写入，跨进程串行）。代价是登录失败也消耗一次冷却——但这正是想要的：
     # 真实登录已经发生过，风控暴露已经产生。
@@ -1340,7 +1337,7 @@ def api_scheduler_executors_measure():
         if remaining > 0:
             return jsonify({"error": "实测冷却中", "next_allowed_in": remaining}), 429
         started_at = clock.now()
-        m._write_measure_state(state_path, {
+        _measure._write_measure_state(state_path, {
             "at": started_at.strftime("%Y-%m-%d %H:%M:%S"),
             "seconds": None, "sample": sample,
         })
@@ -1349,7 +1346,7 @@ def api_scheduler_executors_measure():
     ok, message = signin.verify_account(_accounts_data._as_signin_account(acc))
     seconds = time.monotonic() - started
     with signin._state_file_lock(state_path):
-        m._write_measure_state(state_path, {
+        _measure._write_measure_state(state_path, {
             "at": started_at.strftime("%Y-%m-%d %H:%M:%S"),
             "seconds": round(seconds, 2), "sample": sample,
         })
@@ -1405,7 +1402,6 @@ def api_scheduler_executors_progress():
     `totals` 读不通时全 0 并置 `totals_unreadable: true`，同时 `note` 里写明。
     "读数不可用"与"当日无记录（全 0）"是两件事，不许合成一件（ba-p01-01）。
     """
-    m = _appmod()
     if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可查看签到进度"}), 403
     day = db.task_latest_day() or clock.today()
@@ -1419,7 +1415,7 @@ def api_scheduler_executors_progress():
         logger.warning("读取当日任务队列计数失败（页面按读数不可用显示）: %s", e)
         counts = None
     totals_unreadable = counts is None
-    bounds = m._executors_window()
+    bounds = _executor_env._executors_window()
     return jsonify({
         "ok": True,
         "day": day,
@@ -1566,8 +1562,7 @@ def api_registration_paused():
     仅暴露一个布尔——暂停注册本就是面向访客的全局状态（提示文案公开显示），
     无敏感信息，无需鉴权。
     """
-    m = _appmod()
-    return jsonify({"paused": m._registration_paused()})
+    return jsonify({"paused": _capacity._registration_paused()})
 
 
 def api_announcement_save():
