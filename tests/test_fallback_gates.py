@@ -532,12 +532,12 @@ class FallbackOwnLockTest(unittest.TestCase):
 
 
 class RunLockProbeTest(unittest.TestCase):
-    """`cli_support._run_lock_held`：全局锁探测原语（**当前无生产调用点**——让位改由
-    肘界谓词承担，工单 `l1rx` R4；本类钉住它的 fail-closed 探测语义）。"""
+    """`cli_support._run_lock_held`：全局锁探测原语（fail-closed 语义由本类钉住；
+    生产消费者是 `queue_store.reclaim_tasks` 的兜底锁判断，工单 `uob1` X2）。"""
 
     def test_probe_sees_held_lock_and_frees_after(self):
         if cli_support.fcntl is None:
-            self.skipTest("跨进程 flock 仅 POSIX 可用（Windows 上探测退回 False）")
+            self.skipTest("跨进程 flock 仅 POSIX 可用（Windows 上锁退化为无互斥、fail-closed 拒跑）")
         tmp = tempfile.mkdtemp(prefix="yiban-lock-probe-")
         self.addCleanup(shutil.rmtree, tmp, True)
         with mock.patch.dict(os.environ, {"YIBAN_STATE_DIR": tmp}, clear=False):

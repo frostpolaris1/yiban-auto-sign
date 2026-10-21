@@ -75,8 +75,8 @@
 `sign_tasks`。
 `egress_state` 的调用方是 `yiban/engine/token_bucket.py`（`EgressLimiter.persist` /
 `restore_from_store`）。
-**唯一的向上依赖**：`reclaim_tasks` 探测兜底锁时调用
-`yiban.engine.cli_support._run_lock_held`（锁原语与锁名的单一来源）。它只在重签路径上
+**唯一的向上依赖**：`reclaim_tasks` 取兜底锁时调用
+`yiban.engine.cli_support._acquire_run_lock`（锁原语与锁名的单一来源）。它只在重签路径上
 使用，不参与领取/收尾；`state_io` / `report` 已有同方向的遗留边（批 B 登记的向后边）。
 
 **降级口径（全模块唯一一条，ba-p01-01）**
@@ -93,6 +93,7 @@
 方向是"这一轮少做一次"或"页面少显示一块"，不参与任何"退出/了结"判定，改动只会扩大面。
 
 """
+import contextlib
 import datetime
 import logging
 from typing import Any, Iterable, Iterator, Mapping
@@ -403,24 +404,6 @@ def requeue_failed(day: str, shards: Iterable[int], include_final: bool = False,
     return flipped
 
 
-def _fallback_run_in_flight() -> bool:
-    """兜底常驻是否在跑——以**兜底锁**为唯一事实源（锁名常量见 `cli_support`）。
-
-    探测走 `cli_support._run_lock_held`，并把兜底锁名**显式**传给它：不读
-    `YIBAN_RUN_LOCK_NAME`（手动 `--only` 进程的环境里放的是全局锁名，读它就会探错对象）。
-    **探不出状态 ⇒ 按"兜底在跑"处置**（fail-closed）：`_run_lock_held` 自己已把
-    `_RunLockUnavailable` 收敛成 True；探针抛出任何未预期异常时本函数同样返回 True
-    并留痕——"探测坏了"绝不能读成"没人跑"，那会让重签翻掉在飞行的行。
-    """
-    try:
-        return bool(cli_support._run_lock_held(name=cli_support.FALLBACK_LOCK_NAME))
-    except Exception as e:
-        logger.warning(
-            "探测兜底运行锁失败（%s），按'兜底在跑'处置：本批不翻在飞行",
-            type(e).__name__)
-        return True
-
-
 def reclaim_tasks(day: str, phones: Iterable[str]) -> int:
     """显式重签：把指定账号当日的行翻回 `pending`，并把它们的 `run_at` 一概置为"现在"
     （让手动签到不必等到计划时刻），返回行数。
@@ -431,18 +414,17 @@ def reclaim_tasks(day: str, phones: Iterable[str]) -> int:
 
     - `done` / `skipped`（终态）：用户主动触发即重签；
     - `claimed`（**在飞行**）：这是**卡死行的逃生口**（工单 `l1rx` 必修 R2）。任务级租约
-      删除后，"持有者已死"不再由时间戳判定，故兜底锁未被持有时本口对 `claimed` 翻回
-      ——用户点的那一下对卡死行必须有效。翻动**换代**（`epoch+1`）并清 `owner`，故原
+      删除后，"持有者已死"不再由时间戳判定，故兜底锁取得到时本口对 `claimed` 翻回——
+      用户点的那一下对卡死行必须有效。翻动**换代**（`epoch+1`）并清 `owner`，故原
       持有者迟到的 `settle_tasks` / `requeue_task` 仍被 fence 住、写不回去。
-      **兜底锁保护（工单 `uob1` X2）**：翻 `claimed` 之前先探兜底锁
-      （`_fallback_run_in_flight`）。持锁 ⇒ **该行整行跳过**（不翻、不换代、不动
+      **兜底锁保护（工单 `uob1` X2）**：翻 `claimed` 前**持有**兜底锁跨整个事务
+      （见函数尾的 D1 整改说明）。拿不到 ⇒ **该行整行跳过**（不翻、不换代、不动
       `run_at`），并记一条带业务日与遮罩账号的 WARNING。理由：手动 `--only` 持全局锁，
       只有兜底腿能与它并存；兜底锁被持有 ⇒ 它可能正持有这些行，翻掉就是**同账号并发
       两条登录**（第一红线）。
-      **代价（登记）**：探测是进程级的，不区分"哪一行是兜底持有的"——兜底进程存活期间
+      **代价（登记）**：锁是进程级的，不区分"哪一行是兜底持有的"——兜底进程存活期间
       本口跳过**全部** `claimed` 行，包括已死执行体留下的行。方向是 fail-closed：
       这些行仍由 `reap_abandoned`（执行体起跑 / 监督进程轮末）回收，不会永久卡死。
-      探测不出锁状态时同样跳过（见 `_fallback_run_in_flight`）。
     - `failed` 走当日回炉口（`requeue_failed`），不在此翻。
 
     `run_at` 置"现在"对**未被跳过**的在册行都做：`pending` 行（当日计划尚未到点）也要能被
@@ -450,58 +432,83 @@ def reclaim_tasks(day: str, phones: Iterable[str]) -> int:
     任何分片集，一律不碰（与 `reap_abandoned` / `pending_count` 同界）。空 `phones` → 0 且
     不取连接；库异常 → 0 + warning。返回值是**实际写入的行数**：兜底锁被持有时，被跳过的
     `claimed` 行不计入。
+
+    **互斥靠持有锁，不靠探测（审查 D1 整改）**：探测是"拿一下立刻放"，探完到 UPDATE 之间
+    存在检查-使用窗口——实测兜底可在该窗口内启动、取锁、领取同一行，而本口的 UPDATE 照样
+    把它翻掉。修法＝把兜底锁**持有**跨 SELECT+UPDATE+commit：
+    - 拿到锁 ⇒ 翻态集合含 `claimed`（此刻不存在持锁的兜底，翻它不会并发第二条登录）；
+      句柄跨整个事务，期间启动的兜底取锁失败退出（rc=3），下一次 cron/调度器再拉；
+    - 拿不到（`_RunLockHeld`／任何异常）⇒ 只翻终态行，`claimed` 整行跳过（fail-closed）。
+    锁序与兜底一致（兜底锁 → 队列锁），不构成死锁。**代价（登记）**：拿不到锁时跳过
+    **全部** `claimed` 行（含已死执行体的遗留行）；这些行仍由 `reap_abandoned` 回收。
     """
     items = tuple(phones or ())
     if not items:
         return 0
     placeholders = ",".join("?" for _ in items)
     stamp = clock.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    # 探测只做一次：整条 UPDATE 是单事务，锁状态在这一步之后变化也不影响已成立的分支
-    # （兜底若在探测后才启动，它尚未来得及持有任何行；它此后领取的是我们翻出的 pending，
-    # 属正常交接，不是并发的第二条登录）。
-    fallback_busy = _fallback_run_in_flight()
-    flip_states = ((STATE_DONE, STATE_SKIPPED) if fallback_busy
-                   else (STATE_DONE, STATE_SKIPPED, STATE_CLAIMED))
-    in_flip = ",".join("?" for _ in flip_states)
-    # 所有 SET 右值都按**原行值**求值（SQLite 语义）：故用 CASE 就地把可翻态翻回 pending，
-    # 其余行只刷新 run_at，一次 UPDATE 完成两件事。
-    sql = (
-        "UPDATE sign_tasks SET "
-        f"state=CASE WHEN state IN ({in_flip}) THEN ? ELSE state END, "
-        f"owner=CASE WHEN state IN ({in_flip}) THEN '' ELSE owner END, "
-        f"epoch=epoch + CASE WHEN state IN ({in_flip}) THEN 1 ELSE 0 END, "
-        "run_at=? "
-        "WHERE day=? AND vshard >= 0 "
-        f"AND phone IN ({placeholders})"
-    )
-    params = [*flip_states, STATE_PENDING, *flip_states, *flip_states,
-              stamp, day, *items]
-    if fallback_busy:
-        # 整行跳过：连 run_at 也不刷新（"跳过该行"＝不碰它）。
-        sql += " AND state != ?"
-        params.append(STATE_CLAIMED)
-    skipped: list[str] = []
+    # 先取兜底锁并**持有**到事务结束（不释放）："探测后放行"的窗口就此结构性消失。
+    fallback_busy = True
+    _fallback_lock_fh = None
     try:
-        conn, lock = _queue_conn()
-        with lock:
-            if fallback_busy:
-                skipped = [r["phone"] for r in conn.execute(
-                    "SELECT phone FROM sign_tasks WHERE day=? AND vshard >= 0 "
-                    f"AND state=? AND phone IN ({placeholders})",
-                    (day, STATE_CLAIMED, *items)).fetchall()]
-            cur = conn.execute(sql, tuple(params))
-            conn.commit()
-            n = cur.rowcount
+        _fallback_lock_fh = cli_support._acquire_run_lock(
+            True, name=cli_support.FALLBACK_LOCK_NAME)
+    except cli_support._RunLockHeld:
+        pass
     except Exception as e:
-        logger.warning("重签已了结签到任务失败（按未重签处理）: %s", e)
-        return 0
-    if skipped:
         logger.warning(
-            "兜底运行锁 %s 被持有：跳过 %d 个在飞行（claimed）账号的重签"
-            "（不翻、不换代）: 业务日=%s 账号=%s",
-            cli_support.FALLBACK_LOCK_NAME, len(skipped), day,
-            ",".join(masking.mask_phone(p) for p in skipped))
-    return n
+            "探测兜底运行锁失败（%s），按'兜底在跑'处置：本批不翻在飞行",
+            type(e).__name__)
+    else:
+        fallback_busy = False
+    try:
+        flip_states = ((STATE_DONE, STATE_SKIPPED) if fallback_busy
+                       else (STATE_DONE, STATE_SKIPPED, STATE_CLAIMED))
+        in_flip = ",".join("?" for _ in flip_states)
+        # 所有 SET 右值都按**原行值**求值（SQLite 语义）：故用 CASE 就地把可翻态翻回
+        # pending，其余行只刷新 run_at，一次 UPDATE 完成两件事。
+        sql = (
+            "UPDATE sign_tasks SET "
+            f"state=CASE WHEN state IN ({in_flip}) THEN ? ELSE state END, "
+            f"owner=CASE WHEN state IN ({in_flip}) THEN '' ELSE owner END, "
+            f"epoch=epoch + CASE WHEN state IN ({in_flip}) THEN 1 ELSE 0 END, "
+            "run_at=? "
+            "WHERE day=? AND vshard >= 0 "
+            f"AND phone IN ({placeholders})"
+        )
+        params = [*flip_states, STATE_PENDING, *flip_states, *flip_states,
+                  stamp, day, *items]
+        if fallback_busy:
+            # 整行跳过：连 run_at 也不刷新（"跳过该行"＝不碰它）。
+            sql += " AND state != ?"
+            params.append(STATE_CLAIMED)
+        skipped: list[str] = []
+        try:
+            conn, lock = _queue_conn()
+            with lock:
+                if fallback_busy:
+                    skipped = [r["phone"] for r in conn.execute(
+                        "SELECT phone FROM sign_tasks WHERE day=? AND vshard >= 0 "
+                        f"AND state=? AND phone IN ({placeholders})",
+                        (day, STATE_CLAIMED, *items)).fetchall()]
+                cur = conn.execute(sql, tuple(params))
+                conn.commit()
+                n = cur.rowcount
+        except Exception as e:
+            logger.warning("重签已了结签到任务失败（按未重签处理）: %s", e)
+            return 0
+        if skipped:
+            logger.warning(
+                "兜底运行锁 %s 被持有或状态未知：跳过 %d 个在飞行（claimed）账号的重签"
+                "（不翻、不换代）: 业务日=%s 账号=%s",
+                cli_support.FALLBACK_LOCK_NAME, len(skipped), day,
+                ",".join(masking.mask_phone(p) for p in skipped))
+        return n
+    finally:
+        # 锁跨住整个翻行事务；commit 之后才释放。拿不到锁的分支没有句柄可放。
+        if _fallback_lock_fh is not None:
+            with contextlib.suppress(OSError):
+                _fallback_lock_fh.close()
 
 
 def reap_abandoned(owner: str, day: str | None = None) -> int:

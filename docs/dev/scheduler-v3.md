@@ -421,8 +421,8 @@ bash scripts/backup.sh
 
 **回退动作（人工，四步）**：
 
-1. 备份：`python -m yiban.entry.cli db --backup`——库结构迁移只进不退，回退前先备份。
-2. `git revert <当前部署的提交>`，得到上一版代码（不用 `reset`，保留可审计的 revert 记录）。
+1. 备份：`python -m yiban.entry.cli db --backup --yes`（不加 `--yes` 只报告计划、不写盘；目标已存在时再加 `--force`）——库结构迁移只进不退，回退前先备份。
+2. `git revert <当前部署的提交>`（合并提交需 `-m 1`），得到上一版代码（不用 `reset`，保留可审计的 revert 记录）。
 3. 重建并重启：容器 `docker compose up -d --build`；裸机 `systemctl restart yiban-web`。
 4. 回退后按当日结果面自查：`sign_tasks` 行状态、`sign_events`、`run_events`、退出码。
 
