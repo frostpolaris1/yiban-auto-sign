@@ -66,6 +66,11 @@
       if (index == null || !ctx.onSigning) return;
       ctx.onSigning(index);
     }
+    // 审核会改变待处理数：列表由 ctx.refresh 重拉，导航徽标属外壳态，必须显式叫它重取。
+    // 不叫就等 10 秒下一拍（工单 inq9 ②）；服务端 count_only=1 零延迟，两者同帧收口。
+    function refreshPendingBadge() {
+      if (YB.refreshNavBadges) YB.refreshNavBadges();
+    }
 
     function review(a, action) {
       var body = { action: action, phone: a.phone };
@@ -94,7 +99,7 @@
       ask.then(function (ok) {
         if (!ok) return;
         run(function () { return YB.api("POST", "/api/accounts/" + a.index + "/review", body); },
-          action === "approve" ? "已通过" : "已拒绝");
+          action === "approve" ? "已通过" : "已拒绝", refreshPendingBadge);
       });
     }
 
@@ -205,6 +210,7 @@
       inflight = true;
       ctx.busy(true);
       var isDelete = !!(body && body.action === "delete");
+      var isApprove = !!(body && body.action === "approve");
       var req = gated
         ? YB.dangerousSubmit({ path: path, body: body, desc: gated.desc, delayDesc: gated.delayDesc })
         : YB.api("POST", path, body);
@@ -213,6 +219,7 @@
           + (isDelete ? " · 可在『待删除账号』恢复（7 天内）" : ""));
         ctx.onBatchSuccess();
         ctx.refresh();
+        if (isApprove) refreshPendingBadge();
         // 批量删除后就地给出恢复入口，避免入口只存在于另一个标签页
         if (isDelete && ctx.onBatchDelete) ctx.onBatchDelete();
       }).catch(function (e) {
