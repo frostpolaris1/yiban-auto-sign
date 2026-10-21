@@ -48,8 +48,8 @@
 **通信**
 输入：`now`（浮点秒，**必须由调用方注入**，测试不依赖真实时钟）、出口标识、风控信号；
 输出：`acquire(...) -> bool` 与 `retry_after(...) -> float`（调用方据此 sleep）。
-落库：`egress_state(egress, rate, burst, tat, half_open_sec, updated_at)`（`rate` / `burst`
-是**出口级**量；`tat` 不写——令牌位置不跨进程共享；`half_open_sec` 是**剩余**半开秒数，
+落库：`egress_state(egress, rate, burst, tat, half_open_until, updated_at)`（`rate` / `burst`
+是**出口级**量；`tat` 不写——令牌位置不跨进程共享；`half_open_until` 是**绝对墙钟截止时刻**（epoch 秒），
 相对量跨进程可读），经 `queue_store.
 load_egress_state` / `save_egress_state`——本模块**唯一**的持久化路径，10s 粒度由
 调用方循环，写失败只告警不阻断签到。配置面只有三个旋钮：每出口目标速率
@@ -298,7 +298,8 @@ class EgressLimiter:
         self._streak[egress] = 0
         return self._set_rate(egress, self.rate * GROWTH_FACTOR, "连续无风控上探")
 
-    def on_risk_signal(self, egress: str, now: float) -> float:
+    def on_risk_signal(self, egress: str, now: float,
+                       wall: float | None = None) -> float:
         """风控信号 → **出口级** `rate ÷= 2`（下限为出口级下界）+ 半开 `HALF_OPEN_SEC`，
         返回新出口级 rate。回退是**安全反应**：人工接管下照做（见 `_set_rate`）。
         """
@@ -315,7 +316,7 @@ class EgressLimiter:
                                   "风控信号回退")  # 回退不吃延迟信号：单账号耗时 t≈1.9~3s 近常量，延迟信噪比差
         # 半开窗口必须**当场**落库：10s 落库循环之前崩溃，冷却仍会丢（工单 ba-p04-04）。
         # 风控信号是稀有事件，这一次写库不拖慢正常放行。
-        self.persist(egress, now=now)
+        self.persist(egress, now=now, wall=wall)
         return new_rate
 
     def downgrade_all(self, now: float, reason: str = "站点级熔断") -> dict[str, float]:
@@ -345,8 +346,8 @@ class EgressLimiter:
                 for e, b in self._buckets.items()}
 
     def persist(self, egress: str, stamp: str | None = None,
-                now: float | None = None) -> bool:
-        """把**出口级** `rate` / `burst` / **剩余半开秒数**落库（调用方按 10s 粒度循环）。
+                now: float | None = None, wall: float | None = None) -> bool:
+        """把**出口级** `rate` / `burst` / **半开窗口截止时刻**落库（调用方按 10s 粒度循环）。
         失败只告警、不阻断签到。
 
         `tat` **不落库**（多进程不共享令牌位置，写进去只会互相覆盖）：写 0。口径见类 docstring。
@@ -354,10 +355,12 @@ class EgressLimiter:
         "上次落库时刻"；不要把通道循环注入的浮点 `now` 传进来——那是桶的时钟域，与 `updated_at`
         不同域（见 `queue_store.save_egress_state`）。
 
-        `now` 是**桶的时钟**（与 `acquire` / `on_risk_signal` 同一个注入值）：用它把
-        `_half_open_until` 换算成**剩余秒数**再落库。相对量跨进程可读——绝对截止时刻
-        是单调钟域，重启后不可比。`now=None` 时若该出口正在半开，按满窗 `HALF_OPEN_SEC`
-        落库（保守方向：宁可重启后多单通道一会儿，也不丢冷却）。
+        `now` 是**桶的时钟**（单调钟，与 `acquire` / `on_risk_signal` 同一个注入值）；
+        `wall` 是**墙钟**（epoch 秒，缺省 `time.time()`）。落库的是**绝对墙钟截止时刻**：
+        先把单调钟的剩余时长算出来，再加到 `wall` 上。为什么不用剩余秒数——同一出口行
+        被多进程共享，未命中风控的兄弟进程周期性写 0 会抹掉别人的冷却（实测 300→0）；
+        绝对时刻 + 库侧 `MAX` 合并让写 0 无害。`now=None` 时若该出口正在半开，按满窗
+        `HALF_OPEN_SEC` 落库（保守方向：宁可重启后多单通道一会儿，也不丢冷却）。
 
         落库前先做**份额分母漂移检查**（F3）：`shares` 是启动快照，本方法按当前配置重算一次 n，
         与快照不同即告警一次（**只告警**，不重算份额）。运行期改清单不生效，须重启执行体。
@@ -370,8 +373,10 @@ class EgressLimiter:
         else:
             remaining = max(0.0, min(HALF_OPEN_SEC,
                                      self._half_open_until.get(egress, 0.0) - now))
+        base_wall = time.time() if wall is None else wall
+        half_open_until = (base_wall + remaining) if remaining > 0 else 0.0
         return queue_store.save_egress_state(egress, self.rate, self.burst, 0.0,
-                                             remaining, stamp)
+                                             half_open_until, stamp)
 
     def _warn_if_shares_drifted(self, egress: str) -> None:
         """同出口执行体数变了就告警一次（仅告警，不重算份额）。"""
@@ -384,7 +389,8 @@ class EgressLimiter:
                            "均分，运行期改清单不生效；请重启执行体",
                            yb_egress.outlet_label(egress), self.shares, current, self.shares)
 
-    def restore_from_store(self, egress: str, now: float | None = None) -> bool:
+    def restore_from_store(self, egress: str, now: float | None = None,
+                           wall: float | None = None) -> bool:
         """从 `egress_state` 装回该出口的**出口级** `rate` / `burst` / **剩余半开窗口**
         （崩溃重启后不"重启即全速"）。
 
@@ -392,9 +398,10 @@ class EgressLimiter:
         只装 `rate`（与 `burst`）：`tat` **不装**——多进程不共享令牌位置，装回别人的 TAT 会
         把本进程误锁（见类 docstring）。故子桶 TAT 从 0 起算。
 
-        半开窗口按**剩余秒数**装回：`_half_open_until[egress] = now + remaining`。
-        `now` 缺省取 `time.monotonic()`（生产调用点都显式注入同一个 `_mono()`）；
-        剩余值夹到 `[0, HALF_OPEN_SEC]`，库里的脏值不得把出口永久锁成单通道。
+        半开窗口按**绝对墙钟截止时刻**装回：`remaining = half_open_until - wall`，
+        `_half_open_until[egress] = now + remaining`。`now` 缺省 `time.monotonic()`，
+        `wall` 缺省 `time.time()`。剩余值夹到 `[0, HALF_OPEN_SEC]`，库里的脏值不得把
+        出口永久锁成单通道。
         """
         st = queue_store.load_egress_state(egress)
         if not st:
@@ -403,7 +410,8 @@ class EgressLimiter:
         burst = float(st.get("burst") or 0.0)
         if burst > 0:
             self.burst = burst
-        remaining = float(st.get("half_open_sec") or 0.0)
+        base_wall = time.time() if wall is None else wall
+        remaining = float(st.get("half_open_until") or 0.0) - base_wall
         if remaining > 0:
             base = time.monotonic() if now is None else now
             self._half_open_until[egress] = base + min(remaining, HALF_OPEN_SEC)
@@ -419,7 +427,9 @@ class EgressLimiter:
         可以往下走，但任何路径都不许把速率抬过它。
 
         自适应决策本身是持久状态：调用方（执行体的 10s 落库循环）负责把它写进
-        `egress_state`，本方法只发变更事件——持久化不该发生在每次调整里（写库会拖慢放行）。
+        `egress_state`，本方法只发变更事件。唯一例外是**风控信号**：`on_risk_signal`
+        会当场落库一次（半开窗口不能等 10s 循环，见工单 ba-p04-04）；风控信号稀有，
+        单次写入不拖慢正常放行。
         """
         self.bucket(egress)
         old = self.rate
