@@ -70,9 +70,11 @@ class _Fixture(unittest.TestCase):
 
     def _seed_durations(self, durations):
         ts = clock.ts()
+        # 一个账号当日只有一次成功（同一 (账号, 日, status, attempt) 只留一行，
+        # 工单 f7or）；分位数的样本天然来自**多个账号**，故每个样本一个账号。
         db.add_sign_events_batch([
-            {"ts": ts, "phone": "13800139000", "status": "success", "stage": "sign",
-             "dur_sec": float(d)}
+            {"ts": ts, "phone": "1380013%04d" % d, "status": "success",
+             "stage": "sign", "dur_sec": float(d)}
             for d in durations
         ])
 

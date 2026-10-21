@@ -74,7 +74,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from yiban import challenge, egress, security
 from yiban.adapters.notifier import report as alerts
-from yiban.adapters.persistence import clock_meta, queue_store, run_events
+from yiban.adapters.persistence import clock_meta, emit_ledger, queue_store, run_events
 from yiban.adapters.statefiles import state_io
 from yiban.core import clock, hrw, window
 from yiban.core import elbow as elbow_pred
@@ -90,6 +90,10 @@ logger = logging.getLogger("yiban")
 ENV_GLOBAL_RATE = "YIBAN_GLOBAL_RATE"
 #: 退避落点的硬上限（秒）：安全类参数，恒为常量、不随窗口或速率自适应
 RETRY_CAP_SEC = 600
+#: 退避落点可从**有效窗口尾部**拿到的最大份额：`next_retry_at_v3` 的
+#: `cap = min(RETRY_CAP_SEC, 剩余 × 本比例)`。定义点只此一处——预算不变量
+#: （`retry_budget_violation`）必须与落点公式用同一个数，否则两处会静默漂移。
+RETRY_WINDOW_TAIL_RATIO = 0.3
 #: 空闲轮询间隔（秒）：通道没领到行时的等一拍，也是收干判定的节拍（claim-at-dispatch 下
 #: 不再有"补货批量领取"，本常量只剩"没活时等多久再看"这一个含义）。
 REFILL_SEC = 5
@@ -272,7 +276,7 @@ def next_retry_at_v3(now_dt, sch_cfg, last_delay, rng=None, day=None):
     remaining = (hi_dt - now_dt).total_seconds()
     if remaining <= 0:
         return None
-    cap = min(RETRY_CAP_SEC, remaining * 0.3)
+    cap = min(RETRY_CAP_SEC, remaining * RETRY_WINDOW_TAIL_RATIO)
     if cap < base:
         return None
     delay = max(base, min(cap, rng.uniform(base, max(base, float(last_delay) * 3))))
@@ -281,6 +285,37 @@ def next_retry_at_v3(now_dt, sch_cfg, last_delay, rng=None, day=None):
     else:
         target = min(now_dt + datetime.timedelta(seconds=delay), hi_dt)
     return target if target > now_dt else None
+
+
+def retry_tail_budget_sec(sch_cfg):
+    """退避可从窗口尾部拿到的**最大**额度（秒）：有效窗口全长 × `RETRY_WINDOW_TAIL_RATIO`。
+
+    取窗口起点处的 `cap`：`remaining` 在起点最大，此后只减不增，故这是整条窗口里
+    能批给退避的最大延迟。`window.bounds` 与落点公式同源（含缓冲收缩/回退处置）。
+    """
+    return window.bounds(sch_cfg).full_sec() * RETRY_WINDOW_TAIL_RATIO
+
+
+def retry_budget_violation(sch_cfg):
+    """→ 违规说明（字符串）或 `None`：退避硬上限 > 尾部预留缓冲即违规。
+
+    **为什么这是一条全局不变量**：`next_retry_at_v3` 逐次判"放不下就放弃"，
+    行为上不会越界；但窗口一旦短到 `有效窗口 × 0.3 < RETRY_CAP_SEC`，配置的
+    硬上限**永远拿不到**（每一拍都被窗口预算压低），而日志里没有任何一句话说明
+    这件事。设计期（配置解析处）把该组合判成违规，管理员才知道"窗口留得太短"。
+
+    判据取 `RETRY_CAP_SEC <= retry_tail_budget_sec(...)`：相等不算违规
+    （窗口起点恰好批得出硬上限）。退化窗口（缓冲吃满后收缩、窗口回退）由
+    `window.bounds` 给出**实际生效**的有效窗口，故不变量看的是真实还款能力。
+    """
+    budget = retry_tail_budget_sec(sch_cfg)
+    if budget >= RETRY_CAP_SEC:
+        return None
+    return ("退避预算不成立：配置的退避上限 %ds 超过尾部预留缓冲 %.0fs"
+            "（有效窗口 %.0fs × %.2f）——窗口留得太短，该上限永远拿不到；"
+            "请延长签到窗口，或接受更小的退避上限"
+            % (RETRY_CAP_SEC, budget,
+               window.bounds(sch_cfg).full_sec(), RETRY_WINDOW_TAIL_RATIO))
 
 
 def shadow_stats(accounts, *, day=None, cfg=None):
@@ -1142,25 +1177,26 @@ UNREACHED_PEER = "peer"
 UNREACHED_RETRY = "retry"
 UNREACHED_UNCLAIMED = "unclaimed"
 
-#: 上一次落下的「已由他人负责」批量留痕**组成**（`_mark_unreached` 的去重依据）：
-#: `(执行体, 账号数, 分因明细)`。兜底常驻循环每 ~5s 一拍、窗口内可上百轮；同一批被别人
-#: 领走的账号在每轮组成不变，逐轮重落只是刷屏（2026-10-10 工单 81xt 的 LOW-1）。状态是
-#: 进程内模块级变量：不落盘、不跨进程。取组成而非轮次/时间：轮次每轮都变，并进去就永远
-#: "变了"。身份必须在键里：同进程换执行体（测试夹具、进程内多执行体）若只按组成判，
-#: 第二个执行体会被判成"没变"而漏掉它唯一的一条批量——与 `_log_banner` 的 `_BANNER_LAST`
-#: 同一形状。peer 为 0 时清回 `None`：同组成 N→0→N 的第三次留痕不得被吞。
-_UNREACHED_PEER_LAST = None
+#: 「已由他人负责」与「无人接手」两族留痕的**成因键**（`emit_ledger` 的 `kind`）。
+#: 去重不再用进程内变量：`emit_on_change(day=ctx.day, scope=ctx.executor_id, kind=…)`
+#: 把「上一个组成」交给库仲裁（单 3zr5）——
+#: - **身份**：`scope` 是键的必填形参 ⇒ 换执行体天然是另一个键；
+#: - **复位**：`day` 是键的必填形参 ⇒ 跨天是另一批键，不需要任何清理动作；
+#: - **复活**：组成写回空串也是一次值变化 ⇒ N→0→N 的第三次留痕照旧。
+#: 兜底常驻循环每 ~5s 一拍、窗口内可上百轮；组成不变就整段跳过（2026-10-10 工单
+#: 81xt 的 LOW-1）。取组成而非轮次/时间：轮次每轮都变，并进去就永远"变了"。
+EMIT_KIND_PEER = "unreached_peer"
+EMIT_KIND_UNCLAIMED = "unreached_unclaimed"
 
-#: 上一次落下的「无人接手」批量留痕**组成**（`_mark_unreached` 的去重依据）：
-#: `(执行体, 分因明细)`。去重理由与 `_UNREACHED_PEER_LAST` 相同（组成不变即整段跳过、
-#: 身份必须进键、归零要能复活），但**形状不同**：peer 那枚是三元的 `(执行体, 账号数,
-#: 分因明细)`，本枚是二元的——无人接手档的账号数就是明细之和，不必另存一列。
-#: 真异常健康时该档为 0；但**队列读不通**时本执行体全部账号都落进这一档——逐账号落库
-#: 就是 O(账号数) 的事件与日志（2026-10-13 生产的 `pending` 洪泛形状），故同样收成一条
-#: 批量并按组成去重。真异常的**规模与分因**由批量行与 `unreached` 出参承担；逐账号事实源
-#: 是台账 `sign_tasks` 的行状态——**仅当台账读得通且该账号当日有行**：「判因不可得」
-#: （队列读不通）读不到台账，「队列中没有当日行」本就没有行，这两种分因只有批量明细可查。
-_UNREACHED_UNCLAIMED_LAST = None
+
+def _say_composition(ctx, kind, value):
+    """→ 本次组成/值是否**变了**（变了才落日志与观测行）。
+
+    载体是库（`yiban/adapters/persistence/emit_ledger.py`）：写失败时 fail-open
+    （返回 True，照说），观测面宁可重复也不静默丢失。
+    """
+    return emit_ledger.emit_on_change(day=ctx.day, scope=ctx.executor_id,
+                                      kind=kind, value=value)
 
 
 def _mark_unreached(ctx, accounts):
@@ -1184,13 +1220,14 @@ def _mark_unreached(ctx, accounts):
     `sign_tasks.result` 又被实际领取者覆盖成"签到成功"，数据侧完全看不出"没轮到"，
     运维只能靠人工比对日志时间线。
 
-    留痕一律收成**一条批量**（日志一行 + 事件一行，带账号数与分因明细），按**组成**去重
-    （见上面两个 `_UNREACHED_*_LAST`）——兜底常驻循环每轮扫描，组成不变就整段跳过：
+    留痕一律收成**一条批量**（日志一行 + 进度事件一行，带账号数与分因明细），按**组成**
+    去重（见 `EMIT_KIND_*` 与 `_say_composition`）——兜底常驻循环每轮扫描，组成不变就
+    整段跳过：
 
     - 逐账号落库会按账号数线性灌噪声——2026-10-10 生产该扫描因此落 1830 行 `pending`
       事件与 1830 行日志（工单 81xt）；2026-10-13 生产更在 `pending` 档上单日灌入
-      49,148 行。批量事件是**摘要行**（`phone=""`，没有单一账号），读者面按摘要行口径
-      排除其账号统计（见 `store.events` 的 sign_event_stats）；看板账号终态统计读的是
+      49,148 行。批量事件是 `run_events` 的**收尾观测行**（`phone=""` 在观测表里是
+      正常形态），`sign_events` 只装账号级事实；看板账号终态统计读的是
       **按日状态文件**（`web/services/logs.py` 的 `accounts_terminal_summary`），不读事件表。
     - 真异常（`UNCLAIMED`）的可查性不靠逐条事件行：**规模与分因**在批量行里（账号数 +
       `{分因文本: 账号数}` 明细），**逐账号判因**经 `unreached` 出参喂运行汇总的独立桶。
@@ -1203,7 +1240,6 @@ def _mark_unreached(ctx, accounts):
     `ctx.unreached` 为 `None`（调用方不要判因，例如只关心自己退出码的子执行体）时本函数
     只做事件留痕，不填 out-param。
     """
-    global _UNREACHED_PEER_LAST, _UNREACHED_UNCLAIMED_LAST
     attempted = getattr(ctx, "attempted", ())
     paused = getattr(ctx, "user_paused", ())
     phones = [a.phone for a in accounts
@@ -1211,9 +1247,9 @@ def _mark_unreached(ctx, accounts):
               and a.phone not in (ctx.delegated or ())
               and a.phone not in paused]
     if not phones:
-        # 没有要判因的账号：两个去重键都清回 `None`（同组成 N→0→N 的第三次留痕不得被吞）。
-        _UNREACHED_PEER_LAST = None
-        _UNREACHED_UNCLAIMED_LAST = None
+        # 没有要判因的账号：两族账本都写回"归零"（同组成 N→0→N 的第三次留痕不得被吞）。
+        _say_composition(ctx, EMIT_KIND_PEER, "")
+        _say_composition(ctx, EMIT_KIND_UNCLAIMED, "")
         return
     pending_judge = [p for p in phones if p not in attempted]
     rows = queue_store.row_owners(ctx.day, pending_judge) if pending_judge else {}
@@ -1257,42 +1293,46 @@ def _mark_unreached(ctx, accounts):
         if ctx.unreached is not None:
             ctx.unreached[phone] = reason
     if peer_n:
-        # 跨执行体交接的**一条批量**留痕：日志一行 + 事件一行，带账号数与分因。
-        # 事件是摘要行（`phone=""`，没有单一账号），读者面按摘要行口径排除其账号统计
-        # （见 `store.events` 的 sign_event_stats）。
-        # 组成去重：签名取 `(执行体, 账号数, 分因明细)`，**不含轮次/时间**——兜底常驻循环
-        # 每轮扫描，组成不变就整段跳过（工单 81xt 返修 LOW-1）；组成一变立刻回到留痕。
-        # 身份进键：同进程换执行体不得互相压掉（同 `_BANNER_LAST`）。
-        signature = (ctx.executor_id, peer_n, tuple(sorted(peer_detail.items())))
-        if signature != _UNREACHED_PEER_LAST:
-            digest = "，".join(f"{k}×{n}" for k, n in sorted(peer_detail.items()))
+        # 跨执行体交接的**一条批量**留痕：日志一行 + 进度事件一行，带账号数与分因。
+        # 组成去重：值取 `(账号数, 分因明细)`，**不含轮次/时间**——兜底常驻循环每轮扫描，
+        # 组成不变就整段跳过（工单 81xt 返修 LOW-1）；组成一变立刻回到留痕。
+        # 去重载体是库（`emit_ledger`）：`day` 与 `scope=执行体` 是必填形参，身份与
+        # 跨天复位由键承担，不再依赖进程内存（单 3zr5）。
+        digest = "，".join(f"{k}×{n}" for k, n in sorted(peer_detail.items()))
+        if _say_composition(ctx, EMIT_KIND_PEER, f"{peer_n}|{digest}"):
             logger.info("%s 未领取：任务已由其他执行体领取，%d 个账号（跨执行体交接，%s）",
                         ctx.log_tag, peer_n, digest)
-            _emit_event(ctx, "", yiban_status.STATUS_PENDING,
-                        f"本执行体未领取：任务已由其他执行体领取，共 {peer_n} 个账号")
-            _UNREACHED_PEER_LAST = signature
+            if ctx.event_sink is not None:
+                _report(ctx, run_events.NODE_FINALIZE,
+                        message=f"未领取摘要：本执行体未领取：任务已由其他执行体领取，"
+                                f"共 {peer_n} 个账号")
     else:
-        # peer 为 0：清回 `None`。同组成 N→0→N 时，中间的 0 拍必须让第三次留痕复活。
-        _UNREACHED_PEER_LAST = None
+        # peer 为 0：账本写回归零。同组成 N→0→N 时，中间的 0 拍必须让第三次留痕复活。
+        _say_composition(ctx, EMIT_KIND_PEER, "")
     if unclaimed_detail:
         # 无人接手（真异常）的**一条批量**留痕：形状与上面那条 peer 批量一致。
-        # 摘要行（`phone=""`）不进账号聚合，故不污染看板终态（见 docstring）。
-        unclaimed_sig = (ctx.executor_id, tuple(sorted(unclaimed_detail.items())))
-        if unclaimed_sig != _UNREACHED_UNCLAIMED_LAST:
-            n_all = sum(unclaimed_detail.values())
-            digest = "，".join(f"{k}×{n}" for k, n in sorted(unclaimed_detail.items()))
+        # 它是 `run_events` 的收尾观测行（`phone=''` 在观测表里是正常形态），
+        # 不再写进 `sign_events`——那张表只装账号级事实（单 3zr5 撤掉哨兵）。
+        n_all = sum(unclaimed_detail.values())
+        digest = "，".join(f"{k}×{n}" for k, n in sorted(unclaimed_detail.items()))
+        if _say_composition(ctx, EMIT_KIND_UNCLAIMED, digest):
             logger.info("%s 未执行：%d 个账号（无人接手，%s）",
                         ctx.log_tag, n_all, digest)
-            _emit_event(ctx, "", yiban_status.STATUS_PENDING,
-                        f"本执行体未执行：{n_all} 个账号（无人接手，{digest}）")
-            _UNREACHED_UNCLAIMED_LAST = unclaimed_sig
+            if ctx.event_sink is not None:
+                _report(ctx, run_events.NODE_FINALIZE,
+                        message=f"未执行摘要：本执行体未执行：{n_all} 个账号"
+                                f"（无人接手，{digest}）")
     else:
-        _UNREACHED_UNCLAIMED_LAST = None
+        _say_composition(ctx, EMIT_KIND_UNCLAIMED, "")
 
 
 #: 上一次打出的 v3 横幅**规模与归属**（`_log_banner` 的去重依据）：`(身份, 通道数, 分片数)`。
 #: 身份必须在键里：去重键只留规模时，同一进程里换一个执行体（测试夹具、将来的进程内
 #: 多执行体）会被判成"没变"而漏掉它起跑的唯一一条 INFO。
+#:
+#: **有意不进 `emit_ledger`**（与 `_UNREACHED_*` 的区别，单 3zr5）：它去掉的是**本进程
+#: 日志**的重复行，作用域与寿命（进程）恰好匹配；进程重启后重新打一次起跑横幅是期望
+#: 行为（部署/重启要能看见规模），进库反而会把重启后的横幅吞掉。这是显式豁免，不是漏搬。
 _BANNER_LAST = None
 
 
