@@ -47,8 +47,8 @@ services:
       - "443:443"
 
     # ⚠️ **优先级按键分两档（工单 71z7，2026-10-20 裁定）**：
-    # · 四个路径键（`YIBAN_ENV_FILE` / `YIBAN_DB_FILE` / `YIBAN_STATE_DIR` /
-    #   `YIBAN_LOG_FILE`）：**这里的值优先**，`/data/.env` 只补缺（与
+    # · 三个可配置路径键（`YIBAN_DB_FILE` / `YIBAN_STATE_DIR` / `YIBAN_LOG_FILE`）：
+    #   **这里的值优先**，`/data/.env` 只补缺（与
     #   `env_io.resolve_path` / `child_env.build_child_env` 同口径）。要换路径，
     #   改这里（或删掉该行、把值写进 `.env`）。
     # · 其余键（如 `YIBAN_ACCOUNTS_FILE` / `YIBAN_COOKIE_SECURE`）：`/data/.env`
