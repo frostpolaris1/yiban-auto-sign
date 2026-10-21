@@ -16,7 +16,7 @@
 本模块按调用时刻解析。
 
 **复用**
-窗口解析委托 `yiban.window.parse_window`、有效窗口委托 `yiban.window.bounds`、运行时段委托
+窗口解析委托 `yiban.core.window.parse_window`、有效窗口委托 `yiban.core.window.bounds`、运行时段委托
 `yiban.engine.schedule.day_off`——与引擎（signin）同一份口径，避免"网页显示 07:50、引擎按
 别的值判定"这类同概念两套实现；`_in_run_period` 复用 `_in_sign_window` 的钟点判定再叠门，
 不另写一套窗口逻辑。
@@ -43,7 +43,7 @@ from yiban.platform import API_AUTH_URL
 # 与 web.app 同名的日志通道：本族的告警落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")
 
-#: 开关类 .env 值的真值字面量。**单一事实源**在 `yiban.infra.env_io.ENV_TRUTHY_LITERALS`
+#: 开关类 .env 值的真值字面量。**单一事实源**在 `yiban.adapters.config.env_io.ENV_TRUTHY_LITERALS`
 #: （与 run.sh 的 `_is_truthy` 同一套口径）；此处只留本模块别名。
 _TRUTHY_LITERALS = _env_io.ENV_TRUTHY_LITERALS
 
@@ -89,7 +89,7 @@ def _host(key):
 def _env_flag(value):
     """把 `.env` 里的开关值解析成布尔（认 1/true/on/yes，大小写不敏感）。
 
-    判定单源在 `yiban.infra.env_io.parse_env_flag`（与引擎、run.sh 同一口径）：
+    判定单源在 `yiban.adapters.config.env_io.parse_env_flag`（与引擎、run.sh 同一口径）：
     只有 `_TRUTHY_LITERALS` 那四个字面量按**开**，其余（0/false/空/未设/写错的词）
     一律按**关**——兜底常驻要占一份出口和一个常驻进程，"开"必须是明确表达出来的意图。
     """
@@ -99,7 +99,7 @@ def _env_flag(value):
 def _sign_window():
     """签到窗口（`.env` 覆盖 YIBAN_SIGN_START/END，非法回退默认）。
 
-    与引擎同一份口径（委托 `yiban.window.parse_window`）的原因见模块头「复用」。
+    与引擎同一份口径（委托 `yiban.core.window.parse_window`）的原因见模块头「复用」。
     宿主注入口径见模块头「通信」。
     """
     env_file = _host("env_file")
@@ -111,7 +111,7 @@ def _sign_window():
 def _in_sign_window(bounds, now=None):
     """当前是否落在**有效**签到窗口内（已扣掐头去尾）——纯钟点口径。
 
-    判定用引擎同一份 `yiban.window.bounds` 给出的边界，这里只把"现在"换算成
+    判定用引擎同一份 `yiban.core.window.bounds` 给出的边界，这里只把"现在"换算成
     当天分钟数再比区间，不另写一套窗口逻辑。**"窗口内不做实测"的 409 拦截用它**
     （只关心"会不会跟签到抢资源"）；执行体接口的 `in_window` 用下面的
     `_in_run_period`（还含周末门/暂停门，见其文档）。
@@ -187,9 +187,9 @@ def _in_run_period(bounds, now=None):
 
 
 def sign_window_bounds():
-    """有效签到窗口（起止 + 前后裁剪，含裁剪吃空时的回退）→ `yiban.window.Window`。
+    """有效签到窗口（起止 + 前后裁剪，含裁剪吃空时的回退）→ `yiban.core.window.Window`。
 
-    唯一口径在 `yiban.window.bounds`：自选片展示与引擎排计划必须同源——网页侧重算一遍
+    唯一口径在 `yiban.core.window.bounds`：自选片展示与引擎排计划必须同源——网页侧重算一遍
     几何会在"有效窗口被裁剪吃空"时与引擎分叉（引擎按回退默认窗口切块，网页却按原始
     配置把片全置灰），用户所选片随之被静默放弃。窗口起止与前后裁剪都按调用时刻取值：
     `_sign_window` 取宿主 `.env`，`edge_config` 现读同一份 `.env`。
@@ -222,7 +222,7 @@ def window_fallback_text(bounds):
     两句话，管理员会以为是两件事。
     """
     if not getattr(bounds, "fell_back", False):
-        # 只有回退需要这句话：缓冲过大只是收缩缓冲、窗口照旧（见 yiban.window 的退化处置）
+        # 只有回退需要这句话：缓冲过大只是收缩缓冲、窗口照旧（见 yiban.core.window 的退化处置）
         return ""
     return (f"配置异常：签到窗口不可用，已按 {_hm(bounds.lo_min)}~{_hm(bounds.hi_min)} 运行")
 

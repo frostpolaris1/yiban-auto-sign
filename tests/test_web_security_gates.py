@@ -242,7 +242,7 @@ class Batch16FixesTest(unittest.TestCase):
              mock.patch.object(h, "handleError"):
             h.emit(record)  # 失败降级
         h.emit(record)  # 目录已"恢复"，重试应成功
-        today = clock.today()  # 按天 handler 取业务钟（yiban.clock），宿主 TZ 下须同源
+        today = clock.today()  # 按天 handler 取业务钟（yiban.core.clock），宿主 TZ 下须同源
         path = os.path.join(self.log_dir, f"sign-{today}.log")
         self.assertTrue(os.path.exists(path), "重试后日志文件应已创建")
         with open(path, encoding="utf-8") as f:

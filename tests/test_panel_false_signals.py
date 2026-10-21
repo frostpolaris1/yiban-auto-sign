@@ -6,7 +6,7 @@
     涂成 user_cancelled（面板与 sign_events 台账相反即假信号）；当日**无结论**时照常
     合成"已取消"（原便利语义保留）。
 对应实现：`web/routes/accounts_api.py::api_accounts`（is_concluded_status 门槛）。
-关键断言：结论判据取 `yiban.status.is_concluded_status`（排除法，看不懂不覆盖）。
+关键断言：结论判据取 `yiban.core.status.is_concluded_status`（排除法，看不懂不覆盖）。
 依赖：纯本地 Flask test client + 临时 `.env`/SQLite + 临时状态目录，不联网。
 
 注：登记 55③（`_my_account_indices_of` owner 哨兵撞车）命中升级子句未修——

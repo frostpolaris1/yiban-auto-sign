@@ -30,9 +30,9 @@
 - 无 `default` 的键（密钥类）取不到值时返回 `None`，不报错。
 
 **归属**
-`yiban.config_loader` 落在包根（`yiban/`），因为它同时被引擎、web 与运维脚本消费，
+`yiban.adapters.config.loader` 落在包根（`yiban/`），因为它同时被引擎、web 与运维脚本消费，
 放进 `yiban/infra/` 会把"配置声明"与"基础设施"混为一类。它只依赖标准库与
-`yiban.infra.env_io`（复用既有 `.env` 解析器，不另立第二套解析实现）。
+`yiban.adapters.config.env_io`（复用既有 `.env` 解析器，不另立第二套解析实现）。
 
 **复用**
 `parse_env_file` / `env_path`（`.env` 的行模型与指针口径）、`ENV_TRUTHY_LITERALS` /
@@ -106,7 +106,7 @@ def _is_number(value):
 
 
 def _is_hhmm(value):
-    r"""是不是合法时刻：**委托 `yiban.window.parse_hhmm`**，不在本模块另写判据。
+    r"""是不是合法时刻：**委托 `yiban.core.window.parse_hhmm`**，不在本模块另写判据。
 
     委托的理由是根因：引擎收的写法加载器也必须收。自己写一条"更严"的判据会把
     "加载器回落缺省、引擎按原值跑"变成常态——`.env` 里手写的 `006:30`、`6 :30`
@@ -119,7 +119,7 @@ def _is_hhmm(value):
     - `web/routes/settings_api.py`：窗口时刻与探针时刻校验（两处），同样就地 `int(x)`；
     - `docker/scheduler.py`：`YIBAN_SIGN_END` 校验自带正则
       `([01]?\d|2[0-3]):[0-5]\d`。实测（7 个分叉样本逐条比对）它拒收引擎收的写法，
-      而它上方的注释自称"格式校验与 run.sh / yiban.window.parse_hhmm 一致"——
+      而它上方的注释自称"格式校验与 run.sh / yiban.core.window.parse_hhmm 一致"——
       与本次所修的同形（自带更严判据 + 不实的"一致"声明）。它不经本模块，
       当前无实害；已单独立账（bd comment 的"已知边界"）；
     - `frontend/src/settings/model.js` 的 `hhmmToMin`：`/^(\d{2}):(\d{2})$/`，比引擎更窄；

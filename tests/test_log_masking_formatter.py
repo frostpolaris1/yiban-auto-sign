@@ -7,7 +7,7 @@
 时间戳/普通数字。展示层 `_mask_log_phones` 与本兜底共用同一实现。
 
 功能：日志格式化与文本脱敏的行为回归。
-归属：`yiban.masking`（文本口径）+ `yiban.logging_ext`（输出面）。
+归属：`yiban.core.masking`（文本口径）+ `yiban.logging_ext`（输出面）。
 复用：`mask_phones_in_text` / `MaskingFormatter` / `mask_phone`。
 通信：直接构造 `logging.LogRecord` 格式化；另经临时文件 handler 落盘读回；
 由 pytest 收集 `unittest.TestCase`。

@@ -421,40 +421,7 @@ docker compose exec yiban ls -l /backups
 | `.env.docker.example` | Docker 部署配置模板 |
 | `.dockerignore` | 阻止账号/密钥/数据库/日志进镜像 |
 
-<details>
-<summary>💾 Docker 备份与恢复（加密备份 / 手动 tar / 恢复校验）</summary>
-
-数据（SQLite / 账号密文 / 加密密钥 / 日志）全部位于宿主 `./data`，**备份该目录即可**：
-
-```bash
-# 推荐：加密备份（口令经 0600 文件读入，不进子进程环境；RETAIN_DAYS 自动轮转，默认 30 天）
-printf '%s\n' '你的备份口令' > /etc/yiban/backup-passphrase && chmod 600 /etc/yiban/backup-passphrase
-YIBAN_BACKUP_PASSPHRASE_FILE=/etc/yiban/backup-passphrase bash docker/backup-docker.sh
-
-# 也可手动裸 tar（明文落盘，请自行妥善保管）
-# 注意：此命令打包的是活库快照，已提交但尚未 checkpoint 的行在 data/yiban.db-wal 里；
-# 恢复时必须把整棵 data/ 解回，且不能留下目标侧旧 yiban.db-wal/yiban.db-shm（见下方恢复说明）。
-tar czf yiban-backup-$(date +%F).tar.gz data/
-```
-
-> 兼容写法：`YIBAN_BACKUP_PASSPHRASE='你的备份口令' bash docker/backup-docker.sh` 仍可用，
-> 但口令会进入该 shell 与 tar/gpg/find 整棵子进程的环境变量（`/proc/<pid>/environ` 可读），
-> 脚本会打印一行提示；建议改用上面的 `_FILE` 形式。
-
-恢复（校验与解包一体；口令经 `_FILE`（或环境变量）注入，不出现在命令行/ps/shell history；解包前做路径穿越、符号链接、设备节点三重校验）：
-
-```bash
-YIBAN_BACKUP_PASSPHRASE_FILE=/etc/yiban/backup-passphrase \
-    bash docker/backup-docker.sh --restore backups/yiban-data-2026-08-29.tar.gz.gpg ./restore-test
-```
-
-> **恢复后启用（任意 Docker 备份路线：`backup-docker.sh` 或手动裸 tar）**：两种路线产出的都是 `data/` 的**活库快照**（含 `yiban.db` 与其 `yiban.db-wal`/`yiban.db-shm`；非 `sqlite3 .backup` 一致性快照）。生效步骤：① `docker compose stop yiban`；② **整棵 `data/` 覆盖**回宿主 `./data`；若采用"保留原目录、只覆盖库文件"的做法，必须先删掉目标侧残留的 `yiban.db-wal` 与 `yiban.db-shm`，再把 `yiban.db`、`yiban.db-wal`、`yiban.db-shm` 三件一起覆盖；③ `docker compose start yiban`。**不要只替换 `yiban.db`**：已提交但尚未 checkpoint 的行在 `yiban.db-wal` 里，只搬主文件会静默丢掉这一批行。
->
-> ⚠️ 与 systemd 部署一致：加密密钥（`data/.env`）与备份口令要与数据**分开存放备份**——密钥丢失 = 已加密账号不可恢复。
->
-> ⚠️ 威胁边界：口令与数据**同机**存放（root crontab/.env）时，加密只能防「备份介质单独失窃」——SSH/root 失陷即口令与全部备份（含异机副本）同时易手。更高强度口径：用 systemd 部署 `scripts/backup.sh` 的 `BACKUP_GPG_RECIPIENT` 公钥模式（服务器只存公钥），或把口令/私钥保存在异机、仅在备份时注入。
-
-</details>
+> 💾 **Docker 备份与恢复**（加密备份 / 手动 tar / 恢复校验）见 [`docs/dev/backup-restore.md`](docs/dev/backup-restore.md)。
 
 <details>
 <summary>🔐 安全运维：主管理员权限追回 / 账号凭据密钥泄露处置 / 时钟守卫</summary>
@@ -540,7 +507,8 @@ YIBAN_BACKUP_PASSPHRASE_FILE=/etc/yiban/backup-passphrase \
 > **不要**删断言或绕过它——它是这套流程唯一的自证面。
 > 旧密钥一律视为已泄露：若攻击者拷走过数据库文件，历史密文仍需按泄露处理（通知受影响用户改易班密码）。
 
-**事后取证**（容器形态在容器内执行；裸机部署把 `--db` 换成宿主的库路径）：`python3 scripts/audit_verify.py --db data/yiban.db --env data/.env --anchor /var/log/yiban/audit-anchor.log`
+**事后取证**——裸机部署在检出根执行：`python3 scripts/audit_verify.py --db data/yiban.db --env data/.env --anchor /var/log/yiban/audit-anchor.log`
+**事后取证**——容器形态在容器内执行（`docker compose exec yiban sh`）：`python3 scripts/audit_verify.py --db /data/yiban.db --env /data/.env --anchor /data/state/audit-anchor.log`
 一次跑完三件校验——哈希链自洽（防改行）、库外锚点比对（防**锚点覆盖区内**的删尾/删前缀/整表清空/截断或改写锚点文件）、审计写入欠账。
 退出码 0=健康、1=检出异常、2=无法定论（缺密钥/库不存在/锚点不可读）。批量操作审计含脱敏目标清单，登录成功留有匿名化 IP
 审计（登录失败阈值/越权 403/数据导出同样留痕）。
@@ -934,7 +902,7 @@ EOF
 #   systemctl status yiban-web        # 启动失败看 journalctl -u yiban-web -n 50
 ```
 
-> ⚠️ **Cookie Secure 必须与访问方式匹配**（systemd 模板默认 `YIBAN_COOKIE_SECURE=1`）：
+> ⚠️ **Cookie Secure 必须与访问方式匹配**（systemd 模板默认 `YIBAN_COOKIE_SECURE=1`；开值 `1` / `true` / `yes` / `on` 均视为开，大小写与两侧空白不敏感）：
 > 经 nginx HTTPS 反代访问时保持 `1`，让浏览器只经 HTTPS 回传会话 Cookie；**直连 HTTP**
 > （`http://IP:17892`、`--host 0.0.0.0`）调试时必须删掉该行或设为 `0`，否则浏览器在明文
 > HTTP 下不回传会话 Cookie，表现为登录后立刻显示未登录。不设该键时应用按请求自动判定：
@@ -948,7 +916,7 @@ EOF
 > `/etc/apt/apt.conf.d/51unattended-noreboot`，内容一行 `Unattended-Upgrade::Automatic-Reboot "false";`
 > ——另起一个文件，别改 `50unattended-upgrades`（那是包提供的文件，改它升级时会被 `.dpkg-dist` 顶掉）。
 
-浏览器访问 `https://你的域名`（经 nginx 反代）或 `http://127.0.0.1:17892`（本机调试）。**默认不监听全网卡**：确需直连局域网请显式 `.venv/bin/python3 -m web --host 0.0.0.0`（明文 HTTP 无防护，自担风险）。直连 HTTP 要能登录，`YIBAN_COOKIE_SECURE` 必须不为 1——若你按模板或显式把它置了 1，请按上面的 Cookie 说明去掉或设为 0，否则浏览器不回传会话 Cookie、登录后拿不到会话。
+浏览器访问 `https://你的域名`（经 nginx 反代）或 `http://127.0.0.1:17892`（本机调试）。**默认不监听全网卡**：确需直连局域网请显式 `.venv/bin/python3 -m web --host 0.0.0.0`（明文 HTTP 无防护，自担风险）。直连 HTTP 要能登录，`YIBAN_COOKIE_SECURE` 必须不为 1（`1` / `true` / `yes` / `on` 均视为开）——若你按模板或显式把它置了开值，请按上面的 Cookie 说明去掉或设为 0，否则浏览器不回传会话 Cookie、登录后拿不到会话。
 
 管理员侧导航：**数据总览 / 签到日志 / 账号管理 / 用户管理 / 系统设置**（个人域为 **我的日历 / 我的账号**）。普通用户走邮箱注册，提交自己的易班账号（名称 + 手机号 + 密码 + 设备信息），管理员审核通过后参与每日自动签到；每人限一个账号，可自助注销（两次确认 + 密码验证，7 天内可登录撤销）。
 
@@ -1030,60 +998,7 @@ curl -s -b $J -X POST $B/api/signin -H "X-CSRF-Token: $CSRF" -H 'Content-Type: a
 
 ### 备份与恢复
 
-`scripts/backup.sh`（建议 cron 每日 02:00）做四件事：`sqlite3 .backup` 一致性快照 → **快照必须过 `PRAGMA integrity_check` 才算这次备份成功**（源库本身损坏时归档照留但非 0 退出；`.backup` 失败回退 `cp` 且校验不过时不落该归档——"看着有备份"比没备份更危险）→ 本地归档**默认加密**（明文落盘需显式 `BACKUP_PLAINTEXT=1`）→ 本地与异机各保留 30 天（`.sha256` 侧车一起轮转）→ 可选异机加密副本（`REMOTE_BACKUP`）。本地归档默认落 `/var/backups/yiban`（专用子目录；与 `pull-prod-backup.sh` 的 `REMOTE_BACKUP_DIR` 默认同值，改一处必须同批改三处）。
-
-包内内容除 `yiban.db`、`.env`、密钥文件外，还含**当日闸门标记与账本**（`sched-run-*`/`sched-slot-*`/`sched-snapshot-*`/`notify-ledger.json`/`notify-throttle.json`/`cred-state.json`）与**审计链外部锚点** `audit-anchor.log`：缺前者恢复当天会重签或漏签、告警日额度被重置；缺后者恢复出来的库就再也验不了"删尾/删前缀/整表清空"。`--restore` 解包后会自动跑 `integrity_check` 与 `audit_verify.py`（链 + 锚点 + 欠账）并带回结论，同时提示"先停服再覆盖"与"必须删除残留 `-wal`/`-shm`"。
-
-```bash
-# 备份（生产执行件收编在 deploy/prod/：backup.sh→/usr/local/sbin/yiban-backup.sh、
-# wrapper、各 cron 表（含 02:00 备份 deploy/prod/cron.d/yiban-backup）一起按
-# manifest.tsv 落位；sha256 对账不过即拒装，见其头注释。
-# 单独手工安装亦可：sudo install -m 0700 -o root -g root scripts/backup.sh /usr/local/sbin/yiban-backup.sh）
-sudo bash deploy/prod/install.sh
-# root cron 调 wrapper（权威件 deploy/prod/cron.d/yiban-backup；--require-encrypt 由
-# wrapper 钉死，不带时加密配置失效会静默产出含全部密钥与口令哈希的明文归档）。
-# 口令从 0600 口令文件经 **stdin fd 0 单跳**
-# 注入，不进 crontab 行 / 命令历史 / 任何子进程的 env（M3 批次0 起，MF-42）：
-#   printf '你的备份口令\n' | sudo tee /etc/yiban/backup-passphrase && sudo chmod 600 /etc/yiban/backup-passphrase
-#   0 2 * * * /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
-# 手工/恢复场景仍可环境变量注入（会给整棵子进程树带上口令，用完即散）：
-sudo BACKUP_GPG_PASSPHRASE='你的备份口令' /usr/local/sbin/yiban-backup.sh --require-encrypt
-# 每日取证校验（锚点判据不能只挂在 web 的每日线程上——web 没起来就永远没人查）。
-# 权威件 deploy/prod/cron.d/yiban-audit（身份 yiban）里的 `cd` 目标带**尾斜杠**
-# `/opt/yiban-auto-sign/`——承重：check-cron-provenance.sh 只认 `$APP_ROOT/*` 形态可回指
-# 仓库，去掉尾斜杠会让来源断言判红。下面手工执行这条不带尾斜杠，与那份等价，但别照抄进 cron.d：
-30 2 * * * yiban cd /opt/yiban-auto-sign/ && .venv/bin/python3 scripts/audit_verify.py --db data/yiban.db --env data/.env >> /var/log/yiban/audit-verify.log 2>&1
-# 备份哨兵（08:05，02:00 备份之后）：当日包/清单缺失、或运行脚本与仓库版**漂移**时发一封
-# 管理员告警；正常路径零输出。**以 root 运行**（须读 0700 root:root 的已装 yiban-backup.sh
-# 做防漂移比对；yiban 读不到会每日误报）；状态目录另给 root 私有目录，避免 root 在 yiban
-# 属主的共享状态目录里留下属主文件。权威件 deploy/prod/cron.d/yiban-backup-sentinel：
-5 8 * * * root YIBAN_STATE_DIR=/var/lib/yiban-backup-sentinel APP_DIR=/opt/yiban-auto-sign /usr/local/sbin/yiban-backup-sentinel.sh >> /var/log/yiban/backup.log 2>&1
-# 恢复演练 / 真实恢复（支持 .tar.gz / .gpg / .age）
-sudo APP_DIR=/opt/yiban-auto-sign BACKUP_GPG_PASSPHRASE='你的备份口令' \
-  bash scripts/backup.sh --restore <备份包> <目标目录>
-```
-
-> ℹ️ **升级提示（曾装过"审计独立见证"的旧部署请清理）**：审计的独立见证纵深已移除，`deploy/prod` 不再提供 `yiban-audit-witness.sh` 与 `/etc/cron.d/yiban-audit-witness`。此前按旧文档装过见证的主机请手工删掉这两个文件——`sudo rm -f /usr/local/sbin/yiban-audit-witness.sh /etc/cron.d/yiban-audit-witness`——否则残留的 root cron 会每 10 分钟调用已删除的脚本并持续报错（仅噪声，不影响体检结论）。移除后"锚点之后的追加行被删除"这一窗口不再由本机检出（见上文「诚实边界」）。
-
-> ⚠️ **异机副本默认未启用**：`REMOTE_BACKUP` 不配置时备份仅存本机——root 失陷时攻击者可一并清掉 `/var/backups/yiban` 下的备份（备份随主机同灭）。**`backup.sh` 本体只从环境变量或 stdin（fd 0 单跳，由 wrapper 注入）取口令**（`BACKUP_GPG_PASSPHRASE`，旧名 `BACKUP_AGE_PASSPHRASE` 兼容；另有 `BACKUP_GPG_RECIPIENT` 走公钥加密）；它自己不读口令文件——读 0600 口令文件的是 `yiban-backup-wrapper.sh`，且只经管道单跳给 backup.sh，口令不进任何子进程的 env。所以口令**必须另行离机保存一份**（密码管理器/离线介质；`/etc/yiban/backup-passphrase` 不算离机副本），否则主机损毁 = 备份与口令同灭、密文不可恢复。需要异地容灾时配置 `REMOTE_BACKUP`（见脚本头部说明）。
->
-> ⚠️ **公钥模式（`BACKUP_GPG_RECIPIENT`）没有回环自检，这是它的代价**：服务器只存公钥、没有对应私钥，所以每轮备份的「解密 → 解包 → `integrity_check`」这一步**在本机根本做不到**，脚本只能降级成「密文 ≥200 字节」这一句尺寸检查。后果要说清：**一把 >200 字节的损坏密文会被判为合格**——脚本照常删明文、写 `.sha256` 清单、跑异机同步与保留期轮转，本地只剩一把解不开的密文；而哨兵（只要求归档与 `.sha256` 旁挂件同在）会判它健康。这个边界**在本机无法消解**（本机没有私钥），只有两条路能盖住：① **按计划跑 `--restore` 演练**（唯一的真判据）；② 异机侧真解一次。两条都做不了就用口令模式（能回环自检），别用公钥模式。
->
-> ℹ️ 恢复路径的审计核验按结论分档：**通过**（退出码 0）/ **检出异常**（1，链被改写或库与锚点不同批次）/ **无法定论**（2，缺解释器、缺 `YIBAN_AUDIT_KEY` 或包内 `.env`）。给到 2 时别按"备份完好"处理，也别按"被篡改"处理——先补齐解释器与密钥来源再重跑。恢复件用的解释器优先取部署自己的 `.venv/bin/python`（系统 `python3` 往往没有 `pycryptodome` 等依赖）。
-
-
-> ⚠️ 加密密钥（`.env` 的 `YIBAN_ACCOUNTS_KEY`）与数据分开备份——密钥丢失 = 已加密账号密码不可恢复。
->
-> ℹ️ 数据库结构由启动时自动迁移（老数据平滑升级）；升级前仍建议先跑一次备份。
-
-**取证与排障工具**：
-
-```bash
-.venv/bin/python3 scripts/audit_verify.py --db /opt/yiban-auto-sign/data/yiban.db --env data/.env --anchor /var/log/yiban/audit-anchor.log
-    # 链自洽 + 库外锚点比对 + 审计写入欠账三件一起跑；0=健康 1=检出删除/篡改 2=无法定论
-.venv/bin/python3 scripts/list_duplicate_owners.py                   # 列出"同一用户多个未删除账号"（人工清理后自动恢复一人一号约束）
-.venv/bin/python3 scripts/db_export.py --out /tmp/export             # 导出回 JSON（降级/迁移用）
-```
+宿主与容器两条备份/恢复路线的完整步骤、取证命令与威胁边界见 [`docs/dev/backup-restore.md`](docs/dev/backup-restore.md)。
 
 ### 状态文件清理
 
@@ -1292,190 +1207,11 @@ python scripts/signin.py
 
 ## 原理与实现
 
-<details>
-<summary>🔬 展开：模块树 / 签到流程 / 定位算法 / 重试机制 / WAF 检测 / 续期</summary>
-
-### 项目架构
-
-```
-web/            Flask 管理后台（账号管理/审核/用户管理/日历/手动签到）
-   │
-   ├── scripts/signin.py        兼容壳 → yiban/engine/（签到引擎）
-   ├── scripts/db.py            兼容壳 → yiban/store/db.py（SQLite 连接与迁移）
-   └── yiban/                   共享包（web 与签到引擎共用）
-            ├── entry/cli/       统一命令行入口（`python -m yiban.entry.cli <子命令>`）
-            │                     ← 旧入口壳已于 145-E 退役
-            ├── clock.py         业务时间唯一入口（北京时间）
-            ├── window.py        签到窗口唯一事实源（排计划/判关闭/算容量同源）
-            ├── status.py        签到状态词汇表
-            ├── masking.py       脱敏（手机号/日志文本/URL）
-            ├── security.py      风控拦截判定 + 跳转白名单
-            ├── egress.py        出口分配与执行体身份串（单/并行/兜底三类角色的唯一口径）
-            ├── client.py        易班客户端外观（凭据/会话缓存/代理/设备绑定）
-            ├── state_gc.py      按日状态文件的保留期策略与清理
-            ├── logging_ext.py   日志落盘（跨进程互斥 + 按天滚动）
-            ├── platform.py      易班平台事实（端点/请求头/版本）+ 登录与签到编排
-            ├── adapters/protocol_yiban/ ★ 洁净室协议库（纯解析/构造；MIT，见其 LICENSE/SPEC.md）
-            ├── adapters/protocol_fake/  测试假上游（e2e 与演练用；生产链路不引）
-            ├── adapters/notifier/       通知适配：`notify/`（推送）与 `mail/`（邮件）
-            │                            ← 旧坐标 `yiban/notify/` 与 `yiban/mail/` 的转发壳已于 145-E 退役
-            ├── geo.py           多边形内定位点采样（偶奇射线法 + 拒绝采样 + 显式兜底）
-            ├── challenge.py     风控挑战检测（只检测不求解）
-            ├── infra/           叶子工具：文件锁 / .env 读写 / 凭据加密
-            ├── engine/          签到引擎（按"执行一轮"切分）：runner 编排 / round 队列重试
-            │                     / schedule 排期与容量 / attempts 单账号尝试 / probe 探针
-            │                     / alerts 告警与邮件 / state_io 状态文件 / accounts 装载
-            │                     / workers 多执行体
-            ├── store/           表级数据访问（db.py 连接与迁移、claims 签到分工记录表）
-            └── attempt/jobs.py  在线校验异步任务（排队/看门狗/收口）
-
-（另有一组目标分层目录 entry / app / core / ports / adapters / workers：
-成员按 `docs/dev/architecture-target.md` 第 3 节逐批搬入，未搬入的仍在原坐标。）
-```
-
-> 依赖方向单向：`web` / `scripts` → `yiban`（`yiban` 不反向依赖调用方）。
-> 新文件规模建议按类型自设目标（py 600 / js·css 800 / html·sh 400 行）——只是建议，无门禁；文件该不该拆以"拆了是否更好维护"判断，不逐行较劲。
-> 命令行有两条等价通道：人类按本文的命令（`bash run.sh`、`.venv/bin/python3 scripts/signin.py ...`）照旧可用；统一入口与机器可读输出见 [`docs/dev/cli.md`](docs/dev/cli.md)。
-
-### 签到流程
-
-```
-登录易班 (OAuth + RSA 加密)
-    ↓
-获取签到任务范围 (nightAttendance/signPosition)
-    ↓
-解析签到多边形 Points
-    ↓
-在多边形内生成随机定位点（围栏内拒绝采样）
-    ↓
-提交签到 (nightAttendance/signIn)
-```
-
-### 定位生成算法
-
-在签到围栏（`Points` 顶点环）内生成随机定位点，取点为**外接矩形内的拒绝采样**：
-点在围栏内**精确均匀**，贴角与贴边区域与围栏中心一样可采到。（旧实现按三角形内缩
-0.7，角与边的采样概率为零，真实围栏覆盖率只有 57%–66%；本批已换掉。）
-
-1. 解析签到范围返回的多边形顶点 `Points`（先折掉相邻重复点与闭合环的重复首点）；
-2. **退化判定**：顶点不足 3 个、外接矩形面积为零、面积为零、自交——命中即走第 5 步；
-3. 在围栏外接矩形内均匀取点，用**偶奇射线法**判定是否在围栏内；在内部即采用；
-4. 重复第 3 步，最多 `MAX_DRAWS`（10000）次仍未命中（极凹或极狭长围栏）即走第 5 步；
-5. **兜底**：返回顶点质心附近的坐标并落一条 WARNING。兜底点**不保证**落在围栏内
-   ——退化围栏没有可判定的内部，自交围栏的"内/外"也没有公认定义；仍返回坐标是因为
-   调用方契约要求"非空围栏必返回一个点"（`yiban/client.py` 直接解包）。原因是
-   **响亮**记录在日志里的，不静默。
-
-每次签到的定位点都不同，非退化围栏的取点都落在有效范围内，避免被识别为异常定位。
-算法语义与边界条件清单见 `yiban/geo.py` 的模块文档串。
-
-### 重试机制
-
-失败账号放回队尾分散重试，同账号两次尝试间隔不小于 60 秒；每次重试附加 0~30 秒随机延迟。尝试次数按失败类型分档：
-
-| 失败类型 | 最多尝试 |
-|---|---|
-| 普通（网络/超时/临时错误） | 3 次（1 初始 + 2 重试） |
-| 风控类（WAF 拦截） | 2 次（1 初始 + 1 重试） |
-| 密码错误 / 易班账号锁定 | 1 次（不重试——确定性失败，重复尝试只会加速易班侧锁定账号） |
-| 会话陈旧（登录状态被服务端作废） | 2 次（1 初始 + 1 重试，并清除缓存重新登录） |
-| 易班未返回签到点位 | 1 次（不重试，属任务未配置/当日已关闭，与账号无关） |
-
-### WAF 拦截检测
-
-易班 WAF 风控会返回包含「风险访问服务禁用」等关键词的页面。检测方式：
-
-- **长度检查**：响应超过 2000 字符直接判定为非拦截（正常页面通常较长）；
-- **关键词匹配**：检测「风险访问」「风控」「访问服务禁用」「WAF」「拦截」；
-- **Unicode 解码**：WAF 返回 JSON 时中文会被 `\uXXXX` 转义，先解码再匹配。
-
-### 定时工作流自动续期
-
-GitHub 官方政策：**仓库连续 60 天无活动，定时工作流会被自动禁用**。工作流里集成了 [`liskin/gh-workflow-keepalive@v1`](https://github.com/liskin/gh-workflow-keepalive)：每次定时触发签到时，keepalive job 通过 GitHub API 检查并重新启用被禁用的工作流，重置 60 天计时器——无需额外 commit，不污染提交历史。
-
-</details>
+模块树、签到流程、定位算法、重试机制、WAF 检测与工作流续期见 [`docs/dev/implementation-notes.md`](docs/dev/implementation-notes.md)。
 
 ## 常见问题
 
-### Q1 账号或密码错误（e003）
-
-> ✅ **已修复**：默认登录方式已改为真实 App 请求特征（UA/AppVersion/Origin 等字段值取自平台实拍）。
-
-**根因**：旧登录流程沿用开源项目 Auto-Test 的请求特征（伪造 iPhone UA + `X-Requested-With: com.yiban.app` + 可预测 CSRF），被易班风控识别为**非官方客户端**，对登录接口统一返回 `e003 账号或密码错误` 伪装拒绝。它与 IP、账号、密码、设备信息均无关——实测手机流量 IP + 新账号同样 e003，而同一网络下手机 App 正常。
-
-**修复方式**：登录改为标准 App 特征流程（UA=`Yiban` + `AppVersion` + 真随机 CSRF + `scope` 空 + `display=authorize` + usersure 不带 Origin 头），新旧账号均恢复正常。旧流程保留，可用 `YIBAN_LEGACY_LOGIN=1` 切回。版本号现值见 `yiban/platform.py` 的 `YIBAN_APP_VERSION`。
-
-**排查顺序（老版本或自行改回旧流程时参考）**：
-
-1. **用手机易班 App 登录一次**——能正常登录说明账号和密码都没问题；
-2. **对照实验**：临时用 `.env` 旧格式（`YIBAN_PHONE`+`YIBAN_PASSWORD`）再跑一次——新旧方式同时报错即可排除配置问题；
-3. **确认触发源**：检查同一账号当天是否被多个 IP 尝试过（如 Actions 海外 IP 定时签到失败重试）；
-4. **等待冷却**：风控冷却通常几小时到 24 小时，**期间不要反复重试**（会延长冷却）。
-
-> 💡 **预防**：避免同一账号叠加多路定时签到（如 Actions + 服务器同时跑）。推荐以国内服务器为唯一签到通道。
-
-
-### Q2 获取签到任务失败
-
-- 你的学校可能未开启晚间考勤（`nightAttendance`）任务，该接口仅适用于开启「晚间考勤 / 晚签到」的学校；
-- 如需打卡的是「每日打卡」（`officeTask`），需修改脚本中的 API 路径。
-
-
-### Q3 未在签到时间内
-
-- 当前时间不在管理员设置的签到窗口内；
-- Actions 的触发延迟（实测约 55–120 分钟）可能导致实际执行时超出窗口——该通道已随 `signin.yml` 删除而退役（MF-106，见「GitHub Actions（备选）」开头说明）；服务器 cron 部署不受影响；
-- 此错误**不会**让 Actions 标记为失败（退出码仍为 0）。
-
-
-### Q4 风险访问服务禁用 / WAF 拦截
-
-- **原因**：GitHub Actions 的海外 IP 被易班 WAF 拦截；
-- **解决**：改用 [服务器部署](#服务器部署分步详解)（国内出口）；如确需 Actions，可配置 `YIBAN_PROXY`（见 [代理配置](#代理配置可选)）；
-- 脚本按失败类型自动重试（见 [重试机制](#重试机制)），仍失败则标记为错误；
-- ⚠️ 海外 IP 的反复失败可能让易班把**账号**标记为可疑，连带影响服务器签到（表现为 e003，见 [Q1](#q1-账号或密码错误e003)）。已有国内服务器时，**建议在 Actions 页面禁用该工作流**。
-
-
-### Q5 ydclearance 反爬
-
-- 此前依赖 `js2py` 在本机执行网页 JS 破解该反爬，但 js2py 存在无修复版本的沙箱逃逸漏洞 CVE-2024-28397，已移除——默认登录流程改为真实 App 请求特征，正常情况下不会走到该反爬页面；
-- 若仍出现，可能是出口 IP 被风控，请改用服务器部署。
-
-
-### Q6 请使用授权设备进行签到
-
-- **原因**：学校在校本化后台开启了「设备绑定」，签到时会校验设备型号与唯一识别码；
-- **解决**：配置 `YIBAN_PHONE_MODEL` 与 `YIBAN_PHONE_CODE`（Actions 中为 Secrets），获取方式见 [设备绑定](#设备绑定可选)。
-
-
-### Q7 签到成功但 Actions 显示失败
-
-- 检查日志中是否有 `❌` 标记的账号：多账号下只要有一个**真正的失败**（非"未在签到时间内"），整体退出码就是 1；
-- "未在签到时间内"不会导致失败（属正常行为）。
-
-
-### Q8 定时任务不执行 / 突然停止
-
-- 进入 `Actions` 页面确认工作流是否被禁用（被禁用会有醒目提示）；
-- 点击 `Enable workflow` 重新启用；keepalive 会在下次定时触发时自动处理，但首次需手动启用。
-
-
-### Q9 查看签到历史
-
-- Actions：进仓库 `Actions` 标签页 → 左侧 `Yiban Sign-in` → 历史运行记录与详细日志；
-- 服务器部署：网页「签到日志」页（按日期查看/检索/导出），或直接看 `/var/log/yiban/sign-YYYY-MM-DD.log`。
-
-
-### Q10 Actions 会不会触发风控
-
-**会**。Actions 使用 GitHub 海外 IP，每次定时尝试登录都会被易班 WAF 拦截（报"风险访问服务禁用"）；更麻烦的是**反复失败可能让易班把账号标记为可疑，连带影响国内服务器签到**（服务器随后出现 e003 伪装"密码错误"，见 [Q1](#q1-账号或密码错误e003)）。
-
-**建议**：
-
-- 已有国内服务器签到 → **在 Actions 页面禁用工作流**（Actions → Yiban Sign-in → ⋯ → Disable workflow），让服务器成为唯一签到通道；
-- 没有服务器、必须用 Actions → 配置 `YIBAN_PROXY`（见 [代理配置](#代理配置可选)），并避免与其他签到通道叠加同一账号；
-- 恢复 Actions：同一位置 `Enable workflow`。
-
+故障排查与常见问题（Q1–Q10）见 [`docs/dev/troubleshooting.md`](docs/dev/troubleshooting.md)。
 
 ## 注意事项
 

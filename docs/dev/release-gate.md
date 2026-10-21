@@ -184,7 +184,7 @@ README「服务器部署（分步详解）」的 7 个编号步骤（折叠标�
 |----|------|----------|------------------|
 | 1 | 服务器环境准备（`apt install python3 python3-venv python3-pip`；时区） | **无**（宿主操作，不落仓库） | **无**（依赖 `docker/Dockerfile` 的镜像面另有其门，但裸机 apt 面无） |
 | 2 | 上传项目代码（打包／解压／`python3 -m venv .venv`／`pip install -r requirements.lock`） | `deploy/prod/install.sh` 的**依赖同步步**（j06f：pip freeze 快照 → 装 lock → 跑门） | `scripts/check-deps-lock.sh`；`tests/test_deploy_deps_sync.py`；install.sh 的 venv 触点收进 M01 门 |
-| 3 | 账号数据（网页后台／`YIBAN_ACCOUNTS_JSON` 注入） | `yiban/store/accounts.py` 等 | 既有账号面测试（不在本名册的发布判据面内） |
+| 3 | 账号数据（网页后台／`YIBAN_ACCOUNTS_JSON` 注入） | `yiban/adapters/persistence/accounts.py` 等 | 既有账号面测试（不在本名册的发布判据面内） |
 | 4 | 配置 `.env`（落 `data/.env`） | `deploy/prod/install.sh` 建 `data/`（**唯一建立点**，属服务账号 0700） | `tests/test_runtime_data_layout.py`；`web/deploy/yiban-web.service` 的 `ReadWritePaths` 与 `User=` 同值用例 |
 | 5 | `run.sh`（`chmod +x`、`mkdir -p /var/log/yiban`、锁/状态目录 0700） | `run.sh`；锁目录**权威件** `deploy/prod/tmpfiles.d/yiban.conf` | `run.sh` 的 M07 状态/锁目录门；tmpfiles 件随 `deploy/prod/manifest.tsv` 逐件 sha256 对账 |
 | 6 | crontab（`31 6`／`12 7` 两行 sign） | `deploy/prod/cron.d/yiban-sign`（另有 cleanup／probe／audit／backup-sentinel 四表） | `scripts/check-cron-provenance.sh`（cron 路径必须能回指仓库原件）；manifest 逐件对账 |

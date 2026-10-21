@@ -23,7 +23,7 @@
 本模块不反向导入 `web.app`（本仓测试以别名加载 `app.py`，普通 import 会再执行一份副本
 模块）。同类型告警邮件节流经 `configure(...)` 登记，按调用时刻解析：测试打桩
 `_mail_alert_due` 仍然生效。未登记即 `RuntimeError`（fail-closed）。段落净化的行分隔符
-字符集与转义实现都取自 `yiban.infra.env_io`（真源 `escape_line_breaks`），与本仓
+字符集与转义实现都取自 `yiban.adapters.config.env_io`（真源 `escape_line_breaks`），与本仓
 `.env` 写入侧同源，不另抄一份。
 """
 
@@ -75,7 +75,7 @@ def _nl_safe(value):
     外部可控字段（用户名/邮箱/IP 等）拼进邮件或通知正文前把换行转义成字面量，
     防止请求体夹带换行在告警正文中伪造额外行。与 .env 写入侧同一个行模型，判据只留一份。
 
-    实现住在 `yiban.infra.env_io.escape_line_breaks`（唯一定义）：邮件折叠层与 SMTP
+    实现住在 `yiban.adapters.config.env_io.escape_line_breaks`（唯一定义）：邮件折叠层与 SMTP
     发信侧消费的必须是同一份净化，此前"各处各挑字符集"正是 MF-44 登记的分叉面。
     """
     return env_io.escape_line_breaks(value)
@@ -146,7 +146,7 @@ def _change_mail(summary, detail=None, operator=None, advice=None, level="urgent
 
     操作者一律过 `mask_email`（幂等，已遮形态原样穿过）：注册管理员的会话用户名
     就是邮箱，缺省路径不得把明文邮箱打进外发邮件（MF-49 出口字段，与审计 actor
-    同一份口径，见 `yiban.masking.mask_email`）。
+    同一份口径，见 `yiban.core.masking.mask_email`）。
     """
     fields = list(detail or [])
     fields.append(("操作者", _nl_safe(mask_email(
@@ -218,7 +218,7 @@ def send_notification(title, content, urgent=False, force=False, ledger=None):
     mail_alert_due = _host("mail_alert_due")
     recipients = _alert_mail_recipients()
     # 高危告警邮件节流：同类标题在窗口内只发一封（防被盗会话反复触发高危操作耗尽
-    # SMTP 额度）；webhook 由 yiban.notify 独立节流。force=True 时绕过（必须送达场景）
+    # SMTP 额度）；webhook 由 yiban.adapters.notifier.notify 独立节流。force=True 时绕过（必须送达场景）
     # recipients 排在最前是有意的：and 短路让"收件人为空"这一路不去调
     # mail_alert_due，于是不登记时间戳、不白占一个节流窗口。
     # 第二参 level=urgent：节流键是 (title, level)，不是标题原文——否则注册
