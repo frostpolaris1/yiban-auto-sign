@@ -1657,6 +1657,9 @@
     clockInfo: CHROME.clockInfo,
     setNavBadge: setNavBadge,
     loadNavBadges: loadNavBadges,
+    // 写操作成功后就地重拉（先丢缓存再取）：与 10s 外壳节拍共用同一实现，
+    // 页面不必等下一拍才看到徽标变化（工单 inq9 ②）。
+    refreshNavBadges: refreshNavBadges,
     SWAP_MS: CHROME.SWAP_MS,
     swapOut: CHROME.swapOut,
     prefs: {
