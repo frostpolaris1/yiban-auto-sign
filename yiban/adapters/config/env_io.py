@@ -26,15 +26,15 @@ bash 与 Python 两侧给出相反结论的开关（`YIBAN_SECOND_RUN` / `YIBAN_
 
 **复用**
 `parse_env_file`（含 `env_path`）与 `write_env_key` / `write_env_keys` 由
-`yiban.infra.account_crypto`、`yiban.store.audit_chain`、`yiban.store.tracking`、
-`yiban.mail.config`、`yiban.notify.config`、`web/services/env_io.py`、
+`yiban.adapters.config.account_crypto`、`yiban.adapters.persistence.audit_chain`、`yiban.adapters.persistence.tracking`、
+`yiban.adapters.notifier.mail.config`、`yiban.adapters.notifier.notify.config`、`web/services/env_io.py`、
 `web/routes/settings_api.py` 复用；**单一行模型 + 单一校验器**=`split_env_lines`（窄行）/
 `env_key_values` / `validate_env_key` / `validate_env_value` / `validate_env_updates` /
 `render_env_write`，`write_env_keys` 是唯一写入口（内部自持 `env_lock.env_write_lock`
 跨进程写锁、做写入前后"键集合 diff"、越权即回滚+审计+抛 `EnvWriteRefused`）。读侧判定 `has_line_break` / `is_valid_env_key`
 / `key_line_pattern` / `count_key_lines` / `find_env_key_collisions` 与写入口共用同一套
 行模型；`resolve_path` 是路径类配置（STATE_DIR / LOG_FILE / DB_FILE）的解析口径，
-`web/app.py`、`yiban.cred_state`、`yiban.engine.alerts`、`yiban.engine.cli_support`、
+`web/app.py`、`yiban.adapters.statefiles.cred_state`、`yiban.adapters.notifier.report`、`yiban.engine.cli_support`、
 `scripts/ledger_check.py` 共用。运行数据的**默认落点**（`RUNTIME_DATA_DIR` /
 `DEFAULT_ENV_FILE` / `DEFAULT_DB_FILE`）也只定义在本模块：`.env` 与库默认落在
 `<检出>/data/` 下，使检出根本身可属 root 且组/其他不可写（见 `RUNTIME_DATA_DIR`）。
@@ -52,7 +52,7 @@ bash 与 Python 两侧给出相反结论的开关（`YIBAN_SECOND_RUN` / `YIBAN_
 
 调用谁：标准库（`os` / `re` / `secrets` / `contextlib`）与同包 `env_lock`——
 `write_env_keys` 内部统一取得跨进程 `.env` 写锁（锁责任不再推给调用方）。
-谁调用：`yiban.engine.*`、`yiban.store.*`、`yiban.infra.account_crypto`、
+谁调用：`yiban.engine.*`、`yiban.adapters.persistence.*`、`yiban.adapters.config.account_crypto`、
 `web/services/env_io.py` 与设置页写入路径。
 前端调用点：系统设置页 `/api/settings`（`web/static/js/components/settings-*.js`）的开关落盘经
 web 服务层走本模块——行模型或 `strict` 口径变化会影响设置保存与密钥/盐的生成。
@@ -154,7 +154,7 @@ def parse_env_flag(value, *, default=False, key=None, log=None):
 # .env 解析进程内缓存（工单 dnox ④）
 # ---------------------------------------------------------------------------
 # 读侧唯一入口 `parse_env_file` 过去每次都读盘并逐行解析。调用方里存在"逐账号反复问
-# 同一份文件"的形态：`yiban/store/accounts._decrypt_row` 在字段循环里逐字段判密钥存在，
+# 同一份文件"的形态：`yiban/adapters/persistence/accounts._decrypt_row` 在字段循环里逐字段判密钥存在，
 # 1,200 账号档一次全量装载可放大到数千次读盘解析。
 #
 # 缓存口径：按**来源路径**存解析结果；取值前用 (mtime_ns, size, ino) 与磁盘现况比对，

@@ -169,7 +169,7 @@ class MaskEmailParityTest(unittest.TestCase):
 class WebForwarderParityTest(unittest.TestCase):
     """`accounts_data._mask_email` 必须仍与真源同值。
 
-    真源搬家（2-9b：`mask_email` 进 `yiban.masking`）后，上面的对拍只钉住
+    真源搬家（2-9b：`mask_email` 进 `yiban.core.masking`）后，上面的对拍只钉住
     "前端 ↔ 真源"；转发层若接错线（改了参、加了别的加工、或干脆另起炉灶），
     对拍不会红——这条按同样的边界输入钉"web 侧名字转发 ↔ 真源"同值。
     RED 可能性：把 `_mask_email` 改回自带实现或转发到别的口径，即红。

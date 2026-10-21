@@ -17,16 +17,16 @@
 web 日志页与 `/api/admin/sign-events`、signin 执行体（runner 批量落库、probe 探针）
 共用的一张事件表。sign_events 同时承载真实签到（stage="sign"）与健康探针
 （stage="probe"），凡以「签到口径」消费的调用方必须显式按 stage 过滤，否则探针的
-成功/失败会被计入签到成功率。建表与索引在迁移域（`yiban/store/migrations.py`），本模块只读写。
+成功/失败会被计入签到成功率。建表与索引在迁移域（`yiban/adapters/persistence/migrations.py`），本模块只读写。
 
 暂停冷却查询按**表归属**（audit_logs）落在本模块，而不是随「自选时间片」域走：
 它按 username 计价（审计 target 为脱敏手机号，故按操作用户名关联；多管理员共享账号
 各自独立计价——暂停/恢复冷却仅防噪音，绕过危害极小，可接受），与 sign_events 无表级
 关系。与之对称的 time_pref 保存冷却按审计 target=hash_phone(phone) 按被选账号计价，
-落在 `yiban/store/time_prefs.py`。
+落在 `yiban/adapters/persistence/time_prefs.py`。
 
 **复用**
-`yiban.store.db` 把本模块的事件函数与常量按原样再导出，`db.add_sign_event()` /
+`yiban.adapters.persistence.db` 把本模块的事件函数与常量按原样再导出，`db.add_sign_event()` /
 `db.sign_event_stats()` / `db._event_cleanup(...)` 一类调用与身份断言不变；本模块并入的
 暂停冷却两名（`last_pause_at` / `pause_count_since`）在门面上走**模块级读写转发**，
 `db.last_pause_at()` 调用与 `db.<名字> = 替身` 打桩都落到这里。
@@ -61,7 +61,7 @@ def _actor_forms(username):
 
 
 def _facade():
-    """db 门面（函数内延迟导入，避免与 `yiban.store.db` 形成导入环）。
+    """db 门面（函数内延迟导入，避免与 `yiban.adapters.persistence.db` 形成导入环）。
 
     打桩可见性见模块说明：必须按**属性**取而不是模块级 from-import，`db.<名字> = 替身`
     才会在函数体里生效。

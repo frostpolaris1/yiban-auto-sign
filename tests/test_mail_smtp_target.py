@@ -2,7 +2,7 @@
 """SMTP 目标的地址判据与发送侧日志粒度。
 
 标签：H · 通知：邮件与推送
-覆盖：`yiban.mail.config.check_smtp_host`——非路由/保留段（链路本地、CGNAT 元数据、
+覆盖：`yiban.adapters.notifier.mail.config.check_smtp_host`——非路由/保留段（链路本地、CGNAT 元数据、
     组播、保留、未指定）一律拒；私网与回环（RFC1918 + 127/8 + ::1）无开关时拒、
     开关为 1/true/ON 时放行；公网域名与公网 IP 放行；方括号 IPv6 与 IPv4-mapped
     解析；`localhost` 与非标准 IPv4 字面量（十进制/0x/短式）拒。发送失败日志的

@@ -295,7 +295,7 @@ class _TierBase(unittest.TestCase):
         """① 关闭邮件告警通道。
 
         必须先把"现值为开"造出来，否则请求会因"没真的在关"而免门、断言假绿。
-        造法不能写 `.env`：`yiban.mail.config._get` **先读 `os.environ`**（进程环境
+        造法不能写 `.env`：`yiban.adapters.notifier.mail.config._get` **先读 `os.environ`**（进程环境
         优先于 .env，与 web.app 的读侧一致），而 `tests/conftest.py` 为让邮件默认静默
         钉了 `YIBAN_MAIL_ENABLE=0`，故这里直接临时改进程环境（`patch.dict` 出栈即还原，
         不污染同进程后续用例）。

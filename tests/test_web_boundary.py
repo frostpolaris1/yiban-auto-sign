@@ -809,7 +809,7 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
         解不出，一律落 `pending`——日历把"已跳过/补签中"显示成"待签"。本门按**行为**钉住
         覆盖面：把这些符号逐个写进 sign-daily，核每个解出的状态码属于该符号的状态码集。
 
-        覆盖面**取自 `yiban.status.SYMBOL` 全表**，不手抄一份子集：手抄的那份会在写入侧
+        覆盖面**取自 `yiban.core.status.SYMBOL` 全表**，不手抄一份子集：手抄的那份会在写入侧
         扩表时静默漏格——正是本门要防的形状，写成手抄就成了同病。
         """
         date = "2026-09-20"

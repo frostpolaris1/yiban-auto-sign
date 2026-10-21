@@ -347,7 +347,7 @@ def replace_accounts(rows):
 class DeploySeedTwoGenerationTest(unittest.TestCase):
     """工单 e0ro：灌数脚本同时在**旧镜像**（v0.6.2）与**新镜像**（本树）里执行。
 
-    T6 迁移把 import 从 `yiban.store` 单向改成 `yiban.adapters.persistence`，而
+    T6 迁移把 import 从 `yiban.adapters.persistence` 单向改成 `yiban.adapters.persistence`，而
     `seed_sql_py` 在 Phase B 的旧容器里运行 ⇒ ImportError ⇒ B3/B6/B8/B11 连锁红。
     本类钉三条不变量：
       ① 两代模块路径都只有**一个定义点**（`store_module`），灌数脚本按代次取；

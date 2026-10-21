@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""校验者：弃权分档词表（`retry:`/`final:` 前缀与"默认可再领"集合）唯一家在 `yiban.status`。
+"""校验者：弃权分档词表（`retry:`/`final:` 前缀与"默认可再领"集合）唯一家在 `yiban.core.status`。
 
 128-P1 把词表自 `yiban.store.claims`（D3a 退役对象，函数已无生产调用点）迁入状态码
 词汇表：判据与成员（`STATUS_SKIPPED_WINDOW` / `STATUS_SKIPPED_NORANGE` /
 `STATUS_NO_POSITION`）同文件，"唯一一份"才钉得住。本文件钉三件事，任何一条红都
 意味着词表出现了第二份名字：
 
-1. `yiban.status` 拥有三名且**值**不变（值是 `sign_tasks.result` 列的下游契约，
+1. `yiban.core.status` 拥有三名且**值**不变（值是 `sign_tasks.result` 列的下游契约，
    `queue_store.requeue_failed` 的当日回炉口按它分档）；
 2. `yiban.store.claims` 不再拥有它们——复活即"记成 retry、判成 final"的漂移起点；
 3. `yiban.store.db` 门面不再导出 `CLAIM_*` 词表别名（名字唯一，防第三条读取路径）。
