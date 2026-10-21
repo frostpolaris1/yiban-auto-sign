@@ -246,7 +246,8 @@ def next_retry_at_v3(now_dt, sch_cfg, last_delay, rng=None, day=None):
     """装订式抖动退避的落点 → datetime；`None` = 窗口放不下 / 守不住最小间隔，放弃重试。
 
     `delay = min(cap, uniform(base, max(base, last_delay × 3)))`，其中
-    `cap = min(RETRY_CAP_SEC, 剩余有效窗口 × 0.3)`：下界是 `YIBAN_RETRY_MIN_INTERVAL`
+    `cap = min(RETRY_CAP_SEC, 剩余有效窗口 × RETRY_WINDOW_TAIL_RATIO)`：下界是
+    `YIBAN_RETRY_MIN_INTERVAL`
     （防连击），上界随剩余窗口收缩（不在尾端扎堆），落点再夹到有效窗口结束——**绝不让
     重试越过窗口**。`cap < base` 时**返回 `None`**：窗口尾段放不下一个合法间隔，宁可
     当日放弃重试，也不把间隔压到配置的最小值之下（工单 ba-p03-04；旧实现取
@@ -290,8 +291,9 @@ def next_retry_at_v3(now_dt, sch_cfg, last_delay, rng=None, day=None):
 def retry_tail_budget_sec(sch_cfg):
     """退避可从窗口尾部拿到的**最大**额度（秒）：有效窗口全长 × `RETRY_WINDOW_TAIL_RATIO`。
 
-    取窗口起点处的 `cap`：`remaining` 在起点最大，此后只减不增，故这是整条窗口里
-    能批给退避的最大延迟。`window.bounds` 与落点公式同源（含缓冲收缩/回退处置）。
+    取**窗口内路径**（`now >= 起点`）起点处的 `cap`：此后 `remaining` 只减不增，故这是
+    窗口内能批给退避的最大延迟。提前拉起（`now < 起点`）时 `remaining` 实际更大，
+    不归本值约束；`window.bounds` 与落点公式同源（含缓冲收缩/回退处置）。
     """
     return window.bounds(sch_cfg).full_sec() * RETRY_WINDOW_TAIL_RATIO
 
@@ -300,9 +302,10 @@ def retry_budget_violation(sch_cfg):
     """→ 违规说明（字符串）或 `None`：退避硬上限 > 尾部预留缓冲即违规。
 
     **为什么这是一条全局不变量**：`next_retry_at_v3` 逐次判"放不下就放弃"，
-    行为上不会越界；但窗口一旦短到 `有效窗口 × 0.3 < RETRY_CAP_SEC`，配置的
-    硬上限**永远拿不到**（每一拍都被窗口预算压低），而日志里没有任何一句话说明
-    这件事。设计期（配置解析处）把该组合判成违规，管理员才知道"窗口留得太短"。
+    行为上不会越界；但窗口一旦短到 `有效窗口 × RETRY_WINDOW_TAIL_RATIO < RETRY_CAP_SEC`，
+    配置的硬上限在**窗口内路径**（`now >= 起点`）上拿不到（每一拍都被窗口预算压低），
+    而日志里没有任何一句话说明这件事。设计期（配置解析处）把该组合判成违规，
+    管理员才知道"窗口留得太短"。提前拉起的 `now < 起点` 路径不在此判据内。
 
     判据取 `RETRY_CAP_SEC <= retry_tail_budget_sec(...)`：相等不算违规
     （窗口起点恰好批得出硬上限）。退化窗口（缓冲吃满后收缩、窗口回退）由
@@ -312,7 +315,7 @@ def retry_budget_violation(sch_cfg):
     if budget >= RETRY_CAP_SEC:
         return None
     return ("退避预算不成立：配置的退避上限 %ds 超过尾部预留缓冲 %.0fs"
-            "（有效窗口 %.0fs × %.2f）——窗口留得太短，该上限永远拿不到；"
+            "（有效窗口 %.0fs × %.2f）——窗口留得太短，该上限在窗口内拿不到；"
             "请延长签到窗口，或接受更小的退避上限"
             % (RETRY_CAP_SEC, budget,
                window.bounds(sch_cfg).full_sec(), RETRY_WINDOW_TAIL_RATIO))

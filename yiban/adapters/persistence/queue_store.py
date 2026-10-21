@@ -420,6 +420,12 @@ def reclaim_tasks(day: str, phones: Iterable[str]) -> int:
     否则手动签到会睡到计划时刻（窗口外更会一直等）。`vshard < 0` 的历史行不属于任何分片集，
     一律不碰（与 `reap_abandoned` / `pending_count` 同界）。空 `phones` → 0 且不取连接；
     库异常 → 0 + warning。
+
+    **翻态时 `attempts` 同时 +1**：重签是**下一次真实登录**，不是同一次观测。
+    `sign_events` 的去重键是 `(账号, 业务日, status, attempt)`；不递增时下一次尝试算出
+    与上次相同的编号，同状态的事件行会被条件 INSERT 当作重复整行丢弃（审查实测：
+    `done` 行重签后表里仍只有旧的一行）。代价：本次重签占用一次重试预算——语义上它
+    本来就是一次真实请求，记账应当如此。
     """
     items = tuple(phones or ())
     if not items:
@@ -433,11 +439,13 @@ def reclaim_tasks(day: str, phones: Iterable[str]) -> int:
         "state=CASE WHEN state IN (?, ?, ?) THEN ? ELSE state END, "
         "owner=CASE WHEN state IN (?, ?, ?) THEN '' ELSE owner END, "
         "epoch=epoch + CASE WHEN state IN (?, ?, ?) THEN 1 ELSE 0 END, "
+        "attempts=attempts + CASE WHEN state IN (?, ?, ?) THEN 1 ELSE 0 END, "
         "run_at=? "
         "WHERE day=? AND vshard >= 0 "
         f"AND phone IN ({placeholders})"
     )
     params = (STATE_DONE, STATE_SKIPPED, STATE_CLAIMED, STATE_PENDING,
+              STATE_DONE, STATE_SKIPPED, STATE_CLAIMED,
               STATE_DONE, STATE_SKIPPED, STATE_CLAIMED,
               STATE_DONE, STATE_SKIPPED, STATE_CLAIMED,
               stamp, day, *items)
@@ -478,9 +486,14 @@ def reap_abandoned(owner: str, day: str | None = None) -> int:
     只回收该业务日。
 
     库异常 → 0 + warning（回收是补偿动作，失败不该打断调用方；下一次监督进程轮末会再试）。
+
+    **回收时 `attempts` 同时 +1**：被回收的行已经历过一次真实尝试（持有者领到即进入
+    `attempts_n + 1` 的编号），下一次领取是**下一次真实尝试**。不递增时同状态的事件行
+    会被 `sign_events` 的条件 INSERT 当作重复丢弃。
     """
     prefix = owner + ":"
-    sql = ("UPDATE sign_tasks SET state=?, owner='', epoch=epoch + 1 "
+    sql = ("UPDATE sign_tasks SET state=?, owner='', epoch=epoch + 1, "
+           "attempts=attempts + 1 "
            "WHERE state=? AND vshard >= 0 AND (owner = ? OR instr(owner, ?) = 1)")
     params = [STATE_PENDING, STATE_CLAIMED, owner, prefix]
     if day is not None:
