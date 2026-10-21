@@ -142,20 +142,35 @@ def _registered(token):
 
 
 def _artifacts_prefixes():
-    """R1：`yiban/adapters/statefiles/state_gc.py` 的 `ARTIFACTS` 元组里的前缀（按定义顺序）。"""
-    src = _read(os.path.join(BASE, "yiban", "adapters", "statefiles", "state_gc.py"))
-    body = src.split("ARTIFACTS = (", 1)[1].split("\n)", 1)[0]
-    return re.findall(r'Artifact\(\s*"([^"]+)"', body)
+    """R1：`state_gc.ARTIFACTS` 的前缀（按定义顺序）。
+
+    直接读模块对象而不是解析文本：前缀已收进 `env_io` 常量（census-P2-sign-state），
+    文本扫描看不见它们。
+    """
+    from yiban.adapters.statefiles import state_gc
+    return [art.prefix for art in state_gc.ARTIFACTS]
 
 
 def _backup_entries():
-    """R2：`scripts/backup.sh` 的 state_files + log_files 收录项（去引号后的 glob）。"""
+    """R2：`scripts/backup.sh` 的 state_files + log_files 收录项（去引号后的 glob）。
+
+    三个 `$_SIGN_*_GLOB` 是从 `env_io` 定义点导出的变量（census-P2-sign-state /
+    sign-day-log）：这里按定义点展开，名册对照的仍是"备份收哪几类件"这个事实，
+    不是 bash 变量名。
+    """
+    from yiban.adapters.config import env_io
+    derived = {
+        "$_SIGN_DAILY_GLOB": env_io.SIGN_DAILY_PREFIX + "*" + env_io.SIGN_DAILY_SUFFIX,
+        "$_SIGN_STATE_GLOB": env_io.SIGN_STATE_PREFIX + "*" + env_io.SIGN_STATE_SUFFIX,
+        "$_SIGN_LOG_GLOB": env_io.DAY_LOG_PREFIX + "*" + env_io.DAY_LOG_SUFFIX,
+    }
     src = _read(os.path.join(BASE, "scripts", "backup.sh"))
     names = []
     for var in ("state_files=(", "log_files=("):
         start = src.index(var) + len(var)
         arr = src[start:src.index(")", start)]
-        names += re.findall(r'/\*?"?([^"/\s)]+)"?', arr)
+        for name in re.findall(r'/\*?"?([^"/\s)]+)"?', arr):
+            names.append(derived.get(name, name))
     return names
 
 

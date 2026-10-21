@@ -153,11 +153,16 @@ class SignStatePathSingleDefinitionTest(unittest.TestCase):
     def test_sign_state_path_is_one_function(self):
         self.assertEqual("sign-state-2026-01-02.json",
                          os.path.basename(state_io.sign_state_path("2026-01-02")))
-        day = datetime.datetime(2026, 1, 2, 7, 0, 0)
-        with mock.patch.object(state_io, "_state_dir", return_value="/tmp/x"), \
-                mock.patch.object(state_io.clock, "now", return_value=day):
-            self.assertEqual("/tmp/x/sign-state-2026-01-02.json",
-                             state_io._sign_state_path())
+        # 形状与默认目录的唯一来源是 env_io（census-P2-sign-state）：替换定义点后，
+        # state_io 的产物必须跟着变（派生 vs 各写一份，只有这条能分开）。
+        from yiban.adapters.config import env_io
+        with mock.patch.object(env_io, "sign_state_path",
+                               return_value="/tmp/x/SENTINEL.json") as fn:
+            self.assertEqual("/tmp/x/SENTINEL.json",
+                             state_io._sign_state_path("2026-01-02"))
+        self.assertEqual("2026-01-02", fn.call_args.args[0])
+        self.assertTrue(str(fn.call_args.kwargs.get("state_dir", "")).strip(),
+                        "state_io 没把缺省状态目录传给定义点")
 
 
 if __name__ == "__main__":

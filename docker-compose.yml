@@ -46,10 +46,14 @@ services:
       - "80:80"
       - "443:443"
 
-    # ⚠️ **下面这些值会被 /data/.env 的同名 YIBAN_* 键覆盖**（M27，全仓口径：
-    # `.env` 优先、进程环境只补缺）。它们在这里的作用是"**默认兜底**"——`.env` 里
-    # 没写这些键时才生效。容器里 /data 是唯一可写卷，把这些路径写进 .env 也没问题；
-    # 真要换路径，改 .env 而不是改这里（改这里会在 .env 有同名键时静默不生效）。
+    # ⚠️ **优先级按键分两档（工单 71z7，2026-10-20 裁定）**：
+    # · 三个可配置路径键（`YIBAN_DB_FILE` / `YIBAN_STATE_DIR` / `YIBAN_LOG_FILE`）：
+    #   **这里的值优先**，`/data/.env` 只补缺（与
+    #   `env_io.resolve_path` / `child_env.build_child_env` 同口径）。要换路径，
+    #   改这里（或删掉该行、把值写进 `.env`）。
+    # · 其余键（如 `YIBAN_ACCOUNTS_FILE` / `YIBAN_COOKIE_SECURE`）：`/data/.env`
+    #   优先，这里的值只在 `.env` 没写同名键时生效（M27）。
+    # 容器里 /data 是唯一可写卷；两份配置保持同一处事实源即可。
     environment:
       - TZ=Asia/Shanghai          # 参与签到窗口计算，缺省会错 8 小时
       - YIBAN_ENV_FILE=/data/.env

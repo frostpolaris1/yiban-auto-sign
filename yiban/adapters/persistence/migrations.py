@@ -133,6 +133,7 @@ _ARTIFACTS = {
     18: (("sign_tasks", None), ("egress_state", None)),   # migrate_v18 建两表
     19: (("sign_claims", "epoch"), ("sign_tasks", "epoch")),  # migrate_v19 补两列
     21: (("run_events", None),),                          # migrate_v21 建表
+    23: (("egress_state", "half_open_until"),),           # migrate_v23 补列
 }
 
 
@@ -1014,7 +1015,7 @@ def _read_sign_state(state_dir, day):
     "无记录"与"这一日跳过"，以便把扫描账目记准。**不得**读 `sign-daily-<day>.json`
     ——那是 `{phone: 符号}` 的符号表，没有 `status`/`time`。
     """
-    path = os.path.join(state_dir, f"sign-state-{day}.json")
+    path = env_io.sign_state_path(day, state_dir=state_dir)
     try:
         with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
@@ -1181,6 +1182,24 @@ def migrate_v22(conn):
     _commit_if_free(conn)
 
 
+def migrate_v23(conn):
+    """v23：`egress_state` 补 `half_open_until` 列——半开冷却窗口跨进程重启保留。
+
+    **核心迁移**：`queue_store.load_egress_state` / `save_egress_state` 把该列名写进
+    SQL；缺列时读取整行失败（返回 None），连出口级 `rate` 也装不回，重启即回出厂
+    速率。产物登记进迁移产物表，缺列拒启。
+
+    **单位是绝对墙钟截止时刻（epoch 秒），不是剩余秒数**：同一出口行被多个执行体
+    共享（`--workers >1` 或主轮＋兜底），每个进程都会周期性落库。若存"剩余秒数"，
+    未命中风控的兄弟进程每次写 0 就会把别人的冷却抹掉（实测 300→0）。存绝对截止
+    时刻后，UPSERT 用 `MAX(existing, excluded)` 合并：只有更晚的截止时刻能胜出，
+    写 0 不再有破坏性。restore 时按新进程墙钟算剩余并夹到 `[0, HALF_OPEN_SEC]`。
+    存量行默认 0 = 无半开（epoch 0 早已过期），不回退历史行为。
+    """
+    _ensure_column(conn, "egress_state", "half_open_until", "REAL NOT NULL DEFAULT 0")
+    _commit_if_free(conn)
+
+
 # 迁移项格式：(目标版本号, 名称, 函数, 是否核心)
 # - 核心迁移：现有功能依赖，失败应阻断启动。
 # - 可选迁移：未来/非关键能力，失败只告警或延后重试。
@@ -1219,6 +1238,9 @@ _MIGRATIONS = [
     # v22 可选：清空 `egress_state`——桶键由执行体身份改判为出口标识（工单 2cwd）。
     # 只清数据、无 schema 产物，故不进 `_ARTIFACTS`；失败不阻断启动。
     (22, "v22_egress_identity_rebuild", migrate_v22, False),
+    # v23 核心：出口桶状态的半开剩余时长。读写层硬编该列名；缺列会让整行读失败，
+    # 连出口级 rate 也装不回（工单 ba-p04-04）。
+    (23, "v23_egress_half_open", migrate_v23, True),
 ]
 
 

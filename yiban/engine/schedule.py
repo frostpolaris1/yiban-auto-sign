@@ -343,9 +343,29 @@ def egress_rate() -> float:
     """出口级目标速率 λ（`YIBAN_EGRESS_RATE`，次尝试/s）。**唯一读取点**：
     `planner_config`（限速桶速率）与容量预检的**出口预算告警**都调本函数——同一个量
     只许一处读，域与夹取也只此一份（两处各写一遍式子，改一处必漏另一处）。
-    非法/越界回退名册缺省（与 `channel_count` 的"非法回退出厂速率"同口径）。
+
+    域与引擎**同一对常量**（`token_bucket` 导出的速率域，名册声明同值，由守卫钉住）：
+    本函数不另写数字。域外值**钳到最近边界并告警**（原值＋钳后值＋来源），不静默夹取：
+    0.05 被无声抬到 0.2 会让"降速"变成"加速"，50 被无声压到 4.0 会让"改成功了"变成
+    "实际按 4.0 跑"（工单 zx54）。非数值仍回退名册缺省并告警。
     """
-    return _env_float("YIBAN_EGRESS_RATE", _DEFAULT_BUCKET_RATE, 0.01, 100)
+    from yiban.engine import token_bucket
+    default = _DEFAULT_BUCKET_RATE
+    raw = os.environ.get("YIBAN_EGRESS_RATE", "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("配置 YIBAN_EGRESS_RATE=%r 非法（不是数值），回退缺省 %s",
+                       raw, default)
+        return default
+    lo, hi = token_bucket.RATE_MIN, token_bucket.RATE_MAX
+    clamped = min(max(value, lo), hi)
+    if clamped != value:
+        logger.warning("配置 YIBAN_EGRESS_RATE=%s 超出引擎速率域 [%s, %s]（来源 进程环境），"
+                       "按边界 %s 执行", value, lo, hi, clamped)
+    return clamped
 
 
 def _schedule_config(now: datetime | None = None) -> dict[str, Any]:

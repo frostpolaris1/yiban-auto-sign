@@ -328,7 +328,8 @@ ACCOUNTS_DEFAULT = env_io.resolve_path("YIBAN_ACCOUNTS_FILE", "accounts.json")
 # 会静默落到 /var/log/yiban；同机第二份部署因此与第一份共用状态目录与磁盘外锚点。
 STATE_DIR_DEFAULT = env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
 LOG_DEFAULT = env_io.resolve_path("YIBAN_LOG_FILE", "/var/log/yiban/sign.log")
-# ENV_DEFAULT / DB_DEFAULT 也走 resolve_path。只认 os.environ 时，`.env` 里写的值对 web 进程无效。
+# DB_DEFAULT 也走 resolve_path（`.env` 里的库路径对 web 进程有效）。
+# ENV_DEFAULT 是**指针**：`resolve_path` 对它只读进程环境，不读 `.env`（自指）。
 # 库路径一侧的后果最直白：引擎开到 `.env` 声明的库，web 开到默认库。同一部署会出现两个库。
 # 两枚默认值都取自 `env_io` 的单点常量（`data/.env` / `data/yiban.db`，相对检出根）——
 # 与引擎侧同源，且使检出根可属 root 且组/其他不可写（install.sh 的 M01 门）。
@@ -2370,8 +2371,10 @@ def create_app(host=None):
         口令门收窄（用户拍板清单）：门内只剩**不可逆/凭据类**动作
         ——删除账号、清库清理、换钥、改管理员口令、改他人凭据，以及**关闭邮件/推送
         告警通道**（拆掉安全网本身）。改设备识别码、备注、改角色、调推送额度/节流
-        参数、**开启**邮件通道与邮件收件人变更等**可逆操作一律免门免额度**，但保留
-        审计行与变更信/告警（"只标位/只发信"，MF-86 的归类随之回退）。
+        参数、**开启**邮件通道与 admin_notify 开关等**可逆操作一律免门免额度**，但保留
+        审计行与变更信/告警（"只标位/只发信"，MF-86 的归类随之回退）。**收件人改道
+        不在免门面**：把全部告警改发别处正是静音手法，它单独过同一道门并占 creds
+        额度（用户 2026-10-02 裁决，覆盖 0.5.0 的"可逆路由改动免门"归类）。
 
         `irreversible=True` 标注"不可逆清除/删除"类落点（物理清除、彻底删除、
         删用户）：非 `full` 档下它们还要求请求体带倒计时确认凭据，见
@@ -2392,11 +2395,12 @@ def create_app(host=None):
         - POST /api/users/<int:user_id>/password（改他人凭据）
         - POST /api/users/<int:user_id>/delete（full 与 accounts_only）
         - PUT /api/notify-config（触碰推送密钥时——换钥/清钥/改道；调额度/节流参数免门）
-        - PUT /api/mail-config（**关闭邮件通道**时——开 → 关；SMTP 凭据变更直连
-          _reconfirm_admin_password 要口令、不占额度，开启方向与收件人变更免门）
-        免门（均保留审计）：PUT /api/mail-config 的**开启**与收件人变更
-        （关闭邮件通道过本门；SMTP 凭据变更仍直连 _reconfirm_admin_password 要口令、
-        不占额度）。`/api/announcement/publish` 与 `/api/settings` 的 A/B 档另走
+        - PUT /api/mail-config（**关闭邮件通道**与**收件人改道**——两道门分别判：
+          关通道在本门；改道在视图内单独过本门，quota="creds"、risk_always=True；
+          SMTP 凭据变更直连 _reconfirm_admin_password 要口令、不占额度）
+        免门（均保留审计）：PUT /api/mail-config 的**开启**与 admin_notify 开关
+        （关闭邮件通道与收件人改道过本门；SMTP 凭据变更仍直连
+        _reconfirm_admin_password 要口令、不占额度）。`/api/announcement/publish` 与 `/api/settings` 的 A/B 档另走
         `sensitive_password_gate()`（不占额度），不在本清单内。
         可被 TTL 豁免的配置类动作（因此不走本函数）：/api/settings 的 B 档（排序风格与
         自选权）、/api/scheduler/executors* 的写操作；A 档（签到窗口与缓冲边距、周末开关、

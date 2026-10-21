@@ -206,11 +206,11 @@ def _probe_time_overlaps_sign_window(probe_time=None, cfg=None):
 def _apply_egress_proxy(client):
     """把本进程身份对应的出口套到客户端 session 上（读侧出口管控，M35）。
 
-    **为什么这里要再套一次**：`YibanClient.__init__` 只读 `os.environ["YIBAN_PROXY"]`。
-    注册/添加账号的在线校验与设备登记补全跑在 **web 进程**里，而该进程的环境通常没有
-    这个键（出口是给执行体子进程注入的），于是这一次"服务器代用户向易班发起真实登录"
-    就**直连出网**——恰恰是风控暴露面最大、最该受 `YIBAN_PROXY` 管控的一条路径，却绕过
-    了管控。
+    **为什么这里要再套一次**：`YibanClient.__init__` 按 `egress.resolve(ROLE_SINGLE)`
+    取单执行体出口；web 进程的环境通常没有 `YIBAN_PROXY`（出口是给执行体子进程
+    注入的），于是这一次"服务器代用户向易班发起真实登录"就**直连出网**——恰恰是风控
+    暴露面最大、最该受 `YIBAN_PROXY` 管控的一条路径。这里按**进程身份**重解析一次，
+    把清单/多执行体形态下该槽位自己的出口套上去。
 
     **出口怎么取**：按**本进程执行体身份**解析（`_resolve_egress`）。web 进程无
     `YIBAN_EXECUTOR_ID` ⇒ 单执行体角色 ⇒ 读 `YIBAN_PROXY`（与改造前逐字一致）；探针在
@@ -606,10 +606,11 @@ def run_probe(accounts):
                 "探针：账号 %s 网络类失败（不计预警）：%s",
                 _mask_phone(acc.phone), _sanitize_text(message),
             )
-    # 桶状态落库：把**出口级速率**写回同一行 `egress_state`，执行体下一轮（或本轮重启）
-    # `restore_from_store` 即看见——这是"跨进程同一份出口速率"的落点（令牌位置 `tat` 不落库，
-    # 各进程独立）。写失败由 `EgressLimiter.persist` 内部告警，不阻断探针（桶状态是记忆不是业务事实）。
-    limiter.persist(egress_key)
+    # 桶状态落库：把**出口级速率**与剩余半开窗口写回同一行 `egress_state`，执行体下一轮
+    # （或本轮重启）`restore_from_store` 即看见——这是"跨进程同一份出口速率"的落点
+    # （令牌位置 `tat` 不落库，各进程独立）。`now` 用本进程的单调钟，把半开截止时刻
+    # 换算成相对量。写失败由 `EgressLimiter.persist` 内部告警，不阻断探针（桶状态是记忆不是业务事实）。
+    limiter.persist(egress_key, now=_mono())
     # 预警（复用 A/B 线邮件机制；用户邮件按「健康探测」措辞，避免误报为当日签到失败）
     if fuse_cleared:
         with contextlib.suppress(Exception):
