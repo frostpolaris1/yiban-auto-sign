@@ -126,6 +126,7 @@ fast	tests/test_egress_direct_applied.py
 fast	tests/test_egress_rate_domain_single_source.py
 fast	tests/test_elbow_predicate.py
 fast	tests/test_elbow_shadow.py
+fast	tests/test_emit_ledger.py
 fast	tests/test_email_domain_review.py
 fast	tests/test_env_export_line_divergence.py
 fast	tests/test_env_fail_loud.py
