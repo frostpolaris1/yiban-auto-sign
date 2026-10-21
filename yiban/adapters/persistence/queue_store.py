@@ -460,8 +460,7 @@ def reclaim_tasks(day: str, phones: Iterable[str]) -> int:
             type(e).__name__)
     else:
         fallback_busy = False
-    # stamp 在取锁**之后**生成（复评 F3）：首支 clock.now 探针由此真落进持锁窗口；
-    # 放在取锁前会让竞态用例的探针全部落在窗口之外，只靠偶然路径变绿。
+    # stamp 在取锁**之后**生成（复评 F3）：首支 clock.now 探针由此真落进持锁窗口。
     stamp = clock.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     try:
         flip_states = ((STATE_DONE, STATE_SKIPPED) if fallback_busy
