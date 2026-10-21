@@ -26,7 +26,7 @@ web/            Flask 管理后台（账号管理/审核/用户管理/日历/手
             ├── adapters/statefiles/state_gc.py  按日状态文件的保留期策略与清理
             ├── logging_ext.py   日志落盘（跨进程互斥 + 按天滚动）
             ├── platform.py      易班平台事实（端点/请求头/版本）+ 登录与签到编排
-            ├── adapters/protocol_yiban/ ★ 洁净室协议库（纯解析/构造；MIT，见其 LICENSE/SPEC.md）
+            ├── adapters/protocol_yiban/ ★ 洁净室协议库（纯解析/构造；AGPL-3.0-only，见其 LICENSE/SPEC.md）
             ├── adapters/protocol_fake/  测试假上游（e2e 与演练用；生产链路不引）
             ├── adapters/notifier/       通知适配：`notify/`（推送）与 `mail/`（邮件）
             │                            ← 旧坐标 `yiban/notify/` 与 `yiban/mail/` 的转发壳已于 145-E 退役
