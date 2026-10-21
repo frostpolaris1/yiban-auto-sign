@@ -296,11 +296,12 @@ class WebuiStatsDbTest(unittest.TestCase):
         return None
 
     def test_stats_count_distinct_phone_not_rows(self):
-        # 跳过发生在领取之前：两个执行体各走一遍跳过路径、各写一行 ⇒ 同一账号两行。
-        # cnt 必须按账号计一次，否则报表虚增；row_cnt 保留真实行数（尝试次数）。
-        db.add_sign_event(_recent(minutes=2), "13800138000", "user_cancelled")
-        db.add_sign_event(_recent(minutes=1), "13800138000", "user_cancelled")
-        row = self._stat_for("user_cancelled")
+        # 同一账号当日可有多行，但那是 **attempt 递进的真重试**（写入端对同一
+        # (账号, 日, status, attempt) 只留一行，工单 f7or）。cnt 按账号计一次，
+        # row_cnt 保留真实行数（尝试次数）。
+        db.add_sign_event(_recent(minutes=2), "13800138000", "failed", attempt=1)
+        db.add_sign_event(_recent(minutes=1), "13800138000", "failed", attempt=2)
+        row = self._stat_for("failed")
         self.assertIsNotNone(row)
         self.assertEqual(row["cnt"], 1, "同一账号同一状态当日只计一次")
         self.assertEqual(row["row_cnt"], 2, "原始行数（尝试次数）不得丢失")
@@ -325,36 +326,30 @@ class WebuiStatsDbTest(unittest.TestCase):
         self.assertEqual(failed["cnt"] + success["cnt"], 2,
                          "同一账号在两个桶各计一次（分桶去重的必然结果）")
 
-    def test_summary_rows_do_not_pollute_account_stats(self):
-        """收尾扫描的**批量摘要行**（`phone=''`）不进按账号聚合——工单 81xt 的读者面。
+    def test_accountless_sign_rows_cannot_pollute_account_stats(self):
+        """无账号的 sign 行在写入口就被拒——负向不变式从"读者守"变成"写不进"。
 
-        兜底收尾扫描把「已由他人负责」收成一条批量事件（O(1)）。该行没有单一账号
-        （`phone=''`），若照常参与聚合：`sign_event_stats` 会凭空造出一个 `pending`
-        桶——正是 2026-10-10 生产「pending 桶 = 全部账号数」的成因形状（MF-55）。
-        摘要行仍留在表里、仍可被事件流读出（它是那条 O(1) 留痕本身）。
-
-        **看板账号统计（`accounts_stats`）不读事件表**，故摘要行对它无从污染；
-        本用例只钉日志页那半边（`sign_event_stats` 与事件流）。
+        旧形状（工单 81xt／MF-55）：兜底收尾把「已由他人负责」收成一条 `phone=''`
+        的摘要行写进 `sign_events`，每个读者都得记得过滤，否则日志页凭空多出
+        `pending` 桶。摘要行现在住 `run_events`（观测表），本表在写入口拒绝空账号
+        （`_accountless_sign_row`）；`sign_event_stats` 保留 `phone <> ''` 只作
+        历史行防御（旧库的摘要行在 180 天保留期内仍可能被读到）。
         """
         db.add_sign_event(_recent(minutes=2), "13800138000", "success", stage="sign")
-        # 摘要行：一条批量结论，不带单一账号
-        db.add_sign_event(_recent(minutes=1), "", "pending",
-                          "本执行体未领取：任务已由其他执行体领取，共 6 个账号",
-                          stage="sign")
-        # ① 聚合：摘要行不得造出 pending 桶
-        stats = {(r["day"], r["status"]): r
-                 for r in db.sign_event_stats(days=30, stage="sign")}
-        self.assertEqual(set(s for (_d, s) in stats), {"success"},
-                         f"摘要行凭空造出了状态桶（生产 pending 桶污染的形状）：{stats}")
-        # ② 留痕：摘要行仍在表内、仍可被事件流读出
+        with self.assertLogs("yiban.store.events", level="WARNING"):
+            db.add_sign_event(_recent(minutes=1), "", "pending",
+                              "本执行体未领取：任务已由其他执行体领取，共 6 个账号",
+                              stage="sign")
+        # ① 写入口拒绝：表里只剩账号级事实
         raw = db.get_conn().execute(
             "SELECT phone, status FROM sign_events ORDER BY id").fetchall()
         self.assertEqual([(r["phone"], r["status"]) for r in raw],
-                         [("13800138000", "success"), ("", "pending")],
-                         "摘要行必须仍在表里（它就是那条 O(1) 留痕）")
-        stream = db.sign_events_since("1970-01-01 00:00:00", limit=10)
-        self.assertIn("", [str(r["phone"]) for r in stream],
-                      "摘要行必须仍能被事件流读出，不得被静默丢弃")
+                         [("13800138000", "success")],
+                         "无账号的 sign 行不得落库（哨兵不得复活）")
+        # ② 聚合不需要哨兵过滤也看不到 pending 桶
+        stats = {(r["day"], r["status"]): r
+                 for r in db.sign_event_stats(days=30, stage="sign")}
+        self.assertEqual(set(s for (_d, s) in stats), {"success"})
 
 
 class DashboardTerminalStatsTest(unittest.TestCase):
@@ -498,3 +493,217 @@ class DashboardTerminalStatsTest(unittest.TestCase):
         daily = {(row["day"], row["status"]) for row in data["daily_stats"]}
         self.assertIn((day, "pending"), daily, "过程事件仍须在 daily_stats 可见")
         self.assertIn((day, "success"), daily, "过程事件仍须在 daily_stats 可见")
+
+
+# ---------------------------------------------------------------------------
+# f7or：sign_events 不得记录「观测」
+# ---------------------------------------------------------------------------
+#: 门的历史豁免登记：业务日 → 理由。只登记**已判明**的日子，不做"整段历史放行"。
+#: 2026-08-31：`failed`/`retrying` 在 attempt 1..4 上各 3 行，是多执行体各记一次
+#: **同一次真实尝试**（变迁重复）。删行会伪造尝试史，故登记豁免而不是清洗。
+GATE_EXEMPT_DAYS = {
+    "2026-08-31": "多执行体各记一次同一次尝试（attempt>0）；删行会伪造尝试史",
+}
+
+
+def sign_events_observation_gate(conn):
+    """门：同 (账号, 业务日, status, attempt) 的 sign 事件行必须 ≤1。
+
+    两类历史数据必须分开（工单 f7or 验收 2）：
+    - **观测重复**：`attempt == 0`——同一个事实被每轮重扫重发（pending 洪水、
+      user_cancelled 每轮一条），**没有尝试号递进**。一律红。
+    - **变迁重复**：`attempt > 0`——行带着真实尝试号，是多执行体各记一次同一次
+      尝试。旧数据里确实存在（2026-08-31），删除会伪造尝试史，故按**日期显式
+      登记**豁免；登记日之外再出现就是回归（写入端已做幂等），同样红。
+
+    返回 `(status, groups)`：status ∈ {"ok", "violations", "cannot-determine"}；
+    groups 每项是 dict（含 `class` 与 `reason`）。`cannot-determine` 对应
+    "一行可判定的数据都没有"——扫空不得当绿（AGENTS §30）。
+    """
+    rows = conn.execute(
+        "SELECT phone, substr(ts, 1, 10) AS day, status, attempt, "
+        "COUNT(*) AS n, MIN(ts) AS lo, MAX(ts) AS hi "
+        "FROM sign_events WHERE stage <> 'probe' AND phone <> '' "
+        "GROUP BY phone, day, status, attempt HAVING COUNT(*) > 1 "
+        "ORDER BY day, phone, status, attempt").fetchall()
+    scanned = conn.execute(
+        "SELECT 1 FROM sign_events WHERE stage <> 'probe' AND phone <> '' LIMIT 1"
+    ).fetchone()
+    if scanned is None:
+        return "cannot-determine", []
+    violations, exemptions = [], []
+    for r in rows:
+        group = dict(r)
+        if int(group["attempt"] or 0) > 0:
+            group["class"] = "transition"
+            reason = GATE_EXEMPT_DAYS.get(group["day"])
+            if reason:
+                group["reason"] = reason
+                exemptions.append(group)
+            else:
+                group["reason"] = "未登记的变迁重复（attempt>0）"
+                violations.append(group)
+        else:
+            group["class"] = "observation"
+            group["reason"] = "attempt=0：同一事实被重扫重发"
+            violations.append(group)
+    return ("violations" if violations else "ok"), violations + exemptions
+
+
+class ObservationWriteGateTest(unittest.TestCase):
+    """f7or：写入端幂等（重复在结构上不可能）＋ 门的两类判别与突变。
+
+    每条断言钉的是**不变式**：任何时刻同一 (账号, 业务日, status, attempt) 的
+    sign 事件行 ≤1；观测行没有尝试号（attempt=0）时不得因重扫而增行；探针行
+    （stage='probe'）是另一条观测通道，不参与本不变量。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="yiban-observation-gate-")
+        cls.env_file = os.path.join(cls.tmp, ".env")
+        with open(cls.env_file, "w", encoding="utf-8") as f:
+            f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n")
+        cls.db_file = os.path.join(cls.tmp, "yiban.db")
+        os.environ["YIBAN_ACCOUNTS_KEY"] = TEST_KEY
+        os.environ["YIBAN_ENV_FILE"] = cls.env_file
+        os.environ["YIBAN_DB_FILE"] = cls.db_file
+        global db
+        import db
+
+    @classmethod
+    def tearDownClass(cls):
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        os.environ.pop("YIBAN_ACCOUNTS_KEY", None)
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def setUp(self):
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        for suffix in ("", "-wal", "-shm"):
+            p = self.db_file + suffix
+            if os.path.exists(p):
+                os.remove(p)
+        db.init_db(self.db_file, env_file=self.env_file)
+        self.conn = db.get_conn()
+
+    def _count(self):
+        return self.conn.execute("SELECT COUNT(*) FROM sign_events").fetchone()[0]
+
+    # ---- 写入端：重复在结构上不可能 ----
+    def test_same_key_written_twice_keeps_one_row(self):
+        db.add_sign_event("2026-09-01 06:30:00", "13800138000", "failed",
+                          stage="sign", attempt=2)
+        db.add_sign_event("2026-09-01 06:30:01", "13800138000", "failed",
+                          stage="sign", attempt=2)
+        self.assertEqual(self._count(), 1)
+
+    def test_same_key_inside_one_batch_keeps_one_row(self):
+        db.add_sign_events_batch([
+            {"ts": "2026-09-01 06:30:00", "phone": "13800138000",
+             "status": "user_cancelled", "stage": "sign", "attempt": 0},
+            {"ts": "2026-09-01 06:30:05", "phone": "13800138000",
+             "status": "user_cancelled", "stage": "sign", "attempt": 0},
+        ])
+        self.assertEqual(self._count(), 1)
+
+    def test_same_status_on_different_attempt_is_kept(self):
+        """真实重试不是重复：attempt 递进必须各留一行（尝试史不得被吞）。"""
+        for attempt in (1, 2, 3):
+            db.add_sign_event(f"2026-09-01 06:3{attempt}:00", "13800138000", "failed",
+                              stage="sign", attempt=attempt)
+        self.assertEqual(self._count(), 3)
+
+    def test_different_day_is_not_a_duplicate(self):
+        db.add_sign_event("2026-09-01 06:30:00", "13800138000", "failed",
+                          stage="sign", attempt=1)
+        db.add_sign_event("2026-09-02 06:30:00", "13800138000", "failed",
+                          stage="sign", attempt=1)
+        self.assertEqual(self._count(), 2)
+
+    def test_probe_rows_keep_their_cadence(self):
+        """探针是另一条观测通道：同号同日同状态的多拍探针不得被合并。"""
+        for hour in (1, 2, 3):
+            db.add_sign_event(f"2026-09-01 0{hour}:00:00", "13800138000", "success",
+                              stage="probe")
+        self.assertEqual(self._count(), 3,
+                         "stage='probe' 的多拍观测不得被 sign 口径的去重吞掉")
+
+    def test_accountless_sign_row_is_refused(self):
+        """`phone=''` 带内哨兵已撤：sign_events 只装账号级事实（结构上拒绝）。"""
+        with self.assertLogs("yiban.store.events", level="WARNING"):
+            db.add_sign_event("2026-09-01 06:30:00", "", "pending",
+                              "本执行体未领取：任务已由其他执行体领取，共 6 个账号",
+                              stage="sign")
+        self.assertEqual(self._count(), 0,
+                         "无账号的 sign 事件必须被写入口拒绝（哨兵不得复活）")
+
+    # ---- 门：两类判别 ----
+    def _insert_raw(self, ts, phone, status, stage, attempt):
+        """绕过写入口直插——模拟**历史行**（门要能审旧库）。"""
+        self.conn.execute(
+            "INSERT INTO sign_events (ts, phone, status, message, stage, attempt) "
+            "VALUES (?,?,?,?,?,?)", (ts, phone, status, "", stage, attempt))
+        self.conn.commit()
+
+    def test_gate_passes_written_data(self):
+        db.add_sign_event("2026-09-01 06:30:00", "13800138000", "failed",
+                          stage="sign", attempt=1)
+        db.add_sign_event("2026-09-01 06:31:00", "13800138000", "retrying",
+                          stage="sign", attempt=1)
+        status, groups = sign_events_observation_gate(self.conn)
+        self.assertEqual(status, "ok")
+        self.assertEqual(groups, [])
+
+    def test_gate_separates_observation_from_transition_duplicates(self):
+        # 观测重复（attempt=0，重扫重发）⇒ 红
+        for minute in (1, 2):
+            self._insert_raw(f"2026-09-01 06:3{minute}:00", "13800138000",
+                             "pending", "sign", 0)
+        # 变迁重复（attempt>0，多执行体各记一次）且在登记豁免日 ⇒ 登记，不算违规
+        for minute in (1, 2, 3):
+            self._insert_raw(f"2026-08-31 06:3{minute}:00", "13800138001",
+                             "failed", "sign", 2)
+        status, groups = sign_events_observation_gate(self.conn)
+        self.assertEqual(status, "violations", "观测重复必须判红")
+        classes = {(g["class"], g["day"]) for g in groups}
+        self.assertIn(("observation", "2026-09-01"), classes)
+        self.assertIn(("transition", "2026-08-31"), classes,
+                      "08-31 的变迁重复必须作为豁免登记出现在结果里（不许静默吞掉）")
+        observation = [g for g in groups if g["class"] == "observation"]
+        self.assertEqual(len(observation), 1, "只应报那一条观测重复组")
+        transition = [g for g in groups if g["class"] == "transition"]
+        self.assertIn("伪造尝试史", transition[0]["reason"])
+
+    def test_gate_transition_duplicate_outside_registry_is_red(self):
+        """写入端幂等之后，登记日之外的变迁重复就是回归。"""
+        for minute in (1, 2):
+            self._insert_raw(f"2026-09-01 06:3{minute}:00", "13800138000",
+                             "failed", "sign", 2)
+        status, groups = sign_events_observation_gate(self.conn)
+        self.assertEqual(status, "violations")
+        self.assertEqual(groups[0]["class"], "transition")
+        self.assertIn("未登记", groups[0]["reason"])
+
+    def test_gate_empty_scan_is_not_green(self):
+        status, groups = sign_events_observation_gate(self.conn)
+        self.assertEqual(status, "cannot-determine",
+                         "一行可判定的数据都没有时不得报绿（扫空 ≠ 通过）")
+        self.assertEqual(groups, [])
+
+    # ---- 突变验证：往干净夹具写两条同键观测 ⇒ 门必红 ----
+    def test_mutation_two_observation_rows_turn_the_gate_red(self):
+        db.add_sign_event("2026-09-01 06:30:00", "13800138000", "failed",
+                          stage="sign", attempt=1)
+        status, _ = sign_events_observation_gate(self.conn)
+        self.assertEqual(status, "ok", "干净夹具必须先绿（突变前的基准）")
+        self._insert_raw("2026-09-01 07:00:00", "13800138002", "pending", "sign", 0)
+        self._insert_raw("2026-09-01 07:00:05", "13800138002", "pending", "sign", 0)
+        status, groups = sign_events_observation_gate(self.conn)
+        self.assertEqual(status, "violations", "突变后门必须变红")
+        self.assertIn("observation", {g["class"] for g in groups})
