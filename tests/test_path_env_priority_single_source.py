@@ -25,8 +25,10 @@ import child_env  # noqa: E402
 
 from yiban.adapters.config import env_io  # noqa: E402
 
-PATH_KEYS = ("YIBAN_ENV_FILE", "YIBAN_DB_FILE",
-             "YIBAN_STATE_DIR", "YIBAN_LOG_FILE")
+#: 三个**可配置**路径键（进程环境优先）。指针 `YIBAN_ENV_FILE` 单独一条：
+#: 它只由进程环境给，`.env` 里写它一律忽略（否则"读哪份配置"会自指）。
+PATH_KEYS = ("YIBAN_DB_FILE", "YIBAN_STATE_DIR", "YIBAN_LOG_FILE")
+ENV_FILE_KEY = "YIBAN_ENV_FILE"
 
 
 class PathEnvPriorityTest(unittest.TestCase):
@@ -51,7 +53,18 @@ class PathEnvPriorityTest(unittest.TestCase):
                 got = env_io.resolve_path(
                     key, "default", env={key: f"env-{key}"}, env_file=self.env_file)
                 self.assertEqual(got, f"env-{key}",
-                                 "四个路径键：进程环境必须压过 .env")
+                                 "三个可配置路径键：进程环境必须压过 .env")
+
+    def test_resolve_pointer_ignores_dotenv_self_reference(self):
+        """指针键不得由 `.env` 自指：只认进程环境，否则 web 与 run.sh 会读两份配置。"""
+        got = env_io.resolve_path(
+            ENV_FILE_KEY, "default.env", env={}, env_file=self.env_file)
+        self.assertEqual(got, "default.env",
+                         ".env 里写的指针被当成了事实（自指）")
+        got2 = env_io.resolve_path(
+            ENV_FILE_KEY, "default.env",
+            env={ENV_FILE_KEY: "from-env.env"}, env_file=self.env_file)
+        self.assertEqual(got2, "from-env.env", "进程环境给的指针必须生效")
 
     def test_child_env_prefers_process_env_for_path_keys(self):
         base = {key: f"env-{key}" for key in PATH_KEYS}
