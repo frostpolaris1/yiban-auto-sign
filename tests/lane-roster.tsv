@@ -241,6 +241,7 @@ fast	tests/test_registration_pause.py
 fast	tests/test_rekey_key_source.py
 fast	tests/test_release_gate_scripts.py	# 读文档 + git ls-files + bash -n（工单 fdfn 的引用门）
 fast	tests/test_release_version_source.py
+fast	tests/test_repo_structure_gate.py	# 顶层条目白名单（跟踪集的顶层形状）
 fast	tests/test_resolve_path_bypass_collapse.py
 fast	tests/test_result_vocab_home.py
 fast	tests/test_retry_window_day_boundary.py
