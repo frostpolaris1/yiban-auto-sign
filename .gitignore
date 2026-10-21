@@ -56,6 +56,10 @@ logs/
 # 只有构建产物、没有源码（新检出无法 npm run build，test_logs_by_date 引用的
 # date-guard.js 也不存在）。负向规则必须紧跟在排除规则之后。
 !frontend/src/logs/
+# 2026-10-21 补：ocr 审查工具不展开「负向目录规则」，只认 `!目录/**`。
+# 缺此行的后果：审查清单漏 13 个 logs 源码文件，审查假绿。
+# 该行与上一行并存；git 本身两行都认，ocr 只认这一行。
+!frontend/src/logs/**
 data/
 # 裸机演练（scripts/drill-baremetal.sh）在演练树根生成的运行件
 /.venv-bare/
