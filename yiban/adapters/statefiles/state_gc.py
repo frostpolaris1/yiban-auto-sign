@@ -71,9 +71,12 @@ class Artifact:
 # 表里每一项都必须有对应写入点（元测试会双向核对）。新增按日文件时**必须**在此登记，
 # 否则文件永远不被清理——这是本模块存在的主要理由。
 ARTIFACTS = (
-    Artifact("sign-", ".log", "log", "log", "按天签到日志（web 日志页按日期读取）"),
-    Artifact("sign-state-", ".json", "log", "state", "按日结构化状态（签到日历数据源）"),
-    Artifact("sign-daily-", ".json", "log", "state", "旧版按日状态（日历回退读取）"),
+    Artifact(env_io.DAY_LOG_PREFIX, env_io.DAY_LOG_SUFFIX, "log", "log",
+             "按天签到日志（web 日志页按日期读取）"),
+    Artifact(env_io.SIGN_STATE_PREFIX, env_io.SIGN_STATE_SUFFIX, "log", "state",
+             "按日结构化状态（签到日历数据源）"),
+    Artifact(env_io.SIGN_DAILY_PREFIX, env_io.SIGN_DAILY_SUFFIX, "log", "state",
+             "旧版按日状态（日历回退读取）"),
     Artifact("mail-user-fail-", ".json", "snapshot", "state", "用户失败提醒额度账本（仅当日有效）"),
     Artifact("sched-run-", ".json", "snapshot", "state", "当日全量签到收尾标记（闸门用）"),
     Artifact("sched-slot-", ".json", "snapshot", "state", "容器调度时段闩锁标记（按日失效）"),
@@ -151,26 +154,23 @@ def match(name):
 
 
 def state_dir_from_env(env=None):
-    """状态目录：`env_io.resolve_path` 口径（进程环境 → .env → 默认 `/var/log/yiban`）。
+    """状态目录：`env_io.state_dir_from_env` 口径（进程环境 → .env → 默认 `/var/log/yiban`）。
 
     放在本模块是为了"清理目录与写目录同源"：宿主清理脚本、容器调度与 CLI
     （`python -m yiban.cli state`）都调这里，避免又出现一份各自的默认值。
     `env` 供测试注入映射（None = 读进程环境，与 resolve_path 同语义）。
     """
-    return env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban", env=env)
+    return env_io.state_dir_from_env(env=env)
 
 
 def log_dir_from_env(state_dir, env=None):
     """日志目录：`dirname(YIBAN_LOG_FILE)` → 回退 state_dir。
 
-    不取绝对路径：run.sh 用的是 `dirname "$LOG_FILE"`（相对值即相对当前目录），
-    这里保持同一语义，避免"配置相同、清理目录不同"。
+    形状与默认值唯一在 `env_io.log_dir_path`：不取绝对路径（run.sh 用的是
+    `dirname "$LOG_FILE"`，相对值即相对当前目录），避免"配置相同、清理目录不同"。
     `env` 供测试注入映射（None = 读进程环境，与 resolve_path 同语义）。
     """
-    log_file = env_io.resolve_path("YIBAN_LOG_FILE", "", env=env)
-    if not log_file:
-        return state_dir
-    return os.path.dirname(log_file) or state_dir
+    return env_io.log_dir_path(default_dir=state_dir, env=env)
 
 
 def sweep(state_dir, log_dir=None, env=None, now=None):

@@ -354,8 +354,8 @@
   "YIBAN_EGRESS_RATE": {
     "type": "float",
     "domain": [
-      0.01,
-      100.0
+      0.2,
+      4.0
     ],
     "default": 1.0,
     "group": [

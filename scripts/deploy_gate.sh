@@ -403,9 +403,16 @@ phase_B() {
         fail "B4 升级后健康" "见 $log"; dc logs --tail 60 >>"$log" 2>&1; cleanup_proj "$proj" "$ov"; return
     fi
 
-    local uv_after
+    local uv_after uv_expect
     uv_after="$(c_uv "$proj" "$ov" 2>>"$log")"
-    if [ "$uv_after" = "22" ]; then pass "B5 v22 迁移已自动执行（user_version=22）" "22"; else fail "B5 v22 迁移" "实得 $uv_after（期望 22）"; fi
+    # 期望值**从候选镜像自己的迁移登记表取**，不写死数字：新增迁移（v23）时本闸门
+    # 自动跟上，不需要人记得改两处（旧写法写死 22，v23 一落地 CI 必红）。
+    uv_expect="$(c_in_py "$proj" "$ov" "from yiban.adapters.persistence.migrations import _MIGRATIONS; print(max(m[0] for m in _MIGRATIONS))" 2>>"$log")"
+    if [ -n "${uv_expect:-}" ] && [ "$uv_after" = "$uv_expect" ]; then
+        pass "B5 迁移已自动执行（user_version=$uv_after）" "$uv_after"
+    else
+        fail "B5 迁移" "实得 $uv_after（期望 ${uv_expect:-取不到登记表}）"
+    fi
 
     local accounts_after egress_left chain
     accounts_after="$(c_in_py "$proj" "$ov" "import sqlite3;print(sqlite3.connect('/data/yiban.db').execute('SELECT COUNT(*) FROM accounts').fetchone()[0])" 2>>"$log")"
@@ -435,17 +442,19 @@ phase_B() {
     _write_mig_override "${proj}-old" "$old_tree"
     echo "-- 回滚到旧版代码（库不动）"
     if dc_up_build >>"$log" 2>&1 && wait_healthy "$proj"; then
-        pass "B10 回滚（旧版代码 on v22 库）容器健康" "healthy"
+        pass "B10 回滚（旧版代码 on 迁移后库）容器健康" "healthy"
     else
         fail "B10 回滚后健康" "见 $log"; dc logs --tail 60 >>"$log" 2>&1; cleanup_proj "$proj" "$ov"; return
     fi
     local uv_rb accounts_rb
     uv_rb="$(c_uv "$proj" "$ov" 2>>"$log")"
     accounts_rb="$(c_in_py "$proj" "$ov" "import sqlite3;print(sqlite3.connect('/data/yiban.db').execute('SELECT COUNT(*) FROM accounts').fetchone()[0])" 2>>"$log")"
-    if [ "$uv_rb" = "22" ] && [ "${accounts_rb:-0}" = "$GATE_SEED_N" ]; then
+    # 回滚**不得降 schema**：与 B5 测到的版本比，而不是写死某个数字（旧版代码
+    # 不认新列也不回退 user_version，故迁移后的版本必须原样保留）。
+    if [ "$uv_rb" = "$uv_after" ] && [ "${accounts_rb:-0}" = "$GATE_SEED_N" ]; then
         pass "B11 回滚不降 schema 且数据完整" "uv=$uv_rb accounts=$accounts_rb"
     else
-        fail "B11 回滚 schema/数据" "uv=$uv_rb accounts=${accounts_rb:-?}"
+        fail "B11 回滚 schema/数据" "uv=$uv_rb（期望 $uv_after）accounts=${accounts_rb:-?}"
     fi
 
     cleanup_proj "$proj" "$ov"
