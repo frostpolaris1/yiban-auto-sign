@@ -296,6 +296,9 @@ SKIP_EXEMPT_PATHS=(
     "tests/test_second_round_rc_contract.py"
     # root 下 chmod 反例不成立（平台条件）
     "tests/test_migrations_fail_closed.py"
+    # 运行期数据布局族：root/POSIX 条件用例在 CI 非 root 恒跳；其余用例照常运行。
+    # 故不登记 NEVER_RUNS_IN_CI（整族并非不跑），只登记运行期豁免（1ffr 同族）。
+    "tests/test_runtime_data_layout.py"
     # 真占写锁演练 opt-in（9×busy_timeout）
     "tests/test_audit_transaction.py"
 )
