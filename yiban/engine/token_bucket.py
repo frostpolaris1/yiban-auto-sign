@@ -49,8 +49,8 @@
 输入：`now`（浮点秒，**必须由调用方注入**，测试不依赖真实时钟）、出口标识、风控信号；
 输出：`acquire(...) -> bool` 与 `retry_after(...) -> float`（调用方据此 sleep）。
 落库：`egress_state(egress, rate, burst, tat, half_open_until, updated_at)`（`rate` / `burst`
-是**出口级**量；`tat` 不写——令牌位置不跨进程共享；`half_open_until` 是**绝对墙钟截止时刻**（epoch 秒），
-相对量跨进程可读），经 `queue_store.
+是**出口级**量；`tat` 不写——令牌位置不跨进程共享；`half_open_until` 是**绝对墙钟截止时刻**
+（epoch 秒，兄弟进程写 0 时由库侧 `MAX` 合并保住更晚的截止时刻）），经 `queue_store.
 load_egress_state` / `save_egress_state`——本模块**唯一**的持久化路径，10s 粒度由
 调用方循环，写失败只告警不阻断签到。配置面只有三个旋钮：每出口目标速率
 `YIBAN_EGRESS_RATE`（attempt/s，缺省值住在名册里，**值只由 `schedule.planner_config` 读**，

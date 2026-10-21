@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""CLI 配置视图的优先级：非路径键 `.env` 优先、进程环境只补缺；四个路径键例外（ba-p10-02）。
+"""CLI 配置视图的优先级：非路径键 `.env` 优先、进程环境只补缺；三个可配置路径键例外（ba-p10-02）。
 
 标签：J · 运维：部署/备份/发布
 覆盖：`yiban/entry/cli/__init__.py::_env_view` 与 `_cmd_state` 的取值链。
     M27（2026-10-01 起）规定**非路径键** `.env` 压过进程环境；`docs/dev/cli.md` §1.1
-    只给四个路径键（`YIBAN_ENV_FILE` / `YIBAN_DB_FILE` / `YIBAN_STATE_DIR` /
+    只给三个可配置路径键（`YIBAN_DB_FILE` / `YIBAN_STATE_DIR` /
     `YIBAN_LOG_FILE`）开"进程环境优先"的口子（工单 71z7）。
 对应实现：`_env_view`（合并优先级）、`state_gc.state_dir_from_env` /
     `log_dir_from_env` / `retention_days`（消费视图）。
