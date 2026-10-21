@@ -87,6 +87,11 @@ REQUESTS_PER_ACCOUNT = LOGIN_CHAIN_REQUESTS + SIGNIN_CHAIN_REQUESTS
 #: 清单版本号一致（`yiban/platform.py` 的常量是唯一来源，测试钉住同值关系）。
 YIBAN_APP_VERSION = "5.2.3"
 
+#: 签到站点（App 域）的**唯一字面量定义点**：`HEADERS` 与 `APP_SIGN_HEADERS` 都引用它。
+#: 同一域名的字面量全仓只此一处（`tests/test_login_session_single_point.py` 钉住）。
+#: 新增同域请求头请引用本常量，不要重写域名——重写一处就是第二份定义。
+APP_ORIGIN = "https://app.uyiban.com"
+
 #: 易班 iOS 客户端 UA（旧流程 `YIBAN_LEGACY_LOGIN=1` 使用）
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) "
@@ -94,8 +99,8 @@ HEADERS = {
     "Chrome/104.0.5112.97 Mobile Safari/537.36 yiban_iOS/" + YIBAN_APP_VERSION,
     "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
     "X-Requested-With": "com.yiban.app",
-    "Origin": "https://app.uyiban.com",
-    "Referer": "https://app.uyiban.com/",
+    "Origin": APP_ORIGIN,
+    "Referer": APP_ORIGIN + "/",
     "Connection": "close",
 }
 
@@ -111,11 +116,11 @@ KILLYIBAN_HEADERS = {
 }
 
 #: 签到接口（nightAttendance）的目标站点特征：旧流程走 App 域。
-#: 登录链把 Origin/Referer 改成了 OAuth/回调域，签到时必须**改回来**，
+#: 登录链把 Origin/Referer 改成了 `c.uyiban.com`（KillYiBan 客户端域），签到时必须**改回来**，
 #: 故单独成一份常量而不是复用上面的整份头。
 APP_SIGN_HEADERS = {
-    "Origin": "https://app.uyiban.com",
-    "Referer": "https://app.uyiban.com/",
+    "Origin": APP_ORIGIN,
+    "Referer": APP_ORIGIN + "/",
 }
 
 #: 端点与客户端标识（平台侧固定值）
