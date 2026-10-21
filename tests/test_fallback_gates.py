@@ -532,8 +532,10 @@ class FallbackOwnLockTest(unittest.TestCase):
 
 
 class RunLockProbeTest(unittest.TestCase):
-    """`cli_support._run_lock_held`：全局锁探测原语（fail-closed 语义由本类钉住；
-    生产消费者是 `queue_store.reclaim_tasks` 的兜底锁判断，工单 `uob1` X2）。"""
+    """`cli_support._run_lock_held`：全局锁探测原语（fail-closed 语义由本类钉住）。
+    重签路径的互斥已改为**持有**兜底锁（`queue_store.reclaim_tasks` 直调
+    `_acquire_run_lock`，审查 D1）；本函数现无生产调用点，消费者＝测试侧门与
+    竞态用例探针，存删随 X6 由主会话裁决。"""
 
     def test_probe_sees_held_lock_and_frees_after(self):
         if cli_support.fcntl is None:
