@@ -58,20 +58,15 @@ business_day() {
 # 加载环境变量（逐行安全解析，显式 export；必须先于日志/状态路径计算：
 # YIBAN_STATE_DIR / YIBAN_LOG_FILE 可能由 .env 提供）
 #
-# **优先级口径（M27，全仓统一）：`.env` 优先，进程环境只补缺。** 本脚本一直就是
-# `.env` 覆盖进程环境（下面是无条件 export）；此前 `scripts/yiban-fallback.sh`
-# 恰好相反（"环境变量优先"）、容器调度器/引擎 `build_child_env` 又是第三种说法，
-# 2026-10-01 把后两者对齐成本口径。含义：
-#   · cron / systemd 行上写的 `YIBAN_XXX=v` 前缀**会被 `.env` 同名键顶掉**；
-#   · `.env` 里没有的键，才由进程环境补缺（如 compose 注入的路径类变量）；
-#   · 要临时改一项，改 `.env`（网页设置页写的也是 `.env`），别指望命令行前缀。
-# 这不是"命令行从此不能覆盖"，而是"配置只有一个事实源"——否则会出现页面显示关闭、
-# 排程却照跑这种两处同时为真的状态，排查时没人说得清算哪个生效了。
-#
-# `.env` 路径**不受这条口径约束**（它是"读哪个文件"的指针，不是被管的配置）：
-# 一律 $APP_DIR/data/.env，与 run_probe.sh / 容器调度器（/data/.env）同口径；
-# 该指针**没有环境变量覆盖面**（旧注释声称可由 YIBAN_ENV_FILE 覆盖，实现从未读该键；
-# 与 scripts/yiban-fallback.sh 同批订正，见工单 p12-13）。
+# **优先级口径（工单 71z7，2026-10-20 裁定）：**
+# · **非路径键**：`.env` 优先，进程环境只补缺（M27）。网页设置页写的是 `.env`，
+#   读侧若反过来，页面显示关闭而排程照跑——两处同时为真没人说得清。
+# · **四个路径键**（环境文件指针、库文件、状态目录、日志文件）：**进程环境优先，
+#   `.env` 只补缺**（与 `env_io.resolve_path` / `scripts/child_env.build_child_env`
+#   同一口径）。真实用途：测试/CI 用进程环境把数据目录重定向到临时目录，不该被
+#   `.env` 里的旧路径拉回。
+# · 环境文件指针固定 `$APP_DIR/data/.env`（下面显式 export）；它不参与 `.env` 覆盖
+#   （p12-13：旧注释声称可由该指针环境变量覆盖，实现从未读它）。
 #
 # 安全说明：绝不能使用 `source`/`.` 加载 .env。Web 普通管理员可写入公告等文本，
 # 若公告含 `; $(...)` 等 shell 元字符，source 会把文本当作 shell 命令执行（命令注入）。
@@ -103,6 +98,14 @@ if [ -r "$ENV_PATH" ]; then
             _err "警告: .env 含非 YIBAN_ 前缀键，已跳过导出: $key"
             continue
         fi
+        # 四个路径键的优先级例外（与 env_io.resolve_path / child_env 同口径）：
+        # 进程环境已有非空值时，.env 只补缺。环境文件指针固定 $APP_DIR/data/.env
+        # （p12-13），不在覆盖范围（见下方显式 export）。
+        case "$key" in
+            YIBAN_DB_FILE|YIBAN_STATE_DIR|YIBAN_LOG_FILE)
+                [ -n "${!key:-}" ] && continue
+                ;;
+        esac
         export "$key=$value"
     done < "$ENV_PATH"
 else
@@ -119,9 +122,8 @@ fi
 
 # 指针与库路径**显式导出给子进程**（本脚本读的是上面那个固定 `$APP_DIR/data/.env`，
 # 子进程不得与它分叉：一侧读 data/.env、另一侧读别处 = 引擎与 cron 用两份配置）。
-# 位置约束：必须排在**上面 .env 装载之后**——装载会把 `.env` 里的 YIBAN_* 键
-# 无条件 export（M27 口径），包括万一写在 `.env` 里的这两枚指针键；排在它之前会被
-# 那一步顶掉，出现"本脚本读 A、子进程读 B"。排在这里则两者恒为同一个值。
+# 位置约束：必须排在**上面 .env 装载之后**——装载循环把路径键排除在覆盖之外，
+# 这里再无条件写一次，保证本脚本与子进程读同一份文件（p12-13）。
 export YIBAN_ENV_FILE="$ENV_PATH"
 STATE_DIR="${YIBAN_STATE_DIR:-/var/log/yiban}"
 # MF-81：状态目录承载全部"跑/不跑"判定件（RUN_MARKER / 状态文件 / 收尾标记），

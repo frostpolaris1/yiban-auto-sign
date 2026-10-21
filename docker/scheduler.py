@@ -370,9 +370,11 @@ def _backup_script_path():
 def _backup_env():
     """备份子进程的环境。
 
-    口径与全仓一致（**`.env` 优先、进程环境只补缺**，见 M27）：容器调度器的兜底门
-    已经这么判（`_fallback_gate_env` 的注释），备份的路径类参数必须同口径，否则
-    compose 里显式注入的 `YIBAN_BACKUP_*` 会被 Web 设置页/`.env` 里的同名键悄悄顶掉。
+    口径按**非路径键**（`YIBAN_BACKUP_*` 不在 `env_io.PATH_KEYS` 里）：`.env` 优先、
+    进程环境只补缺（M27）。容器调度器的兜底门已经这么判（`_fallback_gate_env` 的注释），
+    备份参数必须同口径，否则 compose 里显式注入的 `YIBAN_BACKUP_*` 会被
+    Web 设置页/`.env` 里的同名键悄悄顶掉。四个路径键例外（进程环境优先）由
+    `build_child_env` / `resolve_path` 统一处理，本函数不碰它们。
     口令本身**不入环境**：`backup-docker.sh` 只从 `YIBAN_BACKUP_PASSPHRASE_FILE` 读
     0600 文件（M97），绝不用 `_PASSPHRASE` 环境变量形态。`.env` 里若残留
     `YIBAN_BACKUP_PASSPHRASE`，`parse_env_file` 会把它并进 `src`——这里**显式剔除**
