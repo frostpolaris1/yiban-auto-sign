@@ -124,7 +124,7 @@ class _Base(unittest.TestCase):
         `snapshot` 默认给一份桩快照：`_anchor_snapshot()` 会走 `db.init_db()`，
         那是对**进程级单例连接**的真实初始化——在测试里做会把同一 worker 后续所有
         用例的库指到临时区（-n 8 并发下污染面更大）。锚点读库路径的断言放在
-        `AuditAnchorBroadcastTest`，那里直接打桩 `yiban.store.db` 的三个读函数。
+        `AuditAnchorBroadcastTest`，那里直接打桩 `yiban.adapters.persistence.db` 的三个读函数。
         """
         sender = send or self._send
         with mock.patch.object(self.mod, "_send_admin_alert", side_effect=sender), \

@@ -5,7 +5,7 @@
 **功能**
 把 `run_events`（内核进度事件层）的增量读通过 Server-Sent Events 推给浏览器。
 事件类型全集冻结为 5 类：`snapshot` / `progress` / `heartbeat` / `resync` / `end`
-（类型与 payload 的唯一定义点在 `yiban/store/run_events.py`；本模块只做帧封装与调度）。
+（类型与 payload 的唯一定义点在 `yiban/adapters/persistence/run_events.py`；本模块只做帧封装与调度）。
 
 **两条端点的受众与数据面**
 - `/api/stream/progress`：**仅主管理员**（强档判定，与 `/api/scheduler/executors/progress`

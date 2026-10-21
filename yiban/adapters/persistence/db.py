@@ -47,7 +47,7 @@ import sqlite3
 import sys
 import types
 
-# 包导入引导：本模块已入包（`yiban.store.db`），正常导入路径下仓库根必然在 sys.path
+# 包导入引导：本模块已入包（`yiban.adapters.persistence.db`），正常导入路径下仓库根必然在 sys.path
 # 里；这里仍补一次仓库根，作为"被以任意 sys.path 形状导入"的兜底（如容器里从
 # `/app/scripts` 起手的老入口）。**必须先于任何 yiban 导入**（含下面的 infra 导入，
 # 以及函数内的延迟导入）。
@@ -57,7 +57,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-# 表级数据访问按表拆在 yiban/store/*，本模块只做门面：多数域按原名再导出，`claims` 与
+# 表级数据访问按表拆在 yiban/adapters/persistence/*，本模块只做门面：多数域按原名再导出，`claims` 与
 # `verify_jobs` 两域是重命名别名（逐条见各自绑定处的行尾注释）。依赖方向单向 db → store
 # （store 只在函数内延迟取连接），旧调用方（web/app.py、测试）继续用 db.xxx。
 # account_crypto 的唯一自用点（JSON 导入）已随迁移域迁入 migrations.py；保留绑定是因为
@@ -84,7 +84,7 @@ from yiban.core import clock  # noqa: E402
 account_is_signable = _accounts.is_signable
 account_signs_in = _accounts.signs_in
 purge_orphan_session_cache = _accounts.purge_orphan_session_cache
-# accounts.phone 唯一约束冲突的可区分异常，定义点随 accounts 表在 yiban/store/accounts.py
+# accounts.phone 唯一约束冲突的可区分异常，定义点随 accounts 表在 yiban/adapters/persistence/accounts.py
 DuplicatePhoneError = _accounts.DuplicatePhoneError
 
 VERIFY_JOB_RETENTION_DAYS = _verify_jobs.VERIFY_JOB_RETENTION_DAYS
@@ -105,11 +105,11 @@ count_active_verify_jobs = _verify_jobs.count_active
 reclaim_stale_verify_jobs = _verify_jobs.reclaim_stale
 purge_verify_jobs = _verify_jobs.purge
 
-# 签到领取池（v17，多执行体协调）：唯一定义点在 `yiban/store/claims.py`
+# 签到领取池（v17，多执行体协调）：唯一定义点在 `yiban/adapters/persistence/claims.py`
 CLAIM_LEASE_SECONDS = _claims.LEASE_SECONDS  # 账号级租约（900s，旧领取池冻结件）；queue_store 的任务级租约已随工单 l1rx 删除
 CLAIM_RETENTION_DAYS = _claims.RETENTION_DAYS
 CLAIM_STATE_CLAIMED = _claims.STATE_CLAIMED
-CLAIM_STATE_DONE = _claims.STATE_DONE  # 了结词表成员见 yiban.status.CLAIM_DONE_STATUSES
+CLAIM_STATE_DONE = _claims.STATE_DONE  # 了结词表成员见 yiban.core.status.CLAIM_DONE_STATUSES
 CLAIM_STATE_FAILED = _claims.STATE_FAILED
 CLAIM_SETTLED_STATES = _claims.SETTLED_STATES
 CLAIM_OPEN_STATES = _claims.OPEN_STATES
@@ -140,7 +140,7 @@ task_latest_day = _queue_store.latest_day  # 最近一次有记录的业务日
 task_owners_since = _queue_store.owners_since  # 保留期内出现过的执行体身份串
 purge_sign_tasks = _queue_store.purge  # 唯一台账（sign_tasks）的保留期清理（带时钟跳变守卫）
 
-# 审计链域（唯一定义点在 yiban/store/audit_chain.py）：函数与常量按原样再导出，既有
+# 审计链域（唯一定义点在 yiban/adapters/persistence/audit_chain.py）：函数与常量按原样再导出，既有
 # `db.audit()` / `db.audit_health()` / `db._audit_hash(...)` 调用面与打桩面不变。
 # 三个**可变状态**名（`_AUDIT_KEY_CACHE` / `_AUDIT_FAIL_UNFLUSHED` / `_AUDIT_FAIL_UNFLUSHED_DB`）
 # 不走这里的快照式再导出，而走下方模块类的读写转发——否则 `db._AUDIT_KEY_CACHE = None`
@@ -236,7 +236,7 @@ _AUDIT_PURGE_EVENTS_KEY = _audit_chain._AUDIT_PURGE_EVENTS_KEY
 _PURGE_EVENTS_KEEP = _audit_chain._PURGE_EVENTS_KEEP
 _ANCHOR_GENESIS = _audit_chain._ANCHOR_GENESIS
 
-# 事件域（唯一定义点在 yiban/store/events.py）：写入/查询/统计与保留期清理按原样再导出，
+# 事件域（唯一定义点在 yiban/adapters/persistence/events.py）：写入/查询/统计与保留期清理按原样再导出，
 # 既有 `db.add_sign_event()` / `db.sign_event_stats()` / `db._event_cleanup(...)` 调用面不变。
 # 按表归属并入事件域的暂停冷却两名（`last_pause_at` / `pause_count_since`，查 audit_logs）
 # 走下方读写转发，不在这里再导出。
@@ -253,8 +253,8 @@ sign_events_recent_date = _events.sign_events_recent_date
 attempt_dur_quantile = _events.attempt_dur_quantile  # 容量告警的实测输入（MF-56③）
 _event_cleanup = _events._event_cleanup
 
-# 内核进度事件域（唯一定义点在 yiban/store/run_events.py，N2a 打点层）：两个写入入口
-# 按门面惯例补域后缀再导出；`yiban/store/cleanup.py` 的每日编排经
+# 内核进度事件域（唯一定义点在 yiban/adapters/persistence/run_events.py，N2a 打点层）：两个写入入口
+# 按门面惯例补域后缀再导出；`yiban/adapters/persistence/cleanup.py` 的每日编排经
 # `_facade().purge_run_events()` 调保留期清理（与 purge_sign_tasks 同形）。
 # 节点值域（`NODES`）是下游消费者的契约面，按原名留在域模块，门面不另立别名
 # ——两处名字会让"改哪一处"变成判断题。
@@ -262,7 +262,7 @@ report_run_event = _run_events.report
 report_run_events = _run_events.report_many
 purge_run_events = _run_events.purge
 
-# 会话缓存域（唯一定义点在 yiban/store/session_cache.py）：函数走下方读写转发（内部调用点
+# 会话缓存域（唯一定义点在 yiban/adapters/persistence/session_cache.py）：函数走下方读写转发（内部调用点
 # 会被 `db._session_cache_now` 打桩），四个常量是不可变配置、全仓无重绑与打桩，按常量
 # 再导出即等价。`db.SESSION_CACHE_TTL_HOURS_DEFAULT` 一类读取不变。
 SESSION_CACHE_TTL_HOURS_DEFAULT = _session_cache.SESSION_CACHE_TTL_HOURS_DEFAULT
@@ -270,7 +270,7 @@ SESSION_CACHE_TTL_HOURS_MIN = _session_cache.SESSION_CACHE_TTL_HOURS_MIN
 SESSION_CACHE_TTL_HOURS_MAX = _session_cache.SESSION_CACHE_TTL_HOURS_MAX
 SESSION_CACHE_HKDF_INFO = _session_cache.SESSION_CACHE_HKDF_INFO
 
-# 用户与注销域（唯一定义点在 yiban/store/users.py）：users / user_delete_requests 表的状态机、
+# 用户与注销域（唯一定义点在 yiban/adapters/persistence/users.py）：users / user_delete_requests 表的状态机、
 # 注销与反悔、到期物理清除按原样再导出，既有 `db.load_users()` / `db.restore_user()` /
 # `db.LastAdminError` 调用面与异常捕获不变。宽限期常量同时约束用户行与账号行的清除时机。
 SOFT_DELETE_RETENTION_DAYS = _users.SOFT_DELETE_RETENTION_DAYS
@@ -301,7 +301,7 @@ is_last_registered_admin = _users.is_last_registered_admin
 batch_user_ops = _users.batch_user_ops
 _delete_user_delete_requests = _users._delete_user_delete_requests
 
-# 每日清理域（唯一定义点在 yiban/store/cleanup.py）：清理编排与审计/账号保留期清除按原样
+# 每日清理域（唯一定义点在 yiban/adapters/persistence/cleanup.py）：清理编排与审计/账号保留期清除按原样
 # 再导出，web 每日线程的 `db.run_daily_cleanup()`、signin 启动的
 # `db.purge_expired_deleted_accounts()` 与测试直接调用的 `db._audit_cleanup(...)` 调用面不变。
 run_daily_cleanup = _cleanup.run_daily_cleanup
@@ -309,7 +309,7 @@ _audit_cleanup = _cleanup._audit_cleanup
 _purge_expired_deleted = _cleanup._purge_expired_deleted
 purge_expired_deleted_accounts = _cleanup.purge_expired_deleted_accounts
 
-# 迁移域（唯一定义点在 yiban/store/migrations.py）：建表/索引定义、migrate_v1..v20、版本编排
+# 迁移域（唯一定义点在 yiban/adapters/persistence/migrations.py）：建表/索引定义、migrate_v1..v20、版本编排
 # `_run_migrations` 与迁移助手按原样再导出，既有 `db.migrate_v10(...)` / `db._ensure_column(...)`
 # / `db._create_tables(...)` 调用面不变。`_MIGRATIONS` 是可变登记表，走下方模块类的读写转发
 # （测试以 `db._MIGRATIONS = [...]` 缩窄或替换迁移集）。JSON → SQLite 自动导入两名
@@ -352,7 +352,7 @@ logger = logging.getLogger("yiban.db")
 
 DB_DEFAULT = _connection.DB_DEFAULT
 
-# 连接层再导出（唯一定义点在 yiban/store/connection.py）：`_conn`/`_db_file`/`_env_file`
+# 连接层再导出（唯一定义点在 yiban/adapters/persistence/connection.py）：`_conn`/`_db_file`/`_env_file`
 # 读写都**转发**——全仓 190+ 处测试收尾 `db._conn = None` 与 `db._env_file = path` 若只写
 # 一份快照就静默失效（connection 仍握真连接/旧路径）；`_conn_lock`（永不重绑）与
 # `get_conn`/`is_initialized` 直接再导出即等价：本模块内部按裸名调用，既有
@@ -397,7 +397,7 @@ _FORWARDED_STATE = {
     "_AUDIT_FAIL_UNFLUSHED": _audit_chain,
     "_AUDIT_FAIL_UNFLUSHED_DB": _audit_chain,
     "_MIGRATIONS": _migrations,
-    # 账号域迁出名（唯一定义点在 yiban/store/accounts.py）
+    # 账号域迁出名（唯一定义点在 yiban/adapters/persistence/accounts.py）
     "_mask_phone_display": _accounts,
     "_decrypt_row": _accounts,
     "_apply_plaintext_heal": _accounts,
@@ -426,17 +426,17 @@ _FORWARDED_STATE = {
     "replace_accounts": _accounts,
     "batch_account_ops": _accounts,
     "update_account_status_if": _accounts,
-    # 会话缓存域迁出名（唯一定义点在 yiban/store/session_cache.py）
+    # 会话缓存域迁出名（唯一定义点在 yiban/adapters/persistence/session_cache.py）
     "_session_cache_now": _session_cache,
     "_session_cache_key": _session_cache,
     "_session_cache_ttl_hours": _session_cache,
     "get_session_cache": _session_cache,
     "set_session_cache": _session_cache,
     "clear_session_cache": _session_cache,
-    # 事件域按表归属并入的暂停冷却（查 audit_logs 表，唯一定义点在 yiban/store/events.py）
+    # 事件域按表归属并入的暂停冷却（查 audit_logs 表，唯一定义点在 yiban/adapters/persistence/events.py）
     "last_pause_at": _events,
     "pause_count_since": _events,
-    # 用户自选时间片域迁出名（唯一定义点在 yiban/store/time_prefs.py）
+    # 用户自选时间片域迁出名（唯一定义点在 yiban/adapters/persistence/time_prefs.py）
     "last_time_pref_set_at": _time_prefs,
     "time_pref_set_count_since": _time_prefs,
     "get_time_prefs": _time_prefs,
@@ -444,13 +444,13 @@ _FORWARDED_STATE = {
     "set_time_pref": _time_prefs,
     "clear_time_pref": _time_prefs,
     "time_pref_stats": _time_prefs,
-    # 时钟守卫告警与 app_meta 单键读写（唯一定义点在 yiban/store/clock_meta.py）
+    # 时钟守卫告警与 app_meta 单键读写（唯一定义点在 yiban/adapters/persistence/clock_meta.py）
     "get_meta": _clock_meta,
     "set_meta": _clock_meta,
-    # JSON → SQLite 自动导入（唯一定义点在 yiban/store/migrations.py；门面内 init_db 晚解析调用）
+    # JSON → SQLite 自动导入（唯一定义点在 yiban/adapters/persistence/migrations.py；门面内 init_db 晚解析调用）
     "_maybe_migrate": _migrations,
     "_rename_backup": _migrations,
-    # 追踪盐与加盐哈希域迁出名（唯一定义点在 yiban/store/tracking.py）
+    # 追踪盐与加盐哈希域迁出名（唯一定义点在 yiban/adapters/persistence/tracking.py）
     "_write_track_salt_to_env_file": _tracking,
     "_track_salt": _tracking,
     "hash_ip": _tracking,
@@ -492,7 +492,7 @@ class _StateForwardingModule(types.ModuleType):
         """撤销外部赋值：把名字从门面上摘下来（读取随即回落到真状态）。
 
         **为什么必须"摘下来"而不是去删真状态**：`mock.patch.object` /
-        `mock.patch("yiban.store.db._conn", …)` 对不在 `__dict__` 里的名字走
+        `mock.patch("yiban.adapters.persistence.db._conn", …)` 对不在 `__dict__` 里的名字走
         `delattr` 撤销路径，随后按"删完名字还在不在"决定要不要 `setattr` 回原值
         （`unittest.mock._patch.__exit__`）——若删不掉（`__getattr__` 照旧转发），
         原值永不被恢复，打桩静默残留；pytest `monkeypatch.delattr` 的 undo 同理
@@ -608,7 +608,7 @@ def init_db(db_file=None, migrate_from=None, env_file=None, cleanup=True, migrat
             if migrate:
                 _run_migrations(conn)
                 # 自动迁移（幂等：库存在但空表 + JSON 存在才导入）
-                # 定义点在 yiban/store/migrations.py：按属性取，`db._maybe_migrate = 替身`
+                # 定义点在 yiban/adapters/persistence/migrations.py：按属性取，`db._maybe_migrate = 替身`
                 # 一类打桩必须被本调用点看见（晚解析）
                 if migrate_from:
                     _migrations._maybe_migrate(conn, migrate_from)

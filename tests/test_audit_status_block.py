@@ -2,7 +2,7 @@
 """审计链自洽状态块（巡检面第二刀 ⑤，工单 yiban-auto-sign-vjy9）。
 
 标签：E · Web：认证/权限/API
-覆盖：`GET /api/admin/audit-status`（只读巡检端点）、`yiban.store.audit_chain` 的三态裁决
+覆盖：`GET /api/admin/audit-status`（只读巡检端点）、`yiban.adapters.persistence.audit_chain` 的三态裁决
      `/ 数据库快照 / 已知欠账，以及 `scripts/audit_verify.py` 与端点的**同一份裁决**。
 
 本文件钉**不变式**，不钉调用顺序：
@@ -128,7 +128,7 @@ class _AuditFixtureBase(unittest.TestCase):
 
         本默认值一度是字面日期 `"2026-10-13 00:00:07"`。写入当天它新鲜；实现加入
         "快照超龄降级"（健康快照超 36 小时判 `indeterminate`）后，隔一天凡不显式传
-        `at` 的用例集体转红（工单 5f9q）。夹具的"现在"必须是相对于 `yiban.clock`
+        `at` 的用例集体转红（工单 5f9q）。夹具的"现在"必须是相对于 `yiban.core.clock`
         取出的当下，不能是常量——由 `tests/test_no_literal_date_in_fixtures.py` 钉住。
         """
         import db

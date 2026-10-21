@@ -34,10 +34,10 @@
 配置经 `schedule.planner_config()` 取（窗口/裁剪/分布三态/μσ/bucket_rate/executors/
 account_gap_max）。
 输出：`[PlanRow, ...]`（dict）或落库行数；`plan_stats` 回摘要 dict。
-调用谁：`yiban.window.bounds`（窗口唯一口径）、`yiban.engine.hrw`（分工与哈希）、
+调用谁：`yiban.core.window.bounds`（窗口唯一口径）、`yiban.core.hrw`（分工与哈希）、
 `yiban.engine.schedule`（配置、`_sigma_eff`、自选片成员性判定）、
-`yiban.store.queue_store`（队列库连接与 `sign_tasks` 的 state 词汇）、
-`yiban.store.clock_meta`（计划元数据）。
+`yiban.adapters.persistence.queue_store`（队列库连接与 `sign_tasks` 的 state 词汇）、
+`yiban.adapters.persistence.clock_meta`（计划元数据）。
 谁调用：唯一生产调用点是 `executor_v3`——`_ensure_plan` 在当日没有可用计划行时调
 `build_plan` + `write_plan` 补建，`shadow_stats` 调 `plan_stats` 做影子对账。
 台账单池化后 `executor_v3` 是唯一生产执行体，本模块因此在产线恒被调用。
@@ -108,7 +108,7 @@ def _phones(accounts: Iterable[Any]) -> list[str]:
 
 
 def _span(cfg: Mapping[str, Any]) -> tuple[float, float]:
-    """有效窗口的分钟边界 `(eff_lo, eff_hi)`——唯一口径在 `yiban.window`。"""
+    """有效窗口的分钟边界 `(eff_lo, eff_hi)`——唯一口径在 `yiban.core.window`。"""
     win = window.bounds(cfg)
     return win.lo_min, win.hi_min
 

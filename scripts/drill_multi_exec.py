@@ -55,8 +55,8 @@
 输出：证据目录（`run.json` / `monitor.jsonl` / `mock.jsonl` / 子进程日志）与退出码
 （0 = 全部判据通过；1 = 有不变式或断言失败；2 = 前提不满足）。
 调用谁：`yiban/adapters/protocol_fake/__init__.py`（假上游）、`yiban.engine.executor_v3`
-（建计划）、`yiban.egress`（执行体身份）、`yiban.store.queue_store`（库直读）与
-`yiban.store.db`。
+（建计划）、`yiban.egress`（执行体身份）、`yiban.adapters.persistence.queue_store`（库直读）与
+`yiban.adapters.persistence.db`。
 谁调用：`scripts/drill-multi-exec.sh` 与 `tests/test_multi_executor_drill_e2e.py`。
 """
 from __future__ import annotations
@@ -389,7 +389,7 @@ with open(os.environ["DRILL_PROBE_OUT"], "w", encoding="utf-8") as fh:
 
 
 def now_dt() -> datetime.datetime:
-    """业务时间（naive）：与引擎 `yiban.clock` **同一口径**（固定 +8 北京时间）。
+    """业务时间（naive）：与引擎 `yiban.core.clock` **同一口径**（固定 +8 北京时间）。
 
     **不得用 `datetime.datetime.now()`**：那是宿主本地时区。CI（ubuntu runner）是 UTC，
     而引擎一律按北京时间判窗口，两者差 8 小时。用宿主本地时区写出的窗口，在引擎看来

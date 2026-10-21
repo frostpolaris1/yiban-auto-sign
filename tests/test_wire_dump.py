@@ -4,7 +4,7 @@
 硬约束：默认关闭；请求行为零改变；凭据面（Cookie/Authorization/凭据字段/手机号）
 只记形态不记值；落盘失败绝不影响请求。
 
-凭据字段名口径只有一张表：`yiban.masking._CRED_KEY`（`pwd` 片段覆盖真实字段
+凭据字段名口径只有一张表：`yiban.core.masking._CRED_KEY`（`pwd` 片段覆盖真实字段
 `oauth_upwd`）；手机号值走 `masking.mask_phones_in_text`（覆盖 `oauth_uname`
 这类承载手机号、键名不含凭据片段的字段）。改这里必须同时改 masking 的口径。
 """
