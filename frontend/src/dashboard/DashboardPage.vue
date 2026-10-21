@@ -16,7 +16,6 @@ import {
   distView,
   emptyState,
   fmtMonth,
-  normalizeDaily,
   num,
   pauseView,
   pendingKpiView,
@@ -29,7 +28,7 @@ import {
 
 /* 数据看板（管理端首页 /data/dashboard）。
 
-   分工：口径（双口径聚合、各视图的数据变换、词表与文案）全在 `model.js`（纯 JS，被
+   分工：口径（账号终态聚合、各视图的数据变换、词表与文案）全在 `model.js`（纯 JS，被
    Python 守卫抽真函数跑 / Vitest 覆盖）；本组件只做**编排与绘制**——请求、Chart.js 实例
    生命周期、热力图换月动效、页级状态条。
 
@@ -318,9 +317,6 @@ function applyWeekend(d: any): void {
 async function loadSign(): Promise<boolean> {
   try {
     const d = await api<any>("GET", SIGN_EVENTS_PATH);
-    const norm = normalizeDaily((d && d.daily_stats) || []);
-    state.dailyMap = norm.map;
-    state.dailyDays = norm.days;
     const acc = acceptAccounts(d && d.accounts_stats);
     state.accountsTotal = acc.total;
     state.statusAccounts = acc.byStatus;
@@ -328,20 +324,18 @@ async function loadSign(): Promise<boolean> {
     state.signLoaded = true;
     state.signFailed = false;
     const days = Number((d && d.days) || SIGN_DAYS);
-    cov.trend = "最近 " + days + " 天 · 仅真实签到";
+    cov.trend = "最近 " + days + " 天 · 账号终态";
     cov.dist = cov.trend;
     calNote.value = CAL_NOTE_BASE;
     paintTrend();
     paintDist();
     return true;
   } catch (e) {
-    // 失败时**清空**签到数据（不只置 signFailed）：否则此前成功过的 dailyMap/dayFinal 会在
+    // 失败时**清空**签到数据（不只置 signFailed）：否则此前成功过的 dayFinal 会在
     // 任意 `yiban:theme` 事件里被 onTheme 用陈旧数据重绘、把错误 overlay 洗回正常态。
     // signLoaded 一并置 false，作为 onTheme 的重绘门（signFailed 只护成功率卡）。
     state.signLoaded = false;
     state.signFailed = true;
-    state.dailyMap = {};
-    state.dailyDays = [];
     state.accountsTotal = 0;
     state.statusAccounts = {};
     state.dayFinal = {};
@@ -378,7 +372,9 @@ async function loadSlots(): Promise<boolean> {
 
 async function loadPending(): Promise<boolean> {
   try {
-    pendingData.value = await api<any>("GET", "/api/accounts");
+    // count_only=1：后端在分页前早退，只回 {total,pending,rejected} 三个标量。
+    // 看板只要待处理数，不需要把整张账号表（含已删除行）搬回浏览器。
+    pendingData.value = await api<any>("GET", "/api/accounts?count_only=1");
     pendingState.value = "ok";
     return true;
   } catch (e) {
@@ -530,12 +526,12 @@ function onTheme(): void {
   destroyAll();
   // 门控用「加载成功」标志而非仅看数据长度：失败路径已清空 state，但显式门更抗将来改动
   // （signLoaded 在 loadSign 失败时置 false；slotsLoaded 在 loadSlots 失败时置 false）。
-  if (state.signLoaded && state.dailyDays.length) { paintTrend(); paintDist(); }
+  if (state.signLoaded && Object.keys(state.dayFinal).length) { paintTrend(); paintDist(); }
   if (slotsLoaded.value && state.slots.length) paintSlots();
 }
 
 /* KPI「待处理账号」按外壳节拍刷新（工单 vff0）：与账号页/用户列表同拍。
-   只重取 loadPending（读 /api/accounts），不动图表与其它卡片。
+   只重取 loadPending（读 /api/accounts?count_only=1），不动图表与其它卡片。
    机制在 `lib/polling.ts`，节拍取唯一来源 `pollMs()`。
    口径同源：本 KPI = 待审核 + 已拒绝账号数（model.js::pendingKpiView），
    与账号管理页「待处理账号」组、导航徽标 work-accounts 一致。 */
