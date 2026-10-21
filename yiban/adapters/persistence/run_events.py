@@ -45,8 +45,8 @@
 **归属**
 `yiban/engine/executor_v3.py`（执行体节点）与 `yiban/app/runner.py`（编排节点）
 共用的一张**观测表**。本表不参与签到正确性：任何一行写不进去都不改变签到结论。
-建表与索引在迁移域（`yiban/store/migrations.py` 的 v21），本模块只读写；
-保留期清理由 `yiban/store/cleanup.py` 的每日编排调用（`purge_run_events`）。
+建表与索引在迁移域（`yiban/adapters/persistence/migrations.py` 的 v21），本模块只读写；
+保留期清理由 `yiban/adapters/persistence/cleanup.py` 的每日编排调用（`purge_run_events`）。
 
 **收尾有两层，外加两族批量摘要行（`finalize` 的 message 前缀是判别面）**
 - `执行体会话收尾：`：一次执行体会话正常结束（`run_executor_v3` 正常返回路径）；
@@ -80,7 +80,7 @@
 直接调本模块同名函数会让打桩静默失效（测试仍绿，但打桩点不再是它以为的那一个）。
 调用谁：`yiban.clock`。
 谁调用：`yiban/engine/executor_v3.py`、`yiban/app/runner.py`、
-`yiban/store/cleanup.py`（每日清理）。
+`yiban/adapters/persistence/cleanup.py`（每日清理）。
 """
 import contextlib
 import datetime
@@ -129,7 +129,7 @@ _INSERT_SQL = (
 # 写入失败时的定位线索：INSERT 报 "no such table/column" 时，后果是本表在保留期内
 # **永久零写入**（每次写都失败、失败只发告警），而告警原文里没有升级链的线索。
 _ARTIFACT_HINT = (
-    "缺失产物归属：表 run_events=v21（核对 yiban/store/migrations.py 的"
+    "缺失产物归属：表 run_events=v21（核对 yiban/adapters/persistence/migrations.py 的"
     "产物登记表与迁移完成记录）"
 )
 
