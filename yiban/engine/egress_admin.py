@@ -29,7 +29,7 @@
 输出：stdout 一行 JSON（`--json`）或 stderr 人类可读汇总；退出码 0 / 1 / 2
 （含义见 `docs/dev/cli.md` §3）。
 调用谁：`yiban.engine.token_bucket`、`yiban.engine.schedule`、`yiban.egress`、
-`yiban.store.db`、`yiban.clock`、`yiban.engine.cli_support`。
+`yiban.adapters.persistence.db`、`yiban.core.clock`、`yiban.engine.cli_support`。
 谁调用：`yiban/entry/cli/__init__.py` 的 `_dispatch`。
 
 **四条边界**
@@ -108,7 +108,7 @@ def _engine_rate(view):
     一个引擎不会用的速率（缺陷 D2 的残留形状）。
 
     为什么先把视图导出进程环境：`run.sh` 先把 `.env` 逐键导出为环境变量再拉起引擎；直接跑
-    `python -m yiban.cli` 时没有这一步，同一份配置在两条路径下会解析出不同的值。
+    `python -m yiban.entry.cli` 时没有这一步，同一份配置在两条路径下会解析出不同的值。
     """
     value = str(view.get(RATE_KEY, "") or "").strip()
     if value:

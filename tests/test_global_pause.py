@@ -4,7 +4,7 @@
 标签：D · 状态词汇与账号生命周期
 覆盖：YIBAN_GLOBAL_PAUSE=1 时自动签到 exit 2（SKIPPED 语义）、`--only` 手动签到不受阻、
     STATUS_GLOBAL_PAUSED 的取值与符号映射。
-对应实现：状态码与符号的**权威定义**在 `yiban.status`（`STATUS_GLOBAL_PAUSED`、
+对应实现：状态码与符号的**权威定义**在 `yiban.core.status`（`STATUS_GLOBAL_PAUSED`、
     `SYMBOL`），`scripts/signin.py` 里只是别名转发；暂停判定发生在签到入口
     `signin.main()`（引擎实现 `yiban/app/runner.py`）。
 关键断言：暂停只对自动路径生效——手动路径若也被 exit 2 挡住，管理员就无法在暂停期间

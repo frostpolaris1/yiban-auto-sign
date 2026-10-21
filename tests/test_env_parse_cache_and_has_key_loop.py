@@ -6,7 +6,7 @@
    每个账号行有 password / phone_code 两枚密文字段 ⇒ 每行判定两次。
    进程环境没有 `YIBAN_ACCOUNTS_KEY`（密钥写在 `.env`，README 教的就是这条）时，
    每次判定都把整份 `.env` 读盘解析一遍 ⇒ 一次全量装载读盘 **2N 次**。
-2. `.env` 解析（`yiban.infra.env_io.parse_env_file`）没有进程内缓存：
+2. `.env` 解析（`yiban.adapters.config.env_io.parse_env_file`）没有进程内缓存：
    同样的文件被反复读盘解析。
 
 **钉住的不变量（不钉调用顺序）**

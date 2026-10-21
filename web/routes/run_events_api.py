@@ -42,7 +42,7 @@
 
 **复用**
 `register(app)` 供 `web.routes.register_all` 装配。只读实现住在
-`yiban/store/run_events.py` 的读取面。访问留痕复用 `read_audit_trace()`。
+`yiban/adapters/persistence/run_events.py` 的读取面。访问留痕复用 `read_audit_trace()`。
 
 **通信**
 视图体经 `web.routes.appmod()` 取 web.app 自有的模块级名字（`logger`）；A 类转发名

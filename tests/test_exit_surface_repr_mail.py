@@ -3,7 +3,7 @@
 
 标签：G · 安全：脱敏/审计/配置注入
 覆盖：`Account.__repr__`（异常消息 / traceback / `%s account` 直出的载体）、
-    `yiban.mail.layout.Mail` 构造点的正文遮罩收口（邮件 to_plain/to_html 与推送
+    `yiban.adapters.notifier.mail.layout.Mail` 构造点的正文遮罩收口（邮件 to_plain/to_html 与推送
     三条出口共享同一构造，故一处收口覆盖三条）。
 对应实现：`yiban/engine/accounts.py::Account.__repr__`、
     `yiban/adapters/notifier/mail/layout.py::Mail.__init__` / `_masked_tree`。

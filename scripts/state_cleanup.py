@@ -16,8 +16,8 @@ YIBAN_STATE_DIR 指到别处的部署也能被正确清理，不会去清默认�
 在 `yiban/adapters/statefiles/state_gc.py`，本脚本只做入口与退出码。
 
 **复用**
-`state_dir_from_env` / `log_dir_from_env` 是 `yiban.state_gc` 同名函数的保留绑定
-（既有调用方无需改动）；清理函数与 `ARTIFACTS` 登记表复用 `yiban.state_gc`，不另写规则。
+`state_dir_from_env` / `log_dir_from_env` 是 `yiban.adapters.statefiles.state_gc` 同名函数的保留绑定
+（既有调用方无需改动）；清理函数与 `ARTIFACTS` 登记表复用 `yiban.adapters.statefiles.state_gc`，不另写规则。
 
 **通信**
 输入：环境变量（`YIBAN_STATE_DIR` / `YIBAN_LOG_FILE` / 保留期两档）与可选 `argv`
@@ -25,7 +25,7 @@ YIBAN_STATE_DIR 指到别处的部署也能被正确清理，不会去清默认�
 输出：被清理的文件、`<state_dir>/cleanup.log` 追加行；退出码 0 = 正常（无过期文件
 也是 0），1 = 保留期配置非法、目录不可用或清理日志写入失败（响亮失败，不静默退化——
 静默退化会让磁盘慢慢涨满而没人发现），2 = 未知/多余参数（用法错误，不静默丢弃）。
-调用谁：只有 `yiban.state_gc`（策略与实现；它是本文件唯一的项目内 import）。
+调用谁：只有 `yiban.adapters.statefiles.state_gc`（策略与实现；它是本文件唯一的项目内 import）。
 日志时间戳用 `datetime.datetime.now()`（宿主本地钟——它是**展示时刻**，跟随宿主
 时区属预期，见 README 部署章节的时区说明）；日志行里的"截止 X"自 MF-109 统一起
 与 `state_gc._cutoff`（删除判据，北京时间）**同钟**——此前"截止"用宿主本地钟，
@@ -49,7 +49,7 @@ from yiban.adapters.statefiles import state_gc  # noqa: E402
 
 # 目录解析与 run.sh 同口径（顺序也一致）：YIBAN_STATE_DIR → 默认 /var/log/yiban；
 # 日志目录 = dirname(YIBAN_LOG_FILE) → 默认 state_dir。实现在 `yiban/adapters/statefiles/state_gc.py`
-# ——CLI（`python -m yiban.cli state`）与本脚本共用同一份，免得出现"配置一样、
+# ——CLI（`python -m yiban.entry.cli state`）与本脚本共用同一份，免得出现"配置一样、
 # 清理目录不同"；这里保留同名绑定，既有调用方（测试）无需改动。
 state_dir_from_env = state_gc.state_dir_from_env
 log_dir_from_env = state_gc.log_dir_from_env

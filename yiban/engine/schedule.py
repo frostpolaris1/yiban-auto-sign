@@ -4,7 +4,7 @@
 
 调度 v2 是"排序维度（顺序/随机）× 分布维度（均匀/正态）"的 2×2 组合：块容量顺延、
 自选时间片优先、正态钟形锚点、σ 自适应封顶、超容量压缩模式。窗口（起止 + 掐头去尾 +
-是否已关闭）的唯一口径在 `yiban.window`，本模块只做调用与告警，不另存一份判断。
+是否已关闭）的唯一口径在 `yiban.core.window`，本模块只做调用与告警，不另存一份判断。
 
 **告警去重**：窗口配置非法 / 缓冲过大被收缩 / 窗口不可用被回退各只并入当日汇总邮件
 一次（`_invalid_window_notified`、`_window_clamped_notified`、
@@ -395,7 +395,7 @@ def _schedule_config(now: datetime | None = None) -> dict[str, Any]:
             dist = "normal" if mode == "normal" else DEFAULT_SIGN_DIST
     elif dist not in SIGN_DIST_CHOICES:
         dist = DEFAULT_SIGN_DIST
-    # 窗口与前后裁剪的解析委托 yiban.window（排计划/判关闭/算容量同源）；告警仍在此处发
+    # 窗口与前后裁剪的解析委托 yiban.core.window（排计划/判关闭/算容量同源）；告警仍在此处发
     start, end, _win_invalid = window.parse_window(os.environ)
     if _win_invalid:
         global _invalid_window_notified
@@ -425,7 +425,7 @@ def _schedule_config(now: datetime | None = None) -> dict[str, Any]:
         sigma_lo, sigma_hi = _DEFAULT_SIGMA_MIN_PCT, _DEFAULT_SIGMA_MAX_PCT
     # 掐头去尾（前后独立，秒级，0.5 分钟=30s 粒度；UI 按 0.5 分钟步进）：
     # 新键 YIBAN_WINDOW_EDGE_FRONT_SEC / _BACK_SEC 优先；旧键 YIBAN_WINDOW_EDGE_SEC
-    # 存在时映射为前后对称（保证旧配置行为不变）——解析在 yiban.window.parse_edges。
+    # 存在时映射为前后对称（保证旧配置行为不变）——解析在 yiban.core.window.parse_edges。
     edge_front, edge_back = window.parse_edges(os.environ)
     return {
         "order": order,
@@ -610,7 +610,7 @@ def _window_opens_in(sch_cfg: Mapping[str, Any], now_dt: datetime) -> float:
     return window.bounds(sch_cfg).opens_in_sec(now_dt)
 
 
-#: 开关类环境变量的真值字面量。**单一事实源**在 `yiban.infra.env_io.ENV_TRUTHY_LITERALS`
+#: 开关类环境变量的真值字面量。**单一事实源**在 `yiban.adapters.config.env_io.ENV_TRUTHY_LITERALS`
 #: （引擎 / web / 通知 / 容器调度 / bash 共用一套口径）；此处只保留别名供既有再导出
 #: （`web/app.py` 的 `_TRUTHY_LITERALS`）与测试引用，勿在此另抄一份字面量。
 _TRUTHY_LITERALS = _env_io.ENV_TRUTHY_LITERALS
@@ -619,7 +619,7 @@ _TRUTHY_LITERALS = _env_io.ENV_TRUTHY_LITERALS
 def _env_flag(name: str, env: Mapping[str, str] | None = None) -> bool:
     """开关类环境变量真值（1/true/on/yes，大小写不敏感、两侧空白忽略）。
 
-    判定单源在 `yiban.infra.env_io.parse_env_flag`：非预期取值按缺省（假）处理并出声一次，
+    判定单源在 `yiban.adapters.config.env_io.parse_env_flag`：非预期取值按缺省（假）处理并出声一次，
     不再静默吞掉。未设/空/其它假值字面量一律为假。
     """
     src = os.environ if env is None else env

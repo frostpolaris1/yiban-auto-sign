@@ -1442,7 +1442,7 @@ class ChannelHealthReportB14Test(_B14AlertGateBase):
                 "mail_recipients": 2, "push_ever_configured": False, "push_usable": False}
 
     def _due_at(self, moment, status, exhausted=False):
-        """在指定时刻判闸门：时刻经 `yiban.clock.now` 注入，额度状态按需打桩。"""
+        """在指定时刻判闸门：时刻经 `yiban.core.clock.now` 注入，额度状态按需打桩。"""
         with mock.patch.object(self.webapp.clock, "now", return_value=moment), \
                 mock.patch.object(self.webapp.notify, "budget_exhausted_today",
                                   return_value=exhausted):
@@ -1477,7 +1477,7 @@ class ChannelHealthReportB14Test(_B14AlertGateBase):
         general / urgent 两本推送账的余额，攻击当天（非例行日）这封报告不发，告知
         就在次日归零时永久消失。
 
-        占用与判闸门都在同一时刻（同一天）里做：账本按 `yiban.clock` 的北京日归零，
+        占用与判闸门都在同一时刻（同一天）里做：账本按 `yiban.core.clock` 的北京日归零，
         两者跨日会被正常归零，测的就不是闸门了。
         """
         tuesday = datetime(2026, 9, 22, 9, 0, 0)
