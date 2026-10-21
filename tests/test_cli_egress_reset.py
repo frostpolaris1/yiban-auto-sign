@@ -29,6 +29,7 @@ import tempfile
 import unittest
 
 from yiban.adapters.config import loader as config_loader
+from yiban.engine import token_bucket
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -88,7 +89,7 @@ class _EgressCliCase(unittest.TestCase):
             "i=3\n"
             "while i < len(sys.argv):\n"
             "    queue_store.save_egress_state(sys.argv[i], float(sys.argv[i+1]),"
-            " float(sys.argv[i+2]), float(sys.argv[i+3]), sys.argv[i+4])\n"
+            " float(sys.argv[i+2]), float(sys.argv[i+3]), 0.0, sys.argv[i+4])\n"
             "    i += 5\n"
             "db.get_conn().close()")
         argv = [sys.executable, "-c", code, str(self.root / "yiban.db"),
@@ -249,26 +250,26 @@ class _EgressCliCase(unittest.TestCase):
                                  "给了 --reset 就是复位请求，不得退成 status")
                 self.assertEqual(self._row(DIRECT_EGRESS), before, "畸形参数不得写库")
 
-    def test_engine_default_rate_out_of_engine_domain_fails(self):
-        """默认目标速率与 `--rate` 走**同一道**域校验：引擎会夹掉的值一律拒绝（D2）。
+    def test_engine_default_rate_out_of_engine_domain_is_clamped_loudly(self):
+        """域外配置由读取侧钳到最近边界并 WARN；命令写的是引擎实际会用的值（zx54）。
 
-        名册声明域是 [0.01, 100]，引擎的速率域是 [0.2, 4.0]。写 50 时引擎按 4.0 起跑，
-        故入口必须拒绝——否则命令报"已写 50"，引擎跑 4.0。
+        旧行为是"名册域宽于引擎域 ⇒ 入口拒绝"；收窄后两者同域，读取侧负责钳边＋告警，
+        出口命令不能再报一个引擎不会用的速率。
         """
         self._seed([(DIRECT_EGRESS, 0.25, 6.0, 0.0, STALE_STAMP)])
-        before = self._row(DIRECT_EGRESS)
         env = dict(self.env, YIBAN_EGRESS_RATE="50")
         r = _run(["egress", "--reset", DIRECT_EGRESS, "--yes", "--json"], env)
-        self.assertEqual(r.returncode, 1, r.stderr[-400:])
+        self.assertEqual(r.returncode, 0, r.stderr[-400:])
         payload = self._one_json(r)
-        self.assertFalse(payload["ok"])
-        self.assertEqual(payload["error_kind"], "config_error")
-        self.assertIn("4.0", r.stderr, "拒绝时要报出引擎会用的值")
-        self.assertEqual(self._row(DIRECT_EGRESS), before, "越域值不得写库")
-        # 只读面同样响亮：不得报一个引擎不会用的速率
+        self.assertAlmostEqual(payload["target_rate"],
+                               float(token_bucket.RATE_MAX), places=9)
+        self.assertAlmostEqual(self._row(DIRECT_EGRESS)[0],
+                               float(token_bucket.RATE_MAX), places=9)
+        # 只读面报同一个生效值，不报原配置值
         r2 = _run(["egress", "--status", "--json"], env)
-        self.assertEqual(r2.returncode, 1, r2.stderr[-400:])
-        self.assertEqual(self._one_json(r2)["error_kind"], "config_error")
+        self.assertEqual(r2.returncode, 0, r2.stderr[-400:])
+        self.assertAlmostEqual(self._one_json(r2)["target_rate"],
+                               float(token_bucket.RATE_MAX), places=9)
 
     def test_engine_default_rate_in_domain_is_used(self):
         """上一条的非空对照：键值在引擎域内时必须照用（否则那条断言可能空转）。"""

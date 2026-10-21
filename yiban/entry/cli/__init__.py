@@ -115,9 +115,8 @@ _PASSTHROUGH = ("sign", "probe")
 # ---------------------------------------------------------------------------
 #: 四个路径键（`docs/dev/cli.md` §1.1）：它们保留"进程环境优先"。
 #: 其余 `YIBAN_*` 键按 M27 统一口径"`.env` 优先、进程环境只补缺"。
-_ENV_FIRST_PATH_KEYS = (
-    "YIBAN_ENV_FILE", "YIBAN_DB_FILE", "YIBAN_STATE_DIR", "YIBAN_LOG_FILE",
-)
+#: 键集合只有一处定义（`env_io.PATH_KEYS`），本别名不另抄一份。
+_ENV_FIRST_PATH_KEYS = env_io.PATH_KEYS
 
 
 def _env_view():

@@ -254,8 +254,16 @@ class LegacyRowFateTest(_DbCase):
     LEGACY = ("worker-0@host", "worker-2@host", "fallback@host")
 
     def _seed_legacy(self):
+        # 直写旧列：本组用例的外层是"升级前只到 v21 的库"，它**没有** v23 的
+        # `half_open_sec` 列——生产写入口 `save_egress_state` 只服务已迁到顶的库。
+        conn = db.get_conn()
         for i, old in enumerate(self.LEGACY):
-            queue_store.save_egress_state(old, 0.5 + i, 6, 0.0)
+            conn.execute(
+                "INSERT INTO egress_state (egress, rate, burst, tat, updated_at) "
+                "VALUES (?,?,?,?,?)",
+                (old, 0.5 + i, 6, 0.0, "2026-09-20 00:00:00"),
+            )
+        conn.commit()
 
     def test_new_identity_does_not_read_legacy_key(self):
         self._seed_legacy()
