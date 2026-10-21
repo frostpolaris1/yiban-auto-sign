@@ -1,17 +1,12 @@
-import { expect, test } from "@playwright/test";
+import { userTest as test, expect } from "./base";
+
+const USER_EMAIL = "e2e-user@example.com";
 
 // 用户端账号页真浏览器端到端（P2 整页迁移后）。
 // 数据由 e2e/server.py 预置：普通用户 e2e-user@example.com 名下有一个生效账号
 // （e2e-user-acct / 13800138001）。会话走 API 登录（表单登录由 logs.spec 覆盖一次即可，
 // 避免反复访问 /login 撞上服务端的登录循环守卫）。
-const USER_EMAIL = "e2e-user@example.com";
-const USER_PASS = "UserPass123!";
-
-async function loginUser(page: import("@playwright/test").Page): Promise<void> {
-  const resp = await page.request.post("/api/login", { data: { username: USER_EMAIL, password: USER_PASS } });
-  expect(resp.ok()).toBeTruthy();
-}
-
+// 会话由 playwright.config.ts 的 user project 注入（.auth/user.json）。
 /* ---- 待审核刷新的外部变化制造器（工单 vff0）----
    变化一律直连后端、不经页面 JS：页面只能靠轮询发现，正是被测行为。
    写请求必须自带头 CSRF（登录后 /api/me 下发 session 内的 token）。 */
@@ -50,7 +45,6 @@ async function softDeleteAccount(page: import("@playwright/test").Page, name: st
 }
 
 test("用户端账号页：账号行/调度提示/自选时段/邮件开关/改密入口，且无管理端专有卡", async ({ page }) => {
-  await loginUser(page);
   await page.goto("/user/account");
 
   // 页头 + 调度提示条（由 /api/me 填充）
@@ -102,7 +96,6 @@ test("用户端账号页：账号行/调度提示/自选时段/邮件开关/改�
 });
 
 test("用户端账号页：暂停/恢复往返、编辑保存、改密弹窗、注销确认（取消）", async ({ page }) => {
-  await loginUser(page);
   await page.goto("/user/account");
   const card = page.locator(".account-card").first();
   const badge = card.locator(".account-title-row .badge");
