@@ -55,7 +55,7 @@ jobs:
           pip install pytest==9.1.1
           python -m pytest tests/test_deploy_gate_wiring.py -q -p no:randomly
 
-      # 闸门本体：干净 docker 环境按 README 起全栈 + v21→v22 迁移/回滚演练 + 备份恢复。
+      # 闸门本体：干净 docker 环境按 README 起全栈 + 迁移/回滚演练（期望版本取自迁移登记表） + 备份恢复。
       # 它自己失败（任一 PASS/FAIL 项为 FAIL）即非 0 退出 ⇒ 本 job 红。
-      - name: Deploy gate — README clean deploy + v21→v22 migration/rollback + backup restore
+      - name: Deploy gate — README clean deploy + migration/rollback + backup restore
         run: bash scripts/deploy_gate.sh

@@ -492,13 +492,13 @@ class PersistTest(unittest.TestCase):
         self.assertTrue(queue_store.save_egress_state("e0", 1.5, 6, 123.4))
         self.assertEqual(queue_store.load_egress_state("e0"),
                          {"rate": 1.5, "burst": 6.0, "tat": 123.4,
-                          "half_open_sec": 0.0})
+                          "half_open_until": 0.0})
         self.assertIsNone(queue_store.load_egress_state("e404"), "无记录 → None")
 
         queue_store.save_egress_state("e0", 0.8, 2, 7.0)
         self.assertEqual(queue_store.load_egress_state("e0"),
                          {"rate": 0.8, "burst": 2.0, "tat": 7.0,
-                          "half_open_sec": 0.0})
+                          "half_open_until": 0.0})
         conn = db.get_conn()
         n = conn.execute("SELECT COUNT(*) FROM egress_state").fetchone()[0]
         self.assertEqual(n, 1, "同一出口只留一行（UPSERT）")
@@ -553,22 +553,41 @@ class PersistTest(unittest.TestCase):
         重启后立刻按 burst=6 并发打同一出口（与 `acquire` 的注释相反）。
         """
         lim = token_bucket.EgressLimiter(rate=1.0, burst=6)
-        lim.on_risk_signal("e0", now=100.0)  # 半开至 400（注入的单调钟域）
-        self.assertTrue(lim.persist("e0", now=110.0), "落库必须带上半开剩余时长")
+        lim.on_risk_signal("e0", now=100.0, wall=1000.0)  # 半开至 400（单调域）
+        self.assertTrue(lim.persist("e0", now=110.0, wall=1000.0),
+                        "落库必须带上半开截止时刻")
 
         fresh = token_bucket.EgressLimiter(rate=1.0, burst=6)
-        self.assertTrue(fresh.restore_from_store("e0", now=5000.0))
+        self.assertTrue(fresh.restore_from_store("e0", now=5000.0, wall=1010.0))
         self.assertTrue(fresh.is_half_open("e0", 5000.0),
                         "重启后半开窗口必须仍在（这是风控命中后的单通道保护）")
         self.assertTrue(fresh.acquire("e0", 5000.0), "半开期首次探测放行")
         self.assertFalse(fresh.acquire("e0", 5000.0),
                          "半开期只放单通道，不得恢复完整 burst")
 
+    def test_13g_sibling_periodic_persist_does_not_wipe_half_open(self):
+        """未命中风控的兄弟进程周期性落库（写 0）不得抹掉别人的半开冷却。
+
+        同一出口行被多进程共享（`--workers >1` 或主轮＋兜底）。若按"剩余秒数"落库，
+        兄弟每 10s 写一次 0 就会把 300s 冷却抹成 0——重启后直接回到完整 burst。
+        绝对截止时刻 + 库侧 MAX 合并之后，写 0 无害。
+        """
+        a = token_bucket.EgressLimiter(rate=1.0, burst=6)
+        a.on_risk_signal("e0", now=100.0, wall=1000.0)          # 截止 1300（墙钟）
+        self.assertTrue(a.persist("e0", now=110.0, wall=1000.0))
+        b = token_bucket.EgressLimiter(rate=1.0, burst=6)        # 未命中风控的兄弟
+        b.bucket("e0")                                            # 有桶才允许落库
+        self.assertTrue(b.persist("e0", now=100.0, wall=1010.0))  # 写 0
+        fresh = token_bucket.EgressLimiter(rate=1.0, burst=6)
+        self.assertTrue(fresh.restore_from_store("e0", now=0.0, wall=1020.0))
+        self.assertTrue(fresh.is_half_open("e0", 0.0),
+                        "兄弟进程写 0 抹掉了冷却（绝对时刻 + MAX 合并失效）")
+
     def test_13f_expired_half_open_is_not_restored(self):
         """半开已走完再落库 ⇒ 恢复后不得凭空进入半开（不能把正常重启降成单通道）。"""
         lim = token_bucket.EgressLimiter(rate=1.0, burst=6)
-        lim.on_risk_signal("e0", now=100.0)
-        self.assertTrue(lim.persist("e0", now=400.0))  # 剩余 0
+        lim.on_risk_signal("e0", now=100.0, wall=1000.0)         # 截止 1300（墙钟）
+        self.assertTrue(lim.persist("e0", now=400.0, wall=1400.0))  # 剩余 0
         fresh = token_bucket.EgressLimiter(rate=1.0, burst=6)
-        self.assertTrue(fresh.restore_from_store("e0", now=5000.0))
+        self.assertTrue(fresh.restore_from_store("e0", now=5000.0, wall=1500.0))
         self.assertFalse(fresh.is_half_open("e0", 5000.0))
