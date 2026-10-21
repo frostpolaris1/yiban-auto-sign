@@ -8,11 +8,11 @@
   不代表库指对（软链、改名、复制出的副本都会让路径看起来"对"），而行数/规模差异
   天然能区分 demo/压测库与生产库；库缺失时也不建文件。
 - **确认回显**要求操作者逐字抄回指纹：单纯 `--yes` 不构成放行。
-- **留痕**复用审计链写入助手（`yiban.store.audit_chain.audit`）；审计写不进去就
+- **留痕**复用审计链写入助手（`yiban.adapters.persistence.audit_chain.audit`）；审计写不进去就
   返回 False，调用方据此拒绝执行（fail-closed）——否则会"删了但没留痕"。
 
 **归属**
-`yiban/store/` 数据层：指纹要直读 SQLite，留痕要走审计链（`_conn` 单例与 `audit`
+`yiban/adapters/persistence/` 数据层：指纹要直读 SQLite，留痕要走审计链（`_conn` 单例与 `audit`
 都属本层）。部署面脚本（demo 数据生成、`state` 子命令）都经本模块，不各自再写一份
 指纹/确认逻辑。
 
@@ -24,7 +24,7 @@
 **通信**
 输入：SQLite 路径、任意目标部件序列、操作者回显的指纹、审计三要素。
 输出：指纹字符串（`PURGE-<hex>`）、摘要行列表、确认是否成立、审计是否落库。
-调用谁：`sqlite3`（只读计数）与 `yiban.store.db`（审计写入；局部导入避免与门面成环）。
+调用谁：`sqlite3`（只读计数）与 `yiban.adapters.persistence.db`（审计写入；局部导入避免与门面成环）。
 谁调用：`scripts/generate_demo_data.py`、`yiban/entry/cli/__init__.py` 的 `state` 子命令。
 """
 import hashlib

@@ -16,7 +16,7 @@
   `purge_orphan_session_cache`。
 
 **归属**
-`yiban.store.db` 门面之后：定义点在本模块，门面把全部迁出名纳入模块级读写转发
+`yiban.adapters.persistence.db` 门面之后：定义点在本模块，门面把全部迁出名纳入模块级读写转发
 （`db.add_account()` 一类调用、`db.add_account = 替身` 一类打桩与 `del db.add_account`
 都落到这里）。
 
@@ -62,7 +62,7 @@ VALIDITY_UNKNOWN = None
 
 
 def _facade():
-    """db 门面（函数内延迟导入，避免与 `yiban.store.db` 形成导入环）。
+    """db 门面（函数内延迟导入，避免与 `yiban.adapters.persistence.db` 形成导入环）。
 
     打桩可见性见模块说明：必须按**属性**取而不是模块级 from-import，`db.<名字> = 替身`
     才会在函数体里生效。
@@ -183,7 +183,7 @@ def purge_orphan_session_cache(conn):
 # 行加解密与明文自愈
 # ---------------------------------------------------------------------------
 def _mask_phone_display(phone):
-    """展示用打码（仅用于日志文案）：**转发** `yiban.masking.mask_phone`，不另立公式。
+    """展示用打码（仅用于日志文案）：**转发** `yiban.core.masking.mask_phone`，不另立公式。
 
     本层曾有与 `masking.mask_phone` 平行的一份切片公式；两份必然分叉（改一边漏一边），
     故收敛为转发（2026-10-06 census P0-3 契约化）。

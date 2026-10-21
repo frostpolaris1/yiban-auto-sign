@@ -33,14 +33,14 @@
 `is_yiban_trusted_url` / `is_strict_yiban_url` / `is_waf_blocked` 与
 `WAF_BLOCKED_MESSAGE`、`_WHITELIST_MESSAGES`（对外文案单一来源）；失败分类的档位词元
 （`HARD_FAIL_TOKENS`/`is_hard_fail_message`/`hard_fail_pattern`）与 `WAF_KEYWORDS` 同在本模块，
-是重试档位（`yiban.engine.attempts`）与探针硬失败判据（`yiban.engine.probe`）的**唯一真值源**；
+是重试档位（`yiban.engine.attempts`）与探针硬失败判据（`yiban.app.probe`）的**唯一真值源**；
 WAF 词元的命中判定 `matches_waf_keywords` 由 `attempts` 的风控族判据复用（那边喂的是失败**消息**，
 不受"短响应"上界约束）；挑战形态特征复用 `yiban.challenge.looks_like_challenge`（不另抄特征串）；
-脱敏口径复用 `yiban.masking`。
+脱敏口径复用 `yiban.core.masking`。
 
 **通信**
 输入：URL、响应文本/头部/状态码、待脱敏文本。输出：布尔判定或脱敏/诊断后的文本。
-调用谁：`yiban.masking`、`urlsplit`、`yiban.challenge`（挑战形态特征，单向依赖：平台层
+调用谁：`yiban.core.masking`、`urlsplit`、`yiban.challenge`（挑战形态特征，单向依赖：平台层
 不得反向 import 本模块）。
 谁调用：`yiban.client`（组装 `RequestPolicy` 注入协议层）、`yiban/platform.py`
 经注入的策略回调、`yiban/engine/attempts.py` 与 `yiban/app/probe.py`（档位词元单一来源）、

@@ -15,7 +15,7 @@
 依赖：纯静态——AST 解析源码 + 正则读 Dockerfile/compose/入口脚本文本；
     **不需要 docker CLI、不构建镜像**。
 
-背景：`yiban/` 被 `scripts/signin.py`（`yiban.status`）与 `web/app.py`
+背景：`yiban/` 被 `scripts/signin.py`（`yiban.core.status`）与 `web/app.py`
 （`yiban.attempt.jobs`）导入，而 Dockerfile 一度只 COPY 了 `web/` 与 `scripts/`。
 """
 import ast

@@ -16,7 +16,7 @@
 - 批量入口 `batch_user_ops`（单事务，整体成功或整体回滚）。
 
 **归属**
-`yiban.store.db` 门面之后：定义点在本模块，门面按原样再导出（`db.load_users` /
+`yiban.adapters.persistence.db` 门面之后：定义点在本模块，门面按原样再导出（`db.load_users` /
 `db.restore_user` / `db.LastAdminError` 等调用与身份断言不变）。注销宽限期常量
 `SOFT_DELETE_RETENTION_DAYS` / `PURGE_SKIP_CANCELLED_OWNER` 也定义在这里——它们同时
 约束用户行与账号行的清除时机。
@@ -44,7 +44,7 @@ logger = logging.getLogger("yiban.store.users")
 
 
 def _facade():
-    """db 门面（函数内延迟导入，避免与 `yiban.store.db` 形成导入环）。
+    """db 门面（函数内延迟导入，避免与 `yiban.adapters.persistence.db` 形成导入环）。
 
     打桩可见性见模块说明：必须按**属性**取而不是模块级 from-import，`db.<名字> = 替身`
     才会在函数体里生效。

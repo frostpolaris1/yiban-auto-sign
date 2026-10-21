@@ -25,7 +25,7 @@ CLI 支撑：日志装配、进程级运行锁、状态文件读改写锁，以�
 **通信**
 输入：日志级别/路径等环境配置、状态文件路径与加锁范围、结果对象。
 输出：配置好的 logger/handler、被加锁的读改写上下文、stdout 单行 JSON / stderr 人话。
-调用谁：`yiban.infra.env_io`、`yiban.infra.locks`、`yiban.logging_ext.FlockFileHandler`。
+调用谁：`yiban.adapters.config.env_io`、`yiban.infra.locks`、`yiban.logging_ext.FlockFileHandler`。
 谁调用：`yiban/entry/cli/__init__.py`（输出收口、`last_fatal_error` 的 `--json` 摘要）、`runner`、
 `workers`、`state_io`、`probe`、`alerts` 与 `scripts/signin.py` 兼容壳；web 服务层不调用本模块。
 前端调用点：无直接调用点（前端经 `runner` / `state_io` 间接受影响）；执行体与手动签到
@@ -273,7 +273,7 @@ def report_fatal_error(summary):
     """致命错误（配置加载失败/未配置任何账号类）：stderr 一行摘要 + 记录给 `--json`。
 
     为什么不能只靠 `logger.error`：CLI 日志装配只挂**按天文件** handler，stderr 上
-    什么都没有——agent/CI 直调 `python -m yiban.cli sign` 时退出码 1 而 stdout/stderr
+    什么都没有——agent/CI 直调 `python -m yiban.entry.cli sign` 时退出码 1 而 stdout/stderr
     全空，错误只进日志文件。stdout 仍保持"只有结果"
     （`docs/dev/cli.md` §2.2），摘要一律走 stderr；`--json` 的 error 字段由调用方
     （`yiban/entry/cli/__init__.py`）经 `last_fatal_error()` 取用。

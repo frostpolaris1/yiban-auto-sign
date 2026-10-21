@@ -11,7 +11,7 @@
 | state | 含义 | 是否了结 |
 |-------|------|----------|
 | `claimed` | 已被某执行体领取、尚未收尾（含执行中） | 否 |
-| `done` | 收尾且**当日无需再签**（即 `yiban.status.CLAIM_DONE_STATUSES`：成功 / 已签到 / 今日无任务） | 是 |
+| `done` | 收尾且**当日无需再签**（即 `yiban.core.status.CLAIM_DONE_STATUSES`：成功 / 已签到 / 今日无任务） | 是 |
 | `failed` | 收尾但结果未了结（本轮重试预算耗尽、窗口外跳过、无点位） | 否（按原因档再领：窗口外/无点位默认可领，预算耗尽/风控需显式路径，见 `STATE_FAILED`） |
 
 **四条纪律**：
@@ -41,15 +41,15 @@
   （监督进程对**已确认死亡**的子进程名下的行）把租约立刻放开，而不是等满 900s 让补签轮
   误判成"别人在飞"。判定死亡的证据强度不同（异常退出 > 心跳过期），故两者分开。
 
-连接与进程内锁取自同包的 `yiban.store.db`；门面对本模块是**重命名**再导出（`claim_*`
-前缀），逐条别名见 `yiban.store.db` 领取池绑定处的行尾注释。
+连接与进程内锁取自同包的 `yiban.adapters.persistence.db`；门面对本模块是**重命名**再导出（`claim_*`
+前缀），逐条别名见 `yiban.adapters.persistence.db` 领取池绑定处的行尾注释。
 
 **冻结说明（台账单池化后）**：本表（`sign_claims`）与其 `epoch` 列**不物理删除**——已发布
 的 v17/v19 迁移条目把它们登记为**核心产物**，删产物会让 `user_version >= 17` 的库在启动时
 被完整性校验拒启（现网已升至 v20）。故表与列原样保留、**零写入**：生产执行已恒定走
 `executor_v3` 的 `sign_tasks` 队列，本模块的函数无生产调用点（仅既有单测覆盖）。
 旧的行是当日临时的领取记录，切换后下一轮自然在 `sign_tasks` 重建，**不做任何数据迁移**。
-`sign_tasks` 的访问层是 `yiban/store/queue_store.py`，单池读法一律以它为准。
+`sign_tasks` 的访问层是 `yiban/adapters/persistence/queue_store.py`，单池读法一律以它为准。
 """
 import datetime
 import logging
@@ -80,18 +80,18 @@ RETENTION_DAYS = 14
 
 #: 在飞：已被某执行体领取、尚未收尾。
 STATE_CLAIMED = "claimed"
-#: **当日了结**：无需再签（成员见 `yiban.status.CLAIM_DONE_STATUSES`）。
+#: **当日了结**：无需再签（成员见 `yiban.core.status.CLAIM_DONE_STATUSES`）。
 STATE_DONE = "done"
 #: 尝试过但**未了结**（本轮重试预算耗尽、窗口外跳过等）：当日仍可被别的执行体或
 #: 下一轮（补签轮 / 兜底常驻）接手——给弃时会把租约立刻置为过期，见 `give_up`。
 #: 两点必须知道：①「预算」住在**单轮进程内**（`yiban.engine.attempts._retry_budget`），
 #: 换一轮即重新计数；②故领取层必须**按弃权原因分档**，否则"预算耗尽"的账号会被
 #: 后面每一轮无上限地重领一遍（每次都是一次真实登录）。分档用 `result` 字段前缀表达
-#: （词表住 `yiban.status`：`RESULT_RETRY_PREFIX` / `RESULT_FINAL_PREFIX`，不动表结构）。
+#: （词表住 `yiban.core.status`：`RESULT_RETRY_PREFIX` / `RESULT_FINAL_PREFIX`，不动表结构）。
 STATE_FAILED = "failed"
 #: 终态集合（「了结」的账号）。
 SETTLED_STATES = (frozenset((STATE_CLAIMED, STATE_DONE, STATE_FAILED))
-                  # 「了结」的词义定义在 `yiban.status`（同一件事在 sign_claims / sign_tasks /
+                  # 「了结」的词义定义在 `yiban.core.status`（同一件事在 sign_claims / sign_tasks /
                   # 状态文件里各有一套 state 名），此处只做本表词表下的投影，不自写第二份判据
                   & yiban_status.TASKS_SETTLED_STATES)  # 交集后只剩 done：failed 是"可再领"、不是终态
 #: 参与"未了结账号"统计的状态（与 done 互斥）
@@ -346,7 +346,7 @@ def give_up(phone, day, owner, result="", epoch=None, retryable=False):
       （`try_claim(allow_failed=True)`）才可再领——否则它会当日每轮重来一遍。
 
     缺省保守是刻意的：判不清原因时宁可要求显式路径，也不要无上限重复真实登录。
-    调用方按 `yiban.status.RETRYABLE_GIVE_UP_STATUSES` 选档（`round._settle_claims`），不要各写一份。
+    调用方按 `yiban.core.status.RETRYABLE_GIVE_UP_STATUSES` 选档（`round._settle_claims`），不要各写一份。
 
     `epoch` 的语义同 `settle`（弃权同样是终态写：被接管者不得把接管者的在飞记录改成 failed）。
     返回是否写成功（被接管 / token 落后时为 False）。
@@ -608,7 +608,7 @@ def owners_since(days=RETENTION_DAYS):
 def purge(days=RETENTION_DAYS):
     """清理保留期外的记录（按业务日字符串比较）。失败仅告警，返回删除行数。
 
-    接入时钟跳变守卫（同库其余清理同形，见 `yiban.store.db._clock_jump_guard`）：
+    接入时钟跳变守卫（同库其余清理同形，见 `yiban.adapters.persistence.db._clock_jump_guard`）：
     系统时间被拨快 >72h 时按日比较的 cutoff 会一下子跳到未来，"保留期外"的判据于是
     把最近几天的行全部算超期——本表是**当日互斥面**（(phone, day) 的持有记录），
     整删当日行等于把当天所有账号放行给下一个执行体重复真实登录。跳变只跳本轮：
