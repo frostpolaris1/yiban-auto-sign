@@ -1,4 +1,5 @@
-import { userTest as test, expect } from "./base";
+import { userTest as test, expect, USER } from "./base";
+import { businessDay, zonedDay } from "./business-day";
 
 // 签到日历页真浏览器端到端（P2 日历对迁移后）。
 // 数据由 e2e/server.py 预置：普通用户 e2e-user@example.com 名下有一个生效账号
@@ -123,4 +124,34 @@ test("签到日历：点取样工作日 → 面板拉当天日志（端到端脱
   });
   await expect(page.locator(`.sc-grid button[data-sc-date="${today}"]`)).toHaveClass(/is-selected/);
   await expect(page.locator("[data-sc-log-date]")).toHaveText(today);
+});
+
+/* zvj1：日历的「今天」必须取服务端校准钟（core.js serverNow，其本地字段即服务器墙上时间），
+   而不是浏览器本地日期。断言办法：另开一个**浏览器时区≠+8**的上下文，挑一个此刻日期确实
+   与业务日不同的时区，页面仍必须高亮业务日。旧实现读 new Date() 时这里会高亮浏览器当天，
+   必然与期望不同（断言与宿主时区、运行时刻都无关：时区按当下现算）。 */
+test("签到日历：浏览器时区≠+8 时，「今天」仍按服务端校准钟", async ({ browser }) => {
+  const expected = businessDay();
+  const zone = ["America/Los_Angeles", "Pacific/Kiritimati", "Etc/GMT+12", "Etc/GMT-14"].find(
+    (z) => zonedDay(z) !== expected,
+  );
+  expect(zone, "找不到与业务日不同的时区（辅助函数失效）").toBeTruthy();
+  expect(zonedDay(zone as string)).not.toBe(expected); // 环境自检：浏览器当天确实不是业务日
+
+  const context = await browser.newContext({
+    baseURL: test.info().project.use.baseURL,
+    timezoneId: zone,
+  });
+  const page = await context.newPage();
+  try {
+    const resp = await page.request.post("/api/login", {
+      data: { username: USER.username, password: USER.password },
+    });
+    expect(resp.ok()).toBeTruthy();
+    await page.goto("/user/calendar");
+    await expect(page.locator(".sc-grid button.is-selected")).toHaveAttribute("data-sc-date", expected);
+    await expect(page.locator("[data-sc-log-date]")).toHaveText(expected);
+  } finally {
+    await context.close();
+  }
 });
