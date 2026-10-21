@@ -79,6 +79,7 @@ fast	tests/test_cli_env_priority.py	# 子进程跑 state --dry-run：.env/进程
 fast	tests/test_cli_egress_reset.py
 fast	tests/test_cli_exit_surface.py
 fast	tests/test_concurrency_fidelity_gate.py
+fast	tests/test_comment_symbol_ownership.py	# 纯 AST+正则扫生产树（工单 mr50 的形状门）
 fast	tests/test_config_input_caps.py
 fast	tests/test_config_loader.py
 fast	tests/test_config_registry_gate.py
@@ -122,6 +123,7 @@ fast	tests/test_egress_and_executors_api.py
 fast	tests/test_egress_bucket_key.py
 fast	tests/test_egress_budget_split_e2e.py
 fast	tests/test_egress_direct_applied.py
+fast	tests/test_egress_rate_domain_single_source.py
 fast	tests/test_elbow_predicate.py
 fast	tests/test_elbow_shadow.py
 fast	tests/test_email_domain_review.py
@@ -174,6 +176,7 @@ fast	tests/test_log_masking_entry_mounts.py
 fast	tests/test_log_masking_formatter.py
 fast	tests/test_login_e2e_mock.py
 fast	tests/test_login_protocol_shape.py
+fast	tests/test_login_session_single_point.py	# AST 判据：签到域请求头切换只有一个实现点（vq97）
 fast	tests/test_logs_by_date.py
 fast	tests/test_logs_export_masking.py
 fast	tests/test_logs_level_filter.py
@@ -212,7 +215,9 @@ fast	tests/test_notify_throttle.py
 fast	tests/test_notify_webhook.py
 slow	tests/test_only_single_process.py	# 真进程组：起真进程树并 terminate 整组（本机 10.9s）
 fast	tests/test_panel_false_signals.py
+fast	tests/test_path_env_priority_single_source.py
 fast	tests/test_path_env_read_gate.py
+fast	tests/test_path_single_definition.py
 slow	tests/test_pause_flag_truthiness_e2e.py	# 真子进程：真跑 run.sh/fallback/probe 三份 bash（本机 1.5s）
 fast	tests/test_planner.py
 fast	tests/test_pr_template_gate.py
@@ -234,6 +239,7 @@ fast	tests/test_readme_deploy_selfsufficiency.py
 fast	tests/test_register_admin_email_indist.py
 fast	tests/test_registration_pause.py
 fast	tests/test_rekey_key_source.py
+fast	tests/test_release_gate_scripts.py	# 读文档 + git ls-files + bash -n（工单 fdfn 的引用门）
 fast	tests/test_release_version_source.py
 fast	tests/test_resolve_path_bypass_collapse.py
 fast	tests/test_result_vocab_home.py
@@ -241,6 +247,7 @@ fast	tests/test_retry_window_day_boundary.py
 fast	tests/test_review_bypass_and_fake_success.py
 fast	tests/test_review_flow.py
 fast	tests/test_review_refresh_cadence_single_source.py
+fast	tests/test_root_artifacts.py	# 仓库根 glob（128-P0-B 的 NoRootArtifacts 门）
 fast	tests/test_ruff_config_guard.py
 fast	tests/test_run_events_inspection.py
 fast	tests/test_run_lock_fail_closed.py
@@ -291,7 +298,9 @@ fast	tests/test_store_cleanup_accounts.py
 fast	tests/test_store_events_quantile.py
 fast	tests/test_store_queue.py
 fast	tests/test_store_users_hard_purge.py
+fast	tests/test_frozen_carrier_usage_gate.py
 fast	tests/test_store_verify_jobs_purge.py
+fast	tests/test_suite_cwd_isolation_gate.py
 fast	tests/test_stream_api.py
 fast	tests/test_subpath_deploy.py
 fast	tests/test_supervisor_recursion_guard.py

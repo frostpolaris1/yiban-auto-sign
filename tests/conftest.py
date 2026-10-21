@@ -9,6 +9,7 @@
 import contextlib
 import logging
 import os
+import sys
 
 import pytest
 
@@ -202,6 +203,71 @@ def _restore_process_umask():
     os.umask(before)
 
 
+# ---------------------------------------------------------------------------
+# 工作树卫生门（工单 qg8f）：一次测试会话不得在检出根留下新增文件
+# ---------------------------------------------------------------------------
+# 为什么放在 conftest 而不是逐用例点名：污染源可以是任何用例（子进程 CLI、默认库/
+# 日志路径回落、被遗忘的临时目录……）。逐用例点名只能拦住"已经知道的那一个"；本门
+# 判**会话前后的检出根差集**，与污染源是谁无关。
+#
+# 不变式（任何时刻都不该被违反）：会话结束时，检出根里的文件集合不得比开始时多。
+# 历史缺陷形态：某用例按默认值打开库，`yiban.db`（后改为 `data/yiban.db`）被写进
+# 检出根；该文件又被 `.gitignore` 命中，`git status` 看不见——于是"全量绿"不可
+# 复现（工单 qg8f：同一内容 4 次全量 1 次红）。**看不见的污染比红更危险。**
+#
+# 判在 **controller 进程**（xdist 主进程，或串行跑测的同一进程）：worker 收尾时
+# 其它 worker 可能正在写临时件，逐 worker 判会把并发误报成污染。`workerinput`
+# 存在即为 xdist worker，跳过。
+#
+# 跳过面（显式，不静默）：工具缓存目录（`.pytest_cache` / `__pycache__` / ruff /
+# mypy / venv / node_modules）不是运行产物；`work/` 是过程产物目录（AGENTS §七）。
+# 其它任何新增路径——包括 `data/yiban.db`——一律判污染。
+_RUNTIME_ARTIFACT_IGNORED_DIRS = frozenset({
+    ".git", "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache",
+    ".venv", "node_modules", "work",
+})
+_runtime_artifact_before = None
+
+
+def _runtime_artifact_paths(root):
+    """检出根内的文件相对路径集合（POSIX 分隔，跨平台可读）。"""
+    found = set()
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _RUNTIME_ARTIFACT_IGNORED_DIRS]
+        for name in filenames:
+            found.add(os.path.relpath(os.path.join(dirpath, name), root).replace(os.sep, "/"))
+    return found
+
+
+def _runtime_artifact_diff(root, before):
+    """会话新增的运行产物（排序后的相对路径列表）；`before` 为空表示未启用判定。"""
+    if before is None:
+        return []
+    return sorted(_runtime_artifact_paths(root) - before)
+
+
+def pytest_sessionstart(session):
+    """记录会话开始时的检出根文件集（仅 controller / 串行进程）。"""
+    global _runtime_artifact_before
+    if getattr(session.config, "workerinput", None) is not None:
+        return
+    root = getattr(session.config, "rootpath", None) or session.config.rootdir
+    _runtime_artifact_before = _runtime_artifact_paths(str(root))
+
+
 def pytest_sessionfinish(session, exitstatus):
-    """进程收尾兜底：即便个别测试异常中断，也释放全部文件句柄。"""
+    """进程收尾兜底：释放文件句柄 ＋ 判检出根是否新增运行产物（工单 qg8f）。"""
     _close_root_file_handlers()
+    root = getattr(session.config, "rootpath", None) or session.config.rootdir
+    added = _runtime_artifact_diff(str(root), _runtime_artifact_before)
+    if not added:
+        return
+    lines = ["", "SUITE-CWD-ISOLATION: 本次会话在检出根留下 %d 个新增文件：" % len(added)]
+    lines += ["  + " + rel for rel in added[:20]]
+    if len(added) > 20:
+        lines.append("  …（另 %d 个）" % (len(added) - 20))
+    lines.append("用例必须把运行产物写进 tmp_path / tempfile，不得落在检出根。")
+    sys.stderr.write("\n".join(lines) + "\n")
+    sys.stderr.flush()
+    # 污染的会话不得报绿：它让"全量绿"不可复现（qg8f 的原始危害）。
+    session.exitstatus = 1

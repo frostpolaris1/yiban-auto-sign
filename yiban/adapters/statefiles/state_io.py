@@ -167,18 +167,16 @@ def _is_second_run():
 def sign_state_path(day=None, state_dir=None):
     """`sign-state-<day>.json` 的**唯一路径定义点**（census-P2-sign-state）。
 
-    写侧（`_sign_state_path` / `_write_sign_state`）与清理名册（`state_gc.ARTIFACTS`
-    的前后缀）都从这里取形状；其他进程（网页日志页、ledger_check、backup.sh）
-    仍各有读取点，收口它们须单独裁决（本函数先让写入侧不再各手写 f-string）。
+    形状与默认值住在 `yiban.adapters.config.env_io`（`SIGN_STATE_PREFIX` /
+    `SIGN_STATE_SUFFIX` / `state_dir_from_env`）：Python 写者、web 日志页、ledger_check
+    与清理名册全部引用同一处，本函数只保留状态件层的名字与 `day` 语义。
 
     `day` 是**业务日**（`YYYY-MM-DD`）：执行体在入口定一次，写入侧原样传下来。缺省取
     业务钟日期，供一次性工具与既有单测沿用。跨午夜的长轮次必须传 `ctx.day`——否则
     队列按启动日 settle/requeue，状态文件却按新日期新建，两个事实源指向不同的一天
     （工单 ba-p03-07）。
     """
-    directory = state_dir or _state_dir()
-    today = day or clock.now().strftime("%Y-%m-%d")
-    return os.path.join(directory, f"sign-state-{today}.json")
+    return env_io.sign_state_path(day, state_dir=state_dir or _state_dir())
 
 
 def _sign_state_path(day=None):
@@ -574,7 +572,7 @@ def _state_dir():
     `YIBAN_STATE_DIR` 写进 .env 的部署里，`run.sh`（自己 export）与直接调用的脚本
     会落到**不同目录**——一边是配置目录、一边是 /var/log/yiban。
     """
-    return env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
+    return env_io.state_dir_from_env()
 
 
 def full_run_done_today(state_dir=None, day=None):
@@ -626,7 +624,7 @@ def has_undone_accounts_today(state_dir=None, day=None):
         return True
     d = state_dir or _state_dir()
     try:
-        with open(os.path.join(d, f"sign-state-{today}.json"), encoding="utf-8-sig") as f:
+        with open(sign_state_path(today, state_dir=d), encoding="utf-8-sig") as f:
             data = json.load(f)
     except (OSError, ValueError):
         return True

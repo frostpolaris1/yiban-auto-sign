@@ -59,6 +59,7 @@ from web.services.accounts_data import plan_state_message as _plan_state_message
 from web.services.accounts_data import today_plan_map as _today_plan_map
 from web.services.device_refresh import refresh_account_device as _refresh_account_device
 from web.services.verify_queue import start_edit_probe as _start_edit_probe
+from yiban.adapters.config import env_io
 from yiban.adapters.notifier import mail as mailer
 from yiban.adapters.notifier.mail import layout as mail_layout
 from yiban.adapters.persistence import db
@@ -723,16 +724,18 @@ def api_my_calendar():
     days_in_month = calendar.monthrange(year, mon)[1]
     result = {f"{year:04d}-{mon:02d}-{d:02d}": {} for d in range(1, days_in_month + 1)}
     # 聚合读取：单次目录遍历取本月全部日文件（替代每天一次 exists+open 共 30 次 IO）
-    prefix = f"sign-daily-{year:04d}-{mon:02d}-"
+    # 前后缀唯一在 env_io（census-P2-sign-state）：这里只拼"年-月"这一段。
+    prefix = f"{env_io.SIGN_DAILY_PREFIX}{year:04d}-{mon:02d}-"
+    suffix = env_io.SIGN_DAILY_SUFFIX
     try:
         for entry in os.scandir(m.STATE_DIR):
             # 伴生文件按"后缀+形态"识别，不按截字符串：每日状态写入必带
             # `<名>.lock`，崩溃残留还有 `<名>.tmp<pid>-<tid>`——它们同样命中月份
             # 前缀，原先"截掉末尾 5 字符"会把伴生文件切成幻影日期
             # （`X.json.lock` → `X.json`），日历平白多出一个不存在的天。
-            if not (entry.name.startswith(prefix) and entry.name.endswith(".json")):
+            if not (entry.name.startswith(prefix) and entry.name.endswith(suffix)):
                 continue
-            day = entry.name[len(prefix) : -len(".json")]
+            day = entry.name[len(prefix) : -len(suffix)]
             if len(day) != 2 or not day.isdigit():
                 continue
             date = f"{year:04d}-{mon:02d}-{day}"

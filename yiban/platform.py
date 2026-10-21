@@ -58,6 +58,7 @@ from yiban.adapters.protocol_yiban import (
     SessionExpired,
     build_sign_in_body,
     build_usersure_form,
+    code_is_ok,
     extract_verify_request,
     parse_api_envelope,
     parse_authorize_page,
@@ -67,6 +68,17 @@ from yiban.adapters.protocol_yiban import crypto as _lib_crypto
 
 logger = logging.getLogger("yiban.platform")
 
+#: 单账号一次完整尝试的 HTTP 请求数（census-P2-req6，**唯一定义点**）。
+#:
+#: 六跳链路 = 登录链 4 跳（OAuth 页 / usersure / iframe / auth）＋
+#: 签到链 2 跳（signPosition / signIn）。容量与限速的"账号尝试数 ↔ 请求数"换算
+#: 只认这一枚常量；过去这个数只活在 7 处散文里，协议层的调用点没有东西在数它。
+#: **会话缓存命中时登录链被跳过**（实际 < 6）：这是按最坏形态给的**上限**，
+#: 容量评估宁可略保守，不要据此当成"每次必有 6 次请求"。
+LOGIN_CHAIN_REQUESTS = 4
+SIGNIN_CHAIN_REQUESTS = 2
+REQUESTS_PER_ACCOUNT = LOGIN_CHAIN_REQUESTS + SIGNIN_CHAIN_REQUESTS
+
 # ---------------------------------------------------------------------------
 # 平台事实：客户端标识、端点、请求头与版本
 # ---------------------------------------------------------------------------
@@ -75,6 +87,11 @@ logger = logging.getLogger("yiban.platform")
 #: 清单版本号一致（`yiban/platform.py` 的常量是唯一来源，测试钉住同值关系）。
 YIBAN_APP_VERSION = "5.2.3"
 
+#: 签到站点（App 域）的**唯一字面量定义点**：`HEADERS` 与 `APP_SIGN_HEADERS` 都引用它。
+#: 同一域名的字面量全仓只此一处（`tests/test_login_session_single_point.py` 钉住）。
+#: 新增同域请求头请引用本常量，不要重写域名——重写一处就是第二份定义。
+APP_ORIGIN = "https://app.uyiban.com"
+
 #: 易班 iOS 客户端 UA（旧流程 `YIBAN_LEGACY_LOGIN=1` 使用）
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) "
@@ -82,8 +99,8 @@ HEADERS = {
     "Chrome/104.0.5112.97 Mobile Safari/537.36 yiban_iOS/" + YIBAN_APP_VERSION,
     "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
     "X-Requested-With": "com.yiban.app",
-    "Origin": "https://app.uyiban.com",
-    "Referer": "https://app.uyiban.com/",
+    "Origin": APP_ORIGIN,
+    "Referer": APP_ORIGIN + "/",
     "Connection": "close",
 }
 
@@ -99,11 +116,11 @@ KILLYIBAN_HEADERS = {
 }
 
 #: 签到接口（nightAttendance）的目标站点特征：旧流程走 App 域。
-#: 登录链把 Origin/Referer 改成了 OAuth/回调域，签到时必须**改回来**，
+#: 登录链把 Origin/Referer 改成了 `c.uyiban.com`（KillYiBan 客户端域），签到时必须**改回来**，
 #: 故单独成一份常量而不是复用上面的整份头。
 APP_SIGN_HEADERS = {
-    "Origin": "https://app.uyiban.com",
-    "Referer": "https://app.uyiban.com/",
+    "Origin": APP_ORIGIN,
+    "Referer": APP_ORIGIN + "/",
 }
 
 #: 端点与客户端标识（平台侧固定值）
@@ -302,11 +319,12 @@ def _parse_api_body(resp):
 def _validate_sign_position(data):
     """成功信封里的签到配置过一次库解析（实拍契约）——结构不合即抛 ParseError。
 
-    只在"形状已足以进入客户端点位分支"时才解析：`code == 0`、`Position` 为非空数组、
+    只在"形状已足以进入客户端点位分支"时才解析：`code` 为成功码（`0` 或 `"0"`，
+    口径与协议库 `code_is_ok` 同一容忍度）、`Position` 为非空数组、
     顶层 `Range` 带 `StartTime/EndTime`。这样既不改变既有"缺 Range / 空 Position"的
     容错分支，又让完整响应真实走库解析路径（含 `Range` 时间窗对象与 `IsNeedPhoto`）。
     """
-    if not isinstance(data, dict) or data.get("code") != 0:
+    if not isinstance(data, dict) or not code_is_ok(data.get("code")):
         return
     data_obj = data.get("data")
     if not isinstance(data_obj, dict):
@@ -341,7 +359,7 @@ def login_legacy(session, *, phone, password, csrf, policy):
     )
     policy.require_not_blocked(resp)
     data = resp.json()
-    if data.get("code") != 0:
+    if not code_is_ok(data.get("code")):
         raise RuntimeError(f"获取登录入口失败: {policy.sanitize(data.get('msg'))}")
 
     # 2. 跳转到 OAuth 页面，解析 RSA 公钥与 page_use
@@ -422,7 +440,7 @@ def login_legacy(session, *, phone, password, csrf, policy):
     )
     policy.require_not_blocked(resp)
     data = resp.json()
-    if data.get("code") != 0:
+    if not code_is_ok(data.get("code")):
         raise RuntimeError(f"最终认证失败: {policy.sanitize(data.get('msg'))}")
     if "csrf_token" not in dict_from_cookiejar(session.cookies):
         raise RuntimeError("登录失败：未获取到 csrf_token")
@@ -544,7 +562,7 @@ def login_killyiban(session, *, phone, password, csrf, policy, session_store=Non
     else:
         raise RuntimeError("最终认证重定向层数过多，疑似重定向环")
     data = resp.json()
-    if data.get("code") != 0:
+    if not code_is_ok(data.get("code")):
         raise RuntimeError(f"最终认证失败: {policy.sanitize(data.get('msg'))}")
     # **本项目自有判定**（非平台知识）：code==0 只代表"签发方没有否认"，不代表签发
     # 发生过：成功签发附带的回执在 data 载荷（同一端点的入口步应答即 `data.Data`，

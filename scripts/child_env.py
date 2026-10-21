@@ -4,7 +4,8 @@
 此前 web 手动签到子进程只继承 gunicorn 启动时的环境快照，
 管理员事后在 .env 改的 YIBAN_PROXY / YIBAN_NOTIFY_URL / 登录方式等对手动签到
 不生效（定时签到经 run.sh/scheduler 每次重读 .env，两条路径行为分叉）。
-现统一为本模块：以进程环境为底座，.env 的 YIBAN_* 键覆盖注入。
+现统一为本模块：以进程环境为底座，.env 的 YIBAN_* 键覆盖注入；**三个可配置路径键例外**，
+它们按 `env_io.resolve_path` 同口径进程环境优先、.env 只补缺。
 
 `.env` 读不到时**响亮告警**（口径对齐 run.sh 的 MF-81④）：本模块存在的理由就是
 "设置页写进 `.env` 的全局暂停/代理/窗口时间对子进程即时生效"，读不到 `.env` 恰好把
@@ -15,6 +16,15 @@
 """
 import logging
 import os
+import sys
+
+# 仓库根引导（`scripts/*` 直跑时 sys.path[0] 是本目录）：必须在任何 `yiban` 导入之前。
+# 见 `tests/test_deploy_entry_imports.py` 的结构守卫。
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from yiban.adapters.config import env_io  # noqa: E402  （引导块必须在 import 之前）
 
 # 告警通道：与 `yiban.infra.env_io` 的 .env 解析告警同通道。调度器
 # （docker/scheduler.py 的 `_setup_logging`）与 web 入口都把 root 挂上处理器并把
@@ -81,13 +91,30 @@ def parse_env_file(path):
 
 
 def build_child_env(env_file, base=None):
-    """构造签到/探针子进程环境：进程环境为底座，.env 的 YIBAN_* 键覆盖注入。
+    """构造签到/探针子进程环境：进程环境为底座，`.env` 的 YIBAN_* 键覆盖注入。
 
-    文件值优先于外部环境：这是 Web 设置页能生效的关键。`.env` 缺失/不可读时
-    **不静默**：`parse_env_file` 按 run.sh MF-81④ 口径记一行 WARNING（两类读失败
-    消息不同，点名路径与后果"全部 YIBAN_* 配置回落进程环境快照，设置页改动不生效"），
-    本函数照常返回继承环境（不抛、不中断签到）。
+    文件值优先于外部环境：这是 Web 设置页能生效的关键。**三个可配置路径键例外**
+    （`env_io.PATH_KEYS` 的三枚键）：它们按 `env_io.resolve_path` 的同一口径
+    **进程环境优先、`.env` 只补缺**。否则同一份 `.env` 行经 web/引擎（`resolve_path`）
+    与经子进程注入（本函数）会得到两个真值——测试/CI 用进程环境重定向数据目录时，
+    子进程会被 `.env` 拉回旧目录。
+
+    **指针键**（`env_io.ENV_FILE_KEY`，即 `.env` 文件路径）不在 `PATH_KEYS` 里，也
+    不是被管的配置：`.env` 里写它一律忽略（自指）；父进程没给指针时补成 `env_file`，
+    子进程因此读父进程读的同一份文件（p12-13）。
+
+    `.env` 缺失/不可读时**不静默**：`parse_env_file` 按 run.sh MF-81④ 口径记一行
+    WARNING（两类读失败消息不同，点名路径与后果"全部 YIBAN_* 配置回落进程环境快照，
+    设置页改动不生效"），本函数照常返回继承环境（不抛、不中断签到）。
     """
     env = dict(base) if base is not None else dict(os.environ)
-    env.update(parse_env_file(env_file))
+    file_env = parse_env_file(env_file)
+    for key, value in file_env.items():
+        if key == env_io.ENV_FILE_KEY:
+            continue  # 指针不是被管的配置：子进程必须读父进程读的那份
+        if key in env_io.PATH_KEYS and str(env.get(key, "")).strip():
+            continue  # 路径键：进程环境已有非空值 ⇒ .env 只补缺
+        env[key] = value
+    if file_env and not str(env.get(env_io.ENV_FILE_KEY, "")).strip():
+        env[env_io.ENV_FILE_KEY] = env_file
     return env

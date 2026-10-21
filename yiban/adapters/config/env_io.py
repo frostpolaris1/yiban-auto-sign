@@ -67,9 +67,21 @@ import re
 import secrets
 import threading
 
+from yiban.core import clock
 from yiban.infra import env_lock
 
 logger = logging.getLogger("yiban")
+
+#: **三个可配置路径键**（`docs/dev/cli.md` §1.1）：唯一的优先级例外——**进程环境 →
+#: `.env` → 默认值**。其余 `YIBAN_*` 键按 M27 统一口径 `.env` 优先、进程环境只补缺。
+#: 这是键集合的**唯一定义点**：CLI 视图与 `scripts/child_env.build_child_env` 都引用它，
+#: bash 载体的同一排除条件由 `tests/test_path_env_priority_single_source.py` 源码守卫钉住。
+#:
+#: `YIBAN_ENV_FILE` **不在**此列：它是指针，必须在读任何 `.env` 之前定位，故只由进程
+#: 环境给（`env_path()`），`.env` 里写它一律忽略。把它并进来会让"指针指向另一份 .env"
+#: 变成事实，而 web 会跟着走、三个 bash 载体固定 `$APP_DIR/data/.env`——两份配置就此分叉。
+PATH_KEYS = ("YIBAN_DB_FILE", "YIBAN_STATE_DIR", "YIBAN_LOG_FILE")
+ENV_FILE_KEY = "YIBAN_ENV_FILE"
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +300,13 @@ def resolve_path(key, default, *, env=None, env_file=None):
     锁与磁盘外锚点，互相污染对方的取证基线。
 
     env / env_file 参数供测试注入；缺省读进程环境与 `env_path()`。
+
+    **指针键例外**：`YIBAN_ENV_FILE` 只由进程环境给，不读 `.env`（见 `PATH_KEYS` 注释
+    与 `env_path()` 的说明）。它决定"读哪份 .env"，不可能由 .env 自己决定。
     """
+    if key == ENV_FILE_KEY:
+        raw = (os.environ if env is None else env).get(key, "")
+        return str(raw).strip() or default
     raw = (os.environ if env is None else env).get(key, "")
     if not str(raw).strip():
         try:
@@ -296,6 +314,106 @@ def resolve_path(key, default, *, env=None, env_file=None):
         except OSError:
             raw = ""
     return str(raw).strip() or default
+
+
+# ---------------------------------------------------------------------------
+# 路径事实：日志与按日状态件的命名（**唯一定义点**）
+# ---------------------------------------------------------------------------
+# 为什么放在这里：这几枚形状原先在 Python 写者、web 读取面、ledger_check、清理名册与
+# 四个 bash 宿主脚本里各写一遍（census-P2-log-file / sign-day-log / sign-state）。
+# 改一次形状时只有被顺手改到的那一处跟得上，其余静默读旧名字——日志页空白、
+# 备份漏收状态件、清理删不掉新名字。现在：
+#   · Python 读者一律调本节的函数，不拼字符串；
+#   · bash 宿主脚本（`run.sh` / `run_probe.sh` / `scripts/yiban-fallback.sh` /
+#     `scripts/backup.sh`）走 `scripts/lib/host_paths.sh`，其形状由
+#     `tests/test_path_single_definition.py` 逐字比对，出现第二份手写形状即红。
+# 计数口径：定义只此一处；本节内出现多次不算"第二个定义点"。
+#
+#: `YIBAN_LOG_FILE` 未设时的基名（目录由状态目录决定）。
+LOG_BASENAME = "sign.log"
+#: 按天签到日志：`sign-<业务日>.log`（web 日志页、宿主脚本、引擎写同一批文件）。
+DAY_LOG_PREFIX = "sign-"
+DAY_LOG_SUFFIX = ".log"
+#: 按日结构化状态：网页日历的事实源。
+SIGN_STATE_PREFIX = "sign-state-"
+SIGN_STATE_SUFFIX = ".json"
+#: 旧版按日状态（符号 → 状态码）：日历的部署过渡期回退读取。
+SIGN_DAILY_PREFIX = "sign-daily-"
+SIGN_DAILY_SUFFIX = ".json"
+#: 状态目录缺省（裸机部署口径；容器由 compose 的 `YIBAN_STATE_DIR` 覆盖）。
+DEFAULT_STATE_DIR = "/var/log/yiban"
+
+
+def state_dir_from_env(default=DEFAULT_STATE_DIR, *, env=None, env_file=None):
+    """状态目录的唯一解析口径：进程环境 → `.env` → 默认值。"""
+    return resolve_path("YIBAN_STATE_DIR", default, env=env, env_file=env_file)
+
+
+def _today(day=None):
+    """按日文件的缺省日期：调用方给了就用它，否则取业务钟（`yiban.core.clock`）。
+
+    单点包装的目的：业务钟取"今天"只在这里出现一次，下面三个"缺省取当天"的函数
+    共用它，不再各写一遍默认日来源。
+    """
+    return day or clock.today()
+
+
+def log_file_path(*, default_dir=None, env=None, env_file=None):
+    """已解析的 `YIBAN_LOG_FILE`；未配置时 = `<状态目录>/sign.log`。
+
+    `default_dir` 用于容器形态（缺省日志目录不是状态目录）。
+    """
+    raw = resolve_path("YIBAN_LOG_FILE", "", env=env, env_file=env_file)
+    if raw:
+        return raw
+    directory = default_dir if default_dir is not None else state_dir_from_env(env=env, env_file=env_file)
+    return os.path.join(directory, LOG_BASENAME)
+
+
+def log_dir_path(*, default_dir=None, env=None, env_file=None):
+    """日志目录 = `dirname(YIBAN_LOG_FILE)` → 回退 `default_dir`/状态目录。
+
+    与 `run.sh` 的 `dirname "$LOG_FILE"` 同语义：相对值原样保留，不转绝对路径
+    （转绝对会让"配置相同、清理目录不同"重现）。
+    """
+    raw = resolve_path("YIBAN_LOG_FILE", "", env=env, env_file=env_file)
+    if raw:
+        return os.path.dirname(raw) or default_dir or state_dir_from_env(env=env, env_file=env_file)
+    return default_dir if default_dir is not None else state_dir_from_env(env=env, env_file=env_file)
+
+
+def day_log_name(day=None):
+    """按天日志的文件名（不含目录）：`sign-<day>.log`。"""
+    return f"{DAY_LOG_PREFIX}{_today(day)}{DAY_LOG_SUFFIX}"
+
+
+def day_log_path(day=None, *, log_file=None, default_dir=None, env=None, env_file=None):
+    """按天日志的完整路径：`dirname(YIBAN_LOG_FILE)/sign-<day>.log`。
+
+    `log_file` 供调用方传入已解析的基名（web 侧的宿主注入、测试的打桩面）。
+    """
+    base = log_file if log_file is not None else log_file_path(
+        default_dir=default_dir, env=env, env_file=env_file)
+    return os.path.join(os.path.dirname(base), day_log_name(day))
+
+
+def sign_state_path(day=None, *, state_dir=None, env=None, env_file=None):
+    """`sign-state-<业务日>.json` 的完整路径；`day` 缺省取业务钟日期。
+
+    `day` 是**业务日**（`YYYY-MM-DD`）：执行体在入口定一次，写入侧原样传下来。
+    跨午夜的长轮次必须传 `ctx.day`——否则队列按启动日 settle/requeue，状态文件却按
+    新日期新建，两个事实源指向不同的一天（工单 ba-p03-07）。
+    """
+    directory = state_dir or state_dir_from_env(env=env, env_file=env_file)
+    return os.path.join(directory,
+                        f"{SIGN_STATE_PREFIX}{_today(day)}{SIGN_STATE_SUFFIX}")
+
+
+def sign_daily_path(day=None, *, state_dir=None, env=None, env_file=None):
+    """`sign-daily-<业务日>.json` 的完整路径（旧版符号表）。"""
+    directory = state_dir or state_dir_from_env(env=env, env_file=env_file)
+    return os.path.join(directory,
+                        f"{SIGN_DAILY_PREFIX}{_today(day)}{SIGN_DAILY_SUFFIX}")
 
 
 # ---------------------------------------------------------------------------

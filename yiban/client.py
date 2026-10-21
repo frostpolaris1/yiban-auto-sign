@@ -227,8 +227,13 @@ class YibanClient:
         # 协议核验诊断（默认关闭）：YIBAN_WIRE_DUMP 指向可写目录时挂载线路落盘
         from yiban.infra import wire_dump
         wire_dump.maybe_mount(self.session, account.phone)
-        # 代理配置：GitHub Actions 海外 IP 可能被易班 WAF 地域风控拦截
-        proxy = os.environ.get("YIBAN_PROXY", "").strip()
+        # 代理配置：GitHub Actions 海外 IP 可能被易班 WAF 地域风控拦截。
+        # **只经 egress.resolve(ROLE_SINGLE) 取值**（census-P2-yiban-proxy）：这是
+        # "单执行体出口"的唯一解析口径，`apply_egress` 会把它写回环境。此处若再裸读
+        # `os.environ["YIBAN_PROXY"]`，就多出第二套读取——解析规则一变（清单/兜底/
+        # 空位直连），这条路径静默用旧值。
+        from yiban import egress as _egress
+        proxy = _egress.resolve(_egress.ROLE_SINGLE).strip()
         if proxy:
             self.session.proxies = {"http": proxy, "https": proxy}
             # 日志只记录 scheme://host:port，绝不落 userinfo（账号密码）明文
@@ -426,23 +431,38 @@ class YibanClient:
     def _clear_session_cache(self):
         self._session_store.clear()
 
+    def _ensure_sign_session(self):
+        """登录并使会话头就位签到请求（**唯一实现点**，工单 vq97）。
+
+        两个前提顺序不可拆：
+
+        1. 按配置选择登录流程（`use_killyiban` 决定标准 App 特征流或旧流）；
+        2. 登录链把 `Origin`/`Referer` 指向 `c.uyiban.com`（KillYiBan 客户端域）。旧流拉签到
+           任务前必须改回 App 域 `app.uyiban.com`；标准 App 特征流保持
+           `c.uyiban.com`，实测可用，不回切。
+
+        任何"登录后拉 signPosition / 提交 signIn"的路径都必须先调本方法。此前
+        `signin()` 与 `verify()` 各写一遍同一段，另一条分支上的只读预演脚本又手抄了
+        第三份——第三份漏抄或改错会让旧流的签到请求带 `c.uyiban.com` 域头（上游 e001）。
+        `tests/test_login_session_single_point.py` 用 AST 钉住唯一性。
+        """
+        if not self.logged_in:
+            if self.use_killyiban:
+                self.login_killyiban()
+            else:
+                self.login()
+        if not self.use_killyiban:
+            self.session.headers.update(yiban_platform.APP_SIGN_HEADERS)
+
     # ---- 签到 ----
     def signin(self):
         """执行签到，返回 (success: bool, message: str, skip: bool, status: str)。
 
         skip=True 表示当前不在签到时间窗口内，不需要重试。
         """
-        if not self.logged_in:
-            # 与 attempt_signin 保持一致：按配置选择登录流程（防止直接调 signin() 时走错）
-            if self.use_killyiban:
-                self.login_killyiban()
-            else:
-                self.login()
+        self._ensure_sign_session()
 
         # 1. 获取签到位置范围
-        if not self.use_killyiban:
-            # 登录链改过 Origin/Referer，签到前改回 App 域（形状见 yiban/platform.py）
-            self.session.headers.update(yiban_platform.APP_SIGN_HEADERS)
         resp = yiban_platform.fetch_sign_position(self.session, self.csrf, self._policy)
         if resp.blocked:
             return False, security.WAF_BLOCKED_MESSAGE, False, yiban_status.STATUS_FAILED
@@ -625,14 +645,7 @@ class YibanClient:
         - ok=False：存在无法自愈的问题（登录失败/校本化失效/图形验证/WAF 等，
           message 已脱敏，供用户可见提示或探针预警）
         """
-        if not self.logged_in:
-            if self.use_killyiban:
-                self.login_killyiban()
-            else:
-                self.login()
-        if not self.use_killyiban:
-            # 登录链改过 Origin/Referer，签到前改回 App 域（形状见 yiban/platform.py）
-            self.session.headers.update(yiban_platform.APP_SIGN_HEADERS)
+        self._ensure_sign_session()
         resp = yiban_platform.fetch_sign_position(self.session, self.csrf, self._policy)
         if resp.blocked:
             return False, security.WAF_BLOCKED_MESSAGE

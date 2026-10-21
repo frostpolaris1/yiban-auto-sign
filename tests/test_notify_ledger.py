@@ -574,12 +574,8 @@ class UserFailMailQuotaTest(unittest.TestCase):
         self.env = dict(os.environ)
         os.environ["YIBAN_STATE_DIR"] = self.tmp
         os.environ["YIBAN_MAIL_USER_FAIL_DAILY_CAP"] = "1"
-        # cap 在模块导入期由 parse_env_int 固定，测试内直接改常量
-        self._old_cap = signin.USER_FAIL_MAIL_DAILY_CAP
-        signin.USER_FAIL_MAIL_DAILY_CAP = 1
 
     def tearDown(self):
-        signin.USER_FAIL_MAIL_DAILY_CAP = self._old_cap
         os.environ.clear()
         os.environ.update(self.env)
         shutil.rmtree(self.tmp, ignore_errors=True)

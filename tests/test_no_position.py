@@ -46,8 +46,8 @@ def _load_sched():
 def _run_main(argv=None, run_queue_result=None, flush_side_effect=None):
     """在隔离环境下执行 signin.main()，返回退出码或捕获的 SystemExit。
 
-    run_queue_result：替换 run_queue_retry 返回值（不触网）；load_accounts
-    按结果的手机号构造账号，保证汇总循环遍历到所有结果。
+    run_queue_result：替换生产执行体 `executor_v3.run_executor_v3` 的返回值（不触网）；
+    load_accounts 按结果的手机号构造账号，保证汇总循环遍历到所有结果。
     """
     tmp = tempfile.mkdtemp(prefix="yiban-nopos-test-")
     old_env = {k: os.environ.get(k) for k in (
@@ -189,82 +189,6 @@ class NoPositionAttemptSigninTest(unittest.TestCase):
             _success, _message, _skip, status = signin.attempt_signin(acc)
         self.assertEqual(status, signin.STATUS_NO_POSITION)
         fake_client._wipe_credentials.assert_called_once()
-
-
-class NoPositionRetryNotificationTest(unittest.TestCase):
-    """run_queue_retry 放弃无点位账号时不得触发任何"签到失败"通知（防误报轰炸）。
-
-    对照组：真失败仍须照常通知（确保没有把真失败静默掉）。
-    """
-
-    def setUp(self):
-        self.acc = signin.Account(phone="13800000000", password="p")
-        self.acc.owner = "admin"
-
-    def _run_queue(self, attempt_result, schedule=None):
-        acc = self.acc
-        # 窗口覆盖全天：避免测试运行时已过默认 07:50 截止，schedule 分支在
-        # _window_closed 处整体落 skipped_window（与无点位分支无关）。
-        with mock.patch.dict(os.environ, {
-            "YIBAN_SIGN_START": "00:00",
-            "YIBAN_SIGN_END": "23:59",
-            "YIBAN_WINDOW_EDGE_FRONT_SEC": "0",
-            "YIBAN_WINDOW_EDGE_BACK_SEC": "0",
-        }), \
-             mock.patch.object(signin, "attempt_signin", return_value=attempt_result), \
-             mock.patch.object(signin, "_write_sign_state"), \
-             mock.patch.object(signin, "_update_cred_state"), \
-             mock.patch.object(signin, "_collect_admin_mail") as m_mail, \
-             mock.patch.object(signin.notify, "is_configured", return_value=True), \
-             mock.patch.object(signin, "send_notification") as m_notify, \
-             mock.patch.object(signin, "send_user_fail_mail") as m_user, \
-             mock.patch.object(signin.time, "sleep"):
-            results = signin.run_queue_retry(
-                [acc], "http://notify.invalid", 0, 0, schedule=schedule
-            )
-        return results, m_mail, m_notify, m_user
-
-    def test_queue_mode_no_position_no_notifications(self):
-        results, m_mail, m_notify, m_user = self._run_queue(
-            (False, NO_POSITION_MSG, False, signin.STATUS_NO_POSITION)
-        )
-        self.assertEqual(results[self.acc.phone][3], signin.STATUS_NO_POSITION)
-        self.assertIn("未找到签到位置数据", results[self.acc.phone][1],
-                      "结果 message 应透传")
-        m_mail.assert_not_called()
-        m_notify.assert_not_called()
-        m_user.assert_not_called()
-
-    def test_queue_mode_real_failure_still_notifies(self):
-        """对照组：真失败（凭据）仍须发邮件/webhook/用户邮件——不能因本次改动静默。"""
-        results, m_mail, m_notify, m_user = self._run_queue(
-            (False, "登录失败: 账号或密码错误", False, signin.STATUS_FAILED)
-        )
-        self.assertEqual(results[self.acc.phone][3], signin.STATUS_FAILED)
-        m_mail.assert_called_once()
-        m_notify.assert_called_once()
-        m_user.assert_called_once()
-
-    def test_schedule_mode_no_position_no_notifications(self):
-        """schedule（时间驱动）分支同样跳过通知。"""
-        schedule = {self.acc.phone: signin.clock.now()}
-        results, m_mail, m_notify, m_user = self._run_queue(
-            (False, NO_POSITION_MSG, False, signin.STATUS_NO_POSITION),
-            schedule=schedule,
-        )
-        self.assertEqual(results[self.acc.phone][3], signin.STATUS_NO_POSITION)
-        m_mail.assert_not_called()
-        m_notify.assert_not_called()
-        m_user.assert_not_called()
-
-    def test_schedule_mode_real_failure_still_notifies(self):
-        schedule = {self.acc.phone: signin.clock.now()}
-        results, m_mail, _m_notify, _m_user = self._run_queue(
-            (False, "登录失败: 账号或密码错误", False, signin.STATUS_FAILED),
-            schedule=schedule,
-        )
-        self.assertEqual(results[self.acc.phone][3], signin.STATUS_FAILED)
-        m_mail.assert_called_once()
 
 
 class NoPositionMainSummaryTest(unittest.TestCase):

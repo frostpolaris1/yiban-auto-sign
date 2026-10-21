@@ -113,18 +113,17 @@ _PASSTHROUGH = ("sign", "probe")
 # ---------------------------------------------------------------------------
 # 配置视图与路径（与 run.sh 同源）
 # ---------------------------------------------------------------------------
-#: 四个路径键（`docs/dev/cli.md` §1.1）：它们保留"进程环境优先"。
+#: 三个可配置路径键（`docs/dev/cli.md` §1.1）：它们保留"进程环境优先"。
 #: 其余 `YIBAN_*` 键按 M27 统一口径"`.env` 优先、进程环境只补缺"。
-_ENV_FIRST_PATH_KEYS = (
-    "YIBAN_ENV_FILE", "YIBAN_DB_FILE", "YIBAN_STATE_DIR", "YIBAN_LOG_FILE",
-)
+#: 键集合只有一处定义（`env_io.PATH_KEYS`），本别名不另抄一份。
+_ENV_FIRST_PATH_KEYS = env_io.PATH_KEYS
 
 
 def _env_view():
     """.env 文件 + 进程环境变量 → 配置视图（**`.env` 优先、进程环境只补缺**；只读、不写盘）。
 
     优先级（M27，2026-10-01 起全仓统一，`README.md` 部署章节）：`.env` 里的键压过
-    进程环境；`.env` 没有的键才由进程环境补缺。四个**路径键**例外——它们按
+    进程环境；`.env` 没有的键才由进程环境补缺。三个**可配置路径键**例外——它们按
     `docs/dev/cli.md` §1.1 保持"进程环境优先"，因为 run.sh 会先 `cd` 再 export，
     显式 export 的路径必须压过 `.env`（否则同一条命令会被 `.env` 改道）。
 
@@ -163,7 +162,7 @@ def _cfg_int(view, key, default, lo=None, hi=None):
 
 
 def _paths(view):
-    """四个路径键（与 run.sh 同源）→ dict；`db_file` 的缺省取自数据层常量。"""
+    """三个可配置路径键（与 run.sh 同源）→ dict；`db_file` 的缺省取自数据层常量。"""
     state_dir = state_gc.state_dir_from_env(view)
     return {
         "env_file": env_io.env_path(),
