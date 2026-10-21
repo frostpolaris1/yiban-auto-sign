@@ -6,7 +6,7 @@ r"""`export KEY=value` 行在三个 .env 读取方的解析分叉——双向钉
     正向（真实键三处同值可读）与反向（export 键三处不可读、env_io 侧挂畸形键、
     其余整行丢弃）；不覆盖：行内 value 的逐字一致性（由 tests/test_runsh_env_parse.py
     的文本断言钉住）。
-背景：`.env` 有三个独立读取方，各用不同行模型（`yiban.infra.env_io.parse_env_file`
+背景：`.env` 有三个独立读取方，各用不同行模型（`yiban.adapters.config.env_io.parse_env_file`
     读侧宽松、`scripts/child_env.parse_env_file` YIBAN_ 前缀+合法键名双白名单、
     `run.sh`/`run_probe.sh` 的 shell 键名正则判据）。`export KEY=value` 这种从 shell rc
     借来的写法，在"KEY 是否成为生效配置"上三者必须给出同一个"否"，但**分叉在形态**：
@@ -68,7 +68,7 @@ class ChildEnvLoaderMixin(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 读取方 1：yiban.infra.env_io（读侧宽松模型，写侧折叠同族）
+# 读取方 1：yiban.adapters.config.env_io（读侧宽松模型，写侧折叠同族）
 # ---------------------------------------------------------------------------
 class EnvIoPathTest(_EnvFixture):
     def test_real_key_read(self):

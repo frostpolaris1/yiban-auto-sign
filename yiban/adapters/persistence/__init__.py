@@ -16,6 +16,6 @@
   `run_events` / `purge_guard`。
 
 依赖方向：本层实现 ports。本层不得导入 `yiban.app` / `yiban.entry` / `yiban.workers`
-（契约 `adapters-no-upward`）。已知一处向 `yiban.engine.alerts` 的延迟导入
+（契约 `adapters-no-upward`）。已知一处向 `yiban.adapters.notifier.report` 的延迟导入
 （`claims` 放弃分支的告警），那是执行核搬家前遗留的向后边，本批不动。
 """

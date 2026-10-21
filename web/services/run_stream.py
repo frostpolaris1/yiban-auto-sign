@@ -23,7 +23,7 @@
 隔离，用 `reset_hub()` 换一份新的。
 
 **通信**
-入：`yiban.store.run_events` 的读取面（`stream_events` / `snapshot` / `max_id`）。
+入：`yiban.adapters.persistence.run_events` 的读取面（`stream_events` / `snapshot` / `max_id`）。
 出：SSE 帧字符串（`sse_frame`）。谁调用：`web/routes/stream_api.py`。
 """
 import collections

@@ -36,7 +36,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 from _mail_body import render_body  # noqa: E402
 from werkzeug.security import generate_password_hash  # noqa: E402
 
-# 邮件组件的打桩目标：引擎直连 `yiban.mail`（旧的 scripts/mailer.py 兼容壳已删除），
+# 邮件组件的打桩目标：引擎直连 `yiban.adapters.notifier.mail`（旧的 scripts/mailer.py 兼容壳已删除），
 # 故打桩打在 `signin.mailer`（即实现包）上——与套件其余调用点同口径。
 
 TEST_KEY = "c" * 64

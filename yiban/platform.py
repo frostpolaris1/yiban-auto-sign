@@ -27,7 +27,7 @@
 - URL 白名单、WAF 拦截判定、脱敏与诊断措辞一律经 `policy`（`RequestPolicy`）注入，
   由 `yiban/security.py` 实现、`yiban/client.py` 组装；
 - 会话缓存（我们减少登录频率的手段，非平台概念）经 `session_store` 注入，未注入时即
-  "不缓存"，本层不反向依赖 `yiban.store` / `yiban.client`。
+  "不缓存"，本层不反向依赖 `yiban.adapters.persistence` / `yiban.client`。
 
 **复用**
 端点/参数常量（`OAUTH_CLIENT_ID`、`API_AUTH_URL` 等）、平台请求头常量（`HEADERS` /

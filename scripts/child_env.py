@@ -26,7 +26,7 @@ if _REPO_ROOT not in sys.path:
 
 from yiban.adapters.config import env_io  # noqa: E402  （引导块必须在 import 之前）
 
-# 告警通道：与 `yiban.infra.env_io` 的 .env 解析告警同通道。调度器
+# 告警通道：与 `yiban.adapters.config.env_io` 的 .env 解析告警同通道。调度器
 # （docker/scheduler.py 的 `_setup_logging`）与 web 入口都把 root 挂上处理器并把
 # "yiban" 放开到 INFO，故本模块的 WARNING 必然落到容器 stdout / web 按天日志面。
 logger = logging.getLogger("yiban")
@@ -50,7 +50,7 @@ def parse_env_file(path):
     与 run.sh 同口径：忽略空行/# 注释行，按首个 = 切分并 strip；
     非 YIBAN_ 前缀与非法键名一律丢弃（不向子进程注入无关变量）。
     `export KEY=v` 行同被丢弃（键以 "export" 起头，不是 YIBAN_ 前缀）——与
-    `yiban.infra.env_io` / shell 入口的收敛口径一致："export 行不生效"
+    `yiban.adapters.config.env_io` / shell 入口的收敛口径一致："export 行不生效"
     （差异钉死见 env_io.parse_env_file 注释）。
     """
     # 告警频次口径（两类读失败同族，只准一条上界；本块同时管住下面两个 except 分支）：

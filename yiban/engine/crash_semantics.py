@@ -38,7 +38,7 @@
 定论"多数情况可复用会话缓存、零额外登录；但在量到之前不得据此宣称零成本。
 
 **归属**
-`yiban/engine/crash_semantics.py`（本模块，引擎侧）＋ `yiban/store/run_events.py` 的
+`yiban/engine/crash_semantics.py`（本模块，引擎侧）＋ `yiban/adapters/persistence/run_events.py` 的
 读取面 `unresolved_starts`（数据层）。调用点：`yiban/app/runner.py`（单执行体/手动）
 与 `yiban/workers/workers.py`（多执行体监督进程）的启动路径。定论判据的**平台枚举事实源**
 是 `yiban/client.py`，本模块只 import 复用、不另抄一张表。

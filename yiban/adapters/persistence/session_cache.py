@@ -12,16 +12,16 @@
   判定共用的唯一时钟接缝。
 
 **归属**
-`yiban.store.db` 门面之后：定义点在本模块，门面把全部迁出名纳入模块级读写转发
+`yiban.adapters.persistence.db` 门面之后：定义点在本模块，门面把全部迁出名纳入模块级读写转发
 （`db.get_session_cache()` 一类调用、`db._session_cache_now = 替身` 一类打桩与
 `del db.get_session_cache` 都落到这里）；TTL 与 HKDF 常量以本模块为唯一定义点，门面按常量
 再导出。留在 db.py 的跨域助手 `_clear_session_cache_by_phones`（改绑手机号/注销的停用
 凭据缓存路径）仍直接 DELETE 本表——它与 `_cascade_phone_owned` 共用同一份"以 phone 为键的
-表"清单，故不随本域迁出。建表在迁移域（`yiban/store/migrations.py`，v8），本模块只读写。
+表"清单，故不随本域迁出。建表在迁移域（`yiban/adapters/persistence/migrations.py`，v8），本模块只读写。
 
 **复用**
 `yiban.client`（登录后写缓存 / 命中即免登录）与 `yiban.engine.attempts`（会话失效类失败
-联动清除）经 db 门面调用；`account_crypto` 提供加解密原语，`yiban.clock` 提供东八区时钟。
+联动清除）经 db 门面调用；`account_crypto` 提供加解密原语，`yiban.core.clock` 提供东八区时钟。
 
 **通信**
 连接、进程内锁与写事务入口（`_conn_lock` / `get_conn` / `_begin_immediate`）一律经
@@ -48,7 +48,7 @@ logger = logging.getLogger("yiban.store.session_cache")
 
 
 def _facade():
-    """db 门面（函数内延迟导入，避免与 `yiban.store.db` 形成导入环）。
+    """db 门面（函数内延迟导入，避免与 `yiban.adapters.persistence.db` 形成导入环）。
 
     打桩可见性见模块说明：必须按**属性**取而不是模块级 from-import，`db.<名字> = 替身`
     才会在函数体里生效。
@@ -85,7 +85,7 @@ def _session_cache_now():
 
     写入与过期判定必须用同一个钟：宿主为 UTC 时若写入取北京时间、判定取本地时间，
     updated_at 会凭空"领先"8 小时，TTL 判据永远不会命中。东八区口径统一由
-    `yiban.clock` 提供，本域不得另起固定 +8 时区。
+    `yiban.core.clock` 提供，本域不得另起固定 +8 时区。
     """
     return clock.now()
 

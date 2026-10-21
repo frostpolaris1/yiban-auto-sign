@@ -281,7 +281,7 @@ def _channel_health_facts(status, exhausted=()):
     事实直接丢在取证之外。这里**无条件**把两侧各写一段，健康的那一侧也记——
     事后要能回答"坏的是哪一路、另一路当时是不是好的"。
     刻意用短串而不是整句人话：db.audit 会把 detail 截到 200 字符
-    （见 yiban/store/db.py 的 audit），拼完整句子在最坏情况下会把后半句（推送侧）截没，
+    （见 yiban/adapters/persistence/db.py 的 audit），拼完整句子在最坏情况下会把后半句（推送侧）截没，
     等于重犯同一个错。
     """
     if status["mail_error"]:
@@ -351,7 +351,7 @@ def _send_channel_health_report(force=False, *, alert_channel_status, status_lin
     被吞失败（send_notification 返回 False）都不落——两种失败都保留当日重试资格，
     "送达才销账"与额度占用不变量同一口径（MF-44 验收不变量第 1 条）。
     未送达时取走的额度耗尽告知同步退还（pending 重挂，见
-    `yiban.notify.restore_exhaustion_notice`），重试的那封仍带得出"哪本账用尽"。
+    `yiban.adapters.notifier.notify.restore_exhaustion_notice`），重试的那封仍带得出"哪本账用尽"。
 
     状态生产者、状态行生产者与发信出口都由调用方传入（`web.app` 的
     `_alert_channel_status` / `_channel_status_lines` / `send_notification`）：三者在

@@ -7,7 +7,7 @@
 日期串或 JSON）。
 
 **归属**
-app_meta 表（键值对留痕表）的通用读写口。建表在迁移域（`yiban/store/migrations.py`，
+app_meta 表（键值对留痕表）的通用读写口。建表在迁移域（`yiban/adapters/persistence/migrations.py`，
 v8 建、v12 幂等补建），本模块只读写。app_meta 的其余写入方（清理留痕
 `_record_purge_event`、库外锚点、时钟跳变守卫的参照点）各自在域内直查，不经本模块；
 时钟跳变守卫本体 `_clock_jump_guard` 也留在 db 门面：它是登记承诺的跨域粘合——五处
@@ -18,7 +18,7 @@ upsert 参照点"的方式调用它，cleanup / users / events 三域经门面�
 **复用**
 两条取用路径，改签名或打桩时都得想到：
 - 经 db 门面：`web/services/channel_health.py`（告警通道日报的当日去重键，
-  `db.get_meta` / `db.set_meta`）、`yiban/store/audit_chain.py`（库外锚点指纹与审计欠账计数）；
+  `db.get_meta` / `db.set_meta`）、`yiban/adapters/persistence/audit_chain.py`（库外锚点指纹与审计欠账计数）；
 - 模块直取（`clock_meta.get_meta` / `set_meta`，替身挂在 `db.*` 上对它们无效）：
   `yiban/engine/executor_v3.py`（`_v_meta_key(day)` 键）、`yiban/engine/planner.py`
   （写 `SLOT_WIDTH_META_KEY`）。
@@ -35,7 +35,7 @@ logger = logging.getLogger("yiban.store.clock_meta")
 
 
 def _facade():
-    """db 门面（函数内延迟导入，避免与 `yiban.store.db` 形成导入环）。
+    """db 门面（函数内延迟导入，避免与 `yiban.adapters.persistence.db` 形成导入环）。
 
     为何按属性取而非 from-import：见模块说明「通信」。
     """

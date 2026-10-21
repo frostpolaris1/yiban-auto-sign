@@ -199,7 +199,7 @@ def _mask_json_pair(m):
 def _redact_body(body):
     """请求体脱敏：凭据字段值换占位、手机号值打码；不做"有无凭据"的前置判定。
 
-    键名表与手机号口径都取自 `yiban.masking`（唯一事实源）：凭据字段由
+    键名表与手机号口径都取自 `yiban.core.masking`（唯一事实源）：凭据字段由
     `_QKEYED_CRED` 识别（`oauth_upwd` 命中 `pwd` 片段，`phone_code` 由宽表命中），
     签到体字段 `Code` 另由 wire 侧精确名补齐；`oauth_uname` 这类承载手机号但键名不含
     凭据片段的字段由 `mask_phones_in_text` 按值打码。全量走同一条链，所以**不再**有

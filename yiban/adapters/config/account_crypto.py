@@ -35,10 +35,10 @@
 输入：明文敏感字段 + 手机号（AAD）、密钥来源（环境变量或 .env 路径）。
 输出：v2 密文对象（JSON 可序列化，携带 kid；v1 无 kid 密文照常可读）或解密后的明文；
 密钥缺失时按 0600 生成并持久化。启动/取钥时两档（env 与 .env）都做同钥断言。
-调用谁：`yiban.infra.env_io`、`yiban.infra.env_lock`、`Crypto.Cipher.AES`。
-谁调用（import 点，未必穷尽）：`yiban.engine.accounts`、`yiban.store.accounts`、
-`yiban.store.session_cache`、`yiban.store.migrations`（账号侧加解密）、
-`yiban.notify.config`、`yiban.mail.config`、`web/routes/notify.py`、`web/security.py`
+调用谁：`yiban.adapters.config.env_io`、`yiban.infra.env_lock`、`Crypto.Cipher.AES`。
+谁调用（import 点，未必穷尽）：`yiban.engine.accounts`、`yiban.adapters.persistence.accounts`、
+`yiban.adapters.persistence.session_cache`、`yiban.adapters.persistence.migrations`（账号侧加解密）、
+`yiban.adapters.notifier.notify.config`、`yiban.adapters.notifier.mail.config`、`web/routes/notify.py`、`web/security.py`
 （配置密钥侧）。
 前端调用点：`/api/accounts`、`/api/my-accounts`、`/api/me/password`
 （`web/static/js/components/account-form.js`、`web/static/js/components/my-accounts.js`）提交的密码经本模块

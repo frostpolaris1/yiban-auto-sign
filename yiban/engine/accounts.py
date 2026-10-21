@@ -22,7 +22,7 @@ accounts_data`，不复用本模块。
 旧格式环境变量。输出：`Account` 列表（含 owner / account_id 等运行期字段）。
 调用谁：`db`、`account_crypto`、`config_check`。
 谁调用：`runner.main`、`workers`（监督进程与其子进程）与 `yiban/entry/cli/__init__.py`（`config` /
-`--check-config` 传 `migrate=False`）。探针 `probe` 直取 `yiban.store.accounts`，不经本模块。
+`--check-config` 传 `migrate=False`）。探针 `probe` 直取 `yiban.adapters.persistence.accounts`，不经本模块。
 前端调用点：`/api/accounts`（`web/static/js/pages/work_accounts.js`、
 `web/static/js/components/account-ops.js`）与 `/api/my-accounts`（`web/static/js/components/my-accounts.js`）
 的增删改由本模块在下一轮装载生效——优先级/去重/审核态口径变化会改变这些页面看到的
