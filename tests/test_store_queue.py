@@ -275,7 +275,9 @@ class RequeueTaskTest(_Base):
 
 
 class ReclaimTasksTest(_Base):
-    """`reclaim_tasks`：手动 `--only` 的显式重签——只翻终态、`run_at` 置现在、不动在飞。"""
+    """`reclaim_tasks`：手动 `--only` 的显式重签——翻终态行与在飞行行、`run_at` 置现在。
+    兜底锁被持有时在飞行行整行跳过（本类不持锁，故 `claimed` 行照翻；跨进程守卫见
+    `tests/test_reclaim_fallback_lock_e2e.py`）。"""
 
     def test_terminal_rows_flip_to_pending_with_bumped_epoch(self):
         self._add_task(_phone(1), state="done", owner=OWNER, attempts=1)
