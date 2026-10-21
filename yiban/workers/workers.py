@@ -21,8 +21,9 @@
 `yiban.engine` 的进程编排层；`runner` 在"多执行体监督"分支调用它。
 
 **复用**
-`run_supervisor` / `run_fallback` 是两条入口；`FALLBACK_LOCK_NAME`、`_GATE_REASON_TEXT`
-供同族模块对齐；执行体清单与槽位语义与 `egress` 同源。
+`run_supervisor` / `run_fallback` 是两条入口；兜底锁名常量（从 `cli_support` 转出的
+别名，单一来源在那里）、`_GATE_REASON_TEXT` 供同族模块对齐；执行体清单与槽位语义与
+`egress` 同源。
 
 **通信**
 输入：执行体清单（环境变量 `YIBAN_EXECUTORS`）、槽位数与 `argv`（`--workers` 及其后随值
@@ -52,8 +53,10 @@ from yiban.engine import cli_support, crash_semantics, executor_v3, schedule
 
 logger = logging.getLogger("yiban")
 
-#: 兜底常驻执行体的锁文件名（与定时全量/手动签到并存，互斥交给领取池）
-FALLBACK_LOCK_NAME = "signin-run.lock.fallback"
+#: 兜底常驻执行体的锁文件名（与定时全量/手动签到并存，互斥交给领取池）。
+#: **定义在 `yiban.engine.cli_support`**（锁名的单一来源：探测方 `reclaim_tasks` 与
+#: 持有方 `runner` 的兜底分支取同一常量）；本模块以别名转出，既有读者不变。
+FALLBACK_LOCK_NAME = cli_support.FALLBACK_LOCK_NAME
 
 #: 只读轮开关：这些轮次一个账号都不签，既不作证"全量已收尾"，也不该产生推送类副作用。
 #: **单一定义点**——收尾标记判定与协调器启动识别（崩溃语义）共用它，各写一份会漂移。

@@ -35,8 +35,9 @@
 - `requeue_failed`：当日回炉——把 `failed` 行按 `retry:`/`final:` 档位逐行走
   `requeue_task`（state+epoch 门沿用，不另造协议），`claim_batch` 只取 `pending`，
   没有这条路 v3 的当日失败就无人接手；
-- `reclaim_tasks`：显式重签——把指定账号当日的**终态**行（`done`/`skipped`）翻回
-  `pending`，只服务手动 `--only`（终态复活默认是红线，故无缺省调用者）；
+- `reclaim_tasks`：显式重签——把指定账号当日的**终态**行（`done`/`skipped`）与在飞行行
+  （`claimed`，卡死行逃生口）翻回 `pending`，只服务手动 `--only`（终态复活默认是红线，
+  故无缺省调用者）；**兜底锁被持有时跳过 `claimed` 行**（工单 `uob1` X2）；
 - `reap_abandoned`：对**已确认死亡**（进程句柄已消失，异常退出）的执行体名下 `claimed`
   行立即回退 `pending`——判活靠**进程句柄**而不是心跳文件的时间戳（工单 `l1rx`：心跳降级
   为纯 UI）。任务级租约（`lease_until`）与按时间戳的 `reap_expired` 已删除；不再有
@@ -74,6 +75,9 @@
 `sign_tasks`。
 `egress_state` 的调用方是 `yiban/engine/token_bucket.py`（`EgressLimiter.persist` /
 `restore_from_store`）。
+**唯一的向上依赖**：`reclaim_tasks` 探测兜底锁时调用
+`yiban.engine.cli_support._run_lock_held`（锁原语与锁名的单一来源）。它只在重签路径上
+使用，不参与领取/收尾；`state_io` / `report` 已有同方向的遗留边（批 B 登记的向后边）。
 
 **降级口径（全模块唯一一条，ba-p01-01）**
 读不通（库异常/表未落地/锁等待超时）**一律回 `None` 哨兵**，绝不回"空"值：`[]`、`0`、
@@ -94,8 +98,9 @@ import logging
 from typing import Any, Iterable, Iterator, Mapping
 
 from yiban.adapters.persistence import claims as claims_mod
-from yiban.core import clock
+from yiban.core import clock, masking
 from yiban.core import status as yiban_status
+from yiban.engine import cli_support
 
 logger = logging.getLogger("yiban.store.queue_store")
 
@@ -398,6 +403,24 @@ def requeue_failed(day: str, shards: Iterable[int], include_final: bool = False,
     return flipped
 
 
+def _fallback_run_in_flight() -> bool:
+    """兜底常驻是否在跑——以**兜底锁**为唯一事实源（锁名常量见 `cli_support`）。
+
+    探测走 `cli_support._run_lock_held`，并把兜底锁名**显式**传给它：不读
+    `YIBAN_RUN_LOCK_NAME`（手动 `--only` 进程的环境里放的是全局锁名，读它就会探错对象）。
+    **探不出状态 ⇒ 按"兜底在跑"处置**（fail-closed）：`_run_lock_held` 自己已把
+    `_RunLockUnavailable` 收敛成 True；探针抛出任何未预期异常时本函数同样返回 True
+    并留痕——"探测坏了"绝不能读成"没人跑"，那会让重签翻掉在飞行的行。
+    """
+    try:
+        return bool(cli_support._run_lock_held(name=cli_support.FALLBACK_LOCK_NAME))
+    except Exception as e:
+        logger.warning(
+            "探测兜底运行锁失败（%s），按'兜底在跑'处置：本批不翻在飞行",
+            type(e).__name__)
+        return True
+
+
 def reclaim_tasks(day: str, phones: Iterable[str]) -> int:
     """显式重签：把指定账号当日的行翻回 `pending`，并把它们的 `run_at` 一概置为"现在"
     （让手动签到不必等到计划时刻），返回行数。
@@ -408,48 +431,77 @@ def reclaim_tasks(day: str, phones: Iterable[str]) -> int:
 
     - `done` / `skipped`（终态）：用户主动触发即重签；
     - `claimed`（**在飞行**）：这是**卡死行的逃生口**（工单 `l1rx` 必修 R2）。任务级租约
-      删除后，"持有者已死"不再由时间戳判定，故本口对所有 `claimed` 一律翻回——用户点的
-      那一下对卡死行必须有效。翻动**换代**（`epoch+1`）并清 `owner`，故原持有者迟到的
-      `settle_tasks` / `requeue_task` 仍被 fence 住、写不回去。
-      **代价（登记为残余）**：原持有者若仍存活（只有兜底腿能与本口并存——手动轮持全局
-      运行锁，全量轮起不来），会有一次同账号并发登录。这是"逃生口"换来的风险，方向由
-      用户在管理面上显式选择。
+      删除后，"持有者已死"不再由时间戳判定，故兜底锁未被持有时本口对 `claimed` 翻回
+      ——用户点的那一下对卡死行必须有效。翻动**换代**（`epoch+1`）并清 `owner`，故原
+      持有者迟到的 `settle_tasks` / `requeue_task` 仍被 fence 住、写不回去。
+      **兜底锁保护（工单 `uob1` X2）**：翻 `claimed` 之前先探兜底锁
+      （`_fallback_run_in_flight`）。持锁 ⇒ **该行整行跳过**（不翻、不换代、不动
+      `run_at`），并记一条带业务日与遮罩账号的 WARNING。理由：手动 `--only` 持全局锁，
+      只有兜底腿能与它并存；兜底锁被持有 ⇒ 它可能正持有这些行，翻掉就是**同账号并发
+      两条登录**（第一红线）。
+      **代价（登记）**：探测是进程级的，不区分"哪一行是兜底持有的"——兜底进程存活期间
+      本口跳过**全部** `claimed` 行，包括已死执行体留下的行。方向是 fail-closed：
+      这些行仍由 `reap_abandoned`（执行体起跑 / 监督进程轮末）回收，不会永久卡死。
+      探测不出锁状态时同样跳过（见 `_fallback_run_in_flight`）。
     - `failed` 走当日回炉口（`requeue_failed`），不在此翻。
 
-    `run_at` 置"现在"对全部在册行都做：`pending` 行（当日计划尚未到点）也要能被立刻领到，
-    否则手动签到会睡到计划时刻（窗口外更会一直等）。`vshard < 0` 的历史行不属于任何分片集，
-    一律不碰（与 `reap_abandoned` / `pending_count` 同界）。空 `phones` → 0 且不取连接；
-    库异常 → 0 + warning。
+    `run_at` 置"现在"对**未被跳过**的在册行都做：`pending` 行（当日计划尚未到点）也要能被
+    立刻领到，否则手动签到会睡到计划时刻（窗口外更会一直等）。`vshard < 0` 的历史行不属于
+    任何分片集，一律不碰（与 `reap_abandoned` / `pending_count` 同界）。空 `phones` → 0 且
+    不取连接；库异常 → 0 + warning。返回值是**实际写入的行数**：兜底锁被持有时，被跳过的
+    `claimed` 行不计入。
     """
     items = tuple(phones or ())
     if not items:
         return 0
     placeholders = ",".join("?" for _ in items)
     stamp = clock.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    # 探测只做一次：整条 UPDATE 是单事务，锁状态在这一步之后变化也不影响已成立的分支
+    # （兜底若在探测后才启动，它尚未来得及持有任何行；它此后领取的是我们翻出的 pending，
+    # 属正常交接，不是并发的第二条登录）。
+    fallback_busy = _fallback_run_in_flight()
+    flip_states = ((STATE_DONE, STATE_SKIPPED) if fallback_busy
+                   else (STATE_DONE, STATE_SKIPPED, STATE_CLAIMED))
+    in_flip = ",".join("?" for _ in flip_states)
     # 所有 SET 右值都按**原行值**求值（SQLite 语义）：故用 CASE 就地把可翻态翻回 pending，
     # 其余行只刷新 run_at，一次 UPDATE 完成两件事。
     sql = (
         "UPDATE sign_tasks SET "
-        "state=CASE WHEN state IN (?, ?, ?) THEN ? ELSE state END, "
-        "owner=CASE WHEN state IN (?, ?, ?) THEN '' ELSE owner END, "
-        "epoch=epoch + CASE WHEN state IN (?, ?, ?) THEN 1 ELSE 0 END, "
+        f"state=CASE WHEN state IN ({in_flip}) THEN ? ELSE state END, "
+        f"owner=CASE WHEN state IN ({in_flip}) THEN '' ELSE owner END, "
+        f"epoch=epoch + CASE WHEN state IN ({in_flip}) THEN 1 ELSE 0 END, "
         "run_at=? "
         "WHERE day=? AND vshard >= 0 "
         f"AND phone IN ({placeholders})"
     )
-    params = (STATE_DONE, STATE_SKIPPED, STATE_CLAIMED, STATE_PENDING,
-              STATE_DONE, STATE_SKIPPED, STATE_CLAIMED,
-              STATE_DONE, STATE_SKIPPED, STATE_CLAIMED,
-              stamp, day, *items)
+    params = [*flip_states, STATE_PENDING, *flip_states, *flip_states,
+              stamp, day, *items]
+    if fallback_busy:
+        # 整行跳过：连 run_at 也不刷新（"跳过该行"＝不碰它）。
+        sql += " AND state != ?"
+        params.append(STATE_CLAIMED)
+    skipped: list[str] = []
     try:
         conn, lock = _queue_conn()
         with lock:
-            cur = conn.execute(sql, params)
+            if fallback_busy:
+                skipped = [r["phone"] for r in conn.execute(
+                    "SELECT phone FROM sign_tasks WHERE day=? AND vshard >= 0 "
+                    f"AND state=? AND phone IN ({placeholders})",
+                    (day, STATE_CLAIMED, *items)).fetchall()]
+            cur = conn.execute(sql, tuple(params))
             conn.commit()
-            return cur.rowcount
+            n = cur.rowcount
     except Exception as e:
         logger.warning("重签已了结签到任务失败（按未重签处理）: %s", e)
         return 0
+    if skipped:
+        logger.warning(
+            "兜底运行锁 %s 被持有：跳过 %d 个在飞行（claimed）账号的重签"
+            "（不翻、不换代）: 业务日=%s 账号=%s",
+            cli_support.FALLBACK_LOCK_NAME, len(skipped), day,
+            ",".join(masking.mask_phone(p) for p in skipped))
+    return n
 
 
 def reap_abandoned(owner: str, day: str | None = None) -> int:
