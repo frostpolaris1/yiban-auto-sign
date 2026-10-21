@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { userTest as test, expect } from "./base";
 
 // 签到日历页真浏览器端到端（P2 日历对迁移后）。
 // 数据由 e2e/server.py 预置：普通用户 e2e-user@example.com 名下有一个生效账号
@@ -8,14 +8,7 @@ import { expect, test } from "@playwright/test";
 // 断言刻意**不**依赖账号名称：myaccounts.spec 会把账号改名，而 spec 文件顺序不是契约。
 // 日期一律按"运行时当天"推导（今天/当月天数/取样日由服务端同一规则选出），故整周任意一天
 // 跑都成立——只有"今天恰好是周末"这一分支要单独处理（停签日不查日志）。
-const USER_EMAIL = "e2e-user@example.com";
-const USER_PASS = "UserPass123!";
-
-async function loginUser(page: import("@playwright/test").Page): Promise<void> {
-  const resp = await page.request.post("/api/login", { data: { username: USER_EMAIL, password: USER_PASS } });
-  expect(resp.ok()).toBeTruthy();
-}
-
+// 会话由 playwright.config.ts 的 user project 注入（.auth/user.json），不在用例里登录。
 /** 与服务端 `_probe_day()` 同规则：当月第一个"非今天、非三天前"的工作日。 */
 async function probeDay(page: import("@playwright/test").Page): Promise<string> {
   return page.evaluate(() => {
@@ -34,7 +27,6 @@ async function probeDay(page: import("@playwright/test").Page): Promise<string> 
 }
 
 test("签到日历：月历骨架/今日选中/语气档底色/图例收敛，且无 legacy 日历脚本", async ({ page }) => {
-  await loginUser(page);
   await page.goto("/user/calendar");
 
   // 卡头：账号手机号（用户看自己的账号按既有设计显示完整号）
@@ -76,7 +68,10 @@ test("签到日历：月历骨架/今日选中/语气档底色/图例收敛，�
   await expect(probeCell).not.toContainText("✅");
   await expect(probeCell).toHaveAttribute("aria-label", /已签到/);
   await expect(page.locator('.sc-legend li[data-tone="ok"]')).toBeVisible();
-  await expect(page.locator('.sc-legend li[data-tone="bad"]')).toBeHidden(); // 该档本页没出现 → 收敛掉
+  // 月历只读 sign-daily 文件（web/routes/my_api.py:728-748），今日终态不影响日历：
+  // 今天没有 daily 档 ⇒ 红档不进图例，图例随档位收敛。
+  await expect(todayCell).toHaveClass(/sc-cell--none/);
+  await expect(page.locator('.sc-legend li[data-tone="bad"]')).toBeHidden();
 
   // 图例的常驻两项与语义标签
   await expect(page.locator(".sc-legend")).toContainText("周末停签");
@@ -89,7 +84,6 @@ test("签到日历：月历骨架/今日选中/语气档底色/图例收敛，�
 });
 
 test("签到日历：点取样工作日 → 面板拉当天日志（端到端脱敏）；换月/今天往返", async ({ page }) => {
-  await loginUser(page);
   await page.goto("/user/calendar");
   const probe = await probeDay(page);
 

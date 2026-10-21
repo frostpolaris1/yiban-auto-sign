@@ -61,7 +61,7 @@
   --t-weak: var(--t-muted);
 
   /* 列表页表格行高（Adminator 原版刻度，两族表同高） */
-  --table-row-h: 44px;
+  --table-row-h: 48px;
 
   /* 文本行宽上限（可读刻度）：说明/正文类容器一律 ≤ 本值。
      裁决（124 §A.6）：**文本行宽可限，布局宽度不可限**——只给"说明/正文"容器
@@ -1473,9 +1473,6 @@ body {
 .auth-mobile-brand .logo svg { width: 17px; height: 17px; stroke: currentColor; stroke-width: var(--icon-stroke); fill: none; }
 @media (min-width: 901px) { .auth-mobile-brand { display: none; } }
 
-/* 公告条：单列提示条，不需要 Adminator 的图标列 */
-.auth-announce { grid-template-columns: 1fr; margin-bottom: 16px; }
-
 /* 认证页页脚：复用共享 partials/footer.html，排布改为居中的窄栏 */
 .auth-main-bottom .d-footer {
   padding: 0;
@@ -1781,68 +1778,6 @@ html[data-theme="dark"] .auth-tabs.auth-seg .tab { --seg-fg: #94a3b8; }
 }
 @media (hover: hover) and (pointer: fine) {
   .auth-switch-hint button:hover { text-decoration: underline; }
-}
-
-/* ---- 18.5 公告横幅 ----
-   Adminator 没有 .banner/.notice，最接近的是 .alert（已带 .ico/.body/.close 骨架），
-   故沿用 .alert 并收窄为「整行细高 + 左图标 + 左语义边 + 右关闭」。
-   必须写成 .alert.auth-announce（0,2,0）才能盖掉 Adminator 的 .alert.warning（0,2,0），
-   只写 .auth-announce（0,1,0）会输给 .alert.warning 的底色。 */
-.alert.auth-announce {
-  /* 与表单同宽、紧贴其上方（见 .auth-main-center）；不再作为独立块飘在顶部 */
-  margin: 0 0 16px;
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  margin: 0 0 18px;
-  padding: 10px 12px;
-  border: 1px solid var(--border-soft);
-  border-left: 3px solid var(--warning);
-  border-radius: 8px;
-  background: var(--warning-soft);
-  color: var(--t-base);
-  font-size: 12px;
-  line-height: 1.5;
-}
-.alert.auth-announce .ico {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
-  margin-top: 1px;
-  color: var(--warning);
-}
-.alert.auth-announce .ico svg {
-  width: 16px;
-  height: 16px;
-  stroke: currentColor;
-  stroke-width: var(--icon-stroke);
-  fill: none;
-}
-.alert.auth-announce .body { flex: 1 1 auto; min-width: 0; }
-.alert.auth-announce .close {
-  /* 22×22 低于 WCAG 2.2 SC 2.5.8 的 24×24 下限；抬到 28（再大就会把公告文字挤窄），
-     触屏档另在 @media (hover: none) 抬到 44。 */
-  width: 28px;
-  height: 28px;
-  flex: 0 0 28px;
-  display: grid;
-  place-items: center;
-  border: 0;
-  border-radius: 8px;
-  color: var(--t-muted);   /* 承载「关闭」动作的图标，--t-light 仅 2.22:1 < 1.4.11 的 3:1 */
-  background: none;
-  cursor: pointer;
-  transition: background-color 150ms, color 150ms;
-}
-@media (hover: hover) and (pointer: fine) {
-  .alert.auth-announce .close:hover { background: var(--bg-hover); color: var(--t-base); }
-}
-.alert.auth-announce .close svg {
-  width: 14px;
-  height: 14px;
-  stroke: currentColor;
-  stroke-width: var(--icon-stroke);
-  fill: none;
 }
 
 /* ---- 18.6 深浅色切换过渡 ----
@@ -3240,8 +3175,10 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
 @media (max-width: 1100px) { .acct-col-lg { display: none; } }
 @media (max-width: 900px) {
   .acct-col-md { display: none; }
-  /* 名称单元格允许两行（默认白列表头/单元格是 nowrap）；行高由内容撑开，不写死 */
-  .acct-cell-name { white-space: normal; }
+  /* 名称单元格允许两行（默认白列表头/单元格是 nowrap）；行高由内容撑开，不写死。
+     选择器带 .data-table tbody td 是为了压过第 4117 行的 padding-block: 0
+     （同权重时后者在后，会把这 8px 清掉）。 */
+  .data-table tbody td.acct-cell-name { white-space: normal; padding-block: 8px; }
   .acct-cell-phone { display: none; }
   .acct-phone-inline,
   .acct-time-inline {
@@ -3745,7 +3682,7 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: var(--ctl-h-
   text-overflow: ellipsis;
 }
 /* 行内就地 ⓘ：与右侧开关同组、排在开关左侧、靠行右缘（浮层向左展开，不撑宽文档）。 */
-.set-row-ctl { display: flex; align-items: flex-start; gap: 8px; flex: 0 0 auto; }
+.set-row-ctl { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 .set-row-info { flex: 0 0 auto; }
 
 /* 数值滑杆（模板无滑杆组件）：用于「0–5 分钟」这类标量刻度。
@@ -4175,9 +4112,9 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: var(--ctl-h-
    触屏 44px 命中区集中在第 38 节。 */
 .btn--sm { min-height: var(--ctl-h-md); }
 .el-switch { min-height: var(--ctl-h-md); }
-/* 列表页表格行高统一 44px（Adminator 原版刻度，122 §R2.6）：
+/* 列表页表格行高统一 48px（122 §R2.6；用户 2026-10-21 实测 44 偏挤后抬到 48）：
    自研 .data-table 的行高原本由最高的操作按钮（32px）+ vendor 12px 上下内距撑到 56.8–65；
-   这里把行高钉到 --table-row-h（44），两族表（自研 .data-table 与 EP .el-table）同高。
+   这里把行高钉到 --table-row-h（48），两族表（自研 .data-table 与 EP .el-table）同高。
    最小行高用 height（td 上等同 min-height）；内容更高的行（如 SMTP 输入行）仍由内容撑开。 */
 .data-table tbody td { height: var(--table-row-h); padding-block: 0; }
 /* EP 表（audit / pilot）size=small 行高 32：抬到 --table-row-h。
@@ -4185,7 +4122,8 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: var(--ctl-h-
    （4×2+24=32 实测）。用内距令牌换算成 (44-24)/2 = 10px。
    选择器带元素名（td.el-table__cell）压过 EP 的 `.el-table--small .el-table__cell`
    （同权重时 EP chunk 在 app.css 之后注入会赢，故多一个元素名提高权重）。 */
-.el-table--small td.el-table__cell {
+.el-table--small td.el-table__cell,
+.el-table--small th.el-table__cell {
   padding-top: calc((var(--table-row-h) - 24px) / 2);
   padding-bottom: calc((var(--table-row-h) - 24px) / 2);
 }
@@ -4211,8 +4149,6 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: var(--ctl-h-
 /* 三列标量网格（额度与节流）：三项本会落在「两列 + 一个孤格」上，窄屏退回单列 */
 .form-grid--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 @media (max-width: 720px) { .form-grid--3 { grid-template-columns: 1fr; } }
-.set-row { align-items: flex-start; }
-.set-row .switch { margin-top: 1px; }          /* 与标签行光学居中 */
 #sm-smtps .sm-empty-row td { border-bottom: 0; }
 /* SMTP 表：固定列宽 + 左缘与字段对齐（表头不再缩进 14px）。
    列宽：host 30% / 端口 88px / 发件账号 24% / 授权码 auto（余量）/ 操作 76px。
@@ -4740,7 +4676,6 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
   .auth-links a,
   .auth-switch-hint button,
   .auth-agree-text button,
-  .alert.auth-announce .close,
   .input-affix .affix-btn,
   .toast__close,
   .pm-panel .pm-panel-close,

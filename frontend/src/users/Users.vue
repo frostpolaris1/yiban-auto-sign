@@ -262,7 +262,10 @@ function onRowAction(row: UserRecord, key: ActionKey): void {
 
 /** 重置口令入口：统一口径提示交给共享密码模态（长度 + 类别判定在模态内完成，本页不自带策略） */
 function askNewPassword(cb: (pw: string) => void): void {
-  openPasswordModal(`设置新密码（${passwordHint(false)}）。重置后该用户的旧会话立即失效。`, cb);
+  openPasswordModal(
+    `设置新密码（${passwordHint(false)}）。这是本站登录口令，不是易班签到凭证。重置后该用户的旧会话立即失效。`,
+    cb,
+  );
 }
 
 function onBatch(group: Group, action: string): void {
