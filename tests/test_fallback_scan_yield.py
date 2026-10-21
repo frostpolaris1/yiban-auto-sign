@@ -124,14 +124,8 @@ class _Harness(unittest.TestCase):
 
     def setUp(self):
         self._close_conn()
-        # 批量留痕去重键是**模块级**的（跨轮共享正是降噪要的语义）：用例间必须清掉，
-        # 否则同组成的后一个用例会因上一批留下的键而漏落事件（同 `_BANNER_LAST` 的处置）。
-        self._saved = {}
-        for name in ("_UNREACHED_PEER_LAST", "_UNREACHED_UNCLAIMED_LAST"):
-            self._saved[name] = getattr(executor_v3, name, None)
-            if hasattr(executor_v3, name):
-                setattr(executor_v3, name, None)
-        self.addCleanup(self._restore_globals)
+        # 组成去重由库（`emit_ledger`）承担：每个用例一套临时库 ⇒ 天然从"没说过"开始，
+        # 不需要再清进程内变量（单 3zr5）。
         self.root = tempfile.mkdtemp(prefix="yiban-scan-yield-")
         self.db_file = os.path.join(self.root, "yiban.db")
         self.state_dir = os.path.join(self.root, "state")
@@ -159,11 +153,6 @@ class _Harness(unittest.TestCase):
         self.addCleanup(env_patch.stop)
         self.addCleanup(self._teardown)
         self.fc = _FakeClock()
-
-    def _restore_globals(self):
-        for name, val in self._saved.items():
-            if hasattr(executor_v3, name):
-                setattr(executor_v3, name, val)
 
     def _teardown(self):
         self._close_conn()
