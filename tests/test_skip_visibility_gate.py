@@ -305,7 +305,7 @@ KNOWN_SKIP_SITES = json.loads(r"""
   ],
   [
    "skipTest",
-   "跨进程 flock 仅 POSIX 可用（Windows 上探测退回 False）"
+   "跨进程 flock 仅 POSIX 可用（Windows 上锁退化为无互斥、fail-closed 拒跑）"
   ]
  ],
  "tests/test_global_pause_chain_e2e.py": [
