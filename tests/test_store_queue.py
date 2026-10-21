@@ -313,6 +313,16 @@ class ReclaimTasksTest(_Base):
         self.assertEqual(self._row(_phone(1))["state"], "done", "vshard=-1 历史行不碰")
         self.assertEqual(self._row(_phone(2))["state"], "pending")
 
+    def test_only_flipped_rows_gain_attempts(self):
+        """`attempts` 只随**翻态**行 +1：`pending`／`failed` 行被刷新 `run_at` 时不得白吃预算。"""
+        self._add_task(_phone(1), state="pending", attempts=2)
+        self._add_task(_phone(2), state="failed", attempts=1)
+        self._add_task(_phone(3), state="done", attempts=0)
+        queue_store.reclaim_tasks(DAY, [_phone(1), _phone(2), _phone(3)])
+        self.assertEqual(self._row(_phone(1))["attempts"], 2, "pending 不翻态，预算不动")
+        self.assertEqual(self._row(_phone(2))["attempts"], 1, "failed 归回炉口，预算不动")
+        self.assertEqual(self._row(_phone(3))["attempts"], 1, "done 翻态＝一次新尝试记账")
+
 
 class DisplayReadsTest(_Base):
     """展示读口径（`sign_tasks` 为唯一台账）：latest_day / owners_for_day / activity / owners_since。"""
@@ -450,6 +460,46 @@ class FallbackEventOwnerPrefixTest(_Base):
             "剔除自己的槽位只能按 `worker-1:` 前缀；按裸名匹配会把 worker-12 的行"
             "一起剔掉，兜底漏掉一次唤醒",
         )
+
+
+class ReclaimAttemptNumberTest(_Base):
+    """重签是**第二次真实登录**：它的事件必须有自己的 attempt 号，不得被去重键吞掉。
+
+    判据是用户可见结果（`sign_events` 里两条尝试各留一行），不是「attempts 字段等于几」。
+    """
+
+    def _event_rows(self, phone):
+        return db.get_conn().execute(
+            "SELECT COUNT(*) FROM sign_events WHERE phone=?", (phone,)).fetchone()[0]
+
+    def test_second_real_attempt_after_reclaim_is_not_deduped(self):
+        phone = _phone(1)
+        self._add_task(phone, state="done", owner=OWNER, attempts=0)
+        db.add_sign_event(f"{DAY} 06:30:00", phone, "success", "第一次",
+                          stage="sign", attempt=1)
+        queue_store.reclaim_tasks(DAY, [phone])
+        row = self._row(phone)
+        db.add_sign_event(f"{DAY} 06:40:00", phone, "success", "第二次",
+                          stage="sign", attempt=row["attempts"] + 1)
+        self.assertEqual(self._event_rows(phone), 2,
+                         "重签后的第二次真实尝试被当成同一次观测而丢弃")
+
+
+class ReapAttemptNumberTest(_Base):
+    """崩溃回收后重试同样是**下一次真实尝试**：事件必须有自己的 attempt 号。"""
+
+    def test_second_real_attempt_after_reap_is_not_deduped(self):
+        phone = _phone(2)
+        self._add_task(phone, state="claimed", owner=OWNER + ":1:1", attempts=0)
+        db.add_sign_event(f"{DAY} 06:30:00", phone, "failed", "崩溃前那次",
+                          stage="sign", attempt=1)
+        queue_store.reap_abandoned(OWNER, DAY)
+        row = self._row(phone)
+        db.add_sign_event(f"{DAY} 06:40:00", phone, "failed", "回收后重试仍失败",
+                          stage="sign", attempt=row["attempts"] + 1)
+        n = db.get_conn().execute(
+            "SELECT COUNT(*) FROM sign_events WHERE phone=?", (phone,)).fetchone()[0]
+        self.assertEqual(n, 2, "回收后重试被当成同一次观测而丢弃")
 
 
 class NoHardcodedDateTest(unittest.TestCase):
