@@ -1007,7 +1007,7 @@ async def _persist_loop(ctx):
     """
     while True:
         await _sleep(EGRESS_PERSIST_SEC)
-        ctx.limiter.persist(ctx.egress)
+        ctx.limiter.persist(ctx.egress, now=_mono())
 
 
 async def _run_async(ctx):
