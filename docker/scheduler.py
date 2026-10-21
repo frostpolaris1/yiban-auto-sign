@@ -66,7 +66,7 @@ from yiban.adapters.config import env_io  # noqa: E402
 # ~数小时，tick-only 心跳会在正常工作状态下"陈旧"误报；线程随进程死——进程
 # 没了心跳断流，正是探活要抓的形态），探活只读一个事实：心跳 mtime。
 # `--check-health` 在 import signin 与 yiban 业务模块之前退出：30s 一次的探测不该拖着
-# 整条业务导入链（耗时）。它躲不开第三方依赖：快路为解析 STATEDIR 导 `yiban.infra.env_io`，
+# 整条业务导入链（耗时）。它躲不开第三方依赖：快路为解析 STATEDIR 导 `yiban.adapters.config.env_io`，
 # 连带 `env_lock → yiban.infra.locks → portalocker`。"观测件的判据必须比被观测对象更
 # 简单"从此只在业务模块图上成立，依赖图上快路与 sched 本体共用 portalocker。
 # 这笔导入必须付：状态目录可以只写在 `.env` 里。写心跳的一方与探活读的一方必须算出同
@@ -122,9 +122,8 @@ LOGDIR = env_io.log_dir_path(default_dir="/data/logs")
 # 缺省值 `/data/logs` 是**容器形态**的默认（裸机默认随状态目录，见
 # `env_io.log_dir_path`）。`default_dir` 显式给容器缺省，故不借 `state_gc`
 # 那条"未设键即回落 state_dir"的裸机口径。
-# 与 web / 引擎同一读法：指针**只认进程环境**（`env_io.resolve_path` 对
-# `YIBAN_ENV_FILE` 不读 `.env`——那会自指）。容器里由 compose 的 environment
-# 或入口脚本给值；没给就落到下面的缺省 `/data/.env`。
+# 与 web / 引擎同一读法：指针走**两段自举**（进程环境 → 基线 `.env` → 缺省）。
+# 容器里 compose 的 environment 给的就是指针，故直接生效；都没给时落到下面缺省。
 ENV_FILE = env_io.resolve_path("YIBAN_ENV_FILE", "/data/.env")
 
 logger = logging.getLogger("scheduler")
@@ -375,7 +374,7 @@ def _backup_env():
     口径按**非路径键**（`YIBAN_BACKUP_*` 不在 `env_io.PATH_KEYS` 里）：`.env` 优先、
     进程环境只补缺（M27）。容器调度器的兜底门已经这么判（`_fallback_gate_env` 的注释），
     备份参数必须同口径，否则 compose 里显式注入的 `YIBAN_BACKUP_*` 会被
-    Web 设置页/`.env` 里的同名键悄悄顶掉。三个可配置路径键例外（进程环境优先）由
+    Web 设置页/`.env` 里的同名键悄悄顶掉。四个路径键例外（进程环境优先）由
     `build_child_env` / `resolve_path` 统一处理，本函数不碰它们。
     口令本身**不入环境**：`backup-docker.sh` 只从 `YIBAN_BACKUP_PASSPHRASE_FILE` 读
     0600 文件（M97），绝不用 `_PASSPHRASE` 环境变量形态。`.env` 里若残留
@@ -536,7 +535,7 @@ def _child_timeout(env):
         except (TypeError, ValueError):
             pass
     end_hhmm = str(env.get("YIBAN_SIGN_END", "07:50")).strip()
-    # 格式校验与 run.sh / yiban.window.parse_hhmm 一致（接受 7:50 与 07:50）；非法回退
+    # 格式校验与 run.sh / yiban.core.window.parse_hhmm 一致（接受 7:50 与 07:50）；非法回退
     if not re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", end_hhmm):
         end_hhmm = "07:50"
     try:

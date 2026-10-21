@@ -107,7 +107,7 @@ def _host(key):
 def read_env(env_path):
     """读取 .env 全部键值，返回 dict（宽松：文件缺失/读失败返回空 dict）。
 
-    解析实现单一来源见 `yiban.infra.env_io.parse_env_file`（utf-8-sig 兼容 BOM——Windows
+    解析实现单一来源见 `yiban.adapters.config.env_io.parse_env_file`（utf-8-sig 兼容 BOM——Windows
     记事本等工具保存时会带 BOM，否则首个键名会带上 \\ufeff 前缀导致读不到，
     管理员登录/改密会静默失败）。
     """
@@ -293,7 +293,7 @@ def _weekday_text(value):
 def health_report_time_str(env):
     """报告发送时刻的**归一取值**（`"HH:MM"`）；未配置或写坏返回 `""`（= 未配置）。
 
-    刻意归一而不是原样回显：生效判据走 `yiban.window.parse_hhmm`，它同时收 `9:00`
+    刻意归一而不是原样回显：生效判据走 `yiban.core.window.parse_hhmm`，它同时收 `9:00`
     这种不补零写法。原样回显时前端的时间形状校验（`^\\d{2}:\\d{2}$`）会把它判成非法值
     ⇒ 界面显示"未配置"（开关关）而报告其实已按 09:00 锚定——显示值/生效值两段不等，
     正是时间类设置要消灭的病。
@@ -456,7 +456,7 @@ def write_env_batch(env_path, updates):
     updates: dict {key: value}，value 为空字符串则删除该键。
 
     行模型、键/值校验、写入前后"键集合 diff"、跨进程写锁**全部单源在**
-    `yiban.infra.env_io.write_env_keys`（web 与引擎共用一个实现，两侧拒绝文案同源）：
+    `yiban.adapters.config.env_io.write_env_keys`（web 与引擎共用一个实现，两侧拒绝文案同源）：
     本函数只负责 web 侧特有的落盘注入（`atomic_write`）。外层锁已就此去重——写锁
     下沉进 `write_env_keys` 后，这里再包一层是对同一路径的纯冗余嵌套；只在本函数
     之外还有"判定读取"要与之同临界区的调用方（改密、保存设置、执行体读-改-写）才
@@ -590,7 +590,7 @@ def ensure_secret_key(env_path):
 
     .env 不可写、或既有行含潜伏行分隔符（写入被 fail-closed 拒绝）时降级为进程内随机
     密钥并告警（服务可用，重启后会话失效）——与口令哈希迁移的降级策略一致：宁可告警后
-    带病运行，也不让启动直接失败。行模型/校验单源在 `yiban.infra.env_io.write_env_keys`。
+    带病运行，也不让启动直接失败。行模型/校验单源在 `yiban.adapters.config.env_io.write_env_keys`。
 
     判定"已有密钥/全新部署"走**严格读**（`strict=True`，与 account_crypto 建钥支、
     audit_chain 审计密钥支同口径）：宽松读把"文件存在但读不到"（权限/占用/upsert 截断

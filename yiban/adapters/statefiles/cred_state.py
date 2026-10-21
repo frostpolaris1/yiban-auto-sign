@@ -21,12 +21,12 @@
 
 **复用**
 `path()` / `read()` / `write()` / 按手机号的增量合并接口是全项目**唯一**读写入口，
-调用方都走它；路径解析复用 `yiban.infra.env_io.resolve_path`。
+调用方都走它；路径解析复用 `yiban.adapters.config.env_io.resolve_path`。
 
 **通信**
 输入：本进程要改动的账号 → `{fail_days, last_fail, paused_since, probe_date}` 记录。
 输出：`cred-state.json`（`YIBAN_STATE_DIR` 下，原子写 + 跨进程锁）。
-调用谁：`clock`、`yiban.infra.env_io`、`yiban.infra.locks`。
+调用谁：`clock`、`yiban.adapters.config.env_io`、`yiban.infra.locks`。
 谁调用：`round` / `probe`（失败记账与暂停）、`state_io`、web 服务层（改密/编辑后清除熔断）。
 前端调用点：`/api/accounts`（`web/static/js/components/account-ops.js`）与 `/api/my-accounts`
 （`web/static/js/components/my-accounts.js`）的账号编辑，经 `web/services/logs.py` 的

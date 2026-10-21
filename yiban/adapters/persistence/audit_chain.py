@@ -20,14 +20,14 @@
 **归属**
 审计可追溯性是 web 与 signin 两个进程共用的一条链：写入方是 `db.audit()` 的全体调用点，
 读出方是 web 每日线程与 `scripts/audit_verify.py`（都经 `audit_health()` 汇总）。建表与全部
-迁移函数在 `yiban/store/migrations.py`；写事务入口 `_begin_immediate`、留痕的**写入**侧
-（`_table_min_max` / `_record_purge_event`）在 `yiban/store/db.py`，每日清理 `_audit_cleanup`
-的定义点已迁到 `yiban/store/cleanup.py`（门面按原名再导出），
-追踪盐与加盐匿名哈希 `hash_ip` / `hash_phone` / `_track_salt` 在 `yiban/store/tracking.py`
+迁移函数在 `yiban/adapters/persistence/migrations.py`；写事务入口 `_begin_immediate`、留痕的**写入**侧
+（`_table_min_max` / `_record_purge_event`）在 `yiban/adapters/persistence/db.py`，每日清理 `_audit_cleanup`
+的定义点已迁到 `yiban/adapters/persistence/cleanup.py`（门面按原名再导出），
+追踪盐与加盐匿名哈希 `hash_ip` / `hash_phone` / `_track_salt` 在 `yiban/adapters/persistence/tracking.py`
 （与审计密钥同住一个 .env、共用本模块的路径回落链）。
 
 **复用**
-`yiban.store.db` 把本模块的函数与常量按原样再导出，`db.audit()` /
+`yiban.adapters.persistence.db` 把本模块的函数与常量按原样再导出，`db.audit()` /
 `db.audit_health()` / `db._audit_hash(...)` 一类调用与身份断言不变；三个进程内可变状态
 （`_AUDIT_KEY_CACHE` / `_AUDIT_FAIL_UNFLUSHED` / `_AUDIT_FAIL_UNFLUSHED_DB`）由 db 侧模块类
 读写转发——`db._AUDIT_KEY_CACHE = None`（tests/test_rekey_key_source.py 清缓存）必须真的清到
@@ -82,7 +82,7 @@ _AUDIT_KEY_LOCK = threading.Lock()
 
 
 def _facade():
-    """db 门面（函数内延迟导入，避免与 `yiban.store.db` 形成导入环）。
+    """db 门面（函数内延迟导入，避免与 `yiban.adapters.persistence.db` 形成导入环）。
 
     打桩可见性见模块说明：必须按**属性**取而不是模块级 from-import，`db.<名字> = 替身`
     才会在函数体里生效。
@@ -625,7 +625,7 @@ def audit_or_refuse(username, action, target="", detail="", request_id=None):
 
     给**无法与业务并事务**的调用点用（业务写跨另一存储、另开连接或异步，SQLite 事务
     覆盖不到：.env 口令/清单写、跨库清库、后台任务）。这些路径必须"审计失败即拒绝
-    业务"，而不是"先做业务再补审计"。范例见 `yiban/store/purge_guard.py` 的
+    业务"，而不是"先做业务再补审计"。范例见 `yiban/adapters/persistence/purge_guard.py` 的
     `write_purge_audit`（返回 False 时调用方放弃删除，本函数是同一口径的异常版）。
     """
     if _facade().audit(username, action, target, detail, request_id=request_id):

@@ -28,7 +28,7 @@ config.local.py
 *.local
 # 账号配置文件（含密码，严禁入库）
 accounts.json
-# 迁移/升级产出的按日备份（yiban/store/migrations.py 的 _rename_backup；M39）
+# 迁移/升级产出的按日备份（yiban/adapters/persistence/migrations.py 的 _rename_backup；M39）
 accounts.json.bak-*
 users.json.bak-*
 # 通知额度/限速运行时状态（现落 YIBAN_STATE_DIR；历史版本曾按 cwd 落在检出根，
@@ -130,6 +130,9 @@ docs/dev/*
 !docs/dev/release-gate.md
 !docs/dev/scheduler-v3.md
 !docs/dev/architecture-target.md
+!docs/dev/backup-restore.md
+!docs/dev/implementation-notes.md
+!docs/dev/troubleshooting.md
 .superpowers/
 
 # ZCode 工具目录

@@ -26,15 +26,15 @@ bash 与 Python 两侧给出相反结论的开关（`YIBAN_SECOND_RUN` / `YIBAN_
 
 **复用**
 `parse_env_file`（含 `env_path`）与 `write_env_key` / `write_env_keys` 由
-`yiban.infra.account_crypto`、`yiban.store.audit_chain`、`yiban.store.tracking`、
-`yiban.mail.config`、`yiban.notify.config`、`web/services/env_io.py`、
+`yiban.adapters.config.account_crypto`、`yiban.adapters.persistence.audit_chain`、`yiban.adapters.persistence.tracking`、
+`yiban.adapters.notifier.mail.config`、`yiban.adapters.notifier.notify.config`、`web/services/env_io.py`、
 `web/routes/settings_api.py` 复用；**单一行模型 + 单一校验器**=`split_env_lines`（窄行）/
 `env_key_values` / `validate_env_key` / `validate_env_value` / `validate_env_updates` /
 `render_env_write`，`write_env_keys` 是唯一写入口（内部自持 `env_lock.env_write_lock`
 跨进程写锁、做写入前后"键集合 diff"、越权即回滚+审计+抛 `EnvWriteRefused`）。读侧判定 `has_line_break` / `is_valid_env_key`
 / `key_line_pattern` / `count_key_lines` / `find_env_key_collisions` 与写入口共用同一套
 行模型；`resolve_path` 是路径类配置（STATE_DIR / LOG_FILE / DB_FILE）的解析口径，
-`web/app.py`、`yiban.cred_state`、`yiban.engine.alerts`、`yiban.engine.cli_support`、
+`web/app.py`、`yiban.adapters.statefiles.cred_state`、`yiban.adapters.notifier.report`、`yiban.engine.cli_support`、
 `scripts/ledger_check.py` 共用。运行数据的**默认落点**（`RUNTIME_DATA_DIR` /
 `DEFAULT_ENV_FILE` / `DEFAULT_DB_FILE`）也只定义在本模块：`.env` 与库默认落在
 `<检出>/data/` 下，使检出根本身可属 root 且组/其他不可写（见 `RUNTIME_DATA_DIR`）。
@@ -52,7 +52,7 @@ bash 与 Python 两侧给出相反结论的开关（`YIBAN_SECOND_RUN` / `YIBAN_
 
 调用谁：标准库（`os` / `re` / `secrets` / `contextlib`）与同包 `env_lock`——
 `write_env_keys` 内部统一取得跨进程 `.env` 写锁（锁责任不再推给调用方）。
-谁调用：`yiban.engine.*`、`yiban.store.*`、`yiban.infra.account_crypto`、
+谁调用：`yiban.engine.*`、`yiban.adapters.persistence.*`、`yiban.adapters.config.account_crypto`、
 `web/services/env_io.py` 与设置页写入路径。
 前端调用点：系统设置页 `/api/settings`（`web/static/js/components/settings-*.js`）的开关落盘经
 web 服务层走本模块——行模型或 `strict` 口径变化会影响设置保存与密钥/盐的生成。
@@ -72,15 +72,12 @@ from yiban.infra import env_lock
 
 logger = logging.getLogger("yiban")
 
-#: **三个可配置路径键**（`docs/dev/cli.md` §1.1）：唯一的优先级例外——**进程环境 →
-#: `.env` → 默认值**。其余 `YIBAN_*` 键按 M27 统一口径 `.env` 优先、进程环境只补缺。
+#: 四个**路径键**（`docs/dev/cli.md` §1.1）：唯一的优先级例外——**进程环境 → `.env` →
+#: 默认值**。其余 `YIBAN_*` 键按 M27 统一口径 `.env` 优先、进程环境只补缺。
 #: 这是键集合的**唯一定义点**：CLI 视图与 `scripts/child_env.build_child_env` 都引用它，
 #: bash 载体的同一排除条件由 `tests/test_path_env_priority_single_source.py` 源码守卫钉住。
-#:
-#: `YIBAN_ENV_FILE` **不在**此列：它是指针，必须在读任何 `.env` 之前定位，故只由进程
-#: 环境给（`env_path()`），`.env` 里写它一律忽略。把它并进来会让"指针指向另一份 .env"
-#: 变成事实，而 web 会跟着走、三个 bash 载体固定 `$APP_DIR/data/.env`——两份配置就此分叉。
-PATH_KEYS = ("YIBAN_DB_FILE", "YIBAN_STATE_DIR", "YIBAN_LOG_FILE")
+PATH_KEYS = ("YIBAN_ENV_FILE", "YIBAN_DB_FILE", "YIBAN_STATE_DIR", "YIBAN_LOG_FILE")
+#: 指针键名（供 `scripts/child_env` 与测试引用；语义见 `env_path()`）。
 ENV_FILE_KEY = "YIBAN_ENV_FILE"
 
 
@@ -154,7 +151,7 @@ def parse_env_flag(value, *, default=False, key=None, log=None):
 # .env 解析进程内缓存（工单 dnox ④）
 # ---------------------------------------------------------------------------
 # 读侧唯一入口 `parse_env_file` 过去每次都读盘并逐行解析。调用方里存在"逐账号反复问
-# 同一份文件"的形态：`yiban/store/accounts._decrypt_row` 在字段循环里逐字段判密钥存在，
+# 同一份文件"的形态：`yiban/adapters/persistence/accounts._decrypt_row` 在字段循环里逐字段判密钥存在，
 # 1,200 账号档一次全量装载可放大到数千次读盘解析。
 #
 # 缓存口径：按**来源路径**存解析结果；取值前用 (mtime_ns, size, ino) 与磁盘现况比对，
@@ -300,13 +297,7 @@ def resolve_path(key, default, *, env=None, env_file=None):
     锁与磁盘外锚点，互相污染对方的取证基线。
 
     env / env_file 参数供测试注入；缺省读进程环境与 `env_path()`。
-
-    **指针键例外**：`YIBAN_ENV_FILE` 只由进程环境给，不读 `.env`（见 `PATH_KEYS` 注释
-    与 `env_path()` 的说明）。它决定"读哪份 .env"，不可能由 .env 自己决定。
     """
-    if key == ENV_FILE_KEY:
-        raw = (os.environ if env is None else env).get(key, "")
-        return str(raw).strip() or default
     raw = (os.environ if env is None else env).get(key, "")
     if not str(raw).strip():
         try:

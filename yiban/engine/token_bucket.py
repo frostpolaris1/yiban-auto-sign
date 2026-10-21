@@ -58,7 +58,7 @@ load_egress_state` / `save_egress_state`——本模块**唯一**的持久化路
 `schedule.egress_rate_explicit` 回答，用来判人工接管）、`YIBAN_MIN_EXEC_GAP`
 （突发额度收口，见 `burst_from_env`）、`YIBAN_ACCOUNT_GAP_MAX` /
 `YIBAN_ACCOUNT_GAP_ENFORCE`（gap 门）。
-调用谁：`yiban.store.queue_store`。谁调用：执行体（通道循环取额度、回报 `on_success` /
+调用谁：`yiban.adapters.persistence.queue_store`。谁调用：执行体（通道循环取额度、回报 `on_success` /
 `on_risk_signal`、10s 循环 `persist`）与探针（`probe.run_probe` 每账号前取额度、轮末
 `persist`；只消费额度、不喂 AIMD 信号）。`downgrade_all` 与 `apply_ewma` **当前无生产
 调用点**（工单 ba-p04-03 复核：全仓除测试外零调用）。

@@ -19,8 +19,8 @@
 
 **归属**
 运维/取证侧脚本（`scripts/`）。台账口径的落地在别处，本脚本只核对不再造第二份判据：
-终态判定取 `yiban.store.migrations.terminal_task_state`（与 v20 补账同一份逻辑），
-池状态词表取 `yiban.store.queue_store.STATES`。
+终态判定取 `yiban.adapters.persistence.migrations.terminal_task_state`（与 v20 补账同一份逻辑），
+池状态词表取 `yiban.adapters.persistence.queue_store.STATES`。
 
 **复用**
 无对外可复用函数。
@@ -30,15 +30,15 @@
 输入：命令行 `--day`（缺省今天）/ `--all-days N`（最近 N 天，含今天）；库路径与状态
 目录走环境变量与 `.env`（`YIBAN_DB_FILE` / `YIBAN_STATE_DIR`）。
 输出：逐日结论与差异行到 stdout 并逐个打一遍结论，差异行的手机号经
-`yiban.masking.mask_phone` 脱敏（对外输出不得含完整号码）。
+`yiban.core.masking.mask_phone` 脱敏（对外输出不得含完整号码）。
 退出码：`0`=对账平；`1`=有差异（已逐行打印）；`2`=无法定论（状态目录缺失 /
 库文件缺失 / 库不可用（含库尚未升到 `sign_tasks` 存在的那一版）/ 任何未预期异常 /
 零覆盖——一天的处理文件都没有，或处理文件里一条终态记录都没有 /
 补账窗口外缺行——有终态输入但因窗口外无法定论且无任何明确差异）。`1` 只留给
 **明确探测到的差异**，其余一律 `2`：把一次崩溃或空覆盖读成"对账不平/对账平"都会误导运维。
-调用谁：`yiban.store.db`（`open_readonly` 的只读连接）、`yiban.store.migrations`、
-`yiban.store.queue_store`、`yiban.infra.env_io`、`yiban.clock`。
-谁调用：运维在库升级后手工跑一次；无其它调用点（web 与 `yiban.cli` 都不调它）。
+调用谁：`yiban.adapters.persistence.db`（`open_readonly` 的只读连接）、`yiban.adapters.persistence.migrations`、
+`yiban.adapters.persistence.queue_store`、`yiban.adapters.config.env_io`、`yiban.core.clock`。
+谁调用：运维在库升级后手工跑一次；无其它调用点（web 与 `yiban.entry.cli` 都不调它）。
 """
 import argparse
 import json

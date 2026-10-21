@@ -2,7 +2,7 @@
 """签到日历状态可见性：状态表单一源（日期格渲染 + 图例）与急停/周末门真值显示。
 
 标签：F · 前端与界面守卫
-覆盖：状态显示表 `yiban.status.DISPLAY` 覆盖全部状态码并被日历图例与前端状态行两侧消费；`global_paused`/`no_position` 不再渲染成"排队待签"；日历格对有结论的日子渲染语气档色点（色彩即语义，emoji 不上界面）；急停/周末门在 web 侧读 `.env` 真值（与引擎同源）
+覆盖：状态显示表 `yiban.core.status.DISPLAY` 覆盖全部状态码并被日历图例与前端状态行两侧消费；`global_paused`/`no_position` 不再渲染成"排队待签"；日历格对有结论的日子渲染语气档色点（色彩即语义，emoji 不上界面）；急停/周末门在 web 侧读 `.env` 真值（与引擎同源）
 对应实现：`yiban/core/status.py`（`DISPLAY` / `legend_items` / `display_payload`）、`web/routes/pages.py`
 （`_calendar_page_context` 把表与图例同车下发）、`web/templates/partials/page_sign_calendar.html`
 （内联载荷）、`frontend/src/calendar/model.js`（`statusLine` / `stateEntry` / `dayCell`）、

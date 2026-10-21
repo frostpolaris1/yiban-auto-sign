@@ -386,12 +386,12 @@ def site_image():
 # 新键 YIBAN_WINDOW_EDGE_FRONT_SEC / _BACK_SEC 优先（合法域 0~300 秒）；
 # 旧键 YIBAN_WINDOW_EDGE_SEC（前后对称）只补新键缺席的那一边，合法域 0~600 秒。
 def _edge_config_from(env):
-    """`edge_config` 的取值入口：返回 (front_sec, back_sec)（解析见 yiban.window.parse_edges）。"""
+    """`edge_config` 的取值入口：返回 (front_sec, back_sec)（解析见 yiban.core.window.parse_edges）。"""
     return yb_window.parse_edges(env)
 
 
 def edge_config(env=None):
-    """返回 (front_sec, back_sec)：签到窗口前后裁剪秒数（解析见 yiban.window.parse_edges）。
+    """返回 (front_sec, back_sec)：签到窗口前后裁剪秒数（解析见 yiban.core.window.parse_edges）。
 
     跨进程写锁与 `--config` 都会改写 `.env` 路径，故键值在 `env` 缺省时按调用时刻现读。
     显式传 `env` 保留给"同一份键值喂多个读者"的对拍用例（单源口径不变）。

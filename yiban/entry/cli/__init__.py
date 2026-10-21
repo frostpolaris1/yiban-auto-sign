@@ -53,8 +53,8 @@
 **通信**
 输入：`argv`（子命令 + 选项）与环境变量/.env（敏感值只从环境读）。
 输出：stdout 一行 JSON（`--json`）或 stderr 人类可读汇总；退出码见上表。
-调用谁：`yiban.engine.runner`（`sign`/`probe`）、`yiban.state_gc`（`state`）、
-`yiban.store.db`（`db`）、`yiban.engine.egress_admin`（`egress`）、
+调用谁：`yiban.app.runner`（`sign`/`probe`）、`yiban.adapters.statefiles.state_gc`（`state`）、
+`yiban.adapters.persistence.db`（`db`）、`yiban.engine.egress_admin`（`egress`）、
 配置检查与容量计算（`config`/`capacity`）。
 谁调用：`scripts/signin.py` / `scripts/db.py` / `scripts/state_cleanup.py` 兼容壳、
 `run.sh`、`docker/scheduler.py`，以及 web 手动签到经 `scripts/signin.py --only`
@@ -113,7 +113,7 @@ _PASSTHROUGH = ("sign", "probe")
 # ---------------------------------------------------------------------------
 # 配置视图与路径（与 run.sh 同源）
 # ---------------------------------------------------------------------------
-#: 三个可配置路径键（`docs/dev/cli.md` §1.1）：它们保留"进程环境优先"。
+#: 四个路径键（`docs/dev/cli.md` §1.1）：它们保留"进程环境优先"。
 #: 其余 `YIBAN_*` 键按 M27 统一口径"`.env` 优先、进程环境只补缺"。
 #: 键集合只有一处定义（`env_io.PATH_KEYS`），本别名不另抄一份。
 _ENV_FIRST_PATH_KEYS = env_io.PATH_KEYS
@@ -162,7 +162,7 @@ def _cfg_int(view, key, default, lo=None, hi=None):
 
 
 def _paths(view):
-    """三个可配置路径键（与 run.sh 同源）→ dict；`db_file` 的缺省取自数据层常量。"""
+    """四个路径键（与 run.sh 同源）→ dict；`db_file` 的缺省取自数据层常量。"""
     state_dir = state_gc.state_dir_from_env(view)
     return {
         "env_file": env_io.env_path(),
@@ -292,7 +292,7 @@ def _capacity_numbers(view, signable):
     """容量三数（**与网页 `/api/scheduler/executors` 同一口径**，不另写公式）。
 
     - `capacity_per_executor`：有效窗口能容纳的账号数 = `schedule.capacity_of`（本口径
-      显式固定 v2 公式 `enabled=False`，逐值不变；窗口用 `yiban.window.bounds(...).full_sec()`
+      显式固定 v2 公式 `enabled=False`，逐值不变；窗口用 `yiban.core.window.bounds(...).full_sec()`
       ——网页侧同样是"完整有效窗口"，即"这套配置能容纳几个"，不是"今天还剩几个"）；
       `k=1` 钉住"每执行体"的字面语义；
     - `recommended_per_executor`：部署者实测值（`YIBAN_CAPACITY_MEASURED`，由部署者

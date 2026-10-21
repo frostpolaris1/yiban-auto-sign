@@ -16,7 +16,7 @@
 
 **复用**
 "账号是否可实测"只有本模块一处判据（`_pick_measure_account`，与容量口径同源，都经
-`yiban.store.db.account_signs_in`）；状态文件的读写与"缺失/损坏按从未实测"的容错链也只有
+`yiban.adapters.persistence.db.account_signs_in`）；状态文件的读写与"缺失/损坏按从未实测"的容错链也只有
 一处，避免实测端点与展示各自解析同一份状态。跨进程冷却串行沿用 `signin._state_file_lock`
 （由调用方持锁），不自建第二套。
 

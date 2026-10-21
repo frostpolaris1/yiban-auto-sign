@@ -14,14 +14,14 @@
 追踪盐与审计密钥同住一个 .env、共用同一条路径回落链（`init_db(env_file=…)` →
 `YIBAN_ENV_FILE` → `env_io.DEFAULT_ENV_FILE`，即 `data/.env`，相对检出根；含"来源只能靠
 默认值兜底且文件不存在时拒绝生成"的防游离落盘判据），故密钥来源解析仍由
-`yiban/store/audit_chain.py` 提供、本模块经门面按
+`yiban/adapters/persistence/audit_chain.py` 提供、本模块经门面按
 属性取；本模块只负责盐的取用与两个哈希口径。加盐哈希是**库内关联键与限速键**的共同
 来源，换盐会使全部存量关联失效，故 `hash_phone` 的口径刻意与 `hash_ip` 不同并已在函数
 说明中记录理由。
 
 **复用**
 `web/app.py` 与 `web/routes/{auth,me_api,pages}.py` 的审计 target、登录/改密限速键经 db 门面
-调 `hash_ip`；`web/routes/my_api.py` 的审计 target 与 `yiban/store/time_prefs.py` 的保存冷却
+调 `hash_ip`；`web/routes/my_api.py` 的审计 target 与 `yiban/adapters/persistence/time_prefs.py` 的保存冷却
 查询（经门面按属性取，`db.hash_phone = 替身` 必须被它看见）调 `hash_phone`。
 
 **通信**
@@ -44,7 +44,7 @@ logger = logging.getLogger("yiban.store.tracking")
 
 
 def _facade():
-    """db 门面（函数内延迟导入，避免与 `yiban.store.db` 形成导入环）。
+    """db 门面（函数内延迟导入，避免与 `yiban.adapters.persistence.db` 形成导入环）。
 
     打桩可见性见模块说明：必须按**属性**取而不是模块级 from-import，`db.<名字> = 替身`
     才会在函数体里生效。
