@@ -176,6 +176,7 @@ fast	tests/test_log_masking_entry_mounts.py
 fast	tests/test_log_masking_formatter.py
 fast	tests/test_login_e2e_mock.py
 fast	tests/test_login_protocol_shape.py
+fast	tests/test_login_session_single_point.py	# AST 判据：签到域请求头切换只有一个实现点（vq97）
 fast	tests/test_logs_by_date.py
 fast	tests/test_logs_export_masking.py
 fast	tests/test_logs_level_filter.py
