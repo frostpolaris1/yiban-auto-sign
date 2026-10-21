@@ -393,10 +393,10 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   // 为什么合并在日志用例里：/api/login 有 60 秒窗口 10 次/IP 的独立限速，整套 e2e 共用
   // 同一 Flask 实例与 127.0.0.1，单开一条看板/账号用例会多一次登录、把后面的用例顶到 429
   // （2026-10-03 实测：账号管理页单开 spec 时 myaccounts 的管理员登录被顶到 429）。
-  // 种子数据与本文件同源（今天 2 条签到：success + failed；两个 active 账号；一个用户；
-  // 另有三条账号管理页种子：待审核 1 + 已拒绝 1 + 软删除 1，供下方账号管理页断言用），
-  // 故看板口径可精确断言：成功率 50.0%、趋势 成功 2 · 失败 1 · 跳过 0、分布总数 1、
-  // 待处理账号 = 待审核 1 + 已拒绝 1 = 2。
+  // 种子数据与本文件同源（两个 active 账号，其中 13800138001 今日终态 failed、
+  // 13900139002 今日无记录；另有三条账号管理页种子：待审核 1 + 已拒绝 1 + 软删除 1）。
+  // 看板按**账号当日终态**计：成功 0、失败 1 ⇒ 成功率 0.0%、分布总数 1、
+  // 待处理账号 = 待审核 1 + 已拒绝 1 = 2。事件表今天有 2 条事件，但每账号恰计一次。
   await page.goto("/data/dashboard");
   await expect(page.locator("#dashboard-root")).toBeVisible();
 
@@ -405,17 +405,17 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   await expect(page.locator("#kpi-accounts-value")).toHaveText("0"); // 今日成功账号
   await expect(page.locator("#kpi-users-value")).toHaveText("1"); // 今日失败账号
   await expect(page.locator("#kpi-users-sub")).toContainText("按账号统计");
-  await expect(page.locator("#kpi-rate-value")).toContainText("50.0");
-  await expect(page.locator("#kpi-rate-sub")).toContainText("成功 1 · 失败 1");
+  await expect(page.locator("#kpi-rate-value")).toContainText("0.0");
+  await expect(page.locator("#kpi-rate-sub")).toContainText("成功 0 · 失败 1");
   await expect(page.locator("#kpi-rate-pill")).toContainText("无昨日对比");
   await expect(page.locator("#kpi-pending-value")).toContainText("2");
   await expect(page.locator("#kpi-pending-sub")).toContainText("待审核 1 · 已拒绝 1");
 
   // 三张图：Canvas 真实绘制（Chart.js 由 vendor defer 先行加载）+ 元数据行
-  await expect(page.locator("#trend-coverage")).toHaveText("最近 30 天 · 仅真实签到");
+  await expect(page.locator("#trend-coverage")).toHaveText("最近 30 天 · 账号终态");
   const trendBox = await page.locator("#chart-trend").boundingBox();
   expect(trendBox && trendBox.width > 100 && trendBox.height > 50).toBeTruthy();
-  await expect(page.locator("#trend-meta")).toContainText("日均签到事件（次）");
+  await expect(page.locator("#trend-meta")).toContainText("日均签到账号（个）");
   await expect(page.locator("#dist-meta .chart-meta-cell").first()).toContainText("1");
   await expect(page.locator("#slots-meta")).toContainText("最热门时段");
 
@@ -570,7 +570,56 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   // 取消后仍是待处理，计数不变
   await expect(page.getByRole("tab", { name: /待处理账号/ })).toContainText("2");
 
-  // ⑦ 添加账号表单：打开 → 必填校验 → 取消
+  // ⑦ 审核通过就地重拉：徽标与两个页签不等 10 秒外壳节拍（工单 inq9 验收③）
+  // 旧实现只在 ② 的表单成功分支里刷新，审核/驳回走 review() 分支，徽标要等 setInterval。
+  // 不改动种子账号：另建一个待审核账号，通过后软删，后续 spec 的徽标/KPI 仍是初始值。
+  const badge = page.locator('[data-nav-badge="work-accounts"]');
+  await expect(badge).toHaveText("2");
+  const csrf = String((await (await page.request.get("/api/me")).json()).csrf_token ?? "");
+  const created = await page.request.post("/api/accounts", {
+    data: {
+      name: "e2e-badge-refresh",
+      phone: "13712340009",
+      password: "e2e-phone-pw",
+      email: "e2e-badge@refresh-e2e.dev",
+      initial_password: "RefreshPass123",
+    },
+    headers: { "X-CSRF-Token": csrf },
+  });
+  expect(created.ok(), `新建待审核账号失败：${created.status()} ${await created.text()}`).toBeTruthy();
+  await page.reload();
+  // 新页面的徽标计数走 10s 缓存；先手动丢缓存取一次，才能把基线钉在 3。
+  await page.evaluate(() => (window as unknown as { YB: { refreshNavBadges(): void } }).YB.refreshNavBadges());
+  await expect(badge).toHaveText("3");
+  const badgeRow = page.locator("tbody tr[data-acct-idx]", { hasText: "e2e-badge-refresh" });
+  await expect(badgeRow).toBeVisible();
+  const badgeRefreshed = page.waitForResponse(
+    (resp) =>
+      resp.request().method() === "GET" &&
+      new URL(resp.url()).pathname === "/api/accounts" &&
+      new URL(resp.url()).searchParams.get("count_only") === "1",
+    { timeout: 5000 },
+  );
+  await badgeRow.getByRole("button", { name: "通过" }).click();
+  await acctModal.getByRole("button", { name: "通过", exact: true }).click();
+  await badgeRefreshed;
+  await expect(badge).toHaveText("2", { timeout: 2000 });
+  await expect(page.getByRole("tab", { name: /待处理账号/ })).toContainText("2");
+  await expect(page.getByRole("tab", { name: /正常账号/ })).toContainText("3");
+
+  // 复原：软删刚通过的账号（删除接口要手机号二次确认），徽标与页签回到种子状态。
+  const listing = await (await page.request.get("/api/accounts")).json();
+  const target = (listing.accounts as Array<{ index: number; name: string; phone: string }>).find(
+    (a) => a.name === "e2e-badge-refresh",
+  );
+  expect(target, "待清理账号 e2e-badge-refresh 不在 /api/accounts 里").toBeTruthy();
+  const removed = await page.request.delete(`/api/accounts/${target!.index}`, {
+    data: { phone: target!.phone },
+    headers: { "X-CSRF-Token": csrf },
+  });
+  expect(removed.ok(), `清理账号失败：${removed.status()} ${await removed.text()}`).toBeTruthy();
+
+  // ⑧ 添加账号表单：打开 → 必填校验 → 取消
   await page.locator("[data-add-account]").first().click();
   const acctForm = page.locator(".pm-backdrop, .el-dialog").first();
   await expect(acctForm).toBeVisible();

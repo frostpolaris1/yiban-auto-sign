@@ -11,7 +11,8 @@ import { test as base, expect, type Page } from "@playwright/test";
 // 抬高窗口上限，避免 20+ 次登录撞 60 秒 10 次/IP。
 
 const ADMIN = { username: "admin", password: "TestPass1234!" };
-const USER = { username: "e2e-user@example.com", password: "UserPass123!" };
+// 导出给需要在**自建上下文**里登录的用例（如按指定时区新建 browser context）。
+export const USER = { username: "e2e-user@example.com", password: "UserPass123!" };
 
 async function loginAs(page: Page, who: { username: string; password: string }): Promise<void> {
   const resp = await page.request.post("/api/login", { data: who });

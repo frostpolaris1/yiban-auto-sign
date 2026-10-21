@@ -73,7 +73,7 @@
     "name": "vendor-vue"
   },
   "accounts.html": {
-    "file": "assets/accounts-DOIIZhSb.js",
+    "file": "assets/accounts-CpajAUa1.js",
     "name": "accounts",
     "src": "accounts.html",
     "isEntry": true,
@@ -108,7 +108,7 @@
     ]
   },
   "calendar.html": {
-    "file": "assets/calendar-fblTTdMn.js",
+    "file": "assets/calendar-IUbMLgPS.js",
     "name": "calendar",
     "src": "calendar.html",
     "isEntry": true,
@@ -118,7 +118,7 @@
     ]
   },
   "dashboard.html": {
-    "file": "assets/dashboard-C4umIHT7.js",
+    "file": "assets/dashboard-C50mfuhy.js",
     "name": "dashboard",
     "src": "dashboard.html",
     "isEntry": true,

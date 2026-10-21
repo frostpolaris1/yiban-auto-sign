@@ -2,14 +2,14 @@
  * 数据看板口径层（**刻意保留纯 JS**，不是 TS）。
  *
  * 为什么不用 TS：`tests/test_dashboard_stats_caliber_js.py` 会用 `_extract_function` /
- * `_extract_object` 从本文件里按花括号配对抽出 `statusKind` / `normalizeDaily` /
- * `acceptAccounts` / `rateOf` 四段并**在 Node 里真跑**（迁移前它们扫的是 legacy 的
+ * `_extract_object` 从本文件里按花括号配对抽出 `statusKind` / `acceptAccounts` /
+ * `rateOf` 三段并**在 Node 里真跑**（迁移前它们扫的是 legacy 的
  * `web/static/js/pages/data_dashboard.js`），另抽 `trendView` / `distView` /
  * `calendarView` / `rateKpiView` 做静态口径钉。抽函数靠字面量 `"function " + 名字 + "("`
  * 定位，故：
  *   · 必须保持标准具名 function 声明写法（不加 TS 类型注解、不改成箭头函数、参数不带
  *     对象默认值解构）——三者都会让抽出的文本在 Node 里跑不起来或配错括号；
- *   · **本注释块内不得出现那四个字面量本身**（即"function 加名字加左括号"的连写）；
+ *   · **本注释块内不得出现这三个字面量本身**（即"function 加名字加左括号"的连写）；
  *     抽取器先命中注释里的那次出现，就会从注释处数括号、永远配不平；
  *   · 被抽函数体内（含其中注释）不得出现不成对的 `{` / `}`——抽取器只数花括号，字符串/
  *     注释里的裸花括号同样计入；也不要在字符串里写会被当成形态说明的花括号。
@@ -18,12 +18,13 @@
  * 本模块**零 DOM、零网络、零全局**：所有函数是数据 → 数据的纯变换。图表实例的创建/
  * 更新/销毁、日历换月动效、请求编排留在 `DashboardPage.vue`。
  *
- * ## 双口径（MF-55）是本模块存在的理由
- * 事件数与账号数是两个**不可互换**的口径：
- *   · 事件（尝试）= `daily_stats.row_cnt`，在 `normalizeDaily` 里按天打桶、跨天相加仍是
- *     事实；趋势图与成功率的分母都用它；
+ * ## 单一口径：账号终态（2026-10-21 裁决，6l5w）
+ * 看板只回答「多少个账号最终怎样」，**不回答「发生多少次尝试」**：
  *   · 账号 = `/api/admin/sign-events` 的 `accounts_stats` **后端终值**（窗口去重 total /
  *     按状态去重 by_status / 按日终态 by_day），本模块一律透传，**绝不跨天或跨状态直加**。
+ *     每个账号每天只有一个终态，日内各桶互斥 ⇒ 相加合法、重试不重复计数。
+ *   · 事件（尝试）= `daily_stats.row_cnt` **不再进入看板**。过程数据只进日志页；看板不再
+ *     消费 `daily_stats`，也不在模块里保留事件聚合函数（防顺手换回混用）。
  * 前端不聚合 `cnt`（页面拿不到 phone 明细、无从去重）——「953 vs 真值 94」正是直加出来的。
  *
  * ## 词表
@@ -76,7 +77,7 @@ export var STATUS_TOKEN = {
 /** 空看板状态工厂（Vitest 与组件共用同一形状）。 */
 export function emptyState() {
   return {
-    dailyMap: {}, dailyDays: [], accountsTotal: 0, statusAccounts: {}, dayFinal: {},
+    accountsTotal: 0, statusAccounts: {}, dayFinal: {},
     calMonth: null, signLoaded: false, signFailed: false, slots: [],
     weekendKnown: false, satSign: true, sunSign: true,
   };
@@ -124,28 +125,7 @@ export function statusColor(st, t) {
   return t[STATUS_TOKEN[st] || "light"] || t.light;
 }
 
-/* ---------------- 聚合：事件数与账号数双口径 ---------------- */
-
-/**
- * 事件口径：`daily_stats`（按 (day,status) 聚合）按天打桶。
- *
- * 只读 `row_cnt`（原始行数）——行数跨维相加仍是事实。**刻意不读 `cnt`**：`cnt` 按
- * (day,status) 各自去重、桶间不互斥，跨天或跨状态直加必虚增（MF-55 的 953 vs 94）。
- * 返回 `{ map, days }`，不再就地改全局长态（纯函数，可单测）。
- */
-export function normalizeDaily(rows) {
-  var map = {};
-  (rows || []).forEach(function (r) {
-    var day = String((r && r.day) || "");
-    if (!day) return;
-    var m = map[day] || (map[day] = { success: 0, fail: 0, skip: 0, unknown: 0, total: 0 });
-    var ev = Number(r.row_cnt) || 0;
-    var kind = statusKind(String(r.status || ""));
-    m[kind] += ev;
-    m.total += ev;
-  });
-  return { map: map, days: Object.keys(map).sort() };
-}
+/* ---------------- 聚合：账号终态 ---------------- */
 
 /**
  * 账号口径：后端窗口去重终值（`accounts_stats`）原样透传。
@@ -233,8 +213,7 @@ export function capacityRows(d) {
  * 返回 `{ success, fail }` 两个 KPI 视图；数据未回返 null（保持骨架），sign 失败给错误视图。
  */
 export function todayAccountKpiViews(state, now) {
-  var CALIBER = "账号口径：当日最终状态，每账号恰计一次（重试不重复计数）；"
-    + "与「今日成功率」的签到事件口径（重试多次分别计数）不同";
+  var CALIBER = "账号口径：当日最终状态，每账号恰计一次（重试不重复计数）";
   if (state.signFailed) {
     var err = {
       failed: true, value: "—", sup: null, sub: "签到事件加载失败",
@@ -260,8 +239,9 @@ export function todayAccountKpiViews(state, now) {
 }
 
 /**
- * 今日成功率 KPI。返回 null 表示「数据尚未回来，保持骨架」；签到事件失败时返回**失败视图**
- * （错误行），这样设置接口后到触发的重算不会把它盖成「今日暂无签到结果」（失败 ≠ 没有结果）。
+ * 今日成功率 KPI（账号口径）。返回 null 表示「数据尚未回来，保持骨架」；终态数据失败时
+ * 返回**失败视图**（错误行），这样设置接口后到触发的重算不会把它盖成「今日暂无签到结果」
+ * （失败 ≠ 没有结果）。
  */
 export function rateKpiView(state, now) {
   if (state.signFailed) {
@@ -272,7 +252,7 @@ export function rateKpiView(state, now) {
   }
   if (!state.signLoaded) return null;
   var today = fmtDate(now), y = fmtDate(addDays(now, -1));
-  var m = state.dailyMap[today], yb = state.dailyMap[y];
+  var m = state.dayFinal[today], yb = state.dayFinal[y];
   var rt = rateOf(m), ry = rateOf(yb);
   if (rt == null) {
     return {
@@ -297,23 +277,33 @@ export function rateKpiView(state, now) {
   return {
     empty: false, value: rt.toFixed(1), sup: "%",
     subTitle: "",
-    valueTitle: "成功率 = 成功 ÷（成功 + 失败），跳过与未知不计入；按事件（尝试）计，重试各算一次",
+    valueTitle: "成功率 = 成功 ÷（成功 + 失败），跳过与未知不计入；按账号当日最终状态计，每账号恰计一次",
     sub: sub, subCls: "", pill: pill,
   };
 }
 
-/** 待处理账号 KPI：待审核 + 已拒绝（单一口径不叠加；`deleted` 行不计）。 */
+/**
+ * 待处理账号 KPI：待审核 + 已拒绝（单一口径不叠加；`deleted` 行不计）。
+ *
+ * 优先读 `/api/accounts?count_only=1` 的标量响应 `{pending, rejected}`：看板只要两个
+ * 数，不需要把整张账号表搬回浏览器。旧形状 `{accounts:[...]}` 仍兼容（单测与缓存）。
+ */
 export function pendingKpiView(d) {
   if (!d) {
     return { failed: true, value: "—", sup: null, sub: "待处理账号加载失败", subTitle: "", valueTitle: "", pill: null, alert: false };
   }
-  var list = (d && d.accounts) || [];
   var pending = 0, rejected = 0;
-  list.forEach(function (a) {
-    if (!a || a.deleted) return;
-    if (a.status === "pending") pending += 1;
-    else if (a.status === "rejected") rejected += 1;
-  });
+  if (typeof d.pending === "number" || typeof d.rejected === "number") {
+    pending = Number(d.pending) || 0;
+    rejected = Number(d.rejected) || 0;
+  } else {
+    var list = d.accounts || [];
+    list.forEach(function (a) {
+      if (!a || a.deleted) return;
+      if (a.status === "pending") pending += 1;
+      else if (a.status === "rejected") rejected += 1;
+    });
+  }
   var total = pending + rejected;
   return {
     failed: false, value: num(total), sup: null,
@@ -325,15 +315,15 @@ export function pendingKpiView(d) {
 /* ---------------- 图表视图（数据 → 数据；绘制在组件里） ---------------- */
 
 /**
- * 趋势视图：堆叠柱状，回答「发生多少次」，取**事件（行数）**桶。
- * 未知码单列一条「未知」序列（只在真出现时进图例）。`state.dailyDays` 为空时返回 null。
+ * 趋势视图：堆叠柱状，回答「每天多少个账号最终怎样」，取**日终态** `dayFinal`。
+ * 未知码单列一条「未知」序列（只在真出现时进图例）。无终态数据时返回 null。
  */
 export function trendView(state) {
-  var days = state.dailyDays;
+  var days = Object.keys(state.dayFinal).sort();
   if (!days.length) return null;
   var labels = [], ok = [], fail = [], skip = [], unk = [], sum = { ok: 0, fail: 0, skip: 0, unk: 0 };
   days.forEach(function (day) {
-    var ev = state.dailyMap[day];
+    var ev = state.dayFinal[day];
     labels.push(day.slice(5));
     ok.push(ev.success); fail.push(ev.fail); skip.push(ev.skip); unk.push(ev.unknown);
     sum.ok += ev.success; sum.fail += ev.fail; sum.skip += ev.skip; sum.unk += ev.unknown;
@@ -346,12 +336,12 @@ export function trendView(state) {
   if (sum.unk > 0) datasets.push({ label: "未知", data: unk, token: "muted" });
   var total = sum.ok + sum.fail + sum.skip + sum.unk;
   var meta = [
-    ["近 30 天成功", num(sum.ok)],
-    ["近 30 天失败", num(sum.fail)],
-    ["近 30 天跳过", num(sum.skip)],
-    ["日均签到事件（次）", num(days.length ? Math.round(total / days.length * 10) / 10 : 0)],
+    ["近 30 天成功账号", num(sum.ok)],
+    ["近 30 天失败账号", num(sum.fail)],
+    ["近 30 天跳过账号", num(sum.skip)],
+    ["日均签到账号（个）", num(days.length ? Math.round(total / days.length * 10) / 10 : 0)],
   ];
-  if (sum.unk > 0) meta.splice(3, 0, ["近 30 天未知", num(sum.unk)]);
+  if (sum.unk > 0) meta.splice(3, 0, ["近 30 天未知账号", num(sum.unk)]);
   return { labels: labels, datasets: datasets, meta: meta };
 }
 
@@ -398,7 +388,7 @@ export function slotsView(slots) {
 
 /**
  * 签到热力图：周一起始、展示桶取后端**日终态分桶** `dayFinal`（每账号当日恰落一桶、
- * 桶互斥），存在性以事件行数 `dailyMap` 兜底（两者取或，防换口径误判空）。
+ * 桶互斥）。只看账号终态：无终态的日子就是「无记录」，不再用事件行数兜底。
  * 返回标签与格子数据（类名 / title 是口径，markup 由 Vue 出）。
  */
 export function calendarView(state, opts) {
@@ -415,8 +405,7 @@ export function calendarView(state, opts) {
   for (i = 1; i <= daysIn; i++) {
     var ds = fmtDate(new Date(y, mo, i));
     var fin = state.dayFinal[ds];
-    var ev = state.dailyMap[ds];
-    var hasData = !!((((fin && fin.total) || (ev && ev.total)) || 0) > 0);
+    var hasData = !!((fin && fin.total) || 0) > 0;
     var cls = "mini-cal-day";
     if (ds > today) cls += " is-future";
     else if (hasData) {
@@ -426,10 +415,8 @@ export function calendarView(state, opts) {
     if (ds === today) cls += " is-today";
     var title = !hasData
       ? (ds > today ? "未来日期（尚未签到）" : "当日无真实签到记录")
-      : (fin && fin.total > 0
-        ? "成功 " + fin.success + " · 失败 " + fin.fail + " · 跳过 " + fin.skip
-          + (fin.unknown > 0 ? " · 未知 " + fin.unknown : "") + "（账号，当日最终态）"
-        : "有签到记录（账号未识别）");
+      : ("成功 " + fin.success + " · 失败 " + fin.fail + " · 跳过 " + fin.skip
+        + (fin.unknown > 0 ? " · 未知 " + fin.unknown : "") + "（账号，当日最终态）");
     cells.push({ d: i, cls: cls, title: title });
   }
   for (i = 0; i < trail; i++) cells.push({ other: true });
