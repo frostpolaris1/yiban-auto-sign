@@ -133,6 +133,7 @@ _ARTIFACTS = {
     18: (("sign_tasks", None), ("egress_state", None)),   # migrate_v18 建两表
     19: (("sign_claims", "epoch"), ("sign_tasks", "epoch")),  # migrate_v19 补两列
     21: (("run_events", None),),                          # migrate_v21 建表
+    23: (("egress_state", "half_open_sec"),),             # migrate_v23 补列
 }
 
 
@@ -1181,6 +1182,22 @@ def migrate_v22(conn):
     _commit_if_free(conn)
 
 
+def migrate_v23(conn):
+    """v23：`egress_state` 补 `half_open_sec` 列——半开冷却窗口跨进程重启保留。
+
+    **核心迁移**：`queue_store.load_egress_state` / `save_egress_state` 把该列名写进
+    SQL；缺列时读取整行失败（返回 None），连出口级 `rate` 也装不回，重启即回出厂
+    速率。产物登记进迁移产物表，缺列拒启。
+
+    **单位是剩余秒数，不是绝对时刻**：`EgressLimiter` 的 `now` 是调用方注入的单调钟，
+    跨进程/重启不可比；落绝对截止时刻会跨时钟域。相对量在 restore 时按新进程的
+    `now` 重新起算。代价是停机时长不扣减（重启后最多多保守 `HALF_OPEN_SEC` 秒）。
+    存量行默认 0 = 无半开，不回退历史行为。
+    """
+    _ensure_column(conn, "egress_state", "half_open_sec", "REAL NOT NULL DEFAULT 0")
+    _commit_if_free(conn)
+
+
 # 迁移项格式：(目标版本号, 名称, 函数, 是否核心)
 # - 核心迁移：现有功能依赖，失败应阻断启动。
 # - 可选迁移：未来/非关键能力，失败只告警或延后重试。
@@ -1219,6 +1236,9 @@ _MIGRATIONS = [
     # v22 可选：清空 `egress_state`——桶键由执行体身份改判为出口标识（工单 2cwd）。
     # 只清数据、无 schema 产物，故不进 `_ARTIFACTS`；失败不阻断启动。
     (22, "v22_egress_identity_rebuild", migrate_v22, False),
+    # v23 核心：出口桶状态的半开剩余时长。读写层硬编该列名；缺列会让整行读失败，
+    # 连出口级 rate 也装不回（工单 ba-p04-04）。
+    (23, "v23_egress_half_open", migrate_v23, True),
 ]
 
 

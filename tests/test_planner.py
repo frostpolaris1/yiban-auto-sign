@@ -38,7 +38,7 @@ from unittest import mock
 
 from yiban.adapters.persistence import clock_meta, queue_store
 from yiban.core import window
-from yiban.engine import planner, schedule
+from yiban.engine import planner, schedule, token_bucket
 
 #: 计划用例共用的窗口配置（有效窗口 06:05~07:15，4200s / 70 分片 / 4200 微槽）
 WINDOW_ENV = {
@@ -502,11 +502,16 @@ class ModeTest(_Base):
         self.assertLessEqual(st["rate_peak"], st["lam"] + 1e-9)
 
     def test_violating_peak_flattens_density_instead_of_sigma(self):
-        """违反 φ_max×N ≤ Λ 时压平密度（削峰），σ_eff 不动。"""
+        """违反 φ_max×N ≤ Λ 时压平密度（削峰），σ_eff 不动。
+
+        用引擎域内的最低速率 `RATE_MIN` 制造约束；账号数取 1200（均值密度 ≈ 0.29/s，
+        高于 0.2，正常分布的峰值必然越界）。旧值 0.01 在域收窄后会被钳到 0.2
+        （工单 zx54），不能再用来制造违反。
+        """
         os.environ["YIBAN_SIGN_DIST"] = "normal"
-        accs = _accounts(400)
+        accs = _accounts(1200)
         plain = planner.plan_stats(self.plan(accs), self.cfg(), DAY)
-        os.environ["YIBAN_EGRESS_RATE"] = "0.01"
+        os.environ["YIBAN_EGRESS_RATE"] = str(token_bucket.RATE_MIN)
         flat = planner.plan_stats(self.plan(accs), self.cfg(), DAY)
         self.assertEqual(flat["sigma_min"], plain["sigma_min"], "σ_eff 不因削峰而改")
         self.assertGreater(flat["flatten_alpha"], 0.0, "违反约束时压平密度")

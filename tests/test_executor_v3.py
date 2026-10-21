@@ -155,7 +155,7 @@ class _PermissiveLimiter:
     def on_risk_signal(self, egress, now):
         self.trace.append(("on_risk_signal", egress))
 
-    def persist(self, egress, stamp=None):
+    def persist(self, egress, stamp=None, now=None):
         self.persisted += 1
         return True
 
