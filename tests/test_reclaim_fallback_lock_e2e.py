@@ -226,11 +226,45 @@ class ReclaimUnderHeldFallbackLockE2ETest(_DbBase):
                            "回收必须换代——原持有者迟到的写被 fence")
 
 
+class ReclaimRacesFallbackStartupTest(_DbBase):
+    """竞态形态：重签**探测时**兜底还没起，**翻行时**兜底已起并领取了同一行。
+
+    「探测后放行」存在检查-使用窗口（审查 D1 实测可翻掉刚被兜底持有的行）。
+    修法＝改持锁：重签若**持有**兜底锁跨整个翻行事务，则「兜底在我们翻行时启动并领取」
+    在结构上不可能——兜底取不到锁（rc=3 退出），下一次 cron 再拉。故本用例断言：
+    翻行后重查，行不得处于 claimed（它要么已翻且不可能是兜底持有的，要么根本没被领）。
+    """
+
+    def test_reclaim_holds_lock_across_update(self):
+        if cli_support.fcntl is None:
+            self.skipTest("跨进程 flock 仅 POSIX 可用（Windows 上取不到锁）")
+        self._add_task(PHONE_IN_FLIGHT, state="done", epoch=1)
+        # 持锁形态的判别断言必须在**事务进行中**验（reclaim 返回即已放锁）。
+        # sqlite3.Connection 的属性只读，故探锁挂在 clock.now 上：reclaim 先取锁、
+        # 后调 clock.now() 生成 stamp，再 UPDATE——桩被调时锁必已持有。
+        observed = {}
+        real_now = queue_store.clock.now
+
+        def spying_now():
+            observed["held"] = cli_support._run_lock_held(
+                name=cli_support.FALLBACK_LOCK_NAME)
+            return real_now()
+
+        with mock.patch.object(queue_store.clock, "now", spying_now):
+            n = queue_store.reclaim_tasks(DAY, [PHONE_IN_FLIGHT])
+        self.assertEqual(n, 1)
+        self.assertIs(observed.get("held"), True,
+                      "翻行进行中本进程必须持有兜底锁（探测形态下 held=False，即红）")
+        row = self._row(PHONE_IN_FLIGHT)
+        self.assertEqual((row["state"], row["owner"]), ("pending", ""),
+                         "无并发兜底时重签必须照常翻行")
+
+
 class ProbeFailureFailClosedTest(_DbBase):
     """探不出锁状态 ⇒ 按"有人在跑"处置（fail-closed），在飞行一律不翻。"""
 
     def test_unavailable_lock_backend_keeps_claimed_rows(self):
-        """锁后端不存在（`fcntl is None`）＝探不出：不得假装"没人跑"。"""
+        """锁后端不存在（`fcntl is None`）＝锁取不到：不得假装"锁没人持"。"""
         self._add_task(PHONE_IN_FLIGHT, state="claimed", owner=OWNER, epoch=7)
         self._add_task(PHONE_DONE, state="done", epoch=1)
         with mock.patch.object(cli_support, "fcntl", None):
@@ -239,21 +273,22 @@ class ProbeFailureFailClosedTest(_DbBase):
         row = self._row(PHONE_IN_FLIGHT)
         self.assertEqual((row["state"], row["owner"], row["epoch"]),
                          ("claimed", OWNER, 7),
-                         "探测不出锁状态时，在飞行必须原样保留")
+                         "取不到锁时，在飞行必须原样保留")
 
-    def test_probe_exception_keeps_claimed_rows(self):
-        """探针自身抛异常（非预期故障）同样按被持有处置，不得外泄成"照翻"。"""
+    def test_lock_takeover_exception_keeps_claimed_rows(self):
+        """取锁自身抛异常（非预期故障，非 `_RunLockHeld`）同样按被持有处置，
+        不得外泄成"照翻"。"""
         self._add_task(PHONE_IN_FLIGHT, state="claimed", owner=OWNER, epoch=7)
-        with mock.patch.object(queue_store.cli_support, "_run_lock_held",
-                               side_effect=RuntimeError("探针炸了")), \
+        with mock.patch.object(queue_store.cli_support, "_acquire_run_lock",
+                               side_effect=RuntimeError("取锁炸了")), \
                 self.assertLogs("yiban.store.queue_store", "WARNING") as cm:
             n = queue_store.reclaim_tasks(DAY, [PHONE_IN_FLIGHT])
         self.assertEqual(n, 0)
         row = self._row(PHONE_IN_FLIGHT)
         self.assertEqual((row["state"], row["owner"], row["epoch"]),
                          ("claimed", OWNER, 7))
-        self.assertTrue(any("探" in line or "锁" in line for line in cm.output),
-                        f"探针失败必须留痕，实际 {cm.output}")
+        self.assertTrue(any("锁" in line for line in cm.output),
+                        f"取锁失败必须留痕，实际 {cm.output}")
 
 
 if __name__ == "__main__":
