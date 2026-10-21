@@ -113,7 +113,7 @@ _PASSTHROUGH = ("sign", "probe")
 # ---------------------------------------------------------------------------
 # 配置视图与路径（与 run.sh 同源）
 # ---------------------------------------------------------------------------
-#: 三个可配置路径键（`docs/dev/cli.md` §1.1）：它们保留"进程环境优先"。
+#: 四个路径键（`docs/dev/cli.md` §1.1）：它们保留"进程环境优先"。
 #: 其余 `YIBAN_*` 键按 M27 统一口径"`.env` 优先、进程环境只补缺"。
 #: 键集合只有一处定义（`env_io.PATH_KEYS`），本别名不另抄一份。
 _ENV_FIRST_PATH_KEYS = env_io.PATH_KEYS
@@ -162,7 +162,7 @@ def _cfg_int(view, key, default, lo=None, hi=None):
 
 
 def _paths(view):
-    """三个可配置路径键（与 run.sh 同源）→ dict；`db_file` 的缺省取自数据层常量。"""
+    """四个路径键（与 run.sh 同源）→ dict；`db_file` 的缺省取自数据层常量。"""
     state_dir = state_gc.state_dir_from_env(view)
     return {
         "env_file": env_io.env_path(),

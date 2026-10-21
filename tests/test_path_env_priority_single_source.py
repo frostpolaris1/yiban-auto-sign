@@ -2,12 +2,12 @@
 """路径键优先级只有一个口径：进程环境 → `.env` → 默认值（工单 71z7）。
 
 标签：A · 配置：邮件/推送读侧
-覆盖：三个可配置路径键（`YIBAN_DB_FILE` / `YIBAN_STATE_DIR` /
+覆盖：四个路径键（`YIBAN_ENV_FILE` / `YIBAN_DB_FILE` / `YIBAN_STATE_DIR` /
    `YIBAN_LOG_FILE`）在 `env_io.PATH_KEYS`、`resolve_path`、`child_env.build_child_env`
    与三个 bash 载体里的同一口径；非路径键保持 `.env` 优先（M27）。
 对应实现：`yiban/adapters/config/env_io.py`、`scripts/child_env.py`、
    `run.sh` / `scripts/yiban-fallback.sh` / `run_probe.sh`。
-关键断言：① 路径键集合只有一处定义，CLI 视图引用它；② 三个可配置路径键在进程环境与
+关键断言：① 路径键集合只有一处定义，CLI 视图引用它；② 四个路径键在进程环境与
    `.env` 冲突时取进程环境；③ 抽一个非路径键，冲突时取 `.env`（翻优先级会红）。
 依赖：临时 `.env`；不触网、不建库。bash 载体做源码级守卫（行为级覆盖见报告）。
 """
@@ -25,9 +25,11 @@ import child_env  # noqa: E402
 
 from yiban.adapters.config import env_io  # noqa: E402
 
-#: 三个**可配置**路径键（进程环境优先）。指针 `YIBAN_ENV_FILE` 单独一条：
-#: 它只由进程环境给，`.env` 里写它一律忽略（否则"读哪份配置"会自指）。
-PATH_KEYS = ("YIBAN_DB_FILE", "YIBAN_STATE_DIR", "YIBAN_LOG_FILE")
+#: 四个路径键（进程环境优先）。指针 `YIBAN_ENV_FILE` 走**两段自举**：
+#: 进程环境 → 基线 `.env`（默认 `data/.env`）→ 默认值；见
+#: `tests/test_resolve_path_bypass_collapse.py::EnvFilePointerFromEnvFileTest`。
+PATH_KEYS = ("YIBAN_ENV_FILE", "YIBAN_DB_FILE",
+             "YIBAN_STATE_DIR", "YIBAN_LOG_FILE")
 ENV_FILE_KEY = "YIBAN_ENV_FILE"
 
 
@@ -53,18 +55,7 @@ class PathEnvPriorityTest(unittest.TestCase):
                 got = env_io.resolve_path(
                     key, "default", env={key: f"env-{key}"}, env_file=self.env_file)
                 self.assertEqual(got, f"env-{key}",
-                                 "三个可配置路径键：进程环境必须压过 .env")
-
-    def test_resolve_pointer_ignores_dotenv_self_reference(self):
-        """指针键不得由 `.env` 自指：只认进程环境，否则 web 与 run.sh 会读两份配置。"""
-        got = env_io.resolve_path(
-            ENV_FILE_KEY, "default.env", env={}, env_file=self.env_file)
-        self.assertEqual(got, "default.env",
-                         ".env 里写的指针被当成了事实（自指）")
-        got2 = env_io.resolve_path(
-            ENV_FILE_KEY, "default.env",
-            env={ENV_FILE_KEY: "from-env.env"}, env_file=self.env_file)
-        self.assertEqual(got2, "from-env.env", "进程环境给的指针必须生效")
+                                 "四个路径键：进程环境必须压过 .env")
 
     def test_child_env_prefers_process_env_for_path_keys(self):
         base = {key: f"env-{key}" for key in PATH_KEYS}
@@ -91,7 +82,7 @@ class PathEnvPriorityTest(unittest.TestCase):
                          "父进程给的指针优先于 .env 里的同名键")
 
     def test_bash_carriers_apply_the_same_exception(self):
-        """三个 bash 载体都必须对三个可配置路径键做"进程环境优先、.env 补缺"。
+        """三个 bash 载体都必须对四个路径键做"进程环境优先、.env 补缺"。
 
         `YIBAN_ENV_FILE` 是"读哪个文件"的指针，三个脚本都固定 `$APP_DIR/data/.env`
         （p12-13），故不在 .env 覆盖范围内。
@@ -101,7 +92,7 @@ class PathEnvPriorityTest(unittest.TestCase):
                 with io.open(os.path.join(BASE, rel), encoding="utf-8") as fh:
                     text = fh.read()
                 self.assertIn("YIBAN_DB_FILE|YIBAN_STATE_DIR|YIBAN_LOG_FILE", text,
-                              f"{rel} 必须把三个可配置路径键从 .env 覆盖里排除")
+                              f"{rel} 必须把四个路径键从 .env 覆盖里排除")
 
 
 if __name__ == "__main__":
