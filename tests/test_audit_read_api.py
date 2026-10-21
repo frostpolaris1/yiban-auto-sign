@@ -12,7 +12,6 @@
 依赖：进程内加载 `web/app.py`（importlib 隔离）+ Flask test client；临时 `.env`/SQLite，
     不联网、不访问真实易班接口。
 """
-import ast
 import contextlib
 import importlib.util
 import os
