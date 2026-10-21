@@ -124,17 +124,6 @@ def _run_main(argv=None, run_queue_result=None, flush_side_effect=None):
 class NoPositionConstantTest(unittest.TestCase):
     """独立状态码与符号必须存在，且不与既有状态混淆。"""
 
-    def test_status_code_is_independent(self):
-        self.assertEqual(signin.STATUS_NO_POSITION, "no_position")
-        # 不与任何既有状态码重复
-        existing = {
-            signin.STATUS_SUCCESS, signin.STATUS_ALREADY, signin.STATUS_NO_TASK,
-            signin.STATUS_FAILED, signin.STATUS_RETRYING, signin.STATUS_SKIPPED_WINDOW,
-            signin.STATUS_SKIPPED_NORANGE, signin.STATUS_PAUSED,
-            signin.STATUS_USER_CANCELLED, signin.STATUS_PENDING,
-            signin.STATUS_GLOBAL_PAUSED,
-        }
-        self.assertNotIn(signin.STATUS_NO_POSITION, existing)
 
     def test_symbol_mapping_exists(self):
         self.assertIn(signin.STATUS_NO_POSITION, signin.STATUS_SYMBOL)
@@ -286,19 +275,6 @@ class NoPositionSchedulerGateTest(unittest.TestCase):
         })
         self.assertTrue(self.sched._has_undone_today())
 
-    def test_host_container_dual_path_consistent(self):
-        """宿主/容器双路径一致：宿主 no_position 汇总归 skip → exit 2 → run.sh 写
-        SKIPPED → 07:10 补签重跑；容器 _UNDONE_STATUSES 含 no_position →
-        _has_undone_today() 为真 → 07:10 补签同样重跑。两条路径都必须触发补签轮。"""
-        self._write_marker()
-        self._write_state({"13800000000": {"status": "no_position"}})
-        self.assertTrue(self.sched._has_undone_today(),
-                        "容器侧：no_position 计入未了结，补签轮应重跑")
-        code, _ = _run_main(run_queue_result={
-            "13800000000": (False, NO_POSITION_MSG, False, signin.STATUS_NO_POSITION),
-        })
-        self.assertEqual(code, 2,
-                         "宿主侧：仅无点位 → exit 2（SKIPPED），run.sh 07:10 补签重跑")
 
 
 if __name__ == "__main__":

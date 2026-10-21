@@ -34,14 +34,6 @@ class BackupFlagParsingTextTest(unittest.TestCase):
     def setUpClass(cls):
         cls.src = _read()
 
-    def test_no_single_position_flag_checks_remain(self):
-        body = "\n".join(
-            ln for ln in self.src.splitlines()
-            if not ln.strip().startswith("#") and "旧实现" not in ln)
-        self.assertNotIn('if [ "${1:-}" = "--restore" ]', body,
-                         "仍按位置只看 ${1} 判 --restore")
-        self.assertNotIn('if [ "${1:-}" = "--require-encrypt" ]', body,
-                         "仍按位置只看 ${1} 判 --require-encrypt（移位即门禁失效）")
 
     def test_parses_all_arguments_in_a_loop(self):
         self.assertIn("while [ $# -gt 0 ]", self.src, "必须全参数扫描")

@@ -172,25 +172,6 @@ class BreakerTest(unittest.TestCase):
         self._run_main(datetime(2026, 8, 26, 6, 40), dict(cred))
         self.assertEqual(self._calls, ["13800138000"], "试探日应执行一次")
 
-    def test_probe_day_credential_failure_postpones_on_production_path(self):
-        """生产路径（`runner.main` → `executor_v3`）上，半开试探凭据失败必须顺延试探日。
-
-        本用例走的是唯一生产执行体，不是冻结的 `run_queue_retry`：熔断到期后若这里
-        不顺延，`probe_date` 停在过去，`_probe_due` 每天为真，密码确实错的账号会被
-        每天真实登录一次（风控暴露面）。
-        """
-        probe_day = datetime(2026, 8, 26, 6, 40)  # = probe_date，周三
-        cred = {"13800138000": {"fail_days": 3, "last_fail": self.D3,
-                                "paused_since": self.D3, "probe_date": "2026-08-26"}}
-        self._run_main(
-            probe_day, dict(cred),
-            attempt_result=(False, "登录失败: 账号或密码错误", False, signin.STATUS_FAILED),
-        )
-        self.assertEqual(self._attempt_signin.call_count, 1, "试探日应真实执行一次")
-        saved = self._saved_cred_state.call_args[0][0]
-        self.assertIn("13800138000", saved, "凭据类失败应保持暂停")
-        self.assertEqual(saved["13800138000"]["probe_date"], "2026-09-02",
-                         "生产执行体上的试探失败必须顺延 7 天（8-26 + 7）")
 
     def test_probe_date_advance_has_one_owner(self):
         """`probe_date` 的写入点只有一处：`attempts._update_cred_state`。

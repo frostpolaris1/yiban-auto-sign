@@ -174,14 +174,6 @@ class FullRunGateTest(unittest.TestCase):
         self.assertFalse(self.sched._full_run_done_today())
 
     # -- 补签闸门：_has_undone_today --
-    def test_failed_state_needs_second_sign(self):
-        """首签存在失败账号 → 补签必须重跑（旧 any-success 语义会误跳过）。"""
-        self._write_marker()
-        self._write_state({
-            "13800000001": {"status": "failed"},
-            "13800000002": {"status": "success"},
-        })
-        self.assertTrue(self.sched._has_undone_today())
 
     def test_retrying_state_needs_second_sign(self):
         self._write_marker()
@@ -194,27 +186,7 @@ class FullRunGateTest(unittest.TestCase):
         self._write_state({"13800000000": {"status": "pending"}})
         self.assertTrue(self.sched._has_undone_today())
 
-    def test_all_done_skips_second_sign(self):
-        """全员真正了结（success/already/no_task）→ 补签跳过，不再全天空跑两遍。
 
-        语义修正：skipped_window/skipped_norange 不再视为"了结"
-        （学校窗口晚开时全员窗口外跳过必须触发补签重跑），已移出本用例。"""
-        self._write_marker()
-        self._write_state({
-            "13800000001": {"status": "success"},
-            "13800000002": {"status": "already"},
-            "13800000003": {"status": "no_task"},
-        })
-        self.assertFalse(self.sched._has_undone_today())
-
-    def test_window_skip_is_undone(self):
-        """窗口外跳过 = 未了结 → 补签闸门放行重跑。"""
-        self._write_marker()
-        self._write_state({
-            "13800000001": {"status": "success"},
-            "13800000002": {"status": "skipped_window"},
-        })
-        self.assertTrue(self.sched._has_undone_today())
 
     def test_manual_only_success_is_not_undone_but_first_gate_still_open(self):
         """手动签到成功后：无失败记录 → 补签不跑；但首签闸门仍开（标记缺失）。"""

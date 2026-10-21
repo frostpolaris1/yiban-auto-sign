@@ -46,7 +46,6 @@ READERS = (
     "tests/test_multi_executor_drill_e2e.py",
     "tests/test_drill_redline_e2e.py",
     "tests/test_fake_upstream_fault_knobs_gate.py",
-    "tests/test_unguarded_surface_registry.py",
 )
 
 

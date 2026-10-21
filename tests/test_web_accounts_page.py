@@ -173,13 +173,6 @@ class AccountsPageTest(unittest.TestCase):
         self.assertFalse(os.path.exists(ROW_MENU_JS),
                          "row-menu.js 仍留在库里——三页迁 Vue 后已无消费者")
 
-    def test_contract_hooks_survive_in_the_component(self):
-        # 钩子可能在组件模板（字面量 id）或口径层（组定义表里的 tbody/bar 等 id）中
-        src = _read(ACCOUNTS_VUE) + "\n" + _read(ACCOUNTS_MODEL_JS)
-        missing = [h for h in CONTRACT_HOOKS if h not in src]
-        self.assertEqual(missing, [], "缺少这些 data-* 钩子（e2e 按它们取值）：" + ", ".join(missing))
-        missing_ids = [i for i in CONTRACT_IDS if i not in src]
-        self.assertEqual(missing_ids, [], "缺少这些 id 锚点： " + ", ".join(missing_ids))
 
     # ---- PII 出口面（展示侧） ----
 

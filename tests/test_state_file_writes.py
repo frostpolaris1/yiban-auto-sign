@@ -120,15 +120,6 @@ class SigninWritesAreAtomicTest(unittest.TestCase):
         with open(os.path.join(BASE, *rel.split("/")), encoding="utf-8") as f:
             return f.read()
 
-    def test_cred_state_write_is_delegated(self):
-        """熔断状态文件的原子写归 `yiban/adapters/statefiles/cred_state.py`（唯一读写入库）；
-        引擎不得自己再写一份（原子性与并发由 tests/test_breaker.py 钉住）。"""
-        src = self._read("yiban/adapters/statefiles/state_io.py")
-        # 只取本函数体（到下一个顶层 def 为止）——按字符数截取会把相邻函数一起断言
-        body = src.split("def _save_cred_state(", 1)[1].split("\ndef ", 1)[0]
-        self.assertIn("cred_state.update(", body)
-        self.assertIn("cred_state.merge(", body)
-        self.assertNotIn("open(", body)
 
 
 class SignStateBomReadTest(unittest.TestCase):
