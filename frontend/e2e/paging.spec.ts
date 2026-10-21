@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { adminTest as test, expect } from "./base";
 
 // 账号列表 5k 规模的分页验收（工单 p37f）：首屏 DOM 受控、翻页不整页重拉、徽标走 count_only。
 //
@@ -21,11 +21,7 @@ test("账号列表 5k：首屏 DOM 受控、翻页不整页重拉、徽标走 co
   test.skip(BULK < 1000, "需 YB_E2E_BULK_ACCOUNTS>=1000：本用例量的是 5k 规模");
   test.setTimeout(180_000);
 
-  const resp = await page.request.post("/api/login", {
-    data: { username: ADMIN_USER, password: ADMIN_PASS },
-  });
-  expect(resp.ok()).toBeTruthy();
-
+  // 管理员会话由 admin project 注入（.auth/admin.json）。
   // 只用**响应监听**量字节（不改写响应体：route.fulfill 会破坏 gzip/内容长度，页面解析失败）。
   const reqs: { url: string; bytes: number }[] = [];
   const pending: Promise<void>[] = [];

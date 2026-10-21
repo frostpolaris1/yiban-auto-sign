@@ -37,6 +37,7 @@ for _p in (ROOT, ROOT / "scripts", ROOT / "web"):
 # 导入必须在本文件把 ROOT 加进 sys.path 之后：直接跑 `python e2e/server.py` 时
 # `yiban` 不在默认导入路径上。
 from yiban.core import clock  # noqa: E402
+from yiban.adapters.config import env_io  # noqa: E402
 # 日志路径直接取服务层真源：批 3-d 已删除 `web/app.py` 的 `log_path_for` 转发包装，
 # 旧写法 `webapp.log_path_for(...)` 会让本启动器在建种子时 `AttributeError`（pytest
 # 全绿、CI 不跑 Playwright ⇒ 静默断点）。宿主 hook 由 `webapp` 载入时登记，调用时刻已就绪。
@@ -197,13 +198,26 @@ def _seed_state_files() -> None:
     账号键 → 状态符号）。只种这一个账号的状态：管理端日历用另一张卡，正好顺带验证
     "状态按账号过滤"。
     """
-    day = _probe_day()
-    if day is None:
-        return
     state_dir = Path(os.environ["YIBAN_STATE_DIR"])
     state_dir.mkdir(parents=True, exist_ok=True)
-    (state_dir / f"sign-daily-{day.isoformat()}.json").write_text(
-        json.dumps({"13800138001": "✅"}), encoding="utf-8"
+    day = _probe_day()
+    if day is not None:
+        Path(env_io.sign_daily_path(day.isoformat(), state_dir=str(state_dir))).write_text(
+            json.dumps({"13800138001": "✅"}), encoding="utf-8"
+        )
+    # 今天：终态与日志种子最后一条事件一致（13800138001 第三次尝试 = failed，见
+    # _seed_events）。看板「今日失败账号」读的是**按日终态文件**（不是事件表），
+    # 缺这份文件时该 KPI 恒为 0，logs.spec.ts 的 0/1 断言就测不到真实口径。
+    # 文件名走唯一命名处 sign_state_path；终态文件优先于旧符号文件。
+    today = clock.now().strftime("%Y-%m-%d")
+    Path(env_io.sign_state_path(today, state_dir=str(state_dir))).write_text(
+        json.dumps(
+            {"13800138001": {"status": "failed", "message": "密码错误",
+                             "time": clock.now().strftime("%H:%M:%S"),
+                             "task": "default"}},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
     )
 
 
@@ -338,11 +352,34 @@ def main():
     _seed_state_files()
     _seed_heartbeats()
     _seed_audit_health_snapshot()
+
+    # 体检快照必须**签名**：巡检端点先验签再读内容（web/routes/audit_api.py:287），
+    # 未签名一律答「无法定论」。每日线程写完快照后调同一函数（web/app.py:2559）。
+    # 密钥在首启时由 init_db/审计链写入 .env；此处显式确保已生成再签。
+    from web import security as _security_mod
+    from yiban.adapters.persistence import audit_chain as _audit_chain
+
+    _audit_chain._audit_key()
+    if not _security_mod.sign_audit_health_snapshot():
+        raise RuntimeError("e2e 种子：体检快照签名失败，巡检页将答『无法定论』")
     with db.audit_unit(ADMIN_USER, "e2e_seed_open", target="e2e", detail="seed batch") as conn:
         for i in range(SEED_ROWS):
             db.record_in_txn(conn, ADMIN_USER, f"e2e_seed_{i}", target=f"acct-{i}", detail=f"seed detail {i}")
 
     app = webapp.create_app()
+
+    # e2e 专用：登录限速是 60 秒 10 次/IP（web/routes/auth.py:90）。本套件 20+ 条用例
+    # 各用独立会话登录一次（管理员/用户每次登录会换发 sid，不能共享 Cookie），同一
+    # 127.0.0.1 必然越限。限速语义由 pytest 覆盖；这里只把该窗口上限抬高，生产零改动。
+    _orig_bump = _security_mod._bump_window_count
+
+    def _bump_e2e(store, key, now, window, limit=None):
+        if window == 60 and limit == 10:
+            limit = 10_000
+        return _orig_bump(store, key, now, window, limit)
+
+    _security_mod._bump_window_count = _bump_e2e
+
     print(f"[e2e] 临时实例就绪 http://127.0.0.1:{PORT}（种子 {SEED_ROWS} 条审计行）", flush=True)
     app.run(host="127.0.0.1", port=PORT, threaded=True, use_reloader=False)
 
