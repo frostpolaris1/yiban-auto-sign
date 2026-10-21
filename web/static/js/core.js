@@ -1186,12 +1186,24 @@
   }
 
   /* ---------- 公告 ---------- */
-  function showAnnouncement(text) {
-    openModal({ title: "公告", body: el("div", { class: "pm-announce", text: text }), actions: [{ label: "关闭", variant: "ghost" }] });
-  }
-  // 公告关闭只记在本次会话（sessionStorage），按文本区分：
-  // 同一公告不再重复打扰，但换了内容会重新显示（避免"永久静音"掉重要通知）。
+  // 每个新会话**首次进入**自动弹一次，不再用横幅（用户 2026-10-21 裁决）。
+  // 弹过即记 sessionStorage（按文本区分），刷新/换页不重复弹；点「我知道了」另记
+  // dismiss（同时标已读），本会话彻底不再弹。换公告文本后按新文本重新弹。
+  var ANNOUNCE_SHOWN_KEY = "yiban-announce-shown";
   var ANNOUNCE_DISMISS_KEY = "yiban-announce-dismissed";
+  function announceIsShown(text) {
+    try { return sessionStorage.getItem(ANNOUNCE_SHOWN_KEY) === text; } catch (e) { return false; }
+  }
+  function showAnnouncement(text) {
+    try { sessionStorage.setItem(ANNOUNCE_SHOWN_KEY, text); } catch (e) {}
+    openModal({
+      title: "公告",
+      body: el("div", { class: "pm-announce", text: text }),
+      // 右上角 ✕ / Esc / 点遮罩与「我知道了」同义：都算已读并结束本次会话的打扰。
+      onClose: function () { acknowledgeAnnouncement(text); },
+      actions: [{ label: "我知道了", variant: "primary" }]
+    });
+  }
   function announceIsDismissed(text) {
     try { return sessionStorage.getItem(ANNOUNCE_DISMISS_KEY) === text; } catch (e) { return false; }
   }
@@ -1204,9 +1216,11 @@
   function markAnnouncementRead(text) {
     try { sessionStorage.setItem(ANNOUNCE_READ_KEY, text); } catch (e) {}
   }
-  function dismissAnnouncement(text) {
+  function acknowledgeAnnouncement(text) {
     try { sessionStorage.setItem(ANNOUNCE_DISMISS_KEY, text); } catch (e) {}
-    forEach(document.querySelectorAll("[data-announcement-bar]"), function (bar) { bar.hidden = true; });
+    markAnnouncementRead(text);
+    // 就地把圆点/计数/铃铛 aria-label 刷新为已读；applyAnnouncementText 本身不弹窗。
+    applyAnnouncementText(text);
   }
   function showBell() {
     var btn = $("announcementBtn");
@@ -1215,26 +1229,12 @@
     if (btn.getAttribute("data-notif-always") === "1") btn.hidden = false;
     return btn;
   }
-  // 公告文本落到全部挂点（顶栏入口、通知中心分节、登录页横幅）。单独抽出来是为了让
-  // 「发布/下线」拿到响应里的 text 后能就地刷新横幅，不必再等一次 GET（且不再重复绑定监听：
+  // 公告文本落到全部挂点（顶栏入口、通知中心分节）。单独抽出来是为了让
+  // 「发布/下线」拿到响应里的 text 后能就地刷新入口与分节，不必再等一次 GET（且不再重复绑定监听：
   // 用 data-announce-bound / data-announce-text 幂等绑定与取值）。
   function applyAnnouncementText(raw) {
     var text = String(raw == null ? "" : raw).trim();
     var btn = $("announcementBtn");
-    if (btn && !btn.closest(".dd-wrap")) {
-      btn.setAttribute("data-announce-text", text);
-      if (text) {
-        btn.hidden = false;
-        if (btn.getAttribute("data-announce-bound") !== "1") {
-          btn.setAttribute("data-announce-bound", "1");
-          btn.addEventListener("click", function () {
-            showAnnouncement(String(btn.getAttribute("data-announce-text") || ""));
-          });
-        }
-      } else {
-        btn.hidden = true;
-      }
-    }
     showBell();
     var unread = !!text && !announceIsRead(text);
     // 未读的三载体：圆点（图形）+ 面板头数字徽标（文字）+ 铃铛 aria-label（读屏）。
@@ -1261,22 +1261,18 @@
     }
     forEach(document.querySelectorAll("[data-announcement-text]"), function (n) { n.textContent = text; });
     forEach(document.querySelectorAll("[data-announcement-block]"), function (block) { block.hidden = !text; });
-    forEach(document.querySelectorAll("[data-announcement-bar]"), function (bar) {
-      var closeBtn = bar.querySelector("[data-announcement-dismiss]");
-      if (closeBtn && closeBtn.getAttribute("data-announce-bound") !== "1") {
-        closeBtn.setAttribute("data-announce-bound", "1");
-        closeBtn.addEventListener("click", function () {
-          var tn = bar.querySelector("[data-announcement-text]");
-          dismissAnnouncement(tn ? (tn.textContent || "") : "");
-        });
-      }
-      bar.hidden = !text || announceIsDismissed(text);
-    });
   }
   function initAnnouncement() {
     // 公告是公开只读、低频变更：60s 缓存，切页不重复拉取
     apiCached("announcement", 60000, function () { return api("GET", "/api/announcement"); })
-      .then(function (data) { applyAnnouncementText(data && data.text); })
+      .then(function (data) {
+        var text = String(data && data.text || "").trim();
+        applyAnnouncementText(text);
+        // 只在登录后的外壳自动弹；同一会话只弹一次，换文本才重弹。
+        if (text && !announceIsShown(text) && !announceIsDismissed(text) && !announceIsRead(text)) {
+          showAnnouncement(text);
+        }
+      })
       .catch(function () {
         // 公告接口失败也不能让通知入口消失（用户端下拉是常驻入口）
         showBell();
@@ -1437,11 +1433,10 @@
     var themeBtn = $("themeToggle");
     if (themeBtn) themeBtn.addEventListener("click", CHROME.toggleTheme);
     CHROME.updateThemeIcons();
-    // 公告是公开只读接口，认证页也要显示，故放在提前返回之前。
-    initAnnouncement();
-    // 认证页（layout_auth.html 的 data-page="auth"）没有身份/时钟需求，而 /api/me 与
-    // /api/clock 对匿名请求返回 401；跳过可避免登录页每次加载产生无谓的失败请求。
+    // 认证页（layout_auth.html 的 data-page="auth"）没有通知入口、也不该被公告弹窗打断登录；
+    // /api/me 与 /api/clock 对匿名请求返回 401，跳过可避免登录页每次加载产生无谓的失败请求。
     if (document.body.getAttribute("data-page") === "auth") return;
+    initAnnouncement();
     identity().then(function (data) { if (data) loadNavBadges(data); });
     // 徽标按 POLL_MS 节拍刷新（非管理员在 loadNavBadges 里短路）；切回可见立刻补一次。
     setInterval(refreshNavBadges, POLL_MS);

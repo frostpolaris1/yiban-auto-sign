@@ -72,16 +72,9 @@
     </div>
     {% endblock %}
 
-    {# 公告与卡片成组居中：公告紧贴表单上方 16px，且与顶部工具条保持 ≥16px 距离
-       （曾把公告直接放在主列首元素：与顶部组件零间距、与表单隔着一个 auto 外边距 → 
-        实测"离上面太近、离表单太远"，窄屏还会顶到工具条上）。 #}
+    {# 登录页只保留表单卡片。公告自 2026-10-21 起不再用横幅：管理端与用户端
+       都收进右上角通知铃铛，登录页不显示（未登录时没有通知入口，也不该被弹窗打断登录）。 #}
     <div class="auth-main-center">
-      <div class="alert warning auth-announce" data-announcement-bar role="status" hidden>
-        <span class="ico">{{ icon('triangle-alert') }}</span>
-        <span class="body" data-announcement-text></span>
-        <button type="button" class="close" data-announcement-dismiss
-                title="关闭公告" aria-label="关闭公告">{{ icon('x') }}</button>
-      </div>
       <div class="auth-card">
         {% block content %}{% endblock %}
       </div>
