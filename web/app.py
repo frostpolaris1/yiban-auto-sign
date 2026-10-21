@@ -328,7 +328,8 @@ ACCOUNTS_DEFAULT = env_io.resolve_path("YIBAN_ACCOUNTS_FILE", "accounts.json")
 # 会静默落到 /var/log/yiban；同机第二份部署因此与第一份共用状态目录与磁盘外锚点。
 STATE_DIR_DEFAULT = env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
 LOG_DEFAULT = env_io.resolve_path("YIBAN_LOG_FILE", "/var/log/yiban/sign.log")
-# ENV_DEFAULT / DB_DEFAULT 也走 resolve_path。只认 os.environ 时，`.env` 里写的值对 web 进程无效。
+# DB_DEFAULT 也走 resolve_path（`.env` 里的库路径对 web 进程有效）。
+# ENV_DEFAULT 是**指针**：`resolve_path` 对它只读进程环境，不读 `.env`（自指）。
 # 库路径一侧的后果最直白：引擎开到 `.env` 声明的库，web 开到默认库。同一部署会出现两个库。
 # 两枚默认值都取自 `env_io` 的单点常量（`data/.env` / `data/yiban.db`，相对检出根）——
 # 与引擎侧同源，且使检出根可属 root 且组/其他不可写（install.sh 的 M01 门）。

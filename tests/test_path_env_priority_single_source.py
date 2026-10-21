@@ -2,12 +2,12 @@
 """路径键优先级只有一个口径：进程环境 → `.env` → 默认值（工单 71z7）。
 
 标签：A · 配置：邮件/推送读侧
-覆盖：四个路径键（`YIBAN_ENV_FILE` / `YIBAN_DB_FILE` / `YIBAN_STATE_DIR` /
+覆盖：三个可配置路径键（`YIBAN_DB_FILE` / `YIBAN_STATE_DIR` /
    `YIBAN_LOG_FILE`）在 `env_io.PATH_KEYS`、`resolve_path`、`child_env.build_child_env`
    与三个 bash 载体里的同一口径；非路径键保持 `.env` 优先（M27）。
 对应实现：`yiban/adapters/config/env_io.py`、`scripts/child_env.py`、
    `run.sh` / `scripts/yiban-fallback.sh` / `run_probe.sh`。
-关键断言：① 路径键集合只有一处定义，CLI 视图引用它；② 四个路径键在进程环境与
+关键断言：① 路径键集合只有一处定义，CLI 视图引用它；② 三个可配置路径键在进程环境与
    `.env` 冲突时取进程环境；③ 抽一个非路径键，冲突时取 `.env`（翻优先级会红）。
 依赖：临时 `.env`；不触网、不建库。bash 载体做源码级守卫（行为级覆盖见报告）。
 """

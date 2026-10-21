@@ -193,7 +193,7 @@ class YibanFallbackShTest(unittest.TestCase):
         self.assertIsNotNone(self._sign_log(), "补缺路径下日志仍应落在进程环境给的目录")
 
     def test_path_keys_prefer_process_env(self):
-        """四个路径键例外（工单 71z7）：`.env` 与 cron 行都写 STATE_DIR 时，进程环境胜。"""
+        """三个可配置路径键例外（工单 71z7）：`.env` 与 cron 行都写 STATE_DIR 时，进程环境胜。"""
         dotenv_state = os.path.join(self.tmp, "dotenv-state")
         os.makedirs(dotenv_state, exist_ok=True)
         self._write_env("YIBAN_FALLBACK_ENABLE=1\n"
