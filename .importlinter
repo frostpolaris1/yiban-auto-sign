@@ -55,7 +55,7 @@ forbidden_modules =
 ; ---------------------------------------------------------------------------
 ; 契约 2：洁净室协议库不得依赖仓内任何其他包
 ;
-; yiban.adapters.protocol_yiban 是 L2 洁净室。MIT 许可随代码，SPEC.md 是契约。
+; yiban.adapters.protocol_yiban 是 L2 洁净室。AGPL-3.0-only 许可随代码，SPEC.md 是契约。
 ; 它要能整包独立复用与审计。它引 yiban 兄弟模块即污染洁净室。
 ; 引 web 或 scripts 同理。许可与可复用性同时失效。
 ;
