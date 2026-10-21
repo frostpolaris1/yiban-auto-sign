@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""`yiban.engine`：签到引擎。批 B 后这里是**迁移期形态**：部分成员已搬出，旧坐标留壳。
+"""`yiban.engine`：签到引擎。批 B 后这里是**迁移期形态**：部分成员已搬出。旧坐标转发壳已由 `145-E` 删净，本包不再提供这些名字。
 
 仍在原地的成员（未搬，理由见各条）：
 - `cli_support`：CLI 日志装配、进程级运行锁、状态文件读改写锁（支撑件，归属待定）；
@@ -13,7 +13,7 @@
 - `executor_v3`：调度 v3 的执行体（要求拆 `app/sign_one` ＋ `app/ingest`）；
 - `crash_semantics`、`db_maintenance`、`egress_admin`：崩溃语义、库维护、出口管理。
 
-已搬出的成员（本包对应名字是**转发壳**，取到的是新坐标的实现对象）：
+已搬出的成员（本包不再提供这些名字；请直接 import 下列新坐标）：
 - `hrw` → `yiban/core/hrw.py`；
 - `round` → `yiban/app/round.py`；`probe` → `yiban/app/probe.py`；
   `runner` → `yiban/app/runner.py`；
@@ -29,7 +29,7 @@
 两条依赖纪律（与 `yiban/` 其它包一致，且直接决定既有测试的打桩是否生效）：
 
 1. **包内不得以裸名导入 `db` / `mailer` / `notify` / `signin`**——等价物是
-   `from yiban.adapters.persistence import db` 与 `from yiban import mail, notify`；
+   `from yiban.adapters.persistence import db` 与 `from yiban.adapters.notifier import mail, notify`；
 2. **跨模块调用走模块属性**（`schedule.build_schedule(...)`），**不要**
    `from yiban.engine.schedule import build_schedule`：后者在导入期就把引用钉死，
    而测试以 `signin.build_schedule = 替身` 打桩时，兼容壳会把写入转发到实现模块，

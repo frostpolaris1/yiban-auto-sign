@@ -12,9 +12,9 @@
 - `adapters/`：唯一 I/O 面。`protocol_yiban/`（洁净室协议库：纯解析/构造；MIT，许可见其
   LICENSE）、`protocol_fake/`（测试假上游）、`notifier/`（邮件、推送与告警编排
   `report`）、`persistence/`（原 `yiban.store` 包整包搬入）、`statefiles/`（含原
-  `yiban.engine.state_io` 模块）、`config/`。
+  `yiban.adapters.statefiles.state_io` 模块）、`config/`。
 - `workers/`：签名工作体（`workers`＝多执行体监督进程与兜底常驻，原
-  `yiban.engine.workers` 模块。其编排面按契约第 1 节应属 `app/coord`，
+  `yiban.workers.workers` 模块。其编排面按契约第 1 节应属 `app/coord`，
   拆分属第三刀）。
 - `engine/`：迁移期形态，仍有未搬成员（见各包 docstring）。
 

@@ -28,7 +28,7 @@
 本模块不反向导入 `web.app`（本仓测试以别名加载 `app.py`，普通 import 会再执行一份副本
 模块）。宿主依赖经 `configure(...)` 登记，登记的是 lambda 而不是值：测试赋值
 `LOG_FILE` / `STATE_DIR`、打桩 `_tail_lines` 都在调用时刻生效。未登记即 `RuntimeError`
-（fail-closed）。熔断状态文件的读写一律走 `yiban.cred_state` 的唯一入口，不自建第二套。
+（fail-closed）。熔断状态文件的读写一律走 `yiban.adapters.statefiles.cred_state` 的唯一入口，不自建第二套。
 """
 
 import json
@@ -334,7 +334,7 @@ def _mask_log_phones(line):
 # ---------------------------------------------------------------------------
 # 按日签到状态
 # ---------------------------------------------------------------------------
-#: sign-daily 符号 → 状态码的反查表，由 `yiban.status.SYMBOL` **取反**得到（不手抄）。
+#: sign-daily 符号 → 状态码的反查表，由 `yiban.core.status.SYMBOL` **取反**得到（不手抄）。
 #:
 #: 为什么必须取反：本表原来是手抄的三项（✅/❌/➖），而写入侧 `runner._write_sign_daily`
 #: 写的是 `SYMBOL` 里的六项（含 🚫 no_position 与 🕓 supplementing）。手抄子集会随写入侧
@@ -464,7 +464,7 @@ def accounts_terminal_summary(days=30):
 def _cred_paused_phones():
     """处于「账密故障暂停」（熔断/半开试探中）的手机号集合，供设置页容量拆解展示。
 
-    数据源经 `yiban.cred_state` 唯一入口（读写口径与 signin 一致）：`paused_since`
+    数据源经 `yiban.adapters.statefiles.cred_state` 唯一入口（读写口径与 signin 一致）：`paused_since`
     非空即暂停中。**只服务展示**——配额与调度判定一律不读这里，所以退化成本低。
     """
     data = cred_state.read()
@@ -482,7 +482,7 @@ def _cred_paused_phones():
 def clear_fuse_pause(phone):
     """账号凭据变更（改密码/编辑）后清除熔断暂停记录，使其立即恢复签到。
 
-    必须走 `yiban.cred_state` 的唯一入口（整段读-改-写持跨进程锁）：自己读整个文件、
+    必须走 `yiban.adapters.statefiles.cred_state` 的唯一入口（整段读-改-写持跨进程锁）：自己读整个文件、
     删一条、再整体写回且不持锁，会与签到进程的收尾保存并发——按自己的读取结果重写会
     抹掉对方写入的其他账号记录。文件不存在时静默返回：用户每次编辑账号都走到这里，
     按 I/O 失败告警会刷屏。

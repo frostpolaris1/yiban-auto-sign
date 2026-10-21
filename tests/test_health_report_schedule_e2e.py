@@ -102,7 +102,7 @@ class _HealthScheduleBase(_B14AlertGateBase):
 
     def _due_at(self, moment, status=HEALTHY_STATUS, exhausted=False, since=None,
                 unconfigured_hm=None):
-        """在指定时刻判闸门：时刻经 `yiban.clock.now` 注入，额度状态按需打桩。
+        """在指定时刻判闸门：时刻经 `yiban.core.clock.now` 注入，额度状态按需打桩。
 
         `since` = 上一次唤醒时刻，走清理线程的区间判定（不传 = 单点判定）。
         `unconfigured_hm` = 时刻键未配置时的锚点（不传 = 无时刻门，旧签名语义）。

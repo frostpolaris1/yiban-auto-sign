@@ -5,7 +5,7 @@
 两条转发纪律（都为"行为零变化"服务）：
 
 1. **逐名转发**实现模块的模块级名字全集（含下划线名，如 `_conn_lock` / `_begin_immediate`），
-   转发的是同一对象——函数、常量与可变状态字典，`db.get_conn is yiban.store.db.get_conn`
+   转发的是同一对象——函数、常量与可变状态字典，`db.get_conn is yiban.adapters.persistence.db.get_conn`
    这类身份断言仍成立，测试对内部名的引用无需改动。名字用程序化方式逐个拉取，不手抄
    ——手抄两百多个名字迟早与实现漂移。
 2. **属性写入转发**（`_ForwardingModule`）：既有测试与调用方以 `db.<名字> = 替身` 打桩
@@ -18,12 +18,12 @@
    模块 `__dict__` 的名字尤其如此）。故壳另记一份"已摘名"清单（`_shell_deleted`），
    删除后读取立刻失败，随后的恢复 `setattr` 移出清单并照常转发到实现模块。
 
-补充一条读取纪律：实现入包后，`web/app.py` 与 `yiban/**` 直接 `from yiban.store import db`，
+补充一条读取纪律：实现入包后，`web/app.py` 与 `yiban/**` 直接 `from yiban.adapters.persistence import db`，
 于是同一进程里可能"一半读壳、一半读实现"。只转发写入挡不住这种不一致
 （例如 `mock.patch.object(web.app.db, "audit")` 打在实现上，而壳里那份绑定仍是旧对象），
 故本壳的**读取也回落到实现模块**（见 `_ForwardingModule.__getattribute__`）。
 
-新代码请直接 `from yiban.store import db`；本壳只为部署面与既有调用方保留。
+新代码请直接 `from yiban.adapters.persistence import db`；本壳只为部署面与既有调用方保留。
 """
 import os
 import sys

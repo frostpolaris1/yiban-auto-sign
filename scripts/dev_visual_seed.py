@@ -298,7 +298,7 @@ def seed(tmp: str, reset: bool = False) -> dict:
 
     # 按日状态文件（sign-daily-YYYY-MM-DD.json，{phone: 状态符号}）——/api/my-calendar
     # 直接读的就是这一族（结构化 sign-state 是 /api/accounts 状态行的另一条事实源，
-    # 两者别混，符号统一取自 yiban.status.DISPLAY 不另抄字面量）。此前种子根本没写
+    # 两者别混，符号统一取自 yiban.core.status.DISPLAY 不另抄字面量）。此前种子根本没写
     # 这族文件、日历格一直空白。
     # 覆盖策略（色彩语义定版后图例按语气档收敛）：
     # - **全状态轮转** DAILY_CYCLE：账号 idx 在第 day 天取 (day + idx*7) % len——

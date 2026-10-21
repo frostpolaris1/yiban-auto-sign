@@ -253,7 +253,7 @@ class LedgerCheckTest(unittest.TestCase):
         """兜底打印的异常消息含凭据形态时必须脱敏（与迁移侧同一口径）。
 
         异常文本多来自连接层/`.env` 解析，可能带出配置值；原样打印等于把它写进
-        运维终端与日志。判定与实现共用 `yiban.masking.sanitize_text`。
+        运维终端与日志。判定与实现共用 `yiban.core.masking.sanitize_text`。
 
         前置条件必须**在本用例内自建**：`main()` 在进程内跑，读的是进程环境；缺库
         守卫（拒绝新建空库）排在 `open_readonly` 注入点**之前**，环境没指到位就短路返回，
