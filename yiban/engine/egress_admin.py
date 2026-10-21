@@ -13,9 +13,9 @@
 **归属**
 `yiban.engine` 的命令行子命令实现层。速率的**引擎域**只有一份，在
 `yiban.engine.token_bucket`——本模块回问桶自己的夹取，不自建字面量。出口速率的键名与
-出厂值都只由 `yiban.engine.schedule.planner_config()` 取用。名册另声明了该键的域，两者
-不一致（域漂移，登记在 `scripts/gate/shared-facts.tsv` 的已知盲点）。
-
+出厂值都只由 `yiban.engine.schedule.planner_config()` 取用。名册声明域与引擎域同值
+（`config/registry.json` 的 `[0.2, 4.0]`，由守卫钉住）；读取侧对域外值**钳到边界并
+告警**，不再有"名册说 100、引擎静默按 4.0 跑"的漂移（工单 zx54）。
 **复用**
 `token_bucket.EgressBucket`（速率域的判据：构造时经它自己的夹取）、
 `schedule.planner_config()`（出口速率键的唯一取值点）、
@@ -99,9 +99,10 @@ def _parse_rate(text):
 def _engine_rate(view):
     """引擎出厂速率 → `(rate, 错误文本)`。
 
-    取值点只有一处（`schedule.planner_config()`）。取到的值再过**同一道**域校验：该键的
-    名册声明域（`config/registry.json`）宽于引擎域，中间值（如大于 4.0）引擎装载时会静默
-    夹回。不校验就会出现"命令报已写 50、引擎按 4.0 跑"（缺陷 D2）。
+    取值点只有一处（`schedule.planner_config()`）。该键的名册声明域与引擎域同值
+    （`token_bucket` 的速率域常量），读取侧对域外值**钳到边界并 WARN**；本函数
+    再按"引擎装回后是不是它"校验一次，是防读取侧回归的第二道闸。没有这道闸，命令会报
+    一个引擎不会用的速率（缺陷 D2 的残留形状）。
 
     为什么先把视图导出进程环境：`run.sh` 先把 `.env` 逐键导出为环境变量再拉起引擎；直接跑
     `python -m yiban.cli` 时没有这一步，同一份配置在两条路径下会解析出不同的值。

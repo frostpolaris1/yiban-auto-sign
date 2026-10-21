@@ -123,6 +123,7 @@ fast	tests/test_egress_and_executors_api.py
 fast	tests/test_egress_bucket_key.py
 fast	tests/test_egress_budget_split_e2e.py
 fast	tests/test_egress_direct_applied.py
+fast	tests/test_egress_rate_domain_single_source.py
 fast	tests/test_elbow_predicate.py
 fast	tests/test_elbow_shadow.py
 fast	tests/test_email_domain_review.py
@@ -213,6 +214,7 @@ fast	tests/test_notify_throttle.py
 fast	tests/test_notify_webhook.py
 slow	tests/test_only_single_process.py	# 真进程组：起真进程树并 terminate 整组（本机 10.9s）
 fast	tests/test_panel_false_signals.py
+fast	tests/test_path_env_priority_single_source.py
 fast	tests/test_path_env_read_gate.py
 fast	tests/test_path_single_definition.py
 slow	tests/test_pause_flag_truthiness_e2e.py	# 真子进程：真跑 run.sh/fallback/probe 三份 bash（本机 1.5s）
