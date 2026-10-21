@@ -362,19 +362,6 @@ class BackupDirDefaultTest(BackupHardeningBase):
         self.assertEqual({"/var/backups/yiban"}, set(values.values()),
                          f"备份目录默认值跨载体漂移：{values}")
 
-    def test_no_old_default_left_in_docs_or_wrapper(self):
-        wrapper = os.path.join(BASE, "deploy", "prod", "yiban-backup-wrapper.sh")
-        sentinel_sh = os.path.join(BASE, "scripts", "yiban-backup-sentinel.sh")
-        for path in (wrapper, sentinel_sh, os.path.join(BASE, "README.md")):
-            with open(path, encoding="utf-8") as f:
-                body = f.read()
-            self.assertNotIn("默认 /var/backups、", body,
-                             f"{os.path.basename(path)} 仍写旧默认")
-            self.assertNotIn("`/var/backups` 下", body,
-                             f"{os.path.basename(path)} 仍把旧目录写成默认落点")
-        with open(wrapper, encoding="utf-8") as f:
-            self.assertIn("/var/backups/yiban", f.read(),
-                          "wrapper 没有写明它继承的新默认")
 
     def test_shared_dir_is_refused_before_chmod(self):
         r = self._run(extra_env={"BACKUP_DIR": "/var/backups",

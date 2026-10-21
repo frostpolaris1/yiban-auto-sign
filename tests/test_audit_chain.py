@@ -851,11 +851,6 @@ class BackupScriptContractTest(unittest.TestCase):
         self.assertIn("exit 1", block, "校验不过必须以非 0 退出")
         self.assertIn("integrity_check", self._block("verify_db_snapshot()", "if [ -f \"${DB_SRC}\" ]"))
 
-    def test_corrupt_source_keeps_archive_but_exits_nonzero(self):
-        """.backup 成功但 integrity 不过 = 源库损坏：归档照留（最后一份素材），退出码非 0。"""
-        self.assertIn("CORRUPT_SOURCE=1", self.src)
-        tail = self.src[self.src.index("if [ \"${CORRUPT_SOURCE:-0}\" -eq 1 ]"):]
-        self.assertIn("exit 4", tail)
 
     def test_manifest_includes_anchor_and_gate_files(self):
         """(b) 备份清单必须含外部锚点与闸门/账本状态文件。

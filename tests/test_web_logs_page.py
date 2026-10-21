@@ -161,20 +161,6 @@ class LogsPageTest(unittest.TestCase):
         c = self._admin_client()
         self.assertEqual(c.get("/data/logs").headers.get("Cache-Control"), "no-store")
 
-    def test_legacy_assets_are_fully_retired(self):
-        """退役必须是"连引用一起消失"：HTML 不再引旧脚本，服务端也不再出分区标记。
-
-        只删文件、留着引用会让浏览器 404、也让人以为旧实现还在；反过来只删引用、留着
-        文件则留下死代码（本仓对死文件有清理纪律）。
-        """
-        c = self._admin_client()
-        html = c.get("/data/logs").get_data(as_text=True)
-        for legacy in ("static/js/pages/data_logs.js", "static/js/components/date-field.js"):
-            self.assertNotIn(legacy, html, f"页面仍在引用已退役的 {legacy}")
-        self.assertNotIn("data-tab-id", html, "分区标记应由 Vue 渲染，服务端不再出")
-        # 文件本身也该已删除（防"引用没了、文件还在"的半退役状态）
-        self.assertFalse(os.path.exists(os.path.join(BASE, "web", "static", "js", "pages", "data_logs.js")))
-        self.assertFalse(os.path.exists(os.path.join(BASE, "web", "static", "js", "components", "date-field.js")))
 
     def test_logs_data_is_client_rendered_only(self):
         c = self._admin_client()

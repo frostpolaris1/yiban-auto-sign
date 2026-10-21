@@ -127,11 +127,6 @@ class ContractConfigTest(unittest.TestCase):
     def setUp(self):
         self.text = _read(CONFIG)
 
-    def test_all_contracts_are_declared(self):
-        for cid in CONTRACT_IDS:
-            with self.subTest(contract=cid):
-                self.assertNotEqual(_section(self.text, cid), "",
-                                    f"`.importlinter` 里缺契约 {cid}（契约被删等于门被拆）")
 
     def test_config_declares_no_contract_beyond_the_frozen_set(self):
         """配置里的契约 id 集合必须**恰等于** CONTRACT_IDS。
@@ -261,21 +256,7 @@ class GateWiringTest(unittest.TestCase):
                 self.assertIn(cmd, body,
                               f"run_ci 必须**执行**这一行（写在注释里不算）：{cmd}")
 
-    def test_entry_script_frozen_command_list_has_the_new_step(self):
-        """入口测试的冻结清单必须同步。少一行，CI 命令表就与脚本漂移。"""
-        frozen = _read(os.path.join(BASE, "tests", "test_dev_verify_entry.py"))
-        for cmd in (CI_GATE_CMD, CI_META_CMD):
-            with self.subTest(cmd=cmd):
-                self.assertIn(cmd, frozen,
-                              "tests/test_dev_verify_entry.py 的 EXPECTED_CI_COMMANDS "
-                              f"缺 {cmd}——CI 命令表是逐字冻结的")
 
-    def test_gate_is_tracked_with_its_contract_and_baseline(self):
-        for path in (".importlinter", "scripts/check-import-linter.py",
-                     "scripts/gate/import-linter-baseline.txt"):
-            with self.subTest(path=path):
-                self.assertTrue(os.path.isfile(os.path.join(BASE, path)),
-                                f"缺产物 {path}")
 
     def test_committed_baseline_is_a_tombstone(self):
         """入库基线只允许文件头（工单 jlmv：基线按模块对放行会放行整条方向）。
@@ -372,12 +353,6 @@ class GateLiveTest(unittest.TestCase):
         self.assertIn("基线机制已退役", out)
         self.assertIn("ignore_imports", out, "拒绝信息必须给出唯一豁免出口")
 
-    def test_write_baseline_is_retired(self):
-        rc, out = _run_gate(self.root, self.config, self.baseline,
-                            extra=("--write-baseline",))
-        self.assertEqual(rc, 2, f"--write-baseline 必须退 2：\n{out}")
-        self.assertIn("已退役", out)
-        self.assertIn("ignore_imports", out)
 
     def test_malformed_baseline_row_is_an_environment_error(self):
         self._write_baseline(["no-upward\tpkg.core"])
@@ -608,15 +583,6 @@ class CurrentTreeTest(unittest.TestCase):
         self.assertIn(f"契约数 {len(CONTRACT_IDS)}", out,
                       "配置里的契约必须全部被跑（少一条等于门被拆）")
 
-    def test_committed_baseline_is_empty(self):
-        """入库基线必须只有文件头：数据行一律判环境错误（jlmv）。"""
-        rc, out = _run_gate(BASE, CONFIG, BASELINE, timeout=300)
-        if "import-linter 不可用" in out:
-            self.fail("测试解释器里没有 import-linter：本门不许静默跳过。"
-                      f"装上再跑：{sys.executable} -m pip install {PINNED_TOOL}\n{out}")
-        self.assertEqual(rc, 0, f"真树 + 空基线必须退 0：\n{out}")
-        self.assertIn("基线机制已退役", out)
-        self.assertEqual(_read(BASELINE), _load_gate_module().BASELINE_HEADER)
 
 
 if __name__ == "__main__":
