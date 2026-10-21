@@ -311,6 +311,16 @@ class ReclaimTasksTest(_Base):
         self.assertEqual(self._row(_phone(1))["state"], "done", "vshard=-1 历史行不碰")
         self.assertEqual(self._row(_phone(2))["state"], "pending")
 
+    def test_only_flipped_rows_gain_attempts(self):
+        """`attempts` 只随**翻态**行 +1：`pending`／`failed` 行被刷新 `run_at` 时不得白吃预算。"""
+        self._add_task(_phone(1), state="pending", attempts=2)
+        self._add_task(_phone(2), state="failed", attempts=1)
+        self._add_task(_phone(3), state="done", attempts=0)
+        queue_store.reclaim_tasks(DAY, [_phone(1), _phone(2), _phone(3)])
+        self.assertEqual(self._row(_phone(1))["attempts"], 2, "pending 不翻态，预算不动")
+        self.assertEqual(self._row(_phone(2))["attempts"], 1, "failed 归回炉口，预算不动")
+        self.assertEqual(self._row(_phone(3))["attempts"], 1, "done 翻态＝一次新尝试记账")
+
 
 class DisplayReadsTest(_Base):
     """展示读口径（`sign_tasks` 为唯一台账）：latest_day / owners_for_day / activity / owners_since。"""

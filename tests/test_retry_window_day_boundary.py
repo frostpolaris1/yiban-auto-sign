@@ -222,7 +222,7 @@ class RetryBudgetInvariantTest(unittest.TestCase):
 
     `next_retry_at_v3` 的落点上界是 `min(RETRY_CAP_SEC, 剩余有效窗口 × 0.3)`。
     「尾部预留缓冲」= 这条式子能从窗口尾部拿到的最大额度（窗口起点处的
-    `有效窗口 × 0.3`）。若它小于 `RETRY_CAP_SEC`，配置的退避上限**永远拿不到**：
+    `有效窗口 × 0.3`）。若它小于 `RETRY_CAP_SEC`，配置的退避上限在**窗口内路径**拿不到：
     函数每一拍都会静默把 cap 压低，日志里没有任何一句话说"你配的 600s 不可达"。
     这条不变量把该形态变成显式报错（`schedule._schedule_config` 记录 ERROR）。
 

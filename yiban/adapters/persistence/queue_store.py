@@ -45,7 +45,7 @@
   闸门，见该函数说明）；
 - `fallback_event`：兜底常驻的"失败即入队"读取端——默认可接手（`retry:` 档）未了结行的
   事件签名 `(条数, 最新迁移标记)`，短轮询变化即接手；
-- `purge`：按保留期清理本表存量（带时钟跳变守卫，见 `yiban/store/cleanup.py` 编排）；
+- `purge`：按保留期清理本表存量（带时钟跳变守卫，见 `yiban/adapters/persistence/cleanup.py` 编排）；
 - `day_counts`：当日各 state 计数与派生口径（settled/open/total）——调用方据此给
   进度展示取数；**读不通回 `None` 哨兵**（降级口径见下）；`open` **不过滤 `vshard`，
   不得当"当日是否了结"的闸门**（那会把永不被领取的 `vshard=-1` 惰性行算进去），
@@ -56,17 +56,17 @@
   的读写薄封装，供 `yiban/engine/token_bucket.py` 落库与崩溃重启恢复。
 
 **归属**
-`sign_tasks` 由 `yiban/store/migrations.py` 的 v18 迁移建立；本模块是该表与
+`sign_tasks` 由 `yiban/adapters/persistence/migrations.py` 的 v18 迁移建立；本模块是该表与
 `egress_state` 在 store 层的**唯一访问点**——表结构、SQL 与降级口径都收在这里，
 调用方不自己拼 SQL。台账单池化后本表是**唯一生产台账**（`sign_claims` 已冻结、零写入，
-其旧访问层 `yiban/store/claims.py` 保留但无生产调用点）。
+其旧访问层 `yiban/adapters/persistence/claims.py` 保留但无生产调用点）。
 
 **复用**
-调用方按模块属性取（`from yiban.store import queue_store` 后 `queue_store.claim_batch(...)`），
+调用方按模块属性取（`from yiban.adapters.persistence import queue_store` 后 `queue_store.claim_batch(...)`），
 这样打桩与"换成独立队列库文件"都不需要改调用点。
 
 **通信**
-数据源连接与进程内写锁暂取 `yiban.store.connection` 的单例 `get_conn()` / `_conn_lock`
+数据源连接与进程内写锁暂取 `yiban.adapters.persistence.connection` 的单例 `get_conn()` / `_conn_lock`
 （`_queue_conn()` 是唯一取点：将来本表迁到独立库文件、换独立连接时只改这一处）。
 设计上的调用方是执行入口 `yiban/engine/executor_v3.py`（批量领取/收尾/重排/待办计数/
 重签/桶状态落库）与展示侧 `yiban/adapters/statefiles/state_io.py`、`web/services/executor_env.py`
@@ -124,7 +124,7 @@ STATES = (STATE_PENDING, STATE_CLAIMED, STATE_DONE, STATE_FAILED, STATE_SKIPPED,
           STATE_STOLEN)
 
 #: 了结态（当日不必再签）。「了结」的词义只在 `yiban.status` 定义一处，本表不自写判据。
-SETTLED_STATES = yiban_status.TASKS_SETTLED_STATES  # = {done, skipped}：`skipped` 承接暂停/取消类结论（paused / user_cancelled / global_paused，v18 平移映射见 `yiban.store.migrations._JSON_TERMINAL_TO_TASK_STATE`）；旧表 `sign_claims` 没有 `skipped` 这一档、同批结论当时落 `failed`（未了结、可再领），跨表比对"当日是否了结"不得直接对齐
+SETTLED_STATES = yiban_status.TASKS_SETTLED_STATES  # = {done, skipped}：`skipped` 承接暂停/取消类结论（paused / user_cancelled / global_paused，v18 平移映射见 `yiban/adapters/persistence/migrations._JSON_TERMINAL_TO_TASK_STATE`）；旧表 `sign_claims` 没有 `skipped` 这一档、同批结论当时落 `failed`（未了结、可再领），跨表比对"当日是否了结"不得直接对齐
 #: 未了结态（当日仍可能被重排、被接手，或正被某个执行体持有）。
 OPEN_STATES = tuple(s for s in STATES if s in yiban_status.TASKS_OPEN_STATES)  # 成员取自 `yiban.status.TASKS_OPEN_STATES`；顺序沿用本表 `STATES`——成员无先后语义，但顺序稳定便于比对与调试
 #: 可被 `requeue_task` 重排回 `pending` 的状态：所有**未了结**态（`OPEN_STATES`）。
@@ -487,9 +487,11 @@ def reap_abandoned(owner: str, day: str | None = None) -> int:
 
     库异常 → 0 + warning（回收是补偿动作，失败不该打断调用方；下一次监督进程轮末会再试）。
 
-    **回收时 `attempts` 同时 +1**：被回收的行已经历过一次真实尝试（持有者领到即进入
-    `attempts_n + 1` 的编号），下一次领取是**下一次真实尝试**。不递增时同状态的事件行
-    会被 `sign_events` 的条件 INSERT 当作重复丢弃。
+    **回收时 `attempts` 同时 +1**：该次领取已占去一个尝试编号（执行体按
+    `attempts_n + 1` 写事件），下一次领取是**下一次真实尝试**，必须拿新编号。
+    不递增时同状态的事件行会被 `sign_events` 的条件 INSERT 当作重复丢弃。
+    「领取后未发请求就崩溃」的行也 +1：那一次编号已被占，代价是当日重试预算少一次
+    （方向保守：少一次重试，永不多一次登录）。
     """
     prefix = owner + ":"
     sql = ("UPDATE sign_tasks SET state=?, owner='', epoch=epoch + 1, "
