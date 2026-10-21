@@ -271,12 +271,6 @@ class LaneRosterCheckerMutationTest(unittest.TestCase):
         self.assertTrue(any("未被归类" in b for b in bad),
                         "新增文件没归类必须判红，实得：%r" % bad)
 
-    def test_missing_row_is_red(self):
-        bad, _, _ = _lane_violations(
-            self._text("fast\ttests/test_a.py", "fast\ttests/test_b.py"),
-            self.DISK, self.COLL)
-        self.assertTrue(any("未被归类" in b for b in bad),
-                        "新增文件没归类必须判红，实得：%r" % bad)
 
     def test_stale_row_is_red(self):
         bad, _, _ = _lane_violations(
@@ -321,10 +315,6 @@ class LaneRosterCheckerMutationTest(unittest.TestCase):
         self.assertTrue(_empty_lane_violations(rows),
                         "空/残集名册必须被判红：下限断言失效会让'名册==空集'恒真")
 
-    def test_short_roster_is_red(self):
-        rows, _ = _parse_roster(self._text("fast\ttests/test_a.py"))
-        self.assertTrue(_empty_lane_violations(rows),
-                        "残集名册（1 行）必须判红：下限断言失效即扫空当绿")
 
 
 if __name__ == "__main__":

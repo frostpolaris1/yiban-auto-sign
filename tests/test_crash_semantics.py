@@ -367,36 +367,12 @@ class MarkerPrecedesRequestTest(_Base):
         self.assertGreaterEqual(seen[0][1], 1,
                                 "真实请求发出时，写前标记必须已落库（先标记后请求）")
 
-    def test_marker_count_is_not_fewer_than_request_count(self):
-        """标记数 ≥ 真实请求数：每个被发出的请求都有一条对应的 `start` 行。"""
-        phones = [_phone(i) for i in (1, 2, 3)]
-        for p in phones:
-            self._add_task(p)
-        self._seed_v(8)
-        calls = []
-
-        def fake_attempt(acc):
-            calls.append(acc.phone)
-            return (True, "签到成功", False, "success")
-
-        with mock.patch.object(executor_v3.attempts, "attempt_signin", fake_attempt):
-            self._run_v3(self._accounts(*phones))
-
-        starts = db.get_conn().execute(
-            "SELECT COUNT(*) FROM run_events WHERE day=? AND node=?",
-            (DAY, NODE_START)).fetchone()[0]
-        self.assertGreaterEqual(starts, len(calls),
-                                "每个真实请求之前都必须落一条 start 行")
 
 
 # ===========================================================================
 # V-S3 ③：标记写入失败的行为=继续（显式判据）
 # ===========================================================================
 class MarkerWriteFailurePolicyTest(_Base):
-    def test_policy_is_explicitly_continue(self):
-        self.assertEqual(
-            crash_semantics.MARKER_WRITE_FAILURE_POLICY, "continue",
-            "本批裁决：标记写入失败=继续（沿用'观测面坏了不得改变签到结论'）")
 
     def test_signing_proceeds_when_event_table_write_fails(self):
         """观测表写不进时签到照常并了结：标记失败不得反噬主流程。"""

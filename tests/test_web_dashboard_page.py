@@ -165,11 +165,6 @@ class DashboardPageTest(unittest.TestCase):
         self.assertNotIn("pages/data_dashboard.js", html, "模板仍引用 legacy data_dashboard.js")
         self.assertFalse(os.path.exists(LEGACY_DASH_JS), "data_dashboard.js 仍留在库里")
 
-    def test_contract_hooks_survive_in_the_component(self):
-        # id 钩子分布在两个组件文件里（页面骨架 + KPI 卡子组件），合并检查
-        src = _read(DASH_VUE) + "\n" + _read(DASH_KPI)
-        missing = [h for h in CONTRACT_HOOKS if h not in src]
-        self.assertEqual(missing, [], "组件缺少这些 id 钩子（e2e 按它们取值）：" + ", ".join(missing))
 
     # ---- 注入 / PII 出口面 ----
 

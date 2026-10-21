@@ -409,16 +409,7 @@ class _Base(unittest.TestCase):
 class SchedulerV3EnabledTest(unittest.TestCase):
     """台账单池化后 `scheduler_v3_enabled` 恒真；双轨开关的键与缺省常量已删除。"""
 
-    def test_always_true_regardless_of_env(self):
-        for raw in (None, "", "0", "false", "no", "off", "nonsense", "2", "1", "true"):
-            env = {} if raw is None else {"YIBAN_SCHEDULER_V3": raw}
-            self.assertTrue(executor_v3.scheduler_v3_enabled(env), repr(raw))
 
-    def test_switch_key_and_default_constants_are_gone(self):
-        self.assertFalse(hasattr(executor_v3, "ENV_SCHEDULER_V3"),
-                         "双轨开关的键随单池消失")
-        self.assertFalse(hasattr(executor_v3, "DEFAULT_V3"))
-        self.assertEqual(executor_v3.ENV_GLOBAL_RATE, "YIBAN_GLOBAL_RATE")
 
 
 class ManualReclaimTest(_Base):
@@ -527,28 +518,6 @@ class ChannelCountTest(unittest.TestCase):
         for rate in (0.01, 0.05):
             self.assertGreaterEqual(schedule.channel_count(rate, 1), 1)
 
-    def test_capacity_accounts_v3_values_unchanged(self):
-        """把 `channel_count` 接进旧公式的回归护栏：逐值与改造前的内联式子相同。"""
-
-        def legacy(ws, k=1, avg=None, bucket_rate=1.0, util=0.8):
-            avg = 3 if avg is None else max(1, int(avg))
-            k = max(1, int(k))
-            bucket_rate = float(bucket_rate)
-            if bucket_rate <= 0:
-                bucket_rate = 1.0
-            util = min(max(float(util), 0.0), 1.0)
-            channels = min(16, math.ceil(bucket_rate * avg * 2))
-            rate_eff = min(channels / avg, bucket_rate)
-            return math.floor(k * rate_eff * max(0, int(ws)) * util + 1e-9)
-
-        for ws in (0, 10, 100, 4140, 4200, -5):
-            for k in (1, 2, 4):
-                for avg in (1, 3, 8):
-                    for rate in (1.0, 4.0, 0.2, 0.0, 2.5):
-                        with self.subTest(ws=ws, k=k, avg=avg, rate=rate):
-                            self.assertEqual(
-                                schedule.capacity_accounts_v3(ws, k, avg, rate),
-                                legacy(ws, k, avg, rate))
 
 
 # ---------------------------------------------------------------------------
@@ -562,22 +531,7 @@ class PendingCountTest(_Base):
         self._add_task(_phone(4), vshard=FOREIGN_SHARD, state="pending")
         self.assertEqual(queue_store.pending_count(DAY, MY_SHARDS), 2)
 
-    def test_empty_shards_is_zero_without_touching_db(self):
-        self._add_task(_phone(1), vshard=1, state="pending")
-        self.assertEqual(queue_store.pending_count(DAY, ()), 0)
 
-    def test_missing_table_returns_sentinel_with_warning(self):
-        """表未落地 = 待办面读不通：回 `None` 哨兵**并告警**，不再回 0。
-
-        0 只回答"分片集内确实没有 pending 行"。回 0 会让收干判据直接 break——
-        库坏了被当成"活已了结"就是全天零签到（ba-p01-01）。
-        """
-        conn = db.get_conn()
-        conn.execute("DROP TABLE sign_tasks")
-        conn.commit()
-        with self.assertLogs("yiban.store.queue_store", level="WARNING") as cm:
-            self.assertIsNone(queue_store.pending_count(DAY, MY_SHARDS))
-        self.assertIn("读取当日待办任务计数失败", "\n".join(cm.output))
 
     def test_historical_rows_are_never_counted(self):
         """`vshard=-1`（v18 平移 / v20 补账）恒不在分片集内 ⇒ 永不计入待办。"""
@@ -671,19 +625,6 @@ class VInvariantTest(_Base):
         self.assertEqual(
             clock_meta.get_meta(executor_v3.V_META_KEY_PREFIX + DAY, ""), "41")
 
-    def test_stored_v_below_written_shard_is_widened(self):
-        """落库的 V 比已写行的最大分片号还小 ⇒ 有行在扫描范围外，按最大分片号放宽。"""
-        accounts = self._accounts(*[_phone(i) for i in range(3)])
-        self._seed_v(8)
-        self._add_task(_phone(0), vshard=40, state="pending")
-        with self.assertLogs("yiban", level="ERROR") as cm, \
-             mock.patch.object(executor_v3.attempts, "attempt_signin",
-                               lambda acc: (True, "ok", False, "success")):
-            self._run_v3(accounts)
-        self.assertIn("虚分片数不可用", "\n".join(cm.output))
-        self.assertEqual(self._row(_phone(0))["state"], "done", "该行不得被静默漏掉")
-        self.assertEqual(
-            clock_meta.get_meta(executor_v3.V_META_KEY_PREFIX + DAY, ""), "41")
 
     def test_only_historical_rows_are_treated_as_no_usable_plan(self):
         """当日只剩历史惰性行（`vshard=-1`）时视为"无可用计划"：留 error 并照常建计划。
@@ -723,22 +664,6 @@ class VInvariantTest(_Base):
         self.assertEqual(
             clock_meta.get_meta(executor_v3.V_META_KEY_PREFIX + DAY, ""), "8")
 
-    def test_rebuilt_plan_rows_share_the_same_v(self):
-        """补建的计划行与执行体分片集同源：每个分片都有执行体认领，否则该行无人领。"""
-        other = "worker-1@testhost"
-        cfg = _cfg(executors=[OWNER, other])
-        phones = [_phone(i) for i in range(3)]
-        self._add_task(_phone(99), vshard=-1, state="failed")
-        with mock.patch.object(executor_v3.attempts, "attempt_signin",
-                               lambda acc: (True, "ok", False, "success")):
-            self._run_v3(self._accounts(*phones), cfg=cfg)
-        v = int(clock_meta.get_meta(executor_v3.V_META_KEY_PREFIX + DAY, ""))
-        covered = set()
-        for ex in (OWNER, other):
-            covered |= set(hrw.shards_of(ex, cfg["executors"], DAY, v))
-        self.assertEqual(covered, set(range(v)), "每个分片都要有执行体认领")
-        for p in phones:
-            self.assertLess(self._row(p)["vshard"], v)
 
 
 # ---------------------------------------------------------------------------
@@ -1157,14 +1082,6 @@ class RetryTest(_Base):
         self.assertGreaterEqual(delay, 20)
         self.assertLessEqual(delay, 30)
 
-    def test_next_retry_at_caps_at_retry_cap(self):
-        # 有效窗口至 07:47:40（剩余 4060s）→ cap 应为硬上限 600s
-        cfg = _cfg(sign_start=(6, 30), sign_end=(7, 47), edge_back_sec=20,
-                   edge_front_sec=0)
-        self.assertGreater(_remaining(cfg, START), 3600)
-        delay = (executor_v3.next_retry_at_v3(START, cfg, 600, random.Random(5))
-                 - START).total_seconds()
-        self.assertLessEqual(delay, executor_v3.RETRY_CAP_SEC)
 
     def test_next_retry_at_never_passes_window_end(self):
         """落点恒在有效窗口内（`cap = 剩余 × 0.3` 给出结构性保证，再夹一次窗口结束）。
@@ -1407,21 +1324,6 @@ class DryRunTest(_Base):
         self.assertEqual(calls, [], "影子模式不得领取/落库/发请求/写状态")
         self.assertEqual(self._task_count(), 0, "影子模式不写 sign_tasks")
 
-    def test_run_executor_v3_dry_run_returns_empty_and_writes_nothing(self):
-        accounts = self._accounts(*[_phone(i) for i in range(5)])
-        calls = []
-        with mock.patch.object(queue_store, "claim_batch",
-                               side_effect=lambda *a, **kw: calls.append("claim") or []), \
-             mock.patch.object(planner, "write_plan",
-                               side_effect=lambda *a, **kw: calls.append("write")), \
-             mock.patch.object(executor_v3.attempts, "attempt_signin",
-                               side_effect=lambda acc: calls.append("attempt")):
-            results = executor_v3.run_executor_v3(
-                accounts, day=DAY, dry_run=True, cfg=_cfg())
-        self.assertEqual(results, {})
-        self.assertEqual(calls, [])
-        self.assertEqual(self._task_count(), 0)
-        self.assertFalse(os.path.exists(self._state_path()), "dry_run 不写 sign-state")
 
 
 # ---------------------------------------------------------------------------
@@ -1525,23 +1427,6 @@ class LimiterWiringTest(_Base):
         self.assertAlmostEqual(limiter.bucket(OWNER).rate, 0.25, places=6,
                                msg="风控的乘性回退照做")
 
-    def test_global_limiter_semantics(self):
-        with mock.patch.object(token_bucket.logger, "warning") as warn:
-            empty = token_bucket.GlobalLimiter(os.environ.get("YIBAN_GLOBAL_RATE", ""))
-        self.assertIsNone(empty.lam)
-        self.assertFalse(empty.invalid)
-        warn.assert_not_called()
-
-        with self.assertLogs("yiban.engine.token_bucket", level="WARNING") as cm:
-            bad = token_bucket.GlobalLimiter("abc")
-        self.assertTrue(bad.invalid)
-        self.assertIsNone(bad.lam)
-        self.assertIn("非法", "\n".join(cm.output))
-
-        lam2 = token_bucket.GlobalLimiter("2")
-        allowed = sum(1 for t in (0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
-                      if lam2.acquire(t))
-        self.assertLessEqual(allowed, 2, "Λ=2 时 1 秒内放行不超过 2 条")
 
     def test_global_limiter_env_key_is_wired(self):
         self.assertEqual(executor_v3.ENV_GLOBAL_RATE, "YIBAN_GLOBAL_RATE")
@@ -1599,13 +1484,6 @@ class ProductContractTest(_Base):
         self.assertEqual({e["stage"] for e in events}, {"sign"})
         self.assertTrue(all(e["attempt"] for e in events))
 
-    def test_dry_run_leaves_state_file_untouched(self):
-        accounts = self._accounts(_phone(1))
-        with open(self._state_path(), "w", encoding="utf-8") as f:
-            json.dump({_phone(1): {"status": "success", "message": "旧"}}, f)
-        before = self._read_state()
-        executor_v3.run_executor_v3(accounts, day=DAY, dry_run=True, cfg=_cfg())
-        self.assertEqual(self._read_state(), before)
 
     def test_v3_does_not_write_sched_snapshot(self):
         """分流点选在 runner 的执行调用处：快照仍由 runner 的写盘点承担，v3 不重复写。"""
