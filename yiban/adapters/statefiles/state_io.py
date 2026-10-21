@@ -40,7 +40,7 @@
 日历与容器调度器都按这些文件判"跑没跑、结没结"。
 
 **复用**
-状态码别名取自 `yiban.status`（唯一事实源）；`mark_worker_*` / `worker_presence`、
+状态码别名取自 `yiban.core.status`（唯一事实源）；`mark_worker_*` / `worker_presence`、
 `fallback_alive`、按日状态读写函数被 `runner` / `workers` / `probe` / `alerts` 与
 web 服务层复用。
 
@@ -79,7 +79,7 @@ from yiban.infra import private_json
 
 logger = logging.getLogger("yiban")
 
-# 状态码别名（与 yiban.status 同一对象）
+# 状态码别名（与 yiban.core.status 同一对象）
 STATUS_SUCCESS = yiban_status.STATUS_SUCCESS
 STATUS_ALREADY = yiban_status.STATUS_ALREADY
 STATUS_NO_TASK = yiban_status.STATUS_NO_TASK
@@ -117,7 +117,7 @@ def _has_conclusion(entry):
     """该账号当日是否已有"结论"：`status` 非空且非 `pending`（未知状态串也算有结论）。
 
     `pending` 只是计划（"打算什么时候签"），success/failed 等才是事实；"空/缺失"
-    等价于无记录。判据取自 `yiban.status.is_concluded_status`（唯一定义处）：
+    等价于无记录。判据取自 `yiban.core.status.is_concluded_status`（唯一定义处）：
     `_write_sign_state` 的 only_if_absent CAS 与窗口收尾预筛共用这一口径。
     """
     if not isinstance(entry, dict):
@@ -431,7 +431,7 @@ def _second_run_drop_done(accounts, day=None):
     recorded = _daily_statuses(day)
     if not recorded:
         return accounts
-    # 已了结 = `yiban.status.CLAIM_DONE_STATUSES`（success/already/**no_task**：no_task
+    # 已了结 = `yiban.core.status.CLAIM_DONE_STATUSES`（success/already/**no_task**：no_task
     # 指"今天没任务"，同样无需重跑）。与领取池记 `done` 的判据是**同一对象**——两处
     # 各写一份会漂移，让补签轮对这些账号再走一遍完整登录。
     done = {
@@ -560,7 +560,7 @@ def _write_sched_done(counts=None):
 #     崩溃或压根没跑起来 → 必须补跑；
 #   - 存在未了结账号 = 状态文件里任一账号落 UNDONE_STATUSES。
 # 无状态文件/文件损坏一律按"未了结"处理（宁多跑一轮，不漏签）。
-# 「未了结」状态集合：定义在 yiban.status（唯一事实源），此处为同一对象的别名
+# 「未了结」状态集合：定义在 yiban.core.status（唯一事实源），此处为同一对象的别名
 # （docker/scheduler.py 亦别名引用它；测试断言三者同一身份）。
 UNDONE_STATUSES = yiban_status.UNDONE_STATUSES
 

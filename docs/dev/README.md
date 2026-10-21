@@ -12,6 +12,9 @@
 | `umask-decision.md` | 生产入口 `umask 077` 不还原的评估结论与影响面 |
 | `dev-verify.md` | **统一跑测入口** `scripts/dev-verify.sh` 的配方（本地 WSL 全量 + CI 子集同源） |
 | `release-gate.md` | **推送 `main` 的四条门槛**（安全/压力/稳定/脱敏与演练） |
+| `backup-restore.md` | **备份与恢复**：宿主（systemd/cron）与 Docker 两条路线、取证命令、威胁边界 |
+| `implementation-notes.md` | **原理与实现**：模块树、签到流程、定位算法、重试机制、WAF 检测、工作流续期 |
+| `troubleshooting.md` | **故障排查与常见问题**（Q1–Q10） |
 与设计/调研类文稿分开——这里的每条内容都按脱敏红线自查过：
 不含真实域名/IP/邮箱/手机号/密钥与站点注册信息，示例一律用占位值。
 
@@ -128,7 +131,7 @@ web / scripts / docker  →  yiban.*  →  infra, platform, protocol, store（`y
 ### 校验/取证类读库必须显式 `init_db(cleanup=False, migrate=False)`（M36 · 定档保留）
 
 `yiban.adapters.persistence.db.init_db(...)` 的缺省是 `cleanup=True, migrate=True`，而
-`yiban/store/connection.py` 的 `get_conn()` 在单例连接不存在时会**隐式**调一次
+`yiban/adapters/persistence/connection.py` 的 `get_conn()` 在单例连接不存在时会**隐式**调一次
 `init_db()` 的**全套缺省**。这对业务进程是对的（启动时该做的清理与迁移就该做），
 对**校验/取证类工具**是错的：`scripts/audit_verify.py`、哨兵、`db_export.py` 这类调用方
 只是想**读**——
@@ -137,7 +140,7 @@ web / scripts / docker  →  yiban.*  →  infra, platform, protocol, store（`y
   "检出删除"会变成"我自己删的"）；
 - `migrate=True` 会回填审计链等结构（同样改动被校验对象）。
 
-**约定（`yiban/store/db.py` 的 `init_db` docstring 已写明）**：只读取证类调用方在第一次
+**约定（`yiban/adapters/persistence/db.py` 的 `init_db` docstring 已写明）**：只读取证类调用方在第一次
 触库前**显式** `db.init_db(cleanup=False, migrate=False)`。仓库内的既有样例：
 `scripts/backup_sentinel.py` 的 `_anchor_snapshot()`（M28 的锚点外发读链头）。
 

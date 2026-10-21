@@ -20,7 +20,7 @@
 - 容量预检/网页预估用**完整**有效窗口算、不扣已流逝时间 → 迟启动时按满容量放行，
   真实剩余只能容纳 `(eff_hi - now) / (avg + gap)` 个，超出者全部落 skipped_window。
 
-时间一律取 `yiban.clock`（北京时间），与窗口语义同源。
+时间一律取 `yiban.core.clock`（北京时间），与窗口语义同源。
 
 调用方的取舍（有意区分，勿"顺手统一"）：
 - **引擎**（signin 预检）用 `remaining_sec(now)`——它问的是"今天还能签几个"；
@@ -36,7 +36,7 @@ env 映射一律由调用方取好传进来——这正是上面"两个入口刻
 `web/services/capacity.py`（`from_env(...).full_sec()` 容量预估）、
 `web/routes/settings_api.py`（`edge_cap_sec` 保存闸门）、`web/render.py`（`parse_edges`）、
 `run.sh`（与 `retry_hm` 读同一个键的宿主 cron 时刻）。
-它调用：标准库 `datetime` / `os`；"现在是几点"由调用方按 `yiban.clock` 取好传入
+它调用：标准库 `datetime` / `os`；"现在是几点"由调用方按 `yiban.core.clock` 取好传入
 （见 `remaining_sec` / `is_open` / `is_closed` 的 `now_dt` 形参）。
 """
 import datetime

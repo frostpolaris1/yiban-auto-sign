@@ -8,7 +8,7 @@
     （实际发送与日志）。
 关键断言：失败必须**静默**（发信失败不能把签到主流程带崩），但日志要留下可判定的
     分类——"静默"只针对异常传播，不针对记录。
-依赖：monkeypatch `yiban.mail.transport.smtplib`；临时 .env 与 `YIBAN_ACCOUNTS_KEY`；
+依赖：monkeypatch `yiban.adapters.notifier.mail.transport.smtplib`；临时 .env 与 `YIBAN_ACCOUNTS_KEY`；
     不真发信、不触网。
 """
 import contextlib

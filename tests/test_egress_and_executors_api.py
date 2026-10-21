@@ -1476,7 +1476,7 @@ class EgressErrorMustNotLeakCredentialsTest(_WebBase):
 class _TaskRowMixin:
     """往 `sign_tasks` 直接写当日行（聚合端点的取数源，单池后唯一台账）。
 
-    `state` 用队列的真实词汇（与 `yiban.status` 同一套），聚合端点的"已签/待签/失败"
+    `state` 用队列的真实词汇（与 `yiban.core.status` 同一套），聚合端点的"已签/待签/失败"
     就是它们各自的计数——展示层不另造一套状态名，否则两套词表必然漂。
     """
 

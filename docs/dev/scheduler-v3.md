@@ -279,10 +279,10 @@ bash scripts/backup.sh
   `message` 在写入面净化后再于读取面复遮一次（纵深防御）。日筛选**下推到 SQL**
   （`WHERE day = ?`），故读取层的轮数上限只作用于已筛出的集合；读取面另按保留窗口
   两端过滤（`WHERE day = ? AND day >= 下界 AND day <= 上界`），窗外日期回空表。
-  窗口两端只有 `yiban/store/run_events.py::window_range()` 一个定义点，端点
+  窗口两端只有 `yiban/adapters/persistence/run_events.py::window_range()` 一个定义点，端点
   `window.start_day` / `end_day` 从它取值，不另算公式。当日轮数被截断时回
   `rounds_truncated=true` 与 `rounds_limit`，页面写明「已截断」（不许静默出空表）。
-  页面入口是 `/data/logs` 的首块「运行巡检」。读取层住在 `yiban/store/run_events.py`，
+  页面入口是 `/data/logs` 的首块「运行巡检」。读取层住在 `yiban/adapters/persistence/run_events.py`，
   路由住在 `web/routes/run_events_api.py`。
 
 ### 日志面判据

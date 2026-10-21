@@ -451,7 +451,7 @@ class InternalComponentTest(unittest.TestCase):
     """加载器是内部件，不作为使用者概念导出。"""
 
     def test_not_exported_from_package_root(self):
-        """包根不导入也不导出它（`from yiban import config_loader` 是子模块绑定，
+        """包根不导入也不导出它（加载器已迁到 `yiban.adapters.config.loader`；
         不是"暴露为使用者概念"——判据看包根的源码文本与 `__all__`）。"""
         import yiban
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

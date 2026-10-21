@@ -20,7 +20,7 @@
 #                         发送日志里直呼 config 的私有名 `_mask_addr`）
 #   transport → layout   （`_send` 里 `layout.as_body(text)` 排版正文）
 # `config` 与 `layout` 都不 import 包内其它模块（config 只取 yiban.infra /
-# yiban.adapters.notifier.notify.config，layout 只取 yiban.clock），故三层无环；transport 是唯一的汇聚点。
+# yiban.adapters.notifier.notify.config，layout 只取 yiban.core.clock），故三层无环；transport 是唯一的汇聚点。
 from .config import (  # noqa: F401
     admin_notify_enabled,
     admin_recipients,

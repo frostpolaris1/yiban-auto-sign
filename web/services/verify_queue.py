@@ -310,7 +310,7 @@ def start_edit_probe(clean, username, fails, limits, start_job,
     **承重突变**
     任务**不绑定账号 id**（`start_job(..., None, ...)`）。这是"探针失败不改账号
     可用状态"的唯一机制：`yiban/attempt/jobs.py` 的失败回调与
-    `yiban/store/verify_jobs.py` 的超龄收口都以 `account_id is None` 为跳过条件
+    `yiban/adapters/persistence/verify_jobs.py` 的超龄收口都以 `account_id is None` 为跳过条件
     （见 `_reject_account` 与 `reclaim_stale`）。改传真实账号 id 后，校验失败会把
     账号翻成 rejected，违反本端点的验收。
 
@@ -380,7 +380,7 @@ def _account_verify_enabled():
 
     与 `verify_async_enabled` 共用 `_effective_switch`（`.env` 优先、进程环境补缺）。
 
-    真值口径单源在 `yiban.infra.env_io.parse_env_flag`（1/true/on/yes，大小写与两侧空白
+    真值口径单源在 `yiban.adapters.config.env_io.parse_env_flag`（1/true/on/yes，大小写与两侧空白
     不敏感），与面板 `GET /api/settings` 的 account_verify 同口径。
     """
     return parse_env_flag(_effective_switch("YIBAN_ACCOUNT_VERIFY"), default=False,

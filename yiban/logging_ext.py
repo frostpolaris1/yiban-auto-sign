@@ -11,11 +11,11 @@
   装上这个 formatter 的那些 handler——三个入口各装配一处：CLI
   `yiban.engine.cli_support._setup_cli_logging`、web `create_app`、容器调度器
   `docker/scheduler.py::_setup_logging`；别处自建 handler 写的日志不在保护范围内。
-  两族口径都取自 `yiban.masking`（`mask_phones_in_text` / `mask_credentials_in_text`），
+  两族口径都取自 `yiban.core.masking`（`mask_phones_in_text` / `mask_credentials_in_text`），
   本层不另造规则：号码写成编码形态（凑不出号码数字串）仍照漏，凭据键名被百分号编码
   （`tok%65n=v`）仍照漏——绕过面与那两族各自登记的同一份。
 
-日期口径取 `yiban.clock`（北京时间），与签到事件/状态文件一致。
+日期口径取 `yiban.core.clock`（北京时间），与签到事件/状态文件一致。
 """
 import logging
 import os
@@ -38,7 +38,7 @@ class MaskingFormatter(logging.Formatter):
     覆盖 `format`（而非 `formatMessage`）：异常栈文本由 `Formatter.format` 追加，
     它可能内嵌上游回显的手机号与令牌，只有对最终串替换才兜得住。
 
-    两族都用 `yiban.masking` 的**同一个**原语对象（改口径只改那一处）；顺序是凭据先、
+    两族都用 `yiban.core.masking` 的**同一个**原语对象（改口径只改那一处）；顺序是凭据先、
     号码后——号码规则幂等，且凭据规则不看数字形态，两者互不干扰。
     """
 
