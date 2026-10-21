@@ -240,8 +240,9 @@ class ReclaimRacesFallbackStartupTest(_DbBase):
             self.skipTest("跨进程 flock 仅 POSIX 可用（Windows 上取不到锁）")
         self._add_task(PHONE_IN_FLIGHT, state="done", epoch=1)
         # 持锁形态的判别断言必须在**事务进行中**验（reclaim 返回即已放锁）。
-        # sqlite3.Connection 的属性只读，故探锁挂在 clock.now 上：reclaim 先取锁、
-        # 后调 clock.now() 生成 stamp，再 UPDATE——桩被调时锁必已持有。
+        # sqlite3.Connection 的属性只读，故探锁挂在 clock.now 上。判别力的主载体是
+        # 取锁后连接初始化/清理链里的多次 clock.now 调用（末次写入获胜）——它们全落
+        # 在持锁窗口内；「探放形态」（拿了立刻放）下这些探针读到 held=False，断言红。
         observed = {}
         real_now = queue_store.clock.now
 
