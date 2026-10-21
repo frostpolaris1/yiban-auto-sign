@@ -90,8 +90,8 @@ class MypyConfigTest(unittest.TestCase):
                            "pyproject.toml 里没有 [tool.mypy] 段——类型门禁的配置缺口未补")
 
     def test_python_version_targets_the_production_floor(self):
-        self.assertIn('python_version = "3.10"', self.section,
-                      "mypy 目标版本必须是生产下限 3.10（按它判语法/库可用性）")
+        self.assertIn('python_version = "3.13"', self.section,
+                      "mypy 目标版本必须是生产下限 3.13（按它判语法/库可用性）")
 
     def test_files_whitelist_equals_the_frozen_adopted_list(self):
         m = re.search(r"files\s*=\s*\[(.*?)\]", self.section, re.S)

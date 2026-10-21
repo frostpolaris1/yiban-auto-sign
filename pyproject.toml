@@ -3,7 +3,7 @@
 # 只检查 `files` 列出的"收编名单"，名单内严格档全开；名单外显式豁免（本轮不检查）。
 # 为什么用 files 白名单而不是全树 ignore_errors：白名单让"收编进度"成为一份可读的
 # 清单（改一行 = 收编一个模块），也不依赖"谁把某个模块 import 进来"这种隐式路径。
-python_version = "3.10"
+python_version = "3.13"
 files = [
     "yiban/core/clock.py",
     "yiban/core/status.py",
@@ -47,7 +47,7 @@ warn_unused_configs = true
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py313"
 # 无 lint 排除项：洁净室协议库 `yiban/adapters/protocol_yiban/` 已是本仓一等模块（不再 vendored），
 # 与本仓其余部分同口径受检。
 exclude = [".git", "__pycache__"]
