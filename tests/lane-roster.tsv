@@ -236,6 +236,7 @@ fast	tests/test_pw_gate_tiers.py
 fast	tests/test_queue_failclosed.py
 fast	tests/test_rate_limit_tiers.py
 fast	tests/test_readme_deploy_selfsufficiency.py
+fast	tests/test_reclaim_fallback_lock_e2e.py	# 工单 uob1 X2：两个真子进程（A 持兜底锁在飞、B 走重签）
 fast	tests/test_register_admin_email_indist.py
 fast	tests/test_registration_pause.py
 fast	tests/test_rekey_key_source.py

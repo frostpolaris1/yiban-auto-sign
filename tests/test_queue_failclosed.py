@@ -450,6 +450,12 @@ class DegradePolicyShapeTest(unittest.TestCase):
         "reap_abandoned", "load_egress_state", "save_egress_state",
         "purge", "fallback_event", "latest_day", "owners_for_day", "owners_since",
         "activity",
+        # 探测兜底锁的判别点：异常分支有意回 **True（按"兜底在跑"处置）**，不是空值，
+        # 也不参与退出/了结判定——它只决定 reclaim_tasks 本批是否跳过在飞行行。
+        # 安全方向是 fail-closed；若改成回 False，"探测坏了"会被读成"没人跑"并翻掉
+        # 在飞行的行（同账号并发登录，第一红线）。守卫用例见
+        # tests/test_reclaim_fallback_lock_e2e.py::ProbeFailureFailClosedTest。
+        "_fallback_run_in_flight",
     )
 
     @staticmethod
