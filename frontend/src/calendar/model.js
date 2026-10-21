@@ -53,9 +53,12 @@ export function pad2(n) {
   return String(n).padStart(2, "0");
 }
 
-/** 本地日期串（YYYY-MM-DD）。刻意不借 toISOString：那是 UTC，UTC+8 下会差一天。 */
-export function todayStr() {
-  var d = new Date();
+/**
+ * 业务日期串（YYYY-MM-DD），由调用方传入**服务端校准钟**（lib/shell.ts 的 getServerNow）。
+ * 刻意不借 toISOString：那是 UTC，UTC+8 下会差一天。也不在这里读 new Date()：浏览器时区
+ * 不是 +8 时，本地日期会与服务端结算日错位（zvj1）。
+ */
+export function dateStr(d) {
   return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
 }
 

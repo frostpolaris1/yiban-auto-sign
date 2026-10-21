@@ -28,3 +28,18 @@ export function businessDay(daysAgo = 0, baseMs: number = Date.now()): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}`;
 }
+
+/**
+ * 指定 IANA 时区下的日期串 `YYYY-MM-DD`（Node 侧）。用于构造「浏览器时区与业务钟不同」
+ * 的断言：把该串与 businessDay() 对比即可证明页面读的是哪个时钟。
+ */
+export function zonedDay(zone: string, baseMs: number = Date.now()): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: zone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(baseMs));
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}

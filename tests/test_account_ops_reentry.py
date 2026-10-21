@@ -31,11 +31,13 @@ def _run(driver):
     """把整份 account-ops.js 交给 node 执行（桩只给 YB 命名空间与 ctx）。"""
     harness = (
         "var apiCalls = [];\n"
+        "var badgeRefreshes = 0;\n"
         "var window = {YB: {\n"
         "  api: function (m, p) { apiCalls.push([m, p]); return Promise.resolve({}); },\n"
         "  toast: { success: function () {}, error: function () {} },\n"
         "  confirmDialog: function () { return Promise.resolve(true); },\n"
         "  promptDialog: function () { return Promise.resolve(null); },\n"
+        "  refreshNavBadges: function () { badgeRefreshes += 1; },\n"
         "  dangerousSubmit: function (o) { apiCalls.push(['DANGER', o.path]); return Promise.resolve({}); }\n"
         "}};\n"
         "var YB = window.YB;\n"
@@ -43,7 +45,7 @@ def _run(driver):
         "            onBatchSuccess: function () {}, onBatchDelete: function () {} };\n"
     )
     script = harness + _read(ACCOUNT_OPS_JS) + "\nvar ops = window.YB.accountOps.create(ctx);\n" + driver + (
-        "\nsetTimeout(function () { console.log('RESULT' + JSON.stringify({calls: apiCalls})); }, 60);\n"
+        "\nsetTimeout(function () { console.log('RESULT' + JSON.stringify({calls: apiCalls, badgeRefreshes: badgeRefreshes})); }, 60);\n"
     )
     proc = subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=30,
                           encoding="utf-8")
@@ -72,6 +74,14 @@ class AccountOpsReentryTest(unittest.TestCase):
             calls, [["POST", "/api/accounts/1/restore"], ["POST", "/api/accounts/1/move"]],
             "在途中的重复触发不得发请求，在途结束后必须放行")
 
+    def test_review_approve_refreshes_badge_without_waiting_for_poll(self):
+        """审核通过成功回调里必须就地重拉徽标（工单 inq9 ②）：不等 10 秒外壳节拍。"""
+        out = _run(
+            "ops.review({index: 1, phone: '138****0000', display_name: '示例'}, 'approve');\n"
+        )
+        self.assertEqual(out["calls"], [["POST", "/api/accounts/1/review"]])
+        self.assertEqual(out["badgeRefreshes"], 1, "审核通过后必须调用 refreshNavBadges 一次")
+
     def test_batch_blocks_reentry_after_confirm(self):
         """批量入口在确认后重入同样被挡——弹窗只挡一次点击。"""
         out = _run(
@@ -79,6 +89,7 @@ class AccountOpsReentryTest(unittest.TestCase):
             "ops.batch('approve', [1], ['138****0000']);\n"
         )
         self.assertEqual(out["calls"], [["POST", "/api/accounts/batch"]])
+        self.assertEqual(out["badgeRefreshes"], 1, "批量通过后必须就地重拉徽标一次")
 
 
 if __name__ == "__main__":
