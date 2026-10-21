@@ -72,6 +72,12 @@ from yiban.infra import env_lock
 
 logger = logging.getLogger("yiban")
 
+#: 四个**路径键**（`docs/dev/cli.md` §1.1）：唯一的优先级例外——**进程环境 → `.env` →
+#: 默认值**。其余 `YIBAN_*` 键按 M27 统一口径 `.env` 优先、进程环境只补缺。
+#: 这是键集合的**唯一定义点**：CLI 视图与 `scripts/child_env.build_child_env` 都引用它，
+#: bash 载体的同一排除条件由 `tests/test_path_env_priority_single_source.py` 源码守卫钉住。
+PATH_KEYS = ("YIBAN_ENV_FILE", "YIBAN_DB_FILE", "YIBAN_STATE_DIR", "YIBAN_LOG_FILE")
+
 
 # ---------------------------------------------------------------------------
 # 布尔开关键的真值判定：**本批收口的开关单一判定源**（census P0-1 止血）

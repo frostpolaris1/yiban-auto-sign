@@ -444,6 +444,38 @@ class KillyibanLoginShapeTest(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "请求被 WAF 风控拦截"):
                     _run(rec, client.login_killyiban)
 
+class StringZeroEnvelopeCodeTest(unittest.TestCase):
+    """登录链的成功判据必须与协议库同一容忍度：数字 `0` 与字符串 `"0"` 都算成功。
+
+    上游同一字段可能发数字也可能发数字字符串（协议库 SPEC §3.1；`code=999` 已按双态
+    收敛）。登录链若仍用严格 `!= 0`，载荷完好的字符串 `"0"` 会被判成失败，落到
+    通用档打满 3 次真实登录（工单 ba-p08-05）。
+    """
+
+    def test_killyiban_final_auth_accepts_string_zero(self):
+        responses = _killyiban_happy_responses()
+        responses[3] = _resp({"code": "0", "data": {}, "msg": ""})
+        client, rec = _killyiban_client(responses)
+        _run(rec, client.login_killyiban)
+        self.assertTrue(client.logged_in, "字符串 '0' 必须与数字 0 同判成功")
+
+    def test_legacy_entry_and_final_auth_accept_string_zero(self):
+        oauth_page_url = "https://oauth.yiban.cn/code/html?client_id=95626fa3080300ea"
+        responses = [
+            _resp({"code": "0", "data": {"Data": oauth_page_url}}),
+            _resp(text=_legacy_page(_pubkey_pem()), url=oauth_page_url),
+            _resp({"reUrl": "https://f.yiban.cn/iapp7463?verify_request=TOK"}),
+            _resp(text="", headers={"Location": "https://f.yiban.cn/x"},
+                  url="https://f.yiban.cn/x"),
+            _resp(text="", headers={"Location": "https://c.uyiban.com/?verify_request=VTOK"},
+                  url="https://c.uyiban.com/"),
+            _resp({"code": "0", "msg": ""}),
+        ]
+        client, rec = _legacy_client(responses)
+        _run(rec, client.login)
+        self.assertTrue(client.logged_in, "旧流入口与终步的字符串 '0' 都必须判成功")
+
+
 _TEST_ACCOUNTS_KEY = "a" * 64  # 测试专用密钥，与生产无任何关系
 _TEST_AUDIT_KEY = "b" * 64
 

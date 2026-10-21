@@ -192,6 +192,23 @@ class YibanFallbackShTest(unittest.TestCase):
         self.assertEqual(len(self._calls()), 1)
         self.assertIsNotNone(self._sign_log(), "补缺路径下日志仍应落在进程环境给的目录")
 
+    def test_path_keys_prefer_process_env(self):
+        """四个路径键例外（工单 71z7）：`.env` 与 cron 行都写 STATE_DIR 时，进程环境胜。"""
+        dotenv_state = os.path.join(self.tmp, "dotenv-state")
+        os.makedirs(dotenv_state, exist_ok=True)
+        self._write_env("YIBAN_FALLBACK_ENABLE=1\n"
+                        f"YIBAN_STATE_DIR={_to_bash_path(dotenv_state)}\n")
+        env_state = os.path.join(self.tmp, "env-state")
+        os.makedirs(env_state, exist_ok=True)
+        r = self._run(YIBAN_STATE_DIR=_to_bash_path(env_state))
+        self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace"))
+        self.assertEqual(len(self._calls()), 1)
+        name = f"sign-{clock.today()}.log"
+        self.assertTrue(os.path.exists(os.path.join(env_state, name)),
+                        "进程环境的 STATE_DIR 必须压过 .env（测试/CI 重定向数据目录）")
+        self.assertFalse(os.path.exists(os.path.join(dotenv_state, name)),
+                         "路径键不得被 .env 顶回旧目录")
+
     def test_dotenv_is_parsed_safely(self):
         """`.env` 里带 BOM/CRLF/多余空白/杂键时仍能读到开关（与 run.sh 同源解析）。"""
         self._write_env("\ufeff  YIBAN_FALLBACK_ENABLE = true \r\nOTHER_KEY=x\n")
