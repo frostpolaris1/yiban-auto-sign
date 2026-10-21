@@ -16,7 +16,12 @@ CLI 支撑：日志装配、进程级运行锁、状态文件读改写锁，以�
 
 **复用**
 `_setup_cli_logging`（幂等日志装配）、`_state_file_lock`（状态文件读改写锁）、
-`GLOBAL_RUN_LOCK_NAME`、`_acquire_run_lock` 与 `_run_lock_held`；锁原语来自 `yiban.infra.locks`。`_run_lock_held` 目前**无生产调用点**（让位的锁探测随工单 `l1rx` R4 删除），保留为带 fail-closed 校验者的锁原语。
+`GLOBAL_RUN_LOCK_NAME`、兜底锁名常量、`_acquire_run_lock`（互斥取锁）与
+`_run_lock_held`（探测原语）。
+锁原语来自 `yiban.infra.locks`。重签路径的互斥由 `_acquire_run_lock` 承担：
+`yiban.adapters.persistence.queue_store.reclaim_tasks` **持有**兜底锁跨事务
+（工单 `uob1` X2 ＋ 审查 D1 整改）；`_run_lock_held` 现无生产调用点，
+消费者＝测试侧 fail-closed 门与竞态用例探针（存删随 X6 裁决）。
 运行锁的两种拒绝信号是 `_RunLockHeld`（别人在跑）与 `_RunLockUnavailable`（本进程拿不到
 互斥：锁文件不可写 / 平台无锁后端 / 等待超时），两者都 fail-closed，调用点按既有退出码族透出。
 输出收口供 `yiban/entry/cli/__init__.py` 复用（`_say` 人话走 stderr、`_emit_json` 结果走 stdout、失败
@@ -27,7 +32,8 @@ CLI 支撑：日志装配、进程级运行锁、状态文件读改写锁，以�
 输出：配置好的 logger/handler、被加锁的读改写上下文、stdout 单行 JSON / stderr 人话。
 调用谁：`yiban.adapters.config.env_io`、`yiban.infra.locks`、`yiban.logging_ext.FlockFileHandler`。
 谁调用：`yiban/entry/cli/__init__.py`（输出收口、`last_fatal_error` 的 `--json` 摘要）、`runner`、
-`workers`、`state_io`、`probe`、`alerts` 与 `scripts/signin.py` 兼容壳；web 服务层不调用本模块。
+`workers`、`state_io`、`probe`、`alerts`、`queue_store`（重签前的兜底锁探测）与
+`scripts/signin.py` 兼容壳；web 服务层不调用本模块。
 前端调用点：无直接调用点（前端经 `runner` / `state_io` 间接受影响）；执行体与手动签到
 页面的"正在跑/存活"判定依赖本模块的全局运行锁。
 本模块内部用裸名，跨模块一律走模块属性访问。
@@ -62,6 +68,13 @@ _RUN_LOCK_WAIT_DEFAULT = 600
 #: 多执行体形态下只有监督进程持它、各子进程用各自的 `signin-run.lock.w{i}`；
 #: 多执行体子进程用各自的锁名（`YIBAN_RUN_LOCK_NAME`）；全局锁由监督进程持有。
 GLOBAL_RUN_LOCK_NAME = "signin-run.lock"
+
+#: **兜底常驻的独立锁**文件名。兜底进程（`runner.main --fallback`）在进程存活期间持有它；
+#: 它与全局锁不同文件，故兜底能与定时全量、手动 `--only`、其他执行体并存（账号级互斥
+#: 交给领取池）。定义放在本模块是**单一来源**：`yiban.workers.workers` 以别名转出，
+#: 既有读者（`runner` / 容器调度器 / 测试）不变；探测方（`queue_store.reclaim_tasks`）
+#: 与持有方（`runner` 的兜底分支）取同一个名字，不各写一份字面量。
+FALLBACK_LOCK_NAME = "signin-run.lock.fallback"
 
 #: 迁移完整性拒启的专用退出码（MF-40）。`docs/dev/cli.md` §3 的 0/1/2/3/10 家族
 #: **只增不改**，4 未被占用。触发链：`init_db(migrate=True)` →
@@ -183,12 +196,12 @@ def _run_lock_held(name=None):
 
     判据与部署形态无关：**锁被持有 = 有一轮在飞**（监督进程持它覆盖整轮，含全部子执行体）。
 
-    **当前无生产调用点**：它曾是兜底腿"整段让位"与轮内复检（`yield_probe`）的事实源，
-    两者随工单 `l1rx` R4 删除——让位改由兜底腿的**肘界谓词**承担
-    （`run_executor_v3(elbow_sec=FALLBACK_ELBOW_SEC)`），"谁该做"成为行的函数、零协调。
-    本函数保留为**带 fail-closed 校验者的锁探测原语**（`tests/test_run_lock_fail_closed.py`
-    钉住"探测不出 ⇒ 按有人在跑处置"）；删它要连该门与另三处测试同批动，属独立一刀，
-    本批只如实登记"无调用点"。
+    **消费现状（复评 F2 订正）**：重签路径的互斥已改为**持有**兜底锁——
+    `queue_store.reclaim_tasks` 直接调 `_acquire_run_lock`（锁名显式传兜底锁常量）
+    跨事务（审查 D1 整改），本函数退回"探测原语 ＋ fail-closed 语义门"：
+    生产代码零调用点，消费者是 `tests/test_fallback_gates.py`（fail-closed 门）与
+    `tests/test_reclaim_fallback_lock_e2e.py`（竞态用例的事务中探针）。删它须连
+    `tests/test_run_lock_fail_closed.py` 与这两处同批动。
 
     做法就是"拿一下立刻放"：flock 只能靠尝试获取来问，拿到说明没人跑、当场释放。
     `name` 缺省即**全局轮次锁名**（取值见 `_acquire_run_lock`：它**不读**
@@ -198,10 +211,10 @@ def _run_lock_held(name=None):
     概率极低且只影响一次手动触发；相比"兜底把全量轮计划给执行体的活先领走"这个代价是划算的。
 
     **探测不出锁状态时按"有人在跑"处置**（`_RunLockUnavailable`，进程内只告警一次）：
-    本函数只服务"该不该让位"这一个决策，而两种判错的代价不对称——错报"没人跑"会让
-    兜底领走那一轮计划的活（10-07 生产 84/100）、把精心错峰的分工冲掉；错报"有人在跑"
-    只是兜底这一轮不捡活（下一轮还会再看）。安全的判错方向是让位，故不再返回 False
-    假装锁不存在。
+    两种判错的代价不对称——错报"没人跑"会让重签翻掉在飞行的行（同账号并发真实登录，
+    第一红线），也会让兜底领走计划轮该做的活（10-07 生产 84/100）；错报"有人在跑"
+    只是这一次少翻一行、或少捡一轮活（下一轮还会再看）。安全的判错方向是"按在跑处置"，
+    故不再返回 False 假装锁不存在。
     """
     global _PROBE_UNAVAILABLE_WARNED
     try:
@@ -212,8 +225,8 @@ def _run_lock_held(name=None):
         if not _PROBE_UNAVAILABLE_WARNED:
             _PROBE_UNAVAILABLE_WARNED = True
             logger.warning(
-                "运行锁不可用（%s），无法探测是否有全量轮在跑：按'有人在跑'处置，"
-                "兜底本轮让位（这条告警每进程只报一次）", e)
+                "运行锁不可用（%s），无法探测锁是否被持有：按'有人在跑'处置，"
+                "本进程不再把探测读成'没人跑'（这条告警每进程只报一次）", e)
         return True
     if fh is not None:
         with suppress(OSError):
