@@ -1,6 +1,6 @@
 # 易班自动签到
 
-![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.13+-blue?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)
 
 ## 项目介绍
@@ -1231,7 +1231,7 @@ python scripts/signin.py
 <details>
 <summary>🧪 已测试环境 / 运行测试 / 未覆盖场景</summary>
 
-**已测试环境**：Ubuntu 22.04 服务器部署、Python 3.10+。
+**已测试环境**：Ubuntu 22.04+／24.04+ 服务器部署、Python 3.13+。
 
 ### 运行测试
 
@@ -1314,7 +1314,7 @@ python -m pytest tests/test_smoke.py -v    # 单个文件
 | 请求头字段值与 App 版本（`Yiban` / `AppVersion` / `Origin` / iOS UA） | `yiban/platform.py` | **平台事实**：字段值取自平台客户端实拍请求与官方安装包清单 |
 | 端点、`client_id` / `redirect_uri`、`scope` / `display` 取值、成功标志 `s200` | `yiban/platform.py` | **平台事实**：平台接口的固定取值 |
 | 六跳登录链路的**顺序与跳转形态** | `yiban/platform.py` | **本项目实拍**：逐端点抓包记录（TASK-C）；顺序是本项目的实现产物 |
-| 授权页 / 响应信封 / 表单 / 签到体的解析与构造 | `yiban/adapters/protocol_yiban/` | **洁净室库**（MIT）：唯一规格来源是第一手旁路实拍，见其 `SPEC.md` 与 `LICENSE` |
+| 授权页 / 响应信封 / 表单 / 签到体的解析与构造 | `yiban/adapters/protocol_yiban/` | **洁净室库**（AGPL-3.0-only）：唯一规格来源是第一手旁路实拍，见其 `SPEC.md` 与 `LICENSE` |
 | 调度错峰、重试预算与失败分级、账密熔断、通知告警、账号与数据库、Web 管理后台、多执行体并行 | `yiban/engine/` 等 | **本项目原创** |
 
 > 历史沿革（如实记录）：早期版本曾把上游派生代码圈在一个独立隔离层目录内（目录名取自
@@ -1326,8 +1326,9 @@ python -m pytest tests/test_smoke.py -v    # 单个文件
 > 项目无代码关系。
 
 **许可**：本项目整体以 **AGPL-3.0** 分发（根 `LICENSE`），与上游项目同一许可版本；
-`yiban/adapters/protocol_yiban/` 是 **MIT** 许可的洁净室库，其许可全文随包分发
-（`yiban/adapters/protocol_yiban/LICENSE`）——MIT 与 AGPL 兼容，两段许可各自约束自己的文件。
+`yiban/adapters/protocol_yiban/` 是**洁净室库**，与全项目同以 **AGPL-3.0-only** 分发
+（许可全文随包分发于 `yiban/adapters/protocol_yiban/LICENSE`，内容＝根 `LICENSE`）。
+（2026-10-21 用户裁决：原先协议包单独用 MIT 以利社区复用，现统一改 AGPL。）
 
 </details>
 
@@ -1378,7 +1379,7 @@ python -m pytest tests/test_smoke.py -v    # 单个文件
 | App 请求指纹（UA `Yiban` / AppVersion / Origin） | `Core/SchoolBased.kt` | `yiban/platform.py` | **平台事实**：字段值取自平台客户端实拍与安装包清单（版本值随官方客户端更新） |
 | CSRF 随机令牌 | `Core/SchoolBased.kt` | `yiban/platform.py` | **平台事实** + 本地加固（每次实例重生成，用密码学安全随机源） |
 | 校本化 OAuth 五步登录与全部请求常量 | `Core/SchoolBasedAuth.kt` | `yiban/platform.py` + `yiban/client.py` | **平台事实（端点/参数取值）** + **本项目实拍（六跳顺序）**；另加本地特性：会话缓存分支、URL 白名单、风控识别、脱敏 |
-| 密码 RSA/PKCS1v1.5 加密 | `Core/SchoolBasedAuth.kt` | `yiban/platform.py` → `yiban/adapters/protocol_yiban/crypto.py` | **平台事实（协议形态）**；实现属洁净室库（MIT），另加本地长度守卫 |
+| 密码 RSA/PKCS1v1.5 加密 | `Core/SchoolBasedAuth.kt` | `yiban/platform.py` → `yiban/adapters/protocol_yiban/crypto.py` | **平台事实（协议形态）**；实现属洁净室库（AGPL-3.0-only），另加本地长度守卫 |
 | 登录成功判据 `code == "s200"` | `Core/SchoolBasedAuth.kt` | `yiban/platform.py` | **平台事实**（响应取值） |
 | `nightAttendance` 的 `signPosition` / `signIn` 请求构造 | `Core/TaskFeedback.kt` | `yiban/platform.py` + `yiban/adapters/protocol_yiban/forms.py` | **平台事实（字段与编码形态，取自实拍）**；构造由洁净室库承担，多任务遍历/容错分支为本项目实现 |
 | 定位点算法（缩放质心 + 射线法） | `tool/Point.kt` | `yiban/geo.py` | **洁净室自研**（2026-10-07 重写）：射线法按教科书偶奇定义重写、取点改外接矩形拒绝采样、兜底语义本项目自定；缩放质心骨架已退役 |
