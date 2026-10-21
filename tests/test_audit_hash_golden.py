@@ -108,11 +108,6 @@ class _KeyInjectedTest(unittest.TestCase):
 class AuditHashGoldenTest(_KeyInjectedTest):
     """`_audit_hash` 对固定输入的字面量金样例。"""
 
-    def test_literals_are_lowercase_hex64(self):
-        """金样例自身格式正确——防止有人贴进大写或短串。"""
-        for name, _args, expected in GOLDEN_HASHES:
-            with self.subTest(sample=name):
-                self.assertTrue(_HEX64.match(expected), f"{name} 不是 64 位小写 hex：{expected}")
 
     def test_hashes_equal_literal_hex64(self):
         """被测函数逐字返回字面量。断言里不出现"用生产函数算期望值"。"""

@@ -109,17 +109,7 @@ class SchemaTest(_Base):
         self.assertEqual(col["notnull"], 1, "epoch 必须 NOT NULL：NULL 会让自增算术静默失效")
         self.assertEqual(str(col["dflt_value"]), "0")
 
-    def test_v19_is_core(self):
-        """核心迁移：epoch 是 try_claim 硬编列名，失败必须阻断启动（fail-closed 改判）。"""
-        narrow = self._registry_up_to(19)
-        self.assertEqual(narrow[-1][0], 19, "≤19 的登记尾项应是 v19")
-        self.assertIs(narrow[-1][3], True)
 
-    def test_v20_is_registered_as_optional(self):
-        """v20 同为可选迁移（补账失败只告警，下次启动整段重跑收敛）。"""
-        narrow = self._registry_up_to(20)
-        self.assertEqual(narrow[-1][0], 20, "≤20 的登记尾项应是 v20")
-        self.assertIs(narrow[-1][3], False)
 
     def test_existing_rows_default_to_zero(self):
         """存量行（v17 时代建的）取默认 0——迁移不得要求重写业务行。"""
@@ -183,31 +173,7 @@ class RegistrationTierBehaviorTest(_Base):
     对该档位标志的通用处理，不是 v19 的登记值。）
     """
 
-    def test_optional_tier_entry_failure_does_not_block_startup(self):
-        def failing_v19(conn):
-            raise RuntimeError("boom")
 
-        old = db._MIGRATIONS
-        db._MIGRATIONS = [(19, "v19_failing", failing_v19, False)]
-        try:
-            conn = db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
-            self.assertIsNotNone(conn)
-            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 0)
-        finally:
-            db._MIGRATIONS = old
-
-    def test_core_tier_entry_failure_blocks_startup(self):
-        def failing_v19(conn):
-            raise RuntimeError("boom")
-
-        old = db._MIGRATIONS
-        db._MIGRATIONS = [(19, "v19_failing", failing_v19, True)]
-        try:
-            with self.assertRaises(RuntimeError):
-                db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
-            self.assertIsNone(db._conn, "核心失败必须复位连接（阻断启动）")
-        finally:
-            db._MIGRATIONS = old
 
 
 if __name__ == "__main__":

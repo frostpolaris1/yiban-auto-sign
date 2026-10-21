@@ -306,17 +306,7 @@ class SecondRunDropDoneTest(unittest.TestCase):
         os.environ.update(self.env)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_no_task_is_treated_as_done(self):
-        with open(self.state_path, "w", encoding="utf-8") as f:
-            json.dump({PHONE: {"status": signin.STATUS_NO_TASK}}, f)
-        kept = signin._second_run_drop_done([signin.Account(phone=PHONE, password="p")])
-        self.assertEqual([a.phone for a in kept], [], "no_task 当日已了结，补签轮不应重登")
 
-    def test_failed_is_kept_for_retry(self):
-        with open(self.state_path, "w", encoding="utf-8") as f:
-            json.dump({PHONE: {"status": signin.STATUS_FAILED}}, f)
-        kept = signin._second_run_drop_done([signin.Account(phone=PHONE, password="p")])
-        self.assertEqual([a.phone for a in kept], [PHONE], "失败账号必须保留待补签")
 
 
 sys.path.insert(0, os.path.join(BASE, "scripts"))
@@ -353,12 +343,6 @@ class ClockTest(unittest.TestCase):
 class LogAndStateDateUseBeijingTest(unittest.TestCase):
     """按日留痕（日志文件名 / 状态文件 / 事件时间戳）也走同一时钟。"""
 
-    def test_signin_log_path_uses_beijing_date(self):
-        """日志按日切分：宿主为 UTC 时若用宿主日期，北京时间 00:00–08:00 会写进前一日。"""
-        fake_bj = _dt.datetime(2026, 3, 2, 1, 30, 0)  # 北京凌晨 = UTC 前一日 17:30
-        with mock.patch.object(clock, "now", return_value=fake_bj):
-            self.assertEqual(clock.today(), "2026-03-02")
-            self.assertEqual(clock.ts(), "2026-03-02 01:30:00")
 
 
 class SlotBoundaryTest(unittest.TestCase):

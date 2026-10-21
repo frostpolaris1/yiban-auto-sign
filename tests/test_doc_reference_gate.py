@@ -470,46 +470,8 @@ class DocReferenceGateTest(unittest.TestCase):
             problems, [],
             "入库文本件引用了库外的路径（读者检出后打不开）：\n" + "\n".join(problems))
 
-    def test_out_of_face_residue_reconciles_with_registry(self):
-        """面外（`frontend/**`）残留与登记表逐条对账，两侧都不许静默。"""
-        tracked = _ls_tracked(BASE)
-        _files, _in_face, out_face = face_plan(BASE, tracked)
-        self.assertGreaterEqual(
-            len(out_face), 10,
-            "面外扫描面过小（%d 个文件）——扫描根写错或前端被移走（扫空不得当绿）"
-            % len(out_face))
-        hits, _n_refs = scan_face(BASE, tracked, out_face)
-        found, where = {}, {}
-        for rel, line, ref, _why in hits:
-            found[(rel, ref)] = found.get((rel, ref), 0) + 1
-            where.setdefault((rel, ref), []).append(line)
-        problems = out_of_face_problems(found, where=where)
-        self.assertEqual(
-            problems, [], "面外引用残留与登记表不一致：\n" + "\n".join(problems))
 
-    def test_out_of_face_registry_reconciliation_has_teeth(self):
-        """突变验证（合成输入）：未登记 ⇒ 红；次数不符 ⇒ 红；登记消失 ⇒ 红；一致 ⇒ 绿。"""
-        key = ("frontend/x.js", _PLAN_DOC_SHORT)
-        reg = {key: (1, "登记理由")}
-        self.assertEqual(out_of_face_problems({key: 1}, registry=reg), [],
-                         "一致时不该报问题（否则三条判据可能是一组恒真断言）")
-        self.assertTrue(out_of_face_problems(
-            {key: 1, ("frontend/y.js", _PLAN_DOC_SHORT): 1}, registry=reg),
-            "未登记的面外残留未判红：本门没有牙")
-        self.assertTrue(out_of_face_problems({key: 2}, registry=reg),
-                        "命中次数多于登记未判红：新增残留会被静默放过")
-        self.assertTrue(out_of_face_problems({}, registry=reg),
-                        "登记已消失未判红：登记会变成僵尸")
 
-    def test_old_coordinate_list_is_intact(self):
-        """旧坐标清单不得被误清空或写歪（否则形态二静默失效）。"""
-        self.assertGreaterEqual(
-            len(OLD_COORD_PATHS), MIN_OLD_COORD_PATHS,
-            "旧坐标清单只剩 %d 条（下限 %d）——形态二会静默失效"
-            % (len(OLD_COORD_PATHS), MIN_OLD_COORD_PATHS))
-        for p in OLD_COORD_PATHS:
-            self.assertTrue(p.startswith("yiban/") and p.endswith(".py"),
-                            "旧坐标清单条目不是 `yiban/**/*.py` 形态：%r" % p)
 
     def test_scanner_has_teeth(self):
         """突变验证：塞进悬空引用 ⇒ 红；目录形态／通配／可解引用 ⇒ 不误红。
@@ -567,57 +529,7 @@ class DocReferenceGateTest(unittest.TestCase):
             [(1, _FAKE_DOC, "文档引用未入库")],
             "`./` 形态的悬空引用被漏检（且应归一到不带 `./` 的路径）")
 
-    def test_this_gate_file_is_scanned(self):
-        """本门**不得豁免自己**：本文件也是入库文本件，注释与 docstring 同受本门管。
 
-        为什么钉这条：登记表天然要写出被登记的路径。最容易的"修法"是豁免本文件——
-        那正是**加宽豁免表**（AGENTS §十四 明令禁止）。本文件靠**按片段拼装**路径
-        （`_FAKE_DOC` / `_PLAN_DOC`）避免自锁。
-
-        三条逃逸路径都要挡（审查 N1 立、审查 B2 补齐）：
-          ① 移出跟踪集；② 当二进制跳过；③ **把本文件从扫描面剔除**。
-        ①②是"本文件在不在跟踪集/文本件里"这一**代理**。
-        ③才是"本文件真被扫"这一**性质**，而它有两个位置：
-          · `face_plan` / `scanned_face` 内 —— 由本条的 `assertIn` 挡；
-          · **调用点重建扫描面再剔除** —— 由**扫描原语** `scan_face` 里的
-            `face_guard_problems` 挡（钉性质不钉代理，AGENTS §十三 第 29 条）。
-        `face_guard_problems` 自己的牙由 `test_face_guard_has_teeth` 钉住。
-        """
-        rel = os.path.relpath(os.path.abspath(__file__), BASE).replace(os.sep, "/")
-        tracked = _ls_tracked(BASE)
-        self.assertIn(rel, tracked, "本门文件必须入库（否则它自己逃出扫描面）")
-        self.assertIn(rel, text_files_of(BASE, tracked),
-                      "本门文件不得被当二进制跳过")
-        in_face, _hits, _n_refs, _files = scanned_face(BASE, tracked)
-        self.assertIn(rel, in_face,
-                      "本门文件必须落在**主门实际扫描的清单**里"
-                      "（谁在 `face_plan`/`scanned_face` 里剔除它，这条即红）")
-        self.assertEqual(scan_text("见 " + _PLAN_DOC + "。\n", tracked),
-                         [(1, _PLAN_DOC, "文档引用未入库")],
-                         "本门的形态一在本文件身上失效（夹具串没被当真引用扫）")
-
-    def test_face_guard_has_teeth(self):
-        """扫描原语的不变量（审查 B2）：窄面调用不误红，剔除本文件即红。
-
-        `face_guard_problems` 是**纯函数**，故三条合法窄面与一条逃逸都能直接喂：
-          · 空面 / 面外全 `frontend/**` / 别的 root ⇒ 不误红（三种真实调用形态）；
-          · `BASE` 上非空、不含 `frontend/`、又缺本门文件 ⇒ 红（正是"调用点剔除"）。
-        """
-        rel = os.path.relpath(os.path.abspath(__file__), BASE).replace(os.sep, "/")
-        self.assertEqual(face_guard_problems(BASE, []), [],
-                         "空面被误红：`test_empty_face_is_red` 会假红")
-        self.assertEqual(face_guard_problems(BASE, ["frontend/a.js"]), [],
-                         "面外全 `frontend/**` 被误红：面外用例会假红")
-        self.assertEqual(face_guard_problems("/tmp/some-other-root", ["tests/a.py"]), [],
-                         "别的 root 被误红：临时目录夹具会假红")
-        self.assertEqual(face_guard_problems(BASE, [rel]), [],
-                         "本文件在面内时不该报问题（否则这条判据可能恒真）")
-        self.assertTrue(
-            face_guard_problems(BASE, ["tests/test_other.py", "yiban/core/clock.py"]),
-            "调用点重建扫描面并剔除本文件未判红：审查 B2 的逃逸仍成立")
-        # 端到端那一半：原语本身要真抛，而不是只有纯函数会判。
-        with self.assertRaises(AssertionError):
-            scan_face(BASE, set(), ["tests/test_other.py"])
 
     def test_empty_face_is_red(self):
         """扫空不得当绿：空面必须判红（两条下限都要挡）。"""

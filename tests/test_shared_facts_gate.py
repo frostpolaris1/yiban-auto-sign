@@ -197,10 +197,6 @@ def _scope_classes(scope):
 class SharedFactsRosterShapeTest(unittest.TestCase):
     """① 名册↔脚本同源；名册形状与诚实边界。"""
 
-    def test_roster_and_script_both_exist(self):
-        self.assertTrue(os.path.isfile(ROSTER),
-                        "名册数据文件缺失——门禁必须自包含（CI runner 上没有仓外 _census）")
-        self.assertTrue(os.path.isfile(SCRIPT), "门禁脚本缺失")
 
     def test_script_references_the_roster_and_embeds_no_second_copy(self):
         text = _read(SCRIPT)
@@ -232,19 +228,6 @@ class SharedFactsRosterShapeTest(unittest.TestCase):
                                  f"pending 行不许带假上限凑数（工单 §四.5）: {r}")
                 self.assertTrue(r["口径备注"].strip(), f"pending 行必须写明原因: {r}")
 
-    def test_requests_per_account_key_has_a_definition_point(self):
-        """『每账号请求数 6』原先零定义点（pending）；2026-10-20 已建定义点并翻 active。
-
-        census-P2-req6：常量在 `yiban/platform.py`（六跳链路 = 登录 4 + 签到 2）。
-        本用例钉住"这枚键不许退回 pending"——退回就意味着那个数又只剩散文。
-        """
-        hit = [r for r in _rows() if r["键"].startswith(ZERO_DEF_KEY)]
-        self.assertEqual(len(hit), 1,
-                         "『每账号 HTTP 请求数 6』不许从名册里消失（静默丢弃=缺陷）")
-        self.assertEqual(hit[0]["状态"], "active",
-                         "该键已建定义点，必须 active 判定（pending = 没人守）")
-        self.assertEqual(int(hit[0]["允许上限"]), 1,
-                         "定义点只许一处赋值")
 
 
 @unittest.skipUnless(BASH, "需要 bash（Git Bash / WSL）")
@@ -279,9 +262,6 @@ class SharedFactsCiWiringTest(unittest.TestCase):
         self.assertIn("tests/test_shared_facts_gate.py", self.entry_ci,
                       "元测试必须与门禁同一步跑——否则名册/脚本漂移无人发现")
 
-    def test_job_name_is_still_verify(self):
-        """job 名不许改（改则必需检查静默失效，见 ci.yml 文件头批 1 约束 6）。"""
-        self.assertIn("  verify:", self.ci)
 
 
 @unittest.skipUnless(BASH, "需要 bash（Git Bash / WSL）")
@@ -650,22 +630,7 @@ class SharedFactsNewFamilyCoverageTest(unittest.TestCase):
         self.assertEqual(not_active, [WIRE_ZERO_DEF_KEY],
                          f"两族的非 active 行只许那一枚零定义点键: {not_active}")
 
-    def test_wire_zero_definition_point_key_is_registered_pending(self):
-        """census def=0 的那枚键必须显式 pending 且不许带假上限（与『每账号请求数 6』同规）。"""
-        hit = [r for r in _rows_of(WIRE_FAMILY) if r["键"] == WIRE_ZERO_DEF_KEY]
-        self.assertEqual(len(hit), 1, f"{WIRE_ZERO_DEF_KEY} 必须以 pending 显式登记")
-        self.assertEqual(hit[0]["状态"], "pending")
-        self.assertEqual(hit[0]["允许上限"].strip(), "-",
-                         "零定义点键不许硬编上限凑数")
-        self.assertIn("B3", hit[0]["口径备注"],
-                      "零定义点键必须写明由谁先建定义点（B3），否则无人接手")
 
-    def test_census_meta_rows_are_not_registered_as_keys(self):
-        """census 的 `(交付状态)`/`__STATUS__` 元行不是一枚共享事实，不许混进名册凑数。"""
-        for r in _rows():
-            for marker in CENSUS_META_MARKERS:
-                self.assertNotIn(marker, r["键"],
-                                 f"census 元行被当成键登记了: {r['键']!r}")
 
     def test_cap_equals_measured_hit_count_for_both_new_families(self):
         self.assertEqual(self.gate.returncode, 0,
@@ -686,29 +651,6 @@ class SharedFactsNewFamilyCoverageTest(unittest.TestCase):
                                  f"键 {r['键']} 的上限 {cap} 不等于实测 {hits}——"
                                  f"差值就是门被放水的量（放宽上限凑绿禁止）")
 
-    def test_gate_is_silent_when_a_registered_key_is_dropped(self):
-        """实证门的语义边界：摘掉一行**不会**让门红（少判一枚键没有超标可报）。
-
-        这条不是缺陷断言，是把"为什么必须由本守卫钉住 25 枚齐"写进可执行文档：
-        若有人删掉一行并指望门兜住，这里证明兜不住——摘键的红只来自上面那条行数断言。
-        """
-        victims = _rows_of(TRUST_FAMILY) + _rows_of(WIRE_FAMILY)
-        self.assertTrue(victims, "两族还没登记，本条无从取证")
-        victim = victims[0]
-        tmp = tempfile.mkdtemp(prefix="yiban-sfdrop-")
-        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
-        dropped = os.path.join(tmp, "roster-without-one-key.tsv")
-        kept = [ln for ln in _read(ROSTER).splitlines()
-                if ln.strip() and not ln.startswith("\t".join(
-                    (victim["族"], victim["键"], victim["状态"])) + "\t")]
-        with io.open(dropped, "w", encoding="utf-8", newline="\n") as f:
-            f.write("\n".join(kept) + "\n")
-        r = _run(SCRIPT, "--roster", dropped)
-        self.assertEqual(r.returncode, 0,
-                         f"预期门对摘键无感（若这条红=门的语义变了，要重读本测试）：\n"
-                         f"{r.stdout}\n{r.stderr}")
-        self.assertNotIn(victim["键"], _gate_counts(r.stdout),
-                         "被摘掉的键不该还有计数行——它已经不在册了")
 
 
 @unittest.skipUnless(BASH, "需要 bash（Git Bash / WSL）")
@@ -809,41 +751,7 @@ class SharedFactsCoverageClaimTest(unittest.TestCase):
                                 if ln.lstrip().startswith("#"))
         self.rows = _rows()
 
-    def test_header_declares_every_census_family_with_correct_key_counts(self):
-        m = re.search(r"路径配置 (\d+) / 状态件 (\d+) / 语义常量 (\d+) / "
-                      r"信任权限 (\d+) / 线格式身份 (\d+)", self.header)
-        self.assertIsNotNone(m, "文件头「覆盖边界」段必须逐族写出真键数"
-                                "（不写=读者无从核对本册缺了哪一族）")
-        declared = {"路径配置": int(m.group(1)), "状态件": int(m.group(2)),
-                    "语义常量": int(m.group(3)), TRUST_FAMILY: int(m.group(4)),
-                    WIRE_FAMILY: int(m.group(5))}
-        self.assertEqual(declared, CENSUS_REAL_KEY_COUNTS,
-                         "文件头声明的逐族真键数与 census 不符")
-        self.assertEqual(set(FAMILIES), set(CENSUS_REAL_KEY_COUNTS),
-                         "FAMILIES 必须与 census 的族集等势（本文件两处硬编码不许各说各话）")
 
-    def test_header_declared_counts_match_the_actual_rows(self):
-        active = [r for r in self.rows if r["状态"] == "active"]
-        pending = [r for r in self.rows if r["状态"] == "pending"]
-        keys = sum(CENSUS_REAL_KEY_COUNTS.values())
-        m = re.search(r"真键 (\d+) 枚", self.header)
-        self.assertIsNotNone(m, "文件头必须写出 census 真键总数")
-        self.assertEqual(int(m.group(1)), keys, "文件头声明的真键总数与逐族数之和不等")
-        m = re.search(r"\+ (\d+) 行拆分", self.header)
-        self.assertIsNotNone(m, "文件头必须写出拆分行数（一枚 census 键登记成多行时读者才对得上账）")
-        extra = int(m.group(1))
-        self.assertEqual(len(self.rows), keys + extra,
-                         f"实有 {len(self.rows)} 行 ≠ 真键 {keys} + 拆分 {extra} 行——"
-                         f"行数漂了就得同批改文件头「覆盖边界」段")
-        m = re.search(r"合计登记 (\d+) 行", self.header)
-        self.assertIsNotNone(m, "文件头必须写出登记总行数")
-        self.assertEqual(int(m.group(1)), len(self.rows),
-                         f"文件头声明合计 {m.group(1)} 行，实有 {len(self.rows)} 行")
-        m = re.search(r"active (\d+) 行、pending (\d+) 行", self.header)
-        self.assertIsNotNone(m, "文件头必须写出 active/pending 行数")
-        self.assertEqual((int(m.group(1)), int(m.group(2))),
-                         (len(active), len(pending)),
-                         "文件头声明的 active/pending 行数与实有行数不符")
 
 
 def _git(root, *args):

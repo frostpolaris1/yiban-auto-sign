@@ -14,7 +14,7 @@ D1 的验收**不**看"删掉多少行""测试源码比"。主判据只有一条
 | 1 | 车道名册 `tests/test_gate_lane_roster.py` | 每个测试文件恰好归一条道；名册＝文件系统＝pytest 收集 | `LaneRosterCheckerMutationTest`（新增文件不归类 ⇒ 红） |
 | 2 | 跳过显性化 `tests/test_skip_visibility_gate.py` + `scripts/dev-verify.sh` 的 skip policy | 未登记的跳过在严格档判红；关键族"永不运行"有名有姓 | `RuntimeSkipPolicyTest`、`NeverRunsRegisteredTest` |
 | 3 | 并发保真 `tests/test_concurrency_fidelity_gate.py` | 线程不得冒充跨进程并发；两把进程内锁的行为可证 | `ConcurrencyFidelityTeethTest`（假锁 ⇒ 红）、`NAMED_SMOKE` 摘条目 ⇒ 红 |
-| 4 | 覆盖面对账 `tests/test_coverage_ledger_gate.py` | 改动文件 ⊆ 覆盖并集或显式登记；空改动集退 2 | `test_removing_a_registry_row_turns_green_into_red`、`test_empty_change_set_is_an_environment_error` |
+| 4 | 覆盖面对账 `scripts/check-coverage-ledger.py` ＋ `scripts/gate/coverage-ledger.tsv` | 改动文件 ⊆ 覆盖并集或显式登记；空改动集退 2 | **无运行期门**（2026-10-21 瘦身批删除 `test_coverage_ledger_gate.py`；该工具全仓零调用点，登记表保留作人工对账） |
 | 5 | 入库引用 `tests/test_doc_reference_gate.py` | 入库文本里的路径必须 `git ls-files` 可解 | 门内突变夹具：塞入未入库的 `docs/` 路径 ⇒ 红；扫空不得当绿 |
 
 辅判据：下列三处**负数条款**为零（见第 2 节），每处都有常驻门。

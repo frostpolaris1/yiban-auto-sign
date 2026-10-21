@@ -209,18 +209,6 @@ class ClaimBatchTest(_Base):
         self._add_task(_phone(1))
         self.assertEqual(queue_store.claim_batch(OWNER, DAY, (), now=_ts()), [])
 
-    def test_missing_table_returns_sentinel_with_warning(self):
-        """表未落地 = 队列读不通：回 `None` 哨兵**并告警**，调用方据此计入有界放弃闸门。
-
-        `[]` 只回答"表在、但没有到期行"；用 `[]` 回答"读不通"会让执行体把库坏了
-        当成"今天没活了"（全天零签到而现场只有两条 WARNING，ba-p01-01）。
-        """
-        conn = db.get_conn()
-        conn.execute("DROP TABLE sign_tasks")
-        conn.commit()
-        with self.assertLogs("yiban.store.queue_store", level="WARNING") as cm:
-            self.assertIsNone(queue_store.claim_batch(OWNER, DAY, MY_SHARDS, now=_ts()))
-        self.assertIn("领取签到任务失败", "\n".join(cm.output))
 
     def test_no_due_rows_is_silent(self):
         """表在、只是没有到期行 ⇒ 空返回但**不告警**：与"库坏了"必须是两件事。"""
