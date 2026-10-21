@@ -441,6 +441,12 @@ def reclaim_tasks(day: str, phones: Iterable[str]) -> int:
     - 拿不到（`_RunLockHeld`／任何异常）⇒ 只翻终态行，`claimed` 整行跳过（fail-closed）。
     锁序与兜底一致（兜底锁 → 队列锁），不构成死锁。**代价（登记）**：拿不到锁时跳过
     **全部** `claimed` 行（含已死执行体的遗留行）；这些行仍由 `reap_abandoned` 回收。
+
+    **翻态时 `attempts` 同时 +1**：重签是**下一次真实登录**，不是同一次观测。
+    `sign_events` 的去重键是 `(账号, 业务日, status, attempt)`；不递增时下一次尝试算出
+    与上次相同的编号，同状态的事件行会被条件 INSERT 当作重复整行丢弃（审查实测：
+    `done` 行重签后表里仍只有旧的一行）。代价：本次重签占用一次重试预算——语义上它
+    本来就是一次真实请求，记账应当如此。
     """
     items = tuple(phones or ())
     if not items:
@@ -473,12 +479,13 @@ def reclaim_tasks(day: str, phones: Iterable[str]) -> int:
             f"state=CASE WHEN state IN ({in_flip}) THEN ? ELSE state END, "
             f"owner=CASE WHEN state IN ({in_flip}) THEN '' ELSE owner END, "
             f"epoch=epoch + CASE WHEN state IN ({in_flip}) THEN 1 ELSE 0 END, "
+            f"attempts=attempts + CASE WHEN state IN ({in_flip}) THEN 1 ELSE 0 END, "
             "run_at=? "
             "WHERE day=? AND vshard >= 0 "
             f"AND phone IN ({placeholders})"
         )
         params = [*flip_states, STATE_PENDING, *flip_states, *flip_states,
-                  stamp, day, *items]
+                  *flip_states, stamp, day, *items]
         if fallback_busy:
             # 整行跳过：连 run_at 也不刷新（"跳过该行"＝不碰它）。
             sql += " AND state != ?"
@@ -538,9 +545,16 @@ def reap_abandoned(owner: str, day: str | None = None) -> int:
     只回收该业务日。
 
     库异常 → 0 + warning（回收是补偿动作，失败不该打断调用方；下一次监督进程轮末会再试）。
+
+    **回收时 `attempts` 同时 +1**：该次领取已占去一个尝试编号（执行体按
+    `attempts_n + 1` 写事件），下一次领取是**下一次真实尝试**，必须拿新编号。
+    不递增时同状态的事件行会被 `sign_events` 的条件 INSERT 当作重复丢弃。
+    「领取后未发请求就崩溃」的行也 +1：那一次编号已被占，代价是当日重试预算少一次
+    （方向保守：少一次重试，永不多一次登录）。
     """
     prefix = owner + ":"
-    sql = ("UPDATE sign_tasks SET state=?, owner='', epoch=epoch + 1 "
+    sql = ("UPDATE sign_tasks SET state=?, owner='', epoch=epoch + 1, "
+           "attempts=attempts + 1 "
            "WHERE state=? AND vshard >= 0 AND (owner = ? OR instr(owner, ?) = 1)")
     params = [STATE_PENDING, STATE_CLAIMED, owner, prefix]
     if day is not None:

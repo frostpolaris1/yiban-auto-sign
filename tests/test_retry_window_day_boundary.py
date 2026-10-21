@@ -23,11 +23,12 @@ import os
 import random
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from yiban.core import window
-from yiban.engine import executor_v3
+from yiban.engine import executor_v3, schedule
 
 
 def _cfg(**over):
@@ -214,6 +215,57 @@ class RetryLandingTest(unittest.TestCase):
         self.assertIsNotNone(target)
         self.assertEqual(target.date(), DAY1.date())
         self._in_window(target, DAY1)
+
+
+class RetryBudgetInvariantTest(unittest.TestCase):
+    """ksn1：退避预算 ≤ 尾部预留缓冲——把「窗口留得太短」暴露在设计期。
+
+    `next_retry_at_v3` 的落点上界是 `min(RETRY_CAP_SEC, 剩余有效窗口 × 0.3)`。
+    「尾部预留缓冲」= 这条式子能从窗口尾部拿到的最大额度（窗口起点处的
+    `有效窗口 × 0.3`）。若它小于 `RETRY_CAP_SEC`，配置的退避上限在**窗口内路径**拿不到：
+    函数每一拍都会静默把 cap 压低，日志里没有任何一句话说"你配的 600s 不可达"。
+    这条不变量把该形态变成显式报错（`schedule._schedule_config` 记录 ERROR）。
+
+    钉的是**配置组合上的性质**，不是某次调用的返回值：窗口宽度足以容纳硬上限时
+    必须无违规；窗口一旦短到尾部预算低于硬上限，必须报违规。
+    """
+
+    def test_default_window_affords_the_full_retry_cap(self):
+        self.assertIsNone(executor_v3.retry_budget_violation(_cfg()),
+                          "默认 06:30~07:50 的尾部预算必须容得下 RETRY_CAP_SEC")
+
+    def test_shrinking_the_effective_window_below_the_cap_turns_red(self):
+        # 边界 = RETRY_CAP_SEC / 0.3 = 2000s；窗口粒度是分钟（60s），故边界两侧取
+        # 1980s（尾部预算 594s < 600s）与 2040s（612s ≥ 600s）。首尾缓冲归零，
+        # 使 sign_end 直接决定有效窗口宽度。
+        cap = executor_v3.RETRY_CAP_SEC
+        for width_sec, expect_violation in ((1920, True), (1980, True), (2040, False)):
+            with self.subTest(width_sec=width_sec):
+                end_min = 6 * 60 + 30 + width_sec // 60
+                cfg = _cfg(sign_start=(6, 30), sign_end=(end_min // 60, end_min % 60),
+                           edge_front_sec=0, edge_back_sec=0)
+                got = executor_v3.retry_budget_violation(cfg)
+                if expect_violation:
+                    self.assertIsNotNone(got, f"有效窗口 {width_sec}s 应判违规")
+                    self.assertIn(str(cap), got, "报错必须点名退避上限")
+                    self.assertIn("尾部", got, "报错必须点名尾部预留缓冲")
+                else:
+                    self.assertIsNone(got, f"有效窗口 {width_sec}s 不应判违规")
+
+    def test_schedule_config_reports_the_violation_loudly(self):
+        """设计期入口（配置解析）必须自己出声，不要求调用方先跑一次重试。"""
+        env = {
+            "YIBAN_SIGN_START": "06:30",
+            "YIBAN_SIGN_END": "06:45",   # 900s 有效窗口 ⇒ 尾部预算 270s < 600s
+            "YIBAN_WINDOW_EDGE_FRONT_SEC": "0",
+            "YIBAN_WINDOW_EDGE_BACK_SEC": "0",
+        }
+        with mock.patch.dict(os.environ, env, clear=False), \
+                self.assertLogs("yiban", level="ERROR") as caught:
+            schedule._schedule_config()
+        text = "\n".join(caught.output)
+        self.assertIn("退避", text, f"窗口过短没有响亮报错：\n{text}")
+        self.assertIn("尾部", text, f"报错没有点名尾部预留缓冲：\n{text}")
 
 
 if __name__ == "__main__":
