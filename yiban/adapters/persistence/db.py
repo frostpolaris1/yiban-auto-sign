@@ -70,6 +70,7 @@ from yiban.adapters.persistence import claims as _claims  # noqa: E402
 from yiban.adapters.persistence import cleanup as _cleanup  # noqa: E402
 from yiban.adapters.persistence import clock_meta as _clock_meta  # noqa: E402
 from yiban.adapters.persistence import connection as _connection  # noqa: E402
+from yiban.adapters.persistence import emit_ledger as _emit_ledger  # noqa: E402
 from yiban.adapters.persistence import events as _events  # noqa: E402
 from yiban.adapters.persistence import migrations as _migrations  # noqa: E402
 from yiban.adapters.persistence import queue_store as _queue_store  # noqa: E402
@@ -261,6 +262,12 @@ _event_cleanup = _events._event_cleanup
 report_run_event = _run_events.report
 report_run_events = _run_events.report_many
 purge_run_events = _run_events.purge
+
+# 发射账本（唯一定义点在 yiban/adapters/persistence/emit_ledger.py，单 3zr5）：
+# 「是否已经说过」的唯一入口，两者都返回"我是不是说的那一个"。全仓只有引擎侧的
+# 去重成因调用；门面导出是为了让 `db.emit_once` 一类调用与既有导出同形。
+emit_once = _emit_ledger.emit_once
+emit_on_change = _emit_ledger.emit_on_change
 
 # 会话缓存域（唯一定义点在 yiban/adapters/persistence/session_cache.py）：函数走下方读写转发（内部调用点
 # 会被 `db._session_cache_now` 打桩），四个常量是不可变配置、全仓无重绑与打桩，按常量

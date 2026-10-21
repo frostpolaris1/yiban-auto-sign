@@ -156,19 +156,8 @@ class _Harness(unittest.TestCase):
         # 共享 DB 单例教训（2026-10-07 复核 F1）：上一个文件/用例留下的 `db._conn` 会让
         # 本用例的 `db.init_db` 复用旧连接、读到陈旧库。setUp 第一件事就把它关掉。
         self._close_conn()
-        # 批量留痕去重键是模块级的（`_mark_unreached` 跨轮共享，正是降噪要的语义）：
-        # 用例间必须清掉，否则同组成的后一个用例会因上一批留下的键而漏落事件
-        # （同 `_BANNER_LAST` 的处置）。
-        self._saved_unreached = getattr(executor_v3, "_UNREACHED_PEER_LAST", None)
-        executor_v3._UNREACHED_PEER_LAST = None
-        self.addCleanup(setattr, executor_v3, "_UNREACHED_PEER_LAST",
-                        self._saved_unreached)
-        # 无人接手档同样收成批量并按**组成**去重（工单 81xt）：同一个键、同一条理由，
-        # 用例间也要清（否则同组成的后一个用例会漏落它那唯一一条批量）。
-        self._saved_uc = getattr(executor_v3, "_UNREACHED_UNCLAIMED_LAST", None)
-        executor_v3._UNREACHED_UNCLAIMED_LAST = None
-        self.addCleanup(setattr, executor_v3, "_UNREACHED_UNCLAIMED_LAST",
-                        self._saved_uc)
+        # 组成去重现在由库（`emit_ledger`）承担，每个用例一套临时库 ⇒ 天然从"没说过"
+        # 开始，不需要再清进程内变量（单 3zr5）。
         self.root = tempfile.mkdtemp(prefix="yiban-unreach-")
         self.db_file = os.path.join(self.root, "yiban.db")
         self.state_dir = os.path.join(self.root, "state")
@@ -265,6 +254,13 @@ class _Harness(unittest.TestCase):
             "ORDER BY id")
         return [dict(r) for r in cur.fetchall()]
 
+    def _run_events(self):
+        """`run_events` 的收尾摘要行（批量留痕的新住址，单 3zr5）。"""
+        cur = db.get_conn().execute(
+            "SELECT ts, day, node, executor, phone, message FROM run_events "
+            "WHERE node='finalize' AND message LIKE '%摘要：%' ORDER BY id")
+        return [dict(r) for r in cur.fetchall()]
+
     def _run(self, *, attempt=None, claim_batch=None, row_owners="__unset__"):
         """跑一轮真 `runner.main`，返回 (rc, 日志正文)。
 
@@ -340,32 +336,32 @@ class PeerClaimedWorkerTest(_Harness):
         self.assertNotEqual(rc, 1, "全被别人领走时不得报「有真失败」（那是假失败）")
 
     def test_peer_claimed_leaves_one_batch_event_not_per_account(self):
-        """判据 B2：被别人领走 ⇒ **一条批量**事件（O(1)），不逐账号落库。
+        """判据 B2：被别人领走 ⇒ **一条批量**观测（O(1)），不逐账号落库。
 
         故障现场（2026-10-10 生产）：兜底收尾扫描对每个被别人领走的账号各落一行
         `sign_events`（status=pending）×1830，当天 pending 事件 1893 条、日志 1934 行
-        ——事件表与日志被按账号数线性灌噪声，看板凭空多出一个 pending 桶。
-        本用例只断言"事件条数与账号数解耦"：6 个账号全部被别人领走，事件仍是 1 条。
+        ——事件表与日志被按账号数线性灌噪声。本用例只断言"留痕条数与账号数解耦"：
+        6 个账号全部被别人领走，留痕仍是 1 条。
+
+        留痕住在 `run_events`（观测表，无账号行是正常形态）：`sign_events` 只装
+        账号级事实，摘要行写不进去（单 f7or／3zr5）。
         """
         self._plan()
         self._peer_settles_all()
         self._run()
 
-        rows = self._events()
+        rows = self._run_events()
         self.assertEqual(len(rows), 1,
-                         f"「已由他人负责」必须收成一条批量事件（O(1)），实得 {len(rows)} 行：{rows}")
+                         f"「已由他人负责」必须收成一条批量（O(1)），实得 {len(rows)} 行：{rows}")
         row = rows[0]
-        self.assertEqual(row["stage"], "sign")
-        self.assertNotEqual(row["status"], yiban_status.STATUS_FAILED,
-                            "留痕不得写成真失败（两者必须可区分）")
-        self.assertEqual(row["status"], yiban_status.STATUS_PENDING,
-                         "未执行应当落 pending 档，而不是成功或失败")
+        self.assertEqual(row["node"], "finalize")
         self.assertIn("已由其他执行体领取", row["message"],
-                      f"批量事件无法区分「被别人领走」与真失败：{row}")
+                      f"批量留痕无法区分「被别人领走」与真失败：{row}")
         self.assertIn(str(len(self.phones)), row["message"],
-                      f"批量事件必须带计数（运维据此知道有多少个账号）：{row}")
-        self.assertEqual(row["phone"], "",
-                         f"批量事件是摘要行（无单一账号），phone 必须留空：{row}")
+                      f"批量留痕必须带计数（运维据此知道有多少个账号）：{row}")
+        self.assertEqual(row["phone"], "", "摘要行没有单一账号（观测表的正常形态）")
+        self.assertEqual(self._events(), [],
+                         "摘要行不得再写进 sign_events（哨兵已撤）")
 
 
 class TrulyUnreachedStillFailsTest(_Harness):
@@ -390,20 +386,19 @@ class TrulyUnreachedStillFailsTest(_Harness):
         self.assertNotIn(f"✅ {len(self.phones)}", summary[0],
                          "没人接手的账号不得被算成成功（藏进成功即掩盖）")
         self.assertEqual(rc, 1, "存在无人接手的账号必须是真失败（退出码 1）")
-        rows = self._events()
-        # 留痕收成**一条批量**（O(1)）：账号数与分因明细都在事件正文里，摘要行不进账号
-        # 聚合（故永不成为某账号当日最后一条事件）。逐账号落行是 2026-10-13 生产
-        # `pending` 洪泛的形状，也是这里必须拒的形状。
+        rows = self._run_events()
+        # 留痕收成**一条批量**（O(1)）：账号数与分因明细都在正文里，摘要行没有单一账号。
+        # 逐账号落行是 2026-10-13 生产 `pending` 洪泛的形状，也是这里必须拒的形状。
         self.assertEqual(len(rows), 1,
                          f"无人接手的留痕必须收成一条批量（O(1)），实得 {len(rows)} 行：{rows}")
-        self.assertEqual(rows[0]["phone"], "",
-                         f"批量是摘要行（无单一账号），phone 必须留空：{rows[0]}")
-        self.assertEqual(rows[0]["status"], yiban_status.STATUS_PENDING,
-                         f"「未执行」的留痕状态不得写成 failed/success：{rows[0]}")
+        self.assertEqual(rows[0]["phone"], "", "摘要行没有单一账号（观测表的正常形态）")
+        self.assertEqual(rows[0]["node"], "finalize", "摘要行是收尾观测节点")
         self.assertIn("未执行", rows[0]["message"],
                       f"留痕文本必须能读出「本执行体未执行」：{rows[0]}")
         self.assertIn(str(len(self.phones)), rows[0]["message"],
                       f"批量必须带账号数（运维据此知道规模）：{rows[0]}")
+        self.assertEqual(self._events(), [],
+                         "摘要行不得再写进 sign_events（哨兵已撤）")
 
 
 class RetryRequeuedIsNotUnreachedTest(_Harness):
@@ -471,12 +466,12 @@ class SentinelDirectionGuardTest(_Harness):
         self.assertNotIn("已由其他执行体领取", summary,
                          f"读不通被说成「别人做了」——那是掩盖：{summary}")
         self.assertEqual(rc, 1, "读不通不得把账号从真失败里划走")
-        rows = self._events()
+        rows = self._run_events()
         self.assertTrue(rows, "读不通同样要留痕")
         self.assertTrue(all("判因不可得" in r["message"] for r in rows),
                         f"留痕必须写明判因不可得：{rows}")
-        self.assertTrue(all(r["status"] == yiban_status.STATUS_PENDING for r in rows),
-                        f"未执行的留痕不得写成成功或失败：{rows}")
+        self.assertTrue(all(r["node"] == "finalize" for r in rows),
+                        f"留痕是收尾观测节点，不得写成成功或失败：{rows}")
 
     def _day_rows(self):
         """当日任务行（只读配对；判因守卫的前置断言用）。"""
@@ -492,15 +487,15 @@ class CaliberConsistencyTest(_Harness):
         self._peer_settles_all()
         _rc, log = self._run()
         summary = next(ln for ln in log.splitlines() if "==== 签到汇总" in ln)
-        events = self._events()
+        events = self._run_events()
         import re
-        # 「已由他人负责」收成一条批量（O(1)）：汇总的独立桶数字、批量事件里的计数、
+        # 「已由他人负责」收成一条批量（O(1)）：汇总的独立桶数字、批量留痕里的计数、
         # 账号数三者必须同源。改一处不改另一处即红。
-        self.assertEqual(len(events), 1, f"应恰有一条批量事件：{events}")
+        self.assertEqual(len(events), 1, f"应恰有一条批量留痕：{events}")
         m_sum = re.search(r"(\d+) 已由其他执行体领取", summary)
         self.assertIsNotNone(m_sum, f"汇总缺独立桶：{summary}")
         m_ev = re.search(r"(\d+) 个账号", events[0]["message"])
-        self.assertIsNotNone(m_ev, f"批量事件缺计数：{events[0]}")
+        self.assertIsNotNone(m_ev, f"批量留痕缺计数：{events[0]}")
         self.assertEqual(int(m_sum.group(1)), int(m_ev.group(1)),
                          "汇总计数与批量事件计数不一致（两套口径）")
         self.assertEqual(int(m_sum.group(1)), len(self.phones),
@@ -530,38 +525,37 @@ class QueueOwnershipReadTest(_Harness):
                           "读不通被折成了「什么都没有」——判因会静默把别人的活当我自己的失败")
 
 
-class PeerBatchDedupTest(unittest.TestCase):
+class PeerBatchDedupTest(_Harness):
     """LOW-1 守卫（工单 81xt 返修）：同一组成的批量留痕**只落一次**。
 
     兜底常驻循环每 ~5s 一拍、窗口内可上百轮。同一批被别人领走的账号在每轮组成不变
     （账号数与分因明细都不变），旧实现每轮各落一条日志 + 一条摘要事件——按轮数线性
-    灌噪声。修法是进程内模块级去重键，按 `(执行体, 账号数, 分因明细)` 变化才落；签名
-    不变则整段跳过。组成一变（换执行体、账号数变、或同数下分因明细变）立刻回到留痕。
+    灌噪声。修法是**按组成去重**：组成不变则整段跳过；组成一变（换执行体、账号数变、
+    或同数下分因明细变）立刻回到留痕。载体是库（`emit_ledger`，单 3zr5）：
+    身份与跨天复位由键承担，不再有进程内变量。
 
-    直接调真 `_mark_unreached`：本用例的题目是留痕的**去重**，不引入库与网络，
-    队列归属用打桩事实喂入。
+    直接调真 `_mark_unreached`：本用例的题目是留痕的**去重**，队列归属用打桩事实喂入；
+    库只用来承载账本与 `run_events` 收尾观测行。
     """
 
     TAG = "[fallback]"
     LOG_MARK = "未领取：任务已由其他执行体领取"
 
     def setUp(self):
-        # 去重键是模块级的（同进程跨轮共享）：用例要断言"第一拍落"，就得先清键，
-        # 否则断言取决于执行顺序（同 `_BANNER_LAST` 的做法）。
-        self._saved = getattr(executor_v3, "_UNREACHED_PEER_LAST", None)
-        executor_v3._UNREACHED_PEER_LAST = None
-        self.addCleanup(setattr, executor_v3, "_UNREACHED_PEER_LAST", self._saved)
-        self._saved_uc = getattr(executor_v3, "_UNREACHED_UNCLAIMED_LAST", None)
-        executor_v3._UNREACHED_UNCLAIMED_LAST = None
-        self.addCleanup(setattr, executor_v3, "_UNREACHED_UNCLAIMED_LAST", self._saved_uc)
+        super().setUp()
+        self._plan()   # 建库（真迁移链）
+        self._last_id = self._max_run_event_id()
+
+    def _max_run_event_id(self):
+        row = db.get_conn().execute("SELECT MAX(id) AS m FROM run_events").fetchone()
+        return int((row["m"] if row else 0) or 0)
 
     def _scan(self, phones, owners, executor_id=WORKER0, attempted=()):
-        """跑一拍 `_mark_unreached`，返回 (摘要事件列表, 本拍批量日志文本)。"""
-        events = []
+        """跑一拍 `_mark_unreached`，返回 (本拍 run_events 摘要行, 本拍批量日志文本)。"""
         ctx = SimpleNamespace(
             attempted=set(attempted), results={}, delegated=(), day=DAY,
             executor_id=executor_id, runtime_id=executor_id,
-            log_tag=self.TAG, unreached={}, event_sink=events.append)
+            log_tag=self.TAG, unreached={}, event_sink=[].append)
         cap = _LogCapture()
         logger = logging.getLogger("yiban")
         logger.addHandler(cap)
@@ -573,7 +567,13 @@ class PeerBatchDedupTest(unittest.TestCase):
                                lambda *a, **k: owners):
             executor_v3._mark_unreached(
                 ctx, [SimpleNamespace(phone=p) for p in phones])
-        return events, [t for t in cap.texts if self.LOG_MARK in t]
+        cur = db.get_conn().execute(
+            "SELECT id, node, phone, message FROM run_events WHERE id > ? ORDER BY id",
+            (self._last_id,))
+        rows = [dict(r) for r in cur.fetchall()]
+        if rows:
+            self._last_id = rows[-1]["id"]
+        return rows, [t for t in cap.texts if self.LOG_MARK in t]
 
     @staticmethod
     def _owners(phones, state="done"):
@@ -645,37 +645,34 @@ class PeerBatchDedupTest(unittest.TestCase):
                          "组成再现必须再落一条（同组成 N→0→N 不得吞第三次留痕）")
 
 
-class UnclaimedBatchDedupTest(unittest.TestCase):
+class UnclaimedBatchDedupTest(_Harness):
     """无人接手档的同一条去重守卫（工单 81xt 的另一半）：同一组成只落一次。
 
     该档在健康运行时为 0，但**队列读不通**时本执行体全部账号落进它——逐账号落库就是
-    O(账号数)（2026-10-13 生产的 `pending` 洪泛形状）。修法与 PEER 档同一条：进程内
-    模块级去重键 `_UNREACHED_UNCLAIMED_LAST`，按 `(执行体, 分因明细)` 变化才落。
+    O(账号数)（2026-10-13 生产的 `pending` 洪泛形状）。修法与 PEER 档同一条：
+    组成不变即整段跳过（账本在库，单 3zr5），组成一变即再落。
     三条性质必须与 PEER 档逐条对齐：身份在键里、组成 N→0→N 能复活、组成一变即再落。
-    形状差别（本枚是二元、peer 那枚是三元）不该让这三条漏钉。
+    形状差别（peer 的组成含账号数、本档是明细之和）不该让这三条漏钉。
 
-    直接调真 `_mark_unreached`：本用例的题目是留痕的**去重**，不引入库与网络，
-    队列归属用打桩事实喂入。
+    直接调真 `_mark_unreached`：本用例的题目是留痕的**去重**，队列归属用打桩事实喂入；
+    库只用来承载账本与 `run_events` 收尾观测行。
     """
 
     TAG = "[fallback]"
     LOG_MARK = "未执行："
 
     def setUp(self):
-        self._saved = getattr(executor_v3, "_UNREACHED_PEER_LAST", None)
-        executor_v3._UNREACHED_PEER_LAST = None
-        self.addCleanup(setattr, executor_v3, "_UNREACHED_PEER_LAST", self._saved)
-        self._saved_uc = getattr(executor_v3, "_UNREACHED_UNCLAIMED_LAST", None)
-        executor_v3._UNREACHED_UNCLAIMED_LAST = None
-        self.addCleanup(setattr, executor_v3, "_UNREACHED_UNCLAIMED_LAST", self._saved_uc)
+        super().setUp()
+        self._plan()   # 建库（真迁移链）
+        row = db.get_conn().execute("SELECT MAX(id) AS m FROM run_events").fetchone()
+        self._last_id = int((row["m"] if row else 0) or 0)
 
     def _scan(self, phones, owners, executor_id=WORKER0, attempted=(), unreadable=False):
-        """跑一拍 `_mark_unreached`，返回 (摘要事件列表, 本拍无人接手档的批量日志文本)。"""
-        events = []
+        """跑一拍 `_mark_unreached`，返回 (本拍 run_events 摘要行, 本拍无人接手档日志)。"""
         ctx = SimpleNamespace(
             attempted=set(attempted), results={}, delegated=(), day=DAY,
             executor_id=executor_id, runtime_id=executor_id,
-            log_tag=self.TAG, unreached={}, event_sink=events.append)
+            log_tag=self.TAG, unreached={}, event_sink=[].append)
         cap = _LogCapture()
         logger = logging.getLogger("yiban")
         logger.addHandler(cap)
@@ -687,7 +684,13 @@ class UnclaimedBatchDedupTest(unittest.TestCase):
                                lambda *a, **k: (None if unreadable else owners)):
             executor_v3._mark_unreached(
                 ctx, [SimpleNamespace(phone=p) for p in phones])
-        return events, [t for t in cap.texts if self.LOG_MARK in t]
+        cur = db.get_conn().execute(
+            "SELECT id, node, phone, message FROM run_events WHERE id > ? ORDER BY id",
+            (self._last_id,))
+        rows = [dict(r) for r in cur.fetchall()]
+        if rows:
+            self._last_id = rows[-1]["id"]
+        return rows, [t for t in cap.texts if self.LOG_MARK in t]
 
     @staticmethod
     def _owners(phones, state="done"):
