@@ -84,7 +84,7 @@ _GATE_REASON_TEXT = {
     schedule.DAY_OFF_PAUSED: "管理员已一键暂停签到",
 }
 
-# 状态码别名（与 yiban.status 同一对象）
+# 状态码别名（与 yiban.core.status 同一对象）
 STATUS_FAILED = yiban_status.STATUS_FAILED
 
 

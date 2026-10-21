@@ -18,17 +18,17 @@
 
 **归属**
 `yiban` 包根的清理策略模块；`scripts/state_cleanup.py`（宿主 cron）与
-`docker/scheduler.py`（容器调度）共用同一份，CLI 子命令 `python -m yiban.cli state`
+`docker/scheduler.py`（容器调度）共用同一份，CLI 子命令 `python -m yiban.entry.cli state`
 也走它。
 
 **复用**
 `ARTIFACTS`（按日文件登记表）、`state_dir_from_env` / `log_dir_from_env`（目录解析）
-与清理函数是唯一事实源；目录解析复用 `yiban.infra.env_io.resolve_path`。
+与清理函数是唯一事实源；目录解析复用 `yiban.adapters.config.env_io.resolve_path`。
 
 **通信**
 输入：环境变量（`YIBAN_STATE_DIR` / `YIBAN_LOG_FILE` / 保留期两档）与当前日期。
 输出：被删除的过期按日文件与清理结果（供调用方打印/记日志）。
-调用谁：`yiban.clock`、`yiban.infra.env_io`。
+调用谁：`yiban.core.clock`、`yiban.adapters.config.env_io`。
 谁调用：`scripts/state_cleanup.py`、`docker/scheduler.py`、`yiban/entry/cli/__init__.py` 的 `state` 子命令。
 前端调用点：容器调度器的清理结果与保留期设置经 `/api/settings`
 （`web/static/js/components/settings-quota.js` 等设置页）暴露；登记表或保留期口径变化会改变运维
@@ -157,7 +157,7 @@ def state_dir_from_env(env=None):
     """状态目录：`env_io.state_dir_from_env` 口径（进程环境 → .env → 默认 `/var/log/yiban`）。
 
     放在本模块是为了"清理目录与写目录同源"：宿主清理脚本、容器调度与 CLI
-    （`python -m yiban.cli state`）都调这里，避免又出现一份各自的默认值。
+    （`python -m yiban.entry.cli state`）都调这里，避免又出现一份各自的默认值。
     `env` 供测试注入映射（None = 读进程环境，与 resolve_path 同语义）。
     """
     return env_io.state_dir_from_env(env=env)

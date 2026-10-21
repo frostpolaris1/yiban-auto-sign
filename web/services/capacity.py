@@ -18,10 +18,10 @@
 
 **复用**
 `_capacity_account_count` 与 `_capacity_audit_count` 互斥互补（两者之和 = 全部非删除
-账号），判定口径唯一来源是 `yiban.store.accounts.signs_in`；`_capacity_estimate` 的公式
+账号），判定口径唯一来源是 `yiban.adapters.persistence.accounts.signs_in`；`_capacity_estimate` 的公式
 与引擎共用 `yiban.engine.schedule.capacity_of`（**显式固定 v2 公式**，即
 `capacity_accounts` 那一支：双轨开关已随单池消失，展示/闸门口径保持批 4 的取值不变），
-有效窗口取 `yiban.window.bounds`（含"裁剪吃空 → 回退默认窗口"），
+有效窗口取 `yiban.core.window.bounds`（含"裁剪吃空 → 回退默认窗口"），
 不另写一套容量模型。`_accounts_at_capacity` 复用 `_capacity_account_count`，
 `_users_at_capacity` 与其同构（"超过上限才拒绝"语义）。触发告警的发信不在这里直接
 发出，而是经 `web/services/locks.py` 的 `run_after_file_lock` 登记——那是全局锁
@@ -100,7 +100,7 @@ def _host(key):
 def _capacity_account_count():
     """计入账号容量的账号数（= 会发起易班请求的账号，含 owner='admin' 裸账号）。
 
-    口径（判据唯一来源 `yiban.store.accounts.signs_in`）：**非删除且审核态已通过**；
+    口径（判据唯一来源 `yiban.adapters.persistence.accounts.signs_in`）：**非删除且审核态已通过**；
     user_paused 仍计入（用户主动暂停、一键可恢复，总览三分类已单独列出）。
     「同源」成立在**判据**上，不成立在**计数表达式**上：设置页视图（
     `web/routes/settings_api.py` 的 `_cur_accounts = sum(... account_signs_in(a))`）另写了
@@ -131,7 +131,7 @@ def _capacity_estimate(gap=0):
     公式**（`enabled=False`，逐值不变）：`capacity_of` 的缺省已随台账单池化变为 v3，
     但容量口径（批 4）要求展示与"预估 < 当前账号数就拒绝保存"的闸门逐值不动。
     有效窗口取
-    `yiban.window.from_env(...).full_sec()`（含"裁剪吃空 → 回退默认窗口"，故不会再
+    `yiban.core.window.from_env(...).full_sec()`（含"裁剪吃空 → 回退默认窗口"，故不会再
     出现"配置异常时容量显示 0"）。avg 取 YIBAN_AVG_ATTEMPT_SEC（缺省 3s）。
 
     avg 的取值配置层是**生效配置层**（进程环境为底、`.env` 覆盖——与 run.sh 起引擎
@@ -179,7 +179,7 @@ def _registration_paused():
     YIBAN_GLOBAL_PAUSE 同款读写口径。注册接口（web/routes/auth.py）与
     api_registration_paused 共用这一份实现。参数注入口径见模块头「通信」。
 
-    判定与引擎的开关真值**同一口径**（`yiban.infra.env_io.parse_env_flag`：1/true/on/yes=开）。
+    判定与引擎的开关真值**同一口径**（`yiban.adapters.config.env_io.parse_env_flag`：1/true/on/yes=开）。
     原实现 `load_env_int(...) == 1` 只认整数，`=true` 会让引擎真停注册、此门（及登录页
     探测端点）却判"开放"——与面板显示的同一处假安心（census P0-1）。
     """

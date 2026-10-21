@@ -39,9 +39,9 @@
 **复用**
 收件人算法复用 `web/services/notify_mail.py` 的 `_alert_mail_recipients`（与 A 线告警
 邮件同一份：ADMIN_TO 按个人开关过滤 + 开启接收的管理员），发送出口复用
-`yiban.mail.send_admin_alert`；节流复用 `yiban/adapters/notifier/notify/transport.py` 的 `_throttle_due`
+`yiban.adapters.notifier.mail.send_admin_alert`；节流复用 `yiban/adapters/notifier/notify/transport.py` 的 `_throttle_due`
 （`$YIBAN_STATE_DIR/notify-throttle.json`，跨进程磁盘表——cron 每次新进程，进程内节流表
-在这里等于没有节流，故不新造）；链头与记录数读 `yiban.store.db` 的
+在这里等于没有节流，故不新造）；链头与记录数读 `yiban.adapters.persistence.db` 的
 `audit_head_hash_ex` / `audit_row_count`（只读；不读、不改锚点文件）。
 
 **通信**
@@ -112,10 +112,10 @@ def _env(name, default):
 
 
 def _now():
-    """当日日期串（`YYYY-MM-DD`）——业务日（`yiban.clock` 北京钟）。
+    """当日日期串（`YYYY-MM-DD`）——业务日（`yiban.core.clock` 北京钟）。
 
     与 backup.sh 的包名时钟**同源**（MF-109 统一后 backup.sh 的包名也走
-    `yiban.clock.today()`）：两边取不同时钟才会在时区非 +08 的服务器上按天错位、
+    `yiban.core.clock.today()`）：两边取不同时钟才会在时区非 +08 的服务器上按天错位、
     天天误报"备份缺失"。宿主时区本就是北京时它与 `datetime.now()` 逐日相等。
     """
     from yiban.core.clock import today

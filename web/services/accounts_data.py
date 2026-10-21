@@ -135,7 +135,7 @@ def load_users():
 def _mask_email(e):
     """日志/列表脱敏：邮箱 → abc***@example.com（幂等）。
 
-    真源在 `yiban.masking.mask_email`——展示面与审计 `actor` 列共用同一份口径，
+    真源在 `yiban.core.masking.mask_email`——展示面与审计 `actor` 列共用同一份口径，
     这里只是 web 侧的名字转发（前端 `maskEmail` 由对拍测试钉住同口径）。
     """
     return mask_email(e)
@@ -384,7 +384,7 @@ def _plan_clock(run_at):
     """台账 `run_at`（"YYYY-MM-DD HH:MM:SS[.mmm]"）→ "HH:MM"；空值 / 短串返回 ""。
 
     只取时分：展示口径与状态文案「计划 HH:MM」同一精度（秒不展示）。截断而非解析，
-    是因为本仓时间串格式单一（`yiban.clock` 产出），多一次解析只多一处失败点。
+    是因为本仓时间串格式单一（`yiban.core.clock` 产出），多一次解析只多一处失败点。
     """
     text = str(run_at or "").strip()
     return text[11:16] if len(text) >= 16 else ""

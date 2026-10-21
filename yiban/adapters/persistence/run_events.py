@@ -14,10 +14,10 @@
 **读取面（巡检）**
 本模块是写入面与读取面的唯一收口点。写入面净化并截断 `message`。读取面遮罩
 `phone`、把 `executor` 收敛成公开标签、并**再复遮一次 `message`**。
-- `phone`：复用 `yiban.masking.mask_phone` 的单源口径。响应不出现原始号码。
+- `phone`：复用 `yiban.core.masking.mask_phone` 的单源口径。响应不出现原始号码。
 - `executor`：复用 `yiban.egress.owner_tag`，只回角色与槽位序号。身份原串带
   主机名；主机名属部署信息，任何接口都不得回原串。
-- `message`：复用 `yiban.masking.sanitize_text` 再复遮一次。写入面
+- `message`：复用 `yiban.core.masking.sanitize_text` 再复遮一次。写入面
   已净化，读取面复遮是**纵深防御**：历史行与直插行未过写入面净化时仍不漏。
   复遮**不是无条件幂等**：已遮值与下一个凭据键之间无分隔符时会吞掉后一段。
   对写入口径的产物在实测形态下幂等。实测口径：定向 fuzz 出过非不动点；
@@ -44,8 +44,8 @@
 **归属**
 `yiban/engine/executor_v3.py`（执行体节点）与 `yiban/app/runner.py`（编排节点）
 共用的一张**观测表**。本表不参与签到正确性：任何一行写不进去都不改变签到结论。
-建表与索引在迁移域（`yiban/store/migrations.py` 的 v21），本模块只读写；
-保留期清理由 `yiban/store/cleanup.py` 的每日编排调用（`purge_run_events`）。
+建表与索引在迁移域（`yiban/adapters/persistence/migrations.py` 的 v21），本模块只读写；
+保留期清理由 `yiban/adapters/persistence/cleanup.py` 的每日编排调用（`purge_run_events`）。
 
 **收尾有两层（`finalize` 的 message 前缀是它们的判别面）**
 - `执行体会话收尾：`：一次执行体会话正常结束（`run_executor_v3` 正常返回路径）；
@@ -74,9 +74,9 @@
 `_clock_jump_guard` / `_table_min_max` / `_record_purge_event`）一律经 `_facade()`
 按属性取：`mock.patch.object(db, "get_conn", …)` 一类打桩要求打桩点落在 db 门面上，
 直接调本模块同名函数会让打桩静默失效（测试仍绿，但打桩点不再是它以为的那一个）。
-调用谁：`yiban.clock`。
+调用谁：`yiban.core.clock`。
 谁调用：`yiban/engine/executor_v3.py`、`yiban/app/runner.py`、
-`yiban/store/cleanup.py`（每日清理）。
+`yiban/adapters/persistence/cleanup.py`（每日清理）。
 """
 import contextlib
 import datetime
@@ -131,7 +131,7 @@ _ARTIFACT_HINT = (
 
 
 def _facade():
-    """db 门面（函数内延迟导入，避免与 `yiban.store.db` 形成导入环）。
+    """db 门面（函数内延迟导入，避免与 `yiban.adapters.persistence.db` 形成导入环）。
 
     打桩可见性见模块说明：必须按**属性**取而不是模块级 from-import。
     """

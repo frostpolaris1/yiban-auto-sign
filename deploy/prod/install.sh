@@ -359,7 +359,7 @@ SERVICE_GROUP="yiban"
 DATA_DIR="$REPO_ROOT/data"
 # 旧布局的运行数据。集合与搬迁提交（a5bc16b7）改动的默认值同源：只有 YIBAN_ENV_FILE
 # 与 YIBAN_DB_FILE 两枚默认值从检出根改到 data/，故旧件就是 `.env` 与库本体连同
-# SQLite 的同目录 `-wal`/`-shm`（本项目统一 WAL 模式，见 yiban/store/db.py）。
+# SQLite 的同目录 `-wal`/`-shm`（本项目统一 WAL 模式，见 yiban/adapters/persistence/db.py）。
 # `accounts.json` 的默认值未动（仍是检出根），不属本集合。
 LEGACY_RUNTIME_FILES=(.env yiban.db yiban.db-wal yiban.db-shm)
 if [ "$(id -u)" -eq 0 ] && [ -z "$DESTDIR" ]; then
