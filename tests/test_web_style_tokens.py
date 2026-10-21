@@ -11,7 +11,7 @@
      ② 任何裸 `font-size: Npx` 必须落在六档 {11,12,13,16,22}，或 ≥24（展示大数字档，单列
         --fs-metric）；
      ③ 控件选择器上的裸 `height`/`min-height` 必须落在三档 {32,40,44}；
-     ④ 表格行高由 `--table-row-h`（44）承载，自研 `.data-table` 与 EP `.el-table` 同源；
+     ④ 表格行高由 `--table-row-h`（48）承载，自研 `.data-table` 与 EP `.el-table` 同源；
      ⑤ 承载信息的文字不得再用 `--t-light`（白底 2.32–2.56:1）——只许两个纯装饰/豁免例外。
 下一个改样式的人往令牌外写裸值，这里直接报红。
 
@@ -46,7 +46,7 @@ RADIUS_TOKENS = {
     "--r-card": "14px",
     "--r-inner": "10px",
 }
-TABLE_ROW_H = 44
+TABLE_ROW_H = 48
 ALLOWED_FS = {11, 12, 13, 16, 22}
 DISPLAY_FS_MIN = 24          # ≥24px 视为展示大数字档（--fs-metric 一类）
 ALLOWED_CTL_H = {0, 32, 40, 44}

@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
+import { adminTest as test, expect } from "./base";
 
 import { businessDay } from "./business-day";
 
@@ -42,7 +43,9 @@ test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、�
   // 本用例含一段 11.5 秒的轮询观测（轮询沿用在途选择），默认 30 秒超时不够。
   test.setTimeout(90_000);
   // 整个套件只在这里走一次真实登录表单（同 IP 10 秒内第 4 次访问 /login 会被
-  // 服务端的「登录页访问循环」守卫打断——那是给真实用户的保护，测试不该反复撞）
+  // 服务端的「登录页访问循环」守卫打断——那是给真实用户的保护，测试不该反复撞）。
+  // admin project 默认带管理员 Cookie，先清掉才是匿名登录页。
+  await page.context().clearCookies();
   await page.goto("/login");
   await page.fill("#username", ADMIN_USER);
   await page.fill("#password", ADMIN_PASS);
@@ -308,10 +311,7 @@ test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、�
 test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账号管理（复用同一管理员会话）", async ({ page }) => {
   // 本用例把日志/看板/账号/用户/设置五页串成一条会话，默认 30 秒不够（实测 54.8s）。
   test.setTimeout(120_000);
-  // 会话走 API 登录（表单登录已在上一条覆盖）
-  const resp = await page.request.post("/api/login", { data: { username: ADMIN_USER, password: ADMIN_PASS } });
-  expect(resp.ok()).toBeTruthy();
-
+  // 管理员会话由 admin project 注入（.auth/admin.json）；表单登录已在上一条覆盖。
   const { today, older } = dates();
   await page.goto("/data/logs");
 
@@ -508,9 +508,10 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   await expect(page.getByRole("tab", { name: /正常账号/ })).toContainText("2");
   await expect(page.getByRole("tab", { name: /待删除账号/ })).toContainText("1");
   // KPI 卡（今日签到统计）：成功/失败/待签/跳过。
+  // 种子里 13800138001 今日终态 failed、13900139002 无记录 ⇒ 失败 1、待签 1。
   await expect(page.locator("#stat-success")).toHaveText("0");
-  await expect(page.locator("#stat-failed")).toHaveText("0");
-  await expect(page.locator("#stat-waiting")).toHaveText("2");
+  await expect(page.locator("#stat-failed")).toHaveText("1");
+  await expect(page.locator("#stat-waiting")).toHaveText("1");
   await expect(page.locator("#stat-skipped")).toHaveText("0");
   await expect(page.locator("#pending-tip")).toBeVisible();
   await expect(page.locator("#pending-count")).toHaveText("2");

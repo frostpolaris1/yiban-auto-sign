@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { adminTest as test, expect } from "./base";
 
 // 窄屏表单与审计列表的结构护栏。
 //
@@ -10,12 +10,10 @@ import { expect, test } from "@playwright/test";
 const ADMIN_USER = "admin";
 const ADMIN_PASS = "TestPass1234!";
 
-test("窄屏：账号表单弹窗不溢出，footer 常驻视口", async ({ page }) => {
-  const resp = await page.request.post("/api/login", {
-    data: { username: ADMIN_USER, password: ADMIN_PASS },
-  });
-  expect(resp.ok()).toBeTruthy();
+// 本文件 7 条管理员用例的会话由 playwright.config.ts 的 admin project 注入（.auth/admin.json）。
+// 用户端那条用例仍自己登录一次（它需要换身份）。
 
+test("窄屏：账号表单弹窗不溢出，审计记录用卡片列表", async ({ page }) => {
   for (const width of [390, 360]) {
     await page.setViewportSize({ width, height: 844 });
     await page.goto("/work/accounts");
@@ -37,14 +35,9 @@ test("窄屏：账号表单弹窗不溢出，footer 常驻视口", async ({ page
     await page.keyboard.press("Escape");
     await expect(dialog).toBeHidden();
   }
-});
 
-test("窄屏：审计记录用卡片列表，关键字段不依赖横向滚动", async ({ page }) => {
-  const resp = await page.request.post("/api/login", {
-    data: { username: ADMIN_USER, password: ADMIN_PASS },
-  });
-  expect(resp.ok()).toBeTruthy();
-
+  // 同一条用例顺带测审计卡片：两者都是窄屏形态护栏，合并可省一次 API 登录。
+  // e2e 的登录限速按客户端 IP 计（60 秒 10 次），整套的登录次数是要省着用的资源。
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/data/audit");
 
@@ -63,11 +56,6 @@ test("窄屏：审计记录用卡片列表，关键字段不依赖横向滚动",
 });
 
 test("竖屏 dashboard：KPI 一行两个，首图不被推出首屏", async ({ page }) => {
-  const resp = await page.request.post("/api/login", {
-    data: { username: ADMIN_USER, password: ADMIN_PASS },
-  });
-  expect(resp.ok()).toBeTruthy();
-
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/data/dashboard");
 
@@ -97,11 +85,6 @@ test("竖屏 dashboard：KPI 一行两个，首图不被推出首屏", async ({ 
 });
 
 test("平板图标栏：待处理徽标、服务器时钟与分组分隔线仍可见", async ({ page }) => {
-  const resp = await page.request.post("/api/login", {
-    data: { username: ADMIN_USER, password: ADMIN_PASS },
-  });
-  expect(resp.ok()).toBeTruthy();
-
   await page.setViewportSize({ width: 1024, height: 768 });
   await page.goto("/data/dashboard");
 
@@ -125,11 +108,6 @@ test("平板图标栏：待处理徽标、服务器时钟与分组分隔线仍�
 });
 
 test("自研页签：切换后滑动指示条与 active 页签对齐", async ({ page }) => {
-  const resp = await page.request.post("/api/login", {
-    data: { username: ADMIN_USER, password: ADMIN_PASS },
-  });
-  expect(resp.ok()).toBeTruthy();
-
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto("/work/accounts");
   await page.locator('[data-acct-tab="active"]').click();
@@ -153,11 +131,6 @@ test("自研页签：切换后滑动指示条与 active 页签对齐", async ({ 
 });
 
 test("竖屏签到日志：页签不裁切、控件铺满、事件/巡检表改卡片", async ({ page }) => {
-  const resp = await page.request.post("/api/login", {
-    data: { username: ADMIN_USER, password: ADMIN_PASS },
-  });
-  expect(resp.ok()).toBeTruthy();
-
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/data/logs");
 
@@ -193,11 +166,6 @@ test("竖屏签到日志：页签不裁切、控件铺满、事件/巡检表改�
 });
 
 test("竖屏账号表：无横向滚动，手机号与审核状态行内可见", async ({ page }) => {
-  const resp = await page.request.post("/api/login", {
-    data: { username: ADMIN_USER, password: ADMIN_PASS },
-  });
-  expect(resp.ok()).toBeTruthy();
-
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/work/accounts");
   await page.locator('[data-acct-tab="pending"]').click();
@@ -282,11 +250,6 @@ async function rowMismatches(page: import("@playwright/test").Page): Promise<Row
 }
 
 test("管理端：各页工具行内控件同高（高度差 ≤2px）", async ({ page }) => {
-  const resp = await page.request.post("/api/login", {
-    data: { username: ADMIN_USER, password: ADMIN_PASS },
-  });
-  expect(resp.ok()).toBeTruthy();
-
   await page.setViewportSize({ width: 1440, height: 900 });
   for (const path of ROW_PAGES_ADMIN) {
     await page.goto(path);
