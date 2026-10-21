@@ -377,7 +377,7 @@ def _schedule_config(now: datetime | None = None) -> dict[str, Any]:
     min_exec_gap/avg_attempt_sec/retry_min_interval/exec_gap_min/sign_start/sign_end。
 
     **设计期不变量（单 ksn1）**：返回前用 `executor_v3.retry_budget_violation`
-    核对"退避上限 ≤ 尾部预留缓冲"。窗口短到硬上限永远拿不到时记 ERROR（响亮但不
+    核对"退避上限 ≤ 尾部预留缓冲"。窗口短到硬上限在窗口内路径拿不到时记 ERROR（响亮但不
     阻断：窗口仍能跑，只是退避更小），把配置组合问题暴露在排障之前。
 
     `now` 只用于把"业务日"交给 `reset_daily_alerts`（见其文档）：常驻兜底这类每轮都
@@ -450,7 +450,7 @@ def _schedule_config(now: datetime | None = None) -> dict[str, Any]:
         "sign_end": end,
     }
     # 设计期不变量（单 ksn1）：退避硬上限必须容得进窗口的尾部预留预算。逐次落点判断
-    # 只能保证"不越窗"，说不出"配置的上限永远拿不到"；在这里出声，管理员改窗口前
+    # 只能保证"不越窗"，说不出"配置的上限在窗口内拿不到"；在这里出声，管理员改窗口前
     # 就知道组合不成立。局部导入的理由同 `capacity_of`（executor_v3 反向依赖本模块）。
     from yiban.engine import executor_v3
     violation = executor_v3.retry_budget_violation(cfg)
