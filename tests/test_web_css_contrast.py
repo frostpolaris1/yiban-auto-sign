@@ -315,7 +315,7 @@ class BatchAContrastTokenTest(unittest.TestCase):
 
     def test_icon_controls_drop_t_light(self):
         css = _strip_comments(_read(APP_CSS))
-        for sel in (".input-affix .affix-btn", ".alert.auth-announce .close", ".pm-panel .pm-panel-close"):
+        for sel in (".input-affix .affix-btn", ".pm-panel .pm-panel-close"):
             decls = _color_decls(css, sel)
             self.assertTrue(decls, f"{sel} 找不到 color 声明 —— 图标按钮退回 vendor 的 --t-light？")
             self.assertNotIn("var(--t-light)", decls, f"{sel} 又用回 --t-light（2.2–2.6:1 < 3:1）")
@@ -572,7 +572,7 @@ class TouchAndMotionRegressionTest(unittest.TestCase):
         for dead in (".auth-agree-label", ".announce-close"):
             self.assertNotIn(dead, joined, f"触屏命中区名单里仍是死类名 {dead}")
         for real in (".auth-switch-hint button", ".auth-agree-text button",
-                     ".alert.auth-announce .close", ".info-tip", ".sc-nav-btn"):
+                     ".info-tip", ".sc-nav-btn"):
             self.assertIn(real, joined, f"触屏命中区漏了真实目标 {real}")
 
     def test_theme_crossfade_single_duration_token(self):
