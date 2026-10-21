@@ -115,6 +115,6 @@ def build_child_env(env_file, base=None):
         if key in env_io.PATH_KEYS and str(env.get(key, "")).strip():
             continue  # 路径键：进程环境已有非空值 ⇒ .env 只补缺
         env[key] = value
-    if file_env and not str(env.get("YIBAN_ENV_FILE", "")).strip():
-        env["YIBAN_ENV_FILE"] = env_file
+    if file_env and not str(env.get(env_io.ENV_FILE_KEY, "")).strip():
+        env[env_io.ENV_FILE_KEY] = env_file
     return env
