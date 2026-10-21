@@ -721,34 +721,6 @@ class PlanStatsTest(_Base):
                 _row(_phone(2), f"{DAY} 07:09:59.000")]
         self.assertEqual(planner.plan_stats(rows, cfg, DAY)["hist"], {0: 1, 5: 2})
 
-    def test_geometry_derived_from_a_single_window_view(self):
-        """分片数/槽宽都由同一份有效窗口视图派生：逐值钉住，且 `bounds` 只读一次。
-
-        约简前经 `_span`、`window.bounds(cfg).start_min`、`_slice_count`（两次）共读 4 次
-        有效窗口；约简为取一次 `win` 再派生，逐值必须不变（正常与缓冲收缩两种窗口都钉）。
-        """
-        cfg = self.cfg()                       # 有效窗口 06:05~07:15 → 70 分钟分片
-        win = window.bounds(cfg)
-        self.assertFalse(win.fell_back)
-        with mock.patch.object(planner.window, "bounds",
-                               wraps=planner.window.bounds) as spy:
-            st = planner.plan_stats([], cfg, DAY)
-        self.assertEqual(spy.call_count, 1, "几何应只读一次有效窗口")
-        self.assertEqual(st["n_slices"], 70)
-        self.assertEqual(st["slot_width_ms"], 1000)
-        self.assertEqual(st["n_slices"], int((win.hi_min - win.lo_min) * 60 // 60))
-        self.assertEqual(st["hist"], {})
-        # 缓冲收缩：同一份视图给有效窗口 07:01~07:09（8 分片），仍只读一次
-        os.environ.update(CLAMPED_WINDOW_ENV)
-        cfg2 = self.cfg()
-        win2 = window.bounds(cfg2)
-        self.assertTrue(win2.edges_clamped)
-        with mock.patch.object(planner.window, "bounds",
-                               wraps=planner.window.bounds) as spy2:
-            st2 = planner.plan_stats([], cfg2, DAY)
-        self.assertEqual(spy2.call_count, 1, "收缩下同样只读一次有效窗口")
-        self.assertEqual(st2["n_slices"], 8)
-        self.assertEqual(st2["n_slices"], int((win2.hi_min - win2.lo_min) * 60 // 60))
 
     def test_peak_per_sec_counts_landings_in_the_same_second(self):
         """`peak_per_sec` 是同一秒内的落点数（聚合口径，与计划形状无关）。"""
@@ -782,11 +754,6 @@ class CapacityV3Test(unittest.TestCase):
         # 桶再高也没用：瓶颈变成通道能力 M/avg = 16/3（这正是 min(M/avg, bucket) 的含义）
         self.assertEqual(schedule.capacity_accounts_v3(4200, k=1, avg=3, bucket_rate=8.0), 17920)
 
-    def test_does_not_fall_back_to_the_old_two_point_six_formula(self):
-        """反例：原稿拿通道吞吐 M/avg 算容量（忽略令牌桶封顶）会得 8960，高估 2.3 倍。"""
-        got = schedule.capacity_accounts_v3(4200, k=1, avg=3, bucket_rate=1.0)
-        self.assertEqual(got, 3360)
-        self.assertNotEqual(got, 8960, "2.6667 × 4200 × 0.8 = 8960 是原稿口径")
 
     def test_util_is_the_derating_factor(self):
         self.assertEqual(

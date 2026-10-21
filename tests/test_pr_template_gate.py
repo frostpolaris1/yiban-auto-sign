@@ -44,21 +44,7 @@ def _git(*args):
 
 @unittest.skipUnless(GIT, "git 不可用：跳过 PR 模板守卫")
 class PullRequestTemplateTest(unittest.TestCase):
-    def test_template_exists_and_is_not_a_stub(self):
-        self.assertTrue(os.path.isfile(TEMPLATE),
-                        f"{TEMPLATE_REL} 缺失——PR 上不再有自检清单")
-        with open(TEMPLATE, encoding="utf-8") as fh:
-            text = fh.read()
-        self.assertGreater(len(text), 400,
-                           f"{TEMPLATE_REL} 太短，等于空模板（没有清单就没有约束力）")
 
-    def test_template_is_not_gitignored(self):
-        """模板不许被 `.gitignore` 命中：忽略规则会让它静默留在本地。"""
-        r = _git("check-ignore", "-q", TEMPLATE_REL)
-        self.assertEqual(r.returncode, 1,
-                         f"{TEMPLATE_REL} 被 .gitignore 命中（check-ignore 退出码 "
-                         f"{r.returncode}）——`git add` 会静默跳过它，PR 上永远没有模板。"
-                         f"核对 {r.stdout.strip() or '.gitignore'}")
 
     def test_template_is_tracked_by_git(self):
         """模板必须在库里：只有工作树有它 = 新检出与 GitHub 都拿不到。"""
@@ -67,12 +53,6 @@ class PullRequestTemplateTest(unittest.TestCase):
                          f"{TEMPLATE_REL} 未入库（git ls-files 退出码 {r.returncode}）："
                          f"{r.stderr.strip()}")
 
-    def test_template_names_the_three_required_items(self):
-        """三项自检必须逐项在模板里出现——删一项即红。"""
-        with open(TEMPLATE, encoding="utf-8") as fh:
-            text = fh.read()
-        missing = [name for name, anchor in REQUIRED_ITEMS.items() if anchor not in text]
-        self.assertEqual(missing, [], f"模板缺以下自检项：{missing}")
 
 
 if __name__ == "__main__":

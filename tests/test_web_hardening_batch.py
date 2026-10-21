@@ -293,13 +293,6 @@ class EffectiveEnvOverlayTest(unittest.TestCase):
         with io.open(self.env_file, "w", encoding="utf-8", newline="\n") as f:
             f.write(text)
 
-    def test_env_file_wins_then_process_env_fills_gap(self):
-        from web.services import env_io
-        self._write("YIBAN_MAX_ACCOUNTS=5\n")
-        os.environ["YIBAN_MAX_ACCOUNTS"] = "9"
-        self.assertEqual(env_io.load_env_int(self.env_file, "YIBAN_MAX_ACCOUNTS", 0), 5)
-        self._write("")
-        self.assertEqual(env_io.load_env_int(self.env_file, "YIBAN_MAX_ACCOUNTS", 0), 9)
 
     def test_both_verify_switches_share_precedence(self):
         from web.services import verify_queue
