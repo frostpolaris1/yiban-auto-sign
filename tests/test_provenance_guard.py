@@ -3,7 +3,7 @@
 
 标签：K · 登录协议与自研链路
 覆盖：退役名的复活（生产树不得再出现 `fyiban` / `onefeifan` 字样）、`yiban/_vendor`
-    路径与 import 串的复活、MIT 许可随洁净室协议库在位、核心实现（几何采样 /
+    路径与 import 串的复活、AGPL 许可随洁净室协议库在位、核心实现（几何采样 /
     平台事实常量 / 协议端点）各自单点定义、`signin` 只做同名转发（同一对象）、
     客户端外观层不重写协议步骤、风控挑战检测归属与委托、协议层不自算安全裁决、
     自交与求解器不复活、根许可以及"无 AGPL 声明指向已退役代码"。
@@ -152,7 +152,7 @@ class RetiredLayerRevivalTest(unittest.TestCase):
                     licences.append(
                         os.path.relpath(os.path.join(dirpath, name), BASE).replace(os.sep, "/"))
         self.assertEqual(licences, ["yiban/adapters/protocol_yiban/LICENSE"],
-                         "yiban/ 下只允许洁净室协议库的 MIT 许可文本：" + "; ".join(licences))
+                         "yiban/ 下只允许洁净室协议库的许可文本：" + "; ".join(licences))
 
     def test_root_license_stays_agpl(self):
         """项目整体许可不变：根 `LICENSE` 仍是 AGPL-3.0 全文。"""
@@ -160,7 +160,7 @@ class RetiredLayerRevivalTest(unittest.TestCase):
 
 
 class ProtocolLibraryTest(unittest.TestCase):
-    """洁净室协议库：一等模块，MIT 许可随代码，隔离层只引用不复制。"""
+    """洁净室协议库：一等模块，AGPL-3.0-only 许可随代码，隔离层只引用不复制。"""
 
     def test_library_is_located_with_its_license(self):
         for rel in ("yiban/adapters/protocol_yiban/__init__.py", "yiban/adapters/protocol_yiban/LICENSE",
@@ -168,8 +168,11 @@ class ProtocolLibraryTest(unittest.TestCase):
                     "yiban/adapters/protocol_yiban/crypto.py", "yiban/adapters/protocol_yiban/envelopes.py"):
             with self.subTest(rel=rel):
                 self.assertTrue(os.path.isfile(os.path.join(BASE, rel)), f"缺文件: {rel}")
-        self.assertIn("MIT License", _source("yiban/adapters/protocol_yiban/LICENSE"))
-        self.assertNotIn("AFFERO", _source("yiban/adapters/protocol_yiban/LICENSE"))
+        boot = _source("yiban/adapters/protocol_yiban/LICENSE")
+        self.assertIn("GNU AFFERO GENERAL PUBLIC LICENSE", boot)
+        self.assertNotIn("MIT License", boot,
+                         "协议包许可已统一为 AGPL-3.0-only（用户 2026-10-21 裁决）："
+                         "留 MIT 文本会让「对外许可」在仓内出现两个答案。")
 
     def test_consumers_import_the_library_instead_of_reimplementing(self):
         """消费方一律 `from yiban.adapters.protocol_yiban import …`，不再内联页面正则或表单字段表。"""

@@ -305,7 +305,7 @@ yiban/adapters/protocol_yiban/
   __init__.py     # 仅 re-export 公共 API 与 __version__ = "0.1.0"
   errors.py  page.py  location.py  envelopes.py
   identity.py  position.py  device.py  forms.py  crypto.py
-  LICENSE         # MIT 许可全文（随包分发）
+  LICENSE         # AGPL-3.0-only 许可全文（随包分发）
   SPEC.md         # 本文件
 tests/protocol/
   conftest.py     # 夹具读取辅助（read_fixture / read_fixture_json）
