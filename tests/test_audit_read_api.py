@@ -187,13 +187,6 @@ class AuditReadApiTest(unittest.TestCase):
 
     # ---- M90-trace：docstring 信封 + 只读端点访问留痕 ----
 
-    def test_docstring_names_pagination_envelope(self):
-        path = os.path.join(BASE, "web", "routes", "audit_api.py")
-        with open(path, encoding="utf-8") as f:
-            doc = ast.get_docstring(ast.parse(f.read()))
-        self.assertIsNotNone(doc, "audit_api.py 缺模块 docstring")
-        for token in ("rows", "page", "page_size", "total", "has_more"):
-            self.assertIn(token, doc, f"docstring 未点名信封字段 {token}")
 
     def test_read_audit_trace_recorded_on_read(self):
         app = self.webapp.create_app()

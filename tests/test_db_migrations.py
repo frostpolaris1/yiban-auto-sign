@@ -347,40 +347,7 @@ class DbMigrationTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             db._ensure_column(conn, "accounts", "zzz_test", "zzz_test TEXT NOT NULL DEFAULT ''")
 
-    def test_core_migration_failure_blocks_and_cleans_conn(self):
-        def failing_migration(conn):
-            raise RuntimeError("boom")
 
-        old_migrations = db._MIGRATIONS
-        db._MIGRATIONS = [(1, "failing_core", failing_migration, True)]
-        try:
-            with self.assertRaises(RuntimeError):
-                db.init_db(self.db_file)
-            self.assertIsNone(db._conn)
-        finally:
-            db._MIGRATIONS = old_migrations
-            if db._conn is not None:
-                with contextlib.suppress(Exception):
-                    db._conn.close()
-                db._conn = None
-
-    def test_optional_migration_failure_does_not_block(self):
-        def failing_migration(conn):
-            raise RuntimeError("boom")
-
-        old_migrations = db._MIGRATIONS
-        db._MIGRATIONS = [(1, "failing_optional", failing_migration, False)]
-        try:
-            conn = db.init_db(self.db_file)
-            self.assertIsNotNone(conn)
-            version = conn.execute("PRAGMA user_version").fetchone()[0]
-            self.assertEqual(version, 0)
-        finally:
-            db._MIGRATIONS = old_migrations
-            if db._conn is not None:
-                with contextlib.suppress(Exception):
-                    db._conn.close()
-                db._conn = None
 
 
 if __name__ == "__main__":

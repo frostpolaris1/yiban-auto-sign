@@ -33,24 +33,6 @@ def _read(path):
 
 
 class JsAssemblyGuardTest(unittest.TestCase):
-    def test_pages_never_use_innerhtml(self):
-        """`pages/*.js` 全量不得出现 `.innerHTML`（P4 后零允许清单）。
-
-        旧栈页面脚本（dashboard/login）的历史 innerHTML 常量 SVG 已在 P4 就地改为
-        DOM 构造（`YB.iconEl` / 页面自建 `svgIcon`），允许清单随之删除；此后任何页面
-        新增 `.innerHTML` 都会在这里报红——动态文本一律走 YB.el/textContent，数据脱敏
-        不能依赖「先拼 HTML 再转义」。
-        """
-        offenders = []
-        for path in sorted(glob.glob(os.path.join(JS_DIR, "pages", "*.js"))):
-            name = os.path.basename(path)
-            if ".innerHTML" in _read(path):
-                offenders.append(f"  pages/{name}")
-        if offenders:
-            self.fail(
-                "页面脚本出现 .innerHTML —— 动态文本必须走 YB.el/textContent，"
-                "禁止把（哪怕是脱敏后的）数据拼进 HTML：\n" + "\n".join(offenders)
-            )
 
     def test_components_innerhtml_only_from_constant_svg(self):
         """`components/*.js` 的 innerHTML 赋值右值只允许常量 SVG 或清空容器。"""

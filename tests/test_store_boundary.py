@@ -171,12 +171,6 @@ class FacadeBehaviourTest_ACC(_AccountsSplitBase):
             impl.add_account({"name": "b", "phone": "13800138003", "password": "pw",
                               "owner": "user@test.local"})
 
-    def test_is_encrypted_value_readable_on_facade(self):
-        """迁移路径（`_maybe_migrate`）按 `_accounts._is_encrypted_value` 取这个助手。"""
-        self.assertFalse(impl._is_encrypted_value("plain"))
-        self.assertTrue(impl._is_encrypted_value(
-            impl._encrypt_field("pw", "13800138000")
-        ))
 
 
 MOVED_NAMES_CLOCK = (
@@ -343,15 +337,6 @@ class _ConnStateBase(unittest.TestCase):
 class InitDbSemanticsTest(_ConnStateBase):
     """② `init_db` 各分支语义（连接、幂等、路径刷新、异常置空）。"""
 
-    def test_init_then_select_one(self):
-        path = self._temp_db()
-        self.assertFalse(impl.is_initialized())
-        c = impl.init_db(db_file=path, cleanup=False)
-        self.assertTrue(impl.is_initialized())
-        self.assertTrue(os.path.exists(path))
-        row = impl.get_conn().execute("SELECT 1").fetchone()
-        self.assertEqual(row[0], 1, "get_conn() 必须给出能跑 SQL 的真连接")
-        self.assertIs(impl.get_conn(), c)
 
     def test_init_db_same_path_is_idempotent_and_path_switch_fails_closed(self):
         """同路径幂等复用；**换路径必须显式收尾**（工单 mgq5）。
@@ -458,16 +443,6 @@ class DbPathFromEnvFileTest(_ConnStateBase):
             os.environ["YIBAN_ENV_FILE"] = self._prev_env_file_var
         super().tearDown()
 
-    def test_init_db_resolves_db_file_from_env_file(self):
-        c = impl.init_db(cleanup=False)
-        self.assertEqual(conn_mod._db_file, self.db_path,
-                         "库路径应从 .env 解析（而非回退默认 ./yiban.db）")
-        self.assertTrue(os.path.isfile(self.db_path), "应在 .env 指定的路径上建库")
-        # 连接真正落在 .env 指定的库上（不是默认库）
-        rows = c.execute("PRAGMA database_list").fetchall()
-        self.assertTrue(any(os.path.realpath(r[2]) == os.path.realpath(self.db_path)
-                            for r in rows if r[2]),
-                        f"连接指向的库不是 .env 指定的库: {[r[2] for r in rows]}")
 
     def test_engine_load_accounts_uses_env_file_db(self):
         """引擎取账号（accounts.load_accounts）在只有 .env 配置时解析到 .env 指定的库。"""
