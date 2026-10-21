@@ -3,12 +3,13 @@
 
 标签：B · 调度：领取/队列/执行体
 覆盖：day_off
-   判定表（工作日放行、周末默认关、开关开则跑、暂停压过任何一天、周末优先于暂停、非真值字面量算关）、兜底主循环的门与窗口边界（周六/周日/暂停三种情形一轮不扫且不写心跳、窗口未开先等、窗口关闭即退出、周末已开与窗口内为反向控制）、兜底轮末熔断计数增量写盘、**让位由肘界谓词承担**（兜底只领 `run_at` 已过期超过 `FALLBACK_ELBOW_SEC` 的行；旧的"整段让位"与轮内锁探测已随工单 `l1rx` R4 删除）、事件唤醒（池事件签名一变即接手、不变则按短轮询数满扫描间隔为上限）、兜底独立锁确实被取、全局锁探测原语（**无生产调用点**，只钉 fail-closed 语义）、定时轮与兜底共用同一份门。
+   判定表（工作日放行、周末默认关、开关开则跑、暂停压过任何一天、周末优先于暂停、非真值字面量算关）、兜底主循环的门与窗口边界（周六/周日/暂停三种情形一轮不扫且不写心跳、窗口未开先等、窗口关闭即退出、周末已开与窗口内为反向控制）、兜底轮末熔断计数增量写盘、**让位由肘界谓词承担**（兜底只领 `run_at` 已过期超过 `FALLBACK_ELBOW_SEC` 的行；旧的"整段让位"与轮内锁探测已随工单 `l1rx` R4 删除）、事件唤醒（池事件签名一变即接手、不变则按短轮询数满扫描间隔为上限）、兜底独立锁确实被取、锁探测原语（`_run_lock_held`，现无生产调用点，消费者＝本文件 fail-closed 门与 reclaim 竞态用例探针；重签互斥已改由 `_acquire_run_lock` 持锁承担，工单 `uob1` X2 ＋ 审查 D1）、定时轮与兜底共用同一份门。
 对应实现：yiban/engine/schedule.py（day_off 与 DAY_OFF_*
    常量）、yiban/app/runner.py（兜底常驻分支与派发前的门）、yiban/engine/schedule.py
    的窗口判定与 state_io 心跳。
 关键断言：兜底不得绕过任何一道门：它按 cron 提前拉起（06:05 起、窗口 06:30 开），而
-   `executor_v3.run_executor_v3` 的手动轮本身不判本项目窗口，所以「窗口未开就等」漏掉就是窗口外每个账号白登陆一次。反向控制与正中情形同权重：周末签到已开时兜底必须照跑，否则「修门」会变成误伤。判据必须走共享实现（打桩即证明没有第二套）。让位判据是**行的函数**：兜底只领已过期超过肘界的行（`elbow_sec`），不再探测"有没有一轮在飞"——旧的整段让位与轮内锁探测随 `l1rx` R4 删除。`_run_lock_held` 仍保留为带 fail-closed 校验者的锁原语（**当前无生产调用点**，见 `cli_support` 模块头）。事件唤醒的等待预算仍以扫描间隔为上限（新账号、跨日等无签名可感的事件照旧靠全量轮发现）。
+   `executor_v3.run_executor_v3` 的手动轮本身不判本项目窗口，所以「窗口未开就等」漏掉就是窗口外每个账号白登陆一次。反向控制与正中情形同权重：周末签到已开时兜底必须照跑，否则「修门」会变成误伤。判据必须走共享实现（打桩即证明没有第二套）。让位判据是**行的函数**：兜底只领已过期超过肘界的行（`elbow_sec`），不再探测"有没有一轮在飞"——旧的整段让位与轮内锁探测随 `l1rx` R4 删除。`_run_lock_held` 是带 fail-closed 校验者的锁原语，现无生产调用点（重签互斥改由 `_acquire_run_lock` 持锁承担）
+（工单 `uob1` X2：翻 `claimed` 前探兜底锁），本文件钉住它的探测语义。事件唤醒的等待预算仍以扫描间隔为上限（新账号、跨日等无签名可感的事件照旧靠全量轮发现）。
 依赖：临时状态目录 + clock.now 替身（按序列返回、超过 max_calls
    抛错以暴露死循环）+ 打桩 executor_v3.run_executor_v3 / 锁探测 /
    心跳写盘 / 领取池在场判定（只打桩 `is_initialized`——`workers` 只读它；旧夹具还
@@ -531,12 +532,14 @@ class FallbackOwnLockTest(unittest.TestCase):
 
 
 class RunLockProbeTest(unittest.TestCase):
-    """`cli_support._run_lock_held`：全局锁探测原语（**当前无生产调用点**——让位改由
-    肘界谓词承担，工单 `l1rx` R4；本类钉住它的 fail-closed 探测语义）。"""
+    """`cli_support._run_lock_held`：全局锁探测原语（fail-closed 语义由本类钉住）。
+    重签路径的互斥已改为**持有**兜底锁（`queue_store.reclaim_tasks` 直调
+    `_acquire_run_lock`，审查 D1）；本函数现无生产调用点，消费者＝测试侧门与
+    竞态用例探针，存删随 X6 由主会话裁决。"""
 
     def test_probe_sees_held_lock_and_frees_after(self):
         if cli_support.fcntl is None:
-            self.skipTest("跨进程 flock 仅 POSIX 可用（Windows 上探测退回 False）")
+            self.skipTest("跨进程 flock 仅 POSIX 可用（Windows 上锁退化为无互斥、fail-closed 拒跑）")
         tmp = tempfile.mkdtemp(prefix="yiban-lock-probe-")
         self.addCleanup(shutil.rmtree, tmp, True)
         with mock.patch.dict(os.environ, {"YIBAN_STATE_DIR": tmp}, clear=False):
