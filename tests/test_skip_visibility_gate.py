@@ -159,7 +159,7 @@ KNOWN_SKIP_SITES = json.loads(r"""
  "tests/test_dashboard_stats_caliber_js.py": [
   [
    "skipUnless",
-   "node 不可用：跳过数据看板双口径聚合的 JS 行为测试"
+   "node 不可用：跳过数据看板账号终态口径的 JS 行为测试"
   ]
  ],
  "tests/test_db_integrity.py": [
