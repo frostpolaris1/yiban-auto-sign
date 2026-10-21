@@ -17,13 +17,13 @@
 web 日志页与 `/api/admin/sign-events`、signin 执行体（runner 批量落库、probe 探针）
 共用的一张事件表。sign_events 同时承载真实签到（stage="sign"）与健康探针
 （stage="probe"），凡以「签到口径」消费的调用方必须显式按 stage 过滤，否则探针的
-成功/失败会被计入签到成功率。建表与索引在迁移域（`yiban/store/migrations.py`），本模块只读写。
+成功/失败会被计入签到成功率。建表与索引在迁移域（`yiban/adapters/persistence/migrations.py`），本模块只读写。
 
 暂停冷却查询按**表归属**（audit_logs）落在本模块，而不是随「自选时间片」域走：
 它按 username 计价（审计 target 为脱敏手机号，故按操作用户名关联；多管理员共享账号
 各自独立计价——暂停/恢复冷却仅防噪音，绕过危害极小，可接受），与 sign_events 无表级
 关系。与之对称的 time_pref 保存冷却按审计 target=hash_phone(phone) 按被选账号计价，
-落在 `yiban/store/time_prefs.py`。
+落在 `yiban/adapters/persistence/time_prefs.py`。
 
 **复用**
 `yiban.store.db` 把本模块的事件函数与常量按原样再导出，`db.add_sign_event()` /
@@ -93,8 +93,9 @@ def _event_params(ts, phone, status, message, stage, attempt,
                   account_id, dur_sec, finished_at):
     """条件 INSERT 的 14 个占位：9 个列值 + 去重判据（stage/phone/status/attempt/ts）。
 
-    去重键与门（`tests/test_sign_events.py::sign_events_observation_gate`）同一口径：
-    **账号 + 业务日（ts 前 10 位）+ status + attempt**；stage 只用来把探针排除在外。
+    去重键与测试侧的不变式校验器（`tests/test_sign_events.py::sign_events_observation_gate`）
+    同一口径：**账号 + 业务日（ts 前 10 位）+ status + attempt**；stage 只用来把探针排除在外。
+    该校验器是单测助手，不是运行期门；真实写入幂等由本条 SQL 与行为用例钉住。
     """
     attempt = int(attempt or 0)
     stage = str(stage or "")
@@ -108,7 +109,7 @@ def _event_params(ts, phone, status, message, stage, attempt,
 # 运维才能一步判断"版本说过了这档、schema 里却没有它的产物"（ba-p01-02 的下游形状）。
 _SIGN_EVENTS_ARTIFACT_HINT = (
     "缺失产物归属：表 sign_events=v4、列 account_id/dur_sec/finished_at=v6"
-    "（核对 yiban/store/migrations.py 的 _ARTIFACTS 与 schema_migrations 记录）"
+    "（核对 yiban/adapters/persistence/migrations.py 的 _ARTIFACTS 与 schema_migrations 记录）"
 )
 
 
@@ -141,11 +142,13 @@ def add_sign_event(ts, phone, status, message="", stage="", attempt=0,
     同一 (账号, 业务日, status, attempt) 重复写入只保留第一行（条件 INSERT，工单
     f7or）。"第一行赢"与 `INSERT OR IGNORE` 同义：先到者的 message/ts 留档。
     """
-    if _accountless_sign_row(stage, phone):
-        logger.warning("拒绝写入无账号的 sign_events 行（本表只装账号级事实；"
-                       "摘要/观测行请写 run_events）")
-        return
     try:
+        # 判据在 try 内：`str(phone)`/`str(stage)` 抛异常时也要走「仅告警」契约，
+        # 不得外逃到签到主流程（与批量路径同形）。
+        if _accountless_sign_row(stage, phone):
+            logger.warning("拒绝写入无账号的 sign_events 行（本表只装账号级事实；"
+                           "摘要/观测行请写 run_events）")
+            return
         with _facade()._conn_lock:
             conn = _facade().get_conn()
             # BEGIN IMMEDIATE：查重与写入同处一把写锁，跨进程重发也只会留下一行。
