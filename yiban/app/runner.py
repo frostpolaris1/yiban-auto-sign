@@ -27,7 +27,7 @@
 拒启，MF-40）与日志；`--json` 由 `cli.py` 包裹。
 调用谁：`accounts` / `probe` / `workers` / `executor_v3`（唯一执行体） / `state_io` /
 `alerts` / `cli_support`（跨模块一律走模块属性访问）。
-谁调用：`yiban/entry/cli/__init__.py`（`python -m yiban.cli sign|probe`）、`scripts/signin.py` 兼容壳、
+谁调用：`yiban/entry/cli/__init__.py`（`python -m yiban.entry.cli sign|probe`）、`scripts/signin.py` 兼容壳、
 `docker/scheduler.py`。
 前端调用点：手动签到 `/api/signin` 经 `web/services/manual_sign.py` 以子进程拉起
 `scripts/signin.py --only`（`web/static/js/components/account-ops.js` 触发），执行体接口
@@ -89,7 +89,7 @@ SUNDAY_SIGN = schedule_mod._env_flag("YIBAN_SUNDAY_SIGN")
 # 需要在周六签到的部署要在网页「系统设置 → 周末签到」开启，或 .env 写 YIBAN_SATURDAY_SIGN=1。
 SATURDAY_SIGN = schedule_mod._env_flag("YIBAN_SATURDAY_SIGN")
 
-# 签到状态码与日志/日历符号：**定义在 yiban.status（唯一事实源）**，此处为别名
+# 签到状态码与日志/日历符号：**定义在 yiban.core.status（唯一事实源）**，此处为别名
 # （此前 web/app.py 另有一份同名常量，两份会各自漂移，收口后只有一处定义）。
 STATUS_SUCCESS = yiban_status.STATUS_SUCCESS
 STATUS_ALREADY = yiban_status.STATUS_ALREADY
@@ -126,7 +126,7 @@ _GATE_SKIP_MESSAGES = {
 
 
 def _report_run(node, phone="", message=""):
-    """编排层进度打点（唯一入口）：与执行体共用 `yiban.store.run_events` 的 reporter。
+    """编排层进度打点（唯一入口）：与执行体共用 `yiban.adapters.persistence.run_events` 的 reporter。
 
     身份取 `YIBAN_EXECUTOR_ID`（监督进程注入的子执行体身份）；单执行体与监督进程
     自身没有该变量，回退到 egress 的**单执行体稳定名**——与 `run_executor_v3` 在

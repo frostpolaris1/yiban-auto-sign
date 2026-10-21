@@ -159,7 +159,7 @@ class ClearFusePauseTest(unittest.TestCase):
 
     def test_corrupt_json_still_warns(self):
         # 真实 I/O/数据错误保留 WARNING 留痕（2026-08-27 审查背景仍成立）。
-        # 留痕方为唯一入口 yiban.cred_state（web 侧不再自己读写该文件）。
+        # 留痕方为唯一入口 yiban.adapters.statefiles.cred_state（web 侧不再自己读写该文件）。
         with open(self._cred_path(), "w", encoding="utf-8") as f:
             f.write("{not-json")
         with self.assertLogs("yiban.cred_state", "WARNING") as cm:

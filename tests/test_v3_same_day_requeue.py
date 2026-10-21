@@ -334,7 +334,7 @@ class TierPrefixSettleTest(_Base):
         self.assertFalse(row["result"].startswith(yiban_status.RESULT_FINAL_PREFIX))
 
     def test_tier_authority_is_the_same_set_as_v2(self):
-        """分档判据只有一份：执行侧与收尾侧共用 `yiban.status.RETRYABLE_GIVE_UP_STATUSES`。"""
+        """分档判据只有一份：执行侧与收尾侧共用 `yiban.core.status.RETRYABLE_GIVE_UP_STATUSES`。"""
         for st in yiban_status.RETRYABLE_GIVE_UP_STATUSES:
             with self.subTest(status=st):
                 self.assertEqual(executor_v3._tier_prefix(st), yiban_status.RESULT_RETRY_PREFIX)

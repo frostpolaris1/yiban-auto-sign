@@ -27,10 +27,10 @@
 「今日是否了结」的划分同样收在本模块（`UNDONE_STATUSES` / `CLAIM_DONE_STATUSES` /
 `CONCLUDED_JSON_STATUSES`，以及领取池侧的 `TASKS_*`）：补签闸门、补签轮剔除与领取池
 收尾都引用同一批对象，判定口径只有一处可改。弃权分档词表（`RESULT_RETRY_PREFIX` /
-`RESULT_FINAL_PREFIX` / `RETRYABLE_GIVE_UP_STATUSES`，128-P1 自 `yiban.store.claims`
+`RESULT_FINAL_PREFIX` / `RETRYABLE_GIVE_UP_STATUSES`，128-P1 自 `yiban.adapters.persistence.claims`
 迁入）同样收在本模块（文末）——判据与成员同文件，「唯一一份」才钉得住。
 
-**这里没有脱敏**：本模块只是状态词汇，遮手机号/凭据发生在 `yiban.masking` 与
+**这里没有脱敏**：本模块只是状态词汇，遮手机号/凭据发生在 `yiban.core.masking` 与
 `yiban.logging_ext` 两层——状态串会进日志、日状态文件与 `/api/my-accounts`，把关不在这里。
 """
 from typing import Any
@@ -258,7 +258,7 @@ def is_concluded_status(value: object) -> bool:
     return str(value).strip() not in ("", STATUS_PENDING)
 
 
-#: 领取池（sign_tasks）侧的两个集合，state 词表见 yiban/store/queue_store.py。
+#: 领取池（sign_tasks）侧的两个集合，state 词表见 yiban/adapters/persistence/queue_store.py。
 #: 与 JSON 状态码是两套词，且**不是一一对应**：池里的 `done` 只收 `CLAIM_DONE_STATUSES`
 #: 那三种（success / already / no_task）；`no_position` / `skipped_window` / `skipped_norange`
 #: 平移进的是 `failed`（见 `migrations._JSON_TERMINAL_TO_TASK_STATE`，`round._settle_claims`

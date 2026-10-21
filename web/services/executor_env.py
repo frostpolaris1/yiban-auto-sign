@@ -25,7 +25,7 @@
 打桩点，本模块另持绑定会让打桩静默失效；同理 `_executors_window` 的 `.env` 路径与签到
 窗口解析器也按调用时刻解析。未登记即 `RuntimeError`（fail-closed）。读路径
 （`read_env` / `_env_write_lock` / `_is_http_proxy_url`）复用
-`web.services.env_io` 的同域实现，行分隔符判定取 `yiban.infra.env_io` 真源。
+`web.services.env_io` 的同域实现，行分隔符判定取 `yiban.adapters.config.env_io` 真源。
 """
 
 import logging
