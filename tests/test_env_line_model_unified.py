@@ -9,7 +9,7 @@ r""".env 单一行模型 + 单一校验器 + 写入前后键集合 diff（web �
 还归零）。反向：引擎写入口对传入 value/key 一字不校验；前端对行分隔符零校验。
 
 **本文件钉住的修复**：
-- 一处行模型：`yiban.infra.env_io.split_env_lines`（窄行：`\n` / `\r\n` / `\r`），
+- 一处行模型：`yiban.adapters.config.env_io.split_env_lines`（窄行：`\n` / `\r\n` / `\r`），
   web 服务层不得再出现第二份 `splitlines(`；读取侧对历史文件里的换行族字符**容忍读取**，
   只在写入/校验路径拒绝；
 - 一处校验器：键名白名单 + 值禁换行族 + 值长度上限，web 与引擎两侧消费同一函数

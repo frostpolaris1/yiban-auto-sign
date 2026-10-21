@@ -13,7 +13,7 @@
 
 **未搬入（需拆分，属第三刀）**：契约第 3 节把 `engine/{planner,token_bucket,schedule}`
 映射到本层（`plan` / `rate`），把 `engine/attempts` 映射成 `classify` ＋ `policy`。
-但代码面实测：`planner` / `token_bucket` / `schedule` 直接 import `yiban.store` 与
+但代码面实测：`planner` / `token_bucket` / `schedule` 直接 import `yiban.adapters.persistence` 与
 `yiban/infra`（有 I/O）；`attempts` 携带整条客户端链。整文件搬进本层会造出
 `core → adapters` 的跨层边（契约 `core-no-upward` 会红），须先把纯算法与 I/O 切开。
 `security`（→ `security_policy`）经 `yiban.challenge` 间接到 `adapters`，同理。

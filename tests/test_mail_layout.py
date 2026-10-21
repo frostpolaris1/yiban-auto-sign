@@ -247,7 +247,7 @@ class ChannelEntryPointsTest(unittest.TestCase):
 class FoldLineBreakFamilyTest(unittest.TestCase):
     """MF-44 D10：`_fold` 此前只 split("\\n")，9 个换行族字符原样穿进正文可伪造行。
 
-    收口到全项目唯一的单行安全原语（`yiban.infra.env_io.escape_line_breaks`，与
+    收口到全项目唯一的单行安全原语（`yiban.adapters.config.env_io.escape_line_breaks`，与
     `.env` 写侧同一字符集）；`\\n` 保留为内容自身的换行语义。
     """
 

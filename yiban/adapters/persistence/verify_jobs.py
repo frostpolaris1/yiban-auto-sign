@@ -7,8 +7,8 @@
 **状态推进全部走 CAS**：任务状态由内存里的线程推进，进程随时可能消失，所有 UPDATE 都带
 期望状态条件，迟到者写不进去也就覆盖不了别人的终态。
 
-连接与进程内锁取自同包的 `yiban.store.db`（当前唯一的连接持有者）——延迟到函数内导入，
-避免它在文件末尾导入本模块时形成导入环。`yiban.store.db` 把本模块的公开名全部再导出
+连接与进程内锁取自同包的 `yiban.adapters.persistence.db`（当前唯一的连接持有者）——延迟到函数内导入，
+避免它在文件末尾导入本模块时形成导入环。`yiban.adapters.persistence.db` 把本模块的公开名全部再导出
 （`db.create_verify_job` 等），故历史调用方无需改动。
 """
 import datetime

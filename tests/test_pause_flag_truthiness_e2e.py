@@ -5,7 +5,7 @@
 覆盖：`YIBAN_GLOBAL_PAUSE=true` 时"引擎停、run.sh 记 GLOBAL_PAUSED、面板却说未暂停"
     的反向假安心；跨语言（Python ↔ bash）真值口径一致性；面板布尔键不再用
     `load_env_int` 读；非预期取值出声；写读往返相容（空值=关）。
-对应实现：`yiban.infra.env_io.parse_env_flag`（唯一真值判定）、
+对应实现：`yiban.adapters.config.env_io.parse_env_flag`（唯一真值判定）、
     `yiban.engine.schedule._env_flag`、`web/routes/settings_api.py` 面板读、
     `web/services/env_io._settings_effective_values`、`web/services/capacity._registration_paused`、
     `yiban/engine/state_io._is_second_run`、`run.sh` 的 `_is_truthy`、

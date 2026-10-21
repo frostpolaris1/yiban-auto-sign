@@ -52,7 +52,7 @@ from yiban.core import status as _yiban_status
 
 
 # `.env` 行分隔符码点：前端"提交前拒含换行族的输入"必须与后端**同一份清单**
-# （`yiban.infra.env_io.ENV_LINE_BREAK_CHARS`），故由后端渲染进页面而不是前端另抄一份。
+# （`yiban.adapters.config.env_io.ENV_LINE_BREAK_CHARS`），故由后端渲染进页面而不是前端另抄一份。
 # 只渲染页面（不引入构建步骤）；核心符号换取时值仍与写入口字符集同源。
 def _env_line_break_codes():
     return sorted(ord(ch) for ch in _env_io.ENV_LINE_BREAK_CHARS)
@@ -61,7 +61,7 @@ def _env_line_break_codes():
 def _calendar_page_context():
     """日历页的状态显示上下文：状态表 + 图例 + 今日门真值（服务端渲染进页面的内联载荷）。
 
-    **同源方式**：状态显示表是 `yiban.status.DISPLAY`（唯一事实源）。`display_payload()`
+    **同源方式**：状态显示表是 `yiban.core.status.DISPLAY`（唯一事实源）。`display_payload()`
     把它序列化进页面的内联脚本（`window.YB_CALENDAR_STATE`）；**图例档位清单同车下发**
     （`payload["legend"] = legend_items()`），故图例与日期格/账号卡状态行消费的是同一份表
     ——新增状态码只会同时出现在两侧，不再有"渲染认得、图例不认得"的漂移（急停曾渲染成

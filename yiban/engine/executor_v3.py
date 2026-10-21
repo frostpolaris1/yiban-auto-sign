@@ -22,7 +22,7 @@
   兜底常驻据此只领"已过期超过肘界"的行——"谁该做"是**行的函数**，不再是进程身份的函数；
   它取代了原先的让位探针（10-07 型启动竞态从机制上消失）。
 - Fencing Token（栅栏令牌）：Martin Kleppmann。领取自增 `epoch`、结算按 epoch 比对，同项
-  溯源见 `yiban/store/queue_store.py`。**注意**：任务级租约（`lease_until` / 宽限 /
+  溯源见 `yiban/adapters/persistence/queue_store.py`。**注意**：任务级租约（`lease_until` / 宽限 /
   `reap_expired` / 豁免名册 / 死主接管）已删除；崩溃自愈改由**监督进程按进程句柄**做
   （`queue_store.reap_abandoned`），epoch 只服务"回退重排后原持有者不得再写"。
 - Exponential Backoff with Jitter（指数退避加抖动）：`next_retry_at_v3` 用**Decorrelated
@@ -58,7 +58,7 @@
 （出口桶 + 全局上界 + gap 门）、`planner`（计划生成与落库、`has_plan`）、`hrw`（分片集）、
 `state_io`（按日状态、执行体文件心跳——只服务 UI）、`attempts`（单次尝试与失败分级）、
 `alerts`（最终放弃时的管理员告警与用户失败邮件）、`clock_meta`（当日虚分片数落库）、
-`schedule`（配置、窗口关闭判定、通道数）——均在 `yiban.engine` / `yiban.store` / `yiban.core` 下。
+`schedule`（配置、窗口关闭判定、通道数）——均在 `yiban.engine` / `yiban.adapters.persistence` / `yiban.core` 下。
 谁调用：`runner.main`（`run_executor_v3` 是唯一执行入口，非 `--only` 时 `requeue_final`
 取补签轮身份，`--only` 时 `claim_all` + `reclaim` + `requeue_final`）；兜底常驻
 （`workers.run_fallback_worker`）用 `claim_all` + `requeue_during_run` + `elbow_sec=FALLBACK_ELBOW_SEC`。
@@ -108,7 +108,7 @@ FALLBACK_ELBOW_SEC = 60
 #: **为什么必须有界**：降级口径改成 fail-closed 后，"读不通"不再判收干。库一直坏就会让
 #: 补货循环空转到窗口关闭。那比原来的静默漏签更糟：占着运行锁，压着宿主 timeout。
 #: **为什么取 60**：判据是"连续"，任何一轮读通即归零。故它挡的是"持续读不通"，不是
-#: "偶发一次"。连接层 `busy_timeout=15000`（`yiban/store/db.py`）⇒ 单次锁等待占 3 拍，
+#: "偶发一次"。连接层 `busy_timeout=15000`（`yiban/adapters/persistence/db.py`）⇒ 单次锁等待占 3 拍，
 #: 60 拍容得下约 20 次连续锁等待。整表重插级别的长事务压不住写锁 15 分钟；压住就说明
 #: 库真坏了，继续等没有意义。墙钟上界 ≈ 60 × (5s 轮询 + 15s 锁等待) = 20 分钟。
 #: 会话内回炉那次读再多一次锁等待 ⇒ 最坏 35 分钟。两者都小于签到窗口的 80 分钟，
@@ -126,7 +126,7 @@ EGRESS_PERSIST_SEC = 10
 #: 当日虚分片数在 `app_meta` 的键前缀（键 = 前缀 + 业务日）
 V_META_KEY_PREFIX = "scheduler_v3_v_"
 
-# 状态码别名（与 yiban.status 同一对象）
+# 状态码别名（与 yiban.core.status 同一对象）
 STATUS_RETRYING = yiban_status.STATUS_RETRYING
 STATUS_PAUSED = yiban_status.STATUS_PAUSED
 STATUS_USER_CANCELLED = yiban_status.STATUS_USER_CANCELLED
@@ -622,7 +622,7 @@ def _tier_prefix(status):
 
     `sign_tasks.result` 的 `retry:`/`final:` 前缀是当日回炉口
     （`queue_store.requeue_failed`）区分"默认档自动回炉 / 须显式路径"的唯一判据；
-    成员表只认 `yiban.status.RETRYABLE_GIVE_UP_STATUSES`（v2 的 `claims.give_up` 与
+    成员表只认 `yiban.core.status.RETRYABLE_GIVE_UP_STATUSES`（v2 的 `claims.give_up` 与
     `round._settle_claims` 选档用的是同一 frozenset）。各写一份会漂移成
     "记成 retry、判成 final"——回炉口对默认档失明，当日失败又没人接手。
     """
