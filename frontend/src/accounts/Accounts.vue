@@ -580,7 +580,6 @@ const M = {
     <div class="page-head page-head--split">
       <div class="page-head-text">
         <h1 class="page-title">账号管理</h1>
-        <p class="page-sub">管理易班账号：审核、排序与手动签到；删除后 7 天内可恢复。</p>
       </div>
       <button type="button" class="btn btn--primary" data-add-account @click="openAdd">
         <svg aria-hidden="true"><use href="#i-plus" /></svg>添加账号

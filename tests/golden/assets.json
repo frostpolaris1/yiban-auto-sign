@@ -17,7 +17,7 @@
     "link rel=modulepreload href=/static/vue/assets/vendor-vue-DcgF_2Vl.js",
     "link rel=modulepreload href=/static/vue/assets/polling-CbJgyZON.js",
     "link rel=modulepreload href=/static/vue/assets/status-vocab-DDwGXPz2.js",
-    "script src=/static/vue/assets/dashboard-C50mfuhy.js"
+    "script src=/static/vue/assets/dashboard-0yYOBzgy.js"
   ],
   "login": [
     "link rel=icon href=/favicon.png?v=*",
@@ -34,7 +34,7 @@
     "script src=/static/js/core.js?v=*",
     "link rel=modulepreload href=/static/vue/assets/shell-CMBRo7Rh.js",
     "link rel=modulepreload href=/static/vue/assets/vendor-vue-DcgF_2Vl.js",
-    "script src=/static/vue/assets/login-BtkwKyXn.js"
+    "script src=/static/vue/assets/login-BQi-Qfpn.js"
   ],
   "user": [
     "link rel=icon href=/favicon.png?v=*",

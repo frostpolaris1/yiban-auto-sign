@@ -150,6 +150,23 @@ test("竖屏签到日志：页签不裁切、控件铺满、事件/巡检表改�
   );
   expect(over, "日志页在 390px 出现横向滚动").toBeLessThanOrEqual(1);
 
+  // 工具条单排：检索框与「显示全部日志 / 导出日志」同一行；按钮只剩图标，全名在 aria-label。
+  const actions = page.locator(".logs-head--log .logs-actions > *");
+  await expect(actions).toHaveCount(2);
+  const searchBox = await page.locator("#logs-search-input").boundingBox();
+  expect(searchBox, "取不到检索输入框位置").not.toBeNull();
+  for (const box of await actions.all()) {
+    const b = await box.boundingBox();
+    expect(b, "取不到工具按钮位置").not.toBeNull();
+    expect(Math.abs(b!.y - searchBox!.y), "工具按钮掉到第二排").toBeLessThanOrEqual(2);
+    expect(await box.getAttribute("aria-label"), "图标按钮缺少全名").toBeTruthy();
+  }
+  const toolsH = await page
+    .locator(".logs-head--log .logs-tools")
+    .evaluate((el) => el.getBoundingClientRect().height);
+  expect(toolsH, "工具条仍占两排高度").toBeLessThanOrEqual(40);
+  await expect(page.locator(".logs-head--log .logs-act-text").first()).toBeHidden();
+
   await page.getByRole("tab", { name: /签到事件/ }).click();
   await expect(page.locator(".logs-table-wrap").first()).toBeHidden();
   const cards = page.locator(".el-tab-pane:visible .logs-event-cards");
