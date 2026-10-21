@@ -58,6 +58,7 @@ from yiban.adapters.protocol_yiban import (
     SessionExpired,
     build_sign_in_body,
     build_usersure_form,
+    code_is_ok,
     extract_verify_request,
     parse_api_envelope,
     parse_authorize_page,
@@ -302,11 +303,12 @@ def _parse_api_body(resp):
 def _validate_sign_position(data):
     """成功信封里的签到配置过一次库解析（实拍契约）——结构不合即抛 ParseError。
 
-    只在"形状已足以进入客户端点位分支"时才解析：`code == 0`、`Position` 为非空数组、
+    只在"形状已足以进入客户端点位分支"时才解析：`code` 为成功码（`0` 或 `"0"`，
+    口径与协议库 `code_is_ok` 同一容忍度）、`Position` 为非空数组、
     顶层 `Range` 带 `StartTime/EndTime`。这样既不改变既有"缺 Range / 空 Position"的
     容错分支，又让完整响应真实走库解析路径（含 `Range` 时间窗对象与 `IsNeedPhoto`）。
     """
-    if not isinstance(data, dict) or data.get("code") != 0:
+    if not isinstance(data, dict) or not code_is_ok(data.get("code")):
         return
     data_obj = data.get("data")
     if not isinstance(data_obj, dict):
@@ -341,7 +343,7 @@ def login_legacy(session, *, phone, password, csrf, policy):
     )
     policy.require_not_blocked(resp)
     data = resp.json()
-    if data.get("code") != 0:
+    if not code_is_ok(data.get("code")):
         raise RuntimeError(f"获取登录入口失败: {policy.sanitize(data.get('msg'))}")
 
     # 2. 跳转到 OAuth 页面，解析 RSA 公钥与 page_use
@@ -422,7 +424,7 @@ def login_legacy(session, *, phone, password, csrf, policy):
     )
     policy.require_not_blocked(resp)
     data = resp.json()
-    if data.get("code") != 0:
+    if not code_is_ok(data.get("code")):
         raise RuntimeError(f"最终认证失败: {policy.sanitize(data.get('msg'))}")
     if "csrf_token" not in dict_from_cookiejar(session.cookies):
         raise RuntimeError("登录失败：未获取到 csrf_token")
@@ -544,7 +546,7 @@ def login_killyiban(session, *, phone, password, csrf, policy, session_store=Non
     else:
         raise RuntimeError("最终认证重定向层数过多，疑似重定向环")
     data = resp.json()
-    if data.get("code") != 0:
+    if not code_is_ok(data.get("code")):
         raise RuntimeError(f"最终认证失败: {policy.sanitize(data.get('msg'))}")
     # **本项目自有判定**（非平台知识）：code==0 只代表"签发方没有否认"，不代表签发
     # 发生过：成功签发附带的回执在 data 载荷（同一端点的入口步应答即 `data.Data`，

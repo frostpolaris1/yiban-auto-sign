@@ -606,10 +606,11 @@ def run_probe(accounts):
                 "探针：账号 %s 网络类失败（不计预警）：%s",
                 _mask_phone(acc.phone), _sanitize_text(message),
             )
-    # 桶状态落库：把**出口级速率**写回同一行 `egress_state`，执行体下一轮（或本轮重启）
-    # `restore_from_store` 即看见——这是"跨进程同一份出口速率"的落点（令牌位置 `tat` 不落库，
-    # 各进程独立）。写失败由 `EgressLimiter.persist` 内部告警，不阻断探针（桶状态是记忆不是业务事实）。
-    limiter.persist(egress_key)
+    # 桶状态落库：把**出口级速率**与剩余半开窗口写回同一行 `egress_state`，执行体下一轮
+    # （或本轮重启）`restore_from_store` 即看见——这是"跨进程同一份出口速率"的落点
+    # （令牌位置 `tat` 不落库，各进程独立）。`now` 用本进程的单调钟，把半开截止时刻
+    # 换算成相对量。写失败由 `EgressLimiter.persist` 内部告警，不阻断探针（桶状态是记忆不是业务事实）。
+    limiter.persist(egress_key, now=_mono())
     # 预警（复用 A/B 线邮件机制；用户邮件按「健康探测」措辞，避免误报为当日签到失败）
     if fuse_cleared:
         with contextlib.suppress(Exception):

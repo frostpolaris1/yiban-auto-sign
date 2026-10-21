@@ -498,9 +498,10 @@ def reap_abandoned(owner: str, day: str | None = None) -> int:
 
 
 def load_egress_state(egress: str) -> dict[str, Any] | None:
-    """读某出口的令牌桶状态：`{"rate","burst","tat"}`；无记录/库异常 → `None`。
+    """读某出口的令牌桶状态：`{"rate","burst","tat","half_open_sec"}`；无记录/库异常 → `None`。
 
     `rate` 单位是**账号尝试/s**（attempt/s，见 `yiban/engine/token_bucket.py` 模块头）。
+    `half_open_sec` 是**剩余**半开秒数（相对量，与调用方注入的单调钟无关）；0 表示无半开。
     读失败**不抛**：调用方（执行体）按"没有记忆"回退出厂速率——重启后拿不到速率也不该
     卡住签到，出厂速率本就比自适应上限保守。
     """
@@ -508,30 +509,35 @@ def load_egress_state(egress: str) -> dict[str, Any] | None:
         conn, lock = _queue_conn()
         with lock:
             row = conn.execute(
-                "SELECT rate, burst, tat FROM egress_state WHERE egress=?", (egress,)
+                "SELECT rate, burst, tat, half_open_sec FROM egress_state WHERE egress=?",
+                (egress,)
             ).fetchone()
     except Exception as e:
         logger.warning("读取出口令牌桶状态失败（按无记录处理）: %s", e)
         return None
     if row is None:
         return None
-    return {"rate": row["rate"], "burst": row["burst"], "tat": row["tat"]}
+    return {"rate": row["rate"], "burst": row["burst"], "tat": row["tat"],
+            "half_open_sec": row["half_open_sec"]}
 
 
 def save_egress_state(egress: str, rate: float, burst: float, tat: float,
-                      now: str | None = None) -> bool:
+                      half_open_sec: float = 0.0, now: str | None = None) -> bool:
     """UPSERT 某出口的令牌桶状态，返回是否写入成功。
 
     `rate` 单位 = 账号尝试/s（attempt/s）；`burst` 是突发额度（尝试数）；`tat` 是 GCRA 的
-    理论到达时刻（浮点秒，与调用方注入的时钟**同域**）。`now` 是写入时刻（墙钟字符串，
-    缺省 `clock.ts()`）——它与 `tat` 不同域，只作"上次落库时刻"给运维看，**不可**拿来与
-    `tat` 直接比较。写失败只告警不抛：桶状态是记忆不是业务事实，写不进去不该阻断签到。
+    理论到达时刻（浮点秒，与调用方注入的时钟**同域**）。`half_open_sec` 是**剩余**半开
+    秒数（相对量，restore 时按新进程的 `now` 重新起算；不落绝对时刻，避免跨时钟域）。
+    `now` 是写入时刻（墙钟字符串，缺省 `clock.ts()`）——它与 `tat` / `half_open_sec`
+    不同域，只作"上次落库时刻"给运维看，**不可**拿来与它们直接比较。写失败只告警不抛：
+    桶状态是记忆不是业务事实，写不进去不该阻断签到。
     """
-    sql = ("INSERT INTO egress_state (egress, rate, burst, tat, updated_at) "
-           "VALUES (?,?,?,?,?) ON CONFLICT(egress) DO UPDATE SET "
+    sql = ("INSERT INTO egress_state (egress, rate, burst, tat, half_open_sec, updated_at) "
+           "VALUES (?,?,?,?,?,?) ON CONFLICT(egress) DO UPDATE SET "
            "rate=excluded.rate, burst=excluded.burst, tat=excluded.tat, "
-           "updated_at=excluded.updated_at")
-    params = (egress, float(rate), float(burst), float(tat), now or clock.ts())
+           "half_open_sec=excluded.half_open_sec, updated_at=excluded.updated_at")
+    params = (egress, float(rate), float(burst), float(tat), float(half_open_sec),
+              now or clock.ts())
     try:
         conn, lock = _queue_conn()
         with lock:
