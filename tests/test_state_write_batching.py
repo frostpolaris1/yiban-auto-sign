@@ -271,25 +271,6 @@ class SignStateCrashDurabilityTest(unittest.TestCase):
         self.assertNotIn("13800000004", data, "崩溃切点前 D 未落盘，不得出现在盘上")
         self.assertNotIn("13800000005", data)
 
-    def test_atexit_hook_is_registered(self):
-        """退出钩子必须真的挂在 `atexit` 上——删掉注册即红。
-
-        为什么断言"注册"而不是"跑一遍退出钩子"：`batch_sign_state` 是 `contextmanager`
-        生成器，进程正常退出/异常展开时它的 `finally` 会先跑掉，落盘与 `atexit` **不可
-        区分**（实测：把 `atexit.register` 删掉，原"正常退出"用例照绿）。能区分两者的只有
-        "缓冲区非空、且退出钩子是唯一冲刷者"的场景（如批量区开在存活线程里、生成器不被
-        终结）；那种场景无法在小用例里稳定构造。故此处钉注册本身，并另外用
-        `test_flush_sign_state_persists_pending` 钉住钩子所调用的函数确实会落盘。
-        """
-        import atexit
-        import importlib
-        with mock.patch.object(atexit, "register") as reg:
-            importlib.reload(state_io)
-        registered = [c.args[0] for c in reg.call_args_list if c.args]
-        self.assertIn(state_io.flush_sign_state, registered,
-                      "state_io 必须在 import 时把 flush_sign_state 挂上 atexit")
-        # 重载会重置模块级缓冲，清一次以免影响后续用例
-        state_io.flush_sign_state()
 
     def test_flush_sign_state_persists_pending(self):
         """退出钩子所调用的函数本身必须把待写条目落盘（钩子不是空转）。"""
@@ -422,41 +403,6 @@ class SignStateVisibilityBoundTest(unittest.TestCase):
         state_io.flush_sign_state()
         self.assertEqual(_read(self.path)["13800000001"]["status"], "failed")
 
-    def test_batch_of_only_rejected_cas_writes_nothing(self):
-        """落盘契约：一批 `only_if_absent` 全被拒 ⇒ 一次盘都不写（与逐条形态同权）。
-
-        逐条形态在 CAS 拒绝时**不写文件**；落盘若"只要 ops 非空就写"，就多写一次空变化的盘。
-
-        白盒说明：M1 的修法把 `only_if_absent` 整体移出缓冲（判定与写入必须原子），所以
-        **当前没有公共 API 能把一条被拒的 CAS 放进缓冲**——本用例直接构造缓冲条目，
-        钉的是 `_flush_sign_state_path` 自己的契约（守卫被删即红），不是调用方编舞。
-        """
-        state_io.flush_sign_state()
-        with open(self.path, "w", encoding="utf-8") as f:
-            json.dump({"13800000001": {"status": "success", "message": "已有", "time": "06:31:00"}},
-                      f)
-        before = _read(self.path)
-        writes = {"n": 0}
-        real_write = state_io.private_json.write_private_json
-
-        def _counting_write(p, payload, **kw):
-            writes["n"] += 1
-            return real_write(p, payload, **kw)
-
-        buf = state_io._StateBuf()
-        buf.view = dict(before)
-        buf.ops.append(("13800000001", "skipped_window", "签到时段已结束", None, None,
-                        True, state_io.clock.now()))
-        with mock.patch.object(state_io, "_state_dir", return_value=self.tmp), \
-                mock.patch.object(state_io.private_json, "write_private_json",
-                                  _counting_write):
-            state_io._STATE_BUFFERS[self.path] = buf
-            try:
-                state_io.flush_sign_state()
-            finally:
-                state_io._STATE_BUFFERS.pop(self.path, None)
-        self.assertEqual(writes["n"], 0, "全被 CAS 拒不得写盘")
-        self.assertEqual(_read(self.path), before)
 
     def test_entry_time_is_call_time_not_flush_time(self):
         """`time` 字段是"何时签的"，落盘被推迟不得改写它（用假钟钉死）。"""

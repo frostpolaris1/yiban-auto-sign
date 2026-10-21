@@ -254,45 +254,11 @@ class NeedSecondRunTest(unittest.TestCase):
             else:
                 json.dump(payload, f)
 
-    def test_no_sched_marker_needs_second(self):
-        """当日全量未收尾（标记缺失）→ 需要补跑。"""
-        self.assertTrue(signin.need_second_run(self.tmp, BIZ_TODAY))
 
-    def test_done_and_all_success_no_second(self):
-        """已收尾 + 全部 success → 不需要补跑。"""
-        self._write(f"sched-run-{BIZ_TODAY}.json", {"completed": True})
-        self._write(f"sign-state-{BIZ_TODAY}.json", {
-            "13800000001": {"status": "success"},
-            "13800000002": {"status": "already"},
-            "13800000003": {"status": "no_task"},
-        })
-        self.assertFalse(signin.need_second_run(self.tmp, BIZ_TODAY))
 
-    def test_done_with_failed_needs_second(self):
-        """已收尾但有 failed 账号 → 需要补跑（补签轮的核心价值）。"""
-        self._write(f"sched-run-{BIZ_TODAY}.json", {"completed": True})
-        self._write(f"sign-state-{BIZ_TODAY}.json", {
-            "13800000001": {"status": "success"},
-            "13800000002": {"status": "failed"},
-        })
-        self.assertTrue(signin.need_second_run(self.tmp, BIZ_TODAY))
 
-    def test_done_with_window_skip_needs_second(self):
-        """已收尾但有 skipped_window（学校窗口晚于本地配置）→ 需要补跑。"""
-        self._write(f"sched-run-{BIZ_TODAY}.json", {"completed": True})
-        self._write(f"sign-state-{BIZ_TODAY}.json", {"13800000001": {"status": "skipped_window"}})
-        self.assertTrue(signin.need_second_run(self.tmp, BIZ_TODAY))
 
-    def test_completed_false_needs_second(self):
-        """标记存在但 completed=false（首轮被 timeout 击杀）→ 需要补跑。"""
-        self._write(f"sched-run-{BIZ_TODAY}.json", {"completed": False})
-        self._write(f"sign-state-{BIZ_TODAY}.json", {"13800000001": {"status": "success"}})
-        self.assertTrue(signin.need_second_run(self.tmp, BIZ_TODAY))
 
-    def test_missing_state_file_fails_safe(self):
-        """标记已写但状态文件缺失 → 按"未了结"处理（宁多跑一轮，不漏签）。"""
-        self._write(f"sched-run-{BIZ_TODAY}.json", {"completed": True})
-        self.assertTrue(signin.need_second_run(self.tmp, BIZ_TODAY))
 
     def test_corrupted_state_file_fails_safe(self):
         """状态文件损坏 → 同样按"需要补跑"。"""

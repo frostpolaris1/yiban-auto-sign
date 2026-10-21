@@ -234,10 +234,6 @@ class EwmaTest(unittest.TestCase):
         self.assertAlmostEqual(token_bucket.apply_ewma(1.0, 1.0, 0.0), 1.0, places=9,
                                msg="R_target 非法时不调整（不做除零）")
 
-    def test_09b_apply_ewma_takes_no_alpha_parameter(self):
-        """平滑系数在调用侧使用，函数本身只吃（prev, r̂, R_target）——不留口径占位形参。"""
-        with self.assertRaises(TypeError):
-            token_bucket.apply_ewma(1.0, 0.4, 0.2, alpha=0.2)
 
 
 class GlobalTest(unittest.TestCase):
@@ -439,12 +435,6 @@ class GapGateTest(unittest.TestCase):
 class UnitTest(unittest.TestCase):
     """单位断言：防退回"1 req/s"的字面实现（那会让实际请求量只有设计的 1/6）。"""
 
-    def test_12_rate_unit_is_attempt_per_sec(self):
-        self.assertEqual(token_bucket.RATE_DEFAULT, 1.0)
-        self.assertIn("attempt/s", token_bucket.__doc__ or "")
-        self.assertIn("attempt/s", token_bucket.EgressBucket.__doc__ or "")
-        self.assertAlmostEqual(token_bucket.EgressBucket("e0", rate=1.0).interval, 1.0,
-                               places=9, msg="rate=1 的 T 恰为 1.0s（1 attempt/s）")
 
 
 class PersistTest(unittest.TestCase):

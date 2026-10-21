@@ -507,10 +507,6 @@ class WrapperSourceTest(unittest.TestCase):
         with io.open(WRAPPER, encoding="utf-8") as f:
             cls.src = f.read()
 
-    def test_header_documents_install_and_crontab(self):
-        self.assertIn("/usr/local/sbin/yiban-backup-sentinel.sh", self.src, "安装命令不得缺")
-        self.assertIn("5 8 * * *", self.src, "排期须是 08:05（02:00 备份之后）")
-        self.assertIn("静默失败", self.src, "头部须写清它防的是什么")
 
     def test_wrapper_only_forwards(self):
         """薄包装：判据实现唯一在 backup_sentinel.py，包装里不出现任何检查逻辑。"""

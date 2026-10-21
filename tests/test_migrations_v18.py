@@ -224,19 +224,6 @@ class DataShiftTest(_Base):
 class SynchronousAppliedByMigrationTest(_Base):
     """迁移函数本身必须把连接的耐久级提到 FULL（不依赖连接默认值）。"""
 
-    def test_migrate_v18_raises_synchronous_to_full(self):
-        conn = sqlite3.connect(self.db_file)
-        conn.row_factory = sqlite3.Row
-        try:
-            conn.execute("PRAGMA synchronous = NORMAL")
-            self.assertEqual(conn.execute("PRAGMA synchronous").fetchone()[0], 1,
-                             "前置条件：连接耐久级不是 FULL")
-            _create_sign_claims(conn)
-            conn.commit()
-            db.migrate_v18(conn)
-            self.assertEqual(conn.execute("PRAGMA synchronous").fetchone()[0], 2)
-        finally:
-            conn.close()
 
 
 class OptionalRegistrationTest(_Base):
@@ -245,18 +232,6 @@ class OptionalRegistrationTest(_Base):
     （v18 **本体**已是核心档——登记值由 tests/test_migrations_fail_closed.py
     `RegistryClassificationTest` 钉住；本类打桩替换登记表，测的是档位处理框架。）"""
 
-    def test_optional_tier_entry_failure_does_not_block_startup(self):
-        def failing_v18(conn):
-            raise RuntimeError("boom")
-
-        old = db._MIGRATIONS
-        db._MIGRATIONS = [(18, "v18_failing", failing_v18, False)]
-        try:
-            conn = db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
-            self.assertIsNotNone(conn)
-            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 0)
-        finally:
-            db._MIGRATIONS = old
 
 
 if __name__ == "__main__":

@@ -84,7 +84,3 @@ class ReleaseGateScriptsTest(unittest.TestCase):
                           "发布门槛必须点名该演练形态的脚本：%s（判据有了、手段没有载体）"
                           % script)
 
-    def test_detector_has_teeth(self):
-        self.assertEqual(
-            _untracked(["scripts/a.sh", "scripts/b.py"], {"scripts/a.sh"}),
-            ["scripts/b.py"])

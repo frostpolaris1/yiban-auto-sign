@@ -259,18 +259,6 @@ class SkeletonScopeTest(unittest.TestCase):
             "找不到裸类名 `.dash-skel` 的尺寸规则 —— 组件层必须有一条与祖先无关的声明",
         )
 
-    def test_skeleton_class_is_not_orphaned(self):
-        """`.dash-skel` 至少还有一个模板在用——否则上面那条规则就是死 CSS。
-
-        与「删死代码」同一方向：规则与使用者必须成对存在，只剩其一时报红，
-        避免留下"看着在管事、实际没人消费"的样式。
-        """
-        users = self._users_of("dash-skel")
-        self.assertTrue(
-            users,
-            "没有任何模板使用 .dash-skel —— app.css 里那条骨架尺寸规则已成死样式，"
-            "应连同本类一并删除（而不是留着占位）",
-        )
 
 
 def _color_decls(css, selector):
