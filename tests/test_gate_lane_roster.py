@@ -146,11 +146,19 @@ def _empty_lane_violations(rows):
 class LaneRosterGuardTest(unittest.TestCase):
     """① 名册与现实三方一致（这是本批的主守卫）。"""
 
+    #: 收集结果是**本次进程内不变的**事实：每个用例各自重跑一次
+    #: `pytest --collect-only` 会让 6 条用例各付 ~10s（实测合计 60s，占全量四成）。
+    #: 缓存到类级只跑一次；`_collect_test_files` 的"收集为空"判据仍由
+    #: `test_collection_is_not_empty` 单独钉住，缓存不削弱它。
+    _collected_cache = None
+
     def setUp(self):
         with io.open(ROSTER, encoding="utf-8") as f:
             self.text = f.read()
         self.disk = _scan_test_files()
-        self.collected = _collect_test_files()
+        if LaneRosterGuardTest._collected_cache is None:
+            LaneRosterGuardTest._collected_cache = _collect_test_files()
+        self.collected = LaneRosterGuardTest._collected_cache
         self.rows, self.row_errors = _parse_roster(self.text)
         self.lane_of = {}
         for lane, path in self.rows:
