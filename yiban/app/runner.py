@@ -296,8 +296,13 @@ def main(argv=None):
         # （与手动签到撞锁同一语义），不排队；句柄在本进程存活期间必须保活。
         os.environ.setdefault("YIBAN_RUN_LOCK_NAME", workers.FALLBACK_LOCK_NAME)
         try:
-            # 句柄必须保活到进程结束（flock 随句柄释放），故赋值给局部变量而不是丢弃
-            _fallback_lock_fh = cli_support._acquire_run_lock(True)
+            # 句柄必须保活到进程结束（flock 随句柄释放），故赋值给局部变量而不是丢弃。
+            # 锁名**显式**传常量而不是读环境变量（审查 D5）：_acquire_run_lock 缺省按
+            # YIBAN_RUN_LOCK_NAME 解析，而部署件会把 .env 的 YIBAN_* 键 export 进来
+            # ——若 .env 带了该键，兜底会持另一把锁，重签的兜底锁判断就恒答"空闲"
+            # 而静默失效。显式传参与探测方（queue_store）同源。
+            _fallback_lock_fh = cli_support._acquire_run_lock(
+                True, name=cli_support.FALLBACK_LOCK_NAME)
         except cli_support._RunLockHeld:
             logger.warning("已有兜底常驻执行体在运行，本次不重复拉起（防同账号并发登录）")
             return 3

@@ -98,7 +98,7 @@ _PROD_DIRS = ("yiban", "web", "scripts")
 _ALLOWED_STATE_WRITERS = frozenset({
     ("yiban/adapters/persistence/queue_store.py", "settle_tasks"),    # 收尾：state 由调用方给（done/failed）
     ("yiban/adapters/persistence/queue_store.py", "requeue_task"),    # 重排回落 pending
-    ("yiban/adapters/persistence/queue_store.py", "reclaim_tasks"),   # 显式重签：终态翻回 pending
+    ("yiban/adapters/persistence/queue_store.py", "reclaim_tasks"),   # 显式重签：终态/在飞行翻回 pending（兜底锁持有时跳过在飞行）
     ("yiban/adapters/persistence/queue_store.py", "reap_abandoned"),  # 死亡执行体名下在飞行回退 pending
 })
 

@@ -408,6 +408,12 @@ KNOWN_SKIP_SITES = json.loads(r"""
    "git 不可用：跳过 PR 模板守卫"
   ]
  ],
+ "tests/test_reclaim_fallback_lock_e2e.py": [
+  [
+   "skipTest",
+   "跨进程 flock 仅 POSIX 可用（Windows 上取不到锁）"
+  ]
+ ],
  "tests/test_run_entry_hardening.py": [
   [
    "skipIf",
