@@ -6,7 +6,7 @@
 
 三条判据（工单 `yiban-auto-sign-2ula`）：
 1. **名册自校验**：类型合法、域有序、缺省值在域内、必填字段齐全（复用加载器的
-   `yiban.config_loader.validate_registry`——校验实现只有一份，门禁不自抄第二套）。
+   `yiban.adapters.config.loader.validate_registry`——校验实现只有一份，门禁不自抄第二套）。
 2. **已登记键的默认值字面量在代码内清零**：对名册里开了 `default_literal_gate` 的键，
    生产代码不得再出现两种回潮形状——
    （a）键名出现的同一行里又写死缺省值字面量（读取点回退）；
@@ -64,7 +64,7 @@ import subprocess
 import sys
 import tokenize
 
-# 门禁要 import 被测实现（`yiban.config_loader` 的校验器）：按路径直跑时 sys.path[0]
+# 门禁要 import 被测实现（`yiban.adapters.config.loader` 的校验器）：按路径直跑时 sys.path[0]
 # 是 scripts/，仓库根不在路径上——先补引导再 import（`tests/test_deploy_entry_imports.py`
 # 对 runtime 目录里导入 yiban 的脚本立的是同一条规矩）。
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

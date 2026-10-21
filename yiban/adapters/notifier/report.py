@@ -12,7 +12,7 @@
 - **B 线（用户本人）**：`send_user_fail_mail` 逐条即时，受按天额度（默认每账号 1 封，
   签到/手动/探针三个入口统一计算）与用户开关约束，**发送成功才消耗额度**，未发出即归还。
 
-`mailer` / `notify` 是本包内的实现（`from yiban import mail as mailer`、`from yiban import notify`），
+`mailer` / `notify` 是本包内的实现（`from yiban.adapters.notifier import mail as mailer`、`from yiban.adapters.notifier import notify`），
 发送失败一律只留痕，绝不抛出，也不影响退出码。
 
 **归属**
@@ -23,7 +23,7 @@
 **复用**
 `_collect_admin_mail` / `_flush_admin_mail_summary`（A 线汇总）、`send_user_fail_mail`
 （B 线逐条）、`send_notification` 族与额度口径被三个入口共用；`STATUS_*` 取自
-`yiban.status`。
+`yiban.core.status`。
 
 **通信**
 输入：本轮结果（状态码、账号、失败原因）、收件人/开关/额度配置（来自 .env 与 db）。
@@ -58,7 +58,7 @@ from yiban.engine import cli_support, config_check, schedule
 
 logger = logging.getLogger("yiban")
 
-# 状态码别名（与 yiban.status 同一对象）
+# 状态码别名（与 yiban.core.status 同一对象）
 STATUS_SKIPPED_WINDOW = yiban_status.STATUS_SKIPPED_WINDOW
 STATUS_SKIPPED_NORANGE = yiban_status.STATUS_SKIPPED_NORANGE
 

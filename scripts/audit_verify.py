@@ -15,11 +15,11 @@
 只能靠这两个数字发现保留期清理被异常前移。
 
 **归属**
-取证/运维侧脚本（`scripts/`）；判据本体在 `yiban.store.audit_chain`，本脚本只做参数
+取证/运维侧脚本（`scripts/`）；判据本体在 `yiban.adapters.persistence.audit_chain`，本脚本只做参数
 解析与取证口径落定，与 web 每日线程共用同一 `audit_health()`。
 
 **复用**
-无对外可复用函数；核心判据复用 `yiban.store.audit_chain.audit_health` /
+无对外可复用函数；核心判据复用 `yiban.adapters.persistence.audit_chain.audit_health` /
 `audit_anchor_path`，web 与容器侧都应调那一份，不得另写第二套校验。
 
 **通信**
@@ -34,10 +34,10 @@
   2  无法定论（"未查"）：密钥缺失、链校验过程异常、`database is locked` 等库/锁
      故障、锚点自检无法定论、**从未写过锚点**（没得比对）——一律不得印成通过，
      也不得用 1 冒充一次成功的取证。
-三态与退出码的**唯一映射**在 `yiban.store.audit_chain.audit_verdict`（巡检面「审计链
+三态与退出码的**唯一映射**在 `yiban.adapters.persistence.audit_chain.audit_verdict`（巡检面「审计链
 自洽」块读同一份）：本脚本只按它给出的状态决定退出码，不另排一份。健 → 0、检出篡改 → 1、
 无法定论 → 2。
-调用谁：`db`（`yiban.store.db` / `audit_chain` 的兼容壳）。
+调用谁：`db`（`yiban.adapters.persistence.db` / `audit_chain` 的兼容壳）。
 谁调用：运维手工取证；`scripts/backup.sh` 恢复件双验（restore 流程在解包后调它做审计
 链核验，非 0 视为恢复件不可信）；backup.sh 头部示例还给了 cron 每日 02:30 定排的一条
 命令，把输出重定向到 `audit-verify.log`。只读，无写盘。
