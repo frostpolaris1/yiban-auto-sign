@@ -362,6 +362,10 @@ KNOWN_SKIP_SITES = json.loads(r"""
   [
    "skipUnless",
    "SIGKILL 与 /proc 查进程环境仅 POSIX 可用"
+  ],
+  [
+   "skipUnless",
+   "真监督进程与执行体子进程仅 POSIX 可用"
   ]
  ],
  "tests/test_notify_ledger.py": [
@@ -379,6 +383,12 @@ KNOWN_SKIP_SITES = json.loads(r"""
  "tests/test_path_env_read_gate.py": [
   [
    "skipUnless",
+   "需要 bash（Git Bash / WSL）"
+  ]
+ ],
+ "tests/test_path_single_definition.py": [
+  [
+   "skipIf",
    "需要 bash（Git Bash / WSL）"
   ]
  ],

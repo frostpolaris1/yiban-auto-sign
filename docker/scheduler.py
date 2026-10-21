@@ -118,11 +118,13 @@ from yiban.infra import private_json  # noqa: E402  （状态文件私有写单�
 from yiban.logging_ext import MaskingFormatter  # noqa: E402
 from yiban.workers import workers  # noqa: E402
 
-LOGDIR = os.path.dirname(env_io.resolve_path("YIBAN_LOG_FILE", "/data/logs/sign.log"))
-# LOGDIR 不借 state_gc.log_dir_from_env()：它未设键时回落到 state_dir，会把容器
-# 缺省从 /data/logs 挪到 /data/state。缺省值是部署形态，本批只统一读法。
-# 与 web / 引擎同一读法：`.env` 里的指针也要认得（基线见 env_io.env_path——进程环境
-# 未给指针时按 cwd 的 .env 定位，容器里 cwd 是 /app）。
+LOGDIR = env_io.log_dir_path(default_dir="/data/logs")
+# 缺省值 `/data/logs` 是**容器形态**的默认（裸机默认随状态目录，见
+# `env_io.log_dir_path`）。`default_dir` 显式给容器缺省，故不借 `state_gc`
+# 那条"未设键即回落 state_dir"的裸机口径。
+# 与 web / 引擎同一读法：指针**只认进程环境**（`env_io.resolve_path` 对
+# `YIBAN_ENV_FILE` 不读 `.env`——那会自指）。容器里由 compose 的 environment
+# 或入口脚本给值；没给就落到下面的缺省 `/data/.env`。
 ENV_FILE = env_io.resolve_path("YIBAN_ENV_FILE", "/data/.env")
 
 logger = logging.getLogger("scheduler")
@@ -370,9 +372,11 @@ def _backup_script_path():
 def _backup_env():
     """备份子进程的环境。
 
-    口径与全仓一致（**`.env` 优先、进程环境只补缺**，见 M27）：容器调度器的兜底门
-    已经这么判（`_fallback_gate_env` 的注释），备份的路径类参数必须同口径，否则
-    compose 里显式注入的 `YIBAN_BACKUP_*` 会被 Web 设置页/`.env` 里的同名键悄悄顶掉。
+    口径按**非路径键**（`YIBAN_BACKUP_*` 不在 `env_io.PATH_KEYS` 里）：`.env` 优先、
+    进程环境只补缺（M27）。容器调度器的兜底门已经这么判（`_fallback_gate_env` 的注释），
+    备份参数必须同口径，否则 compose 里显式注入的 `YIBAN_BACKUP_*` 会被
+    Web 设置页/`.env` 里的同名键悄悄顶掉。三个可配置路径键例外（进程环境优先）由
+    `build_child_env` / `resolve_path` 统一处理，本函数不碰它们。
     口令本身**不入环境**：`backup-docker.sh` 只从 `YIBAN_BACKUP_PASSPHRASE_FILE` 读
     0600 文件（M97），绝不用 `_PASSPHRASE` 环境变量形态。`.env` 里若残留
     `YIBAN_BACKUP_PASSPHRASE`，`parse_env_file` 会把它并进 `src`——这里**显式剔除**

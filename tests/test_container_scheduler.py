@@ -962,7 +962,7 @@ class ContainerBackupHookTest(unittest.TestCase):
        按键非空判会让默认部署天天三次重试后报 ERROR；
     6. 备份目录**不在 /data 内**（否则每轮 tar 把上一轮备份再打进去）；
     7. 口令**绝不下发**到子进程环境（M97 口径延续）；
-    8. 路径类参数同 M27 口径：`.env` 优先、进程环境只补缺。
+    8. 备份参数（非路径键）同 M27 口径：`.env` 优先、进程环境只补缺。
     """
 
     def setUp(self):

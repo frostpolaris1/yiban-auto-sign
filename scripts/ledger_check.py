@@ -103,7 +103,7 @@ def _read_terminals(state_dir, day):
     `terminal_task_state` 的返回值——它就是 v20 补账写入台账时用的那一份判据，
     对账必须按同一份期望比对（各写一遍会在规范化细节上漂移，报出假差异或漏报真差异）。
     """
-    path = os.path.join(state_dir, f"sign-state-{day}.json")
+    path = env_io.sign_state_path(day, state_dir=state_dir)
     try:
         # utf-8-sig：手工编辑过的状态文件可能带 BOM，BOM 会让 json.load 抛错、整日判成
         # "无输入"——那是假零覆盖，不是真没跑

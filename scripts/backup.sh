@@ -84,7 +84,10 @@ umask 077
 # ------------------------------------------------------------
 # 配置（按需调整；也可通过环境变量覆盖）
 # ------------------------------------------------------------
-APP_DIR="${APP_DIR:-/opt/yiban-auto-sign}"          # 项目部署目录
+# 项目部署目录：唯一环境键 YIBAN_APP_DIR；`APP_DIR` 只作旧部署别名。
+# 本脚本会被安装到 /usr/local/sbin（不在检出内），故**不从自身路径反推**——部署根
+# 只能来自环境键或生产默认值（manifest 与 cron.d 都按 /opt/yiban-auto-sign 装配）。
+APP_DIR="${YIBAN_APP_DIR:-${APP_DIR:-/opt/yiban-auto-sign}}"
 # `.env` 的绝对路径：**单点定义**（工单 ybg8——运行数据与代码分离，`.env` 与库都在
 # 检出内的 data/ 下，检出根才能属 root 且组/其他不可写）。下面多处引用它，不各写一遍：
 # 同一路径写 N 遍就是"同一事实多处定义"，改一处必漏一处。
@@ -163,8 +166,13 @@ YIBAN_STATE_DIR="$(env_get YIBAN_STATE_DIR)"
 YIBAN_LOG_FILE="$(env_get YIBAN_LOG_FILE)"
 SIGN_STATE_DIR="${YIBAN_STATE_DIR:-${SIGN_STATE_DIR:-/var/log/yiban}}"
 # 可选：按天签到日志目录（sign-YYYY-MM-DD.log；过期清理由 yiban-cleanup.sh 负责，此处仅备份现存量）
-# 跟随 YIBAN_LOG_FILE 所在目录（两者都没配，才回落到与状态目录同级的默认值）
-SIGN_LOG_DIR="${SIGN_LOG_DIR:-$(dirname "${YIBAN_LOG_FILE:-${SIGN_STATE_DIR}/sign.log}")}"
+# 跟随 YIBAN_LOG_FILE 所在目录；未配置时日志就在状态目录下（默认 <state>/sign.log 的 dirname）。
+# 名字形状不在这里写：默认基名唯一在 `env_io.LOG_BASENAME`（census-P2-log-file）。
+if [ -n "${YIBAN_LOG_FILE}" ]; then
+    SIGN_LOG_DIR="${SIGN_LOG_DIR:-$(dirname "${YIBAN_LOG_FILE}")}"
+else
+    SIGN_LOG_DIR="${SIGN_LOG_DIR:-${SIGN_STATE_DIR}}"
+fi
 # ------------------------------------------------------------
 # SQLite 数据库（账号+用户表；用 sqlite3 .backup 一致性快照，WAL 安全）
 # 键名与引擎同一枚：YIBAN_DB_FILE。
@@ -194,28 +202,17 @@ DB_FILE="${DB_PATH##*/}"
 # 密钥文件：systemd 单元 EnvironmentFile 指向的密钥（0600，root:yiban）
 KEY_FILE="${KEY_FILE:-/etc/yiban/accounts-key}"
 
-# 业务日唯一来源（MF-109）：yiban.core.clock 的北京钟，与引擎/web 同一事实源——备份包名
-# 与保留期"当天件"判定必须落在引擎业务日上（宿主时区≠北京时差一天，会把"当天归档
-# 失踪"误报或漏报）。取不到 yiban.core.clock 时退化 TZ=Asia/Shanghai date，再退化宿主 date。
-business_day() {
-    # 只信任形如 YYYY-MM-DD 的输出：解释器在但打印为空/异常时（venv 损坏、版本不匹配）
-    # 必须退到下一级——否则按天文件名会变成 `sign-.log` / `yiban-.tar.gz` 这种静默错位。
-    local _d _tz
-    _d="$("$PY" -c "import sys; sys.path.insert(0, sys.argv[1]); from yiban.core.clock import today as t; print(t())" "$APP_DIR" 2>/dev/null)"
-    case "$_d" in
-        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) echo "$_d"; return 0 ;;
-    esac
-    # 二级降级的判据必须是「TZ 真的生效」，不是「date 的退出码」：宿主缺 tzdata 时
-    # GNU date 对未知时区按 UTC 处理并返回 0，旧写法的 `&& return 0` 让第三级永远
-    # 不可达，降级点也一行日志都不留。
-    _tz="$(TZ=Asia/Shanghai date +%z 2>/dev/null || true)"
-    if [ "$_tz" = "+0800" ]; then
-        TZ=Asia/Shanghai date +%F
-        return 0
-    fi
-    echo "[$(date '+%F %T')] 警告：宿主缺 tzdata，TZ=Asia/Shanghai 不生效（date +%z=${_tz:-空}），业务日退回宿主 date——可能与引擎业务日差一天" >&2
-    date +%F
-}
+# 业务日唯一来源（MF-109）：与 run.sh / run_probe.sh / 兜底脚本共用
+# `scripts/lib/host_paths.sh`（宿主脚本的唯一 bash 定义点）。安装到 /usr/local/sbin 时
+# 本文件旁边没有 lib，按部署根找；整棵树缺失（极端破坏态）时退到 TZ 日期并响亮告警，
+# 不让备份因为一个助手文件缺席而整体失败。
+_LIB="$APP_DIR/scripts/lib/host_paths.sh"
+if [ -r "$_LIB" ]; then
+    # shellcheck source=scripts/lib/host_paths.sh
+    . "$_LIB"
+else
+    echo "[$(date '+%F %T')] 警告：缺少 $_LIB，业务日退回 TZ=Asia/Shanghai date（可能与引擎业务日差一天）" >&2
+fi
 
 # Python 解释器：备份本体零第三方依赖，系统 python3 即可（venv 缺失不拦备份）。
 if [ -x "$APP_DIR/.venv/bin/python3" ]; then
@@ -224,7 +221,11 @@ else
     PY="$(command -v python3 || echo /usr/bin/python3)"
 fi
 
-DATE="$(business_day)"
+if declare -F business_day >/dev/null; then
+    DATE="$(business_day)"
+else
+    DATE="$(TZ=Asia/Shanghai date +%F 2>/dev/null || date +%F)"
+fi
 ARCHIVE="${BACKUP_DIR}/yiban-${DATE}.tar.gz"
 TMPDIR_BAK="$(mktemp -d "${TMPDIR:-/tmp}/yiban-bak.XXXXXX")"
 trap 'rm -rf "${TMPDIR_BAK}"' EXIT
@@ -812,19 +813,36 @@ fi
 # `notify/ledger._state_dir()` 在未显式设 YIBAN_STATE_DIR 时回落 `dirname(.env)`
 # （= APP_DIR/data），不是 /var/log/yiban。旧实现只在 SIGN_STATE_DIR 下 glob，
 # 默认部署下这两枚永远不中，nullglob 让缺失完全静默。这里按写入方同一口径单独解析。
+# sign-daily / sign-state / 按天日志的匹配形状由唯一事实源导出（census-P2-sign-state /
+# sign-day-log）：改形状只改 `env_io` 的前后缀，这里跟着变，不会静默漏收。
+# 解释器不可用（备份允许 venv 缺失）时退化为"整目录收录"，宁多勿漏。
+_sign_patterns="$("$PY" -c 'import sys; sys.path.insert(0, sys.argv[1]); from yiban.adapters.config import env_io; print(env_io.SIGN_DAILY_PREFIX + "*" + env_io.SIGN_DAILY_SUFFIX); print(env_io.SIGN_STATE_PREFIX + "*" + env_io.SIGN_STATE_SUFFIX); print(env_io.DAY_LOG_PREFIX + "*" + env_io.DAY_LOG_SUFFIX)' "$APP_DIR" 2>/dev/null)" || _sign_patterns=""
+_SIGN_DAILY_GLOB="$(printf '%s\n' "$_sign_patterns" | sed -n '1p')"
+_SIGN_STATE_GLOB="$(printf '%s\n' "$_sign_patterns" | sed -n '2p')"
+_SIGN_LOG_GLOB="$(printf '%s\n' "$_sign_patterns" | sed -n '3p')"
+
 if [ -d "${SIGN_STATE_DIR}" ]; then
     shopt -s nullglob
-    state_files=(
-        "${SIGN_STATE_DIR}"/sign-daily-*.json
-        "${SIGN_STATE_DIR}"/sign-state-*.json
-        "${SIGN_STATE_DIR}"/cred-state.json
-        "${SIGN_STATE_DIR}"/sched-run-*.json
-        "${SIGN_STATE_DIR}"/sched-slot-*.json
-        "${SIGN_STATE_DIR}"/sched-snapshot-*.json
-        "${SIGN_STATE_DIR}"/notify-ledger.json
-        "${SIGN_STATE_DIR}"/notify-throttle.json
-        "${SIGN_STATE_DIR}"/audit-anchor.log
-    )
+    if [ -n "$_SIGN_DAILY_GLOB" ] && [ -n "$_SIGN_STATE_GLOB" ]; then
+        state_files=(
+            "${SIGN_STATE_DIR}"/$_SIGN_DAILY_GLOB
+            "${SIGN_STATE_DIR}"/$_SIGN_STATE_GLOB
+            "${SIGN_STATE_DIR}"/cred-state.json
+            "${SIGN_STATE_DIR}"/sched-run-*.json
+            "${SIGN_STATE_DIR}"/sched-slot-*.json
+            "${SIGN_STATE_DIR}"/sched-snapshot-*.json
+            "${SIGN_STATE_DIR}"/notify-ledger.json
+            "${SIGN_STATE_DIR}"/notify-throttle.json
+            "${SIGN_STATE_DIR}"/audit-anchor.log
+        )
+    else
+        log "警告：无法从 yiban.adapters.config.env_io 取得状态件形状，改为收录状态目录下全部文件（宁多勿漏）"
+        state_files=()
+        _state_root="${SIGN_STATE_DIR}"
+        for _f in "$_state_root"/*; do
+            [ -f "$_f" ] && state_files+=("$_f")
+        done
+    fi
     shopt -u nullglob
 else
     state_files=()
@@ -876,12 +894,16 @@ fi
 #    ——glob 匹配；无匹配时静默跳过（日志可重建，非关键；过期清理由 yiban-cleanup.sh 负责）
 if [ -d "${SIGN_LOG_DIR}" ]; then
     shopt -s nullglob
-    log_files=("${SIGN_LOG_DIR}"/sign-*.log)
+    if [ -n "$_SIGN_LOG_GLOB" ]; then
+        log_files=("${SIGN_LOG_DIR}"/$_SIGN_LOG_GLOB)
+    else
+        log_files=("${SIGN_LOG_DIR}"/*)
+    fi
     shopt -u nullglob
     if [ ${#log_files[@]} -gt 0 ]; then
         mkdir -p "${TMPDIR_BAK}/logs"
         cp -p "${log_files[@]}" "${TMPDIR_BAK}/logs/" 2>/dev/null \
-            && log "已备份按天签到日志（${#log_files[@]} 个：sign-*.log）"
+            && log "已备份按天签到日志（${#log_files[@]} 个）"
     fi
 fi
 

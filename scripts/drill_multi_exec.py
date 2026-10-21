@@ -85,6 +85,8 @@ for _p in (REPO, os.path.join(REPO, "scripts")):
 #: 故不会命中 `account_crypto` 的两道拒绝/告警判据。
 KEY = secrets.token_hex(32)
 MOCK = os.path.join(REPO, "yiban", "adapters", "protocol_fake", "__init__.py")
+# 假上游轨迹的固定基名唯一在 protocol_fake（census-P2-fake-server），此处不另写。
+from yiban.adapters import protocol_fake  # noqa: E402
 
 #: 采样间隔（秒）：I1 的"没经释放的换手"要求采样足够密才不误判为合法换手。
 SAMPLE_SEC = 0.02
@@ -447,7 +449,7 @@ def _await_barrier(ready_file: str, timeout: float, monitor: "Monitor",
 
 def _barrier_diag(ready_file: str, dbfile: str, day: str, target_id: str,
                   sup_log: str = "", proc: "subprocess.Popen | None" = None,
-                  engine_log: str = "") -> dict:
+                  engine_log: str = "", instance_token: str = "") -> dict:
     """屏障不就绪时**当场取证**：两条前提各报事实，供一眼定位。
 
     就绪需要同时满足两件事，修法完全不同：
@@ -478,7 +480,8 @@ def _barrier_diag(ready_file: str, dbfile: str, day: str, target_id: str,
         diag["rows"] = {p: {"state": r["state"], "owner": r["owner"]} for p, r in rows.items()}
         diag["claimed_owners"] = sorted({r["owner"] for r in rows.values()
                                          if r["state"] == "claimed"})
-        diag["pids_for_target"] = find_child_pids(target_id)
+        diag["pids_for_target"] = find_child_pids(target_id,
+                                                  instance_token=instance_token or None)
     except Exception as e:                                  # 取证不许再抛
         diag["rows_error"] = "%s: %s" % (type(e).__name__, e)
     if sup_log and os.path.exists(sup_log):
@@ -556,13 +559,20 @@ def _mutation_applied(mutate: str, probe: dict) -> bool:
     return True
 
 
-def start_mock(tmp: str) -> tuple[subprocess.Popen, int]:
+def start_mock(tmp: str, delay_ms: float = 0.0) -> tuple[subprocess.Popen, int]:
+    """起假上游；`delay_ms` 透传 `--delay-ms`（每请求人工延迟）。
+
+    延迟旋钮的唯一用途是**让等待行为有载体**（工单 `6mru` 的引擎级负载用例）：
+    零延迟回环下，"令牌桶/通道/间隔"这些维度不会被真正触发，跑出来的墙钟也不能
+    当吞吐证据。默认 0 与既有调用完全一致。
+    """
     ready = os.path.join(tmp, "mock.ready")
-    log = os.path.join(tmp, "mock.jsonl")
-    proc = subprocess.Popen(
-        [sys.executable, MOCK, "--no-tls", "--port", "0", "--no-ipv6",
-         "--ready-file", ready, "--log", log],
-        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    log = protocol_fake.trace_path(tmp)
+    argv = [sys.executable, MOCK, "--no-tls", "--port", "0", "--no-ipv6",
+            "--ready-file", ready, "--log", log]
+    if delay_ms:
+        argv += ["--delay-ms", str(delay_ms)]
+    proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     deadline = time.time() + 30
     while time.time() < deadline:
         if os.path.exists(ready) and os.path.getsize(ready):
@@ -758,19 +768,40 @@ class Monitor:
                 if r["state"] == "claimed"]
 
 
-def find_child_pids(executor_id: str) -> list[int]:
-    """按 `/proc/<pid>/environ` 找持有该执行体身份的子进程（同 uid，无需 root）。"""
+#: 本次演练实例的唯一标记的环境变量名。`run_drill` 每次生成一个值并注入整棵
+#: 子进程树；pid 查找按它隔离，同机并发演练才不会互指对方的同名槽位。
+INSTANCE_TOKEN_ENV = "DRILL_INSTANCE_TOKEN"
+
+
+def find_child_pids(executor_id: str, proc_root: str = "/proc",
+                    instance_token: str | None = None) -> list[int]:
+    """按 `/proc/<pid>/environ` 找**本次演练**启动的执行体子进程（同 uid，无需 root）。
+
+    匹配两个完整的 env 条目：执行体身份（`YIBAN_EXECUTOR_ID=<executor_id>`）与
+    实例标记（`DRILL_INSTANCE_TOKEN=<token>`）。同机并发演练的执行体名相同
+    （`worker-0@<host>`），只按身份匹配会互杀对方的槽位 0（工单 wkx8）。
+
+    无 token（老进程 / 非本次演练）一律不命中：杀注入放空枪由持有闸门的硬上限
+    兜住，比误杀别人的 worker 安全。
+    """
+    token = instance_token
+    if token is None:
+        token = os.environ.get(INSTANCE_TOKEN_ENV, "")
+    if not token:
+        return []
     target = ("YIBAN_EXECUTOR_ID=" + executor_id).encode()
+    mark = (INSTANCE_TOKEN_ENV + "=" + token).encode()
     out = []
-    for path in glob.glob("/proc/[0-9]*/environ"):
+    for path in glob.glob(os.path.join(proc_root, "[0-9]*", "environ")):
         try:
             with open(path, "rb") as f:
                 blob = f.read()
         except OSError:
             continue
-        if target in blob.split(b"\x00"):
+        entries = blob.split(b"\x00")
+        if target in entries and mark in entries:
             with contextlib.suppress(ValueError):
-                out.append(int(path.split("/")[2]))
+                out.append(int(os.path.basename(os.path.dirname(path))))
     return out
 
 
@@ -812,7 +843,8 @@ def _wait_supervisor(proc: subprocess.Popen, monitor: Monitor, kill_plan: dict,
                                if r["state"] == "claimed"
                                and r["owner"].startswith(kill_plan["owner_prefix"])]
                 if target_rows:
-                    pids = find_child_pids(kill_plan["executor_id"])
+                    pids = find_child_pids(kill_plan["executor_id"],
+                                           instance_token=kill_plan["instance_token"])
                     if pids:
                         phone, row = target_rows[0]
                         os.kill(pids[0], signal.SIGKILL)
@@ -822,7 +854,8 @@ def _wait_supervisor(proc: subprocess.Popen, monitor: Monitor, kill_plan: dict,
                         kill_plan["killed_epoch"] = int(row["epoch"])
                         kill_plan["killed_owner"] = row["owner"]
             elif time.time() >= kill_plan["at"]:
-                pids = find_child_pids(kill_plan["executor_id"])
+                pids = find_child_pids(kill_plan["executor_id"],
+                                       instance_token=kill_plan["instance_token"])
                 if pids:
                     # 与 claim 形态同口径：记下此刻该执行体名下的在飞行（供收尸/旧代写断言）。
                     held = [(p, r) for p, r in _rows(monitor.dbfile, monitor.day).items()
@@ -907,11 +940,18 @@ def _max_shard(dbfile: str, day: str) -> int:
 def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
               slow: str = "", stale_write: bool = False, mutate: str = "",
               timeout_sec: float = 120, evidence_dir: str = "", tmp: str = "",
-              keep_tree: bool = False, recover: bool | None = None) -> dict:
+              keep_tree: bool = False, recover: bool | None = None,
+              mock_delay_ms: float = 0.0) -> dict:
     """跑一轮靶场演练，返回结果 dict（含两条不变式的判红明细与全部证据路径）。
 
     `recover`：杀注入后是否再跑一轮，验"被收尸的账号在下一轮被领走"（缺省：有杀注入时开）。
+
+    `mock_delay_ms`：假上游每请求人工延迟（毫秒）。供**引擎级一轮多账号用例**使用（工单
+    `6mru` 关闭条件 3）：零延迟回环下"令牌桶/通道/等待"不会被真正触发。该用例验的是
+    真实用户动作下的不变式，**不是性能压测**。`result["elapsed_sec"]` 是整轮（含造数、
+    拉起、执行、汇总）的墙钟，**口径是回环 ＋ 假上游 ＋ 固定延迟，不是生产吞吐**。
     """
+    t_start = time.time()
     own_tmp = not tmp
     tmp = tmp or tempfile.mkdtemp(prefix="drill-multi-exec-")
     manifest = make_manifest(executors)
@@ -920,9 +960,10 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
     env_snapshot = dict(os.environ)
     result: dict = {"executors": executors, "accounts": accounts, "mutate": mutate,
                     "kill_at": kill_at, "slow": slow, "stale_write": stale_write,
+                    "mock_delay_ms": mock_delay_ms,
                     "tmp": tmp, "started": now_dt().isoformat()}
     try:
-        mock_proc, port = start_mock(tmp)
+        mock_proc, port = start_mock(tmp, delay_ms=mock_delay_ms)
         info = seed(tmp, accounts, executors, manifest)
         day = info["day"]
         monitor = Monitor(info["dbfile"], day)
@@ -930,10 +971,13 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
 
         childenv = dict(os.environ)
         childenv.update(info["cfg_env"])
+        instance_token = secrets.token_hex(8)
         childenv.update({
             "YIBAN_EXECUTORS": manifest,
             "PYTHONPATH": shimdir + os.pathsep + REPO,
             "DRILL_MOCK_PORT": str(port),
+            # 本次演练的唯一标记：pid 查找只命中自己的子树（工单 wkx8）。
+            INSTANCE_TOKEN_ENV: instance_token,
         })
         if mutate in ("reap-off", "window-off"):
             # 这两条变异必须进整棵进程树：收尸在**监督进程**里发生（reap-off）；
@@ -976,8 +1020,9 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
             })
         if kill_at:
             kill_plan = {"armed": True, "executor_id": target_id,
-                         "owner_prefix": target_id + ":", "killed_pid": None,
-                         "killed_phone": None}
+                         "owner_prefix": target_id + ":",
+                         "instance_token": instance_token,
+                         "killed_pid": None, "killed_phone": None}
             if kill_at == "claim":
                 kill_plan["when"] = "claim"
             else:
@@ -1027,7 +1072,7 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
                 # stdout 上没有）。
                 result["barrier_diag"] = _barrier_diag(
                     hold_ready, info["dbfile"], day, target_id, sup_log, sup,
-                    engine_log=engine_log)
+                    engine_log=engine_log, instance_token=instance_token)
             result["barrier_phone"] = target_phone
 
         # ② 变异**哨兵**：先证明变异真的贴上了，再谈不变式红不红。claim-steal 的哨兵
@@ -1100,7 +1145,7 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
         result["final_rows"] = rows
         result["i2_ok"] = not result["i2_claimed_left"]
         result["i1_ok"] = not result["i1_violations"]
-        trace = mock_trace(os.path.join(tmp, "mock.jsonl"))
+        trace = mock_trace(protocol_fake.trace_path(tmp))
         result["mock_requests"] = len(trace)
         result["mock_signin_count"] = sum(
             1 for r in trace if r.get("path", "").endswith("/signIn"))
@@ -1118,6 +1163,9 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
         result["signin_excess"] = result["mock_signin_count"] - len(rows)
         result["terminal_or_pending"] = all(r["state"] in ("done", "skipped", "pending", "failed")
                                             for r in rows.values())
+        # 整轮墙钟（口径：回环 ＋ 假上游 ＋ 注入延迟；**不是**生产吞吐）。多账号用例据此
+        # 证明"注入的延迟真的进了请求路径"，不据此产出任何容量/带宽推荐值。
+        result["elapsed_sec"] = round(time.time() - t_start, 3)
 
         # 证据落盘
         if evidence_dir:
@@ -1125,9 +1173,9 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
             with open(os.path.join(evidence_dir, "monitor.jsonl"), "w", encoding="utf-8") as f:
                 for t in monitor.trace:
                     f.write(json.dumps(t, ensure_ascii=False) + "\n")
-            if os.path.exists(os.path.join(tmp, "mock.jsonl")):
-                shutil.copy(os.path.join(tmp, "mock.jsonl"),
-                            os.path.join(evidence_dir, "mock.jsonl"))
+            _trace = protocol_fake.trace_path(tmp)
+            if os.path.exists(_trace):
+                shutil.copy(_trace, os.path.join(evidence_dir, protocol_fake.TRACE_BASENAME))
             for name in os.listdir(os.path.join(info["state"])):
                 src = os.path.join(info["state"], name)
                 if os.path.isfile(src):

@@ -31,10 +31,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUN_SH = os.path.join(BASE, "run.sh")
 SETTINGS_API = os.path.join(BASE, "web", "routes", "settings_api.py")
+RUNNER_PY = os.path.join(BASE, "yiban", "app", "runner.py")
 
 from yiban import egress  # noqa: E402
 
@@ -261,6 +263,60 @@ class WorkersDomainNoSecondCopyTest(unittest.TestCase):
         self.assertIn("yb_egress.WORKERS_MAX", text)
         self.assertIsNone(re.search(r"load_env_int\([^)]*YIBAN_WORKERS", text),
                           "单槽位写接口的执行体数必须走 egress.legacy_worker_count")
+
+    def test_cli_uses_the_same_constants(self):
+        text = self._read(RUNNER_PY)
+        self.assertIn("egress.WORKERS_MIN", text, "CLI 必须复用同一对上下限")
+        self.assertIn("egress.WORKERS_MAX", text)
+        self.assertIsNone(re.search(r"1\s*<=\s*args\.workers\s*<=\s*64", text),
+                          "CLI 不得自己抄一份上下限")
+
+
+class WorkersDomainCliTest(unittest.TestCase):
+    """⑦：`--workers` 的合法域与 env/web 同源；越界是**拒启动**（使用者裁决 2026-10-20）。
+
+    语义：人手敲的 CLI 参数越界必须响亮失败（rc=2 / usage_engine），不像 env 那样
+    告警后回退单执行体——宿主 `run.sh` 已在传参前按同一域校验，cron 路径不会因此零签到。
+    """
+
+    def _main(self, argv, *, supervisor=None):
+        from yiban.app import runner
+        supervisor = supervisor or mock.Mock(return_value=7)
+        with mock.patch.object(runner.egress, "launch_slots", return_value=None), \
+             mock.patch.object(runner.workers, "run_worker_supervisor", supervisor), \
+             mock.patch.object(runner.account_crypto, "assert_key_sources_agree",
+                               return_value=None), \
+             mock.patch.object(runner, "_day_off_skip", return_value=None):
+            try:
+                return runner.main(argv), supervisor
+            except SystemExit as exc:
+                return exc, supervisor
+
+    def test_out_of_range_is_a_usage_error_and_dispatches_nothing(self):
+        for value in ("0", "-2", str(egress.WORKERS_MAX + 1), "999"):
+            with self.subTest(workers=value):
+                result, supervisor = self._main(["--workers", value])
+                self.assertIsInstance(result, SystemExit, f"--workers {value} 必须拒启动")
+                self.assertEqual(result.code, 2, "越界按用法错误（rc=2）退出")
+                supervisor.assert_not_called()
+
+    def test_in_range_still_dispatches(self):
+        result, supervisor = self._main(["--workers", "2"])
+        self.assertEqual(result, 7)
+        self.assertEqual(supervisor.call_args[0][0], 2)
+        self.assertIsNone(supervisor.call_args[1].get("slots"))
+
+    def test_domain_comes_from_the_single_constant(self):
+        """把 egress 的上下限改窄 ⇒ CLI 的判定跟着变（不是第二份数）。"""
+        from yiban.app import runner
+        with mock.patch.object(runner.egress, "WORKERS_MIN", 2), \
+             mock.patch.object(runner.egress, "WORKERS_MAX", 3):
+            result, supervisor = self._main(["--workers", "4"])
+            self.assertIsInstance(result, SystemExit, "4 超出改窄后的 2~3 必须拒启动")
+            self.assertEqual(result.code, 2)
+            supervisor.assert_not_called()
+            result, supervisor = self._main(["--workers", "3"])
+            self.assertEqual(result, 7, "3 仍在改窄后的域内，必须照常派发")
 
 
 if __name__ == "__main__":

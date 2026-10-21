@@ -19,10 +19,12 @@
 #   常驻，会让兜底开关、状态目录、日志目录读到另一份文件。
 #   YIBAN_FALLBACK_ENABLE —— 真值（1/true/on/yes，大小写不敏感）才起进程；
 #     未设/0/false —— 静默 exit 0（不写日志、不取锁、不启进程）
-#   **`.env` 优先，进程环境只补缺**（M27，与 run.sh / docker-compose / 引擎
+#   **非路径键：`.env` 优先，进程环境只补缺**（M27，与 run.sh / 引擎
 #   `build_child_env` 同一口径）：`.env` 里写了 `YIBAN_FALLBACK_ENABLE=0`，即便 cron
 #   行上写 `YIBAN_FALLBACK_ENABLE=1` 也不起进程。想临时绕过开关，去网页设置页改
 #   `.env`（或临时把 `.env` 那行挪掉），**不要**指望 cron 行里的前缀。
+#   **三个可配置路径键**（库文件 / 状态目录 / 日志文件）例外：进程环境优先、
+#   `.env` 只补缺（工单 71z7；与 `env_io.resolve_path` 同口径）。
 #   口径反转过一次（过去的头注释写「环境变量优先于 .env」，实现却也确实是那样），
 #   现已统一成 `.env` 优先：开关的事实源必须是网页写进 `.env` 的那份，否则会出现
 #   「页面显示关闭、cron 却天天拉起兜底」这种两处同时为真的状态。
@@ -37,7 +39,10 @@
 # 解释器：优先项目虚拟环境（与 run.sh 同一套解析），缺失时回退系统 python3。
 umask 077
 
-APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# 应用目录：唯一环境键 YIBAN_APP_DIR；未设时按本脚本所在检出反推
+# （`scripts/lib/host_paths.sh`，与 run.sh / run_probe.sh 同一算法）。
+. "$(dirname "${BASH_SOURCE[0]}")/lib/host_paths.sh"
+APP_DIR="$(yiban_app_dir)"
 
 # `.env` 指针唯一口径：一律 $APP_DIR/data/.env（工单 p12-13）。
 # 与 run.sh / run_probe.sh 同源；**不读 YIBAN_ENV_FILE**——旧写法让 cron 行前缀一次
@@ -48,11 +53,12 @@ ENV_PATH="$APP_DIR/data/.env"
 # 安全说明与 run.sh 同源：绝不能使用 `source`/`.` 加载 .env——网页可写公告等文本，
 # 若含 `; $(...)` 等 shell 元字符，source 会把文本当命令执行（命令注入）。
 # 这里只做 key=value 赋值导出，值不会再次被 shell 求值；且只导出 YIBAN_* 键。
-# 行为变更（2026-10-01，M27）：过去这里是「已在环境里设过的键不改」（环境变量优先），
-# 现与 run.sh / 容器调度器 / 引擎 `build_child_env` 统一为 `.env` 优先。
-# 谁受影响：cron 行上带 `YIBAN_FALLBACK_ENABLE=1` 前缀、而 `.env` 里是 0（或没写）的
-# 部署——改后这些部署**不再**起兜底进程。怎么回退：把 `.env` 里那一行删掉（键不存在
-# ⇒ 进程环境补缺 ⇒ 前缀重新生效），或在 cron 行上显式 `env -u YIBAN_FALLBACK_ENABLE`。
+# 行为变更（2026-10-20，工单 71z7 裁定）：非路径键仍是 `.env` 优先（M27）；
+# **三个可配置路径键**改成进程环境优先、`.env` 只补缺（与 `env_io.resolve_path` /
+# `scripts/child_env.build_child_env` 同口径）。`YIBAN_ENV_FILE` 是指针，固定
+# `$APP_DIR/data/.env`（p12-13），不参与 .env 覆盖。
+# 谁受影响：cron 行上带 `YIBAN_STATE_DIR=…` / `YIBAN_LOG_FILE=…` 前缀、而 `.env`
+# 里是另一个值的部署——改后**进程环境值生效**（此前被 `.env` 顶掉）。
 # 不打印任何告警：本脚本默认（开关关闭）每 5 分钟跑一次，向 stderr 输出会在 cron 下
 # 变成周期性邮件噪声；非 YIBAN_ 键或非法键名一律**静默跳过**。
 if [ -r "$ENV_PATH" ]; then
@@ -69,10 +75,21 @@ if [ -r "$ENV_PATH" ]; then
         [ -z "$key" ] && continue
         case "$key" in \#*) continue ;; esac
         [[ "$key" =~ ^YIBAN_ && "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-        # `.env` 优先：无条件覆盖。进程环境只在 `.env` **没有这个键**时补缺。
+        # 三个可配置路径键的优先级例外（工单 71z7，与 env_io.resolve_path / child_env 同口径）：
+        # 进程环境已有非空值时，.env 只补缺。环境文件指针固定 $APP_DIR/data/.env
+        # （p12-13），不参与 .env 覆盖。
+        case "$key" in
+            YIBAN_DB_FILE|YIBAN_STATE_DIR|YIBAN_LOG_FILE)
+                [ -n "${!key:-}" ] && continue
+                ;;
+        esac
+        # 其余键：`.env` 优先（M27），进程环境只在 `.env` **没有这个键**时补缺。
         export "$key=$value"
     done < "$ENV_PATH"
 fi
+
+# 指针与 run.sh 同源：子进程不得与脚本读到另一份配置（p12-13）。
+export YIBAN_ENV_FILE="$ENV_PATH"
 
 # 真值判定。字面量口径的**单一事实源**在 yiban/adapters/config/env_io.py 的
 # ENV_TRUTHY_LITERALS（Python 侧 parse_env_flag 用它）；bash 无法 import，此处逐字
@@ -112,24 +129,7 @@ else
     exit 1
 fi
 
-business_day() {
-    # 只信任形如 YYYY-MM-DD 的输出：解释器在但打印为空/异常时（venv 损坏、版本不匹配）
-    # 必须退到下一级——否则按天文件名会变成 `sign-.log` / `yiban-.tar.gz` 这种静默错位。
-    local _d _tz
-    _d="$("$PY" -c "import sys; sys.path.insert(0, sys.argv[1]); from yiban.core.clock import today as t; print(t())" "$APP_DIR" 2>/dev/null)"
-    case "$_d" in
-        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) echo "$_d"; return 0 ;;
-    esac
-    # 二级降级的判据是「TZ 真的生效」，不是 date 的退出码：宿主缺 tzdata 时
-    # GNU date 对未知时区按 UTC 处理并返回 0，旧写法让第三级永远不可达。
-    _tz="$(TZ=Asia/Shanghai date +%z 2>/dev/null || true)"
-    if [ "$_tz" = "+0800" ]; then
-        TZ=Asia/Shanghai date +%F
-        return 0
-    fi
-    echo "[$(date '+%F %T')] 警告：宿主缺 tzdata，TZ=Asia/Shanghai 不生效（date +%z=${_tz:-空}），业务日退回宿主 date——可能与引擎业务日差一天" >&2
-    date +%F
-}
+# 业务日与按天日志名来自 `scripts/lib/host_paths.sh`（宿主脚本唯一 bash 定义点）。
 STATE_DIR="${YIBAN_STATE_DIR:-/var/log/yiban}"
 mkdir -p "$STATE_DIR" 2>/dev/null || true
 # M07：状态目录属主 + 700 硬检查（与 run.sh 同一判据）——已存在目录同样校验：
@@ -138,8 +138,7 @@ if ! { [ -O "$STATE_DIR" ] && chmod 700 "$STATE_DIR" 2>/dev/null; }; then
     echo "致命: 状态目录 $STATE_DIR 不安全（非本用户属主或权限收紧失败），拒绝启动兜底执行体" >&2
     exit 1
 fi
-LOG_FILE="${YIBAN_LOG_FILE:-$STATE_DIR/sign.log}"
-LOG_FILE="$(dirname "$LOG_FILE")/sign-$(business_day).log"
+LOG_FILE="$(yiban_day_log_file "$STATE_DIR")"
 
 # 窗口关闭时引擎自己退出，故无需额外 timeout；本行之后进程被 exec 替换
 exec "$PY" -m yiban.entry.cli sign --fallback >> "$LOG_FILE" 2>&1

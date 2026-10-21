@@ -367,6 +367,10 @@ def _reap_dead_worker(slot):
 #: （执行体清单 = HRW 分片名册 + 存活豁免/死主接管名单）由 `planner_config` 补读。
 #: 这两个增量键尤其重要：兜底是唯一跨越整个窗口的执行体，管理员的运行期降速/摘出口/
 #: 改执行体清单必须对它生效，否则唯一的"第一手处置"要重启才生效。
+#:
+#: `YIBAN_MAIL_USER_FAIL_DAILY_CAP` 同属 hot 档（配置名册 `reload: hot`）：兜底在窗口内
+#: 会发用户失败提醒，额度必须随 .env 即时生效（工单 ba-p04-07）。读取点已改为每次调用
+#: 重读环境；若本名单漏掉该键，常驻进程的 `os.environ` 仍是启动快照，读时取也读不到新值。
 _ENV_RELOAD_KEYS = frozenset({
     "YIBAN_SIGN_START", "YIBAN_SIGN_END",
     "YIBAN_SIGN_MODE", "YIBAN_SIGN_ORDER", "YIBAN_SIGN_DIST",
@@ -380,6 +384,7 @@ _ENV_RELOAD_KEYS = frozenset({
     "YIBAN_SCHEDULE_SIGMA_MIN_PCT", "YIBAN_SCHEDULE_SIGMA_MAX_PCT",
     "YIBAN_BLOCK_CAP", "YIBAN_ALLOW_TIME_PREF",
     "YIBAN_EGRESS_RATE", "YIBAN_EXECUTORS",
+    "YIBAN_MAIL_USER_FAIL_DAILY_CAP",
 })
 
 
