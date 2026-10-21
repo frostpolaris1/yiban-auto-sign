@@ -21,9 +21,7 @@ import shutil
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta
-from types import SimpleNamespace
-from unittest import mock
+from datetime import datetime
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "scripts"))
@@ -76,49 +74,6 @@ class _Base(unittest.TestCase):
             if os.path.exists(path):
                 os.remove(path)
         db.init_db(os.environ["YIBAN_DB_FILE"], env_file=self.env_file, cleanup=False)
-
-    def _acc(self, phone):
-        return SimpleNamespace(phone=phone, user_paused=False, owner="", account_id=0,
-                               password="p")
-
-    @staticmethod
-    def _frozen_clock():
-        """把业务时钟固定在 FIXED_NOW（窗口判定、当日、租约判据都因此确定）。
-
-        预置领取行与跑队列**必须用同一个时钟**：租约判据是拿"当前时间"与行上的心跳
-        比大小，一边用真实时间、一边用冻结时间就会得出"租约还没到期"（或反之）的
-        错误结论——这个陷阱我在此处踩过一次。
-        """
-        class _FakeDT(datetime):
-            @classmethod
-            def now(cls, tz=None):
-                return FIXED_NOW
-
-        return mock.patch.object(signin.clock, "now", _FakeDT.now)
-
-    def _run(self, phone, result, *, reclaim=False, executor="", schedule=True,
-             retry_failed=False):
-        """跑一轮单账号队列，返回 (results, 实际发起尝试的账号, 状态写入记录)。"""
-        calls = []
-        states = []
-
-        def fake_attempt(_acc):
-            calls.append(_acc.phone) # 只记号不记结果：断言的是「这一轮真的发了尝试」，重试次数也因此暴露
-            return result
-
-        with mock.patch.dict(os.environ, {"YIBAN_EXECUTOR_ID": executor} if executor else {},
-                             clear=False), \
-                self._frozen_clock(), \
-                mock.patch.object(signin, "attempt_signin", side_effect=fake_attempt), \
-                mock.patch.object(signin, "_write_sign_state",
-                                  side_effect=lambda p, st, msg, **kw: states.append((p, st))), \
-                mock.patch.object(signin.time, "sleep"):
-            sched = {phone: FIXED_NOW - timedelta(seconds=5)} if schedule else None # 落点设在「已过点」以跳过等待；schedule=None 走的是无计划的动态领取分支
-            # sleep 与写盘都在上面的 with 里打桩：过点账号仍会走间隔等待，不打桩就真睡
-            results = signin.run_queue_retry([self._acc(phone)], None, 0, 0,
-                                             schedule=sched, cred_state={},
-                                             reclaim=reclaim, retry_failed=retry_failed)
-        return results, calls, states
 
 
 class PlanMustNotClobberResultTest(_Base):

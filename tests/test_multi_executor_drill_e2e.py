@@ -51,6 +51,7 @@ sys.path.insert(0, os.path.join(BASE, "scripts"))
 import drill_multi_exec as drill  # noqa: E402
 
 from yiban import egress  # noqa: E402
+from yiban.adapters import protocol_fake  # noqa: E402
 from yiban.core import hrw  # noqa: E402
 
 _POSIX = (os.name == "posix"
@@ -387,6 +388,61 @@ class FindChildPidsInstanceIsolationTest(unittest.TestCase):
         self.assertEqual(
             drill.find_child_pids(self.EID, proc_root=self.root,
                                   instance_token="drill-a"), [])
+
+
+@unittest.skipUnless(_POSIX, "真监督进程与执行体子进程仅 POSIX 可用")
+class EngineRoundMultiAccountE2ETest(unittest.TestCase):
+    """引擎级一轮多账号：N 个账号走**真**执行体（`executor_v3`），假上游注入人工延迟。
+
+    标签：B · 调度：领取/队列/执行体
+    **本用例补的缺口（工单 `6mru` 关闭条件 3）**：套件此前没有"多账号过 executor_v3
+    （asyncio 通道 ＋ 令牌桶 ＋ 领取 ＋ 结算）跑一轮"的用例。它验的是**真实用户动作下的
+    不变式**（每个账号一轮内恰好一次真登录、全部了结、无并发双持有），**不是性能压测**：
+    不产出吞吐/容量数字，也不把墙钟当判据（`elapsed_sec` 只记录"延迟真的进了请求路径"）。
+
+    **口径**：假上游是回环 ＋ 人工延迟，与生产网络无关；本用例的任何时间读数
+    **不得**写成生产吞吐或容量推荐值。
+
+    **不是编舞**：断言只钉"全部了结 / 无超额登录 / 延迟在路径上"三条性质，不钉请求
+    顺序或调度落点。
+    """
+
+    #: 账号数：足够形成"一批"（>1），又让 1 req/s 的出口桶把墙钟控制在十秒量级。
+    ACCOUNTS = 8
+    #: 每请求人工延迟（毫秒）。取值要显著大于计时粒度，又能被 `dur_ms` 逐请求核对。
+    DELAY_MS = 20.0
+
+    def test_one_engine_round_over_n_accounts_with_delay(self):
+        res = drill.run_drill(executors=1, accounts=self.ACCOUNTS,
+                              mock_delay_ms=self.DELAY_MS, timeout_sec=300,
+                              keep_tree=True)
+        # 留下现场只为读 `mock.jsonl` 的逐请求 `dur_ms`；用例结束必须清掉（不能把
+        # 证据目录变成工作树垃圾——工单 `qg8f` 的不变式同样约束测试自己）。
+        self.addCleanup(shutil.rmtree, res["tmp"], True)
+        diag = ("executors=1 accounts=%s signin=%s done=%s elapsed=%ss"
+                % (self.ACCOUNTS, res.get("mock_signin_count"), res.get("done_count"),
+                   res.get("elapsed_sec")))
+        # ① 确实发生过：不先钉这一条，"全了结"在空跑时也天然成立。
+        self.assertFalse(res.get("timed_out"), "引擎一轮未在预算内结束：" + diag)
+        self.assertEqual(res.get("done_count"), self.ACCOUNTS,
+                         "N 个账号必须全部签成：" + diag)
+        self.assertEqual(res.get("mock_signin_count"), self.ACCOUNTS,
+                         "每账号恰好一次真登录：" + diag)
+        self.assertLessEqual(res.get("signin_excess", 1), 0,
+                             "不得出现重复真登录：" + diag)
+        self.assertTrue(res.get("i1_ok"), "无并发双持有：%s" % res.get("i1_violations"))
+        self.assertTrue(res.get("i2_ok"), "无残留 claimed：%s" % res.get("i2_claimed_left"))
+
+        # ② 延迟真的进了请求路径：假上游逐请求记的 `dur_ms` 就是注入值。
+        trace = drill.mock_trace(protocol_fake.trace_path(res["tmp"]))
+        self.assertTrue(trace, "假上游没有记录任何请求：" + diag)
+        delayed = [float(r.get("dur_ms") or 0) for r in trace]
+        self.assertGreaterEqual(
+            min(delayed), self.DELAY_MS * 0.99,
+            "有请求没走注入延迟 ⇒ '等待行为'这一维没被触发（口径：逐请求 dur_ms）："
+            "min=%s n=%d" % (min(delayed), len(delayed)))
+        # ③ 墙钟字段存在且只作记录（**不**据此断言吞吐；它不是生产口径）。
+        self.assertGreater(res.get("elapsed_sec", 0), 0, "整轮墙钟必须可读：" + diag)
 
 
 if __name__ == "__main__":
