@@ -12,7 +12,7 @@ APP_DIR="$(yiban_app_dir)"
 cd "$APP_DIR" || { echo "致命: 无法进入应用目录 $APP_DIR" >&2; exit 1; }
 
 # 加载环境变量（安全逐行解析，仅导出 YIBAN_* 前缀键；与 run.sh 一致，绝不用 source）
-# 优先级：非路径键 `.env` 优先（M27）；四个路径键进程环境优先、`.env` 只补缺
+# 优先级：非路径键 `.env` 优先（M27）；三个可配置路径键进程环境优先、`.env` 只补缺
 # （工单 71z7，与 `env_io.resolve_path` / `child_env.build_child_env` 同口径）。
 # .env 在检出内的 data/ 下（工单 ybg8）：运行数据与代码分离，检出根才能属 root
 # 且组/其他不可写（install.sh 的 M01 门）。data/ 由 install.sh 建立。
@@ -42,7 +42,7 @@ if [ -r "$_ENV_PATH" ]; then
 '
             continue
         fi
-        # 四个路径键的优先级例外（工单 71z7，与 env_io.resolve_path / child_env 同口径）：
+        # 三个可配置路径键的优先级例外（工单 71z7，与 env_io.resolve_path / child_env 同口径）：
         # 进程环境已有非空值时，.env 只补缺。环境文件指针固定 $APP_DIR/data/.env
         # （p12-13），不参与 .env 覆盖。
         case "$key" in

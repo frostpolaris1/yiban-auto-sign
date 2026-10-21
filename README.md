@@ -670,9 +670,12 @@ YIBAN_ACCOUNTS = 13800138000:your_password
 > **优先级口径（工单 71z7，2026-10-20 裁定）**：
 > - **非路径键：`.env` 优先，进程环境只补缺**（M27）。`run.sh` / `run_probe.sh` /
 >   `scripts/yiban-fallback.sh` / 容器调度器 / 引擎 `build_child_env` 一律按这一条判。
-> - **四个路径键例外：进程环境优先，`.env` 只补缺**——`YIBAN_ENV_FILE` /
+> - **三个可配置路径键例外：进程环境优先，`.env` 只补缺**——
 >   `YIBAN_DB_FILE` / `YIBAN_STATE_DIR` / `YIBAN_LOG_FILE`（与 `env_io.resolve_path`
 >   同口径）。测试/CI 用进程环境重定向数据目录时，不被 `.env` 里的旧路径拉回。
+>   `YIBAN_ENV_FILE` **不在此列**：它是指针，Python 入口只读进程环境（`.env` 里写它
+>   一律忽略，否则"读哪份配置"会自指）；三个 bash 入口（`run.sh` / `run_probe.sh` /
+>   `yiban-fallback.sh`）固定 `$APP_DIR/data/.env`，因为它们必须在 venv 损坏时也能定位。
 > 于是：
 > - **非路径键**：docker-compose 的 `environment:` 注入会被 `/data/.env` 的同名键覆盖；
 >   cron / systemd 行上的 `YIBAN_XXX=v` 前缀同样会被 `.env` 覆盖。
@@ -814,7 +817,7 @@ YIBAN_MAIL_ADMIN_TO=管理员收件邮箱@qq.com  # 逗号分隔支持多个
 
 > ⚠️ `YIBAN_MAIL_PASS` 是**授权码**而非邮箱登录密码；属敏感凭据，只写入服务器本地 `.env`（已被 `.gitignore` 排除）。不配置邮箱通知时，Webhook 通知不受任何影响。
 
-> ❄️ 「保存即时生效」的前提（0.5.1 起的统一口径）：**非路径配置以 `.env` 优先，进程环境只补缺**——网页里保存的新值总会赢，环境变量里同名旧键被 `.env` 覆盖。四个路径键（`YIBAN_ENV_FILE` / `YIBAN_DB_FILE` / `YIBAN_STATE_DIR` / `YIBAN_LOG_FILE`）例外：进程环境优先。另有一个例外是 `YIBAN_ACCOUNTS_KEY`（账号密钥历来环境变量档优先，且与 `.env` 同键分叉时拒绝启动）。因此 systemd 部署把整份 `.env` 拷成 `EnvironmentFile`（历史装法）对非路径键虽不再压住新值，但仍属多余且易漂移——EnvironmentFile 按「网页管理后台」装法只放 `YIBAN_ACCOUNTS_KEY` 一行即可。
+> ❄️ 「保存即时生效」的前提（0.5.1 起的统一口径）：**非路径配置以 `.env` 优先，进程环境只补缺**——网页里保存的新值总会赢，环境变量里同名旧键被 `.env` 覆盖。三个可配置路径键（`YIBAN_DB_FILE` / `YIBAN_STATE_DIR` / `YIBAN_LOG_FILE`）例外：进程环境优先。另有一个例外是 `YIBAN_ACCOUNTS_KEY`（账号密钥历来环境变量档优先，且与 `.env` 同键分叉时拒绝启动）。因此 systemd 部署把整份 `.env` 拷成 `EnvironmentFile`（历史装法）对非路径键虽不再压住新值，但仍属多余且易漂移——EnvironmentFile 按「网页管理后台」装法只放 `YIBAN_ACCOUNTS_KEY` 一行即可。
 
 </details>
 
@@ -917,7 +920,7 @@ EOF
 #     install -m 0640 -o root -g yiban /tmp/yiban-accounts-key /etc/yiban/accounts-key \
 #     && rm -f /tmp/yiban-accounts-key                         # 模板的 EnvironmentFile：只放启动密钥这一行
 #   ⚠️ 不要把整份 .env 拷成 EnvironmentFile：非路径键的读序是 .env 优先、
-#   进程环境只补缺；四个路径键（ENV_FILE/DB_FILE/STATE_DIR/LOG_FILE）反过来
+#   进程环境只补缺；三个可配置路径键（DB_FILE/STATE_DIR/LOG_FILE）反过来
 #   （进程环境优先）。另 YIBAN_ACCOUNTS_KEY 仍是环境变量档优先。整份拷贝
 #   虽不再压住「系统设置」页的新值，但会把启动时刻的旧值留成第二份来源、随 .env
 #   漂移。模板只放上面这一行；旧部署若已整份拷贝，收窄成只含这一行即可。
@@ -1150,7 +1153,7 @@ YIBAN_FALLBACK_ENABLE=1
 
 包装脚本 `scripts/yiban-fallback.sh` 自己读 `.env`（开关关掉时**静默退出**，不会每 5 分钟发一封 cron 邮件），并把日志并到当天的 `sign-YYYY-MM-DD.log`。它是常驻的，**不需要** timeout 包裹；与 `run.sh` 并存是安全的（各自持独立锁文件，分工交给领取池）。cron 模板与细节见该脚本头部注释。
 
-> **cron 行上不要再写 `YIBAN_FALLBACK_ENABLE=1` 前缀（M27 口径变更，2026-10-01）**：非路径键统一为「**`.env` 优先，进程环境只补缺**」——`.env` 里写了 `YIBAN_FALLBACK_ENABLE=0` 时，cron 行上的 `=1` 不再能把它顶开（过去可以）。受影响的是"靠 cron 前缀临时绕过开关"的部署：**开关的真值源只有 `.env`**（网页设置页写的也是它）。想临时改开关就改 `.env`；确实需要在命令行临时覆盖的场景，`env -u` 去掉这个键即可让 `.env` 补进来。同步说明：`run.sh` 对非路径键同样 `.env` 优先；**四个路径键例外**（`YIBAN_ENV_FILE` / `YIBAN_DB_FILE` / `YIBAN_STATE_DIR` / `YIBAN_LOG_FILE`），cron/systemd 行上的同名值优先、`.env` 只补缺（工单 71z7，2026-10-20）。
+> **cron 行上不要再写 `YIBAN_FALLBACK_ENABLE=1` 前缀（M27 口径变更，2026-10-01）**：非路径键统一为「**`.env` 优先，进程环境只补缺**」——`.env` 里写了 `YIBAN_FALLBACK_ENABLE=0` 时，cron 行上的 `=1` 不再能把它顶开（过去可以）。受影响的是"靠 cron 前缀临时绕过开关"的部署：**开关的真值源只有 `.env`**（网页设置页写的也是它）。想临时改开关就改 `.env`；确实需要在命令行临时覆盖的场景，`env -u` 去掉这个键即可让 `.env` 补进来。同步说明：`run.sh` 对非路径键同样 `.env` 优先；**三个可配置路径键例外**（`YIBAN_DB_FILE` / `YIBAN_STATE_DIR` / `YIBAN_LOG_FILE`），cron/systemd 行上的同名值优先、`.env` 只补缺（工单 71z7，2026-10-20）。
 
 > 上面说的是**服务器（裸机/systemd）部署**。容器部署**不需要**加这条 cron——容器调度器自己在**有效签到窗口内**按同一个 `YIBAN_FALLBACK_ENABLE` 拉起兜底执行体、窗口结束由进程自行退出（判据与口径同一份，见 `docs/dev/scheduler-v3.md` 与 `docs/dev/README.md`）。
 
