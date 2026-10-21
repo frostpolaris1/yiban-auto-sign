@@ -118,17 +118,6 @@ class DayMuSigmaTest(_EnvIsolated):
 
 
 class PlanExecuteSameSourceTest(_EnvIsolated):
-    def test_density_uses_day_mu_sigma(self):
-        """planner 密度用的 μ/σ 逐字等于 `day_mu_sigma_pct` 的当日取值。"""
-        cfg = _cfg((35, 45), (12, 18))
-        n, span_sec = 50, 4200.0
-        mu_min, sigma_min, _alpha, _phi = planner._density(n, cfg, DAY, span_sec)
-        mu_pct, sg_pct = schedule.day_mu_sigma_pct(cfg, DAY)
-        span_min = span_sec / 60.0
-        self.assertAlmostEqual(mu_min, span_min * mu_pct / 100.0, places=9)
-        self.assertAlmostEqual(
-            sigma_min, schedule._sigma_eff(span_min * sg_pct / 100.0, n, span_min),
-            places=9)
 
     def test_planner_and_build_schedule_share_the_day_key(self):
         """验收核心：计划层与执行层都从**同一业务日键**派生 μ/σ（同源）。

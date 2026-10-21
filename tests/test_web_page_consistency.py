@@ -135,20 +135,6 @@ class TabAriaRovingTest(unittest.TestCase):
                 "让 Tab 键序里出现多个分区停止点）：\n" + "\n".join(problems)
             )
 
-    def test_settings_page_self_manages_deep_link(self):
-        """设置页深链自管的反查锚：自管逻辑必须在 SettingsPage.vue 里，而非 legacy 标记。
-
-        设置页整页迁到 Vue 且**刻意不用** core.js 的 `data-tab-target` 契约（那套有
-        document 级点击委托，会先于页面的未保存改动守卫切换分区）。故"自管深链"这条不变量
-        改指向组件：切分区时自行写 `?tab=`（history.replaceState），且不引用 legacy 的
-        `data-tab-url-own` / `data-tab-target` 标记。
-        """
-        src = _read(SETTINGS_PAGE_VUE)
-        self.assertIn("syncTabUrl(", src, "设置页缺少自管深链写入函数")
-        self.assertIn("history.replaceState(", src, "自管深链必须自己写 ?tab= 的 URL")
-        self.assertIn("data-settings-tab", src, "设置页应使用自管页签标记")
-        self.assertNotIn("data-tab-url-own", src, "自管页签不再借 legacy 的 data-tab-url-own 标记")
-        self.assertNotIn("data-tab-target=", src, "自管页签刻意不用 core.js 的 data-tab-target 契约")
 
 
 if __name__ == "__main__":

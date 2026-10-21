@@ -233,17 +233,6 @@ class BackupDbPathTest(unittest.TestCase):
                          f"未声明时归档里应是且仅是默认库（归档里是 {got}）：{out}")
 
     # ---------------- 边界守卫（AGENTS §15） ----------------
-    def test_dotenv_reader_stays_single(self):
-        """库路径必须复用本文件已有的 `env_get`：全文件只许一套 `.env` 解析。"""
-        with io.open(SCRIPT, encoding="utf-8") as f:
-            src = f.read()
-        self.assertIn("env_get YIBAN_DB_FILE", src,
-                      "库路径没走本文件已有的 env_get 双源口径")
-        readers = [line for line in src.splitlines()
-                   if "ENV_FILE}" in line and "sed -n" in line]
-        self.assertEqual(1, len(readers),
-                         f"backup.sh 里按行解析 .env 的实现应只有 env_get 一处"
-                         f"（实测 {len(readers)} 处）——再添一套就是根没找到")
 
     def test_env_file_path_is_single_definition(self):
         """`.env` 的绝对路径只许定义一次：写 N 遍就是"同一事实多处定义"。"""

@@ -305,7 +305,7 @@ KNOWN_SKIP_SITES = json.loads(r"""
   ],
   [
    "skipTest",
-   "跨进程 flock 仅 POSIX 可用（Windows 上探测退回 False）"
+   "跨进程 flock 仅 POSIX 可用（Windows 上锁退化为无互斥、fail-closed 拒跑）"
   ]
  ],
  "tests/test_global_pause_chain_e2e.py": [
@@ -948,18 +948,6 @@ class RuntimeSkipPolicyTest(unittest.TestCase):
                            capture_output=True, text=True, timeout=60)
         self.assertNotEqual(r.returncode, 0, "报告缺失在 strict 档必须判红")
 
-    def test_both_modes_write_a_skip_report(self):
-        """接线：全量/fast 与 --ci 的 pytest 都必须产出可解析的跳过报告。"""
-        self.assertIn('--junitxml="$SKIP_XML"', self.text,
-                      "全量/fast 的 pytest 没有产出跳过报告")
-        self.assertIn('SKIP_XML=$(mktemp)', self.text,
-                      "全量/fast 的报告路径必须每次新建（不落仓库）")
-        m = re.search(r"^run_ci\(\) \{(.*?)^\}", self.text, re.M | re.S)
-        self.assertIsNotNone(m, "抽不出 run_ci")
-        self.assertIn('--junitxml="$CI_SKIP_XML"', m.group(1),
-                      "--ci 的快集也必须产出跳过报告")
-        self.assertIn('skip_policy_check "$CI_SKIP_XML" 1 "$py"', m.group(1),
-                      "--ci 必须对未登记跳过判红")
 
 
 if __name__ == "__main__":

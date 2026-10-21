@@ -467,7 +467,6 @@ run_ci() { # CI 关键子集：就地跑，不建副本；命令逐字冻结在 
 FAST_KNOWN_SLOW=(
     "tests/test_audit_transaction.py::CliExitCodeTest::test_locked_db_exit_two_not_tampered"
     "tests/test_shared_facts_gate.py::SharedFactsGateLiveTest::test_current_repo_tree_is_green"
-    "tests/test_shared_facts_gate.py::SharedFactsNewFamilyCoverageTest::test_gate_is_silent_when_a_registered_key_is_dropped"
     "tests/test_shared_facts_gate.py::SharedFactsNewFamilyCoverageTest::test_cap_equals_measured_hit_count_for_both_new_families"
     "tests/test_path_env_read_gate.py::GateNoDoubleCountTest::test_routed_key_is_counted_by_exactly_one_engine"
 )

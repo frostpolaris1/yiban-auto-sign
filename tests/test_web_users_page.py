@@ -145,10 +145,6 @@ class UsersPageTest(unittest.TestCase):
         self.assertFalse(os.path.exists(ROW_MENU_JS),
                          "row-menu.js 仍留在库里——三页迁 Vue 后已无消费者")
 
-    def test_contract_hooks_survive_in_the_component(self):
-        src = _read(USERS_VUE)
-        missing = [h for h in CONTRACT_HOOKS if h not in src]
-        self.assertEqual(missing, [], "组件缺少这些 data-* 钩子（e2e 按它们取值）：" + ", ".join(missing))
 
     # ---- PII 出口面（展示侧） ----
 

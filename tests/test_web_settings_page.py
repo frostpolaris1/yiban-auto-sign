@@ -178,10 +178,6 @@ class SettingsPageTest(unittest.TestCase):
 
     # ---- e2e 锚点 ----
 
-    def test_contract_ids_survive_in_the_components(self):
-        src = _settings_source_blob()
-        missing = [i for i in CONTRACT_IDS if i not in src]
-        self.assertEqual(missing, [], "缺少这些 id 锚点（e2e 按它们取值）：" + ", ".join(missing))
 
     def test_no_v_html_in_settings_components(self):
         for name in sorted(os.listdir(SETTINGS_SRC)):

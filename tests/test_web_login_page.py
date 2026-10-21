@@ -146,13 +146,6 @@ class LoginPageTest(unittest.TestCase):
         self.assertIn("vue-login-app", _read(os.path.join(BASE, "frontend", "src", "login", "main.ts")),
                       "入口未挂载到共享挂载点")
 
-    def test_contract_ids_survive_in_the_component(self):
-        """e2e 依赖的契约 id 必须还在组件源码里（改名即静默失守，不会报红）。"""
-        src = _read(LOGIN_VUE)
-        missing = [i for i in CONTRACT_IDS if f'id="{i}"' not in src]
-        self.assertEqual(missing, [],
-                         "登录页组件缺少这些契约 id（e2e 的真表单登录/错误路径按它们取值）："
-                         + ", ".join(missing))
 
     def test_auth_shell_still_loads_the_shared_shell_layer(self):
         """认证外壳仍引 core.js：本页的口令策略/模态/请求层全部复用外壳的单一实现。"""

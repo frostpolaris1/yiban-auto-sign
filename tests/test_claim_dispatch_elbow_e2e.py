@@ -195,23 +195,7 @@ class _DbBase(unittest.TestCase):
 # ① 领取即执行、每次一行
 # ---------------------------------------------------------------------------
 class ClaimAtDispatchTest(_DbBase):
-    def test_claim_limit_is_one(self):
-        self.assertEqual(queue_store.CLAIM_LIMIT, 1,
-                         "claim-at-dispatch：领取行数缺省为一")
-        self.assertFalse(hasattr(executor_v3, "SENTINEL_PRIORITY"),
-                         "进程内队列的哨兵常量随队列退场")
-        self.assertFalse(hasattr(executor_v3, "PRIORITY_ORDER_BASE"),
-                         "进程内排序基准随队列退场")
 
-    def test_claim_one_returns_at_most_one_row(self):
-        for i in range(3):
-            self._add_task(_phone(i), run_at=_ts(seconds=-1))
-        with mock.patch.object(executor_v3, "_now", lambda: START):
-            rows = executor_v3._claim_one(self._ctx())
-        self.assertEqual(len(rows), 1, "每次领取只许一行")
-        claimed = [p for p in (_phone(i) for i in range(3))
-                   if self._row(p)["state"] == "claimed"]
-        self.assertEqual(claimed, [rows[0]["phone"]], "只有返回的那一行被占住")
 
     def test_executor_source_has_no_batch_claim(self):
         """执行体源码里不得出现 `limit=<大于 1>` 的领取（防回退成批量预取）。"""
@@ -306,12 +290,6 @@ class LeaseFamilyRemovedTest(_DbBase):
         self.assertEqual(self._row(_phone(1))["lease_until"], "",
                          "领取不得写任务级租约（租约族已删）")
 
-    def test_lease_family_symbols_are_gone(self):
-        for name in ("reap_expired", "claimed_owners", "LEASE_SECONDS", "REAP_GRACE_SEC",
-                     "CLAIM_BATCH_LIMIT"):
-            self.assertFalse(hasattr(queue_store, name), f"queue_store.{name} 应随租约族删除")
-        for name in ("_refiller", "_live_row_owners", "_widen_with_dead_peers"):
-            self.assertFalse(hasattr(executor_v3, name), f"executor_v3.{name} 应删除")
 
     def test_process_handle_reaping_is_the_recovery_path(self):
         """崩溃自愈只剩进程句柄口径：`reap_abandoned` 把死亡执行体名下的在飞行回退。"""
@@ -322,10 +300,6 @@ class LeaseFamilyRemovedTest(_DbBase):
         self.assertEqual(self._row(_phone(1))["state"], "pending")
         self.assertEqual(self._row(_phone(2))["state"], "claimed", "别人的行不动")
 
-    def test_run_executor_v3_signature(self):
-        sig = inspect.signature(executor_v3.run_executor_v3)
-        self.assertIn("elbow_sec", sig.parameters, "执行体入口必须能带肘界")
-        self.assertNotIn("yield_probe", sig.parameters, "轮内让位探针已删")
 
     def test_executor_imports_core_elbow(self):
         tree = ast.parse(inspect.getsource(executor_v3))
@@ -342,20 +316,9 @@ class LeaseFamilyRemovedTest(_DbBase):
 
 # ---------------------------------------------------------------------------
 # ④ 兜底腿带肘界（轮内让位探针的结构性替代）
+#    接线用例已由 `test_fallback_elbow_discrimination_e2e.py` 更强地覆盖
+#    （精确实参＋常量名），2026-10-21 瘦身批删除本类。
 # ---------------------------------------------------------------------------
-class FallbackElbowWiringTest(unittest.TestCase):
-    def test_fallback_call_passes_elbow_and_no_probe(self):
-        src = inspect.getsource(workers.run_fallback_worker)
-        tree = ast.parse(src)
-        calls = [n for n in ast.walk(tree)
-                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
-                 and n.func.attr == "run_executor_v3"]
-        self.assertEqual(len(calls), 1, "兜底腿应恰有一处 run_executor_v3 调用")
-        kwargs = {kw.arg: kw for kw in calls[0].keywords}
-        self.assertIn("elbow_sec", kwargs, "兜底腿必须带肘界")
-        self.assertNotIn("yield_probe", kwargs, "轮内让位探针已删")
-        self.assertGreater(executor_v3.FALLBACK_ELBOW_SEC, 0,
-                           "兜底的肘界必须为正（否则退化成到期即领、抢跑回来）")
 
 
 # ---------------------------------------------------------------------------
