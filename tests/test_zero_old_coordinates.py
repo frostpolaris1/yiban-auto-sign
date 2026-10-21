@@ -69,6 +69,7 @@ import functools
 import io
 import os
 import re
+import subprocess
 import tempfile
 import unittest
 
@@ -382,11 +383,31 @@ def old_coordinate_hits(path):
     return sorted(set(hits))
 
 
+def _tracked_files(root):
+    """`git ls-files` 跟踪集（相对 root）；非 git 树返回 `None`。
+
+    **为什么面要取跟踪集**：本门守的是「入库文本不得引用旧坐标」。`docs/dev/` 下
+    既有入库契约，也有本地过程稿（`docs/` 整体 gitignore）。按文件系统走会把
+    本机未入库的过程稿算进面 ⇒ 本机恒红、干净检出恒绿，两边结论不一致。跟踪集
+    消除这个口径差；`subprocess` 失败时退回文件系统面（元测试的合成树没有 git）。
+    """
+    try:
+        out = subprocess.run(["git", "-C", root, "ls-files", "-z"],
+                             capture_output=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return {p for p in out.stdout.decode("utf-8", "replace").split(chr(0)) if p}
+
+
 def own_face_files(root):
     """自有面的扫描文件清单（相对路径，升序）。
 
     七棵子树按 `FACE_DIRS` 走；根文件按 `FACE_FILES` 逐个取（存在的才算）。
+    git 树只保留**跟踪集**里的文件（见 `_tracked_files`）。
     """
+    tracked = _tracked_files(root)
     out = []
     for d in FACE_DIRS:
         for dirpath, dirs, files in os.walk(os.path.join(root, d)):
@@ -402,6 +423,8 @@ def own_face_files(root):
     for name in FACE_FILES:
         if os.path.exists(os.path.join(root, name)):
             out.append(name)
+    if tracked is not None:
+        out = [rel for rel in out if rel in tracked]
     return sorted(set(out))
 
 
