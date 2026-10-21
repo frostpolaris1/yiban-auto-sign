@@ -559,13 +559,20 @@ def _mutation_applied(mutate: str, probe: dict) -> bool:
     return True
 
 
-def start_mock(tmp: str) -> tuple[subprocess.Popen, int]:
+def start_mock(tmp: str, delay_ms: float = 0.0) -> tuple[subprocess.Popen, int]:
+    """起假上游；`delay_ms` 透传 `--delay-ms`（每请求人工延迟）。
+
+    延迟旋钮的唯一用途是**让等待行为有载体**（工单 `6mru` 的引擎级负载用例）：
+    零延迟回环下，"令牌桶/通道/间隔"这些维度不会被真正触发，跑出来的墙钟也不能
+    当吞吐证据。默认 0 与既有调用完全一致。
+    """
     ready = os.path.join(tmp, "mock.ready")
     log = protocol_fake.trace_path(tmp)
-    proc = subprocess.Popen(
-        [sys.executable, MOCK, "--no-tls", "--port", "0", "--no-ipv6",
-         "--ready-file", ready, "--log", log],
-        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    argv = [sys.executable, MOCK, "--no-tls", "--port", "0", "--no-ipv6",
+            "--ready-file", ready, "--log", log]
+    if delay_ms:
+        argv += ["--delay-ms", str(delay_ms)]
+    proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     deadline = time.time() + 30
     while time.time() < deadline:
         if os.path.exists(ready) and os.path.getsize(ready):
@@ -933,11 +940,18 @@ def _max_shard(dbfile: str, day: str) -> int:
 def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
               slow: str = "", stale_write: bool = False, mutate: str = "",
               timeout_sec: float = 120, evidence_dir: str = "", tmp: str = "",
-              keep_tree: bool = False, recover: bool | None = None) -> dict:
+              keep_tree: bool = False, recover: bool | None = None,
+              mock_delay_ms: float = 0.0) -> dict:
     """跑一轮靶场演练，返回结果 dict（含两条不变式的判红明细与全部证据路径）。
 
     `recover`：杀注入后是否再跑一轮，验"被收尸的账号在下一轮被领走"（缺省：有杀注入时开）。
+
+    `mock_delay_ms`：假上游每请求人工延迟（毫秒）。供**引擎级一轮多账号用例**使用（工单
+    `6mru` 关闭条件 3）：零延迟回环下"令牌桶/通道/等待"不会被真正触发。该用例验的是
+    真实用户动作下的不变式，**不是性能压测**。`result["elapsed_sec"]` 是整轮（含造数、
+    拉起、执行、汇总）的墙钟，**口径是回环 ＋ 假上游 ＋ 固定延迟，不是生产吞吐**。
     """
+    t_start = time.time()
     own_tmp = not tmp
     tmp = tmp or tempfile.mkdtemp(prefix="drill-multi-exec-")
     manifest = make_manifest(executors)
@@ -946,9 +960,10 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
     env_snapshot = dict(os.environ)
     result: dict = {"executors": executors, "accounts": accounts, "mutate": mutate,
                     "kill_at": kill_at, "slow": slow, "stale_write": stale_write,
+                    "mock_delay_ms": mock_delay_ms,
                     "tmp": tmp, "started": now_dt().isoformat()}
     try:
-        mock_proc, port = start_mock(tmp)
+        mock_proc, port = start_mock(tmp, delay_ms=mock_delay_ms)
         info = seed(tmp, accounts, executors, manifest)
         day = info["day"]
         monitor = Monitor(info["dbfile"], day)
@@ -1148,6 +1163,9 @@ def run_drill(*, executors: int = 2, accounts: int = 6, kill_at: str = "",
         result["signin_excess"] = result["mock_signin_count"] - len(rows)
         result["terminal_or_pending"] = all(r["state"] in ("done", "skipped", "pending", "failed")
                                             for r in rows.values())
+        # 整轮墙钟（口径：回环 ＋ 假上游 ＋ 注入延迟；**不是**生产吞吐）。多账号用例据此
+        # 证明"注入的延迟真的进了请求路径"，不据此产出任何容量/带宽推荐值。
+        result["elapsed_sec"] = round(time.time() - t_start, 3)
 
         # 证据落盘
         if evidence_dir:

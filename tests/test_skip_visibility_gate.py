@@ -362,6 +362,10 @@ KNOWN_SKIP_SITES = json.loads(r"""
   [
    "skipUnless",
    "SIGKILL 与 /proc 查进程环境仅 POSIX 可用"
+  ],
+  [
+   "skipUnless",
+   "真监督进程与执行体子进程仅 POSIX 可用"
   ]
  ],
  "tests/test_notify_ledger.py": [

@@ -9,10 +9,10 @@
     `signin.main()`（引擎实现 `yiban/app/runner.py`）。
 关键断言：暂停只对自动路径生效——手动路径若也被 exit 2 挡住，管理员就无法在暂停期间
     单独补签；状态码字面量 "global_paused" 与符号 ⏸ 一并锁死。
-依赖：进程内 mock（`load_accounts`/`run_queue_retry`/`_save_cred_state`）+ 临时
+依赖：进程内 mock（`load_accounts`/`executor_v3.run_executor_v3`/`_save_cred_state`）+ 临时
     STATE/DB/LOG 与 YIBAN_ACCOUNTS_JSON 注入；不起子进程、不触网、不需 bash/docker。
 
-`test_manual_signin_not_blocked` 把 `run_queue_retry` mock 掉：那是真实网络签到路径，
+`test_manual_signin_not_blocked` 把 `executor_v3.run_executor_v3` mock 掉：那是真实网络签到路径，
 本用例只验"暂停检查放行 --only"这一分支，不放它去触网（沙箱无外网时会挂住）。
 """
 import json
