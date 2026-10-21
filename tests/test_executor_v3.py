@@ -1651,6 +1651,35 @@ class ProductContractTest(_Base):
         self.assertEqual(results[_phone(1)][3], "failed", "已有结论按原结论透传")
         self.assertEqual(self._read_state()[_phone(1)]["message"], "真实失败")
 
+    def test_window_closed_preserves_unknown_status(self):
+        """看不懂的状态串也是「已有结论」，窗口外跳过不得覆盖它（工单 `77s2` 迁移）。
+
+        判据来自 `is_concluded_status` 的排除法口径：读侧可能遇到本进程不认识的
+        状态串（新增状态码而读侧未同步、外部工具手写）。把它当"无记录"覆盖成
+        `skipped_window`，真实结论会从告警/日历里消失。原用例住在冻结载体
+        `tests/test_status_sets.py::WindowSkipPrefilterAgreementTest`。
+
+        反向控制：条目**缺 `status` 键**（半截条目）＝无记录，窗口外跳过必须写得进去
+        （否则漏记一轮）。
+        """
+        for recorded, want, why in (
+            ({"status": "GLOBAL_PAUSED", "message": "旧版残留"}, "GLOBAL_PAUSED",
+             "看不懂的状态串也是结论"),
+            ({"message": "半截条目"}, yiban_status.STATUS_SKIPPED_WINDOW,
+             "缺 status 的条目与 `is_concluded_status` 同口径＝无记录"),
+        ):
+            with self.subTest(recorded=recorded):
+                self._clear_tasks()
+                self._seed_v(8)
+                self.fc.t = START.replace(hour=8, minute=0)
+                with open(self._state_path(), "w", encoding="utf-8") as f:
+                    json.dump({_phone(1): recorded}, f)
+                results = self._run_v3(self._accounts(_phone(1)))
+                self.assertEqual(results[_phone(1)][3], want,
+                                 "预筛与落盘必须给同一判定：" + why)
+                self.assertEqual(self._read_state()[_phone(1)]["status"], want,
+                                 "落盘状态必须是判定结果：" + why)
+
     def test_write_plan_failure_is_contained(self):
         accounts = self._accounts(*[_phone(i) for i in range(3)])
         calls = []
@@ -2075,6 +2104,124 @@ class LogAttributionTest(_Base):
                 self.assertTrue(any(n in call for n in names),
                                 f"{rel} 的「{msg}」又丢了归因前缀：本条调用里没有 {names}；"
                                 f"实际调用文本：{call[:200]}")
+
+
+# ---------------------------------------------------------------------------
+# 从冻结载体（`round.run_queue_retry`）迁到真路径的判据（工单 `77s2`）
+# ---------------------------------------------------------------------------
+class ProbeDayUnfreezeTest(_Base):
+    """半开试探日：登录成功但被窗口/无 Range 跳过 ⇒ 必须解冻。
+
+    **来源与理由**：这两条判据原先住在 `tests/test_breaker.py`，驱动的是冻结的
+    `round.run_queue_retry`。冻结载体里的语义（`round.py` 的 `probe_healthy`）是：
+    `SKIPPED_WINDOW` / `SKIPPED_NORANGE` 发生在**登录成功之后**，凭据已被证实可用；
+    只看 `success` 会把窗口跳过误判成试探失败，再冻一个试探周期。迁到 v3（唯一生产
+    执行体）后，这条语义必须在真路径上成立——否则被暂停账号的 `probe_date` 停在过去，
+    `_probe_due` 每天为真，密码确实错的账号被每天真实登录一次（风控暴露面）。
+
+    对照组钉住反方向：试探日仍是**凭据类失败** ⇒ 保持暂停并顺延 `probe_date`。
+    """
+
+    def _cred(self, phone):
+        return {phone: {"fail_days": 3, "last_fail": "2026-09-21",
+                        "paused_since": "2026-09-15", "probe_date": DAY}}
+
+    def _run_probe(self, phone, attempt_result):
+        self._add_claimed(phone)
+        self._seed_v(8)
+        cred = self._cred(phone)
+        with mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: attempt_result):
+            self._run_v3(self._accounts(phone), [_item(phone)], cred_state=cred)
+        return cred
+
+    def test_probe_day_window_skip_unfreezes(self):
+        for status, message in (
+            (yiban_status.STATUS_SKIPPED_WINDOW, "签到时段已结束"),
+            (yiban_status.STATUS_SKIPPED_NORANGE, "签到时间窗口缺失（无 Range），已跳过"),
+        ):
+            with self.subTest(status=status):
+                phone = _phone(1)
+                self._clear_tasks()
+                cred = self._run_probe(phone, (False, message, True, status))
+                self.assertNotIn(
+                    phone, cred,
+                    "试探日登录已成功、仅被窗口规则跳过 ⇒ 凭据可用，必须解冻"
+                    "（否则 probe_date 停在过去，每天重登一次）")
+
+    def test_probe_day_credential_failure_keeps_pause_and_extends_probe(self):
+        phone = _phone(1)
+        cred = self._run_probe(
+            phone, (False, "账号或密码错误", False, yiban_status.STATUS_FAILED))
+        self.assertIn(phone, cred, "凭据类失败必须保持暂停")
+        self.assertGreater(cred[phone]["probe_date"], DAY,
+                           "半开试探失败必须顺延 probe_date（唯一写入点是 _update_cred_state）")
+
+
+class RetryReasonVisibilityTest(_Base):
+    """重试入队的状态文件与日志都必须带**转义后**的失败原因（防日志注入）。
+
+    原判据住在 `tests/test_schedule_retry.py` 的冻结载体上；v3 的对应写入点
+    （`_sanitize_text` + `STATUS_RETRYING`）此前没有直接用例。
+    """
+
+    def test_retry_state_and_log_escape_newlines(self):
+        phone = _phone(1)
+        self._add_claimed(phone)
+        self._seed_v(8)
+        reason = "获取签到任务失败\n未登录或登录已经超时"
+        with mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (False, reason, False, "failed")), \
+                mock.patch.object(executor_v3, "next_retry_at_v3",
+                                  lambda *a, **k: START + datetime.timedelta(seconds=30)), \
+                self.assertLogs("yiban", level="WARNING") as cm:
+            self._run_v3(self._accounts(phone), [_item(phone)])
+        state = self._read_state()[phone]
+        self.assertEqual(state["status"], yiban_status.STATUS_RETRYING)
+        self.assertNotIn("\n", state["message"], "状态文件 message 不得含真实换行")
+        self.assertIn(executor_v3._sanitize_text(reason), state["message"],
+                      "状态文件必须补记转义后的失败原因")
+        retry_lines = [r.getMessage() for r in cm.records if "待重试" in r.getMessage()]
+        self.assertTrue(retry_lines, "未捕获到重试入队日志")
+        self.assertTrue(all("\n" not in line for line in retry_lines),
+                        "原因里的换行会把日志拆成多行（注入形态）")
+
+
+class HostClockNotUsedTest(unittest.TestCase):
+    """窗口/当日判定只认业务钟（`yiban.core.clock`），不得直接读宿主墙钟。
+
+    `clock.now()` 恒为 UTC+8，与宿主 TZ 无关；直接 `datetime.now()` 会让"窗口判定"
+    随部署机时区漂移（旧 `round` 路径上实测过：UTC 主机把北京时间 06:40 判成窗口外，
+    整轮零请求）。本门用 AST 钉住执行核四个文件里没有宿主墙钟读取——原行为用例住在
+    冻结载体 `tests/test_effective_window.py::WindowDecisionUsesBeijingClockTest`。
+    """
+
+    FILES = (
+        "yiban/engine/executor_v3.py",
+        "yiban/engine/schedule.py",
+        "yiban/engine/attempts.py",
+        "yiban/core/window.py",
+    )
+
+    def test_no_direct_host_clock_read(self):
+        import ast
+
+        hits = []
+        for rel in self.FILES:
+            path = os.path.join(BASE, rel)
+            with open(path, encoding="utf-8") as f:
+                tree = ast.parse(f.read(), filename=path)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if isinstance(func, ast.Attribute) and func.attr == "now":
+                    dotted = ast.unparse(func)
+                    if dotted in ("datetime.now", "datetime.datetime.now"):
+                        hits.append("%s:%d %s" % (rel, node.lineno, dotted))
+        self.assertEqual(hits, [],
+                         "执行核不得直接读宿主墙钟（业务钟唯一入口是 yiban.core.clock）：%s"
+                         % hits)
 
 
 if __name__ == "__main__":
