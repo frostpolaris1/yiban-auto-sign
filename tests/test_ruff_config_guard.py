@@ -16,7 +16,7 @@ import unittest
 
 try:
     import tomllib
-except ModuleNotFoundError:  # Python 3.10 无 tomllib；门禁环境为 3.11+
+except ModuleNotFoundError:  # Python < 3.11 无 tomllib；门禁环境为 3.13+（WSL 固定 venv 为 3.14）
     import tomli as tomllib  # type: ignore[no-redef]
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

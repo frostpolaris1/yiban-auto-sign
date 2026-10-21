@@ -9,8 +9,8 @@
   `token_bucket` 与 `cli_support` / `config_check` / `accounts` 等支撑件）仍在原地。
 - `core/`：纯函数层（`clock` / `status` / `window` / `masking` / `hrw` / `elbow`）。
 - `ports/`：端口声明。
-- `adapters/`：唯一 I/O 面。`protocol_yiban/`（洁净室协议库：纯解析/构造；MIT，许可见其
-  LICENSE）、`protocol_fake/`（测试假上游）、`notifier/`（邮件、推送与告警编排
+- `adapters/`：唯一 I/O 面。`protocol_yiban/`（洁净室协议库：纯解析/构造；AGPL-3.0-only，
+  许可见其 LICENSE）、`protocol_fake/`（测试假上游）、`notifier/`（邮件、推送与告警编排
   `report`）、`persistence/`（原 `yiban.store` 包整包搬入）、`statefiles/`（含原
   `yiban.adapters.statefiles.state_io` 模块）、`config/`。
 - `workers/`：签名工作体（`workers`＝多执行体监督进程与兜底常驻，原
