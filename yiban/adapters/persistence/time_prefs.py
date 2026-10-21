@@ -19,18 +19,18 @@ time_prefs 表以 phone 为键，服务调度 v2 的「用户自选时间片」�
 （审计 target=hash_phone(phone)，匿名稳定键）：多管理员共享 admin 账号时冷却全局生效
 （管理员 A 保存后 B 立即改选也被拦截）；改手机号/删号重提交新号后，新 phone 无历史审计，
 不被旧账号冷却误伤。暂停/恢复的冷却查询按 username 计价、查 audit_logs 表，按**表归属**
-落在 `yiban/store/events.py`。建表在迁移域（`yiban/store/migrations.py`），本模块只读写。
+落在 `yiban/adapters/persistence/events.py`。建表在迁移域（`yiban/adapters/persistence/migrations.py`），本模块只读写。
 
 **复用**
 `web/routes/my_api.py`（自选读写、拥挤度与保存冷却）、`web/routes/accounts_api.py`（改绑手机号
 时清旧号自选）、`yiban/engine/schedule.py` 与 `yiban/engine/planner.py`（调度每次启动/重排时
 读一次全量，只读不写）经 db 门面调用；`scripts/generate_demo_data.py` 写演示自选。
-换号/注销路径是否保留自选由 `yiban/store/users.py` 与账号软删路径决定，本模块不做取舍。
+换号/注销路径是否保留自选由 `yiban/adapters/persistence/users.py` 与账号软删路径决定，本模块不做取舍。
 
 **通信**
 连接与进程内锁（`_conn_lock` / `get_conn`）一律经 `_facade()` 按属性取——必须按属性取而非
 模块级 from-import，`mock.patch.object(db, "get_conn"/"_conn_lock", …)` 一类打桩才会在函数
-体里生效。冷却查询用的 `hash_phone` 定义点在 `yiban/store/tracking.py`，同样经 `_facade()`
+体里生效。冷却查询用的 `hash_phone` 定义点在 `yiban/adapters/persistence/tracking.py`，同样经 `_facade()`
 按属性取，`db.hash_phone = 替身` 才能被这里的查询看见。
 """
 import logging
@@ -39,7 +39,7 @@ logger = logging.getLogger("yiban.store.time_prefs")
 
 
 def _facade():
-    """db 门面（函数内延迟导入，避免与 `yiban.store.db` 形成导入环）。
+    """db 门面（函数内延迟导入，避免与 `yiban.adapters.persistence.db` 形成导入环）。
 
     打桩可见性见模块说明：必须按**属性**取而不是模块级 from-import，`db.<名字> = 替身`
     才会在函数体里生效。

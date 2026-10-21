@@ -23,7 +23,7 @@
    容器内整链生效待生产演练。
 依赖：调度器用例按文件路径加载 docker/scheduler.py + subprocess/time 模块桩
    （真循环靠 sleep 抛异常打断）；心跳探活 CLI 用例不加载调度器（心跳手写落盘、
-   起 sys.executable 子进程）；快路仍先导 `yiban.infra.env_io`，连带
+   起 sys.executable 子进程）；快路仍先导 `yiban.adapters.config.env_io`，连带
    `env_lock → locks → portalocker`。缺 portalocker 的机器跑不动这条反例
    （阻断后抛 ModuleNotFoundError，走不到 sys.exit；暴露面见
    docker/scheduler.py 模块头）；
@@ -263,7 +263,7 @@ class CheckHealthCliTest(unittest.TestCase):
 
     故意不继承 _SchedBase：CLI 快路在业务导入图之前就 sys.exit，判据只看心跳
     mtime。心跳手写落盘即可，不需要业务模块图。快路躲不开第三方依赖：STATEDIR
-    收口到 resolve_path 之后，它必须先导 `yiban.infra.env_io`，连带
+    收口到 resolve_path 之后，它必须先导 `yiban.adapters.config.env_io`，连带
     `env_lock → locks → portalocker`。缺 portalocker 时这条反例抛
     ModuleNotFoundError，走不到 sys.exit。残余暴露面记在 docker/scheduler.py
     模块头。

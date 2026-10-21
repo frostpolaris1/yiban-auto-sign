@@ -247,7 +247,7 @@ class WebPrefSlotsYardstickTest(unittest.TestCase):
             slots[1], {"slot_min": 5, "label": "06:35", "disabled": False, "edge_note": ""})
 
     def test_sign_window_bounds_composes_window_and_edges(self):
-        """`web.services.signstatus.sign_window_bounds` 只做组合：起止与前后裁剪交给 `yiban.window.bounds`。"""
+        """`web.services.signstatus.sign_window_bounds` 只做组合：起止与前后裁剪交给 `yiban.core.window.bounds`。"""
         with mock.patch.object(_signstatus, "_sign_window", return_value=((6, 30), (6, 40))), \
                 mock.patch.object(_render, "edge_config", return_value=(300, 300)):
             win = _signstatus.sign_window_bounds()

@@ -32,7 +32,7 @@
   accounts/users 导入 SQLite（幂等），两个文件都成功后一起改名 `.bak` 保留逃生门。
 
 **归属**
-`yiban/store/db.py` 的 `init_db` 启动序列：建连后 `_create_tables` → `_run_migrations`
+`yiban/adapters/persistence/db.py` 的 `init_db` 启动序列：建连后 `_create_tables` → `_run_migrations`
 （`migrate=False` 时整段跳过）→ `_maybe_migrate`（仅在给了 `migrate_from` 时）。迁移历史
 是一份**按版本号冻结的时间序列**——已发布的迁移函数不可再改（改了对已升级的库无效，还会
 给介于两个版本之间的库制造新的失败路径），故整块按「同一份 schema 演进史」放在一起，
@@ -40,7 +40,7 @@
 共用同一个入口编排，故并入本模块。
 
 **复用**
-`yiban.store.db` 把本模块全部名字按原样再导出：既有 `db.migrate_v10(...)` /
+`yiban.adapters.persistence.db` 把本模块全部名字按原样再导出：既有 `db.migrate_v10(...)` /
 `db._ensure_column(...)` / `db._create_tables(...)` / `db._maybe_migrate(...)` 调用面不变。
 `_MIGRATIONS` 是**可变登记表**（测试用 `db._MIGRATIONS = [...]` 缩窄或替换迁移集），由 db
 侧模块类读写转发到本模块——快照式再导出会让缩窄静默失效（编排仍读真表）。
@@ -51,7 +51,7 @@
 迁移函数一律接收调用方传入的 `conn`（事务由 `_run_migrations` 经写事务入口开启），本模块
 从不自取连接。跨域调用——写事务入口 `_begin_immediate`、审计链升级回填
 `_backfill_audit_hashes`、JSON 导入的进程内写锁 `_conn_lock`——经 `_facade()`
-按属性延迟取 `yiban.store.db`：函数内导入避免导入环，按属性取保证 `db.<名字> = 替身`
+按属性延迟取 `yiban.adapters.persistence.db`：函数内导入避免导入环，按属性取保证 `db.<名字> = 替身`
 一类打桩可见。库与密钥来源路径直接读连接模块（`_connection._env_file`；`db._env_file =
 path` 的写入由 db 门面转发落到那里），账号域的加密值判定按父提交同形直取
 `_accounts._is_encrypted_value`。
@@ -74,7 +74,7 @@ logger = logging.getLogger("yiban.store.migrations")
 
 
 def _facade():
-    """db 门面（函数内延迟导入，避免与 `yiban.store.db` 形成导入环）。
+    """db 门面（函数内延迟导入，避免与 `yiban.adapters.persistence.db` 形成导入环）。
 
     打桩可见性见模块说明：必须按**属性**取而不是模块级 from-import，`db.<名字> = 替身`
     才会在函数体里生效。
@@ -95,7 +95,7 @@ class MigrationIntegrityError(Exception):
     核心/可选档）。典型成因：旧链"可选失败只告警"
     时代留下的半升级库、有人手工拨 PRAGMA、绕过链直接改 schema。让 `try_claim` /
     执行体在这种库上继续跑只会把静默拒跑变成运维事故，故启动即拒、异常文本点名是哪条
-    迁移缺了什么。调用面：`yiban.engine.runner` / `workers` 捕获后按退出码 4 退出
+    迁移缺了什么。调用面：`yiban.app.runner` / `workers` 捕获后按退出码 4 退出
     （见 `docs/dev/cli.md` §3）。
     """
 
@@ -977,7 +977,7 @@ _BACKFILL_COMMIT_ROWS = 50
 
 #: JSON 状态 → `sign_tasks.state` 的映射（**冻结语义**；只登记终态）。
 #: 为什么按这三档落：
-#: - `success`/`already`/`no_task` 是 `yiban.status.CLAIM_DONE_STATUSES`，当日不必
+#: - `success`/`already`/`no_task` 是 `yiban.core.status.CLAIM_DONE_STATUSES`，当日不必
 #:   再签 → `done`；
 #: - `skipped_window`/`skipped_norange`/`no_position` 与 `failed` 同落 `failed`：
 #:   前两者**在 `UNDONE_STATUSES` 内**、`no_position` 是可重试侧（点位为空不代表
@@ -1133,7 +1133,7 @@ def migrate_v21(conn):
     """v21：内核进度事件表 `run_events`（N2a 打点层）。可选迁移，失败只告警不阻断。
 
     **为什么可选**：本表是观测面——`yiban/engine/executor_v3.py` 与
-    `yiban/app/runner.py` 经 `yiban.store.run_events.report` 写入，写入失败被
+    `yiban/app/runner.py` 经 `yiban.adapters.persistence.run_events.report` 写入，写入失败被
     隔离（只告警），签到结论与退出码都不依赖它。故迁移执行失败不该阻断启动。
 
     **但产物必须在册**：登记进产物登记表后，版本声称过了本档而表不存在
@@ -1172,7 +1172,7 @@ def migrate_v22(conn):
 
     **为什么安全**：出厂速率是**保守**方向（`token_bucket.EgressLimiter.restore_from_store`
     对"无记录"的处置就是回退出厂速率，本模块 docstring 亦如此声明）。丢失的只是被风控信号
-    压低过的自适应值，运维可用 `yiban.cli egress --reset` 手动复位。
+    压低过的自适应值，运维可用 `yiban.entry.cli egress --reset` 手动复位。
 
     **为什么是可选档**：本迁移只清数据、不改 schema，失败不阻断签到。但没有产物可登记
     （产物登记表不列 v22）：`egress_state` 表由 v18 建，本档的产物是"旧键行不存在"，

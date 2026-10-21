@@ -11,15 +11,15 @@
 
 **归属**
 清理是横跨多张表的动作，故单列一域：本模块不定义自己的表，只按各表保留期调用。
-sign_events 的保留期清理（同事务兼清超期 verify_jobs）留在 `yiban/store/events.py` 的
+sign_events 的保留期清理（同事务兼清超期 verify_jobs）留在 `yiban/adapters/persistence/events.py` 的
 `_event_cleanup`——那是事件表写入者对自己表的保留策略，本模块只在编排里调用，不改其
-内部；用户行与注销请求的到期清除在 `yiban/store/users.py`，同样只调用。
+内部；用户行与注销请求的到期清除在 `yiban/adapters/persistence/users.py`，同样只调用。
 
 **复用**
 `db.run_daily_cleanup()` 是 web 每日线程与 `init_db(cleanup=True)` 的共用入口；
 `db._audit_cleanup` / `db.purge_expired_deleted_accounts` 仍可从门面直接调用。
 进度事件表（`run_events`，N2a）的保留期清理同样只是被编排调用：策略与实现留在
-`yiban/store/run_events.py` 的 `purge`，本模块不另写规则。
+`yiban/adapters/persistence/run_events.py` 的 `purge`，本模块不另写规则。
 
 **通信**
 连接、锁、时钟守卫、清理留痕（`get_conn` / `_conn_lock` / `_clock_jump_guard` /
@@ -40,7 +40,7 @@ logger = logging.getLogger("yiban.store.cleanup")
 
 
 def _facade():
-    """db 门面（函数内延迟导入，避免与 `yiban.store.db` 形成导入环）。
+    """db 门面（函数内延迟导入，避免与 `yiban.adapters.persistence.db` 形成导入环）。
 
     打桩可见性见模块说明：必须按**属性**取而不是模块级 from-import，`db.<名字> = 替身`
     才会在函数体里生效。

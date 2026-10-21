@@ -46,10 +46,10 @@ state_io / accounts / workers / config_check / cli_support / db_maintenance / eg
 **相对路径一律按当前工作目录解析**（`run.sh` 先 `cd` 到部署目录再 export，故"相对路径"
 在两条路径下都应指向同一处；在别处直接调用 CLI 时请用绝对路径或先 `cd`）。解析优先级：
 进程环境 → `.env` → 默认值（这三个**可配置路径键**是工单 71z7 的例外，2026-10-20 裁定；
-`run.sh` 的显式 export 优先）。`YIBAN_ENV_FILE` **不在**此列：它是指针，只由进程环境给
-（`.env` 里写它一律忽略）；三个 bash 入口固定 `$APP_DIR/data/.env`。
+`run.sh` 的显式 export 优先）。指针 `YIBAN_ENV_FILE` 是**两段自举**：进程环境 →
+基线 `.env`（默认 `data/.env`）→ 默认值；三个 bash 入口固定 `$APP_DIR/data/.env`。
 其余 `YIBAN_*` 配置键按 **`.env` 优先、进程环境只补缺**（M27，2026-10-01）——
-`_env_view()` 因此先取进程环境作底座、再用 `.env` 覆盖，最后只把上面三个可配置路径键按进程
+`_env_view()` 因此先取进程环境作底座、再用 `.env` 覆盖，最后只把上面四个路径键按进程
 环境回填。四个变量名在根 `--help`、`config --help`、`db --help` 的文本里都列明。
 
 ## 2. 硬性约定（实施与评审都按这几条）

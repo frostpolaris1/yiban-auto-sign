@@ -131,7 +131,7 @@ class SettledVocabularyRegressionTest(unittest.TestCase):
 
     def test_open_states_are_disjoint_from_settled(self):
         """两个池的「未了结」与「了结」互斥（同一行不可能又了结又开放），
-        且池侧两套常量都与 `yiban.status` 的共享定义同值。"""
+        且池侧两套常量都与 `yiban.core.status` 的共享定义同值。"""
         self.assertEqual(set(claims_mod.SETTLED_STATES) & set(claims_mod.OPEN_STATES), set())
         self.assertEqual(set(queue_store.SETTLED_STATES) & set(queue_store.OPEN_STATES), set())
         self.assertIs(queue_store.SETTLED_STATES, yiban_status.TASKS_SETTLED_STATES)

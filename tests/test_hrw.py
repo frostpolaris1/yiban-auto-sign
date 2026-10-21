@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""`yiban.engine.hrw` 的契约用例：纯函数 HRW 分工（虚分片 + argmax 归属）。
+"""`yiban.core.hrw` 的契约用例：纯函数 HRW 分工（虚分片 + argmax 归属）。
 
 标签：A · 调度：计划与分片
 覆盖：虚分片层（vshard_of 确定性、值域、吃 day、blake2b 编码定值、v_for 定档

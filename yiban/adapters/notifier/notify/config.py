@@ -98,7 +98,7 @@ def _env_str(key, envs=None):
 # 不能按短名去重：`_env_int` 与 `_env_flag` 对同一个键的词汇表不同，共用短名会让一个
 # 读取路径的告警永久吞掉另一个（ba-p09-10）。
 _bad_value_warned = set()
-# 布尔开关键的取值口径。**单一事实源**在 `yiban.infra.env_io` 的
+# 布尔开关键的取值口径。**单一事实源**在 `yiban.adapters.config.env_io` 的
 # `ENV_TRUTHY_LITERALS` / `ENV_FALSY_LITERALS`（与引擎 `schedule._env_flag`、面板读侧、
 # bash `run.sh._is_truthy` 同一套字面量）；本处只引用不再另抄一份。
 # 本模块的 `_env_flag` 因契约不同（读 `YIBAN_NOTIFY_*` 键 + 带缺省值 + 自己一类"只喊一次"
