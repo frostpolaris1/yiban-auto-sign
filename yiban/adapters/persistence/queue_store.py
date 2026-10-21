@@ -45,7 +45,7 @@
   闸门，见该函数说明）；
 - `fallback_event`：兜底常驻的"失败即入队"读取端——默认可接手（`retry:` 档）未了结行的
   事件签名 `(条数, 最新迁移标记)`，短轮询变化即接手；
-- `purge`：按保留期清理本表存量（带时钟跳变守卫，见 `yiban/store/cleanup.py` 编排）；
+- `purge`：按保留期清理本表存量（带时钟跳变守卫，见 `yiban/adapters/persistence/cleanup.py` 编排）；
 - `day_counts`：当日各 state 计数与派生口径（settled/open/total）——调用方据此给
   进度展示取数；**读不通回 `None` 哨兵**（降级口径见下）；`open` **不过滤 `vshard`，
   不得当"当日是否了结"的闸门**（那会把永不被领取的 `vshard=-1` 惰性行算进去），
@@ -56,17 +56,17 @@
   的读写薄封装，供 `yiban/engine/token_bucket.py` 落库与崩溃重启恢复。
 
 **归属**
-`sign_tasks` 由 `yiban/store/migrations.py` 的 v18 迁移建立；本模块是该表与
+`sign_tasks` 由 `yiban/adapters/persistence/migrations.py` 的 v18 迁移建立；本模块是该表与
 `egress_state` 在 store 层的**唯一访问点**——表结构、SQL 与降级口径都收在这里，
 调用方不自己拼 SQL。台账单池化后本表是**唯一生产台账**（`sign_claims` 已冻结、零写入，
-其旧访问层 `yiban/store/claims.py` 保留但无生产调用点）。
+其旧访问层 `yiban/adapters/persistence/claims.py` 保留但无生产调用点）。
 
 **复用**
-调用方按模块属性取（`from yiban.store import queue_store` 后 `queue_store.claim_batch(...)`），
+调用方按模块属性取（`from yiban.adapters.persistence import queue_store` 后 `queue_store.claim_batch(...)`），
 这样打桩与"换成独立队列库文件"都不需要改调用点。
 
 **通信**
-数据源连接与进程内写锁暂取 `yiban.store.connection` 的单例 `get_conn()` / `_conn_lock`
+数据源连接与进程内写锁暂取 `yiban.adapters.persistence.connection` 的单例 `get_conn()` / `_conn_lock`
 （`_queue_conn()` 是唯一取点：将来本表迁到独立库文件、换独立连接时只改这一处）。
 设计上的调用方是执行入口 `yiban/engine/executor_v3.py`（批量领取/收尾/重排/待办计数/
 重签/桶状态落库）与展示侧 `yiban/adapters/statefiles/state_io.py`、`web/services/executor_env.py`
@@ -123,10 +123,10 @@ STATE_STOLEN = "stolen"
 STATES = (STATE_PENDING, STATE_CLAIMED, STATE_DONE, STATE_FAILED, STATE_SKIPPED,
           STATE_STOLEN)
 
-#: 了结态（当日不必再签）。「了结」的词义只在 `yiban.status` 定义一处，本表不自写判据。
-SETTLED_STATES = yiban_status.TASKS_SETTLED_STATES  # = {done, skipped}：`skipped` 承接暂停/取消类结论（paused / user_cancelled / global_paused，v18 平移映射见 `yiban.store.migrations._JSON_TERMINAL_TO_TASK_STATE`）；旧表 `sign_claims` 没有 `skipped` 这一档、同批结论当时落 `failed`（未了结、可再领），跨表比对"当日是否了结"不得直接对齐
+#: 了结态（当日不必再签）。「了结」的词义只在 `yiban.core.status` 定义一处，本表不自写判据。
+SETTLED_STATES = yiban_status.TASKS_SETTLED_STATES  # = {done, skipped}：`skipped` 承接暂停/取消类结论（paused / user_cancelled / global_paused，v18 平移映射见 `yiban.adapters.persistence.migrations._JSON_TERMINAL_TO_TASK_STATE`）；旧表 `sign_claims` 没有 `skipped` 这一档、同批结论当时落 `failed`（未了结、可再领），跨表比对"当日是否了结"不得直接对齐
 #: 未了结态（当日仍可能被重排、被接手，或正被某个执行体持有）。
-OPEN_STATES = tuple(s for s in STATES if s in yiban_status.TASKS_OPEN_STATES)  # 成员取自 `yiban.status.TASKS_OPEN_STATES`；顺序沿用本表 `STATES`——成员无先后语义，但顺序稳定便于比对与调试
+OPEN_STATES = tuple(s for s in STATES if s in yiban_status.TASKS_OPEN_STATES)  # 成员取自 `yiban.core.status.TASKS_OPEN_STATES`；顺序沿用本表 `STATES`——成员无先后语义，但顺序稳定便于比对与调试
 #: 可被 `requeue_task` 重排回 `pending` 的状态：所有**未了结**态（`OPEN_STATES`）。
 #: 终态（`done` / `skipped`）绝不许复活——复活会被 `claim_batch` 重新领取，等于同一
 #: 账号当日再登录一次，"当日是否了结"的闸门也会凭空又出现待办。`pending` 行重排只是
@@ -147,7 +147,7 @@ def _queue_conn() -> tuple[Any, Any]:
 def _shift_stamp(stamp: object, sec: float) -> str:
     """时间串平移 `sec` 秒，返回毫秒精度、与 `run_at` 同格式的可比字符串。
 
-    本库的时间串一律北京时间（`yiban.clock`），**不能用 SQL 的 `datetime(..., '-N seconds')`
+    本库的时间串一律北京时间（`yiban.core.clock`），**不能用 SQL 的 `datetime(..., '-N seconds')`
     代替**：它的输出**没有毫秒**（`datetime('2026-09-22 06:40:00','-120 seconds')` 得
     `'2026-09-22 06:38:00'`），而 `run_at` 是毫秒格式；`'…06:38:00' < '…06:38:00.000'`
     为真，拿它跟毫秒串做字符串比较会在同一秒内错位。**不是时区问题**：纯秒平移下把北京时间
@@ -335,7 +335,7 @@ def requeue_failed(day: str, shards: Iterable[int], include_final: bool = False,
     **为什么必须有**：`claim_batch` 只取 `pending`，v3 执行体弃权（give-up 档）留下的
     `failed` 行若没有这条路，当日就**无人接手**——v2 的等价物是领取层"默认参数可再领
     `retry:` 档"（`claims.try_claim`），v3 的队列以 `pending` 为唯一可领态，档位语义只能
-    靠这里翻态来兑现。**档位判据沿用领取层的同一份常量**（`yiban.status.RESULT_RETRY_PREFIX`
+    靠这里翻态来兑现。**档位判据沿用领取层的同一份常量**（`yiban.core.status.RESULT_RETRY_PREFIX`
     /`RESULT_FINAL_PREFIX`，v18 平移时逐字带过来的协议，128-P1 迁入 status，不另造一套）：
 
     - 缺省只回炉 `retry:` 档（窗口外/无点位/"本轮没产生结论"，"该重试"）——当日任何
@@ -709,7 +709,7 @@ def day_counts(day: str) -> dict[str, int] | None:
 
     | 派生键 | 定义 |
     |--------|------|
-    | `settled` | `done` + `skipped`（当日不必再签；「了结」的词义见 `yiban.status.TASKS_SETTLED_STATES`） |
+    | `settled` | `done` + `skipped`（当日不必再签；「了结」的词义见 `yiban.core.status.TASKS_SETTLED_STATES`） |
     | `open` | `pending` + `claimed` + `failed` + `stolen`（仍可能被重排/接手） |
     | `total` | 当日全部行数 = `settled` + `open` |
 

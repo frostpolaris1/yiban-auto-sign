@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""状态词汇表单一事实源：`yiban.status` 定义，signin / web 只做别名引用。
+"""状态词汇表单一事实源：`yiban.core.status` 定义，signin / web 只做别名引用。
 
 标签：D · 状态词汇与账号生命周期
-覆盖：13 个状态码常量在 `signin` 侧与 `yiban.status` 等值、`STATUS_SYMBOL`/
+覆盖：13 个状态码常量在 `signin` 侧与 `yiban.core.status` 等值、`STATUS_SYMBOL`/
     `UNDONE_STATUSES` 是**同一对象**；web 侧常量与 `STATUS_ICON`/`STATUS_TEXT` 同为
     别名；未了结集合的成员口径；两张展示映射刻意不合并；**前端三页的状态中文已收敛为
     唯一事实源 `frontend/src/lib/status-vocab.js`**（键集合 == ALL_STATUSES，三页 import 它）。
@@ -450,7 +450,7 @@ class StatusSingleSourceTest(unittest.TestCase):
         """急停（global_paused）在前端图表色板里必须落异常档，不得落"无异常"档。
 
         census P1-5：Vue 重写不得复刻旧 `data_dashboard.js` 的暂停假安心。权威口径是
-        `yiban.status.DISPLAY`——它把急停定为 `warn`（非正常，见 `_DISPLAY_ROWS`）。
+        `yiban.core.status.DISPLAY`——它把急停定为 `warn`（非正常，见 `_DISPLAY_ROWS`）。
         前端 `dashboard/model.js` 的 `STATUS_TOKEN` 是图表配色（非展示词表，见
         `SANCTIONED_MAPS`）；修复前它把急停自持为 `"muted"`（与「用户取消」同色 = 无异常
         档），于是分布图上"管理员急停"与"用户自己取消"无从区分。此门钉四条：

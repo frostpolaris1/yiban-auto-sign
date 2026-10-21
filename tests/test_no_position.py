@@ -6,8 +6,8 @@
     队列/排程两种模式下无点位均不触发失败通知（真失败仍触发）、main() 汇总与退出码
     （仅无点位=exit 2、含真失败=exit 1、有成功=exit 0）、每日状态文件写入 🚫、
     容器补签闸门与宿主 run.sh 双路径一致、汇总邮件异常不得改退出码。
-对应实现：状态码权威定义 `yiban.status.STATUS_NO_POSITION`（符号
-    `yiban.status.SYMBOL`，未了结集合 `yiban.status.UNDONE_STATUSES`）；分支判定在
+对应实现：状态码权威定义 `yiban.core.status.STATUS_NO_POSITION`（符号
+    `yiban.core.status.SYMBOL`，未了结集合 `yiban.core.status.UNDONE_STATUSES`）；分支判定在
     客户端/引擎侧，补签闸门在 `docker/scheduler.py` 的 `_UNDONE_STATUSES`。
 关键断言：无点位 ≠ 凭据/网络失败——此前并入 STATUS_FAILED 会造成逐账号误报轰炸；
     retry budget 为 1（`NO_POSITION_MAX_ATTEMPTS`），不像 failed 那样反复重试；

@@ -10,7 +10,7 @@
 
 **归属**
 `yiban.engine` 的命令行子命令实现层（同族先例：`config_check` 承担 `config` 的输出装配）；
-SQLite 只读打开、账号只读装载与目标指纹分别复用 `yiban.store` 的
+SQLite 只读打开、账号只读装载与目标指纹分别复用 `yiban.adapters.persistence` 的
 `connection.open_readonly` / `accounts.load_accounts_readonly` / `purge_guard`，本模块不另写
 第二套。
 
@@ -24,7 +24,7 @@ SQLite 只读打开、账号只读装载与目标指纹分别复用 `yiban.store
 解析出的路径 dict。
 输出：stdout 一行 JSON（`--json`）或 stderr 人类可读汇总；退出码由 `cmd_db` 返回（0 / 1 /
 2，含义见 `docs/dev/cli.md` §3）。
-调用谁：`yiban.store.db`（只读打开、账号只读装载）、`yiban.store.purge_guard`（内容指纹与
+调用谁：`yiban.adapters.persistence.db`（只读打开、账号只读装载）、`yiban.adapters.persistence.purge_guard`（内容指纹与
 回显比对）、`yiban.engine.cli_support`（输出收口）。
 谁调用：`yiban/entry/cli/__init__.py` 的 `_dispatch`。
 """
@@ -54,7 +54,7 @@ def account_counts(conn):
     """→ (未删除账号数, 会签到的账号数)。
 
     "会签到"的判据与 web/signin 同源：未删除且审核态不在
-    `yiban.store.accounts.ACCOUNT_AUDIT_INACTIVE`——那个元组是**库内落库值**的唯一
+    `yiban.adapters.persistence.accounts.ACCOUNT_AUDIT_INACTIVE`——那个元组是**库内落库值**的唯一
     列举点（`signs_in` 用的就是它），此处按它拼 SQL 条件，不另写一套字面量。
     """
     inactive = tuple(store_accounts.ACCOUNT_AUDIT_INACTIVE)

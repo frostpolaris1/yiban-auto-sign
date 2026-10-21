@@ -3,7 +3,7 @@
 
 标签：B · 调度：领取/队列/执行体
 
-**为什么必须真跨进程**：`claim_batch` 在 `yiban.store.connection._conn_lock`
+**为什么必须真跨进程**：`claim_batch` 在 `yiban.adapters.persistence.connection._conn_lock`
 （进程内 `threading.RLock`）下执行。同进程两线程调它会被**串行化**，争用窗口不出现，
 用例对"跨进程原子性"**无判别力**（形状与判据见 `tests/test_concurrency_fidelity_gate.py`）。
 真争用只能用**独立进程**（每进程一个独立连接）制造——这正是本文件的形态。

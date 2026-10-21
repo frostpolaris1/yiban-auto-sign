@@ -16,7 +16,7 @@
 
 **复用**
 `verify_account`（注册/改密即时验证，网页侧复用）、探针模式判定与结果落库函数；
-账号复核 `account_still_signable` 取自 `yiban.store.accounts`。
+账号复核 `account_still_signable` 取自 `yiban.adapters.persistence.accounts`。
 
 **通信**
 输入：账号列表、探针配置（`YIBAN_PROBE_ENABLE` / `YIBAN_PROBE_TIME` 等，经 .env 传入）、
@@ -73,7 +73,7 @@ account_still_signable = accounts_store.account_still_signable
 # 「图形验证墙 / 校本化失效 / 密码错误」等无法自愈问题；注册提交账号时亦可即时验证打回。
 # 配置经 web 系统设置写入 .env（YIBAN_PROBE_ENABLE / YIBAN_PROBE_TIME / YIBAN_PROBE_INTERVAL_DAYS /
 # YIBAN_ACCOUNT_VERIFY），run.sh / run_probe.sh 加载后经环境变量传入。
-# 真值口径单源在 `yiban.infra.env_io.parse_env_flag`（1/true/on/yes，大小写与两侧空白不敏感），
+# 真值口径单源在 `yiban.adapters.config.env_io.parse_env_flag`（1/true/on/yes，大小写与两侧空白不敏感），
 # 与面板 read 侧、run_probe.sh 同口径。
 PROBE_ENABLE = env_io.parse_env_flag(os.environ.get("YIBAN_PROBE_ENABLE", ""),
                                      default=False, key="YIBAN_PROBE_ENABLE", log=logger)

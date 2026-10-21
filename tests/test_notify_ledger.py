@@ -122,7 +122,7 @@ class NotifyLedgerDiskTest(unittest.TestCase):
 
         UTC 主机上 `time.strftime` 的本地日期比北京晚（北京时间 09-17 00:00 时
         宿主仍是 09-16 16:00）——额度重置点错位，一个北京日历日内可动用近两份
-        额度。修复后 `_daily_today` 委托 `yiban.clock.today`：让两个来源返回
+        额度。修复后 `_daily_today` 委托 `yiban.core.clock.today`：让两个来源返回
         不同日期，断言账本落盘用的是 clock 那个。
         """
         os.environ["YIBAN_NOTIFY_DAILY_MAX"] = "5"

@@ -558,7 +558,7 @@ ADMIN_CREDS_MAX = 20
 # 带点的名字，签到链路的**细节行**（登录成功 / 生成定位 / 签到成功）会整行被丢弃，日志页只剩
 # 汇总与结果。
 
-# 签到状态码与文案映射：**定义在 yiban.status（唯一事实源）**，此处为别名。
+# 签到状态码与文案映射：**定义在 yiban.core.status（唯一事实源）**，此处为别名。
 # 历史上本文件另定义了一份同名常量与两张映射，与 signin 侧各自漂移
 # （实测本侧缺 no_position/global_paused、signin 侧缺 pending）。收口后状态码只有一处
 # 定义；两张映射的差异是**有意的**（不同消费方），合并需前后端协同，见 yiban/core/status.py。
@@ -633,7 +633,7 @@ def edge_front_sec():
 
 
 # 有效窗口视图 `sign_window_bounds` 已随批 3-d 搬入 web/services/signstatus.py：
-# 路由与测试直取该模块，本模块不再保留转发包装。唯一口径仍在 `yiban.window.bounds`。
+# 路由与测试直取该模块，本模块不再保留转发包装。唯一口径仍在 `yiban.core.window.bounds`。
 
 
 # 设置项展示族（键的中文标签 / 值的展示形态 / A/B 档生效值）实现见 web/services/env_io.py。
@@ -663,7 +663,7 @@ def write_env_int(env_path, key, value):
 # 落位，scripts/ 各 .env 写入方无需反向依赖 web 即可共用同一套判定。
 # 不变量（读写两侧同源）：新注入在写入口被 has_line_break 拦下；升级前已埋下的
 # 潜伏载荷不会被回溯改写——由 create_app 启动时的
-# _report_env_key_collisions（yiban.infra.env_io.find_env_key_collisions）报告、运维手工清理。
+# _report_env_key_collisions（yiban.adapters.config.env_io.find_env_key_collisions）报告、运维手工清理。
 # 此处保留常量别名（本模块已无自用点）：测试的探测口径 webapp._ENV_LINE_BREAK_CHARS 不变。
 # 谓词本体已去壳（批 3-c S1），消费方直取 env_io.has_line_break。
 _ENV_LINE_BREAK_CHARS = env_io.ENV_LINE_BREAK_CHARS
@@ -1039,7 +1039,7 @@ _report_cfg_latch = None
 def _health_report_cfg():
     """报告调度配置的一次取值：`(配置时刻 (h,m) 或 None, 星期 int)`。
 
-    取值走 `yiban.config_loader`（名册是配置键的唯一定义点）：非法时刻由加载器按"未设"
+    取值走 `yiban.adapters.config.loader`（名册是配置键的唯一定义点）：非法时刻由加载器按"未设"
     处理并点名告警，随后落到名册缺省 null；越界星期由加载器按域告警、由本函数回落到
     缺省。回落成"未配置/缺省"是刻意的：配置里写错一个字符不该让这份安全报告从此不再发出。
 

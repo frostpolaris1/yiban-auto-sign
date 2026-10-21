@@ -18,7 +18,7 @@
 3. 过滤字段白名单：只认 `action`/`actor`/`target`/`from_ts`/`to_ts`，出现任何其它
    查询键即 400 JSON（`{"error": "不支持的过滤字段: X"}`）。
 4. 对外 id 不透明：不返回自增 `audit_logs.id`，行定位符用
-   `yiban.store.audit_chain.public_row_id(id)`（HMAC 前 16 hex，字段名 `row_id`）。
+   `yiban.adapters.persistence.audit_chain.public_row_id(id)`（HMAC 前 16 hex，字段名 `row_id`）。
 5. 脱敏单出口：行一律经 `_serialize_audit_row()` 出 HTTP，username 走 `actor_tag()`、
    target/detail 走 `_nl_safe()` 后截断，原串绝不进响应。
 6. 访问留痕：每次成功读取经 `read_audit_trace()` 聚合成一条只读面审计
@@ -31,7 +31,7 @@
 
 **复用**
 `register(app)` 供 `web.routes.register_all` 装配；只读实现住在
-`yiban/store/audit_chain.py`（本模块不触 `verify_audit_chain`，读接口不触发全表哈希）。
+`yiban/adapters/persistence/audit_chain.py`（本模块不触 `verify_audit_chain`，读接口不触发全表哈希）。
 
 **通信**
 视图体经 `web.routes.appmod()` 取 web.app 自有的模块级名字（`logger`）；A 类转发名
