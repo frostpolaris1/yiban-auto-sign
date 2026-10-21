@@ -6,7 +6,7 @@
 覆盖：本批把洁净室协议库从 `yiban/protocol/` 搬到 `yiban/adapters/protocol_yiban/`
     （目标架构契约 `docs/dev/architecture-target.md` 第 3 节）。本文件钉四条不变式：
     ① **旧坐标消失**：`yiban/protocol/` 不存在——留着它就是第二份实现。
-    ② **许可与规格随包**：`LICENSE`（MIT）与 `SPEC.md` 在新坐标下在位。
+    ② **许可与规格随包**：`LICENSE`（AGPL-3.0-only）与 `SPEC.md` 在新坐标下在位。
     ③ **洁净室仍然洁净**：新坐标下每个 `.py` 都不引仓内任何东西。判据是 AST
        扫 import 语句，加一条**字符串面**扫描（动态导入的模块名）。
        为什么另加 AST 判据：import-linter 走静态图，`importlib.import_module("yiban.x")`
