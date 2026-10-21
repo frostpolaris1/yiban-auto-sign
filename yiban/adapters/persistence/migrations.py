@@ -134,6 +134,7 @@ _ARTIFACTS = {
     19: (("sign_claims", "epoch"), ("sign_tasks", "epoch")),  # migrate_v19 补两列
     21: (("run_events", None),),                          # migrate_v21 建表
     23: (("egress_state", "half_open_until"),),           # migrate_v23 补列
+    24: (("emit_ledger", None),),                         # migrate_v24 建表
 }
 
 
@@ -1200,6 +1201,31 @@ def migrate_v23(conn):
     _commit_if_free(conn)
 
 
+def migrate_v24(conn):
+    """v24：建 `emit_ledger`——「是否已经说过」的持久仲裁者（单 3zr5）。
+
+    键是**内容寻址**（`day`/`scope`/`kind`/`payload` 的摘要，由数据层构造），主键
+    唯一约束就是仲裁者。作用域（业务日、执行体槽位）写进键与列，故跨天/多执行体
+    不需要任何清理或复位动作（见 `yiban/adapters/persistence/emit_ledger.py`）。
+
+    **核心迁移**：表缺失时两个入口 fail-open（每次都照说），后果是观测面重复而
+    不是签到错误；但"重复"正是本单要根治的形状，故按核心档 fail-closed 拒启，
+    并登记产物（缺表点名报错），不让它静默退化成"去重没生效"。
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS emit_ledger ("
+        "key      TEXT PRIMARY KEY, "
+        "day      TEXT NOT NULL, "
+        "scope    TEXT NOT NULL, "
+        "kind     TEXT NOT NULL, "
+        "value    TEXT NOT NULL DEFAULT '', "
+        "seen_at  TEXT NOT NULL"
+        ")"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_emit_ledger_day ON emit_ledger(day)")
+    _commit_if_free(conn)
+
+
 # 迁移项格式：(目标版本号, 名称, 函数, 是否核心)
 # - 核心迁移：现有功能依赖，失败应阻断启动。
 # - 可选迁移：未来/非关键能力，失败只告警或延后重试。
@@ -1241,6 +1267,9 @@ _MIGRATIONS = [
     # v23 核心：出口桶状态的半开剩余时长。读写层硬编该列名；缺列会让整行读失败，
     # 连出口级 rate 也装不回（工单 ba-p04-04）。
     (23, "v23_egress_half_open", migrate_v23, True),
+    # v24 核心：「是否已经说过」的持久仲裁者（单 3zr5）。缺表时入口 fail-open ⇒
+    # 观测面重复而不报错，正是本单要根治的形状，故 fail-closed。
+    (24, "v24_emit_ledger", migrate_v24, True),
 ]
 
 

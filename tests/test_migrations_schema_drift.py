@@ -55,6 +55,7 @@ REQUIRED_ARTIFACTS = (
     (16, "verify_jobs", "prev_status"),
     (21, "run_events", None),
     (23, "egress_state", "half_open_until"),
+    (24, "emit_ledger", None),
 )
 
 
