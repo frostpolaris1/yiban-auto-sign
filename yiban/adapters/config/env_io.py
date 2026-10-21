@@ -72,15 +72,12 @@ from yiban.infra import env_lock
 
 logger = logging.getLogger("yiban")
 
-#: **三个可配置路径键**（`docs/dev/cli.md` §1.1）：唯一的优先级例外——**进程环境 →
-#: `.env` → 默认值**。其余 `YIBAN_*` 键按 M27 统一口径 `.env` 优先、进程环境只补缺。
+#: 四个**路径键**（`docs/dev/cli.md` §1.1）：唯一的优先级例外——**进程环境 → `.env` →
+#: 默认值**。其余 `YIBAN_*` 键按 M27 统一口径 `.env` 优先、进程环境只补缺。
 #: 这是键集合的**唯一定义点**：CLI 视图与 `scripts/child_env.build_child_env` 都引用它，
 #: bash 载体的同一排除条件由 `tests/test_path_env_priority_single_source.py` 源码守卫钉住。
-#:
-#: `YIBAN_ENV_FILE` **不在**此列：它是指针，必须在读任何 `.env` 之前定位，故只由进程
-#: 环境给（`env_path()`），`.env` 里写它一律忽略。把它并进来会让"指针指向另一份 .env"
-#: 变成事实，而 web 会跟着走、三个 bash 载体固定 `$APP_DIR/data/.env`——两份配置就此分叉。
-PATH_KEYS = ("YIBAN_DB_FILE", "YIBAN_STATE_DIR", "YIBAN_LOG_FILE")
+PATH_KEYS = ("YIBAN_ENV_FILE", "YIBAN_DB_FILE", "YIBAN_STATE_DIR", "YIBAN_LOG_FILE")
+#: 指针键名（供 `scripts/child_env` 与测试引用；语义见 `env_path()`）。
 ENV_FILE_KEY = "YIBAN_ENV_FILE"
 
 
@@ -300,13 +297,7 @@ def resolve_path(key, default, *, env=None, env_file=None):
     锁与磁盘外锚点，互相污染对方的取证基线。
 
     env / env_file 参数供测试注入；缺省读进程环境与 `env_path()`。
-
-    **指针键例外**：`YIBAN_ENV_FILE` 只由进程环境给，不读 `.env`（见 `PATH_KEYS` 注释
-    与 `env_path()` 的说明）。它决定"读哪份 .env"，不可能由 .env 自己决定。
     """
-    if key == ENV_FILE_KEY:
-        raw = (os.environ if env is None else env).get(key, "")
-        return str(raw).strip() or default
     raw = (os.environ if env is None else env).get(key, "")
     if not str(raw).strip():
         try:
