@@ -4,7 +4,7 @@
 此前 web 手动签到子进程只继承 gunicorn 启动时的环境快照，
 管理员事后在 .env 改的 YIBAN_PROXY / YIBAN_NOTIFY_URL / 登录方式等对手动签到
 不生效（定时签到经 run.sh/scheduler 每次重读 .env，两条路径行为分叉）。
-现统一为本模块：以进程环境为底座，.env 的 YIBAN_* 键覆盖注入；**三个可配置路径键例外**，
+现统一为本模块：以进程环境为底座，.env 的 YIBAN_* 键覆盖注入；**四个路径键例外**，
 它们按 `env_io.resolve_path` 同口径进程环境优先、.env 只补缺。
 
 `.env` 读不到时**响亮告警**（口径对齐 run.sh 的 MF-81④）：本模块存在的理由就是
@@ -93,7 +93,7 @@ def parse_env_file(path):
 def build_child_env(env_file, base=None):
     """构造签到/探针子进程环境：进程环境为底座，`.env` 的 YIBAN_* 键覆盖注入。
 
-    文件值优先于外部环境：这是 Web 设置页能生效的关键。**三个可配置路径键例外**
+    文件值优先于外部环境：这是 Web 设置页能生效的关键。**四个路径键例外**
     （`env_io.PATH_KEYS` 的三枚键）：它们按 `env_io.resolve_path` 的同一口径
     **进程环境优先、`.env` 只补缺**。否则同一份 `.env` 行经 web/引擎（`resolve_path`）
     与经子进程注入（本函数）会得到两个真值——测试/CI 用进程环境重定向数据目录时，
