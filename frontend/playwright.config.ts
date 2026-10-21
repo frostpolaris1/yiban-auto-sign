@@ -31,7 +31,10 @@ export default defineConfig({
   reporter: [["list"]],
   timeout: 30_000,
   expect: { timeout: 10_000 },
+  // 每条用例用 e2e/base.ts 的登录夹具新建会话，**不共享** Cookie：
+  // 管理员/用户每次登录都会换发 sid，上一份 Cookie 立刻作废（详见 base.ts）。
   use: {
+    ...devices["Desktop Chrome"],
     baseURL: `http://127.0.0.1:${PORT}`,
     trace: "off",
     // 浏览器时区固定为北京（UTC+8）：e2e/server.py 按业务钟 `yiban.clock`（固定 +8）
@@ -41,7 +44,6 @@ export default defineConfig({
     // （`logs.spec.ts::dates()` 与 `crowded`）不受它影响，另走 `e2e/business-day.ts`。
     timezoneId: "Asia/Shanghai",
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
     command: `"${pythonCommand()}" e2e/server.py`,
     url: `http://127.0.0.1:${PORT}/login`,
