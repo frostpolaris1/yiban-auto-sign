@@ -66,7 +66,7 @@ from yiban.adapters.config import env_io  # noqa: E402
 # ~数小时，tick-only 心跳会在正常工作状态下"陈旧"误报；线程随进程死——进程
 # 没了心跳断流，正是探活要抓的形态），探活只读一个事实：心跳 mtime。
 # `--check-health` 在 import signin 与 yiban 业务模块之前退出：30s 一次的探测不该拖着
-# 整条业务导入链（耗时）。它躲不开第三方依赖：快路为解析 STATEDIR 导 `yiban.infra.env_io`，
+# 整条业务导入链（耗时）。它躲不开第三方依赖：快路为解析 STATEDIR 导 `yiban.adapters.config.env_io`，
 # 连带 `env_lock → yiban.infra.locks → portalocker`。"观测件的判据必须比被观测对象更
 # 简单"从此只在业务模块图上成立，依赖图上快路与 sched 本体共用 portalocker。
 # 这笔导入必须付：状态目录可以只写在 `.env` 里。写心跳的一方与探活读的一方必须算出同
@@ -535,7 +535,7 @@ def _child_timeout(env):
         except (TypeError, ValueError):
             pass
     end_hhmm = str(env.get("YIBAN_SIGN_END", "07:50")).strip()
-    # 格式校验与 run.sh / yiban.window.parse_hhmm 一致（接受 7:50 与 07:50）；非法回退
+    # 格式校验与 run.sh / yiban.core.window.parse_hhmm 一致（接受 7:50 与 07:50）；非法回退
     if not re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", end_hhmm):
         end_hhmm = "07:50"
     try:

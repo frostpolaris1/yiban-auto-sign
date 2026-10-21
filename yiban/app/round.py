@@ -5,7 +5,7 @@
 
 两种形态共用同一份重试分级与领取池：调度 v2 的**时间驱动堆队列**（自动错峰，失败
 账号经 `_next_retry_at` 重新采样落点后非阻塞重插）与**手动队列**（`--only`/兜底执行体
-传入空 schedule，失败回队尾并等满最小间隔）。多执行体的分工靠 `yiban/store/claims.py`
+传入空 schedule，失败回队尾并等满最小间隔）。多执行体的分工靠 `yiban/adapters/persistence/claims.py`
 的账号级租约：领不到即"别人正在做它"，本进程不碰（不写状态、不重试、不告警）。
 
 **归属**
@@ -17,10 +17,10 @@
 **外部集成不得调用**：`run_queue_retry` 会**静默写冻结的 `sign_claims`**、绕开唯一台账
 `sign_tasks`（当日计划/了结事实都以新表为准），任何部署脚本、cron、容器调度或第三方集成
 都**不得**直接调用它（也不要经 `scripts/signin.py` 兼容壳的裸名转发调用）；对外入口只有
-`yiban.engine.runner.main`（`python -m yiban.cli sign` / `scripts/signin.py` 的 `main`）。
+`yiban.app.runner.main`（`python -m yiban.entry.cli sign` / `scripts/signin.py` 的 `main`）。
 
 **复用**
-`run_queue_retry` 与重试分级常量、状态码别名（`STATUS_*`，取自 `yiban.status`）。
+`run_queue_retry` 与重试分级常量、状态码别名（`STATUS_*`，取自 `yiban.core.status`）。
 `SIGN_MODE` 与 `_DEFAULT_SLOW_SIGN_SEC` **不对齐任何外部口径**，只在本文件内自用（前者喂
 随机模式判定，后者喂慢签告警）：读 `YIBAN_SIGN_MODE` 的另外五处（`engine/schedule.py`、
 `web/routes/me_api.py`、`web/routes/settings_api.py`、`web/services/accounts_data.py`、
@@ -67,7 +67,7 @@ SIGN_MODE = os.environ.get("YIBAN_SIGN_MODE", "").strip().lower()
 # 单次尝试耗时告警阈值（秒）：超此值 → warning + 管理员汇总邮件 + 即时通知
 _DEFAULT_SLOW_SIGN_SEC = 30
 
-# 状态码别名（与 yiban.status 同一对象）
+# 状态码别名（与 yiban.core.status 同一对象）
 STATUS_SUCCESS = yiban_status.STATUS_SUCCESS
 STATUS_ALREADY = yiban_status.STATUS_ALREADY
 STATUS_NO_TASK = yiban_status.STATUS_NO_TASK
@@ -81,7 +81,7 @@ STATUS_USER_CANCELLED = yiban_status.STATUS_USER_CANCELLED
 # 状态码 → 日志/日历符号（同一对象，非副本）
 STATUS_SYMBOL = yiban_status.SYMBOL
 
-#: 领取池的"当日了结"口径：`yiban.status.CLAIM_DONE_STATUSES` 的别名（**同一对象**，
+#: 领取池的"当日了结"口径：`yiban.core.status.CLAIM_DONE_STATUSES` 的别名（**同一对象**，
 #: 非副本）。这三个状态意味着今天不必再签，其余状态（含窗口外跳过、无点位、失败）
 #: 都仍开放，由补签轮或兜底执行体接手。补签轮定向剔除（`state_io`）判的是同一件事。
 _CLAIM_DONE_STATUSES = yiban_status.CLAIM_DONE_STATUSES

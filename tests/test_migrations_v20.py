@@ -9,7 +9,7 @@
 5. 容错（某日损坏 / 目录缺失 → 跳过，不抛）；
 6. `run_at` 时间回退与批量提交不丢行。
 
-另有一条守卫：冻结映射表与 `yiban.status.ALL_STATUSES` 的键绑定（少一格即两头静默失效）。
+另有一条守卫：冻结映射表与 `yiban.core.status.ALL_STATUSES` 的键绑定（少一格即两头静默失效）。
 
 库是**手工搭到 v19** 的（v17 建 `sign_claims`、v18 建 `sign_tasks`+`epoch`、v19 补
 `sign_claims.epoch`）——不借 `db` 的全局连接，免得多用例共享单例连接互相干扰。

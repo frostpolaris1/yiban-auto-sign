@@ -29,7 +29,7 @@ from yiban.core.masking import sanitize_url as _sanitize_url
 
 logger = logging.getLogger("yiban")
 
-# 状态码别名（与 yiban.status 同一对象）
+# 状态码别名（与 yiban.core.status 同一对象）
 STATUS_USER_CANCELLED = yiban_status.STATUS_USER_CANCELLED
 STATUS_FAILED = yiban_status.STATUS_FAILED
 
@@ -143,7 +143,7 @@ _is_yiban_trusted_url = security.is_yiban_trusted_url
 _is_strict_yiban_url = security.is_strict_yiban_url
 
 # 运行期账号复核（"启动快照跑完整轮期间账号可能被删/停用"）的实现在
-# `yiban/store/accounts.py::account_still_signable`——会话缓存的写入闸门
+# `yiban/adapters/persistence/accounts.py::account_still_signable`——会话缓存的写入闸门
 # （`yiban.client`）与本模块必须用**同一份**判据，各写一份会分叉。
 account_still_signable = accounts_store.account_still_signable
 
