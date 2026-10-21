@@ -74,10 +74,34 @@ def _facade():
 SIGN_EVENTS_RETENTION_DAYS = 180
 
 # 单条与批量写入共用同一列序：分列两处时，只改一侧的列序会让另一条写入路径静默错位。
+# 条件 INSERT（工单 f7or）：sign 事件按 (账号, 业务日, status, attempt) 幂等——
+# 同一事实被重扫/多执行体重发时只留第一行。探针（stage='probe'）是另一条观测通道，
+# 有自己的 cadence，不参与去重。单语句 `INSERT … SELECT … WHERE NOT EXISTS` 在
+# `_begin_immediate` 的写锁内执行，故"查重"与"写入"之间没有别的写者能插进来。
 _INSERT_SIGN_EVENT_SQL = (
     "INSERT INTO sign_events (ts, phone, status, message, stage, attempt, "
-    "account_id, dur_sec, finished_at) VALUES (?,?,?,?,?,?,?,?,?)"
+    "account_id, dur_sec, finished_at) "
+    "SELECT ?,?,?,?,?,?,?,?,? "
+    "WHERE ? = 'probe' OR NOT EXISTS ("
+    "SELECT 1 FROM sign_events "
+    "WHERE phone = ? AND stage <> 'probe' AND status = ? AND attempt = ? "
+    "AND substr(ts, 1, 10) = substr(?, 1, 10))"
 )
+
+
+def _event_params(ts, phone, status, message, stage, attempt,
+                  account_id, dur_sec, finished_at):
+    """条件 INSERT 的 14 个占位：9 个列值 + 去重判据（stage/phone/status/attempt/ts）。
+
+    去重键与测试侧的不变式校验器（`tests/test_sign_events.py::sign_events_observation_gate`）
+    同一口径：**账号 + 业务日（ts 前 10 位）+ status + attempt**；stage 只用来把探针排除在外。
+    该校验器是单测助手，不是运行期门；真实写入幂等由本条 SQL 与行为用例钉住。
+    """
+    attempt = int(attempt or 0)
+    stage = str(stage or "")
+    return (ts, phone, status, message, stage, attempt,
+            account_id, dur_sec, finished_at,
+            stage, phone, status, attempt, ts)
 
 # 两条写入路径共用的告警指针：本表的产物各由哪一档迁移建出。
 # 为什么要点名到档：INSERT 报 "no such column" 时，后果是这张表在保留期内**永久零写入**
@@ -85,7 +109,7 @@ _INSERT_SIGN_EVENT_SQL = (
 # 运维才能一步判断"版本说过了这档、schema 里却没有它的产物"（ba-p01-02 的下游形状）。
 _SIGN_EVENTS_ARTIFACT_HINT = (
     "缺失产物归属：表 sign_events=v4、列 account_id/dur_sec/finished_at=v6"
-    "（核对 yiban/store/migrations.py 的 _ARTIFACTS 与 schema_migrations 记录）"
+    "（核对 yiban/adapters/persistence/migrations.py 的 _ARTIFACTS 与 schema_migrations 记录）"
 )
 
 
@@ -100,17 +124,39 @@ def _normalize_limit(limit, default):
 # ---------------------------------------------------------------------------
 # 写入
 # ---------------------------------------------------------------------------
+def _accountless_sign_row(stage, phone):
+    """→ 该行是不是"无账号的 sign 行"（本表必须拒绝的形状）。
+
+    `sign_events` 只装**账号级事实**。2026-10-18 之前的摘要行用 `phone=''` 的带内
+    哨兵表示"这行不关于账号"，于是每个读者都得记得过滤。摘要行已改住 `run_events`
+    （观测表，无账号行是正常形态），本表在写入口直接拒绝空账号，负向不变式从
+    "靠读者守"变成"写不进来"。探针（stage='probe'）不受影响——它总是按账号探。
+    """
+    return str(stage or "") != "probe" and not str(phone or "")
+
+
 def add_sign_event(ts, phone, status, message="", stage="", attempt=0,
                    account_id=None, dur_sec=None, finished_at=None):
-    """写入签到事件；失败仅告警，不影响调用方。"""
+    """写入签到事件；失败仅告警，不影响调用方。
+
+    同一 (账号, 业务日, status, attempt) 重复写入只保留第一行（条件 INSERT，工单
+    f7or）。"第一行赢"与 `INSERT OR IGNORE` 同义：先到者的 message/ts 留档。
+    """
     try:
+        # 判据在 try 内：`str(phone)`/`str(stage)` 抛异常时也要走「仅告警」契约，
+        # 不得外逃到签到主流程（与批量路径同形）。
+        if _accountless_sign_row(stage, phone):
+            logger.warning("拒绝写入无账号的 sign_events 行（本表只装账号级事实；"
+                           "摘要/观测行请写 run_events）")
+            return
         with _facade()._conn_lock:
             conn = _facade().get_conn()
+            # BEGIN IMMEDIATE：查重与写入同处一把写锁，跨进程重发也只会留下一行。
+            _facade()._begin_immediate(conn)
             conn.execute(
                 _INSERT_SIGN_EVENT_SQL,
-                # attempt 列 NOT NULL：调用方显式传 None（无尝试号的事件）在此归 0。
-                (ts, phone, status, message, stage, int(attempt or 0),
-                 account_id, dur_sec, finished_at),
+                _event_params(ts, phone, status, message, stage, attempt,
+                              account_id, dur_sec, finished_at),
             )
             conn.commit()
     except Exception as e:
@@ -127,29 +173,33 @@ def add_sign_event(ts, phone, status, message="", stage="", attempt=0,
 def add_sign_events_batch(rows):
     """批量写入签到事件（单事务）；失败仅告警，不影响调用方。
 
-    rows 为 dict 列表，支持 add_sign_event 的全部字段。
+    rows 为 dict 列表，支持 add_sign_event 的全部字段。去重口径与单条一致；
+    无账号的 sign 行逐条丢弃，落库前只记一条汇总告警（见 `_accountless_sign_row`）。
     """
     with _facade()._conn_lock:
         try:
             conn = _facade().get_conn()
             _facade()._begin_immediate(conn)
+            dropped = 0
             for r in rows:
+                stage = str(r.get("stage") or "")
+                phone = r.get("phone", "")
+                if _accountless_sign_row(stage, phone):
+                    dropped += 1
+                    continue
                 conn.execute(
                     _INSERT_SIGN_EVENT_SQL,
-                    (
-                        r.get("ts", ""),
-                        r.get("phone", ""),
-                        r.get("status", ""),
-                        r.get("message", ""),
-                        r.get("stage", ""),
-                        # `.get("attempt", 0)` 挡不住显式 None；列 NOT NULL，归 0 兜底
-                        int(r.get("attempt") or 0),
-                        r.get("account_id"),
-                        r.get("dur_sec"),
+                    _event_params(
+                        r.get("ts", ""), phone, r.get("status", ""),
+                        r.get("message", ""), stage, r.get("attempt"),
+                        r.get("account_id"), r.get("dur_sec"),
                         r.get("finished_at"),
                     ),
                 )
             conn.commit()
+            if dropped:
+                logger.warning("批量写入 sign_events：丢弃 %d 条无账号行"
+                               "（摘要/观测行应写 run_events）", dropped)
         except Exception as e:
             with contextlib.suppress(Exception):
                 conn.rollback()
@@ -168,9 +218,8 @@ def sign_event_stats(days=30, stage=None):
     """按天统计签到事件数量/状态分布；失败返回空列表。
 
     两个计数口径并存：
-    - `cnt`：该日该状态的**账号数**（`COUNT(DISTINCT phone)`）。同一账号当日可被多个
-      执行体各留一行（跳过发生在领取之前，不产生 claim、不占租约，故每个 worker 都会
-      各走一遍并各写一行），按行计数会把同一账号算多次、令报表虚增；
+    - `cnt`：该日该状态的**账号数**（`COUNT(DISTINCT phone)`）。同一账号当日可有多行
+      （attempt 递进的真重试），按行计数会把同一账号算多次、令报表虚增；
     - `row_cnt`：该日该状态的**原始行数**（`COUNT(*)`），保留"尝试次数"信息（重试本来
       就会多行，那是真事实）。
 
@@ -181,18 +230,19 @@ def sign_event_stats(days=30, stage=None):
        状态文件，见 `web/services/logs.py` 的 `accounts_terminal_summary`），
        不来自本表——用"每账号最后一条事件"模拟终态会被观测行污染（2026-10-16 的
        `pending` 洪水把 311 个账号刷成待签）。
-    2. 事件**列表**仍会显示多行——那是各执行体各自的事实；写入侧去重（同一
-       `(phone, day, status, stage)` 只写一次）不在本聚合范围内。
+    2. 事件**列表**仍会显示多行——那是各次真实尝试各自的事实；写入侧对同一
+       `(phone, day, status, attempt)` 只写一次（条件 INSERT，工单 f7or），故多行
+       必然对应不同的 attempt 或 status，不是同一事实的重复观测。
 
     stage 为可选过滤开关：sign_events 同时承载真实签到（stage="sign"）与健康探针
     （stage="probe"），不传时两者混算。需要「签到口径」的调用方必须显式传
     stage="sign"，否则探针的成功/失败会被计入签到成功率。
 
-    **摘要行（`phone=''`）排除在账号口径之外**：兜底收尾扫描把「已由他人负责」收成
-    一条批量事件（工单 81xt），该行没有单一账号。它若参与聚合，就会凭空造出一个
-    `pending` 桶、并把 `COUNT(DISTINCT phone)` 抬高 1——正是 2026-10-10 生产
-    「pending 桶 = 全部账号数」的成因形状（MF-55）。摘要行仍留在表里、仍可被事件流
-    读出，只是不进按账号聚合。
+    **账号级事实是结构性保证（工单 3zr5）**：写入口拒绝无账号的 sign 行
+    （`_accountless_sign_row`），摘要/观测行走 `run_events`。`phone <> ''` 保留为
+    **历史行防御**：本批上线前的库可能仍有 `phone=''` 的摘要行（180 天保留期内），
+    去掉过滤会让 2026-10-10 的 `pending` 桶污染（MF-55／81xt）在旧数据上复活。
+    新写入已构造不出这种行，故该过滤对新数据是空操作。
     """
     try:
         with _facade()._conn_lock:
