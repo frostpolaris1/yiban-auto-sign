@@ -72,6 +72,14 @@ from yiban.workers import workers
 
 logger = logging.getLogger("yiban")
 
+def _workers_domain() -> tuple[int, int]:
+    """`--workers` 的合法域：每次从 `yiban.egress` 的单一定义点取（与 env / web 同源）。
+
+    取在函数里而不是模块顶层常量：测试打桩 `egress.WORKERS_MIN/MAX` 后要能观察
+    到变化，证明 CLI 没有第二份数。生产路径每次取值相同。
+    """
+    return egress.WORKERS_MIN, egress.WORKERS_MAX
+
 # 周日签到开关：部分学校周日也有签到任务（默认关闭，与历史行为一致）
 # 由网页系统设置页写入 .env（YIBAN_SUNDAY_SIGN=1），run.sh 加载后经环境变量传入。
 # 真值口径与 `schedule._env_flag` 同源（1/true/on/yes，大小写与两侧空白不敏感）。
@@ -219,6 +227,7 @@ def main(argv=None):
     # 日志装配延迟到 CLI 入口（幂等；覆盖 --check-config / --probe / --only 全部路径）
     cli_support._setup_cli_logging()
     parser = argparse.ArgumentParser(description="易班自动签到")
+    _help_w_min, _help_w_max = _workers_domain()
     parser.add_argument(
         "--check-config", action="store_true", help="仅检查账号配置（脱敏打印），不发起任何网络请求"
     )
@@ -240,7 +249,8 @@ def main(argv=None):
     parser.add_argument(
         "--workers", type=int, default=1, metavar="N",
         help=(
-            "多执行体：拉起 N 个并行执行体共同完成本轮（默认 1 = 单执行体，行为不变）。"
+            f"多执行体：拉起 N 个并行执行体共同完成本轮（默认 1 = 单执行体，行为不变；"
+            f"合法域 {_help_w_min}~{_help_w_max}，越界拒启动）。"
             "分工靠数据库里的领取池（动态领取 + 账号级租约），账号不会被两个执行体同时签；"
             "每个执行体可用 YIBAN_PROXY_LIST 配一个独立出口代理"
         ),
@@ -254,6 +264,16 @@ def main(argv=None):
         ),
     )
     args = parser.parse_args(argv)
+
+    # `--workers` 的合法域只有一处定义（`yiban.egress` 的同名常量，与 env / web
+    # 同源；见 `_workers_domain`）。CLI 是人手敲的入口，越界按**用法错误**
+    # 拒启动（rc=2，不拉起任何执行体）：宿主 `run.sh` 已在传参前按同一域校验，
+    # cron/脚本路径不会因此把一轮签到变成零签到。
+    _w_min, _w_max = _workers_domain()
+    if not (_w_min <= args.workers <= _w_max):
+        parser.error(
+            f"--workers 必须在 {_w_min}~{_w_max} 之间"
+            f"（收到 {args.workers}）")
 
     # 账号凭据密钥两侧自证（fail-closed）：env 档（如 systemd EnvironmentFile 注入）
     # 与 .env 文件档并存且不同 ⇒ 引擎拒绝本轮——"env 优先"下静默用另一把钥，签到会把
@@ -562,8 +582,9 @@ def main(argv=None):
         _declared = {egress.egress_identity(egress.resolve(egress.ROLE_WORKER, i))
                      for i in _slots}
         _egress_n = max(1, len(_declared))
-        # λ 必须与令牌桶同域（`clamp_rate` 是桶的公开夹取口径）：名册域 [0.01, 100] 比
-        # 桶域 [0.2, 4.0] 宽，不夹取会让结论偏一个方向（λ > 4 漏报、λ < 0.2 多报）。
+        # λ 已由 `schedule.egress_rate()` 按引擎速率域读过并钳过（域外值在那里已
+        # WARN）。这里再过一次 `clamp_rate` 是防御：容量预检与令牌桶必须同域，
+        # 否则结论偏一个方向（偏大漏报、偏小多报）。
         # caveat：平台侧按 IP 限速未测，λ 只用配置值，不含 AIMD 实时档位。
         # 口径归一（工单 34gf）：限速单元是**出口标识**（`egress.egress_identity`），不是
         # 物理 IP——两者不一一对应（生产 squid 行与直连行是两个标识、一个物理 IP）。故
