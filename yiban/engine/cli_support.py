@@ -16,10 +16,12 @@ CLI 支撑：日志装配、进程级运行锁、状态文件读改写锁，以�
 
 **复用**
 `_setup_cli_logging`（幂等日志装配）、`_state_file_lock`（状态文件读改写锁）、
-`GLOBAL_RUN_LOCK_NAME`、兜底锁名常量、`_acquire_run_lock` 与 `_run_lock_held`；
-锁原语来自 `yiban.infra.locks`。`_run_lock_held` 的生产消费者是
-`yiban.adapters.persistence.queue_store.reclaim_tasks`（工单 `uob1` X2）：
-手动 `--only` 在翻 `claimed` 行前探测**兜底锁**，持锁则跳过该行。
+`GLOBAL_RUN_LOCK_NAME`、兜底锁名常量、`_acquire_run_lock`（互斥取锁）与
+`_run_lock_held`（探测原语）。
+锁原语来自 `yiban.infra.locks`。重签路径的互斥由 `_acquire_run_lock` 承担：
+`yiban.adapters.persistence.queue_store.reclaim_tasks` **持有**兜底锁跨事务
+（工单 `uob1` X2 ＋ 审查 D1 整改）；`_run_lock_held` 现无生产调用点，
+消费者＝测试侧 fail-closed 门与竞态用例探针（存删随 X6 裁决）。
 运行锁的两种拒绝信号是 `_RunLockHeld`（别人在跑）与 `_RunLockUnavailable`（本进程拿不到
 互斥：锁文件不可写 / 平台无锁后端 / 等待超时），两者都 fail-closed，调用点按既有退出码族透出。
 输出收口供 `yiban/entry/cli/__init__.py` 复用（`_say` 人话走 stderr、`_emit_json` 结果走 stdout、失败
@@ -194,12 +196,12 @@ def _run_lock_held(name=None):
 
     判据与部署形态无关：**锁被持有 = 有一轮在飞**（监督进程持它覆盖整轮，含全部子执行体）。
 
-    **生产消费者**（工单 `uob1` X2）：`yiban.adapters.persistence.queue_store.reclaim_tasks`
-    在把 `claimed` 行翻回 `pending` 之前，把兜底锁名显式传给 `name=` 探测；
-    持锁 ⇒ 跳过该行（不翻、不换代），避免手动 `--only` 与兜底在飞行的同一账号并发真实
-    登录。它曾是兜底腿"整段让位"与轮内复检（`yield_probe`）的事实源，两者随工单 `l1rx`
-    R4 删除（让位改由肘界谓词承担）；本函数因 X2 重新接上真消费者。删它仍要连
-    `tests/test_run_lock_fail_closed.py` 的 fail-closed 门与 `queue_store` 的调用点同批动。
+    **消费现状（复评 F2 订正）**：重签路径的互斥已改为**持有**兜底锁——
+    `queue_store.reclaim_tasks` 直接调 `_acquire_run_lock`（锁名显式传兜底锁常量）
+    跨事务（审查 D1 整改），本函数退回"探测原语 ＋ fail-closed 语义门"：
+    生产代码零调用点，消费者是 `tests/test_fallback_gates.py`（fail-closed 门）与
+    `tests/test_reclaim_fallback_lock_e2e.py`（竞态用例的事务中探针）。删它须连
+    `tests/test_run_lock_fail_closed.py` 与这两处同批动。
 
     做法就是"拿一下立刻放"：flock 只能靠尝试获取来问，拿到说明没人跑、当场释放。
     `name` 缺省即**全局轮次锁名**（取值见 `_acquire_run_lock`：它**不读**
