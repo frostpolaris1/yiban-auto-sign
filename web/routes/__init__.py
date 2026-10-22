@@ -22,15 +22,17 @@ CSRF / 安全响应头）与共享状态仍留在 `web/app.py`。
 是日志导出限速表，`read_audit_trace()` / `read_audit_denied_trace()` 是只读面聚合留痕
 的两个入口；`page_args()` 是列表接口（账号 / 用户 / 日志）可选分页参数的唯一解析点，
 `page_window()` 是列表三域共用的唯一分页切片点，`page_meta()` 是账号 / 用户两域
-分页元数据的唯一取用点（日志域的总数沿用既有键名 `total_lines`，故不走它）。
+分页元数据的唯一取用点，`json_conditional()` 是两域条件请求（ETag/304）的唯一实现（日志域的总数沿用既有键名 `total_lines`，故不走它）。
 
 **通信**
 `web.app` 在 create_app 尾部 `register_all(app)` 一次接入；本包不在导入期反向导入
 web.app——`appmod()` 在调用时才解析，避免与 `web/app.py` 形成导入环。
 """
+import hashlib
+import json
 import sys
 
-from flask import current_app, request
+from flask import current_app, jsonify, request
 
 #: 列表接口分页参数的上下限（沿用日志列表的 1–200 口径）。
 PAGE_LIMIT_MIN = 1
@@ -117,6 +119,30 @@ def page_meta(total, limit, offset, returned):
     `total` 是**整表**条数（不随页窗口变化），`returned` 是本页实际条数。
     """
     return {"total": total, "limit": limit, "offset": offset, "returned": returned}
+
+
+def json_conditional(payload):
+    """列表 GET 的条件请求出口：按响应体算 ETag，命中 `If-None-Match` 时回 304。
+
+    账号与用户列表共用本函数（唯一实现）。ETag 取规范化 JSON 的摘要，故只要负载
+    有一个字节变化（含分页元数据与 group_totals），标签就变；命中时回空体 304，
+    前端沿用上一次解析结果。`Cache-Control: private, no-cache` 表示“可存但每次
+    必须回源校验”，不会让浏览器直接复用旧体。
+    """
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    etag = '"' + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32] + '"'
+    inm = request.headers.get("If-None-Match", "")
+    tags = [t.strip() for t in inm.split(",")] if inm else []
+    # If-None-Match 用弱比较（RFC 9110 §13.1.2）：客户端回传 W/"..." 时也要命中。
+    opaque = [t[2:].strip() if t.startswith("W/") else t for t in tags]
+    if etag in opaque or "*" in tags:
+        resp = current_app.response_class(status=304)
+    else:
+        resp = jsonify(payload)
+    resp.headers["ETag"] = etag
+    resp.headers["Cache-Control"] = "private, no-cache"
+    resp.headers["Vary"] = "Cookie"
+    return resp
 
 
 def login_fails():
