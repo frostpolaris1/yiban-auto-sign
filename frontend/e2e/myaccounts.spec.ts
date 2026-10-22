@@ -154,6 +154,13 @@ test("管理端我的账号：归属邮箱偏好可用、无注销卡、账号�
   // 管理端专有：显示偏好在位且可切换（本机偏好，落 localStorage，不写服务端）
   const prefCard = page.locator(".card", { hasText: "显示偏好" }).first();
   await expect(prefCard).toBeVisible();
+  // 说明块吃满行内剩余宽度：旧实现是固定 167px 的收缩盒，长说明被省略号截断。
+  const prefRow = prefCard.locator(".set-row").first();
+  const prefText = prefRow.locator(".set-row-text");
+  const rowBox = await prefRow.boundingBox();
+  const textBox = await prefText.boundingBox();
+  expect(rowBox && textBox).toBeTruthy();
+  expect(textBox!.width, "说明块未吃满行宽（旧固定 167px）").toBeGreaterThan(rowBox!.width - 100);
   const sw = prefCard.locator("input[type=checkbox]");
   const label = prefCard.locator("label.switch");
   await expect(sw).toBeChecked(); // 默认开（键缺失=开）

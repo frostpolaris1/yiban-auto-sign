@@ -184,7 +184,12 @@ defineExpose({ isDirty: () => dirty.value, save });
     </div>
     <div class="form-grid">
       <div class="field">
-        <span class="field-label" id="sh-report-time-label">报告发送时刻</span>
+        <span class="field-label" id="sh-report-time-label">报告发送时刻
+          <button type="button" class="info-tip" aria-label="报告发送时刻说明" aria-describedby="set-pop-report-time">
+            <svg aria-hidden="true"><use href="#i-info" /></svg>
+            <span class="info-pop" id="set-pop-report-time" role="tooltip">到达该时刻后的最近一次清理线程唤醒发出。时刻落在跨零点那一跳的空隙里时，零点后的第一跳补发：当周可能多一封，不会丢。时刻按北京时间（UTC+8，与签到窗口同一时基）判定；改完下一轮生效（约 5 分钟内），不必重启。通道降级与额度耗尽的当天加发不受本设置影响。</span>
+          </button>
+        </span>
         <el-time-picker
           id="sh-report-time"
           :model-value="form.reportTime"
@@ -195,16 +200,21 @@ defineExpose({ isDirty: () => dirty.value, save });
           style="width: 100%"
           @update:model-value="onReportTimeChange"
         />
-        <p class="field-help">到达该时刻后的最近一次清理线程唤醒发出，误差不超过 5 分钟（时刻落在跨零点那一跳的空隙里时，零点后的第一跳补发：当周可能多一封，不会丢）。时刻按北京时间（UTC+8，与签到窗口同一时基）判定。改完下一轮生效（约 5 分钟内），不必重启；通道降级与额度耗尽的当天加发不受本设置影响。</p>
+        <p class="field-help">误差不超过 5 分钟；改完下一轮生效。</p>
       </div>
       <div class="field">
-        <span class="field-label" id="sh-report-weekday-label">报告发送星期</span>
+        <span class="field-label" id="sh-report-weekday-label">报告发送星期
+          <button type="button" class="info-tip" aria-label="报告发送星期说明" aria-describedby="set-pop-report-weekday">
+            <svg aria-hidden="true"><use href="#i-info" /></svg>
+            <span class="info-pop" id="set-pop-report-weekday" role="tooltip">与上面的时刻同属一项设置。时刻留空也不影响：只填星期同样有效，那一天按服务启动钟点发。</span>
+          </button>
+        </span>
         <div class="select-field" data-select-field="sh-report-weekday">
           <el-select id="sh-report-weekday" v-model="form.reportWeekday" aria-label="报告发送星期" :disabled="!isMaster || !form.reportFixed" style="width: 100%">
             <el-option v-for="it in weekdayItems" :key="it.value" :value="it.value" :label="it.label" />
           </el-select>
         </div>
-        <p class="field-help">与上面的时刻同属一项设置，开关关闭时一并清除（时刻留空也不影响：只填星期同样有效，那一天按服务启动钟点发）。缺省周一。</p>
+        <p class="field-help">开关关闭时一并清除；缺省周一。</p>
       </div>
     </div>
     <p class="set-tip" :class="{ 'set-bad': tip.bad }" id="sh-tip" role="status">{{ tip.text }}</p>
