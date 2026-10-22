@@ -14,7 +14,9 @@ test("登录页：页签切换、注册字段级即时校验、协议模态（�
   await expect(page.locator("#login-form")).toBeVisible();
   await expect(page.locator("#register-pane")).toBeHidden();
   await expect(page.locator("#auth-title")).toHaveText("登录");
-  await expect(page.locator("#auth-sub")).toContainText("使用注册邮箱进入签到管理面板");
+  // 副标题已按「一屏只说一件事」删除：标题只留页签名，说明交给左栏要点。
+  await expect(page.locator("#auth-sub")).toHaveCount(0);
+  await expect(page.locator(".auth-aside-body > p")).toHaveCount(0);
 
   // ② 切到注册：整组显隐 + 标题同步（避免出现「标题说登录、表单是注册」）
   await page.click('[data-auth-tab="register"]');
