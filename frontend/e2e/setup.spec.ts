@@ -38,16 +38,21 @@ test.describe.serial("F4 首次启动引导", () => {
     await page.waitForURL(/\/data\/dashboard$/);
     await expect(page.locator("h1.page-title")).toHaveText("数据总览");
 
-    // 清掉会话回到未登录态，再用刚写入 .env 的管理员口令登录：证明落盘的是
-    // 可验证的 scrypt 哈希，而不是只把当前会话抬成管理员。
+    // 新建一个干净浏览器上下文（而不是 clearCookies）回到未登录态：证明落盘的是
+    // 可验证的 scrypt 哈希，另一台设备/另一个浏览器也能用刚创建的口令登录。
     // 不用 /api/logout：该接口要 CSRF 头，page.request 没有；退出路径另有 e2e 覆盖。
-    await page.context().clearCookies();
-    await page.goto(SETUP + "/login");
-    await page.fill("#username", "admin");
-    await page.fill("#password", "SetupPass123!");
-    await page.click("#login-btn");
-    await page.waitForURL(/\/data\/dashboard$/);
-    await expect(page.locator("h1.page-title")).toHaveText("数据总览");
+    const fresh = await page.context().browser()!.newContext();
+    try {
+      const p2 = await fresh.newPage();
+      await p2.goto(SETUP + "/login");
+      await p2.fill("#username", "admin");
+      await p2.fill("#password", "SetupPass123!");
+      await p2.click("#login-btn");
+      await p2.waitForURL(/\/data\/dashboard$/);
+      await expect(p2.locator("h1.page-title")).toHaveText("数据总览");
+    } finally {
+      await fresh.close();
+    }
   });
 
   test("已配置实例：/setup 转登录页，创建接口拒绝", async ({ page, request }) => {

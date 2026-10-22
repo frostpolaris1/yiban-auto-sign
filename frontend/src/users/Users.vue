@@ -13,7 +13,6 @@ import {
   deletedInlineMeta,
   groupSpec,
   inlineMeta,
-  listOf,
   mapDeleted,
   mapUsers,
   matches,
@@ -67,7 +66,23 @@ interface UserOps {
   batchPurge(uids: string[]): void;
 }
 
-const users = ref<UserRecord[]>([]);
+interface UsersPayload {
+  users?: unknown[];
+  builtin_admin?: unknown;
+  total?: number;
+  group_totals?: Record<string, number>;
+  notModified?: boolean;
+}
+
+// 服务端分组分页：三组各只保存当前页；已注销组仍一次取全（接口无分页）。
+const rowsByGroup = ref<Record<string, UserRecord[]>>({ pending: [], normal: [], vacant: [] });
+const totals = ref<Record<string, number>>({ pending: 0, normal: 0, vacant: 0 });
+const groupTotals = ref<Record<string, number>>({ pending: 0, normal: 0, vacant: 0 });
+const users = computed<UserRecord[]>(() => [
+  ...rowsByGroup.value.pending,
+  ...rowsByGroup.value.normal,
+  ...rowsByGroup.value.vacant,
+]);
 const deleted = ref<DeletedRecord[]>([]);
 const builtin = ref("admin");
 const isMaster = ref(false);
@@ -79,9 +94,8 @@ const tab = ref<Group>("pending");
 const tabsEl = ref<HTMLElement | null>(null);
 const { style: tabIndicatorStyle, ready: tabIndicatorReady } = useTabIndicator(tabsEl, tab);
 const search = ref<Record<string, string>>({ pending: "", normal: "", vacant: "", deleted: "" });
-// 分页状态（每组各持一页；页大小四组共用一个值）。客户端分页：后端 /api/users 的
-// limit/offset 切整表，而本页按角色/状态在前端分四组——直接对整表分页会把同组拆到不同页。
-// 故一次取全、每组只渲染当前页，使 5k 用户下首屏 DOM 与页大小同阶。
+// 分页状态（每组各持一页；页大小四组共用一个值）。三组走服务端 group+limit/offset，
+// 组总量与总条数由服务端下发；已注销组仍客户端切片。
 const pages = ref<Record<string, number>>({ pending: 1, normal: 1, vacant: 1, deleted: 1 });
 const pageSize = ref(DEFAULT_PAGE_SIZE);
 const PAGE_SIZE_OPTS: number[] = [...PAGE_SIZES];
@@ -96,84 +110,83 @@ const visibleGroups = computed(() => GROUPS.filter((g) => g.key !== "deleted" ||
 function specOf(group: Group): ReturnType<typeof groupSpec> {
   return groupSpec(group);
 }
-function userRows(group: Group): UserRecord[] {
-  if (group === "deleted") return [];
-  const kw = search.value[group] ?? "";
-  return listOf(users.value, group).filter((u) => matches(u.email, maskEmail(u.email), kw));
-}
 function rowsOf(group: Group): { email: string }[] {
-  return group === "deleted" ? deleted.value : userRows(group);
+  return group === "deleted" ? deleted.value : rowsByGroup.value[group] ?? [];
 }
 function totalOf(group: Group): number {
   if (group === "deleted") return deleted.value.length;
-  const base = listOf(users.value, group).length;
-  return group === "normal" ? base + 1 : base; // 正式组首行固定为内置主管理员
+  const base = totals.value[group] ?? 0;
+  // 正式组首行是内置主管理员；它只在命中检索时计入（否则「无匹配结果」会被 +1 掩盖）。
+  // 计数与页码无关：翻到第 2 页时「共 N 人」仍要含它，只是不再渲染这一行。
+  return group === "normal" ? base + (builtinMatches(group) ? 1 : 0) : base;
 }
-/** 当前页的渲染行（客户端分页：行集是整组的切片；选中/计数/空态仍按整组口径）。 */
+/** 分页分子只数服务端行：内置主管理员是固定首行，不参与分页，也不该多出一页。 */
+function pageTotalOf(group: Group): number {
+  if (group === "deleted") return deleted.value.length;
+  return totals.value[group] ?? 0;
+}
 function pageRowsOf<T extends { email: string }>(group: Group, rows: T[]): T[] {
-  return pageSlice(rows, pages.value[group] ?? 1, pageSize.value);
+  return group === "deleted" ? pageSlice(rows, pages.value[group] ?? 1, pageSize.value) : rows;
 }
 function onPageChange(group: Group, p: number): void {
   pages.value = { ...pages.value, [group]: p };
+  sel.value = { ...sel.value, [group]: [] };
+  if (group !== "deleted") {
+    void fetchGroup(group).catch((e) => {
+      toast().error((e as Error)?.message || "用户列表加载失败，请稍后重试");
+    });
+  }
 }
 /** 改页大小后各组回到第 1 页（否则原页码可能越界）。 */
-function onPageSizeChange(): void {
+function onPageSizeChange(size: number): void {
+  pageSize.value = size;
   pages.value = { pending: 1, normal: 1, vacant: 1, deleted: 1 };
+  sel.value = { pending: [], normal: [], vacant: [], deleted: [] };
+  void load(false).catch((e) => {
+    toast().error((e as Error)?.message || "用户列表加载失败，请稍后重试");
+  });
 }
-/** 数据或筛选变化后把每组页码夹回有效区间（轮询后行数可能变小）。 */
+/** 数据变化后把每组页码夹回有效区间（轮询后行数可能变小）。 */
 function clampPages(): void {
   const next: Record<string, number> = {};
   for (const g of TAB_KEYS) {
-    next[g] = clampPage(pages.value[g] ?? 1, rowsOf(g).length, pageSize.value);
+    next[g] = clampPage(pages.value[g] ?? 1, pageTotalOf(g), pageSize.value);
   }
   pages.value = next;
 }
+/** 当前页可见行数（计数文案的「匹配」用）。 */
 function shownOf(group: Group): number {
   if (group === "deleted") return deleted.value.length;
-  const base = userRows(group).length;
-  // 内置主管理员行也受搜索约束，故这里必须问 showBuiltin（只 +1 会让筛到 0 条时
-  // 「可见行数 == 计数」不成立，空态与「无匹配结果」都不会出现）
+  const base = rowsOf(group).length;
   return group === "normal" ? base + (showBuiltin(group) ? 1 : 0) : base;
 }
-/** 主管理员行同样受搜索约束：写死显示会让「可见行数 == 计数」不成立（空态也会误判） */
+/** 主管理员行同样受搜索约束：写死显示会让「可见行数 == 计数」不成立（空态也会误判）。
+ *  它是不参与分页的固定首行，只在第 1 页显示，避免每页重复。 */
+function builtinMatches(group: Group): boolean {
+  return group === "normal"
+    && matches(builtin.value, maskEmail(builtin.value), search.value[group] ?? "");
+}
 function showBuiltin(group: Group): boolean {
-  return group === "normal" && matches(builtin.value, maskEmail(builtin.value), search.value[group] ?? "");
+  return builtinMatches(group) && (pages.value[group] ?? 1) === 1;
+}
+/** 组的总量（不含检索条件）：计数文案的「共 N」用这个口径，内置主管理员恒计入正式组。 */
+function groupBaseOf(group: Group): number {
+  if (group === "deleted") return deleted.value.length;
+  const base = groupTotals.value[group] ?? 0;
+  return group === "normal" ? base + 1 : base;
 }
 function countText(group: Group): string {
-  return countLabel(totalOf(group), shownOf(group), search.value[group] ?? "");
+  const kw = search.value[group] ?? "";
+  if (group === "deleted" || !kw) return countLabel(totalOf(group), shownOf(group), "");
+  return countLabel(groupBaseOf(group), totalOf(group), kw);
 }
 /** 真·空 vs 筛出来的空：前者给「下一步」，后者给「清除筛选」 */
 function isFiltering(group: Group): boolean {
-  return group !== "deleted" && listOf(users.value, group).length > 0 && userRows(group).length === 0;
+  return group !== "deleted" && !!search.value[group] && totalOf(group) === 0 && (groupTotals.value[group] ?? 0) > 0;
 }
 function emptyText(group: Group): string {
   if (shownOf(group) > 0) return "";
   return isFiltering(group) ? "无匹配结果" : specOf(group).emptyText;
-}
-
-/**
- * 组合输入（中文输入法）进行中。
- *
- * 为什么需要一个显式标志：组合期的那次回车是「提交候选词」，浏览器**仍会对表单做隐式提交**
- * （实测 Chromium：keydown 的 isComposing 为真时 submit 照样发生一次）。提交落到 commitSearch
- * 就会让输入框失焦、收起软键盘，而拼音串还没上屏。故守卫放在提交路径上，并保证组合期不做
- * 任何拦截（不打断输入法）。同族的日志页与审计页各有一份同样的守卫。
- */
-const composing = ref(false);
-
-/**
- * 检索表单提交（回车 / 点「搜索」）。
- *
- * 桌面端的筛选本就是即时的（`search` 由 v-model 驱动 computed），故这里刻意**不引入**
- * "提交前不过滤"的第二态——那会退掉既有语义。提交只做一件用户看得见的事：让输入框失焦，
- * 收起移动端软键盘，把筛出来的结果露出来。表单本身挡住原生 GET，避免整页重载丢掉内存态
- * （选择态、分页、已加载的完整邮箱都只在内存里）。
- *
- * 组合期直接返回：这次提交是输入法提交候选词带来的，不是检索指令。
- */
-function commitSearch(group: Group): void {
-  if (composing.value) return;
-  rootEl.value?.querySelector<HTMLInputElement>(`#usr-${group}-search`)?.blur();
 }
 
 /* ---------------- 选择态 ---------------- */
@@ -217,13 +230,81 @@ function makeOps(): UserOps {
   }) ?? {}) as UserOps;
 }
 
+function groupQuery(group: Group): string {
+  const params = new URLSearchParams({
+    group,
+    limit: String(pageSize.value),
+    offset: String(((pages.value[group] ?? 1) - 1) * pageSize.value),
+  });
+  const kw = search.value[group] ?? "";
+  if (kw) params.set("q", kw);
+  return "/api/users?" + params.toString();
+}
+
+function applyPayload(group: Group, data: UsersPayload): void {
+  const mapped = mapUsers(data);
+  rowsByGroup.value = { ...rowsByGroup.value, [group]: mapped.users };
+  builtin.value = mapped.builtin;
+  const total = typeof data.total === "number" ? data.total : mapped.users.length;
+  totals.value = { ...totals.value, [group]: total };
+  if (data.group_totals) groupTotals.value = { ...groupTotals.value, ...data.group_totals };
+}
+
+// 每组记住「当前内存态对应的查询串」：换筛选/翻页后第一次请求跳过条件请求，
+// 否则会拿别处的 ETag 换回 304，页面停在旧结果上。
+const lastQuery: Record<string, string> = {};
+
+// 每组一个请求序号：慢响应后到时不得覆盖更新的页码或检索结果（最新请求胜出）。
+const reqSeq: Record<string, number> = {};
+let loadToken = 0;
+
+function nextSeq(group: Group): number {
+  const seq = (reqSeq[group] ?? 0) + 1;
+  reqSeq[group] = seq;
+  return seq;
+}
+
+async function getPayload(group: Group, seq: number): Promise<UsersPayload | null> {
+  const q = groupQuery(group);
+  const conditional = lastQuery[group] === q;
+  const data = await api<UsersPayload>("GET", q, null, conditional ? { conditional: true } : undefined);
+  if (reqSeq[group] !== seq) return null;
+  if (data.notModified) return null;
+  lastQuery[group] = q;
+  return data;
+}
+
+async function fetchGroup(group: Group): Promise<boolean> {
+  const data = await getPayload(group, nextSeq(group));
+  if (!data) return false;
+  applyPayload(group, data);
+  const last = Math.max(1, Math.ceil((totals.value[group] ?? 0) / pageSize.value));
+  if ((pages.value[group] ?? 1) > last) {
+    pages.value = { ...pages.value, [group]: last };
+    return fetchGroup(group);
+  }
+  return true;
+}
+
 async function load(animate = false): Promise<void> {
   const t0 = performance.now();
-  const [u, d] = await Promise.all([api("GET", "/api/users"), api("GET", "/api/users/deleted")]);
+  const token = ++loadToken;
+  const seqs: Record<string, number> = {
+    pending: nextSeq("pending"),
+    normal: nextSeq("normal"),
+    vacant: nextSeq("vacant"),
+  };
+  const [p, n, v, d] = await Promise.all([
+    getPayload("pending", seqs.pending),
+    getPayload("normal", seqs.normal),
+    getPayload("vacant", seqs.vacant),
+    api("GET", "/api/users/deleted"),
+  ]);
   const apply = (): void => {
-    const mapped = mapUsers(u);
-    users.value = mapped.users;
-    builtin.value = mapped.builtin;
+    if (token !== loadToken) return;
+    if (p && seqs.pending === reqSeq.pending) applyPayload("pending", p);
+    if (n && seqs.normal === reqSeq.normal) applyPayload("normal", n);
+    if (v && seqs.vacant === reqSeq.vacant) applyPayload("vacant", v);
     deleted.value = mapDeleted(d);
     pruneSelection();
     clampPages();
@@ -303,9 +384,20 @@ function syncTabUrl(next: Group): void {
 }
 watch(tab, syncTabUrl);
 // 检索条件变化即回到第 1 页（否则筛完停在旧页码上、可能落在越界空页）。
+// 服务端检索：250ms 防抖后重拉三组；选中集清空（旧行可能已不在结果里）。
+const composing = ref(false);
+let searchTimer = 0;
 watch(search, () => {
   pages.value = { pending: 1, normal: 1, vacant: 1, deleted: 1 };
+  sel.value = { pending: [], normal: [], vacant: [], deleted: [] };
+  window.clearTimeout(searchTimer);
+  searchTimer = window.setTimeout(() => { void load(false); }, 250);
 }, { deep: true });
+/** 回车提交：不整页重载（form @submit.prevent），只收起移动端软键盘。 */
+function commitSearch(group: Group): void {
+  if (composing.value) return;
+  rootEl.value?.querySelector<HTMLInputElement>(`#usr-${group}-search`)?.blur();
+}
 
 /* ---------------- 轮询 / 可见性 ----------------
    机制（节拍 / 可见性 / 卸载清理）在 `lib/polling.ts`；本页只给**策略**。
@@ -551,7 +643,7 @@ onMounted(async () => {
                           <td class="usr-cell-time usr-col-md">—</td>
                           <td class="usr-cell-actions"><span class="usr-muted">不可改</span></td>
                         </tr>
-                        <tr v-for="row in pageRowsOf(g.key, userRows(g.key))" :key="'u:' + row.email">
+                        <tr v-for="row in rowsOf(g.key)" :key="'u:' + row.email">
                           <td class="usr-cell-check">
                             <label class="usr-check">
                               <input
@@ -602,16 +694,16 @@ onMounted(async () => {
 
                 <!-- 客户端分页控件（每页大小 × 组）：只渲染当前页。控件走 EP
                      （不是原生 select/range：原生弹出层样式不可控）。 -->
-                <div v-if="rowsOf(g.key).length > pageSize" class="usr-pager" :data-usr-pager="g.key">
+                <div v-if="pageTotalOf(g.key) > pageSize" class="usr-pager" :data-usr-pager="g.key">
                   <el-pagination
                     :current-page="pages[g.key]"
                     :page-size="pageSize"
-                    :total="rowsOf(g.key).length"
+                    :total="pageTotalOf(g.key)"
                     :page-sizes="PAGE_SIZE_OPTS"
                     layout="sizes, prev, pager, next"
                     background
                     @current-change="(p: number) => onPageChange(g.key, p)"
-                    @size-change="onPageSizeChange"
+                    @size-change="(size: number) => onPageSizeChange(size)"
                   />
                 </div>
 
