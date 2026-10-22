@@ -45,6 +45,9 @@ export const TAB_KEYS: TabKey[] = ["main", "inspect", "signev", "probe"];
 
 export const EVENT_PAGE_SIZES = [20, 50, 100];
 
+/** 日志正文页大小：与后端 `web.routes.page_args` 的 limit 上限一致（200）。 */
+export const LOG_PAGE_SIZE = 200;
+
 /** 级别档**取值**（契约：与后端 `/api/logs` 的 `level` 白名单同名）。
  *  前端只认两档取值，**不认哪一档是默认**——默认值只有后端一份
  *  （`web/services/logs.py::LOG_LEVEL_DEFAULT`）。首屏不下发 `level`，
@@ -67,6 +70,32 @@ export function infoText(
     : p.truncated
       ? `已截断：显示 ${p.returned} / 共 ${p.total_lines} 行`
       : `共 ${p.total_lines} 行`;
+  return withLogInfoNotes(base, p);
+}
+
+/** 分页态信息栏：报**当前页**的行区间，不报"已截断"。
+ *  分页后 truncated 只表示"还有别的页"，不是"本页被截断"；用区间最直观。
+ *  检索态写「行匹配」，与 infoText 的检索态口径一致。 */
+export function pagedInfoText(
+  p: Pick<LogsPayload, "returned" | "total_lines" | "dropped_lines" | "q" | "collapsed_lines">,
+  offset: number,
+): string {
+  const start = Math.max(0, offset) + 1;
+  const end = Math.max(0, offset) + p.returned;
+  const base =
+    p.returned <= 0
+      ? `共 ${p.total_lines} 行`
+      : p.q
+        ? `第 ${start}–${end} 行匹配 / 共 ${p.total_lines} 行`
+        : `第 ${start}–${end} 行 / 共 ${p.total_lines} 行`;
+  return withLogInfoNotes(base, p);
+}
+
+/** 收起行与丢弃行的后缀：两个信息栏共用，避免两份文案漂移。 */
+function withLogInfoNotes(
+  base: string,
+  p: Pick<LogsPayload, "dropped_lines" | "collapsed_lines">,
+): string {
   const withCollapsed = p.collapsed_lines > 0 ? `${base}（已收起 ${p.collapsed_lines} 行 INFO／DEBUG）` : base;
   return p.dropped_lines > 0 ? `${withCollapsed}（另有 ${p.dropped_lines} 行未计入）` : withCollapsed;
 }
@@ -130,7 +159,14 @@ export function eventCountText(n: number): string {
 /** 查询串：date 必带；q 与 all=1 仅在生效时下发（避免无意义参数）。
  *  `level` **仅在显式给定下发**：首屏不带 `level`，档位以服务端回执为准
  *  （响应回 `level`/`collapsed_lines`），不把默认档位抄进前端。 */
-export function buildLogsQuery(date: string, q: string, all: boolean, level: string = ""): string {
+export function buildLogsQuery(
+  date: string,
+  q: string,
+  all: boolean,
+  level: string = "",
+  limit?: number,
+  offset?: number,
+): string {
   const params = new URLSearchParams();
   if (date) params.set("date", date);
   const kw = (q || "").trim();
@@ -138,6 +174,12 @@ export function buildLogsQuery(date: string, q: string, all: boolean, level: str
   if (all) params.set("all", "1");
   const lv = (level || "").trim();
   if (lv) params.set("level", lv);
+  // 分页参数成对下发：只给一个时宁可不分页，也不发半套参数（服务端以任一参数
+  // 出现即分页，半套会把 limit 缺省成 20，静默改变每页行数）。
+  if (limit != null && offset != null) {
+    params.set("limit", String(limit));
+    params.set("offset", String(offset));
+  }
   const qs = params.toString();
   return `/api/logs${qs ? `?${qs}` : ""}`;
 }
@@ -160,13 +202,16 @@ export function shouldPoll(opts: {
   following: boolean;
   busy: boolean;
   overlayOpen: boolean;
+  /** 是否停在最新一页；翻到历史页时为 false（不得 10 秒后把用户拉回最新页）。 */
+  atLatest?: boolean;
 }): boolean {
   return (
     opts.visibility === "visible" &&
     opts.autoRefresh &&
     opts.following &&
     !opts.busy &&
-    !opts.overlayOpen
+    !opts.overlayOpen &&
+    (opts.atLatest ?? true)
   );
 }
 

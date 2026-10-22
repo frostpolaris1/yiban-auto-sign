@@ -52,6 +52,10 @@ CROWDED_ROUNDS = 205
 #: 上述拥挤日相对今天的天数偏移。取 5 = 落在 14 天保留窗口内（新的窗口下界不挡它），
 #: 且不撞今天 / 三天前（older）/ 取样工作日（_probe_day 取月初）。logs.spec.ts 用同一个偏移。
 CROWDED_DAY_OFFSET = 5
+#: 分页种子日相对业务日的天数偏移与行数：5000 行跨 25 页（末页 200 行）。
+#: 取 40 天前：必然落在上一个月，永不与「当月首个工作日」的 _probe_day 撞日。
+PAGING_DAY_OFFSET = 40
+PAGING_LOG_LINES = 5000
 ADMIN_USER = "admin"
 ADMIN_PASS = "TestPass1234!"  # 满足主管理员 12 位三类策略
 E2E_USER_EMAIL = "e2e-user@example.com"
@@ -80,12 +84,14 @@ def _probe_day():
 
 
 def _seed_log_file(webapp):
-    """写**三天**的假日志（今天 / 三天前 / 取样工作日）。
+    """写**四天**的假日志（今天 / 三天前 / 取样工作日 / 分页日）。
 
     为什么不止一天：日期导航（查看该日 / 回到今天 / ?date= 深链）只有在存在"另一天"时才
     可观测——2026-10-03 的 blocking 回归（load 用服务端回显日期覆盖用户选择，导致日期栏整体
     失效）就是因为只种了一天、e2e 从未切换过日期。取样工作日（见 _probe_day）让日历页也能
     断言"点某个非今天的格子 → 面板拉到那天的日志"。日志行含完整手机号，用于断言端到端脱敏。
+    分页日（`PAGING_DAY_OFFSET`，40 天前）种 5000 行：日志正文按服务端 limit/offset 分页，
+    首屏只该渲染最后一页（200 行），翻页只发一条 /api/logs。
 
     行格式与 `tests/test_logs_by_date.py::_log_line` 一致（yiban 组件全级别入列）。
     事件由 `_seed_events()` 另种（须在 db.init_db 之后）。
@@ -110,6 +116,16 @@ def _seed_log_file(webapp):
     write_day(older, "older")
     if probe is not None:
         write_day(probe.isoformat(), "probe")
+    paging = (clock.now() - timedelta(days=PAGING_DAY_OFFSET)).strftime("%Y-%m-%d")
+    path = Path(_logs_svc.log_path_for(paging))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(
+            f"[{paging} 06:31:01] [ERROR] yiban: [13800138001] 分页行 {i:04d}"
+            for i in range(PAGING_LOG_LINES)
+        ) + "\n",
+        encoding="utf-8",
+    )
 
 
 
