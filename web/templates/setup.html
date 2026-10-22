@@ -1,0 +1,47 @@
+{# 首次启动引导页（`/setup`）：.env 还没有管理员时出现，创建后写入 .env 哈希。 #}
+{% extends "layout_auth.html" %}
+
+{% block title %}创建管理员 · 易班自动签到{% endblock %}
+
+{% block head_meta %}
+<meta name="robots" content="noindex, nofollow">
+{% endblock %}
+
+{% block content %}
+<div class="auth-page">
+  <h2 id="setup-title">创建管理员账号</h2>
+  <p class="sub">首次启动需要创建内置管理员。账号与口令哈希写入本机 .env，口令不落明文。</p>
+
+  <form id="setup-form" class="auth-form" data-base="{{ request.script_root }}" novalidate>
+    <div class="field">
+      <label class="field-label" for="setup-username">管理员账号</label>
+      <input id="setup-username" name="username" class="input" type="text"
+             autocomplete="username" maxlength="64" required autofocus
+             aria-describedby="setup-username-help">
+      <p id="setup-username-help" class="field-help">3–64 位；可用字母、数字、点、下划线、@ 与连字符。</p>
+    </div>
+    <div class="field">
+      <label class="field-label" for="setup-password">口令</label>
+      <input id="setup-password" name="password" class="input" type="password"
+             autocomplete="new-password" required
+             aria-describedby="setup-password-help">
+      <p id="setup-password-help" class="field-help">至少 12 位，且包含大写字母、小写字母、数字、符号中的至少三类。</p>
+    </div>
+    <div class="field">
+      <label class="field-label" for="setup-password2">确认口令</label>
+      <input id="setup-password2" name="password2" class="input" type="password"
+             autocomplete="new-password" required>
+    </div>
+    <p id="setup-error" class="alert danger" role="alert" hidden></p>
+    <button id="setup-btn" class="btn btn--primary btn--block auth-submit" type="submit">
+      创建管理员并进入
+    </button>
+  </form>
+
+  <noscript><p class="panel-sub">本页需要 JavaScript 才能创建管理员。请启用后重试。</p></noscript>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script defer src="{{ request.script_root }}/static/js/setup.js?v={{ web_version }}"></script>
+{% endblock %}
