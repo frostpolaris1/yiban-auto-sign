@@ -30,6 +30,11 @@ describe("STATUS_VOCAB（唯一事实源）", () => {
     }
   });
 
+  it("跳过类状态不用「禁止」图标：跳过是时序结果，不是禁止", () => {
+    expect(STATUS_VOCAB.skipped_window.icon).toBe("refresh-cw");
+    expect(STATUS_VOCAB.skipped_norange.icon).toBe("refresh-cw");
+  });
+
   it("statusField 对未知码返回调用方兜底值（信息不丢）", () => {
     expect(statusField("brand_new_code", "short", undefined)).toBeUndefined();
     expect(statusField("brand_new_code", "short", "brand_new_code")).toBe("brand_new_code");

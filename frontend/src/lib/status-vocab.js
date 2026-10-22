@@ -50,8 +50,8 @@ export var STATUS_VOCAB = {
   no_task: { full: "无需签到", short: "无需签到", icon: "circle-minus", tone: "muted" },
   failed: { full: "签到失败", short: "失败", icon: "circle-x", tone: "bad" },
   retrying: { full: "重试中", short: "重试中", icon: "refresh-cw", tone: "warn" },
-  skipped_window: { full: "时段外跳过", short: "时段外跳过", icon: "ban", tone: "warn" },
-  skipped_norange: { full: "窗口缺失", short: "窗口缺失", icon: "ban", tone: "warn" },
+  skipped_window: { full: "时段外跳过", short: "时段外跳过", icon: "refresh-cw", tone: "warn" },
+  skipped_norange: { full: "窗口缺失", short: "窗口缺失", icon: "refresh-cw", tone: "warn" },
   no_position: { full: "无点位", short: "无点位", icon: "ban", tone: "warn" },
   // 补签中：平台 signPosition 的 State=5（补签申请或流程进行中，结果未定）。
   // 语气档 warn 与服务端 DISPLAY 同档：不是完成，也不是"有意不签"。

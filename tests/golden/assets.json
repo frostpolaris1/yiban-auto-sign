@@ -16,8 +16,8 @@
     "link rel=modulepreload href=/static/vue/assets/shell-MgCUIYQw.js",
     "link rel=modulepreload href=/static/vue/assets/vendor-vue-DcgF_2Vl.js",
     "link rel=modulepreload href=/static/vue/assets/polling-CbJgyZON.js",
-    "link rel=modulepreload href=/static/vue/assets/status-vocab-DDwGXPz2.js",
-    "script src=/static/vue/assets/dashboard-DUWtIWzZ.js"
+    "link rel=modulepreload href=/static/vue/assets/status-vocab-BWIfi8SC.js",
+    "script src=/static/vue/assets/dashboard-BVqoGswx.js"
   ],
   "login": [
     "link rel=icon href=/favicon.png?v=*",
