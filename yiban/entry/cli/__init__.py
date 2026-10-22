@@ -79,8 +79,7 @@ from yiban.adapters.persistence import db as store_db
 from yiban.adapters.persistence import purge_guard
 from yiban.adapters.statefiles import state_gc
 from yiban.app import runner
-from yiban.core import window
-from yiban.core import password_policy
+from yiban.core import password_policy, window
 from yiban.core.masking import mask_phone
 from yiban.engine import accounts as accounts_mod
 from yiban.engine import cli_support, db_maintenance, egress_admin
