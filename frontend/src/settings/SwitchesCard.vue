@@ -51,14 +51,12 @@ function act(field: string, next: boolean): void {
         <div class="set-head-actions">
           <button type="button" class="info-tip" aria-label="暂停签到与暂停注册的后果" aria-describedby="set-pop-switches">
             <svg aria-hidden="true"><use href="#i-info" /></svg>
-            <span class="info-pop" id="set-pop-switches" role="tooltip">暂停签到＝所有账号停止自动签到（<b>从下次开始</b>）；<b>手动签到不受影响</b>，正在跑的这一轮也不受影响。恢复后下一轮定时任务照常。注册暂停只挡新注册，不影响已有账号签到。</span>
+            <span class="info-pop" id="set-pop-switches" role="tooltip">暂停签到＝所有账号停止自动签到（<b>从下次开始</b>）；<b>手动签到不受影响</b>，正在跑的这一轮也不受影响。恢复后下一轮定时任务照常。注册暂停只挡新注册，登录页关闭注册入口，已注册用户登录不受影响；新用户需在「账号管理」手动添加账号。</span>
           </button>
         </div>
       </div>
     </div>
-    <p class="set-danger-note">暂停签到：所有账号停止自动签到（从下次开始），手动签到不受影响。
-      暂停注册：登录页关闭注册入口，已注册用户登录不受影响，需在「账号管理」手动添加账号。
-      两项都立即生效（不属于表单值，无「保存」概念），均需二次确认 + 当前管理员密码。</p>
+    <p class="set-danger-note">两项都立即生效，需二次确认 + 当前管理员密码。</p>
     <div class="set-danger-actions">
       <button type="button" class="btn btn--danger-ghost set-danger-btn" id="set-gp-pause" :hidden="state.globalPause" :disabled="!allowed('global_pause', true)" :title="!allowed('global_pause', true) ? why('global_pause') : undefined" @click="act('global_pause', true)">
         <svg aria-hidden="true"><use href="#i-pause" /></svg><span>暂停自动签到</span>
