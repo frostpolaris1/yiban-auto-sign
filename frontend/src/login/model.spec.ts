@@ -186,8 +186,8 @@ describe("响应分支", () => {
 
 describe("页签", () => {
   it("标题随模式切换（避免出现「标题说登录、表单是注册」）", () => {
-    expect(AUTH_TITLES.login[0]).toBe("登录");
-    expect(AUTH_TITLES.register[0]).toBe("注册");
+    expect(AUTH_TITLES.login).toBe("登录");
+    expect(AUTH_TITLES.register).toBe("注册");
   });
 
   it("注册暂停时不得切入注册（键盘/脚本路径的兜底）", () => {
