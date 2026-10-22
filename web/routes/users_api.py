@@ -37,6 +37,7 @@ from werkzeug.security import generate_password_hash
 from web import security as _security
 from web.routes import appmod as _appmod
 from web.routes import high_risk_gate, read_audit_trace
+from web.routes import json_conditional as _json_conditional
 from web.routes import page_args as _page_args
 from web.routes import page_meta as _page_meta
 from web.routes import page_window as _page_window
@@ -57,21 +58,39 @@ def _builtin_admin_display():
     return env.get("YIBAN_ADMIN_USER", "").strip() or "admin"
 
 
+_USER_GROUPS = ("pending", "normal", "vacant")
+
+
+def _user_group(email, owner_review_count, owner_account_count):
+    """用户所属展示分组（与 Users.vue 的 listOf 同一口径）。"""
+    if owner_review_count.get(email, 0) > 0:
+        return "pending"
+    if owner_account_count.get(email, 0) == 0:
+        return "vacant"
+    return "normal"
+
+
+def _user_search_hit(u, kw):
+    q = str(kw or "").strip().lower()
+    if not q:
+        return True
+    email = str(u.get("email", ""))
+    display = _accounts_data._owner_display_of(email)
+    masked = _accounts_data._mask_email(email)
+    return q in email.lower() or q in display.lower() or q in masked.lower()
+
+
 def api_users():
     """用户列表（完整邮箱/角色/注册时间/账号数/待审核账号数）+ 内置管理员信息。
 
-    可选分页：不传 `limit`/`offset` 时下发整表（与分页前逐字相同，向后兼容）；
-    传了则只下发 [offset, offset+limit) 一页并附分页元数据（total/limit/offset/returned）。
-    可选 `count_only=1`：只回 `total` 与 `review`（名下有 pending/rejected 账号的用户数），
-    不下发整表——供 10 秒轮询的导航徽标取标量，消除"每拍拉全量 payload"。
+    可选 group/q 与 limit/offset。不传新参数时响应与分页前逐字相同；传 group 时
+    total 是该组再经 q 过滤后的行数，group_totals 给三组全局总数，不随当前页收窄。
+    可选 count_only=1：只回 total 与 review（有待处理账号的用户数）。
     """
     users = _accounts_data.load_users()
-    accounts = _accounts_data.load_accounts()
+    # 用户列表只按 owner/status 计数，不需要解密账号凭据：5k 账号全量解密实测 >9s。
+    accounts = _accounts_data.load_accounts_raw()
     limit, offset, paged = _page_args()
-    total = len(users)
-    # 性能优化：单次遍历 accounts 预计算每个 owner 的计数，避免 O(用户数×账号数)。
-    # 分页与 count_only 两条分支共用**同一次**遍历，"review 口径 = 待处理账号数"
-    # 因此只有这一份定义（不另起一份只算 review 的重复循环）。
     owner_account_count = {}
     owner_pending_count = {}
     owner_review_count = {}
@@ -82,49 +101,55 @@ def api_users():
         owner_account_count[owner] = owner_account_count.get(owner, 0) + 1
         if a.get("status") == _accounts_data.ACCOUNT_STATUS_PENDING:
             owner_pending_count[owner] = owner_pending_count.get(owner, 0) + 1
-        # review 口径 = 待审核 + 已拒绝，与账号管理「待处理账号」组一致
-        # （仅算待审核时，只有已拒绝账号的用户不会出现在待处理栏）
         if a.get("status") in (_accounts_data.ACCOUNT_STATUS_PENDING, _accounts_data.ACCOUNT_STATUS_REJECTED):
             owner_review_count[owner] = owner_review_count.get(owner, 0) + 1
-    # 只取计数（count_only=1）：早退，不下发 `users` 列表（含明文邮箱与 display）。
-    # `review` 是"有待处理账号的用户数"，与徽标口径逐字一致。
     if str(request.args.get("count_only", "")).strip() == "1":
         review = sum(
             1 for u in users if owner_review_count.get(u.get("email", ""), 0) > 0)
-        return jsonify({"ok": True, "total": total, "review": review})
-    if paged:
-        users = _page_window(users, limit, offset)
+        return _json_conditional({"ok": True, "total": len(users), "review": review})
+    group = str(request.args.get("group", "")).strip()
+    if group and group not in _USER_GROUPS:
+        return jsonify({"error": "未知用户分组"}), 400
+    q = str(request.args.get("q", "")).strip()[:64]
+    group_totals = {g: 0 for g in _USER_GROUPS}
+    for u in users:
+        group_totals[_user_group(u.get("email", ""), owner_review_count, owner_account_count)] += 1
+    indexed = [(i, u) for i, u in enumerate(users)]
+    if group:
+        indexed = [(i, u) for i, u in indexed
+                   if _user_group(u.get("email", ""), owner_review_count, owner_account_count) == group]
+    if q:
+        indexed = [(i, u) for i, u in indexed if _user_search_hit(u, q)]
+    total = len(indexed)
+    page = _page_window(indexed, limit, offset) if paged else indexed
     result = [
         {
-            # id 是单条操作（角色/重置口令/删除）的**不透明定位符**：URL path 不再编
-            # 明文邮箱（MF-49 出口字段——path 进 nginx `$request` 与同源 Referrer）。
             "id": u.get("id"),
             "email": u.get("email", ""),
-            # display：邮箱本地部的遮罩展示形态，口径唯一住在服务端
-            # `_owner_display_of`；前端下拉/列表按它渲染，不得再 `split("@")` 自算一份。
             "display": _accounts_data._owner_display_of(u.get("email", "")),
             "role": u.get("role", "user"),
             "created_at": u.get("created_at", ""),
-            # 计数排除软删除账号（删除后不占账号数/待审核数）
             "account_count": owner_account_count.get(u.get("email", ""), 0),
             "pending_count": owner_pending_count.get(u.get("email", ""), 0),
             "review_count": owner_review_count.get(u.get("email", ""), 0),
         }
-        for u in users
+        for _i, u in page
     ]
-    if paged:
-        read_audit_trace()("users_list_read", f"分页 limit={limit} offset={offset} 返回 {len(result)}/{total} 条用户")
-    else:
-        read_audit_trace()("users_list_read", f"整表 {len(result)} 条用户")
+    # 审计目标必须已脱敏：q 可能是完整邮箱，只记录「有检索」标志，不落原文。
+    _scope = f"group={group or '-'} q={'有' if q else '-'} " if (group or q) else ""
+    read_audit_trace()("users_list_read",
+                       f"{_scope}limit={limit} offset={offset} 返回 {len(result)}/{total} 条用户"
+                       if paged else f"{_scope}整表 {len(result)} 条用户")
     payload = {
         "ok": True,
         "users": result,
         "builtin_admin": _builtin_admin_display(),
     }
+    if group or paged:
+        payload["group_totals"] = group_totals
     if paged:
-        # 分页元数据只在分页时出现：不传参数时响应与分页前逐字相同（向后兼容）。
         payload.update(_page_meta(total, limit, offset, len(result)))
-    return jsonify(payload)
+    return _json_conditional(payload)
 
 
 def api_users_deleted():

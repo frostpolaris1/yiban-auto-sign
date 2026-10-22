@@ -1417,8 +1417,9 @@ onBeforeUnmount(() => {
   }
   .logs-level,
   .logs-check { min-height: 28px; }
-  /* 内容少时不再留 220px 空白；长日志到 320px 后自身滚动。 */
-  .log-box { height: auto; min-height: 140px; max-height: 320px; }
+  /* 内容少时不再留 220px 空白；长日志到 320px 后自身滚动。
+     必须显式给 overflow：只给 max-height 时溢出内容仍会画到分页器上。 */
+  .log-box { height: auto; min-height: 140px; max-height: 320px; overflow: auto; }
   /* 4 个页签在 390 下放不下，EP 会显示左右箭头并把第 4 个裁掉；
      收窄内距与字号让四个页签完整露出，保留日志页原有的滑动活动条。 */
   :deep(.el-tabs__item) { padding: 0 10px; font-size: 13px; }
