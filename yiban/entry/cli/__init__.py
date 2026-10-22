@@ -30,6 +30,7 @@
 
 | 子命令 | 做什么 | `--json` 顶层字段 | 退出码 |
 |--------|--------|-------------------|--------|
+| `init` | 首次初始化内置管理员（写 .env 的 scrypt 哈希） | `command` `ok` `exit_code` `admin_user` `env_file` `secret_key_created` `registration_paused` | 0 / 1 已配置或写入失败 / 2 账号或口令不合规 |
 | `sign` | 一轮签到（选项原样透传给引擎） | `command` `exit_code`（非 0 时附 `error` 摘要） | 0/1/2/3/10（引擎口径） |
 | `probe` | 只读健康检查（引擎 `--probe` 语义） | `command` `exit_code`（非 0 时附 `error` 摘要） | 同上 |
 | `config` | 账号配置检查（脱敏、不联网、只读不迁移） | `command` `ok` `accounts` `accounts_missing_device` `phones_masked` `paths` `errors` | 0 正常 / 1 配置错误 |
@@ -66,6 +67,8 @@
 """
 import argparse
 import os
+import re
+import secrets
 import sqlite3
 import sys
 
@@ -77,6 +80,7 @@ from yiban.adapters.persistence import purge_guard
 from yiban.adapters.statefiles import state_gc
 from yiban.app import runner
 from yiban.core import window
+from yiban.core import password_policy
 from yiban.core.masking import mask_phone
 from yiban.engine import accounts as accounts_mod
 from yiban.engine import cli_support, db_maintenance, egress_admin
@@ -94,7 +98,7 @@ from yiban.engine.cli_support import (
 
 USAGE = (
     "用法: python -m yiban.entry.cli <子命令> [选项]\n"
-    "子命令: sign | probe | config | capacity | state | egress | db | version\n"
+    "子命令: init | sign | probe | config | capacity | state | egress | db | version\n"
     "（见 `python -m yiban.entry.cli <子命令> --help`；stdout 只放结果，人类可读汇总走 stderr）"
 )
 
@@ -476,6 +480,98 @@ def _cmd_state(args, view):
 
 
 # ---------------------------------------------------------------------------
+# 子命令：init
+# ---------------------------------------------------------------------------
+_ADMIN_USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@-]*$")
+
+
+def _cmd_init(args, view):
+    """首次初始化内置管理员：写 .env 的账号与 scrypt 哈希，明文口令不落盘。
+
+    口令只从环境变量或既有 .env 读（CLI 契约 §2 第 7 条）。已配置管理员时拒绝，
+    避免把现网管理员静默顶掉。写入走 `write_env_keys`：跨进程锁、行模型校验、
+    未请求键 diff 与回滚都在那一处。
+    """
+    env_file = _paths(view)["env_file"]
+    try:
+        env = env_io.parse_env_file(env_file, strict=True)
+    except OSError as e:
+        return _fail("init", 1, [f"无法读取 .env：{e}"], args.json,
+                     error_kind="config_write_failed")
+    username = str(args.username or env.get("YIBAN_ADMIN_USER", "") or "").strip()
+    password = str(view.get("YIBAN_ADMIN_PASSWORD", "") or "")
+    if env.get("YIBAN_ADMIN_USER", "").strip() and (
+            env.get("YIBAN_ADMIN_PASSWORD_HASH", "").strip()
+            or env.get("YIBAN_ADMIN_PASSWORD", "").strip()):
+        return _fail("init", 1, ["管理员已配置；如需改密请登录网页管理后台"],
+                     args.json, error_kind="admin_configured")
+    if not (3 <= len(username) <= 64) or not _ADMIN_USERNAME_RE.fullmatch(username):
+        return _fail("init", 2,
+                     ["账号需为 3–64 位字母、数字、点、下划线、@ 或连字符，且以字母或数字开头"],
+                     args.json, error_kind="invalid_username")
+    if not password:
+        return _fail("init", 2, ["未提供 YIBAN_ADMIN_PASSWORD 环境变量"],
+                     args.json, error_kind="invalid_password")
+    policy_error = password_policy.admin_password_policy_error(password)
+    if policy_error:
+        return _fail("init", 2, [policy_error], args.json, error_kind="invalid_password")
+
+    # werkzeug 是 Web 依赖；CLI 的只读子命令不应因缺少它而启动失败，故延迟导入。
+    from werkzeug.security import check_password_hash, generate_password_hash
+
+    pw_hash = generate_password_hash(password, method=password_policy.SCRYPT_METHOD)
+    secret_key = env.get("YIBAN_SECRET_KEY", "").strip()
+    secret_key_created = not secret_key
+    new_deployment = not env
+    updates = {
+        "YIBAN_ADMIN_USER": username,
+        "YIBAN_ADMIN_PASSWORD_HASH": pw_hash,
+        "YIBAN_ADMIN_PASSWORD": "",
+        "YIBAN_ADMIN_PW_VERSION": "1",
+        # 清掉可能残留的旧服务端 sid：新管理员不复用旧会话标识。
+        "YIBAN_ADMIN_SID": "",
+    }
+    if secret_key_created:
+        updates["YIBAN_SECRET_KEY"] = secrets.token_hex(32)
+    if new_deployment:
+        updates["YIBAN_REGISTRATION_PAUSE"] = "1"
+    try:
+        env_io.write_env_keys(env_file, updates, delete_empty=True)
+        written = env_io.parse_env_file(env_file, strict=True)
+    except (OSError, ValueError) as e:
+        return _fail("init", 1, [f"写入 .env 失败：{e}"], args.json,
+                     error_kind="config_write_failed")
+
+    stored_hash = written.get("YIBAN_ADMIN_PASSWORD_HASH", "")
+    ok = (
+        written.get("YIBAN_ADMIN_USER", "") == username
+        and stored_hash.startswith("scrypt:")
+        and check_password_hash(stored_hash, password)
+        and len(written.get("YIBAN_SECRET_KEY", "")) == 64
+        and not written.get("YIBAN_ADMIN_PASSWORD", "").strip()
+    )
+    if not ok:
+        return _fail("init", 1, ["写入后自检失败：请检查 .env 内容"],
+                     args.json, error_kind="config_write_failed")
+    payload = {
+        "command": "init",
+        "ok": True,
+        "exit_code": 0,
+        "admin_user": username,
+        "env_file": env_file,
+        "secret_key_created": secret_key_created,
+        "registration_paused": new_deployment,
+    }
+    if args.json:
+        _emit_json(payload)
+    else:
+        _say(f"已创建内置管理员 {username}（配置：{env_file}）")
+        if new_deployment:
+            _say("新部署已默认暂停注册；可在网页「系统设置」开启。")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # 子命令：version
 # ---------------------------------------------------------------------------
 def _cmd_version(args, view):
@@ -521,7 +617,7 @@ def _build_parser():
                 "本命令不读 stdin、不做交互确认。 " + _PATHS_HELP),
     )
     subs = parser.add_subparsers(
-        dest="command", metavar="{sign,probe,config,capacity,state,egress,db,version}")
+        dest="command", metavar="{init,sign,probe,config,capacity,state,egress,db,version}")
     sub_parsers = {}
 
     def _sub(name, **kwargs):
@@ -529,6 +625,19 @@ def _build_parser():
         sub = subs.add_parser(name, **kwargs)
         sub_parsers[name] = sub
         return sub
+
+    p = _sub(
+        "init", help="首次初始化内置管理员（写入 .env 的 scrypt 哈希）",
+        description=("首次部署时创建内置管理员。账号取 --username（缺省读 YIBAN_ADMIN_USER），"
+                     "口令只从 YIBAN_ADMIN_PASSWORD 环境变量或 .env 读取，**不接受命令行口令**"
+                     "（CLI 契约 §2 第 7 条：命令行会进 shell 历史与进程列表）。成功时写 "
+                     "YIBAN_ADMIN_USER / YIBAN_ADMIN_PASSWORD_HASH / YIBAN_ADMIN_PW_VERSION，"
+                     "删除明文口令键，并在缺 YIBAN_SECRET_KEY 时生成新钥。已配置管理员时拒绝。"
+                     + _PATHS_HELP),
+    )
+    p.add_argument("--username", default=None,
+                   help="管理员账号（3–64 位；缺省读 YIBAN_ADMIN_USER）")
+    p.add_argument("--json", action="store_true", help="结果打成一整行 JSON 写 stdout")
 
     p = _sub(
         "sign", help="执行一轮签到（选项原样透传给引擎）",
@@ -655,6 +764,7 @@ def _dispatch(args, extra, subs):
         # yiban/engine/egress_admin.py，理由同 db 族（见该模块头部说明）。
         return egress_admin.cmd_egress(args, _paths(view), view)
     handlers = {
+        "init": _cmd_init,
         "config": _cmd_config,
         "capacity": _cmd_capacity,
         "state": _cmd_state,

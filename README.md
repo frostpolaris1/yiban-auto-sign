@@ -331,7 +331,7 @@ git clone https://gitee.com/frostpolaris/yiban-auto-sign.git && cd yiban-auto-si
 # 2. 数据目录与配置（数据全部落在 ./data，证书放 ./certs）
 mkdir -p data certs
 cp .env.docker.example data/.env
-vim data/.env      # 务必填写 YIBAN_ADMIN_USER / YIBAN_ADMIN_PASSWORD
+# 管理员账号不用手填：首次打开站点会进入 /setup 引导创建（无浏览器部署用 CLI init）
 
 # 3. 生成 HTTPS 证书（自签，用于快速体验；生产请替换为受信证书）
 openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
@@ -345,7 +345,14 @@ docker compose up -d --build
 docker compose ps && docker compose logs -f yiban
 ```
 
-浏览器打开 `https://你的域名或IP`（自签证书首访需点「继续访问」信任），用 `data/.env` 里的管理员账号登录后添加易班账号。
+浏览器打开 `https://你的域名或IP`（自签证书首访需点「继续访问」信任），按页面引导创建内置管理员，进入后台后再添加易班账号。
+
+> **无浏览器（headless）首配**：容器健康后，用容器内的 CLI 创建管理员。口令只走环境变量，不写命令行历史。
+> ```bash
+> docker compose exec -u 10001 -e YIBAN_ADMIN_PASSWORD='你的强口令' yiban \
+>   python3 -m yiban.entry.cli init --username admin
+> ```
+> 成功后打开 `/login` 登录；`/setup` 会自动关闭。
 
 > **国内主机构建镜像**：容器内直连 `pypi.org` 通常不可达，构建会在安装依赖时以 `No matching distribution found` 失败。指定国内索引即可（仅构建期生效，不写进镜像配置）：
 > ```bash
@@ -691,7 +698,8 @@ YIBAN_ACCOUNTS = 13800138000:your_password
 | `YIBAN_HEALTH_REPORT_TIME` / `YIBAN_HEALTH_REPORT_WEEKDAY` | 告警通道健康报告的例行发送时刻（`HH:MM`）与星期（`0`=周一…`6`=周日）；都不配置 = 沿用「周一 + 清理线程唤醒即发」（见 [告警通道健康报告发送时刻](#告警通道健康报告发送时刻可选)） | 可选 |
 | `YIBAN_LEGACY_LOGIN` | 设为 `1` 使用旧登录流程（伪造 iOS UA）；默认用真实 App 特征（推荐） | 可选 |
 | `YIBAN_WORKERS` / `YIBAN_PROXY_LIST` / `YIBAN_PROXY_FALLBACK` / `YIBAN_FALLBACK_ENABLE` / `YIBAN_FALLBACK_INTERVAL` / `YIBAN_CAPACITY_MEASURED` | 多执行体相关（单执行体部署**不需要**配置），见 [多执行体并行签到](#多执行体并行签到可选) 与 [代理配置](#代理配置可选) | 可选 |
-| `YIBAN_ADMIN_USER` / `YIBAN_ADMIN_PASSWORD` | 内置主管理员账号（口令策略：至少 12 位且含四类字符中的至少三类） | 必填（Web） |
+| `YIBAN_ADMIN_USER` / `YIBAN_ADMIN_PASSWORD_HASH` / `YIBAN_ADMIN_PW_VERSION` | 内置主管理员账号与 scrypt 哈希（由网页 `/setup` 引导或 `CLI init` 写入，不手填） | 自动 |
+| `YIBAN_ADMIN_PASSWORD` | 旧版明文口令键：仅用于兼容既有部署；`/setup` 或 `CLI init` 成功后会被删除。新部署不要手填 | 旧部署可选 |
 | `YIBAN_PW_GATE` | 危险操作（改他人凭据 / 物理清除 / 删用户 / 重置他人口令 / 改角色 / 改告警通道 / 破坏性设置 / 发公告 / 执行体写 / 急停）要口令的档位：`risk`（默认，仅换环境才要——本次出口 IP 与本会话已验证 IP 不一致，无记录视为未知不触发；验证通过即记住该出口）/ `full`（每个操作都当次要口令）/ `off`（永不要求）。非 `full` 档下不可逆操作还要求请求体带 `confirm_delay_ack`，改他人凭据 / 清空用户账号 / 执行体写三类在操作成功后补一封管理员告警（其余管理操作只留审计）；门禁失败告警与档位无关：任何实际要求了口令并失败的路径都发；非法值回退 `risk` | 可选 |
 | `YIBAN_ACCOUNTS_KEY` / `YIBAN_AUDIT_KEY` / `YIBAN_TRACK_SALT` | 账号密文密钥 / 审计链 HMAC 密钥 / 访问统计盐：**按需自动生成**并写入 `.env`（分别在首次加解密账号、首次写入审计行、首次记录访问时），一般无需手填。注意：刚装好还没加过账号时，`​.env` 里可能只有管理员哈希与会话密钥——别把这一刻的 `.env` 当成「密钥齐全」归档 | 自动 |
 | `YIBAN_STATE_DIR` / `YIBAN_LOG_FILE` | 状态文件目录（默认 `/var/log/yiban`）与日志路径（按天分文件） | 可选 |
@@ -866,15 +874,14 @@ cd /opt/yiban-auto-sign
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.lock
 
-# 2. .env 配置管理员账号（否则无法登录后台）
-cat >> .env << 'EOF'
-YIBAN_ADMIN_USER=admin
-YIBAN_ADMIN_PASSWORD=你的密码
-EOF
+# 2. 创建内置管理员（二选一）
+#    ① 有浏览器：启动后首次打开站点，会自动进入 /setup 引导页；
+#    ② 无浏览器（headless）：口令只走环境变量，不接受命令行参数。
+YIBAN_ADMIN_PASSWORD='你的强口令' .venv/bin/python3 -m yiban.entry.cli init --username admin
 #    ⚠️ 主管理员口令策略：至少 12 位，且包含大写字母 / 小写字母 / 数字 / 符号中的
-#    至少三类；常见弱口令或不满足策略会拒绝启动（fail-closed）。首次登录后建议在
-#    「我的账号 → 修改主管理员密码」重设：修改会写入哈希并清空 .env 明文、递增
-#    PW_VERSION（旧会话全部失效），并触发安全告警。
+#    至少三类。网页引导与 CLI init 使用同一套策略；写入的是 scrypt 哈希，明文不落盘。
+#    首次登录后建议在「我的账号 → 修改主管理员密码」重设：修改会递增 PW_VERSION
+#    （旧会话全部失效），并触发安全告警。
 
 # 3. 启动（默认只监听回环 127.0.0.1:17892，--host/--port 可改）
 .venv/bin/python3 -m web
