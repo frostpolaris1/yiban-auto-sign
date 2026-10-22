@@ -352,8 +352,9 @@ class PwGateTierBucketSwitchIsRealTest(_AppBase):
     显式钉住：默认必须是回环，且两个不同 XFF 必须给出两个不同的桶。
     """
 
-    #: 匿名可达的非 `/api/` 路径（`require_login` 对非 /api/ 直接放行）。
-    ANON_PATH = "/login"
+    #: 匿名可达的非 `/api/` 路径。本类 `_AppBase` 的 .env 不配管理员，故 `/login`
+    #: 会 302 到 `/setup`；用 `/setup` 本身作为匿名探针路径。
+    ANON_PATH = "/setup"
 
     def _probe(self, app):
         """在真 `test_client()` 请求里记录 remote_addr 与桶（不显式给 REMOTE_ADDR）。"""
