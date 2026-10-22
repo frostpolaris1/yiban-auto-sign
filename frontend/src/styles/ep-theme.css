@@ -40,6 +40,8 @@
   --el-bg-color: var(--bg-card);
   --el-bg-color-page: var(--bg-body);
   --el-bg-color-overlay: var(--bg-card);
+  /* 遮罩基态：先用不依赖 blur 的强底（与 .pm-backdrop 同口径）。 */
+  --el-overlay-color-lighter: var(--overlay-strong);
   --el-text-color-primary: var(--t-base);
   --el-text-color-regular: var(--t-base);
   --el-text-color-secondary: var(--t-muted);
@@ -72,4 +74,28 @@
 :root[data-theme="light"] .el-switch,
 :root[data-theme="dark"] .el-switch {
   --el-switch-off-color: var(--switch-off-bg);
+}
+
+/* ---------- 弹窗遮罩：与 app.css §5 的 .pm-backdrop 同口径 ----------
+ * 支持 backdrop-filter 时用半透明底 + 3px 模糊；浏览器不支持时保留强底。
+ * 2560px 起全屏模糊实测 max=83.4ms、3840 p95=150ms，去 blur 并回退强底。 */
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root[data-theme="light"],
+  :root[data-theme="dark"] {
+    --el-overlay-color-lighter: var(--overlay);
+  }
+  .el-overlay {
+    -webkit-backdrop-filter: blur(var(--modal-blur));
+    backdrop-filter: blur(var(--modal-blur));
+  }
+}
+@media (min-width: 2560px) {
+  :root[data-theme="light"],
+  :root[data-theme="dark"] {
+    --el-overlay-color-lighter: var(--overlay-strong);
+  }
+  .el-overlay {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
 }

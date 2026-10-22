@@ -769,5 +769,44 @@ class Phase3PortGuardTest(unittest.TestCase):
             )
 
 
+class ModalBackdropBlurFallbackTest(unittest.TestCase):
+    """弹窗遮罩的回退底色：不支持 backdrop-filter 时仍要挡得住正文。
+
+    app.css 的 .pm-backdrop 基态必须是 --overlay-strong（不依赖 blur 的强底），
+    只有 @supports 命中时才换成 --overlay + blur。EP 的 .el-overlay 同口径。
+    这条守卫防的是「有人删掉基态、只留 @supports 覆盖」：支持 blur 的浏览器
+    看不出异常，老浏览器会把弹窗外正文直接透出来。
+    """
+
+    def test_pm_backdrop_has_blurless_fallback(self):
+        css = _strip_comments(_read(APP_CSS))
+        bodies = _blocks(css, r"\.pm-backdrop")
+        self.assertTrue(
+            any(re.search(r"background\s*:\s*var\(--overlay-strong\)", b) for b in bodies),
+            ".pm-backdrop 基态缺 background: var(--overlay-strong)；"
+            "不支持 backdrop-filter 时遮罩会透明",
+        )
+        m = re.search(
+            r"@supports\s*\(\(backdrop-filter[^{]*\{\s*\.pm-backdrop\s*\{([^}]*)\}",
+            css, re.S,
+        )
+        self.assertIsNotNone(m, "@supports 内找不到 .pm-backdrop 覆盖块")
+        body = m.group(1)
+        self.assertRegex(body, r"background\s*:\s*var\(--overlay\)")
+        self.assertRegex(body, r"backdrop-filter\s*:\s*blur\(var\(--modal-blur\)\)")
+
+    def test_ep_overlay_has_blurless_fallback(self):
+        css = _strip_comments(_read(EP_THEME_CSS))
+        self.assertRegex(
+            css, r"--el-overlay-color-lighter\s*:\s*var\(--overlay-strong\)",
+            "EP 遮罩基态缺 --el-overlay-color-lighter: var(--overlay-strong)",
+        )
+        self.assertRegex(
+            css, r"@supports[^{]*backdrop-filter[^{]*\{[^}]*"
+                 r"--el-overlay-color-lighter\s*:\s*var\(--overlay\)",
+            "EP 的 @supports 分支未把遮罩换成 --overlay",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
