@@ -71,21 +71,22 @@ for _p in (_SCRIPTS_DIR, _PACKAGE_ROOT):
 from flask import current_app, request, session  # noqa: E402
 from werkzeug.security import check_password_hash, generate_password_hash  # noqa: E402
 
-from web.services.accounts_data import (  # noqa: E402
-    _PASSWORD_CLASS_PATTERNS,
-    ADMIN_PASSWORD_MIN_CLASSES,
-    ADMIN_PASSWORD_MIN_LEN,
-)
 from web.services.locks import _rate_lock  # noqa: E402
 from yiban.adapters.notifier.mail import layout as mail_layout  # noqa: E402
 from yiban.adapters.persistence import audit_chain as _audit_chain  # noqa: E402
 from yiban.adapters.persistence import db  # noqa: E402
+from yiban.core.password_policy import (  # noqa: E402
+    ADMIN_PASSWORD_MIN_CLASSES,
+    ADMIN_PASSWORD_MIN_LEN,
+    PASSWORD_CLASS_PATTERNS as _PASSWORD_CLASS_PATTERNS,
+    SCRYPT_METHOD,
+)
 
 # 与 web.app 同名的日志通道：安全域的日志落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")
 
-# 口令哈希算法（werkzeug scrypt，OWASP 推荐参数；check_password_hash 对旧哈希自动兼容）
-SCRYPT_METHOD = "scrypt:65536:8:1"
+# 口令哈希算法（werkzeug scrypt，OWASP 推荐参数；check_password_hash 对旧哈希自动兼容）。
+# 字面量唯一真源在 yiban.core.password_policy；此处按名再导出，测试打桩点不变。
 
 #: 内置主管理员（.env 账号）的会话凭据键名。
 ADMIN_SID_ENV_KEY = "YIBAN_ADMIN_SID"
@@ -860,6 +861,15 @@ def check_admin_configured(env_path, read_env):
             or env.get("YIBAN_ADMIN_PASSWORD", "").strip()
         )
     )
+
+
+def admin_configured():
+    """按宿主登记的 `.env` 路径与读取器判定管理员是否已配置。
+
+    路由不得经 `web.app` 的转发墙读这个判定（那会把组合根函数变成第二个可漂移的
+    面）；`.env` 路径与读取器由 `web.security.configure(...)` 在 import 末尾登记。
+    """
+    return check_admin_configured(_host("env_file"), _host("read_env"))
 
 
 def _builtin_admin_loginable():

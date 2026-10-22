@@ -5,7 +5,7 @@
 # 用途：
 #   在**全新** docker 环境（独立 project / 独立命名卷 / 独立网络 / 独立数据目录，
 #   不复用任何旧容器）按 README「Docker 部署」从零起全栈并逐条断言。三个阶段：
-#     A 干净部署：起全栈 → /login 200 → .env 管理员登录 → 灌合成账号并计数
+#     A 干净部署：起全栈 → /setup 200 → CLI init 建管理员 → /login 200 → 登录 → 灌合成账号并计数
 #     B 迁移演练：v0.6.2 起库灌数 → 升级到本树顶端（v21→v22 自动）→ 校验数据完整
 #                 → 回滚到 v0.6.2（不降 schema，验证完整性门容忍 v22）
 #     C 备份恢复：容器形态加密备份（含库本体断言）→ 删库 → 恢复 → 自检
@@ -23,9 +23,9 @@
 #   GATE_HTTP_PORT / GATE_HTTPS_PORT   A 阶段宿主端口（默认 18080/18443；
 #                   B/C 阶段各 +1/+2，避免与本机既有实例抢 80/443）
 #   GATE_SEED_N     合成账号数（默认 5000；只计数，不做逐账号断言）
-#   GATE_ADMIN_USER / GATE_ADMIN_PASSWORD   .env 显式管理员（默认见下）。闸门按 README
-#                   的形态把两键**写进 data/.env**（README「一键部署」第 2 步：cp 模板后
-#                   填写管理员），写完当场断言两键就位。
+#   GATE_ADMIN_USER / GATE_ADMIN_PASSWORD   Phase A 的首配账号与口令（默认见下）。
+#                   A4 在容器内走 README 的 headless 路径 `CLI init`；Phase B/C 继续用
+#                   旧部署的明文两键兼容路径。
 #   GATE_PIP_INDEX_URL  构建期 pip 索引。**默认不传**——与 README 的
 #                   `docker compose up -d --build` 同形态（走默认索引）。国内主机直连
 #                   pypi 不可达时由 caller 显式传镜像旁路，例如
@@ -168,21 +168,24 @@ wait_healthy() {
     return 1
 }
 
-# prepare_env <data_dir> : 造数据目录 + .env + 证书
-# 管理员两键按 README「一键部署」第 2 步的形态（`cp .env.docker.example data/.env` 后由
-# 部署者填写 YIBAN_ADMIN_USER / YIBAN_ADMIN_PASSWORD）写进 data/.env；写入是否生效由
-# 调用方（phase_A 的 A0）断言。
+# prepare_env <data_dir> <certs_dir> [write_admin] : 造数据目录 + .env + 证书
+# README 第 2 步已改为「首次打开 /setup 引导创建」或 headless `CLI init`，模板不再带
+# 管理员键。Phase A 传 0，由 A4 在容器内跑 `CLI init`；Phase B/C 传 1（缺省），
+# 继续覆盖旧部署的明文管理员兼容路径。
 prepare_env() {
-    local data="$1" certs="$2"
+    local data="$1" certs="$2" write_admin="${3:-1}"
     rm -rf "$data" "$certs"
     mkdir -p "$data/logs" "$data/state" "$certs"
     cp "$BASE/.env.docker.example" "$data/.env"
-    sed -i "s|^YIBAN_ADMIN_USER=.*|YIBAN_ADMIN_USER=${GATE_ADMIN_USER}|" "$data/.env"
-    sed -i "s|^YIBAN_ADMIN_PASSWORD=.*|YIBAN_ADMIN_PASSWORD=${GATE_ADMIN_PASSWORD}|" "$data/.env"
+    if [ "$write_admin" = 1 ]; then
+        printf 'YIBAN_ADMIN_USER=%s\nYIBAN_ADMIN_PASSWORD=%s\n' \
+            "$GATE_ADMIN_USER" "$GATE_ADMIN_PASSWORD" >> "$data/.env"
+    fi
     openssl req -x509 -nodes -days 2 -newkey rsa:2048 \
         -keyout "$certs/key.pem" -out "$certs/fullchain.pem" \
         -subj "/CN=deploy-gate" >/dev/null 2>&1
 }
+
 
 c_in_py() { # c_in_py <proj> <ov> <python code>
     # 一律以业务用户 uid 10001（容器内 yiban）执行：与 supervisord 下的 web/调度同身份。
@@ -250,15 +253,15 @@ phase_A() {
     local proj="${GATE_PROJECT}-a" data="$GATE_TMP/data-a" certs="$GATE_TMP/certs-a"
     local ov="$GATE_TMP/override-a.yml" log="$LOG_DIR/phase-a.log"
     CUR_PROJ="$proj"; CUR_OVERRIDE="$ov"
-    prepare_env "$data" "$certs"
-    # A0：README「一键部署」第 2 步（填写管理员）确实生效——缺则当场停，不拿模板里的
-    # 占位口令（YIBAN_ADMIN_PASSWORD=请修改为强密码）当部署者的口令继续跑。
-    if grep -qxF "YIBAN_ADMIN_USER=${GATE_ADMIN_USER}" "$data/.env" &&
-        grep -qxF "YIBAN_ADMIN_PASSWORD=${GATE_ADMIN_PASSWORD}" "$data/.env"; then
-        pass "A0 管理员按 README 填入 data/.env" "两键就位"
+    prepare_env "$data" "$certs" 0
+    # A0：模板不得自带管理员键或明文口令——首配只走 /setup 或 CLI init。
+    if ! grep -qE '^YIBAN_ADMIN_(USER|PASSWORD|PASSWORD_HASH)=' "$data/.env"; then
+        pass "A0 模板不含管理员键（首配走 /setup 或 CLI init）" "零管理员键"
     else
-        fail "A0 管理员填入 data/.env" "README 的填写步骤未生效"; cleanup_proj "$proj" "$ov"; return
+        fail "A0 模板不含管理员键" "模板仍带管理员键：$(grep -E '^YIBAN_ADMIN_' "$data/.env" | tr '\n' ' ')"
+        cleanup_proj "$proj" "$ov"; return
     fi
+
     write_override "$ov" "$proj" "$data" "$certs" "$GATE_HTTP_PORT" "$GATE_HTTPS_PORT"
     : > "$log"
 
@@ -277,8 +280,30 @@ phase_A() {
     fi
 
     local code
+    code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 "https://127.0.0.1:${GATE_HTTPS_PORT}/setup")"
+    if [ "$code" = "200" ]; then pass "A3 未配置管理员时 /setup 200（首次引导）" "200"; else fail "A3 GET /setup" "HTTP $code"; fi
     code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 "https://127.0.0.1:${GATE_HTTPS_PORT}/login")"
-    if [ "$code" = "200" ]; then pass "A3 GET /login（经 nginx HTTPS）" "200"; else fail "A3 GET /login" "HTTP $code"; fi
+    if [ "$code" = "302" ]; then pass "A3b 未配置管理员时 /login 302 到 /setup" "302"; else fail "A3b GET /login" "HTTP $code（期望 302）"; fi
+
+    # A4：README 的 headless 首配路径——容器内跑 CLI init，口令只走环境变量。
+    local iout irc
+    iout="$(dc exec -T -u 10001 -e "YIBAN_ADMIN_PASSWORD=${GATE_ADMIN_PASSWORD}" \
+        yiban python3 -m yiban.entry.cli init --username "${GATE_ADMIN_USER}" --json 2>>"$log")"
+    irc=$?
+    printf '%s\n' "$iout" >> "$log"
+    if [ "$irc" = 0 ] && printf '%s' "$iout" | grep -q '"ok": true'; then
+        pass "A4 容器内 CLI init 创建管理员" "rc=0"
+    else
+        fail "A4 CLI init" "rc=$irc 输出：$(printf '%s' "$iout" | tail -c 200)"
+    fi
+    # .env 已被 entrypoint chown 给容器内 uid 10001，宿主用户读不到；A5 在容器内读。
+    if dc exec -T -u 10001 yiban python3 -c 'import pathlib,sys; t=pathlib.Path("/data/.env").read_text(); u=sys.argv[1]; sys.exit(0 if ("YIBAN_ADMIN_USER="+u+"\n") in t and "\nYIBAN_ADMIN_PASSWORD_HASH=scrypt:" in ("\n"+t) and "\nYIBAN_ADMIN_PASSWORD=" not in ("\n"+t) else 1)' "$GATE_ADMIN_USER"; then
+        pass "A5 .env 写入账号与 scrypt 哈希、无明文口令" "哈希就位"
+    else
+        fail "A5 .env 管理员写入形状" "见 A4 日志"
+    fi
+    code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 "https://127.0.0.1:${GATE_HTTPS_PORT}/login")"
+    if [ "$code" = "200" ]; then pass "A6 GET /login（已配置管理员）" "200"; else fail "A6 GET /login" "HTTP $code"; fi
 
     local lresp lcode
     lresp="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 \
@@ -286,7 +311,7 @@ phase_A() {
         -d "{\"username\":\"${GATE_ADMIN_USER}\",\"password\":\"${GATE_ADMIN_PASSWORD}\"}" \
         "https://127.0.0.1:${GATE_HTTPS_PORT}/api/login")"
     lcode="$lresp"
-    if [ "$lcode" = "200" ]; then pass "A4 .env 管理员登录 /api/login" "200"; else fail "A4 管理员登录" "HTTP $lcode"; fi
+    if [ "$lcode" = "200" ]; then pass "A7 管理员登录 /api/login" "200"; else fail "A7 管理员登录" "HTTP $lcode"; fi
 
     local out seed_mod want_mod got
     out="$(c_in_py "$proj" "$ov" "$(seed_sql_py plain new)" 2>>"$log")"
@@ -297,9 +322,9 @@ phase_A() {
     # 守卫（工单 e0ro）：灌数脚本实际导入的模块必须属于**新镜像**。单向改写（把
     # import 改回只存在于旧镜像的模块）会在这里红，而不是等到 B3 连锁红。
     if [ "${got:-0}" = "$GATE_SEED_N" ] && [ "$seed_mod" = "$want_mod" ]; then
-        pass "A5 灌合成账号并计数" "accounts=$got module=$seed_mod"
+        pass "A8 灌合成账号并计数" "accounts=$got module=$seed_mod"
     else
-        fail "A5 灌合成账号" "期望 $GATE_SEED_N 实得 ${got:-?}；STORE_MODULE=${seed_mod:-?}（期望 $want_mod）"
+        fail "A8 灌合成账号" "期望 $GATE_SEED_N 实得 ${got:-?}；STORE_MODULE=${seed_mod:-?}（期望 $want_mod）"
     fi
 
     cleanup_proj "$proj" "$ov"
