@@ -3696,7 +3696,7 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: var(--ctl-h-
 @media (max-width: 720px) {
   .form-actions.is-sticky { position: static; }
 }
-.set-row-text { min-width: 0; }
+.set-row-text { flex: 1 1 auto; min-width: 0; }
 .set-row-label { display: block; font-size: var(--fs-body); color: var(--t-base); }
 /* 说明不换行（122 §R2.4.1 规格②）：开关行是"一行标题 + 一行说明 + 右侧开关"，
    说明折行会把行高顶到 2–7 行、开关与标题脱开。nowrap + ellipsis 兜底；
@@ -4088,8 +4088,8 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: var(--ctl-h-
    B) .select 与 .input 等高：实测 select 36 / input 40（差 5px），统一 min-height。
    C) 组间距：.set-row 与后续 .field 之间补 16px —— 原来只有 .set-row + .set-row 有规则，
       实测「说明 → 下一字段标签」只剩 8px（组间 < 组内，字段组失去边界）。
-   D) 开关行锚定标签行：align-items:flex-start 让开关与标题行对齐，
-      不再对「标签 + 多行说明」整块居中（实测偏低 18px）。
+   D) 开关行与文字块垂直居中：align-items 用 center。曾试 flex-start 让开关顶到标题行，
+      与单行说明的行高不一致，已回退（2026-10 F1 实拍）。
    E) 空表体不留底边线：空态行 + .form-actions 上边线会形成「双线夹空带」。
    ========================================================================== */
 .input, .select, .textarea, .input-group { min-height: var(--ctl-h); }

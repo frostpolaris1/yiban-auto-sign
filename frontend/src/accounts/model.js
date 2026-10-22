@@ -35,7 +35,7 @@ export var GROUPS = {
   active: {
     key: "active",
     title: "正常账号",
-    sub: "签到状态、排序与手动操作；删除后 7 天内可恢复。",
+    sub: "签到状态、排序与手动操作。",
     searchLabel: "搜索正常账号",
     tbody: "accounts-tbody",
     empty: "accounts-empty",

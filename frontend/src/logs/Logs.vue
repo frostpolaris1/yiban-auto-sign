@@ -766,8 +766,14 @@ onBeforeUnmount(() => {
                 <button type="submit" class="btn btn--ghost btn--sm" :disabled="loading">检索</button>
               </form>
               <div class="logs-actions">
-                <a v-if="canExport" class="btn btn--ghost btn--sm" :href="exportHref" :download="exportName" role="button">导出日志</a>
-                <button v-else type="button" class="btn btn--ghost btn--sm" disabled title="尚未加载出可导出的日期">导出日志</button>
+                <a v-if="canExport" class="btn btn--ghost btn--sm logs-act" :href="exportHref" :download="exportName" role="button" aria-label="导出日志" title="导出日志">
+                  <svg class="logs-act-ico" aria-hidden="true"><use href="#i-download" /></svg>
+                  <span class="logs-act-text">导出日志</span>
+                </a>
+                <button v-else type="button" class="btn btn--ghost btn--sm logs-act" disabled title="尚未加载出可导出的日期" aria-label="导出日志">
+                  <svg class="logs-act-ico" aria-hidden="true"><use href="#i-download" /></svg>
+                  <span class="logs-act-text">导出日志</span>
+                </button>
               </div>
             </div>
             <!-- 状态文本是「看不见的事实」类文案，不是控件。它独立成次要行、落在控件行之下，
@@ -1373,6 +1379,10 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
 }
+/* 操作按钮的图标只在 ≤560 露头：那里文字标签隐藏、图标承担识别，aria-label 与 title
+   同步给出全名，键盘与读屏仍拿到「显示全部日志 / 导出日志」。 */
+.logs-act { display: inline-flex; align-items: center; gap: 6px; }
+.logs-act-ico { display: none; width: 16px; height: 16px; }
 /* 桌面不渲染移动卡片；窄屏媒体块里再显示。 */
 .logs-event-cards,
 .logs-event-empty,
@@ -1516,6 +1526,37 @@ onBeforeUnmount(() => {
     color: var(--t-sub);
     overflow-wrap: anywhere;
   }
+}
+@media (max-width: 560px) {
+  /* 360 竖屏：检索框 + 三个按钮挤在一排。输入框吃掉剩余宽度，按钮只留图标；
+     两排会占掉首屏近 90px，标题与日志正文被推得更远。 */
+  .logs-head--log .logs-tools {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 8px;
+    width: 100%;
+    margin-left: 0;
+  }
+  .logs-search {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+  }
+  .logs-actions {
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    gap: 8px;
+  }
+  .logs-actions > * {
+    width: auto;
+    flex: 0 0 auto;
+    padding-left: 8px;
+    padding-right: 8px;
+    justify-content: center;
+  }
+  .logs-act-text { display: none; }
+  .logs-act-ico { display: block; }
 }
 .logs-empty {
   padding: 12px 0;

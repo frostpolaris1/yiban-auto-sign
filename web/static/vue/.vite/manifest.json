@@ -73,7 +73,7 @@
     "name": "vendor-vue"
   },
   "accounts.html": {
-    "file": "assets/accounts-BqyQyp_0.js",
+    "file": "assets/accounts-DDbsVb9G.js",
     "name": "accounts",
     "src": "accounts.html",
     "isEntry": true,
@@ -118,7 +118,7 @@
     ]
   },
   "dashboard.html": {
-    "file": "assets/dashboard-C50mfuhy.js",
+    "file": "assets/dashboard-0yYOBzgy.js",
     "name": "dashboard",
     "src": "dashboard.html",
     "isEntry": true,
@@ -147,7 +147,7 @@
     ]
   },
   "login.html": {
-    "file": "assets/login-BtkwKyXn.js",
+    "file": "assets/login-BQi-Qfpn.js",
     "name": "login",
     "src": "login.html",
     "isEntry": true,
@@ -157,7 +157,7 @@
     ]
   },
   "logs.html": {
-    "file": "assets/logs-DEPl8e-b.js",
+    "file": "assets/logs-DQYUe3d8.js",
     "name": "logs",
     "src": "logs.html",
     "isEntry": true,
@@ -172,7 +172,7 @@
       "_status-vocab-DDwGXPz2.js"
     ],
     "css": [
-      "assets/logs-Da-Bp8cC.css"
+      "assets/logs-D8nxyxXi.css"
     ]
   },
   "myaccounts.html": {
@@ -190,7 +190,7 @@
     ]
   },
   "settings.html": {
-    "file": "assets/settings-BJbw_UNC.js",
+    "file": "assets/settings-DPhT6sir.js",
     "name": "settings",
     "src": "settings.html",
     "isEntry": true,
