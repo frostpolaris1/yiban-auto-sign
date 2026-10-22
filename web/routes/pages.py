@@ -120,6 +120,10 @@ def _admin_page_redirect():
     """
     role = _security._current_role(_session_abs_ttl())
     if role is None:
+        # 首次启动（.env 还没有管理员）：引导到创建页，而不是让用户面对一个
+        # 无法登录的登录页。已配置时行为不变。
+        if not _security.admin_configured():
+            return redirect(url_for("setup_page"))
         return redirect(url_for("login_page"))
     if role != "admin":
         return redirect(url_for("user_calendar_page"))
@@ -245,6 +249,8 @@ def root_page():
     """
     role = _security._current_role(_session_abs_ttl())
     if role is None:
+        if not _security.admin_configured():
+            return redirect(url_for("setup_page"))
         return redirect(url_for("login_page"))
     if role == "admin":
         return redirect(url_for("dashboard_page"))
@@ -260,6 +266,8 @@ def _user_page_redirect():
     """
     role = _security._current_role(_session_abs_ttl())
     if role is None:
+        if not _security.admin_configured():
+            return redirect(url_for("setup_page"))
         return redirect(url_for("login_page"))
     if role != "user":
         return redirect(url_for("dashboard_page"))
@@ -318,6 +326,9 @@ def _login_loop():
 
 def login_page():
     m = _appmod()
+    if not session.get("auth") and not _security.admin_configured():
+        # 未配置管理员时登录必然失败，直接把首次使用者引到创建页。
+        return redirect(url_for("setup_page"))
     if session.get("auth"):
         ip = _security._client_ip()
         now = time.time()
@@ -342,6 +353,26 @@ def login_page():
             return redirect(url_for("dashboard_page") if _security._current_role(_session_abs_ttl()) == "admin" else url_for("user_calendar_page"))
         m.logger.warning("检测到登录页访问循环（IP %s），已打断并渲染登录页", db.hash_ip(ip))
     return _render_auth_vue_page("login.html", "login.html")
+
+
+def setup_page():
+    """首次启动引导页（`/setup`）：.env 还没有管理员时渲染创建表单。
+
+    已配置管理员 ⇒ 302 到登录页。创建接口自身也做同一判定（防直接 POST），
+    本页的判定只负责"页面该不该出现"。
+    """
+    m = _appmod()
+    if _security.admin_configured():
+        return redirect(url_for("login_page"))
+    return render_template(
+        "setup.html",
+        web_version=m.WEB_VERSION,
+        app_version=APP_VERSION,
+        icp_info=_render.icp_info(),
+        police_info=_render.police_info(),
+        police_link=_render.police_link(),
+        site_description=_render.site_description(),
+    )
 
 
 def _render_auth_vue_page(entry, template):
@@ -482,7 +513,7 @@ def audit_page():
 # 需要禁缓存的页面路径：全部页面路由 + 旧的被重定向路径（含根路径）。
 # web.app 的 no_cache 中间件消费本清单（页面路径的唯一登记点在此）。
 NO_STORE_PAGES = frozenset(_MOVED_PAGES) | {
-    "/", "/login", "/terms", "/privacy",
+    "/", "/login", "/setup", "/terms", "/privacy",
     "/data/dashboard", "/data/logs", "/data/audit",
     "/work/accounts", "/work/users", "/work/settings", "/work/pilot",
     "/my/account", "/my/calendar",
@@ -509,6 +540,7 @@ def register(app):
     app.add_url_rule("/", view_func=root_page)
     app.add_url_rule("/user/account", view_func=user_account_page)
     app.add_url_rule("/user/calendar", view_func=user_calendar_page)
+    app.add_url_rule("/setup", view_func=setup_page)
     app.add_url_rule("/login", view_func=login_page)
     app.add_url_rule("/terms", view_func=terms_page)
     app.add_url_rule("/privacy", view_func=privacy_page)

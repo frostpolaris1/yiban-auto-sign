@@ -8,10 +8,11 @@
 
 ## 1. 形态（**M3 已实施**）
 
-统一入口已落地，八个子命令与 `--json` 全部可用：
+统一入口已落地，九个子命令与 `--json` 全部可用：
 
 ```
 python3 -m yiban.entry.cli <子命令> [选项]
+  init      首次初始化内置管理员（口令只从 YIBAN_ADMIN_PASSWORD 环境变量读）
   sign      一轮签到（可 --workers N / --only 手机号 / --fallback / --second-run-check）
   probe     只读健康检查
   config    配置检查（脱敏打印，不联网）
@@ -122,6 +123,7 @@ state_io / accounts / workers / config_check / cli_support / db_maintenance / eg
 新入口（推荐给脚本/agent；`--json` 时 stdout 是**单行** JSON 对象）：
 
 ```bash
+YIBAN_ADMIN_PASSWORD='强口令' python3 -m yiban.entry.cli init --username admin --json  # 首次初始化
 python3 -m yiban.entry.cli version --json
 python3 -m yiban.entry.cli config --json            # 脱敏配置检查（不联网）
 python3 -m yiban.entry.cli db --status --json       # user_version / 表 / 账号数
@@ -157,6 +159,13 @@ bash run.sh                                   # 宿主入口：读 .env（含 YI
 > `capacity` 只消费 `YIBAN_CAPACITY_MEASURED`（部署者自行量取后录入），自己不联网、
 > 不转发任何工具。原先的 `capacity --measure` 转发开关随离线容量基准工具族于 2026-09
 > 一并移除，传入即按"无法识别的参数"退 2。
+
+`init` 只在 `.env` 尚无管理员时可用：账号取 `--username`（缺省读 `YIBAN_ADMIN_USER`），
+口令只从 `YIBAN_ADMIN_PASSWORD` 环境变量或既有 `.env` 读取，**不接受命令行口令**
+（§2 第 7 条）。成功时写 `YIBAN_ADMIN_USER` / `YIBAN_ADMIN_PASSWORD_HASH` /
+`YIBAN_ADMIN_PW_VERSION`，删除明文口令键与旧 `YIBAN_ADMIN_SID`；缺
+`YIBAN_SECRET_KEY` 时生成新钥，全新部署同时写 `YIBAN_REGISTRATION_PAUSE=1`。
+已配置管理员时退出码 1、`error_kind=admin_configured`，不覆盖现网管理员。
 
 `db --backup` 的目标已存在时**不得静默覆盖**上一份副本：不带 `--force` 的 `--yes` 直接
 拒绝（退出码 1、零写入），dry-run 只报告"需 `--force`"。这与 §2 第 5 条"幂等"的边界是：
