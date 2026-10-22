@@ -91,7 +91,7 @@ test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、�
     `卡头出现预期外的直属子元素：${headKids.join(" / ")}`,
   ).toBe(true);
 
-  for (const vw of [1366, 1468, 1920, 2560]) {
+  for (const vw of [1024, 1366, 1468, 1920, 2560]) {
     await page.setViewportSize({ width: vw, height: 900 });
     await page.waitForTimeout(120);
     const g = await headGeom();
@@ -151,6 +151,43 @@ test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、�
   await expect(tl).toContainText("收尾");
   // 执行体只回角色与槽位：身份原串（带主机名）绝不进 DOM
   await expect(tl).not.toContainText("e2e-host");
+
+  // 0c) 运行巡检卡头构图（hr68）：1024 档标题与「刷新进度」同排，可见窗口行独立成行；
+  //     360 档两者都可见、整页无横向溢出。窗口行若留在控件行内，1024 会把整组挤到第二行，
+  //     标题（align-items:center）随之错位。
+  await expect(
+    page.locator("#run-panel .logs-tools #run-window"),
+    "#run-window 仍住在控件组内（未移出控件行）",
+  ).toHaveCount(0);
+  for (const vw of [1024, 360]) {
+    await page.setViewportSize({ width: vw, height: 800 });
+    await page.waitForTimeout(120);
+    const head = await page.locator("#run-panel .logs-head").boundingBox();
+    const title = await page.locator("#run-panel .logs-title").boundingBox();
+    const btn = await page.locator("#run-panel .logs-tools > .btn").boundingBox();
+    const win = await page.locator("#run-window").boundingBox();
+    if (!head || !title || !btn || !win) throw new Error("运行巡检卡头元素取不到位置（" + vw + "px）");
+    const cy = (b: { y: number; height: number }) => b.y + b.height / 2;
+    if (vw >= 1024) {
+      expect(
+        Math.abs(cy(title) - cy(btn)),
+        vw + "px 标题与「刷新进度」不在同一行：title.cy=" + cy(title) + " btn.cy=" + cy(btn),
+      ).toBeLessThanOrEqual(ACCEPT);
+    } else {
+      // 360 档标题与控件按堆叠形态分行，控件整行落在标题之下。
+      expect(btn.y, "360px 控件未落到标题下方").toBeGreaterThanOrEqual(title.y + title.height - ACCEPT);
+    }
+    expect(
+      win.y,
+      vw + "px 可见窗口行仍在控件行内：win.y=" + win.y + " head.bottom=" + (head.y + head.height),
+    ).toBeGreaterThanOrEqual(head.y + head.height - ACCEPT);
+    const over = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(over, vw + "px 运行巡检卡头横向溢出").toBeLessThanOrEqual(ACCEPT);
+  }
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.waitForTimeout(120);
 
   // 0a) 运行进度（实时）：SSE 流自动建连，快照在首帧到达。一屏两带：六节点总数 +
   //     每执行体一行 + 最近事件。事件计数**不去重**（≠ 首页「今日成功账号」）。
