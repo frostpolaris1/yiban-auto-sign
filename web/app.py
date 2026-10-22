@@ -1333,7 +1333,7 @@ class BasePathMiddleware:
     # 新增任何根级路由（不带分组前缀）都必须登记，否则子路径部署下会被当成挂载前缀的一部分
     # 而 404（图标、旧路径重定向均属此类）——test_subpath_deploy 的 url_map 元测试兜底。
     _ROOT_MARKERS = (
-        "/login", "/user", "/terms", "/privacy",
+        "/login", "/setup", "/user", "/terms", "/privacy",
         "/favicon.png", "/gongan-beian.png", "/robots.txt",
         # 裸 /api 前缀：自身即 API 命名空间（404 handler 按它返回 JSON）。不登记时
         # `/tool/demo/api` 这段「其余部分」两头不命中（既非 /api/ 前缀也非已知路由），
