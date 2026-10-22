@@ -63,6 +63,11 @@
   /* 列表页表格行高（Adminator 原版刻度，两族表同高） */
   --table-row-h: 48px;
 
+  /* 弹窗遮罩：blur 只在浏览器支持且帧成本可接受时启用（见 §5）。
+     不支持 backdrop-filter 或 2560px 起视口时落到 92% 不透明底，正文对比度不依赖模糊。 */
+  --modal-blur: 3px;
+  --overlay-strong: color-mix(in srgb, var(--bg-body) 92%, transparent);
+
   /* 文本行宽上限（可读刻度）：说明/正文类容器一律 ≤ 本值。
      裁决（124 §A.6）：**文本行宽可限，布局宽度不可限**——只给"说明/正文"容器
      加上限，不给任何布局容器加 max-width。124 实测 4K 下 .page-sub=3528px、
@@ -272,7 +277,14 @@ textarea {
 .toast__msg {
   flex: 1;
   min-width: 0;
-  word-break: break-word;
+  /* 2026-10-22 e2e 实测（360×792，真实删除提示）：原 word-break 下末行仅 38.88px。
+     balance 后三行宽 173.22/190.33/179.39px，最大/最小 1.099，无孤行；
+     1920/2560 视口行数 ≤2，无横向溢出。
+     line-break:strict 防中文行首标点，word-break:normal 不让拉丁词被随意拆开。 */
+  word-break: normal;
+  overflow-wrap: break-word;
+  line-break: strict;
+  text-wrap: balance;
 }
 .toast__close {
   display: grid;
@@ -340,9 +352,9 @@ textarea {
   display: grid;
   place-items: center;
   padding: 16px;
-  background: var(--overlay);
-  -webkit-backdrop-filter: blur(3px);
-  backdrop-filter: blur(3px);
+  /* 先给不依赖 blur 的强底；支持 backdrop-filter 时在下方覆盖为半透明+虚化。
+     这样禁用/不支持 blur 的浏览器不会得到透明到看不清正文的遮罩。 */
+  background: var(--overlay-strong);
   opacity: 0;
   /* 动效见 §22 覆盖（进入 200ms ease-out / 退出 160ms ease-in） */
 }
@@ -351,6 +363,23 @@ textarea {
 }
 .pm-backdrop.is-open {
   opacity: 1;
+}
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .pm-backdrop {
+    background: var(--overlay);
+    -webkit-backdrop-filter: blur(var(--modal-blur));
+    backdrop-filter: blur(var(--modal-blur));
+  }
+}
+/* 2026-10-22 全屏 90 帧实测：360 p95=16.7ms；1920 p95=33.3ms；2560 p95 在
+   16.8–66.6ms 间抖动、max=83.4ms；3840 p95=150ms。2560 起即去 blur，
+   回退到 92% 不透明底；1920 及以下保留虚化。 */
+@media (min-width: 2560px) {
+  .pm-backdrop {
+    background: var(--overlay-strong);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
 }
 .pm-panel {
   display: flex;

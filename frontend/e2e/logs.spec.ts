@@ -1261,3 +1261,54 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
     expect(dy, `${vw}px 起止日期两框不在同一行：y=${boxes[0]!.y} / ${boxes[1]!.y}`).toBeLessThanOrEqual(1);
   }
 });
+
+/** 日志正文服务端分页（p37f）：5000 行跨 25 页，首屏只渲染最后一页，翻页只发一条 /api/logs。
+ *  种子日 = 业务日 40 天前（e2e/server.py::PAGING_DAY_OFFSET）；用 ?date= 深链直接 pin 住。 */
+test("日志分页：首屏只渲染最后一页，翻页只重拉日志正文", async ({ page }) => {
+  const day = businessDay(40);
+  await page.goto("/data/logs?date=" + day);
+
+  const box = page.locator(".log-box");
+  const info = page.locator(".logs-info");
+  await expect(info).toContainText("第 4801–5000 行 / 共 5000 行");
+  await expect(page.locator("[data-log-pager]")).toBeVisible();
+
+  const firstPage = await box.innerText();
+  const firstLines = firstPage.split("\n").filter(Boolean);
+  expect(firstLines, "5k 行首屏只渲染最后一页的 200 行").toHaveLength(200);
+  expect(firstLines[0], "末页首行应为第 4801 行（0 基序号 4800）").toContain("分页行 4800");
+  expect(firstLines[199]).toContain("分页行 4999");
+
+  const requests: string[] = [];
+  page.on("request", (req) => {
+    const u = req.url();
+    if (u.includes("/api/")) requests.push(u);
+  });
+
+  const prevResp = page.waitForResponse(
+    (r) => r.url().includes("/api/logs?") && r.url().includes("offset=4600") && r.url().includes("limit=200"),
+  );
+  await page.locator("[data-log-pager] .btn-prev").click();
+  await prevResp;
+  await expect(info).toContainText("第 4601–4800 行 / 共 5000 行");
+
+  const secondLines = (await box.innerText()).split("\n").filter(Boolean);
+  expect(secondLines, "上一页应渲染 200 行").toHaveLength(200);
+  expect(secondLines[0]).toContain("分页行 4600");
+  expect(secondLines[199]).toContain("分页行 4799");
+
+  // 翻页只重拉日志正文：不得连带重拉运行巡检/执行体健康。
+  const pageReqs = requests.filter((u) => u.includes("/api/logs?"));
+  expect(pageReqs.length, "翻页应恰发一条 /api/logs").toBe(1);
+  expect(
+    requests.filter((u) => u.includes("/api/admin/run-events") || u.includes("/api/admin/exec-health")),
+    "翻页不得重拉运行巡检或执行体健康",
+  ).toEqual([]);
+
+  // 360px：正文与分页器都不许把页面撑出横向滚动。
+  await page.setViewportSize({ width: 360, height: 792 });
+  await expect(page.locator("[data-log-pager]")).toBeVisible();
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow, "360px 日志页出现横向溢出").toBeLessThanOrEqual(1);
+  await page.setViewportSize({ width: 1280, height: 800 });
+});
