@@ -869,9 +869,11 @@ onBeforeUnmount(() => {
               <button type="button" class="btn btn--ghost btn--sm" :disabled="runLoading" @click="refreshInspection">
                 刷新进度
               </button>
-              <span id="run-window" class="run-info">{{ runWindowLine }}</span>
             </div>
           </div>
+          <!-- 可见窗口是「口径说明」不是控件：独立成行，不再与「刷新进度」抢同一行。
+               1024 档两者同排会把整组挤到第二行，标题随 align-items:center 错位（hr68）。 -->
+          <span id="run-window" class="run-info run-window-line">{{ runWindowLine }}</span>
 
           <!-- 运行进度（实时）：SSE 流（bd fdjl / 125 §4.2）。一屏两带：全局六节点总数
                + 每执行体一行 + 最近事件。两条口径纪律：事件计数**不去重**（≠ 首页
@@ -1609,6 +1611,11 @@ onBeforeUnmount(() => {
 /* 运行巡检块：摘要与时间线同卡；两块表各占一行，窄屏由 el-table 自身横滚。 */
 #run-panel {
   margin-bottom: 12px;
+}
+/* 运行巡检的可见窗口行：独立成行、紧贴卡头，不与控件抢行（hr68）。 */
+.run-window-line {
+  display: block;
+  margin: -4px 0 12px;
 }
 /* 运行进度（实时）块：一屏两带（全局六节点总数 + 每执行体一行 + 最近事件）。
    外观用全局令牌（--border / --bg-card / --r-inner），与同卡其他块一致；
