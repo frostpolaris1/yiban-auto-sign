@@ -553,7 +553,7 @@ onBeforeUnmount(() => {
   <div class="dash-page" id="dashboard-root">
     <div class="page-head">
       <h1 class="page-title">数据总览</h1>
-      <p class="page-sub">账号、用户与签到结果的一屏汇总；待处理账号与异常排查入口就在对应卡片上。</p>
+      <p class="page-sub">账号、用户与签到结果汇总。</p>
     </div>
 
     <p class="alert dash-status" id="dash-status" role="status" :class="statusTone" :hidden="!statusVisible">
@@ -688,8 +688,12 @@ onBeforeUnmount(() => {
         <div class="panel-head">
           <div class="panel-head-row">
             <h2 class="panel-title">账号与用户容量</h2>
+            <button type="button" class="info-tip" aria-label="容量估算口径" aria-describedby="dash-pop-capacity">
+              <svg aria-hidden="true"><use href="#i-info" /></svg>
+              <span class="info-pop" id="dash-pop-capacity" role="tooltip">容量估算按当前签到窗口与账号间隔计算。</span>
+            </button>
           </div>
-          <p class="panel-sub">改动上限在「系统设置 → 容量配额」；容量估算按当前签到窗口与账号间隔计算。</p>
+          <p class="panel-sub">上限在「系统设置 → 容量配额」。</p>
         </div>
         <div class="dash-health" id="capacity-rows">
           <div class="dash-health-row">
