@@ -35,7 +35,7 @@
 | 主管理员 | 视图内 `_is_builtin_admin_session()` | 仅 `.env` 内置管理员（`auth_source == "builtin"`） |
 
 - **公开**端点（`require_login` 明确豁免）：
-  `POST /api/login`、`POST /api/register`、`POST /api/me/restore`；
+  `POST /api/login`、`POST /api/register`、`POST /api/me/restore`、`POST /api/setup/admin`；
   `GET /api/announcement`、`GET /api/changelog`、`GET /api/registration_paused`。
 - **任意已登录**放行面（普通用户可用的全部路径）：前缀 `/api/my-`、
   `/api/verify-jobs`，以及精确路径 `/api/clock`、`/api/me`、`/api/logout`、
@@ -52,7 +52,7 @@
 
 - **要 CSRF 的方法**：`POST` / `PUT` / `DELETE`，且路径以 `/api/` 开头。
 - **豁免（改用同源校验）**：`POST /api/login`、`POST /api/register`、
-  `POST /api/me/restore`。这三个端点校验 `Origin` 头与 `(scheme, host)` 同源；
+  `POST /api/me/restore`、`POST /api/setup/admin`。这四个端点校验 `Origin` 头与 `(scheme, host)` 同源；
   无 `Origin` 头放行（同站导航、curl）。跨站即 403
   `{"error": "请求来源异常，请刷新页面后重试"}`。
 - **要 CSRF 的取法与带回**：`GET /api/me` 响应里的 `csrf_token`（64 位 hex）。
@@ -191,6 +191,19 @@
 - 副作用：成功写 `login_ok` 审计；重建会话并签发 `sid`（内置管理员写 `.env` 的
   `YIBAN_ADMIN_SID`，注册用户写 `users.sid`）。
 - 不变量：用户名比对统一小写。登录失败计数按 `(IP, 用户名小写)` 组合。
+
+#### `POST /api/setup/admin`
+
+- 鉴权档：公开（仅当 `.env` 尚未配置管理员时可用）。CSRF：豁免，走同源校验。
+- 请求体：`username`（string，必填）、`password`（string，必填）。
+- 成功响应：`{"ok": true, "role": "admin"}`，并直接建立内置管理员会话。
+- 主要错误：400 账号格式或口令策略不符；409 `管理员已配置，请直接登录`；
+  500 `写入 .env 失败，请检查文件权限后重试` 或写入后自检失败。
+- 副作用：写 `YIBAN_ADMIN_USER`、`YIBAN_ADMIN_PASSWORD_HASH`、
+  `YIBAN_ADMIN_PW_VERSION=1` 与 `YIBAN_ADMIN_SID`；删除明文
+  `YIBAN_ADMIN_PASSWORD`；写 `admin_setup` 审计。
+- 不变量：写文件与二次判定在同一把跨进程锁内；明文口令不落盘；并发首配只有
+  一个请求成功。
 
 #### `POST /api/register`
 
@@ -1240,6 +1253,13 @@
 #### `GET /login`
 
 - 鉴权档：公开（HTML 页面）。响应：HTML。已登录时按角色 302 到首页（循环保护）。
+  未配置管理员时 302 到 `/setup`。
+
+#### `GET /setup`
+
+- 鉴权档：公开（HTML 页面）。响应：HTML。
+- 未配置管理员时渲染首次启动表单；已配置时 302 到 `/login`。
+- 未配置管理员时，`/` 与 `/login` 也 302 到本页。
 
 #### `GET /logs`
 
