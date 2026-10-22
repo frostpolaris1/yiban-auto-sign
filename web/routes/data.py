@@ -56,9 +56,13 @@ def api_logs_export():
     date 必填且强校验（防路径穿越），文件名仅含日期。响应体不是磁盘原
     文件：按天日志在盘上按设计保留完整手机号（signin 状态解析 / run.sh
     依赖），HTTP 出口必须与 /api/logs 展示层同一契约——经 _log_lines_for
-    （yiban 全量 + 其余组件仅告警级，同一尾部读取封顶）过滤后逐行
-    _mask_log_phones 脱敏，任何登录身份都无法经 HTTP 取得未脱敏号码。
-    成功导出写 logs_export 审计留痕（400/404 不写），并受每 IP 窗口限速。
+    （yiban 全量 + 其余组件仅告警级）过滤后逐行 _mask_log_phones 脱敏，
+    任何登录身份都无法经 HTTP 取得未脱敏号码。
+
+    导出必须整读当日文件（full=True），不得沿用展示面的 2MB 尾读上限：
+    否则归档会静默丢掉早期行（p37f）。文件超过 _LOG_EXPORT_BYTE_CAP 时
+    返回 413 显式拒绝。成功导出写 logs_export 审计留痕（400/404/413 不写），
+    并受每 IP 窗口限速。
     """
     date = str(request.args.get("date", "")).strip()
     if not _logs_svc._is_valid_date_str(date):
@@ -72,15 +76,24 @@ def api_logs_export():
     )
     if not allowed:
         return jsonify({"error": "导出过于频繁，请稍后再试"}), 429
-    if not os.path.exists(_logs_svc.log_path_for(date)):
+    log_path = _logs_svc.log_path_for(date)
+    if not os.path.exists(log_path):
         return jsonify({"error": f"{date} 无签到日志"}), 404
+    try:
+        size = os.path.getsize(log_path)
+    except OSError:
+        return jsonify({"error": f"{date} 无签到日志"}), 404
+    max_bytes = _logs_svc._LOG_EXPORT_BYTE_CAP
+    if size > max_bytes:
+        # 显式拒绝优于静默截断：调用方必须知道本次没有拿到完整归档。
+        return jsonify({
+            "error": f"日志文件过大（{size} 字节，上限 {max_bytes} 字节），已拒绝导出",
+        }), 413
     # 与展示层同一契约（ba-p06-03）：stats 出参必须传——不传时 _log_lines_for
     # 丢弃的残缺行在导出物里一个字都不留（管理员拿到看似完整、实际缺行的归档）。
     _line_stats = {}
-    text = "".join(
-        _logs_svc._mask_log_phones(ln) + "\n"
-        for ln in _logs_svc._log_lines_for(date, _line_stats)
-    )
+    full_lines = _logs_svc._log_lines_for(date, _line_stats, full=True)
+    text = "".join(_logs_svc._mask_log_phones(ln) + "\n" for ln in full_lines)
     dropped = int(_line_stats.get("dropped", 0))
     if dropped:
         # 缺行必须可见：响应头给下游归档脚本，审计 detail 给事后取证（两者同数）。
@@ -90,12 +103,15 @@ def api_logs_export():
         session.get("username") or "?",
         "logs_export",
         date,
-        f"导出 {date} 签到日志（脱敏；丢弃 {dropped} 行）",
+        f"导出 {date} 签到日志（脱敏；全量 {len(full_lines)} 行；丢弃 {dropped} 行）",
     )
     return Response(text, mimetype="text/plain", headers={
         "Content-Disposition": f"attachment; filename={env_io.day_log_name(date)}",
         # 0 也显式回执：下游无需区分"字段缺失"与"没有丢行"
         "X-Yiban-Dropped-Lines": str(dropped),
+        # 覆盖口径与行数：调用方可据此确认本次是整日全量，不是尾读片段。
+        "X-Yiban-Log-Coverage": "full-day",
+        "X-Yiban-Log-Lines": str(len(full_lines)),
     })
 
 
