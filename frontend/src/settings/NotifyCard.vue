@@ -287,7 +287,7 @@ defineExpose({
       <div class="set-row">
         <label class="set-row-text" for="sm-global">
           <span class="set-row-label">全局邮件通知</span>
-          <p class="set-help">关闭后所有邮件都不发送；推送不受影响。</p>
+          <p class="set-help">关闭后邮件不发送，推送不受影响。</p>
         </label>
         <div class="set-row-ctl">
           <button type="button" class="info-tip set-row-info" aria-label="全局邮件通知说明" aria-describedby="set-pop-mail-global">
