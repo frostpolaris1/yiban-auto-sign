@@ -99,6 +99,8 @@
   /* ---------- 请求层：CSRF / 401 重试 / 非 JSON 兜底 ---------- */
   var csrfToken = "";
   var mePromise = null;
+  // 条件请求的 ETag 表：GET 200 存、304 复用、其余响应清除；只存内存，不跨页/跨会话。
+  var etagStore = {};
   function httpError(status, message, data) {
     var e = new Error(message || ("请求失败 (" + status + ")"));
     e.status = status; e.error = e.message; e.data = data; e.isHttp = true; return e;
@@ -142,6 +144,12 @@
     var write = req.method === "POST" || req.method === "PUT" || req.method === "DELETE" || req.method === "PATCH";
     if (write && csrfToken) headers["X-CSRF-Token"] = csrfToken;
     if (req.headers) forEach(Object.keys(req.headers), function (k) { headers[k] = req.headers[k]; });
+    // 条件请求是**显式 opt-in**：只有调用方声明 `conditional:true` 时才带 If-None-Match。
+    // 默认对所有 GET 生效曾让 /api/accounts?count_only=1 第二次回 304，徽标把空体读成 0；
+    // 其他不认识 notModified 的调用方也会被空体破坏。缓存命中只对声明过的列表读取开放。
+    if (req.method === "GET" && req.conditional && etagStore[req.path] && !headers["If-None-Match"]) {
+      headers["If-None-Match"] = etagStore[req.path];
+    }
     // 超时兜底：只会 abort 本次请求，失败按网络错误抛出（见 timeoutError）。
     // 写请求不加自动重试——重试语义仍由 handleResponse 的 401/403 分支独占。
     var timer = null, ctl = (typeof AbortController === "function") ? new AbortController() : null;
@@ -151,6 +159,8 @@
     var done = function () { if (timer) { clearTimeout(timer); timer = null; } };
     return fetch(url(req.path), opts)
       .then(function (resp) {
+        if (resp.status === 200 && resp.headers.get("ETag")) etagStore[req.path] = resp.headers.get("ETag");
+        else if (resp.status !== 304) delete etagStore[req.path];
         return resp.text().then(function (txt) { return handleResponse(resp, txt, req, retried); });
       }, function (err) {
         // 超时中止与网络故障分开报文案：前者提示"超时"（同一动作值得重试），
@@ -162,6 +172,9 @@
       .then(function (data) { if (write) cacheClearAll(); done(); return data; }, function (err) { done(); throw err; });
   }
   function handleResponse(resp, txt, req, retried) {
+    // 条件请求命中：服务端回 304 空体。返回带 notModified 的哨兵，调用方保留上一次
+    // 已解析的数据；**不把它当错误**。
+    if (resp.status === 304) { return { ok: true, notModified: true }; }
     var data = null;
     try { data = txt ? JSON.parse(txt) : {}; } catch (e) { data = null; }
     if (data === null) {
@@ -251,8 +264,11 @@
      /api/users、/api/clock、/api/announcement，不去重的话每次切页都要把这些重问一遍（单 worker 生产
      环境下白占线程与带宽）。 */
   var inflightGets = {};
-  function api(method, path, body) {
+  function api(method, path, body, opts) {
     var req = normalizeRequest(method, path, body);
+    // conditional：调用方声明「这条 URL 的结果会按 ETag 复用」，并自行处理 notModified 哨兵。
+    // 不声明就绝不发 If-None-Match——避免把不认识 304 的调用方（徽标计数、外壳数据）读成空。
+    if (opts && opts.conditional) req.conditional = true;
     if (req.method !== "GET") {
       // 写请求提交前的行分隔符拦截：含换行族的字段会注入出新的 .env 配置行
       // （后端写入口另有 fail-closed 兜底；这里只是把"提交后 500/409"提前成"提交前提示"）。
@@ -264,7 +280,7 @@
       return perform(req, false);
     }
     var key = req.path + "\u0000" + (req.body == null ? "" : String(req.body))
-      + "\u0000" + JSON.stringify(req.headers || {});
+      + "\u0000" + JSON.stringify(req.headers || {}) + (req.conditional ? "\u0000c" : "");
     if (inflightGets[key]) return inflightGets[key];
     var pending = perform(req, false);
     inflightGets[key] = pending;
@@ -301,6 +317,7 @@
     } catch (e) { /* 隐私模式/配额满：静默降级为不缓存 */ }
   }
   function cacheClearAll() {
+    etagStore = {};
     try {
       var keys = [];
       for (var i = 0; i < sessionStorage.length; i++) {
