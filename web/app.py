@@ -1778,7 +1778,7 @@ def create_app(host=None):
     def require_login():
         if not request.path.startswith("/api/"):
             return
-        if request.path in ("/api/login", "/api/register", "/api/me/restore"):
+        if request.path in ("/api/login", "/api/register", "/api/setup/admin", "/api/me/restore"):
             return
         # 公告/更新日志读取对所有用户开放（含未登录，登录页也显示）；
         # 注册暂停状态（v0.26.3）供登录页决定是否禁用注册入口，同口径公开
@@ -1861,7 +1861,7 @@ def create_app(host=None):
             return
         if not request.path.startswith("/api/"):
             return
-        if request.path in ("/api/login", "/api/register", "/api/me/restore"):
+        if request.path in ("/api/login", "/api/register", "/api/setup/admin", "/api/me/restore"):
             # 未登录态无 session token：用同源校验阻断跨站 CSRF（与登录/注册同等级）
             if not _is_same_origin():
                 _log_forwarded_proto_mismatch_once()  # NEW-M1 反代头未生效诊断
@@ -1869,7 +1869,7 @@ def create_app(host=None):
                 # 同口径 hash_ip 匿名化（哈希形态足以关联同一来源的连续告警）；
                 # 限速等内存计数仍用裸 IP
                 logger.warning(
-                    "跨站登录/注册被拒绝: ip=%s path=%s origin=%s",
+                    "跨站登录/注册/首配被拒绝: ip=%s path=%s origin=%s",
                     db.hash_ip(_client_ip()),
                     _nl_safe(request.path),
                     _nl_safe(request.headers.get("Origin")),
