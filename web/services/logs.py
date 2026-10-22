@@ -151,6 +151,8 @@ SIGN_LOG_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2}) [\d:]+\] \[(\w+)\] ([\w.]+): (.
 
 #: 日志倒读上限 2MB（约 2 万行）
 _LOG_TAIL_BYTES = 2 * 1024 * 1024
+#: 导出整读上限 64MB：超过则显式拒绝，不得静默截断（p37f）。
+_LOG_EXPORT_BYTE_CAP = 64 * 1024 * 1024
 
 
 def _tail_lines(path, max_bytes=_LOG_TAIL_BYTES):
@@ -230,11 +232,14 @@ def log_path_for(date_str=None):
     return env_io.day_log_path(date_str, log_file=_host("log_file"))
 
 
-def _log_lines_for(date_str, stats=None):
+def _log_lines_for(date_str, stats=None, *, full=False):
     """读取指定日期日志的行（行首日期过滤防跨天残留；可见性口径见 `_log_line_visible`）。
 
     文件缺失/不可读返回空列表（历史日期无日志是正常状态，不报错）。
     路径与倒读实现都从宿主取，故日志目录切到别处的既有打桩面继续生效。
+
+    `full=True`：用 `_read_all_lines` 整读，供导出使用。展示面仍走 2MB 尾读，
+    两者不可互换（p37f：导出不得静默丢早期行）。
 
     `stats`：可选 dict，读入 `stats["dropped"]` = 被丢弃的**无法解析**行数。
     上游按宽行模型（`splitlines()`）切文本，行内裸 NEL/LS/PS 会把一条逻辑行
@@ -244,11 +249,14 @@ def _log_lines_for(date_str, stats=None):
     归属），只把丢掉多少数出来给调用方回显（MF-99）。收录行的集合与原
     口径逐字一致；可见性过滤只是**设计内**的隐藏，不算丢弃。
     """
-    tail_lines = _host("tail_lines")
+    if full:
+        lines = _read_all_lines(log_path_for(date_str))
+    else:
+        lines = _host("tail_lines")(log_path_for(date_str))
     prefix = f"[{date_str} "
     out = []
     dropped = 0
-    for line in tail_lines(log_path_for(date_str)):
+    for line in lines:
         if line.startswith(prefix):
             m = SIGN_LOG_RE.match(line.strip())
             if not m:
