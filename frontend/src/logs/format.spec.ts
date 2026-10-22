@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   ALL_LOG_LEVEL,
+  LOG_PAGE_SIZE,
   WARN_LOG_LEVEL,
   buildExportUrl,
   buildLogsQuery,
   eventCountText,
   eventMessage,
   infoText,
+  pagedInfoText,
   paginate,
   shouldPoll,
   sortEvents,
@@ -79,6 +81,65 @@ describe("buildLogsQuery", () => {
   });
 });
 
+
+describe("日志正文服务端分页（p37f）", () => {
+  it("页大小取服务端 page_args 上限 200", () => {
+    expect(LOG_PAGE_SIZE).toBe(200);
+  });
+
+  it("分页查询串：limit 与 offset 必须成对追加，旧调用逐字不变", () => {
+    expect(buildLogsQuery("2026-10-03", "", false)).toBe("/api/logs?date=2026-10-03");
+    expect(buildLogsQuery("2026-10-03", "x", true, ALL_LOG_LEVEL)).toBe(
+      "/api/logs?date=2026-10-03&q=x&all=1&level=all",
+    );
+    expect(buildLogsQuery("2026-10-03", "", false, WARN_LOG_LEVEL, 200, 250)).toBe(
+      "/api/logs?date=2026-10-03&level=warn&limit=200&offset=250",
+    );
+    // 只给一个参数不成对，按旧口径不下发任何一个（避免半套分页参数）。
+    expect(buildLogsQuery("2026-10-03", "", false, "", 200)).toBe("/api/logs?date=2026-10-03");
+    expect(buildLogsQuery("2026-10-03", "", false, "", undefined, 250)).toBe("/api/logs?date=2026-10-03");
+  });
+
+  it("信息栏报当前页行区间，不报「已截断」", () => {
+    expect(
+      pagedInfoText(
+        { total_lines: 450, returned: 200, dropped_lines: 0, q: "", collapsed_lines: 0 },
+        250,
+      ),
+    ).toBe("第 251–450 行 / 共 450 行");
+    expect(
+      pagedInfoText(
+        { total_lines: 450, returned: 200, dropped_lines: 0, q: "", collapsed_lines: 0 },
+        50,
+      ),
+    ).toBe("第 51–250 行 / 共 450 行");
+  });
+
+  it("检索态报匹配区间；收起与丢弃提示沿用同一后缀", () => {
+    expect(
+      pagedInfoText(
+        { total_lines: 30, returned: 20, dropped_lines: 0, q: "签到", collapsed_lines: 0 },
+        0,
+      ),
+    ).toBe("第 1–20 行匹配 / 共 30 行");
+    expect(
+      pagedInfoText(
+        { total_lines: 30, returned: 20, dropped_lines: 2, q: "", collapsed_lines: 5 },
+        0,
+      ),
+    ).toBe("第 1–20 行 / 共 30 行（已收起 5 行 INFO／DEBUG）（另有 2 行未计入）");
+  });
+
+  it("空结果只报总数（不编造行区间）", () => {
+    expect(
+      pagedInfoText(
+        { total_lines: 0, returned: 0, dropped_lines: 0, q: "", collapsed_lines: 0 },
+        0,
+      ),
+    ).toBe("共 0 行");
+  });
+});
+
 describe("buildExportUrl", () => {
   it("日期进 query（文件名仅含日期，不带路径）", () => {
     expect(buildExportUrl("2026-10-03")).toBe("/api/logs/export?date=2026-10-03");
@@ -107,6 +168,12 @@ describe("shouldPoll（与 legacy pollTick 逐条一致）", () => {
 
   it("pin 住某一天（非跟随）时不轮询——即使那天就是今天", () => {
     expect(shouldPoll({ ...base, following: false })).toBe(false);
+  });
+
+  it("翻到历史页（atLatest=false）时不轮询，避免 10 秒后被拉回最新页", () => {
+    expect(shouldPoll({ ...base, atLatest: false })).toBe(false);
+    expect(shouldPoll({ ...base, atLatest: true })).toBe(true);
+    expect(shouldPoll(base)).toBe(true);
   });
 });
 
