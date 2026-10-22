@@ -31,7 +31,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCHEMA_TOP = migrations._MIGRATIONS[-1][0]
 
 #: 子命令（`docs/dev/cli.md` §1 的目标形态）
-SUBCOMMANDS = ("sign", "probe", "config", "capacity", "state", "egress", "db", "version")
+SUBCOMMANDS = ("init", "sign", "probe", "config", "capacity", "state", "egress", "db", "version")
 
 #: `--json` 的期望退出码：临时环境里 0 账号（config 判配置错误=1）、sign 同理=1
 JSON_EXPECTED_RC = {
@@ -196,6 +196,41 @@ class CliContractTest(unittest.TestCase):
         self.assertEqual(rc, 10)
         self.assertIsNone(cli_support.last_fatal_error(),
                           "上一轮的致命原因被带到了本轮（应已在 main 入口清空）")
+
+    # ---- ②c init：首次初始化只写哈希，不落明文，二次调用拒绝 ----
+
+    def test_init_creates_admin_hash_without_plaintext(self):
+        env = dict(self.env, YIBAN_ADMIN_PASSWORD="InitPass123!")
+        r = _run(["init", "--username", "admin", "--json"], env)
+        self.assertEqual(r.returncode, 0, r.stderr[-400:])
+        payload = json.loads(r.stdout)
+        self.assertEqual(payload["command"], "init")
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["admin_user"], "admin")
+        self.assertTrue(payload["secret_key_created"])
+        self.assertTrue(payload["registration_paused"])
+
+        with open(self.root / ".env", encoding="utf-8") as f:
+            lines = f.read()
+        self.assertIn("YIBAN_ADMIN_USER=admin", lines)
+        self.assertIn("YIBAN_ADMIN_PASSWORD_HASH=scrypt:", lines)
+        self.assertNotIn("YIBAN_ADMIN_PASSWORD=", lines, "明文口令键必须被删除")
+        self.assertNotIn("InitPass123!", lines, "口令明文不得落盘")
+
+        # 二次调用：管理员已配置，拒绝覆盖
+        r = _run(["init", "--username", "other", "--json"], env)
+        self.assertEqual(r.returncode, 1)
+        payload = json.loads(r.stdout)
+        self.assertEqual(payload["error_kind"], "admin_configured")
+
+    def test_init_rejects_weak_password_before_writing(self):
+        env = dict(self.env, YIBAN_ADMIN_PASSWORD="short")
+        r = _run(["init", "--username", "admin", "--json"], env)
+        self.assertEqual(r.returncode, 2)
+        payload = json.loads(r.stdout)
+        self.assertEqual(payload["error_kind"], "invalid_password")
+        self.assertIn("至少 12 位", payload["errors"][0])
+        self.assertFalse((self.root / ".env").exists(), "校验失败不得创建 .env")
 
     # ---- ③ state 默认 dry-run，--yes 需回显目标指纹才动手 ----
 

@@ -5,6 +5,7 @@ import { defineConfig, devices } from "@playwright/test";
 // e2e 只用本机 Chromium，跑在 frontend/e2e/server.py 拉起的临时 Flask 实例上
 // （临时 .env/SQLite + 预置审计行；不碰仓库真实数据、不联外网）。
 const PORT = Number(process.env.YB_E2E_PORT ?? 8765);
+const SETUP_PORT = Number(process.env.YB_E2E_SETUP_PORT ?? 8766);
 
 /** 解释器探测：优先显式 YB_E2E_PYTHON（CI / 其他机器），否则试常见 venv 位置。 */
 function pythonCommand(): string {
@@ -44,11 +45,22 @@ export default defineConfig({
     // （`logs.spec.ts::dates()` 与 `crowded`）不受它影响，另走 `e2e/business-day.ts`。
     timezoneId: "Asia/Shanghai",
   },
-  webServer: {
-    command: `"${pythonCommand()}" e2e/server.py`,
-    url: `http://127.0.0.1:${PORT}/login`,
-    reuseExistingServer: false,
-    timeout: 60_000,
-    stdout: "pipe",
-  },
+  webServer: [
+    {
+      command: `"${pythonCommand()}" e2e/server.py`,
+      url: `http://127.0.0.1:${PORT}/login`,
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "pipe",
+    },
+    {
+      // F4 首次启动引导需要「.env 还没有管理员」的独立实例：与主实例状态互斥，
+      // 故另起一个进程/端口（见 e2e/setup_server.py 文件头）。
+      command: `"${pythonCommand()}" e2e/setup_server.py`,
+      url: `http://127.0.0.1:${SETUP_PORT}/setup`,
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "pipe",
+    },
+  ],
 });

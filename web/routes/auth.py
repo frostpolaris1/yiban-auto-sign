@@ -28,6 +28,7 @@ A 类转发名（`db` / `clock` / `load_env_int` / `_client_ip` / `_mask_email` 
 **本模块**（`mock.patch.object(web.routes.auth, "check_password_hash", …)`）。
 打在 web.app 上仍会成功，但不控制本模块的调用——静默失效。
 """
+import re
 import secrets
 import sqlite3
 import time
@@ -60,6 +61,70 @@ def _register_limits():
 def _login_rate():
     """登录频率限速表（仅登录接口使用，每 app 实例一份）。"""
     return current_app.extensions["yiban_login_rate"]
+
+
+_ADMIN_USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@-]*$")
+
+
+def api_setup_admin():
+    """首次启动创建内置管理员：写入 .env 的账号与 scrypt 哈希，并建立会话。
+
+    只在 `admin_configured()` 为假时可用。写文件与二次判定在同一把跨进程锁内，
+    防两个并发首配请求各写一份。明文口令不落盘：只写
+    `YIBAN_ADMIN_PASSWORD_HASH`，并把可能残留的 `YIBAN_ADMIN_PASSWORD` 删键。
+    """
+    m = _appmod()
+    if _security.admin_configured():
+        return jsonify({"error": "管理员已配置，请直接登录"}), 409
+
+    data = _http._json_body()
+    username = str(data.get("username", "")).strip()
+    password = str(data.get("password", ""))
+    if not (3 <= len(username) <= 64) or not _ADMIN_USERNAME_RE.fullmatch(username):
+        return jsonify({"error": "账号需为 3–64 位字母、数字、点、下划线、@ 或连字符，且以字母或数字开头"}), 400
+    policy_error = _accounts_data._admin_password_policy_error(password)
+    if policy_error:
+        return jsonify({"error": policy_error}), 400
+
+    ip = _security._client_ip()
+    pw_hash = generate_password_hash(password, method=_security.SCRYPT_METHOD)
+    sid = _security._new_admin_sid()
+    try:
+        with _env_io_svc._env_write_lock(m.ENV_FILE):
+            # 锁内二次判定：两个并发首配请求只允许一个写入。
+            if _security.admin_configured():
+                return jsonify({"error": "管理员已配置，请直接登录"}), 409
+            _env_io_svc.write_env_batch(
+                m.ENV_FILE,
+                {
+                    "YIBAN_ADMIN_USER": username,
+                    "YIBAN_ADMIN_PASSWORD_HASH": pw_hash,
+                    "YIBAN_ADMIN_PASSWORD": "",
+                    "YIBAN_ADMIN_PW_VERSION": "1",
+                    _security.ADMIN_SID_ENV_KEY: sid,
+                },
+            )
+    except OSError:
+        current_app.logger.exception("首次启动写入管理员配置失败：%s", m.ENV_FILE)
+        return jsonify({"error": "写入 .env 失败，请检查文件权限后重试"}), 500
+
+    # 写后自检：读回 .env 再验一次哈希，避免"接口成功、实际登不进"。
+    if not _security.admin_configured() or not _security.verify_admin(username, password):
+        current_app.logger.error("首次启动写入后自检失败：%s", m.ENV_FILE)
+        return jsonify({"error": "管理员配置写入后校验失败，请检查 .env"}), 500
+
+    db.audit((username.lower() or "?")[:64], "admin_setup", db.hash_ip(ip), "首次启动创建内置管理员")
+    session.clear()
+    session.permanent = True
+    session["auth"] = True
+    session["role"] = "admin"
+    session["username"] = username.lower()
+    session["auth_source"] = "builtin"
+    session["pw_version"] = 1
+    session["login_ts"] = int(time.time())
+    session["login_ip"] = ip
+    session["sid"] = sid
+    return jsonify({"ok": True, "role": "admin"})
 
 
 def api_login():
@@ -393,7 +458,8 @@ def api_logout():
 
 
 def register(app):
-    """在本域注册三条认证路由；endpoint 取函数名（url_for 依赖）。"""
+    """在本域注册认证路由；endpoint 取函数名（url_for 依赖）。"""
+    app.add_url_rule("/api/setup/admin", view_func=api_setup_admin, methods=["POST"])
     app.add_url_rule("/api/login", view_func=api_login, methods=["POST"])
     app.add_url_rule("/api/register", view_func=api_register, methods=["POST"])
     app.add_url_rule("/api/logout", view_func=api_logout, methods=["POST"])
