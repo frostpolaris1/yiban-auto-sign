@@ -7,12 +7,13 @@ import {
   ALL_LOG_LEVEL,
   WARN_LOG_LEVEL,
   EVENT_PAGE_SIZES,
+  LOG_PAGE_SIZE,
   TAB_KEYS,
   buildExportUrl,
   buildLogsQuery,
   eventCountText,
   eventMessage,
-  infoText,
+  pagedInfoText,
   paginate,
   shouldPoll,
   sortEvents,
@@ -86,7 +87,8 @@ import {
      显式写出「已收起 N 行 INFO／DEBUG」——不许让人把收起读成没有那些行。
    · 运行进度只保留 14 天（服务端 `run_events.RETENTION_DAYS`）。页面显式写明窗口；
      窗口外给「跨月回溯请走审计日志页」的指引，不静默出空表。
-   · 翻页/排序是**客户端**行为（接口按日一次性返回当日结果集，封顶 5000 行）。
+   · 日志正文走**服务端分页**（每页 200 行，只渲染当前页）；事件表的翻页/排序
+     仍是客户端行为（接口按日返回当日事件集，封顶 5000 行）。
 
    日期语义（2026-10-03 修 blocking：原实现用服务端回显日期覆盖用户选择，导致
    查看该日/回到今天/空态跳转全部失效）：
@@ -115,7 +117,8 @@ const viewDate = ref("");
 const loadedDate = ref("");
 const searchInput = ref("");
 const keyword = ref("");
-const showAll = ref(false);
+/** 日志正文当前页（1 基）。服务端分页：每页 LOG_PAGE_SIZE 行，只渲染当前页。 */
+const logPage = ref(1);
 /** 级别档用户选择："" = 跟随服务端默认（首屏不下发 level）；切换后为显式档位 */
 const levelOverride = ref("");
 const autoRefresh = ref(true);
@@ -158,8 +161,14 @@ let runBusy = false;
 let runPending: { day: string; executor: string; keepSelection: boolean } | null = null;
 let firstLoad = true;
 
-const info = computed(() => (payload.value ? infoText(payload.value) : ""));
+const info = computed(() =>
+  payload.value ? pagedInfoText(payload.value, (logPage.value - 1) * LOG_PAGE_SIZE) : "",
+);
 const logText = computed(() => (payload.value ? payload.value.logs.join("\n") : ""));
+/** 日志正文总页数（空结果为 1，避免分页器出现 0 页）。 */
+const logPageCount = computed(() =>
+  payload.value ? Math.max(1, Math.ceil(payload.value.total_lines / LOG_PAGE_SIZE)) : 1,
+);
 const following = computed(() => viewDate.value === "");
 const isToday = computed(() => payload.value?.is_today === true);
 const canExport = computed(() => !!loadedDate.value);
@@ -283,6 +292,22 @@ function nearBottom(): boolean {
   return box.scrollHeight - box.scrollTop - box.clientHeight < 80;
 }
 
+/** 日志正文某一页的查询串（1 基页码 → offset）。 */
+function logPageQuery(date: string, page: number): string {
+  return buildLogsQuery(
+    date,
+    keyword.value,
+    false,
+    levelOverride.value,
+    LOG_PAGE_SIZE,
+    (page - 1) * LOG_PAGE_SIZE,
+  );
+}
+
+async function fetchLogPage(date: string, page: number): Promise<LogsPayload> {
+  return api<LogsPayload>("GET", logPageQuery(date, page));
+}
+
 async function load(mode: "nav" | "poll" = "nav"): Promise<void> {
   if (busy) return;
   busy = true;
@@ -294,8 +319,13 @@ async function load(mode: "nav" | "poll" = "nav"): Promise<void> {
   // 否则跟随态下服务端会重新解析日期、把用户正在看的内容换掉。
   const date = mode === "poll" ? loadedDate.value : viewDate.value;
   try {
-    const resp = await api<LogsPayload>("GET", buildLogsQuery(date, keyword.value, showAll.value, levelOverride.value));
+    // 先取第一页只为拿 total_lines，再直接取最后一页：首屏落的永远是**最新**一页，
+    // 不会先渲染旧页再跳。分页后服务端只回当前页，DOM 行数不再随当日总量增长。
+    const head = await fetchLogPage(date, 1);
+    const last = Math.max(1, Math.ceil(head.total_lines / LOG_PAGE_SIZE));
+    const resp = last === 1 ? head : await fetchLogPage(date, last);
     payload.value = resp;
+    logPage.value = last;
     loadedDate.value = resp.date;
     dateInput.value = resp.date;
     // 档位显示校准：以服务端回执为准（不把默认档位抄进前端）
@@ -599,9 +629,31 @@ function onDatePick(v: string | null): void {
   dateInput.value = v ?? "";
 }
 
-function toggleAll(): void {
-  showAll.value = !showAll.value;
-  void load();
+/** 翻到日志正文某一页：只重拉 /api/logs 当前页，不重拉运行巡检/健康卡/审计状态。 */
+async function onLogPageChange(p: number): Promise<void> {
+  if (busy || !loadedDate.value) return;
+  const target = Math.max(1, Math.floor(p) || 1);
+  if (target === logPage.value) return;
+  busy = true;
+  loading.value = true;
+  errorText.value = "";
+  try {
+    let resp = await fetchLogPage(loadedDate.value, target);
+    const maxPage = Math.max(1, Math.ceil(resp.total_lines / LOG_PAGE_SIZE));
+    if (target > maxPage) {
+      // 请求期间当日行数变少：夹回最后一页，不留在空页上。
+      resp = await fetchLogPage(loadedDate.value, maxPage);
+    }
+    payload.value = resp;
+    logPage.value = Math.min(target, maxPage);
+    await nextTick();
+    if (logBox.value) logBox.value.scrollTop = 0;
+  } catch (e) {
+    errorText.value = (e as Error)?.message || "网络错误，请重试";
+  } finally {
+    busy = false;
+    loading.value = false;
+  }
 }
 
 /** 级别档开关：切档后重载（服务端按档过滤，前端不自筛）。切换时才显式下发档位。 */
@@ -632,6 +684,7 @@ function tick(): void {
       following: following.value,
       busy,
       overlayOpen: overlayOpen(),
+      atLatest: logPage.value >= logPageCount.value,
     })
   ) {
     void load("poll");
@@ -713,14 +766,6 @@ onBeforeUnmount(() => {
                 <button type="submit" class="btn btn--ghost btn--sm" :disabled="loading">检索</button>
               </form>
               <div class="logs-actions">
-                <button
-                  type="button"
-                  class="btn btn--ghost btn--sm"
-                  :aria-pressed="showAll ? 'true' : 'false'"
-                  @click="toggleAll"
-                >
-                  {{ showAll ? "回到最近日志" : "显示全部日志" }}
-                </button>
                 <a v-if="canExport" class="btn btn--ghost btn--sm" :href="exportHref" :download="exportName" role="button">导出日志</a>
                 <button v-else type="button" class="btn btn--ghost btn--sm" disabled title="尚未加载出可导出的日期">导出日志</button>
               </div>
@@ -771,6 +816,21 @@ onBeforeUnmount(() => {
             <button type="button" class="btn btn--ghost btn--sm" :disabled="loading" @click="load()">重试</button>
           </div>
           <pre v-show="logText" ref="logBox" class="log-box" role="log" aria-live="off">{{ logText }}</pre>
+          <div
+            v-if="payload && payload.total_lines > LOG_PAGE_SIZE"
+            class="logs-logpager"
+            data-log-pager
+          >
+            <el-pagination
+              :current-page="logPage"
+              :page-size="LOG_PAGE_SIZE"
+              :total="payload.total_lines"
+              :pager-count="5"
+              layout="prev, pager, next"
+              small
+              @current-change="onLogPageChange"
+            />
+          </div>
           <div v-if="!logText && !loading && !errorText" id="logs-empty" class="logs-empty">
             <p v-if="keyword">（无匹配日志行）</p>
             <p v-else-if="collapsed > 0">
@@ -1490,6 +1550,19 @@ onBeforeUnmount(() => {
   justify-content: flex-end;
   gap: 12px;
   margin-top: 12px;
+}
+/* 日志正文分页器（与事件表 .logs-pager 分开：一个绑服务端页，一个是本地表页）。 */
+.logs-logpager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  margin-top: 12px;
+  max-width: 100%;
+  overflow-x: auto;
+}
+@media (max-width: 560px) {
+  .logs-logpager { justify-content: center; }
 }
 /* 运行巡检块：摘要与时间线同卡；两块表各占一行，窄屏由 el-table 自身横滚。 */
 #run-panel {
