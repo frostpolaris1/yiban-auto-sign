@@ -343,6 +343,7 @@ serial	tests/test_web_rate_limit_concurrency_e2e.py	# 真起 gunicorn 服务并�
 fast	tests/test_web_render_golden.py
 fast	tests/test_web_security_gates.py
 fast	tests/test_web_settings_page.py
+fast	tests/test_web_setup_bootstrap.py
 fast	tests/test_web_style_tokens.py
 fast	tests/test_web_users_page.py
 fast	tests/test_web_viewport_meta.py

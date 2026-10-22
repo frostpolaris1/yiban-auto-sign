@@ -71,28 +71,29 @@ DELETE_GRACE_DAYS = db.SOFT_DELETE_RETENTION_DAYS
 # ---------------------------------------------------------------------------
 # 口令策略（普通用户与主管理员两档）
 # ---------------------------------------------------------------------------
-# 密码策略：至少 10 位且包含大写/小写/数字/符号中至少两类（只对新建/修改生效，存量密码不受影响）
-PASSWORD_MIN_LEN = 10
-# 口令"字符类别"单一事实源：四个类别正则按文案顺序排列，与 _PASSWORD_CLASS_LABELS
-# 同序同数。判定语义是"命中类别数 >= _PASSWORD_MIN_CLASSES 即通过"——符号算一类，不额外要求含符号。
-# 前端各页各内联一份同名同序的 PW_CLASS_PATTERNS（不跨文件共享脚本），由元测试从模板源码
-# 提取后与本元组逐字比对，任一侧漂移即红。
-_PASSWORD_CLASS_PATTERNS = (r"[A-Z]", r"[a-z]", r"\d", r"[^A-Za-z0-9]")
-_PASSWORD_CLASS_LABELS = ("大写字母", "小写字母", "数字", "符号")
-# 类别下限：文案里的中文"两"须与本常量一致（元测试同时钉住数值与措辞，防只改一处）
-_PASSWORD_MIN_CLASSES = 2
-# 统一口径文案（前后端同句）：数量下限一律写成"…中的至少 + 本常量值 + 类别"那种形式。
-# 少了限定词就会被读成恰好值，换用别的比较词又会被读成再多一档；这两种歧义写法由
-# tests/test_rekey_key_source.py::PasswordPolicyParityB14Test 按字面量拦——它连注释一起扫，
-# 所以此处只描述规则，不复述被禁写法。
-# 大小写在文案里合并（精简），判定仍按四类各自计数，所以 _PASSWORD_CLASS_LABELS 保持
-# 四元组：主管理员"至少三类"的消息必须把四类列全。
-_PASSWORD_CLASS_HINT = "大小写字母、数字、符号中的至少两类"
-_PASSWORD_POLICY_HINT = f"至少 {PASSWORD_MIN_LEN} 位，且包含{_PASSWORD_CLASS_HINT}"
-# 主管理员（内置 .env 管理员）口令单独提档：至少 12 位且命中至少三类，与启动期的
-# reject_default_admin_password 同一策略（普通用户维持原口径）。
-ADMIN_PASSWORD_MIN_LEN = 12
-ADMIN_PASSWORD_MIN_CLASSES = 3
+# 常量的唯一真源在 yiban.core.password_policy（CLI 与 Web 共用）；本模块保留原有
+# 名字面（含下划线别名），供路由与元测试继续按名取用。
+from yiban.core.password_policy import (  # noqa: E402
+    PASSWORD_CLASS_HINT as _PASSWORD_CLASS_HINT,
+)
+from yiban.core.password_policy import (  # noqa: E402
+    PASSWORD_CLASS_LABELS as _PASSWORD_CLASS_LABELS,  # noqa: F401
+)
+from yiban.core.password_policy import (  # noqa: E402
+    PASSWORD_CLASS_PATTERNS as _PASSWORD_CLASS_PATTERNS,
+)
+from yiban.core.password_policy import (  # noqa: E402
+    PASSWORD_MIN_CLASSES as _PASSWORD_MIN_CLASSES,
+)
+from yiban.core.password_policy import (  # noqa: E402
+    PASSWORD_MIN_LEN,
+)
+from yiban.core.password_policy import (  # noqa: E402
+    PASSWORD_POLICY_HINT as _PASSWORD_POLICY_HINT,
+)
+from yiban.core.password_policy import (  # noqa: E402
+    admin_password_policy_error as _shared_admin_password_policy_error,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -350,15 +351,9 @@ def _password_policy_error(password):
 def _admin_password_policy_error(password):
     """主管理员（内置 .env 管理员）口令策略：至少 12 位且命中至少三类。
 
-    主管理员口令单独提档（普通用户维持原口径不变），与 reject_default_admin_password
-    的启动 fail-closed 同一策略。
+    判据在 yiban.core.password_policy，CLI init 与本函数共用同一实现。
     """
-    if len(password) < ADMIN_PASSWORD_MIN_LEN:
-        return f"至少 {ADMIN_PASSWORD_MIN_LEN} 位，且包含大写字母、小写字母、数字、符号中的至少三类"
-    classes = sum(bool(re.search(pat, password)) for pat in _PASSWORD_CLASS_PATTERNS)
-    if classes < ADMIN_PASSWORD_MIN_CLASSES:
-        return f"需包含{'、'.join(_PASSWORD_CLASS_LABELS)}中的至少三类"
-    return None
+    return _shared_admin_password_policy_error(password)
 
 
 # ---------------------------------------------------------------------------

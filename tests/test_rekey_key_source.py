@@ -2274,15 +2274,17 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
         self.assertEqual(w._PASSWORD_MIN_CLASSES, 2,
                          "判定下限仍是 2 类：不得改成 3 类，也不得要求必须含符号")
         self.assertEqual(w.PASSWORD_MIN_LEN, 10, "长度下限不变")
-        # 后端侧的四类正则与两条文案随账号数据族（含口令策略）住在
-        # web/services/accounts_data.py：判据是「符号类正则全后端只出现一次＝唯一定义点」。
+        # 后端侧的四类正则与两条文案住在 yiban/core/password_policy.py：判据是
+        # 「符号类正则全后端只出现一次＝唯一定义点」。CLI 与 Web 共用该模块，
+        # accounts_data 只保留原名别名，不再定义第二份。
         # 覆盖**消费面**而不只定义点——两侧消费点各按来源不同：
         #   web/security.py 的 reject_default_admin_password 与 web/app.py 的转发/再导出
         #   都只能按名取用（导入常量），一律不得内联那份正则。
         # 说明（评审 Minor 消解）：此前只扫定义文件，任一消费面把 `[^A-Za-z0-9]`
         # 抄一份都会被漏掉；web/app.py 纵深同样纳入后，三处一起钉住。
         backends = {
-            "web/services/accounts_data.py": 1,  # 唯一定义点（_PASSWORD_CLASS_PATTERNS）
+            "yiban/core/password_policy.py": 1,  # 唯一定义点（PASSWORD_CLASS_PATTERNS）
+            "web/services/accounts_data.py": 0,  # 只保留原名别名
             "web/security.py": 0,                # 启动弱口令检测按名取用
             "web/app.py": 0,                     # 只转发/再导出
         }
@@ -2291,7 +2293,7 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
             self.assertEqual(
                 src.count("A-Za-z0-9"), want,
                 f"{rel} 的符号类正则出现 {src.count('A-Za-z0-9')} 处（应为 {want}）："
-                f"全后端只允许 web/services/accounts_data.py 的 _PASSWORD_CLASS_PATTERNS "
+                f"全后端只允许 yiban/core/password_policy.py 的 PASSWORD_CLASS_PATTERNS "
                 f"定义一次，其余位置按名取用；内联第二份即回到多份正则各自漂移的老问题")
         fn = inspect.getsource(w._password_policy_error)
         self.assertIn("_PASSWORD_CLASS_PATTERNS", fn,
