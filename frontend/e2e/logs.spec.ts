@@ -1310,5 +1310,16 @@ test("日志分页：首屏只渲染最后一页，翻页只重拉日志正文",
   await expect(page.locator("[data-log-pager]")).toBeVisible();
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow, "360px 日志页出现横向溢出").toBeLessThanOrEqual(1);
+
+  // 正文限高后必须内滚；否则 200 行会画到分页器上（2026-10-22 截图审查实测）。
+  const logGeom = await box.evaluate((el) => {
+    const cs = getComputedStyle(el);
+    const r = el.getBoundingClientRect();
+    return { overflow: cs.overflow, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, bottom: r.bottom };
+  });
+  expect(logGeom.overflow, "360px 日志正文应内滚").toBe("auto");
+  expect(logGeom.scrollHeight, "200 行正文应高于限高").toBeGreaterThan(logGeom.clientHeight);
+  const pagerTop = await page.locator("[data-log-pager]").evaluate((el) => el.getBoundingClientRect().top);
+  expect(pagerTop, "分页器不得被日志正文覆盖").toBeGreaterThanOrEqual(logGeom.bottom - 1);
   await page.setViewportSize({ width: 1280, height: 800 });
 });

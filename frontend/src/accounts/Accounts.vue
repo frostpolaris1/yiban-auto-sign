@@ -10,7 +10,6 @@ import {
   passwordPolicyOk,
   pollMs,
   shellBase,
-  swapOut,
   toast,
 } from "../lib/shell";
 import { usePolling } from "../lib/polling";
@@ -19,13 +18,11 @@ import "./ops.js"; // 注册 window.YB.accountOps（纯 JS，被 Python 侧 node
 import {
   GROUP_KEYS,
   GROUPS,
-  accountMatch,
   badgeOf,
   batchActions,
   countLabel,
   deletedAtText,
   emptyText,
-  groupAll,
   lastExecText,
   legendEntries,
   menuItems,
@@ -38,9 +35,8 @@ import {
   selectedIds,
   selectedPhones,
   stateCell,
-  statsOf,
 } from "./model.js";
-import { DEFAULT_PAGE_SIZE, PAGE_SIZES, clampPage, pageSlice } from "../lib/pager";
+import { DEFAULT_PAGE_SIZE, PAGE_SIZES } from "../lib/pager";
 import {
   availableUserItems,
   buildAccountPayload,
@@ -110,22 +106,44 @@ const TAB_KEYS = GROUP_KEYS;
 // 渲染的全部状态码；模板不再手写 chip。详情见 model.js 该函数与单源总账测试。
 const LEGEND = legendEntries();
 
-const accounts = ref<AccountRecord[]>([]);
-const states = ref<Record<string, string>>({});
-const stateMsgs = ref<Record<string, string>>({});
-const stateDurs = ref<Record<string, number | null>>({});
-// 「自选」列按后端能力探测隐藏：YIBAN_ALLOW_TIME_PREF 默认 0 时整列恒「—」，
-// 留着只会让用户以为功能坏了。口径与用户端横幅同一来源（/api/me 的 time_pref_allowed）。
+type Stats = { success: number; failed: number; waiting: number; skipped: number };
+interface ListPayload {
+  accounts?: AccountRecord[];
+  states?: Record<string, string>;
+  state_msgs?: Record<string, string>;
+  state_durs?: Record<string, number | null>;
+  group_totals?: Record<string, number>;
+  stats?: Stats;
+  total?: number;
+  notModified?: boolean;
+}
+
+// 服务端分组分页：每组只保存当前页的行，total/组总量/KPI 由服务端给。
+const rowsByGroup = ref<Record<string, AccountRecord[]>>({ pending: [], active: [], deleted: [] });
+const totals = ref<Record<string, number>>({ pending: 0, active: 0, deleted: 0 });
+const groupTotals = ref<Record<string, number>>({ pending: 0, active: 0, deleted: 0 });
+const stats = ref<Stats>({ success: 0, failed: 0, waiting: 0, skipped: 0 });
+const tab = ref("pending");
+const accounts = computed<AccountRecord[]>(() => rowsByGroup.value[tab.value] ?? []);
+const allRows = computed<AccountRecord[]>(() =>
+  GROUP_LIST.flatMap((g) => rowsByGroup.value[g] ?? []));
+function rowByIndex(index: number): AccountRecord | undefined {
+  return allRows.value.find((a) => a.index === index);
+}
+// 状态表按组下发（只含该组当前页的手机号）：分组保存，切页签取当前组那份。
+const statesByGroup = ref<Record<string, Record<string, string>>>({ pending: {}, active: {}, deleted: {} });
+const stateMsgsByGroup = ref<Record<string, Record<string, string>>>({ pending: {}, active: {}, deleted: {} });
+const stateDursByGroup = ref<Record<string, Record<string, number | null>>>({ pending: {}, active: {}, deleted: {} });
+const states = computed<Record<string, string>>(() => statesByGroup.value[tab.value] ?? {});
+const stateMsgs = computed<Record<string, string>>(() => stateMsgsByGroup.value[tab.value] ?? {});
+const stateDurs = computed<Record<string, number | null>>(() => stateDursByGroup.value[tab.value] ?? {});
 const me = ref<{ time_pref_allowed?: boolean } | null>(null);
 const timePrefOn = computed(() => me.value?.time_pref_allowed === true);
-const tab = ref("pending");
 const tabsEl = ref<HTMLElement | null>(null);
 const { style: tabIndicatorStyle, ready: tabIndicatorReady } = useTabIndicator(tabsEl, tab);
 const search = ref<Record<string, string>>({ pending: "", active: "", deleted: "" });
-// 分页状态（每组各持一页；页大小三组共用一个值）。
-// 后端 /api/accounts 的 limit/offset 切的是**整表**，而本页按 status 在**前端分组**——
-// 直接对整表分页会把同一组拆到不同页。故本页用客户端分页：一次取全、每组只渲染当前页，
-// 使 5k 账号下首屏 DOM 与页大小同阶（而非 11 万节点）。详见交付报告"分页口径"。
+// 分页状态（每组各持一页；页大小三组共用一个值）。服务端按组过滤后切片，
+// 组总量（group_totals）与 KPI（stats）不随当前页收窄。
 const pages = ref<Record<string, number>>({ pending: 1, active: 1, deleted: 1 });
 const pageSize = ref(DEFAULT_PAGE_SIZE);
 const PAGE_SIZE_OPTS: number[] = [...PAGE_SIZES];
@@ -135,90 +153,72 @@ const menuOpen = ref(false);
 const narrow = ref(false);
 const deletedHint = ref(false);
 const ownerEmailOn = ref(ownerEmailVisible());
-// 写操作就地反馈（响应式，替代 legacy 直接改 DOM 的 markSigning/flashRow）：
-// 待签中的账号 index / 刚被移动需高亮的账号 index。由 ops.js 的 ctx 回调驱动。
 const signingIndex = ref<number | null>(null);
 const flashIndex = ref<number | null>(null);
 
 const rootEl = ref<HTMLElement | null>(null);
 
-/* ---------------- 分组视图 ---------------- */
+/* ---------------- 分组视图（行集来自服务端，已是该组当前页） ---------------- */
 function rowsOf(group: string): AccountRecord[] {
-  const kw = search.value[group] ?? "";
-  return groupAll(accounts.value, group).filter((a) => accountMatch(a, kw));
+  return rowsByGroup.value[group] ?? [];
 }
 function totalOf(group: string): number {
-  return groupAll(accounts.value, group).length;
+  return totals.value[group] ?? 0;
 }
 function groupCount(group: string): string {
-  return countLabel(totalOf(group), rowsOf(group).length, search.value[group] ?? "");
+  const kw = search.value[group] ?? "";
+  if (!kw) return countLabel(groupTotals.value[group] ?? 0, 0, "");
+  return String(totalOf(group)) + " 个匹配 / 共 " + String(groupTotals.value[group] ?? 0) + " 个";
 }
-/** 当前页的渲染行（客户端分页：行集是 rowsOf 的切片，选中/计数/空态仍按整组口径）。 */
 function pageRows(group: string): AccountRecord[] {
-  return pageSlice(rowsOf(group), pages.value[group] ?? 1, pageSize.value);
+  return rowsOf(group);
 }
 function pageTotal(group: string): number {
-  return rowsOf(group).length;
+  return totalOf(group);
 }
-function onPageChange(group: string, p: number): void {
+async function onPageChange(group: string, p: number): Promise<void> {
   pages.value = { ...pages.value, [group]: p };
+  sel.value = { ...sel.value, [group]: {} };
+  try {
+    await fetchGroup(group);
+  } catch (e) {
+    toast().error(errorMessage(e, "账号列表加载失败，请稍后重试"));
+  }
 }
-/** 改页大小后各组回到第 1 页（否则原页码可能越界）。 */
-function onPageSizeChange(): void {
+async function onPageSizeChange(size: number): Promise<void> {
+  pageSize.value = size;
   pages.value = { pending: 1, active: 1, deleted: 1 };
-}
-/** 数据或筛选变化后把每组页码夹回有效区间（轮询后行数可能变小）。 */
-function clampPages(): void {
-  const next: Record<string, number> = {};
-  for (const g of GROUP_LIST) next[g] = clampPage(pages.value[g] ?? 1, rowsOf(g).length, pageSize.value);
-  pages.value = next;
+  sel.value = { pending: {}, active: {}, deleted: {} };
+  try {
+    await load(false);
+  } catch (e) {
+    toast().error(errorMessage(e, "账号列表加载失败，请稍后重试"));
+  }
 }
 
-/**
- * 组合输入（中文输入法）进行中。
- *
- * 为什么需要一个显式标志：组合期的那次回车是「提交候选词」，浏览器**仍会对表单做隐式提交**
- * （实测 Chromium：keydown 的 isComposing 为真时 submit 照样发生一次）。提交落到 commitSearch
- * 就会让输入框失焦、收起软键盘，而拼音串还没上屏。故守卫放在提交路径上，并保证组合期不做
- * 任何拦截（不打断输入法）。同族的日志页与审计页各有一份同样的守卫。
- */
 const composing = ref(false);
 
-/**
- * 检索表单提交（回车 / 点「搜索」）。
- *
- * 桌面端的筛选本就是即时的（`search` 由 v-model 驱动 computed），故这里刻意**不引入**
- * "提交前不过滤"的第二态——那会退掉既有语义。提交只做一件用户看得见的事：让输入框失焦，
- * 收起移动端软键盘，把筛出来的结果露出来。表单本身挡住原生 GET，避免整页重载丢掉内存态
- * （选择态、快照指纹、已加载的完整手机号都只在内存里）。
- *
- * 组合期直接返回：这次提交是输入法提交候选词带来的，不是检索指令。
- */
 function commitSearch(group: string): void {
   if (composing.value) return;
-  rootEl.value?.querySelector<HTMLInputElement>(`#${group}-search`)?.blur();
+  rootEl.value?.querySelector<HTMLInputElement>("#" + group + "-search")?.blur();
 }
 function isFiltering(group: string): boolean {
-  return totalOf(group) > 0 && rowsOf(group).length === 0;
+  return !!search.value[group] && totalOf(group) === 0 && (groupTotals.value[group] ?? 0) > 0;
 }
 function emptyMessage(group: string): string {
-  // 空态文案单一口径在 model.emptyText（Vitest 钉住）：真空给组默认文案，筛出的空给
-  // 「无匹配结果」。此处不再本地重写一份。
-  return emptyText(group, groupAll(accounts.value, group), rowsOf(group));
+  if (rowsOf(group).length) return "";
+  if (isFiltering(group)) return "无匹配结果";
+  return emptyText(group, [], []);
 }
 function selCount(group: string): number {
   return Object.keys(sel.value[group] ?? {}).length;
 }
 function allState(group: string) {
-  return selectAllState(accounts.value, sel.value, group, search.value[group] ?? "");
+  return selectAllState(rowsOf(group), sel.value, group, "");
 }
-// KPI 是「今日签到统计」总览：口径覆盖**全部**正常账号，不随「正常账号」页的检索框收窄
-// （legacy renderStats(active) 用的也是未过滤的 groupAll）。检索只影响表格行。
-const kpi = computed(() => statsOf(groupAll(accounts.value, "active"), states.value));
-const pendingRows = computed(() => groupAll(accounts.value, "pending"));
+const kpi = computed(() => stats.value);
+const pendingRows = computed(() => groupTotals.value.pending ?? 0);
 
-// 状态列视图：手动签到触发后本账号先就地显示「待签中」（signingIndex），随后刷新用服务端
-// 真实状态覆盖（load() 成功即清空 signingIndex）。legacy 是直接改该行 DOM 的 className。
 function stateOf(row: AccountRecord): { tone: string; title: string; icon: string } {
   if (signingIndex.value === row.index) return { tone: "muted", title: "待签中", icon: "clock" };
   return stateCell(row.phone, states.value, stateMsgs.value, stateDurs.value);
@@ -252,7 +252,6 @@ function makeOps(): AccountOps {
     onBatchDelete: () => {
       deletedHint.value = true;
     },
-    // 就地反馈改由组件响应式状态驱动（ops.js 不碰 DOM）：手动签到 → 待签中；移动成功 → 高亮。
     onSigning: (index: number) => {
       signingIndex.value = index;
     },
@@ -265,37 +264,61 @@ function makeOps(): AccountOps {
   }) ?? {}) as unknown as AccountOps;
 }
 
-// 写操作实例**单例**：ops.js 的防重入守卫是实例内的 `inflight`（在途时第二次触发早退）。
-// 若每次动作都 makeOps() 现建一个，实例内 inflight 每次都是 false，双击 restore/move/批量
-// 就会各发一次请求——legacy 是页面初始化时建一次 ops 复用（work_accounts.js）。故这里也
-// 懒建一次复用；ctx 回调闭包引用的都是本组件稳定的 ref 与函数，无需重建。
 let opsSingleton: AccountOps | null = null;
 function ops(): AccountOps {
   if (!opsSingleton) opsSingleton = makeOps();
   return opsSingleton;
 }
 
-async function load(animate = false): Promise<void> {
-  const t0 = performance.now();
-  const data = await api<{
-    accounts?: AccountRecord[];
-    states?: Record<string, string>;
-    state_msgs?: Record<string, string>;
-    state_durs?: Record<string, number | null>;
-  }>("GET", "/api/accounts");
-  const apply = (): void => {
-    accounts.value = data.accounts ?? [];
-    states.value = data.states ?? {};
-    stateMsgs.value = data.state_msgs ?? {};
-    stateDurs.value = data.state_durs ?? {};
-    sel.value = pruneSelection(accounts.value, sel.value);
-    // 轮询后行数可能变化（审核/删除/搜索）：把每组页码夹回有效区间。
-    clampPages();
-    // 服务端真实状态已到，撤掉「待签中」的乐观标记（同 legacy：刷新后由真实状态覆盖）。
-    signingIndex.value = null;
-  };
-  if (animate && performance.now() - t0 > ANIM_MIN_MS && rootEl.value) swapOut(rootEl.value, apply);
-  else apply();
+function groupQuery(group: string): string {
+  const params = new URLSearchParams({
+    group,
+    limit: String(pageSize.value),
+    offset: String(((pages.value[group] ?? 1) - 1) * pageSize.value),
+  });
+  const kw = search.value[group] ?? "";
+  if (kw) params.set("q", kw);
+  return "/api/accounts?" + params.toString();
+}
+
+// 每组记住「当前内存态对应的查询串」：换筛选/翻页后第一次请求跳过条件请求，
+// 否则会拿别处的 ETag 换回 304，页面停在旧结果上。
+const lastQuery: Record<string, string> = {};
+
+// 每组一个请求序号：慢响应后到时不得覆盖更新的页码或检索结果（最新请求胜出）。
+const reqSeq: Record<string, number> = {};
+
+async function fetchGroup(group: string): Promise<boolean> {
+  const seq = (reqSeq[group] ?? 0) + 1;
+  reqSeq[group] = seq;
+  const q = groupQuery(group);
+  const conditional = lastQuery[group] === q;
+  const data = await api<ListPayload>("GET", q, null, conditional ? { conditional: true } : undefined);
+  if (reqSeq[group] !== seq) return false;
+  if (data.notModified) return false;
+  lastQuery[group] = q;
+  const rows = data.accounts ?? [];
+  rowsByGroup.value = { ...rowsByGroup.value, [group]: rows };
+  const total = typeof data.total === "number" ? data.total : rows.length;
+  totals.value = { ...totals.value, [group]: total };
+  if (data.group_totals) groupTotals.value = { ...groupTotals.value, ...data.group_totals };
+  if (data.stats) stats.value = data.stats;
+  statesByGroup.value = { ...statesByGroup.value, [group]: data.states ?? {} };
+  stateMsgsByGroup.value = { ...stateMsgsByGroup.value, [group]: data.state_msgs ?? {} };
+  stateDursByGroup.value = { ...stateDursByGroup.value, [group]: data.state_durs ?? {} };
+  const last = Math.max(1, Math.ceil(total / pageSize.value));
+  if ((pages.value[group] ?? 1) > last) {
+    pages.value = { ...pages.value, [group]: last };
+    return fetchGroup(group);
+  }
+  return true;
+}
+
+async function load(_animate = false): Promise<void> {
+  const changed = await Promise.all(GROUP_LIST.map((g) => fetchGroup(g)));
+  if (!changed.some(Boolean)) return;
+  sel.value = pruneSelection(allRows.value, sel.value);
+  signingIndex.value = null;
 }
 
 async function startLoad(): Promise<void> {
@@ -320,8 +343,8 @@ function onRowAction(row: AccountRecord, key: string): void {
   else if (key === "signin") o.signin(row);
 }
 function onBatch(group: string, key: string): void {
-  const ids = selectedIds(accounts.value, sel.value, group);
-  const phones = selectedPhones(accounts.value, sel.value, group);
+  const ids = selectedIds(rowsOf(group), sel.value, group);
+  const phones = selectedPhones(rowsOf(group), sel.value, group);
   const action = key === "remove" ? "delete" : key;
   ops().batch(action, ids, phones);
 }
@@ -343,8 +366,13 @@ function syncTabUrl(next: string): void {
 }
 watch(tab, syncTabUrl);
 // 检索条件变化即回到第 1 页（否则筛完停在旧页码上、可能落在越界空页）。
+// 服务端检索：250ms 防抖后重拉三组；选中集清空（旧行可能已不在结果里）。
+let searchTimer = 0;
 watch(search, () => {
   pages.value = { pending: 1, active: 1, deleted: 1 };
+  sel.value = { pending: {}, active: {}, deleted: {} };
+  window.clearTimeout(searchTimer);
+  searchTimer = window.setTimeout(() => { void load(false); }, 250);
 }, { deep: true });
 
 // WAI-ARIA tabs 键盘导航。本页已脱离 core.js 的 data-tab-group 契约（那套方向键只认
@@ -385,7 +413,7 @@ const formManualEmail = ref("");
 const formInitialPassword = ref("");
 const T = computed(() => formTexts("admin"));
 const showManual = computed(() => !formEditing.value && formEmail.value === "__manual__");
-const editingAccount = computed(() => (formIndex.value != null ? accounts.value[formIndex.value] : null));
+const editingAccount = computed(() => (formIndex.value != null ? rowByIndex(formIndex.value) : null));
 function onMenuVisible(v: boolean): void {
   menuOpen.value = v;
 }
@@ -402,7 +430,7 @@ function openForm(index: number | null): void {
   formInitialPassword.value = "";
   // 先落固定条目（同步），loadBindableUsers 成功后再覆盖为「固定条目 + 可绑定用户」。
   emailItems.value = emailBaseItems();
-  const a = index !== null ? accounts.value[index] : null;
+  const a = index !== null ? rowByIndex(index) : null;
   f.value = {
     name: a?.name ?? "",
     phone: a?.phone ?? "",
@@ -428,7 +456,8 @@ async function loadDetail(index: number): Promise<void> {
     const acc = d.account ?? {};
     // 迟到响应防串号：弹窗已关，或已改成编辑另一个账号（index 变），都不得再写入表单。
     if (!formOpen.value || formIndex.value !== index) return;
-    if (!accounts.value[index]?.phone) {
+    const row = rowByIndex(index);
+    if (!row?.phone) {
       formSnapshot.value = null;
       fullPhone.value = "";
       f.value.phone = "";
@@ -436,7 +465,7 @@ async function loadDetail(index: number): Promise<void> {
     }
     fullPhone.value = String(acc.phone ?? "");
     formSnapshot.value = makeSnapshot(acc);
-    f.value.phone = accounts.value[index].phone; // 只回显打码号
+    f.value.phone = row.phone; // 只回显打码号
   } catch {
     // 同判据：过期/串号的失败响应不得清掉当前（可能是另一个）表单的完整号与快照。
     if (!formOpen.value || formIndex.value !== index) return;
@@ -666,10 +695,10 @@ const M = {
             class="alert warning acct-pending-tip"
             id="pending-tip"
             role="status"
-            :hidden="pendingRows.length === 0"
+            :hidden="pendingRows === 0"
           >
             <span class="ico"><svg aria-hidden="true"><use href="#i-clock" /></svg></span>
-            <span class="body">有 <strong id="pending-count">{{ pendingRows.length }}</strong> 个账号待处理，请及时审核。</span>
+            <span class="body">有 <strong id="pending-count">{{ pendingRows }}</strong> 个账号待处理，请及时审核。</span>
           </p>
 
           <section class="card">
@@ -900,7 +929,7 @@ const M = {
                     layout="sizes, prev, pager, next"
                     background
                     @current-change="(p: number) => onPageChange(g, p)"
-                    @size-change="onPageSizeChange"
+                    @size-change="(s: number) => onPageSizeChange(s)"
                   />
                 </div>
 

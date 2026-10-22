@@ -51,6 +51,7 @@ from web.routes import admin_delete_limited as _admin_delete_limited
 from web.routes import appmod as _appmod
 from web.routes import detail_limits as _detail_limits
 from web.routes import high_risk_gate as _high_risk_gate
+from web.routes import json_conditional as _json_conditional
 from web.routes import page_args as _page_args
 from web.routes import page_meta as _page_meta
 from web.routes import page_window as _page_window
@@ -81,16 +82,93 @@ from yiban.core import clock
 from yiban.core import masking as _masking
 from yiban.core import status as yiban_status
 
+_ACCOUNT_GROUPS = ("pending", "active", "deleted")
+_SKIPPED_STATES = {
+    "no_task", "skipped_window", "skipped_norange", "paused", "user_cancelled",
+}
+
+
+def _account_group(acc):
+    """账号所属展示分组（与前端 model.js 的 groupAll 同一口径）。"""
+    if acc.get("deleted"):
+        return "deleted"
+    st = acc.get("status")
+    if st in (_accounts_data.ACCOUNT_STATUS_PENDING,
+              _accounts_data.ACCOUNT_STATUS_REJECTED):
+        return "pending"
+    if st == _accounts_data.ACCOUNT_STATUS_ACTIVE:
+        return "active"
+    return ""
+
+
+def _account_group_totals(accounts):
+    out = {g: 0 for g in _ACCOUNT_GROUPS}
+    for a in accounts:
+        g = _account_group(a)
+        if g:
+            out[g] += 1
+    return out
+
+
+def _digits_of(text):
+    return "".join(ch for ch in str(text or "") if ch.isdigit())
+
+
+def _masked_phone_hit(masked, kw):
+    """按遮罩串匹配号码（与前端 phoneMaskHit 同口径，服务端只做一次判定）。"""
+    digits = _digits_of(kw)
+    if len(digits) == 13 and digits[:2] == "86":
+        digits = digits[2:]
+    if len(digits) < 7:
+        return False
+    pattern = str(masked or "")
+    if "*" not in pattern:
+        return digits == pattern
+    parts = [part for part in pattern.split("*") if part]
+    if not parts:
+        return False
+    if not digits.startswith(parts[0]):
+        return False
+    if len(parts) > 1 and not digits.endswith(parts[-1]):
+        return False
+    tail = parts[-1] if len(parts) > 1 else ""
+    if len(digits) < len(parts[0]) + len(tail):
+        return False
+    middle = digits[len(parts[0]):len(digits) - len(tail)]
+    pos = 0
+    for part in parts[1:-1]:
+        at = middle.find(part, pos)
+        if at < 0:
+            return False
+        pos = at + len(part)
+    return True
+
+
+def _account_search_hit(acc, kw):
+    q = str(kw or "").strip().lower()
+    if not q:
+        return True
+    phone = _masking.mask_phone(str(acc.get("phone", "")))
+    owner = str(acc.get("owner", ""))
+    # 列表「归属」列显示的是遮罩后的完整邮箱；检索必须认这个可见值。
+    hay = (acc.get("name"), phone, _accounts_data._owner_display_of(owner),
+           _accounts_data._mask_email(owner), owner)
+    if any(q in str(v or "").lower() for v in hay):
+        return True
+    return _masked_phone_hit(phone, q)
+
 
 def api_accounts():
+    """账号列表：脱敏、今日状态；可选 group/q 与 limit/offset。
+
+    不传新参数时响应与分页前逐字相同。传 group 时只返回该组，total 是该组
+    再经 q 过滤后的行数；group_totals 给三组全局总数，stats 给全部正常账号的
+    今日 KPI。三者都不随当前页收窄，故前端不必先拉整表再分组。
+    """
     m = _appmod()
-    accounts = _accounts_data.load_accounts()
-    # 只取计数（`count_only=1`）：只为轮询/徽标算标量时用，不下发整表——5k 账号下
-    # 整表响应约 2.14 MiB，而导航徽标每 10s 只取一个计数（core.js::loadNavBadges）。
-    # 这里在**任何**派生映射之前早退（status 文件 / 计划台账 / 上次执行体都不查）。
-    # 口径与账号管理「待处理账号」组一致：非删除且 status ∈ {pending, rejected}。
-    # `total` 是整表条数（同分页 `total`），故与分页元数据同一事实同一数。
     if str(request.args.get("count_only", "")).strip() == "1":
+        # 计数只需明文列：用未解密快照，避免为 5k 账号做一遍 AES-GCM。
+        accounts = _accounts_data.load_accounts_raw()
         pending = rejected = 0
         for a in accounts:
             if a.get("deleted"):
@@ -100,55 +178,52 @@ def api_accounts():
                 pending += 1
             elif _st == _accounts_data.ACCOUNT_STATUS_REJECTED:
                 rejected += 1
-        return jsonify({"ok": True, "total": len(accounts),
-                        "pending": pending, "rejected": rejected})
-    # 可选分页：不传 limit/offset 时 paged=False，下发整表（与分页前逐字相同）。
-    # 传了则只下发 [offset, offset+limit) 一页，并附分页元数据（total/limit/offset/returned）。
-    # 目标：消掉 124 §A.5.1 的"5k 整表 ≈2.14 MiB + 每 10s 轮询全量"隐患——轮询只取当前页。
+        return _json_conditional({"ok": True, "total": len(accounts),
+                                  "pending": pending, "rejected": rejected})
+    group = str(request.args.get("group", "")).strip()
+    if group and group not in _ACCOUNT_GROUPS:
+        return jsonify({"error": "未知账号分组"}), 400
+    q = str(request.args.get("q", "")).strip()[:64]
     limit, offset, paged = _page_args()
-    # `index` 是账号在**整表**里的绝对下标：前端用它拼 /api/accounts/<index>/detail
-    # 等行操作 URL（见 accounts-*.js），也用它显示行号。分页只切窗口，不改下标基准；
-    # 若按页内重数，第二页起每行的操作都会指向错号账号。
-    base_index = offset if paged else 0
-    if paged:
-        total = len(accounts)
-        accounts = _page_window(accounts, limit, offset)
-    # 逐账号派生映射的收窄判据：分页时只保留当前页账号的手机号（轮询只取当前页）。
-    _page_phones = {a.get("phone", "") for a in accounts} if paged else None
-    # 附带今日签到状态（键脱敏与 /api/logs 一致）：前端账号表格状态图标不再依赖
-    # 单独的日志轮询（logs/accounts tab 各自可见时才请求对应接口，减少无效轮询）
-    # 状态来源：signin.py 写的结构化状态文件（status 码），前端做图标映射
+    # 带 limit/offset 时只解密**当前页**：5k 账号全量 AES-GCM 实测 >20s，会撞前端 20s 超时。
+    # 只传 group 是「整组返回」，没有页可裁，仍解密整组；调用方要控成本就带分页。
+    # 不传新参数的旧路径仍走 load_accounts()，响应逐字不变。
+    accounts = (_accounts_data.load_accounts_raw() if (paged or group)
+                else _accounts_data.load_accounts())
+    group_totals = _account_group_totals(accounts)
+    indexed = [(i, a) for i, a in enumerate(accounts)]
+    if group:
+        indexed = [(i, a) for i, a in indexed if _account_group(a) == group]
+        if group == "pending":
+            indexed.sort(key=lambda pair: (
+                0 if pair[1].get("status") == _accounts_data.ACCOUNT_STATUS_PENDING else 1,
+                -pair[0]))
+    if q:
+        indexed = [(i, a) for i, a in indexed if _account_search_hit(a, q)]
+    total = len(indexed)
+    page = _page_window(indexed, limit, offset) if paged else indexed
+    if paged or group:
+        page_accounts = db.decrypt_account_rows([a for _i, a in page])
+    else:
+        page_accounts = [a for _i, a in page]
+    _page_phones = {a.get("phone", "") for a in page_accounts} if (paged or group) else None
     states = _logs_svc.load_sign_state()
-    # 今日计划时刻的唯一事实源：台账 run_at（执行体 claim_batch 的领取依据）。读不通回
-    # None 哨兵 → 当作"今日无计划"展示「待生成」，绝不回退旧的派生算法。一次取全。
     _run_at = _today_plan_map()
     plan_at = _run_at if isinstance(_run_at, dict) else {}
-    # 用户自暂停账号：当日还没有结论时直接呈现"已取消"（⏹️）——无需等下次签到执行
-    # 写状态文件，管理员面板立即反映。**只在无结论时合成**：无条件覆写会把"先签
-    # 成功、再自暂停"的已了结事实涂成"已取消"，面板与 sign_events 台账给出相反信号。
+    # 用户自暂停要在统计口径里生效：统计覆盖全部正常账号，不能只为当前页合成，
+    # 否则同一暂停账号在不同 offset 下会分别计入 skipped 与 waiting。
     for acc in accounts:
         if acc.get("user_paused"):
             _prev = states.get(acc.get("phone", ""))
-            # 无记录 = 空串（`is_concluded_status` 的"无结论"档），不能传 None——
-            # str(None)="None" 会被排除法误判成"已有结论"，把该合成的"已取消"也吞掉
             _prev_status = _prev.get("status", "") if isinstance(_prev, dict) else ""
-            # is_concluded_status 是排除法：看不懂的状态串按"已有结论"处理（宁可不
-            # 覆盖，也不把真实失败从面板上抹掉）
             if yiban_status.is_concluded_status(_prev_status):
                 continue
             states[acc.get("phone", "")] = {
                 "status": yiban_status.STATUS_USER_CANCELLED,
                 "message": "用户已取消签到",
             }
-    # 自选时间（管理员查看每个用户选的片；slot_min → "HH:MM" + 首尾标记）
     prefs = {p: v["slot_min"] for p, v in db.get_time_prefs().items()}
-    # "上次实领是谁签的"：口径是**最近一次有记录的业务日**——"上次"的字面意即最近一次
-    # （按"昨天"取的话，周末停签后会让整列空白到下一个工作日）。
-    # **一次取全**（几百行账号不能逐账号查），角色解析与脱敏都在 _last_executors 里；
-    # 库不存在/未初始化 → {}，于是每行 last_executor 为 null（新部署很正常）。
     last_exec = _executor_env._last_executors(db.task_latest_day())
-    # 片号是相对**有效窗口起点**的偏移，故"末片"的判据也取有效窗口宽度：直读原始窗口
-    # 会在裁剪吃空回退时把宽度算成原始值（如 10 分钟），中段任意片都被误标成 last。
     _win = _signstatus.sign_window_bounds()
     _span_min = _win.end_min - _win.start_min
 
@@ -165,33 +240,24 @@ def api_accounts():
         "ok": True,
         "accounts": [
             {
-                **_accounts_data.mask_account(a, base_index + i),
+                **_accounts_data.mask_account(a, abs_i),
                 "time_pref": _accounts_data._slot_to_label(prefs.get(a["phone"])),
                 "time_pref_edge": _edge_mark(prefs.get(a["phone"])),
-                # 无记录必须是 null（前端靠它显示"—"，空对象/空串会让前端
-                # 误以为"有归属但字段缺失"）
                 "last_executor": last_exec.get(a["phone"]),
             }
-            for i, a in enumerate(accounts)
+            for (abs_i, _raw), a in zip(page, page_accounts, strict=True)
         ],
-        # states 值压成状态码字符串（前端图标映射用）
         "states": {
             _masking.mask_phone(k): (v.get("status", yiban_status.STATUS_PENDING)
                                      if isinstance(v, dict) else yiban_status.STATUS_PENDING)
             for k, v in states.items()
-            # 分页时只下发当前页账号的状态；不传参数（paged=False）保持整表口径不变
             if _page_phones is None or k in _page_phones
         },
-        # 状态原因/计划（如"计划 06:42"），前端表格 title 展示；计划态由台账 run_at 生成，
-        # 故按**当前下发的账号**取值：不传分页参数＝整表，分页时只覆盖当前页。
-        # runner 不再为每个账号预写 sign-state 条目。
-        # 文案由共享助手唯一裁定，与 /api/my-accounts 同源（accounts_data.plan_state_message）。
         "state_msgs": {
             _masking.mask_phone(a.get("phone", "")): _plan_state_message(
                 a, states.get(a.get("phone", "")), plan_at)
-            for a in accounts
+            for a in page_accounts
         },
-        # 单次签到耗时秒数：表格状态 title 展示"耗时 xx s"；无记录为 None
         "state_durs": {
             _masking.mask_phone(k): (v.get("dur") if isinstance(v, dict) else None)
             for k, v in states.items()
@@ -199,10 +265,26 @@ def api_accounts():
         },
         "config_file": os.path.basename(m.DB_FILE),
     }
+    if group or paged:
+        payload["group_totals"] = group_totals
+        stats = {"success": 0, "failed": 0, "waiting": 0, "skipped": 0}
+        for a in accounts:
+            if _account_group(a) != "active":
+                continue
+            _rec = states.get(a.get("phone", ""))
+            st = (_rec.get("status", "pending") if isinstance(_rec, dict) else "pending")
+            if st in ("success", "already"):
+                stats["success"] += 1
+            elif st == "failed":
+                stats["failed"] += 1
+            elif st in _SKIPPED_STATES:
+                stats["skipped"] += 1
+            else:
+                stats["waiting"] += 1
+        payload["stats"] = stats
     if paged:
-        # 分页元数据只在分页时出现：不传参数时响应与分页前逐字相同（向后兼容）。
         payload.update(_page_meta(total, limit, offset, len(payload["accounts"])))
-    return jsonify(payload)
+    return _json_conditional(payload)
 
 
 def api_account_detail(idx):
