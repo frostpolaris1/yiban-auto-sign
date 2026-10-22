@@ -123,6 +123,17 @@
   参数存在但不是十进制整数时回落缺省（不报错）。
 - 分页时响应**增补**四键元数据：`total`（整表条数）、`limit`、`offset`、
   `returned`（本页实际条数）。不传参数时这四键**不出现**。
+- 分组与检索（仅 `GET /api/accounts`、`GET /api/users`）：
+  - `group`：账号取 `pending|active|deleted`，用户取 `pending|normal|vacant`；未知值回 400。
+  - `q`：最多 64 字符，服务端按**遮罩后的可见字段**检索。手机号支持 `138****8000` 形态；
+    用户同时匹配完整邮箱、归属展示名与遮罩邮箱（`abc***@example.com`）。
+  - 传 `group` 或分页参数时，响应增补 `group_totals`（三组全局总数）；账号列表另补
+    `stats`（全部正常账号的今日 KPI，不随当前页收窄）。`total` 是该组经 `q` 过滤后的行数。
+  - 只传 `group` 不传 `limit`/`offset` 时返回整组（未分页），服务端会解密整组；
+    千级以上规模应同时带分页参数，避免一次解密过多行。
+- 条件请求（仅上述两条列表）：成功响应带 `ETag`、`Cache-Control: private, no-cache`、
+  `Vary: Cookie`；`If-None-Match` 命中（含 `W/` 弱标签）时回 `304` 空体。前端只在能处理
+  `notModified` 的列表请求上启用，计数类请求（`count_only=1`）不启用。
 - 例外：`GET /api/logs` 的总数键名沿用既有 `total_lines`，分页时只补
   `limit` / `offset` 两键。
 - 例外：`GET /api/audit-logs` 用**显式分页** `page` / `page_size`，信封见 §2.7。
@@ -473,7 +484,7 @@
 #### `GET /api/accounts`
 
 - 鉴权档：管理员。CSRF：不适用。
-- 查询参数：`limit` / `offset`（可选，见 §1.5）；`count_only`（`"1"` 时只回计数）。
+- 查询参数：`group` / `q` / `limit` / `offset`（可选，见 §1.5）；`count_only`（`"1"` 时只回计数）。
 - 成功响应（`count_only=1`）：`{"ok": true, "total": int, "pending": int,
   "rejected": int}`。
 - 成功响应（默认）：`{"ok": true, "accounts": [{"index": int, "name": string,
@@ -485,7 +496,8 @@
   "time_pref": string|null, "time_pref_edge": "first"|"last"|null,
   "last_executor": object|null}], "states": {"<遮罩手机号>": "<状态码>"},
   "state_msgs": {"<遮罩手机号>": string}, "state_durs": {"<遮罩手机号>": number|null},
-  "config_file": string}`。分页时增补四键元数据。
+  "config_file": string}`。传 `group` 或分页时增补 `group_totals` 与 `stats`
+  （`success|failed|waiting|skipped`，全部正常账号口径）；分页时另补四键元数据。
 - 主要错误：401；403（普通用户）。
 - 不变量：`index` 是**整表绝对下标**（分页只切窗口，不改下标基准）。前端用它拼
   行操作 URL。`states` / `state_msgs` / `state_durs` 的键是遮罩手机号。
@@ -621,13 +633,13 @@
 #### `GET /api/users`
 
 - 鉴权档：管理员。CSRF：不适用。
-- 查询参数：`limit` / `offset`（可选）；`count_only`（`"1"` 只回计数）。
+- 查询参数：`group` / `q` / `limit` / `offset`（可选，见 §1.5）；`count_only`（`"1"` 只回计数）。
 - 成功响应（`count_only=1`）：`{"ok": true, "total": int, "review": int}`
   （`review` = 有待处理账号的用户数）。
 - 成功响应（默认）：`{"ok": true, "users": [{"id": int, "email": string,
   "display": string, "role": "admin"|"user", "created_at": string,
   "account_count": int, "pending_count": int, "review_count": int}],
-  "builtin_admin": string}`。分页时增补四键元数据。
+  "builtin_admin": string}`。传 `group` 或分页时增补 `group_totals`；分页时另补四键元数据。
 - 主要错误：401；403。
 - 副作用：聚合只读审计 `users_list_read`。
 - 不变量：`id` 是单条操作的**不透明定位符**；明文邮箱不进 URL path。

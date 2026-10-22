@@ -316,9 +316,17 @@ export function shellBase(): string {
  * 形状。**不含 CSRF**，故仅适用于只读请求——写请求在外壳缺失时直接拒绝，避免"看起来成功
  * 实际上被后端 CSRF 拒绝"。
  */
-export async function api<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
-  const shellApi = (raw() as { api?: (m: string, p: string, b?: unknown) => Promise<unknown> }).api;
-  if (shellApi) return (await shellApi(method, path, body)) as T;
+export interface ApiOptions {
+  /**
+   * 允许外壳带 If-None-Match 做条件请求（**显式 opt-in**）。
+   * 只有能处理 `notModified` 哨兵并保留上一次数据的调用方才能声明；
+   * 默认关闭，避免徽标计数等只读标量调用被 304 空体读成 0。
+   */
+  conditional?: boolean;
+}
+export async function api<T = unknown>(method: string, path: string, body?: unknown, opts?: ApiOptions): Promise<T> {
+  const shellApi = (raw() as { api?: (m: string, p: string, b?: unknown, o?: ApiOptions) => Promise<unknown> }).api;
+  if (shellApi) return (await shellApi(method, path, body, opts)) as T;
 
   if (method !== "GET") {
     throw new Error("外壳未就绪：写请求缺少 CSRF 保护，已拒绝执行");
