@@ -74,14 +74,24 @@ DELETE_GRACE_DAYS = db.SOFT_DELETE_RETENTION_DAYS
 # 常量的唯一真源在 yiban.core.password_policy（CLI 与 Web 共用）；本模块保留原有
 # 名字面（含下划线别名），供路由与元测试继续按名取用。
 from yiban.core.password_policy import (  # noqa: E402
-    ADMIN_PASSWORD_MIN_CLASSES,
-    ADMIN_PASSWORD_MIN_LEN,
     PASSWORD_CLASS_HINT as _PASSWORD_CLASS_HINT,
-    PASSWORD_CLASS_LABELS as _PASSWORD_CLASS_LABELS,
+)
+from yiban.core.password_policy import (  # noqa: E402
+    PASSWORD_CLASS_LABELS as _PASSWORD_CLASS_LABELS,  # noqa: F401
+)
+from yiban.core.password_policy import (  # noqa: E402
     PASSWORD_CLASS_PATTERNS as _PASSWORD_CLASS_PATTERNS,
+)
+from yiban.core.password_policy import (  # noqa: E402
     PASSWORD_MIN_CLASSES as _PASSWORD_MIN_CLASSES,
+)
+from yiban.core.password_policy import (  # noqa: E402
     PASSWORD_MIN_LEN,
+)
+from yiban.core.password_policy import (  # noqa: E402
     PASSWORD_POLICY_HINT as _PASSWORD_POLICY_HINT,
+)
+from yiban.core.password_policy import (  # noqa: E402
     admin_password_policy_error as _shared_admin_password_policy_error,
 )
 
