@@ -21,7 +21,8 @@
 # 恢复 pip-tools 后可用 pip-compile --output-file=requirements.lock requirements.txt 重新生成
 #
 blinker==1.9.0
-certifi==2026.7.22
+# 2026-10-24 certifi 2026.7.22→2026.10.19：PYSEC-2026-4320，修复版 2026.10.19。
+certifi==2026.10.19
 charset-normalizer==3.5.0
 click==8.4.2
 colorama==0.4.6 ; platform_system == "Windows"
