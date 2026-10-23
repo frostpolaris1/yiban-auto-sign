@@ -1,7 +1,7 @@
 import { adminTest as test, expect } from "./base";
 
 // F1 可见缺陷批（用户 2026-10-21 裁决）：
-//  1) EP 表头/表体统一 48px 行高；账号表名称格在窄屏多行时留出上下呼吸位；
+//  1) EP 表头/表体统一 48px 行高；账号表名称格在窄屏保持单行（恢复横向滚动表格）；
 //  2) 「说明 + 开关」行控件与左侧文案垂直居中；
 //  3) 公告不再用横幅，每个新会话首次进入自动弹一次「我知道了」，本会话不再弹；
 //  4) 重置密码弹窗补「本站登录口令 ≠ 易班签到凭证」一句。
@@ -13,7 +13,7 @@ const ADMIN_PASS = "TestPass1234!";
 const ANNOUNCE_KEY = "yiban-announce-dismissed";
 
 // 会话由 base.ts 的 adminTest 夹具在每条用例内登录（每账号只保留最新 sid）。
-test("F1：表头行高 / 账号多行呼吸位 / 开关居中 / 公告每会话一次 / 重置密码口径", async ({ page }) => {
+test("F1：表头行高 / 名称格单行 / 开关居中 / 公告每会话一次 / 重置密码口径", async ({ page }) => {
 
   // ① EP 表：表头与表体同高 48px（当前表头仍是 EP small 的 32px）。
   await page.goto("/data/audit");
@@ -28,18 +28,18 @@ test("F1：表头行高 / 账号多行呼吸位 / 开关居中 / 公告每会话
   expect(bodyBox?.height, `表体行高 ${bodyBox?.height}，应为 48`).toBeGreaterThanOrEqual(47);
   expect(bodyBox?.height).toBeLessThanOrEqual(49);
 
-  // ② 账号表名称格：窄屏一行变三/四行时，上下各留 8px（当前只剩约 4px）。
+  // ② 账号表名称格：窄屏恢复单行表格，行高 48，名称不折行（不再是三/四行堆叠）。
+  //    旧用例用 hasText 过滤 td；删掉行内手机号后该文本不再存在。这里直接取 tbody 的 td，
+  //    钉「单行 48px」这一用户可见结果，不再断言内边距。
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/work/accounts");
   await page.getByRole("tab", { name: /正常账号/ }).click();
-  const nameCell = page.locator(".acct-cell-name:visible").filter({ hasText: "138" }).first();
+  const nameCell = page.locator("#acct-panel-active tbody td.acct-cell-name").first();
   await expect(nameCell).toBeVisible();
-  const pad = await nameCell.evaluate((td) => {
-    const cs = getComputedStyle(td);
-    return { top: parseFloat(cs.paddingTop), bottom: parseFloat(cs.paddingBottom) };
-  });
-  expect(pad.top, "名称格上内距").toBeGreaterThanOrEqual(7.5);
-  expect(pad.bottom, "名称格下内距").toBeGreaterThanOrEqual(7.5);
+  const nameBox = await nameCell.boundingBox();
+  expect(nameBox?.height, "名称格行高").toBeGreaterThanOrEqual(47);
+  expect(nameBox?.height, "名称格行高").toBeLessThanOrEqual(49);
+  expect(await nameCell.evaluate((td) => getComputedStyle(td).whiteSpace), "名称格不折行").toBe("nowrap");
 
   // ③ 开关行：控件中心与左侧文案中心偏差 ≤1.5px（当前单行偏下 6px、两行偏上 5px）。
   await page.setViewportSize({ width: 1280, height: 900 });
@@ -97,6 +97,33 @@ test("F1：表头行高 / 账号多行呼吸位 / 开关居中 / 公告每会话
   await page.reload();
   await expect(page.locator(".pm-panel", { hasText: "公告" })).toBeVisible();
   await expect(page.locator(".pm-announce")).toHaveText(announceText);
+
+  // 「本条公告不再提示」写 localStorage：同文本跨重载、跨标签页都不再弹。
+  await page.getByRole("button", { name: "本条公告不再提示" }).click();
+  await expect(page.locator(".pm-panel", { hasText: "公告" })).toBeHidden();
+  const neverKeys = await page.evaluate(() =>
+    Object.keys(localStorage).filter((k) => k.startsWith("yiban-announce-never")));
+  expect(neverKeys, "「本条公告不再提示」必须写入 localStorage").toHaveLength(1);
+  await page.reload();
+  await expect(page.locator(".pm-panel", { hasText: "公告" })).toHaveCount(0);
+  const sibling = await page.context().newPage();
+  await sibling.route("**/api/announcement", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, text: announceText }),
+    });
+  });
+  await sibling.goto("/data/dashboard");
+  await expect(sibling.locator(".pm-panel", { hasText: "公告" })).toHaveCount(0);
+  await sibling.close();
+
+  // 公告换文本后仍应重新提示（不是永久静音）。
+  announceText = "e2e 公告：第三次文本。";
+  await page.evaluate(() => sessionStorage.removeItem("yiban-cache:announcement"));
+  await page.reload();
+  await expect(page.locator(".pm-panel", { hasText: "公告" })).toBeVisible();
+  await page.getByRole("button", { name: "我知道了" }).click();
 
   // 明确要求：不留横幅。管理端与登录页都不应有 [data-announcement-bar]。
   expect(await page.locator("[data-announcement-bar]").count()).toBe(0);
