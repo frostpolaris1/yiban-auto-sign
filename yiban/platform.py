@@ -65,6 +65,7 @@ from yiban.adapters.protocol_yiban import (
     parse_sign_position,
 )
 from yiban.adapters.protocol_yiban import crypto as _lib_crypto
+from yiban.core import masking
 
 logger = logging.getLogger("yiban.platform")
 
@@ -298,18 +299,34 @@ def _sign_in_body(phone_code, phone_model, sign_info, out_state):
     )
 
 
+_UPSTREAM_MSG_LIMIT = 120
+
+
+def _safe_upstream_msg(msg):
+    """把上游 msg 收成可落日志的一行：脱敏、去控制字符、截断。"""
+    text = masking.sanitize_text(msg)
+    text = "".join(ch for ch in text if ch.isprintable()).strip()
+    if len(text) > _UPSTREAM_MSG_LIMIT:
+        return text[:_UPSTREAM_MSG_LIMIT] + "…"
+    return text
+
+
 def _parse_api_body(resp):
     """解析 uyiban API 信封；`code == 999` 翻译为"会话失效→重登"。
 
     库 `parse_api_envelope` 的 `SessionExpired` 是本层唯一会引入的"会话已失效"信号，
     适配层把它翻成既有引擎能识别的消息（含 `会话失效` 词元，落
     `yiban.engine.attempts.SESSION_STALE_FAIL_KEYWORDS` 的会话陈旧档：清缓存后强制
-    真重登），不新造异常面。非 JSON 响应沿用 requests `.json()` 的既有报错口径
+    真重登），不新造异常面。上游 `msg` 脱敏后一并带出，否则诊断时只剩固定文案。
+    非 JSON 响应沿用 requests `.json()` 的既有报错口径
     （"Expecting value…" 是 `security.HARD_FAIL_TOKENS` 的硬失败词元）。
     """
     try:
         envelope = parse_api_envelope(resp.text)
     except SessionExpired as exc:
+        detail = _safe_upstream_msg(str(exc))
+        if detail:
+            raise RuntimeError(f"会话失效（上游 code=999）：{detail}，需重新登录") from exc
         raise RuntimeError("会话失效（上游 code=999），需重新登录") from exc
     except ParseError:
         return resp.json()
