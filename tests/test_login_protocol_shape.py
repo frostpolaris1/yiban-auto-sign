@@ -805,8 +805,35 @@ class SigninShapeTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "会话失效") as ctx:
             self._run_sign(client, rec)
         msg = str(ctx.exception)
+        self.assertIn("登录已超时", msg)
         self.assertEqual(signin._retry_budget(msg),
                          (signin.SESSION_STALE_MAX_ATTEMPTS, True))
+
+    def test_session_expired_999_keeps_sanitized_upstream_msg(self):
+        """999 的上游 msg 必须带进异常；换行转义、手机号打码、长度受限。
+
+        日志会被导出/转发；上游 msg 是服务端可控文本，只能以脱敏形态落库。
+        """
+        client, rec = self._client([
+            _resp({"code": 999, "msg": "登录已超时\n手机号 13800138000 请重登"})
+        ])
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run_sign(client, rec)
+        msg = str(ctx.exception)
+        self.assertIn("登录已超时", msg)
+        self.assertIn("138****8000", msg)
+        self.assertNotIn("\n", msg)
+        self.assertEqual(signin._retry_budget(msg),
+                         (signin.SESSION_STALE_MAX_ATTEMPTS, True))
+
+    def test_session_expired_999_truncates_long_upstream_msg(self):
+        """上游 msg 超长时必须截断，防整段进日志/审计。"""
+        client, rec = self._client([_resp({"code": 999, "msg": "超时" * 200})])
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run_sign(client, rec)
+        msg = str(ctx.exception)
+        self.assertTrue(msg.endswith("…，需重新登录"))
+        self.assertLess(len(msg), 200)
 
 
 # ---------------------------------------------------------------------------
