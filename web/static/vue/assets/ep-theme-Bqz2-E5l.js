@@ -1,1 +1,0 @@
-import"./rolldown-runtime-CbXtAM7H.js";import{D as e,n as t}from"./vendor-vue-DcgF_2Vl.js";import{b as n,t as r}from"./vendor-element-plus-DOhnrFIo.js";function i(i,a,o){t({render:()=>e(n,{locale:r},{default:()=>e(i,a??{})})}).mount(o)}export{i as t};
