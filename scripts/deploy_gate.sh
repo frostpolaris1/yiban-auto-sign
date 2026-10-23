@@ -6,8 +6,8 @@
 #   在**全新** docker 环境（独立 project / 独立命名卷 / 独立网络 / 独立数据目录，
 #   不复用任何旧容器）按 README「Docker 部署」从零起全栈并逐条断言。三个阶段：
 #     A 干净部署：起全栈 → /setup 200 → CLI init 建管理员 → /login 200 → 登录 → 灌合成账号并计数
-#     B 迁移演练：v0.6.2 起库灌数 → 升级到本树顶端（v21→v22 自动）→ 校验数据完整
-#                 → 回滚到 v0.6.2（不降 schema，验证完整性门容忍 v22）
+#     B 迁移演练：v0.6.2 起库灌数 → 升级到本树顶端（v21→当前 schema 自动）→ 校验数据完整
+#                 → 回滚到 v0.6.2（不降 schema，验证完整性门容忍当前 schema）
 #     C 备份恢复：容器形态加密备份（含库本体断言）→ 删库 → 恢复 → 自检
 #   结尾打印 PASS/FAIL 摘要表；任一 FAIL 退出码 1。
 #
@@ -40,8 +40,8 @@
 #                   先在 Git Bash 侧 `git archive $GATE_OLD_REF | tar -x -C <dir>`，
 #                   再把 <dir> 传给本变量。
 #
-# 维护提醒：B5 断言把 `user_version` 钉死为 **22**（本单顶端的 schema 版本）。下一次
-#   schema 迁移（v23+）落地后，必须同步改 B5 的期望值，并复核 B11 回滚判据。
+# 维护提醒：B5 期望值从候选镜像的迁移登记表现取，不写死版本号；新增迁移会自动跟上。
+#   改动迁移登记表后，仍须复核 B11 回滚不降 schema 的判据。
 #
 # 红线：
 #   * 只在本机 docker 内造数；不连任何真实平台（合成数据不上网，账号为 13xxxx 占位）。
@@ -334,7 +334,7 @@ phase_A() {
 # Phase B：迁移演练
 # ============================================================
 phase_B() {
-    hdr "Phase B：迁移演练（$GATE_OLD_REF → develop 顶端，v21→v22 + 回滚）"
+    hdr "Phase B：迁移演练（$GATE_OLD_REF → develop 顶端，v21→当前 schema + 回滚）"
     local proj="${GATE_PROJECT}-mig" data="$GATE_TMP/data-mig" certs="$GATE_TMP/certs-mig"
     local ov="$GATE_TMP/override-mig.yml" log="$LOG_DIR/phase-b.log"
     local old_tree="$GATE_TMP/tree-old"
