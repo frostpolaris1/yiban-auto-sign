@@ -708,7 +708,7 @@ onMounted(async () => {
         <div class="panel-head panel-head--center">
           <div class="panel-head-text">
             <h2 class="panel-title">修改密码</h2>
-            <p class="panel-sub">改后下次登录使用新密码，当前会话随即失效</p>
+            <p class="panel-sub">改后当前会话失效，下次登录用新密码。</p>
           </div>
           <button type="button" class="btn btn--ghost btn--sm" @click="openChangePassword({ builtinAdmin: !!me?.is_builtin_admin })">
             <svg aria-hidden="true"><use href="#i-key" /></svg>修改密码
@@ -727,7 +727,6 @@ onMounted(async () => {
         <div class="set-row">
           <div class="set-row-text">
             <span class="set-row-label">竖屏显示归属邮箱</span>
-            <p class="set-help">窄屏补显归属邮箱（已脱敏）。</p>
           </div>
           <label class="switch" title="竖屏显示归属邮箱">
             <input v-model="ownerEmailOn" type="checkbox" @change="toggleOwnerEmail" />
@@ -743,7 +742,7 @@ onMounted(async () => {
         <div class="panel-head panel-head--center">
           <div class="panel-head-text">
             <h2 class="panel-title">注销账号</h2>
-            <p class="panel-sub">账号与自选时间一并删除，7 天内可撤销</p>
+            <p class="panel-sub">7 天内可撤销；到期删除易班账号与自选签到时间。</p>
           </div>
           <button type="button" class="btn btn--ghost btn--danger-ghost" @click="deleteSelf">
             <svg aria-hidden="true"><use href="#i-trash" /></svg>注销账号

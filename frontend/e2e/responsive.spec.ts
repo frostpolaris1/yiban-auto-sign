@@ -23,8 +23,26 @@ test("窄屏：账号表单弹窗不溢出，审计记录用卡片列表", async
     await expect(dialog).toBeVisible();
     const box = await dialog.boundingBox();
     expect(box, `${width}px 取不到弹窗位置`).not.toBeNull();
-    expect(box!.x, `${width}px 弹窗左缘越界`).toBeGreaterThanOrEqual(0);
-    expect(box!.x + box!.width, `${width}px 弹窗右缘越界`).toBeLessThanOrEqual(width + 1);
+    expect(box!.x, `${width}px 弹窗左缘应留 16px 外边距`).toBeGreaterThanOrEqual(15);
+    expect(box!.x + box!.width, `${width}px 弹窗右缘应留 16px 外边距`).toBeLessThanOrEqual(width - 15);
+    const radius = await dialog.evaluate((el) => getComputedStyle(el).borderRadius);
+    expect(radius, `${width}px 弹窗圆角应为 14px`).toContain("14px");
+
+    // 同一表单内 EP 下拉与原生输入必须同高、同描边；EP 内层 min-height:32 与
+    // 描边取 --border 都曾让它们看上去像两套控件。
+    const controls = await dialog.evaluate((el) => {
+      const native = el.querySelector<HTMLElement>("input.input");
+      const select = el.querySelector<HTMLElement>(".el-select__wrapper");
+      if (!native || !select) return null;
+      return {
+        nativeH: native.getBoundingClientRect().height,
+        selectH: select.getBoundingClientRect().height,
+        selectShadow: getComputedStyle(select).boxShadow,
+      };
+    });
+    expect(controls, `${width}px 表单未同时渲染原生输入与 EP 下拉`).not.toBeNull();
+    expect(Math.abs(controls!.nativeH - controls!.selectH), `${width}px 下拉与输入框不同高`).toBeLessThanOrEqual(2);
+    expect(controls!.selectShadow, `${width}px 下拉描边未统一到 --control-border`).toContain("138, 148, 166");
 
     const footer = dialog.locator(".el-dialog__footer");
     await expect(footer).toBeVisible();
@@ -183,18 +201,26 @@ test("竖屏签到日志：页签不裁切、控件铺满、事件/巡检表改�
   await expect(page.locator("#run-timeline .run-mobile-cards")).toBeVisible();
 });
 
-test("竖屏账号表：无横向滚动，手机号与审核状态行内可见", async ({ page }) => {
+test("竖屏账号表：保留手机号/审核列，表格容器横向滚动", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/work/accounts");
   await page.locator('[data-acct-tab="pending"]').click();
 
-  const over = await page.locator("#acct-panel-pending .acct-table").evaluate(
+  // 手机号、审核状态留在原列，不再堆到名称下方（用户 2026-10-23 要求恢复原表格）。
+  await expect(page.locator(".acct-cell-phone").first()).toBeVisible();
+  await expect(page.locator(".acct-cell-audit").first()).toBeVisible();
+  await expect(page.locator(".acct-phone-inline")).toHaveCount(0);
+  await expect(page.locator(".acct-audit-inline")).toHaveCount(0);
+
+  // 表格本身可比视口宽，但横向滚动必须发生在 .table-scroll 内，页面根节点不得横滚。
+  const over = await page.locator("#acct-panel-pending .table-scroll").evaluate(
     (el) => el.scrollWidth - el.clientWidth,
   );
-  expect(over, "账号表在 390px 仍需横向滚动").toBeLessThanOrEqual(1);
-  await expect(page.locator(".acct-phone-inline").first()).toBeVisible();
-  await expect(page.locator(".acct-audit-inline").first()).toBeVisible();
-  await expect(page.locator(".acct-cell-phone").first()).toBeHidden();
+  expect(over, "窄屏账号表应可在表格容器内横向滚动").toBeGreaterThan(1);
+  const docOver = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  expect(docOver, "账号页根节点出现横向滚动").toBeLessThanOrEqual(1);
 });
 
 // ---------------------------------------------------------------------------
@@ -290,4 +316,70 @@ test("用户端：各页工具行内控件同高（高度差 ≤2px）", async (
     expect(bad, `${path} 同排控件参差：\n${bad.map((b) => `  y=${b.y} ${b.min}..${b.max}  ${b.what}`).join("\n")}`)
       .toEqual([]);
   }
+});
+
+// 2026-10-23 用户实拍的账号页与看板体验：副标题、图例折叠、窄屏抽屉、KPI 字号。
+test("账号页副标题 / 图例折叠 / 窄屏操作抽屉；看板 KPI 主视觉", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto("/work/accounts");
+  await expect(page.locator(".page-head .page-sub")).toContainText("审核");
+
+  await page.locator('[data-acct-tab="active"]').click();
+  const legend = page.locator("details.acct-legend");
+  await expect(legend).not.toHaveAttribute("open", "");
+  await expect(legend.locator(".acct-legend-grid")).toBeHidden();
+  await legend.locator("summary").click();
+  await expect(legend.locator(".acct-legend-grid")).toBeVisible();
+  expect(await legend.locator(".acct-state").count()).toBeGreaterThanOrEqual(10);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator('[data-acct-tab="active"]').click();
+  const more = page.locator("#acct-panel-active [data-acct-actions]").first();
+  await expect(more).toBeVisible();
+  await more.click();
+  const drawer = page.locator(".acct-actions-drawer");
+  await expect(drawer).toBeVisible();
+  await expect(drawer).toHaveAttribute("aria-label", "账号操作");
+  await expect(drawer.locator(".acct-drawer-name")).not.toBeEmpty();
+  await expect(drawer.locator(".acct-drawer-action").first()).toBeVisible();
+  await drawer.getByRole("button", { name: "关闭操作菜单" }).click();
+  await expect(drawer).toBeHidden();
+  await expect(more, "关闭抽屉后焦点回到触发按钮").toBeFocused();
+
+  // 抽屉关闭后 el-overlay 只 display:none，不能按节点存在性判弹层；否则一次开合就永久停轮询。
+  await page.waitForRequest(
+    (req) => {
+      const url = new URL(req.url());
+      // 导航徽标每 10s 也会打 /api/accounts?count_only=1；只认带 group 的表格轮询，避免假绿。
+      return req.method() === "GET" && url.pathname === "/api/accounts" && url.searchParams.has("group");
+    },
+    { timeout: 15_000 },
+  );
+
+  // Esc 关闭同样归还焦点，且抽屉带可访问名。
+  await more.click();
+  await expect(drawer).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "账号操作" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(drawer).toBeHidden();
+  await expect(more, "Esc 关闭后焦点回到触发按钮").toBeFocused();
+
+  // 抽屉里点动作会同步开确认弹窗；抽屉离场后不得把焦点抢回背景表格。
+  await more.click();
+  await expect(drawer).toBeVisible();
+  await drawer.getByRole("button", { name: "删除", exact: true }).click();
+  const confirm = page.locator(".pm-panel").filter({ hasText: "确定删除" });
+  await expect(confirm).toBeVisible();
+  await page.waitForTimeout(600);
+  expect(
+    await page.evaluate(() => !!document.activeElement?.closest(".pm-panel")),
+    "动作打开确认弹窗后，焦点必须留在弹窗内",
+  ).toBe(true);
+  await confirm.getByRole("button", { name: "取消", exact: true }).click();
+  await expect(confirm).toBeHidden();
+
+  await page.goto("/data/dashboard");
+  const kpi = page.locator(".dash-page .kpi-value").first();
+  await expect(kpi).toBeVisible();
+  expect(await kpi.evaluate((el) => parseFloat(getComputedStyle(el).fontSize)), "竖屏 KPI 主视觉字号").toBeGreaterThanOrEqual(43);
 });
