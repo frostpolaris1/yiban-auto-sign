@@ -565,16 +565,24 @@ def login_killyiban(session, *, phone, password, csrf, policy, session_store=Non
     if not code_is_ok(data.get("code")):
         raise RuntimeError(f"最终认证失败: {policy.sanitize(data.get('msg'))}")
     # **本项目自有判定**（非平台知识）：code==0 只代表"签发方没有否认"，不代表签发
-    # 发生过：成功签发附带的回执在 data 载荷（同一端点的入口步应答即 `data.Data`，
-    # 签到成功门也 code/data 并读）。`data` 键缺失或为 null 即无签发信封形状——
-    # 网关/降级层伪造 code:0 的假成功正落在这一形状上，不得写"登录成功"日志、更不得
-    # 把残破会话送进缓存密文库。空容器（`{}`）是录制到的真实成功形状之一，放行；
-    # 判据只拒"无回执"。错误文案含 security.HARD_FAIL_TOKENS 词元——重试同一无回执
-    # 应答必然同果，落不可重试档并联动清会话。
-    if data.get("data") is None:
+    # 发生过：成功签发附带的回执在 data 载荷。`data` 键缺失/为 null 是无回执形状；
+    # 入口步应答 `{Action,Data}` 是未认证回退，也不是回执。两者都不得写"登录成功"
+    # 日志、更不得把残破会话送进缓存密文库。空容器（`{}`）与完整 profile 是录制到的
+    # 真实成功形状，放行。错误文案含 security.HARD_FAIL_TOKENS 词元——重试同一应答
+    # 必然同果，落不可重试档并联动清会话。
+    payload = data.get("data")
+    if payload is None:
         _msg = data.get("msg")
         raise RuntimeError("最终认证失败: 无签发方回执（code=0 但 data 载荷缺失）"
                            + (f": msg={policy.sanitize(_msg)}" if _msg else ""))
+    if isinstance(payload, dict) and ("Action" in payload or "Data" in payload):
+        # 入口步只带重定向 URL，不带 cpi/is_certified；放行会污染会话缓存。
+        # 只记键名与 cookie 名，不记值，避免把凭据面写进日志。
+        logger.warning(
+            f"[{policy.mask_account(phone)}] 最终认证返回入口步: "
+            f"data_keys={sorted(payload)} cookies={sorted(dict_from_cookiejar(session.cookies))}"
+        )
+        raise RuntimeError("最终认证失败: 无签发方回执（平台返回入口步 Action/Data，未签发会话）")
     logger.info(f"[{policy.mask_account(phone)}] 登录成功")
     if session_store is not None:
         # 完整登录成功：保存会话缓存供下次免登录复用（失败仅告警，不影响签到）
