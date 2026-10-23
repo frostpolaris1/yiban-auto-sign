@@ -639,6 +639,15 @@ class KillyibanSessionStoreTest(_RealSessionStoreFixture):
             with self.subTest(body=body):
                 self._assert_receiptless_rejected(body)
 
+    def test_fake_success_entry_step_rejected(self):
+        """入口步 {Action,Data} 是未认证回退，不是签发回执：拒绝、零缓存、无成功日志。"""
+        self._assert_receiptless_rejected({
+            "code": 0,
+            "data": {"Action": "redirect",
+                     "Data": "https://openapi.yiban.cn/oauth/authorize?client_id=x"},
+            "msg": "",
+        })
+
     def test_fake_success_does_not_update_existing_cache(self):
         """已有缓存行时遇假成功：拒绝路径自身零写入（行只会被既有探针判死清掉）。"""
         resp = _killyiban_happy_responses()
