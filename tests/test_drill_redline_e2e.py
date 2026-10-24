@@ -24,10 +24,9 @@
     "前提不满足"分支，只断退出码分不清是谁拦的）。
 依赖：bash（`skipIf` 整文件）；③实跑轮还需宿主 python（用本测试自身的解释器）与
     保留 POSIX mode 的文件系统；docker / openssl 用 stub 替身（只替外部命令，脚本与
-    文件系统都是真的）；③的时钟前提用 TZ 钉住（脚本要求本机时钟已过 06:31，否则
-    凌晨跑必挂 P0，测试不可重复）。
+    文件系统都是真的）；③的时钟前提用 `date` 桩钉住（脚本按北京钟要求已过 06:31，
+    宿主 `TZ` 改不动它；北京 00:00–08:00 窗口内不钉住必挂 P0）。
 """
-import datetime
 import io
 import os
 import shutil
@@ -71,18 +70,19 @@ def _fs_preserves_modes():
     return r.stdout.strip() == "600"
 
 
-def _tz_past_latch():
-    """一个把当地墙钟推到 12 点档的固定偏移 TZ。
+def _date_stub_past_latch():
+    """`date` 桩：只把 `+%H:%M` 钉到 12:00，其余参数透传真 `date`。
 
-    脚本 P0 要求本机时钟已过 06:31（容器调度器首签闩锁无上界判定，未过则整轮不触发）。
-    这是环境事实，测试要可重复就必须钉住它。POSIX TZ 的偏移是"加到当地时刻得 UTC 的
-    值"，故当地 = UTC + off 写作 `DRILL-<off>`。
+    脚本 P0 要求时钟已过 06:31（容器调度器首签闩锁无上界，未过则整轮不触发）。
+    该判据按**北京钟**取（`TZ=Asia/Shanghai date +%H:%M`，P12-24），宿主 `TZ` 改不动它，
+    故旧 `_tz_past_latch` 的 TZ 技巧失效（北京 00:00–08:00 窗口内直接撞前提，退出 2）。
+    桩只替这一个查询，其余 `date` 调用（证据目录时间戳等）仍走真命令。
     """
-    utc_h = datetime.datetime.now(datetime.timezone.utc).hour
-    off = (12 - utc_h) % 24
-    if off > 12:
-        off -= 24
-    return None if off == 0 else "DRILL%+d" % (-off)
+    real = shutil.which("date") or "/bin/date"
+    return ("date",
+            '#!/usr/bin/env bash\n'
+            'if [ "$1" = "+%%H:%%M" ]; then echo "12:00"; exit 0; fi\n'
+            'exec "%s" "$@"\n' % real)
 
 
 class _TmpBase(unittest.TestCase):
@@ -119,11 +119,9 @@ class _TmpBase(unittest.TestCase):
             _write(os.path.join(tree, "data", n), body)
         return tree
 
-    def run_script(self, tree, args=(), tz=None, stub_bin=None, script=None):
+    def run_script(self, tree, args=(), stub_bin=None, script=None):
         env = {k: v for k, v in os.environ.items()
                if not k.startswith(("YIBAN_", "DRILL_"))}
-        if tz:
-            env["TZ"] = tz
         if stub_bin:
             env["PATH"] = stub_bin + os.pathsep + env.get("PATH", "")
         return subprocess.run([BASH, script or SCRIPT, *args], cwd=tree, env=env,
@@ -339,17 +337,19 @@ class RealSeedRoundsTest(_TmpBase):
         d = os.path.join(self.tmp, "bin")
         _write(os.path.join(d, "docker"), "#!/usr/bin/env bash\nexit 0\n", 0o755)
         _write(os.path.join(d, "openssl"), "#!/usr/bin/env bash\nexit 1\n", 0o755)
+        name, body = _date_stub_past_latch()
+        _write(os.path.join(d, name), body, 0o755)
         return d
 
     def test_seed_round_keeps_second_round_out_of_the_redline(self):
         if not _fs_preserves_modes():
             self.skipTest("宿主文件系统不保留 POSIX mode（C2 断言 0600，无法实跑）")
         tree = self.make_tree("real", real_pkg=True)
-        tz, stub = _tz_past_latch(), self._stub_bin()
+        stub = self._stub_bin()
         script = os.path.join(tree, "scripts", "drill-container.sh")
         args = ("--host-python", sys.executable)
 
-        r1 = self.run_script(tree, args, tz=tz, stub_bin=stub, script=script)
+        r1 = self.run_script(tree, args, stub_bin=stub, script=script)
         o1 = self.out(r1)
         self.assertNotIn(CRED_MARK, o1, o1)
         self.assertEqual(1, r1.returncode, o1)      # 判据失败（C3 stub）才是应当的
@@ -362,7 +362,7 @@ class RealSeedRoundsTest(_TmpBase):
             self.assertTrue(f.readline().startswith(LEGACY_ENV_HEAD),
                             "data/.env 首行自造头在 C2 写键后丢失")
 
-        r2 = self.run_script(tree, args, tz=tz, stub_bin=stub, script=script)
+        r2 = self.run_script(tree, args, stub_bin=stub, script=script)
         o2 = self.out(r2)
         self.assertNotIn(CRED_MARK, o2, f"同一棵演练树第二轮被红线拒：{o2}")
         self.assertEqual(1, r2.returncode, o2)
