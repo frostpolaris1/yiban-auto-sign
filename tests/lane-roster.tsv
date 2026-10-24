@@ -195,6 +195,7 @@ fast	tests/test_mail_notify.py
 fast	tests/test_mail_outside_file_lock.py
 fast	tests/test_mail_send_deadline.py
 fast	tests/test_mail_send_never_raises.py
+fast	tests/test_mail_smtp_connect_retry_e2e.py
 fast	tests/test_mail_smtp_target.py
 fast	tests/test_mailer.py
 fast	tests/test_maintenance_readonly.py
