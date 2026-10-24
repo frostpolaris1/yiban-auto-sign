@@ -74,6 +74,7 @@ fast	tests/test_claim_dispatch_elbow_e2e.py
 fast	tests/test_claim_write_path_single_source.py
 slow	tests/test_claims_reap_e2e.py	# 真子进程：子进程领取后自杀，轮末收尸（本机 2.0s）
 fast	tests/test_cli_contract.py
+fast	tests/test_cleanup_dotenv_parity_e2e.py	# unshare 挂载命名空间内跑清理 cron（本机 1.6s）
 fast	tests/test_cli_contract_mf60.py
 fast	tests/test_cli_env_priority.py	# 子进程跑 state --dry-run：.env/进程环境优先级
 fast	tests/test_cli_egress_reset.py
