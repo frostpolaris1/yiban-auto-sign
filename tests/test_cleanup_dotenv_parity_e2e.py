@@ -31,7 +31,7 @@ UNSHARE = shutil.which("unshare")
 MIN_ENV = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
 
 #: 过期按日件的日期：远早于默认保留期（365 天），任何时点跑都该被清理。
-STALE_DAY = "2020-01-01"
+STALE_STAMP = "2020-01-01"
 
 
 def _write(path, text):
@@ -69,7 +69,7 @@ class CleanupCronConfigSourceTest(unittest.TestCase):
         self.default = os.path.join(self.tmp, "default-state")
         for d in (self.custom, self.default):
             os.makedirs(d)
-            _write(os.path.join(d, "sign-%s.log" % STALE_DAY), "stale\n")
+            _write(os.path.join(d, "sign-%s.log" % STALE_STAMP), "stale\n")
         _write(os.path.join(self.app, "data", ".env"),
                "YIBAN_STATE_DIR=%s\nYIBAN_LOG_FILE=%s/sign.log\n"
                % (self.custom.replace("\\", "/"), self.custom.replace("\\", "/")))
@@ -89,7 +89,7 @@ class CleanupCronConfigSourceTest(unittest.TestCase):
             'echo "cleanup_rc=$rc"; '
             'test -f "$CUSTOM/sign-DAY.log" && echo CUSTOM_KEPT || echo CUSTOM_DELETED; '
             'test -f "$DEFAULT_DIR/sign-DAY.log" && echo DEFAULT_KEPT || echo DEFAULT_DELETED'
-        ).replace("DAY", STALE_DAY)
+        ).replace("DAY", STALE_STAMP)
         env = dict(MIN_ENV)
         env.update({"HOME": self.tmp, "APP": self.app,
                     "CUSTOM": self.custom, "DEFAULT_DIR": self.default})
