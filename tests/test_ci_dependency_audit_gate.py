@@ -25,7 +25,6 @@ PyYAML 不在运行依赖里，门禁不得为一条注释引入一个新依赖�
 检查器喂一份"可变 tag / 无 pip-audit / 带私钥"的合成内容必须判红。
 依赖：纯文件读取，无网络、无 skip。
 """
-import fnmatch
 import io
 import os
 import re
@@ -56,10 +55,26 @@ def _workflow_files():
 
 
 def _e2e_specs():
-    """`frontend/e2e/` 下的全部 Playwright spec 文件名（扫空由调用方判红）。"""
+    """`frontend/e2e/` 下的全部 Playwright spec（递归；扫空由调用方判红）。"""
     if not os.path.isdir(E2E_DIR):
         return []
-    return sorted(n for n in os.listdir(E2E_DIR) if n.endswith(".spec.ts"))
+    specs = []
+    for root, _dirs, files in os.walk(E2E_DIR):
+        for name in files:
+            if name.endswith(".spec.ts"):
+                rel = os.path.relpath(os.path.join(root, name), E2E_DIR)
+                specs.append(rel.replace(os.sep, "/"))
+    return sorted(specs)
+
+
+def _playwright_scope_problems(cfg):
+    """配置里出现 testIgnore / testMatch 一律判红（R3-008 审查 P2）。
+
+    覆盖门要证明"每个 spec 都会跑"。ignore/match 可以单行也可以多行数组，
+    正则逐项解析容易漏第二项起；这里直接拒绝出现，确需排除先在本门登记豁免。
+    """
+    return [key for key in ("testIgnore", "testMatch")
+            if re.search(r"\b%s\s*:" % key, cfg)]
 
 
 def _job_block(text, name):
@@ -303,17 +318,16 @@ class FrontendE2eCiWiringTest(unittest.TestCase):
         self.assertIsNotNone(m, "读不出 playwright.config 的 testDir：口径丢了")
         test_dir = m.group(1).strip().lstrip("./").rstrip("/")
         self.assertTrue(test_dir, "testDir 为空串：配置坏了")
-        ignore = re.findall(r'testIgnore:\s*(?:\[\s*)?([^\]\n]+)', cfg)
-        ignore_patterns = [p for chunk in ignore for p in re.findall(r'"([^"]+)"', chunk)]
+        problems = _playwright_scope_problems(cfg)
+        self.assertEqual(
+            problems, [],
+            "playwright.config 出现 %s：覆盖门无法证明每个 spec 都会跑；"
+            "如确需排除，先在本门登记显式豁免并说明原因" % problems)
         for spec in specs:
             rel = "e2e/%s" % spec
             self.assertTrue(
                 rel.startswith(test_dir + "/"),
                 "%s 不在 testDir=%r 之下：它永远不会被收集（文件存在但没人跑）" % (rel, test_dir))
-            for pat in ignore_patterns:
-                self.assertFalse(
-                    fnmatch.fnmatch(rel, pat),
-                    "%s 被 testIgnore=%r 挡掉：文件存在但没人跑" % (rel, pat))
 
     def test_ci_invokes_playwright_in_the_frontend_job(self):
         yml = _read(CI)
@@ -330,6 +344,15 @@ class FrontendE2eCiWiringTest(unittest.TestCase):
             runs,
             "frontend 作业里没有一条未注释的 Playwright 执行行："
             "frontend/e2e 的 spec 文件存在但没人调用（R3-008）")
+
+    def test_scope_guard_catches_multiline_ignore_and_match(self):
+        """活体反例：多行 testIgnore、单行 testMatch 都必须被判红。"""
+        self.assertEqual(
+            _playwright_scope_problems('testIgnore: [\n  "**/a.spec.ts",\n  "**/b.spec.ts"\n]'),
+            ["testIgnore"])
+        self.assertEqual(
+            _playwright_scope_problems('testMatch: "**/*.spec.ts"'), ["testMatch"])
+        self.assertEqual(_playwright_scope_problems("testDir: './e2e'"), [])
 
     def test_the_wiring_checker_catches_a_commented_out_step(self):
         """活体反例：把执行行注释掉，检查器必须判红（否则本门恒真）。"""

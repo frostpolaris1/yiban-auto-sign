@@ -252,6 +252,9 @@ jobs:
         run: npx playwright install --with-deps chromium
       # YB_E2E_PYTHON 必须显式给：playwright.config 的探测只覆盖本机 venv 布局，
       # 在 runner 上会退化成 "python" 之外的探测结果。
+      # 覆盖说明（R3-008 P3-1，登记不改）：`paging.spec.ts` 的 2 条 5k 用例要
+      # `YB_E2E_BULK_ACCOUNTS>=1000` 才执行，默认在 PR 里 skip；它们仍会在夹具满足时执行，
+      # 但不在本 job 的默认覆盖内。
       - name: End-to-end tests (Playwright, real browser + temp Flask)
         run: npm run test:e2e
         env:
