@@ -71,7 +71,19 @@ test("签到日历：月历骨架/今日选中/语气档底色/图例收敛，�
   await expect(page.locator('.sc-legend li[data-tone="ok"]')).toBeVisible();
   // 月历只读 sign-daily 文件（web/routes/my_api.py:728-748），今日终态不影响日历：
   // 今天没有 daily 档 ⇒ 红档不进图例，图例随档位收敛。
-  await expect(todayCell).toHaveClass(/sc-cell--none/);
+  // 今日格子的语气档由"今天是否签到日"决定（model.js:136-138）：停签日打 sc-cell--off，
+  // 签到日无 daily 档打 sc-cell--none。周末跑这套 e2e 时旧断言钉死 none ⇒ 假红；
+  // 期望值按服务端同一份星期开关现算，单一取值，不放松成"两者皆可"。
+  const todayTone = await page.evaluate(async () => {
+    const d = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const ym = `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+    const j = await (await fetch(`/api/my-calendar?month=${ym}`)).json();
+    const wd = d.getDay();
+    const off = (wd === 6 && j.saturday_sign !== 1) || (wd === 0 && !j.sunday_sign);
+    return off ? "off" : "none";
+  });
+  await expect(todayCell).toHaveClass(new RegExp(`sc-cell--${todayTone}`));
   await expect(page.locator('.sc-legend li[data-tone="bad"]')).toBeHidden();
 
   // 图例的常驻两项与语义标签
