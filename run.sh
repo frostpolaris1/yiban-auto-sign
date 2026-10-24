@@ -49,47 +49,11 @@ fi
 # · 环境文件指针固定 `$APP_DIR/data/.env`（下面显式 export）；它不参与 `.env` 覆盖
 #   （p12-13：旧注释声称可由该指针环境变量覆盖，实现从未读它）。
 #
-# 安全说明：绝不能使用 `source`/`.` 加载 .env。Web 普通管理员可写入公告等文本，
-# 若公告含 `; $(...)` 等 shell 元字符，source 会把文本当作 shell 命令执行（命令注入）。
-# 这里只做 key=value 赋值导出，值不会再次被 shell 求值。
-if [ -r "$ENV_PATH" ]; then
-    while IFS='=' read -r key value || [ -n "$key$value" ]; do
-        # 兼容 CRLF 编辑产生的行尾 CR
-        value=${value%$'\r'}
-        # 兼容 UTF-8 BOM 开头的 .env（Windows 记事本保存常见）：否则首行键名带 BOM
-        # 前缀被键名校验拒掉，宿主 cron 与 web 侧（utf-8-sig，见 yiban/adapters/config/env_io.py）
-        # 对同一文件读出不同配置（2026-09-08）
-        key="${key#$'\xEF\xBB\xBF'}"
-        # key/value 首尾空白去除（与 env_io.parse_env_file 的两侧 strip 同口径；
-        # 原实现 value 只剥尾部 CR，`KEY = v` / 值带尾随空格时两侧漂移）
-        key="${key#"${key%%[![:space:]]*}"}"
-        key="${key%"${key##*[![:space:]]}"}"
-        value="${value#"${value%%[![:space:]]*}"}"
-        value="${value%"${value##*[![:space:]]}"}"
-        [ -z "$key" ] && continue
-        case "$key" in \#*) continue ;; esac
-        if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-            _err "警告: .env 含非法键名，已跳过: $key"
-            continue
-        fi
-        # 2026-08-21 对抗性审查加固：仅导出 YIBAN_* 前缀键——防止 .env 被写入
-        # PATH/LD_PRELOAD 等敏感变量覆盖后续命令解析（纵深防御；当前能写 .env 的
-        # web 设置页只产 YIBAN_* 键，此白名单同时约束未来变更）
-        if [[ ! "$key" =~ ^YIBAN_ ]]; then
-            _err "警告: .env 含非 YIBAN_ 前缀键，已跳过导出: $key"
-            continue
-        fi
-        # 四个路径键的优先级例外（与 env_io.resolve_path / child_env 同口径）：
-        # 进程环境已有非空值时，.env 只补缺。环境文件指针固定 $APP_DIR/data/.env
-        # （p12-13），不在覆盖范围（见下方显式 export）。
-        case "$key" in
-            YIBAN_DB_FILE|YIBAN_STATE_DIR|YIBAN_LOG_FILE)
-                [ -n "${!key:-}" ] && continue
-                ;;
-        esac
-        export "$key=$value"
-    done < "$ENV_PATH"
-else
+# 解析实现**不在本文件**：唯一副本是 `scripts/lib/host_paths.sh` 的 `yiban_load_env`
+# （清 cron `scripts/yiban-cleanup.sh` 读同一函数）。抄两份的后果实测过：清理 cron
+# 不读 `.env`，状态目录配在 `.env` 时清默认目录、真实目录永不清理（R3-019）。
+# 安全说明：绝不能使用 `source`/`.` 加载 .env（命令注入），函数内只做 key=value 导出。
+if ! yiban_load_env "$ENV_PATH" _err; then
     # MF-81④：.env 缺失/不可读过去完全静默——所有配置（STATE_DIR、通知、窗口时间）
     # 悄悄回落默认值，排障时无人知道"配置读没读到"。现在显式告警（下面 _log 可用后
     # 写入日志）。选择"告警后继续"而不是退出：现网可能以读不到 root-only .env 的身份跑

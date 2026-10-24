@@ -140,6 +140,16 @@ KNOWN_SKIP_SITES = json.loads(r"""
    "SIGKILL 模拟崩溃仅 POSIX 可用"
   ]
  ],
+ "tests/test_cleanup_dotenv_parity_e2e.py": [
+  [
+   "skipIf",
+   "需要 bash（Git Bash/WSL）"
+  ],
+  [
+   "skipIf",
+   "需要 unshare 隔离默认状态目录 /var/log/yiban"
+  ]
+ ],
  "tests/test_config_loader.py": [
   [
    "skipTest",

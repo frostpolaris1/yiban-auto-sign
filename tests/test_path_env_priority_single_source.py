@@ -82,17 +82,40 @@ class PathEnvPriorityTest(unittest.TestCase):
                          "父进程给的指针优先于 .env 里的同名键")
 
     def test_bash_carriers_apply_the_same_exception(self):
-        """三个 bash 载体都必须对四个路径键做"进程环境优先、.env 补缺"。
+        """每个 bash 载体都必须对四个路径键做"进程环境优先、.env 补缺"。
 
         `YIBAN_ENV_FILE` 是"读哪个文件"的指针，三个脚本都固定 `$APP_DIR/data/.env`
         （p12-13），故不在 .env 覆盖范围内。
+
+        判据分两类（2026-10-24，R3-019）：
+          · **持判定本身**的载体：`.env` 解析的唯一副本 `scripts/lib/host_paths.sh`，
+            以及尚未抽出去的 `scripts/yiban-fallback.sh` / `run_probe.sh`；
+          · **只消费**的载体：`run.sh` 调 `host_paths.sh` 的 `yiban_load_env`；
+            `scripts/yiban-cleanup.sh` 只交 `YIBAN_ENV_FILE` 指针，解析由
+            `state_cleanup.py` → `env_io`（引擎/web/容器调度的同一份）完成。
+            两者都**不得再抄一份**优先级判据——抄两份正是"清理 cron 不读 .env、
+            清错目录"的成因。
         """
-        for rel in ("run.sh", "scripts/yiban-fallback.sh", "run_probe.sh"):
+        holders = ("scripts/lib/host_paths.sh", "scripts/yiban-fallback.sh", "run_probe.sh")
+        for rel in holders:
             with self.subTest(script=rel):
                 with io.open(os.path.join(BASE, rel), encoding="utf-8") as fh:
                     text = fh.read()
                 self.assertIn("YIBAN_DB_FILE|YIBAN_STATE_DIR|YIBAN_LOG_FILE", text,
                               f"{rel} 必须把四个路径键从 .env 覆盖里排除")
+        with io.open(os.path.join(BASE, "run.sh"), encoding="utf-8") as fh:
+            run_sh = fh.read()
+        self.assertIn("yiban_load_env", run_sh,
+                      "run.sh 必须调用 host_paths.sh 的 yiban_load_env（不得自持一份）")
+        self.assertNotIn("YIBAN_DB_FILE|YIBAN_STATE_DIR|YIBAN_LOG_FILE", run_sh,
+                         "run.sh 又抄了一份路径键优先级判据（后加的条件正是漂移来源）")
+        with io.open(os.path.join(BASE, "scripts", "yiban-cleanup.sh"),
+                     encoding="utf-8") as fh:
+            cleanup = fh.read()
+        self.assertIn("export YIBAN_ENV_FILE=", cleanup,
+                      "清理 cron 必须把 .env 指针交给 state_cleanup.py（否则清默认目录）")
+        self.assertNotIn("YIBAN_DB_FILE|YIBAN_STATE_DIR|YIBAN_LOG_FILE", cleanup,
+                         "清理 cron 又抄了一份路径键优先级判据（解析只在 env_io 一处）")
 
 
 if __name__ == "__main__":
