@@ -47,6 +47,20 @@ export function finishText(
   if (status === "cancelled") {
     return { text: "已取消本次在线校验。账号仍已提交，管理员审核时可手动核对。", bad: false };
   }
+  // 排队超时不是账号信息有错：不得显示「可修正账号信息」。
+  if (status === "rejected" && (error || "").includes("校验繁忙")) {
+    return {
+      text: "在线校验排队超时，本次未执行。账号信息无需修改，请稍后重新提交。",
+      bad: false,
+    };
+  }
+  // 启动失败与外呼异常是内部错误，同样不是账号信息问题。
+  if (status === "rejected" && /校验(启动失败|异常)/.test(error || "")) {
+    return {
+      text: "在线校验未完成，账号信息无需修改，请稍后重新提交。",
+      bad: false,
+    };
+  }
   return { text: `在线校验未通过${error ? `：${error}` : ""}。可修正账号信息后重新提交。`, bad: true };
 }
 
