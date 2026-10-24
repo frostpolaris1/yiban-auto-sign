@@ -403,7 +403,9 @@ class WrapperPassphraseTest(_TmpBase):
             "YIBAN_STATE_DIR": os.path.join(self.tmp, "state"),
             "YIBAN_LOG_FILE": os.path.join(self.tmp, "logs", "sign.log"),
         }
-        r = self._run_bash(WRAPPER, (), e)
+        # R3-017 起缺库默认失败（独立门 tests/test_backup_db_presence_e2e.py 钉住）；
+        # 本用例的对象是"wrapper→backup.sh 的口令单跳与真 gpg 回环"，夹具不建库。
+        r = self._run_bash(WRAPPER, ("--allow-missing-db",), e)
         out = self._out(r)
         self.assertIn(r.returncode, (0, 5),
                       f"真加密轮应 0（无 sqlite3 降级为 5）：{out}")

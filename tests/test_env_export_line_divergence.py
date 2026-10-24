@@ -154,16 +154,23 @@ done < "$1"
 
 class ShellPathTest(_EnvFixture):
     def test_both_scripts_carry_the_keyname_guard(self):
-        """两份脚本都必须持有拒畸形键名的那道判据（"export KEY" 正是被它挡下）。
+        """每个 .env 解析载体都必须持有拒畸形键名的那道判据（"export KEY" 正是被它挡下）。
 
-        行为复刻见本类另两条；此处钉脚本本体——历史上 run_probe.sh 曾漂移过
+        行为复刻见本类另两条；此处钉载体本体——历史上 run_probe.sh 曾漂移过
         （只剥 key 不剥 value），判据缺位同样从这里红出来。
+        2026-10-24（R3-019）：run.sh 的解析块搬进 `scripts/lib/host_paths.sh` 的
+        `yiban_load_env`（清理 cron 也调它），故 run.sh 那一腿改判该文件；
+        同时要求 run.sh 真的调用它（否则判据在库里、入口没用上）。
         """
-        for name in ("run.sh", "run_probe.sh"):
+        for name in ("scripts/lib/host_paths.sh", "run_probe.sh"):
             with open(os.path.join(BASE, name), encoding="utf-8") as f:
                 src = f.read()
             self.assertIn('[[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]', src,
                           f"{name} 的 .env 循环缺合法键名判据——export 行可能被放行")
+        with open(os.path.join(BASE, "run.sh"), encoding="utf-8") as f:
+            run_sh = f.read()
+        self.assertIn("yiban_load_env", run_sh,
+                      "run.sh 必须调用共用解析（否则判据搬走了、入口没用上）")
 
     def test_export_key_never_exported(self):
         """反向：真 bash 跑同构判据段——export 行不导出，只告警（与另两侧收敛）。"""

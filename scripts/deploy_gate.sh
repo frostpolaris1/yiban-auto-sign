@@ -9,7 +9,8 @@
 #     B 迁移演练：v0.6.2 起库灌数 → 升级到本树顶端（v21→当前 schema 自动）→ 校验数据完整
 #                 → 回滚到 v0.6.2（不降 schema，验证完整性门容忍当前 schema）
 #     C 备份恢复：容器形态加密备份（含库本体断言）→ 删库 → 恢复 → 自检
-#   结尾打印 PASS/FAIL 摘要表；任一 FAIL 退出码 1。
+#   结尾打印 PASS/PARTIAL/FAIL 摘要表。退出码：0 = 全项 PASS（可含登记过的允许跳过）；
+#   1 = 有 FAIL；3 = PARTIAL（有未登记的 SKIP，或一项 PASS 都没有）。
 #
 # 用法（必须在仓库根目录执行）：
 #   bash scripts/deploy_gate.sh                 # 跑 A+B+C
@@ -106,6 +107,21 @@ pass() { echo "  [PASS] $1${2:+ — $2}"; _record "$1" PASS "$2"; }
 fail() { echo "  [FAIL] $1${2:+ — $2}"; _record "$1" FAIL "$2"; }
 skip() { echo "  [SKIP] $1${2:+ — $2}"; _record "$1" SKIP "$2"; }
 hdr()  { echo; echo "==== $* ===="; }
+
+# 允许跳过项（键名逐字匹配）。**每一项都要写理由**，且理由必须解释"为什么这一项
+# 在本发布线上不构成未覆盖"。不在这里的 SKIP 一律把结论降到 PARTIAL（非 0）。
+# 当前只有 fdjl 批的两条：该批未合入本发布线（server-web），其自身批次另有判据。
+GATE_ALLOWED_SKIPS=(
+    "gunicorn 线程升档"          # fdjl 批未合入 server-web；该批另有判据，本门不复刻
+    "SSE 批 fdjl 全部项"         # 同上：整批未合入时的聚合跳过项
+)
+is_allowed_skip() {
+    local key="$1" k
+    for k in "${GATE_ALLOWED_SKIPS[@]}"; do
+        [ "$k" = "$key" ] && return 0
+    done
+    return 1
+}
 
 CUR_PROJ=""
 CUR_OVERRIDE=""
@@ -654,13 +670,40 @@ done
 phase_info
 
 echo
-echo "================ PASS/FAIL 摘要 ================"
+echo "================ PASS/PARTIAL/FAIL 摘要 ================"
 n_fail=0
+n_pass=0
+n_skip=0
+n_skip_unregistered=0
 for i in "${!RESULT_KEYS[@]}"; do
     printf '%-6s | %-46s | %s\n' "${RESULT_STATE[$i]}" "${RESULT_KEYS[$i]}" "${RESULT_NOTE[$i]}"
-    [ "${RESULT_STATE[$i]}" = FAIL ] && n_fail=$((n_fail + 1))
+    case "${RESULT_STATE[$i]}" in
+        FAIL) n_fail=$((n_fail + 1)) ;;
+        PASS) n_pass=$((n_pass + 1)) ;;
+        SKIP)
+            n_skip=$((n_skip + 1))
+            is_allowed_skip "${RESULT_KEYS[$i]}" || n_skip_unregistered=$((n_skip_unregistered + 1))
+            ;;
+    esac
 done
 echo "==============================================="
-echo "合计: ${#RESULT_KEYS[@]} 项, FAIL=$n_fail"
-[ "$n_fail" -eq 0 ] && echo "闸门结论: PASS" || echo "闸门结论: FAIL"
-exit "$([ "$n_fail" -eq 0 ] && echo 0 || echo 1)"
+echo "合计: ${#RESULT_KEYS[@]} 项, PASS=$n_pass, FAIL=$n_fail, SKIP=$n_skip（其中未登记 $n_skip_unregistered）"
+# 结论口径（AGENTS §30「跳过 ≠ 绿」）：
+#   FAIL>0                        ⇒ FAIL，rc=1
+#   FAIL=0 且 (未登记 SKIP>0 或 一项 PASS 都没有) ⇒ PARTIAL，rc=3
+#   FAIL=0 且 仅有登记过的 SKIP    ⇒ PASS，rc=0
+# "全 SKIP"必须非 0：一项断言都没跑却报绿，正是本门要消灭的假绿。
+if [ "$n_fail" -gt 0 ]; then
+    echo "闸门结论: FAIL"
+    exit 1
+fi
+if [ "$n_skip_unregistered" -gt 0 ]; then
+    echo "闸门结论: PARTIAL（$n_skip_unregistered 项跳过未登记为允许——见 GATE_ALLOWED_SKIPS）"
+    exit 3
+fi
+if [ "$n_pass" -eq 0 ]; then
+    echo "闸门结论: PARTIAL（全部 $n_skip 项都是 SKIP，一项断言都没跑）"
+    exit 3
+fi
+echo "闸门结论: PASS"
+exit 0
