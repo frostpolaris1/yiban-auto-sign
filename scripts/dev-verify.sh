@@ -33,8 +33,8 @@
 #   --base REF       --fast / --fast-scoped 的比较基准（默认 HEAD = 只算工作树与暂存区改动；
 #                    传 origin/develop 则算整条分支的改动）
 #   --fast-all       --fast 但不排除非快集文件、也不剔除长尾（只有改动确实落在那些文件上时才用）
-#   --slow           慢集专轨：就地串行跑名册的 slow 行（CI 单独一条作业跑它，与 verify 并行；
-#                     本地一般不用——默认全量模式本来就含这些文件）
+#   --slow           慢集专轨：就地串行跑名册的 slow 行 ＋ FAST_KNOWN_SLOW 长尾轨（CI 单独
+#                     一条作业跑它，与 verify 并行；本地一般不用——默认全量模式本来就含这些用例）
 #   （--ci / --fast / --fast-scoped / --fast-all / --slow 五者互斥：给两个**不同**模式即报错退出 2；
 #     同一模式标志重复给（如 --fast --fast）按幂等接受）
 #   --repo DIR       源仓库目录（默认 = 本脚本所在仓库根）
@@ -79,11 +79,12 @@
 #      为什么要有它：全量实测 4331 用例（passed 4325 + skipped 6）约 146s，
 #      单次改动后反复跑全量 + 报错重修极费时间。
 #      墙钟随机器负载变：并发跑测时本档从约 57s 涨到约 104s（见 docs/dev/dev-verify.md）。
-#   9. 长尾剔除依据（实测 `--durations`）：单个用例 135.92s（占全量墙钟 93%，口径：单测点
-#      用时/全量墙钟）＋"另 4 条被 --dist loadfile 串行化约 116s"。剔除清单共 5 条、分属 3 个
-#      文件（shared_facts 3 条 + audit_transaction 1 条 + path_env_read_gate 1 条）。它们只与
-#      全仓扫描/等待超时有关，与提交前自查无关。
-#      剔除清单硬编码在 FAST_KNOWN_SLOW，改它要连着重测墙钟。
+#   9. 长尾剔除依据（`--durations` 实测）：剔除清单共 4 条、分属 3 个文件（shared_facts /
+#      audit_transaction / path_env_read_gate）。3 条是"全仓扫描/等锁"型，本机实测
+#      28.86s / 28.78s / 29.53s（2026-10-24，WSL 固定 venv，单点串行）。第 4 条为 opt-in
+#      演练、恒 skip；开启后按 2026-10-07 口径单点 135.92s，占当时全量墙钟 93%。
+#      它们只与全仓扫描/等待超时有关，与提交前自查无关。剔除清单硬编码在 FAST_KNOWN_SLOW，
+#      改它要连着重测墙钟。剔除 ≠ 没人跑：这 4 条由 run_slow 的长尾轨执行（CI 的 slow-lane 跑它）。
 #   10. 范围档的选择法（无依赖、无状态）：改动文件 → 测试目标。
 #      · 改到 tests/ 下的用例 → 直接跑它；
 #      · 改到源码 → **按导入路径**反查（裸词会大面积误命中：实测 `window` 裸词命中 70 个文件＝29%，
@@ -409,9 +410,11 @@ run_ci() { # CI 关键子集：就地跑，不建副本；命令逐字冻结在 
     # 现在目标集由 tests/lane-roster.tsv 推导，覆盖 295/299 个测试文件，剔除项逐条带形状理由。
     # 覆盖面对账（快集 vs 全量，文件数与用例数两口径）写在 docs/dev/dev-verify.md §1.2 与
     # 本批 PR 描述里。
-    # FAST_KNOWN_SLOW 的 5 条 nodeid 一并剔除：它们是"等锁超时 / 全仓扫描"型，本机单点
-    # 32.32s / 25.25s / 22.84s / 30.80s（第 5 条已是 opt-in，恒 skip）。不剔，快集的临界
-    # 路径就由这 4 条决定（同一文件内串行 ⇒ ≥82s），再叠固定开销即破 90s。
+    # FAST_KNOWN_SLOW 的 4 条 nodeid 一并剔除：它们是"等锁超时 / 全仓扫描"型。本机实测
+    # （2026-10-24，WSL 固定 venv，单点串行）：28.86s / 28.78s / 29.53s；第 4 条为 opt-in
+    # 演练、恒 skip。不剔，快集临界路径由两个 shared_facts 用例决定（同文件、--dist
+    # loadfile 串行 ⇒ 约 57.6s），再叠固定开销即破 90s。
+    # 这 4 条由 run_slow 的长尾轨执行（见 FAST_KNOWN_SLOW 注释），CI 的 slow-lane 跑它。
     # 跳过面（工单 1ffr）：快集产出 junit 报告，运行期跳过逐条点名；未登记即红。
     CI_SKIP_XML="$(mktemp)"
     "$py" -m pytest tests/ -q -n 4 --dist loadfile \
@@ -464,9 +467,10 @@ run_ci() { # CI 关键子集：就地跑，不建副本；命令逐字冻结在 
 # ------------------------------------------------------------
 # fast 模式：改动 → 测试目标（无依赖、无状态；只做文件级反查）
 # ------------------------------------------------------------
-#: --fast 默认剔除的长尾用例（2026-10-07 实测：第一条单点 135.92s，占全量墙钟 93%，
-#: 口径：单测点用时/全量墙钟；余下 4 条分属 2 个文件、被 --dist loadfile 串行化合计约 116s）。
-#: 剔除清单共 5 条、分属 3 个文件。均为"等待超时/全仓扫描"型。
+#: --fast 默认剔除的长尾用例。本机实测（2026-10-24，WSL 固定 venv，单点串行）：
+#: 28.86s / 28.78s / 29.53s；第 4 条为 opt-in 演练（恒 skip，设
+#: YIBAN_DRILL_REAL_DB_LOCK=1 后约 135s）。剔除清单共 4 条、分属 3 个文件。
+#: 均为"等待超时/全仓扫描"型。剔除只作用于快集：这 4 条由 run_slow 的长尾轨执行。
 FAST_KNOWN_SLOW=(
     "tests/test_audit_transaction.py::CliExitCodeTest::test_locked_db_exit_two_not_tampered"
     "tests/test_shared_facts_gate.py::SharedFactsGateLiveTest::test_current_repo_tree_is_green"
@@ -474,26 +478,39 @@ FAST_KNOWN_SLOW=(
     "tests/test_path_env_read_gate.py::GateNoDoubleCountTest::test_routed_key_is_counted_by_exactly_one_engine"
 )
 
-run_slow() { # 慢集专轨：就地串行跑名册的 slow 行（不建副本、不并发，与 --ci 同一权限模型）
+run_slow() { # 慢集专轨：就地串行跑 ① 名册的 slow 行 ② FAST_KNOWN_SLOW 长尾轨
     # 为什么单独一条命令（而不把 slow 行并进 run_ci）：slow 行的贵是**真实的等外面**
     # （真子进程 / 真定时等待），快集剔除它们的理由在 CI 上同样成立——并进 verify 会把
     # 该作业拱向 10 分钟上限（工单 i9gl）。单独成轨后与 verify 并行，总墙钟不变。
     # 名册仍是唯一事实源：这里不另写名单，行集从 LANE_SLOW_FILES 来（read_lane_roster 已验：
     # 缺失 / 未知车道 / 同文件进两道 / 文件不存在 / 读空，全都当场 die）。
+    # 长尾轨（2026-10-24，R3-025）：FAST_KNOWN_SLOW 的 nodeid 在快集里被 --deselect，
+    # 而它们所在文件在名册里是 fast 行 ⇒ slow-lane 只取 slow 行，此前**任何自动轨都不跑
+    # 它们**。--deselect 只作用于快集，故本轨直接跑 nodeid，是它们的唯一执行点。
     echo "DEV-VERIFY(slow) 慢集专轨（车道名册的 slow 行；串行，不带 -n）"
+    # $py 是 run_ci 的局部变量，这里自己解析（与 run_ci 同口径：DEV_VERIFY_PY 覆盖）。
+    local py=${DEV_VERIFY_PY:-python}
+    command -v "$py" >/dev/null 2>&1 || die "找不到解释器：$py"
+    # 两条命令都跑到底再汇总：一条红不许把另一条藏起来（否则"跳过 ≠ 绿"换个形式复发）。
+    local rc=0
     if [ "${#LANE_SLOW_FILES[@]}" -eq 0 ]; then
         # 跳过 ≠ 绿（AGENTS §十三 第 30 条）：没有 slow 行是**数据决定的**，必须说出口，
         # 不许静默退出让人误以为"跑过了"。
         echo "DEV-VERIFY(slow) 名册里没有 slow 行（跳过——这是数据决定的，不是静默跳过）"
-        return 0
+    else
+        printf 'DEV-VERIFY(slow) 目标集（%d 个文件）：\n' "${#LANE_SLOW_FILES[@]}"
+        printf '  %s\n' "${LANE_SLOW_FILES[@]}"
+        # shellcheck disable=SC2086
+        "$py" -m pytest ${LANE_SLOW_FILES[@]+"${LANE_SLOW_FILES[@]}"} -q -p no:randomly ||
+            rc=$?
     fi
-    # $py 是 run_ci 的局部变量，这里自己解析（与 run_ci 同口径：DEV_VERIFY_PY 覆盖）。
-    local py=${DEV_VERIFY_PY:-python}
-    command -v "$py" >/dev/null 2>&1 || die "找不到解释器：$py"
-    printf 'DEV-VERIFY(slow) 目标集（%d 个文件）：\n' "${#LANE_SLOW_FILES[@]}"
-    printf '  %s\n' "${LANE_SLOW_FILES[@]}"
-    # shellcheck disable=SC2086
-    "$py" -m pytest ${LANE_SLOW_FILES[@]+"${LANE_SLOW_FILES[@]}"} -q -p no:randomly
+    [ "${#FAST_KNOWN_SLOW[@]}" -gt 0 ] ||
+        die "FAST_KNOWN_SLOW 读空：长尾轨没有目标，剔除清单不得静默变空"
+    printf 'DEV-VERIFY(slow) 长尾轨（FAST_KNOWN_SLOW %d 条 nodeid；快集已 --deselect，本轨是唯一执行点）：\n' "${#FAST_KNOWN_SLOW[@]}"
+    printf '  %s\n' "${FAST_KNOWN_SLOW[@]}"
+    "$py" -m pytest ${FAST_KNOWN_SLOW[@]+"${FAST_KNOWN_SLOW[@]}"} -q -p no:randomly ||
+        rc=$?
+    return "$rc"
 }
 
 guard_fast_known_slow() { # 名单防漂移：nodeid 的文件、类、用例三层都必须存在，且不许有前缀嵌套条目
@@ -1056,7 +1073,7 @@ if [ "$MODE" = fast ]; then
         echo "DEV-VERIFY(fast-scoped): ⚠ 只覆盖改动相邻面 —— 未被选中的用例**没有跑**，它们照样可能红"
     else
         # 安全档（默认）：**快集**（车道名册的 fast 行）。2026-10-17（工单 vckk 阶段 2-a）前
-        # 它是"全量 − 5 条长尾"，与 CI 跑的集合**不同**——本地绿不保证 CI 绿。现在本地
+        # 它是"全量 − 4 条长尾"，与 CI 跑的集合**不同**——本地绿不保证 CI 绿。现在本地
         # --fast 与 CI 的 verify 跑同一个快集（由 tests/lane-roster.tsv 推导），covered 数
         # 应当一致。目标保持默认 tests/，非快集文件由 LANE_IGNORE_ARGS 逐条排除。
         echo "DEV-VERIFY(fast): 覆盖＝快集（车道名册的 fast 行；与 CI 的 verify 同集）"
