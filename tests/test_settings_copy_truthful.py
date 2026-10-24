@@ -99,8 +99,8 @@ CLAIM_ALLOWLIST = {
         "full 档下必须当次输口令", "门禁参数说明：full 才要，risk 同出口免"),
     ("web/app.py", 2388): (
         "在 full 档都要当次输口令", "高危门禁说明：full 才要，risk 同出口免"),
-    ("web/routes/accounts_api.py", 608): (
-        "同出口也必须当次口令", "改他人易班凭据属 risk_always 四类"),
+    ("web/routes/accounts_api.py", 609): (
+        "同出口也必须当次口令", "改他人易班凭据属 risk_always 四类；609＝#193 详情端点改版后行号，2026-10-25 订正"),
     ("web/routes/notify.py", 202): (
         "须当次口令并占 creds", "admin_to 改道 risk_always：同出口也要"),
     ("web/routes/notify.py", 204): (
