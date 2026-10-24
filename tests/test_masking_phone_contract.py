@@ -34,6 +34,7 @@ import tempfile
 import unittest
 
 from web.services import logs as _logs_svc
+from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -282,8 +283,8 @@ class DisplaySurfacesAreMaskedTest(unittest.TestCase):
 
         db.init_db(cls.db_file, migrate_from=cls.accounts_file, env_file=cls.env_file)
 
-        from datetime import datetime
-        cls.today = datetime.now().strftime("%Y-%m-%d")
+        # 按天日志名取业务日（北京 +8）：`log_path_for` 与 web/引擎同一口径。
+        cls.today = clock.today()
         # 日志文本里放四种未遮形态：裸号、次位 0–2 的已入库号（写侧校验收、旧 `1[3-9]` 口径漏）、
         # `+86` 前缀、空格分段。写入**按天文件名**（`log_path_for` 的派生规则），故用它的返回值。
         with open(_logs_svc.log_path_for(cls.today), "w", encoding="utf-8") as fh:

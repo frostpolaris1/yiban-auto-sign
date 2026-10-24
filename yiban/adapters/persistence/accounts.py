@@ -7,7 +7,8 @@
   `_is_encrypted_value`，以及把明文驻留行幂等加密回写的 `_apply_plaintext_heal`；
 - 读路径：`accounts_snapshot`（不解密快照）、`decrypt_account_rows`（锁外解密）、
   `read_accounts`（AAD 失配重试一次）、`load_accounts`（全量解密）、
-  `load_accounts_raw`（导出用，保持密文）；
+  `load_accounts_raw`（导出用，保持密文）、`account_row_at` / `read_account_at`
+  （按整表绝对下标单行窄取，只解密一行）；
 - 写路径：`add_account` / `update_account` / `set_account_deleted` / `purge_account` /
   `update_account_status` / `set_user_paused` / `move_account` /
   `delete_accounts_by_owner` / `replace_accounts` / `batch_account_ops` /
@@ -315,19 +316,67 @@ def _encrypt_field(value, phone):
 # ---------------------------------------------------------------------------
 # 读路径（快照 / 锁外解密）
 # ---------------------------------------------------------------------------
+#: 账号全序：`sort_order` 升序，`id` 破平局。
+#: `sort_order` 无唯一约束（移动账号只交换两行，旧库可能有重值）；不加破平局键时，
+#: "整表第 idx 行"在两次查询间没有定义。列表下标与详情下标共用这一条全序。
+_ACCOUNTS_ORDER_BY = "sort_order, id"
+
+
 def accounts_snapshot():
     """账号原始行快照（**不解密**）。持 `_conn_lock` 取到即释放。
 
     与 `decrypt_account_rows` 配对使用，让调用方能把 CPU 密集的解密放到锁外：
     调用方只需在自己那一层护住"取快照"这一步（web 层是 `_file_lock`）。
+
+    顺序是 `sort_order, id`（见 `_ACCOUNTS_ORDER_BY`）：下标寻址（详情端点）与列表
+    必须共享同一条全序，否则重值时同一 idx 可能指向不同账号。
     """
     db = _facade()
     with db._conn_lock:
         conn = db.get_conn()
         return [
             {**dict(r), "deleted": bool(r["deleted"])}
-            for r in conn.execute("SELECT * FROM accounts ORDER BY sort_order").fetchall()
+            for r in conn.execute(
+                f"SELECT * FROM accounts ORDER BY {_ACCOUNTS_ORDER_BY}").fetchall()
         ]
+
+
+def account_row_at(index):
+    """按**整表绝对下标**取一行原始行（不解密）；越界或负下标返回 None。
+
+    详情端点只读一行，不得为它解密整表（工单 dnox-B）。下标口径与
+    `accounts_snapshot()` 的全序一致（`sort_order, id`）。
+
+    持 `_conn_lock` 取到即释放；解密由 `read_account_at` 在锁外做。
+    """
+    if not isinstance(index, int) or index < 0:
+        return None
+    db = _facade()
+    with db._conn_lock:
+        row = db.get_conn().execute(
+            f"SELECT * FROM accounts ORDER BY {_ACCOUNTS_ORDER_BY} LIMIT 1 OFFSET ?",
+            (index,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {**dict(row), "deleted": bool(row["deleted"])}
+
+
+def read_account_at(fetch):
+    """取单行快照 → 锁外解密；越界返回 None。
+
+    `fetch` 是零参可调用对象，返回 `account_row_at()` 的结果。AAD 失配（并发改绑
+    手机号）重取一次，与 `read_accounts` 同口径；重试后仍失败按真实损坏原样抛出。
+    """
+    for attempt in (0, 1):
+        row = fetch()
+        if row is None:
+            return None
+        try:
+            return decrypt_account_rows([row])[0]
+        except RuntimeError:
+            if attempt:
+                raise
 
 
 def load_accounts_raw():
@@ -423,7 +472,7 @@ def load_accounts_readonly(db_file, env_file=None):
         if "accounts" not in names:
             return []
         rows = [dict(r) for r in conn.execute(
-            "SELECT * FROM accounts ORDER BY sort_order").fetchall()]
+            f"SELECT * FROM accounts ORDER BY {_ACCOUNTS_ORDER_BY}").fetchall()]
     finally:
         conn.close()
     accts = []
@@ -676,7 +725,8 @@ def move_account(account_id, direction):
         try:
             db._begin_immediate(conn)
             rows = conn.execute(
-                "SELECT id, sort_order FROM accounts WHERE deleted=0 ORDER BY sort_order"
+                "SELECT id, sort_order FROM accounts WHERE deleted=0 "
+                f"ORDER BY {_ACCOUNTS_ORDER_BY}"
             ).fetchall()
             pos = next((i for i, r in enumerate(rows) if r["id"] == account_id), None)
             if pos is None:

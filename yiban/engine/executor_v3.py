@@ -1150,6 +1150,7 @@ def _mark_window_skips(ctx, accounts):
     if getattr(ctx, "reclaim", False) or not schedule._window_closed(ctx.cfg, _now()):
         return
     recorded = state_io._daily_statuses(ctx.day)
+    to_write = []
     for acc in accounts:
         phone = acc.phone
         if phone in ctx.results:
@@ -1160,8 +1161,14 @@ def _mark_window_skips(ctx, accounts):
         if yiban_status.is_concluded_status(rec):
             ctx.results[phone] = (False, "已有当日结论", False, rec)
             continue
-        if not state_io._write_sign_state(phone, STATUS_SKIPPED_WINDOW, "签到时段已结束",
-                                          only_if_absent=True, day=ctx.day):
+        # 窗口收尾是"一次事件、N 个账号"：逐号 CAS 每次读改写整个文件 ⇒ O(N²)。
+        # 整批 CAS 与逐号判定同权（同一把锁、同一次读改写），返回值逐号对应。
+        to_write.append((phone, STATUS_SKIPPED_WINDOW, "签到时段已结束", None, None))
+    verdicts = (state_io.write_sign_states_if_absent(to_write, day=ctx.day)
+                if to_write else [])
+    for (phone, _status, _msg, _scheduled, _dur), wrote in zip(
+            to_write, verdicts, strict=True):
+        if not wrote:
             continue
         ctx.results[phone] = (False, "签到时段已结束", True, STATUS_SKIPPED_WINDOW)
         _emit_event(ctx, phone, STATUS_SKIPPED_WINDOW, "签到时段已结束")
