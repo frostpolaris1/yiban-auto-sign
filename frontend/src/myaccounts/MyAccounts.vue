@@ -284,8 +284,17 @@ async function submitForm(): Promise<void> {
   const gated = credsWritten(payload, { editing: formEditing.value, snapshot: formSnapshot.value });
   formBusy.value = true;
   try {
+    // 受门禁提交必须**保留原方法**（R3-001）：编辑走 PUT，后端只注册了
+    // `PUT /api/my-accounts/<idx>`；写死 POST 会让"编辑 + 改密码"恒 405。
+    // `dangerousSubmit` 只负责在服务端回 password_required 时补口令后重发，
+    // 方法由调用方给——管理面 `Accounts.vue` 同此写法。
     const data = gated
-      ? ((await api("POST", endpoint, payload)) as { msg?: string; job_id?: string })
+      ? ((await dangerousSubmit({
+          method,
+          path: endpoint,
+          body: payload,
+          desc: CREDS_GATE_DESC,
+        })) as { msg?: string; job_id?: string })
       : ((await api(method, endpoint, payload)) as { msg?: string; job_id?: string });
     formOpen.value = false;
     fullPhone.value = "";
