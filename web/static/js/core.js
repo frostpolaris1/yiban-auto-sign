@@ -552,7 +552,20 @@
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
   }
 
+  /* ---------- 确认框（EP 优先，外壳旧实现兜底） ----------
+     uz7w「手搓弹窗换 EP 自带件」：确认族（纯文本 + 确定/取消）改由 Element Plus 的
+     ElMessageBox 承担，实现住在 frontend/src/lib/ep-confirm.ts，由 Vue 页装配时注册到
+     `window.YB_EP_CONFIRM`（ep-mount.ts → registerEpConfirm()）。
+     本文件保留旧实现作 legacy 兜底：classic 页面（登录/错误页）与 EP 尚未装配的瞬间
+     仍要能确认，不许出现「点了没反应」。两条路径的出口形状完全相同
+     （`(opts) => Promise<boolean>`，确认 true / 取消关闭 false），调用方零改动。
+     **不许**删掉这里的兜底：删了就是「没有 EP 的页面确认键变哑键」。 */
   function confirmDialog(opts) {
+    var ep = window.YB_EP_CONFIRM;
+    if (typeof ep === "function") return ep(opts || {});
+    return legacyConfirmDialog(opts);
+  }
+  function legacyConfirmDialog(opts) {
     opts = opts || {};
     return new Promise(function (resolve) {
       var settled = false;
