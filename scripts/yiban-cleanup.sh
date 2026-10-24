@@ -21,6 +21,26 @@ umask 077
 # （`scripts/lib/host_paths.sh`，与 run.sh / 兜底脚本同一算法，census-P2-repo-root）。
 . "$(dirname "${BASH_SOURCE[0]}")/lib/host_paths.sh"
 APP_DIR="$(yiban_app_dir)"
+# 工作目录与 run.sh 同形：相对路径配置（YIBAN_STATE_DIR 写成相对值）按检出解析。
+# cron 的 cwd 是 $HOME，不 cd 会让同一个 `.env` 在 run.sh 与清理之间指向两处。
+cd "$APP_DIR" 2>/dev/null || { echo "致命: 无法进入应用目录 $APP_DIR" >&2; exit 1; }
+
+# `.env` 指针：状态目录与日志文件可以只写在 `.env` 里。
+# 为什么必须传：不传时 `scripts/state_cleanup.py` 经 `env_io` 回落默认 `/var/log/yiban`
+# ——真实状态目录永不清理（磁盘持续增长），默认目录反被误清（R3-019）。
+# 解析实现**只此一份**：`state_cleanup.py` 的 `state_dir_from_env` / `log_dir_from_env`
+# 就是 `env_io` 的同一函数（引擎、web、容器调度共用）；本脚本只交指针，不抄解析。
+# 优先级因此与 run.sh 同口径：进程环境 → `.env` → 默认值。
+ENV_PATH="$APP_DIR/data/.env"
+export YIBAN_ENV_FILE="$ENV_PATH"
+# 告警走带时间戳的 `_warn`：cron 的 stderr 落 `<state>/cleanup.log`，跨日累积时
+# 无时间戳的同类行会被读成"同一天被反复调用"。
+_warn() { echo "[$(date '+%F %T')] $*" >&2; }
+if [ ! -e "$ENV_PATH" ]; then
+    _warn "警告: .env 不存在，状态目录回落默认值: $ENV_PATH"
+elif [ ! -r "$ENV_PATH" ]; then
+    _warn "警告: .env 存在但当前用户不可读，状态目录回落默认值: $ENV_PATH"
+fi
 
 if [ -x "$APP_DIR/.venv/bin/python3" ]; then
     PY="$APP_DIR/.venv/bin/python3"

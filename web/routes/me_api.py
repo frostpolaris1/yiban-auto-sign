@@ -328,7 +328,17 @@ def api_me_delete():
         db.audit(username, "user_self_delete_request",
                  _accounts_data._mask_email(email), "用户发起注销申请")
         try:
-            _deleted = db.soft_delete_user_with_accounts(email)
+            # 注销确认审计与软删同事务（审计失败整体回滚）；"发起申请"那条
+            # 仍在事务外，因为它记录的是请求事实，删除失败也成立。
+            _deleted = db.soft_delete_user_with_accounts(
+                email,
+                audit_spec=dict(
+                    username=username,
+                    action="user_self_delete_confirm",
+                    target=_accounts_data._mask_email(email),
+                    detail="注销已确认（软删除，7 天宽限期）",
+                ),
+            )
         except db.LastAdminError:
             # 事务内复核兜底：跨进程并发注销时上面的 is_last_registered_admin
             # 预检可能双双通过，db 层复核拦截后转 400（原路径会 500）
@@ -337,8 +347,6 @@ def api_me_delete():
             return jsonify({"error": "注销失败，请稍后再试"}), 500
         # 防批量计数仅在注销成功后才记录（失败不占冷却额度）
         db.record_user_delete_request(email, ip_hash=ip_hash, kind="delete")
-        db.audit(username, "user_self_delete_confirm",
-                 _accounts_data._mask_email(email), "注销已确认（软删除，7 天宽限期）")
         with _locks._rate_lock:
             _login_fails().pop(fail_key, None)
         m.logger.info("用户 %s 已注销账号（7 天宽限期）", _accounts_data._mask_email(username))

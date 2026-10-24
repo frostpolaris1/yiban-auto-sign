@@ -31,6 +31,57 @@ yiban_app_dir() {
     printf '%s\n' "${YIBAN_APP_DIR:-${APP_DIR:-${YIBAN_APP_ROOT:-$HOST_PATHS_ROOT}}}"
 }
 
+# 加载 `.env`（逐行安全解析 + export）。**绝不 source**：网页可写公告等文本，
+# 含 `; $(...)` 时 source 会把文本当命令执行（命令注入）。
+#
+# 用法：yiban_load_env <env 文件> [告警函数名]
+#   告警函数收到一个参数（完整告警文本）。不给时非法键静默跳过——
+#   cron 每 5 分钟一次，向 stderr 输出会变成周期性邮件噪声。
+# 优先级（唯一口径，与 `env_io.resolve_path` / `scripts/child_env.build_child_env` 同形）：
+#   · 非路径键：`.env` 优先，进程环境只补缺（M27）。网页设置页写的是 `.env`。
+#   · 路径键 YIBAN_DB_FILE / YIBAN_STATE_DIR / YIBAN_LOG_FILE：进程环境优先，
+#     `.env` 只补缺（测试/CI 用进程环境把数据目录重定向到临时目录）。
+#   · 只导出 `YIBAN_*` 前缀键：防 `.env` 注入 PATH / LD_PRELOAD 等敏感变量。
+# 返回：0 = 已读；1 = 存在但不可读；2 = 不存在。
+# 读者：run.sh（宿主签到）、scripts/yiban-cleanup.sh（清理 cron）——同一个解析，
+#   否则「run.sh 按 .env 找状态目录、清理按默认目录删」两处同时为真。
+yiban_load_env() {
+    local env_path="$1" warn_fn="${2:-}"
+    local key value
+    [ -e "$env_path" ] || return 2
+    [ -r "$env_path" ] || return 1
+    while IFS='=' read -r key value || [ -n "$key$value" ]; do
+        # 兼容 CRLF 编辑产生的行尾 CR
+        value=${value%$'\r'}
+        # 兼容 UTF-8 BOM 开头的 .env（Windows 记事本保存常见）；否则首行键名带 BOM
+        # 前缀被键名校验拒掉，宿主 cron 与 web 侧对同一文件读出不同配置（2026-09-08）
+        key="${key#$'\xEF\xBB\xBF'}"
+        # key/value 首尾空白去除（与 env_io.parse_env_file 的两侧 strip 同口径）
+        key="${key#"${key%%[![:space:]]*}"}"
+        key="${key%"${key##*[![:space:]]}"}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
+        [ -z "$key" ] && continue
+        case "$key" in \#*) continue ;; esac
+        if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            [ -n "$warn_fn" ] && "$warn_fn" "警告: .env 含非法键名，已跳过: $key"
+            continue
+        fi
+        if [[ ! "$key" =~ ^YIBAN_ ]]; then
+            [ -n "$warn_fn" ] && "$warn_fn" "警告: .env 含非 YIBAN_ 前缀键，已跳过导出: $key"
+            continue
+        fi
+        # 四个路径键的优先级例外：进程环境已有非空值时，`.env` 只补缺。
+        case "$key" in
+            YIBAN_DB_FILE|YIBAN_STATE_DIR|YIBAN_LOG_FILE)
+                [ -n "${!key:-}" ] && continue
+                ;;
+        esac
+        export "$key=$value"
+    done < "$env_path"
+    return 0
+}
+
 # 业务日唯一来源（MF-109）：yiban.core.clock 的北京钟，与引擎/web 同一事实源。
 # 宿主时区 ≠ 北京（UTC 16:00-24:00 窗口）时宿主 `date` 的"当天"与引擎业务日差一天——
 # 状态文件、日志、触发标记、收尾标记与库内"当日事实"查询一律取这里。取不到

@@ -46,7 +46,9 @@ RETRY_MIN_INTERVAL = 60
 RETRY_GAP_MAX = 30
 # 会话陈旧类失败（总尝试上限 2 次：1 次复用缓存 + 1 次强制真重登）
 SESSION_STALE_MAX_ATTEMPTS = 2
-# 易班侧无签到点位（总尝试上限 1 次）：属数据/任务配置问题，重试拿不到就是拿不到
+# 易班侧无签到点位（**单轮**尝试上限 1 次）：属数据/任务配置问题，本次领取内不再立即重试。
+# 当日是否允许后续轮次再领，是另一层判据（`RETRYABLE_GIVE_UP_STATUSES`），并受
+# `queue_store.MAX_DAY_REQUEUES` 的当日上限约束——两层预算不可混为一谈。
 NO_POSITION_MAX_ATTEMPTS = 1
 # 挑战解析/白名单/非 JSON/假成功（无签发方回执）硬失败（总尝试上限 1 次）：判据词元在 `yiban.security.HARD_FAIL_TOKENS`
 # （唯一真值源，档位与探针共用）。同一输入必然同一结果，重试只是把同一死页重发；会话停在

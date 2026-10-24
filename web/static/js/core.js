@@ -1206,10 +1206,19 @@
   // 每个新会话**首次进入**自动弹一次，不再用横幅（用户 2026-10-21 裁决）。
   // 弹过即记 sessionStorage（按文本区分），刷新/换页不重复弹；点「我知道了」另记
   // dismiss（同时标已读），本会话彻底不再弹。换公告文本后按新文本重新弹。
+  // 「本条公告不再提示」记 localStorage（按文本区分）：跨会话、跨标签页生效；
+  // 公告换文本后自然重新提示。存储不可用时退回本会话口径，不阻断页面。
   var ANNOUNCE_SHOWN_KEY = "yiban-announce-shown";
   var ANNOUNCE_DISMISS_KEY = "yiban-announce-dismissed";
+  var ANNOUNCE_NEVER_KEY = "yiban-announce-never";
   function announceIsShown(text) {
     try { return sessionStorage.getItem(ANNOUNCE_SHOWN_KEY) === text; } catch (e) { return false; }
+  }
+  function announceIsNever(text) {
+    try { return localStorage.getItem(ANNOUNCE_NEVER_KEY) === text; } catch (e) { return false; }
+  }
+  function rememberAnnouncementNever(text) {
+    try { localStorage.setItem(ANNOUNCE_NEVER_KEY, text); } catch (e) {}
   }
   function showAnnouncement(text) {
     try { sessionStorage.setItem(ANNOUNCE_SHOWN_KEY, text); } catch (e) {}
@@ -1218,7 +1227,10 @@
       body: el("div", { class: "pm-announce", text: text }),
       // 右上角 ✕ / Esc / 点遮罩与「我知道了」同义：都算已读并结束本次会话的打扰。
       onClose: function () { acknowledgeAnnouncement(text); },
-      actions: [{ label: "我知道了", variant: "primary" }]
+      actions: [
+        { label: "本条公告不再提示", variant: "ghost", onClick: function () { rememberAnnouncementNever(text); } },
+        { label: "我知道了", variant: "primary" }
+      ]
     });
   }
   function announceIsDismissed(text) {
@@ -1286,7 +1298,8 @@
         var text = String(data && data.text || "").trim();
         applyAnnouncementText(text);
         // 只在登录后的外壳自动弹；同一会话只弹一次，换文本才重弹。
-        if (text && !announceIsShown(text) && !announceIsDismissed(text) && !announceIsRead(text)) {
+        // 本设备已选「不再提示」时同样不弹；换文本后恢复提示。
+        if (text && !announceIsNever(text) && !announceIsShown(text) && !announceIsDismissed(text) && !announceIsRead(text)) {
           showAnnouncement(text);
         }
       })
