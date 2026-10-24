@@ -45,7 +45,7 @@
     "link rel=stylesheet href=/static/vendor/fonts/notosanssc/notosanssc.css?v=*",
     "link rel=stylesheet href=/static/vendor/adminator/adminator.css?v=*",
     "link rel=stylesheet href=/static/css/app.css?v=*",
-    "link rel=stylesheet href=/static/vue/assets/vendor-element-plus-pbEFWHIm.css",
+    "link rel=stylesheet href=/static/vue/assets/vendor-element-plus-BEh7yOD-.css",
     "link rel=stylesheet href=/static/vue/assets/ep-theme-kScMQCwv.css",
     "script src=/static/js/boot-loader.js?v=*",
     "script src=/static/vendor/md-render.js?v=*",
@@ -55,10 +55,10 @@
     "link rel=modulepreload href=/static/vue/assets/rolldown-runtime-CbXtAM7H.js",
     "link rel=modulepreload href=/static/vue/assets/shell-MgCUIYQw.js",
     "link rel=modulepreload href=/static/vue/assets/vendor-vue-YYhzo28_.js",
-    "link rel=modulepreload href=/static/vue/assets/vendor-element-plus-BvLKMmlT.js",
-    "link rel=modulepreload href=/static/vue/assets/ep-theme-8BVrKvK5.js",
+    "link rel=modulepreload href=/static/vue/assets/vendor-element-plus-DsNvuZ9M.js",
+    "link rel=modulepreload href=/static/vue/assets/ep-theme-CB6Zho0Z.js",
     "link rel=modulepreload href=/static/vue/assets/accountform-C02G6kjd.js",
-    "script src=/static/vue/assets/myaccounts-WvzesRs8.js"
+    "script src=/static/vue/assets/myaccounts-DVFX7q_3.js"
   ],
   "user_calendar": [
     "link rel=icon href=/favicon.png?v=*",

@@ -709,9 +709,17 @@ onMounted(async () => {
 
                 <!-- 空态：真·空给「下一步」（跨分组跳转）；筛出来的空给「清除筛选」
                      （原来这里直接把按钮藏掉，筛到 0 条时整块面板一个按钮都没有） -->
-                <p class="empty" :id="'usr-' + g.key + '-empty'" :hidden="shownOf(g.key) > 0 && !loadError">
-                  <span class="empty__icon"><svg aria-hidden="true"><use href="#i-users" /></svg></span>
-                  <span class="empty__msg">{{ loadError ? "加载失败" : emptyText(g.key) }}</span>
+                <!-- 空态走 EP `el-empty`（uz7w：手搓空态换自带件）。图/说明/动作三段
+                     由 image/description/default 三槽给出；`#usr-<g>-empty`、
+                     `.empty__msg`、`data-empty-*` 这些契约锚点逐字保留。 -->
+                <el-empty
+                  :id="'usr-' + g.key + '-empty'"
+                  :hidden="shownOf(g.key) > 0 && !loadError"
+                  :image-size="48"
+                >
+                  <template #description>
+                    <span class="empty__msg">{{ loadError ? "加载失败" : emptyText(g.key) }}</span>
+                  </template>
                   <span class="empty__action" :hidden="loadError">
                     <button
                       v-if="isFiltering(g.key)"
@@ -732,7 +740,7 @@ onMounted(async () => {
                       {{ g.emptyAction.label }}
                     </button>
                   </span>
-                </p>
+                </el-empty>
               </div>
             </div>
           </section>

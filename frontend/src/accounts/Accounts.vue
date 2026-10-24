@@ -961,9 +961,18 @@ const M = {
                   />
                 </div>
 
-                <p class="empty" :id="GROUPS[g].empty" :hidden="rowsOf(g).length > 0">
-                  <span class="empty__icon"><svg aria-hidden="true"><use href="#i-list" /></svg></span>
-                  <span class="empty__msg">{{ emptyMessage(g) }}</span>
+                <!-- 空态走 EP `el-empty`（uz7w：手搓空态换自带件）。外层 .empty 手搓
+                     构件不再承担布局：图/说明/动作三段由 el-empty 的 image/description/
+                     default 三个槽给出。e2e 与 Python 契约按 `#<g>-empty` 与
+                     `.empty__msg` / `data-empty-*` 取值，故这些锚点逐字保留。 -->
+                <el-empty
+                  :id="GROUPS[g].empty"
+                  :hidden="rowsOf(g).length > 0"
+                  :image-size="48"
+                >
+                  <template #description>
+                    <span class="empty__msg">{{ emptyMessage(g) }}</span>
+                  </template>
                   <span class="empty__action">
                     <button
                       v-if="isFiltering(g)"
@@ -987,7 +996,7 @@ const M = {
                       @click="openAdd"
                     >{{ GROUPS[g].emptyAction.label }}</button>
                   </span>
-                </p>
+                </el-empty>
               </div>
             </div>
           </section>
