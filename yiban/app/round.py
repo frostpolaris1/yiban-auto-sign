@@ -357,6 +357,7 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
         ❌ N 失败、退出码 1、发失败邮件。
         """
         recorded = state_io._daily_statuses()  # 无锁快照只用于预筛；有无结论以落盘时锁内再判为准
+        to_write = []
         for _ra in rest_accs:
             _p = _ra.phone
             if _p in results:
@@ -369,8 +370,13 @@ def run_queue_retry(accounts, notify_url, start_delay_max, gap_max, schedule=Non
                 # 谓词与 `state_io._has_conclusion` 同源，别在这儿另写一份。
                 results[_p] = (False, "已有当日结论", False, _rec_status)
                 continue
-            if not state_io._write_sign_state(_p, STATUS_SKIPPED_WINDOW,
-                                              "签到时段已结束", only_if_absent=True):
+            # 窗口收尾是"一次事件、N 个账号"：逐个 CAS 会使写盘量随 N 平方增长。
+            # 整批 CAS 与逐号判定同权（同一把锁、同一次读改写），返回值逐号对应。
+            to_write.append((_p, STATUS_SKIPPED_WINDOW, "签到时段已结束", None, None))
+        verdicts = state_io.write_sign_states_if_absent(to_write) if to_write else []
+        for (_p, _status, _msg, _scheduled, _dur), wrote in zip(
+                to_write, verdicts, strict=True):
+            if not wrote:
                 # CAS 被拒：锁内发现他执行体刚写入真实失败——不写、不改 results、不发事件
                 logger.info(f"[{_p}] ⛔ 签到时段已结束，但当日已有结论，跳过写入")
                 continue
