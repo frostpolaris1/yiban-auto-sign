@@ -23,7 +23,7 @@ bash scripts/dev-verify.sh --fast-scoped       # 范围档：只跑改动相邻�
 --log-dir DIR    日志目录；默认按模式分开：全量 <仓库父目录>/yiban-dev-verify-logs，
                  fast 两档 <仓库父目录>/yiban-dev-verify-logs-fast（见 §1.1）
 --keep N         日志保留最近 N 份（默认 5）；fast 两档与全量各自计数，互不影响
---fast           提交前自查·安全档：全量 − FAST_KNOWN_SLOW（5 条长尾）。无选择面损失
+--fast           提交前自查·安全档：全量 − FAST_KNOWN_SLOW（4 条长尾）。无选择面损失
 --fast-scoped    提交前自查·范围档：只跑改动相邻面。快，但未选中的用例没有跑
 --base REF       上面两档的比较基准（默认 HEAD；传 origin/develop 则算整条分支的改动）
 --fast-all       --fast 但不剔除长尾（只有改动确实落在那些文件上时才用）
@@ -48,9 +48,9 @@ bash scripts/dev-verify.sh --fast-scoped       # 范围档：只跑改动相邻�
 **由来**：全量实测 **4331 用例（passed 4325 + skipped 6）/ 146s 墙钟**（pytest 自身 144.43s），
 而瓶颈不在用例数——`--durations` 显示单个用例
 （`test_locked_db_exit_two_not_tampered`，等待锁检测超时）独占 **135.92s＝全量墙钟的 93%**
-（口径：单测点用时/全量墙钟）。剔除清单共 5 条，分属 3 个文件（shared_facts 3 条 +
-audit_transaction 1 条 + path_env_read_gate 1 条）；另 4 条被 `--dist loadfile` 串行化约 **116s**。
-删掉这 5 条，全量立刻落到 **57s**。
+（口径：单测点用时/全量墙钟）。剔除清单共 4 条，分属 3 个文件（shared_facts 2 条 +
+audit_transaction 1 条 + path_env_read_gate 1 条）；同文件内被 `--dist loadfile`
+串行化约 57s。删掉这 4 条，全量立刻落到 **57s**（2026-10-07 实测）。
 修一处跑一次全量再报错重修，时间全花在这些长尾上。
 
 **2026-10-16 复测（口径变了，务必读本节表格）**：那条 135.92s 的长尾已改为
@@ -62,7 +62,7 @@ audit_transaction 1 条 + path_env_read_gate 1 条）；另 4 条被 `--dist loa
 | 档 | 命令 | 实测墙钟（2026-10-16，本树空载） | 覆盖 | 什么时候用 |
 |---|---|---|---|---|
 | 全量 | `bash scripts/dev-verify.sh` | **117s**（pytest 自身 103.7s，passed 4825） | 全部用例 | **门禁**：推送前跑，每批一次 |
-| 安全档 | `--fast` | **106s**（pytest 自身 102.1s，covered=4827） | 全量 − 5 条已知长尾，**无选择面损失** | 子代理汇报前跑一次 |
+| 安全档 | `--fast` | **106s**（pytest 自身 102.1s，covered=4827） | 全量 − 4 条已知长尾，**无选择面损失** | 子代理汇报前跑一次 |
 | 范围档 | `--fast-scoped` | **18s** 稳态（首跑 28s；pytest 自身 1.1s） | 只覆盖改动相邻面，**其余没跑**；空覆盖退出码 **3** | 子代理每改完一处就跑 |
 
 **谁跑哪一档（2026-10-16 定）**：**子代理**每改完一处跑范围档，汇报前跑一次安全档，
@@ -72,10 +72,9 @@ audit_transaction 1 条 + path_env_read_gate 1 条）；另 4 条被 `--dist loa
 **都不是门禁**：两档都会打印免责声明。推送前跑全量（默认模式）或确认 CI 绿；fast 的绿
 不得当成门禁的绿。
 
-**对账**：全量 4832 = `--fast` 的 covered 4827 + 剔除 5 条（2026-10-16 复测：
-`--fast` 报 covered=4827，取自 pytest 汇总行；全量报 passed 4825 + skipped 7 = 4832）。
-这条对账证明剔除清单只减"跑了的用例数"，没有隐藏红：`--fast` 那一轮 4821 passed /
-0 failed / 0 errors。
+**对账**：全量 = `--fast` 的 covered + 4 条剔除（两侧都取自 pytest 汇总行）。
+这条对账证明剔除清单只减"跑了的用例数"，没有隐藏红。历史数字（2026-10-16）见上一段；
+条数从 5 改为 4 的来由见 R3-025（2026-10-24），4 条由 `run_slow` 的长尾轨执行。
 
 **退出码 3 的语义**：范围档没测到任何真实用例——① 改动集为空，或 ② 改动存在但反查不到
 任何相邻用例。这两种情况只跑 `tests/test_dev_verify_entry.py`（入口自检），退出码用 **3**。
@@ -197,11 +196,14 @@ python -m pytest tests/test_import_linter_gate.py -q -p no:randomly
 每行 `车道<TAB>测试文件`，三种车道：`fast`（进快集，本地 `--fast` 与 CI verify 同集）／
 `slow`（只在全量与 CI 的 `slow-lane` 作业跑；判据＝墙钟真按"等外面"计费）／
 `serial`（CI 单独一条串行轨，独占 runner 的核）。本地 `--fast` 与 `--slow`、CI 的
-`verify` 与 `slow-lane` 作业**全部由它推导**，没有任何一处另写名单。
+`verify` 与 `slow-lane` 作业的**文件级目标集全部由它推导**。唯一的例外是
+`FAST_KNOWN_SLOW` 的 4 条 nodeid：它们住在 fast 文件里、被快集 `--deselect`，
+由 `run_slow` 的长尾轨执行；条数与数组长度由元测试核对。
 名册漏归类（新增测试文件没登记）由 `tests/test_gate_lane_roster.py` 对真实文件系统扫描
 ＋真实 pytest 收集对账，红得出来；该守卫本身登记在快集，不会被自己漏掉。
-慢集的自动轨＝CI 的 `slow-lane` 作业（`bash scripts/dev-verify.sh --slow`，串行跑 slow 行），
-与 verify 并行、每次 push 都跑——**slow 行不再只靠本地全量覆盖**。
+慢集的自动轨＝CI 的 `slow-lane` 作业（`bash scripts/dev-verify.sh --slow`，串行跑
+slow 行 + `FAST_KNOWN_SLOW` 长尾 4 条），与 verify 并行、每次 push 都跑——
+**slow 行与长尾不再只靠本地全量覆盖**。
 
 **现量口径（2026-10-18，PR #138 后）**：全量 301 个文件 ＝ 快集 286 ＋ 慢集 14 ＋ 串行轨 1；
 用例数口径 4813 ＝ 4639 ＋ 172 ＋ 2。**`slow` 与 `serial` 都是串行执行**（slow 由 `run_slow`
