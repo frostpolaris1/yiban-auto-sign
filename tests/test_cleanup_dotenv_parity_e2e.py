@@ -89,9 +89,9 @@ class CleanupCronConfigSourceTest(unittest.TestCase):
         if pre.returncode != 0:
             self.skipTest("需要可用的 unshare 挂载/用户命名空间（CI 非特权环境会跳过）")
         inner = (
-            # 挂载点不存在时先建；建不出来就显式报 MOUNT_FAILED，由下方 skip，
-            # 不把环境不足伪装成红。
-            'mkdir -p /var/log/yiban 2>/dev/null || true; '
+            # 不在宿主机建 /var/log/yiban（root 跑测试会留下目录）：挂载点必须已存在；
+            # 不存在就显式报 MOUNT_FAILED，由下方 skip，不把环境不足伪装成红。
+            '[ -d /var/log/yiban ] || { echo MOUNT_FAILED; exit 0; }; '
             'mount --bind "$DEFAULT_DIR" /var/log/yiban || { echo MOUNT_FAILED; exit 0; }; '
             'bash "$APP/scripts/yiban-cleanup.sh"; rc=$?; '
             'echo "cleanup_rc=$rc"; '
