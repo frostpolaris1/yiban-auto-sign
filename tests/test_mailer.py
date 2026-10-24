@@ -161,6 +161,8 @@ def test_send_failure_logs_safe(monkeypatch, tmp_path, caplog):
             raise OSError("connect refused")
 
     monkeypatch.setattr(mailer_transport.smtplib, "SMTP_SSL", Boom)
+    # 连接失败会按 0eul 有界重试（5s/15s）；本用例只断言日志脱敏，不真等退避。
+    monkeypatch.setattr(mailer_transport.time, "sleep", lambda _s: None)
     with caplog.at_level("WARNING", logger="mailer"):
         assert mailer_transport.send_admin_alert("告警", "内容", to="admin@qq.com") is False
     # 契约变更：失败日志不再回显原始异常类型名。`OSError` / `ConnectionRefusedError` /
