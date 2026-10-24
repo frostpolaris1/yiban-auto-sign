@@ -1230,6 +1230,20 @@ def _stale_write(dbfile: str, day: str, phone: str, old_owner: str, old_epoch: i
             "fenced": (n == 0 and before == after)}
 
 
+def _verdict(checks: dict, mutate: str) -> bool:
+    """演练结论的唯一判定点（`_cli` 只从这里取 ok）。
+
+    mutate 档也吃两条不变式：变异把 i1/i2 打破时，结论必须是 FAIL、退出码非零。
+    旧实现只看 `mutation_applied`，于是「有牙证明」那一跑回 PASS——脚本入口注释
+    宣称「应 FAIL」，实现却把牙收起来。`window-off` 是唯一不靠违反不变式的变异
+    （它让整轮什么都不跑），故它在变异生效且 i1/i2 绿时照样按绿收。
+    """
+    if mutate:
+        return (bool(checks.get("mutation_applied"))
+                and bool(checks.get("i1")) and bool(checks.get("i2")))
+    return all(bool(v) for v in checks.values())
+
+
 def _cli() -> int:
     ap = argparse.ArgumentParser(description="本地多执行体演练靶场（零外联）")
     ap.add_argument("--executors", type=int, default=2)
@@ -1260,7 +1274,8 @@ def _cli() -> int:
         "no_extra_signin": (res.get("signin_excess", 1) <= 0),
     }
     if args.mutate:
-        # 变异run 的判据是「变异生效 ＋ 不变式被打破」，两条分开报。
+        # 变异 run 必须证明两件事：变异真的贴上（mutation_applied），且不变式判据仍被
+        # 执行——i1/i2 违例照样判 FAIL。两条分开报，便于分清"变异没贴"与"判据没牙"。
         checks["mutation_applied"] = res.get("mutation_applied")
     kill = res.get("kill") or {}
     if args.kill_executor_at:
@@ -1273,9 +1288,8 @@ def _cli() -> int:
         probe = res.get("elbow_probe") or {}
         checks["elbow_probe_ran"] = bool(probe.get("ran"))
         checks["elbow_no_yield_violation"] = bool(probe.get("no_yield_violation"))
-    # 变异run 期望"红"：这里只报事实，不当失败（牙齿测试断言"红"）。
-    ok = (bool(checks["mutation_applied"]) if args.mutate
-          else all(bool(v) for v in checks.values()))
+    # 变异 run 不豁免不变式：i1/i2 红 ⇒ FAIL、退出码 1（见 `_verdict`）。
+    ok = _verdict(checks, args.mutate)
     shown = {k: res[k] for k in (
         "executors", "accounts", "supervisor_rc", "recover_rc", "done_count",
         "mock_requests", "mock_signin_count", "signin_excess", "i1_ok", "i2_ok",
