@@ -15,7 +15,8 @@
 #
 # 退出码：
 #   0 = 一致
-#   1 = 有漂移（包缺失，或版本与 lock 不符）
+#   1 = 有漂移（包缺失，或版本与 lock 不符），**或清单里一个锁定包都没有**
+#       （空清单的"一致"是空真，扫空不许当绿——R3-010）
 #   2 = 环境/用法错误（venv 解释器缺失、清单缺失、清单出现未知 marker）
 #
 # 存在的原因（工单 j06f，现象）：pip-audit 审的是 requirements.lock，
@@ -104,6 +105,16 @@ if unknown:
     sys.exit(2)
 
 drift = []
+
+# 防"扫空当绿"（R3-010）：0 个锁定包时"venv 与 lock 一致"是空真。
+# 下限 = 1，依据：lock 至少钉一个包才有对账对象；空清单/只有注释的清单
+# （通常是路径写错或文件被清空）必须响亮失败，不许静默通过。
+if not pins:
+    print("check-deps-lock: 锁定清单没有任何 name==version 条目（0 个锁定包）：", file=sys.stderr)
+    print("  %s" % lock_path, file=sys.stderr)
+    print("  'venv 与 lock 一致'对空清单是空真——拒绝放行（检查清单路径与内容）。",
+          file=sys.stderr)
+    sys.exit(1)
 
 
 def norm(name):

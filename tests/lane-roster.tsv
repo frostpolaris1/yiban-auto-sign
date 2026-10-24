@@ -157,6 +157,7 @@ fast	tests/test_fallback_scan_yield.py
 fast	tests/test_file_lock_no_network.py
 fast	tests/test_forwarded_trust_forms.py
 fast	tests/test_frontend_paging_wiring.py
+fast	tests/test_gate_empty_input_red.py	# 空输入/零 token 的门必须非 0（本机 2s）
 fast	tests/test_gate_lane_roster.py
 fast	tests/test_gate_manifest_sync.py
 fast	tests/test_gate_narrowing_e2e.py
