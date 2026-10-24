@@ -245,7 +245,7 @@ defineExpose({ isDirty: () => dirty.value, save });
     </div>
     <p class="alert info" id="ss-perm" :hidden="isMaster">
       <span class="ico"><svg aria-hidden="true"><use href="#i-info" /></svg></span>
-      <span class="body">仅主管理员可改核心配置：签到窗口、掐头去尾、账号间隔、周末开关与正态分布。排序方式、分布方式与「允许用户自选签到时间」任意管理员可改，保存时仍需口令确认。</span>
+      <span class="body">仅主管理员可改核心配置：签到窗口、掐头去尾、账号间隔、周末开关与正态分布。排序方式、分布方式与「允许用户自选签到时间」任意管理员可改。口令按档位要求：默认 risk 档下，同出口的已登录会话可直接保存，换出口才要一次；full 档保存时需口令确认。</span>
     </p>
     <div class="form-grid">
       <!-- 字段顺序按语义重排（方式 → 窗口 → 正态参数 → 开关），并挂密度类名：≤720 单列 /
