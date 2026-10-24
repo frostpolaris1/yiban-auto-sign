@@ -2,9 +2,15 @@
 // toast、模态、口令与倒计时门禁、身份、导航徽标、分区 tab 深链。classic script（非 module）。
 // 归属与复用：全站唯一一份外壳行为层，layout_admin / layout_user / layout_auth 三个外壳模板共用；页面与组件脚本一律
 //   经 window.YB.*（或本文件末尾为内联 onclick 保留的裸全局出口）复用，不再各自实现请求与弹窗。
-// 拆壳（退役账「core.js 拆壳」，第一刀）：外壳**外观**族（主题 / 抽屉 / 服务器时钟 / 慢请求交换 /
-//   显示偏好）已搬到 `web/static/js/shell-chrome.js`，该文件**必须先于本文件载入**。本文件在入口
-//   捕获它的命名空间（`window.YB.__chrome`），并把基础工具经 `window.YB_INTERNALS` 借给它用。
+// 拆壳（退役账「core.js 拆壳」）分两刀，两刀都搬到 `web/static/js/shell-chrome.js`，
+//   该文件**必须先于本文件载入**。本文件在入口捕获它的命名空间（`window.YB.__chrome`），
+//   并把基础工具经 `window.YB_INTERNALS` 借给它用（分片在**调用时**取这些工具）。
+//   · 第一刀：外壳**外观**族——主题 / 抽屉 / 服务器时钟 / 慢请求交换 / 显示偏好；
+//   · 第二刀（2026-10-24）：外壳**交互**族——下拉菜单 / 导航分组（rail 浮层）/ 回到顶部 /
+//     顶部导航进度条。这四族与请求层、模态栈零耦合，只依赖基础工具与 DOM。
+// 确认族弹窗已换 EP（ElMessageBox）：本文件的 confirmDialog 先探 `window.YB_EP_CONFIRM`
+//   （前端 lib/ep-confirm.ts 装配时注册），缺失才落 legacyConfirmDialog。
+//   出口形状不变：`(opts) => Promise<boolean>`。
 // 通信（入）：partials/theme_boot.html 引入的 `theme-boot.js` 先定义全局 BASE 作路径前缀
 //   （CSP 加固后内联脚本外置，仍由 theme_boot 在 <head> 同步加载）；本文件必须排在页面脚本之前载入
 //   （顺序契约见 tests/test_web_js_modules.py）。通信（出）：外壳只读端点 GET /api/me、/api/clock、

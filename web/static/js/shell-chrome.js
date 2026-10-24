@@ -1,12 +1,14 @@
-// 外壳外观层（core.js 拆壳第一刀）：主题、抽屉、服务器时钟、慢请求交换、浏览器级显示偏好。
+// 外壳外观与交互层（core.js 拆壳，两刀）。
+//   · 第一刀：主题、抽屉、服务器时钟、慢请求交换、浏览器级显示偏好；
+//   · 第二刀（2026-10-24）：下拉菜单、导航分组（rail 浮层）、回到顶部、顶部导航进度条。
 //
 // 归属：全站唯一一份。layout_admin / layout_user / layout_auth 三个外壳模板共用。
-// 载入顺序：**必须排在 core.js 之前**（见 tests/test_web_js_modules.py 的顺序契约守卫）。
+// 载入顺序：**必须排在 core.js 之前**（见 tests/test_shell_chrome_shard.py 的顺序契约守卫）。
 //
-// 为什么拆这一刀（退役账「core.js 拆壳」）：core.js 曾是单文件 ~1,800 行全局脚本。
-// 本文件收的都是**叶子能力**——core.js 的请求层、模态栈、身份、导航徽标、分区 tab
-// 都不引用它们，只有「初始化」与「事件委托」两处按名调用。拆走后行为零变化，
-// 且本刀可独立回退（把这段搬回 core.js、删掉模板里的 script 标签即可）。
+// 为什么拆这些（退役账「core.js 拆壳」）：core.js 曾是单文件 1,737 行全局脚本（ref=底本
+// 5cbe2564）。本文件收的都是**叶子能力**——core.js 的请求层、缓存、模态栈、口令与门禁、
+// 身份、导航徽标、分区 tab 都不引用它们，只有「初始化」与「事件委托」两处按名调用。
+// 拆走后行为零变化，且每刀可独立回退（把该段搬回 core.js、删掉模板里的 script 标签即可）。
 //
 // 分片间通信（**这是本刀唯一的设计约束**）：本文件先于 core.js 执行，故
 //   · 取 core.js 的基础工具（el / svgUse / reducedMotion / setText / forEach / api /
@@ -358,7 +360,8 @@
     window.addEventListener("pageshow", function (e) { if (e.persisted) finishNavProgress(); });
   }
 
-  /* ---------- 本层出口（core.js 捕获后转挂到公开面 YB.*） ---------- */  X.currentTheme = currentTheme;
+  /* ---------- 本层出口（core.js 捕获后转挂到公开面 YB.*） ---------- */
+  X.currentTheme = currentTheme;
   X.updateThemeIcons = updateThemeIcons;
   X.applyTheme = applyTheme;
   X.toggleTheme = toggleTheme;

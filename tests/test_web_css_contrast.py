@@ -438,6 +438,10 @@ class BatchCFocusAndLiveTest(unittest.TestCase):
     def test_dropdown_focus_move_in_and_return(self):
         # 两分片合并读：实现可在 core.js 或 shell-chrome.js（拆壳第二刀后在后者的家）。
         # 缺函数 ⇒ index() 抛 ValueError ⇒ 红，「两处都删了」不会静默变绿。
+        #
+        # 本用例只钉**源码形状**（有归还/移入的语句）。真实用户路径走 EP 弹窗与
+        # 浏览器事件循环，那一维由 frontend/e2e/ep-confirm.spec.ts（确认框载体与
+        # 取消路径）与 responsive.spec.ts（抽屉→确认框的焦点归属）覆盖。
         js = _read(CORE_JS) + "\n" + _read(CHROME_JS)
         # 关闭：焦点在菜单里时归还触发器
         close_body = js[js.index("function closeDropdowns"):js.index("function focusItem")]
