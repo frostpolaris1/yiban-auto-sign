@@ -14,6 +14,10 @@
 export type AccountStatus = "pending" | "rejected" | "active" | (string & {});
 
 export interface MyAccount {
+  /** 本人视图的过滤后下标（自助面 PUT/DELETE/POST 的寻址口径）。 */
+  index?: number;
+  /** 账号在全局列表里的真实下标（管理端 detail 端点只认它）。 */
+  admin_index?: number;
   display_name: string;
   phone: string;
   phone_model?: string;

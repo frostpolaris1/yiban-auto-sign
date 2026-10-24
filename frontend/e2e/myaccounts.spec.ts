@@ -200,6 +200,17 @@ test("管理端我的账号：归属邮箱偏好可用、无注销卡、账号�
 
   await expect(page.locator("h1.page-title")).toHaveText("我的账号");
   await expect(page.locator(".account-card").first().locator(".account-name")).toHaveText("e2e-admin-acct");
+
+  // R3-023：管理员编辑自己的账号，detail 必须按全局下标取，不能按本人视图的过滤后下标。
+  // 旧实现取到他人详情 ⇒ 快照手机号不匹配 ⇒ 提交必 409、弹窗不关。
+  const adminCard = page.locator(".account-card").first();
+  await adminCard.getByRole("button", { name: "编辑" }).click();
+  const adminDialog = page.locator(".el-dialog");
+  await expect(adminDialog).toBeVisible();
+  await expect(adminDialog.locator('input[placeholder="如：电力123张三"]')).toHaveValue("e2e-admin-acct");
+  await adminDialog.locator(".el-dialog__footer .btn--primary").click();
+  await expect(adminDialog).toBeHidden();
+
   await expect(page.getByRole("button", { name: /修改密码/ })).toBeVisible();
   await expect(page.locator(".card", { hasText: "邮件提醒" }).first()).toBeVisible();
 
