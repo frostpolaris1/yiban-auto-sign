@@ -726,7 +726,7 @@ def move_account(account_id, direction):
             db._begin_immediate(conn)
             rows = conn.execute(
                 "SELECT id, sort_order FROM accounts WHERE deleted=0 "
-                "ORDER BY sort_order, id"
+                f"ORDER BY {_ACCOUNTS_ORDER_BY}"
             ).fetchall()
             pos = next((i for i, r in enumerate(rows) if r["id"] == account_id), None)
             if pos is None:
