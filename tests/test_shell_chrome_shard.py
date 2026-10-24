@@ -48,6 +48,9 @@ EXPORTS = (
     "currentTheme", "updateThemeIcons", "applyTheme", "toggleTheme", "toggleDrawer",
     "calibrateClock", "renderClock", "serverNow", "clockString", "clockInfo",
     "swapOut", "SWAP_MS", "ownerEmailVisible", "setOwnerEmailVisible",
+    # 第二刀（2026-10-24）：下拉菜单 / 导航分组 / 回顶 / 导航进度条。
+    "closeDropdowns", "focusItem", "clampDropdown", "clampOpenDropdowns", "toggleDropdown",
+    "isRailMode", "positionRailFlyout", "relayoutRail", "initBackToTop", "initNavProgress",
 )
 
 #: core.js 里**不许**再出现的实现痕迹（第二份实现会各自漂移）。
@@ -57,6 +60,11 @@ CORE_MUST_NOT_DEFINE = (
     "function calibrateClock(", "function renderClock(", "function serverNow(",
     "function clockString(", "function clockInfo(", "function ownerEmailVisible(",
     "function setOwnerEmailVisible(", "var SWAP_MS =",
+    # 第二刀：搬家后不许在 core.js 重新长出这四族。
+    "function closeDropdowns(", "function toggleDropdown(", "function clampDropdown(",
+    "function isRailMode(", "function relayoutRail(", "function positionRailFlyout(",
+    "function initBackToTop(", "function initNavProgress(", "var NAV_PROGRESS_KEY",
+    "var TO_TOP_AT",
 )
 
 _CHROME_TAG = re.compile(

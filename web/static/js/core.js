@@ -922,97 +922,9 @@
      已搬到 web/static/js/shell-chrome.js（拆壳第一刀，本文件载入时捕获为 CHROME）。
      本文件只保留调用点与公开面转挂。 */
 
-  /* ---------- 下拉菜单 ---------- */
-  function closeDropdowns(except) {
-    forEach(document.querySelectorAll(".dd-wrap.is-open"), function (w) {
-      if (w === except) return;
-      // 焦点若在菜单里（键盘打开后聚焦了菜单项/面板），关闭必须归还给触发器，
-      // 否则菜单隐藏后焦点落回 <body>，键盘用户要重新 Tab 一遍。
-      // 焦点在触发器或页面别处时不动 —— 外部点击关闭不该抢走用户刚点的元素。
-      var a = document.activeElement;
-      var hadFocus = w.contains(a);
-      w.classList.remove("is-open");
-      if (hadFocus) {
-        var t = w.querySelector("[data-dropdown]");
-        if (t && document.contains(t) && typeof t.focus === "function") t.focus();
-      }
-    });
-  }
-  function focusItem(items, index) {
-    if (!items.length) return;
-    items[((index % items.length) + items.length) % items.length].focus();
-  }
-  // 顶栏下拉的视口钳制。vendor 在 ≤720 把 .dd-menu 定成 width:calc(100vw - 16px) 且 right:-8px,
-  // 面板右缘锚在**触发器右缘**；通知铃铛不是顶栏最后一个元素，锚点离视口右缘还有一段距离，
-  // 面板就从左侧越界（实测 390 下 left=-50、320 下 left=-64）。纯 CSS 改不了：面板宽度由
-  // 锚点右缘反推，锚点位置随顶栏排布（铃铛/主题/头像）变化，`max-width` 也管不到左溢出。
-  // 故与自研日期弹层同一套思路——按「目标视口位置 − 锚点」一次算准，只保留 left 一种锚定：
-  //   候选左缘 = 锚点右缘 − 面板宽，再夹进 [PAD, vw − PAD − 面板宽]。
-  var DD_PAD = 8;
-  function clampDropdown(wrap) {
-    var menu = wrap.querySelector(".dd-menu");
-    if (!menu) return;
-    menu.style.left = "";
-    menu.style.right = "";
-    var vw = document.documentElement.clientWidth || window.innerWidth || 0;
-    // 闭态带 scale(0.98)，矩形会缩水，量 offsetWidth（不受 transform 影响）
-    var w = menu.offsetWidth;
-    if (!w || !vw) return;
-    // 内联已清空，此处的 computed right 即 CSS 的锚定偏移（桌面 0 / 移动 -8px），
-    // 用它还原「菜单右缘」的锚点意图（right:-8 → 右缘 = 锚点右缘 + 8）
-    var rightOff = parseFloat(window.getComputedStyle(menu).right);
-    if (!isFinite(rightOff)) rightOff = 0;
-    var wrapRect = wrap.getBoundingClientRect();
-    var anchorRight = wrapRect.right - rightOff;
-    var left = Math.min(Math.max(anchorRight - w, DD_PAD), Math.max(DD_PAD, vw - DD_PAD - w));
-    menu.style.left = Math.round(left - wrapRect.left) + "px";
-    menu.style.right = "auto";
-  }
-  function clampOpenDropdowns() {
-    forEach(document.querySelectorAll(".dd-wrap.is-open"), clampDropdown);
-  }
-  function toggleDropdown(trigger) {
-    var wrap = trigger && trigger.closest ? trigger.closest(".dd-wrap") : null;
-    if (!wrap) return;
-    var willOpen = !wrap.classList.contains("is-open");
-    closeDropdowns(wrap);
-    wrap.classList.toggle("is-open", willOpen);
-    if (!willOpen) {
-      // 再次点触发器关闭：打开时焦点已移入菜单，这里的 preventDefault 又拦掉了浏览器
-      // 把焦点给触发器的默认动作，需显式归还，否则焦点留在即将隐藏的菜单项上、回落 <body>。
-      var a = document.activeElement;
-      if (wrap.contains(a)) {
-        var trg = wrap.querySelector("[data-dropdown]");
-        if (trg && typeof trg.focus === "function") trg.focus();
-      }
-      return;
-    }
-    clampDropdown(wrap);
-    // 打开即把焦点移入菜单（WAI-ARIA menu-button 约定）。铃铛/头像等 <button> 触发器
-    // 由点击路径进入，此前焦点始终留在触发器上，面板里的方向键/Home/End 全落空；
-    // 通知面板零个 .dd-menu-item，则把面板本身设为可聚焦容器，Esc 才有可归还的焦点。
-    var menu = wrap.querySelector(".dd-menu");
-    if (!menu) return;
-    var item = menu.querySelector(".dd-menu-item");
-    if (item) { item.focus(); return; }
-    if (!menu.hasAttribute("tabindex")) menu.setAttribute("tabindex", "-1");
-    menu.focus();
-  }
-
-  /* ---------- 导航分组（桌面手风琴 + 721–1100px rail 浮层定位） ---------- */
-  function isRailMode() { return window.innerWidth > 720 && window.innerWidth <= 1100; }
-  function positionRailFlyout(sub, trigger) {
-    var r = trigger.getBoundingClientRect();
-    sub.style.top = Math.max(8, Math.min(r.top, window.innerHeight - 60)) + "px";
-  }
-  function relayoutRail() {
-    var groups = document.querySelectorAll("[data-nav-group].is-open");
-    if (!isRailMode()) { forEach(groups, function (g) { var s = g.querySelector(".nav-submenu"); if (s) s.style.top = ""; }); return; }
-    forEach(groups, function (g) {
-      var s = g.querySelector(".nav-submenu"), t = g.querySelector("[data-nav-toggle]");
-      if (s && t) positionRailFlyout(s, t);
-    });
-  }
+  /* ---------- 下拉菜单 / 导航分组 / 回顶 / 导航进度条 ----------
+     已搬到 shell-chrome.js（拆壳第二刀）：这四族只依赖基础工具与 DOM，与请求层、
+     模态栈零耦合。本文件只保留事件委托里的调用点（CHROME.*）与初始化调用。 */
   /* ---------- Tab（容器 [data-tab-group] + .tab[data-tab-target] + .tab-panel[data-tab-id]） ---------- */
   // 深链参数名与同步口径自 /work/settings 的原实现提炼（全站唯一一份）：?tab=<分区 id>，
   // 切换时 history.replaceState 同步（不产生历史堆积）。settings 页分区切换带脏守卫，
@@ -1328,7 +1240,7 @@
       if (e.key === "Escape") {
         if (modalStack.length) { e.preventDefault(); closeModal(); return; }
         if (document.body.classList.contains("has-drawer-open")) { CHROME.toggleDrawer(false); return; }
-        closeDropdowns();
+        CHROME.closeDropdowns();
         return;
       }
       if (e.key === "Tab" && modalStack.length) trapTab(e, modalStack[modalStack.length - 1]);
@@ -1344,9 +1256,9 @@
       if (drawerLink && !drawerLink.hasAttribute("data-nav-toggle") && window.innerWidth <= 720) CHROME.toggleDrawer(false);
 
       var ddTrigger = t.closest("[data-dropdown]");
-      if (ddTrigger) { e.preventDefault(); toggleDropdown(ddTrigger); return; }
-      if (t.closest(".dd-menu-item")) { closeDropdowns(); return; }
-      if (!t.closest(".dd-wrap")) closeDropdowns();
+      if (ddTrigger) { e.preventDefault(); CHROME.toggleDropdown(ddTrigger); return; }
+      if (t.closest(".dd-menu-item")) { CHROME.closeDropdowns(); return; }
+      if (!t.closest(".dd-wrap")) CHROME.closeDropdowns();
 
       // 长口径说明走弹窗，不走 .info-pop 浮层：浮层靠 hover/focus 维持且 pointer-events:none
       // （见 app.css 该处注释），实测 495 字在 390 宽下高 747px、底边超视口 344px，
@@ -1373,17 +1285,17 @@
         var group = navToggle.closest("[data-nav-group]");
         if (!group) return;
         var willOpen = !group.classList.contains("is-open");
-        if (isRailMode()) {
+        if (CHROME.isRailMode()) {
           forEach(document.querySelectorAll("[data-nav-group].is-open"), function (g) { if (g !== group) g.classList.remove("is-open"); });
         }
         group.classList.toggle("is-open", willOpen);
-        if (willOpen && isRailMode()) {
+        if (willOpen && CHROME.isRailMode()) {
           var sub = group.querySelector(".nav-submenu");
-          if (sub) positionRailFlyout(sub, navToggle);
+          if (sub) CHROME.positionRailFlyout(sub, navToggle);
         }
         return;
       }
-      if (isRailMode() && !t.closest("[data-nav-group]")) {
+      if (CHROME.isRailMode() && !t.closest("[data-nav-group]")) {
         forEach(document.querySelectorAll("[data-nav-group].is-open"), function (g) { g.classList.remove("is-open"); });
       }
 
@@ -1428,51 +1340,31 @@
         if (active && active.matches && active.matches("[data-dropdown]") && active.tagName !== "BUTTON" &&
             (e.key === "Enter" || e.key === " " || e.key === "ArrowDown")) {
           e.preventDefault();
-          toggleDropdown(active);
-          focusItem(active.closest(".dd-wrap").querySelectorAll(".dd-menu-item"), 0);
+          CHROME.toggleDropdown(active);
+          CHROME.focusItem(active.closest(".dd-wrap").querySelectorAll(".dd-menu-item"), 0);
         }
         return;
       }
       var items = wrap.querySelectorAll(".dd-menu-item");
       var idx = Array.prototype.indexOf.call(items, active);
-      if (e.key === "ArrowDown") { e.preventDefault(); focusItem(items, idx + 1); }
-      else if (e.key === "ArrowUp") { e.preventDefault(); focusItem(items, idx - 1); }
-      else if (e.key === "Home") { e.preventDefault(); focusItem(items, 0); }
-      else if (e.key === "End") { e.preventDefault(); focusItem(items, items.length - 1); }
+      if (e.key === "ArrowDown") { e.preventDefault(); CHROME.focusItem(items, idx + 1); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); CHROME.focusItem(items, idx - 1); }
+      else if (e.key === "Home") { e.preventDefault(); CHROME.focusItem(items, 0); }
+      else if (e.key === "End") { e.preventDefault(); CHROME.focusItem(items, items.length - 1); }
     });
 
-    window.addEventListener("resize", function () { relayoutRail(); clampOpenDropdowns(); if (window.innerWidth > 720) CHROME.toggleDrawer(false); });
-    window.addEventListener("scroll", relayoutRail, true);
+    window.addEventListener("resize", function () { CHROME.relayoutRail(); CHROME.clampOpenDropdowns(); if (window.innerWidth > 720) CHROME.toggleDrawer(false); });
+    window.addEventListener("scroll", CHROME.relayoutRail, true);
   }
 
-  /* ---------- 回到顶部（共享） ----------
-     列表页的表格没有内滚上限、长列表整页滚动，因此需要一步回顶的入口。
-     按钮固定在右下、滚动超过阈值才出现；只动 opacity/transform（无布局动画），
-     reduced-motion 去位移、点击直接回顶（不做平滑滚动）。键盘可达（原生 button + aria-label）。 */
-  var TO_TOP_AT = 400;
-  function initBackToTop() {
-    if ($("to-top")) return;
-    var btn = el("button", { type: "button", id: "to-top", class: "to-top", "aria-label": "回到顶部", title: "回到顶部" });
-    btn.appendChild(el("span", { class: "to-top__icon", "aria-hidden": "true", html: svgUse("arrow-up") }));
-    (document.body || document.documentElement).appendChild(btn);
-    function sync() {
-      var y = window.pageYOffset || document.documentElement.scrollTop || 0;
-      btn.classList.toggle("is-show", y > TO_TOP_AT);
-    }
-    btn.addEventListener("click", function () {
-      if (reducedMotion()) window.scrollTo(0, 0);
-      else window.scrollTo({ top: 0, behavior: "smooth" });
-      btn.blur();   // 回顶后按钮隐去，焦点归还文档主体，避免焦点停在不可见节点
-    });
-    window.addEventListener("scroll", sync, { passive: true });
-    sync();
-  }
+  /* ---------- 回到顶部 / 顶部导航进度条 ----------
+     已搬到 shell-chrome.js（拆壳第二刀，CHROME.initBackToTop / CHROME.initNavProgress）。 */
 
   onReady(function () {
     initGlobalHandlers();
     initTabRoving();
-    initNavProgress();
-    initBackToTop();
+    CHROME.initNavProgress();
+    CHROME.initBackToTop();
     var themeBtn = $("themeToggle");
     if (themeBtn) themeBtn.addEventListener("click", CHROME.toggleTheme);
     CHROME.updateThemeIcons();
@@ -1493,106 +1385,6 @@
 
   /* ---------- 慢请求的「整体淡出 → 换内容 → 淡入」 ----------
      已搬到 shell-chrome.js（CHROME.swapOut / CHROME.SWAP_MS）。 */
-
-  /* ---------- 顶部导航进度条（MPA 页面切换） ----------
-     多页应用没有前端路由，点内部链接即整页跳转；浏览器自身不提供任何"正在导航"
-     反馈，弱网下会出现"点了一下没反应 → 突然白屏换页"的跳变感。
-     本模块在捕获阶段监听合格的同源导航点击，立即显示细进度条并缓慢推进；
-     新页面 core.js 载入时读 sessionStorage 里的起点时间，接续补到 100% 再淡出。
-     不合格的链接一律放行：修饰键（新标签/下载）、target!=_self、download、
-     外链、仅 hash 同页、文件类扩展名、显式 data-no-nav-progress。
-     reduced-motion 直接不显示（不做任何位移动画）。
-     明确不做「预取」：页面响应是 Cache-Control: no-store（见 app.py _NO_STORE_PAGES），
-     <link rel=prefetch> 拉到的整页无法在导航时复用，只会在单 worker 上白跑一遍
-     渲染；各页共享的 JS/CSS 本身已带版本号缓存。 */
-  var NAV_PROGRESS_KEY = "yiban-nav-progress-at";
-  var navBar = null, navTimer = null, navValue = 0, navGuardTimer = null;
-  // 兜底收尾：进度条靠**新页面**的 core.js 补到 100%，若那次点击最终没发生导航
-  // （被页面自身逻辑拦下、或浏览器取消了导航），条会永远停在 90%。
-  // 兜底计时器保证任何情况下都会自行收尾，不留下"一直在加载"的假象。
-  var NAV_GUARD_MS = 8000;
-  var NAV_FILE_RE = /\.(png|jpe?g|gif|svg|webp|ico|pdf|zip|gz|log|csv|xlsx?|docx?|pptx?|mp4|mp3|txt|json)$/i;
-  function isNavLink(a) {
-    if (!a || !a.getAttribute) return false;
-    if (a.hasAttribute("download") || a.hasAttribute("data-no-nav-progress")) return false;
-    var target = String(a.getAttribute("target") || "").toLowerCase();
-    if (target && target !== "_self") return false;
-    var href = a.getAttribute("href");
-    if (!href || href.charAt(0) === "#") return false;
-    if (/^(mailto|tel|javascript):/i.test(href)) return false;
-    var u;
-    try { u = new URL(a.href, location.href); } catch (e) { return false; }
-    if (u.origin !== location.origin) return false;                       // 外链
-    if (u.pathname === location.pathname && u.search === location.search) return false;  // 同页（含仅 hash）
-    if (NAV_FILE_RE.test(u.pathname)) return false;                       // 下载类资源
-    return true;
-  }
-  function navBarCreate() {
-    if (navBar && document.body && document.body.contains(navBar)) return navBar;
-    navBar = el("div", { class: "nav-progress", "aria-hidden": "true" });
-    navBar.appendChild(el("div", { class: "nav-progress__fill" }));
-    (document.body || document.documentElement).appendChild(navBar);
-    return navBar;
-  }
-  function navSetWidth(pct) { if (navBar) navBar.firstChild.style.width = pct + "%"; }
-  function startNavProgress() {
-    if (reducedMotion()) return;
-    navBarCreate();
-    navBar.classList.remove("is-done");
-    navBar.firstChild.style.opacity = "1";
-    navValue = 8;
-    navSetWidth(navValue);
-    try { sessionStorage.setItem(NAV_PROGRESS_KEY, String(Date.now())); } catch (e) {}
-    clearInterval(navTimer);
-    // 越接近 90% 推进越慢：避免还没到达新页就先满格（满格后长时间不动反而"卡住"）
-    navTimer = setInterval(function () {
-      navValue += Math.max(0.4, (90 - navValue) * 0.08);
-      if (navValue >= 90) { navValue = 90; clearInterval(navTimer); }
-      navSetWidth(navValue);
-    }, 120);
-    // 兜底：到点仍未发生导航（本页还在）就自行收尾
-    clearTimeout(navGuardTimer);
-    navGuardTimer = setTimeout(function () {
-      if (document.visibilityState !== "hidden") finishNavProgress();
-    }, NAV_GUARD_MS);
-  }
-  function finishNavProgress() {
-    clearTimeout(navGuardTimer);
-    if (!navBar || reducedMotion()) return;
-    clearInterval(navTimer);
-    navSetWidth(100);
-    navBar.classList.add("is-done");
-    var node = navBar;
-    setTimeout(function () {
-      if (node.parentNode) node.parentNode.removeChild(node);
-      if (navBar === node) { navBar = null; navValue = 0; }
-    }, 240);
-  }
-  function initNavProgress() {
-    // 新页载入接续：上一页点过导航（15s 内）则从 85% 补到 100% 并淡出，收尾"已到达"
-    var startedAt = 0;
-    try {
-      startedAt = parseInt(sessionStorage.getItem(NAV_PROGRESS_KEY) || "0", 10) || 0;
-      sessionStorage.removeItem(NAV_PROGRESS_KEY);
-    } catch (e) {}
-    if (!reducedMotion() && startedAt && Date.now() - startedAt < 15000) {
-      navBarCreate();
-      navValue = 85;
-      navSetWidth(85);
-      requestAnimationFrame(function () { requestAnimationFrame(finishNavProgress); });
-    }
-    document.addEventListener("click", function (e) {
-      if (e.defaultPrevented || e.button !== 0) return;
-      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-      var t = e.target;
-      var a = (t && t.closest) ? t.closest("a[href]") : null;
-      if (isNavLink(a)) startNavProgress();
-    }, true);
-    // 真正发生导航时（新文档即将接管）取消兜底：条的去向由新页面负责，不再自行收尾；
-    // 从往返缓存恢复时（back/forward）把可能残留的条清掉，避免"回来还挂着"。
-    window.addEventListener("pagehide", finishNavProgress);
-    window.addEventListener("pageshow", function (e) { if (e.persisted) finishNavProgress(); });
-  }
 
   /* ---------- 浏览器级显示偏好（localStorage） ----------
      已搬到 shell-chrome.js（CHROME.ownerEmailVisible / setOwnerEmailVisible）。 */
