@@ -29,6 +29,38 @@ export function businessDay(daysAgo = 0, baseMs: number = Date.now()): string {
   return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}`;
 }
 
+/** 业务日的年月日数字（`m` 为 1–12）：月份标题、当月天数、星期都从这一份取。 */
+export function businessDayParts(daysAgo = 0, baseMs: number = Date.now()) {
+  const shifted = new Date(baseMs + BUSINESS_UTC_OFFSET_MS - daysAgo * DAY_MS);
+  return { y: shifted.getUTCFullYear(), m: shifted.getUTCMonth() + 1, d: shifted.getUTCDate() };
+}
+
+/** 业务日所在月份的天数（Node 侧，不读宿主时区）。 */
+export function businessDaysInMonth(baseMs: number = Date.now()): number {
+  const { y, m } = businessDayParts(0, baseMs);
+  return new Date(Date.UTC(y, m, 0)).getUTCDate();
+}
+
+/** 业务日 `YYYY-MM-DD` 的星期（0=周日…6=周六）；按 UTC 构造，故与宿主时区无关。 */
+export function businessWeekday(day: string): number {
+  const [y, m, d] = day.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+}
+
+/** 业务日 `YYYY-MM-DD` 平移 delta 个月后的「YYYY年M月」标签（与日历页 `.sc-month` 同格式）。 */
+export function businessMonthLabel(deltaMonths = 0, baseMs: number = Date.now()): string {
+  const { y, m } = businessDayParts(0, baseMs);
+  const total = y * 12 + (m - 1) + deltaMonths;
+  return `${Math.floor(total / 12)}年${(total % 12) + 1}月`;
+}
+
+/** 业务月平移 delta 个月后的天数（换月断言用）。 */
+export function businessDaysInMonthShift(deltaMonths: number, baseMs: number = Date.now()): number {
+  const { y, m } = businessDayParts(0, baseMs);
+  const total = y * 12 + (m - 1) + deltaMonths;
+  return new Date(Date.UTC(Math.floor(total / 12), (total % 12) + 1, 0)).getUTCDate();
+}
+
 /**
  * 指定 IANA 时区下的日期串 `YYYY-MM-DD`（Node 侧）。用于构造「浏览器时区与业务钟不同」
  * 的断言：把该串与 businessDay() 对比即可证明页面读的是哪个时钟。

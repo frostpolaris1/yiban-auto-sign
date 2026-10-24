@@ -37,7 +37,6 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime
 from datetime import datetime as clock_cls
 from types import SimpleNamespace
 from unittest import mock
@@ -184,11 +183,12 @@ class ContainerInjectsRetrySlotTest(unittest.TestCase):
 
 
 #: run.sh 的按日文件（sign-status-<date>.txt / sign-<date>.log）与库内当日事实查询
-#: 都用宿主 `date +%Y-%m-%d`（run.sh:183 等），跑 run.sh 的用例须与宿主日对齐。
-TODAY = datetime.now().strftime("%Y-%m-%d")
+#: 都取业务钟（`scripts/lib/host_paths.sh::business_day` = `yiban.core.clock`，北京 +8）。
+#: 旧实现用宿主 `date +%Y-%m-%d`；UTC 16:00–24:00 窗口内与业务日差一天（P0 2026-10-25）。
+TODAY = clock.today()
 
-#: signin/scheduler 的 sched-run-<date>.json / sign-state-<date>.json 取业务钟
-#: （yiban.core.clock，北京 +8），跨宿主 TZ 时与 TODAY 可能不同日——这两类消费方必须用 BIZ_TODAY。
+#: signin/scheduler 的 sched-run-<date>.json / sign-state-<date>.json 同样取业务钟。
+#: 两个名字保留（消费方不同），但值是同一事实源，不得再各算一份。
 BIZ_TODAY = clock.today()
 
 
