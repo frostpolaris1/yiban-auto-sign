@@ -22,6 +22,7 @@ import unittest
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(BASE, "scripts", "backup.sh")
 RUN_SH = os.path.join(BASE, "run.sh")
+HOST_PATHS = os.path.join(BASE, "scripts", "lib", "host_paths.sh")
 
 
 def _read():
@@ -107,12 +108,16 @@ class BackupFlagParsingBehaviorTest(unittest.TestCase):
 
 
 class EnvGetMatchesRunShTest(unittest.TestCase):
-    """M26：backup.sh 的 env_get 必须与 run.sh 的 .env 解析逐字同口径。
+    """M26：backup.sh 的 env_get 必须与宿主脚本的 .env 解析逐字同口径。
 
     旧实现 `sed -n "s/^$1=//p"` 不剥 BOM、不认键名前导空白、不做两侧 strip：`.env` 写成
     `\\ufeff  YIBAN_STATE_DIR = /srv/x` 时 run.sh 取到 /srv/x，backup.sh 取空并回落到
     /var/log/yiban——归档缺真锚点且只打一行提示。本用例用**两份脚本的真源码**（各自的
     解析函数/解析块原样抽出，不改写）跑同一份 .env，要求输出逐字相同。
+
+    2026-10-24（R3-019）：宿主侧解析的唯一副本搬进 `scripts/lib/host_paths.sh` 的
+    `yiban_load_env`（run.sh 与清理 cron 都调它）。本用例改为抽那个函数——它才是
+    与 backup.sh 对账的那一段；抄回 run.sh 文本就失去意义了。
     """
 
     def setUp(self):
@@ -141,11 +146,15 @@ class EnvGetMatchesRunShTest(unittest.TestCase):
         return src[start:src.index("\n}\n", start) + 2]
 
     def _run_sh_parse_body(self):
-        """run.sh 的 .env 解析块原文（与 yiban/infra/env_io 同口径的那段）。"""
-        with io.open(RUN_SH, encoding="utf-8") as f:
+        """宿主侧 .env 解析唯一副本（`host_paths.sh` 的 `yiban_load_env`）原文。
+
+        返回"函数定义 + 一次调用"：调用点原本在 run.sh，抽函数后由各载体自己调。
+        """
+        with io.open(HOST_PATHS, encoding="utf-8") as f:
             src = f.read()
-        start = src.index('if [ -r "$ENV_PATH" ]; then')
-        return src[start:src.index("\nfi\n", start) + 3]
+        start = src.index("yiban_load_env() {")
+        return (src[start:src.index("\n}\n", start) + 2]
+                + '\nyiban_load_env "$ENV_PATH" || true')
 
     def _run(self, script, arg):
         env = {k: v for k, v in os.environ.items() if not k.startswith("YIBAN_")}
