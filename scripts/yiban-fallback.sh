@@ -43,6 +43,11 @@ umask 077
 # （`scripts/lib/host_paths.sh`，与 run.sh / run_probe.sh 同一算法）。
 . "$(dirname "${BASH_SOURCE[0]}")/lib/host_paths.sh"
 APP_DIR="$(yiban_app_dir)"
+# 必须 cd 到检出：本脚本最后以 `python -m yiban.entry.cli` 启动执行体，
+# 而 `-m` 从**当前目录**解析包。cron 的 cwd 是 `$HOME`（不是检出），
+# 缺这一行时兜底在 cron 下必然 `ModuleNotFoundError: No module named 'yiban'`。
+# 与 run.sh / run_probe.sh 同一写法（三处 APP_DIR 同源，见 host_paths.sh）。
+cd "$APP_DIR" 2>/dev/null || { echo "致命: 无法进入应用目录 $APP_DIR" >&2; exit 1; }
 
 # `.env` 指针唯一口径：一律 $APP_DIR/data/.env（工单 p12-13）。
 # 与 run.sh / run_probe.sh 同源；**不读 YIBAN_ENV_FILE**——旧写法让 cron 行前缀一次
