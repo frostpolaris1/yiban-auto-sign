@@ -36,14 +36,15 @@ WORKDIR /app
 # 镜像安装改用精确锁定的 requirements.lock——CI 的 `dependency-audit` job
 # （.github/workflows/ci.yml，跑 `pip-audit -r requirements.lock`）审计的就是它，
 # 浮动下限会让镜像依赖偏离审计结论且构建不可复现。
-# requirements.lock 是手工维护的精确锁定、全程不含 `--hash=`，没有哈希锁可复核，
-# 因此 **pip-audit 是这里唯一的自动依赖审计**——改 lock 必须同时看那个 job 的结论；
-# 它能否**阻塞合并**取决于分支保护是否把 `dependency-audit` 列为必需检查（所有者动作）。
+# requirements.lock 自 2026-10-24（R3-007）起带 `--hash=`，安装用 `--require-hashes`：
+# 依赖文件被篡改或供应链换包会在安装阶段 fail-closed。**pip-audit 仍是审计入口**——
+# 改 lock 必须同时看那个 job 的结论；它能否**阻塞合并**取决于分支保护是否把
+# `dependency-audit` 列为必需检查（所有者动作）。
 # 国内主机直连 pypi.org 常不可达（构建会以 "No matching distribution" 失败），
 # 故支持构建期指定索引：docker build --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple ...
 ARG PIP_INDEX_URL
 COPY requirements.lock ./
-RUN pip install --no-cache-dir ${PIP_INDEX_URL:+-i "$PIP_INDEX_URL"} -r requirements.lock
+RUN pip install --no-cache-dir --require-hashes ${PIP_INDEX_URL:+-i "$PIP_INDEX_URL"} -r requirements.lock
 
 # 应用源码（web 管理端 + 签到脚本 + 共享包 + 合规文档）
 # `yiban/` 是共享包（yiban/core/status.py 起被 signin/web 导入），漏拷会让容器在
