@@ -202,7 +202,8 @@ function openForm(index: number | null): void {
     password: "",
   };
   formOpen.value = true;
-  if (isAdmin.value && index !== null) void loadDetail(index);
+  // detail 端点只认全局下标；本人视图下标是过滤后的，二者不可混用（R3-023）。
+  if (isAdmin.value && index !== null) void loadDetail(a?.admin_index ?? index);
   if (isAdmin.value && index === null) void loadBindableUsers();
 }
 
@@ -217,14 +218,17 @@ async function loadDetail(index: number): Promise<void> {
       `/api/accounts/${index}/detail`,
     );
     const acc = d.account ?? {};
-    formSnapshot.value = makeSnapshot(acc);
-    fullPhone.value = String(acc.phone ?? "");
-    if (!accounts.value[index]?.phone) {
+    const detailPhone = String(acc.phone ?? "");
+    // `index` 是全局下标；不能再用它去查本人视图的过滤后列表（两者口径不同，R3-023）。
+    // 手机号取 detail 的返回值——它就是要编辑的那个账号。
+    if (!detailPhone) {
       f.value.phone = "";
       fullPhone.value = "";
       formSnapshot.value = null;
     } else {
-      f.value.phone = accounts.value[index].phone; // 只回显打码号
+      formSnapshot.value = makeSnapshot(acc);
+      fullPhone.value = detailPhone;
+      f.value.phone = detailPhone;
     }
   } catch {
     fullPhone.value = "";
