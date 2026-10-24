@@ -542,6 +542,25 @@ class AnchorJudgmentTest(_DbFixture):
         h = db.audit_health()
         self.assertFalse(h["anchor_ok"], "跃迁量 > 留痕累计 → 必须判非法删除")
 
+    def test_middle_row_delete_without_purge_record_is_rejected(self):
+        """锚点批次内**中间行**被删且无留痕：只由稠密判据检出（R3-027）。
+
+        夹具刻意让另两条判据都过：
+          · 定点：锚点尾行 id=8 仍在、存量 hash 与锚点一致（删的是 id=2，不动尾行）；
+          · 留痕：min_id 仍为 1、无跃迁，第三条判据不触发。
+        故 `missing > exp` 是唯一能接住它的判据。把该条件放宽 10 万，本条必须红——
+        它是这条删除支的独立守卫（此前 `test_min_jump_larger_than_events_is_rejected`
+        由第三条判据接住，钉不住这一支）。
+        """
+        self._seed(8)
+        db.record_audit_anchor()
+        self._raw("DELETE FROM audit_logs WHERE id = 2")  # 中间行，无清理留痕
+        h = db.audit_health()
+        self.assertFalse(h["anchor_ok"],
+                         f"锚点批次内删行且无留痕必须判篡改：{h['anchor_msg']}")
+        self.assertIn("条数减少且无清理留痕", h["anchor_msg"],
+                      "必须由稠密判据点名；被定点/留痕判据接住就说明本条钉不住这一支")
+
     def test_balanced_but_inconsistent_purge_record_is_rejected(self):
         """留痕**条数**对得上、但留痕声称的"删除后 min_id"与事实不符 → 只有第三条判据能检出。
 
