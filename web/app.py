@@ -2265,8 +2265,9 @@ def create_app(host=None):
 
         入参契约：`data` 收**整个请求体**而不是口令串——非 `full` 档还要读同一请求里的
         `confirm_delay_ack`，只传口令串会把那字段截掉，门禁于是永远判它缺失。
-        `always_required=True` = 必须当次输口令、不吃 TTL 豁免，用于"不可逆清除 / 关闭或
-        改道告警通道 / 角色变更 / 重置他人口令 / 改主管理员口令"，调用点逐个标注。
+        `always_required=True` = full 档下每次都要求口令、不吃 TTL 豁免，用于"不可逆清除 /
+        关闭或改道告警通道 / 角色变更 / 重置他人口令 / 改主管理员口令"，调用点逐个标注。
+        缺省 risk 档在换出口判据处先早退，故该参数只在 full 档生效；同出口免口令。
         `deny_status` 只换响应码、不换判定（保持各落点原有的客户端契约）。
         `irreversible=True` 只标"删了就回不来"的落点（物理清除、彻底删除、删用户）；
         可逆动作别传，否则把可回滚的操作也套上不可撤销的确认负担。
@@ -2347,8 +2348,8 @@ def create_app(host=None):
         薄封装：返回约定（None = 通过，否则 `(响应, 状态码)` 元组）与失败处置
         （独立计数、告警、冷却）全在 `_sensitive_password_gate`，本函数不改写语义。
         `always_required` 默认 True——经 `_high_risk_gate` 的落点本就是一串"不可逆
-        清除 / 重置他人口令"（必须当次输口令）；设置页里两个纯配置项（签到随机
-        延迟、容量上限）显式传 False 走豁免。另一直连调用点是 /api/mail-config 的
+        清除 / 重置他人口令"，full 档下必须当次输口令；缺省 risk 档同出口免口令，
+        `risk_always=True` 的四类落点除外。另一直连调用点是 /api/mail-config 的
         SMTP 凭据变更（换中继/授权码 = 换钥类，要口令但不占高危额度）。
         `risk_always` 原样透传（缺省 `risk` 档是否吃"同出口免口令"，语义见
         `_sensitive_password_gate`）；**不传即逐字保持旧行为**。
@@ -2384,7 +2385,8 @@ def create_app(host=None):
         `_sensitive_password_gate`。可逆动作不传，避免把"可回滚"的动作也变成
         不可撤销的确认负担。
 
-        本函数走的全部是"必须当次输口令"的动作（`always_required=True`，豁免不适用）。
+        本函数走的动作在 full 档都要当次输口令（`always_required=True`，豁免不适用）；
+        缺省 risk 档同出口免口令，只有 `risk_always=True` 的四类落点例外。
         覆盖面（每行 = `METHOD /path`，形态即清单；由 `tests/test_gate_manifest_sync.py`
         与 url_map / 视图源码**双向自动比对**，改名漏登即红——这份表不再是手抄件）：
         - POST /api/accounts/batch（purge 分支）

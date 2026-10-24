@@ -352,8 +352,9 @@ def api_settings_save():
     data = _http._json_body()
     is_master = _security._is_builtin_admin_session()
     # 本次请求的 A 档键集：`web/services/env_io.py` 的 `MASTER_ONLY_KEYS` 加正态 μ/σ 区间四键。
-    # 四键因本轮 file-scope 限制不能进 app.py 的档位表，故其 A 档判定（403 + 当次口令）
-    # 复刻在这里；键名清单单源在 env_io.SCHEDULE_DIST_KEYS，不在本路由另抄一遍字面量。
+    # 四键因本轮 file-scope 限制不能进 app.py 的档位表，故其 A 档判定（403 ＋ 口令门禁）
+    # 复刻在这里。口令要求跟档位走：缺省 risk 档同出口免口令，换出口或 full 档才要。
+    # 键名清单单源在 env_io.SCHEDULE_DIST_KEYS，不在本路由另抄一遍字面量。
     master_only = set(_env_io_svc.MASTER_ONLY_KEYS) | SCHEDULE_DIST_KEYS
     # 档位判定读单源常量（见 MASTER_ONLY_KEYS 的定义处）：只看"键是否出现"、不看值，
     # 与普通管理员即便提交同值也无从改动这些键的既有 403 语义一致。
@@ -831,11 +832,6 @@ def api_settings_save():
         f"容量上限={cap_limits_display} "
         f"变更=[{changes_desc}]",
     )
-    # 变更告警：整次请求**合并成一条**（一键一封会被拿来刷告警日额度与邮箱）。
-    # A 档/急停 → urgent（进手机推送），但只有"全停急停"才 force 跳过同类节流与
-    # 推送日额度——它要立刻叫醒；其余 A 档变更沿用既有的同类节流与紧急账日额度。
-    # 纯 B 档变更非紧急。值全部来自现读+本次落盘的配置项，不含凭据，仍过一道
-    # _nl_safe 只为杜绝换行伪造告警正文。
     # 变更不再逐次外发告警：改设置是高频管理动作，一次一键一封会刷爆告警邮件与推送
     # 额度，也让真故障淹没在"谁改了哪个滑块"里。留痕由上面的审计行承担——它逐键记
     # 旧值→新值，事后可查可回滚；需要"当场叫醒"的只有不可逆操作、凭据改写与告警通道
@@ -1646,8 +1642,10 @@ def api_announcement_save():
 def api_announcement_publish():
     """双人发布的后半程：有草稿即发布，草稿为空则**下线**线上公告。
 
-    仅主管理员 + **当次口令**（`always_required=True`，短时豁免不适用）：这一键改动
-    会即时出现在全体学生的顶横幅与登录页上，是全站影响面最大的对外写操作。
+    权限＝仅主管理员。口令要求跟档位走：缺省 risk 档下，同出口的已登录会话可直接
+    发布或下线，换出口才要一次；full 档每次都要（`always_required=True` 关掉 full
+    档的短时豁免）。这一键改动会即时出现在全体学生的顶横幅与登录页上，是全站
+    影响面最大的对外写操作。
     下线刻意复用本端点（用户裁决）：一收一发走同一条通道、权限档一致，避免"发布了
     错的却撤不下来，只能 SSH 改 .env 重启"。草稿与线上都为空时报 400 而不是静默成功
     ——那种点击多半是误按，报错比按钮亮一下什么也没发生更有信息量。
@@ -1670,7 +1668,8 @@ def api_announcement_publish():
             # 让它报错比让按钮亮一下什么也没发生更有信息量。
             return jsonify({"error": "当前既没有待发布草稿，线上也没有公告"}), 400
         # 空草稿 + 线上有内容 = 下线（用户裁决：不另设 clear 端点，一收一发走同一条
-        # 双人发布的后半程，权限档完全一致——主管理员 + 当次口令）
+        # 双人发布的后半程，权限档完全一致——仅主管理员；口令要求同发布
+        # （缺省 risk 档同出口免口令，full 档要）
         _env_io_svc.write_env_batch(m.ENV_FILE, {
             _env_io_svc.ANNOUNCEMENT_KEY: "",
             _env_io_svc.ANNOUNCEMENT_PUBLISHED_META_KEY: "",
