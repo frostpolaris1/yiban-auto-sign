@@ -316,32 +316,43 @@ def _flush_admin_mail_summary(phase=None):
     _mail_summary.clear()
 
 
+#: SIGTERM 已到达：退出钩子据此把管理员汇总标成「超时终止」。
+_SIGTERM_RECEIVED = False
+
+
 def _flush_mail_on_sigterm(signum, frame):
-    """SIGTERM（run.sh timeout / 手动 terminate / 容器超时终止）兜底冲刷。
+    """SIGTERM（run.sh timeout / 手动 terminate / 容器超时终止）：标记终止并退出。
+
+    **本处理器零 I/O**，只做三件事：置终止标记、注册退出钩子、`sys.exit`。
 
     签到轮被超时击杀时进程内 _mail_summary 随进程死亡——整轮已收集的告警
-    （含部分成功的汇总）一并消失。信号处理器在退出前冲刷一次；汇总为空时
-    不产生任何发送（不重复告警），正常收尾路径已清空收集器。
+    （含部分成功的汇总）一并消失。故注册 `_flush_admin_mail_on_exit`，由退出钩子
+    在解释器正常退出时发出；汇总为空时不产生任何发送（不重复告警）。
 
-    同一信号路径还冲刷**进程内累积的状态文件缓冲**（按日状态与失败提醒额度）：
-    二者默认按界落盘，被 SIGTERM 击杀时最后一个落盘界之后的尾部条目会随进程消失，
-    故在此同步冲刷（崩溃语义的网络，见 state_io 的"写放大治理"段）。
-
-    **两个冲刷一律 `blocking=False`**：本处理器跑在主线程上，而两个缓冲锁都是**不可
-    重入**的 `threading.Lock`。主线程若正在临界区内，处理器再取同名锁＝同线程自杀式
-    阻塞（`contextlib.suppress(Exception)` 兜不住死锁，它是阻塞不是异常），进程从此不再
-    响应任何信号，宿主 `timeout` 只能升级成 SIGKILL ⇒ 缓冲真丢。取不到锁就跳过：
-    紧随其后的 `sys.exit`（SystemExit）会展开调用栈，`batch_sign_state` /
-    `batch_user_fail_mail` 的退出分支与 `atexit` 会完成真正的落盘。
+    状态文件与额度文件也不在这里冲刷：待写批次留在进程内缓冲，`SystemExit` 展开
+    调用栈时 `batch_sign_state()` / `batch_user_fail_mail()` 的退出分支把整批落盘。
+    这样避开不可重入缓冲锁：处理器若在临界区内取锁＝同线程自锁，进程不再响应
+    任何信号，宿主 `timeout` 只能升级成 SIGKILL。
     """
-    # 冲刷失败不改变退出码：SIGTERM 路径的首要契约是尽快退出
-    with contextlib.suppress(Exception):
-        state_io.flush_sign_state(blocking=False)
-    with contextlib.suppress(Exception):
-        flush_user_fail_mail_state(blocking=False)
+    global _SIGTERM_RECEIVED
+    _SIGTERM_RECEIVED = True
+    atexit.register(_flush_admin_mail_on_exit)
+    sys.exit(128 + int(signum or 15))
+
+
+def _flush_admin_mail_on_exit():
+    """退出钩子：发出已收集的管理员汇总，标注「超时终止」；每次终止只发一次。
+
+    只有 SIGTERM 处理器会注册本钩子，且它只在该标记置位时动作——把标记清零使
+    重复调用（含测试直接调用后再到解释器退出）不会重复发送。
+    发送失败不改变退出码：终止路径的首要契约是尽快退出。
+    """
+    global _SIGTERM_RECEIVED
+    if not _SIGTERM_RECEIVED:
+        return
+    _SIGTERM_RECEIVED = False
     with contextlib.suppress(Exception):
         _flush_admin_mail_summary(phase="签到超时终止")
-    sys.exit(128 + int(signum or 15))
 
 
 # B 线用户失败提醒每日限频：承诺是「每天每个账号最多 1 封」，只靠单次运行终态路径
@@ -367,8 +378,12 @@ def _user_fail_mail_state_path(today_str):
 # ---------------------------------------------------------------------------
 # 与 `state_io` 的按日状态文件**同一形状、同一不变式**：原实现每次预占/归还都做
 # "整体持锁＋读整个文件＋改一键＋全量写回"，一轮失败数 F 时写盘量 ∝ F²。
-# 落盘触发、崩溃语义与可见性口径与 `state_io` 完全一致（见该模块"写放大治理"段）：
+# 落盘触发与可见性口径与 `state_io` 一致（见该模块"写放大治理"段）：
 # 待写条数 ≥ `_QUOTA_FLUSH_MAX`、距上次落盘 ≥ `_QUOTA_FLUSH_SEC`、或批量上下文退出。
+# **崩溃语义**：一次落盘本身是原子替换（tmp + `os.replace` + 跨进程文件锁），中断只会
+# 留下旧值或新值。落盘失败整批丢弃、不回填缓冲、不注册退出钩子——额度文件缺失这些
+# 操作的方向是「少记一次用量」⇒ 允许再发一封提醒，不触及签到红线。
+# **信号处理器不冲刷本文件**：待写操作由 `SystemExit` 展开时的上下文退出落盘。
 # **与按日状态唯一的语义差别**：本文件的读改写是**跨进程额度 CAS**（"每账号每天最多
 # 1 封"）。批量区内，另一个进程在本区落盘前看不到本区已占的额度 ⇒ 同一账号在
 # 一个落盘窗口内被两个进程同时判定"可发"。窗口的**实际上界不是严格的 `_QUOTA_FLUSH_SEC`**：
@@ -414,35 +429,23 @@ def batch_user_fail_mail():
                 _QUOTA_BUFFERS.clear()
 
 
-def flush_user_fail_mail_state(blocking=True):
-    """把进程内累积的额度操作整批落盘（幂等；无待写操作时为空操作）。
-
-    `blocking=False` 供**信号处理器**使用：`_QUOTA_GATE` 不可重入，主线程正在临界区内
-    时处理器必须立即返回而不是等锁（否则同线程自杀式阻塞、进程不再响应任何信号）。
-    取不到锁就跳过，交给异常展开（上下文退出）与 `atexit` 兜底。
-    """
-    if not _QUOTA_GATE.acquire(blocking=blocking):
-        return
-    try:
+def flush_user_fail_mail_state():
+    """把进程内累积的额度操作整批落盘（幂等；无待写操作时为空操作）。"""
+    with _QUOTA_GATE:
         paths = list(_QUOTA_BUFFERS)
-    finally:
-        _QUOTA_GATE.release()
     for path in paths:
-        _flush_quota_path(path, blocking=blocking)
+        _flush_quota_path(path)
 
 
-def _flush_quota_path(path, blocking=True):
-    if not _QUOTA_GATE.acquire(blocking=blocking):
-        return
-    try:
+def _flush_quota_path(path):
+    """把一个额度文件的待写操作整批并入磁盘后原子落盘；失败整批丢弃。"""
+    with _QUOTA_GATE:
         buf = _QUOTA_BUFFERS.get(path)
         if buf is None:
             return
         ops = buf.ops
         buf.ops = []
         buf.last_flush = time.monotonic()
-    finally:
-        _QUOTA_GATE.release()
     if not ops:
         return
     try:
@@ -456,27 +459,14 @@ def _flush_quota_path(path, blocking=True):
             if changed:
                 state_io._write_private_json(path, data)
     except OSError as e:
-        _requeue_quota(path, ops)
         logger.warning("写入失败提醒额度文件失败（不影响签到）: %s", e)
         return
-    except BaseException:
-        # 信号/中断打断落盘：先还原条目再让异常继续展开，不丢已占的额度
-        _requeue_quota(path, ops)
-        raise
     if not changed:
         return
     with _QUOTA_GATE:
         buf = _QUOTA_BUFFERS.get(path)
         if buf is not None:
             buf.view = data
-
-
-def _requeue_quota(path, ops):
-    """把一批未落盘的额度操作放回队首（保序），交给下一次落盘重试。"""
-    with _QUOTA_GATE:
-        buf = _QUOTA_BUFFERS.get(path)
-        if buf is not None:
-            buf.ops = ops + buf.ops
 
 
 def _read_quota_file(path):
@@ -614,10 +604,6 @@ def _user_fail_mail_release_now(path, phone):
                 state_io._write_private_json(path, data)
     except OSError as e:
         logger.warning("归还失败提醒额度失败（不影响签到）: %s", e)
-
-
-# 进程退出兜底：与 state_io 同口径（正常/异常退出均冲刷缓冲）。
-atexit.register(flush_user_fail_mail_state)
 
 
 def send_user_fail_mail(owner, phone, message, scenario="signin"):
