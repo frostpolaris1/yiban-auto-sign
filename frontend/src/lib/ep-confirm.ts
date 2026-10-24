@@ -1,3 +1,4 @@
+import { h } from "vue";
 import { ElMessageBox } from "element-plus/es";
 
 /**
@@ -30,7 +31,13 @@ export interface EpConfirmOptions {
 
 export function epConfirm(opts: EpConfirmOptions): Promise<boolean> {
   const o = opts ?? {};
-  const p = ElMessageBox.confirm(o.body ?? "", o.title ?? "请确认", {
+  // 正文以 VNode 传入，带 white-space: pre-line：调用方的文案里有 `\n`（例如
+  // ops.js 删除账号的「…吗？\n移入『待删除账号』，7 天内可恢复。」），而 EP 的
+  // `.el-message-box__message` 缺省不保留换行，直接传字符串会把两行并成一行。
+  // 选渲染侧而不是 app.css 全局规则：改动只作用于本包装器，不牵动任何设计令牌，
+  // 也不影响未来若改用 EP alert 时的既有样式。
+  const message = h("div", { style: { whiteSpace: "pre-line" } }, o.body ?? "");
+  const p = ElMessageBox.confirm(message, o.title ?? "请确认", {
     confirmButtonText: o.confirmText ?? "确定",
     cancelButtonText: o.cancelText ?? "取消",
     confirmButtonClass: o.danger ? "el-button--danger" : "el-button--primary",
