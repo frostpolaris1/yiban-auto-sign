@@ -93,6 +93,7 @@ fast	tests/test_container_scheduler.py
 fast	tests/test_count_only.py
 fast	tests/test_crash_semantics.py
 fast	tests/test_creds_write_accounting.py
+fast	tests/test_cron_provenance_paths.py	# 真跑 cron 来源门：/tmp 与相对路径判红（本机 3s）
 slow	tests/test_cross_process_file_lock_e2e.py	# 真子进程争用：3 个独立进程同刻抢同一把文件锁（本机 5.6s）
 fast	tests/test_csp_header_contract.py
 fast	tests/test_dashboard_stats_caliber_js.py
