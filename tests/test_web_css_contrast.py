@@ -279,6 +279,9 @@ def _decls(css, selector, prop):
 
 
 CORE_JS = os.path.join(BASE, "web", "static", "js", "core.js")
+#: 拆壳第二刀（2026-10-24）把下拉/导航/回顶/导航进度条搬到外观层分片。
+#: 本类的断言问的是「实现存在且形状对」，不关心它住在哪个分片，故两文件合并读。
+CHROME_JS = os.path.join(BASE, "web", "static", "js", "shell-chrome.js")
 LAYOUTS = (
     os.path.join(TEMPLATES_DIR, "layout_admin.html"),
     os.path.join(TEMPLATES_DIR, "layout_user.html"),
@@ -433,7 +436,13 @@ class BatchCFocusAndLiveTest(unittest.TestCase):
                       "confirmDialog 未把初始焦点放到「取消」安全侧")
 
     def test_dropdown_focus_move_in_and_return(self):
-        js = _read(CORE_JS)
+        # 两分片合并读：实现可在 core.js 或 shell-chrome.js（拆壳第二刀后在后者的家）。
+        # 缺函数 ⇒ index() 抛 ValueError ⇒ 红，「两处都删了」不会静默变绿。
+        #
+        # 本用例只钉**源码形状**（有归还/移入的语句）。真实用户路径走 EP 弹窗与
+        # 浏览器事件循环，那一维由 frontend/e2e/ep-confirm.spec.ts（确认框载体与
+        # 取消路径）与 responsive.spec.ts（抽屉→确认框的焦点归属）覆盖。
+        js = _read(CORE_JS) + "\n" + _read(CHROME_JS)
         # 关闭：焦点在菜单里时归还触发器
         close_body = js[js.index("function closeDropdowns"):js.index("function focusItem")]
         self.assertIn("activeElement", close_body, "closeDropdowns 不看焦点位置就关，无法归还")
