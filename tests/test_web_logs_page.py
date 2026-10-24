@@ -28,6 +28,7 @@ import unittest
 from werkzeug.security import generate_password_hash
 
 from web.services import logs as _logs_svc
+from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VUE_DIR = os.path.join(BASE, "web", "static", "vue")
@@ -95,9 +96,8 @@ class LogsPageTest(unittest.TestCase):
 
         # 当天的日志文件与事件：**必须种**——否则 /api/logs 的三元组与事件列表都为空，
         # 契约断言会退化成"对合成字面量校验"（永远为真，既抓不到字段改名也抓不到搬漏）。
-        from datetime import datetime
-
-        today = datetime.now().strftime("%Y-%m-%d")
+        # 业务日（北京 +8）：`log_path_for` 与 web 读取面同一口径；宿主 UTC 时不得退一天。
+        today = clock.today()
         with open(_logs_svc.log_path_for(today), "w", encoding="utf-8") as fh:
             fh.write(chr(10).join([
                 f"[{today} 06:31:01] [INFO] yiban: [13800138001] 签到成功",
