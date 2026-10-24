@@ -34,7 +34,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime
+
+from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUN_SH = os.path.join(BASE, "run.sh")
@@ -102,7 +103,12 @@ FAKE_TIMEOUT = '#!/usr/bin/env bash\necho "$*" >> "$FAKE_TIMEOUT_LOG"\nexit 0\n'
 
 
 def _today():
-    return datetime.now().strftime("%Y-%m-%d")
+    """run.sh 按日文件（sign-<day>.log / sign-status-<day>.txt）取业务日（北京 +8）。
+
+    生产入口走 `scripts/lib/host_paths.sh::business_day`（即 `yiban.core.clock`）。
+    测试若用宿主 `datetime.now()` 推导，UTC 16:00–24:00 窗口内会差一天（P0 2026-10-25）。
+    """
+    return clock.today()
 
 
 @unittest.skipIf(shutil.which("bash") is None, "需要 bash（Git Bash/WSL）")
@@ -191,7 +197,8 @@ class RunShWorkersTest(unittest.TestCase):
 
 
 def _today():
-    return datetime.now().strftime("%Y-%m-%d")
+    """同上：业务日唯一来源 `yiban.core.clock`。"""
+    return clock.today()
 
 
 FAKE_FLOCK_K3 = "#!/usr/bin/env bash\nexit ${FAKE_FLOCK_EXIT:-0}\n"

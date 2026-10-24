@@ -18,11 +18,13 @@ setUpClass 保持一致（临时目录 + YIBAN_* 指向其中 + importlib 装载
 用法（一般由 playwright 配置调用）：
     YB_E2E_PYTHON=<解释器> python e2e/server.py      # 默认 127.0.0.1:8765
 """
+import atexit
 import importlib.util
 import json
 import os
 import sys
 import tempfile
+import threading
 from datetime import timedelta
 from pathlib import Path
 
@@ -256,6 +258,31 @@ def _seed_heartbeats() -> None:
     state_io.mark_worker_started(3, now=now - timedelta(minutes=10))
 
 
+def _start_fallback_heartbeat_refresh(interval_sec: int = 10):
+    """让兜底执行体的"运行中"心跳像真执行体一样持续刷新（后台守护线程）。
+
+    为什么必须刷新：新鲜度判据是 `now - ts <= 2 × WORKER_HEARTBEAT_SEC`（30s ⇒ 60s）。
+    旧夹具只在服务启动时写一次心跳，整条 Playwright 套件串行跑到该用例时常已超过 60s，
+    页面如实显示「可疑中断 · 已过期」——测试期望"运行中"，红的是夹具不是实现。
+    真执行体由 `mark_worker_beat` 周期刷新（`yiban/workers/workers.py`），本线程同一形态。
+
+    退出：守护线程 + `atexit` 置停止位。Playwright 结束 webServer 时进程退出即可回收，
+    不会跨用例累积。槽位 3 的过期种子不刷新（它要钉"过期"那条不变式）。
+    """
+    from yiban import egress
+    from yiban.adapters.statefiles import state_io
+
+    stop = threading.Event()
+
+    def _loop():
+        while not stop.wait(interval_sec):
+            state_io.mark_worker_beat(0, now=clock.now(), role=egress.ROLE_FALLBACK)
+
+    atexit.register(stop.set)
+    threading.Thread(target=_loop, name="e2e-heartbeat", daemon=True).start()
+    return stop
+
+
 def _seed_audit_health_snapshot() -> None:
     """审计体检快照种子（巡检面第二刀 ⑤，断言见 `logs.spec.ts`（并入既有用例，省一次 /api/login））。
 
@@ -367,6 +394,7 @@ def main():
     _seed_run_events_crowded()
     _seed_state_files()
     _seed_heartbeats()
+    _start_fallback_heartbeat_refresh()
     _seed_audit_health_snapshot()
 
     # 体检快照必须**签名**：巡检端点先验签再读内容（web/routes/audit_api.py:287），
