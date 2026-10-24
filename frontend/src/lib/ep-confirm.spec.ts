@@ -69,6 +69,24 @@ describe("epConfirm：EP 确认框路径", () => {
     await expect(p).resolves.toBe(false);
   });
 
+  it("正文里的 \\n 必须保留换行（EP 缺省会并成一行）", async () => {
+    const p = epConfirm({
+      title: "删除账号",
+      body: "确定删除「甲」吗？\n移入『待删除账号』，7 天内可恢复。",
+      confirmText: "删除",
+      danger: true,
+    });
+    const el = await waitForBox();
+    const msg = el.querySelector<HTMLElement>(".el-message-box__message");
+    expect(msg).toBeTruthy();
+    expect(msg!.textContent).toContain("吗？");
+    expect(msg!.textContent).toContain("7 天内可恢复");
+    const ws = getComputedStyle(msg!.firstElementChild ?? msg!).whiteSpace;
+    expect(ws, "正文容器必须保留换行（pre-line）").toBe("pre-line");
+    buttonIn(el, ":not(.el-button--danger)").click();
+    await expect(p).resolves.toBe(false);
+  });
+
   it("danger 确认键带危险档样式；初始焦点落在取消侧", async () => {
     const p = epConfirm({ title: "不可逆", body: "此操作不可撤销", danger: true });
     const el = await waitForBox();
