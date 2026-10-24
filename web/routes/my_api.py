@@ -168,7 +168,11 @@ def _my_account_view(accounts, indices):
         state_message = _plan_state_message(acc, st, plan_at)
         result.append(
             {
+                # `index` 是**本人视图的过滤后下标**：自助面的 PUT/DELETE/POST 都按它寻址。
+                # `admin_index` 是账号在全局列表里的真实下标：管理端 detail 端点只认它。
+                # 两者不可混用（R3-023：管理员在「我的账号」编辑自己的账号时曾取到他人详情）。
                 "index": i,
+                "admin_index": real_idx,
                 "name": acc.get("name", ""),
                 "display_name": acc.get("name") or f"账号{i + 1}",
                 "phone": phone,
@@ -912,17 +916,19 @@ def api_my_account_delete(idx):
         # 但视图漂移时删错本人另一行的代价远大于让用户刷新一次
         if _accounts_data._stale_idx_guard(removed, _http._json_body()):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
+        # 审计与软删同事务（同 `set_account_deleted` 的 audit_spec 口径）：
+        # 软删虽可撤销，但"删了却无痕"同样是追责缺口。
         db.set_account_deleted(
             removed["id"],
             1,
             clock.now().strftime("%Y-%m-%d %H:%M:%S"),
             deleted_by=(session.get("username", "") or "").strip().lower(),
-        )
-        db.audit(
-            session.get("username", "") or "?",
-            "my_account_delete",
-            _masking.mask_phone(removed.get("phone", "")),
-            "用户删除（软删除，宽限期内可撤销）",
+            audit_spec=dict(
+                username=session.get("username", "") or "?",
+                action="my_account_delete",
+                target=_masking.mask_phone(removed.get("phone", "")),
+                detail="用户删除（软删除，宽限期内可撤销）",
+            ),
         )
         m.logger.info(
             "用户 %s 删除账号 %s（软删除）",
@@ -969,12 +975,14 @@ def api_my_account_restore(idx):
             ), 400
         if _accounts_data._stale_idx_guard(acc, _http._json_body()):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
-        db.set_account_deleted(acc["id"], 0)
-        db.audit(
-            session.get("username") or "?",
-            "my_account_restore",
-            _masking.mask_phone(acc.get("phone", "")),
-            "用户撤销删除",
+        db.set_account_deleted(
+            acc["id"], 0,
+            audit_spec=dict(
+                username=session.get("username") or "?",
+                action="my_account_restore",
+                target=_masking.mask_phone(acc.get("phone", "")),
+                detail="用户撤销删除",
+            ),
         )
         accounts = _accounts_data.load_accounts()
         m.logger.info(
