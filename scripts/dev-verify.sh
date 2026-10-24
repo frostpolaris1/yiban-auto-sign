@@ -301,6 +301,11 @@ SKIP_EXEMPT_PATHS=(
     "tests/test_runtime_data_layout.py"
     # 真占写锁演练 opt-in（9×busy_timeout）
     "tests/test_audit_transaction.py"
+    # 清理 cron 同源 e2e（R3-019）：CI 解释器不是项目 venv、且无特权 unshare，
+    # 两条前置不成立时显式 skip；本地 WSL venv/root 会真跑。
+    "tests/test_cleanup_dotenv_parity_e2e.py"
+    # 安装器建日志目录 e2e（R3-009）：CI 非 root 无法在新挂载命名空间 bind mount。
+    "tests/test_install_log_dir_e2e.py"
 )
 SKIP_EXEMPT_REASONS=(
     # unittest SkipTest 丢失用例文件，按理由认（plo2）

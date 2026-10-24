@@ -2,11 +2,15 @@
 """shell 侧 .env 解析契约。
 
 标签：J · 运维：部署/备份/发布
-覆盖：`run.sh` 与 `run_probe.sh` 两个入口的 .env 解析——去行首 UTF-8 BOM、key/value
-    两侧剥空白、只导出 `YIBAN_` 前缀且键名合法的白名单、两份脚本语法可解析。
-对应实现：`run.sh`、`run_probe.sh`；对齐基准是 web 侧 `env_io.parse_env_file`。
-关键断言：**两份脚本都断言**——曾经 run_probe.sh 只剥 key 不剥 value、没有 BOM 剥离，
+覆盖：宿主 `.env` 解析的唯一副本（`scripts/lib/host_paths.sh` 的 `yiban_load_env`，
+    被 run.sh 与清理 cron 调用）与 `run_probe.sh` 自带副本——去行首 UTF-8 BOM、
+    key/value 两侧剥空白、只导出 `YIBAN_` 前缀且键名合法的白名单、脚本语法可解析。
+对应实现：`scripts/lib/host_paths.sh`、`run.sh`、`run_probe.sh`；对齐基准是 web 侧
+    `env_io.parse_env_file`。
+关键断言：**每个载体都断言**——曾经 run_probe.sh 只剥 key 不剥 value、没有 BOM 剥离，
     同一份 .env 下签到与探针读到不同配置；导出白名单 `^YIBAN_` 不得松动。
+    2026-10-24（R3-019）：run.sh 的解析块搬进 `host_paths.sh`（清理 cron 也调它），
+    故 run.sh 那一腿改判该文件，并另断言 run.sh 真的调用它、没有自持第二份。
 依赖：读 .sh 文本（显式 utf-8）；`test_bash_syntax_ok` 需要 bash，无 bash 时逐条
     skipTest；不跑脚本、不连网络、不需 docker。
 
@@ -21,8 +25,8 @@ import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# 读同一份 .env 的两个入口脚本：解析口径必须一致
-SHELL_ENTRIES = ("run.sh", "run_probe.sh")
+# 持解析判据的载体：宿主共用副本 + 探针自带副本
+SHELL_ENTRIES = (os.path.join("scripts", "lib", "host_paths.sh"), "run_probe.sh")
 
 
 class RunshEnvParseTest(unittest.TestCase):
