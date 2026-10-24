@@ -299,6 +299,24 @@ class MailNotifyApiTest(unittest.TestCase):
         r = c.put("/api/my-mail-notify", json={"enabled": False})
         self.assertEqual(r.status_code, 403, "缺少 X-CSRF-Token 应被全局 CSRF 校验拦截")
 
+    def test_csrf_wrong_nonempty_token_rejected(self):
+        """已登录 + **错误但非空** token ⇒ 403（R3-015）。
+
+        "缺 token"那条钉的是 `not token`；本条的才是 `compare_digest` 那一支。
+        把 `web/app.py` 的 `secrets.compare_digest(token, sess_token)` 弱化成
+        `bool(token)`，只有本条会红——故它是这条判据的回归守卫。
+        """
+        c = self.webapp.create_app().test_client()
+        self._login(c, "user1@test.local", USER_PASS)
+        r = c.put("/api/my-mail-notify", json={"enabled": False},
+                  headers={"X-CSRF-Token": "f" * 64})
+        self.assertEqual(r.status_code, 403,
+                         "错误但非空的 X-CSRF-Token 应被全局 CSRF 校验拦截")
+        self.assertIn("校验失败", r.get_json()["error"],
+                      "拒绝文案必须是 CSRF 文案（不得是业务 400）")
+        self.assertEqual(db.find_user("user1@test.local")["mail_notify"], 1,
+                         "被 CSRF 门拦下的请求不得改动数据")
+
     def test_audit_written(self):
         c = self.webapp.create_app().test_client()
         token = self._login(c, "user1@test.local", USER_PASS)
