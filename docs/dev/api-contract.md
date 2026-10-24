@@ -744,9 +744,12 @@
 #### `POST /api/settings`
 
 - 鉴权档：管理员。CSRF：**要**。**分档口令门**：A 档（`MASTER_ONLY_KEYS` 加正态
-  四键，仅主管理员）当次口令且不吃豁免；B 档（`GATED_KEYS`：`sign_order` /
-  `sign_dist` / `sign_mode` / `allow_time_pref`）可吃 TTL 豁免；
-  `global_pause` 0→1 任意管理员可做（当次口令 + 不可逆确认），1→0 仅主管理员。
+  四键）仅主管理员可写；口令要求跟 `YIBAN_PW_GATE` 档位走——缺省 `risk` 档下，同出口
+  的已登录会话直接生效，换出口才要一次；`full` 档每次都要，且 A 档不吃 TTL 豁免。
+  B 档（`GATED_KEYS`：`sign_order` / `sign_dist` / `sign_mode` / `allow_time_pref`）
+  任意管理员可写；`full` 档口令判定同 A 档但可吃 TTL 豁免；`risk` 档同出口免口令。
+  `global_pause` 0→1 任意管理员可做（`full` 档要口令；非 `full` 档同出口免口令、
+  另加不可逆确认），1→0 仅主管理员。
 - 请求体：上面 `GET` 的键中可写的子集。**只写请求携带的键**（缺失不重置）。
   高危门字段 `confirm_password` / `confirm_delay_ack`。
   `sign_window` 格式 `HH:MM ~ HH:MM`。`window_edge_sec` 为旧前端兼容（对称写），
