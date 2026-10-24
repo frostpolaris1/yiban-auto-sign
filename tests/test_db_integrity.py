@@ -873,6 +873,12 @@ class BackupPlaintextP3Test(unittest.TestCase):
         return tmp, backups, env
 
     def _run(self, env, args=()):
+        args = list(args)
+        # R3-017 起缺库默认失败且不产出归档（独立门
+        # tests/test_backup_db_presence_e2e.py 钉住）。本类测的是明文轮的
+        # 告警/退出码/异机契约，夹具不建库，故走显式例外通道。
+        if "--restore" not in args:
+            args.append("--allow-missing-db")
         return subprocess.run([shutil.which("bash"), BACKUP_SH, *args],
                               capture_output=True, env=env,
                               cwd=os.path.dirname(env["APP_DIR"]), timeout=300)

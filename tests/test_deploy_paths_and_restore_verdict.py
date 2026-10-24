@@ -264,7 +264,10 @@ class BackupLogDirTest(unittest.TestCase):
         env["APP_DIR"] = "app"
         env["BACKUP_DIR"] = "backups"
         env["BACKUP_PLAINTEXT"] = "1"            # 免 gpg，只验抓哪个目录
-        r = subprocess.run(["bash", self.SCRIPT], capture_output=True, text=True,
+        # R3-017 起缺库默认失败（独立门 tests/test_backup_db_presence_e2e.py 钉住）。
+        # 本用例的对象是"抓哪个日志目录"，夹具不建库，故走显式例外通道。
+        r = subprocess.run(["bash", self.SCRIPT, "--allow-missing-db"],
+                           capture_output=True, text=True,
                            encoding="utf-8", errors="replace", env=env,
                            cwd=self.tmp, timeout=180)
         out = (r.stdout or "") + (r.stderr or "")
