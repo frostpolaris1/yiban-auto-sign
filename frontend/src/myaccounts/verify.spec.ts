@@ -59,6 +59,22 @@ describe("finishText（终态文案；rejected 不编造原因）", () => {
     });
   });
 
+  it("排队超时按中性提示：不说账号信息有错", () => {
+    expect(finishText("rejected", "校验繁忙：等待同账号校验超时，请稍后重试")).toEqual({
+      text: "在线校验排队超时，本次未执行。账号信息无需修改，请稍后重新提交。",
+      bad: false,
+    });
+  });
+
+  it("启动失败与外呼异常也按中性提示", () => {
+    for (const error of ["校验启动失败：计时器未启动", "校验异常：RuntimeError"]) {
+      expect(finishText("rejected", error)).toEqual({
+        text: "在线校验未完成，账号信息无需修改，请稍后重新提交。",
+        bad: false,
+      });
+    }
+  });
+
   it("未通过：有原因就照实显示，没原因不编", () => {
     expect(finishText("rejected", "验证码不匹配")).toEqual({
       text: "在线校验未通过：验证码不匹配。可修正账号信息后重新提交。",
