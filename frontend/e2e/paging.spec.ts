@@ -100,6 +100,21 @@ test("账号列表 5k：首屏 DOM 受控、翻页不整页重拉、徽标走 co
 
   const nodes2 = await page.evaluate(() => document.querySelectorAll("*").length);
   expect(nodes2).toBeLessThan(4000);
+
+  // ④ 渲染行数有界（lcpx 第 1 步的判据）：5k 种子下「表里出现的行」只能是单页量，
+  //    且滚动到底再数一次仍是单页量——若哪天改成整表渲染/未启虚拟化，这里立刻红。
+  //    当前机制是**服务端分页 + 每页 ≤100**，故有界性不依赖虚拟滚动；
+  //    判据问的是「渲染行数与页大小同阶」这条用户可见性质，不是某个组件名。
+  const PAGE_SIZE_MAX = 100;
+  const rowsAtTop = await rows.count();
+  expect(rowsAtTop, `渲染行数=${rowsAtTop}，必须 ≤ 单页上限 ${PAGE_SIZE_MAX}`).toBeLessThanOrEqual(PAGE_SIZE_MAX);
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await page.waitForTimeout(120);
+  const rowsAfterScroll = await rows.count();
+  expect(rowsAfterScroll, "滚动到底部不得让行数增长（5k 行整表渲染会在这里爆）").toBeLessThanOrEqual(PAGE_SIZE_MAX);
+  const nodes3 = await page.evaluate(() => document.querySelectorAll("*").length);
+  expect(nodes3, `滚动后 DOM=${nodes3}，必须仍与页大小同阶`).toBeLessThan(4000);
+  console.log(`[lcpx-1] 5k 种子：渲染行=${rowsAtTop}（滚动后 ${rowsAfterScroll}），DOM=${nodes3}`);
 });
 
 // 翻页竞态：先点第 2 页（人为延迟），再点第 3 页。旧页响应后到时不得覆盖新页。
