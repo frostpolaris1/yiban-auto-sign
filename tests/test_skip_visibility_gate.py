@@ -80,6 +80,16 @@ KNOWN_SKIP_SITES = json.loads(r"""
    "需要 sqlite3 命令（一致性快照与 integrity_check 判据）"
   ]
  ],
+ "tests/test_backup_db_presence_e2e.py": [
+  [
+   "skipIf",
+   "需要 bash（Git Bash/WSL）"
+  ],
+  [
+   "skipIf",
+   "需要 sqlite3 命令行（一致性快照与 integrity_check）"
+  ]
+ ],
  "tests/test_backup_docker_hardening.py": [
   [
    "skipIf",

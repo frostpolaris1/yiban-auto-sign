@@ -55,6 +55,7 @@ fast	tests/test_audit_read_api.py
 fast	tests/test_audit_status_block.py
 fast	tests/test_audit_transaction.py
 fast	tests/test_backup_db_path.py
+fast	tests/test_backup_db_presence_e2e.py	# 真跑 backup.sh：缺库必须失败且不产出归档（本机 2s）
 fast	tests/test_backup_docker_hardening.py	# docker 备份脚本旗标/口令/锚点/轮转（stub gpg，本机 2s）
 slow	tests/test_backup_docker_script.py	# 真子进程＋遍历：真跑 docker/backup-docker.sh 并扫 DATA_DIR（本机 6.7s）
 slow	tests/test_backup_e2e.py	# 真子进程：真跑 scripts/backup.sh＋真 gpg/tar 回环（本机 4.4s）
