@@ -120,6 +120,30 @@ def _judge_by_state(state):
     return False, _SUPPLEMENTING_MESSAGE, True, status
 
 
+def sign_in_receipt_ok(payload):
+    """`signIn` 的 `data` 是否**真的签发了签到记录**（R3-002）。
+
+    仓内可核的成功形态只有两种：协议夹具 `{"code":0,"msg":"","data":true}`（布尔真）
+    与假上游 `{"Id":"1","Msg":"ok"}`（对象带非空记录 Id）。真实上游的其它形态未采样，
+    本判据按 fail-closed 处理：认不出就记失败。
+    判据**不认"任意真值"**：对象恒为真，`{"Id":"","Msg":"fail"}` 会被记成签到成功，
+    进而写成队列 done、RC=0、日历 ✅，污染当日终态。空白 Id（`"   "`）与空串同判。
+
+    返回 True 时调用方仍须先过 `code_is_ok`：本函数只看载荷形状。
+    """
+    if payload is True:
+        return True
+    if isinstance(payload, dict):
+        record_id = payload.get("Id")
+        if isinstance(record_id, bool):
+            return False
+        if isinstance(record_id, str):
+            return bool(record_id.strip())
+        if isinstance(record_id, int):
+            return record_id > 0
+    return False
+
+
 class _SessionCache:
     """会话缓存的存取（协议层注入 `session_store` 的动作实现）。
 
@@ -505,8 +529,9 @@ class YibanClient:
             # 走到这里说明 State 判不出结论：`State=0/1`（尚未签到）而平台没给点位，
             # 或 State 缺失/未知。登录成功、signPosition 返回 code=0 但 Position 为空：
             # 必须把 Msg 原文落日志，管理员才能判断是"任务未配置点位"还是"当日任务已关闭"。
-            # 状态独立为 STATUS_NO_POSITION——非账号/凭据问题，不按失败告警、不触发补签
-            # 重跑（重试预算对 NO_POSITION 只给 1 次，见 engine 的 _retry_budget）。
+            # 状态独立为 STATUS_NO_POSITION——非账号/凭据问题，不按失败告警。
+            # 单轮重试预算只有 1 次（`_retry_budget`）；当日回炉另有上限
+            # （`queue_store.MAX_DAY_REQUEUES`），不是无限重试。
             logger.warning(
                 f"[{self.account.phone}] signPosition 无可用点位: "
                 f"Msg={masking.sanitize_text(msg)!r} Range={'有' if data_obj.get('Range') else '无'}"
@@ -604,7 +629,35 @@ class YibanClient:
             if submitted.blocked:
                 return False, security.WAF_BLOCKED_MESSAGE, False, yiban_status.STATUS_FAILED
             result = submitted.data
-            if code_is_ok(result.get("code")) and result.get("data"):
+            if code_is_ok(result.get("code")) and not sign_in_receipt_ok(result.get("data")):
+                # 信封 code 成功**不等于**平台签发了签到记录（R3-002）。旧判据只判
+                # data 真值，于是 {"Id":"","Msg":"fail"} 这类对象恒为真 ⇒ 假成功：
+                # 队列 done、RC=0、日历 ✅，当日终态被污染。这里显式收口，并把上游
+                # 事实（键名 + 脱敏 Msg）落 WARN，供事后判定是协议变形还是真失败。
+                payload = result.get("data")
+                payload_shape = (
+                    sorted(payload) if isinstance(payload, dict) else type(payload).__name__
+                )
+                # 失败原因优先取 payload 的 `Msg`，回退信封 `msg`。对象形态的真实原因
+                # 在 data.Msg（`{"Id":"","Msg":"fail"}`），只看信封会把原因丢成空串。
+                upstream_msg = ""
+                if isinstance(payload, dict):
+                    upstream_msg = str(payload.get("Msg") or "")
+                if not upstream_msg:
+                    upstream_msg = str(result.get("msg") or "")
+                upstream_msg = masking.sanitize_text(upstream_msg)
+                logger.warning(
+                    f"[{self.account.phone}] 提交签到未获签发记录：code 成功但 data 无 Id"
+                    f"（data_keys={payload_shape}, msg={upstream_msg!r}）"
+                )
+                # 文案必须含硬失败词元「无签发方回执」：同一应答重发只会再拿到同一份
+                # 无回执，属于确定性失败，不能打满 3 次真实登录（`security.HARD_FAIL_TOKENS`）。
+                reason = "签到失败: 无签发方回执（signIn data 缺记录 Id）"
+                if upstream_msg:
+                    reason += f"：{upstream_msg}"
+                results_tasks.append((task_name, False, reason))
+                continue
+            if code_is_ok(result.get("code")):
                 results_tasks.append((task_name, True, ""))
                 # 「随机选点、任一成功即停」：命中任一任务即视为当日已签，
                 # 停止提交后续任务（省请求、降风控）
