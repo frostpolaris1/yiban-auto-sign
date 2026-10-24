@@ -64,8 +64,11 @@ DATE_CONSTANT_KINDS = {
 #: 基线（现量冻结）：处数、文件数。
 #: 32/28 的增量来自 tests/test_emit_ledger.py 的 `DAY`/`NEXT_DAY`（单 3zr5）：
 #: 两者都是**固定业务日夹具**（跨日边界对照），不随真实今天漂移。
-BASELINE_SITES = 32
-BASELINE_FILES = 28
+#: 33/29 的增量来自 tests/test_cleanup_dotenv_parity_e2e.py 的 `STALE_STAMP`
+#: （2026-10-24，R3-019）：清理 cron 的"过期按日件"样本，取 2020-01-01，
+#: 远早于默认 365 天保留期——属**刻意的过去时刻**，不随真实今天漂移。
+BASELINE_SITES = 33
+BASELINE_FILES = 29
 
 
 def scan_source(src):

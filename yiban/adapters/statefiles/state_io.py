@@ -65,7 +65,7 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from yiban import egress
 from yiban.adapters.config import env_io
@@ -499,6 +499,50 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None,
         return ok
     return _write_sign_state_now(path, phone, status, message, scheduled, dur,
                                  only_if_absent)
+
+
+def purge_phone_from_sign_states(phone):
+    """物理删号后清掉按日状态文件里的手机号条目（R3-006）。返回清理的文件数。
+
+    覆盖两类以手机号为键的按日文件：
+    - `sign-state-<day>.json`（日历事实源）；
+    - `sign-daily-<day>.json`（旧版符号表，过渡期回退读取）。
+    两者都属 log 保留档（`state_gc.RETENTION_DAYS`，默认 365 天），不是 snapshot 档；
+    只扫近 7 天会漏掉 8~365 天前的文件。
+
+    逐文件持既有 `_state_file_lock`，删键后原子写回——与写侧同一把跨进程锁，
+    不会与执行体的读改写互相覆盖。
+
+    只清文件面；DB 侧的连带清理由 `_cascade_phone_owned` 完成。文件不可写只告警，
+    不回滚已提交的物理删除。
+    """
+    phone = str(phone or "").strip()
+    if not phone:
+        return 0
+    # 按保留期逐日取路径，复用两个路径定义点；不手写 glob（路径形状门会把它
+    # 当第二份定义，见 R3-006 门）。
+    from yiban.adapters.statefiles import state_gc
+    paths = []
+    today = clock.now()
+    for offset in range(state_gc.RETENTION_DAYS + 1):
+        day = (today - timedelta(days=offset)).strftime("%Y-%m-%d")
+        for path in (sign_state_path(day), env_io.sign_daily_path(day)):
+            if os.path.exists(path):
+                paths.append(path)
+    touched = 0
+    for path in paths:
+        try:
+            with cli_support._state_file_lock(path):
+                data = _read_sign_state_file(path)
+                if phone not in data:
+                    continue
+                del data[phone]
+                _write_private_json(path, data)
+                touched += 1
+        except (OSError, ValueError, TypeError, AttributeError) as e:
+            logger.warning("清理状态文件中的已删账号失败（%s）: %s",
+                           os.path.basename(path), _sanitize_text(e))
+    return touched
 
 
 def _write_sign_state_now(path, phone, status, message, scheduled, dur, only_if_absent):

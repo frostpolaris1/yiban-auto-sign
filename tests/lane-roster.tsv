@@ -55,9 +55,11 @@ fast	tests/test_audit_read_api.py
 fast	tests/test_audit_status_block.py
 fast	tests/test_audit_transaction.py
 fast	tests/test_backup_db_path.py
+fast	tests/test_backup_db_presence_e2e.py	# 真跑 backup.sh：缺库必须失败且不产出归档（本机 2s）
 fast	tests/test_backup_docker_hardening.py	# docker 备份脚本旗标/口令/锚点/轮转（stub gpg，本机 2s）
 slow	tests/test_backup_docker_script.py	# 真子进程＋遍历：真跑 docker/backup-docker.sh 并扫 DATA_DIR（本机 6.7s）
 slow	tests/test_backup_e2e.py	# 真子进程：真跑 scripts/backup.sh＋真 gpg/tar 回环（本机 4.4s）
+slow	tests/test_backup_lock_e2e.py	# 真双进程＋真等待 2s×2：并行第二跑必须明确失败（本机 14s）
 fast	tests/test_backup_flag_parsing.py
 fast	tests/test_backup_hardening.py	# backup.sh 回环/优先级/状态件（stub gpg，本机 9s）
 fast	tests/test_backup_require_encrypt.py
@@ -74,6 +76,7 @@ fast	tests/test_claim_dispatch_elbow_e2e.py
 fast	tests/test_claim_write_path_single_source.py
 slow	tests/test_claims_reap_e2e.py	# 真子进程：子进程领取后自杀，轮末收尸（本机 2.0s）
 fast	tests/test_cli_contract.py
+fast	tests/test_cleanup_dotenv_parity_e2e.py	# unshare 挂载命名空间内跑清理 cron（本机 1.6s）
 fast	tests/test_cli_contract_mf60.py
 fast	tests/test_cli_env_priority.py	# 子进程跑 state --dry-run：.env/进程环境优先级
 fast	tests/test_cli_egress_reset.py
@@ -91,6 +94,7 @@ fast	tests/test_container_scheduler.py
 fast	tests/test_count_only.py
 fast	tests/test_crash_semantics.py
 fast	tests/test_creds_write_accounting.py
+fast	tests/test_cron_provenance_paths.py	# 真跑 cron 来源门：/tmp 与相对路径判红（本机 3s）
 slow	tests/test_cross_process_file_lock_e2e.py	# 真子进程争用：3 个独立进程同刻抢同一把文件锁（本机 5.6s）
 fast	tests/test_csp_header_contract.py
 fast	tests/test_dashboard_stats_caliber_js.py
@@ -104,6 +108,7 @@ fast	tests/test_demo_data_guard.py
 fast	tests/test_deploy_deps_sync.py
 fast	tests/test_deploy_entry_imports.py
 fast	tests/test_deploy_gate_wiring.py
+fast	tests/test_deploy_gate_skip_verdict.py	# 夹具副本跑闸门摘要：SKIP 计入结论（本机 3s）
 fast	tests/test_deploy_paths_and_restore_verdict.py
 fast	tests/test_deploy_prod_artifacts.py
 fast	tests/test_dev_verify_entry.py
@@ -145,6 +150,7 @@ fast	tests/test_exit_surface_generation.py
 fast	tests/test_exit_surface_repr_mail.py
 fast	tests/test_fake_upstream_fault_knobs_gate.py
 fast	tests/test_fallback_elbow_discrimination_e2e.py
+fast	tests/test_fallback_cron_cwd_e2e.py	# 极简环境从 $HOME 起兜底脚本，桩入口留痕（本机 1.5s）
 fast	tests/test_fallback_event_yield.py
 fast	tests/test_fallback_gates.py
 fast	tests/test_fallback_log_noise.py
@@ -152,6 +158,7 @@ fast	tests/test_fallback_scan_yield.py
 fast	tests/test_file_lock_no_network.py
 fast	tests/test_forwarded_trust_forms.py
 fast	tests/test_frontend_paging_wiring.py
+fast	tests/test_gate_empty_input_red.py	# 空输入/零 token 的门必须非 0（本机 2s）
 fast	tests/test_gate_lane_roster.py
 fast	tests/test_gate_manifest_sync.py
 fast	tests/test_gate_narrowing_e2e.py
@@ -164,6 +171,7 @@ fast	tests/test_host_exit_semantics.py
 fast	tests/test_hrw.py
 fast	tests/test_import_linter_gate.py
 fast	tests/test_infra_layer.py
+fast	tests/test_install_log_dir_e2e.py	# unshare 命名空间内跑 install.sh + cron 行（本机 2s）
 fast	tests/test_json_import_fail_closed.py
 fast	tests/test_key_sources_startup_assert.py
 fast	tests/test_ledger_check.py
@@ -317,6 +325,7 @@ fast	tests/test_user_soft_delete.py
 fast	tests/test_users_exit_surface.py
 fast	tests/test_users_exit_surface_frontend.py
 fast	tests/test_v3_same_day_requeue.py
+fast	tests/test_verify_job_watchdog_scope.py
 fast	tests/test_verify_jobs.py
 fast	tests/test_visual_seed_generation.py	# 子进程真跑 seed()：随机钥、状态覆盖、导入失败不静默
 fast	tests/test_vue_build_reproducible.py

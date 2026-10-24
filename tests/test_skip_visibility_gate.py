@@ -80,7 +80,23 @@ KNOWN_SKIP_SITES = json.loads(r"""
    "需要 sqlite3 命令（一致性快照与 integrity_check 判据）"
   ]
  ],
+ "tests/test_backup_db_presence_e2e.py": [
+  [
+   "skipIf",
+   "需要 bash（Git Bash/WSL）"
+  ],
+  [
+   "skipIf",
+   "需要 sqlite3 命令行（一致性快照与 integrity_check）"
+  ]
+ ],
  "tests/test_backup_docker_hardening.py": [
+  [
+   "skipIf",
+   "需要 bash（Git Bash/WSL）"
+  ]
+ ],
+ "tests/test_backup_lock_e2e.py": [
   [
    "skipIf",
    "需要 bash（Git Bash/WSL）"
@@ -140,6 +156,34 @@ KNOWN_SKIP_SITES = json.loads(r"""
    "SIGKILL 模拟崩溃仅 POSIX 可用"
   ]
  ],
+ "tests/test_cleanup_dotenv_parity_e2e.py": [
+  [
+   "skipIf",
+   "需要 bash（Git Bash/WSL）"
+  ],
+  [
+   "skipIf",
+   "需要 unshare 隔离默认状态目录 /var/log/yiban"
+  ],
+  [
+   "skipTest",
+   "需要带运行依赖的项目 venv（当前解释器不是 venv，且固定路径不存在）"
+  ],
+  [
+   "skipTest",
+   "需要可用的 unshare 挂载/用户命名空间（CI 非特权环境会跳过）"
+  ],
+  [
+   "skipTest",
+   "无法在命名空间内挂载 /var/log/yiban（CI 非特权环境会跳过）"
+  ]
+ ],
+ "tests/test_cron_provenance_paths.py": [
+  [
+   "skipIf",
+   "需要 bash（Git Bash/WSL）"
+  ]
+ ],
  "tests/test_config_loader.py": [
   [
    "skipTest",
@@ -186,6 +230,12 @@ KNOWN_SKIP_SITES = json.loads(r"""
   [
    "skipIf",
    "需要 bash"
+  ]
+ ],
+ "tests/test_deploy_gate_skip_verdict.py": [
+  [
+   "skipIf",
+   "需要 bash（Git Bash/WSL）"
   ]
  ],
  "tests/test_deploy_gate_wiring.py": [
@@ -298,6 +348,12 @@ KNOWN_SKIP_SITES = json.loads(r"""
    "需要 node 真跑前端纯函数（取不到则整类 skip）"
   ]
  ],
+ "tests/test_fallback_cron_cwd_e2e.py": [
+  [
+   "skipIf",
+   "需要 bash（Git Bash/WSL）"
+  ]
+ ],
  "tests/test_fallback_gates.py": [
   [
    "skipTest",
@@ -308,6 +364,12 @@ KNOWN_SKIP_SITES = json.loads(r"""
    "跨进程 flock 仅 POSIX 可用（Windows 上锁退化为无互斥、fail-closed 拒跑）"
   ]
  ],
+ "tests/test_gate_empty_input_red.py": [
+  [
+   "skipIf",
+   "需要 bash（Git Bash/WSL）"
+  ]
+ ],
  "tests/test_global_pause_chain_e2e.py": [
   [
    "skipIf",
@@ -316,6 +378,24 @@ KNOWN_SKIP_SITES = json.loads(r"""
   [
    "skipUnless",
    "全链用例需要 bash（Git Bash 即可）"
+  ]
+ ],
+ "tests/test_install_log_dir_e2e.py": [
+  [
+   "skipIf",
+   "需要 bash（Git Bash/WSL）"
+  ],
+  [
+   "skipIf",
+   "需要 unshare -m 隔离 /var/log、/usr/local/sbin、/etc/cron.d"
+  ],
+  [
+   "skipIf",
+   "需要 root 才能在新挂载命名空间里 bind mount"
+  ],
+  [
+   "skipTest",
+   "需要服务账号 yiban（install.sh 的 data/ 段要求）"
   ]
  ],
  "tests/test_live_claim_cross_process_contention_e2e.py": [

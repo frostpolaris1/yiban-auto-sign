@@ -107,9 +107,8 @@ export const FORM_TEXTS = {
     modelLabel: "设备型号（选填）",
     modelHelp: "学校开启设备绑定时建议填写；不确定就留空。",
     codeLabel: "设备识别码（选填）",
-    codeHelp: "学校开启设备绑定时建议填写。",
-    phoneEditHelp:
-      "已打码显示；修改请填完整号码。若期间被他人改动，保存前会提示确认。",
+    codeHelp: "学校开启设备绑定时填写；没有就留空。",
+    phoneEditHelp: "已打码；改号请填完整号码，保存前会核对。",
   },
 } as const;
 

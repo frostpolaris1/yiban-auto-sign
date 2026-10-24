@@ -426,6 +426,57 @@ class RequeueFailedStoreTest(unittest.TestCase):
         self.assertEqual(row["attempts"], 2, "回炉一次=一次跨执行体重试预算，必须记账")
         self.assertEqual(row["priority"], 6, "回炉排在新任务之后（requeue_task 同一条纪律）")
 
+    def test_day_requeue_is_capped(self):
+        """R3-011：`retry:` 档的默认回炉有当日上限，超限不再复活。
+
+        每回炉一次就是一次新的真实登录。旧实现不限次数，兜底腿每 60 秒复活一次。
+        显式路径（补签/手动）不受限，仍可复活。
+        """
+        p = _phone(1)
+        retry_result = yiban_status.RESULT_RETRY_PREFIX + "no_position"
+        self._add(p, result=retry_result, attempts=0)
+        conn = db.get_conn()
+
+        def _back_to_failed():
+            conn.execute("UPDATE sign_tasks SET state='failed', result=? WHERE phone=?",
+                         (retry_result, p))
+            conn.commit()
+
+        self.assertEqual(queue_store.requeue_failed(
+            DAY, (0,), run_at=f"{DAY} 07:00:00.000"), 1, "首轮回炉必须生效")
+        self.assertEqual(self._row(p)["attempts"], 1)
+        _back_to_failed()
+        self.assertEqual(queue_store.requeue_failed(
+            DAY, (0,), run_at=f"{DAY} 07:10:00.000"), 1, "上限内仍可回炉")
+        self.assertEqual(self._row(p)["attempts"], 2)
+        _back_to_failed()
+        self.assertEqual(queue_store.requeue_failed(
+            DAY, (0,), run_at=f"{DAY} 07:20:00.000"), 0,
+            "达到 MAX_DAY_REQUEUES 后不得再复活（否则每次都是真实登录）")
+        self.assertEqual(self._row(p)["state"], "failed")
+        self.assertEqual(queue_store.requeue_failed(
+            DAY, (0,), include_final=True, run_at=f"{DAY} 07:30:00.000"), 1,
+            "显式路径（补签/手动）不受当日上限约束")
+
+    def test_cap_covers_all_retryable_statuses(self):
+        """三类默认可回炉状态都受同一上限约束（R3-011）。"""
+        statuses = (yiban_status.STATUS_NO_POSITION,
+                    yiban_status.STATUS_SKIPPED_WINDOW,
+                    yiban_status.STATUS_SKIPPED_NORANGE)
+        for i, st in enumerate(statuses):
+            self._add(_phone(10 + i),
+                      result=yiban_status.RESULT_RETRY_PREFIX + st,
+                      attempts=queue_store.MAX_DAY_REQUEUES)
+            self._add(_phone(20 + i),
+                      result=yiban_status.RESULT_RETRY_PREFIX + st,
+                      attempts=0)
+        self.assertEqual(queue_store.requeue_failed(
+            DAY, (0,), run_at=f"{DAY} 07:00:00.000"), 3,
+            "未达上限的三类状态都必须回炉（正向对照）")
+        self.assertEqual(queue_store.requeue_failed(
+            DAY, (0,), run_at=f"{DAY} 07:10:00.000"), 0,
+            "三类状态达到上限后都不得再回炉")
+
     def test_primitive_reuse_and_epoch_gate(self):
         """回炉必须经 requeue_task 原语并带上 SELECT 时的 epoch（不另造第二套写路径）。"""
         p = _phone(1)

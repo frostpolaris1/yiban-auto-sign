@@ -13,6 +13,11 @@
     ①′ 抽出"执行行"的口径认三种调用形态：`"$py" -m 模块`、`bash 脚本`、
        `"$py" 脚本路径`（B1 的 AST 门与 B2 的名册门都用第三种）。认少一种，那一步
        就不进冻结清单，命令原文就此多出第二份事实源。
+    ①″ **长尾剔除清单必须有自动执行点**（R3-025）：`FAST_KNOWN_SLOW` 的每条 nodeid
+       在快集里被 `--deselect`，故必须由 `run_slow` 的长尾轨执行，而 `run_slow` 由
+       CI 的 `slow-lane` 作业调用。三者缺一即红——缺了就是"任何自动轨都不跑"。
+    ①‴ 注释里的条数口径必须等于数组长度（AGENTS §十三 第 31 条：数必须带口径，
+       口径漂移要由机器发现，不靠人记）。
     ② **全量参数固定**：默认模式 `-n auto --dist loadfile`。`--dist loadfile`
        不得去掉：套内存在文件内先后依赖与进程级 DB 单例，按单条分发即误红。
     ③ **固定 venv**：全量模式只认 `/root/.venv-yiban-wsl/bin/python`，不可用就
@@ -34,11 +39,21 @@ import re
 import shlex
 import signal
 import subprocess
+import sys
 import tempfile
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENTRY = os.path.join(BASE, "scripts", "dev-verify.sh")
+CI_YML = os.path.join(BASE, ".github", "workflows", "ci.yml")
+
+#: 注释里关于 FAST_KNOWN_SLOW 条数的口径声明（AGENTS §十三 第 31 条的机器化）。
+#: 新增注释时按这三种写法之一定口径；换写法本组就核不到它（口径声明本身也会漂）。
+_COUNT_CLAIM = re.compile(
+    r"(?:FAST_KNOWN_SLOW 的|剔除清单共)\s*(\d+)\s*条"
+    r"|全量\s*[-−]\s*(\d+)\s*条")
+#: 同一批注释里的"分属 N 个文件"声明（文件数也是跨数比较，不许人记）。
+_FILE_CLAIM = re.compile(r"分属\s*(\d+)\s*个文件")
 
 #: `run_ci` 里必须逐字出现、且按此顺序执行的关键子集命令。
 #: `"$py"` = `--ci` 解析出的解释器绝对路径（CI 上是 setup-python 那个）。
@@ -542,6 +557,125 @@ class DevVerifyFastModeTest(unittest.TestCase):
         rc, out = _run_entry(["--repo", BASE, "--ci", "--base", "HEAD"], timeout=30)
         self.assertNotEqual(rc, 0, "--ci 静默忽略了 --base")
         self.assertIn("--base", out, f"拒绝信息必须点名 --base：{out[-400:]}")
+
+
+class DevVerifyTailLaneTest(unittest.TestCase):
+    """R3-025：`FAST_KNOWN_SLOW` 的每条 nodeid 必须有**一个会被 CI 执行**的集合。
+
+    缺陷形状（复审 R3-025）：这 4 条在快集里被 `--deselect` 剔除，而它们所在的文件在
+    名册里登记为 `fast` 行 ⇒ `slow-lane` 只取 slow 行。结果**两个 CI 作业都不跑**它们，
+    且不重合本身是静默的（AGENTS §十三 第 29 条）。
+
+    执行点定在 `run_slow`（`--slow` 的唯一实现）：`--deselect` 只作用于快集，故长尾轨
+    直接跑 nodeid 是它们唯一的自动执行点。本组钉三件事：
+      ① 执行点在 `run_slow` 里**真的生效**（真跑函数，pytest 换成打印参数的桩）；
+      ② `run_slow` 被 CI 的 `slow-lane` 作业调用（未注释的执行行在场）；
+      ③ 名单不指向空气（真 pytest 能收集全部 nodeid）；
+      ④ 注释里的条数口径等于数组长度（AGENTS §31）。
+    """
+
+    #: 假 pytest 打印参数的标记；用单元分隔符避免与路径里的字符相撞。
+    _SEP = "\x1f"
+
+    def setUp(self):
+        self.text = _read(ENTRY)
+        self.entries = _bash_array_items(self.text, "FAST_KNOWN_SLOW")
+        self.assertGreaterEqual(
+            len(self.entries), 1,
+            "抽不到 FAST_KNOWN_SLOW 条目——结构改了？本条会因此变废断言")
+
+    def _run_slow_with_stub(self):
+        """真跑 `run_slow`，把 `-m pytest` 解析到打印参数的桩上。
+
+        用 `PYTHONPATH` 上的假 `pytest` 模块而不是可执行脚本：不依赖可执行位，
+        WSL 与 Windows 两侧同口径。返回 (退出码, 输出, [每次调用的参数表])。
+        """
+        src = _func_source(self.text, "run_slow")
+        self.assertGreater(len(src), 100, "抽不出 run_slow——结构改了？")
+        with tempfile.TemporaryDirectory(prefix="dev-verify-tail-") as d:
+            with io.open(os.path.join(d, "pytest.py"), "w", encoding="utf-8") as f:
+                f.write("import sys\nprint(%r + %r.join(sys.argv[1:]))\n"
+                        % ("FAKE_PYTEST " + self._SEP, self._SEP))
+            arr = " ".join('"%s"' % e for e in self.entries)
+            script = (
+                "export DEV_VERIFY_PY=%s\n"          # run_slow 用它当解释器
+                "export PYTHONPATH=%s\n"             # 让 `-m pytest` 解析到桩
+                "REPO=%s\n"
+                "LANE_SLOW_FILES=(tests/test_dev_verify_entry.py)\n"
+                "FAST_KNOWN_SLOW=(%s)\n"
+                "die() { echo \"环境错误：$*\" >&2; exit 2; }\n"
+                "%s\nrun_slow\n"
+                % (shlex.quote(sys.executable), shlex.quote(d),
+                   shlex.quote(BASE), arr, src))
+            rc, out = _bash(script, timeout=60)
+        calls = [ln[len("FAKE_PYTEST "):].split(self._SEP)
+                 for ln in out.splitlines() if ln.startswith("FAKE_PYTEST ")]
+        return rc, out, calls
+
+    def test_every_entry_is_executed_by_run_slow(self):
+        """执行点在场性：每个 nodeid 都必须被 `run_slow` 传给一次 pytest。"""
+        rc, out, calls = self._run_slow_with_stub()
+        self.assertEqual(rc, 0, f"run_slow 跑不过（桩模式）：{out}")
+        self.assertEqual(len(calls), 2,
+                         "run_slow 应恰好发起两次 pytest（名册 slow 行 1 次 ＋ 长尾轨 1 次），"
+                         f"实得 {len(calls)} 次：{out}")
+        argv_seen = {arg for call in calls for arg in call}
+        for e in self.entries:
+            self.assertIn(e, argv_seen,
+                          f"FAST_KNOWN_SLOW 条目没有进任何 pytest 调用：{e}——"
+                          "它在快集被 --deselect，此后再没有自动执行点（R3-025）")
+        # 名册 slow 行不许被长尾轨挤掉：同一条轨要跑两件事。
+        self.assertIn("tests/test_dev_verify_entry.py", argv_seen,
+                      "run_slow 不再跑名册的 slow 行：长尾轨不能替代慢集")
+
+    def test_run_slow_is_wired_into_ci(self):
+        """执行点被 CI 调用：`slow-lane` 作业的执行行必须在场且未被注释。"""
+        yml = _read(CI_YML)
+        # 只认**执行行**（去掉首尾空白后整行相等）：注释掉的一行以 `#` 开头，不算。
+        runs = [ln.strip() for ln in yml.splitlines()
+                if ln.strip() == "run: bash scripts/dev-verify.sh --slow"]
+        self.assertEqual(
+            len(runs), 1,
+            "ci.yml 里没有一条未注释的 `run: bash scripts/dev-verify.sh --slow`："
+            "长尾轨于是没有任何自动执行点（R3-025）")
+
+    def test_every_entry_is_collectable(self):
+        """名单不指向空气：真 pytest 能收齐全部 nodeid（假 nodeid 会判红）。"""
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", *self.entries,
+             "--collect-only", "-q", "-p", "no:randomly"],
+            cwd=BASE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, timeout=300)
+        self.assertEqual(
+            proc.returncode, 0,
+            "FAST_KNOWN_SLOW 里有收集不到的 nodeid（改名后剔除与长尾轨同时指向空气）："
+            f"{proc.stdout[-800:]}")
+        m = re.search(r"(\d+) tests? collected", proc.stdout)
+        self.assertIsNotNone(m, f"读不到收集数（口径丢了）：{proc.stdout[-400:]}")
+        self.assertEqual(
+            int(m.group(1)), len(self.entries),
+            "收集数不等于数组长度：有条目指向空气或被重复登记")
+
+    def test_comment_node_counts_match_the_array(self):
+        """注释里的条数口径必须等于数组长度（AGENTS §31 的机器化）。"""
+        claims = [int(a or b) for a, b in _COUNT_CLAIM.findall(self.text)]
+        self.assertGreaterEqual(
+            len(claims), 2,
+            "脚本注释里找不到条数口径声明（`FAST_KNOWN_SLOW 的 N 条` / `剔除清单共 N 条` /"
+            "`全量 − N 条`）：口径没了，漂移就不可见")
+        for n in claims:
+            self.assertEqual(
+                n, len(self.entries),
+                f"注释声称 {n} 条，FAST_KNOWN_SLOW 实有 {len(self.entries)} 条——"
+                "数必须带口径，且两侧量同一对象（AGENTS §31）")
+        files = {e.split("::", 1)[0] for e in self.entries}
+        file_claims = [int(x) for x in _FILE_CLAIM.findall(self.text)]
+        self.assertGreaterEqual(len(file_claims), 1,
+                                "脚本注释里找不到「分属 N 个文件」声明")
+        for n in file_claims:
+            self.assertEqual(
+                n, len(files),
+                f"注释声称分属 {n} 个文件，实有 {len(files)} 个：{sorted(files)}")
 
 
 if __name__ == "__main__":

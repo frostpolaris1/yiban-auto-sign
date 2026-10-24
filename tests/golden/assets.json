@@ -14,10 +14,10 @@
     "script src=/static/js/core.js?v=*",
     "script src=/static/vendor/chartjs/chart.min.js?v=*",
     "link rel=modulepreload href=/static/vue/assets/shell-MgCUIYQw.js",
-    "link rel=modulepreload href=/static/vue/assets/vendor-vue-DcgF_2Vl.js",
-    "link rel=modulepreload href=/static/vue/assets/polling-CbJgyZON.js",
+    "link rel=modulepreload href=/static/vue/assets/vendor-vue-YYhzo28_.js",
+    "link rel=modulepreload href=/static/vue/assets/polling-CUkCx98r.js",
     "link rel=modulepreload href=/static/vue/assets/status-vocab-BWIfi8SC.js",
-    "script src=/static/vue/assets/dashboard-BVqoGswx.js"
+    "script src=/static/vue/assets/dashboard-CPtRETxJ.js"
   ],
   "login": [
     "link rel=icon href=/favicon.png?v=*",
@@ -33,8 +33,8 @@
     "script src=/static/js/shell-chrome.js?v=*",
     "script src=/static/js/core.js?v=*",
     "link rel=modulepreload href=/static/vue/assets/shell-MgCUIYQw.js",
-    "link rel=modulepreload href=/static/vue/assets/vendor-vue-DcgF_2Vl.js",
-    "script src=/static/vue/assets/login-CM2gLTUq.js"
+    "link rel=modulepreload href=/static/vue/assets/vendor-vue-YYhzo28_.js",
+    "script src=/static/vue/assets/login-DkPAUtO1.js"
   ],
   "user": [
     "link rel=icon href=/favicon.png?v=*",
@@ -45,7 +45,7 @@
     "link rel=stylesheet href=/static/vendor/fonts/notosanssc/notosanssc.css?v=*",
     "link rel=stylesheet href=/static/vendor/adminator/adminator.css?v=*",
     "link rel=stylesheet href=/static/css/app.css?v=*",
-    "link rel=stylesheet href=/static/vue/assets/vendor-element-plus-s_HWX-ER.css",
+    "link rel=stylesheet href=/static/vue/assets/vendor-element-plus-pbEFWHIm.css",
     "link rel=stylesheet href=/static/vue/assets/ep-theme-kScMQCwv.css",
     "script src=/static/js/boot-loader.js?v=*",
     "script src=/static/vendor/md-render.js?v=*",
@@ -54,11 +54,11 @@
     "script src=/static/js/components/change-password.js?v=*",
     "link rel=modulepreload href=/static/vue/assets/rolldown-runtime-CbXtAM7H.js",
     "link rel=modulepreload href=/static/vue/assets/shell-MgCUIYQw.js",
-    "link rel=modulepreload href=/static/vue/assets/vendor-vue-DcgF_2Vl.js",
-    "link rel=modulepreload href=/static/vue/assets/vendor-element-plus-DOhnrFIo.js",
-    "link rel=modulepreload href=/static/vue/assets/ep-theme-Bqz2-E5l.js",
-    "link rel=modulepreload href=/static/vue/assets/accountform-BIpR0aWh.js",
-    "script src=/static/vue/assets/myaccounts-CZ_w3vXW.js"
+    "link rel=modulepreload href=/static/vue/assets/vendor-vue-YYhzo28_.js",
+    "link rel=modulepreload href=/static/vue/assets/vendor-element-plus-BvLKMmlT.js",
+    "link rel=modulepreload href=/static/vue/assets/ep-theme-8BVrKvK5.js",
+    "link rel=modulepreload href=/static/vue/assets/accountform-C02G6kjd.js",
+    "script src=/static/vue/assets/myaccounts-WvzesRs8.js"
   ],
   "user_calendar": [
     "link rel=icon href=/favicon.png?v=*",
@@ -74,7 +74,7 @@
     "script src=/static/js/shell-chrome.js?v=*",
     "script src=/static/js/core.js?v=*",
     "link rel=modulepreload href=/static/vue/assets/shell-MgCUIYQw.js",
-    "link rel=modulepreload href=/static/vue/assets/vendor-vue-DcgF_2Vl.js",
-    "script src=/static/vue/assets/calendar-C_KjXD3z.js"
+    "link rel=modulepreload href=/static/vue/assets/vendor-vue-YYhzo28_.js",
+    "script src=/static/vue/assets/calendar-CvOqi4Yn.js"
   ]
 }

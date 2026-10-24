@@ -149,8 +149,15 @@ const pageSize = ref(DEFAULT_PAGE_SIZE);
 const PAGE_SIZE_OPTS: number[] = [...PAGE_SIZES];
 const sel = ref<Record<string, Record<string, boolean>>>({ pending: {}, active: {}, deleted: {} });
 const busy = ref(false);
-const menuOpen = ref(false);
 const narrow = ref(false);
+// 窄屏行操作抽屉：点「更多操作」从右侧滑出；动作集仍从 model.menuItems 取，
+// 与宽屏按钮同一份数据源（pending 组省略已外置的「通过」）。
+const drawerOpen = ref(false);
+const drawerGroup = ref("active");
+const drawerRow = ref<AccountRecord | null>(null);
+const drawerTrigger = ref<HTMLElement | null>(null);
+// 动作会打开确认/编辑/口令弹窗时，抽屉离场不归还焦点，交给新弹窗。
+const drawerRestoreFocus = ref(true);
 const deletedHint = ref(false);
 const ownerEmailOn = ref(ownerEmailVisible());
 const signingIndex = ref<number | null>(null);
@@ -414,8 +421,43 @@ const formInitialPassword = ref("");
 const T = computed(() => formTexts("admin"));
 const showManual = computed(() => !formEditing.value && formEmail.value === "__manual__");
 const editingAccount = computed(() => (formIndex.value != null ? rowByIndex(formIndex.value) : null));
-function onMenuVisible(v: boolean): void {
-  menuOpen.value = v;
+function openActions(row: AccountRecord, group: string, ev?: Event): void {
+  drawerTrigger.value = ev?.currentTarget instanceof HTMLElement ? ev.currentTarget : null;
+  drawerGroup.value = group;
+  drawerRow.value = row;
+  drawerRestoreFocus.value = true;
+  drawerOpen.value = true;
+}
+function hasVisibleOverlay(): boolean {
+  // 弹层关闭后节点仍留在 body（display:none），不能按存在性判断。
+  return Array.from(document.querySelectorAll<HTMLElement>(".pm-backdrop, .el-overlay")).some((node) => {
+    const cs = getComputedStyle(node);
+    return cs.display !== "none" && cs.visibility !== "hidden" && node.getBoundingClientRect().width > 0;
+  });
+}
+function onDrawerClosed(): void {
+  // 彻底删除会先发请求、后开口令框，弹窗可能晚于抽屉离场；按动作预判，不能只看当前可见层。
+  if (!drawerRestoreFocus.value) {
+    drawerRestoreFocus.value = true;
+    return;
+  }
+  // 动作若已打开确认/编辑弹窗，焦点归它；此处抢回会破坏新弹窗的焦点陷阱。
+  if (hasVisibleOverlay()) return;
+  // 无新弹窗时把焦点还给「更多操作」；行被移走则退回当前页签，避免焦点落回 body。
+  const trigger = drawerTrigger.value;
+  if (trigger && trigger.isConnected) trigger.focus();
+  else document.querySelector<HTMLElement>('[data-acct-tab="' + tab.value + '"]')?.focus();
+}
+const drawerActions = computed(() => {
+  const g = drawerGroup.value;
+  return g === "pending" ? menuItemsWithout("pending", ["approve"]) : menuItems(g);
+});
+function onDrawerAction(key: string): void {
+  const row = drawerRow.value;
+  // approve/reject/edit/remove 同步开弹窗；purge 的密码框在请求返回后才开。
+  drawerRestoreFocus.value = !["approve", "reject", "edit", "remove", "purge"].includes(key);
+  drawerOpen.value = false;
+  if (row) onRowAction(row, key);
 }
 
 function openForm(index: number | null): void {
@@ -555,8 +597,8 @@ async function submitForm(): Promise<void> {
 let mq: MediaQueryList | null = null;
 const pollingOn = ref(false);
 function pollGate(): boolean {
-  if (busy.value || menuOpen.value) return false;
-  return !document.querySelector(".pm-backdrop, .el-overlay");
+  if (busy.value || drawerOpen.value) return false;
+  return !hasVisibleOverlay();
 }
 function onBreak(e: MediaQueryListEvent): void {
   narrow.value = e.matches;
@@ -609,6 +651,7 @@ const M = {
     <div class="page-head page-head--split">
       <div class="page-head-text">
         <h1 class="page-title">账号管理</h1>
+        <p class="page-sub">审核、排序与手动签到；删除后 7 天内可恢复。</p>
       </div>
       <button type="button" class="btn btn--primary" data-add-account @click="openAdd">
         <svg aria-hidden="true"><use href="#i-plus" /></svg>添加账号
@@ -703,7 +746,7 @@ const M = {
           <section class="card">
             <div class="panel-head acct-group-head">
               <div class="panel-head-row">
-                <h2 class="panel-title">{{ GROUPS[g].title }}</h2>
+                <h2 class="panel-title">账号列表</h2>
                 <div class="acct-tools">
                   <!-- 检索是一段**表单**：移动端键盘的「搜索/前往」键只有落到表单提交才有去处
                        （原来只有裸 input + v-model，那个键按下去什么也不发生）。
@@ -733,16 +776,19 @@ const M = {
                      覆盖账号表**可渲染的全部**状态码（新增 no_position/global_paused 后曾只列 8 项）。
                      同 symbol 同色（icon + 账号页语气档）的状态合并为一格、标签列出全部 full 名；
                      本处不再手写 chip 表，改词表即改图例。 -->
-                <p v-if="g === 'active'" class="acct-legend">
-                  <span
-                    v-for="it in LEGEND"
-                    :key="it.icon + '|' + it.tone"
-                    class="acct-state"
-                    :class="'acct-state--' + it.tone"
-                  >
-                    <svg aria-hidden="true"><use :href="'#i-' + it.icon" /></svg>{{ it.text }}
-                  </span>
-                </p>
+                <details v-if="g === 'active'" class="acct-legend">
+                  <summary>状态图例（{{ LEGEND.length }} 项）</summary>
+                  <div class="acct-legend-grid">
+                    <span
+                      v-for="it in LEGEND"
+                      :key="it.icon + '|' + it.tone"
+                      class="acct-state"
+                      :class="'acct-state--' + it.tone"
+                    >
+                      <svg aria-hidden="true"><use :href="'#i-' + it.icon" /></svg>{{ it.text }}
+                    </span>
+                  </div>
+                </details>
 
                 <div class="acct-batch" :id="GROUPS[g].bar" role="status" aria-live="polite" :hidden="selCount(g) === 0">
                   <span class="acct-batch-count">已选 <strong :id="GROUPS[g].cnt">{{ selCount(g) }}</strong> 个</span>
@@ -829,8 +875,6 @@ const M = {
                           <td class="acct-cell-audit"><span class="badge" :class="'badge--' + M.badgeOf(row.status).tone">{{ M.badgeOf(row.status).label }}</span></td>
                           <td class="acct-cell-name">
                             <div class="acct-name-main">{{ row.display_name }}</div>
-                            <span class="acct-audit-inline badge" :class="'badge--' + M.badgeOf(row.status).tone">{{ M.badgeOf(row.status).label }}</span>
-                            <span class="acct-phone-inline">{{ row.phone }}</span>
                             <span v-if="ownerEmailOn" class="acct-owner-inline">{{ M.ownerMailText(row) }}</span>
                           </td>
                           <td class="acct-cell-phone">{{ row.phone }}</td>
@@ -842,8 +886,6 @@ const M = {
                         <template v-else-if="g === 'deleted'">
                           <td class="acct-cell-name">
                             <div class="acct-name-main">{{ row.display_name }}<span class="badge badge--bad">待删除</span></div>
-                            <span class="acct-phone-inline">{{ row.phone }}</span>
-                            <span class="acct-time-inline">{{ M.deletedAtText(row) }}</span>
                             <span v-if="ownerEmailOn" class="acct-owner-inline">{{ M.ownerMailText(row) }}</span>
                           </td>
                           <td class="acct-cell-phone">{{ row.phone }}</td>
@@ -862,7 +904,6 @@ const M = {
                           <td class="acct-cell-idx">{{ row.index + 1 }}</td>
                           <td class="acct-cell-name">
                             <div class="acct-name-main">{{ row.display_name }}</div>
-                            <span class="acct-phone-inline">{{ row.phone }}</span>
                             <span v-if="ownerEmailOn" class="acct-owner-inline">{{ M.ownerMailText(row) }}</span>
                           </td>
                           <td class="acct-cell-phone">{{ row.phone }}</td>
@@ -895,21 +936,9 @@ const M = {
                           </div>
                           <div v-else class="acct-row-actions acct-row-actions--narrow">
                             <button v-if="g === 'pending'" type="button" class="btn btn--primary btn--sm" @click="onRowAction(row, 'approve')">通过</button>
-                            <el-dropdown trigger="click" @visible-change="onMenuVisible">
-                              <button type="button" class="btn btn--ghost btn--icon" aria-label="更多操作" title="更多操作"><svg aria-hidden="true"><use href="#i-ellipsis" /></svg></button>
-                              <template #dropdown>
-                                <el-dropdown-menu>
-                                  <el-dropdown-item
-                                    v-for="it in g === 'pending' ? M.menuItemsWithout('pending', ['approve']) : M.menuItems(g)"
-                                    :key="it.key"
-                                    :class="{ 'is-danger': it.danger }"
-                                    @click="onRowAction(row, it.key)"
-                                  >
-                                    {{ it.label }}
-                                  </el-dropdown-item>
-                                </el-dropdown-menu>
-                              </template>
-                            </el-dropdown>
+                            <button type="button" class="btn btn--ghost btn--icon" aria-label="更多操作" title="更多操作" :data-acct-actions="row.index" @click="openActions(row, g, $event)">
+                              <svg aria-hidden="true"><use href="#i-ellipsis" /></svg>
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -965,6 +994,45 @@ const M = {
         </div>
       </div>
     </div>
+
+    <!-- 窄屏行操作抽屉：右侧滑入，保留账号摘要与完整动作列表 -->
+    <el-drawer
+      v-model="drawerOpen"
+      direction="rtl"
+      size="min(320px, 88vw)"
+      :with-header="false"
+      :trap-focus="true"
+      title="账号操作"
+      aria-label="账号操作"
+      class="acct-actions-drawer"
+      append-to-body
+      @closed="onDrawerClosed"
+    >
+      <div class="acct-drawer">
+        <div class="acct-drawer-head">
+          <div class="acct-drawer-account">
+            <div class="acct-drawer-name">{{ drawerRow?.display_name }}</div>
+            <div class="acct-drawer-phone">{{ drawerRow?.phone }}</div>
+          </div>
+          <button type="button" class="btn btn--ghost btn--icon" aria-label="关闭操作菜单" @click="drawerOpen = false">
+            <svg aria-hidden="true"><use href="#i-x" /></svg>
+          </button>
+        </div>
+        <div class="acct-drawer-actions">
+          <button
+            v-for="it in drawerActions"
+            :key="it.key"
+            type="button"
+            class="btn btn--ghost acct-drawer-action"
+            :class="{ 'btn--danger-ghost': it.danger }"
+            :data-acct-action="it.key"
+            @click="onDrawerAction(it.key)"
+          >
+            <svg aria-hidden="true"><use :href="'#i-' + it.icon" /></svg>{{ it.label }}
+          </button>
+        </div>
+      </div>
+    </el-drawer>
 
     <!-- 添加 / 编辑账号弹窗（校验复用 myaccounts/accountform.ts） -->
     <el-dialog

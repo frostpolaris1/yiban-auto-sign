@@ -139,6 +139,13 @@ OPEN_STATES = tuple(s for s in STATES if s in yiban_status.TASKS_OPEN_STATES)  #
 #: 刷新落点/优先级（幂等），保留它以免调用方按"先看再排"写出跨语句窗口。
 REQUEUEABLE_STATES = OPEN_STATES
 
+#: 当日回炉上限（默认路径，R3-011）：首试 + 2 次回炉 = 每个账号每天最多 3 次真实登录。
+#: 只约束 `retry:` 档（窗口外 / 无点位 / 无 Range）。旧实现不限次数，兜底腿每 60 秒
+#: 翻回一次，一个 80 分钟窗口可重复真实登录 60 次以上。显式路径
+#: （`include_final=True`：自动补签轮、手动 `--only`）不受本上限约束；自动补签轮
+#: 每日一次，故全自动路径的上界是 3 + 1 = 4 次真实登录/账号/日。
+MAX_DAY_REQUEUES = 2
+
 
 def _queue_conn() -> tuple[Any, Any]:
     """队列库连接与写锁的**唯一取点**。
@@ -351,6 +358,11 @@ def requeue_failed(day: str, shards: Iterable[int], include_final: bool = False,
       `try_claim`"历史行须 `allow_failed` 才放行"同一纪律——判不清原因的宁可要求显式
       路径，也不要无上限重复真实登录。
 
+    默认路径有**当日上限**（`MAX_DAY_REQUEUES`）：`attempts` 已达上限的行不再翻回。
+    每翻一次就是一次新的真实登录；旧实现不限次数，兜底腿每 60 秒复活一次。
+    显式路径（`include_final=True`）不受此限：自动补签轮每日一次，手动 `--only` 由用户
+    触发；全自动路径因此在 3 次之上再加 1 次。
+
     实现逐行调 `requeue_task(..., epoch=SELECT 时读到的 epoch)`：状态与 epoch 门全部
     沿用既有原语，不另起第二条写路径。列举与回炉之间被他人重领/接管的行 epoch 已进
     一代，写被 fence 拒（0 行不计入）；`done`/`skipped` 终态行不在 SELECT 里、又被
@@ -380,7 +392,7 @@ def requeue_failed(day: str, shards: Iterable[int], include_final: bool = False,
             return 0
         phone_filter = f" AND phone IN ({','.join('?' for _ in allowed)})"
         phone_params = list(allowed)
-    sql = ("SELECT phone, epoch, result FROM sign_tasks "
+    sql = ("SELECT phone, epoch, result, attempts FROM sign_tasks "
            "WHERE day=? AND state=? AND vshard >= 0 "
            f"AND vshard IN ({placeholders})" + phone_filter)
     stamp = run_at or clock.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
@@ -398,6 +410,11 @@ def requeue_failed(day: str, shards: Iterable[int], include_final: bool = False,
         # 前缀比较按**字节前缀**（startswith）而不是 LIKE：结果文本里可能出现 `_`
         # （LIKE 通配符），与 `claims.fallback_event` 的同一避坑纪律
         if not include_final and not result.startswith(retry_prefix):
+            continue
+        # 默认路径必须有上限：`retry:` 档每回炉一次就是一次新的真实登录。`attempts`
+        # 在每次回炉/重领/回收时递增（`requeue_task` / `reclaim_tasks` /
+        # `reap_abandoned`），故用它可以数"这行今天已经被尝试过几次"。
+        if not include_final and int(r["attempts"] or 0) >= MAX_DAY_REQUEUES:
             continue
         if requeue_task(r["phone"], day, stamp, result="", epoch=r["epoch"]):
             flipped += 1

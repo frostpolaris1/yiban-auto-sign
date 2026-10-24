@@ -113,6 +113,15 @@ def load_accounts():
     return db.read_accounts(_snap)
 
 
+def purge_account(account_id, audit_spec=None):
+    """物理删除账号（R3-005 / R3-006）。
+
+    DB 删除与审计同事务；文件面手机号清理已收口到 persistence 层
+    （`db._purge_file_facts`，所有物理删除路径共用），本函数只做转发。
+    """
+    return db.purge_account(account_id, audit_spec=audit_spec)
+
+
 def load_accounts_raw():
     """全部账号原始行（不解密 password/phone_code），供仅需明文列的统计/归类路径。
 

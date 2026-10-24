@@ -155,6 +155,106 @@ class EnvelopeCodeAndPayloadGuardTest(unittest.TestCase):
         self.assertIn("无签发方回执", str(cm.exception))
 
 
+class SignInReceiptGuardTest(unittest.TestCase):
+    """`signIn` 的成功判据：`code` 成功**且**签发回执在场（R3-002 / 旧 F-35）。
+
+    仓内可核的成功形态只有两种：协议夹具 `{"code":0,"msg":"","data":true}` 与假上游
+    `{"code":0,"data":{"Id":"1"}}`。信封 `code=0` 本身不是签到成功的证据——
+    `data` 取"任意真值"时，`{"Id":"","Msg":"fail"}` 这类**对象**在 Python 里恒为真，
+    会被记成签到成功（RC=0、日历 ✅、队列 done），污染当日终态。
+    """
+
+    def _assert_no_receipt(self, post_envelope):
+        verdict, posted = _run_signin(
+            _sign_position_payload(state=0), post_envelope=post_envelope)
+        self.assertTrue(posted, "本该进入提交分支")
+        self.assertFalse(verdict[0], "无签发回执不得判成功：%r -> %r" % (post_envelope, verdict))
+        self.assertEqual(verdict[3], yiban_status.STATUS_FAILED)
+        self.assertIn("回执", verdict[1],
+                      "失败原因必须点名缺回执，不能退回笼统的『未知错误』：%r" % (verdict[1],))
+
+    def test_empty_id_object_is_not_success(self):
+        """`{"Id":"","Msg":"fail"}` 是失败回执，不是成功。"""
+        self._assert_no_receipt({"code": 0, "data": {"Id": "", "Msg": "fail"}})
+
+    def test_object_without_id_is_not_success(self):
+        """只有 `Msg` 没有 `Id`：平台未签发记录 Id。"""
+        self._assert_no_receipt({"code": 0, "data": {"Msg": "签到失败"}})
+
+    def test_blank_id_is_not_success(self):
+        """空白 `Id` 与空串同判：不得因为"非空字符串"就放行。"""
+        self._assert_no_receipt({"code": 0, "data": {"Id": "   "}})
+
+    def test_boolean_true_payload_is_success(self):
+        """协议夹具形态必须继续判成功（判据不能只认 `Id`）。"""
+        verdict, posted = _run_signin(
+            _sign_position_payload(state=0), post_envelope={"code": 0, "msg": "", "data": True})
+        self.assertTrue(posted)
+        self.assertTrue(verdict[0], verdict[1])
+        self.assertEqual(verdict[3], yiban_status.STATUS_SUCCESS)
+
+    def test_record_id_payload_is_success(self):
+        """假上游形态 `{"Id":"1"}` 必须判成功。"""
+        verdict, posted = _run_signin(
+            _sign_position_payload(state=0), post_envelope={"code": 0, "data": {"Id": "1"}})
+        self.assertTrue(posted)
+        self.assertTrue(verdict[0], verdict[1])
+        self.assertEqual(verdict[3], yiban_status.STATUS_SUCCESS)
+
+    def test_payload_matrix_is_fail_closed(self):
+        """11 种载荷逐条断言成功/失败（任务书 §3.1）。
+
+        真实上游是否会出现某些形状未测（禁止外联）；本表钉的是**我们的判据**：
+        认不出的真值一律按失败处理，且失败文案落硬失败档。
+        """
+        cases = [
+            (True, True),
+            ({"Id": "1"}, True),
+            ({"Id": 1}, True),
+            (1, False),
+            ("ok", False),
+            ([0], False),
+            ({}, False),
+            (None, False),
+            (False, False),
+            ({"Code": 0}, False),
+            ({"Id": 0}, False),
+            ({"Id": True}, False),
+        ]
+        for payload, ok in cases:
+            with self.subTest(payload=payload):
+                verdict, posted = _run_signin(
+                    _sign_position_payload(state=0),
+                    post_envelope={"code": 0, "msg": "", "data": payload})
+                self.assertTrue(posted, "本该进入提交分支")
+                self.assertEqual(bool(verdict[0]), ok, verdict)
+                if ok:
+                    self.assertEqual(verdict[3], yiban_status.STATUS_SUCCESS)
+                else:
+                    self.assertEqual(verdict[3], yiban_status.STATUS_FAILED)
+                    self.assertIn("无签发方回执", verdict[1])
+                    self.assertTrue(
+                        yiban_client.security.is_hard_fail_message(verdict[1]),
+                        "无回执是确定性失败，必须落 1 次尝试档：%r" % (verdict[1],))
+
+    def test_nonzero_code_is_failure_even_with_receipt(self):
+        """`code != 0` 时即使 data 带 Id 也不能判成功。"""
+        verdict, posted = _run_signin(
+            _sign_position_payload(state=0),
+            post_envelope={"code": 1, "msg": "上游拒绝", "data": {"Id": "1"}})
+        self.assertTrue(posted)
+        self.assertFalse(verdict[0], verdict)
+        self.assertEqual(verdict[3], yiban_status.STATUS_FAILED)
+
+    def test_failure_reason_carries_data_msg(self):
+        """对象形态的真实原因在 `data.Msg`，必须带进失败文案。"""
+        verdict, _ = _run_signin(
+            _sign_position_payload(state=0),
+            post_envelope={"code": 0, "data": {"Id": "", "Msg": "窗口未开"}})
+        self.assertFalse(verdict[0])
+        self.assertIn("窗口未开", verdict[1], verdict[1])
+
+
 class StateJudgementTest(unittest.TestCase):
     """`State` 逐值判定：映射表写死的每一格都要能被观察。"""
 
