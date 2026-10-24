@@ -139,6 +139,58 @@ test("用户端账号页：暂停/恢复往返、编辑保存、改密弹窗、�
   await page.keyboard.press("Escape");
 });
 
+test("用户端改自己账号的易班密码：保存必须走 PUT 并成功（R3-001）", async ({ page }) => {
+  // 缺陷形状：受门禁分支把方法写死成 POST，而自助面只注册 `PUT /api/my-accounts/<idx>`
+  // ⇒ 「编辑 + 改密码」恒 405。判据是**请求方法与最终落库结果**，不是某一次响应的状态码：
+  // 写请求带 X-CSRF-Token，页面在 403 后会重取 /api/me 的 token 再重发一次（既有自愈），
+  // 故一次流程里可能出现两条 PUT，只有第一条 403。断言 POST 为零、PUT 至少一条、对话框
+  // 关闭（失败时表单留开并显示错误），才是用户可见结果。
+  const methods: string[] = [];
+  page.on("request", (r) => {
+    if (/\/api\/my-accounts\/\d+$/.test(new URL(r.url()).pathname) && r.method() !== "GET") {
+      methods.push(r.method());
+    }
+  });
+
+  await page.goto("/user/account");
+  const card = page.locator(".account-card").first();
+  await expect(card.locator(".account-name")).toBeVisible();
+  // 首卡就是种子账号（同文件前序用例会改其名称，故不能用名称断言身份）。
+  // 它的原始口令是 "p1"（见 e2e/server.py:343）。
+
+  async function saveWithPassword(pw: string) {
+    await card.getByRole("button", { name: "编辑" }).click();
+    const dialog = page.locator(".el-dialog");
+    await expect(dialog).toBeVisible();
+    await dialog.locator('input[type="password"]').fill(pw);
+    await dialog.locator(".el-dialog__footer .btn--primary").click();
+    // 保存成功 = 对话框自行关闭；失败时表单留在原处并显示错误文案
+    await expect(dialog).toBeHidden();
+  }
+
+  // 改成新密码（命中"写密码 ⇒ 受门禁提交"分支），并在任何失败路径上尝试还原，
+  // 否则本用例中途失败会把夹具账号留在新密码，污染后续用例。
+  // 先记"已尝试"，再保存：保存可能已落库但响应超时，此时也必须还原。
+  let attempted = false;
+  try {
+    attempted = true;
+    await saveWithPassword("E2eNewPass#2026");
+  } finally {
+    if (attempted) {
+      try {
+        // 种子账号（e2e-user-acct / 13800138001）的原始口令是 "p1"（见 e2e/server.py）。
+        await saveWithPassword("p1");
+      } catch {
+        // 还原失败不能掩盖原始失败；下一轮 e2e 的种子会重置库。
+      }
+    }
+  }
+
+  expect(methods.filter((m) => m === "POST"),
+    "自助面没有注册 POST，发 POST 必然 405（R3-001 的缺陷形状）").toEqual([]);
+  expect(methods.filter((m) => m === "PUT").length).toBeGreaterThan(0);
+});
+
 test("管理端我的账号：归属邮箱偏好可用、无注销卡、账号行与改密入口在位", async ({ page }) => {
   // 末尾的「待审核刷新」段各等 1 个 10 秒轮询节拍，30 秒默认预算不够；标 slow 放宽到 3×。
   test.slow();
