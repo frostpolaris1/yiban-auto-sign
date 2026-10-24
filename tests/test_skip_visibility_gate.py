@@ -350,6 +350,24 @@ KNOWN_SKIP_SITES = json.loads(r"""
    "全链用例需要 bash（Git Bash 即可）"
   ]
  ],
+ "tests/test_install_log_dir_e2e.py": [
+  [
+   "skipIf",
+   "需要 bash（Git Bash/WSL）"
+  ],
+  [
+   "skipIf",
+   "需要 unshare -m 隔离 /var/log、/usr/local/sbin、/etc/cron.d"
+  ],
+  [
+   "skipIf",
+   "需要 root 才能在新挂载命名空间里 bind mount"
+  ],
+  [
+   "skipTest",
+   "需要服务账号 yiban（install.sh 的 data/ 段要求）"
+  ]
+ ],
  "tests/test_live_claim_cross_process_contention_e2e.py": [
   [
    "skipUnless",

@@ -168,6 +168,7 @@ fast	tests/test_host_exit_semantics.py
 fast	tests/test_hrw.py
 fast	tests/test_import_linter_gate.py
 fast	tests/test_infra_layer.py
+fast	tests/test_install_log_dir_e2e.py	# unshare 命名空间内跑 install.sh + cron 行（本机 2s）
 fast	tests/test_json_import_fail_closed.py
 fast	tests/test_key_sources_startup_assert.py
 fast	tests/test_ledger_check.py
