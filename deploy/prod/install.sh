@@ -524,7 +524,7 @@ else
             exit 1
         fi
         echo "deps snapshot: $SNAPSHOT（回滚：$ROLLBACK）"
-        if ! venv_pip install --no-input --disable-pip-version-check \
+        if ! venv_pip install --no-input --disable-pip-version-check --require-hashes \
                 -r "$REPO_ROOT/requirements.lock" ${PIP_INDEX_URL:+-i "$PIP_INDEX_URL"}; then
             echo "yiban-install: 依赖同步失败（pip 非 0）。venv 可能停在中间状态。" >&2
             echo "  回滚：$ROLLBACK" >&2
