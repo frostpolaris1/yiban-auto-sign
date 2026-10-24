@@ -81,14 +81,18 @@ function loadModule(fetchImpl: typeof fetch): ApiModule {
 }
 
 /** 可编程 fetch 桩：按登记的响应序列逐个消费；记录每次调用。 */
-function makeFetch(responder: (url: string, init: RequestInit) => { status: number; body?: unknown; headers?: Record<string, string> } | Promise<never>) {
+type StubResponse = { status: number; body?: unknown; headers?: Record<string, string> };
+function makeFetch(responder: (url: string, init: RequestInit) => StubResponse | Promise<never>) {
   const calls: { url: string; init: RequestInit }[] = [];
   const impl = ((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     calls.push({ url, init: init ?? {} });
     const r = responder(url, init ?? {});
-    const body = r && typeof (r as { then?: unknown }).then === "function" ? (r as unknown as Promise<never>) : Promise.resolve(r as { status: number; body?: unknown; headers?: Record<string, string> });
-    return body.then((resp: { status: number; body?: unknown; headers?: Record<string, string> }) => ({
+    const body: Promise<StubResponse> =
+      typeof (r as { then?: unknown }).then === "function"
+        ? (r as Promise<never>)
+        : Promise.resolve(r as StubResponse);
+    return body.then((resp) => ({
       status: resp.status,
       ok: resp.status >= 200 && resp.status < 300,
       headers: { get: (k: string) => (resp.headers ?? {})[k] ?? null },
