@@ -96,6 +96,12 @@ KNOWN_SKIP_SITES = json.loads(r"""
    "需要 bash（Git Bash/WSL）"
   ]
  ],
+ "tests/test_backup_lock_e2e.py": [
+  [
+   "skipIf",
+   "需要 bash（Git Bash/WSL）"
+  ]
+ ],
  "tests/test_backup_e2e.py": [
   [
    "skipIf",
