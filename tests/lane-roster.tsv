@@ -118,6 +118,7 @@ fast	tests/test_device_registry_methods.py
 fast	tests/test_doc_reference_gate.py
 fast	tests/test_docker_image_contents.py
 fast	tests/test_docker_image_inputs_gate.py
+fast	tests/test_drill_mutate_exit_gate.py	# 纯判定路径：--mutate 不得豁免 i1/i2（桩替换 run_drill）
 slow	tests/test_drill_redline_e2e.py	# 真子进程：逐个真跑 scripts/drill-container.sh（本机 10.9s）
 fast	tests/test_dupcheck_oracle.py
 fast	tests/test_edit_credential_probe.py
@@ -281,6 +282,7 @@ fast	tests/test_scripts_gate_hardening.py	# 拉取/闸门脚本退出码与 cron
 fast	tests/test_secret_key_strict_read.py
 fast	tests/test_sentinel_db_readonly.py
 fast	tests/test_session.py
+fast	tests/test_settings_copy_truthful.py	# 只读入库文本：六处权限文案不得再宣称「要口令」
 fast	tests/test_settings_tiers_frontend_parity.py
 fast	tests/test_settlement_status_ownership.py
 fast	tests/test_shared_facts_gate.py

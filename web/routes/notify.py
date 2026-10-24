@@ -201,14 +201,14 @@ def api_mail_config_save():
     admin_to（收件人改道）自 2026-10-02 起单独过统一高危门（quota="creds"、
     risk_always=True）——把全部告警改发别处正是静音手法，须当次口令并占 creds
     额度（与「关闭邮件通道」同账；同一请求同时关通道时不再重复占）。SMTP 凭据变更
-    （中继/授权码 = 换钥类）仍要当次口令
+    （中继/授权码 = 换钥类）在 risk 档同出口也要当次口令
     （直连 _reconfirm_admin_password，不占高危额度；用户 2026-10-01 拍板后
     `risk_always=True`，即缺省 `risk` 档下同出口也不吃"同出口免口令"）。开关的判据是
     「值真变化」——已是关的重复提交、或只改 admin_to 的保存不再被这门连坐。留痕统一交给
     落盘后的审计行（谁、把哪路从哪改到哪）；告警通道自身无法可靠通报自己的变更（见下方
     落盘处注释）。
     smtps 与 admin_to 同请求提交时分别过各自的门（凭据重确认 + 改道高危门）：
-    admin_to 改道占 creds 额度，不由 smtps 的口令确认替代（ba-p05-08）。
+    admin_to 改道占 creds 额度，不由 smtps 的口令复核替代（ba-p05-08）。
     """
     m = _appmod()
     if not _security._is_builtin_admin_session():
@@ -358,7 +358,7 @@ def api_mail_config_save():
     # 旧收件人值必须在落盘**之前**取——写后再读只会读到刚写进去的新值，
     # "从哪改到哪"就塌成"从哪改到哪自己"。
     admin_to_old = mail_config._get("ADMIN_TO") if admin_to_val is not None else None
-    # SMTP 凭据变更（中继/授权码 = 换钥类）要当次口令；admin_to 改道不是普通可逆
+    # SMTP 凭据变更（中继/授权码 = 换钥类）在 risk 档同出口也要当次口令；admin_to 改道不是普通可逆
     # 改动——它在下方单独过统一高危门（quota="creds"、risk_always=True）。两字段
     # 分别判定，互不替代。
     if smtps_list is not None:
@@ -378,7 +378,7 @@ def api_mail_config_save():
                                   risk_always=True)
         if gate:
             return gate
-    # 加密排在口令确认之后（同 notify-config：失败请求零写盘痕迹）
+    # 加密排在口令复核之后（同 notify-config：失败请求零写盘痕迹）
     smtps_enc = None
     if smtps_list is not None:
         try:
