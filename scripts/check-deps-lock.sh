@@ -78,24 +78,51 @@ KNOWN_MARKERS = {'platform_system == "Windows"': on_windows}
 
 pins = []
 unknown = []
+missing_hash = []
+entries = []
+current = None
 with open(lock_path, encoding="utf-8") as fh:
+    # 一个 pin 行后跟若干 `--hash=` 行。逐行分组：哈希只属于它前面那条 pin。
     for raw in fh:
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        body, _, marker = line.partition(";")
-        body, marker = body.strip(), marker.strip()
-        name, sep, want = body.partition("==")
-        if not sep or not name.strip() or not want.strip():
-            unknown.append((line, "不是 name==version 形态"))
+        if line.startswith("--hash"):
+            if current is None:
+                unknown.append((line, "哈希行没有所属 pin"))
+            else:
+                current["hashes"].append(line)
             continue
-        if marker:
-            if marker not in KNOWN_MARKERS:
-                unknown.append((line, marker))
-                continue
-            if not KNOWN_MARKERS[marker]:
-                continue  # 本平台不适用（例：Windows 专属包）
-        pins.append((name.strip(), want.strip()))
+        if current is not None:
+            entries.append(current)
+        current = {"req": line.rstrip("\\").strip(), "hashes": []}
+    if current is not None:
+        entries.append(current)
+
+for entry in entries:
+    full = entry["req"]
+    body, _, marker = full.partition(";")
+    body, marker = body.strip(), marker.strip()
+    name, sep, want = body.partition("==")
+    if not sep or not name.strip() or not want.strip():
+        unknown.append((full, "不是 name==version 形态"))
+        continue
+    if not any(h.startswith("--hash=sha256:") for h in entry["hashes"]):
+        missing_hash.append(name.strip())
+    if marker:
+        if marker not in KNOWN_MARKERS:
+            unknown.append((full, marker))
+            continue
+        if not KNOWN_MARKERS[marker]:
+            continue  # 本平台不适用（例：Windows 专属包）
+    pins.append((name.strip(), want.strip()))
+
+if missing_hash:
+    print("check-deps-lock: 以下条目缺 --hash=sha256（R3-007 fail-closed）：", file=sys.stderr)
+    for name in missing_hash:
+        print("  %s" % name, file=sys.stderr)
+    print("  处置：按 requirements.lock 头部说明重新生成哈希。", file=sys.stderr)
+    sys.exit(1)
 
 if unknown:
     print("check-deps-lock: 清单有本门不认识的条目，拒绝放行（fail-closed）：", file=sys.stderr)

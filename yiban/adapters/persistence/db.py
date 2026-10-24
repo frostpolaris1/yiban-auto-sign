@@ -809,9 +809,17 @@ def _cascade_phone_owned(conn, phones):
         return
     rows = [(p,) for p in phones]
     conn.executemany("DELETE FROM time_prefs WHERE phone=?", rows)
-    conn.executemany("DELETE FROM session_cache WHERE phone=?", rows)
+    # session_cache（v8）与 verify_jobs（v15）是**可选迁移**产物：迁移失败时
+    # user_version 不提升，链尾产物核对只看 `target <= user_version` 的档，表可以
+    # 合法地不存在而进程照常服务。本函数在强制路径上（删号/整表保存），无条件 DELETE
+    # 会抛 OperationalError 并回滚整个删号事务。故只对可选表做存在性守卫。
+    # 核心表（time_prefs / sign_events / sign_claims / sign_tasks）不守卫：
+    # 缺表是 schema 损坏，必须响亮失败，不能被守卫掩盖。
+    if _table_columns(conn, "session_cache"):
+        conn.executemany("DELETE FROM session_cache WHERE phone=?", rows)
     conn.executemany("DELETE FROM sign_events WHERE phone=?", rows)
-    conn.executemany("DELETE FROM verify_jobs WHERE phone=?", rows)
+    if _table_columns(conn, "verify_jobs"):
+        conn.executemany("DELETE FROM verify_jobs WHERE phone=?", rows)
     conn.executemany("DELETE FROM sign_claims WHERE phone=?", rows)
     conn.executemany("DELETE FROM sign_tasks WHERE phone=?", rows)
     # run_events 只随**可选**迁移 v21 建出：v21 失败时版本不提升、链尾产物核对
@@ -834,4 +842,32 @@ def _clear_session_cache_by_phones(conn, phones):
     """
     if not phones:
         return
+    if not _table_columns(conn, "session_cache"):
+        return  # v8 可选迁移未落地：无缓存可清，不得把改绑/注销打成 500
     conn.executemany("DELETE FROM session_cache WHERE phone=?", [(p,) for p in phones])
+
+
+def _purge_file_facts(phones):
+    """物理删除账号后清理文件面的手机号事实（R3-006）。
+
+    覆盖所有物理删除路径：单条 purge、批量 purge、按 owner 清空、整表替换、
+    管理员硬清除用户、软删到期自动清除。必须在 DB 事务**提交之后**调用；
+    文件清理失败只告警，不回滚已完成的删除。
+
+    延迟导入 `state_io`：它在顶层 import `yiban.engine`，persistence 顶层导入会成环。
+    """
+    if not phones:
+        return
+    try:
+        from yiban.adapters.statefiles import cred_state, state_io
+    except Exception as e:  # 导入失败不得影响已提交的删除
+        logger.warning("清理已删账号的文件面失败（状态模块导入异常）: %s", e)
+        return
+    for phone in dict.fromkeys(str(p or "").strip() for p in phones):
+        if not phone:
+            continue
+        try:
+            state_io.purge_phone_from_sign_states(phone)
+            cred_state.clear(phone)
+        except Exception as e:  # 单个文件失败不阻断其余账号
+            logger.warning("清理已删账号的文件面手机号失败: %s", type(e).__name__)
