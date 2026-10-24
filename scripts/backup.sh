@@ -29,6 +29,8 @@
 # 用法：
 #   ./backup.sh                      # 执行备份（有加密条件时本地默认密文）
 #   ./backup.sh --require-encrypt    # 本轮必须加密成功，否则不生成任何归档
+#   ./backup.sh --allow-missing-db   # 允许"本轮不含库"的备份（部署初始化等已知场景）；
+#                                    # 默认缺库 = 失败且不产出归档（见退出码 1）
 #   ./backup.sh --restore <备份包> <目标目录>   # 恢复演练/恢复（支持 .gpg/.age）
 #   REMOTE_BACKUP=user@host:/backup/yiban ./backup.sh
 #   REMOTE_BACKUP="user@host:/backup/yiban" BACKUP_GPG_PASSPHRASE=xxx ./backup.sh
@@ -68,7 +70,8 @@
 #
 # 退出码（M3 批次0 起完整口径；4/5 为既有契约，6/7/8 为本轮新增，互不重叠）：
 #   0  正常（密文归档且回环自检通过）
-#   1  拒绝执行/一般失败（RETENTION_DAYS 非法、--require-encrypt 不满足、解密失败等）
+#   1  拒绝执行/一般失败（RETENTION_DAYS 非法、--require-encrypt 不满足、解密失败、
+#      **源库缺失或快照未落盘且未加 --allow-missing-db**、**已有备份进程在运行**等）
 #   4  本轮归档照留，但【源库】integrity_check 未过（垂死库的最后素材）
 #   5  本轮归档照留，但快照因缺 sqlite3 未经 integrity 核验
 #   6  本轮产物是【明文】归档（显式 BACKUP_PLAINTEXT=1，或无可用加密方式回退）——
@@ -589,9 +592,14 @@ restore() {
 # 未知参数被当"没有参数"直接跑一轮备份。故必须扫全部参数，未知/移位一律在重活前拒绝。
 # ------------------------------------------------------------
 RESTORE_MODE=0 RESTORE_ARCHIVE="" RESTORE_TARGET="" REQUIRE_ENCRYPT=0
+# 缺库不许当成功（R3-017）：默认 fail-closed，唯一例外是本开关。
+ALLOW_MISSING_DB=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --require-encrypt) REQUIRE_ENCRYPT=1 ;;
+        # 显式"允许无库备份"：只给部署初始化（库尚未建）这类已知场景。
+        # 放行时仍打印"本轮不含库、不可用于恢复"，cron 与巡检照样看得见。
+        --allow-missing-db) ALLOW_MISSING_DB=1 ;;
         # 每个位置参数各自判 $# 再 shift：`--restore <包>` 这类只剩 1 个参数时，
         # 无条件的尾部 shift 会让 $# 归 0 而 shift 返回 1——set -euo pipefail 下
         # 整个脚本立刻退出 1 且零输出（连"备份包不存在"的诊断都看不到）。
@@ -685,6 +693,32 @@ if ! chmod 0700 "${BACKUP_DIR}"; then
     echo "错误：无法将备份目录 ${BACKUP_DIR} 收紧为 0700（属主不对/只读挂载？），拒绝继续" >&2
     exit 1
 fi
+
+# ------------------------------------------------------------
+# 跨进程互斥（R3-020）：同一时刻只允许一轮备份。
+#
+# 为什么必须有：两跑并行时各自打包、各自轮转，最终只剩一份归档——"跑了两轮"
+# 在任何输出里都不成立（实测两跑都 rc=0）。锁文件放在专用备份目录内（该目录
+# 已收紧为 0700），不占共享的 /tmp。
+# 语义：**第二跑立即失败（rc=1）并说明原因**，不静默丢一轮、也不排队等到
+# 窗口过后。cron 的邮件会把这行带给运维。
+# fail-closed：缺 flock（util-linux）时拒绝执行——本机版本无法保证互斥时
+# 宁可今天不备份，也不产出"两轮同时写同一份归档"的未知状态。
+# ------------------------------------------------------------
+if ! command -v flock > /dev/null 2>&1; then
+    echo "错误：缺 flock 命令（util-linux），无法保证同一时刻只有一轮备份——拒绝执行" >&2
+    exit 1
+fi
+BACKUP_LOCK="${BACKUP_DIR}/.backup.lock"
+exec 9>"${BACKUP_LOCK}" || {
+    echo "错误：无法打开备份锁文件 ${BACKUP_LOCK}" >&2
+    exit 1
+}
+if ! flock -n 9; then
+    echo "错误：已有备份进程在运行（锁 ${BACKUP_LOCK} 被占用）——本次不执行，避免两轮同时写同一份归档" >&2
+    exit 1
+fi
+
 mkdir -p "${TMPDIR_BAK}/data" "${TMPDIR_BAK}/keys"
 
 log "=== 易班自动签到备份开始（${DATE}）==="
@@ -766,6 +800,24 @@ if [ -f "${TMPDIR_BAK}/data/${DB_FILE}" ]; then
     DB_SNAPSHOT_PRESENT=1
 else
     DB_SNAPSHOT_PRESENT=0
+fi
+
+# 缺库判据（R3-017）：**"缺库 ⇒ 失败"**，不是"PRESENT=1 时才校验"。
+# 旧形状只在 PRESENT=1 时才要求库进包，于是"源库不存在"这一支永远不参与判定：
+# 归档照常生成、rc=0，恢复日才发现包里没有库。这里在落任何归档**之前**拦下。
+# 唯一例外是显式 --allow-missing-db（部署初始化等已知场景），放行时照样响亮说明。
+if [ "${DB_SNAPSHOT_PRESENT}" -ne 1 ]; then
+    if [ "${ALLOW_MISSING_DB:-0}" -eq 1 ]; then
+        log "警告：本轮归档不含数据库 ${DB_FILE}（${DB_SRC}）——人工开关 --allow-missing-db 放行，此归档不可用于恢复" >&2
+    else
+        if [ -f "${DB_SRC}" ]; then
+            echo "错误：源库存在（${DB_SRC}）但快照未落盘（${DB_FILE}），本轮不产出归档——缺库的归档不可用于恢复" >&2
+        else
+            echo "错误：源库不存在（${DB_SRC}），本轮不产出归档——'跳过（不存在）'不等于'备份完成'" >&2
+        fi
+        echo "  处置：确认 YIBAN_DB_FILE 与部署初始化状态；确需无库备份时加 --allow-missing-db。" >&2
+        exit 1
+    fi
 fi
 
 # 2) 密钥：优先 /etc/yiban/accounts-key（systemd EnvironmentFile，应含数据加密密钥

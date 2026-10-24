@@ -15,7 +15,8 @@
 #
 # 退出码：
 #   0 = 一致
-#   1 = 有漂移（包缺失，或版本与 lock 不符）
+#   1 = 有漂移（包缺失，或版本与 lock 不符），**或清单里一个锁定包都没有**
+#       （空清单的"一致"是空真，扫空不许当绿——R3-010）
 #   2 = 环境/用法错误（venv 解释器缺失、清单缺失、清单出现未知 marker）
 #
 # 存在的原因（工单 j06f，现象）：pip-audit 审的是 requirements.lock，
@@ -77,24 +78,51 @@ KNOWN_MARKERS = {'platform_system == "Windows"': on_windows}
 
 pins = []
 unknown = []
+missing_hash = []
+entries = []
+current = None
 with open(lock_path, encoding="utf-8") as fh:
+    # 一个 pin 行后跟若干 `--hash=` 行。逐行分组：哈希只属于它前面那条 pin。
     for raw in fh:
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        body, _, marker = line.partition(";")
-        body, marker = body.strip(), marker.strip()
-        name, sep, want = body.partition("==")
-        if not sep or not name.strip() or not want.strip():
-            unknown.append((line, "不是 name==version 形态"))
+        if line.startswith("--hash"):
+            if current is None:
+                unknown.append((line, "哈希行没有所属 pin"))
+            else:
+                current["hashes"].append(line)
             continue
-        if marker:
-            if marker not in KNOWN_MARKERS:
-                unknown.append((line, marker))
-                continue
-            if not KNOWN_MARKERS[marker]:
-                continue  # 本平台不适用（例：Windows 专属包）
-        pins.append((name.strip(), want.strip()))
+        if current is not None:
+            entries.append(current)
+        current = {"req": line.rstrip("\\").strip(), "hashes": []}
+    if current is not None:
+        entries.append(current)
+
+for entry in entries:
+    full = entry["req"]
+    body, _, marker = full.partition(";")
+    body, marker = body.strip(), marker.strip()
+    name, sep, want = body.partition("==")
+    if not sep or not name.strip() or not want.strip():
+        unknown.append((full, "不是 name==version 形态"))
+        continue
+    if not any(h.startswith("--hash=sha256:") for h in entry["hashes"]):
+        missing_hash.append(name.strip())
+    if marker:
+        if marker not in KNOWN_MARKERS:
+            unknown.append((full, marker))
+            continue
+        if not KNOWN_MARKERS[marker]:
+            continue  # 本平台不适用（例：Windows 专属包）
+    pins.append((name.strip(), want.strip()))
+
+if missing_hash:
+    print("check-deps-lock: 以下条目缺 --hash=sha256（R3-007 fail-closed）：", file=sys.stderr)
+    for name in missing_hash:
+        print("  %s" % name, file=sys.stderr)
+    print("  处置：按 requirements.lock 头部说明重新生成哈希。", file=sys.stderr)
+    sys.exit(1)
 
 if unknown:
     print("check-deps-lock: 清单有本门不认识的条目，拒绝放行（fail-closed）：", file=sys.stderr)
@@ -104,6 +132,16 @@ if unknown:
     sys.exit(2)
 
 drift = []
+
+# 防"扫空当绿"（R3-010）：0 个锁定包时"venv 与 lock 一致"是空真。
+# 下限 = 1，依据：lock 至少钉一个包才有对账对象；空清单/只有注释的清单
+# （通常是路径写错或文件被清空）必须响亮失败，不许静默通过。
+if not pins:
+    print("check-deps-lock: 锁定清单没有任何 name==version 条目（0 个锁定包）：", file=sys.stderr)
+    print("  %s" % lock_path, file=sys.stderr)
+    print("  'venv 与 lock 一致'对空清单是空真——拒绝放行（检查清单路径与内容）。",
+          file=sys.stderr)
+    sys.exit(1)
 
 
 def norm(name):

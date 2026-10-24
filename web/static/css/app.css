@@ -3104,8 +3104,22 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
 .acct-batch-count strong { color: var(--t-base); }
 .acct-batch-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
-/* 状态图例：图标 + 文本，颜色语义与表格状态列一致 */
-.acct-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin: 0 0 12px; }
+/* 状态图例：默认折叠，避免 10 项图例占满表格上方首屏；展开后仍按原网格展示。
+   图标 + 文本，颜色语义与表格状态列一致。 */
+.acct-legend { margin: 0 0 12px; }
+.acct-legend summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--t-muted);
+  font-size: 12px;
+  line-height: 1.6;
+  user-select: none;
+}
+@media (hover: hover) and (pointer: fine) {
+  .acct-legend summary:hover { color: var(--t-base); }
+}
+.acct-legend summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: var(--r-ctl); }
+.acct-legend-grid { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 8px; }
 /* 账号页 KPI 口径说明（.panel-sub 全局 margin:0，这里补下边距与前一块分开）。 */
 .acct-kpi-note { margin: 0 0 12px; }
 .acct-state { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
@@ -3193,31 +3207,14 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
    日后设置页开关只改该取值处）。
    对比度：--t-muted on 白卡 4.76:1，达 AA。 */
 .acct-owner-inline { display: none; }
-/* 窄屏把被隐藏列的关键值补到名称下方：手机号（≤900 隐藏手机号列）、
-   删除时间（≤900 隐藏删除时间列）、审核状态（≤720 隐藏审核列）。 */
-.acct-phone-inline,
-.acct-audit-inline,
-.acct-time-inline { display: none; }
+/* 手机号、审核状态、删除时间仍留在原列；窄屏由 .table-scroll 横向滚动查看，
+   不再补到名称下方堆成三行（用户 2026-10-23 要求恢复原表格形态）。 */
 
 /* 响应式：窄屏优先保留「选择 / 状态 / 名称 / 手机号 / 操作」，其余列按档隐藏 */
 @media (max-width: 1280px) { .acct-col-xl { display: none; } }
 @media (max-width: 1100px) { .acct-col-lg { display: none; } }
 @media (max-width: 900px) {
   .acct-col-md { display: none; }
-  /* 名称单元格允许两行（默认白列表头/单元格是 nowrap）；行高由内容撑开，不写死。
-     选择器带 .data-table tbody td 是为了压过第 4117 行的 padding-block: 0
-     （同权重时后者在后，会把这 8px 清掉）。 */
-  .data-table tbody td.acct-cell-name { white-space: normal; padding-block: 8px; }
-  .acct-cell-phone { display: none; }
-  .acct-phone-inline,
-  .acct-time-inline {
-    display: block;
-    margin-top: 2px;
-    font-family: var(--font-mono);
-    font-size: 12px;
-    font-weight: 400;
-    color: var(--t-muted);
-  }
   .acct-owner-inline {
     display: block;
     margin-top: 2px;
@@ -3231,15 +3228,6 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
   }
 }
 @media (max-width: 720px) {
-  /* 审核列与序号列在竖屏隐藏：审核状态补到名称下方，序号是编辑用的次要信息。
-     列减少后表格在 390 不再横向滚动。 */
-  .acct-cell-audit,
-  .acct-cell-idx { display: none; }
-  .acct-audit-inline {
-    display: inline-flex;
-    margin-top: 4px;
-  }
-  .acct-cell-name { min-width: 120px; }
   /* 竖屏：标题与工具行分两行，工具行（已 width:100%）落到第二行。
      只在本页放开换行——桌面端「标题左、控件右同行」是既定规范，不可全局 wrap。 */
   body[data-page="work-accounts"] .panel-head-row { flex-wrap: wrap; }
@@ -3270,6 +3258,30 @@ body[data-page="work-accounts"] .panel-head.acct-group-head { margin-bottom: 0; 
   #accounts-root.is-swapping { opacity: 1; transform: none; }
   .acct-row-flash > td { animation: none; }
 }
+
+/* 窄屏行操作抽屉：右侧滑入，账号摘要固定在头部，动作列表单列 44px 命中区。
+   动效由 el-drawer 自带的 transform 过渡承担；打开时不轮询（见 Accounts.vue pollGate）。 */
+.acct-actions-drawer .el-drawer__body { padding: 0; }
+.acct-drawer { display: flex; flex-direction: column; height: 100%; }
+.acct-drawer-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 16px 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.acct-drawer-account { min-width: 0; }
+.acct-drawer-name { font-size: 16px; font-weight: 700; color: var(--t-base); overflow-wrap: anywhere; }
+.acct-drawer-phone { margin-top: 2px; font-family: var(--font-mono); font-size: 12px; color: var(--t-muted); }
+.acct-drawer-actions { display: flex; flex-direction: column; gap: 4px; padding: 12px; overflow-y: auto; }
+.acct-drawer-action {
+  justify-content: flex-start;
+  min-height: var(--ctl-h-touch);
+  padding-inline: 12px;
+  font-size: var(--fs-body);
+}
+.acct-drawer-action svg { width: 18px; height: 18px; }
 
 /* ==========================================================================
    25. 签到日志页（管理端 /logs）
@@ -4072,7 +4084,8 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: var(--ctl-h-
     gap: 12px;
   }
   .dash-page .kpi-card { padding: 14px; }
-  .dash-page .kpi-value { font-size: 36px; }
+  /* 数值字号沿用 Adminator 的 44px；390 下 2×2 卡宽约 170px，三位数仍放得下。
+     曾压到 36px，用户 2026-10-23 判为主视觉偏小。 */
   .dash-page .kpi-label { font-size: 12px; }
   /* 成功率卡的「无昨日对比」在 171px 卡宽下会换行并把整卡撑高；全文已在 title 里。 */
   .dash-page .kpi-pill { display: none; }
@@ -4131,11 +4144,23 @@ body[data-page="work-users"] .usr-group-head .btn--sm { min-height: var(--ctl-h-
    这里显式消费区域变量，保证工具栏 32、表单 40 与原生 .input 同高。 */
 .el-date-editor.el-input,
 .el-date-editor .el-input__wrapper { height: var(--ctl-h); min-height: var(--ctl-h); }
-.app-form-dialog .el-select__wrapper,
-.settings-page .el-select__wrapper {
-  min-height: var(--ctl-h);
+/* EP 的 select 内层写死 min-height:32px；统一消费区域变量，保证同一行里
+   EP 下拉与原生 .input 同高（工具栏 32、表单 40）。 */
+body .el-select__wrapper {
+  min-height: var(--el-component-size);
   font-size: 13px;
 }
+/* 描边统一到 --control-border（白卡 3.06:1，满足 WCAG 1.4.11）；EP 的
+   .el-input 自身声明 --el-input-border-color:var(--el-border-color)，需更高特异性覆盖。
+   hover/focus 仍用主色，保留可操作反馈。 */
+body .el-input,
+body .el-textarea {
+  --el-input-border-color: var(--control-border);
+  --el-input-hover-border-color: var(--primary);
+  --el-input-focus-border-color: var(--primary);
+}
+body .el-select__wrapper { box-shadow: 0 0 0 1px var(--control-border) inset; }
+body .el-select__wrapper.is-hovering:not(.is-focused) { box-shadow: 0 0 0 1px var(--primary) inset; }
 /* 控件高统一到三档（122 §R2.3.3）：桌面工具行的紧凑控件收 32px（EP default 刻度），
    主操作按钮沿用 40px（EP large，由 vendor .btn 的 padding 9/14 + 13px 字高自然到位）。
    触屏 44px 命中区集中在第 38 节。 */
@@ -4670,14 +4695,13 @@ body:has(.to-top.is-show) .toast-host { bottom: 76px; }
   border-top: 1px solid var(--border-soft);
 }
 @media (max-width: 720px) {
-  .app-form-overlay .el-overlay-dialog { padding: 0; }
+  /* 保留 16px 外边距，不再收成无边整屏 sheet：用户 2026-10-23 要求弹窗四周留白。 */
+  .app-form-overlay .el-overlay-dialog { padding: 16px; }
   .app-form-overlay .app-form-dialog {
-    width: 100% !important;
-    height: 100vh;
-    height: 100dvh;
-    max-height: 100vh;
-    max-height: 100dvh;
-    border-radius: 0;
+    width: calc(100vw - 32px) !important;
+    height: auto;
+    max-height: calc(100dvh - 32px);
+    border-radius: 14px;
   }
   .app-form-overlay .app-form-dialog .el-dialog__footer {
     padding-bottom: max(12px, env(safe-area-inset-bottom));

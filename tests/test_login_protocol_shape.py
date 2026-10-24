@@ -639,6 +639,15 @@ class KillyibanSessionStoreTest(_RealSessionStoreFixture):
             with self.subTest(body=body):
                 self._assert_receiptless_rejected(body)
 
+    def test_fake_success_entry_step_rejected(self):
+        """入口步 {Action,Data} 是未认证回退，不是签发回执：拒绝、零缓存、无成功日志。"""
+        self._assert_receiptless_rejected({
+            "code": 0,
+            "data": {"Action": "redirect",
+                     "Data": "https://openapi.yiban.cn/oauth/authorize?client_id=x"},
+            "msg": "",
+        })
+
     def test_fake_success_does_not_update_existing_cache(self):
         """已有缓存行时遇假成功：拒绝路径自身零写入（行只会被既有探针判死清掉）。"""
         resp = _killyiban_happy_responses()
@@ -805,8 +814,35 @@ class SigninShapeTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "会话失效") as ctx:
             self._run_sign(client, rec)
         msg = str(ctx.exception)
+        self.assertIn("登录已超时", msg)
         self.assertEqual(signin._retry_budget(msg),
                          (signin.SESSION_STALE_MAX_ATTEMPTS, True))
+
+    def test_session_expired_999_keeps_sanitized_upstream_msg(self):
+        """999 的上游 msg 必须带进异常；换行转义、手机号打码、长度受限。
+
+        日志会被导出/转发；上游 msg 是服务端可控文本，只能以脱敏形态落库。
+        """
+        client, rec = self._client([
+            _resp({"code": 999, "msg": "登录已超时\n手机号 13800138000 请重登"})
+        ])
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run_sign(client, rec)
+        msg = str(ctx.exception)
+        self.assertIn("登录已超时", msg)
+        self.assertIn("138****8000", msg)
+        self.assertNotIn("\n", msg)
+        self.assertEqual(signin._retry_budget(msg),
+                         (signin.SESSION_STALE_MAX_ATTEMPTS, True))
+
+    def test_session_expired_999_truncates_long_upstream_msg(self):
+        """上游 msg 超长时必须截断，防整段进日志/审计。"""
+        client, rec = self._client([_resp({"code": 999, "msg": "超时" * 200})])
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run_sign(client, rec)
+        msg = str(ctx.exception)
+        self.assertTrue(msg.endswith("…，需重新登录"))
+        self.assertLess(len(msg), 200)
 
 
 # ---------------------------------------------------------------------------

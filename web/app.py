@@ -856,8 +856,11 @@ verify_jobs.configure(
     seat=_verify_sem,
     # 异步路径同样走"同一账号互斥"（cgx6）：后台线程可以等，但**绝不与另一次
     # 真实登录重叠**（同步验证与设备补全占用的是同一把按手机号的权）。
-    verify_one=lambda clean: _verify_queue.run_account_exclusive(
-        clean.get("phone"), lambda: _verify_account_clean(clean)),
+    # 账号权由 jobs 在起看门狗之前取用：排队等待不是外呼，不计入外呼预算。
+    acquire_account=lambda phone, timeout=None: _verify_queue.acquire_account(
+        phone, timeout=timeout),
+    release_account=lambda phone: _verify_queue.release_account(phone),
+    verify_one=lambda clean: _verify_account_clean(clean),
     record_failure=lambda st, ph, err, now: _record_verify_failure(st, ph, err, now),
     mask_phone=lambda phone: _mask_phone(phone),
     reject_account=lambda phone, reason, aid, expect: _reject_account(phone, reason, aid, expect),

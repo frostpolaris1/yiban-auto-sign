@@ -122,19 +122,27 @@ jobs:
         #   元测试才造得出"venv 落后 lock"的形态）。
         run: 'echo "Fast gate active: lint + mypy + roster fast lane + serial drill lane + e2e smoke + shared-facts roster + path-env bare reads + config registry + import-linter contracts + deps lock meta-tests."'
 
-  # ---- 慢集专轨（vckk 阶段 2-a · 2026-10-17）：名册 slow 行的唯一自动轨 ----
+  # ---- 慢集专轨（vckk 阶段 2-a · 2026-10-17）：名册 slow 行 ＋ FAST_KNOWN_SLOW 长尾轨 ----
   # 为什么独立 job：slow 行的贵是**真实的等外面**（真子进程 / 真定时等待），并进 verify
   # 会把它拱向 10 分钟上限（工单 i9gl；CI 实测比本机慢约一倍）。独立成轨与 verify 并行，
   # 总墙钟不变。
   # 覆盖面对账（AGENTS §十三 第 29 条）：verify 跑 fast + serial 行，本作业跑 slow 行
-  # ⇒ 三个车道在每次 push 上各跑各的，**合起来覆盖名册全部文件**——"改动落在某条道之外"
-  # 在结构上不再可能（名册漏归类由 tests/test_gate_lane_roster.py 红，且该守卫本身在快集里）。
-  # 行集由 tests/lane-roster.tsv 推导（唯一事实源）；本文件不写任何测试名，防第二定义点。
+  # ＋ `FAST_KNOWN_SLOW` 的 4 条长尾（R3-025，2026-10-24）⇒ 三条道在每次 push 上各跑
+  # 各的，**合起来覆盖名册全部文件与全部被快集 --deselect 的 nodeid**——"改动落在某条道
+  # 之外"在结构上不再可能（名册漏归类由 tests/test_gate_lane_roster.py 红，长尾轨的
+  # 执行点在场性由 tests/test_dev_verify_entry.py::DevVerifyTailLaneTest 红，两者都在快集里）。
+  # 长尾 4 条此前落在两道之间：所在文件是 fast 行，而快集用 --deselect 剔除它们，本作业
+  # 又只取 slow 行 ⇒ 任何自动轨都不执行。耗时口径（2026-10-24，WSL 固定 venv，串行）：
+  # 3 条实测 28.86s / 28.78s / 29.53s，第 4 条 opt-in 恒 skip；本作业实测 193s → 305s。
+  # 行集由 tests/lane-roster.tsv 与脚本内 FAST_KNOWN_SLOW 推导（唯一事实源）；本文件不写
+  # 任何测试名，防第二定义点。
   # ⚠️ 要真的拦得住，须把 `slow-lane` 加进分支保护的 required checks（所有者在仓库设置里
   # 勾选）——与 dependency-audit 同一约束，本文件无法替你做。
   slow-lane:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 10 → 15 分钟（R3-025）：本作业新增长尾轨约 +110s（本机实测 193.47s → 305s 合计），
+    # CI 机器更慢；这只是上限，不增加正常路径的时长。
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -153,14 +161,14 @@ jobs:
           # 只钉 pytest：--slow 串行跑，不需要 xdist；ruff/mypy 属 verify 的静态步。
           pip install pytest==9.1.1
 
-      - name: Slow lane (roster slow rows, serial)
+      - name: Slow lane (roster slow rows + FAST_KNOWN_SLOW tail, serial)
         run: bash scripts/dev-verify.sh --slow
 
   # ---- 依赖漏洞审计门（M28 批次 · 补 Dockerfile 注释里承诺的 pip-audit） ----
-  # 为什么要它：`requirements.lock` 是**手工维护的精确锁定**，全程不含 `--hash=`，
-  # 因此没有哈希锁可复核——"镜像实际装的版本 = 被审计过的版本"这件事**只由 pip-audit
-  # 兜住**（0.5.1 评审批已把 urllib3 抬到 2.8.0、Werkzeug 抬到 3.1.9 关掉 4 个 CVE，
-  # 该改动在本分支的基线提交里，不在本文件所在提交的 diff 中）。
+  # 为什么要它：`requirements.lock` 是**手工维护的精确锁定**。2026-10-24（R3-007）起
+  # 每个 pin 带 `--hash=sha256`，安装侧用 `--require-hashes`——供应链换包在安装阶段
+  # 就会 fail-closed；pip-audit 仍是漏洞审计入口。0.5.1 评审批已把 urllib3 抬到 2.8.0、
+  # Werkzeug 抬到 3.1.9 关掉 4 个 CVE（该改动在本分支的基线提交里，不在本文件所在提交的 diff 中）。
   # ⚠️ 它要真的"拦得住"，必须把它加进分支保护的 required checks（所有者在仓库设置里
   # 勾选 `dependency-audit`）——本文件无法替你做这件事；没勾之前它只是**报告式**审计。
   # 独立 job 而非 verify 里的一步：审计要解算整棵依赖树并访问漏洞库，与 verify 的
@@ -193,15 +201,21 @@ jobs:
       - name: Audit ready
         run: 'echo "Dependency audit clean: requirements.lock has no known vulnerabilities."'
 
-  # ---- 前端单测（Vue + Vitest）----
-  # 为什么必须有：122 项 Vitest 此前完全不在门禁内，而"纯函数全绿、组件接线坏掉"的缺陷
+  # ---- 前端单测（Vue + Vitest）＋ 真浏览器 e2e（Playwright）----
+  # 为什么必须有单测：122 项 Vitest 此前完全不在门禁内，而"纯函数全绿、组件接线坏掉"的缺陷
   # 恰好落在无门禁区——2026-10-03 独立审查实测到一个 blocking 回归（日志页日期栏整体失效）
   # 正是这样漏掉的。前端测试与后端测试同门槛。
-  # 只跑 Vitest：Playwright e2e 需要 Python 侧临时实例与浏览器二进制，留给
-  # e2e-nightly.yml（定义点在默认分支 main，见文件头的"排程定义点"一段）。
+  # 为什么 e2e 也放这里（R3-008，2026-10-24）：这批 Playwright 用例此前只挂在
+  # `e2e-nightly.yml`——它的排程定义点在默认分支 main，而 server-web 分支不持有该文件；
+  # 故部署分支上一条都不跑。本 job 已有 node 与 node_modules，补 Python 运行依赖与浏览器
+  # 二进制即可拉起 `e2e/server.py`（临时 Flask 实例 + 临时 SQLite，不碰真实数据、不联外网）。
+  # 实测（本机 2026-10-24，串行 workers=1）：12 个 spec、31 条用例、2m19s。
+  # 为什么不在 verify job：verify 的目标是 ≤3min 快速轨；本 job 与它并行，加时不占快轨。
   frontend:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 10 → 15 分钟（R3-008）：本 job 新增 e2e（浏览器安装 ＋ 2m19s 用例，本机实测）。
+    # 这只是上限，不增加正常路径时长；与 verify / slow-lane 并行，不占快轨关键路径。
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: frontend
@@ -224,3 +238,24 @@ jobs:
       # scripts/e2e/vue-build-reproducible-e2e.sh（WSL 内手跑）；本文件不复制判据文本。
       - name: Vue build artifacts reproducible (LF + byte-identical rebuild)
         run: bash ../scripts/check-vue-build-reproducible.sh
+      # e2e 的 Python 侧：e2e/server.py 要 Flask / portalocker 等运行依赖（按 lock 装，
+      # 与 verify job 用的 requirements.lock 同一份口径）。
+      - name: Set up Python (e2e server)
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - name: Install Python runtime deps (e2e server, locked)
+        run: pip install -r ../requirements.lock
+      - name: Install Playwright browser (chromium)
+        run: npx playwright install --with-deps chromium
+      # YB_E2E_PYTHON 必须显式给：playwright.config 的探测只覆盖本机 venv 布局，
+      # 在 runner 上会退化成 "python" 之外的探测结果。
+      # 覆盖说明（R3-008 P3-1，登记不改）：`paging.spec.ts` 的 2 条 5k 用例要
+      # `YB_E2E_BULK_ACCOUNTS>=1000` 才执行，默认在 PR 里 skip；它们仍会在夹具满足时执行，
+      # 但不在本 job 的默认覆盖内。
+      - name: End-to-end tests (Playwright, real browser + temp Flask)
+        run: npm run test:e2e
+        env:
+          YB_E2E_PYTHON: python
