@@ -1086,12 +1086,16 @@ def api_account_purge(idx):
             return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
         if not acc.get("deleted"):
             return jsonify({"error": "该账号不在待删除状态"}), 400
-        db.purge_account(acc["id"])
-        db.audit(
-            session.get("username") or "?",
-            "account_purge",
-            _masking.mask_phone(acc.get("phone", "")),
-            "彻底删除",
+        # 删除与审计同事务：审计写失败 ⇒ 删除回滚，账号仍在（R3-005）。
+        # 文件面的手机号清理在 DB 事务之后，失败不回滚已完成的物理删除。
+        _accounts_data.purge_account(
+            acc["id"],
+            audit_spec=dict(
+                username=session.get("username") or "?",
+                action="account_purge",
+                target=_masking.mask_phone(acc.get("phone", "")),
+                detail="彻底删除",
+            ),
         )
         # 彻底删除不再外发即时告警：留痕由上面的审计行承担（谁、删了哪个号）。
         accounts = _accounts_data.load_accounts()

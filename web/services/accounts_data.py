@@ -40,6 +40,7 @@ import signin  # 探针/子进程模块（scripts/ 在 sys.path 上，由 web.ap
 from web.services import signstatus as _signstatus
 from web.services.locks import _file_lock
 from yiban.adapters.persistence import db
+from yiban.adapters.statefiles import cred_state, state_io
 from yiban.core import clock
 from yiban.core import status as yiban_status
 from yiban.core.masking import mask_device_code, mask_email, mask_email_local
@@ -111,6 +112,20 @@ def load_accounts():
             return db.accounts_snapshot()
 
     return db.read_accounts(_snap)
+
+
+def purge_account(account_id, audit_spec=None):
+    """物理删除账号，并清理文件面的手机号残留（R3-005 / R3-006）。
+
+    DB 删除与审计同事务（`db.purge_account`）；事务提交后才清文件面：
+    按日状态文件（`sign-state-*.json`）与账密熔断状态（`cred-state.json`）。
+    文件清理失败不回滚已完成的物理删除，只留痕。
+    """
+    phone = db.purge_account(account_id, audit_spec=audit_spec)
+    if phone:
+        state_io.purge_phone_from_sign_states(phone)
+        cred_state.clear(phone)
+    return phone
 
 
 def load_accounts_raw():

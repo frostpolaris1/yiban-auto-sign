@@ -626,7 +626,15 @@ def set_account_deleted(account_id, deleted, deleted_at="", deleted_by="", audit
             db.record_in_txn(conn, **audit_spec)
 
 
-def purge_account(account_id):
+def purge_account(account_id, audit_spec=None):
+    """物理删除单条账号，返回被删账号的手机号（无此账号时返回 None）。
+
+    `audit_spec` 非 None 时，审计行与本次 DELETE **同事务**写入（口径同
+    `delete_accounts_by_owner`）：物理删除不可逆，先提交删除再补审计会在进程被杀或
+    审计写失败时留下"删了却无痕"。审计写失败时整个事务回滚，账号仍在。
+
+    调用方拿返回的 phone 做文件面清理（日状态文件 / 熔断状态），文件不在 DB 事务内。
+    """
     db = _facade()
     conn = db.get_conn()
     with db._conn_lock, conn:
@@ -634,6 +642,9 @@ def purge_account(account_id):
         conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
         if row is not None:
             db._cascade_phone_owned(conn, [row["phone"]])  # 连带清理自选/会话/事件/校验任务
+        if audit_spec:
+            db.record_in_txn(conn, **audit_spec)
+    return row["phone"] if row is not None else None
 
 
 def update_account_status(account_id, status, reject_reason=None):

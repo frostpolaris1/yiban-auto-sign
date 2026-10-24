@@ -65,7 +65,7 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from yiban import egress
 from yiban.adapters.config import env_io
@@ -499,6 +499,44 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None,
         return ok
     return _write_sign_state_now(path, phone, status, message, scheduled, dur,
                                  only_if_absent)
+
+
+def purge_phone_from_sign_states(phone):
+    """物理删号后清掉按日状态文件里的手机号条目（R3-006）。返回清理的文件数。
+
+    状态文件以手机号为键；账号被彻底删除后，条目要留到保留期满（默认 7 天）。
+    逐文件持既有 `_state_file_lock`，删键后原子写回——与写侧同一把跨进程锁，
+    不会与执行体的读改写互相覆盖。
+
+    只清文件面；DB 侧的连带清理由 `_cascade_phone_owned` 完成。文件不可写只告警，
+    不回滚已提交的物理删除。
+    """
+    phone = str(phone or "").strip()
+    if not phone:
+        return 0
+    # 按保留期逐日取路径，复用 `sign_state_path` 这个唯一定义点；
+    # 不手写 `sign-state-*` glob（路径形状门会把它当第二份定义，见 R3-006 门）。
+    from yiban.adapters.statefiles import state_gc
+    paths = []
+    today = clock.now()
+    for offset in range(state_gc.SNAPSHOT_RETENTION_DAYS + 1):
+        path = sign_state_path((today - timedelta(days=offset)).strftime("%Y-%m-%d"))
+        if os.path.exists(path):
+            paths.append(path)
+    touched = 0
+    for path in paths:
+        try:
+            with cli_support._state_file_lock(path):
+                data = _read_sign_state_file(path)
+                if phone not in data:
+                    continue
+                del data[phone]
+                _write_private_json(path, data)
+                touched += 1
+        except (OSError, ValueError, TypeError, AttributeError) as e:
+            logger.warning("清理状态文件中的已删账号失败（%s）: %s",
+                           os.path.basename(path), _sanitize_text(e))
+    return touched
 
 
 def _write_sign_state_now(path, phone, status, message, scheduled, dur, only_if_absent):
