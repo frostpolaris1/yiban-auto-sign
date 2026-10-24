@@ -37,13 +37,15 @@ adminTest("弹窗遮罩：360/4K 单层、正文对比度 AA、2560 起去 blur�
     await page.setViewportSize({ width: c.w, height: c.h });
     await page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"));
     await page.locator("tbody tr[data-acct-idx]").first().getByRole("button", { name: "通过" }).click();
-    const backdrop = page.locator(".pm-backdrop.is-open");
+    // 确认族已换 EP（ElMessageBox，uz7w）：遮罩是 `.el-overlay`，面板/正文随盒子换类名。
+    // 判据（单层、blur 口径、底色、正文 AA）逐个不变，只换载体选择器。
+    const backdrop = page.locator(".el-overlay:visible").last();
     await expect(backdrop).toBeVisible();
-    await expect(page.locator(".pm-backdrop.is-open")).toHaveCount(1);
+    await expect(page.locator(".el-overlay:visible")).toHaveCount(1);
     const m = await backdrop.evaluate((node) => {
       const dlg = node as HTMLElement;
-      const panel = dlg.querySelector(".pm-panel") as HTMLElement;
-      const text = dlg.querySelector(".pm-confirm-text") as HTMLElement;
+      const panel = dlg.querySelector(".el-message-box") as HTMLElement;
+      const text = dlg.querySelector(".el-message-box__message") as HTMLElement;
       const cs = getComputedStyle(dlg);
       return {
         filter: cs.backdropFilter,
@@ -55,7 +57,7 @@ adminTest("弹窗遮罩：360/4K 单层、正文对比度 AA、2560 起去 blur�
     expect(m.filter, c.w + "px 遮罩 blur 口径").toBe(c.blur ? "blur(3px)" : "none");
     expect(m.bg, c.w + "px 遮罩底色").toContain(c.blur ? "0.72" : "0.92");
     expect(contrast(m.panelBg, m.textColor), c.w + "px 正文对比度").toBeGreaterThanOrEqual(4.5);
-    await backdrop.locator(".modal-foot .btn--ghost").click();
+    await backdrop.locator(".el-message-box__btns .el-button").first().click();
     await expect(backdrop).toBeHidden();
   }
 
@@ -63,16 +65,16 @@ adminTest("弹窗遮罩：360/4K 单层、正文对比度 AA、2560 起去 blur�
   await page.setViewportSize({ width: 360, height: 792 });
   await page.evaluate(() => document.documentElement.setAttribute("data-theme", "dark"));
   await page.locator("tbody tr[data-acct-idx]").first().getByRole("button", { name: "通过" }).click();
-  const dark = page.locator(".pm-backdrop.is-open");
+  const dark = page.locator(".el-overlay:visible").last();
   await expect(dark).toBeVisible();
   const dm = await dark.evaluate((node) => {
     const dlg = node as HTMLElement;
-    const panel = dlg.querySelector(".pm-panel") as HTMLElement;
-    const text = dlg.querySelector(".pm-confirm-text") as HTMLElement;
+    const panel = dlg.querySelector(".el-message-box") as HTMLElement;
+    const text = dlg.querySelector(".el-message-box__message") as HTMLElement;
     return { panelBg: getComputedStyle(panel).backgroundColor, textColor: getComputedStyle(text).color };
   });
   expect(contrast(dm.panelBg, dm.textColor), "暗色正文对比度").toBeGreaterThanOrEqual(4.5);
-  await dark.locator(".modal-foot .btn--ghost").click();
+  await dark.locator(".el-message-box__btns .el-button").first().click();
   await page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"));
 
   // Element Plus 弹窗走 .el-overlay，必须与 .pm-backdrop 同一口径；否则两套遮罩深浅不一。
@@ -135,7 +137,8 @@ adminTest("成功提示：360 折行均衡，1920/2560 不溢出", async ({ page
     const drawer = page.locator(".acct-actions-drawer");
     await expect(drawer).toBeVisible();
     await drawer.getByRole("button", { name: "删除", exact: true }).click();
-    const modal = page.locator(".pm-backdrop.is-open");
+    // 确认族走 EP（ElMessageBox）：遮罩为 `.el-overlay`，确认键是危险档。
+    const modal = page.locator(".el-overlay:visible").last();
     await expect(modal).toBeVisible();
     await modal.getByRole("button", { name: "删除", exact: true }).click();
 
