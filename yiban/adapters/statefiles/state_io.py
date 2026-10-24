@@ -216,7 +216,7 @@ def _sign_state_path(day=None):
 #   **失效方向偏安全**：文件缺失/损坏/未更新一律按「尚未了结」处理，宁可重跑不失签。
 #   **不采用"轮末一次性落盘"**：`executor_v3.py` 每次尝试即物化状态（防当天网页日历空窗，
 #   见该文件 707 行注释）是既有设计，轮末一次性落盘会把它整段推翻。
-# - **落盘失败不重试**：磁盘不可写等错误整批丢弃（日志留痕），交给同一条失效方向
+# - **落盘失败不重试**：磁盘不可写等错误整批丢弃（warning 留痕），交给同一条失效方向
 #   兜底：文件里缺这些条目 ⇒ 尚未了结 ⇒ 补签轮重跑。没有恢复队列，也没有进程退出钩子。
 # - 已落盘条目**永不回退**：后续 `pending` 不覆盖已有结论（与本文件既有规则同一份），
 #   且落盘走 `os.replace`，崩溃不留半截文件。
@@ -314,8 +314,12 @@ def _flush_sign_state_path(path):
 
 
 def _log_sign_write_failure(path, exc):
-    """状态文件落盘失败：debug 留痕（异常文本脱敏），不改变调用方返回值。"""
-    logger.debug("写入状态文件失败（%s）: %s", path, _sanitize_text(exc))
+    """状态文件落盘失败：warning 留痕（异常文本脱敏），不改变调用方返回值。
+
+    「整批丢弃」必须默认可见：debug 级在默认日志级别下看不见，运维会把
+    「状态文件没更新」误读成正常。
+    """
+    logger.warning("写入状态文件失败（%s）: %s", path, _sanitize_text(exc))
 
 
 def _read_sign_state_file(path):
@@ -537,7 +541,7 @@ def _write_sign_state_now(path, phone, status, message, scheduled, dur, only_if_
             _write_private_json(path, data)
             return True
     except (OSError, ValueError, TypeError, AttributeError) as e:
-        # 状态目录不可写/写入异常时丢弃但不静默：debug 留痕（不影响签到执行）；
+        # 状态目录不可写/写入异常时丢弃但不静默：warning 留痕（不影响签到执行）；
         # 异常消息经 _sanitize_text 脱敏（sqlite/json 异常可能回显 cookie/csrf 值）
         _log_sign_write_failure(path, e)
         return False
@@ -558,6 +562,12 @@ def write_sign_states_if_absent(entries, day=None):
 
     落盘失败整批丢弃并返回全 False（与逐号路径"失败返回 False"同口径）。状态文件
     缺少这些条目时读侧按「尚未了结」处理，补签轮重跑；不设重试队列。
+
+    **整批原子，非逐行隔离**：任一条目在合并时抛错（例如 `dur` 非数字）⇒ 整批
+    返回 False 且**不落盘**，同一批里的好条目也不会写入。逐号路径相反：好条目
+    已各自落盘，只有坏条目失败。当前两个调用点（`round` / `executor_v3` 的窗口
+    收尾）均传 `dur=None`，该边界不可达；逐行隔离不在本批范围（要隔离就得上
+    逐条 try，退回到 O(N) 次判定，须另批立据）。
     """
     ops = list(entries)
     if not ops:
