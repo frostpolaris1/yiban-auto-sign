@@ -208,6 +208,12 @@ KNOWN_SKIP_SITES = json.loads(r"""
    "需要 bash"
   ]
  ],
+ "tests/test_deploy_gate_skip_verdict.py": [
+  [
+   "skipIf",
+   "需要 bash（Git Bash/WSL）"
+  ]
+ ],
  "tests/test_deploy_gate_wiring.py": [
   [
    "skipIf",
