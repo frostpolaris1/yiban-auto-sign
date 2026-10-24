@@ -98,6 +98,14 @@ while IFS=$'\t' read -r _mode src dest; do
     DESTS+=("$dest")
 done < "$MANIFEST"
 
+# 防"扫空当绿"（R3-010）：空清单的"全部可回指"是空真，不是证据。
+# 下限 = 1，依据：本门的存在理由是"每个 cron 引用的路径都能追到原件"；清单 0 条时
+# 它连一个可追的安装件都没有，任何结论都不成立。
+if [ "${#DESTS[@]}" -eq 0 ]; then
+    echo "缺少来源: manifest 没有任何安装条目（0 条）：${MANIFEST}"
+    viol=1
+fi
+
 is_dest() {
     local t="$1" d
     for d in ${DESTS[@]+"${DESTS[@]}"}; do
@@ -226,6 +234,18 @@ for cf in "$CRON_DIR"/*; do
         set +f
     done < "$cf"
 done
+
+# 防"扫空当绿"（R3-010）：0 张表或 0 个 token 时，上面零违规是因为什么都没判。
+# 下限 = 1，依据：生产面是 deploy/prod/cron.d 的 6 张表；门至少要看一张表、
+# 判一个路径 token 才有资格说"可回指"。跳过 ≠ 绿（AGENTS §30）。
+if [ "$N_TABLES" -eq 0 ]; then
+    echo "缺少来源: cron 目录 $CRON_DIR 里没有表（0 张）——门没有可判的对象"
+    viol=1
+fi
+if [ "$N_TOKENS" -eq 0 ]; then
+    echo "缺少来源: 没有判定到任何路径 token（$N_TABLES 张表）——门空转不算通过"
+    viol=1
+fi
 
 if [ "$viol" -eq 0 ]; then
     echo "cron provenance ok: $N_TABLES 张表、manifest ${#DESTS[@]} 条、判定 $N_TOKENS 个路径 token 全部可回指仓库来源"
