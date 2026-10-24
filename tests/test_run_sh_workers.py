@@ -196,11 +196,6 @@ class RunShWorkersTest(unittest.TestCase):
                 self.assertIn("YIBAN_WORKERS", self._log(), "非法值应留告警痕迹")
 
 
-def _today():
-    """同上：业务日唯一来源 `yiban.core.clock`。"""
-    return clock.today()
-
-
 FAKE_FLOCK_K3 = "#!/usr/bin/env bash\nexit ${FAKE_FLOCK_EXIT:-0}\n"
 
 

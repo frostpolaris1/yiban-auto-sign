@@ -264,7 +264,10 @@ def _start_fallback_heartbeat_refresh(interval_sec: int = 10):
     为什么必须刷新：新鲜度判据是 `now - ts <= 2 × WORKER_HEARTBEAT_SEC`（30s ⇒ 60s）。
     旧夹具只在服务启动时写一次心跳，整条 Playwright 套件串行跑到该用例时常已超过 60s，
     页面如实显示「可疑中断 · 已过期」——测试期望"运行中"，红的是夹具不是实现。
-    真执行体由 `mark_worker_beat` 周期刷新（`yiban/workers/workers.py`），本线程同一形态。
+    真执行体由 `mark_worker_beat` 周期刷新（`yiban/workers/workers.py`）。本线程改用
+    `mark_worker_started` 整条重写：`worker_alive_facts` 先比 `day`，只刷 `ts` 时跨北京
+    零点会被判回 `idle`（心跳文件仍写着昨天）。重写会把 `started_at` 刷新为当下——
+    夹具里只断言"运行中/心跳"，不受影响。
 
     退出：守护线程 + `atexit` 置停止位。Playwright 结束 webServer 时进程退出即可回收，
     不会跨用例累积。槽位 3 的过期种子不刷新（它要钉"过期"那条不变式）。
@@ -276,7 +279,7 @@ def _start_fallback_heartbeat_refresh(interval_sec: int = 10):
 
     def _loop():
         while not stop.wait(interval_sec):
-            state_io.mark_worker_beat(0, now=clock.now(), role=egress.ROLE_FALLBACK)
+            state_io.mark_worker_started(0, now=clock.now(), role=egress.ROLE_FALLBACK)
 
     atexit.register(stop.set)
     threading.Thread(target=_loop, name="e2e-heartbeat", daemon=True).start()
