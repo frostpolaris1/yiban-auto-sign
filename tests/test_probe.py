@@ -13,6 +13,7 @@
 依赖：全程 mock 网络与邮件（`YibanClient`、发送出口），无真实请求；临时
     STATE/DB/ENV 目录。用法（项目根目录）：py -m pytest tests/test_probe.py -v
 """
+import json
 import os
 import shutil
 import tempfile
@@ -258,6 +259,62 @@ class ProbeAccountingTest(unittest.TestCase):
         )
         # 软失败不出用户预警（告警口径不变：只有硬失败才发个人邮件）
         user_mail.assert_not_called()
+
+
+class ProbeQuotaWriteAmplificationTest(unittest.TestCase):
+    """探针逐号预占失败提醒额度必须整批落盘：F 个硬失败不得做 F 次读改写。
+
+    探针一次可能报出大量硬失败；旧形态每个账号各做一次"持锁＋读整个额度文件＋
+    写回"，写盘量随 F 平方增长（dnox/`hkew` 同形）。判据只看**写盘次数**：F 个
+    预占必须并成一次（批量上下文退出时落盘），不是逐号各写一次。
+    """
+
+    def test_hard_fail_quota_writes_are_batched(self):
+        import signin
+
+        import yiban.app.probe as probe
+
+        tmp = tempfile.mkdtemp(prefix="yiban-probe-quota-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        n = 6
+        accounts = [
+            signin.Account(phone=f"1380000100{i}", password="pw", owner="u@example.test")
+            for i in range(n)
+        ]
+        seen = {"n": 0}
+        real = probe.alerts.state_io._write_private_json
+
+        def spy(path, payload, **kw):
+            seen["n"] += 1
+            return real(path, payload, **kw)
+
+        quota_path = os.path.join(tmp, "mail-user-fail-today.json")
+        with mock.patch.object(probe, "PROBE_ENABLE", True), \
+                mock.patch.object(probe, "PROBE_INTERVAL", ""), \
+                mock.patch.object(probe, "_health_probe_due", return_value=True), \
+                mock.patch.object(probe, "_update_probe_state_run"), \
+                mock.patch.object(probe, "verify_account",
+                                  return_value=(False, "登录失败（账号或密码错误）")), \
+                mock.patch.object(probe.state_io, "_load_cred_state", return_value={}), \
+                mock.patch.object(probe.alerts, "_collect_admin_mail"), \
+                mock.patch.object(probe.alerts, "_flush_admin_mail_summary"), \
+                mock.patch.object(probe.db, "add_sign_event"), \
+                mock.patch.object(probe.alerts, "_user_fail_mail_daily_cap",
+                                  return_value=1), \
+                mock.patch.object(probe.alerts, "_user_fail_mail_state_path",
+                                  return_value=quota_path), \
+                mock.patch.object(probe.alerts.db, "find_user",
+                                  return_value={"mail_notify": 1}), \
+                mock.patch.object(probe.alerts.mailer, "send_user",
+                                  return_value=True), \
+                mock.patch.object(probe.alerts.state_io, "_write_private_json", spy):
+            probe.run_probe(accounts)
+
+        self.assertEqual(seen["n"], 1,
+                         f"{n} 个硬失败的额度预占必须整批落一次盘（实测 {seen['n']} 次）")
+        with open(quota_path, encoding="utf-8-sig") as f:
+            data = json.load(f)
+        self.assertEqual(len(data), n, "每个硬失败账号的预占都必须仍在盘上")
 
 
 if __name__ == "__main__":
