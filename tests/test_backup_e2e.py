@@ -216,6 +216,12 @@ class _BackupRunBase(unittest.TestCase):
     def _run(self, args=(), extra_env=None):
         env = dict(self.env)
         env.update(extra_env or {})
+        args = list(args)
+        # R3-017 起"缺库 ⇒ 失败且不产出归档"是默认判据（独立门
+        # tests/test_backup_db_presence_e2e.py 钉住）。本文件测的是轮转/加密/恢复，
+        # 夹具里没有库，故走显式例外通道；--restore 不接受该旗标，只给备份轮追加。
+        if "--restore" not in args:
+            args.append("--allow-missing-db")
         return subprocess.run([BASH, SCRIPT, *args], capture_output=True,
                               env=env, cwd=self.tmp, timeout=300)
 
