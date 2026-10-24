@@ -504,7 +504,12 @@ def _write_sign_state(phone, status, message, scheduled=None, dur=None,
 def purge_phone_from_sign_states(phone):
     """物理删号后清掉按日状态文件里的手机号条目（R3-006）。返回清理的文件数。
 
-    状态文件以手机号为键；账号被彻底删除后，条目要留到保留期满（默认 7 天）。
+    覆盖两类以手机号为键的按日文件：
+    - `sign-state-<day>.json`（日历事实源）；
+    - `sign-daily-<day>.json`（旧版符号表，过渡期回退读取）。
+    两者都属 log 保留档（`state_gc.RETENTION_DAYS`，默认 365 天），不是 snapshot 档；
+    只扫近 7 天会漏掉 8~365 天前的文件。
+
     逐文件持既有 `_state_file_lock`，删键后原子写回——与写侧同一把跨进程锁，
     不会与执行体的读改写互相覆盖。
 
@@ -514,15 +519,16 @@ def purge_phone_from_sign_states(phone):
     phone = str(phone or "").strip()
     if not phone:
         return 0
-    # 按保留期逐日取路径，复用 `sign_state_path` 这个唯一定义点；
-    # 不手写 `sign-state-*` glob（路径形状门会把它当第二份定义，见 R3-006 门）。
+    # 按保留期逐日取路径，复用两个路径定义点；不手写 glob（路径形状门会把它
+    # 当第二份定义，见 R3-006 门）。
     from yiban.adapters.statefiles import state_gc
     paths = []
     today = clock.now()
-    for offset in range(state_gc.SNAPSHOT_RETENTION_DAYS + 1):
-        path = sign_state_path((today - timedelta(days=offset)).strftime("%Y-%m-%d"))
-        if os.path.exists(path):
-            paths.append(path)
+    for offset in range(state_gc.RETENTION_DAYS + 1):
+        day = (today - timedelta(days=offset)).strftime("%Y-%m-%d")
+        for path in (sign_state_path(day), env_io.sign_daily_path(day)):
+            if os.path.exists(path):
+                paths.append(path)
     touched = 0
     for path in paths:
         try:

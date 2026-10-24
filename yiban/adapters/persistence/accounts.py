@@ -644,7 +644,10 @@ def purge_account(account_id, audit_spec=None):
             db._cascade_phone_owned(conn, [row["phone"]])  # 连带清理自选/会话/事件/校验任务
         if audit_spec:
             db.record_in_txn(conn, **audit_spec)
-    return row["phone"] if row is not None else None
+        phone = row["phone"] if row is not None else None
+    if phone:
+        db._purge_file_facts([phone])
+    return phone
 
 
 def update_account_status(account_id, status, reject_reason=None):
@@ -714,7 +717,8 @@ def delete_accounts_by_owner(owner, audit_spec=None):
             spec = dict(audit_spec)
             spec["detail"] = f"{spec.get('detail', '')}；实际删除 {deleted} 个账号"
             db.record_in_txn(conn, **spec)
-        return deleted
+    db._purge_file_facts(phones)
+    return deleted
 
 
 def replace_accounts(accounts):
@@ -762,19 +766,24 @@ def replace_accounts(accounts):
             except sqlite3.IntegrityError as e:
                 conn.rollback()
                 _convert_integrity_error(e)
+    db._purge_file_facts(removed)
     return len(accounts)
 
 
-def batch_account_ops(ops):
+def batch_account_ops(ops, audit_spec=None):
     """在一个事务内批量执行账号操作（Phase 1：整体成功或整体回滚）。
 
     ops 为 (op, params) 列表，op 支持：
       ("update_status", account_id, status, reject_reason)
       ("set_deleted", account_id, deleted, deleted_at)
       ("purge", account_id)
+
+    `audit_spec` 非 None 时，批量审计行与全部操作**同事务**写入（R3-005）：
+    批量彻底删除是不可逆操作，审计失败必须整体回滚。文件面的手机号清理在提交后。
     """
     db = _facade()
     conn = db.get_conn()
+    purged_phones = []
     with db._conn_lock:
         try:
             db._begin_immediate(conn)
@@ -811,13 +820,17 @@ def batch_account_ops(ops):
                     conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
                     if row is not None:
                         db._cascade_phone_owned(conn, [row["phone"]])
+                        purged_phones.append(row["phone"])
                 else:
                     raise ValueError(f"未知批量账号操作: {kind}")
+            if audit_spec:
+                db.record_in_txn(conn, **audit_spec)
             conn.commit()
         except Exception:
             with contextlib.suppress(Exception):
                 conn.rollback()
             raise
+    db._purge_file_facts(purged_phones)
 
 
 def update_account_status_if(account_id, new_status, expect_status, reject_reason=None):

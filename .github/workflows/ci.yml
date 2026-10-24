@@ -157,10 +157,10 @@ jobs:
         run: bash scripts/dev-verify.sh --slow
 
   # ---- 依赖漏洞审计门（M28 批次 · 补 Dockerfile 注释里承诺的 pip-audit） ----
-  # 为什么要它：`requirements.lock` 是**手工维护的精确锁定**，全程不含 `--hash=`，
-  # 因此没有哈希锁可复核——"镜像实际装的版本 = 被审计过的版本"这件事**只由 pip-audit
-  # 兜住**（0.5.1 评审批已把 urllib3 抬到 2.8.0、Werkzeug 抬到 3.1.9 关掉 4 个 CVE，
-  # 该改动在本分支的基线提交里，不在本文件所在提交的 diff 中）。
+  # 为什么要它：`requirements.lock` 是**手工维护的精确锁定**。2026-10-24（R3-007）起
+  # 每个 pin 带 `--hash=sha256`，安装侧用 `--require-hashes`——供应链换包在安装阶段
+  # 就会 fail-closed；pip-audit 仍是漏洞审计入口。0.5.1 评审批已把 urllib3 抬到 2.8.0、
+  # Werkzeug 抬到 3.1.9 关掉 4 个 CVE（该改动在本分支的基线提交里，不在本文件所在提交的 diff 中）。
   # ⚠️ 它要真的"拦得住"，必须把它加进分支保护的 required checks（所有者在仓库设置里
   # 勾选 `dependency-audit`）——本文件无法替你做这件事；没勾之前它只是**报告式**审计。
   # 独立 job 而非 verify 里的一步：审计要解算整棵依赖树并访问漏洞库，与 verify 的

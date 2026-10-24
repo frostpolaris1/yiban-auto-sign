@@ -321,7 +321,7 @@ def set_user_role(email, new_role, allow_last_admin=False, audit_spec=None):
 # ---------------------------------------------------------------------------
 # 注销（软删除 + 宽限期）与反悔恢复
 # ---------------------------------------------------------------------------
-def soft_delete_user_with_accounts(email):
+def soft_delete_user_with_accounts(email, audit_spec=None):
     """软注销：标记用户 deleted=1，并软删除其易班账号。
 
     账号同样走软删除（而非物理删除），与账号级软删的 7 天保留语义对齐——宽限期内
@@ -379,6 +379,9 @@ def soft_delete_user_with_accounts(email):
                 "UPDATE users SET deleted=1, deleted_at=? WHERE id=?",
                 (now, row["id"]),
             )
+            if audit_spec:
+                # 注销确认审计与软删同事务（R3-005 同族）：审计失败整体回滚。
+                _facade().record_in_txn(conn, **audit_spec)
             conn.commit()
             return True
         except Exception:
@@ -513,6 +516,7 @@ def purge_deleted_users_hard(emails, audit_spec=None):
         return []
     conn = _facade().get_conn()
     purged = []
+    all_phones = []
     with _facade()._conn_lock:
         # BEGIN IMMEDIATE 写锁内完成"读 phones → 删账号 → 连带清理"，与 restore_user
         # 跨进程串行化：deferred 快照下 phones 列表可能陈旧（并发 restore 后升级写会
@@ -539,6 +543,7 @@ def purge_deleted_users_hard(emails, audit_spec=None):
                 ]
                 conn.execute("DELETE FROM accounts WHERE owner=? AND deleted=1", (email,))
                 _facade()._cascade_phone_owned(conn, phones)
+                all_phones.extend(phones)
                 purged.append(email)
                 _delete_user_delete_requests(conn, email)  # 冷却计数连带清除
             if purged and audit_spec:
@@ -559,6 +564,7 @@ def purge_deleted_users_hard(emails, audit_spec=None):
             with contextlib.suppress(Exception):
                 conn.rollback()
             raise
+    _facade()._purge_file_facts(all_phones)
     return purged
 
 
