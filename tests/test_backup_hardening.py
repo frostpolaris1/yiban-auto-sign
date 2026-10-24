@@ -222,7 +222,10 @@ class VerifyIntegrityIsExplicitTest(BackupHardeningBase):
                 "date", "tar", "gzip", "find", "sed", "tr", "head", "tail", "wc",
                 "sort", "awk", "grep", "du", "sha256sum", "dirname", "basename",
                 "printenv", "python3", "ls", "rmdir", "sleep", "touch", "stat",
-                "readlink", "env")
+                "readlink", "env",
+                # R3-020：跨进程互斥用 flock；它属 util-linux 基础件，本夹具只
+                # 想剔除 sqlite3，故保留（缺它时脚本 fail-closed 拒绝执行）。
+                "flock")
         for name in keep:
             src = shutil.which(name)
             if src:

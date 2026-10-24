@@ -416,6 +416,40 @@ else
     echo "yiban-install: note: 非 root 或 DESTDIR 暂存安装——跳过运行数据目录 $DATA_DIR 的建立" >&2
 fi
 
+# ------------------------------------------------------------
+# cron 日志目录（/var/log/yiban）：**唯一建立点**（R3-009）
+#
+# 为什么必须有本步：六张 cron 表都 `>> /var/log/yiban/<x>.log`。目录不存在时 `sh`
+# 在**执行命令之前**就因重定向失败退出——签到/备份/审计一行都不跑，cron 只往 mail
+# 里丢一行。旧流程靠 README 让人手工 `mkdir -p`，与「干净环境一次装成、零手动调整」
+# 的发布判据冲突。
+# 属主/模式：与 `<检出>/data` 同一条判据——属服务账号、0700。`run.sh` / `run_probe.sh`
+# / 兜底执行体对状态目录做 M07 硬检查（属本用户且收紧成功），属主不对即拒绝运行。
+# 备份 cron 以 root 运行；root 有 CAP_DAC_OVERRIDE，仍能写 0700 的本目录。
+# 幂等修复：已存在的目录同样重设属主与模式（README 的 `chown -R root:root .` 不影响
+# 检出外的本目录，但旧部署可能被手工 chmod 放宽）。
+# DESTDIR 暂存只在前缀内建目录、不改属主（与 data/ 段同一分工）。
+# ------------------------------------------------------------
+LOG_DIR_REAL="/var/log/yiban"
+if [ "$(id -u)" -eq 0 ] && [ -z "$DESTDIR" ]; then
+    if ! install -d -m 0700 -o "$SERVICE_USER" -g "$SERVICE_GROUP" "$LOG_DIR_REAL"; then
+        echo "yiban-install: 无法建立 cron 日志目录 $LOG_DIR_REAL（属主 $SERVICE_USER:$SERVICE_GROUP）。" >&2
+        echo "  处置：确认服务账号在本机存在。该目录是六张 cron 表的重定向目标：" >&2
+        echo "        缺它时 sh 在执行命令前就退出，签到/备份/审计全部静默不跑。" >&2
+        exit 1
+    fi
+    chmod 0700 "$LOG_DIR_REAL"
+    echo "cron log dir ready: $LOG_DIR_REAL owner=$SERVICE_USER:$SERVICE_GROUP mode=0700"
+elif [ -n "$DESTDIR" ]; then
+    if ! install -d -m 0700 "$DESTDIR$LOG_DIR_REAL"; then
+        echo "yiban-install: 无法在暂存前缀内建立 cron 日志目录 $DESTDIR$LOG_DIR_REAL。" >&2
+        exit 1
+    fi
+    echo "cron log dir staged: $DESTDIR$LOG_DIR_REAL（DESTDIR 暂存不改属主）"
+else
+    echo "yiban-install: note: 非 root 且无 DESTDIR——跳过 $LOG_DIR_REAL 的建立" >&2
+fi
+
 TS=$(date +%Y%m%d%H%M%S)
 
 for row in "${ROWS[@]}"; do
@@ -490,7 +524,7 @@ else
             exit 1
         fi
         echo "deps snapshot: $SNAPSHOT（回滚：$ROLLBACK）"
-        if ! venv_pip install --no-input --disable-pip-version-check \
+        if ! venv_pip install --no-input --disable-pip-version-check --require-hashes \
                 -r "$REPO_ROOT/requirements.lock" ${PIP_INDEX_URL:+-i "$PIP_INDEX_URL"}; then
             echo "yiban-install: 依赖同步失败（pip 非 0）。venv 可能停在中间状态。" >&2
             echo "  回滚：$ROLLBACK" >&2

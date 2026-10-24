@@ -202,7 +202,16 @@ function openForm(index: number | null): void {
     password: "",
   };
   formOpen.value = true;
-  if (isAdmin.value && index !== null) void loadDetail(index);
+  // detail 端点只认全局下标；本人视图下标是过滤后的，二者不可混用（R3-023）。
+  // 缺 admin_index 时 fail-closed：不回退到过滤后下标（那正是旧缺陷）。
+  if (isAdmin.value && index !== null) {
+    const detailIndex = a?.admin_index;
+    if (detailIndex === undefined) {
+      formError.value = "账号列表已更新，请刷新页面后重试";
+      return;
+    }
+    void loadDetail(detailIndex);
+  }
   if (isAdmin.value && index === null) void loadBindableUsers();
 }
 
@@ -217,14 +226,17 @@ async function loadDetail(index: number): Promise<void> {
       `/api/accounts/${index}/detail`,
     );
     const acc = d.account ?? {};
-    formSnapshot.value = makeSnapshot(acc);
-    fullPhone.value = String(acc.phone ?? "");
-    if (!accounts.value[index]?.phone) {
+    const detailPhone = String(acc.phone ?? "");
+    // `index` 是全局下标；不能再用它去查本人视图的过滤后列表（两者口径不同，R3-023）。
+    // 手机号取 detail 的返回值——它就是要编辑的那个账号。
+    if (!detailPhone) {
       f.value.phone = "";
       fullPhone.value = "";
       formSnapshot.value = null;
     } else {
-      f.value.phone = accounts.value[index].phone; // 只回显打码号
+      formSnapshot.value = makeSnapshot(acc);
+      fullPhone.value = detailPhone;
+      f.value.phone = detailPhone;
     }
   } catch {
     fullPhone.value = "";
@@ -284,8 +296,17 @@ async function submitForm(): Promise<void> {
   const gated = credsWritten(payload, { editing: formEditing.value, snapshot: formSnapshot.value });
   formBusy.value = true;
   try {
+    // 受门禁提交必须**保留原方法**（R3-001）：编辑走 PUT，后端只注册了
+    // `PUT /api/my-accounts/<idx>`；写死 POST 会让"编辑 + 改密码"恒 405。
+    // `dangerousSubmit` 只负责在服务端回 password_required 时补口令后重发，
+    // 方法由调用方给——管理面 `Accounts.vue` 同此写法。
     const data = gated
-      ? ((await api("POST", endpoint, payload)) as { msg?: string; job_id?: string })
+      ? ((await dangerousSubmit({
+          method,
+          path: endpoint,
+          body: payload,
+          desc: CREDS_GATE_DESC,
+        })) as { msg?: string; job_id?: string })
       : ((await api(method, endpoint, payload)) as { msg?: string; job_id?: string });
     formOpen.value = false;
     fullPhone.value = "";
@@ -708,7 +729,7 @@ onMounted(async () => {
         <div class="panel-head panel-head--center">
           <div class="panel-head-text">
             <h2 class="panel-title">修改密码</h2>
-            <p class="panel-sub">改后下次登录使用新密码，当前会话随即失效</p>
+            <p class="panel-sub">改后当前会话失效，下次登录用新密码。</p>
           </div>
           <button type="button" class="btn btn--ghost btn--sm" @click="openChangePassword({ builtinAdmin: !!me?.is_builtin_admin })">
             <svg aria-hidden="true"><use href="#i-key" /></svg>修改密码
@@ -727,7 +748,6 @@ onMounted(async () => {
         <div class="set-row">
           <div class="set-row-text">
             <span class="set-row-label">竖屏显示归属邮箱</span>
-            <p class="set-help">窄屏补显归属邮箱（已脱敏）。</p>
           </div>
           <label class="switch" title="竖屏显示归属邮箱">
             <input v-model="ownerEmailOn" type="checkbox" @change="toggleOwnerEmail" />
@@ -743,7 +763,7 @@ onMounted(async () => {
         <div class="panel-head panel-head--center">
           <div class="panel-head-text">
             <h2 class="panel-title">注销账号</h2>
-            <p class="panel-sub">账号与自选时间一并删除，7 天内可撤销</p>
+            <p class="panel-sub">7 天内可撤销；到期删除易班账号与自选签到时间。</p>
           </div>
           <button type="button" class="btn btn--ghost btn--danger-ghost" @click="deleteSelf">
             <svg aria-hidden="true"><use href="#i-trash" /></svg>注销账号

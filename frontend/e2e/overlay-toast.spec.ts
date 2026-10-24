@@ -130,9 +130,11 @@ adminTest("成功提示：360 折行均衡，1920/2560 不溢出", async ({ page
     await page.getByRole("tab", { name: /正常账号/ }).click();
     const row = page.locator("tbody tr[data-acct-idx]", { hasText: name });
     await expect(row).toBeVisible();
-    // 360px 下操作列收进「更多操作」下拉；展开后选删除。
+    // 360px 下操作列收进「更多操作」抽屉；展开后选删除。
     await row.getByRole("button", { name: "更多操作" }).click();
-    await page.locator(".el-dropdown-menu:visible").getByRole("menuitem", { name: "删除", exact: true }).click();
+    const drawer = page.locator(".acct-actions-drawer");
+    await expect(drawer).toBeVisible();
+    await drawer.getByRole("button", { name: "删除", exact: true }).click();
     const modal = page.locator(".pm-backdrop.is-open");
     await expect(modal).toBeVisible();
     await modal.getByRole("button", { name: "删除", exact: true }).click();
