@@ -34,6 +34,8 @@ from datetime import timedelta
 
 from werkzeug.security import generate_password_hash
 
+from yiban.adapters.config import env_io as _env_io
+from yiban.adapters.statefiles import state_io as _state_io
 from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -270,7 +272,7 @@ class AdversarialFixes0820Test(unittest.TestCase):
         """正常路径：删除、审计、状态文件手机号清理三者一致（R3-005 / R3-006）。"""
         self._reset_db()
         self._soft_deleted_account()
-        state_path = os.path.join(self.tmp, f"sign-state-{clock.today()}.json")
+        state_path = _state_io.sign_state_path(clock.today())
         with open(state_path, "w", encoding="utf-8") as f:
             json.dump({"13800138000": {"status": "success", "message": "13800138000"}}, f)
         cred_path = os.path.join(self.tmp, "cred-state.json")
@@ -278,8 +280,8 @@ class AdversarialFixes0820Test(unittest.TestCase):
             json.dump({"13800138000": {"fail_days": 1}}, f)
         # 保留期是 log 档 365 天：200 天前的文件也必须清（审查 D-1）。
         old_day = (clock.now() - timedelta(days=200)).strftime("%Y-%m-%d")
-        old_state = os.path.join(self.tmp, f"sign-state-{old_day}.json")
-        old_daily = os.path.join(self.tmp, f"sign-daily-{old_day}.json")
+        old_state = _state_io.sign_state_path(old_day)
+        old_daily = _env_io.sign_daily_path(old_day)
         for p in (old_state, old_daily):
             with open(p, "w", encoding="utf-8") as f:
                 json.dump({"13800138000": "success"}, f)
@@ -318,8 +320,8 @@ class AdversarialFixes0820Test(unittest.TestCase):
         self._reset_db()
         acc_id = self._add_account("13800138000")
         db.set_account_deleted(acc_id, 1, "2020-01-01 00:00:00")
-        state_path = os.path.join(self.tmp, f"sign-state-{clock.today()}.json")
-        daily_path = os.path.join(self.tmp, f"sign-daily-{clock.today()}.json")
+        state_path = _state_io.sign_state_path(clock.today())
+        daily_path = _env_io.sign_daily_path(clock.today())
         for p in (state_path, daily_path):
             with open(p, "w", encoding="utf-8") as f:
                 json.dump({"13800138000": "success"}, f)
@@ -339,8 +341,8 @@ class AdversarialFixes0820Test(unittest.TestCase):
                                role="user")
                 db.add_account({"name": "U", "phone": "13800138000", "password": "p1",
                                 "status": "active", "owner": "u1@test.local"})
-                state_path = os.path.join(self.tmp, f"sign-state-{clock.today()}.json")
-                daily_path = os.path.join(self.tmp, f"sign-daily-{clock.today()}.json")
+                state_path = _state_io.sign_state_path(clock.today())
+                daily_path = _env_io.sign_daily_path(clock.today())
                 for p in (state_path, daily_path):
                     with open(p, "w", encoding="utf-8") as f:
                         json.dump({"13800138000": "success"}, f)
