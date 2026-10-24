@@ -47,6 +47,8 @@ STATUS_SKIPPED_NORANGE = "skipped_norange"  # 签到窗口缺失（Range 为空�
 # （任务未配置/当日任务已关闭）。必须与 STATUS_FAILED 区分——否则会触发
 # "签到失败"告警轰炸、并把补签闸门判为未了结而白跑一轮全量；独立状态后
 # 展示可区分、不按失败告警、不触发补签重跑（重试拿不到就是拿不到）。
+# 当日仍允许有限次回炉（`queue_store.MAX_DAY_REQUEUES`），用于接住当天后配置的任务；
+# 上限按账号与业务日计，不是无限重试。
 STATUS_NO_POSITION = "no_position"
 # 易班 signPosition 的 `State=5`「补签中」：补签申请/流程正在进行，**当日结果未定**。
 # 来历：平台 stateEnum 里 5＝补签中（TASK-A 逆向记录，2026-10-08 用户确认）。
