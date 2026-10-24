@@ -41,6 +41,7 @@ sys.path.insert(0, os.path.join(BASE, "tests"))
 
 from yiban.adapters.config import env_io  # noqa: E402
 from yiban.adapters.statefiles import state_io  # noqa: E402
+from yiban.core import clock  # noqa: E402
 
 
 class ResolvePathTest(unittest.TestCase):
@@ -367,9 +368,13 @@ class _PullRunBase(unittest.TestCase):
         os.chmod(path, 0o755)
 
     def _remote_archive(self, days_ago=0, name=None):
-        """在生产端夹具里放一个合成密文包（名字/内容全假），返回文件名。"""
+        """在生产端夹具里放一个合成密文包（名字/内容全假），返回文件名。
+
+        日期取业务日（`yiban.core.clock`）：合成名与断言用同一表达式，但宿主 UTC 时
+        `date.today()` 会与业务日差一天（P0 2026-10-25）。统一业务钟消除该口径分叉。
+        """
         n = name or "yiban-%s.tar.gz.gpg" % (
-            (datetime.date.today() - datetime.timedelta(days=days_ago)).isoformat())
+            (clock.now().date() - datetime.timedelta(days=days_ago)).isoformat())
         p = os.path.join(self.remote, n)
         with open(p, "wb") as f:
             f.write(os.urandom(64))
@@ -439,8 +444,8 @@ class PullProdBackupBehaviorTest(_PullRunBase):
         rc, out = self._run()
         self.assertEqual(rc, 0, out)
         names = sorted(os.listdir(self.mirror))
-        today = datetime.date.today().isoformat()
-        yest = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+        today = clock.today()
+        yest = (clock.now().date() - datetime.timedelta(days=1)).isoformat()
         want = ["yiban-%s.tar.gz.gpg" % today, "yiban-%s.tar.gz.gpg" % yest]
         for n in want:
             self.assertIn(n, names)
@@ -477,8 +482,7 @@ class PullProdBackupBehaviorTest(_PullRunBase):
     def test_plaintext_archives_are_never_pulled(self):
         """只搬密文：明文 yiban-*.tar.gz 即使在生产目录里，也不得出现在任何远端命令
         或 scp 下载中。"""
-        self._remote_archive(days_ago=0, name="yiban-%s.tar.gz" %
-                             datetime.date.today().isoformat())
+        self._remote_archive(days_ago=0, name="yiban-%s.tar.gz" % clock.today())
         self._remote_archive(days_ago=0)
         rc, out = self._run()
         self.assertEqual(rc, 0, out)
@@ -626,7 +630,7 @@ class PullProdBackupInjectionTest(_PullRunBase):
             self.assertNotIn("touch", cmd, "远端命令串被回流名污染：%s" % cmd)
         self.assertEqual(rc, 1, "隔离了非法回流行 ⇒ 整轮必须非 0（fail-closed）：%s" % out)
         legit = "yiban-%s.tar.gz.gpg" % (
-            datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+            (clock.now().date() - datetime.timedelta(days=1)).isoformat())
         self.assertIn(legit, os.listdir(self.mirror), "合法件仍应正常拉取：%s" % out)
         self.assertIn(crafted[:20], out, "隔离动作必须留痕可查")
 

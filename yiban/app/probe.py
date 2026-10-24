@@ -615,12 +615,15 @@ def run_probe(accounts):
     if fuse_cleared:
         with contextlib.suppress(Exception):
             state_io._save_cred_state(cred_state, touched={a.phone for a in accounts})
-    for acc, message in hard_fail:
-        alerts._collect_admin_mail("健康探测预警", [
-            ("账号", _mask_phone(acc.phone)),
-            ("原因", _sanitize_text(message)),
-        ])
-        alerts.send_user_fail_mail(acc.owner, acc.phone, message, scenario="probe")
+    # 逐号预占额度是一次事件的多账号写入：整批上下文把 F 次"持锁＋读改写"并成
+    # 一次（退出时落盘），避免写盘量随硬失败数平方增长。
+    with alerts.batch_user_fail_mail():
+        for acc, message in hard_fail:
+            alerts._collect_admin_mail("健康探测预警", [
+                ("账号", _mask_phone(acc.phone)),
+                ("原因", _sanitize_text(message)),
+            ])
+            alerts.send_user_fail_mail(acc.owner, acc.phone, message, scenario="probe")
     if soft_fail_n and not hard_fail:
         # 无硬失败时单独提示，避免管理员把「零预警」误读为「全员可用」
         alerts._collect_admin_mail("健康探测提示", [

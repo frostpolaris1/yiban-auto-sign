@@ -34,6 +34,7 @@ fast	tests/protocol/test_position.py
 fast	tests/test_account_abuse_gate.py
 fast	tests/test_account_ciphertext_kid.py
 fast	tests/test_account_crypto_key_source.py
+fast	tests/test_account_detail_narrow_read.py	# 详情窄读：golden 逐字节＋解密计数＋掩码不变量（本机 1.2s）
 fast	tests/test_account_liveness_gate.py
 fast	tests/test_account_ops_reentry.py
 fast	tests/test_account_plaintext_patch.py
@@ -44,6 +45,7 @@ fast	tests/test_alert_frequency_caliber.py
 fast	tests/test_alerts_level_gate.py
 fast	tests/test_alerts_summary_level.py
 fast	tests/test_api_contract_coverage.py
+fast	tests/test_api_clock_business_tz.py	# /api/clock 的 tz_offset_min 必须恒为业务时区 +480（P0 2026-10-25）
 fast	tests/test_audit_anchor.py
 fast	tests/test_audit_anchor_field_source.py
 fast	tests/test_audit_anchor_hardening.py
@@ -66,6 +68,7 @@ fast	tests/test_backup_require_encrypt.py
 fast	tests/test_backup_sentinel.py
 slow	tests/test_breaker.py	# 真等待：4 条用例各等一次真实 5s 超时（本机 31.1s）
 fast	tests/test_builtin_admin_sid.py
+fast	tests/test_business_day_source_gate.py	# 业务日事实源静态门：测试不得用宿主/浏览器钟取日（P0 2026-10-25）
 fast	tests/test_calendar_state_visibility.py
 fast	tests/test_capacity_audit_scope.py
 fast	tests/test_capacity_limits.py
@@ -194,6 +197,7 @@ fast	tests/test_mail_notify.py
 fast	tests/test_mail_outside_file_lock.py
 fast	tests/test_mail_send_deadline.py
 fast	tests/test_mail_send_never_raises.py
+fast	tests/test_mail_smtp_connect_retry_e2e.py
 fast	tests/test_mail_smtp_target.py
 fast	tests/test_mailer.py
 fast	tests/test_maintenance_readonly.py
