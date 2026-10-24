@@ -317,6 +317,7 @@ fast	tests/test_user_soft_delete.py
 fast	tests/test_users_exit_surface.py
 fast	tests/test_users_exit_surface_frontend.py
 fast	tests/test_v3_same_day_requeue.py
+fast	tests/test_verify_job_watchdog_scope.py
 fast	tests/test_verify_jobs.py
 fast	tests/test_visual_seed_generation.py	# 子进程真跑 seed()：随机钥、状态覆盖、导入失败不静默
 fast	tests/test_vue_build_reproducible.py
