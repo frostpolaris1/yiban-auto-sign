@@ -86,19 +86,45 @@ def _out(r):
 
 
 def _lock_pins():
-    """requirements.lock 的非注释行 ⇒ [(名字, 版本)]。"""
+    """requirements.lock 的 pin 行 ⇒ [(名字, 版本)]。
+
+    2026-10-24（R3-007）起 pin 行以反斜杠续行携带 `--hash=`；哈希行不是 pin。
+    """
     pins = []
     with io.open(LOCK, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
-            if not line or line.startswith("#"):
+            if not line or line.startswith("#") or line.startswith("--hash"):
                 continue
+            if line.endswith("\\"):
+                line = line[:-1].strip()
             body = line.partition(";")[0].strip()
             name, sep, ver = body.partition("==")
             if not sep:
                 continue
             pins.append((name.strip(), ver.strip()))
     return pins
+
+
+def _lock_entries():
+    """lock 的 pin 块 ⇒ [{"req": 行, "hashes": [--hash 行]}]（哈希只归它前面那条 pin）。"""
+    entries = []
+    current = None
+    with io.open(LOCK, encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("--hash"):
+                if current is not None:
+                    current["hashes"].append(line)
+                continue
+            if current is not None:
+                entries.append(current)
+            current = {"req": line.rstrip("\\").strip(), "hashes": []}
+        if current is not None:
+            entries.append(current)
+    return entries
 
 
 def _write_fake_dists(root, overrides=None, drop=()):
@@ -195,7 +221,8 @@ class DepsLockGateTest(unittest.TestCase):
     def test_gate_fails_closed_on_unknown_marker(self):
         """清单出现本门不认识的 marker ⇒ 退 2 并点名，不静默跳过任何条目。"""
         odd = os.path.join(self.tmp, "odd.lock")
-        _write(odd, '# 合成清单\nblinker==1.9.0\nfoo==1.0 ; python_version < "3.9"\n')
+        _write(odd, '# 合成清单\nblinker==1.9.0 \\\n    --hash=sha256:deadbeef\n'
+                    'foo==1.0 ; python_version < "3.9" \\\n    --hash=sha256:deadbeef\n')
         _write_fake_dists(self.dists)
         r = self._run(["--venv", self.venv, "--lock", odd])
         out = _out(r)
@@ -434,6 +461,25 @@ class InstallDepsSyncTest(unittest.TestCase):
         self.assertIn("跳过依赖同步", out)
         self.assertEqual([], self._records(), out)
         self.assertTrue(os.path.isfile(self.dest), "执行件落位不该被本步影响：%s" % out)
+
+
+class DepsLockHashTest(unittest.TestCase):
+    """R3-007：lock 的每个 pin 必须带 `--hash=sha256:`，两个安装器必须 `--require-hashes`。"""
+
+    def test_every_pin_has_sha256(self):
+        missing = [
+            entry["req"] for entry in _lock_entries()
+            if "==" in entry["req"]
+            and not any(h.startswith("--hash=sha256:") for h in entry["hashes"])
+        ]
+        self.assertEqual(missing, [], f"以下 pin 缺哈希：{missing}")
+
+    def test_installers_require_hashes(self):
+        for path in (INSTALL, os.path.join(BASE, "docker", "Dockerfile")):
+            with io.open(path, encoding="utf-8") as f:
+                text = f.read()
+            self.assertIn("--require-hashes", text,
+                          f"{os.path.basename(path)} 安装依赖时必须启用 --require-hashes")
 
 
 if __name__ == "__main__":

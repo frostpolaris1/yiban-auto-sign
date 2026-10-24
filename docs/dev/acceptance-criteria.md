@@ -50,6 +50,13 @@ D1 的验收**不**看"删掉多少行""测试源码比"。主判据只有一条
 3. **运行前提**：Python 版本、systemd/cron 二选一、必需的环境变量、可选的
    `pycryptodome` 附加件。
 
+**哈希生成（2026-10-24 起，R3-007）**：`requirements.lock` 的每个 pin 带
+`--hash=sha256:`。生成方式是查 `https://pypi.org/pypi/<pkg>/<ver>/json` 的
+`urls[].digests.sha256`，取该版本当前全部 sdist/wheel 的哈希。安装侧
+`deploy/prod/install.sh` 与 `docker/Dockerfile` 用 `--require-hashes`。
+`scripts/check-deps-lock.sh` 对缺哈希的条目 fail-closed；
+`tests/test_deploy_deps_sync.py` 的 `DepsLockHashTest` 逐条核对。
+
 ### 3.2 逐条可核（交付前清单）
 
 | 声明 | 核法 |
