@@ -208,6 +208,11 @@ chmod +x /opt/yiban-auto-sign/run.sh
 mkdir -p /var/log/yiban
 ```
 
+> 📁 `/var/log/yiban` 是全部 cron 表的**重定向目标**（签到/备份/审计/清理都写这里）。
+> 目录不存在时 `sh` 在**执行命令之前**就因重定向失败退出，命令一行都不跑。
+> `deploy/prod/install.sh` 会建立并修复它（属 `yiban:yiban`、`0700`，幂等）；
+> 没走安装器的手工部署才需要上面那条 `mkdir`。
+>
 > 🔒 状态目录与锁目录（默认 `/var/log/yiban`、`/var/lock/yiban`）必须**属主为本用户且
 > `chmod 700`**：目录**已存在**时 `run.sh` / `run_probe.sh` / 兜底执行体同样校验（M07），
 > 非本用户属主或收紧失败即拒绝运行（不静默降级）。升级后若日志报
@@ -269,6 +274,8 @@ mkdir -p /var/log/yiban
 > 服务账号名与 `web/deploy/yiban-web.service` 的 `User=`/`Group=` 同值（本仓
 > `yiban:yiban`；两处同值由用例钉住）。
 > 状态/日志目录（`/var/log/yiban`）与锁目录（`/var/lock/yiban`）**不在**检出内。
+> 前者同样由 `install.sh` 建立（属 `yiban:yiban`、`0700`；它是六张 cron 表的重定向目标），
+> 后者由 `tmpfiles.d` 件声明。
 > 另注：是否把产物设成 `root:root` 属主，看的仍是「root 且未设 `DESTDIR`」——那是写入
 > 侧的不变量，与上面那条判据不同，两条门不许"统一"。
 >
