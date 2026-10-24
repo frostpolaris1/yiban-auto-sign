@@ -363,6 +363,35 @@ class SignStateSigtermTest(unittest.TestCase):
         self.assertTrue(os.path.exists(path), "SIGTERM 后已收条目不得随进程消失")
         self.assertEqual(_read(path)["13800000008"]["status"], "success")
 
+    def test_sigterm_sends_admin_mail_via_exit_hook(self):
+        """真子进程整链：SIGTERM → 状态批次落盘 **且** 管理员汇总由退出钩子发出。
+
+        这是「信号处理器零 I/O」的承重面：删掉 `atexit.register(_flush_admin_mail_on_exit)`
+        后，本用例必须红（标记文件不出现）。mock 只替换邮件出口，信号与退出路径全是真的。
+        """
+        marker = os.path.join(self.tmp, "admin-mail.flag")
+        r = self._child(
+            "def _send(*_a, **_k):\n"
+            f"    with open({marker!r}, 'w', encoding='utf-8') as _f:\n"
+            "        _f.write('sent')\n"
+            "    return True\n"
+            "alerts.mailer.send_admin_alert = _send\n"
+            "alerts.db.admin_mail_recipients = lambda extra: ['a@b.c']\n"
+            "alerts._collect_admin_mail('易班签到失败', 'x')\n"
+            "with state_io.batch_sign_state():\n"
+            "    state_io._write_sign_state('13800000011', 'success', 'A')\n"
+            "    os.kill(os.getpid(), signal.SIGTERM)\n"
+            "    time.sleep(30)\n"
+        )
+        self.assertEqual(r.returncode, 143, r.stderr)
+        self.assertTrue(os.path.exists(marker),
+                        "SIGTERM 后已收集的管理员汇总必须由退出钩子发出")
+        with open(marker, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "sent")
+        path = os.path.join(self.tmp, f"sign-state-{self.day}.json")
+        self.assertEqual(_read(path)["13800000011"]["status"], "success",
+                         "同一进程里状态批次也必须落盘（两条链都真跑）")
+
 
 class SignStateVisibilityBoundTest(unittest.TestCase):
     """③ 可见性有界：未落盘条数不超过上界；已签不得回退为未签。"""
@@ -806,24 +835,27 @@ class QuotaConcurrencyTest(unittest.TestCase):
         self.barrier = os.path.join(self.tmp, "start.barrier")
         self.path = os.path.join(self.tmp, f"mail-user-fail-{self.DAY}.json")
 
-    def _spawn(self):
+    def _spawn(self, batched=False):
         env = dict(os.environ)
         env["YIBAN_STATE_DIR"] = self.tmp
         env["YIBAN_MAIL_USER_FAIL_DAILY_CAP"] = "1"
+        call = f"ok = alerts._user_fail_mail_reserve({self.PHONE!r}, {self.DAY!r})\n"
+        body = ("with alerts.batch_user_fail_mail():\n    " + call
+                if batched else call)
         code = (
             "import os, sys, time\n"
             f"sys.path.insert(0, {BASE!r})\n"
             "from yiban.adapters.notifier import report as alerts\n"
             f"while not os.path.exists({self.barrier!r}):\n"
             "    time.sleep(0.005)\n"
-            f"print('RESULT', alerts._user_fail_mail_reserve({self.PHONE!r}, {self.DAY!r}))\n"
+            + body
+            + "print('RESULT', ok)\n"
         )
         return subprocess.Popen([sys.executable, "-c", code], env=env, cwd=BASE,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True)
 
-    def test_concurrent_reserve_does_not_exceed_cap(self):
-        procs = [self._spawn(), self._spawn()]
+    def _collect(self, procs):
         with open(self.barrier, "w", encoding="utf-8") as f:
             f.write("go")
         outs = []
@@ -833,9 +865,27 @@ class QuotaConcurrencyTest(unittest.TestCase):
             line = [ln for ln in out.splitlines() if ln.startswith("RESULT ")]
             self.assertEqual(len(line), 1, f"子进程输出异常: {out!r} / {err!r}")
             outs.append(line[0].split()[-1] == "True")
+        return outs
+
+    def test_concurrent_reserve_does_not_exceed_cap(self):
+        outs = self._collect([self._spawn(), self._spawn()])
         self.assertEqual(sum(outs), 1, "cap=1：两个进程只许一个预占成功")
         self.assertEqual(_read(self.path), {self.PHONE: 1},
                          "落盘计数不得超发")
+
+    def test_concurrent_batch_reserve_keeps_disk_total_bounded(self):
+        """两个进程都在批量区内预占：返回值可各自 True，但盘上总量仍不得超 cap。
+
+        批量区的跨进程窗口允许两边都判定"可发"（这是已登记的语义），但两次落盘
+        都在文件锁内重读磁盘：后落盘者看见 cap 已满，不再写入。故不变量是
+        **盘上总量 ≤ cap**，`reserve` 返回值上界只是进程数。
+        """
+        outs = self._collect([self._spawn(batched=True), self._spawn(batched=True)])
+        self.assertGreaterEqual(sum(outs), 1, "至少一个进程必须预占成功")
+        self.assertLessEqual(sum(outs), 2, "返回值上界＝进程数（批量窗口已登记）")
+        data = _read(self.path)
+        self.assertLessEqual(sum(data.values()), 1, "盘上总量不得超发")
+        self.assertEqual(data.get(self.PHONE, 0), 1, "该账号只许记一次用量")
 
 
 if __name__ == "__main__":
