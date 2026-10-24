@@ -31,6 +31,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from yiban.core import clock
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUN_SH = os.path.join(BASE, "run.sh")
 RUN_PROBE_SH = os.path.join(BASE, "run_probe.sh")
@@ -394,8 +396,8 @@ class GlobalPauseRedLineE2ETest(unittest.TestCase):
 
 
 def _today():
-    from datetime import datetime
-    return datetime.now().strftime("%Y-%m-%d")
+    """run.sh 按日状态文件名取业务日（北京 +8），与生产 `business_day` 同源。"""
+    return clock.today()
 
 
 if __name__ == "__main__":
