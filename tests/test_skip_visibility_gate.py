@@ -298,6 +298,12 @@ KNOWN_SKIP_SITES = json.loads(r"""
    "需要 node 真跑前端纯函数（取不到则整类 skip）"
   ]
  ],
+ "tests/test_fallback_cron_cwd_e2e.py": [
+  [
+   "skipIf",
+   "需要 bash（Git Bash/WSL）"
+  ]
+ ],
  "tests/test_fallback_gates.py": [
   [
    "skipTest",
