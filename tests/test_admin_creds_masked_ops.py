@@ -330,6 +330,30 @@ class AdversarialFixes0820Test(unittest.TestCase):
             self.assertNotIn("13800138000", text,
                              f"到期清除后 {os.path.basename(p)} 仍残留手机号")
 
+    def test_user_delete_and_batch_delete_clear_state_files(self):
+        """管理员删用户 / 批量删用户也要清状态文件（R3-006 同族 D-10）。"""
+        for mode in ("single", "batch"):
+            with self.subTest(mode=mode):
+                self._reset_db()
+                db.create_user("u1@test.local", generate_password_hash(USER_PASS),
+                               role="user")
+                db.add_account({"name": "U", "phone": "13800138000", "password": "p1",
+                                "status": "active", "owner": "u1@test.local"})
+                state_path = os.path.join(self.tmp, f"sign-state-{clock.today()}.json")
+                daily_path = os.path.join(self.tmp, f"sign-daily-{clock.today()}.json")
+                for p in (state_path, daily_path):
+                    with open(p, "w", encoding="utf-8") as f:
+                        json.dump({"13800138000": "success"}, f)
+                if mode == "single":
+                    db.delete_user_with_accounts("u1@test.local")
+                else:
+                    db.batch_user_ops([("delete_user_with_accounts", "u1@test.local")])
+                self.assertIsNone(db.find_user("u1@test.local"))
+                for p in (state_path, daily_path):
+                    text = open(p, encoding="utf-8").read() if os.path.exists(p) else ""
+                    self.assertNotIn("13800138000", text,
+                                     f"{mode} 删用户后 {os.path.basename(p)} 仍残留手机号")
+
     def test_batch_purge_audit_failure_rolls_back(self):
         """批量彻底删除的审计与 ops 同事务：审计失败整体回滚（R3-005）。"""
         from unittest import mock

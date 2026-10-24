@@ -283,11 +283,12 @@ def delete_user_with_accounts(email, allow_last_admin=False, audit_spec=None):
             if audit_spec:
                 _facade().record_in_txn(conn, **audit_spec)
             conn.commit()
-            return cur.rowcount
         except Exception:
             with contextlib.suppress(Exception):
                 conn.rollback()
             raise
+    _facade()._purge_file_facts(phones)
+    return cur.rowcount
 
 
 def set_user_role(email, new_role, allow_last_admin=False, audit_spec=None):
@@ -675,6 +676,7 @@ def batch_user_ops(ops, audit_spec=None):
     回滚时审计行同样不落（拒绝/失败另由调用方单独留痕）。
     """
     conn = _facade().get_conn()
+    all_phones = []
     with _facade()._conn_lock:
         try:
             _facade()._begin_immediate(conn)
@@ -708,6 +710,7 @@ def batch_user_ops(ops, audit_spec=None):
                     conn.execute("DELETE FROM accounts WHERE owner=?", (email,))
                     phones = [r["phone"] for r in rows]
                     _facade()._cascade_phone_owned(conn, phones)
+                    all_phones.extend(phones)
                     conn.execute("DELETE FROM users WHERE email=?", (email,))
                     _delete_user_delete_requests(conn, email)
                 else:
@@ -719,6 +722,7 @@ def batch_user_ops(ops, audit_spec=None):
             with contextlib.suppress(Exception):
                 conn.rollback()
             raise
+    _facade()._purge_file_facts(all_phones)
 
 
 def _delete_user_delete_requests(conn, email):
