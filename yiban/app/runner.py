@@ -724,7 +724,8 @@ def main(argv=None):
     # 一轮的按日状态与失败提醒额度文件**在进程内累积、按界整批落盘**（写放大治理，
     # 见 `state_io` 的"写放大治理"段与 131 行为补丁账）：本轮每个账号各写一次全量文件
     # 的读改写会使写盘量随账号数平方增长。上下文退出即整批落盘（轮末数据必须可见），
-    # 中途按 `_FLUSH_MAX`/`_FLUSH_SEC` 与轮末触发；SIGTERM 与 atexit 另有兜底冲刷。
+    # 中途按 `_FLUSH_MAX`/`_FLUSH_SEC` 与轮末触发。SIGTERM 不另做冲刷：处理器只标记
+    # 终止并退出，SystemExit 展开会让上面两个上下文退出并把待写批次落盘。
     # 上下文外（探针/直接调用）行为不变：逐条立即落盘。
     with state_io.batch_sign_state(), alerts.batch_user_fail_mail():
         if args.only:
