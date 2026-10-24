@@ -203,7 +203,15 @@ function openForm(index: number | null): void {
   };
   formOpen.value = true;
   // detail 端点只认全局下标；本人视图下标是过滤后的，二者不可混用（R3-023）。
-  if (isAdmin.value && index !== null) void loadDetail(a?.admin_index ?? index);
+  // 缺 admin_index 时 fail-closed：不回退到过滤后下标（那正是旧缺陷）。
+  if (isAdmin.value && index !== null) {
+    const detailIndex = a?.admin_index;
+    if (detailIndex === undefined) {
+      formError.value = "账号列表已更新，请刷新页面后重试";
+      return;
+    }
+    void loadDetail(detailIndex);
+  }
   if (isAdmin.value && index === null) void loadBindableUsers();
 }
 

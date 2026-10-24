@@ -909,9 +909,19 @@ def api_accounts_batch():
             if len(ops) > _ops_before:
                 batch_targets.append(acc.get("phone", ""))
         done = len(ops)
+        # 批量操作留目标清单（脱敏截断），破坏事后可从审计还原"动了谁"。
+        # 审计与 ops 同事务（R3-005）：批量里可能含 purge，审计失败必须整体回滚。
+        batch_audit_spec = {
+            "username": session.get("username") or "?",
+            "action": "account_batch",
+            "target": action,
+            "detail": (f"处理 {done} 个: " + ",".join(
+                _masking.mask_phone(str(p)) for p in (batch_targets or [])[:20]
+            ))[:200],
+        }
         if ops:
             try:
-                db.batch_account_ops(ops)
+                db.batch_account_ops(ops, audit_spec=batch_audit_spec)
             except db.DuplicateOwnerError:
                 db.audit(
                     session.get("username") or "?",
@@ -942,15 +952,10 @@ def api_accounts_batch():
                     "【易班签到】您提交的账号未通过审核",
                     _notify_mail._review_reject_mail(_phones, reason),
                 )
-        db.audit(
-            session.get("username") or "?",
-            "account_batch",
-            action,
-            # 批量操作留目标清单（脱敏截断），破坏事后可从审计还原"动了谁"
-            (f"处理 {done} 个: " + ",".join(
-                _masking.mask_phone(str(p)) for p in (batch_targets or [])[:20]
-            ))[:200],
-        )
+        if not ops:
+            # 没有操作（处理 0 个）：无删除可回滚，请求本身仍要留痕。
+            db.audit(batch_audit_spec["username"], batch_audit_spec["action"],
+                     batch_audit_spec["target"], batch_audit_spec["detail"])
         # 软删与彻底删除不再外发即时告警：留痕由上面的审计行承担（动作 + 目标清单），
         # 软删本身可逆（保留期内可恢复），把它当"事故"逐条发信会让真故障淹没。
         accounts = _accounts_data.load_accounts()

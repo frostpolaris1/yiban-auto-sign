@@ -117,6 +117,8 @@ def _purge_expired_deleted(conn):
             )
         _facade()._cascade_phone_owned(conn, phones)
         conn.commit()
+        # 自动到期物理清除同样要清文件面手机号（R3-006 同族）。
+        _facade()._purge_file_facts(phones)
     except Exception as e:
         with contextlib.suppress(Exception):
             conn.rollback()
