@@ -30,6 +30,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from datetime import timedelta
 
 from werkzeug.security import generate_password_hash
 
@@ -275,6 +276,13 @@ class AdversarialFixes0820Test(unittest.TestCase):
         cred_path = os.path.join(self.tmp, "cred-state.json")
         with open(cred_path, "w", encoding="utf-8") as f:
             json.dump({"13800138000": {"fail_days": 1}}, f)
+        # 保留期是 log 档 365 天：200 天前的文件也必须清（审查 D-1）。
+        old_day = (clock.now() - timedelta(days=200)).strftime("%Y-%m-%d")
+        old_state = os.path.join(self.tmp, f"sign-state-{old_day}.json")
+        old_daily = os.path.join(self.tmp, f"sign-daily-{old_day}.json")
+        for p in (old_state, old_daily):
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump({"13800138000": "success"}, f)
         c = self._client()
         token = self._login_admin(c)
         r = c.post("/api/accounts/0/purge",
@@ -285,7 +293,7 @@ class AdversarialFixes0820Test(unittest.TestCase):
         rows = db.get_conn().execute(
             "SELECT COUNT(*) FROM audit_logs WHERE action='account_purge'").fetchone()[0]
         self.assertEqual(rows, 1)
-        for p in (state_path, cred_path):
+        for p in (state_path, cred_path, old_state, old_daily):
             text = open(p, encoding="utf-8").read() if os.path.exists(p) else ""
             self.assertNotIn("13800138000", text, f"{os.path.basename(p)} 仍残留手机号")
 
@@ -304,6 +312,81 @@ class AdversarialFixes0820Test(unittest.TestCase):
                    headers={"X-CSRF-Token": token})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertEqual(db.load_accounts(), [])
+
+    def test_expiry_cleanup_clears_state_files(self):
+        """软删到期自动清除也必须清状态文件（R3-006 同族）。"""
+        self._reset_db()
+        acc_id = self._add_account("13800138000")
+        db.set_account_deleted(acc_id, 1, "2020-01-01 00:00:00")
+        state_path = os.path.join(self.tmp, f"sign-state-{clock.today()}.json")
+        daily_path = os.path.join(self.tmp, f"sign-daily-{clock.today()}.json")
+        for p in (state_path, daily_path):
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump({"13800138000": "success"}, f)
+        db.purge_expired_deleted_accounts()
+        self.assertEqual(db.load_accounts(), [], "超期软删账号必须被物理清除")
+        for p in (state_path, daily_path):
+            text = open(p, encoding="utf-8").read() if os.path.exists(p) else ""
+            self.assertNotIn("13800138000", text,
+                             f"到期清除后 {os.path.basename(p)} 仍残留手机号")
+
+    def test_batch_purge_audit_failure_rolls_back(self):
+        """批量彻底删除的审计与 ops 同事务：审计失败整体回滚（R3-005）。"""
+        from unittest import mock
+        self._reset_db()
+        self._soft_deleted_account()
+        c = self._client()
+        token = self._login_admin(c)
+        with mock.patch.object(db, "record_in_txn", side_effect=RuntimeError("audit down")):
+            r = c.post("/api/accounts/batch",
+                       json={"action": "purge", "ids": [0],
+                             "phones": ["13800138000"],
+                             "confirm_password": ADMIN_PASS},
+                       headers={"X-CSRF-Token": token})
+        self.assertGreaterEqual(r.status_code, 500, r.get_data(as_text=True))
+        self.assertEqual(len(db.load_accounts()), 1, "审计失败必须回滚批量物理删除")
+
+    def test_self_delete_audit_failure_rolls_back(self):
+        """自助注销的确认审计与软删同事务：审计失败必须回滚（R3-005 同族）。"""
+        from unittest import mock
+        self._reset_db()
+        db.create_user("u1@test.local", generate_password_hash(USER_PASS), role="user")
+        c = self._client()
+        r = c.post("/api/login", json={"username": "u1@test.local",
+                                       "password": USER_PASS})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        token = c.get("/api/me").get_json()["csrf_token"]
+        with mock.patch.object(db, "record_in_txn", side_effect=RuntimeError("audit down")):
+            try:
+                r = c.post("/api/me/delete", json={"password": USER_PASS},
+                           headers={"X-CSRF-Token": token})
+            except RuntimeError:
+                pass
+            else:
+                self.assertGreaterEqual(r.status_code, 500, r.get_data(as_text=True))
+        u = db.find_user("u1@test.local")
+        self.assertIsNotNone(u, "审计失败不得删除用户行")
+        self.assertFalse(u.get("deleted"), "审计失败必须回滚软注销")
+
+    def test_core_table_missing_fails_loudly(self):
+        """核心表缺表必须响亮失败，不能被可选表守卫掩盖（R3-012 边界）。"""
+        self._reset_db()
+        self._soft_deleted_account()
+        conn = db.get_conn()
+        conn.execute("DROP TABLE time_prefs")
+        conn.commit()
+        c = self._client()
+        token = self._login_admin(c)
+        try:
+            r = c.post("/api/accounts/0/purge",
+                       json={"phone": "13800138000", "confirm_password": ADMIN_PASS},
+                       headers={"X-CSRF-Token": token})
+        except Exception:
+            pass  # 测试客户端可能上抛；关键是删除必须回滚
+        else:
+            self.assertGreaterEqual(r.status_code, 500, r.get_data(as_text=True))
+        self.assertEqual(len(db.load_accounts()), 1,
+                         "核心表缺表时删号必须回滚，不得静默成功")
 
     def test_review_with_mismatched_phone_rejected_409(self):
         self._reset_db()

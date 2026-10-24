@@ -845,3 +845,29 @@ def _clear_session_cache_by_phones(conn, phones):
     if not _table_columns(conn, "session_cache"):
         return  # v8 可选迁移未落地：无缓存可清，不得把改绑/注销打成 500
     conn.executemany("DELETE FROM session_cache WHERE phone=?", [(p,) for p in phones])
+
+
+def _purge_file_facts(phones):
+    """物理删除账号后清理文件面的手机号事实（R3-006）。
+
+    覆盖所有物理删除路径：单条 purge、批量 purge、按 owner 清空、整表替换、
+    管理员硬清除用户、软删到期自动清除。必须在 DB 事务**提交之后**调用；
+    文件清理失败只告警，不回滚已完成的删除。
+
+    延迟导入 `state_io`：它在顶层 import `yiban.engine`，persistence 顶层导入会成环。
+    """
+    if not phones:
+        return
+    try:
+        from yiban.adapters.statefiles import cred_state, state_io
+    except Exception as e:  # 导入失败不得影响已提交的删除
+        logger.warning("清理已删账号的文件面失败（状态模块导入异常）: %s", e)
+        return
+    for phone in dict.fromkeys(str(p or "").strip() for p in phones):
+        if not phone:
+            continue
+        try:
+            state_io.purge_phone_from_sign_states(phone)
+            cred_state.clear(phone)
+        except Exception as e:  # 单个文件失败不阻断其余账号
+            logger.warning("清理已删账号的文件面手机号失败: %s", type(e).__name__)
