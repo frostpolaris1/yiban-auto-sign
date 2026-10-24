@@ -809,9 +809,17 @@ def _cascade_phone_owned(conn, phones):
         return
     rows = [(p,) for p in phones]
     conn.executemany("DELETE FROM time_prefs WHERE phone=?", rows)
-    conn.executemany("DELETE FROM session_cache WHERE phone=?", rows)
+    # session_cache（v8）与 verify_jobs（v15）是**可选迁移**产物：迁移失败时
+    # user_version 不提升，链尾产物核对只看 `target <= user_version` 的档，表可以
+    # 合法地不存在而进程照常服务。本函数在强制路径上（删号/整表保存），无条件 DELETE
+    # 会抛 OperationalError 并回滚整个删号事务。故只对可选表做存在性守卫。
+    # 核心表（time_prefs / sign_events / sign_claims / sign_tasks）不守卫：
+    # 缺表是 schema 损坏，必须响亮失败，不能被守卫掩盖。
+    if _table_columns(conn, "session_cache"):
+        conn.executemany("DELETE FROM session_cache WHERE phone=?", rows)
     conn.executemany("DELETE FROM sign_events WHERE phone=?", rows)
-    conn.executemany("DELETE FROM verify_jobs WHERE phone=?", rows)
+    if _table_columns(conn, "verify_jobs"):
+        conn.executemany("DELETE FROM verify_jobs WHERE phone=?", rows)
     conn.executemany("DELETE FROM sign_claims WHERE phone=?", rows)
     conn.executemany("DELETE FROM sign_tasks WHERE phone=?", rows)
     # run_events 只随**可选**迁移 v21 建出：v21 失败时版本不提升、链尾产物核对
@@ -834,4 +842,6 @@ def _clear_session_cache_by_phones(conn, phones):
     """
     if not phones:
         return
+    if not _table_columns(conn, "session_cache"):
+        return  # v8 可选迁移未落地：无缓存可清，不得把改绑/注销打成 500
     conn.executemany("DELETE FROM session_cache WHERE phone=?", [(p,) for p in phones])

@@ -115,7 +115,8 @@ class AdversarialFixes0820Test(unittest.TestCase):
         return c.get("/api/me").get_json()["csrf_token"]
 
     def _add_account(self, phone, name="A"):
-        db.add_account({"name": name, "phone": phone, "password": "p1", "status": "active"})
+        return db.add_account({"name": name, "phone": phone, "password": "p1",
+                               "status": "active"})
 
     # ---- 1. 空凭据 / 部分配置管理员登录（P1 修复）----
     def test_fully_unconfigured_admin_empty_creds_rejected(self):
@@ -218,6 +219,91 @@ class AdversarialFixes0820Test(unittest.TestCase):
                    headers={"X-CSRF-Token": token})
         self.assertEqual(r.status_code, 409, r.get_data(as_text=True))
         self.assertEqual(len(db.load_accounts()), 2, "409 后不应有账号被物理删除")
+
+    # ---- 4. 自助面下标：本人视图 vs 全局（R3-023）----
+    def test_my_accounts_exposes_global_admin_index(self):
+        """`index` 是本人视图下标，`admin_index` 是全局下标；detail 只认后者。"""
+        self._reset_db()
+        db.add_account({"name": "别人", "phone": "13800138000", "password": "p1",
+                        "status": "active", "owner": "u1@test.local"})
+        db.add_account({"name": "管理员的", "phone": "13900139000", "password": "p2",
+                        "status": "active", "owner": "admin"})
+        c = self._client()
+        self._login_admin(c)
+        r = c.get("/api/my-accounts")
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        mine = r.get_json()["accounts"]
+        self.assertEqual(len(mine), 1, "管理员只应看到自己名下账号")
+        self.assertEqual(mine[0]["index"], 0, "本人视图下标从 0 起")
+        self.assertEqual(mine[0]["admin_index"], 1, "全局下标必须是真实位置")
+        self.assertEqual(db.load_accounts()[mine[0]["admin_index"]]["phone"], "13900139000")
+
+    # ---- 5. purge 事务与可选表（R3-005 / R3-012）----
+    def _soft_deleted_account(self, phone="13800138000"):
+        acc_id = self._add_account(phone)
+        db.set_account_deleted(acc_id, 1, clock.ts())
+        return acc_id
+
+    def test_purge_writes_audit_in_same_transaction(self):
+        """审计写失败：删除必须回滚，账号仍在，且不留审计行。"""
+        from unittest import mock
+        self._reset_db()
+        self._soft_deleted_account()
+        c = self._client()
+        token = self._login_admin(c)
+        with mock.patch.object(db, "record_in_txn", side_effect=RuntimeError("audit down")):
+            try:
+                r = c.post("/api/accounts/0/purge",
+                           json={"phone": "13800138000", "confirm_password": ADMIN_PASS},
+                           headers={"X-CSRF-Token": token})
+            except RuntimeError:
+                pass  # 测试客户端默认向上抛；两种形态都要求非 2xx
+            else:
+                self.assertGreaterEqual(r.status_code, 500, r.get_data(as_text=True))
+        self.assertEqual(len(db.load_accounts()), 1, "审计失败必须回滚物理删除")
+        rows = db.get_conn().execute(
+            "SELECT COUNT(*) FROM audit_logs WHERE action='account_purge'").fetchone()[0]
+        self.assertEqual(rows, 0)
+
+    def test_purge_success_writes_audit_and_clears_state_files(self):
+        """正常路径：删除、审计、状态文件手机号清理三者一致（R3-005 / R3-006）。"""
+        self._reset_db()
+        self._soft_deleted_account()
+        state_path = os.path.join(self.tmp, f"sign-state-{clock.today()}.json")
+        with open(state_path, "w", encoding="utf-8") as f:
+            json.dump({"13800138000": {"status": "success", "message": "13800138000"}}, f)
+        cred_path = os.path.join(self.tmp, "cred-state.json")
+        with open(cred_path, "w", encoding="utf-8") as f:
+            json.dump({"13800138000": {"fail_days": 1}}, f)
+        c = self._client()
+        token = self._login_admin(c)
+        r = c.post("/api/accounts/0/purge",
+                   json={"phone": "13800138000", "confirm_password": ADMIN_PASS},
+                   headers={"X-CSRF-Token": token})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(db.load_accounts(), [], "账号必须被物理删除")
+        rows = db.get_conn().execute(
+            "SELECT COUNT(*) FROM audit_logs WHERE action='account_purge'").fetchone()[0]
+        self.assertEqual(rows, 1)
+        for p in (state_path, cred_path):
+            text = open(p, encoding="utf-8").read() if os.path.exists(p) else ""
+            self.assertNotIn("13800138000", text, f"{os.path.basename(p)} 仍残留手机号")
+
+    def test_purge_tolerates_missing_optional_tables(self):
+        """v8/v15 可选迁移未落地：删号不得因缺表 500（R3-012）。"""
+        self._reset_db()
+        self._soft_deleted_account()
+        conn = db.get_conn()
+        conn.execute("DROP TABLE session_cache")
+        conn.execute("DROP TABLE verify_jobs")
+        conn.commit()
+        c = self._client()
+        token = self._login_admin(c)
+        r = c.post("/api/accounts/0/purge",
+                   json={"phone": "13800138000", "confirm_password": ADMIN_PASS},
+                   headers={"X-CSRF-Token": token})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertEqual(db.load_accounts(), [])
 
     def test_review_with_mismatched_phone_rejected_409(self):
         self._reset_db()
