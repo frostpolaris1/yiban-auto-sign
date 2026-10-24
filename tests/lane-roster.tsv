@@ -145,6 +145,7 @@ fast	tests/test_exit_surface_generation.py
 fast	tests/test_exit_surface_repr_mail.py
 fast	tests/test_fake_upstream_fault_knobs_gate.py
 fast	tests/test_fallback_elbow_discrimination_e2e.py
+fast	tests/test_fallback_cron_cwd_e2e.py	# 极简环境从 $HOME 起兜底脚本，桩入口留痕（本机 1.5s）
 fast	tests/test_fallback_event_yield.py
 fast	tests/test_fallback_gates.py
 fast	tests/test_fallback_log_noise.py
