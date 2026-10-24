@@ -6,6 +6,10 @@
 
 一封邮件、以及一次多收件人告警的全部邮件，共用一份时间预算。超预算即放弃剩余
 条目，并留一行可定位的 warning。单个 socket 操作的超时不是整封的预算（工单 ba-p09-01）。
+
+「连接失败」在同一条目内有界重试（最多 2 次，退避 5s/15s，工单 0eul）。认证失败、
+发送被拒、其他失败一律不重试。DATA 已发出后的任何失败也不重试（防双发）——判据是
+会话阶段，不是异常类型。重试次数与退避取值只有 `_CONNECT_RETRY_BACKOFF_SEC` 一处。
 """
 import hashlib
 import logging
@@ -33,6 +37,11 @@ _OP_TIMEOUT_SEC = 15
 #: 推导：连接、登录、投递各给一次操作超时。预算只截停**条目循环的开始**。已在跑的
 #: 那一条会跑完自己的操作序列。故整封耗时上界 = 预算 + 一条条目的最坏耗时。
 _TOTAL_BUDGET_SEC = 3 * _OP_TIMEOUT_SEC
+
+#: 「连接失败」类的有界重试退避（秒）。**唯一定义点**：重试次数 = 本元组长度，
+#: 故最多 2 次重试，间隔依次为 5 秒、15 秒。认证失败、发送被拒、其他失败不重试；
+#: DATA 已发出后的任何失败也不重试（防双发，判据见 `_retryable_connect_error`）。
+_CONNECT_RETRY_BACKOFF_SEC = (5, 15)
 
 # 发信条目 port 非法的发送侧一次性告警（同 config._port_warned 风格；条目 port 与旧键
 # SMTP_PORT 来源不同，分开记旗避免互相吞掉对方的告警）
@@ -79,6 +88,16 @@ def _classify_send_error(e):
                       smtplib.SMTPNotSupportedError)):
         return "连接失败"
     return "其他失败"
+
+
+def _retryable_connect_error(e, phase):
+    """仅「连接阶段失败」可重试。判据是会话阶段，不是异常类型。
+
+    `phase == "send"` 表示已进入 `sendmail`（MAIL/RCPT/DATA 全在里面）。此时任何
+    异常都可能发生在 DATA 已发出之后：重试会让同封邮件被服务器收下两次。故该阶段
+    一律不重试，即使粗分类仍是「连接失败」（如 DATA 后掉线的 SMTPServerDisconnected）。
+    """
+    return phase != "send" and _classify_send_error(e) == "连接失败"
 
 
 #: Message-ID 的域段：确定性幂等键的固定后缀（不含主机名，跨条目/跨部署同形）
@@ -138,6 +157,11 @@ def _send(subject, text, to, deadline=None):
     （"第 N 条目重投同一封"，MF-90）；条目 port 非法回退 465 并记一次性告警；目标为
     内网/保留地址时进程内只记一次告警但**不**停发；全部失败返回 False。
 
+    「连接失败」先在同一条目内有界重试（`_CONNECT_RETRY_BACKOFF_SEC`，最多 2 次，
+    退避 5s/15s），每次重试各记一行日志；重试用尽或不可重试时按原口径记最终失败
+    warning 并换下一条。认证失败、发送被拒、其他失败不重试。`sendmail` 阶段（MAIL/
+    RCPT/DATA）的任何失败都不重试——DATA 可能已发出，重试会导致同封双发。
+
     `deadline` 是整封预算的到期时刻（单调钟秒）。缺省按 `_TOTAL_BUDGET_SEC` 在本函数
     内起算；`send_admin_alert` 传入同一个到期时刻，让多收件人共用一份预算。到期即放弃
     剩余条目并记 warning；每次 socket 操作的超时取"剩余预算与该操作超时的较小者"。
@@ -172,15 +196,13 @@ def _send(subject, text, to, deadline=None):
     for idx, entry in enumerate(entries):
         # 整封预算：条目循环逐条吃 socket 超时，最坏 = 条目数 × 操作数 × 每操作超时
         # （工单 ba-p09-01）。到点即放弃剩余条目；已在途的那次操作无法中断，故预算
-        # 只截停"还开不开始下一条"。剩余预算同时压住本条的每次 socket 操作超时。
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
+        # 只截停"还开不开始下一次连接"。剩余预算同时压住每次 socket 操作超时。
+        if deadline - time.monotonic() <= 0:
             logger.warning(
                 "邮件通知整封超时，放弃剩余条目（已试 %d/%d 条目，id=%s）: %s → %s",
                 idx, len(entries), message_id, subject, config._mask_addr(to),
             )
             return False
-        op_timeout = min(_OP_TIMEOUT_SEC, remaining)
         host = str(entry.get("host") or "").strip()
         port = entry.get("port", 465)
         reason = config.check_smtp_host(host)
@@ -219,82 +241,117 @@ def _send(subject, text, to, deadline=None):
         user = escape_line_breaks(str(entry.get("user") or "").strip())
         password = str(entry.get("pass") or "")
 
-        try:
-            # MIME 构造与序列化一起进 try：孤立代理对这类坏字符在
-            # `Header(...).encode()` / `as_string()` 时才真正抛 UnicodeEncodeError，
-            # 构造语句挪进来但 except 不收口等于没挪（下方 Exception 分支）。
-            if html_body:
-                # multipart/alternative：parts 按"偏好递增"排（先 plain 后 html），
-                # 不支持 HTML 的客户端与终端读到的仍是排好的纯文本——排版层只是增益，
-                # 不构成新的送达依赖。
-                msg = MIMEMultipart("alternative")
-                msg.attach(MIMEText(plain, "plain", "utf-8"))
-                msg.attach(MIMEText(html_body, "html", "utf-8"))
-            else:
-                msg = MIMEText(plain, "plain", "utf-8")
-            msg["Subject"] = Header(subject, "utf-8")
-            msg["From"] = user
-            msg["To"] = to
-            msg["Message-ID"] = message_id
-
-            # 显式证书校验——smtplib 默认 context（ssl._create_stdlib_context）
-            # verify_mode=CERT_NONE 不校验服务器证书，SMTP 授权码可被中间人窃取后
-            # 以系统名义向用户发钓鱼邮件；主流服务商均为公共 CA，无兼容性损失
-            ctx = ssl.create_default_context()
-            server = None
-            try:
-                if port == 465:
-                    server = smtplib.SMTP_SSL(host, port, timeout=op_timeout, context=ctx)
-                else:
-                    server = smtplib.SMTP(host, port, timeout=op_timeout)
-                    server.starttls(context=ctx)
-                server.login(user, password)
-                accepted = server.sendmail(user, [to], msg.as_string())
-            finally:
-                # QUIT/close 失败不属于投递结论：sendmail 返回即已 ACK（ba-p09-02）。
-                # 关连接的异常在这里被吞掉，不进入下面的失败分支。
-                if server is not None:
-                    _quiet_quit(server)
-            if accepted:
-                # sendmail 的返回 dict 是"其余收件人收下、这些被拒"的结构化结果，
-                # 与下面的 SMTPRecipientsRefused 同一本账，此前同样零消费者。
-                _record_recipient_refusals(accepted, host, idx + 1, len(entries), message_id)
+        # 同一条目内的连接重试：次数与间隔只由 _CONNECT_RETRY_BACKOFF_SEC 决定。
+        retry_no = 0
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 logger.warning(
-                    "邮件通知部分收件人被拒（SMTP 条目 %d/%d host=%s，id=%s）: %s → %s",
-                    idx + 1, len(entries), host or "?", message_id,
-                    subject, config._mask_addr(to),
+                    "邮件通知整封超时，放弃剩余条目（已试 %d/%d 条目，id=%s）: %s → %s",
+                    idx, len(entries), message_id, subject, config._mask_addr(to),
                 )
                 return False
-            logger.info("邮件通知已发送: %s → %s（id=%s，条目 %d/%d）",
-                        subject, config._mask_addr(to), message_id, idx + 1, len(entries))
-            return True
-        except (OSError, smtplib.SMTPException) as e:
-            # 不回显授权码与异常详情（异常文本可能包含敏感信息），只记序号、脱敏地址、
-            # 幂等键与失败粗分类（原始类型名会泄露端口/超时指纹，原因见
-            # _classify_send_error）；OSError 已覆盖 socket 异常（py3 中 socket.error
-            # 是其别名）
-            if isinstance(e, smtplib.SMTPRecipientsRefused):
-                _record_recipient_refusals(e.recipients, host, idx + 1, len(entries),
-                                           message_id)
-            logger.warning(
-                "邮件通知发送失败（SMTP 条目 %d/%d host=%s，%s，id=%s）: %s → %s",
-                idx + 1, len(entries), host or "?", _classify_send_error(e),
-                message_id, subject, config._mask_addr(to),
-            )
-            if idx + 1 < len(entries):
-                # 换条目重投的有界可观测记录（MF-90）：重投的是同一封（同幂等键），
-                # 不再无声；上界 = smtp_list() 长度（配置面 MAIL_SMTPS_MAX=10 封顶）。
-                logger.info(
-                    "同封重投：条目 %d/%d 接手（id=%s）", idx + 2, len(entries), message_id)
-        except Exception as e:
-            # 消息级缺陷（构造/序列化对坏字符敏感，如孤立代理对 →
-            # UnicodeEncodeError）：换条目重投的是同一封、必然同样失败，直接按
-            # "本封未送达"收口。不在本层收口的话异常会抛回调用方（`ba-p05-01`
-            # 前多为持 `_file_lock` 同步发信的 web 路由），等于让一封坏邮件在
-            # 锁内爆 500、并把排在其后的审计留痕一起带走。细节走 ascii() 转义：
-            # 坏字符正是失败原因本身，原样进日志会在写流时二次爆。
-            logger.warning("邮件构造/序列化失败（本封不再换条目重试）: %s", ascii(e))
-            return False
+            op_timeout = min(_OP_TIMEOUT_SEC, remaining)
+            # 会话阶段：连接与认证阶段失败可重试；进入 sendmail 后任何失败都按
+            # "DATA 可能已发出"处理，一律不重试（见 `_retryable_connect_error`）。
+            phase = "connect"
+            server = None
+            try:
+                # MIME 构造与序列化一起进 try：孤立代理对这类坏字符在
+                # `Header(...).encode()` / `as_string()` 时才真正抛 UnicodeEncodeError，
+                # 构造语句挪进来但 except 不收口等于没挪（下方 Exception 分支）。
+                if html_body:
+                    # multipart/alternative：parts 按"偏好递增"排（先 plain 后 html），
+                    # 不支持 HTML 的客户端与终端读到的仍是排好的纯文本——排版层只是增益，
+                    # 不构成新的送达依赖。
+                    msg = MIMEMultipart("alternative")
+                    msg.attach(MIMEText(plain, "plain", "utf-8"))
+                    msg.attach(MIMEText(html_body, "html", "utf-8"))
+                else:
+                    msg = MIMEText(plain, "plain", "utf-8")
+                msg["Subject"] = Header(subject, "utf-8")
+                msg["From"] = user
+                msg["To"] = to
+                msg["Message-ID"] = message_id
+
+                # 显式证书校验——smtplib 默认 context（ssl._create_stdlib_context）
+                # verify_mode=CERT_NONE 不校验服务器证书，SMTP 授权码可被中间人窃取后
+                # 以系统名义向用户发钓鱼邮件；主流服务商均为公共 CA，无兼容性损失
+                ctx = ssl.create_default_context()
+                try:
+                    if port == 465:
+                        server = smtplib.SMTP_SSL(host, port, timeout=op_timeout, context=ctx)
+                    else:
+                        server = smtplib.SMTP(host, port, timeout=op_timeout)
+                        server.starttls(context=ctx)
+                    phase = "auth"
+                    server.login(user, password)
+                    phase = "send"
+                    accepted = server.sendmail(user, [to], msg.as_string())
+                finally:
+                    # QUIT/close 失败不属于投递结论：sendmail 返回即已 ACK（ba-p09-02）。
+                    # 关连接的异常在这里被吞掉，不进入下面的失败分支。
+                    if server is not None:
+                        _quiet_quit(server)
+                if accepted:
+                    # sendmail 的返回 dict 是"其余收件人收下、这些被拒"的结构化结果，
+                    # 与下面的 SMTPRecipientsRefused 同一本账，此前同样零消费者。
+                    _record_recipient_refusals(accepted, host, idx + 1, len(entries), message_id)
+                    logger.warning(
+                        "邮件通知部分收件人被拒（SMTP 条目 %d/%d host=%s，id=%s）: %s → %s",
+                        idx + 1, len(entries), host or "?", message_id,
+                        subject, config._mask_addr(to),
+                    )
+                    return False
+                logger.info("邮件通知已发送: %s → %s（id=%s，条目 %d/%d）",
+                            subject, config._mask_addr(to), message_id, idx + 1, len(entries))
+                return True
+            except (OSError, smtplib.SMTPException) as e:
+                # 不回显授权码与异常详情（异常文本可能包含敏感信息），只记序号、脱敏地址、
+                # 幂等键与失败粗分类（原始类型名会泄露端口/超时指纹，原因见
+                # _classify_send_error）；OSError 已覆盖 socket 异常（py3 中 socket.error
+                # 是其别名）
+                if isinstance(e, smtplib.SMTPRecipientsRefused):
+                    _record_recipient_refusals(e.recipients, host, idx + 1, len(entries),
+                                               message_id)
+                classification = _classify_send_error(e)
+                delay = None
+                if (retry_no < len(_CONNECT_RETRY_BACKOFF_SEC)
+                        and _retryable_connect_error(e, phase)):
+                    delay = _CONNECT_RETRY_BACKOFF_SEC[retry_no]
+                    # 退避也吃整封预算：睡醒后没有剩余预算就不再开新连接。
+                    if deadline - time.monotonic() - delay <= 0:
+                        delay = None
+                if delay is not None:
+                    logger.warning(
+                        "邮件通知连接失败，%d 秒后重试（SMTP 条目 %d/%d host=%s，"
+                        "第 %d/%d 次重试，id=%s）",
+                        delay, idx + 1, len(entries), host or "?",
+                        retry_no + 1, len(_CONNECT_RETRY_BACKOFF_SEC), message_id,
+                    )
+                    time.sleep(delay)
+                    retry_no += 1
+                    continue
+                logger.warning(
+                    "邮件通知发送失败（SMTP 条目 %d/%d host=%s，%s，id=%s）: %s → %s",
+                    idx + 1, len(entries), host or "?", classification,
+                    message_id, subject, config._mask_addr(to),
+                )
+                if idx + 1 < len(entries):
+                    # 换条目重投的有界可观测记录（MF-90）：重投的是同一封（同幂等键），
+                    # 不再无声；上界 = smtp_list() 长度（配置面 MAIL_SMTPS_MAX=10 封顶）。
+                    logger.info(
+                        "同封重投：条目 %d/%d 接手（id=%s）", idx + 2, len(entries), message_id)
+                break
+            except Exception as e:
+                # 消息级缺陷（构造/序列化对坏字符敏感，如孤立代理对 →
+                # UnicodeEncodeError）：换条目重投的是同一封、必然同样失败，直接按
+                # "本封未送达"收口。不在本层收口的话异常会抛回调用方（`ba-p05-01`
+                # 前多为持 `_file_lock` 同步发信的 web 路由），等于让一封坏邮件在
+                # 锁内爆 500、并把排在其后的审计留痕一起带走。细节走 ascii() 转义：
+                # 坏字符正是失败原因本身，原样进日志会在写流时二次爆。
+                logger.warning("邮件构造/序列化失败（本封不再换条目重试）: %s", ascii(e))
+                return False
     return False
 
 

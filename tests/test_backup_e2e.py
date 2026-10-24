@@ -33,6 +33,8 @@ import tarfile
 import tempfile
 import unittest
 
+from yiban.core import clock
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(BASE, "scripts", "backup.sh")
 SENTINEL = os.path.join(BASE, "scripts", "backup_sentinel.py")
@@ -150,11 +152,14 @@ exit $rc
 
 
 def _today():
-    return datetime.datetime.now().strftime("%Y-%m-%d")
+    """归档名里的业务日：backup.sh 走 `scripts/lib/host_paths.sh::business_day`
+    （`yiban.core.clock`，北京 +8），不是宿主 `date`。UTC 16:00–24:00 窗口内两者差一天。"""
+    return clock.today()
 
 
 def _day_str(offset_days):
-    d = datetime.date.today() - datetime.timedelta(days=offset_days)
+    """业务日往前 offset_days 天（轮转夹具的日期组）。"""
+    d = clock.now().date() - datetime.timedelta(days=offset_days)
     return d.strftime("%Y-%m-%d")
 
 

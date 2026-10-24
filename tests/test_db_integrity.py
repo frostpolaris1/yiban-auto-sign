@@ -888,7 +888,8 @@ class BackupPlaintextP3Test(unittest.TestCase):
         return (raw or b"").decode("utf-8", errors="replace")
 
     def _day(self):
-        return datetime.date.today().strftime("%Y-%m-%d")
+        """归档名里的业务日：backup.sh 走 `yiban.core.clock`（北京 +8），不是宿主 date。"""
+        return clock.today()
 
     def test_plaintext_run_warns_on_stderr_and_exits_dedicated_rc6(self):
         """BACKUP_PLAINTEXT=1 ⇒ 大字告警走 stderr + 专用退出码 6 + 归档真实产出。"""

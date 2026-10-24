@@ -338,16 +338,15 @@ def api_ping():
 
 def api_clock():
     text, color = _signstatus.sign_status()
-    try:
-        tz_offset_min = int(clock.now().astimezone().utcoffset().total_seconds() // 60)
-    except Exception:
-        tz_offset_min = 0
+    # 偏移必须与 `now` 同源：`clock.now()` 是 naive 北京墙上时间，`.astimezone()` 会按
+    # **宿主**时区解释它（UTC 主机得 0），前端按 (tz−浏览器时区) 平移后「今天」退一天。
+    tz_offset_min = int(clock.TZ.utcoffset(None).total_seconds() // 60)
     return jsonify(
         {
             "ok": True,
             "now": clock.now().strftime("%Y-%m-%d %H:%M:%S"),
             "server_ts": int(time.time()),  # 服务器 epoch 秒，供前端平滑走秒与校准
-            "tz_offset_min": tz_offset_min,  # 服务器本地时区相对 UTC 的分钟偏移
+            "tz_offset_min": tz_offset_min,  # 服务器业务时区（CST，与 now 同源）相对 UTC 的分钟偏移
             "sign_status": text,
             "color": color,
         }

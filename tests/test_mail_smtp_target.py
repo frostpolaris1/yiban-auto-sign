@@ -174,6 +174,7 @@ class SendFailureLogGranularityTest(_TransportBase):
                 raise ConnectionRefusedError("connection refused")
 
         with mock.patch("smtplib.SMTP_SSL", Refused), \
+             mock.patch.object(mailer_transport.time, "sleep", lambda _s: None), \
              self.assertLogs("mailer", level="WARNING") as logs:
             self.assertFalse(mailer_transport.send_user("to@example.com", "s", "b"))
         joined = "\n".join(logs.output)
@@ -395,9 +396,9 @@ class MailFailoverTest(_Base):
         os.environ["YIBAN_MAIL_ENABLE"] = "1"
         constructed = []
 
-        class FakeOK:
-            def __init__(self, *a, **k):
-                self.creds = None
+        class FakeServer:
+            def __init__(self, host, *a, **k):
+                self.host = host
 
             def __enter__(self):
                 return self
@@ -406,30 +407,37 @@ class MailFailoverTest(_Base):
                 return False
 
             def login(self, u, p):
-                self.creds = (u, p)
+                if self.host == "down.example.com":
+                    # 认证失败属不可重试类（0eul）：必须直接换条目，不在同条目内重试。
+                    raise smtplib.SMTPAuthenticationError(535, b"auth failed")
 
             def sendmail(self, frm, to, msg):
                 pass
 
+            def quit(self):
+                pass
+
+            def close(self):
+                pass
+
         def factory(*a, **k):
-            # 首条构造即抛 SMTPException，次条返回可用服务（模拟主备 failover）
-            constructed.append("down" if not constructed else "ok")
-            if constructed[-1] == "down":
-                raise smtplib.SMTPException("connection down")
-            return FakeOK()
+            host = a[0] if a else k.get("host")
+            constructed.append(host)
+            return FakeServer(*a, **k)
 
         with mock.patch("smtplib.SMTP_SSL", side_effect=factory):
-            # send_user → _send：第 1 条 SMTPException → 第 2 条成功
+            # send_user → _send：第 1 条认证失败 → 第 2 条成功
             self.assertTrue(mailer_transport.send_user("to@x.com", "subject", "body"))
-        self.assertEqual(constructed, ["down", "ok"], "应按顺序尝试两条 SMTP 条目")
+        self.assertEqual(constructed, ["down.example.com", "ok.example.com"],
+                         "应按顺序尝试两条 SMTP 条目")
 
     def test_failover_logs_both_attempts_and_no_credentials(self):
         self._write_two_entries()
         os.environ["YIBAN_MAIL_ENABLE"] = "1"
 
-        class FakeOK:
-            def __init__(self, *a, **k):
-                pass
+        class FakeServer:
+            def __init__(self, host, *a, **k):
+                self.host = host
 
             def __enter__(self):
                 return self
@@ -438,21 +446,22 @@ class MailFailoverTest(_Base):
                 return False
 
             def login(self, u, p):
-                pass
+                if self.host == "down.example.com":
+                    raise smtplib.SMTPAuthenticationError(535, b"auth failed")
 
             def sendmail(self, frm, to, msg):
                 pass
 
-        def factory(*a, **k):
-            if not getattr(factory, "failed", False):
-                factory.failed = True
-                raise smtplib.SMTPException("connection down")
-            return FakeOK()
+            def quit(self):
+                pass
 
-        with mock.patch("smtplib.SMTP_SSL", side_effect=factory) as m, \
+            def close(self):
+                pass
+
+        with mock.patch("smtplib.SMTP_SSL", side_effect=FakeServer) as m, \
              self.assertLogs("mailer", level="WARNING") as logs:
             self.assertTrue(mailer_transport.send_user("to@x.com", "subject", "body"))
-        self.assertEqual(m.call_count, 2, "两次尝试（首条失败 + 次条成功）")
+        self.assertEqual(m.call_count, 2, "两次尝试（首条失败 + 次条成功；认证失败不重试）")
         joined = "\n".join(logs.output)
         self.assertIn("1/2", joined, "失败日志应含条目序号")
         self.assertIn("down.example.com", joined)
@@ -468,6 +477,7 @@ class MailFailoverTest(_Base):
                 raise OSError("network unreachable")
 
         with mock.patch("smtplib.SMTP_SSL", Boom), \
+             mock.patch.object(mailer_transport.time, "sleep", lambda _s: None), \
              self.assertLogs("mailer", level="WARNING"):
             self.assertFalse(mailer_transport.send_user("to@x.com", "subject", "body"))
 

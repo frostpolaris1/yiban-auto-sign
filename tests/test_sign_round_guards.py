@@ -230,7 +230,11 @@ class ProbeGateTest(unittest.TestCase):
 
 
 class SigtermFlushTest(unittest.TestCase):
-    """签到轮被超时击杀（SIGTERM）时，已收集的管理员告警汇总先发出再退出。"""
+    """签到轮被超时击杀（SIGTERM）时，已收集的管理员告警汇总仍会发出。
+
+    信号处理器本身零 I/O：它只标记终止并存下一次退出钩子；发送发生在
+    解释器退出（`atexit`）阶段。测试直接调用钩子以在进程内观察发送。
+    """
 
     def setUp(self):
         self._summary_backup = list(signin._mail_summary)
@@ -245,20 +249,23 @@ class SigtermFlushTest(unittest.TestCase):
         with mock.patch.object(signin.mailer, "send_admin_alert",
                                return_value=True) as m_send, \
              mock.patch.object(signin.db, "admin_mail_recipients",
-                               return_value=["a@b.c"]), \
-             self.assertRaises(SystemExit):
-            signin._flush_mail_on_sigterm(15, None)
-        self.assertEqual(m_send.call_count, 1, "终止前必须把已收集的告警发出")
+                               return_value=["a@b.c"]):
+            with self.assertRaises(SystemExit):
+                signin._flush_mail_on_sigterm(15, None)
+            m_send.assert_not_called()  # 处理器零 I/O：发送推迟到退出钩子
+            signin._flush_admin_mail_on_exit()
+        self.assertEqual(m_send.call_count, 1, "退出钩子必须把已收集的告警发出")
         args, kwargs = m_send.call_args
         body = render_body(kwargs.get("body") or (args[1] if len(args) > 1 else ""))
         self.assertIn("超时", body, "汇总需标明本轮被超时终止")
         self.assertEqual(signin._mail_summary, [], "发送后清空，正常收尾不重复")
 
     def test_sigterm_noop_without_pending_mail(self):
-        """无待发告警：不产生任何发送（不重复告警）。"""
-        with mock.patch.object(signin.mailer, "send_admin_alert") as m_send, \
-             self.assertRaises(SystemExit):
-            signin._flush_mail_on_sigterm(15, None)
+        """无待发告警：退出钩子不产生任何发送（不重复告警）。"""
+        with mock.patch.object(signin.mailer, "send_admin_alert") as m_send:
+            with self.assertRaises(SystemExit):
+                signin._flush_mail_on_sigterm(15, None)
+            signin._flush_admin_mail_on_exit()
         m_send.assert_not_called()
 
     def test_main_registers_sigterm_handler(self):

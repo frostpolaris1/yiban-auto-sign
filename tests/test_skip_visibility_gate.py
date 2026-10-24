@@ -116,6 +116,12 @@ KNOWN_SKIP_SITES = json.loads(r"""
    "需要系统 gpg"
   ]
  ],
+ "tests/test_api_clock_business_tz.py": [
+  [
+   "skipUnless",
+   "需要 POSIX time.tzset（CI/WSL）"
+  ]
+ ],
  "tests/test_backup_flag_parsing.py": [
   [
    "skipTest",

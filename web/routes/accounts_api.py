@@ -305,12 +305,13 @@ def api_account_detail(idx):
         # 上限排布枚举节奏（信息分层口径，与其余 429 一致）
         _read_audit_denied_trace()("account_detail_denied")
         return jsonify({"error": "查看账号详情过于频繁，请稍后再试"}), 429
-    accounts = _accounts_data.load_accounts()
-    if not 0 <= idx < len(accounts):
+    # 只解密目标行：整表解密在 5k 账号下要为一次详情做一遍全表 AES-GCM（工单 dnox-B）。
+    acc = _accounts_data.load_account_at(idx)
+    if acc is None:
         return jsonify({"error": "账号不存在"}), 404
     _read_audit_trace()(
-        "account_detail_read", _masking.mask_phone(str(accounts[idx].get("phone", ""))))
-    return jsonify({"ok": True, "account": _accounts_data.mask_account(accounts[idx], idx, masked=False)})
+        "account_detail_read", _masking.mask_phone(str(acc.get("phone", ""))))
+    return jsonify({"ok": True, "account": _accounts_data.mask_account(acc, idx, masked=False)})
 
 
 def api_account_device_refresh(idx):
