@@ -171,13 +171,26 @@ for cf in "$CRON_DIR"/*; do
                 '>'|'>>'|'&>'|'1>'|'2>') skip_next=1; continue ;;
             esac
             if [[ "$tok" =~ $FDREDIR_RE ]]; then continue; fi  # 2>&1 之类（& 走变量，不能裸写）
-            # 环境前缀赋值（VAR=…）不是路径 token；`--opt=value` 同理（旗标值不拆）
-            if [[ "$tok" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then continue; fi
-            path="$tok"
-            case "$tok" in
-                '>>'*) path="${tok#>>}" ;;
-                '>'*)  path="${tok#>}" ;;
-            esac
+            # 环境前缀赋值（VAR=…）与 --opt=value：值里含 `/` 就是路径候选
+            # （R3-022 等价类：/tmp 与相对路径不得藏在 `=` 右边）。
+            env_value=""
+            if [[ "$tok" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+                env_value="${tok#*=}"
+            elif [[ "$tok" == --*=* ]]; then
+                env_value="${tok#*=}"
+            fi
+            if [ -n "$env_value" ]; then
+                case "$env_value" in
+                    */*) path="$env_value" ;;
+                    *) continue ;;
+                esac
+            else
+                path="$tok"
+                case "$tok" in
+                    '>>'*) path="${tok#>>}" ;;
+                    '>'*)  path="${tok#>}" ;;
+                esac
+            fi
             # `cd` 的目标是目录：它决定后续相对路径的基准（R3-022）。
             if [ "$want_cd" -eq 1 ]; then
                 want_cd=0

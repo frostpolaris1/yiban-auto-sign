@@ -104,6 +104,29 @@ class CronProvenancePathScopeTest(unittest.TestCase):
         self.assertNotEqual(ghost.returncode, 0, self._out(ghost))
         self.assertIn("/usr/local/sbin/ghost.sh", self._out(ghost))
 
+    def test_tmp_path_in_flag_value_is_red(self):
+        """`--opt=value` 的值也是路径面：/tmp 不得藏在等号右边。"""
+        r = self._check(
+            "5 6 * * * yiban cd %s/ && .venv/bin/python3 scripts/audit_verify.py"
+            " --env=/tmp/x.sh" % APP_ROOT)
+        self.assertNotEqual(r.returncode, 0, "旗标值里的 /tmp 仍放行：\n" + self._out(r))
+        self.assertIn("/tmp/x.sh", self._out(r))
+
+    def test_relative_escape_in_flag_value_is_red(self):
+        r = self._check(
+            "5 6 * * * yiban cd %s/ && .venv/bin/python3 scripts/audit_verify.py"
+            " --db=../../../etc/passwd" % APP_ROOT)
+        self.assertNotEqual(r.returncode, 0,
+                            "旗标值里的相对越界仍放行：\n" + self._out(r))
+
+    def test_tmp_path_in_env_assignment_is_red(self):
+        r = self._check(
+            "5 6 * * * yiban cd %s/ && YIBAN_DB_FILE=/tmp/x.db"
+            " .venv/bin/python3 scripts/audit_verify.py" % APP_ROOT)
+        self.assertNotEqual(r.returncode, 0,
+                            "环境前缀里的 /tmp 仍放行：\n" + self._out(r))
+        self.assertIn("/tmp/x.db", self._out(r))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
