@@ -34,6 +34,7 @@ fast	tests/protocol/test_position.py
 fast	tests/test_account_abuse_gate.py
 fast	tests/test_account_ciphertext_kid.py
 fast	tests/test_account_crypto_key_source.py
+fast	tests/test_account_detail_narrow_read.py	# 详情窄读：golden 逐字节＋解密计数＋掩码不变量（本机 1.2s）
 fast	tests/test_account_liveness_gate.py
 fast	tests/test_account_ops_reentry.py
 fast	tests/test_account_plaintext_patch.py
