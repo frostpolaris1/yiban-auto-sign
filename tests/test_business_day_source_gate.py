@@ -35,8 +35,14 @@ UTC 16:00–24:00（＝北京 00:00–08:00）窗口内两者差一天：按天�
   不是 `YYYY-MM-DD`；只有 **date** 对象的 `isoformat()` 才是日期串。故只认 date 源。
 · 裸 `now()` / `today()`（`from datetime import datetime as dt` 后的 `dt.now()` 别名）：
   根名不是 `datetime`/`date`，静态上无法与业务钟区分，本门不判；审查兜底。
-· TS 内的正则字面量已遮罩（避免 `//` 被当行注释）；但正则的识别是启发式，
-  非常规写法（如 `return /re/` 之外的歧义）可能导致一行被多遮，属已登记边界。
+· TS 内的正则字面量已遮罩（避免 `//` 被当行注释）。识别是启发式：`_REGEX_PREV`
+  字符集 + `return/case/throw/yield/await` 关键字两种上下文。仍有无法识别的形态
+  （如 `if (x) /"/`：`/` 前是 `)`）——此时其中的引号会被当字符串帧起点，但帧**遇到
+  未转义换行即退出**，损害被限制在**同一行**（该行后半段可能漏检），不再吞掉文件剩余
+  部分。这是已登记的边界：审查时看到形如 `)/re/` 的写法需人工确认。
+· 别名形 `f = datetime.now(); f.strftime("%Y-%m-%d")` 与格式串非字面量的
+  `datetime.now().strftime(fmt)`（或无格式串）不在静态判定面内（本门不做数据流/
+  常量折叠）；审查兜底。测试里遇到这两种写法按宿主钟违规处理。
 
 面外无读者核对结论（2026-10-25）：
 · 前端业务日的**唯一**读者是 `frontend/e2e/*.spec.ts` 与 `business-day.ts`；
@@ -82,6 +88,19 @@ PY_EXEMPTIONS = {
 
 #: 正则字面量可出现的上一有效字符（启发式；用于把 `/.../ ` 与除法区分）。
 _REGEX_PREV = set("(=:[,!&|?{};+-*%<>~^")
+#: 正则字面量可出现的上一关键字（`return /re/`、`case /re/:` 等）。
+_REGEX_KEYWORDS = {"return", "case", "throw", "yield", "await"}
+
+
+def _prev_word(chars, index):
+    """`chars[index]` 之前最近的一个标识符（跨空白；无则空串）。"""
+    j = index - 1
+    while j >= 0 and chars[j].isspace():
+        j -= 1
+    end = j
+    while j >= 0 and (chars[j].isalnum() or chars[j] in "_$"):
+        j -= 1
+    return "".join(chars[j + 1:end + 1])
 
 
 def _root_name(node):
@@ -168,6 +187,16 @@ def _is_host_strftime(node):
     )
 
 
+def _is_host_timestamp_string(node):
+    """宿主时刻经 `strftime(...)` / `isoformat()` 产出的**时刻串**（可用于 `[:10]`）。"""
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in ("strftime", "isoformat")
+        and _is_host_time_source(node.func.value)
+    )
+
+
 def _python_offenders_source(source, filename="<memory>"):
     """返回命中行号列表（升序去重）。"""
     tree = ast.parse(source, filename=filename)
@@ -183,10 +212,10 @@ def _python_offenders_source(source, filename="<memory>"):
             sources = [node.func.value, *args[1:]]
             if any(_is_host_time_source(s) for s in sources):
                 hits.add(node.lineno)
-    # 切片形单独走一遍（外层 Subscript 不是 Call）
+    # 切片形单独走一遍（外层 Subscript 不是 Call）：
+    #   `now().strftime("%Y-%m-%d %H:%M:%S")[:10]` 与 `now().isoformat()[:10]` 都取日期串。
     for node in ast.walk(tree):
-        if (_is_len10_slice(node) and _is_host_strftime(node.value)
-                and _is_host_time_source(node.value.func.value)):
+        if _is_len10_slice(node) and _is_host_timestamp_string(node.value):
             hits.add(node.lineno)
     return sorted(hits)
 
@@ -210,6 +239,8 @@ def _mask_ts(text):
     字符串必须遮罩（D1）：`"http://127.0.0.1"` 里的 `//` 不是行注释，旧实现会把
     后半行当注释切掉，从而漏掉同一行后面的真违规。模板字符串的 `${...}` 内部是代码，
     必须揭开继续扫描。
+    字符串/模板帧遇**未转义换行**即退出（M-1）：JS 允许换行的只有模板，而本仓 e2e
+    无跨行模板；把引号误判成帧起点时，损害因此只留在当前行，不会吞掉文件剩余部分。
     """
     out = list(text)
     n = len(text)
@@ -277,7 +308,10 @@ def _mask_ts(text):
                 blank(i)
                 i += 1
                 continue
-            if c == "/" and nxt not in ("/", "*") and (not last_sig or last_sig in _REGEX_PREV):
+            if c == "/" and nxt not in ("/", "*") and (
+                not last_sig or last_sig in _REGEX_PREV
+                or _prev_word(out, i) in _REGEX_KEYWORDS
+            ):
                 # 正则字面量：遮到未转义的 `/`（字符类内的 `/` 不结束）。
                 blank(i)
                 i += 1
@@ -317,6 +351,12 @@ def _mask_ts(text):
                 blank(i)
                 i += 1
                 continue
+            if c == "\n":
+                # JS 裸换行不能出现在字符串里 ⇒ 这一定不是字符串（多半是正则里的引号）。
+                # 退出帧，把损害限制在当前行：不退出会把文件剩余部分全部遮掉（M-1）。
+                frames.pop()
+                i += 1
+                continue
             blank(i)
             i += 1
             continue
@@ -338,6 +378,12 @@ def _mask_ts(text):
             frames.append({"kind": "code", "depth": 0, "tpl": True})
             last_sig = "{"
             i += 2
+            continue
+        if c == "\n":
+            # 同上：未闭合的模板帧多半是正则里的反引号。退出帧，把损害限制在当前行
+            # （本仓 e2e 无跨行模板：多行模板会被当代码扫描，见 docstring 边界）。
+            frames.pop()
+            i += 1
             continue
         blank(i)
         i += 1
@@ -415,6 +461,7 @@ PY_BAD_SAMPLES = {
     "date.today": "x = datetime.date.today()\n",
     "utcnow + 8h": 'x = (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d")\n',
     "时刻串切片 [:10]": 'x = datetime.now().strftime("%Y-%m-%d %H:%M:%S")[:10]\n',
+    "datetime isoformat 切片 [:10]": "x = datetime.now().isoformat()[:10]\n",
 }
 PY_GOOD_SAMPLES = {
     "datetime.now().isoformat() 是时刻串": "x = datetime.now().isoformat()\n",
@@ -432,6 +479,8 @@ TS_BAD_SAMPLES = {
     "getUTCDate": "const s = d.getUTCDate();\n",
     "模板字符串内插代码": "const s = `${new Date().getFullYear()}`;\n",
     "正则字面量后的违规": "const r = /a\\/\\/b/; const s = d.getFullYear();\n",
+    "return 后的正则含引号": 'function f() { return /"/.test(s); }\nconst y = d.getFullYear();\n',
+    "case 后的正则含引号": "switch (x) { case /'/.test(s): break; }\nconst y = d.getFullYear();\n",
 }
 TS_GOOD_SAMPLES = {
     "字符串内日期字样": 'const a = "getFullYear("; const b = "http://x/y";\n',
@@ -478,6 +527,16 @@ class GateSelfTest(unittest.TestCase):
         """D1：字符串内 `//` 不得把同一行后半段当注释切掉。"""
         src = 'const u = "http://x/y"; const y = new Date().getFullYear();\n'
         self.assertEqual(_ts_offenders_text(src), [1])
+
+    def test_ts_unrecognized_regex_masks_only_its_own_line(self):
+        """M-1：无法识别的正则（`/` 前是 `)`）里的引号只能遮到行尾，不得吞掉后文。
+
+        `if (x) /"/.test(s);` 的 `/` 前是 `)`，既不在 `_REGEX_PREV` 也不是关键字，
+        故其中的 `"` 会被当字符串帧起点。字符串帧遇未转义换行必须退出，否则后续
+        `getFullYear()` 全部不可见（审查员实跑曾返回空列表）。
+        """
+        src = 'if (x) /"/.test(s);\nconst y = d.getFullYear();\n'
+        self.assertEqual(_ts_offenders_text(src), [2])
 
 
 if __name__ == "__main__":
