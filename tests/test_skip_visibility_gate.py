@@ -164,6 +164,18 @@ KNOWN_SKIP_SITES = json.loads(r"""
   [
    "skipIf",
    "需要 unshare 隔离默认状态目录 /var/log/yiban"
+  ],
+  [
+   "skipTest",
+   "需要带运行依赖的项目 venv（当前解释器不是 venv，且固定路径不存在）"
+  ],
+  [
+   "skipTest",
+   "需要可用的 unshare 挂载/用户命名空间（CI 非特权环境会跳过）"
+  ],
+  [
+   "skipTest",
+   "无法在命名空间内挂载 /var/log/yiban（CI 非特权环境会跳过）"
   ]
  ],
  "tests/test_cron_provenance_paths.py": [
