@@ -3,8 +3,9 @@ import { computed, ref, watch } from "vue";
 import { annDraftMetaText, annMeta, annPublishState, sanitizeAnnouncement } from "./model.js";
 
 /* 全局公告卡（双人发布：任意管理员写草稿，主管理员发布/下线）。
-   legacy = pages/work_settings.js 的公告段。草稿任意管理员可编辑保存；发布/下线仅主管理员
-   且需当次口令（走受门禁 helper）。后端禁换行：前端在输入阶段就把换行族换成空格。 */
+   legacy = pages/work_settings.js 的公告段。草稿任意管理员可编辑保存；发布/下线仅主管理员。
+   口令要求跟档位走：缺省 risk 档同出口免口令，换出口或 full 档才要（走受门禁 helper）。
+   后端禁换行：前端在输入阶段就把换行族换成空格。 */
 
 const props = defineProps<{
   isMaster: boolean;
@@ -93,7 +94,7 @@ defineExpose({ isDirty: () => dirty.value, save, applyRemote });
     </div>
     <p class="alert info" id="set-ann-perm" :hidden="isMaster">
       <span class="ico"><svg aria-hidden="true"><use href="#i-info" /></svg></span>
-      <span class="body">编辑并保存草稿任意管理员均可；发布或下线线上公告仅主管理员可做（需当次口令）。</span>
+      <span class="body">编辑并保存草稿任意管理员均可；发布或下线线上公告仅主管理员可做。口令按档位要求：默认 risk 档下，同出口的已登录会话可直接生效，换出口才要一次；full 档每次需口令。</span>
     </p>
     <div class="field">
       <label class="field-label" for="set-announcement">待发布草稿（保存后不会立即对外显示）</label>
