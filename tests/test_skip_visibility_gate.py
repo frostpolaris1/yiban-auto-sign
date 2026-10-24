@@ -160,6 +160,12 @@ KNOWN_SKIP_SITES = json.loads(r"""
    "需要 unshare 隔离默认状态目录 /var/log/yiban"
   ]
  ],
+ "tests/test_cron_provenance_paths.py": [
+  [
+   "skipIf",
+   "需要 bash（Git Bash/WSL）"
+  ]
+ ],
  "tests/test_config_loader.py": [
   [
    "skipTest",
