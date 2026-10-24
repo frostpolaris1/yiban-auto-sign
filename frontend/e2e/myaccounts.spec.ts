@@ -101,8 +101,12 @@ test("用户端账号页：暂停/恢复往返、编辑保存、改密弹窗、�
   const badge = card.locator(".account-title-row .badge");
 
   // ① 暂停：确认框 → 就地状态行 + 徽标变「已取消」
+  // 确认族已换 EP（ElMessageBox，uz7w）；选择器同时认两种模态，判据不变。
   await card.getByRole("button", { name: "暂停签到" }).click();
-  await page.locator(".modal-foot .btn:not(.btn--ghost)").click();
+  await page
+    .locator(".el-message-box__btns .el-button--primary, .modal-foot .btn:not(.btn--ghost)")
+    .first()
+    .click();
   await expect(card.locator(".state-line--flash")).toContainText("已暂停签到");
   await expect(badge).toHaveText("已取消");
 
@@ -133,10 +137,15 @@ test("用户端账号页：暂停/恢复往返、编辑保存、改密弹窗、�
   await page.keyboard.press("Escape");
 
   // ⑤ 注销账号：确认框出现（此处只验证入口与文案，不真的注销——那会销毁会话）
+  // 确认族走 EP（ElMessageBox）；两种模态都认，文案与按钮标签判据不变。
   await page.getByRole("button", { name: /注销账号/ }).click();
-  await expect(page.locator(".pm-backdrop")).toContainText("7 天内可撤销恢复");
-  await expect(page.locator(".modal-foot .btn:not(.btn--ghost)")).toHaveText("继续注销");
+  const resignBox = page.locator(".el-message-box, .pm-panel").first();
+  await expect(resignBox).toContainText("7 天内可撤销恢复");
+  await expect(
+    page.locator(".el-message-box__btns .el-button--danger, .modal-foot .btn:not(.btn--ghost)").first(),
+  ).toHaveText("继续注销");
   await page.keyboard.press("Escape");
+  await expect(resignBox).toBeHidden();
 });
 
 test("用户端改自己账号的易班密码：保存必须走 PUT 并成功（R3-001）", async ({ page }) => {

@@ -365,14 +365,18 @@ test("账号页副标题 / 图例折叠 / 窄屏操作抽屉；看板 KPI 主视
   await expect(more, "Esc 关闭后焦点回到触发按钮").toBeFocused();
 
   // 抽屉里点动作会同步开确认弹窗；抽屉离场后不得把焦点抢回背景表格。
+  // 确认族已换 EP（ElMessageBox，uz7w）：`.el-message-box` 与外壳 `.pm-panel`
+  // 都认，焦点判据换成「焦点留在当前确认框内」这一条不变式。
   await more.click();
   await expect(drawer).toBeVisible();
   await drawer.getByRole("button", { name: "删除", exact: true }).click();
-  const confirm = page.locator(".pm-panel").filter({ hasText: "确定删除" });
+  const confirm = page.locator(".el-message-box, .pm-panel").filter({ hasText: "确定删除" });
   await expect(confirm).toBeVisible();
   await page.waitForTimeout(600);
   expect(
-    await page.evaluate(() => !!document.activeElement?.closest(".pm-panel")),
+    await page.evaluate(() =>
+      !!document.activeElement?.closest(".el-message-box, .pm-panel"),
+    ),
     "动作打开确认弹窗后，焦点必须留在弹窗内",
   ).toBe(true);
   await confirm.getByRole("button", { name: "取消", exact: true }).click();
