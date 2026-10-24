@@ -45,7 +45,6 @@ import sys
 import tempfile
 import time
 import unittest
-from datetime import datetime
 from types import SimpleNamespace
 from unittest import mock
 
@@ -59,6 +58,7 @@ import signin  # noqa: E402  兼容壳：打桩口径与既有监督测试一致
 
 from yiban.adapters.statefiles import state_io  # noqa: E402
 from yiban.app import runner as runner_mod  # noqa: E402
+from yiban.core import clock  # noqa: E402
 
 
 def _acc(phone):
@@ -66,7 +66,8 @@ def _acc(phone):
 
 
 def _today():
-    return datetime.now().strftime("%Y-%m-%d")
+    """run.sh 按日文件（sign-<day>.log / sign-status-<day>.txt / 收尾标记）取业务日。"""
+    return clock.today()
 
 
 class SupervisorRcAggregationTest(unittest.TestCase):

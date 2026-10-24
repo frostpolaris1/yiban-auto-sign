@@ -45,6 +45,7 @@ fast	tests/test_alert_frequency_caliber.py
 fast	tests/test_alerts_level_gate.py
 fast	tests/test_alerts_summary_level.py
 fast	tests/test_api_contract_coverage.py
+fast	tests/test_api_clock_business_tz.py	# /api/clock 的 tz_offset_min 必须恒为业务时区 +480（P0 2026-10-25）
 fast	tests/test_audit_anchor.py
 fast	tests/test_audit_anchor_field_source.py
 fast	tests/test_audit_anchor_hardening.py
@@ -67,6 +68,7 @@ fast	tests/test_backup_require_encrypt.py
 fast	tests/test_backup_sentinel.py
 slow	tests/test_breaker.py	# 真等待：4 条用例各等一次真实 5s 超时（本机 31.1s）
 fast	tests/test_builtin_admin_sid.py
+fast	tests/test_business_day_source_gate.py	# 业务日事实源静态门：测试不得用宿主/浏览器钟取日（P0 2026-10-25）
 fast	tests/test_calendar_state_visibility.py
 fast	tests/test_capacity_audit_scope.py
 fast	tests/test_capacity_limits.py
