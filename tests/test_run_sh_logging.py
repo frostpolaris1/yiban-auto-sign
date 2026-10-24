@@ -25,7 +25,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime
+
+from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUN_SH = os.path.join(BASE, "run.sh")
@@ -44,7 +45,8 @@ exit ${FAKE_EXIT_CODE:-0}
 
 
 def _today():
-    return datetime.now().strftime("%Y-%m-%d")
+    """run.sh 按日日志/状态文件名取业务日（北京 +8），与生产 `business_day` 同源。"""
+    return clock.today()
 
 
 @unittest.skipIf(shutil.which("bash") is None, "需要 bash（Git Bash/WSL）")

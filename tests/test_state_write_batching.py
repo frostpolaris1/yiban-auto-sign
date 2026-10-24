@@ -7,8 +7,8 @@
     "整体持锁＋读整个文件＋改一键＋全量写回"路径。二者在轮内**每账号调用一次**，
     代价随账号数平方增长（N 次调用 × 每次 O(N) 字节）。
 
-**钉不变式，不钉编舞**（AGENTS §一 6a）。本文件只钉下面四条性质，任何一条被破坏
-都必须红：
+**钉不变式，不钉编舞**（AGENTS §一 6a）。本文件只钉下面四条性质（2026-10-24
+补 5–8，见后），任何一条被破坏都必须红：
 
 1. **等价性**：批量形态的**产出**与"逐条写"形态**逐字段一致**（含 `scheduled`
    继承、`only_if_absent` 的 CAS 结果、`pending` 不覆盖已有结论三条既有规则），
@@ -20,12 +20,23 @@
 4. **写放大有界**：一批 M 次更新的**写盘字节**不得随 M 平方增长（回归即红——
    这正是本批要修的形状）。
 
+2026-10-24 W1-A 批补四条不变式（恢复路径退役＋批量化）：
+
+5. **落盘中断安全**：`os.replace` 抛错时读侧只见到旧值；损坏文件按「尚未了结」
+   处理（偏安全），不得出现半截 JSON。
+6. **信号路径零状态文件 I/O**：SIGTERM 处理器不得写按日状态文件；待写批次由
+   `SystemExit` 展开时的上下文退出落盘。
+7. **批量 CAS 等价**：批量 `only_if_absent` 与逐号调用返回序列与落盘逐字段一致；
+   窗口收尾 N 个账号只做一次读改写。
+8. **额度并发不越界**：两个真实进程并发预占同一账号，cap=1 时只有一个成功。
+
 对应实现：批量缓冲在 `yiban/adapters/statefiles/state_io.py` 与 `yiban/adapters/notifier/report.py`；
 禁用开关（不设该上下文即逐条写盘）由调用方持有（`runner.main`）。
 依赖：临时 `YIBAN_STATE_DIR`、进程内打桩 `private_json.write_private_json` 计数与
-    字节记账、真子进程（崩溃用例）；不触网、不需要库。
+    字节记账、真子进程（崩溃/并发用例）；不触网、不需要库。
 """
 
+import contextlib
 import json
 import os
 import shutil
@@ -36,12 +47,14 @@ import time
 import unittest
 import unittest.mock as mock
 from datetime import datetime
+from types import SimpleNamespace
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE)
 
 from yiban.adapters.notifier import report as alerts  # noqa: E402
 from yiban.adapters.statefiles import state_io  # noqa: E402
+from yiban.engine import executor_v3  # noqa: E402
 
 
 def _read(path):
@@ -52,6 +65,19 @@ def _read(path):
 #: 等价性比对用假钟：`time` 字段是**调用时刻**，两次真实运行可能跨秒 ⇒ 必须冻结时钟，
 #: 否则逐字段比对会随机红（假红，与批量/逐条的真实差异无关）。
 _FIXED_NOW = datetime(2026, 10, 13, 6, 31, 5)
+
+
+#: 批量 CAS 等价性输入：既有结论拒绝、同批重复拒绝、pending 让位、dur/scheduled 落盘。
+_CAS_ENTRIES = [
+    ("13800000001", "skipped_window", "时段已结束", None, None),
+    ("13800000002", "skipped_window", "时段已结束", None, None),
+    # 同一批内重复：第一条写入后，第二条必须被 CAS 拒
+    ("13800000002", "skipped_window", "时段已结束（重复）", None, None),
+    # 只有 pending 不算结论 ⇒ CAS 接受，并写入 scheduled/dur
+    ("13800000003", "skipped_window", "时段已结束", "07:00:00", 1.5),
+    ("13800000004", "skipped_window", "时段已结束", None, None),
+    ("13800000004", "failed", "不应写入", None, None),
+]
 
 
 #: 一段覆盖三条既有规则的真实调用序列（同一账号重复写、CAS、计划保留、dur）。
@@ -273,7 +299,7 @@ class SignStateCrashDurabilityTest(unittest.TestCase):
 
 
     def test_flush_sign_state_persists_pending(self):
-        """退出钩子所调用的函数本身必须把待写条目落盘（钩子不是空转）。"""
+        """`flush_sign_state()` 必须把待写条目落盘（上下文退出调的就是它）。"""
         state_io.flush_sign_state()
         path = os.path.join(self.tmp, f"sign-state-{self.day}.json")
         if os.path.exists(path):
@@ -284,7 +310,7 @@ class SignStateCrashDurabilityTest(unittest.TestCase):
                 state_io.batch_sign_state():
             state_io._write_sign_state("13800000007", "success", "x")
             self.assertFalse(os.path.exists(path), "批未满、未超时：不得提前落盘")
-        # 上下文退出即落盘（与 atexit 钩子调的是同一个函数）
+        # 上下文退出即落盘（不再有 atexit 钩子：退出钩子是已退役的恢复路径）
         self.assertEqual(_read(path)["13800000007"]["status"], "success")
 
 
@@ -336,6 +362,35 @@ class SignStateSigtermTest(unittest.TestCase):
         path = os.path.join(self.tmp, f"sign-state-{self.day}.json")
         self.assertTrue(os.path.exists(path), "SIGTERM 后已收条目不得随进程消失")
         self.assertEqual(_read(path)["13800000008"]["status"], "success")
+
+    def test_sigterm_sends_admin_mail_via_exit_hook(self):
+        """真子进程整链：SIGTERM → 状态批次落盘 **且** 管理员汇总由退出钩子发出。
+
+        这是「信号处理器零 I/O」的承重面：删掉 `atexit.register(_flush_admin_mail_on_exit)`
+        后，本用例必须红（标记文件不出现）。mock 只替换邮件出口，信号与退出路径全是真的。
+        """
+        marker = os.path.join(self.tmp, "admin-mail.flag")
+        r = self._child(
+            "def _send(*_a, **_k):\n"
+            f"    with open({marker!r}, 'w', encoding='utf-8') as _f:\n"
+            "        _f.write('sent')\n"
+            "    return True\n"
+            "alerts.mailer.send_admin_alert = _send\n"
+            "alerts.db.admin_mail_recipients = lambda extra: ['a@b.c']\n"
+            "alerts._collect_admin_mail('易班签到失败', 'x')\n"
+            "with state_io.batch_sign_state():\n"
+            "    state_io._write_sign_state('13800000011', 'success', 'A')\n"
+            "    os.kill(os.getpid(), signal.SIGTERM)\n"
+            "    time.sleep(30)\n"
+        )
+        self.assertEqual(r.returncode, 143, r.stderr)
+        self.assertTrue(os.path.exists(marker),
+                        "SIGTERM 后已收集的管理员汇总必须由退出钩子发出")
+        with open(marker, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "sent")
+        path = os.path.join(self.tmp, f"sign-state-{self.day}.json")
+        self.assertEqual(_read(path)["13800000011"]["status"], "success",
+                         "同一进程里状态批次也必须落盘（两条链都真跑）")
 
 
 class SignStateVisibilityBoundTest(unittest.TestCase):
@@ -556,6 +611,281 @@ class UserFailMailQuotaBatchingTest(unittest.TestCase):
         counts["bat"] = _drive(True)
         self.assertEqual(counts["seq"], n, "逐条形态：每次预占落盘一次")
         self.assertLessEqual(counts["bat"], 2, f"批量形态必须把 {n} 次并成极少数几次落盘")
+
+
+class KillWindowAtomicityTest(unittest.TestCase):
+    """⑤ 落盘中断：替换失败只见旧值；坏文件按「尚未了结」处理。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="yiban-kill-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.day = "2026-10-13"
+        self.path = os.path.join(self.tmp, f"sign-state-{self.day}.json")
+
+    def test_replace_failure_keeps_old_value_and_no_partial_json(self):
+        """`os.replace` 抛错 ⇒ 终文件仍是旧值，tmp 清干净，读侧无半截 JSON。"""
+        with mock.patch.object(state_io, "_state_dir", return_value=self.tmp):
+            self.assertTrue(state_io._write_sign_state(
+                "13800000001", "success", "已签", day=self.day))
+            before = _read(self.path)
+            with mock.patch.object(state_io.private_json.os, "replace",
+                                   side_effect=OSError("disk full")):
+                verdicts = state_io.write_sign_states_if_absent(
+                    [("13800000002", "skipped_window", "时段已结束", None, None)],
+                    day=self.day)
+            self.assertEqual(verdicts, [False], "落盘失败必须按未写入返回")
+            self.assertEqual(_read(self.path), before, "替换失败时终文件必须仍是旧值")
+            self.assertEqual(
+                [n for n in os.listdir(self.tmp) if ".tmp" in n], [],
+                "替换失败不得留下半截 tmp")
+            self.assertEqual(state_io._daily_statuses(self.day),
+                             {"13800000001": "success"},
+                             "读侧不得见到半截 JSON，也不得丢掉旧结论")
+
+    def test_replace_failure_without_old_file_reads_as_unresolved(self):
+        """首次落盘就失败 ⇒ 没有半截文件；读侧按「尚未了结」处理。"""
+        with mock.patch.object(state_io, "_state_dir", return_value=self.tmp):
+            with mock.patch.object(state_io.private_json.os, "replace",
+                                   side_effect=OSError("disk full")):
+                verdicts = state_io.write_sign_states_if_absent(
+                    [("13800000003", "skipped_window", "时段已结束", None, None)],
+                    day=self.day)
+            self.assertEqual(verdicts, [False])
+            self.assertFalse(os.path.exists(self.path))
+            self.assertEqual(state_io._daily_statuses(self.day), {})
+            self.assertEqual([n for n in os.listdir(self.tmp) if ".tmp" in n], [])
+
+    def test_corrupt_file_reads_as_unresolved(self):
+        """半截 JSON ⇒ 无记录（尚未了结）；补签轮必须重跑，不得漏签。"""
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write('{"13800000001": {"status": "suc')
+        with mock.patch.object(state_io, "_state_dir", return_value=self.tmp):
+            self.assertEqual(state_io._daily_statuses(self.day), {},
+                             "坏文件必须按「无记录/尚未了结」处理")
+            accounts = [SimpleNamespace(phone="13800000001")]
+            self.assertEqual(state_io._second_run_drop_done(accounts, day=self.day),
+                             accounts, "未了结 ⇒ 补签轮宁可重跑")
+
+    def test_missing_file_reads_as_unresolved(self):
+        with mock.patch.object(state_io, "_state_dir", return_value=self.tmp):
+            self.assertEqual(state_io._daily_statuses(self.day), {})
+            accounts = [SimpleNamespace(phone="13800000009")]
+            self.assertEqual(state_io._second_run_drop_done(accounts, day=self.day),
+                             accounts)
+
+
+class SignalPathZeroStateIoTest(unittest.TestCase):
+    """⑥ 信号处理器不写状态文件；待写批次交给 SystemExit 展开时的上下文退出。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="yiban-sigio-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        # 处理器只置标记；本用例结束后必须复位，否则进程退出钩子会带走测试汇总
+        self.addCleanup(setattr, alerts, "_SIGTERM_RECEIVED", False)
+        self.day = state_io.clock.now().strftime("%Y-%m-%d")
+        self.path = os.path.join(self.tmp, f"sign-state-{self.day}.json")
+
+    def test_handler_writes_no_state_file(self):
+        state_io.flush_sign_state()
+        written = []
+        real = state_io.private_json.write_private_json
+
+        def spy(path, payload, **kw):
+            written.append(path)
+            return real(path, payload, **kw)
+
+        opened = []
+        real_open = open
+
+        def spy_open(*args, **kwargs):
+            opened.append(args[0] if args else kwargs.get("file"))
+            return real_open(*args, **kwargs)
+
+        with mock.patch.object(state_io, "_state_dir", return_value=self.tmp), \
+                mock.patch.object(state_io, "_FLUSH_MAX", 10 ** 6), \
+                mock.patch.object(state_io, "_FLUSH_SEC", 10 ** 9), \
+                mock.patch.object(state_io.private_json, "write_private_json", spy), \
+                mock.patch.object(alerts, "_mail_summary", []), \
+                contextlib.ExitStack() as stack:
+            stack.enter_context(state_io.batch_sign_state())
+            state_io._write_sign_state("13800000001", "success", "A")
+            with mock.patch("builtins.open", spy_open), \
+                    self.assertRaises(SystemExit):
+                alerts._flush_mail_on_sigterm(15, None)
+            self.assertEqual(written, [], "信号处理器里出现了状态文件写")
+            self.assertEqual(opened, [], "信号处理器不得打开任何文件（零 I/O）")
+            self.assertFalse(os.path.exists(self.path),
+                             "待写条目仍在缓冲，处理器不得提前落盘")
+        self.assertTrue(os.path.exists(self.path), "SystemExit 展开后上下文退出必须落盘")
+        self.assertEqual(_read(self.path)["13800000001"]["status"], "success")
+
+
+class BatchCasEquivalenceTest(unittest.TestCase):
+    """⑦ 批量 CAS 与逐号 CAS：同输入同返回序列、同落盘内容。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="yiban-cas-batch-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.day = "2026-10-13"
+        self.path = os.path.join(self.tmp, f"sign-state-{self.day}.json")
+
+    def _drive(self, batched):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        os.makedirs(self.tmp, exist_ok=True)
+        with mock.patch.object(state_io, "_state_dir", return_value=self.tmp), \
+                mock.patch.object(state_io.clock, "now", lambda: _FIXED_NOW):
+            # 既有事实：01 已 success；03 只有 pending（计划）
+            state_io._write_sign_state("13800000001", "success", "已签", day=self.day)
+            state_io._write_sign_state("13800000003", "pending", "计划", day=self.day)
+            state_io.flush_sign_state()
+            if batched:
+                returns = state_io.write_sign_states_if_absent(
+                    _CAS_ENTRIES, day=self.day)
+            else:
+                returns = [
+                    state_io._write_sign_state(
+                        phone, status, message, scheduled=scheduled, dur=dur,
+                        only_if_absent=True, day=self.day)
+                    for phone, status, message, scheduled, dur in _CAS_ENTRIES
+                ]
+            state_io.flush_sign_state()
+        return _read(self.path), returns
+
+    def test_returns_and_file_are_identical(self):
+        seq_file, seq_returns = self._drive(batched=False)
+        bat_file, bat_returns = self._drive(batched=True)
+        self.assertEqual(bat_returns, seq_returns, "CAS 返回值序列必须逐条一致")
+        self.assertEqual(bat_returns, [False, True, False, True, True, False])
+        self.assertEqual(bat_file, seq_file, "落盘内容必须逐字段一致")
+        self.assertEqual(bat_file["13800000003"]["scheduled"], "07:00:00")
+        self.assertEqual(bat_file["13800000003"]["dur"], 1.5)
+
+    def test_one_batched_write_for_many_accounts(self):
+        """承重：N 个账号的 CAS 只做一次读改写（逐号形态 N 次）。"""
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        os.makedirs(self.tmp, exist_ok=True)
+        entries = [(f"139{i:08d}", "skipped_window", "时段已结束", None, None)
+                   for i in range(40)]
+        seen = {"n": 0}
+        real = state_io.private_json.write_private_json
+
+        def spy(path, payload, **kw):
+            seen["n"] += 1
+            return real(path, payload, **kw)
+
+        with mock.patch.object(state_io, "_state_dir", return_value=self.tmp), \
+                mock.patch.object(state_io.private_json, "write_private_json", spy):
+            verdicts = state_io.write_sign_states_if_absent(entries, day=self.day)
+        self.assertEqual(verdicts, [True] * 40)
+        self.assertEqual(seen["n"], 1, "批量 CAS 必须整批落一次盘")
+        self.assertEqual(len(_read(self.path)), 40)
+
+    def test_empty_batch_is_noop(self):
+        with mock.patch.object(state_io, "_state_dir", return_value=self.tmp):
+            self.assertEqual(state_io.write_sign_states_if_absent([]), [])
+        self.assertFalse(os.path.exists(self.path))
+
+
+class WindowSkipCallSiteTest(unittest.TestCase):
+    """⑦ 生产窗口收尾调用点必须走批量 CAS（同缺陷调用点同批收口）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="yiban-winskip-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.day = "2026-10-13"
+
+    def test_executor_window_skips_write_once_for_all_accounts(self):
+        accounts = [SimpleNamespace(phone=f"138{i:08d}") for i in range(20)]
+        ctx = SimpleNamespace(reclaim=False, cfg=object(), day=self.day,
+                              results={}, v=1, shards={0}, log_tag="t")
+        seen = {"n": 0}
+        real = state_io.private_json.write_private_json
+
+        def spy(path, payload, **kw):
+            seen["n"] += 1
+            return real(path, payload, **kw)
+
+        with mock.patch.object(state_io, "_state_dir", return_value=self.tmp), \
+                mock.patch.object(executor_v3.schedule, "_window_closed",
+                                  return_value=True), \
+                mock.patch.object(executor_v3, "_now", return_value=_FIXED_NOW), \
+                mock.patch.object(executor_v3.hrw, "vshard_of", return_value=0), \
+                mock.patch.object(executor_v3, "_emit_event"), \
+                mock.patch.object(executor_v3, "_report"), \
+                mock.patch.object(state_io.private_json, "write_private_json", spy):
+            executor_v3._mark_window_skips(ctx, accounts)
+
+        self.assertEqual(len(ctx.results), len(accounts), "每个账号都要进 results")
+        self.assertEqual(
+            [v[3] for v in ctx.results.values()],
+            ["skipped_window"] * len(accounts))
+        self.assertEqual(seen["n"], 1,
+                         "窗口收尾 N 个账号必须一次读改写，不得逐号读改写")
+
+
+class QuotaConcurrencyTest(unittest.TestCase):
+    """⑧ 两个真实进程并发预占同一账号：cap=1 时总量不得超发。"""
+
+    DAY = "2026-10-13"
+    PHONE = "13800000001"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="yiban-quota-race-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.barrier = os.path.join(self.tmp, "start.barrier")
+        self.path = os.path.join(self.tmp, f"mail-user-fail-{self.DAY}.json")
+
+    def _spawn(self, batched=False):
+        env = dict(os.environ)
+        env["YIBAN_STATE_DIR"] = self.tmp
+        env["YIBAN_MAIL_USER_FAIL_DAILY_CAP"] = "1"
+        call = f"ok = alerts._user_fail_mail_reserve({self.PHONE!r}, {self.DAY!r})\n"
+        body = ("with alerts.batch_user_fail_mail():\n    " + call
+                if batched else call)
+        code = (
+            "import os, sys, time\n"
+            f"sys.path.insert(0, {BASE!r})\n"
+            "from yiban.adapters.notifier import report as alerts\n"
+            f"while not os.path.exists({self.barrier!r}):\n"
+            "    time.sleep(0.005)\n"
+            + body
+            + "print('RESULT', ok)\n"
+        )
+        return subprocess.Popen([sys.executable, "-c", code], env=env, cwd=BASE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True)
+
+    def _collect(self, procs):
+        with open(self.barrier, "w", encoding="utf-8") as f:
+            f.write("go")
+        outs = []
+        for proc in procs:
+            out, err = proc.communicate(timeout=90)
+            self.assertEqual(proc.returncode, 0, err)
+            line = [ln for ln in out.splitlines() if ln.startswith("RESULT ")]
+            self.assertEqual(len(line), 1, f"子进程输出异常: {out!r} / {err!r}")
+            outs.append(line[0].split()[-1] == "True")
+        return outs
+
+    def test_concurrent_reserve_does_not_exceed_cap(self):
+        outs = self._collect([self._spawn(), self._spawn()])
+        self.assertEqual(sum(outs), 1, "cap=1：两个进程只许一个预占成功")
+        self.assertEqual(_read(self.path), {self.PHONE: 1},
+                         "落盘计数不得超发")
+
+    def test_concurrent_batch_reserve_keeps_disk_total_bounded(self):
+        """两个进程都在批量区内预占：返回值可各自 True，但盘上总量仍不得超 cap。
+
+        批量区的跨进程窗口允许两边都判定"可发"（这是已登记的语义），但两次落盘
+        都在文件锁内重读磁盘：后落盘者看见 cap 已满，不再写入。故不变量是
+        **盘上总量 ≤ cap**，`reserve` 返回值上界只是进程数。
+        """
+        outs = self._collect([self._spawn(batched=True), self._spawn(batched=True)])
+        self.assertGreaterEqual(sum(outs), 1, "至少一个进程必须预占成功")
+        self.assertLessEqual(sum(outs), 2, "返回值上界＝进程数（批量窗口已登记）")
+        data = _read(self.path)
+        self.assertLessEqual(sum(data.values()), 1, "盘上总量不得超发")
+        self.assertEqual(data.get(self.PHONE, 0), 1, "该账号只许记一次用量")
 
 
 if __name__ == "__main__":
