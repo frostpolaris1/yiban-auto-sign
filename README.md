@@ -527,8 +527,9 @@ docker compose exec yiban ls -l /backups
 退出码 0=健康、1=检出异常、2=无法定论（缺密钥/库不存在/锚点不可读）。批量操作审计含脱敏目标清单，登录成功留有匿名化 IP
 审计（登录失败阈值/越权 403/数据导出同样留痕）。
 
-> 诚实边界：以上判据都在**同一台机器**上。拿到 root 者可改 `.env` 里的审计密钥并重启服务，让链在新密钥下重签自洽——
-> 链、锚点与库内指纹同属可写面，本机自洽时抹痕可以不被发现。要真正排除，靠的是**离开本机的留痕**：
+> 诚实边界：以上判据都在**同一台机器**上，且都落在**同一个 uid** 的可写面内。审计锚点文件与 web 进程同 uid
+> 可写；拿到该 uid（含取得应用级代码执行者）即可改 `.env` 里的审计密钥、改锚点并在新密钥下重签自洽——
+> 链、锚点与库内指纹同属可写面，本机自洽时抹痕可以不被发现。仅**离机副本**是兜底。要真正排除，靠的是**离开本机的留痕**：
 >
 > 1. **每日随备份外发的审计链头哈希**（`scripts/backup_sentinel.py` 的锚点外发，cron 08:05 在 02:00 备份之后跑，**每天一封**）——
 >    正文给出完整 64 位链头哈希 + 记录数 + 当天该用的备份包名。这是 M28 的落点：备份把锚点与库**同包同盘**恢复，
@@ -1006,7 +1007,8 @@ curl -s -b $J -X POST $B/api/accounts/0/review -H "X-CSRF-Token: $CSRF" \
 curl -s -b $J -X POST $B/api/signin -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
      -d '{"phone":"13800138000"}'
 # 系统设置：POST /api/settings（部分更新）；公告：PUT /api/announcement 写草稿、
-# POST /api/announcement/publish（仅主管理员 + 当次口令）发布或下线
+# POST /api/announcement/publish（仅主管理员；口令按 YIBAN_PW_GATE 档位——缺省 risk 档
+# 同出口的已登录会话可直接生效，换出口才要一次；full 档每次都要）发布或下线
 ```
 
 绝大多数设置项也可以直接改 `.env` 里的键再重启 web（键名见「配置说明」表；页面上的改动本身就写在 `.env` 里）。危险操作（改他人账号凭据、执行体配置、破坏性设置等）在接口层按 `YIBAN_PW_GATE` 档位要求 `confirm_password` 字段（默认 `risk`：只有风控命中才要，纯脚本调用通常无需带；`full` 档每次都要）。非 `full` 档下的不可逆操作（物理清除 / 删用户 / 急停）另需请求体带 `confirm_delay_ack: true`，否则返回 `reason=delay_ack_required`（前端据此弹倒计时确认框）。
