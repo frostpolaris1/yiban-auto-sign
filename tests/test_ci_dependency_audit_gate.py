@@ -25,6 +25,7 @@ PyYAML 不在运行依赖里，门禁不得为一条注释引入一个新依赖�
 检查器喂一份"可变 tag / 无 pip-audit / 带私钥"的合成内容必须判红。
 依赖：纯文件读取，无网络、无 skip。
 """
+import fnmatch
 import io
 import os
 import re
@@ -35,6 +36,9 @@ from unittest import mock
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKFLOWS = os.path.join(BASE, ".github", "workflows")
 DOCKERFILE = os.path.join(BASE, "docker", "Dockerfile")
+CI = os.path.join(WORKFLOWS, "ci.yml")
+E2E_DIR = os.path.join(BASE, "frontend", "e2e")
+PLAYWRIGHT_CONFIG = os.path.join(BASE, "frontend", "playwright.config.ts")
 
 #: `uses: owner/repo@ref`；ref 允许 40 位十六进制（SHA）或任意可变量（tag/分支）。
 _USES = re.compile(r"^\s*-?\s*uses:\s*([^\s#]+)\s*(#.*)?$", re.M)
@@ -49,6 +53,34 @@ def _read(path):
 
 def _workflow_files():
     return sorted(n for n in os.listdir(WORKFLOWS) if n.endswith((".yml", ".yaml")))
+
+
+def _e2e_specs():
+    """`frontend/e2e/` 下的全部 Playwright spec 文件名（扫空由调用方判红）。"""
+    if not os.path.isdir(E2E_DIR):
+        return []
+    return sorted(n for n in os.listdir(E2E_DIR) if n.endswith(".spec.ts"))
+
+
+def _job_block(text, name):
+    """切出 `jobs:` 下某个作业的正文（缩进 2 的 `name:` 起，到下一个同级键止）。
+
+    返回空串表示没这个作业——调用方必须判红，否则"作业改名/删掉"会让断言恒真。
+    """
+    lines = text.splitlines()
+    start = None
+    for i, ln in enumerate(lines):
+        if re.match(r"^  %s:\s*$" % re.escape(name), ln):
+            start = i
+            break
+    if start is None:
+        return ""
+    out = []
+    for ln in lines[start + 1:]:
+        if re.match(r"^  [A-Za-z0-9_-]+:\s*$", ln):
+            break
+        out.append(ln)
+    return "\n".join(out)
 
 
 def _unpinned_refs(text):
@@ -248,6 +280,70 @@ class ScheduledWorkflowDefinitionPointTest(unittest.TestCase):
                 tmp, "# `e2e-nightly.yml` 在默认分支，checkout 用 `ref: develop`")
         self.assertEqual(bad, ["ci.yml 注释块缺少约定要素：`nightly.yml`"],
                          "锚点丢了就会被裸子串白送通过，nightly.yml 的提及被删也不红")
+
+
+class FrontendE2eCiWiringTest(unittest.TestCase):
+    """R3-008：`frontend/e2e/` 的每个 spec 必须有**一条真的会跑**的 CI 调用点。
+
+    缺陷形状：这批 Playwright 用例只挂在 `e2e-nightly.yml`（定义点在默认分支 main，
+    且那份文件 checkout 的 `object` 只在 develop）——部署分支 `server-web` 上一条都不跑。
+    "文件存在但没人调用"是**静默**的（AGENTS §十三 第 29 条），故这里把两件事对账：
+      ① `playwright.config` 的 `testDir` / `testIgnore` 是否覆盖每一个 spec；
+      ② `ci.yml` 里是否有一条**未注释**的 Playwright 执行行，且它属于 `frontend` 作业
+         （只有该作业有 node_modules 与 `working-directory: frontend`）。
+    本组只钉"有没有人跑、跑的是不是这些文件"，不钉步骤顺序——步骤细节错了 CI 会响亮
+    变红，不需要再钉一遍（同一判据两个定义点会漂）。
+    """
+
+    def test_every_spec_is_covered_by_the_playwright_config(self):
+        specs = _e2e_specs()
+        self.assertGreaterEqual(len(specs), 1, "扫空不得当绿：e2e 目录下一个 spec 都没读到")
+        cfg = _read(PLAYWRIGHT_CONFIG)
+        m = re.search(r'testDir:\s*"([^"]+)"', cfg)
+        self.assertIsNotNone(m, "读不出 playwright.config 的 testDir：口径丢了")
+        test_dir = m.group(1).strip().lstrip("./").rstrip("/")
+        self.assertTrue(test_dir, "testDir 为空串：配置坏了")
+        ignore = re.findall(r'testIgnore:\s*(?:\[\s*)?([^\]\n]+)', cfg)
+        ignore_patterns = [p for chunk in ignore for p in re.findall(r'"([^"]+)"', chunk)]
+        for spec in specs:
+            rel = "e2e/%s" % spec
+            self.assertTrue(
+                rel.startswith(test_dir + "/"),
+                "%s 不在 testDir=%r 之下：它永远不会被收集（文件存在但没人跑）" % (rel, test_dir))
+            for pat in ignore_patterns:
+                self.assertFalse(
+                    fnmatch.fnmatch(rel, pat),
+                    "%s 被 testIgnore=%r 挡掉：文件存在但没人跑" % (rel, pat))
+
+    def test_ci_invokes_playwright_in_the_frontend_job(self):
+        yml = _read(CI)
+        block = _job_block(yml, "frontend")
+        self.assertTrue(block, "ci.yml 里找不到 frontend 作业：node 侧测试没有调用点")
+        self.assertIn(
+            "working-directory: frontend", block,
+            "frontend 作业没有 working-directory: frontend：npm 脚本会在仓库根解析不到")
+        runs = [ln.strip() for ln in block.splitlines()
+                if not ln.strip().startswith("#")
+                and ln.strip().startswith("run:")
+                and ("playwright test" in ln or "test:e2e" in ln)]
+        self.assertTrue(
+            runs,
+            "frontend 作业里没有一条未注释的 Playwright 执行行："
+            "frontend/e2e 的 spec 文件存在但没人调用（R3-008）")
+
+    def test_the_wiring_checker_catches_a_commented_out_step(self):
+        """活体反例：把执行行注释掉，检查器必须判红（否则本门恒真）。"""
+        yml = _read(CI)
+        block = _job_block(yml, "frontend")
+        self.assertTrue(block, "夹具前提不成立：找不到 frontend 作业")
+        commented = "\n".join(
+            ("# " + ln if "test:e2e" in ln or "playwright test" in ln else ln)
+            for ln in block.splitlines())
+        runs = [ln.strip() for ln in commented.splitlines()
+                if not ln.strip().startswith("#")
+                and ln.strip().startswith("run:")
+                and ("playwright test" in ln or "test:e2e" in ln)]
+        self.assertEqual(runs, [], "被注释掉的执行行仍被判成调用点：本门的判据写反了")
 
 
 if __name__ == "__main__":
