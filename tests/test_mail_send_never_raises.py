@@ -4,7 +4,8 @@
 标签：H · 通知：邮件与推送
 覆盖：正文/主题携带**孤立代理对**（utf-8 编码必然失败）时 `_send` 只记日志、返回
     False，绝不抛异常；构造级失败**不**逐条目重试（换条目重投的是同一封，必然同样
-    失败）；运输级失败（连接/SMTP 异常）的主备 failover 行为逐字不变。
+    失败）；运输级失败（连接失败类）先在同一个条目内重试 2 次（退避 5s/15s），
+    重试用尽后再换下一条目（工单 0eul）。
 对应实现：`yiban/adapters/notifier/mail/transport.py::_send`（排版定稿进 try + MIME 构造进 try +
     Exception 收口分支）。
 关键断言：本层既有契约"发送异常只记日志、绝不抛出"（`yiban/adapters/notifier/mail/__init__.py` 模块
@@ -90,7 +91,7 @@ class SendNeverRaisesTest(unittest.TestCase):
         self.assertEqual(seen, ["first.example"], "第二条目不该接手一封必坏的信")
 
     def test_transport_failure_still_fails_over(self):
-        """回归防线：运输级失败（连接错误）的主备 failover 与本修复前逐字一致。"""
+        """运输级失败（连接错误）仍换下一条目；同条目先按 0eul 有界重试 2 次。"""
         attempts = []
         payload = {}
 
@@ -116,10 +117,13 @@ class SendNeverRaisesTest(unittest.TestCase):
              mock.patch.object(mailer, "is_enabled", lambda *a, **k: True), \
              mock.patch.object(mailer, "smtp_list",
                                lambda *a, **k: [_entry("first.example"), _entry("second.example")]), \
-             mock.patch.object(mailer_transport.smtplib, "SMTP_SSL", _FlakySMTP):
+             mock.patch.object(mailer_transport.smtplib, "SMTP_SSL", _FlakySMTP), \
+             mock.patch.object(mailer_transport.time, "sleep", lambda _s: None):
             ok = mailer_transport._send("标题", "正文", "to@example.com")
         self.assertTrue(ok)
-        self.assertEqual(attempts, ["first.example", "second.example"])
+        self.assertEqual(attempts,
+                         ["first.example", "first.example", "first.example", "second.example"],
+                         "连接失败先在同条目内重试 2 次，用尽后换下一条目")
         # 正文在 MIME 里是 base64 段，不逐字可比；可比的判据是"第二条目真的把这封
         # 投了出去"（sendmail 被调用）与"重投的是同一封"（同 Message-ID 幂等键）。
         self.assertIn("msg", payload)

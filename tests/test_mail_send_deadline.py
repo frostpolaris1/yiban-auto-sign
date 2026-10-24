@@ -33,13 +33,18 @@ def _entries(n):
 
 
 class _Clock:
-    """假单调钟：只有显式 advance 会让时间走。"""
+    """假单调钟：只有显式 advance 会让时间走。sleep 也要推进（重试退避同样吃预算）。"""
 
     def __init__(self):
         self.now = 0.0
+        self.sleeps = []  # 退避调用记录：断言「预算不足时不睡」
 
     def monotonic(self):
         return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.advance(seconds)
 
     def advance(self, seconds):
         self.now += seconds
@@ -106,6 +111,20 @@ class MailTotalBudgetTest(unittest.TestCase):
             self.assertGreater(t, 0, "不许用非正超时把操作瞬间饿死")
             self.assertLessEqual(t, OP_SEC, "单操作上限仍是既有的 15 秒")
         self.assertIn(OP_SEC, timeouts, "预算内的操作必须照旧拿满 15 秒")
+
+    def test_retry_backoff_cannot_outlive_the_budget(self):
+        """条目 op_timeout < 15（剩余预算不足）时，退避不得越过预算：不睡、不重试。
+
+        突变判据：删掉 `_send` 里「睡醒后没有剩余预算就不再开新连接」的预检，
+        本用例变红（退避会睡在已过期的预算上）。
+        """
+        deadline = self.clock.now + 10  # 首次连接的 op_timeout = 10，小于 OP_SEC
+        ok = transport._send("主题", "正文", "admin@example.test", deadline=deadline)
+        self.assertFalse(ok)
+        self.assertEqual(self.clock.sleeps, [], "预算已不足以容纳退避时不得睡")
+        self.assertEqual(len(self.attempts), 1, "预算耗尽后不得再开下一次连接")
+        self.assertLess(self.attempts[0][2], OP_SEC,
+                        "前置条件：本场景的 op_timeout 必须小于 15 秒")
 
     def test_healthy_send_still_completes_inside_budget(self):
         """正常路径不受影响：一次成功的投递照旧返回 True，且远早于预算。"""
