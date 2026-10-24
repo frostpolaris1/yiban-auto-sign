@@ -122,19 +122,27 @@ jobs:
         #   元测试才造得出"venv 落后 lock"的形态）。
         run: 'echo "Fast gate active: lint + mypy + roster fast lane + serial drill lane + e2e smoke + shared-facts roster + path-env bare reads + config registry + import-linter contracts + deps lock meta-tests."'
 
-  # ---- 慢集专轨（vckk 阶段 2-a · 2026-10-17）：名册 slow 行的唯一自动轨 ----
+  # ---- 慢集专轨（vckk 阶段 2-a · 2026-10-17）：名册 slow 行 ＋ FAST_KNOWN_SLOW 长尾轨 ----
   # 为什么独立 job：slow 行的贵是**真实的等外面**（真子进程 / 真定时等待），并进 verify
   # 会把它拱向 10 分钟上限（工单 i9gl；CI 实测比本机慢约一倍）。独立成轨与 verify 并行，
   # 总墙钟不变。
   # 覆盖面对账（AGENTS §十三 第 29 条）：verify 跑 fast + serial 行，本作业跑 slow 行
-  # ⇒ 三个车道在每次 push 上各跑各的，**合起来覆盖名册全部文件**——"改动落在某条道之外"
-  # 在结构上不再可能（名册漏归类由 tests/test_gate_lane_roster.py 红，且该守卫本身在快集里）。
-  # 行集由 tests/lane-roster.tsv 推导（唯一事实源）；本文件不写任何测试名，防第二定义点。
+  # ＋ `FAST_KNOWN_SLOW` 的 4 条长尾（R3-025，2026-10-24）⇒ 三条道在每次 push 上各跑
+  # 各的，**合起来覆盖名册全部文件与全部被快集 --deselect 的 nodeid**——"改动落在某条道
+  # 之外"在结构上不再可能（名册漏归类由 tests/test_gate_lane_roster.py 红，长尾轨的
+  # 执行点在场性由 tests/test_dev_verify_entry.py::DevVerifyTailLaneTest 红，两者都在快集里）。
+  # 长尾 4 条此前落在两道之间：所在文件是 fast 行，而快集用 --deselect 剔除它们，本作业
+  # 又只取 slow 行 ⇒ 任何自动轨都不执行。耗时口径（2026-10-24，WSL 固定 venv，串行）：
+  # 3 条实测 28.86s / 28.78s / 29.53s，第 4 条 opt-in 恒 skip；本作业实测 193s → 305s。
+  # 行集由 tests/lane-roster.tsv 与脚本内 FAST_KNOWN_SLOW 推导（唯一事实源）；本文件不写
+  # 任何测试名，防第二定义点。
   # ⚠️ 要真的拦得住，须把 `slow-lane` 加进分支保护的 required checks（所有者在仓库设置里
   # 勾选）——与 dependency-audit 同一约束，本文件无法替你做。
   slow-lane:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 10 → 15 分钟（R3-025）：本作业新增长尾轨约 +110s（本机实测 193.47s → 305s 合计），
+    # CI 机器更慢；这只是上限，不增加正常路径的时长。
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
