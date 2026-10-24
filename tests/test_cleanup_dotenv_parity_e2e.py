@@ -62,7 +62,8 @@ class CleanupCronConfigSourceTest(unittest.TestCase):
         # 只链解释器会让 venv 的 site-packages 丢失（pyvenv.cfg 不在链接旁），
         # 运行依赖（portalocker）随即 import 失败。
         venv_root = self._venv_root()
-        self.assertIsNotNone(venv_root, "需要带运行依赖的项目 venv（/root/.venv-yiban-wsl）")
+        if venv_root is None:
+            self.skipTest("需要带运行依赖的项目 venv（当前解释器不是 venv，且固定路径不存在）")
         os.symlink(venv_root, os.path.join(self.app, ".venv"))
         # 配置状态目录（.env 里声明）与默认状态目录（/var/log/yiban，命名空间内换成临时目录）。
         self.custom = os.path.join(self.tmp, "custom-state")
@@ -83,8 +84,15 @@ class CleanupCronConfigSourceTest(unittest.TestCase):
         return candidate if os.path.exists(WSL_VENV_PY) else None
 
     def test_cleanup_follows_dotenv_state_dir(self):
+        prefix = [UNSHARE, "-m"] if os.geteuid() == 0 else [UNSHARE, "-m", "-r"]
+        pre = subprocess.run([*prefix, "true"], capture_output=True, timeout=30)
+        if pre.returncode != 0:
+            self.skipTest("需要可用的 unshare 挂载/用户命名空间（CI 非特权环境会跳过）")
         inner = (
-            'mount --bind "$DEFAULT_DIR" /var/log/yiban && '
+            # 挂载点不存在时先建；建不出来就显式报 MOUNT_FAILED，由下方 skip，
+            # 不把环境不足伪装成红。
+            'mkdir -p /var/log/yiban 2>/dev/null || true; '
+            'mount --bind "$DEFAULT_DIR" /var/log/yiban || { echo MOUNT_FAILED; exit 0; }; '
             'bash "$APP/scripts/yiban-cleanup.sh"; rc=$?; '
             'echo "cleanup_rc=$rc"; '
             'test -f "$CUSTOM/sign-DAY.log" && echo CUSTOM_KEPT || echo CUSTOM_DELETED; '
@@ -93,11 +101,12 @@ class CleanupCronConfigSourceTest(unittest.TestCase):
         env = dict(MIN_ENV)
         env.update({"HOME": self.tmp, "APP": self.app,
                     "CUSTOM": self.custom, "DEFAULT_DIR": self.default})
-        prefix = [UNSHARE, "-m"] if os.geteuid() == 0 else [UNSHARE, "-m", "-r"]
         r = subprocess.run([*prefix, BASH, "-c", inner], env=env, cwd=self.tmp,
                            capture_output=True, text=True, encoding="utf-8",
                            errors="replace", timeout=180)
         out = (r.stdout or "") + (r.stderr or "")
+        if "MOUNT_FAILED" in out:
+            self.skipTest("无法在命名空间内挂载 /var/log/yiban（CI 非特权环境会跳过）")
         self.assertIn("cleanup_rc=0", out, "清理脚本未正常结束：\n" + out)
         self.assertIn("CUSTOM_DELETED", out,
                       "配置里的状态目录未被清理（cron 不读 .env）：\n" + out)
