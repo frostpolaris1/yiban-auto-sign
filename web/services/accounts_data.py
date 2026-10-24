@@ -3,7 +3,8 @@
 """账号数据族：读取、展示序列化、字段校验与账号审核态词表。
 
 **功能**
-账号与用户的读取 `load_accounts` / `load_accounts_raw` / `load_users`、出站展示序列化
+账号与用户的读取 `load_accounts` / `load_accounts_raw` / `load_account_at` /
+`load_users`、出站展示序列化
 `mask_account`（含邮箱脱敏 `_mask_email` 与归属展示名 `_owner_display_of`）、按手机号
 定位 `find_account_index`、字段清洗与重提冲突文案 `validate_account` /
 `_duplicate_phone_error` / `_owner_has_other_live`、设备识别码表单协议折算
@@ -20,7 +21,8 @@
 
 **复用**
 `mask_account` 只经 `_mask_email` / `_owner_display_of` 出站脱敏，不各自实现一份；读取族
-（`load_accounts` / `load_accounts_raw` / `load_users`）共用 `web.services.locks` 的
+（`load_accounts` / `load_accounts_raw` / `load_account_at` / `load_users`）共用
+`web.services.locks` 的
 `_file_lock`，避免同进程内读到未提交事务的部分结果；口令策略与只读验证各只有一处判据
 （`signin.verify_account`），注册、编辑与校验队列都经它取用。
 
@@ -111,6 +113,20 @@ def load_accounts():
             return db.accounts_snapshot()
 
     return db.read_accounts(_snap)
+
+
+def load_account_at(index):
+    """按**整表绝对下标**取单个账号（已解密）；越界返回 None。
+
+    详情端点专用：只读目标行，不为取一行解密整表（工单 dnox-B）。下标口径与列表
+    一致（`sort_order, id` 全序，见 persistence 层 `_ACCOUNTS_ORDER_BY`）。
+    锁口径与 `load_accounts` 相同：`_file_lock` 只护住"取快照"这一步。
+    """
+    def _snap():
+        with _file_lock:
+            return db.account_row_at(index)
+
+    return db.read_account_at(_snap)
 
 
 def purge_account(account_id, audit_spec=None):
