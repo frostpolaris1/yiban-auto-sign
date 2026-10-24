@@ -33,13 +33,16 @@ def _entries(n):
 
 
 class _Clock:
-    """假单调钟：只有显式 advance 会让时间走。"""
+    """假单调钟：只有显式 advance 会让时间走。sleep 也要推进（重试退避同样吃预算）。"""
 
     def __init__(self):
         self.now = 0.0
 
     def monotonic(self):
         return self.now
+
+    def sleep(self, seconds):
+        self.advance(seconds)
 
     def advance(self, seconds):
         self.now += seconds
