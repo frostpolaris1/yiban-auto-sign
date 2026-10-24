@@ -344,6 +344,10 @@ def face_guard_problems(root, files):
       · 空面（`test_empty_face_is_red` 传 `[]`）；
       · 面外全 `frontend/**`（`test_out_of_face_residue_reconciles_with_registry`）；
       · 别的 root（临时目录夹具 `test_gate_reports_a_temp_dangling_file`）。
+
+    外部守卫：`test_this_gate_file_is_scanned` 从调用方视角喂一个不含本门文件的面，
+    要求本函数判红；把本函数改成 `return []` 它会红（R3-026：不变量不能只由被验
+    函数自己执行）。
     """
     if root != BASE or not files:
         return []
@@ -530,6 +534,32 @@ class DocReferenceGateTest(unittest.TestCase):
             "`./` 形态的悬空引用被漏检（且应归一到不带 `./` 的路径）")
 
 
+
+    def test_this_gate_file_is_scanned(self):
+        """扫描原语的外部守卫：主门那一面必须含本门文件（R3-026）。
+
+        原不变量只由 `face_guard_problems` 自己执行——把它改成 `return []`，全仓无一
+        用例变红。本条从**调用方视角**喂一个不含本门文件的扫描面，要求原语判红；
+        再从正面确认 `face_plan` 推导出的主面确实含本门文件（防有人把本文件从面里
+        剔除后，函数与断言一起"自洽地"失效）。
+        """
+        rel = os.path.relpath(os.path.abspath(__file__), BASE).replace(os.sep, "/")
+        # ① 反面：面里只有别的入库文件 ⇒ 原语必须点名"缺本门文件"
+        other = "README.md"
+        self.assertTrue(os.path.isfile(os.path.join(BASE, other)), "夹具文件不存在")
+        problems = face_guard_problems(BASE, [other])
+        self.assertTrue(
+            problems,
+            "扫描面不含本门文件却判绿：face_guard_problems 被架空，"
+            "『本门不得豁免自己』这条不变量失去守卫")
+        self.assertIn(rel, "；".join(problems),
+                      "拒绝信息必须点名本门文件（否则读者不知道缺的是哪个）")
+        # ② 正面：主门实际推导出的面必须含本门文件
+        _files, in_face, _out = face_plan(BASE, _ls_tracked(BASE))
+        self.assertIn(
+            rel, in_face,
+            "主门推导出的扫描面不含本门文件：把本文件从面里剔出去后，"
+            "它扫不到自己（AGENTS §十三 第 29 条）")
 
     def test_empty_face_is_red(self):
         """扫空不得当绿：空面必须判红（两条下限都要挡）。"""
