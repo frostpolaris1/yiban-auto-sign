@@ -168,10 +168,10 @@ class ProseAfterCredentialKeySurvivesTest(unittest.TestCase):
     """
 
     def test_config_warning_keeps_its_explanation(self):
-        raw = "配置 YIBAN_SESSION_TTL_HOURS=12 非法，回退默认 168 小时"
+        raw = "配置 YIBAN_SESSION_TTL_HOURS=12 非法，回退默认 6 小时"
         out = _format(raw)
         self.assertIn("YIBAN_SESSION_TTL_HOURS=***", out, "键值对本身仍要遮")
-        self.assertIn("非法，回退默认 168 小时", out, "值后面的解释句被吞——排障信息丢失")
+        self.assertIn("非法，回退默认 6 小时", out, "值后面的解释句被吞——排障信息丢失")
 
     def test_bool_config_warning_keeps_its_explanation(self):
         raw = "配置 YIBAN_NOTIFY_SECRET=true 非法（既非真值也非假值），安全件按缺省开处理"
