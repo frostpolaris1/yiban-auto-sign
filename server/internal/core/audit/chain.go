@@ -306,9 +306,10 @@ func validateDetailString(key, text string) error {
 	default:
 		return fmt.Errorf("%w: %q has no string rule", ErrDetailKey, key)
 	}
-	// PII 判定单一来源是 core/mask.MaskText：手机号（连续、分隔、带国家码）
-	// 与邮箱都在掩码层覆盖（W2C-R4-01）。本文件不另设正则，避免两套口径漂移。
-	if mask.MaskText(text) != text {
+	// PII 判定单一来源是 core/mask 的检测入口：
+	// TextHasPhone（对齐窗口，1[3-9]）与 TextHasEmail。
+	// 检测口径宁缺勿冤：时间戳形态不判为手机号（W2C-R2-02）。本文件不另设正则，避免两套口径漂移。
+	if mask.TextHasPhone(text) || mask.TextHasEmail(text) {
 		return fmt.Errorf("%w: %q", ErrDetailPII, key)
 	}
 	return nil

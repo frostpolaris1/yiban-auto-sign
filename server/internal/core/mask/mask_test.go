@@ -133,3 +133,28 @@ func TestMaskTextHandlesFusedPhoneAndDigits(t *testing.T) {
 		t.Fatalf("fused input = %q", got)
 	}
 }
+
+// 检测口径（TextHasPhone）与掩码口径（MaskText）的双向差异钉：
+// 掩码宁多勿漏（时间戳改写），检测宁缺勿冤（时间戳不报）。
+func TestTextHasPhoneStrictCaliber(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"13900139000", true},
+		{"user13800138000", true},
+		{"13800138000abc", true},
+		{"139-0013-9000", true},
+		{"+86 139 0013 9000", true},
+		{"{\"note\":\"139-0013-9000\"}", true},
+		{"1735689600000", false},
+		{"订单 1735689600000 已核对", false},
+		{"2026-10-25", false},
+		{"0013900139000", false},
+	}
+	for _, tc := range cases {
+		if got := TextHasPhone(tc.in); got != tc.want {
+			t.Fatalf("TextHasPhone(%q) = %t; want %t", tc.in, got, tc.want)
+		}
+	}
+}

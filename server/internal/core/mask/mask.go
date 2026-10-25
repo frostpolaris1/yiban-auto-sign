@@ -91,11 +91,52 @@ func MaskDevice(s string) string {
 // 手机号被掩，日期与数量保持原样。
 // 改写非号码的数字会破坏原文，故窗口之外的数字一律不动。
 //
-// **调用方判「是否含 PII」只看本函数返回值是否变化**：
-// 本包不再另设只判手机号的入口，避免两套口径漂移。
+// **调用方判「是否含 PII」用下面两个检测入口，不看本函数返回值**：
+// 掩码口径宁多勿漏（时间戳形态也会被改写），
+// 检测口径宁缺勿冤（只认 1[3-9] 开头，时间戳不判为手机号）。
+// 两套口径刻意不同，理由见各自注释。
 func MaskText(s string) string {
 	s = emailInText.ReplaceAllStringFunc(s, MaskEmail)
 	return phoneInText.ReplaceAllStringFunc(s, maskPhoneRun)
+}
+
+// TextHasPhone 报告文本里是否还有未掩码的手机号形态。
+//
+// 这是**检测口径**：只认**对齐窗口**（数字段开头到段结尾）且
+// 11 位以 1[3-9] 开头、13 位以 86+1[3-9] 开头。
+// 掩码口径（MaskText）宁多勿漏，会把时间戳形态也改写；
+// 检测若沿用同一口径，纪元毫秒与编号会被冤成手机号（W2C-R2-02）。
+// 融进更长数字串的手机号检测不到，属已登记限制。
+// 审计守卫与符合性套件都用本函数做失败关闭判定。
+func TextHasPhone(s string) bool {
+	for _, run := range phoneInText.FindAllString(s, -1) {
+		segs := splitSegments(run)
+		// 检测窗口与掩码第一遍同构：从某段开头到某段结尾的**对齐窗口**。
+		// 单段内部（i==j）即整段；跨段（i<j）要求窗口覆盖完整段。
+		for i := 0; i < len(segs); i++ {
+			for j := i; j < len(segs); j++ {
+				dd := digitsOnly(run[segs[i].start:segs[j].end])
+				switch {
+				case len(dd) == 11 && dd[0] == '1' && dd[1] >= '3' && dd[1] <= '9':
+					return true
+				case len(dd) == 13 && strings.HasPrefix(dd, "86") && dd[2] == '1' && dd[3] >= '3' && dd[3] <= '9':
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// TextHasEmail 报告文本里是否还有未掩码的邮箱形态。
+// 已掩码（含 ***）的邮箱不算。
+func TextHasEmail(s string) bool {
+	for _, m := range emailInText.FindAllString(s, -1) {
+		if MaskEmail(m) != m {
+			return true
+		}
+	}
+	return false
 }
 
 // segment 是游程内一段无分隔符的数字，start 与 end 是字节偏移（含头不含尾）。
