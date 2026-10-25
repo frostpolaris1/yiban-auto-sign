@@ -161,7 +161,7 @@ func (s *server) authenticate() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		if token, err := c.Cookie(s.cookieName); err == nil {
+		if token, err := c.Cookie(s.cookies.name); err == nil {
 			sess, rerr := s.sessions.Resolve(c.Request.Context(), token)
 			if rerr == nil {
 				c.Request = c.Request.WithContext(auth.WithSession(c.Request.Context(), sess))

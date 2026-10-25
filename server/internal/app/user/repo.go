@@ -41,6 +41,9 @@ type Repo interface {
 	GetByID(ctx context.Context, id string) (Record, error)
 	GetByEmail(ctx context.Context, email string) (Record, error)
 	UpdatePassword(ctx context.Context, id, passwordHash string, mustChange bool, at time.Time) error
+	// RehashPassword 只替换哈希，**不改 password_changed_at**。
+	// 登录时的透明升级走本方法：口令没有变，改密时刻不得前移。
+	RehashPassword(ctx context.Context, id, passwordHash string) error
 	SetStatus(ctx context.Context, id string, status coreauth.Status, at time.Time) error
 	MarkLogin(ctx context.Context, id string, at time.Time) error
 	SoftDelete(ctx context.Context, id, by string, at time.Time) error

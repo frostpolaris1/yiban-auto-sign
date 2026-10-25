@@ -15,18 +15,6 @@ func openapiEmail(s string) openapi_types.Email { return openapi_types.Email(s) 
 // P1 只交付契约与接线；下列每个端点由后续任务填充。
 func notImplemented(c *gin.Context) { respond.NotImplemented(c.Writer, c.Request) }
 
-// AuthLogin 是 P1 占位实现。
-func (s *server) AuthLogin(c *gin.Context) { notImplemented(c) }
-
-// AuthLogout 是 P1 占位实现。CSRF 门禁已先跑过。
-func (s *server) AuthLogout(c *gin.Context, _ oapi.AuthLogoutParams) { notImplemented(c) }
-
-// AuthForgotPassword 是 P1 占位实现。
-func (s *server) AuthForgotPassword(c *gin.Context) { notImplemented(c) }
-
-// AuthResetPassword 是 P1 占位实现。
-func (s *server) AuthResetPassword(c *gin.Context) { notImplemented(c) }
-
 // UserCreate 是 P1 占位实现。
 func (s *server) UserCreate(c *gin.Context, _ oapi.UserCreateParams) { notImplemented(c) }
 

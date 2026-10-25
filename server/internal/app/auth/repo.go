@@ -1,20 +1,22 @@
-// Package auth 声明会话与密码重置的仓储端口。
+// Package auth 声明会话与密码重置的仓储端口，并实现认证用例。
 //
 // # 功能
-// 声明会话仓储与一次性重置令牌仓储，并转发 core/auth 的类型。
-// 本包**不**签发令牌、**不**派生 CSRF、**不**写 SQL。
+// 声明会话仓储与一次性重置令牌仓储；实现登录、登出、会话主体、
+// 忘记口令与重置口令。本包**不**写 SQL，**不**做 HTTP 编码。
 //
 // # 归属
-// app 层用例端口。行类型留在 core/auth，
+// app 层用例端口与用例。行类型留在 core/auth，
 // 这样 PostgreSQL 适配器无需导入本包（canonical.tsv 的 boundary.adapters）。
 //
 // # 复用
-// SessionRepo、PasswordResetRepo；类型别名 Session、NewSession、
-// ResolvedSession、PasswordReset、NewPasswordReset。
+// SessionRepo、PasswordResetRepo；Service、Deps、NewService、Me；
+// ErrInvalidCredentials、ErrInvalidResetToken、ResetTokenTTL；
+// 类型别名 Session、NewSession、ResolvedSession、PasswordReset、NewPasswordReset。
 //
 // # 口径
 // 解析只返回有效会话；未知、已撤销、绝对过期、空闲超时一律 not_found。
 // 每用户有效会话上限取自 core/auth.MaxSessionsPerUser。
+// 登录失败不区分「用户不存在」与「口令错误」。
 package auth
 
 import (

@@ -11,6 +11,7 @@
 //
 // # 复用
 // CookieName、InsecureCookieName、MaxSessionsPerUser；
+// SessionIdleWindow、SessionAbsoluteWindow、NewToken；
 // TokenHash 及 HashToken、Bytes、IsZero；
 // IPHash、UserAgentHash 及 HashIP、HashUserAgent、HashValue、FromStored 系列；
 // CSRFToken；Role、Status；User、Session、Issued；
@@ -27,6 +28,7 @@ package auth
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -46,6 +48,26 @@ const InsecureCookieName = "yiban_session_dev"
 // MaxSessionsPerUser 限制每用户同时有效会话数 20。
 // 新登录淘汰最旧会话，**不无界增长**（决策 12.9）。
 const MaxSessionsPerUser = 20
+
+// 会话窗口取自裁决 12.9。全仓只此一份。
+const (
+	// SessionIdleWindow 是空闲滑动窗口：连续 30 分钟无请求即失效。
+	SessionIdleWindow = 30 * time.Minute
+	// SessionAbsoluteWindow 是绝对上限：从签发起 12 小时后必失效。
+	SessionAbsoluteWindow = 12 * time.Hour
+)
+
+// NewToken 返回 32 字节随机令牌的 base64url 文本。
+//
+// 这是会话令牌与重置令牌的唯一生成点。原始令牌只向调用方返回一次；
+// 落库前一律经 HashToken 转成摘要。
+func NewToken() (string, error) {
+	var buf [32]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf[:]), nil
+}
 
 // TokenHash 是会话令牌或重置令牌的 SHA-256 摘要。
 //

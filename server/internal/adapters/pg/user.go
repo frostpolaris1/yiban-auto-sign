@@ -115,6 +115,26 @@ func (r *UserRepo) UpdatePassword(ctx context.Context, id, passwordHash string, 
 	return nil
 }
 
+// RehashPassword 只替换口令哈希。
+//
+// 登录时的透明升级走本方法：口令没有变，故 password_changed_at
+// 与 must_change_password **保持不变**。改密请用 UpdatePassword。
+func (r *UserRepo) RehashPassword(ctx context.Context, id, passwordHash string) error {
+	if passwordHash == "" {
+		return validationError("password hash is required")
+	}
+	tag, err := r.db.q(ctx).Exec(ctx, `
+		UPDATE users SET password_hash = $2, updated_at = now()
+		 WHERE id = $1::uuid AND deleted_at IS NULL`, id, passwordHash)
+	if err != nil {
+		return mapError(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return coreerrNotFound()
+	}
+	return nil
+}
+
 // SetStatus 修改用户状态。
 // 停用用户**还必须撤销其会话**；那属于调用方的事务，不在本方法内。
 func (r *UserRepo) SetStatus(ctx context.Context, id string, status coreauth.Status, at time.Time) error {
