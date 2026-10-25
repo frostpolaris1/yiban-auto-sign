@@ -145,8 +145,11 @@ def _stream_generator(m, hub, cfg, last_id, sub, phones):
     # 心跳：`stream_config` 缺省即名册值（15），但显式写 0 时 `_int` 会原样返回 0，
     # 故保留"0 → 名册缺省"的兜底；兜底值从名册现取，不写字面量。
     heartbeat = cfg["heartbeat_sec"] or _run_stream.heartbeat_default_sec()
-    # `stream_config` 的 `_int` 永远返回整数（缺省/非法都回名册值），故不存在 None 分支。
-    gap_max = cfg["gap_max"]
+    # 不变量：两个调用点都只喂 `stream_config` 的结果，而它的 `_int` 永远返回整数
+    # （缺省/非法都回名册值），故此处不存在 None 分支。注解与断言把这条写进代码。
+    gap_max: int = cfg["gap_max"]
+    assert isinstance(gap_max, int), (
+        "gap_max 必须来自 stream_config（整数，无 None）")
     user_mode = phones is not None
     started = clock_monotonic()
 
