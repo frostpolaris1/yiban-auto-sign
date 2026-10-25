@@ -117,7 +117,7 @@ export interface paths {
         /**
          * Create a master, admin or user account.
          * @description Master only (decision 12.4). There is no public registration endpoint.
-         *     P1 returns 501.
+         *     The password is stored as an argon2id hash. A duplicate email is a 409.
          */
         post: operations["UserCreate"];
         delete?: never;

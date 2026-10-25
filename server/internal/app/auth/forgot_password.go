@@ -7,6 +7,7 @@ import (
 
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 )
 
 // ForgotPassword 为已知账号创建一次性重置令牌。
@@ -17,8 +18,8 @@ import (
 // SMTP 未接线，令牌投递属后续通知批；故本动作**不写审计**：
 // 没有投递就没有可审计事件，且 audit 词表不含该动作。
 func (s *Service) ForgotPassword(ctx context.Context, email string) error {
-	email = normalizeEmail(email)
-	if !validEmail(email) {
+	email = coreuser.NormalizeEmail(email)
+	if !coreuser.ValidEmail(email) {
 		return errs.New(errs.CodeValidation, "invalid email")
 	}
 	rec, err := s.users.GetByEmail(ctx, email)

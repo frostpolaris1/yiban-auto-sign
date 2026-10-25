@@ -92,15 +92,16 @@ provider contract, error envelope, and the gate with mutation tests.
 
 P1 so far: the OpenAPI 3.1 contract, generated transport types, the Gin
 assembly with request id, panic recovery, access log and auth middleware, an
-in-memory `SessionIssuer`, and the PostgreSQL layer: eleven goose
-migrations, a pgxpool with `statement_timeout`, a READ COMMITTED transaction
-manager, and repositories for users, sessions, schools, administrator
-bindings, accounts, credentials, audit and password resets. Every business
-endpoint still answers 501 through the generated handlers until its use case
-lands.
+in-memory `SessionIssuer`, the PostgreSQL layer (eleven goose migrations, a
+pgxpool with `statement_timeout`, a READ COMMITTED transaction manager, and
+repositories for users, sessions, schools, administrator bindings, accounts,
+credentials, audit and password resets), and the live use cases behind every
+business endpoint: auth and password reset, users, schools, administrators and
+accounts. A domain handler that is not wired answers 501; production wires all
+four.
 
-Not implemented yet: login, RBAC, scheduling, image pipeline, frontend. Those
-land in later P1 tasks and P2+. `scripts/generate.sh --check` fails when
+Not implemented yet: scheduling, image pipeline, upstream client, frontend.
+Those land in later P1 tasks and P2+. `scripts/generate.sh --check` fails when
 `contracts/openapi.yaml` and the generated code drift apart.
 
 Database tests need a real PostgreSQL 18. Set `YIBAN_TEST_DATABASE_URL`; when

@@ -3,7 +3,7 @@
 // # 功能
 // 建路由、串中间件、读会话 cookie。
 // 认证端点由 Options.Auth 注入；未注入时保持 501。
-// 学校、管理员、账号三组端点委托到域处理器；/api/users 仍是 501 占位。
+// 学校、管理员、账号、用户四组端点委托到域处理器。
 // 本包**不**连数据库、**不**写业务逻辑。
 //
 // # 归属
@@ -33,11 +33,12 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/respond"
 	schoolhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/school"
+	userhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/user"
 )
 
 // Options 装配路由。Sessions 必填；其余有默认值。
 //
-// Schools、Admins、Accounts 是三个业务域的处理器。
+// Schools、Admins、Accounts、Users 是四组业务端点的域处理器。
 // 生产由 cmd/server 装配；为 nil 时对应端点回 501，
 // 该状态只出现在测试或降级进程里。
 type Options struct {
@@ -50,15 +51,16 @@ type Options struct {
 	// 浏览器拒绝不带 Secure 的 __Host- cookie，故仅限本地 HTTP。
 	InsecureCookies bool
 	Logger          *slog.Logger
-	// Schools、Admins、Accounts 是三组业务端点的域处理器。
+	// Schools、Admins、Accounts、Users 是四组业务端点的域处理器。
 	// 为 nil 时对应端点回 501，装配代码必须显式决定。
 	Schools  *schoolhttp.Handler
 	Admins   *adminhttp.Handler
 	Accounts *accounthttp.Handler
+	Users    *userhttp.Handler
 }
 
 // server 实现生成的契约接口。
-// /api/users 仍为占位；其余业务端点委托给域处理器。
+// 全部业务端点委托给域处理器。
 type server struct {
 	sessions auth.SessionIssuer
 	auth     AuthService
@@ -66,6 +68,7 @@ type server struct {
 	schools  *schoolhttp.Handler
 	admins   *adminhttp.Handler
 	accounts *accounthttp.Handler
+	users    *userhttp.Handler
 }
 
 // New 构造 HTTP 引擎。缺 SessionIssuer 时**失败关闭**。
@@ -94,6 +97,7 @@ func New(opts Options) (*gin.Engine, error) {
 	srv.schools = opts.Schools
 	srv.admins = opts.Admins
 	srv.accounts = opts.Accounts
+	srv.users = opts.Users
 
 	engine := gin.New()
 	engine.Use(
