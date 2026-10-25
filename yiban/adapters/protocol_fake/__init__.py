@@ -26,6 +26,9 @@
     POST /nightAttendance/student/index/signIn        -> JSON {"code": 0, "data": {...}}
   探针入口
     GET  /nightAttendance/student/index/signPosition  -> 只读探针（verify/--probe 复用）
+  回放入口（可选，默认关）
+    --replay-dir <dir>  -> 按 replay_manifest.json 回放夹具（captured 原样下发）
+                           未实拍状态回 501 + {"replay": "unrecorded"}，不编造响应
   运维入口
     GET  /__stats   -> 运行统计（含并发峰值）
     GET  /__health  -> 存活探测
@@ -58,6 +61,36 @@ import threading
 import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+#: 回放子模块的缓存（见 `_replay_module`）。
+_REPLAY_MODULE = None
+
+
+def _replay_module():
+    """装载 `replay` 子模块，兼容两种装载形态。
+
+    形态一：包内相对导入（`-m yiban.adapters.protocol_fake` 与普通 import）。
+    形态二：按文件路径装载（drill 与既有用例仍 `exec_module(__init__.py)`）。
+    形态二没有包上下文，相对导入会失败，故按同目录文件装载 `replay.py`。
+    """
+    global _REPLAY_MODULE
+    if _REPLAY_MODULE is not None:
+        return _REPLAY_MODULE
+    try:
+        from . import replay as module
+    except ImportError:
+        import importlib.util
+        from pathlib import Path
+        spec = importlib.util.spec_from_file_location(
+            "_protocol_fake_replay", Path(__file__).with_name("replay.py"))
+        if spec is None or spec.loader is None:  # pragma: no cover - 文件必然存在
+            raise
+        module = importlib.util.module_from_spec(spec)
+        # dataclasses 在 exec 期间按 `cls.__module__` 回查 sys.modules；先登记再执行。
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+    _REPLAY_MODULE = module
+    return module
 
 # ---------------------------------------------------------------------------
 # 内置测试公钥（RSA-1024，仅公开部分；signin 只做公钥加密，mock 无需私钥）
@@ -151,7 +184,7 @@ class MockConfig:
 
     def __init__(self, delay_ms=0, tail_delay_ms=0, tail_every=0,
                  fail_rate=0.0, fail_stage="none", config_path=None,
-                 strict_form=False):
+                 strict_form=False, replay_dir="", replay_state="ok"):
         self.delay_ms = float(delay_ms or 0)
         self.tail_delay_ms = float(tail_delay_ms or 0)
         self.tail_every = int(tail_every or 0)
@@ -168,6 +201,11 @@ class MockConfig:
         #: 夹具，而是假服务端对所有消费者的口径变更，故由显式开关承载，翻默认
         #: 留待独立批次处理。
         self.strict_form = bool(strict_form)
+        #: 夹具回放（ziqz）：空串 = 关闭（现行为零变化）。非空时按目录里的
+        #: `replay_manifest.json` 回放；`replay_state` 选状态（默认 ok）。
+        #: captured 原样下发；synthetic 或缺失状态回 501 显式拒答。
+        self.replay_dir = str(replay_dir or "")
+        self.replay_state = str(replay_state or "ok")
 
     def snapshot(self) -> dict:
         """返回本次请求生效的配置（配置文件的字段优先）。"""
@@ -178,6 +216,8 @@ class MockConfig:
             "fail_rate": self.fail_rate,
             "fail_stage": self.fail_stage,
             "strict_form": self.strict_form,
+            "replay_dir": self.replay_dir,
+            "replay_state": self.replay_state,
         }
         path = self.config_path
         if path:
@@ -201,6 +241,8 @@ class MockConfig:
                         "tail_every": 0, "fail_rate": 0.0})
         if cfg["fail_stage"] not in FAIL_STAGES:
             cfg["fail_stage"] = "none"
+        cfg["replay_dir"] = str(cfg.get("replay_dir") or "")
+        cfg["replay_state"] = str(cfg.get("replay_state") or "ok")
         return cfg
 
 
@@ -418,6 +460,32 @@ def build_handler(state: MockState, config: MockConfig, pubkey_pem: str,
             return True
 
         # ---- HTTP 入口 ----
+        def _replay(self, cfg, endpoint: str):
+            """按回放清单应答；返回记账标签。
+
+            None         端点不在回放面内（或回放未启用）⇒ 调用方走既有响应。
+            "replay"     已按 captured 夹具原样发出。
+            "unrecorded" 已发 501 显式拒答（未实拍）。
+            """
+            replay_dir = str(cfg.get("replay_dir") or "")
+            if not replay_dir:
+                return None
+            replay = _replay_module()
+            state = str(cfg.get("replay_state") or "ok")
+            try:
+                resp = replay.catalog_for(replay_dir).serve(endpoint, state)
+            except replay.ReplayNotCovered:
+                return None
+            except replay.ReplayUnavailable as exc:
+                self._send_json({"code": 501, "msg": str(exc), "replay": "unrecorded"},
+                                code=501)
+                return "unrecorded"
+            except replay.ReplayError as exc:
+                self._send_json({"code": 500, "msg": str(exc), "replay": "error"}, code=500)
+                return "unrecorded"
+            self._send(resp.body, 200, resp.content_type)
+            return "replay"
+
         def do_GET(self):
             cfg = config.snapshot()
             inflight = state.enter()
@@ -429,7 +497,10 @@ def build_handler(state: MockState, config: MockConfig, pubkey_pem: str,
                 # 运维/探测端点不计入记账，避免驱动侧对 /__stats 的轮询自扰
                 is_ops = p in ("/__stats", "/__health")
 
-                if p == "/__stats":
+                replayed = None if is_ops else self._replay(cfg, "GET " + p)
+                if replayed is not None:
+                    injected = replayed == "unrecorded"
+                elif p == "/__stats":
                     self._send_json(state.snapshot(cfg))
                 elif p == "/__health":
                     self._send_json({"ok": True})
@@ -528,7 +599,10 @@ def build_handler(state: MockState, config: MockConfig, pubkey_pem: str,
                     ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
                     form_readable = ctype == "application/x-www-form-urlencoded"
 
-                if p == "/code/usersure":
+                replayed = self._replay(cfg, "POST " + p)
+                if replayed is not None:
+                    injected = replayed == "unrecorded"
+                elif p == "/code/usersure":
                     # 登录链第 2 步：成功标志默认是 code == "s200"（KillYiBan 流程）；
                     # 旧 iOS 流程（scope 为 "1,2,3,4,"）的成功标志是响应里的 reUrl
                     injected = self._should_fail(cfg, "login")
@@ -713,6 +787,11 @@ def main(argv=None):
                          "Content-Type: application/x-www-form-urlencoded 的请求体，"
                          "模拟 servlet 容器的 getParameter 语义——signIn 缺该头时回 "
                          'code=1, msg="定位获取失败"（真实上游形态）。')
+    ap.add_argument("--replay-dir", default="",
+                    help="夹具回放目录（含 replay_manifest.json）。默认空=关闭，"
+                         "现行为零变化。启用后 captured 夹具原样回放；未实拍（synthetic "
+                         "或缺状态）回 501 显式拒答。状态选择用 --config 的 replay_state"
+                         "（默认 ok）。")
     ap.add_argument("--log", default="", help="逐请求 JSONL 落盘路径（缺省不落盘）")
     ap.add_argument("--ready-file", default="",
                     help="启动完成后写入一行 ready（供驱动等待就绪）")
@@ -735,7 +814,7 @@ def main(argv=None):
         delay_ms=args.delay_ms, tail_delay_ms=args.tail_delay_ms,
         tail_every=args.tail_every, fail_rate=args.fail_rate,
         fail_stage=args.fail_stage, config_path=args.config or None,
-        strict_form=args.strict_form,
+        strict_form=args.strict_form, replay_dir=args.replay_dir,
     )
     state = MockState(log_path=args.log or None)
 
