@@ -78,7 +78,7 @@ NON_STATE_FIXED_NAME = {
                                   "不落状态目录、不进清理与备份名册",
     "mock.jsonl": "scripts/drill_multi_exec.py 的演练假上游请求轨迹：落**调用方指定的**"
                   "证据目录或临时目录，不落状态目录、不进清理/备份名册",
-    "package.json": "Lucide 来源目录的 npm manifest（scripts/build_lucide_sprite.py 的"
+    "package.json": "Lucide 来源目录的 npm manifest（tools/build_lucide_sprite.py 的"
                     "版本校验输入）；只在构建时读取，不落状态目录、不进清理/备份名册",
     "monitor.jsonl": "scripts/drill_multi_exec.py 的演练协调面采样轨迹：同上（调用方指定的"
                      "证据目录，不进状态目录）",

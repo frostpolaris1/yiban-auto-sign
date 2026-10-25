@@ -40,6 +40,7 @@ ALLOWED_TOP = {
     "frontend",      # Vue 源码与前端 e2e（产物在 web/static/vue）
     "scripts",       # CLI 入口与门（.sh 用连字符、.py 用下划线，见实现笔记）
     "tests",         # 测试（test_*.py 平铺 + protocol/ 与 golden/ 子目录）
+    "tools",         # 开发期构建与代码生成（不进镜像；运行时不 import）
     "web",           # 管理后端（app/routes/services/templates/static）
     "yiban",         # 后端命名空间（core/ports/adapters/engine/app/entry/workers/infra/attempt）
     ".github",       # CI 与 PR 模板

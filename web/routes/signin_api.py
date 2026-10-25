@@ -29,7 +29,6 @@ import sys
 import threading
 import time
 
-import child_env
 from flask import current_app, jsonify, session
 
 # A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
@@ -43,6 +42,7 @@ from web.services import logs as _logs_svc
 from web.services import manual_sign as _manual_sign
 from yiban.adapters.persistence import db
 from yiban.core import masking as _masking
+from yiban.infra import env_child as child_env  # 坐标 yiban.infra.env_child；本地名沿用墙契约
 
 #: 手动签到全局冷却默认秒数（.env 的 `YIBAN_BATCH_SIGN_COOLDOWN_SEC` 可覆盖，0=关闭）。
 #: 单条与批量共用同一冷却基准，两处读取必须取同一个默认——各写一遍字面量迟早漂移。

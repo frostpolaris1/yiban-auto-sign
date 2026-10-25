@@ -1,27 +1,27 @@
 # -*- coding: utf-8 -*-
-"""yiban-auto-sign-6g92 守卫：`child_env` 告警频率上界口径 + 告警频次口径落在入库文件。
+"""yiban-auto-sign-6g92 守卫：`env_child` 告警频率上界口径 + 告警频次口径落在入库文件。
 
 标签：B · 调度：配置与告警口径
-覆盖：`scripts/child_env.py::parse_env_file` 的两类 `.env` 读失败告警，其**调用频率
+覆盖：`yiban/infra/env_child.py::parse_env_file` 的两类 `.env` 读失败告警，其**调用频率
    上界**必须以常量名表达（`PROBE_TRY_SECONDS` / `FALLBACK_TRY_SECONDS` /
    `YIBAN_FALLBACK_INTERVAL`）、不得抄常量值，且必须是一条同时管住
    `FileNotFoundError` 与 `OSError` 两个分支的共用口径；PM 2026-10-05 裁定的
    **告警频次口径**（状态突变类每次响亮 / 反复可容忍类允许静默）必须落在
    **会入库**的文件里（`run.sh`），不得只活在 `.gitignore` 命中的文稿里。
-对应实现：`scripts/child_env.py::parse_env_file`（上界口径块）、
+对应实现：`yiban/infra/env_child.py::parse_env_file`（上界口径块）、
    `run.sh` 的「告警频次口径」段（口径正文）、`docker/scheduler.py`（两枚周期常量的
    定义点与到点判法、兜底闸门 `_fallback_gate_env` 的读盘）、
    `yiban/workers/workers.py`（常驻扫描间隔的键与缺省域）、
    `web/routes/signin_api.py`（web 手动签到每请求一次）。
 关键断言：九条，缺一即红——
-   ① 上界块按常量名引用三个周期来源，且每名在 `child_env.py` 内只出现一次；
+   ① 上界块按常量名引用三个周期来源，且每名在 `env_child.py` 内只出现一次；
    ② 上界块位于 `try:` 之上（同批管住两个 except 分支，不是只管 `OSError`）；
    ③ 注释里没有任何常量值或"数字 次/日"（本单要消灭的正是这种会过期的假话）；
    ④ 两枚周期常量仍是 `docker/scheduler.py` 的定义点并参与到点判法，值锚在本测试；
    ⑤ 常驻扫描间隔的键与缺省域仍是 `yiban/workers/workers.py` 的那一处；
    ⑥ 三个周期来源今日仍有出处（兜底闸门读盘 / web 每请求 / 兜底外壳在场）；
    ⑦ 口径正文住在 `run.sh`，且点名两类的承载者；
-   ⑧ 口径正文与 `child_env` 的上界块逐字同名同锚；
+   ⑧ 口径正文与 `env_child` 的上界块逐字同名同锚；
    ⑨ 两枚口径承载者都在 git 跟踪集里（不入库 = 没写）。
    改常量值、改常量名、删掉兜底路径、把口径挪进不入库的文稿——任一项都会把上界式
    变成假话，本测试即红。数字只活在测试里（改值响亮），注释里一个数字都没有
@@ -37,14 +37,14 @@ import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-CHILD_ENV = os.path.join(BASE, "scripts", "child_env.py")
+CHILD_ENV = os.path.join(BASE, "yiban", "infra", "env_child.py")
 SCHEDULER = os.path.join(BASE, "docker", "scheduler.py")
 WORKERS = os.path.join(BASE, "yiban", "workers", "workers.py")
 RUN_SH = os.path.join(BASE, "run.sh")
 SIGNIN_API = os.path.join(BASE, "web", "routes", "signin_api.py")
 FALLBACK_SH = os.path.join(BASE, "scripts", "yiban-fallback.sh")
 
-# 口径正文的锚串（run.sh 与 child_env.py 必须逐字同一枚名字，否则指针落空）
+# 口径正文的锚串（run.sh 与 env_child.py 必须逐字同一枚名字，否则指针落空）
 CALIBER_ANCHOR = "告警频次口径"
 CLASS_LOUD = "状态突变"
 CLASS_TOLERABLE = "反复可容忍"
@@ -106,10 +106,10 @@ class ChildEnvBoundCommentTest(unittest.TestCase):
     def test_bound_cites_every_periodic_source_by_name(self):
         for name in _cited_names():
             self.assertIn(name, self.comments,
-                          f"child_env 的上界注释未点名 {name}：上界式必须可按常量名核对")
+                          f"env_child 的上界注释未点名 {name}：上界式必须可按常量名核对")
             self.assertEqual(
                 self.src.count(name), 1,
-                f"{name} 在 child_env.py 里出现 {self.src.count(name)} 次："
+                f"{name} 在 env_child.py 里出现 {self.src.count(name)} 次："
                 "同一件事只准有一条上界口径，两处抄写迟早互相打架")
 
     def test_bound_block_covers_both_except_branches(self):
@@ -151,11 +151,11 @@ class CadenceSourceTest(unittest.TestCase):
             m = re.search(r"(?m)^%s = (\d+)\s*$" % name, sched)
             self.assertIsNotNone(
                 m, f"{name} 不再是 {rel} 的模块级定义点："
-                   "child_env 的上界式按它命名，来源没了注释就成了假话")
+                   "env_child 的上界式按它命名，来源没了注释就成了假话")
             self.assertEqual(
                 int(m.group(1)), pinned,
                 f"{name} 的值已从 {pinned} 改为 {m.group(1)}：请回去核对 "
-                "scripts/child_env.py 的上界式与 run.sh 的「告警频次口径」是否仍然成立，"
+                "yiban/infra/env_child.py 的上界式与 run.sh 的「告警频次口径」是否仍然成立，"
                 "再更新本值锚（数字只钉在这里，不钉在注释里）")
             self.assertIsNotNone(
                 re.search(r">= %s\b" % name, sched),
@@ -181,8 +181,8 @@ class CadenceSourceTest(unittest.TestCase):
         """上界式的三个来源逐个验：容器调度器两枚周期闸门 + 常驻引擎扫描 + web 每请求。"""
         sched = _text(SCHEDULER)
         self.assertRegex(
-            sched, r'from child_env import .*parse_env_file',
-            "容器调度器不再直接调 child_env.parse_env_file：兜底闸门那一项的落点变了")
+            sched, r'from yiban\.infra\.env_child import .*parse_env_file',
+            "容器调度器不再直接调 env_child.parse_env_file：兜底闸门那一项的落点变了")
         self.assertRegex(
             sched, r"(?s)def _fallback_gate_env\(.*?return parse_env_file\(ENV_FILE\)",
             "兜底闸门 `_fallback_gate_env` 不再读 .env：常驻路径的频率上界需要重算")
@@ -206,18 +206,18 @@ class CaliberLocationTest(unittest.TestCase):
         for anchor in (CALIBER_ANCHOR, CLASS_LOUD, CLASS_TOLERABLE):
             self.assertIn(anchor, src, f"run.sh 缺少口径锚串「{anchor}」")
         # 两类的承载者都要点名，否则"同理由不同结论"的质疑还堵不住
-        for carrier in ("scripts/child_env.py", "scripts/yiban-fallback.sh"):
+        for carrier in ("yiban/infra/env_child.py", "scripts/yiban-fallback.sh"):
             self.assertIn(carrier, src,
                           f"run.sh 的口径段未点名承载者 {carrier}")
 
     def test_child_env_points_at_the_caliber(self):
         comments = "\n".join(_comment_lines(_text(CHILD_ENV)))
         self.assertIn(CALIBER_ANCHOR, comments,
-                      "child_env 未指向 run.sh 的口径正文：两处必须同名同锚")
+                      "env_child 未指向 run.sh 的口径正文：两处必须同名同锚")
 
     def test_caliber_files_are_tracked_by_git(self):
         tracked = _tracked_relpaths()
-        for rel in ("run.sh", "scripts/child_env.py"):
+        for rel in ("run.sh", "yiban/infra/env_child.py"):
             self.assertIn(rel, tracked,
                           f"{rel} 不在 git 跟踪集里：口径正文落在不入库的文件等于没写")
 

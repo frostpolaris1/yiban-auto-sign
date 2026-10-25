@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""肘界影子分析脚本（`scripts/elbow_shadow.py`）的守卫：判据不许恒真。
+"""肘界影子分析脚本（`tools/elbow_shadow.py`）的守卫：判据不许恒真。
 
 标签：B · 调度与领取
 覆盖：
@@ -10,7 +10,7 @@
   ② **与核心谓词同判**：脚本的判定规则逐例等于 `yiban.core.elbow.may_claim`
      （避免分析口径与线上口径漂移的第二份实现）。
   ③ **只读**：脚本只读打开库，绝不建库/写库；输出不出现原始手机号。
-对应实现：`scripts/elbow_shadow.py`（`classify` / `load_records` / `analyze` /
+对应实现：`tools/elbow_shadow.py`（`classify` / `load_records` / `analyze` /
     `analyze_owners` / `main`）。
 关键断言：① 是"判据不许恒真"的机械判据；② 是"两份口径不许漂移"的对拍。
 """
@@ -22,10 +22,9 @@ import tempfile
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCRIPT = os.path.join(BASE, "scripts", "elbow_shadow.py")
+SCRIPT = os.path.join(BASE, "tools", "elbow_shadow.py")
 
-import elbow_shadow  # noqa: E402  (pythonpath 含 scripts/)
-
+from tools import elbow_shadow  # noqa: E402
 from yiban.core.elbow import ClaimRole, ClaimRow, may_claim  # noqa: E402
 
 PHONE_A = "13800000001"

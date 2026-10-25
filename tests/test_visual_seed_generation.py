@@ -3,7 +3,7 @@
 
 标签：J · 运维：部署/备份/发布
 覆盖：
-  · `scripts/dev_visual_seed.py` 用随机密钥建演示环境（不再用随仓库公开、且已被
+  · `tools/dev_visual_seed.py` 用随机密钥建演示环境（不再用随仓库公开、且已被
     `account_crypto` 拉黑的演示钥），重跑复用同一把钥；
   · 种子数据的状态取值直接来自 `yiban.core.status`（`ALL_STATUSES` / `DISPLAY`），
     `global_paused` 等低频码不会漏；日志/事件/按日状态三处口径一致；
@@ -22,7 +22,7 @@ import tempfile
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCRIPT = os.path.join(BASE, "scripts", "dev_visual_seed.py")
+SCRIPT = os.path.join(BASE, "tools", "dev_visual_seed.py")
 PUBLISHED_DEMO_KEY = "7f3a9c1e5b2d8046af17c3e9b5d2084c6ea93f7b1d5c8042a6e93f1b7d5c2084"
 
 _SEED_CODE = (

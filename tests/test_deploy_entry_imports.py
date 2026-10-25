@@ -142,13 +142,14 @@ class DeployEntryImportTest(unittest.TestCase):
 # 这是整批唯一的运行期硬依赖。本门钉：运行期载体里旧坐标的**启动点**为零。
 #
 # 面（运行期载体）＝部署时真会被执行的文件：
-#   `yiban/**/*.py`、`scripts/**/*.py`、`docker/**/*.py`、`scripts/**/*.sh`、
-#   `docker/**/*.sh`，以及仓库根的 `run.sh`。
+#   `yiban/**/*.py`、`scripts/**/*.py`、`docker/**/*.py`、`tools/**/*.py`、
+#   `scripts/**/*.sh`、`docker/**/*.sh`，以及仓库根的 `run.sh`。
+#   注：`tools/` 不进镜像，但被构建机手工执行；它的启动点同样是"读者会照抄的坐标"。
 # 不在面内：`tests/`、`docs/`、`README.md`、注释、docstring。
 #   文档与注释里的历史叙述不算（任务口径）。
 #   （`145-E` 前这里另有一条豁免：`yiban/entry/cli/` 的 `USAGE` / `prog` 写旧坐标属
 #    用户可见帮助文本、不是启动点。壳已删、`prog` 与 `USAGE` 已改新坐标，该豁免随之删除。）
-RUNTIME_PY_DIRS = ("yiban", "scripts", "docker", "web")
+RUNTIME_PY_DIRS = ("yiban", "scripts", "docker", "web", "tools")
 RUNTIME_SHELL_NAMES = ("run.sh",)
 OLD_CLI_MODULE = "yiban.cli"
 

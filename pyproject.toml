@@ -84,9 +84,10 @@ ignore = [
 # 而当时给旧坐标留了转发壳（`145-E` 已删净）。
 # 于是 `from yiban.adapters.notifier.mail.layout import …` 被判成 third-party，与同文件的
 # `from yiban.engine import …`（first-party）排进不同段，I001 假红。
-# 覆盖面只有 `yiban` 一个顶层名：`web/` 与 `scripts/` 的模块文件都在原位，
-# 按存在性判定已经正确。
-known-first-party = ["yiban"]
+# 覆盖面：`yiban`（命名空间包）与 `tools`（B1 起的开发工具目录，无 `__init__.py`，
+# 按存在性判定在原位不稳）。`web/` 与 `scripts/` 的模块文件都在原位，按存在性
+# 判定已经正确。
+known-first-party = ["yiban", "tools"]
 
 [tool.ruff.lint.per-file-ignores]
 # tests/ 整体豁免 DTZ：测试大量用 naive datetime 构造业务本地时间做断言与打桩，

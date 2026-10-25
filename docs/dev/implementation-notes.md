@@ -50,7 +50,8 @@ engine/ 仍是迁移期形态：成员按 `docs/dev/architecture-target.md` 第 
 > 新文件规模建议按类型自设目标（py 600 / js·css 800 / html·sh 400 行）——只是建议，无门禁；文件该不该拆以"拆了是否更好维护"判断，不逐行较劲。
 > 命令行有两条等价通道：人类按本文的命令（`bash run.sh`、`.venv/bin/python3 scripts/signin.py ...`）照旧可用；统一入口与机器可读输出见 [docs/dev/cli.md](cli.md)。
 > **`scripts/` 命名约定（2026-10-21 成文）**：`.sh` 一律连字符（CLI 入口：`check-*.sh`、`drill-*.sh`、`dev-verify.sh`）；
-> `.py` 一律下划线（可被 import 的模块：`audit_verify.py`、`drill_multi_exec.py`、`email_policy.py`）。
+> `.py` 一律下划线（可被 import 的模块：`audit_verify.py`、`drill_multi_exec.py`）。
+> 开发期构建与代码生成工具已移入 `tools/`（不进镜像）；`email_policy` 已移入 `yiban/core/`。
 > **唯一例外 `deploy_gate.sh`**（连字符化要同步改 10 处读者与 deploy-gate 工作流，收益不足；此处显式登记）。
 > 顶层形状由 `tests/test_repo_structure_gate.py` 的白名单钉住：新增顶层条目必须登记并写用途。
 

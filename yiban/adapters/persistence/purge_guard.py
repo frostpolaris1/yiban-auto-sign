@@ -25,7 +25,7 @@
 输入：SQLite 路径、任意目标部件序列、操作者回显的指纹、审计三要素。
 输出：指纹字符串（`PURGE-<hex>`）、摘要行列表、确认是否成立、审计是否落库。
 调用谁：`sqlite3`（只读计数）与 `yiban.adapters.persistence.db`（审计写入；局部导入避免与门面成环）。
-谁调用：`scripts/generate_demo_data.py`、`yiban/entry/cli/__init__.py` 的 `state` 子命令。
+谁调用：`tools/generate_demo_data.py`、`yiban/entry/cli/__init__.py` 的 `state` 子命令。
 """
 import hashlib
 import os

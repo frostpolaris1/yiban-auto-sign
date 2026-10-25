@@ -134,6 +134,7 @@ docs/dev/*
 !docs/dev/release-gate.md
 !docs/dev/scheduler-v3.md
 !docs/dev/architecture-target.md
+!docs/dev/target-tree.md
 !docs/dev/backup-restore.md
 !docs/dev/implementation-notes.md
 !docs/dev/troubleshooting.md

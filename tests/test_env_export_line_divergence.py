@@ -2,15 +2,15 @@
 r"""`export KEY=value` 行在三个 .env 读取方的解析分叉——双向钉死收敛不变量。
 
 标签：J · 运维：部署/备份/发布 · G · 安全：脱敏/审计/配置注入
-覆盖：`export KEY=value` 行在 env_io / child_env / shell 三读取方的收敛不变量——
+覆盖：`export KEY=value` 行在 env_io / env_child / shell 三读取方的收敛不变量——
     正向（真实键三处同值可读）与反向（export 键三处不可读、env_io 侧挂畸形键、
     其余整行丢弃）；不覆盖：行内 value 的逐字一致性（由 tests/test_runsh_env_parse.py
     的文本断言钉住）。
 背景：`.env` 有三个独立读取方，各用不同行模型（`yiban.adapters.config.env_io.parse_env_file`
-    读侧宽松、`scripts/child_env.parse_env_file` YIBAN_ 前缀+合法键名双白名单、
+    读侧宽松、`yiban.infra.env_child.parse_env_file` YIBAN_ 前缀+合法键名双白名单、
     `run.sh`/`run_probe.sh` 的 shell 键名正则判据）。`export KEY=value` 这种从 shell rc
     借来的写法，在"KEY 是否成为生效配置"上三者必须给出同一个"否"，但**分叉在形态**：
-    env_io 把它挂进畸形键 `"export KEY"`（含空格，不匹配 `get("KEY")`），child_env 与
+    env_io 把它挂进畸形键 `"export KEY"`（含空格，不匹配 `get("KEY")`），env_child 与
     shell 整行丢弃。剥前缀"归一"会把历史一向未生效的行扶正成生效配置（行内若藏
     `GLOBAL_PAUSE`/`ADMIN_PASSWORD_HASH` 即实体化提权载荷），撞"键语义不变"红线——
     故**保留三态**，只钉两条不变量：
@@ -18,14 +18,14 @@ r"""`export KEY=value` 行在三个 .env 读取方的解析分叉——双向钉
     ②（反向）`export KEY=value` 三处都读不到 `KEY`，且不与真实键串台。
 
 对应实现：`yiban/adapters/config/env_io.py`（`parse_env_file` / `key_line_pattern` /
-    `env_key_values` / `render_env_write`）、`scripts/child_env.py`、
+    `env_key_values` / `render_env_write`）、`yiban/infra/env_child.py`、
     `run.sh` / `run_probe.sh` 的加载循环（文本逐字一致性由
     `tests/test_runsh_env_parse.py` 钉住，本文件钉行为面收敛）。
 关键断言：反向不止断 `get("KEY")` 为空——env_io 侧另钉"export 行确实解析进了 dict
     但挂在畸形键下"（分叉形态本体；将来任何'归一'剥前缀的改动都会红在这里）；
     折叠正则不得吃掉 export 行；shell 侧先断两份脚本的解析段与本测试复刻段逐字
     同源，再以真 bash 跑判据。
-依赖：临时 `.env`；child_env 按文件路径加载（与 docker/scheduler.py 运行时同语义）；
+依赖：临时 `.env`；env_child 按文件路径加载（与调度器同语义）；
     shell 行为用例无 bash 时 skip（同 test_runsh_env_parse 惯例）。不发网络、不起 webapp。
 """
 import importlib.util
@@ -61,7 +61,7 @@ class ChildEnvLoaderMixin(unittest.TestCase):
     @staticmethod
     def _load_child_env():
         spec = importlib.util.spec_from_file_location(
-            "child_env_divergence", os.path.join(BASE, "scripts", "child_env.py"))
+            "env_child_divergence", os.path.join(BASE, "yiban", "infra", "env_child.py"))
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         return mod
@@ -108,7 +108,7 @@ class EnvIoPathTest(_EnvFixture):
 
 
 # ---------------------------------------------------------------------------
-# 读取方 2：scripts/child_env.py（双白名单）
+# 读取方 2：yiban/infra/env_child.py（双白名单）
 # ---------------------------------------------------------------------------
 class ChildEnvPathTest(_EnvFixture, ChildEnvLoaderMixin):
     def test_real_key_read(self):
@@ -121,7 +121,7 @@ class ChildEnvPathTest(_EnvFixture, ChildEnvLoaderMixin):
         path = self._write(f"export {DECOY}={DECOY_VAL}\n")
         parsed = child_env.parse_env_file(path)
         self.assertEqual(parsed, {},
-                         "child_env 整行丢弃 export 行（与 env_io 的畸形键形态刻意不同，"
+                         "env_child 整行丢弃 export 行（与 env_io 的畸形键形态刻意不同，"
                          "但收敛一致：键永不生效）")
 
 

@@ -3,7 +3,7 @@
 # 快照日期: 2026-08-28，共 8368 条
 # 格式: 每行一个域名; "#" 开头为注释; 空行忽略; 前缀 "." 会被剥掉按裸 TLD 处理
 # 匹配: 命中域名或其子域名即拒绝; RFC 2606 占位域名(example.com/demo.com 等)
-#       内置在 scripts/email_policy.py 中，不依赖本文件;
+#       内置在 yiban/core/email_policy.py 中，不依赖本文件;
 # 追加部署自定义黑名单请用 .env 的 YIBAN_EMAIL_DOMAIN_BLOCKLIST_EXTRA（逗号分隔）
 
 0-mail.com

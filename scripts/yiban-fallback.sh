@@ -60,7 +60,7 @@ ENV_PATH="$APP_DIR/data/.env"
 # 这里只做 key=value 赋值导出，值不会再次被 shell 求值；且只导出 YIBAN_* 键。
 # 行为变更（2026-10-20，工单 71z7 裁定）：非路径键仍是 `.env` 优先（M27）；
 # **四个路径键**改成进程环境优先、`.env` 只补缺（与 `env_io.resolve_path` /
-# `scripts/child_env.build_child_env` 同口径）。`YIBAN_ENV_FILE` 是指针，固定
+# `yiban/infra/env_child.build_child_env` 同口径）。`YIBAN_ENV_FILE` 是指针，固定
 # `$APP_DIR/data/.env`（p12-13），不参与 .env 覆盖。
 # 谁受影响：cron 行上带 `YIBAN_STATE_DIR=…` / `YIBAN_LOG_FILE=…` 前缀、而 `.env`
 # 里是另一个值的部署——改后**进程环境值生效**（此前被 `.env` 顶掉）。
@@ -80,7 +80,7 @@ if [ -r "$ENV_PATH" ]; then
         [ -z "$key" ] && continue
         case "$key" in \#*) continue ;; esac
         [[ "$key" =~ ^YIBAN_ && "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-        # 四个路径键的优先级例外（工单 71z7，与 env_io.resolve_path / child_env 同口径）：
+        # 四个路径键的优先级例外（工单 71z7，与 env_io.resolve_path / env_child 同口径）：
         # 进程环境已有非空值时，.env 只补缺。环境文件指针固定 $APP_DIR/data/.env
         # （p12-13），不参与 .env 覆盖。
         case "$key" in

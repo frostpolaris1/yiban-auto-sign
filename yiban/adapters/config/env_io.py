@@ -57,7 +57,7 @@ bash 与 Python 两侧给出相反结论的开关（`YIBAN_SECOND_RUN` / `YIBAN_
 前端调用点：系统设置页 `/api/settings`（`web/static/js/components/settings-*.js`）的开关落盘经
 web 服务层走本模块——行模型或 `strict` 口径变化会影响设置保存与密钥/盐的生成。
 
-`child_env.parse_env_file` 不在此收敛：它有额外语义（仅接受 YIBAN_ 前缀且键名
+`env_child.parse_env_file` 不在此收敛：它有额外语义（仅接受 YIBAN_ 前缀且键名
 合法的行，供子进程环境注入，防 .env 被写入特殊键后污染子进程），保持独立实现。
 """
 import contextlib
@@ -74,10 +74,10 @@ logger = logging.getLogger("yiban")
 
 #: 四个**路径键**（`docs/dev/cli.md` §1.1）：唯一的优先级例外——**进程环境 → `.env` →
 #: 默认值**。其余 `YIBAN_*` 键按 M27 统一口径 `.env` 优先、进程环境只补缺。
-#: 这是键集合的**唯一定义点**：CLI 视图与 `scripts/child_env.build_child_env` 都引用它，
+#: 这是键集合的**唯一定义点**：CLI 视图与 `yiban/infra/env_child.build_child_env` 都引用它，
 #: bash 载体的同一排除条件由 `tests/test_path_env_priority_single_source.py` 源码守卫钉住。
 PATH_KEYS = ("YIBAN_ENV_FILE", "YIBAN_DB_FILE", "YIBAN_STATE_DIR", "YIBAN_LOG_FILE")
-#: 指针键名（供 `scripts/child_env` 与测试引用；语义见 `env_path()`）。
+#: 指针键名（供 `yiban/infra/env_child` 与测试引用；语义见 `env_path()`）。
 ENV_FILE_KEY = "YIBAN_ENV_FILE"
 
 
@@ -214,7 +214,7 @@ def parse_env_file(path, *, strict=False):
       · 本实现（读侧宽松）：按首个 `=` 切，键名是整串 `"export KEY"`（含空格，
         不匹配任何 `get("KEY")`，惰性挂在一个畸形键下）；写侧折叠 `key_line_pattern`
         同样不认它，故该行原样驻留、被后续任何 `get("真实键")` 无视；
-      · `scripts/child_env.py`（YIBAN_ 前缀 + 合法键名双白名单）：直接丢弃；
+      · `yiban/infra/env_child.py`（YIBAN_ 前缀 + 合法键名双白名单）：直接丢弃；
       · `run.sh` / `run_probe.sh`（键名 `^[A-Za-z_]` 校验）：告警后跳过。
     若剥掉 `export` 前缀"归一"到本模型，会把历史上一向未生效的行扶正成生效配置
     （改既有文件读取结果；行内若藏 `GLOBAL_PAUSE`/`ADMIN_PASSWORD_HASH` 即把潜伏

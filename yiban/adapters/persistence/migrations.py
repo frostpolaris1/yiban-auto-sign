@@ -743,7 +743,7 @@ def migrate_v14(conn):
 
     page_visits / server_metrics 是 v4 建、v6 补列的一整套"页面访问统计 + 服务器
     采样"能力，但生产侧**零写入方、零读取方、零 UI**：web/ 全目录无任何引用，唯一
-    写入者是 scripts/generate_demo_data.py（演示数据生成器）。保留它们只会让每次
+    写入者是 tools/generate_demo_data.py（演示数据生成器）。保留它们只会让每次
     启动多跑两条全表 DELETE，并让两张空表与八个空索引常驻 schema。
 
     **只删表，不改 migrate_v4 / migrate_v6 原文**——已发布迁移不可修改（改了对
