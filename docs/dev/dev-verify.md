@@ -191,6 +191,11 @@ python scripts/check-config-registry.py
 python -m pytest tests/test_config_registry_gate.py -q -p no:randomly
 python scripts/check-import-linter.py
 python -m pytest tests/test_import_linter_gate.py -q -p no:randomly
+python -m pytest tests/test_deploy_deps_sync.py -q -p no:randomly
+# Vue 构建可复现门（2026-10-25 S1 批接入）：有 node/npm 真跑 full 模式
+#   （LF 守卫 + 干净重建逐字节比对）；缺 node/npm 时打显式 SKIPPED＋原因——跳过≠绿
+#   （AGENTS §十三.30）。CI 侧覆盖：frontend job 跑同一脚本 full 模式。
+bash scripts/check-vue-build-reproducible.sh
 ```
 
 **车道名册（`tests/lane-roster.tsv`）是目标集的唯一事实源**（2026-10-17 vckk 2-a 立）。
@@ -222,6 +227,9 @@ verify 里（占）。⇒ 重且必须独占核的用例，优先放 `slow`，�
 `.importlinter` 的依赖方向契约（P0 批四条；批 A0 为新层补三条。门禁对**任何**违规
 红；确需接受的边逐条写进对应契约的 `ignore_imports`，基线文件只是墓碑）。名册门禁的
 元测试是**突变验证**：每条放行断言都配一条同形状的污染断言，门禁判据写反即红。
+第五道是 Vue 构建可复现门 `check-vue-build-reproducible.sh`（2026-10-25 S1 批接入，
+不带元测试）：钉 LF 口径与干净重建逐字节可比。有 node/npm 真跑 full 模式；缺席时打
+显式 SKIPPED＋原因（跳过≠绿）。承重段的突变证明在 `scripts/e2e/vue-build-reproducible-e2e.sh`。
 
 解释器取 `PATH` 上的 `python`（CI 由 `actions/setup-python` + 钉版 `pip install` 保证），
 可用 `DEV_VERIFY_PY` 覆盖。**WSL 内必须显式给**：WSL 里没有 `python` 这个名字（只有
