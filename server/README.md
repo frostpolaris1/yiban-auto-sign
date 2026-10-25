@@ -112,7 +112,8 @@ deployment cannot silently fall back to development defaults.
 | `YIBAN_DATABASE_URL` | no | empty | PostgreSQL DSN; unused until W1 |
 | `YIBAN_TZ` | no | `Asia/Shanghai` | business time zone |
 | `YIBAN_INSECURE_COOKIES` | no | `true` for development and test | use the unprefixed cookie name; production refuses a true value |
-| `YIBAN_HASH_PEPPER` | **yes** | — | at least 16 characters; keys the HMAC digests of IP addresses and user agents |
+| `YIBAN_HASH_PEPPER` | **yes** | — | at least 16 characters; keys the HMAC digests of IP addresses and user agents, and derives the audit chain key. Rotating it breaks verification of the existing audit chain. |
+| `YIBAN_CREDENTIAL_KEY` | **yes** | — | base64 of exactly 32 bytes; encrypts stored credentials with AES-256-GCM. Rotating it goes through kid re-encryption (P4/P8), so old rows stay decryptable. |
 
 Production always uses `__Host-yiban_session` with `Secure`. A true
 `YIBAN_INSECURE_COOKIES` under `YIBAN_ENV=production` is a startup error.

@@ -38,8 +38,8 @@ import (
 // Options 装配路由。Sessions 必填；其余有默认值。
 //
 // Schools、Admins、Accounts 是三个业务域的处理器。
-// 为 nil 时对应端点回 501：本批只交付委托与 e2e，
-// 进程装配（cmd/server）由集成批接线。
+// 生产由 cmd/server 装配；为 nil 时对应端点回 501，
+// 该状态只出现在测试或降级进程里。
 type Options struct {
 	Sessions auth.SessionIssuer
 	// Auth 是认证用例。为 nil 时登录、登出与口令重置回 501。

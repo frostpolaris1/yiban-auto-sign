@@ -159,3 +159,16 @@ func (d *DB) hasTx(ctx context.Context) bool {
 	_, ok := ctx.Value(txKey{}).(pgx.Tx)
 	return ok
 }
+
+// txQueryer 返回 ctx 携带的显式事务。
+//
+// 没有事务时报 ErrNoTransaction，**绝不回退到连接池**。
+// q 会回落到连接池，故「先判 hasTx、再调 q」的写法
+// 只在两次判断都看同一 ctx 时成立。
+// 审计链与容量写入必须用本函数取连接：回滚要能带走它们的行。
+func (d *DB) txQueryer(ctx context.Context) (queryer, error) {
+	if tx, ok := ctx.Value(txKey{}).(pgx.Tx); ok {
+		return tx, nil
+	}
+	return nil, ErrNoTransaction
+}

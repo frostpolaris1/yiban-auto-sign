@@ -1,12 +1,33 @@
 package config
 
-import "testing"
+import (
+	"encoding/base64"
+	"testing"
+)
 
 type mapSource map[string]string
 
 func (m mapSource) Lookup(key string) (string, bool) {
 	v, ok := m[key]
 	return v, ok
+}
+
+const (
+	// validPepper 是 32 字符的合法 pepper。
+	validPepper = "0123456789abcdef0123456789abcdef"
+	// validCredentialKey 是 32 字节钥的 base64 文本。
+	validCredentialKey = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+	// longCredentialKey 解码后 33 字节，比 AES-256 的键长多一字节。
+	longCredentialKey = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWZY"
+)
+
+// baseSource 是只含三个必填项的最小环境。
+func baseSource() mapSource {
+	return mapSource{
+		"YIBAN_ENV":            "development",
+		"YIBAN_HASH_PEPPER":    validPepper,
+		"YIBAN_CREDENTIAL_KEY": validCredentialKey,
+	}
 }
 
 func TestLoadFromRequiresEnv(t *testing.T) {
@@ -18,7 +39,7 @@ func TestLoadFromRequiresEnv(t *testing.T) {
 }
 
 func TestLoadFromDefaults(t *testing.T) {
-	cfg, err := LoadFrom(mapSource{"YIBAN_ENV": "development", "YIBAN_HASH_PEPPER": "0123456789abcdef0123456789abcdef"})
+	cfg, err := LoadFrom(baseSource())
 	if err != nil {
 		t.Fatalf("LoadFrom: %v", err)
 	}
@@ -34,13 +55,12 @@ func TestLoadFromDefaults(t *testing.T) {
 }
 
 func TestLoadFromOverrides(t *testing.T) {
-	cfg, err := LoadFrom(mapSource{
-		"YIBAN_ENV":          "production",
-		"YIBAN_HASH_PEPPER":  "0123456789abcdef0123456789abcdef",
-		"YIBAN_HTTP_ADDR":    "127.0.0.1:8080",
-		"YIBAN_DATABASE_URL": "  postgres://x  ",
-		"YIBAN_TZ":           "UTC",
-	})
+	src := baseSource()
+	src["YIBAN_ENV"] = "production"
+	src["YIBAN_HTTP_ADDR"] = "127.0.0.1:8080"
+	src["YIBAN_DATABASE_URL"] = "  postgres://x  "
+	src["YIBAN_TZ"] = "UTC"
+	cfg, err := LoadFrom(src)
 	if err != nil {
 		t.Fatalf("LoadFrom: %v", err)
 	}
@@ -75,7 +95,9 @@ func TestInsecureCookiesFollowEnv(t *testing.T) {
 		{"production", false},
 	}
 	for _, tc := range cases {
-		cfg, err := LoadFrom(mapSource{"YIBAN_ENV": tc.env, "YIBAN_HASH_PEPPER": "0123456789abcdef0123456789abcdef"})
+		src := baseSource()
+		src["YIBAN_ENV"] = tc.env
+		cfg, err := LoadFrom(src)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.env, err)
 		}
@@ -86,7 +108,10 @@ func TestInsecureCookiesFollowEnv(t *testing.T) {
 }
 
 func TestInsecureCookiesOverride(t *testing.T) {
-	cfg, err := LoadFrom(mapSource{"YIBAN_ENV": "staging", "YIBAN_INSECURE_COOKIES": "1", "YIBAN_HASH_PEPPER": "0123456789abcdef0123456789abcdef"})
+	src := baseSource()
+	src["YIBAN_ENV"] = "staging"
+	src["YIBAN_INSECURE_COOKIES"] = "1"
+	cfg, err := LoadFrom(src)
 	if err != nil {
 		t.Fatalf("staging override: %v", err)
 	}
@@ -94,38 +119,84 @@ func TestInsecureCookiesOverride(t *testing.T) {
 		t.Fatal("override was ignored")
 	}
 
-	if _, err := LoadFrom(mapSource{"YIBAN_ENV": "production", "YIBAN_INSECURE_COOKIES": "1", "YIBAN_HASH_PEPPER": "0123456789abcdef0123456789abcdef"}); err == nil {
+	prod := baseSource()
+	prod["YIBAN_ENV"] = "production"
+	prod["YIBAN_INSECURE_COOKIES"] = "1"
+	if _, err := LoadFrom(prod); err == nil {
 		t.Fatal("production must refuse insecure cookies")
 	}
-	if _, err := LoadFrom(mapSource{"YIBAN_ENV": "development", "YIBAN_INSECURE_COOKIES": "maybe", "YIBAN_HASH_PEPPER": "0123456789abcdef0123456789abcdef"}); err == nil {
+
+	bad := baseSource()
+	bad["YIBAN_INSECURE_COOKIES"] = "maybe"
+	if _, err := LoadFrom(bad); err == nil {
 		t.Fatal("non-boolean flag must be rejected")
 	}
 }
 
 func TestLoadFromRequiresHashPepper(t *testing.T) {
 	for name, src := range map[string]mapSource{
-		"missing":   {"YIBAN_ENV": "development"},
-		"empty":     {"YIBAN_ENV": "development", "YIBAN_HASH_PEPPER": "  "},
-		"too short": {"YIBAN_ENV": "development", "YIBAN_HASH_PEPPER": "short"},
+		"missing":   {"YIBAN_ENV": "development", "YIBAN_CREDENTIAL_KEY": validCredentialKey},
+		"empty":     {"YIBAN_ENV": "development", "YIBAN_HASH_PEPPER": "  ", "YIBAN_CREDENTIAL_KEY": validCredentialKey},
+		"too short": {"YIBAN_ENV": "development", "YIBAN_HASH_PEPPER": "short", "YIBAN_CREDENTIAL_KEY": validCredentialKey},
 	} {
 		if _, err := LoadFrom(src); err == nil {
 			t.Fatalf("%s pepper must be rejected", name)
 		}
 	}
-	cfg, err := LoadFrom(mapSource{"YIBAN_ENV": "development", "YIBAN_HASH_PEPPER": "0123456789abcdef0123456789abcdef"})
+	cfg, err := LoadFrom(baseSource())
 	if err != nil {
 		t.Fatalf("valid pepper: %v", err)
 	}
-	if string(cfg.HashPepper) != "0123456789abcdef0123456789abcdef" {
+	if string(cfg.HashPepper) != validPepper {
 		t.Fatalf("pepper = %q", cfg.HashPepper)
 	}
 	// 首尾空白是输入事故，不是熵：
 	// 存储值取裁剪后的形式，与 DatabaseURL 的约定一致。
-	padded, err := LoadFrom(mapSource{"YIBAN_ENV": "development", "YIBAN_HASH_PEPPER": "  0123456789abcdef  "})
+	padded := baseSource()
+	padded["YIBAN_HASH_PEPPER"] = "  0123456789abcdef  "
+	cfg, err = LoadFrom(padded)
 	if err != nil {
 		t.Fatalf("padded pepper: %v", err)
 	}
-	if len(padded.HashPepper) != 16 || string(padded.HashPepper) != "0123456789abcdef" {
-		t.Fatalf("padded pepper stored %q", padded.HashPepper)
+	if len(cfg.HashPepper) != 16 || string(cfg.HashPepper) != "0123456789abcdef" {
+		t.Fatalf("padded pepper stored %q", cfg.HashPepper)
+	}
+}
+
+// TestLoadFromCredentialKeyIsBase64Of32Bytes 钉住凭据钥的形状。
+//
+// 凭据钥独立于 pepper：轮换 pepper 只让摘要与审计链失效，
+// 不能让凭据永久不可解密（W2C-R2-04）。
+// 形状错即启动错误：短钥进 AES-256-GCM 会直接报错，
+// 长度对但内容错的钥会静默加密出无法解密的行。
+func TestLoadFromCredentialKeyIsBase64Of32Bytes(t *testing.T) {
+	for name, key := range map[string]string{
+		"missing":        "",
+		"blank":          "   ",
+		"not base64":     "not base64!",
+		"too short":      base64.StdEncoding.EncodeToString([]byte("short")),
+		"too long":       longCredentialKey,
+		"pepper literal": validPepper,
+	} {
+		src := baseSource()
+		if key == "" {
+			delete(src, "YIBAN_CREDENTIAL_KEY")
+		} else {
+			src["YIBAN_CREDENTIAL_KEY"] = key
+		}
+		if _, err := LoadFrom(src); err == nil {
+			t.Fatalf("%s credential key must be rejected", name)
+		}
+	}
+
+	cfg, err := LoadFrom(baseSource())
+	if err != nil {
+		t.Fatalf("valid credential key: %v", err)
+	}
+	if len(cfg.CredentialKey) != 32 {
+		t.Fatalf("credential key length = %d, want 32", len(cfg.CredentialKey))
+	}
+	if got := base64.StdEncoding.EncodeToString(cfg.CredentialKey); got != validCredentialKey {
+		t.Fatalf("credential key = %q, want the decoded input", got)
 	}
 }

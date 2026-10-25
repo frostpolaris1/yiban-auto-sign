@@ -32,9 +32,12 @@ func NewAuditRepo(db *DB, key []byte) (*AuditRepo, error) {
 // **必须在事务内运行**。它取 AuditChainLock、读链头、算哈希再插入，
 // 故两个事务不可能追加同一前驱。
 // 本行最后插入：长事务持有链锁，会阻塞每一次受审计写入。
+// 无事务时报 ErrNoTransaction，**不得回落到连接池**：
+// 回落到池连接会让审计行逃出调用方事务，链锁也随即释放。
 func (r *AuditRepo) Append(ctx context.Context, in coreaudit.Entry) (coreaudit.Row, error) {
-	if !r.db.hasTx(ctx) {
-		return coreaudit.Row{}, ErrNoTransaction
+	q, err := r.db.txQueryer(ctx)
+	if err != nil {
+		return coreaudit.Row{}, err
 	}
 	if in.TS.IsZero() {
 		return coreaudit.Row{}, validationError("audit timestamp is required")
@@ -50,7 +53,6 @@ func (r *AuditRepo) Append(ctx context.Context, in coreaudit.Entry) (coreaudit.R
 		return coreaudit.Row{}, validationError(err.Error())
 	}
 
-	q := r.db.q(ctx)
 	if _, err := q.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", AuditChainLock); err != nil {
 		return coreaudit.Row{}, mapError(err)
 	}

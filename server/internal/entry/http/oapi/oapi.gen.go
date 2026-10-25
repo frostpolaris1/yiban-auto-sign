@@ -476,6 +476,9 @@ type ForbiddenError = Error
 // NotFoundError defines model for NotFoundError.
 type NotFoundError = Error
 
+// PayloadTooLargeError defines model for PayloadTooLargeError.
+type PayloadTooLargeError = Error
+
 // UnauthorizedError defines model for UnauthorizedError.
 type UnauthorizedError = Error
 
@@ -492,10 +495,12 @@ type AccountListParams struct {
 	SchoolId *string        `form:"school_id,omitempty" json:"school_id,omitempty"`
 	Status   *AccountStatus `form:"status,omitempty" json:"status,omitempty"`
 
-	// Q Phone filter. Non-digits are stripped. The leading digits (up to
-	// three), the trailing four digits, or the exact 11-digit phone match.
-	// Every other length never matches, so the four digits hidden by the
-	// mask stay unsearchable.
+	// Q Phone filter. Non-digits are stripped. A leading prefix of one to
+	// three digits, a trailing four-digit suffix, or the exact 11-digit
+	// phone matches. A 5..10 digit fragment never matches. The exact
+	// 11-digit phone still matches, so the number stays enumerable.
+	// Login and password-reset rate limiting is a deployment precondition
+	// before public exposure (P7).
 	Q *string `form:"q,omitempty" json:"q,omitempty"`
 }
 

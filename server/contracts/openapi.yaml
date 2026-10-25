@@ -202,6 +202,7 @@ paths:
         '400': { $ref: '#/components/responses/ValidationError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '409': { $ref: '#/components/responses/ConflictError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/schools/{id}:
     patch:
@@ -278,6 +279,7 @@ paths:
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/ConflictError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/schools/{id}/admins/{uid}:
     delete:
@@ -319,10 +321,12 @@ paths:
           in: query
           required: false
           description: |
-            Phone filter. Non-digits are stripped. The leading digits (up to
-            three), the trailing four digits, or the exact 11-digit phone match.
-            Every other length never matches, so the four digits hidden by the
-            mask stay unsearchable.
+            Phone filter. Non-digits are stripped. A leading prefix of one to
+            three digits, a trailing four-digit suffix, or the exact 11-digit
+            phone matches. A 5..10 digit fragment never matches. The exact
+            11-digit phone still matches, so the number stays enumerable.
+            Login and password-reset rate limiting is a deployment precondition
+            before public exposure (P7).
           schema: { type: string }
       responses:
         '200':
@@ -360,6 +364,7 @@ paths:
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/ConflictError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/accounts/{id}:
     get:
@@ -572,6 +577,12 @@ components:
             $ref: '#/components/schemas/Error'
     ConflictError:
       description: Object already exists or the state transition is invalid.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    PayloadTooLargeError:
+      description: Request body exceeds the entry limit; the code stays validation_failed.
       content:
         application/json:
           schema:

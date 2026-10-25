@@ -1156,6 +1156,8 @@ func TestW2CP23OversizedDomainBodiesAre413(t *testing.T) {
 			"phone":     "13800138000",
 			"password":  huge,
 		}},
+		{"school-admins", "/api/schools/018f0000-0000-7000-8000-00000000000f/admins",
+			map[string]any{"user_id": huge}},
 	}
 	for _, tc := range cases {
 		rec := e.do(http.MethodPost, tc.path, tc.body, masterSess)
@@ -1209,3 +1211,69 @@ func TestW2CP32RealStackWiresDomainHandlers(t *testing.T) {
 
 // 编译期检查：生成契约的参数类型仍是本测试使用的形状。
 var _ = oapi.SchoolListParams{}
+
+// TestW2CRealStackCredentialRoundTrip 钉住凭据钥来自配置而非 pepper。
+//
+// 真实用户动作：master 登录、建校、建账号。
+// 断言：库内凭据能用 YIBAN_CREDENTIAL_KEY 解出提交时的口令。
+// 若装配改回从 pepper 派生，kid 与密文都不再匹配该钥，本用例即红。
+func TestW2CRealStackCredentialRoundTrip(t *testing.T) {
+	e := newAuthEnv(t)
+	user := e.createUser("key-master@example.com", "correct-horse")
+	if _, err := e.db.Exec(e.ctx,
+		"UPDATE users SET role = 'master' WHERE id = $1::uuid", user.ID); err != nil {
+		t.Fatalf("promote the user to master: %v", err)
+	}
+	resp, body := e.login("key-master@example.com", "correct-horse")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login = %d, want 200", resp.StatusCode)
+	}
+	if body.CSRFToken == "" {
+		t.Fatal("login returned no CSRF token")
+	}
+	csrf := map[string]string{"X-CSRF-Token": body.CSRFToken}
+
+	resp, payload := e.do(http.MethodPost, "/api/schools",
+		map[string]any{"code": "key-school", "name": "Key School"}, csrf)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create school = %d, want 201; body=%q", resp.StatusCode, payload)
+	}
+	var school w2cSchool
+	if err := json.Unmarshal(payload, &school); err != nil || school.ID == "" {
+		t.Fatalf("decode school: %v; body=%q", err, payload)
+	}
+
+	const password = "credential-secret"
+	resp, payload = e.do(http.MethodPost, "/api/accounts", map[string]any{
+		"school_id": school.ID,
+		"phone":     "13900139000",
+		"password":  password,
+	}, csrf)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create account = %d, want 201; body=%q", resp.StatusCode, payload)
+	}
+	var account w2cAccount
+	if err := json.Unmarshal(payload, &account); err != nil || account.ID == "" {
+		t.Fatalf("decode account: %v; body=%q", err, payload)
+	}
+
+	credential, err := pg.NewAccountRepo(e.db).Credential(e.ctx, corescope.Master(), account.ID)
+	if err != nil {
+		t.Fatalf("read credential: %v", err)
+	}
+	cipher, err := appaccount.NewCipher(authTestCredentialKey)
+	if err != nil {
+		t.Fatalf("new cipher: %v", err)
+	}
+	if credential.KID != cipher.KID() {
+		t.Fatalf("stored kid = %q, want the YIBAN_CREDENTIAL_KEY kid %q",
+			credential.KID, cipher.KID())
+	}
+	plain, err := cipher.Open(credential)
+	if err != nil {
+		t.Fatalf("open credential with the configured key: %v", err)
+	}
+	if plain.Password != password {
+		t.Fatal("decrypted credential does not carry the submitted password")
+	}
+}

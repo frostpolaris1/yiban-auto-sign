@@ -143,6 +143,7 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 	if strings.TrimSpace(cfg.DatabaseURL) == "" {
 		issuer = session.NewMemory(clk, cfg.HashPepper)
 		logger.Warn("auth endpoints are disabled: YIBAN_DATABASE_URL is empty")
+		logger.Warn("school, admin and account endpoints return 501: YIBAN_DATABASE_URL is empty")
 	} else {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -185,12 +186,9 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 			return nil, fmt.Errorf("server: auth service: %w", err)
 		}
 
-		credentialKey, err := deriveCredentialKey(cfg.HashPepper)
-		if err != nil {
-			closeFn()
-			return nil, err
-		}
-		cipher, err := appaccount.NewCipher(credentialKey)
+		// 凭据钥独立于 pepper：轮换 pepper 只让摘要与审计链失效，
+		// 不能连带让凭据永久不可解密（裁决：W2C-R2-04）。
+		cipher, err := appaccount.NewCipher(cfg.CredentialKey)
 		if err != nil {
 			closeFn()
 			return nil, fmt.Errorf("server: credential cipher: %w", err)
@@ -259,26 +257,14 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 // deriveAuditKey 从服务器 pepper 派生审计链密钥。
 //
 // P1 没有独立的 YIBAN_AUDIT_KEY；派生值稳定，重启后仍可校验旧链。
+// 轮换 pepper 会让旧链无法再校验，需要一次迁移口径。
 // 域标签把本用途与 CSRF、IP 摘要隔开：三者消息不同。
+// 凭据加密钥**不**在此派生：它由 YIBAN_CREDENTIAL_KEY 独立注入。
 func deriveAuditKey(pepper []byte) ([]byte, error) {
 	if len(pepper) == 0 {
 		return nil, errors.New("server: YIBAN_HASH_PEPPER is required to derive the audit key")
 	}
 	mac := hmac.New(sha256.New, pepper)
 	mac.Write([]byte("yiban.audit.key.v1"))
-	return mac.Sum(nil), nil
-}
-
-// deriveCredentialKey 从服务器 pepper 派生凭据加密钥。
-//
-// P1 没有独立的凭据钥环境变量；派生值稳定，重启后仍能解密旧行。
-// 域标签把本用途与审计钥、CSRF、IP 摘要隔开：四者消息不同。
-// 输出恰好 32 字节，满足 AES-256 的键长要求。
-func deriveCredentialKey(pepper []byte) ([]byte, error) {
-	if len(pepper) == 0 {
-		return nil, errors.New("server: YIBAN_HASH_PEPPER is required to derive the credential key")
-	}
-	mac := hmac.New(sha256.New, pepper)
-	mac.Write([]byte("yiban.credential.key.v1"))
 	return mac.Sum(nil), nil
 }

@@ -22,7 +22,11 @@ import (
 )
 
 var (
-	phoneInText = regexp.MustCompile(`\b1\d{10}\b`)
+	// phoneInText 匹配一个候选数字组。
+	// 组内允许空格、连字符与点分隔，并允许 +86 国家码前缀：
+	// 用户会把号码写成 139-0013-9000 或 +86 139 0013 9000（W2C-R2-05）。
+	// 匹配整组而非 11 个连续数字，可避免从更长的数字串里截出半截。
+	phoneInText = regexp.MustCompile(`\+?[0-9]+(?:[\s.\-]+[0-9]+)*`)
 	emailInText = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
 )
 
@@ -66,9 +70,40 @@ func MaskDevice(s string) string {
 }
 
 // MaskText 掩码自由文本中的手机号与邮箱。
+//
+// 手机号可带 +86 前缀，并可用空格、连字符或点分隔。
+// 去分隔符后不是 11 位手机号时，数字组原样保留：
+// 改写非号码的数字会破坏原文。
 func MaskText(s string) string {
 	s = emailInText.ReplaceAllStringFunc(s, MaskEmail)
-	return phoneInText.ReplaceAllStringFunc(s, MaskPhone)
+	return phoneInText.ReplaceAllStringFunc(s, maskPhoneRun)
+}
+
+// maskPhoneRun 掩码一个候选数字组。
+// 先去掉分隔符得到数字串；带 86 前缀的 13 位串再剥掉前缀。
+// 掩码规则只来自 MaskPhone，本函数不另立口径。
+func maskPhoneRun(run string) string {
+	digits := digitsOnly(run)
+	if len(digits) == 13 && strings.HasPrefix(digits, "86") {
+		digits = digits[len(digits)-11:]
+	}
+	masked := MaskPhone(digits)
+	if masked == digits {
+		return run
+	}
+	return masked
+}
+
+// digitsOnly 返回 s 中的十进制数字。
+func digitsOnly(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] >= '0' && s[i] <= '9' {
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
 }
 
 // EmailLabel 返回审计 actor 标签。
