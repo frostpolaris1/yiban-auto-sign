@@ -185,9 +185,8 @@ class ChildEnvConsumerVisibilityTest(unittest.TestCase):
 
     def test_web_manual_signin_spawn_warns_to_root(self):
         """真入口：web 手动签到的子进程 spawn（`_launch_signin_proc`）。"""
-        from yiban.infra import env_child as child_env
-
         from web.routes import signin_api
+        from yiban.infra import env_child as child_env
 
         m = types.SimpleNamespace(
             __file__=os.path.join(BASE, "web", "app.py"),

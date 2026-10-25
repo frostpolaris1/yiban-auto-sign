@@ -25,7 +25,6 @@ from unittest import mock
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 from tools import generate_demo_data  # noqa: E402
-
 from yiban.adapters.persistence import connection, purge_guard  # noqa: E402
 
 
