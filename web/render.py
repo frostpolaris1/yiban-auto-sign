@@ -40,6 +40,7 @@ _PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PACKAGE_ROOT not in sys.path:
     sys.path.insert(0, _PACKAGE_ROOT)
 
+from yiban.adapters.config import loader as config_loader  # noqa: E402
 from yiban.core import email_policy  # noqa: E402
 from yiban.core import window as yb_window  # noqa: E402
 
@@ -321,8 +322,11 @@ def email_domain_error(email):
     env = _env()
     return email_policy.review_email(
         email,
-        allowlist=env.get("YIBAN_EMAIL_DOMAIN_ALLOWLIST", ""),
-        blocklist_extra=env.get("YIBAN_EMAIL_DOMAIN_BLOCKLIST_EXTRA", ""),
+        allowlist=env.get("YIBAN_EMAIL_DOMAIN_ALLOWLIST",
+                          config_loader.default_of("YIBAN_EMAIL_DOMAIN_ALLOWLIST")),
+        blocklist_extra=env.get(
+            "YIBAN_EMAIL_DOMAIN_BLOCKLIST_EXTRA",
+            config_loader.default_of("YIBAN_EMAIL_DOMAIN_BLOCKLIST_EXTRA")),
     )
 
 
@@ -332,7 +336,8 @@ def icp_info():
     解耦设计：未配置时模板 `{% if icp_info %}` 块不输出，footer 保持旧样式；
     配置后所有页面底部显示该文本（模板经 Jinja autoescape 转义，无 XSS）。
     """
-    return _env().get("YIBAN_ICP_INFO", "").strip()
+    return _env().get("YIBAN_ICP_INFO",
+                      config_loader.default_of("YIBAN_ICP_INFO")).strip()
 
 
 def police_info():
@@ -340,7 +345,8 @@ def police_info():
 
     与 ICP 备案分开独立预留位；未配置时模板 `{% if police_info %}` 块不输出。
     """
-    return _env().get("YIBAN_POLICE_INFO", "").strip()
+    return _env().get("YIBAN_POLICE_INFO",
+                      config_loader.default_of("YIBAN_POLICE_INFO")).strip()
 
 
 def police_link():
@@ -354,7 +360,8 @@ def police_link():
     破坏标签结构，**挡不住协议**：`javascript:` 转义后照样是可执行链接，所以协议只能在源头判——
     不在白名单（含空值）一律回落公安部通用门户。
     """
-    link = _env().get("YIBAN_POLICE_LINK", "").strip()
+    link = _env().get("YIBAN_POLICE_LINK",
+                      config_loader.default_of("YIBAN_POLICE_LINK")).strip()
     if link and link.lower().startswith(_SAFE_LINK_SCHEMES):
         return link
     return "https://beian.mps.gov.cn/"
@@ -366,8 +373,10 @@ def site_description():
     全站此前无 meta description 与 og:* 标签，分享链接解析出的卡片只有标题、
     没有摘要。本值经 Jinja autoescape 进 content 属性，无注入面。默认文案由宿主登记。
     """
-    return _env().get("YIBAN_SITE_DESCRIPTION", "").strip() or _host(
-        "site_description_default")
+    return _env().get(
+        "YIBAN_SITE_DESCRIPTION",
+        config_loader.default_of("YIBAN_SITE_DESCRIPTION")).strip() or _host(
+            "site_description_default")
 
 
 def site_image():
@@ -376,7 +385,8 @@ def site_image():
     必须为绝对 https 地址（分享抓取方无法解析相对路径）；不在 https 白名单
     一律忽略——该值进公开页 meta content，配置 javascript:/data: 无意义且有害。
     """
-    url = _env().get("YIBAN_SITE_IMAGE", "").strip()
+    url = _env().get("YIBAN_SITE_IMAGE",
+                     config_loader.default_of("YIBAN_SITE_IMAGE")).strip()
     return url if url.lower().startswith("https://") else ""
 
 

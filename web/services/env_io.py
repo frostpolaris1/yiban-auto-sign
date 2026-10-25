@@ -54,6 +54,7 @@ from web.services.limits import (
     DEFAULT_MAX_USERS,
 )
 from yiban.adapters.config import env_io as _env_io
+from yiban.adapters.config import loader as config_loader
 from yiban.adapters.notifier.mail import layout as mail_layout
 from yiban.core import window as yb_window
 from yiban.engine import schedule as _schedule
@@ -354,7 +355,9 @@ def _settings_effective_values(env_file):
         return "1" if env_flag(env.get(key, "")) else "0"
 
     vals = {
-        "start_delay_max": str(load_env_int(env_file, "YIBAN_START_DELAY_MAX", 0)),
+        "start_delay_max": str(load_env_int(
+            env_file, "YIBAN_START_DELAY_MAX",
+            config_loader.default_of("YIBAN_START_DELAY_MAX"))),
         "gap_max": str(load_env_int(env_file, "YIBAN_ACCOUNT_GAP_MAX",
                                     DEFAULT_ACCOUNT_GAP_MAX)),
         "sign_window": (f"{w_start[0]:02d}:{w_start[1]:02d}"
@@ -382,8 +385,10 @@ def _settings_effective_values(env_file):
             "normal" if mode == "normal" else "front"),
         "account_verify": _flag("YIBAN_ACCOUNT_VERIFY"),
         "probe_enable": _flag("YIBAN_PROBE_ENABLE"),
-        "probe_time": env.get("YIBAN_PROBE_TIME", "20:00").strip() or "20:00",
-        "probe_interval": env.get("YIBAN_PROBE_INTERVAL_DAYS", "1").strip() or "1",
+        "probe_time": (env.get("YIBAN_PROBE_TIME") or "").strip()
+        or config_loader.default_of("YIBAN_PROBE_TIME"),
+        "probe_interval": (env.get("YIBAN_PROBE_INTERVAL_DAYS") or "").strip()
+        or config_loader.default_of("YIBAN_PROBE_INTERVAL_DAYS"),
         # 告警通道健康报告：时刻缺省是空串（未配置 = 沿用"唤醒即发"，不是某个钟点），
         # 故不能用 `or "09:00"` 那种"补一个默认钟点"的写法——那会把"没配"显示成"配了"。
         "health_report_time": health_report_time_str(env),

@@ -73,6 +73,7 @@ from datetime import datetime, timedelta
 
 from yiban import egress
 from yiban.adapters.config import env_io
+from yiban.adapters.config import loader as config_loader
 from yiban.adapters.persistence import db
 from yiban.adapters.statefiles import cred_state
 from yiban.core import clock
@@ -230,9 +231,13 @@ _STATE_GATE = threading.Lock()
 _STATE_BATCH_DEPTH = 0    # 批量上下文嵌套层数；0 = 逐条立即落盘（既有行为）
 
 #: 待写条数上界；达到即落盘（回归守卫见 tests/test_state_write_batching.py）。
-_FLUSH_MAX = config_check.parse_env_int("YIBAN_SIGN_STATE_FLUSH_MAX", 64)
+_FLUSH_MAX = config_check.parse_env_int(
+    "YIBAN_SIGN_STATE_FLUSH_MAX",
+    config_loader.default_required("YIBAN_SIGN_STATE_FLUSH_MAX"))
 #: 落盘间隔上界（秒）；未达条数上界时最多陈旧这么久。默认＝最快读者轮询周期。
-_FLUSH_SEC = config_check.parse_env_int("YIBAN_SIGN_STATE_FLUSH_SEC", 10)
+_FLUSH_SEC = config_check.parse_env_int(
+    "YIBAN_SIGN_STATE_FLUSH_SEC",
+    config_loader.default_required("YIBAN_SIGN_STATE_FLUSH_SEC"))
 
 
 class _StateBuf:
@@ -801,7 +806,9 @@ def fallback_alive(interval_sec=None, now=None):
         return False, None
     now = now or clock.now()
     age = (now - stamp).total_seconds()
-    limit = 2 * (interval_sec or schedule._env_int("YIBAN_FALLBACK_INTERVAL", 60, 5, 3600))
+    limit = 2 * (interval_sec or schedule._env_int(
+        "YIBAN_FALLBACK_INTERVAL",
+        config_loader.default_of("YIBAN_FALLBACK_INTERVAL"), 5, 3600))
     return age <= limit, age
 
 
