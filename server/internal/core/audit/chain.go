@@ -124,6 +124,9 @@ var ErrDetailTooLarge = errors.New("audit: detail is too large")
 // ErrDetailType reports a detail value outside the scalar whitelist.
 var ErrDetailType = errors.New("audit: detail value type is not allowed")
 
+// ErrDetailShape reports a string that does not match the shape of its key.
+var ErrDetailShape = errors.New("audit: detail value shape is not allowed")
+
 // ErrDetailReason reports a reason shorter than 1 or longer than
 // MaxReasonChars runes.
 var ErrDetailReason = errors.New("audit: detail reason is out of range")
@@ -149,6 +152,17 @@ var (
 )
 
 // detailKeys is the only allowed set of detail keys.
+var (
+	// traceIDShape is the request id alphabet from entry/http/router.
+	traceIDShape = regexp.MustCompile(`^[0-9A-Za-z._-]{1,64}$`)
+	// kidShape matches the credential key id: 16 lowercase hex characters.
+	kidShape = regexp.MustCompile(`^[0-9a-f]{16}$`)
+	// fieldShape is a column or setting name.
+	fieldShape = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+	// wordShape is a status or reason code.
+	wordShape = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+)
+
 var detailKeys = map[string]bool{
 	"field":    true,
 	"from":     true,
@@ -171,10 +185,13 @@ func ZeroHash() []byte { return make([]byte, sha256.Size) }
 // slices, structs and non-nil pointers are rejected. encoding/json sorts map
 // keys, so the same map always yields the same bytes.
 //
-// A string is rejected when it changes under mask.MaskText or when it contains
-// a mobile number (1[3-9] and 9 more digits) or an email address, even without
-// word boundaries. A number inside [10000000000, 14999999999] is rejected
-// because it has the phone shape. A reason is limited to MaxReasonChars runes.
+// Each key has its own shape. trace_id, kid, field, from and to are matched
+// against fixed character classes, so a random 32-hex trace id is accepted and
+// a phone number is not. Only reason carries free text: it must survive
+// mask.MaskText, must not contain a mobile number or an email address, and is
+// limited to MaxReasonChars runes. A number inside [10000000000,
+// 14999999999] is rejected because it has the phone shape; rows accepts only
+// integers for the same reason.
 //
 // Limitation: a password or a device code has no recognizable shape. This
 // function cannot detect one. Callers must never pass a secret to detail. The
@@ -210,12 +227,12 @@ func validateDetailValue(key string, value any) error {
 		return validateDetailString(key, typed)
 	case bool:
 		return nil
-	case []string:
+	case []int:
 		if key != "rows" {
 			return fmt.Errorf("%w: %q must not be a slice", ErrDetailType, key)
 		}
 		for _, item := range typed {
-			if err := validateDetailString(key, item); err != nil {
+			if err := validateDetailNumber(float64(item)); err != nil {
 				return err
 			}
 		}
@@ -252,13 +269,38 @@ func validateDetailValue(key string, value any) error {
 	return fmt.Errorf("%w: %q has type %T", ErrDetailType, key, value)
 }
 
-// validateDetailString rejects personal data in one string.
+// validateDetailString applies the per-key shape or free-text rule.
 func validateDetailString(key, text string) error {
+	switch key {
+	case "trace_id":
+		if !traceIDShape.MatchString(text) {
+			return fmt.Errorf("%w: %q has the wrong trace id shape", ErrDetailShape, key)
+		}
+		return nil
+	case "kid":
+		if !kidShape.MatchString(text) {
+			return fmt.Errorf("%w: %q has the wrong kid shape", ErrDetailShape, key)
+		}
+		return nil
+	case "field":
+		if !fieldShape.MatchString(text) {
+			return fmt.Errorf("%w: %q has the wrong field shape", ErrDetailShape, key)
+		}
+		return nil
+	case "from", "to":
+		if !wordShape.MatchString(text) {
+			return fmt.Errorf("%w: %q has the wrong value shape", ErrDetailShape, key)
+		}
+		return nil
+	case "reason":
+		if utf8.RuneCountInString(text) > MaxReasonChars {
+			return fmt.Errorf("%w: %q has %d characters", ErrDetailReason, key, utf8.RuneCountInString(text))
+		}
+	default:
+		return fmt.Errorf("%w: %q has no string rule", ErrDetailKey, key)
+	}
 	if mask.MaskText(text) != text || phoneAnywhere.MatchString(text) || emailAnywhere.MatchString(text) {
 		return fmt.Errorf("%w: %q", ErrDetailPII, key)
-	}
-	if key == "reason" && utf8.RuneCountInString(text) > MaxReasonChars {
-		return fmt.Errorf("%w: %q has %d characters", ErrDetailReason, key, utf8.RuneCountInString(text))
 	}
 	return nil
 }

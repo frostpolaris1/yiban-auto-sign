@@ -51,15 +51,41 @@ func (h TokenHash) Bytes() []byte {
 // the caller did not set the field.
 func (h TokenHash) IsZero() bool { return h == TokenHash{} }
 
-// HashSecret returns the lowercase hex SHA-256 of raw for the sessions ip_hash
-// and user_agent_hash columns.
+// IPHash is the keyed digest of an IP address. The type is the guard: a
+// repository accepts only this type, so a raw address cannot be stored.
+type IPHash string
+
+// UserAgentHash is the keyed digest of a user-agent string.
+type UserAgentHash string
+
+// HashValue returns the lowercase hex HMAC-SHA256 of value under pepper.
 //
-// The repositories store the value unchanged: callers pass only the output of
-// this function, never a raw IP address or user-agent string.
-func HashSecret(raw string) string {
-	sum := sha256.Sum256([]byte(raw))
-	return hex.EncodeToString(sum[:])
+// A bare SHA-256 would let anyone enumerate the IPv4 space and recover the
+// address. The pepper is a server secret; an empty pepper is a programming
+// error and yields a zero digest rather than an unkeyed hash.
+func HashValue(pepper []byte, value string) string {
+	if len(pepper) == 0 {
+		return ""
+	}
+	mac := hmac.New(sha256.New, pepper)
+	mac.Write([]byte(value))
+	return hex.EncodeToString(mac.Sum(nil))
 }
+
+// HashIP hashes an address with the server pepper.
+func HashIP(pepper []byte, ip string) IPHash { return IPHash(HashValue(pepper, ip)) }
+
+// HashUserAgent hashes a user-agent string with the server pepper.
+func HashUserAgent(pepper []byte, ua string) UserAgentHash {
+	return UserAgentHash(HashValue(pepper, ua))
+}
+
+// IsZero reports whether the digest is empty. A repository rejects a session
+// whose IP or user-agent hash is non-empty but malformed.
+func (h IPHash) IsZero() bool { return h == "" }
+
+// IsZero reports whether the digest is empty.
+func (h UserAgentHash) IsZero() bool { return h == "" }
 
 // CSRFToken derives the CSRF token from the session token and a server secret.
 // Nothing is stored: the value is recomputed on each request, so a database
@@ -131,8 +157,8 @@ type SessionRow struct {
 	IdleExpiresAt time.Time
 	ExpiresAt     time.Time
 	RevokedAt     *time.Time
-	IPHash        string
-	UserAgentHash string
+	IPHash        IPHash
+	UserAgentHash UserAgentHash
 }
 
 // NewSessionRow is the input of a session creation. TokenHash must come from
@@ -145,8 +171,8 @@ type NewSessionRow struct {
 	Now           time.Time
 	IdleExpiresAt time.Time
 	ExpiresAt     time.Time
-	IPHash        string
-	UserAgentHash string
+	IPHash        IPHash
+	UserAgentHash UserAgentHash
 }
 
 // ResolvedSession is a live session joined with its user.

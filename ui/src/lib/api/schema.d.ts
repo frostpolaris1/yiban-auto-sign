@@ -477,7 +477,10 @@ export interface components {
         AccountReviewRequest: {
             /** @enum {string} */
             decision: "approve" | "reject";
-            /** @description Required when decision is reject. */
+            /**
+             * @description Required when decision is reject. The limit matches the audit
+             *     detail limit and the accounts.reject_reason CHECK.
+             */
             reason?: string;
         };
         AccountPauseRequest: {

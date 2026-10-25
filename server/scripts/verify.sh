@@ -34,6 +34,8 @@ else
 fi
 
 # E-4 contract drift gate: regenerating must not change the checked-in code.
+# E-4 contract drift gate: regenerating must not change the checked-in code.
+# The gate fails closed: a generator that produced nothing exits 2.
 bash ./scripts/generate.sh --check
 
 # Structure gate: top-level and layer directories match structure.tsv.

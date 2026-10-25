@@ -55,7 +55,7 @@ func (r *SessionRepo) Create(ctx context.Context, in coreauth.NewSessionRow) (co
 			VALUES ($1::uuid, $2::uuid, $3, $4, $5, $5, $6, $7, NULLIF($8, ''), NULLIF($9, ''))
 			RETURNING `+sessionColumns,
 			sessionID, in.UserID, in.TokenHash.Bytes(), in.AuthMethod, in.Now,
-			in.IdleExpiresAt, in.ExpiresAt, in.IPHash, in.UserAgentHash)
+			in.IdleExpiresAt, in.ExpiresAt, string(in.IPHash), string(in.UserAgentHash))
 		var scanErr error
 		record, scanErr = scanSession(row)
 		if scanErr != nil {
