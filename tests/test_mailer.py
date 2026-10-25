@@ -779,6 +779,35 @@ class SmtpDefaultFromRegistryTest(unittest.TestCase):
         self.assertEqual(cfg["port"], 2525)
 
 
+class SmtpPortFallbackSourceTest(unittest.TestCase):
+    """端口回退只许走名册缺省（审查员 7f delta 低-10）。
+
+    回填 `entry.get("port", 465)` 必须让本测红：行为断言看不出"第二份定义点"，
+    源码断言才能钉住"回退表达式引用名册访问器"这条性质。
+    """
+
+    FILES = ("yiban/adapters/notifier/mail/config.py",
+             "yiban/adapters/notifier/mail/transport.py",
+             "web/routes/notify.py")
+
+    def _src(self, rel):
+        with io.open(os.path.join(BASE, rel), encoding="utf-8") as f:
+            return f.read()
+
+    def test_no_bare_port_literal_fallback(self):
+        banned = ('get("port", 465)', 'get("port",465)', "or 465", "return 465")
+        for rel in self.FILES:
+            src = self._src(rel)
+            for bad in banned:
+                self.assertNotIn(bad, src,
+                                 "%s 仍有裸端口回退 %r" % (rel, bad))
+
+    def test_fallbacks_use_registry_accessor(self):
+        for rel in self.FILES:
+            self.assertIn("_default_smtp_port()", self._src(rel),
+                          "%s 的端口回退没走名册访问器" % rel)
+
+
 class SmtpListTest(_Base_FAILOVER):
     """smtp_list：旧键回落与 ENC 解析。"""
 
