@@ -166,7 +166,7 @@ write_override() {
         echo "  yiban-nginx:"
         echo "    container_name: ${proj}-nginx"
         echo "    volumes: !override"
-        echo "      - ${BASE}/docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro"
+        echo "      - ${BASE}/docker/nginx.conf:/etc/nginx/templates/default.conf.template:ro"
         echo "      - ${certs}:/etc/yiban/certs:ro"
     } > "$file"
 }
@@ -403,7 +403,7 @@ phase_B() {
             echo "  yiban-nginx:"
             echo "    container_name: ${proj}-nginx"
             echo "    volumes: !override"
-            echo "      - ${BASE}/docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro"
+            echo "      - ${BASE}/docker/nginx.conf:/etc/nginx/templates/default.conf.template:ro"
             echo "      - ${certs}:/etc/yiban/certs:ro"
         } > "$ov"
     }
