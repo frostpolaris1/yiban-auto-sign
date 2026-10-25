@@ -28,8 +28,8 @@ const sessionColumns = `id::text, user_id::text, token_hash, auth_method,
 // coreauth.MaxSessionsPerUser. Insert and eviction share one transaction, so a
 // concurrent reader never observes more than the cap for long.
 func (r *SessionRepo) Create(ctx context.Context, in coreauth.NewSessionRow) (coreauth.SessionRow, error) {
-	if len(in.TokenHash) != 32 {
-		return coreauth.SessionRow{}, validationError("token hash must be 32 bytes")
+	if in.TokenHash.IsZero() {
+		return coreauth.SessionRow{}, validationError("token hash is required")
 	}
 	if in.AuthMethod != "password" && in.AuthMethod != "reset" {
 		return coreauth.SessionRow{}, validationError("unknown auth method")
@@ -54,7 +54,7 @@ func (r *SessionRepo) Create(ctx context.Context, in coreauth.NewSessionRow) (co
 			        idle_expires_at, expires_at, ip_hash, user_agent_hash)
 			VALUES ($1::uuid, $2::uuid, $3, $4, $5, $5, $6, $7, NULLIF($8, ''), NULLIF($9, ''))
 			RETURNING `+sessionColumns,
-			sessionID, in.UserID, in.TokenHash, in.AuthMethod, in.Now,
+			sessionID, in.UserID, in.TokenHash.Bytes(), in.AuthMethod, in.Now,
 			in.IdleExpiresAt, in.ExpiresAt, in.IPHash, in.UserAgentHash)
 		var scanErr error
 		record, scanErr = scanSession(row)
@@ -82,8 +82,14 @@ func (r *SessionRepo) Create(ctx context.Context, in coreauth.NewSessionRow) (co
 // window. Unknown, revoked, expired and idle sessions all return not_found.
 // A disabled or deleted user makes the session unresolvable without an
 // explicit revoke.
-func (r *SessionRepo) Resolve(ctx context.Context, tokenHash []byte, now time.Time, idle time.Duration) (coreauth.ResolvedSession, error) {
-	if len(tokenHash) != 32 {
+//
+// The refresh moves both last_seen_at and idle_expires_at, so the returned row
+// is self-consistent: a caller that sets a cookie Max-Age from IdleExpiresAt
+// gets the same instant the next request will check. The idle expiry is capped
+// by the absolute expiry, so the check constraint idle_expires_at <=
+// expires_at always holds.
+func (r *SessionRepo) Resolve(ctx context.Context, tokenHash coreauth.TokenHash, now time.Time, idle time.Duration) (coreauth.ResolvedSession, error) {
+	if tokenHash.IsZero() {
 		return coreauth.ResolvedSession{}, coreerrs.ErrNotFound
 	}
 	if idle <= 0 {
@@ -93,7 +99,8 @@ func (r *SessionRepo) Resolve(ctx context.Context, tokenHash []byte, now time.Ti
 	row := r.db.q(ctx).QueryRow(ctx, `
 		WITH refreshed AS (
 		    UPDATE sessions
-		       SET last_seen_at = $2
+		       SET last_seen_at = $2,
+		           idle_expires_at = LEAST($2 + (idle_expires_at - last_seen_at), expires_at)
 		     WHERE token_hash = $1
 		       AND revoked_at IS NULL
 		       AND expires_at > $2
@@ -108,18 +115,18 @@ func (r *SessionRepo) Resolve(ctx context.Context, tokenHash []byte, now time.Ti
 		  FROM refreshed f
 		  JOIN users u ON u.id = f.user_id
 		 WHERE u.deleted_at IS NULL AND u.status = 'active'`,
-		tokenHash, now, cutoff)
+		tokenHash.Bytes(), now, cutoff)
 	return scanResolvedSession(row)
 }
 
 // Revoke marks one session revoked. It is idempotent.
-func (r *SessionRepo) Revoke(ctx context.Context, tokenHash []byte, now time.Time) error {
-	if len(tokenHash) != 32 {
+func (r *SessionRepo) Revoke(ctx context.Context, tokenHash coreauth.TokenHash, now time.Time) error {
+	if tokenHash.IsZero() {
 		return nil
 	}
 	_, err := r.db.q(ctx).Exec(ctx, `
 		UPDATE sessions SET revoked_at = $2
-		 WHERE token_hash = $1 AND revoked_at IS NULL`, tokenHash, now)
+		 WHERE token_hash = $1 AND revoked_at IS NULL`, tokenHash.Bytes(), now)
 	return mapError(err)
 }
 
@@ -155,13 +162,19 @@ func (r *SessionRepo) DeleteExpired(ctx context.Context, before time.Time, limit
 func scanSession(row pgx.Row) (coreauth.SessionRow, error) {
 	var (
 		record  coreauth.SessionRow
+		rawHash []byte
 		revoked pgtype.Timestamptz
 	)
-	if err := row.Scan(&record.ID, &record.UserID, &record.TokenHash, &record.AuthMethod,
+	if err := row.Scan(&record.ID, &record.UserID, &rawHash, &record.AuthMethod,
 		&record.CreatedAt, &record.LastSeenAt, &record.IdleExpiresAt, &record.ExpiresAt,
 		&revoked, &record.IPHash, &record.UserAgentHash); err != nil {
 		return coreauth.SessionRow{}, err
 	}
+	hash, err := tokenHashFromBytes(rawHash)
+	if err != nil {
+		return coreauth.SessionRow{}, err
+	}
+	record.TokenHash = hash
 	record.RevokedAt = timePtr(revoked)
 	return record, nil
 }
@@ -169,11 +182,12 @@ func scanSession(row pgx.Row) (coreauth.SessionRow, error) {
 func scanResolvedSession(row pgx.Row) (coreauth.ResolvedSession, error) {
 	var (
 		record  coreauth.ResolvedSession
+		rawHash []byte
 		revoked pgtype.Timestamptz
 		role    string
 		status  string
 	)
-	err := row.Scan(&record.Session.ID, &record.Session.UserID, &record.Session.TokenHash,
+	err := row.Scan(&record.Session.ID, &record.Session.UserID, &rawHash,
 		&record.Session.AuthMethod, &record.Session.CreatedAt, &record.Session.LastSeenAt,
 		&record.Session.IdleExpiresAt, &record.Session.ExpiresAt, &revoked,
 		&record.Session.IPHash, &record.Session.UserAgentHash,
@@ -184,6 +198,11 @@ func scanResolvedSession(row pgx.Row) (coreauth.ResolvedSession, error) {
 		}
 		return coreauth.ResolvedSession{}, mapError(err)
 	}
+	hash, err := tokenHashFromBytes(rawHash)
+	if err != nil {
+		return coreauth.ResolvedSession{}, err
+	}
+	record.Session.TokenHash = hash
 	record.Session.RevokedAt = timePtr(revoked)
 	record.User.ID = record.Session.UserID
 	record.User.Role = coreauth.Role(role)

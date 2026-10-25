@@ -46,6 +46,25 @@ func mapError(err error) error {
 	}
 }
 
+// mapInsertForeignKey maps a foreign-key failure at an insert site.
+//
+// mapError keeps the SQLSTATE-level view: 23503 is a conflict. At an insert,
+// however, 23503 means the referenced parent row does not exist, and schema
+// §2.4 requires not_found (HTTP 404). A rejected delete is RESTRICT, which
+// PostgreSQL reports as 23001 at the delete site and stays a conflict (409).
+// Use this function only for statements that insert a child row.
+func mapInsertForeignKey(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+		details := map[string]any{}
+		if pgErr.ConstraintName != "" {
+			details["constraint"] = pgErr.ConstraintName
+		}
+		return &errs.Error{Code: errs.CodeNotFound, Message: "not found", Details: details}
+	}
+	return mapError(err)
+}
+
 // recordOrNotFound returns value, or maps a missing row to errs.ErrNotFound
 // and any other failure to its stable code.
 func recordOrNotFound[T any](value T, err error) (T, error) {

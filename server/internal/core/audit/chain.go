@@ -16,7 +16,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
+	"regexp"
 	"time"
+	"unicode/utf8"
 
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
@@ -118,6 +121,33 @@ var ErrDetailPII = errors.New("audit: detail contains personal data")
 // ErrDetailTooLarge reports a detail value over MaxDetailBytes.
 var ErrDetailTooLarge = errors.New("audit: detail is too large")
 
+// ErrDetailType reports a detail value outside the scalar whitelist.
+var ErrDetailType = errors.New("audit: detail value type is not allowed")
+
+// ErrDetailReason reports a reason shorter than 1 or longer than
+// MaxReasonChars runes.
+var ErrDetailReason = errors.New("audit: detail reason is out of range")
+
+// MaxReasonChars bounds the reason value. A free-text field is the only place
+// where arbitrary words can reach the chain, so it gets the tightest limit.
+const MaxReasonChars = 200
+
+// Phone-shaped numbers in this inclusive range are rejected. A JSON number
+// that equals an 11-digit mobile number cannot be told apart from a phone
+// number, so the whole shape is refused.
+const (
+	phoneNumberMin = 10000000000
+	phoneNumberMax = 14999999999
+)
+
+var (
+	// phoneAnywhere matches an 11-digit mobile number without word
+	// boundaries, so "user13800138000" and "13800138000abc" are caught too.
+	phoneAnywhere = regexp.MustCompile(`1[3-9][0-9]{9}`)
+	// emailAnywhere matches an email address without word boundaries.
+	emailAnywhere = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
+)
+
 // detailKeys is the only allowed set of detail keys.
 var detailKeys = map[string]bool{
 	"field":    true,
@@ -135,10 +165,20 @@ func ZeroHash() []byte { return make([]byte, sha256.Size) }
 
 // EncodeDetail validates values and returns canonical JSON text.
 //
-// The whitelist is closed: an unknown key is an error. A string value that
-// changes under mask.MaskText contains a phone number or an email address and
-// is rejected. encoding/json sorts map keys, so the same map always yields
-// the same bytes.
+// The key whitelist is closed: an unknown key is an error. Values are checked
+// recursively. The only allowed types are nil, string, bool, signed and
+// unsigned integers, floats, and []string under the "rows" key. Maps, other
+// slices, structs and non-nil pointers are rejected. encoding/json sorts map
+// keys, so the same map always yields the same bytes.
+//
+// A string is rejected when it changes under mask.MaskText or when it contains
+// a mobile number (1[3-9] and 9 more digits) or an email address, even without
+// word boundaries. A number inside [10000000000, 14999999999] is rejected
+// because it has the phone shape. A reason is limited to MaxReasonChars runes.
+//
+// Limitation: a password or a device code has no recognizable shape. This
+// function cannot detect one. Callers must never pass a secret to detail. The
+// key whitelist and code review are the guards; do not weaken either.
 func EncodeDetail(values map[string]any) (string, error) {
 	if len(values) == 0 {
 		return "{}", nil
@@ -147,8 +187,8 @@ func EncodeDetail(values map[string]any) (string, error) {
 		if !detailKeys[key] {
 			return "", fmt.Errorf("%w: %q", ErrDetailKey, key)
 		}
-		if text, ok := value.(string); ok && mask.MaskText(text) != text {
-			return "", fmt.Errorf("%w: %q", ErrDetailPII, key)
+		if err := validateDetailValue(key, value); err != nil {
+			return "", err
 		}
 	}
 	encoded, err := json.Marshal(values)
@@ -159,6 +199,76 @@ func EncodeDetail(values map[string]any) (string, error) {
 		return "", fmt.Errorf("%w: %d bytes", ErrDetailTooLarge, len(encoded))
 	}
 	return string(encoded), nil
+}
+
+// validateDetailValue applies the type whitelist to one value.
+func validateDetailValue(key string, value any) error {
+	switch typed := value.(type) {
+	case nil:
+		return nil
+	case string:
+		return validateDetailString(key, typed)
+	case bool:
+		return nil
+	case []string:
+		if key != "rows" {
+			return fmt.Errorf("%w: %q must not be a slice", ErrDetailType, key)
+		}
+		for _, item := range typed {
+			if err := validateDetailString(key, item); err != nil {
+				return err
+			}
+		}
+		return nil
+	case int:
+		return validateDetailNumber(float64(typed))
+	case int8:
+		return validateDetailNumber(float64(typed))
+	case int16:
+		return validateDetailNumber(float64(typed))
+	case int32:
+		return validateDetailNumber(float64(typed))
+	case int64:
+		return validateDetailNumber(float64(typed))
+	case uint:
+		return validateDetailNumber(float64(typed))
+	case uint8:
+		return validateDetailNumber(float64(typed))
+	case uint16:
+		return validateDetailNumber(float64(typed))
+	case uint32:
+		return validateDetailNumber(float64(typed))
+	case uint64:
+		return validateDetailNumber(float64(typed))
+	case float32:
+		return validateDetailNumber(float64(typed))
+	case float64:
+		return validateDetailNumber(typed)
+	}
+	// A nil pointer encodes as null, which carries no data.
+	if rv := reflect.ValueOf(value); rv.Kind() == reflect.Ptr && rv.IsNil() {
+		return nil
+	}
+	return fmt.Errorf("%w: %q has type %T", ErrDetailType, key, value)
+}
+
+// validateDetailString rejects personal data in one string.
+func validateDetailString(key, text string) error {
+	if mask.MaskText(text) != text || phoneAnywhere.MatchString(text) || emailAnywhere.MatchString(text) {
+		return fmt.Errorf("%w: %q", ErrDetailPII, key)
+	}
+	if key == "reason" && utf8.RuneCountInString(text) > MaxReasonChars {
+		return fmt.Errorf("%w: %q has %d characters", ErrDetailReason, key, utf8.RuneCountInString(text))
+	}
+	return nil
+}
+
+// validateDetailNumber rejects numbers that have the phone shape.
+func validateDetailNumber(value float64) error {
+	if value >= phoneNumberMin && value <= phoneNumberMax {
+		return fmt.Errorf("%w: numeric phone shape", ErrDetailPII)
+	}
+	return nil
 }
 
 // Payload builds the bytes that Hash signs. The layout is frozen:
