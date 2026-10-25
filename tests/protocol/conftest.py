@@ -16,7 +16,7 @@ import 一律改写为 `yiban.adapters.protocol_yiban`。
 **回放（ziqz）**：`replay_manifest.json` 登记回放面的响应夹具。
 12 条＝6 captured＋6 synthetic。
 `captured` 原样回放；`synthetic_*` 是未实拍，`serve()` 拒答。
-本目录另有 5 份请求体文本件（iframe_location、sign_in_body 两形、usersure 两件）。
+本目录另有 5 份非响应体文本件（iframe_location 302 Location 串、sign_in_body 两形、usersure 两件）。
 它们不是响应夹具，不属回放面，不登记。
 """
 
