@@ -1,5 +1,5 @@
 import type { components } from './schema'
-import { apiRequest } from './client'
+import { apiRequest, setCsrfToken } from './client'
 
 /**
  * Auth stubs. Every type comes from `schema.d.ts`, which is generated from
@@ -29,10 +29,13 @@ export function login(body: LoginRequest): Promise<SessionUser> {
   })
 }
 
-export function logout(): Promise<void> {
-  return apiRequest<void>(AUTH_PATHS.logout, { method: 'POST' })
+export async function logout(): Promise<void> {
+  await apiRequest<void>(AUTH_PATHS.logout, { method: 'POST' })
+  setCsrfToken(null)
 }
 
-export function fetchMe(): Promise<SessionUser> {
-  return apiRequest<SessionUser>(AUTH_PATHS.me)
+export async function fetchMe(): Promise<SessionUser> {
+  const me = await apiRequest<SessionUser>(AUTH_PATHS.me)
+  setCsrfToken(me.csrf_token)
+  return me
 }

@@ -18,3 +18,7 @@ features	features	cross-feature	features never import a sibling feature
 lib	features	deny	lib is the bottom layer
 lib	pages	deny	lib is the bottom layer
 lib	components	deny	lib is the bottom layer
+lib	app	deny	lib is the bottom layer
+components	app	deny	components stay below app
+features	app	deny	features stay below app
+pages	app	deny	app renders pages; pages must not import app

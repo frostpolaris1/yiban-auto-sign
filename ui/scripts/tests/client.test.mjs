@@ -71,3 +71,36 @@ test('credentials default to include', async () => {
   }
   assert.equal(capture.calls[0].init.credentials, 'include')
 })
+
+test('unsafe methods send the stored CSRF token, safe methods do not', async () => {
+  const { setCsrfToken } = await import('../../src/lib/api/client.ts')
+  const capture = captureFetch()
+  try {
+    setCsrfToken('csrf-value')
+    await apiRequest('/api/accounts', { method: 'POST', body: '{}' })
+    await apiRequest('/api/accounts')
+  } finally {
+    capture.restore()
+    setCsrfToken(null)
+  }
+
+  const postHeaders = new Headers(capture.calls[0].init.headers)
+  assert.equal(postHeaders.get('X-CSRF-Token'), 'csrf-value')
+  const getHeaders = new Headers(capture.calls[1].init.headers)
+  assert.equal(getHeaders.get('X-CSRF-Token'), null)
+})
+
+test('a caller header wins over the stored CSRF token', async () => {
+  const { setCsrfToken } = await import('../../src/lib/api/client.ts')
+  const capture = captureFetch()
+  try {
+    setCsrfToken('stored')
+    await apiRequest('/api/accounts', { method: 'DELETE', headers: { 'X-CSRF-Token': 'explicit' } })
+  } finally {
+    capture.restore()
+    setCsrfToken(null)
+  }
+
+  const headers = new Headers(capture.calls[0].init.headers)
+  assert.equal(headers.get('X-CSRF-Token'), 'explicit')
+})

@@ -43,3 +43,49 @@ func TestLoadFromNil(t *testing.T) {
 		t.Fatal("LoadFrom(nil) must fail")
 	}
 }
+
+func TestLoadFromRejectsUnknownEnv(t *testing.T) {
+	for _, env := range []string{"prod", "Production", "dev"} {
+		if _, err := LoadFrom(mapSource{"YIBAN_ENV": env}); err == nil {
+			t.Fatalf("env %q must be rejected", env)
+		}
+	}
+}
+
+func TestInsecureCookiesFollowEnv(t *testing.T) {
+	cases := []struct {
+		env  string
+		want bool
+	}{
+		{"development", true},
+		{"test", true},
+		{"staging", false},
+		{"production", false},
+	}
+	for _, tc := range cases {
+		cfg, err := LoadFrom(mapSource{"YIBAN_ENV": tc.env})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.env, err)
+		}
+		if cfg.InsecureCookies != tc.want {
+			t.Fatalf("%s: InsecureCookies = %v, want %v", tc.env, cfg.InsecureCookies, tc.want)
+		}
+	}
+}
+
+func TestInsecureCookiesOverride(t *testing.T) {
+	cfg, err := LoadFrom(mapSource{"YIBAN_ENV": "staging", "YIBAN_INSECURE_COOKIES": "1"})
+	if err != nil {
+		t.Fatalf("staging override: %v", err)
+	}
+	if !cfg.InsecureCookies {
+		t.Fatal("override was ignored")
+	}
+
+	if _, err := LoadFrom(mapSource{"YIBAN_ENV": "production", "YIBAN_INSECURE_COOKIES": "1"}); err == nil {
+		t.Fatal("production must refuse insecure cookies")
+	}
+	if _, err := LoadFrom(mapSource{"YIBAN_INSECURE_COOKIES": "maybe"}); err == nil {
+		t.Fatal("non-boolean flag must be rejected")
+	}
+}

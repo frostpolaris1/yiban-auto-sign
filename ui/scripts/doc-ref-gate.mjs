@@ -31,7 +31,11 @@ const SKIP_DIRS = new Set(['node_modules', 'dist', 'test-results', 'playwright-r
 const SKIP_FILES = new Set(['package-lock.json'])
 /** The gate documents the forbidden token and tests it, so it scans itself out. */
 const EXEMPT = new Set(['scripts/doc-ref-gate.mjs'])
-const RULE = /(^|[^\w])work\/[\w./-]*/g
+// Match a local work/ reference with either separator and any case, after
+// removing URLs so a link path is not mistaken for a local one. Scan scope is
+// ui/ only; docs/ and server/ are registered as out of scope below.
+const URL = /https?:\/\/\S+/g
+const RULE = /(^|[^\w])work[\\/][\w.\\/-]*/gi
 
 class ConfigError extends Error {}
 
@@ -61,9 +65,10 @@ function lineAndColumn(text, index) {
 
 function detect(text) {
   const hits = []
+  const cleaned = text.replace(URL, (url) => ' '.repeat(url.length))
   RULE.lastIndex = 0
   let match
-  while ((match = RULE.exec(text)) !== null) {
+  while ((match = RULE.exec(cleaned)) !== null) {
     const value = match[0].trim()
     const offset = match.index + match[0].indexOf(value)
     const { line, column } = lineAndColumn(text, offset)
@@ -99,7 +104,13 @@ function selfTest() {
     'Clone: `work/adminator` (read only).',
     'Mapping lives in work/handoff/2026-10-25-p1b.md.',
     'See ./work/plans/x.md',
+    'Windows path work\\handoff\\x.md',
+    'Upper case Work/plans/x.md',
   ]
+  const urls = ['See https://example.com/work/x for details.']
+  urls.forEach((sample, index) => {
+    if (detect(sample).length !== 0) failures.push(`url ${index} was flagged: ${sample}`)
+  })
   positives.forEach((sample, index) => {
     if (detect(sample).length !== 0) failures.push(`positive ${index} was flagged: ${sample}`)
   })

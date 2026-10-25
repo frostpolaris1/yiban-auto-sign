@@ -70,7 +70,7 @@ func newServer(cfg *config.Config, logger *slog.Logger) (*http.Server, error) {
 		Sessions:        sessions,
 		Clock:           clk,
 		Logger:          logger,
-		InsecureCookies: cfg.Env != "production",
+		InsecureCookies: cfg.InsecureCookies,
 	})
 	if err != nil {
 		return nil, err

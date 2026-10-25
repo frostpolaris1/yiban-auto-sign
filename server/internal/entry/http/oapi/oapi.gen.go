@@ -448,6 +448,9 @@ type AccountID = string
 // CSRFToken defines model for CSRFToken.
 type CSRFToken = string
 
+// CSRFTokenOptional defines model for CSRFTokenOptional.
+type CSRFTokenOptional = string
+
 // Cursor defines model for Cursor.
 type Cursor = string
 
@@ -529,9 +532,9 @@ type AccountReviewParams struct {
 
 // AuthLogoutParams defines parameters for AuthLogout.
 type AuthLogoutParams struct {
-	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
-	// state-changing request that carries a session.
-	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+	// XCSRFToken Required only when the request carries a session. Used by logout,
+	// where a session-less request is a no-op.
+	XCSRFToken *CSRFTokenOptional `json:"X-CSRF-Token,omitempty"`
 }
 
 // SchoolListParams defines parameters for SchoolList.
@@ -1065,26 +1068,23 @@ func (siw *ServerInterfaceWrapper) AuthLogout(c *gin.Context) {
 
 	headers := c.Request.Header
 
-	// ------------- Required header parameter "X-CSRF-Token" -------------
+	// ------------- Optional header parameter "X-CSRF-Token" -------------
 	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
-		var XCSRFToken CSRFToken
+		var XCSRFToken CSRFTokenOptional
 		n := len(valueList)
 		if n != 1 {
 			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
 			return
 		}
 
-		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
 		if err != nil {
 			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
 			return
 		}
 
-		params.XCSRFToken = XCSRFToken
+		params.XCSRFToken = &XCSRFToken
 
-	} else {
-		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
-		return
 	}
 
 	for _, middleware := range siw.HandlerMiddlewares {

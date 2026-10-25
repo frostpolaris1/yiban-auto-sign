@@ -220,9 +220,10 @@ func selectorName(e ast.Expr) (string, bool) {
 	return id.Name + "." + sel.Sel.Name, true
 }
 
-// CountGoFiles returns how many Go files a scan would consider. A caller uses
-// it to reject a run that scans nothing.
-func CountGoFiles(root string) (int, error) {
+// CountGoFiles returns how many Go files a scan with the same includeTests
+// flag would consider. A caller uses it to reject a run that scans nothing;
+// the set must match the scanner, or a tree of test files alone reports green.
+func CountGoFiles(root string, includeTests bool) (int, error) {
 	count := 0
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -235,9 +236,13 @@ func CountGoFiles(root string) (int, error) {
 			}
 			return nil
 		}
-		if strings.HasSuffix(path, ".go") {
-			count++
+		if !strings.HasSuffix(path, ".go") {
+			return nil
 		}
+		if !includeTests && strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		count++
 		return nil
 	})
 	return count, err

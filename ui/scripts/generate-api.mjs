@@ -42,9 +42,17 @@ const CLI = join(
   'cli.js',
 )
 
+class GateError extends Error {
+  constructor(message, code) {
+    super(message)
+    this.code = code
+  }
+}
+
 function configError(message) {
-  console.error(`generate-api: CONFIG ERROR: ${message}`)
-  process.exit(2)
+  // Throw, never exit: process.exit skips the finally that removes the
+  // temporary directory.
+  throw new GateError(`CONFIG ERROR: ${message}`, 2)
 }
 
 function generate(target) {
@@ -60,9 +68,7 @@ function generate(target) {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
   } catch (error) {
-    console.error('generate-api: generator failed')
-    console.error(String(error.stderr ?? error.message))
-    process.exit(1)
+    throw new GateError(`generator failed: ${String(error.stderr ?? error.message)}`, 1)
   }
   if (!existsSync(target) || statSync(target).size === 0) {
     configError(`generator produced no output at ${target}`)
@@ -98,4 +104,12 @@ function main() {
   }
 }
 
-process.exit(main())
+try {
+  process.exit(main())
+} catch (error) {
+  if (error instanceof GateError) {
+    console.error(`generate-api: ${error.message}`)
+    process.exit(error.code)
+  }
+  throw error
+}
