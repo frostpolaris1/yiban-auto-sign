@@ -43,8 +43,8 @@ ENTRY = os.path.join(BASE, "scripts", "dev-verify.sh")
 #: 否则"车道名未知"判红（这是有意的：车道是判据的一部分）。
 LANES = ("fast", "slow", "serial")
 
-#: 扫描/收集的下限（AGENTS §30：扫空不得当绿）。本树实测 299 个测试文件。
-#: 下限取 100：真实套件远在其上，环境坏掉/路径写错时远在其下。
+#: 扫描/收集的下限（AGENTS §30：扫空不得当绿）。B1 收口态实测 367 个测试文件
+#: （口径＝`git ls-files` 的 `tests/**/test_*.py`）。下限取 100：真实套件远在其上。
 MIN_FILES = 100
 
 #: 名册表头里声明的列数（lane / path / 可选理由）

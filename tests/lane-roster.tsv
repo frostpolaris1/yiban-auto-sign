@@ -15,7 +15,8 @@
 #             CI 跑它，本地 --fast 不跑。
 # 三条道互斥，且并集必须等于全部测试文件。
 #
-# 快集 = 除 slow 之外的全部文件，故快集**大**（本树 301 个文件里 286 个进快集）。只有
+# 快集 = 除 slow 之外的全部文件，故快集**大**（B1 收口态 367 个文件里 352 个进快集；
+# 口径＝`git ls-files` 的 `tests/**/test_*.py`）。只有
 # 墙钟真按"等外面"计费的用例才进 slow；判据是**形状**、不是口味：用例的时间由真实进程树 /
 # 真实定时等待 / 全仓扫描决定，而不是由进程内逻辑决定。逐条理由在行内。
 #
@@ -49,6 +50,7 @@ fast	tests/test_alerts_level_gate.py
 fast	tests/test_alerts_summary_level.py
 fast	tests/test_api_clock_business_tz.py	# /api/clock 的 tz_offset_min 必须恒为业务时区 +480（P0 2026-10-25）
 fast	tests/test_api_contract_coverage.py
+fast	tests/test_anchor_gate.py
 fast	tests/test_audit_anchor.py
 fast	tests/test_audit_anchor_field_source.py
 fast	tests/test_audit_anchor_hardening.py
@@ -227,6 +229,7 @@ slow	tests/test_multi_executor_drill_e2e.py	# 真进程树＋真登录：慢集�
 fast	tests/test_multi_executor_engine.py
 fast	tests/test_multi_task.py
 fast	tests/test_mypy_type_gate.py
+fast	tests/test_naming_gate.py
 fast	tests/test_no_literal_date_in_fixtures.py
 fast	tests/test_no_position.py
 fast	tests/test_notify_ledger.py

@@ -1,0 +1,37 @@
+# B1（2026-10-25）命名基线 —— 已知例外，只许缩小
+#
+# 为什么有它：`docs/dev/target-tree.md` §6.1 的命名规则在存量树上已被 20 处文件违反。
+# 规则不能先写成一条"永远红"的门，否则没人跑；也不能只写在文档里，否则新增违规静默。
+# 本表冻结当天实测量的例外，门对"不在表内的违规"直接红（新增即红）。
+#
+# 列（制表符分隔）：path <TAB> rule <TAB> 理由
+#   path —— 相对仓库根；必须是现存跟踪件。
+#   rule —— 命中的规则 id（见 tests/test_naming_gate.py 的 RULE_IDS）。
+#   理由 —— 为什么今天允许；处置批次写在这里。
+#
+# 退役条件：某行对应的 path 不再违规、或 path 被删，门会红，要求同批删掉该行。
+# 本表只许缩小，不许增长（AGENTS §十三 第 27 条：按形状立门）。
+#
+# 口径：ref＝`origin/develop` `aa75e2b9` 的 `git ls-files` 跟踪集，加 B1 新增件。
+# 生成方式＝真跑 tests/test_naming_gate.py 的判据函数后逐行抄录，不是估算。
+
+scripts/deploy_gate.sh	sh-underscore	可执行程序用了下划线；10 个读者，改名收益不足（target-tree §10）
+yiban/workers/workers.py	pkg-module-duplicate	包名与模块名重复；B3 拆分为 pool/supervisor/fallback（target-tree §6.2）
+yiban/challenge.py	yiban-root-loose	包根散件；目标 adapters/protocol_yiban/challenge.py，触及即搬
+yiban/client.py	yiban-root-loose	包根散件；目标 usecases/client.py，触及即搬
+yiban/egress.py	yiban-root-loose	包根散件；目标 engine/egress.py，触及即搬
+yiban/geo.py	yiban-root-loose	包根散件；目标 core/geo.py，须先注入随机源
+yiban/logging_ext.py	yiban-root-loose	包根散件；目标 infra/logging.py，触及即搬
+yiban/platform.py	yiban-root-loose	包根散件；目标 adapters/protocol_yiban/platform.py，触及即搬
+yiban/security.py	yiban-root-loose	包根散件；目标 engine/security.py，触及即搬
+yiban/engine/executor_v3.py	forbidden-token	`v3` 是执行体代数；51 个测试 import，改名属 B3
+tests/test_executor_v3.py	forbidden-token	按被骑模块命名；随 executor_v3 同批处置
+tests/test_migrations_v18.py	forbidden-token	迁移账 schema 版本号；测试按版本命名
+tests/test_migrations_v19.py	forbidden-token	迁移账 schema 版本号；测试按版本命名
+tests/test_migrations_v20.py	forbidden-token	迁移账 schema 版本号；测试按版本命名
+tests/test_migrations_v25.py	forbidden-token	迁移账 schema 版本号；测试按版本命名
+tests/test_schedule_v2.py	forbidden-token	旧排期代际名；随排期收敛处置
+tests/test_v3_same_day_requeue.py	forbidden-token	`v3` 执行体同日重排用例；随 executor_v3 处置
+tests/test_cli_contract_mf60.py	forbidden-token	工单号 mf60；测试名保留以便追溯
+tests/test_m9bi_display_reads_ledger.py	forbidden-token	工单号 m9bi；测试名保留以便追溯
+tests/test_notify_p05_routes.py	forbidden-token	工单号 p05；测试名保留以便追溯
