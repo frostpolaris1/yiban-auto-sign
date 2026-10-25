@@ -3,7 +3,7 @@
 
 标签：M · 架构分层与基础设施
 覆盖：基础设施层的依赖单向与无重复实现：旧 scripts
-   路径已消失且新路径在场、四个模块可按包导入且有
+   路径已消失且新路径在场、五个模块可按包导入且有
    docstring、不导入业务层与上层、包内互引不走裸名；两个兼容壳（notify /
    mailer）已删除、运行时目录不再裸名导入它们、包暴露的公共面与壳曾转发的公共名一致。
 对应实现：`yiban/infra/`（locks.py、env_lock.py）、`yiban/adapters/config/`
@@ -27,7 +27,7 @@ import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-INFRA_MODULES = ("locks", "env_io", "env_lock", "account_crypto") # 清单加一项，下面几组守卫自动覆盖它；新模块漏登记才是真正的漏洞
+INFRA_MODULES = ("locks", "env_io", "env_lock", "account_crypto", "env_child") # 清单加一项，下面几组守卫自动覆盖它；新模块漏登记才是真正的漏洞
 
 #: 成员搬家后的模块坐标（批 1 起，读者一律走这里）。未搬的仍在 `yiban.infra`。
 MODULE_COORD = {
