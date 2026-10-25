@@ -82,6 +82,10 @@ flowchart TD
 
 ## 3. 目标目录树
 
+> **已取代**：本节的目录树由 `docs/dev/target-tree.md` 取代。分层红线（§1）、运行时（§4）、
+> 持久化（§5）、配置（§6）、施工判据（§7）与回退闸门（§8）继续有效。
+> 目标树与命名以 `docs/dev/target-tree.md` 为准；该文同时登记现存空壳 `yiban/ports/`。
+
 ```text
 yiban/
 ├── entry/                 # 入口层：只翻译参数 + 鉴权
