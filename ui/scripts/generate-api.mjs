@@ -1,23 +1,22 @@
 #!/usr/bin/env node
 /**
- * generate-api.mjs — regenerates `src/lib/api/schema.d.ts` from the contract.
+ * generate-api.mjs — 由契约重生成 `src/lib/api/schema.d.ts`。
  *
- * The contract `server/contracts/openapi.yaml` is the only source of the host
- * API shapes. The generated file is committed so `tsc` works without running
- * the generator. `--check` regenerates into a temporary directory and compares
- * bytes: a stale file fails the gate.
+ * 契约 `server/contracts/openapi.yaml` 是宿主 API 形状的唯一来源。
+ * 生成物入库，故不跑生成器也能 `tsc`。
+ * `--check` 先写到临时目录再逐字节比较：生成物过期即红。
  *
- * Why a nested toolchain: the UI compiler is TypeScript 7. openapi-typescript
- * 7.13.0 needs the TypeScript 5 compiler API. `scripts/api-codegen` pins both
- * packages, so the generator never sees TypeScript 7. UI source code still uses
- * the root TypeScript 7 compiler only.
+ * 为什么另装一套工具链：UI 编译器是 TypeScript 7。
+ * openapi-typescript 7.13.0 需要 TypeScript 5 的编译器 API。
+ * `scripts/api-codegen` 固定这两个包，生成器见不到 TypeScript 7。
+ * UI 源码仍只用根目录的 TypeScript 7。
  *
- * Exit codes:
- *   0  written or up to date
- *   1  generated output differs from the committed file (drift)
- *   2  configuration error (missing contract, missing toolchain, empty output)
+ * 退出码：
+ *   0  已写入或已最新
+ *   1  生成物与入库文件不一致（漂移）
+ *   2  配置错误（缺契约、缺工具链、输出为空）
  *
- * Usage:
+ * 用法：
  *   node scripts/generate-api.mjs
  *   node scripts/generate-api.mjs --check
  */
@@ -50,8 +49,7 @@ class GateError extends Error {
 }
 
 function configError(message) {
-  // Throw, never exit: process.exit skips the finally that removes the
-  // temporary directory.
+  // 抛错，不 exit：process.exit 会跳过清理临时目录的 finally。
   throw new GateError(`CONFIG ERROR: ${message}`, 2)
 }
 

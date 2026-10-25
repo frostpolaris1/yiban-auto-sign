@@ -1,3 +1,14 @@
+/**
+ * **功能**
+ * 状态徽章（`badge`）与状态标签（`tag`）。
+ *
+ * **归属**
+ * `components` 通用件：只映射 Adminator 类名。
+ *
+ * **口径**
+ * `Tone` 是徽章色，`TagTone` 是标签色。两套枚举不混用。
+ */
+
 import type { ReactNode } from 'react'
 import { cx } from '@/lib/cx'
 

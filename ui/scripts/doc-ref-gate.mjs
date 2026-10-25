@@ -1,21 +1,20 @@
 #!/usr/bin/env node
 /**
- * doc-ref-gate.mjs — keeps committed UI text free of uncommitted `work/` paths.
+ * doc-ref-gate.mjs — 阻止入库 UI 文本指向未入库的 work/ 路径。
  *
- * `work/` holds local plans, hand-offs and review output. It is not in the
- * repository. A committed file that points into `work/` sends the reader to a
- * path that does not exist after a clone. Load-bearing facts must live in the
- * committed file itself (AGENTS section 24).
+ * `work/` 存本地计划、交接与审查产物。它不入库。
+ * 入库文件一旦指向 `work/`，克隆后就指向不存在的路径。
+ * 承重结论必须写在入库文件本身（AGENTS 第 24 条）。
  *
- * Scan set: every text file under ui/ with a checked extension, except
- * node_modules, dist, test-results, playwright-report and lock files.
+ * 扫描集：ui/ 下按扩展名筛选的文本文件。
+ * 排除 node_modules、dist、test-results、playwright-report 与 lock 文件。
  *
- * Exit codes:
- *   0  no finding
- *   1  a `work/` path is referenced
- *   2  configuration error (empty scan set)
+ * 退出码：
+ *   0  无发现
+ *   1  引用了 work/ 路径
+ *   2  配置错误（扫描集为空）
  *
- * Usage:
+ * 用法：
  *   node scripts/doc-ref-gate.mjs
  *   node scripts/doc-ref-gate.mjs --self-test
  */
@@ -29,12 +28,12 @@ const UI_ROOT = resolve(HERE, '..')
 const EXTENSIONS = new Set(['.md', '.ts', '.tsx', '.css', '.html', '.mjs', '.json'])
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'test-results', 'playwright-report', 'blob-report'])
 const SKIP_FILES = new Set(['package-lock.json'])
-/** The gate documents the forbidden token and tests it, so it scans itself out. */
+/** 本门要记录并自测这个禁用词，故把自己排除在扫描外。 */
 const EXEMPT = new Set(['scripts/doc-ref-gate.mjs'])
-// Match a local work/ reference with either separator and any case, after
-// removing URLs so a link path is not mistaken for a local one. Scan scope is
-// ui/ only. The scope is registered in STRUCTURE.md; docs/ and server/ are
-// covered by the Python doc-reference gate and by review.
+// 匹配本地 work/ 引用：两种分隔符、任意大小写。
+// 先去掉 URL，避免把链接路径误判成本地路径。
+// 扫描范围只有 ui/。范围登记在 STRUCTURE.md。
+// docs/ 与 server/ 由 Python 侧文档门与审查覆盖。
 const URL = /[a-z][a-z0-9+.-]*:\/\/\S+/gi
 const RULE = /(?<![\w])work[\\/][\w.\\/-]*/gi
 

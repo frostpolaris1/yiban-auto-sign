@@ -1,3 +1,16 @@
+/**
+ * **功能**
+ * 表单控件：文本、下拉、多行。
+ * 字段壳统一渲染标签、提示与错误。
+ *
+ * **归属**
+ * `components` 通用件：只做呈现与无障碍关联。
+ *
+ * **口径**
+ * 错误优先于提示。有错误时不再显示提示。
+ * `aria-describedby` 只指向当前可见的那一条。
+ */
+
 import type { ComponentPropsWithoutRef, ReactNode } from 'react'
 import { cx } from '@/lib/cx'
 import { Icon, type IconName } from '@/components/ui/Icon'
@@ -11,6 +24,10 @@ type FieldShellProps = {
   children: ReactNode
 }
 
+/**
+ * 三个控件共用字段壳。标签、提示、错误的 id 都在这里生成。
+ * 错误与提示互斥，故控件只关联当前可见的一条。
+ */
 function FieldShell({ id, label, hint, error, required, children }: FieldShellProps) {
   return (
     <div className="field">

@@ -1,3 +1,15 @@
+/**
+ * **功能**
+ * 组件画廊页：八个分区。
+ *
+ * **归属**
+ * `pages` 路由页：只装配，不承载域逻辑。
+ *
+ * **口径**
+ * 每个视觉原语复用 Adminator 类。行为由 Radix 给。
+ * 外观由设计令牌给。
+ */
+
 import { Badge } from '@/components/ui/Badge'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { ButtonsSection } from '@/features/design/ButtonsSection'
@@ -9,10 +21,7 @@ import { OverlaysSection } from '@/features/design/OverlaysSection'
 import { TableSection } from '@/features/design/TableSection'
 import { TokensSection } from '@/features/design/TokensSection'
 
-/**
- * Component gallery.
- * Every visual primitive reuses an Adminator class; behavior comes from Radix.
- */
+/** 画廊是设计语言的唯一人工验收面。分区顺序即阅读顺序。 */
 export function DesignPage() {
   return (
     <>

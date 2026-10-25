@@ -1,3 +1,16 @@
+/**
+ * **功能**
+ * 表格画廊：工具栏、筛选、服务端分页外观。
+ * DOM 照 Adminator `src/datatable.html`。
+ *
+ * **归属**
+ * `features/design` 域组件：只组合通用件。
+ *
+ * **口径**
+ * 示例总数 42 条，每页 5 条。演示值，不是契约值。
+ * 翻页只改本地页码，不取数。
+ */
+
 import { useState } from 'react'
 import { Icon } from '@/components/ui/Icon'
 import { Badge } from '@/components/ui/Badge'
@@ -134,7 +147,6 @@ const COLUMNS: Array<DataTableColumn<AccountRow>> = [
   },
 ]
 
-/** Data table card. DOM follows Adminator `src/datatable.html`. */
 export function TableSection() {
   const [page, setPage] = useState(1)
 

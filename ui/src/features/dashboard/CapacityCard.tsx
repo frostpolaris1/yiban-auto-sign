@@ -1,3 +1,15 @@
+/**
+ * **功能**
+ * 窗口与容量卡：三条容量进度、四个统计格。
+ *
+ * **归属**
+ * `features/dashboard` 域组件。
+ *
+ * **口径**
+ * 百分比与统计格全是演示值。
+ * 真实窗口 80 分钟、时间片 5 分钟由调度层定义。本页不复制该判据。
+ */
+
 type CapacityRow = {
   label: string
   percent: number
@@ -10,7 +22,7 @@ const ROWS: CapacityRow[] = [
   { label: '北校区 · 晚签', percent: 31, fillClass: 'success' },
 ]
 
-/** Window and capacity card. Uses `.progress` and `.monthly-footer` from Adminator. */
+/** 进度条与统计格取 Adminator `.progress` 与 `.monthly-footer`。 */
 export function CapacityCard() {
   return (
     <section className="col-6 card">

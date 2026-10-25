@@ -1,3 +1,15 @@
+/**
+ * **功能**
+ * 色板：按组展示设计令牌名与色块。
+ *
+ * **归属**
+ * `features/design` 域组件：只读令牌，不定义取值。
+ *
+ * **口径**
+ * 取值只在 `tokens.css`。本文件只写 `var(--token)`。
+ * 除 `tokens.css` 与逐字节复制件外，本仓不允许颜色字面量。
+ */
+
 import { Card } from '@/components/ui/Card'
 
 const SURFACE_TOKENS = ['--bg-body', '--bg-card', '--bg-sidebar', '--bg-hover', '--bg-muted'] as const
@@ -23,7 +35,6 @@ const GROUPS = [
   { label: 'Semantic', tokens: SEMANTIC_TOKENS },
 ]
 
-/** Token swatches. Values live in tokens.css only. */
 export function TokensSection() {
   return (
     <Card className="col-6" eyebrow="Tokens" title="色板">

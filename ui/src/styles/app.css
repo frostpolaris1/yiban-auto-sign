@@ -1,15 +1,20 @@
 /*
- * app.css — project layer on top of the Adminator stylesheet.
+ * app.css — 项目覆盖层，叠在 Adminator 样式表之上。
  *
- * Rules:
- * - Every color, radius, and shadow comes from a token in tokens.css.
- * - No color literal appears here; `scripts/token-gate.mjs` enforces this.
- * - Geometry that Adminator already defines stays in Adminator classes.
- *   This file only fills gaps: overlay positioning, Radix state mapping,
- *   a11y helpers, and gallery layout.
+ * **功能**
+ * 只补 vendor 缺口：遮罩定位、Radix 状态映射、无障碍辅助类、
+ * 画廊布局，以及 vendor 漏掉的 `.ma-1`..`.ma-6`。
+ *
+ * **归属**
+ * `styles` 样式层：不定义新配色，只消费令牌。
+ *
+ * **口径**
+ * 颜色、圆角、阴影一律取自 tokens.css 的令牌。
+ * 本文件不得出现颜色字面量。`scripts/token-gate.mjs` 会判红。
+ * vendor 已定义的几何留在 vendor 类里，不在此重复。
  */
 
-/* ---------- accessibility ---------- */
+/* ---------- 无障碍辅助 ---------- */
 
 .app-visually-hidden {
   position: absolute;
@@ -23,7 +28,7 @@
   border: 0;
 }
 
-/* ---------- Radix Dialog: Adminator exposes only static modal markup ---------- */
+/* ---------- Radix Dialog：Adminator 只有静态弹窗标记 ---------- */
 
 .app-modal-backdrop {
   position: fixed;
@@ -51,7 +56,7 @@
   color: var(--t-base);
 }
 
-/* ---------- Radix DropdownMenu: map keyboard highlight to Adminator hover ---------- */
+/* ---------- Radix DropdownMenu：键盘高亮映射到 vendor 悬停色 ---------- */
 
 .dd-menu-item[data-highlighted] {
   background: var(--bg-hover);
@@ -61,7 +66,7 @@
   background: var(--danger-soft);
 }
 
-/* ---------- Radix Switch: Adminator styles the native checkbox, not a button ---------- */
+/* ---------- Radix Switch：vendor 样式针对原生 checkbox，不是按钮 ---------- */
 
 .app-switch[data-state="checked"] .track {
   background: var(--primary);
@@ -69,7 +74,7 @@
 }
 
 .app-switch[data-state="checked"] .track::after {
-  /* Matches `.switch input:checked + .track::after` in the vendor stylesheet. */
+  /* 与 vendor 的 `.switch input:checked + .track::after` 位移保持一致。 */
   transform: translateX(14px);
 }
 
@@ -98,9 +103,10 @@
   margin-bottom: 20px;
 }
 
-/* ---------- vendor gaps ----------
- * The vendored stylesheet omits `.ma-1`..`.ma-6` (they live in Adminator
- * `src/assets/styles/2026/_email.scss`). Restored here from source, tokens only.
+/* ---------- vendor 缺口 ----------
+ * vendor 样式表缺 `.ma-1`..`.ma-6`。这组类在 Adminator
+ * `src/assets/styles/2026/_email.scss` 里。
+ * 依源补回。只用令牌，不加颜色字面量。
  */
 .ma-1 { background: linear-gradient(135deg, var(--primary), var(--purple)); }
 .ma-2 { background: linear-gradient(135deg, var(--success), var(--teal)); }
@@ -109,7 +115,7 @@
 .ma-5 { background: linear-gradient(135deg, var(--orange), var(--pink)); }
 .ma-6 { background: linear-gradient(135deg, var(--purple), var(--pink)); }
 
-/* ---------- shared demo layout ---------- */
+/* ---------- 画廊共用布局 ---------- */
 
 .app-demo-stack {
   display: flex;

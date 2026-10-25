@@ -1,8 +1,19 @@
+/**
+ * **功能**
+ * 反馈画廊：徽章、标签、四色提示条。
+ * DOM 照 Adminator `src/ui.html`。
+ *
+ * **归属**
+ * `features/design` 域组件：只组合通用件。
+ *
+ * **口径**
+ * 提示条可关闭。关闭状态不落库。
+ */
+
 import { Alert } from '@/components/ui/Alert'
 import { Badge, Tag } from '@/components/ui/Badge'
 import { Card } from '@/components/ui/Card'
 
-/** Badges, tags, and alerts. DOM follows Adminator `src/ui.html`. */
 export function FeedbackSection() {
   return (
     <Card className="col-6" eyebrow="Feedback" title="徽章与提示">

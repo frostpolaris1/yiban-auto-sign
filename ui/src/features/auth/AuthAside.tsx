@@ -1,8 +1,19 @@
+/**
+ * **功能**
+ * 登录页左侧介绍面板：品牌、标语、页脚。
+ *
+ * **归属**
+ * `features/auth` 域组件。
+ *
+ * **口径**
+ * 纯文案。不发请求，不读会话。
+ */
+
 import { BrandMark, Icon } from '@/components/ui/Icon'
 
 /**
- * Marketing panel of the split auth screen.
- * Structure and classes follow Adminator `src/signin.html`.
+ * 结构与类名照 Adminator `src/signin.html`。
+ * 文案是 P1 骨架说明。接入认证时整段改写。
  */
 export function AuthAside() {
   return (

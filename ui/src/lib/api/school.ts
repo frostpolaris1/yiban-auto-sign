@@ -1,10 +1,17 @@
+/**
+ * **功能**
+ * 学校域桩：类型别名、路径表、列表查询。
+ *
+ * **归属**
+ * `lib/api` 工具层。
+ *
+ * **口径**
+ * 类型来自生成的 `schema.d.ts`，不手工重写。
+ * 列表返回页对象，**不是裸数组**。
+ */
+
 import type { components } from './schema'
 import { apiRequest } from './client'
-
-/**
- * School stubs. Contract shapes come from the generated `schema.d.ts`.
- * The list endpoint returns a page object, not a bare array.
- */
 
 type Schemas = components['schemas']
 

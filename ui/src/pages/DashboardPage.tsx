@@ -1,3 +1,15 @@
+/**
+ * **功能**
+ * 仪表盘占位页：页头、提示、KPI、两张卡。
+ *
+ * **归属**
+ * `pages` 路由页：只装配，不承载域逻辑。
+ *
+ * **口径**
+ * 本批不发请求。数字固定，保证视觉基线稳定。
+ * 数据接入安排在调度与实时批次。
+ */
+
 import { Icon } from '@/components/ui/Icon'
 import { Alert } from '@/components/ui/Alert'
 import { Button } from '@/components/ui/Button'
@@ -7,9 +19,8 @@ import { KpiGrid } from '@/features/dashboard/KpiGrid'
 import { SignStatusCard } from '@/features/dashboard/SignStatusCard'
 
 /**
- * Placeholder dashboard.
- * No request is made in this batch. Numbers are fixed so the visual baseline
- * is stable.
+ * 全部数据是演示值。**改数字会让视觉基线失效**。
+ * 真实数据接入前，此页只定 Adminator 视觉基线。
  */
 export function DashboardPage() {
   return (

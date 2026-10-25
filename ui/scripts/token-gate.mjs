@@ -1,35 +1,33 @@
 #!/usr/bin/env node
 /**
- * token-gate.mjs — pins the Adminator token contract for the React UI.
+ * token-gate.mjs — 钉住 React UI 的 Adminator 令牌契约。
  *
- * Three checks run in order. Each one fails with a non-zero exit code.
+ * 三项检查按序执行。任一项失败即非零退出。
  *
- * 1. Color literals. Every text file under `src/` plus `index.html` is scanned
- *    for `#hex`, `rgb(...)`, `hsl(...)`, `oklch(...)`, `lab(...)`, `lch(...)`
- *    and `color(...)`. Two files are exempt:
- *    - `src/styles/tokens.css` holds the canonical token values.
- *    - `src/styles/adminator.css` is a verbatim copy of the vendor stylesheet.
- *    Both exemptions are registered below and are printed on every run.
+ * 1. 颜色字面量。扫描 `src/` 全部文本文件与 `index.html`。
+ *    规则覆盖 `#hex`、`rgb(...)`、`hsl(...)`、`oklch(...)`、
+ *    `lab(...)`、`lch(...)` 与 `color(...)`。两个文件免扫：
+ *    - `src/styles/tokens.css` 持有令牌真值。
+ *    - `src/styles/adminator.css` 是 vendor 样式表的逐字节副本。
+ *    两项豁免在此登记，每次运行都打印。
  *
- * 2. Verbatim vendor copy. `src/styles/adminator.css` must be byte-identical to
- *    `../web/static/vendor/adminator/adminator.css`. This is what makes the
- *    second exemption safe.
+ * 2. vendor 副本。`src/styles/adminator.css` 必须与
+ *    `../web/static/vendor/adminator/adminator.css` 逐字节相同。
+ *    第 2 项检查是第 1 项豁免可信的前提。
  *
- * 3. Token parity. `src/styles/tokens.css` must define exactly the same token
- *    names and values as the vendor stylesheet, for both `light` and `dark`.
- *    The vendor stylesheet carries 36 tokens per theme.
+ * 3. 令牌对齐。`src/styles/tokens.css` 的令牌名与值必须与 vendor 完全一致，
+ *    浅色与深色两套都比。vendor 每套 36 个令牌。
  *
- * Guards: an empty file set, an all-exempt file set, an empty rule set, a
- * missing vendor file, or an `index.html` that left the scan set is a
- * configuration error (exit 2), never a pass.
+ * 守卫：扫描集为空、全为豁免文件、规则集为空、vendor 文件缺失、
+ * 或 `index.html` 掉出扫描集，都是配置错误（退出 2），不得当通过。
  *
- * Known limitation: CSS named colours (for example `red`) are not detected.
- * A complete list is 148 names and a partial list would give false confidence.
- * The rule set covers every functional notation the codebase may use.
+ * 已知限制：CSS 命名颜色（如 `red`）不检测。
+ * 完整名单有 148 个名字。部分名单会给出虚假信心。
+ * 规则集覆盖本仓可能用到的全部函数式写法。
  *
- * Usage:
- *   node scripts/token-gate.mjs             # run all checks
- *   node scripts/token-gate.mjs --self-test  # mutation-test the checker itself
+ * 用法：
+ *   node scripts/token-gate.mjs              # 跑全部检查
+ *   node scripts/token-gate.mjs --self-test  # 对检查器自身做突变测试
  */
 
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
@@ -46,7 +44,7 @@ const VENDOR_COPY = join(SRC_ROOT, 'styles', 'adminator.css')
 const VENDOR_SOURCE = resolve(UI_ROOT, '..', 'web', 'static', 'vendor', 'adminator', 'adminator.css')
 const THEMES = ['light', 'dark']
 
-/** Registered exemptions. Keep this list short and justify every entry. */
+/** 已登记豁免。名单保持短，每项写明理由。 */
 const EXEMPT = new Map([
   [
     'src/styles/tokens.css',
@@ -60,7 +58,7 @@ const EXEMPT = new Map([
 
 const SCANNED_EXTENSIONS = new Set(['.css', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.html'])
 
-/** Hardcoded color rules. Order is stable for deterministic output. */
+/** 颜色规则写死。顺序固定，保证输出可重复。 */
 const RULES = [
   { id: 'hex', label: '#hex', pattern: /#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b/g },
   { id: 'rgb', label: 'rgb()/rgba()', pattern: /\brgba?\s*\(/g },

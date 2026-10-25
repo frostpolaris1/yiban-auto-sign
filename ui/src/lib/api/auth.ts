@@ -1,10 +1,18 @@
+/**
+ * **功能**
+ * 认证域桩：登录、登出、取当前会话。
+ *
+ * **归属**
+ * `lib/api` 工具层。
+ *
+ * **口径**
+ * 类型来自 `schema.d.ts`，源是 `server/contracts/openapi.yaml`。
+ * **不在此重写契约形状**。
+ * 登录与取会话后写入 CSRF 令牌。登出成功后清空。
+ */
+
 import type { components } from './schema'
 import { apiRequest, setCsrfToken } from './client'
-
-/**
- * Auth stubs. Every type comes from `schema.d.ts`, which is generated from
- * `server/contracts/openapi.yaml`. Do not redeclare contract shapes here.
- */
 
 type Schemas = components['schemas']
 

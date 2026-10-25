@@ -1,3 +1,15 @@
+/**
+ * **功能**
+ * Adminator 提示条：图标、标题、可关闭。
+ *
+ * **归属**
+ * `components` 通用件：不发请求，不读域状态。
+ *
+ * **口径**
+ * 关闭按钮由 React 控制。Adminator 未给该按钮行为。
+ * 危险色用 `alert` 角色，其余用 `status`。
+ */
+
 import { useState, type ReactNode } from 'react'
 import { cx } from '@/lib/cx'
 import { Icon, type IconName } from '@/components/ui/Icon'
@@ -20,7 +32,10 @@ type AlertProps = {
   children: ReactNode
 }
 
-/** Adminator `.alert`. The close button has no vendor behavior, so React owns it. */
+/**
+ * 关闭状态只在本组件内存里，父组件不传受控值。
+ * 关闭后整块从 DOM 移除，不再占位。
+ */
 export function Alert({ tone = 'info', title, dismissible, onDismiss, children }: AlertProps) {
   const [visible, setVisible] = useState(true)
   if (!visible) return null

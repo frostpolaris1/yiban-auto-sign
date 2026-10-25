@@ -1,3 +1,15 @@
+/**
+ * **功能**
+ * 导航画廊：标签页、药丸切换、开关。
+ * DOM 照 Adminator `src/ui.html` 与 `src/forms.html`。
+ *
+ * **归属**
+ * `features/design` 域组件：只组合通用件。
+ *
+ * **口径**
+ * 药丸组是本地状态。不参与路由，不落库。
+ */
+
 import { useState } from 'react'
 import { Card } from '@/components/ui/Card'
 import { SwitchControl } from '@/components/ui/SwitchControl'
@@ -5,7 +17,6 @@ import { Tabs } from '@/components/ui/Tabs'
 
 const PILLS = ['日', '周', '月', '年'] as const
 
-/** Tabs and switches. DOM follows Adminator `src/ui.html` and `src/forms.html`. */
 export function NavigationSection() {
   const [pill, setPill] = useState<(typeof PILLS)[number]>('周')
 

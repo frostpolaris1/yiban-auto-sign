@@ -1,3 +1,15 @@
+/**
+ * **功能**
+ * 按钮：11 种变体、3 种尺寸。
+ *
+ * **归属**
+ * `components` 通用件：只拼类名，不封装业务动作。
+ *
+ * **口径**
+ * 默认 `type="button"`。表单内提交必须显式传 `type="submit"`。
+ * 变体与类名一一对应，见 `VARIANT_CLASS`。
+ */
+
 import type { ComponentPropsWithoutRef } from 'react'
 import { cx } from '@/lib/cx'
 

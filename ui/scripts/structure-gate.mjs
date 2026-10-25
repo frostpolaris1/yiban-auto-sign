@@ -1,27 +1,26 @@
 #!/usr/bin/env node
 /**
- * structure-gate.mjs — enforces the ui/src import direction on resolved paths.
+ * structure-gate.mjs — 按解析后的路径判 ui/src 的导入方向。
  *
- * The Gate problem it replaces: a string-prefix check (`text.includes('@/features')`)
- * misses relative imports, skips the `lib` layer, and looks at only the first
- * match per file. This gate parses each file into an AST, collects every module
- * specifier, resolves it to a real path under `ui/src`, and applies the rules
- * from `structure.rules.tsv` to the two resolved paths.
+ * 它取代的门用字符串前缀判断（`text.includes('@/features')`）。
+ * 那种写法漏相对导入、跳过 `lib` 层、每文件只看第一条匹配。
+ * 本门把每个文件解析成 AST，收集全部模块说明符，
+ * 解析成 `ui/src` 下的真实路径，再用 `structure.rules.tsv` 判两个路径。
  *
- * Specifier handling:
- *   `@/x`        resolves under ui/src.
- *   `./x`, `../x` resolves next to the importing file.
- *   bare names   (react, @tanstack/*) are external and carry no direction.
+ * 说明符处理：
+ *   `@/x`         在 ui/src 下解析。
+ *   `./x`、`../x`  在导入文件旁解析。
+ *   裸名           （react、@tanstack/*）是外部包，不带方向。
  *
- * A relative or alias specifier that does not resolve, or that resolves outside
- * `ui/src`, is a finding. The gate never skips an unresolved in-project path.
+ * 相对或别名说明符解析失败，或解析到 `ui/src` 外，都是发现。
+ * 本门不跳过任何未解析的库内路径。
  *
- * Exit codes:
- *   0  no finding
- *   1  violation
- *   2  configuration error (missing/empty rules file, empty scan set, bad rule)
+ * 退出码：
+ *   0  无发现
+ *   1  违例
+ *   2  配置错误（规则文件缺失或为空、扫描集为空、规则非法）
  *
- * Usage:
+ * 用法：
  *   node scripts/structure-gate.mjs [--rules <file>]
  *   node scripts/structure-gate.mjs --self-test
  */
@@ -73,7 +72,7 @@ function walk(dir) {
   return files.sort()
 }
 
-/** Parse `from <TAB> to <TAB> mode <TAB> note` rows. An empty file is fatal. */
+/** 解析 `from<TAB>to<TAB>mode<TAB>备注` 行。空文件即致命错误。 */
 export function loadRules(path) {
   let text
   try {
@@ -102,7 +101,7 @@ export function loadRules(path) {
   return rules
 }
 
-/** Every module specifier in one file, with its line. */
+/** 一个文件里的全部模块说明符，带行号。 */
 export function extractSpecifiers(file) {
   const text = readFileSync(file, 'utf8')
   let ast
@@ -134,7 +133,7 @@ export function extractSpecifiers(file) {
         break
       case 'CallExpression':
         if (node.callee?.type === 'Import') add(node.arguments?.[0])
-        // CommonJS require() reaches the same module graph.
+        // CommonJS require() 进同一张模块图，也要判。
         if (node.callee?.type === 'Identifier' && node.callee.name === 'require') {
           add(node.arguments?.[0])
         }
@@ -179,9 +178,9 @@ function caseExact(srcRoot, target) {
 }
 
 /**
- * Resolve one specifier against a source root.
- * Returns `{ kind: 'external' }`, `{ kind: 'resolved', path }` or
- * `{ kind: 'error', reason }`.
+ * 把一个说明符解析到源码根。
+ * 返回 `{ kind: 'external' }`、`{ kind: 'resolved', path }`
+ * 或 `{ kind: 'error', reason }`。
  */
 export function resolveSpecifier(importer, specifier, srcRoot) {
   const clean = specifier.replace(/[?#].*$/, '')
@@ -201,9 +200,8 @@ export function resolveSpecifier(importer, specifier, srcRoot) {
   for (const suffix of JS_EXTENSIONS) {
     const candidate = `${base}${suffix}`
     if (!existsSync(candidate) || !statSync(candidate).isFile()) continue
-    // Windows resolves paths case-insensitively. The gate must judge the same
-    // thing on every platform, so every segment must match its directory
-    // entry byte for byte.
+    // Windows 路径不区分大小写。本门要在各平台判同一件事，
+    // 故每段目录名都必须与目录项逐字节一致。
     if (!caseExact(srcRoot, candidate)) {
       return { kind: 'error', reason: `cannot resolve ${specifier}: case mismatch` }
     }
@@ -238,8 +236,8 @@ function judge(importerRel, targetRel, rules) {
 }
 
 /**
- * Analyse a file set. Throws ConfigError when the gate would be a no-op.
- * Returns `{ problems, files, specifiers }`.
+ * 分析一个文件集。本门会空转时抛 ConfigError。
+ * 返回 `{ problems, files, specifiers }`。
  */
 export function analyze(files, rules, srcRoot) {
   if (files.length === 0) {
@@ -370,9 +368,9 @@ function selfTest() {
     if (!problems.some((problem) => problem.includes('resolves outside ui/src'))) {
       failures.push('path escaping ui/src was not reported')
     }
-    // The filesystem decides the reason: a case-insensitive disk resolves the
-    // path and reports a case mismatch, a case-sensitive disk cannot resolve
-    // it. Both outcomes reject the import, so assert the fixture, not the text.
+    // 判定理由由文件系统决定：不区分大小写的盘能解析路径，
+    // 报大小写不符；区分大小写的盘解析失败。
+    // 两种结果都拒绝该导入，故断言固定装置，不断言文案。
     if (!problems.some((problem) => problem.startsWith('ui/src/lib/BadCase.ts:'))) {
       failures.push('case-mismatched path was not reported')
     }

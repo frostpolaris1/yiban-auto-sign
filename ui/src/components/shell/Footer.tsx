@@ -1,3 +1,14 @@
+/**
+ * **功能**
+ * 页脚：产品名、版本、设计语言。
+ *
+ * **归属**
+ * `components/shell`：壳的固定部分。
+ *
+ * **口径**
+ * 版本号手抄自 `package.json`。改版本必须同步这里。
+ */
+
 export function Footer() {
   return (
     <footer className="d-footer">

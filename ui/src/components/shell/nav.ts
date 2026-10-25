@@ -1,11 +1,21 @@
+/**
+ * **功能**
+ * 导航数据源：段、项、分组、面包屑、页面标题。
+ *
+ * **归属**
+ * `components/shell`：壳的配置，不渲染。
+ *
+ * **口径**
+ * 每个 `to` 必须在 `router.tsx` 里有对应路由。
+ * 面包屑与标题都从这里派生，不另写一份。
+ */
+
 import type { IconName } from '@/components/ui/Icon'
 
 /**
- * Navigation source of truth.
- *
- * This replaces `NAV` in Adminator `Shell.js`. A new page is one entry here.
- * Every `to` value must exist in the router. The shell derives breadcrumbs
- * from the same table, so the two cannot drift.
+ * 导航唯一来源。取代 Adminator `Shell.js` 里的 `NAV`。
+ * 新增页面只在此加一条。
+ * 路径写错时侧栏出死链，页面标题退回产品名。
  */
 
 export type NavBadgeKind = 'new' | 'pro' | 'hot'
@@ -84,7 +94,7 @@ export const NAV: NavSection[] = [
   },
 ]
 
-/** Flat list of navigable leaves. Used by breadcrumb lookup. */
+/** 可导航叶子的平铺表。面包屑查找用。 */
 export const NAV_LEAVES: NavLeaf[] = NAV.flatMap((section) =>
   section.items.flatMap((item) => (isNavGroup(item) ? item.children : [item])),
 )

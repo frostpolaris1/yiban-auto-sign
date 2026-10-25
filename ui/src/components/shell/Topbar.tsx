@@ -1,3 +1,15 @@
+/**
+ * **功能**
+ * 顶栏：面包屑、抽屉开关、通知、主题切换、账号菜单。
+ *
+ * **归属**
+ * `components/shell`：显示层，不改路由状态。
+ *
+ * **口径**
+ * 面包屑取自 `nav.ts`。与侧栏共用一张表，故两处不会分叉。
+ * 通知与账号菜单是演示数据。本批不发请求。
+ */
+
 import { Fragment } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { Icon } from '@/components/ui/Icon'

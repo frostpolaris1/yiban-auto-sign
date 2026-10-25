@@ -1,3 +1,16 @@
+/**
+ * **功能**
+ * 状态画廊：进度条、加载环、头像组、悬停提示。
+ * DOM 照 Adminator `src/ui.html`。
+ *
+ * **归属**
+ * `features/design` 域组件：只组合通用件。
+ *
+ * **口径**
+ * 百分比是演示值。
+ * 低于 6% 的进度条补 8px 最小宽度，否则细条不可见。
+ */
+
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Hint } from '@/components/ui/Hint'
@@ -18,7 +31,6 @@ const PROGRESS_ROWS: ProgressRow[] = [
   { label: '细条 · 4px', value: '60%', percent: 60, fill: '', thin: true },
 ]
 
-/** Progress bars, spinners, avatar group, and tooltip. DOM follows `src/ui.html`. */
 export function IndicatorsSection() {
   return (
     <Card className="col-6" eyebrow="Status" title="进度、加载与头像">

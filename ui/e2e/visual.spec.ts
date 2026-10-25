@@ -1,11 +1,11 @@
 import { test, expect, type Page } from '@playwright/test'
 
 /**
- * Visual regression baseline for the Adminator shell.
+ * Adminator 壳的视觉回归基线。
  *
- * Matrix: 3 routes x 2 themes x 2 widths = 12 screenshots.
- * Baselines are committed under `e2e/visual.spec.ts-snapshots/`.
- * First run: `npm run test:visual:update`. Later runs must report 0 diff.
+ * 矩阵：3 条路由 × 2 套主题 × 2 个宽度 = 12 张截图。
+ * 基线随 spec 入库，目录是 `e2e/visual.spec.ts-snapshots/`。
+ * 首次运行 `npm run test:visual:update`。此后每次必须 0 差异。
  */
 
 const ROUTES = [
@@ -26,7 +26,7 @@ async function openWithTheme(page: Page, path: string, theme: (typeof THEMES)[nu
     try {
       localStorage.setItem('dash26-theme', value)
     } catch {
-      /* localStorage can be blocked; the boot script falls back to the media query. */
+      /* localStorage 可能被禁用。引导脚本会退回媒体查询。 */
     }
   }, theme)
   await page.goto(path)
