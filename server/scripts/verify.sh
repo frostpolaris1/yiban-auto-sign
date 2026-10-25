@@ -12,3 +12,9 @@ fi
 go vet ./...
 go test ./...
 go run ./tools/gate -root . -rules canonical.tsv
+
+# E-4 contract drift gate: regenerating must not change the checked-in code.
+bash ./scripts/generate.sh --check
+
+# Structure gate: top-level and layer directories match structure.tsv.
+go run ./tools/structure -root .. -rules structure.tsv
