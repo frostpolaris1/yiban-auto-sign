@@ -1,44 +1,74 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type Page } from '@playwright/test'
 
 /**
  * User-visible behavior of the shell and the component gallery.
  * These tests assert outcomes, not internal choreography.
  */
 
+async function focusIsInsideDialog(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const active = document.activeElement
+    const dialog = document.querySelector('[role="dialog"]')
+    return Boolean(active && dialog && dialog.contains(active))
+  })
+}
+
 test('theme is applied before the first paint and survives a reload', async ({ page, context }) => {
   await page.addInitScript(() => {
     localStorage.setItem('dash26-theme', 'dark')
-    const target = window as unknown as { __themeAtFirstPaint?: string | null }
+    const probe: { value?: string; time?: number; fcp?: number; sets: number } = { sets: 0 }
+    ;(window as unknown as { __themeProbe?: typeof probe }).__themeProbe = probe
+
+    // Record the first `data-theme` write and its timestamp. Never read the DOM
+    // later: the probe holds what happened, not what the attribute says now.
+    const original = Element.prototype.setAttribute
+    Element.prototype.setAttribute = function (this: Element, name: string, value: string) {
+      if (name === 'data-theme' && this === document.documentElement && probe.sets === 0) {
+        probe.value = String(value)
+        probe.time = performance.now()
+        probe.sets += 1
+      }
+      return original.call(this, name, value)
+    }
+
+    // Record the first-contentful-paint timestamp when the browser emits it.
     try {
       new PerformanceObserver((list) => {
         for (const entry of list.getEntries()) {
-          if (
-            entry.name === 'first-contentful-paint' &&
-            target.__themeAtFirstPaint === undefined
-          ) {
-            target.__themeAtFirstPaint = document.documentElement.getAttribute('data-theme')
+          if (entry.name === 'first-contentful-paint' && probe.fcp === undefined) {
+            probe.fcp = entry.startTime
           }
         }
       }).observe({ type: 'paint', buffered: true })
     } catch {
-      /* PerformanceObserver is optional; the attribute assertions below still run. */
+      /* The assertion below fails explicitly when no FCP entry arrives. */
     }
   })
   await page.goto('/')
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
 
-  const atFirstPaint = await page
-    .waitForFunction(
-      () => (window as unknown as { __themeAtFirstPaint?: string | null }).__themeAtFirstPaint !== undefined,
-      undefined,
-      { timeout: 5_000 },
-    )
-    .then(() =>
-      page.evaluate(
-        () => (window as unknown as { __themeAtFirstPaint?: string | null }).__themeAtFirstPaint ?? null,
-      ),
-    )
-  expect(atFirstPaint, 'data-theme must be set before the first contentful paint').toBe('dark')
+  await page.waitForFunction(
+    () =>
+      (window as unknown as { __themeProbe?: { fcp?: number } }).__themeProbe?.fcp !== undefined,
+    undefined,
+    { timeout: 5_000 },
+  )
+  const firstPaint = await page.evaluate(() => {
+    const probe = (window as unknown as { __themeProbe?: { value?: string; time?: number; fcp?: number } })
+      .__themeProbe
+    return {
+      value: probe?.value ?? null,
+      time: probe?.time ?? null,
+      fcp: probe?.fcp ?? null,
+    }
+  })
+  expect(firstPaint.value, 'first data-theme value written to <html>').toBe('dark')
+  expect(firstPaint.time, 'time of the first data-theme write').not.toBeNull()
+  expect(firstPaint.fcp, 'first-contentful-paint timestamp').not.toBeNull()
+  expect(
+    firstPaint.time as number,
+    'data-theme must be written before the first contentful paint',
+  ).toBeLessThanOrEqual(firstPaint.fcp as number)
 
   await page.locator('#themeToggle').click()
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
@@ -59,36 +89,65 @@ test('mobile drawer opens from the hamburger and closes on Escape', async ({ pag
   await page.goto('/')
 
   const hamburger = page.locator('[data-drawer-open]')
+  const sidebar = page.locator('.d-sidebar')
   await expect(hamburger).toBeVisible()
+  await expect(hamburger, 'the drawer starts closed').toHaveAttribute('aria-expanded', 'false')
+  await expect(sidebar, 'a closed drawer is outside the viewport').not.toBeInViewport()
+
   await hamburger.click()
-  await expect(page.locator('body')).toHaveClass(/has-drawer-open/)
-  await expect(page.locator('.d-sidebar')).toBeInViewport()
+  await expect(hamburger, 'the drawer reports the open state').toHaveAttribute(
+    'aria-expanded',
+    'true',
+  )
+  await expect(sidebar, 'an open drawer is visible').toBeInViewport()
 
   await page.keyboard.press('Escape')
-  await expect(page.locator('body')).not.toHaveClass(/has-drawer-open/)
+  await expect(hamburger, 'Escape closes the drawer').toHaveAttribute('aria-expanded', 'false')
+  await expect(sidebar, 'a closed drawer leaves the viewport').not.toBeInViewport()
 })
 
 test('navigation moves between shell routes and marks the active item', async ({ page }) => {
   await page.goto('/')
-  await expect(page.locator('.d-sidebar a.is-active')).toContainText('仪表盘')
 
-  await page.locator('.d-sidebar').getByRole('button', { name: '设计系统' }).click()
+  const activeLink = page.locator('.d-sidebar a[aria-current="page"]')
+  await expect(activeLink).toContainText('仪表盘')
+
+  const group = page.locator('.d-sidebar').getByRole('button', { name: '设计系统' })
+  await expect(group, 'the group starts collapsed').toHaveAttribute('aria-expanded', 'false')
+  await group.click()
+  await expect(group, 'the group reports the expanded state').toHaveAttribute(
+    'aria-expanded',
+    'true',
+  )
+
   await page.locator('.d-sidebar').getByRole('link', { name: '组件画廊' }).click()
   await expect(page).toHaveURL(/\/design$/)
-  await expect(page.locator('.d-sidebar a.is-active')).toContainText('组件画廊')
+  await expect(activeLink).toContainText('组件画廊')
 
   await page.locator('.d-sidebar').getByRole('link', { name: '仪表盘' }).click()
   await expect(page).toHaveURL(/\/$/)
-  await expect(page.locator('.d-sidebar a.is-active')).toContainText('仪表盘')
+  await expect(activeLink).toContainText('仪表盘')
 })
 
-test('gallery: modal opens, traps focus, and closes', async ({ page }) => {
+test('gallery: modal traps focus and closes on Escape', async ({ page }) => {
   await page.goto('/design')
 
   await page.getByRole('button', { name: '打开弹窗' }).click()
   const dialog = page.getByRole('dialog')
   await expect(dialog).toBeVisible()
   await expect(dialog).toContainText('删除账号？')
+  await expect(await focusIsInsideDialog(page), 'focus starts inside the dialog').toBe(true)
+
+  for (let step = 1; step <= 10; step += 1) {
+    await page.keyboard.press('Tab')
+    expect(await focusIsInsideDialog(page), `focus left the dialog after Tab ${step}`).toBe(true)
+  }
+  for (let step = 1; step <= 4; step += 1) {
+    await page.keyboard.press('Shift+Tab')
+    expect(await focusIsInsideDialog(page), `focus left the dialog after Shift+Tab ${step}`).toBe(
+      true,
+    )
+  }
 
   await page.keyboard.press('Escape')
   await expect(dialog).toBeHidden()
@@ -141,9 +200,13 @@ test('gallery: dismissible alert disappears', async ({ page }) => {
   await expect(alert).toHaveCount(0)
 })
 
-test('login form stays local and does not navigate', async ({ page }) => {
+test('login form stays local and offers no long-lived session option', async ({ page }) => {
   await page.goto('/login')
   await expect(page.getByRole('heading', { name: '登录' })).toBeVisible()
+
+  const form = page.locator('.auth-form')
+  await expect(form.locator('input[type="checkbox"]'), 'no persistence checkbox').toHaveCount(0)
+  await expect(page.getByText(/保持登录/), 'no 30-day session promise').toHaveCount(0)
 
   await page.getByLabel('邮箱').fill('operator@example.com')
   await page.getByLabel('密码').fill('not-a-real-password')

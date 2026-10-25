@@ -6,10 +6,11 @@ import { useTheme } from '@/lib/theme'
 
 type TopbarProps = {
   crumbs: string[]
+  drawerOpen: boolean
   onOpenDrawer: () => void
 }
 
-export function Topbar({ crumbs, onOpenDrawer }: TopbarProps) {
+export function Topbar({ crumbs, drawerOpen, onOpenDrawer }: TopbarProps) {
   const { theme, toggleTheme } = useTheme()
   const navigate = useNavigate()
 
@@ -21,6 +22,7 @@ export function Topbar({ crumbs, onOpenDrawer }: TopbarProps) {
           className="hamburger"
           data-drawer-open
           aria-label="打开导航"
+          aria-expanded={drawerOpen}
           onClick={onOpenDrawer}
         >
           <Icon name="menu" />

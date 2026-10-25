@@ -1,12 +1,15 @@
+import type { components } from './schema'
 import { apiRequest } from './client'
 
-export type School = {
-  id: string
-  name: string
-  code: string
-  status: 'active' | 'disabled'
-  timezone: string
-}
+/**
+ * School stubs. Contract shapes come from the generated `schema.d.ts`.
+ * The list endpoint returns a page object, not a bare array.
+ */
+
+type Schemas = components['schemas']
+
+export type School = Schemas['School']
+export type SchoolPage = Schemas['SchoolPage']
 
 export const SCHOOL_PATHS = {
   list: '/api/schools',
@@ -14,6 +17,6 @@ export const SCHOOL_PATHS = {
   admins: (id: string) => `/api/schools/${id}/admins`,
 } as const
 
-export function listSchools(): Promise<School[]> {
-  return apiRequest<School[]>(SCHOOL_PATHS.list)
+export function listSchools(): Promise<SchoolPage> {
+  return apiRequest<SchoolPage>(SCHOOL_PATHS.list)
 }

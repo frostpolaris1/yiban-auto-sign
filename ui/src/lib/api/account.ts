@@ -1,25 +1,22 @@
+import type { components } from './schema'
 import { apiRequest } from './client'
 
-export type AccountStatus = 'pending' | 'active' | 'paused' | 'deleted'
+/**
+ * Account stubs. Contract shapes come from the generated `schema.d.ts`.
+ * `AccountQuery` is the query-string view; its `status` uses the contract enum.
+ */
 
-export type Account = {
-  id: string
-  school_id: string
-  phone_masked: string
-  status: AccountStatus
-  created_at: string
-}
+type Schemas = components['schemas']
 
-export type AccountPage = {
-  items: Account[]
-  next_cursor: string | null
-}
+export type AccountStatus = Schemas['AccountStatus']
+export type Account = Schemas['Account']
+export type AccountPage = Schemas['AccountPage']
 
 export type AccountQuery = {
   school_id?: string
   status?: AccountStatus
   q?: string
-  cursor?: string | null
+  cursor?: string
 }
 
 export const ACCOUNT_PATHS = {

@@ -1,22 +1,18 @@
+import type { components } from './schema'
 import { apiRequest } from './client'
 
-export type Role = 'master' | 'admin' | 'user'
+/**
+ * Auth stubs. Every type comes from `schema.d.ts`, which is generated from
+ * `server/contracts/openapi.yaml`. Do not redeclare contract shapes here.
+ */
 
-export type SessionUser = {
-  id: string
-  email: string
-  role: Role
-}
+type Schemas = components['schemas']
 
-export type LoginRequest = {
-  email: string
-  password: string
-}
-
-export type ResetRequest = {
-  token: string
-  password: string
-}
+export type Role = Schemas['UserRole']
+export type UserStatus = Schemas['UserStatus']
+export type SessionUser = Schemas['SessionUser']
+export type LoginRequest = Schemas['LoginRequest']
+export type ResetRequest = Schemas['ResetPasswordRequest']
 
 export const AUTH_PATHS = {
   login: '/api/auth/login',
