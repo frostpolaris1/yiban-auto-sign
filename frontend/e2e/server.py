@@ -171,6 +171,8 @@ def _install_frozen_epoch():
         payload["server_ts"] = int(clock.now().replace(tzinfo=clock.TZ).timestamp())
         return jsonify(payload)
 
+    # endpoint 名由 view 函数名推导：保持 `api_clock`，`url_for("api_clock")` 不因打桩断裂。
+    _clock_view.__name__ = "api_clock"
     _data_routes.api_clock = _clock_view
 
 
