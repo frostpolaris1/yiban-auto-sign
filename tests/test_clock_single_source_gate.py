@@ -15,9 +15,18 @@
     1. `datetime.now()`（含 `datetime.datetime.now()`）；
     2. `datetime.utcnow()`（含别名导入）；
     3. `date.today()` / `datetime.date.today()` / `datetime.today()`；
-    4. `datetime.now(<tz>)` 是**带时区**取时，不算；本门放行。
+    4. `datetime.now(tz=None)`：等价宿主钟 naive 取时，判红。
+· `datetime.now(<tz>)` 只认 `clock.TZ`。
+  其他时区给的是**别的时区的日期**，不是业务日。
+  只在下游**取日**时判红：`.date()`，或格式串含日期占位符的 `.strftime(...)`。
+  仅作时刻、不做取日时放行。
 · `naive` 时刻上的 `.astimezone()`：按宿主时区解释北京墙钟。
   这是 P0 的原始缺陷形状（`clock.now().astimezone()`）。
+  可证为 naive 的来源：
+    `clock.now()`、宿主钟取时、`replace(tzinfo=None)`、
+    `strptime`（格式串无 `%z`/`%Z`）、`fromtimestamp`（无 `tz`）、
+    `utcfromtimestamp`、`fromisoformat`（实参无偏移）、
+    `combine`（time 实参无 tzinfo）、任一操作数为 naive 的 `BinOp`。
   只判**可证为 naive** 的接收者；变量接收者静态不可判，登记为边界。
 
 明确豁免（`EXEMPTIONS`，file:line + 代码片段 + 理由）：
@@ -32,6 +41,9 @@
 · `time.time()` / `.timestamp()`：epoch 秒。epoch 与宿主时区无关。
 · `datetime.fromtimestamp(ts)` 无 `tz`：它按宿主时区造**时刻**。
   本门不判；审查兜底。
+· `datetime.fromisoformat(<非字面量>)`：实参可能带偏移，静态不可判。
+  按无偏移处理（保守判 naive）；确有偏移时登记豁免。
+· `datetime.now(<tz>)` 后接变量格式串的 `.strftime(...)`：占位符静态不可判。
 · 别名变量（`t = datetime.now(); t.strftime(...)`）：本门不做数据流。
 · 变量接收者的 `.astimezone()`：静态不可判是否 aware。
 · 同一形状出现两处以上即按形状立门（AGENTS §27）。
@@ -41,6 +53,7 @@
 
 import ast
 import os
+import re
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -48,7 +61,8 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PRODUCT_DIRS = ("yiban", "web", "scripts", "docker")
 #: 业务时钟本尊：它必须读宿主钟并换算出 +8，是唯一豁免文件。
 CLOCK_MODULE = "yiban/core/clock.py"
-#: 扫描面下限（AGENTS §30）。本树实测 157 个文件；下限取 100。
+#: 扫描面下限（AGENTS §30）。本树实测 156 个文件（含 `clock.py` 共 157，本尊不扫）；
+#: 下限取 100。
 MIN_FILES = 100
 
 #: 显式豁免：`(相对路径, 行号)` → 登记项。
@@ -90,12 +104,14 @@ EXEMPTIONS = {
         "code": 'db.set_account_deleted(aid, True, '
                 'deleted_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"), '
                 'deleted_by="admin")  # noqa: DTZ005 开发演示种子数据，非判定路径',
-        "reason": "开发机演示种子。非部署件、非 CI、非判定路径",
+        "reason": "CI fast 车道经 tests/test_visual_seed_generation.py 子进程跑 seed()"
+                  "（lane-roster.tsv:345）；宿主钟只写演示数据时间戳、不进任何断言；非部署件",
     },
     ("scripts/dev_visual_seed.py", 243): {
         "kind": "datetime.now",
         "code": "now = datetime.now()  # noqa: DTZ005 开发演示种子数据，非判定路径",
-        "reason": "开发机演示种子。非部署件、非 CI、非判定路径",
+        "reason": "CI fast 车道经 tests/test_visual_seed_generation.py 子进程跑 seed()"
+                  "（lane-roster.tsv:345）；宿主钟只写演示数据时间戳、不进任何断言；非部署件",
     },
     ("scripts/state_cleanup.py", 98): {
         "kind": "datetime.now",
@@ -113,6 +129,15 @@ EXEMPTIONS = {
 
 #: `datetime` 类的宿主取时方法。`today` 在 date 类上同名，一并收口。
 _NOW_ATTRS = {"now", "utcnow", "today"}
+
+#: 「无实参」的哨兵：区分 `now()` 与 `now(None)`。
+_MISSING = object()
+
+#: `strftime` 中表示**日期**的转换符。`%H:%M:%S` 只有时刻，不算。
+_DATE_STRFTIME_TOKENS = frozenset("YymdejxDFGgVUWCc")
+
+#: ISO 串末尾的时区偏移（`Z`、`+08:00`、`+0800`）。
+_ISO_OFFSET_RE = re.compile(r"(?:Z|[+-]\d{2}:?\d{2})$")
 
 
 def _class_aliases(tree):
@@ -149,8 +174,121 @@ def _is_datetime_attr(node, classes, modules, cls_name, attr):
     return False
 
 
-def _has_tz_arg(call):
-    return bool(call.args) or any(k.arg == "tz" for k in call.keywords)
+def _is_none(node):
+    return isinstance(node, ast.Constant) and node.value is None
+
+
+def _is_clock_tz(node):
+    """是否是 `clock.TZ`：业务时区的唯一合法实参形状（按 AST 判属性访问）。"""
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "TZ"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "clock"
+    )
+
+
+def _tz_argument(call):
+    """`datetime.now(...)` 的 tz 实参；未给返回 `_MISSING`。"""
+    if call.args:
+        return call.args[0]
+    for k in call.keywords:
+        if k.arg == "tz":
+            return k.value
+    return _MISSING
+
+
+def _call_arg(call, keyword, index):
+    """按位置或关键字取实参；未给返回 None。"""
+    if len(call.args) > index:
+        return call.args[index]
+    for k in call.keywords:
+        if k.arg == keyword:
+            return k.value
+    return None
+
+
+def _is_datetime_now_call(node, classes, modules):
+    return (
+        isinstance(node, ast.Call)
+        and _is_datetime_attr(node.func, classes, modules, "datetime", "now")
+    )
+
+
+def _is_foreign_tz_now(node, classes, modules):
+    """`datetime.now(<tz>)`，且 tz 不是 `clock.TZ`、也不是字面 None。"""
+    if not _is_datetime_now_call(node, classes, modules):
+        return False
+    tz = _tz_argument(node)
+    return tz is not _MISSING and not _is_none(tz) and not _is_clock_tz(tz)
+
+
+def _strftime_tokens(fmt):
+    """逐个产出未转义的转换符：跳过 `%%`、宽度与 `E`/`O` 修饰。"""
+    i = 0
+    n = len(fmt)
+    while i < n:
+        if fmt[i] != "%":
+            i += 1
+            continue
+        i += 1
+        while i < n and (
+            fmt[i] in "-_0^# +" or fmt[i].isdigit() or fmt[i] in "EO"
+        ):
+            i += 1
+        if i >= n:
+            return
+        tok = fmt[i]
+        i += 1
+        if tok == "%":
+            continue
+        yield tok
+
+
+def _has_date_token(fmt):
+    """格式串是否含日期转换符。"""
+    return any(tok in _DATE_STRFTIME_TOKENS for tok in _strftime_tokens(fmt))
+
+
+def _has_zone_token(fmt):
+    """格式串是否含时区转换符（`%z` / `%Z`）：含则 strptime 产物是 aware。"""
+    return any(tok in "zZ" for tok in _strftime_tokens(fmt))
+
+
+def _iso_has_offset(node):
+    """字面量 ISO 串是否自带时区偏移。非字面量返回 False（保守判无偏移）。"""
+    return (
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and bool(_ISO_OFFSET_RE.search(node.value.strip()))
+    )
+
+
+def _is_aware_time(node):
+    """`combine` 的 time 实参是否**可证为 aware**。
+
+    判据：`time.fromisoformat(<带偏移的字面量>)`，或 `time(...)` 的 tzinfo
+    实参（第 5 个位置参数或关键字）非 None。
+    """
+    if node is None:
+        return False
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "fromisoformat"
+    ):
+        return _iso_has_offset(_call_arg(node, "date_string", 0))
+    if isinstance(node, ast.Call):
+        func = node.func
+        is_time = (
+            (isinstance(func, ast.Name) and func.id == "time")
+            or (isinstance(func, ast.Attribute) and func.attr == "time")
+        )
+        if is_time:
+            tzinfo = _call_arg(node, "tzinfo", 4)
+            if tzinfo is not None:
+                return not _is_none(tzinfo)
+    return False
 
 
 def _host_clock_kind(node, classes, modules):
@@ -161,9 +299,40 @@ def _host_clock_kind(node, classes, modules):
         for attr in _NOW_ATTRS:
             if not _is_datetime_attr(node.func, classes, modules, cls_name, attr):
                 continue
-            if attr == "now" and _has_tz_arg(node):
+            if attr == "now":
+                tz = _tz_argument(node)
+                if tz is _MISSING:
+                    return "datetime.now"
+                if _is_none(tz):
+                    return "datetime.now(None)"
+                # 带 tz：`clock.TZ` 放行；其他时区交给下游取日判定。
                 continue
             return "%s.%s" % (cls_name, attr)
+    return None
+
+
+def _foreign_tz_date_kind(node, classes, modules):
+    """`datetime.now(<非 clock.TZ>)` 下游取日 → 违例类别；否则 None。
+
+    取日指 `.date()`，或格式串含日期占位符的 `.strftime(...)`。
+    只作时刻（不取日）时放行：aware 时刻本身与时区无关。
+    """
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+        return None
+    attr = node.func.attr
+    if attr not in ("date", "strftime"):
+        return None
+    if not _is_foreign_tz_now(node.func.value, classes, modules):
+        return None
+    if attr == "date":
+        return "非业务时区取日"
+    fmt = _call_arg(node, "format", 0)
+    if (
+        isinstance(fmt, ast.Constant)
+        and isinstance(fmt.value, str)
+        and _has_date_token(fmt.value)
+    ):
+        return "非业务时区取日"
     return None
 
 
@@ -191,16 +360,35 @@ def _is_naive_expr(node, classes, modules):
                 for k in node.keywords
             )
         if attr == "strptime":
-            # strptime 无 tz 参数，产物恒为 naive。
-            return True
+            # 格式串含 %z/%Z 时产物 aware；其余（含变量格式串）按 naive。
+            fmt = _call_arg(node, "format", 1)
+            return not (
+                isinstance(fmt, ast.Constant)
+                and isinstance(fmt.value, str)
+                and _has_zone_token(fmt.value)
+            )
         if attr == "fromtimestamp":
-            return not (len(node.args) >= 2 or any(
-                k.arg in ("tz", "tzinfo") for k in node.keywords))
+            tz = _call_arg(node, "tz", 1)
+            if tz is None:
+                tz = _call_arg(node, "tzinfo", 1)
+            return tz is None or _is_none(tz)
+        if attr == "utcfromtimestamp":
+            # 恒为 naive（弃用形状，仍按宿主 UTC 解释）。
+            return True
+        if attr == "fromisoformat":
+            return not _iso_has_offset(_call_arg(node, "date_string", 0))
         if attr == "combine":
-            return not (len(node.args) >= 3 or any(
-                k.arg == "tzinfo" for k in node.keywords))
+            # 产物 tzinfo 取自 time 实参；显式 tzinfo 实参优先。
+            explicit = _call_arg(node, "tzinfo", 2)
+            if explicit is not None:
+                return _is_none(explicit)
+            return not _is_aware_time(_call_arg(node, "time", 1))
     if isinstance(node, ast.BinOp):
-        return _is_naive_expr(node.left, classes, modules)
+        # 任一侧 naive 则结果 naive：`timedelta(0) + clock.now()` 必须判红。
+        return (
+            _is_naive_expr(node.left, classes, modules)
+            or _is_naive_expr(node.right, classes, modules)
+        )
     return False
 
 
@@ -222,6 +410,8 @@ def _offenders_source(source, filename="<memory>"):
             and _is_naive_expr(node.func.value, classes, modules)
         ):
             kind = "naive astimezone"
+        else:
+            kind = _foreign_tz_date_kind(node, classes, modules)
         if kind is None:
             continue
         src = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else ""
@@ -358,9 +548,30 @@ BAD_SAMPLES = {
     "无 tz 的 fromtimestamp 后 astimezone": (
         "from datetime import datetime\n"
         "x = datetime.fromtimestamp(0).astimezone()\n"),
+    "utcfromtimestamp 后 astimezone": (
+        "from datetime import datetime\n"
+        "x = datetime.utcfromtimestamp(0).astimezone()\n"),
+    "无偏移的 fromisoformat 后 astimezone": (
+        "from datetime import datetime\n"
+        'x = datetime.fromisoformat("2026-01-01T00:00:00").astimezone()\n'),
     "无 tzinfo 的 combine 后 astimezone": (
         "from datetime import datetime, date, time\n"
         "x = datetime.combine(date(2026, 1, 1), time(0)).astimezone()\n"),
+    "BinOp 左侧 naive 后 astimezone": (
+        "from datetime import timedelta\n"
+        "x = (clock.now() + timedelta(0)).astimezone()\n"),
+    "BinOp 右侧 naive 后 astimezone": (
+        "from datetime import timedelta\n"
+        "x = (timedelta(0) + clock.now()).astimezone()\n"),
+    "now(tz=None) 的宿主钟取时": (
+        "from datetime import datetime\n"
+        "x = datetime.now(tz=None)\n"),
+    "非业务时区 strftime 取日": (
+        "from datetime import datetime, timezone\n"
+        'x = datetime.now(timezone.utc).strftime("%Y-%m-%d")\n'),
+    "非业务时区 date 取日": (
+        "from datetime import datetime, timezone\n"
+        "x = datetime.now(timezone.utc).date()\n"),
 }
 GOOD_SAMPLES = {
     "带时区的 now": ("from datetime import datetime, timezone\n"
@@ -375,9 +586,27 @@ GOOD_SAMPLES = {
     "带 tz 的 fromtimestamp 后 astimezone": (
         "from datetime import datetime, timezone\n"
         "x = datetime.fromtimestamp(0, timezone.utc).astimezone()\n"),
+    "带偏移的 fromisoformat 后 astimezone": (
+        "from datetime import datetime\n"
+        'x = datetime.fromisoformat("2026-01-01T00:00:00+08:00").astimezone()\n'),
+    "strptime 含 %z 后 astimezone": (
+        "from datetime import datetime\n"
+        'x = datetime.strptime("2026-01-01T00:00:00+08:00",'
+        ' "%Y-%m-%dT%H:%M:%S%z").astimezone()\n'),
+    "combine tz-aware time 后 astimezone": (
+        "from datetime import datetime, date, time, timezone\n"
+        "x = datetime.combine(date(2026, 1, 1), time(0, tzinfo=timezone.utc)).astimezone()\n"),
     "带 tzinfo 的 combine 后 astimezone": (
         "from datetime import datetime, date, time, timezone\n"
         "x = datetime.combine(date(2026, 1, 1), time(0), timezone.utc).astimezone()\n"),
+    "clock.TZ 的 now 取日": (
+        "from datetime import datetime\n"
+        'x = datetime.now(clock.TZ).strftime("%Y-%m-%d")\n'
+        "y = datetime.now(tz=clock.TZ).date()\n"),
+    "非业务时区仅作时刻": (
+        "from datetime import datetime, timezone\n"
+        'x = datetime.now(timezone.utc).strftime("%H:%M:%S")\n'
+        "y = datetime.now(timezone.utc).timestamp()\n"),
     "变量接收者不做数据流": ("x = t.astimezone()\n"),
     "注释与字符串不算": ('"""datetime.now() 只是文字"""\n# datetime.now()\nx = "datetime.now()"\n'),
 }
