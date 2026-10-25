@@ -219,3 +219,26 @@ func selectorName(e ast.Expr) (string, bool) {
 	}
 	return id.Name + "." + sel.Sel.Name, true
 }
+
+// CountGoFiles returns how many Go files a scan would consider. A caller uses
+// it to reject a run that scans nothing.
+func CountGoFiles(root string) (int, error) {
+	count := 0
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", "vendor", "node_modules", "testdata":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasSuffix(path, ".go") {
+			count++
+		}
+		return nil
+	})
+	return count, err
+}

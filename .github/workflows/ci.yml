@@ -259,3 +259,37 @@ jobs:
         run: npm run test:e2e
         env:
           YB_E2E_PYTHON: python
+
+  # 新栈（Go 后端 + React 前端）的自动门。与 verify job 分开：
+  # Python 旧栈与 Go/React 新栈的依赖与工具链不同，混在一个 job 里会让
+  # 任一栈的安装失败拖垮另一栈。两侧都跑同一个本地入口 scripts/verify-stacks.sh。
+  # 视觉回归不在本 job：基线目前只有 win32（见 ui/README.md），Linux 基线未生成。
+  stacks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Server gates (gofmt, vet, test, canonical, drift, structure)
+        working-directory: server
+        run: ./scripts/verify.sh
+
+      - name: UI gates (types, token gate, contract drift, structure, build)
+        working-directory: ui
+        run: |
+          npm ci
+          npm run verify

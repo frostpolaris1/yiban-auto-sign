@@ -22,12 +22,16 @@ type Options struct {
 	Sessions auth.SessionIssuer
 	Clock    clock.Clock
 	Logger   *slog.Logger
+	// InsecureCookies selects the unprefixed cookie name. Browsers reject
+	// __Host- cookies without Secure, so this is only for local HTTP.
+	InsecureCookies bool
 }
 
 // server implements the generated contract interface. This phase answers 501
 // for every business endpoint; only /healthz and /api/auth/me are real.
 type server struct {
-	sessions auth.SessionIssuer
+	sessions   auth.SessionIssuer
+	cookieName string
 }
 
 // New builds the HTTP engine. It fails closed on a missing SessionIssuer.
@@ -43,14 +47,20 @@ func New(opts Options) (*gin.Engine, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	srv := &server{sessions: opts.Sessions}
+	cookieName := auth.CookieName
+	if opts.InsecureCookies {
+		cookieName = auth.InsecureCookieName
+	}
+	srv := &server{sessions: opts.Sessions, cookieName: cookieName}
 
 	engine := gin.New()
 	engine.Use(
 		requestID(),
-		recoverPanic(logger),
 		accessLog(logger, clk),
+		recoverPanic(logger),
+		securityHeaders(),
 		srv.authenticate(),
+		srv.requireCSRF(),
 	)
 	oapi.RegisterHandlersWithOptions(engine, srv, oapi.GinServerOptions{
 		ErrorHandler: func(c *gin.Context, _ error, _ int) {

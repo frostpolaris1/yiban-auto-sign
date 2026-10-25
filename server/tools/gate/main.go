@@ -18,6 +18,15 @@ func main() {
 		fmt.Fprintln(os.Stderr, "gate:", err)
 		os.Exit(2)
 	}
+	scanned, err := CountGoFiles(*root)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "gate:", err)
+		os.Exit(2)
+	}
+	if scanned == 0 {
+		fmt.Fprintln(os.Stderr, "gate: no Go files under root; refused to pass")
+		os.Exit(2)
+	}
 	violations, err := Scan(*root, rules, *includeTests)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "gate:", err)

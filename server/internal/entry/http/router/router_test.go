@@ -47,6 +47,15 @@ func (s *stubIssuer) Revoke(_ context.Context, token string) error {
 	return nil
 }
 
+func (s *stubIssuer) RevokeAllForUser(_ context.Context, userID string) error {
+	for token, sess := range s.sessions {
+		if sess.User.ID == userID {
+			delete(s.sessions, token)
+		}
+	}
+	return nil
+}
+
 // errorEnvelope mirrors the frozen error envelope shape.
 type errorEnvelope struct {
 	Error struct {
@@ -199,8 +208,74 @@ func TestE5MeWithSession(t *testing.T) {
 	if body.CSRFToken != "csrf-"+user.ID {
 		t.Fatalf("csrf_token = %q", body.CSRFToken)
 	}
-	if rec.Body.String() == issued.Token {
+	if strings.Contains(rec.Body.String(), issued.Token) {
 		t.Fatal("response leaked the session token")
+	}
+}
+
+// E-8: a state-changing request with a session but no CSRF header is rejected.
+func TestE8MissingCSRF(t *testing.T) {
+	engine, issuer := newTestEngine(t)
+	issued, err := issuer.Issue(context.Background(), auth.User{ID: "u1", Email: "u1@example.com", Role: auth.RoleUser, Status: auth.StatusActive})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/accounts", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: issued.Token})
+	rec := serve(engine, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%q", rec.Code, rec.Body.String())
+	}
+	if env := decodeEnvelope(t, rec); env.Error.Code != "forbidden" {
+		t.Fatalf("code = %q, want forbidden", env.Error.Code)
+	}
+}
+
+// E-9: the same request passes the CSRF gate when the derived token matches.
+func TestE9ValidCSRF(t *testing.T) {
+	engine, issuer := newTestEngine(t)
+	issued, err := issuer.Issue(context.Background(), auth.User{ID: "u1", Email: "u1@example.com", Role: auth.RoleUser, Status: auth.StatusActive})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/accounts", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", issued.CSRFToken)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: issued.Token})
+	rec := serve(engine, req)
+
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501; body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+// E-10: logout needs the CSRF token because it destroys a session.
+func TestE10LogoutRequiresCSRF(t *testing.T) {
+	engine, issuer := newTestEngine(t)
+	issued, err := issuer.Issue(context.Background(), auth.User{ID: "u1", Email: "u1@example.com", Role: auth.RoleUser, Status: auth.StatusActive})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: issued.Token})
+	rec := serve(engine, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+}
+
+// Writes without a session are rejected before the CSRF gate.
+func TestWriteWithoutSession(t *testing.T) {
+	engine, _ := newTestEngine(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/accounts", strings.NewReader("{}"))
+	rec := serve(engine, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
 	}
 }
 
@@ -226,6 +301,7 @@ func (panicIssuer) Issue(context.Context, auth.User) (auth.Issued, error) {
 }
 func (panicIssuer) Resolve(context.Context, string) (auth.Session, error) { panic("boom") }
 func (panicIssuer) Revoke(context.Context, string) error                  { return nil }
+func (panicIssuer) RevokeAllForUser(context.Context, string) error        { return nil }
 
 // E-7: a panic becomes the 500 envelope, not a dropped connection.
 func TestE7PanicRecovery(t *testing.T) {

@@ -1,9 +1,13 @@
 // Command structure enforces the repository layout.
 //
-// It reads structure.tsv, checks that every immediate child directory of each
-// managed scope is registered, and applies the front-end naming and import
-// rules. An empty rules file, an empty allowlist or an unknown scope is an
-// error: the gate must never pass by scanning nothing.
+// It reads structure.tsv and checks that every immediate child directory of
+// each managed scope is registered. A missing scope is an error unless the
+// scope is marked optional with a leading question mark. It also applies the
+// front-end naming rules. Import direction is enforced by
+// ui/scripts/structure-gate.mjs, which resolves module paths.
+//
+// An empty rules file, an empty allowlist, an unknown scope or a scan that
+// finds no directory is an error: the gate never passes by scanning nothing.
 package main
 
 import (
@@ -19,15 +23,15 @@ import (
 
 // rule is one managed directory and its registered child directories.
 type rule struct {
-	scope string
-	allow map[string]bool
+	scope    string
+	optional bool
+	allow    map[string]bool
 }
 
 var (
-	pageName    = regexp.MustCompile(`^[A-Z][A-Za-z0-9]*Page\.tsx$`)
-	lowerName   = regexp.MustCompile(`^[a-z][a-z0-9]*$`)
-	featurePath = regexp.MustCompile(`@/features/([a-zA-Z0-9_-]+)`)
-	skipDirs    = map[string]bool{".git": true, "node_modules": true}
+	pageName  = regexp.MustCompile(`^[A-Z][A-Za-z0-9]*Page\.tsx$`)
+	lowerName = regexp.MustCompile(`^[a-z][a-z0-9]*$`)
+	skipDirs  = map[string]bool{".git": true, "node_modules": true}
 )
 
 func main() {
@@ -66,7 +70,8 @@ func fatal(err error) {
 	os.Exit(1)
 }
 
-// loadRules parses scope<TAB>allow,allow<TAB>note lines.
+// loadRules parses scope<TAB>allow,allow<TAB>note lines. A leading ? marks a
+// scope that may be absent in this phase.
 func loadRules(path string) ([]rule, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -86,6 +91,8 @@ func loadRules(path string) ([]rule, error) {
 			return nil, fmt.Errorf("%s:%d: want scope, allow and note", path, line)
 		}
 		scope := strings.TrimSpace(parts[0])
+		optional := strings.HasPrefix(scope, "?")
+		scope = strings.TrimPrefix(scope, "?")
 		if !knownScope(scope) {
 			return nil, fmt.Errorf("%s:%d: unknown scope %q", path, line, scope)
 		}
@@ -100,7 +107,7 @@ func loadRules(path string) ([]rule, error) {
 		if len(allow) == 0 {
 			return nil, fmt.Errorf("%s:%d: empty allowlist", path, line)
 		}
-		rules = append(rules, rule{scope: scope, allow: allow})
+		rules = append(rules, rule{scope: scope, optional: optional, allow: allow})
 	}
 	if err := sc.Err(); err != nil {
 		return nil, err
@@ -111,6 +118,8 @@ func loadRules(path string) ([]rule, error) {
 	return rules, nil
 }
 
+// knownScope validates the whole path, so a typo such as server/internals is
+// rejected instead of silently skipped.
 func knownScope(scope string) bool {
 	if scope == "root" {
 		return true
@@ -131,8 +140,8 @@ func knownScope(scope string) bool {
 	return false
 }
 
-// checkAllowlist reports unregistered child directories and counts the scopes
-// that exist on disk.
+// checkAllowlist reports missing required scopes and unregistered child
+// directories, and counts the scopes that exist on disk.
 func checkAllowlist(root string, rules []rule) ([]string, int, error) {
 	var problems []string
 	seen := 0
@@ -144,25 +153,36 @@ func checkAllowlist(root string, rules []rule) ([]string, int, error) {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			if os.IsNotExist(err) {
-				fmt.Printf("structure: skip missing scope %s\n", r.scope)
+				if r.optional {
+					fmt.Printf("structure: skip optional scope %s\n", r.scope)
+					continue
+				}
+				problems = append(problems, fmt.Sprintf("%s: scope is missing (mark it optional with ? if this phase does not create it)", r.scope))
 				continue
 			}
 			return nil, 0, err
 		}
 		seen++
 		for _, e := range entries {
-			if !e.IsDir() || skipDirs[e.Name()] {
+			if !e.IsDir() {
 				continue
 			}
-			if !r.allow[e.Name()] {
-				problems = append(problems, fmt.Sprintf("%s: unregistered directory %q (register it in structure.tsv)", r.scope, e.Name()))
+			name := e.Name()
+			if skipDirs[name] {
+				continue
+			}
+			if r.scope == "root" && strings.HasPrefix(name, ".") {
+				continue
+			}
+			if !r.allow[name] {
+				problems = append(problems, fmt.Sprintf("%s: unregistered directory %q (register it in structure.tsv)", r.scope, name))
 			}
 		}
 	}
 	return problems, seen, nil
 }
 
-// checkFrontend applies page naming, feature naming and import direction.
+// checkFrontend applies page naming, directory naming and export style.
 func checkFrontend(root string) ([]string, error) {
 	src := filepath.Join(root, "ui", "src")
 	if _, err := os.Stat(src); os.IsNotExist(err) {
@@ -172,6 +192,7 @@ func checkFrontend(root string) ([]string, error) {
 	}
 
 	var problems []string
+	scanned := 0
 	err := filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -193,6 +214,7 @@ func checkFrontend(root string) ([]string, error) {
 		if !strings.HasSuffix(name, ".ts") && !strings.HasSuffix(name, ".tsx") {
 			return nil
 		}
+		scanned++
 		rel, _ := filepath.Rel(src, path)
 		rel = filepath.ToSlash(rel)
 
@@ -204,31 +226,16 @@ func checkFrontend(root string) ([]string, error) {
 		if readErr != nil {
 			return readErr
 		}
-		text := string(body)
-		if strings.Contains(text, "export default") {
+		if strings.Contains(string(body), "export default") {
 			problems = append(problems, fmt.Sprintf("ui/src/%s: use named exports, not export default", rel))
-		}
-		if strings.HasPrefix(rel, "components/") && strings.Contains(text, "@/features") {
-			problems = append(problems, fmt.Sprintf("ui/src/%s: components must not import features", rel))
-		}
-		if strings.HasPrefix(rel, "components/") && strings.Contains(text, "@/pages") {
-			problems = append(problems, fmt.Sprintf("ui/src/%s: components must not import pages", rel))
-		}
-		if strings.HasPrefix(rel, "features/") {
-			if strings.Contains(text, "@/pages") {
-				problems = append(problems, fmt.Sprintf("ui/src/%s: features must not import pages", rel))
-			}
-			if m := featurePath.FindStringSubmatch(text); m != nil {
-				rest := strings.TrimPrefix(rel, "features/")
-				if !strings.HasPrefix(rest, m[1]+"/") {
-					problems = append(problems, fmt.Sprintf("ui/src/%s: feature must not import feature %q", rel, m[1]))
-				}
-			}
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
+	}
+	if scanned == 0 {
+		problems = append(problems, "ui/src: no TypeScript files found; refused to pass")
 	}
 	return problems, nil
 }

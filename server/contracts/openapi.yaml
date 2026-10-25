@@ -20,6 +20,9 @@ info:
   description: |
     Host API for the account caretaking platform. Roles: master (all schools,
     admins, settings), admin (bound schools only), user (own accounts).
+
+    Phase P1 ships the frozen shape and the transport skeleton. Every business
+    endpoint answers 501 with the error envelope until its use case lands.
 servers:
   - url: /
 tags:
@@ -62,7 +65,10 @@ paths:
       operationId: AuthLogout
       summary: Destroy the current session.
       description: Idempotent; succeeds even without a session. P1 returns 501.
+      security: []
       x-roles: [public]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
       responses:
         '204': { description: Session destroyed. }
         default: { $ref: '#/components/responses/DefaultError' }
@@ -131,6 +137,8 @@ paths:
         Master only (decision 12.4). There is no public registration endpoint.
         P1 returns 501.
       x-roles: [master]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
       requestBody:
         required: true
         content:
@@ -153,13 +161,14 @@ paths:
       tags: [schools]
       operationId: SchoolList
       summary: List schools with cursor pagination.
-      x-roles: [master]
+      x-roles: [master, admin]
       parameters:
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
       responses:
         '200':
-          description: School page.
+          description: |
+            School page. master sees every school; admin sees only bound schools.
           content:
             application/json:
               schema:
@@ -171,6 +180,8 @@ paths:
       operationId: SchoolCreate
       summary: Create a school.
       x-roles: [master]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
       requestBody:
         required: true
         content:
@@ -196,6 +207,7 @@ paths:
       description: The school code is immutable in v1.
       x-roles: [master]
       parameters:
+        - $ref: '#/components/parameters/CSRFToken'
         - $ref: '#/components/parameters/SchoolID'
       requestBody:
         required: true
@@ -243,6 +255,7 @@ paths:
         and have role admin or master.
       x-roles: [master]
       parameters:
+        - $ref: '#/components/parameters/CSRFToken'
         - $ref: '#/components/parameters/SchoolID'
       requestBody:
         required: true
@@ -269,6 +282,7 @@ paths:
       summary: Unbind an admin from the school.
       x-roles: [master]
       parameters:
+        - $ref: '#/components/parameters/CSRFToken'
         - $ref: '#/components/parameters/SchoolID'
         - $ref: '#/components/parameters/UserID'
       responses:
@@ -319,6 +333,8 @@ paths:
         owner_user_id defaults to the caller. Only master and admin may set it
         to another user. The account starts in status pending.
       x-roles: [master, admin, user]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
       requestBody:
         required: true
         content:
@@ -364,6 +380,7 @@ paths:
         school is forbidden in P1 (decision 12.3) and returns conflict.
       x-roles: [master, admin, user]
       parameters:
+        - $ref: '#/components/parameters/CSRFToken'
         - $ref: '#/components/parameters/AccountID'
       requestBody:
         required: true
@@ -389,6 +406,7 @@ paths:
       description: Sets deleted_at and deleted_by. Cascades hide credentials.
       x-roles: [master, admin, user]
       parameters:
+        - $ref: '#/components/parameters/CSRFToken'
         - $ref: '#/components/parameters/AccountID'
       responses:
         '204': { description: Account deleted. }
@@ -402,6 +420,7 @@ paths:
       description: A rejection must carry a reason.
       x-roles: [master, admin]
       parameters:
+        - $ref: '#/components/parameters/CSRFToken'
         - $ref: '#/components/parameters/AccountID'
       requestBody:
         required: true
@@ -430,6 +449,7 @@ paths:
         Sending paused false resumes the account.
       x-roles: [master, admin, user]
       parameters:
+        - $ref: '#/components/parameters/CSRFToken'
         - $ref: '#/components/parameters/AccountID'
       requestBody:
         required: true
@@ -484,6 +504,14 @@ components:
       required: false
       description: Page size, 1 to 200.
       schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    CSRFToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      description: |
+        CSRF token returned by GET /api/auth/me. Required on every
+        state-changing request that carries a session.
+      schema: { type: string }
     SchoolID:
       name: id
       in: path
@@ -744,6 +772,9 @@ components:
         phone_masked:
           type: string
           description: Masked phone. The raw phone never leaves the server.
+        phone_model:
+          type: string
+          description: Device model reported to the platform. Not sensitive.
         status:
           $ref: '#/components/schemas/AccountStatus'
         reject_reason: { type: string }

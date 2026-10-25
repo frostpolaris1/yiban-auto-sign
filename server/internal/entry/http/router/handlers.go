@@ -15,60 +15,72 @@ func openapiEmail(s string) openapi_types.Email { return openapi_types.Email(s) 
 // contract and the wiring only; each endpoint below is filled by a later task.
 func notImplemented(c *gin.Context) { respond.NotImplemented(c.Writer, c.Request) }
 
-// Login is a P1 placeholder.
+// AuthLogin is a P1 placeholder.
 func (s *server) AuthLogin(c *gin.Context) { notImplemented(c) }
 
-// Logout is a P1 placeholder.
-func (s *server) AuthLogout(c *gin.Context) { notImplemented(c) }
+// AuthLogout is a P1 placeholder. The CSRF gate already ran.
+func (s *server) AuthLogout(c *gin.Context, _ oapi.AuthLogoutParams) { notImplemented(c) }
 
-// ForgotPassword is a P1 placeholder.
+// AuthForgotPassword is a P1 placeholder.
 func (s *server) AuthForgotPassword(c *gin.Context) { notImplemented(c) }
 
-// ResetPassword is a P1 placeholder.
+// AuthResetPassword is a P1 placeholder.
 func (s *server) AuthResetPassword(c *gin.Context) { notImplemented(c) }
 
-// CreateUser is a P1 placeholder.
-func (s *server) UserCreate(c *gin.Context) { notImplemented(c) }
+// UserCreate is a P1 placeholder.
+func (s *server) UserCreate(c *gin.Context, _ oapi.UserCreateParams) { notImplemented(c) }
 
-// ListSchools is a P1 placeholder.
+// SchoolList is a P1 placeholder.
 func (s *server) SchoolList(c *gin.Context, params oapi.SchoolListParams) { notImplemented(c) }
 
-// CreateSchool is a P1 placeholder.
-func (s *server) SchoolCreate(c *gin.Context) { notImplemented(c) }
+// SchoolCreate is a P1 placeholder.
+func (s *server) SchoolCreate(c *gin.Context, _ oapi.SchoolCreateParams) { notImplemented(c) }
 
-// UpdateSchool is a P1 placeholder.
-func (s *server) SchoolUpdate(c *gin.Context, id oapi.SchoolID) { notImplemented(c) }
+// SchoolUpdate is a P1 placeholder.
+func (s *server) SchoolUpdate(c *gin.Context, id oapi.SchoolID, _ oapi.SchoolUpdateParams) {
+	notImplemented(c)
+}
 
-// ListSchoolAdmins is a P1 placeholder.
+// SchoolAdminList is a P1 placeholder.
 func (s *server) SchoolAdminList(c *gin.Context, id oapi.SchoolID, params oapi.SchoolAdminListParams) {
 	notImplemented(c)
 }
 
-// AddSchoolAdmin is a P1 placeholder.
-func (s *server) SchoolAdminAdd(c *gin.Context, id oapi.SchoolID) { notImplemented(c) }
-
-// RemoveSchoolAdmin is a P1 placeholder.
-func (s *server) SchoolAdminRemove(c *gin.Context, id oapi.SchoolID, uid oapi.UserID) {
+// SchoolAdminAdd is a P1 placeholder.
+func (s *server) SchoolAdminAdd(c *gin.Context, id oapi.SchoolID, _ oapi.SchoolAdminAddParams) {
 	notImplemented(c)
 }
 
-// ListAccounts is a P1 placeholder.
+// SchoolAdminRemove is a P1 placeholder.
+func (s *server) SchoolAdminRemove(c *gin.Context, id oapi.SchoolID, uid oapi.UserID, _ oapi.SchoolAdminRemoveParams) {
+	notImplemented(c)
+}
+
+// AccountList is a P1 placeholder.
 func (s *server) AccountList(c *gin.Context, params oapi.AccountListParams) { notImplemented(c) }
 
-// CreateAccount is a P1 placeholder.
-func (s *server) AccountCreate(c *gin.Context) { notImplemented(c) }
+// AccountCreate is a P1 placeholder.
+func (s *server) AccountCreate(c *gin.Context, _ oapi.AccountCreateParams) { notImplemented(c) }
 
-// GetAccount is a P1 placeholder.
+// AccountGet is a P1 placeholder.
 func (s *server) AccountGet(c *gin.Context, id oapi.AccountID) { notImplemented(c) }
 
-// UpdateAccount is a P1 placeholder.
-func (s *server) AccountUpdate(c *gin.Context, id oapi.AccountID) { notImplemented(c) }
+// AccountUpdate is a P1 placeholder.
+func (s *server) AccountUpdate(c *gin.Context, id oapi.AccountID, _ oapi.AccountUpdateParams) {
+	notImplemented(c)
+}
 
-// DeleteAccount is a P1 placeholder.
-func (s *server) AccountDelete(c *gin.Context, id oapi.AccountID) { notImplemented(c) }
+// AccountDelete is a P1 placeholder.
+func (s *server) AccountDelete(c *gin.Context, id oapi.AccountID, _ oapi.AccountDeleteParams) {
+	notImplemented(c)
+}
 
-// ReviewAccount is a P1 placeholder.
-func (s *server) AccountReview(c *gin.Context, id oapi.AccountID) { notImplemented(c) }
+// AccountReview is a P1 placeholder.
+func (s *server) AccountReview(c *gin.Context, id oapi.AccountID, _ oapi.AccountReviewParams) {
+	notImplemented(c)
+}
 
-// PauseAccount is a P1 placeholder.
-func (s *server) AccountPause(c *gin.Context, id oapi.AccountID) { notImplemented(c) }
+// AccountPause is a P1 placeholder.
+func (s *server) AccountPause(c *gin.Context, id oapi.AccountID, _ oapi.AccountPauseParams) {
+	notImplemented(c)
+}
