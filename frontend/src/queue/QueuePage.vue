@@ -136,16 +136,25 @@ async function send(req: OpRequest): Promise<{ msg?: string }> {
   return api<{ msg?: string }>(req.method, req.path, req.body);
 }
 
-/** 审核（通过/驳回）。成功后账号可能换组：三组与摘要全刷，徽标同步重取。 */
-async function doReview(row: RowView, action: "approve" | "reject", reason?: string): Promise<void> {
-  const ok = await confirmDialog({
-    title: action === "approve" ? "通过账号" : "驳回账号",
-    body: action === "approve"
-      ? `确定通过「${row.name}」(${row.phone}) 吗？通过后将参与定时签到。`
-      : `确定驳回「${row.name}」(${row.phone}) 吗？理由：${reason}`,
-    confirmText: action === "approve" ? "通过" : "驳回",
-  });
-  if (!ok) return;
+/** 审核（通过/驳回）。成功后账号可能换组：三组与摘要全刷，徽标同步重取。
+    `alreadyConfirmed`：驳回理由弹窗本身就是一次确认（含必填校验），此时不再叠第二个
+    确认框——队列页的价值就在"点即改"，同一动作连弹两个框是纯摩擦。 */
+async function doReview(
+  row: RowView,
+  action: "approve" | "reject",
+  reason?: string,
+  alreadyConfirmed = false,
+): Promise<void> {
+  if (!alreadyConfirmed) {
+    const ok = await confirmDialog({
+      title: action === "approve" ? "通过账号" : "驳回账号",
+      body: action === "approve"
+        ? `确定通过「${row.name}」(${row.phone}) 吗？通过后将参与定时签到。`
+        : `确定驳回「${row.name}」(${row.phone}) 吗？理由：${reason}`,
+      confirmText: action === "approve" ? "通过" : "驳回",
+    });
+    if (!ok) return;
+  }
   const done = await runWrite(
     () => send(reviewRequest(row, action, reason)),
     action === "approve" ? "已通过" : "已拒绝",
@@ -174,7 +183,7 @@ async function doReject(row: RowView): Promise<void> {
     toast().error("驳回理由不能为空");
     return;
   }
-  await doReview(row, "reject", reason);
+  await doReview(row, "reject", reason, true);
 }
 
 async function doRemove(row: RowView): Promise<void> {
