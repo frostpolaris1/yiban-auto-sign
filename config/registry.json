@@ -681,7 +681,11 @@
     "sensitive": false,
     "web_editable": true,
     "tier": "master",
-    "reload": "next-round"
+    "reload": "next-round",
+    "default_literal_gate": true,
+    "default_symbols": [
+      "DEFAULT_START"
+    ]
   },
   "YIBAN_SIGN_END": {
     "type": "hhmm",
@@ -710,7 +714,11 @@
     "sensitive": false,
     "web_editable": false,
     "tier": "master",
-    "reload": "next-round"
+    "reload": "next-round",
+    "default_literal_gate": true,
+    "default_symbols": [
+      "DEFAULT_RETRY_HM"
+    ]
   },
   "YIBAN_WINDOW_EDGE_FRONT_SEC": {
     "type": "seconds",
