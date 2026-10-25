@@ -13,12 +13,13 @@
 approve/reject/restore/delete/purge；`DELETE /api/accounts/<idx>` 软删；
 `POST /api/accounts/<idx>/restore|purge|review|move` 恢复/彻底删除/审核/排序；
 `POST /api/accounts/<idx>/device-refresh` 设备字段按需补全（登录一次读回服务端已登记
-设备并落库；读不到不改库）。
+设备并落库；读不到不改库）；`PUT /api/accounts/<idx>/profile` 二段资料与暴露开关的
+管理员维护面（本人自助走 my 域端点，工单 qmz4）。
 
 **归属**
 `web.app.create_app` 的"账号管理"面（管理员专用，路径不在普通用户白名单）。工厂骨架、
 跨域中间件（前置限速、登录守卫、CSRF、同源校验、安全响应头）与库访问层仍留在
-`web/app.py`，本模块只提供十一条视图。
+`web/app.py`，本模块只提供十二条视图。
 
 **复用**
 `register(app)` 供 `web.routes.register_all` 装配。`web.routes.high_risk_gate()` 取回
@@ -312,6 +313,46 @@ def api_account_detail(idx):
     _read_audit_trace()(
         "account_detail_read", _masking.mask_phone(str(acc.get("phone", ""))))
     return jsonify({"ok": True, "account": _accounts_data.mask_account(acc, idx, masked=False)})
+
+
+def api_account_profile(idx):
+    """维护账号二段资料与暴露开关（管理员维护面；本人自助走 /api/my-accounts/<idx>/profile）。
+
+    权限口径跟既有账号编辑门同形：本路径在管理面空间，普通用户由全局登录守卫
+    403 并留 forbidden_path 审计；本人改自己的走本人面端点。对齐令牌：管理面
+    写口 fail-closed，请求必须携带 `phone`（掩码形态可），防列表漂移后把资料
+    写错行（与 delete/restore/review 同闸）。
+    资料内容是 PII：落库走存储层同通道加密；审计 detail 只记字段名
+    （`profile_audit_detail`），字段值不进审计与日志（qmz4 判据⑥）。
+    """
+    m = _appmod()
+    with _locks._file_lock:
+        acc = _accounts_data.load_account_at(idx)  # 只解密目标行（dnox-B 同法）
+        if acc is None:
+            return jsonify({"error": "账号不存在"}), 404
+        if acc.get("deleted"):
+            return jsonify({"error": "账号已删除，请先恢复"}), 400
+        data = _http._json_body()
+        if _accounts_data._stale_idx_guard(acc, data, fail_closed=True):
+            return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
+        err, profile, expose = _accounts_data.normalize_profile_input(data)
+        if err:
+            return jsonify({"error": err}), 400
+        try:
+            content, flags = db.update_account_profile(
+                acc["id"], profile, expose,
+                audit_spec={
+                    "username": session.get("username") or "?",
+                    "action": "account_profile_update",
+                    "target": _masking.mask_phone(str(acc.get("phone", ""))),
+                    "detail": _accounts_data.profile_audit_detail(profile, expose),
+                },
+            )
+        except ValueError as e:
+            # 底子损坏（profile 列非合法 JSON）：拒绝覆盖写入，回 500 让维护者先修数据
+            m.logger.warning("账号资料维护失败（疑似脏数据）: %s", e)
+            return jsonify({"error": str(e)}), 500
+        return jsonify({"ok": True, "profile": content, "expose": flags})
 
 
 def api_account_device_refresh(idx):
@@ -1219,11 +1260,13 @@ def api_account_move(idx):
 
 
 def register(app):
-    """在本域注册十一条账号管理路由；endpoint 取函数名（url_for 依赖）。"""
+    """在本域注册十二条账号管理路由；endpoint 取函数名（url_for 依赖）。"""
     app.add_url_rule("/api/accounts", view_func=api_accounts)
     app.add_url_rule("/api/accounts/<int:idx>/detail", view_func=api_account_detail)
     app.add_url_rule("/api/accounts/<int:idx>/device-refresh",
                      view_func=api_account_device_refresh, methods=["POST"])
+    app.add_url_rule("/api/accounts/<int:idx>/profile", view_func=api_account_profile,
+                     methods=["PUT"])
     app.add_url_rule("/api/accounts", view_func=api_account_add, methods=["POST"])
     app.add_url_rule("/api/accounts/<int:idx>", view_func=api_account_update, methods=["PUT"])
     app.add_url_rule("/api/accounts/batch", view_func=api_accounts_batch, methods=["POST"])

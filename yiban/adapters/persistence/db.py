@@ -12,7 +12,7 @@
 
 本模块再导出的同包模块（各域唯一定义点不在本模块）：
 - `connection`：连接单例与路径（`_conn`/`_conn_lock`/`_db_file`/`_env_file`/`get_conn`）。
-- `migrations`：建表/索引、`migrate_v1..v21`、版本编排 `_run_migrations` 与完整性校验
+- `migrations`：建表/索引、`migrate_v1..v25`、版本编排 `_run_migrations` 与完整性校验
   （`MigrationIntegrityError`：迁移记录/登记产物缺失 ⇒ 拒启），以及 JSON → SQLite
   自动导入 `_maybe_migrate` / `_rename_backup`。
 - `audit_chain`：`audit()` 写入链路、哈希链校验、库外锚点族、审计密钥来源与缓存。
@@ -427,6 +427,7 @@ _FORWARDED_STATE = {
     "_convert_integrity_error": _accounts,
     "add_account": _accounts,
     "update_account": _accounts,
+    "update_account_profile": _accounts,
     "set_account_deleted": _accounts,
     "purge_account": _accounts,
     "update_account_status": _accounts,

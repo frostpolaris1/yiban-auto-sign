@@ -135,6 +135,8 @@ _ARTIFACTS = {
     21: (("run_events", None),),                          # migrate_v21 建表
     23: (("egress_state", "half_open_until"),),           # migrate_v23 补列
     24: (("emit_ledger", None),),                         # migrate_v24 建表
+    25: (("accounts", "profile"),                         # migrate_v25 补两列
+         ("accounts", "profile_expose")),
 }
 
 
@@ -1226,6 +1228,28 @@ def migrate_v24(conn):
     _commit_if_free(conn)
 
 
+def migrate_v25(conn):
+    """v25：accounts 补 `profile` / `profile_expose` 两列——二段资料与逐字段暴露开关。
+
+    **为什么是两条 JSON 列而不是 5+5 条平铺列**：五字段（姓名/学号/学院/班级/邮箱，
+    词表见 `accounts.PROFILE_FIELDS`）是一个逻辑聚合，读写同发，库内没有按单字段
+    过滤/排序的需求；加密通道按值 AES-GCM，整体一枚密文一次加解密——分列则改绑
+    重加密、明文自愈、写入白名单三处字段循环全部扩面五倍。开关单独一列且**明文**：
+    布尔集合不是 PII，读它不需要密钥，混进密文会让"只看开关"的路径被密钥可用性绑架。
+
+    **加密口径**：`profile` 内容与 password/phone_code 同通道同 envelope
+    （`account_crypto.encrypt_password`，AAD=手机号），行内落 JSON 串；空资料落
+    空串（与"空凭据显式语义"同口径）。改绑重加密与明文自愈复用 `update_account` /
+    `_decrypt_row` 的既有字段循环（同批把 "profile" 加进同一批元组），不另立第二套。
+
+    **核心迁移**：维护写口对该列名硬编 UPDATE，缺列即 500；产物登记进 `_ARTIFACTS`
+    fail-closed，与 accounts 表既有补列档（v1/v10/v13）同档。
+    """
+    _ensure_column(conn, "accounts", "profile", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "accounts", "profile_expose", "TEXT NOT NULL DEFAULT ''")
+    _commit_if_free(conn)
+
+
 # 迁移项格式：(目标版本号, 名称, 函数, 是否核心)
 # - 核心迁移：现有功能依赖，失败应阻断启动。
 # - 可选迁移：未来/非关键能力，失败只告警或延后重试。
@@ -1270,6 +1294,9 @@ _MIGRATIONS = [
     # v24 核心：「是否已经说过」的持久仲裁者（单 3zr5）。缺表时入口 fail-open ⇒
     # 观测面重复而不报错，正是本单要根治的形状，故 fail-closed。
     (24, "v24_emit_ledger", migrate_v24, True),
+    # v25 核心：accounts 补二段资料密文列与暴露开关列（工单 qmz4）。维护写口硬编
+    # 列名；缺列时写口 500、读面静默丢能力，与 accounts 既有补列档同判核心。
+    (25, "v25_account_profile", migrate_v25, True),
 ]
 
 
@@ -1600,10 +1627,19 @@ def _maybe_migrate(conn, json_base):
                         phone_code = json.dumps(account_crypto.encrypt_password(phone_code, key, a.get("phone", "")))
                     elif isinstance(phone_code, dict):
                         phone_code = json.dumps(phone_code)
+                # 二段资料（工单 qmz4）：与替换路径共用同一个形态归一助手
+                # （`accounts.cipher_field_for_replay`）——密文透传、明文（含明文 dict）
+                # 加密。两处各写一遍曾是孪生缺陷的来源，故只保留一份实现。
+                profile = a.get("profile", "") or ""
+                if profile and not _accounts._is_encrypted_value(profile):
+                    had_plaintext = True
+                profile = _accounts.cipher_field_for_replay(profile, a.get("phone", ""))
+                # 暴露开关是明文 JSON（布尔集非 PII）：形态归一只，不经密钥
+                profile_expose = _accounts._as_plain_json(a.get("profile_expose"))
                 cur = conn.execute(
                     "INSERT OR IGNORE INTO accounts "
-                    "(sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason, deleted, deleted_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    "(sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason, deleted, deleted_at, profile, profile_expose) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         i + 1,
                         a.get("name", ""),
@@ -1616,6 +1652,8 @@ def _maybe_migrate(conn, json_base):
                         a.get("reject_reason", ""),
                         1 if a.get("deleted") else 0,
                         a.get("deleted_at", ""),
+                        profile,
+                        profile_expose,
                     ),
                 )
                 imported_accounts += cur.rowcount
@@ -1714,6 +1752,14 @@ def _rename_backup(path, reencrypt=False, key=None):
                         a["phone_code"] = json.dumps(
                             account_crypto.encrypt_password(code, key, a.get("phone", ""))
                         )
+                        changed = True
+                    # 二段资料（工单 qmz4）是第三枚 PII 密文字段：明文形态同理重写为
+                    # 加密版，否则 `.bak` 逃生门会把资料明文长期留在磁盘上。形态归一
+                    # 与导入/替换路径共用 `accounts.cipher_field_for_replay`。
+                    prof = a.get("profile", "") or ""
+                    if prof and not _accounts._is_encrypted_value(prof):
+                        a["profile"] = _accounts.cipher_field_for_replay(
+                            prof, a.get("phone", ""))
                         changed = True
                 if changed:
                     tmp = bak + ".tmp" + str(os.getpid())
