@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """签到/探针子进程环境构造（run.sh、container_scheduler、web 共用口径）。
 
+坐标：`yiban/infra/env_child.py`（B1 自 scripts 目录移入；旧路径不留壳）。
+导入方按包坐标取：`from yiban.infra import env_child`。
+
 此前 web 手动签到子进程只继承 gunicorn 启动时的环境快照，
 管理员事后在 .env 改的 YIBAN_PROXY / YIBAN_NOTIFY_URL / 登录方式等对手动签到
 不生效（定时签到经 run.sh/scheduler 每次重读 .env，两条路径行为分叉）。
@@ -16,15 +19,8 @@
 """
 import logging
 import os
-import sys
 
-# 仓库根引导（`scripts/*` 直跑时 sys.path[0] 是本目录）：必须在任何 `yiban` 导入之前。
-# 见 `tests/test_deploy_entry_imports.py` 的结构守卫。
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
-
-from yiban.adapters.config import env_io  # noqa: E402  （引导块必须在 import 之前）
+from yiban.adapters.config import env_io
 
 # 告警通道：与 `yiban.adapters.config.env_io` 的 .env 解析告警同通道。调度器
 # （docker/scheduler.py 的 `_setup_logging`）与 web 入口都把 root 挂上处理器并把

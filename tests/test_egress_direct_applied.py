@@ -6,7 +6,7 @@
    ——把出口交给执行体的那一次环境写入：
    ①监督进程按槽位拉起执行体时，父环境里的 `YIBAN_PROXY` 不得留在被显式配成直连
       （清单行 `proxy` 为空）的那个槽位上；旧口径 `YIBAN_PROXY_LIST` 的空元素同判；
-   ②同一份槽位配置经 `.env` 覆盖注入（`scripts/child_env.build_child_env`——web 手动
+   ②同一份槽位配置经 `.env` 覆盖注入（`yiban.infra.env_child.build_child_env`——web 手动
       签到与容器调度器共用的环境底座）交进来，也必须落到直连；
    ③兜底常驻执行体（角色 `fallback`，写的是本进程 `os.environ`）同判；
    ④`describe()` 给管理员看的显示必须等于执行体实际出网的出口（工单点名的"两侧都
@@ -33,7 +33,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-import child_env  # scripts/ 在 pytest 的 pythonpath 里
+from yiban.infra import env_child as child_env
 
 from yiban import egress
 from yiban.workers import workers

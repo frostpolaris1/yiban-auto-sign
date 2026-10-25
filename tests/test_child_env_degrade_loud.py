@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""ba-p11-04 止血回归：`scripts/child_env.py` 读不到 `.env` 必须响亮告警。
+"""ba-p11-04 止血回归：`yiban/infra/env_child.py` 读不到 `.env` 必须响亮告警。
 
 标签：B · 调度：领取/队列/执行体
-覆盖：`scripts/child_env.py` 的两类读失败出口（路径不存在 / 存在但不可读）必须各留
+覆盖：`yiban/infra/env_child.py` 的两类读失败出口（路径不存在 / 存在但不可读）必须各留
    一行 WARNING（点名路径 + 说明后果），且取值仍是"告警后继续"（返回继承环境、不抛）；
    可读路径不得告警；容器调度器与 web 手动签到两条消费方路径下告警必须到达 root
    日志面（即调度器 stdout handler / web 按天文件 handler 所挂的祖先）。
-对应实现：`scripts/child_env.py`（parse_env_file / build_child_env）、
+对应实现：`yiban/infra/env_child.py`（parse_env_file / build_child_env）、
    `docker/scheduler.py::_run_signin_child`、`web/routes/signin_api.py::_launch_signin_proc`。
 关键断言：三类形态必须**分别**成立——不存在与不可读的消息不同、都不抛、可读时零告警。
    把三者混成"任何 OSError 一律静默"（本次修复前的形态）正是工单点名的病：管理员事后
@@ -44,9 +44,9 @@ def _load_module(path, name):
 
 
 def _load_child_env():
-    """按文件路径装载 `scripts/child_env.py`（非包内模块，沿用既有装载方式）。"""
+    """按文件路径装载 `yiban/infra/env_child.py`（非包内模块，沿用既有装载方式）。"""
     return _load_module(
-        os.path.join(BASE, "scripts", "child_env.py"), "yiban_child_env_degrade")
+        os.path.join(BASE, "yiban", "infra", "env_child.py"), "yiban_child_env_degrade")
 
 
 class _Capture(logging.Handler):
@@ -185,8 +185,7 @@ class ChildEnvConsumerVisibilityTest(unittest.TestCase):
 
     def test_web_manual_signin_spawn_warns_to_root(self):
         """真入口：web 手动签到的子进程 spawn（`_launch_signin_proc`）。"""
-        sys.path.insert(0, os.path.join(BASE, "scripts"))
-        import child_env
+        from yiban.infra import env_child as child_env
 
         from web.routes import signin_api
 
