@@ -30,7 +30,7 @@
   "YIBAN_USERS_FILE": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "三份模板均无该键的取值行；名册缺省 null"
     }
   },
   "YIBAN_APP_DIR": {
@@ -60,7 +60,7 @@
   "YIBAN_BACKUP_DATA_DIR": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "三份模板均无该键的取值行；名册缺省 null"
     }
   },
   "YIBAN_BACKUP_SCRIPT": {
@@ -90,13 +90,13 @@
   "YIBAN_EXECUTORS": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "三份模板均无该键的取值行；名册缺省 null"
     }
   },
   "YIBAN_EXECUTOR_ID": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "三份模板均无该键的取值行；名册缺省 null"
     }
   },
   "YIBAN_PROXY": {
@@ -108,13 +108,13 @@
   "YIBAN_PROXY_LIST": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "模板取值 .env.example=http://a:1,http://b:2,,http://d:4；README.md=http://a:1,http://b:2,http://c:3；名册缺省 null；载体间不一致——归 yiban-auto-sign-7yf 拍板"
     }
   },
   "YIBAN_PROXY_FALLBACK": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "模板取值 .env.example=http://fb:8080；README.md=http://fb:8080；名册缺省 null；多处取值相同——归 yiban-auto-sign-7yf 拍板"
     }
   },
   "YIBAN_FALLBACK_ENABLE": {
@@ -159,7 +159,7 @@
   "YIBAN_GLOBAL_RATE": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "三份模板均无该键的取值行；名册缺省 null"
     }
   },
   "YIBAN_AVG_ATTEMPT_SEC": {
@@ -192,7 +192,7 @@
   "YIBAN_RUN_LOCK_NAME": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "三份模板均无该键的取值行；名册缺省 null"
     }
   },
   "YIBAN_RUN_LOCK_WAIT": {
@@ -204,7 +204,7 @@
   "YIBAN_RUN_TIMEOUT_SEC": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "模板取值 .env.example=1800；.env.docker.example=3600；名册缺省 null；载体间不一致——归 yiban-auto-sign-7yf 拍板"
     }
   },
   "YIBAN_HOST_SECOND_ROUND": {
@@ -222,7 +222,7 @@
   "YIBAN_SIGN_MODE": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "三份模板均无该键的取值行；名册缺省 null"
     }
   },
   "YIBAN_SIGN_START": {
@@ -294,49 +294,49 @@
   "YIBAN_START_DELAY_MAX": {
     "default_literal_gate_exempt": {
       "class": "example_diverges",
-      "reason": "已废弃键：读取后不生效（名册 doc 明示），模板保留历史值 60；名册缺省 0"
+      "reason": "不再参与调度，仅设置页读取展示（web/routes/settings_api.py:261、web/services/env_io.py:357）；名册缺省 0，模板保留历史值 60"
     }
   },
   "YIBAN_ACCOUNTS": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "模板取值 .env.example=13800138000:your_password#13900139000:another_password；README.md=13800138000:your_password；名册缺省 null；载体间不一致——归 yiban-auto-sign-7yf 拍板"
     }
   },
   "YIBAN_ACCOUNTS_JSON": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "模板取值 .env.example=[{\"phone\":\"13800138000\",\"password\":\"pwd\",\"phone_model\":\"Vivo-XXXX\",\"phone_code\":\"xxxx...\"}]；README.md=[{\"phone\":\"13800138000\",\"password\":\"你的密码\",\"phone_model\":\"Vivo-XXXX\",\"phone_code\":\"64位识别码\"}]；名册缺省 null；载体间不一致——归 yiban-auto-sign-7yf 拍板"
     }
   },
   "YIBAN_ACCOUNTS_KEY": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "模板取值 .env.example=<64位随机十六进制>（生成：python3 -c \"import secrets;print(secrets.token_hex(32))\"）；名册缺省 null；仅一处取值——归 yiban-auto-sign-7yf 拍板"
     }
   },
   "YIBAN_PHONE": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "模板取值 .env.example=13800138000；名册缺省 null；仅一处取值——归 yiban-auto-sign-7yf 拍板"
     }
   },
   "YIBAN_PASSWORD": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "模板取值 .env.example=your_password；名册缺省 null；仅一处取值——归 yiban-auto-sign-7yf 拍板"
     }
   },
   "YIBAN_PHONE_MODEL": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "模板取值 .env.example=Vivo-XXXX；.env.docker.example（说明行:App 上报的机型名；示例行:Vivo-XXXX）；名册缺省 null；载体间不一致——归 yiban-auto-sign-7yf 拍板"
     }
   },
   "YIBAN_PHONE_CODE": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "模板取值 .env.example=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx；.env.docker.example（说明行:App 上报的设备唯一识别码；示例行:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx）；名册缺省 null；载体间不一致——归 yiban-auto-sign-7yf 拍板"
     }
   },
   "YIBAN_ACCOUNT_VERIFY": {
@@ -357,25 +357,25 @@
   "YIBAN_HEALTH_REPORT_TIME": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "模板取值 .env.example=09:00；名册缺省 null；仅一处取值——归 yiban-auto-sign-7yf 拍板"
     }
   },
   "YIBAN_HEALTH_REPORT_WEEKDAY": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "模板取值 .env.example=0；名册缺省 null；仅一处取值——归 yiban-auto-sign-7yf 拍板"
     }
   },
   "YIBAN_AUDIT_KEY": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "三份模板均无该键的取值行；名册缺省 null"
     }
   },
   "YIBAN_TRACK_SALT": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "三份模板均无该键的取值行；名册缺省 null"
     }
   },
   "YIBAN_LEGACY_LOGIN": {
@@ -414,19 +414,19 @@
   "YIBAN_ADMIN_USER": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "模板取值 .env.example=admin；名册缺省 null；仅一处取值——归 yiban-auto-sign-7yf 拍板"
     }
   },
   "YIBAN_ADMIN_PASSWORD": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "名册缺省 null；仅出现在 CLI 命令示例（env 前缀写法，不是模板取值行）；三份模板无该键取值行"
     }
   },
   "YIBAN_ADMIN_PASSWORD_HASH": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "模板取值 .env.example=scrypt:65536:8:1$...；名册缺省 null；仅一处取值——归 yiban-auto-sign-7yf 拍板"
     }
   },
   "YIBAN_ADMIN_PW_VERSION": {
@@ -438,13 +438,13 @@
   "YIBAN_ADMIN_SID": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "模板取值 .env.example=；名册缺省 null；仅一处取值——归 yiban-auto-sign-7yf 拍板"
     }
   },
   "YIBAN_SECRET_KEY": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "三份模板均无该键的取值行；名册缺省 null"
     }
   },
   "YIBAN_COOKIE_SECURE": {
@@ -594,19 +594,19 @@
   "YIBAN_MAIL_USER": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "模板取值 .env.example=your@qq.com；.env.docker.example=your@qq.com；README.md=你的发件邮箱@qq.com；名册缺省 null；载体间不一致——归 yiban-auto-sign-7yf 拍板"
     }
   },
   "YIBAN_MAIL_PASS": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "模板取值 .env.example=你的QQ邮箱授权码；.env.docker.example=你的QQ邮箱授权码（敏感凭据，只填 data/.env，勿写本模板）；README.md=你的QQ邮箱授权码；名册缺省 null；载体间不一致——归 yiban-auto-sign-7yf 拍板"
     }
   },
   "YIBAN_MAIL_ADMIN_TO": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "模板取值 .env.example=your@qq.com；.env.docker.example=your@qq.com；README.md=管理员收件邮箱@qq.com；名册缺省 null；载体间不一致——归 yiban-auto-sign-7yf 拍板"
     }
   },
   "YIBAN_MAIL_SMTPS_ENC": {
@@ -642,7 +642,7 @@
   "YIBAN_TRIGGER": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "三份模板均无该键的取值行；名册缺省 null"
     }
   },
   "YIBAN_BACKUP_INSTALLED": {
@@ -657,7 +657,7 @@
   "YIBAN_BACKUP_PASSPHRASE": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省为 null；无字面量可断言"
+      "reason": "三份模板均无该键的取值行；名册缺省 null"
     }
   },
   "YIBAN_READ_PASSPHRASE_STDIN": {
