@@ -11,7 +11,9 @@ clock.location	call	internal/core/clock/	time.LoadLocation	internal/core/clock/,
 clock.tz	string	internal/core/clock/	Asia/Shanghai	internal/core/clock/,internal/adapters/config/,internal/entry/http/oapi/	use the configured timezone
 env.get	call	internal/adapters/config/	os.Getenv	internal/adapters/config/	read environment only in adapters/config
 env.lookup	call	internal/adapters/config/	os.LookupEnv	internal/adapters/config/	read environment only in adapters/config
-status.literal	string	internal/core/status/	pending,running,success,failed,skipped	internal/core/status/,internal/signing/contract/,internal/entry/http/oapi/	use status.TaskState constants
+# core/account is in the allow list because account status shares the word
+# "pending" with task status. Account status is a different vocabulary.
+status.literal	string	internal/core/status/	pending,running,success,failed,skipped	internal/core/status/,internal/signing/contract/,internal/entry/http/oapi/,internal/core/account/	use status.TaskState constants; account status comes from core/account
 errors.http	call	internal/entry/http/respond/	http.Error	internal/entry/http/respond/	use respond.Error
 mask.phone	func	internal/core/mask/	MaskPhone	internal/core/mask/	use mask.MaskPhone
 mask.email	func	internal/core/mask/	MaskEmail	internal/core/mask/	use mask.MaskEmail

@@ -9,8 +9,9 @@
 root	server,ui,docs,work,deploy,docker,yiban,web,frontend,tests,scripts,config,data,out,.github	top level
 server/internal	core,app,adapters,entry,signing	layers
 server/cmd	server,cli	process entrypoints
-server/internal/core	auth,user,school,account,schedule,signing,photo,audit,notify,diagnostic,clock,status,errs,mask,retry,egress,plan,capacity,image	pure domain packages
-?server/internal/app	auth,user,school,account,schedule,signing,photo,audit,notify,diagnostic	use cases; remove ? when Wave 2 lands
+server/migrations	postgres	SQL migrations
+server/internal/core	auth,user,school,account,schedule,signing,photo,audit,notify,diagnostic,clock,status,errs,mask,retry,egress,plan,capacity,image,scope	pure domain packages
+server/internal/app	auth,user,school,account,schedule,signing,photo,audit,notify,diagnostic	use cases
 server/internal/adapters	pg,session,config,audit,mail,sse,image,upstream	infrastructure packages
 server/internal/entry/http	router,respond,oapi,auth,user,school,account,schedule,signing,photo,audit,notify,diagnostic	http handlers
 ui/src	app,pages,features,components,lib,styles	frontend layers

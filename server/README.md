@@ -19,9 +19,17 @@ server/
 ├── internal/core/egress       the only egress identity
 ├── internal/core/plan         the only slot geometry
 ├── internal/core/capacity     owner stub (P4)
+├── internal/core/account      account status, record and credential types
+├── internal/core/audit        audit chain encoding and verification
+├── internal/core/scope        master / admin / user authorization scope
+├── internal/core/school       school and binding types
+├── internal/core/user         user record types
+├── internal/app               use-case ports (repository interfaces, TxManager)
+├── internal/adapters/pg       PostgreSQL repositories, pool, transactions, migrations
 ├── internal/core/image        owner stub (P5)
 ├── internal/adapters/config   the only environment reader
 ├── internal/adapters/session  in-memory SessionIssuer (development only)
+├── migrations/postgres        goose migrations, embedded in the binary
 ├── internal/signing/contract  provider v1
 ├── internal/entry/http/oapi     generated contract types and Gin handlers
 ├── internal/entry/http/router   Gin assembly, middleware, auth skeleton
@@ -67,13 +75,21 @@ Implemented in P0: clock, status, errors, mask, config, retry, egress, plan,
 provider contract, error envelope, and the gate with mutation tests.
 
 P1 so far: the OpenAPI 3.1 contract, generated transport types, the Gin
-assembly with request id, panic recovery, access log and auth middleware, and
-an in-memory `SessionIssuer`. Every business endpoint answers 501 through the
-generated handlers until its own task lands.
+assembly with request id, panic recovery, access log and auth middleware, an
+in-memory `SessionIssuer`, and the PostgreSQL layer: nine forward-only goose
+migrations, a pgxpool with `statement_timeout`, a READ COMMITTED transaction
+manager, and repositories for users, sessions, schools, administrator
+bindings, accounts, credentials, audit and password resets. Every business
+endpoint still answers 501 through the generated handlers until its use case
+lands.
 
-Not implemented yet: database, login, RBAC, scheduling, image pipeline,
-frontend. Those land in later P1 tasks and P2+. `scripts/generate.sh --check`
-fails when `contracts/openapi.yaml` and the generated code drift apart.
+Not implemented yet: login, RBAC, scheduling, image pipeline, frontend. Those
+land in later P1 tasks and P2+. `scripts/generate.sh --check` fails when
+`contracts/openapi.yaml` and the generated code drift apart.
+
+Database tests need a real PostgreSQL 18. Set `YIBAN_TEST_DATABASE_URL`; when
+it is unset they skip and print a warning. CI starts a `postgres:18` service
+for the `stacks` job.
 
 ## Boundary
 
