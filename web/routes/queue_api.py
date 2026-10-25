@@ -65,8 +65,6 @@ from yiban.core import status as yiban_status
 _BUCKETS = ("failed", "unsigned")
 #: 单账号事件时间线的响应封顶。
 _EVENTS_CAP = 50
-#: 事件消息截断长度（与 /api/admin/sign-events 的 `_mask` 同值）。
-_EVENT_MSG_MAX = 160
 #: 「今天」的星期展示（Monday=0 → 周一）。
 _WEEKDAYS = ("一", "二", "三", "四", "五", "六", "日")
 
@@ -234,7 +232,7 @@ def api_queue_events(idx):
     masked = _masking.mask_phone(phone)
     raw = db.sign_events_by_phone(phone, days=days)  # 时间升序
     window = recent_window(raw)
-    events = [_mask_event(ev) for ev in window]
+    events = [_logs_svc.mask_event(ev) for ev in window]
     _read_audit_trace()("queue_events_read", f"{masked} 近 {days} 天 {len(raw)} 条")
     return jsonify({
         "ok": True,
@@ -256,20 +254,6 @@ def recent_window(events, cap=_EVENTS_CAP):
     if cap <= 0:
         return []
     return list(events[-cap:])
-
-
-def _mask_event(ev):
-    """事件行脱敏序列化（字段集合与 /api/admin/sign-events 的 `_mask` 同形）。"""
-    msg = str(ev.get("message") or "")
-    return {
-        "ts": str(ev.get("ts", "")),
-        "phone": _masking.mask_phone(str(ev.get("phone") or "")),
-        "status": str(ev.get("status") or ""),
-        "message": (msg[:_EVENT_MSG_MAX] + "…") if len(msg) > _EVENT_MSG_MAX else msg,
-        "stage": str(ev.get("stage") or ""),
-        "attempt": int(ev.get("attempt") or 0),
-        "dur_sec": ev.get("dur_sec"),
-    }
 
 
 def register(app):
