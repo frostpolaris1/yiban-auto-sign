@@ -56,10 +56,14 @@ AST 里键名是 `ast.Constant`、缺省值是另一处 `ast.Constant`，"同行
   但那种写法的取值与规范写法相同（1 == 1.0），不构成静默改值。
 - 判据 4 只认模板里的 `KEY=值` 行。README 表格/散文里写"默认 `500`"这类**没有
   `KEY=` 前缀**的取值不在判据内；它靠评审，不靠本门。
+- 判据 4 **不比较** `docker-compose.yml` 的注入值。compose 是部署形态声明，
+  不是模板缺省：11 行 `YIBAN_*=` 注入里，4 个开门键是容器路径重映射
+  （`YIBAN_ENV_FILE` / `YIBAN_DB_FILE` / `YIBAN_STATE_DIR` / `YIBAN_LOG_FILE`
+  = `/data/…`），属容器形态刻意值，不入等值判据。
 - 判据 4 只处置**模板侧**。代码侧仍由 registry 的 `default_literal_gate` 声明
   （本批 3 键）。46 键在代码/散文中仍有与键名同行的缺省字面量（判据 2a 形状；
   口径=本门文本扫描的同行命中数，非全部运行时读取点）；S2 不动代码取值，
-  这些键的代码侧收口归后续批次，清单在 S2 报告里逐键列出。
+  这些键的代码侧收口归后续批次，清单见 bd 单 `yiban-auto-sign-7yf`。
 
 **归属**
 门禁/运维侧脚本（`scripts/`）。处置册：`config/default-gate-register.json`
@@ -435,12 +439,17 @@ def _check_unregistered(root, files, registry, cache):
 
 
 def _read_register(path):
-    """读处置册。缺失/坏 JSON/顶层不是对象 ⇒ 拒判（2）：没有处置册就无法判"逐键处置"。"""
-    if not os.path.isfile(path):
-        _die("处置册不存在: %s——每个名册键必须逐键处置（开门或豁免+理由）" % path)
+    """读处置册。读不了/坏 JSON/顶层不是对象 ⇒ 拒判（2）。
+
+    "读不了"包括缺失文件、路径是目录、权限拒绝：它们都是环境错误（2），
+    不是"有违规"（1）。不先 `isfile` 预判，`io.open` 的 OSError 统一收口。
+    """
     try:
         with io.open(path, encoding="utf-8-sig") as f:
             raw = json.load(f)
+    except OSError as exc:
+        _die("处置册读不了: %s（%s）——每个名册键必须逐键处置（开门或豁免+理由）"
+             % (path, exc))
     except ValueError as exc:
         _die("处置册不是合法 JSON: %s（%s）" % (path, exc))
     if not isinstance(raw, dict):
@@ -448,10 +457,16 @@ def _read_register(path):
     return raw
 
 
-def _validate_register(register, registry):
-    """判据 4 的前置：处置册必须覆盖每个名册键，且每键恰好一种合法处置。
+def _validate_register(register, registry, occurrences):
+    """判据 4 的前置：处置册必须覆盖每个名册键，每键恰好一种合法处置。
 
-    返回覆盖缺口条数（退出码 1）。字段形状/未知类别/缺理由/开门却无缺省是
+    另外钉住豁免类别与事实一致（三条零成本前提）：
+    - `no_default` ⇒ 名册缺省为 None；
+    - `no_template_value` ⇒ 三份载体零取值行；
+    - `example_diverges` ⇒ 至少一行取值不等于缺省。
+    豁免写错类别会让判据静默失去覆盖，故按违规（1）判红。
+
+    返回违规条数（退出码 1）。字段形状/未知类别/缺理由/开门却无缺省是
     **门禁自身的输入错误**（2）——它们让判据无法成立，不是"内容违规"。
     """
     known = set(CL.registry_keys(registry))
@@ -494,6 +509,30 @@ def _validate_register(register, registry):
         reason = exempt.get("reason")
         if not isinstance(reason, str) or not reason.strip():
             _die("处置册 %s 的豁免缺 reason——豁免必须有理由" % key)
+        # ——豁免类别必须与事实一致（写错类别＝静默失去覆盖）
+        default = spec.get("default")
+        rows = occurrences.get(key, [])
+        if klass == "no_default":
+            if default is not None:
+                print("处置册错配: %s 标了 no_default，但名册缺省是 %r——"
+                      "豁免类别必须与名册一致" % (key, default))
+                viol += 1
+        elif klass == "no_template_value":
+            if rows:
+                print("处置册错配: %s 标了 no_template_value，但模板有 %d 行取值"
+                      "（%s）" % (key, len(rows),
+                                  "、".join("%s:%d" % (c, ln) for c, ln, _ in rows)))
+                viol += 1
+        else:                                   # example_diverges
+            allowed = _default_renderings(default)
+            if allowed is None:
+                print("处置册错配: %s 标了 example_diverges，但名册没有缺省——"
+                      "应标 no_default" % key)
+                viol += 1
+            elif not any(value not in allowed for _, _, value in rows):
+                print("处置册错配: %s 标了 example_diverges，但模板取值全部等于缺省"
+                      "——要么改成开门，要么写明真正的差异" % key)
+                viol += 1
     return viol
 
 
@@ -527,7 +566,11 @@ def _parse_template_line(line):
 
 
 def _default_renderings(default):
-    """缺省值在模板里的合法写法集合（None = 名册无缺省，无可断言）。"""
+    """缺省值在模板里的合法写法集合。
+
+    `None` = 名册无缺省（无可断言）。非标量（dict/list 等）返回**空集**：
+    这样的缺省拿不到单行写法，任何取值都不算等值。调用方据此拒判。
+    """
     if default is None:
         return None
     if isinstance(default, bool):
@@ -541,21 +584,15 @@ def _default_renderings(default):
         return out
     if isinstance(default, str):
         return {default}
-    return None
+    return set()
 
 
-def _check_template_defaults(root, registry, register, min_gated):
-    """判据 4：模板载体里的缺省声明必须等于名册缺省。返回违规条数。
+def _read_template_occurrences(root):
+    """读三份模板载体 → `{键: [(载体, 行号, 值)]}`。
 
-    载体缺失/没有任何取值行/开门键数不足下限 ⇒ 拒判（2）：这三种都是
-    "判据看的面塌了"，静默放绿比红更危险。
+    载体缺失/没有任何取值行 ⇒ 拒判（2）：判据 4 看的面塌了，静默放绿比红更危险。
     """
-    gated = sorted(k for k, v in register.items()
-                   if isinstance(v, dict) and v.get("default_literal_gate") is True)
-    if len(gated) < min_gated:
-        _die("处置册只开了 %d 键模板缺省门（< --min-template-gated %d）——"
-             "把处置册整体改成豁免不能算合规" % (len(gated), min_gated))
-    occurrences = {k: [] for k in gated}
+    occurrences = {}
     for carrier in TEMPLATE_CARRIERS:
         path = os.path.join(root, carrier)
         if not os.path.isfile(path):
@@ -567,24 +604,36 @@ def _check_template_defaults(root, registry, register, min_gated):
                 continue
             count += 1
             key, value = parsed
-            if key in occurrences:
-                occurrences[key].append((carrier, lineno, value))
+            occurrences.setdefault(key, []).append((carrier, lineno, value))
         if count == 0:
             _die("模板载体 %s 没有任何 KEY=值 行——载体塌陷即拒判" % carrier)
+    return occurrences
+
+
+def _check_template_defaults(registry, register, min_gated, occurrences):
+    """判据 4：模板载体里的缺省声明必须等于名册缺省。返回违规条数。"""
+    gated = sorted(k for k, v in register.items()
+                   if isinstance(v, dict) and v.get("default_literal_gate") is True)
+    if len(gated) < min_gated:
+        _die("处置册只开了 %d 键模板缺省门（< --min-template-gated %d）——"
+             "把处置册整体改成豁免不能算合规" % (len(gated), min_gated))
     viol = 0
     for key in gated:
-        rows = occurrences[key]
+        rows = occurrences.get(key, [])
         if not rows:
             print("模板缺省缺位: %s 开了门但三份模板都没有它的取值行——"
                   "门空转不算覆盖" % key)
             viol += 1
             continue
-        allowed = _default_renderings(registry[key].get("default"))
+        default = registry[key].get("default")
+        allowed = _default_renderings(default)
+        if not allowed:
+            _die("处置册 %s 开了模板缺省门，但缺省 %r 拿不到单行写法——判据无处可判"
+                 % (key, default))
         for carrier, lineno, value in rows:
             if value not in allowed:
                 print("模板缺省漂移: %s 在 %s:%d 写的是 %r，名册缺省是 %r——"
-                      "模板与名册必须同值"
-                      % (key, carrier, lineno, value, registry[key].get("default")))
+                      "模板与名册必须同值" % (key, carrier, lineno, value, default))
                 viol += 1
     return viol
 
@@ -653,8 +702,9 @@ def main(argv=None):
         print("名册不合法: %s" % exc)
         viol += 1
 
-    # ——判据 4 的前置：每个名册键恰好一种处置
-    viol += _validate_register(register, raw)
+    # ——判据 4 的前置：读模板载体（缺失/塌陷即拒判），再核逐键处置
+    occurrences = _read_template_occurrences(root)
+    viol += _validate_register(register, raw, occurrences)
 
     # ——判据 2、3（代码面）。模板载体不参与判据 2：模板按设计写示例值，
     # 那由判据 4 按"等值"判，不按"清零"判。
@@ -666,8 +716,8 @@ def main(argv=None):
     viol += lit_viol
 
     # ——判据 4：模板缺省等值
-    template_viol = _check_template_defaults(root, raw, register,
-                                              args.min_template_gated)
+    template_viol = _check_template_defaults(raw, register,
+                                             args.min_template_gated, occurrences)
     template_gated = sum(1 for v in register.values()
                          if isinstance(v, dict) and v.get("default_literal_gate") is True)
     print("模板缺省字面量门: %d 键" % template_gated)
