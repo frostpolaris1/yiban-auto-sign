@@ -112,6 +112,13 @@ function selfTest() {
   urls.forEach((sample, index) => {
     if (detect(sample).length !== 0) failures.push(`url ${index} was flagged: ${sample}`)
   })
+  if (detect('see ftp://host/work/x').length !== 0) {
+    failures.push('non-http scheme was flagged as a local path')
+  }
+  const withSeparator = detect('See ./work/plans/x.md')
+  if (withSeparator.length !== 1 || withSeparator[0].value !== 'work/plans/x.md') {
+    failures.push('finding keeps a leading separator or misses the path')
+  }
   positives.forEach((sample, index) => {
     if (detect(sample).length !== 0) failures.push(`positive ${index} was flagged: ${sample}`)
   })
