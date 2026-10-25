@@ -529,6 +529,10 @@ def _validate_register(register, registry, occurrences):
                 print("处置册错配: %s 标了 example_diverges，但名册没有缺省——"
                       "应标 no_default" % key)
                 viol += 1
+            elif not allowed:
+                # 非标量缺省拿不到单行写法：与开门分支同一口径，判据无处可判 ⇒ 2。
+                _die("处置册 %s 标了 example_diverges，但缺省 %r 拿不到单行写法——"
+                     "判据无处可判" % (key, default))
             elif not any(value not in allowed for _, _, value in rows):
                 print("处置册错配: %s 标了 example_diverges，但模板取值全部等于缺省"
                       "——要么改成开门，要么写明真正的差异" % key)
