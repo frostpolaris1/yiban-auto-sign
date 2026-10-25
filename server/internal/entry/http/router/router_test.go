@@ -130,6 +130,31 @@ func TestE1UnauthenticatedMe(t *testing.T) {
 	}
 }
 
+// The router mints its own request id and never reuses the client header, so
+// a caller cannot steer what the audit layer records.
+func TestClientRequestIDIsNotReused(t *testing.T) {
+	engine, _ := newTestEngine(t)
+	for _, client := range []string{"13800138000", "a@b.com", "client-controlled-trace"} {
+		req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+		req.Header.Set("X-Request-Id", client)
+		rec := serve(engine, req)
+
+		minted := rec.Header().Get("X-Request-Id")
+		if minted == client {
+			t.Fatalf("client id %q was reused; the router must mint its own", client)
+		}
+		if len(minted) != 32 {
+			t.Fatalf("minted id %q is not 32 hex characters", minted)
+		}
+		for _, r := range minted {
+			isHex := (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')
+			if !isHex {
+				t.Fatalf("minted id %q is not lowercase hex", minted)
+			}
+		}
+	}
+}
+
 // E-2: an unknown route returns 404 and the frozen envelope.
 func TestE2UnknownRoute(t *testing.T) {
 	engine, _ := newTestEngine(t)
