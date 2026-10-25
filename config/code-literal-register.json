@@ -1,7 +1,39 @@
 {
   "_meta": {
     "version": 1,
-    "doc": "代码侧缺省字面量逐键处置册（工单 yiban-auto-sign-7yf）。判据：scripts/check-config-registry.py 的判据 5。只登记豁免：已开门键（registry 的 default_literal_gate）要的是清零，不进本册。class 词表见脚本 CODE_EXEMPT_CLASSES；files 记每个文件的命中行数，行数漂移或归零都判红。缺省值仍只住在 config/registry.json。"
+    "doc": "代码侧缺省字面量逐键处置册（工单 yiban-auto-sign-7yf）。判据：scripts/check-config-registry.py 的判据 5。只登记豁免：已开门键（registry 的 default_literal_gate）要的是清零，不进本册。class 词表见脚本 CODE_EXEMPT_CLASSES；files 记每个文件的命中行数，行数漂移或归零都判红。缺省值仍只住在 config/registry.json。_meta.shell_exempt_defaults 登记 shell 臂里静态判不了的跳过（动态值/存在性判定）：未登记即红，登记了却没出现也红。",
+    "shell_exempt_defaults": [
+      {
+        "file": "docker/backup-docker.sh",
+        "key": "YIBAN_BACKUP_PASSPHRASE_FILE",
+        "reason": "${KEY:-} 只用于 [ -n ] 存在性判定，空串不是缺省值；名册缺省 /etc/yiban/backup-passphrase 不参与该判定"
+      },
+      {
+        "file": "docker/backup-docker.sh",
+        "key": "YIBAN_DB_FILE",
+        "reason": "容器形态：库落点由 DATA_DIR 拼出（/data/yiban.db），与名册的仓库相对路径 data/yiban.db 刻意不同；${DATA_DIR} 静态判不了"
+      },
+      {
+        "file": "scripts/backup.sh",
+        "key": "YIBAN_STATE_DIR",
+        "reason": "宿主备份脚本用 dirname(ENV_FILE) 作通知账本目录；与名册缺省 /var/log/yiban 刻意不同（历史形态，已在 7yf 报告登记待裁）"
+      },
+      {
+        "file": "scripts/lib/host_paths.sh",
+        "key": "YIBAN_APP_DIR",
+        "reason": "部署根三档回退，最内层由 $HOST_PATHS_ROOT 决定；静态判不了"
+      },
+      {
+        "file": "scripts/lib/host_paths.sh",
+        "key": "YIBAN_LOG_FILE",
+        "reason": "日志目录由状态目录变量拼出（${_state_dir}/sign.log）；静态判不了"
+      },
+      {
+        "file": "scripts/yiban-backup-sentinel.sh",
+        "key": "YIBAN_ENV_FILE",
+        "reason": "哨兵按 $APP_DIR/data/.env 定位 .env；静态判不了"
+      }
+    ]
   },
   "YIBAN_ACCOUNTS_FILE": {
     "class": "harness",
@@ -147,15 +179,11 @@
     }
   },
   "YIBAN_START_DELAY_MAX": {
-    "class": [
-      "false_positive",
-      "harness"
-    ],
-    "reason": "路由写侧的 0 是 start > 0 的比较阈值（不是缺省回退）；两份演练脚本注入夹具值。两处读取已改读名册",
+    "class": "harness",
+    "reason": "三份演练脚本注入起始延迟夹具值；写侧比较阈值已从键行移走（不再与缺省同值同行的假命中）",
     "files": {
       "scripts/drill-baremetal.sh": 1,
-      "scripts/drill-container.sh": 1,
-      "web/routes/settings_api.py": 1
+      "scripts/drill-container.sh": 1
     }
   },
   "YIBAN_WINDOW_EDGE_FRONT_SEC": {

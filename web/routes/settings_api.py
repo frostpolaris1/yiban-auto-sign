@@ -708,7 +708,9 @@ def api_settings_save():
         # 仅请求携带的字段才写入（缺失不重置）
         updates = {}
         if has_start:
-            updates["YIBAN_START_DELAY_MAX"] = str(start) if start > 0 else ""
+            # 0 = 关闭随机延迟：写空值即删键，生效值回落到名册缺省。
+            start_value = str(start) if start > 0 else ""
+            updates["YIBAN_START_DELAY_MAX"] = start_value
         if has_gap:
             updates["YIBAN_ACCOUNT_GAP_MAX"] = str(gap) if gap > 0 else ""
         if sign_mode:

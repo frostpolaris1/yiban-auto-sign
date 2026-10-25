@@ -284,9 +284,9 @@ def gap(env):
     return int(env.get("YIBAN_ACCOUNT_GAP_MAX", 10))
 '''
 
-    def _entry(self, files=None, klass=None, reason="夹具：散文说明缺省值"):
+    def _entry(self, files=None, klass=None, reason="夹具：读取点比较阈值/散文混合"):
         return {"YIBAN_ACCOUNT_GAP_MAX": {
-            "class": klass if klass is not None else ["prose", "false_positive"],
+            "class": klass if klass is not None else "false_positive",
             "reason": reason,
             "files": files if files is not None else {"yiban/probe.py": 2}}}
 
@@ -330,11 +330,36 @@ def gap(env):
             self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
             self.assertIn("class", r.stderr)
 
-    def test_code_exemption_class_list_passes(self):
-        """一个键命中多种形状（如夹具注入＋段落说明）：class 可以给列表。"""
+    def test_class_list_with_mechanical_member_and_code_line_turns_red(self):
+        """审查员 delta 中-1 的绕过样本：`["harness","false_positive"]` 标 .py 代码行。
+
+        机械类别必须投票：yiban/probe.py 不匹配 harness，非机械类别不能替它放行。
+        """
+        with _Fixture(registry=GOOD_REGISTRY, source=self.SOURCE,
+                      code_register={"_meta": {"version": 1},
+                                     **self._entry(klass=["harness",
+                                                          "false_positive"])}) as fx:
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("类别不符", r.stdout)
+
+    def test_class_list_with_prose_on_code_line_turns_red(self):
+        """`prose` 在场即做行校验：混合列表也不能把代码行说成 docstring。"""
         with _Fixture(registry=GOOD_REGISTRY, source=self.SOURCE,
                       code_register={"_meta": {"version": 1},
                                      **self._entry(klass=["prose", "harness"])}) as fx:
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("不在 docstring", r.stdout)
+
+    def test_class_list_with_prose_in_docstring_passes(self):
+        """混合类别在 docstring-only 命中上放行：机械类别命中、行校验也过。"""
+        src = '"""YIBAN_ACCOUNT_GAP_MAX 的缺省是 10。"""\n'
+        with _Fixture(registry=GOOD_REGISTRY, source=src,
+                      code_register={"_meta": {"version": 1},
+                                     **self._entry(klass=["prose",
+                                                          "false_positive"],
+                                                   files={"yiban/probe.py": 1})}) as fx:
             r = _run_gate(fx.root, fx.registry_path)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
@@ -454,9 +479,37 @@ class GateHhmmTupleCarrierTest(unittest.TestCase):
             self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
             self.assertIn("元组", r.stdout)
 
+    def test_trailing_comma_and_double_parens_are_checked(self):
+        """载体形状变体：`(20, 1,)` 与 `((20, 1))` 都必须被识别并判红。"""
+        for src in ("DEFAULT_TIME = (20, 1,)\n", "DEFAULT_TIME = ((20, 1))\n"):
+            with (self.subTest(src=src),
+                  _Fixture(registry=self._registry(), source=src) as fx):
+                r = _run_gate(fx.root, fx.registry_path)
+                self.assertEqual(r.returncode, 1, src + r.stdout + r.stderr)
+                self.assertIn("元组", r.stdout)
+
+    def test_datetime_time_carrier_is_checked(self):
+        """`datetime.time(20, 1)` 与 `time(20, 1)` 同样纳入等值断言。"""
+        for src in ("DEFAULT_TIME = datetime.time(20, 1)\n",
+                    "DEFAULT_TIME = time(20, 1)\n"):
+            with (self.subTest(src=src),
+                  _Fixture(registry=self._registry(), source=src) as fx):
+                r = _run_gate(fx.root, fx.registry_path)
+                self.assertEqual(r.returncode, 1, src + r.stdout + r.stderr)
+
+    def test_datetime_time_equal_passes(self):
+        src = "DEFAULT_TIME = datetime.time(20, 0)\n"
+        with _Fixture(registry=self._registry(), source=src) as fx:
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
 
 class GateShellDefaultCarrierTest(unittest.TestCase):
-    """判据 ② 的 shell 臂：`${KEY:-值}` 的缺省必须等于名册缺省（审查员 7yf 高-2）。"""
+    """判据 ② 的 shell 臂：`${KEY:-值}` / `${KEY:=值}` 必须等于名册缺省。
+
+    覆盖所有有缺省的键（不只开门键）；嵌套 `${INNER:-X}` 取内层静态值；
+    `$(…)`/`$VAR` 与"空值≠缺省"必须登记跳过（§30：跳过≠绿）。
+    """
 
     def _registry(self):
         return {
@@ -469,10 +522,15 @@ class GateShellDefaultCarrierTest(unittest.TestCase):
             },
         }
 
-    def _run(self, src):
-        with _Fixture(registry=self._registry(), source=src,
-                      files=("scripts/x.sh",)) as fx:
+    def _run(self, src, code_register=None, files=("scripts/x.sh",)):
+        with _Fixture(registry=self._registry(), source=src, files=files,
+                      code_register=code_register) as fx:
             return _run_gate(fx.root, fx.registry_path, "--scan", "scripts")
+
+    @staticmethod
+    def _register(*items):
+        return {"_meta": {"version": 1,
+                          "shell_exempt_defaults": list(items)}}
 
     def test_equal_shell_default_passes(self):
         r = self._run('STATE_DIR="${YIBAN_STATE_DIR:-/var/log/yiban}"\n')
@@ -483,10 +541,62 @@ class GateShellDefaultCarrierTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("shell 缺省漂移", r.stdout)
 
-    def test_dynamic_shell_default_is_skipped(self):
-        """`$(…)` 动态值静态判不了：跳过是显性代价，不当红也不当绿。"""
-        r = self._run('STATE_DIR="${YIBAN_STATE_DIR:-$(dirname "$X")}"\n')
+    def test_assign_form_drift_turns_gate_red(self):
+        """`${KEY:=值}` 是赋值形态，值同样必须等于名册缺省（审查员低-8）。"""
+        r = self._run('STATE_DIR="${YIBAN_STATE_DIR:=/tmp/elsewhere}"\n')
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("shell 缺省漂移", r.stdout)
+
+    def test_alternative_form_is_not_a_default(self):
+        """`${KEY:+值}` 是"已设置才用替代值"，不是缺省，不许判。"""
+        r = self._run('STATE_DIR="${YIBAN_STATE_DIR:+/tmp/elsewhere}"\n')
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_unregistered_empty_default_turns_gate_red(self):
+        """`${KEY:-}` 空值≠名册缺省：按存在性判定处理，必须登记。"""
+        r = self._run('STATE_DIR="${YIBAN_STATE_DIR:-}"\n')
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("shell 缺省未登记", r.stdout)
+
+    def test_nested_static_default_equal_passes(self):
+        """`scripts/backup.sh:170` 现役形状：内层静态值必须比对。"""
+        r = self._run('D="${YIBAN_STATE_DIR:-${OTHER:-/var/log/yiban}}"\n')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_nested_static_default_drift_turns_gate_red(self):
+        """审查员 delta 中-2 的对抗样本：嵌套内层改 /tmp/x 必红。"""
+        r = self._run('D="${YIBAN_STATE_DIR:-${OTHER:-/tmp/x}}"\n')
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("shell 缺省漂移", r.stdout)
+
+    def test_dynamic_skip_without_registration_turns_gate_red(self):
+        r = self._run('D="${YIBAN_STATE_DIR:-$(dirname "$X")}"\n')
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("shell 缺省未登记", r.stdout)
+
+    def test_dynamic_skip_with_registration_passes_visibly(self):
+        r = self._run('D="${YIBAN_STATE_DIR:-$(dirname "$X")}"\n',
+                      code_register=self._register({
+                          "file": "scripts/x.sh", "key": "YIBAN_STATE_DIR",
+                          "reason": "夹具：动态值，登记跳过"}))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("shell 缺省跳过（已登记）", r.stdout)
+
+    def test_stale_shell_registration_turns_gate_red(self):
+        r = self._run('D="${YIBAN_STATE_DIR:-/var/log/yiban}"\n',
+                      code_register=self._register({
+                          "file": "scripts/x.sh", "key": "YIBAN_STATE_DIR",
+                          "reason": "陈旧"}))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("陈旧 shell 跳过登记", r.stdout)
+
+    def test_shell_skip_without_reason_is_environment_error(self):
+        r = self._run('D="${YIBAN_STATE_DIR:-$(dirname "$X")}"\n',
+                      code_register=self._register({
+                          "file": "scripts/x.sh", "key": "YIBAN_STATE_DIR",
+                          "reason": " "}))
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("reason", r.stderr)
 
 
 class GateCodeDispositionClassFactTest(unittest.TestCase):
@@ -533,6 +643,20 @@ class GateCodeDispositionClassFactTest(unittest.TestCase):
                       "container_form")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("类别不符", r.stdout)
+
+    def test_container_form_on_docker_python_turns_gate_red(self):
+        """`docker/scheduler.py` 能读 JSON 名册，不是容器形态的值定义点。"""
+        r = self._run('GAP = int(os.environ.get("YIBAN_KNOB", 10))\n',
+                      "container_form", files={"docker/scheduler.py": 1},
+                      scan=("docker",))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("类别不符", r.stdout)
+
+    def test_container_form_on_compose_passes(self):
+        r = self._run('X: "YIBAN_KNOB=10"\n', "container_form",
+                      files={"docker-compose.yml": 1},
+                      scan=("docker-compose.yml",))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_harness_on_python_file_turns_gate_red(self):
         r = self._run('GAP = int(os.environ.get("YIBAN_KNOB", 10))\n', "harness")
@@ -1488,7 +1612,8 @@ class GateRealCodeRegisterContentTest(unittest.TestCase):
         must_gate = (
             "YIBAN_STATE_DIR", "YIBAN_LOG_FILE", "YIBAN_LOG_LEVEL",
             "YIBAN_MAIL_SMTP_PORT", "YIBAN_MAIL_SMTP_HOST",
-            "YIBAN_RUN_LOCK_WAIT",
+            "YIBAN_RUN_LOCK_WAIT", "YIBAN_SIGN_START",
+            "YIBAN_SECOND_RUN_TIME",
             "YIBAN_SIGN_STATE_FLUSH_MAX", "YIBAN_SIGN_STATE_FLUSH_SEC",
             "YIBAN_QUOTA_STATE_FLUSH_MAX", "YIBAN_QUOTA_STATE_FLUSH_SEC",
             "YIBAN_PROBE_TIME", "YIBAN_PROBE_INTERVAL_DAYS",
@@ -1509,6 +1634,16 @@ class GateRealCodeRegisterContentTest(unittest.TestCase):
                 continue
             self.assertIn("default_symbols", spec,
                           "%s 开门了却没声明 default_symbols（无载体写 []）" % key)
+
+    def test_shell_skips_are_registered_with_reason(self):
+        """§30：shell 臂跳过必须登记（动态值/存在性判定），不许静默。"""
+        items = self.code_register["_meta"].get("shell_exempt_defaults") or []
+        self.assertGreaterEqual(len(items), 5,
+                                "shell 跳过登记面塌了（本批实测 6 条）")
+        for item in items:
+            self.assertIn(item["key"], self.registry)
+            self.assertTrue(item["reason"].strip())
+            self.assertTrue(item["file"].endswith((".sh", ".yml")))
 
     def test_every_no_default_carrier_divergence_is_registered(self):
         """10 键载体取值互相矛盾：每键都必须有 carrier_example 登记。"""

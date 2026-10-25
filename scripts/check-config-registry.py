@@ -13,8 +13,11 @@
    生产代码不得再出现四种回潮形状——
    （a）键名出现的同一行里又写死缺省值字面量（读取点回退）；
    （b）`default_symbols` 里登记的承载常量被赋成字面量（不论该值等不等缺省）；
-   （c）HH:MM 键的承载元组 `(H, M)` 换算后必须等于名册缺省（等值断言，漂移即红）；
-   （d）shell 的 `${KEY:-值}` / `${KEY-值}` 缺省必须等于名册缺省（等值断言）。
+   （c）HH:MM 键的承载时刻形状 `(H, M)` / `((H, M))` / `time(H, M)` 换算后必须
+   等于名册缺省（等值断言，漂移即红；改载体形状即失去保护）；
+   （d）shell 的 `${KEY:-值}` / `${KEY:=值}`（含嵌套 `${INNER:-X}` 的内层静态值）
+   必须等于名册缺省。本臂覆盖**所有有缺省的键**，不只开门键；`$(…)`/`$VAR` 等
+   静态判不了的跳过必须登记（见判据 5 的 `_meta.shell_exempt_defaults`）。
    承载常量必须**显式声明**：无常量写 `default_symbols: []`，缺字段/null 由 loader 拒判。
    模板载体（`TEMPLATE_CARRIERS`）**不参与**本条：模板按设计要写出示例值，
    那一条由判据 4 按"等值"判，不按"清零"判。
@@ -38,9 +41,11 @@
    "键名与缺省字面量同行"的命中，必须在**代码侧处置册**
    （`config/code-literal-register.json`）里逐键登记豁免：`class`（一个类别或类别
    列表）∈ `CODE_EXEMPT_CLASSES`、非空 `reason`、以及 `files`（**每个文件的命中行数**）。
-   可机械判定的类别还要与载体形状一致：`shell` 只覆盖 `.sh`、`container_form` 只
-   覆盖 compose 与 `docker/`、`harness` 只覆盖演练脚本与 `frontend/e2e/`、`prose`
-   只覆盖 `.py` 且命中行必须落在 docstring 里（不符判 1）。
+   类别与载体形状必须一致：类别列表里只要有机械类别（shell/container_form/harness/
+   prose），每个命中文件必须命中至少一个；`prose` 在场即核命中行是否落在 docstring；
+   `container_form` 只认 compose 与 `docker/` 下的非 `.py` 部署件；非机械类别不投票。
+   另：shell 臂的跳过登记在 `_meta.shell_exempt_defaults`（file + key + reason），
+   未登记即红、登记陈旧也红。
    台账按文件行数比对：新增一处裸缺省（行数变多）、删掉一处（行数变少＝陈旧豁免）、
    未登记命中，三者都判 1。开门键不许同时登记代码侧豁免（判 2）——开门要的是清零。
    这一条的判据形状与判据 2 相同（同一套文本扫描），差别只在"命中后怎么处置"。
@@ -76,10 +81,14 @@ AST 里键名是 `ast.Constant`、缺省值是另一处 `ast.Constant`，"同行
 - 空串缺省只认"独立的 `""` / `''`"与三引号写的空串（六个连续引号）：三引号
   定界符里的两连引号不算一次回退。该收窄只去假红（散文提到键名本是说明，不是
   定义点），不放宽真回退——`env.get("KEY", "")` 照旧命中。
-- 判据 2 的 shell 臂只判**静态值**：`${KEY:-$(…)}` / `${KEY:-$VAR}` 判不了，跳过。
-  跳过是显性的代价：这类写法要人工核；门不把它当绿。
-- 判据 2 的元组臂只判 `(H, M)` 两整数元组（HH:MM 键）。`(H, M, S)` 或字符串元组
-  不在判据内。
+- 判据 2 的 shell 臂覆盖静态值（含嵌套内层）。`$(…)` / 裸 `$VAR` 静态判不了：
+  跳过必须登记在代码侧处置册的 `_meta.shell_exempt_defaults`，未登记即红——
+  "跳过"是显性代价，门不把它当绿。
+- 判据 2 的时刻形状臂只认 `(H, M)` / `((H, M))` / `time(H, M)`。改载体形状
+  （`(H, M, S)`、字符串元组、字典）即失去保护，diff 里必须写明。
+- 判据 5 的类别事实核对：机械类别（shell/container_form/harness/prose）参与文件
+  路径投票；`false_positive` / `write_value` / `other_semantics` 无法静态判定，
+  只受"文件必须命中至少一个机械类别"这一条约束（类别列表全为非机械时不做路径核）。
 - 判据 2/5 的"同行"判据对**真假命中不加区分**：`+ 1`、`> 0`、`lo=0` 这类与缺省
   无关的字面量同样算命中。它们在代码侧处置册里按 `false_positive` 登记豁免。
 - 判据 5 的类别事实核对只覆盖可机械判定的四类（shell/container_form/harness/
@@ -474,8 +483,10 @@ def _check_default_literals(root, files, registry, cache, hits):
     """判据 2：已开门键的缺省值字面量在代码内清零。
 
     三种回潮形状：（a）键名与缺省字面量同行；（b）承载常量被赋字面量；
-    （c）HH:MM 键的承载是 `(H, M)` 元组时，元组换算后必须等于名册缺省。
+    （c）HH:MM 键的承载是时刻形状时，换算后必须等于名册缺省。
     （c）是**等值断言**：`DEFAULT_END = (7, 50)` 允许，换成 `(7, 51)` 即红。
+    时刻形状只认三种：`(H, M)`、`((H, M))`、`time(H, M)`（含 `datetime.time`、
+    尾部多余逗号）。**改载体形状即失去保护**（如 `(7, 51, 0)` 或字符串元组）。
     返回 `(违规条数, 开了门的键列表)`——清单给调用方打印口径用。
     """
     gated = [(k, v) for k, v in registry.items()
@@ -504,10 +515,15 @@ def _check_default_literals(root, files, registry, cache, hits):
             r"(?<![\w.])" + re.escape(s) +
             r"\s*=\s*(?:-?\d+(?:\.\d+)?|True|False|\"[^\"]*\"|'[^']*')"
             for s in symbols))
-        tuple_re = (re.compile("|".join(
-            r"(?<![\w.])" + re.escape(s) +
-            r"\s*=\s*\(\s*(\d{1,2})\s*,\s*(\d{1,2})\s*\)" for s in symbols))
-            if spec.get("type") == "hhmm" else None)
+        tuple_res = ([re.compile(
+            r"(?<![\w.])" + re.escape(s) + pat) for s in symbols for pat in (
+                # 双层括号（含尾部多余逗号）
+                r"\s*=\s*\(\s*\(\s*(\d{1,2})\s*,\s*(\d{1,2})\s*,?\s*\)\s*\)",
+                # 普通元组（含尾部多余逗号）
+                r"\s*=\s*\(\s*(\d{1,2})\s*,\s*(\d{1,2})\s*,?\s*\)",
+                # datetime.time(H, M) / time(H, M)
+                r"\s*=\s*(?:(?:datetime\.)?time)\(\s*(\d{1,2})\s*,\s*(\d{1,2})\s*\)",
+            )] if spec.get("type") == "hhmm" else [])
         allowed = _default_renderings(spec.get("default"))
         for rel in files:
             for lineno, line in enumerate(_cached_lines(root, rel, cache), 1):
@@ -518,9 +534,11 @@ def _check_default_literals(root, files, registry, cache, hits):
                           "（%s:%d）——改成从名册取缺省" % (key, sym, rel, lineno))
                     viol += 1
                     continue
-                if tuple_re is None:
-                    continue
-                t = tuple_re.search(line)
+                t = None
+                for pattern in tuple_res:
+                    t = pattern.search(line)
+                    if t is not None:
+                        break
                 if t is None:
                     continue
                 rendered = "%02d:%02d" % (int(t.group(1)), int(t.group(2)))
@@ -533,39 +551,166 @@ def _check_default_literals(root, files, registry, cache, hits):
     return viol, gated
 
 
-#: shell 的缺省回退写法：`${KEY:-值}` / `${KEY-值}`。只认"值是字面量"的一种；
-#: `$(…)` / `$VAR` 这类动态值判不了，跳过（在模块 docstring 的已知弱化点登记）。
-_SHELL_DEFAULT = re.compile(r"\$\{?(YIBAN_[A-Z0-9_]+)(?::?-)([^}]*)\}")
+#: shell 的缺省回退写法：`${KEY:-…}` / `${KEY:=…}`（嵌套按花括号配对切）。
+_SHELL_VAR_START = re.compile(r"\$\{(YIBAN_[A-Z0-9_]+)")
+_SHELL_OP = re.compile(r"(:[-=+?]|[-=+?])")
+_SHELL_INNER_VAR = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_SHELL_EXEMPT_FIELD = "shell_exempt_defaults"
 
 
-def _check_shell_defaults(root, files, registry, cache):
-    """判据 2 的 shell 臂：`${KEY:-值}` 的缺省必须等于名册缺省。
+def _shell_defaults_in_line(line):
+    """→ `[(键, 操作符, 值原文)]`：`${KEY:-…}` / `${KEY:=…}`，嵌套按花括号配对。
 
-    为什么单列一臂：shell 里的值不带引号，判据 2a 的字符串候选只认 `"值"` 写法，
-    看不见 `${KEY:-/var/log/yiban}`。审查员实证过真实分叉：只改名册与模板、shell
-    不动，门 rc=0 而容器调度器已读名册。本臂按**等值**判：一致放行，漂移即红。
+    只收花括号形态（`$KEY` 没有缺省语法）。操作符原样返回，由调用方跳过 `:+`。
     """
-    gated = {k for k, v in registry.items()
-             if isinstance(v, dict) and v.get("default_literal_gate")}
+    out = []
+    i = 0
+    while True:
+        start = line.find("${", i)
+        if start < 0:
+            return out
+        m = _SHELL_VAR_START.match(line, start)
+        if m is None:
+            i = start + 2
+            continue
+        pos = m.end()
+        op = _SHELL_OP.match(line, pos)
+        if op is None:
+            i = pos
+            continue
+        depth = 1
+        k = op.end()
+        while k < len(line) and depth:
+            if line.startswith("${", k):
+                depth += 1
+                k += 2
+                continue
+            if line[k] == "}":
+                depth -= 1
+            k += 1
+        if depth:
+            i = pos
+            continue
+        out.append((m.group(1), op.group(1), line[op.end():k - 1]))
+        i = k
+
+
+def _shell_static_value(text):
+    """→ `(字面量, 状态)`；状态 ∈ {"static", "dynamic", "alternative"}。
+
+    嵌套 `${INNER:-X}` 递归取 X（审查员 7yf 中-2：`${KEY:-${INNER:-/tmp/x}}`
+    内层静态值必须比对）。`$(…)` / 裸 `$VAR` / 无缺省操作符的嵌套 → dynamic。
+    `:+`（已设置才替换）→ alternative，不是缺省，不判。
+    """
+    text = text.strip()
+    while text.startswith("${") and text.endswith("}"):
+        inner = text[2:-1]
+        m = _SHELL_INNER_VAR.match(inner)
+        if m is None:
+            return None, "dynamic"
+        rest = inner[m.end():]
+        op = _SHELL_OP.match(rest)
+        if op is None:
+            return None, "dynamic"
+        if op.group(1) in (":+", "+"):
+            return None, "alternative"
+        text = rest[op.end():].strip()
+    if "$(" in text or "`" in text or re.search(r"\$(?:\{)?[A-Za-z_]", text):
+        return None, "dynamic"
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        text = text[1:-1]
+    return text, "static"
+
+
+def _shell_exempt_entries(code_register):
+    """读代码侧处置册 `_meta.shell_exempt_defaults` → `{(文件, 键): 理由}`。
+
+    形状错（不是列表、缺 file/key/reason、键不在名册、重复）一律拒判（2）。
+    """
+    meta = code_register.get(CL.META_KEY)
+    if not isinstance(meta, dict):
+        return {}
+    entries = meta.get(_SHELL_EXEMPT_FIELD)
+    if entries is None:
+        return {}
+    if not isinstance(entries, list):
+        _die("代码侧处置册 %s 的 %s 必须是列表" % (CL.META_KEY, _SHELL_EXEMPT_FIELD))
+    out = {}
+    for item in entries:
+        if not isinstance(item, dict):
+            _die("代码侧处置册 %s 的成员必须是对象" % _SHELL_EXEMPT_FIELD)
+        rel, key, reason = item.get("file"), item.get("key"), item.get("reason")
+        if not isinstance(rel, str) or not rel:
+            _die("代码侧处置册 %s 的成员缺 file" % _SHELL_EXEMPT_FIELD)
+        if not isinstance(key, str) or not key.startswith("YIBAN_"):
+            _die("代码侧处置册 %s 的成员缺 key（YIBAN_ 开头）" % _SHELL_EXEMPT_FIELD)
+        if not isinstance(reason, str) or not reason.strip():
+            _die("代码侧处置册 %s 的 %s 缺 reason——跳过必须有理由"
+                 % (_SHELL_EXEMPT_FIELD, key))
+        if (rel, key) in out:
+            _die("代码侧处置册 %s 重复登记 %s:%s" % (_SHELL_EXEMPT_FIELD, rel, key))
+        out[(rel, key)] = reason
+    return out
+
+
+def _check_shell_defaults(root, files, registry, cache, code_register):
+    """判据 2 的 shell 臂：`${KEY:-值}` / `${KEY:=值}` 的缺省必须等于名册缺省。
+
+    覆盖**所有有缺省的键**，不只开门键（审查员 7yf 低-11：非开门 shell 载体
+    名册改值同样会分叉）。规则：
+    - 静态值（含嵌套 `${INNER:-X}` 的内层静态值）按等值判，漂移即红；
+    - 空值 `${KEY:-}` 按字面量与名册比；与名册不等的按"存在性判定/空缺省"处理，
+      必须登记（见下）；
+    - `$(…)` / `$VAR` 等动态值静态判不了，必须登记（§30：跳过≠绿）；
+    - 登记面：代码侧处置册 `_meta.shell_exempt_defaults`（file + key + reason）。
+      未登记的跳过、登记了却没再出现的（陈旧），都判 1。
+    """
+    exempt = _shell_exempt_entries(code_register)
+    seen = set()
     viol = 0
     for rel in files:
         for lineno, line in enumerate(_cached_lines(root, rel, cache), 1):
             if "${" not in line:
                 continue
-            for m in _SHELL_DEFAULT.finditer(line):
-                key, value = m.group(1), m.group(2).strip()
-                if key not in gated:
+            for key, op, raw in _shell_defaults_in_line(line):
+                if op in (":+", "+"):
                     continue
-                if not value or "$" in value or "(" in value:
-                    continue          # 动态值/空值：静态判不了，跳过
-                if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-                    value = value[1:-1]
-                allowed = _default_renderings(registry[key].get("default"))
-                if not allowed or value not in allowed:
-                    print("shell 缺省漂移: %s 在 %s:%d 的 ${%s:-%s} 不等于名册缺省 %r"
-                          "——两侧必需同值" % (key, rel, lineno, key, value,
-                                              registry[key].get("default")))
+                spec = registry.get(key)
+                default = spec.get("default") if isinstance(spec, dict) else None
+                if default is None:
+                    continue
+                value, state = _shell_static_value(raw)
+                if state == "alternative":
+                    continue
+                kind = None
+                if state == "dynamic":
+                    kind = "动态值"
+                else:
+                    allowed = _default_renderings(default)
+                    if allowed and value in allowed:
+                        continue
+                    if value == "":
+                        kind = "空值/存在性判定"
+                    else:
+                        print("shell 缺省漂移: %s 在 %s:%d 的 ${%s%s%s} 不等于名册缺省 %r"
+                              "——两侧必需同值"
+                              % (key, rel, lineno, key, op, raw,
+                                 spec.get("default")))
+                        viol += 1
+                        continue
+                seen.add((rel, key))
+                if (rel, key) in exempt:
+                    print("shell 缺省跳过（已登记）: %s:%d %s（%s）"
+                          % (rel, lineno, key, exempt[(rel, key)]))
+                else:
+                    print("shell 缺省未登记: %s:%d %s 的 ${%s%s%s} 静态判不了"
+                          "（%s）——登记到代码侧处置册的 %s"
+                          % (rel, lineno, key, key, op, raw, kind,
+                             _SHELL_EXEMPT_FIELD))
                     viol += 1
+    for rel, key in sorted(set(exempt) - seen):
+        print("陈旧 shell 跳过登记: %s:%s 已不再出现——删掉这条登记" % (rel, key))
+        viol += 1
     return viol
 
 
@@ -592,44 +737,50 @@ def _docstring_line_ranges(root, rel):
     return lines
 
 
-#: 类别 → 路径判据。只覆盖能机械判定的四类；其余类别不可静态判定，放行。
+#: 类别 → 路径判据。只覆盖能机械判定的四类；其余类别不可静态判定（不投票）。
+#: `container_form` **只认部署件**：`docker/scheduler.py` 能读 JSON 名册，不是容器形态
+#: 的值定义点（审查员 7f delta 中-1 第 4 条）。
 _CLASS_PATH_RULES = (
     ("shell", lambda rel: rel.endswith(".sh")),
     ("container_form", lambda rel: rel == "docker-compose.yml"
-                                  or rel.startswith("docker/")),
+                                  or (rel.startswith("docker/")
+                                      and not rel.endswith(".py"))),
     ("harness", lambda rel: rel.startswith(("scripts/drill", "frontend/e2e/",
                                             "tests/"))),
     ("prose", lambda rel: rel.endswith(".py")),
 )
+_MECHANICAL_CLASSES = frozenset(name for name, _ in _CLASS_PATH_RULES)
 
 
 def _class_file_matches(klass, rel):
-    """该文件是否可能是这个类别的载体（不可机械判定的类别恒真）。"""
+    """该文件是否可能是这个类别的载体。无路径规则的类别**不投票**（返回 False）。"""
     for name, rule in _CLASS_PATH_RULES:
         if name == klass:
             return rule(rel)
-    return True
+    return False
 
 
 def _check_class_facts(key, klasses, files, hits, root):
     """判据 5 的事实核对：豁免类别必须与命中载体的形状一致。
 
-    只核可机械判定的四类（审查员 7yf 中-2）：
-    - `shell` 只覆盖 `.sh`；`container_form` 只覆盖 compose / `docker/`；
-      `harness` 只覆盖演练脚本与 `frontend/e2e/`；`prose` 只覆盖 `.py`，
-      且该文件的命中行必须落在 docstring 里。
-    `false_positive` / `write_value` / `other_semantics` 无法静态判定，不核。
-    `prose` 的逐行核对只在**单类别 prose** 时执行：类别列表无法把行映射到类别，
-    混合列表只核文件路径（如实登记，别当"已完全覆盖"）。
+    规则（审查员 7f delta 中-1）：
+    - 类别列表里只要有**机械类别**，每个命中文件必须命中至少一个机械类别；
+      非机械类别（false_positive / write_value / other_semantics）不投票。
+    - `prose` **在场即做行校验**：该文件的命中行必须落在 docstring 里
+      （混合列表不再绕过）。
+    - `false_positive` / `write_value` / `other_semantics` 的语义无法静态判定，
+      只受上面的文件路径规则约束。
     """
     viol = 0
-    for rel in files:
-        if any(_class_file_matches(k, rel) for k in klasses):
-            continue
-        print("代码侧豁免类别不符: %s 把 %s 归为 %s，但文件不匹配任何一类——"
-              "类别必须与事实一致" % (key, rel, "、".join(klasses)))
-        viol += 1
-    if klasses != ["prose"]:
+    mechanical = [k for k in klasses if k in _MECHANICAL_CLASSES]
+    if mechanical:
+        for rel in files:
+            if any(_class_file_matches(k, rel) for k in mechanical):
+                continue
+            print("代码侧豁免类别不符: %s 把 %s 归为 %s，但文件不匹配任何机械类别——"
+                  "类别必须与事实一致" % (key, rel, "、".join(klasses)))
+            viol += 1
+    if "prose" not in klasses:
         return viol
     for rel in files:
         if not rel.endswith(".py"):
@@ -1048,7 +1199,7 @@ def main(argv=None):
     print("默认值字面量门: %d 键（%s）"
           % (len(gated), "、".join(k for k, _ in gated) or "无"))
     viol += lit_viol
-    viol += _check_shell_defaults(root, code_files, raw, cache)
+    viol += _check_shell_defaults(root, code_files, raw, cache, code_register)
     code_exempt = sum(1 for k in code_register if k != CL.META_KEY)
     print("代码侧豁免登记: %d 键" % code_exempt)
     viol += _check_code_dispositions(root, hits, raw, code_register)

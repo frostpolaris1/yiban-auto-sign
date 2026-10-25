@@ -261,17 +261,17 @@ def get_config(envs=None):
 
     回显口径是**实际发信用的第一主条目**（ba-p09-08）：SMTPS_ENC 配置时 host/port
     也取 `entries[0]`，不能只让 user 走条目、host/port 仍读旧单条键——否则设置页
-    恒显示 smtp.qq.com:465，管理员核对不了告警实际发往哪个中继。
+    恒显示固定的默认中继，管理员核对不了告警实际发往哪个中继。
 
     port_fallback：实际生效端口不是配置写的值时为 True（旧键缺省/非法，或条目
-    端口非法回退 465）——展示层据此提示「端口未按预期生效」，不再无声回退。
+    端口非法回退到名册缺省）——展示层据此提示「端口未按预期生效」，不再无声回退。
     """
     global _port_warned
     if envs is None:
         envs = _read_env_file()
     entries = smtp_list(envs)
     # 只有 SMTPS_ENC 真正配置时才按条目回显（ba-p09-08）；旧单条键的 smtp_list 会把
-    # 非法端口归一成 465，若也走条目分支，get_config 就再也看不到「端口被回退」这件事。
+    # 非法端口归一成到名册缺省，若也走条目分支，get_config 就再也看不到「端口被回退」这件事。
     entry0 = (entries[0] if entries and _env_value("SMTPS_ENC", envs)
               else None)
     if entry0 is not None:
