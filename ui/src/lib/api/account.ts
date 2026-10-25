@@ -1,10 +1,17 @@
+/**
+ * **功能**
+ * 账号域桩：类型别名、路径表、列表查询。
+ *
+ * **归属**
+ * `lib/api` 工具层：只拼路径与查询串，不含展示逻辑。
+ *
+ * **口径**
+ * 类型来自生成的 `schema.d.ts`。**不在此重写契约字段**。
+ * `status` 用契约枚举，不另立字符串联合。
+ */
+
 import type { components } from './schema'
 import { apiRequest } from './client'
-
-/**
- * Account stubs. Contract shapes come from the generated `schema.d.ts`.
- * `AccountQuery` is the query-string view; its `status` uses the contract enum.
- */
 
 type Schemas = components['schemas']
 
@@ -12,6 +19,7 @@ export type AccountStatus = Schemas['AccountStatus']
 export type Account = Schemas['Account']
 export type AccountPage = Schemas['AccountPage']
 
+/** 查询串视图。字段与 `GET /api/accounts` 的参数一一对应。 */
 export type AccountQuery = {
   school_id?: string
   status?: AccountStatus

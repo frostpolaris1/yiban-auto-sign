@@ -1,8 +1,8 @@
 import { test, expect, type Page } from '@playwright/test'
 
 /**
- * User-visible behavior of the shell and the component gallery.
- * These tests assert outcomes, not internal choreography.
+ * 壳与组件画廊的用户可见行为。
+ * 断言结果，不钉内部调用顺序。
  */
 
 async function focusIsInsideDialog(page: Page): Promise<boolean> {
@@ -19,8 +19,8 @@ test('theme is applied before the first paint and survives a reload', async ({ p
     const probe: { value?: string; time?: number; fcp?: number; sets: number } = { sets: 0 }
     ;(window as unknown as { __themeProbe?: typeof probe }).__themeProbe = probe
 
-    // Record the first `data-theme` write and its timestamp. Never read the DOM
-    // later: the probe holds what happened, not what the attribute says now.
+    // 记录第一次 `data-theme` 写入及其时刻。之后不再读 DOM：
+    // 探针保存当时发生的事，不是属性此刻的值。
     const original = Element.prototype.setAttribute
     Element.prototype.setAttribute = function (this: Element, name: string, value: string) {
       if (name === 'data-theme' && this === document.documentElement && probe.sets === 0) {
@@ -31,7 +31,7 @@ test('theme is applied before the first paint and survives a reload', async ({ p
       return original.call(this, name, value)
     }
 
-    // Record the first-contentful-paint timestamp when the browser emits it.
+    // 浏览器发出首次内容绘制时，记下时刻。
     try {
       new PerformanceObserver((list) => {
         for (const entry of list.getEntries()) {
@@ -41,7 +41,7 @@ test('theme is applied before the first paint and survives a reload', async ({ p
         }
       }).observe({ type: 'paint', buffered: true })
     } catch {
-      /* The assertion below fails explicitly when no FCP entry arrives. */
+      /* 拿不到 FCP 条目时，下面的断言会明确失败。 */
     }
   })
   await page.goto('/')
@@ -76,8 +76,8 @@ test('theme is applied before the first paint and survives a reload', async ({ p
   const keys = await page.evaluate(() => Object.keys(localStorage).sort())
   expect(keys, 'localStorage must hold the theme key only').toEqual(['dash26-theme'])
 
-  // A fresh tab in the same context reads the persisted value. Do not reload
-  // this page: its init script would re-seed the dark value.
+  // 同上下文的新标签页读到持久化值。不要重载本页：
+  // 它的 init 脚本会重新种入深色值。
   const second = await context.newPage()
   await second.goto('/')
   await expect(second.locator('html')).toHaveAttribute('data-theme', 'light')

@@ -1,11 +1,21 @@
+/**
+ * **功能**
+ * Adminator SVG 图标登记表与 `<Icon>` 渲染器。
+ *
+ * **归属**
+ * `components` 通用件：全仓唯一图标来源。
+ *
+ * **口径**
+ * 图标名即 `ICON_PATHS` 的键。新增图标只在此表加一项。
+ * 路径数据取 Adminator 2026 的 `Shell.js` 与 `init.js`。
+ * 本仓不引第二套图标库。
+ */
+
 import type { CSSProperties, ReactNode } from 'react'
 
 /**
- * Adminator SVG registry.
- *
- * The shell and UI primitives draw from this table only. The project does not
- * ship a second icon set. Path data comes from Adminator 2026 `Shell.js` and
- * `init.js`.
+ * 图标注册表。壳与所有原语只从这里取图。
+ * 键名同时是 `IconName` 的取值域。
  */
 const ICON_PATHS = {
   dashboard: (
@@ -170,7 +180,7 @@ export function Icon({ name, size, className, style }: IconProps): ReactNode {
   )
 }
 
-/** Adminator brand mark. Uses the inverse token so it works in both themes. */
+/** Adminator 品牌标记。用反色令牌，明暗两套都可见。 */
 export function BrandMark() {
   return (
     <svg viewBox="0 0 36 36" xmlns="http://www.w3.org/2000/svg" style={{ color: 'var(--t-inverse)' }}>

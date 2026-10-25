@@ -1,3 +1,15 @@
+/**
+ * **功能**
+ * 覆盖层画廊：弹窗与下拉菜单。
+ * 弹窗外壳照 Adminator `src/ui.html`。
+ *
+ * **归属**
+ * `features/design` 域组件：只组合通用件。
+ *
+ * **口径**
+ * 确认动作只关闭弹窗。不发请求，不改数据。
+ */
+
 import { useState } from 'react'
 import { Icon } from '@/components/ui/Icon'
 import { Button } from '@/components/ui/Button'
@@ -5,7 +17,6 @@ import { Card } from '@/components/ui/Card'
 import { Menu, MenuDivider, MenuItem } from '@/components/ui/Menu'
 import { Modal } from '@/components/ui/Modal'
 
-/** Modal and dropdown. Modal shell follows Adminator `src/ui.html`. */
 export function OverlaysSection() {
   const [modalOpen, setModalOpen] = useState(false)
 

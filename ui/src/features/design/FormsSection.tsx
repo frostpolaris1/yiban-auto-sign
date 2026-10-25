@@ -1,7 +1,18 @@
+/**
+ * **功能**
+ * 表单画廊：文本、下拉、多行、复选、单选。
+ * 类名与 DOM 照 Adminator `src/forms.html`。
+ *
+ * **归属**
+ * `features/design` 域组件：只组合通用件。
+ *
+ * **口径**
+ * 所有输入只在前端演示。不落库，不发请求。
+ */
+
 import { Card } from '@/components/ui/Card'
 import { SelectInput, TextAreaInput, TextInput } from '@/components/ui/Input'
 
-/** Form controls. Classes and DOM follow Adminator `src/forms.html`. */
 export function FormsSection() {
   return (
     <Card className="col-6" eyebrow="Forms" title="输入">

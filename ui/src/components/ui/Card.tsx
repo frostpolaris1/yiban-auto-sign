@@ -1,3 +1,15 @@
+/**
+ * **功能**
+ * Adminator 卡片，可带 `.card-head` 头块。
+ *
+ * **归属**
+ * `components` 通用件：只排版，不取数。
+ *
+ * **口径**
+ * eyebrow、title、action 任一存在才渲染头块。
+ * 三者全无时不输出空头块。
+ */
+
 import type { ReactNode } from 'react'
 import { cx } from '@/lib/cx'
 
@@ -10,7 +22,7 @@ type CardProps = {
   children: ReactNode
 }
 
-/** Adminator `.card` with the optional `.card-head` block. */
+/** 卡片容器。头块缺失时 DOM 少一层，不留空白。 */
 export function Card({ id, eyebrow, title, action, className, children }: CardProps) {
   const hasHead = eyebrow !== undefined || title !== undefined || action !== undefined
   return (

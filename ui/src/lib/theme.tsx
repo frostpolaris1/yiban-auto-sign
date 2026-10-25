@@ -1,10 +1,22 @@
+/**
+ * **功能**
+ * 主题状态：读取、切换、持久化，并写 `<html data-theme>`。
+ *
+ * **归属**
+ * `lib` 工具层：上下文与存储都在此，UI 只消费。
+ *
+ * **口径**
+ * 唯一 localStorage 键是 `dash26-theme`。
+ * 只存 `light` 或 `dark`。**凭据永不写入此处**。
+ */
+
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 
 export type Theme = 'light' | 'dark'
 
 /**
- * The single localStorage key owned by the UI.
- * It stores the theme only. Credentials must never be written here.
+ * UI 拥有的唯一 localStorage 键。
+ * 只存主题字符串。写入凭据即违反隐私口径。
  */
 export const THEME_STORAGE_KEY = 'dash26-theme'
 
@@ -13,6 +25,7 @@ function isTheme(value: unknown): value is Theme {
 }
 
 function readStoredTheme(): Theme | null {
+  // localStorage 可能被隐私模式禁用。读不到按未设置处理。
   try {
     const value = window.localStorage.getItem(THEME_STORAGE_KEY)
     return isTheme(value) ? value : null
@@ -29,7 +42,7 @@ function readSystemTheme(): Theme {
   }
 }
 
-/** Mirrors the early bootstrap script in index.html. */
+/** 与 index.html 的引导脚本同算法。改一处必须改两处，否则首屏闪色。 */
 export function resolveInitialTheme(): Theme {
   return readStoredTheme() ?? readSystemTheme()
 }
@@ -38,7 +51,7 @@ function persistTheme(theme: Theme): void {
   try {
     window.localStorage.setItem(THEME_STORAGE_KEY, theme)
   } catch {
-    /* Persisting is best effort. The in-memory theme still applies. */
+    /* 持久化失败不阻断切换。内存中的主题照样生效。 */
   }
 }
 
@@ -75,6 +88,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>
 }
 
+/**
+ * 取主题上下文。**必须在 ThemeProvider 内调用**。
+ * 缺失时抛错，避免静默退回默认主题。
+ */
 export function useTheme(): ThemeContextValue {
   const value = useContext(ThemeContext)
   if (value === null) {

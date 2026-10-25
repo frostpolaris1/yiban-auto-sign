@@ -1,12 +1,22 @@
+/**
+ * **功能**
+ * 静态登录表单：邮箱、密码、提交按钮。
+ *
+ * **归属**
+ * `features/auth` 域组件。
+ *
+ * **口径**
+ * 本批不调端点，不存凭据。
+ * 提交只做 `preventDefault`，页面不跳转。
+ * **不得添加"保持登录"选项**。会话期限由服务端定。
+ */
+
 import { Icon } from '@/components/ui/Icon'
 import { TextInput } from '@/components/ui/Input'
 
 /**
- * Static login form.
- *
- * It mirrors Adminator `src/signin.html` field for field. The submit handler
- * stops at the page boundary: this batch does not call an endpoint and does not
- * store credentials.
+ * 字段逐个照 Adminator `src/signin.html`。
+ * 提交停在页面边界：不发请求，不触发导航。
  */
 export function LoginForm() {
   return (

@@ -1,3 +1,15 @@
+/**
+ * **功能**
+ * 四格 KPI：今日已签、待处理、托管账号、出口健康。
+ *
+ * **归属**
+ * `features/dashboard` 域组件。
+ *
+ * **口径**
+ * 数字、环比与角标文案全是演示值。
+ * 本页不取数，也不定义指标算法。
+ */
+
 import { Icon, type IconName } from '@/components/ui/Icon'
 import { formatNumber } from '@/lib/format'
 
@@ -75,7 +87,7 @@ const KPI_ITEMS: KpiItem[] = [
   },
 ]
 
-/** KPI card DOM copied from Adminator `src/index.html`. */
+/** 卡片 DOM 照 Adminator `src/index.html`。数字为演示值。 */
 export function KpiGrid() {
   return (
     <section className="kpi-grid" aria-label="关键指标">

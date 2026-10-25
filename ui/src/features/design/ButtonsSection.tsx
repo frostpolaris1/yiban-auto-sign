@@ -1,8 +1,19 @@
+/**
+ * **功能**
+ * 按钮画廊：11 种变体、3 种尺寸、按钮组。
+ * 类名与 DOM 照 Adminator `src/buttons.html`。
+ *
+ * **归属**
+ * `features/design` 域组件：只组合通用件。
+ *
+ * **口径**
+ * 只演示外观，不带业务动作。
+ */
+
 import { Icon } from '@/components/ui/Icon'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 
-/** Button variants. Classes and DOM follow Adminator `src/buttons.html`. */
 export function ButtonsSection() {
   return (
     <Card className="col-12" eyebrow="Actions" title="按钮">

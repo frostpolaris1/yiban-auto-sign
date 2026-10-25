@@ -5,11 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>易班自动签到 · 控制台</title>
     <!--
-      Early theme bootstrap.
-      Purpose: set data-theme before any CSS loads, so a dark-mode user never sees
-      a light flash. The 36 Adminator tokens only resolve under
-      :root[data-theme="light"] or :root[data-theme="dark"].
-      This script writes one key only: dash26-theme. It stores no credentials.
+      主题引导。
+      目的：在任何 CSS 加载前写入 data-theme。
+      这样深色用户不会先看到一帧浅色。
+      36 个 Adminator 令牌只在 :root[data-theme="light"]
+      或 :root[data-theme="dark"] 下解析。
+      本脚本只写一个键：dash26-theme。不存任何凭据。
     -->
     <script>
       (function () {
@@ -19,7 +20,7 @@
           var saved = localStorage.getItem(KEY);
           if (saved === 'light' || saved === 'dark') theme = saved;
         } catch (error) {
-          /* localStorage can be blocked; fall through to the media query. */
+          /* localStorage 可能被禁用。读不到就落到媒体查询。 */
         }
         if (!theme) {
           try {

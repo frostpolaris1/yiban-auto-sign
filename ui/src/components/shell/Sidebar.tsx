@@ -1,3 +1,15 @@
+/**
+ * **功能**
+ * 侧栏：品牌、导航段、分组、底部工作区块。
+ *
+ * **归属**
+ * `components/shell`：只渲染 `nav.ts` 的表。
+ *
+ * **口径**
+ * 导航项全部来自 `NAV`。本文件不硬编码路径。
+ * 分组手动开合优先。未手动时跟随当前路由。
+ */
+
 import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { cx } from '@/lib/cx'
@@ -32,6 +44,7 @@ export function Sidebar({ pathname, onNavigate }: SidebarProps) {
               return <NavLeafView key={item.key} item={item} onNavigate={onNavigate} />
             }
             const activeGroup = item.children.some((child) => child.to === pathname)
+            // 手动状态优先。未手动时按当前路由自动展开。
             const open = manualOpen[item.key] ?? activeGroup
             return (
               <NavGroupView
@@ -85,6 +98,10 @@ type NavGroupViewProps = {
   onNavigate: () => void
 }
 
+/**
+ * 分组视图。子项激活时父级默认展开。
+ * 用户点过一次后，手动值一直压过自动判定。
+ */
 function NavGroupView({ item, open, onToggle, onNavigate }: NavGroupViewProps) {
   return (
     <div className={cx('nav-item-group', open && 'is-open')} data-nav-group>

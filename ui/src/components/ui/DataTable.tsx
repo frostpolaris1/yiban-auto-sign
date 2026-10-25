@@ -1,3 +1,16 @@
+/**
+ * **功能**
+ * 服务端分页数据表：工具栏、表体、页脚分页。
+ *
+ * **归属**
+ * `components` 通用件：行数据由调用方给，组件不取数。
+ *
+ * **口径**
+ * 组件只渲染当前一页。**从不持有全量结果集**。
+ * 最小宽度缺省 900px。窄屏在 `.table-scroll` 内横向滚动。
+ * 页码窗口最多 5 个。
+ */
+
 import type { ReactNode } from 'react'
 import { Icon } from '@/components/ui/Icon'
 
@@ -21,15 +34,14 @@ export type DataTableProps<T> = {
   toolbar?: ReactNode
   caption?: string
   emptyLabel?: string
-  /** Adminator demo keeps a 900px minimum so narrow viewports scroll inside `.table-scroll`. */
+  /** 最小宽度缺省 900px。窄屏改在 `.table-scroll` 内滚动，不压窄列。 */
   minWidth?: number
 }
 
 /**
- * Server-paginated Adminator data table.
- *
- * The component renders one page of rows only. It never holds the full result
- * set, so a 10k account list cannot become a 10k-node DOM.
+ * 渲染当前页。**DOM 节点数只随当前页行数增长**。
+ * 改成本地全量分页后，节点数会随总数增长。
+ * 一万行账号列表会变成一万个节点。
  */
 export function DataTable<T>({
   columns,

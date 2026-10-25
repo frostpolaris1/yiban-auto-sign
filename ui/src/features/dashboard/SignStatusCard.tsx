@@ -1,3 +1,15 @@
+/**
+ * **功能**
+ * 今日签到状态卡：四行账号与状态标签。
+ *
+ * **归属**
+ * `features/dashboard` 域组件。
+ *
+ * **口径**
+ * 行数据是演示值。标签色只表达视觉分类。
+ * 状态语义以引擎定论为准。本页不定义状态判据。
+ */
+
 import { Link } from '@tanstack/react-router'
 import { Icon } from '@/components/ui/Icon'
 import { Tag, type TagTone } from '@/components/ui/Badge'
@@ -18,9 +30,8 @@ const ROWS: StatusRow[] = [
 ]
 
 /**
- * Status card. The table markup follows Adminator `src/index.html` and
- * `src/basic-table.html`: `.table` inside `.table-scroll`, `.cell-name`,
- * `.cell-date`, and `.tag` status pills.
+ * 表格标记照 Adminator 的 `src/index.html` 与 `src/basic-table.html`。
+ * 结构为 `.table` 套 `.table-scroll`，状态用 `.tag` 药丸。
  */
 export function SignStatusCard() {
   return (
