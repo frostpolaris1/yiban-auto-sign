@@ -142,6 +142,26 @@ class CronProvenancePathScopeTest(unittest.TestCase):
             "5 6 * * * yiban %s/run.sh --retention=30/7" % APP_ROOT)
         self.assertEqual(r.returncode, 0, "数字比值被当成路径判红：\n" + self._out(r))
 
+    def test_scheme_suffix_does_not_hide_absolute_path(self):
+        """`/tmp/x.sh://` 不是 scheme URL：`://` 尾巴不得绕过绝对路径判定。"""
+        r = self._check(
+            "5 6 * * * yiban %s/run.sh --opt=/tmp/x.sh://" % APP_ROOT)
+        self.assertNotEqual(r.returncode, 0, "绝对路径藏在 `://` 尾巴后仍放行：\n" + self._out(r))
+        self.assertIn("/tmp/x.sh", self._out(r))
+
+    def test_scheme_suffix_does_not_hide_relative_escape(self):
+        """`../../etc/passwd://` 不是 scheme URL：相对越界仍判红。"""
+        r = self._check(
+            "5 6 * * * yiban %s/run.sh --opt=../../etc/passwd://" % APP_ROOT)
+        self.assertNotEqual(r.returncode, 0, "相对越界藏在 `://` 尾巴后仍放行：\n" + self._out(r))
+        self.assertIn("../../etc/passwd://", self._out(r))
+
+    def test_file_scheme_payload_is_still_a_path(self):
+        """`file://` 的载荷是路径，仍须判定（不得当普通 URL 放过）。"""
+        r = self._check(
+            "5 6 * * * yiban %s/run.sh --opt=file:///tmp/x.sh" % APP_ROOT)
+        self.assertNotEqual(r.returncode, 0, "file:// 载荷里的 /tmp 仍放行：\n" + self._out(r))
+
     def test_relative_path_value_without_cd_is_still_red(self):
         """值里的真相对路径仍判红：`--db=data/yiban.db` 没有可达的 cwd（B-1 不放宽）。"""
         r = self._check(

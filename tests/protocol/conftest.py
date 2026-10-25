@@ -13,8 +13,11 @@ import 一律改写为 `yiban.adapters.protocol_yiban`。
 `parse_usersure_response` **当前没有生产消费者**：这两组用例是**库资产保全**
 （保住解析契约），不算主仓链路的回归。
 
-**回放（ziqz）**：`replay_manifest.json` 逐份登记夹具的来源。`captured` 是实拍，
-`serve()` 原样回放。`synthetic_*` 是未实拍（已知未知），`serve()` 拒答。
+**回放（ziqz）**：`replay_manifest.json` 登记回放面的响应夹具。
+12 条＝6 captured＋6 synthetic。
+`captured` 原样回放；`synthetic_*` 是未实拍，`serve()` 拒答。
+本目录另有 5 份请求体文本件（iframe_location、sign_in_body 两形、usersure 两件）。
+它们不是响应夹具，不属回放面，不登记。
 """
 
 from __future__ import annotations

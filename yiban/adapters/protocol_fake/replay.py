@@ -2,16 +2,29 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """夹具回放：按夹具文件驱动假上游响应（ziqz 代码面）。
 
-职责只有两条：
-  1. 读夹具：响应体取夹具文件的原始字节，不做二次序列化。
-  2. 记来源：每份夹具在 `replay_manifest.json` 里登记 captured 或 synthetic。
+职责两条：
+  1. 读夹具：响应体取夹具文件的原始字节，不二次序列化。
+  2. 记来源：回放面的响应夹具逐份登记。
 
-来源的两档：
-  · `captured`   实拍。`serve()` 原样回放。
-  · `synthetic`  未实拍（已知未知）。`load()` 供解析分支用例取用；
-                  `serve()` 拒答。假上游不得把合成响应当已知响应下发。
+登记口径：
+  manifest 共 12 条：6 captured ＋ 6 synthetic。
+  `tests/protocol/fixtures/` 另有 5 份请求体文本件。
+  它们不是响应夹具，不属回放面，不登记。
+  5 份是 iframe_location、sign_in_body 两形、usersure 两件。
 
-未实拍清单要一眼可见：合成分子的文件名一律以 `synthetic_` 开头。
+来源两档：
+  · `captured`  实拍。`serve()` 原样回放。
+  · `synthetic` 未实拍（已知未知）。
+                `load()` 供解析分支用例取用；`serve()` 拒答。
+
+回放模式口径：
+  `covers()` 把 synthetic 端点也算在回放面内。
+  故回放模式下，仅 synthetic 覆盖的端点一律 501。
+  它不回退手写响应。这是保守方向。
+  目的：未实拍状态不得被当已知下发。
+  代价：旧 iOS 链在纯 synthetic 回放下走不完。
+
+未实拍清单一目可见：合成夹具名一律以 `synthetic_` 开头。
 本模块只读夹具，不写盘、不联网。
 """
 
