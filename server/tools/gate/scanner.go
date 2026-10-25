@@ -68,6 +68,19 @@ func LoadRules(path string) ([]Rule, error) {
 		default:
 			return nil, fmt.Errorf("%s:%d: unknown kind %q", path, lineNo, r.Kind)
 		}
+		// under 把 prefix == "*" 解释为「匹配全部文件」。
+		// 对非 import 规则，owner 命中表示豁免：owner 为 * 会让规则永不生效。
+		// allow 为 * 会让任意规则永不生效。两种写法都是语义反转，加载时拒绝。
+		if r.Kind != "import" && strings.TrimSpace(r.Owner) == "*" {
+			return nil, fmt.Errorf("%s:%d: rule %q is not an import rule and must not use owner *",
+				path, lineNo, r.ID)
+		}
+		for _, prefix := range strings.Split(r.Allow, ",") {
+			if strings.TrimSpace(prefix) == "*" {
+				return nil, fmt.Errorf("%s:%d: rule %q must not use allow *",
+					path, lineNo, r.ID)
+			}
+		}
 		rules = append(rules, r)
 	}
 	if err := sc.Err(); err != nil {
@@ -154,7 +167,7 @@ func underAny(rel, list string) bool {
 //
 // prefix 以 .go 结尾时按**单文件精确匹配**：
 // 需要把概念钉在一个文件、而不是整个目录时用这种写法。
-// prefix 为 * 时匹配全部文件：用于没有单一属主的规则，
+// prefix 为 * 时匹配全部文件：用于没有单一属主的 import 规则，
 // 例如「任何生产代码都不得导入这个包」。
 // 其余 prefix 按目录前缀比较。
 func under(rel, prefix string) bool {

@@ -4,13 +4,14 @@
  *
  * 口径：`npm ls --all` 列出的全部已安装包，含 devDependencies。
  * 许可证取自各包 package.json 的 license 字段。
+ * 根 package.json 的**直接依赖必须全部出现在扫描结果里**；缺失即扫描失败。
  * 清单写入 THIRD_PARTY_LICENSES.md，随发布件分发。
  * Adminator 的通知不在此文件，见 THIRD_PARTY_NOTICES.md。
  *
  * 退出码：
  *   0  通过
  *   1  许可证不在允许清单内，或清单与扫描结果不一致
- *   2  扫描失败或扫描为空（门没有真正运行）
+ *   2  扫描失败或扫描为空（门没有真正运行）；含不可解析的 package.json
  *
  * 用法：
  *   node scripts/license-gate.mjs            校验
@@ -28,8 +29,9 @@ const UI_ROOT = resolve(HERE, '..')
 const MANIFEST = join(UI_ROOT, 'THIRD_PARTY_LICENSES.md')
 
 /**
- * 允许的许可证。前八项与 server 门一致。
- * MPL-2.0（lightningcss）与 Unlicense（isbot）只出现在构建期依赖，已登记。
+ * 允许清单的许可证。前八项与 server 门一致。
+ * MPL-2.0（lightningcss）与 Unlicense（isbot）按实际 scope 登记：
+ * 措辞由扫描结果生成，不写死。
  */
 const ALLOWED = [
   'Apache-2.0',
@@ -46,6 +48,12 @@ const ALLOWED = [
 
 /** 允许清单之外的例外项。运行时要提示。 */
 const EXCEPTIONS = new Set(['MPL-2.0', 'Unlicense'])
+
+/** 例外许可证的固定理由。scope 由扫描结果决定。 */
+const EXCEPTION_NOTES = {
+  'MPL-2.0': '文件级弱著佐权，不限制本项目代码的许可证',
+  Unlicense: '公有领域，无传染问题',
+}
 
 class ScanError extends Error {}
 
@@ -112,6 +120,21 @@ function dirsOf(output) {
     .filter((line) => line !== '')
 }
 
+/** directDependencyNames 返回根 package.json 的直接依赖名（运行时与开发）。 */
+function directDependencyNames() {
+  const pkg = JSON.parse(readFileSync(join(UI_ROOT, 'package.json'), 'utf8'))
+  return [
+    ...Object.keys(pkg.dependencies ?? {}),
+    ...Object.keys(pkg.devDependencies ?? {}),
+  ]
+}
+
+/** missingDirectDependencies 返回扫描结果里缺失的直接依赖名。 */
+function missingDirectDependencies(names, packages) {
+  const seen = new Set(packages.map((pkg) => pkg.name))
+  return names.filter((name) => !seen.has(name))
+}
+
 /** collect 返回按 名称、版本 排序的包清单。 */
 function collect() {
   const all = dirsOf(npmTree([]))
@@ -125,14 +148,16 @@ function collect() {
     if (resolve(dir) === UI_ROOT) {
       continue
     }
+    // 不可解析的 package.json 必须让门失败：静默跳过会让一个包凭空消失，
+    // 而门仍报绿。缺失 name 的包同样跳过了一个可追责的对象，一并判失败。
     let pkg
     try {
       pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
-    } catch {
-      continue
+    } catch (error) {
+      throw new ScanError(`cannot read ${join(dir, 'package.json')}: ${error.message}`)
     }
     if (typeof pkg.name !== 'string' || pkg.name === '') {
-      continue
+      throw new ScanError(`${join(dir, 'package.json')} has no package name`)
     }
     const key = `${pkg.name}@${pkg.version}`
     if (packages.has(key)) {
@@ -150,12 +175,32 @@ function collect() {
     throw new ScanError('no third-party packages found; the gate did not run')
   }
 
+  const missing = missingDirectDependencies(directDependencyNames(), [...packages.values()])
+  if (missing.length > 0) {
+    throw new ScanError(`the scan missed direct dependencies: ${missing.join(', ')}`)
+  }
+
   return [...packages.values()].sort((a, b) => {
     if (a.name !== b.name) {
       return a.name < b.name ? -1 : 1
     }
     return a.version < b.version ? -1 : a.version > b.version ? 1 : 0
   })
+}
+
+/** exceptionLines 按扫描结果生成例外许可证说明。scope 与包名取自实据。 */
+function exceptionLines(packages) {
+  const lines = []
+  for (const license of EXCEPTIONS) {
+    const hits = packages.filter((pkg) => pkg.license === license)
+    if (hits.length === 0) {
+      continue
+    }
+    const names = [...new Set(hits.map((pkg) => pkg.name))].sort().join('、')
+    const scope = hits.some((pkg) => pkg.scope === '运行时') ? '运行时' : '构建期'
+    lines.push(`${license}（${names}）只出现在${scope}依赖；${EXCEPTION_NOTES[license]}。`)
+  }
+  return lines
 }
 
 function render(packages) {
@@ -173,8 +218,11 @@ function render(packages) {
   lines.push(
     '允许的许可证：Apache-2.0、BSD-2-Clause、BSD-3-Clause、ISC、MIT、0BSD、CC0-1.0、BlueOak-1.0.0、MPL-2.0、Unlicense。',
   )
-  lines.push('MPL-2.0 与 Unlicense 只出现在构建期依赖，已在交付报告登记。')
+  for (const line of exceptionLines(packages)) {
+    lines.push(line)
+  }
   lines.push('其余许可证一律使门失败。GPL 系、AGPL 系、未知与无许可证同样失败。')
+  lines.push('门还校验根 package.json 的全部直接依赖都出现在扫描结果里。')
   lines.push('')
   lines.push('| 包 | 版本 | 许可证 | 依赖类型 |')
   lines.push('|---|---|---|---|')
@@ -218,6 +266,26 @@ function selfTest() {
   const tampered = base.replace('| a | 1.0.0 | MIT |', '| a | 1.0.0 | GPL-3.0-only |')
   if (normalize(base) === normalize(tampered)) {
     console.error('license-gate self-test: drift comparison cannot see a changed row')
+    failed += 1
+  }
+  // 直接依赖覆盖：缺失的直接依赖必须被报出来。
+  const covered = [{ name: 'a' }, { name: 'b' }]
+  if (missingDirectDependencies(['a', 'b'], covered).length !== 0) {
+    console.error('license-gate self-test: coverage check reports a false miss')
+    failed += 1
+  }
+  if (missingDirectDependencies(['a', 'c'], covered).join(',') !== 'c') {
+    console.error('license-gate self-test: coverage check cannot see a missing direct dependency')
+    failed += 1
+  }
+  // 例外说明按实际 scope 生成：运行时依赖不得写成构建期。
+  const notes = exceptionLines([
+    { name: 'lightningcss', license: 'MPL-2.0', scope: '开发' },
+    { name: 'isbot', license: 'Unlicense', scope: '运行时' },
+  ]).join('\n')
+  if (!notes.includes('MPL-2.0（lightningcss）只出现在构建期依赖') ||
+      !notes.includes('Unlicense（isbot）只出现在运行时依赖')) {
+    console.error('license-gate self-test: exception wording does not follow the scan scope')
     failed += 1
   }
   if (failed !== 0) {

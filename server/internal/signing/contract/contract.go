@@ -26,6 +26,10 @@ import (
 )
 
 // Provider 是唯一的平台相关接缝。
+//
+// 能力与调用约定：
+// 未声明的发现能力，对应方法**必须返回非 nil 错误**；宿主不得调用该方法。
+// 宿主只按 Capabilities 决定 UI 与调度，不假设提供方的平台细节。
 type Provider interface {
 	ID() string
 	Capabilities() Capabilities

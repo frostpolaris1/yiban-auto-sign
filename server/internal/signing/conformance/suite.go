@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"math"
 	"reflect"
-	"regexp"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
 
@@ -29,10 +29,12 @@ const (
 	CheckTargetsCancel  = "targets.cancel"
 	CheckVerifyResult   = "verify.result"
 	CheckSignResult     = "sign.result"
+	CheckPhotoMissing   = "sign.photo_missing"
 	CheckPIIAbsent      = "pii.absent"
 	CheckSignRetry      = "sign.retry"
 	CheckSignUnknown    = "sign.unknown"
 	CheckSignCancel     = "sign.cancel"
+	CheckSignTimeout    = "sign.timeout"
 	CheckSignIdempotent = "sign.idempotent"
 	CheckSignConcurrent = "sign.concurrent"
 )
@@ -44,6 +46,12 @@ const (
 	concurrentWorkers = 8
 	// concurrentTimeout 是并发判据的完成上限。
 	concurrentTimeout = 10 * time.Second
+	// inflightGrace 是 sign.timeout 判在途取消前等待的时长。
+	// 提供方在此期间返回视为未进入取消窗口；超出则取消必须生效。
+	inflightGrace = 20 * time.Millisecond
+	// signTimeoutGrace 是 sign.timeout 单次调用的完成上限。
+	// 阻塞的提供方由它转成失败，套件不挂起。
+	signTimeoutGrace = 5 * time.Second
 )
 
 // NewProvider 构造一个全新的提供方实例。
@@ -77,10 +85,12 @@ func Checks() []Check {
 		{CheckTargetsCancel, checkTargetsCancel},
 		{CheckVerifyResult, checkVerifyResult},
 		{CheckSignResult, checkSignResult},
+		{CheckPhotoMissing, checkPhotoMissing},
 		{CheckPIIAbsent, checkPIIAbsent},
 		{CheckSignRetry, checkSignRetry},
 		{CheckSignUnknown, checkSignUnknown},
 		{CheckSignCancel, checkSignCancel},
+		{CheckSignTimeout, checkSignTimeout},
 		{CheckSignIdempotent, checkSignIdempotent},
 		{CheckSignConcurrent, checkSignConcurrent},
 	}
@@ -207,12 +217,20 @@ func checkWindowShape(newProvider NewProvider) error {
 	return nil
 }
 
-// checkWindowCancel 要求已取消上下文返回 context.Canceled。
+// checkWindowCancel 要求取消后的窗口发现不返回结果。
+// 未声明 WindowDiscovery 时只要求非 nil 错误：宿主不得调用该方法（G1）。
 func checkWindowCancel(newProvider NewProvider) error {
 	p := newProvider()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := p.DiscoverWindow(ctx, discoverRequest()); !errors.Is(err, context.Canceled) {
+	_, err := p.DiscoverWindow(ctx, discoverRequest())
+	if !p.Capabilities().WindowDiscovery {
+		if err == nil {
+			return failf(CheckWindowCancel, "未声明 WindowDiscovery，取消上下文返回 nil 错误")
+		}
+		return nil
+	}
+	if !errors.Is(err, context.Canceled) {
 		return failf(CheckWindowCancel, "错误 = %v，want context.Canceled", err)
 	}
 	return nil
@@ -247,12 +265,19 @@ func checkTargetsShape(newProvider NewProvider) error {
 	return nil
 }
 
-// checkTargetsCancel 要求已取消上下文返回 context.Canceled。
+// checkTargetsCancel 要求取消后的目标发现不返回结果。口径同 window.cancel（G1）。
 func checkTargetsCancel(newProvider NewProvider) error {
 	p := newProvider()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := p.DiscoverTargets(ctx, discoverRequest()); !errors.Is(err, context.Canceled) {
+	_, err := p.DiscoverTargets(ctx, discoverRequest())
+	if !p.Capabilities().TargetDiscovery {
+		if err == nil {
+			return failf(CheckTargetsCancel, "未声明 TargetDiscovery，取消上下文返回 nil 错误")
+		}
+		return nil
+	}
+	if !errors.Is(err, context.Canceled) {
 		return failf(CheckTargetsCancel, "错误 = %v，want context.Canceled", err)
 	}
 	return nil
@@ -362,7 +387,8 @@ func checkSignCancel(newProvider NewProvider) error {
 	return nil
 }
 
-// checkSignIdempotent 要求同一 AttemptID 重复签到得到同一结果。
+// checkSignIdempotent 要求同一 AttemptID 重复签到得到**完全相同**的结果。
+// 依据：契约 §3 身份与幂等；只比 Outcome 会放过证据与重试建议的漂移。
 func checkSignIdempotent(newProvider NewProvider) error {
 	p := newProvider()
 	request := signRequest("attempt-idempotent")
@@ -376,17 +402,25 @@ func checkSignIdempotent(newProvider NewProvider) error {
 	if err != nil {
 		return failf(CheckSignIdempotent, "重复 Sign 返回错误: %v", err)
 	}
-	if first.Outcome != second.Outcome {
-		return failf(CheckSignIdempotent, "同一 AttemptID 得到 %q 与 %q", first.Outcome, second.Outcome)
+	if !reflect.DeepEqual(first, second) {
+		return failf(CheckSignIdempotent,
+			"同一 AttemptID 两次结果不同：Outcome %q/%q，Evidence 相同=%t，Retry 相同=%t，Message %q/%q",
+			first.Outcome, second.Outcome,
+			reflect.DeepEqual(first.Evidence, second.Evidence),
+			reflect.DeepEqual(first.Retry, second.Retry),
+			first.Message, second.Message)
 	}
 	return nil
 }
 
 // checkSignConcurrent 要求并发签到互不串扰。
-// 实现 Expecter 时逐条比对期望；否则只覆盖词表与完成时限。
+// 提供方**必须**实现 Expecter：没有 AttemptID 关联就无法证明不串扰（缺口 G2）。
 func checkSignConcurrent(newProvider NewProvider) error {
 	p := newProvider()
-	expecter, hasExpecter := p.(Expecter)
+	expecter, ok := p.(Expecter)
+	if !ok {
+		return failf(CheckSignConcurrent, "提供方未实现 Expecter：无法关联 AttemptID，不通过认证")
+	}
 
 	requests := make([]contract.SignRequest, concurrentWorkers)
 	results := make([]contract.Result, concurrentWorkers)
@@ -428,15 +462,101 @@ func checkSignConcurrent(newProvider NewProvider) error {
 		if !results[i].Outcome.Valid() {
 			return failf(CheckSignConcurrent, "第 %d 个并发结果 %q 不在契约词表内", i+1, results[i].Outcome)
 		}
-		if !hasExpecter {
-			continue
-		}
 		want, declared := expecter.ExpectedOutcome(requests[i])
 		if declared && results[i].Outcome != want {
 			return failf(CheckSignConcurrent, "第 %d 个并发结果串扰：得到 %q，期望 %q", i+1, results[i].Outcome, want)
 		}
 	}
 	return nil
+}
+
+// checkPhotoMissing 要求声明图片能力的提供方对无图请求返回 photo_missing。
+// 依据：契约 §4.5「无图但需要图 → photo_missing，不登录」。
+// 未声明 ImageRequired 时跳过并在标准输出登记：**跳过不是通过**。
+func checkPhotoMissing(newProvider NewProvider) error {
+	p := newProvider()
+	if !p.Capabilities().ImageRequired {
+		fmt.Printf("conformance: %s: 跳过：提供方未声明 ImageRequired\n", CheckPhotoMissing)
+		return nil
+	}
+	request := signRequest("attempt-photo-missing")
+	request.Image = nil
+	result, err := p.Sign(context.Background(), request)
+	if err != nil {
+		return failf(CheckPhotoMissing, "无图请求返回错误: %v", err)
+	}
+	if result.Outcome != contract.OutcomePhotoMissing {
+		return failf(CheckPhotoMissing, "无图请求结果 = %q，want photo_missing", result.Outcome)
+	}
+	return nil
+}
+
+// checkSignTimeout 要求期限结束与在途取消都返回上下文错误，且不返回伪结果。
+// 依据：契约 §7.2 把「超时」列为 conformance 必测项。
+func checkSignTimeout(newProvider NewProvider) error {
+	// 场景一：调用入口的期限已过。
+	expired, cancelExpired := context.WithTimeout(context.Background(), 0)
+	defer cancelExpired()
+	result, err := newProvider().Sign(expired, signRequest("attempt-timeout-expired"))
+	if err == nil {
+		return failf(CheckSignTimeout, "期限已过仍返回 nil 错误，结果 %q", result.Outcome)
+	}
+	if !isContextError(err) {
+		return failf(CheckSignTimeout, "错误 = %v，want context.DeadlineExceeded 或 context.Canceled", err)
+	}
+	if result.Outcome != "" {
+		return failf(CheckSignTimeout, "期限已过仍返回结果 %q", result.Outcome)
+	}
+
+	// 场景二：取消发生在调用期间。
+	// 先给提供方一个窗口；窗口内返回视为未进入取消。
+	// 窗口之后返回必须带上下文错误，且不得带结果。
+	p := newProvider()
+	ctx, cancel := context.WithCancel(context.Background())
+	type callResult struct {
+		result contract.Result
+		err    error
+	}
+	done := make(chan callResult, 1)
+	go func() {
+		// 协程内 panic 无法被 runCheck 捕获；在这里转成错误。
+		defer func() {
+			if r := recover(); r != nil {
+				done <- callResult{err: fmt.Errorf("panic: %v", r)}
+			}
+		}()
+		got, err := p.Sign(ctx, signRequest("attempt-timeout-inflight"))
+		done <- callResult{result: got, err: err}
+	}()
+
+	select {
+	case <-done:
+		cancel()
+		return nil
+	case <-time.After(inflightGrace):
+	}
+
+	cancel()
+	select {
+	case got := <-done:
+		if got.err == nil {
+			return failf(CheckSignTimeout, "取消后仍返回 nil 错误，结果 %q", got.result.Outcome)
+		}
+		if !isContextError(got.err) {
+			return failf(CheckSignTimeout, "取消后错误 = %v，want context.DeadlineExceeded 或 context.Canceled", got.err)
+		}
+		if got.result.Outcome != "" {
+			return failf(CheckSignTimeout, "取消后仍返回结果 %q", got.result.Outcome)
+		}
+		return nil
+	case <-time.After(signTimeoutGrace):
+		return failf(CheckSignTimeout, "取消后 %s 内未返回", signTimeoutGrace)
+	}
+}
+
+// isContextError 报告 err 是否为上下文错误。
+func isContextError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // discoverRequest 返回判据用的固定发现请求。
@@ -518,18 +638,17 @@ func sampleSign(p contract.Provider, prefix string, n int) ([]contract.Result, e
 	return results, nil
 }
 
-// phoneLike 匹配未脱敏的 11 位手机号。
-var phoneLike = regexp.MustCompile(`(^|[^0-9])1[3-9][0-9]{9}([^0-9]|$)`)
-
 // findLeak 返回泄漏描述；无泄漏返回空串。
-// 它同时检查凭据原值与形如手机号的明文数字。
+// 它检查凭据原值，并用 core/mask 判定未脱敏的手机号与邮箱。
+// 形态判定只有 core/mask 一份：分隔号码与带国家码的形状同口径。
 // 序列化失败也算泄漏：**证明不了没有，就不算通过**。
 func findLeak(value any, cred contract.Credential) string {
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return "无法序列化，无法证明已脱敏：" + err.Error()
 	}
-	text := strings.ToLower(string(raw))
+	text := string(raw)
+	lower := strings.ToLower(text)
 	secrets := []struct{ name, value string }{
 		{"手机号", cred.Phone},
 		{"口令", cred.Password},
@@ -540,12 +659,12 @@ func findLeak(value any, cred contract.Credential) string {
 		if secret.value == "" {
 			continue
 		}
-		if strings.Contains(text, strings.ToLower(secret.value)) {
+		if strings.Contains(lower, strings.ToLower(secret.value)) {
 			return secret.name
 		}
 	}
-	if phoneLike.MatchString(string(raw)) {
-		return "明文手机号"
+	if mask.MaskText(text) != text {
+		return "明文手机号或邮箱"
 	}
 	return ""
 }

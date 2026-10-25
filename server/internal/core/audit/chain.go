@@ -155,13 +155,6 @@ const (
 	phoneNumberMax = 14999999999
 )
 
-var (
-	// emailAnywhere 匹配邮箱地址，不带词边界。
-	// 手机号形态判定单一来源是 core/mask.TextHasPhone：
-	// 连续、分隔与带国家码的形状都在掩码层覆盖（W2C-R4-01）。
-	emailAnywhere = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
-)
-
 // detailKeys 是允许的 detail 键全集，闭合不可扩展。
 var (
 	// traceIDShape 匹配 entry/http/router 生成的 id：32 位十六进制，
@@ -313,7 +306,9 @@ func validateDetailString(key, text string) error {
 	default:
 		return fmt.Errorf("%w: %q has no string rule", ErrDetailKey, key)
 	}
-	if mask.MaskText(text) != text || mask.TextHasPhone(text) || emailAnywhere.MatchString(text) {
+	// PII 判定单一来源是 core/mask.MaskText：手机号（连续、分隔、带国家码）
+	// 与邮箱都在掩码层覆盖（W2C-R4-01）。本文件不另设正则，避免两套口径漂移。
+	if mask.MaskText(text) != text {
 		return fmt.Errorf("%w: %q", ErrDetailPII, key)
 	}
 	return nil
