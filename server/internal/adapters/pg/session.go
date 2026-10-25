@@ -55,7 +55,7 @@ func (r *SessionRepo) Create(ctx context.Context, in coreauth.NewSessionRow) (co
 			VALUES ($1::uuid, $2::uuid, $3, $4, $5, $5, $6, $7, NULLIF($8, ''), NULLIF($9, ''))
 			RETURNING `+sessionColumns,
 			sessionID, in.UserID, in.TokenHash.Bytes(), in.AuthMethod, in.Now,
-			in.IdleExpiresAt, in.ExpiresAt, string(in.IPHash), string(in.UserAgentHash))
+			in.IdleExpiresAt, in.ExpiresAt, in.IPHash.String(), in.UserAgentHash.String())
 		var scanErr error
 		record, scanErr = scanSession(row)
 		if scanErr != nil {
@@ -165,9 +165,10 @@ func scanSession(row pgx.Row) (coreauth.SessionRow, error) {
 		rawHash []byte
 		revoked pgtype.Timestamptz
 	)
+	var ipHash, agentHash string
 	if err := row.Scan(&record.ID, &record.UserID, &rawHash, &record.AuthMethod,
 		&record.CreatedAt, &record.LastSeenAt, &record.IdleExpiresAt, &record.ExpiresAt,
-		&revoked, &record.IPHash, &record.UserAgentHash); err != nil {
+		&revoked, &ipHash, &agentHash); err != nil {
 		return coreauth.SessionRow{}, err
 	}
 	hash, err := tokenHashFromBytes(rawHash)
@@ -175,6 +176,12 @@ func scanSession(row pgx.Row) (coreauth.SessionRow, error) {
 		return coreauth.SessionRow{}, err
 	}
 	record.TokenHash = hash
+	if record.IPHash, err = coreauth.IPHashFromStored(ipHash); err != nil {
+		return coreauth.SessionRow{}, err
+	}
+	if record.UserAgentHash, err = coreauth.UserAgentHashFromStored(agentHash); err != nil {
+		return coreauth.SessionRow{}, err
+	}
 	record.RevokedAt = timePtr(revoked)
 	return record, nil
 }
@@ -187,10 +194,11 @@ func scanResolvedSession(row pgx.Row) (coreauth.ResolvedSession, error) {
 		role    string
 		status  string
 	)
+	var ipHash, agentHash string
 	err := row.Scan(&record.Session.ID, &record.Session.UserID, &rawHash,
 		&record.Session.AuthMethod, &record.Session.CreatedAt, &record.Session.LastSeenAt,
 		&record.Session.IdleExpiresAt, &record.Session.ExpiresAt, &revoked,
-		&record.Session.IPHash, &record.Session.UserAgentHash,
+		&ipHash, &agentHash,
 		&record.User.Email, &role, &status, &record.User.MustChangePassword)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -203,6 +211,12 @@ func scanResolvedSession(row pgx.Row) (coreauth.ResolvedSession, error) {
 		return coreauth.ResolvedSession{}, err
 	}
 	record.Session.TokenHash = hash
+	if record.Session.IPHash, err = coreauth.IPHashFromStored(ipHash); err != nil {
+		return coreauth.ResolvedSession{}, err
+	}
+	if record.Session.UserAgentHash, err = coreauth.UserAgentHashFromStored(agentHash); err != nil {
+		return coreauth.ResolvedSession{}, err
+	}
 	record.Session.RevokedAt = timePtr(revoked)
 	record.User.ID = record.Session.UserID
 	record.User.Role = coreauth.Role(role)

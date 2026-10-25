@@ -40,34 +40,17 @@ var csrfExemptPaths = map[string]struct{}{
 
 var fallbackRequestID atomic.Uint64
 
-// requestID accepts a sane client trace id or mints one. It writes the value
-// to the request header first so respond.Error can read it.
+// requestID always mints a fresh id. A client-supplied value is not reused:
+// the audit layer records trace ids, and an attacker-controlled header must
+// not decide what lands there.
 func requestID() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		id := sanitizeRequestID(c.GetHeader(respond.RequestIDHeader))
-		if id == "" {
-			id = newRequestID()
-		}
+		id := newRequestID()
 		c.Request.Header.Set(respond.RequestIDHeader, id)
 		c.Header(respond.RequestIDHeader, id)
 		c.Set(contextRequestID, id)
 		c.Next()
 	}
-}
-
-func sanitizeRequestID(raw string) string {
-	if raw == "" || len(raw) > 64 {
-		return ""
-	}
-	for _, r := range raw {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-		case r == '-', r == '_', r == '.':
-		default:
-			return ""
-		}
-	}
-	return raw
 }
 
 func newRequestID() string {

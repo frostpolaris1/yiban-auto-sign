@@ -112,6 +112,7 @@ deployment cannot silently fall back to development defaults.
 | `YIBAN_DATABASE_URL` | no | empty | PostgreSQL DSN; unused until W1 |
 | `YIBAN_TZ` | no | `Asia/Shanghai` | business time zone |
 | `YIBAN_INSECURE_COOKIES` | no | `true` for development and test | use the unprefixed cookie name; production refuses a true value |
+| `YIBAN_HASH_PEPPER` | **yes** | — | at least 16 characters; keys the HMAC digests of IP addresses and user agents |
 
 Production always uses `__Host-yiban_session` with `Secure`. A true
 `YIBAN_INSECURE_COOKIES` under `YIBAN_ENV=production` is a startup error.

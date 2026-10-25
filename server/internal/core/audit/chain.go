@@ -153,8 +153,11 @@ var (
 
 // detailKeys is the only allowed set of detail keys.
 var (
-	// traceIDShape is the request id alphabet from entry/http/router.
-	traceIDShape = regexp.MustCompile(`^[0-9A-Za-z._-]{1,64}$`)
+	// traceIDShape matches the ids entry/http/router mints: 32 hex characters,
+	// or the req-<counter> fallback. A client-supplied header value never
+	// reaches the audit layer, so a bare digit run such as a phone number is
+	// rejected here.
+	traceIDShape = regexp.MustCompile(`^([0-9a-f]{32}|req-[0-9]+)$`)
 	// kidShape matches the credential key id: 16 lowercase hex characters.
 	kidShape = regexp.MustCompile(`^[0-9a-f]{16}$`)
 	// fieldShape is a column or setting name.

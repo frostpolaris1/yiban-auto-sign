@@ -71,14 +71,14 @@ func TestEncodeDetailAcceptsScalars(t *testing.T) {
 		"count":    int64(3),
 		"kid":      "0123456789abcdef",
 		"rows":     []int{1, 2},
-		"trace_id": "trace-1",
+		"trace_id": "0f2e1d3c4b5a69788796a5b4c3d2e1f0",
 	})
 	if err != nil {
 		t.Fatalf("valid detail rejected: %v", err)
 	}
 	// encoding/json sorts map keys, so the bytes are canonical.
 	const want = `{"count":3,"field":"status","from":"pending","kid":"0123456789abcdef",` +
-		`"reason":"photo rejected","rows":[1,2],"to":"active","trace_id":"trace-1"}`
+		`"reason":"photo rejected","rows":[1,2],"to":"active","trace_id":"0f2e1d3c4b5a69788796a5b4c3d2e1f0"}`
 	if got != want {
 		t.Fatalf("canonical detail:\n got %s\nwant %s", got, want)
 	}
