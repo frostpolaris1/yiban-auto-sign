@@ -503,19 +503,158 @@ class DevVerifyFastModeTest(unittest.TestCase):
         self.assertGreater(m.start(), self.text.index('rc=$(resolve_exit_code'),
                            "提示必须在最终 rc 算出之后打印：只看 FAST_EMPTY 会与真红报的码矛盾")
 
-    # ---- low#4：日志目录必须按模式分开（fast 与全量走不同的锁，可并发）----
+    # ---- 4kl：副本与锁必须按源仓分键（并行批的跨树污染）----
 
-    def test_default_log_dir_is_separate_per_mode(self):
-        src = _func_source(self.text, "default_log_dir")
-        self.assertGreater(len(src), 50, "抽不出 default_log_dir——结构改了？")
-        rc, out = _bash("%s\ndefault_log_dir /x/y fast\necho\ndefault_log_dir /x/y full\n" % src)
+    def test_copy_slot_and_lock_are_keyed_by_source_repo(self):
+        """副本路径与锁必须按源仓分键（4kl）。
+
+        缺陷形状（ziy B1 审查实测）：缓存路径只有一个固定键 `fast-worktree`，
+        两个 worktree 的 `--fast` 共用同一份副本——一方整体替换另一方的缓存
+        （HEAD 从 0323353b 变 9e1191b5），跨树伪红 rc=2。
+        判据：同一模式 + 不同源仓 → 两个槽；同一源仓 → 同一槽（增量复用仍成立）；
+        不同模式 → 不同槽（fast 与全量仍隔离）。锁与槽同键：不同源仓不互相排队。
+        """
+        parts = [_func_source(self.text, name)
+                 for name in ("repo_digest", "copy_dest", "copy_lock")]
+        for name, src in zip(("repo_digest", "copy_dest", "copy_lock"), parts, strict=True):
+            self.assertGreater(len(src), 30,
+                               f"抽不出 {name}——结构改了？本条会因此变废断言")
+        script = ("WORKDIR=/root/.cache/yiban-dev-verify\n"
+                  + "".join(parts)
+                  + "\ncopy_dest fast /x/repo-a\n"
+                  + "copy_dest fast /x/repo-b\n"
+                  + "copy_dest fast /x/repo-a\n"
+                  + "copy_dest full /x/repo-a\n"
+                  + "copy_lock fast /x/repo-a\n"
+                  + "copy_lock fast /x/repo-b\n")
+        rc, out = _bash(script)
+        self.assertEqual(rc, 0, f"抽出的分键函数跑失败：{out}")
+        lines = out.split()
+        self.assertEqual(len(lines), 6, f"期望 6 行输出，实得：{lines}")
+        dest_a, dest_b, dest_a_again, dest_full, lock_a, lock_b = lines
+        self.assertNotEqual(
+            dest_a, dest_b,
+            "两个不同源仓拿到同一个副本槽：并行跑 --fast 会互相整体覆盖（4kl）")
+        self.assertEqual(dest_a, dest_a_again,
+                         "同一源仓必须复用同一槽：否则每次 --fast 都整树重建")
+        self.assertNotEqual(dest_a, dest_full,
+                            "fast 与全量的副本槽必须不同（两者的锁与重建策略不同）")
+        self.assertNotEqual(lock_a, lock_b,
+                            "两个不同源仓共用一把锁：并行批会互相排队")
+        for dest in (dest_a, dest_b, dest_full):
+            self.assertTrue(dest.startswith("/root/.cache/yiban-dev-verify/"),
+                            f"副本槽没落在 WORKDIR 下：{dest}")
+            self.assertNotIn("repo-a", dest,
+                             f"槽名直接拼了源仓路径（含空格/斜杠会坏路径）：{dest}")
+        # 在场性：算出来的槽必须真被入口脚本使用，**实参也要钉死**。只断言
+        # `copy_dest(` 在场时，`copy_dest "$MODE" "$MODE"` 这种实参传错仍会绿
+        # （4kl 缺陷原样回来，门却不响；审查突变实测）。行尾允许 `|| die` 续写。
+        self.assertRegex(self.text,
+                         r'(?m)^DEST=\$\(copy_dest "\$MODE" "\$REPO"\)(?: \|\||$)',
+                         "入口脚本的 DEST 没按「模式, 源仓」调用 copy_dest："
+                         "传错实参会重新引入跨树互覆")
+        self.assertRegex(self.text,
+                         r'(?m)^LOCKFILE=\$\(copy_lock "\$MODE" "\$REPO"\)(?: \|\||$)',
+                         "入口脚本的 LOCKFILE 没按「模式, 源仓」调用 copy_lock："
+                         "传错实参会重新引入共锁/共槽")
+
+    def test_legacy_copy_is_migrated_or_cleaned_only_when_idle(self):
+        """旧键缓存（只按模式）的兼容处理（4kl）。
+
+        三种分支都必须成立：无新槽 → 整体改名到本槽（首跑仍走增量同步）；
+        新槽已在 → 删旧键垃圾；旧版锁被占 → 不动（旧进程可能正在用那份副本）。
+        迁移/删除都是 `rm -rf` 级动作，静默走错会毁掉正在用的缓存。
+        """
+        parts = [_func_source(self.text, name)
+                 for name in ("legacy_copy_dest", "legacy_copy_lock", "migrate_legacy_copy")]
+        for name, src in zip(("legacy_copy_dest", "legacy_copy_lock", "migrate_legacy_copy"),
+                             parts, strict=True):
+            self.assertGreater(len(src), 30,
+                               f"抽不出 {name}——结构改了？本条会因此变废断言")
+        srcs = "".join(parts)
+        with tempfile.TemporaryDirectory() as d:
+            script = (
+                "WORKDIR=%s\n%s\n"
+                "mkdir -p \"$WORKDIR/fast-worktree\"\n"
+                "echo marker >\"$WORKDIR/fast-worktree/marker\"\n"
+                "migrate_legacy_copy fast \"$WORKDIR/fast-worktree-abc\"\n"
+                "[ -f \"$WORKDIR/fast-worktree-abc/marker\" ] && [ ! -d \"$WORKDIR/fast-worktree\" ]\n"
+                % (shlex.quote(d), srcs))
+            rc, out = _bash(script)
+            self.assertEqual(rc, 0, f"旧键迁移分支失败：{out}")
+        with tempfile.TemporaryDirectory() as d:
+            script = (
+                "WORKDIR=%s\n%s\n"
+                "mkdir -p \"$WORKDIR/fast-worktree\" \"$WORKDIR/fast-worktree-abc\"\n"
+                "echo old >\"$WORKDIR/fast-worktree/old\"\n"
+                "echo new >\"$WORKDIR/fast-worktree-abc/marker\"\n"
+                "migrate_legacy_copy fast \"$WORKDIR/fast-worktree-abc\"\n"
+                "[ -f \"$WORKDIR/fast-worktree-abc/marker\" ] && [ ! -d \"$WORKDIR/fast-worktree\" ]\n"
+                % (shlex.quote(d), srcs))
+            rc, out = _bash(script)
+            self.assertEqual(rc, 0, f"新槽已在时没清掉旧键垃圾：{out}")
+        with tempfile.TemporaryDirectory() as d:
+            script = (
+                "WORKDIR=%s\n%s\n"
+                "mkdir -p \"$WORKDIR/fast-worktree\"\n"
+                "echo marker >\"$WORKDIR/fast-worktree/marker\"\n"
+                "exec 7>\"$WORKDIR/dev-verify-fast-runlock\"\n"
+                "flock 7\n"
+                "migrate_legacy_copy fast \"$WORKDIR/fast-worktree-abc\"\n"
+                "[ -f \"$WORKDIR/fast-worktree/marker\" ] && [ ! -d \"$WORKDIR/fast-worktree-abc\" ]\n"
+                % (shlex.quote(d), srcs))
+            rc, out = _bash(script)
+            self.assertEqual(rc, 0, f"旧键锁被占时不得动旧缓存：{out}")
+
+    # ---- dix 低-5：日志目录必须按模式与源仓分开（轮转互删与跨树混日志）----
+
+    def test_default_log_dir_is_separate_per_mode_and_repo(self):
+        parts = [_func_source(self.text, name) for name in ("repo_digest", "default_log_dir")]
+        for name, src in zip(("repo_digest", "default_log_dir"), parts, strict=True):
+            self.assertGreater(len(src), 40, f"抽不出 {name}——结构改了？")
+        script = ("WORKDIR=/root/.cache/yiban-dev-verify\n"
+                  + "".join(parts)
+                  + "\ndefault_log_dir /x/y fast\n"
+                  + "default_log_dir /x/y full\n"
+                  + "default_log_dir /x/z fast\n"
+                  + "default_log_dir /x/y fast\n")
+        rc, out = _bash(script)
         self.assertEqual(rc, 0, f"default_log_dir 跑失败：{out}")
-        self.assertEqual(out.split(),
-                         ["/x/yiban-dev-verify-logs-fast", "/x/yiban-dev-verify-logs"],
-                         "fast 与全量的默认日志目录必须不同：两者走不同的锁、可并发，"
-                         "共用目录会让 prune_logs 轮转删掉对方的日志")
+        lines = out.split()
+        self.assertEqual(len(lines), 4, f"期望 4 行输出，实得：{lines}")
+        fast_y, full_y, fast_z, fast_y_again = lines
+        self.assertTrue(fast_y.startswith("/x/yiban-dev-verify-logs-fast-"),
+                        f"fast 日志目录没按源仓分键：{fast_y}")
+        self.assertTrue(full_y.startswith("/x/yiban-dev-verify-logs-"), full_y)
+        self.assertFalse(full_y.startswith("/x/yiban-dev-verify-logs-fast-"),
+                         f"全量日志目录不得落进 fast 前缀：{full_y}")
+        self.assertNotEqual(
+            fast_y, fast_z,
+            "两个源仓共用一个 fast 日志目录：prune_logs 会轮转删掉对方的日志（dix 低-5）")
+        self.assertEqual(fast_y, fast_y_again, "同一源仓必须复用同一日志目录")
+        self.assertNotEqual(fast_y, full_y, "fast 与全量的日志目录必须不同")
         self.assertIn('LOG_DIR=$(default_log_dir "$REPO" "$MODE")', self.text,
-                      "默认日志目录必须由模式决定（调用点在场性）")
+                      "默认日志目录必须由模式与源仓决定（调用点在场性）")
+
+    def test_repo_digest_fails_closed_when_sha256sum_is_unavailable(self):
+        """摘要取不到时必须失败，不许让两个源仓共用一个空键槽（dix 低-3）。
+
+        旧实现把 `die` 放在命令替换里：`die` 只杀子壳，`copy_dest` 的 `printf` 照样
+        返回 0，两个源仓都得到 `fast-worktree-`（4kl 缺陷原样回来且 rc=0）。
+        """
+        parts = [_func_source(self.text, name) for name in ("repo_digest", "copy_dest")]
+        for name, src in zip(("repo_digest", "copy_dest"), parts, strict=True):
+            self.assertGreater(len(src), 40, f"抽不出 {name}——结构改了？")
+        script = ("set -o pipefail\n"
+                  "WORKDIR=/tmp/probe-workdir\n"
+                  "sha256sum() { return 127; }\n"
+                  + "".join(parts)
+                  + "\ncopy_dest fast /x/repo-a\n")
+        rc, out = _bash(script)
+        self.assertNotEqual(rc, 0,
+                            f"sha256sum 不可用时 copy_dest 仍返回 0（fail-open）：{out!r}")
+        self.assertEqual(out.strip(), "",
+                         f"摘要取不到时不得输出槽路径（两个源仓会共槽）：{out!r}")
 
     # ---- low#2 / low#3：参数不许静默忽略 ----
 

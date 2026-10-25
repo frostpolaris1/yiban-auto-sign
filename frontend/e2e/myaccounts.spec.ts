@@ -148,6 +148,56 @@ test("用户端账号页：暂停/恢复往返、编辑保存、改密弹窗、�
   await expect(resignBox).toBeHidden();
 });
 
+/** 种子账号（e2e-user-acct / 13800138001）的原始易班口令（见 e2e/server.py 的账号种子）。 */
+const SEED_PASSWORD = "p1";
+
+/** 关掉可能留在屏幕上的编辑弹窗。
+ *  保存失败（含「PUT 已发、响应不回」）时弹窗不关，遮罩会拦住「编辑」按钮，
+ *  还原动作就点不到（实测：点击超时吃满 test 预算）。 */
+async function dismissOpenDialog(page: import("@playwright/test").Page): Promise<void> {
+  const dialog = page.locator(".el-dialog");
+  if (await dialog.isVisible()) {
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden({ timeout: 5_000 });
+  }
+}
+
+/** 一次「编辑 + 填易班口令 + 保存」。成功 = 弹窗自行关闭；失败时弹窗留开。 */
+async function saveWithPassword(
+  page: import("@playwright/test").Page,
+  card: import("@playwright/test").Locator,
+  pw: string,
+  hiddenTimeout = 10_000,
+): Promise<void> {
+  await card.getByRole("button", { name: "编辑" }).click();
+  const dialog = page.locator(".el-dialog");
+  await expect(dialog).toBeVisible();
+  await dialog.locator('input[type="password"]').fill(pw);
+  await dialog.locator(".el-dialog__footer .btn--primary").click();
+  // 保存成功 = 对话框自行关闭；失败时表单留在原处并显示错误文案
+  await expect(dialog).toBeHidden({ timeout: hiddenTimeout });
+}
+
+/** 改密并保证还原种子口令：保存可能已落库但响应不回，此时弹窗留开——
+ *  还原前先关框，否则遮罩拦点击。还原无条件执行：口径口令写 p1 是幂等的。 */
+async function changePasswordWithRestore(
+  page: import("@playwright/test").Page,
+  card: import("@playwright/test").Locator,
+  pw: string,
+  hiddenTimeout = 10_000,
+): Promise<void> {
+  try {
+    await saveWithPassword(page, card, pw, hiddenTimeout);
+  } finally {
+    try {
+      await dismissOpenDialog(page);
+      await saveWithPassword(page, card, SEED_PASSWORD, 5_000);
+    } catch {
+      // 还原失败不能掩盖原始失败；下一轮 e2e 的种子会重置库。
+    }
+  }
+}
+
 test("用户端改自己账号的易班密码：保存必须走 PUT 并成功（R3-001）", async ({ page }) => {
   // 缺陷形状：受门禁分支把方法写死成 POST，而自助面只注册 `PUT /api/my-accounts/<idx>`
   // ⇒ 「编辑 + 改密码」恒 405。判据是**请求方法与最终落库结果**，不是某一次响应的状态码：
@@ -165,39 +215,69 @@ test("用户端改自己账号的易班密码：保存必须走 PUT 并成功（
   const card = page.locator(".account-card").first();
   await expect(card.locator(".account-name")).toBeVisible();
   // 首卡就是种子账号（同文件前序用例会改其名称，故不能用名称断言身份）。
-  // 它的原始口令是 "p1"（见 e2e/server.py:343）。
+  // 它的原始口令是 SEED_PASSWORD（见 e2e/server.py 的账号种子）。
 
-  async function saveWithPassword(pw: string) {
-    await card.getByRole("button", { name: "编辑" }).click();
-    const dialog = page.locator(".el-dialog");
-    await expect(dialog).toBeVisible();
-    await dialog.locator('input[type="password"]').fill(pw);
-    await dialog.locator(".el-dialog__footer .btn--primary").click();
-    // 保存成功 = 对话框自行关闭；失败时表单留在原处并显示错误文案
-    await expect(dialog).toBeHidden();
-  }
-
-  // 改成新密码（命中"写密码 ⇒ 受门禁提交"分支），并在任何失败路径上尝试还原，
+  // 改成新密码（命中"写密码 ⇒ 受门禁提交"分支），并在任何失败路径上还原，
   // 否则本用例中途失败会把夹具账号留在新密码，污染后续用例。
-  // 先记"已尝试"，再保存：保存可能已落库但响应超时，此时也必须还原。
-  let attempted = false;
-  try {
-    attempted = true;
-    await saveWithPassword("E2eNewPass#2026");
-  } finally {
-    if (attempted) {
-      try {
-        // 种子账号（e2e-user-acct / 13800138001）的原始口令是 "p1"（见 e2e/server.py）。
-        await saveWithPassword("p1");
-      } catch {
-        // 还原失败不能掩盖原始失败；下一轮 e2e 的种子会重置库。
-      }
-    }
-  }
+  await changePasswordWithRestore(page, card, "E2eNewPass#2026");
 
   expect(methods.filter((m) => m === "POST"),
     "自助面没有注册 POST，发 POST 必然 405（R3-001 的缺陷形状）").toEqual([]);
   expect(methods.filter((m) => m === "PUT").length).toBeGreaterThan(0);
+});
+
+test("改密响应丢失时还原仍执行：夹具口令不被污染（dix A-1）", async ({ page }) => {
+  // 真实用户动作：点「保存」后网络断——请求已到服务端（口令已改），响应没回来。
+  // 用户可见结果：本次保存失败、弹窗留开并显示错误；还原仍必须把种子口令写回，
+  // 否则后续用例拿着旧口令登录，整个套件被夹具污染（还原点不到「编辑」）。
+  await page.goto("/user/account");
+  const card = page.locator(".account-card").first();
+  await expect(card.locator(".account-name")).toBeVisible();
+
+  // 每次 PUT 的请求体与服务端状态码。403（CSRF 自愈的第一发）要原样回给页面，
+  // 只掐掉**第一条成功**（200）的响应：服务端已落库，浏览器侧看到网络错误。
+  const puts: Array<{ body: string; status: number }> = [];
+  let landedResponse: { status: number; body: string } | null = null;
+  let lost = false;
+  await page.route(/\/api\/my-accounts\/\d+$/, async (route) => {
+    const req = route.request();
+    if (req.method() !== "PUT") {
+      await route.continue();
+      return;
+    }
+    const body = req.postData() ?? "";
+    const resp = await route.fetch();
+    puts.push({ body, status: resp.status() });
+    if (!lost && resp.status() === 200) {
+      lost = true;
+      // 回包是落库之后生成的：留证后掐掉响应。
+      landedResponse = { status: resp.status(), body: await resp.text() };
+      await route.abort("failed");
+      return;
+    }
+    await route.fulfill({ response: resp });
+  });
+
+  let firstSaveFailed = false;
+  try {
+    await changePasswordWithRestore(page, card, "E2eNewPass#2026", 3_000);
+  } catch {
+    firstSaveFailed = true;
+  }
+  expect(firstSaveFailed, "响应丢失后第一次保存必须失败（否则本用例没测到窗口）").toBe(true);
+  expect(landedResponse, "必须有一次成功（200）的写被掐掉响应").toBeTruthy();
+  expect(landedResponse!.status, "服务端必须接受改写（写已落库）").toBe(200);
+  // 回包在 db.update_account 之后生成。JSON 里的中文是 \uXXXX 转义，必须解析后比。
+  const landedJson = JSON.parse(landedResponse!.body) as { ok?: boolean; msg?: string };
+  expect(landedJson.ok, "服务端回包必须在落库成功后才生成").toBe(true);
+  expect(landedJson.msg).toContain("已保存");
+  const landed = puts.find((p) => p.status === 200);
+  expect(landed, "第一次保存必须真落库一次（200）").toBeTruthy();
+  expect(landed!.body).toContain("E2eNewPass#2026");
+  const last = puts[puts.length - 1];
+  expect(last.status, "还原 PUT 必须成功").toBe(200);
+  expect(last.body, "还原 PUT 必须把种子口令 p1 写回").toContain('"p1"');
+  await expect(page.locator(".el-dialog")).toBeHidden();
 });
 
 test("管理端我的账号：归属邮箱偏好可用、无注销卡、账号行与改密入口在位", async ({ page }) => {
