@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { api } from "../lib/shell";
+import { api, shellBase } from "../lib/shell";
 import {
   FOCUS_TARGET,
   drawerForm,
@@ -206,7 +206,7 @@ function act(key: "approve" | "reject" | "edit" | "remove"): void {
             </li>
           </ul>
         </div>
-        <a class="obj-drawer-link" href="/data/logs">看全部 → 台账</a>
+        <a class="obj-drawer-link" :href="`${shellBase()}/data/logs`">看全部 → 台账</a>
       </section>
 
       <section class="obj-drawer-sec obj-drawer-actions">
