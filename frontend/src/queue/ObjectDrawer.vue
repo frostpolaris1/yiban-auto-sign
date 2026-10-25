@@ -76,6 +76,10 @@ const eventsCount = ref(0);
 const eventsTruncated = ref(false);
 const loading = ref(false);
 const errorText = ref("");
+/** 在途装载的行下标：首开时「open 上升沿」与「target 变化」两个 watch 在同一帧各命中
+ *  一次，会各发一次装载。按行下标在途去重 ⇒ 同一行只发一次。不依赖外壳的并发 GET
+ *  去重：那层去重是性能优化，不是本组件的正确性前提（审查观察 1）。 */
+let loadingIndex: number | null = null;
 
 const canReview = computed(() => {
   const st = props.target?.status ?? "";
@@ -102,6 +106,8 @@ function focusClose(): void {
 }
 
 async function load(row: RowView): Promise<void> {
+  if (loadingIndex === row.index) return;
+  loadingIndex = row.index;
   loading.value = true;
   errorText.value = "";
   detail.value = null;
@@ -122,11 +128,17 @@ async function load(row: RowView): Promise<void> {
   } catch (err) {
     errorText.value = (err as { message?: string })?.message || "加载失败，请稍后再试";
   } finally {
+    loadingIndex = null;
     loading.value = false;
   }
 }
 
 // 打开（含"关了再开同一行"）＝ open 上升沿：重读详情与事件，焦点送关闭钮。
+// 首开时本 watch 与下面的 target watch 在同一帧各命中一次 ⇒ load 被调两次；
+// 由 `load` 的「行下标在途去重」收成一次（不依赖外壳的并发 GET 去重）。
+// 注：不要再试图用 `prev !== null` 排掉首帧——Vue 3.5 的 watch 首触发传入的是
+// `undefined`（runtime-core/renderer 的 INITIAL_WATCHER_VALUE 分支），该守卫恒真、
+// 实测无效（2026-10-25 验证：加与不加，load 逻辑调用都是 2）。
 watch(
   () => props.open,
   (v, prev) => {
