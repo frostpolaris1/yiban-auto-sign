@@ -102,52 +102,38 @@ func Checks() []Check {
 // 它不是失败：Run 会把它打印成显性跳过（AGENTS §30，跳过不算通过）。
 var errNotApplicable = errors.New("not applicable")
 
-// result 是一条判据的执行结果。
-type result struct {
-	name string
-	err  error
-	skip bool
-}
-
-// execute 顺序执行判据，遇到判据超时即停跑剩余判据。
-// 与 *testing.T 解耦：元测试可以断言「停跑」行为而不把父用例染红。
-func execute(newProvider NewProvider) (results []result, stoppedAt string) {
-	checks := Checks()
-	for _, check := range checks {
-		err := runCheck(check, newProvider)
-		if errors.Is(err, errCriterionTimeout) {
-			results = append(results, result{name: check.Name, err: err})
-			return results, check.Name
-		}
-		results = append(results, result{
-			name: check.Name,
-			err:  err,
-			skip: errors.Is(err, errNotApplicable),
-		})
-	}
-	return results, ""
-}
-
+// Run 顺序执行判据。判据在各自的 t.Run 内执行：
+// 子测试计时与 `-run <测试>/<判据>` 过滤因此保持有效。
+// 首个判据超时后停跑剩余判据（阻塞的提供方不该让整轮每条各付一次上限）。
 func Run(t *testing.T, newProvider NewProvider) {
 	t.Helper()
-	results, stoppedAt := execute(newProvider)
 	skipped := 0
-	for _, r := range results {
-		r := r
-		t.Run(r.name, func(t *testing.T) {
+	checks := Checks()
+	for i, check := range checks {
+		check := check
+		stopped := false
+		t.Run(check.Name, func(t *testing.T) {
 			t.Helper()
-			switch {
-			case r.skip:
+			err := runCheck(check, newProvider)
+			if errors.Is(err, errNotApplicable) {
 				// 跳过必须显性可见：非 -v 运行也打印。
 				skipped++
-				fmt.Printf("conformance: %s: 跳过：%v\n", r.name, r.err)
-			case r.err != nil:
-				t.Error(r.err)
+				fmt.Printf("conformance: %s: 跳过：%v\n", check.Name, err)
+				return
+			}
+			if stopAfter(err) {
+				stopped = true
+			}
+			if err != nil {
+				t.Error(err)
 			}
 		})
-	}
-	if stoppedAt != "" {
-		fmt.Printf("conformance: 判据 %s 超时，剩余判据不再执行（提供方阻塞或过慢）\n", stoppedAt)
+		if stopped {
+			if rest := len(checks) - i - 1; rest > 0 {
+				fmt.Printf("conformance: 判据 %s 超时，剩余 %d 条不再执行（提供方阻塞或过慢）\n", check.Name, rest)
+			}
+			return
+		}
 	}
 	if skipped > 0 {
 		fmt.Printf("conformance: %d 条判据跳过（未声明对应能力）\n", skipped)
@@ -160,6 +146,10 @@ func Run(t *testing.T, newProvider NewProvider) {
 // 采样类判据调 Sign 最多 13 次，隐含单次 SLA 约为上限的 1/13；
 // 慢于此值的提供方得到「未在上限内完成」，文案不写「阻塞」。
 var criterionTimeout = 15 * time.Second
+
+// stopAfter 报告判据错误是否要求停跑整轮。
+// 单独成函数：停跑决策有入库用例，循环里的三行状态由评审覆盖。
+func stopAfter(err error) bool { return errors.Is(err, errCriterionTimeout) }
 
 // errCriterionTimeout 标记判据整体超时。
 // Run 见到它即停跑剩余判据：阻塞的提供方不应让整轮每条各付一次上限（R3-04）。
@@ -186,8 +176,9 @@ func runCheck(check Check, newProvider NewProvider) (err error) {
 	case got := <-done:
 		return got.err
 	case <-time.After(criterionTimeout):
-		return fmt.Errorf("%w: %s", errCriterionTimeout,
-			failf(check.Name, "未在 %s 内完成：提供方阻塞或过慢", criterionTimeout))
+		return fmt.Errorf("%s: %w",
+			failf(check.Name, "未在 %s 内完成：提供方阻塞或过慢", criterionTimeout),
+			errCriterionTimeout)
 	}
 }
 
@@ -292,7 +283,7 @@ func checkWindowShape(newProvider NewProvider) error {
 }
 
 // checkWindowCancel 要求取消后的窗口发现不返回结果。
-// 未声明 WindowDiscovery 时只要求非 nil 错误：宿主不得调用该方法（G1）。
+// 未声明 WindowDiscovery 时本判据不适用（notApplicable）：判据不得调用未声明的方法（G1）。
 func checkWindowCancel(newProvider NewProvider) error {
 	p := newProvider()
 	// 能力检查在调用之前：G1 要求宿主不得调用未声明的能力，
