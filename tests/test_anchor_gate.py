@@ -199,7 +199,7 @@ def old_coordinate_hits(root, rel):
     text = _read_text(path)
     if text is None:
         return []
-    hits = [(ln, "路径 " + p) for ln, p in old_path_hits(text)]
+    hits = [(ln, "坐标 " + p) for ln, p in old_path_hits(text)]
     if rel.endswith(".py"):
         try:
             hits += [(ln, why) for ln, why in bare_import_hits(text)]
