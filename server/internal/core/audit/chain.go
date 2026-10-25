@@ -156,10 +156,9 @@ const (
 )
 
 var (
-	// phoneAnywhere 匹配 11 位手机号，不带词边界。
-	// 因此 "user13800138000" 与 "13800138000abc" 也会被拦。
-	phoneAnywhere = regexp.MustCompile(`1[3-9][0-9]{9}`)
 	// emailAnywhere 匹配邮箱地址，不带词边界。
+	// 手机号形态判定单一来源是 core/mask.TextHasPhone：
+	// 连续、分隔与带国家码的形状都在掩码层覆盖（W2C-R4-01）。
 	emailAnywhere = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
 )
 
@@ -314,7 +313,7 @@ func validateDetailString(key, text string) error {
 	default:
 		return fmt.Errorf("%w: %q has no string rule", ErrDetailKey, key)
 	}
-	if mask.MaskText(text) != text || phoneAnywhere.MatchString(text) || emailAnywhere.MatchString(text) {
+	if mask.MaskText(text) != text || mask.TextHasPhone(text) || emailAnywhere.MatchString(text) {
 		return fmt.Errorf("%w: %q", ErrDetailPII, key)
 	}
 	return nil
