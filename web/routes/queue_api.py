@@ -224,16 +224,30 @@ def api_queue_events(idx):
         return jsonify({"error": "账号不存在"}), 404
     phone = str(accounts[idx].get("phone", ""))
     masked = _masking.mask_phone(phone)
-    raw = db.sign_events_by_phone(phone, days=days)
-    events = [_mask_event(ev) for ev in raw]
-    _read_audit_trace()("queue_events_read", f"{masked} 近 {days} 天 {len(events)} 条")
+    raw = db.sign_events_by_phone(phone, days=days)  # 时间升序
+    window = recent_window(raw)
+    events = [_mask_event(ev) for ev in window]
+    _read_audit_trace()("queue_events_read", f"{masked} 近 {days} 天 {len(raw)} 条")
     return jsonify({
         "ok": True,
-        "count": len(events),
-        "returned": min(len(events), _EVENTS_CAP),
-        "truncated": len(events) > _EVENTS_CAP,
-        "events": events[:_EVENTS_CAP],
+        "count": len(raw),
+        "returned": len(events),
+        "truncated": len(raw) > len(events),
+        "events": events,
     })
+
+
+def recent_window(events, cap=_EVENTS_CAP):
+    """事件序列 → 保留**最近** `cap` 条，仍按时间升序返回。
+
+    「近 30 天事件」回答的是"最近发生了什么"：截断必须砍**最旧**的一端。
+    直接 `events[:cap]` 会保留最早 50 条，页面上写「已截断」却看不到今天的记录，
+    等于给出"最近无事发生"的假信号。入参约定时间升序（`sign_events_by_phone`
+    的 `ORDER BY ts`）；`cap <= 0` 返回空表（不返回全量）。
+    """
+    if cap <= 0:
+        return []
+    return list(events[-cap:])
 
 
 def _mask_event(ev):
