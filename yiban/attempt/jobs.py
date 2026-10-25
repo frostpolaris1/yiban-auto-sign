@@ -136,20 +136,31 @@ def run(job_id, clean, username, account_id, prev_status, fails):
     # 那段只捕 `Exception`——BaseException 会越过释放段，两个资源永久泄漏
     # （dix A-2）。异常照原样上抛；只有 `Exception` 才转成业务终态。
     watchdog = None
-    slot_released = False
+    # 每个释放步各自记完成：一步抛错不许挡住其余步，也不许把"已完成"记到未完成的步上。
+    # 旧写法先把单一标志置 True 再释放：`watchdog.cancel()` 抛错后席位与账号权泄漏，
+    # 外层 finally 的重试又被早置位挡成 no-op（dix 低-2）。
+    release_done = {"cancel": False, "seat": False, "account": False}
 
     def _release_slot():
-        # 释放一次且仅一次：计时器启动失败的 `Exception` 分支先释放再落终态，
-        # 外层 finally 会再调一次；BoundedSemaphore 超发会直接 ValueError。
-        nonlocal slot_released
-        if slot_released:
-            return
-        slot_released = True
-        if watchdog is not None:
-            watchdog.cancel()
-        seat.release()
-        if release_account is not None:
-            release_account(phone)
+        try:
+            if watchdog is not None and not release_done["cancel"]:
+                try:
+                    watchdog.cancel()
+                except Exception:
+                    # 取消失败只记日志：定时器可能残留，但资源必须继续归还。
+                    logger.exception("取消异步校验计时器失败（job=%s）", job_id)
+                else:
+                    release_done["cancel"] = True
+        finally:
+            try:
+                if not release_done["seat"]:
+                    seat.release()
+                    release_done["seat"] = True
+            finally:
+                if not release_done["account"]:
+                    if release_account is not None:
+                        release_account(phone)
+                    release_done["account"] = True
 
     try:
         try:

@@ -79,16 +79,61 @@ def _playwright_scope_problems(cfg):
             if re.search(r"\b%s\s*:" % key, cfg)]
 
 
-def _frontend_e2e_command(block):
-    """抽 frontend 作业里第一条**未注释**的 e2e 执行行（已剥 `run:`）。"""
-    for ln in block.splitlines():
-        s = ln.strip()
-        if s.startswith("#") or not s.startswith("run:"):
-            continue
-        cmd = s[len("run:"):].strip()
-        if "playwright test" in cmd or "test:e2e" in cmd:
-            return cmd
+#: 允许 Playwright 调用点携带的参数（元组）→ 理由。空表 = 一个都不允许。
+#: 任何参数都可能缩小 spec 面；确需加参数时在此登记并在 PR 写明它为什么不缩小覆盖。
+E2E_INVOCATION_ARGUMENT_EXEMPTIONS: dict[tuple[str, ...], str] = {}
+
+
+def _job_steps(block):
+    """把作业正文切成 step 文本块。
+
+    step 边界＝该作业里缩进最浅的 `- ` 行（更深的 `- ` 是 with: 里的嵌套列表）。
+    """
+    lines = block.splitlines()
+    indents = [len(m.group(1)) for ln in lines
+               if (m := re.match(r"^( *)- ", ln))]
+    if not indents:
+        return []
+    step_indent = min(indents)
+    steps = []
+    cur = []
+    for ln in lines:
+        m = re.match(r"^( *)- ", ln)
+        if m is not None and len(m.group(1)) == step_indent:
+            if cur:
+                steps.append("\n".join(cur))
+            cur = [ln]
+        elif cur:
+            cur.append(ln)
+    if cur:
+        steps.append("\n".join(cur))
+    return steps
+
+
+def _step_command(step):
+    """取 step 里第一条 `run:` 的命令正文，并剥掉 YAML 行内注释。
+
+    `run: true # npm run test:e2e` 的真实命令是 `true`，注释里的字样不算执行点。
+    """
+    for ln in step.splitlines():
+        m = re.match(r"^\s*run:\s*(.*)$", ln)
+        if m is not None:
+            return re.split(r"\s+#", m.group(1), maxsplit=1)[0].strip()
     return ""
+
+
+def _is_e2e_invocation(cmd):
+    """命令是否**真会执行**整个 Playwright 面。
+
+    只认以 `npm` / `npx` 开头的命令：`echo npm run test:e2e`、`true # …` 都是
+    只把字样放进行里，实际不跑（dix C-2 审查的 fail-open 形态）。
+    """
+    if not cmd:
+        return False
+    first = cmd.split()[0]
+    if first not in ("npm", "npx"):
+        return False
+    return "playwright test" in cmd or "test:e2e" in cmd
 
 
 def _e2e_invocation_args(cmd):
@@ -112,11 +157,11 @@ def _e2e_invocation_args(cmd):
 def _frontend_e2e_wiring_problems(yml):
     """frontend 作业的 e2e 接线判据：空清单 = 真跑整个 e2e 面（dix C-2）。
 
-    判据不是"有一步跑了 Playwright"，而是"那一步没有收窄 spec 面"。以下三类都算窄：
-    · 位置参数（`e2e/login.spec.ts`）只跑一个文件；
-    · 过滤标志（`--grep` / `--project`）只跑一部分；
-    · 执行行被注释掉（没人跑）。
-    确需加参数时先在本门登记豁免并说明它不缩小覆盖——任何参数默认可疑。
+    判据不是"行里有 Playwright 字样"，而是"真有一步无条件执行整个面"。以下都算红：
+    · 执行行被注释掉、写成 `echo …`、或字样只活在行内注释里（没人跑）；
+    · 执行步骤带 `if:`（条件不满足就整步跳过）；
+    · 位置参数（`e2e/login.spec.ts`）或过滤标志（`--grep` / `--project`）只跑一部分。
+    参数豁免必须登记到 `E2E_INVOCATION_ARGUMENT_EXEMPTIONS` 并写明理由。
     """
     block = _job_block(yml, "frontend")
     if not block:
@@ -125,17 +170,24 @@ def _frontend_e2e_wiring_problems(yml):
     if "working-directory: frontend" not in block:
         problems.append(
             "frontend 作业没有 working-directory: frontend：npm 脚本会在仓库根解析不到")
-    cmd = _frontend_e2e_command(block)
-    if not cmd:
+    candidates = [(step, _step_command(step)) for step in _job_steps(block)]
+    candidates = [(step, cmd) for step, cmd in candidates if _is_e2e_invocation(cmd)]
+    if not candidates:
         problems.append(
-            "frontend 作业里没有一条未注释的 Playwright 执行行："
+            "frontend 作业里没有一条会执行的 Playwright 执行行（必须以 npm/npx 开头）："
             "frontend/e2e 的 spec 文件存在但没人调用（R3-008）")
         return problems
-    args = _e2e_invocation_args(cmd)
-    if args:
-        problems.append(
-            "Playwright 调用点带参数 %s：会把 spec 面收窄，覆盖门无法证明每个 spec 都会跑；"
-            "确需加参数先在本门登记豁免并说明它不缩小覆盖" % args)
+    for step, cmd in candidates:
+        if re.search(r"(?m)^\s*if:\s*", step):
+            problems.append(
+                "Playwright 执行步骤带 if:（条件不满足就整步跳过）：%r；"
+                "如确需条件执行，先在本门登记豁免并写明不会漏跑" % cmd)
+        args = _e2e_invocation_args(cmd)
+        if args and tuple(args) not in E2E_INVOCATION_ARGUMENT_EXEMPTIONS:
+            problems.append(
+                "Playwright 调用点带参数 %s：会把 spec 面收窄，覆盖门无法证明每个 spec "
+                "都会跑；确需加参数先登记到 E2E_INVOCATION_ARGUMENT_EXEMPTIONS 并写明"
+                "它不缩小覆盖" % args)
     return problems
 
 
@@ -451,6 +503,30 @@ class FrontendE2eCiWiringTest(unittest.TestCase):
             self.assertTrue(
                 _frontend_e2e_wiring_problems(mutated),
                 "把 e2e 面收窄成 %r 仍判绿：覆盖门没有牙" % cmd)
+
+    def test_the_wiring_checker_catches_a_step_that_does_not_run(self):
+        """活体反例：三种「行里有字样、实际没人跑」的形态必须判红（dix C-2 审查）。
+
+        · `if: false`：执行步被条件跳过；
+        · `run: echo npm run test:e2e`：只是打印命令，不执行；
+        · `run: true # npm run test:e2e`：字样只在行内注释里。
+        旧判据按行内子串认，三种都判绿（fail-open：没人跑也过门）。
+        """
+        yml = _read(CI)
+        anchor = "run: npm run test:e2e"
+        self.assertEqual(_frontend_e2e_wiring_problems(yml), [],
+                         "夹具前提：真实 ci.yml 必须先判绿")
+        mutations = {
+            "if-false": anchor + "\n        if: false",
+            "echo": "run: echo npm run test:e2e",
+            "inline-comment": "run: true # npm run test:e2e",
+        }
+        for label, replacement in mutations.items():
+            mutated = yml.replace(anchor, replacement)
+            self.assertNotEqual(mutated, yml, f"{label} 变异没落到真实调用行上")
+            self.assertTrue(
+                _frontend_e2e_wiring_problems(mutated),
+                "%s 形态仍判绿：没人跑的步骤被当成调用点" % label)
 
     def test_the_wiring_checker_catches_a_commented_out_step(self):
         """活体反例：把执行行注释掉，检查器必须判红（否则本门恒真）。"""
