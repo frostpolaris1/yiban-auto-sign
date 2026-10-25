@@ -39,6 +39,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from typing import ClassVar
 
 from werkzeug.security import generate_password_hash
 
@@ -54,6 +55,8 @@ from test_account_detail_narrow_read import (  # noqa: E402
     DETAIL_GOLDEN,
     LIST_GOLDEN,
 )
+
+from yiban.adapters.config import account_crypto  # noqa: E402
 
 TEST_KEY = "3f9a2c7e5b1d8046a7c3e9f2b6d10485c2a7f4b9e1d63058fa4c7b2e9d15803a"
 ADMIN_PASS = "TestPass1234!"
@@ -502,6 +505,106 @@ class ProfileFieldVocabularyTest(unittest.TestCase):
         from yiban.adapters.persistence import accounts as store
         self.assertEqual(tuple(accounts_data._PROFILE_FIELDS),
                          tuple(store.PROFILE_FIELDS))
+
+
+class CipherFieldReplayTest(unittest.TestCase):
+    """回环形态归一助手 `cipher_field_for_replay` 的三分支（二审中-3）。
+
+    缺陷形状：助手原先对**明文 dict** 直接交给 `_encrypt_field`，而那里把 dict 一律
+    当作"已是密文对象"透传 —— 明文 dict 原样落库。三条用例各钉一支，且都过**真实
+    写库→读回**（不只测返回值）：落库形态与可解密性才是要守的性质。
+    """
+
+    CONTENT: ClassVar[dict[str, str]] = {
+        "real_name": "张三", "student_id": "20250001",
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="yiban-cipher-replay-")
+        cls.env_file = os.path.join(cls.tmp, ".env")
+        with open(cls.env_file, "w", encoding="utf-8") as f:
+            f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n")
+        cls.db_file = os.path.join(cls.tmp, "yiban.db")
+        os.environ["YIBAN_ACCOUNTS_KEY"] = TEST_KEY
+        os.environ["YIBAN_ENV_FILE"] = cls.env_file
+        os.environ["YIBAN_DB_FILE"] = cls.db_file
+        os.environ["YIBAN_STATE_DIR"] = cls.tmp
+
+    @classmethod
+    def tearDownClass(cls):
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+        for k in ("YIBAN_ACCOUNTS_KEY", "YIBAN_ENV_FILE", "YIBAN_DB_FILE",
+                  "YIBAN_STATE_DIR"):
+            os.environ.pop(k, None)
+
+    def setUp(self):
+        if db._conn is not None:
+            with contextlib.suppress(Exception):
+                db._conn.close()
+            db._conn = None
+        for suffix in ("", "-wal", "-shm"):
+            p = self.db_file + suffix
+            if os.path.exists(p):
+                os.remove(p)
+        db.init_db(self.db_file, env_file=self.env_file)
+
+    def _raw_row(self, phone):
+        conn = sqlite3.connect(self.db_file)
+        conn.row_factory = sqlite3.Row
+        try:
+            return dict(conn.execute("SELECT * FROM accounts WHERE phone=?",
+                                     (phone,)).fetchone())
+        finally:
+            conn.close()
+
+    def _envelope(self, phone):
+        key = account_crypto.load_key(self.env_file)
+        return account_crypto.encrypt_password(
+            json.dumps(self.CONTENT, ensure_ascii=False), key, phone)
+
+    def _replace_one(self, profile_value, phone="13800138002"):
+        """用 replace_accounts 写一行（整表替换是回环的真实入口）。"""
+        db.replace_accounts([{
+            "name": "乙", "phone": phone, "password": "", "phone_model": "",
+            "phone_code": "", "owner": OWNER, "status": "pending",
+            "reject_reason": "", "deleted": False, "deleted_at": "",
+            "profile": profile_value,
+        }])
+
+    def test_plaintext_dict_is_encrypted_not_stored_verbatim(self):
+        """① 明文 dict 落库必密文：列内不得出现明文手机号/学号。"""
+        self._replace_one(dict(self.CONTENT))
+        raw = self._raw_row("13800138002")["profile"]
+        self.assertIn("ct", json.loads(raw), "明文 dict 必须被加密成密文 envelope")
+        for plain in ("20250001", "13800138002", "张三"):
+            self.assertNotIn(plain, raw, f"资料明文 {plain} 不得落库")
+        acc = next(a for a in db.load_accounts() if a["phone"] == "13800138002")
+        self.assertEqual(json.loads(acc["profile"]), self.CONTENT, "解密后必须原样还原")
+
+    def test_ciphertext_dict_passes_through_without_double_encryption(self):
+        """② 密文 dict 透传不改写：再加密一次就成了读不出来的双层密文。"""
+        envelope = self._envelope("13800138002")
+        self._replace_one(dict(envelope))  # 内存形态的密文对象（0.16 JSON 嵌套对象）
+        raw = self._raw_row("13800138002")["profile"]
+        self.assertEqual(json.loads(raw), envelope, "密文对象必须原样（仅序列化）入库")
+        acc = next(a for a in db.load_accounts() if a["phone"] == "13800138002")
+        self.assertEqual(json.loads(acc["profile"]), self.CONTENT,
+                         "只解一层就必须得到明文：多一层即双层加密")
+
+    def test_none_and_empty_keep_empty_semantics(self):
+        """③ None / 空值：落空串，不产出"看似密文的空串"，也不触密钥。"""
+        from yiban.adapters.persistence import accounts as store
+        for empty in (None, "", {}):
+            with self.subTest(value=repr(empty)):
+                self.assertEqual(store.cipher_field_for_replay(empty, "13800138002"), "")
+        self._replace_one(None)
+        self.assertEqual(self._raw_row("13800138002")["profile"], "",
+                         "未给资料的整表替换行，profile 列必须为空串")
 
 
 if __name__ == "__main__":

@@ -876,16 +876,27 @@ def delete_accounts_by_owner(owner, audit_spec=None):
     return deleted
 
 
-def _outbound_cipher_field(value, phone):
-    """整表回环用：密文原样透传，明文走 `_encrypt_field`（与 password/phone_code 同通道）。
+def cipher_field_for_replay(value, phone):
+    """回环写库的唯一形态归一：密文透传，**任何**明文形态加密（`account_crypto` 同通道）。
 
-    `replace_accounts` 与 JSON 导入都吃"导出 → 导入"的回环输入：导出默认给密文
-    （`load_accounts_raw`），密文再加密一次就成了读不出来的双层密文。故先判形态：
-    已是密文（dict 密文对象或密文 JSON 串）→ 原样（dict 序列化）；否则按明文加密。
-    空值仍走 `_encrypt_field` 的空值语义（落空串）。
+    调用面两处，必须是同一实现（§14 一劳永逸）：`replace_accounts`（整表替换）与
+    `migrations._maybe_migrate`（JSON→SQLite 导入）。两处都吃"导出 → 导入"的回环输入，
+    导出默认给密文（`load_accounts_raw`）——密文再加密一次就是读不出来的双层密文。
+
+    入参三分支，逐支如实描述：
+    - 密文（dict 密文对象或密文 JSON 串，`_is_encrypted_value` 为真）→ 原样，
+      dict 序列化成 JSON 串；
+    - 明文 dict → **先 `json.dumps` 再加密**。不可直接交给 `_encrypt_field`：那里把
+      dict 一律当作"已是密文对象"透传（password/phone_code 的历史形态），明文 dict
+      会原样落库（二审中-3 实测缺陷）；空 dict `{}` 是"没有资料"，与空串同义落空串；
+    - 明文 str / None / 空值 → `_encrypt_field`：非空加密，空值落空串（空即空语义）。
     """
     if value and _is_encrypted_value(value):
         return value if isinstance(value, str) else json.dumps(value)
+    if isinstance(value, dict):
+        if not value:
+            return ""
+        value = json.dumps(value, ensure_ascii=False)
     return _encrypt_field(value, phone)
 
 
@@ -942,7 +953,7 @@ def replace_accounts(accounts):
                         1 if a.get("deleted") else 0,
                         a.get("deleted_at", ""),
                         1 if a.get("user_paused") else 0,
-                        _outbound_cipher_field(a.get("profile"), a.get("phone", "")),
+                        cipher_field_for_replay(a.get("profile"), a.get("phone", "")),
                         _as_plain_json(a.get("profile_expose")),
                     ),
                 )
