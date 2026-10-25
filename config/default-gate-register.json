@@ -564,7 +564,7 @@
   "YIBAN_NOTIFY_URGENT_ONLY": {
     "default_literal_gate_exempt": {
       "class": "example_diverges",
-      "reason": "示意值：docker 模板示范 0=非紧急也推手机；名册缺省 1=只推重要。相邻注释写「1=开启」而示例值写 0，两者不一致，作为待复核疑点登记，本批不改值"
+      "reason": "容器示例刻意关掉紧急过滤（全量通知）；名册缺省 true（仅紧急）——2026-08-31 初始提交即如此，改示例会变更复制示例部署的行为，留独立产品决定"
     }
   },
   "YIBAN_NOTIFY_DAILY_MAX": {
