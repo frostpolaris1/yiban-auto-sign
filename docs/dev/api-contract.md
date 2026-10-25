@@ -380,6 +380,28 @@
   `操作过于频繁，请稍后再试`（仅"暂停"方向计冷却）。
 - 副作用：写 `my_account_pause` / `my_account_resume` 审计。
 
+#### `PUT /api/my-accounts/<int:idx>/profile`
+
+- 鉴权档：本人（数据范围由 `_my_account_indices_of` 收窄；非本人 idx 一律 404，
+  不做存在性区分）。CSRF：**要**。
+- 请求体：`profile`（可选，对象；键限二段资料词表 `real_name` / `student_id` /
+  `college` / `class_name` / `email`，值一律字符串，除 email 外 ≤50 字（email ≤254），
+  `""` = 清空该字段）、`expose`（可选，对象；同词表键，值一律布尔，`true` 开
+  `false` 关）、`phone`（可选，防错位对齐令牌；**携带时**与目标行掩码不匹配 → 409）。
+  两者至少给一个，子集合并语义（未给的键不动）。
+- 成功响应：`{"ok": true, "profile": {合并后的全部资料}, "expose": {开着的开关}}`。
+- 主要错误：400 `请求体缺少可变更字段（profile / expose 至少给一个）` /
+  `未知资料字段: …` / 类型或长度文案 / `账号已删除，请先恢复`；404 `账号不存在`；
+  409 `账号列表已变化，请刷新页面后重试`（携带的 `phone` 已不指向该 idx）；
+  500 `账号的资料字段损坏…`（库内底子非合法 JSON，拒绝覆盖写入）。
+- 副作用：写账号行 `profile`（整体 AES-GCM 密文，AAD=手机号，与口令/识别码同通道）
+  与 `profile_expose`（明文 JSON，只存 `true` 项）；写 `my_account_profile_update`
+  审计（**detail 只记字段名，不记字段值**）。
+- 不变量：二段资料**全部默认不暴露**。只有开关开启的字段出现在本人视图
+  （`GET /api/my-accounts`）与管理详情（`GET /api/accounts/<idx>/detail`）；管理列表
+  （`GET /api/accounts`）**永不**出现。开关只能账号本人（本端点）或管理员（管理面
+  对偶端点）改。自助提交面（`POST/PUT /api/my-accounts`）不收这些字段。
+
 #### `POST /api/my-accounts/<int:idx>/device-refresh`
 
 - 鉴权档：任意已登录（数据范围由归属邮箱收窄）。CSRF：**要**。
@@ -560,6 +582,20 @@
   发当事人邮件与管理员事后告警、异步起校验探针；与 `account_update` 审计同事务。
 - 不变量：改绑手机号一律回待审核并清旧拒绝理由。只改/清识别码免口令门（但仍
   标审计位、发信）。防错位：管理面写口 `fail_closed=True`（不带 `phone` 即 409）。
+
+#### `PUT /api/accounts/<int:idx>/profile`
+
+- 鉴权档：管理员。CSRF：**要**。
+- 请求体：`profile` / `expose`（同本人端点 `PUT /api/my-accounts/<idx>/profile` 的
+  请求体口径，子集合并语义）；另**必填** `phone`（防错位对齐令牌，掩码形态可，
+  管理面 fail-closed）。
+- 成功响应：`{"ok": true, "profile": {合并后的全部资料}, "expose": {开着的开关}}`。
+- 主要错误：同本人端点的 400 / 500；404 `账号不存在`；409
+  `账号列表已变化，请刷新页面后重试`（缺 `phone` 或不匹配）。
+- 副作用：同本人端点；审计 action 为 `account_profile_update`（detail 同样只记
+  字段名）。
+- 不变量：同本人端点。普通用户访问本路径由全局登录守卫 403 并留 `forbidden_path`
+  审计；本人改自己的走本人面对偶端点。
 
 #### `POST /api/accounts/batch`
 
