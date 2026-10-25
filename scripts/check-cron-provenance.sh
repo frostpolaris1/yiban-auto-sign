@@ -15,6 +15,10 @@
 #   /etc /var/*                            配置/数据/日志路径（非可执行原件），放行
 #   **/tmp/* 不放行**（R3-022）：临时目录里的可执行件没有来源，拒猜。
 #   /opt/yiban-auto-sign/<rel>             应用检出件：<rel> 必须存在于仓库
+#   @YIBAN_APP_DIR@/<rel>                  **模板**（2026-10-25）：先展开成生产检出根
+#                                          $APP_ROOT，再按上面的检出件判据判。
+#                                          未知占位符（@OTHER@/…）不展开，落进
+#                                          "无法定位/无法归类"分支照旧判红——不猜。
 #   /usr/local/{s,}bin/<x>                 必须逐字出现在 manifest 第三列（安装清单）
 #   其余绝对路径                            无来源，判红（拒绝猜测）
 #
@@ -38,7 +42,8 @@
 #     `data/*`  —— 运行数据（.env 与 SQLite 库，install.sh 建）
 #   除此之外的相对路径必须在仓库里真实存在。
 # 同时校验 manifest 第二列（仓库源）都存在——"原件入库"的另一半。
-# 退出码：0 全部可回指；1 存在无来源路径（stdout 逐条点名 缺少来源: <路径> (文件:行)）。
+# 退出码：0 全部可回指；1 存在无来源路径（stdout 逐条点名 缺少来源: <路径> (文件:行)）；
+#   2 用法/环境错误（参数缺值、未知参数、检出根不匹配 ^/[A-Za-z0-9._/-]+$ 白名单）。
 # 活体反例（测试里跑）：往 cron 表加一行 /usr/local/sbin/ghost-not-in-manifest.sh ⇒ 必红；
 #   /tmp/x.sh、未 cd 的相对路径、cd 到检出外的相对路径同样必红
 #   （tests/test_cron_provenance_paths.py）。
@@ -48,8 +53,21 @@ set -euo pipefail
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 # 生产检出根：唯一环境键 YIBAN_APP_DIR；YIBAN_APP_ROOT 只作旧部署别名（census-P2-repo-root）。
 APP_ROOT="${YIBAN_APP_DIR:-${YIBAN_APP_ROOT:-/opt/yiban-auto-sign}}"
+# 部署路径占位符：cron 表是模板（install.sh 渲染成检出根）。门自己按同一口径展开，
+# 否则仓库里的模板会让每个 token 都"无法定位"，门要么假红、要么被迫放水。
+APP_DIR_TOKEN='@YIBAN_APP_DIR@'
 # 尾斜杠会被下面的"<前缀>/<rel>"拼接吃掉；先归一，`cd /opt/…/` 与 `cd /opt/…` 同判。
 while [ "${APP_ROOT%/}" != "$APP_ROOT" ]; do APP_ROOT="${APP_ROOT%/}"; done
+# 检出根的字符面（**白名单**，rc=2 环境错误）：必须是绝对路径，且字符只许
+# A-Za-z0-9 . _ / -（与 install.sh 的入口门、scripts/pull-prod-backup.sh 同一口径）。
+# 为什么不是黑名单：cron 命令行原样嵌入这个值，`sh -c` 对空格/引号/;/&/|/$/反引号/
+# 反斜杠/制表符/CR 各有语义，黑名单永远枚举不完。这类路径下门给不出有意义的
+# "可回指"结论（装出来的命令行本身就不能表达它），故拒判而非猜。
+if [[ ! "$APP_ROOT" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+    echo "check-cron-provenance: 检出根不在白名单字符集内：$APP_ROOT" >&2
+    echo '  允许：绝对路径，字符限 A-Za-z0-9 . _ / -（不得含空格、引号、;、$、`、\ 等）；拒判。' >&2
+    exit 2
+fi
 CRON_DIR="$REPO_ROOT/deploy/prod/cron.d"
 MANIFEST="$REPO_ROOT/deploy/prod/manifest.tsv"
 
@@ -213,6 +231,9 @@ for cf in "$CRON_DIR"/*; do
             case "$tok" in
                 '>'|'>>'|'&>'|'1>'|'2>') skip_next=1; continue ;;
             esac
+            # 模板占位符展开（只有这一个已知占位符）。展开后与硬写路径走完全相同的
+            # 判据；不认识的 @X@ 不处理，后续"无法定位/无法归类"分支照旧判红。
+            tok="${tok//$APP_DIR_TOKEN/$APP_ROOT}"
             if [[ "$tok" =~ $FDREDIR_RE ]]; then continue; fi  # 2>&1 之类（& 走变量，不能裸写）
             if [[ "$tok" =~ $FDREDIR_ATTACHED_RE ]]; then continue; fi  # 2>/dev/null 等（B-2）
             # 环境前缀赋值（VAR=…）与 --opt=value：值按路径形态判（B-1）。
