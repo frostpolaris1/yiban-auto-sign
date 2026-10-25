@@ -1,0 +1,29 @@
+# P0 canonical owners
+
+# Columns: id, kind, owner, pattern, allow, message
+# kind: call | string | func | type | import
+# owner: path prefix (relative to server/) that is allowed to define/use the concept
+# For import rules, owner is the importer prefix and pattern is a forbidden import substring.
+# allow: comma-separated extra path prefixes allowed to use the concept.
+
+clock.now	call	internal/core/clock/	time.Now	internal/core/clock/	use clock.Clock.Now
+clock.location	call	internal/core/clock/	time.LoadLocation	internal/core/clock/,internal/adapters/config/	load a timezone only in clock or config
+clock.tz	string	internal/core/clock/	Asia/Shanghai	internal/core/clock/,internal/adapters/config/	use the configured timezone
+env.get	call	internal/adapters/config/	os.Getenv	internal/adapters/config/	read environment only in adapters/config
+env.lookup	call	internal/adapters/config/	os.LookupEnv	internal/adapters/config/	read environment only in adapters/config
+status.literal	string	internal/core/status/	pending,running,success,failed,skipped	internal/core/status/,internal/signing/contract/	use status.TaskState constants
+errors.http	call	internal/entry/http/respond/	http.Error	internal/entry/http/respond/	use respond.Error
+mask.phone	func	internal/core/mask/	MaskPhone	internal/core/mask/	use mask.MaskPhone
+mask.email	func	internal/core/mask/	MaskEmail	internal/core/mask/	use mask.MaskEmail
+mask.device	func	internal/core/mask/	MaskDevice	internal/core/mask/	use mask.MaskDevice
+mask.text	func	internal/core/mask/	MaskText	internal/core/mask/	use mask.MaskText
+capacity.func	func	internal/core/capacity/	Capacity	internal/core/capacity/	use capacity.Capacity
+retry.type	type	internal/core/retry/	Policy	internal/core/retry/	use retry.Policy
+egress.func	func	internal/core/egress/	Identity	internal/core/egress/	use egress.Identity
+plan.slot	func	internal/core/plan/	SlotOf	internal/core/plan/	use plan.SlotOf
+image.prepare	func	internal/core/image/	Prepare	internal/core/image/	use image.Prepare
+boundary.core	import	internal/core/	internal/app,internal/adapters,internal/entry		core must not import app, adapters or entry
+boundary.app	import	internal/app/	internal/adapters,internal/entry		app must not import adapters or entry
+boundary.adapters	import	internal/adapters/	internal/app,internal/entry		adapters must not import app or entry
+boundary.entry	import	internal/entry/	internal/adapters		entry must not import adapters
+boundary.signing	import	internal/signing/providers/	internal/app,internal/adapters		providers must not import the host
