@@ -73,6 +73,9 @@ NON_STATE_FIXED_NAME = {
     "manifest.json": "web/services/vue_assets.py 的前端构建产物清单（静态资源，非状态件）",
     "registry.json": "config/registry.json 是配置名册（104 第一批·A）：入库的源码数据件，"
                      "由 yiban/adapters/config/loader.py 读；不落状态目录、不进清理与备份名册",
+    "default-gate-register.json": "config/default-gate-register.json 是配置缺省处置册（S2）："
+                                  "入库的源码数据件，由 scripts/check-config-registry.py 读；"
+                                  "不落状态目录、不进清理与备份名册",
     "mock.jsonl": "scripts/drill_multi_exec.py 的演练假上游请求轨迹：落**调用方指定的**"
                   "证据目录或临时目录，不落状态目录、不进清理/备份名册",
     "package.json": "Lucide 来源目录的 npm manifest（tools/build_lucide_sprite.py 的"
