@@ -1,0 +1,10 @@
+{
+  "name": "yiban-ui-api-codegen",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Pinned OpenAPI to TypeScript generator. TypeScript 5 is isolated here because the UI compiler is TypeScript 7.",
+  "dependencies": {
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.3"
+  }
+}

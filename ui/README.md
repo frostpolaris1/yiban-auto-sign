@@ -8,14 +8,19 @@ React 19 + Vite 8 + TypeScript 7。视觉语言复用 Adminator 4.4.0。
 
 | 命令 | 作用 |
 |---|---|
-| `npm install` | 安装依赖。需要 Node >= 22 |
+| `npm install` | 安装依赖。需要 Node >= 22。同时安装 API 生成工具链 |
 | `npm run dev` | 本地开发，端口 5173 |
 | `npm run build` | 类型检查 + 生产构建到 `dist/` |
 | `npm run lint` | TypeScript 类型检查。本批不引 ESLint |
+| `npm run generate:api` | 由契约重写 `src/lib/api/schema.d.ts` |
+| `npm run check:api` | 契约漂移门。生成物与契约不一致即红 |
 | `npm run gate:tokens` | 设计令牌门 |
+| `npm run gate:structure` | 导入方向门 |
+| `npm run gate:docs` | 入库文档门。禁止指向未入库目录 |
+| `npm run test:unit` | fetch 与查询默认值单测，运行器为 `node:test` |
 | `npm run test:visual` | Playwright。先跑 `npm run build` |
 | `npm run test:visual:update` | 重写视觉基线。先跑 `npm run build` |
-| `npm run verify` | 类型检查 + 门自测 + 门 + 构建 |
+| `npm run verify` | 类型检查 + 契约漂移 + 单测 + 各门自测 + 三门 + 构建 |
 
 首次运行 Playwright 需要浏览器：`npx playwright install chromium`。
 
@@ -35,9 +40,20 @@ ui/src/
 
 依赖方向单向：`pages → features → components/ui → lib`。
 
-`components` 不导入 `features` 或 `pages`。`features` 不互相导入。
+`components` 不导入 `features` 或 `pages`。`features` 不互相导入。`lib` 不导入上层。
+
+`scripts/structure-gate.mjs` 解析每个文件的 import、export 与 `import()`，把 `@/` 与相对路径解析成 `ui/src` 下的真实文件，再按 `structure.rules.tsv` 判方向。它检查全部说明符，不只第一条。无法解析的库内路径即红。规则为空或扫描集为空时退出码 2。
 
 路径别名 `@/` 指向 `ui/src`。配置见 `tsconfig.json` 与 `vite.config.ts`。
+
+## 契约类型
+
+`server/contracts/openapi.yaml` 是前端类型的唯一来源。`src/lib/api/schema.d.ts` 由 `openapi-typescript` 生成，已入库。手写桩只做别名，不重写字段。
+
+- 生成：`npm run generate:api`。
+- 漂移门：`npm run check:api`。它把契约重新生成到临时目录，与入库文件逐字节比较。
+- 生成器装在 `scripts/api-codegen/`，固定 `openapi-typescript 7.13.0` 与 `typescript 5.9.3`。原因：UI 编译器是 TypeScript 7，生成器需要 TypeScript 5 的编译器 API。两套编译器互不影响。
+- `npm install` 的 `postinstall` 自动安装该工具链。缺少工具链时门报配置错误，退出码 2。
 
 ## 设计令牌
 
@@ -48,11 +64,11 @@ ui/src/
 
 `scripts/token-gate.mjs` 做三项检查：
 
-1. 扫 `src/` 的颜色字面量。`tokens.css` 与 `adminator.css` 免扫。两项豁免都做了等值校验。
+1. 扫 `src/` 与 `index.html` 的颜色字面量。规则覆盖 `#hex`、`rgb()`、`hsl()`、`oklch()`、`lab()`、`lch()`、`color()`。`tokens.css` 与 `adminator.css` 免扫。两项豁免都做了等值校验。
 2. `adminator.css` 必须与 vendor 源逐字节一致。
 3. `tokens.css` 的 token 名与值必须与 vendor 源完全一致，两套主题都比。
 
-空扫描集、全豁免扫描集、空规则集都是配置错误，退出码 2。
+空扫描集、全豁免扫描集、空规则集都是配置错误，退出码 2。`--self-test` 对颜色规则、vendor 字节规则、token 对齐规则各跑正负样本。
 
 ```sh
 node scripts/token-gate.mjs --self-test
@@ -78,12 +94,31 @@ node scripts/token-gate.mjs
 
 ## Adminator 源
 
-- 克隆：`work/adminator`（只读）。
+- 仓库：<https://github.com/puikinsh/adminator-admin-dashboard>
 - commit：`4c768545ad0c981c77669a7bf84de75b94d082e0`（2026-10-13）。
 - 版本：4.4.0。
 - 许可证：MIT，版权归 Aigars Silkalns。全文见 `THIRD_PARTY_NOTICES.md`。
 
-组件与源文件的对应关系见 `work/handoff/2026-10-25-p1b.md`。
+源文件与我们的组件对应关系：
+
+| Adminator 源（commit 4c76854） | 提取内容 | 我们的落点 |
+|---|---|---|
+| `src/index.html` | `shell` 占位、`hero`、`kpi-grid`、`monthly-footer`、`.table` + `tag` | `AppShell`、`PageHeader`、`KpiGrid`、`SignStatusCard`、`CapacityCard` |
+| `src/signin.html` | `auth-shell`、`auth-aside`、`auth-card`、`auth-form`、`field-row` | `LoginPage`、`AuthAside`、`LoginForm` |
+| `src/ui.html` | `alert`、`badge`、`tag`、`progress`、`spinner`、`tabs`、`modal-demo`、`popover-demo`、`avatar-group` | `FeedbackSection`、`IndicatorsSection`、`OverlaysSection`、`NavigationSection`、`Alert`、`Badge`、`Modal`、`Tabs`、`Hint` |
+| `src/forms.html` | `form-grid`、`field`、`input`、`select`、`textarea`、`check`、`switch`、`form-actions` | `FormsSection`、`Input`、`SwitchControl` |
+| `src/basic-table.html` | `.table`、`.cell-name`、`.cell-date`、`.tag` | `SignStatusCard` 的表格 |
+| `src/datatable.html` | `data-toolbar`、`data-table`、`data-cell-user`、`data-cell-mono`、`data-cell-actions`、`pager` | `TableSection`、`DataTable` |
+| `src/charts.html` | `chart-canvas-wrap`、`chart-meta-row`、`btn-group` | 本批未移植。类名已记录 |
+| `src/calendar.html` | `cal-shell`、`cal-rail`、`mini-cal-grid`、`upc-list` | 本批未移植。类名已记录 |
+| `src/assets/scripts/2026/Shell.js` | `NAV`、侧栏、顶栏、页脚 DOM、抽屉钩子 | `shell/nav.ts`、`Sidebar`、`Topbar`、`Footer`、`AppShell` |
+| `src/assets/scripts/2026/init.js` | 主题切换、移动抽屉、下拉关闭 | `lib/theme.tsx`、`Topbar`、`AppShell` |
+| `_tokens.scss` | 36 × 2 令牌 | `styles/tokens.css` |
+| `_shell.scss` | shell、sidebar、topbar、footer、drawer | 壳组件消费 vendor 类 |
+| `_components.scss` | hero、card、btn、table、tag、grid | `PageHeader`、`Card`、`Button`、仪表盘 |
+| `_forms.scss` | field、input、check、switch | `Input`、`SwitchControl`、`app.css` 状态映射 |
+| `_ui.scss` | alert、badge、progress、spinner、tabs、modal、popover、avatar、`demo-row`、`section-h` | `Alert`、`Badge`、`Tabs`、`Modal`、`Hint`、各画廊卡片 |
+| `_data.scss` | data table、cell、pager | `DataTable`、`TableSection` |
 
 ## 本批不做
 

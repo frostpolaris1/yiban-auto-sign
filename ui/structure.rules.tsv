@@ -1,0 +1,20 @@
+# Import direction rules for ui/scripts/structure-gate.mjs.
+#
+# Columns: from-layer <TAB> to-layer <TAB> mode <TAB> optional note.
+# A rule matches when the importing file and the imported file are in the
+# named layers (first path segment under ui/src).
+#
+# Modes:
+#   deny           every import into the target layer is a violation.
+#   cross-feature  allowed only when both files sit in the same
+#                  features/<name>/ directory.
+#
+# An empty file, an unknown mode or a missing column is a configuration error.
+
+components	features	deny	components stay below features
+components	pages	deny	components stay below pages
+features	pages	deny	features stay below pages
+features	features	cross-feature	features never import a sibling feature
+lib	features	deny	lib is the bottom layer
+lib	pages	deny	lib is the bottom layer
+lib	components	deny	lib is the bottom layer

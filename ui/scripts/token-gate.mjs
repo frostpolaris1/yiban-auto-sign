@@ -4,8 +4,9 @@
  *
  * Three checks run in order. Each one fails with a non-zero exit code.
  *
- * 1. Color literals. Every text file under `src/` is scanned for `#hex`,
- *    `rgb(...)`/`rgba(...)`, and `hsl(...)`/`hsla(...)`. Two files are exempt:
+ * 1. Color literals. Every text file under `src/` plus `index.html` is scanned
+ *    for `#hex`, `rgb(...)`, `hsl(...)`, `oklch(...)`, `lab(...)`, `lch(...)`
+ *    and `color(...)`. Two files are exempt:
  *    - `src/styles/tokens.css` holds the canonical token values.
  *    - `src/styles/adminator.css` is a verbatim copy of the vendor stylesheet.
  *    Both exemptions are registered below and are printed on every run.
@@ -18,21 +19,24 @@
  *    names and values as the vendor stylesheet, for both `light` and `dark`.
  *    The vendor stylesheet carries 36 tokens per theme.
  *
- * Guards: an empty file set, an all-exempt file set, an empty rule set, or a
- * missing vendor file is a configuration error (exit 2), never a pass.
+ * Guards: an empty file set, an all-exempt file set, an empty rule set, a
+ * missing vendor file, or an `index.html` that left the scan set is a
+ * configuration error (exit 2), never a pass.
  *
  * Usage:
  *   node scripts/token-gate.mjs             # run all checks
  *   node scripts/token-gate.mjs --self-test  # mutation-test the checker itself
  */
 
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const UI_ROOT = resolve(HERE, '..')
 const SRC_ROOT = join(UI_ROOT, 'src')
+const INDEX_FILE = join(UI_ROOT, 'index.html')
 const TOKENS_FILE = join(SRC_ROOT, 'styles', 'tokens.css')
 const VENDOR_COPY = join(SRC_ROOT, 'styles', 'adminator.css')
 const VENDOR_SOURCE = resolve(UI_ROOT, '..', 'web', 'static', 'vendor', 'adminator', 'adminator.css')
@@ -41,11 +45,11 @@ const THEMES = ['light', 'dark']
 /** Registered exemptions. Keep this list short and justify every entry. */
 const EXEMPT = new Map([
   [
-    'styles/tokens.css',
+    'src/styles/tokens.css',
     'canonical token values (36 light + 36 dark), checked by the parity rule below',
   ],
   [
-    'styles/adminator.css',
+    'src/styles/adminator.css',
     'verbatim copy of the audited vendor stylesheet, checked by the byte rule below',
   ],
 ])
@@ -57,6 +61,10 @@ const RULES = [
   { id: 'hex', label: '#hex', pattern: /#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b/g },
   { id: 'rgb', label: 'rgb()/rgba()', pattern: /\brgba?\s*\(/g },
   { id: 'hsl', label: 'hsl()/hsla()', pattern: /\bhsla?\s*\(/g },
+  { id: 'oklch', label: 'oklch()', pattern: /\boklch\s*\(/g },
+  { id: 'lab', label: 'lab()', pattern: /\blab\s*\(/g },
+  { id: 'lch', label: 'lch()', pattern: /\blch\s*\(/g },
+  { id: 'color', label: 'color()', pattern: /\bcolor\s*\(/g },
 ]
 
 class ConfigError extends Error {}
@@ -75,6 +83,15 @@ function walk(dir) {
       files.push(full)
     }
   }
+  return files
+}
+
+function scanSet() {
+  if (!existsSync(SRC_ROOT)) {
+    throw new ConfigError(`source root is missing: ${SRC_ROOT}`)
+  }
+  const files = walk(SRC_ROOT)
+  if (!files.includes(INDEX_FILE)) files.push(INDEX_FILE)
   return files
 }
 
@@ -101,9 +118,9 @@ function detectTokens(text) {
 
 function verifyScanSet(files) {
   if (files.length === 0) {
-    throw new ConfigError('scan set is empty: no files under src/ matched the extension list')
+    throw new ConfigError('scan set is empty: no files under src/ or index.html')
   }
-  const usable = files.filter((file) => !EXEMPT.has(toPosix(relative(SRC_ROOT, file))))
+  const usable = files.filter((file) => !EXEMPT.has(toPosix(relative(UI_ROOT, file))))
   if (usable.length === 0) {
     throw new ConfigError('scan set contains only exempt files: the gate would be a no-op')
   }
@@ -116,7 +133,7 @@ function verifyScanSet(files) {
 function checkColors(files) {
   const violations = []
   for (const file of files) {
-    const rel = toPosix(relative(SRC_ROOT, file))
+    const rel = toPosix(relative(UI_ROOT, file))
     if (EXEMPT.has(rel)) continue
     const text = readFileSync(file, 'utf8')
     for (const hit of detectTokens(text)) {
@@ -126,22 +143,22 @@ function checkColors(files) {
   return violations
 }
 
-function checkVendorCopy() {
+function checkVendorCopy(sourcePath = VENDOR_SOURCE, copyPath = VENDOR_COPY) {
   let source
   try {
-    source = readFileSync(VENDOR_SOURCE)
-  } catch (error) {
-    throw new ConfigError(`vendor stylesheet is missing: ${VENDOR_SOURCE}`)
+    source = readFileSync(sourcePath)
+  } catch {
+    throw new ConfigError(`vendor stylesheet is missing: ${sourcePath}`)
   }
   let copy
   try {
-    copy = readFileSync(VENDOR_COPY)
-  } catch (error) {
-    throw new ConfigError(`vendored copy is missing: ${VENDOR_COPY}`)
+    copy = readFileSync(copyPath)
+  } catch {
+    throw new ConfigError(`vendored copy is missing: ${copyPath}`)
   }
   if (Buffer.compare(source, copy) !== 0) {
     return [
-      `${toPosix(relative(UI_ROOT, VENDOR_COPY))} differs from ${toPosix(relative(UI_ROOT, VENDOR_SOURCE))} ` +
+      `${toPosix(relative(UI_ROOT, copyPath))} differs from ${toPosix(relative(UI_ROOT, sourcePath))} ` +
         `(${copy.length} B vs ${source.length} B)`,
     ]
   }
@@ -184,18 +201,18 @@ function extractTokenBlocks(css) {
   return blocks
 }
 
-function checkTokenParity() {
+function checkTokenParity(tokensPath = TOKENS_FILE, vendorPath = VENDOR_SOURCE) {
   let tokensCss
   let vendorCss
   try {
-    tokensCss = readFileSync(TOKENS_FILE, 'utf8')
-  } catch (error) {
-    throw new ConfigError(`token file is missing: ${TOKENS_FILE}`)
+    tokensCss = readFileSync(tokensPath, 'utf8')
+  } catch {
+    throw new ConfigError(`token file is missing: ${tokensPath}`)
   }
   try {
-    vendorCss = readFileSync(VENDOR_SOURCE, 'utf8')
-  } catch (error) {
-    throw new ConfigError(`vendor stylesheet is missing: ${VENDOR_SOURCE}`)
+    vendorCss = readFileSync(vendorPath, 'utf8')
+  } catch {
+    throw new ConfigError(`vendor stylesheet is missing: ${vendorPath}`)
   }
   const tokensBlocks = extractTokenBlocks(tokensCss)
   const vendorBlocks = extractTokenBlocks(vendorCss)
@@ -231,6 +248,10 @@ function selfTest() {
     'box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.2);',
     'border-color: hsl(210 40% 98%);',
     'outline-color: hsla(210, 40%, 98%, 0.5);',
+    'color: oklch(0.7 0.1 200);',
+    'color: lab(50% 40 59);',
+    'color: lch(50% 40 30);',
+    'color: color(display-p3 1 0 0);',
   ]
   const negatives = [
     'color: var(--primary);',
@@ -250,22 +271,66 @@ function selfTest() {
     if (hits.length !== 0) failures.push(`negative sample ${index} was detected: ${sample} -> ${hits.map((h) => h.value).join(', ')}`)
   })
 
-  const expectConfigError = (label, files) => {
+  const expectConfigError = (label, run) => {
     try {
-      verifyScanSet(files)
+      run()
       failures.push(`${label} did not raise a config error`)
     } catch (error) {
       if (!(error instanceof ConfigError)) failures.push(`${label} raised the wrong error: ${error}`)
     }
   }
-  expectConfigError('empty scan set', [])
-  expectConfigError('all-exempt scan set', [join(SRC_ROOT, 'styles', 'tokens.css')])
+  expectConfigError('empty scan set', () => verifyScanSet([]))
+  expectConfigError('all-exempt scan set', () => verifyScanSet([TOKENS_FILE]))
   verifyScanSet([join(SRC_ROOT, 'main.tsx')])
+  expectConfigError('missing vendor file', () => checkVendorCopy(join(UI_ROOT, 'nope.css'), VENDOR_COPY))
 
-  if (!EXEMPT.has('styles/adminator.css') || !EXEMPT.has('styles/tokens.css')) {
+  if (!EXEMPT.has('src/styles/adminator.css') || !EXEMPT.has('src/styles/tokens.css')) {
     failures.push('expected exemptions are not registered')
   }
   if (RULES.length === 0) failures.push('rule set is empty')
+  if (!scanSet().includes(INDEX_FILE)) failures.push('index.html left the scan set')
+
+  const temp = mkdtempSync(join(tmpdir(), 'token-gate-'))
+  try {
+    const vendorCss =
+      ':root[data-theme="light"] { --a: 1px; --b: 2px; }\n' +
+      ':root[data-theme="dark"] { --a: 3px; --b: 4px; }\n'
+    const vendorFile = join(temp, 'vendor.css')
+    const copyFile = join(temp, 'copy.css')
+    writeFileSync(vendorFile, vendorCss)
+    writeFileSync(copyFile, vendorCss)
+    if (checkVendorCopy(vendorFile, copyFile).length !== 0) {
+      failures.push('vendor byte rule flagged an identical copy')
+    }
+    writeFileSync(copyFile, `${vendorCss} `)
+    if (checkVendorCopy(vendorFile, copyFile).length === 0) {
+      failures.push('vendor byte rule missed a changed byte')
+    }
+
+    const tokensFile = join(temp, 'tokens.css')
+    writeFileSync(tokensFile, vendorCss)
+    if (checkTokenParity(tokensFile, vendorFile).length !== 0) {
+      failures.push('token parity rule flagged aligned tokens')
+    }
+    writeFileSync(
+      tokensFile,
+      ':root[data-theme="light"] { --a: 1px; }\n' +
+        ':root[data-theme="dark"] { --a: 3px; --b: 4px; }\n',
+    )
+    if (!checkTokenParity(tokensFile, vendorFile).some((problem) => problem.includes('--b missing'))) {
+      failures.push('token parity rule missed a missing token')
+    }
+    writeFileSync(
+      tokensFile,
+      ':root[data-theme="light"] { --a: 9px; --b: 2px; }\n' +
+        ':root[data-theme="dark"] { --a: 3px; --b: 4px; }\n',
+    )
+    if (!checkTokenParity(tokensFile, vendorFile).some((problem) => problem.includes('--a is 9px'))) {
+      failures.push('token parity rule missed a wrong value')
+    }
+  } finally {
+    rmSync(temp, { recursive: true, force: true })
+  }
 
   if (failures.length > 0) {
     for (const failure of failures) console.error(`token-gate self-test FAIL: ${failure}`)
@@ -273,7 +338,7 @@ function selfTest() {
   }
   console.log(
     `token-gate self-test: ${positives.length} positive, ${negatives.length} negative, ` +
-      '2 config guards, exemption registry OK',
+      '2 config guards + vendor byte + token parity mutations, exemption registry OK',
   )
   return 0
 }
@@ -283,7 +348,7 @@ function main() {
     return selfTest()
   }
 
-  const files = walk(SRC_ROOT)
+  const files = scanSet()
   const usable = verifyScanSet(files)
   const violations = checkColors(files)
   const copyProblems = checkVendorCopy()
@@ -300,7 +365,7 @@ function main() {
     console.log(`token-gate: exempt ${path} — ${reason}`)
   }
   console.log(
-    `token-gate: scanned ${files.length} files under src/ ` +
+    `token-gate: scanned ${files.length} files (src/ + index.html) ` +
       `(${files.length - usable.length} exempt, ${usable.length} enforced), ` +
       `rules ${RULES.map((rule) => rule.label).join(', ')}, 0 violations`,
   )

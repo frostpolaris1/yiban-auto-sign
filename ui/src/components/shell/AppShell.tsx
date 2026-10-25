@@ -46,7 +46,11 @@ export function AppShell() {
     <div className="shell">
       <Sidebar pathname={pathname} onNavigate={() => setDrawerOpen(false)} />
       <div className="main">
-        <Topbar crumbs={crumbsFor(pathname)} onOpenDrawer={() => setDrawerOpen(true)} />
+        <Topbar
+          crumbs={crumbsFor(pathname)}
+          drawerOpen={drawerOpen}
+          onOpenDrawer={() => setDrawerOpen(true)}
+        />
         <main className="content app-content">
           <Outlet />
         </main>

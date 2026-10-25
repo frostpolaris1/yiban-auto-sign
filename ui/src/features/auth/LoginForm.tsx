@@ -47,12 +47,6 @@ export function LoginForm() {
           </div>
         </div>
 
-        <label className="check">
-          <input type="checkbox" defaultChecked />
-          <span className="box" />
-          保持登录 30 天
-        </label>
-
         <button className="btn btn--primary auth-submit" type="submit">
           登录控制台
           <Icon name="arrowRight" />
