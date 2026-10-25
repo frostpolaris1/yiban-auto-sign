@@ -145,6 +145,9 @@ DEFAULT_MIN_FILES = 100
 BENIGN_TOP_DIRS = {
     ".git", ".github", ".pytest_cache", ".ruff_cache", ".venv", "__pycache__",
     "build", "docs", "node_modules", "out", "tests", "work",
+    # 开发期构建与代码生成（target-tree §3 职责表）：不进镜像、不被运行期 import，
+    # 写的是演示环境变量，不是生产配置面。B1（2026-10-25）从 scripts/ 移入。
+    "tools",
 }
 
 

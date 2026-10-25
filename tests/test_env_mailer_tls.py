@@ -6,11 +6,11 @@
     路径都传 `create_default_context`）与密钥/盐落盘临时文件创建即 0600 且无残留；
     其余条目跨子系统：`db_export`/`generate_demo_data` 不触发启动清理、env_lock
     Windows msvcrt 跨进程锁、`audit_verify` 只读化（缺库报错退出、不执行迁移）、
-    child_env 的 `YIBAN_` 白名单与非法键名丢弃、SSH 重设主管理员密码触发 PW_VERSION
+    env_child 的 `YIBAN_` 白名单与非法键名丢弃、SSH 重设主管理员密码触发 PW_VERSION
     递增、批量端点单次 10 上限、settings 部分更新不清空延迟字段、
     `start_delay_max`/`gap_max` 收归主管理员、登录成功写审计（IP 匿名化）。
 对应实现：`yiban/adapters/notifier/mail/transport.py`（TLS 上下文）、`yiban/infra/env_lock.py`、
-    `scripts/audit_verify.py`、`yiban/infra/child_env.py`、`web/app.py` 批量与设置端点。
+    `scripts/audit_verify.py`、`yiban/infra/env_child.py`、`web/app.py` 批量与设置端点。
 关键断言：TLS 必须带证书校验（不接受"能连上就算对"）；只读工具不得顺手跑迁移；
     白名单之外的环境变量不得被子进程继承。
 依赖：⚠ 混合回归文件，按主题 importlib 单独加载多个脚本 + mock `smtplib`；
@@ -42,7 +42,7 @@ USER_PASS = "secret1"
 
 class ChildEnvTest(unittest.TestCase):
     def test_parse_env_file_filters_and_overrides(self):
-        import child_env
+        from yiban.infra import env_child as child_env
 
         tmp = tempfile.mkdtemp(prefix="childenv-")
         try:

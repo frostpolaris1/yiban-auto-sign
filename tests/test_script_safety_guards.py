@@ -3,7 +3,7 @@
 
 标签：J · 运维：部署/备份/发布
 覆盖（工单 ba-p11-03 / ba-p11-06 / ba-p11-09 / ba-p11-10）：
-  · `scripts/generate_demo_data.py`：既有库只校验 schema、绝不在清空前迁移
+  · `tools/generate_demo_data.py`：既有库只校验 schema、绝不在清空前迁移
     （迁移会用当前密钥回填审计链，抹平"链被动过"的证据）；新库照常迁移到当前
     schema（否则 `db.audit` 需要的 `prev_hash`/`hash` 列不存在）。
   · `scripts/db_export.py`：默认拒绝覆盖既有 `accounts.json` / `users.json`；
@@ -25,12 +25,14 @@ import tempfile
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+#: 已迁 tools/ 的开发工具；其余脚本仍在 scripts/。
+_SCRIPT_DIR = {"generate_demo_data.py": "tools"}
 TEST_KEY = "a" * 64
 
 
 def _run(script, argv, env, cwd):
     return subprocess.run(
-        [sys.executable, os.path.join(BASE, "scripts", script), *argv],
+        [sys.executable, os.path.join(BASE, _SCRIPT_DIR.get(script, "scripts"), script), *argv],
         cwd=cwd, env=env, capture_output=True, text=True, encoding="utf-8",
         errors="replace", stdin=subprocess.DEVNULL, timeout=180,
     )

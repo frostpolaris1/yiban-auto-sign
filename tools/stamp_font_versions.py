@@ -38,8 +38,8 @@ CI 调用方：`tests/test_generated_artifacts_gate.py`（快集常跑，含突�
 只处理相对路径的本地资源；`data:`、绝对路径与外网 URL 一律跳过。
 用法：
 
-    python scripts/stamp_font_versions.py            # 打标（默认 fonts 目录）
-    python scripts/stamp_font_versions.py --check    # 只检查不写盘
+    python tools/stamp_font_versions.py            # 打标（默认 fonts 目录）
+    python tools/stamp_font_versions.py --check    # 只检查不写盘
 """
 import hashlib
 import os

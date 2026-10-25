@@ -3,10 +3,10 @@
 
 标签：J · 运维：部署/备份/发布
 覆盖：
-  · `scripts/stamp_font_versions.py --check` 在真实字体树上必须绿（这条用例就是
+  · `tools/stamp_font_versions.py --check` 在真实字体树上必须绿（这条用例就是
     它此前缺失的调用方）；分片内容变化必须红；空目录/无可打标 URL 退 2（量具
     没跑不等于"0 命中"，AGENTS §十三 第 30 条）。
-  · `scripts/build_lucide_sprite.py --check`：生成物与来源一致时绿、被就地改动后红；
+  · `tools/build_lucide_sprite.py --check`：生成物与来源一致时绿、被就地改动后红；
     来源 `package.json` 版本与 `LUCIDE_VERSION` 不一致时退 2；已提交的 `_sprite.svg`
     头部版本/commit/图标数必须与脚本常量一致（出处记录不许与内容分叉）。
 关键断言：钉"生成物可复核、来源可校验、量具没跑不得当绿"三条性质；不钉图标内容。
@@ -23,8 +23,8 @@ import tempfile
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-STAMP = os.path.join(BASE, "scripts", "stamp_font_versions.py")
-LUCIDE = os.path.join(BASE, "scripts", "build_lucide_sprite.py")
+STAMP = os.path.join(BASE, "tools", "stamp_font_versions.py")
+LUCIDE = os.path.join(BASE, "tools", "build_lucide_sprite.py")
 SPRITE = os.path.join(BASE, "web", "static", "vendor", "lucide", "_sprite.svg")
 
 

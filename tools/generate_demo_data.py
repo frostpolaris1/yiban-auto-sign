@@ -3,8 +3,8 @@
 """生成本地 demo 数据库（大量占位用户/账号/统计事件），用于 WebUI 对接测试。
 
 用法：
-    python3 scripts/generate_demo_data.py --dry-run            # 只看将清哪些表、多少行
-    python3 scripts/generate_demo_data.py --yes --fingerprint <上面打印的指纹>
+    python3 tools/generate_demo_data.py --dry-run            # 只看将清哪些表、多少行
+    python3 tools/generate_demo_data.py --yes --fingerprint <上面打印的指纹>
 
 说明：
 - 仅用于本地测试，不部署。
@@ -20,13 +20,14 @@ import os
 import random
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(_REPO_ROOT, "scripts"))
+sys.path.insert(0, _REPO_ROOT)
 
-import db
+import db  # noqa: E402
 
-from yiban.adapters.persistence import purge_guard
-from yiban.core.status import ALL_STATUSES
+from yiban.adapters.persistence import purge_guard  # noqa: E402
+from yiban.core.status import ALL_STATUSES  # noqa: E402
 
 DEFAULT_DEMO_DB = "demo-log/demo.db"
 

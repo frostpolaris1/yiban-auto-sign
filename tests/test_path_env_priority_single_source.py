@@ -3,9 +3,9 @@
 
 标签：A · 配置：邮件/推送读侧
 覆盖：四个路径键（`YIBAN_ENV_FILE` / `YIBAN_DB_FILE` / `YIBAN_STATE_DIR` /
-   `YIBAN_LOG_FILE`）在 `env_io.PATH_KEYS`、`resolve_path`、`child_env.build_child_env`
+   `YIBAN_LOG_FILE`）在 `env_io.PATH_KEYS`、`resolve_path`、`env_child.build_child_env`
    与三个 bash 载体里的同一口径；非路径键保持 `.env` 优先（M27）。
-对应实现：`yiban/adapters/config/env_io.py`、`scripts/child_env.py`、
+对应实现：`yiban/adapters/config/env_io.py`、`yiban/infra/env_child.py`、
    `run.sh` / `scripts/yiban-fallback.sh` / `run_probe.sh`。
 关键断言：① 路径键集合只有一处定义，CLI 视图引用它；② 四个路径键在进程环境与
    `.env` 冲突时取进程环境；③ 抽一个非路径键，冲突时取 `.env`（翻优先级会红）。
@@ -13,17 +13,13 @@
 """
 import io
 import os
-import sys
 import tempfile
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if os.path.join(BASE, "scripts") not in sys.path:
-    sys.path.insert(0, os.path.join(BASE, "scripts"))
-
-import child_env  # noqa: E402
 
 from yiban.adapters.config import env_io  # noqa: E402
+from yiban.infra import env_child as child_env  # noqa: E402
 
 #: 四个路径键（进程环境优先）。指针 `YIBAN_ENV_FILE` 走**两段自举**：
 #: 进程环境 → 基线 `.env`（默认 `data/.env`）→ 默认值；见

@@ -443,7 +443,7 @@ class SignDailySingleChannelTest(unittest.TestCase):
                                     f"符号 {sym} 反查成 pending = 面板假信号")
 
     def test_demo_writer_uses_the_private_channel(self):
-        path = os.path.join(BASE, "scripts", "dev_visual_seed.py")
+        path = os.path.join(BASE, "tools", "dev_visual_seed.py")
         with open(path, encoding="utf-8") as f:
             src = f.read()
         self.assertIn("private_json.write_private_json(", src,

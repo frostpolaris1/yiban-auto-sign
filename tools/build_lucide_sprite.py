@@ -5,7 +5,7 @@
 详见 web/static/vendor/lucide/MANIFEST.md「重建 / 升级命令」。
 
 用法：
-    python scripts/build_lucide_sprite.py <lucide-repo-dir> [输出路径] [--check]
+    python tools/build_lucide_sprite.py <lucide-repo-dir> [输出路径] [--check]
 
     <lucide-repo-dir> 例如解压后的 D:/tmp/lucide-1.45.0（含 icons/ 子目录）。
     `--check` 不写盘：生成物与既有文件逐字节一致时退 0，有差异或缺文件时退 1
@@ -52,7 +52,7 @@ HEADER = (
     "  Source: lucide-icons/lucide\n"
     "  Version: {ver}  Commit: {sha}\n"
     "  License: ISC (see LICENSE in this directory; some icons are Feather-derived, MIT).\n"
-    "  Build: python scripts/build_lucide_sprite.py <lucide-repo-dir> <output>\n"
+    "  Build: python tools/build_lucide_sprite.py <lucide-repo-dir> <output>\n"
     "  Usage: call ui.sprite() once after <body>, then ui.icon('trash', 'w-4 h-4').\n"
     "  Symbols inherit stroke=currentColor from the use context, so icons follow text color (dark mode safe).\n"
     "-->\n"
