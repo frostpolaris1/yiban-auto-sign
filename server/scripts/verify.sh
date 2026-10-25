@@ -58,3 +58,8 @@ bash ./scripts/generate.sh --check
 
 # Structure gate: top-level and layer directories match structure.tsv.
 go run ./tools/structure -root .. -rules structure.tsv
+
+# License gate: every third-party dependency must carry an allowed license,
+# and THIRD_PARTY_LICENSES.md must match the scan. The gate fails closed:
+# a missing scanner or an incomplete scan exits 2, never green.
+bash ./scripts/license.sh

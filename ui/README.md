@@ -17,10 +17,11 @@ React 19 + Vite 8 + TypeScript 7。视觉语言复用 Adminator 4.4.0。
 | `npm run gate:tokens` | 设计令牌门 |
 | `npm run gate:structure` | 导入方向门 |
 | `npm run gate:docs` | 入库文档门。禁止指向未入库目录 |
+| `npm run gate:license` | 依赖许可证门。禁用许可证或清单漂移即红 |
 | `npm run test:unit` | fetch 与查询默认值单测，运行器为 `node:test` |
 | `npm run test:visual` | Playwright。先跑 `npm run build` |
 | `npm run test:visual:update` | 重写视觉基线。先跑 `npm run build` |
-| `npm run verify` | 类型检查 + 契约漂移 + 单测 + 各门自测 + 三门 + 构建 |
+| `npm run verify` | 类型检查 + 契约漂移 + 单测 + 各门自测 + 四门 + 构建 |
 
 首次运行 Playwright 需要浏览器：`npx playwright install chromium`。
 
@@ -98,6 +99,7 @@ node scripts/token-gate.mjs
 - commit：`4c768545ad0c981c77669a7bf84de75b94d082e0`（2026-10-13）。
 - 版本：4.4.0。
 - 许可证：MIT，版权归 Aigars Silkalns。全文见 `THIRD_PARTY_NOTICES.md`。
+- 其余依赖的清单见 `THIRD_PARTY_LICENSES.md`（由 `npm run gate:license -- --write` 生成）。
 
 源文件与我们的组件对应关系：
 
