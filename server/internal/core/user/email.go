@@ -12,11 +12,12 @@
 // NormalizeEmail、ValidEmail。
 //
 // # 口径
-// 归一＝去首尾空白后转小写，与 ck_users_email_lower 同口径。
-// 形状＝3 至 254 字符、恰好一个 @、两侧非空、无空白与 *，
-// 与 ck_users_email_shape 同口径。
-// 应用层先拒，错误码才是 validation_failed；
+// 归一＝去首尾空白后转小写。应用层产出小写地址，库内 ck_users_email_lower 兜底。
+// 形状＝3 至 254 **字节**（len 的单位是字节）、恰好一个 @、两侧非空、
+// 无 Unicode 空白、无 *、无 Unicode Cf 格式字符。
+// 应用层比库内 CHECK 更严：库内的 [[:space:]] 随 LC_CTYPE 变化，且不拦 Cf。
 // 库内 CHECK 是最后一道，不是第一道。
+// 应用层先拒，错误码才是 validation_failed。
 package user
 
 import (
@@ -30,9 +31,13 @@ func NormalizeEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
 }
 
-// ValidEmail 报告已归一的邮箱是否满足库内 CHECK 的形状。
+// ValidEmail 报告已归一的邮箱是否满足应用层的最严形状。
 //
 // 判定顺序固定：长度、非法字符、@ 个数、两侧非空。
+// 空白与 Cf 一并拒绝：任何 Unicode 空白（含 \v、U+00A0）都不允许；
+// 零宽与双向控制等 Cf 字符让两个账号渲染相同，构成仿冒面。
+// 代价是 ZWNJ/ZWJ 等在某些文字中合法的字符也被拒。
+// 本部署的中文与拉丁地址不需要它们；若将来支持这类文字，须重新裁决。
 // RFC 5321 允许无点域名，故本函数不要求域名含点（裁决 P3-5）。
 func ValidEmail(email string) bool {
 	if len(email) < 3 || len(email) > 254 {
@@ -41,9 +46,9 @@ func ValidEmail(email string) bool {
 	if strings.ContainsAny(email, "*") {
 		return false
 	}
-	// 任何 Unicode 空白（含 \v、U+00A0）一律拒绝：
-	// 库内 CHECK 的 [[:space:]] 随排序规则变化，应用层先按最严口径拦。
-	if strings.IndexFunc(email, unicode.IsSpace) >= 0 {
+	if strings.IndexFunc(email, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.Is(unicode.Cf, r)
+	}) >= 0 {
 		return false
 	}
 	if strings.Count(email, "@") != 1 {

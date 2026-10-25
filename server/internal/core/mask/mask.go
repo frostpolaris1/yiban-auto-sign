@@ -13,10 +13,12 @@
 //
 // # 口径
 // 所有函数幂等：对已掩码的值再掩码，返回原值。
+// 合法 UTF-8 输入经任何掩码函数后仍是合法 UTF-8；切分首尾一律按字符，不按字节。
 // 手机号保留前 3 后 4，邮箱保留首字符与域名，设备保留前 2 后 2。
 // 两套口径都在本包，判定只有一份实现：
 // 掩码口径 MaskText（宁多勿漏，时间戳形态也会被改写）；
 // 检测口径 TextHasPhone/TextHasEmail（宁缺勿冤，只认对齐窗口 + 1[3-9]）。
+// 邮箱检测覆盖 Unicode 字母、数字与组合记号：本地部与域名都可以非 ASCII。
 // 审计守卫与符合性套件用检测口径。连写进更长数字串的手机号检测不到，
 // 属已登记限制；掩码仍会处理它。
 package mask
@@ -33,7 +35,10 @@ var (
 	// 并允许 +86 国家码前缀（W2C-R2-05）。
 	// 游程内的窗口扫描见 maskPhoneRun：与分段规则同源。
 	phoneInText = regexp.MustCompile(`\+?[0-9]+(?:[\s.\-]+[0-9]+)*`)
-	emailInText = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
+	// emailInText 覆盖系统接受的地址形状：本地部与域名可含非 ASCII 字母。
+	// 只认 ASCII 会让非 ASCII 邮箱躲过审计 PII 守卫（N5）。
+	// \p{M} 收组合记号：分解形式的带音标字符由字母与记号组成。
+	emailInText = regexp.MustCompile(`[\p{L}\p{N}\p{M}._%+\-]+@[\p{L}\p{N}\p{M}.\-]+\.[\p{L}]{2,}`)
 )
 
 // isDigitSep 报告 c 是否为号码书写中的分隔符。
@@ -78,22 +83,25 @@ func MaskEmail(s string) string {
 	return local[:size] + "***" + s[at:]
 }
 
-// MaskDevice 保留设备号前 2 位与后 2 位。
-// 长度不超过 4 时整串掩掉，**不泄露任何字符**。
+// MaskDevice 保留设备号前 2 个字符与后 2 个字符。
+// 长度不超过 4 个字符时整串掩掉，**不泄露任何字符**。
+// 按字符切，不按字节：多字节设备码不得产出非法 UTF-8（N1）。
 func MaskDevice(s string) string {
 	if strings.Contains(s, "****") {
 		return s
 	}
-	if len(s) <= 4 {
+	runes := []rune(s)
+	if len(runes) <= 4 {
 		return "****"
 	}
-	return s[:2] + "****" + s[len(s)-2:]
+	return string(runes[:2]) + "****" + string(runes[len(runes)-2:])
 }
 
 // MaskText 掩码自由文本中的手机号与邮箱。
 //
 // 手机号形态：11 位且以 1 开头，可带 86 国家码（13 位），
 // 数字之间允许空格、点、连字符等分隔符。
+// 邮箱形态：本地部与域名可含 Unicode 字母、数字与组合记号。
 // 判定做**两遍窗口扫描**：先取跨段的「对齐窗口」，再掩段内遗留窗口。
 // 「139-0013-9000 100」与「2026-10-25 13900139000」都能正确处理：
 // 手机号被掩，日期与数量保持原样。
@@ -138,6 +146,8 @@ func TextHasPhone(s string) bool {
 
 // TextHasEmail 报告文本里是否还有未掩码的邮箱形态。
 // 已掩码（含 ***）的邮箱不算。
+// 覆盖非 ASCII 字母、数字与组合记号；符号更多的本地部不在此口径内。
+// 检测口径宁缺勿冤，但不得对系统接受的字符类整体失明（N5）。
 func TextHasEmail(s string) bool {
 	for _, m := range emailInText.FindAllString(s, -1) {
 		if MaskEmail(m) != m {

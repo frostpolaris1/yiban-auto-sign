@@ -262,6 +262,7 @@ func TestW2DE43InvalidInputIsRejected(t *testing.T) {
 		{"empty password", map[string]any{"email": "two@example.com", "password": "", "role": "user"}},
 		{"email without at", map[string]any{"email": "not-an-email", "password": "x-pass-123", "role": "user"}},
 		{"email with space", map[string]any{"email": "bad email@example.com", "password": "x-pass-123", "role": "user"}},
+		{"email with zero-width space", map[string]any{"email": "zero\u200bwidth@example.com", "password": "x-pass-123", "role": "user"}},
 	}
 	for _, tc := range cases {
 		resp, payload := e.w2dCreate(session.CSRFToken, tc.body)

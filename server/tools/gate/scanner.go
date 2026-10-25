@@ -16,7 +16,7 @@ import (
 // Rule 是一条规范归属规则。
 type Rule struct {
 	ID      string
-	Kind    string // call | string | func | type | import
+	Kind    string // call | string | func | type | import | forbid
 	Owner   string
 	Pattern string
 	Allow   string
@@ -64,15 +64,21 @@ func LoadRules(path string) ([]Rule, error) {
 			return nil, fmt.Errorf("%s:%d: empty id, kind or pattern", path, lineNo)
 		}
 		switch r.Kind {
-		case "call", "string", "func", "type", "import":
+		case "call", "string", "func", "type", "import", "forbid":
 		default:
 			return nil, fmt.Errorf("%s:%d: unknown kind %q", path, lineNo, r.Kind)
 		}
 		// under 把 prefix == "*" 解释为「匹配全部文件」。
-		// 对非 import 规则，owner 命中表示豁免：owner 为 * 会让规则永不生效。
-		// allow 为 * 会让任意规则永不生效。两种写法都是语义反转，加载时拒绝。
+		// 对非 import 规则，owner 命中表示豁免：owner 为 * 会让 call 类规则永不生效。
+		// forbid 的 owner 是检查范围，* 虽可解释为全查，但规则要求写明具体范围。
+		// load 时拒绝这两种写法；否则门会静默报绿。
 		if r.Kind != "import" && strings.TrimSpace(r.Owner) == "*" {
-			return nil, fmt.Errorf("%s:%d: rule %q is not an import rule and must not use owner *",
+			return nil, fmt.Errorf("%s:%d: rule %q must use a concrete owner (owner * is only for import rules)",
+				path, lineNo, r.ID)
+		}
+		// forbid 的 owner 为空等于检查零个文件。接受它就是一条永不触发的规则。
+		if r.Kind == "forbid" && strings.TrimSpace(r.Owner) == "" {
+			return nil, fmt.Errorf("%s:%d: forbid rule %q needs a non-empty owner; it would check no files",
 				path, lineNo, r.ID)
 		}
 		for _, prefix := range strings.Split(r.Allow, ",") {
@@ -142,9 +148,10 @@ func Scan(root string, rules []Rule, includeTests bool) ([]Violation, error) {
 }
 
 func ruleApplies(r Rule, rel string) bool {
-	if r.Kind == "import" {
-		// import 规则：owner 内的文件不得导入 pattern 的东西。
-		// allow 同样生效；owner 为 * 时检查全部被扫描的文件。
+	// import 与 forbid 的 owner 是**检查范围**：只查 owner 之下的文件。
+	// 其余规则的 owner 是**唯一属主**：owner 之下的文件被放行，其余被检查。
+	// 两种语义方向相反，混用会让门静默失效，故在注释与测试里分开写。
+	if r.Kind == "import" || r.Kind == "forbid" {
 		return under(rel, r.Owner) && !underAny(rel, r.Allow)
 	}
 	if under(rel, r.Owner) {
@@ -192,7 +199,7 @@ func inspectFile(file *ast.File, fset *token.FileSet, rel string, r Rule) []Viol
 	}
 	ast.Inspect(file, func(n ast.Node) bool {
 		switch r.Kind {
-		case "call":
+		case "call", "forbid":
 			call, ok := n.(*ast.CallExpr)
 			if !ok {
 				return true

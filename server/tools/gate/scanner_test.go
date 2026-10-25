@@ -74,6 +74,43 @@ func set(w http.ResponseWriter) { http.SetCookie(w, nil) }
 	}
 }
 
+// forbid：owner 指定的文件不得调用 pattern。owner 外不受影响。
+// 与 call 的区别是适用方向相反：call 是「只有 owner 可以用」，
+// forbid 是「owner 不许用，别处随意」。
+func TestScanForbidFlagsUnderOwner(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "internal/adapters/pg/user.go", `package pg
+import "strings"
+func f(s string) string { return strings.ToLower(s) }
+`)
+	rules := []Rule{testRule("email.normalize.lower", "forbid",
+		"internal/adapters/pg/user.go", "strings.ToLower", "")}
+	violations, err := Scan(root, rules, false)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(violations) != 1 || violations[0].File != "internal/adapters/pg/user.go" {
+		t.Fatalf("want one violation in the owner file, got %#v", violations)
+	}
+}
+
+func TestScanForbidSparesOutsideOwner(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "internal/app/foo.go", `package app
+import "strings"
+func f(s string) string { return strings.ToLower(s) }
+`)
+	rules := []Rule{testRule("email.normalize.lower", "forbid",
+		"internal/adapters/pg/user.go", "strings.ToLower", "")}
+	violations, err := Scan(root, rules, false)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("forbid must not apply outside its owner, got %#v", violations)
+	}
+}
+
 func TestScanImportBoundary(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "internal/core/foo.go", `package core
@@ -264,6 +301,19 @@ func TestLoadRulesAllowsImportOwnerWildcard(t *testing.T) {
 	}
 	if _, err := LoadRules(path); err != nil {
 		t.Fatalf("LoadRules: %v", err)
+	}
+}
+
+// forbid 的 owner 为空等于检查零个文件：加载时必须拒绝。
+// 接受它就是一条永不触发的规则，门会静默报绿（AGENTS §29）。
+func TestLoadRulesRejectsEmptyForbidOwner(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rules.tsv")
+	line := "email.normalize.lower\tforbid\t\tstrings.ToLower\t\tmsg\n"
+	if err := os.WriteFile(path, []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadRules(path); err == nil {
+		t.Fatal("LoadRules accepted a forbid rule that checks no files")
 	}
 }
 
