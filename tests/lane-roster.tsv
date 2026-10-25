@@ -245,6 +245,7 @@ fast	tests/test_provenance_guard.py
 fast	tests/test_public_example_key_blocked.py
 fast	tests/test_purge_guard.py
 fast	tests/test_pw_gate_tiers.py
+fast	tests/test_queue_api_authz.py
 fast	tests/test_queue_api_recent_window.py
 fast	tests/test_queue_failclosed.py
 fast	tests/test_rate_limit_tiers.py
@@ -355,6 +356,7 @@ fast	tests/test_web_logs_page.py
 fast	tests/test_web_mask_email_parity.py
 fast	tests/test_web_native_pickers.py
 fast	tests/test_web_page_consistency.py
+fast	tests/test_web_queue_page.py
 serial	tests/test_web_rate_limit_concurrency_e2e.py	# 真起 gunicorn 服务并打并发请求：串行轨独占核（原在快集，移此保持 serial 道非空且给并发面独占核）（本机 1.2s）
 fast	tests/test_web_render_golden.py
 fast	tests/test_web_security_gates.py
