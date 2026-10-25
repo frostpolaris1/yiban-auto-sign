@@ -194,8 +194,11 @@
 | `page/page_size` | `GET /api/audit-logs` | 50 | 200 | — |
 | `limit` | `GET /api/admin/run-events` | 200 | 500 | — |
 
-数值口径：缺省与上限都是服务端夹取后的边界值（含边界）；`limit/offset` 组的下界是 1
-（见 §1.5），本表不另列。
+数值口径：本表的缺省与上限都是**允许域端点**（含边界）。`limit/offset` 组
+（`GET /api/accounts`、`GET /api/users`、`GET /api/logs`）越界**夹取**：`limit` 夹到
+`[1, 200]`、`offset` 夹到 `>= 0`（下界见 §1.5）。`GET /api/admin/sign-events` 只收
+`limit`、不收 `offset`，越界同样夹取。`page/page_size` 组与 `limit`（run-events）组
+越界**回 400，不夹取**。
 
 ## §2 端点清单
 

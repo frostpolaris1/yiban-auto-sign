@@ -29,6 +29,7 @@ CONTRACT = os.path.join(BASE, "docs", "dev", "api-contract.md")
 PAGER_TS = os.path.join(BASE, "frontend", "src", "lib", "pager.ts")
 AUDIT_QUERY_TS = os.path.join(BASE, "frontend", "src", "audit", "query.ts")
 LOGS_FORMAT_TS = os.path.join(BASE, "frontend", "src", "logs", "format.ts")
+DATA_PY = os.path.join(BASE, "web", "routes", "data.py")
 
 #: 契约表的小节范围：到下一个同级或更高级标题为止。
 _SECTION = re.compile(r"^### §1\.8 分页档位登记.*?(?=^### |^## )", re.MULTILINE | re.DOTALL)
@@ -136,6 +137,37 @@ class PaginationContractRegistryTest(unittest.TestCase):
                          audit_api._DEFAULT_PAGE_SIZE)
         self.assertEqual(_nums(AUDIT_MAX_RE, text, AUDIT_QUERY_TS)[0],
                          audit_api._MAX_PAGE_SIZE)
+
+
+#: `data.py` 的 sign-events 端点必须引用的共享常量名（按名字，不按值）。
+_REQUIRED_LIMIT_NAMES = ("_PAGE_LIMIT_DEFAULT", "_PAGE_LIMIT_MAX", "_PAGE_LIMIT_MIN")
+
+
+def missing_limit_constants(text):
+    """→ 文本里缺失的共享常量名列表；空列表=合规。
+
+    只认**名字**：回填同值字面量时值仍相等，只有名字消失，故这是唯一能看住
+    "实现改回内联"的判据。
+    """
+    return [name for name in _REQUIRED_LIMIT_NAMES if name not in text]
+
+
+class SignEventsSourceFormTest(unittest.TestCase):
+    """`data.py` 的 sign-events 分页必须引用共享常量，不得回填字面量。"""
+
+    def test_data_py_references_shared_limit_constants(self):
+        text = _read(DATA_PY)
+        self.assertEqual(missing_limit_constants(text), [],
+                         "data.py 未引用分页上下限常量（回填同值字面量会让契约互检失明）")
+        self.assertNotRegex(text, r'args\.get\(\s*"limit"\s*,\s*100\s*\)')
+        self.assertNotRegex(
+            text, r'min\(\s*max\(\s*int\(request\.args\.get\("limit"[^\n]*,\s*1\s*\)\s*,\s*200\s*\)')
+
+    def test_detector_reds_on_same_value_literals(self):
+        literal = 'limit = min(max(int(request.args.get("limit", 100)), 1), 200)'
+        self.assertEqual(missing_limit_constants(literal),
+                         list(_REQUIRED_LIMIT_NAMES))
+        self.assertEqual(missing_limit_constants(_read(DATA_PY)), [])
 
 
 class ParserTeethTest(unittest.TestCase):
