@@ -288,24 +288,13 @@ def api_admin_sign_events():
     if stage not in ("sign", "probe"):
         stage = ""
 
-    def _mask(ev):
-        msg = str(ev.get("message") or "")
-        return {
-            "ts": str(ev.get("ts", "")),
-            "phone": signin._mask_phone(str(ev.get("phone") or "")),
-            "status": str(ev.get("status") or ""),
-            "message": (msg[:160] + "…") if len(msg) > 160 else msg,
-            "stage": str(ev.get("stage") or ""),
-            "attempt": int(ev.get("attempt") or 0),
-            "dur_sec": ev.get("dur_sec"),
-        }
-
+    # 事件行脱敏序列化：与 /api/queue/<idx>/events 共用唯一实现（services/logs.mask_event）。
     events = []
     if phone:
-        events = [_mask(ev) for ev in db.sign_events_by_phone(phone, days=days)][:limit]
+        events = [_logs_svc.mask_event(ev) for ev in db.sign_events_by_phone(phone, days=days)][:limit]
     else:
         cutoff = (clock.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
-        events = [_mask(ev) for ev in db.sign_events_since(cutoff, limit=limit)]
+        events = [_logs_svc.mask_event(ev) for ev in db.sign_events_since(cutoff, limit=limit)]
     if stage:
         # 事件流本身不带 stage 过滤（sign_events_since 无该参数），故在此收口；
         # 代价是过滤后条数可能少于 limit，对展示样本无影响。

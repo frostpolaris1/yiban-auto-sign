@@ -339,6 +339,29 @@ def _mask_log_phones(line):
     return _mask_phones_in_text(line)
 
 
+#: 事件 message 对外截断长度（两个事件面共用同一上限）。
+EVENT_MSG_MAX = 160
+
+
+def mask_event(ev):
+    """事件行 → 对外 JSON：手机号遮罩 + message 截断（**唯一实现**）。
+
+    `GET /api/admin/sign-events` 与 `GET /api/queue/<idx>/events` 两个事件面共用本函数。
+    各写一份必然在截断长度与脱敏口径上分叉（同一个事件在两个接口里长度不同），
+    且脱敏属安全面——口径只许有一处。
+    """
+    msg = str(ev.get("message") or "")
+    return {
+        "ts": str(ev.get("ts", "")),
+        "phone": _mask_phone(str(ev.get("phone") or "")),
+        "status": str(ev.get("status") or ""),
+        "message": (msg[:EVENT_MSG_MAX] + "…") if len(msg) > EVENT_MSG_MAX else msg,
+        "stage": str(ev.get("stage") or ""),
+        "attempt": int(ev.get("attempt") or 0),
+        "dur_sec": ev.get("dur_sec"),
+    }
+
+
 # ---------------------------------------------------------------------------
 # 按日签到状态
 # ---------------------------------------------------------------------------

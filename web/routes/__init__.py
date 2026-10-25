@@ -257,6 +257,7 @@ def register_all(app):
         my_api,
         notify,
         pages,
+        queue_api,
         run_events_api,
         settings_api,
         signin_api,
@@ -277,3 +278,4 @@ def register_all(app):
     stream_api.register(app)
     settings_api.register(app)
     signin_api.register(app)
+    queue_api.register(app)
