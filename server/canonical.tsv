@@ -53,5 +53,6 @@ token.new.func	func	internal/core/auth/	NewToken		NewToken 只在 core/auth 内�
 # 新增导入测试文件或目录必须登记在此行 allow。
 fake.import	import	*	internal/signing/fake	internal/signing/conformance/	internal/signing/fake 只允许测试代码与 conformance 套件导入
 # 邮箱归一只有一个实现：core/user.NormalizeEmail。
-# 适配器只调用，不自写 lower/trim；回退即红（W2D 二轮复审 N3）。
+# 门拦自写 lowercase；回退到 ToLower 即红（W2D 二轮复审 N3）。
+# 只 trim 不 lower 的写法不拦：应用层已先归一，库内 ck_users_email_lower 兜底大小写。
 email.normalize.lower	forbid	internal/adapters/pg/user.go	strings.ToLower		邮箱归一只能调用 core/user.NormalizeEmail

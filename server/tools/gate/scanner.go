@@ -268,6 +268,42 @@ func selectorName(e ast.Expr) (string, bool) {
 	return id.Name + "." + sel.Sel.Name, true
 }
 
+// ValidateForbidOwners 要求每条 forbid 规则在 root 下至少命中一个 Go 文件。
+//
+// forbid 的 owner 是检查范围。owner 改名或删除后，规则命中零个文件，
+// 永不触发；门会打印 ok，静默失守（AGENTS §29）。本检查把这种配置变成 rc=2。
+// 判据是「owner 路径是否存在」，故固定按含 _test.go 的口径统计，
+// 与本轮 Scan 的 includeTests 无关。
+func ValidateForbidOwners(root string, rules []Rule) error {
+	var rels []string
+	if err := walkGoFiles(root, true, func(path string) error {
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rels = append(rels, filepath.ToSlash(rel))
+		return nil
+	}); err != nil {
+		return err
+	}
+	for _, r := range rules {
+		if r.Kind != "forbid" {
+			continue
+		}
+		hit := false
+		for _, rel := range rels {
+			if ruleApplies(r, rel) {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			return fmt.Errorf("forbid rule %q checks no files under %q; refused to pass", r.ID, r.Owner)
+		}
+	}
+	return nil
+}
+
 // CountGoFiles 返回同一 includeTests 口径下扫描会考虑的文件数。
 // 调用方用它拒绝一次什么都没扫的运行。
 func CountGoFiles(root string, includeTests bool) (int, error) {
