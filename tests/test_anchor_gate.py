@@ -6,20 +6,22 @@
 覆盖：
     ① `docs/dev/target-tree.md` §8.2 的「现存」锚点逐个存在（目录或文件）；
     ② 标「计划」的锚点只登记、不要求存在（B3 才落地）；
-    ③ B1 搬迁的 8 个旧坐标（2 个共享模块 + 6 个开发工具）本体不存在；
-    ④ 跟踪集内不得再有旧坐标读者：路径字面量与裸 import 两面都判；
+    ③ B1 搬迁的 9 个旧坐标（2 个共享模块 + 6 个开发工具 + 1 个数据文件）本体不存在；
+    ④ 跟踪集内不得再有旧坐标读者：路径字面量（相对/点号/绝对前缀）、
+      `-m scripts.<stem>` 与裸 import 三面都判；
     ⑤ 门自身有牙：夹具样本必红、干净样本不得误红、扫描面有下限（扫空不得当绿）。
 
 **为什么判据要同时扫路径与 import**：旧路径文件删掉后，`import child_env` 在缺
 `scripts/` 的部署形态下当场炸，而路径字面量（`python scripts/child_env.py`）不炸但
-读者按它找不到文件。两面合起来才是「旧坐标清零」。
+读者按它找不到文件。`./scripts/…` 与 `/opt/app/scripts/…` 是 cron 与部署件的现役
+写法，故左右边界只挡标识符与连字符，不挡 `/` 与 `.`。
 
 **面**：`git ls-files` 跟踪集（全仓）。跟踪集外的本地残留不改变结论；新文件须先
 `git add` 才进面（与 `tests/test_shared_facts_gate.py` 同口径）。
 **豁免**：`docs/dev/target-tree.md` 必须写出旧坐标（迁移记录是它的职责）；
 本门自身必须写出禁字面量做夹具。两条豁免都按「仍在写旧坐标」锚住，失去理由即红。
-**已知盲点（显式登记，AGENTS §28）**：只判路径形态与 import 形态。运行期字符串
-`importlib.import_module("child_env")` 不在判据面内；今天仓内实测 0 处。
+**已知盲点（显式登记，AGENTS §28）**：`importlib.import_module("child_env")` 这类
+非 `-m` 字符串坐标不在判据面内；今天仓内实测 0 处。
 
 依赖：只读跟踪集文本 + 文件系统；不导入业务包、不联网。
 """
@@ -70,6 +72,8 @@ MOVED_STEMS = (
     "generate_demo_data",
     "elbow_shadow",
 )
+#: 只按路径形态存在的搬迁数据文件（没有模块 import 形态）。
+MOVED_DATA_FILES = ("email_blocklist.txt",)
 OLD_DIR = "scripts"
 
 #: 职责就是写出旧坐标的文件。逐条给理由，并由 `test_exempt_files_are_anchored` 钉住。
@@ -80,28 +84,47 @@ EXEMPT_FILES = {
         "迁移记录：§0/§2 必须写出源坐标，否则读者不知道旧路径去了哪里",
 }
 
-#: 扫描面下限（AGENTS §30：扫空不得当绿）。ref＝`origin/develop` `aa75e2b9` 实测 966。
-MIN_FACE_FILES = 700
+#: 扫描面下限（AGENTS §30：扫空不得当绿）。
+#: 双口径（不同源，不可相减）：`origin/develop` `aa75e2b9` 跟踪集 966、可读文本面 861；
+#: B1 收口态跟踪集 976、可读文本面 871（+10 入库件）。下限取 861。
+MIN_FACE_FILES = 861
 
 
 def _moved_paths():
-    """B1 搬迁件的旧路径形态（`scripts/<stem>.py`）。"""
-    return tuple(REL(OLD_DIR, stem + ".py") for stem in MOVED_STEMS)
+    """B1 搬迁件的旧路径形态（8 个 `.py` ＋ 1 个数据文件）。"""
+    return (tuple(REL(OLD_DIR, stem + ".py") for stem in MOVED_STEMS)
+            + tuple(REL(OLD_DIR, name) for name in MOVED_DATA_FILES))
 
 
 def _old_path_re(path):
-    """旧路径的字面量判据：前后不接路径/标识符字符。"""
-    return re.compile(r"(?<![\w./-])" + re.escape(path) + r"(?![\w-])")
+    """旧路径的字面量判据。
+
+    左边界只挡标识符字符与连字符：`xscripts/…` 不命中，但 `./scripts/…`、
+    `/opt/app/scripts/…` 必须命中（cron 与部署件就是绝对/点号前缀形态）。
+    """
+    return re.compile(r"(?<![\w-])" + re.escape(path) + r"(?![\w-])")
+
+
+def _m_form_re(stem):
+    """`python -m scripts.<stem>` 形态（运行期模块坐标）。"""
+    return re.compile(r"(?<![\w.-])-m\s+" + re.escape(OLD_DIR) + r"\." + re.escape(stem)
+                      + r"(?![\w.])")
 
 
 def old_path_hits(text, paths=None):
-    """文本里出现的旧路径：`[(行号, 路径)]`。"""
+    """文本里的旧坐标：`[(行号, 命中形态)]`。
+
+    两面：路径字面量（相对/点号/绝对前缀）与 `-m scripts.<stem>` 运行期写法。
+    """
     paths = paths if paths is not None else _moved_paths()
     out = []
     for i, line in enumerate(text.splitlines(), 1):
         for p in paths:
             if _old_path_re(p).search(line):
                 out.append((i, p))
+        for stem in MOVED_STEMS:
+            if _m_form_re(stem).search(line):
+                out.append((i, "-m " + OLD_DIR + "." + stem))
     return sorted(set(out))
 
 
@@ -259,8 +282,9 @@ class MovedCoordinateTest(unittest.TestCase):
                  if os.path.exists(os.path.join(BASE, p))]
         self.assertEqual(alive, [], "B1 搬迁的旧路径仍在（旧路径不留壳）："
                          + "；".join(alive))
-        self.assertEqual(len(_moved_paths()), 8,
-                         "搬迁清单条数变了：本门按 8 条立，清单被误改即红")
+        self.assertEqual(len(_moved_paths()), 9,
+                         "搬迁清单条数变了：本门按 9 条立（8 个 .py ＋ 1 个数据文件），"
+                         "清单被误改即红")
 
     def test_tracked_face_has_no_old_coordinate_reader(self):
         tracked = _tracked(BASE)
@@ -302,23 +326,32 @@ class GateHasTeethTest(unittest.TestCase):
 
     def test_path_fixtures_are_detected(self):
         sample = _moved_paths()[0]
+        data = _moved_paths()[-1]
         cases = (
             "python " + sample,
             "见 `" + sample + "` 的告警口径",
             '["' + sample + '"]',
+            "./" + sample,                       # 点号相对前缀
+            "/opt/yiban/" + sample,              # 绝对路径前缀（cron 现役形态）
+            "python -m scripts." + MOVED_STEMS[0],
+            "python3 -m scripts." + MOVED_STEMS[0],
+            "数据文件 " + data,
         )
         for src in cases:
             with self.subTest(src=src):
                 self.assertTrue(old_path_hits(src),
-                                "旧路径夹具未被判红：本门没有牙 —— %r" % (src,))
+                                "旧坐标夹具未被判红：本门没有牙 —— %r" % (src,))
 
     def test_clean_path_fixtures_are_not_flagged(self):
         stem = MOVED_STEMS[0]
         cases = (
             "python tools/" + stem + ".py",
             "yiban/infra/env_child.py",
+            "yiban/core/email_blocklist.txt",
             "# 旧路径 " + OLD_DIR + "/" + stem + "（无扩展名，指目录）",
             "scripts/signin.py",
+            "python -m scripts.signin",
+            "xscripts/" + stem + ".py",
         )
         for src in cases:
             with self.subTest(src=src):

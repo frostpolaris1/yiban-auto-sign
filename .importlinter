@@ -24,10 +24,11 @@
 ;   本门不改任何既有门禁的语义。它是新增的一道。
 ;   本门对任何违规红。
 ;
-; root_packages 为什么是这三个
+; root_packages 为什么是这四个
 ;   yiban 是后端命名空间。web 是管理后台，P2 才并入 yiban。
-;   scripts 是兼容壳与运维脚本。该目录无 __init__.py，按 PEP 420 解析为命名空间包。
-;   契约 3 要判 "yiban/web 反向 import scripts"。scripts 不进 root_packages 就判不到。
+;   scripts 是兼容壳与运维脚本，tools 是开发期构建与代码生成。两目录都无 __init__.py，
+;   按 PEP 420 解析为命名空间包。
+;   契约 3 要判 "yiban/web 反向 import scripts 与 tools"。两者不进 root_packages 就判不到。
 ; ============================================================================
 
 [importlinter]
@@ -35,6 +36,7 @@ root_packages =
     yiban
     web
     scripts
+    tools
 
 ; ---------------------------------------------------------------------------
 ; 契约 1：后端命名空间不得依赖管理后台
@@ -96,22 +98,25 @@ forbidden_modules =
     scripts
 
 ; ---------------------------------------------------------------------------
-; 契约 3：兼容壳不得被反向 import
+; 契约 3：兼容壳与开发工具不得被反向 import
 ;
 ; scripts/ 是兼容壳与运维脚本。它是 L6b 的过渡形态。
 ; 它调 yiban 是允许的。yiban 或 web 反向 import 它则把脚本层拉进运行时依赖图。
 ; 容器镜像里 scripts 未随包分发时立刻 ImportError。兼容壳一删核心链路就炸。
-; 今天实测零违规。全仓唯一的 `scripts` 导入在 tests/ 里。
+; tools/（B1 起）更严：它不进镜像、不被任何运行期模块 import。运行期引用 tools
+; 等于把构建机目录写进部署依赖，检出不带 tools 时当场 ImportError。
+; 今天实测零违规（唯一相关导入是 tests/ 与 tools/ 自身）。
 ; 本契约钉回归敞口。
 ; ---------------------------------------------------------------------------
 [importlinter:contract:no-reverse-import-of-scripts]
-name = yiban/web 不得反向 import scripts（兼容壳只许被 scripts 层调用）
+name = yiban/web 不得反向 import scripts 与 tools（非运行时目录只许被自己调用）
 type = forbidden
 source_modules =
     yiban
     web
 forbidden_modules =
     scripts
+    tools
 
 ; ---------------------------------------------------------------------------
 ; 契约 4：core 级模块两两独立
