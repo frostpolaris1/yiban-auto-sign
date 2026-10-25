@@ -424,7 +424,7 @@ TRUE_SOURCE = {
     "_wait_signin_proc": ("web.services.manual_sign", "_wait_signin_proc"),
     "account_crypto": ("yiban.adapters.config", "account_crypto"),
     "check_connectivity": ("web.services.signstatus", "check_connectivity"),
-    "child_env": ("child_env", None),
+    "child_env": ("yiban.infra", "env_child"),
     "clear_fuse_on_cred_change": ("web.services.logs", "clear_fuse_on_cred_change"),
     "clock": ("yiban.core", "clock"),
     "db": ("yiban.adapters.persistence", "db"),

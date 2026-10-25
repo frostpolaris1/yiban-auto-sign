@@ -2,8 +2,8 @@
 """回归守卫：CJK 分片脚本 outdir 白名单的进程级行为。
 
 标签：F · 前端与界面守卫
-覆盖：分片脚本（`scripts/build_cjk_font_slices.py`）对越界 outdir 以退出码拒绝且**目标目录未被动过**（它是位置参数 + 整目录 rmtree）
-对应实现：`scripts/build_cjk_font_slices.py` 的白名单判定
+覆盖：分片脚本（`tools/build_cjk_font_slices.py`）对越界 outdir 以退出码拒绝且**目标目录未被动过**（它是位置参数 + 整目录 rmtree）
+对应实现：`tools/build_cjk_font_slices.py` 的白名单判定
 关键断言：白名单外必须 returncode==2 且 stderr 点名「白名单」，落盘哨兵文件与目录本体都不动；白名单根自身与「前缀相似」的同级目录都不算命中（后者防字符串前缀误判）；白名单内的合法落点必须过闸
 依赖：⚠ 需要**真跑子进程**；缺 fonttools（构建期依赖，不在 requirements 里）时**用替身包顶上**，不再整组 SkipTest
 
@@ -27,7 +27,7 @@ import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-#: fontTools 的**导入面**替身（只让 `scripts/build_cjk_font_slices.py` 的模块级 import
+#: fontTools 的**导入面**替身（只让 `tools/build_cjk_font_slices.py` 的模块级 import
 #: 通过；白名单判定与它无关，越界路径在用到字体功能之前就已 `sys.exit(2)`）。
 _STUB_FILES = {
     "fontTools/__init__.py": "",
@@ -44,7 +44,7 @@ class FontSliceOutdirGuardTest(unittest.TestCase):
     fonttools（**构建期**依赖，不在 requirements 里）：缺依赖时挂替身包，不跳过。
     """
 
-    SCRIPT = os.path.join(BASE, "scripts", "build_cjk_font_slices.py")
+    SCRIPT = os.path.join(BASE, "tools", "build_cjk_font_slices.py")
 
     @classmethod
     def setUpClass(cls):

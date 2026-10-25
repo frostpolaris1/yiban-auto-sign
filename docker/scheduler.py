@@ -41,9 +41,9 @@ from datetime import datetime
 # 包导入引导（探活快路也要用它，故排在业务导入图之前）
 # ---------------------------------------------------------------------------
 # 本文件在仓库里是 `docker/scheduler.py`、在镜像里被复制为
-# `scripts/container_scheduler.py`——两处都比仓库根低一层，但**同目录的兄弟模块**
-# （signin/child_env/env_io）只在 scripts/ 一侧，而 `yiban/` 只在仓库根。故三个路径
-# 都补上，两种位置都能直接跑（2026-09-15 容器冒烟实测：漏引导会让 sched 进程
+# `scripts/container_scheduler.py`——两处都比仓库根低一层。同目录的兄弟模块
+# （signin）只在 scripts/ 一侧，而 `yiban/` 只在仓库根。故三个路径都补上，
+# 两种位置都能直接跑（2026-09-15 容器冒烟实测：漏引导会让 sched 进程
 # ModuleNotFoundError → supervisord 反复重启 → FATAL）。过渡机制，随 M1③ 清 sys.path 注入移除。
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_HERE)
@@ -106,7 +106,6 @@ if __name__ == "__main__" and "--check-health" in sys.argv[1:]:
 # signin：补签轮判定与未了结状态码的单一事实源（宿主 run.sh 的进程内补签轮
 # 复用同一套函数，两侧不再各写一份判定）。
 import signin  # noqa: E402
-from child_env import build_child_env, parse_env_file  # noqa: E402
 
 from yiban.adapters.statefiles import state_gc  # noqa: E402
 from yiban.core import (  # noqa: E402
@@ -115,6 +114,7 @@ from yiban.core import (  # noqa: E402
 )
 from yiban.engine import schedule  # noqa: E402
 from yiban.infra import private_json  # noqa: E402  （状态文件私有写单通道）
+from yiban.infra.env_child import build_child_env, parse_env_file  # noqa: E402
 from yiban.logging_ext import MaskingFormatter  # noqa: E402
 from yiban.workers import workers  # noqa: E402
 

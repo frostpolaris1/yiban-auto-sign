@@ -458,7 +458,7 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
     # `signin-run.lock.fallback` 挡住，跨主机靠 @主机名 区分）。
     os.environ.setdefault("YIBAN_EXECUTOR_ID", egress.fallback_owner())
     # 出口写入走 egress 单点：兜底行配成空出口时也必须显式写成直连，压掉继承来的
-    # `YIBAN_PROXY`（宿主形态由 run.sh 全量 export、容器/web 形态由 child_env 覆盖注入）
+    # `YIBAN_PROXY`（宿主形态由 run.sh 全量 export、容器/web 形态由 env_child 覆盖注入）
     proxy = egress.apply_egress(os.environ, egress.ROLE_FALLBACK)
     # 身份前缀只算一次：本进程的身份（`YIBAN_EXECUTOR_ID`）启动期就定了，跨轮不变；
     # 轮次序号在循环内逐轮拼（见下）——日志归因要能答出"哪个执行体、第几轮"。

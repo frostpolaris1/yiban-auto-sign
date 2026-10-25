@@ -66,7 +66,7 @@ class PublishedExampleKeyDecodeBlockedTest(unittest.TestCase):
         self.assertEqual(account_crypto._decode_key(TEST_KEY), bytes.fromhex(TEST_KEY))
 
     def test_demo_seed_public_key_also_blocked(self):
-        """`scripts/dev_visual_seed.py` 内置演示钥同样随仓库公开：与模板钥一起精确拉黑。
+        """`tools/dev_visual_seed.py` 内置演示钥同样随仓库公开：与模板钥一起精确拉黑。
 
         它逃过全零/单字节/顺序三条弱判据（与模板钥同因），照抄进真实 `.env` 会让存量
         密文等同明文。演示脚本已改为导入同一常量，本格钉住"换钥只改一处也会被拦"。

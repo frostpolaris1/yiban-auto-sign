@@ -2,6 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """邮箱域名可用性审查：注册写入前拦截占位/一次性邮箱域名，保护用户池。
 
+坐标：`yiban/core/email_policy.py`（B1 自 scripts 目录移入；旧路径不留壳）。
+数据文件 `email_blocklist.txt` 随模块同目录移动。
+
 背景：开放注册常收到 example.com、demo.com 等占位域名或 mailinator.com 等
 一次性邮箱的注册请求——这类账号收不到任何通知邮件，却持续挤占
 YIBAN_MAX_USERS 用户池名额。本模块在注册入口（开放注册 / 管理员自动注册）
@@ -14,8 +17,8 @@ YIBAN_MAX_USERS 用户池名额。本模块在注册入口（开放注册 / 管�
    - 内置保留域名 _RESERVED_DOMAINS（RFC 2606/6761 占位域名 + 常见教程
      占位域名，硬编码兜底：数据文件缺失/损坏时依然拦截）；
    - data 文件 email_blocklist.txt 一次性邮箱域名（与本模块同目录，来源与
-     许可见文件头，CC0；放 scripts/data/ 会被根 .gitignore 的 data/ 规则误伤，
-     故平置于 scripts/ 下随模块走）；
+     许可见文件头，CC0；放包内 data/ 子目录会被根 .gitignore 的 data/ 规则误伤，
+     故平置于 yiban/core/ 下随模块走）；
    - blocklist_extra 参数（web 层来自 .env 的 YIBAN_EMAIL_DOMAIN_BLOCKLIST_EXTRA，
      部署自定义追加，无需改数据文件）。
 
@@ -36,10 +39,11 @@ import logging
 import os
 import threading
 
-logger = logging.getLogger(__name__)
+# 通道名固定为 `email_policy`：它是运维过滤面，不随模块坐标变化（B1 迁移保持原名）。
+logger = logging.getLogger("email_policy")
 
 # 数据文件：一次性邮箱域名黑名单（与本模块同目录；
-# Docker 整目录 COPY scripts/，数据随镜像带走）
+# Docker 整目录 COPY yiban/，数据随镜像带走）
 _DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "email_blocklist.txt")
 
 # 内置保留/占位域名（硬编码兜底）：
