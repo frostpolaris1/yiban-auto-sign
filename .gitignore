@@ -138,6 +138,10 @@ docs/dev/*
 !docs/dev/backup-restore.md
 !docs/dev/implementation-notes.md
 !docs/dev/troubleshooting.md
+# 双线交接文档（2026-10-25）：旧系统判据交给实验线，契约类入库
+!docs/dev/experimental-line/
+docs/dev/experimental-line/*
+!docs/dev/experimental-line/legacy-criteria-handoff.md
 .superpowers/
 
 # ZCode 工具目录
