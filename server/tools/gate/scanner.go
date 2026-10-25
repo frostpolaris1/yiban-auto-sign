@@ -130,28 +130,40 @@ func Scan(root string, rules []Rule, includeTests bool) ([]Violation, error) {
 
 func ruleApplies(r Rule, rel string) bool {
 	if r.Kind == "import" {
-		return under(rel, r.Owner)
+		// import 规则：owner 内的文件不得导入 pattern 的东西。
+		// allow 同样生效；owner 为 * 时检查全部被扫描的文件。
+		return under(rel, r.Owner) && !underAny(rel, r.Allow)
 	}
 	if under(rel, r.Owner) {
 		return false
 	}
-	for _, allow := range strings.Split(r.Allow, ",") {
-		if under(rel, allow) {
-			return false
+	return !underAny(rel, r.Allow)
+}
+
+// underAny 判断 rel 是否落在任一允许前缀之下。
+func underAny(rel, list string) bool {
+	for _, prefix := range strings.Split(list, ",") {
+		if under(rel, prefix) {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 // under 判断 rel 是否落在 prefix 之下。
 //
 // prefix 以 .go 结尾时按**单文件精确匹配**：
 // 需要把概念钉在一个文件、而不是整个目录时用这种写法。
+// prefix 为 * 时匹配全部文件：用于没有单一属主的规则，
+// 例如「任何生产代码都不得导入这个包」。
 // 其余 prefix 按目录前缀比较。
 func under(rel, prefix string) bool {
 	prefix = strings.TrimSpace(prefix)
 	if prefix == "" {
 		return false
+	}
+	if prefix == "*" {
+		return true
 	}
 	if strings.HasSuffix(prefix, ".go") {
 		return rel == prefix

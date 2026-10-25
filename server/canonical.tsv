@@ -4,6 +4,8 @@
 # kind: call | string | func | type | import
 # owner: path prefix (relative to server/) that is allowed to define/use the concept
 # For import rules, owner is the importer prefix and pattern is a forbidden import substring.
+# An owner of * means every scanned file: use it for rules with no single owner.
+# allow exempts path prefixes from an import rule too.
 # allow: comma-separated extra path prefixes allowed to use the concept.
 
 clock.now	call	internal/core/clock/	time.Now	internal/core/clock/	use clock.Clock.Now
@@ -38,3 +40,7 @@ kdf.argon.idkey	call	internal/core/auth/	argon2.IDKey		argon2 只在 core/auth �
 kdf.argon.id	call	internal/core/auth/	argon2.ID		argon2 只在 core/auth 内调用
 token.csrf.func	func	internal/core/auth/	CSRFToken		CSRFToken 只在 core/auth 内定义
 token.new.func	func	internal/core/auth/	NewToken		NewToken 只在 core/auth 内定义
+# signing/fake 只服务测试。生产代码禁止导入。
+# 门的默认口径不含 _test.go，因此测试文件可导入本包。
+# 打开 -tests 时，allow 之外的测试目录会被拦下：新增导入目录必须登记在此行 allow。
+fake.import	import	*	internal/signing/fake	internal/signing/conformance/	internal/signing/fake 只允许测试代码与 conformance 套件导入
