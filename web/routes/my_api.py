@@ -6,7 +6,8 @@
 `GET/POST /api/my-accounts` 与 `PUT/DELETE /api/my-accounts/<idx>`、
 `POST /api/my-accounts/<idx>/restore`、`PUT /api/my-accounts/<idx>/pause`、
 `POST /api/my-accounts/<idx>/device-refresh`：本人账号的
-提交、列表、编辑、软删与撤销、自暂停、设备字段按需补全；`GET/PUT /api/my-time-pref` 与
+提交、列表、编辑、软删与撤销、自暂停、设备字段按需补全；`PUT /api/my-accounts/<idx>/profile`：
+本人二段资料与暴露开关的维护（工单 qmz4，管理面另有对偶端点）；`GET/PUT /api/my-time-pref` 与
 `GET /api/time-prefs/stats`：自选时间片的读写、拥挤度与管理员侧逐片人数；
 `GET/DELETE /api/verify-jobs/<job_id>`：在线校验异步任务的查询与取消；
 `GET /api/my-calendar` 与 `GET /api/my-logs`：本人已生效账号的月历与按天日志。
@@ -14,7 +15,7 @@
 **归属**
 `web.app.create_app` 的"个人自助"面（普通用户路径，只读/只写本人数据）。工厂骨架、
 跨域中间件（前置限速、登录守卫、CSRF、同源校验、安全响应头）与库访问层仍留在
-`web/app.py`，本模块只提供十四条视图与本人视图助手。
+`web/app.py`，本模块只提供十五条视图与本人视图助手。
 
 **复用**
 `register(app)` 供 `web.routes.register_all` 装配；`verify_fails()` / `verify_limits()`
@@ -166,41 +167,45 @@ def _my_account_view(accounts, indices):
         # 状态文案由共享助手唯一裁定（参与调度的未了结账号按台账 run_at 生成「计划 HH:MM」/
         # 「待生成」，其余保留结论文案）；与 /api/accounts 同源，见 accounts_data.plan_state_message。
         state_message = _plan_state_message(acc, st, plan_at)
-        result.append(
-            {
-                # `index` 是**本人视图的过滤后下标**：自助面的 PUT/DELETE/POST 都按它寻址。
-                # `admin_index` 是账号在全局列表里的真实下标：管理端 detail 端点只认它。
-                # 两者不可混用（R3-023：管理员在「我的账号」编辑自己的账号时曾取到他人详情）。
-                "index": i,
-                "admin_index": real_idx,
-                "name": acc.get("name", ""),
-                "display_name": acc.get("name") or f"账号{i + 1}",
-                "phone": phone,
-                "phone_model": acc.get("phone_model", ""),
-                # 设备识别码原文不下发（与 /api/accounts 同口径）：只给掩码供只读展示
-                "phone_code_masked": _mask_device_code(acc.get("phone_code", "")),
-                "status": acc.get("status", _accounts_data.ACCOUNT_STATUS_ACTIVE),
-                "reject_reason": acc.get("reject_reason", ""),
-                "state_icon": yiban_status.ICON.get(st_status, "⏳"),
-                "state_status": st_status,  # 状态码（前端按码映射文案）
-                "state_message": state_message,
-                "queue_ahead": queue_ahead,
-                # 出站脱敏：与 /api/my-logs、/api/logs
-                # 统一口径——当前 signin.py 日志每行仅含本人手机号，但口径不设防时，
-                # 未来出现一行多号的日志格式会把他人号码原样下发普通用户
-                "logs": [_logs_svc._mask_log_phones(ln) for ln in my_logs[-5:]],
-                "deleted": bool(acc.get("deleted")),
-                "deleted_at": acc.get("deleted_at", ""),
-                # 用户删除可撤销：仅本人自删行（deleted_by=本人）前端展示撤销入口
-                "deleted_by_me": bool(acc.get("deleted"))
-                and acc.get("deleted_by", "")
-                == (session.get("username", "") or "").strip().lower(),
-                "user_paused": bool(acc.get("user_paused", False)),  # 用户自暂停（调度 v2）
-                # 用户确认：管理员账号（owner=admin）不支持自暂停——
-                # 暂停是普通用户管理自己账号的能力；该字段仅管理员视图可见（前端据此隐藏按钮）
-                "pause_forbidden": acc.get("owner", "admin") == "admin" and not acc.get("deleted"),
-            }
-        )
+        entry = {
+            # `index` 是**本人视图的过滤后下标**：自助面的 PUT/DELETE/POST 都按它寻址。
+            # `admin_index` 是账号在全局列表里的真实下标：管理端 detail 端点只认它。
+            # 两者不可混用（R3-023：管理员在「我的账号」编辑自己的账号时曾取到他人详情）。
+            "index": i,
+            "admin_index": real_idx,
+            "name": acc.get("name", ""),
+            "display_name": acc.get("name") or f"账号{i + 1}",
+            "phone": phone,
+            "phone_model": acc.get("phone_model", ""),
+            # 设备识别码原文不下发（与 /api/accounts 同口径）：只给掩码供只读展示
+            "phone_code_masked": _mask_device_code(acc.get("phone_code", "")),
+            "status": acc.get("status", _accounts_data.ACCOUNT_STATUS_ACTIVE),
+            "reject_reason": acc.get("reject_reason", ""),
+            "state_icon": yiban_status.ICON.get(st_status, "⏳"),
+            "state_status": st_status,  # 状态码（前端按码映射文案）
+            "state_message": state_message,
+            "queue_ahead": queue_ahead,
+            # 出站脱敏：与 /api/my-logs、/api/logs
+            # 统一口径——当前 signin.py 日志每行仅含本人手机号，但口径不设防时，
+            # 未来出现一行多号的日志格式会把他人号码原样下发普通用户
+            "logs": [_logs_svc._mask_log_phones(ln) for ln in my_logs[-5:]],
+            "deleted": bool(acc.get("deleted")),
+            "deleted_at": acc.get("deleted_at", ""),
+            # 用户删除可撤销：仅本人自删行（deleted_by=本人）前端展示撤销入口
+            "deleted_by_me": bool(acc.get("deleted"))
+            and acc.get("deleted_by", "")
+            == (session.get("username", "") or "").strip().lower(),
+            "user_paused": bool(acc.get("user_paused", False)),  # 用户自暂停（调度 v2）
+            # 用户确认：管理员账号（owner=admin）不支持自暂停——
+            # 暂停是普通用户管理自己账号的能力；该字段仅管理员视图可见（前端据此隐藏按钮）
+            "pause_forbidden": acc.get("owner", "admin") == "admin" and not acc.get("deleted"),
+        }
+        # 二段资料（工单 qmz4）：只有开关开启的字段才出现（装配唯一取点
+        # `exposed_profile`）；全关时键不出现，回包与改动前逐字节一致。
+        prof = _accounts_data.exposed_profile(acc)
+        if prof:
+            entry["profile"] = prof
+        result.append(entry)
     return result
 
 
@@ -1103,8 +1108,50 @@ def api_my_account_device_refresh(idx):
     return jsonify(payload), status
 
 
+def api_my_account_profile(idx):
+    """维护本人账号的二段资料与暴露开关（本人面；管理员维护任意账号走管理面端点）。
+
+    权限口径跟既有账号编辑门同形（工单 qmz4 判据④）：本人面按
+    `_my_account_indices_of` 收窄，非本人的 idx 不在空间内 → 404（存在性隐藏，
+    与 /api/my-accounts 既有写口同口径）；管理面路径对普通用户由全局守卫 403。
+    资料内容是 PII：落库走存储层同通道加密；审计 detail 只记字段名
+    （`profile_audit_detail`），字段值不进审计与日志。
+    """
+    m = _appmod()
+    with _locks._file_lock:
+        accounts = _accounts_data.load_accounts()
+        indices = _my_account_indices_of(accounts)
+        if not 0 <= idx < len(indices):
+            return jsonify({"error": "账号不存在"}), 404
+        acc = accounts[indices[idx]]
+        if acc.get("deleted"):
+            return jsonify({"error": "账号已删除，请先恢复"}), 400
+        err, profile, expose = _accounts_data.normalize_profile_input(_http._json_body())
+        if err:
+            return jsonify({"error": err}), 400
+        owner = acc.get("owner", "") or (session.get("username") or "")
+        try:
+            content, flags = db.update_account_profile(
+                acc["id"], profile, expose,
+                audit_spec={
+                    "username": owner,
+                    "action": "my_account_profile_update",
+                    "target": _masking.mask_phone(str(acc.get("phone", ""))),
+                    "detail": _accounts_data.profile_audit_detail(profile, expose),
+                },
+            )
+        except ValueError as e:
+            # 底子损坏（profile 列非合法 JSON）：拒绝覆盖写入，回 500 让维护者先修数据
+            m.logger.warning("本人资料维护失败（疑似脏数据）: %s", e)
+            return jsonify({"error": str(e)}), 500
+        m.logger.info("用户 %s 维护二段资料（%s）",
+                      _accounts_data._mask_email(owner),
+                      _accounts_data.profile_audit_detail(profile, expose))
+        return jsonify({"ok": True, "profile": content, "expose": flags})
+
+
 def register(app):
-    """在本域注册十四条个人自助路由；endpoint 取函数名（url_for 依赖）。"""
+    """在本域注册十五条个人自助路由；endpoint 取函数名（url_for 依赖）。"""
     app.add_url_rule("/api/my-accounts", view_func=api_my_accounts)
     app.add_url_rule("/api/my-time-pref", view_func=api_my_time_pref)
     app.add_url_rule("/api/my-time-pref", view_func=api_my_time_pref_save, methods=["PUT"])
@@ -1125,3 +1172,5 @@ def register(app):
                      methods=["PUT"])
     app.add_url_rule("/api/my-accounts/<int:idx>/device-refresh",
                      view_func=api_my_account_device_refresh, methods=["POST"])
+    app.add_url_rule("/api/my-accounts/<int:idx>/profile", view_func=api_my_account_profile,
+                     methods=["PUT"])

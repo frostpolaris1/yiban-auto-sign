@@ -12,7 +12,10 @@
 注销冷却剩余 `_delete_grace_remaining`、口令策略 `_password_policy_error` /
 `_admin_password_policy_error`、自选时间片的展示与预计时段 `_slot_to_label` / `_estimate_slot`、
 当日计划映射 `today_plan_map`、计划文案 `plan_message` / `plan_state_message`，
-以及只读验证的入参构造 `_as_signin_account` 与验证包装 `_verify_account_clean`。
+以及只读验证的入参构造 `_as_signin_account` 与验证包装 `_verify_account_clean`；
+二段资料（工单 qmz4）的请求清洗、审计文案与出站装配
+`normalize_profile_input` / `profile_audit_detail` / `exposed_profile`
+（词表真源在存储层 `yiban.adapters.persistence.accounts.PROFILE_FIELDS`）。
 
 **归属**
 原 `web/app.py` 的模块级账号数据辅助，唯一真源在本模块。批 3-d 删除 `web/app.py`
@@ -34,6 +37,7 @@
 不自建第二套探针。
 """
 
+import json
 import re
 from datetime import datetime, timedelta
 
@@ -189,10 +193,14 @@ def mask_account(acc, index, masked=True):
     密码始终不下发（has_password 布尔）；设备识别码**原文始终不下发**，只给布尔
     `has_phone_code` 与展示用 `phone_code_masked`（`前4…后4`，掩码口径唯一一处见
     `yiban.core.masking.mask_device_code`）。
+
+    二段资料（qmz4）：**只有详情面**（masked=False）按暴露开关装配 `profile`；管理
+    列表是逐行广播面（全量枚举、默认脱敏），永不下发——即使开关全开，列表回包也
+    逐字节不变（回包零变化硬判据）。字段装配唯一取点是 `exposed_profile`。
     """
     phone = acc.get("phone", "")
     owner = acc.get("owner", "admin")
-    return {
+    out = {
         "index": index,
         "name": acc.get("name", ""),
         "phone": _mask_phone(phone) if masked else phone,
@@ -212,6 +220,98 @@ def mask_account(acc, index, masked=True):
         "deleted": bool(acc.get("deleted")),
         "deleted_at": acc.get("deleted_at", ""),
     }
+    if not masked:
+        prof = exposed_profile(acc)
+        if prof:
+            out["profile"] = prof
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 二段资料与暴露开关（工单 qmz4）
+# ---------------------------------------------------------------------------
+#: 资料字段的长度上限（清洗口径唯一真源）；词表本身在存储层 `accounts.PROFILE_FIELDS`。
+_PROFILE_FIELDS = ("real_name", "student_id", "college", "class_name", "email")
+_PROFILE_MAXLEN = {"real_name": 50, "student_id": 50, "college": 50,
+                   "class_name": 50, "email": 254}
+
+
+def normalize_profile_input(data):
+    """维护端点请求体清洗：→ (错误 or None, profile 子集, expose 子集)。
+
+    `profile` / `expose` 都可选，但至少给一个且非空；键必须都在词表内；
+    profile 值一律字符串（strip 后计长度上限，`""` = 清空该字段）；expose 值一律
+    布尔。返回的 dicts 只含**提供的**键，交给 `db.update_account_profile` 合并。
+    """
+    profile_raw = data.get("profile")
+    expose_raw = data.get("expose")
+    missing = "请求体缺少可变更字段（profile / expose 至少给一个）"
+    profile = {}
+    if profile_raw is not None:
+        if not isinstance(profile_raw, dict):
+            return "profile 应为 JSON 对象", None, None
+        for k, v in profile_raw.items():
+            if k not in _PROFILE_FIELDS:
+                return f"未知资料字段: {k}", None, None
+            if not isinstance(v, str):
+                return f"资料字段 {k} 的值应为字符串", None, None
+            v = v.strip()
+            if len(v) > _PROFILE_MAXLEN[k]:
+                return f"资料字段 {k} 过长（最多 {_PROFILE_MAXLEN[k]} 字）", None, None
+            profile[k] = v
+    expose = {}
+    if expose_raw is not None:
+        if not isinstance(expose_raw, dict):
+            return "expose 应为 JSON 对象", None, None
+        for k, v in expose_raw.items():
+            if k not in _PROFILE_FIELDS:
+                return f"未知资料字段: {k}", None, None
+            if not isinstance(v, bool):
+                return f"暴露开关 {k} 应为布尔值", None, None
+            expose[k] = v
+    if not profile and not expose:
+        return missing, None, None
+    return None, profile, expose
+
+
+def profile_audit_detail(profile, expose):
+    """维护动作的审计 detail：**只列字段名，绝不列字段值**（审计面是 PII 出站面）。"""
+    parts = []
+    if profile:
+        parts.append("资料:" + ",".join(sorted(profile)))
+    if expose:
+        on = sorted(k for k, v in expose.items() if v)
+        off = sorted(k for k, v in expose.items() if not v)
+        if on:
+            parts.append("开暴露:" + ",".join(on))
+        if off:
+            parts.append("关暴露:" + ",".join(off))
+    return "；".join(parts)
+
+
+def exposed_profile(acc):
+    """出站暴露装配：开关开启的字段才出现；返回 {} = 无暴露（视图不出 profile 键）。
+
+    内容来自已解密行的 `profile`（JSON 串）；解析失败按 {} 处理——读取面不对单行
+    脏数据 500（写口在存储层拒改坏底子，读面宁可少显示）。开关列明文 JSON，损坏
+    同样按全关（少暴露方向）。本函数是"哪些字段出站"的唯一裁定，列表/详情/我的
+    三视图共用，视图自身不得再各自拼一遍。
+    """
+    raw = acc.get("profile") or ""
+    try:
+        content = json.loads(raw) if raw else {}
+    except (TypeError, ValueError):
+        content = {}
+    if not isinstance(content, dict):
+        content = {}
+    raw_flags = acc.get("profile_expose") or ""
+    try:
+        flags = json.loads(raw_flags) if raw_flags else {}
+    except (TypeError, ValueError):
+        flags = {}
+    if not isinstance(flags, dict):
+        flags = {}
+    return {k: str(content.get(k, "")) for k in _PROFILE_FIELDS if flags.get(k) is True}
 
 
 # ---------------------------------------------------------------------------

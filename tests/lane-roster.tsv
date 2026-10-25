@@ -38,6 +38,7 @@ fast	tests/test_account_detail_narrow_read.py	# 详情窄读：golden 逐字节�
 fast	tests/test_account_liveness_gate.py
 fast	tests/test_account_ops_reentry.py
 fast	tests/test_account_plaintext_patch.py
+fast	tests/test_account_profile_exposure.py	# 二段资料暴露建模（qmz4）：三视图 golden＋逐字段开关＋权限＋落库密文（本机 ~2s）
 fast	tests/test_admin_creds_masked_ops.py
 fast	tests/test_admin_privilege_web.py
 fast	tests/test_alert_channel_dispatch.py
@@ -214,6 +215,7 @@ fast	tests/test_migrations_schema_drift.py
 fast	tests/test_migrations_v18.py
 fast	tests/test_migrations_v19.py
 fast	tests/test_migrations_v20.py
+fast	tests/test_migrations_v25.py	# v25 补列：24→25 升级保数据＋幂等＋产物登记（本机 <1s）
 fast	tests/test_module_date_constant_gate.py
 slow	tests/test_multi_executor_drill_e2e.py	# 真进程树＋真登录：慢集专轨本就串行独占核（与 serial 轨同性质），移到并行慢集轨后不再占 verify 关键路径（本机 66.1s）
 fast	tests/test_multi_executor_engine.py
