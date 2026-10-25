@@ -158,3 +158,19 @@ func TestTextHasPhoneStrictCaliber(t *testing.T) {
 		}
 	}
 }
+
+// 包口径的补充：检测口径放过时间戳与编号，只抓 1[3-9] 形态。
+func TestTextHasPhoneIgnoresNonMobileNumbers(t *testing.T) {
+	for _, s := range []string{
+		"订单 1735689600000 已核对",
+		"2026-10-25",
+		"0013900139000",
+	} {
+		if TextHasPhone(s) {
+			t.Fatalf("TextHasPhone(%q) = true; 时间戳与编号不得判为手机号", s)
+		}
+	}
+	if !TextHasEmail("a@b.com") || TextHasEmail("a***@b.com") {
+		t.Fatal("邮箱检测口径不正确")
+	}
+}

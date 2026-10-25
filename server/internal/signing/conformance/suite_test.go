@@ -389,3 +389,78 @@ func TestConcurrencyExpectationIsEnforced(t *testing.T) {
 		t.Fatal("声明期望却不兑现的提供方必须报红")
 	}
 }
+
+// 检测口径的正例：证据里出现毫秒时间戳不得判为泄漏。
+type echoesTimestamp struct{ contract.Provider }
+
+func (echoesTimestamp) Sign(context.Context, contract.SignRequest) (contract.Result, error) {
+	return contract.Result{
+		Outcome:  contract.OutcomeSuccess,
+		Evidence: contract.Evidence{Raw: map[string]any{"note": "1735689600000"}},
+	}, nil
+}
+
+// 取消后返回非 success 的伪结果：sign.cancel 必须红（与 sign.timeout 同口径）。
+type pseudoOutcomeOnCancel struct{ contract.Provider }
+
+func (pseudoOutcomeOnCancel) Sign(ctx context.Context, _ contract.SignRequest) (contract.Result, error) {
+	if err := ctx.Err(); err != nil {
+		return contract.Result{Outcome: contract.OutcomeAlreadyDone}, err
+	}
+	return contract.Result{Outcome: contract.OutcomeSuccess}, nil
+}
+
+// 泄漏邮箱：pii.absent 必须红，原因是明文邮箱。
+type leaksEmail struct{ contract.Provider }
+
+func (leaksEmail) Sign(context.Context, contract.SignRequest) (contract.Result, error) {
+	return contract.Result{
+		Outcome:  contract.OutcomeSuccess,
+		Evidence: contract.Evidence{Raw: map[string]any{"note": "a@b.com"}},
+	}, nil
+}
+
+func TestDetectionCaliberAndCapabilitySkips(t *testing.T) {
+	// 时间戳放行。
+	if err := runCheck(findCheck(t, CheckPIIAbsent), func() contract.Provider {
+		return echoesTimestamp{referenceProvider()}
+	}); err != nil {
+		t.Fatalf("毫秒时间戳被判为泄漏: %v", err)
+	}
+
+	// 邮箱泄漏必须红，且原因指向邮箱。
+	err := runCheck(findCheck(t, CheckPIIAbsent), func() contract.Provider {
+		return leaksEmail{referenceProvider()}
+	})
+	if err == nil || !strings.Contains(err.Error(), "明文邮箱") {
+		t.Fatalf("邮箱泄漏未按预期红: %v", err)
+	}
+
+	// 取消后的伪结果必须红（旧口径只禁 success，会放过 already_done）。
+	err = runCheck(findCheck(t, CheckSignCancel), func() contract.Provider {
+		return pseudoOutcomeOnCancel{referenceProvider()}
+	})
+	if err == nil || !strings.Contains(err.Error(), "伪结果") {
+		t.Fatalf("取消后的伪结果未红: %v", err)
+	}
+
+	// 未声明能力的四条判据返回 errNotApplicable，不静默通过。
+	capsLess := func() contract.Provider {
+		return fake.New("caps-less", contract.Capabilities{}).
+			OnSign(fake.ResultSteps()...)
+	}
+	for _, name := range []string{CheckWindowShape, CheckWindowCancel, CheckTargetsShape, CheckTargetsCancel, CheckPhotoMissing} {
+		err := runCheck(findCheck(t, name), capsLess)
+		if !errors.Is(err, errNotApplicable) {
+			t.Fatalf("%s 未返回 errNotApplicable: %v", name, err)
+		}
+	}
+}
+
+// Run 对未声明能力的提供方必须打印跳过行（-v 下可见），且不算失败。
+func TestRunPrintsSkips(t *testing.T) {
+	Run(t, func() contract.Provider {
+		return fake.New("caps-less-run", contract.Capabilities{}).
+			OnSign(fake.ResultSteps()...)
+	})
+}
