@@ -82,3 +82,20 @@ fails when `contracts/openapi.yaml` and the generated code drift apart.
 - `adapters` are the only I/O surface.
 - `entry` only translates HTTP; it does not import adapters.
 - `signing/providers` must not import the host.
+
+## Environment
+
+`cmd/server` reads the process environment through `internal/adapters/config`
+only. `YIBAN_ENV` is required: an unset or empty value stops startup, so a
+deployment cannot silently fall back to development defaults.
+
+| Variable | Required | Default | Meaning |
+|---|---|---|---|
+| `YIBAN_ENV` | yes | — | `development`, `test`, `staging` or `production` |
+| `YIBAN_HTTP_ADDR` | no | `127.0.0.1:47183` | listen address |
+| `YIBAN_DATABASE_URL` | no | empty | PostgreSQL DSN; unused until W1 |
+| `YIBAN_TZ` | no | `Asia/Shanghai` | business time zone |
+| `YIBAN_INSECURE_COOKIES` | no | `true` for development and test | use the unprefixed cookie name; production refuses a true value |
+
+Production always uses `__Host-yiban_session` with `Secure`. A true
+`YIBAN_INSECURE_COOKIES` under `YIBAN_ENV=production` is a startup error.

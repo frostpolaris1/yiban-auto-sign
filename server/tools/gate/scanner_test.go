@@ -196,3 +196,40 @@ func TestCountGoFilesRespectsIncludeTests(t *testing.T) {
 		t.Fatalf("with tests count=%d err=%v, want 1", count, err)
 	}
 }
+
+// The refusal paths are the gate's boundary: a tree it did not really scan
+// must never report ok.
+func TestRunRefusesEmptyScans(t *testing.T) {
+	rules := filepath.Join("..", "..", "canonical.tsv")
+
+	empty := t.TempDir()
+	if code := run(empty, rules, false); code != 2 {
+		t.Fatalf("empty tree: code = %d, want 2", code)
+	}
+
+	tests := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tests, "x_test.go"), []byte("package x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := run(tests, rules, false); code != 2 {
+		t.Fatalf("test-only tree without -tests: code = %d, want 2", code)
+	}
+	if code := run(tests, rules, true); code != 0 {
+		t.Fatalf("test-only tree with -tests: code = %d, want 0", code)
+	}
+}
+
+func TestRunReportsViolations(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "internal/core/clock/x.go", "package clock\n\nimport \"time\"\n\nvar _ = time.Now()\n")
+	rules := filepath.Join(t.TempDir(), "canonical.tsv")
+	writeFile(t, "", rules, "clock.now\tcall\tinternal/core/clock/\ttime.Now\tinternal/core/clock/\tuse clock.Clock.Now\n")
+	if code := run(root, rules, false); code != 0 {
+		t.Fatalf("inside owner: code = %d, want 0", code)
+	}
+
+	writeFile(t, root, "internal/app/x.go", "package app\n\nimport \"time\"\n\nvar _ = time.Now()\n")
+	if code := run(root, rules, false); code != 1 {
+		t.Fatalf("outside owner: code = %d, want 1", code)
+	}
+}

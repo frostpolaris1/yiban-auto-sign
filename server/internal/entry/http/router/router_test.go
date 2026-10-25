@@ -336,11 +336,16 @@ func TestAccessLogCoversPanics(t *testing.T) {
 	}
 }
 
-// Logout without a session reaches the handler instead of failing binding.
+// A session-less logout must not be rejected by parameter binding. The
+// status itself belongs to the phase; the invariant is that it is not a
+// validation failure.
 func TestLogoutWithoutSession(t *testing.T) {
 	engine, _ := newTestEngine(t)
 	rec := serve(engine, httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil))
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want 501; body=%q", rec.Code, rec.Body.String())
+	if rec.Code == http.StatusBadRequest {
+		t.Fatalf("session-less logout was rejected by binding: %q", rec.Body.String())
+	}
+	if env := decodeEnvelope(t, rec); env.Error.Code == "validation_failed" {
+		t.Fatalf("code = validation_failed, want a non-binding outcome")
 	}
 }

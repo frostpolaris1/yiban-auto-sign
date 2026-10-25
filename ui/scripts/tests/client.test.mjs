@@ -104,3 +104,29 @@ test('a caller header wins over the stored CSRF token', async () => {
   const headers = new Headers(capture.calls[0].init.headers)
   assert.equal(headers.get('X-CSRF-Token'), 'explicit')
 })
+
+test('login stores the CSRF token returned in the body', async () => {
+  const client = await import('../../src/lib/api/client.ts')
+  const { login } = await import('../../src/lib/api/auth.ts')
+  const calls = []
+  const original = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    calls.push({ input, init })
+    return new Response(JSON.stringify({ csrf_token: 'from-login' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+  try {
+    client.setCsrfToken(null)
+    await login({ email: 'a@example.com', password: 'secret' })
+    assert.equal(client.getCsrfToken(), 'from-login')
+
+    await client.apiRequest('/api/accounts', { method: 'POST', body: '{}' })
+    const headers = new Headers(calls[1].init.headers)
+    assert.equal(headers.get('X-CSRF-Token'), 'from-login')
+  } finally {
+    globalThis.fetch = original
+    client.setCsrfToken(null)
+  }
+})

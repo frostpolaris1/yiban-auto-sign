@@ -90,7 +90,7 @@ ui/src/
 └── styles/         tokens.css / adminator.css / app.css
 ```
 
-依赖方向：`pages → features → components/ui → lib`。
+依赖方向：`app → pages → features → components/ui → lib`。`app` 是装配层，其余各层不得反向导入它。
 
 - `components` 不得导入 `features` 或 `pages`。
 - `features` 之间不得互相导入；共用逻辑下沉到 `lib` 或 `components`。
@@ -131,6 +131,7 @@ ui/src/
 4. 名册为空、作用域不存在、扫描集为空时门报错，不当绿。未到阶段的作用域用 `?` 标记。
 
 前端导入方向由 `ui/scripts/structure-gate.mjs` 解析模块路径后判定。
+该门只扫 `ui/`；`docs/` 与 `server/` 由 Python 文档门与人工审查覆盖。
 
 两条入口：
 
