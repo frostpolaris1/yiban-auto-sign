@@ -1,5 +1,7 @@
 # /etc/cron.d/yiban-backup-sentinel —— 每日 08:05 备份哨兵 + 审计锚点离机外发
 # 仓库源：deploy/prod/cron.d/yiban-backup-sentinel（install.sh 装到 /etc/cron.d/，0644 root:root）
+# **模板**：@YIBAN_APP_DIR@ 由 install.sh 渲染成检出根（默认 /opt/yiban-auto-sign）；
+#   仓库里的这份留占位符，源码不再硬写一个部署路径。
 # 谁调用：/usr/local/sbin/yiban-backup-sentinel.sh（manifest 收编的薄包装；实现在 scripts/backup_sentinel.py）
 # 身份：root——哨兵防漂移比对要读 0700 root:root 的已装 /usr/local/sbin/yiban-backup.sh；
 #   yiban 读不到会把它判成"读取失败"漂移、每日误报（见 scripts/backup_sentinel.py::_drift_report）。
@@ -12,4 +14,4 @@
 SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 MAILTO=""
-5 8 * * * root YIBAN_STATE_DIR=/var/lib/yiban-backup-sentinel APP_DIR=/opt/yiban-auto-sign /usr/local/sbin/yiban-backup-sentinel.sh >> /var/log/yiban/backup.log 2>&1
+5 8 * * * root YIBAN_STATE_DIR=/var/lib/yiban-backup-sentinel APP_DIR=@YIBAN_APP_DIR@ /usr/local/sbin/yiban-backup-sentinel.sh >> /var/log/yiban/backup.log 2>&1
