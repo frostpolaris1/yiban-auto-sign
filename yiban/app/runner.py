@@ -109,9 +109,10 @@ STATUS_GLOBAL_PAUSED = yiban_status.STATUS_GLOBAL_PAUSED
 # 状态码 → 日志/日历符号（同一对象，非副本）
 STATUS_SYMBOL = yiban_status.SYMBOL
 
-# `--second-run-check` 的退出码契约（run.sh 据此分支，勿随意改动）
-SECOND_RUN_CHECK_NEED = 10   # 需要补跑第二轮
-SECOND_RUN_CHECK_SKIP = 0    # 无需补跑
+# `--second-run-check` 的退出码契约（run.sh 据此分支，勿随意改动）。
+# 值取自 `cli_support` 的唯一定义点：监督进程（workers）不能反向导入本模块。
+SECOND_RUN_CHECK_NEED = cli_support.SECOND_RUN_CHECK_NEED   # 需要补跑第二轮
+SECOND_RUN_CHECK_SKIP = 0                                   # 无需补跑
 
 # 三道门（周日未开 / 周六未开 / 一键暂停）跳过时的日志文案：**逐字保留历史措辞**
 # （运维与既有测试按它判断"这一轮为什么没跑"），因此仍写在本模块而不是门函数里。

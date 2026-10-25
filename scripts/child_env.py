@@ -94,13 +94,14 @@ def build_child_env(env_file, base=None):
     """构造签到/探针子进程环境：进程环境为底座，`.env` 的 YIBAN_* 键覆盖注入。
 
     文件值优先于外部环境：这是 Web 设置页能生效的关键。**四个路径键例外**
-    （`env_io.PATH_KEYS` 的三枚键）：它们按 `env_io.resolve_path` 的同一口径
+    （`env_io.PATH_KEYS` 的四枚键）：它们按 `env_io.resolve_path` 的同一口径
     **进程环境优先、`.env` 只补缺**。否则同一份 `.env` 行经 web/引擎（`resolve_path`）
     与经子进程注入（本函数）会得到两个真值——测试/CI 用进程环境重定向数据目录时，
     子进程会被 `.env` 拉回旧目录。
 
-    **指针键**（`env_io.ENV_FILE_KEY`，即 `.env` 文件路径）不在 `PATH_KEYS` 里，也
-    不是被管的配置：`.env` 里写它一律忽略（自指）；父进程没给指针时补成 `env_file`，
+    **指针键**（`env_io.ENV_FILE_KEY`，即 `.env` 文件路径）在 `PATH_KEYS` 四枚之内，
+    但本函数把它放在路径键分支之前单独处理，不是被管的配置：`.env` 里写它一律忽略
+    （自指）；父进程没给指针时补成 `env_file`，
     子进程因此读父进程读的同一份文件（p12-13）。
 
     `.env` 缺失/不可读时**不静默**：`parse_env_file` 按 run.sh MF-81④ 口径记一行
