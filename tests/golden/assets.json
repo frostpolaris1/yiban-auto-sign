@@ -55,10 +55,10 @@
     "link rel=modulepreload href=/static/vue/assets/rolldown-runtime-CbXtAM7H.js",
     "link rel=modulepreload href=/static/vue/assets/shell-C5vP6wJ6.js",
     "link rel=modulepreload href=/static/vue/assets/vendor-vue-YYhzo28_.js",
-    "link rel=modulepreload href=/static/vue/assets/vendor-element-plus-DsNvuZ9M.js",
-    "link rel=modulepreload href=/static/vue/assets/ep-theme-CC6drbiO.js",
-    "link rel=modulepreload href=/static/vue/assets/accountform-C02G6kjd.js",
-    "script src=/static/vue/assets/myaccounts-C64gVPGX.js"
+    "link rel=modulepreload href=/static/vue/assets/vendor-element-plus-Dx2IUsIH.js",
+    "link rel=modulepreload href=/static/vue/assets/ep-theme-VYjqvQ3-.js",
+    "link rel=modulepreload href=/static/vue/assets/privacy-Bw6DZHbn.js",
+    "script src=/static/vue/assets/myaccounts-CtbsrPor.js"
   ],
   "user_calendar": [
     "link rel=icon href=/favicon.png?v=*",
