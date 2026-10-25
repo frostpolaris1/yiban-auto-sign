@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
-"""限速的**真 HTTP 并发维**载体：与生产同形的 `gunicorn -w 1 --threads 32`。
+"""限速的**真 HTTP 并发维**载体：与生产同形的 `gunicorn -w 1 --threads <值表>`。
 
 标签：E · Web：认证/权限/API
 
 **本文件补哪一维**：全仓 87 个测试文件用 `test_client`（进程内直调、**不经过 HTTP
 服务器**）验 Web 面；真起 HTTP 服务的测试文件 **0 个**。而生产形状是
-`docker/supervisord.conf:23` 的 `gunicorn -w 1 --threads 32`，其注释明写"必须保持
+`docker/supervisord.conf` 的 `gunicorn -w 1 --threads %(ENV_YIBAN_WEB_THREADS)s`，其注释明写"必须保持
 `-w 1`（单 worker 多线程）：**限速/爆破锁定/签到防抖状态存于进程内存**"。
-⇒ "32 个线程共享同一份进程内限速状态"这一维**零载体**：每个用例都新建 app 实例、
+⇒ "生产线程数共享同一份进程内限速状态"这一维**零载体**：每个用例都新建 app 实例、
 拿到一个全新的空额度桶，且没有任何用例对一个活服务发过并发请求。
+线程数从部署面值表 `deploy/web.env` 读取（`PROD_THREADS`）：模拟器必须与生产同值，
+否则本维在值表变更后静默失真。
 
 **本文件测什么（一条不变式，不是编舞）**：在**同一个 app 实例**（一个 gunicorn worker）
 上并发打 `/api/*`，**窗口内放行数恰为 `RATE_MAX`**——不多放（超发＝限速失效），
@@ -70,6 +72,23 @@ def _app_constant(name):
 
 RATE_MAX = _app_constant("RATE_MAX")
 RATE_WINDOW = _app_constant("RATE_WINDOW")
+
+
+def _deploy_value(name):
+    """部署面值表（`deploy/web.env`）里的一个键——不在测试里再抄一份数。"""
+    with open(os.path.join(BASE, "deploy", "web.env"), encoding="utf-8-sig") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            if key.strip() == name:
+                return value.strip()
+    raise AssertionError("deploy/web.env 缺键 %s" % name)
+
+
+#: 与生产同形的 gunicorn 线程数（模拟器必须等价，见模块 docstring）。
+PROD_THREADS = int(_deploy_value("YIBAN_WEB_THREADS"))
 
 #: 对照服务的 WSGI 入口：同一份 `web.app`，只把限速上限放大到极大。
 _CONTROL_WSGI = '''\
@@ -143,7 +162,7 @@ class RateLimitRealHttpConcurrencyTest(unittest.TestCase):
         if extra_pythonpath:
             env["PYTHONPATH"] = extra_pythonpath + os.pathsep + env.get("PYTHONPATH", "")
         proc = subprocess.Popen(
-            [sys.executable, "-m", "gunicorn", "-w", "1", "--threads", "32",
+            [sys.executable, "-m", "gunicorn", "-w", "1", "--threads", str(PROD_THREADS),
              "--timeout", "60", "--no-control-socket",
              "-b", "127.0.0.1:%d" % port, spec],
             cwd=BASE, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -168,7 +187,7 @@ class RateLimitRealHttpConcurrencyTest(unittest.TestCase):
         return counts
 
     def test_same_app_instance_caps_at_rate_max_under_concurrency(self):
-        """一个 app 实例、32 线程：窗口内放行数恰为 RATE_MAX。"""
+        """一个 app 实例、生产线程数：窗口内放行数恰为 RATE_MAX。"""
         port = self._start_server("web.app:create_app()")
         n = RATE_MAX + 20
         counts = self._hammer(port, n)

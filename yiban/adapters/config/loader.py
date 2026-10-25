@@ -75,12 +75,23 @@ _REQUIRED = ("group", "doc", "sensitive", "reload", "tier")
 _WEB_FORBIDDEN_SUFFIXES = ("_DIR", "_FILE", "_PATH", "_PROXY")
 #: 名册文件相对包根的路径（104 §5.3 指定 `config/registry.json`）。
 REGISTRY_RELATIVE_PATH = os.path.join("config", "registry.json")
+#: 部署面值表相对包根的路径：端口/线程的**唯一值定义点**（名册只登记键，不复制值）。
+#: 为什么值与名册分开：端口/线程要在 systemd、supervisord、nginx、compose、
+#: Dockerfile 五处被消费，它们读不了 JSON；一份能被同一机制（环境变量/占位符）消费的
+#: 纯文本值表，是唯一不引入新构建步骤、又与 `scripts/lib/host_paths.sh` 的 bash 侧
+#: 单点同构的形态。读入口 `deploy_value` 是本模块唯一读者。
+DEPLOY_ENV_RELATIVE_PATH = os.path.join("deploy", "web.env")
 # 仓库根：本模块批 B 从旧坐标 `yiban.config_loader` 搬来本路径，
 # 深两层。这里按**当前位置**上溯到仓库根（`config/` 与 `yiban/` 同级）。
-REGISTRY_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.dirname(os.path.abspath(__file__))))),
-    REGISTRY_RELATIVE_PATH)
+# `config/`、`deploy/` 都在仓库根下，故两者共用这一个根。
+#
+# **刻意不叫 `_REPO_ROOT`**：那个名字是"入口脚本的 sys.path 引导块"标记，由
+# tests/test_deploy_entry_imports.py 按**出现位置先于 yiban 导入**钉死。本模块在
+# `yiban` 包内，不需要引导；叫那个名字会把一段普通路径计算误报成"引导写在导入之后"。
+_CHECKOUT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))))
+REGISTRY_PATH = os.path.join(_CHECKOUT_ROOT, REGISTRY_RELATIVE_PATH)
+DEPLOY_ENV_PATH = os.path.join(_CHECKOUT_ROOT, DEPLOY_ENV_RELATIVE_PATH)
 
 
 class RegistryError(ValueError):
@@ -90,6 +101,27 @@ class RegistryError(ValueError):
 def registry_path():
     """名册文件的绝对路径（`config/registry.json`）。"""
     return REGISTRY_PATH
+
+
+def deploy_env_path():
+    """部署面值表的绝对路径（`deploy/web.env`）。"""
+    return DEPLOY_ENV_PATH
+
+
+def deploy_value(key):
+    """部署面值表（`deploy/web.env`）的**唯一读取器**（返回原文字符串）。
+
+    端口/线程的值只定义在那张表里；名册登记两键的类型与域，`default` 显式为
+    null（"本键无应用内缺省"）。**缺失或坏行一律响亮失败**——静默回落到另一份
+    缺省就是第二个定义点，正是本设计要消灭的形态。
+
+    读者：`web/app.py` 的 `--port` 缺省。其余载体（systemd 模板、supervisord 的
+    `%(ENV_*)s`、nginx 模板、compose 的 env_file）不经过 Python，直接消费同一张表。
+    """
+    values = env_io.parse_env_file(DEPLOY_ENV_PATH, strict=True)
+    if key not in values:
+        raise RegistryError("部署面值表 %s 缺少键 %s" % (DEPLOY_ENV_PATH, key))
+    return values[key]
 
 
 def _warn(msg, *args):

@@ -341,7 +341,7 @@ class CheckerTeethTest(unittest.TestCase):
         }), [])
 
     def test_supervisord_rejects_multi_worker(self):
-        good = 'command=/usr/local/bin/gunicorn -w 1 --threads 32 "web.app:create_app()"\n'
+        good = 'command=/usr/local/bin/gunicorn -w 1 --threads 4 "web.app:create_app()"\n'
         self.assertEqual(_supervisord_violations(good), [])
         self.assertTrue(_supervisord_violations(good.replace("-w 1", "-w 2")))
 

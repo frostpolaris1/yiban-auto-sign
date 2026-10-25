@@ -72,6 +72,11 @@ COPY USER_AGREEMENT.md PRIVACY_POLICY.md CHANGELOG.md README.md ./
 COPY docker/supervisord.conf /etc/supervisord.conf
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/scheduler.py ./scripts/container_scheduler.py
+# 部署面唯一值表（端口/线程数）：compose 经 env_file 读仓库里的同一份；镜像里保留
+# 仓库相对路径 `deploy/web.env`，因为 `yiban/adapters/config/loader.py::deploy_value`
+# 按检出根解析这个路径（`python -m web` 的 --port 缺省用它）。entrypoint 也导出给
+# supervisord 的 %(ENV_*)s（不经 compose 的 `docker run` 同样生效）。
+COPY deploy/web.env ./deploy/web.env
 # M44：容器内定时备份脚本。它在仓库里位于 docker/，镜像里与调度器同处 scripts/
 # （调度器的 _backup_script_path 按候选列表解析，两处位置都成立）。
 COPY docker/backup-docker.sh ./scripts/backup-docker.sh
@@ -80,7 +85,8 @@ RUN chmod +x /entrypoint.sh ./scripts/backup-docker.sh
 # 数据目录（SQLite / .env / 日志 / 加密密钥 / 状态文件），由 compose 挂载
 VOLUME ["/data"]
 
-# gunicorn 监听端口（仅回环，由共享网络栈的 nginx 反代）
-EXPOSE 17892
+# 监听端口不在此声明：EXPOSE 是静态元数据，写一个数字就是端口值表的第二份定义。
+# 端口只定义在 deploy/web.env（compose 不用 `-P` 发布，端口映射显式写 80/443）。
+# 守卫：tests/test_deploy_parameterization_gate.py。
 
 CMD ["/entrypoint.sh"]
