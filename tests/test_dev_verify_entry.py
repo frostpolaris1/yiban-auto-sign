@@ -95,6 +95,10 @@ EXPECTED_CI_COMMANDS = (
     # 2026-10-13（工单 j06f，复审指定）：依赖同步门的元测试进 CI 子集。
     # 为什么是元测试而不是门本体：CI 的解释器刚按 lock 装过，门本体在那里是同义反复。
     '"$py" -m pytest tests/test_deploy_deps_sync.py -q -p no:randomly',
+    # 2026-10-25（S1 门收紧批）：Vue 构建可复现门进 --ci。node/npm 缺席时打显式
+    # SKIPPED＋原因（跳过≠绿，AGENTS §十三.30）；CI 侧覆盖＝frontend job 跑同一脚本
+    # full 模式（.github/workflows/ci.yml）。
+    "bash scripts/check-vue-build-reproducible.sh",
 )
 
 
