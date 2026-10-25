@@ -10,6 +10,14 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// distinctHash returns a unique 32-byte token hash so a mutant that lets one
+// shape constraint pass fails on the shape, not on the shared unique index.
+func distinctHash(n byte) []byte {
+	out := make([]byte, 32)
+	out[0] = n
+	return out
+}
+
 // TestDatabaseConstraintsRejectBadRows pins the CHECK and UNIQUE constraints
 // that the Go layer would otherwise hide.
 //
@@ -141,7 +149,7 @@ func TestDatabaseConstraintsRejectBadRows(t *testing.T) {
 			name: "ck_sessions_ip_hash_shape",
 			sql: `INSERT INTO sessions (user_id, token_hash, idle_expires_at, expires_at, ip_hash)
 			      VALUES ($1::uuid, $2, now() + interval '30 minutes', now() + interval '12 hours', $3)`,
-			args:       []any{owner.ID, validTokenHash, "203.0.113.5"},
+			args:       []any{owner.ID, distinctHash(3), "203.0.113.5"},
 			code:       "23514",
 			constraint: "ck_sessions_ip_hash_shape",
 		},
@@ -149,15 +157,31 @@ func TestDatabaseConstraintsRejectBadRows(t *testing.T) {
 			name: "ck_sessions_user_agent_hash_shape",
 			sql: `INSERT INTO sessions (user_id, token_hash, idle_expires_at, expires_at, user_agent_hash)
 			      VALUES ($1::uuid, $2, now() + interval '30 minutes', now() + interval '12 hours', $3)`,
-			args:       []any{owner.ID, validTokenHash, "Mozilla/5.0"},
+			args:       []any{owner.ID, distinctHash(4), "Mozilla/5.0"},
 			code:       "23514",
 			constraint: "ck_sessions_user_agent_hash_shape",
+		},
+		{
+			name: "ck_sessions_ip_hash_shape 63 hex",
+			sql: `INSERT INTO sessions (user_id, token_hash, idle_expires_at, expires_at, ip_hash)
+			      VALUES ($1::uuid, $2, now() + interval '30 minutes', now() + interval '12 hours', $3)`,
+			args:       []any{owner.ID, distinctHash(1), strings.Repeat("ab", 31) + "a"},
+			code:       "23514",
+			constraint: "ck_sessions_ip_hash_shape",
+		},
+		{
+			name: "ck_sessions_ip_hash_shape 65 hex",
+			sql: `INSERT INTO sessions (user_id, token_hash, idle_expires_at, expires_at, ip_hash)
+			      VALUES ($1::uuid, $2, now() + interval '30 minutes', now() + interval '12 hours', $3)`,
+			args:       []any{owner.ID, distinctHash(2), strings.Repeat("ab", 32) + "a"},
+			code:       "23514",
+			constraint: "ck_sessions_ip_hash_shape",
 		},
 		{
 			name: "ck_sessions_ip_hash_shape upper hex",
 			sql: `INSERT INTO sessions (user_id, token_hash, idle_expires_at, expires_at, ip_hash)
 			      VALUES ($1::uuid, $2, now() + interval '30 minutes', now() + interval '12 hours', $3)`,
-			args:       []any{owner.ID, validTokenHash, strings.ToUpper(strings.Repeat("ab", 32))},
+			args:       []any{owner.ID, distinctHash(5), strings.ToUpper(strings.Repeat("ab", 32))},
 			code:       "23514",
 			constraint: "ck_sessions_ip_hash_shape",
 		},
@@ -165,7 +189,7 @@ func TestDatabaseConstraintsRejectBadRows(t *testing.T) {
 			name: "ck_sessions_ip_hash_shape short hex",
 			sql: `INSERT INTO sessions (user_id, token_hash, idle_expires_at, expires_at, ip_hash)
 			      VALUES ($1::uuid, $2, now() + interval '30 minutes', now() + interval '12 hours', $3)`,
-			args:       []any{owner.ID, validTokenHash, strings.Repeat("ab", 31)},
+			args:       []any{owner.ID, distinctHash(6), strings.Repeat("ab", 31)},
 			code:       "23514",
 			constraint: "ck_sessions_ip_hash_shape",
 		},

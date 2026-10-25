@@ -76,7 +76,7 @@ provider contract, error envelope, and the gate with mutation tests.
 
 P1 so far: the OpenAPI 3.1 contract, generated transport types, the Gin
 assembly with request id, panic recovery, access log and auth middleware, an
-in-memory `SessionIssuer`, and the PostgreSQL layer: eleven forward-only goose
+in-memory `SessionIssuer`, and the PostgreSQL layer: eleven goose
 migrations, a pgxpool with `statement_timeout`, a READ COMMITTED transaction
 manager, and repositories for users, sessions, schools, administrator
 bindings, accounts, credentials, audit and password resets. Every business

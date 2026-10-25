@@ -44,6 +44,7 @@ func TestEncodeDetailRejectsPersonalData(t *testing.T) {
 		{"trace id that is a bare phone", map[string]any{"trace_id": "13800138000"}, coreaudit.ErrDetailShape},
 		{"trace id with a dashed phone", map[string]any{"trace_id": "138-0013-8000"}, coreaudit.ErrDetailShape},
 		{"trace id req run over the counter width", map[string]any{"trace_id": "req-13800138000"}, coreaudit.ErrDetailShape},
+		{"trace id req at the counter cap plus one", map[string]any{"trace_id": "req-1000000"}, coreaudit.ErrDetailShape},
 		{"trace id with an illegal character", map[string]any{"trace_id": "abc@def"}, coreaudit.ErrDetailShape},
 		{"trace id over 64 characters", map[string]any{"trace_id": strings.Repeat("a", 65)}, coreaudit.ErrDetailShape},
 		{"kid with upper case", map[string]any{"kid": "0123456789ABCDEF"}, coreaudit.ErrDetailShape},
@@ -92,6 +93,13 @@ func TestEncodeDetailAcceptsScalars(t *testing.T) {
 	// A random 32-hex request id must pass even when it contains 11 digits.
 	if _, err := coreaudit.EncodeDetail(map[string]any{"trace_id": "06317272289944f6e935132eb62042ec"}); err != nil {
 		t.Fatalf("a 32-hex trace id must be accepted: %v", err)
+	}
+	// The req-<counter> fallback is accepted up to six digits, the width the
+	// router can actually mint.
+	for _, id := range []string{"req-1", "req-999999"} {
+		if _, err := coreaudit.EncodeDetail(map[string]any{"trace_id": id}); err != nil {
+			t.Fatalf("fallback id %s must be accepted: %v", id, err)
+		}
 	}
 	if _, err := coreaudit.EncodeDetail(nil); err != nil {
 		t.Fatalf("an empty detail must be accepted: %v", err)
