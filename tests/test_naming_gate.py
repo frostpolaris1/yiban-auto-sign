@@ -108,12 +108,13 @@ def violations(paths):
         problem = module_name_problem(rel, name) if rel.endswith(".py") else None
         if problem:
             out.add((rel, problem))
+        # ④ 判面＝全部 basename（契约 §6.1「禁止…进文件名」不限于 Python）。
+        if forbidden_token(name):
+            out.add((rel, "forbidden-token"))
         if rel.endswith(".py"):
             problem = check_test_name(rel, name)
             if problem:
                 out.add((rel, problem))
-            if forbidden_token(name):
-                out.add((rel, "forbidden-token"))
             if rel.startswith("yiban/") and rel.count("/") == 1 \
                     and name != "__init__.py":
                 out.add((rel, "yiban-root-loose"))
@@ -187,12 +188,13 @@ class NamingGateTest(unittest.TestCase):
             + "\n".join("%s\t%s" % v for v in fresh))
 
     def test_baseline_entries_stay_live(self):
-        """基线只许缩小：每行必须仍真的违规，且文件仍在。"""
+        """基线只许缩小：每行必须仍真的违规，且文件仍在跟踪集。"""
         current = set(violations(self.tracked))
+        tracked = set(self.tracked)
         stale = []
         for rel, rule in self.baseline:
-            if not os.path.exists(os.path.join(BASE, rel)):
-                stale.append("%s\t%s：文件已不存在，删掉该行" % (rel, rule))
+            if rel not in tracked:
+                stale.append("%s\t%s：文件不在跟踪集，删掉该行" % (rel, rule))
             elif (rel, rule) not in current:
                 stale.append("%s\t%s：已不再违规，删掉该行" % (rel, rule))
         self.assertEqual(stale, [], "命名基线出现死行：\n" + "\n".join(stale))
@@ -201,6 +203,14 @@ class NamingGateTest(unittest.TestCase):
         rows = load_baseline()
         self.assertEqual(len(rows), len(set(rows)),
                          "基线有重复行：同一 (path, rule) 登记了两次")
+
+    def test_baseline_row_count_is_capped(self):
+        """行数上限 20：基线增长即红。改数须显式改判据并写理由。"""
+        self.assertTrue(self.baseline, "命名基线为空：已知例外没有登记处")
+        self.assertLessEqual(
+            len(self.baseline), 20,
+            "命名基线有 %d 行（上限 20）：新增例外等于放宽门禁，"
+            "须先论证并显式改本判据" % len(self.baseline))
 
     def test_gate_and_baseline_are_in_the_face(self):
         rel_self = os.path.relpath(os.path.abspath(__file__), BASE).replace(os.sep, "/")
