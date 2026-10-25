@@ -175,7 +175,8 @@ func TestEmptyAttemptIDIsNotCached(t *testing.T) {
 
 // 未配置脚本的方法返回零值与 nil 错误。
 func TestUnscriptedReturnsZero(t *testing.T) {
-	p := New("fake", contract.Capabilities{})
+	// 能力必须声明：未声明的发现方法按 G1 返回错误（见下一条用例）。
+	p := New("fake", contract.Capabilities{WindowDiscovery: true, TargetDiscovery: true})
 	if w, err := p.DiscoverWindow(context.Background(), discoverRequest()); err != nil || !w.Start.IsZero() {
 		t.Fatalf("未配置窗口 = %+v, %v; want 零值, nil", w, err)
 	}
@@ -186,7 +187,7 @@ func TestUnscriptedReturnsZero(t *testing.T) {
 
 // 发现与校验同样响应取消。
 func TestDiscoverAndVerifyHonorContext(t *testing.T) {
-	p := New("fake", contract.Capabilities{}).
+	p := New("fake", contract.Capabilities{WindowDiscovery: true, TargetDiscovery: true}).
 		OnWindow(Step[contract.Window]{Value: ValidWindow()}).
 		OnTargets(Step[[]contract.Target]{Value: ValidTargets()}).
 		OnVerify(Step[contract.Profile]{Value: ValidProfile()})
@@ -378,5 +379,16 @@ func TestReferenceFixtures(t *testing.T) {
 	profile := ValidProfile()
 	if profile.DisplayName == "" {
 		t.Fatalf("身份夹具缺少展示名: %+v", profile)
+	}
+}
+
+// 未声明能力的发现方法默认返回非 nil 错误（G1）。
+func TestUndeclaredCapabilityReturnsError(t *testing.T) {
+	p := New("fake", contract.Capabilities{})
+	if _, err := p.DiscoverWindow(context.Background(), discoverRequest()); err == nil {
+		t.Fatal("未声明 WindowDiscovery 仍返回 nil 错误")
+	}
+	if _, err := p.DiscoverTargets(context.Background(), discoverRequest()); err == nil {
+		t.Fatal("未声明 TargetDiscovery 仍返回 nil 错误")
 	}
 }

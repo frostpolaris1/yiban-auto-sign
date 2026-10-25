@@ -55,6 +55,9 @@ else
   echo "auth e2e: $auth_pass top-level tests passed."
 fi
 
+# 符合性套件以 -v 跑一遍：未声明能力的判据会打印跳过行（AGENTS §30）。
+go test -v -count=1 ./internal/signing/conformance/
+
 # E-4 contract drift gate: regenerating must not change the checked-in code.
 # The gate fails closed: a generator that produced nothing exits 2.
 bash ./scripts/generate.sh --check

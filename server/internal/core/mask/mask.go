@@ -9,7 +9,7 @@
 // 调用方**不得自行复写掩码规则**。
 //
 // # 复用
-// MaskPhone、MaskEmail、MaskDevice、MaskText、EmailLabel。
+// MaskPhone、MaskEmail、MaskDevice、MaskText、TextHasPhone、TextHasEmail、EmailLabel。
 //
 // # 口径
 // 所有函数幂等：对已掩码的值再掩码，返回原值。

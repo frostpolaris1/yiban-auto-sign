@@ -49,6 +49,9 @@ const (
 	// inflightGrace 是 sign.timeout 判在途取消前等待的时长。
 	// 提供方在此期间返回视为未进入取消窗口；超出则取消必须生效。
 	inflightGrace = 20 * time.Millisecond
+	// criterionTimeout 是单条判据的完成上限。
+	// 高于 sign.timeout 的 5 秒与并发判据的 10 秒，冲突时不抢判据自己的判决。
+	criterionTimeout = 15 * time.Second
 	// signTimeoutGrace 是 sign.timeout 单次调用的完成上限。
 	// 阻塞的提供方由它转成失败，套件不挂起。
 	signTimeoutGrace = 5 * time.Second
@@ -128,13 +131,32 @@ func Run(t *testing.T, newProvider NewProvider) {
 
 // runCheck 执行一条判据，并把 panic 转成同格式失败。
 // 提供方 panic 不得拖垮整轮判据。
+//
+// 每条判据都有 criterionTimeout 上限：任意调用都阻塞的提供方
+// 得到可读失败，而不是挂起整轮（R3-04）。超时后遗留的 goroutine
+// 无法回收，测试进程退出时一并结束。
 func runCheck(check Check, newProvider NewProvider) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = failf(check.Name, "panic: %v", r)
-		}
+	type outcome struct{ err error }
+	done := make(chan outcome, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				done <- outcome{failf(check.Name, "panic: %v", r)}
+			}
+		}()
+		done <- outcome{check.Run(newProvider)}
 	}()
-	return check.Run(newProvider)
+	select {
+	case got := <-done:
+		return got.err
+	case <-time.After(criterionTimeout):
+		return failf(check.Name, "%s 内未返回：提供方阻塞", criterionTimeout)
+	}
+}
+
+// notApplicable 标记判据因能力未声明而不适用。
+func notApplicable(capability string) error {
+	return fmt.Errorf("%w: 提供方未声明 %s", errNotApplicable, capability)
 }
 
 // failf 生成统一失败文本。
@@ -212,7 +234,7 @@ func checkCapsHonored(newProvider NewProvider) error {
 func checkWindowShape(newProvider NewProvider) error {
 	p := newProvider()
 	if !p.Capabilities().WindowDiscovery {
-		return nil
+		return notApplicable("WindowDiscovery")
 	}
 	window, err := p.DiscoverWindow(context.Background(), discoverRequest())
 	if err != nil {
@@ -240,10 +262,8 @@ func checkWindowCancel(newProvider NewProvider) error {
 	cancel()
 	_, err := p.DiscoverWindow(ctx, discoverRequest())
 	if !p.Capabilities().WindowDiscovery {
-		if err == nil {
-			return failf(CheckWindowCancel, "未声明 WindowDiscovery，取消上下文返回 nil 错误")
-		}
-		return nil
+		// 未声明能力的返回形状由 caps.honored 判定，本判据不适用。
+		return notApplicable("WindowDiscovery")
 	}
 	if !errors.Is(err, context.Canceled) {
 		return failf(CheckWindowCancel, "错误 = %v，want context.Canceled", err)
@@ -255,7 +275,7 @@ func checkWindowCancel(newProvider NewProvider) error {
 func checkTargetsShape(newProvider NewProvider) error {
 	p := newProvider()
 	if !p.Capabilities().TargetDiscovery {
-		return nil
+		return notApplicable("TargetDiscovery")
 	}
 	targets, err := p.DiscoverTargets(context.Background(), discoverRequest())
 	if err != nil {
@@ -287,10 +307,7 @@ func checkTargetsCancel(newProvider NewProvider) error {
 	cancel()
 	_, err := p.DiscoverTargets(ctx, discoverRequest())
 	if !p.Capabilities().TargetDiscovery {
-		if err == nil {
-			return failf(CheckTargetsCancel, "未声明 TargetDiscovery，取消上下文返回 nil 错误")
-		}
-		return nil
+		return notApplicable("TargetDiscovery")
 	}
 	if !errors.Is(err, context.Canceled) {
 		return failf(CheckTargetsCancel, "错误 = %v，want context.Canceled", err)
@@ -491,7 +508,7 @@ func checkSignConcurrent(newProvider NewProvider) error {
 func checkPhotoMissing(newProvider NewProvider) error {
 	p := newProvider()
 	if !p.Capabilities().ImageRequired {
-		return fmt.Errorf("%w: 提供方未声明 ImageRequired", errNotApplicable)
+		return notApplicable("ImageRequired")
 	}
 	request := signRequest("attempt-photo-missing")
 	request.Image = nil

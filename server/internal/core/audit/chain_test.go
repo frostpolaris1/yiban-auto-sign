@@ -218,3 +218,16 @@ func actionConstants(t *testing.T, path string) []string {
 	}
 	return out
 }
+
+// 审计守卫用检测口径：纪元毫秒时间戳放行，分隔手机号与邮箱拒绝。
+func TestEncodeDetailUsesDetectionCaliber(t *testing.T) {
+	if _, err := coreaudit.EncodeDetail(map[string]any{"reason": "订单 1735689600000 已核对"}); err != nil {
+		t.Fatalf("时间戳形态被拒绝: %v", err)
+	}
+	if _, err := coreaudit.EncodeDetail(map[string]any{"reason": "退回 139-0013-9000"}); err == nil {
+		t.Fatal("分隔手机号未被拒绝")
+	}
+	if _, err := coreaudit.EncodeDetail(map[string]any{"reason": "a@b.com"}); err == nil {
+		t.Fatal("邮箱未被拒绝")
+	}
+}

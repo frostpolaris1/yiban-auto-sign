@@ -29,6 +29,7 @@ package fake
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -127,6 +128,10 @@ func (p *Provider) Capabilities() contract.Capabilities { return p.caps }
 
 // DiscoverWindow 返回下一项窗口脚本。
 func (p *Provider) DiscoverWindow(ctx context.Context, _ contract.DiscoverRequest) (contract.Window, error) {
+	// G1：未声明能力的发现方法必须返回非 nil 错误（默认行为，可被脚本覆盖）。
+	if !p.caps.WindowDiscovery {
+		return contract.Window{}, errors.New("fake: WindowDiscovery not declared")
+	}
 	p.count(&p.windowHit)
 
 	p.mu.Lock()
@@ -144,6 +149,9 @@ func (p *Provider) DiscoverWindow(ctx context.Context, _ contract.DiscoverReques
 
 // DiscoverTargets 返回下一项目标脚本。
 func (p *Provider) DiscoverTargets(ctx context.Context, _ contract.DiscoverRequest) ([]contract.Target, error) {
+	if !p.caps.TargetDiscovery {
+		return nil, errors.New("fake: TargetDiscovery not declared")
+	}
 	p.count(&p.targetHit)
 
 	p.mu.Lock()
