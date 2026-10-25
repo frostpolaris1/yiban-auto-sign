@@ -96,3 +96,40 @@ func TestMaskTextHandlesPhoneAdjacentToDigits(t *testing.T) {
 		}
 	}
 }
+
+// W2C-R4-01：分隔号码与相邻数字并存时，跨段的手机号窗口必须被掩，
+// 原文不得进响应与审计。三审实测的三种 400→漏掩输入全部钉住。
+func TestMaskTextHandlesSeparatedPhoneAdjacentToDigits(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"139-0013-9000 100", "139****9000 100"},
+		{"139 0013 9000 100", "139****9000 100"},
+		{"139.0013.9000 100", "139****9000 100"},
+		{"+86 139 0013 9000 100", "139****9000 100"},
+		{"2026-10-25 13900139000", "2026-10-25 139****9000"},
+		{"13900139000 2026-10-25", "139****9000 2026-10-25"},
+	}
+	for _, tc := range cases {
+		if got := MaskText(tc.in); got != tc.want {
+			t.Fatalf("MaskText(%q) = %q; want %q", tc.in, got, tc.want)
+		}
+	}
+	// 幂等：掩码过的文本再掩一遍不变。
+	for _, tc := range cases {
+		once := MaskText(tc.in)
+		if twice := MaskText(once); twice != once {
+			t.Fatalf("not idempotent: %q -> %q", once, twice)
+		}
+	}
+	// 日期段是 4 位数字，段内遗留窗口（≥11 位）不会碰到它。
+	if got := MaskText("2026-10-25"); got != "2026-10-25" {
+		t.Fatalf("pure date was rewritten: %q", got)
+	}
+}
+
+// 连写的 14 位数字里藏着手机号：段内遗留窗口掩最左命中。
+func TestMaskTextHandlesFusedPhoneAndDigits(t *testing.T) {
+	got := MaskText("13900139000100")
+	if got != "139****9000100" {
+		t.Fatalf("fused input = %q", got)
+	}
+}

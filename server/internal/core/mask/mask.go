@@ -9,11 +9,12 @@
 // 调用方**不得自行复写掩码规则**。
 //
 // # 复用
-// MaskPhone、MaskEmail、MaskDevice、MaskText、EmailLabel。
+// MaskPhone、MaskEmail、MaskDevice、MaskText、TextHasPhone、EmailLabel。
 //
 // # 口径
 // 所有函数幂等：对已掩码的值再掩码，返回原值。
 // 手机号保留前 3 后 4，邮箱保留首字符与域名，设备保留前 2 后 2。
+// 手机号形态判定只有本包一份（TextHasPhone），审计守卫复用它。
 package mask
 
 import (
@@ -22,13 +23,24 @@ import (
 )
 
 var (
-	// phoneInText 匹配一个候选数字组。
-	// 组内允许空格、连字符与点分隔，并允许 +86 国家码前缀：
-	// 用户会把号码写成 139-0013-9000 或 +86 139 0013 9000（W2C-R2-05）。
-	// 匹配整组而非 11 个连续数字，可避免从更长的数字串里截出半截。
+	// phoneInText 匹配一个候选数字游程。
+	// 游程内的数字可被空格、点、连字符等分隔符打断，
+	// 并允许 +86 国家码前缀（W2C-R2-05）。
+	// 游程内的窗口扫描见 maskPhoneRun：与分段规则同源。
 	phoneInText = regexp.MustCompile(`\+?[0-9]+(?:[\s.\-]+[0-9]+)*`)
 	emailInText = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
 )
+
+// isDigitSep 报告 c 是否为号码书写中的分隔符。
+// 与游程正则的 \s、点、连字符同源（W2C-R4-02：\f 属 \s）。
+// 加号**不是**分隔符：+86 国家码留在段内，随窗口一起消费。
+func isDigitSep(c byte) bool {
+	switch c {
+	case ' ', '\t', '\n', '\r', '\f', '\v', '.', '-':
+		return true
+	}
+	return false
+}
 
 // MaskPhone 保留手机号前 3 位与后 4 位。
 // 非 11 位、非 1 开头或已含掩码的输入原样返回。
@@ -71,57 +83,136 @@ func MaskDevice(s string) string {
 
 // MaskText 掩码自由文本中的手机号与邮箱。
 //
-// 手机号可带 +86 前缀，并可用空格、连字符或点分隔。
-// 去分隔符后不是 11 位手机号时，数字组原样保留：
-// 改写非号码的数字会破坏原文。
+// 手机号形态：11 位且以 1 开头，可带 86 国家码（13 位），
+// 数字之间允许空格、点、连字符等分隔符。
+// 判定做**两遍窗口扫描**：先取跨段的「对齐窗口」，再掩段内遗留窗口。
+// 「139-0013-9000 100」与「2026-10-25 13900139000」都能正确处理：
+// 手机号被掩，日期与数量保持原样。
+// 改写非号码的数字会破坏原文，故窗口之外的数字一律不动。
 func MaskText(s string) string {
 	s = emailInText.ReplaceAllStringFunc(s, MaskEmail)
 	return phoneInText.ReplaceAllStringFunc(s, maskPhoneRun)
 }
 
-// maskPhoneRun 掩码一个候选数字组。
-// 整段数字先按手机号判定；不成时按分隔符切段，每段单独再判。
-// 游程正则会把「手机号 + 空格 + 数字」并成一组，切段让手机号段落被掩、
-// 邻接的日期或数量保持原样（W2C-R3-01）。
-// 掩码规则只来自 MaskPhone，本函数不另立口径。
-func maskPhoneRun(run string) string {
-	if masked := maskDigits(digitsOnly(run), run); masked != "" {
-		return masked
+// TextHasPhone 报告文本里是否还有未掩码的手机号形态。
+// 审计守卫用它做**失败关闭**的二次检查；判定口径与 MaskText 同源。
+func TextHasPhone(s string) bool {
+	return MaskText(s) != s
+}
+
+// segment 是游程内一段无分隔符的数字，start 与 end 是字节偏移（含头不含尾）。
+type segment struct {
+	start, end int
+}
+
+// splitSegments 按分隔符把游程切成数字段。
+func splitSegments(run string) []segment {
+	var out []segment
+	start := -1
+	for i := 0; i < len(run); i++ {
+		if isDigitSep(run[i]) {
+			if start >= 0 {
+				out = append(out, segment{start, i})
+				start = -1
+			}
+			continue
+		}
+		if start < 0 {
+			start = i
+		}
 	}
-	segments := strings.FieldsFunc(run, func(r rune) bool {
-		// 与游程正则的 \s、点、连字符同一集合；\s 含换行。
-		return r == ' ' || r == '.' || r == '-' || r == '\t' || r == '\n' || r == '\r'
-	})
-	if len(segments) < 2 {
+	if start >= 0 {
+		out = append(out, segment{start, len(run)})
+	}
+	return out
+}
+
+// maskPhoneRun 在游程内做两遍窗口扫描（W2C-R4-01 及其复审）。
+//
+// 第一遍：**对齐窗口**。窗口必须从某段的开头到某段的结尾，
+// 总位数 11（1 开头）或 13（86 开头）。它修掉分隔号码，
+// 又不会把「日期 + 手机号」的日期尾巴并进窗口。
+//
+// 第二遍：**段内遗留**。对第一遍没动过、位数仍 ≥11 的段，
+// 掩掉段内最左的匹配窗口。它处理「手机号与数字连写」的输入；
+// 对纯日期段（位数不足 11）无影响。
+//
+// 顺序固定：先对齐、后遗留；两遍都只消费未掩码的原文偏移。
+func maskPhoneRun(run string) string {
+	segs := splitSegments(run)
+	if len(segs) == 0 {
 		return run
 	}
 	var b strings.Builder
-	rest := run
-	for _, seg := range segments {
-		idx := strings.Index(rest, seg)
-		b.WriteString(rest[:idx])
-		if masked := maskDigits(digitsOnly(seg), seg); masked != "" {
-			b.WriteString(masked)
-		} else {
-			b.WriteString(seg)
+	consumed := 0
+	i := 0
+	for i < len(segs) {
+		matched := false
+		for j := i; j < len(segs); j++ {
+			dd := digitsOnly(run[segs[i].start:segs[j].end])
+			if len(dd) != 11 && len(dd) != 13 {
+				continue
+			}
+			if !phoneShape(dd) {
+				continue
+			}
+			b.WriteString(run[consumed:segs[i].start])
+			b.WriteString(maskedSpan(run[segs[i].start:segs[j].end], len(dd)))
+			consumed = segs[j].end
+			i = j + 1
+			matched = true
+			break
 		}
-		rest = rest[idx+len(seg):]
+		if matched {
+			continue
+		}
+		segText := run[segs[i].start:segs[i].end]
+		if m := maskLeftmostInSegment(segText); m != segText {
+			b.WriteString(run[consumed:segs[i].start])
+			b.WriteString(m)
+			consumed = segs[i].end
+		}
+		i++
 	}
-	b.WriteString(rest)
+	b.WriteString(run[consumed:])
 	return b.String()
 }
 
-// maskDigits 判定一段数字是否为手机号形态并掩码。
-// 命中返回掩码文本；不命中返回空串。
-func maskDigits(digits, original string) string {
-	if len(digits) == 13 && strings.HasPrefix(digits, "86") {
-		digits = digits[len(digits)-11:]
+// maskLeftmostInSegment 掩掉段内最左的手机号窗口。
+// 段是无分隔符的纯数字；窗口取 11 位或 86 前缀的 13 位。
+func maskLeftmostInSegment(seg string) string {
+	for start := 0; start+11 <= len(seg); start++ {
+		if dd := seg[start : start+11]; phoneShape(dd) {
+			return seg[:start] + MaskPhone(dd) + seg[start+11:]
+		}
+		if start+13 <= len(seg) {
+			if dd := seg[start : start+13]; strings.HasPrefix(dd, "86") && phoneShape(dd) {
+				return seg[:start] + MaskPhone(dd[2:]) + seg[start+13:]
+			}
+		}
 	}
-	masked := MaskPhone(digits)
-	if masked == digits {
-		return ""
+	return seg
+}
+
+// phoneShape 判定数字串是否为手机号形态：11 位以 1 开头，
+// 或 13 位以 86 国家码开头且第 3 位是 1。与 MaskPhone 的口径一致。
+func phoneShape(digits string) bool {
+	switch len(digits) {
+	case 11:
+		return digits[0] == '1'
+	case 13:
+		return strings.HasPrefix(digits, "86") && digits[2] == '1'
 	}
-	return masked
+	return false
+}
+
+// maskedSpan 返回对齐窗口的掩码文本：前 3 后 4，去掉分隔符与国家码。
+func maskedSpan(seg string, n int) string {
+	dd := digitsOnly(seg)
+	if n == 13 {
+		dd = dd[2:]
+	}
+	return dd[:3] + "****" + dd[7:]
 }
 
 // digitsOnly 返回 s 中的十进制数字。
