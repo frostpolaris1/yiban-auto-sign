@@ -87,13 +87,6 @@
       "yiban/adapters/statefiles/state_gc.py": 1
     }
   },
-  "YIBAN_RUN_LOCK_WAIT": {
-    "class": "prose",
-    "reason": "锁等待 docstring 说明默认 600s；默认常量已改读名册，prose 只描述语义",
-    "files": {
-      "yiban/engine/cli_support.py": 1
-    }
-  },
   "YIBAN_SESSION_TTL_HOURS": {
     "class": "prose",
     "reason": "会话缓存 docstring 说明 TTL 默认 6 小时；散文说明，不是读取点",

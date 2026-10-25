@@ -30,6 +30,11 @@ def _default_smtp_port():
     """
     return int(config_loader.default_of("YIBAN_MAIL_SMTP_PORT"))
 
+
+def _default_smtp_host():
+    """SMTP 主机的缺省：只在配置名册里定义（`reload: hot`，每次调用现取）。"""
+    return config_loader.default_of("YIBAN_MAIL_SMTP_HOST")
+
 # 允许私网/回环 SMTP 目标的显式开关。取值口径与项目其它开关一致（1/true/on/yes，
 # 大小写不敏感），未设或其它值一律为假。
 _ALLOW_PRIVATE_KEY = "YIBAN_MAIL_ALLOW_PRIVATE_HOST"
@@ -237,7 +242,7 @@ def smtp_list(envs=None):
         except ValueError:
             port = _default_smtp_port()
         return [{
-            "host": _env_value("SMTP_HOST", envs) or "smtp.qq.com",
+            "host": _env_value("SMTP_HOST", envs) or _default_smtp_host(),
             "port": port,
             "user": _env_value("USER", envs),
             "pass": _env_value("PASS", envs),
@@ -279,7 +284,7 @@ def get_config(envs=None):
             port_fallback = True
     else:
         raw_port = _get("SMTP_PORT", envs)
-        host = _get("SMTP_HOST", envs) or "smtp.qq.com"
+        host = _get("SMTP_HOST", envs) or _default_smtp_host()
         try:
             port = int(raw_port or _default_smtp_port())
             port_fallback = not raw_port.strip()

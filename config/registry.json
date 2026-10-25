@@ -39,7 +39,9 @@
     "tier": "master",
     "reload": "restart",
     "default_literal_gate": true,
-    "default_symbols": ["STATE_DIR_DEFAULT"]
+    "default_symbols": [
+      "STATE_DIR_DEFAULT"
+    ]
   },
   "YIBAN_LOG_FILE": {
     "type": "path",
@@ -53,7 +55,9 @@
     "tier": "master",
     "reload": "restart",
     "default_literal_gate": true,
-    "default_symbols": ["LOG_DEFAULT"]
+    "default_symbols": [
+      "LOG_DEFAULT"
+    ]
   },
   "YIBAN_LOCK_DIR": {
     "type": "path",
@@ -127,7 +131,9 @@
     "tier": "master",
     "reload": "restart",
     "default_literal_gate": true,
-    "default_symbols": ["_BASE_PATH_DEFAULT"]
+    "default_symbols": [
+      "_BASE_PATH_DEFAULT"
+    ]
   },
   "YIBAN_BACKUP_DIR": {
     "type": "path",
@@ -324,7 +330,8 @@
     "web_editable": false,
     "tier": "master",
     "reload": "next-round",
-    "default_literal_gate": true
+    "default_literal_gate": true,
+    "default_symbols": []
   },
   "YIBAN_SIGN_STATE_FLUSH_MAX": {
     "type": "int",
@@ -342,7 +349,9 @@
     "tier": "master",
     "reload": "restart",
     "default_literal_gate": true,
-    "default_symbols": ["_FLUSH_MAX"]
+    "default_symbols": [
+      "_FLUSH_MAX"
+    ]
   },
   "YIBAN_SIGN_STATE_FLUSH_SEC": {
     "type": "seconds",
@@ -360,7 +369,9 @@
     "tier": "master",
     "reload": "restart",
     "default_literal_gate": true,
-    "default_symbols": ["_FLUSH_SEC"]
+    "default_symbols": [
+      "_FLUSH_SEC"
+    ]
   },
   "YIBAN_QUOTA_STATE_FLUSH_MAX": {
     "type": "int",
@@ -378,7 +389,9 @@
     "tier": "master",
     "reload": "restart",
     "default_literal_gate": true,
-    "default_symbols": ["_QUOTA_FLUSH_MAX"]
+    "default_symbols": [
+      "_QUOTA_FLUSH_MAX"
+    ]
   },
   "YIBAN_QUOTA_STATE_FLUSH_SEC": {
     "type": "seconds",
@@ -396,7 +409,9 @@
     "tier": "master",
     "reload": "restart",
     "default_literal_gate": true,
-    "default_symbols": ["_QUOTA_FLUSH_SEC"]
+    "default_symbols": [
+      "_QUOTA_FLUSH_SEC"
+    ]
   },
   "YIBAN_EGRESS_RATE": {
     "type": "float",
@@ -576,7 +591,11 @@
     "sensitive": false,
     "web_editable": false,
     "tier": "master",
-    "reload": "restart"
+    "reload": "restart",
+    "default_literal_gate": true,
+    "default_symbols": [
+      "_RUN_LOCK_WAIT_DEFAULT"
+    ]
   },
   "YIBAN_RUN_TIMEOUT_SEC": {
     "type": "seconds",
@@ -675,7 +694,11 @@
     "web_editable": true,
     "tier": "master",
     "reload": "next-round",
-    "default_literal_gate": true
+    "default_literal_gate": true,
+    "default_symbols": [
+      "DEFAULT_END",
+      "sign_end_default"
+    ]
   },
   "YIBAN_SECOND_RUN_TIME": {
     "type": "hhmm",
@@ -1068,7 +1091,10 @@
     "web_editable": true,
     "tier": "master",
     "reload": "next-round",
-    "default_literal_gate": true
+    "default_literal_gate": true,
+    "default_symbols": [
+      "PROBE_TIME"
+    ]
   },
   "YIBAN_PROBE_INTERVAL_DAYS": {
     "type": "string",
@@ -1081,7 +1107,10 @@
     "web_editable": true,
     "tier": "master",
     "reload": "next-round",
-    "default_literal_gate": true
+    "default_literal_gate": true,
+    "default_symbols": [
+      "PROBE_INTERVAL"
+    ]
   },
   "YIBAN_HEALTH_REPORT_TIME": {
     "type": "hhmm",
@@ -1495,7 +1524,8 @@
     "web_editable": false,
     "tier": "master",
     "reload": "hot",
-    "default_literal_gate": true
+    "default_literal_gate": true,
+    "default_symbols": []
   },
   "YIBAN_EMAIL_DOMAIN_BLOCKLIST_EXTRA": {
     "type": "string",
@@ -1508,7 +1538,8 @@
     "web_editable": false,
     "tier": "master",
     "reload": "hot",
-    "default_literal_gate": true
+    "default_literal_gate": true,
+    "default_symbols": []
   },
   "YIBAN_DISABLE_PURGE_LOOP": {
     "type": "bool",
@@ -1533,7 +1564,8 @@
     "web_editable": false,
     "tier": "master",
     "reload": "hot",
-    "default_literal_gate": true
+    "default_literal_gate": true,
+    "default_symbols": []
   },
   "YIBAN_POLICE_INFO": {
     "type": "string",
@@ -1546,7 +1578,8 @@
     "web_editable": false,
     "tier": "master",
     "reload": "hot",
-    "default_literal_gate": true
+    "default_literal_gate": true,
+    "default_symbols": []
   },
   "YIBAN_POLICE_LINK": {
     "type": "string",
@@ -1559,7 +1592,8 @@
     "web_editable": false,
     "tier": "master",
     "reload": "hot",
-    "default_literal_gate": true
+    "default_literal_gate": true,
+    "default_symbols": []
   },
   "YIBAN_SITE_DESCRIPTION": {
     "type": "string",
@@ -1572,7 +1606,8 @@
     "web_editable": false,
     "tier": "master",
     "reload": "hot",
-    "default_literal_gate": true
+    "default_literal_gate": true,
+    "default_symbols": []
   },
   "YIBAN_SITE_IMAGE": {
     "type": "string",
@@ -1585,7 +1620,8 @@
     "web_editable": false,
     "tier": "master",
     "reload": "hot",
-    "default_literal_gate": true
+    "default_literal_gate": true,
+    "default_symbols": []
   },
   "YIBAN_NOTIFY_TYPE": {
     "type": "enum",
@@ -1615,7 +1651,8 @@
     "web_editable": false,
     "tier": "master",
     "reload": "hot",
-    "default_literal_gate": true
+    "default_literal_gate": true,
+    "default_symbols": []
   },
   "YIBAN_NOTIFY_SECRET_ENC": {
     "type": "string",
@@ -1711,7 +1748,9 @@
     "sensitive": false,
     "web_editable": false,
     "tier": "master",
-    "reload": "hot"
+    "reload": "hot",
+    "default_literal_gate": true,
+    "default_symbols": []
   },
   "YIBAN_MAIL_SMTP_PORT": {
     "type": "int",
@@ -1724,7 +1763,8 @@
     "web_editable": false,
     "tier": "master",
     "reload": "hot",
-    "default_literal_gate": true
+    "default_literal_gate": true,
+    "default_symbols": []
   },
   "YIBAN_MAIL_ALLOW_PRIVATE_HOST": {
     "type": "bool",
@@ -1828,7 +1868,9 @@
     "tier": "master",
     "reload": "restart",
     "default_literal_gate": true,
-    "default_symbols": ["LOG_LEVEL"]
+    "default_symbols": [
+      "LOG_LEVEL"
+    ]
   },
   "YIBAN_RETENTION_DAYS": {
     "type": "int",
@@ -1952,7 +1994,10 @@
   },
   "YIBAN_SSE_POLL_SEC": {
     "type": "seconds",
-    "domain": [1, 60],
+    "domain": [
+      1,
+      60
+    ],
     "default": 1,
     "group": [
       "实时进度流"
@@ -1965,7 +2010,10 @@
   },
   "YIBAN_SSE_HEARTBEAT_SEC": {
     "type": "seconds",
-    "domain": [1, 50],
+    "domain": [
+      1,
+      50
+    ],
     "default": 15,
     "group": [
       "实时进度流"
@@ -1978,7 +2026,10 @@
   },
   "YIBAN_SSE_GAP_MAX": {
     "type": "int",
-    "domain": [0, 100000],
+    "domain": [
+      0,
+      100000
+    ],
     "default": 500,
     "group": [
       "实时进度流"
@@ -1991,7 +2042,10 @@
   },
   "YIBAN_SSE_SESSION_MAX": {
     "type": "int",
-    "domain": [1, 100],
+    "domain": [
+      1,
+      100
+    ],
     "default": 3,
     "group": [
       "实时进度流"
@@ -2004,7 +2058,10 @@
   },
   "YIBAN_SSE_CONNECTIONS_MAX": {
     "type": "int",
-    "domain": [1, 1000],
+    "domain": [
+      1,
+      1000
+    ],
     "default": 10,
     "group": [
       "实时进度流"
@@ -2017,7 +2074,10 @@
   },
   "YIBAN_SSE_USER_CONNECTIONS_MAX": {
     "type": "int",
-    "domain": [1, 1000],
+    "domain": [
+      1,
+      1000
+    ],
     "default": 10,
     "group": [
       "实时进度流"
@@ -2030,7 +2090,10 @@
   },
   "YIBAN_SSE_IDLE_SEC": {
     "type": "seconds",
-    "domain": [0, 86400],
+    "domain": [
+      0,
+      86400
+    ],
     "default": 300,
     "group": [
       "实时进度流"
@@ -2043,7 +2106,10 @@
   },
   "YIBAN_SSE_SESSION_RECHECK_SEC": {
     "type": "seconds",
-    "domain": [0, 3600],
+    "domain": [
+      0,
+      3600
+    ],
     "default": 60,
     "group": [
       "实时进度流"
@@ -2056,7 +2122,10 @@
   },
   "YIBAN_SSE_CONNECTION_MAX_SEC": {
     "type": "seconds",
-    "domain": [0, 86400],
+    "domain": [
+      0,
+      86400
+    ],
     "default": 7200,
     "group": [
       "实时进度流"

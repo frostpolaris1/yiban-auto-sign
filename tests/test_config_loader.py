@@ -290,11 +290,11 @@ class UnparseableValueTest(unittest.TestCase):
 
 
 class RegistryGateDeclarationTest(unittest.TestCase):
-    """`default_literal_gate` 的声明形状：承载常量可省，声明了就得合法。
+    """`default_literal_gate` 的声明形状：承载常量必须显式声明，可为空列表。
 
-    读取点内联取 `default_of` 的键没有常量可登记（工单 7yf 的 13 键）——强制登记
-    假名字会得到一条没有牙的门。反向：声明了 `default_symbols` 却写成空/非列表，
-    仍必须拒判，否则门会静默失去"常量回潮"那一半。
+    审查员 7yf 高-1：允许"没有承载常量"时如果连字段都可省，"忘了登记"与"确认无
+    载体"就长得一样，判据 2 的常量臂会静默消失。故 `default_symbols: []` 是
+    **显式声明无载体**；缺字段/null/非列表一律拒判。
     """
 
     def _spec(self, **extra):
@@ -306,22 +306,30 @@ class RegistryGateDeclarationTest(unittest.TestCase):
         spec.update(extra)
         return {"_meta": {"version": 1}, "YIBAN_KNOB": spec}
 
-    def test_gate_without_symbols_is_valid(self):
-        CL.validate_registry(self._spec())
+    def test_gate_with_empty_symbol_list_is_valid(self):
+        CL.validate_registry(self._spec(default_symbols=[]))
 
     def test_gate_with_symbols_is_valid(self):
         CL.validate_registry(self._spec(default_symbols=["KNOB_DEFAULT"]))
 
-    def test_gate_with_empty_symbols_is_rejected(self):
+    def test_gate_without_symbols_field_is_rejected(self):
         with self.assertRaises(CL.RegistryError):
-            CL.validate_registry(self._spec(default_symbols=[]))
+            CL.validate_registry(self._spec())
+
+    def test_gate_with_null_symbols_is_rejected(self):
+        with self.assertRaises(CL.RegistryError):
+            CL.validate_registry(self._spec(default_symbols=None))
 
     def test_gate_with_non_list_symbols_is_rejected(self):
         with self.assertRaises(CL.RegistryError):
             CL.validate_registry(self._spec(default_symbols="KNOB_DEFAULT"))
 
+    def test_gate_with_blank_symbol_member_is_rejected(self):
+        with self.assertRaises(CL.RegistryError):
+            CL.validate_registry(self._spec(default_symbols=[""]))
+
     def test_gate_without_default_is_rejected(self):
-        spec = self._spec()
+        spec = self._spec(default_symbols=[])
         del spec["YIBAN_KNOB"]["default"]
         with self.assertRaises(CL.RegistryError):
             CL.validate_registry(spec)
