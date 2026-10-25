@@ -546,6 +546,75 @@ func TestResetRevokesEverySession(t *testing.T) {
 	}
 }
 
+// --- 审计与会话同事务 --------------------------------------------------
+
+// 模拟真实用户：审计表坏掉时用正确口令登录。
+// 断言用户可见结果：登录失败（5xx），且服务端**没有**留下会话。
+// 审计完整性是自持项：会话不得先于审计提交。
+func TestLoginRollsBackSessionWhenAuditFails(t *testing.T) {
+	e := newAuthEnv(t)
+	e.createUser("ivy@example.com", "correct-horse")
+
+	if _, err := e.db.Exec(e.ctx, "ALTER TABLE audit_logs RENAME TO audit_logs_muted"); err != nil {
+		t.Fatalf("mute audit_logs: %v", err)
+	}
+	restored := false
+	restore := func() {
+		if restored {
+			return
+		}
+		restored = true
+		if _, err := e.db.Exec(context.Background(),
+			"ALTER TABLE audit_logs_muted RENAME TO audit_logs"); err != nil {
+			t.Errorf("restore audit_logs: %v", err)
+		}
+	}
+	t.Cleanup(restore)
+
+	resp, payload := e.do(http.MethodPost, "/api/auth/login",
+		map[string]string{"email": "ivy@example.com", "password": "correct-horse"}, nil)
+	if resp.StatusCode < 500 {
+		t.Fatalf("login with a broken audit table = %d, want 5xx; body=%q", resp.StatusCode, payload)
+	}
+	if got := e.scalarInt("SELECT count(*) FROM sessions"); got != 0 {
+		t.Fatalf("sessions after a failed audit write = %d, want 0; the session must roll back", got)
+	}
+
+	// 恢复审计表后同一账号必须能登录：证明上面的失败只是审计故障所致。
+	restore()
+	again, body := e.login("ivy@example.com", "correct-horse")
+	if again.StatusCode != http.StatusOK {
+		t.Fatalf("login after restoring audit_logs = %d, want 200; body=%+v", again.StatusCode, body)
+	}
+	if got := e.scalarInt("SELECT count(*) FROM sessions"); got != 1 {
+		t.Fatalf("sessions after a successful login = %d, want 1", got)
+	}
+}
+
+// --- 禁用用户不可登录 --------------------------------------------------
+
+// 模拟真实用户：账号被停用后仍用正确口令登录。
+// 断言用户可见结果：401，且不签发会话。
+func TestDisabledUserCannotLogIn(t *testing.T) {
+	e := newAuthEnv(t)
+	user := e.createUser("judy@example.com", "correct-horse")
+	if err := e.users.SetStatus(e.ctx, user.ID, coreauth.StatusDisabled, time.Now().UTC()); err != nil {
+		t.Fatalf("disable user: %v", err)
+	}
+
+	resp, payload := e.do(http.MethodPost, "/api/auth/login",
+		map[string]string{"email": "judy@example.com", "password": "correct-horse"}, nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("disabled user login = %d, want 401; body=%q", resp.StatusCode, payload)
+	}
+	if code, _ := errorCode(t, payload); code != "unauthorized" {
+		t.Fatalf("disabled user login code = %q, want unauthorized", code)
+	}
+	if got := e.scalarInt("SELECT count(*) FROM sessions WHERE user_id = $1", user.ID); got != 0 {
+		t.Fatalf("sessions for a disabled user = %d, want 0", got)
+	}
+}
+
 // --- 忘记口令不泄露账号是否存在 ----------------------------------------
 
 // 模拟真实用户：分别对已知与未知邮箱发起重置。

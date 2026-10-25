@@ -78,6 +78,7 @@ func New(opts Options) (*gin.Engine, error) {
 	engine := gin.New()
 	engine.Use(
 		requestID(),
+		bodyLimit(maxRequestBodyBytes),
 		accessLog(logger, clk),
 		recoverPanic(logger),
 		securityHeaders(),
@@ -85,8 +86,8 @@ func New(opts Options) (*gin.Engine, error) {
 		srv.requireCSRF(),
 	)
 	oapi.RegisterHandlersWithOptions(engine, srv, oapi.GinServerOptions{
-		ErrorHandler: func(c *gin.Context, _ error, _ int) {
-			respond.Error(c.Writer, c.Request, errs.New(errs.CodeValidation, "invalid request"))
+		ErrorHandler: func(c *gin.Context, err error, _ int) {
+			bindError(c, err)
 		},
 	})
 	engine.NoRoute(func(c *gin.Context) {

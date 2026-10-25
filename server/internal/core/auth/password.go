@@ -44,14 +44,19 @@ const (
 
 // 校验侧上界。库内的哈希串按可信数据对待，
 // 但坏行不得让进程分配无界内存。
+//
+// 上界取现用参数的 2 倍，故单次校验最多付当前登录成本的内存与迭代各 2 倍。
+// argon2 现用 m=19456、t=2、p=1，上界据此取 38912、4、2。
+// scrypt 实测最大 N*r = 65536*8 = 524288，上界取 1048576（约 128 MiB）。
+// 上界防的是**数据事故**，不是用户输入：哈希串只来自库内。
 const (
-	maxArgonMemory  uint32 = 1024 * 1024
-	maxArgonTime    uint32 = 16
-	maxArgonThreads uint8  = 32
+	maxArgonMemory  uint32 = 2 * argonMemory
+	maxArgonTime    uint32 = 2 * argonTime
+	maxArgonThreads uint8  = 2 * argonThreads
 	maxScryptN             = 1 << 20
 	maxScryptRP            = 32
-	// scrypt 内存约 128*N*r 字节。N*r 上限 2M 把单次分配压到 256 MiB。
-	maxScryptWork = 2 << 20
+	// scrypt 内存约 128*N*r 字节。N*r 上限 1M 把单次分配压到 128 MiB。
+	maxScryptWork = 1 << 20
 	maxDigestLen  = 128
 )
 
@@ -188,6 +193,11 @@ func verifyScrypt(password, encoded string) (PasswordCheck, error) {
 	}
 	valid := subtle.ConstantTimeCompare(got, want) == 1
 	// 旧格式一律重哈希；参数由当前 argon2id 常量取代。
+	//
+	// 计时差已登记豁免（裁决 P2-2，2026-10-26）。
+	// 本机实测口径（localhost 真库，40 轮中位数）：旧 scrypt 98 ms，argon2id 21 ms。
+	// 人群仅限 P8 导入后未登录过的用户；登录成功即重哈希，窗口随之关闭。
+	// 拉平要给全部 argon2 用户垫到 98 ms，每次登录多付约 5 倍 CPU，故否决。
 	return PasswordCheck{Valid: valid, NeedsRehash: true}, nil
 }
 
