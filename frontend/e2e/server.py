@@ -19,12 +19,14 @@ setUpClass 保持一致（临时目录 + YIBAN_* 指向其中 + importlib 装载
 - `YB_E2E_FROZEN_NOW=2026-10-26T23:55:00`：`clock.now()` 从该北京时间起步。
 - `YB_E2E_FROZEN_ADVANCE=1` 让钟按真实时间前进；`YB_E2E_FROZEN_SCALE` 设倍速。
   默认恒定冻结。跨业务日用例用「前进＋倍速」，避免真等 5 分钟。
-- `/api/clock` 的 `server_ts` 同步改成冻结 epoch（`web.routes.data` 命名空间替换）。
+- `/api/clock` 的 `server_ts` 同步改成冻结 epoch（只在 `api_clock` 的返回处替换该字段）。
   不补这一处，浏览器「今天」会跟随真实日期（前端按 `server_ts` 重建墙上时间）。
 - 覆盖的消费面：`clock.now/today/ts` 的全部属主调用；`/api/clock` 的 `now` 与
   `server_ts`；种子、心跳、审计快照、按日日志与状态文件。
-- 不在覆盖面：模块级 `from yiban.core.clock import now`（`wire_dump.py`，不在请求路径）；
-  `datetime.now()` 的登记豁免点（进程标记、mtime 比对、展示时刻）；会话与限速的真实钟。
+- `wire_dump.py:51` 的模块级 `from yiban.core.clock import now` 也在覆盖面内：
+  `client.py:252` 懒导入它，导入时取到冻结的 `now`。它不在 e2e 请求路径上。
+- 不在覆盖面：`datetime.now()` 的登记豁免点（进程标记、mtime 比对、展示时刻）；
+  会话与限速的真实钟（含导出限速窗口 `data.py:74`）。
 - 前端校准钟按 1x 走秒；跨日后必须让页面重新校准（例如 reload）。
 
 用法（一般由 playwright 配置调用）：
@@ -112,8 +114,9 @@ def _install_frozen_clock():
     · `clock.now()`：唯一取时出口；`clock.today()` / `clock.ts()` 在模块内
       按名字查 `now`，故同被覆盖。
     · 所有 `from yiban.core import clock` 的读者：按属性调用，调用时取到补丁。
-    · 唯一例外：`from yiban.core.clock import now` 的模块级绑定
-      （`yiban/infra/wire_dump.py`）。它不在 e2e 服务端请求路径上。
+    · 模块级 `from yiban.core.clock import now` 的读者（`yiban/infra/wire_dump.py:51`）
+      也在覆盖面内：`client.py:252` 懒导入它，导入时取到冻结的 `now`。
+      它不在 e2e 服务端请求路径上。
 
     ADVANCE=0：每次调用返回同一时刻（严格冻结）。
     ADVANCE=1：从锚点按真实时间前进，倍速 FROZEN_SCALE。
@@ -152,19 +155,23 @@ def _install_frozen_epoch():
     只冻结 `clock.now` 而 `server_ts` 仍取真实 `time.time()` 时，
     浏览器「今天」会跟随真实日期，冻结面就不等价（AGENTS §32）。
 
-    做法：只替换 `web.routes.data` 模块命名空间里的 `time` 名字。
-    不替换全局 `time` 模块：会话、限速、锁仍用真实钟。
+    做法：包住 `web.routes.data.api_clock` 的返回，只替换 `server_ts` 一个字段。
+    不替换模块的 `time` 名字：同模块 `data.py:74` 用 `time.time()` 供导出限速，
+    替换会冻住限速窗口。
     """
     if not FROZEN_NOW:
         return
+    from flask import jsonify
     from web.routes import data as _data_routes
 
-    class _FrozenEpoch:
-        @staticmethod
-        def time():
-            return clock.now().replace(tzinfo=clock.TZ).timestamp()
+    original_view = _data_routes.api_clock
 
-    _data_routes.time = _FrozenEpoch
+    def _clock_view():
+        payload = original_view().get_json()
+        payload["server_ts"] = int(clock.now().replace(tzinfo=clock.TZ).timestamp())
+        return jsonify(payload)
+
+    _data_routes.api_clock = _clock_view
 
 
 FROZEN_ANCHOR = _install_frozen_clock()
