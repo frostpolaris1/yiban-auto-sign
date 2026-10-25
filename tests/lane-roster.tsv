@@ -31,6 +31,7 @@ fast	tests/protocol/test_identity.py
 fast	tests/protocol/test_location.py
 fast	tests/protocol/test_page.py
 fast	tests/protocol/test_position.py
+fast	tests/protocol/test_replay.py	# 夹具回放（ziqz）：字节/字段一致＋未实拍拒答；回环 HTTP，本机 <2s
 fast	tests/test_account_abuse_gate.py
 fast	tests/test_account_ciphertext_kid.py
 fast	tests/test_account_crypto_key_source.py
