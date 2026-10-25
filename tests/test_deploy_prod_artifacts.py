@@ -292,6 +292,20 @@ class CronProvenanceTest(_TmpBase):
                             "无来源路径未被打红——来源断言门形同虚设")
         self.assertIn("/usr/local/sbin/ghost-not-in-manifest.sh", self._out(r))
 
+    def test_placeholder_forged_path_goes_red_on_real_tables(self):
+        """红线突变：真表副本里把占位符指向仓内不存在的件 ⇒ 必红且点名。
+
+        cron 表改成模板（@YIBAN_APP_DIR@）后，来源门必须仍对"展开后的伪造路径"有牙。
+        """
+        d = os.path.join(self.tmp, "cron.d")
+        shutil.copytree(CRON_DIR, d)
+        with io.open(os.path.join(d, "yiban-sign"), "a", encoding="utf-8", newline="\n") as f:
+            f.write("0 4 * * * yiban @YIBAN_APP_DIR@/ghost-under-checkout.sh\n")
+        r = self._check(d)
+        self.assertNotEqual(r.returncode, 0,
+                            "占位符展开后的伪造路径未被打红：模板把归属门打穿了")
+        self.assertIn("ghost-under-checkout.sh", self._out(r))
+
     def test_repo_relative_app_paths_must_exist(self):
         """/opt/yiban-auto-sign/<rel> 型路径：rel 在仓库不存在 ⇒ 非 0。"""
         d = os.path.join(self.tmp, "cron.d")
@@ -464,6 +478,16 @@ class InstallScriptTest(_TmpBase):
     def _dest(self, dest):
         return os.path.join(self.destroot, dest.lstrip("/").replace("/", os.sep))
 
+    def _rendered_source_bytes(self, src):
+        """仓库源 → **安装器渲染后**的期望字节。
+
+        cron 表是模板（`@YIBAN_APP_DIR@` 由 install.sh 渲染成检出根）；其余件逐字不变。
+        期望值按与安装器**同一条规则**算出（字符串替换），不是"内容随便"。
+        """
+        with io.open(os.path.join(BASE, src.replace("/", os.sep)), "rb") as fh:
+            raw = fh.read()
+        return raw.replace(b"@YIBAN_APP_DIR@", self.checkout.encode("utf-8"))
+
     def test_fresh_install_places_all_manifest_entries_with_modes(self):
         r = self._install()
         out = self._out(r)
@@ -471,14 +495,60 @@ class InstallScriptTest(_TmpBase):
         for mode, src, dest in self._manifest_rows():
             d = self._dest(dest)
             self.assertTrue(os.path.isfile(d), f"未安装 {dest}：{out}")
-            with open(d, "rb") as a, open(os.path.join(BASE, src.replace("/", os.sep)), "rb") as b:
-                self.assertEqual(a.read(), b.read(), f"{dest} 内容与仓库源不一致")
+            with open(d, "rb") as a:
+                self.assertEqual(a.read(), self._rendered_source_bytes(src),
+                                 f"{dest} 内容与仓库源（渲染后）不一致")
             m = stat.S_IMODE(os.stat(d).st_mode)
             self.assertEqual(m, int(mode, 8), f"{dest} 权限 {oct(m)} ≠ {mode}")
         import re
         self.assertGreaterEqual(len(re.findall(r"\b[0-9a-f]{64}\b", out)),
                                 len(self._manifest_rows()),
                                 f"安装后校验和输出缺失：{out}")
+
+    #: 白名单 `^/[A-Za-z0-9._/-]+$` 之外的路径末段（二审 R1 竖表）。每一条都必须在
+    #: install.sh 的**入口**被拦下（先于 manifest 读取与任何落位）。
+    BAD_CHECKOUT_COMPONENTS = (
+        "a b",      # 空格：sh 拆词
+        "a\\b",     # 反斜杠：转义
+        "x;rm",     # 分号：命令分隔
+        "$HOME",    # 美元：参数展开
+        'a"b',      # 双引号：改变引号状态
+        "a'b",      # 单引号：改变引号状态
+        "a`b`",     # 反引号：命令替换
+        "a&b",      # &：后台
+        "a|b",      # |：管道
+        "a\tb",     # 制表符
+        "a\rb",     # 回车
+        "a\nb",     # 换行：截断 cron 表
+        "中文",      # 非 ASCII（白名单外）
+    )
+
+    def _minimal_installer_at(self, component):
+        """在白名单外路径上放一份最小检出：入口门先于 manifest，故只需 install.sh。"""
+        target = os.path.join(self.tmp, "co", component, "deploy", "prod")
+        os.makedirs(target, exist_ok=True)
+        shutil.copyfile(INSTALL, os.path.join(target, "install.sh"))
+        return os.path.join(target, "install.sh")
+
+    def test_refuses_checkout_path_outside_whitelist(self):
+        """突变参数化：白名单外的检出根全拒，且不落任何 cron 表。
+
+        原因（判据本身）：cron 命令行原样嵌入检出根，`sh -c` 对空格/引号/;/&/|/$/
+        反引号/反斜杠/制表符/CR 各有语义；白名单比黑名单结构安全。拒装必须在
+        **任何落位之前**（DESTDIR 里不得出现 cron 表）。
+        """
+        for component in self.BAD_CHECKOUT_COMPONENTS:
+            with self.subTest(component=component):
+                installer = self._minimal_installer_at(component)
+                r = self._run_bash(installer, (), {"DESTDIR": self.destroot})
+                out = self._out(r)
+                self.assertNotEqual(r.returncode, 0,
+                                    "白名单外的检出路径未拒装：%r\n%s" % (component, out))
+                self.assertIn("白名单", out,
+                              "拒装理由必须点名白名单：%r\n%s" % (component, out))
+                self.assertFalse(
+                    os.path.exists(self._dest("/etc/cron.d/yiban-sign")),
+                    "拒装发生在落位之后：DESTDIR 里已有 cron 表（%r）" % component)
 
     def test_refuses_checksum_mismatch_without_flag(self):
         """现网 3 行手工漂移：不得被静默覆盖（仓库=唯一来源，但先对峙再裁决）。"""

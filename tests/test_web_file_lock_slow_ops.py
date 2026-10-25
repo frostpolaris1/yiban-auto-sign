@@ -7,8 +7,8 @@
     check_password_hash），与**冻结的存量清单**逐条对照：不得多（新增即失败）、
     不得少（还掉一处债就更新清单，防"账还在、测试假装看不见"）。
 对应实现：判据对象是 `web/services/locks.py` 的 `_file_lock`（进程级 RLock，
-    gunicorn `-w 1 --threads 32` 下三十二条线程全等；口径＝web/deploy/yiban-web.service
-    与 docker/supervisord.conf 的实际配置，2026-10-25 订正，旧文误写 8）
+    gunicorn `-w 1` 多线程下所有线程全等；线程数由部署面值表 deploy/web.env 定义，
+    实配见 web/deploy/yiban-web.service 与 docker/supervisord.conf）
     与各路由的持锁发信/哈希段。
 关键断言：**为什么是静态判据而不是运行时持锁时长断言**——"锁内不做 scrypt"
     在当前架构下尚不成立（存量锁内慢调用是登记在案的债），任何"秒级上限"的计时

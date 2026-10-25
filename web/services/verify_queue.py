@@ -119,7 +119,7 @@ class VerifyQuotaExceeded(Exception):
 #:
 #: 键取手机号（易班账号的唯一标识）；空键不守卫（没有可互斥的对象）。
 #: gunicorn 单进程多线程形态下进程内集合即足够；跨进程（多 worker）形态不在本仓
-#: 生产口径内（`-w 1 --threads 32` 是明文不变量）。
+#: 生产口径内（`-w 1` 是明文不变量；线程数见部署面值表 deploy/web.env）。
 _in_flight_accounts = set()
 _in_flight_cv = threading.Condition()
 

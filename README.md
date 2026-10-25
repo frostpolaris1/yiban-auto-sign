@@ -427,7 +427,8 @@ docker compose exec yiban ls -l /backups
 |---|---|
 | `docker/Dockerfile` | 应用镜像（x86_64） |
 | `docker-compose.yml` | 编排 `yiban`（应用）+ `yiban-nginx`（反代）双容器，声明备份命名卷 |
-| `docker/nginx.conf` | 容器内 HTTPS 反代配置（覆盖式 XFF，见上文信任模型） |
+| `docker/nginx.conf` | 容器内 HTTPS 反代配置**模板**（端口经官方镜像的 envsubst 渲染；覆盖式 XFF，见上文信任模型） |
+| `deploy/web.env` | **部署面唯一值表**：Web 端口与 gunicorn 线程数（systemd/容器/nginx/compose/Dockerfile 共用） |
 | `docker/supervisord.conf` | 容器内进程管理（Web + 调度） |
 | `docker/scheduler.py` | 容器内签到调度 + 每日 02:00 备份挂点 |
 | `docker/backup-docker.sh` | 容器形态的加密备份/恢复脚本（调度器每日调它；也可手工调） |
@@ -891,10 +892,15 @@ YIBAN_ADMIN_PASSWORD='你的强口令' .venv/bin/python3 -m yiban.entry.cli init
 #    首次登录后建议在「我的账号 → 修改主管理员密码」重设：修改会递增 PW_VERSION
 #    （旧会话全部失效），并触发安全告警。
 
-# 3. 启动（默认只监听回环 127.0.0.1:17892，--host/--port 可改）
+# 3. 启动（默认只监听回环；端口见 deploy/web.env 的 YIBAN_WEB_PORT，--host/--port 可改）
 .venv/bin/python3 -m web
 # 生产用 systemd + gunicorn 常驻（禁止 werkzeug dev server 公网直连）：
 #   systemd 单元模板 web/deploy/yiban-web.service，nginx 示例 web/deploy/nginx.conf.example
+#
+# 🔑 **端口与线程数只有一处定义：`deploy/web.env`**。六个部署件（本单元的 ExecStart/
+#   WorkingDirectory/ReadWritePaths、supervisord、nginx 两处 proxy_pass、Dockerfile、
+#   compose 探活、`python -m web` 的 --port 缺省）都从这张表取；仓库里不再写死这两个值。
+#   守卫：`tests/test_deploy_parameterization_gate.py`。
 #
 # 装单元前先备齐模板里引用的三样东西（缺任一样 systemd 会以 "Failed at step NAMESPACE"
 # 或 EnvironmentFile 报错启动失败）：
@@ -908,12 +914,21 @@ YIBAN_ADMIN_PASSWORD='你的强口令' .venv/bin/python3 -m yiban.entry.cli init
 #   （进程环境优先）。另 YIBAN_ACCOUNTS_KEY 仍是环境变量档优先。整份拷贝
 #   虽不再压住「系统设置」页的新值，但会把启动时刻的旧值留成第二份来源、随 .env
 #   漂移。模板只放上面这一行；旧部署若已整份拷贝，收窄成只含这一行即可。
-# ⚠️ 换目录部署要改齐这几处（模板与 cron 写的都是绝对路径 /opt/yiban-auto-sign）：
-#   ① 单元的 WorkingDirectory；② 单元的 ExecStart（.venv/bin/gunicorn 的完整路径）；
-#    ③ 单元的 ReadWritePaths；另有 crontab 里的 /opt/yiban-auto-sign/run.sh。
+# ⚠️ 换目录部署：单元是**模板**，检出根由渲染命令注入（`YIBAN_APP_DIR="$(pwd)"`），
+#   不再需要手工改 WorkingDirectory / ExecStart / ReadWritePaths。cron 表的
+#   @YIBAN_APP_DIR@ 由 `deploy/prod/install.sh` 按检出根渲染。
 #
-# 安装与开机自启（照抄即可，先按上面改好路径）：
-#   cp web/deploy/yiban-web.service /etc/systemd/system/
+# 安装与开机自启（照抄即可；先在检出根执行）：
+#   set -a; . deploy/web.env; set +a        # 读端口/线程数（唯一值表）
+#   export YIBAN_APP_DIR="$(pwd)"           # 检出根（标准部署即 /opt/yiban-auto-sign）
+#   # 检出路径必须在白名单字符集内（绝对路径＋字母数字._/-）：空格/引号/;/$/` 等一律拒绝
+#   [[ "$YIBAN_APP_DIR" =~ ^/[A-Za-z0-9._/-]+$ ]] || { echo "检出路径含不安全字符：$YIBAN_APP_DIR"; exit 1; }
+#   # 白名单已排除 & 与 #；下面转义是第二层防护（sed 替换串里 & 表示匹配文本）
+#   APP_DIR_SED=$(printf '%s' "$YIBAN_APP_DIR" | sed 's/[&#]/\\&/g')
+#   sed -e "s#@YIBAN_APP_DIR@#$APP_DIR_SED#g" \
+#       -e "s#@YIBAN_WEB_PORT@#$YIBAN_WEB_PORT#g" \
+#       -e "s#@YIBAN_WEB_THREADS@#$YIBAN_WEB_THREADS#g" \
+#       web/deploy/yiban-web.service | sudo tee /etc/systemd/system/yiban-web.service >/dev/null
 #   systemctl daemon-reload && systemctl enable --now yiban-web
 #   systemctl status yiban-web        # 启动失败看 journalctl -u yiban-web -n 50
 ```
@@ -991,7 +1006,7 @@ Web 应用**自动适配挂载前缀**，同一份代码可部署在三种位置
 只有 SSH、没有浏览器的机器也能把管理面走完——管理端本身就是一套 JSON 接口，网页只是它的前端。**除 `GET /api/scheduler/executors` 外，下面这些接口属于内部契约**（随版本可能变），自动化脚本请锁定版本并自测。
 
 ```bash
-B=http://127.0.0.1:17892 ; J=/tmp/yiban.jar
+B="http://127.0.0.1:$(sed -n 's/^YIBAN_WEB_PORT=//p' deploy/web.env)" ; J=/tmp/yiban.jar
 # 登录（会话存 cookie jar）
 curl -s -c $J -X POST $B/api/login -H 'Content-Type: application/json' \
      -d '{"username":"你的管理员账号","password":"你的口令"}'

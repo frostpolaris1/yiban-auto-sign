@@ -121,6 +121,7 @@ fast	tests/test_deploy_gate_skip_verdict.py	# 夹具副本跑闸门摘要：SKIP
 fast	tests/test_deploy_gate_wiring.py
 fast	tests/test_deploy_paths_and_restore_verdict.py
 fast	tests/test_deploy_prod_artifacts.py
+fast	tests/test_deploy_parameterization_gate.py	# 只读文本+git 名册：六载体无字面量、渲染等值与突变自证
 fast	tests/test_dev_verify_entry.py
 fast	tests/test_device_autofill_api.py
 fast	tests/test_device_identification.py
