@@ -49,7 +49,7 @@ server/
 └── canonical.tsv   单一事实源名册
 ```
 
-依赖方向只有一条：`entry → app → core`。`adapters` 被 `app` 调用。反向导入由门拦截。
+依赖方向只有一条：`entry → app → core`。`app` 只依赖 `core` 定义的接口。`adapters` 实现这些接口，由 `cmd` 装配注入。`app` 不得导入 `adapters`。反向导入由 `canonical.tsv` 的 `boundary.*` 门拦截。
 
 ### 3.1 域名单
 
@@ -128,7 +128,15 @@ ui/src/
 1. 顶层目录必须在名册内。
 2. `server/internal/*` 与 `ui/src/*` 的子目录必须在名册内。
 3. 新增域必须登记，否则门红。
-4. 名册为空时门报错，不当绿。
+4. 名册为空、作用域不存在、扫描集为空时门报错，不当绿。未到阶段的作用域用 `?` 标记。
+
+前端导入方向由 `ui/scripts/structure-gate.mjs` 解析模块路径后判定。
+
+两条入口：
+
+- 旧 Python 栈：`scripts/dev-verify.sh`。
+- 新 Go + React 栈：`bash scripts/verify-stacks.sh`。
+- CI 的两个 job 分别跑这两条。
 
 运行：`cd server && ./scripts/verify.sh`。
 

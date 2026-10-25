@@ -230,7 +230,10 @@ type Account struct {
 	OwnerUserId string    `json:"owner_user_id"`
 
 	// PhoneMasked Masked phone. The raw phone never leaves the server.
-	PhoneMasked  string     `json:"phone_masked"`
+	PhoneMasked string `json:"phone_masked"`
+
+	// PhoneModel Device model reported to the platform. Not sensitive.
+	PhoneModel   *string    `json:"phone_model,omitempty"`
 	RejectReason string     `json:"reject_reason"`
 	ReviewedAt   *time.Time `json:"reviewed_at,omitempty"`
 	ReviewedBy   *string    `json:"reviewed_by,omitempty"`
@@ -442,6 +445,9 @@ type UserStatus string
 // AccountID defines model for AccountID.
 type AccountID = string
 
+// CSRFToken defines model for CSRFToken.
+type CSRFToken = string
+
 // Cursor defines model for Cursor.
 type Cursor = string
 
@@ -486,6 +492,48 @@ type AccountListParams struct {
 	Q *string `form:"q,omitempty" json:"q,omitempty"`
 }
 
+// AccountCreateParams defines parameters for AccountCreate.
+type AccountCreateParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
+// AccountDeleteParams defines parameters for AccountDelete.
+type AccountDeleteParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
+// AccountUpdateParams defines parameters for AccountUpdate.
+type AccountUpdateParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
+// AccountPauseParams defines parameters for AccountPause.
+type AccountPauseParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
+// AccountReviewParams defines parameters for AccountReview.
+type AccountReviewParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
+// AuthLogoutParams defines parameters for AuthLogout.
+type AuthLogoutParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
 // SchoolListParams defines parameters for SchoolList.
 type SchoolListParams struct {
 	// Cursor Opaque page cursor taken from next_cursor.
@@ -495,6 +543,20 @@ type SchoolListParams struct {
 	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
+// SchoolCreateParams defines parameters for SchoolCreate.
+type SchoolCreateParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
+// SchoolUpdateParams defines parameters for SchoolUpdate.
+type SchoolUpdateParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
 // SchoolAdminListParams defines parameters for SchoolAdminList.
 type SchoolAdminListParams struct {
 	// Cursor Opaque page cursor taken from next_cursor.
@@ -502,6 +564,27 @@ type SchoolAdminListParams struct {
 
 	// Limit Page size, 1 to 200.
 	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// SchoolAdminAddParams defines parameters for SchoolAdminAdd.
+type SchoolAdminAddParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
+// SchoolAdminRemoveParams defines parameters for SchoolAdminRemove.
+type SchoolAdminRemoveParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
+// UserCreateParams defines parameters for UserCreate.
+type UserCreateParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
 }
 
 // AccountCreateJSONRequestBody defines body for AccountCreate for application/json ContentType.
@@ -544,22 +627,22 @@ type ServerInterface interface {
 	AccountList(c *gin.Context, params AccountListParams)
 	// AccountCreate Register a platform account.
 	// (POST /api/accounts)
-	AccountCreate(c *gin.Context)
+	AccountCreate(c *gin.Context, params AccountCreateParams)
 	// AccountDelete Soft-delete an account.
 	// (DELETE /api/accounts/{id})
-	AccountDelete(c *gin.Context, id AccountID)
+	AccountDelete(c *gin.Context, id AccountID, params AccountDeleteParams)
 	// AccountGet Read one account.
 	// (GET /api/accounts/{id})
 	AccountGet(c *gin.Context, id AccountID)
 	// AccountUpdate Update account fields.
 	// (PATCH /api/accounts/{id})
-	AccountUpdate(c *gin.Context, id AccountID)
+	AccountUpdate(c *gin.Context, id AccountID, params AccountUpdateParams)
 	// AccountPause Pause or resume an account.
 	// (POST /api/accounts/{id}/pause)
-	AccountPause(c *gin.Context, id AccountID)
+	AccountPause(c *gin.Context, id AccountID, params AccountPauseParams)
 	// AccountReview Approve or reject a pending account.
 	// (POST /api/accounts/{id}/review)
-	AccountReview(c *gin.Context, id AccountID)
+	AccountReview(c *gin.Context, id AccountID, params AccountReviewParams)
 	// AuthForgotPassword Start the password reset flow.
 	// (POST /api/auth/forgot-password)
 	AuthForgotPassword(c *gin.Context)
@@ -568,7 +651,7 @@ type ServerInterface interface {
 	AuthLogin(c *gin.Context)
 	// AuthLogout Destroy the current session.
 	// (POST /api/auth/logout)
-	AuthLogout(c *gin.Context)
+	AuthLogout(c *gin.Context, params AuthLogoutParams)
 	// AuthMe Return the signed-in user and the CSRF token.
 	// (GET /api/auth/me)
 	AuthMe(c *gin.Context)
@@ -580,22 +663,22 @@ type ServerInterface interface {
 	SchoolList(c *gin.Context, params SchoolListParams)
 	// SchoolCreate Create a school.
 	// (POST /api/schools)
-	SchoolCreate(c *gin.Context)
+	SchoolCreate(c *gin.Context, params SchoolCreateParams)
 	// SchoolUpdate Update school name, status or time zone.
 	// (PATCH /api/schools/{id})
-	SchoolUpdate(c *gin.Context, id SchoolID)
+	SchoolUpdate(c *gin.Context, id SchoolID, params SchoolUpdateParams)
 	// SchoolAdminList List admins bound to the school.
 	// (GET /api/schools/{id}/admins)
 	SchoolAdminList(c *gin.Context, id SchoolID, params SchoolAdminListParams)
 	// SchoolAdminAdd Bind an existing user as an admin of the school.
 	// (POST /api/schools/{id}/admins)
-	SchoolAdminAdd(c *gin.Context, id SchoolID)
+	SchoolAdminAdd(c *gin.Context, id SchoolID, params SchoolAdminAddParams)
 	// SchoolAdminRemove Unbind an admin from the school.
 	// (DELETE /api/schools/{id}/admins/{uid})
-	SchoolAdminRemove(c *gin.Context, id SchoolID, uid UserID)
+	SchoolAdminRemove(c *gin.Context, id SchoolID, uid UserID, params SchoolAdminRemoveParams)
 	// UserCreate Create a master, admin or user account.
 	// (POST /api/users)
-	UserCreate(c *gin.Context)
+	UserCreate(c *gin.Context, params UserCreateParams)
 	// HealthCheck Liveness probe.
 	// (GET /healthz)
 	HealthCheck(c *gin.Context)
@@ -672,6 +755,36 @@ func (siw *ServerInterfaceWrapper) AccountList(c *gin.Context) {
 // AccountCreate operation middleware
 func (siw *ServerInterfaceWrapper) AccountCreate(c *gin.Context) {
 
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AccountCreateParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
 	for _, middleware := range siw.HandlerMiddlewares {
 		middleware(c)
 		if c.IsAborted() {
@@ -679,7 +792,7 @@ func (siw *ServerInterfaceWrapper) AccountCreate(c *gin.Context) {
 		}
 	}
 
-	siw.Handler.AccountCreate(c)
+	siw.Handler.AccountCreate(c, params)
 }
 
 // AccountDelete operation middleware
@@ -697,6 +810,33 @@ func (siw *ServerInterfaceWrapper) AccountDelete(c *gin.Context) {
 		return
 	}
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AccountDeleteParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
 	for _, middleware := range siw.HandlerMiddlewares {
 		middleware(c)
 		if c.IsAborted() {
@@ -704,7 +844,7 @@ func (siw *ServerInterfaceWrapper) AccountDelete(c *gin.Context) {
 		}
 	}
 
-	siw.Handler.AccountDelete(c, id)
+	siw.Handler.AccountDelete(c, id, params)
 }
 
 // AccountGet operation middleware
@@ -747,6 +887,33 @@ func (siw *ServerInterfaceWrapper) AccountUpdate(c *gin.Context) {
 		return
 	}
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AccountUpdateParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
 	for _, middleware := range siw.HandlerMiddlewares {
 		middleware(c)
 		if c.IsAborted() {
@@ -754,7 +921,7 @@ func (siw *ServerInterfaceWrapper) AccountUpdate(c *gin.Context) {
 		}
 	}
 
-	siw.Handler.AccountUpdate(c, id)
+	siw.Handler.AccountUpdate(c, id, params)
 }
 
 // AccountPause operation middleware
@@ -772,6 +939,33 @@ func (siw *ServerInterfaceWrapper) AccountPause(c *gin.Context) {
 		return
 	}
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AccountPauseParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
 	for _, middleware := range siw.HandlerMiddlewares {
 		middleware(c)
 		if c.IsAborted() {
@@ -779,7 +973,7 @@ func (siw *ServerInterfaceWrapper) AccountPause(c *gin.Context) {
 		}
 	}
 
-	siw.Handler.AccountPause(c, id)
+	siw.Handler.AccountPause(c, id, params)
 }
 
 // AccountReview operation middleware
@@ -797,6 +991,33 @@ func (siw *ServerInterfaceWrapper) AccountReview(c *gin.Context) {
 		return
 	}
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AccountReviewParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
 	for _, middleware := range siw.HandlerMiddlewares {
 		middleware(c)
 		if c.IsAborted() {
@@ -804,7 +1025,7 @@ func (siw *ServerInterfaceWrapper) AccountReview(c *gin.Context) {
 		}
 	}
 
-	siw.Handler.AccountReview(c, id)
+	siw.Handler.AccountReview(c, id, params)
 }
 
 // AuthForgotPassword operation middleware
@@ -836,6 +1057,36 @@ func (siw *ServerInterfaceWrapper) AuthLogin(c *gin.Context) {
 // AuthLogout operation middleware
 func (siw *ServerInterfaceWrapper) AuthLogout(c *gin.Context) {
 
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AuthLogoutParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
 	for _, middleware := range siw.HandlerMiddlewares {
 		middleware(c)
 		if c.IsAborted() {
@@ -843,7 +1094,7 @@ func (siw *ServerInterfaceWrapper) AuthLogout(c *gin.Context) {
 		}
 	}
 
-	siw.Handler.AuthLogout(c)
+	siw.Handler.AuthLogout(c, params)
 }
 
 // AuthMe operation middleware
@@ -910,6 +1161,36 @@ func (siw *ServerInterfaceWrapper) SchoolList(c *gin.Context) {
 // SchoolCreate operation middleware
 func (siw *ServerInterfaceWrapper) SchoolCreate(c *gin.Context) {
 
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params SchoolCreateParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
 	for _, middleware := range siw.HandlerMiddlewares {
 		middleware(c)
 		if c.IsAborted() {
@@ -917,7 +1198,7 @@ func (siw *ServerInterfaceWrapper) SchoolCreate(c *gin.Context) {
 		}
 	}
 
-	siw.Handler.SchoolCreate(c)
+	siw.Handler.SchoolCreate(c, params)
 }
 
 // SchoolUpdate operation middleware
@@ -935,6 +1216,33 @@ func (siw *ServerInterfaceWrapper) SchoolUpdate(c *gin.Context) {
 		return
 	}
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params SchoolUpdateParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
 	for _, middleware := range siw.HandlerMiddlewares {
 		middleware(c)
 		if c.IsAborted() {
@@ -942,7 +1250,7 @@ func (siw *ServerInterfaceWrapper) SchoolUpdate(c *gin.Context) {
 		}
 	}
 
-	siw.Handler.SchoolUpdate(c, id)
+	siw.Handler.SchoolUpdate(c, id, params)
 }
 
 // SchoolAdminList operation middleware
@@ -1004,6 +1312,33 @@ func (siw *ServerInterfaceWrapper) SchoolAdminAdd(c *gin.Context) {
 		return
 	}
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params SchoolAdminAddParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
 	for _, middleware := range siw.HandlerMiddlewares {
 		middleware(c)
 		if c.IsAborted() {
@@ -1011,7 +1346,7 @@ func (siw *ServerInterfaceWrapper) SchoolAdminAdd(c *gin.Context) {
 		}
 	}
 
-	siw.Handler.SchoolAdminAdd(c, id)
+	siw.Handler.SchoolAdminAdd(c, id, params)
 }
 
 // SchoolAdminRemove operation middleware
@@ -1038,6 +1373,33 @@ func (siw *ServerInterfaceWrapper) SchoolAdminRemove(c *gin.Context) {
 		return
 	}
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params SchoolAdminRemoveParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
 	for _, middleware := range siw.HandlerMiddlewares {
 		middleware(c)
 		if c.IsAborted() {
@@ -1045,12 +1407,42 @@ func (siw *ServerInterfaceWrapper) SchoolAdminRemove(c *gin.Context) {
 		}
 	}
 
-	siw.Handler.SchoolAdminRemove(c, id, uid)
+	siw.Handler.SchoolAdminRemove(c, id, uid, params)
 }
 
 // UserCreate operation middleware
 func (siw *ServerInterfaceWrapper) UserCreate(c *gin.Context) {
 
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params UserCreateParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
 	for _, middleware := range siw.HandlerMiddlewares {
 		middleware(c)
 		if c.IsAborted() {
@@ -1058,7 +1450,7 @@ func (siw *ServerInterfaceWrapper) UserCreate(c *gin.Context) {
 		}
 	}
 
-	siw.Handler.UserCreate(c)
+	siw.Handler.UserCreate(c, params)
 }
 
 // HealthCheck operation middleware

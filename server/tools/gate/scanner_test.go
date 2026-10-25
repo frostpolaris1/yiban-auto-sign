@@ -148,3 +148,37 @@ func TestLoadRealCanonical(t *testing.T) {
 		t.Fatalf("canonical.tsv has %d rules, want at least 20", len(rules))
 	}
 }
+
+func TestCountGoFilesEmptyTree(t *testing.T) {
+	count, err := CountGoFiles(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("count = %d, want 0", count)
+	}
+}
+
+func TestCountGoFilesSkipsCaches(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"a", "vendor", "node_modules", "testdata"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "a", "x.go"), []byte("package a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{"vendor", "node_modules", "testdata"} {
+		if err := os.WriteFile(filepath.Join(root, dir, "y.go"), []byte("package y\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	count, err := CountGoFiles(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("count = %d, want 1", count)
+	}
+}

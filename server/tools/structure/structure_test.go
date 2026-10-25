@@ -17,6 +17,15 @@ func writeFile(t *testing.T, path, body string) {
 	}
 }
 
+func mkdirs(t *testing.T, root string, dirs ...string) {
+	t.Helper()
+	for _, dir := range dirs {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestLoadRulesRejectsEmptyFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "structure.tsv")
 	writeFile(t, path, "# only a comment\n")
@@ -35,49 +44,42 @@ func TestLoadRulesRejectsEmptyAllowlist(t *testing.T) {
 
 func TestLoadRulesRejectsUnknownScope(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "structure.tsv")
-	writeFile(t, path, "ui/srcx\ta\tnote\n")
-	if _, err := loadRules(path); err == nil {
-		t.Fatal("unknown scope must fail")
+	for _, scope := range []string{"ui/srcx", "server/internals", "server"} {
+		writeFile(t, path, scope+"\ta\tnote\n")
+		if _, err := loadRules(path); err == nil {
+			t.Fatalf("scope %q must fail", scope)
+		}
 	}
 }
 
-func TestLoadRulesParsesScopes(t *testing.T) {
+func TestLoadRulesParsesOptionalScope(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "structure.tsv")
-	writeFile(t, path, "root\tserver,ui\tnote\nui/src\tapp,pages\tnote\n")
+	writeFile(t, path, "root\tserver,ui\tnote\n?server/internal/app\tauth\tnote\n")
 	rules, err := loadRules(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rules) != 2 || !rules[1].allow["pages"] {
+	if len(rules) != 2 || !rules[1].optional || rules[1].scope != "server/internal/app" {
 		t.Fatalf("unexpected rules: %#v", rules)
 	}
 }
 
 func TestCheckAllowlistFlagsUnregistered(t *testing.T) {
 	root := t.TempDir()
-	for _, dir := range []string{"server/core", "server/stray"} {
-		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
+	mkdirs(t, root, "server/core", "server/stray")
 	rules := []rule{{scope: "server", allow: map[string]bool{"core": true}}}
 	problems, seen, err := checkAllowlist(root, rules)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if seen != 1 {
-		t.Fatalf("seen = %d", seen)
-	}
-	if len(problems) != 1 || !strings.Contains(problems[0], "stray") {
-		t.Fatalf("problems = %#v", problems)
+	if seen != 1 || len(problems) != 1 || !strings.Contains(problems[0], "stray") {
+		t.Fatalf("seen=%d problems=%#v", seen, problems)
 	}
 }
 
 func TestCheckAllowlistAcceptsRegistered(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "server", "core"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	mkdirs(t, root, "server/core")
 	rules := []rule{{scope: "server", allow: map[string]bool{"core": true}}}
 	problems, seen, err := checkAllowlist(root, rules)
 	if err != nil {
@@ -88,13 +90,45 @@ func TestCheckAllowlistAcceptsRegistered(t *testing.T) {
 	}
 }
 
+func TestCheckAllowlistMissingScope(t *testing.T) {
+	root := t.TempDir()
+	mkdirs(t, root, "server/core")
+	rules := []rule{
+		{scope: "server", allow: map[string]bool{"core": true}},
+		{scope: "server/internal", allow: map[string]bool{"app": true}},
+		{scope: "ui/src", optional: true, allow: map[string]bool{"app": true}},
+	}
+	problems, seen, err := checkAllowlist(root, rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seen != 1 {
+		t.Fatalf("seen = %d, want 1", seen)
+	}
+	if len(problems) != 1 || !strings.Contains(problems[0], "server/internal: scope is missing") {
+		t.Fatalf("problems = %#v", problems)
+	}
+}
+
+func TestCheckAllowlistSkipsDotDirsAtRoot(t *testing.T) {
+	root := t.TempDir()
+	mkdirs(t, root, ".github", ".beads", "server")
+	rules := []rule{{scope: "root", allow: map[string]bool{"server": true}}}
+	problems, _, err := checkAllowlist(root, rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(problems) != 0 {
+		t.Fatalf("problems = %#v", problems)
+	}
+}
+
 func TestCheckFrontendRules(t *testing.T) {
 	root := t.TempDir()
 	src := filepath.Join(root, "ui", "src")
 	writeFile(t, filepath.Join(src, "pages", "Dashboard.tsx"), "export const Dashboard = 1\n")
-	writeFile(t, filepath.Join(src, "components", "ui", "Bad.tsx"), "import x from '@/features/auth/x'\nexport default Bad\n")
-	writeFile(t, filepath.Join(src, "features", "auth", "a.ts"), "import '@/features/school/b'\n")
-	writeFile(t, filepath.Join(src, "features", "school", "b.ts"), "export const b = 1\n")
+	writeFile(t, filepath.Join(src, "components", "ui", "Bad.tsx"), "export default Bad\n")
+	writeFile(t, filepath.Join(src, "features", "Auth", "a.ts"), "export const a = 1\n")
 	writeFile(t, filepath.Join(src, "lib", "ok.ts"), "export const ok = 1\n")
 
 	problems, err := checkFrontend(root)
@@ -105,8 +139,7 @@ func TestCheckFrontendRules(t *testing.T) {
 	for _, want := range []string{
 		"page files must be named",
 		"use named exports",
-		"components must not import features",
-		"feature must not import feature",
+		"directory name must be lowercase",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing %q in:\n%s", want, joined)
@@ -120,11 +153,8 @@ func TestCheckFrontendRules(t *testing.T) {
 func TestCheckFrontendAcceptsCleanTree(t *testing.T) {
 	root := t.TempDir()
 	src := filepath.Join(root, "ui", "src")
-	writeFile(t, filepath.Join(src, "pages", "DashboardPage.tsx"), "import '@/features/auth/LoginForm'\nexport const DashboardPage = 1\n")
-	writeFile(t, filepath.Join(src, "pages", "LoginPage.tsx"), "import '@/features/dashboard/Card'\nexport const LoginPage = 1\n")
-	writeFile(t, filepath.Join(src, "features", "auth", "LoginForm.tsx"), "import '@/features/auth/helpers'\nexport const LoginForm = 1\n")
-	writeFile(t, filepath.Join(src, "features", "auth", "helpers.ts"), "export const helpers = 1\n")
-	writeFile(t, filepath.Join(src, "features", "dashboard", "Card.tsx"), "export const Card = 1\n")
+	writeFile(t, filepath.Join(src, "pages", "DashboardPage.tsx"), "export const DashboardPage = 1\n")
+	writeFile(t, filepath.Join(src, "features", "auth", "LoginForm.tsx"), "export const LoginForm = 1\n")
 	writeFile(t, filepath.Join(src, "components", "ui", "Button.tsx"), "export const Button = 1\n")
 
 	problems, err := checkFrontend(root)
@@ -132,6 +162,19 @@ func TestCheckFrontendAcceptsCleanTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(problems) != 0 {
+		t.Fatalf("problems = %#v", problems)
+	}
+}
+
+// An existing but empty front-end must not pass.
+func TestCheckFrontendEmptyScanFails(t *testing.T) {
+	root := t.TempDir()
+	mkdirs(t, root, "ui/src/app")
+	problems, err := checkFrontend(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(problems) != 1 || !strings.Contains(problems[0], "no TypeScript files") {
 		t.Fatalf("problems = %#v", problems)
 	}
 }

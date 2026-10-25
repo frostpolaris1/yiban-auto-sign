@@ -12,12 +12,14 @@ SPEC="contracts/openapi.yaml"
 CONFIG="oapi-codegen.yaml"
 OUT="internal/entry/http/oapi/oapi.gen.go"
 
+# The pinned module version wins. A bare oapi-codegen on PATH is used only
+# when the caller asks for it, because an older binary would produce different
+# output and make --check meaningless.
+PINNED="go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.1"
 if [ -n "${OAPI_CODEGEN:-}" ]; then
   GENERATOR="$OAPI_CODEGEN"
-elif command -v oapi-codegen >/dev/null 2>&1; then
-  GENERATOR="oapi-codegen"
 else
-  GENERATOR="go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.1"
+  GENERATOR="$PINNED"
 fi
 
 if [ "${1:-}" = "--check" ]; then

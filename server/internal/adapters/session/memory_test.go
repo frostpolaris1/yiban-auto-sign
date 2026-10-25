@@ -13,17 +13,23 @@ type stepClock struct{ t time.Time }
 
 func (c *stepClock) Now() time.Time { return c.t }
 
-func testUser() auth.User {
-	return auth.User{ID: "u1", Email: "u1@example.com", Role: auth.RoleUser, Status: auth.StatusActive}
+func testUser(id string) auth.User {
+	return auth.User{ID: id, Email: id + "@example.com", Role: auth.RoleUser, Status: auth.StatusActive}
+}
+
+var testSecret = []byte("0123456789abcdef0123456789abcdef")
+
+func newStore(clk *stepClock) *Memory {
+	return NewMemoryWithTTL(clk, 30*time.Minute, 12*time.Hour, testSecret)
 }
 
 // A revoked or expired token must never resolve again.
 func TestMemoryRevokeAndExpiry(t *testing.T) {
 	clk := &stepClock{t: time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC)}
-	store := NewMemoryWithTTL(clk, 30*time.Minute, 12*time.Hour)
+	store := newStore(clk)
 	ctx := context.Background()
 
-	issued, err := store.Issue(ctx, testUser())
+	issued, err := store.Issue(ctx, testUser("u1"))
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
@@ -41,12 +47,161 @@ func TestMemoryRevokeAndExpiry(t *testing.T) {
 		t.Fatalf("resolve after revoke = %v, want ErrNoSession", err)
 	}
 
-	second, err := store.Issue(ctx, testUser())
+	second, err := store.Issue(ctx, testUser("u1"))
 	if err != nil {
 		t.Fatalf("issue 2: %v", err)
 	}
 	clk.t = clk.t.Add(13 * time.Hour)
 	if _, err := store.Resolve(ctx, second.Token); !errors.Is(err, auth.ErrNoSession) {
 		t.Fatalf("resolve after absolute expiry = %v, want ErrNoSession", err)
+	}
+}
+
+// Resolve refreshes the idle window; a gap longer than the idle timeout ends
+// the session even before the absolute expiry.
+func TestMemoryIdleSliding(t *testing.T) {
+	clk := &stepClock{t: time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC)}
+	store := newStore(clk)
+	ctx := context.Background()
+
+	issued, err := store.Issue(ctx, testUser("u1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clk.t = clk.t.Add(20 * time.Minute)
+	if _, err := store.Resolve(ctx, issued.Token); err != nil {
+		t.Fatalf("resolve at +20m: %v", err)
+	}
+
+	clk.t = clk.t.Add(25 * time.Minute)
+	if _, err := store.Resolve(ctx, issued.Token); err != nil {
+		t.Fatalf("resolve at +45m after activity: %v", err)
+	}
+
+	clk.t = clk.t.Add(31 * time.Minute)
+	if _, err := store.Resolve(ctx, issued.Token); !errors.Is(err, auth.ErrNoSession) {
+		t.Fatalf("resolve after idle gap = %v, want ErrNoSession", err)
+	}
+}
+
+func TestMemoryRevokeIsIdempotent(t *testing.T) {
+	clk := &stepClock{t: time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC)}
+	store := newStore(clk)
+	ctx := context.Background()
+
+	issued, err := store.Issue(ctx, testUser("u1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := store.Revoke(ctx, issued.Token); err != nil {
+			t.Fatalf("revoke %d: %v", i, err)
+		}
+	}
+}
+
+// RevokeAllForUser ends every session of one user and leaves other users live.
+func TestMemoryRevokeAllForUser(t *testing.T) {
+	clk := &stepClock{t: time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC)}
+	store := newStore(clk)
+	ctx := context.Background()
+
+	first, err := store.Issue(ctx, testUser("u1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Issue(ctx, testUser("u1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := store.Issue(ctx, testUser("u2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.RevokeAllForUser(ctx, "u1"); err != nil {
+		t.Fatal(err)
+	}
+	for _, token := range []string{first.Token, second.Token} {
+		if _, err := store.Resolve(ctx, token); !errors.Is(err, auth.ErrNoSession) {
+			t.Fatalf("resolve revoked u1 token = %v, want ErrNoSession", err)
+		}
+	}
+	if _, err := store.Resolve(ctx, other.Token); err != nil {
+		t.Fatalf("resolve u2 token: %v", err)
+	}
+	if err := store.RevokeAllForUser(ctx, "u1"); err != nil {
+		t.Fatalf("second revoke all: %v", err)
+	}
+}
+
+// Issue always mints a fresh token.
+func TestMemoryIssueIsUnique(t *testing.T) {
+	clk := &stepClock{t: time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC)}
+	store := newStore(clk)
+	ctx := context.Background()
+
+	seen := map[string]bool{}
+	for i := 0; i < 50; i++ {
+		issued, err := store.Issue(ctx, testUser("u1"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if seen[issued.Token] {
+			t.Fatal("issue returned a duplicate token")
+		}
+		seen[issued.Token] = true
+	}
+}
+
+// The CSRF token is derived, never stored, and stable for one session token.
+func TestMemoryCSRFDerivation(t *testing.T) {
+	clk := &stepClock{t: time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC)}
+	store := newStore(clk)
+	ctx := context.Background()
+
+	issued, err := store.Issue(ctx, testUser("u1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issued.CSRFToken == issued.Token {
+		t.Fatal("csrf token equals the session token")
+	}
+	resolved, err := store.Resolve(ctx, issued.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.CSRFToken != issued.CSRFToken {
+		t.Fatalf("csrf token changed: %q then %q", issued.CSRFToken, resolved.CSRFToken)
+	}
+	if want := auth.CSRFToken(testSecret, issued.Token); resolved.CSRFToken != want {
+		t.Fatalf("csrf token is not the derived value")
+	}
+}
+
+// A user cannot hold more than MaxPerUser live sessions.
+func TestMemoryPerUserCap(t *testing.T) {
+	clk := &stepClock{t: time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC)}
+	store := newStore(clk)
+	ctx := context.Background()
+
+	var tokens []string
+	for i := 0; i < MaxPerUser+5; i++ {
+		issued, err := store.Issue(ctx, testUser("u1"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		tokens = append(tokens, issued.Token)
+		clk.t = clk.t.Add(time.Second)
+	}
+	live := 0
+	for _, token := range tokens {
+		if _, err := store.Resolve(ctx, token); err == nil {
+			live++
+		}
+	}
+	if live != MaxPerUser {
+		t.Fatalf("live sessions = %d, want %d", live, MaxPerUser)
 	}
 }
