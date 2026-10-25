@@ -18,8 +18,11 @@
 //
 // # 口径
 // 第 N 次调用取脚本第 N 项；序列用尽后重复最后一项。
+// 异构脚本按**调用到达顺序**发牌，不绑定 AttemptID：
+// 并发用例不得依赖发牌顺序，改用 OnAttempt 或 Expecter 固定每项。
 // 未配置脚本的方法返回零值与 nil 错误。
 // 被上下文取消的调用仍消耗一项脚本。
+// 声明 ImageRequired 时，无图请求返回 photo_missing，且**不消耗脚本**。
 // 空 AttemptID 关闭幂等缓存。
 // **全部时间取 FixedTime**，本包不读墙上时钟。
 package fake
@@ -175,6 +178,7 @@ func (p *Provider) Verify(ctx context.Context, _ contract.VerifyRequest) (contra
 
 // Sign 返回下一次签到结果。
 // 同一 AttemptID 串行执行；首次成功后缓存，重复调用不再取脚本。
+// 声明 ImageRequired 且请求无图时返回 photo_missing（契约 §4.5）。
 func (p *Provider) Sign(ctx context.Context, req contract.SignRequest) (contract.Result, error) {
 	p.count(&p.signHit)
 	release := p.lockAttempt(req.AttemptID)
@@ -183,11 +187,24 @@ func (p *Provider) Sign(ctx context.Context, req contract.SignRequest) (contract
 	p.mu.Lock()
 	if fixed, ok := p.attemptFixed[req.AttemptID]; ok && req.AttemptID != "" {
 		p.mu.Unlock()
+		if err := wait(ctx, 0); err != nil {
+			return contract.Result{}, err
+		}
 		return fixed, nil
 	}
 	if cached, ok := p.attempts[req.AttemptID]; ok && req.AttemptID != "" {
 		p.mu.Unlock()
+		if err := wait(ctx, 0); err != nil {
+			return contract.Result{}, err
+		}
 		return cached, nil
+	}
+	if p.caps.ImageRequired && req.Image == nil {
+		p.mu.Unlock()
+		if err := wait(ctx, 0); err != nil {
+			return contract.Result{}, err
+		}
+		return ResultFor(contract.OutcomePhotoMissing), nil
 	}
 	step := next(p.signSteps, &p.signN)
 	p.mu.Unlock()
@@ -380,12 +397,15 @@ func next[T any](steps []Step[T], n *int) Step[T] {
 }
 
 // wait 先查上下文，再在延迟期间响应取消。
+// 零延迟同样走 select：已取消的上下文不能拿到伪结果。
 func wait(ctx context.Context, delay time.Duration) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
 	if delay <= 0 {
-		return nil
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			return nil
+		}
 	}
 	timer := time.NewTimer(delay)
 	defer timer.Stop()

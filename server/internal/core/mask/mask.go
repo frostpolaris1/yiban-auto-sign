@@ -9,12 +9,12 @@
 // 调用方**不得自行复写掩码规则**。
 //
 // # 复用
-// MaskPhone、MaskEmail、MaskDevice、MaskText、TextHasPhone、EmailLabel。
+// MaskPhone、MaskEmail、MaskDevice、MaskText、EmailLabel。
 //
 // # 口径
 // 所有函数幂等：对已掩码的值再掩码，返回原值。
 // 手机号保留前 3 后 4，邮箱保留首字符与域名，设备保留前 2 后 2。
-// 手机号形态判定只有本包一份（TextHasPhone），审计守卫复用它。
+// 手机号与邮箱的形态判定只有本包一份（MaskText），审计守卫复用它。
 package mask
 
 import (
@@ -32,7 +32,8 @@ var (
 )
 
 // isDigitSep 报告 c 是否为号码书写中的分隔符。
-// 与游程正则的 \s、点、连字符同源（W2C-R4-02：\f 属 \s）。
+// 游程正则的字符类是 [\s.\-]，Go 的 \s 为 [\t\n\f\r ]，**不含 \v**。
+// 故 \v 分支是防御性的：正常输入走不到，保留它只为对齐书写习惯。
 // 加号**不是**分隔符：+86 国家码留在段内，随窗口一起消费。
 func isDigitSep(c byte) bool {
 	switch c {
@@ -89,15 +90,12 @@ func MaskDevice(s string) string {
 // 「139-0013-9000 100」与「2026-10-25 13900139000」都能正确处理：
 // 手机号被掩，日期与数量保持原样。
 // 改写非号码的数字会破坏原文，故窗口之外的数字一律不动。
+//
+// **调用方判「是否含 PII」只看本函数返回值是否变化**：
+// 本包不再另设只判手机号的入口，避免两套口径漂移。
 func MaskText(s string) string {
 	s = emailInText.ReplaceAllStringFunc(s, MaskEmail)
 	return phoneInText.ReplaceAllStringFunc(s, maskPhoneRun)
-}
-
-// TextHasPhone 报告文本里是否还有未掩码的手机号形态。
-// 审计守卫用它做**失败关闭**的二次检查；判定口径与 MaskText 同源。
-func TextHasPhone(s string) bool {
-	return MaskText(s) != s
 }
 
 // segment 是游程内一段无分隔符的数字，start 与 end 是字节偏移（含头不含尾）。

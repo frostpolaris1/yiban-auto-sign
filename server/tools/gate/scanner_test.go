@@ -209,6 +209,64 @@ var _ = time.Now()
 	}
 }
 
+// 非 import 规则的 allow 路径：allow 内的文件豁免，其余照常命中。
+// 该路径在 ruleApplies 重构后改走 underAny，必须单独钉住。
+func TestScanNonImportAllow(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "internal/testsupport/clock.go", `package testsupport
+import "time"
+var _ = time.Now()
+`)
+	writeFile(t, root, "internal/app/foo.go", `package app
+import "time"
+var _ = time.Now()
+`)
+	rules := []Rule{testRule("clock.now", "call", "internal/core/clock/", "time.Now", "internal/testsupport/")}
+	violations, err := Scan(root, rules, false)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(violations) != 1 || violations[0].File != "internal/app/foo.go" {
+		t.Fatalf("want only the app violation, got %#v", violations)
+	}
+}
+
+// 加载时拒绝语义反转写法：非 import 规则的 owner *，以及任何规则的 allow *。
+// 两者都会让规则永不生效，且门会静默报绿。
+func TestLoadRulesRejectsWildcardInversion(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+	}{
+		{"non-import owner", "clock.now\tcall\t*\ttime.Now\t\tmsg"},
+		{"non-import allow", "clock.now\tcall\tinternal/core/clock/\ttime.Now\t*\tmsg"},
+		{"import allow", "fake.import\timport\t*\tinternal/signing/fake\t*\tmsg"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "rules.tsv")
+			if err := os.WriteFile(path, []byte(tc.line+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadRules(path); err == nil {
+				t.Fatalf("LoadRules accepted %q", tc.line)
+			}
+		})
+	}
+}
+
+// import 规则的 owner * 是合法写法：它表示检查全部被扫描文件。
+func TestLoadRulesAllowsImportOwnerWildcard(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rules.tsv")
+	line := "fake.import\timport\t*\tinternal/signing/fake\tinternal/signing/conformance/\tmsg\n"
+	if err := os.WriteFile(path, []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadRules(path); err != nil {
+		t.Fatalf("LoadRules: %v", err)
+	}
+}
+
 func TestLoadRulesEmptyIsError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "empty.tsv")
 	if err := os.WriteFile(path, []byte("# only a comment\n"), 0o644); err != nil {

@@ -56,10 +56,12 @@ func TestCheckListIsFixed(t *testing.T) {
 		CheckTargetsCancel,
 		CheckVerifyResult,
 		CheckSignResult,
+		CheckPhotoMissing,
 		CheckPIIAbsent,
 		CheckSignRetry,
 		CheckSignUnknown,
 		CheckSignCancel,
+		CheckSignTimeout,
 		CheckSignIdempotent,
 		CheckSignConcurrent,
 	}
@@ -225,53 +227,124 @@ func (crossTalk) Sign(context.Context, contract.SignRequest) (contract.Result, e
 	return contract.Result{Outcome: contract.OutcomeAlreadyDone}, nil
 }
 
+// 证据带分隔手机号：pii.absent 必须红。
+// 该形状与 W2C-R4-01 修复的形状相同；判据必须与被保护的边界同口径。
+type leaksSeparatedPhone struct{ contract.Provider }
+
+func (leaksSeparatedPhone) Sign(context.Context, contract.SignRequest) (contract.Result, error) {
+	return contract.Result{
+		Outcome:  contract.OutcomeSuccess,
+		Evidence: contract.Evidence{Raw: map[string]any{"note": "139-0013-9000"}},
+	}, nil
+}
+
+// 同一 AttemptID 的 Outcome 相同，但证据字段变化：sign.idempotent 必须红。
+// 只比较 Outcome 的判据会放行这一形状。
+type unstableEvidence struct {
+	contract.Provider
+	calls atomic.Int64
+}
+
+func (p *unstableEvidence) Sign(context.Context, contract.SignRequest) (contract.Result, error) {
+	receipt := "receipt-1"
+	if p.calls.Add(1)%2 == 0 {
+		receipt = "receipt-2"
+	}
+	return contract.Result{
+		Outcome:  contract.OutcomeSuccess,
+		Evidence: contract.Evidence{Receipt: receipt},
+	}, nil
+}
+
+// 声明需要图片，无图请求却报成功：sign.photo_missing 必须红。
+type signsWithoutPhoto struct{ contract.Provider }
+
+func (signsWithoutPhoto) Sign(context.Context, contract.SignRequest) (contract.Result, error) {
+	return contract.Result{Outcome: contract.OutcomeSuccess}, nil
+}
+
+// 忽略上下文与期限：sign.timeout 必须红。
+type ignoresDeadline struct{ contract.Provider }
+
+func (ignoresDeadline) Sign(context.Context, contract.SignRequest) (contract.Result, error) {
+	return contract.Result{Outcome: contract.OutcomeSuccess}, nil
+}
+
+// 入口查上下文，调用中忽略：延迟返回成功。sign.timeout 必须红。
+type lateSuccess struct{ contract.Provider }
+
+func (lateSuccess) Sign(ctx context.Context, _ contract.SignRequest) (contract.Result, error) {
+	if err := ctx.Err(); err != nil {
+		return contract.Result{}, err
+	}
+	time.Sleep(60 * time.Millisecond)
+	return contract.Result{Outcome: contract.OutcomeSuccess}, nil
+}
+
+// 不实现 Expecter：sign.concurrent 必须拒绝认证（G2）。
+type withoutExpecter struct{ contract.Provider }
+
 // 判据内 panic：runCheck 必须转成同格式失败。
 type panicsOnID struct{ contract.Provider }
 
 func (panicsOnID) ID() string { panic("boom") }
 
-// 坏提供方必须被对应判据抓住，且失败文本统一。
+// 坏提供方必须被对应判据抓住，失败文本统一，且原因可核对。
+// reason 是该判据特有的原因子串；只比前缀会让「因别的原因红」也通过。
 func TestBrokenProvidersAreCaught(t *testing.T) {
 	cases := []struct {
 		name        string
 		want        string
+		reason      string
 		newProvider NewProvider
 	}{
-		{"构造器返回 nil", CheckConstructible,
+		{"构造器返回 nil", CheckConstructible, "构造器返回 nil",
 			func() contract.Provider { return nil }},
-		{"空 ID", CheckIDNonEmpty,
+		{"空 ID", CheckIDNonEmpty, "ID() 为空",
 			func() contract.Provider { return emptyID{referenceProvider()} }},
-		{"ID 不稳定", CheckIDStable,
+		{"ID 不稳定", CheckIDStable, "首值",
 			func() contract.Provider { return &unstableID{Provider: referenceProvider()} }},
-		{"能力不稳定", CheckCapsStable,
+		{"能力不稳定", CheckCapsStable, "两次能力不同",
 			func() contract.Provider { return &unstableCaps{Provider: referenceProvider()} }},
-		{"能力声明不实", CheckCapsHonored,
+		{"能力声明不实", CheckCapsHonored, "未声明 WindowDiscovery",
 			func() contract.Provider { return dishonestCaps{referenceProvider()} }},
-		{"窗口起止颠倒", CheckWindowShape,
+		{"窗口起止颠倒", CheckWindowShape, "不晚于开始",
 			func() contract.Provider { return invertedWindow{referenceProvider()} }},
-		{"发现忽略取消", CheckWindowCancel,
+		{"发现忽略取消", CheckWindowCancel, "want context.Canceled",
 			func() contract.Provider { return ignoresCancel{referenceProvider()} }},
-		{"目标发现忽略取消", CheckTargetsCancel,
+		{"目标发现忽略取消", CheckTargetsCancel, "want context.Canceled",
 			func() contract.Provider { return ignoresCancelOnTargets{referenceProvider()} }},
-		{"目标坐标越界", CheckTargetsShape,
+		{"目标坐标越界", CheckTargetsShape, "坐标无效",
 			func() contract.Provider { return badTargets{referenceProvider()} }},
-		{"校验失败", CheckVerifyResult,
+		{"校验失败", CheckVerifyResult, "Verify 返回错误",
 			func() contract.Provider { return failingVerify{referenceProvider()} }},
-		{"结果词表越界", CheckSignResult,
+		{"结果词表越界", CheckSignResult, "不在契约词表内",
 			func() contract.Provider { return badOutcome{referenceProvider()} }},
-		{"证据泄漏手机号", CheckPIIAbsent,
+		{"证据泄漏手机号", CheckPIIAbsent, "泄漏手机号",
 			func() contract.Provider { return leaksPhone{referenceProvider()} }},
-		{"unknown 可重试", CheckSignUnknown,
+		{"证据泄漏分隔手机号", CheckPIIAbsent, "明文手机号或邮箱",
+			func() contract.Provider { return leaksSeparatedPhone{referenceProvider()} }},
+		{"unknown 可重试", CheckSignUnknown, "unknown 被标记可重试",
 			func() contract.Provider { return retriesUnknown{referenceProvider()} }},
-		{"transient 不可重试", CheckSignRetry,
+		{"transient 不可重试", CheckSignRetry, "transient 必须可重试",
 			func() contract.Provider { return nonRetryableTransient{referenceProvider()} }},
-		{"取消后仍成功", CheckSignCancel,
+		{"取消后仍成功", CheckSignCancel, "want context.Canceled",
 			func() contract.Provider { return ignoresCancelOnSign{referenceProvider()} }},
-		{"重复调用变形", CheckSignIdempotent,
+		{"重复调用变形", CheckSignIdempotent, "同一 AttemptID 两次结果不同",
 			func() contract.Provider { return &unstableSign{Provider: referenceProvider()} }},
-		{"并发结果串扰", CheckSignConcurrent,
+		{"重复调用证据变化", CheckSignIdempotent, "同一 AttemptID 两次结果不同",
+			func() contract.Provider { return &unstableEvidence{Provider: referenceProvider()} }},
+		{"并发结果串扰", CheckSignConcurrent, "并发结果串扰",
 			func() contract.Provider { return crossTalk{referenceProvider()} }},
-		{"判据内 panic", CheckIDNonEmpty,
+		{"未实现 Expecter", CheckSignConcurrent, "Expecter",
+			func() contract.Provider { return withoutExpecter{referenceProvider()} }},
+		{"无图仍报成功", CheckPhotoMissing, "want photo_missing",
+			func() contract.Provider { return signsWithoutPhoto{referenceProvider()} }},
+		{"忽略期限", CheckSignTimeout, "期限已过仍返回 nil 错误",
+			func() contract.Provider { return ignoresDeadline{referenceProvider()} }},
+		{"在途取消后返回成功", CheckSignTimeout, "取消后仍返回 nil 错误",
+			func() contract.Provider { return lateSuccess{referenceProvider()} }},
+		{"判据内 panic", CheckIDNonEmpty, "panic: boom",
 			func() contract.Provider { return panicsOnID{referenceProvider()} }},
 	}
 
@@ -284,6 +357,9 @@ func TestBrokenProvidersAreCaught(t *testing.T) {
 			prefix := "conformance: " + tc.want + ": "
 			if !strings.HasPrefix(err.Error(), prefix) {
 				t.Fatalf("失败文本 %q 未以 %q 开头", err.Error(), prefix)
+			}
+			if !strings.Contains(err.Error(), tc.reason) {
+				t.Fatalf("失败文本 %q 未含原因 %q", err.Error(), tc.reason)
 			}
 		})
 	}

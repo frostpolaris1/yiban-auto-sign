@@ -29,6 +29,8 @@ func TestEncodeDetailRejectsPersonalData(t *testing.T) {
 		want   error
 	}{
 		{"bare phone", map[string]any{"reason": "13800138000"}, coreaudit.ErrDetailPII},
+		{"separated phone", map[string]any{"reason": "139-0013-9000"}, coreaudit.ErrDetailPII},
+		{"phone with the country code", map[string]any{"reason": "+86 139 0013 9000"}, coreaudit.ErrDetailPII},
 		{"phone after a word", map[string]any{"reason": "user13800138000"}, coreaudit.ErrDetailPII},
 		{"phone before a word", map[string]any{"reason": "13800138000abc"}, coreaudit.ErrDetailPII},
 		{"bare email", map[string]any{"reason": "a@b.com"}, coreaudit.ErrDetailPII},

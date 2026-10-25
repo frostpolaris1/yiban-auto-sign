@@ -12,6 +12,9 @@ fi
 go vet ./...
 go test ./...
 go run ./tools/gate -root . -rules canonical.tsv
+# 默认口径不含 _test.go。这里再跑一遍 -tests，
+# 使测试文件的 allow 登记被实际执行（AGENTS §29）。
+go run ./tools/gate -root . -rules canonical.tsv -tests
 
 # PostgreSQL e2e visibility (AGENTS §30). Without a DSN the suite skips, and a
 # skipped suite is not a pass: say so on stdout. With a DSN the suite must

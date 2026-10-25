@@ -205,6 +205,82 @@ func TestDiscoverAndVerifyHonorContext(t *testing.T) {
 	}
 }
 
+// 零延迟也必须响应取消：已取消的上下文不得拿到伪结果。
+func TestSignZeroDelayHonorsContext(t *testing.T) {
+	p := New("fake", contract.Capabilities{}).
+		OnSign(ResultSteps(contract.OutcomeSuccess)...)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result, err := p.Sign(ctx, signRequest("attempt-a"))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("错误 = %v, want context.Canceled", err)
+	}
+	if result.Outcome != "" {
+		t.Fatalf("已取消调用返回结果 %q, want 零值", result.Outcome)
+	}
+}
+
+// 幂等缓存与固定结果同样响应取消：取消后不得返回缓存结果。
+func TestSignCachedResultHonorsContext(t *testing.T) {
+	p := New("fake", contract.Capabilities{}).
+		OnAttempt("attempt-fixed", ResultFor(contract.OutcomeAlreadyDone))
+
+	first, err := p.Sign(context.Background(), signRequest("attempt-fixed"))
+	if err != nil {
+		t.Fatalf("首次 Sign 返回错误: %v", err)
+	}
+	if first.Outcome != contract.OutcomeAlreadyDone {
+		t.Fatalf("首次结果 = %q, want %q", first.Outcome, contract.OutcomeAlreadyDone)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := p.Sign(ctx, signRequest("attempt-fixed")); !errors.Is(err, context.Canceled) {
+		t.Fatalf("取消后错误 = %v, want context.Canceled", err)
+	}
+}
+
+// 声明图片能力时，无图请求返回 photo_missing，且不消耗脚本。
+func TestSignMissingImageReturnsPhotoMissing(t *testing.T) {
+	p := New("fake", contract.Capabilities{ImageRequired: true}).
+		OnSign(ResultSteps(contract.OutcomeSuccess, contract.OutcomeAlreadyDone)...)
+
+	without := signRequest("attempt-no-photo")
+	got, err := p.Sign(context.Background(), without)
+	if err != nil {
+		t.Fatalf("无图 Sign 返回错误: %v", err)
+	}
+	if got.Outcome != contract.OutcomePhotoMissing {
+		t.Fatalf("无图结果 = %q, want %q", got.Outcome, contract.OutcomePhotoMissing)
+	}
+
+	with := signRequest("attempt-with-photo")
+	with.Image = &contract.ImageRef{ID: "image-1", Mime: "image/jpeg"}
+	next, err := p.Sign(context.Background(), with)
+	if err != nil {
+		t.Fatalf("带图 Sign 返回错误: %v", err)
+	}
+	if next.Outcome != contract.OutcomeSuccess {
+		t.Fatalf("带图结果 = %q, want %q（无图调用不得消耗脚本）", next.Outcome, contract.OutcomeSuccess)
+	}
+}
+
+// 未声明图片能力时，无图请求照常取脚本。
+func TestSignMissingImageIgnoredWhenNotRequired(t *testing.T) {
+	p := New("fake", contract.Capabilities{}).
+		OnSign(ResultSteps(contract.OutcomeSuccess)...)
+
+	without := signRequest("attempt-no-photo")
+	got, err := p.Sign(context.Background(), without)
+	if err != nil {
+		t.Fatalf("无图 Sign 返回错误: %v", err)
+	}
+	if got.Outcome != contract.OutcomeSuccess {
+		t.Fatalf("无图结果 = %q, want %q", got.Outcome, contract.OutcomeSuccess)
+	}
+}
+
 // 结果词表必须覆盖契约全部 13 项，且 Advice 与契约表一致。
 func TestOutcomeTablesFollowContract(t *testing.T) {
 	all := AllOutcomes()

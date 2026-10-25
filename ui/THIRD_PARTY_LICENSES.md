@@ -7,8 +7,10 @@
 > Adminator 的通知单列在 `THIRD_PARTY_NOTICES.md`。
 
 允许的许可证：Apache-2.0、BSD-2-Clause、BSD-3-Clause、ISC、MIT、0BSD、CC0-1.0、BlueOak-1.0.0、MPL-2.0、Unlicense。
-MPL-2.0 与 Unlicense 只出现在构建期依赖，已在交付报告登记。
+MPL-2.0（lightningcss、lightningcss-win32-x64-msvc）只出现在构建期依赖；文件级弱著佐权，不限制本项目代码的许可证。
+Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题。
 其余许可证一律使门失败。GPL 系、AGPL 系、未知与无许可证同样失败。
+门还校验根 package.json 的全部直接依赖都出现在扫描结果里。
 
 | 包 | 版本 | 许可证 | 依赖类型 |
 |---|---|---|---|
