@@ -80,6 +80,134 @@ func (r *AccountRepo) Get(ctx context.Context, s corescope.Scope, id string) (co
 	return r.fetch(ctx, s, id, false)
 }
 
+// List 按作用域与可选过滤条件列账号，游标分页。
+//
+// 作用域与过滤条件是**与**关系：admin 指定未绑定院校时结果为空。
+// search 只匹配手机号（P1 未单独存储机型）；掩码串里的 * 先去掉。
+func (r *AccountRepo) List(ctx context.Context, s corescope.Scope, schoolID string, status coreaccount.Status, search, cursor string, limit int) ([]coreaccount.Record, string, error) {
+	if limit < 1 || limit > 200 {
+		return nil, "", validationError("limit must be between 1 and 200")
+	}
+	scopeSQL, args, err := scopePredicate(s, 1, "")
+	if err != nil {
+		return nil, "", err
+	}
+	where := ` WHERE deleted_at IS NULL` + scopeSQL
+	if schoolID != "" {
+		args = append(args, schoolID)
+		where += fmt.Sprintf(" AND school_id = $%d::uuid", len(args))
+	}
+	if status != "" {
+		if !status.Valid() {
+			return nil, "", validationError("unknown account status")
+		}
+		args = append(args, string(status))
+		where += fmt.Sprintf(" AND status = $%d::account_status", len(args))
+	}
+	if term := strings.TrimSpace(strings.ReplaceAll(search, "*", "")); term != "" {
+		args = append(args, term)
+		where += fmt.Sprintf(" AND strpos(phone, $%d) > 0", len(args))
+	}
+	query, args, err := appendKeyset(`SELECT `+accountColumns+` FROM accounts`+where,
+		args, cursor, "created_at", "id")
+	if err != nil {
+		return nil, "", err
+	}
+	query += ` ORDER BY created_at DESC, id DESC`
+	query, args = appendLimit(query, args, limit)
+
+	rows, err := r.db.q(ctx).Query(ctx, query, args...)
+	if err != nil {
+		return nil, "", mapError(err)
+	}
+	defer rows.Close()
+
+	items := make([]coreaccount.Record, 0, limit)
+	for rows.Next() {
+		record, err := scanAccount(rows)
+		if err != nil {
+			return nil, "", mapError(err)
+		}
+		items = append(items, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", mapError(err)
+	}
+	more := len(items) > limit
+	if more {
+		items = items[:limit]
+	}
+	next := nextCursor(items, more, func(rec coreaccount.Record) (time.Time, string) {
+		return rec.CreatedAt, rec.ID
+	})
+	return items, next, nil
+}
+
+// UpdatePhone 在范围内改登录手机号。
+// 与另一活跃行同校同号时撞唯一索引，映射为 conflict。
+func (r *AccountRepo) UpdatePhone(ctx context.Context, s corescope.Scope, id, phone string, at time.Time) (coreaccount.Record, error) {
+	if strings.TrimSpace(phone) == "" {
+		return coreaccount.Record{}, validationError("phone is required")
+	}
+	scopeSQL, scopeArgs, err := scopePredicate(s, 2, "")
+	if err != nil {
+		return coreaccount.Record{}, err
+	}
+	// 作用域参数必须紧跟 $1，脚本编号再顺延。
+	args := append([]any{id}, scopeArgs...)
+	phoneIdx := len(args) + 1
+	args = append(args, phone)
+	atIdx := len(args) + 1
+	args = append(args, at)
+	row := r.db.q(ctx).QueryRow(ctx, fmt.Sprintf(`
+		UPDATE accounts
+		   SET phone = $%d, updated_at = $%d
+		 WHERE id = $1::uuid AND deleted_at IS NULL%s
+		RETURNING %s`, phoneIdx, atIdx, scopeSQL, accountColumns), args...)
+	record, err := scanAccount(row)
+	return recordOrNotFound(record, err)
+}
+
+// Review 只推进 pending 行：通过写 active，拒绝写 rejected 并记理由。
+// 零行由 classifyMiss 区分：越权或已删报 not_found，状态已变报冲突。
+func (r *AccountRepo) Review(ctx context.Context, s corescope.Scope, id string, approve bool, reason, by string, at time.Time) (coreaccount.Record, error) {
+	if strings.TrimSpace(by) == "" {
+		return coreaccount.Record{}, validationError("reviewer is required")
+	}
+	if !approve && strings.TrimSpace(reason) == "" {
+		return coreaccount.Record{}, validationError("reject reason is required")
+	}
+	scopeSQL, scopeArgs, err := scopePredicate(s, 2, "")
+	if err != nil {
+		return coreaccount.Record{}, err
+	}
+	args := append([]any{id}, scopeArgs...)
+	approveIdx := len(args) + 1
+	args = append(args, approve)
+	reasonIdx := len(args) + 1
+	args = append(args, reason)
+	atIdx := len(args) + 1
+	args = append(args, at)
+	byIdx := len(args) + 1
+	args = append(args, by)
+	row := r.db.q(ctx).QueryRow(ctx, fmt.Sprintf(`
+		UPDATE accounts
+		   SET status = CASE WHEN $%d THEN 'active'::account_status ELSE 'rejected'::account_status END,
+		       reject_reason = CASE WHEN $%d THEN reject_reason ELSE $%d END,
+		       reviewed_at = $%d,
+		       reviewed_by = $%d::uuid,
+		       updated_at = $%d
+		 WHERE id = $1::uuid
+		   AND status = 'pending'::account_status
+		   AND deleted_at IS NULL%s
+		RETURNING %s`, approveIdx, approveIdx, reasonIdx, atIdx, byIdx, atIdx, scopeSQL, accountColumns), args...)
+	record, err := scanAccount(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return r.classifyMiss(ctx, s, id)
+	}
+	return record, mapError(err)
+}
+
 // SetStatus 仅当当前状态等于 from 时改状态。
 // 零行由 classifyMiss 区分：越权报 not_found，状态已变报冲突。
 func (r *AccountRepo) SetStatus(ctx context.Context, s corescope.Scope, id string, from, to coreaccount.Status, at time.Time, reason string) (coreaccount.Record, error) {
