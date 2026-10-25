@@ -1,0 +1,182 @@
+{
+  "_meta": {
+    "version": 1,
+    "doc": "代码侧缺省字面量逐键处置册（工单 yiban-auto-sign-7yf）。判据：scripts/check-config-registry.py 的判据 5。只登记豁免：已开门键（registry 的 default_literal_gate）要的是清零，不进本册。class 词表见脚本 CODE_EXEMPT_CLASSES；files 记每个文件的命中行数，行数漂移或归零都判红。缺省值仍只住在 config/registry.json。"
+  },
+  "YIBAN_ACCOUNTS_FILE": {
+    "class": "harness",
+    "reason": "前端端到端夹具显式注入临时账号文件路径；夹具值不是生产缺省定义点",
+    "files": {
+      "frontend/e2e/server.py": 1,
+      "frontend/e2e/setup_server.py": 1
+    }
+  },
+  "YIBAN_ADMIN_PW_VERSION": {
+    "class": "false_positive",
+    "reason": "两处是写回递增值 str(cur + 1)：同行的 1 是自增量，不是读取回退；读取已改读名册",
+    "files": {
+      "web/routes/me_api.py": 1,
+      "web/security.py": 1
+    }
+  },
+  "YIBAN_AVG_ATTEMPT_SEC": {
+    "class": "prose",
+    "reason": "两处 docstring 说明缺省 3s；散文不能读名册，删除数字会让耗时口径失去说明",
+    "files": {
+      "web/services/capacity.py": 1,
+      "yiban/engine/schedule.py": 1
+    }
+  },
+  "YIBAN_BACKUP_RETAIN_DAYS": {
+    "class": [
+      "container_form",
+      "harness"
+    ],
+    "reason": "compose 显式注入与名册缺省同值（部署形态声明）；演练脚本注入固定保留期。调度器读取已改读名册",
+    "files": {
+      "docker-compose.yml": 1,
+      "scripts/drill-container.sh": 1
+    }
+  },
+  "YIBAN_CAPACITY_MEASURED": {
+    "class": "false_positive",
+    "reason": "同行的 0 是 _cfg_int 的域下界 lo；缺省参数已改读名册",
+    "files": {
+      "yiban/entry/cli/__init__.py": 1
+    }
+  },
+  "YIBAN_MAIL_USER_FAIL_DAILY_CAP": {
+    "class": "prose",
+    "reason": "docstring 说明每账号每日封顶默认 1；读取点已改读名册",
+    "files": {
+      "yiban/adapters/notifier/report.py": 1
+    }
+  },
+  "YIBAN_MEASURE_COOLDOWN": {
+    "class": "prose",
+    "reason": "路由 docstring 说明全局冷却默认 600s；散文说明，不是读取点",
+    "files": {
+      "web/routes/settings_api.py": 1
+    }
+  },
+  "YIBAN_NOTIFY_COOLDOWN": {
+    "class": "prose",
+    "reason": "运维脚本 docstring 说明节流窗口默认 60 秒；散文说明，不是读取点",
+    "files": {
+      "scripts/backup_sentinel.py": 1
+    }
+  },
+  "YIBAN_NOTIFY_SECRET_ENC": {
+    "class": "write_value",
+    "reason": "写空串用于删键（清掉旧推送密钥）；空串在这里是删除指令，不是读取回退",
+    "files": {
+      "web/routes/notify.py": 1
+    }
+  },
+  "YIBAN_PROXY": {
+    "class": "prose",
+    "reason": "两处 docstring 的引号交界处出现两连引号；与空串缺省无关，属散文叙述",
+    "files": {
+      "yiban/egress.py": 2
+    }
+  },
+  "YIBAN_RETENTION_DAYS": {
+    "class": "prose",
+    "reason": "清理策略模块头说明保留期默认 365；散文说明，不是读取点",
+    "files": {
+      "yiban/adapters/statefiles/state_gc.py": 1
+    }
+  },
+  "YIBAN_RUN_LOCK_WAIT": {
+    "class": "prose",
+    "reason": "锁等待 docstring 说明默认 600s；默认常量已改读名册，prose 只描述语义",
+    "files": {
+      "yiban/engine/cli_support.py": 1
+    }
+  },
+  "YIBAN_SESSION_TTL_HOURS": {
+    "class": "prose",
+    "reason": "会话缓存 docstring 说明 TTL 默认 6 小时；散文说明，不是读取点",
+    "files": {
+      "yiban/adapters/persistence/session_cache.py": 1
+    }
+  },
+  "YIBAN_SIGN_DIST": {
+    "class": "harness",
+    "reason": "演练脚本显式注入分布方式；夹具值不是生产缺省定义点",
+    "files": {
+      "scripts/drill-container.sh": 1,
+      "scripts/drill_multi_exec.py": 1
+    }
+  },
+  "YIBAN_SIGN_ORDER": {
+    "class": "harness",
+    "reason": "三份演练脚本显式注入排序方式；夹具值不是生产缺省定义点",
+    "files": {
+      "scripts/drill-baremetal.sh": 1,
+      "scripts/drill-container.sh": 1,
+      "scripts/drill_multi_exec.py": 1
+    }
+  },
+  "YIBAN_SNAPSHOT_RETENTION_DAYS": {
+    "class": "prose",
+    "reason": "清理策略模块头说明快照保留默认 7 天；散文说明，不是读取点",
+    "files": {
+      "yiban/adapters/statefiles/state_gc.py": 1
+    }
+  },
+  "YIBAN_SSE_CONNECTIONS_MAX": {
+    "class": "prose",
+    "reason": "进度流模块头说明管理员流连接上限缺省 10；缺省由 run_stream 读名册，散文只作说明",
+    "files": {
+      "web/routes/stream_api.py": 1
+    }
+  },
+  "YIBAN_SSE_GAP_MAX": {
+    "class": "prose",
+    "reason": "进度流模块头说明缺口阈值默认 500；散文说明，不是读取点",
+    "files": {
+      "web/routes/stream_api.py": 1
+    }
+  },
+  "YIBAN_SSE_SESSION_MAX": {
+    "class": "prose",
+    "reason": "进度流模块头说明每会话连接上限 3；散文说明，不是读取点",
+    "files": {
+      "web/routes/stream_api.py": 1
+    }
+  },
+  "YIBAN_SSE_USER_CONNECTIONS_MAX": {
+    "class": "prose",
+    "reason": "进度流模块头说明用户流连接上限缺省 10；散文说明，不是读取点",
+    "files": {
+      "web/routes/stream_api.py": 1
+    }
+  },
+  "YIBAN_START_DELAY_MAX": {
+    "class": [
+      "false_positive",
+      "harness"
+    ],
+    "reason": "路由写侧的 0 是 start > 0 的比较阈值（不是缺省回退）；两份演练脚本注入夹具值。两处读取已改读名册",
+    "files": {
+      "scripts/drill-baremetal.sh": 1,
+      "scripts/drill-container.sh": 1,
+      "web/routes/settings_api.py": 1
+    }
+  },
+  "YIBAN_WINDOW_EDGE_FRONT_SEC": {
+    "class": "prose",
+    "reason": "窗口模块头说明两端各让出 60 秒；常量 DEFAULT_EDGE_SEC 由 window.py 持有，loader 依赖 window，反向读名册会成环",
+    "files": {
+      "yiban/core/window.py": 1
+    }
+  },
+  "YIBAN_WORKERS": {
+    "class": "shell",
+    "reason": "宿主 shell 的 ${YIBAN_WORKERS:-1} 回退；bash 读不了 JSON 名册，缺省沿用同名键",
+    "files": {
+      "run.sh": 1
+    }
+  }
+}

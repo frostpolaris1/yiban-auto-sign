@@ -273,11 +273,13 @@ def validate_registry(data):
                      "名册 %s 的 default_literal_gate 只允许 true（不设即关门）" % key)
             _require("default" in spec,
                      "名册 %s 开了默认值字面量门却没有缺省值，判据无处可判" % key)
+            # 承载常量**不是必需的**：读取点内联取 `default_of` 的键没有常量可登记，
+            # 强制登记一个假名字只会得到一条没有牙的门。声明了就必须是"非空字符串列表"。
             symbols = spec.get("default_symbols")
-            _require(isinstance(symbols, list) and symbols and
-                     all(isinstance(s, str) and s for s in symbols),
-                     "名册 %s 开了默认值字面量门就必须登记承载缺省的常量名"
-                     % key)
+            if symbols is not None:
+                _require(isinstance(symbols, list) and symbols and
+                         all(isinstance(s, str) and s for s in symbols),
+                         "名册 %s 的 default_symbols 必须是非空字符串列表" % key)
         if key.endswith(_WEB_FORBIDDEN_SUFFIXES):
             _require(spec.get("web_editable") is False,
                      "名册 %s 是路径/代理类键，不得入网页白名单（§5.4）" % key)
