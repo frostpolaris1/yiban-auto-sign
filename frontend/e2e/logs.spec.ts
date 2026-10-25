@@ -1062,6 +1062,7 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   // 把已经锚在 pwForm 上的 locator 传进去会变成双侧锚定、一条也命不中）。
   // 添加入口默认「不绑定」，手填分支（含「初始密码」）不渲染 ⇒ 本页只有一个 password 输入。
   const pwField = pwForm.locator('label.field:has(input[type="password"])').first();
+  await expect(pwField.locator(".field-label"), "管理端口令标签不可见").toBeVisible();
   await expect(pwField.locator(".field-label"), "管理端口令标签丢了「易班」限定词").toHaveText(/易班密码/);
   await expect(pwField.locator(".field-help"), "缺「不是本站登录密码」区分说明").toContainText("不是本站登录密码");
   await pwForm.getByRole("button", { name: /取消/ }).first().click();
@@ -1207,6 +1208,18 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   await expect(mp.locator("#accounts-tbody tr"), "打字即筛的既有语义被改动").toHaveCount(1);
   await acctInput2.press("Enter");
   await expect.poll(focusedId, { message: "非组合期回车没失焦（对照失败）" }).not.toBe("active-search");
+
+  // ---- A2. 移动端同一条「易班密码」标签断言（l065：此前移动段只断搜索按钮与溢出）----
+  // 判据与桌面 A 段同族：标签必须读得出「易班」限定词，并带区分说明。
+  await mp.locator("[data-add-account]").first().click();
+  const mpwForm = mp.locator(".pm-backdrop, .el-dialog").first();
+  await expect(mpwForm).toBeVisible();
+  const mpwField = mpwForm.locator('label.field:has(input[type="password"])').first();
+  await expect(mpwField.locator(".field-label"), "移动端口令标签不可见").toBeVisible();
+  await expect(mpwField.locator(".field-label"), "移动端口令标签丢了「易班」限定词").toHaveText(/易班密码/);
+  await expect(mpwField.locator(".field-help"), "移动端缺「不是本站登录密码」区分说明").toContainText("不是本站登录密码");
+  await mpwForm.getByRole("button", { name: /取消/ }).first().click();
+  await expect(mpwForm).toBeHidden();
 
   // 日志页：检索是服务端查询（关键字随请求发出），回车与按钮两条路径都要生效
   await mp.goto("/data/logs");

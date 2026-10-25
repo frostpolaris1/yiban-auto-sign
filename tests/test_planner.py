@@ -21,6 +21,10 @@
    环境变量快照还原；纯计算类用例不碰库。不发网络请求。整文件在本机执行，无
    skip。
 
+回归位（j0br）：两条真实案例不建 fixture。①「非法签到」是拍照签到拒签。
+   仓库无该响应实拍。② random×normal 无生产形状 fixture。
+   造响应会把未知当已知（ziqz 红线）。故只在本文档登记，不建用例。
+
 窗口取 06:00~07:20、前后各裁 300s ⇒ 有效窗口 70 分钟 = 4200s = 70 个 1 分钟分片
 （每片 60 个 1 秒微槽），与容量核算口径同数。自选片 `slot_min` 仍是"相对窗口起点"的
 5 分钟格（与 web `_pref_slots`、`schedule._slot_to_bi` 同源），故 `slot_min=35` 对应
@@ -552,33 +556,53 @@ class FrontFillTest(_Base):
         super().setUp()
         os.environ.update(PROD_WINDOW_ENV)
 
-    def _place(self, n, k):
+    def _place(self, n, k, order="sequence"):
         """铺 n 个自由账号（K 个执行体），返回 (rows, 升序落点秒)。"""
         execs = [f"worker-{i}@hostA" for i in range(k)]
-        rows = self.plan(_accounts(n), executors=execs, dist="front")
+        rows = self.plan(_accounts(n), executors=execs, dist="front", order=order)
         eff_lo = self.eff_lo_min()
         return rows, sorted(_off_sec(r["run_at"], eff_lo) for r in rows)
 
-    def test_average_spacing_never_faster_than_the_gate(self):
-        """**校验者**：排序后相邻 run_at 的平均间距 ≥ (avg+gap)/K。
-
-        平均值 = (最大 run_at − 最小 run_at) / (n−1)。只断平均值，**不断最小值**：
-        分片内微槽与相位由哈希派生，同一秒内可能落两个账号，个例很密属正常；平均值
-        才是"计划是否跑在闸门前面"的观测量。
-        """
-        for n, k in ((183, 2), (1200, 6)):
-            with self.subTest(n=n, k=k):
-                _, offs = self._place(n, k)
-                avg_gap = (offs[-1] - offs[0]) / (len(offs) - 1)
-                self.assertGreaterEqual(avg_gap, (3 + 10) / k)
-
     def test_span_within_capacity_allowed_segment(self):
-        """跨度判据：last − first ≤ span_needed + 一片宽（末片内相位可跨一点点）。"""
+        """跨度判据：last − first ≤ span_needed + 一片宽（末片内相位可跨一点点）。
+
+        本用例取代原「平均间距 ≥ (avg+gap)/K」判据。理由：平均间距不是序无关
+        不变量。审查实测 112 组合中 17 条违反（含 sequence 形）；本次另测 183
+        账号/K=2 的随机序为 6.474s（阈值 6.5s，DAY=2026-09-23）。哈希序可能让
+        首/末分片的微槽取不满，平均值因此低于容量上界，而计划并未跑在闸门前面。
+        跨度上界是容量允许段的真实不变量；order 无关性由 random×front 用例另钉。
+        """
         for n, k in ((183, 2), (1200, 6)):
             with self.subTest(n=n, k=k):
                 _, offs = self._place(n, k)
                 span_needed = math.ceil(n / k) * (3 + 10)
                 self.assertLessEqual(offs[-1] - offs[0], span_needed + planner.SLICE_SEC)
+
+    def test_random_order_uses_the_same_front_segment(self):
+        """`order=random` × `dist=front`：只改段内排序，不改 front 段（j0br 补格）。
+
+        判据取既有 front 同族形状：跨度 ≤ `ceil(n/K)×(avg+gap)` ＋ 一片宽；占用分片数
+        与 sequence 相同。**不**断平均间距 ≥ (avg+gap)/K：实测 183 账号 / K=2 的随机序
+        平均间距 6.474s，低于 6.5s（DAY=2026-09-23，本用例环境）。哈希序可能让首/末
+        分片的微槽取不满，故平均间距不是 order 无关的不变量。
+        """
+        n_slices = planner._slice_count(self.cfg())
+        eff_lo = self.eff_lo_min()
+        for n, k in ((183, 2), (1200, 6)):
+            with self.subTest(n=n, k=k):
+                seq_rows, _seq_offs = self._place(n, k, order="sequence")
+                rnd_rows, rnd_offs = self._place(n, k, order="random")
+                span_needed = math.ceil(n / k) * (3 + 10)
+                self.assertLessEqual(rnd_offs[-1] - rnd_offs[0],
+                                     span_needed + planner.SLICE_SEC)
+                expected = planner._front_slices(n, self.cfg(), n_slices, k)
+                for label, rows in (("sequence", seq_rows), ("random", rnd_rows)):
+                    used = max(_slice_of(r["run_at"], eff_lo) for r in rows) + 1
+                    self.assertEqual(used, expected,
+                                     "%s 的 front 段长不是容量允许的最早一段" % label)
+                self.assertNotEqual([r["run_at"] for r in rnd_rows],
+                                    [r["run_at"] for r in seq_rows],
+                                    "order=random 没有改变落点排序")
 
     def test_production_scale_leaves_thirty_minute_tail(self):
         """183 账号 / K=2（首轮生产量级）：最后一个 run_at 距有效窗口末 ≥ 30 分钟。"""
