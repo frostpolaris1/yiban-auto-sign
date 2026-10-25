@@ -33,6 +33,25 @@ else
   echo "pg e2e: $pg_pass top-level tests passed."
 fi
 
+# Auth e2e follows the same rule: a skipped suite is not a pass.
+# The package holds the DB-backed login, logout and reset flows.
+if [ -z "${YIBAN_TEST_DATABASE_URL:-}" ]; then
+  echo "SKIP: auth e2e did not run: YIBAN_TEST_DATABASE_URL is not set."
+else
+  auth_log="$(mktemp)"
+  if ! go test -count=1 -v ./cmd/server/ | tee "$auth_log"; then
+    rm -f "$auth_log"
+    exit 1
+  fi
+  auth_pass="$(grep -c '^--- PASS' "$auth_log" || true)"
+  rm -f "$auth_log"
+  if [ "$auth_pass" -lt 9 ]; then
+    echo "FAIL: auth e2e ran $auth_pass top-level tests; want at least 9." >&2
+    exit 1
+  fi
+  echo "auth e2e: $auth_pass top-level tests passed."
+fi
+
 # E-4 contract drift gate: regenerating must not change the checked-in code.
 # The gate fails closed: a generator that produced nothing exits 2.
 bash ./scripts/generate.sh --check

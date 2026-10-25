@@ -22,7 +22,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"sort"
 	"sync"
 	"time"
@@ -31,14 +30,14 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 )
 
-// 会话时长取自决策 12.9。
+// 会话时长取自决策 12.9。常量转发 core/auth，全仓只此一份来源。
 const (
-	DefaultIdle     = 30 * time.Minute
-	DefaultAbsolute = 12 * time.Hour
+	DefaultIdle     = auth.SessionIdleWindow
+	DefaultAbsolute = auth.SessionAbsoluteWindow
 
 	// MaxPerUser 限制每用户有效会话数。
 	// 新设备登录淘汰最旧会话，**不无界增长**。
-	MaxPerUser = 20
+	MaxPerUser = auth.MaxSessionsPerUser
 )
 
 type key [sha256.Size]byte
@@ -102,7 +101,7 @@ func (m *Memory) Issue(ctx context.Context, user auth.User) (auth.Issued, error)
 	if err := ctx.Err(); err != nil {
 		return auth.Issued{}, err
 	}
-	token, err := randomToken()
+	token, err := auth.NewToken()
 	if err != nil {
 		return auth.Issued{}, err
 	}
@@ -226,12 +225,4 @@ func (m *Memory) evictOverflowLocked(userID string) {
 		delete(m.entries, items[i].k)
 		delete(set, items[i].k)
 	}
-}
-
-func randomToken() (string, error) {
-	var b [32]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(b[:]), nil
 }

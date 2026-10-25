@@ -1,15 +1,15 @@
 // Package router 装配 Gin 引擎、中间件链与生成的契约处理器。
 //
 // # 功能
-// 建路由、串中间件、读会话 cookie、回 501 占位响应。
+// 建路由、串中间件、读会话 cookie、回占位响应。
+// 认证端点由 Options.Auth 注入；未注入时它们保持 501。
 // 本包**不**连数据库、**不**写业务逻辑。
-// 本阶段业务端点全部 501；只有 /healthz 与 /api/auth/me 是真的。
 //
 // # 归属
-// entry/http 入口层。存储经 Options 注入，路由不自行构造依赖。
+// entry/http 入口层。存储与用例经 Options 注入，路由不自行构造依赖。
 //
 // # 复用
-// New、Options；server 实现生成的契约接口。
+// New、Options、AuthService；server 实现生成的契约接口。
 //
 // # 口径
 // 中间件顺序固定：requestID → accessLog → recoverPanic →
@@ -34,18 +34,21 @@ import (
 // Options 装配路由。Sessions 必填；其余有默认值。
 type Options struct {
 	Sessions auth.SessionIssuer
-	Clock    clock.Clock
-	Logger   *slog.Logger
+	// Auth 是认证用例。为 nil 时登录、登出与口令重置回 501。
+	// 生产必须有值；cmd/server 在配置了数据库时注入。
+	Auth  AuthService
+	Clock clock.Clock
 	// InsecureCookies 选择无前缀的 cookie 名。
 	// 浏览器拒绝不带 Secure 的 __Host- cookie，故仅限本地 HTTP。
 	InsecureCookies bool
+	Logger          *slog.Logger
 }
 
 // server 实现生成的契约接口。
-// 本阶段业务端点全部回 501；只有 /healthz 与 /api/auth/me 是真的。
 type server struct {
-	sessions   auth.SessionIssuer
-	cookieName string
+	sessions auth.SessionIssuer
+	auth     AuthService
+	cookies  sessionCookie
 }
 
 // New 构造 HTTP 引擎。缺 SessionIssuer 时**失败关闭**。
@@ -61,11 +64,16 @@ func New(opts Options) (*gin.Engine, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	cookieName := auth.CookieName
-	if opts.InsecureCookies {
-		cookieName = auth.InsecureCookieName
+	srv := &server{
+		sessions: opts.Sessions,
+		auth:     opts.Auth,
+		cookies:  newSessionCookie(opts.InsecureCookies),
 	}
-	srv := &server{sessions: opts.Sessions, cookieName: cookieName}
+	if srv.auth == nil {
+		// 显性可见：没有用例就没有可用登录。
+		// 健康检查与 me 仍可服务，其余认证端点回 501。
+		logger.Warn("auth endpoints are not wired: login, logout and password reset return 501")
+	}
 
 	engine := gin.New()
 	engine.Use(
@@ -85,24 +93,6 @@ func New(opts Options) (*gin.Engine, error) {
 		respond.Error(c.Writer, c.Request, errs.New(errs.CodeNotFound, "route not found"))
 	})
 	return engine, nil
-}
-
-// AuthMe 返回会话主体。
-// **响应不回传会话令牌**，只回 CSRF 令牌。
-func (s *server) AuthMe(c *gin.Context) {
-	sess, ok := auth.FromContext(c.Request.Context())
-	if !ok {
-		respond.Error(c.Writer, c.Request, errs.New(errs.CodeUnauthorized, "authentication required"))
-		return
-	}
-	respond.JSON(c.Writer, http.StatusOK, oapi.SessionUser{
-		Id:                 sess.User.ID,
-		Email:              openapiEmail(sess.User.Email),
-		Role:               oapi.UserRole(sess.User.Role),
-		Status:             oapi.UserStatus(sess.User.Status),
-		MustChangePassword: sess.User.MustChangePassword,
-		CsrfToken:          sess.CSRFToken,
-	})
 }
 
 // HealthCheck 报告进程正在服务请求。

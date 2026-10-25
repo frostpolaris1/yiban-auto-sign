@@ -9,7 +9,7 @@
 // 调用方**不得自行复写掩码规则**。
 //
 // # 复用
-// MaskPhone、MaskEmail、MaskDevice、MaskText。
+// MaskPhone、MaskEmail、MaskDevice、MaskText、EmailLabel。
 //
 // # 口径
 // 所有函数幂等：对已掩码的值再掩码，返回原值。
@@ -69,4 +69,17 @@ func MaskDevice(s string) string {
 func MaskText(s string) string {
 	s = emailInText.ReplaceAllStringFunc(s, MaskEmail)
 	return phoneInText.ReplaceAllStringFunc(s, MaskPhone)
+}
+
+// EmailLabel 返回审计 actor 标签。
+//
+// **无法掩码的输入一律返回 "unknown"**：畸形串可能是手机号或任意文本，
+// 原样写入审计会把未掩码的个人数据带进链。
+func EmailLabel(s string) string {
+	normalized := strings.ToLower(strings.TrimSpace(s))
+	masked := MaskEmail(normalized)
+	if normalized == "" || masked == normalized {
+		return "unknown"
+	}
+	return masked
 }
