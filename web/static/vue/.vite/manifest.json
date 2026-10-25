@@ -73,7 +73,7 @@
     "name": "vendor-vue"
   },
   "accounts.html": {
-    "file": "assets/accounts-BxZvCGlG.js",
+    "file": "assets/accounts-Dt6kN7RE.js",
     "name": "accounts",
     "src": "accounts.html",
     "isEntry": true,
@@ -176,7 +176,7 @@
     ]
   },
   "myaccounts.html": {
-    "file": "assets/myaccounts-Bo0a1VWW.js",
+    "file": "assets/myaccounts-CtbsrPor.js",
     "name": "myaccounts",
     "src": "myaccounts.html",
     "isEntry": true,
