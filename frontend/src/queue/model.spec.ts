@@ -4,6 +4,7 @@ import {
   type OpRequest,
   type QueueRow,
   type RowView,
+  eventStatusText,
   WIDE_MIN,
   closeDrawer,
   deleteRequest,
@@ -180,6 +181,15 @@ describe("抽屉两形态与焦点口径", () => {
 
   it("初始焦点目标＝抽屉关闭钮（破坏面同 ep-confirm 落安全侧）", () => {
     expect(FOCUS_TARGET).toBe(".el-drawer__close-btn");
+  });
+});
+
+describe("事件状态文案（词表全称，未知码回落原文）", () => {
+  it("已知码取 STATUS_VOCAB.full；表外码原样可见（不并进已知档）", () => {
+    expect(eventStatusText("failed")).toBe("签到失败");
+    expect(eventStatusText("success")).toBe("签到成功");
+    expect(eventStatusText("weird_new_code")).toBe("weird_new_code");
+    expect(eventStatusText("")).toBe("");
   });
 });
 

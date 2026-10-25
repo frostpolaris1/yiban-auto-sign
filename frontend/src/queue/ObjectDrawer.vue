@@ -4,6 +4,7 @@ import { api } from "../lib/shell";
 import {
   FOCUS_TARGET,
   drawerForm,
+  eventStatusText,
   eventsQuery,
   type DrawerForm,
   type RowView,
@@ -184,7 +185,7 @@ function act(key: "approve" | "reject" | "edit" | "remove"): void {
           <ul v-else class="obj-event-list">
             <li v-for="(ev, i) in events" :key="i" class="obj-event">
               <span class="obj-event-ts mono">{{ ev.ts }}</span>
-              <span class="obj-event-status">{{ ev.status }}</span>
+              <span class="obj-event-status">{{ eventStatusText(ev.status) }}</span>
               <span class="obj-event-msg">{{ ev.message }}</span>
             </li>
           </ul>

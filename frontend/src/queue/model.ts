@@ -105,9 +105,16 @@ export function eventsQuery(index: number, days = 30): string {
 
 /* ---------------- 行归一 ---------------- */
 
-function statusShort(code: string): string {
+/** 状态码 → 词表短名（唯一事实源 lib/status-vocab.js）；表外码返回空串（由调用方兜底）。 */
+export function statusShort(code: string): string {
   const e = STATUS_VOCAB[code];
-  return e ? e.short : String(code || "");
+  return e ? e.short : "";
+}
+
+/** 事件行状态码 → 词表全称；表外码回落**原文**（不静默并进已知档，与日志页同口径）。 */
+export function eventStatusText(code: string): string {
+  const e = STATUS_VOCAB[code];
+  return e ? e.full : String(code || "");
 }
 
 export function rowView(raw: QueueRow, group: GroupKey): RowView {
