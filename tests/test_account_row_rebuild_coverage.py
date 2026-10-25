@@ -169,7 +169,6 @@ def scan_insert_sites(root):
         elif _INSERT_ACCOUNTS.search(text):
             sites.add((relpath, "<module>"))
     return sites
-    return sites
 
 
 class AccountRowRebuildCoverageTest(unittest.TestCase):
