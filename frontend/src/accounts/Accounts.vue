@@ -438,7 +438,9 @@ const detailProfile = ref<Record<string, string>>({});
 const privacy = ref<PrivacyState>(emptyPrivacyState());
 const privacyInitial = ref<PrivacyState>(emptyPrivacyState());
 const privacyError = ref("");
-const privacyBusy = ref(false);
+/** 本次弹窗内一段是否已保存，以及已保存请求体的指纹（二段失败重试时不重复写账号）。 */
+const accountSaved = ref(false);
+const accountSavedKey = ref("");
 const T = computed(() => formTexts("admin"));
 const showManual = computed(() => !formEditing.value && formEmail.value === "__manual__");
 const editingAccount = computed(() => (formIndex.value != null ? rowByIndex(formIndex.value) : null));
@@ -495,6 +497,8 @@ function openForm(index: number | null): void {
   privacy.value = emptyPrivacyState();
   privacyInitial.value = emptyPrivacyState();
   privacyError.value = "";
+  accountSaved.value = false;
+  accountSavedKey.value = "";
   // 先落固定条目（同步），loadBindableUsers 成功后再覆盖为「固定条目 + 可绑定用户」。
   emailItems.value = emailBaseItems();
   const a = index !== null ? rowByIndex(index) : null;
@@ -577,50 +581,33 @@ function onFormClosed(): void {
   privacy.value = emptyPrivacyState();
   privacyInitial.value = emptyPrivacyState();
   privacyError.value = "";
+  accountSaved.value = false;
+  accountSavedKey.value = "";
 }
 
-/**
- * 二段保存（管理面）：必须带完整号令牌（后端 fail-closed）。
- * 详情只下发开着的字段，故保存后重新取详情，让展示与开关回到服务端事实。
- */
-async function submitPrivacyAdmin(): Promise<void> {
-  if (privacyBusy.value || !formEditing.value || formIndex.value == null) return;
-  privacyError.value = "";
-  const payload = buildPrivacyPayload(privacy.value, privacyInitial.value, fullPhone.value, {
-    requirePhone: true,
-  });
-  if (payload && "error" in payload) {
-    privacyError.value = payload.error;
-    return;
-  }
-  if (!payload) {
-    toast().success("没有需要保存的改动");
-    return;
-  }
-  const diff = privacyDiff(privacy.value, privacyInitial.value);
-  const ok = await confirmDialog({
-    title: privacyTitle(),
-    body: privacyConfirmBody(diff),
-    confirmText: "保存",
-  });
-  if (!ok) return;
-  const index = formIndex.value;
-  privacyBusy.value = true;
+/** 只刷新乐观锁快照与完整号（不碰二段表单，避免抹掉未保存的隐私编辑）。 */
+async function refreshSnapshot(index: number): Promise<void> {
   try {
-    await api("PUT", privacyEndpoint("admin", index), payload);
-    toast().success("隐私资料已保存");
-    await loadDetail(index);
-  } catch (e) {
-    if (isCanceled(e)) return;
-    privacyError.value = errorMessage(e, "隐私资料保存失败，请稍后再试");
-  } finally {
-    privacyBusy.value = false;
+    const d = await api<{
+      account?: { phone?: string; name?: string; phone_model?: string; status?: string; deleted?: boolean };
+    }>("GET", `/api/accounts/${index}/detail`);
+    if (!formOpen.value || formIndex.value !== index) return;
+    const acc = d.account ?? {};
+    formSnapshot.value = makeSnapshot(acc);
+    if (acc.phone) fullPhone.value = String(acc.phone);
+  } catch {
+    // 保留旧快照：同一请求体重试会走「一段已保存」分支，不会因旧快照 409。
   }
+}
+
+function clonePrivacy(state: PrivacyState): PrivacyState {
+  return { profile: { ...state.profile }, expose: { ...state.expose } };
 }
 
 async function submitForm(): Promise<void> {
   if (formBusy.value) return;
   formError.value = "";
+  privacyError.value = "";
   const built = buildAccountPayload(
     {
       name: f.value.name,
@@ -648,18 +635,67 @@ async function submitForm(): Promise<void> {
     return;
   }
   const payload = built.payload;
-  const endpoint = formEditing.value ? `/api/accounts/${formIndex.value}` : "/api/accounts";
-  const method = formEditing.value ? "PUT" : "POST";
-  const gated = credsWritten(payload, { editing: formEditing.value, snapshot: formSnapshot.value });
+  // 二段只在编辑态存在。管理面写口 fail-closed：必须带本次提交的完整号令牌。
+  const privacyPayload = formEditing.value
+    ? buildPrivacyPayload(privacy.value, privacyInitial.value, payload.phone, { requirePhone: true })
+    : null;
+  if (privacyPayload && "error" in privacyPayload) {
+    privacyError.value = privacyPayload.error;
+    return;
+  }
+  if (privacyPayload) {
+    const ok = await confirmDialog({
+      title: privacyTitle(),
+      body: privacyConfirmBody(privacyDiff(privacy.value, privacyInitial.value)),
+      confirmText: "保存",
+    });
+    if (!ok) return;
+  }
+  // 指纹只含用户可改字段：_snapshot 在每次一段保存后会被刷新，
+  // 若把它算进指纹，二段失败重试会被误判成"一段变了"而重复写一次。
+  const accountKey = JSON.stringify({
+    name: payload.name,
+    phone: payload.phone,
+    password: payload.password,
+    phone_model: payload.phone_model,
+    phone_code: payload.phone_code,
+    email: payload.email,
+    initial_password: payload.initial_password,
+  });
+  const needAccount = !formEditing.value || !accountSaved.value || accountKey !== accountSavedKey.value;
   formBusy.value = true;
   try {
-    const data = gated
-      ? ((await dangerousSubmit({ method, path: endpoint, body: payload, desc: CREDS_GATE_DESC })) as { msg?: string })
-      : ((await api(method, endpoint, payload)) as { msg?: string });
+    let msg = "";
+    if (needAccount) {
+      const endpoint = formEditing.value ? `/api/accounts/${formIndex.value}` : "/api/accounts";
+      const method = formEditing.value ? "PUT" : "POST";
+      const gated = credsWritten(payload, { editing: formEditing.value, snapshot: formSnapshot.value });
+      const data = gated
+        ? ((await dangerousSubmit({ method, path: endpoint, body: payload, desc: CREDS_GATE_DESC })) as { msg?: string })
+        : ((await api(method, endpoint, payload)) as { msg?: string });
+      msg = data?.msg || "";
+      if (formEditing.value) {
+        accountSaved.value = true;
+        accountSavedKey.value = accountKey;
+        // 一段已落库：刷新快照，二段失败重试时才不会拿旧快照撞 409。
+        if (formIndex.value != null) await refreshSnapshot(formIndex.value);
+      }
+    }
+    if (privacyPayload) {
+      try {
+        await api("PUT", privacyEndpoint("admin", formIndex.value as number), privacyPayload);
+        privacyInitial.value = clonePrivacy(privacy.value);
+      } catch (e) {
+        if (isCanceled(e)) return;
+        // 账号已写入、二段失败：弹窗留开，错误可见；重试只补二段。
+        privacyError.value = errorMessage(e, "隐私资料保存失败，请稍后再试");
+        return;
+      }
+    }
     formOpen.value = false;
     fullPhone.value = "";
     formSnapshot.value = null;
-    toast().success(data?.msg || "已保存");
+    toast().success(msg || "已保存");
     await load(true);
   } catch (e) {
     if (isCanceled(e)) return; // 取消门禁口令框不算失败
@@ -1137,6 +1173,7 @@ const M = {
         <span class="ico"><svg aria-hidden="true"><use href="#i-circle-alert" /></svg></span>
         <span class="body">{{ formError }}</span>
       </div>
+      <el-alert v-if="privacyError" type="error" :title="privacyError" :closable="false" show-icon style="margin-bottom: 10px" />
 
       <div class="form-stack">
         <label class="field">
@@ -1220,18 +1257,20 @@ const M = {
           <div v-if="profileLine(detailProfile)" class="account-profile" data-detail-profile>
             {{ profileLine(detailProfile) }}
           </div>
-          <el-alert v-if="privacyError" type="error" :title="privacyError" :closable="false" show-icon style="margin-bottom: 10px" />
           <div v-for="pf in PRIVACY_FIELDS" :key="pf.key" class="field privacy-field" :data-privacy-field="pf.key">
             <span class="field-label">{{ pf.label }}</span>
-            <el-input v-model="privacy.profile[pf.key]" :maxlength="pf.maxlength" clearable :placeholder="pf.placeholder" />
+            <el-input
+              v-model="privacy.profile[pf.key]"
+              :aria-label="pf.label"
+              :maxlength="pf.maxlength"
+              clearable
+              :placeholder="pf.placeholder"
+            />
             <div class="privacy-expose">
               <el-switch v-model="privacy.expose[pf.key]" :aria-label="`暴露${pf.label}`" />
               <span class="field-help">{{ exposureHint(privacy.expose[pf.key], 'admin') }}</span>
             </div>
           </div>
-          <button type="button" class="btn btn--ghost btn--sm" :disabled="privacyBusy || formDetailLoading" @click="submitPrivacyAdmin">
-            保存隐私资料
-          </button>
         </details>
       </div>
       <template #footer>
