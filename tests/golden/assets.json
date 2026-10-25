@@ -46,7 +46,7 @@
     "link rel=stylesheet href=/static/vendor/adminator/adminator.css?v=*",
     "link rel=stylesheet href=/static/css/app.css?v=*",
     "link rel=stylesheet href=/static/vue/assets/vendor-element-plus-BEh7yOD-.css",
-    "link rel=stylesheet href=/static/vue/assets/ep-theme-kScMQCwv.css",
+    "link rel=stylesheet href=/static/vue/assets/ep-theme-BhDpIX_1.css",
     "script src=/static/js/boot-loader.js?v=*",
     "script src=/static/vendor/md-render.js?v=*",
     "script src=/static/js/shell-chrome.js?v=*",
@@ -56,9 +56,9 @@
     "link rel=modulepreload href=/static/vue/assets/shell-C5vP6wJ6.js",
     "link rel=modulepreload href=/static/vue/assets/vendor-vue-YYhzo28_.js",
     "link rel=modulepreload href=/static/vue/assets/vendor-element-plus-DsNvuZ9M.js",
-    "link rel=modulepreload href=/static/vue/assets/ep-theme-CB6Zho0Z.js",
+    "link rel=modulepreload href=/static/vue/assets/ep-theme-CvXtY_Hu.js",
     "link rel=modulepreload href=/static/vue/assets/accountform-C02G6kjd.js",
-    "script src=/static/vue/assets/myaccounts-40J41TY3.js"
+    "script src=/static/vue/assets/myaccounts-DvVQf3qH.js"
   ],
   "user_calendar": [
     "link rel=icon href=/favicon.png?v=*",
