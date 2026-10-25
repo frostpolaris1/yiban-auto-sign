@@ -464,3 +464,42 @@ func TestRunPrintsSkips(t *testing.T) {
 			OnSign(fake.ResultSteps()...)
 	})
 }
+
+// 看门狗入库钉（R4 3.4）：阻塞的提供方必须在上限附近得到失败，不得挂起。
+// 超时变量注入短值，不靠真等 15 秒。
+func TestCriterionWatchdogFailsBlockingProvider(t *testing.T) {
+	previous := criterionTimeout
+	criterionTimeout = 150 * time.Millisecond
+	t.Cleanup(func() { criterionTimeout = previous })
+
+	blocking := func() contract.Provider { return blocksSign{referenceProvider()} }
+	err := runCheck(findCheck(t, CheckSignResult), blocking)
+	if !errors.Is(err, errCriterionTimeout) {
+		t.Fatalf("阻塞提供方未触发判据超时: %v", err)
+	}
+}
+
+// 超时后整轮停跑：execute 在首个判据超时即返回，不再为每条各付上限（R3-04）。
+func TestExecuteStopsAfterFirstTimeout(t *testing.T) {
+	previous := criterionTimeout
+	criterionTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { criterionTimeout = previous })
+
+	results, stoppedAt := execute(func() contract.Provider { return blocksSign{referenceProvider()} })
+	if stoppedAt == "" {
+		t.Fatal("阻塞提供方未触发停跑")
+	}
+	if len(results) >= len(Checks()) {
+		t.Fatalf("执行了 %d 条判据；停跑后应少于总数 %d", len(results), len(Checks()))
+	}
+	if !errors.Is(results[len(results)-1].err, errCriterionTimeout) {
+		t.Fatalf("最后一条判据不是超时: %v", results[len(results)-1].err)
+	}
+}
+
+// blocksSign 在 Sign 上永久阻塞，其余方法正常。
+type blocksSign struct{ contract.Provider }
+
+func (blocksSign) Sign(context.Context, contract.SignRequest) (contract.Result, error) {
+	select {}
+}

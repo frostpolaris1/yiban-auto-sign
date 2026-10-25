@@ -49,9 +49,6 @@ const (
 	// inflightGrace 是 sign.timeout 判在途取消前等待的时长。
 	// 提供方在此期间返回视为未进入取消窗口；超出则取消必须生效。
 	inflightGrace = 20 * time.Millisecond
-	// criterionTimeout 是单条判据的完成上限。
-	// 高于 sign.timeout 的 5 秒与并发判据的 10 秒，冲突时不抢判据自己的判决。
-	criterionTimeout = 15 * time.Second
 	// signTimeoutGrace 是 sign.timeout 单次调用的完成上限。
 	// 阻塞的提供方由它转成失败，套件不挂起。
 	signTimeoutGrace = 5 * time.Second
@@ -105,29 +102,68 @@ func Checks() []Check {
 // 它不是失败：Run 会把它打印成显性跳过（AGENTS §30，跳过不算通过）。
 var errNotApplicable = errors.New("not applicable")
 
+// result 是一条判据的执行结果。
+type result struct {
+	name string
+	err  error
+	skip bool
+}
+
+// execute 顺序执行判据，遇到判据超时即停跑剩余判据。
+// 与 *testing.T 解耦：元测试可以断言「停跑」行为而不把父用例染红。
+func execute(newProvider NewProvider) (results []result, stoppedAt string) {
+	checks := Checks()
+	for _, check := range checks {
+		err := runCheck(check, newProvider)
+		if errors.Is(err, errCriterionTimeout) {
+			results = append(results, result{name: check.Name, err: err})
+			return results, check.Name
+		}
+		results = append(results, result{
+			name: check.Name,
+			err:  err,
+			skip: errors.Is(err, errNotApplicable),
+		})
+	}
+	return results, ""
+}
+
 func Run(t *testing.T, newProvider NewProvider) {
 	t.Helper()
+	results, stoppedAt := execute(newProvider)
 	skipped := 0
-	for _, check := range Checks() {
-		check := check
-		t.Run(check.Name, func(t *testing.T) {
+	for _, r := range results {
+		r := r
+		t.Run(r.name, func(t *testing.T) {
 			t.Helper()
-			err := runCheck(check, newProvider)
-			if errors.Is(err, errNotApplicable) {
+			switch {
+			case r.skip:
 				// 跳过必须显性可见：非 -v 运行也打印。
 				skipped++
-				fmt.Printf("conformance: %s: 跳过：%v\n", check.Name, err)
-				return
-			}
-			if err != nil {
-				t.Error(err)
+				fmt.Printf("conformance: %s: 跳过：%v\n", r.name, r.err)
+			case r.err != nil:
+				t.Error(r.err)
 			}
 		})
+	}
+	if stoppedAt != "" {
+		fmt.Printf("conformance: 判据 %s 超时，剩余判据不再执行（提供方阻塞或过慢）\n", stoppedAt)
 	}
 	if skipped > 0 {
 		fmt.Printf("conformance: %d 条判据跳过（未声明对应能力）\n", skipped)
 	}
 }
+
+// criterionTimeout 是单条判据的完成上限。
+// 变量而非常量：测试注入短值，不靠真等 15 秒。
+// 高于 sign.timeout 的 5 秒与并发判据的 10 秒，冲突时不抢判据自己的判决。
+// 采样类判据调 Sign 最多 13 次，隐含单次 SLA 约为上限的 1/13；
+// 慢于此值的提供方得到「未在上限内完成」，文案不写「阻塞」。
+var criterionTimeout = 15 * time.Second
+
+// errCriterionTimeout 标记判据整体超时。
+// Run 见到它即停跑剩余判据：阻塞的提供方不应让整轮每条各付一次上限（R3-04）。
+var errCriterionTimeout = errors.New("criterion timeout")
 
 // runCheck 执行一条判据，并把 panic 转成同格式失败。
 // 提供方 panic 不得拖垮整轮判据。
@@ -150,7 +186,8 @@ func runCheck(check Check, newProvider NewProvider) (err error) {
 	case got := <-done:
 		return got.err
 	case <-time.After(criterionTimeout):
-		return failf(check.Name, "%s 内未返回：提供方阻塞", criterionTimeout)
+		return fmt.Errorf("%w: %s", errCriterionTimeout,
+			failf(check.Name, "未在 %s 内完成：提供方阻塞或过慢", criterionTimeout))
 	}
 }
 
@@ -258,13 +295,14 @@ func checkWindowShape(newProvider NewProvider) error {
 // 未声明 WindowDiscovery 时只要求非 nil 错误：宿主不得调用该方法（G1）。
 func checkWindowCancel(newProvider NewProvider) error {
 	p := newProvider()
+	// 能力检查在调用之前：G1 要求宿主不得调用未声明的能力，
+	// 判据自己更不能先调（R4 3.3）。
+	if !p.Capabilities().WindowDiscovery {
+		return notApplicable("WindowDiscovery")
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err := p.DiscoverWindow(ctx, discoverRequest())
-	if !p.Capabilities().WindowDiscovery {
-		// 未声明能力的返回形状由 caps.honored 判定，本判据不适用。
-		return notApplicable("WindowDiscovery")
-	}
 	if !errors.Is(err, context.Canceled) {
 		return failf(CheckWindowCancel, "错误 = %v，want context.Canceled", err)
 	}
@@ -303,12 +341,12 @@ func checkTargetsShape(newProvider NewProvider) error {
 // checkTargetsCancel 要求取消后的目标发现不返回结果。口径同 window.cancel（G1）。
 func checkTargetsCancel(newProvider NewProvider) error {
 	p := newProvider()
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, err := p.DiscoverTargets(ctx, discoverRequest())
 	if !p.Capabilities().TargetDiscovery {
 		return notApplicable("TargetDiscovery")
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := p.DiscoverTargets(ctx, discoverRequest())
 	if !errors.Is(err, context.Canceled) {
 		return failf(CheckTargetsCancel, "错误 = %v，want context.Canceled", err)
 	}
