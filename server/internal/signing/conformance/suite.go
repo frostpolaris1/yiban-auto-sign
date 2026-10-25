@@ -98,16 +98,31 @@ func Checks() []Check {
 
 // Run 逐条执行判据。
 // 失败文本统一为 `conformance: <名称>: <原因>`。
+// errNotApplicable 标记「提供方未声明能力，判据不适用」。
+// 它不是失败：Run 会把它打印成显性跳过（AGENTS §30，跳过不算通过）。
+var errNotApplicable = errors.New("not applicable")
+
 func Run(t *testing.T, newProvider NewProvider) {
 	t.Helper()
+	skipped := 0
 	for _, check := range Checks() {
 		check := check
 		t.Run(check.Name, func(t *testing.T) {
 			t.Helper()
-			if err := runCheck(check, newProvider); err != nil {
+			err := runCheck(check, newProvider)
+			if errors.Is(err, errNotApplicable) {
+				// 跳过必须显性可见：非 -v 运行也打印。
+				skipped++
+				fmt.Printf("conformance: %s: 跳过：%v\n", check.Name, err)
+				return
+			}
+			if err != nil {
 				t.Error(err)
 			}
 		})
+	}
+	if skipped > 0 {
+		fmt.Printf("conformance: %d 条判据跳过（未声明对应能力）\n", skipped)
 	}
 }
 
@@ -381,8 +396,8 @@ func checkSignCancel(newProvider NewProvider) error {
 	if !errors.Is(err, context.Canceled) {
 		return failf(CheckSignCancel, "错误 = %v，want context.Canceled", err)
 	}
-	if result.Outcome == contract.OutcomeSuccess {
-		return failf(CheckSignCancel, "已取消上下文仍报告 %q", result.Outcome)
+	if result.Outcome != "" {
+		return failf(CheckSignCancel, "已取消上下文仍返回伪结果 %q", result.Outcome)
 	}
 	return nil
 }
@@ -472,12 +487,11 @@ func checkSignConcurrent(newProvider NewProvider) error {
 
 // checkPhotoMissing 要求声明图片能力的提供方对无图请求返回 photo_missing。
 // 依据：契约 §4.5「无图但需要图 → photo_missing，不登录」。
-// 未声明 ImageRequired 时跳过并在标准输出登记：**跳过不是通过**。
+// 未声明 ImageRequired 时返回 errNotApplicable：Run 把它打印成显性跳过。
 func checkPhotoMissing(newProvider NewProvider) error {
 	p := newProvider()
 	if !p.Capabilities().ImageRequired {
-		fmt.Printf("conformance: %s: 跳过：提供方未声明 ImageRequired\n", CheckPhotoMissing)
-		return nil
+		return fmt.Errorf("%w: 提供方未声明 ImageRequired", errNotApplicable)
 	}
 	request := signRequest("attempt-photo-missing")
 	request.Image = nil
@@ -495,17 +509,37 @@ func checkPhotoMissing(newProvider NewProvider) error {
 // 依据：契约 §7.2 把「超时」列为 conformance 必测项。
 func checkSignTimeout(newProvider NewProvider) error {
 	// 场景一：调用入口的期限已过。
+	// 调用放进协程并套完成上限：阻塞的提供方转成可读失败，
+	// 而不是挂起整轮判据（W2C-R2-01）。
 	expired, cancelExpired := context.WithTimeout(context.Background(), 0)
 	defer cancelExpired()
-	result, err := newProvider().Sign(expired, signRequest("attempt-timeout-expired"))
-	if err == nil {
-		return failf(CheckSignTimeout, "期限已过仍返回 nil 错误，结果 %q", result.Outcome)
+	type callResult struct {
+		result contract.Result
+		err    error
 	}
-	if !isContextError(err) {
-		return failf(CheckSignTimeout, "错误 = %v，want context.DeadlineExceeded 或 context.Canceled", err)
-	}
-	if result.Outcome != "" {
-		return failf(CheckSignTimeout, "期限已过仍返回结果 %q", result.Outcome)
+	done := make(chan callResult, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				done <- callResult{err: fmt.Errorf("panic: %v", r)}
+			}
+		}()
+		got, err := newProvider().Sign(expired, signRequest("attempt-timeout-expired"))
+		done <- callResult{result: got, err: err}
+	}()
+	select {
+	case got := <-done:
+		if got.err == nil {
+			return failf(CheckSignTimeout, "期限已过仍返回 nil 错误，结果 %q", got.result.Outcome)
+		}
+		if !isContextError(got.err) {
+			return failf(CheckSignTimeout, "错误 = %v，want context.DeadlineExceeded 或 context.Canceled", got.err)
+		}
+		if got.result.Outcome != "" {
+			return failf(CheckSignTimeout, "期限已过仍返回结果 %q", got.result.Outcome)
+		}
+	case <-time.After(signTimeoutGrace):
+		return failf(CheckSignTimeout, "期限已过 %s 内未返回：阻塞的提供方", signTimeoutGrace)
 	}
 
 	// 场景二：取消发生在调用期间。
@@ -513,24 +547,24 @@ func checkSignTimeout(newProvider NewProvider) error {
 	// 窗口之后返回必须带上下文错误，且不得带结果。
 	p := newProvider()
 	ctx, cancel := context.WithCancel(context.Background())
-	type callResult struct {
+	type inflightResult struct {
 		result contract.Result
 		err    error
 	}
-	done := make(chan callResult, 1)
+	inflight := make(chan inflightResult, 1)
 	go func() {
 		// 协程内 panic 无法被 runCheck 捕获；在这里转成错误。
 		defer func() {
 			if r := recover(); r != nil {
-				done <- callResult{err: fmt.Errorf("panic: %v", r)}
+				inflight <- inflightResult{err: fmt.Errorf("panic: %v", r)}
 			}
 		}()
 		got, err := p.Sign(ctx, signRequest("attempt-timeout-inflight"))
-		done <- callResult{result: got, err: err}
+		inflight <- inflightResult{result: got, err: err}
 	}()
 
 	select {
-	case <-done:
+	case <-inflight:
 		cancel()
 		return nil
 	case <-time.After(inflightGrace):
@@ -538,7 +572,7 @@ func checkSignTimeout(newProvider NewProvider) error {
 
 	cancel()
 	select {
-	case got := <-done:
+	case got := <-inflight:
 		if got.err == nil {
 			return failf(CheckSignTimeout, "取消后仍返回 nil 错误，结果 %q", got.result.Outcome)
 		}
@@ -663,8 +697,11 @@ func findLeak(value any, cred contract.Credential) string {
 			return secret.name
 		}
 	}
-	if mask.MaskText(text) != text {
-		return "明文手机号或邮箱"
+	if mask.TextHasPhone(text) {
+		return "明文手机号"
+	}
+	if mask.TextHasEmail(text) {
+		return "明文邮箱"
 	}
 	return ""
 }

@@ -322,7 +322,7 @@ func TestBrokenProvidersAreCaught(t *testing.T) {
 			func() contract.Provider { return badOutcome{referenceProvider()} }},
 		{"证据泄漏手机号", CheckPIIAbsent, "泄漏手机号",
 			func() contract.Provider { return leaksPhone{referenceProvider()} }},
-		{"证据泄漏分隔手机号", CheckPIIAbsent, "明文手机号或邮箱",
+		{"证据泄漏分隔手机号", CheckPIIAbsent, "明文手机号",
 			func() contract.Provider { return leaksSeparatedPhone{referenceProvider()} }},
 		{"unknown 可重试", CheckSignUnknown, "unknown 被标记可重试",
 			func() contract.Provider { return retriesUnknown{referenceProvider()} }},
