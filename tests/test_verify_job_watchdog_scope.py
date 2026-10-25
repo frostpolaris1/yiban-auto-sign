@@ -204,6 +204,29 @@ class WatchdogScopeTest(unittest.TestCase):
                     self.assertTrue(timer.cancel.called,
                                     "已创建但未启动的计时器必须 cancel")
 
+    def test_release_step_failure_does_not_block_retry(self):
+        """释放步抛错时其余步照常执行，finally 仍重试失败的那一步（dix 低-2）。
+
+        旧实现先把单一 `slot_released` 置 True 再释放：`watchdog.cancel()` 抛错后
+        席位与账号权泄漏，外层 finally 的重试被早置位挡成 no-op。
+        """
+        timer = mock.Mock()
+        timer.start.side_effect = RuntimeError("start boom")
+        timer.cancel.side_effect = [RuntimeError("cancel boom"), None]
+        factory = mock.Mock(return_value=timer)
+        with self._fake_store(), mock.patch.object(jobs, "_hooks", {}), \
+                mock.patch.object(jobs, "GATE_WAIT", 0.2), \
+                mock.patch.object(jobs.threading, "Timer", factory):
+            jobs.configure(**self._account_hooks())
+            jobs.run(1, {"phone": PHONE, "status": "pending"}, USER, 1, "pending", {})
+        self.assertEqual(timer.cancel.call_count, 2,
+                         "第一次 cancel 抛错后 finally 必须重试")
+        self.assertTrue(self.seat.acquire(timeout=0), "cancel 抛错后席位泄漏")
+        self.seat.release()
+        self.assertFalse(self.account_lock.locked(), "cancel 抛错后账号权泄漏")
+        self.assertEqual(self.jobs_state["status"], "rejected")
+        self.assertIn("校验启动失败", self.jobs_state["error"])
+
     def test_outbound_call_still_times_out(self):
         """外呼本身卡住时，看门狗仍在 `OUTBOUND_TIMEOUT` 后收口（边界未放宽）。"""
         stop = threading.Event()

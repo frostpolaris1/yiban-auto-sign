@@ -40,8 +40,9 @@
 #     同一模式标志重复给（如 --fast --fast）按幂等接受）
 #   --repo DIR       源仓库目录（默认 = 本脚本所在仓库根）
 #   --target PATH    一个或多个 pytest 目标（默认 tests/）；只对默认全量模式有效
-#   --log-dir DIR    日志目录（默认按模式分开：全量 <仓库父目录>/yiban-dev-verify-logs，
-#                    fast 两档 <仓库父目录>/yiban-dev-verify-logs-fast——两档走不同的锁、
+#   --log-dir DIR    日志目录（默认按模式与源仓分开：全量
+#                    <仓库父目录>/yiban-dev-verify-logs-<源仓摘要>，fast 两档
+#                    <仓库父目录>/yiban-dev-verify-logs-fast-<源仓摘要>——两档走不同的锁、
 #                    可以并发，共用目录会互相轮转删掉对方的日志）
 #   --keep N         日志保留最近 N 份（默认 5）；fast 两档与全量各自计数
 #                    （--ci 跑固定关键子集、就地跑不落日志：--log-dir / --keep 传了会被拒绝；
@@ -166,39 +167,49 @@ prune_logs() { # $1 = 目录，$2 = 保留份数
     return 0
 }
 
-default_log_dir() { # $1 = 仓库目录；$2 = 模式（full / fast）；返回默认日志目录
-    # fast 两档与全量走**不同的锁**，两者可以同时跑。日志目录按 mtime 轮转（--keep），
-    # 共用一个目录就会互相删掉对方的日志——实测：fast 档用默认目录跑几次，把同目录里
-    # 他方的 5 份日志轮转删掉了。不同锁的两个流程不许共享可被轮转的资源，故按模式分目录。
-    case "$2" in
-        fast) printf '%s\n' "$(dirname "$1")/yiban-dev-verify-logs-fast" ;;
-        *) printf '%s\n' "$(dirname "$1")/yiban-dev-verify-logs" ;;
-    esac
-}
-
-repo_digest() { # $1 = 规范化后的仓库绝对路径；输出 16 位十六进制摘要
-    # 副本槽与锁都按「模式 + 源仓路径」分键。只按模式分键时（旧实现），两个 worktree
-    # 的 --fast 共用一份副本：一方整体替换另一方的缓存（4kl，实测 HEAD 被换掉后伪红 rc=2）。
+repo_digest() { # $1 = 规范化后的仓库绝对路径；输出 16 位十六进制摘要；取不到返回非 0
+    # 副本槽、锁与默认日志目录都按「模式 + 源仓路径」分键。只按模式分键时（旧实现），
+    # 两个 worktree 的 --fast 共用一份副本：一方整体替换另一方的缓存
+    # （4kl，实测 HEAD 被换掉后伪红 rc=2）。
+    # 失败必须返回非 0：命令替换里 `die` 只杀子壳，调用方拿到的会是空串；
+    # 两个源仓都拿空摘要＝又回到共槽（dix 低-3）。调用点统一 `|| die`。
     local digest
-    digest=$(printf '%s' "$1" | sha256sum | cut -c1-16) ||
-        die "sha256sum 不可用：副本槽无法按源仓分键（不分键就会跨树互覆）"
-    [ -n "$digest" ] || die "源仓摘要为空（仓库路径为空？）：副本槽无法分键"
+    digest=$(printf '%s' "$1" | sha256sum 2>/dev/null) || return 1
+    digest=${digest%% *}
+    digest=${digest:0:16}
+    [ -n "$digest" ] || return 1
     printf '%s\n' "$digest"
 }
 
-copy_dest() { # $1 = 模式（fast / 其他），$2 = 仓库绝对路径
+default_log_dir() { # $1 = 仓库目录；$2 = 模式（full / fast）；返回默认日志目录
+    # 日志目录按 mtime 轮转（--keep）。它按「模式 + 源仓」分键：两个 worktree 并行跑
+    # 各有日志目录，prune_logs 不会轮转删掉对方的日志（dix 低-5）。fast 与全量也分开，
+    # 两者走不同的锁、可以同时跑。
+    local key
+    key=$(repo_digest "$1") || return 1
+    case "$2" in
+        fast) printf '%s\n' "$(dirname "$1")/yiban-dev-verify-logs-fast-$key" ;;
+        *) printf '%s\n' "$(dirname "$1")/yiban-dev-verify-logs-$key" ;;
+    esac
+}
+
+copy_dest() { # $1 = 模式（fast / 其他），$2 = 仓库绝对路径；摘要取不到即返回非 0
+    local key
+    key=$(repo_digest "$2") || return 1
     if [ "$1" = fast ]; then
-        printf '%s\n' "$WORKDIR/fast-worktree-$(repo_digest "$2")"
+        printf '%s\n' "$WORKDIR/fast-worktree-$key"
     else
-        printf '%s\n' "$WORKDIR/worktree-$(repo_digest "$2")"
+        printf '%s\n' "$WORKDIR/worktree-$key"
     fi
 }
 
 copy_lock() { # $1 = 模式，$2 = 仓库绝对路径；锁与副本槽同键：不同源仓不互相排队
+    local key
+    key=$(repo_digest "$2") || return 1
     if [ "$1" = fast ]; then
-        printf '%s\n' "$WORKDIR/dev-verify-fast-runlock-$(repo_digest "$2")"
+        printf '%s\n' "$WORKDIR/dev-verify-fast-runlock-$key"
     else
-        printf '%s\n' "$WORKDIR/dev-verify-runlock-$(repo_digest "$2")"
+        printf '%s\n' "$WORKDIR/dev-verify-runlock-$key"
     fi
 }
 
@@ -220,8 +231,9 @@ legacy_copy_lock() { # 旧版本只按模式分键的锁文件（迁移前确认
 
 migrate_legacy_copy() { # $1 = 模式，$2 = 新键副本目录
     # 旧键缓存可能属于**任意**源仓，且旧版进程可能正在用它。旧锁拿不到就不动：
-    # 迁移与清理都只在没有旧版运行的情况下进行。拿得到时：新槽已在则删旧（垃圾），
-    # 否则整体改名到新槽（首跑把已有副本变成增量同步的起点）。
+    # 迁移与清理都只在没有旧版运行的情况下进行。
+    # 混合版本期旧版每次运行都会重建旧键缓存。拿得到锁时：新槽已在则删旧
+    # （旧版下一次只丢一次冷复制的时间，不丢数据），否则整体改名到新槽。
     local legacy lock
     legacy=$(legacy_copy_dest "$1")
     [ -d "$legacy" ] || return 0
@@ -230,9 +242,11 @@ migrate_legacy_copy() { # $1 = 模式，$2 = 新键副本目录
     if flock -n 8; then
         if [ -d "$2" ]; then
             rm -rf "$legacy"
-            echo "DEV-VERIFY: 已清理旧键缓存（$legacy）"
+            echo "DEV-VERIFY: 已清理旧键缓存（$legacy；旧版下次冷复制）"
         elif mv "$legacy" "$2" 2>/dev/null; then
             echo "DEV-VERIFY: 旧键缓存已迁移到按源仓分键的槽（$2）"
+        else
+            echo "DEV-VERIFY: 旧键缓存迁移失败，保留原处（不阻断跑测）：$legacy"
         fi
         flock -u 8
     else
@@ -1024,7 +1038,10 @@ if [ "${DEV_VERIFY_LOGGED:-0}" = "1" ] && [ -z "${DEV_VERIFY_LOG:-}" ]; then
     die "DEV_VERIFY_LOGGED=1 但 DEV_VERIFY_LOG 为空：拒绝在没有日志的情况下跑测"
 fi
 if [ "${DEV_VERIFY_LOGGED:-0}" != "1" ]; then
-    [ -n "$LOG_DIR" ] || LOG_DIR=$(default_log_dir "$REPO" "$MODE")
+    if [ -z "$LOG_DIR" ]; then
+        LOG_DIR=$(default_log_dir "$REPO" "$MODE") ||
+            die "默认日志目录算不出来（sha256sum 不可用？）：拒绝在无法落盘时跑测"
+    fi
     mkdir -p "$LOG_DIR" || die "日志目录建不了：$LOG_DIR"
     LOG="$LOG_DIR/dev-verify-$(date +%Y%m%d-%H%M%S)-$$.log"
     set +e
@@ -1070,12 +1087,14 @@ echo "DEV-VERIFY sha: $SHA"
 # 副本槽与锁都按「模式 + 源仓路径」分键（copy_dest / copy_lock）：两个 worktree 并行跑
 # 各有副本与锁，不会互相整体覆盖（4kl）。fast 与全量仍是两个槽、两把锁：fast 的
 # "提交前自查"不去等一个可能跑满两分半的全量。
-DEST=$(copy_dest "$MODE" "$REPO")
-LOCKFILE=$(copy_lock "$MODE" "$REPO")
+DEST=$(copy_dest "$MODE" "$REPO") ||
+    die "副本槽算不出来（sha256sum 不可用？）：无法按源仓分键，拒绝跑测"
+LOCKFILE=$(copy_lock "$MODE" "$REPO") ||
+    die "锁文件算不出来（sha256sum 不可用？）：无法按源仓分键，拒绝跑测"
 # 并发保护：同一个源的副本槽是共享资源；两个 dev-verify 同时跑会互相 rm -rf 掉对方的
 # 副本（正是本脚本要消灭的那类伪红）。后到者等前者结束，不把对方的副本删掉。
-# 日志目录也是共享的轮转资源，但**按模式分目录**（default_log_dir）：fast 两档与全量
-# 走不同的锁、可以并发，共用一个目录就会互相轮转删除。日志文件名带 PID，同目录也不互撞。
+# 日志目录也是可被轮转的资源，但**按模式与源仓分目录**（default_log_dir）：两个 worktree
+# 并行跑、fast 与全量并行跑都不共用目录，prune_logs 不会删掉对方的日志。文件名带 PID。
 mkdir -p "$WORKDIR" || die "副本根目录建不了：$WORKDIR"
 exec 9>"$LOCKFILE" || die "锁文件不可写：$LOCKFILE"
 if command -v flock >/dev/null 2>&1; then
