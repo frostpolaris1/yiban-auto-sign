@@ -158,12 +158,19 @@ userTest.describe("我的账号 · 二段资料与暴露（本人面）", () => 
 pwTest.describe("新增账号 · 二段全路径", () => {
   pwTest("跳过二段默认全关；进二段失败后回一段再前进不重发 POST", async ({ browser }) => {
     const { ctx, req, page } = await newUserContext(browser, "e2e-privacy-flow@qq.com");
-    const posts: string[] = [];
+    // 只数**成功**的建号请求：core.js 对 403 会带新 CSRF 自动重试一次，
+    // 按 request 计数会把"同一动作的两次请求"误判成两次建号。
+    const post200: string[] = [];
     const accountPuts: string[] = [];
     const profilePuts: string[] = [];
+    page.on("response", (r) => {
+      const path = new URL(r.url()).pathname;
+      if (r.request().method() === "POST" && path === "/api/my-accounts" && r.status() === 200) {
+        post200.push(path);
+      }
+    });
     page.on("request", (r) => {
       const path = new URL(r.url()).pathname;
-      if (r.method() === "POST" && path === "/api/my-accounts") posts.push(path);
       if (r.method() === "PUT" && /^\/api\/my-accounts\/\d+$/.test(path)) accountPuts.push(path);
       if (r.method() === "PUT" && /^\/api\/my-accounts\/\d+\/profile$/.test(path)) profilePuts.push(path);
     });
@@ -197,7 +204,7 @@ pwTest.describe("新增账号 · 二段全路径", () => {
       expect(del1.ok(), `软删首号失败：${del1.status()} ${await del1.text()}`).toBeTruthy();
 
       // 段二：重新提交 → 进二段 → 二段写失败 → 回一段再前进 → 只补二段。
-      posts.length = 0;
+      post200.length = 0;
       accountPuts.length = 0;
       profilePuts.length = 0;
       let failOnce = true;
@@ -233,7 +240,7 @@ pwTest.describe("新增账号 · 二段全路径", () => {
       // 第一次二段写失败：弹窗留开、错误可见、账号只建一次。
       dialog = page.locator(".el-dialog:visible");
       await expect(dialog).toContainText("模拟二段保存失败");
-      expect(posts.length, "建号只允许一次 POST").toBe(1);
+      expect(post200.length, "建号只允许一次成功 POST").toBe(1);
 
       // 回一段再前进：弹窗已切编辑态，后续走 PUT，不再 POST。
       await dialog.getByRole("button", { name: "上一步" }).click();
@@ -243,7 +250,7 @@ pwTest.describe("新增账号 · 二段全路径", () => {
       await confirm.locator(".el-message-box__btns .el-button--primary").click();
       await expect(dialog).toBeHidden();
 
-      expect(posts.length, "回一段再前进后不得出现第二次 POST").toBe(1);
+      expect(post200.length, "回一段再前进后不得出现第二次成功 POST").toBe(1);
       expect(accountPuts.length, "建号后应切编辑态走 PUT").toBeGreaterThan(0);
       expect(profilePuts.length, "二段失败后应重试一次").toBeGreaterThanOrEqual(2);
       view = await (await req.get("/api/my-accounts")).json();
