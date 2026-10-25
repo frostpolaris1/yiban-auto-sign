@@ -17,6 +17,7 @@ import time
 from contextlib import contextmanager, suppress
 
 from yiban.adapters.config import env_io
+from yiban.adapters.config import loader as config_loader
 from yiban.core import clock
 from yiban.infra import locks, private_json
 
@@ -97,7 +98,8 @@ def _state_dir():
     时它落到 **cwd 的 data/**，随两侧 cwd 不同而分叉（双份额度、双份告警），
     账本也不在备份链归档的状态目录内（ba-p09-05）。
     """
-    return env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
+    return env_io.resolve_path(
+        "YIBAN_STATE_DIR", config_loader.default_required("YIBAN_STATE_DIR"))
 
 
 def _ledger_path():

@@ -37,6 +37,7 @@ import logging
 import os
 
 from yiban.adapters.config import env_io
+from yiban.adapters.config import loader as config_loader
 from yiban.core import clock
 from yiban.infra import private_json
 
@@ -45,7 +46,8 @@ logger = logging.getLogger("yiban.cred_state")
 
 def path():
     """状态文件路径（YIBAN_STATE_DIR，与按日状态文件同目录）。"""
-    state_dir = env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
+    state_dir = env_io.resolve_path(
+        "YIBAN_STATE_DIR", config_loader.default_required("YIBAN_STATE_DIR"))
     return os.path.join(state_dir, "cred-state.json")
 
 

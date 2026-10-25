@@ -48,6 +48,7 @@ from web.services import limits as _limits
 from web.services import locks as _locks
 from web.services import notify_mail as _notify_mail
 from web.services import signstatus as _signstatus
+from yiban.adapters.config import loader as config_loader
 from yiban.adapters.notifier import mail as mailer
 from yiban.adapters.notifier.mail import layout as mail_layout
 from yiban.adapters.persistence import db
@@ -136,12 +137,16 @@ def api_me_password():
         # 递增值——一次递增被吞，本应随版本失效的旧会话继续有效。
         new_hash = generate_password_hash(new_password, method=_security.SCRYPT_METHOD)
         with _env_io_svc._env_write_lock(m.ENV_FILE):
+            # 现值读取留在锁内（见上）：两个并发改密读到同一旧值会吞掉一次递增。
+            cur_pwv = _env_io_svc.load_env_int(
+                m.ENV_FILE, "YIBAN_ADMIN_PW_VERSION",
+                config_loader.default_of("YIBAN_ADMIN_PW_VERSION"))
             _env_io_svc.write_env_batch(
                 m.ENV_FILE,
                 {
                     "YIBAN_ADMIN_PASSWORD_HASH": new_hash,
                     "YIBAN_ADMIN_PASSWORD": "",  # 清理旧明文口令，改由哈希校验
-                    "YIBAN_ADMIN_PW_VERSION": str(_env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_ADMIN_PW_VERSION", 1) + 1),
+                    "YIBAN_ADMIN_PW_VERSION": str(cur_pwv + 1),
                     # 会话凭据与版本号同一次原子写换发（改口令 = 假定会话已失窃；
                     # 本会话随版本号递增一起失效，故无需回填 session）
                     _security.ADMIN_SID_ENV_KEY: _security._new_admin_sid(),

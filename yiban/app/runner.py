@@ -373,7 +373,8 @@ def main(argv=None):
     # SIGTERM 结束子进程；注册在探针分支之前，签到与探针子进程同享。
     signal.signal(signal.SIGTERM, alerts._flush_mail_on_sigterm)
 
-    notify_url = os.environ.get("YIBAN_NOTIFY_URL", "")
+    notify_url = os.environ.get(
+        "YIBAN_NOTIFY_URL", config_loader.default_of("YIBAN_NOTIFY_URL"))
 
     # 加载账号配置（文件 > JSON 环境变量 > 旧格式，详见 load_accounts）
     # `--check-config` 是只读校验：不跑 schema 迁移（迁移会重写审计链，使"被校验
@@ -700,7 +701,10 @@ def main(argv=None):
         # 调度快照标记：见 `_write_sched_snapshot`；标记不可写时 web 端回退旧分界，不影响签到
         with contextlib.suppress(OSError):
             _write_sched_snapshot(
-                env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban"), attempt_date)
+                env_io.resolve_path(
+                    "YIBAN_STATE_DIR",
+                    config_loader.default_required("YIBAN_STATE_DIR")),
+                attempt_date)
 
     # 账密熔断状态：跨天计数（暂停账号零请求；手动签到 --only 不受限）
     cred_state = {} if args.only else state_io._load_cred_state()
@@ -871,8 +875,9 @@ def main(argv=None):
     if event_rows:
         db.add_sign_events_batch(event_rows)
 
-    _write_sign_daily(env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban"),
-                      accounts, results)
+    _write_sign_daily(env_io.resolve_path(
+        "YIBAN_STATE_DIR", config_loader.default_required("YIBAN_STATE_DIR")),
+        accounts, results)
 
     # A 线：签到任务彻底结束后，把运行期收集的管理员告警汇总成一封邮件发送。
     # 无异常则不发送（成功不打扰）；mailer 内部静默失败，不影响退出码。

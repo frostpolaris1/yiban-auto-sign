@@ -46,6 +46,7 @@ import time
 from contextlib import contextmanager, suppress
 
 from yiban.adapters.config import env_io
+from yiban.adapters.config import loader as config_loader
 from yiban.core.masking import mask_phones_in_text, sanitize_text
 from yiban.infra import locks
 from yiban.logging_ext import FlockFileHandler, MaskingFormatter
@@ -58,11 +59,12 @@ except ImportError:
     fcntl = None
 
 # 日志级别可用 YIBAN_LOG_LEVEL 调整：DEBUG / INFO / WARNING / ERROR
-LOG_LEVEL = os.environ.get("YIBAN_LOG_LEVEL", "INFO").upper()
+LOG_LEVEL = os.environ.get(
+    "YIBAN_LOG_LEVEL", config_loader.default_required("YIBAN_LOG_LEVEL")).upper()
 
 # 进程级签到单实例锁：全量模式等待其他进程退出的上限（秒）。
 # 手动 --only 通常几十秒结束；cron 全量队列被手动阻塞时最多等这么久。
-_RUN_LOCK_WAIT_DEFAULT = 600
+_RUN_LOCK_WAIT_DEFAULT = config_loader.default_required("YIBAN_RUN_LOCK_WAIT")
 
 #: **全局轮次锁**的文件名（"此刻是否有一轮全量/多执行体在跑"的唯一判据）。
 #: 多执行体形态下只有监督进程持它、各子进程用各自的 `signin-run.lock.w{i}`；
@@ -148,7 +150,8 @@ def _acquire_run_lock(only_mode, name=None):
     再退到 `GLOBAL_RUN_LOCK_NAME`。**显式传参可绕过环境变量**——探测全局锁必须显式
     传（兜底进程自己的环境变量里放的是它自己的锁名）。
     """
-    state_dir = env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
+    state_dir = env_io.resolve_path(
+        "YIBAN_STATE_DIR", config_loader.default_required("YIBAN_STATE_DIR"))
     # 多执行体形态下每个子进程用**各自的**锁文件（YIBAN_RUN_LOCK_NAME），全局锁由
     # 拉起它们的监督进程持有：这样既保住"散落的另一轮全量不得与本轮并发"的原有保护，
     # 又不让子进程之间互相阻塞。

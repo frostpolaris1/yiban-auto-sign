@@ -11,15 +11,24 @@ import logging
 import os
 
 from yiban.adapters.config import account_crypto, env_io
+from yiban.adapters.config import loader as config_loader
 from yiban.adapters.notifier.notify import config as notify_config
 
 logger = logging.getLogger("mailer")
 
 _PREFIX = "YIBAN_MAIL_"
 
-# SMTP_PORT 配置无效时的「回退 465」一次性告警：静默回退会让填错端口的用户在设置页
-# 看到 465 而误以为配置正确，排查困难。
+# SMTP_PORT 配置无效时的「回退到名册缺省」一次性告警：静默回退会让填错端口的用户在
+# 设置页看到生效端口而误以为配置正确，排查困难。
 _port_warned = False
+
+
+def _default_smtp_port():
+    """SMTP 端口的缺省：只在配置名册里定义。
+
+    该键是 `reload: hot`（管理员改 .env 即时生效），故每次调用现取，不在导入期快照。
+    """
+    return int(config_loader.default_of("YIBAN_MAIL_SMTP_PORT"))
 
 # 允许私网/回环 SMTP 目标的显式开关。取值口径与项目其它开关一致（1/true/on/yes，
 # 大小写不敏感），未设或其它值一律为假。
@@ -224,9 +233,9 @@ def smtp_list(envs=None):
             logger.warning("YIBAN_MAIL_SMTPS_ENC 解密失败（%s），回落旧单条键", type(e).__name__)
     if _env_value("USER", envs) and _env_value("PASS", envs):
         try:
-            port = int(_env_value("SMTP_PORT", envs) or "465")
+            port = int(_env_value("SMTP_PORT", envs) or _default_smtp_port())
         except ValueError:
-            port = 465
+            port = _default_smtp_port()
         return [{
             "host": _env_value("SMTP_HOST", envs) or "smtp.qq.com",
             "port": port,
@@ -263,25 +272,25 @@ def get_config(envs=None):
     if entry0 is not None:
         host = str(entry0.get("host") or "").strip()
         try:
-            port = int(entry0.get("port", 465))
+            port = int(entry0.get("port", _default_smtp_port()))
             port_fallback = False
         except (TypeError, ValueError):
-            port = 465
+            port = _default_smtp_port()
             port_fallback = True
     else:
         raw_port = _get("SMTP_PORT", envs)
         host = _get("SMTP_HOST", envs) or "smtp.qq.com"
         try:
-            port = int(raw_port or "465")
+            port = int(raw_port or _default_smtp_port())
             port_fallback = not raw_port.strip()
         except ValueError:
-            port = 465
+            port = _default_smtp_port()
             port_fallback = True
             if raw_port and not _port_warned:
                 _port_warned = True
                 logger.warning(
-                    "YIBAN_MAIL_SMTP_PORT=%r 不是合法端口，已回退 465；请修正 .env",
-                    raw_port,
+                    "YIBAN_MAIL_SMTP_PORT=%r 不是合法端口，已回退 %d；请修正 .env",
+                    raw_port, port,
                 )
     return {
         "enable": _get("ENABLE", envs),

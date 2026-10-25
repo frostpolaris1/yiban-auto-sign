@@ -51,6 +51,7 @@ from datetime import datetime
 from yiban import client as yiban_client
 from yiban import egress, security  # egress：与执行体同一套出口模型（M35）
 from yiban.adapters.config import env_io
+from yiban.adapters.config import loader as config_loader
 from yiban.adapters.notifier import report as alerts
 from yiban.adapters.persistence import accounts as accounts_store
 from yiban.adapters.persistence import db
@@ -77,9 +78,11 @@ account_still_signable = accounts_store.account_still_signable
 # 与面板 read 侧、run_probe.sh 同口径。
 PROBE_ENABLE = env_io.parse_env_flag(os.environ.get("YIBAN_PROBE_ENABLE", ""),
                                      default=False, key="YIBAN_PROBE_ENABLE", log=logger)
-PROBE_TIME = os.environ.get("YIBAN_PROBE_TIME", "20:00").strip() or "20:00"
+PROBE_TIME = (os.environ.get("YIBAN_PROBE_TIME") or "").strip() or (
+    config_loader.default_required("YIBAN_PROBE_TIME"))
 # 触发频率：正整数=每 N 天；once=下一次计划时间单次执行（执行后自动关闭）
-PROBE_INTERVAL = os.environ.get("YIBAN_PROBE_INTERVAL_DAYS", "1").strip() or "1"
+PROBE_INTERVAL = (os.environ.get("YIBAN_PROBE_INTERVAL_DAYS") or "").strip() or (
+    config_loader.default_required("YIBAN_PROBE_INTERVAL_DAYS"))
 
 #: 探针限速的**总等待预算**（秒）：主循环从开始等令牌起计时，越过即停止本轮剩余账号并
 #: 留痕。探针有 cadence（每晚/每若干天一轮），故"这轮少探一些"是安全的失败方向；反之
@@ -370,7 +373,8 @@ def _refresh_result(ok, reason, message):
 
 def _probe_state_path():
     """探针最近执行日状态文件（由探针进程独占维护，避免频繁写 .env）。"""
-    state_dir = env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
+    state_dir = env_io.resolve_path(
+        "YIBAN_STATE_DIR", config_loader.default_required("YIBAN_STATE_DIR"))
     return os.path.join(state_dir, "probe-state.json")
 
 
