@@ -219,6 +219,8 @@ func TestMasksPreserveValidUTF8(t *testing.T) {
 		"😀A😀B😀",
 		"é@例子.中国",
 		"13900139000 学生@example.com",
+		"13900139000",
+		"1é23456789",
 	}
 	funcs := map[string]func(string) string{
 		"MaskPhone":  MaskPhone,
@@ -236,7 +238,7 @@ func TestMasksPreserveValidUTF8(t *testing.T) {
 	}
 }
 
-// 检测口径必须覆盖系统接受的地址形状：本地部与域名可含非 ASCII 字母。
+// 检测口径必须覆盖常见地址形状；已登记不覆盖的形状见 emailInText 注释。
 // 掩码口径同源，否则审计守卫对这类邮箱失明（N5）。
 func TestTextHasEmailCoversNonASCII(t *testing.T) {
 	yes := []string{

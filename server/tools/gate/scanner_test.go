@@ -114,25 +114,72 @@ func f(s string) string { return strings.ToLower(s) }
 	}
 }
 
-// forbid 规则必须命中至少一个文件。
+// 检查范围规则必须命中至少一个文件。
 // owner 改名或删除时，规则会永不触发；门不得静默报绿（AGENTS §29）。
-func TestValidateForbidOwnersRejectsMissingOwner(t *testing.T) {
+func TestValidateCheckedScopesRejectsMissingForbidOwner(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "internal/app/foo.go", "package app\n")
 	rules := []Rule{testRule("email.normalize.lower", "forbid",
 		"internal/adapters/pg/user.go", "strings.ToLower", "")}
-	if err := ValidateForbidOwners(root, rules); err == nil {
+	if err := ValidateCheckedScopes(root, rules); err == nil {
 		t.Fatal("a forbid rule that matches no files must be rejected")
 	}
 }
 
-func TestValidateForbidOwnersAcceptsExistingOwner(t *testing.T) {
+func TestValidateCheckedScopesAcceptsExistingForbidOwner(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "internal/adapters/pg/user.go", "package pg\n")
 	rules := []Rule{testRule("email.normalize.lower", "forbid",
 		"internal/adapters/pg/user.go", "strings.ToLower", "")}
-	if err := ValidateForbidOwners(root, rules); err != nil {
-		t.Fatalf("ValidateForbidOwners: %v", err)
+	if err := ValidateCheckedScopes(root, rules); err != nil {
+		t.Fatalf("ValidateCheckedScopes: %v", err)
+	}
+}
+
+// import 的 owner 也是检查范围，必须与 forbid 同口径 fail-closed。
+func TestValidateCheckedScopesRejectsMissingImportOwner(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "internal/app/foo.go", "package app\n")
+	rules := []Rule{testRule("boundary.signing", "import",
+		"internal/signing/providers/", "internal/app", "")}
+	if err := ValidateCheckedScopes(root, rules); err == nil {
+		t.Fatal("an import rule that matches no files must be rejected")
+	}
+}
+
+func TestValidateCheckedScopesAcceptsExistingImportOwner(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "internal/signing/providers/doc.go", "package providers\n")
+	rules := []Rule{testRule("boundary.signing", "import",
+		"internal/signing/providers/", "internal/app", "")}
+	if err := ValidateCheckedScopes(root, rules); err != nil {
+		t.Fatalf("ValidateCheckedScopes: %v", err)
+	}
+}
+
+// allow 覆盖 owner 的全部文件时，规则实际检查零个文件。
+func TestValidateCheckedScopesRejectsAllowThatCoversAll(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "internal/app/foo.go", "package app\n")
+	rules := []Rule{testRule("email.normalize.lower", "forbid",
+		"internal/app/", "strings.ToLower", "internal/app/")}
+	if err := ValidateCheckedScopes(root, rules); err == nil {
+		t.Fatal("a checked-scope rule fully exempted by allow must be rejected")
+	}
+}
+
+// owner 是测试文件时，存在性检查含 _test.go；默认扫描不含。
+// verify.sh 跑两遍，-tests 那一遍才真正检查该文件。
+func TestValidateCheckedScopesIncludesTests(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "internal/app/user_test.go", "package app\n")
+	rules := []Rule{testRule("email.normalize.lower", "forbid",
+		"internal/app/user_test.go", "strings.ToLower", "")}
+	if err := ValidateCheckedScopes(root, rules); err != nil {
+		t.Fatalf("a test-file owner must keep the rule alive: %v", err)
+	}
+	if violations, err := Scan(root, rules, false); err != nil || len(violations) != 0 {
+		t.Fatalf("default scan must skip test files: %#v, %v", violations, err)
 	}
 }
 
@@ -142,6 +189,20 @@ func TestRunRejectsForbidWithNoTargets(t *testing.T) {
 	writeFile(t, root, "internal/app/foo.go", "package app\n")
 	rulesPath := filepath.Join(root, "rules.tsv")
 	line := "email.normalize.lower\tforbid\tinternal/adapters/pg/user.go\tstrings.ToLower\t\tmsg\n"
+	if err := os.WriteFile(rulesPath, []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if rc := run(root, rulesPath, false); rc != 2 {
+		t.Fatalf("run rc = %d, want 2", rc)
+	}
+}
+
+// import 与 forbid 同形状：owner 缺失必须 rc=2。
+func TestRunRejectsImportWithNoTargets(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "internal/app/foo.go", "package app\n")
+	rulesPath := filepath.Join(root, "rules.tsv")
+	line := "boundary.signing\timport\tinternal/signing/providers/\tinternal/app\t\tmsg\n"
 	if err := os.WriteFile(rulesPath, []byte(line), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -428,8 +489,8 @@ func TestCountGoFilesRespectsIncludeTests(t *testing.T) {
 // 没有真正扫描的树**绝不可报告 ok**。
 func TestRunRefusesEmptyScans(t *testing.T) {
 	// 用最小规则集：本用例只测「扫描为空」与 -tests 口径。
-	// 真实 canonical.tsv 含 forbid 规则，空树会先被 owner 检查拦下，
-	// 那条路径由 TestRunRejectsForbidWithNoTargets 单独覆盖。
+	// 真实 canonical.tsv 含 checked-scope 规则；空树会先被 CountGoFiles
+	// 以 no Go files 拦下，owner 缺失另由 TestRunRejects*WithNoTargets 覆盖。
 	rules := filepath.Join(t.TempDir(), "rules.tsv")
 	if err := os.WriteFile(rules, []byte("clock.now\tcall\tinternal/core/clock/\ttime.Now\t\tuse clock.Clock.Now\n"), 0o644); err != nil {
 		t.Fatal(err)

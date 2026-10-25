@@ -16,9 +16,10 @@
 // 形状＝3 至 254 **字节**（len 的单位是字节）、恰好一个 @、两侧非空、
 // 无 Unicode 空白、无 *、无 Unicode Cf 格式字符。
 // 应用层比库内 CHECK 更严：库内的 [[:space:]] 随 LC_CTYPE 变化，且不拦 Cf。
-// 库内 CHECK 兜底空白与非空侧；Cf 只由本层拦截，直写库可绕过。
+// 库内 CHECK 兜底 ASCII 空白与非空侧；Unicode 空白（如 NBSP）与 Cf
+// 只由本层拦截，直写库可绕过。
 // 发布前须查目标库是否已有 Cf 行（见 README 的 Release checks）。
-// 库内 CHECK 不是 Cf 的最后一道。
+// 库内 CHECK 不是 Unicode 空白与 Cf 的最后一道。
 // 应用层先拒，错误码才是 validation_failed。
 package user
 
