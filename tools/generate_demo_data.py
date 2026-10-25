@@ -24,10 +24,10 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_REPO_ROOT, "scripts"))
 sys.path.insert(0, _REPO_ROOT)
 
-import db
+import db  # noqa: E402
 
-from yiban.adapters.persistence import purge_guard
-from yiban.core.status import ALL_STATUSES
+from yiban.adapters.persistence import purge_guard  # noqa: E402
+from yiban.core.status import ALL_STATUSES  # noqa: E402
 
 DEFAULT_DEMO_DB = "demo-log/demo.db"
 
