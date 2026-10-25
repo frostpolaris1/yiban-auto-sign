@@ -3,6 +3,7 @@ package pg
 import (
 	"fmt"
 
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
@@ -31,5 +32,25 @@ func scopePredicate(s corescope.Scope, argIndex int, prefix string) (string, []a
 		return clause, []any{s.UserID()}, nil
 	default:
 		return "", nil, fmt.Errorf("pg: unsupported scope kind %d", s.Kind())
+	}
+}
+
+// schoolScopePredicate 是 scopePredicate 的院校表版本。
+//
+// schools 表的作用域列是 id 本身，不是 school_id。
+// 只接受 master 与 admin：user 作用域没有院校可见面，
+// **不把空集合当全量**。
+func schoolScopePredicate(s corescope.Scope, argIndex int) (string, []any, error) {
+	if !s.Valid() {
+		return "", nil, errs.New(errs.CodeInternal, "invalid scope")
+	}
+	switch s.Kind() {
+	case corescope.KindMaster:
+		return "", nil, nil
+	case corescope.KindAdmin:
+		clause := fmt.Sprintf(" AND id = ANY($%d::text[]::uuid[])", argIndex)
+		return clause, []any{s.SchoolIDs()}, nil
+	default:
+		return "", nil, errs.New(errs.CodeForbidden, "role cannot list schools")
 	}
 }
