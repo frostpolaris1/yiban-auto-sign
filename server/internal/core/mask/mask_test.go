@@ -79,3 +79,20 @@ func TestMaskTextCoversSeparatedPhones(t *testing.T) {
 		}
 	}
 }
+
+// W2C-R3-01：游程正则会把「手机号 + 空格 + 数字」并成一组。
+// 四种基线树回 400 的输入，现在必须掩掉号码、保留邻接数字。
+func TestMaskTextHandlesPhoneAdjacentToDigits(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"13900139000 2026-10-25", "139****9000 2026-10-25"},
+		{"2026-10-25 13900139000", "2026-10-25 139****9000"},
+		{"退回：13900139000 100", "退回：139****9000 100"},
+		{"12345678901 100", "123****8901 100"},
+		{"13900139000\n13900139000", "139****9000\n139****9000"},
+	}
+	for _, tc := range cases {
+		if got := MaskText(tc.in); got != tc.want {
+			t.Fatalf("MaskText(%q) = %q; want %q", tc.in, got, tc.want)
+		}
+	}
+}

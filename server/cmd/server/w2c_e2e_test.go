@@ -1051,7 +1051,8 @@ func TestW2CP12AuditFailureRollsBackBusinessWrite(t *testing.T) {
 // --- P2-1 q 过滤口径 -------------------------------------------------------
 
 // q 只命中前 3 位前缀、后 4 位后缀或 11 位全号。
-// 掩码隐藏的中四位**不可检索**：它曾是一个数字 oracle。
+// 中四位可被全号枚举恢复（10^4 次），依赖登录限速（P7 前置）；
+// 本用例钉住的是「5..10 位片段永不命中」这一更强的性质。
 func TestW2CP21PhoneQueryHasNoMaskOracle(t *testing.T) {
 	e := w2cNewEnv(t)
 	master := e.user("master@example.com", coreauth.RoleMaster)
