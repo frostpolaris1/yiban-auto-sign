@@ -6,11 +6,11 @@
     白名单模式优先级、部署追加黑名单、数据文件缺失兜底、mtime 缓存热更新；
     web 注册入口集成——开放注册与管理员自动注册命中即 400 且用户不落库，
     白名单经 `.env` 配置由 `email_domain_error` 生效。
-对应实现：判定在 `scripts/email_policy.py`（`email_domain_error`），拦截点在
+对应实现：判定在 `yiban/core/email_policy.py`（`review_email`），拦截点在
     `web/app.py` 的注册路径。
 关键断言：命中必须**不落库**（只拦响应等于把脏数据留在库里）；数据文件缺失是兜底
     放行而不是崩掉注册流程。
-依赖：importlib/sys.path 注入加载 `scripts/email_policy.py` + Flask test client +
+依赖：直接导入 `yiban.core.email_policy` + Flask test client +
     临时 DB 与名单数据文件；纯本地，不触网、不发信。
 """
 import contextlib
@@ -24,7 +24,7 @@ import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-import email_policy  # noqa: E402
+from yiban.core import email_policy  # noqa: E402
 
 TEST_KEY = "a" * 64
 ADMIN_PASS = "TestPass1234!"
