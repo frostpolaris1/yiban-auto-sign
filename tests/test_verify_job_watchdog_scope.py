@@ -170,6 +170,40 @@ class WatchdogScopeTest(unittest.TestCase):
         self.seat.release()
         self.assertFalse(self.account_lock.locked(), "账号权必须已释放")
 
+    def test_timer_base_exception_releases_resources(self):
+        """计时器构造/启动抛 BaseException 时也必须归还席位与账号权（dix A-2）。
+
+        形状：`except Exception` 不捕 KeyboardInterrupt / SystemExit。旧实现里
+        计时器那段只捕 `Exception`，BaseException 会越过释放段直接冲出 `run()`，
+        席位与账号权永久泄漏。判据：异常照原样上抛（不转成业务终态），两个资源已归还。
+        """
+        for stage in ("construct", "start"):
+            with self.subTest(stage=stage):
+                # 每档换新的资源夹具：一档泄漏不许把下一档拖成 300 秒排队。
+                self.seat = threading.BoundedSemaphore(1)
+                self.account_lock = threading.Lock()
+                timer = mock.Mock()
+                if stage == "construct":
+                    factory = mock.Mock(side_effect=KeyboardInterrupt())
+                else:
+                    timer.start.side_effect = KeyboardInterrupt()
+                    factory = mock.Mock(return_value=timer)
+                with self._fake_store(), mock.patch.object(jobs, "_hooks", {}), \
+                        mock.patch.object(jobs, "GATE_WAIT", 0.2), \
+                        mock.patch.object(jobs.threading, "Timer", factory):
+                    jobs.configure(**self._account_hooks())
+                    with self.assertRaises(KeyboardInterrupt):
+                        jobs.run(1, {"phone": PHONE, "status": "pending"},
+                                 USER, 1, "pending", {})
+                self.assertTrue(self.seat.acquire(timeout=0),
+                                f"{stage} 阶段 BaseException 后席位泄漏")
+                self.seat.release()
+                self.assertFalse(self.account_lock.locked(),
+                                 f"{stage} 阶段 BaseException 后账号权泄漏")
+                if stage == "start":
+                    self.assertTrue(timer.cancel.called,
+                                    "已创建但未启动的计时器必须 cancel")
+
     def test_outbound_call_still_times_out(self):
         """外呼本身卡住时，看门狗仍在 `OUTBOUND_TIMEOUT` 后收口（边界未放宽）。"""
         stop = threading.Event()
