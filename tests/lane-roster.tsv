@@ -245,6 +245,7 @@ fast	tests/test_provenance_guard.py
 fast	tests/test_public_example_key_blocked.py
 fast	tests/test_purge_guard.py
 fast	tests/test_pw_gate_tiers.py
+fast	tests/test_queue_api_recent_window.py
 fast	tests/test_queue_failclosed.py
 fast	tests/test_rate_limit_tiers.py
 fast	tests/test_readme_deploy_selfsufficiency.py
