@@ -334,7 +334,10 @@ class ComposeHealthcheckSchedTest(unittest.TestCase):
         hb = re.search(r"healthcheck:\s*\n(?:.*\n)*?\s*start_period", text)
         self.assertIsNotNone(hb, "compose 里找不到 healthcheck 块")
         block = hb.group(0)
-        self.assertIn("17892", block, "web 探活不得丢（nginx depends_on 依赖它）")
+        # 端口经容器环境取同一张值表（deploy/web.env）：compose 写 $$YIBAN_WEB_PORT，
+        # 由容器 shell 展开。web 探活不得丢（nginx depends_on 依赖它）。
+        self.assertIn("$$YIBAN_WEB_PORT", block,
+                      "web 探活必须用容器环境里的端口值（不得另写字面量）")
         self.assertIn("--check-health", block,
                       "sched 侧必须探调度器自己的活体出口（心跳），而非只有 web")
 
@@ -343,10 +346,10 @@ class ComposeHealthcheckSchedTest(unittest.TestCase):
         legacy = ("healthcheck:\n"
                   "      test: [\"CMD\", \"python3\", \"-c\",\n"
                   "             \"import urllib.request;urllib.request.urlopen"
-                  "('http://127.0.0.1:17892/login', timeout=3)\"]\n"
+                  "('http://127.0.0.1:8099/login', timeout=3)\"]\n"
                   "      interval: 30s\n      start_period: 20s\n")
         hb = re.search(r"healthcheck:\s*\n(?:.*\n)*?\s*start_period", legacy)
-        self.assertIn("17892", hb.group(0))
+        self.assertIn("127.0.0.1:8099", hb.group(0))
         self.assertNotIn("--check-health", hb.group(0))   # 判据点名：旧块缺 sched 探活
 
 

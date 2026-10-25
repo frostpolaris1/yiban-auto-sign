@@ -40,8 +40,8 @@ services:
       - KILL         # supervisord 停止子进程
 
     # yiban-nginx 会共享本容器的网络命名空间，因此 80/443 在这里声明。
-    # 注意：容器内 gunicorn 只监听回环 127.0.0.1:17892，不经共享栈的
-    # nginx 就访问不到——保证应用不直接暴露公网（沿用现有部署安全模型）。
+    # 注意：容器内 gunicorn 只监听回环（端口见 deploy/web.env 的 YIBAN_WEB_PORT），
+    # 不经共享栈的 nginx 就访问不到——保证应用不直接暴露公网（沿用现有部署安全模型）。
     ports:
       - "80:80"
       - "443:443"
@@ -54,6 +54,10 @@ services:
     # · 其余键（如 `YIBAN_ACCOUNTS_FILE` / `YIBAN_COOKIE_SECURE`）：`/data/.env`
     #   优先，这里的值只在 `.env` 没写同名键时生效（M27）。
     # 容器里 /data 是唯一可写卷；两份配置保持同一处事实源即可。
+    # 部署面启动参数（端口/线程数）只来自 deploy/web.env：它是唯一值表，
+    # supervisord 与 healthcheck 都在容器内读同一份环境。
+    env_file:
+      - deploy/web.env
     environment:
       - TZ=Asia/Shanghai          # 参与签到窗口计算，缺省会错 8 小时
       - YIBAN_ENV_FILE=/data/.env
@@ -100,13 +104,13 @@ services:
       # 出口 --check-health：状态目录里心跳文件（守护线程周期落盘，签到子进程
       # wait 期间不断流）mtime 在容忍窗内则 0，陈旧/缺失则 1。
       # 容器内整链生效待生产演练（本机无 docker 运行时）。
+      # 端口经容器环境取值（$$ 交给容器 shell 展开，值来自 env_file 的同一张值表）。
       test: ["CMD-SHELL",
-             "python3 -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:17892/login', timeout=3)\" && python3 scripts/container_scheduler.py --check-health"]
+             "python3 -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:$$YIBAN_WEB_PORT/login', timeout=3)\" && python3 scripts/container_scheduler.py --check-health"]
       interval: 30s
-      # P13-09：这条 CMD-SHELL 要起两次 python3（urllib 探活 timeout=3 本身就可能
-      # 吃掉 3s；web 侧是 -w 1 --threads 32 的单 worker（实配＝web/deploy/yiban-web.service，
-      # 2026-10-25 订正旧文 8），首签窗口内 /login 排队常见）。
-      # timeout 5s 是整条命令的上限，高峰期会被判假 unhealthy；给足 15s。
+      # P13-09：这条命令起两次 python3（urllib 探活 timeout=3 本身就可能吃掉 3s；
+      # 线程数见 deploy/web.env）。timeout 5s 是整条命令的上限，高峰期会被判假
+      # unhealthy；给足 15s。
       timeout: 15s
       retries: 3
       start_period: 20s
@@ -126,8 +130,14 @@ services:
         # sched 故障连坐全下线（旧单探 web 形态无此耦合）。
         condition: service_started
     volumes:
-      - ./docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # 模板挂到官方镜像约定的目录：入口脚本用 envsubst 渲染到 /etc/nginx/conf.d/，
+      # 端口来自下面 env_file 的同一张值表（只替换已定义的 YIBAN_* 变量，
+      # nginx 自己的 $host / $remote_addr / $scheme 保持原样）。
+      - ./docker/nginx.conf:/etc/nginx/templates/default.conf.template:ro
       - ./certs:/etc/yiban/certs:ro   # 需 ./certs/fullchain.pem 和 ./certs/key.pem
+    # 与应用读同一张端口/线程值表（envsubst 需要 YIBAN_WEB_PORT）。
+    env_file:
+      - deploy/web.env
     # nginx 同样禁新特权；只读根文件系统 + tmpfs 承接运行时缓存/pid 目录
     security_opt:
       - no-new-privileges:true
@@ -136,3 +146,5 @@ services:
       - /var/cache/nginx:size=16m
       - /var/run:size=1m
       - /tmp:size=4m
+      # envsubst 的输出目录：只读根文件系统下必须可写（模板渲染的唯一写入点）
+      - /etc/nginx/conf.d:size=1m
