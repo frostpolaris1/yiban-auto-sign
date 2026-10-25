@@ -34,14 +34,28 @@ import tempfile
 import unittest
 
 from web.services import logs as _logs_svc
+from web.services.accounts_data import PHONE_RE
 from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+
+def _write_side_phones():
+    """由 `PHONE_RE` 派生样本族：第二位取 0..9，其余位固定。
+
+    返回**写侧校验接受**的号码列表；调用方仍逐枚 `PHONE_RE.fullmatch` 复核，
+    拒绝"正则与样本族脱钩"（例如写侧收紧到 `1[3-9]` 时本族只剩 7 枚，判据会红）。
+    """
+    return [f"1{d}012345678" for d in range(10)]
+
+
 TEST_KEY = "a" * 64
 ADMIN_PASS = "TestPass1234!"
-PHONE = "13800138001"
-MASKED = "138****8001"
+PHONE = _write_side_phones()[3]
+MASKED = PHONE[:3] + "****" + PHONE[7:]
+#: 次位 0–2 的已入库号（写侧校验收、旧 `1[3-9]` 遮罩口径漏）：由同一族派生。
+LOW_SECOND_PHONE = _write_side_phones()[2]
+LOW_SECOND_MASKED = LOW_SECOND_PHONE[:3] + "****" + LOW_SECOND_PHONE[7:]
 
 #: 号码遮罩公式的"指纹"正则：任何一处出现即代表又长出一个公式定义点。
 #: 只允许命中 `yiban/core/masking.py`（唯一真源）。
@@ -128,7 +142,11 @@ class PhoneTextFormMaskingTest(unittest.TestCase):
         （`_mask_log_phones` → `mask_phones_in_text`）原样下发，而前端已不再自遮。
         """
         from yiban.core.masking import mask_phone, mask_phones_in_text
-        for raw in ("12012345678", "10012345678"):
+        samples = _write_side_phones()
+        accepted = [raw for raw in samples if PHONE_RE.fullmatch(raw)]
+        self.assertEqual(accepted, samples,
+                         "PHONE_RE 不再接受派生样本族（写侧口径变了，判据需重定）")
+        for raw in accepted:
             want = raw[:3] + "****" + raw[7:]
             with self.subTest(raw=raw, caliber="value"):
                 self.assertEqual(mask_phone(raw), want)
@@ -291,7 +309,7 @@ class DisplaySurfacesAreMaskedTest(unittest.TestCase):
             fh.write("\n".join([
                 f"[{cls.today} 06:31:01] [INFO] yiban: [{PHONE}] 签到成功",
                 f"[{cls.today} 06:31:02] [WARNING] yiban: 上游回显 +8613800138000 与 138 0013 8000",
-                f"[{cls.today} 06:31:03] [WARNING] yiban: 旧口径漏网号 12012345678",
+                f"[{cls.today} 06:31:03] [WARNING] yiban: 旧口径漏网号 {LOW_SECOND_PHONE}",
             ]) + "\n")
 
     @classmethod
@@ -332,9 +350,9 @@ class DisplaySurfacesAreMaskedTest(unittest.TestCase):
         self.assertNotIn(PHONE, body, "日志响应含 11 位明文手机号")
         self.assertNotIn("+8613800138000", body, "+86 前缀形态未遮")
         self.assertNotIn("138 0013 8000", body, "空格分段形态未遮")
-        self.assertNotIn("12012345678", body, "写侧校验收下的号（次位 0–2）未遮")
+        self.assertNotIn(LOW_SECOND_PHONE, body, "写侧校验收下的号（次位 0–2）未遮")
         self.assertIn(MASKED, body)
-        self.assertIn("120****5678", body)
+        self.assertIn(LOW_SECOND_MASKED, body)
 
     def test_accounts_response_has_no_plaintext_phone(self):
         body = self._admin_client().get("/api/accounts").get_data(as_text=True)

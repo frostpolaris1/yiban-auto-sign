@@ -38,14 +38,16 @@ fast	tests/test_account_detail_narrow_read.py	# 详情窄读：golden 逐字节�
 fast	tests/test_account_liveness_gate.py
 fast	tests/test_account_ops_reentry.py
 fast	tests/test_account_plaintext_patch.py
+fast	tests/test_account_profile_exposure.py	# 二段资料暴露建模（qmz4）：三视图 golden＋逐字段开关＋权限＋落库密文（本机 ~2s）
+fast	tests/test_account_row_rebuild_coverage.py	# 行重建列覆盖门（qmz4 §27）：INSERT 列清单 vs schema 对账＋源码突变自证（本机 <1s）
 fast	tests/test_admin_creds_masked_ops.py
 fast	tests/test_admin_privilege_web.py
 fast	tests/test_alert_channel_dispatch.py
 fast	tests/test_alert_frequency_caliber.py
 fast	tests/test_alerts_level_gate.py
 fast	tests/test_alerts_summary_level.py
-fast	tests/test_api_contract_coverage.py
 fast	tests/test_api_clock_business_tz.py	# /api/clock 的 tz_offset_min 必须恒为业务时区 +480（P0 2026-10-25）
+fast	tests/test_api_contract_coverage.py
 fast	tests/test_audit_anchor.py
 fast	tests/test_audit_anchor_field_source.py
 fast	tests/test_audit_anchor_hardening.py
@@ -61,9 +63,9 @@ fast	tests/test_backup_db_presence_e2e.py	# 真跑 backup.sh：缺库必须失�
 fast	tests/test_backup_docker_hardening.py	# docker 备份脚本旗标/口令/锚点/轮转（stub gpg，本机 2s）
 slow	tests/test_backup_docker_script.py	# 真子进程＋遍历：真跑 docker/backup-docker.sh 并扫 DATA_DIR（本机 6.7s）
 slow	tests/test_backup_e2e.py	# 真子进程：真跑 scripts/backup.sh＋真 gpg/tar 回环（本机 4.4s）
-slow	tests/test_backup_lock_e2e.py	# 真双进程＋真等待 2s×2：并行第二跑必须明确失败（本机 14s）
 fast	tests/test_backup_flag_parsing.py
 fast	tests/test_backup_hardening.py	# backup.sh 回环/优先级/状态件（stub gpg，本机 9s）
+slow	tests/test_backup_lock_e2e.py	# 真双进程＋真等待 2s×2：并行第二跑必须明确失败（本机 14s）
 fast	tests/test_backup_require_encrypt.py
 fast	tests/test_backup_sentinel.py
 slow	tests/test_breaker.py	# 真等待：4 条用例各等一次真实 5s 超时（本机 31.1s）
@@ -78,26 +80,27 @@ fast	tests/test_ci_dependency_audit_gate.py
 fast	tests/test_claim_dispatch_elbow_e2e.py
 fast	tests/test_claim_write_path_single_source.py
 slow	tests/test_claims_reap_e2e.py	# 真子进程：子进程领取后自杀，轮末收尸（本机 2.0s）
-fast	tests/test_cli_contract.py
 fast	tests/test_cleanup_dotenv_parity_e2e.py	# unshare 挂载命名空间内跑清理 cron（本机 1.6s）
+fast	tests/test_cli_contract.py
 fast	tests/test_cli_contract_mf60.py
-fast	tests/test_cli_env_priority.py	# 子进程跑 state --dry-run：.env/进程环境优先级
 fast	tests/test_cli_egress_reset.py
+fast	tests/test_cli_env_priority.py	# 子进程跑 state --dry-run：.env/进程环境优先级
 fast	tests/test_cli_exit_surface.py
-fast	tests/test_concurrency_fidelity_gate.py
 fast	tests/test_comment_symbol_ownership.py	# 纯 AST+正则扫生产树（工单 mr50 的形状门）
+fast	tests/test_concurrency_fidelity_gate.py
 fast	tests/test_config_input_caps.py
 fast	tests/test_config_loader.py
 fast	tests/test_config_registry_gate.py
-fast	tests/test_constraint_registry_gate.py	# 读 docs/dev/constraints.tsv 并真跑四个检查器
 fast	tests/test_conftest_mail_guard.py
 fast	tests/test_conftest_umask_guard.py
 fast	tests/test_connection_pool_declared.py
+fast	tests/test_constraint_registry_gate.py	# 读 docs/dev/constraints.tsv 并真跑四个检查器
 fast	tests/test_container_scheduler.py
 fast	tests/test_count_only.py
 fast	tests/test_crash_semantics.py
 fast	tests/test_creds_write_accounting.py
 fast	tests/test_cron_provenance_paths.py	# 真跑 cron 来源门：/tmp 与相对路径判红（本机 3s）
+fast	tests/test_cron_time_equivalence.py
 slow	tests/test_cross_process_file_lock_e2e.py	# 真子进程争用：3 个独立进程同刻抢同一把文件锁（本机 5.6s）
 fast	tests/test_csp_header_contract.py
 fast	tests/test_dashboard_stats_caliber_js.py
@@ -110,8 +113,8 @@ fast	tests/test_delete_timeline_consistency.py
 fast	tests/test_demo_data_guard.py
 fast	tests/test_deploy_deps_sync.py
 fast	tests/test_deploy_entry_imports.py
-fast	tests/test_deploy_gate_wiring.py
 fast	tests/test_deploy_gate_skip_verdict.py	# 夹具副本跑闸门摘要：SKIP 计入结论（本机 3s）
+fast	tests/test_deploy_gate_wiring.py
 fast	tests/test_deploy_paths_and_restore_verdict.py
 fast	tests/test_deploy_prod_artifacts.py
 fast	tests/test_dev_verify_entry.py
@@ -133,8 +136,8 @@ fast	tests/test_egress_direct_applied.py
 fast	tests/test_egress_rate_domain_single_source.py
 fast	tests/test_elbow_predicate.py
 fast	tests/test_elbow_shadow.py
-fast	tests/test_emit_ledger.py
 fast	tests/test_email_domain_review.py
+fast	tests/test_emit_ledger.py
 fast	tests/test_env_export_line_divergence.py
 fast	tests/test_env_fail_loud.py
 fast	tests/test_env_file_precedence.py
@@ -150,11 +153,12 @@ fast	tests/test_executor_health_card.py
 fast	tests/test_executor_manifest.py
 fast	tests/test_executor_v3.py
 fast	tests/test_executor_write_guard.py
+fast	tests/test_exit_code_table_gate.py
 fast	tests/test_exit_surface_generation.py
 fast	tests/test_exit_surface_repr_mail.py
 fast	tests/test_fake_upstream_fault_knobs_gate.py
-fast	tests/test_fallback_elbow_discrimination_e2e.py
 fast	tests/test_fallback_cron_cwd_e2e.py	# 极简环境从 $HOME 起兜底脚本，桩入口留痕（本机 1.5s）
+fast	tests/test_fallback_elbow_discrimination_e2e.py
 fast	tests/test_fallback_event_yield.py
 fast	tests/test_fallback_gates.py
 fast	tests/test_fallback_log_noise.py
@@ -162,6 +166,7 @@ fast	tests/test_fallback_scan_yield.py
 fast	tests/test_file_lock_no_network.py
 fast	tests/test_forwarded_trust_forms.py
 fast	tests/test_frontend_paging_wiring.py
+fast	tests/test_frozen_carrier_usage_gate.py
 fast	tests/test_gate_empty_input_red.py	# 空输入/零 token 的门必须非 0（本机 2s）
 fast	tests/test_gate_lane_roster.py
 fast	tests/test_gate_manifest_sync.py
@@ -206,14 +211,15 @@ fast	tests/test_manual_paused_spawn_filter.py
 fast	tests/test_manual_sign_reporting.py
 fast	tests/test_masking_phone_contract.py
 fast	tests/test_masking_ssrf_gaps.py
-fast	tests/test_masking_tree_parity.py
 fast	tests/test_masking_tokens.py
+fast	tests/test_masking_tree_parity.py
 fast	tests/test_migration_compat.py
 slow	tests/test_migrations_fail_closed.py	# 真子进程：真起子进程验迁移拒启/kill 重跑收敛（本机 3.0s）
 fast	tests/test_migrations_schema_drift.py
 fast	tests/test_migrations_v18.py
 fast	tests/test_migrations_v19.py
 fast	tests/test_migrations_v20.py
+fast	tests/test_migrations_v25.py	# v25 补列：24→25 升级保数据＋幂等＋产物登记（本机 <1s）
 fast	tests/test_module_date_constant_gate.py
 slow	tests/test_multi_executor_drill_e2e.py	# 真进程树＋真登录：慢集专轨本就串行独占核（与 serial 轨同性质），移到并行慢集轨后不再占 verify 关键路径（本机 66.1s）
 fast	tests/test_multi_executor_engine.py
@@ -226,6 +232,7 @@ fast	tests/test_notify_p05_routes.py
 fast	tests/test_notify_throttle.py
 fast	tests/test_notify_webhook.py
 slow	tests/test_only_single_process.py	# 真进程组：起真进程树并 terminate 整组（本机 10.9s）
+fast	tests/test_pagination_contract_gate.py
 fast	tests/test_panel_false_signals.py
 fast	tests/test_path_env_priority_single_source.py
 fast	tests/test_path_env_read_gate.py
@@ -265,10 +272,10 @@ fast	tests/test_review_flow.py
 fast	tests/test_review_refresh_cadence_single_source.py
 fast	tests/test_root_artifacts.py	# 仓库根 glob（128-P0-B 的 NoRootArtifacts 门）
 fast	tests/test_ruff_config_guard.py
+fast	tests/test_run_entry_hardening.py	# 探针/兜底/run.sh 收尾标记（stub python，本机 4s）
 fast	tests/test_run_events_inspection.py
 fast	tests/test_run_lock_fail_closed.py
 fast	tests/test_run_sh_logging.py
-fast	tests/test_run_entry_hardening.py	# 探针/兜底/run.sh 收尾标记（stub python，本机 4s）
 fast	tests/test_run_sh_stderr_timestamps.py
 fast	tests/test_run_sh_workers.py
 fast	tests/test_runsh_env_parse.py
@@ -282,9 +289,9 @@ fast	tests/test_schedule_v2.py
 fast	tests/test_scheduler_env_probe.py
 fast	tests/test_scheduler_exception_surface.py
 fast	tests/test_scheduler_gate.py
-slow	tests/test_second_round_rc_contract.py	# 真子进程：真跑 run.sh＋真监督进程（本机 2.8s）
 fast	tests/test_script_safety_guards.py	# 四个运维脚本的破坏性动作守卫（子进程跑脚本，秒级）
 fast	tests/test_scripts_gate_hardening.py	# 拉取/闸门脚本退出码与 cron 来源门（stub ssh/git，本机 2s）
+slow	tests/test_second_round_rc_contract.py	# 真子进程：真跑 run.sh＋真监督进程（本机 2.8s）
 fast	tests/test_secret_key_strict_read.py
 fast	tests/test_sentinel_db_readonly.py
 fast	tests/test_session.py
@@ -301,6 +308,7 @@ fast	tests/test_sign_touchpoint_singleton.py
 fast	tests/test_skip_visibility_gate.py
 fast	tests/test_slot_geometry.py
 fast	tests/test_smtp_identity_frontend.py
+fast	tests/test_sse_default_parity.py
 fast	tests/test_state_file_writes.py
 fast	tests/test_state_gc.py
 fast	tests/test_state_helpers_hardening.py	# sched-run/slot kind/清理不可读目录（本机 1.5s）
@@ -315,16 +323,16 @@ fast	tests/test_store_cleanup_accounts.py
 fast	tests/test_store_events_quantile.py
 fast	tests/test_store_queue.py
 fast	tests/test_store_users_hard_purge.py
-fast	tests/test_frozen_carrier_usage_gate.py
 fast	tests/test_store_verify_jobs_purge.py
-fast	tests/test_suite_cwd_isolation_gate.py
 fast	tests/test_stream_api.py
 fast	tests/test_subpath_deploy.py
+fast	tests/test_suite_cwd_isolation_gate.py
 fast	tests/test_supervisor_recursion_guard.py
 fast	tests/test_switch_password_gate.py
 fast	tests/test_time_field_norm.py
 fast	tests/test_time_prefs.py
 fast	tests/test_token_bucket.py
+fast	tests/test_truncation_literal_gate.py
 fast	tests/test_unreached_summary_bucket.py
 fast	tests/test_url_userinfo_masking.py
 fast	tests/test_user_deregistration_db.py
@@ -344,12 +352,12 @@ fast	tests/test_web_api_security.py
 fast	tests/test_web_audit_page.py
 fast	tests/test_web_auth_security.py
 fast	tests/test_web_boundary.py
-fast	tests/test_web_hardening_batch.py
 fast	tests/test_web_calendar_parity.py
 fast	tests/test_web_css_contrast.py
 fast	tests/test_web_dashboard_page.py
 fast	tests/test_web_file_lock_slow_ops.py
 fast	tests/test_web_font_closure.py
+fast	tests/test_web_hardening_batch.py
 fast	tests/test_web_js_modules.py
 fast	tests/test_web_login_page.py
 fast	tests/test_web_logs_page.py
@@ -368,6 +376,7 @@ fast	tests/test_web_viewport_meta.py
 fast	tests/test_web_vue_pilot.py
 fast	tests/test_web_vue_sources_tracked.py
 fast	tests/test_webui_inline_context.py
+fast	tests/test_weekend_parity.py
 fast	tests/test_window_alert_reset.py
 fast	tests/test_window_edge_clamp.py
 fast	tests/test_window_edge_single_source.py
