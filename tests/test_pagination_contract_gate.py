@@ -146,8 +146,9 @@ _REQUIRED_LIMIT_NAMES = ("_PAGE_LIMIT_DEFAULT", "_PAGE_LIMIT_MAX", "_PAGE_LIMIT_
 def missing_limit_constants(text):
     """→ 文本里缺失的共享常量名列表；空列表=合规。
 
-    只认**名字**：回填同值字面量时值仍相等，只有名字消失，故这是唯一能看住
-    "实现改回内联"的判据。
+    只认**名字**：回填同值字面量时值仍相等，只有名字消失时本函数才报红；但名字
+    import 通常仍在，故真正的牙是调用点的两条 `assertNotRegex`——分别禁掉
+    `args.get("limit", 100)` 与 `min(max(..., 1), 200)` 两种回填形态。
     """
     return [name for name in _REQUIRED_LIMIT_NAMES if name not in text]
 
