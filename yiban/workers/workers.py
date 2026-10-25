@@ -101,11 +101,11 @@ _REPO_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 #: `state_io.WORKER_HEARTBEAT_SEC` 决定，与这个粒度无关。
 _WAIT_POLL_SEC = 1.0
 
-#: 补签轮判定「需要补跑」的退出码：与 `runner.SECOND_RUN_CHECK_NEED` 是同一契约值
-#: （`docs/dev/cli.md` §3）。此处复写而非从 runner 取，是因为 runner 反向依赖本模块，
-#: 导入期取不到它；两处一致性由测试对账。子进程带它退出时监督进程必须原样透出——
-#: 归一成 0 会让宿主 run.sh 把「需要补签」读成「一切正常」，补签轮被静默吞掉。
-_SECOND_RUN_CHECK_NEED = 10
+#: 补签轮判定「需要补跑」的退出码：引用 `cli_support.SECOND_RUN_CHECK_NEED`（唯一
+#: 定义点，`docs/dev/cli.md` §3）。不能从 `runner` 取——runner 反向依赖本模块，导入期
+#: 成环。子进程带它退出时监督进程必须原样透出：归一成 0 会让宿主 run.sh 把「需要补签」
+#: 读成「一切正常」，补签轮被静默吞掉。
+_SECOND_RUN_CHECK_NEED = cli_support.SECOND_RUN_CHECK_NEED
 
 
 def run_worker_supervisor(n, argv, slots=None, migrate=True):
