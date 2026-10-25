@@ -200,6 +200,8 @@ const privacyError = ref("");
 const privacyBusy = ref(false);
 /** 一段是否已在本次弹窗里保存成功（二段重试时不重复写账号）。 */
 const stageOneSaved = ref(false);
+/** 新增流程是否已建号。建号成功后弹窗切编辑态，后续只走 PUT，绝不再 POST。 */
+const accountCreated = ref(false);
 /** 一段保存回包（二段写完后统一收尾：提示文案与在线校验任务 id）。 */
 const stageOneResult = ref<{ msg?: string; job_id?: string }>({});
 
@@ -209,7 +211,37 @@ function resetPrivacy(a?: MyAccount | null): void {
   privacyInitial.value = privacyFromView(a?.profile);
   privacyError.value = "";
   stageOneSaved.value = false;
+  accountCreated.value = false;
   stageOneResult.value = {};
+}
+
+/**
+ * 新增建号成功后切编辑态：后续保存一律走 PUT。
+ *
+ * 这是「回一段再前进」不再重发 POST 的机制保证：只要建号成功，
+ * 弹窗的形态就从新增变成编辑（标题与请求方法随之改变）。
+ */
+async function adoptCreatedAccount(phone: string): Promise<boolean> {
+  try {
+    // 直取一次视图（不走 loadAccounts 的淡出交换）：建号后必须同步拿到新下标，
+    // 否则调用方会误判"还没就绪"。弹窗打开期间也不需要列表动画。
+    const data = await api<{ accounts?: MyAccount[] }>("GET", "/api/my-accounts");
+    const list = data.accounts ?? [];
+    accounts.value = list;
+    const idx = list.findIndex((a) => a.phone === phone && !a.deleted);
+    if (idx < 0) return false;
+    formEditing.value = true;
+    formIndex.value = idx;
+    f.value.password = ""; // 建号时已提交；后续编辑留空＝不改密码
+    if (isAdmin.value) {
+      const adminIndex = list[idx].admin_index;
+      if (adminIndex === undefined) return false;
+      await loadDetail(adminIndex);
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function openForm(index: number | null): void {
@@ -429,14 +461,29 @@ async function submitPrivacy(): Promise<void> {
   privacyBusy.value = true;
   try {
     if (!stageOneSaved.value) {
-      try {
-        stageOneResult.value = await submitStageOne(one);
+      if (!formEditing.value && accountCreated.value) {
+        // 已建号但上次没切成编辑态：只补切换，绝不重发 POST。
+        if (!(await adoptCreatedAccount(one.phone))) {
+          privacyError.value = "账号已提交，但列表尚未就绪，请刷新页面后再补充隐私资料";
+          return;
+        }
         stageOneSaved.value = true;
-      } catch (e) {
-        if (isCanceled(e)) return;
-        formError.value = errorMessage(e, "保存失败，请稍后再试");
-        formStage.value = 1;
-        return;
+      } else {
+        const wasEditing = formEditing.value;
+        try {
+          stageOneResult.value = await submitStageOne(one);
+          stageOneSaved.value = true;
+          if (!wasEditing) {
+            accountCreated.value = true;
+            // 建号成功即切编辑态；失败也继续走下面的下标定位（只写二段）。
+            await adoptCreatedAccount(one.phone);
+          }
+        } catch (e) {
+          if (isCanceled(e)) return;
+          formError.value = errorMessage(e, "保存失败，请稍后再试");
+          formStage.value = 1;
+          return;
+        }
       }
     }
     // 一段写成功后按完整号定位本人视图下标：管理端并发增删行会让旧下标漂移。
@@ -978,6 +1025,7 @@ onMounted(async () => {
           <span class="field-label">{{ pf.label }}</span>
           <el-input
             v-model="privacy.profile[pf.key]"
+            :aria-label="pf.label"
             :maxlength="pf.maxlength"
             clearable
             :placeholder="pf.placeholder"
