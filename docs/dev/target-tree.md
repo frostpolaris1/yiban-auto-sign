@@ -460,6 +460,7 @@ B1 搬 6 个开发工具时，同批改五处注释里的旧路径：`account_cr
 | `docker` | 现存 |
 | `config/registry.json` | 现存 |
 | `docs/dev` | 现存 |
+| `docs/dev/target-tree.md` | 现存（本契约自身） |
 | `run.sh` | 现存 |
 | `run_probe.sh` | 现存 |
 | `docker-compose.yml` | 现存 |
@@ -473,7 +474,7 @@ B1 搬 6 个开发工具时，同批改五处注释里的旧路径：`account_cr
 | `scripts/compat` | 计划 |
 
 B1 收口时已更新本表（新增 `tools`、`yiban/infra/env_child.py`、`yiban/core/email_policy.py`、
-`yiban/ports`）。B3 完成后删除 `yiban/app` 行，加入 `yiban/usecases` 行。
+`yiban/ports`、本契约自身）。B3 完成后删除 `yiban/app` 行，加入 `yiban/usecases` 行。
 
 ---
 
