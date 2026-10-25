@@ -697,7 +697,7 @@ KNOWN_SKIP_SITES = json.loads(r"""
  "tests/test_web_mask_email_parity.py": [
   [
    "skipUnless",
-   "node 不可用：跳过前后端邮箱脱敏口径对拍"
+   "node 不可用：跳过前后端邮箱脱敏口径对拍（跳过不是绿）"
   ]
  ],
  "tests/test_web_rate_limit_concurrency_e2e.py": [
@@ -710,6 +710,12 @@ KNOWN_SKIP_SITES = json.loads(r"""
   [
    "skipUnless",
    "git 不可用：跳过 Vue 源码入库守卫"
+  ]
+ ],
+ "tests/test_weekend_parity.py": [
+  [
+   "skipUnless",
+   "node 不可用：跳过周末停签前后端对拍（跳过不是绿）"
   ]
  ],
  "tests/test_work_accounts_selection.py": [
