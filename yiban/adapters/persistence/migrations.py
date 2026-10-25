@@ -1627,19 +1627,13 @@ def _maybe_migrate(conn, json_base):
                         phone_code = json.dumps(account_crypto.encrypt_password(phone_code, key, a.get("phone", "")))
                     elif isinstance(phone_code, dict):
                         phone_code = json.dumps(phone_code)
-                # 二段资料（工单 qmz4）：与上面两枚凭据同一分支口径——明文形态加密
-                # （`db_export --plaintext` 给的是明文 JSON 串），密文形态原样透传。
-                # 明文 dict（内存调用方）先序列化再加密，语义等价于"整枚密文"。
+                # 二段资料（工单 qmz4）：与替换路径共用同一个形态归一助手
+                # （`accounts.cipher_field_for_replay`）——密文透传、明文（含明文 dict）
+                # 加密。两处各写一遍曾是孪生缺陷的来源，故只保留一份实现。
                 profile = a.get("profile", "") or ""
-                if key is not None:
-                    if profile and not _accounts._is_encrypted_value(profile):
-                        had_plaintext = True
-                        plain_profile = (profile if isinstance(profile, str)
-                                         else json.dumps(profile, ensure_ascii=False))
-                        profile = json.dumps(account_crypto.encrypt_password(
-                            plain_profile, key, a.get("phone", "")))
-                    elif isinstance(profile, dict):
-                        profile = json.dumps(profile)
+                if profile and not _accounts._is_encrypted_value(profile):
+                    had_plaintext = True
+                profile = _accounts.cipher_field_for_replay(profile, a.get("phone", ""))
                 # 暴露开关是明文 JSON（布尔集非 PII）：形态归一只，不经密钥
                 profile_expose = _accounts._as_plain_json(a.get("profile_expose"))
                 cur = conn.execute(
@@ -1760,13 +1754,12 @@ def _rename_backup(path, reencrypt=False, key=None):
                         )
                         changed = True
                     # 二段资料（工单 qmz4）是第三枚 PII 密文字段：明文形态同理重写为
-                    # 加密版，否则 `.bak` 逃生门会把资料明文长期留在磁盘上。
+                    # 加密版，否则 `.bak` 逃生门会把资料明文长期留在磁盘上。形态归一
+                    # 与导入/替换路径共用 `accounts.cipher_field_for_replay`。
                     prof = a.get("profile", "") or ""
                     if prof and not _accounts._is_encrypted_value(prof):
-                        plain_prof = (prof if isinstance(prof, str)
-                                      else json.dumps(prof, ensure_ascii=False))
-                        a["profile"] = json.dumps(account_crypto.encrypt_password(
-                            plain_prof, key, a.get("phone", "")))
+                        a["profile"] = _accounts.cipher_field_for_replay(
+                            prof, a.get("phone", ""))
                         changed = True
                 if changed:
                     tmp = bak + ".tmp" + str(os.getpid())
