@@ -87,17 +87,66 @@ BAD_CONSTANT_LITERAL = GOOD_SOURCE.replace(
     "_DEFAULT_BUCKET_RATE = RATE_DEFAULT", "_DEFAULT_BUCKET_RATE = 1.0")
 
 
+#: 缺省字面量的模板载体（判据 ④ 的固定读取面，与 --scan 无关）。
+TEMPLATE_CARRIERS = (".env.example", ".env.docker.example", "README.md")
+
+
 def _run_gate(root, registry, *args):
-    """夹具树只有 yiban/ 一个扫描面：显式给 --scan，免得撞上"扫描面不存在即拒判"。"""
+    """显式给 --scan，免得撞上"扫描面不存在即拒判"。
+
+    三个模板载体也进扫描面：判据 ③（未登记键）同样要看它们。判据 ④ 自己按
+    固定载体读取，不受 --scan 影响；`--min-template-gated 0` 让夹具的小名册
+    不撞真实仓的覆盖下限。
+    """
     cmd = [sys.executable, GATE, "--root", root, "--registry", registry,
-           "--min-keys", "1", "--min-files", "1", "--scan", "yiban", *args]
+           "--min-keys", "1", "--min-files", "1", "--min-template-gated", "0",
+           "--scan", "yiban"]
+    for carrier in TEMPLATE_CARRIERS:
+        cmd += ["--scan", carrier]
+    cmd += list(args)
     return subprocess.run(cmd, capture_output=True, text=True, timeout=120, cwd=BASE)
 
 
-class _Fixture:
-    """临时夹具树：`config/registry.json` + `yiban/probe.py`。"""
+def _template_value(default):
+    """缺省值在模板里的规范写法（bool 写 1/0，其余 str）。"""
+    if isinstance(default, bool):
+        return "1" if default else "0"
+    return str(default)
 
-    def __init__(self, registry=None, source=GOOD_SOURCE, files=("yiban/probe.py",)):
+
+def _auto_register(registry):
+    """按夹具名册生成处置册：有缺省即开门，无缺省即豁免（no_default）。"""
+    out = {"_meta": {"version": 1, "doc": "夹具自动生成的处置册"}}
+    for key, spec in registry.items():
+        if key == "_meta":
+            continue
+        if spec.get("default") is None:
+            out[key] = {"default_literal_gate_exempt": {
+                "class": "no_default", "reason": "夹具键无缺省，字面量无从断言"}}
+        else:
+            out[key] = {"default_literal_gate": True}
+    return out
+
+
+def _auto_templates(registry):
+    """按夹具名册生成三份模板：每个有缺省的键写一行 `# KEY=缺省`。"""
+    lines = ["# %s=%s" % (key, _template_value(spec["default"]))
+             for key, spec in registry.items()
+             if key != "_meta" and spec.get("default") is not None]
+    text = "\n".join(lines) + ("\n" if lines else "")
+    return {carrier: text for carrier in TEMPLATE_CARRIERS}
+
+
+class _Fixture:
+    """临时夹具树：`config/registry.json` ＋ 处置册 ＋ 三份模板 ＋ `yiban/probe.py`。
+
+    `register=None` 按名册自动生成处置册；传 dict 即用它；传 False 不写
+    （测"处置册缺失"）。`templates=None` 按名册自动生成；传 dict 覆盖同名载体；
+    传 False 不写（测载体缺失/塌陷）。
+    """
+
+    def __init__(self, registry=None, source=GOOD_SOURCE, files=("yiban/probe.py",),
+                 register=None, templates=None):
         self.root = tempfile.mkdtemp(prefix="yiban-registry-gate-")
         os.makedirs(os.path.join(self.root, "config"), exist_ok=True)
         os.makedirs(os.path.join(self.root, "yiban"), exist_ok=True)
@@ -105,9 +154,28 @@ class _Fixture:
                   encoding="utf-8") as f:
             f.write("")
         self.registry_path = os.path.join(self.root, "config", "registry.json")
+        self.register_path = os.path.join(self.root, "config",
+                                          "default-gate-register.json")
         if registry is not None:
             with open(self.registry_path, "w", encoding="utf-8") as f:
                 json.dump(registry, f, ensure_ascii=False)
+        registry = registry if registry is not None else {}
+        if register is None:
+            register = _auto_register(registry)
+        if register is not False:
+            with open(self.register_path, "w", encoding="utf-8") as f:
+                json.dump(register, f, ensure_ascii=False)
+        if templates is None:
+            templates = _auto_templates(registry)
+        elif templates is not False:
+            merged = _auto_templates(registry)
+            merged.update(templates)
+            templates = merged
+        if templates is not False:
+            for name, text in templates.items():
+                with open(os.path.join(self.root, name), "w",
+                          encoding="utf-8") as f:
+                    f.write(text)
         if source is not None:
             for rel in files:
                 path = os.path.join(self.root, rel.replace("/", os.sep))
@@ -295,7 +363,8 @@ class GateDeadGateGuardTest(unittest.TestCase):
         with _Fixture(registry=GOOD_REGISTRY) as fx:
             cmd = [sys.executable, GATE, "--root", fx.root,
                    "--registry", fx.registry_path, "--min-keys", "99",
-                   "--min-files", "1", "--scan", "yiban"]
+                   "--min-files", "1", "--min-template-gated", "0",
+                   "--scan", "yiban"]
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=120, cwd=BASE)
             self.assertEqual(r.returncode, 2, "键数不足即拒判（防名册被删成空壳）"
                              + r.stdout + r.stderr)
@@ -311,7 +380,8 @@ class GateDeadGateGuardTest(unittest.TestCase):
         with _Fixture(registry=GOOD_REGISTRY) as fx:
             cmd = [sys.executable, GATE, "--root", fx.root,
                    "--registry", fx.registry_path, "--min-keys", "1",
-                   "--min-files", "1", "--scan", "yiban", "--scan", "no-such-dir"]
+                   "--min-files", "1", "--min-template-gated", "0",
+                   "--scan", "yiban", "--scan", "no-such-dir"]
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=120, cwd=BASE)
             self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
             self.assertIn("不存在", r.stderr, "红的必须是扫描面存在性拒判：" + r.stderr)
@@ -663,6 +733,307 @@ class GateStringDefaultTest(unittest.TestCase):
         with _Fixture(registry=self._registry(), source=src) as fx:
             r = _run_gate(fx.root, fx.registry_path)
             self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+
+
+class GateTemplateDefaultEqualityTest(unittest.TestCase):
+    """判据 ④：开门键在模板载体里的字面量必须等于名册缺省（改任一侧必红）。
+
+    模板载体（`.env.example` / `.env.docker.example` / `README.md`）里的
+    `KEY=值` 是**用户可见的缺省声明**：复制模板即得到该值。名册是唯一定义点，
+    故任一侧漂移都必须红。消亡/塌陷（载体为空、载体缺失、开门键在模板里消失、
+    开门键数跌破下限）一律拒判（退出码 2 或 1），不许静默变成零命中。
+    """
+
+    SOURCE = 'KEY = "YIBAN_PROBE_TIME"\n'
+
+    def _registry(self):
+        return {
+            "_meta": {"version": 1},
+            "YIBAN_PROBE_TIME": {
+                "type": "hhmm", "default": "20:00", "group": ["探针"],
+                "doc": "探针触发时刻", "sensitive": False, "web_editable": True,
+                "tier": "admin", "reload": "next-round",
+            },
+            "YIBAN_MAIL_SMTP_PORT": {
+                "type": "int", "default": 465, "group": ["通知"],
+                "doc": "SMTP 端口", "sensitive": False, "web_editable": False,
+                "tier": "master", "reload": "restart",
+            },
+            "YIBAN_SUNDAY_SIGN": {
+                "type": "bool", "default": False, "group": ["调度"],
+                "doc": "周日签到开关", "sensitive": False, "web_editable": True,
+                "tier": "admin", "reload": "next-round",
+            },
+        }
+
+    def _fixture(self, **kwargs):
+        return _Fixture(registry=self._registry(), source=self.SOURCE, **kwargs)
+
+    def test_clean_templates_pass(self):
+        with self._fixture() as fx:
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("模板缺省字面量门: 3 键", r.stdout)
+
+    def test_registry_default_change_turns_gate_red(self):
+        """突变 ①：改名册缺省，模板不动 ⇒ 必红。"""
+        with self._fixture() as fx:
+            with open(fx.registry_path, encoding="utf-8") as f:
+                data = json.load(f)
+            data["YIBAN_PROBE_TIME"]["default"] = "21:00"
+            with open(fx.registry_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("YIBAN_PROBE_TIME", r.stdout)
+
+    def test_env_example_value_change_turns_gate_red(self):
+        """突变 ③：改 `.env.example` 的覆盖值 ⇒ 必红。"""
+        with self._fixture(templates={
+                ".env.example": "# YIBAN_PROBE_TIME=20:00\n"
+                                "# YIBAN_MAIL_SMTP_PORT=465\n"
+                                "# YIBAN_SUNDAY_SIGN=1\n"}) as fx:
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn(".env.example", r.stdout)
+            self.assertIn("YIBAN_SUNDAY_SIGN", r.stdout)
+
+    def test_readme_value_change_turns_gate_red(self):
+        """README 里的 `KEY=值` 同样是缺省声明，改它必须红。"""
+        with self._fixture(templates={
+                "README.md": "YIBAN_MAIL_SMTP_PORT=587\n"}) as fx:
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("README.md", r.stdout)
+            self.assertIn("YIBAN_MAIL_SMTP_PORT", r.stdout)
+
+    def test_bool_true_word_is_accepted(self):
+        """值写法等价不算漂移：bool 缺省 true 接受模板写 `true`（也接受 `1`）。"""
+        registry = self._registry()
+        registry["YIBAN_SUNDAY_SIGN"]["default"] = True
+        with _Fixture(registry=registry, source=self.SOURCE, templates={
+                ".env.docker.example": "# YIBAN_SUNDAY_SIGN=true\n"}) as fx:
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_gate_key_absent_from_templates_turns_gate_red(self):
+        """开门键在模板里消失 ⇒ 门变空转，必须红（不许静默降级）。"""
+        with self._fixture(templates={
+                ".env.example": "# YIBAN_MAIL_SMTP_PORT=465\n"
+                                "# YIBAN_SUNDAY_SIGN=0\n",
+                ".env.docker.example": "# YIBAN_MAIL_SMTP_PORT=465\n"
+                                      "# YIBAN_SUNDAY_SIGN=0\n",
+                "README.md": "YIBAN_MAIL_SMTP_PORT=465\nYIBAN_SUNDAY_SIGN=0\n",
+        }) as fx:
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("YIBAN_PROBE_TIME", r.stdout)
+
+    def test_example_diverges_exemption_passes(self):
+        """显式豁免（示例值刻意不同）放行；理由不参与判定但要存在。"""
+        register = _auto_register(self._registry())
+        register["YIBAN_PROBE_TIME"] = {"default_literal_gate_exempt": {
+            "class": "example_diverges", "reason": "夹具演示刻意不同的示例值"}}
+        with self._fixture(register=register, templates={
+                ".env.example": "# YIBAN_PROBE_TIME=23:59\n"}) as fx:
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_exempt_example_diverges_without_divergence_is_red(self):
+        """豁免类别与事实不符必红：模板值全等于缺省却标 example_diverges。"""
+        register = _auto_register(self._registry())
+        register["YIBAN_PROBE_TIME"] = {"default_literal_gate_exempt": {
+            "class": "example_diverges", "reason": "自称刻意不同"}}
+        with self._fixture(register=register) as fx:
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("example_diverges", r.stdout)
+
+    def test_exempt_no_default_with_default_is_red(self):
+        """豁免类别与事实不符必红：名册有缺省却标 no_default。"""
+        register = _auto_register(self._registry())
+        register["YIBAN_PROBE_TIME"] = {"default_literal_gate_exempt": {
+            "class": "no_default", "reason": "错标成无缺省"}}
+        with self._fixture(register=register) as fx:
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("no_default", r.stdout)
+
+    def test_exempt_no_template_value_with_template_line_is_red(self):
+        """审查员那条：标 no_template_value 的键在模板里加一行取值 ⇒ 必红。"""
+        register = _auto_register(self._registry())
+        register["YIBAN_PROBE_TIME"] = {"default_literal_gate_exempt": {
+            "class": "no_template_value", "reason": "错标成模板无取值行"}}
+        with self._fixture(register=register) as fx:
+            # 自动模板本来就给每个有缺省的键写了一行；再显式加一行也一样。
+            with open(os.path.join(fx.root, ".env.example"), "a",
+                      encoding="utf-8") as f:
+                f.write("# YIBAN_PROBE_TIME=20:00\n")
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("no_template_value", r.stdout)
+
+    def test_exempt_without_reason_is_environment_error(self):
+        register = _auto_register(self._registry())
+        register["YIBAN_PROBE_TIME"] = {"default_literal_gate_exempt": {
+            "class": "example_diverges", "reason": "  "}}
+        with self._fixture(register=register) as fx:
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("reason", r.stderr)
+
+    def test_exempt_unknown_class_is_environment_error(self):
+        register = _auto_register(self._registry())
+        register["YIBAN_PROBE_TIME"] = {"default_literal_gate_exempt": {
+            "class": "looks_fine_to_me", "reason": "自造类别"}}
+        with self._fixture(register=register) as fx:
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("class", r.stderr)
+
+    def test_register_missing_key_turns_gate_red(self):
+        register = _auto_register(self._registry())
+        del register["YIBAN_PROBE_TIME"]
+        with self._fixture(register=register) as fx:
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("YIBAN_PROBE_TIME", r.stdout)
+
+    def test_register_stale_key_turns_gate_red(self):
+        register = _auto_register(self._registry())
+        register["YIBAN_RETIRED_KNOB"] = {"default_literal_gate_exempt": {
+            "class": "no_default", "reason": "已不在名册"}}
+        with self._fixture(register=register) as fx:
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("YIBAN_RETIRED_KNOB", r.stdout)
+
+    def test_register_with_both_fields_is_environment_error(self):
+        register = _auto_register(self._registry())
+        register["YIBAN_PROBE_TIME"]["default_literal_gate_exempt"] = {
+            "class": "no_default", "reason": "两个字段同时给"}
+        with self._fixture(register=register) as fx:
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
+    def test_register_file_missing_is_environment_error(self):
+        """处置册缺失 ⇒ 无法判"154 键逐键处置"，必须拒判（不是放绿）。"""
+        with self._fixture(register=False) as fx:
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("处置册", r.stderr)
+
+    def test_register_path_is_directory_is_environment_error(self):
+        """处置册路径读不了（这里是目录）⇒ OSError 收口为 2，不许 traceback 崩。"""
+        with self._fixture(register=False) as fx:
+            os.makedirs(fx.register_path, exist_ok=True)
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("处置册读不了", r.stderr)
+            self.assertNotIn("Traceback", r.stderr)
+
+    def test_non_scalar_gated_default_is_environment_error(self):
+        """开门键的缺省不是标量 ⇒ 拿不到单行写法，按环境错拒判（2）。"""
+        registry = {
+            "_meta": {"version": 1},
+            "YIBAN_JSON_KNOB": {
+                "type": "json", "default": ["a"], "group": ["夹具"],
+                "doc": "非标量缺省", "sensitive": False, "web_editable": False,
+                "tier": "master", "reload": "restart",
+                "default_literal_gate": True,
+                "default_symbols": ["JSON_KNOB_DEFAULT"],
+            },
+        }
+        with _Fixture(registry=registry, source='KEY = "YIBAN_JSON_KNOB"\n') as fx:
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("单行写法", r.stderr)
+            self.assertNotIn("Traceback", r.stderr)
+
+    def test_non_scalar_example_diverges_is_environment_error(self):
+        """非标量缺省 + example_diverges：不许恒放行，按环境错拒判（2）。"""
+        registry = {
+            "_meta": {"version": 1},
+            "YIBAN_JSON_KNOB": {
+                "type": "json", "default": ["a"], "group": ["夹具"],
+                "doc": "非标量缺省", "sensitive": False, "web_editable": False,
+                "tier": "master", "reload": "restart",
+            },
+        }
+        register = {"_meta": {"version": 1}, "YIBAN_JSON_KNOB": {
+            "default_literal_gate_exempt": {
+                "class": "example_diverges", "reason": "非标量缺省自称示例不同"}}}
+        with _Fixture(registry=registry, register=register,
+                      source='KEY = "YIBAN_JSON_KNOB"\n') as fx:
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("单行写法", r.stderr)
+            self.assertNotIn("Traceback", r.stderr)
+
+    def test_empty_carrier_is_environment_error(self):
+        with self._fixture(templates={".env.docker.example": ""}) as fx:
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn(".env.docker.example", r.stderr)
+
+    def test_missing_carrier_is_environment_error(self):
+        with self._fixture(templates=False) as fx:
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn(".env.example", r.stderr)
+
+    def test_min_template_gated_floor_is_environment_error(self):
+        """开门键数跌破下限 ⇒ 拒判（防把处置册整体改成豁免来废掉门）。"""
+        with self._fixture() as fx:
+            r = _run_gate(fx.root, fx.registry_path, "--min-template-gated", "4")
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("min-template-gated", r.stderr)
+
+    def test_template_default_is_not_treated_as_code_restatement(self):
+        """模板里的 `KEY=缺省` 是**允许且要求**的写法，不得撞判据 ②（代码清零）。"""
+        with self._fixture(templates={
+                ".env.example": "# YIBAN_MAIL_SMTP_PORT=465\n"}) as fx:
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertNotIn("默认值字面量:", r.stdout)
+
+    def test_symbol_assigned_other_literal_turns_red(self):
+        """突变 ②：承载常量被赋**任何**字面量都红（不止"等于缺省"那一种）。"""
+        src = GOOD_SOURCE.replace(
+            "_DEFAULT_BUCKET_RATE = RATE_DEFAULT", "_DEFAULT_BUCKET_RATE = 7")
+        with _Fixture(registry=GOOD_REGISTRY, source=src) as fx:
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("_DEFAULT_BUCKET_RATE", r.stdout)
+
+
+class GateRealRegisterContentTest(unittest.TestCase):
+    """真实处置册的内容底线：154 键逐键有处置，开门面不许被掏空。"""
+
+    REGISTER = os.path.join(BASE, "config", "default-gate-register.json")
+
+    def setUp(self):
+        with open(REGISTRY, encoding="utf-8") as f:
+            self.registry = json.load(f)
+        with open(self.REGISTER, encoding="utf-8") as f:
+            self.register = json.load(f)
+
+    def test_every_registry_key_has_exactly_one_disposition(self):
+        known = {k for k in self.registry if k != "_meta"}
+        entries = {k for k in self.register if k != "_meta"}
+        self.assertEqual(known, entries, "处置册与名册的键集合必须完全一致")
+        for key, entry in self.register.items():
+            if key == "_meta":
+                continue
+            self.assertEqual(len(entry), 1, "%s 必须恰好一种处置" % key)
+            self.assertIn(next(iter(entry)),
+                          ("default_literal_gate", "default_literal_gate_exempt"))
+
+    def test_template_gate_keeps_a_wide_face(self):
+        gated = [k for k, v in self.register.items()
+                 if v.get("default_literal_gate") is True]
+        self.assertGreaterEqual(len(gated), 60,
+                                "开门键数过少即处置册被整体掏空：%d" % len(gated))
 
 
 class GateCiWiringTest(unittest.TestCase):
