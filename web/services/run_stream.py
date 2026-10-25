@@ -284,3 +284,13 @@ def stream_config(env_file, read_env):
         "recheck_sec": _int(env.get(_KEY_RECHECK), d(_KEY_RECHECK)),
         "connection_max_sec": _int(env.get(_KEY_MAX_SEC), d(_KEY_MAX_SEC)),
     }
+
+
+def heartbeat_default_sec():
+    """SSE 心跳的名册缺省（秒）：路由侧"值为 0 或缺失"时的兜底。
+
+    `stream_config` 已按名册填缺省，故正常路径无需本函数；它只服务"配置显式写成 0"
+    这一种输入（`_int` 把 0 当合法整数返回），让兜底值仍来自 `config/registry.json`，
+    不在路由里写第二份字面量。
+    """
+    return config_loader.default_of(_KEY_HEARTBEAT)

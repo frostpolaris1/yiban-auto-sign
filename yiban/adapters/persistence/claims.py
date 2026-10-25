@@ -78,6 +78,12 @@ HEARTBEAT_SEC = 300
 #: 保留期（天）：只用于运维追溯与"昨日的了结情况"，展示口径不读它。
 RETENTION_DAYS = 14
 
+#: 一条 `result` 摘要最多保留的字符数（唯一**定义点**）。
+#: `queue_store.RESULT_MAX` 是本常量的别名（queue_store 在导入期依赖本模块，
+#: 反向导入会成环）；本模块的 `settle` / `give_up` / `reap_abandoned` 与
+#: queue_store 的写入面共用同一把尺子。改值即改全部领取结果摘要的截断宽度。
+RESULT_MAX = 200
+
 #: 在飞：已被某执行体领取、尚未收尾。
 STATE_CLAIMED = "claimed"
 #: **当日了结**：无需再签（成员见 `yiban.core.status.CLAIM_DONE_STATUSES`）。
@@ -312,7 +318,7 @@ def settle(phone, day, owner, state=STATE_DONE, result="", epoch=None):
         raise ValueError(f"非法终态: {state!r}")
     sql = ("UPDATE sign_claims SET state=?, result=?, heartbeat_at=? "
            "WHERE phone=? AND day=? AND owner=?")
-    params = [state, (result or "")[:200], clock.ts(), phone, day, owner]  # 只留摘要；200 与 queue_store.RESULT_MAX 同口径，改一处要同步另一处
+    params = [state, (result or "")[:RESULT_MAX], clock.ts(), phone, day, owner]
     if epoch is not None:
         sql += " AND epoch=?"
         params.append(epoch)
@@ -357,7 +363,7 @@ def give_up(phone, day, owner, result="", epoch=None, retryable=False):
     expired = _utc_offset_str(LEASE_SECONDS)   # 主动置为"已过期"
     prefix = (yiban_status.RESULT_RETRY_PREFIX if retryable
               else yiban_status.RESULT_FINAL_PREFIX)
-    params = [STATE_FAILED, (prefix + (result or ""))[:200], expired, phone, day, owner]
+    params = [STATE_FAILED, (prefix + (result or ""))[:RESULT_MAX], expired, phone, day, owner]
     if epoch is not None:
         sql += " AND epoch=?"
         params.append(epoch)
@@ -435,7 +441,7 @@ def reap_abandoned(owner, day=None, result="轮末收尸：执行体已异常退
     expired = _utc_offset_str(LEASE_SECONDS)   # 与 give_up 同口径：立刻放开租约
     sql = ("UPDATE sign_claims SET state=?, result=?, "
            "heartbeat_at=?, epoch=epoch + 1 WHERE state=? AND (owner = ? OR instr(owner, ?) = 1)")
-    params = [STATE_FAILED, (yiban_status.RESULT_RETRY_PREFIX + (result or ""))[:200],
+    params = [STATE_FAILED, (yiban_status.RESULT_RETRY_PREFIX + (result or ""))[:RESULT_MAX],
               expired, STATE_CLAIMED, owner, prefix]
     if day is not None:
         sql += " AND day=?"

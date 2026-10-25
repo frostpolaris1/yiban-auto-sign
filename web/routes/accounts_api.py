@@ -959,7 +959,7 @@ def api_accounts_batch():
             "target": action,
             "detail": (f"处理 {done} 个: " + ",".join(
                 _masking.mask_phone(str(p)) for p in (batch_targets or [])[:20]
-            ))[:200],
+            ))[:db.AUDIT_DETAIL_LIMIT],
         }
         if ops:
             try:
