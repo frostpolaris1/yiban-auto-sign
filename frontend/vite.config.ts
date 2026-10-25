@@ -44,6 +44,7 @@ export default defineConfig({
         users: fileURLToPath(new URL("./users.html", import.meta.url)),
         accounts: fileURLToPath(new URL("./accounts.html", import.meta.url)),
         settings: fileURLToPath(new URL("./settings.html", import.meta.url)),
+        queue: fileURLToPath(new URL("./queue.html", import.meta.url)),
       },
       output: {
         // vendor 独立成 chunk：多页入口共享同一份 vue / element-plus 按需集合，

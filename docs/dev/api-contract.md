@@ -1348,6 +1348,57 @@
 
 - 鉴权档：管理员（HTML 页面）。响应：HTML。
 
+#### `GET /work/queue`
+
+- 鉴权档：管理员（HTML 页面）。响应：HTML（工作队列试点页，lcpx 2026-10-25）。
+
+### §2.11 工作队列（管理员，lcpx 试点）
+
+#### `GET /api/queue`
+
+- 鉴权档：管理员。CSRF：不适用。**只读聚合，不写任何状态**（lcpx 试点
+  2026-10-25；实现 `web/routes/queue_api.py`）。
+- 查询参数：`bucket`（**必填**，`failed`|`unsigned`，其它值 400 `未知队列分组`）、
+  `limit`/`offset`（§1.5 分页口径，传任一即分页并增补四键元数据）、
+  `q`（≤64 字符，检索口径与 `GET /api/accounts` 同一份实现）。
+- 成功响应：`{"ok": true, "bucket": string, "today": "YYYY-MM-DD",
+  "weekday": "周X", "window": "HH:MM ~ HH:MM",
+  "counts": {"pending": int, "rejected": int, "active": int, "failed": int,
+  "unsigned": int},
+  "rows": [<账号行>], "total"?: int, "limit"?: int, "offset"?: int, "returned"?: int}`。
+  账号行 = `GET /api/accounts` 的行字段（同一 `mask_account` 脱敏单出口：
+  `index`/`name`/`phone`（遮罩）/`phone_model`/`display_name`/`owner`（遮罩）/
+  `owner_display`/`status`/`reject_reason`/`user_paused`/`deleted` 等）另加：
+  `state`（当日**有效**终态码，无记录按 `pending`）、`state_msg`（终态文案，唯一取点
+  `accounts_data.plan_state_message`：未了结账号是「计划 HH:MM」或「待生成」）、
+  `state_time`（终态时刻 "HH:MM:SS"，可空）、`plan_at`（"HH:MM"，可空串）、
+  `time_pref`（自选时段 "HH:MM"，可 null）。
+- 分组口径（终态唯一事实源 = 按日状态文件，与看板/账号表同源）：
+  **今日失败** = 已生效、未软删、当日有效终态为 `failed`（用户自暂停不影响其已有
+  结论）；**今日未签** = 已生效、未软删、未被用户暂停、当日无结论（无记录或
+  `pending`）。用户自暂停且无结论的账号按账号页同一合成视为「用户已取消」，
+  不进任何一组。
+- 排序：`unsigned` 按当日计划时刻升序（执行序，"待生成"垫底）；`failed` 按终态时刻
+  降序；同键按 `index` 稳定。`index` 是整表绝对下标，可直接用于
+  `/api/accounts/<idx>/*` 既有操作端点。
+- `counts` 不随 `q`/分页收窄；待审核组不在本端点（走既有
+  `GET /api/accounts?group=pending`）。
+- 不变量：分组/计数/检索只读未解密快照（零 AES-GCM）；行内手机号与归属一律
+  服务端已遮值，前端不得尝试还原。
+
+#### `GET /api/queue/<int:idx>/events`
+
+- 鉴权档：管理员。CSRF：不适用。**只读**。
+- 查询参数：`days`（1~90，缺省 30）。
+- 成功响应：`{"ok": true, "count": int, "returned": int, "truncated": bool,
+  "events": [{"ts": string, "phone": string（遮罩）, "status": string,
+  "message": string, "stage": string, "attempt": int, "dur_sec": number|null}]}`
+  （`events` 按时间升序，封顶 50 条；`count` 是窗口内全量条数）。
+- 主要错误：404 `账号不存在`；503 `账号数据暂不可读，请稍后再试`。
+- 副作用：聚合只读审计 `queue_events_read`。
+- 不变量：按**账号下标**解析号码——明文手机号不得出现在请求 URL（访问日志落盘
+  红线）；响应内手机号一律遮罩。
+
 ## §3 契约变更纪律
 
 1. 改任何端点的**路径、方法、鉴权档、字段、状态码**，必须**同批**改本文件。

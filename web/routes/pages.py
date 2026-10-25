@@ -449,6 +449,16 @@ def settings_page():
     return _render_vue_page("settings.html", "pages/work_settings.html", "work-settings", ["工作台", "系统设置"])
 
 
+# 工作队列（lcpx 试点 2026-10-25）：既有 8 页之外的**额外入口**，新旧共存。
+# 数据客户端拉取（GET /api/accounts?group=pending + GET /api/queue，契约见
+# web/routes/queue_api.py 模块 docstring）；服务端只出挂载点与 manifest 资产。
+def queue_page():
+    blocked = _admin_page_redirect()
+    if blocked:
+        return blocked
+    return _render_vue_page("queue.html", "pages/work_queue.html", "work-queue", ["工作台", "队列"])
+
+
 def my_account_page():
     blocked = _admin_page_redirect()
     if blocked:
@@ -515,7 +525,7 @@ def audit_page():
 NO_STORE_PAGES = frozenset(_MOVED_PAGES) | {
     "/", "/login", "/setup", "/terms", "/privacy",
     "/data/dashboard", "/data/logs", "/data/audit",
-    "/work/accounts", "/work/users", "/work/settings", "/work/pilot",
+    "/work/accounts", "/work/users", "/work/settings", "/work/pilot", "/work/queue",
     "/my/account", "/my/calendar",
     "/user/account", "/user/calendar",
 }
@@ -551,5 +561,6 @@ def register(app):
     app.add_url_rule("/work/users", view_func=users_page)
     app.add_url_rule("/work/settings", view_func=settings_page)
     app.add_url_rule("/work/pilot", view_func=vue_pilot_page)
+    app.add_url_rule("/work/queue", view_func=queue_page)
     app.add_url_rule("/my/account", view_func=my_account_page)
     app.add_url_rule("/my/calendar", view_func=my_calendar_page)
