@@ -16,6 +16,7 @@
 | `backup-restore.md` | **备份与恢复**：宿主（systemd/cron）与 Docker 两条路线、取证命令、威胁边界 |
 | `implementation-notes.md` | **原理与实现**：模块树、签到流程、定位算法、重试机制、WAF 检测、工作流续期 |
 | `troubleshooting.md` | **故障排查与常见问题**（Q1–Q10） |
+| `experimental-line/legacy-criteria-handoff.md` | **双线交接**：旧系统判据交给实验线 `server/`＋`ui/`——六请求链到 Provider 的映射、七族单一定义点、隐私暴露三条、脱敏双口径、审计锚点边界、退出码与「跳过≠绿」、fixtures 映射约定、不搬清单 |
 与设计/调研类文稿分开——这里的每条内容都按脱敏红线自查过：
 不含真实域名/IP/邮箱/手机号/密钥与站点注册信息，示例一律用占位值。
 
