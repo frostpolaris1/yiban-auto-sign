@@ -37,7 +37,7 @@ yiban_app_dir() {
 # 用法：yiban_load_env <env 文件> [告警函数名]
 #   告警函数收到一个参数（完整告警文本）。不给时非法键静默跳过——
 #   cron 每 5 分钟一次，向 stderr 输出会变成周期性邮件噪声。
-# 优先级（唯一口径，与 `env_io.resolve_path` / `scripts/child_env.build_child_env` 同形）：
+# 优先级（唯一口径，与 `env_io.resolve_path` / `yiban/infra/env_child.build_child_env` 同形）：
 #   · 非路径键：`.env` 优先，进程环境只补缺（M27）。网页设置页写的是 `.env`。
 #   · 路径键 YIBAN_DB_FILE / YIBAN_STATE_DIR / YIBAN_LOG_FILE：进程环境优先，
 #     `.env` 只补缺（测试/CI 用进程环境把数据目录重定向到临时目录）。

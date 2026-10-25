@@ -46,9 +46,9 @@ FAKE_PASSWORD = "hunter2-under-key-a"
 
 
 def _load_child_env():
-    """按文件路径装载 `scripts/child_env.py`（非包内模块，沿用既有装载方式）。"""
+    """按文件路径装载 `yiban/infra/env_child.py`（包内模块；按路径装载以隔离模块状态）。"""
     spec = importlib.util.spec_from_file_location(
-        "yiban_child_env_exit", os.path.join(BASE, "scripts", "child_env.py"))
+        "yiban_child_env_exit", os.path.join(BASE, "yiban", "infra", "env_child.py"))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
