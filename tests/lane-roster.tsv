@@ -79,6 +79,7 @@ fast	tests/test_child_env_degrade_loud.py
 fast	tests/test_ci_dependency_audit_gate.py
 fast	tests/test_claim_dispatch_elbow_e2e.py
 fast	tests/test_claim_write_path_single_source.py
+fast	tests/test_clock_single_source_gate.py	# 产品代码时间门：clock.py 之外不得取宿主钟（ont ① 2026-10-25）
 slow	tests/test_claims_reap_e2e.py	# 真子进程：子进程领取后自杀，轮末收尸（本机 2.0s）
 fast	tests/test_cleanup_dotenv_parity_e2e.py	# unshare 挂载命名空间内跑清理 cron（本机 1.6s）
 fast	tests/test_cli_contract.py
