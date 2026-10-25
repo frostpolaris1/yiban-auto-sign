@@ -275,7 +275,8 @@ type AccountPauseRequest struct {
 type AccountReviewRequest struct {
 	Decision AccountReviewRequestDecision `json:"decision"`
 
-	// Reason Required when decision is reject.
+	// Reason Required when decision is reject. The limit matches the audit
+	// detail limit and the accounts.reject_reason CHECK.
 	Reason *string `json:"reason,omitempty"`
 }
 

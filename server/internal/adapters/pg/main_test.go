@@ -26,6 +26,9 @@ const dsnEnv = "YIBAN_TEST_DATABASE_URL"
 // auditKey is a fixed 32-byte key. A real key comes from configuration.
 var auditKey = []byte("0123456789abcdef0123456789abcdef")
 
+// testPepper keys the IP and user-agent digests.
+var testPepper = []byte("fedcba9876543210fedcba9876543210")
+
 // testEnv owns one database schema. Every test gets an empty schema, so runs
 // never depend on each other or on leftovers from a crashed run.
 type testEnv struct {
@@ -197,8 +200,8 @@ func (e *testEnv) newSession(userID, token string, now time.Time) coreauth.Sessi
 			Now:           now,
 			IdleExpiresAt: now.Add(30 * time.Minute),
 			ExpiresAt:     now.Add(12 * time.Hour),
-			IPHash:        coreauth.HashSecret("127.0.0.1"),
-			UserAgentHash: coreauth.HashSecret("test-agent"),
+			IPHash:        coreauth.HashIP(testPepper, "127.0.0.1"),
+			UserAgentHash: coreauth.HashUserAgent(testPepper, "test-agent"),
 		})
 		return err
 	})

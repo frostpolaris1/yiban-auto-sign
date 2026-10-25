@@ -35,12 +35,18 @@ func TestEncodeDetailRejectsPersonalData(t *testing.T) {
 		{"email after a word", map[string]any{"reason": "user@example.com"}, coreaudit.ErrDetailPII},
 		{"integer phone", map[string]any{"count": int64(13800138000)}, coreaudit.ErrDetailPII},
 		{"float phone", map[string]any{"count": float64(13800138000)}, coreaudit.ErrDetailPII},
-		{"phone in rows", map[string]any{"rows": []string{"ok", "13800138000"}}, coreaudit.ErrDetailPII},
+		{"phone in rows", map[string]any{"rows": []int{1, 13800138000}}, coreaudit.ErrDetailPII},
 		{"phone in a nested map", map[string]any{"from": map[string]any{"v": "13800138000"}}, coreaudit.ErrDetailType},
 		{"map value", map[string]any{"field": map[string]any{"v": "status"}}, coreaudit.ErrDetailType},
 		{"untyped slice", map[string]any{"count": []any{int64(1)}}, coreaudit.ErrDetailType},
-		{"rows outside the rows key", map[string]any{"field": []string{"a"}}, coreaudit.ErrDetailType},
+		{"rows outside the rows key", map[string]any{"field": []int{1}}, coreaudit.ErrDetailType},
 		{"reason over 200 characters", map[string]any{"reason": reason201}, coreaudit.ErrDetailReason},
+		{"trace id with an illegal character", map[string]any{"trace_id": "abc@def"}, coreaudit.ErrDetailShape},
+		{"trace id over 64 characters", map[string]any{"trace_id": strings.Repeat("a", 65)}, coreaudit.ErrDetailShape},
+		{"kid with upper case", map[string]any{"kid": "0123456789ABCDEF"}, coreaudit.ErrDetailShape},
+		{"kid of the wrong length", map[string]any{"kid": "0123456789abcde"}, coreaudit.ErrDetailShape},
+		{"field with spaces", map[string]any{"field": "user name"}, coreaudit.ErrDetailShape},
+		{"from with a dash", map[string]any{"from": "not-a-status"}, coreaudit.ErrDetailShape},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := coreaudit.EncodeDetail(tc.detail)
@@ -64,7 +70,7 @@ func TestEncodeDetailAcceptsScalars(t *testing.T) {
 		"reason":   "photo rejected",
 		"count":    int64(3),
 		"kid":      "0123456789abcdef",
-		"rows":     []string{"a", "b"},
+		"rows":     []int{1, 2},
 		"trace_id": "trace-1",
 	})
 	if err != nil {
@@ -72,13 +78,17 @@ func TestEncodeDetailAcceptsScalars(t *testing.T) {
 	}
 	// encoding/json sorts map keys, so the bytes are canonical.
 	const want = `{"count":3,"field":"status","from":"pending","kid":"0123456789abcdef",` +
-		`"reason":"photo rejected","rows":["a","b"],"to":"active","trace_id":"trace-1"}`
+		`"reason":"photo rejected","rows":[1,2],"to":"active","trace_id":"trace-1"}`
 	if got != want {
 		t.Fatalf("canonical detail:\n got %s\nwant %s", got, want)
 	}
 
 	if _, err := coreaudit.EncodeDetail(map[string]any{"reason": nilReason}); err != nil {
 		t.Fatalf("a nil pointer must be accepted as null: %v", err)
+	}
+	// A random 32-hex request id must pass even when it contains 11 digits.
+	if _, err := coreaudit.EncodeDetail(map[string]any{"trace_id": "06317272289944f6e935132eb62042ec"}); err != nil {
+		t.Fatalf("a 32-hex trace id must be accepted: %v", err)
 	}
 	if _, err := coreaudit.EncodeDetail(nil); err != nil {
 		t.Fatalf("an empty detail must be accepted: %v", err)

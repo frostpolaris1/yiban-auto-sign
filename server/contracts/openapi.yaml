@@ -829,7 +829,10 @@ components:
           enum: [approve, reject]
         reason:
           type: string
-          description: Required when decision is reject.
+          maxLength: 200
+          description: |
+            Required when decision is reject. The limit matches the audit
+            detail limit and the accounts.reject_reason CHECK.
       if:
         properties:
           decision:

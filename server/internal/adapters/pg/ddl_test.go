@@ -3,6 +3,7 @@ package pg_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -112,6 +113,37 @@ func TestDatabaseConstraintsRejectBadRows(t *testing.T) {
 			args:       []any{owner.ID, validTokenHash},
 			code:       "23514",
 			constraint: "ck_sessions_expiry",
+		},
+		{
+			name: "ck_credentials_ct_len",
+			sql: `INSERT INTO credentials (account_id, school_id, kid, nonce, ciphertext)
+			      VALUES ($1::uuid, $2::uuid, '0123456789abcdef', $3, $4)`,
+			args:       []any{account.ID, school.ID, validNonce, make([]byte, 8)},
+			code:       "23514",
+			constraint: "ck_credentials_ct_len",
+		},
+		{
+			name: "ck_credentials_aad_version",
+			sql: `INSERT INTO credentials (account_id, school_id, kid, nonce, ciphertext, aad_version)
+			             VALUES ($1::uuid, $2::uuid, '0123456789abcdef', $3, $4, 2)`,
+			args:       []any{account.ID, school.ID, validNonce, validCiphertext},
+			code:       "23514",
+			constraint: "ck_credentials_aad_version",
+		},
+		{
+			name:       "uq_users_email_live",
+			sql:        `INSERT INTO users (email, password_hash) VALUES ($1, 'x')`,
+			args:       []any{owner.Email},
+			code:       "23505",
+			constraint: "uq_users_email_live",
+		},
+		{
+			name: "ck_accounts_reject_reason_len",
+			sql: `INSERT INTO accounts (school_id, owner_user_id, phone, status, reject_reason)
+			      VALUES ($1::uuid, $2::uuid, '13500135007', 'rejected', $3)`,
+			args:       []any{school.ID, owner.ID, strings.Repeat("r", 201)},
+			code:       "23514",
+			constraint: "ck_accounts_reject_reason_len",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
