@@ -8,9 +8,9 @@
 
 登记口径：
   manifest 共 12 条：6 captured ＋ 6 synthetic。
-  `tests/protocol/fixtures/` 另有 5 份请求体文本件。
+  `tests/protocol/fixtures/` 另有 5 份非响应体文本件。
   它们不是响应夹具，不属回放面，不登记。
-  5 份是 iframe_location、sign_in_body 两形、usersure 两件。
+  5 份是 iframe_location（302 Location 串）、sign_in_body 两形、usersure 两件。
 
 来源两档：
   · `captured`  实拍。`serve()` 原样回放。
