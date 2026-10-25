@@ -25,7 +25,6 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(BASE, "tools", "elbow_shadow.py")
 
 from tools import elbow_shadow  # noqa: E402
-
 from yiban.core.elbow import ClaimRole, ClaimRow, may_claim  # noqa: E402
 
 PHONE_A = "13800000001"

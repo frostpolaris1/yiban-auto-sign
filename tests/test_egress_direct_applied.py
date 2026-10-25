@@ -33,9 +33,8 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from yiban.infra import env_child as child_env
-
 from yiban import egress
+from yiban.infra import env_child as child_env
 from yiban.workers import workers
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

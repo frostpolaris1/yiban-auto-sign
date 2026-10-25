@@ -13,14 +13,13 @@
 """
 import io
 import os
-import sys
 import tempfile
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-from yiban.infra import env_child as child_env  # noqa: E402
 
 from yiban.adapters.config import env_io  # noqa: E402
+from yiban.infra import env_child as child_env  # noqa: E402
 
 #: 四个路径键（进程环境优先）。指针 `YIBAN_ENV_FILE` 走**两段自举**：
 #: 进程环境 → 基线 `.env`（默认 `data/.env`）→ 默认值；见

@@ -66,7 +66,7 @@ _FILE_CLAIM = re.compile(r"分属\s*(\d+)\s*个文件")
 #: shared-facts / path-env-reads 两个元测试步补 `FAST_DESELECT_ARGS`（那 4 条全仓扫描在 CI 上
 #: 实测占该两步 162s / 60s，剔掉后只剩十几秒；它们已由全量与 nightly 覆盖）。
 EXPECTED_CI_COMMANDS = (
-    '"$py" -m ruff check yiban/ tests/ scripts/ web/ docker/ --quiet',
+    '"$py" -m ruff check yiban/ tests/ scripts/ web/ docker/ tools/ --quiet',
     # 工单 dq2n（2026-10-20）：mypy 用隔离缓存目录。mypy 在 (path,size,mtime) 相同时
     # 不校验内容哈希，会信任上一轮缓存里的错误；--ci 就地跑，最容易被脏 .mypy_cache
     # 影响。缓存目录每次 mktemp -d 新建（见 run_ci），故同一代码同一结论。

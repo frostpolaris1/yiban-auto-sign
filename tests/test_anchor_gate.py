@@ -118,18 +118,16 @@ def bare_import_hits(source):
         if isinstance(node, ast.Import):
             for a in node.names:
                 parts = a.name.split(".")
-                if parts[0] in old:
-                    out.append((node.lineno, "import " + a.name))
-                elif len(parts) > 1 and parts[0] == OLD_DIR and parts[1] in old:
+                if parts[0] in old or (
+                        len(parts) > 1 and parts[0] == OLD_DIR and parts[1] in old):
                     out.append((node.lineno, "import " + a.name))
         elif isinstance(node, ast.ImportFrom):
             if node.level:
                 continue
             mod = node.module or ""
             parts = mod.split(".")
-            if parts[0] in old:
-                out.append((node.lineno, "from " + mod + " import ..."))
-            elif len(parts) > 1 and parts[0] == OLD_DIR and parts[1] in old:
+            if parts[0] in old or (
+                    len(parts) > 1 and parts[0] == OLD_DIR and parts[1] in old):
                 out.append((node.lineno, "from " + mod + " import ..."))
             elif mod == OLD_DIR:
                 for a in node.names:
