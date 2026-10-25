@@ -213,6 +213,18 @@ ALLOWED_NON_STATE = {  #元测试扫的是源码字面量：误命中的前缀�
     "dev-verify-": "scripts/dev-verify.sh 的跑测日志文件名（dev-verify-<时间戳>.log）——"
                    "落在仓库外的日志目录，不是状态文件；保留由该脚本的 --keep 自己轮转"
                    "（默认最近 5 份）",
+    # 工单 4kl：副本槽与锁按「模式 + 源仓摘要」分键。名字里带 `$(...)` 才被扫描器命中，
+    # 但它们不是按日状态件，且全在 /root/.cache/yiban-dev-verify（机器级缓存目录）：
+    # 数量 = 本机用过的源仓数 × 模式数，缓存可随时删除重建，不属于仓库状态目录的
+    # 无界增长面。旧键缓存在脚本首跑时迁移或清理。
+    "fast-worktree-": "scripts/dev-verify.sh 的 WSL fast 副本槽（<摘要> = 源仓路径），"
+                      "落在 /root/.cache/yiban-dev-verify，不是状态文件",
+    "worktree-": "scripts/dev-verify.sh 的 WSL 全量副本槽（<摘要> = 源仓路径），"
+                 "落在 /root/.cache/yiban-dev-verify，不是状态文件",
+    "dev-verify-fast-runlock-": "scripts/dev-verify.sh 的 fast 锁文件名（按源仓分键），"
+                                "落在 /root/.cache/yiban-dev-verify，不是状态文件",
+    "dev-verify-runlock-": "scripts/dev-verify.sh 的全量锁文件名（按源仓分键），"
+                           "落在 /root/.cache/yiban-dev-verify，不是状态文件",
     "worker-alive-": "并行执行体心跳文件名（固定名覆盖写，非按日）——"
                      "常量 WORKER_ALIVE_FILE_PREFIX 定义在 yiban/adapters/statefiles/state_io.py，"
                      "故被常量拼接检测器命中；它不是按日件，不进按日清理名册"
