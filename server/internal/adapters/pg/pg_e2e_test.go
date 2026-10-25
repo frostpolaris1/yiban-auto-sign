@@ -19,10 +19,10 @@ import (
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
-// --- E-10: migrate up twice ------------------------------------------------
+// --- E-10：迁移连续执行两次 ------------------------------------------------
 
 func TestMigrationUpIsIdempotent(t *testing.T) {
-	e := newEnv(t) // newEnv already ran migrate up once.
+	e := newEnv(t) // newEnv 已经执行过一次 migrate up。
 
 	historyBefore := e.scalarInt("SELECT count(*) FROM goose_db_version")
 
@@ -50,7 +50,7 @@ func TestMigrationUpIsIdempotent(t *testing.T) {
 		t.Fatalf("database version %d does not match embedded version %d", v1, embedded)
 	}
 
-	// The seven P1 tables plus password_resets must exist in this schema.
+	// P1 的七张表加 password_resets 必须都存在于此 schema。
 	for _, table := range []string{
 		"users", "sessions", "schools", "admin_schools", "accounts",
 		"credentials", "audit_logs", "password_resets",
@@ -64,14 +64,14 @@ func TestMigrationUpIsIdempotent(t *testing.T) {
 	}
 }
 
-// --- E-11: concurrent creation of the 10,001st account ---------------------
+// --- E-11：并发创建第 10 001 个账号 ----------------------------------------
 
 func TestCapacityAdmitsExactlyOneWinner(t *testing.T) {
 	e := newEnv(t)
 	owner := e.createUser("capacity@example.com")
 	school := e.createSchool("capacity-school")
 
-	// Fill to 9,999 live accounts in one statement.
+	// 一条语句填到 9 999 个活跃账号。
 	inserted, err := e.db.Exec(e.ctx, `
 		INSERT INTO accounts (school_id, owner_user_id, phone)
 		SELECT $1::uuid, $2::uuid, '1' || lpad(i::text, 10, '0')
@@ -82,8 +82,8 @@ func TestCapacityAdmitsExactlyOneWinner(t *testing.T) {
 		t.Fatalf("prefilled %d accounts, want 9999", inserted)
 	}
 
-	// Two independent pools give two independent backend connections. A
-	// goroutine pair sharing one pool would not prove concurrency (AGENTS §32).
+	// 两个独立连接池给出两条独立后端连接。
+	// 共用同一池的两个 goroutine 无法证明并发（AGENTS §32）。
 	dbA, err := pg.Open(e.ctx, pg.Options{DSN: e.dsn, MaxConns: 1, StatementTimeout: 30 * time.Second})
 	mustNotError(t, err, "open independent pool A")
 	defer dbA.Close()
@@ -138,7 +138,7 @@ func TestCapacityAdmitsExactlyOneWinner(t *testing.T) {
 	}
 }
 
-// --- E-12: a user with accounts cannot be deleted --------------------------
+// --- E-12：名下有账号的用户不可删除 ----------------------------------------
 
 func TestForeignKeyBlocksUserDelete(t *testing.T) {
 	e := newEnv(t)
@@ -152,9 +152,9 @@ func TestForeignKeyBlocksUserDelete(t *testing.T) {
 	if mapped.Code != errs.CodeConflict {
 		t.Fatalf("want conflict from the foreign key, got %v", err)
 	}
-	// PostgreSQL 18 reports ON DELETE RESTRICT as 23001; a plain FK violation
-	// is 23503. Both map to conflict, and the constraint name proves which
-	// guard fired.
+	// PostgreSQL 18 把 ON DELETE RESTRICT 报成 23001，
+	// 普通外键违反是 23503。两者都映射为冲突，
+	// 约束名则证明是哪道守卫触发。
 	if mapped.Details["constraint"] != "accounts_owner_user_id_fkey" {
 		t.Fatalf("blocked by %v; want accounts_owner_user_id_fkey", mapped.Details["constraint"])
 	}
@@ -166,9 +166,9 @@ func TestForeignKeyBlocksUserDelete(t *testing.T) {
 	}
 }
 
-// TestInsertForeignKeyViolationMapsToNotFound pins schema §2.4: a reference to
-// a missing parent at an insert is not_found (HTTP 404), while a rejected
-// delete stays a conflict (HTTP 409).
+// TestInsertForeignKeyViolationMapsToNotFound 钉住 schema §2.4：
+// 插入时引用不存在的父行是 not_found（HTTP 404），
+// 被拒的删除仍是冲突（HTTP 409）。
 func TestInsertForeignKeyViolationMapsToNotFound(t *testing.T) {
 	e := newEnv(t)
 	owner := e.createUser("fk-insert@example.com")
@@ -213,7 +213,7 @@ func TestInsertForeignKeyViolationMapsToNotFound(t *testing.T) {
 		t.Fatalf("reset token for a missing user: got %v (%s); want not_found", err, got)
 	}
 
-	// The pair of the contract: delete-restrict remains a conflict (409).
+	// 契约的另一半：删除受限仍是冲突（409）。
 	account := e.createAccount(school.ID, owner.ID, "13400134001")
 	_, err = e.db.Exec(e.ctx, "DELETE FROM users WHERE id = $1", owner.ID)
 	if got := errs.From(err).Code; got != errs.CodeConflict {
@@ -224,7 +224,7 @@ func TestInsertForeignKeyViolationMapsToNotFound(t *testing.T) {
 	}
 }
 
-// --- E-13: audit rows are append-only -------------------------------------
+// --- E-13：审计行只可追加 ------------------------------------------------
 
 func TestAuditRowsAreAppendOnly(t *testing.T) {
 	e := newEnv(t)
@@ -248,9 +248,9 @@ func TestAuditRowsAreAppendOnly(t *testing.T) {
 	}
 }
 
-// TestAuditPurgeSwitchIsGone pins the removal of the yiban.audit_purge escape
-// hatch. A runtime role can SET any custom parameter; the trigger must ignore
-// it, so DELETE and TRUNCATE stay impossible (schema §3.7, D-6).
+// TestAuditPurgeSwitchIsGone 钉住 yiban.audit_purge 逃逸开关已移除。
+// 运行期角色可以 SET 任意自定义参数；触发器必须忽略它，
+// 故 DELETE 与 TRUNCATE 始终不可行（schema §3.7、D-6）。
 func TestAuditPurgeSwitchIsGone(t *testing.T) {
 	e := newEnv(t)
 	e.auditEntry(coreaudit.ActionUserCreate, map[string]any{"field": "role"})
@@ -279,7 +279,7 @@ func TestAuditPurgeSwitchIsGone(t *testing.T) {
 	}
 }
 
-// --- audit chain: append well, detect tampering ---------------------------
+// --- 审计链：正常追加，篡改可发现 ----------------------------------------
 
 func TestAuditChainVerifiesAndDetectsTamper(t *testing.T) {
 	e := newEnv(t)
@@ -293,8 +293,8 @@ func TestAuditChainVerifiesAndDetectsTamper(t *testing.T) {
 		t.Fatalf("verified %d rows, want 3", report.Count)
 	}
 
-	// A row inserted outside the chain has the right column shapes but the
-	// wrong hash. INSERT is allowed; only UPDATE and DELETE are blocked.
+	// 绕过链插入的行列形状正确，哈希错误。
+	// INSERT 是允许的；只有 UPDATE 与 DELETE 被拦。
 	_, err = e.db.Exec(e.ctx, `
 		INSERT INTO audit_logs (ts, actor_label, action, detail, prev_hash, hash)
 		VALUES (now(), 'master', 'user.create', '{}', $1, $2)`,
@@ -323,7 +323,7 @@ func TestAuditDetailRejectsPersonalData(t *testing.T) {
 	}
 }
 
-// --- sessions -------------------------------------------------------------
+// --- 会话 -----------------------------------------------------------------
 
 func TestRevokeAllForUserRevokesOnlyThatUser(t *testing.T) {
 	e := newEnv(t)
@@ -358,7 +358,7 @@ func TestSessionExpiryAndRevocationAreNotResolvable(t *testing.T) {
 	user := e.createUser("session@example.com")
 	now := time.Now().UTC()
 
-	// Absolute expiry already passed.
+	// 绝对过期时刻已过。
 	if err := e.db.InTx(e.ctx, func(ctx context.Context) error {
 		_, err := e.ses.Create(ctx, newExpiredSession(user.ID, "expired", now))
 		return err
@@ -374,8 +374,8 @@ func TestSessionExpiryAndRevocationAreNotResolvable(t *testing.T) {
 		t.Fatalf("cleanup deleted %d sessions; want 1", deleted)
 	}
 
-	// Idle window: resolve refreshes last_seen_at, and the refresh extends the
-	// window. A 31 minute gap without a request must fail.
+	// 空闲窗口：resolve 刷新 last_seen_at，刷新也延长窗口。
+	// 31 分钟无请求**必须失败**。
 	e.newSession(user.ID, "idle", now)
 	if _, err := e.ses.Resolve(e.ctx, tokenHash("idle"), now.Add(10*time.Minute), 30*time.Minute); err != nil {
 		t.Fatalf("session inside the idle window: %v", err)
@@ -387,7 +387,7 @@ func TestSessionExpiryAndRevocationAreNotResolvable(t *testing.T) {
 		t.Fatalf("idle session resolved after the window: %v", err)
 	}
 
-	// Revocation closes the session immediately.
+	// 撤销立即关闭会话。
 	e.newSession(user.ID, "revoked", now)
 	mustNotError(t, e.ses.Revoke(e.ctx, tokenHash("revoked"), now.Add(time.Minute)), "revoke one session")
 	if _, err := e.ses.Resolve(e.ctx, tokenHash("revoked"), now.Add(2*time.Minute), 30*time.Minute); errs.From(err).Code != errs.CodeNotFound {
@@ -406,9 +406,9 @@ func newExpiredSession(userID, token string, now time.Time) coreauthNewSession {
 	}
 }
 
-// TestResolveSlidesIdleExpiry pins §3.2: a successful resolve moves the idle
-// deadline forward by the time since the last request, and the returned row is
-// self-consistent (idle <= absolute, last_seen is the request time).
+// TestResolveSlidesIdleExpiry 钉住 §3.2：
+// 成功解析把空闲截止按距上次请求的时间前移，
+// 返回行自洽（idle <= absolute，last_seen 即本次请求时刻）。
 func TestResolveSlidesIdleExpiry(t *testing.T) {
 	e := newEnv(t)
 	user := e.createUser("idle-slide@example.com")
@@ -433,8 +433,8 @@ func TestResolveSlidesIdleExpiry(t *testing.T) {
 		t.Fatalf("idle expiry %s is after absolute expiry %s", session.IdleExpiresAt, session.ExpiresAt)
 	}
 
-	// When the idle deadline would pass the absolute expiry, the cap keeps the
-	// CHECK idle_expires_at <= expires_at true.
+	// 空闲截止会越过绝对过期时，封顶保证
+	// CHECK idle_expires_at <= expires_at 恒成立。
 	mustNotError(t, e.db.InTx(e.ctx, func(ctx context.Context) error {
 		_, err := e.ses.Create(ctx, coreauth.NewSessionRow{
 			UserID:        user.ID,
@@ -474,7 +474,7 @@ func TestNewSessionEvictsTheOldestBeyondTheCap(t *testing.T) {
 	}
 }
 
-// --- password resets ------------------------------------------------------
+// --- 密码重置 -------------------------------------------------------------
 
 func TestPasswordResetTokenIsSingleUse(t *testing.T) {
 	e := newEnv(t)
@@ -502,7 +502,7 @@ func TestPasswordResetTokenIsSingleUse(t *testing.T) {
 		t.Fatalf("a reset token was accepted twice: %v", err)
 	}
 
-	// An expired token is not usable even once.
+	// 过期令牌一次也不可用。
 	if err := e.db.InTx(e.ctx, func(ctx context.Context) error {
 		_, err := e.resets.Create(ctx, coreauthNewReset{
 			UserID:    user.ID,
@@ -519,7 +519,7 @@ func TestPasswordResetTokenIsSingleUse(t *testing.T) {
 	}
 }
 
-// --- accounts -------------------------------------------------------------
+// --- 账号 -----------------------------------------------------------------
 
 func TestSoftDeleteAndRestoreRespectCapacity(t *testing.T) {
 	e := newEnv(t)
@@ -548,14 +548,14 @@ func TestSoftDeleteAndRestoreRespectCapacity(t *testing.T) {
 		t.Fatalf("third account at the cap: want capacity_exceeded, got %v", err)
 	}
 
-	// A soft-deleted row leaves the capacity count and the unique phone index.
+	// 软删行同时退出容量计数与手机号唯一索引。
 	mustNotError(t, e.db.InTx(e.ctx, func(ctx context.Context) error {
 		return e.accts.SoftDelete(ctx, corescope.Master(), first.ID, owner.ID, time.Now().UTC())
 	}), "soft delete first account")
 	reused, err := create("13800138001", 2)
 	mustNotError(t, err, "reuse a soft-deleted phone number")
 
-	// Restoring the deleted row would exceed the cap: it must fail.
+	// 恢复该行会突破上限，**必须失败**。
 	restore := func(id string) (coreaccount.Record, error) {
 		var rec coreaccount.Record
 		err := e.db.InTx(e.ctx, func(ctx context.Context) error {
@@ -569,7 +569,7 @@ func TestSoftDeleteAndRestoreRespectCapacity(t *testing.T) {
 		t.Fatalf("restore beyond the cap: want capacity_exceeded, got %v", err)
 	}
 
-	// Free a slot, then the restore succeeds.
+	// 腾出一个名额，恢复才会成功。
 	mustNotError(t, e.db.InTx(e.ctx, func(ctx context.Context) error {
 		return e.accts.SoftDelete(ctx, corescope.Master(), reused.ID, owner.ID, time.Now().UTC())
 	}), "soft delete reused account")
@@ -630,9 +630,8 @@ func TestCredentialSchoolMustMatchAccount(t *testing.T) {
 	}
 }
 
-// TestReplaceCredentialIncrementsVersion pins §7.3: the statement increments
-// the stored version, and two writers that read the same version cannot both
-// win.
+// TestReplaceCredentialIncrementsVersion 钉住 §7.3：
+// 语句自增存储版本，两个读到同一版本的写者不可能同时成功。
 func TestReplaceCredentialIncrementsVersion(t *testing.T) {
 	e := newEnv(t)
 	owner := e.createUser("cred-race@example.com")
@@ -657,7 +656,7 @@ func TestReplaceCredentialIncrementsVersion(t *testing.T) {
 		return e.scalarInt("SELECT version FROM credentials WHERE account_id = $1::uuid", account.ID)
 	}
 
-	// The input version is ignored: 99 in, stored 2.
+	// 入参版本被忽略：传入 99，存储为 2。
 	cred.Version = 99
 	cred.Ciphertext = bytes.Repeat([]byte{0x03}, 32)
 	mustNotError(t, e.db.InTx(e.ctx, func(ctx context.Context) error {
@@ -667,8 +666,8 @@ func TestReplaceCredentialIncrementsVersion(t *testing.T) {
 		t.Fatalf("stored version is %d after one replace; want 2", got)
 	}
 
-	// Two independent pools give two independent backends; a goroutine pair on
-	// one pool would not prove concurrency (AGENTS §32).
+	// 两个独立连接池给出两条独立后端连接；
+	// 同一池上的两个 goroutine 无法证明并发（AGENTS §32）。
 	dbA, err := pg.Open(e.ctx, pg.Options{DSN: e.dsn, MaxConns: 1, StatementTimeout: 30 * time.Second})
 	mustNotError(t, err, "open independent pool A")
 	defer dbA.Close()
@@ -742,7 +741,7 @@ func TestScopeFiltersAccounts(t *testing.T) {
 	}
 }
 
-// --- pool -----------------------------------------------------------------
+// --- 连接池 ---------------------------------------------------------------
 
 func TestPoolAppliesStatementTimeoutAndUTC(t *testing.T) {
 	e := newEnv(t)
@@ -757,14 +756,14 @@ func TestPoolAppliesStatementTimeoutAndUTC(t *testing.T) {
 	}
 }
 
-// --- compile-time aliases used above --------------------------------------
+// --- 上文用到的编译期别名 -------------------------------------------------
 
-// coreauthNewSession and coreauthNewReset keep the session and reset helpers
-// short while still naming the core types the production code uses.
+// coreauthNewSession 与 coreauthNewReset 缩短会话和重置辅助调用，
+// 同时仍点名生产代码所用的 core 类型。
 type coreauthNewSession = coreauth.NewSessionRow
 type coreauthNewReset = coreauth.NewPasswordReset
 
-// --- lifecycle and bindings ----------------------------------------------
+// --- 生命周期与绑定 -------------------------------------------------------
 
 func TestDisabledAndDeletedUserSessionsDoNotResolve(t *testing.T) {
 	e := newEnv(t)

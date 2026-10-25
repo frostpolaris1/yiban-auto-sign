@@ -17,7 +17,7 @@ func TestBusinessDay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadLocation: %v", err)
 	}
-	// 2026-10-24 16:30 UTC is 2026-10-25 00:30 in Shanghai.
+	// 2026-10-24 16:30 UTC 即上海 2026-10-25 00:30。
 	now := time.Date(2026, 10, 24, 16, 30, 0, 0, time.UTC)
 	if got, want := BusinessDay(now, loc), "2026-10-25"; got != want {
 		t.Fatalf("BusinessDay = %q, want %q", got, want)

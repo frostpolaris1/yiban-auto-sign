@@ -18,19 +18,20 @@ import (
 	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 )
 
-// dsnEnv names the test database. The tests need a real PostgreSQL 18 server:
-// triggers, partial indexes, advisory locks and uuidv7() have no honest
-// in-process substitute (AGENTS §32).
+// dsnEnv 是测试库的环境变量名。
+// 测试需要真实 PostgreSQL 18：触发器、部分索引、advisory lock 与 uuidv7()
+// 都没有**诚实的进程内替身**（AGENTS §32）。
 const dsnEnv = "YIBAN_TEST_DATABASE_URL"
 
-// auditKey is a fixed 32-byte key. A real key comes from configuration.
+// auditKey 是固定 32 字节密钥。真实密钥来自配置。
 var auditKey = []byte("0123456789abcdef0123456789abcdef")
 
-// testPepper keys the IP and user-agent digests.
+// testPepper 是 IP 与 User-Agent 摘要的密钥。
 var testPepper = []byte("fedcba9876543210fedcba9876543210")
 
-// testEnv owns one database schema. Every test gets an empty schema, so runs
-// never depend on each other or on leftovers from a crashed run.
+// testEnv 独占一个数据库 schema。
+// 每个测试拿到空 schema，故各次运行互不依赖，
+// 也不依赖崩溃残留。
 type testEnv struct {
 	t       *testing.T
 	ctx     context.Context
@@ -137,8 +138,8 @@ func randomHex(n int) string {
 	return hex.EncodeToString(b)
 }
 
-// tokenHash builds the typed digest the repositories accept. A raw token
-// cannot be passed to a token_hash parameter (D-7).
+// tokenHash 构造仓储接受的定型摘要。
+// 原始令牌无法传给 token_hash 参数（D-7）。
 func tokenHash(token string) coreauth.TokenHash {
 	return coreauth.HashToken(token)
 }
@@ -263,13 +264,12 @@ func mustNotError(t *testing.T, err error, what string) {
 	}
 }
 
-// TestMain makes a missing database explicit. `go test` hides t.Skip logs
-// unless -v is set, so an environment-skipped database run must never look
-// green silently (AGENTS §30).
+// TestMain 让缺失数据库显性可见。
+// 未加 -v 时 go test 会吞掉 t.Skip 日志，
+// 故因环境跳过的数据库运行**绝不可静默显得绿**（AGENTS §30）。
 //
-// In CI a missing DSN is a failure: the pipeline would otherwise report a
-// green run in which zero e2e tests executed. Locally the banner goes to
-// stdout, where the operator still sees it, and the run skips.
+// CI 中缺少 DSN 即失败：否则流水线会报告一次零 e2e 执行的绿。
+// 本地把横幅打到 stdout，操作者仍能看到，然后跳过。
 func TestMain(m *testing.M) {
 	if strings.TrimSpace(os.Getenv(dsnEnv)) == "" {
 		if strings.TrimSpace(os.Getenv("CI")) != "" {

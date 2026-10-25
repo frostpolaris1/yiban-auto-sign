@@ -12,18 +12,18 @@ import (
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 )
 
-// PasswordResetRepo is the PostgreSQL one-time reset token repository.
+// PasswordResetRepo 是 PostgreSQL 一次性重置令牌仓储。
 type PasswordResetRepo struct {
 	db *DB
 }
 
-// NewPasswordResetRepo builds a reset token repository.
+// NewPasswordResetRepo 构造重置令牌仓储。
 func NewPasswordResetRepo(db *DB) *PasswordResetRepo { return &PasswordResetRepo{db: db} }
 
 const resetColumns = `id::text, user_id::text, token_hash, created_at, expires_at, used_at`
 
-// Create stores a reset token. Only the SHA-256 hash is stored; TokenHash is
-// the typed digest, so a raw token cannot reach this call.
+// Create 存储一个重置令牌。**只存 SHA-256 摘要**；
+// TokenHash 是定型摘要，原始令牌无法传到本调用。
 func (r *PasswordResetRepo) Create(ctx context.Context, in coreauth.NewPasswordReset) (coreauth.PasswordReset, error) {
 	if in.TokenHash.IsZero() {
 		return coreauth.PasswordReset{}, validationError("token hash is required")
@@ -45,17 +45,16 @@ func (r *PasswordResetRepo) Create(ctx context.Context, in coreauth.NewPasswordR
 		if errors.Is(err, pgx.ErrNoRows) {
 			return coreauth.PasswordReset{}, coreerrs.ErrNotFound
 		}
-		// A reset token for a user that does not exist is a missing parent.
+		// 给不存在的用户发重置令牌，属于父行缺失。
 		return coreauth.PasswordReset{}, mapInsertForeignKey(err)
 	}
 	return record, nil
 }
 
-// Consume marks a token used and returns it.
+// Consume 把令牌标记为已用并返回它。
 //
-// The UPDATE is the single-use decision: only a row that is unused and
-// unexpired can change. A second call, an expired token and an unknown token
-// all return not_found.
+// 这条 UPDATE 就是**单次使用判据**：只有未用且未过期的行会改变。
+// 第二次调用、已过期令牌、未知令牌一律 not_found。
 func (r *PasswordResetRepo) Consume(ctx context.Context, tokenHash coreauth.TokenHash, now time.Time) (coreauth.PasswordReset, error) {
 	if tokenHash.IsZero() {
 		return coreauth.PasswordReset{}, coreerrNotFound()

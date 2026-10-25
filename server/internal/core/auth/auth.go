@@ -1,8 +1,27 @@
-// Package auth defines the session contract between HTTP entry points and
-// the session store. It is pure: implementations live in adapters.
+// Package auth 定义 HTTP 入口与会话存储之间的会话契约。
 //
-// The session token is a 32-byte random value sent as an HttpOnly cookie. A
-// store persists only its SHA-256 hash; the raw token never leaves the client.
+// # 功能
+// 定义会话、令牌摘要、CSRF 派生、角色与用户状态词表。
+// 本包**不**实现存储，**不**读写数据库，**不**做密码校验。
+// 存储实现见 adapters/session 与 adapters/pg。
+//
+// # 归属
+// core 层纯领域包。entry/http 读会话，app/auth 声明仓储端口，
+// adapters 实现 SessionIssuer 与 SessionRepo。
+//
+// # 复用
+// CookieName、InsecureCookieName、MaxSessionsPerUser；
+// TokenHash 及 HashToken、Bytes、IsZero；
+// IPHash、UserAgentHash 及 HashIP、HashUserAgent、HashValue、FromStored 系列；
+// CSRFToken；Role、Status；User、Session、Issued；
+// SessionRow、NewSessionRow、ResolvedSession、PasswordReset、NewPasswordReset；
+// SessionIssuer 接口与 WithSession、FromContext。
+//
+// # 口径
+// 会话令牌是 32 字节随机值，经 HttpOnly cookie 下发。
+// 存储侧**只存 SHA-256 摘要**，原始令牌不离开客户端。
+// CSRF 令牌由会话令牌与服务器密钥 HMAC 派生，**不落盘**。
+// IP 与 User-Agent 只存 HMAC 摘要，pepper 为空即报错。
 package auth
 
 import (
@@ -16,60 +35,56 @@ import (
 	"time"
 )
 
-// CookieName is the session cookie. The __Host- prefix requires Secure,
-// Path=/ and no Domain attribute.
+// CookieName 是会话 cookie 名。
+// __Host- 前缀要求同时满足 Secure、Path=/、无 Domain 三项。
 const CookieName = "__Host-yiban_session"
 
-// InsecureCookieName is used only when the process runs behind a TLS
-// terminator and cannot set a Secure cookie. Browsers reject __Host- cookies
-// without Secure, so the development name must stay unprefixed.
+// InsecureCookieName 仅用于进程位于 TLS 终结器之后、无法设置 Secure cookie 的场景。
+// 浏览器会拒绝不带 Secure 的 __Host- cookie，故开发名**必须**去掉前缀。
 const InsecureCookieName = "yiban_session_dev"
 
-// MaxSessionsPerUser bounds live sessions per user. A new sign-in evicts the
-// oldest session instead of growing without bound (decision 12.9).
+// MaxSessionsPerUser 限制每用户同时有效会话数 20。
+// 新登录淘汰最旧会话，**不无界增长**（决策 12.9）。
 const MaxSessionsPerUser = 20
 
-// TokenHash is the SHA-256 digest of a raw session or reset token.
+// TokenHash 是会话令牌或重置令牌的 SHA-256 摘要。
 //
-// The database stores only this digest. Making it a distinct type means a raw
-// token cannot reach a token_hash column by accident: a []byte or a string
-// does not compile there. Build one with HashToken.
+// **数据库只存该摘要**。独立类型的作用是编译期拦截：
+// []byte 与 string 不能直接传入 token_hash 列。请用 HashToken 构造。
 type TokenHash [32]byte
 
-// HashToken returns the SHA-256 digest of raw. This is the only constructor a
-// caller needs; the raw token is not stored.
+// HashToken 返回 raw 的 SHA-256 摘要。
+// 这是调用方唯一需要的构造函数；**原始令牌不存储**。
 func HashToken(raw string) TokenHash { return TokenHash(sha256.Sum256([]byte(raw))) }
 
-// Bytes returns a copy of the digest for a database driver. The copy keeps the
-// array immutable after the call.
+// Bytes 返回摘要副本供数据库驱动使用。
+// 返回副本使数组在调用后保持不可变。
 func (h TokenHash) Bytes() []byte {
 	out := make([]byte, len(h))
 	copy(out, h[:])
 	return out
 }
 
-// IsZero reports whether the digest is all zero bytes. A zero digest means
-// the caller did not set the field.
+// IsZero 报告摘要是否全零。全零表示调用方未设置该字段。
 func (h TokenHash) IsZero() bool { return h == TokenHash{} }
 
-// IPHash is the keyed digest of an IP address. The digest field is
-// unexported, so a raw address cannot be converted into this type: HashIP is
-// the only constructor, and it refuses an empty pepper instead of storing an
-// unkeyed hash.
+// IPHash 是 IP 地址的带密钥摘要。
+// digest 字段不导出，原始地址无法转成该类型：
+// HashIP 是唯一构造函数，且空 pepper 直接报错，不存无密钥哈希。
 type IPHash struct {
 	digest string
 }
 
-// UserAgentHash is the keyed digest of a user-agent string.
+// UserAgentHash 是 User-Agent 字符串的带密钥摘要。
 type UserAgentHash struct {
 	digest string
 }
 
-// HashValue returns the lowercase hex HMAC-SHA256 of value under pepper.
+// HashValue 返回 value 在 pepper 下的 HMAC-SHA256 小写十六进制。
 //
-// A bare SHA-256 would let anyone enumerate the IPv4 space and recover the
-// address. An empty pepper is an error, not a silent default: a deployment
-// without a pepper must fail at startup, not lose its abuse trail.
+// 裸 SHA-256 会让任何人枚举 IPv4 空间反推地址。
+// **空 pepper 是错误，不是静默默认**：缺少 pepper 的部署必须在启动时失败，
+// 而不是丢掉滥用线索。
 func HashValue(pepper []byte, value string) (string, error) {
 	if len(pepper) == 0 {
 		return "", errors.New("auth: empty hash pepper")
@@ -79,7 +94,7 @@ func HashValue(pepper []byte, value string) (string, error) {
 	return hex.EncodeToString(mac.Sum(nil)), nil
 }
 
-// HashIP hashes an address with the server pepper.
+// HashIP 用服务器 pepper 哈希一个地址。
 func HashIP(pepper []byte, ip string) (IPHash, error) {
 	d, err := HashValue(pepper, ip)
 	if err != nil {
@@ -88,7 +103,7 @@ func HashIP(pepper []byte, ip string) (IPHash, error) {
 	return IPHash{digest: d}, nil
 }
 
-// HashUserAgent hashes a user-agent string with the server pepper.
+// HashUserAgent 用服务器 pepper 哈希 User-Agent 字符串。
 func HashUserAgent(pepper []byte, ua string) (UserAgentHash, error) {
 	d, err := HashValue(pepper, ua)
 	if err != nil {
@@ -97,25 +112,24 @@ func HashUserAgent(pepper []byte, ua string) (UserAgentHash, error) {
 	return UserAgentHash{digest: d}, nil
 }
 
-// String returns the digest for storage.
+// String 返回可存储的摘要。
 func (h IPHash) String() string { return h.digest }
 
-// String returns the digest for storage.
+// String 返回可存储的摘要。
 func (h UserAgentHash) String() string { return h.digest }
 
-// IsZero reports whether no digest was computed.
+// IsZero 报告是否未计算摘要。
 func (h IPHash) IsZero() bool { return h.digest == "" }
 
-// IsZero reports whether no digest was computed.
+// IsZero 报告是否未计算摘要。
 func (h UserAgentHash) IsZero() bool { return h.digest == "" }
 
-// storedHashPattern is the stored form of an IP or user-agent digest: 64 hex.
+// storedHashPattern 是摘要的存储形式：64 位小写十六进制。
 var storedHashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// IPHashFromStored wraps a digest read back from the database. An empty value
-// is the stored NULL and yields the zero hash; a non-empty value must be the
-// keyed form, so a raw value written by another path cannot masquerade as a
-// digest.
+// IPHashFromStored 包装从数据库读回的摘要。
+// 空值即存储的 NULL，返回零值；非空值必须是带密钥形式，
+// 防止其他路径写入的原始值冒充摘要。
 func IPHashFromStored(hexDigest string) (IPHash, error) {
 	if hexDigest == "" {
 		return IPHash{}, nil
@@ -126,8 +140,8 @@ func IPHashFromStored(hexDigest string) (IPHash, error) {
 	return IPHash{digest: hexDigest}, nil
 }
 
-// UserAgentHashFromStored wraps a digest read back from the database. An
-// empty value is the stored NULL and yields the zero hash.
+// UserAgentHashFromStored 包装从数据库读回的摘要。
+// 空值即存储的 NULL，返回零值。
 func UserAgentHashFromStored(hexDigest string) (UserAgentHash, error) {
 	if hexDigest == "" {
 		return UserAgentHash{}, nil
@@ -138,9 +152,8 @@ func UserAgentHashFromStored(hexDigest string) (UserAgentHash, error) {
 	return UserAgentHash{digest: hexDigest}, nil
 }
 
-// CSRFToken derives the CSRF token from the session token and a server secret.
-// Nothing is stored: the value is recomputed on each request, so a database
-// leak reveals no CSRF token.
+// CSRFToken 由会话令牌与服务器密钥派生 CSRF 令牌。
+// **不存储任何值**：每个请求重新计算，数据库泄露也拿不到 CSRF 令牌。
 func CSRFToken(secret []byte, sessionToken string) string {
 	mac := hmac.New(sha256.New, secret)
 	mac.Write([]byte("csrf:"))
@@ -148,32 +161,32 @@ func CSRFToken(secret []byte, sessionToken string) string {
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
-// Role is the authorization role of a user.
+// Role 是用户的授权角色。
 type Role string
 
-// Roles. The set is frozen for v1.
+// 角色集合，v1 冻结。
 const (
 	RoleMaster Role = "master"
 	RoleAdmin  Role = "admin"
 	RoleUser   Role = "user"
 )
 
-// Valid reports whether r is a known role.
+// Valid 报告 r 是否为已知角色。
 func (r Role) Valid() bool { return r == RoleMaster || r == RoleAdmin || r == RoleUser }
 
-// Status is the account status of a user.
+// Status 是用户的账号状态。
 type Status string
 
-// User statuses. A disabled user cannot sign in.
+// 用户状态集合。**disabled 用户不能登录**。
 const (
 	StatusActive   Status = "active"
 	StatusDisabled Status = "disabled"
 )
 
-// Valid reports whether s is a known user status.
+// Valid 报告 s 是否为已知用户状态。
 func (s Status) Valid() bool { return s == StatusActive || s == StatusDisabled }
 
-// User is the authenticated principal.
+// User 是已认证主体。
 type User struct {
 	ID                 string
 	Email              string
@@ -182,22 +195,23 @@ type User struct {
 	MustChangePassword bool
 }
 
-// Session is the server-side session state attached to a request.
+// Session 是挂在请求上的服务端会话状态。
 type Session struct {
 	User      User
 	CSRFToken string
 }
 
-// Issued is a freshly created session plus its raw token. The token is
-// returned to the caller exactly once and never stored in plain form.
+// Issued 是新建会话及其原始令牌。
+// 令牌只向调用方返回一次，**从不以明文形式存储**。
 type Issued struct {
 	Token string
 	Session
 }
 
-// SessionRow is one row of sessions. The token hash is the only credential
-// form the store keeps. IPHash and UserAgentHash hold the output of
-// HashIP and HashUserAgent, never a raw address or agent string.
+// SessionRow 是一行 sessions 记录。
+// 存储侧只保留令牌摘要这一种凭据形式。
+// IPHash 与 UserAgentHash 承载 HashIP、HashUserAgent 的输出，
+// **绝不是原始地址或原始 UA 串**。
 type SessionRow struct {
 	ID            string
 	UserID        string
@@ -212,10 +226,10 @@ type SessionRow struct {
 	UserAgentHash UserAgentHash
 }
 
-// NewSessionRow is the input of a session creation. TokenHash must come from
-// HashToken. IPHash and UserAgentHash must come from HashIP and
-// HashUserAgent; the
-// repository stores them unchanged and never hashes.
+// NewSessionRow 是创建会话的输入。
+// TokenHash 必须来自 HashToken；
+// IPHash 与 UserAgentHash 必须来自 HashIP 与 HashUserAgent。
+// 仓储原样存储，**不再哈希**。
 type NewSessionRow struct {
 	UserID        string
 	TokenHash     TokenHash
@@ -227,13 +241,13 @@ type NewSessionRow struct {
 	UserAgentHash UserAgentHash
 }
 
-// ResolvedSession is a live session joined with its user.
+// ResolvedSession 是有效会话与其用户的连接结果。
 type ResolvedSession struct {
 	Session SessionRow
 	User    User
 }
 
-// PasswordReset is one one-time password reset token.
+// PasswordReset 是一个一次性密码重置令牌。
 type PasswordReset struct {
 	ID        string
 	UserID    string
@@ -243,8 +257,8 @@ type PasswordReset struct {
 	UsedAt    *time.Time
 }
 
-// NewPasswordReset is the input of a reset token creation. TokenHash must come
-// from HashToken.
+// NewPasswordReset 是创建重置令牌的输入。
+// TokenHash 必须来自 HashToken。
 type NewPasswordReset struct {
 	UserID    string
 	TokenHash TokenHash
@@ -252,14 +266,14 @@ type NewPasswordReset struct {
 	ExpiresAt time.Time
 }
 
-// ErrNoSession reports a missing, expired or revoked session.
+// ErrNoSession 表示会话缺失、过期或已撤销。
 var ErrNoSession = errors.New("auth: no session")
 
-// SessionIssuer creates, resolves and revokes sessions.
+// SessionIssuer 创建、解析与撤销会话。
 //
-// Issue always mints a new token: a pre-login session is never reused.
-// Resolve treats unknown, expired and revoked tokens the same way and returns
-// ErrNoSession. Revoke and RevokeAllForUser are idempotent.
+// Issue **总是签发新令牌**：登录前的会话不复用。
+// Resolve 对未知、过期、已撤销令牌给出同一结果 ErrNoSession。
+// Revoke 与 RevokeAllForUser 幂等。
 type SessionIssuer interface {
 	Issue(ctx context.Context, user User) (Issued, error)
 	Resolve(ctx context.Context, token string) (Session, error)
@@ -271,12 +285,12 @@ type contextKey struct{}
 
 var sessionKey contextKey
 
-// WithSession returns a context that carries sess.
+// WithSession 返回携带 sess 的 context。
 func WithSession(ctx context.Context, sess Session) context.Context {
 	return context.WithValue(ctx, sessionKey, sess)
 }
 
-// FromContext returns the session carried by ctx.
+// FromContext 返回 ctx 携带的会话。第二个返回值报告是否存在。
 func FromContext(ctx context.Context) (Session, bool) {
 	sess, ok := ctx.Value(sessionKey).(Session)
 	return sess, ok

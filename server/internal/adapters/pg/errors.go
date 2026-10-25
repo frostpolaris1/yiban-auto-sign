@@ -9,10 +9,10 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 )
 
-// mapError turns a PostgreSQL failure into a stable error code.
+// mapError 把 PostgreSQL 失败转成稳定错误码。
 //
-// It is the only place that reads SQLSTATE. Use cases and handlers see
-// core/errs codes and never a driver error.
+// **这是全仓唯一读 SQLSTATE 的地方**。
+// 用例与处理器只见 core/errs 码，不见驱动错误。
 func mapError(err error) error {
 	if err == nil {
 		return nil
@@ -46,13 +46,13 @@ func mapError(err error) error {
 	}
 }
 
-// mapInsertForeignKey maps a foreign-key failure at an insert site.
+// mapInsertForeignKey 在插入点映射外键失败。
 //
-// mapError keeps the SQLSTATE-level view: 23503 is a conflict. At an insert,
-// however, 23503 means the referenced parent row does not exist, and schema
-// §2.4 requires not_found (HTTP 404). A rejected delete is RESTRICT, which
-// PostgreSQL reports as 23001 at the delete site and stays a conflict (409).
-// Use this function only for statements that insert a child row.
+// mapError 保留 SQLSTATE 层面的视图：23503 是冲突。
+// 但在插入处，23503 表示被引用的父行不存在，
+// schema §2.4 要求报 not_found（HTTP 404）。
+// 被拒的删除属 RESTRICT，PostgreSQL 在删除点报 23001，仍算冲突（409）。
+// **本函数只用于插入子行的语句**。
 func mapInsertForeignKey(err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23503" {
@@ -65,8 +65,8 @@ func mapInsertForeignKey(err error) error {
 	return mapError(err)
 }
 
-// recordOrNotFound returns value, or maps a missing row to errs.ErrNotFound
-// and any other failure to its stable code.
+// recordOrNotFound 返回值；行缺失映射为 errs.ErrNotFound，
+// 其他失败映射为各自稳定码。
 func recordOrNotFound[T any](value T, err error) (T, error) {
 	if err == nil {
 		return value, nil
@@ -78,21 +78,21 @@ func recordOrNotFound[T any](value T, err error) (T, error) {
 	return zero, mapError(err)
 }
 
-// coreerrNotFound is shorthand for the shared not-found error.
+// coreerrNotFound 是共用未找到错误的简写。
 func coreerrNotFound() error { return errs.ErrNotFound }
 
-// validationError builds a validation failure with an optional constraint name.
+// validationError 构造校验失败错误。
 func validationError(message string) error {
 	return errs.New(errs.CodeValidation, message)
 }
 
-// conflictError builds a conflict failure.
+// conflictError 构造冲突失败错误。
 func conflictError(message string) error {
 	return errs.New(errs.CodeConflict, message)
 }
 
-// capacityError builds the capacity failure. It means: the limit is reached,
-// the write did nothing.
+// capacityError 构造容量失败错误。
+// 语义：已达上限，**本次写入未生效**。
 func capacityError() error {
 	return errs.New(errs.CodeCapacity, "capacity exceeded")
 }

@@ -19,7 +19,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/router"
 )
 
-// stubIssuer is a minimal SessionIssuer for the HTTP surface tests.
+// stubIssuer 是 HTTP 面测试用的最小 SessionIssuer。
 type stubIssuer struct {
 	sessions map[string]auth.Session
 }
@@ -56,7 +56,7 @@ func (s *stubIssuer) RevokeAllForUser(_ context.Context, userID string) error {
 	return nil
 }
 
-// errorEnvelope mirrors the frozen error envelope shape.
+// errorEnvelope 对应冻结的错误信封形状。
 type errorEnvelope struct {
 	Error struct {
 		Code    string         `json:"code"`
@@ -101,7 +101,7 @@ func decodeEnvelope(t *testing.T, rec *httptest.ResponseRecorder) errorEnvelope 
 	return env
 }
 
-// E-1: an unauthenticated read of /api/auth/me returns 401 and the frozen envelope.
+// E-1：未认证读取 /api/auth/me 返回 401 与冻结信封。
 func TestE1UnauthenticatedMe(t *testing.T) {
 	engine, _ := newTestEngine(t)
 	rec := serve(engine, httptest.NewRequest(http.MethodGet, "/api/auth/me", nil))
@@ -130,8 +130,8 @@ func TestE1UnauthenticatedMe(t *testing.T) {
 	}
 }
 
-// The router mints its own request id and never reuses the client header, so
-// a caller cannot steer what the audit layer records.
+// 路由自造请求 id，从不复用客户端请求头，
+// 故调用方无法左右审计层记录的内容。
 func TestClientRequestIDIsNotReused(t *testing.T) {
 	engine, _ := newTestEngine(t)
 	for _, client := range []string{"13800138000", "a@b.com", "client-controlled-trace", "06317272289944f6e935132eb62042ec"} {
@@ -155,8 +155,8 @@ func TestClientRequestIDIsNotReused(t *testing.T) {
 	}
 }
 
-// Two requests to the same engine mint different ids: audit correlation dies
-// if every request shares one trace value.
+// 同一引擎的两次请求必须得到不同 id：
+// 所有请求共用一个 trace 值会让审计关联失效。
 func TestRequestIDIsFreshPerRequest(t *testing.T) {
 	engine, _ := newTestEngine(t)
 	first := serve(engine, httptest.NewRequest(http.MethodGet, "/healthz", nil)).Header().Get("X-Request-Id")
@@ -166,8 +166,8 @@ func TestRequestIDIsFreshPerRequest(t *testing.T) {
 	}
 }
 
-// The id the access log records is the id the response header carries, so an
-// audit line can always be matched to the response a caller saw.
+// 访问日志记录的 id 就是响应头携带的 id，
+// 故任何审计行都能对上调用方看到的响应。
 func TestAccessLogRequestIDMatchesHeader(t *testing.T) {
 	var logBuf bytes.Buffer
 	engine := newEngine(t, newStubIssuer(), slog.New(slog.NewTextHandler(&logBuf, nil)))
@@ -180,7 +180,7 @@ func TestAccessLogRequestIDMatchesHeader(t *testing.T) {
 	}
 }
 
-// E-2: an unknown route returns 404 and the frozen envelope.
+// E-2：未知路由返回 404 与冻结信封。
 func TestE2UnknownRoute(t *testing.T) {
 	engine, _ := newTestEngine(t)
 	rec := serve(engine, httptest.NewRequest(http.MethodGet, "/api/does-not-exist", nil))
@@ -197,7 +197,7 @@ func TestE2UnknownRoute(t *testing.T) {
 	}
 }
 
-// E-3: the liveness probe answers 200 without a session.
+// E-3：存活探针无会话也回 200。
 func TestE3Healthz(t *testing.T) {
 	engine, _ := newTestEngine(t)
 	rec := serve(engine, httptest.NewRequest(http.MethodGet, "/healthz", nil))
@@ -216,7 +216,7 @@ func TestE3Healthz(t *testing.T) {
 	}
 }
 
-// E-5: a valid session cookie returns the current user, never the session token.
+// E-5：有效会话 cookie 返回当前用户，**绝不返回会话令牌**。
 func TestE5MeWithSession(t *testing.T) {
 	engine, issuer := newTestEngine(t)
 	user := auth.User{
@@ -263,7 +263,7 @@ func TestE5MeWithSession(t *testing.T) {
 	}
 }
 
-// E-8: a state-changing request with a session but no CSRF header is rejected.
+// E-8：带会话但不带 CSRF 头的改状态请求被拒。
 func TestE8MissingCSRF(t *testing.T) {
 	engine, issuer := newTestEngine(t)
 	issued, err := issuer.Issue(context.Background(), auth.User{ID: "u1", Email: "u1@example.com", Role: auth.RoleUser, Status: auth.StatusActive})
@@ -284,7 +284,7 @@ func TestE8MissingCSRF(t *testing.T) {
 	}
 }
 
-// E-9: the same request passes the CSRF gate when the derived token matches.
+// E-9：派生令牌匹配时，同一请求通过 CSRF 门禁。
 func TestE9ValidCSRF(t *testing.T) {
 	engine, issuer := newTestEngine(t)
 	issued, err := issuer.Issue(context.Background(), auth.User{ID: "u1", Email: "u1@example.com", Role: auth.RoleUser, Status: auth.StatusActive})
@@ -303,7 +303,7 @@ func TestE9ValidCSRF(t *testing.T) {
 	}
 }
 
-// E-10: logout needs the CSRF token because it destroys a session.
+// E-10：登出销毁会话，故需要 CSRF 令牌。
 func TestE10LogoutRequiresCSRF(t *testing.T) {
 	engine, issuer := newTestEngine(t)
 	issued, err := issuer.Issue(context.Background(), auth.User{ID: "u1", Email: "u1@example.com", Role: auth.RoleUser, Status: auth.StatusActive})
@@ -319,7 +319,7 @@ func TestE10LogoutRequiresCSRF(t *testing.T) {
 	}
 }
 
-// Writes without a session are rejected before the CSRF gate.
+// 无会话的写请求在 CSRF 门禁之前就被拒。
 func TestWriteWithoutSession(t *testing.T) {
 	engine, _ := newTestEngine(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/accounts", strings.NewReader("{}"))
@@ -329,7 +329,7 @@ func TestWriteWithoutSession(t *testing.T) {
 	}
 }
 
-// E-6: access logs carry the path but never the query string.
+// E-6：访问日志带路径，但**从不带查询串**。
 func TestE6AccessLogHasNoQuery(t *testing.T) {
 	var logBuf bytes.Buffer
 	engine := newEngine(t, newStubIssuer(), slog.New(slog.NewTextHandler(&logBuf, nil)))
@@ -353,7 +353,7 @@ func (panicIssuer) Resolve(context.Context, string) (auth.Session, error) { pani
 func (panicIssuer) Revoke(context.Context, string) error                  { return nil }
 func (panicIssuer) RevokeAllForUser(context.Context, string) error        { return nil }
 
-// E-7: a panic becomes the 500 envelope, not a dropped connection.
+// E-7：panic 变成 500 信封，而不是被掐断的连接。
 func TestE7PanicRecovery(t *testing.T) {
 	engine := newEngine(t, panicIssuer{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
@@ -369,7 +369,7 @@ func TestE7PanicRecovery(t *testing.T) {
 	}
 }
 
-// A panicking request still produces one access log line with status 500.
+// panic 的请求仍产出一行状态 500 的访问日志。
 func TestAccessLogCoversPanics(t *testing.T) {
 	var logBuf bytes.Buffer
 	engine := newEngine(t, panicIssuer{}, slog.New(slog.NewTextHandler(&logBuf, nil)))
@@ -386,9 +386,8 @@ func TestAccessLogCoversPanics(t *testing.T) {
 	}
 }
 
-// A session-less logout must not be rejected by parameter binding. The
-// status itself belongs to the phase; the invariant is that it is not a
-// validation failure.
+// 无会话的登出不得被参数绑定拒绝。
+// 状态码归本阶段决定；不变式是「不是校验失败」。
 func TestLogoutWithoutSession(t *testing.T) {
 	engine, _ := newTestEngine(t)
 	rec := serve(engine, httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil))

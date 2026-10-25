@@ -119,8 +119,8 @@ func TestLoadFromRequiresHashPepper(t *testing.T) {
 	if string(cfg.HashPepper) != "0123456789abcdef0123456789abcdef" {
 		t.Fatalf("pepper = %q", cfg.HashPepper)
 	}
-	// Leading and trailing whitespace is an input accident, not entropy: the
-	// stored value is the trimmed form, matching the DatabaseURL convention.
+	// 首尾空白是输入事故，不是熵：
+	// 存储值取裁剪后的形式，与 DatabaseURL 的约定一致。
 	padded, err := LoadFrom(mapSource{"YIBAN_ENV": "development", "YIBAN_HASH_PEPPER": "  0123456789abcdef  "})
 	if err != nil {
 		t.Fatalf("padded pepper: %v", err)

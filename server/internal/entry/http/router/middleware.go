@@ -20,7 +20,7 @@ import (
 
 const contextRequestID = "request_id"
 
-// publicPaths never require a session. Everything else under /api does.
+// publicPaths 永不要求会话。其余 /api 路径一律要求。
 var publicPaths = map[string]struct{}{
 	"/healthz":                  {},
 	"/api/auth/login":           {},
@@ -29,8 +29,8 @@ var publicPaths = map[string]struct{}{
 	"/api/auth/reset-password":  {},
 }
 
-// csrfExemptPaths either establish the session or carry no session authority.
-// Logout is not exempt: it destroys a session and needs the token.
+// csrfExemptPaths 要么建立会话，要么不携带会话权限。
+// **logout 不豁免**：它销毁会话，需要令牌。
 var csrfExemptPaths = map[string]struct{}{
 	"/healthz":                  {},
 	"/api/auth/login":           {},
@@ -40,9 +40,9 @@ var csrfExemptPaths = map[string]struct{}{
 
 var fallbackRequestID atomic.Uint64
 
-// requestID always mints a fresh id. A client-supplied value is not reused:
-// the audit layer records trace ids, and an attacker-controlled header must
-// not decide what lands there.
+// requestID 每次都造新 id。
+// **客户端自带值不复用**：审计层记录 trace id，
+// 攻击者可控的请求头不得决定写进审计的内容。
 func requestID() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := newRequestID()
@@ -61,8 +61,8 @@ func newRequestID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// recoverPanic turns a panic into the 500 envelope. The panic value is not
-// logged because it may carry request data.
+// recoverPanic 把 panic 转成 500 信封。
+// panic 值不记日志，因为它可能携带请求数据。
 func recoverPanic(logger *slog.Logger) gin.HandlerFunc {
 	return gin.CustomRecovery(func(c *gin.Context, _ any) {
 		logger.Error("panic recovered",
@@ -74,9 +74,9 @@ func recoverPanic(logger *slog.Logger) gin.HandlerFunc {
 	})
 }
 
-// accessLog records method, path, status and duration. It never records the
-// query string, request body or header values. It runs before the recovery
-// middleware so a panicking request still produces one log line.
+// accessLog 记录方法、路径、状态与耗时。
+// 它**从不**记录查询串、请求体或请求头的值。
+// 它排在 panic 恢复之前，故 panic 的请求仍产出一行日志。
 func accessLog(logger *slog.Logger, clk clock.Clock) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := clk.Now()
@@ -96,7 +96,7 @@ func accessLog(logger *slog.Logger, clk clock.Clock) gin.HandlerFunc {
 	}
 }
 
-// securityHeaders sets headers that never vary per response.
+// securityHeaders 设置不随响应变化的头。
 func securityHeaders() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		h := c.Writer.Header()
@@ -110,10 +110,9 @@ func securityHeaders() gin.HandlerFunc {
 	}
 }
 
-// requireCSRF rejects state-changing requests that carry a session but no
-// matching X-CSRF-Token header. The token is derived from the session token,
-// so nothing is stored. Login, password reset and health checks are exempt:
-// they either establish the session or carry no session authority.
+// requireCSRF 拒绝「带会话但不带匹配 X-CSRF-Token 头」的改状态请求。
+// 令牌由会话令牌派生，**不存储任何值**。
+// 登录、重置密码与健康检查豁免：它们要么建立会话，要么不带会话权限。
 func (s *server) requireCSRF() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !unsafeMethod(c.Request.Method) {
@@ -153,8 +152,8 @@ func unsafeMethod(method string) bool {
 	return false
 }
 
-// authenticate resolves the session cookie. Unknown routes fall through to
-// NoRoute (404); public routes fall through without a session.
+// authenticate 解析会话 cookie。
+// 未知路由落到 NoRoute（404）；公开路由无会话也放行。
 func (s *server) authenticate() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		route := c.FullPath()

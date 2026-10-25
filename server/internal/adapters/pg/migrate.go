@@ -16,17 +16,14 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/migrations"
 )
 
-// ErrDatabaseAhead reports that the database schema version is newer than the
-// version this binary carries. A downgraded process must stop: it does not
-// know the newer columns or constraints (schema §9.3).
+// ErrDatabaseAhead 表示数据库 schema 版本高于本二进制携带的版本。
+// 降级进程**必须停下**：它不认识更新的列与约束（schema §9.3）。
 var ErrDatabaseAhead = errors.New("pg: database schema is newer than this binary")
 
-// Migrate applies every pending migration and returns the resulting schema
-// version.
+// Migrate 应用全部待执行迁移，并返回迁移后的 schema 版本。
 //
-// The migration session gets lock_timeout=5s and statement_timeout=60s. A
-// migration that cannot take its lock fails instead of queueing and blocking
-// live traffic.
+// 迁移会话设 lock_timeout=5s、statement_timeout=60s。
+// 取不到锁的迁移**直接失败**，不排队阻塞线上流量。
 func Migrate(ctx context.Context, dsn string) (int64, error) {
 	embedded, err := EmbeddedVersion()
 	if err != nil {
@@ -60,8 +57,8 @@ func Migrate(ctx context.Context, dsn string) (int64, error) {
 	return version, nil
 }
 
-// EmbeddedVersion returns the highest migration number compiled into this
-// binary. It reads the embedded file names, so a missing embed shows up here.
+// EmbeddedVersion 返回编入本二进制的最高迁移号。
+// 它读嵌入文件名，故嵌入缺失会在此暴露。
 func EmbeddedVersion() (int64, error) {
 	entries, err := migrations.Files.ReadDir(migrations.Dir)
 	if err != nil {
@@ -91,7 +88,7 @@ func EmbeddedVersion() (int64, error) {
 	return highest, nil
 }
 
-// openMigrationDB builds a single-connection sql.DB with migration timeouts.
+// openMigrationDB 建单连接 sql.DB，并带上迁移超时。
 func openMigrationDB(dsn string) (*sql.DB, error) {
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
@@ -108,8 +105,7 @@ func openMigrationDB(dsn string) (*sql.DB, error) {
 	return db, nil
 }
 
-// dbVersion reads the applied version, treating a missing version table as
-// version 0 (a fresh database).
+// dbVersion 读已应用版本。版本表缺失即视为 0（全新数据库）。
 func dbVersion(ctx context.Context, db *sql.DB) (int64, error) {
 	var exists bool
 	if err := db.QueryRowContext(ctx,

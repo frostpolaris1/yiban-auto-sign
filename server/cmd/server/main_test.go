@@ -12,7 +12,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/config"
 )
 
-// E-11: the assembled process answers the liveness probe on a real TCP port.
+// E-11：装配后的进程在真实 TCP 端口上应答存活探针。
 func TestHealthzOnRealPort(t *testing.T) {
 	cfg := &config.Config{Env: "test", HTTPAddr: "127.0.0.1:0", Timezone: "Asia/Shanghai"}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))

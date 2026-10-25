@@ -183,7 +183,7 @@ func TestCountGoFilesSkipsCaches(t *testing.T) {
 	}
 }
 
-// A tree of only test files is not a scanned tree unless tests are included.
+// 只有测试文件的树，在不含测试时不算被扫描的树。
 func TestCountGoFilesRespectsIncludeTests(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "x_test.go"), []byte("package x\n"), 0o644); err != nil {
@@ -197,8 +197,8 @@ func TestCountGoFilesRespectsIncludeTests(t *testing.T) {
 	}
 }
 
-// The refusal paths are the gate's boundary: a tree it did not really scan
-// must never report ok.
+// 拒绝路径就是本门的边界：
+// 没有真正扫描的树**绝不可报告 ok**。
 func TestRunRefusesEmptyScans(t *testing.T) {
 	rules := filepath.Join("..", "..", "canonical.tsv")
 

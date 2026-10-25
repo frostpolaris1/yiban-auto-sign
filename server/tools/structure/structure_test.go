@@ -166,7 +166,7 @@ func TestCheckFrontendAcceptsCleanTree(t *testing.T) {
 	}
 }
 
-// An existing but empty front-end must not pass.
+// 已存在但空的前端目录**不得通过**。
 func TestCheckFrontendEmptyScanFails(t *testing.T) {
 	root := t.TempDir()
 	mkdirs(t, root, "ui/src/app")

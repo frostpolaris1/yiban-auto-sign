@@ -1,4 +1,19 @@
-// Package egress is the only definition of an egress identity.
+// Package egress 是出口标识的唯一定义。
+//
+// # 功能
+// 把代理串归一为 scheme://host[:port]，并去掉 userinfo。
+// 本包**不**建连接、**不**探测代理可用性、**不**做限速。
+//
+// # 归属
+// core 层纯领域包。风控按出口 IP 计数，
+// 故出口标识必须全仓同名同形。
+//
+// # 复用
+// Identity，以及常量 Direct、Unparseable。
+//
+// # 口径
+// 空串与纯空白都算直连（Direct）。
+// 无法解析的代理串归入 Unparseable，**不退回 Direct**。
 package egress
 
 import (
@@ -7,13 +22,14 @@ import (
 )
 
 const (
-	// Direct is the identity of a direct connection.
+	// Direct 是直连的标识。
 	Direct = "direct"
-	// Unparseable is the identity of a malformed proxy string.
+	// Unparseable 是畸形代理串的标识。
 	Unparseable = "<unparseable>"
 )
 
-// Identity normalizes a proxy string to scheme://host[:port] without userinfo.
+// Identity 把代理串归一为 scheme://host[:port]，去掉 userinfo。
+// 归一结果参与风控计数，**同一代理的不同写法必须得到同一串**。
 func Identity(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

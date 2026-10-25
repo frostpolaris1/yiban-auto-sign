@@ -1,7 +1,19 @@
-// Package audit declares the audit repository port.
+// Package audit 声明审计仓储端口。
 //
-// The chain encoding lives in core/audit so the PostgreSQL adapter never
-// imports this package (canonical.tsv boundary.adapters).
+// # 功能
+// 声明追加与校验两个方法，并转发 core/audit 的类型。
+// 本包**不**实现链编码、**不**取 HMAC 密钥、**不**写 SQL。
+//
+// # 归属
+// app 层用例端口。链编码留在 core/audit，
+// 这样 PostgreSQL 适配器无需导入本包（canonical.tsv 的 boundary.adapters）。
+//
+// # 复用
+// Repo 接口；类型别名 Entry、Row、Report、Action。
+//
+// # 口径
+// 追加**必须**是短事务的最后一条语句。
+// 校验区间两端闭区间，0 表示该侧不限。
 package audit
 
 import (
@@ -10,28 +22,28 @@ import (
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 )
 
-// Entry is the input of one append.
+// Entry 是一次追加的输入。
 type Entry = coreaudit.Entry
 
-// Row is one stored audit row.
+// Row 是一行已存储的审计记录。
 type Row = coreaudit.Row
 
-// Report summarizes a verified range.
+// Report 汇总一次校验的区间。
 type Report = coreaudit.Report
 
-// Action is an audited operation name.
+// Action 是受审计的操作名。
 type Action = coreaudit.Action
 
-// Repo is the audit repository port.
+// Repo 是审计仓储端口。
 //
-// Append must run inside a transaction. It takes the chain advisory lock,
-// reads the current head and inserts the next row, so the chain is serialized
-// and cannot fork. Append must be the last statement of a short transaction: a
-// long transaction holds the chain lock and blocks every audited write.
+// Append **必须在事务内运行**。它取链 advisory lock、读当前链头、
+// 插入下一行，故链是串行的，不会分叉。
+// Append 必须是短事务的最后一条语句：
+// 长事务持有链锁，会阻塞每一次受审计写入。
 //
-// Verify checks link continuity and recomputes every hash. from and to are
-// inclusive row ids; zero means unbounded. An empty range is an error, never a
-// pass.
+// Verify 校验链接连续性并复算每一行哈希。
+// from 与 to 是闭区间行 id；0 表示该侧不限。
+// **空区间是错误，永不算通过**。
 type Repo interface {
 	Append(ctx context.Context, in Entry) (Row, error)
 	Verify(ctx context.Context, from, to int64) (Report, error)

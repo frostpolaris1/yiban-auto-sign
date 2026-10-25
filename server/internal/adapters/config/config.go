@@ -1,4 +1,20 @@
-// Package config is the only place that reads environment variables.
+// Package config 是读取环境变量的唯一位置。
+//
+// # 功能
+// 读取、校验并定型启动配置：环境名、监听地址、数据库 DSN、时区、
+// 不安全 cookie 开关、哈希 pepper。
+// 本包**不**连库、**不**启动服务、**不**读命令行参数。
+//
+// # 归属
+// adapters 层设施包。cmd/server 调 Load；
+// 测试用 LoadFrom 注入 map，不改进程环境。
+//
+// # 复用
+// Source、Env、Config、Load、LoadFrom。
+//
+// # 口径
+// 环境名是闭集，未知值即启动错误。
+// YIBAN_HASH_PEPPER 至少 16 字符；production 拒绝不安全 cookie。
 package config
 
 import (
@@ -9,31 +25,32 @@ import (
 	"strings"
 )
 
-// Source is the environment abstraction. Tests pass a map-backed source.
+// Source 是环境抽象。测试传入 map 实现。
 type Source interface {
 	Lookup(key string) (string, bool)
 }
 
-// Env reads the process environment.
+// Env 读取进程环境。
 type Env struct{}
 
-// Lookup implements Source.
+// Lookup 实现 Source。
 func (Env) Lookup(key string) (string, bool) { return os.LookupEnv(key) }
 
-// Config is the typed runtime configuration.
+// Config 是定型后的运行时配置。
 type Config struct {
 	Env             string
 	HTTPAddr        string
 	DatabaseURL     string
 	Timezone        string
 	InsecureCookies bool
-	// HashPepper keys the HMAC digests of IP addresses and user agents. It is
-	// required: a deployment without one would silently lose its abuse trail.
+	// HashPepper 是 IP 与 User-Agent 摘要的 HMAC 密钥。
+	// **必填**：缺少它的部署会静默丢掉滥用线索。
 	HashPepper []byte
 }
 
-// knownEnvs is a closed set. An unknown value is a startup error: a typo such
-// as "prod" must not silently select the development cookie name.
+// knownEnvs 是闭集。
+// 未知值即启动错误：像 "prod" 这样的笔误，
+// **不得静默选中开发用 cookie 名**。
 var knownEnvs = map[string]bool{
 	"development": true,
 	"test":        true,
@@ -41,10 +58,10 @@ var knownEnvs = map[string]bool{
 	"production":  true,
 }
 
-// Load reads the process environment.
+// Load 读取进程环境。
 func Load() (*Config, error) { return LoadFrom(Env{}) }
 
-// LoadFrom reads from src. It never reads the process environment itself.
+// LoadFrom 从 src 读取。它**从不**自行读进程环境。
 func LoadFrom(src Source) (*Config, error) {
 	if src == nil {
 		return nil, errors.New("config: nil source")
@@ -62,8 +79,8 @@ func LoadFrom(src Source) (*Config, error) {
 		HTTPAddr:    get(src, "YIBAN_HTTP_ADDR", "127.0.0.1:47183"),
 		DatabaseURL: strings.TrimSpace(get(src, "YIBAN_DATABASE_URL", "")),
 		Timezone:    get(src, "YIBAN_TZ", "Asia/Shanghai"),
-		// Local HTTP cannot set a Secure cookie, so the unprefixed name is
-		// the default only for development and test.
+		// 本地 HTTP 无法设置 Secure cookie，
+		// 故无前缀名只在 development 与 test 下作为默认。
 		InsecureCookies: env == "development" || env == "test",
 	}
 	if cfg.Timezone == "" {

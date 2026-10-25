@@ -1,7 +1,19 @@
-// Package mask is the only place that turns personal data into display text.
+// Package mask 是把个人数据转成展示文本的唯一位置。
 //
-// Every function is idempotent: masking an already masked value returns it
-// unchanged. Callers must not reimplement these rules.
+// # 功能
+// 掩码手机号、邮箱、设备号，以及自由文本中的手机号与邮箱。
+// 本包**不**脱敏姓名、学号或凭据，**不**做加解密，**不**写日志。
+//
+// # 归属
+// core 层纯领域包。审计、日志与界面展示都取本包结果。
+// 调用方**不得自行复写掩码规则**。
+//
+// # 复用
+// MaskPhone、MaskEmail、MaskDevice、MaskText。
+//
+// # 口径
+// 所有函数幂等：对已掩码的值再掩码，返回原值。
+// 手机号保留前 3 后 4，邮箱保留首字符与域名，设备保留前 2 后 2。
 package mask
 
 import (
@@ -14,7 +26,8 @@ var (
 	emailInText = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
 )
 
-// MaskPhone keeps the first three and last four digits.
+// MaskPhone 保留手机号前 3 位与后 4 位。
+// 非 11 位、非 1 开头或已含掩码的输入原样返回。
 func MaskPhone(s string) string {
 	if strings.Contains(s, "****") || len(s) != 11 || s[0] != '1' {
 		return s
@@ -27,7 +40,7 @@ func MaskPhone(s string) string {
 	return s[:3] + "****" + s[7:]
 }
 
-// MaskEmail keeps the first character and the domain.
+// MaskEmail 保留邮箱首字符与域名。
 func MaskEmail(s string) string {
 	at := strings.LastIndexByte(s, '@')
 	if at <= 0 {
@@ -40,7 +53,8 @@ func MaskEmail(s string) string {
 	return local[:1] + "***" + s[at:]
 }
 
-// MaskDevice keeps the first two and last two characters.
+// MaskDevice 保留设备号前 2 位与后 2 位。
+// 长度不超过 4 时整串掩掉，**不泄露任何字符**。
 func MaskDevice(s string) string {
 	if strings.Contains(s, "****") {
 		return s
@@ -51,7 +65,7 @@ func MaskDevice(s string) string {
 	return s[:2] + "****" + s[len(s)-2:]
 }
 
-// MaskText masks phone numbers and email addresses inside free text.
+// MaskText 掩码自由文本中的手机号与邮箱。
 func MaskText(s string) string {
 	s = emailInText.ReplaceAllStringFunc(s, MaskEmail)
 	return phoneInText.ReplaceAllStringFunc(s, MaskPhone)

@@ -8,17 +8,17 @@ import (
 	coreschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/school"
 )
 
-// SchoolRepo is the PostgreSQL school repository.
+// SchoolRepo 是 PostgreSQL 院校仓储。
 type SchoolRepo struct {
 	db *DB
 }
 
-// NewSchoolRepo builds a school repository.
+// NewSchoolRepo 构造院校仓储。
 func NewSchoolRepo(db *DB) *SchoolRepo { return &SchoolRepo{db: db} }
 
 const schoolColumns = `id::text, code, name, status::text, time_zone, created_at, updated_at`
 
-// Create inserts a school. An empty time zone uses the column default.
+// Create 插入院校。空时区套用列默认值。
 func (r *SchoolRepo) Create(ctx context.Context, in coreschool.New) (coreschool.Record, error) {
 	if in.Code == "" || in.Name == "" {
 		return coreschool.Record{}, validationError("code and name are required")
@@ -47,21 +47,21 @@ func (r *SchoolRepo) Create(ctx context.Context, in coreschool.New) (coreschool.
 	return recordOrNotFound(scanSchool(row))
 }
 
-// Get returns one school.
+// Get 返回一个院校。
 func (r *SchoolRepo) Get(ctx context.Context, id string) (coreschool.Record, error) {
 	row := r.db.q(ctx).QueryRow(ctx,
 		`SELECT `+schoolColumns+` FROM schools WHERE id = $1::uuid`, id)
 	return recordOrNotFound(scanSchool(row))
 }
 
-// GetByCode returns one school by its external code.
+// GetByCode 按对外编码返回院校。
 func (r *SchoolRepo) GetByCode(ctx context.Context, code string) (coreschool.Record, error) {
 	row := r.db.q(ctx).QueryRow(ctx,
 		`SELECT `+schoolColumns+` FROM schools WHERE code = $1`, code)
 	return recordOrNotFound(scanSchool(row))
 }
 
-// Update changes the fields present in in. A nil field keeps its value.
+// Update 修改 in 中出现的字段。nil 字段保持原值。
 func (r *SchoolRepo) Update(ctx context.Context, id string, in coreschool.Update) (coreschool.Record, error) {
 	var status *string
 	if in.Status != nil {

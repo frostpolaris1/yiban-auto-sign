@@ -16,11 +16,11 @@ import (
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 )
 
-// TestEncodeDetailRejectsPersonalData pins the detail rules of schema §8.5.
+// TestEncodeDetailRejectsPersonalData 钉住 schema §8.5 的 detail 规则。
 //
-// Each row is a shape that must never reach the audit table. The list covers
-// the defects reported in the W2A review: a phone number attached to a word,
-// a numeric phone, a phone inside rows and a nested map.
+// 每一行都是一种**绝不可进审计表**的形状。
+// 清单覆盖 W2A 复审报告的缺陷：词后跟手机号、数字型手机号、
+// rows 内手机号、嵌套 map。
 func TestEncodeDetailRejectsPersonalData(t *testing.T) {
 	reason201 := strings.Repeat("x", 201)
 	for _, tc := range []struct {
@@ -64,7 +64,7 @@ func TestEncodeDetailRejectsPersonalData(t *testing.T) {
 	}
 }
 
-// TestEncodeDetailAcceptsScalars pins the accepted shapes.
+// TestEncodeDetailAcceptsScalars 钉住被接受的形状。
 func TestEncodeDetailAcceptsScalars(t *testing.T) {
 	var nilReason *string
 	got, err := coreaudit.EncodeDetail(map[string]any{
@@ -80,7 +80,7 @@ func TestEncodeDetailAcceptsScalars(t *testing.T) {
 	if err != nil {
 		t.Fatalf("valid detail rejected: %v", err)
 	}
-	// encoding/json sorts map keys, so the bytes are canonical.
+	// encoding/json 对 map 键排序，故字节是规范的。
 	const want = `{"count":3,"field":"status","from":"pending","kid":"0123456789abcdef",` +
 		`"reason":"photo rejected","rows":[1,2],"to":"active","trace_id":"0f2e1d3c4b5a69788796a5b4c3d2e1f0"}`
 	if got != want {
@@ -90,12 +90,11 @@ func TestEncodeDetailAcceptsScalars(t *testing.T) {
 	if _, err := coreaudit.EncodeDetail(map[string]any{"reason": nilReason}); err != nil {
 		t.Fatalf("a nil pointer must be accepted as null: %v", err)
 	}
-	// A random 32-hex request id must pass even when it contains 11 digits.
+	// 随机 32 位十六进制请求 id 必须通过，即使其中含 11 位数字。
 	if _, err := coreaudit.EncodeDetail(map[string]any{"trace_id": "06317272289944f6e935132eb62042ec"}); err != nil {
 		t.Fatalf("a 32-hex trace id must be accepted: %v", err)
 	}
-	// The req-<counter> fallback is accepted up to six digits, the width the
-	// router can actually mint.
+	// req-<计数> 兜底形式最多六位数字，即路由实际可生成的最大宽度。
 	for _, id := range []string{"req-1", "req-999999"} {
 		if _, err := coreaudit.EncodeDetail(map[string]any{"trace_id": id}); err != nil {
 			t.Fatalf("fallback id %s must be accepted: %v", id, err)
@@ -106,17 +105,16 @@ func TestEncodeDetailAcceptsScalars(t *testing.T) {
 	}
 }
 
-// The next two constants are a regression pin, not a self-check. A change to
-// the payload layout or to formatTime makes the stored hashes of every
-// existing chain disagree with the rebuilt payload. Recomputing the constants
-// after such a change is correct only together with a chain migration plan.
+// 下面两个常量是回归钉，不是自检。
+// 改动 payload 布局或 formatTime，会让历史链的存储哈希与复算 payload 不符。
+// 这种改动之后重算常量，**只有配套链迁移方案才算正确**。
 const (
 	wantPayloadHex = "796962616e2e61756469742e76310000000020000000000000000000000000000000000000000000000000000000000000000000000018323032362d31302d32355431323a33343a35362e3738395a0000002430313932663066302d303030302d373030302d383030302d3030303030303030303030310000002430313932663066302d303030302d373030302d383030302d3030303030303030303030320000000561646d696e00000010612a2a2a406578616d706c652e636f6d000000166163636f756e742e7265766965775f617070726f7665000000076163636f756e740000002430313932663066302d303030302d373030302d383030302d303030303030303030303033000000317b226669656c64223a22737461747573222c2266726f6d223a2270656e64696e67222c22746f223a22616374697665227d"
 	wantHashHex    = "6f997b8cfdec535c9db3648e694adfdd8268aae6b3050f722d3657ebc0c43ef5"
 )
 
-// fixedRow is the frozen sample. Every payload field is non-empty so a field
-// dropped from Payload changes the bytes.
+// fixedRow 是冻结样本。
+// 每个 payload 字段都非空，Payload 漏掉任一字段都会改变字节。
 func fixedRow() coreaudit.Row {
 	return coreaudit.Row{
 		ID:          7,
@@ -133,7 +131,7 @@ func fixedRow() coreaudit.Row {
 	}
 }
 
-// TestPayloadBytesAreFixed pins the exact payload bytes and the HMAC output.
+// TestPayloadBytesAreFixed 钉住 payload 的精确字节与 HMAC 输出。
 func TestPayloadBytesAreFixed(t *testing.T) {
 	row := fixedRow()
 	if got := hex.EncodeToString(coreaudit.Payload(row)); got != wantPayloadHex {
@@ -145,8 +143,8 @@ func TestPayloadBytesAreFixed(t *testing.T) {
 	}
 }
 
-// TestPayloadSeparatesFields guards the length-prefix framing: shifting one
-// byte between two adjacent fields must change the payload.
+// TestPayloadSeparatesFields 守卫长度前缀分帧：
+// 在相邻两字段之间移位一个字节，payload 必须改变。
 func TestPayloadSeparatesFields(t *testing.T) {
 	a := fixedRow()
 	b := fixedRow()
@@ -157,14 +155,13 @@ func TestPayloadSeparatesFields(t *testing.T) {
 	}
 }
 
-// TestActionVocabularyMatchesDatabaseShape checks every Action constant against
-// the CHECK shape of the audit_logs table.
+// TestActionVocabularyMatchesDatabaseShape 逐条核对 Action 常量与
+// audit_logs 表的 CHECK 形状。
 //
-// The pattern is copied from ck_audit_action_shape in
-// migrations/postgres/00007_audit_logs.sql. The constants come from the source
-// file, so a new action is covered without editing this test.
+// 正则取自 migrations/postgres/00007_audit_logs.sql 的 ck_audit_action_shape。
+// 常量从源文件读，故新增动作无需改本测试。
 func TestActionVocabularyMatchesDatabaseShape(t *testing.T) {
-	// Keep in sync with migrations/postgres/00007_audit_logs.sql.
+	// 必须与 migrations/postgres/00007_audit_logs.sql 保持一致。
 	shape := regexp.MustCompile(`^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$`)
 	actions := actionConstants(t, "chain.go")
 	if len(actions) < 20 {
@@ -182,7 +179,7 @@ func TestActionVocabularyMatchesDatabaseShape(t *testing.T) {
 	}
 }
 
-// actionConstants reads the string values of the Action constants in path.
+// actionConstants 读出 path 中 Action 常量的字符串值。
 func actionConstants(t *testing.T, path string) []string {
 	t.Helper()
 	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)

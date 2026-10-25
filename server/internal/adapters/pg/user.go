@@ -13,24 +13,23 @@ import (
 	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 )
 
-// UserRepo is the PostgreSQL user repository.
+// UserRepo 是 PostgreSQL 用户仓储。
 type UserRepo struct {
 	db *DB
 }
 
-// NewUserRepo builds a user repository.
+// NewUserRepo 构造用户仓储。
 func NewUserRepo(db *DB) *UserRepo { return &UserRepo{db: db} }
 
 const userColumns = `id::text, email, password_hash, role::text, status::text,
 	must_change_password, password_changed_at, last_login_at, created_at,
 	updated_at, deleted_at, coalesce(deleted_by::text, '')`
 
-// Create inserts a user when the live-user count is below limit.
+// Create 在活跃用户数低于 limit 时插入用户。
 //
-// It must run inside a transaction. It takes UserCapacityLock, counts live
-// rows and inserts in that order, in one transaction, under READ COMMITTED.
-// A direct INSERT that bypasses this function is not covered by the lock
-// (schema §6.6).
+// **必须在事务内运行**。它按序取 UserCapacityLock、统计活跃行、插入，
+// 三者同属一个事务且处于 READ COMMITTED。
+// 绕过本函数直接 INSERT 不受该锁保护（schema §6.6）。
 func (r *UserRepo) Create(ctx context.Context, in coreuser.New, limit int) (coreuser.Record, error) {
 	if !r.db.hasTx(ctx) {
 		return coreuser.Record{}, ErrNoTransaction
@@ -80,15 +79,15 @@ func (r *UserRepo) Create(ctx context.Context, in coreuser.New, limit int) (core
 	return record, mapError(err)
 }
 
-// GetByID returns one live user.
+// GetByID 返回一个未删除用户。
 func (r *UserRepo) GetByID(ctx context.Context, id string) (coreuser.Record, error) {
 	row := r.db.q(ctx).QueryRow(ctx,
 		`SELECT `+userColumns+` FROM users WHERE id = $1::uuid AND deleted_at IS NULL`, id)
 	return recordOrNotFound(scanUser(row))
 }
 
-// GetByEmail returns one live user by login name. The input is normalized the
-// same way Create normalizes it.
+// GetByEmail 按登录名返回未删除用户。
+// 入参与 Create 做同样的归一（小写、去空白）。
 func (r *UserRepo) GetByEmail(ctx context.Context, email string) (coreuser.Record, error) {
 	row := r.db.q(ctx).QueryRow(ctx,
 		`SELECT `+userColumns+` FROM users WHERE email = $1 AND deleted_at IS NULL`,
@@ -96,7 +95,7 @@ func (r *UserRepo) GetByEmail(ctx context.Context, email string) (coreuser.Recor
 	return recordOrNotFound(scanUser(row))
 }
 
-// UpdatePassword replaces the password hash and the change flag.
+// UpdatePassword 替换密码哈希与改密标记。
 func (r *UserRepo) UpdatePassword(ctx context.Context, id, passwordHash string, mustChange bool, at time.Time) error {
 	if passwordHash == "" {
 		return validationError("password hash is required")
@@ -116,8 +115,8 @@ func (r *UserRepo) UpdatePassword(ctx context.Context, id, passwordHash string, 
 	return nil
 }
 
-// SetStatus changes the user status. Disabling a user must also revoke its
-// sessions; that is the caller's transaction, not this method's.
+// SetStatus 修改用户状态。
+// 停用用户**还必须撤销其会话**；那属于调用方的事务，不在本方法内。
 func (r *UserRepo) SetStatus(ctx context.Context, id string, status coreauth.Status, at time.Time) error {
 	if !status.Valid() {
 		return validationError("unknown user status")
@@ -135,7 +134,7 @@ func (r *UserRepo) SetStatus(ctx context.Context, id string, status coreauth.Sta
 	return nil
 }
 
-// MarkLogin records a successful sign-in time.
+// MarkLogin 记录一次成功登录的时间。
 func (r *UserRepo) MarkLogin(ctx context.Context, id string, at time.Time) error {
 	tag, err := r.db.q(ctx).Exec(ctx, `
 		UPDATE users SET last_login_at = $2, updated_at = now()
@@ -149,8 +148,8 @@ func (r *UserRepo) MarkLogin(ctx context.Context, id string, at time.Time) error
 	return nil
 }
 
-// SoftDelete marks a user deleted. Physical deletion is a later cleanup task;
-// accounts owned by the user block it until they are gone.
+// SoftDelete 把用户标记为已删除。
+// 物理删除留给后续清理任务；用户名下的账号未清空之前，删除会被拦截。
 func (r *UserRepo) SoftDelete(ctx context.Context, id, by string, at time.Time) error {
 	if strings.TrimSpace(by) == "" {
 		return validationError("deleted_by is required")

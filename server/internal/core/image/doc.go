@@ -1,2 +1,17 @@
-// Package image owns the only image preparation pipeline. Implementation lands in P5.
+// Package image 是图片预处理流水线的唯一归属。
+//
+// # 功能
+// P1 只有占位，**不提供任何处理实现**；实现随 P5 落地。
+// 本包**不**上传图片、**不**发请求、**不**读写数据库。
+// 平台协议只上传与提交，见 internal/signing/contract。
+//
+// # 归属
+// core 层纯领域包。宿主负责旋转、裁剪与重编码。
+//
+// # 复用
+// P1 无导出符号。P5 落地后在此列出预处理入口。
+//
+// # 口径
+// 图片在交给平台之前完成全部变换。
+// 平台侧不再做尺寸或方向修正。
 package image

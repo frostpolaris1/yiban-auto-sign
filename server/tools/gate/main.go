@@ -15,8 +15,8 @@ func main() {
 	os.Exit(run(*root, *rulesPath, *includeTests))
 }
 
-// run returns the process exit code. It is separate from main so a test can
-// pin the refusal paths without spawning a process.
+// run 返回进程退出码。
+// 它与 main 分离，使测试能钉住拒绝路径，而无需另起进程。
 func run(root, rulesPath string, includeTests bool) int {
 	rules, err := LoadRules(rulesPath)
 	if err != nil {

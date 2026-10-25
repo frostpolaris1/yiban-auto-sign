@@ -1,5 +1,18 @@
-// Command server runs the HTTP API. It wires configuration, the session
-// issuer and the router, then serves until SIGINT or SIGTERM.
+// Command server 运行 HTTP API。
+//
+// # 功能
+// 装配配置、会话签发器与路由，然后服务到 SIGINT 或 SIGTERM。
+// 本命令**不**执行数据库迁移、**不**跑后台任务、**不**读命令行参数。
+//
+// # 归属
+// entry 层可执行件。main 只做信号与退出码；装配在 run 与 newServer。
+//
+// # 复用
+// main、run、newServer。
+//
+// # 口径
+// 优雅关闭上限 10s。
+// 会话存储在进程内存，故单进程是设计不变量。
 package main
 
 import (
@@ -55,8 +68,8 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	}
 }
 
-// newServer assembles the process without starting it. Tests bind an ephemeral
-// port through the returned server.
+// newServer 装配进程但不启动它。
+// 测试通过返回的 server 绑定临时端口。
 func newServer(cfg *config.Config, logger *slog.Logger) (*http.Server, error) {
 	if cfg == nil {
 		return nil, errors.New("server: nil config")

@@ -10,17 +10,16 @@ import (
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 )
 
-// AuditRepo is the PostgreSQL audit repository.
+// AuditRepo 是 PostgreSQL 审计仓储。
 //
-// It owns the only chain-append implementation. The key comes from
-// configuration; an empty key is refused, so a misconfigured process cannot
-// write an unkeyed chain.
+// 它是**链追加的唯一实现**。密钥来自配置；空密钥直接拒绝，
+// 配置错误的进程无法写出无密钥的链。
 type AuditRepo struct {
 	db  *DB
 	key []byte
 }
 
-// NewAuditRepo builds an audit repository. key is the HMAC key for the chain.
+// NewAuditRepo 构造审计仓储。key 是链的 HMAC 密钥。
 func NewAuditRepo(db *DB, key []byte) (*AuditRepo, error) {
 	if len(key) == 0 {
 		return nil, errors.New("pg: audit key is required")
@@ -28,12 +27,11 @@ func NewAuditRepo(db *DB, key []byte) (*AuditRepo, error) {
 	return &AuditRepo{db: db, key: append([]byte(nil), key...)}, nil
 }
 
-// Append writes the next link of the chain.
+// Append 写入链的下一环。
 //
-// It must run inside a transaction. It takes AuditChainLock, reads the head,
-// computes the hash and inserts, so two transactions cannot append the same
-// predecessor. The row is inserted last: a long transaction holds the chain
-// lock and blocks every audited write.
+// **必须在事务内运行**。它取 AuditChainLock、读链头、算哈希再插入，
+// 故两个事务不可能追加同一前驱。
+// 本行最后插入：长事务持有链锁，会阻塞每一次受审计写入。
 func (r *AuditRepo) Append(ctx context.Context, in coreaudit.Entry) (coreaudit.Row, error) {
 	if !r.db.hasTx(ctx) {
 		return coreaudit.Row{}, ErrNoTransaction
@@ -96,9 +94,8 @@ func (r *AuditRepo) Append(ctx context.Context, in coreaudit.Entry) (coreaudit.R
 	return row, nil
 }
 
-// Verify checks the chain over an inclusive id range. Zero means unbounded on
-// that side. An empty range is an error: a verification that looked at nothing
-// is not a pass.
+// Verify 在闭区间 id 范围内校验链。0 表示该侧不限。
+// **空区间是错误**：什么都没看的校验不算通过。
 func (r *AuditRepo) Verify(ctx context.Context, from, to int64) (coreaudit.Report, error) {
 	rows, err := r.db.q(ctx).Query(ctx, `
 		SELECT id, ts, coalesce(school_id::text, ''), coalesce(actor_user_id::text, ''),
