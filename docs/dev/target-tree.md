@@ -242,8 +242,9 @@ tests     ← 全部
 4. `engine` 不得 import `usecases`、`entry`、`web`。
 5. `usecases` 不得 import `entry`、`web`。
 6. `web/routes` 不得 import `adapters`；路由只调用 `web/services`。
-7. 任何运行时模块不得 import `scripts`。
-8. `scripts` 不得被 `yiban`、`web`、`docker` 的运行时模块 import。
+7. 任何运行时模块不得 import `scripts`、`tools`。
+8. `scripts` 与 `tools` 不得被 `yiban`、`web`、`docker` 的运行时模块 import。
+   这条由 `.importlinter` 契约 3 机械判（`yiban`/`web` → `scripts`/`tools` 即红）。
 
 ### 4.2.1 组合根例外
 
@@ -426,7 +427,10 @@ B1 首批补齐 `config/`、`deploy/`、`docker/`、`web/services/` 四份 READM
 |---|---|---|---|---|
 | B1 | 锚点门、命名门、四份 README（`config`、`deploy`、`web/services`、各顶层目录）、`child_env` 入 `infra`、`email_policy` 入 `core`、开发工具移入 `tools/` 并移出镜像 | 否 | 锚点门、命名门 | `git revert` |
 | B2 | 6 个路由改调 services、隐藏 import 门、`scripts/compat/` | 否 | 隐藏 import 门、路由边界门 | `git revert` |
-| B3 | `app/` 改 `usecases/`、`attempt/jobs.py` 收敛为 `usecases/verify_jobs.py`、`workers/workers.py` 拆三分、端口按需门 | 否 | 端口门 | `git revert` |
+| B3 | `app/` 改 `usecases/`、`attempt/jobs.py` 收敛为 `usecases/verify_jobs.py`、`workers/workers.py` 拆三分、端口按需门；**并承载 §10 两条跨层例外**：`infra/env_child` 的 `env_io` 依赖拆分、`core/email_policy` 的数据读取拆分 | 否 | 端口门 | `git revert` |
+
+§10 登记的两条跨层例外（`yiban/infra/env_child.py`、`yiban/core/email_policy.py`）由 B3 承载。
+B3 不拆完，这两条豁免不得删除；B3 完成后同批删除 §10 的对应行。
 
 三批都是零行为变化。按 `AGENTS.md` §33–§36 减配：每片跑范围档，收口门与全量由主会话跑一次。
 

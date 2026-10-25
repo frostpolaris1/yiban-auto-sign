@@ -192,7 +192,8 @@ class ContractConfigTest(unittest.TestCase):
     def test_scripts_contract_forbids_reverse_import_only(self):
         sec = _section(self.text, "no-reverse-import-of-scripts")
         self.assertEqual(sorted(_field(sec, "source_modules")), ["web", "yiban"])
-        self.assertEqual(_field(sec, "forbidden_modules"), ["scripts"])
+        # B1（2026-10-25）：tools/ 与 scripts/ 同属非运行时目录，同一条契约管住。
+        self.assertEqual(_field(sec, "forbidden_modules"), ["scripts", "tools"])
 
     def test_core_modules_are_all_listed(self):
         sec = _section(self.text, "core-layer-independence")
