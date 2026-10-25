@@ -263,6 +263,20 @@ class ProfileImportReplayTest(unittest.TestCase):
         self.assertNotIn("20250001", bak_text, "备份里的资料明文必须被重写为加密版")
         self.assertIn("ct", bak_text)
 
+    def test_plaintext_dict_form_is_encrypted_too(self):
+        """导入侧的第二支：内存/第三方给**明文 dict** 时同样必须加密（二审中-3）。
+
+        `_encrypt_field` 的 dict 分支假设"dict＝密文对象"直接透传；这条钉住导入路径
+        经统一助手后不再把明文 dict 原样落库。
+        """
+        self._write_json([self._base_row(profile=dict(self.CONTENT))])
+        migrations._maybe_migrate(self.conn, self.accounts_json)
+        raw = self._row()["profile"]
+        self.assertIn("ct", json.loads(raw), "明文 dict 必须被加密")
+        for plain in ("20250001", "13800138002"):
+            self.assertNotIn(plain, raw, f"资料明文 {plain} 不得落库")
+        self.assertEqual(self._decrypted_content(), self.CONTENT)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1116,6 +1116,10 @@ def api_my_account_profile(idx):
     与 /api/my-accounts 既有写口同口径）；管理面路径对普通用户由全局守卫 403。
     资料内容是 PII：落库走存储层同通道加密；审计 detail 只记字段名
     （`profile_audit_detail`），字段值不进审计与日志。
+
+    防错位：请求**可**携带 `phone`（对齐令牌，掩码形态亦可）。携带且与目标行掩码
+    不匹配 → 409，与同文件 `api_my_account_pause` 同口径（不携带则按默认放行）。
+    管理面路径对普通用户由全局守卫 403，契约见 `docs/dev/api-contract.md`。
     """
     m = _appmod()
     with _locks._file_lock:

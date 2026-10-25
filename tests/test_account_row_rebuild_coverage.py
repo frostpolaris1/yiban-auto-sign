@@ -64,8 +64,24 @@ AUTO_COLUMNS = {"id": "INTEGER PRIMARY KEY AUTOINCREMENT，由 SQLite 生成"}
 #: INSERT 里必须出现的列（qmz4 的回归锚：这两列曾从两条清单里缺失）。
 REQUIRED_COLUMNS = {"profile", "profile_expose"}
 
+#: 产品代码的扫描面（与 `scripts/check-shared-facts.sh` 的 DEFAULT_SCOPE 同口径）。
+PRODUCT_PATHS = ("yiban", "web", "scripts", "docker", "deploy", ".github",
+                 "run.sh", "run_probe.sh")
+
+#: **面外**的 `INSERT INTO accounts` 站点登记（发现性断言用）。
+#: 门只审"整行重建"路径；其余写入面必须在此逐条登记，否则新出现的第三条重建路径
+#: 会静默绕门。键＝(相对路径, 所在函数名)，值＝为什么不在覆盖门的判据面。
+OUT_OF_SCOPE_INSERT_SITES = {
+    ("yiban/adapters/persistence/accounts.py", "add_account"):
+        "新行插入：只写业务字段，其余列按 schema 默认值；二段资料由维护端点单独写入，"
+        "自助提交面不收这些字段是需求本身（qmz4 边界），不是整行重建",
+}
+
+#: `INSERT [OR IGNORE] INTO accounts (<列清单>)`。**不要**写成 `(?:[^()]|\n)*?`：
+#: 两条分支都能吃换行时，长换行串（前端大文件）会指数回溯，扫描面一扩大就挂死
+#: （本批实测：扫 web/static 时卡住）。`[^()]*` 单分支且被括号截断，线性且够用。
 _INSERT_ACCOUNTS = re.compile(
-    r"INSERT(?:[^()]|\n)*?INTO\s+accounts\s*\(([^)]*)\)")
+    r"INSERT[^()]*INTO\s+accounts\s*\(([^)]*)\)")
 
 
 def _insert_column_list(source, func_name):
@@ -96,6 +112,64 @@ def parse_columns(text):
 def uncovered(columns, schema, exempt=AUTO_COLUMNS):
     """schema 里既不在列清单、也不在结构自动列里的列（按 schema 顺序）。"""
     return [c for c in schema if c not in columns and c not in exempt]
+
+
+def _iter_source_files(root, paths=PRODUCT_PATHS):
+    """按产品扫描面列文件（跳过缓存/依赖目录）。"""
+    for rel in paths:
+        base = os.path.join(root, rel)
+        if os.path.isfile(base):
+            yield base
+            continue
+        if not os.path.isdir(base):
+            continue
+        for dirpath, dirnames, filenames in os.walk(base):
+            dirnames[:] = [d for d in dirnames if d not in
+                           {".git", "__pycache__", "node_modules", ".pytest_cache",
+                            ".ruff_cache", ".mypy_cache"}]
+            for name in filenames:
+                if name.endswith((".py", ".sh", ".sql", ".js", ".ts")):
+                    yield os.path.join(dirpath, name)
+
+
+def scan_insert_sites(root):
+    """产品代码里所有 `INSERT ... INTO accounts` 站点 → `{(相对路径, 所在函数名)}`。
+
+    **Python 文件走 AST**：源码里的 SQL 常被拆成多段相邻字面量（`"INSERT ... accounts "`
+    `"(col, ...)"`），按原文正则匹配不到——只有解析器折叠后的常量才含完整语句。
+    非 Python（sh/sql/js）按原文匹配。
+
+    函数名取最内层所在 `FunctionDef`；模块级站点记为 `<module>`。发现性断言的基准：
+    新站点不进登记表，门必须红——否则第三条整行重建路径会静默绕开列覆盖检查。
+    """
+    sites = set()
+    for path in _iter_source_files(root):
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        relpath = os.path.relpath(path, root).replace(os.sep, "/")
+        if path.endswith(".py"):
+            tree = ast.parse(text)
+            parents = {}
+            for parent in ast.walk(tree):
+                for child in ast.iter_child_nodes(parent):
+                    parents[child] = parent
+            for node in ast.walk(tree):
+                if not (isinstance(node, ast.Constant)
+                        and isinstance(node.value, str)
+                        and _INSERT_ACCOUNTS.search(node.value)):
+                    continue
+                cur = parents.get(node)
+                func = "<module>"
+                while cur is not None:
+                    if isinstance(cur, ast.FunctionDef):
+                        func = cur.name
+                        break
+                    cur = parents.get(cur)
+                sites.add((relpath, func))
+        elif _INSERT_ACCOUNTS.search(text):
+            sites.add((relpath, "<module>"))
+    return sites
+    return sites
 
 
 class AccountRowRebuildCoverageTest(unittest.TestCase):
@@ -151,6 +225,49 @@ class AccountRowRebuildCoverageTest(unittest.TestCase):
         """schema 侧自证：门比的真是"迁移跑完后的 accounts 表"，不是手抄清单。"""
         self.assertIn("profile", self.schema)
         self.assertIn("profile_expose", self.schema)
+
+    # ---- 发现性：产品代码里的 INSERT 站点不许有未知项 ----
+    def test_every_product_insert_site_is_known(self):
+        """站点集合 == 门看守的两条 ∪ 面外登记表（低-4）。
+
+        覆盖门只审登记在 `TARGETS` 的函数；若将来出现第三条整行重建路径而没人把它
+        加进来，本断言必须红——否则门看着是绿的，实际只盯住了两条老路径。
+        """
+        expected = {(os.path.relpath(p, BASE).replace(os.sep, "/"), f)
+                    for p, f in TARGETS} | set(OUT_OF_SCOPE_INSERT_SITES)
+        found = scan_insert_sites(BASE)
+        self.assertGreaterEqual(len(found), 3,
+                                f"扫描面解析出的站点过少（扫描器可能失效）：{sorted(found)}")
+        self.assertEqual(sorted(found - expected), [],
+                         "产品代码里出现了未登记的 INSERT INTO accounts 站点："
+                         "整行重建路径必须加入 TARGETS，其余加入 OUT_OF_SCOPE_INSERT_SITES 并写理由")
+        self.assertEqual(sorted(expected - found), [],
+                         "登记表过期：登记的站点已不在代码里，应删除该行")
+        for site, reason in OUT_OF_SCOPE_INSERT_SITES.items():
+            with self.subTest(site=site):
+                self.assertTrue(reason.strip(), "面外登记必须写理由")
+
+    def test_a_new_fake_insert_site_turns_the_gate_red(self):
+        """突变自证：临时加一个假 INSERT 站点，发现性断言必须红。"""
+        root = tempfile.mkdtemp(prefix="yiban-fake-site-")
+        try:
+            fake = os.path.join(root, "yiban", "fake_rebuild.py")
+            os.makedirs(os.path.dirname(fake))
+            with open(fake, "w", encoding="utf-8") as f:
+                f.write(
+                    "def rebuild_accounts(conn, rows):\n"
+                    "    conn.execute(\n"
+                    "        \"INSERT INTO accounts (sort_order, name, phone) \"\n"
+                    "        \"VALUES (?,?,?)\", rows)\n")
+            expected = {(os.path.relpath(p, BASE).replace(os.sep, "/"), fn)
+                        for p, fn in TARGETS} | set(OUT_OF_SCOPE_INSERT_SITES)
+            found = scan_insert_sites(root)
+            self.assertEqual(found, {("yiban/fake_rebuild.py", "rebuild_accounts")})
+            self.assertEqual(sorted(found - expected), [("yiban/fake_rebuild.py",
+                                                         "rebuild_accounts")],
+                             "假站点必须成为未登记项（门红）")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
     # ---- ②③ 未覆盖列 = 该清单的豁免登记 ----
     def test_registry_entries_all_carry_reasons(self):
