@@ -22,8 +22,10 @@
     `.replace(...)` 继承墙钟归属；`.astimezone(业务时区)` 把 aware 源换回业务日；
     其余 `astimezone` 目标、以及换上前的外来墙钟，都给非业务日期；BinOp 判两侧。
   取日形状：`.date()`；含日期占位符的 `.strftime(...)`；
-  `.isoformat()[<覆盖日期段的切片>]`；`str(<时刻>)[<覆盖日期段的切片>]`。
+  `.isoformat()[<覆盖日期段的切片>]`；`str(<时刻>)[<覆盖日期段的切片>]`；
+  `f"{<时刻>:<含日期占位符>}"`；`.isoformat().split("T")[0]`。
   仅作时刻、不做取日时放行。
+  伪造归属有粘性：换成别的 tzinfo 后，再 `.astimezone(业务时区)` 也不得洗白。
 · 业务钟的别名写法同判：`from yiban.core import clock as X`、`X.now()`；
   `from yiban.core.clock import now [as Y]`、`Y()`；`import yiban.core.clock as Z`；
   星号导入同时绑定 `now` 与 `TZ`。
@@ -51,7 +53,9 @@
 · `datetime.fromisoformat(<非字面量>)`：实参可能带偏移，静态不可判。
   按无偏移处理（保守判 naive）；确有偏移时登记豁免。
 · `datetime.now(<tz>)` 后接变量格式串的 `.strftime(...)`：占位符静态不可判。
-· `import yiban.core`（不带 `as`）后的 `yiban.core.clock.now()`：链式名不在别名表。
+· 无格式说明的 f-string（`f"{<时刻>}"`）：形状不是「取日」的显式判据。
+· 不带 `as` 的整链导入（`import yiban.core` / `import yiban.core.clock`）后的链式名
+  （`yiban.core.clock.now()`）：不在别名表。
 · 别名变量（`t = datetime.now(); t.strftime(...)`）：本门不做数据流。
 · 变量接收者的 `.astimezone()`：静态不可判是否 aware。
 · 同一形状出现两处以上即按形状立门（AGENTS §27）。
@@ -397,6 +401,48 @@ def _isoformat_source(node):
     return None
 
 
+def _joined_str_text(node):
+    """`JoinedStr` 的全部字面量文本；含非常量片段时返回 None。"""
+    if not isinstance(node, ast.JoinedStr):
+        return None
+    parts = []
+    for value in node.values:
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            parts.append(value.value)
+        else:
+            return None
+    return "".join(parts)
+
+
+def _iso_split_date_source(node):
+    """`x.isoformat().split("T")[0]` 里的 `x`；不是该形状则 None。"""
+    idx = node.slice
+    if not (
+        isinstance(idx, ast.Constant)
+        and not isinstance(idx.value, bool)
+        and idx.value == 0
+    ):
+        return None
+    call = node.value
+    if not (
+        isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "split"
+    ):
+        return None
+    sep = _call_arg(call, "sep", 0)
+    if not (isinstance(sep, ast.Constant) and sep.value == "T"):
+        return None
+    inner = call.func.value
+    if not (
+        isinstance(inner, ast.Call)
+        and isinstance(inner.func, ast.Attribute)
+        and inner.func.attr == "isoformat"
+    ):
+        return None
+    return inner.func.value
+
+
 def _foreign_tz_date_kind(node, ctx):
     """从非业务时区的时刻**取日** → 违例类别；否则 None。
 
@@ -405,7 +451,9 @@ def _foreign_tz_date_kind(node, ctx):
     · `.date()`；
     · `.strftime(<含日期占位符的格式串>)`；
     · `.isoformat()[<覆盖日期段的切片>]`；
-    · `str(<时刻>)[<覆盖日期段的切片>]`。
+    · `str(<时刻>)[<覆盖日期段的切片>]`；
+    · `f"{<时刻>:<含日期占位符>}"`；
+    · `.isoformat().split("T")[0]`。
     只作时刻、不取日时放行：aware 时刻本身与时区无关。
     """
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
@@ -424,10 +472,25 @@ def _foreign_tz_date_kind(node, ctx):
         ):
             return "非业务时区取日"
         return None
-    if isinstance(node, ast.Subscript) and _slice_starts_at_date(node.slice):
-        source = _isoformat_source(node.value)
+    if isinstance(node, ast.JoinedStr):
+        for value in node.values:
+            if not isinstance(value, ast.FormattedValue):
+                continue
+            if _tz_class(value.value, ctx) not in (_FOREIGN, _FORGED):
+                continue
+            spec = _joined_str_text(value.format_spec)
+            if spec is not None and _has_date_token(spec):
+                return "非业务时区取日"
+        return None
+    if isinstance(node, ast.Subscript):
+        if _slice_starts_at_date(node.slice):
+            source = _isoformat_source(node.value)
+            if source is not None and _tz_class(source, ctx) in (_FOREIGN, _FORGED):
+                return "非业务时区取日"
+        source = _iso_split_date_source(node)
         if source is not None and _tz_class(source, ctx) in (_FOREIGN, _FORGED):
             return "非业务时区取日"
+        return None
     return None
 
 
@@ -465,18 +528,20 @@ def _tz_class(node, ctx):
             tzinfo = _call_arg(node, "tzinfo", 4)
             if tzinfo is None or _is_none(tzinfo):
                 return cls
-            # 换 tzinfo 不改墙钟：外来墙钟被贴上业务时区标签 = FORGED。
-            return _BUSINESS if cls is _BUSINESS else _FORGED
+            if cls is _BUSINESS and _is_clock_tz(tzinfo, ctx):
+                return _BUSINESS  # 业务墙钟贴业务时区标签：日期不变
+            # 换 tzinfo 不改墙钟：归属被伪造，后续换算不得洗白。
+            return _FORGED
         if attr == "astimezone":
             cls = _tz_class(recv, ctx)
             if cls is None:
                 return None
+            if cls is _FORGED:
+                return _FORGED  # 伪造归属粘性（三审攻击一）
             target = _call_arg(node, "tz", 0)
             if target is None or _is_none(target):
                 return _FOREIGN  # 转到宿主时区
-            if _is_clock_tz(target, ctx):
-                return _FOREIGN if cls is _FORGED else _BUSINESS
-            return _FOREIGN
+            return _BUSINESS if _is_clock_tz(target, ctx) else _FOREIGN
         return None
     if isinstance(node, ast.BinOp):
         sides = (_tz_class(node.left, ctx), _tz_class(node.right, ctx))
@@ -737,6 +802,19 @@ BAD_SAMPLES = {
     "非业务时区 %w 取日": (
         "from datetime import datetime, timezone\n"
         'x = datetime.now(timezone.utc).strftime("%w")\n'),
+    "非业务时区 f-string 取日": (
+        "from datetime import datetime, timezone\n"
+        'x = f"{datetime.now(timezone.utc):%Y-%m-%d}"\n'),
+    "非业务时区 isoformat split 取日": (
+        "from datetime import datetime, timezone\n"
+        'x = datetime.now(timezone.utc).isoformat().split("T")[0]\n'),
+    "洗白攻击一：伪造归属后连转业务时区": (
+        "from datetime import datetime, timezone\n"
+        "x = datetime.now(timezone.utc).replace(tzinfo=clock.TZ)"
+        ".astimezone(clock.TZ).astimezone(clock.TZ).date()\n"),
+    "洗白攻击二：业务墙钟贴 UTC 标签后转回": (
+        "from datetime import timezone\n"
+        "x = clock.now().replace(tzinfo=timezone.utc).astimezone(clock.TZ).date()\n"),
     "clock 模块别名后 astimezone": (
         "from yiban.core import clock as _clock\n"
         "x = _clock.now().astimezone()\n"),
@@ -796,6 +874,15 @@ GOOD_SAMPLES = {
     "非业务时区仅取时刻切片": (
         "from datetime import datetime, timezone\n"
         "x = datetime.now(timezone.utc).isoformat()[11:]\n"),
+    "非业务时区 f-string 仅取时刻": (
+        "from datetime import datetime, timezone\n"
+        'x = f"{datetime.now(timezone.utc):%H:%M}"\n'),
+    "非业务时区 isoformat split 取时刻": (
+        "from datetime import datetime, timezone\n"
+        'x = datetime.now(timezone.utc).isoformat().split("T")[1]\n'),
+    "业务钟的 f-string 取日": ('x = f"{clock.now():%Y-%m-%d}"\n'),
+    "业务钟的 isoformat split 取日": (
+        'x = clock.now().isoformat().split("T")[0]\n'),
     "业务钟的时刻切片": ("x = str(clock.now())[:10]\n"),
     "两位小时偏移的 fromisoformat": (
         "from datetime import datetime\n"
