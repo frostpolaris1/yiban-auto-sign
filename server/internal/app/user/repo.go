@@ -1,20 +1,20 @@
-// Package user 声明用户仓储端口。
+// Package user 声明用户仓储端口，并实现建号用例。
 //
 // # 功能
-// 声明用户仓储接口，并转发 core/user 的类型与 core/auth 的词表。
-// 本包**不**实现 SQL、**不**校验密码、**不**签发会话。
+// 声明用户仓储接口；建号动作见 create.go。
+// 本包**不**实现 SQL、**不**做 HTTP 编码、**不**签发会话。
 //
 // # 归属
-// app 层用例端口。Record 与 New 留在 core/user，
+// app 层端口与用例。Record 与 New 留在 core/user，
 // 这样 PostgreSQL 适配器无需导入本包（canonical.tsv 的 boundary.adapters）。
 // 别名让端口可读，并保证两侧命名同一类型。
 //
 // # 复用
-// Repo；类型别名 Record、New。
+// Repo；类型别名 Record、New；create.go 的 Service、Deps、CreateInput。
 //
 // # 口径
 // 用户上限数是活跃用户数（deleted_at IS NULL）。
-// 邮箱比对一律小写去空白。
+// 邮箱比对一律小写去空白，实现取自 core/user。
 package user
 
 import (

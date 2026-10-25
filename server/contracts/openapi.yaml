@@ -21,9 +21,8 @@ info:
     Host API for the account caretaking platform. Roles: master (all schools,
     admins, settings), admin (bound schools only), user (own accounts).
 
-    Phase P1 ships the frozen shape and live use cases. Auth and password reset
-    are fully wired. Schools, admins and accounts answer from their use cases.
-    POST /api/users still answers 501 with the error envelope.
+    Phase P1 ships the frozen shape and live use cases. Auth, password reset,
+    users, schools, admins and accounts answer from their use cases.
 servers:
   - url: /
 tags:
@@ -139,7 +138,7 @@ paths:
       summary: Create a master, admin or user account.
       description: |
         Master only (decision 12.4). There is no public registration endpoint.
-        P1 returns 501.
+        The password is stored as an argon2id hash. A duplicate email is a 409.
       x-roles: [master]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'

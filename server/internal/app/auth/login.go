@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +19,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
+	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 )
 
 // ResetTokenTTL 是一次性重置令牌的有效期。
@@ -88,8 +88,8 @@ func NewService(d Deps) (*Service, error) {
 // 旧 scrypt 哈希校验成功后**当场**重哈希为 argon2id。
 // 成功时 auth.login 审计由 SessionIssuer 同事务写入。
 func (s *Service) Login(ctx context.Context, email, password string) (coreauth.Issued, error) {
-	email = normalizeEmail(email)
-	if !validEmail(email) {
+	email = coreuser.NormalizeEmail(email)
+	if !coreuser.ValidEmail(email) {
 		return coreauth.Issued{}, errs.New(errs.CodeValidation, "invalid email")
 	}
 	if password == "" {
@@ -177,26 +177,6 @@ func verifyDummyPassword(password string) error {
 	}
 	_, err = coreauth.VerifyPassword(password, hash)
 	return err
-}
-
-func normalizeEmail(email string) string {
-	return strings.ToLower(strings.TrimSpace(email))
-}
-
-// validEmail 与 users 表 CHECK 的口径一致：
-// 3 至 254 字符，恰好一个 @，两侧非空，无空白与 *。
-func validEmail(email string) bool {
-	if len(email) < 3 || len(email) > 254 {
-		return false
-	}
-	if strings.ContainsAny(email, " \t\r\n*") {
-		return false
-	}
-	if strings.Count(email, "@") != 1 {
-		return false
-	}
-	at := strings.IndexByte(email, '@')
-	return at > 0 && at < len(email)-1
 }
 
 func isNotFound(err error) bool {

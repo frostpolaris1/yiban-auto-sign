@@ -1,9 +1,9 @@
 // Command server 运行 HTTP API。
 //
 // # 功能
-// 装配配置、数据库、会话签发器、三个业务域与路由，然后服务到 SIGINT 或 SIGTERM。
+// 装配配置、数据库、会话签发器、四个业务域与路由，然后服务到 SIGINT 或 SIGTERM。
 // 配置了 YIBAN_DATABASE_URL 时启动前执行迁移，
-// 并接线真实认证、学校、管理员与账号端点。
+// 并接线真实认证、用户、学校、管理员与账号端点。
 // 本命令**不**跑后台任务、**不**读命令行参数。
 //
 // # 归属
@@ -38,17 +38,23 @@ import (
 	appadmin "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/admin"
 	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
 	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
+	appuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/user"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	accounthttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/account"
 	adminhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/admin"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/router"
 	schoolhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/school"
+	userhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/user"
 )
 
 // accountCapacityLimit 是 P1 的活跃账号上限（裁决 12.11）。
 // P1 不提供配置项；改上限只改本常量。
 const accountCapacityLimit = 10000
+
+// userCapacityLimit 是 P1 的活跃用户上限（裁决 12.11）。
+// 与账号上限同值，两道约束各自在插入事务内判定。
+const userCapacityLimit = 10000
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -119,8 +125,8 @@ func newServer(cfg *config.Config, logger *slog.Logger) (*http.Server, error) {
 
 // buildStack 装配数据库、用例与路由。
 //
-// 有 DSN 时：迁移 → 连接池 → 仓储 → 认证与三个业务域用例。
-// 无 DSN 时：内存会话；认证与三个业务域端点回 501，并打印警告。
+// 有 DSN 时：迁移 → 连接池 → 仓储 → 认证与四个业务域用例。
+// 无 DSN 时：内存会话；认证与四个业务域端点回 501，并打印警告。
 // **不静默降级**：没有数据库就没有可用登录，警告写在启动日志里。
 func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 	if cfg == nil {
@@ -136,6 +142,7 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 		schools  *schoolhttp.Handler
 		admins   *adminhttp.Handler
 		accounts *accounthttp.Handler
+		users    *userhttp.Handler
 		db       *pg.DB
 		closeFn  = func() {}
 	)
@@ -143,7 +150,7 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 	if strings.TrimSpace(cfg.DatabaseURL) == "" {
 		issuer = session.NewMemory(clk, cfg.HashPepper)
 		logger.Warn("auth endpoints are disabled: YIBAN_DATABASE_URL is empty")
-		logger.Warn("school, admin and account endpoints return 501: YIBAN_DATABASE_URL is empty")
+		logger.Warn("user, school, admin and account endpoints return 501: YIBAN_DATABASE_URL is empty")
 	} else {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -232,9 +239,24 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 			closeFn()
 			return nil, fmt.Errorf("server: account service: %w", err)
 		}
+		// 用户用例复用同一个用户仓储：建号走 Create，
+		// 它的容量守卫与账号上限同形（裁决 12.11）。
+		userRepo := pg.NewUserRepo(db)
+		userSvc, err := appuser.NewService(appuser.Deps{
+			Users: userRepo,
+			Audit: audits,
+			Tx:    db,
+			Clock: clk,
+			Limit: userCapacityLimit,
+		})
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("server: user service: %w", err)
+		}
 		schools = schoolhttp.NewHandler(schoolSvc, adminSvc)
 		admins = adminhttp.NewHandler(adminSvc, adminSvc)
 		accounts = accounthttp.NewHandler(accountSvc, adminSvc)
+		users = userhttp.NewHandler(userSvc, adminSvc)
 	}
 
 	engine, err := router.New(router.Options{
@@ -246,6 +268,7 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 		Schools:         schools,
 		Admins:          admins,
 		Accounts:        accounts,
+		Users:           users,
 	})
 	if err != nil {
 		closeFn()

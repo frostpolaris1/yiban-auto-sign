@@ -12,11 +12,17 @@ import (
 func openapiEmail(s string) openapi_types.Email { return openapi_types.Email(s) }
 
 // notImplemented 以 internal_error 信封回 501。
-// P1 只交付契约与接线；下列每个端点由后续任务填充。
+// 它只服务「域处理器未装配」的端点；生产装配后不应出现。
 func notImplemented(c *gin.Context) { respond.NotImplemented(c.Writer, c.Request) }
 
-// UserCreate 是 P1 占位实现。用户管理属后续批次。
-func (s *server) UserCreate(c *gin.Context, _ oapi.UserCreateParams) { notImplemented(c) }
+// UserCreate 委托用户处理器。未装配时仍是 501。
+func (s *server) UserCreate(c *gin.Context, params oapi.UserCreateParams) {
+	if s.users == nil {
+		notImplemented(c)
+		return
+	}
+	s.users.Create(c, params)
+}
 
 // SchoolList 委托院校处理器。未装配时仍是 501。
 func (s *server) SchoolList(c *gin.Context, params oapi.SchoolListParams) {

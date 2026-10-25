@@ -17,6 +17,7 @@
 // 解析只返回有效会话；未知、已撤销、绝对过期、空闲超时一律 not_found。
 // 每用户有效会话上限取自 core/auth.MaxSessionsPerUser。
 // 登录失败不区分「用户不存在」与「口令错误」。
+// 邮箱归一与形状校验取自 core/user，与建号同口径。
 package auth
 
 import (
