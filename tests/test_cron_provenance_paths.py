@@ -46,6 +46,26 @@ def _write(path, text, mode=None):
         os.chmod(path, mode)
 
 
+#: 白名单 `^/[A-Za-z0-9._/-]+$` 之外的检出根（二审 R1 逐类覆盖）。
+#: 每条都必须按环境错误（rc=2）拒判——黑名单枚举不完，故按字符类竖表钉住。
+BAD_APP_ROOTS = (
+    "/root/a b",      # 空格：sh 拆词
+    "/root/a\\b",     # 反斜杠：转义
+    "/opt/x;rm",      # 分号：命令分隔
+    "/opt/$HOME",     # 美元：参数展开
+    '/opt/a"b',       # 双引号：改变引号状态
+    "/opt/a'b",       # 单引号：改变引号状态
+    "/opt/a`b`",      # 反引号：命令替换
+    "/opt/a&b",       # &：后台
+    "/opt/a|b",       # |：管道
+    "/opt/a\tb",      # 制表符
+    "/opt/a\rb",      # 回车
+    "/opt/a\nb",      # 换行：截断 cron 表
+    "/opt/中文",       # 非 ASCII（白名单外）
+    "relative/path",  # 非绝对路径
+)
+
+
 @unittest.skipIf(BASH is None, "需要 bash（Git Bash/WSL）")
 class CronProvenancePathScopeTest(unittest.TestCase):
     """R3-022：/tmp 与相对路径必须判红。"""
@@ -58,15 +78,45 @@ class CronProvenancePathScopeTest(unittest.TestCase):
         self.manifest = os.path.join(self.tmp, "manifest.tsv")
         _write(self.manifest, MANIFEST)
 
-    def _check(self, command):
+    def _check(self, command, env_extra=None):
         _write(os.path.join(self.cron, "yiban-x"), command + "\n")
+        env = dict(os.environ)
+        env.update(env_extra or {})
         return subprocess.run(
             [BASH, GATE, "--cron-dir", self.cron, "--manifest", self.manifest],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=120)
+            timeout=120, env=env)
 
     def _out(self, r):
         return (r.stdout or "") + (r.stderr or "")
+
+    def test_app_root_outside_whitelist_is_refused(self):
+        """检出根不匹配白名单 `^/[A-Za-z0-9._/-]+$` ⇒ 拒判（rc=2）。
+
+        这不是"有违规"（1），而是环境错误（2）——门对这类路径给不出有意义的
+        "可回指"结论。与 install.sh 的入口门、scripts/pull-prod-backup.sh 同口径
+        （本单二审 R1：白名单优先于黑名单，竖表逐类覆盖）。
+        """
+        for bad in BAD_APP_ROOTS:
+            with self.subTest(app_root=bad):
+                r = self._check(
+                    "5 6 * * * yiban @YIBAN_APP_DIR@/run.sh",
+                    env_extra={"YIBAN_APP_DIR": bad})
+                self.assertEqual(r.returncode, 2,
+                                 "白名单外的检出根未按环境错误拒判：rc=%d\n%s"
+                                 % (r.returncode, self._out(r)))
+                self.assertIn("白名单", self._out(r))
+
+    def test_app_root_inside_whitelist_is_green(self):
+        """正常路径必须照旧判绿：标准部署与含 `._-/数字` 的临时路径。"""
+        for good in ("/opt/yiban-auto-sign", "/tmp/a_b.c-1"):
+            with self.subTest(app_root=good):
+                r = self._check(
+                    "5 6 * * * yiban @YIBAN_APP_DIR@/run.sh",
+                    env_extra={"YIBAN_APP_DIR": good})
+                self.assertEqual(r.returncode, 0,
+                                 "白名单内的检出根被误拒：rc=%d\n%s"
+                                 % (r.returncode, self._out(r)))
 
     def test_tmp_path_is_red(self):
         r = self._check("5 6 * * * yiban /tmp/x.sh")
@@ -127,6 +177,51 @@ class CronProvenancePathScopeTest(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0,
                             "环境前缀里的 /tmp 仍放行：\n" + self._out(r))
         self.assertIn("/tmp/x.db", self._out(r))
+
+    # ---- 模板占位符：展开后与硬写路径同判（2026-10-25 部署件参数化） ----------
+
+    def test_app_dir_placeholder_resolves_to_checkout(self):
+        """`@YIBAN_APP_DIR@/run.sh` 展开成检出根后必须可回指。"""
+        r = self._check("5 6 * * * yiban @YIBAN_APP_DIR@/run.sh")
+        self.assertEqual(r.returncode, 0,
+                         "模板占位符未按检出根解析：\n" + self._out(r))
+
+    def test_app_dir_placeholder_cd_relative_is_green(self):
+        """生产 yiban-audit 表的模板形态：cd 占位符目录后走相对路径。"""
+        r = self._check(
+            "30 2 * * * yiban cd @YIBAN_APP_DIR@/ && .venv/bin/python3"
+            " scripts/audit_verify.py --db data/yiban.db --env data/.env"
+            " >> /var/log/yiban/audit-verify.log 2>&1")
+        self.assertEqual(r.returncode, 0, self._out(r))
+
+    def test_app_dir_placeholder_env_value_is_checked(self):
+        """`APP_DIR=@YIBAN_APP_DIR@` 是路径值，展开后必须可回指（哨兵表形态）。"""
+        r = self._check(
+            "5 8 * * * root APP_DIR=@YIBAN_APP_DIR@ /usr/local/sbin/yiban-backup.sh")
+        self.assertEqual(r.returncode, 0, self._out(r))
+
+    def test_app_dir_placeholder_missing_repo_file_is_red(self):
+        r = self._check("5 5 * * * yiban @YIBAN_APP_DIR@/no-such-script.sh")
+        self.assertNotEqual(r.returncode, 0,
+                            "占位符下的无来源件仍放行：\n" + self._out(r))
+        self.assertIn("no-such-script.sh", self._out(r))
+
+    def test_app_dir_placeholder_escape_is_red(self):
+        # 注意：`/etc/*` 在门的判据里是放行的配置路径；越界样本要落到**不受信**的
+        # 位置（/tmp）才能证明"展开后仍按真实路径判"。
+        r = self._check("5 6 * * * yiban @YIBAN_APP_DIR@/../../tmp/x.sh")
+        self.assertNotEqual(r.returncode, 0,
+                            "占位符下的相对越界仍放行：\n" + self._out(r))
+
+    def test_unknown_placeholder_is_red(self):
+        r = self._check("5 6 * * * yiban @OTHER_DIR@/run.sh")
+        self.assertNotEqual(r.returncode, 0,
+                            "未知占位符被当路径放行（不得靠猜测）：\n" + self._out(r))
+
+    def test_sibling_dir_with_app_root_prefix_is_red(self):
+        """`/opt/yiban-auto-sign-forged` 不是检出根的子路径（前缀相似不算）。"""
+        r = self._check("5 6 * * * yiban /opt/yiban-auto-sign-forged/run.sh")
+        self.assertNotEqual(r.returncode, 0, self._out(r))
 
     # ---- B-1：值里的 `/` 不是路径的充分条件 ---------------------------------
 

@@ -433,7 +433,7 @@ docker run -d --name "$CTR" --network "$NET" \
   -e CURL_CA_BUNDLE=/data/loadtest/ca/ca.pem \
   -v "$ROOT/data:/data" \
   "$IMAGE" > "$EV/c4-container-id.txt"
-# 不发布任何宿主端口（-p 一个都没有）：web 只在容器内 127.0.0.1:17892 可达
+# 不发布任何宿主端口（-p 一个都没有）：web 只在容器内回环可达（端口见部署面值表）
 docker port "$CTR" > "$EV/c4-ports.txt"
 [ ! -s "$EV/c4-ports.txt" ] || die "容器发布了宿主端口（红线），见 c4-ports.txt"
 
@@ -504,9 +504,12 @@ grep -q "^EGRESS-BLOCKED " "$EV/c5-egress.log" || die "出口探测结果异常�
 note "自签证书挂 CA 可达 / 摘 CA SSLError；出口 203.0.113.7:80 连不通"
 
 WEB=""
+# 端口从容器环境读（值表 deploy/web.env 经 entrypoint 导出），不在此再写一份字面量。
+WEB_PORT="$(docker exec "$CTR" printenv YIBAN_WEB_PORT 2>/dev/null || true)"
+[ -n "$WEB_PORT" ] || die "容器环境缺 YIBAN_WEB_PORT（值表未进镜像）"
 for _ in $(seq 1 60); do
   WEB="$(docker exec "$CTR" python3 -c \
-    "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:17892/login',timeout=3).status)" \
+    "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:${WEB_PORT}/login',timeout=3).status)" \
     2>/dev/null || true)"
   if [ "$WEB" = "200" ]; then break; fi
   sleep 1
