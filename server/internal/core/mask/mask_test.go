@@ -221,6 +221,7 @@ func TestMasksPreserveValidUTF8(t *testing.T) {
 		"13900139000 学生@example.com",
 	}
 	funcs := map[string]func(string) string{
+		"MaskPhone":  MaskPhone,
 		"MaskEmail":  MaskEmail,
 		"MaskDevice": MaskDevice,
 		"MaskText":   MaskText,

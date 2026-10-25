@@ -382,7 +382,10 @@ export interface components {
             new_password: string;
         };
         UserCreate: {
-            /** Format: email */
+            /**
+             * Format: email
+             * @description The server also limits the address to 254 UTF-8 bytes. maxLength counts Unicode code points, so the server check is the stricter one for non-ASCII addresses.
+             */
             email: string;
             password: string;
             role: components["schemas"]["UserRole"];

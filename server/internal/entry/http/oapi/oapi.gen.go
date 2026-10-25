@@ -432,6 +432,7 @@ type User struct {
 
 // UserCreate defines model for UserCreate.
 type UserCreate struct {
+	// Email The server also limits the address to 254 UTF-8 bytes. maxLength counts Unicode code points, so the server check is the stricter one for non-ASCII addresses.
 	Email    openapi_types.Email `json:"email"`
 	Password string              `json:"password"`
 	Role     UserRole            `json:"role"`

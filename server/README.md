@@ -82,8 +82,25 @@ id  kind  owner  pattern  allow  message
 - `kind=string`: forbidden exact string literals outside `owner`.
 - `kind=func` / `kind=type`: forbidden definitions outside `owner`.
 - `kind=import`: forbidden imports inside `owner`.
+- `kind=forbid`: forbidden `pkg.Func` calls **inside** `owner`; the inverse of
+  `call`. `owner` is the checked scope, must be non-empty, and must match at
+  least one Go file. A `forbid` rule that matches no files is an error.
 
 The gate is empty-safe: an empty rule file is an error, never a green run.
+
+## Release checks
+
+The application rejects email addresses that contain Unicode format characters
+(Cf). The database CHECK does not. Before a release, confirm the target database
+has no such rows:
+
+```sql
+SELECT count(*) FROM users
+WHERE email ~ '[\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]';
+```
+
+The query covers the common Cf ranges. The application check uses the full
+Unicode category and remains the authoritative gate.
 
 ## P0 scope
 

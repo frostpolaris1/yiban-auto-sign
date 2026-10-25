@@ -96,6 +96,9 @@ func f(s string) string { return strings.ToLower(s) }
 
 func TestScanForbidSparesOutsideOwner(t *testing.T) {
 	root := t.TempDir()
+	writeFile(t, root, "internal/adapters/pg/user.go", `package pg
+func clean() {}
+`)
 	writeFile(t, root, "internal/app/foo.go", `package app
 import "strings"
 func f(s string) string { return strings.ToLower(s) }
@@ -108,6 +111,42 @@ func f(s string) string { return strings.ToLower(s) }
 	}
 	if len(violations) != 0 {
 		t.Fatalf("forbid must not apply outside its owner, got %#v", violations)
+	}
+}
+
+// forbid 规则必须命中至少一个文件。
+// owner 改名或删除时，规则会永不触发；门不得静默报绿（AGENTS §29）。
+func TestValidateForbidOwnersRejectsMissingOwner(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "internal/app/foo.go", "package app\n")
+	rules := []Rule{testRule("email.normalize.lower", "forbid",
+		"internal/adapters/pg/user.go", "strings.ToLower", "")}
+	if err := ValidateForbidOwners(root, rules); err == nil {
+		t.Fatal("a forbid rule that matches no files must be rejected")
+	}
+}
+
+func TestValidateForbidOwnersAcceptsExistingOwner(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "internal/adapters/pg/user.go", "package pg\n")
+	rules := []Rule{testRule("email.normalize.lower", "forbid",
+		"internal/adapters/pg/user.go", "strings.ToLower", "")}
+	if err := ValidateForbidOwners(root, rules); err != nil {
+		t.Fatalf("ValidateForbidOwners: %v", err)
+	}
+}
+
+// run 必须把「owner 缺失的 forbid 配置」拦成退出码 2，而不是 ok。
+func TestRunRejectsForbidWithNoTargets(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "internal/app/foo.go", "package app\n")
+	rulesPath := filepath.Join(root, "rules.tsv")
+	line := "email.normalize.lower\tforbid\tinternal/adapters/pg/user.go\tstrings.ToLower\t\tmsg\n"
+	if err := os.WriteFile(rulesPath, []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if rc := run(root, rulesPath, false); rc != 2 {
+		t.Fatalf("run rc = %d, want 2", rc)
 	}
 }
 
@@ -388,7 +427,13 @@ func TestCountGoFilesRespectsIncludeTests(t *testing.T) {
 // 拒绝路径就是本门的边界：
 // 没有真正扫描的树**绝不可报告 ok**。
 func TestRunRefusesEmptyScans(t *testing.T) {
-	rules := filepath.Join("..", "..", "canonical.tsv")
+	// 用最小规则集：本用例只测「扫描为空」与 -tests 口径。
+	// 真实 canonical.tsv 含 forbid 规则，空树会先被 owner 检查拦下，
+	// 那条路径由 TestRunRejectsForbidWithNoTargets 单独覆盖。
+	rules := filepath.Join(t.TempDir(), "rules.tsv")
+	if err := os.WriteFile(rules, []byte("clock.now\tcall\tinternal/core/clock/\ttime.Now\t\tuse clock.Clock.Now\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	empty := t.TempDir()
 	if code := run(empty, rules, false); code != 2 {
