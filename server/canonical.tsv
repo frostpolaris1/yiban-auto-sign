@@ -29,10 +29,11 @@ boundary.app	import	internal/app/	internal/adapters,internal/entry		app must not
 boundary.adapters	import	internal/adapters/	internal/app,internal/entry		adapters must not import app or entry
 boundary.entry	import	internal/entry/	internal/adapters		entry must not import adapters
 boundary.signing	import	internal/signing/providers/	internal/app,internal/adapters		providers must not import the host
-# owner and allow are directory prefixes, not files. The next five rules pin a
-# package, not one file: no session-cookie writer outside entry/http/router, no
-# argon2 call outside core/auth, no token generator outside core/auth.
-cookie.set	call	internal/entry/http/router/	http.SetCookie		会话 cookie 只在 entry/http/router 内写入
+# owner and allow are directory prefixes. An owner that ends in .go pins one
+# file instead of a directory: cookie.set is the only such rule. The next five
+# rules pin a package, not one file: no session-cookie writer outside cookie.go,
+# no argon2 call outside core/auth, no token generator outside core/auth.
+cookie.set	call	internal/entry/http/router/cookie.go	http.SetCookie		会话 cookie 只在 entry/http/router/cookie.go 内写入
 kdf.argon.idkey	call	internal/core/auth/	argon2.IDKey		argon2 只在 core/auth 内调用
 kdf.argon.id	call	internal/core/auth/	argon2.ID		argon2 只在 core/auth 内调用
 token.csrf.func	func	internal/core/auth/	CSRFToken		CSRFToken 只在 core/auth 内定义

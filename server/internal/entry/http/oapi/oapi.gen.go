@@ -230,10 +230,7 @@ type Account struct {
 	OwnerUserId string    `json:"owner_user_id"`
 
 	// PhoneMasked Masked phone. The raw phone never leaves the server.
-	PhoneMasked string `json:"phone_masked"`
-
-	// PhoneModel Device model reported to the platform. Not sensitive.
-	PhoneModel   *string    `json:"phone_model,omitempty"`
+	PhoneMasked  string     `json:"phone_masked"`
 	RejectReason string     `json:"reject_reason"`
 	ReviewedAt   *time.Time `json:"reviewed_at,omitempty"`
 	ReviewedBy   *string    `json:"reviewed_by,omitempty"`
@@ -266,7 +263,10 @@ type AccountPage struct {
 	NextCursor string `json:"next_cursor"`
 }
 
-// AccountPauseRequest defines model for AccountPauseRequest.
+// AccountPauseRequest paused true pauses the account. master and admin set paused_admin; the
+// owner sets paused_user. paused false resumes only the matching shape:
+// master and admin resume paused_admin; the owner resumes paused_user.
+// The implementation follows exactly this semantics.
 type AccountPauseRequest struct {
 	Paused bool `json:"paused"`
 }
@@ -492,7 +492,10 @@ type AccountListParams struct {
 	SchoolId *string        `form:"school_id,omitempty" json:"school_id,omitempty"`
 	Status   *AccountStatus `form:"status,omitempty" json:"status,omitempty"`
 
-	// Q Masked-phone or phone-model substring filter.
+	// Q Phone filter. Non-digits are stripped. The leading digits (up to
+	// three), the trailing four digits, or the exact 11-digit phone match.
+	// Every other length never matches, so the four digits hidden by the
+	// mask stay unsearchable.
 	Q *string `form:"q,omitempty" json:"q,omitempty"`
 }
 

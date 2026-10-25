@@ -21,8 +21,9 @@ info:
     Host API for the account caretaking platform. Roles: master (all schools,
     admins, settings), admin (bound schools only), user (own accounts).
 
-    Phase P1 ships the frozen shape and the transport skeleton. Every business
-    endpoint answers 501 with the error envelope until its use case lands.
+    Phase P1 ships the frozen shape and live use cases. Auth and password reset
+    are fully wired. Schools, admins and accounts answer from their use cases.
+    POST /api/users still answers 501 with the error envelope.
 servers:
   - url: /
 tags:
@@ -317,7 +318,11 @@ paths:
         - name: q
           in: query
           required: false
-          description: Masked-phone or phone-model substring filter.
+          description: |
+            Phone filter. Non-digits are stripped. The leading digits (up to
+            three), the trailing four digits, or the exact 11-digit phone match.
+            Every other length never matches, so the four digits hidden by the
+            mask stay unsearchable.
           schema: { type: string }
       responses:
         '200':
@@ -448,8 +453,10 @@ paths:
       operationId: AccountPause
       summary: Pause or resume an account.
       description: |
-        An admin pause sets paused_admin; the owner pause sets paused_user.
-        Sending paused false resumes the account.
+        An admin or master pause sets paused_admin; the owner pause sets
+        paused_user. Sending paused false resumes only the matching shape:
+        admin and master resume paused_admin; the owner resumes paused_user.
+        Any other shape returns conflict.
       x-roles: [master, admin, user]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -783,9 +790,6 @@ components:
         phone_masked:
           type: string
           description: Masked phone. The raw phone never leaves the server.
-        phone_model:
-          type: string
-          description: Device model reported to the platform. Not sensitive.
         status:
           $ref: '#/components/schemas/AccountStatus'
         reject_reason: { type: string }
@@ -808,8 +812,8 @@ components:
           type: string
           pattern: '^1[0-9]{10}$'
         password: { type: string, minLength: 1 }
-        device_code: { type: string }
-        phone_model: { type: string }
+        device_code: { type: string, maxLength: 64 }
+        phone_model: { type: string, maxLength: 64 }
     AccountUpdate:
       type: object
       minProperties: 1
@@ -818,8 +822,8 @@ components:
           type: string
           pattern: '^1[0-9]{10}$'
         password: { type: string, minLength: 1 }
-        device_code: { type: string }
-        phone_model: { type: string }
+        device_code: { type: string, maxLength: 64 }
+        phone_model: { type: string, maxLength: 64 }
     AccountReviewRequest:
       type: object
       required: [decision]
@@ -843,6 +847,11 @@ components:
           reason: { type: string, minLength: 1 }
     AccountPauseRequest:
       type: object
+      description: |
+        paused true pauses the account. master and admin set paused_admin; the
+        owner sets paused_user. paused false resumes only the matching shape:
+        master and admin resume paused_admin; the owner resumes paused_user.
+        The implementation follows exactly this semantics.
       required: [paused]
       properties:
         paused: { type: boolean }

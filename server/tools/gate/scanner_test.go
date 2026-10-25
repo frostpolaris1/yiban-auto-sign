@@ -53,6 +53,27 @@ var _ = time.Now()
 	}
 }
 
+// 文件级 owner：规则只放行 owner 指定的那一个文件。
+// 同目录的第二个文件必须被拦下；目录级 owner 曾放过这一情形。
+func TestScanFileOwner(t *testing.T) {
+	root := t.TempDir()
+	const setter = `package router
+import "net/http"
+func set(w http.ResponseWriter) { http.SetCookie(w, nil) }
+`
+	writeFile(t, root, "internal/entry/http/router/cookie.go", setter)
+	writeFile(t, root, "internal/entry/http/router/sibling.go", setter)
+	rules := []Rule{testRule("cookie.set", "call",
+		"internal/entry/http/router/cookie.go", "http.SetCookie", "")}
+	violations, err := Scan(root, rules, false)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(violations) != 1 || violations[0].File != "internal/entry/http/router/sibling.go" {
+		t.Fatalf("want only the sibling violation, got %#v", violations)
+	}
+}
+
 func TestScanImportBoundary(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "internal/core/foo.go", `package core

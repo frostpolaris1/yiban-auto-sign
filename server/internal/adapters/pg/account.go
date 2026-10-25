@@ -83,7 +83,9 @@ func (r *AccountRepo) Get(ctx context.Context, s corescope.Scope, id string) (co
 // List 按作用域与可选过滤条件列账号，游标分页。
 //
 // 作用域与过滤条件是**与**关系：admin 指定未绑定院校时结果为空。
-// search 只匹配手机号（P1 未单独存储机型）；掩码串里的 * 先去掉。
+// search 只抽取数字，再按长度定过滤式：
+// 1..3 位前缀、4 位后缀、11 位全号精确，其余长度**恒假**。
+// 故掩码隐藏的中四位不可检索：它曾是恢复手机号的数字 oracle。
 func (r *AccountRepo) List(ctx context.Context, s corescope.Scope, schoolID string, status coreaccount.Status, search, cursor string, limit int) ([]coreaccount.Record, string, error) {
 	if limit < 1 || limit > 200 {
 		return nil, "", validationError("limit must be between 1 and 200")
@@ -104,9 +106,27 @@ func (r *AccountRepo) List(ctx context.Context, s corescope.Scope, schoolID stri
 		args = append(args, string(status))
 		where += fmt.Sprintf(" AND status = $%d::account_status", len(args))
 	}
-	if term := strings.TrimSpace(strings.ReplaceAll(search, "*", "")); term != "" {
-		args = append(args, term)
-		where += fmt.Sprintf(" AND strpos(phone, $%d) > 0", len(args))
+	if term := phoneDigits(search); term != "" {
+		switch {
+		case len(term) <= 3:
+			// 前缀：只暴露前 3 位，掩码本就展示这 3 位。
+			args = append(args, term)
+			where += fmt.Sprintf(" AND phone LIKE $%d || '%%'", len(args))
+		case len(term) == 4:
+			// 后缀：只暴露后 4 位，掩码本就展示这 4 位。
+			args = append(args, term)
+			where += fmt.Sprintf(" AND phone LIKE '%%' || $%d", len(args))
+		case len(term) == 11:
+			args = append(args, term)
+			where += fmt.Sprintf(" AND phone = $%d", len(args))
+		default:
+			// 5..10 位覆盖掩码隐藏的中四位，一律不命中。
+			where += " AND FALSE"
+		}
+	} else if strings.TrimSpace(search) != "" {
+		// 非空串但没有数字：任何手机号都匹配不上，恒假。
+		// **不得**退化成「不过滤」：那会把全量当作搜索结果返回。
+		where += " AND FALSE"
 	}
 	query, args, err := appendKeyset(`SELECT `+accountColumns+` FROM accounts`+where,
 		args, cursor, "created_at", "id")
@@ -408,6 +428,18 @@ func (r *AccountRepo) classifyRestoreMiss(ctx context.Context, s corescope.Scope
 		return coreaccount.Record{}, conflictError("account is not deleted")
 	}
 	return coreaccount.Record{}, capacityError()
+}
+
+// phoneDigits 只保留 search 里的 0..9。
+// 掩码串的 * 与分隔符在此消失；没有数字的串返回空串。
+func phoneDigits(search string) string {
+	var b strings.Builder
+	for _, r := range search {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func scanAccount(row pgx.Row) (coreaccount.Record, error) {

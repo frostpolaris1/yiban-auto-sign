@@ -289,8 +289,10 @@ export interface paths {
         put?: never;
         /**
          * Pause or resume an account.
-         * @description An admin pause sets paused_admin; the owner pause sets paused_user.
-         *     Sending paused false resumes the account.
+         * @description An admin or master pause sets paused_admin; the owner pause sets
+         *     paused_user. Sending paused false resumes only the matching shape:
+         *     admin and master resume paused_admin; the owner resumes paused_user.
+         *     Any other shape returns conflict.
          */
         post: operations["AccountPause"];
         delete?: never;
@@ -447,8 +449,6 @@ export interface components {
             owner_user_id: string;
             /** @description Masked phone. The raw phone never leaves the server. */
             phone_masked: string;
-            /** @description Device model reported to the platform. Not sensitive. */
-            phone_model?: string;
             status: components["schemas"]["AccountStatus"];
             reject_reason: string;
             /** Format: date-time */
@@ -483,6 +483,12 @@ export interface components {
              */
             reason?: string;
         };
+        /**
+         * @description paused true pauses the account. master and admin set paused_admin; the
+         *     owner sets paused_user. paused false resumes only the matching shape:
+         *     master and admin resume paused_admin; the owner resumes paused_user.
+         *     The implementation follows exactly this semantics.
+         */
         AccountPauseRequest: {
             paused: boolean;
         };
@@ -937,7 +943,12 @@ export interface operations {
                 limit?: components["parameters"]["Limit"];
                 school_id?: string;
                 status?: components["schemas"]["AccountStatus"];
-                /** @description Masked-phone or phone-model substring filter. */
+                /**
+                 * @description Phone filter. Non-digits are stripped. The leading digits (up to
+                 *     three), the trailing four digits, or the exact 11-digit phone match.
+                 *     Every other length never matches, so the four digits hidden by the
+                 *     mask stay unsearchable.
+                 */
                 q?: string;
             };
             header?: never;

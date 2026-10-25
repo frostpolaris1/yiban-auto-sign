@@ -17,6 +17,7 @@ package respond
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
@@ -54,6 +55,20 @@ func Error(w http.ResponseWriter, r *http.Request, err error) {
 func NotImplemented(w http.ResponseWriter, r *http.Request) {
 	e := errs.New(errs.CodeInternal, "not implemented")
 	writeJSON(w, http.StatusNotImplemented, Envelope{Error: bodyOf(e, r)})
+}
+
+// BindError 把请求体解码失败写成信封。
+//
+// 请求体超过入口上界时回 413；其余仍是 400 validation_failed。
+// 上界失败**不得**落到 400：调用方要能区分「格式错」与「体积超限」。
+// 所有处理器共用本函数，故认证与三个业务域的口径只有一份。
+func BindError(w http.ResponseWriter, r *http.Request, err error) {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		PayloadTooLarge(w, r)
+		return
+	}
+	Error(w, r, errs.New(errs.CodeValidation, "invalid request"))
 }
 
 // PayloadTooLarge 写 413 信封。
