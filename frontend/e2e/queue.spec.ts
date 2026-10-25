@@ -234,6 +234,27 @@ test("抽屉开→改→合：抽屉内[通过]走同一确认桥，成功后收
   }
 });
 
+test("抽屉可重复打开同一行：开→关→再开仍可见", async ({ page }) => {
+  // 回归 2026-10-25 审查 1：宿主关抽屉后保留 target，再点同一行时 target 引用不变；
+  // 若用 target 变化当开合信号，watch 的 Object.is 比较不触发，抽屉再也打不开。
+  await page.goto("/work/queue");
+  const row = page.locator('[data-queue-group="failed"]')
+    .locator(`[data-queue-row][data-phone="${FAILED_PHONE}"]`);
+  const drawer = page.locator(".el-drawer");
+
+  await row.locator('[data-queue-action="detail"]').click();
+  await expect(drawer).toBeVisible();
+  await drawer.locator(".el-drawer__close-btn").click();
+  await expect(drawer).toBeHidden();
+
+  // 同一行再开：必须再次可见，且内容仍是该账号
+  await row.locator('[data-queue-action="detail"]').click();
+  await expect(drawer).toBeVisible();
+  await expect(drawer).toContainText(FAILED_PHONE);
+  await drawer.locator(".el-drawer__close-btn").click();
+  await expect(drawer).toBeHidden();
+});
+
 test("360 视口：抽屉全屏（宽度＝视口宽）", async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 800 });
   await page.goto("/work/queue");

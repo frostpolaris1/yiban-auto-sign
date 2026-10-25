@@ -161,7 +161,7 @@ async function doReview(
   );
   if (done) {
     refreshNavBadges();
-    drawer.target = null;
+    closeAndClear();
     loadAll();
   }
 }
@@ -198,7 +198,7 @@ async function doRemove(row: RowView): Promise<void> {
   const done = await runWrite(() => send(req), "已删除账号 · 可在『待删除账号』恢复（7 天内）");
   if (done) {
     refreshNavBadges();
-    drawer.target = null;
+    closeAndClear();
     loadAll();
   }
 }
@@ -241,6 +241,11 @@ function onDrawerAction(payload: { key: "approve" | "reject" | "edit" | "remove"
 
 function closeDrawer_(): void {
   Object.assign(drawer, closeDrawer(drawer));
+}
+
+/** 动作成功后收起并清空目标（对象已换组/已删，保留它只会让抽屉显示过期数据）。 */
+function closeAndClear(): void {
+  Object.assign(drawer, { open: false, target: null });
 }
 
 function stateMsgFor(row: RowView): string {
@@ -338,7 +343,7 @@ onMounted(loadAll);
       </ul>
     </section>
 
-    <ObjectDrawer :target="drawer.target" @close="closeDrawer_" @action="onDrawerAction" />
+    <ObjectDrawer :target="drawer.target" :open="drawer.open" @close="closeDrawer_" @action="onDrawerAction" />
   </div>
 </template>
 
