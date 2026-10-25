@@ -2,12 +2,12 @@
 """demo 数据生成的清库防线：目标指纹 + 确认 + 清库留痕 + dry-run 真不删。
 
 标签：J · 运维：部署/备份/发布
-覆盖：`scripts/generate_demo_data.py` 的四条防线——dry-run 打印将清对象与计数且
+覆盖：`tools/generate_demo_data.py` 的四条防线——dry-run 打印将清对象与计数且
     文件系统零删除；缺确认/指纹不匹配一律拒绝且零删除；指纹齐全才真清并在
     `audit_logs` 落一条 `demo_purge_begin` 与一条 `demo_purge`（begin 写在
     audit_logs 清零之后，故存活到最终状态）；审计写入失败必须让清库失败（fail-closed、
     业务表零删除）；未知参数报错退出。
-对应实现：`scripts/generate_demo_data.py`（`main` 的 `--dry-run` / `--yes` /
+对应实现：`tools/generate_demo_data.py`（`main` 的 `--dry-run` / `--yes` /
     `--fingerprint` 分支）与 `yiban/adapters/persistence/purge_guard.py`。
 关键断言：`--yes` 单独不构成放行（指纹回显是前置）；"dry-run" 必须真的不删；
     审计失败 ⇒ 清库一并失败——这三条分别用"行数前后对照"与"审计桩返回 False"活体反例钉住。
@@ -24,7 +24,7 @@ from unittest import mock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-import generate_demo_data  # noqa: E402  （scripts/generate_demo_data.py）
+from tools import generate_demo_data  # noqa: E402
 
 from yiban.adapters.persistence import connection, purge_guard  # noqa: E402
 
