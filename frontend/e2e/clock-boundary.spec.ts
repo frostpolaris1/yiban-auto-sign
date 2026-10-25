@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 
 import { shiftDay } from "./business-day";
+import { pythonCommand } from "./python-command";
 
 /* 冻结钟的跨业务日守卫（P0 2026-10-25 的三族形状）。
  *
@@ -32,10 +33,6 @@ const USER = { username: "e2e-user@example.com", password: "UserPass123!" };
 
 const SERVER = fileURLToPath(new URL("./server.py", import.meta.url));
 const FRONTEND_DIR = fileURLToPath(new URL("..", import.meta.url));
-
-function pythonCommand(): string {
-  return process.env.YB_E2E_PYTHON || "python";
-}
 
 function startFrozenServer(): ChildProcessWithoutNullStreams {
   const child = spawn(pythonCommand(), [SERVER], {
