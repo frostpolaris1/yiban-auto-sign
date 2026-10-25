@@ -62,6 +62,30 @@ test("队列页三组渲染＋今日摘要", async ({ page }) => {
     5k 种子下容量闸门会拦添加（403「账号数量已达上限」），审核用例整体 skip。 */
 const ADMIN_PASS = "TestPass1234!"; // 与 e2e/base.ts 的 ADMIN 同源
 
+/** 用例级清理：软删自建行（deleted ⇒ 不计入待处理徽标与任何队列组）。
+    每一步都用 try/finally 调它——用例中途失败也不许把共享计数留在原处。 */
+async function softDeleteRow(
+  page: import("@playwright/test").Page,
+  maskedPhone: string,
+): Promise<void> {
+  const me = await page.request.get("/api/me");
+  const csrf = (await me.json()).csrf_token as string;
+  const headers = { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
+  for (const group of ["pending", "active"]) {
+    const resp = await page.request.get(
+      `/api/accounts?group=${group}&q=${maskedPhone}`, { headers },
+    );
+    const rows = (await resp.json()).accounts ?? [];
+    const hit = rows.find((r: { phone?: string }) => r.phone === maskedPhone);
+    if (hit) {
+      await page.request.delete(`/api/accounts/${hit.index}`, {
+        data: { phone: maskedPhone }, headers,
+      });
+      return;
+    }
+  }
+}
+
 async function createPendingRow(
   page: import("@playwright/test").Page,
   activePhone: string,
@@ -103,26 +127,58 @@ test("待审核行[通过]：真调 review 端点后行消失并进今日未签�
   test.skip(BULK >= 1000, "5k 种子触发容量闸门，审核流不可过闸（常规模式已覆盖）");
   const PHONE = "134****4002"; // 自建行（activePhone 13400134001 → 改绑 13400134002）
   await createPendingRow(page, "13400134001", "13400134002");
-  await page.goto("/work/queue");
-  const row = page.locator('[data-queue-group="pending"]')
-    .locator(`[data-queue-row][data-phone="${PHONE}"]`);
-  await expect(row).toBeVisible();
+  try {
+    await page.goto("/work/queue");
+    const row = page.locator('[data-queue-group="pending"]')
+      .locator(`[data-queue-row][data-phone="${PHONE}"]`);
+    await expect(row).toBeVisible();
 
-  // 判「端点真被调且成功」＝等一个 200 的 review 响应（若首个请求撞上外壳的
-  // CSRF 重试路径，403 不匹配谓词，重试的 200 才算数——不钉第几次尝试）。
-  const reviewOk = page.waitForResponse(
-    (r) => r.url().includes("/review") && r.request().method() === "POST" && r.status() === 200,
-  );
-  await row.locator('[data-queue-action="approve"]').click();
-  // 确认桥（EP MessageBox）：确认才发请求
-  await page.locator(".el-message-box__btns .el-button--primary").click();
-  await reviewOk;
+    // 判「端点真被调且成功」＝等一个 200 的 review 响应（若首个请求撞上外壳的
+    // CSRF 重试路径，403 不匹配谓词，重试的 200 才算数——不钉第几次尝试）。
+    const reviewOk = page.waitForResponse(
+      (r) => r.url().includes("/review") && r.request().method() === "POST" && r.status() === 200,
+    );
+    await row.locator('[data-queue-action="approve"]').click();
+    // 确认桥（EP MessageBox）：确认才发请求
+    await page.locator(".el-message-box__btns .el-button--primary").click();
+    await reviewOk;
 
-  // 行离开待审核组
-  await expect(row).toHaveCount(0);
-  // 账号已生效、当日无结论 ⇒ 出现在今日未签组
-  await expect(page.locator('[data-queue-group="unsigned"]')
-    .locator(`[data-queue-row][data-phone="${PHONE}"]`)).toBeVisible();
+    // 行离开待审核组
+    await expect(row).toHaveCount(0);
+    // 账号已生效、当日无结论 ⇒ 出现在今日未签组
+    await expect(page.locator('[data-queue-group="unsigned"]')
+      .locator(`[data-queue-row][data-phone="${PHONE}"]`)).toBeVisible();
+  } finally {
+    await softDeleteRow(page, PHONE);
+  }
+});
+
+test("待审核行[驳回]：填理由即提交（不叠第二个确认框），行变已拒绝", async ({ page }) => {
+  test.skip(BULK >= 1000, "5k 种子触发容量闸门（同审用例口径）");
+  const PHONE = "134****4006"; // 自建行（13400134005 → 改绑 13400134006）
+  await createPendingRow(page, "13400134005", "13400134006");
+  try {
+    await page.goto("/work/queue");
+    const row = page.locator('[data-queue-group="pending"]')
+      .locator(`[data-queue-row][data-phone="${PHONE}"]`);
+    const reviewOk = page.waitForResponse(
+      (r) => r.url().includes("/review") && r.request().method() === "POST" && r.status() === 200,
+    );
+    await row.locator('[data-queue-action="reject"]').click();
+    // 理由弹窗（外壳 promptDialog）：必填，填入后点「驳回」即提交
+    const prompt = page.locator(".modal, .pm-modal, [role=dialog]").filter({ has: page.locator("input.input") }).first();
+    await prompt.locator("input.input").fill("识别码不匹配");
+    await prompt.getByRole("button", { name: "驳回" }).click();
+    await reviewOk;
+
+    // 理由弹窗本身即确认：不再出现第二个确认框
+    await expect(page.locator(".el-message-box")).toHaveCount(0);
+    // 行留在待审核组，状态变「已拒绝」并显示理由（不跳页）
+    await expect(row).toContainText("已拒绝");
+    await expect(row).toContainText("识别码不匹配");
+  } finally {
+    await softDeleteRow(page, PHONE); // 已拒绝行同属待处理徽标，必须清走
+  }
 });
 
 test("抽屉：开→详情与近 30 天事件→合；明文手机号零出现", async ({ page }) => {
@@ -133,6 +189,11 @@ test("抽屉：开→详情与近 30 天事件→合；明文手机号零出现"
 
   const drawer = page.locator(".el-drawer");
   await expect(drawer).toBeVisible();
+  // 初始焦点落关闭钮（安全侧，与 ep-confirm 焦点落取消侧同一口径）
+  await expect.poll(
+    () => page.evaluate(() => !!document.activeElement?.closest(".el-drawer__close-btn")),
+    { message: "抽屉打开后初始焦点必须在关闭钮上" },
+  ).toBe(true);
   await expect(drawer).toContainText(FAILED_PHONE); // 只允许遮罩形
   // 近 30 天事件：种子今日有 success + failed 两条（13800138001）
   const events = drawer.locator("[data-drawer-events]");
@@ -148,25 +209,29 @@ test("抽屉开→改→合：抽屉内[通过]走同一确认桥，成功后收
   test.skip(BULK >= 1000, "5k 种子触发容量闸门，审核流不可过闸（常规模式已覆盖）");
   const PHONE = "134****4004"; // 自建行（activePhone 13400134003 → 改绑 13400134004）
   await createPendingRow(page, "13400134003", "13400134004");
-  await page.goto("/work/queue");
-  const pendingRow = page.locator('[data-queue-group="pending"]')
-    .locator(`[data-queue-row][data-phone="${PHONE}"]`);
-  await pendingRow.locator('[data-queue-action="detail"]').click();
+  try {
+    await page.goto("/work/queue");
+    const pendingRow = page.locator('[data-queue-group="pending"]')
+      .locator(`[data-queue-row][data-phone="${PHONE}"]`);
+    await pendingRow.locator('[data-queue-action="detail"]').click();
 
-  const drawer = page.locator(".el-drawer");
-  await expect(drawer).toBeVisible();
-  const reviewOk = page.waitForResponse(
-    (r) => r.url().includes("/review") && r.request().method() === "POST" && r.status() === 200,
-  );
-  await drawer.locator('[data-drawer-action="approve"]').click();
-  await page.locator(".el-message-box__btns .el-button--primary").click();
-  await reviewOk;
+    const drawer = page.locator(".el-drawer");
+    await expect(drawer).toBeVisible();
+    const reviewOk = page.waitForResponse(
+      (r) => r.url().includes("/review") && r.request().method() === "POST" && r.status() === 200,
+    );
+    await drawer.locator('[data-drawer-action="approve"]').click();
+    await page.locator(".el-message-box__btns .el-button--primary").click();
+    await reviewOk;
 
-  // 改成功 ⇒ 抽屉收起，行离开待审核组并出现在今日未签组
-  await expect(drawer).toBeHidden();
-  await expect(pendingRow).toHaveCount(0);
-  await expect(page.locator('[data-queue-group="unsigned"]')
-    .locator(`[data-queue-row][data-phone="${PHONE}"]`)).toBeVisible();
+    // 改成功 ⇒ 抽屉收起，行离开待审核组并出现在今日未签组
+    await expect(drawer).toBeHidden();
+    await expect(pendingRow).toHaveCount(0);
+    await expect(page.locator('[data-queue-group="unsigned"]')
+      .locator(`[data-queue-row][data-phone="${PHONE}"]`)).toBeVisible();
+  } finally {
+    await softDeleteRow(page, PHONE);
+  }
 });
 
 test("360 视口：抽屉全屏（宽度＝视口宽）", async ({ page }) => {
