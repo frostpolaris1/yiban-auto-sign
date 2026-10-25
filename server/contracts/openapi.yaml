@@ -40,7 +40,7 @@ paths:
       tags: [auth]
       operationId: AuthLogin
       summary: Sign in with email and password.
-      description: Sets the HttpOnly session cookie on success. P1 returns 501.
+      description: Sets the HttpOnly session cookie on success.
       security: []
       x-roles: [public]
       requestBody:
@@ -67,7 +67,7 @@ paths:
       description: |
         Idempotent. A request without a session is a no-op and needs no CSRF
         token, because no authority is carried. A request with a session must
-        send X-CSRF-Token. P1 returns 501.
+        send X-CSRF-Token.
       security: []
       x-roles: [public]
       parameters:

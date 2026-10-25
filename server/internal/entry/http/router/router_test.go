@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,12 +17,15 @@ import (
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/router"
 )
 
 // stubIssuer 是 HTTP 面测试用的最小 SessionIssuer。
 type stubIssuer struct {
 	sessions map[string]auth.Session
+	// resolveErr 非空时 Resolve 直接返回该错误，用来模拟数据库故障。
+	resolveErr error
 }
 
 func newStubIssuer() *stubIssuer {
@@ -35,6 +39,9 @@ func (s *stubIssuer) Issue(_ context.Context, user auth.User) (auth.Issued, erro
 }
 
 func (s *stubIssuer) Resolve(_ context.Context, token string) (auth.Session, error) {
+	if s.resolveErr != nil {
+		return auth.Session{}, s.resolveErr
+	}
 	sess, ok := s.sessions[token]
 	if !ok {
 		return auth.Session{}, auth.ErrNoSession
@@ -398,5 +405,86 @@ func TestLogoutWithoutSession(t *testing.T) {
 		if env := decodeEnvelope(t, rec); env.Error.Code == "validation_failed" {
 			t.Fatalf("code = validation_failed, want a non-binding outcome")
 		}
+	}
+}
+
+// stubAuth 是最小认证用例替身，用来让认证端点真正走到请求体绑定。
+type stubAuth struct {
+	loginErr error
+}
+
+func (s stubAuth) Login(context.Context, string, string) (auth.Issued, error) {
+	return auth.Issued{}, s.loginErr
+}
+
+func (stubAuth) Logout(context.Context, auth.Session, string) error { return nil }
+
+func (stubAuth) ForgotPassword(context.Context, string) error { return nil }
+
+func (stubAuth) ResetPassword(context.Context, string, string) error { return nil }
+
+func newAuthEngine(t *testing.T, issuer auth.SessionIssuer, svc router.AuthService) *gin.Engine {
+	t.Helper()
+	engine, err := router.New(router.Options{
+		Sessions: issuer,
+		Auth:     svc,
+		Clock:    clock.Fixed{T: time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC)},
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("router.New: %v", err)
+	}
+	return engine
+}
+
+// 数据库故障不是「未登录」。
+// 会话解析返回非 ErrNoSession 的错误时必须回 500，
+// 否则一次数据库故障会表现成全体用户被登出。
+func TestSessionResolutionFailureIsNotUnauthenticated(t *testing.T) {
+	engine, issuer := newTestEngine(t)
+	req := func() *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "/api/auth/me", nil)
+		r.AddCookie(&http.Cookie{Name: auth.CookieName, Value: "token-1"})
+		return r
+	}
+
+	issuer.resolveErr = errors.New("db down")
+	rec := serve(engine, req())
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("database failure status = %d, want 500; body=%q", rec.Code, rec.Body.String())
+	}
+	if env := decodeEnvelope(t, rec); env.Error.Code != "internal_error" {
+		t.Fatalf("database failure code = %q, want internal_error", env.Error.Code)
+	}
+
+	issuer.resolveErr = auth.ErrNoSession
+	rec = serve(engine, req())
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unknown session status = %d, want 401; body=%q", rec.Code, rec.Body.String())
+	}
+	if env := decodeEnvelope(t, rec); env.Error.Code != "unauthorized" {
+		t.Fatalf("unknown session code = %q, want unauthorized", env.Error.Code)
+	}
+}
+
+// 请求体超过 1 MiB 上界时必须回 413，而不是 400 或内存无界读取。
+// 上界内的请求保持原状态码：绑定成功，由用例决定结果。
+func TestOversizedRequestBodyIsRejectedWith413(t *testing.T) {
+	engine := newAuthEngine(t, newStubIssuer(),
+		stubAuth{loginErr: errs.New(errs.CodeUnauthorized, "invalid email or password")})
+
+	normal := `{"email":"a@example.com","password":"x"}`
+	rec := serve(engine, httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(normal)))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("well-formed body status = %d, want 401; body=%q", rec.Code, rec.Body.String())
+	}
+
+	oversized := `{"email":"a@example.com","password":"` + strings.Repeat("x", 2<<20) + `"}`
+	rec = serve(engine, httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(oversized)))
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized body status = %d, want 413; body=%q", rec.Code, rec.Body.String())
+	}
+	if env := decodeEnvelope(t, rec); env.Error.Code == "" || env.Error.TraceID == "" {
+		t.Fatalf("413 envelope is incomplete: %#v", env.Error)
 	}
 }

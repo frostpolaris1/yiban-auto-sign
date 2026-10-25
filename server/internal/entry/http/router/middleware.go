@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -19,6 +20,11 @@ import (
 )
 
 const contextRequestID = "request_id"
+
+// maxRequestBodyBytes 是单请求体的上界：1 MiB。
+// 登录、忘记与重置是公开 POST；无上界时绑定会把整个请求体读进内存。
+// 合法认证请求体远小于 1 MiB，故正常调用不受影响。
+const maxRequestBodyBytes int64 = 1 << 20
 
 // publicPaths 永不要求会话。其余 /api 路径一律要求。
 var publicPaths = map[string]struct{}{
@@ -59,6 +65,30 @@ func newRequestID() string {
 		return "req-" + strconv.FormatUint(fallbackRequestID.Add(1), 10)
 	}
 	return hex.EncodeToString(b[:])
+}
+
+// bodyLimit 把请求体包成有界读取器。它排在 requestID 之后、其余中间件之前。
+// 超界读取在处理器绑定时暴露；bindError 把它转成 413。
+// 本中间件**不**自己读请求体：读走即无法再次绑定。
+func bodyLimit(limit int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.Body != nil {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
+		}
+		c.Next()
+	}
+}
+
+// bindError 把请求体绑定失败转成信封。
+// 请求体超过入口上界时回 413；其余仍是 400 validation_failed。
+// 上界失败不得落到 400：调用方要能区分「格式错」与「体积超限」。
+func bindError(c *gin.Context, err error) {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		respond.PayloadTooLarge(c.Writer, c.Request)
+		return
+	}
+	respond.Error(c.Writer, c.Request, errs.New(errs.CodeValidation, "invalid request"))
 }
 
 // recoverPanic 把 panic 转成 500 信封。
@@ -154,6 +184,7 @@ func unsafeMethod(method string) bool {
 
 // authenticate 解析会话 cookie。
 // 未知路由落到 NoRoute（404）；公开路由无会话也放行。
+// **数据库故障不是未登录**：只有 ErrNoSession 走 401 与公开路径。
 func (s *server) authenticate() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		route := c.FullPath()
@@ -166,6 +197,13 @@ func (s *server) authenticate() gin.HandlerFunc {
 			if rerr == nil {
 				c.Request = c.Request.WithContext(auth.WithSession(c.Request.Context(), sess))
 				c.Next()
+				return
+			}
+			if !errors.Is(rerr, auth.ErrNoSession) {
+				// 存储故障不得表现成「全体用户被登出」。
+				// 也不得放行到公开路径：带着坏会话的请求失败关闭。
+				respond.Error(c.Writer, c.Request, errs.New(errs.CodeInternal, "session lookup failed"))
+				c.Abort()
 				return
 			}
 		}

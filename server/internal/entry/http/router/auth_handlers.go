@@ -45,7 +45,7 @@ func (s *server) AuthLogin(c *gin.Context) {
 	}
 	var req oapi.AuthLoginJSONRequestBody
 	if err := c.ShouldBindJSON(&req); err != nil {
-		respond.Error(c.Writer, c.Request, errs.New(errs.CodeValidation, "invalid request"))
+		bindError(c, err)
 		return
 	}
 	issued, err := s.auth.Login(c.Request.Context(), string(req.Email), req.Password)
@@ -105,7 +105,7 @@ func (s *server) AuthForgotPassword(c *gin.Context) {
 	}
 	var req oapi.AuthForgotPasswordJSONRequestBody
 	if err := c.ShouldBindJSON(&req); err != nil {
-		respond.Error(c.Writer, c.Request, errs.New(errs.CodeValidation, "invalid request"))
+		bindError(c, err)
 		return
 	}
 	if err := s.auth.ForgotPassword(c.Request.Context(), string(req.Email)); err != nil {
@@ -123,7 +123,7 @@ func (s *server) AuthResetPassword(c *gin.Context) {
 	}
 	var req oapi.AuthResetPasswordJSONRequestBody
 	if err := c.ShouldBindJSON(&req); err != nil {
-		respond.Error(c.Writer, c.Request, errs.New(errs.CodeValidation, "invalid request"))
+		bindError(c, err)
 		return
 	}
 	if err := s.auth.ResetPassword(c.Request.Context(), req.Token, req.NewPassword); err != nil {

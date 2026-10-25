@@ -15,7 +15,7 @@ export interface paths {
         put?: never;
         /**
          * Sign in with email and password.
-         * @description Sets the HttpOnly session cookie on success. P1 returns 501.
+         * @description Sets the HttpOnly session cookie on success.
          */
         post: operations["AuthLogin"];
         delete?: never;
@@ -37,7 +37,7 @@ export interface paths {
          * Destroy the current session.
          * @description Idempotent. A request without a session is a no-op and needs no CSRF
          *     token, because no authority is carried. A request with a session must
-         *     send X-CSRF-Token. P1 returns 501.
+         *     send X-CSRF-Token.
          */
         post: operations["AuthLogout"];
         delete?: never;

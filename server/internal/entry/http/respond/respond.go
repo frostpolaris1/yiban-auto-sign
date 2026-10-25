@@ -56,6 +56,14 @@ func NotImplemented(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusNotImplemented, Envelope{Error: bodyOf(e, r)})
 }
 
+// PayloadTooLarge 写 413 信封。
+// 请求体超过入口上界时用它；错误码沿用 validation_failed，
+// 调用方凭状态码区分「格式错」与「体积超限」。
+func PayloadTooLarge(w http.ResponseWriter, r *http.Request) {
+	e := errs.New(errs.CodeValidation, "request body too large")
+	writeJSON(w, http.StatusRequestEntityTooLarge, Envelope{Error: bodyOf(e, r)})
+}
+
 // JSON 写成功响应体。
 func JSON(w http.ResponseWriter, status int, v any) {
 	writeJSON(w, status, v)

@@ -101,6 +101,21 @@ func TestVerifyPasswordRejectsUnknownFormat(t *testing.T) {
 	}
 }
 
+// 校验侧上界只防库内坏行的资源事故。
+// 上界取现用参数的 2 倍：超过即拒，坏行不得让单次校验吃掉上 GiB。
+func TestVerifyPasswordRejectsParamsAboveBounds(t *testing.T) {
+	for _, encoded := range []string{
+		"$argon2id$v=19$m=38913,t=2,p=1$c2FsdA$aGFzaA", // 内存超 2×19456
+		"$argon2id$v=19$m=19456,t=5,p=1$c2FsdA$aGFzaA", // 迭代超 2×2
+		"$argon2id$v=19$m=19456,t=2,p=3$c2FsdA$aGFzaA", // 并行超 2×1
+		"scrypt:262144:8:1$testsalt12345678$00",        // N*r = 2097152 > 1048576
+	} {
+		if _, err := coreauth.VerifyPassword("password", encoded); err == nil {
+			t.Fatalf("VerifyPassword(%q) accepted parameters above the bounds", encoded)
+		}
+	}
+}
+
 // 空口令不得悄悄哈希成有效凭据。
 func TestHashPasswordRejectsEmpty(t *testing.T) {
 	if _, err := coreauth.HashPassword(""); err == nil {

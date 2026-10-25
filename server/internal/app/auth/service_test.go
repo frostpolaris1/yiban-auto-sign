@@ -256,6 +256,97 @@ func TestForgotPasswordStoresOnlyTheHash(t *testing.T) {
 	}
 }
 
+// median 返回样本中位数。样本数取奇数，避免两值平均掩盖单边漂移。
+func median(samples []time.Duration) time.Duration {
+	sorted := append([]time.Duration(nil), samples...)
+	for i := 1; i < len(sorted); i++ {
+		for j := i; j > 0 && sorted[j] < sorted[j-1]; j-- {
+			sorted[j], sorted[j-1] = sorted[j-1], sorted[j]
+		}
+	}
+	return sorted[len(sorted)/2]
+}
+
+// 登录失败的两条路径必须同量级。
+//
+// 阈值 [1/3, 3]。本机实测（2026-10-26，WSL，fake 仓储，11 轮中位数）：
+// 已知用户口令错 17.2 ms，未知用户 16.2 ms，比值 1.06。
+// 突变实测：删掉未知路径的 verifyDummyPassword 后，未知路径降到微秒级，
+// 比值远超 3（突变记录见 W2B 修复报告）。
+func TestLoginFailureTimingIsLeveled(t *testing.T) {
+	h := newHarness(t)
+	hash, err := coreauth.HashPassword("right-password")
+	if err != nil {
+		t.Fatalf("HashPassword: %v", err)
+	}
+	h.users.byEmail["known@example.com"] = appuser.Record{
+		ID: "u5", Email: "known@example.com", PasswordHash: hash,
+		Role: coreauth.RoleUser, Status: coreauth.StatusActive,
+	}
+	// 预热：dummyOnce 首次调用要额外算一次哈希。
+	_, _ = h.svc.Login(t.Context(), "known@example.com", "wrong-password")
+	_, _ = h.svc.Login(t.Context(), "nobody@example.com", "wrong-password")
+
+	const rounds = 11
+	known := make([]time.Duration, 0, rounds)
+	unknown := make([]time.Duration, 0, rounds)
+	for i := 0; i < rounds; i++ {
+		start := time.Now()
+		_, _ = h.svc.Login(t.Context(), "known@example.com", "wrong-password")
+		known = append(known, time.Since(start))
+
+		start = time.Now()
+		_, _ = h.svc.Login(t.Context(), "nobody@example.com", "wrong-password")
+		unknown = append(unknown, time.Since(start))
+	}
+
+	knownMedian := median(known)
+	unknownMedian := median(unknown)
+	ratio := float64(knownMedian) / float64(unknownMedian)
+	t.Logf("login failure medians: known=%s unknown=%s ratio=%.2f", knownMedian, unknownMedian, ratio)
+	if ratio < 1.0/3.0 || ratio > 3.0 {
+		t.Fatalf("login failure timing ratio = %.2f (known %s, unknown %s), want [1/3, 3]",
+			ratio, knownMedian, unknownMedian)
+	}
+}
+
+// 忘记口令的两条路径必须同量级。
+//
+// 阈值 [1/2, 2]。本机实测（2026-10-26，WSL，fake 仓储，11 轮中位数）：
+// 已知邮箱 16.4 ms，未知邮箱 16.5 ms，比值 0.99。
+// 突变实测：删掉未知路径的垫时后，未知路径降到微秒级，比值远超 2。
+func TestForgotPasswordTimingIsLeveled(t *testing.T) {
+	h := newHarness(t)
+	h.users.byEmail["known@example.com"] = appuser.Record{
+		ID: "u6", Email: "known@example.com", Role: coreauth.RoleUser, Status: coreauth.StatusActive,
+	}
+	// 预热：dummyOnce 首次调用要额外算一次哈希。
+	_ = h.svc.ForgotPassword(t.Context(), "known@example.com")
+	_ = h.svc.ForgotPassword(t.Context(), "absent@example.com")
+
+	const rounds = 11
+	known := make([]time.Duration, 0, rounds)
+	unknown := make([]time.Duration, 0, rounds)
+	for i := 0; i < rounds; i++ {
+		start := time.Now()
+		_ = h.svc.ForgotPassword(t.Context(), "known@example.com")
+		known = append(known, time.Since(start))
+
+		start = time.Now()
+		_ = h.svc.ForgotPassword(t.Context(), "absent@example.com")
+		unknown = append(unknown, time.Since(start))
+	}
+
+	knownMedian := median(known)
+	unknownMedian := median(unknown)
+	ratio := float64(knownMedian) / float64(unknownMedian)
+	t.Logf("forgot-password medians: known=%s unknown=%s ratio=%.2f", knownMedian, unknownMedian, ratio)
+	if ratio < 0.5 || ratio > 2.0 {
+		t.Fatalf("forgot-password timing ratio = %.2f (known %s, unknown %s), want [1/2, 2]",
+			ratio, knownMedian, unknownMedian)
+	}
+}
+
 func TestResetPasswordRejectsUnknownToken(t *testing.T) {
 	h := newHarness(t)
 	err := h.svc.ResetPassword(t.Context(), "no-such-token", "new-password")

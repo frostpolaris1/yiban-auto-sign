@@ -85,3 +85,46 @@ func TestClearCookieExpiresImmediately(t *testing.T) {
 		}
 	}
 }
+
+// 清除用的 cookie 必须与设置用的 cookie 除 value 与过期字段外逐属性相同。
+// 属性不一致时浏览器可能保留另一条同名 cookie：服务端已登出，
+// 浏览器却仍带着旧令牌发请求。
+func TestClearCookieMirrorsSetAttributes(t *testing.T) {
+	for _, insecure := range []bool{false, true} {
+		rec := httptest.NewRecorder()
+		c := newSessionCookie(insecure)
+		c.set(rec, "token-value")
+		c.clear(rec)
+
+		cookies := rec.Result().Cookies()
+		if len(cookies) != 2 {
+			t.Fatalf("Set-Cookie count = %d, want 2", len(cookies))
+		}
+		set, clear := cookies[0], cookies[1]
+
+		if set.Domain != "" || clear.Domain != "" {
+			t.Fatalf("domains = %q and %q, want empty", set.Domain, clear.Domain)
+		}
+		if clear.Name != set.Name {
+			t.Fatalf("clear name = %q, set name = %q", clear.Name, set.Name)
+		}
+		if clear.Path != set.Path {
+			t.Fatalf("clear path = %q, set path = %q", clear.Path, set.Path)
+		}
+		if clear.Secure != set.Secure {
+			t.Fatalf("clear Secure = %v, set Secure = %v", clear.Secure, set.Secure)
+		}
+		if clear.HttpOnly != set.HttpOnly {
+			t.Fatalf("clear HttpOnly = %v, set HttpOnly = %v", clear.HttpOnly, set.HttpOnly)
+		}
+		if clear.SameSite != set.SameSite {
+			t.Fatalf("clear SameSite = %v, set SameSite = %v", clear.SameSite, set.SameSite)
+		}
+		if clear.Value != "" {
+			t.Fatalf("clear value = %q, want empty", clear.Value)
+		}
+		if clear.MaxAge >= 0 {
+			t.Fatalf("clear MaxAge = %d, want negative", clear.MaxAge)
+		}
+	}
+}
