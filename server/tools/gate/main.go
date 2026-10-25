@@ -32,7 +32,7 @@ func run(root, rulesPath string, includeTests bool) int {
 		fmt.Fprintln(os.Stderr, "gate: no Go files under root; refused to pass")
 		return 2
 	}
-	if err := ValidateForbidOwners(root, rules); err != nil {
+	if err := ValidateCheckedScopes(root, rules); err != nil {
 		fmt.Fprintln(os.Stderr, "gate:", err)
 		return 2
 	}

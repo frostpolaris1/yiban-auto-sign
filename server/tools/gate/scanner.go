@@ -268,13 +268,15 @@ func selectorName(e ast.Expr) (string, bool) {
 	return id.Name + "." + sel.Sel.Name, true
 }
 
-// ValidateForbidOwners 要求每条 forbid 规则在 root 下至少命中一个 Go 文件。
+// ValidateCheckedScopes 要求每条 import 与 forbid 规则在 root 下至少命中一个 Go 文件。
 //
-// forbid 的 owner 是检查范围。owner 改名或删除后，规则命中零个文件，
-// 永不触发；门会打印 ok，静默失守（AGENTS §29）。本检查把这种配置变成 rc=2。
+// import 与 forbid 的 owner 都是**检查范围**：import 查范围内的导入，
+// forbid 查范围内的调用。owner 改名或删除后，规则命中零个文件，永不触发；
+// 门会打印 ok，静默失守（AGENTS §29）。本检查把这种配置变成 rc=2。
 // 判据是「owner 路径是否存在」，故固定按含 _test.go 的口径统计，
-// 与本轮 Scan 的 includeTests 无关。
-func ValidateForbidOwners(root string, rules []Rule) error {
+// 与本轮 Scan 的 includeTests 无关。测试文件作为 owner 时，
+// 默认扫描看不到它，只有 verify.sh 的 -tests 那一遍会真正检查。
+func ValidateCheckedScopes(root string, rules []Rule) error {
 	var rels []string
 	if err := walkGoFiles(root, true, func(path string) error {
 		rel, err := filepath.Rel(root, path)
@@ -287,7 +289,7 @@ func ValidateForbidOwners(root string, rules []Rule) error {
 		return err
 	}
 	for _, r := range rules {
-		if r.Kind != "forbid" {
+		if r.Kind != "import" && r.Kind != "forbid" {
 			continue
 		}
 		hit := false
@@ -298,7 +300,7 @@ func ValidateForbidOwners(root string, rules []Rule) error {
 			}
 		}
 		if !hit {
-			return fmt.Errorf("forbid rule %q checks no files under %q; refused to pass", r.ID, r.Owner)
+			return fmt.Errorf("%s rule %q checks no files under %q; refused to pass", r.Kind, r.ID, r.Owner)
 		}
 	}
 	return nil

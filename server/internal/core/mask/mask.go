@@ -21,7 +21,7 @@
 // 邮箱检测覆盖常见地址：本地部与域名含 Unicode 字母、数字与组合记号，
 // 域名带点且 TLD 至少 2 个字母。
 // 下列系统接受的形状不在检测口径内，属已登记限制：
-// 无点域、纯数字 TLD、Punycode TLD、符号或 emoji 本地部。
+// 无点域、TLD 不是至少 2 个字母、Punycode TLD、符号或 emoji 本地部。
 // 审计守卫与符合性套件用检测口径。连写进更长数字串的手机号检测不到，
 // 属已登记限制；掩码仍会处理它。
 package mask
@@ -42,8 +42,9 @@ var (
 	// 域名带点且 TLD 至少 2 个字母。
 	// 只认 ASCII 会让非 ASCII 邮箱躲过审计 PII 守卫（N5）。
 	// \p{M} 收组合记号：分解形式的带音标字符由字母与记号组成。
-	// 已登记不覆盖：无点域（a@localhost）、纯数字 TLD（a@b.12）、
-	// Punycode TLD（a@xn--fiqs8s）、符号或 emoji 本地部（😀@example.com）。
+	// 已登记不覆盖：无点域（a@localhost）、TLD 不是至少 2 个字母
+	// （a@b.c、a@b.12、a@b.12c）、Punycode TLD（a@xn--fiqs8s）、
+	// 符号或 emoji 本地部（😀@example.com）。
 	emailInText = regexp.MustCompile(`[\p{L}\p{N}\p{M}._%+\-]+@[\p{L}\p{N}\p{M}.\-]+\.[\p{L}]{2,}`)
 )
 

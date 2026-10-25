@@ -83,8 +83,12 @@ id  kind  owner  pattern  allow  message
 - `kind=func` / `kind=type`: forbidden definitions outside `owner`.
 - `kind=import`: forbidden imports inside `owner`.
 - `kind=forbid`: forbidden `pkg.Func` calls **inside** `owner`; the inverse of
-  `call`. `owner` is the checked scope, must be non-empty, and must match at
-  least one Go file. A `forbid` rule that matches no files is an error.
+  `call`. `owner` is the checked scope and must be non-empty. `owner *` is only
+  valid for `import`.
+
+`import` and `forbid` owners are checked scopes: each must match at least one Go
+file. A rule that matches no files is an error (exit 2). A test-file owner is
+counted here but only scanned in the `-tests` pass.
 
 The gate is empty-safe: an empty rule file is an error, never a green run.
 
@@ -96,11 +100,12 @@ has no such rows:
 
 ```sql
 SELECT count(*) FROM users
-WHERE email ~ '[\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]';
+WHERE email ~ '[\u00AD\u0600-\u0605\u061C\u06DD\u070F\u0890-\u0891\u08E2\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF\uFFF9-\uFFFB]';
 ```
 
-The query covers the common Cf ranges. The application check uses the full
-Unicode category and remains the authoritative gate.
+The query covers all BMP Cf ranges. Astral Cf code points (U+110BD, U+E0001,
+U+E0020–U+E007F) are not covered. The application check uses the full Unicode
+category and remains the authoritative gate.
 
 ## P0 scope
 
