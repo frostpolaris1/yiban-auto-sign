@@ -9,7 +9,8 @@
   `read_accounts`（AAD 失配重试一次）、`load_accounts`（全量解密）、
   `load_accounts_raw`（导出用，保持密文）、`account_row_at` / `read_account_at`
   （按整表绝对下标单行窄取，只解密一行）；
-- 写路径：`add_account` / `update_account` / `set_account_deleted` / `purge_account` /
+- 写路径：`add_account` / `update_account` / `update_account_profile`（二段资料与暴露
+  开关的唯一写口，工单 qmz4）/ `set_account_deleted` / `purge_account` /
   `update_account_status` / `set_user_paused` / `move_account` /
   `delete_accounts_by_owner` / `replace_accounts` / `batch_account_ops` /
   `update_account_status_if`；
@@ -48,6 +49,12 @@ logger = logging.getLogger("yiban.store.accounts")
 # 不参与签到的审核态（与 web 的 ACCOUNT_STATUS_PENDING/REJECTED 同值；此处是**库内
 # 落库值**的唯一列举点，新增审核态时必须同步这里，否则新态的账号会被签到进程放行）。
 ACCOUNT_AUDIT_INACTIVE = ("pending", "rejected")
+
+# 二段资料字段词表（工单 qmz4 的唯一真源）：姓名/学号/学院/班级/邮箱。内容整体加密落
+# `accounts.profile`（AAD=手机号，与 password/phone_code 同通道）；逐字段暴露开关落
+# `accounts.profile_expose`（明文 JSON，只存 true 项，空 = 全关）。词表外的键在
+# `update_account_profile` 直接 ValueError——web 层先清洗，这里是防脏键进库的末闸。
+PROFILE_FIELDS = ("real_name", "student_id", "college", "class_name", "email")
 
 #: `account_still_signable` 的异常留痕是否已报过（进程内一次）。与
 #: `claims._pool_down_notified` 同法：同一场库故障只写一条 ERROR、只进一次当日汇总，
@@ -214,8 +221,9 @@ def _decrypt_row(row, env_file=None):
     # 首枚密文字段处做一次，字段循环内不再逐字段重复。一行有 password / phone_code 两枚
     # 密文字段，逐字段判定会把 `has_key`（读盘）与 `load_key` 的调用翻倍。
     key = None
-    # 密文解密（password/phone_code 存 JSON 串；解密失败抛明确错误，绝不静默降级）
-    for k in ("password", "phone_code"):
+    # 密文解密（password/phone_code 存 JSON 串；profile 解密后是**明文资料的 JSON 串**，
+    # 展示层解析；解密失败抛明确错误，绝不静默降级）
+    for k in ("password", "phone_code", "profile"):
         v = a.get(k)
         if not v:
             continue
@@ -596,10 +604,10 @@ def update_account(account_id, fields, expect_snapshot=None, audit_spec=None):
         if new_phone is not None and new_phone != cur_a.get("phone"):
             # 改绑手机号：旧手机号的会话缓存随之失效（主键/AAD 均按旧号，不复用）
             db._clear_session_cache_by_phones(conn, [cur_a.get("phone", "")])
-            for k in ("password", "phone_code"):
+            for k in ("password", "phone_code", "profile"):
                 if k not in fields:
                     fields = dict(fields)
-                    fields[k] = cur_a.get(k, "")  # 已解密明文
+                    fields[k] = cur_a.get(k, "")  # 已解密明文（profile 为 JSON 串）
         phone_for_aad = new_phone if new_phone is not None else cur_a.get("phone", "")
         sets = []
         vals = []
@@ -607,7 +615,7 @@ def update_account(account_id, fields, expect_snapshot=None, audit_spec=None):
             if k in fields:
                 sets.append(f"{k}=?")
                 vals.append(fields[k])
-        for k in ("password", "phone_code"):
+        for k in ("password", "phone_code", "profile"):
             if k in fields:
                 sets.append(f"{k}=?")
                 vals.append(_encrypt_field(fields[k], phone_for_aad))
@@ -624,7 +632,7 @@ def update_account(account_id, fields, expect_snapshot=None, audit_spec=None):
             conn.rollback()
             # 主更新失败回滚会连带撤销 _row_to_account 的明文自愈；凭据不留明文优先，
             # 用已解密值重放自愈并独立提交（幂等，仅原行确为明文时生效）。
-            for k in ("password", "phone_code"):
+            for k in ("password", "phone_code", "profile"):
                 raw = row[k]
                 if raw and not _is_encrypted_value(raw) and cur_a.get(k):
                     conn.execute(
@@ -641,6 +649,102 @@ def update_account(account_id, fields, expect_snapshot=None, audit_spec=None):
             result = _body()
             conn.commit()
             return result
+        except Exception:
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            raise
+
+
+def _parse_profile_json(raw):
+    """库内 `profile` 列（已解密的 JSON 串）→ dict；损坏**拒绝覆盖写入**（读面另按宽容处理）。
+
+    写口必须建立在完整读出旧内容之上（合并语义），底子坏了还往上合并就是把脏底子
+    永久固化——宁可响亮失败让维护者先修数据。
+    """
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError) as e:
+        raise ValueError("账号的资料字段损坏（profile 不是合法 JSON），拒绝覆盖写入") from e
+    if not isinstance(data, dict):
+        raise ValueError("账号的资料字段损坏（profile 不是 JSON 对象），拒绝覆盖写入")
+    return data
+
+
+def _parse_expose_json(raw):
+    """库内 `profile_expose` 列（明文 JSON）→ {字段: True}；损坏按全关（少暴露方向）。"""
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: True for k, v in data.items() if v is True}
+
+
+def update_account_profile(account_id, profile=None, expose=None, audit_spec=None):
+    """维护二段资料与暴露开关（管理面/本人面两个路由共用的唯一写口，工单 qmz4）。
+
+    `profile`：{字段: 值} 子集（None = 不动；值一律 str，"" = 清空该字段，合并进
+    既有内容）；`expose`：{字段: bool} 子集（None = 不动；True 开、False 关）。
+    词表外的键或非约定类型直接 ValueError——web 层先清洗，这里是防脏键进库的末闸。
+
+    内容合并后**整体** AES-GCM 落 `accounts.profile`（AAD=手机号，与
+    password/phone_code 同通道；空 dict 落空串，与"空凭据显式语义"同口径）；
+    开关只存 true 项、明文 JSON 落 `accounts.profile_expose`（空 = 全关）。
+    返回 `(content_dict, expose_dict)`（合并后的**完整**状态，供回包回显）；
+    行不存在返回 None。
+
+    audit_spec 非 None 时审计行与 UPDATE 同事务（口径同 `update_account`）：
+    **detail 只记字段名，绝不记字段值**——审计面是 PII 出站面之一。
+    """
+    if profile is not None:
+        for k, v in profile.items():
+            if k not in PROFILE_FIELDS:
+                raise ValueError(f"未知资料字段: {k!r}")
+            if not isinstance(v, str):
+                raise ValueError(f"资料字段 {k} 的值应为字符串")
+    if expose is not None:
+        for k, v in expose.items():
+            if k not in PROFILE_FIELDS:
+                raise ValueError(f"未知资料字段: {k!r}")
+            if not isinstance(v, bool):
+                raise ValueError(f"暴露开关 {k} 的值应为布尔")
+    db = _facade()
+    conn = db.get_conn()
+    with db._conn_lock:
+        db._begin_immediate(conn)
+        try:
+            row = conn.execute("SELECT * FROM accounts WHERE id=?", (account_id,)).fetchone()
+            if row is None:
+                conn.rollback()
+                return None
+            cur_a = _row_to_account(row, conn)  # 顺带明文自愈（含 profile）
+            content = _parse_profile_json(cur_a.get("profile", ""))
+            flags = _parse_expose_json(row["profile_expose"])
+            if profile:
+                content.update(profile)
+            if expose:
+                for k, on in expose.items():
+                    if on:
+                        flags[k] = True
+                    else:
+                        flags.pop(k, None)
+            enc = (_encrypt_field(json.dumps(content, ensure_ascii=False),
+                                  cur_a.get("phone", "")) if content else "")
+            expose_json = (json.dumps({k: True for k in sorted(flags)},
+                                      ensure_ascii=False) if flags else "")
+            conn.execute(
+                "UPDATE accounts SET profile=?, profile_expose=? WHERE id=?",
+                (enc, expose_json, account_id),
+            )
+            if audit_spec:
+                db.record_in_txn(conn, **audit_spec)
+            conn.commit()
+            return content, dict(flags)
         except Exception:
             with contextlib.suppress(Exception):
                 conn.rollback()
