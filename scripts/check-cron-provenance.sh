@@ -18,6 +18,15 @@
 #   /usr/local/{s,}bin/<x>                 必须逐字出现在 manifest 第三列（安装清单）
 #   其余绝对路径                            无来源，判红（拒绝猜测）
 #
+# 值不是路径（B-1，2026-10-25）：`VAR=…`／`--opt=…` 的值不因含 `/` 就当路径。
+#   带 scheme 的 URL（`https://…`；`file://` 除外）不是路径；
+#   全段为数字的比值（`30/7`）不是路径；
+#   绝对路径、`./`／`../`／`~/` 与其余含 `/` 的值仍按路径判。
+#   纯字符串判形，不识别每个旗标的参数语义（例：`--pattern=a/b` 仍按路径判）。
+#
+# 重定向目标（B-2，2026-10-25）：分离式（`> /var/log/x`）与贴紧式
+#   （`2>/dev/null`、`2>>/var/log/x`、`&>/dev/null`）都不判。
+#
 # 相对路径（R3-022）：只在**同一命令行先 `cd` 到检出内**时判定。
 #   门按 shell 语义跟踪 cwd：`cd <检出>` 之后的相对 token（含 `--db data/yiban.db`
 #   这类参数）解析成 `$APP_ROOT/<rel>`，再看它是否可回指仓库。
@@ -63,6 +72,9 @@ done
 
 viol=0
 FDREDIR_RE='^[0-9]*>&[0-9-]*$'   # 形如 2>&1 / &>/dev/null 的 fd 复制：不是重定向目标
+# 贴紧式重定向（目标与操作符同一 token）：2>/dev/null、2>>/var/log/x、&>/dev/null。
+# `2>&1` 由 FDREDIR_RE 先处理，故这里排除后随 `&`（[^&=]）。
+FDREDIR_ATTACHED_RE='^[0-9]*&?>>?[^&=].*$'
 declare -a DESTS=()
 N_TOKENS=0                        # 真正判定过的路径 token 数（"全跳过"判据，R3-010）
 N_TABLES=0
@@ -84,6 +96,33 @@ normalize_abs() {
 is_runtime_path() {
     case "$1" in
         .venv/*|data/*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# 值什么时候是路径候选（B-1）。判形不判旗标语义：
+#   URL（`scheme://…`，但 `file://` 的载荷是路径）不是；
+#   全段为数字的比值（`30/7`）不是；
+#   绝对、`./`／`../`／`~/`、其余含 `/` 的值都是。
+is_path_value() {
+    local v="$1" seg
+    case "$v" in
+        *'://'*)
+            case "$v" in
+                [Ff][Ii][Ll][Ee]://*) return 0 ;;
+                *) return 1 ;;
+            esac ;;
+        /*|./*|../*|~/*) return 0 ;;
+    esac
+    case "$v" in
+        */*)
+            local IFS=/
+            for seg in $v; do
+                case "$seg" in
+                    ''|*[!0-9]*) return 0 ;;
+                esac
+            done
+            return 1 ;;
         *) return 1 ;;
     esac
 }
@@ -171,8 +210,9 @@ for cf in "$CRON_DIR"/*; do
                 '>'|'>>'|'&>'|'1>'|'2>') skip_next=1; continue ;;
             esac
             if [[ "$tok" =~ $FDREDIR_RE ]]; then continue; fi  # 2>&1 之类（& 走变量，不能裸写）
-            # 环境前缀赋值（VAR=…）与 --opt=value：值里含 `/` 就是路径候选
-            # （R3-022 等价类：/tmp 与相对路径不得藏在 `=` 右边）。
+            if [[ "$tok" =~ $FDREDIR_ATTACHED_RE ]]; then continue; fi  # 2>/dev/null 等（B-2）
+            # 环境前缀赋值（VAR=…）与 --opt=value：值按路径形态判（B-1）。
+            # R3-022 等价类仍在：`=` 右边的真路径（绝对/显式相对/含 `/`）都要判。
             env_value=""
             if [[ "$tok" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
                 env_value="${tok#*=}"
@@ -180,10 +220,8 @@ for cf in "$CRON_DIR"/*; do
                 env_value="${tok#*=}"
             fi
             if [ -n "$env_value" ]; then
-                case "$env_value" in
-                    */*) path="$env_value" ;;
-                    *) continue ;;
-                esac
+                is_path_value "$env_value" || continue
+                path="$env_value"
             else
                 path="$tok"
                 case "$tok" in
