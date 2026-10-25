@@ -107,6 +107,36 @@ export function dangerousSubmit(options: DangerousSubmitOptions): Promise<unknow
   return fn(options);
 }
 
+export interface PromptOptions {
+  title?: string;
+  label?: string;
+  placeholder?: string;
+  maxlength?: number;
+  required?: boolean;
+  requiredMessage?: string;
+  confirmText?: string;
+  cancelText?: string;
+  defaultValue?: string;
+  password?: boolean;
+}
+
+/**
+ * 文本输入弹窗（**委托 `YB.promptDialog`**，core.js 的唯一实现；账号 ops 的驳回理由
+ * 同一入口）。resolve 输入值；取消 / 关闭一律 resolve(null)。
+ * 外壳缺失时 resolve(null)——与确认框同一安全默认：拿不到输入就不动作。
+ */
+export function promptDialog(options: PromptOptions): Promise<string | null> {
+  const fn = (raw() as { promptDialog?: (o: PromptOptions) => Promise<string | null> }).promptDialog;
+  if (!fn) return Promise.resolve(null);
+  return fn(options);
+}
+
+/** 导航徽标重取（core.js 唯一实现）。审核类写操作后调用，让侧栏计数立即跟上。 */
+export function refreshNavBadges(): void {
+  const fn = (raw() as { refreshNavBadges?: () => void }).refreshNavBadges;
+  if (fn) fn();
+}
+
 export function toast(): ShellToast {
   const t = raw().toast;
   if (t) return t;
