@@ -33,7 +33,7 @@
 结论：五项结构改动（四处改名 + 删 `engine`）合计 260 个读者，行为收益为零。
 两项依赖倒置修正的读者合计 19（`child_env` 14、`email_policy` 5）；6 个开发工具在运行时零 import。
 本版只做后两项，加上四份 README（`config`、`deploy`、`docker`、`web/services`）、
-一份产物说明（`web/static/vue/BUILT.md`）和四道门。
+一份产物说明（`docs/dev/vue-build-output.md`）和四道门。
 
 ---
 
@@ -352,7 +352,7 @@ B1 把这两个模块搬进 `yiban/` 后，这段禁令由门钉住。
 ```
 
 B1 首批补齐 `config/`、`deploy/`、`docker/`、`web/services/` 四份 README 与
-`web/static/vue/BUILT.md`。其余顶层目录的 README 由 B2 补齐；README 门见 §9.4。
+`docs/dev/vue-build-output.md`。其余顶层目录的 README 由 B2 补齐；README 门见 §9.4。
 
 ### 5.5 基线棘轮
 
