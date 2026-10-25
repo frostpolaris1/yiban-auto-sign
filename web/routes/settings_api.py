@@ -1107,7 +1107,8 @@ def api_scheduler_executors_save():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     # 审计只记键名：代理串可能带凭据，不得进审计链
-    db.audit(_notify_mail._audit_actor(), "settings", "executors", ",".join(sorted(updates))[:200])
+    db.audit(_notify_mail._audit_actor(), "settings", "executors",
+             ",".join(sorted(updates))[:db.AUDIT_DETAIL_LIMIT])
     _executor_change_alert("整条保存:" + ",".join(changed_keys)[:160], bool(changed_keys))
     return jsonify({"ok": True, "applied": sorted(updates),
                     "note": "已写入配置；下一轮定时任务或容器重启后生效"})

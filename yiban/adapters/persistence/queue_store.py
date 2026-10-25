@@ -116,8 +116,10 @@ CLAIM_LIMIT = 1
 #: `sqlite3.ProgrammingError`。取 900：给 day 等其余占位留出余量。
 SQL_VAR_CHUNK = 900
 
-#: 一个 result 字段最多保留的字符数（与 `claims.settle` 同口径）。
-RESULT_MAX = 200
+#: 一个 result 字段最多保留的字符数。
+#: **定义点在 `claims.RESULT_MAX`**：本模块导入期已依赖 claims，反向定义会成环；
+#: 此别名保留既有 `queue_store.RESULT_MAX` 的读取面。
+RESULT_MAX = claims_mod.RESULT_MAX
 
 #: `state` 取值全集（与 v18 DDL 的列注释同一套口径）。
 STATE_PENDING = "pending"

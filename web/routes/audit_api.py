@@ -56,7 +56,6 @@ _MAX_PAGE_SIZE = 200
 _MAX_PAGE = (2 ** 63 - 1) // _MAX_PAGE_SIZE
 _ALLOWED_QUERY_KEYS = {"page", "page_size", "action", "actor", "target", "from_ts", "to_ts"}
 _TARGET_MAX = 120
-_DETAIL_MAX = 200
 _ACTION_MAX = 64
 
 
@@ -72,7 +71,7 @@ def _serialize_audit_row(row):
         "actor": _audit_chain.actor_tag(row["username"] or ""),
         "action": _notify_mail._nl_safe(str(row["action"] or ""))[:_ACTION_MAX],
         "target": _notify_mail._nl_safe(str(row["target"] or ""))[:_TARGET_MAX],
-        "detail": _notify_mail._nl_safe(str(row["detail"] or ""))[:_DETAIL_MAX],
+        "detail": _notify_mail._nl_safe(str(row["detail"] or ""))[:_audit_chain.AUDIT_DETAIL_LIMIT],
     }
 
 
@@ -250,12 +249,12 @@ def _payload_from_snapshot(snapshot):
             {"code": str(d.get("code") or ""),
              "label": _notify_mail._nl_safe(str(d.get("label") or ""))[:120],
              "count": int(d.get("count") or 0),
-             "reason": _notify_mail._nl_safe(str(d.get("reason") or ""))[:200]}
+             "reason": _notify_mail._nl_safe(str(d.get("reason") or ""))[:_audit_chain.AUDIT_DETAIL_LIMIT]}
             for d in debt
         ],
         "write_failures": health.get("write_failures"),
         "empty_hash_rows": health.get("empty_hash_rows"),
-        "note": _notify_mail._nl_safe(str(health.get("note") or ""))[:200],
+        "note": _notify_mail._nl_safe(str(health.get("note") or ""))[:_audit_chain.AUDIT_DETAIL_LIMIT],
     }
 
 

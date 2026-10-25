@@ -33,6 +33,9 @@ from flask import Response, jsonify, request, session
 
 # A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
 from web import security as _security
+from web.routes import PAGE_LIMIT_DEFAULT as _PAGE_LIMIT_DEFAULT
+from web.routes import PAGE_LIMIT_MAX as _PAGE_LIMIT_MAX
+from web.routes import PAGE_LIMIT_MIN as _PAGE_LIMIT_MIN
 from web.routes import appmod as _appmod
 from web.routes import export_limits, read_audit_trace
 from web.routes import page_args as _page_args
@@ -272,9 +275,12 @@ def api_admin_sign_events():
     except (TypeError, ValueError):
         days = 7
     try:
-        limit = min(max(int(request.args.get("limit", 100)), 1), 200)
+        # 与 page_args() 同一份上下限常量：本端点不接受 offset，故只复用上下限，
+        # 不调用 page_args()（它会把"只传 offset"也判成分页）。
+        limit = min(max(int(request.args.get("limit", _PAGE_LIMIT_DEFAULT)),
+                        _PAGE_LIMIT_MIN), _PAGE_LIMIT_MAX)
     except (TypeError, ValueError):
-        limit = 100
+        limit = _PAGE_LIMIT_DEFAULT
     # stage 过滤：sign=真实签到、probe=健康探针；缺省不过滤（两者混算，保持旧行为）。
     # 两种事件共用 sign_events 表，不区分会让探针的成功/失败污染签到成功率，
     # 故需要「签到口径」的调用方显式传 stage=sign。取值走白名单 + 参数绑定。

@@ -438,6 +438,14 @@ def _process_scope():
     return f"proc{pid}-{seen}"
 
 
+#: 审计 `detail` 的字符上限：**唯一定义点**。
+#: 写入侧（本模块 `audit` / `record_in_txn` / `_scope_detail`）、读出口
+#: （`web.routes.audit_api`）与同族审计写点（`purge_guard` / `settings_api` /
+#: `users_api` / `accounts_api` / `channel_health`）都只引用本常量。
+#: 改值即改整条审计链的 detail 宽度。
+AUDIT_DETAIL_LIMIT = 200
+
+
 def _scope_detail(detail, request_id=None):
     """把作用域 id 编码进 detail（重复调用只留一个真实标记）。
 
@@ -450,9 +458,9 @@ def _scope_detail(detail, request_id=None):
     下方幂等判据误当成"已带作用域"，从而抑止真实 id 的附加——即让请求体伪造归属），
     再统一附加真实标记。
 
-    **已知缺口**：JSON 对象序列化后超过 200 字符时，`"_req"` 键这条路径放不下，退化为
-    追加后缀并截断，产出的 detail 不再是合法 JSON（下游按 JSON 还原会失败）。这是
-    200 字符上限与"保住 JSON"两个目标在超长结构化 detail 下不可兼得时的取舍。
+    **已知缺口**：JSON 对象序列化后超过 `AUDIT_DETAIL_LIMIT` 字符时，`"_req"` 键这条
+    路径放不下，退化为追加后缀并截断，产出的 detail 不再是合法 JSON（下游按 JSON 还原
+    会失败）。这是字符上限与"保住 JSON"两个目标在超长结构化 detail 下不可兼得时的取舍。
     """
     detail = detail or ""
     # 先消毒再附加：不让任何入参内容冒充真实作用域标记（见 docstring）
@@ -469,10 +477,10 @@ def _scope_detail(detail, request_id=None):
             # 非 JSON 分支的标记消毒同口径：只认本函数追加的值。
             obj["_req"] = rid
             out = json.dumps(obj, ensure_ascii=False)
-            if len(out) <= 200:
+            if len(out) <= AUDIT_DETAIL_LIMIT:
                 return out
     tag = f"{_SCOPE_MARKER}{rid}]"
-    return (detail[: max(0, 200 - len(tag))] + tag)[:200]
+    return (detail[: max(0, AUDIT_DETAIL_LIMIT - len(tag))] + tag)[:AUDIT_DETAIL_LIMIT]
 
 
 # 审计行时间戳的线上格式。写入方三处共用本常量：
@@ -506,7 +514,7 @@ def audit(username, action, target="", detail="", request_id=None):
     # actor 列在**写入口**收口（见 `actor_tag`）：哈希链对已写形态验真，遮罩先于哈希，
     # 链与内容口径从此一致；不存在"库里明文、出口才遮"的第二份。
     username = actor_tag(username)
-    detail = _scope_detail(detail[:200], request_id)
+    detail = _scope_detail(detail[:AUDIT_DETAIL_LIMIT], request_id)
     last_err = None
     for attempt in range(_AUDIT_RETRIES):
         try:
@@ -575,7 +583,7 @@ def record_in_txn(conn, username, action, target="", detail="", request_id=None)
     """
     ts = clock.now().strftime(_TS_FMT)
     username = actor_tag(username)
-    detail = _scope_detail((detail or "")[:200], request_id)
+    detail = _scope_detail((detail or "")[:AUDIT_DETAIL_LIMIT], request_id)
     row = conn.execute(
         "SELECT hash FROM audit_logs ORDER BY id DESC LIMIT 1"
     ).fetchone()
