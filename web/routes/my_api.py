@@ -1126,7 +1126,13 @@ def api_my_account_profile(idx):
         acc = accounts[indices[idx]]
         if acc.get("deleted"):
             return jsonify({"error": "账号已删除，请先恢复"}), 400
-        err, profile, expose = _accounts_data.normalize_profile_input(_http._json_body())
+        data = _http._json_body()
+        # 防错位（与同文件 api_my_account_pause 及 /api/accounts/* 同形）：视图渲染后
+        # 列表可能变动（管理员整表重排/并发移动），旧 idx 会指向本人另一行；无守卫就是
+        # 静默把 A 的资料写给 B。请求携带 `phone` 时按掩码比对，不匹配 → 409。
+        if _accounts_data._stale_idx_guard(acc, data):
+            return jsonify({"error": "账号列表已变化，请刷新页面后重试"}), 409
+        err, profile, expose = _accounts_data.normalize_profile_input(data)
         if err:
             return jsonify({"error": err}), 400
         owner = acc.get("owner", "") or (session.get("username") or "")

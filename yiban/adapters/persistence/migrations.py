@@ -1627,10 +1627,25 @@ def _maybe_migrate(conn, json_base):
                         phone_code = json.dumps(account_crypto.encrypt_password(phone_code, key, a.get("phone", "")))
                     elif isinstance(phone_code, dict):
                         phone_code = json.dumps(phone_code)
+                # 二段资料（工单 qmz4）：与上面两枚凭据同一分支口径——明文形态加密
+                # （`db_export --plaintext` 给的是明文 JSON 串），密文形态原样透传。
+                # 明文 dict（内存调用方）先序列化再加密，语义等价于"整枚密文"。
+                profile = a.get("profile", "") or ""
+                if key is not None:
+                    if profile and not _accounts._is_encrypted_value(profile):
+                        had_plaintext = True
+                        plain_profile = (profile if isinstance(profile, str)
+                                         else json.dumps(profile, ensure_ascii=False))
+                        profile = json.dumps(account_crypto.encrypt_password(
+                            plain_profile, key, a.get("phone", "")))
+                    elif isinstance(profile, dict):
+                        profile = json.dumps(profile)
+                # 暴露开关是明文 JSON（布尔集非 PII）：形态归一只，不经密钥
+                profile_expose = _accounts._as_plain_json(a.get("profile_expose"))
                 cur = conn.execute(
                     "INSERT OR IGNORE INTO accounts "
-                    "(sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason, deleted, deleted_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    "(sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason, deleted, deleted_at, profile, profile_expose) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         i + 1,
                         a.get("name", ""),
@@ -1643,6 +1658,8 @@ def _maybe_migrate(conn, json_base):
                         a.get("reject_reason", ""),
                         1 if a.get("deleted") else 0,
                         a.get("deleted_at", ""),
+                        profile,
+                        profile_expose,
                     ),
                 )
                 imported_accounts += cur.rowcount
@@ -1741,6 +1758,15 @@ def _rename_backup(path, reencrypt=False, key=None):
                         a["phone_code"] = json.dumps(
                             account_crypto.encrypt_password(code, key, a.get("phone", ""))
                         )
+                        changed = True
+                    # 二段资料（工单 qmz4）是第三枚 PII 密文字段：明文形态同理重写为
+                    # 加密版，否则 `.bak` 逃生门会把资料明文长期留在磁盘上。
+                    prof = a.get("profile", "") or ""
+                    if prof and not _accounts._is_encrypted_value(prof):
+                        plain_prof = (prof if isinstance(prof, str)
+                                      else json.dumps(prof, ensure_ascii=False))
+                        a["profile"] = json.dumps(account_crypto.encrypt_password(
+                            plain_prof, key, a.get("phone", "")))
                         changed = True
                 if changed:
                     tmp = bak + ".tmp" + str(os.getpid())

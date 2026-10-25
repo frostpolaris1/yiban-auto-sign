@@ -265,6 +265,75 @@ class AccountProfileExposureTest(unittest.TestCase):
         r = self._client(OWNER, USER_PASS).get("/api/my-accounts")
         self.assertEqual(r.get_data(), MY_VIEW_GOLDEN_USER1, "关回后我的视图必须逐字节还原")
 
+    def test_list_golden_unchanged_with_every_switch_on(self):
+        """观察项实例：**五个字段全开**时列表回包仍逐字节等于 golden。
+
+        与单字段用例走同一代码路径（mask_account 的 masked 分支），但取极值——
+        "全开"是最容易被误塞进列表的形态，单字段用例未必覆盖。
+        """
+        self._fill_profile()
+        r = self._put_admin(1, {"expose": {k: True for k in PROFILE_CONTENT},
+                                "phone": "138****8002"})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        c = self._admin_client()
+        listing = c.get("/api/accounts")
+        self.assertEqual(listing.get_data(), LIST_GOLDEN,
+                         "全开时管理列表仍不得出现 profile")
+        self.assertNotIn(b'"profile"', listing.get_data())
+        # 对照：同一时刻详情确实出现了全部五项（证明开关真的生效，列表不是"没开"才不变）
+        detail = c.get("/api/accounts/1/detail").get_json()["account"]
+        self.assertEqual(detail.get("profile"), PROFILE_CONTENT)
+
+    # ---- 中-1：视图漂移后按旧 idx 写必须被拦 ----
+    def test_stale_index_after_view_drift_is_rejected(self):
+        """列表变动后旧 idx 指向另一行：带旧 phone 的写必须 409，且库里资料不变。
+
+        成因是真实的：`sort_order` 决定我的视图顺序（`_my_account_indices_of` 保序），
+        管理员整表重排/并发移动后，客户端手里的 idx 就指向了别人那一行。没有守卫
+        就是"A 的资料写给 B"且回 200。
+        """
+        c = self._admin_client()  # admin 我的视图：[甲(idx0), 丙(idx1)]
+        token = self._csrf(c)
+        before = c.get("/api/my-accounts").get_json()["accounts"]
+        self.assertEqual([a["phone"] for a in before], ["13800138001", "13800138003"])
+        # 并发排序变动：把丙排到最前（等价于管理员重排后的顺序）
+        conn = sqlite3.connect(self.db_file)
+        try:
+            conn.execute("UPDATE accounts SET sort_order=0 WHERE phone='13800138003'")
+            conn.commit()
+        finally:
+            conn.close()
+        after = c.get("/api/my-accounts").get_json()["accounts"]
+        self.assertEqual([a["phone"] for a in after], ["13800138003", "13800138001"],
+                         "前置条件：视图顺序已漂移")
+        # 旧客户端仍按 idx=1 写，并带它记着的 phone（丙）
+        r = c.put("/api/my-accounts/1/profile",
+                  json={"expose": {"student_id": True}, "phone": "13800138003"},
+                  headers={"X-CSRF-Token": token})
+        self.assertEqual(r.status_code, 409, r.get_data(as_text=True))
+        # 库里两行的资料都没被动过（错位写即使回了错码也可能已经落库）
+        for phone in ("13800138001", "13800138003"):
+            acc = next(a for a in db.load_accounts() if a["phone"] == phone)
+            self.assertEqual(acc.get("profile", ""), "", f"{phone} 的资料不得被错位写改到")
+
+    # ---- 中-2：整表替换回环保住资料与开关 ----
+    def test_replace_accounts_round_trip_keeps_profile_and_expose(self):
+        """`replace_accounts` 是导出→导入的整表重建路径：密文透传，不许静默丢列。"""
+        self._fill_profile()
+        self._put_admin(1, {"expose": {"student_id": True}, "phone": "138****8002"})
+        raw = db.load_accounts_raw()  # 导出形态（profile 密文串、expose 明文串）
+        db.replace_accounts(raw)
+        acc = next(a for a in db.load_accounts() if a["phone"] == "13800138002")
+        self.assertEqual(json.loads(acc["profile"]), PROFILE_CONTENT)
+        self.assertEqual(json.loads(acc["profile_expose"]), {"student_id": True})
+        # 明文形态（load_accounts 的 profile 是明文 JSON 串）同样可回环加密
+        plain = [dict(a) for a in db.load_accounts()]
+        db.replace_accounts(plain)
+        acc = next(a for a in db.load_accounts() if a["phone"] == "13800138002")
+        self.assertEqual(json.loads(acc["profile"]), PROFILE_CONTENT)
+        self.assertIn("ct", json.loads(self._raw_row("13800138002")["profile"]),
+                      "明文回环后列内必须仍是密文")
+
     def test_owner_toggle_via_my_endpoint_is_visible_to_self(self):
         """本人面写开关（真实用户动作）：本人视图立即可见，详情同样出现。"""
         r = self._put_my(0, {"profile": {"student_id": "20250001"},
@@ -418,6 +487,21 @@ class AccountProfileExposureTest(unittest.TestCase):
                                 "phone": "138****8004"})
         self.assertEqual(r.status_code, 400)
         self.assertIn("已删除", r.get_json()["error"])
+
+
+class ProfileFieldVocabularyTest(unittest.TestCase):
+    """词表单一真源：展示层 `_PROFILE_FIELDS` 必须与存储层 `PROFILE_FIELDS` 逐项相等。
+
+    两处各写一份是必然的（分层不互相导入私名）；手抄的副本迟早分叉——一边加字段、
+    另一边漏加时，新字段写不进库或被写口拒收，两种都是静默失败。故用等值断言钉住，
+    不做逐项抽查：顺序也要一致（展示层按此顺序装配出站字段）。
+    """
+
+    def test_front_fields_equal_storage_fields(self):
+        from web.services import accounts_data
+        from yiban.adapters.persistence import accounts as store
+        self.assertEqual(tuple(accounts_data._PROFILE_FIELDS),
+                         tuple(store.PROFILE_FIELDS))
 
 
 if __name__ == "__main__":
