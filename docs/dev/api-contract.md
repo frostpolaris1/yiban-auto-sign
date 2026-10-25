@@ -1366,9 +1366,12 @@
   "counts": {"pending": int, "rejected": int, "active": int, "failed": int,
   "unsigned": int},
   "rows": [<账号行>], "total"?: int, "limit"?: int, "offset"?: int, "returned"?: int}`。
-  账号行 = `GET /api/accounts` 的行字段（同一 `mask_account` 脱敏单出口：
-  `index`/`name`/`phone`（遮罩）/`phone_model`/`display_name`/`owner`（遮罩）/
-  `owner_display`/`status`/`reject_reason`/`user_paused`/`deleted` 等）另加：
+  账号行 = `GET /api/accounts` 的行字段（同一 `mask_account` 脱敏单出口），
+  **但剔除 `phone_code_masked`**（本端点只读未解密快照，该字段会是密文切片；
+  要看识别码走 `GET /api/accounts/<idx>/detail`）：`index`/`name`/`phone`（遮罩）/
+  `phone_model`/`display_name`/`owner`（遮罩）/
+  `owner_display`/`status`/`reject_reason`/`user_paused`/`deleted`/`has_password`/
+  `has_phone_code`/`deleted_at` 等，另加：
   `state`（当日**有效**终态码，无记录按 `pending`）、`state_msg`（终态文案，唯一取点
   `accounts_data.plan_state_message`：未了结账号是「计划 HH:MM」或「待生成」）、
   `state_time`（终态时刻 "HH:MM:SS"，可空）、`plan_at`（"HH:MM"，可空串）、

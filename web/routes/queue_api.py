@@ -189,12 +189,20 @@ def _state_seconds(entry):
 
 
 def _queue_row(i, acc, entry, states, plan_at, prefs):
-    """展示行：`mask_account`（服务端脱敏单出口）+ 当日终态/计划/自选时段。"""
+    """展示行：`mask_account`（服务端脱敏单出口）+ 当日终态/计划/自选时段。
+
+    `phone_code_masked` **剔除**（2026-10-25 审查 2）：本端点只读未解密快照，
+    该字段此时是 `mask_device_code(密文 JSON)`——既不是可读的设备识别码
+    （前 4…后 4 落在 `{"ct":…}` 的花括号与引号上），又把密文字符搬进响应。
+    队列页不渲染它；要看识别码走抽屉的详情接口（解密后按 `mask_device_code` 遮罩）。
+    """
     status, entry = _effective_entry(acc, states)
     phone = str(acc.get("phone", ""))
     slot = prefs.get(phone)
+    row = _accounts_data.mask_account(acc, i)
+    row.pop("phone_code_masked", None)
     return {
-        **_accounts_data.mask_account(acc, i),
+        **row,
         "state": status or yiban_status.STATUS_PENDING,
         "state_msg": _plan_state_message(acc, entry, plan_at),
         "state_time": str(entry.get("time") or "") if isinstance(entry, dict) else "",
