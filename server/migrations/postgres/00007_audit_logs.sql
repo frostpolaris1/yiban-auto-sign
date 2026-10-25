@@ -33,16 +33,12 @@ CREATE TABLE audit_logs (
 CREATE FUNCTION audit_logs_guard() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
-    IF TG_OP = 'UPDATE' THEN
-        RAISE EXCEPTION 'audit_logs is append-only; UPDATE is forbidden';
-    END IF;
-    IF coalesce(current_setting('yiban.audit_purge', true), '') <> 'on' THEN
-        RAISE EXCEPTION 'audit_logs delete requires yiban.audit_purge=on';
-    END IF;
-    IF TG_LEVEL = 'ROW' THEN
-        RETURN OLD;
-    END IF;
-    RETURN NULL;
+    -- Every mutating verb is refused, with no runtime switch. A purge option
+    -- that a runtime role can SET makes append-only a naming convention. The
+    -- 365-day retention cleanup is a P7 migration-level operation; it runs
+    -- under the owner role and rewrites this guard in a new migration. Until
+    -- then the wall is unconditional.
+    RAISE EXCEPTION 'audit_logs is append-only; % is forbidden', TG_OP;
 END
 $$;
 -- +goose StatementEnd

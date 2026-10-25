@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
 	coreaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/account"
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
@@ -164,6 +166,64 @@ func TestForeignKeyBlocksUserDelete(t *testing.T) {
 	}
 }
 
+// TestInsertForeignKeyViolationMapsToNotFound pins schema §2.4: a reference to
+// a missing parent at an insert is not_found (HTTP 404), while a rejected
+// delete stays a conflict (HTTP 409).
+func TestInsertForeignKeyViolationMapsToNotFound(t *testing.T) {
+	e := newEnv(t)
+	owner := e.createUser("fk-insert@example.com")
+	school := e.createSchool("fk-insert-school")
+
+	const missingID = "0192f0f0-0000-7000-8000-00000000dead"
+
+	err := e.db.InTx(e.ctx, func(ctx context.Context) error {
+		_, err := e.accts.Create(ctx, coreaccount.New{
+			SchoolID:    missingID,
+			OwnerUserID: owner.ID,
+			Phone:       "13400134000",
+		}, 10000)
+		return err
+	})
+	if got := errs.From(err).Code; got != errs.CodeNotFound {
+		t.Fatalf("account with a missing school: got %v (%s); want not_found", err, got)
+	}
+
+	err = e.db.InTx(e.ctx, func(ctx context.Context) error {
+		return e.accts.InsertCredential(ctx, coreaccount.Credential{
+			AccountID:  missingID,
+			SchoolID:   school.ID,
+			KID:        "0123456789abcdef",
+			AADVersion: 1,
+			Nonce:      bytes.Repeat([]byte{0x01}, 12),
+			Ciphertext: bytes.Repeat([]byte{0x02}, 32),
+			Version:    1,
+		})
+	})
+	if got := errs.From(err).Code; got != errs.CodeNotFound {
+		t.Fatalf("credential for a missing account: got %v (%s); want not_found", err, got)
+	}
+
+	_, err = e.resets.Create(e.ctx, coreauthNewReset{
+		UserID:    missingID,
+		TokenHash: tokenHash("missing-user"),
+		Now:       time.Now().UTC(),
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+	})
+	if got := errs.From(err).Code; got != errs.CodeNotFound {
+		t.Fatalf("reset token for a missing user: got %v (%s); want not_found", err, got)
+	}
+
+	// The pair of the contract: delete-restrict remains a conflict (409).
+	account := e.createAccount(school.ID, owner.ID, "13400134001")
+	_, err = e.db.Exec(e.ctx, "DELETE FROM users WHERE id = $1", owner.ID)
+	if got := errs.From(err).Code; got != errs.CodeConflict {
+		t.Fatalf("delete of a user that owns an account: got %v (%s); want conflict", err, got)
+	}
+	if _, err := e.accts.Get(e.ctx, corescope.Master(), account.ID); err != nil {
+		t.Fatalf("account vanished after the blocked delete: %v", err)
+	}
+}
+
 // --- E-13: audit rows are append-only -------------------------------------
 
 func TestAuditRowsAreAppendOnly(t *testing.T) {
@@ -185,6 +245,37 @@ func TestAuditRowsAreAppendOnly(t *testing.T) {
 	}
 	if detail, err := e.db.QueryString(e.ctx, "SELECT detail FROM audit_logs ORDER BY id LIMIT 1"); err != nil || detail != `{"field":"role"}` {
 		t.Fatalf("audit detail changed: %q, %v", detail, err)
+	}
+}
+
+// TestAuditPurgeSwitchIsGone pins the removal of the yiban.audit_purge escape
+// hatch. A runtime role can SET any custom parameter; the trigger must ignore
+// it, so DELETE and TRUNCATE stay impossible (schema §3.7, D-6).
+func TestAuditPurgeSwitchIsGone(t *testing.T) {
+	e := newEnv(t)
+	e.auditEntry(coreaudit.ActionUserCreate, map[string]any{"field": "role"})
+
+	conn, err := pgx.Connect(e.ctx, e.dsn)
+	mustNotError(t, err, "open raw connection")
+	defer func() { _ = conn.Close(context.Background()) }()
+
+	for _, statement := range []string{"DELETE FROM audit_logs", "TRUNCATE audit_logs"} {
+		tx, err := conn.Begin(e.ctx)
+		mustNotError(t, err, "begin transaction")
+		if _, err := tx.Exec(e.ctx, "SET LOCAL yiban.audit_purge = 'on'"); err != nil {
+			_ = tx.Rollback(context.Background())
+			t.Fatalf("SET LOCAL yiban.audit_purge: %v", err)
+		}
+		if _, err := tx.Exec(e.ctx, statement); err == nil {
+			_ = tx.Rollback(context.Background())
+			t.Fatalf("%q was accepted with yiban.audit_purge=on; the switch is still a backdoor", statement)
+		}
+		if err := tx.Rollback(e.ctx); err != nil {
+			t.Fatalf("rollback: %v", err)
+		}
+	}
+	if rows := e.scalarInt("SELECT count(*) FROM audit_logs"); rows != 1 {
+		t.Fatalf("audit row count is %d after the purge attempts; want 1", rows)
 	}
 }
 
@@ -312,6 +403,54 @@ func newExpiredSession(userID, token string, now time.Time) coreauthNewSession {
 		Now:           now.Add(-2 * time.Hour),
 		IdleExpiresAt: now.Add(-time.Minute),
 		ExpiresAt:     now.Add(-time.Minute),
+	}
+}
+
+// TestResolveSlidesIdleExpiry pins §3.2: a successful resolve moves the idle
+// deadline forward by the time since the last request, and the returned row is
+// self-consistent (idle <= absolute, last_seen is the request time).
+func TestResolveSlidesIdleExpiry(t *testing.T) {
+	e := newEnv(t)
+	user := e.createUser("idle-slide@example.com")
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	created := e.newSession(user.ID, "slide", now)
+	if !created.IdleExpiresAt.Equal(now.Add(30 * time.Minute)) {
+		t.Fatalf("fresh session idle expiry is %s; want %s", created.IdleExpiresAt, now.Add(30*time.Minute))
+	}
+
+	at := now.Add(20 * time.Minute)
+	resolved, err := e.ses.Resolve(e.ctx, tokenHash("slide"), at, 30*time.Minute)
+	mustNotError(t, err, "resolve twenty minutes after creation")
+	session := resolved.Session
+	if !session.LastSeenAt.Equal(at) {
+		t.Fatalf("last_seen_at is %s; want %s", session.LastSeenAt, at)
+	}
+	if want := at.Add(30 * time.Minute); !session.IdleExpiresAt.Equal(want) {
+		t.Fatalf("idle_expires_at is %s; want %s (now + idle window)", session.IdleExpiresAt, want)
+	}
+	if session.IdleExpiresAt.After(session.ExpiresAt) {
+		t.Fatalf("idle expiry %s is after absolute expiry %s", session.IdleExpiresAt, session.ExpiresAt)
+	}
+
+	// When the idle deadline would pass the absolute expiry, the cap keeps the
+	// CHECK idle_expires_at <= expires_at true.
+	mustNotError(t, e.db.InTx(e.ctx, func(ctx context.Context) error {
+		_, err := e.ses.Create(ctx, coreauth.NewSessionRow{
+			UserID:        user.ID,
+			TokenHash:     tokenHash("cap-slide"),
+			AuthMethod:    "password",
+			Now:           now,
+			IdleExpiresAt: now.Add(30 * time.Minute),
+			ExpiresAt:     now.Add(30 * time.Minute),
+		})
+		return err
+	}), "create a session whose absolute expiry equals the idle expiry")
+	resolved, err = e.ses.Resolve(e.ctx, tokenHash("cap-slide"), at, 30*time.Minute)
+	mustNotError(t, err, "resolve a session near its absolute expiry")
+	if !resolved.Session.IdleExpiresAt.Equal(resolved.Session.ExpiresAt) {
+		t.Fatalf("idle expiry is %s; want the absolute cap %s",
+			resolved.Session.IdleExpiresAt, resolved.Session.ExpiresAt)
 	}
 }
 
@@ -488,6 +627,84 @@ func TestCredentialSchoolMustMatchAccount(t *testing.T) {
 		return e.accts.ReplaceCredential(ctx, cred, 1)
 	}); errs.From(err).Code != errs.CodeConflict {
 		t.Fatalf("stale credential version: want conflict, got %v", err)
+	}
+}
+
+// TestReplaceCredentialIncrementsVersion pins §7.3: the statement increments
+// the stored version, and two writers that read the same version cannot both
+// win.
+func TestReplaceCredentialIncrementsVersion(t *testing.T) {
+	e := newEnv(t)
+	owner := e.createUser("cred-race@example.com")
+	school := e.createSchool("cred-race")
+	account := e.createAccount(school.ID, owner.ID, "13300133000")
+
+	cred := coreaccount.Credential{
+		AccountID:  account.ID,
+		SchoolID:   school.ID,
+		Alg:        "AES-256-GCM",
+		KID:        "0123456789abcdef",
+		AADVersion: 1,
+		Nonce:      bytes.Repeat([]byte{0x01}, 12),
+		Ciphertext: bytes.Repeat([]byte{0x02}, 32),
+		Version:    1,
+	}
+	mustNotError(t, e.db.InTx(e.ctx, func(ctx context.Context) error {
+		return e.accts.InsertCredential(ctx, cred)
+	}), "insert credential")
+
+	storedVersion := func() int64 {
+		return e.scalarInt("SELECT version FROM credentials WHERE account_id = $1::uuid", account.ID)
+	}
+
+	// The input version is ignored: 99 in, stored 2.
+	cred.Version = 99
+	cred.Ciphertext = bytes.Repeat([]byte{0x03}, 32)
+	mustNotError(t, e.db.InTx(e.ctx, func(ctx context.Context) error {
+		return e.accts.ReplaceCredential(ctx, cred, 1)
+	}), "replace a credential with the current version")
+	if got := storedVersion(); got != 2 {
+		t.Fatalf("stored version is %d after one replace; want 2", got)
+	}
+
+	// Two independent pools give two independent backends; a goroutine pair on
+	// one pool would not prove concurrency (AGENTS §32).
+	dbA, err := pg.Open(e.ctx, pg.Options{DSN: e.dsn, MaxConns: 1, StatementTimeout: 30 * time.Second})
+	mustNotError(t, err, "open independent pool A")
+	defer dbA.Close()
+	dbB, err := pg.Open(e.ctx, pg.Options{DSN: e.dsn, MaxConns: 1, StatementTimeout: 30 * time.Second})
+	mustNotError(t, err, "open independent pool B")
+	defer dbB.Close()
+
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for _, repo := range []*pg.AccountRepo{pg.NewAccountRepo(dbA), pg.NewAccountRepo(dbB)} {
+		go func(repo *pg.AccountRepo) {
+			<-start
+			update := cred
+			update.Ciphertext = bytes.Repeat([]byte{0x04}, 32)
+			results <- repo.ReplaceCredential(context.Background(), update, 2)
+		}(repo)
+	}
+	close(start)
+
+	var succeeded, conflicted int
+	for i := 0; i < 2; i++ {
+		err := <-results
+		switch {
+		case err == nil:
+			succeeded++
+		case errs.From(err).Code == errs.CodeConflict:
+			conflicted++
+		default:
+			t.Fatalf("unexpected replace error: %v (%+v)", err, errs.From(err))
+		}
+	}
+	if succeeded != 1 || conflicted != 1 {
+		t.Fatalf("want one success and one conflict, got %d succeeded and %d conflict", succeeded, conflicted)
+	}
+	if got := storedVersion(); got != 3 {
+		t.Fatalf("stored version is %d after the race; want 3", got)
 	}
 }
 

@@ -34,8 +34,8 @@ type NewPasswordReset = coreauth.NewPasswordReset
 // per user and evicts the oldest.
 type SessionRepo interface {
 	Create(ctx context.Context, in NewSession) (Session, error)
-	Resolve(ctx context.Context, tokenHash []byte, now time.Time, idle time.Duration) (ResolvedSession, error)
-	Revoke(ctx context.Context, tokenHash []byte, now time.Time) error
+	Resolve(ctx context.Context, tokenHash coreauth.TokenHash, now time.Time, idle time.Duration) (ResolvedSession, error)
+	Revoke(ctx context.Context, tokenHash coreauth.TokenHash, now time.Time) error
 	RevokeAllForUser(ctx context.Context, userID string, now time.Time) (int64, error)
 	DeleteExpired(ctx context.Context, before time.Time, limit int) (int64, error)
 }
@@ -46,5 +46,5 @@ type SessionRepo interface {
 // token and an unknown token all return errs.CodeNotFound.
 type PasswordResetRepo interface {
 	Create(ctx context.Context, in NewPasswordReset) (PasswordReset, error)
-	Consume(ctx context.Context, tokenHash []byte, now time.Time) (PasswordReset, error)
+	Consume(ctx context.Context, tokenHash coreauth.TokenHash, now time.Time) (PasswordReset, error)
 }

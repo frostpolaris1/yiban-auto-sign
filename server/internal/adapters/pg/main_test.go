@@ -3,7 +3,6 @@ package pg_test
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -135,9 +134,10 @@ func randomHex(n int) string {
 	return hex.EncodeToString(b)
 }
 
-func tokenHash(token string) []byte {
-	sum := sha256.Sum256([]byte(token))
-	return sum[:]
+// tokenHash builds the typed digest the repositories accept. A raw token
+// cannot be passed to a token_hash parameter (D-7).
+func tokenHash(token string) coreauth.TokenHash {
+	return coreauth.HashToken(token)
 }
 
 func (e *testEnv) createUser(email string) coreuser.Record {
@@ -197,8 +197,8 @@ func (e *testEnv) newSession(userID, token string, now time.Time) coreauth.Sessi
 			Now:           now,
 			IdleExpiresAt: now.Add(30 * time.Minute),
 			ExpiresAt:     now.Add(12 * time.Hour),
-			IPHash:        "iphash",
-			UserAgentHash: "uahash",
+			IPHash:        coreauth.HashSecret("127.0.0.1"),
+			UserAgentHash: coreauth.HashSecret("test-agent"),
 		})
 		return err
 	})
@@ -252,13 +252,26 @@ func mustNotError(t *testing.T, err error, what string) {
 	}
 }
 
-// TestMain prints the skip reason once. `go test` hides t.Skip logs unless -v
-// is set, and an environment-skipped database run must never look green
-// silently (AGENTS §30).
+// TestMain makes a missing database explicit. `go test` hides t.Skip logs
+// unless -v is set, so an environment-skipped database run must never look
+// green silently (AGENTS §30).
+//
+// In CI a missing DSN is a failure: the pipeline would otherwise report a
+// green run in which zero e2e tests executed. Locally the banner goes to
+// stdout, where the operator still sees it, and the run skips.
 func TestMain(m *testing.M) {
 	if strings.TrimSpace(os.Getenv(dsnEnv)) == "" {
-		fmt.Fprintf(os.Stderr, "\nSKIP: %s is not set. The PostgreSQL e2e tests in this package DID NOT RUN. "+
-			"Set it to a disposable PostgreSQL 18 database to run them.\n\n", dsnEnv)
+		if strings.TrimSpace(os.Getenv("CI")) != "" {
+			fmt.Fprintf(os.Stderr, "\nFAIL: %s is not set in CI. The PostgreSQL e2e tests "+
+				"in this package DID NOT RUN. An unset database is never a green result.\n\n", dsnEnv)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stdout, "\n"+
+			"**********************************************************************\n"+
+			"* SKIP: %s is not set.\n"+
+			"* The PostgreSQL e2e tests in this package DID NOT RUN.\n"+
+			"* An unset database is never a green result.\n"+
+			"**********************************************************************\n\n", dsnEnv)
 	}
 	os.Exit(m.Run())
 }

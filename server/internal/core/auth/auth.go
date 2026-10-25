@@ -10,6 +10,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"time"
 )
@@ -26,6 +27,39 @@ const InsecureCookieName = "yiban_session_dev"
 // MaxSessionsPerUser bounds live sessions per user. A new sign-in evicts the
 // oldest session instead of growing without bound (decision 12.9).
 const MaxSessionsPerUser = 20
+
+// TokenHash is the SHA-256 digest of a raw session or reset token.
+//
+// The database stores only this digest. Making it a distinct type means a raw
+// token cannot reach a token_hash column by accident: a []byte or a string
+// does not compile there. Build one with HashToken.
+type TokenHash [32]byte
+
+// HashToken returns the SHA-256 digest of raw. This is the only constructor a
+// caller needs; the raw token is not stored.
+func HashToken(raw string) TokenHash { return TokenHash(sha256.Sum256([]byte(raw))) }
+
+// Bytes returns a copy of the digest for a database driver. The copy keeps the
+// array immutable after the call.
+func (h TokenHash) Bytes() []byte {
+	out := make([]byte, len(h))
+	copy(out, h[:])
+	return out
+}
+
+// IsZero reports whether the digest is all zero bytes. A zero digest means
+// the caller did not set the field.
+func (h TokenHash) IsZero() bool { return h == TokenHash{} }
+
+// HashSecret returns the lowercase hex SHA-256 of raw for the sessions ip_hash
+// and user_agent_hash columns.
+//
+// The repositories store the value unchanged: callers pass only the output of
+// this function, never a raw IP address or user-agent string.
+func HashSecret(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
+}
 
 // CSRFToken derives the CSRF token from the session token and a server secret.
 // Nothing is stored: the value is recomputed on each request, so a database
@@ -85,11 +119,12 @@ type Issued struct {
 }
 
 // SessionRow is one row of sessions. The token hash is the only credential
-// form the store keeps.
+// form the store keeps. IPHash and UserAgentHash hold the output of
+// HashSecret, never a raw address or agent string.
 type SessionRow struct {
 	ID            string
 	UserID        string
-	TokenHash     []byte
+	TokenHash     TokenHash
 	AuthMethod    string
 	CreatedAt     time.Time
 	LastSeenAt    time.Time
@@ -100,10 +135,12 @@ type SessionRow struct {
 	UserAgentHash string
 }
 
-// NewSessionRow is the input of a session creation.
+// NewSessionRow is the input of a session creation. TokenHash must come from
+// HashToken. IPHash and UserAgentHash must be HashSecret outputs; the
+// repository stores them unchanged and never hashes.
 type NewSessionRow struct {
 	UserID        string
-	TokenHash     []byte
+	TokenHash     TokenHash
 	AuthMethod    string
 	Now           time.Time
 	IdleExpiresAt time.Time
@@ -122,16 +159,17 @@ type ResolvedSession struct {
 type PasswordReset struct {
 	ID        string
 	UserID    string
-	TokenHash []byte
+	TokenHash TokenHash
 	CreatedAt time.Time
 	ExpiresAt time.Time
 	UsedAt    *time.Time
 }
 
-// NewPasswordReset is the input of a reset token creation.
+// NewPasswordReset is the input of a reset token creation. TokenHash must come
+// from HashToken.
 type NewPasswordReset struct {
 	UserID    string
-	TokenHash []byte
+	TokenHash TokenHash
 	Now       time.Time
 	ExpiresAt time.Time
 }

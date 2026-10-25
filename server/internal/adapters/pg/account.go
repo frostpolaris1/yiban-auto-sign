@@ -71,7 +71,8 @@ func (r *AccountRepo) Create(ctx context.Context, in coreaccount.New, limit int)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return coreaccount.Record{}, capacityError()
 	}
-	return record, mapError(err)
+	// A missing school or owner is a missing parent, not a conflict (§2.4).
+	return record, mapInsertForeignKey(err)
 }
 
 // Get returns one live account inside scope.
@@ -202,11 +203,17 @@ func (r *AccountRepo) InsertCredential(ctx context.Context, in coreaccount.Crede
 		        COALESCE($5, 1), $6, $7, COALESCE($8, 1))`,
 		in.AccountID, in.SchoolID, in.Alg, in.KID, in.AADVersion,
 		in.Nonce, in.Ciphertext, in.Version)
-	return mapError(err)
+	// A missing account or a school that differs from the account school
+	// breaks the composite foreign key; the parent cannot be found (§2.4).
+	return mapInsertForeignKey(err)
 }
 
-// ReplaceCredential overwrites a credential using optimistic locking. A
-// version mismatch changes nothing and reports conflict.
+// ReplaceCredential overwrites a credential using optimistic locking.
+//
+// The stored version is incremented by the statement, never supplied by the
+// caller: an input version would let two concurrent writers both succeed and
+// the later one silently overwrite the earlier one (§7.3). A stale
+// expectedVersion changes nothing and reports conflict.
 func (r *AccountRepo) ReplaceCredential(ctx context.Context, in coreaccount.Credential, expectedVersion int32) error {
 	if expectedVersion < 1 {
 		return validationError("expected version must be positive")
@@ -218,13 +225,13 @@ func (r *AccountRepo) ReplaceCredential(ctx context.Context, in coreaccount.Cred
 		       aad_version = COALESCE($5, aad_version),
 		       nonce = $6,
 		       ciphertext = $7,
-		       version = $8,
-		       rekeyed_at = COALESCE($9, rekeyed_at),
-		       last_verified_at = COALESCE($10, last_verified_at),
+		       version = version + 1,
+		       rekeyed_at = COALESCE($8, rekeyed_at),
+		       last_verified_at = COALESCE($9, last_verified_at),
 		       updated_at = now()
-		 WHERE account_id = $1::uuid AND school_id = $2::uuid AND version = $11`,
+		 WHERE account_id = $1::uuid AND school_id = $2::uuid AND version = $10`,
 		in.AccountID, in.SchoolID, in.Alg, in.KID, in.AADVersion,
-		in.Nonce, in.Ciphertext, in.Version, in.RekeyedAt, in.LastVerifiedAt,
+		in.Nonce, in.Ciphertext, in.RekeyedAt, in.LastVerifiedAt,
 		expectedVersion)
 	if err != nil {
 		return mapError(err)
