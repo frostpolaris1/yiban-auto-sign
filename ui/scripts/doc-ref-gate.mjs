@@ -33,9 +33,10 @@ const SKIP_FILES = new Set(['package-lock.json'])
 const EXEMPT = new Set(['scripts/doc-ref-gate.mjs'])
 // Match a local work/ reference with either separator and any case, after
 // removing URLs so a link path is not mistaken for a local one. Scan scope is
-// ui/ only; docs/ and server/ are registered as out of scope below.
-const URL = /https?:\/\/\S+/g
-const RULE = /(^|[^\w])work[\\/][\w.\\/-]*/gi
+// ui/ only. The scope is registered in STRUCTURE.md; docs/ and server/ are
+// covered by the Python doc-reference gate and by review.
+const URL = /[a-z][a-z0-9+.-]*:\/\/\S+/gi
+const RULE = /(?<![\w])work[\\/][\w.\\/-]*/gi
 
 class ConfigError extends Error {}
 

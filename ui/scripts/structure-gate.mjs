@@ -370,7 +370,10 @@ function selfTest() {
     if (!problems.some((problem) => problem.includes('resolves outside ui/src'))) {
       failures.push('path escaping ui/src was not reported')
     }
-    if (!problems.some((problem) => problem.includes('case mismatch'))) {
+    // The filesystem decides the reason: a case-insensitive disk resolves the
+    // path and reports a case mismatch, a case-sensitive disk cannot resolve
+    // it. Both outcomes reject the import, so assert the fixture, not the text.
+    if (!problems.some((problem) => problem.startsWith('ui/src/lib/BadCase.ts:'))) {
       failures.push('case-mismatched path was not reported')
     }
     if (!problems.some((problem) => problem.includes('lib must not import app'))) {

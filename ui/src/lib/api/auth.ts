@@ -22,11 +22,13 @@ export const AUTH_PATHS = {
   resetPassword: '/api/auth/reset-password',
 } as const
 
-export function login(body: LoginRequest): Promise<SessionUser> {
-  return apiRequest<SessionUser>(AUTH_PATHS.login, {
+export async function login(body: LoginRequest): Promise<SessionUser> {
+  const me = await apiRequest<SessionUser>(AUTH_PATHS.login, {
     method: 'POST',
     body: JSON.stringify(body),
   })
+  setCsrfToken(me.csrf_token)
+  return me
 }
 
 export async function logout(): Promise<void> {

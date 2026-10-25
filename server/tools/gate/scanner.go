@@ -79,10 +79,10 @@ func LoadRules(path string) ([]Rule, error) {
 	return rules, nil
 }
 
-// Scan walks root and returns every rule hit.
-func Scan(root string, rules []Rule, includeTests bool) ([]Violation, error) {
-	var out []Violation
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+// walkGoFiles visits every file a scan considers. Scan and CountGoFiles both
+// use it, so the set they see cannot drift.
+func walkGoFiles(root string, includeTests bool, fn func(path string) error) error {
+	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -99,6 +99,14 @@ func Scan(root string, rules []Rule, includeTests bool) ([]Violation, error) {
 		if !includeTests && strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
+		return fn(path)
+	})
+}
+
+// Scan walks root and returns every rule hit.
+func Scan(root string, rules []Rule, includeTests bool) ([]Violation, error) {
+	var out []Violation
+	err := walkGoFiles(root, includeTests, func(path string) error {
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
@@ -221,27 +229,10 @@ func selectorName(e ast.Expr) (string, bool) {
 }
 
 // CountGoFiles returns how many Go files a scan with the same includeTests
-// flag would consider. A caller uses it to reject a run that scans nothing;
-// the set must match the scanner, or a tree of test files alone reports green.
+// flag would consider. A caller uses it to reject a run that scans nothing.
 func CountGoFiles(root string, includeTests bool) (int, error) {
 	count := 0
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			switch d.Name() {
-			case ".git", "vendor", "node_modules", "testdata":
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") {
-			return nil
-		}
-		if !includeTests && strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
+	err := walkGoFiles(root, includeTests, func(string) error {
 		count++
 		return nil
 	})

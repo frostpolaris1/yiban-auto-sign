@@ -9,8 +9,16 @@ func (m mapSource) Lookup(key string) (string, bool) {
 	return v, ok
 }
 
+func TestLoadFromRequiresEnv(t *testing.T) {
+	for _, src := range []mapSource{{}, {"YIBAN_ENV": ""}, {"YIBAN_ENV": "   "}} {
+		if _, err := LoadFrom(src); err == nil {
+			t.Fatalf("source %#v must be rejected", src)
+		}
+	}
+}
+
 func TestLoadFromDefaults(t *testing.T) {
-	cfg, err := LoadFrom(mapSource{})
+	cfg, err := LoadFrom(mapSource{"YIBAN_ENV": "development"})
 	if err != nil {
 		t.Fatalf("LoadFrom: %v", err)
 	}
@@ -19,6 +27,9 @@ func TestLoadFromDefaults(t *testing.T) {
 	}
 	if cfg.DatabaseURL != "" {
 		t.Fatalf("DatabaseURL = %q, want empty", cfg.DatabaseURL)
+	}
+	if !cfg.InsecureCookies {
+		t.Fatal("development must default to insecure cookies")
 	}
 }
 
@@ -85,7 +96,7 @@ func TestInsecureCookiesOverride(t *testing.T) {
 	if _, err := LoadFrom(mapSource{"YIBAN_ENV": "production", "YIBAN_INSECURE_COOKIES": "1"}); err == nil {
 		t.Fatal("production must refuse insecure cookies")
 	}
-	if _, err := LoadFrom(mapSource{"YIBAN_INSECURE_COOKIES": "maybe"}); err == nil {
+	if _, err := LoadFrom(mapSource{"YIBAN_ENV": "development", "YIBAN_INSECURE_COOKIES": "maybe"}); err == nil {
 		t.Fatal("non-boolean flag must be rejected")
 	}
 }

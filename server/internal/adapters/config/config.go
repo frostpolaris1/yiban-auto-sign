@@ -46,7 +46,11 @@ func LoadFrom(src Source) (*Config, error) {
 	if src == nil {
 		return nil, errors.New("config: nil source")
 	}
-	env := get(src, "YIBAN_ENV", "development")
+	rawEnv, ok := src.Lookup("YIBAN_ENV")
+	env := strings.TrimSpace(rawEnv)
+	if !ok || env == "" {
+		return nil, errors.New("config: YIBAN_ENV is required (development, test, staging or production)")
+	}
 	if !knownEnvs[env] {
 		return nil, fmt.Errorf("config: unknown YIBAN_ENV %q (want development, test, staging or production)", env)
 	}
