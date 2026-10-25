@@ -27,6 +27,9 @@ type Config struct {
 	DatabaseURL     string
 	Timezone        string
 	InsecureCookies bool
+	// HashPepper keys the HMAC digests of IP addresses and user agents. It is
+	// required: a deployment without one would silently lose its abuse trail.
+	HashPepper []byte
 }
 
 // knownEnvs is a closed set. An unknown value is a startup error: a typo such
@@ -76,6 +79,11 @@ func LoadFrom(src Source) (*Config, error) {
 	if env == "production" && cfg.InsecureCookies {
 		return nil, errors.New("config: production refuses insecure cookies")
 	}
+	rawPepper, pepperSet := src.Lookup("YIBAN_HASH_PEPPER")
+	if !pepperSet || len(strings.TrimSpace(rawPepper)) < 16 {
+		return nil, errors.New("config: YIBAN_HASH_PEPPER is required (at least 16 characters)")
+	}
+	cfg.HashPepper = []byte(rawPepper)
 	return cfg, nil
 }
 

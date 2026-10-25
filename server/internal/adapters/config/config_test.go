@@ -18,7 +18,7 @@ func TestLoadFromRequiresEnv(t *testing.T) {
 }
 
 func TestLoadFromDefaults(t *testing.T) {
-	cfg, err := LoadFrom(mapSource{"YIBAN_ENV": "development"})
+	cfg, err := LoadFrom(mapSource{"YIBAN_ENV": "development", "YIBAN_HASH_PEPPER": "0123456789abcdef0123456789abcdef"})
 	if err != nil {
 		t.Fatalf("LoadFrom: %v", err)
 	}
@@ -36,6 +36,7 @@ func TestLoadFromDefaults(t *testing.T) {
 func TestLoadFromOverrides(t *testing.T) {
 	cfg, err := LoadFrom(mapSource{
 		"YIBAN_ENV":          "production",
+		"YIBAN_HASH_PEPPER":  "0123456789abcdef0123456789abcdef",
 		"YIBAN_HTTP_ADDR":    "127.0.0.1:8080",
 		"YIBAN_DATABASE_URL": "  postgres://x  ",
 		"YIBAN_TZ":           "UTC",
@@ -74,7 +75,7 @@ func TestInsecureCookiesFollowEnv(t *testing.T) {
 		{"production", false},
 	}
 	for _, tc := range cases {
-		cfg, err := LoadFrom(mapSource{"YIBAN_ENV": tc.env})
+		cfg, err := LoadFrom(mapSource{"YIBAN_ENV": tc.env, "YIBAN_HASH_PEPPER": "0123456789abcdef0123456789abcdef"})
 		if err != nil {
 			t.Fatalf("%s: %v", tc.env, err)
 		}
@@ -85,7 +86,7 @@ func TestInsecureCookiesFollowEnv(t *testing.T) {
 }
 
 func TestInsecureCookiesOverride(t *testing.T) {
-	cfg, err := LoadFrom(mapSource{"YIBAN_ENV": "staging", "YIBAN_INSECURE_COOKIES": "1"})
+	cfg, err := LoadFrom(mapSource{"YIBAN_ENV": "staging", "YIBAN_INSECURE_COOKIES": "1", "YIBAN_HASH_PEPPER": "0123456789abcdef0123456789abcdef"})
 	if err != nil {
 		t.Fatalf("staging override: %v", err)
 	}
@@ -93,10 +94,29 @@ func TestInsecureCookiesOverride(t *testing.T) {
 		t.Fatal("override was ignored")
 	}
 
-	if _, err := LoadFrom(mapSource{"YIBAN_ENV": "production", "YIBAN_INSECURE_COOKIES": "1"}); err == nil {
+	if _, err := LoadFrom(mapSource{"YIBAN_ENV": "production", "YIBAN_INSECURE_COOKIES": "1", "YIBAN_HASH_PEPPER": "0123456789abcdef0123456789abcdef"}); err == nil {
 		t.Fatal("production must refuse insecure cookies")
 	}
-	if _, err := LoadFrom(mapSource{"YIBAN_ENV": "development", "YIBAN_INSECURE_COOKIES": "maybe"}); err == nil {
+	if _, err := LoadFrom(mapSource{"YIBAN_ENV": "development", "YIBAN_INSECURE_COOKIES": "maybe", "YIBAN_HASH_PEPPER": "0123456789abcdef0123456789abcdef"}); err == nil {
 		t.Fatal("non-boolean flag must be rejected")
+	}
+}
+
+func TestLoadFromRequiresHashPepper(t *testing.T) {
+	for name, src := range map[string]mapSource{
+		"missing":   {"YIBAN_ENV": "development"},
+		"empty":     {"YIBAN_ENV": "development", "YIBAN_HASH_PEPPER": "  "},
+		"too short": {"YIBAN_ENV": "development", "YIBAN_HASH_PEPPER": "short"},
+	} {
+		if _, err := LoadFrom(src); err == nil {
+			t.Fatalf("%s pepper must be rejected", name)
+		}
+	}
+	cfg, err := LoadFrom(mapSource{"YIBAN_ENV": "development", "YIBAN_HASH_PEPPER": "0123456789abcdef0123456789abcdef"})
+	if err != nil {
+		t.Fatalf("valid pepper: %v", err)
+	}
+	if string(cfg.HashPepper) != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("pepper = %q", cfg.HashPepper)
 	}
 }

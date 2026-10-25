@@ -190,6 +190,14 @@ func (e *testEnv) createAccount(schoolID, ownerID, phone string) coreaccount.Rec
 
 func (e *testEnv) newSession(userID, token string, now time.Time) coreauth.SessionRow {
 	e.t.Helper()
+	ipHash, hashErr := coreauth.HashIP(testPepper, "127.0.0.1")
+	if hashErr != nil {
+		e.t.Fatalf("HashIP: %v", hashErr)
+	}
+	uaHash, hashErr := coreauth.HashUserAgent(testPepper, "test-agent")
+	if hashErr != nil {
+		e.t.Fatalf("HashUserAgent: %v", hashErr)
+	}
 	var rec coreauth.SessionRow
 	err := e.db.InTx(e.ctx, func(ctx context.Context) error {
 		var err error
@@ -200,8 +208,8 @@ func (e *testEnv) newSession(userID, token string, now time.Time) coreauth.Sessi
 			Now:           now,
 			IdleExpiresAt: now.Add(30 * time.Minute),
 			ExpiresAt:     now.Add(12 * time.Hour),
-			IPHash:        coreauth.HashIP(testPepper, "127.0.0.1"),
-			UserAgentHash: coreauth.HashUserAgent(testPepper, "test-agent"),
+			IPHash:        ipHash,
+			UserAgentHash: uaHash,
 		})
 		return err
 	})
