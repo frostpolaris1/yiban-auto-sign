@@ -2,10 +2,12 @@ package pg
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	coreschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/school"
+	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
 // SchoolRepo 是 PostgreSQL 院校仓储。
@@ -80,6 +82,52 @@ func (r *SchoolRepo) Update(ctx context.Context, id string, in coreschool.Update
 		 WHERE id = $1::uuid
 		RETURNING `+schoolColumns, id, in.Name, status, in.TimeZone)
 	return recordOrNotFound(scanSchool(row))
+}
+
+// List 按作用域列院校，游标分页。
+// master 走无谓词语句；admin 走 id = ANY(...) 语句。
+// 排序键是 (created_at DESC, id DESC)。
+func (r *SchoolRepo) List(ctx context.Context, s corescope.Scope, cursor string, limit int) ([]coreschool.Record, string, error) {
+	if limit < 1 || limit > 200 {
+		return nil, "", validationError("limit must be between 1 and 200")
+	}
+	clause, args, err := schoolScopePredicate(s, 1)
+	if err != nil {
+		return nil, "", err
+	}
+	query := `SELECT ` + schoolColumns + ` FROM schools WHERE true` + clause
+	query, args, err = appendKeyset(query, args, cursor, "created_at", "id")
+	if err != nil {
+		return nil, "", err
+	}
+	query += ` ORDER BY created_at DESC, id DESC`
+	query, args = appendLimit(query, args, limit)
+
+	rows, err := r.db.q(ctx).Query(ctx, query, args...)
+	if err != nil {
+		return nil, "", mapError(err)
+	}
+	defer rows.Close()
+
+	items := make([]coreschool.Record, 0, limit)
+	for rows.Next() {
+		record, err := scanSchool(rows)
+		if err != nil {
+			return nil, "", mapError(err)
+		}
+		items = append(items, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", mapError(err)
+	}
+	more := len(items) > limit
+	if more {
+		items = items[:limit]
+	}
+	next := nextCursor(items, more, func(rec coreschool.Record) (time.Time, string) {
+		return rec.CreatedAt, rec.ID
+	})
+	return items, next, nil
 }
 
 func scanSchool(row pgx.Row) (coreschool.Record, error) {

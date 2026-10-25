@@ -19,6 +19,7 @@ import (
 	"context"
 
 	coreschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/school"
+	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
 // Status 是院校生命周期状态。
@@ -43,19 +44,27 @@ type Update = coreschool.Update
 type Binding = coreschool.AdminBinding
 
 // Repo 是院校仓储端口。
+//
+// List 按作用域过滤并做游标分页。
+// master 走全量语句；admin 走 id = ANY(...) 语句。
+// **两条语句不合并**：空集合与全量必须可分辨。
 type Repo interface {
 	Create(ctx context.Context, in New) (Record, error)
 	Get(ctx context.Context, id string) (Record, error)
 	GetByCode(ctx context.Context, code string) (Record, error)
 	Update(ctx context.Context, id string, in Update) (Record, error)
+	List(ctx context.Context, scope corescope.Scope, cursor string, limit int) ([]Record, string, error)
 }
 
 // AdminRepo 是管理员绑定仓储端口。
 //
 // Grant 幂等：重复授予同一条绑定不算错误。
 // **Revoke 删行；无行可删时报 not_found**。
+// ListBySchool 带邮箱与角色，供管理页展示。
 type AdminRepo interface {
 	Grant(ctx context.Context, binding Binding) error
 	Revoke(ctx context.Context, userID, schoolID string) error
 	SchoolsForUser(ctx context.Context, userID string) ([]string, error)
+	ListBySchool(ctx context.Context, schoolID, cursor string, limit int) ([]Binding, string, error)
+	GetBinding(ctx context.Context, userID, schoolID string) (Binding, error)
 }
