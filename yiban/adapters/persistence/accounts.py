@@ -218,8 +218,8 @@ def _decrypt_row(row, env_file=None):
     key_env_file = _connection._env_file if env_file is None else env_file
     pending = []
     # 本行只取一次钥（工单 dnox ④）：判定"有没有钥"与装载钥都在下面 `key is None` 的
-    # 首枚密文字段处做一次，字段循环内不再逐字段重复。一行有 password / phone_code 两枚
-    # 密文字段，逐字段判定会把 `has_key`（读盘）与 `load_key` 的调用翻倍。
+    # 首枚密文字段处做一次，字段循环内不再逐字段重复。一行有 password / phone_code /
+    # profile 三枚密文字段，逐字段判定会把 `has_key`（读盘）与 `load_key` 的调用翻倍。
     key = None
     # 密文解密（password/phone_code 存 JSON 串；profile 解密后是**明文资料的 JSON 串**，
     # 展示层解析；解密失败抛明确错误，绝不静默降级）
@@ -558,7 +558,8 @@ def add_account(fields, audit_spec=None):
 def update_account(account_id, fields, expect_snapshot=None, audit_spec=None):
     """更新单行；expect_snapshot 为乐观锁指纹 dict（name/phone/phone_model/status/deleted），不匹配返回 False。
 
-    手机号变更时自动用新手机号重加密 password/phone_code（旧密文 AAD 绑定旧手机号）；
+    手机号变更时自动用新手机号重加密 password/phone_code/profile（旧密文 AAD 绑定旧手机号；
+    profile 是二段资料的密文列，见 `PROFILE_FIELDS`）；
     改 phone 撞 UNIQUE 抛 sqlite3.IntegrityError（业务层捕获）。
 
     整个读-改-写过程纳入 BEGIN IMMEDIATE 事务：原实现 SELECT（读行 + 解密）与 UPDATE
@@ -875,10 +876,36 @@ def delete_accounts_by_owner(owner, audit_spec=None):
     return deleted
 
 
+def _outbound_cipher_field(value, phone):
+    """整表回环用：密文原样透传，明文走 `_encrypt_field`（与 password/phone_code 同通道）。
+
+    `replace_accounts` 与 JSON 导入都吃"导出 → 导入"的回环输入：导出默认给密文
+    （`load_accounts_raw`），密文再加密一次就成了读不出来的双层密文。故先判形态：
+    已是密文（dict 密文对象或密文 JSON 串）→ 原样（dict 序列化）；否则按明文加密。
+    空值仍走 `_encrypt_field` 的空值语义（落空串）。
+    """
+    if value and _is_encrypted_value(value):
+        return value if isinstance(value, str) else json.dumps(value)
+    return _encrypt_field(value, phone)
+
+
+def _as_plain_json(value):
+    """明文 JSON 列（`profile_expose`）入库形态：dict → JSON 串；串/空值原样。
+
+    开关列不是密文（布尔集非 PII），回环时只需形态归一：导出给的是 JSON 串，
+    内存调用方可能给 dict。非 dict 一律转 `str` 但不重排键——归一化与"只存 true 项"
+    的语义由写口 `update_account_profile` 负责，回环面只保证不丢内容。
+    """
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    return "" if value is None else str(value)
+
+
 def replace_accounts(accounts):
     """整表替换：事务内清空并重插，sort_order=列表顺序 1..N。
 
-    敏感字段密文化同 add_account（AAD=手机号）。
+    敏感字段密文化同 add_account（AAD=手机号）；二段资料 `profile` 同通道
+    （密文透传，明文加密），`profile_expose` 是明文开关列（只存 true 项）。
     ⚠️ 整表替换语义：与 web 并发使用时以最后一次保存为准（勿与其他写入方同时编辑）。
     不再存在的账号连带清理自选时间片、会话缓存与事件（防孤儿 pref 虚高拥挤度、
     凭据残留、明文手机号驻留至保留期满）。
@@ -895,8 +922,8 @@ def replace_accounts(accounts):
         for i, a in enumerate(accounts):
             try:
                 conn.execute(
-                    "INSERT INTO accounts (sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason, deleted, deleted_at, user_paused) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO accounts (sort_order, name, phone, password, phone_model, phone_code, owner, status, reject_reason, deleted, deleted_at, user_paused, profile, profile_expose) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         i + 1,
                         a.get("name", ""),
@@ -915,6 +942,8 @@ def replace_accounts(accounts):
                         1 if a.get("deleted") else 0,
                         a.get("deleted_at", ""),
                         1 if a.get("user_paused") else 0,
+                        _outbound_cipher_field(a.get("profile"), a.get("phone", "")),
+                        _as_plain_json(a.get("profile_expose")),
                     ),
                 )
             except sqlite3.IntegrityError as e:

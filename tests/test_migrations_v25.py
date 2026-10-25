@@ -17,16 +17,21 @@
 依赖：临时库文件；无网络、无 skip。
 """
 import contextlib
+import json
 import os
 import shutil
 import sqlite3
 import tempfile
 import unittest
+from typing import ClassVar
 from unittest import mock
 
-from yiban.adapters.persistence import migrations
+from yiban.adapters.config import account_crypto
+from yiban.adapters.persistence import connection, migrations
 
 V25_COLUMNS = ("profile", "profile_expose")
+
+TEST_KEY = "3f9a2c7e5b1d8046a7c3e9f2b6d10485c2a7f4b9e1d63058fa4c7b2e9d15803a"
 
 
 class MigrateV25Test(unittest.TestCase):
@@ -149,6 +154,114 @@ class MigrateV25Test(unittest.TestCase):
         """v25 产物必须在册：缺列拒启由链尾完整性门执行（schema_drift 族逐项验）。"""
         self.assertEqual(migrations._ARTIFACTS.get(25),
                          (("accounts", "profile"), ("accounts", "profile_expose")))
+
+
+class ProfileImportReplayTest(unittest.TestCase):
+    """导出 → 干净导入回放：二段资料与暴露开关不得在逃生门上静默丢失（审查中-2）。
+
+    两条导入形态都测：`db_export` 默认给密文（`load_accounts_raw`），`--plaintext`
+    给明文（`load_accounts`，profile 是明文 JSON 串）。导入走 `_maybe_migrate`。
+    """
+
+    PHONE = "13800138002"
+    CONTENT: ClassVar[dict[str, str]] = {
+        "real_name": "张三", "student_id": "20250001",
+        "college": "计算机学院", "class_name": "软件2401",
+        "email": "zhangsan@example.edu",
+    }
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="yiban-v25-import-")
+        self.db_path = os.path.join(self.root, "yiban.db")
+        self.env_file = os.path.join(self.root, ".env")
+        with open(self.env_file, "w", encoding="utf-8") as f:
+            f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n")
+        self.accounts_json = os.path.join(self.root, "accounts.json")
+        self._prev = {k: os.environ.get(k) for k in
+                      ("YIBAN_ACCOUNTS_KEY", "YIBAN_ENV_FILE", "YIBAN_STATE_DIR")}
+        os.environ["YIBAN_ACCOUNTS_KEY"] = TEST_KEY
+        os.environ["YIBAN_ENV_FILE"] = self.env_file
+        os.environ["YIBAN_STATE_DIR"] = self.root
+        connection.set_env_file(self.env_file)
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        migrations._create_tables(conn)
+        migrations._run_migrations(conn)
+        self.conn = conn
+        prev_conn = connection._conn
+        connection.set_conn(conn)
+        self.addCleanup(self._restore_conn, prev_conn)
+
+    def _restore_conn(self, prev_conn):
+        if prev_conn is None:
+            connection.reset_conn()
+        else:
+            connection.set_conn(prev_conn)
+        with contextlib.suppress(Exception):
+            self.conn.close()
+        for k, v in self._prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _write_json(self, rows):
+        with open(self.accounts_json, "w", encoding="utf-8") as f:
+            json.dump(rows, f, ensure_ascii=False)
+
+    def _encrypted_profile(self):
+        key = account_crypto.load_key(self.env_file)
+        plain = json.dumps(self.CONTENT, ensure_ascii=False)
+        return json.dumps(account_crypto.encrypt_password(plain, key, self.PHONE))
+
+    def _row(self):
+        return dict(self.conn.execute(
+            "SELECT profile, profile_expose FROM accounts WHERE phone=?",
+            (self.PHONE,)).fetchone())
+
+    def _decrypted_content(self):
+        key = account_crypto.load_key(self.env_file)
+        return json.loads(account_crypto.decrypt_password(
+            json.loads(self._row()["profile"]), key, self.PHONE))
+
+    def _base_row(self, **extra):
+        row = {"name": "乙", "phone": self.PHONE, "password": "", "phone_model": "",
+               "phone_code": "", "owner": "u@t.local", "status": "pending",
+               "reject_reason": "", "deleted": False, "deleted_at": ""}
+        row.update(extra)
+        return row
+
+    def test_ciphertext_export_replay_keeps_profile_and_expose(self):
+        """密文导出（逃生门默认形态）：profile 原样透传，expose 原样保留。"""
+        self._write_json([self._base_row(
+            profile=self._encrypted_profile(),
+            profile_expose=json.dumps({"student_id": True}))])
+        migrations._maybe_migrate(self.conn, self.accounts_json)
+        self.assertEqual(self._decrypted_content(), self.CONTENT)
+        self.assertEqual(json.loads(self._row()["profile_expose"]), {"student_id": True})
+        self.assertIn("ct", json.loads(self._row()["profile"]), "导入后必须仍是密文")
+
+    def test_plaintext_export_replay_encrypts_profile(self):
+        """`--plaintext` 导出：profile 是明文 JSON 串，导入必须加密落库。
+
+        同批还钉住 `.bak` 逃生门：源文件含明文资料时，备份必须被重写成加密版，
+        否则资料明文会以 `.bak` 形态长期驻留磁盘。
+        """
+        self._write_json([self._base_row(
+            profile=json.dumps(self.CONTENT, ensure_ascii=False),
+            profile_expose='{"student_id": true}')])
+        migrations._maybe_migrate(self.conn, self.accounts_json)
+        self.assertEqual(self._decrypted_content(), self.CONTENT)
+        self.assertIn("ct", json.loads(self._row()["profile"]), "明文导入后必须加密")
+        self.assertNotIn("20250001", self._row()["profile"], "资料明文不得落库")
+        bak = [p for p in os.listdir(self.root)
+               if p.startswith("accounts.json.bak")]
+        self.assertTrue(bak, "迁移成功必须留下 .bak 逃生门")
+        with open(os.path.join(self.root, bak[0]), encoding="utf-8") as f:
+            bak_text = f.read()
+        self.assertNotIn("20250001", bak_text, "备份里的资料明文必须被重写为加密版")
+        self.assertIn("ct", bak_text)
 
 
 if __name__ == "__main__":
