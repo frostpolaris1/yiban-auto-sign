@@ -35,6 +35,7 @@
     悬空夹具因此按片段拼装，见 `_FAKE_DOC`。
 """
 import ast
+import functools
 import io
 import os
 import re
@@ -285,6 +286,23 @@ def text_files_of(root, tracked):
     return out
 
 
+@functools.lru_cache(maxsize=4)
+def _tracked_dirs(tracked_key):
+    """跟踪集的**目录**集合（含全部祖先）。
+
+    为什么需要：`_DOC_PATH` 会匹配「两段以上、无 .md 后缀」的路径形态，
+    因此 `.gitignore` 里的负向目录规则 `!docs/dev/<子目录>/` 会被误当成文件引用。
+    目录形态**不是**文档引用（本门 docstring 第 21–22 行已定这条口径），
+    故判定前先看它是不是跟踪集里某个文件的祖先目录。
+    """
+    dirs = set()
+    for p in tracked_key:
+        parts = p.split("/")
+        for i in range(1, len(parts)):
+            dirs.add("/".join(parts[:i]))
+    return frozenset(dirs)
+
+
 def _doc_ref_of(match):
     """一次 `_DOC_REF` 匹配 → 库内相对路径。
 
@@ -319,13 +337,14 @@ def scan_text(text, tracked, skip=None):
     `skip` 可传入预先算好的行号集合，避免同一文本重复做 AST 解析。
     """
     skip = _negated_literal_lines(text) if skip is None else skip
+    dirs = _tracked_dirs(frozenset(tracked))
     out = []
     for i, line in enumerate(text.splitlines(), 1):
         if i in skip:
             continue
         for m in _DOC_REF.finditer(line):
             ref = _doc_ref_of(m)
-            if ref not in tracked:
+            if ref not in tracked and ref not in dirs:
                 out.append((i, ref, "文档引用未入库"))
         for m in _OLD_COORD_RE.finditer(line):
             if m.group(0) not in tracked:
@@ -496,6 +515,24 @@ class DocReferenceGateTest(unittest.TestCase):
                      "见 docs/refactor 的 PENDING\n", "前缀 feat/fix/docs/...\n"):
             self.assertEqual(scan_text(line, tracked), [],
                              "目录形态／通配被误判成文档引用：%r" % line)
+        # ③b 多段无后缀的**目录**形态 ⇒ 不误红
+        #     实证：`.gitignore` 的负向目录规则 `!docs/dev/<子目录>/` 曾把
+        #     `docs/dev/<子目录>` 当成文件引用（2026-10-25 交接文档批暴露）。
+        tracked_with_dir = {"docs/dev/experimental-line/legacy-criteria-handoff.md"}
+        for line in ("!docs/dev/experimental-line/\n",
+                     "docs/dev/experimental-line/*\n",
+                     "见 docs/dev/experimental-line 目录\n"):
+            self.assertEqual(scan_text(line, tracked_with_dir), [],
+                             "目录形态（多段无后缀）被误判成文档引用：%r" % line)
+        # 目录里的文件都没入库时，同一形态仍要红（不因上面的豁免放走真悬空）
+        # 拼装：本文件也是入库文本件、本门会扫到它自己，故不写出完整假路径。
+        _gone_dir = "docs/dev/" + "not-tracked-dir"
+        self.assertEqual(
+            [(h[0], h[1]) for h in scan_text("见 " + _gone_dir + "\n",
+                                             tracked_with_dir)],
+            [(1, _gone_dir)],
+            "未入库目录被误放行：目录豁免只对跟踪集里确有后代的目录生效")
+
         # ④ 旧坐标路径：在库内 ⇒ 不误红；不在库内 ⇒ 命中
         self.assertEqual(scan_text("见 `" + _FAKE_OLD + "` 转发壳。\n", tracked), [],
                          "在库内的旧坐标路径被误判成悬空")
