@@ -14,7 +14,9 @@
 # 行为契约（tests/test_deploy_prod_artifacts.py 逐条钉死，活体反例可红）：
 #   1) 逐行读 manifest.tsv（mode<TAB>仓库源<TAB>生产绝对路径）；安装前跑
 #      scripts/check-cron-provenance.sh，cron 来源断言不过 ⇒ 拒装。
-#   2) sha256 对账：目标已存在且与仓库源校验和不符 ⇒ 拒装并打印双侧校验和——
+#   1a) 模板渲染：源里含 @YIBAN_APP_DIR@ 时先展开成本检出根再落位（cron 表用；
+#      标准部署 /opt/yiban-auto-sign 下逐字不变）。对账与幂等比的是渲染后内容。
+#   2) sha256 对账：目标已存在且与仓库源（渲染后）校验和不符 ⇒ 拒装并打印双侧校验和——
 #      现网手工漂移（yiban-backup.sh 差 3 行那类）不得被静默覆盖；漂移内容先人工
 #      diff 回填仓库。确要"以仓库为准"时加 --adopt-production：现网件先归档为
 #      <目标>.reconcile-<时间戳> 再覆写（归档件是回填 scripts/backup.sh 的原料）。
@@ -42,10 +44,26 @@
 #      指向本检出的活进程。容器形态**不走本安装器**（容器升级 = `git pull` ＋
 #      `docker compose up -d --build`），其进程 argv 也不含宿主检出路径，故本门不宣称
 #      覆盖它。拒装输出给出可复制的停服命令。带 DESTDIR 的暂存安装豁免本门。
+#   9a) 检出路径字符面（入口门）：必须匹配 `^/[A-Za-z0-9._/-]+$`（绝对路径＋安全
+#      字符集），否则拒装（未做任何改动）。原因：cron 命令行原样嵌入检出根，
+#      /etc/cron.d 由 `sh -c` 解析——空格/引号/;/$/反引号/&/|/反斜杠/制表符/CR
+#      都会改变命令语义，黑名单枚举不完（本单二审 R1；先例 pull-prod-backup.sh）。
 # ============================================================
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# 检出路径的字符面（**白名单**，fail-closed，在任何落位之前）：
+# 必须是绝对路径，且字符只许 A-Za-z0-9 . _ / -（仓内先例：scripts/pull-prod-backup.sh
+# 的 REMOTE_BACKUP_DIR 同一条正则）。为什么白名单而不是黑名单：cron 表命令行原样
+# 嵌入检出根，/etc/cron.d 由 `sh -c` 解析——空格拆词、引号改引、`;`/`&`/`|` 改变
+# 命令结构、`$`/反引号触发展开、反斜杠转义、制表符与 CR 破坏表。黑名单永远枚举不完。
+if [[ ! "$REPO_ROOT" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+    echo "yiban-install: 检出路径不在白名单字符集内：$REPO_ROOT" >&2
+    echo '  允许：绝对路径，字符限 A-Za-z0-9 . _ / -（不得含空格、引号、;、$、`、\ 等）。' >&2
+    echo "  原因：cron 命令行原样嵌入检出根；特殊字符会改变 sh 的解析（拆词/展开/管道）。" >&2
+    echo "  处置：把检出移到白名单字符集内的路径，再重跑本安装器。未做任何改动。" >&2
+    exit 1
+fi
 MANIFEST="$REPO_ROOT/deploy/prod/manifest.tsv"
 DESTDIR="${DESTDIR:-}"
 ADOPT=0
@@ -57,6 +75,42 @@ for arg in "$@"; do
 done
 
 sha() { sha256sum "$1" | cut -d' ' -f1; }
+
+# ------------------------------------------------------------
+# 模板渲染（cron 表的部署路径）
+#
+# 为什么只在安装器里渲染：cron 表由 root 装到 /etc/cron.d/，仓库里的原件不能硬写
+# 某一个部署路径（换目录部署就错）。占位符 @YIBAN_APP_DIR@ 的渲染值就是**本检出根**
+# ——与 M01 门、`scripts/lib/host_paths.sh` 的反推口径同源；标准部署（/opt）逐字不变。
+#
+# 只有含占位符的源才走临时件；其余**逐字安装**（不碰内容、不重写行尾）。校验和
+# 对账比的是**渲染后**的内容：现网漂移的判据仍是"装出来的东西 = 仓库渲染结果"。
+# 校验和输出打印的也是渲染后摘要（运维拿它比对装机件）。
+# ------------------------------------------------------------
+APP_DIR_TOKEN='@YIBAN_APP_DIR@'
+RENDER_TMP=()
+cleanup_render() {
+    if [ "${#RENDER_TMP[@]}" -gt 0 ]; then
+        rm -f -- "${RENDER_TMP[@]}"
+    fi
+}
+trap cleanup_render EXIT
+
+# stage_source <manifest 源> → stdout 给"要安装的那份"路径
+stage_source() {
+    local src="$1" tmp body
+    if ! grep -qF "$APP_DIR_TOKEN" "$REPO_ROOT/$src"; then
+        printf '%s\n' "$REPO_ROOT/$src"
+        return 0
+    fi
+    tmp="$(mktemp "${TMPDIR:-/tmp}/yiban-install-render.XXXXXX")" \
+        || { echo "yiban-install: 无法创建模板暂存件" >&2; exit 1; }
+    RENDER_TMP+=("$tmp")
+    body="$(cat "$REPO_ROOT/$src")"
+    # bash 字符串替换：REPO_ROOT 里的 & / | / \\ 都不是特殊字符（sed 会当特殊字符）。
+    printf '%s\n' "${body//$APP_DIR_TOKEN/$REPO_ROOT}" > "$tmp"
+    printf '%s\n' "$tmp"
+}
 
 [ -f "$MANIFEST" ] || { echo "yiban-install: 清单缺失: $MANIFEST" >&2; exit 1; }
 mapfile -t ROWS < <(grep -vE '^[[:space:]]*(#|$)' "$MANIFEST")
@@ -87,10 +141,12 @@ drift=0
 for row in "${ROWS[@]}"; do
     IFS=$'\t' read -r _mode src dest <<< "$row"
     destpath="$DESTDIR$dest"
-    if [ -f "$destpath" ] && [ "$(sha "$destpath")" != "$(sha "$REPO_ROOT/$src")" ]; then
+    # 对账基准是**渲染后**的源（模板 → 检出根）；不含占位符的源仍是逐字原件。
+    srcpath="$(stage_source "$src")"
+    if [ -f "$destpath" ] && [ "$(sha "$destpath")" != "$(sha "$srcpath")" ]; then
         drift=1
         echo "checksum mismatch: $dest" >&2
-        echo "  expected(repo):    $(sha "$REPO_ROOT/$src")" >&2
+        echo "  expected(repo):    $(sha "$srcpath")" >&2
         echo "  actual(present):   $(sha "$destpath")" >&2
     fi
 done
@@ -454,7 +510,8 @@ TS=$(date +%Y%m%d%H%M%S)
 
 for row in "${ROWS[@]}"; do
     IFS=$'\t' read -r mode src dest <<< "$row"
-    srcpath="$REPO_ROOT/$src"
+    # 模板渲染：含 @YIBAN_APP_DIR@ 的源先展开成本检出根，再按普通件落位。
+    srcpath="$(stage_source "$src")"
     destpath="$DESTDIR$dest"
     dd=$(dirname "$destpath")
     mkdir -p "$dd"

@@ -11,7 +11,7 @@
 - 系统设置：随机延迟开关（写入 .env）、连通性检测、服务器时间/签到窗口状态
 
 运行：
-    python3 -m web                 # 默认 127.0.0.1:17892（仅回环；生产用 systemd/gunicorn 模板）
+    python3 -m web                 # 默认只监听回环（端口见 deploy/web.env 的 YIBAN_WEB_PORT）
     python3 -m web --port 9000     # 自定义端口
 
 管理员账号：首次启动自动生成 SECRET_KEY 并写入 .env；
@@ -2635,6 +2635,21 @@ def create_app(host=None):
 # ---------------------------------------------------------------------------
 # 入口
 # ---------------------------------------------------------------------------
+def _deploy_web_port():
+    """`python -m web` 的 `--port` 缺省：进程环境 → 部署面值表（`deploy/web.env`）。
+
+    端口只有一处定义（值表），名册只登记键的类型与域。生产由 systemd/compose 用
+    同一张表注入监听参数；本函数只服务开发直跑。取不到就响亮失败——静默回落到
+    另一个数字就是第二个定义点。
+    """
+    raw = os.environ.get("YIBAN_WEB_PORT") or config_loader.deploy_value("YIBAN_WEB_PORT")
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise SystemExit(
+            "YIBAN_WEB_PORT 必须是整数，实际 %r（值表 deploy/web.env）" % (raw,)) from None
+
+
 def main():
     global ACCOUNTS_FILE, LOG_FILE, ENV_FILE, STATE_DIR, DB_FILE
     parser = argparse.ArgumentParser(description="易班自动签到网页管理系统")
@@ -2642,8 +2657,10 @@ def main():
     # 全网卡（明文 HTTP + 无反代防护）。生产走 systemd/gunicorn 模板不受影响；
     # 确需直连局域网时显式传 --host 0.0.0.0（自担风险）。
     parser.add_argument("--host", default="127.0.0.1", help="监听地址（默认 127.0.0.1，仅回环）")
-    # 非常见端口（默认 17892）：避开 8000/5000/3000 等常见端口，防止与其他部署冲突
-    parser.add_argument("--port", type=int, default=17892, help="监听端口（默认 17892）")
+    # 端口缺省读部署面值表（deploy/web.env）：非常见端口，避开 8000/5000/3000，
+    # 防止与本机其他服务冲突。改端口只改值表，不要在代码里再写一份。
+    parser.add_argument("--port", type=int, default=_deploy_web_port(),
+                        help="监听端口（默认见 deploy/web.env 的 YIBAN_WEB_PORT）")
     parser.add_argument(
         "--config", default=ACCOUNTS_DEFAULT, help=f"JSON 数据文件路径（迁移来源，默认: {ACCOUNTS_DEFAULT}）"
     )

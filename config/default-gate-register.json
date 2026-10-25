@@ -81,6 +81,18 @@
       "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
     }
   },
+  "YIBAN_WEB_PORT": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "部署面启动参数：值唯一定义在 deploy/web.env，名册无应用内缺省"
+    }
+  },
+  "YIBAN_WEB_THREADS": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "部署面启动参数：值唯一定义在 deploy/web.env，名册无应用内缺省"
+    }
+  },
   "YIBAN_WORKERS": {
     "default_literal_gate_exempt": {
       "class": "example_diverges",
