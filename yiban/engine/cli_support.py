@@ -134,7 +134,7 @@ def _acquire_run_lock(only_mode, name=None):
     web 端的防抖/terminate 只覆盖 web 自己 spawn 的子进程，与 cron 全量队列之间没有
     任何互斥——同账号被两个进程并发登录易班会导致重复打卡/会话异常/风控画像。
     锁文件 <STATE_DIR>/signin-run.lock：
-    - 全量模式：阻塞等待至多 YIBAN_RUN_LOCK_WAIT 秒（默认 600s），等到就继续；
+    - 全量模式：阻塞等待至多 YIBAN_RUN_LOCK_WAIT 秒（缺省见配置名册），等到就继续；
       **超时即拒绝运行**（抛 `_RunLockUnavailable`）——旧行为是告警后"无锁继续"，
       那等于把"另一轮全量正在签同一批账号"这个事实忽略掉，两边各登录一次；
     - --only 模式：立即尝试一次，被持有则抛 `_RunLockHeld`（调用方退出并留痕，

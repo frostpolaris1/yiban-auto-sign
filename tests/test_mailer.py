@@ -741,6 +741,44 @@ class _Base_FAILOVER(unittest.TestCase):
         return json.loads(plain)
 
 
+class SmtpDefaultFromRegistryTest(unittest.TestCase):
+    """SMTP 主机/端口的缺省只在配置名册：换名册值，读取点必须跟着变。
+
+    审查员 7yf 中-1：`or "smtp.qq.com"` 这类回退与名册缺省同值，但它是第二份
+    定义点。本测把 `default_of` 打桩成别的值，证明读取点真的走名册。
+    """
+
+    @staticmethod
+    def _envs():
+        return {"YIBAN_MAIL_USER": "u@x.com", "YIBAN_MAIL_PASS": "p"}
+
+    @staticmethod
+    def _sentinel():
+        return {"YIBAN_MAIL_SMTP_HOST": "mx.example.test",
+                "YIBAN_MAIL_SMTP_PORT": 2525}
+
+    def _patched(self):
+        orig = mailer.config_loader.default_of
+        sentinel = self._sentinel()
+
+        def fake(key):
+            return sentinel.get(key, orig(key))
+
+        return mock.patch.object(mailer.config_loader, "default_of", fake)
+
+    def test_smtp_list_follows_registry_defaults(self):
+        with self._patched():
+            entries = mailer.smtp_list(self._envs())
+        self.assertEqual(entries[0]["host"], "mx.example.test")
+        self.assertEqual(entries[0]["port"], 2525)
+
+    def test_get_config_follows_registry_defaults(self):
+        with self._patched():
+            cfg = mailer.get_config(self._envs())
+        self.assertEqual(cfg["host"], "mx.example.test")
+        self.assertEqual(cfg["port"], 2525)
+
+
 class SmtpListTest(_Base_FAILOVER):
     """smtp_list：旧键回落与 ENC 解析。"""
 
