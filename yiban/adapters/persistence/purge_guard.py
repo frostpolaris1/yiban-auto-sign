@@ -151,7 +151,8 @@ def write_purge_audit(action, target, detail, db_file=None, env_file=None):
             return False
         # audit_or_refuse = fail-closed 审计（失败抛 AuditWriteRefused）：本函数正是它的
         # 典型调用面——清库/删除留痕写不进去就必须放弃删除，不能"删了却无痕"。
-        store_db.audit_or_refuse("purge-guard", action, target, str(detail)[:200])
+        store_db.audit_or_refuse("purge-guard", action, target,
+                                 str(detail)[:store_db.AUDIT_DETAIL_LIMIT])
         return True
     except Exception:  # 初始化/审计任一失败（含 AuditWriteRefused）都不得放行删除
         return False

@@ -34,10 +34,13 @@ import sys
 
 from flask import current_app, jsonify, request
 
-#: 列表接口分页参数的上下限（沿用日志列表的 1–200 口径）。
+#: limit/offset 列表分页的上下限与缺省：**唯一定义点**。
+#: 读者：本模块 `page_args()`、`web.routes.data.api_admin_sign_events`（只取上下限），
+#: 以及 `tests/test_pagination_contract_gate.py` 对 `docs/dev/api-contract.md` §1.8
+#: 与前端档位的互检门。改这里必须同批改 §1.8 与前端档位，否则门红。
 PAGE_LIMIT_MIN = 1
 PAGE_LIMIT_MAX = 200
-#: limit 缺省（参数缺失或非法时取它）；与日志列表 sign_events 的缺省同值。
+#: limit 缺省（参数缺失或非法时取它）。
 PAGE_LIMIT_DEFAULT = 100
 
 

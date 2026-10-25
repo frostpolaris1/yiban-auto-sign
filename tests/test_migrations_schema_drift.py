@@ -56,6 +56,8 @@ REQUIRED_ARTIFACTS = (
     (21, "run_events", None),
     (23, "egress_state", "half_open_until"),
     (24, "emit_ledger", None),
+    (25, "accounts", "profile"),
+    (25, "accounts", "profile_expose"),
 )
 
 

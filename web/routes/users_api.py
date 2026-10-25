@@ -330,7 +330,7 @@ def api_users_batch():
         # 重置密码时补"跳过 N 个"（被软跳过项），运维能看出批量里有没处理上的
         audit_detail = (f"处理 {done} 个: " + ",".join(
             _accounts_data._mask_email(e) for e in (emails or [])[:20]
-        ))[:200]
+        ))[:db.AUDIT_DETAIL_LIMIT]
         if action == "reset_password" and done < len(emails or []):
             audit_detail += f"；跳过 {len(emails or []) - done} 个"
         audit_spec = {

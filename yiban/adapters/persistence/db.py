@@ -12,7 +12,7 @@
 
 本模块再导出的同包模块（各域唯一定义点不在本模块）：
 - `connection`：连接单例与路径（`_conn`/`_conn_lock`/`_db_file`/`_env_file`/`get_conn`）。
-- `migrations`：建表/索引、`migrate_v1..v21`、版本编排 `_run_migrations` 与完整性校验
+- `migrations`：建表/索引、`migrate_v1..v25`、版本编排 `_run_migrations` 与完整性校验
   （`MigrationIntegrityError`：迁移记录/登记产物缺失 ⇒ 拒启），以及 JSON → SQLite
   自动导入 `_maybe_migrate` / `_rename_backup`。
 - `audit_chain`：`audit()` 写入链路、哈希链校验、库外锚点族、审计密钥来源与缓存。
@@ -161,6 +161,9 @@ _reset_audit_fail_memory = _audit_chain._reset_audit_fail_memory
 audit_persisted_write_failures = _audit_chain.audit_persisted_write_failures
 audit_write_failures = _audit_chain.audit_write_failures
 audit = _audit_chain.audit
+#: 审计 detail 的字符上限（唯一定义点在 `audit_chain.AUDIT_DETAIL_LIMIT`）：
+#: 按原样再导出，审计写点取 `db.AUDIT_DETAIL_LIMIT` 即可，不另写字面量。
+AUDIT_DETAIL_LIMIT = _audit_chain.AUDIT_DETAIL_LIMIT
 # 请求作用域（审计行携带"哪个请求做的"）与"业务+审计同事务"原语：
 # `audit_unit` 上下文管理器、`record_in_txn`（业务事务内插审计行）、
 # `audit_or_refuse`（跨存储调用点的 fail-closed 审计，失败抛 AuditWriteRefused）。
@@ -427,6 +430,7 @@ _FORWARDED_STATE = {
     "_convert_integrity_error": _accounts,
     "add_account": _accounts,
     "update_account": _accounts,
+    "update_account_profile": _accounts,
     "set_account_deleted": _accounts,
     "purge_account": _accounts,
     "update_account_status": _accounts,
