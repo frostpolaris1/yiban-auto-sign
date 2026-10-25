@@ -21,7 +21,8 @@
 # 选项：
 #   --ci             跑 CI 的关键集（ruff + mypy + 快集 -n 4 + 名册的串行专轨 + e2e smoke
 #                    + shared-facts + path-env-reads + config-registry + import-linter 四道
-#                    门禁，各带自己的元测试），就地跑：不建副本、不归一化、不落日志。
+#                    门禁，各带自己的元测试 + Vue 构建可复现门（缺 node/npm 时显式 SKIPPED，
+#                    不静默），就地跑：不建副本、不归一化、不落日志。
 #                    **快集 = 车道名册 tests/lane-roster.tsv 的 fast 行**（2026-10-17 起；
 #                    此前是 `-k` 关键词子集，改动落在命中面外会静默漏测）。
 #   --fast           **提交前自查·安全档**：跑**快集**——与 CI 的 verify 同一集合
@@ -466,6 +467,12 @@ run_ci() { # CI 关键子集：就地跑，不建副本；命令逐字冻结在 
     # 装过，它必然"一致"。要判的形态是"venv 落后 lock"，那由该文件的假 dist-info
     # 与 stub 造出来；门本体在部署点跑（deploy/prod/install.sh 同步后即跑）。
     "$py" -m pytest tests/test_deploy_deps_sync.py -q -p no:randomly
+    echo "DEV-VERIFY(ci) vue build reproducible gate"
+    if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+        bash scripts/check-vue-build-reproducible.sh
+    else
+        echo "DEV-VERIFY(ci) SKIPPED: vue build reproducible gate 缺 node/npm——跳过≠绿（AGENTS §十三.30）；覆盖关系：CI frontend job（.github/workflows/ci.yml）跑同一脚本 full 模式" >&2
+    fi
     echo "DEV-VERIFY(ci) done"
 }
 
