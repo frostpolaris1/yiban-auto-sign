@@ -46,7 +46,7 @@
 // 依据：契约 Window 与 WindowSource 的定义。
 //
 // window.cancel：声明 WindowDiscovery 时，已取消上下文返回 context.Canceled。
-// 未声明时只要求非 nil 错误：该方法本就不该被调用（G1）。
+// 未声明时本判据不适用（显性跳过）：该方法本就不该被调用（G1）。
 // 依据：Go 惯例；宿主靠它区分取消与上游失败。
 //
 // targets.shape：每个目标 ID 非空，经纬度在物理范围内。

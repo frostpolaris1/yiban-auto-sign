@@ -3,11 +3,13 @@ package conformance
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/fake"
 )
@@ -479,21 +481,33 @@ func TestCriterionWatchdogFailsBlockingProvider(t *testing.T) {
 	}
 }
 
-// 超时后整轮停跑：execute 在首个判据超时即返回，不再为每条各付上限（R3-04）。
-func TestExecuteStopsAfterFirstTimeout(t *testing.T) {
+// 看门狗有界：阻塞判据在注入上限附近返回超时哨兵，不悬挂。
+func TestCriterionWatchdogBoundsBlockingProvider(t *testing.T) {
 	previous := criterionTimeout
-	criterionTimeout = 100 * time.Millisecond
+	criterionTimeout = 120 * time.Millisecond
 	t.Cleanup(func() { criterionTimeout = previous })
 
-	results, stoppedAt := execute(func() contract.Provider { return blocksSign{referenceProvider()} })
-	if stoppedAt == "" {
-		t.Fatal("阻塞提供方未触发停跑")
+	clk := coreclock.System{}
+	started := clk.Now()
+	err := runCheck(findCheck(t, CheckSignResult), func() contract.Provider {
+		return blocksSign{referenceProvider()}
+	})
+	elapsed := clk.Now().Sub(started)
+	if !errors.Is(err, errCriterionTimeout) {
+		t.Fatalf("阻塞提供方未触发判据超时: %v", err)
 	}
-	if len(results) >= len(Checks()) {
-		t.Fatalf("执行了 %d 条判据；停跑后应少于总数 %d", len(results), len(Checks()))
+	if elapsed < criterionTimeout || elapsed > criterionTimeout+time.Second {
+		t.Fatalf("判据耗时 %s；应在 %s 附近", elapsed, criterionTimeout)
 	}
-	if !errors.Is(results[len(results)-1].err, errCriterionTimeout) {
-		t.Fatalf("最后一条判据不是超时: %v", results[len(results)-1].err)
+}
+
+// 停跑决策：超时哨兵要求停跑，其余错误不停。
+func TestStopAfterDecision(t *testing.T) {
+	if !stopAfter(fmt.Errorf("%s: %w", "conformance: x: 未完成", errCriterionTimeout)) {
+		t.Fatal("超时哨兵未触发停跑")
+	}
+	if stopAfter(errors.New("普通失败")) || stopAfter(nil) {
+		t.Fatal("普通错误不应停跑")
 	}
 }
 
@@ -502,4 +516,32 @@ type blocksSign struct{ contract.Provider }
 
 func (blocksSign) Sign(context.Context, contract.SignRequest) (contract.Result, error) {
 	select {}
+}
+
+// 阻塞的未声明能力：判据必须在调用之前判能力（G1），
+// 否则会先调阻塞方法、耗满看门狗再报超时。
+type blocksDiscovery struct{ contract.Provider }
+
+func (blocksDiscovery) DiscoverWindow(context.Context, contract.DiscoverRequest) (contract.Window, error) {
+	select {}
+}
+
+func TestUndeclaredCapabilityIsNotCalled(t *testing.T) {
+	previous := criterionTimeout
+	criterionTimeout = 150 * time.Millisecond
+	t.Cleanup(func() { criterionTimeout = previous })
+
+	provider := func() contract.Provider {
+		return blocksDiscovery{fake.New("blocks-discovery", contract.Capabilities{})}
+	}
+	clk := coreclock.System{}
+	started := clk.Now()
+	err := runCheck(findCheck(t, CheckWindowCancel), provider)
+	elapsed := clk.Now().Sub(started)
+	if !errors.Is(err, errNotApplicable) {
+		t.Fatalf("未声明能力仍被调用: %v", err)
+	}
+	if elapsed > criterionTimeout {
+		t.Fatalf("判据耗时 %s；能力检查应在调用之前", elapsed)
+	}
 }
