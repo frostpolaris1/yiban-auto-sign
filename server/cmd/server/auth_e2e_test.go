@@ -48,6 +48,10 @@ const (
 
 var authTestPepper = []byte("0123456789abcdef0123456789abcdef")
 
+// authTestCredentialKey 是凭据加密的固定 32 字节钥。
+// 它与 pepper 不同源：轮换 pepper 不得导致凭据不可解密。
+var authTestCredentialKey = []byte("fedcba9876543210fedcba9876543210")
+
 // TestMain 让缺库显性可见（AGENTS §30）。
 func TestMain(m *testing.M) {
 	if strings.TrimSpace(os.Getenv(authDSNEnv)) == "" {
@@ -103,6 +107,7 @@ func newAuthEnv(t *testing.T) *authEnv {
 		DatabaseURL:     withSearchPath(base, schema),
 		InsecureCookies: true,
 		HashPepper:      authTestPepper,
+		CredentialKey:   authTestCredentialKey,
 	}
 	stack, err := buildStack(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {

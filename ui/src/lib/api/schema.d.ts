@@ -548,6 +548,15 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
+        /** @description Request body exceeds the entry limit; the code stays validation_failed. */
+        PayloadTooLargeError: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
         /** @description Error envelope; the code field carries the stable code. */
         DefaultError: {
             headers: {
@@ -798,6 +807,7 @@ export interface operations {
             400: components["responses"]["ValidationError"];
             403: components["responses"]["ForbiddenError"];
             409: components["responses"]["ConflictError"];
+            413: components["responses"]["PayloadTooLargeError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -901,6 +911,7 @@ export interface operations {
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
+            413: components["responses"]["PayloadTooLargeError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -944,10 +955,12 @@ export interface operations {
                 school_id?: string;
                 status?: components["schemas"]["AccountStatus"];
                 /**
-                 * @description Phone filter. Non-digits are stripped. The leading digits (up to
-                 *     three), the trailing four digits, or the exact 11-digit phone match.
-                 *     Every other length never matches, so the four digits hidden by the
-                 *     mask stay unsearchable.
+                 * @description Phone filter. Non-digits are stripped. A leading prefix of one to
+                 *     three digits, a trailing four-digit suffix, or the exact 11-digit
+                 *     phone matches. A 5..10 digit fragment never matches. The exact
+                 *     11-digit phone still matches, so the number stays enumerable.
+                 *     Login and password-reset rate limiting is a deployment precondition
+                 *     before public exposure (P7).
                  */
                 q?: string;
             };
@@ -1002,6 +1015,7 @@ export interface operations {
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
+            413: components["responses"]["PayloadTooLargeError"];
             default: components["responses"]["DefaultError"];
         };
     };

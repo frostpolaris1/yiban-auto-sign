@@ -323,6 +323,53 @@ func TestAuditDetailRejectsPersonalData(t *testing.T) {
 	}
 }
 
+// TestAuditAppendStaysInsideCallerTransaction 钉住审计追加的事务边界。
+//
+// 两条不变式：
+// 一，无事务调用必须报错，且不写行；
+// 二，事务回滚后不得留下审计行。
+// 用例先做一次提交的追加，证明追加确实落库；
+// 再让第二次追加随事务回滚，行数必须回到提交后的值。
+func TestAuditAppendStaysInsideCallerTransaction(t *testing.T) {
+	e := newEnv(t)
+	entry := coreaudit.Entry{
+		TS:         time.Now().UTC(),
+		ActorLabel: "master",
+		Action:     coreaudit.ActionUserCreate,
+		Detail:     map[string]any{"field": "role"},
+	}
+
+	if _, err := e.audits.Append(e.ctx, entry); !errors.Is(err, pg.ErrNoTransaction) {
+		t.Fatalf("Append outside a transaction = %v, want ErrNoTransaction", err)
+	}
+	if rows := e.scalarInt("SELECT count(*) FROM audit_logs"); rows != 0 {
+		t.Fatalf("rejected audit write left %d rows, want 0", rows)
+	}
+
+	mustNotError(t, e.db.InTx(e.ctx, func(ctx context.Context) error {
+		_, err := e.audits.Append(ctx, entry)
+		return err
+	}), "append inside a committed transaction")
+	committed := e.scalarInt("SELECT count(*) FROM audit_logs")
+	if committed != 1 {
+		t.Fatalf("audit rows after a committed append = %d, want 1", committed)
+	}
+
+	boom := errors.New("force rollback")
+	err := e.db.InTx(e.ctx, func(ctx context.Context) error {
+		if _, err := e.audits.Append(ctx, entry); err != nil {
+			return err
+		}
+		return boom
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("rolled-back transaction returned %v, want the injected error", err)
+	}
+	if after := e.scalarInt("SELECT count(*) FROM audit_logs"); after != committed {
+		t.Fatalf("audit row escaped a rolled-back transaction: before=%d after=%d", committed, after)
+	}
+}
+
 // --- 会话 -----------------------------------------------------------------
 
 func TestRevokeAllForUserRevokesOnlyThatUser(t *testing.T) {
