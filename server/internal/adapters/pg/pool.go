@@ -165,7 +165,8 @@ func (d *DB) hasTx(ctx context.Context) bool {
 // 没有事务时报 ErrNoTransaction，**绝不回退到连接池**。
 // q 会回落到连接池，故「先判 hasTx、再调 q」的写法
 // 只在两次判断都看同一 ctx 时成立。
-// 审计链与容量写入必须用本函数取连接：回滚要能带走它们的行。
+// 审计链必须经本函数取连接：回滚要能带走审计行（W2C-R2-01）。
+// 容量写入仍走 q 加前置 hasTx，行为等价；统一到本函数属后续批。
 func (d *DB) txQueryer(ctx context.Context) (queryer, error) {
 	if tx, ok := ctx.Value(txKey{}).(pgx.Tx); ok {
 		return tx, nil

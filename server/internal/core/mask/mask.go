@@ -80,16 +80,46 @@ func MaskText(s string) string {
 }
 
 // maskPhoneRun 掩码一个候选数字组。
-// 先去掉分隔符得到数字串；带 86 前缀的 13 位串再剥掉前缀。
+// 整段数字先按手机号判定；不成时按分隔符切段，每段单独再判。
+// 游程正则会把「手机号 + 空格 + 数字」并成一组，切段让手机号段落被掩、
+// 邻接的日期或数量保持原样（W2C-R3-01）。
 // 掩码规则只来自 MaskPhone，本函数不另立口径。
 func maskPhoneRun(run string) string {
-	digits := digitsOnly(run)
+	if masked := maskDigits(digitsOnly(run), run); masked != "" {
+		return masked
+	}
+	segments := strings.FieldsFunc(run, func(r rune) bool {
+		// 与游程正则的 \s、点、连字符同一集合；\s 含换行。
+		return r == ' ' || r == '.' || r == '-' || r == '\t' || r == '\n' || r == '\r'
+	})
+	if len(segments) < 2 {
+		return run
+	}
+	var b strings.Builder
+	rest := run
+	for _, seg := range segments {
+		idx := strings.Index(rest, seg)
+		b.WriteString(rest[:idx])
+		if masked := maskDigits(digitsOnly(seg), seg); masked != "" {
+			b.WriteString(masked)
+		} else {
+			b.WriteString(seg)
+		}
+		rest = rest[idx+len(seg):]
+	}
+	b.WriteString(rest)
+	return b.String()
+}
+
+// maskDigits 判定一段数字是否为手机号形态并掩码。
+// 命中返回掩码文本；不命中返回空串。
+func maskDigits(digits, original string) string {
 	if len(digits) == 13 && strings.HasPrefix(digits, "86") {
 		digits = digits[len(digits)-11:]
 	}
 	masked := MaskPhone(digits)
 	if masked == digits {
-		return run
+		return ""
 	}
 	return masked
 }

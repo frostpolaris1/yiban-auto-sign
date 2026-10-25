@@ -85,7 +85,7 @@ func (r *AccountRepo) Get(ctx context.Context, s corescope.Scope, id string) (co
 // 作用域与过滤条件是**与**关系：admin 指定未绑定院校时结果为空。
 // search 只抽取数字，再按长度定过滤式：
 // 1..3 位前缀、4 位后缀、11 位全号精确，其余长度**恒假**。
-// 故掩码隐藏的中四位不可检索：它曾是恢复手机号的数字 oracle。
+// 故中四位可被全号枚举恢复（10^4 次），依赖登录限速（P7 前置）。
 func (r *AccountRepo) List(ctx context.Context, s corescope.Scope, schoolID string, status coreaccount.Status, search, cursor string, limit int) ([]coreaccount.Record, string, error) {
 	if limit < 1 || limit > 200 {
 		return nil, "", validationError("limit must be between 1 and 200")
