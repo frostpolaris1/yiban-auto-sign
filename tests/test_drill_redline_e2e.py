@@ -95,8 +95,10 @@ class _TmpBase(unittest.TestCase):
         """造一棵最小演练树：P0 要的四件在位，按需放"生产凭据"形态的文件。"""
         tree = os.path.join(self.tmp, name)
         if real_pkg:
-            # 实跑轮：C2 造数要真 yiban 包与 scripts/（含被测脚本自身）
-            for sub in ("yiban", "scripts"):
+            # 实跑轮：C2 造数要真 yiban 包与 scripts/（含被测脚本自身）。
+            # config/ 必须同带：名册是配置缺省的唯一定义点，生产镜像也 COPY 它
+            # （docker/Dockerfile 由 GateRealRegistryContentTest 钉住）。
+            for sub in ("yiban", "scripts", "config"):
                 shutil.copytree(os.path.join(BASE, sub), os.path.join(tree, sub),
                                 ignore=shutil.ignore_patterns("__pycache__"))
             _write(os.path.join(tree, "docker", "Dockerfile"), "")

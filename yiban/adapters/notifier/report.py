@@ -45,6 +45,7 @@ import threading
 import time
 
 from yiban.adapters.config import env_io
+from yiban.adapters.config import loader as config_loader
 from yiban.adapters.notifier import mail as mailer
 from yiban.adapters.notifier import notify
 from yiban.adapters.notifier.mail import layout
@@ -365,11 +366,14 @@ def _user_fail_mail_daily_cap():
     白名单键并回 `os.environ`（`workers._ENV_RELOAD_KEYS`）。导入期取一次会让
     常驻进程从此看不到新值（工单 ba-p04-07）。
     """
-    return config_check.parse_env_int("YIBAN_MAIL_USER_FAIL_DAILY_CAP", 1)
+    return config_check.parse_env_int(
+        "YIBAN_MAIL_USER_FAIL_DAILY_CAP",
+        config_loader.default_of("YIBAN_MAIL_USER_FAIL_DAILY_CAP"))
 
 
 def _user_fail_mail_state_path(today_str):
-    state_dir = env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
+    state_dir = env_io.resolve_path(
+        "YIBAN_STATE_DIR", config_loader.default_required("YIBAN_STATE_DIR"))
     return os.path.join(state_dir, f"mail-user-fail-{today_str}.json")
 
 
@@ -396,9 +400,13 @@ _QUOTA_GATE = threading.Lock()
 _QUOTA_BATCH_DEPTH = 0    # 批量上下文嵌套层数；0 = 逐条立即落盘（既有行为）
 
 #: 待写条数上界；达到即落盘。
-_QUOTA_FLUSH_MAX = config_check.parse_env_int("YIBAN_QUOTA_STATE_FLUSH_MAX", 64)
+_QUOTA_FLUSH_MAX = config_check.parse_env_int(
+    "YIBAN_QUOTA_STATE_FLUSH_MAX",
+    config_loader.default_required("YIBAN_QUOTA_STATE_FLUSH_MAX"))
 #: 落盘间隔上界（秒）；默认＝最快读者轮询周期（见 state_io 同名字段）。
-_QUOTA_FLUSH_SEC = config_check.parse_env_int("YIBAN_QUOTA_STATE_FLUSH_SEC", 10)
+_QUOTA_FLUSH_SEC = config_check.parse_env_int(
+    "YIBAN_QUOTA_STATE_FLUSH_SEC",
+    config_loader.default_required("YIBAN_QUOTA_STATE_FLUSH_SEC"))
 
 
 class _QuotaBuf:

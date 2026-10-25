@@ -53,6 +53,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from yiban.adapters.config import env_io  # noqa: E402
+from yiban.adapters.config import loader as config_loader  # noqa: E402
 from yiban.adapters.persistence import db, migrations, queue_store  # noqa: E402
 from yiban.core import clock  # noqa: E402
 from yiban.core.masking import mask_phone, sanitize_text  # noqa: E402
@@ -232,7 +233,8 @@ def main(argv=None):
 
 def _reconcile(args):
     """执行对账并返回退出码：`0`=平 / `1`=有差异 / `2`=无法定论。"""
-    state_dir = env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
+    state_dir = env_io.resolve_path(
+        "YIBAN_STATE_DIR", config_loader.default_required("YIBAN_STATE_DIR"))
     if not os.path.isdir(state_dir):
         print(f"对账无法定论：状态目录不存在 {state_dir}")
         return 2

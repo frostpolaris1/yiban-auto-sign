@@ -72,6 +72,7 @@ from flask import current_app, request, session  # noqa: E402
 from werkzeug.security import check_password_hash, generate_password_hash  # noqa: E402
 
 from web.services.locks import _rate_lock  # noqa: E402
+from yiban.adapters.config import loader as config_loader  # noqa: E402
 from yiban.adapters.notifier.mail import layout as mail_layout  # noqa: E402
 from yiban.adapters.persistence import audit_chain as _audit_chain  # noqa: E402
 from yiban.adapters.persistence import db  # noqa: E402
@@ -458,7 +459,9 @@ def migrate_admin_password_to_hash(env_path, read_env, load_env_int, write_env_b
                 return  # 明文与哈希一致（重复启动），无需任何写入
         # 只要本次写入改了口令哈希（含"无现存哈希"的新建——README 的『删/清空 HASH 行』
         # 写法），一律走吊销路径：递增版本 + 换发内置会话凭据。
-        cur_pwv = load_env_int(env_path, "YIBAN_ADMIN_PW_VERSION", 1)
+        cur_pwv = load_env_int(
+            env_path, "YIBAN_ADMIN_PW_VERSION",
+            config_loader.default_of("YIBAN_ADMIN_PW_VERSION"))
         updates["YIBAN_ADMIN_PW_VERSION"] = str(cur_pwv + 1)
         # 追回 = 假定会话已失窃：与版本号一并在这一次批量写里换发内置会话凭据
         # （共用 write_env_batch = 单次原子写，既不多写一遍 .env，也不留下

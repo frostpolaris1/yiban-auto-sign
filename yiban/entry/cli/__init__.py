@@ -311,7 +311,8 @@ def _capacity_numbers(view, signable):
     gap = _cfg_int(view, "YIBAN_ACCOUNT_GAP_MAX",
                    config_loader.default_required("YIBAN_ACCOUNT_GAP_MAX"), 0, 3600)
     avg = _cfg_int(view, "YIBAN_AVG_ATTEMPT_SEC", schedule_mod.avg_attempt_sec(), 1, 300)
-    measured = _cfg_int(view, "YIBAN_CAPACITY_MEASURED", 0, 0)
+    measured = _cfg_int(view, "YIBAN_CAPACITY_MEASURED",
+                        config_loader.default_of("YIBAN_CAPACITY_MEASURED"), 0)
     recommended = None
     needed = None
     if measured > 0:
@@ -526,7 +527,8 @@ def _cmd_init(args, view):
         "YIBAN_ADMIN_USER": username,
         "YIBAN_ADMIN_PASSWORD_HASH": pw_hash,
         "YIBAN_ADMIN_PASSWORD": "",
-        "YIBAN_ADMIN_PW_VERSION": "1",
+        "YIBAN_ADMIN_PW_VERSION": str(
+            config_loader.default_required("YIBAN_ADMIN_PW_VERSION")),
         # 清掉可能残留的旧服务端 sid：新管理员不复用旧会话标识。
         "YIBAN_ADMIN_SID": "",
     }

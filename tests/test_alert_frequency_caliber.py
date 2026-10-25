@@ -30,6 +30,7 @@
 用法（项目根目录）：bash scripts/dev-verify.sh --target tests/test_alert_frequency_caliber.py
 """
 import io
+import json
 import os
 import re
 import subprocess
@@ -163,19 +164,34 @@ class CadenceSourceTest(unittest.TestCase):
                 f"定义点之外还须参与判法，否则「每 N 一次」的上界不成立")
 
     def test_resident_interval_key_keeps_default_and_domain(self):
-        """常驻扫描间隔的唯一出处：`run_fallback_worker` 的 `_env_int` 调用。"""
+        """常驻扫描间隔的唯一出处：`run_fallback_worker` 的 `_env_int` 调用。
+
+        缺省值本身住在配置名册（工单 7yf 起代码不再写 60）：本测钉两件事——
+        读点的缺省取自 `default_of(键)`，且域仍是 (5, 3600)；名册缺省还必须等于
+        上界式锚值 60，否则「每 60 秒一次」的上界说明失实。
+        """
         rel, key, default, low, high = RESIDENT_KEY
         workers = _text(WORKERS)
-        m = re.search(
-            r'_env_int\(\s*"%s"\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)' % key, workers)
-        self.assertIsNotNone(
-            m, f"{key} 在 {rel} 不再是 `_env_int(…)` 的读点："
-               "上界式的常驻项按它命名，读点没了注释就成了假话")
-        got = tuple(int(g) for g in m.groups())
+        calls = re.findall(
+            r'_env_int\(\s*"%s"\s*,\s*([^,]+?)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)' % key,
+            workers, re.S)
+        self.assertTrue(
+            calls, f"{key} 在 {rel} 不再是 `_env_int(…)` 的读点："
+                   "上界式的常驻项按它命名，读点没了注释就成了假话")
+        for default_expr, got_low, got_high in calls:
+            self.assertIn('default_of("%s")' % key, default_expr,
+                          f"{key} 的缺省必须取自配置名册：{default_expr}")
+            got = (int(got_low), int(got_high))
+            self.assertEqual(
+                got, (low, high),
+                f"{key} 的域已从 {(low, high)} 改为 {got}："
+                "请回去核对上界式与 run.sh 的「告警频次口径」，再更新本值锚")
+        with open(os.path.join(BASE, "config", "registry.json"),
+                  encoding="utf-8") as f:
+            registry = json.load(f)
         self.assertEqual(
-            got, (default, low, high),
-            f"{key} 的缺省/域已从 {(default, low, high)} 改为 {got}："
-            "请回去核对上界式与 run.sh 的「告警频次口径」，再更新本值锚")
+            registry[key]["default"], default,
+            f"{key} 的名册缺省已从 {default} 改变：上界式的「每 60 秒一次」需重算")
 
     def test_three_periodic_sources_have_outlets(self):
         """上界式的三个来源逐个验：容器调度器两枚周期闸门 + 常驻引擎扫描 + web 每请求。"""

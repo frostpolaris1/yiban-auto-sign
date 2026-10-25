@@ -84,6 +84,8 @@ services:
       # 保留这行环境变量而没挂文件，等价于"未启用"，每天只在日志里留一行。
       - YIBAN_BACKUP_DATA_DIR=/data
       - YIBAN_BACKUP_DIR=/backups
+      # 保留期注入值与名册缺省（config/registry.json 的 YIBAN_BACKUP_RETAIN_DAYS）同值；
+      # compose 读不了 JSON，显式注入让「容器形态保留多久」在本文件可读。
       - YIBAN_BACKUP_RETAIN_DAYS=30
       - YIBAN_BACKUP_PASSPHRASE_FILE=/run/yiban-secrets/backup-passphrase
 
