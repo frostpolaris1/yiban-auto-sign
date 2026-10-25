@@ -181,6 +181,25 @@
   `{"kind": "key", "key": "…"}`。前端据此渲染"一键清理"入口（清理走
   `POST /api/settings/env-cleanup`）。
 
+### §1.8 分页档位登记（门禁读本表）
+
+本表是列表分页档位的**登记面**：`tests/test_pagination_contract_gate.py` 逐行与代码真值
+对拍，改代码不改本表即红。第一列是组的机读键；`limit/offset` 组的前端可选档
+（`frontend/src/lib/pager.ts::PAGE_SIZES`）必须全部 ≤ 该组上限——后端下调上限会让
+前端选中的档位被静默夹小，末页丢行。
+
+| 组 | 端点 | 缺省 | 上限 | 前端可选档 |
+|---|---|---|---|---|
+| `limit/offset` | `GET /api/accounts`、`GET /api/users`、`GET /api/logs`、`GET /api/admin/sign-events` | 100 | 200 | 20 / 50 / 100 |
+| `page/page_size` | `GET /api/audit-logs` | 50 | 200 | — |
+| `limit` | `GET /api/admin/run-events` | 200 | 500 | — |
+
+数值口径：本表的缺省与上限都是**允许域端点**（含边界）。`limit/offset` 组
+（`GET /api/accounts`、`GET /api/users`、`GET /api/logs`）越界**夹取**：`limit` 夹到
+`[1, 200]`、`offset` 夹到 `>= 0`（下界见 §1.5）。`GET /api/admin/sign-events` 只收
+`limit`、不收 `offset`，越界同样夹取。`page/page_size` 组与 `limit`（run-events）组
+越界**回 400，不夹取**。
+
 ## §2 端点清单
 
 按域分组。每条的"鉴权档"用 §1.1 的四档名。
