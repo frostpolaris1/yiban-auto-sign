@@ -1,24 +1,32 @@
 # ============================================================
 # yiban-web.service —— 易班自动签到 Web 控制台 systemd 单元模板
 # ============================================================
-# 安装：
-#   sudo cp web/deploy/yiban-web.service /etc/systemd/system/
+# 安装（本文件是**模板**：@YIBAN_*@ 占位符必须先按部署面值表渲染）：
+#   set -a; . deploy/web.env; set +a
+#   export YIBAN_APP_DIR="$(pwd)"        # 检出根（标准部署即 /opt/yiban-auto-sign）
+#   sed -e "s|@YIBAN_APP_DIR@|$YIBAN_APP_DIR|g" \
+#       -e "s|@YIBAN_WEB_PORT@|$YIBAN_WEB_PORT|g" \
+#       -e "s|@YIBAN_WEB_THREADS@|$YIBAN_WEB_THREADS|g" \
+#       web/deploy/yiban-web.service | sudo tee /etc/systemd/system/yiban-web.service >/dev/null
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now yiban-web
 #
+# 端口与线程数的唯一值表是 deploy/web.env；本文件不得写死这两个值（守卫：
+# tests/test_deploy_parameterization_gate.py）。
+#
 # 前提：
-#   1. 应用监听 127.0.0.1:17892，由 nginx 反代对外提供 443 HTTPS，
-#      17892 不对公网开放（防火墙仅放行 22/443）。
+#   1. 应用只监听回环地址的 @YIBAN_WEB_PORT@ 端口，由 nginx 反代对外提供 443 HTTPS，
+#      该端口不对公网开放（防火墙仅放行 22/443）。
 #   2. /etc/yiban/accounts-key 为密钥文件（0600，属主 root:yiban），
 #      由 systemd 注入为环境变量（web/app.py 会通过 .env / 环境变量读取）。
 #      若服务器不使用该密钥文件，可删除 EnvironmentFile 一行，
-#      并确保 /opt/yiban-auto-sign/data/.env 中 YIBAN_SECRET_KEY 已配置。
+#      并确保 <检出>/data/.env 中 YIBAN_SECRET_KEY 已配置。
 #      ⚠️ 轮换 YIBAN_ACCOUNTS_KEY 时必须同步改这份 EnvironmentFile 与 .env——
 #      启动断言"两侧读到同一把钥"，不一致即拒绝启动（fail-closed，日志报两侧
 #      kid），不再允许 env 静默压住 .env 造成 web/engine 分叉。见 README 处置节。
 #
 # gunicorn 安装二选一（本模板默认用虚拟环境 .venv/bin/gunicorn）：
-#   方式 A（推荐，隔离依赖）：cd /opt/yiban-auto-sign && python3 -m venv .venv \
+#   方式 A（推荐，隔离依赖）：cd <检出> && python3 -m venv .venv \
 #         && .venv/bin/pip install -r requirements.lock gunicorn
 #   注：安装精确锁定的 requirements.lock（与 CI/Docker 镜像同源），
 #       保证部署版本 = 安全审计覆盖的版本；requirements.txt 仅作下限声明。
@@ -34,7 +42,7 @@ After=network.target
 [Service]
 User=yiban
 Group=yiban
-WorkingDirectory=/opt/yiban-auto-sign
+WorkingDirectory=@YIBAN_APP_DIR@
 EnvironmentFile=/etc/yiban/accounts-key
 # 生产环境经 nginx HTTPS 反代，强制会话 Cookie 仅经 HTTPS 发送（H6）。
 Environment=YIBAN_COOKIE_SECURE=1
@@ -47,14 +55,13 @@ Environment=YIBAN_TRUST_FORWARDED_HEADERS=1
 # 注意：必须保持 -w 1（单 worker 多线程）。限速/爆破锁定/签到防抖等状态存于进程内存，
 # 多 worker 各自持有独立副本会导致阈值被轮换请求绕过（安全审查 S2）。如需提升并发，
 # 请调整 --threads 而非 --workers（gthread 线程共享进程内存）。
-# --threads 32（10 档最小实现，125 §2.3 实测）：SSE 长连接在 gthread 下各占一个线程，
-# 8 线程时第 9 条连接即饿死全站；32 线程下 10 条 SSE + 普通请求 p50 1.24ms。
-# 全局连接上限取 min(10, threads-4)（YIBAN_SSE_CONNECTIONS_MAX，缺省 10），给普通请求留线程。
+# --threads 取 @YIBAN_WEB_THREADS@：SSE 长连接在 gthread 下各占一个线程，线程数不足时
+# 新连接会饿死全站。档位理由与实测数据见 deploy/web.env 的注释。
 # 方式 A：虚拟环境安装（推荐，与项目依赖隔离；--no-control-socket 与生产一致，防控制 socket 暴露）
-ExecStart=/opt/yiban-auto-sign/.venv/bin/gunicorn -w 1 --threads 32 --timeout 60 --no-control-socket -b 127.0.0.1:17892 "web.app:create_app()"
+ExecStart=@YIBAN_APP_DIR@/.venv/bin/gunicorn -w 1 --threads @YIBAN_WEB_THREADS@ --timeout 60 --no-control-socket -b 127.0.0.1:@YIBAN_WEB_PORT@ "web.app:create_app()"
 # 方式 B：系统级 gunicorn（未创建 .venv 时使用；注意 Ubuntu 包名/可执行名为 gunicorn3）
-# ExecStart=/usr/bin/gunicorn3 -w 1 --threads 32 --timeout 60 --no-control-socket -b 127.0.0.1:17892 "web.app:create_app()"
-# 方式 B（pip 全局安装）：ExecStart=/usr/bin/gunicorn -w 1 --threads 32 --timeout 60 --no-control-socket -b 127.0.0.1:17892 "web.app:create_app()"
+# ExecStart=/usr/bin/gunicorn3 -w 1 --threads @YIBAN_WEB_THREADS@ --timeout 60 --no-control-socket -b 127.0.0.1:@YIBAN_WEB_PORT@ "web.app:create_app()"
+# 方式 B（pip 全局安装）：ExecStart=/usr/bin/gunicorn -w 1 --threads @YIBAN_WEB_THREADS@ --timeout 60 --no-control-socket -b 127.0.0.1:@YIBAN_WEB_PORT@ "web.app:create_app()"
 Restart=always
 RestartSec=3
 ProtectSystem=strict
@@ -63,7 +70,7 @@ ProtectHome=true
 # 但**有效的**可写面只有检出内的 data/——检出根属 root 且组/其他不可写（install.sh 的
 # M01 门要求），服务账号只能写 data/（属 yiban、0700，由 install.sh 建立）。运行数据
 # （.env / yiban.db / 通知账本与节流表）都落在 data/ 下。
-ReadWritePaths=/opt/yiban-auto-sign /var/log/yiban /var/lock/yiban
+ReadWritePaths=@YIBAN_APP_DIR@ /var/log/yiban /var/lock/yiban
 NoNewPrivileges=true
 PrivateTmp=true
 RestrictAddressFamilies=AF_INET AF_INET6

@@ -31,6 +31,8 @@ export interface MyAccount {
   logs?: string[];
   state_status?: string;
   queue_ahead?: number | null;
+  /** 二段资料：只含暴露开关开着的字段（服务端 `exposed_profile`；全关时键不出现）。 */
+  profile?: Record<string, string>;
 }
 
 /** 审核状态 → 图标名（白名单；缺失回落 clock）。deleted 另有表达。 */

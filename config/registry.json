@@ -183,6 +183,38 @@
     "tier": "master",
     "reload": "restart"
   },
+  "YIBAN_WEB_PORT": {
+    "type": "int",
+    "domain": [
+      1,
+      65535
+    ],
+    "default": null,
+    "group": [
+      "部署"
+    ],
+    "doc": "Web 监听端口（部署面启动参数；值唯一定义在 deploy/web.env，本名册只登记类型与域）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_WEB_THREADS": {
+    "type": "int",
+    "domain": [
+      1,
+      64
+    ],
+    "default": null,
+    "group": [
+      "部署"
+    ],
+    "doc": "gunicorn 线程数（部署面启动参数；值唯一定义在 deploy/web.env，本名册只登记类型与域）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
   "YIBAN_WORKERS": {
     "type": "int",
     "domain": [
