@@ -19,7 +19,7 @@
    三个子 css 直接并行 <link>：浏览器解析 <head> 时同时发起，避免旧写法
    fonts.css → @import 子 css 的串行瀑布（每层多 1 个 RTT）。
    子 css 以 ?v={{web_version}} 版本化（进程启动时间戳，每次发版 URL 变化）；
-   其内部的 woff2 分片由 scripts/stamp_font_versions.py 打内容哈希，两级共同保证
+   其内部的 woff2 分片由 tools/stamp_font_versions.py 打内容哈希，两级共同保证
    重切片后旧缓存不会引用已删除分片（详见该脚本头注释）。 #}
 <link rel="stylesheet" href="{{ request.script_root }}/static/vendor/fonts/inter/inter.css?v={{ web_version }}">
 <link rel="stylesheet" href="{{ request.script_root }}/static/vendor/fonts/jetbrains-mono/jetbrains-mono.css?v={{ web_version }}">

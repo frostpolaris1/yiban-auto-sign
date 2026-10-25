@@ -54,7 +54,7 @@ Get-FileHash -Algorithm SHA256 web/static/vendor/md-render.js
 | 用途 | 全站线性图标。经 `macros/ui.html` 的 `sprite()`/`icon()` 使用；symbol 用 `stroke="currentColor"`，随文字色适配暗色 |
 | 来源 | https://github.com/lucide-icons/lucide（同目录 LICENSE，ISC；部分图标源自 Feather，MIT） |
 | 版本 | 1.45.0，commit `b998e2892b90b88004d62da2d0b64dab9959a520` |
-| 构建 | `python3 scripts/build_lucide_sprite.py <lucide 仓库目录> web/static/vendor/lucide/_sprite.svg`，子集化出 70 个图标，可复现 |
+| 构建 | `python3 tools/build_lucide_sprite.py <lucide 仓库目录> web/static/vendor/lucide/_sprite.svg`，子集化出 70 个图标，可复现 |
 | 体积 | 19112 字节（gzip 3372 字节） |
 | SHA-256 | `c48ed989c0ac455b105d51a5a2d2aa1ce582ac2b878c9dbb45ed3695b43b0afa` |
 

@@ -430,7 +430,7 @@ def _parse_env_file(env_file):
 # （load_key 抛 ValueError，调用方按启动失败处理）。刻意**不做**通用熵/KDF 检测：
 # Web 侧不管理这把钥（没有写侧校验点可挂），把判定做成"读侧启动即崩"的通用判据会
 # 把外泄风险换成全站不可用，且撞存量密钥不可轮换的现实约束。
-#: `scripts/dev_visual_seed.py` 内置的演示钥（hex）：同样随仓库公开、任何人可读，
+#: `tools/dev_visual_seed.py` 内置的演示钥（hex）：同样随仓库公开、任何人可读，
 #: 照抄进真实 `.env` 会让存量密文等同明文，且三条弱钥判据全不命中（非全零/非单字节/
 #: 非字节值连续），故与模板钥一起精确拉黑。演示脚本改为从本常量取用（单一事实源）。
 PUBLISHED_DEMO_ACCOUNTS_KEY = (

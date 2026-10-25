@@ -7,7 +7,7 @@
 部署在 UTC 主机时，北京时间 00:00–08:00 与宿主日期不同。
 按天日志名、状态文件名、备份归档名、日历取样日会错一天。
 测试面已有 `test_business_day_source_gate.py`。
-本门补产品面：`yiban/`、`web/`、`scripts/`、`docker/` 的 `.py`。
+本门补产品面：`yiban/`、`web/`、`scripts/`、`docker/`、`tools/` 的 `.py`。
 `yiban/core/clock.py` 是唯一时点来源，不在扫描面内。
 
 判定面（静态，只读源码，不取真实时钟）：
@@ -62,7 +62,7 @@
 · 变量接收者的 `.astimezone()`：静态不可判是否 aware。
 · 同一形状出现两处以上即按形状立门（AGENTS §27）。
 
-扫空不得当绿：四个产品目录各自的 `.py` 文件数都必须大于 0。
+扫空不得当绿：五个产品目录各自的 `.py` 文件数都必须大于 0。
 """
 
 import ast
@@ -72,11 +72,11 @@ import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #: 产品面目录（相对仓库根）。测试面不在内：见 test_business_day_source_gate.py。
-PRODUCT_DIRS = ("yiban", "web", "scripts", "docker")
+PRODUCT_DIRS = ("yiban", "web", "scripts", "docker", "tools")
 #: 业务时钟本尊：它必须读宿主钟并换算出 +8，是唯一豁免文件。
 CLOCK_MODULE = "yiban/core/clock.py"
-#: 扫描面下限（AGENTS §30）。本树实测 156 个文件（含 `clock.py` 共 157，本尊不扫）；
-#: 下限取 100。
+#: 扫描面下限（AGENTS §30）。B1 收口态实测 158 个文件（含 `clock.py` 共 159，
+#: 本尊不扫；口径＝`git ls-files`，ref＝`origin/develop` `aa75e2b9` 加 B1 新增件）；下限取 100。
 MIN_FILES = 100
 
 #: 显式豁免：`(相对路径, 行号)` → 登记项。
@@ -113,7 +113,7 @@ EXEMPTIONS = {
                 '  # noqa: DTZ005 备份文件名戳，只求唯一（含同秒后缀），与业务钟无关',
         "reason": "备份文件名戳，只求唯一。不参与业务日判定",
     },
-    ("scripts/dev_visual_seed.py", 239): {
+    ("tools/dev_visual_seed.py", 239): {
         "kind": "datetime.now",
         "code": 'db.set_account_deleted(aid, True, '
                 'deleted_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"), '
@@ -121,7 +121,7 @@ EXEMPTIONS = {
         "reason": "CI fast 车道经 tests/test_visual_seed_generation.py 子进程跑 seed()"
                   "（lane-roster.tsv:345）；宿主钟只写演示数据时间戳、不进任何断言；非部署件",
     },
-    ("scripts/dev_visual_seed.py", 243): {
+    ("tools/dev_visual_seed.py", 243): {
         "kind": "datetime.now",
         "code": "now = datetime.now()  # noqa: DTZ005 开发演示种子数据，非判定路径",
         "reason": "CI fast 车道经 tests/test_visual_seed_generation.py 子进程跑 seed()"
@@ -928,7 +928,7 @@ class GateSelfTest(unittest.TestCase):
             "from datetime import datetime as dt\nx = dt.now()\n")), 1)
 
     def test_empty_scan_surface_is_red(self):
-        """扫空判红：四个目录都为空时 `_surface_problem` 必须给理由。"""
+        """扫空判红：五个目录都为空时 `_surface_problem` 必须给理由。"""
         self.assertIsNotNone(_surface_problem({d: 0 for d in PRODUCT_DIRS}))
 
     def test_scan_of_missing_tree_is_red(self):
