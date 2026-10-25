@@ -197,7 +197,7 @@ type Issued struct {
 
 // SessionRow is one row of sessions. The token hash is the only credential
 // form the store keeps. IPHash and UserAgentHash hold the output of
-// HashSecret, never a raw address or agent string.
+// HashIP and HashUserAgent, never a raw address or agent string.
 type SessionRow struct {
 	ID            string
 	UserID        string
@@ -213,7 +213,8 @@ type SessionRow struct {
 }
 
 // NewSessionRow is the input of a session creation. TokenHash must come from
-// HashToken. IPHash and UserAgentHash must be HashSecret outputs; the
+// HashToken. IPHash and UserAgentHash must come from HashIP and
+// HashUserAgent; the
 // repository stores them unchanged and never hashes.
 type NewSessionRow struct {
 	UserID        string

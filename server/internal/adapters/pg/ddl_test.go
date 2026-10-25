@@ -138,6 +138,38 @@ func TestDatabaseConstraintsRejectBadRows(t *testing.T) {
 			constraint: "uq_users_email_live",
 		},
 		{
+			name: "ck_sessions_ip_hash_shape",
+			sql: `INSERT INTO sessions (user_id, token_hash, idle_expires_at, expires_at, ip_hash)
+			      VALUES ($1::uuid, $2, now() + interval '30 minutes', now() + interval '12 hours', $3)`,
+			args:       []any{owner.ID, validTokenHash, "203.0.113.5"},
+			code:       "23514",
+			constraint: "ck_sessions_ip_hash_shape",
+		},
+		{
+			name: "ck_sessions_user_agent_hash_shape",
+			sql: `INSERT INTO sessions (user_id, token_hash, idle_expires_at, expires_at, user_agent_hash)
+			      VALUES ($1::uuid, $2, now() + interval '30 minutes', now() + interval '12 hours', $3)`,
+			args:       []any{owner.ID, validTokenHash, "Mozilla/5.0"},
+			code:       "23514",
+			constraint: "ck_sessions_user_agent_hash_shape",
+		},
+		{
+			name: "ck_sessions_ip_hash_shape upper hex",
+			sql: `INSERT INTO sessions (user_id, token_hash, idle_expires_at, expires_at, ip_hash)
+			      VALUES ($1::uuid, $2, now() + interval '30 minutes', now() + interval '12 hours', $3)`,
+			args:       []any{owner.ID, validTokenHash, strings.ToUpper(strings.Repeat("ab", 32))},
+			code:       "23514",
+			constraint: "ck_sessions_ip_hash_shape",
+		},
+		{
+			name: "ck_sessions_ip_hash_shape short hex",
+			sql: `INSERT INTO sessions (user_id, token_hash, idle_expires_at, expires_at, ip_hash)
+			      VALUES ($1::uuid, $2, now() + interval '30 minutes', now() + interval '12 hours', $3)`,
+			args:       []any{owner.ID, validTokenHash, strings.Repeat("ab", 31)},
+			code:       "23514",
+			constraint: "ck_sessions_ip_hash_shape",
+		},
+		{
 			name: "ck_accounts_reject_reason_len",
 			sql: `INSERT INTO accounts (school_id, owner_user_id, phone, status, reject_reason)
 			      VALUES ($1::uuid, $2::uuid, '13500135007', 'rejected', $3)`,

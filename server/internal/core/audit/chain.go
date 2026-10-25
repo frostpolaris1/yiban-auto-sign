@@ -127,8 +127,9 @@ var ErrDetailType = errors.New("audit: detail value type is not allowed")
 // ErrDetailShape reports a string that does not match the shape of its key.
 var ErrDetailShape = errors.New("audit: detail value shape is not allowed")
 
-// ErrDetailReason reports a reason shorter than 1 or longer than
-// MaxReasonChars runes.
+// ErrDetailReason reports a reason longer than MaxReasonChars runes. An empty
+// reason is accepted: an append does not have to carry one. Only the upper
+// bound is enforced here; callers that require a reason check it themselves.
 var ErrDetailReason = errors.New("audit: detail reason is out of range")
 
 // MaxReasonChars bounds the reason value. A free-text field is the only place
@@ -154,10 +155,13 @@ var (
 // detailKeys is the only allowed set of detail keys.
 var (
 	// traceIDShape matches the ids entry/http/router mints: 32 hex characters,
-	// or the req-<counter> fallback. A client-supplied header value never
-	// reaches the audit layer, so a bare digit run such as a phone number is
-	// rejected here.
-	traceIDShape = regexp.MustCompile(`^([0-9a-f]{32}|req-[0-9]+)$`)
+	// or the req-<counter> fallback capped at six digits. A client-supplied
+	// header value never reaches the audit layer, so a bare digit run such as
+	// a phone number is rejected here. The counter passes six digits only
+	// after a million crypto-rand failures, which is not an operational
+	// scenario; past that the audit write fails closed instead of storing a
+	// digit run that reads as a phone number.
+	traceIDShape = regexp.MustCompile(`^([0-9a-f]{32}|req-[0-9]{1,6})$`)
 	// kidShape matches the credential key id: 16 lowercase hex characters.
 	kidShape = regexp.MustCompile(`^[0-9a-f]{16}$`)
 	// fieldShape is a column or setting name.
@@ -184,7 +188,7 @@ func ZeroHash() []byte { return make([]byte, sha256.Size) }
 //
 // The key whitelist is closed: an unknown key is an error. Values are checked
 // recursively. The only allowed types are nil, string, bool, signed and
-// unsigned integers, floats, and []string under the "rows" key. Maps, other
+// unsigned integers, floats, and []int under the "rows" key. Maps, other
 // slices, structs and non-nil pointers are rejected. encoding/json sorts map
 // keys, so the same map always yields the same bytes.
 //

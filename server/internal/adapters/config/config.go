@@ -83,7 +83,7 @@ func LoadFrom(src Source) (*Config, error) {
 	if !pepperSet || len(strings.TrimSpace(rawPepper)) < 16 {
 		return nil, errors.New("config: YIBAN_HASH_PEPPER is required (at least 16 characters)")
 	}
-	cfg.HashPepper = []byte(rawPepper)
+	cfg.HashPepper = []byte(strings.TrimSpace(rawPepper))
 	return cfg, nil
 }
 
