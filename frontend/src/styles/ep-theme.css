@@ -57,12 +57,14 @@
 
   /* 形体：控件高、圆角、表格、三级阴影全部接到 Adminator 令牌。
      尺寸刻度以 app.css §0 为单一事实源；本文件只消费，不再写裸值。 */
-  /* EP 输入/下拉从 --el-component-size 派生高度；区域覆盖仍由 app.css 的
-     --ctl-h/--el-component-size 联动规则提供（工具栏 32、表单 40）。 */
+  /* 潜伏修正：EP 输入/下拉的高度从 --el-component-size 派生，EP 默认 32px。
+     本仓 5 个消费面（账号 / 我的账号 / 设置 / 日志 / 审计）的 EP 输入都在
+     app.css 的区域覆盖内（工具栏 32、表单 40），故本次为零可见变化。
+     根档改为 --ctl-h 后，未来新增的区域外输入自动落到页面控件档。 */
   --el-component-size: var(--ctl-h);
   --el-border-radius-base: var(--r-ctl);
-  /* small 只被 el-checkbox 内框消费（--el-checkbox-border-radius）。令牌阶里
-     最小档是 --r-ctl；10/14 会把 14px 的方框画成圆。 */
+  /* small 在本仓零消费。EP 另有 .el-color-picker__color 与 .el-menu--popup
+     消费；本仓最小档为 --r-ctl，故接 8px（10/14 会把 14px 方框画成圆）。 */
   --el-border-radius-small: var(--r-ctl);
   /* round 是「胶囊」修饰，只有 .el-button.is-round 消费。令牌阶没有胶囊档；
      改成 8/10/14 会改变该修饰的用户可见语义，故保留 999px。 */
@@ -97,22 +99,32 @@
  * 高度跟随所在区域的 --ctl-h（工具栏 32 / 表单 40）；内距取 Adminator .btn 的
  * 9px 14px；聚焦环取 --primary-ring。EP 把默认高写死 32px、padding 8/15，
  * 且把 --el-button-outline-color 声明在组件自身，故这里落到组件选择器。
- * 选择器带 :root[data-theme] (0,2,0)，高于 EP 的组件规则 (0,1,0)。 */
+ * 选择器带 :root[data-theme] (0,2,0)，高于 EP 的组件规则 (0,1,0)。
+ * is-link 是文字链形态（EP 给它 height:auto、padding:2px、无底无边），
+ * 高度规则必须排除它，否则链接会被撑成 40px 的块。
+ * is-round 的胶囊圆角来自 EP `.el-button.is-round`(0,2,0)；本仓零使用。
+ * 下方小档圆角规则排除 .is-round，登记这一档必须留给胶囊（防退化）。 */
 :root[data-theme="light"] .el-button,
 :root[data-theme="dark"] .el-button {
-  height: var(--ctl-h);
-  padding: 9px 14px;
   --el-button-outline-color: var(--primary-ring);
 }
-:root[data-theme="light"] .el-button--small,
-:root[data-theme="dark"] .el-button--small {
+:root[data-theme="light"] .el-button:not(.is-link),
+:root[data-theme="dark"] .el-button:not(.is-link) {
+  height: var(--ctl-h);
+  padding: 9px 14px;
+}
+:root[data-theme="light"] .el-button--small:not(.is-link),
+:root[data-theme="dark"] .el-button--small:not(.is-link) {
   height: var(--ctl-h-md);
   padding: 5px 11px;
-  /* EP 的小档圆角是 calc(base - 1px)=7px，落在令牌阶外。 */
+}
+/* EP 的小档圆角是 calc(base - 1px)=7px，落在令牌阶外。is-round 保留胶囊。 */
+:root[data-theme="light"] .el-button--small:not(.is-round),
+:root[data-theme="dark"] .el-button--small:not(.is-round) {
   border-radius: var(--r-ctl);
 }
-:root[data-theme="light"] .el-button--large,
-:root[data-theme="dark"] .el-button--large {
+:root[data-theme="light"] .el-button--large:not(.is-link),
+:root[data-theme="dark"] .el-button--large:not(.is-link) {
   height: var(--ctl-h-lg);
   padding: 12px 19px;
 }
@@ -160,8 +172,10 @@
   --el-messagebox-box-shadow: var(--shadow-lg);
   border: 1px solid var(--border);
 }
-:root[data-theme="light"] .el-drawer,
-:root[data-theme="dark"] .el-drawer {
+/* 只给右侧滑入（.rtl）画左边线：ltr 抽屉的贴边在左侧，
+   无条件 border-left 会在未来 ltr 抽屉上画错边。 */
+:root[data-theme="light"] .el-drawer.rtl,
+:root[data-theme="dark"] .el-drawer.rtl {
   border-left: 1px solid var(--border);
 }
 

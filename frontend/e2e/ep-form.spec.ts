@@ -183,6 +183,12 @@ test("EP 形态：抽屉与确认框 = 令牌刻度（亮/暗）", async ({ page
   ] as const) {
     await setTheme(page, mode);
 
+    // 方向标：贴边线只挂在右侧滑入的 .rtl 上。
+    expect(
+      await drawer.evaluate((el) => el.classList.contains("rtl")),
+      `${mode} 抽屉方向标 rtl`,
+    ).toBe(true);
+
     // 抽屉：底 --bg-card / 描边 --border / 阴影 --shadow-lg / 贴边圆角 0。
     await expect
       .poll(() => drawer.evaluate((el) => getComputedStyle(el).backgroundColor), {
@@ -215,17 +221,25 @@ test("EP 形态：抽屉与确认框 = 令牌刻度（亮/暗）", async ({ page
 
   const box = page.locator(".el-message-box");
   await expect(box).toBeVisible();
-  const m = await box.evaluate((el) => {
-    const s = getComputedStyle(el);
-    return {
-      radius: s.borderRadius,
-      border: s.borderTopColor,
-      shadow: s.boxShadow,
-    };
-  });
-  expect(m.radius, "确认框圆角").toBe("14px");
-  expect(m.border, "确认框描边").toBe(LIGHT.border);
-  expect(m.shadow, "确认框阴影").toContain(LIGHT.shadowLg);
+  await noMotion(page);
+
+  for (const [mode, t] of [
+    ["light", LIGHT],
+    ["dark", DARK],
+  ] as const) {
+    await setTheme(page, mode);
+    const m = await box.evaluate((el) => {
+      const s = getComputedStyle(el);
+      return {
+        radius: s.borderRadius,
+        border: s.borderTopColor,
+        shadow: s.boxShadow,
+      };
+    });
+    expect(m.radius, `${mode} 确认框圆角`).toBe("14px");
+    expect(m.border, `${mode} 确认框描边`).toBe(t.border);
+    expect(m.shadow, `${mode} 确认框阴影`).toContain(t.shadowLg);
+  }
 
   await box.getByRole("button", { name: "取消" }).click();
   await expect(box).toBeHidden();
