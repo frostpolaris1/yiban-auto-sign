@@ -119,4 +119,13 @@ func TestLoadFromRequiresHashPepper(t *testing.T) {
 	if string(cfg.HashPepper) != "0123456789abcdef0123456789abcdef" {
 		t.Fatalf("pepper = %q", cfg.HashPepper)
 	}
+	// Leading and trailing whitespace is an input accident, not entropy: the
+	// stored value is the trimmed form, matching the DatabaseURL convention.
+	padded, err := LoadFrom(mapSource{"YIBAN_ENV": "development", "YIBAN_HASH_PEPPER": "  0123456789abcdef  "})
+	if err != nil {
+		t.Fatalf("padded pepper: %v", err)
+	}
+	if len(padded.HashPepper) != 16 || string(padded.HashPepper) != "0123456789abcdef" {
+		t.Fatalf("padded pepper stored %q", padded.HashPepper)
+	}
 }

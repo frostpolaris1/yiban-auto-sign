@@ -134,7 +134,7 @@ func TestE1UnauthenticatedMe(t *testing.T) {
 // a caller cannot steer what the audit layer records.
 func TestClientRequestIDIsNotReused(t *testing.T) {
 	engine, _ := newTestEngine(t)
-	for _, client := range []string{"13800138000", "a@b.com", "client-controlled-trace"} {
+	for _, client := range []string{"13800138000", "a@b.com", "client-controlled-trace", "06317272289944f6e935132eb62042ec"} {
 		req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 		req.Header.Set("X-Request-Id", client)
 		rec := serve(engine, req)
@@ -152,6 +152,31 @@ func TestClientRequestIDIsNotReused(t *testing.T) {
 				t.Fatalf("minted id %q is not lowercase hex", minted)
 			}
 		}
+	}
+}
+
+// Two requests to the same engine mint different ids: audit correlation dies
+// if every request shares one trace value.
+func TestRequestIDIsFreshPerRequest(t *testing.T) {
+	engine, _ := newTestEngine(t)
+	first := serve(engine, httptest.NewRequest(http.MethodGet, "/healthz", nil)).Header().Get("X-Request-Id")
+	second := serve(engine, httptest.NewRequest(http.MethodGet, "/healthz", nil)).Header().Get("X-Request-Id")
+	if first == "" || first == second {
+		t.Fatalf("ids are %q and %q; every request must mint a fresh one", first, second)
+	}
+}
+
+// The id the access log records is the id the response header carries, so an
+// audit line can always be matched to the response a caller saw.
+func TestAccessLogRequestIDMatchesHeader(t *testing.T) {
+	var logBuf bytes.Buffer
+	engine := newEngine(t, newStubIssuer(), slog.New(slog.NewTextHandler(&logBuf, nil)))
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := serve(engine, req)
+
+	header := rec.Header().Get("X-Request-Id")
+	if !strings.Contains(logBuf.String(), "request_id="+header) {
+		t.Fatalf("log lacks the response id %q: %q", header, logBuf.String())
 	}
 }
 
