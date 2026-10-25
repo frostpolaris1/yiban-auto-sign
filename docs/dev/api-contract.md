@@ -1396,7 +1396,8 @@
 - 成功响应：`{"ok": true, "count": int, "returned": int, "truncated": bool,
   "events": [{"ts": string, "phone": string（遮罩）, "status": string,
   "message": string, "stage": string, "attempt": int, "dur_sec": number|null}]}`
-  （`events` 按时间升序，封顶 50 条；`count` 是窗口内全量条数）。
+  （`events` 按时间升序，**封顶保留最近 50 条**（砍最旧一端）；`count` 是窗口内全量条数，
+  `returned` 是本次返回条数，`truncated` 表示是否发生截断）。
 - 主要错误：404 `账号不存在`；503 `账号数据暂不可读，请稍后再试`。
 - 副作用：聚合只读审计 `queue_events_read`。
 - 不变量：按**账号下标**解析号码——明文手机号不得出现在请求 URL（访问日志落盘

@@ -63,7 +63,7 @@ from yiban.core import status as yiban_status
 
 #: 桶名白名单（本端点只承两组；待审核走既有 /api/accounts?group=pending）。
 _BUCKETS = ("failed", "unsigned")
-#: 单账号事件时间线的响应封顶。
+#: 单账号事件时间线的响应条数上限（保留**最近** N 条，见 `recent_window`）。
 _EVENTS_CAP = 50
 #: 「今天」的星期展示（Monday=0 → 周一）。
 _WEEKDAYS = ("一", "二", "三", "四", "五", "六", "日")
@@ -211,7 +211,7 @@ def _queue_row(i, acc, entry, states, plan_at, prefs):
 
 
 def api_queue_events(idx):
-    """单账号事件时间线（脱敏、封顶 `_EVENTS_CAP`），供对象抽屉「近 30 天事件」。
+    """单账号事件时间线（脱敏、**保留最近** `_EVENTS_CAP` 条），供对象抽屉「近 30 天事件」。
 
     按**账号下标**解析号码（明文号不进 URL、不进日志）；响应里的手机号一律
     `mask_phone` 后下发。只读面聚合留痕一行（与 /api/admin/sign-events 同纪律）。
