@@ -6,6 +6,7 @@ package account
 // 本文件**不**连库、**不**测轮换。
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 )
@@ -94,5 +95,30 @@ func TestCipherRejectsForeignAADAndUnknownKey(t *testing.T) {
 		if _, err := NewCipher(key); err == nil {
 			t.Fatalf("NewCipher accepted a %d-byte key", len(key))
 		}
+	}
+}
+
+// 同一明文两次加密的 nonce 必须不同。
+// nonce 复用会让 AES-GCM 泄漏明文异或值，属于不可接受的回归。
+func TestCipherNonceIsFresh(t *testing.T) {
+	cipher, err := NewCipher([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("NewCipher: %v", err)
+	}
+	payload := CredentialPayload{Password: "pass"}
+	first, err := cipher.Seal(
+		"018f0000-0000-7000-8000-000000000001",
+		"018f0000-0000-7000-8000-000000000002", payload)
+	if err != nil {
+		t.Fatalf("Seal first: %v", err)
+	}
+	second, err := cipher.Seal(
+		"018f0000-0000-7000-8000-000000000001",
+		"018f0000-0000-7000-8000-000000000002", payload)
+	if err != nil {
+		t.Fatalf("Seal second: %v", err)
+	}
+	if bytes.Equal(first.Nonce, second.Nonce) {
+		t.Fatalf("two seals reused the nonce %x", first.Nonce)
 	}
 }

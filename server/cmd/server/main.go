@@ -1,8 +1,9 @@
 // Command server 运行 HTTP API。
 //
 // # 功能
-// 装配配置、数据库、会话签发器与路由，然后服务到 SIGINT 或 SIGTERM。
-// 配置了 YIBAN_DATABASE_URL 时启动前执行迁移并接线真实认证。
+// 装配配置、数据库、会话签发器、三个业务域与路由，然后服务到 SIGINT 或 SIGTERM。
+// 配置了 YIBAN_DATABASE_URL 时启动前执行迁移，
+// 并接线真实认证、学校、管理员与账号端点。
 // 本命令**不**跑后台任务、**不**读命令行参数。
 //
 // # 归属
@@ -33,11 +34,21 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/config"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/session"
+	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
+	appadmin "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/admin"
 	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
+	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
+	accounthttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/account"
+	adminhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/admin"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/router"
+	schoolhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/school"
 )
+
+// accountCapacityLimit 是 P1 的活跃账号上限（裁决 12.11）。
+// P1 不提供配置项；改上限只改本常量。
+const accountCapacityLimit = 10000
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -108,8 +119,8 @@ func newServer(cfg *config.Config, logger *slog.Logger) (*http.Server, error) {
 
 // buildStack 装配数据库、用例与路由。
 //
-// 有 DSN 时：迁移 → 连接池 → 仓储 → 认证用例。
-// 无 DSN 时：内存会话，认证端点回 501，并打印警告。
+// 有 DSN 时：迁移 → 连接池 → 仓储 → 认证与三个业务域用例。
+// 无 DSN 时：内存会话；认证与三个业务域端点回 501，并打印警告。
 // **不静默降级**：没有数据库就没有可用登录，警告写在启动日志里。
 func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 	if cfg == nil {
@@ -120,10 +131,13 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 	}
 	clk := clock.System{}
 	var (
-		issuer  auth.SessionIssuer
-		authSvc *appauth.Service
-		db      *pg.DB
-		closeFn = func() {}
+		issuer   auth.SessionIssuer
+		authSvc  *appauth.Service
+		schools  *schoolhttp.Handler
+		admins   *adminhttp.Handler
+		accounts *accounthttp.Handler
+		db       *pg.DB
+		closeFn  = func() {}
 	)
 
 	if strings.TrimSpace(cfg.DatabaseURL) == "" {
@@ -170,6 +184,59 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 			closeFn()
 			return nil, fmt.Errorf("server: auth service: %w", err)
 		}
+
+		credentialKey, err := deriveCredentialKey(cfg.HashPepper)
+		if err != nil {
+			closeFn()
+			return nil, err
+		}
+		cipher, err := appaccount.NewCipher(credentialKey)
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("server: credential cipher: %w", err)
+		}
+
+		schoolRepo := pg.NewSchoolRepo(db)
+		schoolSvc, err := appschool.NewService(appschool.Deps{
+			Schools: schoolRepo,
+			Audit:   audits,
+			Tx:      db,
+			Clock:   clk,
+		})
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("server: school service: %w", err)
+		}
+		// adminSvc 同时是三个域的作用域解析器：
+		// 入口层只认一个 Authorizer，故绑定校口径只有一份。
+		adminSvc, err := appadmin.NewService(appadmin.Deps{
+			Admins:  pg.NewAdminSchoolRepo(db),
+			Users:   pg.NewUserRepo(db),
+			Schools: schoolRepo,
+			Audit:   audits,
+			Tx:      db,
+			Clock:   clk,
+		})
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("server: admin service: %w", err)
+		}
+		accountSvc, err := appaccount.NewService(appaccount.Deps{
+			Accounts: pg.NewAccountRepo(db),
+			Schools:  schoolRepo,
+			Audit:    audits,
+			Tx:       db,
+			Clock:    clk,
+			Cipher:   cipher,
+			Limit:    accountCapacityLimit,
+		})
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("server: account service: %w", err)
+		}
+		schools = schoolhttp.NewHandler(schoolSvc, adminSvc)
+		admins = adminhttp.NewHandler(adminSvc, adminSvc)
+		accounts = accounthttp.NewHandler(accountSvc, adminSvc)
 	}
 
 	engine, err := router.New(router.Options{
@@ -178,6 +245,9 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 		Clock:           clk,
 		Logger:          logger,
 		InsecureCookies: cfg.InsecureCookies,
+		Schools:         schools,
+		Admins:          admins,
+		Accounts:        accounts,
 	})
 	if err != nil {
 		closeFn()
@@ -196,5 +266,19 @@ func deriveAuditKey(pepper []byte) ([]byte, error) {
 	}
 	mac := hmac.New(sha256.New, pepper)
 	mac.Write([]byte("yiban.audit.key.v1"))
+	return mac.Sum(nil), nil
+}
+
+// deriveCredentialKey 从服务器 pepper 派生凭据加密钥。
+//
+// P1 没有独立的凭据钥环境变量；派生值稳定，重启后仍能解密旧行。
+// 域标签把本用途与审计钥、CSRF、IP 摘要隔开：四者消息不同。
+// 输出恰好 32 字节，满足 AES-256 的键长要求。
+func deriveCredentialKey(pepper []byte) ([]byte, error) {
+	if len(pepper) == 0 {
+		return nil, errors.New("server: YIBAN_HASH_PEPPER is required to derive the credential key")
+	}
+	mac := hmac.New(sha256.New, pepper)
+	mac.Write([]byte("yiban.credential.key.v1"))
 	return mac.Sum(nil), nil
 }

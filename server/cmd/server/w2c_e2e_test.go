@@ -925,5 +925,287 @@ func TestW2CInvalidTransitionIsConflict(t *testing.T) {
 	}
 }
 
+// --- P1-1 跨校写动作 --------------------------------------------------------
+
+// accountSnapshot 返回一行账号的可比较快照。
+// 越权写必须让整行不变，故快照覆盖会被这四类动作改动的列。
+func (e *w2cEnv) accountSnapshot(id string) string {
+	e.t.Helper()
+	return e.scalarString(`
+		SELECT phone || '|' || status::text || '|' || reject_reason || '|' ||
+		       (deleted_at IS NOT NULL)::text || '|' || coalesce(reviewed_by::text, '')
+		  FROM accounts WHERE id = $1::uuid`, id)
+}
+
+// admin 只绑定学校 A。对学校 B 的账号做审核、暂停、改号、软删：
+// 四个写动作全部 404，且 B 的行一个字节都不变。
+func TestW2CP11CrossSchoolWritesAre404(t *testing.T) {
+	e := w2cNewEnv(t)
+	adminUser := e.user("admin@example.com", coreauth.RoleAdmin)
+	owner := e.user("owner@example.com", coreauth.RoleUser)
+	schoolA := e.school("p11-a")
+	schoolB := e.school("p11-b")
+	e.bind(adminUser.ID, schoolA.ID)
+	adminSess := e.login(adminUser)
+
+	reviewed := e.account(schoolB.ID, owner.ID, "13800138020")
+	paused := e.account(schoolB.ID, owner.ID, "13800138021")
+	phoned := e.account(schoolB.ID, owner.ID, "13800138022")
+	deleted := e.account(schoolB.ID, owner.ID, "13800138023")
+	// 暂停只从 active 出发；这里直接把行置为 active，避免用 master 预置。
+	if _, err := e.db.Exec(e.ctx,
+		"UPDATE accounts SET status = 'active' WHERE id = $1::uuid", paused); err != nil {
+		t.Fatalf("activate the pause target: %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		method string
+		path   string
+		body   any
+		id     string
+	}{
+		{"review", http.MethodPost, "/api/accounts/" + reviewed + "/review",
+			map[string]any{"decision": "approve"}, reviewed},
+		{"pause", http.MethodPost, "/api/accounts/" + paused + "/pause",
+			map[string]any{"paused": true}, paused},
+		{"update-phone", http.MethodPatch, "/api/accounts/" + phoned,
+			map[string]any{"phone": "13900139099"}, phoned},
+		{"soft-delete", http.MethodDelete, "/api/accounts/" + deleted, nil, deleted},
+	}
+	for _, tc := range cases {
+		before := e.accountSnapshot(tc.id)
+		rec := e.do(tc.method, tc.path, tc.body, adminSess)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s on an unbound school account = %d, want 404; body=%q",
+				tc.name, rec.Code, rec.Body.String())
+		}
+		if code := e.errorCode(rec); code != "not_found" {
+			t.Fatalf("%s code = %q, want not_found", tc.name, code)
+		}
+		if after := e.accountSnapshot(tc.id); after != before {
+			t.Fatalf("%s changed the out-of-scope row: %q -> %q", tc.name, before, after)
+		}
+	}
+}
+
+// --- P1-2 审计与业务同事务 --------------------------------------------------
+
+// 审计表改名让每次 Append 失败。
+// 断言：master 建校 5xx 且该校一行都没有；admin 审核 5xx 且状态仍是 pending。
+// 恢复表名后同一组动作必须成功。
+func TestW2CP12AuditFailureRollsBackBusinessWrite(t *testing.T) {
+	e := w2cNewEnv(t)
+	master := e.user("master@example.com", coreauth.RoleMaster)
+	adminUser := e.user("admin@example.com", coreauth.RoleAdmin)
+	school := e.school("p12")
+	e.bind(adminUser.ID, school.ID)
+	account := e.account(school.ID, master.ID, "13800138024")
+	masterSess := e.login(master)
+	adminSess := e.login(adminUser)
+
+	if _, err := e.db.Exec(e.ctx, "ALTER TABLE audit_logs RENAME TO audit_logs_muted"); err != nil {
+		t.Fatalf("mute audit_logs: %v", err)
+	}
+	restored := false
+	restore := func() {
+		if restored {
+			return
+		}
+		restored = true
+		if _, err := e.db.Exec(context.Background(),
+			"ALTER TABLE audit_logs_muted RENAME TO audit_logs"); err != nil {
+			t.Errorf("restore audit_logs: %v", err)
+		}
+	}
+	t.Cleanup(restore)
+
+	rec := e.do(http.MethodPost, "/api/schools",
+		map[string]any{"code": "p12-blocked", "name": "Blocked"}, masterSess)
+	if rec.Code < 500 {
+		t.Fatalf("create school with a broken audit table = %d, want 5xx; body=%q",
+			rec.Code, rec.Body.String())
+	}
+	if got := e.scalarInt("SELECT count(*) FROM schools WHERE code = 'p12-blocked'"); got != 0 {
+		t.Fatalf("school rows after a failed audit write = %d, want 0", got)
+	}
+
+	rec = e.do(http.MethodPost, "/api/accounts/"+account+"/review",
+		map[string]any{"decision": "approve"}, adminSess)
+	if rec.Code < 500 {
+		t.Fatalf("review with a broken audit table = %d, want 5xx; body=%q",
+			rec.Code, rec.Body.String())
+	}
+	if status := e.scalarString("SELECT status::text FROM accounts WHERE id = $1::uuid", account); status != "pending" {
+		t.Fatalf("status after a failed audit write = %q, want pending", status)
+	}
+
+	// 恢复表名后同一组动作成功：证明上面的失败只是审计故障所致。
+	restore()
+	w2cWantStatus(t, e.do(http.MethodPost, "/api/schools",
+		map[string]any{"code": "p12-blocked", "name": "Blocked"}, masterSess), http.StatusCreated)
+	w2cWantStatus(t, e.do(http.MethodPost, "/api/accounts/"+account+"/review",
+		map[string]any{"decision": "approve"}, adminSess), http.StatusOK)
+}
+
+// --- P2-1 q 过滤口径 -------------------------------------------------------
+
+// q 只命中前 3 位前缀、后 4 位后缀或 11 位全号。
+// 掩码隐藏的中四位**不可检索**：它曾是一个数字 oracle。
+func TestW2CP21PhoneQueryHasNoMaskOracle(t *testing.T) {
+	e := w2cNewEnv(t)
+	master := e.user("master@example.com", coreauth.RoleMaster)
+	school := e.school("p21")
+	e.account(school.ID, master.ID, "13800138000")
+	e.account(school.ID, master.ID, "13900139000")
+	masterSess := e.login(master)
+
+	cases := []struct {
+		q    string
+		want int
+	}{
+		{"0013", 0},        // 掩码隐藏的中四位
+		{"138", 1},         // 前 3 位前缀
+		{"8000", 1},        // 后 4 位后缀
+		{"13800138000", 1}, // 11 位全号
+	}
+	for _, tc := range cases {
+		rec := e.do(http.MethodGet, "/api/accounts?q="+tc.q, nil, masterSess)
+		w2cWantStatus(t, rec, http.StatusOK)
+		var page w2cAccountPage
+		e.decode(rec, &page)
+		if len(page.Items) != tc.want {
+			t.Fatalf("q=%s returned %d accounts, want %d; items=%#v",
+				tc.q, len(page.Items), tc.want, page.Items)
+		}
+	}
+
+	// 命中的必须是 138 那一行，而不是 139 那一行。
+	rec := e.do(http.MethodGet, "/api/accounts?q=138", nil, masterSess)
+	w2cWantStatus(t, rec, http.StatusOK)
+	var page w2cAccountPage
+	e.decode(rec, &page)
+	if len(page.Items) != 1 || page.Items[0].PhoneMasked != "138****8000" {
+		t.Fatalf("q=138 items = %#v, want only 138****8000", page.Items)
+	}
+}
+
+// --- P2-2 拒绝理由出口掩码 --------------------------------------------------
+
+// 拒绝理由含手机号时，审核响应、读取响应、列表响应都只出现掩码；
+// 审计 detail 保持原有掩码口径。
+func TestW2CP22RejectReasonIsMaskedOnEveryResponse(t *testing.T) {
+	e := w2cNewEnv(t)
+	master := e.user("master@example.com", coreauth.RoleMaster)
+	school := e.school("p22")
+	account := e.account(school.ID, master.ID, "13800138012")
+	masterSess := e.login(master)
+	const (
+		raw  = "13900139000"
+		mask = "139****9000"
+	)
+	reason := "退回：" + raw + " 需更正"
+
+	bodies := map[string]string{}
+	rec := e.do(http.MethodPost, "/api/accounts/"+account+"/review",
+		map[string]any{"decision": "reject", "reason": reason}, masterSess)
+	w2cWantStatus(t, rec, http.StatusOK)
+	bodies["review"] = rec.Body.String()
+
+	rec = e.do(http.MethodGet, "/api/accounts/"+account, nil, masterSess)
+	w2cWantStatus(t, rec, http.StatusOK)
+	bodies["get"] = rec.Body.String()
+
+	rec = e.do(http.MethodGet, "/api/accounts", nil, masterSess)
+	w2cWantStatus(t, rec, http.StatusOK)
+	bodies["list"] = rec.Body.String()
+
+	for name, body := range bodies {
+		if !strings.Contains(body, mask) {
+			t.Fatalf("%s response is missing the masked reason: %q", name, body)
+		}
+		if strings.Contains(body, raw) {
+			t.Fatalf("%s response leaked the raw phone: %q", name, body)
+		}
+	}
+
+	detail := e.scalarString(
+		"SELECT coalesce(string_agg(detail, ' '), '') FROM audit_logs WHERE action = 'account.review_reject'")
+	if !strings.Contains(detail, mask) || strings.Contains(detail, raw) {
+		t.Fatalf("audit detail = %q, want the masked reason only", detail)
+	}
+}
+
+// --- P2-3 413 覆盖域处理器 --------------------------------------------------
+
+// 域端点与认证端点同口径：请求体超过 1 MiB 回 413，不是 400。
+func TestW2CP23OversizedDomainBodiesAre413(t *testing.T) {
+	e := w2cNewEnv(t)
+	master := e.user("master@example.com", coreauth.RoleMaster)
+	masterSess := e.login(master)
+	huge := strings.Repeat("x", 2<<20)
+
+	cases := []struct {
+		name string
+		path string
+		body any
+	}{
+		{"schools", "/api/schools", map[string]any{"code": huge, "name": "x"}},
+		{"accounts", "/api/accounts", map[string]any{
+			"school_id": "00000000-0000-0000-0000-000000000000",
+			"phone":     "13800138000",
+			"password":  huge,
+		}},
+	}
+	for _, tc := range cases {
+		rec := e.do(http.MethodPost, tc.path, tc.body, masterSess)
+		if rec.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("%s oversized body = %d, want 413; body=%q",
+				tc.name, rec.Code, rec.Body.String())
+		}
+		if code := e.errorCode(rec); code != "validation_failed" {
+			t.Fatalf("%s 413 code = %q, want validation_failed", tc.name, code)
+		}
+	}
+}
+
+// --- P3-2 真实装配接线 ------------------------------------------------------
+
+// 真实进程的装配（buildStack）必须注入三组业务处理器。
+// 未注入时端点在认证之后回 501；本用例走真实登录，故 501 会被看见。
+// 三个端点各取一条：schools、accounts、绑定列表。
+func TestW2CP32RealStackWiresDomainHandlers(t *testing.T) {
+	e := newAuthEnv(t)
+	user := e.createUser("wired-master@example.com", "correct-horse")
+	if _, err := e.db.Exec(e.ctx,
+		"UPDATE users SET role = 'master' WHERE id = $1::uuid", user.ID); err != nil {
+		t.Fatalf("promote the user to master: %v", err)
+	}
+	resp, body := e.login("wired-master@example.com", "correct-horse")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login = %d, want 200", resp.StatusCode)
+	}
+	if body.Role != "master" {
+		t.Fatalf("session role = %q, want master", body.Role)
+	}
+
+	for name, tc := range map[string]struct {
+		path string
+		want int
+	}{
+		"schools":       {"/api/schools", http.StatusOK},
+		"accounts":      {"/api/accounts", http.StatusOK},
+		"school-admins": {"/api/schools/018f0000-0000-7000-8000-00000000000f/admins", http.StatusNotFound},
+	} {
+		resp, payload := e.do(http.MethodGet, tc.path, nil, nil)
+		if resp.StatusCode == http.StatusNotImplemented {
+			t.Fatalf("%s endpoint is not wired: 501; body=%q", name, payload)
+		}
+		if resp.StatusCode != tc.want {
+			t.Fatalf("%s status = %d, want %d; body=%q", name, resp.StatusCode, tc.want, payload)
+		}
+	}
+}
+
 // 编译期检查：生成契约的参数类型仍是本测试使用的形状。
 var _ = oapi.SchoolListParams{}

@@ -12,8 +12,8 @@
 //
 // # 口径
 // 绑定成功回 201；解绑成功回 204。
-// 邮箱在数据源里已是掩码后的展示值吗？**不是**：绑定页展示真实邮箱，
-// 只有审计与日志使用掩码邮箱。
+// 绑定页展示**真实邮箱**；只有审计与日志使用掩码邮箱。
+// 请求体解码失败走 respond.BindError：超限回 413，其余回 400。
 package admin
 
 import (
@@ -92,7 +92,7 @@ func (h *Handler) Add(c *gin.Context, id oapi.SchoolID, _ oapi.SchoolAdminAddPar
 	}
 	var body oapi.SchoolAdminCreate
 	if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
-		fail(c, errs.New(errs.CodeValidation, "invalid request body"))
+		respond.BindError(c.Writer, c.Request, err)
 		return
 	}
 	binding, err := h.svc.Grant(c.Request.Context(), scope, id, body.UserId, actor)

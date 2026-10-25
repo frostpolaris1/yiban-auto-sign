@@ -79,16 +79,10 @@ func bodyLimit(limit int64) gin.HandlerFunc {
 	}
 }
 
-// bindError 把请求体绑定失败转成信封。
-// 请求体超过入口上界时回 413；其余仍是 400 validation_failed。
-// 上界失败不得落到 400：调用方要能区分「格式错」与「体积超限」。
+// bindError 是 respond.BindError 的 Gin 适配。
+// 口径只在 respond 实现一份：认证与三个业务域共用。
 func bindError(c *gin.Context, err error) {
-	var tooLarge *http.MaxBytesError
-	if errors.As(err, &tooLarge) {
-		respond.PayloadTooLarge(c.Writer, c.Request)
-		return
-	}
-	respond.Error(c.Writer, c.Request, errs.New(errs.CodeValidation, "invalid request"))
+	respond.BindError(c.Writer, c.Request, err)
 }
 
 // recoverPanic 把 panic 转成 500 信封。

@@ -143,10 +143,18 @@ func ruleApplies(r Rule, rel string) bool {
 	return true
 }
 
+// under 判断 rel 是否落在 prefix 之下。
+//
+// prefix 以 .go 结尾时按**单文件精确匹配**：
+// 需要把概念钉在一个文件、而不是整个目录时用这种写法。
+// 其余 prefix 按目录前缀比较。
 func under(rel, prefix string) bool {
 	prefix = strings.TrimSpace(prefix)
 	if prefix == "" {
 		return false
+	}
+	if strings.HasSuffix(prefix, ".go") {
+		return rel == prefix
 	}
 	prefix = strings.TrimSuffix(prefix, "/") + "/"
 	return strings.HasPrefix(rel, prefix)

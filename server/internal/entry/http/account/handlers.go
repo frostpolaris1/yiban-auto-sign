@@ -13,7 +13,7 @@
 // # 口径
 // 响应只给 phone_masked；原始手机号在 Record 里，**不出本层**。
 // 口令与设备码只进请求体，本层不记录、不回显。
-// phone_model 在 P1 存在凭据密文里，不单独回显，故响应中省略该字段。
+// phone_model 在 P1 存在凭据密文里，契约的 Account 响应不声明该字段。
 package account
 
 import (
@@ -241,12 +241,14 @@ func (h *Handler) principal(c *gin.Context) (corescope.Scope, appaudit.Actor, bo
 
 func accountResponse(record appaccount.Record) oapi.Account {
 	out := oapi.Account{
-		Id:           record.ID,
-		SchoolId:     record.SchoolID,
-		OwnerUserId:  record.OwnerUserID,
-		PhoneMasked:  mask.MaskPhone(record.Phone),
-		Status:       oapi.AccountStatus(record.Status),
-		RejectReason: record.RejectReason,
+		Id:          record.ID,
+		SchoolId:    record.SchoolID,
+		OwnerUserId: record.OwnerUserID,
+		PhoneMasked: mask.MaskPhone(record.Phone),
+		Status:      oapi.AccountStatus(record.Status),
+		// 拒绝理由是自由文本；写库时保留原文，**出口一律掩码**。
+		// 审核、读取、列表三条响应同源，故只在这里处理一次。
+		RejectReason: mask.MaskText(record.RejectReason),
 		ReviewedAt:   record.ReviewedAt,
 		CreatedAt:    record.CreatedAt,
 		UpdatedAt:    record.UpdatedAt,
@@ -274,7 +276,7 @@ func stringOf(value *string) string {
 
 func decode(c *gin.Context, target any) bool {
 	if err := json.NewDecoder(c.Request.Body).Decode(target); err != nil {
-		fail(c, errs.New(errs.CodeValidation, "invalid request body"))
+		respond.BindError(c.Writer, c.Request, err)
 		return false
 	}
 	return true

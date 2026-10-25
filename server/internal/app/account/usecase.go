@@ -45,6 +45,10 @@ const maxPasswordBytes = 1024
 // maxQueryChars 限制列表搜索串长度。
 const maxQueryChars = 64
 
+// maxCredentialFieldChars 与契约的 maxLength: 64 同值。
+// 设备码与机型会进入凭据密文；不设上界时只受 1 MiB 体上界约束。
+const maxCredentialFieldChars = 64
+
 // SchoolReader 读院校行。只用到按 id 取一条。
 type SchoolReader interface {
 	Get(ctx context.Context, id string) (coreschool.Record, error)
@@ -175,6 +179,12 @@ func (s *Service) Create(ctx context.Context, scope corescope.Scope, in CreateIn
 	if err := validatePassword(in.Password); err != nil {
 		return Record{}, err
 	}
+	if err := validateCredentialText("device_code", in.DeviceCode); err != nil {
+		return Record{}, err
+	}
+	if err := validateCredentialText("phone_model", in.PhoneModel); err != nil {
+		return Record{}, err
+	}
 	if s.deps.Cipher == nil {
 		return Record{}, errs.New(errs.CodeInternal, "credential cipher is not configured")
 	}
@@ -242,6 +252,16 @@ func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, 
 	}
 	if in.Password != nil {
 		if err := validatePassword(*in.Password); err != nil {
+			return Record{}, err
+		}
+	}
+	if in.DeviceCode != nil {
+		if err := validateCredentialText("device_code", *in.DeviceCode); err != nil {
+			return Record{}, err
+		}
+	}
+	if in.PhoneModel != nil {
+		if err := validateCredentialText("phone_model", *in.PhoneModel); err != nil {
 			return Record{}, err
 		}
 	}
@@ -501,6 +521,15 @@ func resolveOwner(scope corescope.Scope, actor appaudit.Actor, requested string)
 		return actor.UserID, nil
 	}
 	return requested, nil
+}
+
+// validateCredentialText 限制会进入凭据密文的自由文本长度。
+// 空串合法：设备码与机型都是可选项。
+func validateCredentialText(field, value string) error {
+	if utf8.RuneCountInString(value) > maxCredentialFieldChars {
+		return errs.New(errs.CodeValidation, field+" must be at most 64 characters")
+	}
+	return nil
 }
 
 func validatePassword(password string) error {

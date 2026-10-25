@@ -168,7 +168,7 @@ func cursorOf(cursor *string) string {
 
 func decode(c *gin.Context, target any) bool {
 	if err := json.NewDecoder(c.Request.Body).Decode(target); err != nil {
-		fail(c, errs.New(errs.CodeValidation, "invalid request body"))
+		respond.BindError(c.Writer, c.Request, err)
 		return false
 	}
 	return true
