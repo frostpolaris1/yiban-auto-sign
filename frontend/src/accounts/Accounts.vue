@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import {
   api,
+  confirmDialog,
   dangerousSubmit,
   errorMessage,
   isCanceled,
@@ -56,6 +57,19 @@ import {
   submitLabel,
   type SelectItem,
 } from "../myaccounts/accountform";
+import {
+  PRIVACY_FIELDS,
+  buildPrivacyPayload,
+  emptyPrivacyState,
+  exposureHint,
+  privacyConfirmBody,
+  privacyDiff,
+  privacyEndpoint,
+  privacyFromView,
+  privacyTitle,
+  profileLine,
+  type PrivacyState,
+} from "../myaccounts/privacy";
 
 /* 账号管理（管理端 /work/accounts）—— P3 整页迁移到 Vue。
    与 legacy 的分工：口径层在 `model.js`（纯函数 + Vitest + node 真跑选中身份键），写操作
@@ -418,6 +432,13 @@ const emailItems = ref<SelectItem[]>(emailBaseItems());
 const formEmail = ref("");
 const formManualEmail = ref("");
 const formInitialPassword = ref("");
+/* 二段：隐私资料与暴露（qmz4）。管理面写口 fail-closed（必须带 phone 令牌），
+   详情面只下发开着的字段；保存只提交改动过的键（见 myaccounts/privacy.ts）。 */
+const detailProfile = ref<Record<string, string>>({});
+const privacy = ref<PrivacyState>(emptyPrivacyState());
+const privacyInitial = ref<PrivacyState>(emptyPrivacyState());
+const privacyError = ref("");
+const privacyBusy = ref(false);
 const T = computed(() => formTexts("admin"));
 const showManual = computed(() => !formEditing.value && formEmail.value === "__manual__");
 const editingAccount = computed(() => (formIndex.value != null ? rowByIndex(formIndex.value) : null));
@@ -470,6 +491,10 @@ function openForm(index: number | null): void {
   formEmail.value = "";
   formManualEmail.value = "";
   formInitialPassword.value = "";
+  detailProfile.value = {};
+  privacy.value = emptyPrivacyState();
+  privacyInitial.value = emptyPrivacyState();
+  privacyError.value = "";
   // 先落固定条目（同步），loadBindableUsers 成功后再覆盖为「固定条目 + 可绑定用户」。
   emailItems.value = emailBaseItems();
   const a = index !== null ? rowByIndex(index) : null;
@@ -491,10 +516,16 @@ function openAdd(): void {
 async function loadDetail(index: number): Promise<void> {
   formDetailLoading.value = true;
   try {
-    const d = await api<{ account?: { phone?: string; name?: string; phone_model?: string; status?: string; deleted?: boolean } }>(
-      "GET",
-      `/api/accounts/${index}/detail`,
-    );
+    const d = await api<{
+      account?: {
+        phone?: string;
+        name?: string;
+        phone_model?: string;
+        status?: string;
+        deleted?: boolean;
+        profile?: Record<string, string>;
+      };
+    }>("GET", `/api/accounts/${index}/detail`);
     const acc = d.account ?? {};
     // 迟到响应防串号：弹窗已关，或已改成编辑另一个账号（index 变），都不得再写入表单。
     if (!formOpen.value || formIndex.value !== index) return;
@@ -508,6 +539,11 @@ async function loadDetail(index: number): Promise<void> {
     fullPhone.value = String(acc.phone ?? "");
     formSnapshot.value = makeSnapshot(acc);
     f.value.phone = row.phone; // 只回显打码号
+    // 详情面只含开着的字段（#201 暴露出口）：键存在＝开关开，内容即展示值。
+    detailProfile.value = acc.profile ?? {};
+    privacy.value = privacyFromView(acc.profile);
+    privacyInitial.value = privacyFromView(acc.profile);
+    privacyError.value = "";
   } catch {
     // 同判据：过期/串号的失败响应不得清掉当前（可能是另一个）表单的完整号与快照。
     if (!formOpen.value || formIndex.value !== index) return;
@@ -537,6 +573,49 @@ function toggleClearCode(): void {
 function onFormClosed(): void {
   fullPhone.value = "";
   formSnapshot.value = null;
+  detailProfile.value = {};
+  privacy.value = emptyPrivacyState();
+  privacyInitial.value = emptyPrivacyState();
+  privacyError.value = "";
+}
+
+/**
+ * 二段保存（管理面）：必须带完整号令牌（后端 fail-closed）。
+ * 详情只下发开着的字段，故保存后重新取详情，让展示与开关回到服务端事实。
+ */
+async function submitPrivacyAdmin(): Promise<void> {
+  if (privacyBusy.value || !formEditing.value || formIndex.value == null) return;
+  privacyError.value = "";
+  const payload = buildPrivacyPayload(privacy.value, privacyInitial.value, fullPhone.value, {
+    requirePhone: true,
+  });
+  if (payload && "error" in payload) {
+    privacyError.value = payload.error;
+    return;
+  }
+  if (!payload) {
+    toast().success("没有需要保存的改动");
+    return;
+  }
+  const diff = privacyDiff(privacy.value, privacyInitial.value);
+  const ok = await confirmDialog({
+    title: privacyTitle(),
+    body: privacyConfirmBody(diff),
+    confirmText: "保存",
+  });
+  if (!ok) return;
+  const index = formIndex.value;
+  privacyBusy.value = true;
+  try {
+    await api("PUT", privacyEndpoint("admin", index), payload);
+    toast().success("隐私资料已保存");
+    await loadDetail(index);
+  } catch (e) {
+    if (isCanceled(e)) return;
+    privacyError.value = errorMessage(e, "隐私资料保存失败，请稍后再试");
+  } finally {
+    privacyBusy.value = false;
+  }
 }
 
 async function submitForm(): Promise<void> {
@@ -1131,6 +1210,29 @@ const M = {
             @click="toggleClearCode"
           >{{ clearCode ? CODE_CLEAR_CANCEL_BTN : CODE_CLEAR_BTN }}</button>
         </label>
+
+        <!-- 二段：隐私资料与暴露（qmz4）。只在编辑态可见：详情面只含开着的字段。 -->
+        <details v-if="formEditing" class="privacy-details" data-admin-privacy>
+          <summary>{{ privacyTitle() }}</summary>
+          <p class="field-help">
+            详情只显示开着的字段；管理列表始终不显示。保存只提交改动过的键，关闭字段的既有内容不受影响。
+          </p>
+          <div v-if="profileLine(detailProfile)" class="account-profile" data-detail-profile>
+            {{ profileLine(detailProfile) }}
+          </div>
+          <el-alert v-if="privacyError" type="error" :title="privacyError" :closable="false" show-icon style="margin-bottom: 10px" />
+          <div v-for="pf in PRIVACY_FIELDS" :key="pf.key" class="field privacy-field" :data-privacy-field="pf.key">
+            <span class="field-label">{{ pf.label }}</span>
+            <el-input v-model="privacy.profile[pf.key]" :maxlength="pf.maxlength" clearable :placeholder="pf.placeholder" />
+            <div class="privacy-expose">
+              <el-switch v-model="privacy.expose[pf.key]" :aria-label="`暴露${pf.label}`" />
+              <span class="field-help">{{ exposureHint(privacy.expose[pf.key], 'admin') }}</span>
+            </div>
+          </div>
+          <button type="button" class="btn btn--ghost btn--sm" :disabled="privacyBusy || formDetailLoading" @click="submitPrivacyAdmin">
+            保存隐私资料
+          </button>
+        </details>
       </div>
       <template #footer>
         <button type="button" class="btn btn--ghost" @click="formOpen = false">取消</button>
