@@ -131,7 +131,8 @@ ui/src/
 4. 名册为空、作用域不存在、扫描集为空时门报错，不当绿。未到阶段的作用域用 `?` 标记。
 
 前端导入方向由 `ui/scripts/structure-gate.mjs` 解析模块路径后判定。
-该门只扫 `ui/`；`docs/` 与 `server/` 由 Python 文档门与人工审查覆盖。
+该门只扫 `ui/`。`docs/`、`server/`、`tests/` 不在它扫描面内，`server/` 的 `work/` 引用无自动门，靠审查。
+Python 文档门只管 `docs/…` 路径是否存在，不管 `work/` 引用。
 
 两条入口：
 

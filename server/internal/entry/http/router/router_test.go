@@ -345,7 +345,9 @@ func TestLogoutWithoutSession(t *testing.T) {
 	if rec.Code == http.StatusBadRequest {
 		t.Fatalf("session-less logout was rejected by binding: %q", rec.Body.String())
 	}
-	if env := decodeEnvelope(t, rec); env.Error.Code == "validation_failed" {
-		t.Fatalf("code = validation_failed, want a non-binding outcome")
+	if rec.Body.Len() > 0 {
+		if env := decodeEnvelope(t, rec); env.Error.Code == "validation_failed" {
+			t.Fatalf("code = validation_failed, want a non-binding outcome")
+		}
 	}
 }
