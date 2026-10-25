@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>易班自动签到 · 控制台</title>
+    <!--
+      Early theme bootstrap.
+      Purpose: set data-theme before any CSS loads, so a dark-mode user never sees
+      a light flash. The 36 Adminator tokens only resolve under
+      :root[data-theme="light"] or :root[data-theme="dark"].
+      This script writes one key only: dash26-theme. It stores no credentials.
+    -->
+    <script>
+      (function () {
+        var KEY = 'dash26-theme';
+        var theme = null;
+        try {
+          var saved = localStorage.getItem(KEY);
+          if (saved === 'light' || saved === 'dark') theme = saved;
+        } catch (error) {
+          /* localStorage can be blocked; fall through to the media query. */
+        }
+        if (!theme) {
+          try {
+            theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+          } catch (error) {
+            theme = 'light';
+          }
+        }
+        document.documentElement.setAttribute('data-theme', theme);
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/app/main.tsx"></script>
+  </body>
+</html>

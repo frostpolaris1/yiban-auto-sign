@@ -1,0 +1,120 @@
+/*
+ * tokens.css — canonical Adminator design tokens.
+ *
+ * Source values: Adminator 2026 `src/assets/styles/2026/_tokens.scss`.
+ * The token gate enforces exact parity with
+ * `web/static/vendor/adminator/adminator.css`, for both themes:
+ * 36 token names per theme, 72 declarations total.
+ *
+ * Do not add, rename, or re-value a token here. This file is the only place in
+ * `src/` (besides the verbatim vendor stylesheet) where color literals may
+ * appear. New components must consume `var(--token)`.
+ */
+
+:root[data-theme="light"] {
+  /* Surfaces */
+  --bg-body: #F0F4F8;
+  --bg-card: #FFFFFF;
+  --bg-sidebar: #FFFFFF;
+  --bg-hover: #F8FAFC;
+  --bg-muted: #F1F5F9;
+
+  /* Text */
+  --t-base: #1E293B;
+  --t-muted: #64748B;
+  --t-light: #94A3B8;
+  --t-inverse: #FFFFFF;
+
+  /* Borders */
+  --border: #E4E8EF;
+  --border-soft: #EEF1F5;
+
+  /* Brand */
+  --primary: #2563EB;
+  --primary-light: #3B82F6;
+  --primary-dark: #1D4ED8;
+  --primary-soft: #EFF6FF;
+  --primary-ring: rgba(37, 99, 235, 0.18);
+
+  /* Semantic solid */
+  --success: #10B981;
+  --warning: #F59E0B;
+  --danger: #EF4444;
+  --info: #0EA5E9;
+  --purple: #8B5CF6;
+  --pink: #EC4899;
+  --teal: #14B8A6;
+  --orange: #F97316;
+
+  /* Semantic soft */
+  --success-soft: #ECFDF5;
+  --warning-soft: #FFFBEB;
+  --danger-soft: #FEF2F2;
+  --info-soft: #F0F9FF;
+  --purple-soft: #F5F3FF;
+  --pink-soft: #FDF2F8;
+  --teal-soft: #F0FDFA;
+  --orange-soft: #FFF7ED;
+
+  /* Elevation */
+  --shadow-sm: 0 1px 2px 0 rgb(15 23 42 / 0.04);
+  --shadow-card: 0 1px 3px 0 rgb(15 23 42 / 0.06), 0 1px 2px -1px rgb(15 23 42 / 0.04);
+  --shadow-lg: 0 10px 15px -3px rgb(15 23 42 / 0.08), 0 4px 6px -4px rgb(15 23 42 / 0.05);
+
+  /* Overlay */
+  --overlay: rgba(240, 244, 248, 0.72);
+}
+
+:root[data-theme="dark"] {
+  /* Surfaces */
+  --bg-body: #0B1120;
+  --bg-card: #141B2D;
+  --bg-sidebar: #141B2D;
+  --bg-hover: #1C2438;
+  --bg-muted: #1A2237;
+
+  /* Text */
+  --t-base: #F1F5F9;
+  --t-muted: #94A3B8;
+  --t-light: #64748B;
+  --t-inverse: #0B1120;
+
+  /* Borders */
+  --border: #222C42;
+  --border-soft: #1A2237;
+
+  /* Brand */
+  --primary: #60A5FA;
+  --primary-light: #93C5FD;
+  --primary-dark: #3B82F6;
+  --primary-soft: #0F2847;
+  --primary-ring: rgba(96, 165, 250, 0.24);
+
+  /* Semantic solid */
+  --success: #34D399;
+  --warning: #FBBF24;
+  --danger: #F87171;
+  --info: #38BDF8;
+  --purple: #A78BFA;
+  --pink: #F472B6;
+  --teal: #2DD4BF;
+  --orange: #FB923C;
+
+  /* Semantic soft */
+  --success-soft: #0F2A20;
+  --warning-soft: #2B1F08;
+  --danger-soft: #2B1414;
+  --info-soft: #0D2232;
+  --purple-soft: #1E1A2C;
+  --pink-soft: #2A1424;
+  --teal-soft: #0E2826;
+  --orange-soft: #2A1810;
+
+  /* Elevation */
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.4);
+  --shadow-card: 0 1px 3px 0 rgb(0 0 0 / 0.3), 0 1px 2px -1px rgb(0 0 0 / 0.25);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.5), 0 4px 6px -4px rgb(0 0 0 / 0.4);
+
+  /* Overlay */
+  --overlay: rgba(11, 17, 32, 0.72);
+}

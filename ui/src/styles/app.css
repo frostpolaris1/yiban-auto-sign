@@ -1,0 +1,178 @@
+/*
+ * app.css — project layer on top of the Adminator stylesheet.
+ *
+ * Rules:
+ * - Every color, radius, and shadow comes from a token in tokens.css.
+ * - No color literal appears here; `scripts/token-gate.mjs` enforces this.
+ * - Geometry that Adminator already defines stays in Adminator classes.
+ *   This file only fills gaps: overlay positioning, Radix state mapping,
+ *   a11y helpers, and gallery layout.
+ */
+
+/* ---------- accessibility ---------- */
+
+.app-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---------- Radix Dialog: Adminator exposes only static modal markup ---------- */
+
+.app-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 190;
+  background: var(--overlay);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+}
+
+.app-modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 200;
+  width: min(480px, calc(100vw - 32px));
+  transform: translate(-50%, -50%);
+}
+
+.app-modal:focus {
+  outline: none;
+}
+
+.app-modal .modal-body strong {
+  color: var(--t-base);
+}
+
+/* ---------- Radix DropdownMenu: map keyboard highlight to Adminator hover ---------- */
+
+.dd-menu-item[data-highlighted] {
+  background: var(--bg-hover);
+}
+
+.dd-menu-item.danger[data-highlighted] {
+  background: var(--danger-soft);
+}
+
+/* ---------- Radix Switch: Adminator styles the native checkbox, not a button ---------- */
+
+.app-switch[data-state="checked"] .track {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+.app-switch[data-state="checked"] .track::after {
+  /* Matches `.switch input:checked + .track::after` in the vendor stylesheet. */
+  transform: translateX(14px);
+}
+
+.app-switch[data-disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.app-switch:focus-visible,
+.tab:focus-visible,
+.dd-menu-item:focus-visible,
+.pager-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.cmd:disabled {
+  cursor: default;
+}
+
+.app-content {
+  flex: 1;
+}
+
+.app-alert-block {
+  margin-bottom: 20px;
+}
+
+/* ---------- vendor gaps ----------
+ * The vendored stylesheet omits `.ma-1`..`.ma-6` (they live in Adminator
+ * `src/assets/styles/2026/_email.scss`). Restored here from source, tokens only.
+ */
+.ma-1 { background: linear-gradient(135deg, var(--primary), var(--purple)); }
+.ma-2 { background: linear-gradient(135deg, var(--success), var(--teal)); }
+.ma-3 { background: linear-gradient(135deg, var(--danger), var(--warning)); }
+.ma-4 { background: linear-gradient(135deg, var(--info), var(--primary-light)); }
+.ma-5 { background: linear-gradient(135deg, var(--orange), var(--pink)); }
+.ma-6 { background: linear-gradient(135deg, var(--purple), var(--pink)); }
+
+/* ---------- shared demo layout ---------- */
+
+.app-demo-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.app-muted {
+  color: var(--t-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.app-caption {
+  color: var(--t-light);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.app-rule {
+  height: 1px;
+  margin: 16px 0;
+  border: 0;
+  background: var(--border-soft);
+}
+
+.app-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.app-progress-row .progress {
+  flex: 1;
+}
+
+.app-progress-row .app-caption {
+  min-width: 36px;
+  text-align: right;
+}
+
+.app-swatch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.app-swatch {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--t-muted);
+}
+
+.app-swatch-chip {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+}
+
+.app-toolbar-note {
+  color: var(--t-muted);
+  font-size: 12px;
+}
