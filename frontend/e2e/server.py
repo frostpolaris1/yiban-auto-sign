@@ -15,6 +15,18 @@ setUpClass 保持一致（临时目录 + YIBAN_* 指向其中 + importlib 装载
 → has_more=true → 加载更多）。链式 prev_hash 由 record_in_txn 逐条读取，故同事务顺序写
 不会分叉。
 
+**冻结钟（可选，`YB_E2E_FROZEN_NOW`）**：只在本启动壳里打桩，产品代码零改动。
+- `YB_E2E_FROZEN_NOW=2026-10-26T23:55:00`：`clock.now()` 从该北京时间起步。
+- `YB_E2E_FROZEN_ADVANCE=1` 让钟按真实时间前进；`YB_E2E_FROZEN_SCALE` 设倍速。
+  默认恒定冻结。跨业务日用例用「前进＋倍速」，避免真等 5 分钟。
+- `/api/clock` 的 `server_ts` 同步改成冻结 epoch（`web.routes.data` 命名空间替换）。
+  不补这一处，浏览器「今天」会跟随真实日期（前端按 `server_ts` 重建墙上时间）。
+- 覆盖的消费面：`clock.now/today/ts` 的全部属主调用；`/api/clock` 的 `now` 与
+  `server_ts`；种子、心跳、审计快照、按日日志与状态文件。
+- 不在覆盖面：模块级 `from yiban.core.clock import now`（`wire_dump.py`，不在请求路径）；
+  `datetime.now()` 的登记豁免点（进程标记、mtime 比对、展示时刻）；会话与限速的真实钟。
+- 前端校准钟按 1x 走秒；跨日后必须让页面重新校准（例如 reload）。
+
 用法（一般由 playwright 配置调用）：
     YB_E2E_PYTHON=<解释器> python e2e/server.py      # 默认 127.0.0.1:8765
 """
@@ -25,7 +37,8 @@ import os
 import sys
 import tempfile
 import threading
-from datetime import timedelta
+import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -47,6 +60,16 @@ from web.services import logs as _logs_svc  # noqa: E402
 
 PORT = int(os.environ.get("YB_E2E_PORT", "8765"))
 SEED_ROWS = int(os.environ.get("YB_E2E_SEED_ROWS", "60"))
+#: e2e 冻结钟（可选）。设置后服务端时钟从该北京时间起步，不动产品代码。
+#: 格式：`YYYY-MM-DDTHH:MM:SS`（无时区按北京时间解释，可带 `+08:00`）。
+#: 用途：把「今天」钉在一个已知时刻，运行期不受真实日历影响。
+FROZEN_NOW = os.environ.get("YB_E2E_FROZEN_NOW", "").strip()
+#: `1` = 冻结钟按真实时间前进（从锚点起步），`0`（默认）= 恒定冻结。
+#: 跨业务日用例用 `1`：锚点放在 23:55，等时钟真的跨过零点。
+FROZEN_ADVANCE = os.environ.get("YB_E2E_FROZEN_ADVANCE", "") == "1"
+#: 冻结钟倍速（只对 ADVANCE=1 生效）。默认 1（与真实时间同速）。
+#: 跨日边界用例用 15：5 个虚拟分钟＝20 秒真实时间。
+FROZEN_SCALE = float(os.environ.get("YB_E2E_FROZEN_SCALE", "1") or "1")
 #: V3 渲染层截断守卫的种子：单日执行体分组数必须**超过**读取层轮级上限
 #: （`yiban/store/run_events.py::MAX_ROUNDS` = 200）。205 > 200，端点回
 #: `rounds_truncated=true`，页面「已截断」说明才有可断言的内容。
@@ -63,6 +86,88 @@ ADMIN_PASS = "TestPass1234!"  # 满足主管理员 12 位三类策略
 E2E_USER_EMAIL = "e2e-user@example.com"
 USER_PASS = "UserPass123!"
 TEST_KEY = "a" * 64
+
+
+def _parse_frozen_now(raw):
+    """把 `YB_E2E_FROZEN_NOW` 解析成北京时间 naive datetime。
+
+    无时区的串按北京时间解释（与 `yiban.core.clock` 同口径）。
+    带 `+08:00`/`Z` 的串先归一到北京时间，再去掉 tzinfo。
+    """
+    text = raw.strip().replace(" ", "T")
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is not None:
+        return parsed.astimezone(clock.TZ).replace(tzinfo=None)
+    return parsed
+
+
+#: 冻结钟的可变状态：锚点与 ADVANCE 的实际起点。
+_FROZEN = {"anchor": None, "advance_from": None}
+
+
+def _install_frozen_clock():
+    """把 `clock.now` 换成测试夹具时钟。返回冻结锚点（未设置则 None）。
+
+    **只改 e2e 启动壳，不改产品代码**。覆盖面：
+    · `clock.now()`：唯一取时出口；`clock.today()` / `clock.ts()` 在模块内
+      按名字查 `now`，故同被覆盖。
+    · 所有 `from yiban.core import clock` 的读者：按属性调用，调用时取到补丁。
+    · 唯一例外：`from yiban.core.clock import now` 的模块级绑定
+      （`yiban/infra/wire_dump.py`）。它不在 e2e 服务端请求路径上。
+
+    ADVANCE=0：每次调用返回同一时刻（严格冻结）。
+    ADVANCE=1：从锚点按真实时间前进，倍速 FROZEN_SCALE。
+    """
+    if not FROZEN_NOW:
+        return None
+    anchor = _parse_frozen_now(FROZEN_NOW)
+    _FROZEN["anchor"] = anchor
+
+    def _frozen_now():
+        if not FROZEN_ADVANCE or _FROZEN["advance_from"] is None:
+            return anchor
+        elapsed = (time.monotonic() - _FROZEN["advance_from"]) * FROZEN_SCALE
+        return anchor + timedelta(seconds=elapsed)
+
+    clock.now = _frozen_now
+    return anchor
+
+
+def _start_frozen_advance():
+    """种子与装配完成后，让冻结钟从锚点开始走（未设置冻结钟时是空操作）。
+
+    为什么不在导入时就走：冷启动要建种子（5000 行日志、迁移、审计）。
+    这一段会按倍速吃掉边界前的余量，让「23:55 种子」名不副实。
+    种子阶段固定在锚点，就绪后从锚点起步。
+    """
+    if _FROZEN["anchor"] is not None and FROZEN_ADVANCE:
+        _FROZEN["advance_from"] = time.monotonic()
+
+
+def _install_frozen_epoch():
+    """让 `/api/clock` 的 `server_ts` 与冻结钟同源。
+
+    为什么必须补这一处：前端 `serverNow()` 不用 `now` 字段，它用
+    `server_ts`（epoch 秒）＋ `tz_offset_min` 重建墙上时间。
+    只冻结 `clock.now` 而 `server_ts` 仍取真实 `time.time()` 时，
+    浏览器「今天」会跟随真实日期，冻结面就不等价（AGENTS §32）。
+
+    做法：只替换 `web.routes.data` 模块命名空间里的 `time` 名字。
+    不替换全局 `time` 模块：会话、限速、锁仍用真实钟。
+    """
+    if not FROZEN_NOW:
+        return
+    from web.routes import data as _data_routes
+
+    class _FrozenEpoch:
+        @staticmethod
+        def time():
+            return clock.now().replace(tzinfo=clock.TZ).timestamp()
+
+    _data_routes.time = _FrozenEpoch
+
+
+FROZEN_ANCHOR = _install_frozen_clock()
 
 
 def _probe_day():
@@ -353,6 +458,10 @@ def main():
     sys.modules["webapp_e2e"] = webapp
     spec.loader.exec_module(webapp)
 
+    # 冻结钟的 HTTP 面：/api/clock 的 server_ts 必须与 clock.now 同源。
+    # 必须在本步之后：data.py 的导入依赖上面的环境变量与 sys.path。
+    _install_frozen_epoch()
+
     _seed_log_file(webapp)
 
     import db  # 裸模块名：sys.path 已含 scripts
@@ -427,7 +536,12 @@ def main():
 
     _security_mod._bump_window_count = _bump_e2e
 
+    # 种子与装配已全部完成：冻结钟从锚点起步（恒定模式为空操作）。
+    _start_frozen_advance()
     print(f"[e2e] 临时实例就绪 http://127.0.0.1:{PORT}（种子 {SEED_ROWS} 条审计行）", flush=True)
+    if FROZEN_ANCHOR is not None:
+        mode = "前进" if FROZEN_ADVANCE else "恒定"
+        print(f"[e2e] 时钟已冻结：{FROZEN_ANCHOR}（{mode}，倍速 {FROZEN_SCALE}）", flush=True)
     app.run(host="127.0.0.1", port=PORT, threaded=True, use_reloader=False)
 
 
