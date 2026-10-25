@@ -280,9 +280,9 @@ def _channel_health_facts(status, exhausted=()):
     两侧都不带 ⚠（或只有一侧带），detail 就只剩半条链，"推送侧也被拆了"这个关键
     事实直接丢在取证之外。这里**无条件**把两侧各写一段，健康的那一侧也记——
     事后要能回答"坏的是哪一路、另一路当时是不是好的"。
-    刻意用短串而不是整句人话：db.audit 会把 detail 截到 200 字符
-    （见 yiban/adapters/persistence/db.py 的 audit），拼完整句子在最坏情况下会把后半句（推送侧）截没，
-    等于重犯同一个错。
+    刻意用短串而不是整句人话：db.audit 会把 detail 截到
+    `db.AUDIT_DETAIL_LIMIT` 字符（定义点 `yiban/adapters/persistence/audit_chain.py`），
+    拼完整句子在最坏情况下会把后半句（推送侧）截没，等于重犯同一个错。
     """
     if status["mail_error"]:
         mail = f"读取失败({status['mail_error']})"
@@ -320,7 +320,7 @@ def _audit_channel_health_degraded(facts):
     facts 必须由 _channel_health_facts()（结构化状态）产出，不得改为拼正文里含 ⚠
     的行——那正是失准的来源。
     """
-    detail = f"degraded=1 {facts}"[:200]
+    detail = f"degraded=1 {facts}"[:db.AUDIT_DETAIL_LIMIT]
     if not db.audit("system", "channel_health", "alert_channels", detail):
         # 审计也写不进去时只剩日志这条退路（此时大概率两通道与库都在打架）
         logger.error("告警通道降级痕迹未能落审计链，请人工核查: %s", detail)

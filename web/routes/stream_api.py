@@ -142,8 +142,11 @@ def _stream_generator(m, hub, cfg, last_id, sub, phones):
     与 `run_stream.hub`）。订阅先于补发：广播线程自此起投递"新增"事件，补发覆盖"此刻
     表内区间"，两者叠起来才不漏事件（重叠按 id 去重）。
     """
-    heartbeat = cfg["heartbeat_sec"] or 15
-    gap_max = cfg["gap_max"] if cfg["gap_max"] is not None else 500
+    # 心跳：`stream_config` 缺省即名册值（15），但显式写 0 时 `_int` 会原样返回 0，
+    # 故保留"0 → 名册缺省"的兜底；兜底值从名册现取，不写字面量。
+    heartbeat = cfg["heartbeat_sec"] or _run_stream.heartbeat_default_sec()
+    # `stream_config` 的 `_int` 永远返回整数（缺省/非法都回名册值），故不存在 None 分支。
+    gap_max = cfg["gap_max"]
     user_mode = phones is not None
     started = clock_monotonic()
 

@@ -62,6 +62,11 @@ EDGE_BUDGET_RATIO = 0.2
 #: 两边合计 40%，仍远小于 `bounds` 的收缩阈值（合计 >= 100%），故保存过的配置
 #: 在运行期不会再触发收缩——预防在前，收缩只是手改 .env 时的兜底。
 EDGE_SIDE_CAP_RATIO = 0.2
+#: 首签触发点，默认 06:31（窗口缺省起点 06:30 之后 1 分钟）。
+#: 容器调度器直接以本常量为 `FIRST`；宿主 cron 表是静态文件、无法导入本模块，故由
+#: `tests/test_cron_time_equivalence.py` 读取 `deploy/prod/cron.d/yiban-sign` 原文与
+#: 本常量等值对拍。改本值必须同批改 cron 表，否则门红。
+DEFAULT_FIRST_HM = (6, 31)
 # 补签轮（当天最后一轮）触发点，默认 07:12——**必须早于进程内补签轮的等待目标**：
 # signin 的告警抑制靠它判断"是否还有下一轮兜底"。宿主 run.sh 与
 # docker/scheduler.py 读同一个键（后者把真实值注入子进程环境）。
