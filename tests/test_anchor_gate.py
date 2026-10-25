@@ -191,8 +191,35 @@ def anchor_problems(root, anchors):
             if not os.path.exists(os.path.join(root, a))]
 
 
+def contract_anchors(text):
+    """从 `docs/dev/target-tree.md` §8.2 读回 `(现存集合, 计划集合)`。
+
+    门与契约表是同一份数据的两个副本。只读表、不读散文：表外文字变化不影响判据。
+    """
+    existing, planned = set(), set()
+    in_table = False
+    for line in text.splitlines():
+        if line.startswith("### 8.2"):
+            in_table = True
+            continue
+        if in_table and line.startswith("#"):
+            break
+        if not in_table or not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 2 or not cells[0].startswith("`"):
+            continue
+        path = cells[0].strip("`")
+        status = cells[1]
+        if status.startswith("现存"):
+            existing.add(path)
+        elif status.startswith("计划"):
+            planned.add(path)
+    return existing, planned
+
+
 class ExistingAnchorTest(unittest.TestCase):
-    """① 现存锚点在场；② 计划锚点只登记。"""
+    """① 现存锚点在场；② 计划锚点只登记；③ 契约表与本门的表一致。"""
 
     def test_existing_anchors_are_present(self):
         self.assertEqual(anchor_problems(BASE, EXISTING_ANCHORS), [],
@@ -202,6 +229,18 @@ class ExistingAnchorTest(unittest.TestCase):
         self.assertTrue(PLANNED_ANCHORS, "计划锚点表为空：本门读不到 B3 的落点")
         self.assertEqual(set(EXISTING_ANCHORS) & set(PLANNED_ANCHORS), set(),
                          "同一个路径同时登记为现存与计划")
+
+    def test_contract_table_matches_this_gate(self):
+        """§29：门看的东西必须等于契约写的东西（两份副本不许静默分叉）。"""
+        text = _read_text(os.path.join(BASE, "docs", "dev", "target-tree.md"))
+        self.assertIsNotNone(text, "读不到 target-tree.md：本门无法判定（不是绿）")
+        doc_existing, doc_planned = contract_anchors(text)
+        self.assertTrue(doc_existing and doc_planned,
+                        "§8.2 表解析为空：表格式变了，判据会静默失效")
+        self.assertEqual(doc_existing, set(EXISTING_ANCHORS),
+                         "§8.2 的现存行与本门 EXISTING_ANCHORS 不一致")
+        self.assertEqual(doc_planned, set(PLANNED_ANCHORS),
+                         "§8.2 的计划行与本门 PLANNED_ANCHORS 不一致")
 
     def test_anchor_checker_has_teeth(self):
         with tempfile.TemporaryDirectory() as tmp:
