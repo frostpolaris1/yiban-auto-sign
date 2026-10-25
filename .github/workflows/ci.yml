@@ -267,6 +267,24 @@ jobs:
   stacks:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # The database layer has e2e tests that need a real PostgreSQL 18: partial
+    # indexes, advisory locks, FK RESTRICT and append-only triggers have no
+    # honest in-process substitute. Without this service the tests skip, so the
+    # service is what makes the database gates real in CI.
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: yiban
+          POSTGRES_PASSWORD: yiban
+          POSTGRES_DB: yiban
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U yiban -d yiban"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -286,6 +304,8 @@ jobs:
 
       - name: Server gates (gofmt, vet, test, canonical, drift, structure)
         working-directory: server
+        env:
+          YIBAN_TEST_DATABASE_URL: postgres://yiban:yiban@127.0.0.1:5432/yiban?sslmode=disable
         run: ./scripts/verify.sh
 
       - name: UI gates (types, token gate, contract drift, structure, build)

@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"time"
 )
 
 // CookieName is the session cookie. The __Host- prefix requires Secure,
@@ -21,6 +22,10 @@ const CookieName = "__Host-yiban_session"
 // terminator and cannot set a Secure cookie. Browsers reject __Host- cookies
 // without Secure, so the development name must stay unprefixed.
 const InsecureCookieName = "yiban_session_dev"
+
+// MaxSessionsPerUser bounds live sessions per user. A new sign-in evicts the
+// oldest session instead of growing without bound (decision 12.9).
+const MaxSessionsPerUser = 20
 
 // CSRFToken derives the CSRF token from the session token and a server secret.
 // Nothing is stored: the value is recomputed on each request, so a database
@@ -42,6 +47,9 @@ const (
 	RoleUser   Role = "user"
 )
 
+// Valid reports whether r is a known role.
+func (r Role) Valid() bool { return r == RoleMaster || r == RoleAdmin || r == RoleUser }
+
 // Status is the account status of a user.
 type Status string
 
@@ -50,6 +58,9 @@ const (
 	StatusActive   Status = "active"
 	StatusDisabled Status = "disabled"
 )
+
+// Valid reports whether s is a known user status.
+func (s Status) Valid() bool { return s == StatusActive || s == StatusDisabled }
 
 // User is the authenticated principal.
 type User struct {
@@ -71,6 +82,58 @@ type Session struct {
 type Issued struct {
 	Token string
 	Session
+}
+
+// SessionRow is one row of sessions. The token hash is the only credential
+// form the store keeps.
+type SessionRow struct {
+	ID            string
+	UserID        string
+	TokenHash     []byte
+	AuthMethod    string
+	CreatedAt     time.Time
+	LastSeenAt    time.Time
+	IdleExpiresAt time.Time
+	ExpiresAt     time.Time
+	RevokedAt     *time.Time
+	IPHash        string
+	UserAgentHash string
+}
+
+// NewSessionRow is the input of a session creation.
+type NewSessionRow struct {
+	UserID        string
+	TokenHash     []byte
+	AuthMethod    string
+	Now           time.Time
+	IdleExpiresAt time.Time
+	ExpiresAt     time.Time
+	IPHash        string
+	UserAgentHash string
+}
+
+// ResolvedSession is a live session joined with its user.
+type ResolvedSession struct {
+	Session SessionRow
+	User    User
+}
+
+// PasswordReset is one one-time password reset token.
+type PasswordReset struct {
+	ID        string
+	UserID    string
+	TokenHash []byte
+	CreatedAt time.Time
+	ExpiresAt time.Time
+	UsedAt    *time.Time
+}
+
+// NewPasswordReset is the input of a reset token creation.
+type NewPasswordReset struct {
+	UserID    string
+	TokenHash []byte
+	Now       time.Time
+	ExpiresAt time.Time
 }
 
 // ErrNoSession reports a missing, expired or revoked session.
