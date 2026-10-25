@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-// Rule is one canonical-owner rule.
+// Rule 是一条规范归属规则。
 type Rule struct {
 	ID      string
 	Kind    string // call | string | func | type | import
@@ -23,15 +23,15 @@ type Rule struct {
 	Message string
 }
 
-// Violation is one rule hit.
+// Violation 是一次规则命中。
 type Violation struct {
 	File string
 	Line int
 	Rule Rule
 }
 
-// LoadRules reads the tab-separated canonical file.
-// An empty rule set is an error: an empty scan must never look green.
+// LoadRules 读取制表符分隔的规范文件。
+// **空规则集是错误**：空扫描绝不可显得绿。
 func LoadRules(path string) ([]Rule, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -79,8 +79,8 @@ func LoadRules(path string) ([]Rule, error) {
 	return rules, nil
 }
 
-// walkGoFiles visits every file a scan considers. Scan and CountGoFiles both
-// use it, so the set they see cannot drift.
+// walkGoFiles 遍历扫描会考虑的全部文件。
+// Scan 与 CountGoFiles 都用它，故两者看到的集合不会漂移。
 func walkGoFiles(root string, includeTests bool, fn func(path string) error) error {
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -103,7 +103,7 @@ func walkGoFiles(root string, includeTests bool, fn func(path string) error) err
 	})
 }
 
-// Scan walks root and returns every rule hit.
+// Scan 遍历 root，返回全部规则命中。
 func Scan(root string, rules []Rule, includeTests bool) ([]Violation, error) {
 	var out []Violation
 	err := walkGoFiles(root, includeTests, func(path string) error {
@@ -183,7 +183,7 @@ func inspectFile(file *ast.File, fset *token.FileSet, rel string, r Rule) []Viol
 				return true
 			}
 			if strings.HasPrefix(lit.Value, "`") {
-				return true // struct tags and raw strings are not status values
+				return true // 结构体标签与原始串不是状态值
 			}
 			value, err := strconv.Unquote(lit.Value)
 			if err != nil {
@@ -228,8 +228,8 @@ func selectorName(e ast.Expr) (string, bool) {
 	return id.Name + "." + sel.Sel.Name, true
 }
 
-// CountGoFiles returns how many Go files a scan with the same includeTests
-// flag would consider. A caller uses it to reject a run that scans nothing.
+// CountGoFiles 返回同一 includeTests 口径下扫描会考虑的文件数。
+// 调用方用它拒绝一次什么都没扫的运行。
 func CountGoFiles(root string, includeTests bool) (int, error) {
 	count := 0
 	err := walkGoFiles(root, includeTests, func(string) error {

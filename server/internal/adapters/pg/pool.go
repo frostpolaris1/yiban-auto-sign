@@ -1,8 +1,23 @@
-// Package pg implements the repository ports on PostgreSQL with pgx.
+// Package pg 用 pgx 在 PostgreSQL 上实现全部仓储端口。
 //
-// This package is the only place that knows SQL and SQLSTATE codes. It maps
-// database failures to core/errs codes so use cases never inspect PostgreSQL
-// errors.
+// # 功能
+// 实现 app 层声明的仓储端口、事务边界、迁移执行与 SQLSTATE 归一。
+// 本包**不**做 HTTP 编码、**不**编排用例、**不**持有业务判据。
+//
+// # 归属
+// adapters 层设施包。**全仓只有本包写 SQL 与读 SQLSTATE**；
+// 数据库失败在此映射为 core/errs 码，用例层不见驱动错误。
+//
+// # 复用
+// DB、Options、Open 及默认值常量；
+// InTx、Exec、QueryInt64、QueryString；
+// Migrate、EmbeddedVersion、ErrDatabaseAhead、ErrNoTransaction；
+// 各仓储：UserRepo、SessionRepo、SchoolRepo、AdminSchoolRepo、
+// AccountRepo、AuditRepo、PasswordResetRepo。
+//
+// # 口径
+// 会话时区固定 UTC；statement_timeout 缺省 5s。
+// advisory lock 用固定数字，锁序固定：容量在前，审计在后。
 package pg
 
 import (
@@ -18,37 +33,37 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Defaults for a pool. The statement timeout is the fallback that bounds an
-// advisory-lock wait: PostgreSQL does not document lock_timeout as covering
-// advisory locks, so a stuck lock must be cancelled from above (schema §6.2).
+// 连接池默认值。
+// statement_timeout 是 advisory lock 等待的兜底上界：
+// PostgreSQL 未承诺 lock_timeout 覆盖 advisory lock，
+// 故卡住的锁必须由上层取消（schema §6.2）。
 const (
 	DefaultMaxConns         = int32(8)
 	DefaultStatementTimeout = 5 * time.Second
 )
 
-// Options configures a pool.
+// Options 配置连接池。
 type Options struct {
-	// DSN is the PostgreSQL connection string. Required.
+	// DSN 是 PostgreSQL 连接串。必填。
 	DSN string
-	// MaxConns bounds the number of backend connections. Zero uses
-	// DefaultMaxConns.
+	// MaxConns 限制后端连接数。零值取 DefaultMaxConns。
 	MaxConns int32
-	// MinConns keeps idle connections open. Zero uses the pgxpool default.
+	// MinConns 保持空闲连接数。零值取 pgxpool 默认。
 	MinConns int32
-	// StatementTimeout cancels a statement that runs too long and is the
-	// upper bound for lock waits. Zero uses DefaultStatementTimeout.
+	// StatementTimeout 取消执行过久的语句，也是锁等待的上界。
+	// 零值取 DefaultStatementTimeout。
 	StatementTimeout time.Duration
 }
 
-// DB is a connection pool plus the helpers repositories use.
+// DB 是连接池加仓储所需的辅助方法。
 //
-// The zero value is not usable. Build one with Open and close it with Close.
+// 零值不可用。请用 Open 构造，用 Close 释放。
 type DB struct {
 	pool *pgxpool.Pool
 }
 
-// Open builds a pool and verifies that the server answers. The session time
-// zone is pinned to UTC and statement_timeout is set on every connection.
+// Open 建池并确认服务端应答。
+// 会话时区固定 UTC；statement_timeout 设到每条连接上。
 func Open(ctx context.Context, opts Options) (*DB, error) {
 	if strings.TrimSpace(opts.DSN) == "" {
 		return nil, errors.New("pg: DSN is required")
@@ -85,7 +100,7 @@ func Open(ctx context.Context, opts Options) (*DB, error) {
 	return db, nil
 }
 
-// Close releases every connection.
+// Close 释放全部连接。
 func (d *DB) Close() {
 	if d == nil || d.pool == nil {
 		return
@@ -93,12 +108,11 @@ func (d *DB) Close() {
 	d.pool.Close()
 }
 
-// Ping verifies that the server answers.
+// Ping 确认服务端应答。
 func (d *DB) Ping(ctx context.Context) error { return d.pool.Ping(ctx) }
 
-// Exec runs one statement outside an explicit transaction. It exists for
-// maintenance tasks and tests; use cases go through repositories. It returns
-// the number of affected rows.
+// Exec 在显式事务之外执行一条语句。
+// 它只服务维护任务与测试；用例一律走仓储。返回受影响行数。
 func (d *DB) Exec(ctx context.Context, sql string, args ...any) (int64, error) {
 	tag, err := d.pool.Exec(ctx, sql, args...)
 	if err != nil {
@@ -107,7 +121,7 @@ func (d *DB) Exec(ctx context.Context, sql string, args ...any) (int64, error) {
 	return tag.RowsAffected(), nil
 }
 
-// QueryInt64 reads one integer column from one row.
+// QueryInt64 从单行读一个整数列。
 func (d *DB) QueryInt64(ctx context.Context, sql string, args ...any) (int64, error) {
 	var value int64
 	if err := d.pool.QueryRow(ctx, sql, args...).Scan(&value); err != nil {
@@ -116,7 +130,7 @@ func (d *DB) QueryInt64(ctx context.Context, sql string, args ...any) (int64, er
 	return value, nil
 }
 
-// QueryString reads one text column from one row.
+// QueryString 从单行读一个文本列。
 func (d *DB) QueryString(ctx context.Context, sql string, args ...any) (string, error) {
 	var value string
 	if err := d.pool.QueryRow(ctx, sql, args...).Scan(&value); err != nil {
@@ -125,14 +139,14 @@ func (d *DB) QueryString(ctx context.Context, sql string, args ...any) (string, 
 	return value, nil
 }
 
-// queryer is the statement interface shared by a pool and a transaction.
+// queryer 是连接池与事务共用的语句接口。
 type queryer interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// q returns the transaction carried by ctx, or the pool when there is none.
+// q 返回 ctx 携带的事务；没有事务时返回连接池。
 func (d *DB) q(ctx context.Context) queryer {
 	if tx, ok := ctx.Value(txKey{}).(pgx.Tx); ok {
 		return tx
@@ -140,7 +154,7 @@ func (d *DB) q(ctx context.Context) queryer {
 	return d.pool
 }
 
-// hasTx reports whether ctx carries an explicit transaction.
+// hasTx 报告 ctx 是否携带显式事务。
 func (d *DB) hasTx(ctx context.Context) bool {
 	_, ok := ctx.Value(txKey{}).(pgx.Tx)
 	return ok

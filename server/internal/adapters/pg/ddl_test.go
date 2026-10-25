@@ -10,20 +10,20 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// distinctHash returns a unique 32-byte token hash so a mutant that lets one
-// shape constraint pass fails on the shape, not on the shared unique index.
+// distinctHash 返回唯一的 32 字节令牌摘要，
+// 使「某条形状约束被放过」的突变体失败在形状上，
+// 而不是失败在共享的唯一索引上。
 func distinctHash(n byte) []byte {
 	out := make([]byte, 32)
 	out[0] = n
 	return out
 }
 
-// TestDatabaseConstraintsRejectBadRows pins the CHECK and UNIQUE constraints
-// that the Go layer would otherwise hide.
+// TestDatabaseConstraintsRejectBadRows 钉住 Go 层会掩盖的 CHECK 与 UNIQUE 约束。
 //
-// Every statement bypasses the repositories and runs on its own connection, so
-// only the database can reject it. mapError rewrites SQLSTATE codes, so the
-// raw pgx error is inspected: the test names the exact constraint that fired.
+// 每条语句都绕过仓储，走独立连接，故**只有数据库能拒绝它**。
+// mapError 会改写 SQLSTATE，故这里检查原始 pgx 错误：
+// 测试要指出究竟哪条约束被触发。
 func TestDatabaseConstraintsRejectBadRows(t *testing.T) {
 	e := newEnv(t)
 	owner := e.createUser("ddl-owner@example.com")
@@ -218,7 +218,7 @@ func TestDatabaseConstraintsRejectBadRows(t *testing.T) {
 				}
 			}
 
-			// A rejected row leaves the table unchanged.
+			// 被拒绝的行不留痕迹，表内容不变。
 			if tc.constraint == "uq_accounts_school_phone_live" {
 				count := e.scalarInt("SELECT count(*) FROM accounts WHERE school_id = $1::uuid AND phone = $2",
 					school.ID, "13500135000")

@@ -1,6 +1,20 @@
-// Package router assembles the Gin engine, the middleware chain and the
-// generated contract handlers. It reads the session cookie and never talks to
-// a database: stores are injected through Options.
+// Package router 装配 Gin 引擎、中间件链与生成的契约处理器。
+//
+// # 功能
+// 建路由、串中间件、读会话 cookie、回 501 占位响应。
+// 本包**不**连数据库、**不**写业务逻辑。
+// 本阶段业务端点全部 501；只有 /healthz 与 /api/auth/me 是真的。
+//
+// # 归属
+// entry/http 入口层。存储经 Options 注入，路由不自行构造依赖。
+//
+// # 复用
+// New、Options；server 实现生成的契约接口。
+//
+// # 口径
+// 中间件顺序固定：requestID → accessLog → recoverPanic →
+// securityHeaders → authenticate → requireCSRF。
+// 不安全 cookie 名只用于本地 HTTP。
 package router
 
 import (
@@ -17,24 +31,24 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/respond"
 )
 
-// Options wires the router. Sessions is required; the rest have defaults.
+// Options 装配路由。Sessions 必填；其余有默认值。
 type Options struct {
 	Sessions auth.SessionIssuer
 	Clock    clock.Clock
 	Logger   *slog.Logger
-	// InsecureCookies selects the unprefixed cookie name. Browsers reject
-	// __Host- cookies without Secure, so this is only for local HTTP.
+	// InsecureCookies 选择无前缀的 cookie 名。
+	// 浏览器拒绝不带 Secure 的 __Host- cookie，故仅限本地 HTTP。
 	InsecureCookies bool
 }
 
-// server implements the generated contract interface. This phase answers 501
-// for every business endpoint; only /healthz and /api/auth/me are real.
+// server 实现生成的契约接口。
+// 本阶段业务端点全部回 501；只有 /healthz 与 /api/auth/me 是真的。
 type server struct {
 	sessions   auth.SessionIssuer
 	cookieName string
 }
 
-// New builds the HTTP engine. It fails closed on a missing SessionIssuer.
+// New 构造 HTTP 引擎。缺 SessionIssuer 时**失败关闭**。
 func New(opts Options) (*gin.Engine, error) {
 	if opts.Sessions == nil {
 		return nil, errors.New("router: nil SessionIssuer")
@@ -73,7 +87,8 @@ func New(opts Options) (*gin.Engine, error) {
 	return engine, nil
 }
 
-// GetCurrentUser returns the session principal.
+// AuthMe 返回会话主体。
+// **响应不回传会话令牌**，只回 CSRF 令牌。
 func (s *server) AuthMe(c *gin.Context) {
 	sess, ok := auth.FromContext(c.Request.Context())
 	if !ok {
@@ -90,7 +105,7 @@ func (s *server) AuthMe(c *gin.Context) {
 	})
 }
 
-// Healthz reports that the process is serving requests.
+// HealthCheck 报告进程正在服务请求。
 func (s *server) HealthCheck(c *gin.Context) {
 	respond.JSON(c.Writer, http.StatusOK, oapi.HealthStatus{Status: oapi.HealthStatusStatus("ok")})
 }

@@ -1,5 +1,21 @@
-// Package session provides the in-memory SessionIssuer. It serves tests and
-// single-process development; the database-backed store lands in W1.
+// Package session 提供内存版 SessionIssuer。
+//
+// # 功能
+// 令牌签发、解析、撤销与每用户上限淘汰，全部在进程内存内完成。
+// 本包**不**持久化会话、**不**做密码校验、**不**清库。
+// 数据库会话仓储见 adapters/pg（本包不接线）。
+//
+// # 归属
+// adapters 层设施包。cmd/server 用它装配 HTTP 服务。
+// 单进程是明文设计不变量，故内存态可行。
+//
+// # 复用
+// Memory、NewMemory、NewMemoryWithTTL；
+// 常量 DefaultIdle、DefaultAbsolute、MaxPerUser。
+//
+// # 口径
+// 内存条目的键是令牌的 SHA-256 摘要，转储不泄露可用令牌。
+// CSRF 令牌每次读取时派生，**从不存储**。
 package session
 
 import (
@@ -15,14 +31,13 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 )
 
-// Session lifetimes from decision 12.9.
+// 会话时长取自决策 12.9。
 const (
 	DefaultIdle     = 30 * time.Minute
 	DefaultAbsolute = 12 * time.Hour
 
-	// MaxPerUser bounds how many live sessions one user can hold. Signing in
-	// on a new device evicts the oldest session instead of growing without
-	// bound.
+	// MaxPerUser 限制每用户有效会话数。
+	// 新设备登录淘汰最旧会话，**不无界增长**。
 	MaxPerUser = 20
 )
 
@@ -34,11 +49,10 @@ type entry struct {
 	lastSeen time.Time
 }
 
-// Memory is a concurrency-safe in-memory SessionIssuer.
+// Memory 是并发安全的内存 SessionIssuer。
 //
-// It keeps entries keyed by the SHA-256 of the token, so a memory dump does
-// not reveal usable tokens. The CSRF token is derived from the token and a
-// secret on every read; it is never stored.
+// 条目以令牌的 SHA-256 为键，故内存转储不泄露可用令牌。
+// CSRF 令牌每次读取时由令牌与密钥派生，**从不存储**。
 type Memory struct {
 	mu       sync.Mutex
 	clock    clock.Clock
@@ -49,14 +63,14 @@ type Memory struct {
 	byUser   map[string]map[key]struct{}
 }
 
-// NewMemory builds a store with the default lifetimes.
+// NewMemory 用默认时长构造存储。
 func NewMemory(c clock.Clock, secret []byte) *Memory {
 	return NewMemoryWithTTL(c, DefaultIdle, DefaultAbsolute, secret)
 }
 
-// NewMemoryWithTTL builds a store with explicit lifetimes. Non-positive
-// values fall back to the defaults. An empty secret is replaced with a random
-// one, which invalidates sessions on restart.
+// NewMemoryWithTTL 用显式时长构造存储。
+// 非正值回退默认值。
+// 空密钥换成随机密钥，**重启即让旧会话失效**。
 func NewMemoryWithTTL(c clock.Clock, idle, absolute time.Duration, secret []byte) *Memory {
 	if c == nil {
 		c = clock.System{}
@@ -83,7 +97,7 @@ func NewMemoryWithTTL(c clock.Clock, idle, absolute time.Duration, secret []byte
 	}
 }
 
-// Issue mints a new token for user.
+// Issue 为 user 签发新令牌。
 func (m *Memory) Issue(ctx context.Context, user auth.User) (auth.Issued, error) {
 	if err := ctx.Err(); err != nil {
 		return auth.Issued{}, err
@@ -105,7 +119,8 @@ func (m *Memory) Issue(ctx context.Context, user auth.User) (auth.Issued, error)
 	return auth.Issued{Token: token, Session: sess}, nil
 }
 
-// Resolve returns the live session for token.
+// Resolve 返回 token 对应的有效会话。
+// 绝对过期或空闲超时都会当场删除该条目。
 func (m *Memory) Resolve(ctx context.Context, token string) (auth.Session, error) {
 	if err := ctx.Err(); err != nil {
 		return auth.Session{}, err
@@ -132,7 +147,7 @@ func (m *Memory) Resolve(ctx context.Context, token string) (auth.Session, error
 	return e.session, nil
 }
 
-// Revoke drops token. It is idempotent.
+// Revoke 丢弃 token。幂等。
 func (m *Memory) Revoke(ctx context.Context, token string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -148,7 +163,7 @@ func (m *Memory) Revoke(ctx context.Context, token string) error {
 	return nil
 }
 
-// RevokeAllForUser drops every session of userID. It is idempotent.
+// RevokeAllForUser 丢弃 userID 的全部会话。幂等。
 func (m *Memory) RevokeAllForUser(ctx context.Context, userID string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -181,8 +196,8 @@ func (m *Memory) dropLocked(k key, userID string) {
 	}
 }
 
-// pruneLocked removes expired entries. Issue calls it so abandoned sessions do
-// not accumulate forever.
+// pruneLocked 删除过期条目。
+// Issue 调用它，防止废弃会话**无限累积**。
 func (m *Memory) pruneLocked(now time.Time) {
 	for k, e := range m.entries {
 		if now.Sub(e.created) >= m.absolute || now.Sub(e.lastSeen) >= m.idle {
@@ -191,8 +206,8 @@ func (m *Memory) pruneLocked(now time.Time) {
 	}
 }
 
-// evictOverflowLocked keeps at most MaxPerUser live sessions per user and
-// drops the oldest ones.
+// evictOverflowLocked 每用户最多保留 MaxPerUser 个有效会话，
+// 超出即丢掉最旧的。
 func (m *Memory) evictOverflowLocked(userID string) {
 	set := m.byUser[userID]
 	if len(set) <= MaxPerUser {

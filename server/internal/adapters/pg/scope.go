@@ -6,14 +6,14 @@ import (
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
-// scopePredicate returns an SQL condition and its arguments for a scope.
+// scopePredicate 返回范围对应的 SQL 条件与参数。
 //
-// The three scopes produce three different statements. They are never merged
-// into "($n IS NULL OR school_id = ANY($n))": an empty set and "all rows" must
-// stay distinguishable. prefix is the table alias plus a dot, or empty.
+// 三种范围产出三条不同语句，**绝不合并**为
+// "($n IS NULL OR school_id = ANY($n))"：
+// 空集合与「全部行」必须始终可分辨。prefix 是表别名加点，或空串。
 //
-// A user scope filters by owner_user_id. Ownership is the user's whole
-// visibility: there is no user-to-school binding in P1.
+// user 范围按 owner_user_id 过滤。
+// P1 没有用户到院校的绑定，故所有权就是用户的全部可见面。
 func scopePredicate(s corescope.Scope, argIndex int, prefix string) (string, []any, error) {
 	if !s.Valid() {
 		return "", nil, fmt.Errorf("pg: invalid scope kind %d", s.Kind())
@@ -22,8 +22,8 @@ func scopePredicate(s corescope.Scope, argIndex int, prefix string) (string, []a
 	case corescope.KindMaster:
 		return "", nil, nil
 	case corescope.KindAdmin:
-		// The cast runs on the parameter, not on the column, so the
-		// school_id index stays usable.
+		// 类型转换作用在参数上而不是列上，
+		// 这样 school_id 索引仍可用。
 		clause := fmt.Sprintf(" AND %sschool_id = ANY($%d::text[]::uuid[])", prefix, argIndex)
 		return clause, []any{s.SchoolIDs()}, nil
 	case corescope.KindUser:

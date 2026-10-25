@@ -1,4 +1,18 @@
-// Package respond is the only place that writes an error response body.
+// Package respond 是写错误响应体的唯一位置。
+//
+// # 功能
+// 把 core/errs 错误编码为固定 JSON 信封，并把错误码映射为 HTTP 状态码。
+// 本包**不**鉴权、**不**写业务数据、**不**记日志。
+//
+// # 归属
+// entry/http 入口层。路由、中间件与处理器都经本包回错误。
+//
+// # 复用
+// Error、NotImplemented、JSON；Envelope、Body；RequestIDHeader。
+//
+// # 口径
+// 信封四键恒在：code、message、details、trace_id。
+// details 缺省发 {}，trace_id 缺省发 ""，**形状不随场景变化**。
 package respond
 
 import (
@@ -8,17 +22,17 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 )
 
-// RequestIDHeader carries the trace id in both directions.
+// RequestIDHeader 双向携带 trace id：请求头与响应头同名。
 const RequestIDHeader = "X-Request-Id"
 
-// Envelope is the error response shape.
+// Envelope 是错误响应的外形。
 type Envelope struct {
 	Error Body `json:"error"`
 }
 
-// Body is the error detail. Every key is always present: consumers rely on a
-// stable shape, so an unused details map is emitted as {} and a missing trace
-// id as "".
+// Body 是错误明细。
+// **四键恒在**：消费方依赖稳定形状，
+// 故无 details 时发 {}，无 trace id 时发 ""。
 type Body struct {
 	Code    string         `json:"code"`
 	Message string         `json:"message"`
@@ -26,7 +40,7 @@ type Body struct {
 	TraceID string         `json:"trace_id"`
 }
 
-// Error writes err as the stable JSON envelope.
+// Error 把 err 写成稳定 JSON 信封。
 func Error(w http.ResponseWriter, r *http.Request, err error) {
 	e := errs.From(err)
 	if e == nil {
@@ -35,14 +49,14 @@ func Error(w http.ResponseWriter, r *http.Request, err error) {
 	writeJSON(w, statusFor(e.Code), Envelope{Error: bodyOf(e, r)})
 }
 
-// NotImplemented writes the internal_error envelope with 501 for an endpoint
-// that the contract reserves but this phase does not implement.
+// NotImplemented 为「契约保留、本阶段未实现」的端点
+// 写 internal_error 信封与 501。
 func NotImplemented(w http.ResponseWriter, r *http.Request) {
 	e := errs.New(errs.CodeInternal, "not implemented")
 	writeJSON(w, http.StatusNotImplemented, Envelope{Error: bodyOf(e, r)})
 }
 
-// JSON writes a success body.
+// JSON 写成功响应体。
 func JSON(w http.ResponseWriter, status int, v any) {
 	writeJSON(w, status, v)
 }

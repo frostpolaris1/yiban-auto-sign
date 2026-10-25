@@ -23,7 +23,7 @@ func newStore(clk *stepClock) *Memory {
 	return NewMemoryWithTTL(clk, 30*time.Minute, 12*time.Hour, testSecret)
 }
 
-// A revoked or expired token must never resolve again.
+// 已撤销或已过期的令牌绝不能再次解析成功。
 func TestMemoryRevokeAndExpiry(t *testing.T) {
 	clk := &stepClock{t: time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC)}
 	store := newStore(clk)
@@ -57,8 +57,8 @@ func TestMemoryRevokeAndExpiry(t *testing.T) {
 	}
 }
 
-// Resolve refreshes the idle window; a gap longer than the idle timeout ends
-// the session even before the absolute expiry.
+// Resolve 刷新空闲窗口；超过空闲时长的间隔，
+// 在绝对过期之前就会结束会话。
 func TestMemoryIdleSliding(t *testing.T) {
 	clk := &stepClock{t: time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC)}
 	store := newStore(clk)
@@ -101,7 +101,7 @@ func TestMemoryRevokeIsIdempotent(t *testing.T) {
 	}
 }
 
-// RevokeAllForUser ends every session of one user and leaves other users live.
+// RevokeAllForUser 结束一个用户的全部会话，其他用户不受影响。
 func TestMemoryRevokeAllForUser(t *testing.T) {
 	clk := &stepClock{t: time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC)}
 	store := newStore(clk)
@@ -136,7 +136,7 @@ func TestMemoryRevokeAllForUser(t *testing.T) {
 	}
 }
 
-// Issue always mints a fresh token.
+// Issue 每次都签发全新令牌。
 func TestMemoryIssueIsUnique(t *testing.T) {
 	clk := &stepClock{t: time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC)}
 	store := newStore(clk)
@@ -155,7 +155,7 @@ func TestMemoryIssueIsUnique(t *testing.T) {
 	}
 }
 
-// The CSRF token is derived, never stored, and stable for one session token.
+// CSRF 令牌靠派生得来，从不存储，且同一会话令牌下保持稳定。
 func TestMemoryCSRFDerivation(t *testing.T) {
 	clk := &stepClock{t: time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC)}
 	store := newStore(clk)
@@ -180,7 +180,7 @@ func TestMemoryCSRFDerivation(t *testing.T) {
 	}
 }
 
-// A user cannot hold more than MaxPerUser live sessions.
+// 一个用户最多持有 MaxPerUser 个有效会话。
 func TestMemoryPerUserCap(t *testing.T) {
 	clk := &stepClock{t: time.Date(2026, 10, 25, 9, 0, 0, 0, time.UTC)}
 	store := newStore(clk)

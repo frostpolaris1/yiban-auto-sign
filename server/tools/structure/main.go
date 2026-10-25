@@ -1,13 +1,20 @@
-// Command structure enforces the repository layout.
+// Command structure 执行仓库布局检查。
 //
-// It reads structure.tsv and checks that every immediate child directory of
-// each managed scope is registered. A missing scope is an error unless the
-// scope is marked optional with a leading question mark. It also applies the
-// front-end naming rules. Import direction is enforced by
-// ui/scripts/structure-gate.mjs, which resolves module paths.
+// # 功能
+// 读 structure.tsv，核对每个受管域的直属子目录都已登记。
+// 缺域除非以 ? 标记为可选，否则报错。它还执行前端命名规则。
+// 导入方向由 ui/scripts/structure-gate.mjs 检查（该脚本解析模块路径）。
+// 本命令**不**改文件、**不**移动目录、**不**启动服务。
 //
-// An empty rules file, an empty allowlist, an unknown scope or a scan that
-// finds no directory is an error: the gate never passes by scanning nothing.
+// # 归属
+// 仓库门禁件，由 scripts/verify.sh 调用。
+//
+// # 复用
+// loadRules、checkAllowlist、checkFrontend（均为包内函数）。
+//
+// # 口径
+// 空规则文件、空白名单、未知域、零目录扫描**一律报错**：
+// 本门绝不靠「什么都没扫」通过。
 package main
 
 import (
@@ -21,7 +28,7 @@ import (
 	"strings"
 )
 
-// rule is one managed directory and its registered child directories.
+// rule 是一个受管目录及其已登记子目录。
 type rule struct {
 	scope    string
 	optional bool
@@ -70,8 +77,8 @@ func fatal(err error) {
 	os.Exit(1)
 }
 
-// loadRules parses scope<TAB>allow,allow<TAB>note lines. A leading ? marks a
-// scope that may be absent in this phase.
+// loadRules 解析 scope<TAB>allow,allow<TAB>note 行。
+// 前导 ? 表示该域在本阶段可以不存在。
 func loadRules(path string) ([]rule, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -118,8 +125,8 @@ func loadRules(path string) ([]rule, error) {
 	return rules, nil
 }
 
-// knownScope validates the first two segments, so a typo such as
-// server/internals is rejected instead of silently skipped.
+// knownScope 校验前两段路径，
+// 使 server/internals 这类笔误被拒绝，而不是被静默跳过。
 func knownScope(scope string) bool {
 	if scope == "root" {
 		return true
@@ -140,8 +147,8 @@ func knownScope(scope string) bool {
 	return false
 }
 
-// checkAllowlist reports missing required scopes and unregistered child
-// directories, and counts the scopes that exist on disk.
+// checkAllowlist 报告缺失的必需域与未登记的子目录，
+// 并统计磁盘上真实存在的域数。
 func checkAllowlist(root string, rules []rule) ([]string, int, error) {
 	var problems []string
 	seen := 0
@@ -162,8 +169,8 @@ func checkAllowlist(root string, rules []rule) ([]string, int, error) {
 			}
 			return nil, 0, err
 		}
-		// The root always exists. Only a managed sub-scope proves that the
-		// gate looked at something.
+		// 根目录恒存在。
+		// **只有受管子域才能证明本门确实看过东西**。
 		if r.scope != "root" {
 			seen++
 		}
@@ -186,7 +193,7 @@ func checkAllowlist(root string, rules []rule) ([]string, int, error) {
 	return problems, seen, nil
 }
 
-// checkFrontend applies page naming, directory naming and export style.
+// checkFrontend 执行页面命名、目录命名与导出风格检查。
 func checkFrontend(root string) ([]string, error) {
 	src := filepath.Join(root, "ui", "src")
 	if _, err := os.Stat(src); os.IsNotExist(err) {

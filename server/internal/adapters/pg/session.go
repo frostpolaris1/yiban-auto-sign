@@ -12,21 +12,20 @@ import (
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 )
 
-// SessionRepo is the PostgreSQL session repository.
+// SessionRepo 是 PostgreSQL 会话仓储。
 type SessionRepo struct {
 	db *DB
 }
 
-// NewSessionRepo builds a session repository.
+// NewSessionRepo 构造会话仓储。
 func NewSessionRepo(db *DB) *SessionRepo { return &SessionRepo{db: db} }
 
 const sessionColumns = `id::text, user_id::text, token_hash, auth_method,
 	created_at, last_seen_at, idle_expires_at, expires_at, revoked_at,
 	coalesce(ip_hash, ''), coalesce(user_agent_hash, '')`
 
-// Create stores a session and evicts the oldest live sessions beyond
-// coreauth.MaxSessionsPerUser. Insert and eviction share one transaction, so a
-// concurrent reader never observes more than the cap for long.
+// Create 存储一个会话，并淘汰超出 coreauth.MaxSessionsPerUser 的最旧有效会话。
+// 插入与淘汰同属一个事务，故并发读者不会长时间看到超限。
 func (r *SessionRepo) Create(ctx context.Context, in coreauth.NewSessionRow) (coreauth.SessionRow, error) {
 	if in.TokenHash.IsZero() {
 		return coreauth.SessionRow{}, validationError("token hash is required")
@@ -78,16 +77,14 @@ func (r *SessionRepo) Create(ctx context.Context, in coreauth.NewSessionRow) (co
 	return record, nil
 }
 
-// Resolve returns a live session joined with its user and refreshes the idle
-// window. Unknown, revoked, expired and idle sessions all return not_found.
-// A disabled or deleted user makes the session unresolvable without an
-// explicit revoke.
+// Resolve 返回有效会话及所属用户，并刷新空闲窗口。
+// 未知、已撤销、绝对过期、空闲超时一律 not_found。
+// 用户被停用或删除时，会话**无需显式撤销**即不可解析。
 //
-// The refresh moves both last_seen_at and idle_expires_at, so the returned row
-// is self-consistent: a caller that sets a cookie Max-Age from IdleExpiresAt
-// gets the same instant the next request will check. The idle expiry is capped
-// by the absolute expiry, so the check constraint idle_expires_at <=
-// expires_at always holds.
+// 刷新同时移动 last_seen_at 与 idle_expires_at，返回行自洽：
+// 调用方按 IdleExpiresAt 设置 cookie Max-Age 时，
+// 得到的就是下次请求要校验的同一时刻。
+// 空闲截止被绝对截止封顶，故约束 idle_expires_at <= expires_at 恒成立。
 func (r *SessionRepo) Resolve(ctx context.Context, tokenHash coreauth.TokenHash, now time.Time, idle time.Duration) (coreauth.ResolvedSession, error) {
 	if tokenHash.IsZero() {
 		return coreauth.ResolvedSession{}, coreerrs.ErrNotFound
@@ -119,7 +116,7 @@ func (r *SessionRepo) Resolve(ctx context.Context, tokenHash coreauth.TokenHash,
 	return scanResolvedSession(row)
 }
 
-// Revoke marks one session revoked. It is idempotent.
+// Revoke 把一个会话标记为已撤销。幂等。
 func (r *SessionRepo) Revoke(ctx context.Context, tokenHash coreauth.TokenHash, now time.Time) error {
 	if tokenHash.IsZero() {
 		return nil
@@ -130,8 +127,8 @@ func (r *SessionRepo) Revoke(ctx context.Context, tokenHash coreauth.TokenHash, 
 	return mapError(err)
 }
 
-// RevokeAllForUser revokes every live session of userID and reports how many
-// rows changed. It is idempotent.
+// RevokeAllForUser 撤销 userID 的全部有效会话，并报告变更行数。
+// 幂等。
 func (r *SessionRepo) RevokeAllForUser(ctx context.Context, userID string, now time.Time) (int64, error) {
 	tag, err := r.db.q(ctx).Exec(ctx, `
 		UPDATE sessions SET revoked_at = $2
@@ -142,8 +139,8 @@ func (r *SessionRepo) RevokeAllForUser(ctx context.Context, userID string, now t
 	return tag.RowsAffected(), nil
 }
 
-// DeleteExpired removes at most limit sessions that expired before the given
-// time. Cleanup runs in batches so it never holds a long lock.
+// DeleteExpired 最多删除 limit 个在给定时刻之前过期的会话。
+// 清理分批执行，**不长时间持锁**。
 func (r *SessionRepo) DeleteExpired(ctx context.Context, before time.Time, limit int) (int64, error) {
 	if limit <= 0 {
 		return 0, validationError("limit must be positive")

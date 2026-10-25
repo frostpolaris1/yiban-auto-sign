@@ -1,6 +1,23 @@
-// Package contract is the fixed v1 interface between the host framework and a
-// platform provider. Providers must not import the host, touch storage or log
-// credentials.
+// Package contract 定义宿主框架与平台提供方之间的 v1 固定接口。
+//
+// # 功能
+// 定义窗口与目标发现、凭据校验、签到尝试、结果词表与能力声明。
+// 提供方**不得**导入宿主、**不得**碰存储、**不得**记录凭据。
+// 本包**不**发请求、**不**存数据、**不**做调度。
+//
+// # 归属
+// 宿主与平台适配器之间的唯一接缝。
+// 平台实现负责协议；宿主负责图片预处理与重试决策。
+//
+// # 复用
+// Provider；DiscoverRequest、VerifyRequest、SignRequest；
+// Window、Target、Location、ImageRef；
+// Profile、Result、Evidence、RetryAdvice、Capabilities；
+// Outcome 及全部结果常量；Credential、AccountRef。
+//
+// # 口径
+// Outcome 是中性词表；unknown 与 success **必须保持区分**。
+// Credential 只在一次调用内有效，提供方不得留存或记录。
 package contract
 
 import (
@@ -8,7 +25,7 @@ import (
 	"time"
 )
 
-// Provider is the only platform-specific seam.
+// Provider 是唯一的平台相关接缝。
 type Provider interface {
 	ID() string
 	Capabilities() Capabilities
@@ -18,14 +35,15 @@ type Provider interface {
 	Sign(ctx context.Context, req SignRequest) (Result, error)
 }
 
-// AccountRef is a host-owned account identity.
+// AccountRef 是宿主持有的账号标识。
 type AccountRef struct {
 	ID       string
 	SchoolID string
 	Platform string
 }
 
-// Credential is valid for one call only. Providers must not retain or log it.
+// Credential 只在一次调用内有效。
+// **提供方不得留存或记录它**。
 type Credential struct {
 	Phone      string
 	Password   string
@@ -33,7 +51,7 @@ type Credential struct {
 	PhoneModel string
 }
 
-// WindowSource records where a window came from.
+// WindowSource 记录窗口的来源。
 type WindowSource string
 
 const (
@@ -42,7 +60,7 @@ const (
 	WindowFallback WindowSource = "fallback"
 )
 
-// Window is one sign-in window.
+// Window 是一个签到窗口。
 type Window struct {
 	Start  time.Time
 	End    time.Time
@@ -50,13 +68,13 @@ type Window struct {
 	Raw    map[string]any
 }
 
-// Point is a WGS84 coordinate.
+// Point 是 WGS84 坐标。
 type Point struct {
 	Lng float64
 	Lat float64
 }
 
-// Target is one signable location.
+// Target 是一个可签到地点。
 type Target struct {
 	ID             string
 	Title          string
@@ -69,7 +87,7 @@ type Target struct {
 	Raw            map[string]any
 }
 
-// LocationMode selects automatic sampling or a fixed point.
+// LocationMode 选择自动采样还是固定点。
 type LocationMode string
 
 const (
@@ -77,7 +95,7 @@ const (
 	LocationFixed LocationMode = "fixed"
 )
 
-// Location is the host's location policy for one attempt.
+// Location 是宿主对一次尝试的定位策略。
 type Location struct {
 	Mode   LocationMode
 	Lng    float64
@@ -85,8 +103,8 @@ type Location struct {
 	Reason string
 }
 
-// ImageRef is a prepared image. The host rotates, crops and re-encodes before
-// passing it; the provider only uploads and submits it.
+// ImageRef 是已预处理好的图片。
+// 宿主先完成旋转、裁剪与重编码；提供方只负责上传与提交。
 type ImageRef struct {
 	ID     string
 	Mime   string
@@ -96,19 +114,19 @@ type ImageRef struct {
 	Bytes  []byte
 }
 
-// DiscoverRequest asks a provider for the window or targets of one account.
+// DiscoverRequest 向提供方索取一个账号的窗口或目标。
 type DiscoverRequest struct {
 	Account    AccountRef
 	Credential Credential
 }
 
-// VerifyRequest asks a provider to validate one credential set.
+// VerifyRequest 请提供方校验一组凭据。
 type VerifyRequest struct {
 	Account    AccountRef
 	Credential Credential
 }
 
-// Profile is the non-secret identity a provider may return.
+// Profile 是提供方可以返回的非秘密身份信息。
 type Profile struct {
 	DisplayName string
 	SchoolName  string
@@ -116,7 +134,7 @@ type Profile struct {
 	Raw         map[string]any
 }
 
-// SignRequest is one attempt.
+// SignRequest 是一次签到尝试。
 type SignRequest struct {
 	AttemptID  string
 	Account    AccountRef
@@ -128,7 +146,7 @@ type SignRequest struct {
 	Options    map[string]string
 }
 
-// Outcome is the neutral result vocabulary.
+// Outcome 是中性结果词表。
 type Outcome string
 
 const (
@@ -147,7 +165,7 @@ const (
 	OutcomeUnknown         Outcome = "unknown"
 )
 
-// Valid reports whether o is a known outcome.
+// Valid 报告 o 是否为已知结果。
 func (o Outcome) Valid() bool {
 	switch o {
 	case OutcomeSuccess, OutcomeAlreadyDone, OutcomePendingUpstream,
@@ -161,7 +179,7 @@ func (o Outcome) Valid() bool {
 	}
 }
 
-// Evidence is the audit-safe result detail. Raw must already be masked.
+// Evidence 是审计安全的结果明细。Raw **必须已经掩码**。
 type Evidence struct {
 	Rank        *int
 	SignedAt    *time.Time
@@ -171,7 +189,7 @@ type Evidence struct {
 	Raw         map[string]any
 }
 
-// RetryAdvice tells the host whether and when to retry.
+// RetryAdvice 告诉宿主是否重试、何时重试。
 type RetryAdvice struct {
 	Retryable    bool
 	After        time.Duration
@@ -179,7 +197,7 @@ type RetryAdvice struct {
 	ClearSession bool
 }
 
-// Result is one attempt's outcome.
+// Result 是一次尝试的结果。
 type Result struct {
 	Outcome  Outcome
 	Evidence Evidence
@@ -187,7 +205,7 @@ type Result struct {
 	Message  string
 }
 
-// Capabilities lets the host adapt its UI and scheduling.
+// Capabilities 让宿主适配界面与调度。
 type Capabilities struct {
 	WindowDiscovery bool
 	TargetDiscovery bool

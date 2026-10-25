@@ -10,14 +10,14 @@ import (
 	appuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/user"
 )
 
-// Compile-time wiring checks.
+// 编译期接线检查。
 //
-// The ports live in internal/app and the implementations in
-// internal/adapters/pg. canonical.tsv forbids the adapter from importing app,
-// so these assertions are the place where the two sides must match. A
-// signature change on either side breaks the build here, not at first use.
+// 端口在 internal/app，实现在 internal/adapters/pg。
+// canonical.tsv 禁止适配器导入 app，
+// 故这些断言是两侧必须对齐的地方。
+// 任一侧签名改动都会在编译期失败，而不是留到首次调用。
 //
-// This file asserts types only. It opens no connection and starts no server.
+// 本文件只断言类型。它**不**建连接，**不**启动服务。
 var (
 	_ app.TxManager             = (*pg.DB)(nil)
 	_ appuser.Repo              = (*pg.UserRepo)(nil)

@@ -1,51 +1,64 @@
-// Package scope defines which school-domain rows a principal may read or
-// write.
+// Package scope 定义主体可读写的院校范围。
 //
-// The zero value is invalid and is rejected at runtime. Every repository
-// method for a school-domain table takes a Scope, so a forgotten filter is a
-// compile error, not a silent data leak.
+// # 功能
+// 定义三种授权形状：master、admin、user，并提供查询用的范围值。
+// 本包**不**查库、**不**解析令牌、**不**决定谁能登录。
+// 范围到 SQL 的翻译见 adapters/pg 的 scopePredicate。
+//
+// # 归属
+// core 层纯领域包。院校域表的每个仓储方法都收 Scope，
+// 忘记加过滤会变成编译错误，而不是静默越权。
+//
+// # 复用
+// Kind 及 Invalid、KindMaster、KindAdmin、KindUser；
+// Scope 及 Master、Admin、User、Kind、Valid、UserID、SchoolIDs。
+//
+// # 口径
+// 零值无效，运行时拒绝。
+// **空集合不等于全部院校**：admin 无绑定即看不到任何行。
 package scope
 
-// Kind is the authorization shape of a principal.
+// Kind 是主体的授权形状。
 type Kind uint8
 
 const (
-	// Invalid is the zero kind. Repositories reject it.
+	// Invalid 是零值形状。仓储一律拒绝。
 	Invalid Kind = iota
-	// KindMaster sees every school.
+	// KindMaster 可见全部院校。
 	KindMaster
-	// KindAdmin sees the schools bound in admin_schools.
+	// KindAdmin 可见 admin_schools 中绑定的院校。
 	KindAdmin
-	// KindUser sees only rows it owns.
+	// KindUser 只见自己拥有的行。
 	KindUser
 )
 
-// Scope is an authorization scope. Build one with Master, Admin or User.
+// Scope 是授权范围。请用 Master、Admin 或 User 构造。
 type Scope struct {
 	kind    Kind
 	userID  string
 	schools []string
 }
 
-// Master returns the unrestricted scope. Only a master principal may use it.
+// Master 返回不受限范围。**只有 master 主体可用**。
 func Master() Scope { return Scope{kind: KindMaster} }
 
-// Admin returns a scope limited to schoolIDs. An empty slice sees nothing:
-// an empty set is never treated as "all schools". The copy is non-nil even
-// when no school is given, so the query sends an empty array, not NULL.
+// Admin 返回限于 schoolIDs 的范围。
+// 空切片**看不到任何行**：空集合永不当作「全部院校」。
+// 即使未给院校，副本也非 nil，查询发出空数组而不是 NULL。
 func Admin(schoolIDs []string) Scope {
 	copied := make([]string, len(schoolIDs))
 	copy(copied, schoolIDs)
 	return Scope{kind: KindAdmin, schools: copied}
 }
 
-// User returns a scope limited to rows owned by userID.
+// User 返回限于 userID 拥有的行。
 func User(userID string) Scope { return Scope{kind: KindUser, userID: userID} }
 
-// Kind reports the authorization shape.
+// Kind 返回授权形状。
 func (s Scope) Kind() Kind { return s.kind }
 
-// Valid reports whether the scope can be used in a query.
+// Valid 报告范围能否用于查询。
+// user 范围必须带非空 userID，否则拒绝。
 func (s Scope) Valid() bool {
 	switch s.kind {
 	case KindMaster, KindAdmin:
@@ -57,9 +70,8 @@ func (s Scope) Valid() bool {
 	}
 }
 
-// UserID returns the owning user. It is empty for master and admin scopes.
+// UserID 返回所属用户。master 与 admin 范围为空。
 func (s Scope) UserID() string { return s.userID }
 
-// SchoolIDs returns a copy of the bound schools. It is empty for master and
-// user scopes.
+// SchoolIDs 返回绑定院校的副本。master 与 user 范围为 nil。
 func (s Scope) SchoolIDs() []string { return append([]string{}, s.schools...) }

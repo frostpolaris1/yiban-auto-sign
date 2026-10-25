@@ -1,2 +1,17 @@
-// Package capacity owns the only capacity formula. Implementation lands in P4.
+// Package capacity 是容量公式的唯一归属。
+//
+// # 功能
+// P1 只有占位，**不提供任何公式**；实现随 P4 落地。
+// 本包**不**读配置、**不**排调度、**不**发网络请求。
+//
+// # 归属
+// core 层纯领域包。用例层与执行层向本包取容量结论，
+// 不得在别处复写同一公式。
+//
+// # 复用
+// P1 无导出符号。P4 落地后在此列出容量常量与计算函数。
+//
+// # 口径
+// 容量只有一个口径来源，即本包。
+// 调用方不得按自己的单位复算。
 package capacity

@@ -7,15 +7,15 @@ import (
 	coreschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/school"
 )
 
-// AdminSchoolRepo is the PostgreSQL administrator-binding repository.
+// AdminSchoolRepo 是 PostgreSQL 管理员绑定仓储。
 type AdminSchoolRepo struct {
 	db *DB
 }
 
-// NewAdminSchoolRepo builds an administrator-binding repository.
+// NewAdminSchoolRepo 构造管理员绑定仓储。
 func NewAdminSchoolRepo(db *DB) *AdminSchoolRepo { return &AdminSchoolRepo{db: db} }
 
-// Grant binds a user to a school. Granting an existing binding is a no-op.
+// Grant 绑定用户与院校。重复授予同一条绑定是空操作。
 func (r *AdminSchoolRepo) Grant(ctx context.Context, binding coreschool.AdminBinding) error {
 	if strings.TrimSpace(binding.UserID) == "" || strings.TrimSpace(binding.SchoolID) == "" {
 		return validationError("user and school are required")
@@ -28,7 +28,7 @@ func (r *AdminSchoolRepo) Grant(ctx context.Context, binding coreschool.AdminBin
 	return mapError(err)
 }
 
-// Revoke deletes one binding.
+// Revoke 删除一条绑定。无行可删时报 not_found。
 func (r *AdminSchoolRepo) Revoke(ctx context.Context, userID, schoolID string) error {
 	tag, err := r.db.q(ctx).Exec(ctx, `
 		DELETE FROM admin_schools WHERE user_id = $1::uuid AND school_id = $2::uuid`,
@@ -42,8 +42,8 @@ func (r *AdminSchoolRepo) Revoke(ctx context.Context, userID, schoolID string) e
 	return nil
 }
 
-// SchoolsForUser lists the schools bound to a user. An empty result means the
-// user administers no school; it is never treated as "all schools".
+// SchoolsForUser 列出用户绑定的院校。
+// 空结果表示该用户不管理任何院校，**绝不解释为「全部院校」**。
 func (r *AdminSchoolRepo) SchoolsForUser(ctx context.Context, userID string) ([]string, error) {
 	rows, err := r.db.q(ctx).Query(ctx, `
 		SELECT school_id::text FROM admin_schools
