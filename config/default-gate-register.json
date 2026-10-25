@@ -420,7 +420,7 @@
   "YIBAN_ADMIN_PASSWORD": {
     "default_literal_gate_exempt": {
       "class": "no_default",
-      "reason": "名册缺省 null；仅出现在 CLI 命令示例（env 前缀写法，不是模板取值行）；三份模板无该键取值行"
+      "reason": "名册缺省 null；仅出现在 CLI 命令示例（env 前缀写法，不是模板取值行）；仅有命令示例行（.env.docker.example:10、README.md:888），值为命令串，不是配置值"
     }
   },
   "YIBAN_ADMIN_PASSWORD_HASH": {

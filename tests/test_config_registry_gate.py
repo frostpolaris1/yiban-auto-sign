@@ -950,6 +950,26 @@ class GateTemplateDefaultEqualityTest(unittest.TestCase):
             self.assertIn("单行写法", r.stderr)
             self.assertNotIn("Traceback", r.stderr)
 
+    def test_non_scalar_example_diverges_is_environment_error(self):
+        """非标量缺省 + example_diverges：不许恒放行，按环境错拒判（2）。"""
+        registry = {
+            "_meta": {"version": 1},
+            "YIBAN_JSON_KNOB": {
+                "type": "json", "default": ["a"], "group": ["夹具"],
+                "doc": "非标量缺省", "sensitive": False, "web_editable": False,
+                "tier": "master", "reload": "restart",
+            },
+        }
+        register = {"_meta": {"version": 1}, "YIBAN_JSON_KNOB": {
+            "default_literal_gate_exempt": {
+                "class": "example_diverges", "reason": "非标量缺省自称示例不同"}}}
+        with _Fixture(registry=registry, register=register,
+                      source='KEY = "YIBAN_JSON_KNOB"\n') as fx:
+            r = _run_gate(fx.root, fx.registry_path)
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("单行写法", r.stderr)
+            self.assertNotIn("Traceback", r.stderr)
+
     def test_empty_carrier_is_environment_error(self):
         with self._fixture(templates={".env.docker.example": ""}) as fx:
             r = _run_gate(fx.root, fx.registry_path)
