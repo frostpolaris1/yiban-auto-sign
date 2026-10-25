@@ -19,7 +19,10 @@
 // 库内 CHECK 是最后一道，不是第一道。
 package user
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+)
 
 // NormalizeEmail 去首尾空白并转小写。
 // 每次比较与存储前都要先归一，否则同一地址会有两种行形态。
@@ -35,7 +38,12 @@ func ValidEmail(email string) bool {
 	if len(email) < 3 || len(email) > 254 {
 		return false
 	}
-	if strings.ContainsAny(email, " \t\r\n*") {
+	if strings.ContainsAny(email, "*") {
+		return false
+	}
+	// 任何 Unicode 空白（含 \v、U+00A0）一律拒绝：
+	// 库内 CHECK 的 [[:space:]] 随排序规则变化，应用层先按最严口径拦。
+	if strings.IndexFunc(email, unicode.IsSpace) >= 0 {
 		return false
 	}
 	if strings.Count(email, "@") != 1 {

@@ -239,7 +239,7 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 			closeFn()
 			return nil, fmt.Errorf("server: account service: %w", err)
 		}
-		// 用户用例复用同一个用户仓储：建号走 Create，
+		// 用户用例复用同一数据库下的用户仓储实例（仓储无状态）：建号走 Create，
 		// 它的容量守卫与账号上限同形（裁决 12.11）。
 		userRepo := pg.NewUserRepo(db)
 		userSvc, err := appuser.NewService(appuser.Deps{

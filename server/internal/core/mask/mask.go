@@ -24,6 +24,7 @@ package mask
 import (
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 var (
@@ -71,7 +72,10 @@ func MaskEmail(s string) string {
 	if strings.Contains(local, "***") {
 		return s
 	}
-	return local[:1] + "***" + s[at:]
+	// 按**字符**而非字节取首字符：邮箱本地部可以是多字节字符，
+	// 按字节切会产出非法 UTF-8，落库即报错（W2D 审查 P2）。
+	_, size := utf8.DecodeRuneInString(local)
+	return local[:size] + "***" + s[at:]
 }
 
 // MaskDevice 保留设备号前 2 位与后 2 位。
