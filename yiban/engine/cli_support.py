@@ -84,6 +84,13 @@ FALLBACK_LOCK_NAME = "signin-run.lock.fallback"
 #: 半升级（下次启动重试/人工介入）"与"配置错误(1)"区分开。
 EXIT_SCHEMA_MIGRATION = 4
 
+#: `--second-run-check` 的"需要补跑第二轮"退出码：**唯一定义点**。
+#: `runner.SECOND_RUN_CHECK_NEED`（供命令帮助文案与判定返回）与
+#: `workers._SECOND_RUN_CHECK_NEED`（供监督进程透传）都引用本常量，不再各写 10。
+#: 方向不能反：`workers` 不导入 `runner`（`runner` 反向依赖 `workers`），本模块是
+#: 两者共同的低层。
+SECOND_RUN_CHECK_NEED = 10
+
 # CLI 日志装配幂等标记（见 _setup_cli_logging）
 _cli_logging_ready = False
 
@@ -399,7 +406,7 @@ _EXIT_KINDS = {
     2: "skipped",
     3: "locked",
     EXIT_SCHEMA_MIGRATION: "schema_migration",
-    10: "second_run_check",
+    SECOND_RUN_CHECK_NEED: "second_run_check",
 }
 
 

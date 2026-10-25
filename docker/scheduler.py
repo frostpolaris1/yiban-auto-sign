@@ -500,7 +500,13 @@ def _tick_backup(now, state):
 # 写死 23:55 的问题）。现每 PROBE_TRY_SECONDS 尝试一次 --probe（探针未开启不
 # spawn），signin.py 内部按 PROBE_TIME / 频率 / 当日防重裁决是否真正探测，
 # 与宿主 cron */10 轮询语义对齐。
-FIRST, SECOND = (6, 31), (7, 10)
+# 首签与宿主 cron 同源：读 `yiban.core.window.DEFAULT_FIRST_HM`（宿主 cron 表由
+# `tests/test_cron_time_equivalence.py` 对拍同一常量）。
+# 补签 07:10 是**有意的容器分叉**，不与宿主 07:12 统一：容器在同一循环里等首轮子进程
+# 结束后再判 SECOND，不存在宿主「07:12 cron 撞首轮 flock 而空转」的问题，故提前 2 分钟
+# 收尾；网关把 `YIBAN_SECOND_RUN_TIME` 注入子进程时才用 `SECOND`。该分叉在
+# `tests/test_cron_time_equivalence.py` 登记为显式豁免。
+FIRST, SECOND = window.DEFAULT_FIRST_HM, (7, 10)
 #: 每日定时备份时刻（M44），与宿主 cron 的 `0 2 * * *` 同点。取 02:00 而非更晚：
 #: 赶在首签（06:31）与状态清理（03:00）之前，把"昨天一天的数据"完整封存，也给
 #: 备份子进程留出足够时间在早上之前跑完。

@@ -161,6 +161,9 @@ _reset_audit_fail_memory = _audit_chain._reset_audit_fail_memory
 audit_persisted_write_failures = _audit_chain.audit_persisted_write_failures
 audit_write_failures = _audit_chain.audit_write_failures
 audit = _audit_chain.audit
+#: 审计 detail 的字符上限（唯一定义点在 `audit_chain.AUDIT_DETAIL_LIMIT`）：
+#: 按原样再导出，审计写点取 `db.AUDIT_DETAIL_LIMIT` 即可，不另写字面量。
+AUDIT_DETAIL_LIMIT = _audit_chain.AUDIT_DETAIL_LIMIT
 # 请求作用域（审计行携带"哪个请求做的"）与"业务+审计同事务"原语：
 # `audit_unit` 上下文管理器、`record_in_txn`（业务事务内插审计行）、
 # `audit_or_refuse`（跨存储调用点的 fail-closed 审计，失败抛 AuditWriteRefused）。
