@@ -89,6 +89,65 @@ import _ "example.com/internal/adapters/store"
 	}
 }
 
+// owner 为 * 时，规则检查每一个被扫描的文件。
+// 这条规则用于「任何生产代码都不得导入某包」。
+func TestScanImportAllOwners(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "internal/app/foo.go", `package app
+import _ "example.com/internal/signing/fake"
+`)
+	writeFile(t, root, "examples/demo/other.go", `package other
+import _ "example.com/internal/signing/fake"
+`)
+	rules := []Rule{testRule("fake.import", "import", "*", "internal/signing/fake", "")}
+	violations, err := Scan(root, rules, false)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(violations) != 2 {
+		t.Fatalf("want 2 violations, got %#v", violations)
+	}
+}
+
+// allow 对 import 规则同样生效：套件目录可导入，其余目录不可。
+func TestScanImportAllow(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "internal/signing/conformance/suite.go", `package conformance
+import _ "example.com/internal/signing/fake"
+`)
+	writeFile(t, root, "internal/signing/providers/yiban/provider.go", `package yiban
+import _ "example.com/internal/signing/fake"
+`)
+	rules := []Rule{testRule("fake.import", "import", "*", "internal/signing/fake", "internal/signing/conformance/")}
+	violations, err := Scan(root, rules, false)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(violations) != 1 || violations[0].File != "internal/signing/providers/yiban/provider.go" {
+		t.Fatalf("want only the provider violation, got %#v", violations)
+	}
+}
+
+// 测试文件默认不在扫描口径内。
+// 显式打开 -tests 后，allow 之外的测试文件同样被拦：口径差集必须可见。
+func TestScanImportAllOwnersTests(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "internal/signing/providers/yiban/provider_test.go", `package yiban
+import _ "example.com/internal/signing/fake"
+`)
+	rules := []Rule{testRule("fake.import", "import", "*", "internal/signing/fake", "internal/signing/conformance/")}
+	if violations, err := Scan(root, rules, false); err != nil || len(violations) != 0 {
+		t.Fatalf("tests must be skipped by default: %#v, %v", violations, err)
+	}
+	violations, err := Scan(root, rules, true)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(violations) != 1 {
+		t.Fatalf("with -tests want one violation, got %#v", violations)
+	}
+}
+
 func TestScanFuncOwner(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "internal/app/capacity.go", `package app
