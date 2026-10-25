@@ -53,6 +53,8 @@
 · `datetime.fromisoformat(<非字面量>)`：实参可能带偏移，静态不可判。
   按无偏移处理（保守判 naive）；确有偏移时登记豁免。
 · `datetime.now(<tz>)` 后接变量格式串的 `.strftime(...)`：占位符静态不可判。
+· f-string 的变量格式说明（`f"{<时刻>:{fmt}}"`）：占位符静态不可判。
+  与 `.strftime(<变量>)` 同属一类边界。
 · 无格式说明的 f-string（`f"{<时刻>}"`）：形状不是「取日」的显式判据。
 · 不带 `as` 的整链导入（`import yiban.core` / `import yiban.core.clock`）后的链式名
   （`yiban.core.clock.now()`）：不在别名表。
