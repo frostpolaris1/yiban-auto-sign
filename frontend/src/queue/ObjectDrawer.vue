@@ -47,13 +47,28 @@ interface EventItem {
   stage: string;
 }
 
-const props = defineProps<{ target: RowView | null }>();
+/**
+ * 受控开合：`open` 由宿主给，`target` 只决定内容。
+ *
+ * 为什么不用「target 变化」当开合信号：宿主关抽屉后保留 target（供退出过渡），
+ * 再次点同一行时 target 引用不变，`watch(() => props.target)` 用 Object.is 比较
+ * 不触发 ⇒ 抽屉再也打不开（2026-10-25 审查 1）。开合与内容因此是两个独立输入：
+ * `open` 上升沿负责"打开并重读"，`target` 变化负责"换对象"。
+ */
+const props = defineProps<{ target: RowView | null; open: boolean }>();
 const emit = defineEmits<{
   (e: "close"): void;
   (e: "action", payload: { key: "approve" | "reject" | "edit" | "remove"; row: RowView }): void;
 }>();
 
-const open = ref(false);
+/** el-drawer 的 v-model：读宿主 open，写只处理"关"（转成 close 事件给宿主）。 */
+const visible = computed({
+  get: () => props.open,
+  set: (v: boolean) => {
+    if (!v) emit("close");
+  },
+});
+
 const form = ref<DrawerForm>(drawerForm(window.innerWidth));
 const detail = ref<DrawerDetail | null>(null);
 const events = ref<EventItem[]>([]);
@@ -111,23 +126,24 @@ async function load(row: RowView): Promise<void> {
   }
 }
 
+// 打开（含"关了再开同一行"）＝ open 上升沿：重读详情与事件，焦点送关闭钮。
 watch(
-  () => props.target,
-  (t, prev) => {
-    if (t && t !== prev) {
-      open.value = true;
-      void load(t);
+  () => props.open,
+  (v, prev) => {
+    if (v && !prev && props.target) {
+      void load(props.target);
       focusClose();
-      return;
     }
-    // 宿主清空目标（动作成功后刷新）⇒ 收抽屉；用户自己关（open→false）已发 close。
-    if (!t && prev) open.value = false;
   },
 );
 
-watch(open, (v) => {
-  if (!v) emit("close");
-});
+// 换对象（抽屉已开时点另一行）＝ 只重读，不重复抢焦点。
+watch(
+  () => props.target,
+  (t, prev) => {
+    if (props.open && t && t !== prev) void load(t);
+  },
+);
 
 onMounted(() => window.addEventListener("resize", onResize));
 onBeforeUnmount(() => window.removeEventListener("resize", onResize));
@@ -139,7 +155,7 @@ function act(key: "approve" | "reject" | "edit" | "remove"): void {
 
 <template>
   <el-drawer
-    v-model="open"
+    v-model="visible"
     :size="form.size"
     :class="form.cls"
     :with-header="true"
