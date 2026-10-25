@@ -15,6 +15,7 @@
      这是生产 yiban-audit 表的真实形态；`.venv/` 与 `data/` 是部署期创建、
      不入库的路径，登记为显式豁免。
   ⑥ manifest 已登记的 /usr/local/sbin 件 ⇒ 绿；未登记 ⇒ 红（防回归）。
+  ⑦ 值里的 URL 与纯数字比值不是路径（B-1）；贴紧式重定向目标不判（B-2）。
 """
 import io
 import os
@@ -126,6 +127,61 @@ class CronProvenancePathScopeTest(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0,
                             "环境前缀里的 /tmp 仍放行：\n" + self._out(r))
         self.assertIn("/tmp/x.db", self._out(r))
+
+    # ---- B-1：值里的 `/` 不是路径的充分条件 ---------------------------------
+
+    def test_url_value_is_not_a_path(self):
+        """`--url=https://…` 的 `/` 是 URL 分隔符，不是文件路径（B-1 误报）。"""
+        r = self._check(
+            "5 6 * * * yiban %s/run.sh --url=https://api.example.com/v1" % APP_ROOT)
+        self.assertEqual(r.returncode, 0, "URL 值被当成路径判红：\n" + self._out(r))
+
+    def test_numeric_ratio_value_is_not_a_path(self):
+        """`--retention=30/7` 是数字比值，不是文件路径（B-1 误报）。"""
+        r = self._check(
+            "5 6 * * * yiban %s/run.sh --retention=30/7" % APP_ROOT)
+        self.assertEqual(r.returncode, 0, "数字比值被当成路径判红：\n" + self._out(r))
+
+    def test_scheme_suffix_does_not_hide_absolute_path(self):
+        """`/tmp/x.sh://` 不是 scheme URL：`://` 尾巴不得绕过绝对路径判定。"""
+        r = self._check(
+            "5 6 * * * yiban %s/run.sh --opt=/tmp/x.sh://" % APP_ROOT)
+        self.assertNotEqual(r.returncode, 0, "绝对路径藏在 `://` 尾巴后仍放行：\n" + self._out(r))
+        self.assertIn("/tmp/x.sh", self._out(r))
+
+    def test_scheme_suffix_does_not_hide_relative_escape(self):
+        """`../../etc/passwd://` 不是 scheme URL：相对越界仍判红。"""
+        r = self._check(
+            "5 6 * * * yiban %s/run.sh --opt=../../etc/passwd://" % APP_ROOT)
+        self.assertNotEqual(r.returncode, 0, "相对越界藏在 `://` 尾巴后仍放行：\n" + self._out(r))
+        self.assertIn("../../etc/passwd://", self._out(r))
+
+    def test_file_scheme_payload_is_still_a_path(self):
+        """`file://` 的载荷是路径，仍须判定（不得当普通 URL 放过）。"""
+        r = self._check(
+            "5 6 * * * yiban %s/run.sh --opt=file:///tmp/x.sh" % APP_ROOT)
+        self.assertNotEqual(r.returncode, 0, "file:// 载荷里的 /tmp 仍放行：\n" + self._out(r))
+
+    def test_relative_path_value_without_cd_is_still_red(self):
+        """值里的真相对路径仍判红：`--db=data/yiban.db` 没有可达的 cwd（B-1 不放宽）。"""
+        r = self._check(
+            "5 6 * * * yiban %s/run.sh --db=data/yiban.db" % APP_ROOT)
+        self.assertNotEqual(r.returncode, 0, "旗标值里的相对路径仍放行：\n" + self._out(r))
+        self.assertIn("data/yiban.db", self._out(r))
+
+    # ---- B-2：贴紧式重定向目标不判 -------------------------------------------
+
+    def test_attached_fd_redirect_is_not_a_path(self):
+        """`2>/dev/null` 是重定向目标，不是命令行路径 token（B-2 误报）。"""
+        r = self._check(
+            "5 6 * * * yiban %s/run.sh 2>/dev/null" % APP_ROOT)
+        self.assertEqual(r.returncode, 0, "贴紧式重定向被当成路径：\n" + self._out(r))
+
+    def test_attached_append_redirect_is_not_a_path(self):
+        """`2>>/var/log/x.log` 同属重定向目标，不判。"""
+        r = self._check(
+            "5 6 * * * yiban %s/run.sh 2>>/var/log/x.log" % APP_ROOT)
+        self.assertEqual(r.returncode, 0, "贴紧式追加重定向被当成路径：\n" + self._out(r))
 
 
 if __name__ == "__main__":
