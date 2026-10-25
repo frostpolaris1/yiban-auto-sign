@@ -48,7 +48,7 @@ func main() {
 		fatal(err)
 	}
 	if seen == 0 {
-		fatal(fmt.Errorf("structure: no managed directory exists; refused to pass"))
+		fatal(fmt.Errorf("structure: no managed sub-scope exists; refused to pass"))
 	}
 	uiProblems, err := checkFrontend(*root)
 	if err != nil {
@@ -118,8 +118,8 @@ func loadRules(path string) ([]rule, error) {
 	return rules, nil
 }
 
-// knownScope validates the whole path, so a typo such as server/internals is
-// rejected instead of silently skipped.
+// knownScope validates the first two segments, so a typo such as
+// server/internals is rejected instead of silently skipped.
 func knownScope(scope string) bool {
 	if scope == "root" {
 		return true
@@ -162,7 +162,11 @@ func checkAllowlist(root string, rules []rule) ([]string, int, error) {
 			}
 			return nil, 0, err
 		}
-		seen++
+		// The root always exists. Only a managed sub-scope proves that the
+		// gate looked at something.
+		if r.scope != "root" {
+			seen++
+		}
 		for _, e := range entries {
 			if !e.IsDir() {
 				continue

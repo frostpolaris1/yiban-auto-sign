@@ -64,11 +64,14 @@ paths:
       tags: [auth]
       operationId: AuthLogout
       summary: Destroy the current session.
-      description: Idempotent; succeeds even without a session. P1 returns 501.
+      description: |
+        Idempotent. A request without a session is a no-op and needs no CSRF
+        token, because no authority is carried. A request with a session must
+        send X-CSRF-Token. P1 returns 501.
       security: []
       x-roles: [public]
       parameters:
-        - $ref: '#/components/parameters/CSRFToken'
+        - $ref: '#/components/parameters/CSRFTokenOptional'
       responses:
         '204': { description: Session destroyed. }
         default: { $ref: '#/components/responses/DefaultError' }
@@ -511,6 +514,14 @@ components:
       description: |
         CSRF token returned by GET /api/auth/me. Required on every
         state-changing request that carries a session.
+      schema: { type: string }
+    CSRFTokenOptional:
+      name: X-CSRF-Token
+      in: header
+      required: false
+      description: |
+        Required only when the request carries a session. Used by logout,
+        where a session-less request is a no-op.
       schema: { type: string }
     SchoolID:
       name: id

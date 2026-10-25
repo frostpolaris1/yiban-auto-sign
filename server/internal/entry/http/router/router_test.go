@@ -318,3 +318,29 @@ func TestE7PanicRecovery(t *testing.T) {
 		t.Fatalf("code = %q, want internal_error", env.Error.Code)
 	}
 }
+
+// A panicking request still produces one access log line with status 500.
+func TestAccessLogCoversPanics(t *testing.T) {
+	var logBuf bytes.Buffer
+	engine := newEngine(t, panicIssuer{}, slog.New(slog.NewTextHandler(&logBuf, nil)))
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: "any"})
+	serve(engine, req)
+
+	logged := logBuf.String()
+	if !strings.Contains(logged, "http request") {
+		t.Fatalf("no access log line: %q", logged)
+	}
+	if !strings.Contains(logged, "status=500") {
+		t.Fatalf("access log lacks status 500: %q", logged)
+	}
+}
+
+// Logout without a session reaches the handler instead of failing binding.
+func TestLogoutWithoutSession(t *testing.T) {
+	engine, _ := newTestEngine(t)
+	rec := serve(engine, httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil))
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501; body=%q", rec.Code, rec.Body.String())
+	}
+}

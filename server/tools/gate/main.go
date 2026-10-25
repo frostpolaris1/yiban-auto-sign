@@ -18,7 +18,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "gate:", err)
 		os.Exit(2)
 	}
-	scanned, err := CountGoFiles(*root)
+	scanned, err := CountGoFiles(*root, *includeTests)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "gate:", err)
 		os.Exit(2)

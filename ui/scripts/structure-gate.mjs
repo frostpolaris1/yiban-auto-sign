@@ -134,6 +134,16 @@ export function extractSpecifiers(file) {
         break
       case 'CallExpression':
         if (node.callee?.type === 'Import') add(node.arguments?.[0])
+        // CommonJS require() reaches the same module graph.
+        if (node.callee?.type === 'Identifier' && node.callee.name === 'require') {
+          add(node.arguments?.[0])
+        }
+        break
+      case 'TSImportEqualsDeclaration':
+        // import X = require('...')
+        if (node.moduleReference?.type === 'TSExternalModuleReference') {
+          add(node.moduleReference.expression)
+        }
         break
       case 'TSImportType':
         if (node.argument?.type === 'TSLiteralType') add(node.argument.literal)
@@ -150,6 +160,22 @@ export function extractSpecifiers(file) {
   }
   visit(ast)
   return found
+}
+
+function caseExact(srcRoot, target) {
+  const parts = relative(srcRoot, target).split(sep).filter((part) => part !== '')
+  let current = srcRoot
+  for (const part of parts) {
+    let entries
+    try {
+      entries = readdirSync(current)
+    } catch {
+      return false
+    }
+    if (!entries.includes(part)) return false
+    current = join(current, part)
+  }
+  return true
 }
 
 /**
@@ -174,9 +200,14 @@ export function resolveSpecifier(importer, specifier, srcRoot) {
 
   for (const suffix of JS_EXTENSIONS) {
     const candidate = `${base}${suffix}`
-    if (existsSync(candidate) && statSync(candidate).isFile()) {
-      return { kind: 'resolved', path: candidate }
+    if (!existsSync(candidate) || !statSync(candidate).isFile()) continue
+    // Windows resolves paths case-insensitively. The gate must judge the same
+    // thing on every platform, so every segment must match its directory
+    // entry byte for byte.
+    if (!caseExact(srcRoot, candidate)) {
+      return { kind: 'error', reason: `cannot resolve ${specifier}: case mismatch` }
     }
+    return { kind: 'resolved', path: candidate }
   }
   return { kind: 'error', reason: `cannot resolve ${specifier}` }
 }
@@ -268,6 +299,7 @@ const POSITIVES = {
   'components/ui/Icon.tsx': 'export function Icon() {}\n',
   'features/school/S.ts': 'export const S = 1\n',
   'features/auth/A2.ts': 'export const A = 1\n',
+  'app/router.tsx': 'export const R = 1\n',
 }
 
 const NEGATIVES = {
@@ -279,6 +311,11 @@ const NEGATIVES = {
   'lib/bad-components.ts': "import { B } from '../components/ui/Button'\n",
   'features/auth/BadPage.tsx': "import { H } from '@/pages/HomePage'\n",
   'components/ui/BadPage.tsx': "import { H } from '@/pages/HomePage'\n",
+  'lib/bad-require.ts': "const A = require('@/features/auth/A')\n",
+  'features/auth/BadImportEquals.ts': "import S = require('../school/S')\n",
+  'lib/bad-app.ts': "import { R } from '@/app/router'\n",
+  'pages/BadAppPage.tsx': "import { R } from '@/app/router'\n",
+  'lib/BadCase.ts': "import { A } from '@/Features/auth/A'\n",
   'features/auth/BadSecond.tsx': "import { A } from './A'\nimport { S } from '@/features/school/S'\n",
   'components/ui/Unresolved.tsx': "import { X } from '@/features/missing/X'\n",
   'lib/Escape.ts': "import { X } from '../../outside/X'\n",
@@ -298,6 +335,11 @@ function selfTest() {
     'features/auth/BadSecond.tsx',
     'components/ui/Unresolved.tsx',
     'lib/Escape.ts',
+    'lib/bad-require.ts',
+    'features/auth/BadImportEquals.ts',
+    'lib/bad-app.ts',
+    'pages/BadAppPage.tsx',
+    'lib/BadCase.ts',
   ]
 
   const root = mkdtempSync(join(tmpdir(), 'structure-gate-'))
@@ -327,6 +369,12 @@ function selfTest() {
     }
     if (!problems.some((problem) => problem.includes('resolves outside ui/src'))) {
       failures.push('path escaping ui/src was not reported')
+    }
+    if (!problems.some((problem) => problem.includes('case mismatch'))) {
+      failures.push('case-mismatched path was not reported')
+    }
+    if (!problems.some((problem) => problem.includes('lib must not import app'))) {
+      failures.push('lib -> app import was not reported')
     }
 
     const expectConfigError = (label, run) => {

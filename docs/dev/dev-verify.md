@@ -335,3 +335,16 @@ e2e 不写进 CI：CI 结果必须与改前等价，加一步即改变 CI 行为
   不会产生假绿；只是别拿那一轮的 `covered=` 与 `failed=` 当事实。要可信的数字就重跑。
 - ruff 在任何档都扫 `yiban/ tests/ scripts/ web/ docker/` 全量，不随范围档缩小；范围档省的是
   pytest 时间，不是 ruff 时间。
+
+## 新栈（Go + React）的入口
+
+`scripts/dev-verify.sh` 只跑旧 Python 栈。新栈有自己的入口与 CI 作业：
+
+```bash
+bash scripts/verify-stacks.sh
+```
+
+它依次跑 `server/scripts/verify.sh` 与 `ui` 的 `npm run verify`。
+缺少 `go` 或 `npm` 时以退出码 2 结束，并把缺失项打到 stderr；跳过不算绿。
+
+CI 的 `stacks` 作业与本地入口同源。视觉回归目前只在 win32 生成基线，未进 CI。

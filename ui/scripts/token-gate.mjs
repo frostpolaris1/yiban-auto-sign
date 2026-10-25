@@ -23,6 +23,10 @@
  * missing vendor file, or an `index.html` that left the scan set is a
  * configuration error (exit 2), never a pass.
  *
+ * Known limitation: CSS named colours (for example `red`) are not detected.
+ * A complete list is 148 names and a partial list would give false confidence.
+ * The rule set covers every functional notation the codebase may use.
+ *
  * Usage:
  *   node scripts/token-gate.mjs             # run all checks
  *   node scripts/token-gate.mjs --self-test  # mutation-test the checker itself

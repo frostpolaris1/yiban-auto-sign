@@ -35,7 +35,9 @@ export interface paths {
         put?: never;
         /**
          * Destroy the current session.
-         * @description Idempotent; succeeds even without a session. P1 returns 501.
+         * @description Idempotent. A request without a session is a no-op and needs no CSRF
+         *     token, because no authority is carried. A request with a session must
+         *     send X-CSRF-Token. P1 returns 501.
          */
         post: operations["AuthLogout"];
         delete?: never;
@@ -557,6 +559,11 @@ export interface components {
          *     state-changing request that carries a session.
          */
         CSRFToken: string;
+        /**
+         * @description Required only when the request carries a session. Used by logout,
+         *     where a session-less request is a no-op.
+         */
+        CSRFTokenOptional: string;
         SchoolID: string;
         UserID: string;
         AccountID: string;
@@ -597,12 +604,12 @@ export interface operations {
     AuthLogout: {
         parameters: {
             query?: never;
-            header: {
+            header?: {
                 /**
-                 * @description CSRF token returned by GET /api/auth/me. Required on every
-                 *     state-changing request that carries a session.
+                 * @description Required only when the request carries a session. Used by logout,
+                 *     where a session-less request is a no-op.
                  */
-                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+                "X-CSRF-Token"?: components["parameters"]["CSRFTokenOptional"];
             };
             path?: never;
             cookie?: never;

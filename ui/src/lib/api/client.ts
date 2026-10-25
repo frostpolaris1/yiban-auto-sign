@@ -28,13 +28,32 @@ export class ApiError extends Error {
   }
 }
 
+const UNSAFE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
+
+/**
+ * The CSRF token from GET /api/auth/me. The contract requires it on every
+ * state-changing request that carries a session, and deriving it needs the
+ * session token, which only the server holds.
+ */
+let csrfToken: string | null = null
+
+export function setCsrfToken(token: string | null): void {
+  csrfToken = token
+}
+
+export function getCsrfToken(): string | null {
+  return csrfToken
+}
+
 export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = (init?.method ?? 'GET').toUpperCase()
   const response = await fetch(path, {
     credentials: 'include',
     ...init,
     headers: {
       Accept: 'application/json',
       ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(csrfToken && UNSAFE_METHODS.has(method) ? { 'X-CSRF-Token': csrfToken } : {}),
       ...init?.headers,
     },
   })

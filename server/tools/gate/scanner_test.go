@@ -150,7 +150,7 @@ func TestLoadRealCanonical(t *testing.T) {
 }
 
 func TestCountGoFilesEmptyTree(t *testing.T) {
-	count, err := CountGoFiles(t.TempDir())
+	count, err := CountGoFiles(t.TempDir(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,11 +174,25 @@ func TestCountGoFilesSkipsCaches(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	count, err := CountGoFiles(root)
+	count, err := CountGoFiles(root, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if count != 1 {
 		t.Fatalf("count = %d, want 1", count)
+	}
+}
+
+// A tree of only test files is not a scanned tree unless tests are included.
+func TestCountGoFilesRespectsIncludeTests(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "x_test.go"), []byte("package x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := CountGoFiles(root, false); err != nil || count != 0 {
+		t.Fatalf("without tests count=%d err=%v, want 0", count, err)
+	}
+	if count, err := CountGoFiles(root, true); err != nil || count != 1 {
+		t.Fatalf("with tests count=%d err=%v, want 1", count, err)
 	}
 }
