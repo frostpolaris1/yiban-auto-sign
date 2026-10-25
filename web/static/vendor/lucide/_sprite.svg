@@ -4,7 +4,7 @@
   Source: lucide-icons/lucide
   Version: 1.45.0  Commit: b998e2892b90b88004d62da2d0b64dab9959a520
   License: ISC (see LICENSE in this directory; some icons are Feather-derived, MIT).
-  Build: python scripts/build_lucide_sprite.py <lucide-repo-dir> <output>
+  Build: python tools/build_lucide_sprite.py <lucide-repo-dir> <output>
   Usage: call ui.sprite() once after <body>, then ui.icon('trash', 'w-4 h-4').
   Symbols inherit stroke=currentColor from the use context, so icons follow text color (dark mode safe).
 -->

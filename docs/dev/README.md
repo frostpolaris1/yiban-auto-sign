@@ -5,6 +5,7 @@
 | 文件 | 内容 |
 |------|------|
 | `README.md`（本文件） | 模块树、依赖方向、多执行体现状与出口配置 |
+| `target-tree.md` | **仓库目标树**：职责、引用纪律、分包与命名；取代 `architecture-target.md` §3 的目录树 |
 | `api-executors.md` | 执行体与出口接口契约（前端用） |
 | `cli.md` | CLI 契约（面向 agent/自动化） |
 | `constraints.tsv` | **在册约束**（id / 载体 / 门或豁免理由 / 工单）；`tests/test_constraint_registry_gate.py` 逐条真跑 |
@@ -66,8 +67,11 @@ scripts/                      运维 CLI（含过渡期的兼容壳）
 ├── db.py                     兼容壳 → yiban.adapters.persistence.db（旧 `import db` 仍可用）
 ├── state_cleanup.py          状态文件清理 CLI
 ├── yiban-fallback.sh         兜底常驻执行体的 cron 薄包装（读 .env 判开关，关则静默退出）
-├── generate_demo_data.py     演示数据生成（含清库，调用方须回显目标指纹）
 └── ledger_check.py           台账对账（与 v20 补账同生，在役）
+
+tools/                        开发期构建与代码生成，不进镜像
+├── generate_demo_data.py     演示数据生成（含清库，调用方须回显目标指纹）
+└── ...                       字体切片 / 图标精灵 / 版本打标 / 视觉种子 / 肘界影子
 
 docker/                       容器：Dockerfile / entrypoint / supervisord / scheduler
 ```

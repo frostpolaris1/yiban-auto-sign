@@ -9,7 +9,7 @@
 `db.init_db`，账号写入走 `db.add_account`（真实加密路径），故与线上数据结构一致。
 
 用法：
-    python scripts/dev_visual_seed.py --port 17899 [--tmp DIR] [--reset]
+    python tools/dev_visual_seed.py --port 17899 [--tmp DIR] [--reset]
 
 退出：Ctrl-C。重复运行会复用同一临时目录（除非 --reset）。
 """
@@ -27,7 +27,7 @@ from datetime import datetime, timedelta
 from werkzeug.security import generate_password_hash
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# 直接执行本脚本时 sys.path[0] 是 scripts/，仓库根不在路径上——先补上才能 `from yiban...`。
+# 直接执行本脚本时 sys.path[0] 是 tools/，仓库根不在路径上——先补上才能 `from yiban...`。
 if BASE not in sys.path:
     sys.path.insert(0, BASE)
 

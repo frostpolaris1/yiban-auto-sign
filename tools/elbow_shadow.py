@@ -24,7 +24,7 @@
 **注意**：`run_events` 只保留最近若干天，更早的日期没有领取时刻，只能看第 3 段归属分布。
 
 用法：
-    python3 scripts/elbow_shadow.py --db PATH [--elbow-seconds T] [--no-owners]
+    python3 tools/elbow_shadow.py --db PATH [--elbow-seconds T] [--no-owners]
 """
 import argparse
 import sqlite3

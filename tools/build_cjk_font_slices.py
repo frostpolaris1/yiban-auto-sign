@@ -46,7 +46,7 @@ npm `noto-sans-sc@37.0.0`（14 个版本、2019–2024 持续发布，看似更�
 * `unicode-range` 由分片内容精确生成，不引用任何外网地址。
 
 **归属**
-构建/运维脚本（`scripts/`），只在构建机本地运行；产物是 web 前端自托管字体分片
+构建工具（`tools/`，不进镜像），只在构建机本地运行；产物是 web 前端自托管字体分片
 （`web/static/vendor/fonts/notosanssc`），不进生产服务进程。
 
 **复用**
@@ -65,15 +65,15 @@ npm `noto-sans-sc@37.0.0`（14 个版本、2019–2024 持续发布，看似更�
 用法
 ----
     # 1) 取上游字体（联网，写入本地目录，逐文件 SHA-256 校验）
-    python scripts/build_cjk_font_slices.py --fetch build-fonts
+    python tools/build_cjk_font_slices.py --fetch build-fonts
 
     # 2) 离线切片（整目录原子替换）
-    python scripts/build_cjk_font_slices.py web/static/vendor/fonts/notosanssc \
+    python tools/build_cjk_font_slices.py web/static/vendor/fonts/notosanssc \
         --weight-font 400=build-fonts/NotoSansSC-Regular.otf \
         --weight-font 700=build-fonts/NotoSansSC-Bold.otf --strict-source
 
     # 兼容路径：从可变字体实例化各字重
-    python scripts/build_cjk_font_slices.py <输出目录> --font "NotoSansSC[wght].ttf"
+    python tools/build_cjk_font_slices.py <输出目录> --font "NotoSansSC[wght].ttf"
 
 构建期依赖（**不写入** requirements.txt / requirements.lock，仅构建机安装）：
 
@@ -109,6 +109,11 @@ import sys
 import tarfile
 import tempfile
 import urllib.request
+
+# 仓库根引导：直接执行本脚本时 sys.path[0] 是 tools/，`from tools import ...` 找不到包。
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 try:
     from fontTools import subset
@@ -581,10 +586,10 @@ def subset_to_woff2(src_path, codepoints, out_path):
 
 
 CSS_HEADER = """/* Self-hosted %(family)s. %(faces)d faces (%(weights)s).
- * 由 scripts/build_cjk_font_slices.py 从上游完整字体按字频重切片生成。
+ * 由 tools/build_cjk_font_slices.py 从上游完整字体按字频重切片生成。
  * 来源 / 构建方式 / 哈希基线：../MANIFEST.md。
  * License: SIL Open Font License 1.1 (see ../OFL.txt)。不要手工编辑。
- * 生成后由 scripts/stamp_font_versions.py 给 url() 追加内容哈希 ?v=（幂等）。
+ * 生成后由 tools/stamp_font_versions.py 给 url() 追加内容哈希 ?v=（幂等）。
  */
 """
 
@@ -791,10 +796,10 @@ def main(argv=None):
 
     # 生成后立刻给 url() 打内容哈希版本（幂等）：分片内容一变 URL 即变。
     # 强缓存下的失效路径靠它 + 三个外壳给子 CSS 的 ?v={{web_version}} 共同打断——
-    # 重切片后旧访客不再引用已删除的旧分片（详见 scripts/stamp_font_versions.py 头注释）。
+    # 重切片后旧访客不再引用已删除的旧分片（详见 tools/stamp_font_versions.py 头注释）。
     # fonts 根目录存在 fonts.css（现为纯注释说明/scope 哨兵）时对整个 fonts 目录打标
     # （本脚本的常规落点），否则只打产出目录自身（独立 staging 场景）。
-    import stamp_font_versions
+    from tools import stamp_font_versions
     fonts_root = os.path.dirname(os.path.abspath(args.outdir))
     scope = fonts_root if os.path.isfile(os.path.join(fonts_root, "fonts.css")) else args.outdir
     for rel, changed in sorted(stamp_font_versions.stamp_fonts_dir(scope).items()):
