@@ -1,0 +1,135 @@
+# 第三方依赖许可证清单（ui）
+
+> 本文件由 `npm run gate:license -- --write` 生成，禁止手改。
+> 允许清单与禁用清单由 `scripts/license-gate.mjs` 执行，本文件只作留档。
+> 口径：`npm ls --all` 的全部已安装包，含 devDependencies。
+> 许可证取自各包 package.json 的 license 字段。
+> Adminator 的通知单列在 `THIRD_PARTY_NOTICES.md`。
+
+允许的许可证：Apache-2.0、BSD-2-Clause、BSD-3-Clause、ISC、MIT、0BSD、CC0-1.0、BlueOak-1.0.0、MPL-2.0、Unlicense。
+MPL-2.0 与 Unlicense 只出现在构建期依赖，已在交付报告登记。
+其余许可证一律使门失败。GPL 系、AGPL 系、未知与无许可证同样失败。
+
+| 包 | 版本 | 许可证 | 依赖类型 |
+|---|---|---|---|
+| @babel/helper-string-parser | 7.29.11 | MIT | 开发 |
+| @babel/helper-validator-identifier | 7.29.7 | MIT | 开发 |
+| @babel/parser | 7.29.11 | MIT | 开发 |
+| @babel/types | 7.29.11 | MIT | 开发 |
+| @floating-ui/core | 1.8.0 | MIT | 运行时 |
+| @floating-ui/dom | 1.8.0 | MIT | 运行时 |
+| @floating-ui/react-dom | 2.1.9 | MIT | 运行时 |
+| @floating-ui/utils | 0.2.12 | MIT | 运行时 |
+| @oxc-project/types | 0.155.0 | MIT | 开发 |
+| @playwright/test | 1.64.1 | Apache-2.0 | 开发 |
+| @radix-ui/number | 1.1.3 | MIT | 运行时 |
+| @radix-ui/primitive | 1.2.0 | MIT | 运行时 |
+| @radix-ui/react-accessible-icon | 1.2.0 | MIT | 运行时 |
+| @radix-ui/react-accordion | 1.3.1 | MIT | 运行时 |
+| @radix-ui/react-alert-dialog | 1.2.1 | MIT | 运行时 |
+| @radix-ui/react-arrow | 1.1.17 | MIT | 运行时 |
+| @radix-ui/react-aspect-ratio | 1.2.0 | MIT | 运行时 |
+| @radix-ui/react-avatar | 1.3.1 | MIT | 运行时 |
+| @radix-ui/react-checkbox | 1.4.1 | MIT | 运行时 |
+| @radix-ui/react-collapsible | 1.2.1 | MIT | 运行时 |
+| @radix-ui/react-collection | 1.2.0 | MIT | 运行时 |
+| @radix-ui/react-compose-refs | 1.1.5 | MIT | 运行时 |
+| @radix-ui/react-context | 1.3.0 | MIT | 运行时 |
+| @radix-ui/react-context-menu | 2.4.1 | MIT | 运行时 |
+| @radix-ui/react-dialog | 1.3.1 | MIT | 运行时 |
+| @radix-ui/react-direction | 1.2.0 | MIT | 运行时 |
+| @radix-ui/react-dismissable-layer | 1.2.1 | MIT | 运行时 |
+| @radix-ui/react-dropdown-menu | 2.2.1 | MIT | 运行时 |
+| @radix-ui/react-focus-guards | 1.2.0 | MIT | 运行时 |
+| @radix-ui/react-focus-scope | 1.3.1 | MIT | 运行时 |
+| @radix-ui/react-form | 0.3.0 | MIT | 运行时 |
+| @radix-ui/react-hover-card | 1.2.1 | MIT | 运行时 |
+| @radix-ui/react-id | 1.1.4 | MIT | 运行时 |
+| @radix-ui/react-label | 2.1.17 | MIT | 运行时 |
+| @radix-ui/react-menu | 2.2.1 | MIT | 运行时 |
+| @radix-ui/react-menubar | 1.2.1 | MIT | 运行时 |
+| @radix-ui/react-navigation-menu | 1.4.1 | MIT | 运行时 |
+| @radix-ui/react-one-time-password-field | 0.2.1 | MIT | 运行时 |
+| @radix-ui/react-password-toggle-field | 0.2.1 | MIT | 运行时 |
+| @radix-ui/react-popover | 1.3.1 | MIT | 运行时 |
+| @radix-ui/react-popper | 1.4.0 | MIT | 运行时 |
+| @radix-ui/react-portal | 1.2.0 | MIT | 运行时 |
+| @radix-ui/react-presence | 1.1.11 | MIT | 运行时 |
+| @radix-ui/react-primitive | 2.2.0 | MIT | 运行时 |
+| @radix-ui/react-progress | 1.2.1 | MIT | 运行时 |
+| @radix-ui/react-radio-group | 1.5.1 | MIT | 运行时 |
+| @radix-ui/react-roving-focus | 1.2.1 | MIT | 运行时 |
+| @radix-ui/react-scroll-area | 1.4.0 | MIT | 运行时 |
+| @radix-ui/react-select | 2.4.1 | MIT | 运行时 |
+| @radix-ui/react-separator | 1.2.0 | MIT | 运行时 |
+| @radix-ui/react-slider | 1.6.1 | MIT | 运行时 |
+| @radix-ui/react-slot | 1.5.0 | MIT | 运行时 |
+| @radix-ui/react-switch | 1.4.1 | MIT | 运行时 |
+| @radix-ui/react-tabs | 1.2.1 | MIT | 运行时 |
+| @radix-ui/react-toast | 1.3.1 | MIT | 运行时 |
+| @radix-ui/react-toggle | 1.2.1 | MIT | 运行时 |
+| @radix-ui/react-toggle-group | 1.2.1 | MIT | 运行时 |
+| @radix-ui/react-toolbar | 1.2.1 | MIT | 运行时 |
+| @radix-ui/react-tooltip | 1.4.1 | MIT | 运行时 |
+| @radix-ui/react-use-callback-ref | 1.1.5 | MIT | 运行时 |
+| @radix-ui/react-use-controllable-state | 1.3.0 | MIT | 运行时 |
+| @radix-ui/react-use-effect-event | 0.0.5 | MIT | 运行时 |
+| @radix-ui/react-use-escape-keydown | 1.1.6 | MIT | 运行时 |
+| @radix-ui/react-use-is-hydrated | 0.1.3 | MIT | 运行时 |
+| @radix-ui/react-use-layout-effect | 1.1.4 | MIT | 运行时 |
+| @radix-ui/react-use-previous | 1.1.4 | MIT | 运行时 |
+| @radix-ui/react-use-rect | 1.1.4 | MIT | 运行时 |
+| @radix-ui/react-use-size | 1.1.5 | MIT | 运行时 |
+| @radix-ui/react-visually-hidden | 1.2.13 | MIT | 运行时 |
+| @radix-ui/rect | 1.1.3 | MIT | 运行时 |
+| @rolldown/binding-win32-x64-msvc | 1.2.15 | MIT | 开发 |
+| @rolldown/pluginutils | 1.0.1 | MIT | 开发 |
+| @tanstack/history | 1.162.5 | MIT | 运行时 |
+| @tanstack/query-core | 5.104.5 | MIT | 运行时 |
+| @tanstack/react-query | 5.104.5 | MIT | 运行时 |
+| @tanstack/react-router | 1.170.46 | MIT | 运行时 |
+| @tanstack/react-store | 0.11.2 | MIT | 运行时 |
+| @tanstack/router-core | 1.171.39 | MIT | 运行时 |
+| @tanstack/store | 0.11.2 | MIT | 运行时 |
+| @types/node | 26.6.5 | MIT | 开发 |
+| @types/react | 19.3.0 | MIT | 运行时 |
+| @types/react-dom | 19.3.0 | MIT | 运行时 |
+| @typescript/typescript-win32-x64 | 7.0.2 | Apache-2.0 | 开发 |
+| @vitejs/plugin-react | 6.1.2 | MIT | 开发 |
+| aria-hidden | 1.2.6 | MIT | 运行时 |
+| cookie-es | 3.1.1 | MIT | 运行时 |
+| csstype | 3.2.3 | MIT | 运行时 |
+| detect-libc | 2.1.2 | Apache-2.0 | 开发 |
+| detect-node-es | 1.1.0 | MIT | 运行时 |
+| fdir | 6.5.0 | MIT | 开发 |
+| get-nonce | 1.0.1 | MIT | 运行时 |
+| isbot | 5.2.2 | Unlicense | 运行时 |
+| lightningcss | 1.33.0 | MPL-2.0 | 开发 |
+| lightningcss-win32-x64-msvc | 1.33.0 | MPL-2.0 | 开发 |
+| nanoid | 3.3.20 | MIT | 开发 |
+| picocolors | 1.1.1 | ISC | 开发 |
+| picomatch | 4.0.7 | MIT | 开发 |
+| playwright | 1.64.1 | Apache-2.0 | 开发 |
+| playwright-core | 1.64.1 | Apache-2.0 | 开发 |
+| postcss | 8.5.31 | MIT | 开发 |
+| radix-ui | 1.8.1 | MIT | 运行时 |
+| react | 19.3.1 | MIT | 运行时 |
+| react-dom | 19.3.1 | MIT | 运行时 |
+| react-remove-scroll | 2.7.2 | MIT | 运行时 |
+| react-remove-scroll-bar | 2.3.8 | MIT | 运行时 |
+| react-style-singleton | 2.2.3 | MIT | 运行时 |
+| rolldown | 1.2.15 | MIT | 开发 |
+| scheduler | 0.28.0 | MIT | 运行时 |
+| seroval | 1.7.2 | MIT | 运行时 |
+| seroval-plugins | 1.7.2 | MIT | 运行时 |
+| source-map-js | 1.2.2 | BSD-3-Clause | 开发 |
+| tinyglobby | 0.2.17 | MIT | 开发 |
+| tslib | 2.8.1 | 0BSD | 运行时 |
+| typescript | 7.0.2 | Apache-2.0 | 开发 |
+| undici-types | 8.9.0 | MIT | 开发 |
+| use-callback-ref | 1.3.3 | MIT | 运行时 |
+| use-sidecar | 1.1.3 | MIT | 运行时 |
+| use-sync-external-store | 1.7.0 | MIT | 运行时 |
+| vite | 8.3.5 | MIT | 开发 |
+
+共 119 个包（运行时 92，开发 27）。

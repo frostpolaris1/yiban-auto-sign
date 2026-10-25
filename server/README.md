@@ -37,7 +37,8 @@ server/
 ├── tools/gate                 single-source scanner
 ├── tools/structure            repository layout and naming gate
 ├── structure.tsv              registered directories for the structure gate
-└── scripts/verify.sh          gofmt + vet + test + gate + drift + structure
+├── THIRD_PARTY_LICENSES.md    generated dependency license manifest
+└── scripts/verify.sh          gofmt + vet + test + gate + drift + structure + license
 ```
 
 Layer and domain names are fixed by the repository map in `../STRUCTURE.md`.
@@ -51,7 +52,22 @@ go test ./...
 go run ./tools/gate -root . -rules canonical.tsv
 go run ./tools/structure -root .. -rules structure.tsv
 ./scripts/generate.sh --check
+./scripts/license.sh --write
 ```
+
+## License gate
+
+`scripts/license.sh` scans every third-party module with `go-licenses` v1.6.0
+and compares the result with `THIRD_PARTY_LICENSES.md`.
+
+- Allowed: Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, MIT, 0BSD, CC0-1.0,
+  BlueOak-1.0.0.
+- GPL, AGPL, unknown and license-less modules exit 1.
+- A missing scanner, an empty scan or a missing direct dependency exits 2.
+
+The scanner is installed into the user cache on first use. Run
+`./scripts/license.sh --write` after a dependency change. Set `GO_LICENSES` to
+use a local scanner binary.
 
 ## Canonical rules
 

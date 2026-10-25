@@ -18,10 +18,11 @@
     "gate:tokens": "node scripts/token-gate.mjs",
     "gate:structure": "node scripts/structure-gate.mjs",
     "gate:docs": "node scripts/doc-ref-gate.mjs",
+    "gate:license": "node scripts/license-gate.mjs",
     "test:unit": "node --import ./scripts/tests/resolve-ts.mjs --test scripts/tests/client.test.mjs scripts/tests/query.test.mjs",
     "test:visual": "playwright test",
     "test:visual:update": "playwright test --update-snapshots",
-    "verify": "npm run lint && npm run check:api && npm run test:unit && node scripts/token-gate.mjs --self-test && npm run gate:tokens && node scripts/structure-gate.mjs --self-test && npm run gate:structure && node scripts/doc-ref-gate.mjs --self-test && npm run gate:docs && npm run build"
+    "verify": "npm run lint && npm run check:api && npm run test:unit && node scripts/token-gate.mjs --self-test && npm run gate:tokens && node scripts/structure-gate.mjs --self-test && npm run gate:structure && node scripts/doc-ref-gate.mjs --self-test && npm run gate:docs && node scripts/license-gate.mjs --self-test && npm run gate:license && npm run build"
   },
   "dependencies": {
     "@tanstack/react-query": "5.104.5",
