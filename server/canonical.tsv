@@ -8,7 +8,7 @@
 
 clock.now	call	internal/core/clock/	time.Now	internal/core/clock/	use clock.Clock.Now
 clock.location	call	internal/core/clock/	time.LoadLocation	internal/core/clock/,internal/adapters/config/	load a timezone only in clock or config
-clock.tz	string	internal/core/clock/	Asia/Shanghai	internal/core/clock/,internal/adapters/config/	use the configured timezone
+clock.tz	string	internal/core/clock/	Asia/Shanghai	internal/core/clock/,internal/adapters/config/,internal/entry/http/oapi/	use the configured timezone
 env.get	call	internal/adapters/config/	os.Getenv	internal/adapters/config/	read environment only in adapters/config
 env.lookup	call	internal/adapters/config/	os.LookupEnv	internal/adapters/config/	read environment only in adapters/config
 status.literal	string	internal/core/status/	pending,running,success,failed,skipped	internal/core/status/,internal/signing/contract/,internal/entry/http/oapi/	use status.TaskState constants

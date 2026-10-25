@@ -1,0 +1,17 @@
+# Structure allowlist for tools/structure.
+#
+# Columns: scope <TAB> comma-separated allowed child directories <TAB> note
+# A scope is a directory path relative to the repository root.
+# Every immediate child directory of a scope must be listed here.
+# An empty file, an empty allowlist or an unknown scope is an error.
+# Files are not checked by the allowlist; naming rules apply separately.
+
+root	server,ui,docs,work,deploy,docker,yiban,web,frontend,tests,scripts,config,data,out,.github	top level
+server/internal	core,app,adapters,entry,signing	layers
+server/internal/core	auth,user,school,account,schedule,signing,photo,audit,notify,diagnostic,clock,status,errs,mask,retry,egress,plan,capacity,image	pure domain packages
+server/internal/app	auth,user,school,account,schedule,signing,photo,audit,notify,diagnostic	use cases
+server/internal/adapters	pg,session,config,audit,mail,sse,image,upstream	infrastructure packages
+server/internal/entry/http	router,respond,oapi,auth,user,school,account,schedule,signing,photo,audit,notify,diagnostic	http handlers
+ui/src	app,pages,features,components,lib,styles	frontend layers
+ui/src/features	auth,dashboard,design,user,school,account,schedule,signing,photo,audit,notify,diagnostic	domain features
+ui/src/components	shell,ui	shared components

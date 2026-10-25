@@ -1,0 +1,821 @@
+# Host API v1 — OpenAPI 3.1 contract.
+#
+# The frozen shape lives in contracts/README.md; this file is its machine
+# readable form and the only source of the Go transport types. Regenerate the
+# code with the pinned generator (v2.8.1):
+#
+#   ./scripts/generate.sh
+#
+# Conventions:
+# - JSON, UTF-8, RFC3339 timestamps.
+# - Auth: HttpOnly session cookie. Writes also require X-CSRF-Token.
+# - Error envelope: {"error":{"code","message","details","trace_id"}}.
+# - Cross-scope object: 404. Action forbidden: 403.
+# - Pagination: ?cursor=&limit= (default 50, max 200).
+# - No raw phone number, credential or upstream raw text in any response.
+openapi: 3.1.0
+info:
+  title: yiban-auto-sign host API
+  version: "1.0.0"
+  description: |
+    Host API for the account caretaking platform. Roles: master (all schools,
+    admins, settings), admin (bound schools only), user (own accounts).
+servers:
+  - url: /
+tags:
+  - name: auth
+  - name: users
+  - name: schools
+  - name: admins
+  - name: accounts
+  - name: health
+security:
+  - sessionCookie: []
+paths:
+  /api/auth/login:
+    post:
+      tags: [auth]
+      operationId: AuthLogin
+      summary: Sign in with email and password.
+      description: Sets the HttpOnly session cookie on success. P1 returns 501.
+      security: []
+      x-roles: [public]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Session established.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionUser'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/auth/logout:
+    post:
+      tags: [auth]
+      operationId: AuthLogout
+      summary: Destroy the current session.
+      description: Idempotent; succeeds even without a session. P1 returns 501.
+      x-roles: [public]
+      responses:
+        '204': { description: Session destroyed. }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/auth/me:
+    get:
+      tags: [auth]
+      operationId: AuthMe
+      summary: Return the signed-in user and the CSRF token.
+      x-roles: [master, admin, user]
+      responses:
+        '200':
+          description: Current user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionUser'
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/auth/forgot-password:
+    post:
+      tags: [auth]
+      operationId: AuthForgotPassword
+      summary: Start the password reset flow.
+      description: |
+        Always returns 204, whether or not the email exists, to avoid account
+        enumeration. A one-time token row is written only for known accounts.
+      security: []
+      x-roles: [public]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ForgotPasswordRequest'
+      responses:
+        '204': { description: Request accepted. }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/auth/reset-password:
+    post:
+      tags: [auth]
+      operationId: AuthResetPassword
+      summary: Finish the password reset flow with a one-time token.
+      description: |
+        Consumes the token, replaces the password, revokes every session of the
+        user and marks must_change_password false.
+      security: []
+      x-roles: [public]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetPasswordRequest'
+      responses:
+        '204': { description: Password replaced. }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/users:
+    post:
+      tags: [users]
+      operationId: UserCreate
+      summary: Create a master, admin or user account.
+      description: |
+        Master only (decision 12.4). There is no public registration endpoint.
+        P1 returns 501.
+      x-roles: [master]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserCreate'
+      responses:
+        '201':
+          description: User created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '409': { $ref: '#/components/responses/ConflictError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/schools:
+    get:
+      tags: [schools]
+      operationId: SchoolList
+      summary: List schools with cursor pagination.
+      x-roles: [master]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: School page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchoolPage'
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+    post:
+      tags: [schools]
+      operationId: SchoolCreate
+      summary: Create a school.
+      x-roles: [master]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SchoolCreate'
+      responses:
+        '201':
+          description: School created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/School'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '409': { $ref: '#/components/responses/ConflictError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/schools/{id}:
+    patch:
+      tags: [schools]
+      operationId: SchoolUpdate
+      summary: Update school name, status or time zone.
+      description: The school code is immutable in v1.
+      x-roles: [master]
+      parameters:
+        - $ref: '#/components/parameters/SchoolID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SchoolUpdate'
+      responses:
+        '200':
+          description: School updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/School'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/schools/{id}/admins:
+    get:
+      tags: [admins]
+      operationId: SchoolAdminList
+      summary: List admins bound to the school.
+      x-roles: [master]
+      parameters:
+        - $ref: '#/components/parameters/SchoolID'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Admin binding page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchoolAdminPage'
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+    post:
+      tags: [admins]
+      operationId: SchoolAdminAdd
+      summary: Bind an existing user as an admin of the school.
+      description: |
+        P1 has no invitation flow (decision 12.15). The user must already exist
+        and have role admin or master.
+      x-roles: [master]
+      parameters:
+        - $ref: '#/components/parameters/SchoolID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SchoolAdminCreate'
+      responses:
+        '201':
+          description: Admin bound.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchoolAdmin'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        '409': { $ref: '#/components/responses/ConflictError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/schools/{id}/admins/{uid}:
+    delete:
+      tags: [admins]
+      operationId: SchoolAdminRemove
+      summary: Unbind an admin from the school.
+      x-roles: [master]
+      parameters:
+        - $ref: '#/components/parameters/SchoolID'
+        - $ref: '#/components/parameters/UserID'
+      responses:
+        '204': { description: Admin unbound. }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/accounts:
+    get:
+      tags: [accounts]
+      operationId: AccountList
+      summary: List accounts with cursor pagination.
+      description: |
+        master sees all schools; admin sees bound schools; user sees own
+        accounts. school_id, status and q narrow the result.
+      x-roles: [master, admin, user]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: school_id
+          in: query
+          required: false
+          schema: { type: string }
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/AccountStatus'
+        - name: q
+          in: query
+          required: false
+          description: Masked-phone or phone-model substring filter.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Account page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountPage'
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+    post:
+      tags: [accounts]
+      operationId: AccountCreate
+      summary: Register a platform account.
+      description: |
+        owner_user_id defaults to the caller. Only master and admin may set it
+        to another user. The account starts in status pending.
+      x-roles: [master, admin, user]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountCreate'
+      responses:
+        '201':
+          description: Account created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        '409': { $ref: '#/components/responses/ConflictError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/accounts/{id}:
+    get:
+      tags: [accounts]
+      operationId: AccountGet
+      summary: Read one account.
+      description: Cross-scope reads return 404.
+      x-roles: [master, admin, user]
+      parameters:
+        - $ref: '#/components/parameters/AccountID'
+      responses:
+        '200':
+          description: Account.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+    patch:
+      tags: [accounts]
+      operationId: AccountUpdate
+      summary: Update account fields.
+      description: |
+        Never changes status. Review and pause have dedicated endpoints. Changing
+        school is forbidden in P1 (decision 12.3) and returns conflict.
+      x-roles: [master, admin, user]
+      parameters:
+        - $ref: '#/components/parameters/AccountID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountUpdate'
+      responses:
+        '200':
+          description: Account updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        '409': { $ref: '#/components/responses/ConflictError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+    delete:
+      tags: [accounts]
+      operationId: AccountDelete
+      summary: Soft-delete an account.
+      description: Sets deleted_at and deleted_by. Cascades hide credentials.
+      x-roles: [master, admin, user]
+      parameters:
+        - $ref: '#/components/parameters/AccountID'
+      responses:
+        '204': { description: Account deleted. }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/accounts/{id}/review:
+    post:
+      tags: [accounts]
+      operationId: AccountReview
+      summary: Approve or reject a pending account.
+      description: A rejection must carry a reason.
+      x-roles: [master, admin]
+      parameters:
+        - $ref: '#/components/parameters/AccountID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountReviewRequest'
+      responses:
+        '200':
+          description: Account with the new status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        '409': { $ref: '#/components/responses/ConflictError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/accounts/{id}/pause:
+    post:
+      tags: [accounts]
+      operationId: AccountPause
+      summary: Pause or resume an account.
+      description: |
+        An admin pause sets paused_admin; the owner pause sets paused_user.
+        Sending paused false resumes the account.
+      x-roles: [master, admin, user]
+      parameters:
+        - $ref: '#/components/parameters/AccountID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountPauseRequest'
+      responses:
+        '200':
+          description: Account with the new status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        '409': { $ref: '#/components/responses/ConflictError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /healthz:
+    get:
+      tags: [health]
+      operationId: HealthCheck
+      summary: Liveness probe.
+      security: []
+      x-roles: [public]
+      responses:
+        '200':
+          description: Process is serving requests.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        default: { $ref: '#/components/responses/DefaultError' }
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: __Host-yiban_session
+      description: |
+        HttpOnly, Secure, SameSite=Lax session cookie set by POST /api/auth/login.
+  parameters:
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque page cursor taken from next_cursor.
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Page size, 1 to 200.
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    SchoolID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+    UserID:
+      name: uid
+      in: path
+      required: true
+      schema: { type: string }
+    AccountID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    ValidationError:
+      description: Request body or parameters are invalid.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    UnauthorizedError:
+      description: No session, invalid session or invalid one-time token.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ForbiddenError:
+      description: Role or scope does not allow the action.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFoundError:
+      description: Object missing or out of scope.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ConflictError:
+      description: Object already exists or the state transition is invalid.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    DefaultError:
+      description: Error envelope; the code field carries the stable code.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorBody'
+    ErrorBody:
+      type: object
+      required: [code, message, details, trace_id]
+      properties:
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        message:
+          type: string
+          description: User-safe message; no internal detail.
+        details:
+          type: object
+          additionalProperties: true
+          description: Machine-readable extras; an empty object when unused.
+        trace_id:
+          type: string
+          description: Request trace id; mirrors the X-Request-Id header.
+    ErrorCode:
+      type: string
+      description: Stable codes frozen in P0. No other value is allowed.
+      enum:
+        - validation_failed
+        - unauthorized
+        - forbidden
+        - not_found
+        - conflict
+        - rate_limited
+        - capacity_exceeded
+        - window_closed
+        - already_signed
+        - sign_running
+        - photo_missing
+        - photo_invalid
+        - photo_rejected
+        - location_out_of_range
+        - upstream_unavailable
+        - internal_error
+    UserRole:
+      type: string
+      enum: [master, admin, user]
+    UserStatus:
+      type: string
+      enum: [active, disabled]
+    SessionUser:
+      type: object
+      required: [id, email, role, status, must_change_password, csrf_token]
+      properties:
+        id: { type: string }
+        email: { type: string, format: email }
+        role:
+          $ref: '#/components/schemas/UserRole'
+        status:
+          $ref: '#/components/schemas/UserStatus'
+        must_change_password: { type: boolean }
+        csrf_token:
+          type: string
+          description: Token the client sends back in X-CSRF-Token.
+    User:
+      type: object
+      required: [id, email, role, status, must_change_password, created_at]
+      properties:
+        id: { type: string }
+        email: { type: string, format: email }
+        role:
+          $ref: '#/components/schemas/UserRole'
+        status:
+          $ref: '#/components/schemas/UserStatus'
+        must_change_password: { type: boolean }
+        created_at: { type: string, format: date-time }
+        last_login_at:
+          type: [string, "null"]
+          format: date-time
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 1 }
+    ForgotPasswordRequest:
+      type: object
+      required: [email]
+      properties:
+        email: { type: string, format: email }
+    ResetPasswordRequest:
+      type: object
+      required: [token, new_password]
+      properties:
+        token: { type: string, minLength: 1 }
+        new_password: { type: string, minLength: 1 }
+    UserCreate:
+      type: object
+      required: [email, password, role]
+      properties:
+        email: { type: string, format: email, maxLength: 254 }
+        password: { type: string, minLength: 1 }
+        role:
+          $ref: '#/components/schemas/UserRole'
+    SchoolStatus:
+      type: string
+      enum: [active, disabled]
+    School:
+      type: object
+      required: [id, code, name, status, timezone, created_at, updated_at]
+      properties:
+        id: { type: string }
+        code: { type: string }
+        name: { type: string }
+        status:
+          $ref: '#/components/schemas/SchoolStatus'
+        timezone: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    SchoolCreate:
+      type: object
+      required: [code, name]
+      properties:
+        code:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9-]{1,31}$'
+        name: { type: string, minLength: 1, maxLength: 128 }
+        timezone:
+          type: string
+          enum: [Asia/Shanghai]
+          default: Asia/Shanghai
+    SchoolUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        name: { type: string, minLength: 1, maxLength: 128 }
+        status:
+          $ref: '#/components/schemas/SchoolStatus'
+        timezone:
+          type: string
+          enum: [Asia/Shanghai]
+    SchoolPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/School'
+        next_cursor:
+          type: string
+          description: Cursor for the next page; empty on the last page.
+    SchoolAdmin:
+      type: object
+      required: [user_id, email, role, granted_by, created_at]
+      properties:
+        user_id: { type: string }
+        email: { type: string, format: email }
+        role:
+          $ref: '#/components/schemas/UserRole'
+        granted_by: { type: string }
+        created_at: { type: string, format: date-time }
+    SchoolAdminCreate:
+      type: object
+      required: [user_id]
+      properties:
+        user_id: { type: string }
+    SchoolAdminPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SchoolAdmin'
+        next_cursor:
+          type: string
+          description: Cursor for the next page; empty on the last page.
+    AccountStatus:
+      type: string
+      description: |
+        pending on create; review moves to active or rejected. Pause moves
+        active to paused_admin or paused_user. credential_error is written by
+        the engine in P4 only.
+      enum:
+        - pending
+        - active
+        - rejected
+        - paused_admin
+        - paused_user
+        - credential_error
+    Account:
+      type: object
+      required:
+        - id
+        - school_id
+        - owner_user_id
+        - phone_masked
+        - status
+        - reject_reason
+        - created_at
+        - updated_at
+      properties:
+        id: { type: string }
+        school_id: { type: string }
+        owner_user_id: { type: string }
+        phone_masked:
+          type: string
+          description: Masked phone. The raw phone never leaves the server.
+        status:
+          $ref: '#/components/schemas/AccountStatus'
+        reject_reason: { type: string }
+        reviewed_at:
+          type: [string, "null"]
+          format: date-time
+        reviewed_by:
+          type: [string, "null"]
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    AccountCreate:
+      type: object
+      required: [school_id, phone, password]
+      properties:
+        school_id: { type: string }
+        owner_user_id:
+          type: string
+          description: Defaults to the caller.
+        phone:
+          type: string
+          pattern: '^1[0-9]{10}$'
+        password: { type: string, minLength: 1 }
+        device_code: { type: string }
+        phone_model: { type: string }
+    AccountUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        phone:
+          type: string
+          pattern: '^1[0-9]{10}$'
+        password: { type: string, minLength: 1 }
+        device_code: { type: string }
+        phone_model: { type: string }
+    AccountReviewRequest:
+      type: object
+      required: [decision]
+      properties:
+        decision:
+          type: string
+          enum: [approve, reject]
+        reason:
+          type: string
+          description: Required when decision is reject.
+      if:
+        properties:
+          decision:
+            const: reject
+      then:
+        required: [reason]
+        properties:
+          reason: { type: string, minLength: 1 }
+    AccountPauseRequest:
+      type: object
+      required: [paused]
+      properties:
+        paused: { type: boolean }
+    AccountPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Account'
+        next_cursor:
+          type: string
+          description: Cursor for the next page; empty on the last page.
+    HealthStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: ok

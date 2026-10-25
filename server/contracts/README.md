@@ -33,6 +33,7 @@ P0 freezes the shape. The OpenAPI 3.1 YAML is generated in P1 from this file.
 | GET | `/api/auth/me` | any | P1 |
 | POST | `/api/auth/forgot-password` | public | P1 |
 | POST | `/api/auth/reset-password` | public | P1 |
+| POST | `/api/users` | master | P1 |
 | GET | `/api/schools` | master | P1 |
 | POST | `/api/schools` | master | P1 |
 | PATCH | `/api/schools/:id` | master | P1 |
