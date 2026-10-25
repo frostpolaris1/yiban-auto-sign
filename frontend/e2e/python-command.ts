@@ -13,7 +13,7 @@ const FRONTEND_DIR = new URL("..", import.meta.url);
 
 const CANDIDATES = [
   "../.venv/Scripts/python.exe", // 本 worktree 自带
-  "../../yiban-auto-sign/.venv/Scripts/python.exe", // 主检出（worktree 通常无 venv）
+  "../../../.venv/Scripts/python.exe", // 主检出（worktree 在 work/<name>/ 下）
   "../.venv/bin/python",
 ];
 
