@@ -37,7 +37,8 @@ func (r *UserRepo) Create(ctx context.Context, in coreuser.New, limit int) (core
 	if limit <= 0 {
 		return coreuser.Record{}, validationError("limit must be positive")
 	}
-	email := strings.ToLower(strings.TrimSpace(in.Email))
+	// 归一口径的唯一实现在 core/user；适配器只调用，不自己再写一遍。
+	email := coreuser.NormalizeEmail(in.Email)
 	if email == "" {
 		return coreuser.Record{}, validationError("email is required")
 	}
@@ -91,7 +92,7 @@ func (r *UserRepo) GetByID(ctx context.Context, id string) (coreuser.Record, err
 func (r *UserRepo) GetByEmail(ctx context.Context, email string) (coreuser.Record, error) {
 	row := r.db.q(ctx).QueryRow(ctx,
 		`SELECT `+userColumns+` FROM users WHERE email = $1 AND deleted_at IS NULL`,
-		strings.ToLower(strings.TrimSpace(email)))
+		coreuser.NormalizeEmail(email))
 	return recordOrNotFound(scanUser(row))
 }
 

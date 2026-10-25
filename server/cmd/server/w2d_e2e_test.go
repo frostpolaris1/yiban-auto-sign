@@ -326,3 +326,26 @@ func TestW2DE44CreatedUserCanLogIn(t *testing.T) {
 		t.Fatalf("me id = %q, want %q", me.ID, created.ID)
 	}
 }
+
+// P2 回归：本地部含非 ASCII 字符时，建号与登录都必须成功。
+// 旧实现按字节切首字符，掩码邮箱产出非法 UTF-8，登录写审计即 500。
+func TestW2DE45NonASCIIEmailSurvivesLogin(t *testing.T) {
+	e := newAuthEnv(t)
+	w2dSeedUser(t, e, "boss@example.com", "boss-pass", coreauth.RoleMaster)
+	session := e.w2dLoginAs("boss@example.com", "boss-pass")
+
+	resp, payload := e.w2dCreate(session.CSRFToken, map[string]any{
+		"email":    "学生@example.com",
+		"password": "non-ascii-pass",
+		"role":     "user",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%q", resp.StatusCode, payload)
+	}
+
+	// 真实登录链：审计 actor_label 由掩码邮箱生成，必须能落库。
+	login := e.w2dLoginAs("学生@example.com", "non-ascii-pass")
+	if login.CSRFToken == "" {
+		t.Fatal("login returned no csrf token")
+	}
+}

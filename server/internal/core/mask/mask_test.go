@@ -1,6 +1,9 @@
 package mask
 
-import "testing"
+import (
+	"testing"
+	"unicode/utf8"
+)
 
 func TestMaskPhone(t *testing.T) {
 	cases := map[string]string{
@@ -172,5 +175,17 @@ func TestTextHasPhoneIgnoresNonMobileNumbers(t *testing.T) {
 	}
 	if !TextHasEmail("a@b.com") || TextHasEmail("a***@b.com") {
 		t.Fatal("邮箱检测口径不正确")
+	}
+}
+
+// 邮箱首字符按字符取，不按字节：多字节本地部不得产出非法 UTF-8。
+func TestMaskEmailIsRuneSafe(t *testing.T) {
+	if got := MaskEmail("学生@example.com"); got != "学***@example.com" {
+		t.Fatalf("MaskEmail = %q", got)
+	}
+	for _, in := range []string{"学生@example.com", "é@example.com", "a@example.com"} {
+		if got := MaskEmail(in); !utf8.ValidString(got) {
+			t.Fatalf("MaskEmail(%q) = %q is not valid UTF-8", in, got)
+		}
 	}
 }
