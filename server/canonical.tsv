@@ -1,9 +1,13 @@
 # P0 canonical owners
 
 # Columns: id, kind, owner, pattern, allow, message
-# kind: call | string | func | type | import
+# kind: call | string | func | type | import | forbid
 # owner: path prefix (relative to server/) that is allowed to define/use the concept
 # For import rules, owner is the importer prefix and pattern is a forbidden import substring.
+# For forbid rules, owner is the **checked** prefix and pattern is a forbidden call.
+#   forbid is the inverse of call: call means "only owner may use"; forbid means
+#   "owner must not use, everyone else may". A forbid rule must name a non-empty
+#   owner; an empty owner would check no files and never fire.
 # An owner of * means every scanned file: use it for rules with no single owner.
 # allow exempts path prefixes from an import rule too.
 # allow: comma-separated extra path prefixes allowed to use the concept.
@@ -48,3 +52,6 @@ token.new.func	func	internal/core/auth/	NewToken		NewToken 只在 core/auth 内�
 # verify.sh 跑默认口径与 -tests 口径各一次：allow 之外的测试文件会被拦下。
 # 新增导入测试文件或目录必须登记在此行 allow。
 fake.import	import	*	internal/signing/fake	internal/signing/conformance/	internal/signing/fake 只允许测试代码与 conformance 套件导入
+# 邮箱归一只有一个实现：core/user.NormalizeEmail。
+# 适配器只调用，不自写 lower/trim；回退即红（W2D 二轮复审 N3）。
+email.normalize.lower	forbid	internal/adapters/pg/user.go	strings.ToLower		邮箱归一只能调用 core/user.NormalizeEmail
