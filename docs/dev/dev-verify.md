@@ -20,8 +20,9 @@ bash scripts/dev-verify.sh --fast-scoped       # 范围档：只跑改动相邻�
 # 选项
 --repo DIR       源仓库目录（默认 = 脚本所在仓库根）
 --target PATH    一个或多个 pytest 目标（默认 tests/）；只对默认全量模式有效
---log-dir DIR    日志目录；默认按模式分开：全量 <仓库父目录>/yiban-dev-verify-logs，
-                 fast 两档 <仓库父目录>/yiban-dev-verify-logs-fast（见 §1.1）
+--log-dir DIR    日志目录；默认按模式与源仓分开：全量
+                 <仓库父目录>/yiban-dev-verify-logs-<源仓摘要>，fast 两档
+                 <仓库父目录>/yiban-dev-verify-logs-fast-<源仓摘要>（见 §1.1）
 --keep N         日志保留最近 N 份（默认 5）；fast 两档与全量各自计数，互不影响
 --fast           提交前自查·安全档：全量 − FAST_KNOWN_SLOW（4 条长尾）。无选择面损失
 --fast-scoped    提交前自查·范围档：只跑改动相邻面。快，但未选中的用例没有跑
@@ -122,7 +123,8 @@ pytest 自身的 3（INTERNALERROR）也与空覆盖撞码不了。定位信息�
 mtime"，同一秒内改完且尺寸不变的改动会被判成"没变"而跳过，副本因此陈旧，跑出来的是旧代码
 （可能报绿）。加上 `-c` 后按内容校验，"副本 = 当前工作树"这条不变式由 rsync 自己承重
 （rsync 非 0 退出即 die）。旧版本只按模式分键的缓存（`…/fast-worktree`、`…/worktree`）
-在首次运行新版本时自动迁移到本源的槽；旧锁被占（有旧版进程在跑）时不动它。
+在混合版本期会被旧版运行反复重建：新版拿到旧锁空闲时迁移或清理它，旧版下一次只丢一次
+冷复制的时间，不丢数据；旧锁被占（旧版进程在跑）时不动它。
 
 **副本只带"CI 检出会有"的内容（2026-10-16 起）**：副本的形状＝**跟踪文件**，与 CI 的
 全新 clone 同形。做法是按 git 的 ignored 名册剪枝
@@ -137,12 +139,13 @@ ignored 文件即响亮失败。
 故按 gitignore 名册剪，**不写死目录名**——写死的名单会随 `work/` 增长而重新漏。
 
 
-**日志目录也按模式分开**（`default_log_dir`）：全量用 `<仓库父目录>/yiban-dev-verify-logs`，
-fast 两档用 `<仓库父目录>/yiban-dev-verify-logs-fast`。为什么必须分：日志目录按 mtime 轮转
-（`--keep`，默认 5 份），而 fast 与全量走**不同的锁**、可以同时跑；共用一个目录时，一侧的
+**日志目录按「模式 + 源仓」分开**（`default_log_dir`）：全量用
+`<仓库父目录>/yiban-dev-verify-logs-<源仓摘要>`，fast 两档用
+`<仓库父目录>/yiban-dev-verify-logs-fast-<源仓摘要>`。为什么必须分：日志目录按 mtime 轮转
+（`--keep`，默认 5 份），而 fast 与全量、不同 worktree 都可以同时跑；共用一个目录时，一侧的
 轮转会删掉另一侧的日志。实测（2026-10-07）：fast 档用默认目录跑几次，把同目录里他方的
-5 份日志删掉了，且那份备份落在 WSL `/tmp` 后被清空，无法还原。不同锁的两个流程不共享
-可被轮转的资源，这是根因修法。`--keep` 的语义在两档内不变，只是各自计数。
+5 份日志删掉了，且那份备份落在 WSL `/tmp` 后被清空，无法还原。不同锁的流程不共享
+可被轮转的资源，这是根因修法。`--keep` 的语义在各档、各源仓内不变，只是各自计数。
 显式传 `--log-dir` 时两档都用调用方给的目录；若两档传同一目录，轮转互删的风险由调用方承担。
 
 
@@ -155,7 +158,7 @@ fast 两档用 `<仓库父目录>/yiban-dev-verify-logs-fast`。为什么必须�
 | LF 归一 | 副本内文本先转 LF 再跑 | `.gitattributes` 只约束入库形态；Windows 侧 `core.autocrlf=true` 会让工作树出现 CRLF。CRLF 会炸 shell 门禁脚本（`set -euo pipefail` 被 CR 破坏），是伪红大头 |
 | 解释器 | 只认 `/root/.venv-yiban-wsl/bin/python`，跑测前打印绝对路径与版本 | 不许退化成 PATH 上的任意 python（历史上三轮才找到解释器） |
 | 并发 | `-n auto --dist loadfile` | `--dist loadfile` 不得去掉：套内存在文件内先后依赖与进程级 DB 单例，按单条分发即误红 |
-| 日志 | `<日志目录>/dev-verify-<时间戳>-<pid>.log`，整份 tee，保留最近 N 份 | **不截断**：只留 tail 会丢失败名单。日志目录按模式分开（全量 `yiban-dev-verify-logs`，fast 两档 `yiban-dev-verify-logs-fast`，见 §1.1）：两档走不同的锁、可并发，共用目录会互相轮转删日志。文件名带 PID：同一秒的两次运行不互相覆盖。日志内含解释器绝对路径与版本、被跑提交 sha、ruff 退出码、mypy 退出码、pytest 汇总四数、脚本退出码 |
+| 日志 | `<日志目录>/dev-verify-<时间戳>-<pid>.log`，整份 tee，保留最近 N 份 | **不截断**：只留 tail 会丢失败名单。日志目录按「模式 + 源仓」分开（全量 `yiban-dev-verify-logs-<源仓摘要>`，fast 两档 `yiban-dev-verify-logs-fast-<源仓摘要>`，见 §1.1）：各档、各 worktree 可并发，共用目录会互相轮转删日志。文件名带 PID：同一秒的两次运行不互相覆盖。日志内含解释器绝对路径与版本、被跑提交 sha、ruff 退出码、mypy 退出码、pytest 汇总四数、脚本退出码 |
 | ruff | `ruff check yiban/ tests/ scripts/ web/ docker/ --quiet` | 与 CI 同口径（含 `web/` 与 `docker/`） |
 | mypy | `mypy --cache-dir <每次 mktemp -d 新建的目录>`（收编名单读 `pyproject.toml` 的 `[tool.mypy]`） | 静态类型门禁：收编名单住 `[tool.mypy].files`，只此一处；名单内严格档全开。与 ruff 同属静态检查，排在 ruff 之后、pytest 之前。**缓存目录每次新建**（工单 dq2n）：mypy 在 `(path,size,mtime)` 相同时不校验内容哈希，会信任上一轮缓存里的错误 ⇒ 同一份代码旧缓存红、新缓存绿；隔离后同一代码同一结论。实测（native 副本）默认冷缓存 5.38s、隔离 3.80/3.99s；`/mnt/d` 工作树 11.54s vs 2.46/2.39s |
 

@@ -178,26 +178,22 @@ async function saveWithPassword(
   await expect(dialog).toBeHidden({ timeout: hiddenTimeout });
 }
 
-/** 改密并保证还原种子口令：先记「已尝试」，再保存。
- *  保存可能已落库但响应不回，此时弹窗留开——还原前先关框，否则遮罩拦点击。 */
+/** 改密并保证还原种子口令：保存可能已落库但响应不回，此时弹窗留开——
+ *  还原前先关框，否则遮罩拦点击。还原无条件执行：口径口令写 p1 是幂等的。 */
 async function changePasswordWithRestore(
   page: import("@playwright/test").Page,
   card: import("@playwright/test").Locator,
   pw: string,
   hiddenTimeout = 10_000,
 ): Promise<void> {
-  let attempted = false;
   try {
-    attempted = true;
     await saveWithPassword(page, card, pw, hiddenTimeout);
   } finally {
-    if (attempted) {
-      try {
-        await dismissOpenDialog(page);
-        await saveWithPassword(page, card, SEED_PASSWORD, 5_000);
-      } catch {
-        // 还原失败不能掩盖原始失败；下一轮 e2e 的种子会重置库。
-      }
+    try {
+      await dismissOpenDialog(page);
+      await saveWithPassword(page, card, SEED_PASSWORD, 5_000);
+    } catch {
+      // 还原失败不能掩盖原始失败；下一轮 e2e 的种子会重置库。
     }
   }
 }
@@ -238,23 +234,28 @@ test("改密响应丢失时还原仍执行：夹具口令不被污染（dix A-1�
   const card = page.locator(".account-card").first();
   await expect(card.locator(".account-name")).toBeVisible();
 
-  const putBodies: string[] = [];
-  let loseResponse = true;
+  // 每次 PUT 的请求体与服务端状态码。403（CSRF 自愈的第一发）要原样回给页面，
+  // 只掐掉**第一条成功**（200）的响应：服务端已落库，浏览器侧看到网络错误。
+  const puts: Array<{ body: string; status: number }> = [];
+  let landedResponse: { status: number; body: string } | null = null;
+  let lost = false;
   await page.route(/\/api\/my-accounts\/\d+$/, async (route) => {
     const req = route.request();
     if (req.method() !== "PUT") {
       await route.continue();
       return;
     }
-    putBodies.push(req.postData() ?? "");
-    if (loseResponse) {
-      loseResponse = false;
-      // 先真送到服务端（写已落库），再掐掉响应：浏览器侧看到网络错误。
-      await route.fetch();
+    const body = req.postData() ?? "";
+    const resp = await route.fetch();
+    puts.push({ body, status: resp.status() });
+    if (!lost && resp.status() === 200) {
+      lost = true;
+      // 回包是落库之后生成的：留证后掐掉响应。
+      landedResponse = { status: resp.status(), body: await resp.text() };
       await route.abort("failed");
       return;
     }
-    await route.continue();
+    await route.fulfill({ response: resp });
   });
 
   let firstSaveFailed = false;
@@ -264,10 +265,18 @@ test("改密响应丢失时还原仍执行：夹具口令不被污染（dix A-1�
     firstSaveFailed = true;
   }
   expect(firstSaveFailed, "响应丢失后第一次保存必须失败（否则本用例没测到窗口）").toBe(true);
-  expect(putBodies.length, "第一次保存与还原各一条 PUT").toBeGreaterThanOrEqual(2);
-  expect(putBodies[0]).toContain("E2eNewPass#2026");
-  expect(putBodies[putBodies.length - 1], "还原 PUT 必须把种子口令 p1 写回")
-    .toContain('"p1"');
+  expect(landedResponse, "必须有一次成功（200）的写被掐掉响应").toBeTruthy();
+  expect(landedResponse!.status, "服务端必须接受改写（写已落库）").toBe(200);
+  // 回包在 db.update_account 之后生成。JSON 里的中文是 \uXXXX 转义，必须解析后比。
+  const landedJson = JSON.parse(landedResponse!.body) as { ok?: boolean; msg?: string };
+  expect(landedJson.ok, "服务端回包必须在落库成功后才生成").toBe(true);
+  expect(landedJson.msg).toContain("已保存");
+  const landed = puts.find((p) => p.status === 200);
+  expect(landed, "第一次保存必须真落库一次（200）").toBeTruthy();
+  expect(landed!.body).toContain("E2eNewPass#2026");
+  const last = puts[puts.length - 1];
+  expect(last.status, "还原 PUT 必须成功").toBe(200);
+  expect(last.body, "还原 PUT 必须把种子口令 p1 写回").toContain('"p1"');
   await expect(page.locator(".el-dialog")).toBeHidden();
 });
 
