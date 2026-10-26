@@ -25,6 +25,7 @@ import (
 	"unicode/utf8"
 
 	appcore "github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
+	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
 	corecapacity "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/capacity"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	coreplan "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/plan"
@@ -100,6 +101,13 @@ type Service struct {
 	deps Deps
 }
 
+// Notifier 是计划事件的发布端口（实现为 app/events.Broker 的适配器）。
+// kind 取 app/events 的 Type 词表。为 nil 时不发布，现行为不变。
+// 实现必须不阻塞；实现 panic 视为发布失败，只丢事件（见 publish）。
+type Notifier interface {
+	PlanEvent(ctx context.Context, schoolID, taskID, day string, kind string, payload map[string]any)
+}
+
 // NewService 构造服务。缺依赖即失败。
 func NewService(deps Deps) (*Service, error) {
 	if deps.Windows == nil {
@@ -129,15 +137,19 @@ func (s *Service) Preview(ctx context.Context, in Input) (Preview, error) {
 // Build 构建计划并落库：窗口变化时同事务内写窗口、重排 pending、补插。
 // 版本竞争（ErrWindowStale）时整体重试一次；仍失败即上抛。
 // 事务由本方法自开：入口层不得再包一层事务（提交时点会随之改变）。
+// 成功且窗口真实变化后发 window.changed；Shortfall>0 发 capacity.changed
+// （无历史值可比，取「有缺口即发」的保守口径，见 publishCapacity）。
 func (s *Service) Build(ctx context.Context, in Input) (Preview, error) {
-	p, err := s.buildOnce(ctx, in)
+	p, changed, err := s.buildOnce(ctx, in)
 	if errors.Is(err, coreschedule.ErrWindowStale) {
 		// 并发写者先进：重读缓存后整体重试一次。
-		p, err = s.buildOnce(ctx, in)
+		p, changed, err = s.buildOnce(ctx, in)
 	}
 	if err != nil {
 		return Preview{}, err
 	}
+	s.publishWindow(ctx, in, p, changed)
+	s.publishCapacity(ctx, in, p)
 	return p, nil
 }
 
@@ -211,13 +223,17 @@ func (s *Service) Override(ctx context.Context, scope corescope.Scope, in Input,
 	}); err != nil {
 		return Preview{}, err
 	}
-	p, err := s.buildOnce(ctx, in)
+	p, changed, err := s.buildOnce(ctx, in)
 	if errors.Is(err, coreschedule.ErrWindowStale) {
-		p, err = s.buildOnce(ctx, in)
+		p, changed, err = s.buildOnce(ctx, in)
 	}
 	if err != nil {
 		return Preview{}, err
 	}
+	// 覆盖同样可能改变容量（窗口变短/账号变多）：与 Build 同一口径
+	//（P6 审查 P3-1）。
+	s.publishWindow(ctx, in, p, changed)
+	s.publishCapacity(ctx, in, p)
 	return p, nil
 }
 
@@ -263,10 +279,11 @@ func scopeAllowsSchool(scope corescope.Scope, schoolID string) bool {
 }
 
 // buildOnce 是一次完整尝试：预览 → 同事务写入。
-func (s *Service) buildOnce(ctx context.Context, in Input) (Preview, error) {
+// 返回值带 changed：窗口是否真实重写（发布判据用）。
+func (s *Service) buildOnce(ctx context.Context, in Input) (Preview, bool, error) {
 	p, raw, changed, cachedVersion, err := s.previewWithWindow(ctx, in)
 	if err != nil {
-		return Preview{}, err
+		return Preview{}, false, err
 	}
 	rows := planRows(in, p.Rows)
 	err = s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
@@ -284,9 +301,41 @@ func (s *Service) buildOnce(ctx context.Context, in Input) (Preview, error) {
 		return err
 	})
 	if err != nil {
-		return Preview{}, err
+		return Preview{}, false, err
 	}
-	return p, nil
+	return p, changed, nil
+}
+
+// publishWindow 在窗口真实变化后发 window.changed。
+// 未变化的重算不产生事件：管理员视角下没有新信息。
+func (s *Service) publishWindow(ctx context.Context, in Input, p Preview, changed bool) {
+	if !changed || s.deps.Notifier == nil {
+		return
+	}
+	defer func() { _ = recover() }() // 发布失败只丢事件
+	s.deps.Notifier.PlanEvent(ctx, in.SchoolID, in.SchoolTaskID, in.Day,
+		appevents.TypeWindowChanged, map[string]any{
+			"source":  string(p.Source),
+			"version": p.Version,
+			"start":   p.WindowStart,
+			"end":     p.WindowEnd,
+		})
+}
+
+// publishCapacity 在出现容量缺口后发 capacity.changed。
+// 口径偏差（已申报）：服务无历史 Shortfall 可比，取「Shortfall>0 即发」；
+// 缺口持续时会重复发布，管理员侧按幂等处理。
+func (s *Service) publishCapacity(ctx context.Context, in Input, p Preview) {
+	if p.Shortfall <= 0 || s.deps.Notifier == nil {
+		return
+	}
+	defer func() { _ = recover() }() // 发布失败只丢事件
+	s.deps.Notifier.PlanEvent(ctx, in.SchoolID, in.SchoolTaskID, in.Day,
+		appevents.TypeCapacityChanged, map[string]any{
+			"capacity":  p.Capacity,
+			"demand":    p.Demand,
+			"shortfall": p.Shortfall,
+		})
 }
 
 // previewWithWindow 返回预览、原始窗口、是否变化、缓存版本。

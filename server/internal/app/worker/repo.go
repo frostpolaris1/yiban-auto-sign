@@ -87,8 +87,16 @@ type PhotoSource interface {
 	PickForAttempt(ctx context.Context, ownerUserID, attemptID string) (contract.ImageRef, bool, error)
 }
 
+// Notifier 是任务事件的发布端口（实现为 app/events.Broker 的适配器）。
+// kind 取 app/events 的 Type 词表。为 nil 时不发布，现行为不变。
+// 实现必须不阻塞；实现 panic 视为发布失败，只丢事件（见 notify）。
+type Notifier interface {
+	TaskEvent(ctx context.Context, schoolID, taskID, day string, kind string, payload map[string]any)
+}
+
 // Deps 是执行循环的依赖。Locations 与 Photos 可为 nil：
 // 缺哪个端口就退回哪个面的现行为（LocationAuto、无图注入）。
+// Notifier 可为 nil：缺端口就不发事件。
 type Deps struct {
 	Store     Store
 	Creds     Credentials
@@ -99,4 +107,5 @@ type Deps struct {
 	Location  *time.Location
 	Locations LocationSource
 	Photos    PhotoSource
+	Notifier  Notifier
 }
