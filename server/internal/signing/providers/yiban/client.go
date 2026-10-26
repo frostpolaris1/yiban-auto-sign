@@ -1,0 +1,227 @@
+package yiban
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/cookiejar"
+	"net/url"
+	"sync"
+	"time"
+
+	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/protocol"
+)
+
+const (
+	defaultTimeout    = 15 * time.Second
+	defaultSessionTTL = 30 * time.Minute
+	maxBodyBytes      = 1 << 20
+	maxMessageRunes   = 200
+)
+
+// Config 是客户端的运行参数。
+// 零值可用：端点、时钟、超时、TTL 与随机源都有默认值。
+type Config struct {
+	Endpoints  Endpoints
+	Clock      coreclock.Clock
+	Timeout    time.Duration
+	SessionTTL time.Duration
+	Transport  http.RoundTripper
+	Random     io.Reader
+}
+
+// Client 维护每账号的内存会话。
+// 单进程内使用；不同账号可并行，同账号的调用按会话互斥。
+type Client struct {
+	endpoints Endpoints
+	clock     coreclock.Clock
+	timeout   time.Duration
+	ttl       time.Duration
+	transport http.RoundTripper
+	random    io.Reader
+
+	mu       sync.Mutex
+	sessions map[string]*sessionEntry
+}
+
+type sessionEntry struct {
+	mu      sync.Mutex
+	http    *http.Client
+	csrf    string
+	expires time.Time
+}
+
+// New 构造客户端。零值配置取默认值。
+func New(cfg Config) *Client {
+	if cfg.Endpoints == (Endpoints{}) {
+		cfg.Endpoints = DefaultEndpoints()
+	}
+	if cfg.Clock == nil {
+		cfg.Clock = coreclock.System{}
+	}
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = defaultTimeout
+	}
+	if cfg.SessionTTL <= 0 {
+		cfg.SessionTTL = defaultSessionTTL
+	}
+	if cfg.Random == nil {
+		cfg.Random = rand.Reader
+	}
+	return &Client{
+		endpoints: cfg.Endpoints,
+		clock:     cfg.Clock,
+		timeout:   cfg.Timeout,
+		ttl:       cfg.SessionTTL,
+		transport: cfg.Transport,
+		random:    cfg.Random,
+		sessions:  make(map[string]*sessionEntry),
+	}
+}
+
+func (c *Client) entry(accountID string) *sessionEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry := c.sessions[accountID]
+	if entry == nil {
+		entry = &sessionEntry{}
+		c.sessions[accountID] = entry
+	}
+	return entry
+}
+
+func (e *sessionEntry) valid(now time.Time) bool {
+	return e.http != nil && now.Before(e.expires)
+}
+
+// Verify 执行一次完整登录并刷新会话缓存。
+// 它总是重新登录：调用方用它校验凭据，缓存是否命中不改变结论。
+func (c *Client) Verify(ctx context.Context, accountID string, cred contract.Credential) (contract.Profile, error) {
+	entry := c.entry(accountID)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	return c.loginLocked(ctx, entry, cred)
+}
+
+// withSession 复用会话执行一次平台调用。
+// 会话缺失或过期时先登录；遇到 999 失效重登一次。
+// 调用期间持有该账号的锁，避免并发登录与串话。
+func (c *Client) withSession(ctx context.Context, accountID string, cred contract.Credential,
+	fn func(context.Context, *http.Client, string) error) error {
+	entry := c.entry(accountID)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	if !entry.valid(c.clock.Now()) {
+		if _, err := c.loginLocked(ctx, entry, cred); err != nil {
+			return err
+		}
+	}
+	err := fn(ctx, entry.http, entry.csrf)
+	var expired *protocol.SessionExpired
+	if errors.As(err, &expired) {
+		entry.http = nil
+		if _, loginErr := c.loginLocked(ctx, entry, cred); loginErr != nil {
+			return loginErr
+		}
+		return fn(ctx, entry.http, entry.csrf)
+	}
+	if err == nil {
+		entry.expires = c.clock.Now().Add(c.ttl)
+	}
+	return err
+}
+
+func (c *Client) newHTTPClient() (*http.Client, *cookiejar.Jar) {
+	jar, _ := cookiejar.New(nil)
+	return &http.Client{
+		Transport:     c.transport,
+		Jar:           jar,
+		CheckRedirect: noRedirect,
+		Timeout:       c.timeout,
+	}, jar
+}
+
+// do 执行请求并读取有上限的响应体。**不跟随重定向**。
+func (c *Client) do(client *http.Client, req *http.Request) (*http.Response, []byte, error) {
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(body) > maxBodyBytes {
+		return nil, nil, errors.New("yiban: response body is too large")
+	}
+	return resp, body, nil
+}
+
+func setLoginHeaders(req *http.Request) {
+	req.Header.Set("User-Agent", "Yiban")
+	req.Header.Set("AppVersion", appVersion)
+	req.Header.Set("Origin", loginOrigin)
+	req.Header.Set("Referer", loginOrigin+"/")
+	req.Header.Set("Connection", "close")
+}
+
+// setUsersureHeaders 提交账号密码时的头。
+// **不得带 Origin/Referer**：带了会得 e001 无效应用端编号。
+func setUsersureHeaders(req *http.Request) {
+	req.Header.Set("User-Agent", "Yiban")
+	req.Header.Set("AppVersion", appVersion)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+	req.Header.Set("Connection", "close")
+}
+
+func newRequest(ctx context.Context, method, rawURL string, body io.Reader) (*http.Request, error) {
+	return http.NewRequestWithContext(ctx, method, rawURL, body)
+}
+
+func withQuery(base string, values url.Values) string {
+	parsed, err := url.Parse(base)
+	if err != nil {
+		return base
+	}
+	query := parsed.Query()
+	for key, list := range values {
+		for _, value := range list {
+			query.Set(key, value)
+		}
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
+}
+
+func randomHex(reader io.Reader, n int) (string, error) {
+	buf := make([]byte, n)
+	if _, err := io.ReadFull(reader, buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
+}
+
+func noRedirect(*http.Request, []*http.Request) error {
+	return http.ErrUseLastResponse
+}
+
+// safeMessage 把平台文案压成可进审计的短消息。
+func safeMessage(s string) string {
+	s = mask.MaskText(s)
+	runes := []rune(s)
+	if len(runes) > maxMessageRunes {
+		s = string(runes[:maxMessageRunes])
+	}
+	return s
+}
+
+func outcome(o contract.Outcome, msg string) error {
+	return &contract.OutcomeError{Outcome: o, Message: safeMessage(msg)}
+}
