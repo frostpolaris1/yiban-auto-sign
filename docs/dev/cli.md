@@ -208,6 +208,6 @@ schema 版本 `backup_user_version`（恢复后的库版本已由 `--integrity` 
 
 ## 5. 相关文档
 
-- 人类教程与常见问题：仓库根 `README.md`（含「多执行体并行签到」「代理配置」章节）；
+- 人类教程与常见问题：`README.md`（总入口）；「多执行体并行签到」见 `docs/guides/operations.md`，「代理配置」见 `docs/guides/configuration.md`，常见问题见 `docs/dev/troubleshooting.md`；
 - 执行体接口（前端用）：`docs/dev/api-executors.md`；
 - 模块地图与依赖方向：`docs/dev/README.md`。

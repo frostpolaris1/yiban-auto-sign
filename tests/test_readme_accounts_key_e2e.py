@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""README「网页管理后台」的账号密钥步骤必须产出 systemd 能读的 EnvironmentFile。
+"""网页管理后台文档的账号密钥步骤必须产出 systemd 能读的 EnvironmentFile。
 
 标签：J · 运维：部署/备份/发布
 覆盖：发版 dry-run 的 F1（2026-10-25）与复审 H-1（2026-10-25 第二轮）。
@@ -9,11 +9,13 @@
     H-1：grep 判据窄于应用解析器。BOM、值内空白、尾随 NBSP 都被应用接受，
     grep 判为坏值后静默换钥，旧密文不可解。修法：README 调应用自己的
     `account_crypto.ensure_accounts_key`，不再自写 grep/sed。
-对应实现：`README.md`「网页管理后台」的装单元前准备块；
+对应实现：`docs/guides/admin-console.md`「网页管理后台」的装单元前准备块
+    （2026-10-26 拆分批（工单 0gbk）从 README 逐字搬入，判据不变）；
+    换钥脚本同族第二处在 `docs/guides/deploy-docker.md` 的「安全运维」块；
     `yiban/adapters/config/account_crypto.py` 的 `decode_accounts_key` /
     `ensure_accounts_key`；权威消费方是 `web/deploy/yiban-web.service`。
 关键断言：
-  ① 静态：README 的取钥来源是 `data/.env`；落点与单元 `EnvironmentFile=` 相同；
+  ① 静态：文档的取钥来源是 `data/.env`；落点与单元 `EnvironmentFile=` 相同；
      安装参数是 `-m 0640 -o root -g yiban`；取钥走应用解析器，不用 grep/sed。
   ② 活体：该块原文在沙箱里执行，得到 `YIBAN_ACCOUNTS_KEY=<64hex>` 单行、
      mode 0640、属主 root:yiban（非 root 位格退为当前用户/组）；与 `data/.env`
@@ -41,7 +43,8 @@ import unittest
 from yiban.adapters.config import account_crypto
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-README = os.path.join(BASE, "README.md")
+ADMIN_DOC = os.path.join(BASE, "docs", "guides", "admin-console.md")
+DOCKER_DOC = os.path.join(BASE, "docs", "guides", "deploy-docker.md")
 SERVICE_UNIT = os.path.join(BASE, "web", "deploy", "yiban-web.service")
 
 #: 准备块的起止行：两者都在原文里独一无二。标题/段落被改写时抽不到 ⇒ 本文件判红
@@ -86,13 +89,13 @@ def _env_bytes(lines, newline="\n", bom=False):
 
 
 def _block_lines(text):
-    """抽出 README 准备块的 shell 行（去掉每行一个 `#` 注释前缀）。
+    """抽出文档准备块的 shell 行（去掉每行一个 `#` 注释前缀）。
 
     抽不到起止行、或块内出现非注释行 ⇒ 返回空列表，调用方判红。
     """
     lines = text.splitlines()
-    # 起止行必须落在**注释行**里：同一串命令在上面的「服务器部署」节也出现一次
-    # （未注释），只按子串找会从那里开始、把整篇 README 都卷进块里。
+    # 起止行必须落在**注释行**里：取钥块由注释态命令组成（部署者逐行取消注释），
+    # 按裸子串找会从散文里的同名命令开始、把整篇文档卷进块里。
     start = next((i for i, line in enumerate(lines)
                   if line.startswith("#") and BLOCK_START in line), None)
     if start is None:
@@ -123,12 +126,12 @@ class ReadmeAccountsKeyBlockTest(unittest.TestCase):
     """静态判据：来源、机制、目标、安装参数都只有一个定义点。"""
 
     def setUp(self):
-        self.text = _read(README)
+        self.text = _read(ADMIN_DOC)
         self.block = _block_lines(self.text)
         self.block_text = "\n".join(self.block)
 
     def test_block_is_extractable(self):
-        self.assertTrue(self.block, "README 的准备块抽不到（起止行被改名？）")
+        self.assertTrue(self.block, "文档的准备块抽不到（起止行被改名？）")
         self.assertIn("YIBAN_ACCOUNTS_KEY", self.block_text,
                       "抽到的块里没有账号密钥步骤，抽取口径已失效")
 
@@ -176,11 +179,15 @@ class ReadmeAccountsKeyBlockTest(unittest.TestCase):
                          % sorted(unknown))
 
     def test_rotation_snippet_points_at_runtime_data_env(self):
-        """同族第二处：换钥脚本的 YIBAN_ENV_FILE 也必须指向 data/.env。"""
-        self.assertIn("YIBAN_ENV_FILE=data/.env", self.text,
+        """同族第二处：换钥脚本的 YIBAN_ENV_FILE 也必须指向 data/.env。
+
+        该块随「安全运维」逐字搬入 docs/guides/deploy-docker.md（工单 0gbk）。
+        """
+        text = _read(DOCKER_DOC)
+        self.assertIn("YIBAN_ENV_FILE=data/.env", text,
                       "换钥脚本没指向 data/.env（旧值 .env 在现行布局下不存在）")
-        self.assertNotRegex(self.text, r"YIBAN_ENV_FILE=\.env(?:\s|\\|$)",
-                            "README 仍有片段把 YIBAN_ENV_FILE 指向检出根 .env")
+        self.assertNotRegex(text, r"YIBAN_ENV_FILE=\.env(?:\s|\\|$)",
+                            "文档仍有片段把 YIBAN_ENV_FILE 指向检出根 .env")
 
 
 class AccountsKeyApiShapeTest(unittest.TestCase):
@@ -267,8 +274,8 @@ class ReadmeAccountsKeyE2ETest(unittest.TestCase):
         return os.getuid(), os.getgid(), False
 
     def _run_block(self, project, etcdir, tmp_key, uid, gid, verbatim):
-        block = _block_lines(_read(README))
-        self.assertTrue(block, "README 的准备块抽不到")
+        block = _block_lines(_read(ADMIN_DOC))
+        self.assertTrue(block, "文档的准备块抽不到")
         out = []
         for line in block:
             if BLOCK_START in line:
