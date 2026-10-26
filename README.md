@@ -108,10 +108,13 @@ python3 -m venv .venv
 #    审核 → 手动签到），接口清单见「无浏览器部署（纯命令行/自动化）」
 
 # 5. 定时任务（每天 06:31 首签；同一条脚本在进程内补签，07:12 再有一条 cron 兜底）
-crontab -e   # 追加：
+# ⚠ 已跑过 `sudo bash deploy/prod/install.sh` 的主机**跳过本节**：安装器已把
+#    deploy/prod/cron.d/yiban-sign 落到 /etc/cron.d/。两处都写 = 每个排期两条
+#    触发器，同一作业并发跑两轮（2026-10-25 备份事故的同形：gpg 互相覆写）。
+crontab -e   # 仅在未跑安装器时追加：
 # 31 6 * * * /opt/yiban-auto-sign/run.sh
 # 12 7 * * * /opt/yiban-auto-sign/run.sh
-# 无人值守/脚本化安装（crontab -e 是交互式的）：
+# 无人值守/脚本化安装（未跑 install.sh 时；crontab -e 是交互式的）：
 #   ( crontab -l 2>/dev/null; echo '31 6 * * * /opt/yiban-auto-sign/run.sh'; \
 #     echo '12 7 * * * /opt/yiban-auto-sign/run.sh' ) | crontab -
 # 补签时刻须与 .env 的 YIBAN_SECOND_RUN_TIME（默认 07:12）一致；
@@ -229,6 +232,11 @@ mkdir -p /var/log/yiban
 > ⚠️ 不要用"导出 .env 再跑 signin.py"的简化版覆盖它：那会丢掉锁、防重复与超时保护，两次 cron 并发登录同一批账号会触发易班风控。
 
 #### 6. crontab
+
+> ⚠️ **已跑过 `sudo bash deploy/prod/install.sh` 的主机跳过本节**：安装器已把
+> `deploy/prod/cron.d/yiban-sign` 落到 `/etc/cron.d/`。这里再抄同样的两行，
+> 每天 06:31 与 07:12 会各有两条触发器——同一作业并发跑两轮，正是 2026-10-25
+> 备份事故（root crontab 与 cron.d 各一条同一 wrapper）的形状。
 
 ```cron
 # 易班自动签到：06:31 首签 + 07:12 兜底（兜底仅覆盖"06:31 进程被宿主杀死"的场景）

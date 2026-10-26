@@ -22,7 +22,8 @@
 #      密文并删除明文 tar.gz——明文落盘需显式 BACKUP_PLAINTEXT=1（大字告警）。
 #      无可用加密方式（未配置口令/公钥且无交互终端）保持明文 + 大字告警，
 #      不改变既有部署行为。--restore 对 .tar.gz / .gpg / .age 均可直接恢复。
-#   4. 保留策略：本地与异机各保留 30 天（find -mtime +30 -delete，含 .sha256 侧车）。
+#   4. 保留策略：本地与异机各保留 30 天（find -mtime +30 -delete，含 .sha256 侧车）；
+#      写清单期间被硬杀留下的 `*.sha256.tmp.*` 孤儿按 mtime >60 分钟清。
 #   5. --restore 模式：从备份包恢复到指定目录（恢复演练 / 真实恢复），并在解包后
 #      跑 PRAGMA integrity_check + scripts/audit_verify.py 验证恢复件可用。
 #
@@ -236,7 +237,18 @@ else
 fi
 ARCHIVE="${BACKUP_DIR}/yiban-${DATE}.tar.gz"
 TMPDIR_BAK="$(mktemp -d "${TMPDIR:-/tmp}/yiban-bak.XXXXXX")"
-trap 'rm -rf "${TMPDIR_BAK}"' EXIT
+# 退出清理：临时目录 + 清单临时件。SIDECAR_TMP 在写清单段才赋值，用 :- 兜空
+# （set -u 下直接引用未赋值变量会让 trap 自己失败）。
+# 旧 trap 只清 TMPDIR_BAK：`kill`（TERM 亦会走 EXIT trap）与一般失败路径都会把
+# 0 字节 `${FINAL_LOCAL}.sha256.tmp.$$` 留在备份目录——正是 2026-10-25 事故残留的
+# 同形。SIGKILL 不可捕获，那种孤儿由下方轮转段按 mtime 清（两条修法各管一段）。
+_cleanup() {
+    rm -rf "${TMPDIR_BAK}"
+    if [ -n "${SIDECAR_TMP:-}" ]; then
+        rm -f "${SIDECAR_TMP}"
+    fi
+}
+trap '_cleanup' EXIT
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
@@ -1206,7 +1218,18 @@ rotate_pass 'yiban-*.tar.gz.age' "${RETENTION_DAYS}"
 rotate_pass 'yiban-*.tar.gz.age.sha256' "${RETENTION_DAYS}"
 # 兜底：旧命名/孤儿的其它 yiban-*.sha256 侧车按主保留期清（防止回到"侧车永久堆积"）
 rotate_pass 'yiban-*.sha256' "${RETENTION_DAYS}"
-log "本地清理完成（密文 ${RETENTION_DAYS} 天/明文 ${PLAIN_DAYS} 天，含 .sha256 侧车；密文受最近 ${MIN_KEEP_ARCHIVES} 组下界保护，明文过期即删·豁免下界）"
+# 写清单期间的硬杀残留：`yiban-*.sha256.tmp.<pid>`（0 字节最常见）。上面的 6 个
+# pattern 都不匹配 .tmp，旧实现的这类孤儿永不清理——与 2026-10-25 事故的 0 字节
+# 残留同形，只是换了名字。
+# 为什么按 mtime >60 分钟而不是无条件删：无条件删会与"正在写清单"的进程抢同一个
+# 临时件（手工并行跑、或旧版没有 flock 的脚本是真实路径），把对方的原子写打断。
+# 本脚本持有 flock，同一时刻只允许一轮；60 分钟远大于单次 sha256sum 的耗时，
+# 因此超龄件只可能是上一轮被硬杀留下的孤儿。清理必须逐件留日志（删错要可追溯）。
+while IFS= read -r _orphan; do
+    rm -f "${_orphan}"
+    log "清理孤儿临时件（> 60 分钟）：$(basename "${_orphan}")"
+done < <(find "${BACKUP_DIR}" -maxdepth 1 -name 'yiban-*.sha256.tmp.*' -mmin +60)
+log "本地清理完成（密文 ${RETENTION_DAYS} 天/明文 ${PLAIN_DAYS} 天，含 .sha256 侧车与超龄临时件；密文受最近 ${MIN_KEEP_ARCHIVES} 组下界保护，明文过期即删·豁免下界）"
 
 # 删后自检（MF-77）：轮转"删完不数不验"正是历史被清而无人知的成因之一。
 # 当日归档是整条保留策略的锚点——它不在就说明轮转（或别的什么）删错了东西，

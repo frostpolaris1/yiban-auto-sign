@@ -12,20 +12,24 @@
 
 四项检查：
 1. **当日包存在且为密文**：`${BACKUP_DIR:-/var/backups/yiban}/yiban-<今天>.tar.gz.gpg` 与它的
-   `.sha256` 旁挂件都在（age 密文形态也认，见 `_archive_candidates`）。
+   `.sha256` 旁挂件都在**且非空**（age 密文形态也认，见 `_archive_candidates`）。
+   0 字节归档/清单是半写入或事故残留，判健康等于把"备份没成"藏起来（P3-2）。
    **明文包（裸 `.tar.gz`）不计入健康**（M3 批次0 · MF-79）：backup.sh 只在加密配置
    失效或显式 BACKUP_PLAINTEXT=1 时才产出明文包，把它当"当日备份完成"正是曾经
    4 天静默失败的同型盲区；当日只有明文包 ⇒ 判不健康并走告警路径；
    同日既有密文又有明文残留（加密切换过渡日）⇒ 以密文为准，不双告警。
 2. **同一作业的活跃触发器恰好 1 条**（2026-10-25 生产事故）：对 `deploy/prod/cron.d/*`
    每张仓库表里的每个作业，统计生产上 `crontab -l -u root`、`crontab -l`、
-   `/etc/cron.d/*` 与 `/etc/crontab` 的活跃命令。同一作业同一排期出现多于一条，
-   或多出仓库表未声明的排期，都判漂移。作业按命令里可执行件的文件名归类
-   （解释器取它执行的脚本名），因此 sign/probe/cleanup 同形状的重复也会被抓到。
+   `/etc/cron.d/*` 与 `/etc/crontab` 的活跃命令；**只扫 root 与当前身份**，其它
+   身份的 crontab 不在扫描面（登记边界，见 `_active_triggers`）。同一作业同一排期
+   出现多于一条，或多出仓库表未声明的排期，都判漂移。作业按命令里 token 的
+   文件名归类（`flock`/`timeout`/`nice` 等包装器把脚本放在位置参数里也不会漏），
+   因此 sign/probe/cleanup 同形状的重复也会被抓到。
    `/etc/cron.d` 下**文件名含点号**的文件 cron 不读（生产上三份
    `yiban-*.reconcile-*` 残留因此不是活跃触发器），统计先按 cron 自己的文件名规则
-   过滤。读不到 crontab（无命令/权限不足）时**显式**打印"触发器条数未核"——
-   跳过不等于绿。判据与实现见 `_trigger_drift_report`。
+   过滤。读不到 crontab（无命令/权限不足）时**显式**打印"触发器条数未核"，
+   **且不丢掉已发现的重复**——两者并存返回、两者都打印；跳过不等于绿。
+   判据与实现见 `_trigger_drift_report`。
 3. **防漂移**：`$APP_DIR/scripts/backup.sh`（检出侧）与 `$YIBAN_BACKUP_INSTALLED`
    （默认 `/usr/local/sbin/yiban-backup.sh`，cron 实际调的那个）内容一致——"运行脚本
    是检出脚本的拷贝"是部署约定，判据与它挡的是什么见 `_drift_report`。安静路径上
@@ -63,8 +67,9 @@
 `/etc/cron.d` 与 `/etc/crontab`）。
 输出：结论与原因到 stdout（cron 重定向到日志）；审计链头哈希外发一封邮件（每日一封）；
 异常时一封管理员告警邮件。
-退出码：`0`=检查完成（含"缺失但告警已发出"，以及**锚点外发失败**——见下）；
-`1`=检查本身失败或告警发不出去。
+退出码：`0`=检查完成（含"缺失但告警已发出"、**锚点外发失败**——见下；
+**触发器条数未核也算检查完成**，未核原因打印到 stderr，不改退出码——理由见
+`main()` 的 docstring）；`1`=检查本身失败或告警发不出去。
 ⚠ 外发失败**不**改退出码：哨兵的退出码语义是"检查是否做完"，把"邮件通道当时抖动"
 升格成 cron 非 0 只会让每日备份链在日志里天天红，反而淹没真故障。外发失败照样
 `print` 到 stderr 并记 `logger.warning`，与本模块头部"没人看得见 cron 退出码"那段
@@ -157,17 +162,30 @@ def _archive_candidates(backup_dir, day):
     return [os.path.join(backup_dir, f"yiban-{day}{suffix}") for suffix in ARCHIVE_SUFFIXES]
 
 
+def _nonempty_file(path):
+    """存在且字节数 > 0；stat 失败按"不存在"处置。
+
+    只判 `isfile` 会让 0 字节残留（加密切换/半写入/事故残留）被判健康——"文件在"
+    不等于"备份在"，与 `.sha256` 清单那条同理（P3-2）。
+    """
+    try:
+        return os.path.isfile(path) and os.path.getsize(path) > 0
+    except OSError:
+        return False
+
+
 def _find_archive(backup_dir, day):
     """返回 (归档路径, 旁挂件已就位) 或 (None, False)。
 
     `.sha256` 与归档同时要求：归档在而清单不在，同样是"不能核验的备份"——恢复流程
-    靠清单比对完整性，缺了它等于备份不可信。
+    靠清单比对完整性，缺了它等于备份不可信。两侧都要求**非空**：0 字节归档 /
+    0 字节清单都是不可恢复的残留，判健康会把"备份没成"藏起来。
     """
     for path in _archive_candidates(backup_dir, day):
-        if os.path.isfile(path):
+        if _nonempty_file(path):
             # 清单缺失单独带出来：不可核验的包等于没有备份，但它是"包在、清单没了"，
             # 与"整个包没生成"的排查方向不同，故不合并成一个布尔
-            return path, os.path.isfile(path + ".sha256")
+            return path, _nonempty_file(path + ".sha256")
     return None, False
 
 
@@ -267,8 +285,10 @@ def _job_key(command):
     `env A=1 /usr/local/sbin/x.sh` 同键（解释器取其后第一个非选项参数）。
     排期不参与归类：同一作业可以有多条排期（`yiban-sign` 的 06:31 首签 +
     07:12 兜底是有意设计），重复判据按"作业 + 排期"逐对计。
-    边界：只按可执行件名归类。`sh -c '…'` 与带选项值的包装器（`sudo -u user`）
-    取到的键不是被包装的脚本——那类写法下本门不保证认出重复（部署契约里没有）。
+    边界：本函数只用于**仓库表**的作业声明（部署契约是直接写脚本路径或
+    `bash/python3 <脚本>`）。生产侧命令的归类走 `_job_keys_in_command` 的逐 token
+    匹配——带选项值的包装器（`flock`/`timeout`/`nice`/`sudo -u user`）在这里会
+    取到选项值，逐 token 匹配则不受影响。
     """
     for segment in _command_segments(command):
         i = 0
@@ -289,6 +309,27 @@ def _job_key(command):
             continue
         return name
     return None
+
+
+def _job_keys_in_command(command, known_jobs):
+    """命令里出现的已知作业键：任一 token 的 basename 命中即归入该作业。
+
+    生产侧的归类**不按"解释器后第一个位置参数"取**（P3-5 实测）：
+    `flock -n /run/lock/x.lock wrapper.sh` 取到锁文件名、`timeout 600 wrapper.sh`
+    取到时长、`nice -n 10 wrapper.sh` 取到调整值——三种包装形态全部漏检。
+    解析每个包装器的选项参数个数既易错又随工具版本变，故改为逐 token 匹配
+    已知作业键：包装器把真正的命令放在位置参数里，它的 basename 仍是作业键。
+    一行调用多个已知作业时全部计入（多报方向，不静默漏）；重定向目标已在
+    `_command_segments` 里剔除，不会把日志文件名当成作业。
+    边界：`sh -c '<整段脚本>'` 把脚本包成一个 token，本门不认（部署契约里没有）。
+    """
+    found = set()
+    for segment in _command_segments(command):
+        for token in segment:
+            name = os.path.basename(token.strip("'\""))
+            if name in known_jobs:
+                found.add(name)
+    return found
 
 
 def _iter_cron_lines(text, has_user_field):
@@ -393,8 +434,9 @@ def _active_triggers(cron_d_dir=DEFAULT_CRON_D_DIR,
     来源：root 的 crontab、当前身份的 crontab、`/etc/cron.d/*`、`/etc/crontab`。
     哨兵以 root 跑时 `crontab -l` 与 `crontab -l -u root` 是同一条 crontab，
     只读一次——否则每条 root 行都被算两条，门会自己假报重复。
-    边界：其它身份的 crontab 不在扫描面（部署契约把排期放在 `/etc/cron.d`，
-    身份由 install.sh 决定；至少覆盖 root 与当前身份）。
+    **只扫 root 与当前身份**；其它身份的 crontab 不在扫描面（登记边界：部署契约
+    把排期放在 `/etc/cron.d`，身份由 install.sh 决定；生产当前只有 root crontab，
+    现状无影响。要扩到全部身份得枚举 /var/spool/cron，属另一批改动）。
     """
     entries, unverified = [], []
     current = _current_user()
@@ -463,25 +505,24 @@ def _trigger_drift_report(repo_cron_dir, cron_d_dir=DEFAULT_CRON_D_DIR,
                           system_crontab=DEFAULT_SYSTEM_CRONTAB):
     """同一作业的活跃触发器条数检查：返回 `(report, unverified)`。
 
-    `report=None` = 没发现重复；`unverified` 非空 = 条数未核（读不到 crontab）。
-    "跳过不等于绿"：调用方必须把 unverified 打印出来，不得静默通过。
+    `report=None` = 没发现漂移；`unverified` 非空 = 条数未核（读不到 crontab）。
+    **两者并存返回**：少读一面只说明"可能还有没看见的重复"，不构成把已发现的
+    重复丢掉的理由（P3-3：实测 root crontab 有两条重复 + cron.d 不可读时旧实现
+    返回 report=None，重复被隐藏）。调用方必须同时打印两者。
     发现两类漂移：
       - 同一作业同一排期出现多条（生产事故的形态：root crontab + cron.d 各一条）；
       - 同一作业多出仓库表未声明的排期（一天跑两遍，同样要人删）。
+    生产侧归类走 `_job_keys_in_command`（逐 token 匹配），`flock`/`timeout`/`nice`
+    等包装形态不会漏检（P3-5）。
     """
     jobs = _repo_jobs(repo_cron_dir)
     if jobs is None:
         return None, [f"仓库 cron 表目录不可读或解析不出作业（{repo_cron_dir}）"]
     entries, unverified = _active_triggers(cron_d_dir, system_crontab)
-    if unverified:
-        # 少读一面就可能漏掉那条重复：条数结论不完整，整项判"未核"。
-        return None, unverified
     production = {}
     for source, schedule, command in entries:
-        key = _job_key(command)
-        if key is None:
-            continue
-        production.setdefault((key, schedule), []).append(source)
+        for key in _job_keys_in_command(command, jobs):
+            production.setdefault((key, schedule), []).append(source)
     findings = []
     for job in sorted(jobs):
         declared = jobs[job]["schedules"]
@@ -505,10 +546,12 @@ def _trigger_drift_report(repo_cron_dir, cron_d_dir=DEFAULT_CRON_D_DIR,
                     "sources": production[(job, schedule)],
                     "note": "同一作业同一排期有多条",
                 })
-    if not findings:
-        return None, []
-    return {"reason": f"{len(findings)} 条作业排期的活跃触发器条数不为 1",
-            "findings": findings}, []
+    report = None
+    if findings:
+        # 措辞覆盖两种形状：同一排期多条，**以及**未在仓库表声明的排期（count 可为 1）
+        report = {"reason": f"{len(findings)} 条作业排期的活跃触发器与仓库表声明不一致",
+                  "findings": findings}
+    return report, unverified
 
 
 def _alert_due(title):
@@ -550,8 +593,44 @@ def _send_admin_alert(title, mail):
     return bool(mailer.send_admin_alert(title, mail, to=",".join(recipients)))
 
 
-def _missing_mail(day, backup_dir, archive, sidecar_ok, plaintext=None):
-    """当日包缺失/清单缺失/只有明文包的告警正文。"""
+def _script_drift_parts(repo_copy, installed, drift):
+    """脚本内容漂移的邮件字段与处置建议（缺失告警与漂移告警共用同一份）。"""
+    fields = [("检出", repo_copy), ("运行版", installed),
+              ("判定", drift.get("reason", "不一致"))]
+    for label, key in (("检出", "repo"), ("运行版", "installed")):
+        fp = drift.get(key)
+        if fp:
+            fields.append((f"{label}指纹",
+                           f"{fp['size']} 字节 / {fp['sha256'][:16]}… / {fp['mtime']}"))
+    advice = ["以检出为准重装：install -m 0700 -o root -g root scripts/backup.sh "
+              "/usr/local/sbin/yiban-backup.sh",
+              "运行拷贝漂移曾导致备份连续静默失败，改完检出务必同步安装"]
+    return fields, advice
+
+
+def _trigger_drift_parts(trigger_drift):
+    """触发器条数漂移的邮件字段与处置建议（缺失告警与漂移告警共用同一份）。"""
+    fields, advice = [], []
+    for finding in trigger_drift["findings"]:
+        # 条数放在值的最前面：纯文本渲染器按 72 列折行，放后面会被折开
+        fields.append((
+            f"作业 {finding['job']}",
+            f"{finding['count']} 条；排期 {finding['schedule']}；"
+            f"{finding['note']}；来源：" + "、".join(finding["sources"])))
+    advice += ["同一作业只保留一条触发器：删掉 root crontab 里的重复行，"
+               "或删掉多余的 cron.d 表",
+               "权威触发器是检出里的 deploy/prod/cron.d/<表名>，由 install.sh 落位"]
+    return fields, advice
+
+
+def _missing_mail(day, backup_dir, archive, sidecar_ok, plaintext=None, *,
+                  drift=None, trigger_drift=None, repo_copy="", installed=""):
+    """当日包缺失/清单缺失/只有明文包的告警正文。
+
+    归档没成时脚本漂移与触发器漂移**一并写进这封**（P3-4）：本批的意义就是让
+    "备份链路不可信"这件事有声音；只打到 stdout 的漂移在 cron 日志里没人看。
+    共用同一标题与节流键，不另发一封（分标题会让两封互相挤掉）。
+    """
     if archive is None and plaintext is not None:
         summary = (f"当日只有【明文】备份包：{os.path.basename(plaintext)}。"
                    "明文包不计入健康——它内含 .env 全部密钥、管理员口令哈希与全量数据库，"
@@ -565,27 +644,37 @@ def _missing_mail(day, backup_dir, archive, sidecar_ok, plaintext=None):
                   "否则检查 BACKUP_GPG_PASSPHRASE / BACKUP_GPG_RECIPIENT 与 gpg 是否可用"
                   "（backup.sh 加密失败且未带 --require-encrypt 时会静默回退明文）",
                   "处置后手工补跑一次 backup.sh --require-encrypt 并做恢复演练"]
-        return mail_layout.Mail(summary=summary, fields=fields, advice=advice, level="urgent")
-    if archive is None:
+    elif archive is None:
         summary = f"当日备份包不存在：{backup_dir} 下没有 yiban-{day} 的归档。"
         fields = [
             ("期望位置", "、".join(_archive_candidates(backup_dir, day))),
             ("影响", "从这台主机损毁算起，最近一次可用备份已退到更早的日期"),
         ]
+        advice = ["先看 backup.log 与 cron 的报错邮件：backup.sh 加密失败会 fail-closed 不落包",
+                  "缺加密口令时归档不会生成（BACKUP_GPG_PASSPHRASE 只从环境变量取）",
+                  "修好后手工补跑一次并做恢复演练"]
     else:
-        summary = f"当日备份包缺 .sha256 清单：{os.path.basename(archive)} 没有旁挂件。"
+        summary = (f"当日备份包缺 .sha256 清单：{os.path.basename(archive)} "
+                   "的旁挂件缺失或为 0 字节。")
         fields = [
             ("归档", archive),
             ("影响", "包无法核验完整性，恢复流程不能确认它没被改过"),
         ]
-    return mail_layout.Mail(
-        summary=summary,
-        fields=fields,
-        advice=["先看 backup.log 与 cron 的报错邮件：backup.sh 加密失败会 fail-closed 不落包",
-                "缺加密口令时归档不会生成（BACKUP_GPG_PASSPHRASE 只从环境变量取）",
-                "修好后手工补跑一次并做恢复演练"],
-        level="urgent",
-    )
+        advice = ["先看 backup.log 与 cron 的报错邮件：backup.sh 加密失败会 fail-closed 不落包",
+                  "缺加密口令时归档不会生成（BACKUP_GPG_PASSPHRASE 只从环境变量取）",
+                  "修好后手工补跑一次并做恢复演练"]
+    if drift is not None:
+        parts, tips = _script_drift_parts(repo_copy, installed, drift)
+        fields += parts
+        advice += tips
+        summary += " 运行脚本与检出内容不一致。"
+    if trigger_drift is not None:
+        parts, tips = _trigger_drift_parts(trigger_drift)
+        fields += parts
+        advice += tips
+        summary += (f" 另有 {len(trigger_drift['findings'])} 条作业排期的触发器"
+                    "与仓库表声明不一致（cron 会并发跑同一份作业）。")
+    return mail_layout.Mail(summary=summary, fields=fields, advice=advice, level="urgent")
 
 
 def _drift_mail(repo_copy, installed, drift, trigger_drift=None):
@@ -596,28 +685,15 @@ def _drift_mail(repo_copy, installed, drift, trigger_drift=None):
     """
     details, advice, summaries = [], [], []
     if drift is not None:
-        details += [("检出", repo_copy), ("运行版", installed),
-                    ("判定", drift.get("reason", "不一致"))]
-        for label, key in (("检出", "repo"), ("运行版", "installed")):
-            fp = drift.get(key)
-            if fp:
-                details.append((f"{label}指纹",
-                                f"{fp['size']} 字节 / {fp['sha256'][:16]}… / {fp['mtime']}"))
+        parts, tips = _script_drift_parts(repo_copy, installed, drift)
+        details += parts
+        advice += tips
         summaries.append("备份脚本的运行拷贝与检出内容不一致（cron 跑的可能不是检出里的那份）。")
-        advice += ["以检出为准重装：install -m 0700 -o root -g root scripts/backup.sh "
-                   "/usr/local/sbin/yiban-backup.sh",
-                   "运行拷贝漂移曾导致备份连续静默失败，改完检出务必同步安装"]
     if trigger_drift is not None:
-        for finding in trigger_drift["findings"]:
-            # 条数放在值的最前面：纯文本渲染器按 72 列折行，放后面会被折开
-            details.append((
-                f"作业 {finding['job']}",
-                f"{finding['count']} 条；排期 {finding['schedule']}；"
-                f"{finding['note']}；来源：" + "、".join(finding["sources"])))
+        parts, tips = _trigger_drift_parts(trigger_drift)
+        details += parts
+        advice += tips
         summaries.append("同一作业存在多条活跃触发器（cron 会并发跑同一份作业）。")
-        advice += ["同一作业只保留一条触发器：删掉 root crontab 里的重复行，"
-                   "或删掉多余的 cron.d 表",
-                   "权威触发器是检出里的 deploy/prod/cron.d/<表名>，由 install.sh 落位"]
     return mail_layout.Mail(summary="".join(summaries), fields=details,
                             advice=advice, level="urgent")
 
@@ -720,7 +796,12 @@ def _broadcast_anchor(day, archive, sidecar_ok):
 
 
 def main(argv=None):
-    """跑一次哨兵；返回进程退出码（0=检查完成，1=检查或告警失败）。"""
+    """跑一次哨兵；返回进程退出码（0=检查完成，1=检查或告警失败）。
+
+    触发器条数**未核也算检查完成（rc=0）**：读不到 crontab 是"这一面没看见"，
+    不是"哨兵自己坏了"；未核原因打印到 stderr、缺包/漂移照常告警。把未核升格成
+    rc=1 会让没有 crontab 命令或权限受限的主机天天在日志里红，淹没真故障。
+    """
     backup_dir = _env("BACKUP_DIR", DEFAULT_BACKUP_DIR)
     # 部署根：唯一环境键 YIBAN_APP_DIR；APP_DIR 只作旧部署别名（census-P2-repo-root）。
     app_dir = _env("YIBAN_APP_DIR", "") or _env("APP_DIR", DEFAULT_APP_DIR)
@@ -774,12 +855,18 @@ def main(argv=None):
         # MF-79：明文包不算健康——当日只有裸 .tar.gz 时加密链路已失效（或被显式
         # 关闭），这正是"看着有备份、其实全库凭据裸奔"的那一格，必须发声
         print(f"备份哨兵：{day} 只有【明文】归档（{plaintext}），不计入健康，已发告警")
-        mail = _missing_mail(day, backup_dir, archive, sidecar_ok, plaintext=plaintext)
+        mail = _missing_mail(day, backup_dir, archive, sidecar_ok, plaintext=plaintext,
+                             drift=drift, trigger_drift=trigger_drift,
+                             repo_copy=repo_copy, installed=installed)
     else:
-        # 排在漂移之前：归档没成比脚本漂移严重，两病同发时先喊缺备份（同类型只发一封）
+        # 排在漂移之前：归档没成比脚本漂移严重，两病同发时先喊缺备份（同类型只发一封）。
+        # 但漂移**必须同时写进这封**（P3-4）：只打 stdout 的漂移在 cron 日志里没人看，
+        # 缺包那天正是最需要知道"链路还有没有别的病"的时候。
         print(f"备份哨兵：{day} 的备份不完整（归档 {archive or '缺失'}，"
               f"清单 {'在' if sidecar_ok else '缺失'}）")
-        mail = _missing_mail(day, backup_dir, archive, sidecar_ok)
+        mail = _missing_mail(day, backup_dir, archive, sidecar_ok,
+                             drift=drift, trigger_drift=trigger_drift,
+                             repo_copy=repo_copy, installed=installed)
 
     # M28：链头外发与上面这次告警**互相独立**——当天既喊了"备份没成"又喊了
     # "链头离机"是常态（前者说数据没存下来，后者说基线存下来了），两封都要发。
