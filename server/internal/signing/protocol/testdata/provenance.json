@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "files": {
+    "authorize_page.html": {
+      "kind": "response",
+      "provenance": "captured"
+    },
+    "usersure_response.json": {
+      "kind": "response",
+      "provenance": "captured"
+    },
+    "auth_response.json": {
+      "kind": "response",
+      "provenance": "captured"
+    },
+    "sign_in_response.json": {
+      "kind": "response",
+      "provenance": "captured"
+    },
+    "sign_position.json": {
+      "kind": "response",
+      "provenance": "captured"
+    },
+    "device_state.json": {
+      "kind": "response",
+      "provenance": "captured"
+    },
+    "synthetic_session_expired.json": {
+      "kind": "response",
+      "provenance": "synthetic",
+      "note": "未实拍：仅作解析分支输入"
+    },
+    "synthetic_session_expired_string_code.json": {
+      "kind": "response",
+      "provenance": "synthetic",
+      "note": "未实拍：code 为字符串，仅作解析分支输入"
+    },
+    "synthetic_challenge_ydclearance.html": {
+      "kind": "response",
+      "provenance": "synthetic",
+      "note": "未实拍：挑战页标志物样本，仅作识别分支输入"
+    },
+    "synthetic_challenge_fengkongcloud.html": {
+      "kind": "response",
+      "provenance": "synthetic",
+      "note": "未实拍：挑战页标志物样本，仅作识别分支输入"
+    },
+    "synthetic_challenge_captcha.html": {
+      "kind": "response",
+      "provenance": "synthetic",
+      "note": "未实拍：挑战页标志物样本，仅作识别分支输入"
+    },
+    "synthetic_challenge_acw_sc.html": {
+      "kind": "response",
+      "provenance": "synthetic",
+      "note": "未实拍：挑战页标志物样本，仅作识别分支输入"
+    },
+    "iframe_location.txt": {
+      "kind": "input",
+      "provenance": "unknown",
+      "note": "原清单无来源字段；只作结构回归，不引用为实拍证据"
+    },
+    "usersure_form.txt": {
+      "kind": "input",
+      "provenance": "unknown",
+      "note": "原清单无来源字段；只作结构回归，不引用为实拍证据"
+    },
+    "usersure_url.txt": {
+      "kind": "input",
+      "provenance": "unknown",
+      "note": "原清单无来源字段；只作结构回归，不引用为实拍证据"
+    },
+    "sign_in_body.txt": {
+      "kind": "input",
+      "provenance": "unknown",
+      "note": "原清单无来源字段；只作编码回归，不引用为实拍证据"
+    },
+    "sign_in_body_urlencoded.txt": {
+      "kind": "input",
+      "provenance": "unknown",
+      "note": "原清单无来源字段；只作编码回归，不引用为实拍证据"
+    }
+  }
+}

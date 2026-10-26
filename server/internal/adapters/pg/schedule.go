@@ -231,3 +231,117 @@ func (r *ScheduleRepo) ActiveAccountIDs(ctx context.Context, schoolID string) ([
 	}
 	return out, mapError(rows.Err())
 }
+
+// ClaimDue 认领到期任务：单条 UPDATE 批量领取。
+// 判据全在 SQL：pending、run_at 已到、账号活跃未删、任务启用、
+// 同账号当前无 running（I-7 的查询面，库层唯一索引仍是最终兜底）。
+// FOR UPDATE SKIP LOCKED 让多 worker 不互等。
+func (r *ScheduleRepo) ClaimDue(ctx context.Context, now time.Time, limit int) ([]coreschedule.TaskRow, error) {
+	if limit < 1 {
+		limit = 1
+	}
+	rows, err := r.db.q(ctx).Query(ctx,
+		`WITH picked AS (
+		   SELECT DISTINCT ON (s.account_id) s.id
+		   FROM sign_tasks s
+		   WHERE s.state = 'pending' AND s.run_at <= $1
+		     AND NOT EXISTS (
+		       SELECT 1 FROM sign_tasks r
+		       WHERE r.account_id = s.account_id AND r.state = 'running')
+		     AND EXISTS (
+		       SELECT 1 FROM accounts a
+		       WHERE a.id = s.account_id AND a.status = 'active' AND a.deleted_at IS NULL)
+		     AND EXISTS (
+		       SELECT 1 FROM school_tasks st
+		       WHERE st.id = s.school_task_id AND st.enabled)
+		   ORDER BY s.account_id, s.run_at, s.id
+		   LIMIT $2
+		 ),
+		locked AS (
+		   SELECT id FROM sign_tasks WHERE id IN (SELECT id FROM picked) FOR UPDATE SKIP LOCKED
+		 )
+		 UPDATE sign_tasks t SET state = 'running', claimed_at = $1
+		 WHERE t.id IN (SELECT id FROM locked)
+		 RETURNING t.id::text, t.account_id::text, t.school_task_id::text,
+		           (SELECT st.school_id::text FROM school_tasks st WHERE st.id = t.school_task_id),
+		           t.day::text, t.run_at, t.state::text, t.attempts`,
+		now, limit)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	var out []coreschedule.TaskRow
+	for rows.Next() {
+		var t coreschedule.TaskRow
+		if err := rows.Scan(&t.ID, &t.AccountID, &t.SchoolTaskID, &t.SchoolID, &t.Day, &t.RunAt, &t.State, &t.Attempts); err != nil {
+			return nil, mapError(err)
+		}
+		out = append(out, t)
+	}
+	return out, mapError(rows.Err())
+}
+
+// Requeue 把 running 退回 pending 并移到新的落点；尝试数 +1。
+func (r *ScheduleRepo) Requeue(ctx context.Context, taskID string, runAt time.Time, result string) error {
+	ct, err := r.db.q(ctx).Exec(ctx,
+		`UPDATE sign_tasks SET state = 'pending', run_at = $2, result = $3,
+		        attempts = attempts + 1, claimed_at = NULL
+		 WHERE id = $1::uuid AND state = 'running'`,
+		taskID, runAt, result)
+	if err != nil {
+		return mapError(err)
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrScheduleConflict
+	}
+	return nil
+}
+
+// ResetRunning 回收孤儿 running 行（启动时调用）：
+// 单进程下启动瞬间的 running 必然来自上次崩溃。落点改为 now，立即可执行。
+func (r *ScheduleRepo) ResetRunning(ctx context.Context) (int64, error) {
+	ct, err := r.db.q(ctx).Exec(ctx,
+		`UPDATE sign_tasks SET state = 'pending', claimed_at = NULL, run_at = now()
+		 WHERE state = 'running'`)
+	if err != nil {
+		return 0, mapError(err)
+	}
+	return ct.RowsAffected(), nil
+}
+
+// EnsureTask 为手动签到建或取当日任务行。
+// created=true 表示本次插入；(xmax = 0) 是 PostgreSQL 区分插入与冲突更新的惯用判据。
+func (r *ScheduleRepo) EnsureTask(ctx context.Context, accountID, schoolTaskID, day string, runAt time.Time) (coreschedule.TaskRow, bool, error) {
+	var t coreschedule.TaskRow
+	var created bool
+	err := r.db.q(ctx).QueryRow(ctx,
+		`INSERT INTO sign_tasks (account_id, school_task_id, day, run_at)
+		 VALUES ($1::uuid, $2::uuid, $3, $4)
+		 ON CONFLICT (account_id, school_task_id, day) DO UPDATE SET run_at = sign_tasks.run_at
+		 RETURNING id::text, account_id::text, school_task_id::text,
+		           (SELECT st.school_id::text FROM school_tasks st WHERE st.id = sign_tasks.school_task_id),
+		           day::text, run_at, state::text, attempts, (xmax = 0) AS created`,
+		accountID, schoolTaskID, day, runAt).
+		Scan(&t.ID, &t.AccountID, &t.SchoolTaskID, &t.SchoolID, &t.Day, &t.RunAt, &t.State, &t.Attempts, &created)
+	if err != nil {
+		return coreschedule.TaskRow{}, false, mapInsertForeignKey(err)
+	}
+	return t, created, nil
+}
+
+// TodayTask 返回账号所属学校今天启用的第一个任务（按名称序）。
+// 无启用任务返回 errs.ErrNotFound。
+func (r *ScheduleRepo) TodayTask(ctx context.Context, accountID string) (string, error) {
+	var id string
+	err := r.db.q(ctx).QueryRow(ctx,
+		`SELECT st.id::text FROM accounts a
+		 JOIN school_tasks st ON st.school_id = a.school_id AND st.enabled
+		 WHERE a.id = $1::uuid AND a.deleted_at IS NULL
+		 ORDER BY st.name, st.id
+		 LIMIT 1`,
+		accountID).Scan(&id)
+	if err != nil {
+		return "", mapError(err)
+	}
+	return id, nil
+}
