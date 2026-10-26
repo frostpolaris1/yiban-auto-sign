@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -46,14 +48,16 @@ func (c *manualClock) Advance(d time.Duration) {
 }
 
 type upstream struct {
-	server *httptest.Server
-	key    *rsa.PrivateKey
-	public string
+	server     *httptest.Server
+	authServer *httptest.Server
+	key        *rsa.PrivateKey
+	public     string
 
 	challenge    bool
 	usersureCode string
 	authBody     []byte
 	authFixture  []byte
+	authRedirect string
 	missingToken bool
 
 	mu           sync.Mutex
@@ -144,19 +148,9 @@ func newUpstream(t *testing.T) *upstream {
 			}
 			w.WriteHeader(http.StatusFound)
 		case "/base/c/auth/yiban":
-			up.mu.Lock()
-			up.authQuery = r.URL.Query()
-			if cookie, err := r.Cookie("csrf_token"); err == nil {
-				up.authCookie = cookie.Value
-			}
-			body := up.authBody
-			up.mu.Unlock()
-			w.Header().Set("Content-Type", "text/html")
-			if body != nil {
-				w.Write(body)
-				return
-			}
-			w.Write(up.authFixture)
+			up.handleAuth(w, r)
+		case "/base/c/auth/yiban/final":
+			up.handleAuth(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -165,12 +159,46 @@ func newUpstream(t *testing.T) *upstream {
 	return up
 }
 
+// handleAuth 回放认证响应；可配置一次 302。
+func (u *upstream) handleAuth(w http.ResponseWriter, r *http.Request) {
+	u.mu.Lock()
+	u.authQuery = r.URL.Query()
+	if cookie, err := r.Cookie("csrf_token"); err == nil {
+		u.authCookie = cookie.Value
+	}
+	body := u.authBody
+	redirect := u.authRedirect
+	u.mu.Unlock()
+	if redirect != "" && r.URL.Path == "/base/c/auth/yiban" {
+		w.Header().Set("Location", redirect)
+		w.WriteHeader(http.StatusFound)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html")
+	if body != nil {
+		w.Write(body)
+		return
+	}
+	w.Write(u.authFixture)
+}
+
+// startSeparateAuth 让认证跳落到另一台主机，用于验证 CSRF 跨主机。
+func (u *upstream) startSeparateAuth(t *testing.T) {
+	t.Helper()
+	u.authServer = httptest.NewServer(http.HandlerFunc(u.handleAuth))
+	t.Cleanup(u.authServer.Close)
+}
+
 func (u *upstream) endpoints() Endpoints {
+	auth := u.server.URL + "/base/c/auth/yiban"
+	if u.authServer != nil {
+		auth = u.authServer.URL + "/base/c/auth/yiban"
+	}
 	return Endpoints{
 		CodeHTML:    u.server.URL + "/code/html",
 		Usersure:    u.server.URL + "/code/usersure",
 		IframeIndex: u.server.URL + "/iframe/index",
-		APIAuth:     u.server.URL + "/base/c/auth/yiban",
+		APIAuth:     auth,
 	}
 }
 
@@ -283,9 +311,96 @@ func TestVerifyBrokenAuth(t *testing.T) {
 	up.authBody = []byte(`{"code":0`)
 	client := New(Config{Endpoints: up.endpoints()})
 	_, err := client.Verify(context.Background(), "acct-1", testCredential())
-	var parse *protocol.ParseError
-	if !errors.As(err, &parse) {
-		t.Fatalf("error = %v, want ParseError", err)
+	var outcomeErr *contract.OutcomeError
+	if !errors.As(err, &outcomeErr) || outcomeErr.Outcome != contract.OutcomeUnknown {
+		t.Fatalf("error = %v, want OutcomeUnknown", err)
+	}
+}
+
+func TestVerifyAuthDataNotObject(t *testing.T) {
+	up := newUpstream(t)
+	up.authBody = []byte(`{"code":0,"data":[]}`)
+	client := New(Config{Endpoints: up.endpoints()})
+	_, err := client.Verify(context.Background(), "acct-1", testCredential())
+	var outcomeErr *contract.OutcomeError
+	if !errors.As(err, &outcomeErr) || outcomeErr.Outcome != contract.OutcomeUnknown {
+		t.Fatalf("error = %v, want OutcomeUnknown", err)
+	}
+	if outcomeErr.Message != "auth data is not an object" {
+		t.Fatalf("message = %q", outcomeErr.Message)
+	}
+}
+
+// 解析错误不得带身份字段：Fragment 会含 PersonName/PersonId。
+func TestVerifyParseErrorHidesIdentity(t *testing.T) {
+	up := newUpstream(t)
+	var obj map[string]any
+	if err := json.Unmarshal(up.authFixture, &obj); err != nil {
+		t.Fatalf("unmarshal fixture: %v", err)
+	}
+	data, ok := obj["data"].(map[string]any)
+	if !ok {
+		t.Fatal("fixture data is not an object")
+	}
+	delete(data, "PersonName")
+	body, err := json.Marshal(obj)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	up.authBody = body
+	client := New(Config{Endpoints: up.endpoints()})
+	_, err = client.Verify(context.Background(), "acct-1", testCredential())
+	var outcomeErr *contract.OutcomeError
+	if !errors.As(err, &outcomeErr) || outcomeErr.Outcome != contract.OutcomeUnknown {
+		t.Fatalf("error = %v, want OutcomeUnknown", err)
+	}
+	if strings.Contains(outcomeErr.Message, "张三") || strings.Contains(outcomeErr.Message, "ff4640") {
+		t.Fatalf("error message leaked identity: %q", outcomeErr.Message)
+	}
+}
+
+// CSRF cookie 必须跨主机发送：生产第 4 跳在 api.uyiban.com。
+func TestVerifySendsCSRSAcrossHosts(t *testing.T) {
+	up := newUpstream(t)
+	up.startSeparateAuth(t)
+	client := New(Config{Endpoints: up.endpoints()})
+	if _, err := client.Verify(context.Background(), "acct-1", testCredential()); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	up.mu.Lock()
+	cookie, query := up.authCookie, up.authQuery.Get("CSRF")
+	up.mu.Unlock()
+	if cookie == "" || cookie != query {
+		t.Fatalf("csrf cookie = %q, query = %q", cookie, query)
+	}
+}
+
+// 认证跳可能 302：手动跟一跳。
+func TestVerifyFollowsAuthRedirect(t *testing.T) {
+	up := newUpstream(t)
+	up.authRedirect = up.server.URL + "/base/c/auth/yiban/final"
+	client := New(Config{Endpoints: up.endpoints()})
+	profile, err := client.Verify(context.Background(), "acct-1", testCredential())
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if profile.DisplayName != "张三" {
+		t.Fatalf("profile = %+v", profile)
+	}
+	if got := up.count("/base/c/auth/yiban/final"); got != 1 {
+		t.Fatalf("final auth calls = %d, want 1", got)
+	}
+}
+
+// 认证跳落到未知主机：拒绝，不发请求。
+func TestVerifyRejectsUntrustedAuthRedirect(t *testing.T) {
+	up := newUpstream(t)
+	up.authRedirect = "http://127.0.0.1:1/steal"
+	client := New(Config{Endpoints: up.endpoints()})
+	_, err := client.Verify(context.Background(), "acct-1", testCredential())
+	var outcomeErr *contract.OutcomeError
+	if !errors.As(err, &outcomeErr) || outcomeErr.Outcome != contract.OutcomeUnknown {
+		t.Fatalf("error = %v, want OutcomeUnknown", err)
 	}
 }
 

@@ -7,11 +7,11 @@ const (
 	redirectURI   = "https://f.yiban.cn/iapp7463"
 	iframeAct     = "iapp7463"
 	loginOrigin   = "https://c.uyiban.com"
-	appOrigin     = "https://app.uyiban.com"
 )
 
 // Endpoints 是登录链与会话请求的端点。
 // 测试注入 httptest 的 URL；生产用 DefaultEndpoints。
+// SignPosition、SignIn、DeviceState 供 P3-D 的签到链使用。
 type Endpoints struct {
 	CodeHTML     string
 	Usersure     string

@@ -23,6 +23,7 @@ const (
 	defaultSessionTTL = 30 * time.Minute
 	maxBodyBytes      = 1 << 20
 	maxMessageRunes   = 200
+	maxAuthRedirects  = 5
 )
 
 // Config 是客户端的运行参数。
@@ -112,6 +113,8 @@ func (c *Client) Verify(ctx context.Context, accountID string, cred contract.Cre
 // withSession 复用会话执行一次平台调用。
 // 会话缺失或过期时先登录；遇到 999 失效重登一次。
 // 调用期间持有该账号的锁，避免并发登录与串话。
+// **回调必须可安全重试**：999 后会再调用一次；签到等非幂等 POST
+// 由调用方按 AttemptID 去重（P3-D）。
 func (c *Client) withSession(ctx context.Context, accountID string, cred contract.Credential,
 	fn func(context.Context, *http.Client, string) error) error {
 	entry := c.entry(accountID)
@@ -137,14 +140,21 @@ func (c *Client) withSession(ctx context.Context, accountID string, cred contrac
 	return err
 }
 
-func (c *Client) newHTTPClient() (*http.Client, *cookiejar.Jar) {
+func (c *Client) newHTTPClient() *http.Client {
 	jar, _ := cookiejar.New(nil)
 	return &http.Client{
 		Transport:     c.transport,
 		Jar:           jar,
 		CheckRedirect: noRedirect,
 		Timeout:       c.timeout,
-	}, jar
+	}
+}
+
+// addCSRF 每跳显式带上 csrf_token。
+// 平台的该 cookie 域名是空的，参考实现对任意主机一并带出；
+// Go 的 cookiejar 会做主机绑定，故不能用 jar 代替本调用。
+func addCSRF(req *http.Request, csrf string) {
+	req.AddCookie(&http.Cookie{Name: "csrf_token", Value: csrf})
 }
 
 // do 执行请求并读取有上限的响应体。**不跟随重定向**。
@@ -210,6 +220,19 @@ func randomHex(reader io.Reader, n int) (string, error) {
 
 func noRedirect(*http.Request, []*http.Request) error {
 	return http.ErrUseLastResponse
+}
+
+// trustedAuthHost 只允许认证跳回落到配置的 API 主机或 api.uyiban.com。
+// 不跟随自动重定向：自动跟随会在白名单校验前把 CSRF cookie 发到落点。
+func (c *Client) trustedAuthHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	api, err := url.Parse(c.endpoints.APIAuth)
+	if err == nil && host == api.Host {
+		return true
+	}
+	return host == "api.uyiban.com"
 }
 
 // safeMessage 把平台文案压成可进审计的短消息。
