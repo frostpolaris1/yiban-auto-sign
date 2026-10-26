@@ -35,6 +35,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/config"
@@ -115,31 +116,74 @@ func Run(ctx context.Context, logger *slog.Logger) error {
 		return err
 	}
 
+	// 执行循环只在有数据库（Worker 已装配）时启动；
+	// 批量取 Workers：认领 SQL 每账号至多一行，批内并行度与之对齐。
+	var loop *appworker.Loop
+	if stack.Worker != nil {
+		loop = appworker.NewLoop(stack.Worker, stack.Worker, workerPollInterval, cfg.Workers)
+		loop.Start()
+		logger.Info("worker: loop started", "poll_interval", workerPollInterval.String(), "batch", cfg.Workers)
+	}
+
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
 
 	select {
 	case <-ctx.Done():
-		return stopStack(srv, stack, logger)
+		return stopStack(srv, stack, loop, logger)
 	case err := <-errc:
 		if errors.Is(err, http.ErrServerClosed) {
-			stack.Close()
+			stopStack(srv, stack, loop, logger)
 			return nil
+		}
+		if loop != nil {
+			_, _ = loop.Stop(context.Background())
 		}
 		stack.Close()
 		return err
 	}
 }
 
+// workerPollInterval 是执行循环的空转轮询间隔。
+// 认领 SQL 只挑到期行，轮询成本是一次索引查询。
+const workerPollInterval = 2 * time.Second
+
 // stopStack 并行收尾执行循环与 HTTP，总预算 shutdownBudget。
 //
 // 顺序判据（派单 P7）：先停 worker 领取，再等在飞结算，
 // 最后打印在飞清零结果；HTTP 关闭与它并行，不互相等。
-func stopStack(srv *http.Server, stack *Stack, logger *slog.Logger) error {
+// 预算耗尽而循环未停时，残余 running 行由下次启动的 Recover 回收。
+func stopStack(srv *http.Server, stack *Stack, loop *appworker.Loop, logger *slog.Logger) error {
 	shutdown, cancel := context.WithTimeout(context.Background(), shutdownBudget)
 	defer cancel()
+
+	var wg sync.WaitGroup
+	var remain int64
+	var loopErr error
+	if loop != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			remain, loopErr = loop.Stop(shutdown)
+		}()
+	}
 	srvErr := srv.Shutdown(shutdown)
+	wg.Wait()
 	stack.Close()
+
+	if loop != nil {
+		switch {
+		case errors.Is(loopErr, context.DeadlineExceeded):
+			logger.Warn("worker: in-flight drain budget exhausted; remaining rows recover on next boot")
+		case loopErr != nil:
+			logger.Error("worker: drain bookkeeping failed", "error", loopErr.Error())
+		default:
+			logger.Info("worker: in-flight drained", "remaining", remain)
+		}
+		if err := loop.Err(); err != nil {
+			logger.Warn("worker: loop recorded a step error before shutdown", "error", err.Error())
+		}
+	}
 	if srvErr != nil {
 		return fmt.Errorf("assembly: http shutdown: %w", srvErr)
 	}
