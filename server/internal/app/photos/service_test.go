@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -35,7 +36,7 @@ func newFakeStore() *fakeStore {
 	}
 }
 
-func keyOf(rec corephoto.Record) string { return rec.OwnerUserID + "|" + string(rec.SHA256[:]) }
+func keyOf(rec corephoto.Record) string { return fmt.Sprintf("%s/%x", rec.OwnerUserID, rec.SHA256) }
 
 func (f *fakeStore) Create(_ context.Context, rec corephoto.Record) (corephoto.Record, error) {
 	key := keyOf(rec)
@@ -56,23 +57,23 @@ func (f *fakeStore) Create(_ context.Context, rec corephoto.Record) (corephoto.R
 }
 
 func (f *fakeStore) Get(_ context.Context, scope corescope.Scope, id string) (corephoto.Record, error) {
-	rec, ok := f.recs[id]
-	if !ok || rec.Deleted() {
+	if scope.Kind() != corescope.KindUser {
 		return corephoto.Record{}, errs.ErrNotFound
 	}
-	if scope.Kind() == corescope.KindUser && rec.OwnerUserID != scope.UserID() {
+	rec, ok := f.recs[id]
+	if !ok || rec.Deleted() || rec.OwnerUserID != scope.UserID() {
 		return corephoto.Record{}, errs.ErrNotFound
 	}
 	return rec, nil
 }
 
 func (f *fakeStore) List(_ context.Context, scope corescope.Scope, _ string, _ int) ([]corephoto.Record, string, error) {
+	if scope.Kind() != corescope.KindUser {
+		return nil, "", errs.ErrNotFound
+	}
 	var out []corephoto.Record
 	for _, rec := range f.recs {
-		if rec.Deleted() {
-			continue
-		}
-		if scope.Kind() == corescope.KindUser && rec.OwnerUserID != scope.UserID() {
+		if rec.Deleted() || rec.OwnerUserID != scope.UserID() {
 			continue
 		}
 		out = append(out, rec)
@@ -81,11 +82,11 @@ func (f *fakeStore) List(_ context.Context, scope corescope.Scope, _ string, _ i
 }
 
 func (f *fakeStore) SoftDelete(_ context.Context, scope corescope.Scope, id string, now time.Time) (corephoto.Record, error) {
-	rec, ok := f.recs[id]
-	if !ok {
+	if scope.Kind() != corescope.KindUser {
 		return corephoto.Record{}, errs.ErrNotFound
 	}
-	if scope.Kind() == corescope.KindUser && rec.OwnerUserID != scope.UserID() {
+	rec, ok := f.recs[id]
+	if !ok || rec.OwnerUserID != scope.UserID() {
 		return corephoto.Record{}, errs.ErrNotFound
 	}
 	if !rec.Deleted() {
@@ -120,10 +121,9 @@ func (f *fakeStore) PurgeExpired(_ context.Context, now time.Time, _ int) (int64
 }
 
 type fakeBlobs struct {
-	data  map[[32]byte][]byte
-	puts  int
-	fail  error
-	fails error
+	data map[[32]byte][]byte
+	puts int
+	fail error
 }
 
 func newFakeBlobs() *fakeBlobs { return &fakeBlobs{data: map[[32]byte][]byte{}} }
@@ -355,5 +355,37 @@ func TestOpenStreamsBlob(t *testing.T) {
 	}
 	if _, _, err := svc.Open(context.Background(), owner("u2"), rec.ID); !errors.Is(err, errs.ErrNotFound) {
 		t.Fatalf("跨用户 open = %v", err)
+	}
+}
+
+// admin 与 master 不得读、列、删用户的图片：本切片没有账号—图片关系。
+// 这条钉同时是 P5-B pg 实现的规格：非 user 作用域返回 not_found。
+func TestAdminCannotTouchPhotos(t *testing.T) {
+	store, blobs := newFakeStore(), newFakeBlobs()
+	svc := newService(t, store, blobs)
+	rec, err := svc.Upload(context.Background(), owner("u1"), pngBytes(t, 5, 5))
+	if err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+	for name, scope := range map[string]corescope.Scope{
+		"admin":  corescope.Admin([]string{"s1"}),
+		"master": corescope.Master(),
+	} {
+		if _, err := svc.Get(context.Background(), scope, rec.ID); !errors.Is(err, errs.ErrNotFound) {
+			t.Fatalf("%s Get = %v, want not_found", name, err)
+		}
+		if _, _, err := svc.Open(context.Background(), scope, rec.ID); !errors.Is(err, errs.ErrNotFound) {
+			t.Fatalf("%s Open = %v, want not_found", name, err)
+		}
+		if _, err := svc.Delete(context.Background(), scope, rec.ID); err == nil {
+			t.Fatalf("%s Delete 应被拒绝", name)
+		} else if code := errs.From(err).Code; code != errs.CodeForbidden {
+			t.Fatalf("%s Delete 错误码 = %q, want forbidden", name, code)
+		}
+		if _, err := svc.List(context.Background(), scope, "", 10); err == nil {
+			t.Fatalf("%s List 应被拒绝", name)
+		} else if code := errs.From(err).Code; code != errs.CodeForbidden {
+			t.Fatalf("%s List 错误码 = %q, want forbidden", name, code)
+		}
 	}
 }

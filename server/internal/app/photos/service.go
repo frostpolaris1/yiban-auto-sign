@@ -108,8 +108,9 @@ func (s *Service) Upload(ctx context.Context, scope corescope.Scope, raw []byte)
 }
 
 // List 按作用域列一页图片。limit 为 0 时取默认页大小。
+// 契约把 /api/me/photos 定为 user 端点，admin 在这里就被拒绝。
 func (s *Service) List(ctx context.Context, scope corescope.Scope, cursor string, limit int) (Page, error) {
-	if err := appcore.RequireScope(scope); err != nil {
+	if err := requireUser(scope); err != nil {
 		return Page{}, err
 	}
 	limit, err := appcore.NormalizeLimit(limit)
@@ -146,8 +147,9 @@ func (s *Service) Open(ctx context.Context, scope corescope.Scope, id string) (c
 }
 
 // Delete 软删一张图片。重复删除返回同一行，不报错。
+// 契约把 /api/me/photos/{id} 的删除定为 user 端点。
 func (s *Service) Delete(ctx context.Context, scope corescope.Scope, id string) (corephoto.Record, error) {
-	if err := appcore.RequireScope(scope); err != nil {
+	if err := requireUser(scope); err != nil {
 		return corephoto.Record{}, err
 	}
 	return s.deps.Store.SoftDelete(ctx, scope, id, s.deps.Clock.Now())

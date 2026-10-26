@@ -54,6 +54,9 @@ func (f *FS) Put(ctx context.Context, sha [32]byte, data []byte) error {
 	if len(data) == 0 {
 		return errors.New("storage: refusing to write empty blob")
 	}
+	if got := sha256.Sum256(data); got != sha {
+		return errors.New("storage: digest does not match the key")
+	}
 	target := f.path(sha)
 	if _, err := os.Stat(target); err == nil {
 		return nil
