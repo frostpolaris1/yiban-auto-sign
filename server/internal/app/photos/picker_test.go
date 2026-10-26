@@ -1,6 +1,6 @@
 package photos_test
 
-// P5-C 选图判据：同 AttemptID 恒同图；索引按 sha256 首字节取模；
+// P5-C 选图判据：同 AttemptID 恒同图；索引按 sha256 前 8 字节取模；
 // 空库返回 picked=false；字节与元数据完整进入 ImageRef。
 
 import (
@@ -104,7 +104,7 @@ func TestPickForAttemptDeterministic(t *testing.T) {
 	sum := sha256.Sum256([]byte("attempt-42"))
 	want := int(binary.BigEndian.Uint64(sum[:8]) % 3)
 	if store.offsets[0] != want {
-		t.Fatalf("偏移 = %d, want sha256 首字节取模 %d", store.offsets[0], want)
+		t.Fatalf("偏移 = %d, want sha256 前 8 字节取模 %d", store.offsets[0], want)
 	}
 }
 

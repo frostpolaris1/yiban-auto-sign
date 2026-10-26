@@ -382,8 +382,9 @@ type AccountCreate struct {
 }
 
 // AccountLocation The stored location policy. lng and lat are null for auto and always
-// present for fixed. The reason travels to the platform only when the
-// fixed point falls outside the target fence.
+// present for fixed. The reason is kept by the host for audit; it is
+// not delivered to the platform yet (that lands with the upload
+// protocol slice).
 type AccountLocation struct {
 	Lat  *float64            `json:"lat,omitempty"`
 	Lng  *float64            `json:"lng,omitempty"`
