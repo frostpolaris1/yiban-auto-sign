@@ -25,9 +25,10 @@
    出现多于一条，或多出仓库表未声明的排期，都判漂移。作业按命令里 token 的
    文件名归类（`flock`/`timeout`/`nice` 等包装器把脚本放在位置参数里也不会漏），
    因此 sign/probe/cleanup 同形状的重复也会被抓到。
-   `/etc/cron.d` 下**文件名含点号**的文件 cron 不读（生产上三份
-   `yiban-*.reconcile-*` 残留因此不是活跃触发器），统计先按 cron 自己的文件名规则
-   过滤。读不到 crontab（无命令/权限不足）时**显式**打印"触发器条数未核"，
+   `/etc/cron.d` 下**文件名只允许 `[A-Za-z0-9_-]`**，其余字符（点号、波浪号、
+   空格等）让整份文件被忽略（生产上三份 `yiban-*.reconcile-*` 残留因此不是活跃
+   触发器），统计先按 cron 自己的文件名规则过滤。读不到 crontab（无命令/权限
+   不足）时**显式**打印"触发器条数未核"，
    **且不丢掉已发现的重复**——两者并存返回、两者都打印；跳过不等于绿。
    判据与实现见 `_trigger_drift_report`。
 3. **防漂移**：`$APP_DIR/scripts/backup.sh`（检出侧）与 `$YIBAN_BACKUP_INSTALLED`
@@ -138,6 +139,8 @@ _BARE_REDIRECT_TOKENS = frozenset({
 })
 #: 贴紧式重定向（`2>&1`、`>/dev/null`、`2>/dev/null`、`>>/var/log/x`）
 _ATTACHED_REDIRECT_RE = re.compile(r"^\d*(?:>>?|<<?)\S")
+#: cron 只读文件名匹配该字符集（man 5 crontab）；其余字符让整份文件被忽略
+_CRON_TABLE_NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
 
 
 def _env(name, default):
@@ -194,9 +197,10 @@ def _find_plaintext(backup_dir, day):
 
     仅用于把"当日只有明文包"与"什么都没生成"区分开——两种都不健康，但排查方向
     完全不同（前者查加密配置为何失效，后者查 cron/脚本本身）。
+    与 `_find_archive` 同口径：0 字节明文是残留，按"包缺失"归因，不算"只有明文包"。
     """
     path = os.path.join(backup_dir, f"yiban-{day}{PLAINTEXT_SUFFIX}")
-    return path if os.path.isfile(path) else None
+    return path if _nonempty_file(path) else None
 
 
 def _file_fingerprint(path):
@@ -262,12 +266,18 @@ def _strip_redirections(command):
 
 
 def _command_segments(command):
-    """按 shell 控制符（`&&` / `||` / `;` / `|`）切段。
+    """按 shell 控制符（`&&` / `||` / `;` / `|`）切段；行尾注释截断。
 
     `cd <检出> && python3 x.py` 的作业是第二段——`cd` 只是定位，不是作业。
+    以 `#` 开头的 token 起是 shell 注释：本行其余 token 不是命令
+    （`wrapper.sh # 同族见 run.sh` 里的 run.sh 不得被算成触发器）。
     """
     segment = []
     for tok in _strip_redirections(command):
+        if tok.startswith("#"):
+            if segment:
+                yield segment
+            return
         if tok in ("&&", "||", ";", "|"):
             if segment:
                 yield segment
@@ -311,24 +321,76 @@ def _job_key(command):
     return None
 
 
-def _job_keys_in_command(command, known_jobs):
-    """命令里出现的已知作业键：任一 token 的 basename 命中即归入该作业。
+#: 同一作业的入口别名组（部署面已知）。
+#: 安装版 `yiban-backup.sh` 与 cron wrapper 调的是同一个备份作业。
+#: 其它改名入口/软链名不归并（登记边界，不做 inode 归并）。
+_JOB_ALIAS_GROUPS = (
+    frozenset({"yiban-backup-wrapper.sh", "yiban-backup.sh"}),
+)
 
-    生产侧的归类**不按"解释器后第一个位置参数"取**（P3-5 实测）：
-    `flock -n /run/lock/x.lock wrapper.sh` 取到锁文件名、`timeout 600 wrapper.sh`
-    取到时长、`nice -n 10 wrapper.sh` 取到调整值——三种包装形态全部漏检。
-    解析每个包装器的选项参数个数既易错又随工具版本变，故改为逐 token 匹配
-    已知作业键：包装器把真正的命令放在位置参数里，它的 basename 仍是作业键。
-    一行调用多个已知作业时全部计入（多报方向，不静默漏）；重定向目标已在
-    `_command_segments` 里剔除，不会把日志文件名当成作业。
-    边界：`sh -c '<整段脚本>'` 把脚本包成一个 token，本门不认（部署契约里没有）。
+
+def _canonical_job_name(name):
+    """别名归一到组内代表（部署契约优先 wrapper）；无别名原样返回。"""
+    for group in _JOB_ALIAS_GROUPS:
+        if name in group:
+            for member in ("yiban-backup-wrapper.sh", "yiban-backup.sh"):
+                if member in group:
+                    return member
+    return name
+
+
+def _known_job_for(name, known_jobs):
+    """token 的 basename 对应的已知作业键；无对应返回 None。"""
+    if name in known_jobs:
+        return name
+    for group in _JOB_ALIAS_GROUPS:
+        if name in group:
+            for member in group:
+                if member in known_jobs:
+                    return member
+    return None
+
+
+def _job_keys_in_command(command, known_jobs):
+    """命令里**处于命令位置**的已知作业键。
+
+    只有下列 token 是作业：
+      - 每段的首个命令 token（跳过前置 `A=1` 环境赋值）；
+      - 段首是解释器/包装器（`_INTERPRETER_NAMES`）时，其后跳过选项值与
+        选项参数的 token。`flock`/`timeout`/`nice`/`sudo` 因此都不会漏检。
+    普通命令的参数不是作业：`/bin/echo wrapper.sh` 与 `--warn-if wrapper.sh`
+    不计。行尾注释由 `_command_segments` 截断。
+    别名：`yiban-backup.sh` 与 `yiban-backup-wrapper.sh` 同作业。
+    其它改名入口/软链名不归并（登记边界，不做 inode 归并）。
+    `sh -c '<单个脚本路径>'` 会识别（引号剥除后 basename 命中）；
+    `sh -c '<含多个词的整段脚本>'` 不保证。
+    边界（登记）：无值短选项（`sudo -n`、`env -i`）后的命令会被当成选项值跳过；
+    部署契约没有这种写法，出现时本门不保证认出。
     """
     found = set()
     for segment in _command_segments(command):
-        for token in segment:
+        i = 0
+        while i < len(segment) and _ENV_ASSIGN_RE.match(segment[i]):
+            i += 1
+        if i >= len(segment):
+            continue
+        head = os.path.basename(segment[i].strip("'\""))
+        job = _known_job_for(head, known_jobs)
+        if job is not None:
+            found.add(job)
+            continue
+        if head not in _INTERPRETER_NAMES:
+            continue                  # 普通命令的参数不是触发器
+        prev_is_option = False
+        for token in segment[i + 1:]:
             name = os.path.basename(token.strip("'\""))
-            if name in known_jobs:
-                found.add(name)
+            if not prev_is_option:
+                job = _known_job_for(name, known_jobs)
+                if job is not None:
+                    found.add(job)
+            # 其值是命令（`sh -c '<脚本路径>'`），下一个 token 要参与匹配
+            prev_is_option = (False if token in ("-c", "--command")
+                              else token.startswith("-"))
     return found
 
 
@@ -399,9 +461,10 @@ def _read_crontab(crontab_bin, user=None):
 def _cron_d_entries(cron_d_dir):
     """读 `cron.d` 目录的活跃条目：返回 `([(path, schedule, command)], [未核原因])`。
 
-    **cron 自己的文件名规则**：`/etc/cron.d` 下文件名含 `.` 的文件整份被忽略。
-    生产上三份 `yiban-*.reconcile-20261017125303` 残留因此不是活跃触发器；
-    不实现这条规则，门会把它们误报成重复。
+    **cron 自己的文件名规则**：`/etc/cron.d` 下文件名只允许 `[A-Za-z0-9_-]`；
+    其余字符（点号、波浪号、空格、`+` 等）让整份文件被忽略。生产上三份
+    `yiban-*.reconcile-20261017125303` 残留因此不是活跃触发器；不实现这条规则，
+    门会把它们误报成重复。
     边界（如实登记）：文件的属主/权限条件（root 且组与其他不可写）**不判**。
     权限不合的文件 cron 不执行，本门仍把它算成触发器——方向是多报，不是漏报。
     """
@@ -411,8 +474,8 @@ def _cron_d_entries(cron_d_dir):
     except OSError as e:
         return [], [f"无法读取 cron.d 目录 {cron_d_dir}：{e}"]
     for name in names:
-        if "." in name:
-            continue                  # cron 的规则：含点号的 cron.d 文件不读
+        if not _CRON_TABLE_NAME_RE.fullmatch(name):
+            continue                  # cron 的规则：非白名单文件名的表不读
         path = os.path.join(cron_d_dir, name)
         if not os.path.isfile(path):
             continue
@@ -478,8 +541,8 @@ def _repo_jobs(repo_cron_dir):
         return None
     jobs = {}
     for name in names:
-        if "." in name:
-            continue                  # 与生产同一套规则：含点号的表 cron 不读
+        if not _CRON_TABLE_NAME_RE.fullmatch(name):
+            continue                  # 与生产同一套规则：非白名单文件名的表 cron 不读
         path = os.path.join(repo_cron_dir, name)
         if not os.path.isfile(path):
             continue
@@ -492,6 +555,7 @@ def _repo_jobs(repo_cron_dir):
             key = _job_key(command)
             if key is None:
                 continue
+            key = _canonical_job_name(key)
             info = jobs.setdefault(key, {"schedules": set(), "tables": set()})
             info["schedules"].add(schedule)
             info["tables"].add(name)
@@ -677,6 +741,21 @@ def _missing_mail(day, backup_dir, archive, sidecar_ok, plaintext=None, *,
     return mail_layout.Mail(summary=summary, fields=fields, advice=advice, level="urgent")
 
 
+def _trigger_drift_summary(findings):
+    """触发器漂移摘要：按「多条重复」与「仅未声明排期」分流措辞。
+
+    `count=1` 只可能来自「排期未在仓库表声明」。此时说「存在多条」会与正文的
+    「1 条」自相矛盾（第 6 项）。两种形状并存时用中性措辞，不单说哪一种。
+    """
+    has_multi = any(f["count"] > 1 for f in findings)
+    has_undeclared = any(f["note"] == "排期未在仓库表声明" for f in findings)
+    if has_multi and has_undeclared:
+        return "同一作业的触发器与仓库表声明不一致（含重复触发器与未声明排期）。"
+    if has_multi:
+        return "同一作业同一排期存在多条活跃触发器（cron 会并发跑同一份作业）。"
+    return "作业排期未在仓库表声明（可能一天多跑或排期漂移）。"
+
+
 def _drift_mail(repo_copy, installed, drift, trigger_drift=None):
     """"运行脚本 ≠ 检出脚本"与"同一作业多条触发器"的告警正文。
 
@@ -693,7 +772,7 @@ def _drift_mail(repo_copy, installed, drift, trigger_drift=None):
         parts, tips = _trigger_drift_parts(trigger_drift)
         details += parts
         advice += tips
-        summaries.append("同一作业存在多条活跃触发器（cron 会并发跑同一份作业）。")
+        summaries.append(_trigger_drift_summary(trigger_drift["findings"]))
     return mail_layout.Mail(summary="".join(summaries), fields=details,
                             advice=advice, level="urgent")
 

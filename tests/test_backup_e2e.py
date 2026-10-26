@@ -472,6 +472,17 @@ class SidecarWriteRequiresExistingTargetTest(_BackupRunBase):
         self.assertEqual([], glob.glob(os.path.join(self.backups, "*.sha256.tmp*")),
                          "失败路径不得留下清单临时件")
 
+    def test_caller_sidecar_tmp_env_is_not_deleted_on_early_exit(self):
+        """第 8 项：调用者预置 SIDECAR_TMP 时，trap 只删本脚本自己写的。"""
+        victim = os.path.join(self.tmp, "caller-owned.txt")
+        with io.open(victim, "w", encoding="utf-8") as f:
+            f.write("keep me\n")
+        r = self._run((), {"RETENTION_DAYS": "0", "SIDECAR_TMP": victim})
+        out = self._out(r)
+        self.assertEqual(r.returncode, 1, f"RETENTION_DAYS=0 应拒绝执行：{out}")
+        self.assertTrue(os.path.exists(victim),
+                        "EXIT trap 删掉了调用者预置的 SIDECAR_TMP")
+
     def test_sidecar_mv_failure_is_loud_and_leaves_no_temp(self):
         """清单落位（mv）失败：显式 rc=1，且不留临时件（原子写的另一半）。"""
         # 桩只拦 `.sha256` 落位；回退到真 mv 的分支本用例走不到，故不因缺 mv 跳过
@@ -693,6 +704,22 @@ class RotationGuardTest(_BackupRunBase):
             self.assertFalse(os.path.exists(p + ".sha256"))
         self.assertEqual(out.count("轮转删除"), 8, f"每次删除必须留一行日志：{out}")
         self.assertTrue(os.path.isfile(self._archive_name()), "当日件不得被轮转波及")
+
+    def test_fresh_sidecar_temp_is_not_removed_by_rotation(self):
+        """第 4 项：远小于 60 分钟阈值的临时件不是孤儿，轮转不得清。"""
+        fresh = os.path.join(
+            self.backups, f"yiban-{_today()}.tar.gz.gpg.sha256.tmp.999999")
+        with io.open(fresh, "w", encoding="utf-8") as f:
+            f.write("")
+        # 90 秒：仍是「刚产生」量级，但 -mmin +0 会命中（整数分钟为 1）；
+        # 阈值若是 +60 则不会命中。这样 +60→+0 的突变才有判别力。
+        ts = time.time() - 90
+        os.utime(fresh, (ts, ts))
+        r = self._run((), {"BACKUP_PLAINTEXT": "1"})
+        out = self._out(r)
+        self.assertIn(r.returncode, (0, 6), out)
+        self.assertTrue(os.path.exists(fresh),
+                        f"90 秒前的临时件被轮转当成孤儿删掉（-mmin 阈值失效）：{out}")
 
     def test_plaintext_archives_expire_tighter_than_encrypted(self):
         """明文包（含全量密钥）保留期从紧：**默认 K=7 下界也压不过 ≤2 天承诺**。
