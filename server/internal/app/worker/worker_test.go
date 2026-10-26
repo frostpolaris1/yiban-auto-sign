@@ -146,6 +146,16 @@ func (f *fakeStore) ResetRunning(context.Context) (int64, error) {
 	return n, nil
 }
 
+func (f *fakeStore) CountRunning(context.Context) (int64, error) {
+	var n int64
+	for i := range f.tasks {
+		if f.tasks[i].State == string(corestatus.TaskRunning) {
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (f *fakeStore) GetWindow(_ context.Context, schoolTaskID, day string) (coreschedule.WindowRecord, error) {
 	if err := f.windowErrFor[schoolTaskID]; err != nil {
 		return coreschedule.WindowRecord{}, err
