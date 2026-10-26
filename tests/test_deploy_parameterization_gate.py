@@ -15,7 +15,8 @@
   ④ 每个载体确实**引用同一声明**（三种机制：读取器 / 模板占位符 / 环境展开）。
   ⑤ 用声明值渲染各载体，产出与历史命令**逐字相等**——零行为变化的证据。
   ⑥ 全仓跟踪树按**声明值**扫（端口与线程数的当前缺省）：豁免只有两种——
-     值表本身（路径级）与 README 的 4 行示例（**行级**冻结，行号或内容变化即红）；
+     值表本身（路径级）与 README 的 4 行示例（**行级**锚点冻结，锚点消失/多命中/
+     行内容变化即红；不再依赖固定行号）；
      门面外三件（entrypoint / deploy_gate / drill-container）登记口径。
   ⑦ 突变自证：把字面量回填进任一载体的真实文本 ⇒ 同一扫描器必红；
      扫描面为空 ⇒ 判红（扫空不得当绿）；豁免表为空 ⇒ 判红。
@@ -67,13 +68,19 @@ TREE_EXEMPT = {
     "deploy/web.env": "唯一值表——本门要保护的那一处定义",
 }
 
-#: ⑥ 的登记豁免（**行级**）：(文件, 行号) → 理由。README 的 4 处是用户可见示例；
-#: 按行冻结，行内容变化或行号漂移即判红（不整文件放行）。
-TREE_EXEMPT_LINES = {
-    ("README.md", 950): "Cookie Secure 直连示例（示例说明，不是载体）",
-    ("README.md", 962): "本机调试 URL 示例（示例说明，不是载体）",
-    ("README.md", 983): "部署契约说明中的直连示例（示例说明，不是载体）",
-    ("README.md", 985): "XFF 口径说明中的直连示例（示例说明，不是载体）",
+#: ⑥ 的登记豁免（**行级**）：(文件, 锚点) → 理由。README 的 4 处是用户可见示例；
+#: 锚点必须在文件里**恰好命中一行**，且该行仍含声明的端口值。用锚点而不是行号：
+#: 上方插入/删除行不再让豁免漂到别的正文上（2026-10-26 CI 红的形态）。
+#: 锚点本身**不得含声明端口字面量**：本文件也在全仓扫描面内，写进去会让门自己红。
+TREE_EXEMPT_LINE_ANCHORS = {
+    ("README.md", "调试时必须删掉该行或设为"):
+        "Cookie Secure 直连示例（示例说明，不是载体）",
+    ("README.md", "（本机调试）"):
+        "本机调试 URL 示例（示例说明，不是载体）",
+    ("README.md", "应用会从请求路径自动识别挂载前缀"):
+        "部署契约说明中的直连示例（示例说明，不是载体）",
+    ("README.md", "顺带把 IP 口径说清"):
+        "XFF 口径说明中的直连示例（示例说明，不是载体）",
 }
 
 #: **门面外**登记：不是部署载体，但必须写明口径。全仓扫描对**声明值**仍覆盖它们
@@ -204,6 +211,31 @@ def _unregistered(hits, path_exempt, line_exempt):
             continue
         out.append((rel, lineno, kind, frag))
     return out
+
+
+def _resolve_line_exemptions():
+    """锚点 → 当前行号：锚点必须唯一命中，且该行仍含声明端口。
+
+    用锚点而不是固定行号：上方插入/删除行不会让豁免漂到别的正文上。锚点消失、
+    命中多行、或命中行不再含声明端口，都判红（豁免失效必须显性）。
+    """
+    resolved = {}
+    for (rel, anchor), reason in TREE_EXEMPT_LINE_ANCHORS.items():
+        if not reason.strip():
+            raise AssertionError("行级豁免 %s:%r 没有理由" % (rel, anchor))
+        lines = _read(os.path.join(BASE, rel.replace("/", os.sep))).splitlines()
+        matches = [num for num, line in enumerate(lines, 1) if anchor in line]
+        if len(matches) != 1:
+            raise AssertionError(
+                "行级豁免锚点 %s:%r 命中 %d 行（须恰好 1 行；漂移/内容已改）"
+                % (rel, anchor, len(matches)))
+        lineno = matches[0]
+        if PORT_DEFAULT not in lines[lineno - 1]:
+            raise AssertionError(
+                "行级豁免 %s:%d 已不含声明端口（锚点命中但内容已改）：%r"
+                % (rel, lineno, lines[lineno - 1]))
+        resolved[(rel, lineno)] = reason
+    return resolved
 
 
 class DeployParameterizationGateTest(unittest.TestCase):
@@ -381,20 +413,12 @@ class DeployParameterizationGateTest(unittest.TestCase):
             self.assertTrue(reason.strip(), "豁免 %s 没有理由" % rel)
             self.assertTrue(os.path.isfile(os.path.join(BASE, rel.replace("/", os.sep))),
                             "死豁免（文件不存在）：%s" % rel)
-        # 行级豁免必须真实：行存在、且该行确实含声明的端口值（行号漂移即红）。
-        for (rel, lineno), reason in TREE_EXEMPT_LINES.items():
-            self.assertTrue(reason.strip(), "行级豁免 %s:%d 没有理由" % (rel, lineno))
-            lines = _read(os.path.join(BASE, rel.replace("/", os.sep))).splitlines()
-            self.assertLessEqual(lineno, len(lines),
-                                 "行级豁免越界：%s:%d（文件只有 %d 行）"
-                                 % (rel, lineno, len(lines)))
-            self.assertIn(PORT_DEFAULT, lines[lineno - 1],
-                          "行级豁免 %s:%d 已不含声明端口（行号漂移/内容已改）：%r"
-                          % (rel, lineno, lines[lineno - 1]))
+        # 行级豁免按锚点解析：唯一命中且该行仍含声明端口（漂移/内容变化即红）。
+        line_exempt = _resolve_line_exemptions()
         scanned, hits = _scan(_tracked_files())
         self.assertGreater(len(scanned), 100,
                            "跟踪树可读文本只有 %d 个——扫描面塌了" % len(scanned))
-        bad = _unregistered(hits, TREE_EXEMPT, TREE_EXEMPT_LINES)
+        bad = _unregistered(hits, TREE_EXEMPT, line_exempt)
         self.assertEqual([], bad,
                          "跟踪树仍有端口/线程字面量（改引用值表，或登记豁免）：%r" % bad)
         self.assertTrue(any(h[0] == "deploy/web.env" for h in hits),

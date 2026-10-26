@@ -663,6 +663,18 @@
       "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
     }
   },
+  "YIBAN_CRON_D_DIR": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_SYSTEM_CRONTAB": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
   "YIBAN_BACKUP_RETAIN_DAYS": {
     "default_literal_gate": true
   },

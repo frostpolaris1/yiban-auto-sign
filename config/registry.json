@@ -1861,6 +1861,30 @@
     "tier": "master",
     "reload": "restart"
   },
+  "YIBAN_CRON_D_DIR": {
+    "type": "path",
+    "default": "/etc/cron.d",
+    "group": [
+      "部署"
+    ],
+    "doc": "触发器条数门读取的生产 cron.d 目录（备份哨兵用）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_SYSTEM_CRONTAB": {
+    "type": "path",
+    "default": "/etc/crontab",
+    "group": [
+      "部署"
+    ],
+    "doc": "系统级 cron 表路径（触发器条数门用）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
   "YIBAN_BACKUP_RETAIN_DAYS": {
     "type": "int",
     "default": 30,
