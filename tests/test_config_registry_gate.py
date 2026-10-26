@@ -12,9 +12,11 @@
     ④ 模板缺省等值；④′ 无缺省键的载体示例值差异必须逐键登记（值与登记必须一致，
        登记了却同值即陈旧）；
     另有防废门三条（空名册、名册缺失、键数不足）与 CI 接线、部署件到位两条。
-    以及 core 层防御性回退的等值门：`yiban/core/window.py` 的 `DEFAULT_EDGE_SEC`
-    必须等于名册 `YIBAN_WINDOW_EDGE_FRONT_SEC` / `_BACK_SEC` 的缺省（该层读不了名册）。
-    该等值门只钉这一处回退，**不**主张全仓缺省已单源。
+    以及跨层防御性回退的等值门：`yiban/core/window.py` 的 `DEFAULT_EDGE_SEC`
+    必须等于名册 `YIBAN_WINDOW_EDGE_FRONT_SEC` / `_BACK_SEC` / `YIBAN_WINDOW_EDGE_SEC`
+    的缺省；`yiban/adapters/config/env_io.py` 的 `DEFAULT_STATE_DIR` 必须等于
+    `YIBAN_STATE_DIR` 的缺省。两处都读不了名册：loader 在模块级导入这两个模块，
+    反向 import 会拿到半初始化模块。该等值门只钉这两处回退，**不**主张全仓缺省已单源。
 对应实现：`scripts/check-config-registry.py`、`config/registry.json`、
     `config/default-gate-register.json`、`config/code-literal-register.json`、
     `scripts/dev-verify.sh` 的 `run_ci`、`docker/Dockerfile`。
@@ -585,6 +587,32 @@ class GateShellDefaultCarrierTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("shell 缺省漂移", r.stdout)
 
+    def test_nested_non_default_operator_without_registration_turns_gate_red(self):
+        """审查员 7yf 第四轮低-2：`${KEY:-${OTHER:?boom}}` 外层取值静态判不了。
+
+        内层 `:?` 不是缺省操作符，但它让外层取值到运行期才定 ⇒ 按 dynamic 处理，
+        必须登记（§30：跳过≠绿）。旧实现按"非缺省"静默跳过，门判绿。
+        """
+        r = self._run('D="${YIBAN_STATE_DIR:-${OTHER:?boom}}"\n')
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("shell 缺省未登记", r.stdout)
+
+    def test_nested_non_default_operator_with_registration_passes(self):
+        r = self._run('D="${YIBAN_STATE_DIR:-${OTHER:?boom}}"\n',
+                      code_register=self._register({
+                          "file": "scripts/x.sh", "key": "YIBAN_STATE_DIR",
+                          "reason": "夹具：内层 :? 让外层取值动态，登记跳过"}))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("shell 缺省跳过（已登记）", r.stdout)
+
+    def test_nested_non_default_operator_registration_without_reason_is_environment_error(self):
+        r = self._run('D="${YIBAN_STATE_DIR:-${OTHER:?boom}}"\n',
+                      code_register=self._register({
+                          "file": "scripts/x.sh", "key": "YIBAN_STATE_DIR",
+                          "reason": " "}))
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("reason", r.stderr)
+
     def test_dynamic_skip_without_registration_turns_gate_red(self):
         r = self._run('D="${YIBAN_STATE_DIR:-$(dirname "$X")}"\n')
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
@@ -981,7 +1009,8 @@ def _module_level_key_reads(source, keys):
     """→ 在**模块导入期**读取的配置键集合（函数/类体内的读取不算）。
 
     `keys` 是关心的键名集合。判据只认"赋值语句的右值里出现键名字面量"这一形态：
-    `CAP = parse_env_int("KEY", 1)` 与 `X = os.environ["KEY"]` 都会被抓住；
+    `CAP = parse_env_int("KEY", 1)`、`CAP = parse_env_int(key="KEY", default=1)`
+    与 `X = os.environ["KEY"]` 都会被抓住；
     函数体内的同一写法是"读时取"，按设计放行。
     **不读 `.env` 的调用放行**：`config_loader.default_of` / `default_required`
     取的是名册缺省，不是运行期配置值（`_REGISTRY_DEFAULT_ACCESSORS`）。
@@ -1000,6 +1029,10 @@ def _module_level_key_reads(source, keys):
                     for arg in sub.args:
                         if isinstance(arg, ast.Constant) and arg.value in keys:
                             found.add(arg.value)
+                    for kw in sub.keywords:
+                        if (isinstance(kw.value, ast.Constant)
+                                and kw.value.value in keys):
+                            found.add(kw.value.value)
                 elif isinstance(sub, ast.Subscript):
                     sl = sub.slice
                     if isinstance(sl, ast.Constant) and sl.value in keys:
@@ -1077,6 +1110,10 @@ class HotKeyImportSnapshotTest(unittest.TestCase):
                             '"YIBAN_MAIL_USER_FAIL_DAILY_CAP")\n')
         self.assertEqual(_module_level_key_reads(registry_default, hot), set(),
                          "default_required 只读名册，不是 .env 快照")
+        # 关键字实参同样是导入期快照（审查员 7yf 第四轮低-4）
+        keyword_arg = ('CAP = parse_env_int(key="YIBAN_MAIL_USER_FAIL_DAILY_CAP",'
+                       ' default=1)\n')
+        self.assertEqual(_module_level_key_reads(keyword_arg, hot), hot)
 
 
 class GateRealRegistryContentTest(unittest.TestCase):
@@ -1690,6 +1727,17 @@ class GateRealCodeRegisterContentTest(unittest.TestCase):
             self.assertIn("default_symbols", spec,
                           "%s 开门了却没声明 default_symbols（无载体写 []）" % key)
 
+    def test_schedule_window_fallbacks_are_declared_carriers(self):
+        """`yiban/engine/schedule.py` 的两枚窗口回退常量必须登记为承载符号。
+
+        审查员 7yf 第四轮：它们是 `YIBAN_SIGN_START` / `YIBAN_SIGN_END` 的实际
+        回退值；不登记时门看不见漂移（`(6, 31)` 实测仍 rc=0）。
+        """
+        for key, symbol in (("YIBAN_SIGN_START", "_DEFAULT_SIGN_START"),
+                            ("YIBAN_SIGN_END", "_DEFAULT_SIGN_END")):
+            self.assertIn(symbol, self.registry[key].get("default_symbols") or [],
+                          "%s 的承载常量 %s 未登记，漂移门看不见" % (key, symbol))
+
     def test_shell_skips_are_registered_with_reason(self):
         """§30：shell 臂跳过必须登记（动态值/存在性判定），不许静默。"""
         items = self.code_register["_meta"].get("shell_exempt_defaults") or []
@@ -1722,9 +1770,12 @@ class CoreFallbackEquivalenceTest(unittest.TestCase):
     `yiban.core.window` 不读 `.env`，也不许 import `yiban.adapters.config.loader`
     （依赖方向：loader 导入本模块，反向即成环）。故 `DEFAULT_EDGE_SEC` 保留字面量，
     由本用例等值钉住：名册改值而常量不跟随 ⇒ 红；常量单改 ⇒ 红。
+    旧键 `YIBAN_WINDOW_EDGE_SEC` 同样落到 `DEFAULT_EDGE_SEC`（`parse_edges` 的
+    legacy 分支），故也在 `KEYS` 内（审查员 7yf 第四轮低-1）。
     """
 
-    KEYS = ("YIBAN_WINDOW_EDGE_FRONT_SEC", "YIBAN_WINDOW_EDGE_BACK_SEC")
+    KEYS = ("YIBAN_WINDOW_EDGE_FRONT_SEC", "YIBAN_WINDOW_EDGE_BACK_SEC",
+            "YIBAN_WINDOW_EDGE_SEC")
 
     def test_default_edge_sec_equals_registry_defaults(self):
         from yiban.adapters.config import loader as config_loader
@@ -1734,6 +1785,42 @@ class CoreFallbackEquivalenceTest(unittest.TestCase):
                 config_loader.default_required(key), window.DEFAULT_EDGE_SEC,
                 "yiban/core/window.py 的 DEFAULT_EDGE_SEC 与名册 %s 的缺省不等——"
                 "两侧必须同值（改任一侧必红）" % key)
+
+
+class StateDirFallbackEquivalenceTest(unittest.TestCase):
+    """`env_io.DEFAULT_STATE_DIR` 必须等于名册 `YIBAN_STATE_DIR` 的缺省。
+
+    与 `CoreFallbackEquivalenceTest` 同形（审查员 7yf 第四轮 B）：
+    `env_io` 被 `loader` 在模块级导入，而 `DEFAULT_STATE_DIR` 在 `env_io` 导入期
+    求值。此时反向 import loader，loader 还是半初始化模块——实测 loader-first 顺序
+    抛 `AttributeError: partially initialized module 'yiban.adapters.config.loader'
+    has no attribute 'default_required'`。故常量保留字面量，由本用例钉住：
+    名册改值而常量不跟随、或常量单改，两侧都红。
+    """
+
+    def test_default_state_dir_equals_registry_default(self):
+        from yiban.adapters.config import env_io
+        from yiban.adapters.config import loader as config_loader
+        self.assertEqual(
+            env_io.DEFAULT_STATE_DIR,
+            config_loader.default_required("YIBAN_STATE_DIR"),
+            "yiban/adapters/config/env_io.py 的 DEFAULT_STATE_DIR 与名册 "
+            "YIBAN_STATE_DIR 的缺省不等——两侧必须同值（改任一侧必红）")
+
+    def test_resolver_falls_back_to_registry_default(self):
+        """`state_dir_from_env` 的形参缺省也必须落到名册缺省。
+
+        常量等值只钉一个节点：把形参缺省直接改成字面量（`default="/var/log/yiban2"`）
+        时常量不动、常量断言照绿，而运行期落点已经漂移。本用例走空环境调解析器，
+        钉住**实际生效**的缺省。
+        """
+        from yiban.adapters.config import env_io
+        from yiban.adapters.config import loader as config_loader
+        self.assertEqual(
+            env_io.state_dir_from_env(env={}, env_file=os.devnull),
+            config_loader.default_required("YIBAN_STATE_DIR"),
+            "state_dir_from_env 的形参缺省与名册 YIBAN_STATE_DIR 的缺省不等——"
+            "空环境下解析出的状态目录必须是名册缺省")
 
 
 class GateCiWiringTest(unittest.TestCase):

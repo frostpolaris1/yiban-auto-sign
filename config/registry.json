@@ -684,7 +684,8 @@
     "reload": "next-round",
     "default_literal_gate": true,
     "default_symbols": [
-      "DEFAULT_START"
+      "DEFAULT_START",
+      "_DEFAULT_SIGN_START"
     ]
   },
   "YIBAN_SIGN_END": {
@@ -701,7 +702,8 @@
     "default_literal_gate": true,
     "default_symbols": [
       "DEFAULT_END",
-      "sign_end_default"
+      "sign_end_default",
+      "_DEFAULT_SIGN_END"
     ]
   },
   "YIBAN_SECOND_RUN_TIME": {

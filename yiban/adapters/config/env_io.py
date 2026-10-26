@@ -332,6 +332,10 @@ SIGN_STATE_SUFFIX = ".json"
 SIGN_DAILY_PREFIX = "sign-daily-"
 SIGN_DAILY_SUFFIX = ".json"
 #: 状态目录缺省（裸机部署口径；容器由 compose 的 `YIBAN_STATE_DIR` 覆盖）。
+#: 本层不 import loader：loader 在模块级 import 本模块，反向读名册会拿到半初始化
+#: 模块（实测 loader-first 顺序抛 partially initialized AttributeError）。故缺省保留
+#: 字面量，由 tests/test_config_registry_gate.py::StateDirFallbackEquivalenceTest
+#: 与名册 YIBAN_STATE_DIR 的缺省等值钉住（改任一侧必红）。
 DEFAULT_STATE_DIR = "/var/log/yiban"
 
 
