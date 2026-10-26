@@ -237,7 +237,7 @@ mkdir -p /var/log/yiban
 
 > ⚠️ **已跑过 `sudo bash deploy/prod/install.sh` 的主机跳过本节**：安装器已把
 > `deploy/prod/cron.d/yiban-sign` 落到 `/etc/cron.d/`。这里再抄同样的两行，
-> 每天 06:31 与 07:12 会各有两条触发器——同一作业并发跑两轮，正是 2026-10-25
+> 首签与补签两个排期会各有两条触发器——同一作业并发跑两轮，正是 2026-10-25
 > 备份事故（root crontab 与 cron.d 各一条同一 wrapper）的形状。
 
 ```cron
