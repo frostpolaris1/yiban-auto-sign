@@ -39,7 +39,9 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/storage"
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
 	appadmin "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/admin"
+	appdiagnostic "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/diagnostic"
 	appegress "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/egress"
+	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
 	applocation "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/location"
 	appphotos "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/photos"
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
@@ -54,6 +56,7 @@ import (
 	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 	accounthttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/account"
 	adminhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/admin"
+	eventshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/events"
 	locationhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/location"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
 	photoshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/photos"
@@ -93,6 +96,7 @@ type w2cEnv struct {
 	locations *pg.LocationRepo
 	worker    *appworker.Service
 	provider  *e2eProvider
+	broker    *appevents.Broker
 	// windows 是窗口发现脚本：任务 ID → 平台窗口。
 	windows map[string]contract.Window
 
@@ -233,6 +237,7 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 	if err != nil {
 		t.Fatalf("new location service: %v", err)
 	}
+	e.broker = appevents.NewBroker()
 	e.worker, err = appworker.NewService(appworker.Deps{
 		Store:     e.sched,
 		Creds:     e2eCreds{},
@@ -243,6 +248,7 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		Location:  loc,
 		Locations: locationSvc,
 		Photos:    photoSvc,
+		Notifier:  workerNotifier{broker: e.broker},
 	})
 	if err != nil {
 		t.Fatalf("new worker service: %v", err)
@@ -250,6 +256,13 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 	scheduleSvc, err := appschedule.NewService(appschedule.Deps{
 		Windows: e.sched, Plans: e.sched, Accounts: e.sched,
 		Discover: e2eDiscoverer{windows: e.windows}, Prefs: e.prefs, Tx: db,
+		Notifier: scheduleNotifier{broker: e.broker},
+	})
+	diagSvc, err := appdiagnostic.NewService(appdiagnostic.Deps{
+		Accounts: accountSvc,
+		Store:    pg.NewDiagnosticRepo(db),
+		Clock:    clk,
+		Location: loc,
 	})
 	if err != nil {
 		t.Fatalf("new schedule service: %v", err)
@@ -279,6 +292,7 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		Schedule:        scheduleHandler,
 		Photos:          photoshttp.NewHandler(photoSvc, adminSvc),
 		Locations:       locationhttp.NewHandler(locationSvc, adminSvc),
+		Events:          eventshttp.NewHandler(e.broker, diagSvc, adminSvc, clk, nil),
 	})
 	if err != nil {
 		t.Fatalf("router.New: %v", err)
