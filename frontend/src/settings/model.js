@@ -18,7 +18,18 @@
    签到调度
    ========================================================================= */
 
-/* 与后端 `yiban.engine.schedule._DEFAULT_*` 同值：仅用于空输入/缺字段的兜底回显。 */
+/* 与后端 `yiban.engine.schedule._DEFAULT_*` 同值：仅用于空输入/缺字段的兜底回显。
+   **单位陷阱**：`edge` 是**秒**（60 = 1 分钟），与 `edgeVal()` 的返回值同单位；
+   而 `muMin/muMax/sigmaMin/sigmaMax` 是**百分比**（占有效窗口的比例），不是分钟。
+   窗口 `start/end` 是 `"HH:MM"` 字面量，供 `windowSec()` 解析。三套单位混在一个对象里
+   是历史形态（键名沿用 .env 键名），改动时按键名对后端常量，别按旁边键的单位类推。
+
+   缓冲这一路在三种形态之间来回换，动手前先把链条对齐（错了不会报错，只会静默写成别的数）：
+     服务端/`.env`/快照：**秒**（`edge_front_sec`，默认 60）
+     → 表单/滑杆：**分钟**（0~5、0.5 步进；`ScheduleCard.vue` 用 `s.edgeFront / 60` 回填）
+     → 提交：**秒**（`scheduleFormSnapshot` 里过 `edgeVal` 再变回秒）。
+   所以 `scheduleSnapshot` 出来的 `edgeFront` 与表单里的 `form.edgeFront` **不是同一个单位**，
+   两者不能直接比较；脏判走的是 `scheduleBody`（内部统一经 `scheduleFormSnapshot` 归到秒）。 */
 export var SCHEDULE_DEFAULTS = {
   order: "sequence", dist: "uniform", edge: 60, start: "06:30", end: "07:50",
   muMin: 40, muMax: 60, sigmaMin: 15, sigmaMax: 25,
@@ -55,7 +66,14 @@ export function pctVal(v, fallback) {
   return Math.min(100, Math.max(0, n));
 }
 
-/* "HH:MM" → 当天分钟数；形状或范围不符返回 null。 */
+/* "HH:MM" → 当天分钟数；形状或范围不符返回 null。
+
+   严格两位（`"6:30"` 判不可用）是有意的：喂进这里的值要么来自 `norm()`、要么来自
+   EP 时间选择器，形态必为 `HH:MM`；超出这个形状只可能是外部手改的数据，按"窗口不可用"
+   处理（→ `windowSec` 返回 0 → 滑杆禁用 + 明确告警）比按 `6:30` 猜成可用更安全。
+   本函数**只管解析**，不给回退值：回退策略按用途分家（`norm` 给默认时刻，
+   `windowSec`/`edgeMaxMin` 给 0 = fail-closed），把两者混在一处会让"非法"和"未配置"
+   分不开——"保存后数字变小"就是从这类混淆里长出来的。 */
 export function hhmmToMin(v) {
   var m = /^(\d{2}):(\d{2})$/.exec(String(v == null ? "" : v).trim());
   if (!m) return null;
@@ -64,7 +82,12 @@ export function hhmmToMin(v) {
   return h * 60 + mi;
 }
 
-/* 窗口宽度（秒）：结束晚于开始才为正，否则 0（与服务端 fail-closed 同口径）。 */
+/* 窗口宽度（秒）：结束晚于开始才为正，否则 0（与服务端 fail-closed 同口径）。
+
+   0 是"窗口不可用"的唯一编码（倒置、相等、任一端解析失败都落到这里），不复用负数：
+   下游 `edgeMaxMin(0)` 会得 0 → 滑杆禁用 + 告警（见 `ScheduleCard.vue` 的 `edgeMaxValid`）。
+   窗口跨午夜（如 23:50 ~ 00:10）按同一口径得 0，不算 20 分钟——签到窗口固定在清晨，
+   为这种形态做跨零点推演只会掩盖真实配置错误。 */
 export function windowSec(start, end) {
   var s = hhmmToMin(start), e = hhmmToMin(end);
   if (s == null || e == null) return 0;
@@ -91,7 +114,19 @@ export function resolvePaintValue(opts, v) {
   return { value: v, hit: null };
 }
 
-/* 调度快照（用于只提交改动字段）：从服务端响应构造。 */
+/* 调度快照（用于只提交改动字段）：从服务端响应构造。
+
+   快照的语义是"**这一份表单打开（或上次保存成功）时服务端的真实值**"，`scheduleBody`
+   靠它与表单逐键比对得出最小提交集。所以这里任何一键取错，症状都不是"显示不对"，而是
+   "该键永远不脏"（值恒等于快照，改了也不提交）或"一次无关保存把它写回旧值"。
+
+   两处非直读的取值，理由如下：
+   · 缓冲（edgeFront/edgeBack）三级回退：`edge_front_sec`/`edge_back_sec` → 旧兼容键
+     `window_edge_sec`（"前后同一个值"时代）→ 默认 60 秒。旧键**只读不写**（前端已无
+     对它的控件，`tests/test_settings_tiers_frontend_parity.py` 的 `_NO_UI_KEYS` 里登记了
+     这条豁免），故两键同时在场时以新键为准，否则存量部署回填出来的量程会跟保存值不符。
+   · 间隔缺省按 0：`gap_max` 的 0 是**合法间隔**（= 不留间隔，`settings_api` 同口径），
+     不能因为"0 看着像没配"就换成默认值——那会让一次无关保存把有意去掉的间隔写回来。 */
 export function scheduleSnapshot(data) {
   data = data || {};
   var d = SCHEDULE_DEFAULTS;
@@ -121,7 +156,11 @@ export function scheduleSnapshot(data) {
    而本函数沿用了快照/服务端侧的 `muMin/muMax/sigmaMin/sigmaMax`——两侧不同名，`pctVal`
    对 undefined 一律回默认值。后果：正态参数**永远不进保存体**（改了 μ/σ 不动脏，保存也
    不落盘），且服务端一旦是别的 μ/σ，保存任何其它字段都会把它静默重置成默认。快照侧的
-   键名继续用服务端词汇（与 `scheduleSnapshot` 与 `mu_min_pct` 各键对齐），映射只此一处。 */
+   键名继续用服务端词汇（与 `scheduleSnapshot` 与 `mu_min_pct` 各键对齐），映射只此一处。
+
+   单位也在这一处换：表单的 `edgeFront/edgeBack` 是**分钟**（滑杆值），这里过 `edgeVal`
+   换成**秒**，好与 `scheduleSnapshot` 的秒制快照直接比对。漏了这一步的后果正是"改 1 分钟
+   却按 1 秒落盘"——数字看着合理，行为差 60 倍。 */
 export function scheduleFormSnapshot(form) {
   return {
     order: form.order || SCHEDULE_DEFAULTS.order,
@@ -202,14 +241,38 @@ export function distWarnText(lo, hi, kind) {
 /* 拖拽映射的 σ 上限（%）：贴着 σ_eff 的窗口/3 封顶。 */
 export var E_SIGMA_MAX = 33;
 
+/* 百分比收敛口：整数且钳在 0~100。后端那四个 μ/σ 键就是整数百分比，故这里出口即整数，
+   不留小数（带小数提交会被服务端 `int()` 截断，前端显示值与落盘值就此不一致）。
+   取 `Math.round` 而非 `Math.floor`：拖拽是连续小步累积，向下取整会把每步的零头都丢掉，
+   手柄会单向"粘"在低位、拖不回去。 */
 export function clampPct(v) { return Math.min(100, Math.max(0, Math.round(v))); }
 
+/* 正态密度（x、μ、σ 都是**分钟**，返回值单位 1/分钟）。
+   只当形状用：`DistViz.vue` 先除以峰值（`pdf(muMid, muMid, sgMid)`）再映射到像素高度，
+   所以绝对量级（含 1/(σ√2π) 这个归一化因子）不参与布局，删了也不影响画面——但别删：
+   它让 σ 变化时峰宽/峰高的相对关系仍然由真密度决定。
+   σ 兜底 0.5 分钟不是美观取舍：`sgLo` 理论上 ≥1%，乘上极窄的 `span` 后仍可能 <0.5，
+   而 σ→0 时该式直接除零/溢出成 Infinity，画布会被一个 y=∞ 的峰拖垮。 */
 export function pdf(x, mu, sigma) {
   var s = Math.max(sigma, 0.5);
   return Math.exp(-((x - mu) * (x - mu)) / (2 * s * s)) / (s * Math.sqrt(2 * Math.PI));
 }
 
-/* 区间盒上包络：固定 x、μ 时对 σ 求导的最优 σ=|x−μ| 夹到区间即闭式解，μ 按 25 点网格。 */
+/* 区间盒上包络：固定 x、μ 时对 σ 求导的最优 σ=|x−μ| 夹到区间即闭式解，μ 按 26 个采样点（25 段）。
+
+   它回答的是"**这套 μ/σ 区间**里，任一组合法取值下 X=x 处的密度最大能到多少"——即区间盒
+   的上包络，供画"参数不确定带"用；而峰尖那条钟形用的是区间**中点**（`pdf` + `bellY`），
+   两者口径不同，不要互相替代。
+
+   两段逼近，精度各有来源：
+   · 对 σ 是**闭式解**而非采样：固定 x、μ 时 pdf 作为 σ 的函数在 σ=|x−μ| 取极大
+     （σ 再小，指数项 exp(−d²/2σ²) 把高度压向 0；σ 再大，峰变宽、1/(σ√2π) 把高度摊平），
+     故只需把该点夹进 σ 区间，不必扫 σ。
+   · 对 μ 是**等距采样**：`i=0..25` 把 μ 区间 25 等分、含两端共 26 个采样点。这是画图
+     成本的取舍，不是解析极大——两个采样点之间若真存在更高的峰，结果会偏小（偏保守）。
+     故它适合当画布尺度，不适合当"最大值"写进任何校验或断言。
+   s 的字段（effLo/span/muLo/muHi/sgLo/sgHi）与 `DistViz.vue` 的状态对象同形，
+   百分比一律按 `span` 折算成分钟参与计算。 */
 export function envAt(xMin, s) {
   var muL = s.effLo + s.span * s.muLo / 100, muH = s.effLo + s.span * s.muHi / 100;
   var sL = s.span * s.sgLo / 100, sH = s.span * s.sgHi / 100;
@@ -223,17 +286,42 @@ export function envAt(xMin, s) {
   return best;
 }
 
+/* μ/σ 区间的中点（%）：编辑器与画布"当前手柄位置"的口径。
+
+   ⚠ 它**不是**当日实际生效的参数。后端的当日取值是"在区间里按业务日确定性取一点"
+   （`yiban/engine/schedule.py::day_mu_sigma_pct`，blake2b 由 `day` 推导，全体账号共享
+   同一组值）。故这里画在中点只是"区间中心"的可视化，任何一天的实际峰位都可能偏在区间
+   一侧——把中点当成"今天的 μ"去解释签到时刻早晚，会得出错误结论。 */
 export function muMidPct(s) { return (s.muLo + s.muHi) / 2; }
 export function sgMidPct(s) { return (s.sgLo + s.sgHi) / 2; }
 
-/* 账号数超过 20 后实际散布被放大（σ_eff）；≤20 不放大。 */
+/* 账号数超过 20 后实际散布被放大（σ_eff）；≤20 不放大。
+
+   口径与后端 `yiban/engine/schedule.py::_sigma_eff` 的**乘数**逐字一致：
+   `n > 20 ? 1 + log2(n/20) : 1`。两边各写一遍是因为前端要画，但 `20` 与 `log2` 这两个
+   取值的出处只在那里（人数自适应，避免小站散布过窄、大站全挤在峰值）。
+   单位：倍数，不是分钟——乘在 σ（分钟）上，故截图里的"±分钟"要再看 `span` 折算。
+   注意后端的 `n` 是**当日参与签到的账号数**，这里的 `n` 是容量估算值
+   （`ScheduleCard.vue` 的 `capacityN`），两者在"刚增删账号尚未产生记录"时可能不等，
+   这是预览与实跑的正常差异，不是 bug。 */
 export function sigmaFactor(n) {
   n = Math.max(1, Math.floor(n) || 1);
   return n > 20 ? 1 + Math.log2(n / 20) : 1;
 }
 
+/* σ 绘制上限（**分钟**）：有效窗口的 1/3，与后端 `_sigma_eff` 的封顶 `span/3` 同一个界
+   （防正态尾巴在窗口两端堆成"假峰"）。与后端的差别只有取整：后端保留小数，这里取整到
+   分钟（画布不显示小数分钟），故极端窄窗口下两值可能差不到 1 分钟。
+   `max(1, …)` 保底 1 分钟：窗口窄到 3 分钟以内时 floor 会得 0，0 会让"上限"失去意义
+   （把 σ 锁死在 0，钟形退化成一条竖线）。本函数只影响**画**，不参与提交。 */
 export function sigmaCap(span) { return Math.max(1, Math.floor(span / 3)); }
 
+/* 分钟数 → `"HH:MM"` 展示串（四舍五入到整分，补零两位）。
+
+   只用于界面读数（画布刻度、`data-ed` 输入框、无障碍文案），**不进提交体**：提交的窗口
+   是 `"HH:MM"` 字面量、缓冲是秒，均由各自的口径函数产出。若哪天把这里的输出直接塞进
+   `sign_window`，超过 24 小时或负数会静默变成一个看着合法的时刻——`norm()` 才是那条路
+   的关口。 */
 export function fmtT(min) {
   min = Math.round(min);
   var h = Math.floor(min / 60), m = min % 60;
@@ -319,6 +407,10 @@ export function sanitizeAnnouncement(v) {
   return String(v == null ? "" : v).replace(/[\r\n\u2028\u2029]+/g, " ");
 }
 
+/* "由 X · 时间" 摘要行。两个成分都可缺：`api_announcement` 只对管理员会话下发
+   `draft_by`/`draft_at`/`published_by`/`published_at`（公开响应只有已发布文本），且后端
+   `_parse_announcement_meta` 解不开 meta 串时回空串。缺哪个就省哪段——不要改成占位符
+   （"由 —"），那会把"没有作者信息"显示成"作者未知"。 */
 export function annMeta(by, at) {
   var parts = [];
   if (by) parts.push("由 " + by);
@@ -326,6 +418,9 @@ export function annMeta(by, at) {
   return parts.join(" · ");
 }
 
+/* 草稿行的元信息文案：**有草稿**才谈作者与时间，无草稿给固定文案（面板不留空行）。
+   有草稿但缺作者/时间时退成"草稿已保存"——这句是真的（草稿确实在库里），
+   而"草稿："冒号后接空串会读成界面故障。 */
 export function annDraftMetaText(draft, by, at) {
   var meta = annMeta(by, at);
   return draft ? ("草稿" + (meta ? "：" + meta : "已保存")) : "（无草稿）";
@@ -376,6 +471,13 @@ export function notifyStatusText(data) {
   return parts.join("；");
 }
 
+/* 推送配置快照。三个数值键保留 `null` 而不是收敛成 0，因为 `notifyBody` 靠"是否等于快照"
+   判脏：`null` = 服务端没给这个键（未配置），0 = 用户**显式**关闭（`cooldown 0` 关节流、
+   `daily_max 0` 表示不限，两者都是合法且落盘的取值）。若这里写成 `Number(x) || 0`，
+   "未配置"会变成 0，于是"用户把节流从开改成 0"判不出改动、保存也不提交。
+   `configured` 与 `enabled` 是两个不同事实，别合成一个：`enabled` = 现在真能发，
+   `configured` = 配置过（类型在但密钥缺失/解密失败时仍为真——`notifyStatusText` 的三态
+   文案就是靠这一对区分的）。 */
 export function notifySnapshot(data) {
   data = data || {};
   return {
@@ -436,6 +538,11 @@ export function newSmtpId() {
   return "smtp-" + r.slice(0, 12).replace(/[^a-z0-9]/g, "0");
 }
 
+/* 行的 id：服务端给了就用它的，没给（本地新加的行）现发一个。
+   必须是**同步、不重试**的本地生成：id 在建行那一刻就要定下来并跟着行走进提交体，
+   若等保存请求回来再补，前端这一版的行与后端已经落盘的行对不上，"留空沿用"就丢了锚点。
+   形状只需过后端那条正则（`newSmtpId` 里的 `[^a-z0-9]` 替换就是为此），不需要真随机强度
+   ——它只是行身份、不是令牌；12 位 base36 的撞值概率足够低，故不做查重重试。 */
 export function smtpRowId(entry) {
   return (entry && entry.id) ? String(entry.id) : newSmtpId();
 }
@@ -507,6 +614,11 @@ export function adminToPlaceholder(data) {
   return sentinelText((data || {}).admin_to) || "尚未配置，填写管理员邮箱";
 }
 
+/* 邮件配置快照。`enabled` 存**布尔**而不是 0/1：`mailBody` 用严格不等判脏
+   （`form.enabled !== snap.enabled`），两侧类型不一致会让首屏没动也判成"已改动"，
+   于是一次无改动保存也要走一遍口令门禁。
+   `hasTo` 按首字符 `"<"` 判——后端用 `<未配置>` 这类哨兵表示"没配"，而 `!!admin_to`
+   对哨兵也成立；这里只回答"界面上算不算已配"，展示文案另走 `sentinelText`。 */
 export function mailSnapshot(data) {
   data = data || {};
   var toShown = String(data.admin_to || "");
@@ -527,11 +639,19 @@ export function mailBody(snap, form, tableDirty) {
    容量配额
    ========================================================================= */
 
+/* 容量快照。**0 在这里是"不限"，不是"没配"**（后端 `settings_api` 的容量上限校验写的就是
+   `0~100000（0=不限）`），所以缺键回落 0 与后端口径一致、不是掩盖错误。
+   但要知道这条回落的盲点：服务端若因故没下发 `capacity`，界面会显示"不限"而不是"读不到"——
+   写操作仍由后端把关（那条 0~100000 的校验在保存时照跑），故这里只做展示不做兜底提示。 */
 export function quotaSnapshot(data) {
   var cap = (data && data.capacity) || {};
   return { users: Number(cap.users_max) || 0, accounts: Number(cap.accounts_max) || 0 };
 }
 
+/* 容量变更体：输入框空/非法（parseInt 得 NaN）时**回落到快照值**，于是 `u !== snap.users`
+   不成立、该键不进提交体——"清空输入框再保存"因此是"不改"而不是"提交 0（= 不限）"。
+   这是有意的：把空串当 0 提交会让一次误清空直接把容量打开成无限，而它属于主管理员高危键、
+   又是部分更新语义（后端也是"字段携带才写"）。要真设成不限，请显式输入 0。 */
 export function quotaBody(snap, form) {
   var body = {};
   var u = parseInt(form.users, 10);
@@ -559,6 +679,8 @@ export function adviceLine(d) {
     + (win.start && win.end ? " · 有效窗口 " + win.start + " ~ " + win.end : "");
 }
 
+/* 耗时展示文案（1 位秒级/分秒级）。<60 秒走"秒"并**保底 1**：实测结果里 0 秒/0.3 秒是
+   常态（登录复用会话时），显示"0 秒"会被读成"没测到"；保底 1 只影响文案，不回到计算里。 */
 export function clockText(sec) {
   if (sec < 60) return Math.max(1, Math.round(sec)) + " 秒";
   var m = Math.floor(sec / 60), s = Math.round(sec % 60);
