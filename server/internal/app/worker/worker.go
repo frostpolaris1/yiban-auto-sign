@@ -44,7 +44,7 @@ const (
 // locationOutOfRange 是宿主自产的确定性结论词（与 window_closed 同形）：
 // 固定点落在目标围栏外且无原因说明。它不在 contract.Outcome 词表内——
 // 提供方永不返回它；确定结论不退避，落 skipped 档。
-const locationOutOfRange = "location_out_of_range"
+const locationOutOfRange = "location_out_of_range" // 与 core/errs.CodeLocationOutside 同词：宿主自产结论，不经 contract.Outcome。
 
 // Service 是执行循环服务。
 type Service struct {

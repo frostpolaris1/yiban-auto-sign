@@ -167,3 +167,43 @@ func TestResolveAutoAlwaysInside(t *testing.T) {
 		t.Fatal("auto 定位不得被判在外")
 	}
 }
+
+// 非轴对齐多边形：顶点按在内，斜边内外各有判据。
+// 删掉 onSegment 前置时本测试必红（P5-C 审查 P3-1）。
+func TestPointInPolygonNonAxisAligned(t *testing.T) {
+	poly := []contract.Point{
+		{Lng: 0, Lat: 0}, {Lng: 4, Lat: 0}, {Lng: 2, Lat: 2},
+	}
+	cases := []struct {
+		lng, lat float64
+		want     bool
+		note     string
+	}{
+		{2, 0.5, true, "三角形内"},
+		{2, 2.5, false, "顶点上方"},
+		{4, 0, true, "顶点按在内"},
+		{5, 1, false, "右外侧"},
+	}
+	for _, c := range cases {
+		if got := location.PointInPolygon(c.lng, c.lat, poly); got != c.want {
+			t.Fatalf("(%v,%v)=%v, want %v（%s）", c.lng, c.lat, got, c.want, c.note)
+		}
+	}
+}
+
+// 不对称多边形：经纬度互换（射线换轴）必须改变判定结果，
+// 否则换轴突变静默存活（P5-C 审查 P3-2）。
+func TestPointInPolygonAsymmetric(t *testing.T) {
+	poly := []contract.Point{
+		{Lng: 100, Lat: 20}, {Lng: 110, Lat: 21}, {Lng: 109, Lat: 29}, {Lng: 101, Lat: 30},
+	}
+	if !location.PointInPolygon(105, 25, poly) {
+		t.Fatal("(105,25) 应在多边形内")
+	}
+	if location.PointInPolygon(105, 35, poly) {
+		t.Fatal("(105,35) 应在多边形外")
+	}
+	if location.PointInPolygon(90, 25, poly) {
+		t.Fatal("(90,25) 应在多边形外")
+	}
+}

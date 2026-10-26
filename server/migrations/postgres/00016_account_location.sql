@@ -2,8 +2,8 @@
 --
 -- account_location: one row per account. Missing row means "auto": the
 --   platform samples the position. mode fixed pins lng/lat and carries a
---   free-text reason. The reason travels to the platform when the fixed
---   point falls outside the target fence, so the operator can explain why.
+--   free-text reason. The reason is kept by the host for audit; delivering
+--   it to the platform lands with the upload protocol slice (P5-D).
 -- lng/lat are nullable only for auto rows; the CHECK makes a fixed row
 --   impossible without a complete point (fail-closed at the storage layer).
 -- updated_by points at the operator who wrote the row; it is a soft
