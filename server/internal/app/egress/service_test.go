@@ -89,6 +89,9 @@ func TestAssignIsSticky(t *testing.T) {
 	if err != nil {
 		t.Fatalf("assign: %v", err)
 	}
+	if a.Identity != "https://"+a.ID {
+		t.Fatalf("首次分配 Identity 失真: %+v", a)
+	}
 	b, err := svc.Assign(context.Background(), "acct-1")
 	if err != nil {
 		t.Fatalf("reassign: %v", err)
@@ -182,12 +185,53 @@ func TestUnhealthySkippedForNewOnly(t *testing.T) {
 	}
 }
 
-// 无可选出口：响亮拒绝。
+// 无可选出口：响亮拒绝，且错误码是 capacity_exceeded（运维配置面）。
 func TestNoEnabledEgress(t *testing.T) {
 	svc := newService(t, newFakeStore())
-	if _, err := svc.Assign(context.Background(), "acct-1"); err == nil {
+	_, err := svc.Assign(context.Background(), "acct-1")
+	if err == nil {
 		t.Fatal("无启用出口应报错")
 	}
+	if got := coreerrs.From(err).Code; got != coreerrs.CodeCapacity {
+		t.Fatalf("错误码 = %s, want capacity_exceeded", got)
+	}
+}
+
+// 绑定指向不存在的出口：属数据异常，必须响亮失败（不得返回空记录）。
+func TestBoundMissingEgressFails(t *testing.T) {
+	st := newFakeStore("e1")
+	st.assigned["acct-gone"] = "missing-id"
+	svc := newService(t, st)
+	if _, err := svc.Assign(context.Background(), "acct-gone"); err == nil {
+		t.Fatal("绑定指向不存在出口应报错")
+	}
+}
+
+// ListEnabled 错误必须上抛（不得当空清单吞掉）。
+func TestListEnabledErrorPropagates(t *testing.T) {
+	st := &listErrStore{}
+	svc, err := appegress.NewService(appegress.Deps{Store: st, Clock: coreclock.Fixed{T: testNow}})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := svc.Assign(context.Background(), "acct-1"); err == nil {
+		t.Fatal("ListEnabled 错误应上抛")
+	}
+}
+
+type listErrStore struct{}
+
+func (s *listErrStore) Get(context.Context, string) (appegress.Egress, error) {
+	return appegress.Egress{}, coreerrs.ErrNotFound
+}
+func (s *listErrStore) ListEnabled(context.Context) ([]appegress.Egress, error) {
+	return nil, errors.New("list failed")
+}
+func (s *listErrStore) GetAssignment(context.Context, string) (string, error) {
+	return "", coreerrs.ErrNotFound
+}
+func (s *listErrStore) AssignOrGet(context.Context, string, string) (string, error) {
+	return "", nil
 }
 
 // 空账号：校验失败。
