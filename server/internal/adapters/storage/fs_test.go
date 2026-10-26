@@ -133,3 +133,16 @@ func hexOf(sha [32]byte) string {
 	}
 	return string(out)
 }
+
+// 键必须等于字节摘要：内容寻址的根不变量。
+func TestFSPutRejectsMismatchedDigest(t *testing.T) {
+	fs, err := storage.NewFS(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFS: %v", err)
+	}
+	data := []byte("real bytes")
+	wrong := storage.Digest([]byte("other bytes"))
+	if err := fs.Put(context.Background(), wrong, data); err == nil {
+		t.Fatal("摘要不匹配应被拒绝")
+	}
+}
