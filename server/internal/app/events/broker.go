@@ -167,7 +167,8 @@ func (b *Broker) Publish(scope []string, evt Event) {
 // 返回的 cancel 与 ctx 取消等效：都注销订阅并关闭订阅通道。
 // cancel 同步生效：返回后发布不再投递给本订阅。
 // 回放在注册锁内完成，与并发 Publish 严格保序；
-// 回放量超过 subBuffer 时溢出部分计入 dropped。
+// 可回放量超过 subBuffer 时改发 resync（订阅方用 snapshot 兜底），
+// **必须**调用 cancel 或取消 ctx，否则订阅与 goroutine 常驻。
 func (b *Broker) Subscribe(ctx context.Context, schools []string, lastEventID uint64) (Subscription, context.CancelFunc) {
 	sub := &subscriber{ch: make(chan Event, subBuffer)}
 	if schools != nil {
@@ -207,7 +208,20 @@ func (b *Broker) replay(sub *subscriber, lastEventID uint64) {
 	}
 	head := b.seq
 	if lastEventID <= head && lastEventID+1 >= head-uint64(b.n)+1 {
-		// 缺口完整落在环内：最旧 ID = head-n+1 ≤ lastEventID+1。
+		// 缺口完整落在环内。先数条数：可回放量超过订阅者缓冲时
+		// **不做部分回放**——静默丢中间事件比 resync 重连更糟
+		//（P6 审查 P2）；resync 后订阅方用 snapshot 兜底。
+		matching := 0
+		for k := 0; k < b.n; k++ {
+			evt := b.buf[(b.start+k)%RingCapacity]
+			if evt.ID > lastEventID && sub.matchesSchool(evt.SchoolID) {
+				matching++
+			}
+		}
+		if matching > subBuffer {
+			sub.send(Event{Type: TypeResync, Payload: map[string]any{"from": lastEventID}})
+			return
+		}
 		for k := 0; k < b.n; k++ {
 			evt := b.buf[(b.start+k)%RingCapacity]
 			if evt.ID <= lastEventID {

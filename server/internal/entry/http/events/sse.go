@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
 )
@@ -60,6 +61,14 @@ func (h *Handler) AdminEvents(c *gin.Context, params oapi.AdminEventsParams) {
 	}
 	sub, cancel := h.broker.Subscribe(c.Request.Context(), schools, parseLastEventID(params.LastEventID))
 	defer cancel()
+	// 全局 http.Server 带 WriteTimeout（30s），从读到请求头起算，
+	// 到点会掐断本连接的一切写入；长流必须只对本次响应清掉写超时。
+	// 不清的后果：15s 心跳发两次后流断，60s 空闲关闭永不生效
+	//（P6 审查 P1；回归见 cmd/server 的 TestP6SSESurvivesServerWriteTimeout）。
+	if err := http.NewResponseController(c.Writer).SetWriteDeadline(time.Time{}); err != nil {
+		fail(c, errs.New(errs.CodeInternal, "cannot clear write deadline"))
+		return
+	}
 
 	flusher, canFlush := c.Writer.(http.Flusher)
 	if !canFlush {

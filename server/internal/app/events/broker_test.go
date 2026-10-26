@@ -237,20 +237,28 @@ func TestSlowSubscriberDropsPerSubscriber(t *testing.T) {
 }
 
 // 回放超出订阅缓冲深度时溢出部分计入 dropped，不阻塞 Subscribe。
-func TestReplayOverflowCountsDropped(t *testing.T) {
+// 回放量超过订阅者缓冲：不做部分回放，改发 resync 让订阅方
+// 用 snapshot 兜底——静默丢中间事件会让续传判据落空（P6 审查 P2）。
+func TestReplayOverflowFallsBackToResync(t *testing.T) {
 	b := NewBroker()
-	const total = subBuffer + 15 // 回放 lastEventID=5 之后：subBuffer+10 条
+	const total = subBuffer + 15 // lastEventID=5 之后可回放 subBuffer+10 条
 	for i := 0; i < total; i++ {
 		b.Publish([]string{"s1"}, schoolEvent(TypeTaskProgress, "s1"))
 	}
 	sub, cancel := b.Subscribe(context.Background(), nil, 5)
 	defer cancel()
-	const replay = subBuffer + 10
-	if got := sub.Dropped(); got != replay-subBuffer {
-		t.Fatalf("回放溢出 dropped = %d, want %d", got, replay-subBuffer)
+	if got := sub.Dropped(); got != 0 {
+		t.Fatalf("回放溢出 dropped = %d, want 0（改走 resync）", got)
 	}
-	// 缓冲里仍是缓冲深度的条数，可正常读出。
-	collect(t, sub, subBuffer)
+	first := collect(t, sub, 1)[0]
+	if first.Type != TypeResync {
+		t.Fatalf("首帧 = %q, want resync", first.Type)
+	}
+	select {
+	case evt := <-sub.C:
+		t.Fatalf("resync 后不得再回放业务事件: %+v", evt)
+	case <-time.After(100 * time.Millisecond):
+	}
 }
 
 func TestCancelUnsubscribes(t *testing.T) {

@@ -15,6 +15,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -359,6 +360,78 @@ func TestP6PrivacyScan(t *testing.T) {
 			if strings.Contains(strings.ToLower(b), field) {
 				t.Fatalf("响应 %d 含凭据字段名 %q: %s", i, field, b)
 			}
+		}
+	}
+}
+
+// P6 审查 P1 回归：全局 http.Server 的 WriteTimeout 不得掐断 SSE 长流。
+// 处理器必须用 NewResponseController 清掉本次响应的写超时；
+// 否则 50ms（测试值）后任何写入失败、流断，15s 心跳根本活不到第二跳。
+func TestP6SSESurvivesServerWriteTimeout(t *testing.T) {
+	e := w2cNewEnv(t)
+	master := e.user("p6-wt-master@example.com", coreauth.RoleMaster)
+	issued := e.login(master)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := &http.Server{Handler: e.engine, WriteTimeout: 50 * time.Millisecond}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		"http://"+ln.Addr().String()+"/api/admin/events", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.AddCookie(&http.Cookie{Name: coreauth.InsecureCookieName, Value: issued.Token})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("stream status = %d", resp.StatusCode)
+	}
+
+	// 200ms（> WriteTimeout）后发事件：清了写超时才收得到。
+	time.AfterFunc(200*time.Millisecond, func() {
+		e.broker.Publish([]string{"s-unbound"}, appevents.Event{
+			Type: appevents.TypeTaskProgress, SchoolID: "s-unbound",
+		})
+	})
+
+	frames := make(chan p6Frame, 8)
+	go func() {
+		defer close(frames)
+		scanner := bufio.NewScanner(resp.Body)
+		var cur p6Frame
+		for scanner.Scan() {
+			line := scanner.Text()
+			switch {
+			case strings.HasPrefix(line, "event: "):
+				cur.event = strings.TrimPrefix(line, "event: ")
+			case line == "":
+				if cur.event != "" {
+					frames <- cur
+				}
+				cur = p6Frame{}
+			}
+		}
+	}()
+	for {
+		select {
+		case f, ok := <-frames:
+			if !ok {
+				t.Fatal("流在收到事件前被服务端关闭（写超时未清）")
+			}
+			if f.event == string(appevents.TypeTaskProgress) {
+				return
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("3 秒内未收到写超时后发布的事件")
 		}
 	}
 }
