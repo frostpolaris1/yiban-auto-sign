@@ -58,6 +58,9 @@ fi
 # 符合性套件以 -v 跑一遍：未声明能力的判据会打印跳过行（AGENTS §30）。
 go test -v -count=1 ./internal/signing/conformance/
 
+# 真实 Provider 的适用判据也带 -v：能力跳过行必须在常规门禁可见。
+go test -v -count=1 ./internal/signing/providers/yiban/
+
 # E-4 contract drift gate: regenerating must not change the checked-in code.
 # The gate fails closed: a generator that produced nothing exits 2.
 bash ./scripts/generate.sh --check

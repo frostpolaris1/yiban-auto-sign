@@ -223,6 +223,19 @@ func TestTextHasPhoneIgnoresTimestampFractions(t *testing.T) {
 	}
 }
 
+// 宽分组不判为手机号：时间戳的秒.纳秒是 2+9 段。
+// 5 位以上的异常分组属已登记限制；掩码口径仍会处理。
+func TestTextHasPhoneRejectsWideSegments(t *testing.T) {
+	for _, s := range []string{"13800 138000", "138-00138000", "1380013800 0"} {
+		if TextHasPhone(s) {
+			t.Fatalf("TextHasPhone(%q) = true; 宽分组不得判为手机号", s)
+		}
+	}
+	if got := MaskText("13800 138000"); got != "138****8000" {
+		t.Fatalf("MaskText = %q; 掩码口径必须仍处理", got)
+	}
+}
+
 // 邮箱首字符按字符取，不按字节：多字节本地部不得产出非法 UTF-8。
 func TestMaskEmailIsRuneSafe(t *testing.T) {
 	if got := MaskEmail("学生@example.com"); got != "学***@example.com" {
