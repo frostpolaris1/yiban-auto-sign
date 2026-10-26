@@ -1,7 +1,7 @@
 {
   "_meta": {
     "version": 1,
-    "doc": "配置缺省字面量逐键处置册（判据 4）。每个名册键必须恰好一条：default_literal_gate=true 表示三份模板载体里的 KEY=值 必须等于名册缺省；default_literal_gate_exempt 必须给 class（no_default/no_template_value/example_diverges）与 reason。代码侧的严格清零门仍由 registry.json 的 default_literal_gate/default_symbols 声明（本批 3 键），与本册正交。"
+    "doc": "配置缺省字面量逐键处置册（判据 4/6）。每个名册键必须恰好一条模板侧处置：default_literal_gate=true 表示三份模板载体里的 KEY=值 必须等于名册缺省；default_literal_gate_exempt 必须给 class（no_default/no_template_value/example_diverges）与 reason。名册缺省为 null 的键若三份载体示例值刻意不同，再加 carrier_example.reason 逐键登记（判据 6）；有缺省的键不许用它。代码侧处置另见 config/code-literal-register.json（判据 5），与本册正交。"
   },
   "YIBAN_ENV_FILE": {
     "default_literal_gate": true
@@ -121,6 +121,9 @@
     "default_literal_gate_exempt": {
       "class": "no_default",
       "reason": "模板取值 .env.example=http://a:1,http://b:2,,http://d:4；README.md=http://a:1,http://b:2,http://c:3；名册缺省 null；载体间不一致——归 yiban-auto-sign-7yf 拍板"
+    },
+    "carrier_example": {
+      "reason": "示例出口清单：.env.example 演示空位=直连，README 演示第 4 个执行体复用第 1 个出口；两者都是示例，名册无缺省（default=null）"
     }
   },
   "YIBAN_PROXY_FALLBACK": {
@@ -217,6 +220,9 @@
     "default_literal_gate_exempt": {
       "class": "no_default",
       "reason": "模板取值 .env.example=1800；.env.docker.example=3600；名册缺省 null；载体间不一致——归 yiban-auto-sign-7yf 拍板"
+    },
+    "carrier_example": {
+      "reason": "宿主示例 1800、容器示例 3600；两载体注释都写明缺省按窗口动态计算（名册 default=null），数字只是显式覆盖示例"
     }
   },
   "YIBAN_HOST_SECOND_ROUND": {
@@ -313,12 +319,18 @@
     "default_literal_gate_exempt": {
       "class": "no_default",
       "reason": "模板取值 .env.example=13800138000:your_password#13900139000:another_password；README.md=13800138000:your_password；名册缺省 null；载体间不一致——归 yiban-auto-sign-7yf 拍板"
+    },
+    "carrier_example": {
+      "reason": "旧格式账号串：.env.example 演示 # 分隔多账号，README 演示单账号；示例值，名册无缺省"
     }
   },
   "YIBAN_ACCOUNTS_JSON": {
     "default_literal_gate_exempt": {
       "class": "no_default",
       "reason": "模板取值 .env.example=[{\"phone\":\"13800138000\",\"password\":\"pwd\",\"phone_model\":\"Vivo-XXXX\",\"phone_code\":\"xxxx...\"}]；README.md=[{\"phone\":\"13800138000\",\"password\":\"你的密码\",\"phone_model\":\"Vivo-XXXX\",\"phone_code\":\"64位识别码\"}]；名册缺省 null；载体间不一致——归 yiban-auto-sign-7yf 拍板"
+    },
+    "carrier_example": {
+      "reason": "结构化 JSON 的占位文案不同（pwd/xxxx... 与 你的密码/64位识别码）；占位示例，名册无缺省"
     }
   },
   "YIBAN_ACCOUNTS_KEY": {
@@ -343,12 +355,18 @@
     "default_literal_gate_exempt": {
       "class": "no_default",
       "reason": "模板取值 .env.example=Vivo-XXXX；.env.docker.example（说明行:App 上报的机型名；示例行:Vivo-XXXX）；名册缺省 null；载体间不一致——归 yiban-auto-sign-7yf 拍板"
+    },
+    "carrier_example": {
+      "reason": "解析伪差异：.env.docker.example 的说明行被模板解析器当成取值行；真实取值两载体同为 Vivo-XXXX"
     }
   },
   "YIBAN_PHONE_CODE": {
     "default_literal_gate_exempt": {
       "class": "no_default",
       "reason": "模板取值 .env.example=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx；.env.docker.example（说明行:App 上报的设备唯一识别码；示例行:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx）；名册缺省 null；载体间不一致——归 yiban-auto-sign-7yf 拍板"
+    },
+    "carrier_example": {
+      "reason": "解析伪差异：.env.docker.example 的说明行被模板解析器当成取值行；真实取值两载体同为 64 位 x 占位串"
     }
   },
   "YIBAN_ACCOUNT_VERIFY": {
@@ -433,6 +451,9 @@
     "default_literal_gate_exempt": {
       "class": "no_default",
       "reason": "名册缺省 null；仅出现在 CLI 命令示例（env 前缀写法，不是模板取值行）；仅有命令示例行（.env.docker.example:10、README.md:888），值为命令串，不是配置值"
+    },
+    "carrier_example": {
+      "reason": "两处都是命令行示例（环境变量内联），差异只在解释器路径（容器 python3 / 宿主 .venv/bin/python3）；示例值，名册无缺省"
     }
   },
   "YIBAN_ADMIN_PASSWORD_HASH": {
@@ -607,18 +628,27 @@
     "default_literal_gate_exempt": {
       "class": "no_default",
       "reason": "模板取值 .env.example=your@qq.com；.env.docker.example=your@qq.com；README.md=你的发件邮箱@qq.com；名册缺省 null；载体间不一致——归 yiban-auto-sign-7yf 拍板"
+    },
+    "carrier_example": {
+      "reason": "占位邮箱文案不同（your@qq.com 与 你的发件邮箱@qq.com）；占位示例，名册无缺省"
     }
   },
   "YIBAN_MAIL_PASS": {
     "default_literal_gate_exempt": {
       "class": "no_default",
       "reason": "模板取值 .env.example=你的QQ邮箱授权码；.env.docker.example=你的QQ邮箱授权码（敏感凭据，只填 data/.env，勿写本模板）；README.md=你的QQ邮箱授权码；名册缺省 null；载体间不一致——归 yiban-auto-sign-7yf 拍板"
+    },
+    "carrier_example": {
+      "reason": "占位文案不同（docker 额外注明敏感凭据只填 data/.env）；占位示例，名册无缺省"
     }
   },
   "YIBAN_MAIL_ADMIN_TO": {
     "default_literal_gate_exempt": {
       "class": "no_default",
       "reason": "模板取值 .env.example=your@qq.com；.env.docker.example=your@qq.com；README.md=管理员收件邮箱@qq.com；名册缺省 null；载体间不一致——归 yiban-auto-sign-7yf 拍板"
+    },
+    "carrier_example": {
+      "reason": "占位收件人文案不同（your@qq.com 与 管理员收件邮箱@qq.com）；占位示例，名册无缺省"
     }
   },
   "YIBAN_MAIL_SMTPS_ENC": {

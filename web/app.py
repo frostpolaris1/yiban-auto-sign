@@ -321,13 +321,18 @@ from yiban.adapters.notifier.mail import layout as mail_layout  # noqa: E402  # 
 from yiban.adapters.persistence import db  # noqa: E402  # SQLite 数据访问层
 from yiban.core import status as yiban_status  # noqa: E402  # 状态词汇表唯一事实源
 
-# 默认路径（与 run.sh 保持一致，可用参数覆盖）
-ACCOUNTS_DEFAULT = env_io.resolve_path("YIBAN_ACCOUNTS_FILE", "accounts.json")
+# 默认路径（与 run.sh 保持一致，可用参数覆盖）；缺省值只在配置名册里定义。
+ACCOUNTS_DEFAULT = env_io.resolve_path(
+    "YIBAN_ACCOUNTS_FILE", config_loader.default_required("YIBAN_ACCOUNTS_FILE"))
 # 按日状态文件目录（signin.py 写入 sign-daily-YYYY-MM-DD.json，网页日历读取）
 # 路径必须读 .env（环境变量优先）——只认 os.environ 时"写进 .env"对 web 进程无效，
 # 会静默落到 /var/log/yiban；同机第二份部署因此与第一份共用状态目录与磁盘外锚点。
-STATE_DIR_DEFAULT = env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
-LOG_DEFAULT = env_io.resolve_path("YIBAN_LOG_FILE", "/var/log/yiban/sign.log")
+STATE_DIR_DEFAULT = env_io.resolve_path(
+    "YIBAN_STATE_DIR", config_loader.default_required("YIBAN_STATE_DIR"))
+LOG_DEFAULT = env_io.resolve_path(
+    "YIBAN_LOG_FILE", config_loader.default_required("YIBAN_LOG_FILE"))
+#: 子路径部署前缀的缺省（空串 = 不启用）；读取点在 `_resolve_prefix` 与启动期 Cookie 收窄。
+_BASE_PATH_DEFAULT = config_loader.default_required("YIBAN_BASE_PATH")
 # DB_DEFAULT 也走 resolve_path（`.env` 里的库路径对 web 进程有效）。
 # ENV_DEFAULT 是**指针**：两段自举（进程环境 → 基线 `.env` → 缺省）。
 # 库路径一侧的后果最直白：引擎开到 `.env` 声明的库，web 开到默认库。同一部署会出现两个库。
@@ -1368,7 +1373,8 @@ class BasePathMiddleware:
 
     def _resolve_prefix(self, environ, path):
         # 显式配置（构造参数 > 进程环境 > `.env`，走唯一解析器）；仅当路径确实以该前缀开头才生效
-        configured = (self.base_path or env_io.resolve_path("YIBAN_BASE_PATH", "")).strip().strip("/")
+        configured = (self.base_path or env_io.resolve_path(
+            "YIBAN_BASE_PATH", _BASE_PATH_DEFAULT)).strip().strip("/")
         if configured:
             configured = "/" + configured
             if path == configured or path.startswith(configured + "/"):
@@ -1538,7 +1544,8 @@ def create_app(host=None):
     # 说明：BasePathMiddleware 的"自动探测"形态（未设 YIBAN_BASE_PATH）在请求期
     # 才能感知前缀，应用启动时无法可靠得知，故此处不强行处理——需要收窄 Cookie
     # 的子路径部署请显式设置 YIBAN_BASE_PATH（同时可避免自动探测与应用路由段撞车）。
-    _base_path_env = read_env(ENV_FILE).get("YIBAN_BASE_PATH", "").strip()
+    _base_path_env = read_env(ENV_FILE).get(
+        "YIBAN_BASE_PATH", _BASE_PATH_DEFAULT).strip()
     if _base_path_env and _base_path_env != "/":
         app.config["SESSION_COOKIE_PATH"] = "/" + _base_path_env.strip("/") + "/"
     # HTTPS 反代自动升级 Secure——请求经 https 到达而 Secure 未显式开启时，给本次响应

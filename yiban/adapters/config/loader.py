@@ -37,12 +37,15 @@
 **复用**
 `parse_env_file` / `env_path`（`.env` 的行模型与指针口径）、`ENV_TRUTHY_LITERALS` /
 `ENV_FALSY_LITERALS`（开关键真值表，不再抄第二份）、`window.parse_hhmm`（时刻判据，
-本模块不另写一套：引擎收的写法加载器也必须收）。谁调用：本批的生产消费点只有
-`yiban/engine/token_bucket.py`、`yiban/engine/schedule.py`、`yiban/app/runner.py`、
-`yiban/entry/cli/__init__.py`、`web/app.py`，**一律取 `default_required(...)`**——代码里的默认常量
-必须响亮失败，不许把缺省缺失静默变成 `None`。`default_of(...)` **不做生产默认常量的
-取值入口**：它只给"本键可以没有缺省"的读取口径用（含测试与门禁）。读路径全量切换
-归后续批次。
+本模块不另写一套：引擎收的写法加载器也必须收）。谁调用（工单 7yf 收口后）：
+`yiban/engine/` 的 token_bucket / schedule / cli_support、`yiban/app/` 的 runner / probe、
+`yiban/entry/cli/`、`yiban/workers/`、`yiban/adapters/` 的通知与状态件族、`web/` 的
+app / render / security / routes / services，以及 `scripts/ledger_check.py`、
+`docker/scheduler.py`。取默认值分两个入口：
+- 模块级**默认常量**用 `default_required(...)`——名册缺失或残件在导入期响亮失败；
+- **读取点回退**用 `default_of(...)`——服务 `reload: hot` 的键必须每次调用现取，
+  导入期快照会让常驻进程看不到新值（工单 ba-p04-07）。
+代码里不再写第二份默认值字面量；守卫见 `scripts/check-config-registry.py` 判据 2/5。
 """
 import json
 import logging
@@ -273,10 +276,16 @@ def validate_registry(data):
                      "名册 %s 的 default_literal_gate 只允许 true（不设即关门）" % key)
             _require("default" in spec,
                      "名册 %s 开了默认值字面量门却没有缺省值，判据无处可判" % key)
-            symbols = spec.get("default_symbols")
-            _require(isinstance(symbols, list) and symbols and
+            # 承载常量必须**显式声明**：`default_symbols: []` 表示"本键没有承载常量"
+            # （读取点内联取 `default_of`），缺字段/null 一律拒判——否则"忘了登记"
+            # 与"确认无载体"长得一样，常量回潮那一臂会静默消失（审查员 7yf 高-1）。
+            _require("default_symbols" in spec,
+                     "名册 %s 开了默认值字面量门就必须声明 default_symbols"
+                     "（无承载常量时写空列表 []）" % key)
+            symbols = spec["default_symbols"]
+            _require(isinstance(symbols, list) and
                      all(isinstance(s, str) and s for s in symbols),
-                     "名册 %s 开了默认值字面量门就必须登记承载缺省的常量名"
+                     "名册 %s 的 default_symbols 必须是字符串列表（可为空列表）"
                      % key)
         if key.endswith(_WEB_FORBIDDEN_SUFFIXES):
             _require(spec.get("web_editable") is False,

@@ -44,6 +44,7 @@ import time
 
 from yiban import egress
 from yiban.adapters.config import env_io
+from yiban.adapters.config import loader as config_loader
 from yiban.adapters.persistence import db, queue_store
 from yiban.adapters.statefiles import state_io
 from yiban.core import clock
@@ -449,7 +450,9 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
     # 显式传入的 `interval`（测试/调用方）优先且不随 .env 漂移；未传时**每轮在循环内**
     # 从（已重读的）.env 取——运行期改 `YIBAN_FALLBACK_INTERVAL` 下一轮即生效。
     fixed_interval = interval
-    interval = interval or schedule._env_int("YIBAN_FALLBACK_INTERVAL", 60, 5, 3600)
+    interval = interval or schedule._env_int(
+        "YIBAN_FALLBACK_INTERVAL",
+        config_loader.default_of("YIBAN_FALLBACK_INTERVAL"), 5, 3600)
     os.environ.setdefault("YIBAN_RUN_LOCK_NAME", FALLBACK_LOCK_NAME)
     # 身份串：兜底常驻用**稳定的槽位名**（`fallback@{主机名}`），跨重启不变只服务界面与
     # 持久化键。持有者列存运行时串（含进程号/代次）；**自己上一轮被杀留下的在飞行**由本进程
@@ -482,7 +485,9 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
         if fixed_interval is None:
             # 间隔每轮重取：运行期改了 YIBAN_FALLBACK_INTERVAL，下一轮就该按新间隔走
             # （旧实现在进循环前取一次，注释却声称读 os.environ——承诺与实现不符）。
-            interval = schedule._env_int("YIBAN_FALLBACK_INTERVAL", 60, 5, 3600)
+            interval = schedule._env_int(
+                "YIBAN_FALLBACK_INTERVAL",
+                config_loader.default_of("YIBAN_FALLBACK_INTERVAL"), 5, 3600)
         now = clock.now()
         # 配置每轮重读，并把本轮时刻交给 `_schedule_config`（与下面 `day_off` 的每轮重判
         # 同口径：管理员中途改窗口/开关，下一轮即生效）；顺手传时刻是为了让它的告警复位点
@@ -570,7 +575,9 @@ def run_fallback_worker(argv_rest, interval=None, deadline=None):
         unreached = {}
         results = executor_v3.run_executor_v3(
             accounts, day=now.strftime("%Y-%m-%d"),
-            notify_url=os.environ.get("YIBAN_NOTIFY_URL", ""),
+            notify_url=os.environ.get(
+                "YIBAN_NOTIFY_URL",
+                config_loader.default_of("YIBAN_NOTIFY_URL")),
             cred_state=cred_state, delegated=delegated,
             claim_all=True, requeue_during_run=True,
             elbow_sec=executor_v3.FALLBACK_ELBOW_SEC,

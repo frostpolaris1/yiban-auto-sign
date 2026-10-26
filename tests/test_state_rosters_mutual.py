@@ -76,6 +76,10 @@ NON_STATE_FIXED_NAME = {
     "default-gate-register.json": "config/default-gate-register.json 是配置缺省处置册（S2）："
                                   "入库的源码数据件，由 scripts/check-config-registry.py 读；"
                                   "不落状态目录、不进清理与备份名册",
+    "code-literal-register.json": "config/code-literal-register.json 是代码侧缺省字面量处置册"
+                                  "（工单 7yf）：入库的源码数据件，由"
+                                  " scripts/check-config-registry.py 读；不落状态目录、"
+                                  "不进清理与备份名册",
     "mock.jsonl": "scripts/drill_multi_exec.py 的演练假上游请求轨迹：落**调用方指定的**"
                   "证据目录或临时目录，不落状态目录、不进清理/备份名册",
     "package.json": "Lucide 来源目录的 npm manifest（tools/build_lucide_sprite.py 的"

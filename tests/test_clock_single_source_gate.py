@@ -133,7 +133,7 @@ EXEMPTIONS = {
                 '  # noqa: DTZ005 日志行展示时刻，刻意跟随宿主钟（见模块头注 MF-109）',
         "reason": "清理日志的展示时刻，跟随宿主钟。删除判据另走北京时间",
     },
-    ("docker/scheduler.py", 280): {
+    ("docker/scheduler.py", 282): {
         "kind": "datetime.now",
         "code": '"at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},'
                 '  # noqa: DTZ005 心跳旁路观测件，与 mtime 同钟，故意用系统钟（见上方注释）',

@@ -63,6 +63,7 @@ from web.services.env_io import env_write_refused_response as _env_write_refused
 from yiban import egress as yb_egress
 from yiban import platform as yb_platform
 from yiban.adapters.config import env_io
+from yiban.adapters.config import loader as config_loader
 from yiban.adapters.config.env_io import EnvWriteRefused as _EnvWriteRefused
 from yiban.adapters.config.env_io import parse_env_flag as _parse_env_flag
 from yiban.adapters.persistence import db
@@ -258,7 +259,9 @@ def api_settings():
     _owners = {a.get("owner") for a in _accts_raw if not a["deleted"] and a.get("owner")}
     _potential = sum(1 for u in _users if u["email"] not in _owners)
     # gap 缺省取 DEFAULT_ACCOUNT_GAP_MAX（10），与设置页展示一致
-    _est_start = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_START_DELAY_MAX", 0)
+    _est_start = _env_io_svc.load_env_int(
+        m.ENV_FILE, "YIBAN_START_DELAY_MAX",
+        config_loader.default_of("YIBAN_START_DELAY_MAX"))
     _est_gap = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", _limits.DEFAULT_ACCOUNT_GAP_MAX)
     _est_accounts = _capacity._capacity_estimate(_est_gap)
     return jsonify(
@@ -328,8 +331,10 @@ def api_settings():
             # 注册账号验证 + 探针模式（任意管理员可改）
             "account_verify": _bool_field("YIBAN_ACCOUNT_VERIFY"),
             "probe_enable": _bool_field("YIBAN_PROBE_ENABLE"),
-            "probe_time": env.get("YIBAN_PROBE_TIME", "20:00").strip() or "20:00",
-            "probe_interval": env.get("YIBAN_PROBE_INTERVAL_DAYS", "1").strip() or "1",
+            "probe_time": (env.get("YIBAN_PROBE_TIME") or "").strip()
+            or config_loader.default_of("YIBAN_PROBE_TIME"),
+            "probe_interval": (env.get("YIBAN_PROBE_INTERVAL_DAYS") or "").strip()
+            or config_loader.default_of("YIBAN_PROBE_INTERVAL_DAYS"),
             # 告警通道健康报告发送时刻（issue #23）：空串 = 未配置 = 沿用"例行日唤醒即发"。
             # 时刻不补默认钟点：把"没配"显示成"配了 09:00"会让用户以为改过、也看不出
             # 报告的到达时间仍跟着部署节拍走。取值经同一处归一（`9:00` → `09:00`），
@@ -703,7 +708,9 @@ def api_settings_save():
         # 仅请求携带的字段才写入（缺失不重置）
         updates = {}
         if has_start:
-            updates["YIBAN_START_DELAY_MAX"] = str(start) if start > 0 else ""
+            # 0 = 关闭随机延迟：写空值即删键，生效值回落到名册缺省。
+            start_value = str(start) if start > 0 else ""
+            updates["YIBAN_START_DELAY_MAX"] = start_value
         if has_gap:
             updates["YIBAN_ACCOUNT_GAP_MAX"] = str(gap) if gap > 0 else ""
         if sign_mode:
@@ -944,9 +951,13 @@ def api_executors():
                       else yb_egress.resolve(yb_egress.ROLE_FALLBACK, env=env))
     # 窗口：`_executors_window()`（与引擎同一份解析：_sign_window + window.bounds）
     bounds = _executor_env._executors_window()
-    measured = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_CAPACITY_MEASURED", 0)
+    measured = _env_io_svc.load_env_int(
+        m.ENV_FILE, "YIBAN_CAPACITY_MEASURED",
+        config_loader.default_of("YIBAN_CAPACITY_MEASURED"))
     cur_accounts = _capacity._capacity_account_count()
-    fallback_interval = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_FALLBACK_INTERVAL", 60)
+    fallback_interval = _env_io_svc.load_env_int(
+        m.ENV_FILE, "YIBAN_FALLBACK_INTERVAL",
+        config_loader.default_of("YIBAN_FALLBACK_INTERVAL"))
     # 是否在跑：按心跳新鲜度判定（进程被强杀时心跳会过期，故不能只看文件在不在）
     fallback_alive = signin.fallback_alive(fallback_interval)[0]
     # 声明的开关（.env 里网页写入的键）与"实际在跑"分开回，让前端能分辨

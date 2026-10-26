@@ -82,6 +82,7 @@ from yiban.adapters.config import env_io  # noqa: E402
 #   键只在 `.env` 时读方算出 /data/state、rc=1。给镜像加 USER 或给 healthcheck 降权前
 #   先读本段。
 # 容器内整链生效待生产演练。
+# 容器形态刻意值：名册缺省 `/var/log/yiban` 是宿主路径；容器唯一可写卷是 /data。
 STATEDIR = env_io.resolve_path("YIBAN_STATE_DIR", "/data/state")
 HEARTBEAT_FILE = "sched-heartbeat.json"
 HEARTBEAT_INTERVAL = 10          # 守护线程落盘周期（秒）
@@ -107,6 +108,7 @@ if __name__ == "__main__" and "--check-health" in sys.argv[1:]:
 # 复用同一套函数，两侧不再各写一份判定）。
 import signin  # noqa: E402
 
+from yiban.adapters.config import loader as config_loader  # noqa: E402
 from yiban.adapters.statefiles import state_gc  # noqa: E402
 from yiban.core import (  # noqa: E402
     clock,
@@ -390,10 +392,14 @@ def _backup_env():
     # 调度器的 YIBAN_BACKUP_* → backup-docker.sh 自己的参数名（后者才是脚本认的）。
     # 显式设了 YIBAN_BACKUP_* 就**压住**同名的进程环境变量（否则 compose 注入的
     # BACKUP_DIR 会反过来盖掉 .env —— 正是 M27 要消灭的那种"两处打架"）。
+    # 保留期缺省取自配置名册（容器形态不再写第二份 30）；两个路径键的缺省是容器内
+    # 落点，名册对它们没有应用内缺省（default: null）。
+    retain_days_default = str(
+        config_loader.default_required("YIBAN_BACKUP_RETAIN_DAYS"))
     for script_key, sched_key, default in (
             ("DATA_DIR", "YIBAN_BACKUP_DATA_DIR", "/data"),
             ("BACKUP_DIR", "YIBAN_BACKUP_DIR", "/backups"),
-            ("RETAIN_DAYS", "YIBAN_BACKUP_RETAIN_DAYS", "30")):
+            ("RETAIN_DAYS", "YIBAN_BACKUP_RETAIN_DAYS", retain_days_default)):
         if sched_key in src:
             env[script_key] = src[sched_key]
         else:
@@ -528,7 +534,7 @@ def _child_timeout(env):
     原固定 7200s 与可配置窗口脱钩：窗口整体晚于触发点约 2 小时（如 10:00~11:00）
     时，首签/补签子进程在 sleep 等窗口途中即被杀，全天漏签。现默认 = 当日窗口
     结束（YIBAN_SIGN_END，与 signin.py _schedule_config / run.sh 同一事实源，
-    默认 07:50）− 当前时刻 + 5 分钟余量，下限 600s；YIBAN_RUN_TIMEOUT_SEC 显式
+    缺省值见配置名册）− 当前时刻 + 5 分钟余量，下限 600s；YIBAN_RUN_TIMEOUT_SEC 显式
     设置时优先（管理员手动覆盖）。键来源口径与 build_child_env 一致：
     .env（env，Web 设置页写入）优先于进程环境（compose 注入）——否则
     compose 显式设置会让设置页修改静默失效。
@@ -540,14 +546,15 @@ def _child_timeout(env):
             return max(600, int(raw))
         except (TypeError, ValueError):
             pass
-    end_hhmm = str(env.get("YIBAN_SIGN_END", "07:50")).strip()
+    sign_end_default = str(config_loader.default_required("YIBAN_SIGN_END"))
+    end_hhmm = str(env.get("YIBAN_SIGN_END") or sign_end_default).strip()
     # 格式校验与 run.sh / yiban.core.window.parse_hhmm 一致（接受 7:50 与 07:50）；非法回退
     if not re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", end_hhmm):
-        end_hhmm = "07:50"
+        end_hhmm = sign_end_default
     try:
         end_dt = datetime.strptime(f"{clock.now():%Y-%m-%d} {end_hhmm}", "%Y-%m-%d %H:%M")  # noqa: DTZ007 业务钟日期 + HH:MM 拼接，业务本地 naive
     except ValueError:
-        end_dt = datetime.strptime(f"{clock.now():%Y-%m-%d} 07:50", "%Y-%m-%d %H:%M")  # noqa: DTZ007 业务钟日期 + HH:MM 拼接，业务本地 naive
+        end_dt = datetime.strptime(f"{clock.now():%Y-%m-%d} {sign_end_default}", "%Y-%m-%d %H:%M")  # noqa: DTZ007 业务钟日期 + HH:MM 拼接，业务本地 naive
     return max(600, int((end_dt - clock.now()).total_seconds()) + 300)
 
 

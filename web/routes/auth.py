@@ -48,6 +48,7 @@ from web.services import http_request as _http
 from web.services import limits as _limits
 from web.services import locks as _locks
 from web.services import notify_mail as _notify_mail
+from yiban.adapters.config import loader as config_loader
 from yiban.adapters.notifier.mail import layout as mail_layout
 from yiban.adapters.persistence import db
 from yiban.core import clock
@@ -100,7 +101,8 @@ def api_setup_admin():
                     "YIBAN_ADMIN_USER": username,
                     "YIBAN_ADMIN_PASSWORD_HASH": pw_hash,
                     "YIBAN_ADMIN_PASSWORD": "",
-                    "YIBAN_ADMIN_PW_VERSION": "1",
+                    "YIBAN_ADMIN_PW_VERSION": str(
+                        config_loader.default_required("YIBAN_ADMIN_PW_VERSION")),
                     _security.ADMIN_SID_ENV_KEY: sid,
                 },
             )
@@ -164,7 +166,9 @@ def api_login():
     if _security.verify_admin(username, password):
         role = "admin"
         auth_source = "builtin"
-        pw_version = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_ADMIN_PW_VERSION", 1)  # 改密后旧会话失效
+        pw_version = _env_io_svc.load_env_int(
+            m.ENV_FILE, "YIBAN_ADMIN_PW_VERSION",
+            config_loader.default_of("YIBAN_ADMIN_PW_VERSION"))  # 改密后旧会话失效
     else:
         # 2) 普通用户（users，邮箱登录，不区分大小写；role 支持多管理员）
         email = username.lower()
