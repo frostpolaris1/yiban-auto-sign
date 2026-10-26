@@ -296,6 +296,18 @@ type AccountUpdate struct {
 	PhoneModel *string `json:"phone_model,omitempty"`
 }
 
+// AccountVerifyResult defines model for AccountVerifyResult.
+type AccountVerifyResult struct {
+	// Code success, credential_invalid, challenge, device_unbound, transient,
+	// unknown or rejected. A platform conclusion sets ok false and
+	// returns 200.
+	Code string `json:"code"`
+
+	// Message Masked platform text; absent when empty.
+	Message *string `json:"message,omitempty"`
+	Ok      bool    `json:"ok"`
+}
+
 // Error defines model for Error.
 type Error struct {
 	Error ErrorBody `json:"error"`
@@ -540,6 +552,13 @@ type AccountReviewParams struct {
 	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
 }
 
+// AccountVerifyParams defines parameters for AccountVerify.
+type AccountVerifyParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
 // AuthLogoutParams defines parameters for AuthLogout.
 type AuthLogoutParams struct {
 	// XCSRFToken Required only when the request carries a session. Used by logout,
@@ -656,6 +675,9 @@ type ServerInterface interface {
 	// AccountReview Approve or reject a pending account.
 	// (POST /api/accounts/{id}/review)
 	AccountReview(c *gin.Context, id AccountID, params AccountReviewParams)
+	// AccountVerify Verify the stored credentials against the platform.
+	// (POST /api/accounts/{id}/verify)
+	AccountVerify(c *gin.Context, id AccountID, params AccountVerifyParams)
 	// AuthForgotPassword Start the password reset flow.
 	// (POST /api/auth/forgot-password)
 	AuthForgotPassword(c *gin.Context)
@@ -1039,6 +1061,58 @@ func (siw *ServerInterfaceWrapper) AccountReview(c *gin.Context) {
 	}
 
 	siw.Handler.AccountReview(c, id, params)
+}
+
+// AccountVerify operation middleware
+func (siw *ServerInterfaceWrapper) AccountVerify(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id AccountID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", c.Param("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AccountVerifyParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AccountVerify(c, id, params)
 }
 
 // AuthForgotPassword operation middleware
@@ -1522,5 +1596,6 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.PATCH(options.BaseURL+"/api/accounts/:id", wrapper.AccountUpdate)
 	router.POST(options.BaseURL+"/api/accounts/:id/review", wrapper.AccountReview)
 	router.POST(options.BaseURL+"/api/accounts/:id/pause", wrapper.AccountPause)
+	router.POST(options.BaseURL+"/api/accounts/:id/verify", wrapper.AccountVerify)
 	router.GET(options.BaseURL+"/healthz", wrapper.HealthCheck)
 }

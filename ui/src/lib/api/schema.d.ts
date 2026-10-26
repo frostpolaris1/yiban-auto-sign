@@ -302,6 +302,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/accounts/{id}/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Verify the stored credentials against the platform.
+         * @description Reads the stored phone, password and device code, performs a login and
+         *     reports the platform conclusion. The response never includes the
+         *     credential. Platform conclusions return 200; a transport failure
+         *     returns 502 upstream_unavailable.
+         */
+        post: operations["AccountVerify"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -495,6 +518,17 @@ export interface components {
          */
         AccountPauseRequest: {
             paused: boolean;
+        };
+        AccountVerifyResult: {
+            ok: boolean;
+            /**
+             * @description success, credential_invalid, challenge, device_unbound, transient,
+             *     unknown or rejected. A platform conclusion sets ok false and
+             *     returns 200.
+             */
+            code: string;
+            /** @description Masked platform text; absent when empty. */
+            message?: string;
         };
         AccountPage: {
             items: components["schemas"]["Account"][];
@@ -1180,6 +1214,37 @@ export interface operations {
             400: components["responses"]["ValidationError"];
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AccountVerify: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["AccountID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Verification conclusion. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountVerifyResult"];
+                };
+            };
+            404: components["responses"]["NotFoundError"];
+            502: components["responses"]["DefaultError"];
             default: components["responses"]["DefaultError"];
         };
     };

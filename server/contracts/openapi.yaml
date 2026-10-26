@@ -483,6 +483,30 @@ paths:
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/ConflictError' }
         default: { $ref: '#/components/responses/DefaultError' }
+  /api/accounts/{id}/verify:
+    post:
+      tags: [accounts]
+      operationId: AccountVerify
+      summary: Verify the stored credentials against the platform.
+      description: |
+        Reads the stored phone, password and device code, performs a login and
+        reports the platform conclusion. The response never includes the
+        credential. Platform conclusions return 200; a transport failure
+        returns 502 upstream_unavailable.
+      x-roles: [master, admin]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - $ref: '#/components/parameters/AccountID'
+      responses:
+        '200':
+          description: Verification conclusion.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountVerifyResult'
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        '502': { $ref: '#/components/responses/DefaultError' }
+        default: { $ref: '#/components/responses/DefaultError' }
   /healthz:
     get:
       tags: [health]
@@ -873,6 +897,20 @@ components:
       required: [paused]
       properties:
         paused: { type: boolean }
+    AccountVerifyResult:
+      type: object
+      required: [ok, code]
+      properties:
+        ok: { type: boolean }
+        code:
+          type: string
+          description: |
+            success, credential_invalid, challenge, device_unbound, transient,
+            unknown or rejected. A platform conclusion sets ok false and
+            returns 200.
+        message:
+          type: string
+          description: Masked platform text; absent when empty.
     AccountPage:
       type: object
       required: [items, next_cursor]
