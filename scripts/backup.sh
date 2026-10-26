@@ -882,10 +882,10 @@ fi
 #                                 删尾/删前缀/整表清空：锚点是链的唯一外部参照，
 #                                 只备 yiban.db 等于把"防删除"那半边一起丢掉）
 #
-# P12-05：通知账本/节流表的落点与其余状态件**不是同一个默认值**。写入方
-# `notify/ledger._state_dir()` 在未显式设 YIBAN_STATE_DIR 时回落 `dirname(.env)`
-# （= APP_DIR/data），不是 /var/log/yiban。旧实现只在 SIGN_STATE_DIR 下 glob，
-# 默认部署下这两枚永远不中，nullglob 让缺失完全静默。这里按写入方同一口径单独解析。
+# P12-05：通知账本/节流表另有**历史落点** `dirname(.env)`（= APP_DIR/data）——旧版
+# `notify/ledger._state_dir()` 在该处回落。现版 `_state_dir()` 走
+# `env_io.resolve_path("YIBAN_STATE_DIR", …)`，缺省 /var/log/yiban，已由上面的
+# SIGN_STATE_DIR 收录；历史文件仍须归档，故这里单独解析一遍再合并去重。
 # sign-daily / sign-state / 按天日志的匹配形状由唯一事实源导出（census-P2-sign-state /
 # sign-day-log）：改形状只改 `env_io` 的前后缀，这里跟着变，不会静默漏收。
 # 解释器不可用（备份允许 venv 缺失）时退化为"整目录收录"，宁多勿漏。
@@ -920,7 +920,8 @@ if [ -d "${SIGN_STATE_DIR}" ]; then
 else
     state_files=()
 fi
-# 通知账本/节流表：与 ledger._state_dir() 同口径（YIBAN_STATE_DIR → dirname(.env)）。
+# 通知账本/节流表：历史落点（YIBAN_STATE_DIR 未设时取 dirname(.env)）。
+# 当前账本由 SIGN_STATE_DIR 收录（见上），两处取并集后去重。
 NOTIFY_STATE_DIR="${YIBAN_STATE_DIR:-$(dirname "${ENV_FILE}")}"
 notify_files=()
 if [ -d "${NOTIFY_STATE_DIR}" ]; then

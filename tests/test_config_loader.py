@@ -289,6 +289,52 @@ class UnparseableValueTest(unittest.TestCase):
             })
 
 
+class RegistryGateDeclarationTest(unittest.TestCase):
+    """`default_literal_gate` 的声明形状：承载常量必须显式声明，可为空列表。
+
+    审查员 7yf 高-1：允许"没有承载常量"时如果连字段都可省，"忘了登记"与"确认无
+    载体"就长得一样，判据 2 的常量臂会静默消失。故 `default_symbols: []` 是
+    **显式声明无载体**；缺字段/null/非列表一律拒判。
+    """
+
+    def _spec(self, **extra):
+        spec = {
+            "type": "int", "default": 10, "group": ["调度"], "doc": "缺省 10",
+            "sensitive": False, "web_editable": False, "tier": "master",
+            "reload": "restart", "default_literal_gate": True,
+        }
+        spec.update(extra)
+        return {"_meta": {"version": 1}, "YIBAN_KNOB": spec}
+
+    def test_gate_with_empty_symbol_list_is_valid(self):
+        CL.validate_registry(self._spec(default_symbols=[]))
+
+    def test_gate_with_symbols_is_valid(self):
+        CL.validate_registry(self._spec(default_symbols=["KNOB_DEFAULT"]))
+
+    def test_gate_without_symbols_field_is_rejected(self):
+        with self.assertRaises(CL.RegistryError):
+            CL.validate_registry(self._spec())
+
+    def test_gate_with_null_symbols_is_rejected(self):
+        with self.assertRaises(CL.RegistryError):
+            CL.validate_registry(self._spec(default_symbols=None))
+
+    def test_gate_with_non_list_symbols_is_rejected(self):
+        with self.assertRaises(CL.RegistryError):
+            CL.validate_registry(self._spec(default_symbols="KNOB_DEFAULT"))
+
+    def test_gate_with_blank_symbol_member_is_rejected(self):
+        with self.assertRaises(CL.RegistryError):
+            CL.validate_registry(self._spec(default_symbols=[""]))
+
+    def test_gate_without_default_is_rejected(self):
+        spec = self._spec(default_symbols=[])
+        del spec["YIBAN_KNOB"]["default"]
+        with self.assertRaises(CL.RegistryError):
+            CL.validate_registry(spec)
+
+
 class UnknownKeyTest(unittest.TestCase):
     """行为三：未知键告警，不静默忽略。"""
 

@@ -64,6 +64,7 @@ import re
 from datetime import timedelta
 
 from yiban.adapters.config import account_crypto, env_io
+from yiban.adapters.config import loader as config_loader
 from yiban.adapters.persistence import accounts as _accounts
 from yiban.adapters.persistence import connection as _connection
 from yiban.core import clock
@@ -1096,7 +1097,8 @@ def migrate_v20(conn):
 
     返回本次**实际补入**的行数（重跑为 0），供调用方与运维判断收敛。
     """
-    state_dir = env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
+    state_dir = env_io.resolve_path(
+        "YIBAN_STATE_DIR", config_loader.default_required("YIBAN_STATE_DIR"))
     _ensure_state_dir_readable(state_dir)
     # owner 直接内联：`_BACKFILL_OWNER` 是模块常量，不进绑定参数
     sql = ("INSERT OR IGNORE INTO sign_tasks (phone, day, vshard, owner, run_at, "
