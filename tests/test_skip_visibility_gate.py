@@ -494,6 +494,12 @@ KNOWN_SKIP_SITES = json.loads(r"""
    "git 不可用：跳过 PR 模板守卫"
   ]
  ],
+ "tests/test_readme_accounts_key_e2e.py": [
+  [
+   "skipTest",
+   "需要 POSIX + bash + GNU install（Windows 开发机跳过）"
+  ]
+ ],
  "tests/test_reclaim_fallback_lock_e2e.py": [
   [
    "skipTest",

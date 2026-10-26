@@ -114,7 +114,7 @@ def load_key(env_file=None):
     if env_key:
         # 环境变量档每次现取现解码，既不读缓存也不落缓存：同进程改环境变量必须当场换钥，
         # 而落缓存会让它在撤掉后继续冒充 .env 的钥（缓存的每一格都只代表它的来源）。
-        key = _decode_key(env_key)
+        key = decode_accounts_key(env_key)
         _assert_env_matches_env_file(env_file, key)
         return key
     cached = _cache_get(env_file)
@@ -127,7 +127,7 @@ def load_key(env_file=None):
         _assert_source_certain(env_file, explicit)
         file_key = _parse_env_file(env_file).get("YIBAN_ACCOUNTS_KEY", "").strip()
         if file_key:
-            key = _decode_key(file_key)
+            key = decode_accounts_key(file_key)
             _cache_put(env_file, key)
             return key
         logger.info("未找到 YIBAN_ACCOUNTS_KEY，已生成新密钥并写入 %s（chmod 600）", env_file)
@@ -147,7 +147,7 @@ def _assert_env_matches_env_file(env_file, env_key):
     file_key_raw = _parse_env_file(env_file).get("YIBAN_ACCOUNTS_KEY", "").strip()
     if not file_key_raw:
         return
-    file_key = _decode_key(file_key_raw)
+    file_key = decode_accounts_key(file_key_raw)
     if file_key != env_key:
         raise _key_fork_error(env_key, file_key, env_file)
 
@@ -165,8 +165,8 @@ def assert_key_sources_agree(env_file=None):
     env_file = env_file or env_io.env_path(default=DEFAULT_ENV_FILE)
     env_key_raw = os.environ.get("YIBAN_ACCOUNTS_KEY", "").strip()
     file_key_raw = _parse_env_file(env_file).get("YIBAN_ACCOUNTS_KEY", "").strip()
-    env_key = _decode_key(env_key_raw) if env_key_raw else None
-    file_key = _decode_key(file_key_raw) if file_key_raw else None
+    env_key = decode_accounts_key(env_key_raw) if env_key_raw else None
+    file_key = decode_accounts_key(file_key_raw) if file_key_raw else None
     if env_key is not None and file_key is not None:
         if env_key != file_key:
             raise _key_fork_error(env_key, file_key, env_file)
@@ -466,6 +466,62 @@ def _decode_key(raw):
     return key
 
 
+def decode_accounts_key(raw):
+    """把 `YIBAN_ACCOUNTS_KEY` 的原始值解码为 32 字节密钥。
+
+    这是"密钥值是否合法"的唯一公开判据。`load_key`、`assert_key_sources_agree`
+    与部署取钥块都走它，判据不再各处自写一份。写法容忍与应用一致：
+      · `str.strip()` 去掉两侧空白（含 NBSP、CRLF 的 CR）；
+      · `bytes.fromhex` 接受大小写十六进制，忽略字节对之间的 ASCII 空白。
+    格式非法、长度不为 32 字节、命中仓库公开示例钥 ⇒ 抛 ValueError。
+    """
+    if not isinstance(raw, str):
+        raise ValueError("YIBAN_ACCOUNTS_KEY 格式非法：应为字符串")
+    return _decode_key(raw.strip())
+
+
+def ensure_accounts_key(env_file):
+    """部署取钥：读 .env → 校验 → 缺键/坏值才生成并原子写回（0600）。
+
+    读取用 `env_io.parse_env_file`：与 web/引擎同一解析器（utf-8-sig 剥 BOM、
+    逐行 strip；同名键后写覆盖先写）。校验用 `decode_accounts_key`。
+    校验失败且同名键不超过一行才生成新钥。写回用 `env_io.write_env_key`：
+    折叠同名旧行、保留其余行、临时件 + os.replace 原子替换、权限 0600。
+    同名键多行且生效值非法 ⇒ 抛 ValueError：拒绝自动换钥，旧钥不删。
+    读-校验-写回-恢复属主全在跨进程 env_lock 内：并发写者不能在窗口里换主。
+    以 root 运行时恢复 .env 原属主：原子替换会把属主换成 root。
+    返回 32 字节密钥。
+    """
+    with env_lock.env_write_lock(env_file):
+        st = os.stat(env_file) if os.path.exists(env_file) else None
+        raw = env_io.parse_env_file(env_file).get("YIBAN_ACCOUNTS_KEY", "")
+        try:
+            return decode_accounts_key(raw)
+        except ValueError as e:
+            if env_io.count_key_lines(env_file, "YIBAN_ACCOUNTS_KEY") > 1:
+                raise ValueError(
+                    "%s 内 YIBAN_ACCOUNTS_KEY 有多行且生效值非法：拒绝自动换钥"
+                    "（旧钥不删），请人工清理重复行" % env_file) from e
+        key = secrets.token_bytes(32)
+        env_io.write_env_key(env_file, "YIBAN_ACCOUNTS_KEY", key.hex())
+        if st is not None:
+            _preserve_env_owner(env_file, st)
+    return key
+
+
+def _preserve_env_owner(env_file, st):
+    """原子替换后把 .env 属主恢复成写入前的值（仅 root 需要）。
+
+    服务账号必须能读写 .env。以 root 运行部署块时，临时件属于 root；
+    `os.replace` 会让 .env 变成 root 属主，服务随后读不到。换属主失败即抛：
+    宁可部署失败，也不留一份服务读不了的 .env。非 POSIX 或非 root 进程跳过。
+    """
+    if os.name != "posix" or not hasattr(os, "chown") or os.geteuid() != 0:
+        return
+    if (st.st_uid, st.st_gid) != (os.geteuid(), os.getegid()):
+        os.chown(env_file, st.st_uid, st.st_gid)
+
+
 def _write_key_to_env_file(env_file, key):
     """把新生成的密钥写入 .env（保留其他行，原子替换，Unix 权限 0600）。
 
@@ -478,6 +534,6 @@ def _write_key_to_env_file(env_file, key):
     with env_lock.env_write_lock(env_file):
         existing = _parse_env_file(env_file).get("YIBAN_ACCOUNTS_KEY", "").strip()
         if existing:
-            return _decode_key(existing)
+            return decode_accounts_key(existing)
         env_io.write_env_key(env_file, "YIBAN_ACCOUNTS_KEY", key.hex())
         return key
