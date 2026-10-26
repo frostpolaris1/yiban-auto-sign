@@ -41,9 +41,9 @@ const (
 	TypeEnd             = "end"              // SSE 层空闲关闭，不经总线
 )
 
-// ringCapacity 是全局环形缓冲条数。
-// 回放覆盖 lastEventID ≥ head-ringCapacity+1 的缺口；更旧即 resync。
-const ringCapacity = 1000
+// RingCapacity 是全局环形缓冲条数（导出：SSE 契约与测试引用）。
+// 回放覆盖 lastEventID ≥ head-RingCapacity+1 的缺口；更旧即 resync。
+const RingCapacity = 1000
 
 // subBuffer 是每订阅者通道深度。满即丢该订阅者的事件并累计 dropped。
 const subBuffer = 64
@@ -123,7 +123,7 @@ func (s *subscriber) send(evt Event) {
 type Broker struct {
 	mu    sync.Mutex
 	seq   uint64
-	buf   [ringCapacity]Event
+	buf   [RingCapacity]Event
 	start int // 最旧元素下标
 	n     int // 有效条数
 	subs  map[*subscriber]struct{}
@@ -142,11 +142,11 @@ func (b *Broker) Publish(scope []string, evt Event) {
 	defer b.mu.Unlock()
 	b.seq++
 	evt.ID = b.seq
-	b.buf[(b.start+b.n)%ringCapacity] = evt
-	if b.n < ringCapacity {
+	b.buf[(b.start+b.n)%RingCapacity] = evt
+	if b.n < RingCapacity {
 		b.n++
 	} else {
-		b.start = (b.start + 1) % ringCapacity
+		b.start = (b.start + 1) % RingCapacity
 	}
 	for sub := range b.subs {
 		if sub.matchesScope(scope) {
@@ -209,7 +209,7 @@ func (b *Broker) replay(sub *subscriber, lastEventID uint64) {
 	if lastEventID <= head && lastEventID+1 >= head-uint64(b.n)+1 {
 		// 缺口完整落在环内：最旧 ID = head-n+1 ≤ lastEventID+1。
 		for k := 0; k < b.n; k++ {
-			evt := b.buf[(b.start+k)%ringCapacity]
+			evt := b.buf[(b.start+k)%RingCapacity]
 			if evt.ID <= lastEventID {
 				continue
 			}

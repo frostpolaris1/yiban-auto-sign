@@ -33,6 +33,7 @@ tags:
   - name: accounts
   - name: schedule
   - name: photos
+  - name: events
   - name: health
 security:
   - sessionCookie: []
@@ -566,6 +567,97 @@ paths:
                 $ref: '#/components/schemas/AccountLocation'
         '400': { $ref: '#/components/responses/ValidationError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/admin/events:
+    get:
+      tags: [events]
+      operationId: AdminEvents
+      summary: Subscribe to the admin event stream (SSE).
+      description: |
+        text/event-stream. Events carry id, event and data lines. master
+        receives every school; admin receives bound schools only (filtering
+        happens at the broker, not the client). Send Last-Event-ID to resume:
+        events buffered in-process are replayed in order; a gap larger than
+        the buffer answers resync followed by a snapshot. A 15s heartbeat
+        keeps the stream alive; 60s without an event closes the stream with
+        an end event. Cache-Control: no-store; X-Accel-Buffering: no.
+      x-roles: [master, admin]
+      parameters:
+        - name: Last-Event-ID
+          in: header
+          required: false
+          description: Last event id seen by the client, for resumption.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Event stream opened.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/me/diagnostics:
+    get:
+      tags: [events]
+      operationId: MeDiagnostics
+      summary: Diagnostics for the signed-in user's own accounts.
+      description: |
+        One item per account owned by the caller, with today's task state,
+        run time, attempts, result word, next retry time and a closed
+        vocabulary suggestion (wait, retry_now, re_arm, contact_admin).
+        Admins see their own accounts, the same as users. No credential
+        detail and no raw platform text.
+      x-roles: [user, admin]
+      responses:
+        '200':
+          description: Today's diagnostics per own account.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticsReport'
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/accounts/{id}/diagnostics:
+    get:
+      tags: [events]
+      operationId: AccountDiagnostics
+      summary: Detailed diagnostics for one account.
+      description: |
+        Single-account version of /api/me/diagnostics plus the planned
+        window and the bound egress label when present. Cross-user and
+        cross-school reads return 404.
+      x-roles: [user, admin]
+      parameters:
+        - $ref: '#/components/parameters/AccountID'
+      responses:
+        '200':
+          description: Detailed diagnostics.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountDiagnostics'
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/me/sign-status:
+    get:
+      tags: [events]
+      operationId: MeSignStatus
+      summary: Polling status for the signed-in user's own accounts.
+      description: |
+        Lightweight per-account state for 30-60s polling. stale is true when
+        the row has not been updated for more than 90 seconds. Polling role
+        is user only.
+      x-roles: [user]
+      responses:
+        '200':
+          description: Sign status items.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignStatusReport'
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/schedule/windows:
     get:
@@ -1544,3 +1636,75 @@ components:
         status:
           type: string
           const: ok
+    DiagnosticsReport:
+      type: object
+      required: [updated_at, items]
+      properties:
+        updated_at: { type: string, format: date-time }
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiagnosticsItem'
+    DiagnosticsItem:
+      type: object
+      required: [account_id, attempts, result, suggestion]
+      properties:
+        account_id: { type: string }
+        state:
+          type: [string, "null"]
+          description: pending, running, success, failed or skipped; null when the account has no task row today.
+        run_at:
+          type: [string, "null"]
+          format: date-time
+        attempts: { type: integer }
+        result: { type: string }
+        next_retry_at:
+          type: [string, "null"]
+          format: date-time
+          description: When the task is queued again after a failure; null otherwise.
+        suggestion:
+          type: string
+          enum: [wait, retry_now, re_arm, contact_admin]
+    AccountDiagnostics:
+      allOf:
+        - $ref: '#/components/schemas/DiagnosticsItem'
+        - type: object
+          properties:
+            window:
+              type: [object, "null"]
+              description: Today's planned window; null when not discovered yet.
+              required: [start, end, source, version]
+              properties:
+                start: { type: string, format: date-time }
+                end: { type: string, format: date-time }
+                source:
+                  type: string
+                  enum: [platform, cache, fallback, override]
+                version: { type: integer }
+            egress:
+              type: [object, "null"]
+              description: The account's sticky egress label; null when not assigned yet.
+              required: [identity]
+              properties:
+                identity: { type: string }
+    SignStatusReport:
+      type: object
+      required: [updated_at, items]
+      properties:
+        updated_at: { type: string, format: date-time }
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SignStatusItem'
+    SignStatusItem:
+      type: object
+      required: [account_id, stale]
+      properties:
+        account_id: { type: string }
+        state:
+          type: [string, "null"]
+          description: pending, running, success, failed or skipped; null when the account has no task row today.
+        run_at:
+          type: [string, "null"]
+          format: date-time
+        stale: { type: boolean }

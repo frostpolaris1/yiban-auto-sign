@@ -275,3 +275,39 @@ func (s *server) PhotoRetentionSet(c *gin.Context, params oapi.PhotoRetentionSet
 	}
 	s.photos.PhotoRetentionSet(c, params)
 }
+
+// AdminEvents 委托事件流处理器。未装配时仍是 501。
+func (s *server) AdminEvents(c *gin.Context, params oapi.AdminEventsParams) {
+	if s.events == nil {
+		notImplemented(c)
+		return
+	}
+	s.events.AdminEvents(c, params)
+}
+
+// MeDiagnostics 委托诊断处理器。未装配时仍是 501。
+func (s *server) MeDiagnostics(c *gin.Context) {
+	if s.events == nil {
+		notImplemented(c)
+		return
+	}
+	s.events.MeDiagnostics(c)
+}
+
+// AccountDiagnostics 委托诊断处理器。未装配时仍是 501。
+func (s *server) AccountDiagnostics(c *gin.Context, id oapi.AccountID) {
+	if s.events == nil {
+		notImplemented(c)
+		return
+	}
+	s.events.AccountDiagnostics(c, id)
+}
+
+// MeSignStatus 委托轮询处理器。未装配时仍是 501。
+func (s *server) MeSignStatus(c *gin.Context) {
+	if s.events == nil {
+		notImplemented(c)
+		return
+	}
+	s.events.MeSignStatus(c)
+}
