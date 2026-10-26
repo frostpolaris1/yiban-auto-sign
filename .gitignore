@@ -181,13 +181,15 @@ web/static/vendor/gongan-beian.png
 # 运营者本地完整版合规文档（不入库，仅自己的服务器用；仓库内相应文件为只含注释的空模板）
 deploy-local/
 
-# 根目录 agent 记忆入口（2026-08-16 归并：AI-HANDOFF / TODO / .workbuddy 记忆 / WORKFLOW / CONTRIBUTING，非开源）
+# 根目录 agent 记忆入口（2026-08-16 归并：AI-HANDOFF / TODO / .workbuddy 记忆 / WORKFLOW，非开源）
 memory.md
 AGENTS.md
 
 # 协作备用文件（未启用；等协作场景再决定入库，2026-08-16 补忽略）
 WORKFLOW.md
-CONTRIBUTING.md
+# 2026-10-26：CONTRIBUTING.md 解除忽略并入库。理由：贡献指南必须入库才对
+# 外部贡献者可见；内容只含流程、边界与工单清单，无内部信息。守卫见
+# tests/test_repo_structure_gate.py 的 ALLOWED_TOP（登记项消失即红）。
 # 2026-10-05 n4c 第一刀：.github/pull_request_template.md **移出**忽略清单。
 # 理由：模板必须入库才生效（GitHub 从仓库里的模板文件生成 PR 正文），而 develop
 # 分支保护要求所有变更经 PR——自检清单（e2e 先行 / 门禁 / changelog）靠它承载。
