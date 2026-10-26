@@ -75,6 +75,13 @@ func TestPhotoRepoDedupeAndScope(t *testing.T) {
 	if _, err := repo.Get(e.ctx, corescope.User(u1.ID), first.ID); !errors.Is(err, errs.ErrNotFound) {
 		t.Fatalf("删除后 get = %v, want not_found", err)
 	}
+	// 跨用户软删必须 not_found，且不得改动原行。
+	if _, err := repo.SoftDelete(e.ctx, corescope.User(u2.ID), first.ID, now.Add(2*time.Minute)); !errors.Is(err, errs.ErrNotFound) {
+		t.Fatalf("跨用户软删 = %v, want not_found", err)
+	}
+	if left := e.scalarInt("SELECT count(*) FROM photos WHERE id = $1::uuid AND deleted_at IS NOT NULL", first.ID); left != 1 {
+		t.Fatalf("跨用户软删改动了原行, rows=%d", left)
+	}
 	restored, err := repo.Create(e.ctx, photoRecord(u1.ID, 1, now.Add(3*time.Minute)))
 	if err != nil {
 		t.Fatalf("restore: %v", err)
@@ -184,6 +191,14 @@ func TestPhotoRepoPurgeExpired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create kept: %v", err)
 	}
+	// 软删行不参与物理清理：重传恢复同一 id 的语义依赖它。
+	soft, err := repo.Create(e.ctx, photoRecord(u30.ID, 34, old))
+	if err != nil {
+		t.Fatalf("create soft: %v", err)
+	}
+	if _, err := repo.SoftDelete(e.ctx, corescope.User(u30.ID), soft.ID, now); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
 
 	n, err := repo.PurgeExpired(e.ctx, now, 100)
 	if err != nil {
@@ -200,6 +215,9 @@ func TestPhotoRepoPurgeExpired(t *testing.T) {
 	}
 	if _, err := repo.Get(e.ctx, corescope.User(u90.ID), kept.ID); err != nil {
 		t.Fatalf("缺省 90 天行被删: %v", err)
+	}
+	if left := e.scalarInt("SELECT count(*) FROM photos WHERE id = $1::uuid", soft.ID); left != 1 {
+		t.Fatalf("软删行被物理清除, rows=%d", left)
 	}
 }
 

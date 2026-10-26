@@ -103,6 +103,12 @@ func (h *Handler) PhotoUpload(c *gin.Context, _ oapi.PhotoUploadParams) {
 	}
 	raw, err := io.ReadAll(io.LimitReader(file, corephoto.MaxBytes+1))
 	file.Close()
+	// ParseMultipartForm 把超过内存阈值的 part 写进系统临时目录，
+	// Go 只在解析失败时自清。字节已读进内存，这里必须显式删除：
+	// 原始字节未去 EXIF，长期落盘等于把隐私面留在磁盘上。
+	if c.Request.MultipartForm != nil {
+		_ = c.Request.MultipartForm.RemoveAll()
+	}
 	if err != nil {
 		fail(c, errs.New(errs.CodeValidation, "cannot read the image part"))
 		return
