@@ -676,7 +676,7 @@ func TestOrientationParsersAcceptValidLayouts(t *testing.T) {
 }
 
 // 裁切按整像素四舍五入：cut=(N*5+50)/100。
-// 表覆盖整数边界；删掉 +50 后 30 与 50 两行变红。
+// 表覆盖整数边界；删掉 +50 后 10、30、50 三行变红。
 func TestCropRounding(t *testing.T) {
 	cases := []struct {
 		side, cut int
@@ -703,7 +703,7 @@ func TestPrepareNormalizesBitDepth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("plain: %v", err)
 	}
-	withEXIF, err := Prepare(pngWithOrientation(t, src, 1), Options{})
+	withEXIF, err := Prepare(pngWithOrientation(t, src, 6), Options{})
 	if err != nil {
 		t.Fatalf("with exif: %v", err)
 	}
