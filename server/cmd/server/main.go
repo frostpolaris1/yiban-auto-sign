@@ -351,7 +351,7 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 			Locations: locationSvc,
 			Photos:    photoSvc,
 			// P6 注入面：任务事件发布。缺端口时不发事件。
-			Notifier: workerNotifier{broker: broker},
+			Notifier: workerNotifier{broker: broker, clock: clk},
 		})
 		if err != nil {
 			closeFn()
@@ -380,7 +380,7 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 			Prefs:    prefRepo,
 			Tx:       db,
 			// P6 注入面：计划事件发布。缺端口时不发事件。
-			Notifier: scheduleNotifier{broker: broker},
+			Notifier: scheduleNotifier{broker: broker, clock: clk},
 		})
 		if err != nil {
 			closeFn()
@@ -523,28 +523,30 @@ func (d scheduleDiscoverer) DiscoverWindow(ctx context.Context, schoolTaskID str
 }
 
 // workerNotifier 把执行循环的任务事件转成总线事件（P6）。
-// Publish 永不阻塞；失败只丢事件。
+// Publish 永不阻塞；失败只丢事件。At 取进程时钟。
 type workerNotifier struct {
 	broker *appevents.Broker
+	clock  clock.Clock
 }
 
 // TaskEvent 实现 appworker.Notifier。
 func (n workerNotifier) TaskEvent(_ context.Context, schoolID, taskID, day, kind string, payload map[string]any) {
 	n.broker.Publish([]string{schoolID}, appevents.Event{
 		Type: kind, SchoolID: schoolID, TaskID: taskID, Day: day,
-		At: time.Now(), Payload: payload,
+		At: n.clock.Now(), Payload: payload,
 	})
 }
 
 // scheduleNotifier 把计划事件转成总线事件（P6）。
 type scheduleNotifier struct {
 	broker *appevents.Broker
+	clock  clock.Clock
 }
 
 // PlanEvent 实现 appschedule.Notifier。
 func (n scheduleNotifier) PlanEvent(_ context.Context, schoolID, taskID, day, kind string, payload map[string]any) {
 	n.broker.Publish([]string{schoolID}, appevents.Event{
 		Type: kind, SchoolID: schoolID, TaskID: taskID, Day: day,
-		At: time.Now(), Payload: payload,
+		At: n.clock.Now(), Payload: payload,
 	})
 }

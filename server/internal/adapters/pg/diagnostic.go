@@ -18,7 +18,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	appdiagnostic "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/diagnostic"
+	corediag "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/diagnostic"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
@@ -31,7 +31,7 @@ type DiagnosticRepo struct {
 func NewDiagnosticRepo(db *DB) *DiagnosticRepo { return &DiagnosticRepo{db: db} }
 
 // TodayTasks 读账号集合在业务日的全部任务行。
-func (r *DiagnosticRepo) TodayTasks(ctx context.Context, accountIDs []string, day string) ([]appdiagnostic.TaskRow, error) {
+func (r *DiagnosticRepo) TodayTasks(ctx context.Context, accountIDs []string, day string) ([]corediag.TaskRow, error) {
 	rows, err := r.db.q(ctx).Query(ctx,
 		`SELECT id::text, school_task_id::text, account_id::text, state::text,
 		        result, attempts, run_at, updated_at
@@ -46,7 +46,7 @@ func (r *DiagnosticRepo) TodayTasks(ctx context.Context, accountIDs []string, da
 }
 
 // Windows 读任务集合在业务日的窗口缓存；无行不报错。
-func (r *DiagnosticRepo) Windows(ctx context.Context, schoolTaskIDs []string, day string) (map[string]appdiagnostic.WindowInfo, error) {
+func (r *DiagnosticRepo) Windows(ctx context.Context, schoolTaskIDs []string, day string) (map[string]corediag.WindowInfo, error) {
 	rows, err := r.db.q(ctx).Query(ctx,
 		`SELECT school_task_id::text, start_at, end_at, source, version
 		 FROM window_cache
@@ -56,10 +56,10 @@ func (r *DiagnosticRepo) Windows(ctx context.Context, schoolTaskIDs []string, da
 		return nil, mapError(err)
 	}
 	defer rows.Close()
-	out := map[string]appdiagnostic.WindowInfo{}
+	out := map[string]corediag.WindowInfo{}
 	for rows.Next() {
 		var id string
-		var w appdiagnostic.WindowInfo
+		var w corediag.WindowInfo
 		if err := rows.Scan(&id, &w.Start, &w.End, &w.Source, &w.Version); err != nil {
 			return nil, mapError(err)
 		}
@@ -69,7 +69,7 @@ func (r *DiagnosticRepo) Windows(ctx context.Context, schoolTaskIDs []string, da
 }
 
 // Egresses 读账号集合的粘性出口标签；未绑定账号缺席。
-func (r *DiagnosticRepo) Egresses(ctx context.Context, accountIDs []string) (map[string]appdiagnostic.EgressInfo, error) {
+func (r *DiagnosticRepo) Egresses(ctx context.Context, accountIDs []string) (map[string]corediag.EgressInfo, error) {
 	rows, err := r.db.q(ctx).Query(ctx,
 		`SELECT ae.account_id::text, e.identity
 		 FROM account_egress ae
@@ -80,13 +80,13 @@ func (r *DiagnosticRepo) Egresses(ctx context.Context, accountIDs []string) (map
 		return nil, mapError(err)
 	}
 	defer rows.Close()
-	out := map[string]appdiagnostic.EgressInfo{}
+	out := map[string]corediag.EgressInfo{}
 	for rows.Next() {
 		var id, identity string
 		if err := rows.Scan(&id, &identity); err != nil {
 			return nil, mapError(err)
 		}
-		out[id] = appdiagnostic.EgressInfo{Identity: identity}
+		out[id] = corediag.EgressInfo{Identity: identity}
 	}
 	return out, mapError(rows.Err())
 }
@@ -120,10 +120,10 @@ func (r *DiagnosticRepo) StateCounts(ctx context.Context, scope corescope.Scope,
 	return out, mapError(rows.Err())
 }
 
-func scanDiagnosticTasks(rows pgx.Rows) ([]appdiagnostic.TaskRow, error) {
-	var out []appdiagnostic.TaskRow
+func scanDiagnosticTasks(rows pgx.Rows) ([]corediag.TaskRow, error) {
+	var out []corediag.TaskRow
 	for rows.Next() {
-		var t appdiagnostic.TaskRow
+		var t corediag.TaskRow
 		if err := rows.Scan(&t.TaskID, &t.SchoolTaskID, &t.AccountID, &t.State,
 			&t.Result, &t.Attempts, &t.RunAt, &t.UpdatedAt); err != nil {
 			return nil, mapError(err)

@@ -19,6 +19,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
+	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
 )
 
 // seedDiagnostic 建两校两账号，A 账号有当日任务行与窗口与出口。
@@ -60,7 +61,7 @@ func TestDiagnosticTodayTasksAndJoins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TodayTasks: %v", err)
 	}
-	if len(rows) != 1 || rows[0].AccountID != acctA || rows[0].State != "pending" {
+	if len(rows) != 1 || rows[0].AccountID != acctA || rows[0].State != string(corestatus.TaskPending) {
 		t.Fatalf("rows = %+v", rows)
 	}
 	wins, err := repo.Windows(e.ctx, []string{rows[0].SchoolTaskID}, day)
@@ -87,14 +88,14 @@ func TestDiagnosticStateCountsByScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("master counts: %v", err)
 	}
-	if masterCounts["pending"] != 1 {
+	if masterCounts[string(corestatus.TaskPending)] != 1 {
 		t.Fatalf("master counts = %v, want pending:1", masterCounts)
 	}
 	adminCounts, err := repo.StateCounts(ctx, corescope.Admin([]string{schoolA}), day)
 	if err != nil {
 		t.Fatalf("admin counts: %v", err)
 	}
-	if adminCounts["pending"] != 1 {
+	if adminCounts[string(corestatus.TaskPending)] != 1 {
 		t.Fatalf("admin(schoolA) counts = %v", adminCounts)
 	}
 	boundOther := e.createSchool("diag-c")

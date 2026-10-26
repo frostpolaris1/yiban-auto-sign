@@ -17,8 +17,10 @@ import (
 	appdiagnostic "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/diagnostic"
 	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
+	corediag "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/diagnostic"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
+	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
 	eventshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/events"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/router"
 )
@@ -50,9 +52,9 @@ func (f *fakeDiag) SignStatus(_ context.Context, _ string) (appdiagnostic.Status
 	return f.status, f.err
 }
 
-func (f *fakeDiag) Snapshot(_ context.Context, _ corescope.Scope) (appdiagnostic.View, error) {
+func (f *fakeDiag) Snapshot(_ context.Context, _ corescope.Scope) (corediag.View, error) {
 	f.calls = append(f.calls, "snapshot")
-	return appdiagnostic.View{Day: "2026-10-29", States: f.counts}, f.err
+	return corediag.View{Day: "2026-10-29", States: f.counts}, f.err
 }
 
 type fakeAuthorizer struct {
@@ -133,7 +135,7 @@ func decodeBody(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 var diagNowTime = time.Date(2026, 10, 29, 7, 0, 0, 0, time.FixedZone("CST", 8*3600))
 
 func sampleReport() appdiagnostic.Report {
-	state := "pending"
+	state := string(corestatus.TaskPending)
 	runAt := diagNowTime.Add(time.Minute)
 	next := runAt
 	return appdiagnostic.Report{
@@ -141,7 +143,7 @@ func sampleReport() appdiagnostic.Report {
 		Items: []appdiagnostic.Item{{
 			AccountID: "a1", State: &state, RunAt: &runAt,
 			Attempts: 2, Result: "wait_window_open",
-			NextRetryAt: &next, Suggestion: appdiagnostic.SuggestWait,
+			NextRetryAt: &next, Suggestion: corediag.SuggestWait,
 		}},
 	}
 }
@@ -160,7 +162,7 @@ func TestMeDiagnosticsOK(t *testing.T) {
 		t.Fatalf("items = %v", body["items"])
 	}
 	item := items[0].(map[string]any)
-	if item["account_id"] != "a1" || item["state"] != "pending" ||
+	if item["account_id"] != "a1" || item["state"] != string(corestatus.TaskPending) ||
 		item["attempts"] != float64(2) || item["result"] != "wait_window_open" ||
 		item["suggestion"] != "wait" {
 		t.Fatalf("item = %v", item)
@@ -175,7 +177,7 @@ func TestMeDiagnosticsOK(t *testing.T) {
 
 // 轮询 200：items 带 stale；无行账号 state 为 null。
 func TestMeSignStatusOK(t *testing.T) {
-	state := "success"
+	state := string(corestatus.TaskSuccess)
 	runAt := diagNowTime.Add(-time.Minute)
 	diag := &fakeDiag{status: appdiagnostic.StatusReport{
 		UpdatedAt: diagNowTime,
@@ -203,16 +205,16 @@ func TestMeSignStatusOK(t *testing.T) {
 
 // 单账号详版：窗口与出口标签透传为对象；作用域原样下发。
 func TestAccountDiagnosticsOK(t *testing.T) {
-	state := "failed"
+	state := string(corestatus.TaskFailed)
 	start := diagNowTime.Add(-time.Hour)
 	end := diagNowTime.Add(time.Hour)
 	diag := &fakeDiag{detail: appdiagnostic.Detail{
 		Item: appdiagnostic.Item{
 			AccountID: "a1", State: &state, Attempts: 3,
-			Result: "rejected", Suggestion: appdiagnostic.SuggestRetryNow,
+			Result: "rejected", Suggestion: corediag.SuggestRetryNow,
 		},
-		Window: &appdiagnostic.WindowInfo{Start: start, End: end, Source: "platform", Version: 4},
-		Egress: &appdiagnostic.EgressInfo{Identity: "https://eg-1"},
+		Window: &corediag.WindowInfo{Start: start, End: end, Source: "platform", Version: 4},
+		Egress: &corediag.EgressInfo{Identity: "https://eg-1"},
 	}}
 	engine, issued := newEngine(t, nil, diag, appevents.NewBroker())
 	rec := doGet(engine, issued, "/api/accounts/a1/diagnostics", nil)
@@ -243,7 +245,7 @@ func TestDiagnosticsRoleGates(t *testing.T) {
 		mine:   sampleReport(),
 		status: appdiagnostic.StatusReport{UpdatedAt: diagNowTime},
 		detail: appdiagnostic.Detail{
-			Item: appdiagnostic.Item{AccountID: "a1", Suggestion: appdiagnostic.SuggestWait},
+			Item: appdiagnostic.Item{AccountID: "a1", Suggestion: corediag.SuggestWait},
 		},
 	}
 	cases := []struct {

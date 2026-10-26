@@ -19,6 +19,7 @@ import (
 	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
 	eventshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/events"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/router"
 )
@@ -44,9 +45,11 @@ func (c *fakeClock) Advance(d time.Duration) {
 }
 
 // fakeTimer 记住处理器最近要的定时通道；Fire 模拟到期。
+// Fire 发的是假时钟的当前时刻：定时到点与处理器读到的 now 同源。
 type fakeTimer struct {
 	mu sync.Mutex
 	ch chan time.Time
+	c  *fakeClock
 }
 
 func newFakeTimer() *fakeTimer { return &fakeTimer{} }
@@ -58,12 +61,12 @@ func (f *fakeTimer) After(time.Duration) <-chan time.Time {
 	return f.ch
 }
 
-func (f *fakeTimer) Fire() {
+func (f *fakeTimer) fireAt(t time.Time) {
 	f.mu.Lock()
 	ch := f.ch
 	f.mu.Unlock()
 	if ch != nil {
-		ch <- time.Now()
+		ch <- t
 	}
 }
 
@@ -273,7 +276,7 @@ func TestSSEHeartbeatAndIdleEnd(t *testing.T) {
 	defer sc.close()
 
 	clk.Advance(15 * time.Second)
-	timer.Fire()
+	timer.fireAt(clk.Now())
 	f := sc.next(t)
 	if f.event != appevents.TypeHeartbeat {
 		t.Fatalf("15s 帧 = %q, want heartbeat", f.event)
@@ -282,7 +285,7 @@ func TestSSEHeartbeatAndIdleEnd(t *testing.T) {
 		t.Fatalf("心跳帧不应带 id，got %q", f.id)
 	}
 	clk.Advance(45 * time.Second) // 距上一事件 60s
-	timer.Fire()
+	timer.fireAt(clk.Now())
 	f = sc.next(t)
 	if f.event != appevents.TypeEnd {
 		t.Fatalf("60s 帧 = %q, want end", f.event)
@@ -302,7 +305,7 @@ func TestSSEHeartbeatResetsOnlyItsOwnCadence(t *testing.T) {
 	defer sc.close()
 
 	clk.Advance(15 * time.Second)
-	timer.Fire()
+	timer.fireAt(clk.Now())
 	if f := sc.next(t); f.event != appevents.TypeHeartbeat {
 		t.Fatalf("第一帧 = %q", f.event)
 	}
@@ -313,7 +316,7 @@ func TestSSEHeartbeatResetsOnlyItsOwnCadence(t *testing.T) {
 	// 事件把空闲计时重置：再过 45s 只该有 3 次心跳，无 end。
 	for i := 0; i < 3; i++ {
 		clk.Advance(15 * time.Second)
-		timer.Fire()
+		timer.fireAt(clk.Now())
 		if f := sc.next(t); f.event != appevents.TypeHeartbeat {
 			t.Fatalf("第 %d 次 15s 应为心跳，got %q", i+1, f.event)
 		}
@@ -342,7 +345,7 @@ func TestSSEResyncThenSnapshot(t *testing.T) {
 	for i := 0; i < appevents.RingCapacity+2; i++ {
 		broker.Publish([]string{"s1"}, progressEvent("s1"))
 	}
-	diag := &fakeDiag{counts: map[string]int{"pending": 3, "success": 7}}
+	diag := &fakeDiag{counts: map[string]int{string(status.TaskPending): 3, string(status.TaskSuccess): 7}}
 	srv, issued := newSSEServer(t, nil, diag, broker, newFakeClock(diagNowTime), newFakeTimer())
 	sc := newStreamClient(t, srv.URL, issued, "1")
 	defer sc.close()
@@ -363,7 +366,7 @@ func TestSSEResyncThenSnapshot(t *testing.T) {
 		t.Fatalf("snapshot data 非法: %q", snap.data)
 	}
 	states, ok := data["states"].(map[string]any)
-	if !ok || states["pending"] != float64(3) || states["success"] != float64(7) {
+	if !ok || states[string(status.TaskPending)] != float64(3) || states[string(status.TaskSuccess)] != float64(7) {
 		t.Fatalf("states = %v", data["states"])
 	}
 	if _, ok := data["day"]; !ok {

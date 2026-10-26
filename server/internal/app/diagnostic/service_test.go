@@ -17,8 +17,10 @@ import (
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
 	appdiagnostic "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/diagnostic"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
+	corediag "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/diagnostic"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
+	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
 )
 
 var loc = time.FixedZone("CST", 8*3600)
@@ -48,9 +50,9 @@ func (f *fakeAccounts) Get(_ context.Context, scope corescope.Scope, _ string) (
 }
 
 type fakeStore struct {
-	tasks   []appdiagnostic.TaskRow
-	windows map[string]appdiagnostic.WindowInfo
-	egress  map[string]appdiagnostic.EgressInfo
+	tasks   []corediag.TaskRow
+	windows map[string]corediag.WindowInfo
+	egress  map[string]corediag.EgressInfo
 	counts  map[string]int
 
 	gotAccountIDs []string
@@ -58,18 +60,18 @@ type fakeStore struct {
 	gotScope      corescope.Scope
 }
 
-func (f *fakeStore) TodayTasks(_ context.Context, accountIDs []string, _ string) ([]appdiagnostic.TaskRow, error) {
+func (f *fakeStore) TodayTasks(_ context.Context, accountIDs []string, _ string) ([]corediag.TaskRow, error) {
 	f.gotAccountIDs = accountIDs
 	return f.tasks, nil
 }
 
-func (f *fakeStore) Windows(_ context.Context, taskIDs []string, _ string) (map[string]appdiagnostic.WindowInfo, error) {
+func (f *fakeStore) Windows(_ context.Context, taskIDs []string, _ string) (map[string]corediag.WindowInfo, error) {
 	f.gotTaskIDs = taskIDs
 	return f.windows, nil
 }
 
-func (f *fakeStore) Egresses(_ context.Context, accountIDs []string) (map[string]appdiagnostic.EgressInfo, error) {
-	out := map[string]appdiagnostic.EgressInfo{}
+func (f *fakeStore) Egresses(_ context.Context, accountIDs []string) (map[string]corediag.EgressInfo, error) {
+	out := map[string]corediag.EgressInfo{}
 	for _, id := range accountIDs {
 		if e, ok := f.egress[id]; ok {
 			out[id] = e
@@ -99,8 +101,8 @@ func acctRecord(id string) appaccount.Record {
 	return appaccount.Record{ID: id, SchoolID: "school-1", OwnerUserID: "user-1"}
 }
 
-func taskRow(accountID, state, result string, attempts int, updatedAgo time.Duration) appdiagnostic.TaskRow {
-	return appdiagnostic.TaskRow{
+func taskRow(accountID, state, result string, attempts int, updatedAgo time.Duration) corediag.TaskRow {
+	return corediag.TaskRow{
 		TaskID: "t-" + accountID, SchoolTaskID: "st-1", AccountID: accountID,
 		State: state, Result: result, Attempts: attempts,
 		RunAt:     diagNow().Add(-time.Minute),
@@ -111,9 +113,9 @@ func taskRow(accountID, state, result string, attempts int, updatedAgo time.Dura
 // Mine 列本人账号并逐个补当日任务行；作用域必须是 User(uid)。
 func TestMineListsOwnAccountsWithUserScope(t *testing.T) {
 	accts := &fakeAccounts{page: appaccount.Page{Items: []appaccount.Record{acctRecord("a1")}}}
-	row := taskRow("a1", "pending", "wait_window_open", 0, time.Second)
+	row := taskRow("a1", string(corestatus.TaskPending), "wait_window_open", 0, time.Second)
 	row.RunAt = diagNow().Add(time.Minute) // 排队中的行：下一次重试时刻就是 run_at
-	st := &fakeStore{tasks: []appdiagnostic.TaskRow{row}}
+	st := &fakeStore{tasks: []corediag.TaskRow{row}}
 	svc := newDiagService(t, accts, st)
 
 	report, err := svc.Mine(context.Background(), "user-1")
@@ -130,7 +132,7 @@ func TestMineListsOwnAccountsWithUserScope(t *testing.T) {
 		t.Fatalf("items = %d", len(report.Items))
 	}
 	item := report.Items[0]
-	if item.AccountID != "a1" || *item.State != "pending" || item.Suggestion != appdiagnostic.SuggestWait {
+	if item.AccountID != "a1" || *item.State != string(corestatus.TaskPending) || item.Suggestion != corediag.SuggestWait {
 		t.Fatalf("item = %+v", item)
 	}
 	if item.NextRetryAt == nil || !item.NextRetryAt.After(diagNow()) {
@@ -141,59 +143,14 @@ func TestMineListsOwnAccountsWithUserScope(t *testing.T) {
 	}
 }
 
-// suggestion 词表闭集，表驱动逐格校验。
-// failed + credential_invalid → contact_admin；
-// failed + 窗口仍开 → retry_now；
-// failed + 窗口已关/未知 → re_arm；
-// 其余状态 → wait。
-func TestSuggestionVocabulary(t *testing.T) {
-	openWin := &appdiagnostic.WindowInfo{Start: diagNow().Add(-time.Hour), End: diagNow().Add(time.Hour)}
-	closedWin := &appdiagnostic.WindowInfo{Start: diagNow().Add(-3 * time.Hour), End: diagNow().Add(-time.Hour)}
-	cases := []struct {
-		state  string
-		result string
-		win    *appdiagnostic.WindowInfo
-		want   string
-	}{
-		{"failed", "credential_invalid", openWin, appdiagnostic.SuggestContactAdmin},
-		{"failed", "credential_invalid", nil, appdiagnostic.SuggestContactAdmin},
-		{"failed", "rejected", openWin, appdiagnostic.SuggestRetryNow},
-		{"failed", "rejected", closedWin, appdiagnostic.SuggestReArm},
-		{"failed", "rejected", nil, appdiagnostic.SuggestReArm},
-		{"pending", "wait_window_open", openWin, appdiagnostic.SuggestWait},
-		{"running", "", openWin, appdiagnostic.SuggestWait},
-		{"success", "success", openWin, appdiagnostic.SuggestWait},
-		{"skipped", "window_closed", closedWin, appdiagnostic.SuggestWait},
-	}
-	for _, c := range cases {
-		got := appdiagnostic.SuggestionFor(c.state, c.result, c.win, diagNow())
-		if got != c.want {
-			t.Fatalf("SuggestionFor(%s,%s,%v) = %q, want %q", c.state, c.result, c.win, got, c.want)
-		}
-	}
-}
-
-// 未知状态不是合法输入：映射必须给出词表内的词而不是空串或任意词。
-func TestSuggestionUnknownStateStillInVocabulary(t *testing.T) {
-	vocab := map[string]bool{
-		appdiagnostic.SuggestWait: true, appdiagnostic.SuggestRetryNow: true,
-		appdiagnostic.SuggestReArm: true, appdiagnostic.SuggestContactAdmin: true,
-	}
-	for _, state := range []string{"", "unknown", "PENDING"} {
-		if got := appdiagnostic.SuggestionFor(state, "", nil, diagNow()); !vocab[got] {
-			t.Fatalf("state %q 得到词表外的 %q", state, got)
-		}
-	}
-}
-
 // stale 翻转：>90s 真，≤90s 假，无行恒假。
 func TestSignStatusStaleFlip(t *testing.T) {
 	accts := &fakeAccounts{page: appaccount.Page{Items: []appaccount.Record{
 		acctRecord("a1"), acctRecord("a2"), acctRecord("a3"),
 	}}}
-	st := &fakeStore{tasks: []appdiagnostic.TaskRow{
-		taskRow("a1", "pending", "", 0, 91*time.Second),
-		taskRow("a2", "success", "success", 1, 89*time.Second),
+	st := &fakeStore{tasks: []corediag.TaskRow{
+		taskRow("a1", string(corestatus.TaskPending), "", 0, 91*time.Second),
+		taskRow("a2", string(corestatus.TaskSuccess), string(corestatus.TaskSuccess), 1, 89*time.Second),
 	}}
 	svc := newDiagService(t, accts, st)
 
@@ -220,11 +177,11 @@ func TestSignStatusStaleFlip(t *testing.T) {
 func TestAccountDetailIncludesWindowAndEgress(t *testing.T) {
 	accts := &fakeAccounts{get: acctRecord("a1")}
 	st := &fakeStore{
-		tasks: []appdiagnostic.TaskRow{taskRow("a1", "failed", "rejected", 2, time.Second)},
-		windows: map[string]appdiagnostic.WindowInfo{
+		tasks: []corediag.TaskRow{taskRow("a1", string(corestatus.TaskFailed), "rejected", 2, time.Second)},
+		windows: map[string]corediag.WindowInfo{
 			"st-1": {Start: diagNow().Add(-time.Hour), End: diagNow().Add(time.Hour), Source: "platform", Version: 3},
 		},
-		egress: map[string]appdiagnostic.EgressInfo{"a1": {Identity: "https://eg-1"}},
+		egress: map[string]corediag.EgressInfo{"a1": {Identity: "https://eg-1"}},
 	}
 	svc := newDiagService(t, accts, st)
 
@@ -232,7 +189,7 @@ func TestAccountDetailIncludesWindowAndEgress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Account: %v", err)
 	}
-	if detail.Suggestion != appdiagnostic.SuggestRetryNow {
+	if detail.Suggestion != corediag.SuggestRetryNow {
 		t.Fatalf("suggestion = %q", detail.Suggestion)
 	}
 	if detail.Window == nil || detail.Window.Source != "platform" || detail.Window.Version != 3 {
@@ -251,14 +208,14 @@ func TestAccountDetailIncludesWindowAndEgress(t *testing.T) {
 
 // Snapshot 透传状态计数；作用域原样传给仓储。
 func TestSnapshotPassesScopeAndCounts(t *testing.T) {
-	st := &fakeStore{counts: map[string]int{"pending": 2, "success": 5}}
+	st := &fakeStore{counts: map[string]int{string(corestatus.TaskPending): 2, string(corestatus.TaskSuccess): 5}}
 	svc := newDiagService(t, &fakeAccounts{}, st)
 
 	view, err := svc.Snapshot(context.Background(), corescope.Master())
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
-	if view.States["pending"] != 2 || view.States["success"] != 5 {
+	if view.States[string(corestatus.TaskPending)] != 2 || view.States[string(corestatus.TaskSuccess)] != 5 {
 		t.Fatalf("states = %v", view.States)
 	}
 	if view.Day != day {
