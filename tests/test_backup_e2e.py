@@ -22,15 +22,18 @@
 依赖：bash（skipIf 整文件）；① 正例需系统 gpg（无则单条 skip）；WSL 下 sqlite3 缺失
 时回环自检自动退化为"解密+解包"两层（与脚本同口径），不断言 integrity 行。
 """
+import contextlib
 import datetime
 import glob
 import io
 import os
 import shutil
+import signal
 import stat
 import subprocess
 import tarfile
 import tempfile
+import time
 import unittest
 
 from yiban.core import clock
@@ -161,6 +164,33 @@ case "$mode" in
     ;;
   *) exit 0 ;;
 esac
+"""
+
+# tar 桩：只把 `-czf` 的目标建成 0 字节文件，其余子命令透传真 tar。
+# 用来造"目标存在但为空"的清单前置断言反例。
+FAKE_TAR_EMPTY_ARCHIVE = """#!/usr/bin/env bash
+if [ "$1" = "-czf" ]; then
+  : > "$2"
+  exit 0
+fi
+exec "$FAKE_TAR_REAL" "$@"
+"""
+
+# mv 桩：只让 `.sha256` 落位失败（模拟目标目录只读/临时件被移走），其余透传。
+FAKE_MV_FAIL_SIDECAR = """#!/usr/bin/env bash
+last=""
+for a in "$@"; do last="$a"; done
+case "$last" in
+  *.sha256) echo "fake mv: simulated read-only target" >&2; exit 1;;
+esac
+exec "$FAKE_MV_REAL" "$@"
+"""
+
+# sha256sum 桩：先睡 30 秒，留出"写清单期间被杀"的窗口（用例都会提前杀掉进程）。
+# 睡醒后写一行合法形状的清单（不在断言路径上，只为不让桩成为半成品）。
+FAKE_SHA256SUM_SLOW = """#!/usr/bin/env bash
+sleep 30
+printf 'deadbeef  %s\\n' "${1:-archive}"
 """
 
 # find 桩：透传给真 find；第一次带 -mtime 的调用（= 轮转开始）后把"当日归档"删掉，
@@ -422,6 +452,115 @@ class SidecarWriteRequiresExistingTargetTest(_BackupRunBase):
                       f"stderr 必须点名缺失的待校验文件 {enc_name}：{self._stderr(r)!r}")
         leftovers = glob.glob(os.path.join(self.backups, "*.sha256.tmp*"))
         self.assertEqual([], leftovers, f"原子写的临时件必须清理：{leftovers}")
+
+    def test_existing_but_empty_target_is_loud_and_leaves_no_sidecar(self):
+        """目标存在但 0 字节：前置断言必须拦住，绝不给空包出清单。
+
+        只覆盖"目标消失"的旧用例删掉 `-s` 前置断言后仍然全绿（P3-1）；本用例
+        从"存在但为空"这一侧钉住 `[ ! -s ]`，删断言会先造出清单再 rc=6。
+        """
+        # 桩只在 `-czf` 分支拦截；回退到真 tar 的分支本用例走不到，故不因缺 tar 跳过
+        real_tar = shutil.which("tar") or "true"
+        self._fake("tar", FAKE_TAR_EMPTY_ARCHIVE)
+        r = self._run((), {"BACKUP_PLAINTEXT": "1", "FAKE_TAR_REAL": real_tar})
+        out = self._out(r)
+        self.assertEqual(r.returncode, 1, f"0 字节归档必须显式失败 rc=1：{out}")
+        self.assertIn("缺失或为空", self._stderr(r),
+                      f"stderr 必须点名 0 字节的待校验文件：{self._stderr(r)!r}")
+        self.assertEqual([], glob.glob(os.path.join(self.backups, "*.sha256")),
+                         "0 字节归档不得产出任何清单（'清单在'本身就是假绿信号）")
+        self.assertEqual([], glob.glob(os.path.join(self.backups, "*.sha256.tmp*")),
+                         "失败路径不得留下清单临时件")
+
+    def test_sidecar_mv_failure_is_loud_and_leaves_no_temp(self):
+        """清单落位（mv）失败：显式 rc=1，且不留临时件（原子写的另一半）。"""
+        # 桩只拦 `.sha256` 落位；回退到真 mv 的分支本用例走不到，故不因缺 mv 跳过
+        real_mv = shutil.which("mv") or "true"
+        self._fake("mv", FAKE_MV_FAIL_SIDECAR)
+        r = self._run((), {"BACKUP_PLAINTEXT": "1", "FAKE_MV_REAL": real_mv})
+        out = self._out(r)
+        self.assertEqual(r.returncode, 1, f"清单落位失败必须显式失败 rc=1：{out}")
+        self.assertIn("无法落位校验清单", self._stderr(r),
+                      f"stderr 必须点名清单落位失败：{self._stderr(r)!r}")
+        self.assertEqual([], glob.glob(os.path.join(self.backups, "*.sha256")),
+                         f"落位失败不得留下半成品清单：{out}")
+        self.assertEqual([], glob.glob(os.path.join(self.backups, "*.sha256.tmp*")),
+                         f"落位失败后临时件必须清理：{out}")
+
+
+@unittest.skipUnless(os.name == "posix", "kill -9 与进程组信号仅 POSIX 可用")
+class SidecarTempCrashTest(_BackupRunBase):
+    """写清单期间被杀：SIGTERM 走清理路径，SIGKILL 的孤儿由轮转按 mtime 清（P2-1）。
+
+    缺陷形状：`kill -9` 不跑 EXIT trap，留下 0 字节 `*.sha256.tmp.<pid>`；旧轮转的
+    6 个 pattern 都不匹配 `.tmp`，它永不清理。两条修法各钉一例：信号路径当场清、
+    SIGKILL 孤儿（不可捕获）在下一轮按 mtime >60 分钟清。
+    """
+
+    def _start_slow_sidecar_run(self):
+        self._fake("sha256sum", FAKE_SHA256SUM_SLOW)
+        env = dict(self.env)
+        env.update({"BACKUP_PLAINTEXT": "1"})
+        proc = subprocess.Popen(
+            [BASH, SCRIPT, "--allow-missing-db"], stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, env=env, cwd=self.tmp,
+            start_new_session=True)
+        self.addCleanup(self._kill_group, proc)
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            if glob.glob(os.path.join(self.backups, "*.sha256.tmp.*")):
+                return proc
+            if proc.poll() is not None:
+                break
+            time.sleep(0.05)
+        self._kill_group(proc)
+        out = (proc.stdout.read() + proc.stderr.read()).decode("utf-8", "replace")
+        self.fail(f"没等到清单临时件（脚本提前退出？）：{out}")
+
+    @staticmethod
+    def _kill_group(proc):
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        if proc.poll() is None:
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=30)
+
+    def _temps(self):
+        return glob.glob(os.path.join(self.backups, "*.sha256.tmp.*"))
+
+    def test_terminated_run_removes_sidecar_temp(self):
+        """SIGTERM：EXIT 清理必须删掉清单临时件（旧实现连 TMPDIR 都不清）。"""
+        proc = self._start_slow_sidecar_run()
+        self.assertEqual(1, len(self._temps()))
+        # 对进程组发 TERM（cron 超时/服务停止的实际形态）：shell 的 trap 在前台
+        # 子进程退出后执行，清理清单临时件。
+        os.killpg(proc.pid, signal.SIGTERM)
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            self.fail("SIGTERM 后备份进程未退出")
+        self.assertNotEqual(0, proc.returncode)
+        self.assertEqual([], self._temps(),
+                         "TERM 后不得留下清单临时件（EXIT 清理没有跑）")
+
+    def test_killed_run_leaves_orphan_that_rotation_cleans(self):
+        """SIGKILL 不可捕获：孤儿先存在（复现 P2-1），2 小时后下一轮必须清掉。"""
+        proc = self._start_slow_sidecar_run()
+        temp = self._temps()[0]
+        self._kill_group(proc)
+        self.assertTrue(os.path.exists(temp),
+                        "SIGKILL 不可捕获：孤儿应存在（本断言是 P2-1 的活体复现）")
+        old = time.time() - 2 * 60 * 60
+        os.utime(temp, (old, old))
+        # 第二轮走真 sha256sum，避免又停在慢桩上
+        os.remove(os.path.join(self.fakebin, "sha256sum"))
+        r = self._run((), {"BACKUP_PLAINTEXT": "1"})
+        out = self._out(r)
+        self.assertIn(r.returncode, (0, 6), out)
+        self.assertFalse(os.path.exists(temp),
+                         f"2 小时前的孤儿临时件应被轮转清理：{out}")
+        self.assertIn("清理孤儿临时件", out,
+                      "清理动作必须留一行日志（删了什么要能追溯）")
 
 
 class RestoreGuardTest(_BackupRunBase):

@@ -31,6 +31,8 @@
 #   APP_DIR（默认 /opt/yiban-auto-sign）、
 #   YIBAN_BACKUP_INSTALLED（默认 /usr/local/sbin/yiban-backup.sh，防漂移比对对象）、
 #   YIBAN_ENV_FILE（默认 <APP_DIR>/data/.env，由本脚本导出）、
+#   YIBAN_CRON_D_DIR（触发器条数门读的生产 cron.d 目录，默认 /etc/cron.d）、
+#   YIBAN_SYSTEM_CRONTAB（系统级 cron 表，默认 /etc/crontab）、
 #   YIBAN_DB_FILE（本脚本**不设**这枚键。库路径由 store 侧 `resolve_path` 三档解析：
 #     进程环境 → .env → env_io.DEFAULT_DB_FILE "data/yiban.db"。默认值按 cwd 解析，
 #     而本脚本已 cd 到 APP_DIR，所以缺省档就是 <APP_DIR>/data/yiban.db。本脚本插一手
