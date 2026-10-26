@@ -132,6 +132,59 @@ func TestOutcomeErrorCheck(t *testing.T) {
 	if err := check.Run(leaky); err == nil {
 		t.Fatal("an OutcomeError message with PII must fail")
 	}
+
+	badTargets := func() contract.Provider {
+		return fake.New("fake", contract.Capabilities{TargetDiscovery: true}).
+			OnTargets(fake.Step[[]contract.Target]{Err: &contract.OutcomeError{Outcome: "bogus"}})
+	}
+	if err := check.Run(badTargets); err == nil {
+		t.Fatal("an invalid target outcome must fail")
+	}
+
+	badVerify := func() contract.Provider {
+		return fake.New("fake", contract.Capabilities{}).
+			OnVerify(fake.Step[contract.Profile]{Err: &contract.OutcomeError{Outcome: "bogus"}})
+	}
+	if err := check.Run(badVerify); err == nil {
+		t.Fatal("an invalid verify outcome must fail")
+	}
+
+	var typedNil *contract.OutcomeError
+	nilError := func() contract.Provider {
+		return fake.New("fake", contract.Capabilities{WindowDiscovery: true}).
+			OnWindow(fake.Step[contract.Window]{Err: typedNil})
+	}
+	if err := check.Run(nilError); err == nil {
+		t.Fatal("a typed nil OutcomeError must fail cleanly")
+	}
+}
+
+// 合法结论错误表示「没有值可检查」：三条形状判据显性跳过，不判红。
+func TestShapeChecksSkipConclusions(t *testing.T) {
+	makeProvider := func() contract.Provider {
+		return fake.New("fake", contract.Capabilities{WindowDiscovery: true, TargetDiscovery: true}).
+			OnWindow(fake.Step[contract.Window]{Err: &contract.OutcomeError{
+				Outcome: contract.OutcomeAlreadyDone}}).
+			OnTargets(fake.Step[[]contract.Target]{Err: &contract.OutcomeError{
+				Outcome: contract.OutcomeNoTarget}}).
+			OnVerify(fake.Step[contract.Profile]{Err: &contract.OutcomeError{
+				Outcome: contract.OutcomeCredentialBad}})
+	}
+	for _, name := range []string{CheckWindowShape, CheckTargetsShape, CheckVerifyResult} {
+		if err := findCheck(t, name).Run(makeProvider); !errors.Is(err, errNotApplicable) {
+			t.Fatalf("%s: error = %v, want not applicable", name, err)
+		}
+	}
+
+	// 包装后的结论错误同样要能跳过。
+	wrapped := func() contract.Provider {
+		return fake.New("fake", contract.Capabilities{WindowDiscovery: true}).
+			OnWindow(fake.Step[contract.Window]{Err: fmt.Errorf("wrapped: %w",
+				&contract.OutcomeError{Outcome: contract.OutcomeAlreadyDone})})
+	}
+	if err := findCheck(t, CheckWindowShape).Run(wrapped); !errors.Is(err, errNotApplicable) {
+		t.Fatalf("wrapped conclusion: error = %v, want not applicable", err)
+	}
 }
 
 // discoveryGuard 记录发现方法是否被调用；未声明能力时调用即失败。
