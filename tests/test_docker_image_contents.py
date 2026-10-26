@@ -27,7 +27,8 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOCKERFILE = os.path.join(BASE, "docker", "Dockerfile")
 COMPOSE = os.path.join(BASE, "docker-compose.yml")
 ENTRYPOINT = os.path.join(BASE, "docker", "entrypoint.sh")
-README = os.path.join(BASE, "README.md")
+#: 容器备份小节随「Docker 部署」逐字搬入该文档（工单 0gbk）；README 只留索引。
+DOCKER_DOC = os.path.join(BASE, "docs", "guides", "deploy-docker.md")
 
 # 会被打进镜像的源码目录（与 Dockerfile 的 COPY 对应）
 RUNTIME_DIRS = ("web", "scripts", "yiban", "docker")
@@ -325,12 +326,12 @@ class DockerNamedVolumePrepTest(unittest.TestCase):
 
 
 class DockerVolumePrepDocTest(unittest.TestCase):
-    """README 必须教到"谁准备属主 + 怎么验证"（AGENTS.md §13：改行为不改教法是第二处缺陷）。"""
+    """部署文档必须教到"谁准备属主 + 怎么验证"（AGENTS.md §13：改行为不改教法是第二处缺陷）。"""
 
     def test_readme_teaches_owner_prep_and_verification(self):
-        text = _read_text(README)
+        text = _read_text(DOCKER_DOC)
         self.assertIn("#### 容器形态现在自带定时备份", text,
-                      "README 的容器备份小节标题被改名，本门的段抽取失效")
+                      "docs/guides/deploy-docker.md 的容器备份小节标题被改名，本门的段抽取失效")
         seg = _readme_backup_section(text)
         self.assertIn("/backups", seg, "容器备份小节不再提落点 /backups？")
         self.assertRegex(seg, r"entrypoint\.sh",

@@ -41,6 +41,15 @@ CODE_REGISTER = os.path.join(BASE, "config", "code-literal-register.json")
 DOCKERFILE = os.path.join(BASE, "docker", "Dockerfile")
 ENTRY = os.path.join(BASE, "scripts", "dev-verify.sh")
 
+
+def _load_gate_module():
+    """把门禁脚本当模块载入：复用它的模板解析口径，不另写第二套（AGENTS §29）。"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("check_config_registry_gate", GATE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
 GOOD_REGISTRY = {
     "_meta": {"version": 1},
     "YIBAN_EGRESS_RATE": {
@@ -1749,17 +1758,33 @@ class GateRealCodeRegisterContentTest(unittest.TestCase):
             self.assertTrue(item["file"].endswith((".sh", ".yml")))
 
     def test_every_no_default_carrier_divergence_is_registered(self):
-        """10 键载体取值互相矛盾：每键都必须有 carrier_example 登记。"""
-        multi = (
-            "YIBAN_PROXY_LIST", "YIBAN_RUN_TIMEOUT_SEC", "YIBAN_ACCOUNTS",
-            "YIBAN_ACCOUNTS_JSON", "YIBAN_PHONE_MODEL", "YIBAN_PHONE_CODE",
-            "YIBAN_ADMIN_PASSWORD", "YIBAN_MAIL_USER", "YIBAN_MAIL_PASS",
-            "YIBAN_MAIL_ADMIN_TO",
-        )
-        with open(os.path.join(BASE, "config",
-                               "default-gate-register.json"), encoding="utf-8") as f:
+        """载体示例值不一致的键：每键都必须有 carrier_example 登记。
+
+        判据从**真实载体**派生，不钉死键名清单（AGENTS §27：修形状不修实例）。
+        2026-10-26 拆分批（工单 0gbk）把部分示例行搬入 `docs/guides/`，README 的
+        取值面随之收窄；若继续用固定清单，判据就与"实际改的东西"脱钩（§29）。
+        解析复用门禁脚本自己的 `_read_template_occurrences`，不另写第二套口径。
+        下限与已知发散键用来挡"扫空当绿"。
+        """
+        gate = _load_gate_module()
+        register_path = os.path.join(BASE, "config", "default-gate-register.json")
+        with open(register_path, encoding="utf-8") as f:
             register = json.load(f)
-        for key in multi:
+        occurrences = gate._read_template_occurrences(BASE)
+        registry = self.registry
+        divergent = sorted(
+            key for key, rows in occurrences.items()
+            if key in registry
+            and registry[key].get("default") is None
+            and len({value for _carrier, _line, value in rows}) >= 2)
+        self.assertGreaterEqual(
+            len(divergent), 3,
+            "从三份载体派生出的发散键只有 %d 个——解析口径坏了或载体塌了" % len(divergent))
+        for known in ("YIBAN_PHONE_MODEL", "YIBAN_PHONE_CODE",
+                      "YIBAN_RUN_TIMEOUT_SEC"):
+            self.assertIn(known, divergent,
+                          "已知发散键 %s 没被派生出来：载体解析口径坏了" % known)
+        for key in divergent:
             self.assertIn("carrier_example", register[key],
                           "%s 的载体示例值不一致，必须登记刻意差" % key)
 

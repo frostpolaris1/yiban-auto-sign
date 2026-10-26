@@ -199,10 +199,11 @@ git branch -f main <已达标提交> && git push origin main && git push gitee m
 每批在当批文稿里留一段"门禁证据"：四条通用门禁各自的命令与结果、非生产演练形态、
 **以及有效轮次台账**。没有这段证据，等同于没通过门禁。
 
-## 8. README 裸机步骤的步级覆盖名册（2026-10-16 普查；工单已清理）
+## 8. 裸机步骤的步级覆盖名册（2026-10-16 普查；工单已清理）
 
-README「服务器部署（分步详解）」的 7 个编号步骤（折叠标题写作 6 组：环境准备／上传代码／
-账号与 .env／run.sh／crontab／手动测试），逐步骤的**载体**与**守卫**如下。本名册回答普查
+`docs/guides/deploy-baremetal.md`「服务器部署（分步详解）」的 7 个编号步骤（折叠标题写作 6 组：
+环境准备／上传代码／账号与 .env／run.sh／crontab／手动测试），逐步骤的**载体**与**守卫**如下。
+该节 2026-10-26 从 README 逐字搬入（工单 0gbk），步骤编号与内容未变。本名册回答普查
 §八-4 的"零覆盖"：哪几步有仓库载体与门、哪几步只有文字。
 
 | 步 | 内容 | 仓库载体 | 守卫（门／测试） |
@@ -256,7 +257,7 @@ README「服务器部署（分步详解）」的 7 个编号步骤（折叠标�
 ### 9.1 人工步骤：systemd 单元与 nginx 配置（F2，发版 dry-run 2026-10-25）
 
 `deploy/prod/install.sh` 只落位 10 件（备份脚本／wrapper／哨兵／6 张 cron／tmpfiles），
-**不装** systemd 单元与 nginx 配置。在检出根按 README「网页管理后台」执行：
+**不装** systemd 单元与 nginx 配置。在检出根按 `docs/guides/admin-console.md`「网页管理后台」执行：
 
 ```bash
 set -a; . deploy/web.env; set +a
@@ -273,7 +274,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now yiban-web
 
 判据：`systemctl is-active yiban-web` 输出 `active`；`curl -fsS
 http://127.0.0.1:${YIBAN_WEB_PORT}/login` 返回 200。另需先按 §8 第 1 步建 `yiban` 账号，
-并按 README 备齐 `/etc/yiban/accounts-key`。
+并按 `docs/guides/admin-console.md` 备齐 `/etc/yiban/accounts-key`。
 
 ### 9.2 已知噪声：演练窗口过短时的退避 ERROR（F7）
 
