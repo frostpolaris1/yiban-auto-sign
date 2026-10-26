@@ -111,3 +111,15 @@ func (l *Limiter) Admit(egress string, now time.Time) bool {
 	l.mu.Unlock()
 	return b.Admit(now)
 }
+
+// RetryAfter 返回该出口距下一次可放行的等待；无桶或可放行返回 0。
+// 与 Admit 同一把锁秩序：先取桶引用再问桶，避免持有聚合锁做算术。
+func (l *Limiter) RetryAfter(egress string, now time.Time) time.Duration {
+	l.mu.Lock()
+	b := l.buckets[egress]
+	l.mu.Unlock()
+	if b == nil {
+		return 0
+	}
+	return b.RetryAfter(now)
+}
