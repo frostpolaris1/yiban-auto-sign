@@ -10,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -294,5 +295,31 @@ func TestPhotoUploadAdminForbidden(t *testing.T) {
 	rec := request(t, engine, issued, http.MethodPost, "/api/me/photos", body, contentType)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// 上传完成后系统临时目录不得残留 multipart-*：
+// 原始字节未去 EXIF，泄漏等于把隐私面留在磁盘上。
+func TestPhotoUploadCleansTempFiles(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TMPDIR", dir)
+	t.Setenv("TMP", dir)
+	t.Setenv("TEMP", dir)
+	svc := &fakeService{uploadRec: sampleRecord()}
+	engine, issued := newRouter(t, corescope.User("u1"), svc)
+	// 2 MiB 超过 1 MiB 内存阈值，part 必然落盘。
+	body, contentType := uploadBody(t, "image", bytes.Repeat([]byte{'x'}, 2<<20))
+	rec := request(t, engine, issued, http.MethodPost, "/api/me/photos", body, contentType)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read tmpdir: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "multipart-") {
+			t.Fatalf("临时文件残留: %s", entry.Name())
+		}
 	}
 }
