@@ -1,6 +1,7 @@
 package yiban
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/conformance"
@@ -23,13 +24,12 @@ func TestProviderConformanceApplicable(t *testing.T) {
 		return &successExpecter{Provider: NewProvider(New(Config{Endpoints: up.endpoints()}))}
 	}
 	skip := map[string]string{
-		"sign.timeout":       "假上游没有延迟脚本；HTTP 超时由 sign.cancel 与客户端覆盖",
 		"sign.photo_missing": "ImageRequired 在 P5 前为假",
 	}
 	for _, check := range conformance.Checks() {
 		check := check
 		if reason, ok := skip[check.Name]; ok {
-			t.Logf("跳过 %s：%s", check.Name, reason)
+			fmt.Printf("conformance: %s: 跳过：%s\n", check.Name, reason)
 			continue
 		}
 		t.Run(check.Name, func(t *testing.T) {
