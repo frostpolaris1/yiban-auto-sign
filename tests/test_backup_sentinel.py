@@ -1154,6 +1154,12 @@ class BackupDocsContractTest(unittest.TestCase):
     def setUpClass(cls):
         with io.open(os.path.join(BASE, "README.md"), encoding="utf-8") as f:
             cls.readme = f.read()
+        # 「6. crontab」随「服务器部署（分步详解）」逐字搬入该文档（工单 0gbk）；
+        # 快速开始的「# 5. 定时任务」仍在 README。两处标记都必须在面上。
+        with io.open(os.path.join(BASE, "docs", "guides", "deploy-baremetal.md"),
+                     encoding="utf-8") as f:
+            cls.deploy_doc = f.read()
+        cls.deploy_text = cls.readme + "\n" + cls.deploy_doc
         with io.open(os.path.join(BASE, "docs", "dev", "backup-restore.md"),
                      encoding="utf-8") as f:
             cls.backup_doc = f.read()
@@ -1161,9 +1167,9 @@ class BackupDocsContractTest(unittest.TestCase):
     def test_crontab_sections_warn_to_skip_after_installer(self):
         """两处手工 crontab 步骤都必须标注「跑过 install.sh 就跳过」（P2-2）。"""
         for marker in ("# 5. 定时任务", "#### 6. crontab"):
-            idx = self.readme.find(marker)
-            self.assertNotEqual(-1, idx, f"README 缺段落标记：{marker}")
-            window = self.readme[idx:idx + 700]
+            idx = self.deploy_text.find(marker)
+            self.assertNotEqual(-1, idx, f"部署文档缺段落标记：{marker}")
+            window = self.deploy_text[idx:idx + 700]
             self.assertIn("跳过本节", window,
                           f"{marker} 没写「跑过 install.sh 就跳过」——两处都写会重复触发")
 

@@ -142,6 +142,14 @@ docs/dev/*
 !docs/dev/experimental-line/
 docs/dev/experimental-line/*
 !docs/dev/experimental-line/legacy-criteria-handoff.md
+# 用户指南与法务声明（2026-10-26 README 拆分）：README 拆分后的正文落点，读者面契约类。
+# 同样先放行目录，再排除其余内容，最后逐件放行 .md（git 的目录包含语义）。
+!docs/guides/
+docs/guides/*
+!docs/guides/*.md
+!docs/legal/
+docs/legal/*
+!docs/legal/*.md
 .superpowers/
 
 # ZCode 工具目录

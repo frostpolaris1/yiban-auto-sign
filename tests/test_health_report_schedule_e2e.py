@@ -665,9 +665,12 @@ class PurgeLoopCadenceTest(_HealthScheduleBase):
         self.assertLessEqual(sleeps[1], self.webapp._HEALTH_REPORT_TICK_SEC)
 
     def test_documented_arrival_precision_matches_the_tick(self):
-        """三处文案里的分钟数必须等于 `_HEALTH_REPORT_TICK_SEC`（防文档与常量脱钩）。"""
+        """三处文案里的分钟数必须等于 `_HEALTH_REPORT_TICK_SEC`（防文档与常量脱钩）。
+
+        人类文档已随工单 0gbk 从 README 搬入 docs/guides/configuration.md。
+        """
         minutes = self.webapp._HEALTH_REPORT_TICK_SEC // 60
-        for rel in ("README.md", ".env.example",
+        for rel in (os.path.join("docs", "guides", "configuration.md"), ".env.example",
                     os.path.join("frontend", "src", "settings", "HealthCard.vue")):
             with self.subTest(doc=rel):
                 self.assertIn(f"{minutes} 分钟", _read(os.path.join(BASE, rel)),
