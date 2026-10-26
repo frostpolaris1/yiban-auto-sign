@@ -25,7 +25,9 @@ type fakeStore struct {
 	windows map[string]coreschedule.WindowRecord
 	// windowErrFor 按 schoolTaskID 注入读窗口失败（基础设施错误测试用）。
 	windowErrFor map[string]error
-	todayTask    string
+	// finishErr 注入结算失败（验证"已提交行不退回"）。
+	finishErr error
+	todayTask string
 
 	// 观测面
 	claimed  []string
@@ -75,6 +77,9 @@ func (f *fakeStore) ClaimDue(_ context.Context, now time.Time, limit int) ([]cor
 }
 
 func (f *fakeStore) Finish(_ context.Context, accountID, schoolTaskID, day string, state corestatus.TaskState, result string, _ time.Time) error {
+	if f.finishErr != nil {
+		return f.finishErr
+	}
 	for i := range f.tasks {
 		t := &f.tasks[i]
 		if t.AccountID == accountID && t.SchoolTaskID == schoolTaskID && t.Day == day {
@@ -622,6 +627,60 @@ func TestRequestManualSign(t *testing.T) {
 	svc2 := newService(t, st2, defaultSigner(), fakeLimiter{allow: true})
 	if _, err := svc2.Request(ctx, "acct-1"); err == nil {
 		t.Fatal("无任务应报错")
+	}
+}
+
+// 提交面 13 词逐词断言：改错任何一档都必须红（P4-E 复审 P2-1）。
+func TestSignOutcomeSettlesByVocabulary(t *testing.T) {
+	cases := []struct {
+		outcome contract.Outcome
+		want    corestatus.TaskState
+	}{
+		{contract.OutcomeSuccess, corestatus.TaskSuccess},
+		{contract.OutcomeAlreadyDone, corestatus.TaskSuccess},
+		{contract.OutcomeNoTarget, corestatus.TaskSkipped},
+		{contract.OutcomeInvalidTarget, corestatus.TaskSkipped},
+		{contract.OutcomePhotoMissing, corestatus.TaskSkipped},
+		{contract.OutcomeChallenge, corestatus.TaskSkipped},
+		{contract.OutcomeDeviceUnbound, corestatus.TaskSkipped},
+		{contract.OutcomeRejected, corestatus.TaskFailed},
+		{contract.OutcomePhotoRejected, corestatus.TaskFailed},
+		{contract.OutcomeCredentialBad, corestatus.TaskFailed},
+	}
+	for _, c := range cases {
+		st := newStore(baseTask())
+		st.windows["st-1|2026-10-29"] = openWindow()
+		signer := defaultSigner()
+		signer.outcome = c.outcome
+		svc := newService(t, st, signer, fakeLimiter{allow: true})
+		if _, err := svc.Step(context.Background(), 10); err != nil {
+			t.Fatalf("%s: Step: %v", c.outcome, err)
+		}
+		if st.finished["t1"] != c.want {
+			t.Fatalf("%s: 终态 = %v, want %v", c.outcome, st.finished["t1"], c.want)
+		}
+	}
+}
+
+// 已提交签到后结算失败：当前行必须留在 running（不得退回，防重复签到），
+// 只有后续行退回（P4-E 复审 P2-2 的反向判据）。
+func TestSettleFailureKeepsSubmittedRowRunning(t *testing.T) {
+	st := newStore(baseTask())
+	st.windows["st-1|2026-10-29"] = openWindow()
+	st.finishErr = errors.New("db down on finish")
+	svc := newService(t, st, defaultSigner(), fakeLimiter{allow: true})
+	_, err := svc.Step(context.Background(), 10)
+	if err == nil {
+		t.Fatal("结算失败应上抛")
+	}
+	var row coreschedule.TaskRow
+	for _, r := range st.tasks {
+		if r.ID == "t1" {
+			row = r
+		}
+	}
+	if row.State != string(corestatus.TaskRunning) {
+		t.Fatalf("已提交行状态 = %s, want running（不得退回）", row.State)
 	}
 }
 

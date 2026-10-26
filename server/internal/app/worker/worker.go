@@ -31,12 +31,13 @@ var (
 // 入口层与统计不得把 wait_* 当作业务结论。真正的业务结论一律取
 // contract.Outcome 的词面值。前缀 wait_ 就是给读库的人一个直观分界。
 const (
-	waitWindow        = "wait_window"        // 窗口未开 / 当日窗口尚未发现
-	waitRate          = "wait_rate"          // 出口限速未放行
-	waitEgress        = "wait_egress"        // 出口不可用（无可用出口或分配失败）
-	waitBatchAborted  = "wait_batch_aborted" // 同批前一条基础设施失败，本行退回队列
-	unreadableCred    = "credential_invalid"
-	windowMissingWait = 10 * time.Minute // 窗口未发现时的重试间隔
+	waitWindowOpen     = "wait_window_open"    // 窗口未开（已知窗口，退回起点）
+	waitWindowMissing  = "wait_window_missing" // 当日窗口尚未发现（定时再看）
+	waitRate           = "wait_rate"           // 出口限速未放行
+	waitEgress         = "wait_egress"         // 出口不可用（无可用出口或分配失败）
+	waitBatchAborted   = "wait_batch_aborted"  // 同批前一条基础设施失败，本行退回队列
+	unreadableCred     = "credential_invalid"
+	windowMissingRetry = 10 * time.Minute // 窗口未发现时的重试间隔
 )
 
 // Service 是执行循环服务。
@@ -110,8 +111,11 @@ func (s *Service) Step(ctx context.Context, limit int) (int, error) {
 		if !submitted {
 			releaseFrom = i
 		}
+		// 退回用 WithoutCancel：即使 ctx 已取消，队列也必须被修好，
+		// 否则这些行停在 running 到重启（P4-E 复审 P3-1）。
+		releaseCtx := context.WithoutCancel(ctx)
 		for _, rest := range tasks[releaseFrom:] {
-			if releaseErr := s.deps.Store.RequeueWait(ctx, rest.ID, rest.RunAt, waitBatchAborted); releaseErr != nil {
+			if releaseErr := s.deps.Store.RequeueWait(releaseCtx, rest.ID, rest.RunAt, waitBatchAborted); releaseErr != nil {
 				// 退回失败优先上报：队列卡死比单次执行失败更严重。
 				return processed, releaseErr
 			}
@@ -133,7 +137,7 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 		if isNotFound(err) {
 			// 窗口尚未发现不是结论：10 分钟后再看。若当日始终没有窗口，
 			// 行会保持 pending 到下一个业务日，由日切逻辑（P4-F）清理。
-			return false, s.deps.Store.RequeueWait(ctx, task.ID, s.deps.Clock.Now().Add(windowMissingWait), waitWindow)
+			return false, s.deps.Store.RequeueWait(ctx, task.ID, s.deps.Clock.Now().Add(windowMissingRetry), waitWindowMissing)
 		}
 		return false, err
 	}
@@ -146,7 +150,7 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 	}
 	if !win.Open(now) {
 		// 提前认领：退回窗口起点。等待不计业务尝试数。
-		return false, s.deps.Store.RequeueWait(ctx, task.ID, win.Start, waitWindow)
+		return false, s.deps.Store.RequeueWait(ctx, task.ID, win.Start, waitWindowOpen)
 	}
 
 	eg, err := s.deps.Egress.Assign(ctx, task.AccountID)
@@ -205,7 +209,9 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 		Window: contract.Window{
 			Start: windowRecord.Start, End: windowRecord.End,
 			// 来源如实传递：fallback 窗口不得伪装成 platform。
-			Source: contract.WindowSource(windowRecord.Source),
+			// 空来源只可能来自脏数据；兜底为 fallback 而不是 platform，
+			// 让证据面显示"这不是实拍窗口"（P4-E 复审 P3-5）。
+			Source: windowSource(windowRecord.Source),
 		},
 		Target:   targets[0],
 		Location: contract.Location{Mode: contract.LocationAuto},
@@ -267,6 +273,14 @@ func (s *Service) finish(ctx context.Context, task corescheduleTask, state cores
 // 同一尝试被重复调用时仍折叠（这正是幂等缓存要防的双发）。
 func attemptID(task corescheduleTask) string {
 	return fmt.Sprintf("%s#%d", task.ID, task.Attempts)
+}
+
+// windowSource 归一窗口来源；空值兜底为 fallback（保守方向）。
+func windowSource(raw string) contract.WindowSource {
+	if raw == "" {
+		return contract.WindowFallback
+	}
+	return contract.WindowSource(raw)
 }
 
 // outcomeOf 从契约错误里取业务结论；不是 OutcomeError 返回 false。
