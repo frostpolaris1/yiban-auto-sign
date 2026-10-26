@@ -15,8 +15,8 @@
 
 **复用**
 路由按域直取（`from web.services import limits as _limits`）：限速与容量判定、
-输入校验、展示口径共用同一份值。`DEFAULT_ACCOUNT_GAP_MAX` / `DEFAULT_MAX_USERS` /
-`DEFAULT_MAX_ACCOUNTS` 的缺省来自 `yiban.adapters.config.loader` 的配置名册
+输入校验、展示口径共用同一份值。容量上限与账号间隔的缺省均来自
+`yiban.adapters.config.loader` 的配置名册
 （名册是配置键的唯一定义点），本模块不另抄数字。
 
 **通信**
