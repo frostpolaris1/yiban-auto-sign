@@ -131,24 +131,50 @@ def run(job_id, clean, username, account_id, prev_status, fails):
         store.finish(job_id, error="校验繁忙：等待全局校验席位超时，请稍后重试")
         return
     # 看门狗只计**外呼**预算，从两个等待都完成、真正要外呼的这一刻起表。
+    # 席位与账号权从拿到起就由**一个** try/finally 兜底：`BaseException`
+    # （KeyboardInterrupt / SystemExit）也走释放段。旧写法分成两个 try，且计时器
+    # 那段只捕 `Exception`——BaseException 会越过释放段，两个资源永久泄漏
+    # （dix A-2）。异常照原样上抛；只有 `Exception` 才转成业务终态。
     watchdog = None
+    # 每个释放步各自记完成：一步抛错不许挡住其余步，也不许把"已完成"记到未完成的步上。
+    # 旧写法先把单一标志置 True 再释放：`watchdog.cancel()` 抛错后席位与账号权泄漏，
+    # 外层 finally 的重试又被早置位挡成 no-op（dix 低-2）。
+    release_done = {"cancel": False, "seat": False, "account": False}
+
+    def _release_slot():
+        try:
+            if watchdog is not None and not release_done["cancel"]:
+                try:
+                    watchdog.cancel()
+                except Exception:
+                    # 取消失败只记日志：定时器可能残留，但资源必须继续归还。
+                    logger.exception("取消异步校验计时器失败（job=%s）", job_id)
+                else:
+                    release_done["cancel"] = True
+        finally:
+            try:
+                if not release_done["seat"]:
+                    seat.release()
+                    release_done["seat"] = True
+            finally:
+                if not release_done["account"]:
+                    if release_account is not None:
+                        release_account(phone)
+                    release_done["account"] = True
+
     try:
-        watchdog = threading.Timer(OUTBOUND_TIMEOUT, _on_timeout)
-        watchdog.daemon = True
-        watchdog.start()
-    except Exception:
-        # 计时器没起来就不能进入外呼；席位与账号权必须当场还回去，否则永久泄漏。
-        # 任务也要落终态，否则前端会显示"进行中"直到 900 秒超龄收口。
-        if watchdog is not None:
-            watchdog.cancel()
-        # 先释放资源再落终态：`store.finish` 自己也可能失败，资源不能等它。
-        seat.release()
-        if release_account is not None:
-            release_account(phone)
-        logger.exception("异步校验计时器启动失败（job=%s）", job_id)
-        store.finish(job_id, error="校验启动失败：计时器未启动")
-        return
-    try:
+        try:
+            watchdog = threading.Timer(OUTBOUND_TIMEOUT, _on_timeout)
+            watchdog.daemon = True
+            watchdog.start()
+        except Exception:
+            # 计时器没起来就不能进入外呼。先释放资源再落终态：`store.finish`
+            # 自己也可能失败，资源不能等它。任务也要落终态，否则前端会显示
+            # "进行中"直到 900 秒超龄收口。
+            _release_slot()
+            logger.exception("异步校验计时器启动失败（job=%s）", job_id)
+            store.finish(job_id, error="校验启动失败：计时器未启动")
+            return
         verify_err = _hooks["verify_one"](clean)
     except Exception as e:
         # 外呼实现抛异常是内部错误，不是账号问题：任务落终态，账号状态不动。
@@ -156,10 +182,7 @@ def run(job_id, clean, username, account_id, prev_status, fails):
         store.finish(job_id, error=f"校验异常：{type(e).__name__}")
         return
     finally:
-        watchdog.cancel()
-        seat.release()
-        if release_account is not None:
-            release_account(phone)
+        _release_slot()
 
     if expired.is_set():
         return
