@@ -18,6 +18,7 @@ import (
 	apptimepref "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/timepref"
 	appuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/user"
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/assembly"
 	corerate "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/rate"
 	eventshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/events"
 	locationhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/location"
@@ -72,8 +73,8 @@ var (
 	_ appworker.LocationSource = (*applocation.Service)(nil)
 	_ appworker.PhotoSource    = (*appphotos.Service)(nil)
 	// P6：事件总线、发布端口与诊断读模型。
-	_ appworker.Notifier          = workerNotifier{}
-	_ appschedule.Notifier        = scheduleNotifier{}
+	_ appworker.Notifier          = assembly.WorkerNotifier{}
+	_ appschedule.Notifier        = assembly.ScheduleNotifier{}
 	_ appdiagnostic.Store         = (*pg.DiagnosticRepo)(nil)
 	_ appdiagnostic.AccountSource = (*appaccount.Service)(nil)
 	_ eventshttp.Broker           = (*appevents.Broker)(nil)

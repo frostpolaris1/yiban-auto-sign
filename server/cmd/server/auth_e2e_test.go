@@ -33,6 +33,7 @@ import (
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/config"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/assembly"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 )
@@ -75,7 +76,7 @@ type authEnv struct {
 	ctx     context.Context
 	schema  string
 	admin   *pg.DB
-	stack   *appStack
+	stack   *assembly.Stack
 	db      *pg.DB
 	users   *pg.UserRepo
 	resets  *pg.PasswordResetRepo
@@ -110,7 +111,7 @@ func newAuthEnv(t *testing.T) *authEnv {
 		CredentialKey:   authTestCredentialKey,
 		PhotoDir:        t.TempDir(),
 	}
-	stack, err := buildStack(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	stack, err := assembly.Build(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		_, _ = admin.Exec(ctx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE")
 		admin.Close()
@@ -121,23 +122,23 @@ func newAuthEnv(t *testing.T) *authEnv {
 	if err != nil {
 		t.Fatalf("cookie jar: %v", err)
 	}
-	srv := httptest.NewServer(stack.engine)
+	srv := httptest.NewServer(stack.Engine)
 	env := &authEnv{
 		t:       t,
 		ctx:     ctx,
 		schema:  schema,
 		admin:   admin,
 		stack:   stack,
-		db:      stack.db,
-		users:   pg.NewUserRepo(stack.db),
-		resets:  pg.NewPasswordResetRepo(stack.db),
+		db:      stack.DB,
+		users:   pg.NewUserRepo(stack.DB),
+		resets:  pg.NewPasswordResetRepo(stack.DB),
 		client:  &http.Client{Jar: jar, Timeout: 10 * time.Second},
 		baseURL: srv.URL,
 		httpSrv: srv,
 	}
 	t.Cleanup(func() {
 		srv.Close()
-		stack.close()
+		stack.Close()
 		dropCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if _, err := admin.Exec(dropCtx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE"); err != nil {
