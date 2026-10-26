@@ -13,10 +13,12 @@
 // Provider；DiscoverRequest、VerifyRequest、SignRequest；
 // Window、Target、Location、ImageRef；
 // Profile、Result、Evidence、RetryAdvice、Capabilities；
-// Outcome 及全部结果常量；Credential、AccountRef。
+// Outcome 及全部结果常量；OutcomeError；Credential、AccountRef。
 //
 // # 口径
 // Outcome 是中性词表；unknown 与 success **必须保持区分**。
+// 发现与校验的结论错误用 OutcomeError 表达；Outcome 必须在词表内，
+// 且不得为 success。宿主用 errors.As 取回，不认提供方私有类型。
 // Credential 只在一次调用内有效，提供方不得留存或记录。
 package contract
 
@@ -181,6 +183,25 @@ func (o Outcome) Valid() bool {
 	default:
 		return false
 	}
+}
+
+// OutcomeError 把发现或校验的结论放进 error。
+//
+// 用途：DiscoverWindow、DiscoverTargets 与 Verify 只返回 (值, error)。
+// 平台给出「已签到」「补签中」「凭据错」这类结论时，提供方返回
+// &OutcomeError{Outcome: ..., Message: ...}，宿主用 errors.As 取回。
+// Outcome 必须在词表内，且不得为 success；Message 不得含凭据原值。
+// 取消与网络错误继续用原生 error，不要包成 OutcomeError。
+type OutcomeError struct {
+	Outcome Outcome
+	Message string
+}
+
+func (e *OutcomeError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	return "provider: " + string(e.Outcome)
 }
 
 // Evidence 是审计安全的结果明细。Raw **必须已经掩码**。

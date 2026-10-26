@@ -1,6 +1,9 @@
 package contract
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestOutcomeValid(t *testing.T) {
 	all := []Outcome{
@@ -23,5 +26,20 @@ func TestOutcomeValid(t *testing.T) {
 func TestUnknownIsNotSuccess(t *testing.T) {
 	if OutcomeUnknown == OutcomeSuccess {
 		t.Fatal("unknown must stay distinct from success")
+	}
+}
+
+func TestOutcomeError(t *testing.T) {
+	withMessage := &OutcomeError{Outcome: OutcomeCredentialBad, Message: "bad credentials"}
+	if withMessage.Error() != "bad credentials" {
+		t.Fatalf("Error() = %q", withMessage.Error())
+	}
+	withoutMessage := &OutcomeError{Outcome: OutcomeChallenge}
+	if withoutMessage.Error() != "provider: challenge" {
+		t.Fatalf("Error() = %q", withoutMessage.Error())
+	}
+	var target *OutcomeError
+	if !errors.As(error(withMessage), &target) || target != withMessage {
+		t.Fatal("errors.As must recover the OutcomeError")
 	}
 }

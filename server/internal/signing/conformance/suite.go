@@ -23,6 +23,7 @@ const (
 	CheckIDStable       = "id.stable"
 	CheckCapsStable     = "capabilities.stable"
 	CheckCapsHonored    = "capabilities.honored"
+	CheckOutcomeError   = "outcome.error"
 	CheckWindowShape    = "window.shape"
 	CheckWindowCancel   = "window.cancel"
 	CheckTargetsShape   = "targets.shape"
@@ -79,6 +80,7 @@ func Checks() []Check {
 		{CheckIDStable, checkIDStable},
 		{CheckCapsStable, checkCapsStable},
 		{CheckCapsHonored, checkCapsHonored},
+		{CheckOutcomeError, checkOutcomeError},
 		{CheckWindowShape, checkWindowShape},
 		{CheckWindowCancel, checkWindowCancel},
 		{CheckTargetsShape, checkTargetsShape},
@@ -254,6 +256,57 @@ func checkCapsHonored(newProvider NewProvider) error {
 		if _, err := p.DiscoverTargets(ctx, discoverRequest()); err == nil {
 			return failf(CheckCapsHonored, "未声明 TargetDiscovery，DiscoverTargets 却返回 nil 错误")
 		}
+	}
+	return nil
+}
+
+// checkOutcomeError 要求发现与校验的结论错误符合契约词表。
+//
+// 只看实现了 *contract.OutcomeError 的错误：
+// 取消与网络错误不是平台结论，不在此判据内。
+// 声明了发现能力才会调用对应方法；未声明时保持 G1。
+// 结论必须是词表内的值，且不得是 success。
+func checkOutcomeError(newProvider NewProvider) error {
+	p := newProvider()
+	caps := p.Capabilities()
+	ctx := context.Background()
+	if caps.WindowDiscovery {
+		if _, err := p.DiscoverWindow(ctx, discoverRequest()); err != nil {
+			if err := validateOutcomeError("DiscoverWindow", err); err != nil {
+				return err
+			}
+		}
+	}
+	if caps.TargetDiscovery {
+		if _, err := p.DiscoverTargets(ctx, discoverRequest()); err != nil {
+			if err := validateOutcomeError("DiscoverTargets", err); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := p.Verify(ctx, verifyRequest()); err != nil {
+		if err := validateOutcomeError("Verify", err); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateOutcomeError 校验一枚错误携带的结论。
+// 非 OutcomeError 直接放行：调用方按原生错误处理。
+func validateOutcomeError(method string, err error) error {
+	var outcomeErr *contract.OutcomeError
+	if !errors.As(err, &outcomeErr) {
+		return nil
+	}
+	if !outcomeErr.Outcome.Valid() {
+		return failf(CheckOutcomeError, "%s 的结论 %q 不在词表内", method, outcomeErr.Outcome)
+	}
+	if outcomeErr.Outcome == contract.OutcomeSuccess {
+		return failf(CheckOutcomeError, "%s 用 success 表达错误结论", method)
+	}
+	if leak := findLeak(outcomeErr.Message, testCredential()); leak != "" {
+		return failf(CheckOutcomeError, "%s 的结论消息泄漏%s", method, leak)
 	}
 	return nil
 }

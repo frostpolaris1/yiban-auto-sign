@@ -52,6 +52,7 @@ func TestCheckListIsFixed(t *testing.T) {
 		CheckIDStable,
 		CheckCapsStable,
 		CheckCapsHonored,
+		CheckOutcomeError,
 		CheckWindowShape,
 		CheckWindowCancel,
 		CheckTargetsShape,
@@ -80,6 +81,85 @@ func TestCheckListIsFixed(t *testing.T) {
 			t.Fatalf("判据 %q 重复", check.Name)
 		}
 		seen[check.Name] = true
+	}
+}
+
+// outcome.error：合法结论错误通过；非法词与 success 变红；原生错误放行。
+func TestOutcomeErrorCheck(t *testing.T) {
+	check := findCheck(t, CheckOutcomeError)
+
+	valid := func() contract.Provider {
+		return fake.New("fake", contract.Capabilities{WindowDiscovery: true, TargetDiscovery: true}).
+			OnWindow(fake.Step[contract.Window]{Err: &contract.OutcomeError{
+				Outcome: contract.OutcomeAlreadyDone, Message: "done"}}).
+			OnTargets(fake.Step[[]contract.Target]{Err: &contract.OutcomeError{
+				Outcome: contract.OutcomeNoTarget}}).
+			OnVerify(fake.Step[contract.Profile]{Value: fake.ValidProfile()})
+	}
+	if err := check.Run(valid); err != nil {
+		t.Fatalf("valid outcome errors rejected: %v", err)
+	}
+
+	invalid := func() contract.Provider {
+		return fake.New("fake", contract.Capabilities{WindowDiscovery: true}).
+			OnWindow(fake.Step[contract.Window]{Err: &contract.OutcomeError{Outcome: "bogus"}})
+	}
+	if err := check.Run(invalid); err == nil {
+		t.Fatal("an invalid outcome must fail")
+	}
+
+	success := func() contract.Provider {
+		return fake.New("fake", contract.Capabilities{WindowDiscovery: true}).
+			OnWindow(fake.Step[contract.Window]{Err: &contract.OutcomeError{Outcome: contract.OutcomeSuccess}})
+	}
+	if err := check.Run(success); err == nil {
+		t.Fatal("success must not express a discovery error")
+	}
+
+	plain := func() contract.Provider {
+		return fake.New("fake", contract.Capabilities{WindowDiscovery: true}).
+			OnWindow(fake.Step[contract.Window]{Err: errors.New("network")})
+	}
+	if err := check.Run(plain); err != nil {
+		t.Fatalf("a native error must pass: %v", err)
+	}
+
+	leaky := func() contract.Provider {
+		return fake.New("fake", contract.Capabilities{WindowDiscovery: true}).
+			OnWindow(fake.Step[contract.Window]{Err: &contract.OutcomeError{
+				Outcome: contract.OutcomeRejected, Message: "user 13800138000 blocked"}})
+	}
+	if err := check.Run(leaky); err == nil {
+		t.Fatal("an OutcomeError message with PII must fail")
+	}
+}
+
+// discoveryGuard 记录发现方法是否被调用；未声明能力时调用即失败。
+type discoveryGuard struct {
+	*fake.Provider
+	windowCalled bool
+	targetCalled bool
+}
+
+func (p *discoveryGuard) DiscoverWindow(context.Context, contract.DiscoverRequest) (contract.Window, error) {
+	p.windowCalled = true
+	return contract.Window{}, errors.New("must not be called")
+}
+
+func (p *discoveryGuard) DiscoverTargets(context.Context, contract.DiscoverRequest) ([]contract.Target, error) {
+	p.targetCalled = true
+	return nil, errors.New("must not be called")
+}
+
+// 未声明发现能力时不得调用发现方法（G1）。
+func TestOutcomeErrorSkipsUndeclaredDiscovery(t *testing.T) {
+	check := findCheck(t, CheckOutcomeError)
+	guard := &discoveryGuard{Provider: fake.New("fake", contract.Capabilities{})}
+	if err := check.Run(func() contract.Provider { return guard }); err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if guard.windowCalled || guard.targetCalled {
+		t.Fatalf("undeclared discovery was called: window=%t target=%t", guard.windowCalled, guard.targetCalled)
 	}
 }
 

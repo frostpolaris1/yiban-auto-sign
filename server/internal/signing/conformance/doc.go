@@ -42,6 +42,10 @@
 // capabilities.honored：未声明的发现能力必须返回**非 nil 错误**。
 // 依据：契约 G1 裁决；静默零值会被宿主当成一次成功的发现。
 //
+// outcome.error：发现与校验返回的 OutcomeError 结论必须在词表内，且不得为 success。
+// 取消与网络错误不是平台结论，不在此判据内。
+// 依据：宿主用 errors.As 取回结论；无效词会让宿主静默走错分支。
+//
 // window.shape：窗口起止非零，结束晚于开始，来源在契约词表内。
 // 依据：契约 Window 与 WindowSource 的定义。
 //
