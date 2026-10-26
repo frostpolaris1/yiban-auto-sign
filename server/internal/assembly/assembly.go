@@ -137,7 +137,9 @@ func Run(ctx context.Context, logger *slog.Logger) error {
 			return nil
 		}
 		if loop != nil {
-			_, _ = loop.Stop(context.Background())
+			bounded, cancel := context.WithTimeout(context.Background(), shutdownBudget)
+			_, _ = loop.Stop(bounded)
+			cancel()
 		}
 		stack.Close()
 		return err
