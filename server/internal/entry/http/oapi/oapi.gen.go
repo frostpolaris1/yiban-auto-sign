@@ -13,6 +13,42 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for AccountLocationMode.
+const (
+	AccountLocationModeAuto  AccountLocationMode = "auto"
+	AccountLocationModeFixed AccountLocationMode = "fixed"
+)
+
+// Valid indicates whether the value is a known member of the AccountLocationMode enum.
+func (e AccountLocationMode) Valid() bool {
+	switch e {
+	case AccountLocationModeAuto:
+		return true
+	case AccountLocationModeFixed:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AccountLocationUpdateMode.
+const (
+	AccountLocationUpdateModeAuto  AccountLocationUpdateMode = "auto"
+	AccountLocationUpdateModeFixed AccountLocationUpdateMode = "fixed"
+)
+
+// Valid indicates whether the value is a known member of the AccountLocationUpdateMode enum.
+func (e AccountLocationUpdateMode) Valid() bool {
+	switch e {
+	case AccountLocationUpdateModeAuto:
+		return true
+	case AccountLocationUpdateModeFixed:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AccountReviewRequestDecision.
 const (
 	Approve AccountReviewRequestDecision = "approve"
@@ -344,6 +380,33 @@ type AccountCreate struct {
 	PhoneModel  *string `json:"phone_model,omitempty"`
 	SchoolId    string  `json:"school_id"`
 }
+
+// AccountLocation The stored location policy. lng and lat are null for auto and always
+// present for fixed. The reason travels to the platform only when the
+// fixed point falls outside the target fence.
+type AccountLocation struct {
+	Lat  *float64            `json:"lat,omitempty"`
+	Lng  *float64            `json:"lng,omitempty"`
+	Mode AccountLocationMode `json:"mode"`
+
+	// Reason Free text explaining an out-of-range fixed point; may be empty.
+	Reason string `json:"reason"`
+}
+
+// AccountLocationMode defines model for AccountLocation.Mode.
+type AccountLocationMode string
+
+// AccountLocationUpdate mode auto ignores and clears lng/lat; mode fixed requires both.
+// The reason is stored verbatim and never audited in full.
+type AccountLocationUpdate struct {
+	Lat    *float64                  `json:"lat,omitempty"`
+	Lng    *float64                  `json:"lng,omitempty"`
+	Mode   AccountLocationUpdateMode `json:"mode"`
+	Reason *string                   `json:"reason,omitempty"`
+}
+
+// AccountLocationUpdateMode defines model for AccountLocationUpdate.Mode.
+type AccountLocationUpdateMode string
 
 // AccountPage defines model for AccountPage.
 type AccountPage struct {
@@ -803,6 +866,13 @@ type AccountUpdateParams struct {
 	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
 }
 
+// AccountLocationSetParams defines parameters for AccountLocationSet.
+type AccountLocationSetParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
 // AccountPauseParams defines parameters for AccountPause.
 type AccountPauseParams struct {
 	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
@@ -975,6 +1045,9 @@ type AccountCreateJSONRequestBody = AccountCreate
 // AccountUpdateJSONRequestBody defines body for AccountUpdate for application/json ContentType.
 type AccountUpdateJSONRequestBody = AccountUpdate
 
+// AccountLocationSetJSONRequestBody defines body for AccountLocationSet for application/json ContentType.
+type AccountLocationSetJSONRequestBody = AccountLocationUpdate
+
 // AccountPauseJSONRequestBody defines body for AccountPause for application/json ContentType.
 type AccountPauseJSONRequestBody = AccountPauseRequest
 
@@ -1034,6 +1107,9 @@ type ServerInterface interface {
 	// AccountUpdate Update account fields.
 	// (PATCH /api/accounts/{id})
 	AccountUpdate(c *gin.Context, id AccountID, params AccountUpdateParams)
+	// AccountLocationSet Set the account location policy.
+	// (PUT /api/accounts/{id}/location)
+	AccountLocationSet(c *gin.Context, id AccountID, params AccountLocationSetParams)
 	// AccountPause Pause or resume an account.
 	// (POST /api/accounts/{id}/pause)
 	AccountPause(c *gin.Context, id AccountID, params AccountPauseParams)
@@ -1361,6 +1437,58 @@ func (siw *ServerInterfaceWrapper) AccountUpdate(c *gin.Context) {
 	}
 
 	siw.Handler.AccountUpdate(c, id, params)
+}
+
+// AccountLocationSet operation middleware
+func (siw *ServerInterfaceWrapper) AccountLocationSet(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id AccountID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", c.Param("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AccountLocationSetParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AccountLocationSet(c, id, params)
 }
 
 // AccountPause operation middleware
@@ -2507,6 +2635,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/accounts/:id/pause", wrapper.AccountPause)
 	router.POST(options.BaseURL+"/api/accounts/:id/verify", wrapper.AccountVerify)
 	router.POST(options.BaseURL+"/api/accounts/:id/sign", wrapper.AccountSign)
+	router.PUT(options.BaseURL+"/api/accounts/:id/location", wrapper.AccountLocationSet)
 	router.GET(options.BaseURL+"/api/schedule/windows", wrapper.ScheduleWindows)
 	router.GET(options.BaseURL+"/api/schedule/preview", wrapper.SchedulePreview)
 	router.POST(options.BaseURL+"/api/schedule/plan", wrapper.SchedulePlan)
