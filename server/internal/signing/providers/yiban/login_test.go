@@ -61,12 +61,21 @@ type upstream struct {
 	authLoop     bool
 	missingToken bool
 
+	signPositionFixture []byte
+	signPositionBody    []byte
+	deviceBody          []byte
+	signInBody          []byte
+	signInStatus        int
+
 	mu           sync.Mutex
 	codeQuery    url.Values
 	usersureForm url.Values
 	decrypted    string
 	authQuery    url.Values
 	authCookie   string
+	signForm     url.Values
+	signQuery    url.Values
+	signCookie   string
 	headers      map[string]http.Header
 	counts       map[string]int
 }
@@ -82,12 +91,17 @@ func newUpstream(t *testing.T) *upstream {
 		t.Fatalf("MarshalPKIXPublicKey: %v", err)
 	}
 	public := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+	signPosition := readProtocolFixture(t, "sign_position.json")
 	up := &upstream{
-		key:         key,
-		public:      public,
-		authFixture: readAuthFixture(t),
-		headers:     make(map[string]http.Header),
-		counts:      make(map[string]int),
+		key:                 key,
+		public:              public,
+		authFixture:         readProtocolFixture(t, "auth_response.json"),
+		signPositionFixture: signPosition,
+		signPositionBody:    signPosition,
+		deviceBody:          readProtocolFixture(t, "device_state.json"),
+		signInBody:          readProtocolFixture(t, "sign_in_response.json"),
+		headers:             make(map[string]http.Header),
+		counts:              make(map[string]int),
 	}
 	up.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		up.mu.Lock()
@@ -152,6 +166,35 @@ func newUpstream(t *testing.T) *upstream {
 			up.handleAuth(w, r)
 		case "/base/c/auth/yiban/final":
 			up.handleAuth(w, r)
+		case "/nightAttendance/student/index/signPosition":
+			up.mu.Lock()
+			body := up.signPositionBody
+			up.mu.Unlock()
+			w.Write(body)
+		case "/device/student/index/getState":
+			up.mu.Lock()
+			body := up.deviceBody
+			up.mu.Unlock()
+			w.Write(body)
+		case "/nightAttendance/student/index/signIn":
+			if err := r.ParseForm(); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			up.mu.Lock()
+			up.signForm = r.PostForm
+			up.signQuery = r.URL.Query()
+			if cookie, err := r.Cookie("csrf_token"); err == nil {
+				up.signCookie = cookie.Value
+			}
+			body := up.signInBody
+			status := up.signInStatus
+			up.mu.Unlock()
+			if status != 0 {
+				w.WriteHeader(status)
+				return
+			}
+			w.Write(body)
 		default:
 			http.NotFound(w, r)
 		}
@@ -205,11 +248,56 @@ func (u *upstream) endpoints() Endpoints {
 		auth = strings.Replace(auth, "127.0.0.1", "localhost", 1)
 	}
 	return Endpoints{
-		CodeHTML:    u.server.URL + "/code/html",
-		Usersure:    u.server.URL + "/code/usersure",
-		IframeIndex: u.server.URL + "/iframe/index",
-		APIAuth:     auth,
+		CodeHTML:     u.server.URL + "/code/html",
+		Usersure:     u.server.URL + "/code/usersure",
+		IframeIndex:  u.server.URL + "/iframe/index",
+		APIAuth:      auth,
+		SignPosition: u.server.URL + "/nightAttendance/student/index/signPosition",
+		SignIn:       u.server.URL + "/nightAttendance/student/index/signIn",
+		DeviceState:  u.server.URL + "/device/student/index/getState",
 	}
+}
+
+// setSignPositionState 改写 signPosition 的 State。
+func (u *upstream) setSignPositionState(t *testing.T, state int) {
+	t.Helper()
+	var obj map[string]any
+	if err := json.Unmarshal(u.signPositionFixture, &obj); err != nil {
+		t.Fatalf("unmarshal signPosition: %v", err)
+	}
+	data, ok := obj["data"].(map[string]any)
+	if !ok {
+		t.Fatal("signPosition data is not an object")
+	}
+	data["State"] = state
+	body, err := json.Marshal(obj)
+	if err != nil {
+		t.Fatalf("marshal signPosition: %v", err)
+	}
+	u.mu.Lock()
+	u.signPositionBody = body
+	u.mu.Unlock()
+}
+
+// removeSignPositionRange 删除时间窗，用于无窗口分支。
+func (u *upstream) removeSignPositionRange(t *testing.T) {
+	t.Helper()
+	var obj map[string]any
+	if err := json.Unmarshal(u.signPositionFixture, &obj); err != nil {
+		t.Fatalf("unmarshal signPosition: %v", err)
+	}
+	data, ok := obj["data"].(map[string]any)
+	if !ok {
+		t.Fatal("signPosition data is not an object")
+	}
+	delete(data, "Range")
+	body, err := json.Marshal(obj)
+	if err != nil {
+		t.Fatalf("marshal signPosition: %v", err)
+	}
+	u.mu.Lock()
+	u.signPositionBody = body
+	u.mu.Unlock()
 }
 
 func (u *upstream) count(path string) int {
@@ -220,9 +308,14 @@ func (u *upstream) count(path string) int {
 
 func readAuthFixture(t *testing.T) []byte {
 	t.Helper()
-	body, err := os.ReadFile("../../protocol/testdata/auth_response.json")
+	return readProtocolFixture(t, "auth_response.json")
+}
+
+func readProtocolFixture(t *testing.T, name string) []byte {
+	t.Helper()
+	body, err := os.ReadFile("../../protocol/testdata/" + name)
 	if err != nil {
-		t.Fatalf("read auth fixture: %v", err)
+		t.Fatalf("read %s: %v", name, err)
 	}
 	return body
 }
