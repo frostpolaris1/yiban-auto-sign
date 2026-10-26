@@ -194,6 +194,8 @@ type fakeSigner struct {
 	signs   int
 	// attemptIDs 记录每次提交的幂等键：重试必须每次不同。
 	attemptIDs []string
+	// requests 记录每次提交的完整请求：P5-C 断言 Location 与 Image。
+	requests []contract.SignRequest
 }
 
 func (f *fakeSigner) DiscoverTargets(context.Context, contract.DiscoverRequest) ([]contract.Target, error) {
@@ -206,6 +208,7 @@ func (f *fakeSigner) DiscoverTargets(context.Context, contract.DiscoverRequest) 
 func (f *fakeSigner) Sign(_ context.Context, req contract.SignRequest) (contract.Result, error) {
 	f.signs++
 	f.attemptIDs = append(f.attemptIDs, req.AttemptID)
+	f.requests = append(f.requests, req)
 	return contract.Result{Outcome: f.outcome}, f.err
 }
 

@@ -152,6 +152,34 @@ func (r *PhotoRepo) PurgeExpired(ctx context.Context, now time.Time, limit int) 
 	return ct.RowsAffected(), nil
 }
 
+// CountLibrary 报告属主未删图片数（P5-C 选图定界用）。
+func (r *PhotoRepo) CountLibrary(ctx context.Context, ownerUserID string) (int64, error) {
+	var n int64
+	err := r.db.q(ctx).QueryRow(ctx,
+		`SELECT count(*) FROM photos WHERE owner_user_id = $1::uuid AND deleted_at IS NULL`,
+		ownerUserID).Scan(&n)
+	if err != nil {
+		return 0, mapError(err)
+	}
+	return n, nil
+}
+
+// LibraryAt 按 (created_at, id) 升序取第 offset 张（0 基）。
+// 升序口径是选图确定性的存储侧判据：调用方已先 CountLibrary 定界，
+// offset 越界与库空同形，返回 errs.ErrNotFound。
+func (r *PhotoRepo) LibraryAt(ctx context.Context, ownerUserID string, offset int) (corephoto.Record, error) {
+	if offset < 0 {
+		return corephoto.Record{}, validationError("offset must not be negative")
+	}
+	row := r.db.q(ctx).QueryRow(ctx,
+		`SELECT `+photoColumns+` FROM photos
+		 WHERE owner_user_id = $1::uuid AND deleted_at IS NULL
+		 ORDER BY created_at, id
+		 OFFSET $2 LIMIT 1`,
+		ownerUserID, offset)
+	return scanPhoto(row)
+}
+
 // scanPhoto 把一行扫成记录。sha256 以 bytea 存取，读出后拷进定长数组。
 func scanPhoto(row interface{ Scan(...any) error }) (corephoto.Record, error) {
 	var rec corephoto.Record
