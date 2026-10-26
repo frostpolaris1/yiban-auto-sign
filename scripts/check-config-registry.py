@@ -18,7 +18,13 @@
    （d）shell 的 `${KEY:-值}` / `${KEY:=值}`（含嵌套 `${INNER:-X}` 的内层静态值）
    必须等于名册缺省。本臂覆盖**所有有缺省的键**，不只开门键；`$(…)`/`$VAR` 等
    静态判不了的跳过必须登记（见判据 5 的 `_meta.shell_exempt_defaults`）。
+   顶层的非缺省操作符 `${KEY:?…}` / `${KEY:+…}` 不写缺省值，不判；同样的操作符
+   出现在嵌套内层时取值到运行期才定，按动态值处理并强制登记。
    承载常量必须**显式声明**：无常量写 `default_symbols: []`，缺字段/null 由 loader 拒判。
+   读不了名册的跨层常量是例外：`env_io.DEFAULT_STATE_DIR` 进不了 `default_symbols`
+   （loader 在模块级导入 `env_io`，反向 import 拿到半初始化模块），由
+   `tests/test_config_registry_gate.py::StateDirFallbackEquivalenceTest` 等值钉住
+   常量与解析器的形参缺省。
    模板载体（`TEMPLATE_CARRIERS`）**不参与**本条：模板按设计要写出示例值，
    那一条由判据 4 按"等值"判，不按"清零"判。
 3. **未在名册登记的键不得新增读取点**：生产代码里出现的配置键字面量必须在册。
@@ -91,6 +97,9 @@ AST 里键名是 `ast.Constant`、缺省值是另一处 `ast.Constant`，"同行
 - 判据 2 的 shell 臂覆盖静态值（含嵌套内层）。`$(…)` / 裸 `$VAR` 静态判不了：
   跳过必须登记在代码侧处置册的 `_meta.shell_exempt_defaults`，未登记即红——
   "跳过"是显性代价，门不把它当绿。
+- `default_symbols` 只保证**已声明**的常量被赋字面量时判红。常量与键之间没有机械
+  映射，**漏声明的承载常量**本门看不见（第四轮实测 `_DEFAULT_SIGN_START` 改
+  `(6, 31)` 仍 rc=0，本轮已补登记）。新增承载常量必须人工补登记。
 - 判据 2 的时刻形状臂只认 `(H, M)` / `((H, M))` / `time(H, M)`。改载体形状
   （`(H, M, S)`、字符串元组、字典）即失去保护，diff 里必须写明。
 - 判据 5 的类别事实核对：机械类别（shell/container_form/harness/prose）参与文件
@@ -563,7 +572,8 @@ _SHELL_VAR_START = re.compile(r"\$\{(YIBAN_[A-Z0-9_]+)")
 _SHELL_OP = re.compile(r"(:[-=+?]|[-=+?])")
 _SHELL_INNER_VAR = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 #: 不是缺省的操作符：`:+` / `+` 是"已设置才替换"，`:?` / `?` 是"未设即报错"的守卫。
-#: 二者都不写缺省值，判据必须跳过（审查员 7yf 低-1：`${KEY:?msg}` 曾被误报漂移）。
+#: 顶层的二者都不写缺省值，判据必须跳过（审查员 7yf 低-1：`${KEY:?msg}` 曾被误报漂移）。
+#: 嵌套内层的二者让外层取值到运行期才定：按 dynamic 处理，必须登记（第四轮低-2）。
 _SHELL_NOT_DEFAULT_OPS = (":+", "+", ":?", "?")
 _SHELL_EXEMPT_FIELD = "shell_exempt_defaults"
 
@@ -606,12 +616,14 @@ def _shell_defaults_in_line(line):
 
 
 def _shell_static_value(text):
-    """→ `(字面量, 状态)`；状态 ∈ {"static", "dynamic", "not_default"}。
+    """→ `(字面量, 状态)`；状态 ∈ {"static", "dynamic"}。
 
     嵌套 `${INNER:-X}` 递归取 X（审查员 7yf 中-2：`${KEY:-${INNER:-/tmp/x}}`
     内层静态值必须比对）。`$(…)` / 裸 `$VAR` / 无缺省操作符的嵌套 → dynamic。
-    非缺省操作符（`_SHELL_NOT_DEFAULT_OPS`：`:+` 已设置才替换、`:?` 未设即报错）
-    → not_default，不判。
+    **嵌套**里的非缺省操作符（`_SHELL_NOT_DEFAULT_OPS`：`:+` 已设置才替换、
+    `:?` 未设即报错）→ dynamic：内层取值到运行期才定，外层整体判不了，必须登记
+    （审查员 7yf 第四轮低-2）。**顶层**的 `:+` / `:?` 由调用方先筛掉——它们本身
+    不写缺省值。
     """
     text = text.strip()
     while text.startswith("${") and text.endswith("}"):
@@ -624,7 +636,7 @@ def _shell_static_value(text):
         if op is None:
             return None, "dynamic"
         if op.group(1) in _SHELL_NOT_DEFAULT_OPS:
-            return None, "not_default"
+            return None, "dynamic"
         text = rest[op.end():].strip()
     if "$(" in text or "`" in text or re.search(r"\$(?:\{)?[A-Za-z_]", text):
         return None, "dynamic"
@@ -678,8 +690,9 @@ def _check_shell_defaults(root, files, registry, cache, code_register):
     - 空值 `${KEY:-}` 按字面量与名册比；与名册不等的按"存在性判定/空缺省"处理，
       必须登记（见下）；
     - `$(…)` / `$VAR` 等动态值静态判不了，必须登记（§30：跳过≠绿）；
-    - 非缺省操作符（`_SHELL_NOT_DEFAULT_OPS`：`:+` / `+` / `:?` / `?`）不写缺省
-      值，不判（审查员 7yf 低-1：`${KEY:?must set}` 曾是假红）；
+    - 非缺省操作符（`_SHELL_NOT_DEFAULT_OPS`：`:+` / `+` / `:?` / `?`）在**顶层**
+      不写缺省值，不判（审查员 7yf 低-1：`${KEY:?must set}` 曾是假红）；同样的
+      操作符出现在**嵌套内层**时，外层取值到运行期才定 ⇒ 按动态值处理，必须登记；
     - 登记面：代码侧处置册 `_meta.shell_exempt_defaults`（file + key + reason）。
       未登记的跳过、登记了却没再出现的（陈旧），都判 1。
     """
@@ -698,8 +711,6 @@ def _check_shell_defaults(root, files, registry, cache, code_register):
                 if default is None:
                     continue
                 value, state = _shell_static_value(raw)
-                if state == "not_default":
-                    continue
                 kind = None
                 if state == "dynamic":
                     kind = "动态值"
