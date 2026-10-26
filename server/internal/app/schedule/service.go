@@ -7,8 +7,8 @@
 // 本包**不**发 HTTP 请求、**不**写 SQL、**不**实现入口端点。
 //
 // # 归属
-// app 层用例。端口见 repo.go，实现见 adapters/pg。
-// 入口层在 P4-F 接线；窗口发现复用 signing 契约。
+// app 层用例。端口见 repo.go：存储类接 adapters/pg，
+// Discoverer 由 P4-F 用 signing provider 接线（本批无实现）。
 //
 // # 复用
 // Service、Input、Preview、Row；端口 WindowStore、PlanStore、Accounts、Discoverer。
@@ -20,7 +20,6 @@ package schedule
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	corecapacity "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/capacity"
@@ -75,10 +74,11 @@ type Preview struct {
 	Source      contract.WindowSource
 	WindowStart time.Time
 	WindowEnd   time.Time
-	Version     int
-	Capacity    int
-	Demand      int
-	Shortfall   int
+	// Version 在 Preview 里是当前缓存版本；Build 返回的是落库后版本。
+	Version   int
+	Capacity  int
+	Demand    int
+	Shortfall int
 	// Histogram 是 5 分钟片的落点计数，键为片号（相对有效窗口起点）。
 	Histogram map[int]int
 	Rows      []Row
@@ -117,36 +117,44 @@ func (s *Service) Preview(ctx context.Context, in Input) (Preview, error) {
 
 // Build 构建计划并落库：窗口变化时同事务内写窗口、重排 pending、补插。
 // 版本竞争（ErrWindowStale）时整体重试一次；仍失败即上抛。
+// 事务由本方法自开：入口层不得再包一层事务（提交时点会随之改变）。
 func (s *Service) Build(ctx context.Context, in Input) (Preview, error) {
-	for attempt := 0; attempt < 2; attempt++ {
-		p, raw, changed, cachedVersion, err := s.previewWithWindow(ctx, in)
-		if err != nil {
-			return Preview{}, err
-		}
-		rows := planRows(in, p.Rows)
-		err = s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
-			if changed {
-				version, err := s.deps.Windows.PutWindow(ctx, raw, cachedVersion)
-				if err != nil {
-					return err
-				}
-				p.Version = version
-				if _, err := s.deps.Plans.RearrangePlan(ctx, in.SchoolTaskID, in.Day, rows); err != nil {
-					return err
-				}
-			}
-			_, err := s.deps.Plans.InsertPlan(ctx, rows)
-			return err
-		})
-		if errors.Is(err, coreschedule.ErrWindowStale) && attempt == 0 {
-			continue // 并发写者先进：重读缓存后整体重试一次。
-		}
-		if err != nil {
-			return Preview{}, err
-		}
-		return p, nil
+	p, err := s.buildOnce(ctx, in)
+	if errors.Is(err, coreschedule.ErrWindowStale) {
+		// 并发写者先进：重读缓存后整体重试一次。
+		p, err = s.buildOnce(ctx, in)
 	}
-	return Preview{}, fmt.Errorf("schedule: window changed concurrently twice")
+	if err != nil {
+		return Preview{}, err
+	}
+	return p, nil
+}
+
+// buildOnce 是一次完整尝试：预览 → 同事务写入。
+func (s *Service) buildOnce(ctx context.Context, in Input) (Preview, error) {
+	p, raw, changed, cachedVersion, err := s.previewWithWindow(ctx, in)
+	if err != nil {
+		return Preview{}, err
+	}
+	rows := planRows(in, p.Rows)
+	err = s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
+		if changed {
+			version, err := s.deps.Windows.PutWindow(ctx, raw, cachedVersion)
+			if err != nil {
+				return err
+			}
+			p.Version = version
+			if _, err := s.deps.Plans.RearrangePlan(ctx, in.SchoolTaskID, in.Day, rows); err != nil {
+				return err
+			}
+		}
+		_, err := s.deps.Plans.InsertPlan(ctx, rows)
+		return err
+	})
+	if err != nil {
+		return Preview{}, err
+	}
+	return p, nil
 }
 
 // previewWithWindow 返回预览、原始窗口、是否变化、缓存版本。
