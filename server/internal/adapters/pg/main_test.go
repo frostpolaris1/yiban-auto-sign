@@ -15,6 +15,7 @@ import (
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	coreschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/school"
+	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 )
 
@@ -47,6 +48,7 @@ type testEnv struct {
 	accts   *pg.AccountRepo
 	audits  *pg.AuditRepo
 	resets  *pg.PasswordResetRepo
+	sched   *pg.ScheduleRepo
 }
 
 func requireDSN(t *testing.T) string {
@@ -95,6 +97,7 @@ func newEnv(t *testing.T) *testEnv {
 	e.admins = pg.NewAdminSchoolRepo(db)
 	e.accts = pg.NewAccountRepo(db)
 	e.resets = pg.NewPasswordResetRepo(db)
+	e.sched = pg.NewScheduleRepo(db)
 	e.audits, err = pg.NewAuditRepo(db, auditKey)
 	if err != nil {
 		t.Fatalf("new audit repo: %v", err)
@@ -189,6 +192,19 @@ func (e *testEnv) createAccount(schoolID, ownerID, phone string) coreaccount.Rec
 	return rec
 }
 
+// activateAccount 把账号审核为 active。排期 e2e 的 CAS 纵深判据
+// （只领活跃账号）需要它；种子缺省是 pending。
+func (e *testEnv) activateAccount(accountID string) {
+	e.t.Helper()
+	// reviewed_by 是 uuid 列：现建一个 master 用户当审核人（per-test schema 无内置管理员）。
+	admin := e.createUser("reviewer-" + randomHex(4) + "@example.com")
+	e.db.Exec(e.ctx, "UPDATE users SET role = 'master' WHERE id = $1", admin.ID)
+	adminID := admin.ID
+	if _, err := e.accts.Review(e.ctx, corescope.Master(), accountID, true, "", adminID, time.Now()); err != nil {
+		e.t.Fatalf("activate account %s: %v", accountID, err)
+	}
+}
+
 func (e *testEnv) newSession(userID, token string, now time.Time) coreauth.SessionRow {
 	e.t.Helper()
 	ipHash, hashErr := coreauth.HashIP(testPepper, "127.0.0.1")
@@ -218,6 +234,15 @@ func (e *testEnv) newSession(userID, token string, now time.Time) coreauth.Sessi
 		e.t.Fatalf("create session %s: %v", token, err)
 	}
 	return rec
+}
+
+func (e *testEnv) scalarString(sql string, args ...any) string {
+	e.t.Helper()
+	v, err := e.db.QueryString(e.ctx, sql, args...)
+	if err != nil {
+		e.t.Fatalf("query %q: %v", sql, err)
+	}
+	return v
 }
 
 func (e *testEnv) scalarInt(sql string, args ...any) int64 {
