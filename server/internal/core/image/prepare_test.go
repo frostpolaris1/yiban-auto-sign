@@ -153,7 +153,7 @@ func decoded(t *testing.T, out Output) image.Image {
 
 // luma 返回矩形区域的亮度均值。
 // 均值抵消 JPEG 量化噪声，比单点断言稳。
-func luma(img image.Image, r image.Rectangle) float64 {
+func luma(t *testing.T, img image.Image, r image.Rectangle) float64 {
 	var sum float64
 	n := 0
 	for y := r.Min.Y; y < r.Max.Y; y++ {
@@ -162,6 +162,9 @@ func luma(img image.Image, r image.Rectangle) float64 {
 			sum += float64(l >> 8)
 			n++
 		}
+	}
+	if n == 0 {
+		t.Fatal("亮度区域为空：断言会静默通过")
 	}
 	return sum / float64(n)
 }
@@ -218,6 +221,7 @@ func TestPrepareStripsMetadata(t *testing.T) {
 	if bytes.Contains(out.Data, []byte("Exif\x00\x00")) {
 		t.Fatal("输出仍含 EXIF 标识")
 	}
+	decoded(t, out)
 }
 
 // PNG 的 eXIf 块同样可带 GPS，也必须被重编码剥掉。
@@ -268,10 +272,10 @@ func TestPrepareOrientation(t *testing.T) {
 				t.Fatalf("宽高 = %dx%d, want %dx%d", out.Width, out.Height, c.wantW, c.wantH)
 			}
 			img := decoded(t, out)
-			if got := luma(img, c.dark); got > 90 {
+			if got := luma(t, img, c.dark); got > 90 {
 				t.Fatalf("标记块位置亮度 = %.0f, want ≤90（方向不对）", got)
 			}
-			if got := luma(img, c.light); got < 165 {
+			if got := luma(t, img, c.light); got < 165 {
 				t.Fatalf("对角区块亮度 = %.0f, want ≥165（方向不对）", got)
 			}
 		})
@@ -288,8 +292,53 @@ func TestPreparePNGOrientation(t *testing.T) {
 		t.Fatalf("宽高 = %dx%d, want 8x16", out.Width, out.Height)
 	}
 	img := decoded(t, out)
-	if got := luma(img, image.Rect(6, 0, 8, 4)); got > 90 {
+	if got := luma(t, img, image.Rect(6, 0, 8, 4)); got > 90 {
 		t.Fatalf("标记块位置亮度 = %.0f, want ≤90（方向不对）", got)
+	}
+}
+
+// 容器级边界必须直接有牙：畸形块长/段长/过短 TIFF 一律返回 1 且不 panic。
+// Prepare 在解析前已解码，这些分支只能从解析器入口验证；
+// 此处直接调用，防止删除边界守卫后无人发现。
+func TestOrientationParsersRejectMalformedContainers(t *testing.T) {
+	pngSig := "\x89PNG\r\n\x1a\n"
+	cases := []struct {
+		name string
+		fn   func([]byte) int
+		data []byte
+	}{
+		{
+			name: "PNG 块长超过剩余字节",
+			fn:   pngOrientation,
+			data: append([]byte(pngSig), append([]byte{0xFF, 0xFF, 0xFF, 0xFF}, []byte("eXIf")...)...),
+		},
+		{
+			name: "PNG 块头不完整",
+			fn:   pngOrientation,
+			data: append([]byte(pngSig), 0x00, 0x00),
+		},
+		{
+			name: "JPEG 段长超过剩余字节",
+			fn:   jpegOrientation,
+			data: []byte{0xFF, 0xD8, 0xFF, 0xE1, 0x00, 0x08, 'E', 'x'},
+		},
+		{
+			name: "JPEG 段长小于 2",
+			fn:   jpegOrientation,
+			data: []byte{0xFF, 0xD8, 0xFF, 0xE1, 0x00, 0x01, 0x00, 0x00},
+		},
+		{
+			name: "TIFF 不足 8 字节",
+			fn:   tiffOrientation,
+			data: []byte{'I', 'I', 0x2A},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.fn(c.data); got != 1 {
+				t.Fatalf("方向 = %d, want 1", got)
+			}
+		})
 	}
 }
 
@@ -309,6 +358,7 @@ func TestPrepareToleratesMalformedExif(t *testing.T) {
 		{"条目数超过数据长度", []byte{'I', 'I', 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00,
 			0xFF, 0xFF}},
 		{"不足 8 字节", []byte{'I', 'I', 0x2A, 0x00}},
+		{"方向值越界", exifTIFF(9)},
 	}
 	const w, h = 16, 8
 	src := markedImage(w, h)
@@ -327,7 +377,7 @@ func TestPrepareToleratesMalformedExif(t *testing.T) {
 					t.Fatalf("%s 宽高 = %dx%d, want %dx%d（坏 EXIF 不应改方向）",
 						name, out.Width, out.Height, w, h)
 				}
-				if got := luma(decoded(t, out), image.Rect(0, 0, 4, 2)); got > 90 {
+				if got := luma(t, decoded(t, out), image.Rect(0, 0, 4, 2)); got > 90 {
 					t.Fatalf("%s 左上标记亮度 = %.0f, want ≤90（方向被误改）", name, got)
 				}
 			}
@@ -403,10 +453,10 @@ func TestPrepareCrop(t *testing.T) {
 	}
 	img := decoded(t, out)
 	// 裁切原点 (2,1)：中心标记落在输出 (16..19, 8..9)。
-	if got := luma(img, image.Rect(16, 8, 20, 10)); got > 90 {
+	if got := luma(t, img, image.Rect(16, 8, 20, 10)); got > 90 {
 		t.Fatalf("中心标记亮度 = %.0f, want ≤90（主体被裁掉）", got)
 	}
-	if got := luma(img, image.Rect(0, 0, 4, 2)); got < 165 {
+	if got := luma(t, img, image.Rect(0, 0, 4, 2)); got < 165 {
 		t.Fatalf("输出左上亮度 = %.0f, want ≥165（黑边框未被裁掉）", got)
 	}
 }
@@ -423,7 +473,7 @@ func TestPrepareFlattensTransparency(t *testing.T) {
 		t.Fatalf("Mime = %q, want image/jpeg", out.Mime)
 	}
 	img := decoded(t, out)
-	if got := luma(img, image.Rect(4, 4, 16, 16)); got < 200 {
+	if got := luma(t, img, image.Rect(4, 4, 16, 16)); got < 200 {
 		t.Fatalf("透明区域亮度 = %.0f, want ≥200（应铺白，不应变黑）", got)
 	}
 }
@@ -507,9 +557,22 @@ func TestPrepareChecksSizeBeforeDecode(t *testing.T) {
 	if _, _, err := image.DecodeConfig(bytes.NewReader(src)); err != nil {
 		t.Fatalf("测试前提不成立：文件头应可读: %v", err)
 	}
-	_, err := Prepare(src, Options{MaxPixels: 1000})
-	wantValidation(t, err)
-	if msg := errs.From(err).Message; !strings.Contains(msg, "pixel count exceeds") {
-		t.Fatalf("错误 = %q, want 含 pixel count exceeds（先解码后判上限会先报解码失败）", msg)
+	// 两个上限检查同形状：任意一个被移到 Decode 之后都必须变红。
+	cases := []struct {
+		name string
+		opt  Options
+		want string
+	}{
+		{"像素上限先于解码", Options{MaxPixels: 1000}, "pixel count exceeds"},
+		{"单边上限先于解码", Options{MaxSidePx: 1000}, "side exceeds"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := Prepare(src, c.opt)
+			wantValidation(t, err)
+			if msg := errs.From(err).Message; !strings.Contains(msg, c.want) {
+				t.Fatalf("错误 = %q, want 含 %q（先解码后判上限会先报解码失败）", msg, c.want)
+			}
+		})
 	}
 }
