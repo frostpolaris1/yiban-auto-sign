@@ -230,3 +230,81 @@ func TestSignTaskStateEnumMatchesStatus(t *testing.T) {
 		t.Fatalf("ENUM 词表 = %q, want %q（库与 status 词表漂移）", got, joined)
 	}
 }
+
+// TestRearrangeOnlyPending：重排只动 pending；running 与终态行的 run_at 保持。
+// 判据：计划版本变化不得改写当日已发生的执行事实。
+func TestRearrangeOnlyPending(t *testing.T) {
+	e := newEnv(t)
+	_, taskID, acctA := e.seedTask("sched-rearr", "晨间签到", "rearr-a@example.com", "13800005555")
+	acctB := e.createAccount(e.scalarSchool(taskID), e.createUser("rearr-b@example.com").ID, "13800006666")
+	e.activateAccount(acctB.ID)
+	day := "2026-10-29"
+	oldAt := time.Date(2026, 10, 29, 6, 40, 0, 0, time.UTC)
+	newAt := time.Date(2026, 10, 29, 7, 10, 0, 0, time.UTC)
+	if _, err := e.sched.InsertPlan(e.ctx, []coreschedule.PlanRow{
+		{AccountID: acctA, SchoolTaskID: taskID, Day: day, RunAt: oldAt},
+		{AccountID: acctB.ID, SchoolTaskID: taskID, Day: day, RunAt: oldAt},
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	// B 认领后进入 running：重排不得动它。
+	if err := e.sched.ClaimPending(e.ctx, acctB.ID, taskID, day, time.Now()); err != nil {
+		t.Fatalf("claim B: %v", err)
+	}
+	rows := []coreschedule.PlanRow{
+		{AccountID: acctA, SchoolTaskID: taskID, Day: day, RunAt: newAt},
+		{AccountID: acctB.ID, SchoolTaskID: taskID, Day: day, RunAt: newAt},
+	}
+	n, err := e.sched.RearrangePlan(e.ctx, taskID, day, rows)
+	if err != nil {
+		t.Fatalf("rearrange: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("重排行数 = %d, want 1（只 pending）", n)
+	}
+	if got := e.scalarInt("SELECT (run_at = $4::timestamptz)::int FROM sign_tasks WHERE account_id = $1::uuid AND school_task_id = $2::uuid AND day = $3", acctA, taskID, day, newAt); got != 1 {
+		t.Fatalf("pending 行 run_at 未更新")
+	}
+	if got := e.scalarInt("SELECT (run_at = $4::timestamptz)::int FROM sign_tasks WHERE account_id = $1::uuid AND school_task_id = $2::uuid AND day = $3", acctB.ID, taskID, day, oldAt); got != 1 {
+		t.Fatalf("running 行被改写")
+	}
+}
+
+// scalarSchool 反查任务所属学校。
+func (e *testEnv) scalarSchool(taskID string) string {
+	e.t.Helper()
+	return e.scalarString("SELECT school_id::text FROM school_tasks WHERE id = $1::uuid", taskID)
+}
+
+// TestActiveAccountIDsStableAndFiltered：只取活跃未删账号，按手机号稳定排序。
+func TestActiveAccountIDsStableAndFiltered(t *testing.T) {
+	e := newEnv(t)
+	school := e.createSchool("sched-active")
+	taskID, err := e.sched.CreateSchoolTask(e.ctx, school.ID, "晨间签到")
+	if err != nil {
+		t.Fatalf("task: %v", err)
+	}
+	a := e.createAccount(school.ID, e.createUser("act-a@example.com").ID, "13800007777")
+	b := e.createAccount(school.ID, e.createUser("act-b@example.com").ID, "13800008888")
+	e.activateAccount(a.ID)
+	e.activateAccount(b.ID)
+	_ = taskID
+	// 第三个账号保持 pending：不得出现在活跃面。
+	pending := e.createAccount(school.ID, e.createUser("act-c@example.com").ID, "13800009999")
+	ids, err := e.sched.ActiveAccountIDs(e.ctx, school.ID)
+	if err != nil {
+		t.Fatalf("active: %v", err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("活跃账号数 = %d, want 2: %v", len(ids), ids)
+	}
+	for _, id := range ids {
+		if id == pending.ID {
+			t.Fatal("待审账号出现在活跃面")
+		}
+	}
+	// 顺序按手机号：7777 在 8888 前。
+	if ids[0] != a.ID || ids[1] != b.ID {
+		t.Fatalf("顺序不稳定: %v", ids)
+	}
+}
