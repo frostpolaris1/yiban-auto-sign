@@ -294,8 +294,8 @@ def _job_key(command):
 
     同一可执行件归同一作业：`/usr/local/sbin/x.sh`、`bash /opt/x.sh` 与
     `env A=1 /usr/local/sbin/x.sh` 同键（解释器取其后第一个非选项参数）。
-    排期不参与归类：同一作业可以有多条排期（`yiban-sign` 的 06:31 首签 +
-    07:12 兜底是有意设计），重复判据按"作业 + 排期"逐对计。
+    排期不参与归类：同一作业可以有多条排期（`yiban-sign` 的首签与补签
+    两个排期是有意设计），重复判据按"作业 + 排期"逐对计。
     边界：本函数只用于**仓库表**的作业声明（部署契约是直接写脚本路径或
     `bash/python3 <脚本>`）。生产侧命令的归类走 `_job_keys_in_command` 的逐 token
     匹配——带选项值的包装器（`flock`/`timeout`/`nice`/`sudo -u user`）在这里会
