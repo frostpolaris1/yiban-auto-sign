@@ -52,6 +52,32 @@ func TestParseDeviceStateNonObject(t *testing.T) {
 	}
 }
 
+func TestParseDeviceStateAuthorizeThroughEnvelope(t *testing.T) {
+	cases := []struct {
+		body string
+		want bool
+	}{
+		{`{"code":0,"data":{"authorize":1}}`, true},
+		{`{"code":0,"data":{"authorize":1.0}}`, true},
+		{`{"code":0,"data":{"authorize":0}}`, false},
+		{`{"code":0,"data":{"authorize":true}}`, true},
+		{`{"code":0,"data":{"authorize":"true"}}`, true},
+	}
+	for _, tc := range cases {
+		env, err := ParseAPIEnvelope([]byte(tc.body))
+		if err != nil {
+			t.Fatalf("ParseAPIEnvelope(%s): %v", tc.body, err)
+		}
+		state, err := ParseDeviceState(env.Data)
+		if err != nil {
+			t.Fatalf("ParseDeviceState(%s): %v", tc.body, err)
+		}
+		if state.Authorized != tc.want {
+			t.Fatalf("%s: authorized = %t, want %t", tc.body, state.Authorized, tc.want)
+		}
+	}
+}
+
 func TestParseDeviceStateAuthorizeVariants(t *testing.T) {
 	cases := []struct {
 		raw  any

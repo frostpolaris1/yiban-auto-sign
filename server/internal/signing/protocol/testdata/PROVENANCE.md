@@ -16,8 +16,12 @@
 ## 已知冲突
 
 `replay_manifest.json` 把 `authorize_page.html` 标为 `captured`。
-`tests/protocol/SPEC.md` §2.1 写它是合成页，原页未入仓。
+`yiban/adapters/protocol_yiban/SPEC.md` §2.1 写它是合成页，原页未入仓。
 本包只把它当**结构证据**，不声称字节级实拍。
+
+清单本身 `replay_manifest.json` 是索引，不是平台响应；它的键名含
+`challenge_ydclearance` 与 `challenge_fengkongcloud`，会命中挑战检测的强信号。
+它不参与「正常响应」集合。
 
 ## 使用规则
 

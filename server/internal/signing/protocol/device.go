@@ -1,6 +1,9 @@
 package protocol
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // DeviceState 是 getState 的 data 载荷。
 //
@@ -63,6 +66,15 @@ func toBool(v any) bool {
 		return x != 0
 	case float64:
 		return x != 0
+	case json.Number:
+		// decodeObject 用 UseNumber：真实解码路径的数字都是 json.Number。
+		if n, err := x.Int64(); err == nil {
+			return n != 0
+		}
+		if f, err := x.Float64(); err == nil {
+			return f != 0
+		}
+		return false
 	case string:
 		text := strings.ToLower(strings.TrimSpace(x))
 		return text == "1" || text == "true" || text == "on" || text == "yes"

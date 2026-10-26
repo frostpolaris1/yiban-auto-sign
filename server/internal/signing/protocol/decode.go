@@ -4,18 +4,28 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // decodeObject 把 JSON 响应体解码为对象。
 // **不看 Content-Type**：上游会用 text/html 下发 JSON。
 // 数字保留为 json.Number，避免大整数丢精度。
+// 非法 UTF-8 与尾部多余数据都拒绝：Python json.loads 同口径。
 func decodeObject(body []byte, field string) (map[string]any, error) {
+	if !utf8.Valid(body) {
+		return nil, parseError(field, "<undecodable bytes>")
+	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 	var v any
 	if err := dec.Decode(&v); err != nil {
+		return nil, parseError(field, string(body))
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
 		return nil, parseError(field, string(body))
 	}
 	m, ok := v.(map[string]any)
@@ -139,6 +149,15 @@ func codeIsOK(v any) bool {
 		return x == 0
 	case string:
 		return x == "0"
+	case json.Number:
+		// Raw["code"] 保留 json.Number；导出入口必须与归一后的 Code 同判。
+		if n, err := x.Int64(); err == nil {
+			return n == 0
+		}
+		if f, err := x.Float64(); err == nil {
+			return f == 0
+		}
+		return false
 	}
 	return false
 }
@@ -154,6 +173,14 @@ func codeIsSessionExpired(v any) bool {
 		return x == 999
 	case string:
 		return x == "999"
+	case json.Number:
+		if n, err := x.Int64(); err == nil {
+			return n == 999
+		}
+		if f, err := x.Float64(); err == nil {
+			return f == 999
+		}
+		return false
 	}
 	return false
 }

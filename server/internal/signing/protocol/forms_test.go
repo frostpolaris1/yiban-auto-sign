@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"encoding/json"
 	"net/url"
 	"strings"
 	"testing"
@@ -63,6 +64,17 @@ func TestBuildUsersureFormAppendsScope(t *testing.T) {
 	}
 }
 
+func TestBuildUsersureFormDefaultsDisplay(t *testing.T) {
+	got := BuildUsersureForm("1", "2", "3", "4", "", nil)
+	values, err := url.ParseQuery(got)
+	if err != nil {
+		t.Fatalf("ParseQuery: %v", err)
+	}
+	if values.Get("display") != "authorize" {
+		t.Fatalf("display = %q, want authorize", values.Get("display"))
+	}
+}
+
 func TestBuildSignInBodyMatchesFixtures(t *testing.T) {
 	in := SignInBody{
 		LngLat:   Point{Lng: 0.101837, Lat: 1.003954},
@@ -88,6 +100,35 @@ func TestBuildSignInBodyMatchesFixtures(t *testing.T) {
 		values.Get("Code") != "" ||
 		values.Get("PhoneModel") != "" {
 		t.Fatalf("fields = %v", values)
+	}
+
+	// 文本夹具是未编码形态；逐字段对拍，钉住两个夹具互为逆运算。
+	text := strings.TrimRight(string(readFixture(t, "sign_in_body.txt")), "\n")
+	for key, want := range splitFixturePairs(text) {
+		if values.Get(key) != want {
+			t.Fatalf("%s = %q, want %q", key, values.Get(key), want)
+		}
+	}
+}
+
+func TestBuildSignInBodyEscapesControlCharacters(t *testing.T) {
+	got := BuildSignInBody(SignInBody{
+		LngLat:  Point{Lng: 1, Lat: 2},
+		Address: "A\x01B",
+	})
+	values, err := url.ParseQuery(got)
+	if err != nil {
+		t.Fatalf("ParseQuery: %v", err)
+	}
+	info := values.Get("SignInfo")
+	if !strings.Contains(info, `\u0001`) {
+		t.Fatalf("SignInfo = %q, want a \\u0001 escape", info)
+	}
+	if strings.Contains(info, `\x01`) {
+		t.Fatalf("SignInfo = %q, want no \\x escape", info)
+	}
+	if !json.Valid([]byte(info)) {
+		t.Fatalf("SignInfo is not valid JSON: %q", info)
 	}
 }
 
