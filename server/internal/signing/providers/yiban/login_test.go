@@ -58,6 +58,7 @@ type upstream struct {
 	authBody     []byte
 	authFixture  []byte
 	authRedirect string
+	authLoop     bool
 	missingToken bool
 
 	mu           sync.Mutex
@@ -168,7 +169,13 @@ func (u *upstream) handleAuth(w http.ResponseWriter, r *http.Request) {
 	}
 	body := u.authBody
 	redirect := u.authRedirect
+	loop := u.authLoop
 	u.mu.Unlock()
+	if loop && r.URL.Path == "/base/c/auth/yiban" {
+		w.Header().Set("Location", "/base/c/auth/yiban")
+		w.WriteHeader(http.StatusFound)
+		return
+	}
 	if redirect != "" && r.URL.Path == "/base/c/auth/yiban" {
 		w.Header().Set("Location", redirect)
 		w.WriteHeader(http.StatusFound)
@@ -193,6 +200,9 @@ func (u *upstream) endpoints() Endpoints {
 	auth := u.server.URL + "/base/c/auth/yiban"
 	if u.authServer != nil {
 		auth = u.authServer.URL + "/base/c/auth/yiban"
+		// 用不同主机名（不是同主机不同端口）：cookiejar 忽略端口，
+		// 同主机无法暴露「cookie 被绑定」的回退。
+		auth = strings.Replace(auth, "127.0.0.1", "localhost", 1)
 	}
 	return Endpoints{
 		CodeHTML:    u.server.URL + "/code/html",
@@ -404,6 +414,50 @@ func TestVerifyRejectsUntrustedAuthRedirect(t *testing.T) {
 	}
 }
 
+// 连续 302：最多跟 5 层，第 6 次请求后报错。
+func TestVerifyRejectsAuthRedirectLoop(t *testing.T) {
+	up := newUpstream(t)
+	up.authLoop = true
+	client := New(Config{Endpoints: up.endpoints()})
+	_, err := client.Verify(context.Background(), "acct-1", testCredential())
+	var outcomeErr *contract.OutcomeError
+	if !errors.As(err, &outcomeErr) ||
+		outcomeErr.Outcome != contract.OutcomeUnknown ||
+		outcomeErr.Message != "auth redirect limit exceeded" {
+		t.Fatalf("error = %v", err)
+	}
+	if got := up.count("/base/c/auth/yiban"); got != 6 {
+		t.Fatalf("auth calls = %d, want 6", got)
+	}
+}
+
+func TestTrustedAuthHost(t *testing.T) {
+	// 配置端点用测试主机，才能同时钉住「配置主机」与「api.uyiban.com」两条分支。
+	client := New(Config{Endpoints: Endpoints{
+		APIAuth: "http://127.0.0.1:1/base/c/auth/yiban",
+	}})
+	cases := []struct {
+		raw  string
+		want bool
+	}{
+		{"http://127.0.0.1:1/x", true},
+		{"https://127.0.0.1:1/x", false},
+		{"https://api.uyiban.com/x", true},
+		{"http://api.uyiban.com/x", false},
+		{"https://example.com/x", false},
+		{"https://api.uyiban.com.evil/x", false},
+	}
+	for _, tc := range cases {
+		target, err := url.Parse(tc.raw)
+		if err != nil {
+			t.Fatalf("parse %q: %v", tc.raw, err)
+		}
+		if got := client.trustedAuthHost(target); got != tc.want {
+			t.Fatalf("trustedAuthHost(%q) = %t, want %t", tc.raw, got, tc.want)
+		}
+	}
+}
+
 func TestVerifyMissingVerifyRequest(t *testing.T) {
 	up := newUpstream(t)
 	up.missingToken = true
@@ -441,6 +495,58 @@ func TestSessionReuseAndExpiry(t *testing.T) {
 	}
 	if got := up.count("/code/html"); got != 2 {
 		t.Fatalf("expired login calls = %d, want 2", got)
+	}
+}
+
+func TestSessionTTLSlides(t *testing.T) {
+	up := newUpstream(t)
+	clock := &manualClock{now: time.Date(2026, 10, 26, 6, 0, 0, 0, time.UTC)}
+	client := New(Config{Endpoints: up.endpoints(), Clock: clock})
+	call := func() error {
+		return client.withSession(context.Background(), "acct-1", testCredential(),
+			func(context.Context, *http.Client, string) error { return nil })
+	}
+	if err := call(); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	clock.Advance(20 * time.Minute)
+	if err := call(); err != nil {
+		t.Fatalf("20m call: %v", err)
+	}
+	clock.Advance(20 * time.Minute)
+	if err := call(); err != nil {
+		t.Fatalf("40m call: %v", err)
+	}
+	if got := up.count("/code/html"); got != 1 {
+		t.Fatalf("sliding TTL login calls = %d, want 1", got)
+	}
+	clock.Advance(31 * time.Minute)
+	if err := call(); err != nil {
+		t.Fatalf("71m call: %v", err)
+	}
+	if got := up.count("/code/html"); got != 2 {
+		t.Fatalf("expired login calls = %d, want 2", got)
+	}
+}
+
+func TestSessionExpiredRetriesOnce(t *testing.T) {
+	up := newUpstream(t)
+	client := New(Config{Endpoints: up.endpoints()})
+	attempts := 0
+	err := client.withSession(context.Background(), "acct-1", testCredential(),
+		func(context.Context, *http.Client, string) error {
+			attempts++
+			return &protocol.SessionExpired{}
+		})
+	var expired *protocol.SessionExpired
+	if !errors.As(err, &expired) {
+		t.Fatalf("error = %v, want SessionExpired", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if got := up.count("/code/html"); got != 2 {
+		t.Fatalf("login calls = %d, want 2", got)
 	}
 }
 

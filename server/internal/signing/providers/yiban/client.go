@@ -222,17 +222,17 @@ func noRedirect(*http.Request, []*http.Request) error {
 	return http.ErrUseLastResponse
 }
 
-// trustedAuthHost 只允许认证跳回落到配置的 API 主机或 api.uyiban.com。
-// 不跟随自动重定向：自动跟随会在白名单校验前把 CSRF cookie 发到落点。
-func (c *Client) trustedAuthHost(host string) bool {
-	if host == "" {
+// trustedAuthHost 只允许认证跳回落到配置的 API 端点或 api.uyiban.com。
+// 生产只接受 https；测试端点按配置的 scheme 比较。
+// 白名单比参考实现窄：只认 API 主机，其余主机一律拒绝（fail-closed）。
+func (c *Client) trustedAuthHost(target *url.URL) bool {
+	if target == nil || target.Host == "" || target.Scheme == "" {
 		return false
 	}
-	api, err := url.Parse(c.endpoints.APIAuth)
-	if err == nil && host == api.Host {
-		return true
+	if api, err := url.Parse(c.endpoints.APIAuth); err == nil && target.Host == api.Host {
+		return target.Scheme == api.Scheme
 	}
-	return host == "api.uyiban.com"
+	return target.Scheme == "https" && target.Host == "api.uyiban.com"
 }
 
 // safeMessage 把平台文案压成可进审计的短消息。
