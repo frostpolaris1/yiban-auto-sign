@@ -42,7 +42,11 @@ jobs:
   # 改名会让必需检查静默失效。若确要改名，先在 GitHub 设置里同步更新（批 1 约束 6）。
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 10 → 15 分钟（2026-10-26）：`--ci` 子集实测 6m54s → 7m21s → 8m16s → 9m49s 逐批变长，
+    # 到 10m15s 时被 job 上限**取消**（GitHub 把超时记成 cancelled，不是 failed，容易被读成
+    # 「门坏了」）。这只是上限，不增加正常路径时长；与 slow-lane / frontend 的 15 分钟同口径。
+    # 若要点的是「verify 快轨 ≤3min」这条设计意图，那是缩 `--ci` 子集的事，另单；先让门别被时钟误杀。
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
