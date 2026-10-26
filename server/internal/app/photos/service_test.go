@@ -120,6 +120,31 @@ func (f *fakeStore) PurgeExpired(_ context.Context, now time.Time, _ int) (int64
 	return n, nil
 }
 
+// CountLibrary/LibraryAt 实现选图端口：本文件不测选图，
+// 这里给最小实现（计数与按偏移取行）保持编译对齐。
+func (f *fakeStore) CountLibrary(_ context.Context, ownerUserID string) (int64, error) {
+	var n int64
+	for _, rec := range f.recs {
+		if !rec.Deleted() && rec.OwnerUserID == ownerUserID {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (f *fakeStore) LibraryAt(_ context.Context, ownerUserID string, offset int) (corephoto.Record, error) {
+	var out []corephoto.Record
+	for _, rec := range f.recs {
+		if !rec.Deleted() && rec.OwnerUserID == ownerUserID {
+			out = append(out, rec)
+		}
+	}
+	if offset < 0 || offset >= len(out) {
+		return corephoto.Record{}, errs.ErrNotFound
+	}
+	return out[offset], nil
+}
+
 type fakeBlobs struct {
 	data map[[32]byte][]byte
 	puts int

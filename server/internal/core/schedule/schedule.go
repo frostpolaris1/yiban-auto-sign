@@ -90,6 +90,7 @@ type WindowView struct {
 
 // TaskRow 是一行可执行的计划任务（worker 的输入形状）。
 // State 取 core/status 的五态；Attempts 是已消耗的尝试数。
+// OwnerUserID 是账号属主：worker 靠它从属主的图片库选图（P5-C）。
 type TaskRow struct {
 	ID           string
 	AccountID    string
@@ -99,4 +100,5 @@ type TaskRow struct {
 	RunAt        time.Time
 	State        string
 	Attempts     int
+	OwnerUserID  string
 }

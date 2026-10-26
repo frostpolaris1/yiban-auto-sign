@@ -74,13 +74,29 @@ type RateGate interface {
 	RetryAfter(egress string, now time.Time) time.Duration
 }
 
-// Deps 是执行循环的依赖。
+// LocationSource 解析账号的定位策略（实现为 app/location.Service）。
+// 为 nil 时 SignRequest 恒用 LocationAuto：未装配定位面就保持现行为。
+type LocationSource interface {
+	Resolve(ctx context.Context, accountID string) (contract.Location, error)
+}
+
+// PhotoSource 为一次尝试选一张图片（实现为 app/photos.Service）。
+// ownerUserID 来自任务行的账号属主；attemptID 决定确定性的选图轮换。
+// 为 nil 时等同空图库：要求图片的目标按 photo_missing 处理（fail-closed）。
+type PhotoSource interface {
+	PickForAttempt(ctx context.Context, ownerUserID, attemptID string) (contract.ImageRef, bool, error)
+}
+
+// Deps 是执行循环的依赖。Locations 与 Photos 可为 nil：
+// 缺哪个端口就退回哪个面的现行为（LocationAuto、无图注入）。
 type Deps struct {
-	Store    Store
-	Creds    Credentials
-	Signer   Signer
-	Egress   Egress
-	Limiter  RateGate
-	Clock    coreclock.Clock
-	Location *time.Location
+	Store     Store
+	Creds     Credentials
+	Signer    Signer
+	Egress    Egress
+	Limiter   RateGate
+	Clock     coreclock.Clock
+	Location  *time.Location
+	Locations LocationSource
+	Photos    PhotoSource
 }
