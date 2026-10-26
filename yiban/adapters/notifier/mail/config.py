@@ -271,7 +271,7 @@ def get_config(envs=None):
         envs = _read_env_file()
     entries = smtp_list(envs)
     # 只有 SMTPS_ENC 真正配置时才按条目回显（ba-p09-08）；旧单条键的 smtp_list 会把
-    # 非法端口归一成到名册缺省，若也走条目分支，get_config 就再也看不到「端口被回退」这件事。
+    # 非法端口归一为名册缺省，若也走条目分支，get_config 就再也看不到「端口被回退」这件事。
     entry0 = (entries[0] if entries and _env_value("SMTPS_ENC", envs)
               else None)
     if entry0 is not None:
