@@ -3,7 +3,7 @@ package photos
 // P5-C 选图：为一次签到尝试从属主图片库确定性取图。
 //
 // 判据：未删图片按 (created_at, id) 升序排定一个稳定序列，
-// 索引取 sha256(AttemptID) 首字节对库大小的模。
+// 索引取 sha256(AttemptID) 前 8 字节对库大小的模。
 // 同一 AttemptID 恒取同一张；图库增删后同 AttemptID 可换图
 // （模数变了），这属于允许的轮换，不是缺陷。
 

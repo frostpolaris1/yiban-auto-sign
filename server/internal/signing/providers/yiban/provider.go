@@ -184,6 +184,8 @@ func (p *Provider) sign(ctx context.Context, req contract.SignRequest) (contract
 	//  2. AttachmentFileName 语义疑点：现填 Target.AttachmentName，但参考
 	//     作者公开博客与 F2 抓包显示该字段的正确语义是「上传回执返回的
 	//     文件名」。P5-D 接上传时必须改成回执值，不得沿用本行的猜测值。
+	//  3. req.Location.Reason 现在只到宿主为止，本实现不把它写进 SignInfo；
+	//     P5-D 接上传时一并送平台（协议形状 protocol/forms.go 已支持）。
 	// 以实拍为准（AGENTS §26：平台协议形状不采信第三方实现）。
 	body := protocol.BuildSignInBody(protocol.SignInBody{
 		LngLat:             point,
