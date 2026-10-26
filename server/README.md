@@ -28,7 +28,7 @@ server/
 ├── internal/core/user         user record types
 ├── internal/app               use-case ports (repository interfaces, TxManager)
 ├── internal/adapters/pg       PostgreSQL repositories, pool, transactions, migrations
-├── internal/core/image        owner stub (P5)
+├── internal/core/image        the only image preprocessing (P5 wiring pending)
 ├── internal/adapters/config   the only environment reader
 ├── internal/adapters/session  in-memory SessionIssuer (development only)
 ├── migrations/postgres        goose migrations, embedded in the binary
