@@ -248,7 +248,7 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		Location:  loc,
 		Locations: locationSvc,
 		Photos:    photoSvc,
-		Notifier:  workerNotifier{broker: e.broker},
+		Notifier:  workerNotifier{broker: e.broker, clock: clk},
 	})
 	if err != nil {
 		t.Fatalf("new worker service: %v", err)
@@ -256,7 +256,7 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 	scheduleSvc, err := appschedule.NewService(appschedule.Deps{
 		Windows: e.sched, Plans: e.sched, Accounts: e.sched,
 		Discover: e2eDiscoverer{windows: e.windows}, Prefs: e.prefs, Tx: db,
-		Notifier: scheduleNotifier{broker: e.broker},
+		Notifier: scheduleNotifier{broker: e.broker, clock: clk},
 	})
 	diagSvc, err := appdiagnostic.NewService(appdiagnostic.Deps{
 		Accounts: accountSvc,

@@ -35,6 +35,7 @@ import (
 	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
+	corediag "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/diagnostic"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
@@ -51,7 +52,7 @@ type Diagnostics interface {
 	Mine(ctx context.Context, userID string) (appdiagnostic.Report, error)
 	Account(ctx context.Context, scope corescope.Scope, accountID string) (appdiagnostic.Detail, error)
 	SignStatus(ctx context.Context, userID string) (appdiagnostic.StatusReport, error)
-	Snapshot(ctx context.Context, scope corescope.Scope) (appdiagnostic.View, error)
+	Snapshot(ctx context.Context, scope corescope.Scope) (corediag.View, error)
 }
 
 // Authorizer 把会话主体解析成作用域与审计主体。

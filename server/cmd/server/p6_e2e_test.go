@@ -25,6 +25,7 @@ import (
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
+	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
 
@@ -169,7 +170,7 @@ func TestP6SSEConcludedTask(t *testing.T) {
 	if data.Payload["account_id"] != acct {
 		t.Fatalf("payload = %v, want account %s", data.Payload, acct)
 	}
-	if data.Payload["state"] != "success" {
+	if data.Payload["state"] != string(corestatus.TaskSuccess) {
 		t.Fatalf("payload state = %v", data.Payload["state"])
 	}
 	if data.At == "" || data.Day == "" {
@@ -254,7 +255,7 @@ func TestP6SignStatusStaleFlip(t *testing.T) {
 	if body.Items[0].Stale {
 		t.Fatal("刚建行不应 stale")
 	}
-	if body.Items[0].State == nil || *body.Items[0].State != "pending" {
+	if body.Items[0].State == nil || *body.Items[0].State != string(corestatus.TaskPending) {
 		t.Fatalf("state = %v", body.Items[0].State)
 	}
 
