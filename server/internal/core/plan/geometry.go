@@ -68,23 +68,8 @@ func PhaseOf(key string, slots int) int {
 	return int(hash01(key) * float64(slots))
 }
 
-// Spread 把 n 个账号顺序铺进每片 slots 个槽的片里，返回各行的偏移（按行序）。
-// 行 i 落在片 i/slots、槽 i%slots——每片装满 slots 人再进下一片。
-// 「front 收进前段」由调用方选择：把行偏移过 NextSlot 得片号，与 front 片数比较；
-// 本函数只负责"装满一片再进下一片"的几何，不做模式分支。
-// 偏移确定性可重放。
+// Spread 是 front 模式的特例：片数取行数，顺序填充。
+// 实现委托 SpreadWithin，公式只此一份（P4-C 复审 P3-5）。
 func Spread(n, slots int) []time.Duration {
-	if n < 0 {
-		n = 0
-	}
-	if slots < 1 {
-		slots = 1
-	}
-	offs := make([]time.Duration, n)
-	for i := 0; i < n; i++ {
-		k := i / slots
-		slot := i % slots
-		offs[i] = span(k) + time.Duration(slot)*SlotSpan/time.Duration(slots)
-	}
-	return offs
+	return SpreadWithin(n, slots, max(n, 1), true)
 }

@@ -68,3 +68,4 @@ plan.spread	func	internal/core/plan/	Spread		use plan.Spread
 plan.phase	func	internal/core/plan/	PhaseOf		use plan.PhaseOf
 retry.budgetfor	func	internal/core/retry/	BudgetFor		use retry.BudgetFor
 retry.nextdelay	func	internal/core/retry/	NextDelay		use retry.NextDelay
+plan.spreadwithin	func	internal/core/plan/	SpreadWithin		use plan.SpreadWithin
