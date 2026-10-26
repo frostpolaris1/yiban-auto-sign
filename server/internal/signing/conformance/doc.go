@@ -50,6 +50,7 @@
 // 依据：宿主用 errors.As 取回结论；无效词会让宿主静默走错分支。
 //
 // window.shape：窗口起止非零，结束晚于开始，来源在契约词表内。
+// 提供方返回合法的非 success 结论错误时显性跳过：没有窗口可查。
 // 依据：契约 Window 与 WindowSource 的定义。
 //
 // window.cancel：声明 WindowDiscovery 时，已取消上下文返回 context.Canceled。
@@ -57,11 +58,13 @@
 // 依据：Go 惯例；宿主靠它区分取消与上游失败。
 //
 // targets.shape：每个目标 ID 非空，经纬度在物理范围内。
+// 提供方返回合法的非 success 结论错误时显性跳过：没有目标可查。
 // 依据：契约 Target 与 Point 的定义；宿主按 ID 去重与记录。
 //
 // targets.cancel：口径同 window.cancel。
 //
 // verify.result：用测试凭据调用 Verify 返回 nil 错误。
+// 提供方返回合法的非 success 结论错误时显性跳过：没有档案可查。
 // 依据：契约 §7.3 要求 conformance 不连真实平台；
 // 判据对象是参考实现，正常路径不得失败。
 //
