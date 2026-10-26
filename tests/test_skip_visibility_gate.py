@@ -114,6 +114,10 @@ KNOWN_SKIP_SITES = json.loads(r"""
   [
    "skipTest",
    "需要系统 gpg"
+  ],
+  [
+   "skipUnless",
+   "kill -9 与进程组信号仅 POSIX 可用"
   ]
  ],
  "tests/test_api_clock_business_tz.py": [
@@ -148,6 +152,10 @@ KNOWN_SKIP_SITES = json.loads(r"""
   [
    "SkipTest",
    "需要 bash 与 python3（Git Bash/WSL）"
+  ],
+  [
+   "skipIf",
+   "需要 bash（Git Bash/WSL）"
   ]
  ],
  "tests/test_calendar_state_visibility.py": [

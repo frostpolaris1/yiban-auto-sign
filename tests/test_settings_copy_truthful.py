@@ -91,8 +91,8 @@ CLAIM_ALLOWLIST = {
         "full 档每次需口令", "公告卡档位文案：risk 同出口直接生效，full 才要"),
     ("frontend/src/settings/ScheduleCard.vue", 248): (
         "full 档保存时需口令确认", "设置卡档位文案：risk 同出口直接保存，full 才要"),
-    ("scripts/backup.sh", 259): (
-        "无需口令", "GPG 公钥无口令，非本站登录口令门"),
+    ("scripts/backup.sh", 279): (
+        "无需口令", "GPG 公钥无口令，非本站登录口令门；279＝2026-10-26 SIDECAR_TMP 置空后行号"),
     ("web/app.py", 2308): (
         "同出口也必须当次输口令", "risk_always 四类：同出口也要口令"),
     ("web/app.py", 2351): (
