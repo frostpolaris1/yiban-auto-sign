@@ -44,25 +44,36 @@ func (s *Service) Assign(ctx context.Context, accountID string) (Egress, error) 
 	if accountID == "" {
 		return Egress{}, coreerrs.New(coreerrs.CodeValidation, "account is required")
 	}
+	// 已有绑定：直接返回（含不健康/已停用出口——粘性优先）。
+	// 绑定查询在启用清单之前：出口全停用时已绑定账号照样能签到。
+	if id, err := s.deps.Store.GetAssignment(ctx, accountID); err == nil {
+		bound, getErr := s.deps.Store.Get(ctx, id)
+		if getErr != nil {
+			// egress_id 是 RESTRICT：绑定指向不存在的出口属数据异常，响亮失败。
+			return Egress{}, getErr
+		}
+		return bound, nil
+	} else if !isNotFound(err) {
+		return Egress{}, err
+	}
 	enabled, err := s.deps.Store.ListEnabled(ctx)
 	if err != nil {
 		return Egress{}, err
 	}
 	if len(enabled) == 0 {
-		return Egress{}, coreerrs.New(coreerrs.CodeValidation, "no enabled egress")
-	}
-	// 已有绑定：直接返回（含不健康出口——粘性优先）。
-	if id, err := s.deps.Store.GetAssignment(ctx, accountID); err == nil {
-		return lookup(enabled, id), nil
-	} else if !isNotFound(err) {
-		return Egress{}, err
+		// 运维停用了全部出口：是容量/配置面问题，不是调用方参数错。
+		return Egress{}, coreerrs.New(coreerrs.CodeCapacity, "no enabled egress")
 	}
 	preferred := s.pick(enabled, accountID, s.deps.Clock.Now())
 	finalID, err := s.deps.Store.AssignOrGet(ctx, accountID, preferred.ID)
 	if err != nil {
 		return Egress{}, err
 	}
-	return lookup(enabled, finalID), nil
+	bound, err := s.deps.Store.Get(ctx, finalID)
+	if err != nil {
+		return Egress{}, err
+	}
+	return bound, nil
 }
 
 // MarkFailed 把出口标为不健康直到 until：新账号不再选它，
@@ -96,14 +107,4 @@ func (s *Service) pick(enabled []Egress, accountID string, now time.Time) Egress
 	sum := sha256.Sum256([]byte(accountID))
 	idx := binary.BigEndian.Uint64(sum[:8]) % uint64(len(candidates))
 	return candidates[idx]
-}
-
-// lookup 按 ID 取出口；找不到返回零值（绑定指向已删出口属数据异常）。
-func lookup(enabled []Egress, id string) Egress {
-	for _, e := range enabled {
-		if e.ID == id {
-			return e
-		}
-	}
-	return Egress{ID: id}
 }

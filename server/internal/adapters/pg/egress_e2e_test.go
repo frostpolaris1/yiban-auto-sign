@@ -2,6 +2,7 @@ package pg_test
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -76,43 +77,49 @@ func TestEgressAssignSticky(t *testing.T) {
 	}
 }
 
-// 并发首配：单语句 CTE 由主键收敛，全部调用读同一绑定。
+// 并发首配：单条 upsert 由主键收敛，全部调用读同一绑定。
+// 判别力来自**轮次**：连接池 MaxConns=4 封住真并发，
+// 单账号 8 goroutine 对 DO NOTHING+SELECT 变异只有 ~70% 检出率
+// （2026-10-26 审查实测 14/20 复现）。故 20 账号 × 32 goroutine。
 func TestEgressAssignConcurrentSingle(t *testing.T) {
 	e := newEnv(t)
 	repo := pg.NewEgressRepo(e.db)
 	school := e.createSchool("egress-race")
-	acct := e.createAccount(school.ID, e.createUser("race@example.com").ID, "13800010202")
 	e1 := e.seedEgress("https://race1.example", true)
 	e2 := e.seedEgress("https://race2.example", true)
-
-	results := make(chan string, 8)
-	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		pref := e1
-		if i%2 == 1 {
-			pref = e2
-		}
-		wg.Add(1)
-		go func(pref string) {
-			defer wg.Done()
-			id, err := repo.AssignOrGet(e.ctx, acct.ID, pref)
-			if err != nil {
-				t.Errorf("assign: %v", err)
-				return
+	for round := 0; round < 20; round++ {
+		acct := e.createAccount(school.ID,
+			e.createUser(fmt.Sprintf("race-%d@example.com", round)).ID,
+			fmt.Sprintf("138%08d", round))
+		results := make(chan string, 32)
+		var wg sync.WaitGroup
+		for i := 0; i < 32; i++ {
+			pref := e1
+			if i%2 == 1 {
+				pref = e2
 			}
-			results <- id
-		}(pref)
-	}
-	wg.Wait()
-	close(results)
-	var first string
-	for id := range results {
-		if first == "" {
-			first = id
-			continue
+			wg.Add(1)
+			go func(pref string) {
+				defer wg.Done()
+				id, err := repo.AssignOrGet(e.ctx, acct.ID, pref)
+				if err != nil {
+					t.Errorf("round %d assign: %v", round, err)
+					return
+				}
+				results <- id
+			}(pref)
 		}
-		if id != first {
-			t.Fatalf("并发绑定分叉: %s vs %s", first, id)
+		wg.Wait()
+		close(results)
+		var first string
+		for id := range results {
+			if first == "" {
+				first = id
+				continue
+			}
+			if id != first {
+				t.Fatalf("round %d 并发绑定分叉: %s vs %s", round, first, id)
+			}
 		}
 	}
 }
@@ -137,5 +144,19 @@ func TestEgressAssignBadAccount(t *testing.T) {
 	// 插入点外键失败映射为 *errs.Error（CodeNotFound），不是裸哨兵。
 	if got := coreerrs.From(err).Code; got != coreerrs.CodeNotFound {
 		t.Fatalf("坏账号应 not_found, got %v (%v)", got, err)
+	}
+}
+
+// Get 必须能取到停用出口：粘性绑定不因运维停用而失真（复审 P2-1）。
+func TestEgressGetDisabled(t *testing.T) {
+	e := newEnv(t)
+	repo := pg.NewEgressRepo(e.db)
+	id := e.seedEgress("https://disabled.example", false)
+	rec, err := repo.Get(e.ctx, id)
+	if err != nil {
+		t.Fatalf("get disabled: %v", err)
+	}
+	if rec.ID != id || rec.Identity != "https://disabled.example" {
+		t.Fatalf("停用出口记录失真: %+v", rec)
 	}
 }

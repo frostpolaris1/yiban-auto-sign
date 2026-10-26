@@ -29,6 +29,9 @@ type Egress = coreegress.Record
 
 // Store 是出口与绑定的存储端口。
 type Store interface {
+	// Get 按 ID 取出口（**含停用**）：绑定出口被停用时仍要拿到 Identity。
+	// 不存在返回 errs.ErrNotFound（egress_id 是 RESTRICT，正常不可达，属数据异常）。
+	Get(ctx context.Context, egressID string) (Egress, error)
 	// ListEnabled 返回启用出口，按 ID 升序（顺序参与确定性取模）。
 	ListEnabled(ctx context.Context) ([]Egress, error)
 	// GetAssignment 返回账号已绑定的出口 ID；无绑定返回 errs.ErrNotFound。
