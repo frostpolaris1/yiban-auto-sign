@@ -22,7 +22,8 @@
 #      密文并删除明文 tar.gz——明文落盘需显式 BACKUP_PLAINTEXT=1（大字告警）。
 #      无可用加密方式（未配置口令/公钥且无交互终端）保持明文 + 大字告警，
 #      不改变既有部署行为。--restore 对 .tar.gz / .gpg / .age 均可直接恢复。
-#   4. 保留策略：本地与异机各保留 30 天（find -mtime +30 -delete，含 .sha256 侧车）。
+#   4. 保留策略：本地与异机各保留 30 天（find -mtime +30 -delete，含 .sha256 侧车）；
+#      写清单期间被硬杀留下的 `*.sha256.tmp.*` 孤儿按 mtime >60 分钟清。
 #   5. --restore 模式：从备份包恢复到指定目录（恢复演练 / 真实恢复），并在解包后
 #      跑 PRAGMA integrity_check + scripts/audit_verify.py 验证恢复件可用。
 #
@@ -40,17 +41,22 @@
 #   M3 批次0 起生产执行件收编在 deploy/prod/（校验和对账 + 一键安装）：
 #   sudo DESTDIR= bash deploy/prod/install.sh    # 本脚本→/usr/local/sbin/yiban-backup.sh
 #   （或手工：sudo install -m 0700 -o root -g root scripts/backup.sh /usr/local/sbin/yiban-backup.sh）
-#   权威件 deploy/prod/cron.d/yiban-backup（install.sh 落位；内容即下一行）；手工安装时才
-#   需要 `sudo crontab -e` 抄同一行。
+#   触发器唯一来源是 cron.d 表，不是 root crontab。备份的唯一触发器是
+#   deploy/prod/cron.d/yiban-backup（install.sh 落位）；手工安装就把该表
+#   `install -m 0644` 到 /etc/cron.d/yiban-backup，**不要**用 `crontab -e` 抄同一条
+#   命令——root crontab 与 cron.d 同时有它时，02:00 会并发跑两轮同一备份
+#   （2026-10-25 事故：gpg 互相覆写，当天备份全失）。
 #   # 备份——务必带 --require-encrypt：不带时一旦加密配置失效，cron 会静默产出
 #   # 含全部密钥与管理员口令哈希的【明文】归档（备份目录被读 = 全库凭据泄露）。
 #   # 口令经 wrapper 的 stdin fd 0 单跳注入（见 deploy/prod/yiban-backup-wrapper.sh），
 #   # 别再往 crontab 行/env 里写 BACKUP_GPG_PASSPHRASE——那会把口令带进整棵子进程树。
 #   # 备份目录默认 /var/backups/yiban：与 pull-prod-backup.sh 的 REMOTE_BACKUP_DIR、
 #   # backup_sentinel.py 的 DEFAULT_BACKUP_DIR 同值，改一处必须三处同改（有门钉住）。
-#   0 2 * * * /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
-#   # 异机副本走 REMOTE_BACKUP：放 wrapper 之后的同一行 env 前缀即可（非机密主机名）：
-#   # 0 2 * * * REMOTE_BACKUP=user@host:/backup/yiban /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
+#   # 表内命令行（身份列 root）：
+#   0 2 * * * root /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
+#   # 异机副本走 REMOTE_BACKUP：在表内命令行 wrapper 前加 env 前缀（非机密主机名）；
+#   # 改完要与检出里的表同步，否则 install.sh 的 sha256 对账拒装：
+#   # 0 2 * * * root REMOTE_BACKUP=user@host:/backup/yiban /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
 #   # 取证校验——锚点判据的另一半（离机留痕对照）不能只挂在 web 每日线程上：
 #   # web 没起来 / 每日线程没跑到，删链与"锚点文件被截断"就永远没人查。
 #   30 2 * * * cd /opt/yiban-auto-sign && .venv/bin/python3 scripts/audit_verify.py --db data/yiban.db --env data/.env >> /var/log/yiban/audit-verify.log 2>&1
@@ -231,7 +237,21 @@ else
 fi
 ARCHIVE="${BACKUP_DIR}/yiban-${DATE}.tar.gz"
 TMPDIR_BAK="$(mktemp -d "${TMPDIR:-/tmp}/yiban-bak.XXXXXX")"
-trap 'rm -rf "${TMPDIR_BAK}"' EXIT
+# 先把自己的清单临时件变量置空：调用者若在环境里预置了同名 SIDECAR_TMP，
+# 下方 trap 会把它当成"本脚本的临时件"删掉。本脚本只允许删自己写的那一个。
+SIDECAR_TMP=""
+# 退出清理：临时目录 + 清单临时件。SIDECAR_TMP 在写清单段才赋值，用 :- 兜空
+# （set -u 下直接引用未赋值变量会让 trap 自己失败）。
+# 旧 trap 只清 TMPDIR_BAK：`kill`（TERM 亦会走 EXIT trap）与一般失败路径都会把
+# 0 字节 `${FINAL_LOCAL}.sha256.tmp.$$` 留在备份目录——正是 2026-10-25 事故残留的
+# 同形。SIGKILL 不可捕获，那种孤儿由下方轮转段按 mtime 清（两条修法各管一段）。
+_cleanup() {
+    rm -rf "${TMPDIR_BAK}"
+    if [ -n "${SIDECAR_TMP:-}" ]; then
+        rm -f "${SIDECAR_TMP}"
+    fi
+}
+trap '_cleanup' EXIT
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
@@ -1064,8 +1084,28 @@ fi
 # 密文包以 .sha256 清单核验完整性，二次副本下载流程无需人工调整。
 FINAL_LOCAL="${ENC_FILE:-${ARCHIVE}}"
 if command -v sha256sum > /dev/null 2>&1; then
-    sha256sum "${FINAL_LOCAL}" > "${FINAL_LOCAL}.sha256"
-    chmod 0600 "${FINAL_LOCAL}.sha256"
+    # 前置断言必须在重定向**之前**：`sha256sum 缺失文件 > 清单` 会让 shell 先建出
+    # 0 字节清单，再因 sha256sum 失败而中止（set -e）。2026-10-25 02:00 生产事故的
+    # 残留件正是它：并发第二跑删掉 ENC_FILE 后留下 0 字节 .sha256，当天备份全失。
+    # 0 字节清单会被 `sha256sum -c` 与备份哨兵当成"清单在"，比没有清单更危险。
+    if [ ! -s "${FINAL_LOCAL}" ]; then
+        echo "错误：待校验文件缺失或为空（${FINAL_LOCAL}）——不生成校验清单，请排查后重跑备份" >&2
+        exit 1
+    fi
+    # 原子写：先写同目录临时件，校验非空后再 mv 覆盖。任一步失败只清临时件，
+    # 绝不留下 0 字节 .sha256（清单的存在本身就是"可核验"信号）。
+    SIDECAR_TMP="${FINAL_LOCAL}.sha256.tmp.$$"
+    if ! sha256sum "${FINAL_LOCAL}" > "${SIDECAR_TMP}" || [ ! -s "${SIDECAR_TMP}" ]; then
+        rm -f "${SIDECAR_TMP}"
+        echo "错误：sha256sum 失败或输出为空（${FINAL_LOCAL}）——未生成校验清单" >&2
+        exit 1
+    fi
+    chmod 0600 "${SIDECAR_TMP}"
+    if ! mv -f "${SIDECAR_TMP}" "${FINAL_LOCAL}.sha256"; then
+        rm -f "${SIDECAR_TMP}"
+        echo "错误：无法落位校验清单（${FINAL_LOCAL}.sha256）" >&2
+        exit 1
+    fi
     # 加密切换当天避免新旧两份清单并存混淆
     [ -n "${ENC_FILE}" ] && rm -f "${ARCHIVE}.sha256"
     log "已生成校验清单：${FINAL_LOCAL}.sha256"
@@ -1183,7 +1223,18 @@ rotate_pass 'yiban-*.tar.gz.age' "${RETENTION_DAYS}"
 rotate_pass 'yiban-*.tar.gz.age.sha256' "${RETENTION_DAYS}"
 # 兜底：旧命名/孤儿的其它 yiban-*.sha256 侧车按主保留期清（防止回到"侧车永久堆积"）
 rotate_pass 'yiban-*.sha256' "${RETENTION_DAYS}"
-log "本地清理完成（密文 ${RETENTION_DAYS} 天/明文 ${PLAIN_DAYS} 天，含 .sha256 侧车；密文受最近 ${MIN_KEEP_ARCHIVES} 组下界保护，明文过期即删·豁免下界）"
+# 写清单期间的硬杀残留：`yiban-*.sha256.tmp.<pid>`（0 字节最常见）。上面的 6 个
+# pattern 都不匹配 .tmp，旧实现的这类孤儿永不清理——与 2026-10-25 事故的 0 字节
+# 残留同形，只是换了名字。
+# 为什么按 mtime >60 分钟而不是无条件删：无条件删会与"正在写清单"的进程抢同一个
+# 临时件（手工并行跑、或旧版没有 flock 的脚本是真实路径），把对方的原子写打断。
+# 本脚本持有 flock，同一时刻只允许一轮；60 分钟远大于单次 sha256sum 的耗时，
+# 因此超龄件只可能是上一轮被硬杀留下的孤儿。清理必须逐件留日志（删错要可追溯）。
+while IFS= read -r _orphan; do
+    rm -f "${_orphan}"
+    log "清理孤儿临时件（> 60 分钟）：$(basename "${_orphan}")"
+done < <(find "${BACKUP_DIR}" -maxdepth 1 -name 'yiban-*.sha256.tmp.*' -mmin +60)
+log "本地清理完成（密文 ${RETENTION_DAYS} 天/明文 ${PLAIN_DAYS} 天，含 .sha256 侧车与超龄临时件；密文受最近 ${MIN_KEEP_ARCHIVES} 组下界保护，明文过期即删·豁免下界）"
 
 # 删后自检（MF-77）：轮转"删完不数不验"正是历史被清而无人知的成因之一。
 # 当日归档是整条保留策略的锚点——它不在就说明轮转（或别的什么）删错了东西，
