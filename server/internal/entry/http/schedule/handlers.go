@@ -168,7 +168,7 @@ func (h *Handler) Override(c *gin.Context, _ oapi.ScheduleOverrideParams) {
 		fail(c, errs.New(errs.CodeValidation, "invalid request body"))
 		return
 	}
-	scope, user, ok := h.principalUser(c)
+	scope, user, ok := h.adminPrincipal(c)
 	if !ok {
 		return
 	}
@@ -287,19 +287,26 @@ func (h *Handler) today() string {
 
 // principal 解析作用域；计划管理面只给 master 与 admin。
 func (h *Handler) principal(c *gin.Context) (corescope.Scope, bool) {
-	scope, _, ok := h.principalUser(c)
+	scope, _, ok := h.adminPrincipal(c)
+	return scope, ok
+}
+
+// adminPrincipal 解析作用域与会话主体，并限定 master/admin。
+// 角色判据只此一处：预览/计划/容量/覆盖共用。
+func (h *Handler) adminPrincipal(c *gin.Context) (corescope.Scope, coreauth.User, bool) {
+	scope, user, ok := h.principalUser(c)
 	if !ok {
-		return corescope.Scope{}, false
+		return corescope.Scope{}, coreauth.User{}, false
 	}
 	if err := app.RequireScope(scope); err != nil {
 		fail(c, err)
-		return corescope.Scope{}, false
+		return corescope.Scope{}, coreauth.User{}, false
 	}
 	if kind := scope.Kind(); kind != corescope.KindMaster && kind != corescope.KindAdmin {
 		fail(c, errs.New(errs.CodeForbidden, "role cannot manage schedules"))
-		return corescope.Scope{}, false
+		return corescope.Scope{}, coreauth.User{}, false
 	}
-	return scope, true
+	return scope, user, true
 }
 
 // principalUser 解析作用域与会话主体。

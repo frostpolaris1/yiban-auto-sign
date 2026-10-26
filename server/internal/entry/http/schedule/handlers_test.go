@@ -384,3 +384,21 @@ func TestTimePrefRateLimited(t *testing.T) {
 }
 
 func intPtr(v int) *int { return &v }
+
+// 普通用户不得改窗口：403，且不得调用用例。
+func TestOverrideUserForbidden(t *testing.T) {
+	planner := &fakePlanner{preview: samplePreview()}
+	engine, issued := newRouter(t, corescope.User("u1"), planner, &fakeTimePrefs{})
+	body := map[string]string{
+		"day": "2026-10-29", "school_id": "s1", "task_id": "t1",
+		"start": "2026-10-29T09:00:00+08:00", "end": "2026-10-29T09:30:00+08:00",
+		"reason": "调整",
+	}
+	rec := do(t, engine, issued, http.MethodPost, "/api/schedule/override", body)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: %s", rec.Code, rec.Body.String())
+	}
+	if planner.lastReason != "" {
+		t.Fatal("无权重排后不得调用用例")
+	}
+}
