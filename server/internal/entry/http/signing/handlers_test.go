@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
@@ -180,6 +181,60 @@ func TestVerifyUpstreamFailure(t *testing.T) {
 	rec := callVerify(t, engine, issued, true)
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var envelope struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode %q: %v", rec.Body.String(), err)
+	}
+	if envelope.Error.Code != "upstream_unavailable" {
+		t.Fatalf("error code = %q, body=%s", envelope.Error.Code, rec.Body.String())
+	}
+}
+
+func TestVerifyRequiresSession(t *testing.T) {
+	svc := &fakeService{cred: appaccount.SigningCredential{SchoolID: "school-1"}}
+	engine, _ := newTestRouter(t, &fakeAuthorizer{scope: corescope.Master()}, svc, &fakeVerifier{})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/accounts/acc-1/verify", nil)
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestVerifyUnwired(t *testing.T) {
+	issuer := &fakeIssuer{secret: []byte("0123456789abcdef0123456789abcdef")}
+	issued, err := issuer.Issue(context.Background(), coreauth.User{
+		ID: "u1", Email: "boss@example.com", Role: coreauth.RoleMaster, Status: coreauth.StatusActive,
+	})
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	engine, err := router.New(router.Options{Sessions: issuer, InsecureCookies: true})
+	if err != nil {
+		t.Fatalf("router: %v", err)
+	}
+	rec := callVerify(t, engine, issued, true)
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestVerifyMessageCap(t *testing.T) {
+	svc := &fakeService{cred: appaccount.SigningCredential{SchoolID: "school-1"}}
+	verifier := &fakeVerifier{err: &contract.OutcomeError{
+		Outcome: contract.OutcomeRejected, Message: strings.Repeat("a", 300),
+	}}
+	engine, issued := newTestRouter(t, &fakeAuthorizer{scope: corescope.Master()}, svc, verifier)
+
+	result := decodeResult(t, callVerify(t, engine, issued, true))
+	if result.Message == nil || len([]rune(*result.Message)) != 200 {
+		t.Fatalf("message length = %v", result.Message)
 	}
 }
 

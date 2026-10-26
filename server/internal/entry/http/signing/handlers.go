@@ -19,7 +19,6 @@ package signing
 import (
 	"context"
 	"errors"
-	"net"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -92,8 +91,11 @@ func (h *Handler) Verify(c *gin.Context, id oapi.AccountID, _ oapi.AccountVerify
 		},
 	})
 	if err != nil {
-		result, status := verifyFailure(err)
-		respond.JSON(c.Writer, status, result)
+		if result, ok := verifyConclusion(err); ok {
+			respond.JSON(c.Writer, http.StatusOK, result)
+			return
+		}
+		respond.Error(c.Writer, c.Request, errs.New(errs.CodeUpstream, "upstream unavailable"))
 		return
 	}
 	respond.JSON(c.Writer, http.StatusOK, oapi.AccountVerifyResult{
@@ -101,38 +103,30 @@ func (h *Handler) Verify(c *gin.Context, id oapi.AccountID, _ oapi.AccountVerify
 	})
 }
 
-// verifyFailure 把 provider 错误映射成中性结论。
-// 平台结论是 200；网络失败是 502；消息一律掩码。
-func verifyFailure(err error) (oapi.AccountVerifyResult, int) {
+// verifyConclusion 把 provider 错误映射成中性结论。
+// 平台结论与解析失败是 200；网络与未知错误返回 false，由调用方回 502 信封。
+func verifyConclusion(err error) (oapi.AccountVerifyResult, bool) {
 	var outcomeErr *contract.OutcomeError
 	if errors.As(err, &outcomeErr) && outcomeErr != nil {
 		return oapi.AccountVerifyResult{
 			Ok:      false,
 			Code:    string(outcomeErr.Outcome),
 			Message: messagePtr(outcomeErr.Message),
-		}, http.StatusOK
+		}, true
 	}
 	var expired *protocol.SessionExpired
 	if errors.As(err, &expired) {
 		return oapi.AccountVerifyResult{
 			Ok: false, Code: "transient", Message: messagePtr("session expired"),
-		}, http.StatusOK
+		}, true
 	}
 	var parse *protocol.ParseError
 	if errors.As(err, &parse) {
 		return oapi.AccountVerifyResult{
 			Ok: false, Code: "unknown", Message: messagePtr("malformed platform response"),
-		}, http.StatusOK
+		}, true
 	}
-	var netErr net.Error
-	if errors.As(err, &netErr) {
-		return oapi.AccountVerifyResult{
-			Ok: false, Code: "transient", Message: messagePtr("upstream unavailable"),
-		}, http.StatusBadGateway
-	}
-	return oapi.AccountVerifyResult{
-		Ok: false, Code: "transient", Message: messagePtr("upstream failure"),
-	}, http.StatusBadGateway
+	return oapi.AccountVerifyResult{}, false
 }
 
 func messagePtr(s string) *string {
