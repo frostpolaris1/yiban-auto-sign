@@ -9,6 +9,7 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"strings"
 	"testing"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
@@ -54,16 +55,16 @@ func exifTIFF(orientation uint16) []byte {
 }
 
 // exifAPP1 返回含段长前缀的完整 APP1 段。
-func exifAPP1(orientation uint16) []byte {
-	payload := append([]byte("Exif\x00\x00"), exifTIFF(orientation)...)
+func exifAPP1(tiff []byte) []byte {
+	payload := append([]byte("Exif\x00\x00"), tiff...)
 	seg := []byte{0xFF, 0xE1, 0, 0}
 	binary.BigEndian.PutUint16(seg[2:4], uint16(len(payload)+2))
 	return append(seg, payload...)
 }
 
-// jpegWithOrientation 编码 JPEG 并注入 APP1。
+// jpegWithAPP1 编码 JPEG 并注入任意 TIFF 载荷的 APP1 段。
 // 注入后自检前缀存在；否则「输出无 EXIF」的断言会空转。
-func jpegWithOrientation(t *testing.T, src image.Image, orientation uint16) []byte {
+func jpegWithAPP1(t *testing.T, src image.Image, tiff []byte) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, src, nil); err != nil {
@@ -72,7 +73,7 @@ func jpegWithOrientation(t *testing.T, src image.Image, orientation uint16) []by
 	raw := buf.Bytes()
 	out := make([]byte, 0, len(raw)+64)
 	out = append(out, raw[:2]...)
-	out = append(out, exifAPP1(orientation)...)
+	out = append(out, exifAPP1(tiff)...)
 	out = append(out, raw[2:]...)
 	if !bytes.Contains(out, []byte{0xFF, 0xE1}) {
 		t.Fatal("注入的 APP1 段缺失：测试前提不成立")
@@ -81,6 +82,12 @@ func jpegWithOrientation(t *testing.T, src image.Image, orientation uint16) []by
 		t.Fatal("注入的 EXIF 标识缺失：测试前提不成立")
 	}
 	return out
+}
+
+// jpegWithOrientation 注入只含方向条目的合法 APP1。
+func jpegWithOrientation(t *testing.T, src image.Image, orientation uint16) []byte {
+	t.Helper()
+	return jpegWithAPP1(t, src, exifTIFF(orientation))
 }
 
 // pngChunk 组装一个 PNG 块：长度 + 类型 + 数据 + CRC。
@@ -98,20 +105,26 @@ func pngChunk(name string, data []byte) []byte {
 	return append(b, n[:]...)
 }
 
-// pngWithOrientation 在 IHDR 之后插入 eXIf 块。
+// pngWithEXIF 在 IHDR 之后插入任意 TIFF 载荷的 eXIf 块。
 // IHDR 是首块，长度固定：8 字节签名 + 25 字节块。
-func pngWithOrientation(t *testing.T, src image.Image, orientation uint16) []byte {
+func pngWithEXIF(t *testing.T, src image.Image, tiff []byte) []byte {
 	t.Helper()
 	raw := pngBytes(t, src)
 	const ihdrEnd = 8 + 25
-	out := make([]byte, 0, len(raw)+64)
+	out := make([]byte, 0, len(raw)+len(tiff)+32)
 	out = append(out, raw[:ihdrEnd]...)
-	out = append(out, pngChunk("eXIf", exifTIFF(orientation))...)
+	out = append(out, pngChunk("eXIf", tiff)...)
 	out = append(out, raw[ihdrEnd:]...)
 	if !bytes.Contains(out, []byte("eXIf")) {
 		t.Fatal("注入的 eXIf 块缺失：测试前提不成立")
 	}
 	return out
+}
+
+// pngWithOrientation 注入只含方向条目的合法 eXIf。
+func pngWithOrientation(t *testing.T, src image.Image, orientation uint16) []byte {
+	t.Helper()
+	return pngWithEXIF(t, src, exifTIFF(orientation))
 }
 
 // pngBytes 编码小 PNG，供无效输入与格式用例使用。
@@ -207,6 +220,23 @@ func TestPrepareStripsMetadata(t *testing.T) {
 	}
 }
 
+// PNG 的 eXIf 块同样可带 GPS，也必须被重编码剥掉。
+// 方向为 1 时最容易走「原样直通」捷径，故专门钉住。
+func TestPrepareStripsPNGMetadata(t *testing.T) {
+	src := pngWithOrientation(t, whiteImage(60, 40), 1)
+	out, err := Prepare(src, Options{})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if bytes.Contains(out.Data, []byte("eXIf")) {
+		t.Fatal("输出仍含 eXIf 块")
+	}
+	if bytes.Contains(out.Data, []byte("Exif\x00\x00")) {
+		t.Fatal("输出仍含 EXIF 标识")
+	}
+	decoded(t, out)
+}
+
 // EXIF 方向必须落到像素上：宽高互换且标记块移到对应角。
 func TestPrepareOrientation(t *testing.T) {
 	const w, h = 16, 8
@@ -263,6 +293,48 @@ func TestPreparePNGOrientation(t *testing.T) {
 	}
 }
 
+// 畸形 EXIF 不得 panic，也不得改变图像。
+// 平台上传的图来自任意来源，方向段损坏是常态而非例外。
+// 每个载荷同时走 JPEG 与 PNG 两条解析路径。
+func TestPrepareToleratesMalformedExif(t *testing.T) {
+	cases := []struct {
+		name string
+		tiff []byte
+	}{
+		{"非 II/MM 字节序", []byte("XY\x2A\x00\x08\x00\x00\x00\x01\x00")},
+		{"魔数错误", []byte{'I', 'I', 0x2B, 0x00, 0x08, 0x00, 0x00, 0x00}},
+		{"IFD 偏移越界", []byte{'I', 'I', 0x2A, 0x00, 0x64, 0x00, 0x00, 0x00}},
+		{"条目不完整", []byte{'I', 'I', 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00,
+			0x01, 0x00, 0x12, 0x01, 0x03, 0x00}},
+		{"条目数超过数据长度", []byte{'I', 'I', 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00,
+			0xFF, 0xFF}},
+		{"不足 8 字节", []byte{'I', 'I', 0x2A, 0x00}},
+	}
+	const w, h = 16, 8
+	src := markedImage(w, h)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			jpegOut, err := Prepare(jpegWithAPP1(t, src, c.tiff), Options{})
+			if err != nil {
+				t.Fatalf("JPEG 路径: %v", err)
+			}
+			pngOut, err := Prepare(pngWithEXIF(t, src, c.tiff), Options{})
+			if err != nil {
+				t.Fatalf("PNG 路径: %v", err)
+			}
+			for name, out := range map[string]Output{"jpeg": jpegOut, "png": pngOut} {
+				if out.Width != w || out.Height != h {
+					t.Fatalf("%s 宽高 = %dx%d, want %dx%d（坏 EXIF 不应改方向）",
+						name, out.Width, out.Height, w, h)
+				}
+				if got := luma(decoded(t, out), image.Rect(0, 0, 4, 2)); got > 90 {
+					t.Fatalf("%s 左上标记亮度 = %.0f, want ≤90（方向被误改）", name, got)
+				}
+			}
+		})
+	}
+}
+
 // TargetMime 为空时保持输入格式；指定时转换。
 func TestPrepareTargetMime(t *testing.T) {
 	pngSrc := pngBytes(t, whiteImage(20, 10))
@@ -299,9 +371,27 @@ func TestPrepareTargetMime(t *testing.T) {
 }
 
 // 每边裁 5% 后，宽与高各留 90%，容差 1px。
+// 同时断言像素确实被搬移：1 像素黑边框裁掉，中心标记保留。
+// 只查宽高的用例挡不住「返回同尺寸空图」这类退化。
 func TestPrepareCrop(t *testing.T) {
 	const w, h = 40, 20
-	out, err := Prepare(pngBytes(t, whiteImage(w, h)), Options{CropPercent: 5})
+	src := whiteImage(w, h)
+	black := color.NRGBA{R: 0, G: 0, B: 0, A: 255}
+	for x := 0; x < w; x++ {
+		src.SetNRGBA(x, 0, black)
+		src.SetNRGBA(x, h-1, black)
+	}
+	for y := 0; y < h; y++ {
+		src.SetNRGBA(0, y, black)
+		src.SetNRGBA(w-1, y, black)
+	}
+	// 中心 4×2 标记，源坐标 (18..21, 9..10)。
+	for y := 9; y < 11; y++ {
+		for x := 18; x < 22; x++ {
+			src.SetNRGBA(x, y, black)
+		}
+	}
+	out, err := Prepare(pngBytes(t, src), Options{CropPercent: 5})
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
@@ -311,7 +401,31 @@ func TestPrepareCrop(t *testing.T) {
 	if d := out.Height - h*90/100; d < -1 || d > 1 {
 		t.Fatalf("裁切后高 = %d, want %d±1", out.Height, h*90/100)
 	}
-	decoded(t, out)
+	img := decoded(t, out)
+	// 裁切原点 (2,1)：中心标记落在输出 (16..19, 8..9)。
+	if got := luma(img, image.Rect(16, 8, 20, 10)); got > 90 {
+		t.Fatalf("中心标记亮度 = %.0f, want ≤90（主体被裁掉）", got)
+	}
+	if got := luma(img, image.Rect(0, 0, 4, 2)); got < 165 {
+		t.Fatalf("输出左上亮度 = %.0f, want ≥165（黑边框未被裁掉）", got)
+	}
+}
+
+// JPEG 没有 alpha 通道：透明区域必须铺白。
+// 不铺白时透明像素编码为黑色，平台按主体判定会直接拒绝。
+func TestPrepareFlattensTransparency(t *testing.T) {
+	transparent := image.NewNRGBA(image.Rect(0, 0, 20, 20)) // RGB=0, A=0
+	out, err := Prepare(pngBytes(t, transparent), Options{TargetMime: "image/jpeg"})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if out.Mime != "image/jpeg" {
+		t.Fatalf("Mime = %q, want image/jpeg", out.Mime)
+	}
+	img := decoded(t, out)
+	if got := luma(img, image.Rect(4, 4, 16, 16)); got < 200 {
+		t.Fatalf("透明区域亮度 = %.0f, want ≥200（应铺白，不应变黑）", got)
+	}
 }
 
 // 参数越界必须报 validation，不得 panic。
@@ -371,5 +485,31 @@ func TestPrepareRejectsOversize(t *testing.T) {
 	}
 	if _, err := Prepare(src, Options{MaxPixels: 100 * 50, MaxSidePx: 100}); err != nil {
 		t.Fatalf("恰好等于上限应放行: %v", err)
+	}
+}
+
+// 像素上限必须在整图解码之前判定。
+// 否则超大图先吃内存再报错，解压炸弹防护失效。
+// 载荷：IHDR 声明 2000×2000，IDAT 是坏 zlib——头可读、像素不可解。
+func TestPrepareChecksSizeBeforeDecode(t *testing.T) {
+	var b bytes.Buffer
+	b.WriteString("\x89PNG\r\n\x1a\n")
+	ihdr := make([]byte, 13)
+	binary.BigEndian.PutUint32(ihdr[0:4], 2000)
+	binary.BigEndian.PutUint32(ihdr[4:8], 2000)
+	ihdr[8] = 8 // 位深 8
+	ihdr[9] = 2 // 真彩色，无 alpha
+	b.Write(pngChunk("IHDR", ihdr))
+	b.Write(pngChunk("IDAT", []byte("not a zlib stream")))
+	b.Write(pngChunk("IEND", nil))
+	src := b.Bytes()
+
+	if _, _, err := image.DecodeConfig(bytes.NewReader(src)); err != nil {
+		t.Fatalf("测试前提不成立：文件头应可读: %v", err)
+	}
+	_, err := Prepare(src, Options{MaxPixels: 1000})
+	wantValidation(t, err)
+	if msg := errs.From(err).Message; !strings.Contains(msg, "pixel count exceeds") {
+		t.Fatalf("错误 = %q, want 含 pixel count exceeds（先解码后判上限会先报解码失败）", msg)
 	}
 }

@@ -140,7 +140,9 @@ func Prepare(input []byte, opt Options) (Output, error) {
 // # 为什么上限是 5%
 // 裁切只用于去掉边缘水印与黑边。
 // 每边超过 5% 就可能切掉主体，而平台按主体判定通过。
-// 每边 5% 仍保留 90% 的边长与 81% 的面积。
+// 每边 5% 保留 90% 的边长与 81% 的面积。
+// 该比例对边长 ≥20 像素的图成立：更小的图按整像素四舍五入，
+// 实际裁切占比高于 5%。裁切只用于大图，小图不裁也无需裁。
 // 上限在 Options 校验处拒绝，本函数不再判越界。
 func crop(src image.Image, percent int) image.Image {
 	b := src.Bounds()
