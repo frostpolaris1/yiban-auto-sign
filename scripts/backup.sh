@@ -237,6 +237,9 @@ else
 fi
 ARCHIVE="${BACKUP_DIR}/yiban-${DATE}.tar.gz"
 TMPDIR_BAK="$(mktemp -d "${TMPDIR:-/tmp}/yiban-bak.XXXXXX")"
+# 先把自己的清单临时件变量置空：调用者若在环境里预置了同名 SIDECAR_TMP，
+# 下方 trap 会把它当成"本脚本的临时件"删掉。本脚本只允许删自己写的那一个。
+SIDECAR_TMP=""
 # 退出清理：临时目录 + 清单临时件。SIDECAR_TMP 在写清单段才赋值，用 :- 兜空
 # （set -u 下直接引用未赋值变量会让 trap 自己失败）。
 # 旧 trap 只清 TMPDIR_BAK：`kill`（TERM 亦会走 EXIT trap）与一般失败路径都会把

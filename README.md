@@ -117,6 +117,8 @@ crontab -e   # 仅在未跑安装器时追加：
 # 无人值守/脚本化安装（未跑 install.sh 时；crontab -e 是交互式的）：
 #   ( crontab -l 2>/dev/null; echo '31 6 * * * /opt/yiban-auto-sign/run.sh'; \
 #     echo '12 7 * * * /opt/yiban-auto-sign/run.sh' ) | crontab -
+# 跑过 install.sh 后删掉上面两行 root crontab（crontab -e 删除）：
+# /etc/cron.d/yiban-sign 与 root crontab 各一条会让同一排期重复触发。
 # 补签时刻须与 .env 的 YIBAN_SECOND_RUN_TIME（默认 07:12）一致；
 # 周六/周日是否执行由网页「系统设置 → 签到调度」的「周六签到 / 周日签到」开关决定，
 # 两个默认都关（未开启时当天自动跳过），也可直接用 .env 的
