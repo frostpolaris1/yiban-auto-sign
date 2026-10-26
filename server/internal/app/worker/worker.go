@@ -7,6 +7,7 @@ import (
 	"time"
 
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	corelocation "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/location"
 	coreretry "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/retry"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
@@ -39,6 +40,11 @@ const (
 	unreadableCred     = "credential_invalid"
 	windowMissingRetry = 10 * time.Minute // 窗口未发现时的重试间隔
 )
+
+// locationOutOfRange 是宿主自产的确定性结论词（与 window_closed 同形）：
+// 固定点落在目标围栏外且无原因说明。它不在 contract.Outcome 词表内——
+// 提供方永不返回它；确定结论不退避，落 skipped 档。
+const locationOutOfRange = "location_out_of_range" // 与 core/errs.CodeLocationOutside 同词：宿主自产结论，不经 contract.Outcome。
 
 // Service 是执行循环服务。
 type Service struct {
@@ -201,6 +207,42 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 	if len(targets) == 0 {
 		return false, s.finish(ctx, task, corestatus.TaskSkipped, string(contract.OutcomeNoTarget))
 	}
+	target := targets[0]
+
+	// 定位注入与围栏判定先于提交：越界且无原因是一次确定性的当日结论，
+	// 不发起登录、不消耗尝试数（P5-C）。
+	location := contract.Location{Mode: contract.LocationAuto}
+	if s.deps.Locations != nil {
+		location, err = s.deps.Locations.Resolve(ctx, task.AccountID)
+		if err != nil {
+			// 定位读取是库面依赖：失败不是账号结论，上抛退回队列。
+			return false, err
+		}
+		if !corelocation.Resolve(target, location) && location.Reason == "" {
+			return false, s.finish(ctx, task, corestatus.TaskSkipped, locationOutOfRange)
+		}
+	}
+
+	// 图片注入：要求图片的目标必须拿到图。库空（picked=false）与
+	// 端口未装配同等看待——不带图的提交注定失败，宁可当日跳过。
+	// 属主取自杀到行：选图按账号所有者的图片库轮换。
+	var image *contract.ImageRef
+	if target.RequiresPhoto {
+		picked := false
+		var ref contract.ImageRef
+		if s.deps.Photos != nil {
+			var err error
+			ref, picked, err = s.deps.Photos.PickForAttempt(ctx, task.OwnerUserID, attemptID(task))
+			if err != nil {
+				// 选图读库或 blob 失败：基础设施错误，上抛退回队列。
+				return false, err
+			}
+		}
+		if !picked {
+			return false, s.finish(ctx, task, corestatus.TaskSkipped, string(contract.OutcomePhotoMissing))
+		}
+		image = &ref
+	}
 
 	result, err := s.deps.Signer.Sign(ctx, contract.SignRequest{
 		AttemptID:  attemptID(task),
@@ -213,8 +255,9 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 			// 让证据面显示"这不是实拍窗口"（P4-E 复审 P3-5）。
 			Source: windowSource(windowRecord.Source),
 		},
-		Target:   targets[0],
-		Location: contract.Location{Mode: contract.LocationAuto},
+		Target:   target,
+		Location: location,
+		Image:    image,
 	})
 	if err != nil {
 		if outcome, ok := outcomeOf(err); ok {

@@ -240,3 +240,17 @@ func TestEncodeDetailAllowsTimestampFraction(t *testing.T) {
 		t.Fatalf("时间戳被拒绝: %v", err)
 	}
 }
+
+// P5-C location.set 的两个新键：
+// mode 是状态词；has_reason 只接受布尔，字符串即拒绝。
+func TestEncodeDetailAcceptsLocationSetKeys(t *testing.T) {
+	if _, err := coreaudit.EncodeDetail(map[string]any{"mode": "fixed", "has_reason": true}); err != nil {
+		t.Fatalf("mode+has_reason 被拒绝: %v", err)
+	}
+	if _, err := coreaudit.EncodeDetail(map[string]any{"mode": "GEOGRAPHY-POINT"}); err == nil {
+		t.Fatal("mode 非状态词未被拒绝")
+	}
+	if _, err := coreaudit.EncodeDetail(map[string]any{"has_reason": "yes"}); err == nil {
+		t.Fatal("has_reason 字符串未被拒绝")
+	}
+}
