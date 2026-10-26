@@ -350,7 +350,8 @@ func (r *ScheduleRepo) ClaimDue(ctx context.Context, now time.Time, limit int) (
 		 WHERE t.id IN (SELECT id FROM locked)
 		 RETURNING t.id::text, t.account_id::text, t.school_task_id::text,
 		           (SELECT st.school_id::text FROM school_tasks st WHERE st.id = t.school_task_id),
-		           t.day::text, t.run_at, t.state::text, t.attempts`,
+		           t.day::text, t.run_at, t.state::text, t.attempts,
+		           (SELECT a.owner_user_id::text FROM accounts a WHERE a.id = t.account_id)`,
 		now, limit)
 	if err != nil {
 		return nil, mapError(err)
@@ -359,7 +360,7 @@ func (r *ScheduleRepo) ClaimDue(ctx context.Context, now time.Time, limit int) (
 	var out []coreschedule.TaskRow
 	for rows.Next() {
 		var t coreschedule.TaskRow
-		if err := rows.Scan(&t.ID, &t.AccountID, &t.SchoolTaskID, &t.SchoolID, &t.Day, &t.RunAt, &t.State, &t.Attempts); err != nil {
+		if err := rows.Scan(&t.ID, &t.AccountID, &t.SchoolTaskID, &t.SchoolID, &t.Day, &t.RunAt, &t.State, &t.Attempts, &t.OwnerUserID); err != nil {
 			return nil, mapError(err)
 		}
 		out = append(out, t)
@@ -449,9 +450,11 @@ func (r *ScheduleRepo) EnsureTask(ctx context.Context, accountID, schoolTaskID, 
 		 ON CONFLICT (account_id, school_task_id, day) DO UPDATE SET run_at = sign_tasks.run_at
 		 RETURNING id::text, account_id::text, school_task_id::text,
 		           (SELECT st.school_id::text FROM school_tasks st WHERE st.id = sign_tasks.school_task_id),
-		           day::text, run_at, state::text, attempts, (xmax = 0) AS created`,
+		           day::text, run_at, state::text, attempts,
+		           (SELECT a.owner_user_id::text FROM accounts a WHERE a.id = sign_tasks.account_id),
+		           (xmax = 0) AS created`,
 		accountID, schoolTaskID, day, runAt).
-		Scan(&t.ID, &t.AccountID, &t.SchoolTaskID, &t.SchoolID, &t.Day, &t.RunAt, &t.State, &t.Attempts, &created)
+		Scan(&t.ID, &t.AccountID, &t.SchoolTaskID, &t.SchoolID, &t.Day, &t.RunAt, &t.State, &t.Attempts, &t.OwnerUserID, &created)
 	if err != nil {
 		return coreschedule.TaskRow{}, false, mapInsertForeignKey(err)
 	}

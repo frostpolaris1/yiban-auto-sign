@@ -30,6 +30,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	accounthttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/account"
 	adminhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/admin"
+	locationhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/location"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
 	photoshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/photos"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/respond"
@@ -67,21 +68,24 @@ type Options struct {
 	Schedule *schedulehttp.Handler
 	// Photos 提供图片库端点。为 nil 时这些端点回 501。
 	Photos *photoshttp.Handler
+	// Locations 提供账号定位策略端点。为 nil 时这些端点回 501。
+	Locations *locationhttp.Handler
 }
 
 // server 实现生成的契约接口。
 // 全部业务端点委托给域处理器。
 type server struct {
-	sessions auth.SessionIssuer
-	auth     AuthService
-	cookies  sessionCookie
-	schools  *schoolhttp.Handler
-	admins   *adminhttp.Handler
-	accounts *accounthttp.Handler
-	users    *userhttp.Handler
-	signing  *signinghttp.Handler
-	schedule *schedulehttp.Handler
-	photos   *photoshttp.Handler
+	sessions  auth.SessionIssuer
+	auth      AuthService
+	cookies   sessionCookie
+	schools   *schoolhttp.Handler
+	admins    *adminhttp.Handler
+	accounts  *accounthttp.Handler
+	users     *userhttp.Handler
+	signing   *signinghttp.Handler
+	schedule  *schedulehttp.Handler
+	photos    *photoshttp.Handler
+	locations *locationhttp.Handler
 }
 
 // New 构造 HTTP 引擎。缺 SessionIssuer 时**失败关闭**。
@@ -114,6 +118,7 @@ func New(opts Options) (*gin.Engine, error) {
 	srv.signing = opts.Signing
 	srv.schedule = opts.Schedule
 	srv.photos = opts.Photos
+	srv.locations = opts.Locations
 
 	engine := gin.New()
 	engine.Use(

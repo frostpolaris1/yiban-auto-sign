@@ -239,3 +239,35 @@ func TestPhotoRepoCreatedAtPrecision(t *testing.T) {
 		t.Fatalf("created_at 不一致: %v vs %v", got.CreatedAt, rec.CreatedAt)
 	}
 }
+
+// 存储侧选图排序是确定性不变量的另一半：LibraryAt 必须按
+// (created_at, id) 升序取第 offset 张。删掉 ORDER BY 时本测试必红
+// （P5-C 审查 P2-2）。
+func TestPhotoRepoLibraryAtOrder(t *testing.T) {
+	e := newEnv(t)
+	repo := pg.NewPhotoRepo(e.db)
+	u1 := e.createUser("photo-order@example.com")
+	base := clock.System{}.Now().UTC().Truncate(time.Microsecond)
+	old := photoRecord(u1.ID, 51, base.Add(-2*time.Hour))
+	new := photoRecord(u1.ID, 52, base)
+	for _, rec := range []corephoto.Record{new, old} { // 故意乱序写入
+		if _, err := repo.Create(e.ctx, rec); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+	}
+	first, err := repo.LibraryAt(e.ctx, u1.ID, 0)
+	if err != nil {
+		t.Fatalf("at 0: %v", err)
+	}
+	second, err := repo.LibraryAt(e.ctx, u1.ID, 1)
+	if err != nil {
+		t.Fatalf("at 1: %v", err)
+	}
+	if first.SHA256 != old.SHA256 || second.SHA256 != new.SHA256 {
+		t.Fatalf("排序错误: first=%x second=%x, want old→new",
+			first.SHA256, second.SHA256)
+	}
+	if _, err := repo.LibraryAt(e.ctx, u1.ID, 2); !errors.Is(err, errs.ErrNotFound) {
+		t.Fatalf("越界 = %v, want not_found", err)
+	}
+}

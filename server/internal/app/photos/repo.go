@@ -31,6 +31,11 @@ type Store interface {
 	PutRetention(ctx context.Context, userID string, days int, now time.Time) error
 	// PurgeExpired 删除按各用户保留期已到期的行，返回删除行数。
 	PurgeExpired(ctx context.Context, now time.Time, limit int) (int64, error)
+	// CountLibrary 报告属主未删图片数（P5-C 选图用）。
+	CountLibrary(ctx context.Context, ownerUserID string) (int64, error)
+	// LibraryAt 按 (created_at, id) 升序取第 offset 张（0 基）。
+	// 调用方先 CountLibrary 定界；offset 越界或库空返回 errs.ErrNotFound。
+	LibraryAt(ctx context.Context, ownerUserID string, offset int) (corephoto.Record, error)
 }
 
 // Blobs 是内容寻址的字节存储。

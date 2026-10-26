@@ -8,6 +8,7 @@ import (
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
 	appegress "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/egress"
+	applocation "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/location"
 	appphotos "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/photos"
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
 	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
@@ -15,6 +16,7 @@ import (
 	appuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/user"
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
 	corerate "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/rate"
+	locationhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/location"
 	photoshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/photos"
 	schedulehttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/schedule"
 	signinghttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/signing"
@@ -59,4 +61,10 @@ var (
 	_ appphotos.Store    = (*pg.PhotoRepo)(nil)
 	_ appphotos.Blobs    = (*storage.FS)(nil)
 	_ photoshttp.Service = (*appphotos.Service)(nil)
+	// P5-C：定位策略与 worker 的两个注入端口。
+	_ applocation.Store        = (*pg.LocationRepo)(nil)
+	_ applocation.Accounts     = (*appaccount.Service)(nil)
+	_ locationhttp.Service     = (*applocation.Service)(nil)
+	_ appworker.LocationSource = (*applocation.Service)(nil)
+	_ appworker.PhotoSource    = (*appphotos.Service)(nil)
 )

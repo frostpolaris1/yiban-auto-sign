@@ -77,6 +77,8 @@ const (
 	ActionTaskReclaim         Action = "task.reclaim"
 	ActionTaskClaim           Action = "task.claim"
 	ActionTaskSettle          Action = "task.settle"
+	// P5-C：账号定位策略写入。detail 只记 mode 与 has_reason。
+	ActionLocationSet Action = "location.set"
 )
 
 // Entry 是一次追加的输入。
@@ -156,6 +158,9 @@ const (
 )
 
 // detailKeys 是允许的 detail 键全集，闭合不可扩展。
+// 扩充只随新动作同批进行，且必须带形状或限型：
+// mode 是状态词（wordShape），has_reason 只接受布尔——
+// 两者都无自由文本容量，不构成隐私面（P5-C location.set）。
 var (
 	// traceIDShape 匹配 entry/http/router 生成的 id：32 位十六进制，
 	// 或 req-<计数> 的兜底形式（最多六位数字）。
@@ -172,14 +177,16 @@ var (
 )
 
 var detailKeys = map[string]bool{
-	"field":    true,
-	"from":     true,
-	"to":       true,
-	"reason":   true,
-	"count":    true,
-	"kid":      true,
-	"rows":     true,
-	"trace_id": true,
+	"field":      true,
+	"from":       true,
+	"to":         true,
+	"reason":     true,
+	"count":      true,
+	"kid":        true,
+	"rows":       true,
+	"trace_id":   true,
+	"mode":       true,
+	"has_reason": true,
 }
 
 // ZeroHash 是新链首行的 prev_hash：32 字节全零。
@@ -296,7 +303,7 @@ func validateDetailString(key, text string) error {
 			return fmt.Errorf("%w: %q has the wrong field shape", ErrDetailShape, key)
 		}
 		return nil
-	case "from", "to":
+	case "from", "to", "mode":
 		if !wordShape.MatchString(text) {
 			return fmt.Errorf("%w: %q has the wrong value shape", ErrDetailShape, key)
 		}
