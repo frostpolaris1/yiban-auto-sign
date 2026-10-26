@@ -1,17 +1,16 @@
 package image
 
 import (
-	"bytes"
 	"encoding/binary"
 )
 
-// pngSignature 是 PNG 文件头。
-var pngSignature = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'}
+// pngSignature 是 PNG 文件头。用常量，避免包级可变状态被同包改写。
+const pngSignature = "\x89PNG\r\n\x1a\n"
 
 // pngOrientation 返回 PNG eXIf 块里的方向值，取值 1..8。
 // 无 eXIf、结构错、值越界都返回 1（原样）。
 func pngOrientation(data []byte) int {
-	if len(data) < 8 || !bytes.Equal(data[:8], pngSignature) {
+	if len(data) < len(pngSignature) || string(data[:len(pngSignature)]) != pngSignature {
 		return 1
 	}
 	i := 8
