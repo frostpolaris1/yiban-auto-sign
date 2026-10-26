@@ -43,6 +43,9 @@ ALLOWED_TOP = {
     "web",           # 管理后端（app/routes/services/templates/static）
     "yiban",         # 后端命名空间（core/ports/adapters/engine/app/entry/workers/infra/attempt）
     ".github",       # CI 与 PR 模板
+    "server",        # 实验线 Go 后端（P0 起新栈；结构与门禁见 server/structure.tsv）
+    "ui",            # 实验线 React 前端（Adminator；结构与门禁见 server/structure.tsv）
+    "STRUCTURE.md",  # 实验线仓库结构说明（B1 目标树契约的入口文档）
 }
 
 #: 顶层条目数的下限：白名单再小也不会少于这个数。用于"扫空不得当绿"。
@@ -56,6 +59,25 @@ def _git_top_entries(root):
                              capture_output=True, timeout=120)
     except (OSError, subprocess.SubprocessError):
         return None
+    if out.returncode != 0:
+        # worktree 的 .git 文件可能指向 Windows 盘符路径（本仓实验线 worktree 即此形态），
+        # WSL 侧 git 解析不了。此处只处理一种形状：盘符路径换 /mnt/<盘小写>/。
+        # dev-verify 的 resolve_gitdir 另含相对路径、\\?\ 前缀等分支，比这里全。
+        # 覆盖不到的形状返回 None（本门不跳过：读不到跟踪集必须响亮，不是绿）。
+        gitfile = os.path.join(root, ".git")
+        if os.path.isfile(gitfile):
+            try:
+                with open(gitfile, encoding="utf-8", errors="replace") as fh:
+                    line = fh.readline().strip()
+                g = line[len("gitdir:"):].strip() if line.startswith("gitdir:") else ""
+            except OSError:
+                g = ""
+            g = g.replace("\\", "/")
+            if len(g) > 2 and g[1] == ":":
+                g = "/mnt/" + g[0].lower() + g[2:]
+            if g:
+                out = subprocess.run(["git", "--git-dir", g, "ls-files", "-z"],
+                                     capture_output=True, timeout=120)
     if out.returncode != 0:
         return None
     tops = set()

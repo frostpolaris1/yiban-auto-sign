@@ -20,9 +20,12 @@ clock.location	call	internal/core/clock/	time.LoadLocation	internal/core/clock/,
 clock.tz	string	internal/core/clock/	Asia/Shanghai	internal/core/clock/,internal/adapters/config/,internal/entry/http/oapi/,cmd/server/main_test.go,cmd/server/w2c_e2e_test.go	use the configured timezone
 env.get	call	internal/adapters/config/	os.Getenv	internal/adapters/config/,cmd/server/auth_e2e_test.go,cmd/server/w2c_e2e_test.go,internal/adapters/pg/main_test.go	read environment only in adapters/config
 env.lookup	call	internal/adapters/config/	os.LookupEnv	internal/adapters/config/	read environment only in adapters/config
+# core/retry/budget.go(+test) is in the allow list because BudgetFor maps
+# signing contract outcome words, two of which collide with task-state
+# literals ("success"). Retry budgets are a different vocabulary.
 # core/account is in the allow list because account status shares the word
 # "pending" with task status. Account status is a different vocabulary.
-status.literal	string	internal/core/status/	pending,running,success,failed,skipped	internal/core/status/,internal/signing/contract/,internal/entry/http/oapi/,internal/core/account/,cmd/server/w2c_e2e_test.go,internal/core/audit/chain_test.go	use status.TaskState constants; account status comes from core/account
+status.literal	string	internal/core/status/	pending,running,success,failed,skipped	internal/core/status/,internal/signing/contract/,internal/entry/http/oapi/,internal/core/account/,cmd/server/w2c_e2e_test.go,internal/core/audit/chain_test.go,internal/core/retry/budget.go,internal/core/retry/budget_test.go	use status.TaskState constants; account status comes from core/account
 errors.http	call	internal/entry/http/respond/	http.Error	internal/entry/http/respond/	use respond.Error
 mask.phone	func	internal/core/mask/	MaskPhone	internal/core/mask/	use mask.MaskPhone
 mask.email	func	internal/core/mask/	MaskEmail	internal/core/mask/	use mask.MaskEmail
@@ -56,3 +59,12 @@ fake.import	import	*	internal/signing/fake	internal/signing/conformance/	interna
 # 门拦自写 lowercase；回退到 ToLower 即红（W2D 二轮复审 N3）。
 # 只 trim 不 lower 的写法不拦：应用层已先归一，库内 ck_users_email_lower 兜底大小写。
 email.normalize.lower	forbid	internal/adapters/pg/user.go	strings.ToLower		邮箱归一只能调用 core/user.NormalizeEmail
+window.validate	func	internal/core/window/	Validate		use window.Validate
+window.effective	func	internal/core/window/	Effective		use window.Effective
+rate.bucket	type	internal/core/rate/	Bucket		use rate.Bucket
+rate.limiter	type	internal/core/rate/	Limiter		use rate.Limiter
+plan.nearest	func	internal/core/plan/	NearestFree		use plan.NearestFree
+plan.spread	func	internal/core/plan/	Spread		use plan.Spread
+plan.phase	func	internal/core/plan/	PhaseOf		use plan.PhaseOf
+retry.budgetfor	func	internal/core/retry/	BudgetFor		use retry.BudgetFor
+retry.nextdelay	func	internal/core/retry/	NextDelay		use retry.NextDelay

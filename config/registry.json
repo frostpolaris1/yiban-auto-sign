@@ -15,6 +15,91 @@
     "tier": "master",
     "reload": "restart"
   },
+  "YIBAN_ENV": {
+    "type": "enum",
+    "domain": ["development", "test", "staging", "production"],
+    "default": null,
+    "group": [
+      "部署"
+    ],
+    "doc": "实验线运行环境（Go server）。production 拒绝不安全 cookie；缺省无：不写即启动错误，防误以开发态上生产",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_HTTP_ADDR": {
+    "type": "string",
+    "default": "127.0.0.1:47183",
+    "group": [
+      "部署"
+    ],
+    "doc": "实验线 Go server 监听地址（host:port）。缺省只绑回环：暴露需显式改",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_DATABASE_URL": {
+    "type": "string",
+    "default": "",
+    "group": [
+      "部署"
+    ],
+    "doc": "实验线 PostgreSQL DSN。缺省空：auth/user/school/admin/account 端点回 501，仅签到合约端点可用",
+    "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_TZ": {
+    "type": "string",
+    "default": "Asia/Shanghai",
+    "group": [
+      "部署"
+    ],
+    "doc": "实验线业务时区（IANA 名，LoadLocation 接受任意合法名）。当前无生产消费点；院校时区由 schools.time_zone 管（闭集 Asia/Shanghai，DB 约束兜底）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_INSECURE_COOKIES": {
+    "type": "bool",
+    "default": false,
+    "group": [
+      "部署"
+    ],
+    "doc": "实验线会话 cookie 是否允许非 HTTPS。显式设置才生效；未设置时 development/test 缺省真（本地 HTTP 无 Secure），production 缺省假且置真即启动错误",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_HASH_PEPPER": {
+    "type": "string",
+    "default": null,
+    "group": [
+      "部署"
+    ],
+    "doc": "实验线摘要加盐（≥16 字符，去空白后计）：派生 IP/UA 摘要与审计链钥。全环境必需，缺失即启动错误",
+    "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_CREDENTIAL_KEY": {
+    "type": "string",
+    "default": null,
+    "group": [
+      "部署"
+    ],
+    "doc": "实验线凭据加密钥（标准 base64 的 32 字节）：AES-256-GCM。全环境必需，缺失即启动错误",
+    "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
   "YIBAN_DB_FILE": {
     "type": "path",
     "default": "data/yiban.db",
@@ -2002,6 +2087,18 @@
     ],
     "doc": "单连接硬上限（秒，默认 120 分钟，0=关闭）",
     "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_TEST_DATABASE_URL": {
+    "type": "string",
+    "default": "",
+    "group": [
+      "部署"
+    ],
+    "doc": "实验线 PostgreSQL e2e 的测试库 DSN。缺省空：server/scripts/verify.sh 跳过 pg/auth e2e 并打印 SKIP 行（跳过≠绿，跳过必须显性可见）",
+    "sensitive": true,
     "web_editable": false,
     "tier": "master",
     "reload": "restart"

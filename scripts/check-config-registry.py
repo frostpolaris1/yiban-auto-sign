@@ -29,6 +29,9 @@ AST 里键名是 `ast.Constant`、缺省值是另一处 `ast.Constant`，"同行
 - 键名由变量拼出（`_PREFIX + "USER"`）时看不到，故 `YIBAN_MAIL_*` / `YIBAN_NOTIFY_*`
   两族只有族前缀进判据，成员键靠人工维护名册；
 - sh/YAML 的行内注释只在 `#` 前有空白时剥，值里含 `#` 的写法可能把后半行当注释；
+- `.go` 的注释**不剥**：`// YIBAN_X=...` 形状的注释会被当成键引用判红。
+  键名不出现在 Go 注释里是仓库纪律的既有约定；若确需在注释里举例，用
+  `YIBAN_​X`（零宽或拆写）避开字面量形状（2026-10-25 复审 P3-1 登记）；
 - 本脚本自身不在扫描面内（判据文本里必然出现键名形状的示例）；
 - 判据 2 的第一条（键名与字面量同行）只认缺省值的**规范写法**：浮点缺省 1.0 不认
   裸整数写法 `1`。放它进来会造成假红——同行任何一处独立的 `1`（下标、`k=1`、
@@ -77,10 +80,14 @@ from yiban.adapters.config import loader as CL  # noqa: E402  （引导块必须
 SELF = os.path.join("scripts", "check-config-registry.py")
 #: 缺省扫描面（生产树；`tests/` 不在内——测试夹具设的是既有键的夹具值，改不了生产行为）。
 DEFAULT_SCAN = ("yiban", "web", "scripts", "docker", "deploy", "frontend",
-                "run.sh", "run_probe.sh", "docker-compose.yml")
-#: 被扫的文件扩展名。
+                "run.sh", "run_probe.sh", "docker-compose.yml",
+                # 实验线生产面（P0 起）：Go 后端与 React 前端同属生产代码，
+                # 其中的配置键字面量同样受本门判红（B1 目标树契约）。
+                "server", "ui")
+#: 被扫的文件扩展名。`.go` 是实验线生产面（B1 目标树契约）：Go 后端的
+#: 配置键字面量同样受本门判红。漏了它扫描面就是假的（2026-10-25 审查 P1-3）。
 SCAN_EXTS = (".py", ".sh", ".js", ".mjs", ".ts", ".vue", ".yml", ".yaml",
-             ".html", ".conf", ".service", ".toml", ".example")
+             ".html", ".conf", ".service", ".toml", ".example", ".go")
 SKIP_DIRS = {"__pycache__", ".venv", ".pytest_cache", ".ruff_cache", ".git",
              "node_modules", "work"}
 #: 配置键字面量的三种写法（见模块 docstring 判据 3）。前两种对 Python 用，
