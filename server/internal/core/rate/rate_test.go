@@ -116,3 +116,23 @@ func TestLimiterPerEgress(t *testing.T) {
 		t.Fatal("p1 第二条该被 p1 自己的额度拒")
 	}
 }
+
+// Limiter.RetryAfter：与 Admit 同一口径——按返回值等待后必放行；
+// 未建桶的出口返回 0（首条本就即时放行）。
+func TestLimiterRetryAfter(t *testing.T) {
+	l := NewLimiter(1.0, 0)
+	t0 := time.Unix(1000, 0)
+	if d := l.RetryAfter("unknown", t0); d != 0 {
+		t.Fatalf("未建桶出口 RetryAfter = %v, want 0", d)
+	}
+	if !l.Admit("p1", t0) {
+		t.Fatal("首条应放行")
+	}
+	d := l.RetryAfter("p1", t0)
+	if d <= 0 {
+		t.Fatalf("刚放行后 RetryAfter = %v, want > 0", d)
+	}
+	if !l.Admit("p1", t0.Add(d)) {
+		t.Fatalf("按 RetryAfter(%v) 等待后仍被拒", d)
+	}
+}

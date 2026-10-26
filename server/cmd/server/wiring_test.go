@@ -6,6 +6,7 @@ import (
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
+	appegress "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/egress"
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
 	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
 	appuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/user"
@@ -31,4 +32,5 @@ var (
 	_ appschedule.WindowStore   = (*pg.ScheduleRepo)(nil)
 	_ appschedule.PlanStore     = (*pg.ScheduleRepo)(nil)
 	_ appschedule.Accounts      = (*pg.ScheduleRepo)(nil)
+	_ appegress.Store           = (*pg.EgressRepo)(nil)
 )

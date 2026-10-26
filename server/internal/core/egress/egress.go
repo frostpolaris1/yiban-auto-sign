@@ -42,3 +42,10 @@ func Identity(raw string) string {
 	u.User = nil
 	return u.Scheme + "://" + u.Host
 }
+
+// Record 是一个出口记录：ID 是稳定主键，Identity 是归一后的出口标识。
+// 定义在 core：app 端口与 pg 适配器共用同一取值对象，适配器不导入 app。
+type Record struct {
+	ID       string
+	Identity string
+}
