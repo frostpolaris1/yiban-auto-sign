@@ -15,6 +15,7 @@
 依赖：bash；Python 解释器用桩（只回放业务日/版本/退出码），不触网、不碰生产路径。
 """
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -26,7 +27,18 @@ PROBE = os.path.join(BASE, "run_probe.sh")
 FALLBACK = os.path.join(BASE, "scripts", "yiban-fallback.sh")
 RUN_SH = os.path.join(BASE, "run.sh")
 DRILL = os.path.join(BASE, "scripts", "drill-container.sh")
+DRILL_BAREMETAL = os.path.join(BASE, "scripts", "drill-baremetal.sh")
 BASH = shutil.which("bash")
+
+#: +8 时区字面量的**性质判据**（R-7，2026-10-25 第三轮收紧）。
+#: 三种写法算第二定义点：hours=8 / +8 / 08、8*3600、28800。
+#: `timedelta(hours=18)` 等其它小时值放行；小数 `hours=8.5` 不是 +8 偏移，放行。
+#: 数字边界防禁宽：hours=18、hours=80、128800、16*3600 不算。
+TZ_PLUS8_LITERAL = re.compile(
+    r"hours\s*=\s*\+?0?8(?![0-9.])"
+    r"|(?<![0-9])8\s*\*\s*3600(?![0-9])"
+    r"|(?<![0-9])28800(?![0-9])"
+)
 
 PY_STUB = r"""#!/usr/bin/env bash
 case "$1" in
@@ -193,6 +205,8 @@ class DrillClockAndTempGateTest(unittest.TestCase):
     def setUpClass(cls):
         with open(DRILL, encoding="utf-8") as f:
             cls.src = f.read()
+        with open(DRILL_BAREMETAL, encoding="utf-8") as f:
+            cls.src_baremetal = f.read()
 
     def test_clock_judgements_use_asia_shanghai(self):
         self.assertIn('TZ=Asia/Shanghai date +%H:%M', self.src,
@@ -205,10 +219,19 @@ class DrillClockAndTempGateTest(unittest.TestCase):
                          "首签闩锁预检仍用宿主钟")
         self.assertNotIn('TODAY="$(date +%F)"', self.src,
                          "签到日志名仍用宿主 date")
-        self.assertIn("timezone(datetime.timedelta(hours=8))", self.src,
-                      "合成窗口没有按东八区折算 HH:MM")
-        self.assertIn("WIN_S + 8 * 3600", self.src,
-                      "跨日判定没有按北京业务日")
+        # 窗口与跨日判定只认 yiban.core.clock.TZ（R-7，2026-10-25 复审）：
+        # 再写一份 +8 字面量即第二定义点，门要红。
+        self.assertIn("from yiban.core import clock", self.src,
+                      "合成窗口没有引用业务钟 clock.TZ")
+        self.assertIn('int(os.environ["DRILL_WS"]), clock.TZ', self.src,
+                      "合成窗口没有按 clock.TZ 构造")
+        self.assertIn("from yiban.core.clock import TZ", self.src,
+                      "跨日判定没有引用业务钟 TZ")
+        # 性质判据：任何 +8 字面量写法都算第二定义点（R-7，第二轮）。
+        self.assertNotRegex(self.src, TZ_PLUS8_LITERAL,
+                            "drill-container.sh 写死了 +8 时区字面量")
+        self.assertNotRegex(self.src_baremetal, TZ_PLUS8_LITERAL,
+                            "drill-baremetal.sh 写死了 +8 时区字面量")
 
     def test_probe_scripts_use_mktemp_dir(self):
         self.assertIn("mktemp -d", self.src, "探测脚本没有用 mktemp -d 建私有目录")
@@ -218,6 +241,45 @@ class DrillClockAndTempGateTest(unittest.TestCase):
                       "探测脚本没有落进 mktemp 目录")
         self.assertRegex(self.src, r"rm -rf \"\$DRILL_TMP\"",
                          "mktemp 目录没有纳入清理")
+
+
+class TimezoneLiteralPropertyTest(unittest.TestCase):
+    """R-7 性质判据的边界：三类写法必中，正常写法不得误红（防禁宽）。"""
+
+    FORBIDDEN = (
+        "hours=8",
+        "hours = 8",
+        "hours=+8",
+        "hours=08",
+        "hours = +08",
+        "timedelta(hours=8)",
+        "x = datetime.timedelta(hours=+08)",
+        "8*3600",
+        "8 * 3600",
+        "28800",
+        "WIN_S + 28800",
+    )
+    BENIGN = (
+        "hours=18",
+        "hours=80",
+        "hours=8.5",
+        "timedelta(hours=18)",
+        "timedelta(hours=80)",
+        "timedelta(minutes=480)",
+        "16*3600",
+        "128800",
+        "clock.TZ",
+    )
+
+    def test_forbidden_forms_match(self):
+        for sample in self.FORBIDDEN:
+            self.assertRegex(sample, TZ_PLUS8_LITERAL,
+                             "性质判据漏掉写法：%r" % sample)
+
+    def test_benign_forms_do_not_match(self):
+        for sample in self.BENIGN:
+            self.assertNotRegex(sample, TZ_PLUS8_LITERAL,
+                                "性质判据过宽，误伤正常写法：%r" % sample)
 
 
 if __name__ == "__main__":
