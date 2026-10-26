@@ -78,6 +78,8 @@ type Deps struct {
 	Discover Discoverer
 	Prefs    TimePrefs
 	Tx       appcore.TxManager
+	// Notifier 可为 nil：缺端口就不发事件（P6）。
+	Notifier Notifier
 }
 
 // isNotFound 是"无缓存"的判据：实现必须用 errs.ErrNotFound 表达。
