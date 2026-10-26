@@ -33,6 +33,10 @@ logger = logging.getLogger("mailer")
 #: socket 操作一次，不是整封调用的截止时间。
 _OP_TIMEOUT_SEC = 15
 
+#: SMTPS 协议端口（隐式 TLS 的标准端口）。这是**协议常量**，不是配置缺省：
+#: 缺省端口住在配置名册；显式把条目端口设成 465 时仍必须走 SMTPS。
+_SMTPS_PORT = 465
+
 #: 整封（一次 `_send`、一次 `send_admin_alert`）的时间预算上界。取值按一条正常条目
 #: 推导：连接、登录、投递各给一次操作超时。预算只截停**条目循环的开始**。已在跑的
 #: 那一条会跑完自己的操作序列。故整封耗时上界 = 预算 + 一条条目的最坏耗时。
@@ -154,7 +158,7 @@ def _send(subject, text, to, deadline=None):
 
     任一条发送成功即返回；单条失败（SMTP 异常/网络错误）记 warning（含条目序号、
     本封幂等键与 host，不含凭据）后尝试下一条；换条目重投留一行可观测记录
-    （"第 N 条目重投同一封"，MF-90）；条目 port 非法回退 465 并记一次性告警；目标为
+    （"第 N 条目重投同一封"，MF-90）；条目 port 非法回退到名册缺省并记一次性告警；目标为
     内网/保留地址时进程内只记一次告警但**不**停发；全部失败返回 False。
 
     「连接失败」先在同一条目内有界重试（`_CONNECT_RETRY_BACKOFF_SEC`，最多 2 次，
@@ -204,7 +208,7 @@ def _send(subject, text, to, deadline=None):
             )
             return False
         host = str(entry.get("host") or "").strip()
-        port = entry.get("port", 465)
+        port = entry.get("port", config._default_smtp_port())
         reason = config.check_smtp_host(host)
         if reason:
             if config.is_private_target_reason(reason):
@@ -228,12 +232,12 @@ def _send(subject, text, to, deadline=None):
             port = int(port)
         except (TypeError, ValueError):
             global _entry_port_warned
-            port = 465
+            port = config._default_smtp_port()
             if not _entry_port_warned:
                 _entry_port_warned = True
                 logger.warning(
-                    "SMTP 发信条目 %d/%d（host=%s）port=%r 不是合法端口，本次发送回退 465",
-                    idx + 1, len(entries), host or "?", entry.get("port"),
+                    "SMTP 发信条目 %d/%d（host=%s）port=%r 不是合法端口，本次发送回退 %d",
+                    idx + 1, len(entries), host or "?", entry.get("port"), port,
                 )
         # 发信账号过单行安全原语（与告警正文净化同一份实现）：user 来自管理员配置，
         # 若含换行族字符会直进 AUTH 参数、MAIL FROM 与 From 头——单行化后非法形态
@@ -279,7 +283,7 @@ def _send(subject, text, to, deadline=None):
                 # 以系统名义向用户发钓鱼邮件；主流服务商均为公共 CA，无兼容性损失
                 ctx = ssl.create_default_context()
                 try:
-                    if port == 465:
+                    if port == _SMTPS_PORT:
                         server = smtplib.SMTP_SSL(host, port, timeout=op_timeout, context=ctx)
                     else:
                         server = smtplib.SMTP(host, port, timeout=op_timeout)

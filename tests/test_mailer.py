@@ -741,6 +741,73 @@ class _Base_FAILOVER(unittest.TestCase):
         return json.loads(plain)
 
 
+class SmtpDefaultFromRegistryTest(unittest.TestCase):
+    """SMTP 主机/端口的缺省只在配置名册：换名册值，读取点必须跟着变。
+
+    审查员 7yf 中-1：`or "smtp.qq.com"` 这类回退与名册缺省同值，但它是第二份
+    定义点。本测把 `default_of` 打桩成别的值，证明读取点真的走名册。
+    """
+
+    @staticmethod
+    def _envs():
+        return {"YIBAN_MAIL_USER": "u@x.com", "YIBAN_MAIL_PASS": "p"}
+
+    @staticmethod
+    def _sentinel():
+        return {"YIBAN_MAIL_SMTP_HOST": "mx.example.test",
+                "YIBAN_MAIL_SMTP_PORT": 2525}
+
+    def _patched(self):
+        orig = mailer.config_loader.default_of
+        sentinel = self._sentinel()
+
+        def fake(key):
+            return sentinel.get(key, orig(key))
+
+        return mock.patch.object(mailer.config_loader, "default_of", fake)
+
+    def test_smtp_list_follows_registry_defaults(self):
+        with self._patched():
+            entries = mailer.smtp_list(self._envs())
+        self.assertEqual(entries[0]["host"], "mx.example.test")
+        self.assertEqual(entries[0]["port"], 2525)
+
+    def test_get_config_follows_registry_defaults(self):
+        with self._patched():
+            cfg = mailer.get_config(self._envs())
+        self.assertEqual(cfg["host"], "mx.example.test")
+        self.assertEqual(cfg["port"], 2525)
+
+
+class SmtpPortFallbackSourceTest(unittest.TestCase):
+    """端口回退只许走名册缺省（审查员 7f delta 低-10）。
+
+    回填 `entry.get("port", 465)` 必须让本测红：行为断言看不出"第二份定义点"，
+    源码断言才能钉住"回退表达式引用名册访问器"这条性质。
+    """
+
+    FILES = ("yiban/adapters/notifier/mail/config.py",
+             "yiban/adapters/notifier/mail/transport.py",
+             "web/routes/notify.py")
+
+    def _src(self, rel):
+        with io.open(os.path.join(BASE, rel), encoding="utf-8") as f:
+            return f.read()
+
+    def test_no_bare_port_literal_fallback(self):
+        banned = ('get("port", 465)', 'get("port",465)', "or 465", "return 465")
+        for rel in self.FILES:
+            src = self._src(rel)
+            for bad in banned:
+                self.assertNotIn(bad, src,
+                                 "%s 仍有裸端口回退 %r" % (rel, bad))
+
+    def test_fallbacks_use_registry_accessor(self):
+        for rel in self.FILES:
+            self.assertIn("_default_smtp_port()", self._src(rel),
+                          "%s 的端口回退没走名册访问器" % rel)
+
+
 class SmtpListTest(_Base_FAILOVER):
     """smtp_list：旧键回落与 ENC 解析。"""
 

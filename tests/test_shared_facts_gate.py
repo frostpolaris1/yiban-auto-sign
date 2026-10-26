@@ -102,6 +102,11 @@ NEW_FAMILY_KEY_COUNTS = {TRUST_FAMILY: CENSUS_REAL_KEY_COUNTS[TRUST_FAMILY],
 WIRE_ZERO_DEF_KEY = "JS 侧状态字符串硬编码比较（17 处消费、零定义点）"
 #: census 的族汇总/交付状态元行不是一枚共享事实，不许被登记成键
 CENSUS_META_MARKERS = ("(交付状态)", "__STATUS__")
+#: 一枚 census 键拆成多行的**子载体守卫行**标记（写在键名里）。
+#: 拆行理由：同一族事实的两种载体（标识符 / 配置键名）需要各自的上限，塞进一行
+#: 会把两种计数面混在一个上限里。census 枚数对账时排除这些行，「少一行=那枚
+#: 共享事实没有门」的原意不变；`上限==实测` 仍逐行覆盖（含拆分行）。
+CENSUS_SPLIT_GUARD_MARKER = "配置键读写点（"
 #: 生产扫描路径名（`check-shared-facts.sh` 的 DEFAULT_SCOPE 里的条目）
 PRODUCTION_PATHS = ("yiban", "scripts", "web", "docker", "deploy", ".github",
                     "run.sh", "run_probe.sh")
@@ -181,6 +186,12 @@ def _gate_counts(stdout):
 
 def _rows_of(family):
     return [r for r in _rows() if r["族"] == family]
+
+
+def _census_rows_of(family):
+    """该族的 census 键行：排除一枚键拆出的子载体守卫行（见标记常量）。"""
+    return [r for r in _rows_of(family)
+            if CENSUS_SPLIT_GUARD_MARKER not in r["键"]]
 
 
 def _scope_classes(scope):
@@ -620,7 +631,7 @@ class SharedFactsNewFamilyCoverageTest(unittest.TestCase):
 
     def test_two_new_families_registered_with_census_key_counts(self):
         for fam, want in NEW_FAMILY_KEY_COUNTS.items():
-            got = _rows_of(fam)
+            got = _census_rows_of(fam)
             self.assertEqual(len(got), want,
                              f"族 {fam} 在册 {len(got)} 行，census 真键 {want} 枚——"
                              f"少一行=那枚共享事实没有门（摘键的红就在这条）")
@@ -638,7 +649,7 @@ class SharedFactsNewFamilyCoverageTest(unittest.TestCase):
                          f"真树必须绿：\n{self.gate.stdout}\n{self.gate.stderr}")
         counts = _gate_counts(self.gate.stdout)
         for fam, want in NEW_FAMILY_KEY_COUNTS.items():
-            self.assertEqual(len(_rows_of(fam)), want)
+            self.assertEqual(len(_census_rows_of(fam)), want)
             for r in _rows_of(fam):
                 if r["状态"] != "active":
                     self.assertNotIn(r["键"], counts,

@@ -63,11 +63,11 @@ def _new_smtp_id():
 
 
 def _norm_smtp_port(value):
-    """身份匹配用的端口读数：缺失/不可解析按 465（与发送路径的端口回退同口径）。"""
+    """身份匹配用的端口读数：缺失/不可解析取名册缺省（与发送路径同口径）。"""
     try:
         return int(value)
     except (TypeError, ValueError):
-        return 465
+        return mail_config._default_smtp_port()
 
 
 def _smtp_target(entry):
@@ -154,7 +154,7 @@ def api_mail_config():
         "enabled": enabled,
         "admin_notify": bool(cfg.get("admin_notify", True)),
         "smtp_host": cfg.get("host", ""),
-        "smtp_port": cfg.get("port", 465),
+        "smtp_port": cfg.get("port", mail_config._default_smtp_port()),
         "user": cfg.get("user", ""),
         "admin_to": cfg.get("admin_to", ""),
         "smtps": [
@@ -163,7 +163,7 @@ def api_mail_config():
                 # 保存时按迁移口径认领旧凭据并落定 id）
                 "id": e.get("id") if _smtp_id_ok(e.get("id")) else None,
                 "host": str(e.get("host", "")),
-                "port": e.get("port", 465),
+                "port": e.get("port", mail_config._default_smtp_port()),
                 "user": mail_config._mask_addr(e.get("user")),
                 "has_pass": bool(e.get("pass")),
             }
@@ -286,7 +286,7 @@ def api_mail_config_save():
             if _host_reason:
                 return jsonify({"error": f"smtps 第 {i + 1} 条：{_host_reason}"}), 400
             try:
-                port = int(e.get("port", 465))
+                port = int(e.get("port", mail_config._default_smtp_port()))
             except (TypeError, ValueError):
                 return jsonify({"error": f"smtps 第 {i + 1} 条端口无效"}), 400
             if not 1 <= port <= 65535:
