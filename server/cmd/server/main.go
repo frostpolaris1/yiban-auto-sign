@@ -39,6 +39,7 @@ import (
 	appadmin "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/admin"
 	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
 	appegress "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/egress"
+	applocation "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/location"
 	appphotos "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/photos"
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
 	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
@@ -55,6 +56,7 @@ import (
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	accounthttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/account"
 	adminhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/admin"
+	locationhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/location"
 	photoshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/photos"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/router"
 	schedulehttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/schedule"
@@ -171,6 +173,7 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 		signing  *signinghttp.Handler
 		planning *schedulehttp.Handler
 		photoLib *photoshttp.Handler
+		locLib   *locationhttp.Handler
 		db       *pg.DB
 		closeFn  = func() {}
 	)
@@ -304,6 +307,31 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 			closeFn()
 			return nil, fmt.Errorf("server: load timezone %q: %w", cfg.Timezone, err)
 		}
+		// 图片库先于执行循环装配：worker 的选图端口引用同一实例。
+		blobs, err := storage.NewFS(cfg.PhotoDir)
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("server: photo storage: %w", err)
+		}
+		photoSvc, err := appphotos.NewService(appphotos.Deps{
+			Store: pg.NewPhotoRepo(db), Blobs: blobs, Clock: clk,
+			Options: appphotos.Options{MaxPixels: photoMaxPixels, MaxSidePx: photoMaxSidePx},
+		})
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("server: photo service: %w", err)
+		}
+		locationSvc, err := applocation.NewService(applocation.Deps{
+			Store:    pg.NewLocationRepo(db),
+			Accounts: accountSvc,
+			Audit:    audits,
+			Tx:       db,
+			Clock:    clk,
+		})
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("server: location service: %w", err)
+		}
 		scheduleRepo := pg.NewScheduleRepo(db)
 		workerSvc, err := appworker.NewService(appworker.Deps{
 			Store:    scheduleRepo,
@@ -313,6 +341,9 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 			Limiter:  corerate.NewLimiter(corerate.DefaultRate, 6),
 			Clock:    clk,
 			Location: loc,
+			// P5-C 注入面：定位策略与选图。缺端口时对应面退回现行为。
+			Locations: locationSvc,
+			Photos:    photoSvc,
 		})
 		if err != nil {
 			closeFn()
@@ -329,20 +360,8 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 		// admin 只能签绑定学校的账号（跨校回 404）。
 		signing.WithAccess(accountSvc)
 
-		blobs, err := storage.NewFS(cfg.PhotoDir)
-		if err != nil {
-			closeFn()
-			return nil, fmt.Errorf("server: photo storage: %w", err)
-		}
-		photoSvc, err := appphotos.NewService(appphotos.Deps{
-			Store: pg.NewPhotoRepo(db), Blobs: blobs, Clock: clk,
-			Options: appphotos.Options{MaxPixels: photoMaxPixels, MaxSidePx: photoMaxSidePx},
-		})
-		if err != nil {
-			closeFn()
-			return nil, fmt.Errorf("server: photo service: %w", err)
-		}
 		photoLib = photoshttp.NewHandler(photoSvc, adminSvc)
+		locLib = locationhttp.NewHandler(locationSvc, adminSvc)
 
 		prefRepo := pg.NewTimePrefRepo(db)
 		scheduleSvc, err := appschedule.NewService(appschedule.Deps{
@@ -392,6 +411,7 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 		Signing:         signing,
 		Schedule:        planning,
 		Photos:          photoLib,
+		Locations:       locLib,
 	})
 	if err != nil {
 		closeFn()

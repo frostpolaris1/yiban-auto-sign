@@ -40,6 +40,7 @@ import (
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
 	appadmin "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/admin"
 	appegress "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/egress"
+	applocation "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/location"
 	appphotos "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/photos"
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
 	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
@@ -53,6 +54,7 @@ import (
 	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 	accounthttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/account"
 	adminhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/admin"
+	locationhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/location"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
 	photoshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/photos"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/router"
@@ -80,16 +82,17 @@ type w2cEnv struct {
 	engine   *gin.Engine
 	sessions *session.Memory
 
-	users    *pg.UserRepo
-	schools  *pg.SchoolRepo
-	admins   *pg.AdminSchoolRepo
-	accounts *pg.AccountRepo
-	audits   *pg.AuditRepo
-	sched    *pg.ScheduleRepo
-	prefs    *pg.TimePrefRepo
-	photos   *pg.PhotoRepo
-	worker   *appworker.Service
-	provider *e2eProvider
+	users     *pg.UserRepo
+	schools   *pg.SchoolRepo
+	admins    *pg.AdminSchoolRepo
+	accounts  *pg.AccountRepo
+	audits    *pg.AuditRepo
+	sched     *pg.ScheduleRepo
+	prefs     *pg.TimePrefRepo
+	photos    *pg.PhotoRepo
+	locations *pg.LocationRepo
+	worker    *appworker.Service
+	provider  *e2eProvider
 	// windows 是窗口发现脚本：任务 ID → 平台窗口。
 	windows map[string]contract.Window
 
@@ -156,6 +159,7 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 	e.sched = pg.NewScheduleRepo(db)
 	e.prefs = pg.NewTimePrefRepo(db)
 	e.photos = pg.NewPhotoRepo(db)
+	e.locations = pg.NewLocationRepo(db)
 	e.windows = map[string]contract.Window{}
 	e.audits, err = pg.NewAuditRepo(db, []byte("w2c-audit-key-0123456789abcdef00"))
 	if err != nil {
@@ -204,21 +208,41 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 
 	e.sessions = session.NewMemoryWithTTL(clk, 30*time.Minute, 12*time.Hour, []byte("w2c-session-secret-0123456789abc"))
 	loc := time.FixedZone("CST", 8*3600)
-	e.provider = &e2eProvider{windows: e.windows}
+	e.provider = &e2eProvider{windows: e.windows, targets: map[string][]contract.Target{}}
 	egressSvc, err := appegress.NewService(appegress.Deps{
 		Store: pg.NewEgressRepo(db), Clock: clk,
 	})
 	if err != nil {
 		t.Fatalf("new egress service: %v", err)
 	}
+	// 图片库与定位策略先于执行循环装配：worker 的两个注入端口引用同例。
+	photoBlobs, err := storage.NewFS(t.TempDir())
+	if err != nil {
+		t.Fatalf("new photo storage: %v", err)
+	}
+	photoSvc, err := appphotos.NewService(appphotos.Deps{
+		Store: e.photos, Blobs: photoBlobs, Clock: clk,
+		Options: appphotos.Options{MaxPixels: 4_000_000, MaxSidePx: 4096},
+	})
+	if err != nil {
+		t.Fatalf("new photo service: %v", err)
+	}
+	locationSvc, err := applocation.NewService(applocation.Deps{
+		Store: e.locations, Accounts: accountSvc, Audit: e.audits, Tx: db, Clock: clk,
+	})
+	if err != nil {
+		t.Fatalf("new location service: %v", err)
+	}
 	e.worker, err = appworker.NewService(appworker.Deps{
-		Store:    e.sched,
-		Creds:    e2eCreds{},
-		Signer:   e.provider,
-		Egress:   egressSvc,
-		Limiter:  corerate.NewLimiter(corerate.DefaultRate, 6),
-		Clock:    clk,
-		Location: loc,
+		Store:     e.sched,
+		Creds:     e2eCreds{},
+		Signer:    e.provider,
+		Egress:    egressSvc,
+		Limiter:   corerate.NewLimiter(corerate.DefaultRate, 6),
+		Clock:     clk,
+		Location:  loc,
+		Locations: locationSvc,
+		Photos:    photoSvc,
 	})
 	if err != nil {
 		t.Fatalf("new worker service: %v", err)
@@ -238,17 +262,6 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 	}
 	signingHandler := signinghttp.NewHandler(accountSvc, adminSvc, e.provider).
 		WithManual(e.worker).WithAccess(accountSvc)
-	photoBlobs, err := storage.NewFS(t.TempDir())
-	if err != nil {
-		t.Fatalf("new photo storage: %v", err)
-	}
-	photoSvc, err := appphotos.NewService(appphotos.Deps{
-		Store: e.photos, Blobs: photoBlobs, Clock: clk,
-		Options: appphotos.Options{MaxPixels: 4_000_000, MaxSidePx: 4096},
-	})
-	if err != nil {
-		t.Fatalf("new photo service: %v", err)
-	}
 	scheduleHandler := schedulehttp.NewHandler(scheduleSvc, prefSvc, adminSvc, schedulehttp.Config{
 		Location: loc, Workers: 1, Avg: 60 * time.Second, Rate: 1.0, Util: 0.8,
 		SlotsPerSlice: 5, Front: true, UsePrefs: true,
@@ -265,6 +278,7 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		Signing:         signingHandler,
 		Schedule:        scheduleHandler,
 		Photos:          photoshttp.NewHandler(photoSvc, adminSvc),
+		Locations:       locationhttp.NewHandler(locationSvc, adminSvc),
 	})
 	if err != nil {
 		t.Fatalf("router.New: %v", err)
@@ -300,20 +314,29 @@ func (e2eCreds) Credential(context.Context, string) (contract.Credential, error)
 	return contract.Credential{}, nil
 }
 
-// e2eProvider 是本地假提供方：只为满足校验与执行接缝，
-// 本文件的用例不触发平台调用。窗口发现由 e2eDiscoverer 直接提供。
-type e2eProvider struct{ windows map[string]contract.Window }
+// e2eProvider 是本地假提供方：只为满足校验与执行接缝。
+// 窗口发现由 e2eDiscoverer 直接提供；targets 按账号返回点位，
+// signs 记录收到的签到请求供 P5-C 断言注入面。
+type e2eProvider struct {
+	windows map[string]contract.Window
+	targets map[string][]contract.Target
+	signs   []contract.SignRequest
+}
 
 func (p *e2eProvider) DiscoverWindow(context.Context, contract.DiscoverRequest) (contract.Window, error) {
 	return contract.Window{}, errs.New(errs.CodeUpstream, "not used in e2e")
 }
 
-func (p *e2eProvider) DiscoverTargets(context.Context, contract.DiscoverRequest) ([]contract.Target, error) {
+func (p *e2eProvider) DiscoverTargets(_ context.Context, req contract.DiscoverRequest) ([]contract.Target, error) {
+	if ts, ok := p.targets[req.Account.ID]; ok {
+		return ts, nil
+	}
 	return nil, errs.New(errs.CodeUpstream, "not used in e2e")
 }
 
-func (p *e2eProvider) Sign(context.Context, contract.SignRequest) (contract.Result, error) {
-	return contract.Result{}, errs.New(errs.CodeInternal, "not used in e2e")
+func (p *e2eProvider) Sign(_ context.Context, req contract.SignRequest) (contract.Result, error) {
+	p.signs = append(p.signs, req)
+	return contract.Result{Outcome: contract.OutcomeSuccess}, nil
 }
 
 func (p *e2eProvider) Verify(context.Context, contract.VerifyRequest) (contract.Profile, error) {
