@@ -282,6 +282,17 @@ class SentryVerdictTest(_Base):
         self.assertEqual(self._run(), 0)
         self.assertEqual(len(self.mails), 1, f"实际 {self.mails}")
 
+    def test_zero_byte_plaintext_is_missing_not_plaintext(self):
+        """0 字节明文是残留，归因必须是「包缺失」（第 5 项）。"""
+        path = self._write_archive(suffix=".tar.gz")
+        with io.open(path, "wb"):
+            pass
+        self.assertEqual(self._run(), 0)
+        self.assertEqual(len(self.mails), 1, f"实际 {self.mails}")
+        body = self.mails[0][1].to_plain()
+        self.assertIn("不存在", body, "0 字节明文被归到缺包分支")
+        self.assertNotIn("只有【明文】", body, "0 字节明文不该说成只有明文包")
+
 
 class ArchiveProbeTest(_Base):
     """0 字节归档/清单不得判健康（P3-2）：只判 `isfile` 会被空文件骗过。"""
@@ -585,6 +596,9 @@ class TriggerCountTest(_Base):
         self.assertIn("2 条", body, "正文必须给出条数")
         self.assertIn("root 的 crontab", body, "正文必须给出每条触发器的来源")
         self.assertIn(os.path.join(self.cron_d, "yiban-backup"), body)
+        # 第 6 项：重复场景的摘要必须说「多条」，且不得混入未声明排期措辞
+        self.assertIn("多条", mail.summary)
+        self.assertNotIn("未在仓库表声明", mail.summary)
 
     def test_single_trigger_per_job_is_quiet(self):
         self._write_archive()
@@ -691,6 +705,107 @@ class TriggerCountTest(_Base):
                     any(f["job"] == "yiban-backup-wrapper.sh"
                         for f in report["findings"]),
                     f"没有归到被包装的作业：{report}")
+
+    def test_installed_backup_sh_is_the_same_job_as_wrapper(self):
+        """安装版 yiban-backup.sh 与 wrapper 是同一作业（第 1 项：别名漏检）。"""
+        self._write_archive()
+        table = os.path.join(self.cron_d, "yiban-backup")
+        with io.open(table, encoding="utf-8") as f:
+            text = f.read()
+        with io.open(table, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text.replace("yiban-backup-wrapper.sh", "yiban-backup.sh"))
+        self._write_root(WRAPPER_CRON_LINE + "\n")
+        report, unverified = self.mod._trigger_drift_report(
+            os.path.join(self.app_dir, "deploy", "prod", "cron.d"),
+            self.cron_d, os.path.join(self.tmp, "absent-etc-crontab"))
+        self.assertEqual([], unverified)
+        self.assertIsNotNone(report, "yiban-backup.sh 别名未被归到同一作业")
+        findings = [f for f in report["findings"]
+                    if f["job"] == "yiban-backup-wrapper.sh"]
+        self.assertEqual(1, len(findings), report)
+        self.assertEqual(2, findings[0]["count"])
+        self.assertEqual("0 2 * * *", findings[0]["schedule"])
+
+    def test_repo_table_alias_is_canonicalized(self):
+        """仓库表直接写 yiban-backup.sh 时，也归到 wrapper 这个同一作业键。"""
+        d = os.path.join(self.tmp, "repo-alias-cron.d")
+        os.makedirs(d, exist_ok=True)
+        _write_bytes(os.path.join(d, "yiban-backup"),
+                     b"0 2 * * * root /usr/local/sbin/yiban-backup.sh\n")
+        jobs = self.mod._repo_jobs(d)
+        self.assertIsNotNone(jobs)
+        self.assertIn("yiban-backup-wrapper.sh", jobs)
+        self.assertNotIn("yiban-backup.sh", jobs)
+
+    def test_cron_table_filename_charset(self):
+        """cron 只读文件名 [A-Za-z0-9_-]+；其余字符一律忽略（第 2 项）。"""
+        d = os.path.join(self.tmp, "charset-cron.d")
+        os.makedirs(d, exist_ok=True)
+        valid = ["yiban-backup", "yiban_backup-1", "yiban-backup_2", "yiban2"]
+        invalid = ["yiban-backup~", "yiban backup", "yiban-backup.rc",
+                   "yiban-backup.reconcile-20260101"]
+        line = b"0 2 * * * root /usr/local/sbin/yiban-backup-wrapper.sh\n"
+        for name in valid + invalid:
+            _write_bytes(os.path.join(d, name), line)
+        entries, unverified = self.mod._cron_d_entries(d)
+        self.assertEqual([], unverified)
+        self.assertEqual(set(valid),
+                         {os.path.basename(path) for path, _s, _c in entries})
+        self.assertEqual(4, len(entries), f"非法文件名被计入：{entries}")
+
+    def test_repo_table_ignores_invalid_filename(self):
+        """非白名单文件名 cron 不读，不能据此声明作业（第 2 项）。"""
+        d = os.path.join(self.tmp, "repo-charset-cron.d")
+        os.makedirs(d, exist_ok=True)
+        _write_bytes(os.path.join(d, "yiban-sign"),
+                     b"31 6 * * * yiban /opt/yiban-auto-sign/run.sh\n")
+        _write_bytes(os.path.join(d, "yiban-backup~"),
+                     b"0 4 * * * root /opt/other-job.sh\n")
+        jobs = self.mod._repo_jobs(d)
+        self.assertIsNotNone(jobs)
+        self.assertIn("run.sh", jobs)
+        self.assertNotIn("other-job.sh", jobs, "非法文件名被当成仓库表解析")
+
+    def test_non_command_mentions_are_not_triggers(self):
+        """echo/选项值/行尾注释里的作业名不是触发器（第 3 项）。"""
+        empty = self._empty_cron_d()
+        repo = os.path.join(self.app_dir, "deploy", "prod", "cron.d")
+        for command in ("/bin/echo yiban-backup-wrapper.sh",
+                        "--warn-if yiban-backup-wrapper.sh"):
+            with self.subTest(command=command):
+                self._write_root(f"0 3 * * * {command}\n")
+                report, unverified = self.mod._trigger_drift_report(
+                    repo, empty, os.path.join(self.tmp, "absent-etc-crontab"))
+                self.assertEqual([], unverified)
+                self.assertIsNone(report, f"非命令提及被算成触发器：{report}")
+        # 行尾注释里的 run.sh 不得让 run.sh 多出一条未声明排期。
+        # 用解释器形态（`/bin/bash wrapper.sh`）才能让注释截断成为承重件：
+        # 直接以 wrapper 开头时，"只认命令位置"已经不吃后面的参数。
+        self._write_root("0 2 * * * /bin/bash /usr/local/sbin/yiban-backup-wrapper.sh"
+                         " # 同族见 run.sh\n")
+        report, unverified = self.mod._trigger_drift_report(
+            repo, empty, os.path.join(self.tmp, "absent-etc-crontab"))
+        self.assertEqual([], unverified)
+        self.assertIsNone(report, f"行尾注释被算成触发器：{report}")
+
+    def test_undeclared_schedule_summary_does_not_claim_multiple_triggers(self):
+        """仅未声明排期且 count=1 时，摘要不得说「多条」（第 6 项）。"""
+        self._write_archive()
+        self._write_root("0 3 * * * /usr/local/sbin/yiban-backup-wrapper.sh"
+                         " >> /var/log/yiban/backup.log 2>&1\n")
+        self.assertEqual(self._run(), 0)
+        self.assertEqual(len(self.mails), 1, f"实际 {self.mails}")
+        summary = self.mails[0][1].summary
+        self.assertIn("未在仓库表声明", summary)
+        self.assertNotIn("多条", summary,
+                         f"未声明排期且 count=1，摘要不得说多条：{summary}")
+
+    def test_shell_c_with_single_script_path_is_recognized(self):
+        """`sh -c '<单个脚本路径>'` 会被识别（第 8 项：docstring 实测口径）。"""
+        found = self.mod._job_keys_in_command(
+            "sh -c '/usr/local/sbin/yiban-backup-wrapper.sh'",
+            {"yiban-backup-wrapper.sh"})
+        self.assertEqual({"yiban-backup-wrapper.sh"}, found)
 
     def test_empty_repo_table_dir_is_unverified_not_green(self):
         """扫空不得当绿：检出里解析不出任何作业时，门必须报"未核"。"""
@@ -917,12 +1032,13 @@ class WrapperSourceTest(unittest.TestCase):
 
 
 class SentinelDocContractTest(unittest.TestCase):
-    """哨兵 docstring 的两条承重口径（P3-6/P3-8）：扫面边界与"未核也算完成"。"""
+    """哨兵 docstring 的承重口径：扫面边界、未核 rc、sh -c 与别名边界。"""
 
     @classmethod
     def setUpClass(cls):
         with io.open(SCRIPT, encoding="utf-8") as f:
             cls.src = f.read()
+        cls.mod = _load_script()
 
     def test_docstring_states_the_trigger_scan_scope(self):
         self.assertIn("只扫 root 与当前身份", self.src,
@@ -931,6 +1047,16 @@ class SentinelDocContractTest(unittest.TestCase):
     def test_docstring_states_that_unverified_still_exits_zero(self):
         self.assertIn("未核也算检查完成", self.src,
                       "rc 口径必须写明：未核不改退出码")
+
+    def test_job_matcher_docstring_describes_shell_c_truthfully(self):
+        """第 8 项：实测 `sh -c '<单个脚本路径>'` 会识别，旧 docstring 写反了。"""
+        doc = self.mod._job_keys_in_command.__doc__ or ""
+        self.assertIn("单个脚本路径", doc,
+                      "docstring 必须写明 sh -c 的单脚本路径会被识别")
+        self.assertNotIn("本门不认", doc,
+                         "旧 docstring 说 sh -c 不认，与实测不符")
+        self.assertIn("不做 inode 归并", doc,
+                      "软链/改名边界必须登记")
 
 
 class BackupDocsContractTest(unittest.TestCase):
@@ -960,6 +1086,14 @@ class BackupDocsContractTest(unittest.TestCase):
         self.assertNotIn("不为 1 条", self.backup_doc,
                          "实现对 0 条不报；应写「多于 1 条或未声明排期」")
         self.assertIn("归档与清单都在", self.backup_doc)
+
+    def test_quickstart_says_delete_root_crontab_after_installer(self):
+        """第 7 项：快速开始先写 root crontab，必须写明跑过安装器后删掉。"""
+        idx = self.readme.find("# 5. 定时任务")
+        self.assertNotEqual(-1, idx, "README 缺快速开始的定时任务段")
+        window = self.readme[idx:idx + 900]
+        self.assertIn("跑过 install.sh 后删掉上面两行", window,
+                      "快速开始没写「跑过安装器后删掉那两行」")
 
 
 if __name__ == "__main__":
