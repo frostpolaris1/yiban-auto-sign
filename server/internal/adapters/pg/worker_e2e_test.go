@@ -178,3 +178,42 @@ func TestClaimDueSkipsPausedAndDisabled(t *testing.T) {
 		t.Fatalf("暂停账号的任务被认领: %+v", claimed)
 	}
 }
+
+// TestClaimDueSkipsAccountWithRunning：同账号已有 running 时，
+// **另一条 pending** 也不得被认领——这是跨批次串行的真正判据
+// （P4-E 审查 P2-5：删掉 NOT EXISTS 谓词后原有用例仍绿）。
+func TestClaimDueSkipsAccountWithRunning(t *testing.T) {
+	e := newEnv(t)
+	school := e.createSchool("wk-running")
+	taskA, err := e.sched.CreateSchoolTask(e.ctx, school.ID, "任务A")
+	if err != nil {
+		t.Fatalf("taskA: %v", err)
+	}
+	taskB, err := e.sched.CreateSchoolTask(e.ctx, school.ID, "任务B")
+	if err != nil {
+		t.Fatalf("taskB: %v", err)
+	}
+	acct := e.createAccount(school.ID, e.createUser("wk-run@example.com").ID, "13800020007")
+	e.activateAccount(acct.ID)
+	day := "2026-10-29"
+	at := time.Date(2026, 10, 29, 6, 40, 0, 0, time.UTC)
+	if _, err := e.sched.InsertPlan(e.ctx, []coreschedule.PlanRow{
+		{AccountID: acct.ID, SchoolTaskID: taskA, Day: day, RunAt: at},
+		{AccountID: acct.ID, SchoolTaskID: taskB, Day: day, RunAt: at},
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	// 第一次认领：拿到其中一条。
+	first, err := e.sched.ClaimDue(e.ctx, at.Add(time.Minute), 10)
+	if err != nil || len(first) != 1 {
+		t.Fatalf("first claim = (%d,%v), want 1", len(first), err)
+	}
+	// 该账号已在 running：第二次认领必须为空（另一条 pending 被排除）。
+	second, err := e.sched.ClaimDue(e.ctx, at.Add(2*time.Minute), 10)
+	if err != nil {
+		t.Fatalf("second claim: %v", err)
+	}
+	if len(second) != 0 {
+		t.Fatalf("同账号已有 running 仍被认领: %+v", second)
+	}
+}

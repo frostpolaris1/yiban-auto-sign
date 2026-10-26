@@ -281,13 +281,55 @@ func (r *ScheduleRepo) ClaimDue(ctx context.Context, now time.Time, limit int) (
 	return out, mapError(rows.Err())
 }
 
-// Requeue 把 running 退回 pending 并移到新的落点；尝试数 +1。
-func (r *ScheduleRepo) Requeue(ctx context.Context, taskID string, runAt time.Time, result string) error {
+// RequeueWait 把 running 退回 pending 并移到新落点，**不计尝试数**。
+//
+// 适用场景：窗口未开、出口限速、出口暂不可用、批处理中途中止。
+// 这些等待不是"试过了没成"，若计进业务预算，一个账号可能一整天
+// 只真正打过一次平台就被判 failed（P4-E 审查 P2-1）。
+//
+// result 写的是内部等待原因（wait_*），不是 signing 结论词。
+func (r *ScheduleRepo) RequeueWait(ctx context.Context, taskID string, runAt time.Time, result string) error {
+	ct, err := r.db.q(ctx).Exec(ctx,
+		`UPDATE sign_tasks SET state = 'pending', run_at = $2, result = $3,
+		        claimed_at = NULL
+		 WHERE id = $1::uuid AND state = 'running'`,
+		taskID, runAt, result)
+	if err != nil {
+		return mapError(err)
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrScheduleConflict
+	}
+	return nil
+}
+
+// RequeueRetry 是业务失败后的退避：退回 pending、移到新落点、**计一次尝试**。
+// 预算比较在 app 层（core/retry），这里只负责如实记账。
+func (r *ScheduleRepo) RequeueRetry(ctx context.Context, taskID string, runAt time.Time, result string) error {
 	ct, err := r.db.q(ctx).Exec(ctx,
 		`UPDATE sign_tasks SET state = 'pending', run_at = $2, result = $3,
 		        attempts = attempts + 1, claimed_at = NULL
 		 WHERE id = $1::uuid AND state = 'running'`,
 		taskID, runAt, result)
+	if err != nil {
+		return mapError(err)
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrScheduleConflict
+	}
+	return nil
+}
+
+// Rearm 把 failed 行重新放回队列（手动签到的重试入口）。
+//
+// 为什么单独一条而不是复用 Requeue*：Requeue* 只接受 running 行，
+// 而手动签到遇到的是当日已落 failed 的终态行。重排不覆盖 result
+// 之外的历史，attempts 保留（预算仍是当日的真实消耗）。
+func (r *ScheduleRepo) Rearm(ctx context.Context, taskID string, runAt time.Time) error {
+	ct, err := r.db.q(ctx).Exec(ctx,
+		`UPDATE sign_tasks SET state = 'pending', run_at = $2, claimed_at = NULL
+		 WHERE id = $1::uuid AND state = 'failed'`,
+		taskID, runAt)
 	if err != nil {
 		return mapError(err)
 	}
@@ -330,13 +372,15 @@ func (r *ScheduleRepo) EnsureTask(ctx context.Context, accountID, schoolTaskID, 
 }
 
 // TodayTask 返回账号所属学校今天启用的第一个任务（按名称序）。
-// 无启用任务返回 errs.ErrNotFound。
+// 账号必须活跃且未软删——暂停账号入队后 ClaimDue 永不认领，
+// 只会留下一条永远 pending 的行（P4-E 审查 P3-5）。
+// 无启用任务或账号不可用返回 errs.ErrNotFound。
 func (r *ScheduleRepo) TodayTask(ctx context.Context, accountID string) (string, error) {
 	var id string
 	err := r.db.q(ctx).QueryRow(ctx,
 		`SELECT st.id::text FROM accounts a
 		 JOIN school_tasks st ON st.school_id = a.school_id AND st.enabled
-		 WHERE a.id = $1::uuid AND a.deleted_at IS NULL
+		 WHERE a.id = $1::uuid AND a.status = 'active' AND a.deleted_at IS NULL
 		 ORDER BY st.name, st.id
 		 LIMIT 1`,
 		accountID).Scan(&id)
