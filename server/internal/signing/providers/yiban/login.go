@@ -2,6 +2,7 @@ package yiban
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -21,12 +22,7 @@ func (c *Client) loginLocked(ctx context.Context, entry *sessionEntry, cred cont
 	if err != nil {
 		return contract.Profile{}, err
 	}
-	client, jar := c.newHTTPClient()
-	codeURL, err := url.Parse(c.endpoints.CodeHTML)
-	if err != nil {
-		return contract.Profile{}, err
-	}
-	jar.SetCookies(codeURL, []*http.Cookie{{Name: "csrf_token", Value: csrf, Path: "/"}})
+	client := c.newHTTPClient()
 
 	// 1. 授权页：取 page_use 与 RSA 公钥。
 	req, err := newRequest(ctx, http.MethodGet, withQuery(c.endpoints.CodeHTML, url.Values{
@@ -37,6 +33,7 @@ func (c *Client) loginLocked(ctx context.Context, entry *sessionEntry, cred cont
 		return contract.Profile{}, err
 	}
 	setLoginHeaders(req)
+	addCSRF(req, csrf)
 	resp, body, err := c.do(client, req)
 	if err != nil {
 		return contract.Profile{}, err
@@ -54,7 +51,7 @@ func (c *Client) loginLocked(ctx context.Context, entry *sessionEntry, cred cont
 	}
 	page, err := protocol.ParseAuthorizePage(string(body))
 	if err != nil {
-		return contract.Profile{}, err
+		return contract.Profile{}, parseOutcome(err)
 	}
 
 	// 2. usersure：提交加密口令；头不得带 Origin/Referer。
@@ -62,6 +59,8 @@ func (c *Client) loginLocked(ctx context.Context, entry *sessionEntry, cred cont
 	if err != nil {
 		return contract.Profile{}, err
 	}
+	// SPEC §2.6：观测流程未携带 scope。参考实现的空 scope 是等价写法；
+	// 本实现不发送该字段。
 	form := protocol.BuildUsersureForm(cred.Phone, encrypted, oauthClientID, redirectURI, "authorize", nil)
 	req, err = newRequest(ctx, http.MethodPost,
 		withQuery(c.endpoints.Usersure, url.Values{"ajax_sign": {page.PageUse}}),
@@ -70,6 +69,7 @@ func (c *Client) loginLocked(ctx context.Context, entry *sessionEntry, cred cont
 		return contract.Profile{}, err
 	}
 	setUsersureHeaders(req)
+	addCSRF(req, csrf)
 	resp, body, err = c.do(client, req)
 	if err != nil {
 		return contract.Profile{}, err
@@ -83,7 +83,7 @@ func (c *Client) loginLocked(ctx context.Context, entry *sessionEntry, cred cont
 	}
 	usersure, err := protocol.ParseUsersureResponse(body)
 	if err != nil {
-		return contract.Profile{}, err
+		return contract.Profile{}, parseOutcome(err)
 	}
 	if !usersure.OK {
 		return contract.Profile{}, outcome(contract.OutcomeCredentialBad, "usersure code "+usersure.Code)
@@ -96,6 +96,7 @@ func (c *Client) loginLocked(ctx context.Context, entry *sessionEntry, cred cont
 		return contract.Profile{}, err
 	}
 	setLoginHeaders(req)
+	addCSRF(req, csrf)
 	resp, body, err = c.do(client, req)
 	if err != nil {
 		return contract.Profile{}, err
@@ -112,18 +113,33 @@ func (c *Client) loginLocked(ctx context.Context, entry *sessionEntry, cred cont
 		return contract.Profile{}, outcome(contract.OutcomeUnknown, "verify_request is missing")
 	}
 
-	// 4. 最终认证：成功不只看 code=0，还要求 data 是身份对象。
-	req, err = newRequest(ctx, http.MethodGet, withQuery(c.endpoints.APIAuth, url.Values{
+	// 4. 最终认证：手动跟跳最多 5 层，只允许落到配置的 API 主机。
+	authURL := withQuery(c.endpoints.APIAuth, url.Values{
 		"verifyRequest": {token},
 		"CSRF":          {csrf},
-	}), nil)
-	if err != nil {
-		return contract.Profile{}, err
-	}
-	setLoginHeaders(req)
-	resp, body, err = c.do(client, req)
-	if err != nil {
-		return contract.Profile{}, err
+	})
+	for redirects := 0; ; redirects++ {
+		req, err = newRequest(ctx, http.MethodGet, authURL, nil)
+		if err != nil {
+			return contract.Profile{}, err
+		}
+		setLoginHeaders(req)
+		addCSRF(req, csrf)
+		resp, body, err = c.do(client, req)
+		if err != nil {
+			return contract.Profile{}, err
+		}
+		if resp.StatusCode < 300 || resp.StatusCode >= 400 {
+			break
+		}
+		if redirects >= maxAuthRedirects {
+			return contract.Profile{}, outcome(contract.OutcomeUnknown, "auth redirect limit exceeded")
+		}
+		next, err := req.URL.Parse(resp.Header.Get("Location"))
+		if err != nil || !c.trustedAuthHost(next.Host) {
+			return contract.Profile{}, outcome(contract.OutcomeUnknown, "untrusted auth redirect")
+		}
+		authURL = next.String()
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return contract.Profile{}, outcome(contract.OutcomeTransient,
@@ -134,7 +150,7 @@ func (c *Client) loginLocked(ctx context.Context, entry *sessionEntry, cred cont
 	}
 	envelope, err := protocol.ParseAPIEnvelope(body)
 	if err != nil {
-		return contract.Profile{}, err
+		return contract.Profile{}, parseOutcome(err)
 	}
 	if !protocol.CodeIsOK(envelope.Code) {
 		return contract.Profile{}, outcome(contract.OutcomeUnknown,
@@ -146,9 +162,10 @@ func (c *Client) loginLocked(ctx context.Context, entry *sessionEntry, cred cont
 	}
 	identity, err := protocol.ParseIdentity(data)
 	if err != nil {
-		return contract.Profile{}, err
+		return contract.Profile{}, parseOutcome(err)
 	}
 
+	// 不映射 PersonId：它是平台内部 ID，不是学号；Raw 也不放身份数据。
 	profile := contract.Profile{
 		DisplayName: identity.PersonName,
 		SchoolName:  identity.UniversityName,
@@ -157,4 +174,14 @@ func (c *Client) loginLocked(ctx context.Context, entry *sessionEntry, cred cont
 	entry.csrf = csrf
 	entry.expires = c.clock.Now().Add(c.ttl)
 	return profile, nil
+}
+
+// parseOutcome 把协议解析错误压成不含原始片段的结论错误。
+// ParseError.Fragment 可能含身份字段，不能直接外溢。
+func parseOutcome(err error) error {
+	var parse *protocol.ParseError
+	if errors.As(err, &parse) {
+		return outcome(contract.OutcomeUnknown, "malformed "+parse.Field+" payload")
+	}
+	return err
 }
