@@ -141,6 +141,15 @@ func (s *server) AccountPause(c *gin.Context, id oapi.AccountID, params oapi.Acc
 	s.accounts.Pause(c, id, params)
 }
 
+// AccountSign 委托手动签到处理器。未装配时仍是 501。
+func (s *server) AccountSign(c *gin.Context, id oapi.AccountID, params oapi.AccountSignParams) {
+	if s.signing == nil {
+		notImplemented(c)
+		return
+	}
+	s.signing.Sign(c, id, params)
+}
+
 // AccountVerify 委托签到凭据校验处理器。未装配时仍是 501。
 func (s *server) AccountVerify(c *gin.Context, id oapi.AccountID, params oapi.AccountVerifyParams) {
 	if s.signing == nil {

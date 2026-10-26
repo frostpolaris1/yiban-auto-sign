@@ -11,6 +11,8 @@ import (
 	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
 	appuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/user"
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
+	corerate "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/rate"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/providers/yiban"
 )
 
 // 编译期接线检查。
@@ -35,4 +37,7 @@ var (
 	_ appschedule.Accounts      = (*pg.ScheduleRepo)(nil)
 	_ appegress.Store           = (*pg.EgressRepo)(nil)
 	_ appworker.Store           = (*pg.ScheduleRepo)(nil)
+	_ appworker.Signer          = (*yiban.Provider)(nil)
+	_ appworker.Egress          = (*appegress.Service)(nil)
+	_ appworker.RateGate        = (*corerate.Limiter)(nil)
 )

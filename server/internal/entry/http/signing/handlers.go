@@ -50,16 +50,50 @@ type Verifier interface {
 	Verify(ctx context.Context, req contract.VerifyRequest) (contract.Profile, error)
 }
 
-// Handler 处理账号凭据校验。
+// ManualSigner 是手动签到的入队接缝（实现为 app/worker.Service）。
+type ManualSigner interface {
+	// Request 确保当日任务行存在并返回任务 ID。
+	Request(ctx context.Context, accountID string) (string, error)
+}
+
+// Handler 处理账号凭据校验与手动签到。
 type Handler struct {
 	svc      Service
 	authz    Authorizer
 	verifier Verifier
+	manual   ManualSigner
 }
 
-// NewHandler 构造校验处理器。
+// NewHandler 构造处理器。
 func NewHandler(svc Service, authz Authorizer, verifier Verifier) *Handler {
 	return &Handler{svc: svc, authz: authz, verifier: verifier}
+}
+
+// WithManual 注入手动签到接缝。未注入时该端点回 501（由路由层判定）。
+func (h *Handler) WithManual(m ManualSigner) *Handler {
+	h.manual = m
+	return h
+}
+
+// Sign 实现 POST /api/accounts/:id/sign。
+//
+// 成功是 202（已入队，不是已完成）。三类冲突由 worker 的错误码经
+// respond 映射成 409：already_signed / sign_running / window_closed。
+func (h *Handler) Sign(c *gin.Context, id oapi.AccountID, _ oapi.AccountSignParams) {
+	scope, ok := h.principal(c)
+	if !ok {
+		return
+	}
+	if kind := scope.Kind(); kind != corescope.KindMaster && kind != corescope.KindAdmin {
+		fail(c, errs.New(errs.CodeForbidden, "only master or admin may sign manually"))
+		return
+	}
+	taskID, err := h.manual.Request(c.Request.Context(), string(id))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	respond.JSON(c.Writer, http.StatusAccepted, oapi.AccountSignAccepted{TaskId: taskID})
 }
 
 // Verify 实现 POST /api/accounts/:id/verify。

@@ -12,6 +12,7 @@ import (
 
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
+	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
@@ -284,5 +285,103 @@ func TestVerifyRequiresCSRF(t *testing.T) {
 	rec := callVerify(t, engine, issued, false)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+type fakeManual struct {
+	taskID string
+	err    error
+	calls  int
+}
+
+func (f *fakeManual) Request(context.Context, string) (string, error) {
+	f.calls++
+	return f.taskID, f.err
+}
+
+// newSignRouter 装配带手动签到接缝的路由。
+func newSignRouter(t *testing.T, authz *fakeAuthorizer, manual *fakeManual) (http.Handler, coreauth.Issued) {
+	t.Helper()
+	issuer := &fakeIssuer{secret: []byte("0123456789abcdef0123456789abcdef")}
+	issued, err := issuer.Issue(context.Background(), coreauth.User{
+		ID: "u1", Email: "boss@example.com", Role: coreauth.RoleMaster, Status: coreauth.StatusActive,
+	})
+	if err != nil {
+		t.Fatalf("issue session: %v", err)
+	}
+	handler := signinghttp.NewHandler(&fakeService{}, authz, &fakeVerifier{}).WithManual(manual)
+	engine, err := router.New(router.Options{Sessions: issuer, InsecureCookies: true, Signing: handler})
+	if err != nil {
+		t.Fatalf("router: %v", err)
+	}
+	return engine, issued
+}
+
+func callSign(t *testing.T, engine http.Handler, issued coreauth.Issued) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/accounts/acc-1/sign", nil)
+	req.AddCookie(&http.Cookie{Name: coreauth.InsecureCookieName, Value: issued.Token})
+	req.Header.Set("X-CSRF-Token", issued.CSRFToken)
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+	return rec
+}
+
+// 手动签到成功：202 且回 task_id（入队而非完成）。
+func TestSignAccepted(t *testing.T) {
+	manual := &fakeManual{taskID: "task-1"}
+	engine, issued := newSignRouter(t, &fakeAuthorizer{scope: corescope.Master()}, manual)
+	rec := callSign(t, engine, issued)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202: %s", rec.Code, rec.Body.String())
+	}
+	var body oapi.AccountSignAccepted
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.TaskId != "task-1" || manual.calls != 1 {
+		t.Fatalf("body = %+v calls=%d", body, manual.calls)
+	}
+}
+
+// 三类冲突都映射 409 与稳定错误码。
+func TestSignConflicts(t *testing.T) {
+	cases := []struct {
+		err  error
+		code string
+	}{
+		{appworker.ErrAlreadySigned, "already_signed"},
+		{appworker.ErrSignRunning, "sign_running"},
+		{appworker.ErrWindowClosed, "window_closed"},
+	}
+	for _, c := range cases {
+		engine, issued := newSignRouter(t, &fakeAuthorizer{scope: corescope.Master()}, &fakeManual{err: c.err})
+		rec := callSign(t, engine, issued)
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("%s: status = %d, want 409", c.code, rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), c.code) {
+			t.Fatalf("%s: body = %s", c.code, rec.Body.String())
+		}
+	}
+}
+
+// 账号不存在映射 404。
+func TestSignNotFound(t *testing.T) {
+	engine, issued := newSignRouter(t, &fakeAuthorizer{scope: corescope.Master()},
+		&fakeManual{err: errs.New(errs.CodeNotFound, "no enabled task for this account")})
+	rec := callSign(t, engine, issued)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// 普通用户无权手动签到。
+func TestSignUserForbidden(t *testing.T) {
+	engine, issued := newSignRouter(t, &fakeAuthorizer{scope: corescope.User("u1")},
+		&fakeManual{taskID: "task-1"})
+	rec := callSign(t, engine, issued)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: %s", rec.Code, rec.Body.String())
 	}
 }
