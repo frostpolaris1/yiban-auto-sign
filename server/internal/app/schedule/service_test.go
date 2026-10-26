@@ -604,6 +604,7 @@ func TestOverrideValidation(t *testing.T) {
 		{"起点不早于终点", corescope.Master(), end, start, "调整", coreerrs.CodeValidation},
 		{"跨业务日", corescope.Master(), start, start.Add(24 * time.Hour), "调整", coreerrs.CodeValidation},
 		{"跨校管理员", corescope.Admin([]string{"school-2"}), start, end, "调整", coreerrs.CodeNotFound},
+		{"普通用户", corescope.User("u1"), start, end, "调整", coreerrs.CodeForbidden},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -675,24 +676,32 @@ func TestTimePrefPlacedFirst(t *testing.T) {
 }
 
 // 偏好片满时就近顺延；同距离优先更早的片。
+//
+// 偏好放在中部（8 号片）且片容量为 2：前两行占满 8 号片，
+// 第三行必须落 7 号片。放在 0 号片时，顺延目标与 front 自动填充
+// 的落点重合，「满时不顺延」的突变仍然全绿（P4-F 审查 P2-1）。
 func TestTimePrefSpillsToNearestFree(t *testing.T) {
 	ids := []string{"a1", "a2", "a3"}
 	owners := map[string]string{"a1": "u1", "a2": "u1", "a3": "u1"}
-	prefs := &fakePrefs{offsets: map[string]int{"u1": 0}}
+	prefs := &fakePrefs{offsets: map[string]int{"u1": 40}} // 40 分钟 → 8 号片
 	svc := newServiceWithPrefs(t, &fakeWindowStore{}, &fakePlanStore{},
 		fakeAccounts{ids: ids, owners: owners}, &fakeDiscover{window: platformWindow(6, 30, 7, 50)}, prefs)
 	in := baseInput()
 	in.UsePrefs = true
-	in.SlotsPerSlice = 1
+	in.SlotsPerSlice = 2
 	prev, err := svc.Preview(context.Background(), in)
 	if err != nil {
 		t.Fatalf("preview: %v", err)
 	}
-	for i, want := range []int{0, 1, 2} {
+	want := []int{8, 8, 7}
+	for i, k := range want {
 		off := prev.Rows[i].RunAt.Sub(prev.WindowStart)
-		if off < time.Duration(want)*5*time.Minute || off >= time.Duration(want+1)*5*time.Minute {
-			t.Fatalf("行 %d 偏移 = %v, want 片 %d", i, off, want)
+		if off < time.Duration(k)*5*time.Minute || off >= time.Duration(k+1)*5*time.Minute {
+			t.Fatalf("行 %d 偏移 = %v, want 片 %d", i, off, k)
 		}
+	}
+	if prev.Histogram[8] != 2 || prev.Histogram[7] != 1 {
+		t.Fatalf("直方图 = %v, want 8 号 2 行、7 号 1 行", prev.Histogram)
 	}
 }
 
