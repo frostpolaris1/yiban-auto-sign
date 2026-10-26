@@ -16,7 +16,7 @@
       {
         "file": "scripts/backup.sh",
         "key": "YIBAN_STATE_DIR",
-        "reason": "宿主备份脚本用 dirname(ENV_FILE) 作通知账本目录；与名册缺省 /var/log/yiban 刻意不同（历史形态，已在 7yf 报告登记待裁）"
+        "reason": "宿主备份脚本用 dirname(ENV_FILE) 作通知账本的历史落点；当前路径已由 SIGN_STATE_DIR 收录。与名册缺省 /var/log/yiban 刻意不同（兼容旧部署）"
       },
       {
         "file": "scripts/lib/host_paths.sh",

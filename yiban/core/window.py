@@ -47,6 +47,8 @@ logger = logging.getLogger("yiban.window")
 
 DEFAULT_START = (6, 30)
 DEFAULT_END = (7, 50)
+# 值由 tests/test_config_registry_gate.py 的 CoreFallbackEquivalenceTest 等值钉住：
+# 必须等于名册 YIBAN_WINDOW_EDGE_FRONT_SEC / _BACK_SEC 的缺省，不许单改（本层不读 .env）。
 DEFAULT_EDGE_SEC = 60
 EDGE_MIN_SEC = 0
 EDGE_MAX_SEC = 300

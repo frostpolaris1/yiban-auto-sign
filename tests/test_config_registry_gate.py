@@ -12,6 +12,9 @@
     ④ 模板缺省等值；④′ 无缺省键的载体示例值差异必须逐键登记（值与登记必须一致，
        登记了却同值即陈旧）；
     另有防废门三条（空名册、名册缺失、键数不足）与 CI 接线、部署件到位两条。
+    以及 core 层防御性回退的等值门：`yiban/core/window.py` 的 `DEFAULT_EDGE_SEC`
+    必须等于名册 `YIBAN_WINDOW_EDGE_FRONT_SEC` / `_BACK_SEC` 的缺省（该层读不了名册）。
+    该等值门只钉这一处回退，**不**主张全仓缺省已单源。
 对应实现：`scripts/check-config-registry.py`、`config/registry.json`、
     `config/default-gate-register.json`、`config/code-literal-register.json`、
     `scripts/dev-verify.sh` 的 `run_ci`、`docker/Dockerfile`。
@@ -552,6 +555,19 @@ class GateShellDefaultCarrierTest(unittest.TestCase):
         r = self._run('STATE_DIR="${YIBAN_STATE_DIR:+/tmp/elsewhere}"\n')
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_colon_question_form_is_not_a_default(self):
+        """`${KEY:?msg}` 是"未设即报错"的守卫，不是缺省（审查员 7yf 低-1 的假红）。
+
+        同形状的 `:-` / `:=` 由上面两条漂移用例钉住，本对用例不许把跳过写宽。
+        """
+        r = self._run('STATE_DIR="${YIBAN_STATE_DIR:?must set YIBAN_STATE_DIR}"\n')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_bare_question_form_is_not_a_default(self):
+        """`${KEY?msg}` 同形（无冒号），同样不是缺省。"""
+        r = self._run('STATE_DIR="${YIBAN_STATE_DIR?must set YIBAN_STATE_DIR}"\n')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_unregistered_empty_default_turns_gate_red(self):
         """`${KEY:-}` 空值≠名册缺省：按存在性判定处理，必须登记。"""
         r = self._run('STATE_DIR="${YIBAN_STATE_DIR:-}"\n')
@@ -589,6 +605,20 @@ class GateShellDefaultCarrierTest(unittest.TestCase):
                           "reason": "陈旧"}))
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("陈旧 shell 跳过登记", r.stdout)
+
+    def test_shell_registration_for_unknown_key_is_environment_error(self):
+        """登记里出现名册没有的键 ⇒ 拒判 2（审查员 7yf 低-2）。
+
+        与上一条对照：键在名册但没再出现是**内容违规**（1，陈旧登记）；键不在名册
+        是**登记面与名册脱钩**（2，判据不成立），两者必须分得开。
+        """
+        r = self._run('D="${YIBAN_STATE_DIR:-/var/log/yiban}"\n',
+                      code_register=self._register({
+                          "file": "scripts/x.sh", "key": "YIBAN_NOT_IN_REGISTRY",
+                          "reason": "夹具：键不在名册"}))
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("YIBAN_NOT_IN_REGISTRY", r.stderr)
+        self.assertIn("名册里没有的键", r.stderr)
 
     def test_shell_skip_without_reason_is_environment_error(self):
         r = self._run('D="${YIBAN_STATE_DIR:-$(dirname "$X")}"\n',
@@ -932,6 +962,20 @@ class GateDeadGateGuardTest(unittest.TestCase):
 
 _IMPORT_SCOPE = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
 
+#: 只读名册、**不读 `.env`** 的缺省访问器（`loader.default_of` / `default_required`）。
+#: 它们在导入期取到的是名册缺省（`config/registry.json` 的 `default` 字段），
+#: 不是 `.env` 的值——`hot` 语义（改 `.env` 立即生效）不受影响，故不算快照。
+_REGISTRY_DEFAULT_ACCESSORS = frozenset({"default_of", "default_required"})
+
+
+def _callee_name(func):
+    """调用目标的名字（`f(...)` 取 `f`，`mod.f(...)` 取 `f`）；取不到返回 None。"""
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    if isinstance(func, ast.Name):
+        return func.id
+    return None
+
 
 def _module_level_key_reads(source, keys):
     """→ 在**模块导入期**读取的配置键集合（函数/类体内的读取不算）。
@@ -939,6 +983,8 @@ def _module_level_key_reads(source, keys):
     `keys` 是关心的键名集合。判据只认"赋值语句的右值里出现键名字面量"这一形态：
     `CAP = parse_env_int("KEY", 1)` 与 `X = os.environ["KEY"]` 都会被抓住；
     函数体内的同一写法是"读时取"，按设计放行。
+    **不读 `.env` 的调用放行**：`config_loader.default_of` / `default_required`
+    取的是名册缺省，不是运行期配置值（`_REGISTRY_DEFAULT_ACCESSORS`）。
     """
     tree = ast.parse(source)
     found = set()
@@ -949,6 +995,8 @@ def _module_level_key_reads(source, keys):
         if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
             for sub in ast.walk(node.value):
                 if isinstance(sub, ast.Call):
+                    if _callee_name(sub.func) in _REGISTRY_DEFAULT_ACCESSORS:
+                        continue
                     for arg in sub.args:
                         if isinstance(arg, ast.Constant) and arg.value in keys:
                             found.add(arg.value)
@@ -972,6 +1020,8 @@ class HotKeyImportSnapshotTest(unittest.TestCase):
     并回进程环境；键若在导入期取过一次，白名单再全也改变不了已求值的常量。
     `hot` 的语义就是"改了立刻生效"，故这是一条任何时刻都不该被违反的性质，
     不是某条调用链的编舞。
+    判据只管 **`.env` 的值**：导入期取名册缺省（`default_of` / `default_required`）
+    不算快照——这两个访问器不读 `.env`，其返回值是名册的 `default` 字段。
     """
 
     SCAN_DIRS = ("yiban", "web", "scripts", "docker")
@@ -1022,6 +1072,11 @@ class HotKeyImportSnapshotTest(unittest.TestCase):
         # 非 hot 档（restart）允许导入期快照，不在本判据范围
         restart = 'X = parse_env_int("YIBAN_QUOTA_STATE_FLUSH_MAX", 64)\n'
         self.assertEqual(_module_level_key_reads(restart, hot), set())
+        # 读名册缺省不读 .env：导入期取缺省不妨碍改 .env 生效，放行
+        registry_default = ('CAP = config_loader.default_required('
+                            '"YIBAN_MAIL_USER_FAIL_DAILY_CAP")\n')
+        self.assertEqual(_module_level_key_reads(registry_default, hot), set(),
+                         "default_required 只读名册，不是 .env 快照")
 
 
 class GateRealRegistryContentTest(unittest.TestCase):
@@ -1659,6 +1714,26 @@ class GateRealCodeRegisterContentTest(unittest.TestCase):
         for key in multi:
             self.assertIn("carrier_example", register[key],
                           "%s 的载体示例值不一致，必须登记刻意差" % key)
+
+
+class CoreFallbackEquivalenceTest(unittest.TestCase):
+    """core 层的防御性回退必须等于名册缺省（审查员 7yf 低-4）。
+
+    `yiban.core.window` 不读 `.env`，也不许 import `yiban.adapters.config.loader`
+    （依赖方向：loader 导入本模块，反向即成环）。故 `DEFAULT_EDGE_SEC` 保留字面量，
+    由本用例等值钉住：名册改值而常量不跟随 ⇒ 红；常量单改 ⇒ 红。
+    """
+
+    KEYS = ("YIBAN_WINDOW_EDGE_FRONT_SEC", "YIBAN_WINDOW_EDGE_BACK_SEC")
+
+    def test_default_edge_sec_equals_registry_defaults(self):
+        from yiban.adapters.config import loader as config_loader
+        from yiban.core import window
+        for key in self.KEYS:
+            self.assertEqual(
+                config_loader.default_required(key), window.DEFAULT_EDGE_SEC,
+                "yiban/core/window.py 的 DEFAULT_EDGE_SEC 与名册 %s 的缺省不等——"
+                "两侧必须同值（改任一侧必红）" % key)
 
 
 class GateCiWiringTest(unittest.TestCase):
