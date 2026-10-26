@@ -291,6 +291,17 @@ func TestActiveAccountIDsStableAndFiltered(t *testing.T) {
 	_ = taskID
 	// 第三个账号保持 pending：不得出现在活跃面。
 	pending := e.createAccount(school.ID, e.createUser("act-c@example.com").ID, "13800009999")
+	// 第四个暂停、第五个软删：同样不得出现。
+	paused := e.createAccount(school.ID, e.createUser("act-d@example.com").ID, "13800010001")
+	e.activateAccount(paused.ID)
+	if _, err := e.db.Exec(e.ctx, "UPDATE accounts SET status = 'paused_admin' WHERE id = $1::uuid", paused.ID); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	deleted := e.createAccount(school.ID, e.createUser("act-e@example.com").ID, "13800010002")
+	e.activateAccount(deleted.ID)
+	if _, err := e.db.Exec(e.ctx, "UPDATE accounts SET deleted_at = now() WHERE id = $1::uuid", deleted.ID); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
 	ids, err := e.sched.ActiveAccountIDs(e.ctx, school.ID)
 	if err != nil {
 		t.Fatalf("active: %v", err)
@@ -299,8 +310,8 @@ func TestActiveAccountIDsStableAndFiltered(t *testing.T) {
 		t.Fatalf("活跃账号数 = %d, want 2: %v", len(ids), ids)
 	}
 	for _, id := range ids {
-		if id == pending.ID {
-			t.Fatal("待审账号出现在活跃面")
+		if id == pending.ID || id == paused.ID || id == deleted.ID {
+			t.Fatalf("不活跃账号出现在活跃面: %s", id)
 		}
 	}
 	// 顺序按手机号：7777 在 8888 前。

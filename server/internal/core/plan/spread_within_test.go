@@ -62,3 +62,21 @@ func TestSpreadWithinDegenerate(t *testing.T) {
 		}
 	}
 }
+
+// 片号封顶：行数超过 片数×槽数 时，多余行必须留在末片内（P4-C 复审 P2-3）。
+// 这是"落点不越窗"的唯一几何保证；删掉封顶即越窗。
+func TestSpreadWithinCapsLastSlice(t *testing.T) {
+	offs := SpreadWithin(200, 10, 6, true)
+	if len(offs) != 200 {
+		t.Fatalf("行数 = %d, want 200", len(offs))
+	}
+	for i, off := range offs {
+		if off < 0 || off >= 6*5*time.Minute {
+			t.Fatalf("第 %d 行越出 6 片: %v", i, off)
+		}
+	}
+	// 前 60 行占满前 6 片；第 61 行起被压进末片。
+	if offs[60] < 5*5*time.Minute {
+		t.Fatalf("第 60 行应在末片: %v", offs[60])
+	}
+}

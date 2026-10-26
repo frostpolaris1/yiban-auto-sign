@@ -2,8 +2,10 @@ package schedule
 
 import (
 	"context"
+	"errors"
 
-	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
+	appcore "github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
+	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
@@ -13,12 +15,15 @@ import (
 var ErrWindowStale = coreschedule.ErrWindowStale
 
 // WindowStore 读写窗口缓存。
+//
+// GetWindow 在无缓存时必须返回 errs.ErrNotFound；
+// 其他错误（连接失败等）**原样上抛**，不得当成"无缓存"——
+// 否则瞬时读错会让用例走 upsert 覆盖并发写入的窗口（P4-C 复审 P2-5）。
 type WindowStore interface {
-	// LoadWindow 取缓存窗口；不存在时返回错误（用例层按"无缓存"处理）。
-	LoadWindow(ctx context.Context, schoolTaskID, day string) (coreschedule.WindowRecord, error)
-	// SaveWindow 写窗口。expectedVersion > 0 时做乐观锁；
+	GetWindow(ctx context.Context, schoolTaskID, day string) (coreschedule.WindowRecord, error)
+	// PutWindow 写窗口。expectedVersion > 0 时做乐观锁；
 	// 版本对不上返回 ErrWindowStale。
-	SaveWindow(ctx context.Context, w coreschedule.WindowRecord, expectedVersion int) (int, error)
+	PutWindow(ctx context.Context, w coreschedule.WindowRecord, expectedVersion int) (int, error)
 }
 
 // PlanStore 读写计划行。
@@ -27,7 +32,7 @@ type PlanStore interface {
 	InsertPlan(ctx context.Context, rows []coreschedule.PlanRow) (int64, error)
 	// RearrangePlan 重排未执行行：只更新 state = 'pending' 的 run_at。
 	// 运行中与终态行一律不动（当日结论不可覆盖）。
-	RearrangePlan(ctx context.Context, schoolTaskID, day string, rows []Row) (int64, error)
+	RearrangePlan(ctx context.Context, schoolTaskID, day string, rows []coreschedule.PlanRow) (int64, error)
 }
 
 // Accounts 提供某校的活跃账号 ID（按稳定顺序）。
@@ -42,10 +47,17 @@ type Discoverer interface {
 }
 
 // Deps 是计划用例的依赖。
+// Tx 让"写窗口＋重排＋补插"三步同事务：任一步失败整体回滚，
+// 不留下"版本已推进但计划未重排"的半成品（P4-C 复审 P2-4）。
 type Deps struct {
 	Windows  WindowStore
 	Plans    PlanStore
 	Accounts Accounts
 	Discover Discoverer
-	Clock    coreclock.Clock
+	Tx       appcore.TxManager
+}
+
+// isNotFound 是"无缓存"的判据：实现必须用 errs.ErrNotFound 表达。
+func isNotFound(err error) bool {
+	return err != nil && errors.Is(err, coreerrs.ErrNotFound)
 }

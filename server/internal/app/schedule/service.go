@@ -15,9 +15,6 @@
 //
 // # 口径
 // 业务日按 Input.Location 解析；窗口来源取 contract.WindowSource 三值。
-// 有效窗口两端各让 EdgeFront/EdgeBack；0 表示不裁剪。
-// 落点恒在有效窗口内（core/plan.SpreadWithin 按窗口片数封顶）。
-// 窗口未变化时只做幂等补插；变化时先重排 pending 行，再补插新账号。
 package schedule
 
 import (
@@ -106,8 +103,8 @@ func NewService(deps Deps) (*Service, error) {
 	if deps.Discover == nil {
 		return nil, errors.New("schedule: nil window discoverer")
 	}
-	if deps.Clock == nil {
-		return nil, errors.New("schedule: nil clock")
+	if deps.Tx == nil {
+		return nil, errors.New("schedule: nil transaction manager")
 	}
 	return &Service{deps: deps}, nil
 }
@@ -118,34 +115,38 @@ func (s *Service) Preview(ctx context.Context, in Input) (Preview, error) {
 	return p, err
 }
 
-// Build 构建计划并落库：窗口变化时先重排 pending 行，再幂等补插。
+// Build 构建计划并落库：窗口变化时同事务内写窗口、重排 pending、补插。
+// 版本竞争（ErrWindowStale）时整体重试一次；仍失败即上抛。
 func (s *Service) Build(ctx context.Context, in Input) (Preview, error) {
-	p, raw, changed, cachedVersion, err := s.previewWithWindow(ctx, in)
-	if err != nil {
-		return Preview{}, err
-	}
-	if changed {
-		version, saveErr := s.deps.Windows.SaveWindow(ctx, raw, cachedVersion)
-		if errors.Is(saveErr, ErrWindowStale) {
-			// 并发写者先进：按最新版本再写一次。
-			fresh, loadErr := s.deps.Windows.LoadWindow(ctx, in.SchoolTaskID, in.Day)
-			if loadErr != nil {
-				return Preview{}, fmt.Errorf("schedule: window changed concurrently: %w", saveErr)
-			}
-			version, saveErr = s.deps.Windows.SaveWindow(ctx, raw, fresh.Version)
-		}
-		if saveErr != nil {
-			return Preview{}, saveErr
-		}
-		p.Version = version
-		if _, err := s.deps.Plans.RearrangePlan(ctx, in.SchoolTaskID, in.Day, p.Rows); err != nil {
+	for attempt := 0; attempt < 2; attempt++ {
+		p, raw, changed, cachedVersion, err := s.previewWithWindow(ctx, in)
+		if err != nil {
 			return Preview{}, err
 		}
+		rows := planRows(in, p.Rows)
+		err = s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
+			if changed {
+				version, err := s.deps.Windows.PutWindow(ctx, raw, cachedVersion)
+				if err != nil {
+					return err
+				}
+				p.Version = version
+				if _, err := s.deps.Plans.RearrangePlan(ctx, in.SchoolTaskID, in.Day, rows); err != nil {
+					return err
+				}
+			}
+			_, err := s.deps.Plans.InsertPlan(ctx, rows)
+			return err
+		})
+		if errors.Is(err, coreschedule.ErrWindowStale) && attempt == 0 {
+			continue // 并发写者先进：重读缓存后整体重试一次。
+		}
+		if err != nil {
+			return Preview{}, err
+		}
+		return p, nil
 	}
-	if _, err := s.deps.Plans.InsertPlan(ctx, planRows(in, p.Rows)); err != nil {
-		return Preview{}, err
-	}
-	return p, nil
+	return Preview{}, fmt.Errorf("schedule: window changed concurrently twice")
 }
 
 // previewWithWindow 返回预览、原始窗口、是否变化、缓存版本。
@@ -154,14 +155,14 @@ func (s *Service) previewWithWindow(ctx context.Context, in Input) (Preview, cor
 		return Preview{}, coreschedule.WindowRecord{}, false, 0, err
 	}
 	loc := in.Location
-	if loc == nil {
-		loc = time.UTC
-	}
 	dayDate, err := time.ParseInLocation("2006-01-02", in.Day, loc)
 	if err != nil {
 		return Preview{}, coreschedule.WindowRecord{}, false, 0, validation("day must be YYYY-MM-DD")
 	}
-	raw, cached, cacheOK := s.resolveWindow(ctx, in, dayDate, loc)
+	raw, cached, cacheOK, err := s.resolveWindow(ctx, in, dayDate, loc)
+	if err != nil {
+		return Preview{}, coreschedule.WindowRecord{}, false, 0, err
+	}
 	eff, _ := corewindow.Window{Start: raw.Start, End: raw.End}.Effective(in.EdgeFront, in.EdgeBack)
 	if err := corewindow.Validate(eff); err != nil {
 		return Preview{}, coreschedule.WindowRecord{}, false, 0, validation("window has no positive span: " + err.Error())
@@ -182,9 +183,13 @@ func (s *Service) previewWithWindow(ctx context.Context, in Input) (Preview, cor
 }
 
 // resolveWindow 按平台 > 缓存 > 回退解析原始窗口。
-// 平台发现失败不算错误：走缓存或回退，来源如实标注。
-func (s *Service) resolveWindow(ctx context.Context, in Input, day time.Time, loc *time.Location) (coreschedule.WindowRecord, coreschedule.WindowRecord, bool) {
-	cached, cacheErr := s.deps.Windows.LoadWindow(ctx, in.SchoolTaskID, in.Day)
+// 平台发现失败不算错误（来源如实标注）；缓存读取失败**只有**
+// errs.ErrNotFound 才算无缓存，其他错误上抛（P4-C 复审 P2-5）。
+func (s *Service) resolveWindow(ctx context.Context, in Input, day time.Time, loc *time.Location) (coreschedule.WindowRecord, coreschedule.WindowRecord, bool, error) {
+	cached, cacheErr := s.deps.Windows.GetWindow(ctx, in.SchoolTaskID, in.Day)
+	if cacheErr != nil && !isNotFound(cacheErr) {
+		return coreschedule.WindowRecord{}, coreschedule.WindowRecord{}, false, cacheErr
+	}
 	cacheOK := cacheErr == nil &&
 		corewindow.Validate(corewindow.Window{Start: cached.Start, End: cached.End}) == nil
 	if platform, err := s.deps.Discover.DiscoverWindow(ctx, in.SchoolTaskID); err == nil &&
@@ -193,17 +198,17 @@ func (s *Service) resolveWindow(ctx context.Context, in Input, day time.Time, lo
 			SchoolTaskID: in.SchoolTaskID, Day: in.Day,
 			Start: platform.Start, End: platform.End,
 			Source: string(contract.WindowPlatform),
-		}, cached, cacheOK
+		}, cached, cacheOK, nil
 	}
 	if cacheOK {
-		return cached, cached, true
+		return cached, cached, true, nil
 	}
 	return coreschedule.WindowRecord{
 		SchoolTaskID: in.SchoolTaskID, Day: in.Day,
 		Start:  fallbackAt(day, loc, fallbackStartHM),
 		End:    fallbackAt(day, loc, fallbackEndHM),
 		Source: string(contract.WindowFallback),
-	}, coreschedule.WindowRecord{}, false
+	}, coreschedule.WindowRecord{}, false, nil
 }
 
 func fallbackAt(day time.Time, loc *time.Location, minuteOfDay int) time.Time {
@@ -226,10 +231,7 @@ func (s *Service) buildRows(ctx context.Context, in Input, eff corewindow.Window
 	hist := make(map[int]int, slices)
 	rows := make([]Row, len(accounts))
 	for i, acct := range accounts {
-		off := offsets[i]
-		if off >= span {
-			off = span - time.Millisecond
-		}
+		off := clampOffset(offsets[i], span)
 		rows[i] = Row{AccountID: acct, RunAt: eff.Start.Add(off)}
 		hist[coreplan.SlotOf(off)]++
 	}
@@ -246,6 +248,21 @@ func (s *Service) buildRows(ctx context.Context, in Input, eff corewindow.Window
 		Histogram:   hist,
 		Rows:        rows,
 	}, nil
+}
+
+// clampOffset 把片内偏移夹进 [0, span)：留 1ns 余量保证"恒小于终点"。
+// 亚毫秒窗口也成立；span ≤ 0 已由上游 Validate 拒绝。
+func clampOffset(off, span time.Duration) time.Duration {
+	if off < 0 {
+		return 0
+	}
+	if off >= span {
+		if span > time.Nanosecond {
+			return span - time.Nanosecond
+		}
+		return 0
+	}
+	return off
 }
 
 // planRows 把预览行转为落库形状；转换只此一处。
@@ -265,6 +282,9 @@ func planRows(in Input, rows []Row) []coreschedule.PlanRow {
 func validateInput(in Input) error {
 	if in.SchoolID == "" || in.SchoolTaskID == "" || in.Day == "" {
 		return validation("school, task and day are required")
+	}
+	if in.Location == nil {
+		return validation("location is required")
 	}
 	if in.Workers < 1 {
 		return validation("workers must be at least 1")
