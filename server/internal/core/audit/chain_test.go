@@ -232,3 +232,11 @@ func TestEncodeDetailUsesDetectionCaliber(t *testing.T) {
 		t.Fatal("邮箱未被拒绝")
 	}
 }
+
+// RFC3339Nano 的「秒.纳秒」会拼出 11 位数字，但不是手机号。
+func TestEncodeDetailAllowsTimestampFraction(t *testing.T) {
+	if _, err := coreaudit.EncodeDetail(
+		map[string]any{"reason": "2026-10-26T13:10:16.429881512+08:00"}); err != nil {
+		t.Fatalf("时间戳被拒绝: %v", err)
+	}
+}
