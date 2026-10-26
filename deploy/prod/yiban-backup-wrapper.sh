@@ -3,8 +3,10 @@
 # yiban-backup-wrapper.sh —— root cron 的备份入口（口令注入点，MF-42 收编）
 # 仓库来源：deploy/prod/yiban-backup-wrapper.sh
 # 安装位：  /usr/local/sbin/yiban-backup-wrapper.sh（0700 root，install.sh 落位）
-# root crontab 唯一允许形态（口令不进 crontab 行 / 命令历史 / 任何进程的 env）：
-#   0 2 * * * /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
+# 唯一触发器：/etc/cron.d/yiban-backup（仓库源 deploy/prod/cron.d/yiban-backup，
+#   install.sh 落位）。root crontab 出现同一条命令即重复触发：cron 会在 02:00
+#   并发跑两轮同一备份（2026-10-25 事故：gpg 互相覆写，当天备份全失），必须删除该行。
+#   口令不进 crontab 行 / 命令历史 / 任何进程的 env。
 # 备份目录：本 wrapper **不设 BACKUP_DIR**，继承 yiban-backup.sh 的默认
 #   /var/backups/yiban。该默认同时是 pull-prod-backup.sh 的 REMOTE_BACKUP_DIR 与
 #   backup_sentinel.py 的 DEFAULT_BACKUP_DIR；三处必须同值（tests/test_backup_hardening.py

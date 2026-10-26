@@ -148,6 +148,10 @@ KNOWN_SKIP_SITES = json.loads(r"""
   [
    "SkipTest",
    "需要 bash 与 python3（Git Bash/WSL）"
+  ],
+  [
+   "skipIf",
+   "需要 bash（Git Bash/WSL）"
   ]
  ],
  "tests/test_calendar_state_visibility.py": [

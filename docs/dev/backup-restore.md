@@ -15,12 +15,14 @@
 # manifest.tsv 落位；sha256 对账不过即拒装，见其头注释。
 # 单独手工安装亦可：sudo install -m 0700 -o root -g root scripts/backup.sh /usr/local/sbin/yiban-backup.sh）
 sudo bash deploy/prod/install.sh
-# root cron 调 wrapper（权威件 deploy/prod/cron.d/yiban-backup；--require-encrypt 由
-# wrapper 钉死，不带时加密配置失效会静默产出含全部密钥与口令哈希的明文归档）。
+# 触发器只有一条：/etc/cron.d/yiban-backup（权威件；表内排期 02:00、身份 root、
+# 命令 /usr/local/sbin/yiban-backup-wrapper.sh；--require-encrypt 由 wrapper 钉死，
+# 不带时加密配置失效会静默产出含全部密钥与口令哈希的明文归档）。
+# **不要**再往 root crontab 加同一条命令：两条触发器会在 02:00 并发跑同一份备份
+# （2026-10-25 事故：gpg 互相覆写，当天备份全失）。已有该行的主机必须删除。
 # 口令从 0600 口令文件经 **stdin fd 0 单跳**
 # 注入，不进 crontab 行 / 命令历史 / 任何子进程的 env（M3 批次0 起，MF-42）：
 #   printf '你的备份口令\n' | sudo tee /etc/yiban/backup-passphrase && sudo chmod 600 /etc/yiban/backup-passphrase
-#   0 2 * * * /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
 # 手工/恢复场景仍可环境变量注入（会给整棵子进程树带上口令，用完即散）：
 sudo BACKUP_GPG_PASSPHRASE='你的备份口令' /usr/local/sbin/yiban-backup.sh --require-encrypt
 # 每日取证校验（锚点判据不能只挂在 web 的每日线程上——web 没起来就永远没人查）。
@@ -28,7 +30,8 @@ sudo BACKUP_GPG_PASSPHRASE='你的备份口令' /usr/local/sbin/yiban-backup.sh 
 # `/opt/yiban-auto-sign/`——承重：check-cron-provenance.sh 只认 `$APP_ROOT/*` 形态可回指
 # 仓库，去掉尾斜杠会让来源断言判红。下面手工执行这条不带尾斜杠，与那份等价，但别照抄进 cron.d：
 30 2 * * * yiban cd /opt/yiban-auto-sign/ && .venv/bin/python3 scripts/audit_verify.py --db data/yiban.db --env data/.env >> /var/log/yiban/audit-verify.log 2>&1
-# 备份哨兵（08:05，02:00 备份之后）：当日包/清单缺失、或运行脚本与仓库版**漂移**时发一封
+# 备份哨兵（08:05，02:00 备份之后）：当日包/清单缺失、运行脚本与检出**漂移**、
+# 或同一作业的活跃触发器不为 1 条时发一封
 # 管理员告警；正常路径零输出。**以 root 运行**（须读 0700 root:root 的已装 yiban-backup.sh
 # 做防漂移比对；yiban 读不到会每日误报）；状态目录另给 root 私有目录，避免 root 在 yiban
 # 属主的共享状态目录里留下属主文件。权威件 deploy/prod/cron.d/yiban-backup-sentinel：

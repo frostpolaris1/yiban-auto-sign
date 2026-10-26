@@ -136,6 +136,33 @@ echo "rsync: simulated network failure" >&2
 exit 12
 """
 
+# 对称模式 gpg 桩：加解密透传；**解密**那一步结束后删掉密文输入。
+# 它模拟 2026-10-25 02:00 的生产形态：两条触发器并发跑同一备份，另一跑在本跑
+# 回环自检通过后删掉同一个 ENC_FILE。本跑随后写 .sha256 时目标已不存在。
+FAKE_GPG_DECRYPT_DELETES_INPUT = """#!/usr/bin/env bash
+out="" in="" mode="" drain=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2;;
+    --passphrase-fd) drain=1; shift 2;;
+    --cipher-algo|--recipient) shift 2;;
+    --symmetric|--encrypt) mode=enc; shift;;
+    --decrypt) mode=dec; shift;;
+    -*) shift;;
+    *) if [ -f "$1" ]; then in="$1"; fi; shift;;
+  esac
+done
+if [ "$drain" -eq 1 ]; then cat > /dev/null; fi
+case "$mode" in
+  enc) cp -- "$in" "$out" ;;
+  dec)
+    cp -- "$in" "$out" || exit 1
+    rm -f -- "$in"
+    ;;
+  *) exit 0 ;;
+esac
+"""
+
 # find 桩：透传给真 find；第一次带 -mtime 的调用（= 轮转开始）后把"当日归档"删掉，
 # 模拟"轮转把当天件也删了"的事故，钉 rc=8 自检。
 FAKE_FIND_KILL_TODAY = """#!/usr/bin/env bash
@@ -363,6 +390,38 @@ class EncryptRoundtripTest(_BackupRunBase):
         out = self._out(r)
         self.assertEqual(r.returncode, 7, f"疑似空包必须拦下：{out}")
         self.assertIn("疑似空包", out)
+
+
+class SidecarWriteRequiresExistingTargetTest(_BackupRunBase):
+    """校验清单（.sha256）不得留下 0 字节空文件（2026-10-25 生产事故）。
+
+    模拟的真实用户动作：02:00 两条触发器并发跑同一备份；另一跑在本跑回环自检
+    通过后删掉同一个密文。本跑到写清单时目标已不存在。
+    用户可见结果：本轮显式失败（rc=1），stderr 点名缺失文件，备份目录里没有
+    0 字节 .sha256——空清单会被 `sha256sum -c` 与哨兵当"清单在"。
+    """
+
+    def _run_with_disappearing_ciphertext(self):
+        self._fake("gpg", FAKE_GPG_DECRYPT_DELETES_INPUT)
+        # 密文要过 verify 的 200 字节尺寸下限
+        with open(os.path.join(self.app, "data", "padding.bin"), "wb") as f:
+            f.write(b"p" * 4096)
+        return self._run((), {"BACKUP_GPG_PASSPHRASE": FAKE_PASSPHRASE})
+
+    def test_missing_ciphertext_is_loud_and_leaves_no_empty_sidecar(self):
+        r = self._run_with_disappearing_ciphertext()
+        out = self._out(r)
+        self.assertEqual(r.returncode, 1,
+                         f"待校验文件消失必须显式失败 rc=1（不得静默/不得被 set -e 含糊带过）：{out}")
+        sidecars = glob.glob(os.path.join(self.backups, "*.sha256"))
+        empty = [p for p in sidecars if os.path.getsize(p) == 0]
+        self.assertEqual([], empty,
+                         f"留下了 0 字节校验清单（误导性空文件，哨兵会当清单在）：{sidecars}")
+        enc_name = os.path.basename(self._archive_name(".gpg"))
+        self.assertIn(enc_name, self._stderr(r),
+                      f"stderr 必须点名缺失的待校验文件 {enc_name}：{self._stderr(r)!r}")
+        leftovers = glob.glob(os.path.join(self.backups, "*.sha256.tmp*"))
+        self.assertEqual([], leftovers, f"原子写的临时件必须清理：{leftovers}")
 
 
 class RestoreGuardTest(_BackupRunBase):

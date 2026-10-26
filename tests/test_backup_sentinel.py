@@ -30,15 +30,93 @@ import io
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
 
 from yiban.adapters.notifier.notify import ledger as notify_ledger
+from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(BASE, "scripts", "backup_sentinel.py")
 WRAPPER = os.path.join(BASE, "scripts", "yiban-backup-sentinel.sh")
+REPO_CRON_D = os.path.join(BASE, "deploy", "prod", "cron.d")
+BASH = shutil.which("bash")
+
+#: 生产事故原文的命令行（2026-10-25/26）：root crontab 里与 /etc/cron.d/yiban-backup
+#: 同一条 wrapper 调用。crontab 格式没有身份列；/etc/cron.d 格式有。
+WRAPPER_CRON_LINE = ("0 2 * * * /usr/local/sbin/yiban-backup-wrapper.sh"
+                     " >> /var/log/yiban/backup.log 2>&1")
+#: /etc/cron.d 形态：五个时间字段之后是身份列。文件里的行必须能被真解析出来，
+#: 否则"含点号文件不计入"的用例没有判别力（丢弃身份列后命令首段变成重定向）。
+WRAPPER_CRON_D_LINE = ("0 2 * * * root /usr/local/sbin/yiban-backup-wrapper.sh"
+                       " >> /var/log/yiban/backup.log 2>&1")
+
+#: crontab 测试桩：只实现 `-l` 与 `-l -u root`。内容从环境变量指向的文件读；
+#: 文件不存在时按真 crontab 的口径 rc=1 + "no crontab for"。FAKE_CRONTAB_ROOT_ERROR
+#: 非空时模拟"权限不足"（例如非 root 身份查询 root 的 crontab）。
+FAKE_CRONTAB = """#!/usr/bin/env bash
+if [ "${1:-}" != "-l" ]; then
+  echo "fake crontab: unsupported args: $*" >&2
+  exit 2
+fi
+if [ "${2:-}" = "-u" ]; then
+  if [ "${3:-}" = "root" ]; then
+    if [ -n "${FAKE_CRONTAB_ROOT_ERROR:-}" ]; then
+      echo "$FAKE_CRONTAB_ROOT_ERROR" >&2
+      exit 1
+    fi
+    if [ -f "${FAKE_CRONTAB_ROOT:-}" ]; then cat "$FAKE_CRONTAB_ROOT"; exit 0; fi
+    echo "no crontab for root" >&2
+    exit 1
+  fi
+  # 其它身份：一律返回"当前身份"的内容文件（供"两种身份都读"的用例使用）
+  if [ -f "${FAKE_CRONTAB_CURRENT:-}" ]; then cat "$FAKE_CRONTAB_CURRENT"; exit 0; fi
+  echo "no crontab for ${3:-unknown}" >&2
+  exit 1
+fi
+if [ -f "${FAKE_CRONTAB_CURRENT:-}" ]; then cat "$FAKE_CRONTAB_CURRENT"; exit 0; fi
+echo "no crontab for current" >&2
+exit 1
+"""
+
+
+def _write_bytes(path, payload, mode=None):
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with io.open(path, "wb") as f:
+        f.write(payload)
+    if mode is not None:
+        os.chmod(path, mode)
+    return path
+
+
+def _install_repo_tables(dest_dir, render=True):
+    """把仓库 cron 表按 install.sh 的口径落位（渲染 @YIBAN_APP_DIR@）。
+
+    只收 `deploy/prod/cron.d` 里的**普通文件**：作业键是命令里可执行件的文件名，
+    占位符渲染与否不影响归类；渲染是为了贴近生产落位形态。
+    """
+    os.makedirs(dest_dir, exist_ok=True)
+    for name in sorted(os.listdir(REPO_CRON_D)):
+        src = os.path.join(REPO_CRON_D, name)
+        if not os.path.isfile(src):
+            continue
+        with io.open(src, encoding="utf-8") as f:
+            text = f.read()
+        if render:
+            text = text.replace("@YIBAN_APP_DIR@", "/opt/yiban-auto-sign")
+        with io.open(os.path.join(dest_dir, name), "w", encoding="utf-8",
+                     newline="\n") as f:
+            f.write(text)
+    return dest_dir
+
+
+def _fake_crontab_bin(bin_dir):
+    return _write_bytes(os.path.join(bin_dir, "crontab"),
+                        FAKE_CRONTAB.encode("utf-8"), 0o755)
 
 
 def _load_script():
@@ -227,9 +305,11 @@ class DriftTest(_Base):
         self.assertEqual(len(self.mails), 1, f"漂移必须发声，实际 {self.mails}")
         body = self.mails[0][1].to_plain()
         self.assertIn("不一致", body)
-        self.assertIn("仓库版", body)
+        # 措辞口径：比对的两侧是「检出」与「运行版」。写成"仓库版"比实际证明的窄
+        # ——仓库远端并不参与比对，比的是 $APP_DIR 下的检出。
+        self.assertIn("检出", body)
         self.assertIn("运行版", body)
-        self.assertIn("/usr/local/sbin/yiban-backup.sh", body, "要给出以仓库版为准的重装指引")
+        self.assertIn("/usr/local/sbin/yiban-backup.sh", body, "要给出以检出为准的重装指引")
 
     def test_drift_alerts_even_when_backup_is_fine(self):
         """两个判据互不掩盖：备份正常但脚本漂移，仍须单独喊一声。"""
@@ -431,6 +511,235 @@ class AuditAnchorBroadcastTest(_Base):
         with (mock.patch.dict("sys.modules", {"yiban.adapters.persistence.db": _FakeDb}),
               mock.patch("yiban.adapters.persistence.db", _FakeDb)):
             self.assertIsNone(self.mod._anchor_snapshot())
+
+
+class TriggerCountTest(_Base):
+    """同一作业的活跃触发器必须恰好 1 条（2026-10-25 生产事故的运行期门）。
+
+    缺陷形状：root crontab 与 /etc/cron.d 各有一条同一 wrapper 命令，cron 每天
+    02:00 并发跑两轮同一备份。哨兵此前只比"已装脚本 vs 检出脚本"，看不到触发器。
+    """
+
+    def setUp(self):
+        super().setUp()
+        # 检出侧的 cron 表（期望面）：按 install.sh 口径落位到临时 APP_DIR
+        _install_repo_tables(os.path.join(self.app_dir, "deploy", "prod", "cron.d"))
+        # 生产侧 /etc/cron.d 的夹具（已按 install.sh 落位，六张表各一条）
+        self.cron_d = _install_repo_tables(os.path.join(self.tmp, "etc-cron.d"))
+        self.bin = os.path.join(self.tmp, "bin")
+        _fake_crontab_bin(self.bin)
+        self.root_crontab = os.path.join(self.tmp, "root-crontab")
+        self.current_crontab = os.path.join(self.tmp, "current-crontab")
+        _write_bytes(self.root_crontab, b"")
+        _write_bytes(self.current_crontab, b"")
+        patch = mock.patch.dict(os.environ, {
+            "PATH": self.bin + os.pathsep + os.environ.get("PATH", ""),
+            "YIBAN_CRON_D_DIR": self.cron_d,
+            "YIBAN_SYSTEM_CRONTAB": os.path.join(self.tmp, "absent-etc-crontab"),
+            "FAKE_CRONTAB_ROOT": self.root_crontab,
+            "FAKE_CRONTAB_CURRENT": self.current_crontab,
+        })
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def _write_root(self, text):
+        _write_bytes(self.root_crontab, text.encode("utf-8"))
+
+    def test_duplicate_trigger_alerts_on_the_existing_channel_and_names_it(self):
+        self._write_archive()
+        self._write_root(WRAPPER_CRON_LINE + "\n")
+        self.assertEqual(self._run(), 0)
+        self.assertEqual(len(self.mails), 1, f"重复触发器必须发声，实际 {self.mails}")
+        title, mail = self.mails[0]
+        self.assertEqual(title, self.mod.ALERT_TITLE,
+                         "必须复用既有告警通道（同标题=同节流键），不新造通道")
+        body = mail.to_plain()
+        self.assertIn("yiban-backup-wrapper.sh", body, "正文必须点名作业")
+        self.assertIn("0 2 * * *", body, "正文必须点名排期")
+        self.assertIn("2 条", body, "正文必须给出条数")
+        self.assertIn("root 的 crontab", body, "正文必须给出每条触发器的来源")
+        self.assertIn(os.path.join(self.cron_d, "yiban-backup"), body)
+
+    def test_single_trigger_per_job_is_quiet(self):
+        self._write_archive()
+        self.assertEqual(self._run(), 0)
+        self.assertEqual(self.mails, [], f"每作业一条触发器时不得告警：{self.mails}")
+
+    def _empty_cron_d(self):
+        path = os.path.join(self.tmp, "empty-cron.d")
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    def test_both_crontab_identities_are_read(self):
+        """`crontab -l -u root` 与 `crontab -l` 都必须读：重复行可能只在其一。"""
+        self._write_root(WRAPPER_CRON_LINE + "\n")
+        _write_bytes(self.current_crontab, (WRAPPER_CRON_LINE + "\n").encode("utf-8"))
+        with mock.patch.object(self.mod, "_current_user", return_value="yiban"):
+            entries, unverified = self.mod._active_triggers(
+                self._empty_cron_d(), os.path.join(self.tmp, "absent-etc-crontab"))
+        self.assertEqual([], unverified)
+        sources = [src for src, _schedule, command in entries
+                   if self.mod._job_key(command) == "yiban-backup-wrapper.sh"]
+        self.assertIn("root 的 crontab", sources, f"没有读 root 的 crontab：{sources}")
+        self.assertIn("yiban 的 crontab", sources, f"没有读当前身份的 crontab：{sources}")
+
+    def test_root_identity_is_not_counted_twice(self):
+        """哨兵以 root 跑：`-l` 与 `-l -u root` 是同一条 crontab，不得算成两条。"""
+        self._write_root(WRAPPER_CRON_LINE + "\n")
+        with mock.patch.object(self.mod, "_current_user", return_value="root"):
+            entries, unverified = self.mod._active_triggers(
+                self._empty_cron_d(), os.path.join(self.tmp, "absent-etc-crontab"))
+        self.assertEqual([], unverified)
+        matches = [e for e in entries
+                   if self.mod._job_key(e[2]) == "yiban-backup-wrapper.sh"]
+        self.assertEqual(1, len(matches),
+                         f"root 身份下同一条 crontab 被读了两次（会假报重复）：{matches}")
+
+    def test_other_job_duplicate_is_caught_by_the_same_gate(self):
+        """作业识别必须通用：sign 的 run.sh 出现第二条触发器同样判漂移。"""
+        self._write_archive()
+        _write_bytes(os.path.join(self.cron_d, "yiban-sign-dup"),
+                     ("31 6 * * * yiban /opt/yiban-auto-sign/run.sh"
+                      " >> /var/log/yiban/sign-dup.log 2>&1\n").encode("utf-8"))
+        self.assertEqual(self._run(), 0)
+        self.assertEqual(len(self.mails), 1, f"同一形状的重复必须被同一条门抓到：{self.mails}")
+        body = self.mails[0][1].to_plain()
+        self.assertIn("run.sh", body)
+        self.assertIn("2 条", body)
+
+    def test_extra_schedule_for_same_job_is_drift(self):
+        """同一作业多排一个时刻也是重复触发（一天跑两遍），必须点名。"""
+        self._write_archive()
+        self._write_root("0 3 * * * /usr/local/sbin/yiban-backup-wrapper.sh"
+                         " >> /var/log/yiban/backup.log 2>&1\n")
+        self.assertEqual(self._run(), 0)
+        self.assertEqual(len(self.mails), 1, f"未声明的排期必须判漂移：{self.mails}")
+        body = self.mails[0][1].to_plain()
+        self.assertIn("0 3 * * *", body)
+
+    def test_empty_repo_table_dir_is_unverified_not_green(self):
+        """扫空不得当绿：检出里解析不出任何作业时，门必须报"未核"。"""
+        empty_repo = os.path.join(self.tmp, "empty-repo-cron.d")
+        os.makedirs(empty_repo, exist_ok=True)
+        report, unverified = self.mod._trigger_drift_report(
+            empty_repo, self.cron_d, os.path.join(self.tmp, "absent-etc-crontab"))
+        self.assertIsNone(report)
+        self.assertTrue(unverified, "空仓库表目录被当成绿：门被架空却没人知道")
+        self.assertIn("解析不出作业", unverified[0])
+
+
+@unittest.skipIf(BASH is None, "需要 bash（Git Bash/WSL）")
+class TriggerCountE2ETest(unittest.TestCase):
+    """真跑 `scripts/backup_sentinel.py`：cron 文件名规则与"读不到就显式未核"。
+
+    模拟的真实用户动作：主机同时装了 /etc/cron.d/yiban-backup 与 root crontab
+    里同一条 wrapper 命令（2026-10-25 生产形态）。
+    用户可见结果：08:05 哨兵日志点名该作业与条数；删掉重复后日志回到"都在"。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="yiban-bksentinel-trigger-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.backup_dir = os.path.join(self.tmp, "backups")
+        self.cron_d = os.path.join(self.tmp, "etc-cron.d")
+        self.fakebin = os.path.join(self.tmp, "bin")
+        self.state_dir = os.path.join(self.tmp, "state")
+        sbin = os.path.join(self.tmp, "sbin")
+        for path in (self.backup_dir, self.cron_d, self.fakebin, self.state_dir, sbin):
+            os.makedirs(path, exist_ok=True)
+        # 当日归档 + 清单：让"缺备份"那一项不发声，判据只剩触发器条数
+        day = clock.today()
+        archive = os.path.join(self.backup_dir, f"yiban-{day}.tar.gz.gpg")
+        _write_bytes(archive, b"ciphertext")
+        _write_bytes(archive + ".sha256",
+                     b"deadbeef  " + os.path.basename(archive).encode("utf-8") + b"\n")
+        # 运行拷贝与检出一致：排除"脚本内容漂移"这个干扰项
+        self.installed = os.path.join(sbin, "yiban-backup.sh")
+        shutil.copyfile(os.path.join(BASE, "scripts", "backup.sh"), self.installed)
+        _install_repo_tables(self.cron_d)
+        self.root_crontab = os.path.join(self.tmp, "root-crontab")
+        _write_bytes(self.root_crontab, b"")
+        _write_bytes(os.path.join(self.tmp, "current-crontab"), b"")
+        _fake_crontab_bin(self.fakebin)
+        _write_bytes(os.path.join(self.tmp, ".env"), b"")
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith("YIBAN_")}
+        self.env.update({
+            "PATH": self.fakebin + os.pathsep + os.environ.get("PATH", ""),
+            "HOME": self.tmp,
+            "TMPDIR": self.tmp,
+            "BACKUP_DIR": self.backup_dir,
+            "APP_DIR": BASE,
+            "YIBAN_APP_DIR": BASE,
+            "YIBAN_BACKUP_INSTALLED": self.installed,
+            "YIBAN_STATE_DIR": self.state_dir,
+            "YIBAN_ENV_FILE": os.path.join(self.tmp, ".env"),
+            "YIBAN_DB_FILE": os.path.join(self.tmp, "absent.db"),
+            "YIBAN_CRON_D_DIR": self.cron_d,
+            "YIBAN_SYSTEM_CRONTAB": os.path.join(self.tmp, "absent-etc-crontab"),
+            "YIBAN_NOTIFY_COOLDOWN": "0",
+            "FAKE_CRONTAB_ROOT": self.root_crontab,
+            "FAKE_CRONTAB_CURRENT": os.path.join(self.tmp, "current-crontab"),
+        })
+
+    def _run(self):
+        return subprocess.run([sys.executable, SCRIPT], capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", env=self.env,
+                              cwd=self.tmp, timeout=120)
+
+    def _write_root(self, text):
+        _write_bytes(self.root_crontab, text.encode("utf-8"))
+
+    def test_duplicate_trigger_reported_with_job_count_and_sources(self):
+        self._write_root(WRAPPER_CRON_LINE + "\n")
+        r = self._run()
+        self.assertIn("触发器条数漂移", r.stdout,
+                      f"重复触发器没有被判漂移：stdout={r.stdout!r} stderr={r.stderr!r}")
+        self.assertIn("yiban-backup-wrapper.sh", r.stdout, "必须点名作业")
+        self.assertIn("0 2 * * *", r.stdout, "必须点名排期")
+        self.assertIn("2 条", r.stdout, "必须给出条数")
+        self.assertIn("root 的 crontab", r.stdout, "必须给出触发器来源")
+        self.assertIn(os.path.join(self.cron_d, "yiban-backup"), r.stdout)
+
+    def test_single_trigger_is_green_and_quiet(self):
+        r = self._run()
+        self.assertEqual(r.returncode, 0, f"每作业一条触发器时应安静通过：{r.stdout}{r.stderr}")
+        self.assertIn("的归档与清单都在", r.stdout)
+        self.assertNotIn("触发器条数漂移", r.stdout)
+
+    def test_cron_d_file_name_with_dot_is_ignored_by_cron(self):
+        """cron 自己的文件名规则：/etc/cron.d 下含点号的文件不被读取。
+
+        生产上有三份 `yiban-*.reconcile-20261017125303` 残留，按 cron 规则本来
+        就不执行。不实现这条规则，门会把它们误报成重复触发器。
+        """
+        # cron.d 形态（带身份列），与生产残留件的形态一致：若门漏了文件名规则，
+        # 这一行会被算成第二条备份触发器。
+        _write_bytes(os.path.join(self.cron_d, "yiban-backup.reconcile-20260101"),
+                     (WRAPPER_CRON_D_LINE + "\n").encode("utf-8"))
+        r = self._run()
+        self.assertEqual(r.returncode, 0,
+                         f"含点号的文件被当成活跃触发器误报：{r.stdout}{r.stderr}")
+        self.assertNotIn("触发器条数漂移", r.stdout)
+        self.assertIn("的归档与清单都在", r.stdout)
+
+    def test_missing_crontab_command_is_explicitly_unverified(self):
+        """无 crontab 命令：跳过不等于绿，必须显式写出"触发器条数未核"。"""
+        empty_bin = os.path.join(self.tmp, "empty-bin")
+        os.makedirs(empty_bin, exist_ok=True)
+        self.env["PATH"] = empty_bin
+        r = self._run()
+        self.assertIn("触发器条数未核", r.stderr,
+                      f"读不到 crontab 却静默当通过：stdout={r.stdout!r} stderr={r.stderr!r}")
+        self.assertNotIn("触发器条数漂移", r.stdout)
+        self.assertEqual(r.returncode, 0, f"读不到不是检查失败（但必须可见）：{r.stderr}")
+
+    def test_permission_denied_on_root_crontab_is_explicitly_unverified(self):
+        self.env["FAKE_CRONTAB_ROOT_ERROR"] = "must be privileged to use -u"
+        r = self._run()
+        self.assertIn("触发器条数未核", r.stderr,
+                      f"权限不足却静默当通过：{r.stdout}{r.stderr}")
+        self.assertIn("must be privileged", r.stderr, "未核原因必须带真实错误")
+        self.assertNotIn("触发器条数漂移", r.stdout)
 
 
 class WrapperWorkingDirTest(unittest.TestCase):
