@@ -31,13 +31,37 @@ python -m pytest tests/ -q -p no:randomly -n 8 --dist loadfile
 # 日期敏感用例（按天文件名、跨天/跨午夜、保留期、周末边界），TZ=UTC 下 ~10s；
 # 与 .github/workflows/nightly.yml 的时区专项步逐字同词集。
 TZ=UTC python -m pytest tests/ -q -p no:randomly -n 4 --dist loadfile -k "date or midnight or rollover or utc or tz or retention or saturday or weekend or cross_day"
-# 脱敏自查：不得含真实域名/IP/邮箱/手机号/密钥、部署与备案信息
-# 排除 tests/：测试桩里的示例号码（形如 13800138000）与回环地址不算泄漏
-git diff <旧提交>..HEAD -- . ":(exclude)tests" | grep -E "^\+" \
-  | grep -nE "<账号名前缀>|[0-9]{1,3}(\.[0-9]{1,3}){3}|1[3-9][0-9]{9}|\bssh \b"
+# 脱敏自查：不得含真实域名/IP/邮箱/手机号/密钥、部署与备案信息。
+# 口径（2026-10-25 订正，dry-run F6）：
+# ① 排除面＝测试桩（tests/）、前端 e2e 与单测夹具（frontend/e2e、frontend/src 的
+#    *.spec.ts）、生成物（web/static/vue 构建产物、requirements.lock 的 sha256 哈希串）、
+#    配置处置册（config/default-gate-register.json 记录模板示例值，不是部署值）。
+# ② 回环/未指定地址（127.0.0.1、0.0.0.0、localhost）不是部署地址，先**按 token
+#    删除**再扫剩余：同一行里另有公网地址或手机号时仍会命中。
+# ③ 手机号加字母数字边界与可选国家码：覆盖裸号、86 前缀与 +86 前缀三形。
+#    十六进制串里的 11 位数字不按手机号计（如 deadbeef13912345678）：边界排除 ASCII 字母。
+# 已知边界：域名与邮箱不由本命令机读，由评审人看 diff 里的配置件与文档。
+#    本命令只守 IP／手机号／账号名前缀／ssh。
+# 账号名前缀用变量传，命令文本里不写死（否则命令自身也会被扫中）。先设 PREFIX。
+: "${PREFIX:?请先设置账号名前缀（PREFIX=真实前缀）}"
+git diff <旧提交>..HEAD -- . \
+  ":(exclude)tests" \
+  ":(exclude)frontend/e2e" \
+  ":(exclude)frontend/src/**/*.spec.ts" \
+  ":(exclude)requirements.lock" \
+  ":(exclude)web/static/vue" \
+  ":(exclude)config/default-gate-register.json" \
+  | grep -E "^\+" \
+  | sed -E 's/(127\.0\.0\.1|0\.0\.0\.0|localhost)//g' \
+  | grep -nE "${PREFIX}|[0-9]{1,3}(\.[0-9]{1,3}){3}|([^0-9A-Za-z]|^)(\+?86)?1[3-9][0-9]{9}([^0-9A-Za-z]|$)|\bssh[[:space:]]"
 ```
 
-判据：安全类用例 **0 失败**；脱敏自查 **0 命中**（命中即修，不得以"看起来是测试桩"放过）。
+判据：安全类用例 **0 失败**；脱敏自查 **0 命中**。命中先按上面的口径分类：
+真实信息必须修；口径缺口则改口径并写明理由，不得以"看起来是测试桩"放过。
+
+实测（2026-10-25，ref `e9a0cd86..619edbef`）：旧命令 44 命中，全是回环地址、测试桩
+示例号码族与 sha256 里的数字串；新口径 **0 命中**。两个数都是"命中行数"，但命令面
+不同，不可相减。
 
 ### ② 压力测试（按需；触碰规模/并发/调度/库写入/网络路径的改动才跑）
 
@@ -78,7 +102,8 @@ bash scripts/backup.sh --restore <最新备份包> <临时目标目录>   # 退�
 
 - **裸机（宿主 / systemd 形态）**：`scripts/drill-baremetal.sh` —— B1 依赖装配、
   B2 `--check-config` 脱敏、B3 假上游 e2e、B4 备份、B5 `--restore` 恢复、B6 `run.sh`
-  整轮真签到（三行判据）。在演练树根目录执行，需要 `.venv-bare`。
+  整轮真签到（三行判据）。在演练树根目录执行，需要 `.venv-bare`
+  （按 `requirements.lock` 装配，并装 `pytest` 供 B3 使用）。
 - **容器形态**：`scripts/drill-container.sh` —— supervisord → container_scheduler →
   signin 全链，含内部网隔离与 egress 探针。
 
@@ -92,7 +117,7 @@ bash scripts/backup.sh --restore <最新备份包> <临时目标目录>   # 退�
 
 1. `开始执行签到`（**带版本号**，见 §4）
 2. `签到汇总` 中 `❌ 0 失败`
-3. `run.sh 退出，退出码: 0`（`run.sh:184` 实打串为 `=== run.sh 退出，退出码: $rc ===`）
+3. `run.sh 退出，退出码: 0`（`run.sh:147` 实打串为 `=== run.sh 退出，退出码: $rc ===`）
 
 且当日 `sign-status-<日期>.txt` 为 `SUCCESS`。
 
@@ -110,10 +135,10 @@ bash scripts/backup.sh --restore <最新备份包> <临时目标目录>   # 退�
 - **账号固有失败不计为失败**：失败原因＝平台要求的签到类型不是普通签到（拍照/扫码/手势等）、
   自动化无法执行，平台返回含 `非法签到` 字样。该类失败**不触发清零、不推翻退出码判据**。
   已知实例 `138****0001`（真实用户、未删除、未暂停）。同类实例另存本地过程稿，不随本仓分发；本判据不依赖该台账。
-- **两条过渡期例外（同批记录，非阻断）**：①判据③（见工单 `l065`：日志无 5 秒级重复行，
-  该判据只在该工单里定义，本仓无第二处定义）在 `ikik` 部署前不列为阻断；
-  ②`sign-status-<日期>.txt` 在 `f7va` 部署前缺失不列为阻断，当日判据以日志
-  `run.sh 退出，退出码: …` 收尾行为准。两条修复随 2026-10-17 部署生效。
+- **两条过渡期例外（已失效，2026-10-25 核）**：①判据③（日志无 5 秒级重复行，该判据只在
+  原工单里定义，本仓无第二处定义）原定某次部署前不列为阻断；②`sign-status-<日期>.txt`
+  原定部署前缺失不列为阻断。两条的部署判定条件都已过（原记载随 **2026-10-17 部署**
+  生效），相关工单已清理。此后两条都按正常判据处理，不再豁免。
 
 ## 4. 轮次与提交怎么对齐（否则台账无法自证）
 
@@ -174,7 +199,7 @@ git branch -f main <已达标提交> && git push origin main && git push gitee m
 每批在当批文稿里留一段"门禁证据"：四条通用门禁各自的命令与结果、非生产演练形态、
 **以及有效轮次台账**。没有这段证据，等同于没通过门禁。
 
-## 8. README 裸机步骤的步级覆盖名册（工单 c9uz）
+## 8. README 裸机步骤的步级覆盖名册（2026-10-16 普查；工单已清理）
 
 README「服务器部署（分步详解）」的 7 个编号步骤（折叠标题写作 6 组：环境准备／上传代码／
 账号与 .env／run.sh／crontab／手动测试），逐步骤的**载体**与**守卫**如下。本名册回答普查
@@ -182,7 +207,7 @@ README「服务器部署（分步详解）」的 7 个编号步骤（折叠标�
 
 | 步 | 内容 | 仓库载体 | 守卫（门／测试） |
 |----|------|----------|------------------|
-| 1 | 服务器环境准备（`apt install python3 python3-venv python3-pip`；时区） | **无**（宿主操作，不落仓库） | **无**（依赖 `docker/Dockerfile` 的镜像面另有其门，但裸机 apt 面无） |
+| 1 | 服务器环境准备（`apt install python3 python3-venv python3-pip sqlite3 gnupg`；时区） | **无**（宿主操作，不落仓库） | **无**（依赖 `docker/Dockerfile` 的镜像面另有其门，但裸机 apt 面无） |
 | 2 | 上传项目代码（打包／解压／`python3 -m venv .venv`／`pip install -r requirements.lock`） | `deploy/prod/install.sh` 的**依赖同步步**（j06f：pip freeze 快照 → 装 lock → 跑门） | `scripts/check-deps-lock.sh`；`tests/test_deploy_deps_sync.py`；install.sh 的 venv 触点收进 M01 门 |
 | 3 | 账号数据（网页后台／`YIBAN_ACCOUNTS_JSON` 注入） | `yiban/adapters/persistence/accounts.py` 等 | 既有账号面测试（不在本名册的发布判据面内） |
 | 4 | 配置 `.env`（落 `data/.env`） | `deploy/prod/install.sh` 建 `data/`（**唯一建立点**，属服务账号 0700） | `tests/test_runtime_data_layout.py`；`web/deploy/yiban-web.service` 的 `ReadWritePaths` 与 `User=` 同值用例 |
@@ -193,27 +218,72 @@ README「服务器部署（分步详解）」的 7 个编号步骤（折叠标�
 **结论两条**：
 
 - **有载体且有守卫的步**：2、4、5、6。它们由 `deploy/prod/install.sh` ＋ `manifest.tsv` ＋
-  `check-cron-provenance.sh` ＋ 各步自己的用例共同守；干净容器内实测 9 件逐件 sha256 对账一致、
-  M01 门通过、依赖同步步执行且一致性门绿。**证据落点＝工单 `c9uz` 的 2026-10-16 评论**（含
-  drill 的完整 S1–S8 输出与 sha256）；本仓不复制那段输出（它会漂）。
+  `check-cron-provenance.sh` ＋ 各步自己的用例共同守；干净容器内实测 10 件逐件 sha256 对账一致
+  （2026-10-25 dry-run；口径＝`deploy/prod/manifest.tsv` 的非注释行数，ref `619edbef`）、
+  M01 门通过、依赖同步步执行且一致性门绿。**证据落点＝2026-10-25 dry-run 的可达证据**
+  （干净容器实测 10 件落位、渲染 sha256 一致；见本批报告）。2026-10-16 的 drill S1–S8
+  输出属历史引用（工单已清理），记的是当时清单口径（9 件），与 2026-10-25 的 10 件
+  不同源，不可相减。本仓不复制那段输出（它会漂）。
 - **无载体的步**：1、3、7。步 1（apt／时区）与步 7（手动测试）是宿主操作，不落仓库；
   步 3（账号）由既有账号面测试覆盖，不属本发布判据面。这三步的"零覆盖"是**如实登记**，
   不作为"已达标"的证据。
 
-### 8.1 发布判据的守卫与其已知边界（工单 c9uz）
+### 8.1 发布判据的守卫与其已知边界（2026-10-16 普查；工单已清理）
 
 - **守卫**：`.github/workflows/deploy-gate.yml` 跑 `bash scripts/deploy_gate.sh`（README 默认
   索引形态）；`tests/test_deploy_gate_wiring.py` 钉住该接线（有 workflow 真调用闸门、缺省索引
   为空、跑 `dc build`＋`dc up -d`、`bash -n`）。闸门坏了 ⇒ 该 job 红。
-- **L-2（登记，不称已达标）**：该守卫**不命中** `dev-verify.sh --ci` 的关键词子集（实测 0 条）
-  ⇒ **删掉 `deploy-gate.yml` 的 PR 可以过 PR CI 绿**，只由 dev-verify 全量与 nightly 兜
-  （nightly 经 `ref: develop` 间接在轨）。按 §2 的可接受性：守卫仍在自动轨上，但"删除接线"
-  这一形态在 PR 时刻不红。要收掉需把该用例接进 `--ci` 子集（改 `dev-verify.sh` 的 `run_ci`
-  与其冻结清单，属另一笔）。
+- **L-2（已关闭，2026-10-25 核）**：`tests/test_deploy_gate_wiring.py` 已登记在
+  `tests/lane-roster.tsv` 的 `fast` 行；`--ci` 现在跑名册的 fast 行（`scripts/dev-verify.sh`
+  的 `run_ci`），不放 `-k` 关键词子集。因此"删掉 `deploy-gate.yml` 的 PR 可以过 PR CI 绿"
+  **不再成立**：删接线即红。原登记属 2026-10-17 之前的旧 `-k` 子集时代。
 - **L-4（登记，不改）**：`wait_healthy` 在 `restart: unless-stopped` 且容器长期 `starting` 时
   要烧满 `GATE_TIMEOUT`（默认 600s）才红——响亮但慢。属已知行为，本批不改（改它属另一笔）。
 
-**已知未覆盖（登记，不称已达标）**：README 步 2 的"换目录部署要同步改 run.sh／systemd 单元／
-crontab"（工单 6wjd）——`web/deploy/yiban-web.service` 与 `deploy/prod/cron.d/*` 硬写
-`/opt/yiban-auto-sign`，换目录需手改多处，与 §1「零手动调整」相冲。6wjd 为独立设计批，
-未并入本批。
+**换目录部署（6wjd）已关闭（2026-10-25 核）**：`web/deploy/yiban-web.service` 改用
+`@YIBAN_APP_DIR@`／`@YIBAN_WEB_PORT@`／`@YIBAN_WEB_THREADS@` 模板，`deploy/prod/cron.d/*`
+改用 `@YIBAN_APP_DIR@`，由 `deploy/prod/install.sh` 按检出根渲染；端口与线程数的唯一值表是
+`deploy/web.env`。关单证据：`4e2bf176`（PR #209）；守卫 `tests/test_deploy_parameterization_gate.py`；
+2026-10-25 dry-run 在干净容器实测渲染件 sha256 与仓库渲染结果一致。**边界（保留登记）**：
+检出路径限 `^/[A-Za-z0-9._/-]+$`，非 ASCII 路径被拒装（刻意取舍）；systemd 单元与 nginx
+配置的**安装**仍不在 `install.sh` 覆盖面内（见 §9.1）。
+
+## 9. 裸机网页后台：人工步骤与已知前置（登记）
+
+§六第 16 条的"零手动调整"在 Docker 形态成立。裸机 + Web 形态仍有人工步骤与外部前置，
+本节逐条登记，**不称已达标**。
+
+### 9.1 人工步骤：systemd 单元与 nginx 配置（F2，发版 dry-run 2026-10-25）
+
+`deploy/prod/install.sh` 只落位 10 件（备份脚本／wrapper／哨兵／6 张 cron／tmpfiles），
+**不装** systemd 单元与 nginx 配置。在检出根按 README「网页管理后台」执行：
+
+```bash
+set -a; . deploy/web.env; set +a
+export YIBAN_APP_DIR="$(pwd)"
+[[ "$YIBAN_APP_DIR" =~ ^/[A-Za-z0-9._/-]+$ ]] || { echo "检出路径含不安全字符：$YIBAN_APP_DIR"; exit 1; }
+APP_DIR_SED=$(printf '%s' "$YIBAN_APP_DIR" | sed 's/[&#]/\\&/g')
+sed -e "s#@YIBAN_APP_DIR@#$APP_DIR_SED#g" \
+    -e "s#@YIBAN_WEB_PORT@#$YIBAN_WEB_PORT#g" \
+    -e "s#@YIBAN_WEB_THREADS@#$YIBAN_WEB_THREADS#g" \
+    web/deploy/yiban-web.service | sudo tee /etc/systemd/system/yiban-web.service >/dev/null
+sudo systemctl daemon-reload && sudo systemctl enable --now yiban-web
+# nginx：web/deploy/nginx.conf.example（端口占位符同样按 deploy/web.env 渲染）
+```
+
+判据：`systemctl is-active yiban-web` 输出 `active`；`curl -fsS
+http://127.0.0.1:${YIBAN_WEB_PORT}/login` 返回 200。另需先按 §8 第 1 步建 `yiban` 账号，
+并按 README 备齐 `/etc/yiban/accounts-key`。
+
+### 9.2 已知噪声：演练窗口过短时的退避 ERROR（F7）
+
+`scripts/drill-baremetal.sh` 的 B6 用 8 分钟合成窗口；生产窗口 80 分钟。短窗口下日志会出现
+`退避预算不成立：退避上限 600s 超过尾部预留缓冲 144s`。生产窗口尾部缓冲 1440s > 600s
+（80 分钟口径），不会触发。该行只属演练造数窗口过短，**不作演练失败判据**；生产日志出现
+同一行才按真实缺陷处理。
+
+### 9.3 前置条件：`install.sh` 依赖同步需要网络（F8）
+
+`deploy/prod/install.sh` 每次都执行 `pip install --require-hashes -r requirements.lock`。
+断网主机会在该步 rc=1 中止（fail-closed，不静默）。生产升级前确认可访问索引；可用
+`PIP_INDEX_URL` 指向内网镜像（README 已给旁路）。
