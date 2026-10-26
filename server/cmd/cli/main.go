@@ -1,10 +1,10 @@
 // Command yiban-cli 是 Go 服务端的运维命令行。
 //
 // # 功能
-// 四个子命令：server（起服务，与 cmd/server 同实现）、
+// 六个子命令：server（起服务，与 cmd/server 同实现）、
 // migrate（应用迁移并打印版本）、doctor（故障体检）、
-// healthcheck（对 /healthz 做一次探活，容器 healthcheck 用）。
-// backup 与 restore 在片 3 加入。
+// healthcheck（对 /healthz 做一次探活，容器 healthcheck 用）、
+// backup/restore（pg_dump + GPG + 行数对账）。
 // 本命令**不**进 OpenAPI（派单 P7：CLI 不在 openapi 契约面）。
 //
 // # 归属
@@ -40,6 +40,10 @@ func main() {
 		code = runDoctor(os.Args[2:], os.Stdout, os.Stderr)
 	case "healthcheck":
 		code = runHealthcheck(os.Args[2:], os.Stderr)
+	case "backup":
+		code = runBackup(newBackupDeps(os.Stdout, os.Stderr), os.Args[2:])
+	case "restore":
+		code = runRestore(newBackupDeps(os.Stdout, os.Stderr), os.Args[2:])
 	case "--help", "-h", "help":
 		usage(os.Stdout)
 	default:
@@ -59,6 +63,8 @@ func usage(w *os.File) {
   migrate      应用数据库迁移并打印 schema 版本
   doctor       故障模式体检（每条 FAIL 附修复命令）
   healthcheck  探活 /healthz（容器 healthcheck 用）
+  backup       pg_dump + GPG 对称加密备份（含行数清单）
+  restore      解密导入 + 迁移 + 行数对账（--force 或交互确认）
   help         打印本清单
 `)
 }

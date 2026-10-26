@@ -18,7 +18,7 @@
 clock.now	call	internal/core/clock/	time.Now	internal/core/clock/,cmd/server/auth_e2e_test.go,internal/adapters/pg/main_test.go,internal/adapters/pg/pg_e2e_test.go,internal/app/auth/service_test.go,internal/signing/fake/provider_test.go,internal/adapters/pg/schedule_e2e_test.go,internal/adapters/pg/diagnostic_e2e_test.go,internal/app/events/broker_test.go	use clock.Clock.Now
 clock.location	call	internal/core/clock/	time.LoadLocation	internal/core/clock/,internal/adapters/config/	load a timezone only in clock or config
 clock.tz	string	internal/core/clock/	Asia/Shanghai	internal/core/clock/,internal/adapters/config/,internal/entry/http/oapi/,cmd/server/main_test.go,cmd/server/w2c_e2e_test.go	use the configured timezone
-env.get	call	internal/adapters/config/	os.Getenv	internal/adapters/config/,cmd/server/auth_e2e_test.go,cmd/server/loop_e2e_test.go,cmd/server/w2c_e2e_test.go,internal/adapters/pg/main_test.go	read environment only in adapters/config
+env.get	call	internal/adapters/config/	os.Getenv	internal/adapters/config/,cmd/cli/backup_restore_e2e_test.go,cmd/server/auth_e2e_test.go,cmd/server/loop_e2e_test.go,cmd/server/w2c_e2e_test.go,internal/adapters/pg/main_test.go	read environment only in adapters/config
 env.lookup	call	internal/adapters/config/	os.LookupEnv	internal/adapters/config/	read environment only in adapters/config
 # core/retry/budget.go(+test) is in the allow list because BudgetFor maps
 # signing contract outcome words, two of which collide with task-state

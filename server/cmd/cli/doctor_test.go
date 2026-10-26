@@ -237,7 +237,13 @@ func TestDoctorFaultInjectionHitsEachCheck(t *testing.T) {
 				t.Skip("SKIP: " + tc.skipWindows)
 			}
 			if tc.name == "fs.photo_owner" {
-				currentUserNameForTest(t) // 平台拿不到用户名则跳过
+				if me, ok := currentUserName(); !ok {
+					t.Skip("SKIP: 当前平台拿不到用户名，属主故障注入不了")
+				} else if me == "root" {
+					// root 运行时把属主改成 root 与当前用户仍是同一人，
+					// 属主失配这个故障构造不出来。
+					t.Skip("SKIP: running as root; owner mismatch cannot be constructed")
+				}
 			}
 			p, db := healthyProbe(t)
 			tc.inject(p, db)
