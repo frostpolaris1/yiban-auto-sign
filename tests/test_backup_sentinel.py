@@ -670,6 +670,19 @@ class TriggerCountTest(_Base):
         self.assertEqual("yiban-backup-wrapper.sh", report["findings"][0]["job"])
         self.assertEqual(2, report["findings"][0]["count"])
 
+    def test_findings_carry_structured_undeclared_flag(self):
+        """第 P4-3 项：未声明排期用布尔字段判定，不靠 note 文案。"""
+        repo = os.path.join(self.app_dir, "deploy", "prod", "cron.d")
+        absent = os.path.join(self.tmp, "absent-etc-crontab")
+        self._write_root("0 3 * * * /usr/local/sbin/yiban-backup-wrapper.sh\n")
+        report, _ = self.mod._trigger_drift_report(repo, self.cron_d, absent)
+        self.assertIsNotNone(report)
+        self.assertTrue(report["findings"][0]["undeclared"])
+        self._write_root(WRAPPER_CRON_LINE + "\n")
+        report, _ = self.mod._trigger_drift_report(repo, self.cron_d, absent)
+        self.assertIsNotNone(report)
+        self.assertFalse(report["findings"][0]["undeclared"])
+
     def test_trigger_finding_is_in_the_mail_when_archive_is_missing(self):
         """归档缺失时触发器漂移必须进邮件（P3-4）：本批的意义就是告警。"""
         self._write_root(WRAPPER_CRON_LINE + "\n")
@@ -683,6 +696,21 @@ class TriggerCountTest(_Base):
                       "归档缺失时触发器漂移只进 stdout，没进邮件")
         self.assertIn("2 条", body, "邮件必须给出触发器条数")
         self.assertIn("不一致", body, "归档缺失时脚本漂移同样不得被吞")
+        # 第 P3-1 项：2 条重复才可以说并发
+        self.assertIn("并发", self.mails[0][1].summary,
+                      "2 条重复应说明并发，摘要不得把并发删掉")
+
+    def test_missing_archive_summary_does_not_claim_concurrency_for_one_trigger(self):
+        """第 P3-1 项：缺包 + 未声明排期 count=1，摘要不得说并发。"""
+        self._write_root("0 3 * * * /usr/local/sbin/yiban-backup-wrapper.sh"
+                         " >> /var/log/yiban/backup.log 2>&1\n")
+        self.assertEqual(self._run(), 0)
+        self.assertEqual(len(self.mails), 1, f"实际 {self.mails}")
+        summary = self.mails[0][1].summary
+        self.assertIn("不存在", summary)
+        self.assertIn("未在仓库表声明", summary)
+        self.assertNotIn("并发", summary,
+                         f"1 条触发器不存在并发，摘要不得断言：{summary}")
 
     def test_wrapped_job_forms_are_recognized(self):
         """包装器把脚本放在位置参数里：任一 token 命中作业键即归入该作业（P3-5）。"""
@@ -705,6 +733,29 @@ class TriggerCountTest(_Base):
                     any(f["job"] == "yiban-backup-wrapper.sh"
                         for f in report["findings"]),
                     f"没有归到被包装的作业：{report}")
+
+    def test_attached_option_values_do_not_hide_the_job(self):
+        """第 P3-2 项：`--opt=value` 紧贴形态仍要认出被包装的作业。"""
+        empty = self._empty_cron_d()
+        repo = os.path.join(self.app_dir, "deploy", "prod", "cron.d")
+        absent = os.path.join(self.tmp, "absent-etc-crontab")
+        for command in (
+            "sudo --user=root /usr/local/sbin/yiban-backup-wrapper.sh",
+            "nice --adjustment=10 /usr/local/sbin/yiban-backup-wrapper.sh",
+        ):
+            with self.subTest(command=command):
+                self._write_root(f"0 3 * * * {command}\n")
+                report, unverified = self.mod._trigger_drift_report(
+                    repo, empty, absent)
+                self.assertEqual([], unverified)
+                self.assertIsNotNone(report, f"紧贴选项值漏检：{command}")
+                self.assertEqual("0 3 * * *", report["findings"][0]["schedule"])
+        # 分离值 `--warn-if wrapper.sh` 仍不命中
+        self._write_root(
+            "0 3 * * * --warn-if /usr/local/sbin/yiban-backup-wrapper.sh\n")
+        report, unverified = self.mod._trigger_drift_report(repo, empty, absent)
+        self.assertEqual([], unverified)
+        self.assertIsNone(report, f"分离值 --warn-if 不应命中：{report}")
 
     def test_installed_backup_sh_is_the_same_job_as_wrapper(self):
         """安装版 yiban-backup.sh 与 wrapper 是同一作业（第 1 项：别名漏检）。"""
@@ -1057,6 +1108,17 @@ class SentinelDocContractTest(unittest.TestCase):
                          "旧 docstring 说 sh -c 不认，与实测不符")
         self.assertIn("不做 inode 归并", doc,
                       "软链/改名边界必须登记")
+
+    def test_cron_filename_rule_cites_man_8_cron(self):
+        """第 P4-1 项：规则出处是 man 8 cron，不是 man 5 crontab。"""
+        self.assertIn("man 8 cron", self.src)
+        self.assertNotIn("man 5 crontab", self.src)
+
+    def test_cron_d_docstring_registers_lsb_name_assumption(self):
+        """第 P4-2 项：`-l`（LSB 名字规则）假设必须写进 docstring。"""
+        doc = self.mod._cron_d_entries.__doc__ or ""
+        self.assertIn("-l", doc)
+        self.assertIn("LSB", doc)
 
 
 class BackupDocsContractTest(unittest.TestCase):
