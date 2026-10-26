@@ -15,8 +15,9 @@
 
 **复用**
 路由按域直取（`from web.services import limits as _limits`）：限速与容量判定、
-输入校验、展示口径共用同一份值。`DEFAULT_ACCOUNT_GAP_MAX` 的缺省来自
-`yiban.adapters.config.loader` 的配置名册（名册是配置键的唯一定义点），本模块不另抄数字。
+输入校验、展示口径共用同一份值。`DEFAULT_ACCOUNT_GAP_MAX` / `DEFAULT_MAX_USERS` /
+`DEFAULT_MAX_ACCOUNTS` 的缺省来自 `yiban.adapters.config.loader` 的配置名册
+（名册是配置键的唯一定义点），本模块不另抄数字。
 
 **通信**
 本模块**不导入** `web.app`（避免导入环，也避免另持一份绑定让打桩静默失效）：
@@ -40,13 +41,13 @@ DEFAULT_START_DELAY_MAX = 60
 #: 账号间隔缺省（秒）：住在 config/registry.json，代码不再写第二份字面量
 DEFAULT_ACCOUNT_GAP_MAX = config_loader.default_required("YIBAN_ACCOUNT_GAP_MAX")
 
-# 容量上限（注册/使用人数超负载兜底）：
-# 用户 = 全部未删除注册用户（含尚未添加账号的），上限默认 500——注册表防膨胀，口径宽松；
-# 账号 = 至少持有 1 个非删除账号的活跃注册用户，上限默认 200（一人一号 ≈ 200 活跃使用者，
-#   调度窗口 80min ÷ 单账号平均 8s ≈ 600 理论上限，留裕量防 web 解密/轮询劣化）。
+# 容量上限（注册/使用人数超负载兜底）。缺省住在 config/registry.json：
+# 用户 = 全部未删除注册用户（含尚未添加账号的），防注册表膨胀，口径宽松；
+# 账号 = 至少持有 1 个非删除账号的活跃注册用户（一人一号）；调度窗口 80min
+#   ÷ 单账号平均 8s ≈ 600 个理论上限，名册缺省留裕量，防 web 解密/轮询劣化。
 # 0 = 不限。可用 .env 的 YIBAN_MAX_USERS / YIBAN_MAX_ACCOUNTS 调整。
-DEFAULT_MAX_USERS = 500
-DEFAULT_MAX_ACCOUNTS = 200
+DEFAULT_MAX_USERS = config_loader.default_required("YIBAN_MAX_USERS")
+DEFAULT_MAX_ACCOUNTS = config_loader.default_required("YIBAN_MAX_ACCOUNTS")
 
 # ---------------------------------------------------------------------------
 # 登录 / 恢复 / 口令喷洒
