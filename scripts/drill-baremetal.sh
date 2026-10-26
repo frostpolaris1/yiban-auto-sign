@@ -28,6 +28,11 @@
 # ============================================================
 set -Eeuo pipefail
 
+# 窗口时区不取宿主本地时区：造数直接用业务钟 `yiban/core/clock.py` 的 clock.TZ
+# 构造，B0 断言偏移等于 clock.TZ，B6 再用同一时基跑 run.sh。宿主是 UTC 时旧写法
+# 会把窗口整体偏 8 小时，B6 以「签到时段已结束」假红（2026-10-25 dry-run F3：
+# UTC 容器实测 run.sh rc=2）。不设 `TZ` 环境变量——时区只有一个定义点（clock.TZ）。
+
 ROOT="$(pwd -P)"
 PY="$ROOT/.venv-bare/bin/python3"
 PIP="$ROOT/.venv-bare/bin/pip"
@@ -96,18 +101,25 @@ export DRILL_TREE="$ROOT" DRILL_N=3 DRILL_WS=$((NOW_S + 30)) DRILL_WE=$((NOW_S +
 import contextlib, datetime, os, sys
 TREE = os.environ["DRILL_TREE"]; N = int(os.environ["DRILL_N"])
 DB, ENV = TREE + "/data/yiban.db", TREE + "/data/.env"
+sys.path.insert(0, TREE)
 sys.path.insert(0, TREE + "/scripts")
 os.environ["YIBAN_ENV_FILE"] = ENV
 os.environ["YIBAN_DB_FILE"] = DB
 os.umask(0o77)
-start = datetime.datetime.fromtimestamp(int(os.environ["DRILL_WS"]))
-end = datetime.datetime.fromtimestamp(int(os.environ["DRILL_WE"]))
+# 窗口用业务钟构造，不用宿主本地时区：引擎按 clock.TZ（+8）判定，
+# 两者必须是同一时基（dry-run F3，2026-10-25）。造数开始时刻＝业务钟现在 +30s；
+# 若有人改回宿主本地时区，UTC 宿主上这个差值会变成 -8h，下面的断言当场红。
+from yiban.core import clock
+start = datetime.datetime.fromtimestamp(int(os.environ["DRILL_WS"]), clock.TZ)
+end = datetime.datetime.fromtimestamp(int(os.environ["DRILL_WE"]), clock.TZ)
+_lead = (start.replace(tzinfo=None) - clock.now()).total_seconds()
+assert 0 < _lead <= 120, "合成窗口起点必须紧跟当前业务钟（宿主时区未参与）"
 assert start.date() == end.date(), "合成窗口不得跨日历日"
 open(ENV, "w", encoding="utf-8").write("# 裸机演练专用 .env（自造，严禁入库）\n")
 import db
 from yiban.adapters.config import env_io
 db.init_db(DB, env_file=ENV, cleanup=False, migrate=True)
-_conn = db.get_conn(); _day = datetime.date.today().isoformat()
+_conn = db.get_conn(); _day = start.date().isoformat()
 with db._conn_lock:
     _conn.execute("DELETE FROM sign_tasks WHERE day=?", (_day,)); _conn.commit()
 for i in range(N):
@@ -135,6 +147,7 @@ env_io.write_env_keys(ENV, {
     "YIBAN_DB_FILE": DB,
     "YIBAN_ACCOUNTS_FILE": TREE + "/bare-data/accounts.json",
 })
+print("WINDOW_LEAD_SEC", int(_lead))
 print("WINDOW", start.strftime("%H:%M:%S"), "-", end.strftime("%H:%M:%S"))
 print("ACCOUNTS", len(db.load_accounts()))
 # 审计链外部锚点：生产由 web 每日线程写 <STATE_DIR>/audit-anchor.log。演练里没有那一步，
@@ -210,7 +223,8 @@ DOMAINS="oauth.yiban.cn f.yiban.cn api.uyiban.com c.uyiban.com app.uyiban.com"
 CADIR="$WORK/ca"; mkdir -p "$CADIR"
 SAN="$CADIR/san.ext"
 { printf 'subjectAltName='; sep=""; for d in $DOMAINS; do printf '%sDNS:%s' "$sep" "$d"; sep=","; done; printf '\nextendedKeyUsage=serverAuth\n'; } > "$SAN"
-openssl req -x509 -newkey rsa:2048 -sha256 -days 2 -nodes -keyout "$CADIR/ca.key" -out "$CADIR/ca.pem" -subj "/CN=yiban-bare-ca" > "$EV/b6-certs.log" 2>&1
+openssl req -x509 -newkey rsa:2048 -sha256 -days 2 -nodes -keyout "$CADIR/ca.key" -out "$CADIR/ca.pem" -subj "/CN=yiban-bare-ca" \
+  -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign" > "$EV/b6-certs.log" 2>&1
 openssl req -newkey rsa:2048 -sha256 -nodes -keyout "$CADIR/server.key" -out "$CADIR/server.csr" -subj "/CN=oauth.yiban.cn" >> "$EV/b6-certs.log" 2>&1
 openssl x509 -req -in "$CADIR/server.csr" -CA "$CADIR/ca.pem" -CAkey "$CADIR/ca.key" -CAcreateserial -days 2 -sha256 -extfile "$SAN" -out "$CADIR/server.pem" >> "$EV/b6-certs.log" 2>&1
 openssl verify -CAfile "$CADIR/ca.pem" "$CADIR/server.pem" >> "$EV/b6-certs.log" 2>&1 || die "自签证书自验失败"
