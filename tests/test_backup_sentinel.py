@@ -283,6 +283,32 @@ class SentryVerdictTest(_Base):
         self.assertEqual(len(self.mails), 1, f"实际 {self.mails}")
 
 
+class ArchiveProbeTest(_Base):
+    """0 字节归档/清单不得判健康（P3-2）：只判 `isfile` 会被空文件骗过。"""
+
+    def test_zero_byte_archive_is_not_found_and_alerts(self):
+        path = self._write_archive()
+        with io.open(path, "wb"):
+            pass  # 0 字节：加密切换/半写入的残留形状
+        found, sidecar_ok = self.mod._find_archive(self.backup_dir, self.mod._now())
+        self.assertIsNone(found, f"0 字节归档被当成健康备份：{found}")
+        self.assertFalse(sidecar_ok)
+        self.assertEqual(self._run(), 0)
+        self.assertEqual(len(self.mails), 1, f"0 字节归档必须走缺失告警：{self.mails}")
+        self.assertIn("不存在", self.mails[0][1].to_plain())
+
+    def test_zero_byte_sidecar_is_not_ok(self):
+        path = self._write_archive()
+        with io.open(path + ".sha256", "wb"):
+            pass  # 0 字节清单：2026-10-25 事故的残留形状
+        found, sidecar_ok = self.mod._find_archive(self.backup_dir, self.mod._now())
+        self.assertEqual(path, found, "归档本身非空，仍应被识别")
+        self.assertFalse(sidecar_ok, "0 字节清单被当成'清单在'（不可核验的备份）")
+        self.assertEqual(self._run(), 0)
+        self.assertEqual(len(self.mails), 1, f"0 字节清单必须告警：{self.mails}")
+        self.assertIn(".sha256", self.mails[0][1].to_plain())
+
+
 class DriftTest(_Base):
     """"运行脚本 = 仓库脚本"的比对：漂移要喊，一致/未安装要安静。"""
 
@@ -617,6 +643,55 @@ class TriggerCountTest(_Base):
         body = self.mails[0][1].to_plain()
         self.assertIn("0 3 * * *", body)
 
+    def test_findings_survive_an_unreadable_source(self):
+        """未核不得把已发现的重复吞掉：两者并存返回（P3-3，跳过≠绿）。"""
+        self._write_root(WRAPPER_CRON_LINE + "\n" + WRAPPER_CRON_LINE + "\n")
+        report, unverified = self.mod._trigger_drift_report(
+            os.path.join(self.app_dir, "deploy", "prod", "cron.d"),
+            os.path.join(self.tmp, "absent-cron.d"),
+            os.path.join(self.tmp, "absent-etc-crontab"))
+        self.assertTrue(unverified, "缺一面来源时必须报未核")
+        self.assertIsNotNone(report, "未核把已发现的重复吞掉了（report=None）")
+        self.assertEqual(1, len(report["findings"]), report)
+        self.assertEqual("yiban-backup-wrapper.sh", report["findings"][0]["job"])
+        self.assertEqual(2, report["findings"][0]["count"])
+
+    def test_trigger_finding_is_in_the_mail_when_archive_is_missing(self):
+        """归档缺失时触发器漂移必须进邮件（P3-4）：本批的意义就是告警。"""
+        self._write_root(WRAPPER_CRON_LINE + "\n")
+        self._install_copy("#!/bin/bash\n# 漂移\n")
+        self.assertEqual(self._run(), 0)
+        self.assertEqual(len(self.mails), 1,
+                         f"缺包 + 触发器/脚本漂移必须恰好一封告警：{self.mails}")
+        body = self.mails[0][1].to_plain()
+        self.assertIn("不存在", body, "缺包仍是首要结论")
+        self.assertIn("yiban-backup-wrapper.sh", body,
+                      "归档缺失时触发器漂移只进 stdout，没进邮件")
+        self.assertIn("2 条", body, "邮件必须给出触发器条数")
+        self.assertIn("不一致", body, "归档缺失时脚本漂移同样不得被吞")
+
+    def test_wrapped_job_forms_are_recognized(self):
+        """包装器把脚本放在位置参数里：任一 token 命中作业键即归入该作业（P3-5）。"""
+        forms = [
+            "flock -n /run/lock/yiban-backup.lock"
+            " /usr/local/sbin/yiban-backup-wrapper.sh",
+            "timeout 600 /usr/local/sbin/yiban-backup-wrapper.sh",
+            "nice -n 10 /usr/local/sbin/yiban-backup-wrapper.sh",
+            "bash /usr/local/sbin/yiban-backup-wrapper.sh",
+        ]
+        for form in forms:
+            with self.subTest(form=form):
+                self._write_root(f"0 2 * * * {form} >> /var/log/yiban/backup.log 2>&1\n")
+                report, unverified = self.mod._trigger_drift_report(
+                    os.path.join(self.app_dir, "deploy", "prod", "cron.d"),
+                    self.cron_d, os.path.join(self.tmp, "absent-etc-crontab"))
+                self.assertEqual([], unverified)
+                self.assertIsNotNone(report, f"包装器形态漏检：{form}")
+                self.assertTrue(
+                    any(f["job"] == "yiban-backup-wrapper.sh"
+                        for f in report["findings"]),
+                    f"没有归到被包装的作业：{report}")
+
     def test_empty_repo_table_dir_is_unverified_not_green(self):
         """扫空不得当绿：检出里解析不出任何作业时，门必须报"未核"。"""
         empty_repo = os.path.join(self.tmp, "empty-repo-cron.d")
@@ -741,6 +816,17 @@ class TriggerCountE2ETest(unittest.TestCase):
         self.assertIn("must be privileged", r.stderr, "未核原因必须带真实错误")
         self.assertNotIn("触发器条数漂移", r.stdout)
 
+    def test_unverified_source_does_not_hide_a_duplicate(self):
+        """未核与漂移并存时两者都要打印（P3-3）：隐藏重复比"未核"更危险。"""
+        _write_bytes(os.path.join(self.cron_d, "yiban-backup-dup"),
+                     (WRAPPER_CRON_D_LINE + "\n").encode("utf-8"))
+        self.env["FAKE_CRONTAB_ROOT_ERROR"] = "must be privileged to use -u"
+        r = self._run()
+        self.assertIn("触发器条数未核", r.stderr, f"未核必须可见：{r.stderr}")
+        self.assertIn("触发器条数漂移", r.stdout,
+                      f"未核把已发现的重复吞掉了：stdout={r.stdout!r} stderr={r.stderr!r}")
+        self.assertIn("2 条", r.stdout)
+
 
 class WrapperWorkingDirTest(unittest.TestCase):
     """薄包装必须自己把 cwd 与 .env 路径摆正——cron 的 cwd 是 $HOME。
@@ -822,6 +908,58 @@ class WrapperSourceTest(unittest.TestCase):
         self.assertIn('exec "$PY" "$APP_DIR/scripts/backup_sentinel.py"', self.src)
         self.assertNotIn("sha256", self.src)
         self.assertNotIn("tar.gz", self.src)
+
+    def test_header_lists_the_trigger_gate_env_vars(self):
+        """环境变量清单必须与 backup_sentinel.py 的触发器门输入对齐（P3-6）。"""
+        for name in ("YIBAN_CRON_D_DIR", "YIBAN_SYSTEM_CRONTAB"):
+            self.assertIn(name, self.src,
+                          f"包装头部环境变量清单缺 {name}（与哨兵输入面不对齐）")
+
+
+class SentinelDocContractTest(unittest.TestCase):
+    """哨兵 docstring 的两条承重口径（P3-6/P3-8）：扫面边界与"未核也算完成"。"""
+
+    @classmethod
+    def setUpClass(cls):
+        with io.open(SCRIPT, encoding="utf-8") as f:
+            cls.src = f.read()
+
+    def test_docstring_states_the_trigger_scan_scope(self):
+        self.assertIn("只扫 root 与当前身份", self.src,
+                      "登记边界必须写进 docstring：其它身份的 crontab 不在扫描面")
+
+    def test_docstring_states_that_unverified_still_exits_zero(self):
+        self.assertIn("未核也算检查完成", self.src,
+                      "rc 口径必须写明：未核不改退出码")
+
+
+class BackupDocsContractTest(unittest.TestCase):
+    """部署文档的三条承重口径（P2-2/P3-7）：crontab 步骤有条件、正常路径有输出。"""
+
+    @classmethod
+    def setUpClass(cls):
+        with io.open(os.path.join(BASE, "README.md"), encoding="utf-8") as f:
+            cls.readme = f.read()
+        with io.open(os.path.join(BASE, "docs", "dev", "backup-restore.md"),
+                     encoding="utf-8") as f:
+            cls.backup_doc = f.read()
+
+    def test_crontab_sections_warn_to_skip_after_installer(self):
+        """两处手工 crontab 步骤都必须标注「跑过 install.sh 就跳过」（P2-2）。"""
+        for marker in ("# 5. 定时任务", "#### 6. crontab"):
+            idx = self.readme.find(marker)
+            self.assertNotEqual(-1, idx, f"README 缺段落标记：{marker}")
+            window = self.readme[idx:idx + 700]
+            self.assertIn("跳过本节", window,
+                          f"{marker} 没写「跑过 install.sh 就跳过」——两处都写会重复触发")
+
+    def test_backup_doc_does_not_claim_a_silent_normal_path(self):
+        """哨兵正常路径每天打印一行；文档不得再写「零输出」（P3-7）。"""
+        self.assertNotIn("正常路径零输出", self.backup_doc,
+                         "正常路径每天打印一行「归档与清单都在」，零输出为假")
+        self.assertNotIn("不为 1 条", self.backup_doc,
+                         "实现对 0 条不报；应写「多于 1 条或未声明排期」")
+        self.assertIn("归档与清单都在", self.backup_doc)
 
 
 if __name__ == "__main__":
