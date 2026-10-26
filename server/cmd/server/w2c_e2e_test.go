@@ -48,6 +48,7 @@ import (
 	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
 	apptimepref "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/timepref"
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/assembly"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
@@ -248,7 +249,7 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		Location:  loc,
 		Locations: locationSvc,
 		Photos:    photoSvc,
-		Notifier:  workerNotifier{broker: e.broker, clock: clk},
+		Notifier:  assembly.WorkerNotifier{Broker: e.broker, Clock: clk},
 	})
 	if err != nil {
 		t.Fatalf("new worker service: %v", err)
@@ -256,7 +257,7 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 	scheduleSvc, err := appschedule.NewService(appschedule.Deps{
 		Windows: e.sched, Plans: e.sched, Accounts: e.sched,
 		Discover: e2eDiscoverer{windows: e.windows}, Prefs: e.prefs, Tx: db,
-		Notifier: scheduleNotifier{broker: e.broker, clock: clk},
+		Notifier: assembly.ScheduleNotifier{Broker: e.broker, Clock: clk},
 	})
 	diagSvc, err := appdiagnostic.NewService(appdiagnostic.Deps{
 		Accounts: accountSvc,

@@ -57,6 +57,18 @@ func Migrate(ctx context.Context, dsn string) (int64, error) {
 	return version, nil
 }
 
+// Version 只读返回数据库当前已应用的 schema 版本，不应用任何迁移。
+// 版本表缺失视为 0（全新数据库）。doctor 用它判「迁移落后/超前」；
+// 迁移落后时修复命令是 yiban-cli migrate，不是本函数。
+func Version(ctx context.Context, dsn string) (int64, error) {
+	db, err := openMigrationDB(dsn)
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+	return dbVersion(ctx, db)
+}
+
 // EmbeddedVersion 返回编入本二进制的最高迁移号。
 // 它读嵌入文件名，故嵌入缺失会在此暴露。
 func EmbeddedVersion() (int64, error) {
