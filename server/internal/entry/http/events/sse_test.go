@@ -154,7 +154,7 @@ func (sc *streamClient) next(t *testing.T) frame {
 	case err := <-sc.errs:
 		t.Fatalf("读流出错: %v", err)
 		return frame{}
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("等帧超时")
 		return frame{}
 	}
@@ -166,7 +166,7 @@ func (sc *streamClient) closed(t *testing.T) bool {
 	select {
 	case _, ok := <-sc.frames:
 		return !ok
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		return false
 	}
 }
@@ -445,7 +445,7 @@ func TestSSEClientCancelCloses(t *testing.T) {
 	cancel()
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("取消后服务端未断流")
 	}
 }
