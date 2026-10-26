@@ -62,6 +62,46 @@ func TestEncryptPasswordFixtureKey(t *testing.T) {
 	}
 }
 
+func TestEncryptPasswordPKCS1Key(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	publicPEM := string(pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PUBLIC KEY",
+		Bytes: x509.MarshalPKCS1PublicKey(&key.PublicKey),
+	}))
+	encrypted, err := EncryptPassword("secret", publicPEM)
+	if err != nil {
+		t.Fatalf("EncryptPassword: %v", err)
+	}
+	ciphertext, err := base64.StdEncoding.DecodeString(encrypted)
+	if err != nil {
+		t.Fatalf("DecodeString: %v", err)
+	}
+	plain, err := rsa.DecryptPKCS1v15(rand.Reader, key, ciphertext)
+	if err != nil {
+		t.Fatalf("DecryptPKCS1v15: %v", err)
+	}
+	if string(plain) != "secret" {
+		t.Fatalf("plaintext = %q", plain)
+	}
+}
+
+func TestEncryptPasswordRejectsPrivateKey(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	privatePEM := string(pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(key),
+	}))
+	if _, err := EncryptPassword("secret", privatePEM); err == nil {
+		t.Fatal("a private key must not be accepted")
+	}
+}
+
 func TestEncryptPasswordRejectsBadKey(t *testing.T) {
 	for _, pemText := range []string{"", "not a pem", "-----BEGIN PUBLIC KEY-----\nQQ==\n-----END PUBLIC KEY-----"} {
 		if _, err := EncryptPassword("secret", pemText); err == nil {

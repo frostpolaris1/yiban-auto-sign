@@ -1,6 +1,8 @@
 package protocol
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/url"
 	"strconv"
 	"strings"
@@ -21,7 +23,11 @@ type SignInBody struct {
 //
 // 字段顺序固定：oauth_uname、oauth_upwd、client_id、redirect_uri、display；
 // scope 仅在非 nil 时追加。编码为 form-urlencoded（空格→+）。
+// display 为空时取 "authorize"：与 SPEC §2.6 的默认值一致。
 func BuildUsersureForm(phone, encryptedPassword, clientID, redirectURI, display string, scope *string) string {
+	if display == "" {
+		display = "authorize"
+	}
 	pairs := [][2]string{
 		{"oauth_uname", phone},
 		{"oauth_upwd", encryptedPassword},
@@ -77,7 +83,15 @@ func formatFloat(v float64) string {
 	return strconv.FormatFloat(v, 'f', -1, 64)
 }
 
-// quoteJSON 生成 JSON 字符串字面量；保留可打印 Unicode，不转义 HTML 字符。
+// quoteJSON 生成 JSON 字符串字面量。
+// 用 encoding/json 编码：控制字符输出 \u00XX，不产出非法 JSON。
+// 关闭 HTML 转义：地址里的 < > & 保持原样，与 Python 的 ensure_ascii=False 同形。
 func quoteJSON(s string) string {
-	return strconv.Quote(s)
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(s); err != nil {
+		return `""`
+	}
+	return strings.TrimSuffix(buf.String(), "\n")
 }

@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 )
@@ -35,8 +36,17 @@ func TestParseAPIEnvelopeSessionExpired(t *testing.T) {
 }
 
 func TestParseAPIEnvelopeRejectsBrokenJSON(t *testing.T) {
-	for _, body := range []string{`{"code":0`, `[]`, `"text"`, ``} {
-		_, err := ParseAPIEnvelope([]byte(body))
+	bodies := [][]byte{
+		[]byte(`{"code":0`),
+		[]byte(`[]`),
+		[]byte(`"text"`),
+		nil,
+		[]byte(`{"code":0}{"code":1}`),
+		[]byte(`{"code":0} trailing`),
+		[]byte("{\"code\":0,\"msg\":\"\xff\"}"),
+	}
+	for _, body := range bodies {
+		_, err := ParseAPIEnvelope(body)
 		var parse *ParseError
 		if !errors.As(err, &parse) || parse.Field != "envelope" {
 			t.Fatalf("%q: error = %v, want ParseError(envelope)", body, err)
@@ -71,8 +81,8 @@ func TestParseUsersureResponseBusinessFailure(t *testing.T) {
 }
 
 func TestCodeIsOK(t *testing.T) {
-	ok := []any{int(0), int64(0), float64(0), "0"}
-	bad := []any{false, int64(999), "999", "1", nil, "s200"}
+	ok := []any{int(0), int64(0), float64(0), "0", json.Number("0")}
+	bad := []any{false, int64(999), "999", "1", nil, "s200", json.Number("1")}
 	for _, code := range ok {
 		if !CodeIsOK(code) {
 			t.Fatalf("CodeIsOK(%#v) = false, want true", code)
@@ -86,6 +96,9 @@ func TestCodeIsOK(t *testing.T) {
 }
 
 func TestLooksLikeChallenge(t *testing.T) {
+	// replay_manifest.json 是索引，不是平台响应；它的键名含
+	// challenge_ydclearance / challenge_fengkongcloud，会命中强信号。
+	// 故它不参与「正常响应」集合。
 	normal := []string{
 		"authorize_page.html",
 		"auth_response.json",
@@ -94,7 +107,12 @@ func TestLooksLikeChallenge(t *testing.T) {
 		"sign_position.json",
 		"device_state.json",
 		"sign_in_body.txt",
+		"sign_in_body_urlencoded.txt",
 		"usersure_form.txt",
+		"usersure_url.txt",
+		"iframe_location.txt",
+		"synthetic_session_expired.json",
+		"synthetic_session_expired_string_code.json",
 	}
 	for _, name := range normal {
 		if LooksLikeChallenge(string(readFixture(t, name))) {
