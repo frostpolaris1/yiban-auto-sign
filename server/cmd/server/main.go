@@ -38,7 +38,9 @@ import (
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
 	appadmin "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/admin"
 	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
+	appdiagnostic "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/diagnostic"
 	appegress "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/egress"
+	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
 	applocation "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/location"
 	appphotos "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/photos"
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
@@ -56,6 +58,7 @@ import (
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	accounthttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/account"
 	adminhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/admin"
+	eventshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/events"
 	locationhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/location"
 	photoshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/photos"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/router"
@@ -174,6 +177,7 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 		planning *schedulehttp.Handler
 		photoLib *photoshttp.Handler
 		locLib   *locationhttp.Handler
+		eventLib *eventshttp.Handler
 		db       *pg.DB
 		closeFn  = func() {}
 	)
@@ -293,6 +297,8 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 		provider := yiban.NewProvider(yiban.New(yiban.Config{Clock: clk}))
 		signing = signinghttp.NewHandler(accountSvc, adminSvc, provider)
 
+		// 事件总线先于 worker 与计划装配：两者的发布端口引用同一实例。
+		broker := appevents.NewBroker()
 		// 执行循环：手动签到入队 + 进程启动时回收孤儿 running 行。
 		// 限速与出口参数暂用模块缺省；配置面（名册键）随 P4-F 收口统一接入。
 		egressSvc, err := appegress.NewService(appegress.Deps{
@@ -344,6 +350,8 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 			// P5-C 注入面：定位策略与选图。缺端口时对应面退回现行为。
 			Locations: locationSvc,
 			Photos:    photoSvc,
+			// P6 注入面：任务事件发布。缺端口时不发事件。
+			Notifier: workerNotifier{broker: broker},
 		})
 		if err != nil {
 			closeFn()
@@ -371,6 +379,8 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 			Discover: scheduleDiscoverer{provider: provider, accounts: accountSvc, tasks: scheduleRepo},
 			Prefs:    prefRepo,
 			Tx:       db,
+			// P6 注入面：计划事件发布。缺端口时不发事件。
+			Notifier: scheduleNotifier{broker: broker},
 		})
 		if err != nil {
 			closeFn()
@@ -396,6 +406,17 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 			SlotsPerSlice: slots, Front: true, UsePrefs: cfg.AllowTimePref,
 			EdgeFront: cfg.EdgeFront, EdgeBack: cfg.EdgeBack,
 		})
+		diagSvc, err := appdiagnostic.NewService(appdiagnostic.Deps{
+			Accounts: accountSvc,
+			Store:    pg.NewDiagnosticRepo(db),
+			Clock:    clk,
+			Location: loc,
+		})
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("server: diagnostic service: %w", err)
+		}
+		eventLib = eventshttp.NewHandler(broker, diagSvc, adminSvc, clk, nil)
 	}
 
 	engine, err := router.New(router.Options{
@@ -412,6 +433,7 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 		Schedule:        planning,
 		Photos:          photoLib,
 		Locations:       locLib,
+		Events:          eventLib,
 	})
 	if err != nil {
 		closeFn()
@@ -497,5 +519,32 @@ func (d scheduleDiscoverer) DiscoverWindow(ctx context.Context, schoolTaskID str
 			DeviceCode: cred.DeviceCode,
 			PhoneModel: cred.PhoneModel,
 		},
+	})
+}
+
+// workerNotifier 把执行循环的任务事件转成总线事件（P6）。
+// Publish 永不阻塞；失败只丢事件。
+type workerNotifier struct {
+	broker *appevents.Broker
+}
+
+// TaskEvent 实现 appworker.Notifier。
+func (n workerNotifier) TaskEvent(_ context.Context, schoolID, taskID, day, kind string, payload map[string]any) {
+	n.broker.Publish([]string{schoolID}, appevents.Event{
+		Type: kind, SchoolID: schoolID, TaskID: taskID, Day: day,
+		At: time.Now(), Payload: payload,
+	})
+}
+
+// scheduleNotifier 把计划事件转成总线事件（P6）。
+type scheduleNotifier struct {
+	broker *appevents.Broker
+}
+
+// PlanEvent 实现 appschedule.Notifier。
+func (n scheduleNotifier) PlanEvent(_ context.Context, schoolID, taskID, day, kind string, payload map[string]any) {
+	n.broker.Publish([]string{schoolID}, appevents.Event{
+		Type: kind, SchoolID: schoolID, TaskID: taskID, Day: day,
+		At: time.Now(), Payload: payload,
 	})
 }

@@ -5,9 +5,12 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/storage"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
+	appadmin "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/admin"
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
+	appdiagnostic "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/diagnostic"
 	appegress "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/egress"
+	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
 	applocation "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/location"
 	appphotos "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/photos"
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
@@ -16,6 +19,7 @@ import (
 	appuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/user"
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
 	corerate "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/rate"
+	eventshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/events"
 	locationhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/location"
 	photoshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/photos"
 	schedulehttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/schedule"
@@ -67,4 +71,12 @@ var (
 	_ locationhttp.Service     = (*applocation.Service)(nil)
 	_ appworker.LocationSource = (*applocation.Service)(nil)
 	_ appworker.PhotoSource    = (*appphotos.Service)(nil)
+	// P6：事件总线、发布端口与诊断读模型。
+	_ appworker.Notifier          = workerNotifier{}
+	_ appschedule.Notifier        = scheduleNotifier{}
+	_ appdiagnostic.Store         = (*pg.DiagnosticRepo)(nil)
+	_ appdiagnostic.AccountSource = (*appaccount.Service)(nil)
+	_ eventshttp.Broker           = (*appevents.Broker)(nil)
+	_ eventshttp.Diagnostics      = (*appdiagnostic.Service)(nil)
+	_ eventshttp.Authorizer       = (*appadmin.Service)(nil)
 )
