@@ -197,6 +197,32 @@ func TestTextHasPhoneIgnoresNonMobileNumbers(t *testing.T) {
 	}
 }
 
+// 时间戳的「秒.纳秒」会拼出 11 位数字：检测口径不得判为手机号。
+// 这是 P3-D 的 pii.absent 假阳性根因（SignedAt 的 RFC3339Nano）。
+func TestTextHasPhoneIgnoresTimestampFractions(t *testing.T) {
+	bad := []string{
+		"2026-10-26T13:10:16.429881512+08:00",
+		"2026-10-26 13:10:16.429881512",
+		"2026-10-26T13:10:16.123456789+08:00",
+	}
+	for _, s := range bad {
+		if TextHasPhone(s) {
+			t.Fatalf("TextHasPhone(%q) = true; 时间戳不得判为手机号", s)
+		}
+	}
+	good := []string{
+		"139-0013-9000",
+		"1 3 8 0 0 1 3 8 0 0 0",
+		"139.0013.9000",
+		"+86 139 0013 9000",
+	}
+	for _, s := range good {
+		if !TextHasPhone(s) {
+			t.Fatalf("TextHasPhone(%q) = false; 分隔手机号必须被抓", s)
+		}
+	}
+}
+
 // 邮箱首字符按字符取，不按字节：多字节本地部不得产出非法 UTF-8。
 func TestMaskEmailIsRuneSafe(t *testing.T) {
 	if got := MaskEmail("学生@example.com"); got != "学***@example.com" {

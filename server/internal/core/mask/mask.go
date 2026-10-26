@@ -139,6 +139,9 @@ func TextHasPhone(s string) bool {
 		// 单段内部（i==j）即整段；跨段（i<j）要求窗口覆盖完整段。
 		for i := 0; i < len(segs); i++ {
 			for j := i; j < len(segs); j++ {
+				if j > i && !segmentsFitPhone(segs[i:j+1]) {
+					continue
+				}
 				dd := digitsOnly(run[segs[i].start:segs[j].end])
 				switch {
 				case len(dd) == 11 && dd[0] == '1' && dd[1] >= '3' && dd[1] <= '9':
@@ -150,6 +153,22 @@ func TextHasPhone(s string) bool {
 		}
 	}
 	return false
+}
+
+// segmentsFitPhone 报告多段窗口是否符合手机号书写。
+//
+// 单段不限：11 位连写是常见形态。
+// 多段每段不超过 4 位：时间戳的「秒.纳秒」会形成 2+9 段，
+// 11 位数字形似手机号，但不是号码（R3-002 的同类假阳性）。
+// 代价是 5 位以上的异常分组不判为手机号；掩码仍会处理，
+// 检测口径宁缺勿冤。
+func segmentsFitPhone(segs []segment) bool {
+	for _, seg := range segs {
+		if seg.end-seg.start > 4 {
+			return false
+		}
+	}
+	return true
 }
 
 // TextHasEmail 报告文本里是否还有未掩码的邮箱形态。
