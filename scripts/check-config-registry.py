@@ -68,6 +68,13 @@ AST 里键名是 `ast.Constant`、缺省值是另一处 `ast.Constant`，"同行
 普通字符串字面量**计入**——把键名抄进散文正是"改代码不改散文"的病（与
 `scripts/check-shared-facts.sh` 同一立场）。
 
+**口径**
+「代码侧缺省单一定义点」只覆盖**名册键**。`yiban/core/window.py` 的
+`DEFAULT_EDGE_SEC` 属 core 内防御性回退：该层不读 `.env`，也不许 import
+`yiban.adapters.config.loader`（loader 导入本模块，反向成环）。它不读名册，
+由 `tests/test_config_registry_gate.py::CoreFallbackEquivalenceTest` 等值钉住。
+本门判绿**不等于**"全仓缺省已单源"。
+
 **已知弱化点（如实登记，别当"已完全覆盖"）**：
 - 键名由变量拼出（`_PREFIX + "USER"`）时看不到，故 `YIBAN_MAIL_*` / `YIBAN_NOTIFY_*`
   两族只有族前缀进判据，成员键靠人工维护名册；
@@ -555,6 +562,9 @@ def _check_default_literals(root, files, registry, cache, hits):
 _SHELL_VAR_START = re.compile(r"\$\{(YIBAN_[A-Z0-9_]+)")
 _SHELL_OP = re.compile(r"(:[-=+?]|[-=+?])")
 _SHELL_INNER_VAR = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+#: 不是缺省的操作符：`:+` / `+` 是"已设置才替换"，`:?` / `?` 是"未设即报错"的守卫。
+#: 二者都不写缺省值，判据必须跳过（审查员 7yf 低-1：`${KEY:?msg}` 曾被误报漂移）。
+_SHELL_NOT_DEFAULT_OPS = (":+", "+", ":?", "?")
 _SHELL_EXEMPT_FIELD = "shell_exempt_defaults"
 
 
@@ -596,11 +606,12 @@ def _shell_defaults_in_line(line):
 
 
 def _shell_static_value(text):
-    """→ `(字面量, 状态)`；状态 ∈ {"static", "dynamic", "alternative"}。
+    """→ `(字面量, 状态)`；状态 ∈ {"static", "dynamic", "not_default"}。
 
     嵌套 `${INNER:-X}` 递归取 X（审查员 7yf 中-2：`${KEY:-${INNER:-/tmp/x}}`
     内层静态值必须比对）。`$(…)` / 裸 `$VAR` / 无缺省操作符的嵌套 → dynamic。
-    `:+`（已设置才替换）→ alternative，不是缺省，不判。
+    非缺省操作符（`_SHELL_NOT_DEFAULT_OPS`：`:+` 已设置才替换、`:?` 未设即报错）
+    → not_default，不判。
     """
     text = text.strip()
     while text.startswith("${") and text.endswith("}"):
@@ -612,8 +623,8 @@ def _shell_static_value(text):
         op = _SHELL_OP.match(rest)
         if op is None:
             return None, "dynamic"
-        if op.group(1) in (":+", "+"):
-            return None, "alternative"
+        if op.group(1) in _SHELL_NOT_DEFAULT_OPS:
+            return None, "not_default"
         text = rest[op.end():].strip()
     if "$(" in text or "`" in text or re.search(r"\$(?:\{)?[A-Za-z_]", text):
         return None, "dynamic"
@@ -622,10 +633,12 @@ def _shell_static_value(text):
     return text, "static"
 
 
-def _shell_exempt_entries(code_register):
+def _shell_exempt_entries(code_register, registry):
     """读代码侧处置册 `_meta.shell_exempt_defaults` → `{(文件, 键): 理由}`。
 
     形状错（不是列表、缺 file/key/reason、键不在名册、重复）一律拒判（2）。
+    键不在名册＝登记面与名册脱钩：这条跳过永远不会被 shell 臂用到（该臂先按名册
+    取缺省），留着只会让"登记了却没判"静默通过（审查员 7yf 低-2）。
     """
     meta = code_register.get(CL.META_KEY)
     if not isinstance(meta, dict):
@@ -647,6 +660,9 @@ def _shell_exempt_entries(code_register):
         if not isinstance(reason, str) or not reason.strip():
             _die("代码侧处置册 %s 的 %s 缺 reason——跳过必须有理由"
                  % (_SHELL_EXEMPT_FIELD, key))
+        if key not in registry:
+            _die("代码侧处置册 %s 登记了名册里没有的键 %s:%s——"
+                 "名册是配置键的唯一定义点，先登记键再用" % (_SHELL_EXEMPT_FIELD, rel, key))
         if (rel, key) in out:
             _die("代码侧处置册 %s 重复登记 %s:%s" % (_SHELL_EXEMPT_FIELD, rel, key))
         out[(rel, key)] = reason
@@ -662,10 +678,12 @@ def _check_shell_defaults(root, files, registry, cache, code_register):
     - 空值 `${KEY:-}` 按字面量与名册比；与名册不等的按"存在性判定/空缺省"处理，
       必须登记（见下）；
     - `$(…)` / `$VAR` 等动态值静态判不了，必须登记（§30：跳过≠绿）；
+    - 非缺省操作符（`_SHELL_NOT_DEFAULT_OPS`：`:+` / `+` / `:?` / `?`）不写缺省
+      值，不判（审查员 7yf 低-1：`${KEY:?must set}` 曾是假红）；
     - 登记面：代码侧处置册 `_meta.shell_exempt_defaults`（file + key + reason）。
       未登记的跳过、登记了却没再出现的（陈旧），都判 1。
     """
-    exempt = _shell_exempt_entries(code_register)
+    exempt = _shell_exempt_entries(code_register, registry)
     seen = set()
     viol = 0
     for rel in files:
@@ -673,14 +691,14 @@ def _check_shell_defaults(root, files, registry, cache, code_register):
             if "${" not in line:
                 continue
             for key, op, raw in _shell_defaults_in_line(line):
-                if op in (":+", "+"):
+                if op in _SHELL_NOT_DEFAULT_OPS:
                     continue
                 spec = registry.get(key)
                 default = spec.get("default") if isinstance(spec, dict) else None
                 if default is None:
                     continue
                 value, state = _shell_static_value(raw)
-                if state == "alternative":
+                if state == "not_default":
                     continue
                 kind = None
                 if state == "dynamic":
