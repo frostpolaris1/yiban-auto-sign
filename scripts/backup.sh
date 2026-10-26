@@ -40,17 +40,22 @@
 #   M3 批次0 起生产执行件收编在 deploy/prod/（校验和对账 + 一键安装）：
 #   sudo DESTDIR= bash deploy/prod/install.sh    # 本脚本→/usr/local/sbin/yiban-backup.sh
 #   （或手工：sudo install -m 0700 -o root -g root scripts/backup.sh /usr/local/sbin/yiban-backup.sh）
-#   权威件 deploy/prod/cron.d/yiban-backup（install.sh 落位；内容即下一行）；手工安装时才
-#   需要 `sudo crontab -e` 抄同一行。
+#   触发器唯一来源是 cron.d 表，不是 root crontab。备份的唯一触发器是
+#   deploy/prod/cron.d/yiban-backup（install.sh 落位）；手工安装就把该表
+#   `install -m 0644` 到 /etc/cron.d/yiban-backup，**不要**用 `crontab -e` 抄同一条
+#   命令——root crontab 与 cron.d 同时有它时，02:00 会并发跑两轮同一备份
+#   （2026-10-25 事故：gpg 互相覆写，当天备份全失）。
 #   # 备份——务必带 --require-encrypt：不带时一旦加密配置失效，cron 会静默产出
 #   # 含全部密钥与管理员口令哈希的【明文】归档（备份目录被读 = 全库凭据泄露）。
 #   # 口令经 wrapper 的 stdin fd 0 单跳注入（见 deploy/prod/yiban-backup-wrapper.sh），
 #   # 别再往 crontab 行/env 里写 BACKUP_GPG_PASSPHRASE——那会把口令带进整棵子进程树。
 #   # 备份目录默认 /var/backups/yiban：与 pull-prod-backup.sh 的 REMOTE_BACKUP_DIR、
 #   # backup_sentinel.py 的 DEFAULT_BACKUP_DIR 同值，改一处必须三处同改（有门钉住）。
-#   0 2 * * * /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
-#   # 异机副本走 REMOTE_BACKUP：放 wrapper 之后的同一行 env 前缀即可（非机密主机名）：
-#   # 0 2 * * * REMOTE_BACKUP=user@host:/backup/yiban /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
+#   # 表内命令行（身份列 root）：
+#   0 2 * * * root /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
+#   # 异机副本走 REMOTE_BACKUP：在表内命令行 wrapper 前加 env 前缀（非机密主机名）；
+#   # 改完要与检出里的表同步，否则 install.sh 的 sha256 对账拒装：
+#   # 0 2 * * * root REMOTE_BACKUP=user@host:/backup/yiban /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
 #   # 取证校验——锚点判据的另一半（离机留痕对照）不能只挂在 web 每日线程上：
 #   # web 没起来 / 每日线程没跑到，删链与"锚点文件被截断"就永远没人查。
 #   30 2 * * * cd /opt/yiban-auto-sign && .venv/bin/python3 scripts/audit_verify.py --db data/yiban.db --env data/.env >> /var/log/yiban/audit-verify.log 2>&1
@@ -1062,8 +1067,28 @@ fi
 # 密文包以 .sha256 清单核验完整性，二次副本下载流程无需人工调整。
 FINAL_LOCAL="${ENC_FILE:-${ARCHIVE}}"
 if command -v sha256sum > /dev/null 2>&1; then
-    sha256sum "${FINAL_LOCAL}" > "${FINAL_LOCAL}.sha256"
-    chmod 0600 "${FINAL_LOCAL}.sha256"
+    # 前置断言必须在重定向**之前**：`sha256sum 缺失文件 > 清单` 会让 shell 先建出
+    # 0 字节清单，再因 sha256sum 失败而中止（set -e）。2026-10-25 02:00 生产事故的
+    # 残留件正是它：并发第二跑删掉 ENC_FILE 后留下 0 字节 .sha256，当天备份全失。
+    # 0 字节清单会被 `sha256sum -c` 与备份哨兵当成"清单在"，比没有清单更危险。
+    if [ ! -s "${FINAL_LOCAL}" ]; then
+        echo "错误：待校验文件缺失或为空（${FINAL_LOCAL}）——不生成校验清单，请排查后重跑备份" >&2
+        exit 1
+    fi
+    # 原子写：先写同目录临时件，校验非空后再 mv 覆盖。任一步失败只清临时件，
+    # 绝不留下 0 字节 .sha256（清单的存在本身就是"可核验"信号）。
+    SIDECAR_TMP="${FINAL_LOCAL}.sha256.tmp.$$"
+    if ! sha256sum "${FINAL_LOCAL}" > "${SIDECAR_TMP}" || [ ! -s "${SIDECAR_TMP}" ]; then
+        rm -f "${SIDECAR_TMP}"
+        echo "错误：sha256sum 失败或输出为空（${FINAL_LOCAL}）——未生成校验清单" >&2
+        exit 1
+    fi
+    chmod 0600 "${SIDECAR_TMP}"
+    if ! mv -f "${SIDECAR_TMP}" "${FINAL_LOCAL}.sha256"; then
+        rm -f "${SIDECAR_TMP}"
+        echo "错误：无法落位校验清单（${FINAL_LOCAL}.sha256）" >&2
+        exit 1
+    fi
     # 加密切换当天避免新旧两份清单并存混淆
     [ -n "${ENC_FILE}" ] && rm -f "${ARCHIVE}.sha256"
     log "已生成校验清单：${FINAL_LOCAL}.sha256"
