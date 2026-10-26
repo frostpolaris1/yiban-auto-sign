@@ -9,7 +9,7 @@
 // 故出口标识必须全仓同名同形。
 //
 // # 复用
-// Identity，以及常量 Direct、Unparseable。
+// Identity、Record，以及常量 Direct、Unparseable。
 //
 // # 口径
 // 空串与纯空白都算直连（Direct）。

@@ -17,14 +17,30 @@ type fakeStore struct {
 	mu       sync.Mutex
 	enabled  []appegress.Egress
 	assigned map[string]string
+	// all 是"已停用但仍存在"的出口（Get 能取到，ListEnabled 取不到）。
+	all map[string]appegress.Egress
 }
 
 func newFakeStore(ids ...string) *fakeStore {
-	f := &fakeStore{assigned: map[string]string{}}
+	f := &fakeStore{assigned: map[string]string{}, all: map[string]appegress.Egress{}}
 	for _, id := range ids {
 		f.enabled = append(f.enabled, appegress.Egress{ID: id, Identity: "https://" + id})
 	}
 	return f
+}
+
+func (f *fakeStore) Get(_ context.Context, egressID string) (appegress.Egress, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, e := range f.enabled {
+		if e.ID == egressID {
+			return e, nil
+		}
+	}
+	if id, ok := f.all[egressID]; ok {
+		return id, nil
+	}
+	return appegress.Egress{}, coreerrs.ErrNotFound
 }
 
 func (f *fakeStore) ListEnabled(context.Context) ([]appegress.Egress, error) {
@@ -228,8 +244,104 @@ func TestReadErrorPropagates(t *testing.T) {
 
 type errStore struct{ err error }
 
+func (e *errStore) Get(context.Context, string) (appegress.Egress, error) {
+	return appegress.Egress{}, e.err
+}
 func (e *errStore) ListEnabled(context.Context) ([]appegress.Egress, error) { return nil, e.err }
 func (e *errStore) GetAssignment(context.Context, string) (string, error)   { return "", e.err }
 func (e *errStore) AssignOrGet(context.Context, string, string) (string, error) {
 	return "", e.err
+}
+
+// 停用绑定的 Identity 必须仍可取：粘性不因运维停用而失效（复审 P2-1）。
+func TestBoundDisabledEgressKeepsIdentity(t *testing.T) {
+	st := newFakeStore("e1", "e2")
+	svc := newService(t, st)
+	a, err := svc.Assign(context.Background(), "acct-d")
+	if err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+	// 停用该出口：从 enabled 移走，但仍在 all 里（库行未删）。
+	st.mu.Lock()
+	kept := appegress.Egress{ID: a.ID, Identity: a.Identity}
+	st.all[a.ID] = kept
+	var rest []appegress.Egress
+	for _, e := range st.enabled {
+		if e.ID != a.ID {
+			rest = append(rest, e)
+		}
+	}
+	st.enabled = rest
+	st.mu.Unlock()
+
+	b, err := svc.Assign(context.Background(), "acct-d")
+	if err != nil {
+		t.Fatalf("assign bound disabled: %v", err)
+	}
+	if b.ID != a.ID || b.Identity != a.Identity {
+		t.Fatalf("停用后绑定失真: %+v, want %+v", b, kept)
+	}
+	// 全部停用时，已绑定账号仍可用（绑定优先于启用清单）。
+	st.mu.Lock()
+	st.enabled = nil
+	st.mu.Unlock()
+	c, err := svc.Assign(context.Background(), "acct-d")
+	if err != nil || c.Identity != a.Identity {
+		t.Fatalf("全停用时绑定应可用: %+v, %v", c, err)
+	}
+}
+
+// GetAssignment 真错误不得落穿成"新分配"（复审 P3-4）：
+// ListEnabled 正常、GetAssignment 报普通错误 → 必须上抛。
+func TestAssignmentReadErrorDoesNotFallThrough(t *testing.T) {
+	st := &assignErrStore{enabled: []appegress.Egress{{ID: "e1", Identity: "https://e1"}}}
+	svc, err := appegress.NewService(appegress.Deps{Store: st, Clock: coreclock.Fixed{T: testNow}})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := svc.Assign(context.Background(), "acct-1"); err == nil {
+		t.Fatal("GetAssignment 真错误应上抛，不得继续分配")
+	}
+}
+
+// AssignOrGet 失败必须上抛。
+func TestAssignWriteErrorPropagates(t *testing.T) {
+	st := &writeErrStore{enabled: []appegress.Egress{{ID: "e1", Identity: "https://e1"}}}
+	svc, err := appegress.NewService(appegress.Deps{Store: st, Clock: coreclock.Fixed{T: testNow}})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := svc.Assign(context.Background(), "acct-1"); err == nil {
+		t.Fatal("AssignOrGet 失败应上抛")
+	}
+}
+
+type assignErrStore struct{ enabled []appegress.Egress }
+
+func (s *assignErrStore) Get(context.Context, string) (appegress.Egress, error) {
+	return appegress.Egress{}, nil
+}
+func (s *assignErrStore) ListEnabled(context.Context) ([]appegress.Egress, error) {
+	return s.enabled, nil
+}
+func (s *assignErrStore) GetAssignment(context.Context, string) (string, error) {
+	return "", errors.New("read failed")
+}
+func (s *assignErrStore) AssignOrGet(context.Context, string, string) (string, error) {
+	return "", nil
+}
+
+type writeErrStore struct{ enabled []appegress.Egress }
+
+func (s *writeErrStore) Get(context.Context, string) (appegress.Egress, error) {
+	return appegress.Egress{}, coreerrs.ErrNotFound
+}
+func (s *writeErrStore) ListEnabled(context.Context) ([]appegress.Egress, error) {
+	return s.enabled, nil
+}
+func (s *writeErrStore) GetAssignment(context.Context, string) (string, error) {
+	return "", coreerrs.ErrNotFound
+}
+func (s *writeErrStore) AssignOrGet(context.Context, string, string) (string, error) {
+	return "", errors.New("write failed")
 }

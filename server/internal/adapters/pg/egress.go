@@ -14,6 +14,18 @@ type EgressRepo struct {
 // NewEgressRepo 构造出口仓储。
 func NewEgressRepo(db *DB) *EgressRepo { return &EgressRepo{db: db} }
 
+// Get 按 ID 取出口（含停用）。
+func (r *EgressRepo) Get(ctx context.Context, egressID string) (coreegress.Record, error) {
+	var e coreegress.Record
+	err := r.db.q(ctx).QueryRow(ctx,
+		`SELECT id::text, identity FROM egresses WHERE id = $1::uuid`,
+		egressID).Scan(&e.ID, &e.Identity)
+	if err != nil {
+		return coreegress.Record{}, mapError(err)
+	}
+	return e, nil
+}
+
 // ListEnabled 返回启用出口，按 ID 升序（顺序参与确定性取模）。
 func (r *EgressRepo) ListEnabled(ctx context.Context) ([]coreegress.Record, error) {
 	rows, err := r.db.q(ctx).Query(ctx,

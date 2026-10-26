@@ -218,11 +218,14 @@ func TestSignTaskStateEnumMatchesStatus(t *testing.T) {
 		}
 		joined += w
 	}
+	// current_schema 过滤：测试库并发跑多个 schema 时，
+	// 只聚合本 schema 的枚举（否则跨 schema 词表拼接、偶发红）。
 	got, err := e.db.QueryString(e.ctx,
-		`SELECT string_agg(enumlabel, ',' ORDER BY enumsortorder)
+		`SELECT string_agg(e.enumlabel, ',' ORDER BY e.enumsortorder)
 		 FROM pg_enum e
 		 JOIN pg_type t ON t.oid = e.enumtypid
-		 WHERE t.typname = 'sign_task_state'`)
+		 JOIN pg_namespace n ON n.oid = t.typnamespace
+		 WHERE t.typname = 'sign_task_state' AND n.nspname = current_schema()`)
 	if err != nil {
 		t.Fatalf("query pg_enum: %v", err)
 	}
