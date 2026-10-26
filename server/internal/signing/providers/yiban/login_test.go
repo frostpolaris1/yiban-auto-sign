@@ -332,13 +332,41 @@ func readAuthFixture(t *testing.T) []byte {
 	return readProtocolFixture(t, "auth_response.json")
 }
 
+// readProtocolFixture 只允许读 captured 夹具。
+// 一致性套件把这里的假上游当作成功场景。
+// synthetic 与 unknown 夹具不得支撑该场景。
 func readProtocolFixture(t *testing.T, name string) []byte {
 	t.Helper()
+	if provenance := protocolFixtureProvenance(t, name); provenance != "captured" {
+		t.Fatalf("fixture %s is %s; provider tests may only use captured fixtures", name, provenance)
+	}
 	body, err := os.ReadFile("../../protocol/testdata/" + name)
 	if err != nil {
 		t.Fatalf("read %s: %v", name, err)
 	}
 	return body
+}
+
+// protocolFixtureProvenance 从登记表读取夹具来源。
+func protocolFixtureProvenance(t *testing.T, name string) string {
+	t.Helper()
+	raw, err := os.ReadFile("../../protocol/testdata/provenance.json")
+	if err != nil {
+		t.Fatalf("read provenance registry: %v", err)
+	}
+	var registry struct {
+		Files map[string]struct {
+			Provenance string `json:"provenance"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(raw, &registry); err != nil {
+		t.Fatalf("parse provenance registry: %v", err)
+	}
+	entry, ok := registry.Files[name]
+	if !ok {
+		t.Fatalf("fixture %s has no provenance entry", name)
+	}
+	return entry.Provenance
 }
 
 func testCredential() contract.Credential {

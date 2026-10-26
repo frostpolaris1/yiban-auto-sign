@@ -37,3 +37,16 @@ type WindowRecord struct {
 	Source       string
 	Version      int
 }
+
+// TaskRow 是一行可执行的计划任务（worker 的输入形状）。
+// State 取 core/status 的五态；Attempts 是已消耗的尝试数。
+type TaskRow struct {
+	ID           string
+	AccountID    string
+	SchoolID     string
+	SchoolTaskID string
+	Day          string
+	RunAt        time.Time
+	State        string
+	Attempts     int
+}
