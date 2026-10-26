@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -360,5 +361,142 @@ func TestProviderSignServerError(t *testing.T) {
 	}
 	if result.Outcome != contract.OutcomeTransient || !result.Retry.Retryable {
 		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestProviderSignReceiptShapes(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		want    contract.Outcome
+		receipt string
+	}{
+		{"positive int", `{"code":0,"data":{"Id":1}}`, contract.OutcomeSuccess, "1"},
+		{"zero float", `{"code":0,"data":{"Id":0.0}}`, contract.OutcomeUnknown, ""},
+		{"negative int", `{"code":0,"data":{"Id":-1}}`, contract.OutcomeUnknown, ""},
+		{"zero int", `{"code":0,"data":{"Id":0}}`, contract.OutcomeUnknown, ""},
+		{"blank string", `{"code":0,"data":{"Id":"  "}}`, contract.OutcomeUnknown, ""},
+		{"non-empty string", `{"code":0,"data":{"Id":"42"}}`, contract.OutcomeSuccess, "42"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			up := newUpstream(t)
+			up.signInBody = []byte(tc.body)
+			p := NewProvider(New(Config{Endpoints: up.endpoints()}))
+			result, err := p.Sign(context.Background(), providerSignRequest("attempt-receipt"))
+			if err != nil {
+				t.Fatalf("Sign: %v", err)
+			}
+			if result.Outcome != tc.want || result.Evidence.Receipt != tc.receipt {
+				t.Fatalf("result = %+v, want outcome %q receipt %q", result, tc.want, tc.receipt)
+			}
+		})
+	}
+}
+
+func TestProviderDiscoverWindowStateTwo(t *testing.T) {
+	p, up := newTestProvider(t)
+	up.setSignPositionState(t, 2)
+	p.client.clearPositions("acct-1")
+	_, err := p.DiscoverWindow(context.Background(),
+		contract.DiscoverRequest{Account: providerAccount(), Credential: providerCredential()})
+	var outcomeErr *contract.OutcomeError
+	if !errors.As(err, &outcomeErr) || outcomeErr.Outcome != contract.OutcomeNoTarget {
+		t.Fatalf("error = %v, want NoTarget", err)
+	}
+}
+
+func TestProviderSignNoTarget(t *testing.T) {
+	p, up := newTestProvider(t)
+	up.emptySignPosition(t)
+	p.client.clearPositions("acct-1")
+	result, err := p.Sign(context.Background(), providerSignRequest("attempt-notarget"))
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	if result.Outcome != contract.OutcomeNoTarget {
+		t.Fatalf("outcome = %q", result.Outcome)
+	}
+	if got := up.count("/nightAttendance/student/index/signIn"); got != 0 {
+		t.Fatalf("signIn calls = %d, want 0", got)
+	}
+}
+
+func TestProviderSignCredentialInvalid(t *testing.T) {
+	p, up := newTestProvider(t)
+	up.usersureCode = "e001"
+	result, err := p.Sign(context.Background(), providerSignRequest("attempt-badcred"))
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	if result.Outcome != contract.OutcomeCredentialBad {
+		t.Fatalf("outcome = %q", result.Outcome)
+	}
+	if got := up.count("/nightAttendance/student/index/signIn"); got != 0 {
+		t.Fatalf("signIn calls = %d, want 0", got)
+	}
+}
+
+func TestProviderSignRejected(t *testing.T) {
+	up := newUpstream(t)
+	up.signInBody = []byte(`{"code":-1,"msg":"不在签到时间"}`)
+	p := NewProvider(New(Config{Endpoints: up.endpoints()}))
+	result, err := p.Sign(context.Background(), providerSignRequest("attempt-plain-rejected"))
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	if result.Outcome != contract.OutcomeRejected || result.Retry.Retryable {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestSignPositionCache(t *testing.T) {
+	up := newUpstream(t)
+	clock := &manualClock{now: time.Date(2026, 10, 26, 6, 0, 0, 0, time.UTC)}
+	client := New(Config{Endpoints: up.endpoints(), Clock: clock})
+	req := contract.DiscoverRequest{Account: providerAccount(), Credential: providerCredential()}
+	if _, err := client.SignPosition(context.Background(), req.Account.ID, req.Credential); err != nil {
+		t.Fatalf("first SignPosition: %v", err)
+	}
+	if _, err := client.SignPosition(context.Background(), req.Account.ID, req.Credential); err != nil {
+		t.Fatalf("second SignPosition: %v", err)
+	}
+	if got := up.count("/nightAttendance/student/index/signPosition"); got != 1 {
+		t.Fatalf("cached signPosition calls = %d, want 1", got)
+	}
+	clock.Advance(positionTTL + time.Second)
+	if _, err := client.SignPosition(context.Background(), req.Account.ID, req.Credential); err != nil {
+		t.Fatalf("expired SignPosition: %v", err)
+	}
+	if got := up.count("/nightAttendance/student/index/signPosition"); got != 2 {
+		t.Fatalf("expired signPosition calls = %d, want 2", got)
+	}
+}
+
+func TestProviderSignConcurrentSameAttempt(t *testing.T) {
+	p, up := newTestProvider(t)
+	const workers = 8
+	results := make([]contract.Result, workers)
+	errs := make([]error, workers)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			results[i], errs[i] = p.Sign(context.Background(), providerSignRequest("attempt-shared"))
+		}()
+	}
+	wg.Wait()
+	for i := 0; i < workers; i++ {
+		if errs[i] != nil {
+			t.Fatalf("worker %d: %v", i, errs[i])
+		}
+		if !reflect.DeepEqual(results[0], results[i]) {
+			t.Fatalf("worker %d result differs: %+v", i, results[i])
+		}
+	}
+	if got := up.count("/nightAttendance/student/index/signIn"); got != 1 {
+		t.Fatalf("signIn calls = %d, want 1", got)
 	}
 }

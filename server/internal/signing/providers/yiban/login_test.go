@@ -300,6 +300,27 @@ func (u *upstream) removeSignPositionRange(t *testing.T) {
 	u.mu.Unlock()
 }
 
+// emptySignPosition 让 Position 为空数组。
+func (u *upstream) emptySignPosition(t *testing.T) {
+	t.Helper()
+	var obj map[string]any
+	if err := json.Unmarshal(u.signPositionFixture, &obj); err != nil {
+		t.Fatalf("unmarshal signPosition: %v", err)
+	}
+	data, ok := obj["data"].(map[string]any)
+	if !ok {
+		t.Fatal("signPosition data is not an object")
+	}
+	data["Position"] = []any{}
+	body, err := json.Marshal(obj)
+	if err != nil {
+		t.Fatalf("marshal signPosition: %v", err)
+	}
+	u.mu.Lock()
+	u.signPositionBody = body
+	u.mu.Unlock()
+}
+
 func (u *upstream) count(path string) int {
 	u.mu.Lock()
 	defer u.mu.Unlock()

@@ -18,6 +18,8 @@ type Provider struct {
 	cache  *resultCache
 }
 
+var _ contract.Provider = (*Provider)(nil)
+
 // NewProvider 用已配置的客户端构造提供方。
 func NewProvider(client *Client) *Provider {
 	return &Provider{client: client, cache: newResultCache()}
@@ -225,7 +227,8 @@ func (p *Provider) signResult(envelope protocol.Envelope, warning string) contra
 	}
 }
 
-// receiptOf 只认两种成功回执：布尔 true 与带非空 Id 的对象。
+// receiptOf 只认两种成功回执：布尔 true 与带正整数 Id 的对象。
+// 数值 Id 必须 > 0：0、负数、浮点都算无回执（参考实现的 R3-002 判据）。
 func receiptOf(data any) (string, bool) {
 	switch value := data.(type) {
 	case bool:
@@ -239,7 +242,7 @@ func receiptOf(data any) (string, bool) {
 				return id, true
 			}
 		case json.Number:
-			if id.String() != "0" {
+			if n, err := id.Int64(); err == nil && n > 0 {
 				return id.String(), true
 			}
 		}
