@@ -221,3 +221,48 @@ func (s *server) TimePrefSet(c *gin.Context, params oapi.TimePrefSetParams) {
 	}
 	s.schedule.TimePrefSet(c, params)
 }
+
+// PhotoList 委托图片处理器。未装配时仍是 501。
+func (s *server) PhotoList(c *gin.Context, params oapi.PhotoListParams) {
+	if s.photos == nil {
+		notImplemented(c)
+		return
+	}
+	s.photos.PhotoList(c, params)
+}
+
+// PhotoUpload 委托图片处理器。未装配时仍是 501。
+func (s *server) PhotoUpload(c *gin.Context, params oapi.PhotoUploadParams) {
+	if s.photos == nil {
+		notImplemented(c)
+		return
+	}
+	s.photos.PhotoUpload(c, params)
+}
+
+// PhotoGet 委托图片处理器。未装配时仍是 501。
+func (s *server) PhotoGet(c *gin.Context, id oapi.PhotoID) {
+	if s.photos == nil {
+		notImplemented(c)
+		return
+	}
+	s.photos.PhotoGet(c, id)
+}
+
+// PhotoDelete 委托图片处理器。未装配时仍是 501。
+func (s *server) PhotoDelete(c *gin.Context, id oapi.PhotoID, params oapi.PhotoDeleteParams) {
+	if s.photos == nil {
+		notImplemented(c)
+		return
+	}
+	s.photos.PhotoDelete(c, id, params)
+}
+
+// PhotoRetentionSet 委托图片处理器。未装配时仍是 501。
+func (s *server) PhotoRetentionSet(c *gin.Context, params oapi.PhotoRetentionSetParams) {
+	if s.photos == nil {
+		notImplemented(c)
+		return
+	}
+	s.photos.PhotoRetentionSet(c, params)
+}

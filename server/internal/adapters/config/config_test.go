@@ -216,6 +216,9 @@ func TestScheduleConfigDefaultsAndBounds(t *testing.T) {
 	if cfg.AllowTimePref || cfg.TimePrefCooldown.Seconds() != 30 {
 		t.Fatalf("自选缺省 = allow %v cooldown %v", cfg.AllowTimePref, cfg.TimePrefCooldown)
 	}
+	if cfg.PhotoDir != "data/photos" {
+		t.Fatalf("PhotoDir = %q, want data/photos", cfg.PhotoDir)
+	}
 
 	src := baseSource()
 	src["YIBAN_WORKERS"] = "4"
@@ -225,13 +228,15 @@ func TestScheduleConfigDefaultsAndBounds(t *testing.T) {
 	src["YIBAN_WINDOW_EDGE_BACK_SEC"] = "0"
 	src["YIBAN_ALLOW_TIME_PREF"] = "true"
 	src["YIBAN_TIME_PREF_COOLDOWN_SEC"] = "60"
+	src["YIBAN_PHOTO_DIR"] = "var/photos"
 	cfg, err = LoadFrom(src)
 	if err != nil {
 		t.Fatalf("LoadFrom overrides: %v", err)
 	}
 	if cfg.Workers != 4 || cfg.AvgAttempt.Seconds() != 5 || cfg.EgressRate != 1.5 ||
 		cfg.EdgeFront.Seconds() != 30 || cfg.EdgeBack != 0 ||
-		!cfg.AllowTimePref || cfg.TimePrefCooldown.Seconds() != 60 {
+		!cfg.AllowTimePref || cfg.TimePrefCooldown.Seconds() != 60 ||
+		cfg.PhotoDir != "var/photos" {
 		t.Fatalf("覆盖值未生效: %#v", cfg)
 	}
 
@@ -250,6 +255,7 @@ func TestScheduleConfigDefaultsAndBounds(t *testing.T) {
 		{"YIBAN_WINDOW_EDGE_BACK_SEC", "-1"},
 		{"YIBAN_ALLOW_TIME_PREF", "yes"},
 		{"YIBAN_TIME_PREF_COOLDOWN_SEC", "3601"},
+		{"YIBAN_PHOTO_DIR", "   "},
 	}
 	for _, c := range bad {
 		src := baseSource()

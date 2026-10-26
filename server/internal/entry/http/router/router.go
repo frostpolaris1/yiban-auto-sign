@@ -31,6 +31,7 @@ import (
 	accounthttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/account"
 	adminhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/admin"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
+	photoshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/photos"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/respond"
 	schedulehttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/schedule"
 	schoolhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/school"
@@ -64,6 +65,8 @@ type Options struct {
 	// Schedule 提供计划、容量与自选时间片端点。
 	// 为 nil 时这些端点回 501。
 	Schedule *schedulehttp.Handler
+	// Photos 提供图片库端点。为 nil 时这些端点回 501。
+	Photos *photoshttp.Handler
 }
 
 // server 实现生成的契约接口。
@@ -78,6 +81,7 @@ type server struct {
 	users    *userhttp.Handler
 	signing  *signinghttp.Handler
 	schedule *schedulehttp.Handler
+	photos   *photoshttp.Handler
 }
 
 // New 构造 HTTP 引擎。缺 SessionIssuer 时**失败关闭**。
@@ -109,11 +113,12 @@ func New(opts Options) (*gin.Engine, error) {
 	srv.users = opts.Users
 	srv.signing = opts.Signing
 	srv.schedule = opts.Schedule
+	srv.photos = opts.Photos
 
 	engine := gin.New()
 	engine.Use(
 		requestID(),
-		bodyLimit(maxRequestBodyBytes),
+		bodyLimit(requestBodyLimit),
 		accessLog(logger, clk),
 		recoverPanic(logger),
 		securityHeaders(),

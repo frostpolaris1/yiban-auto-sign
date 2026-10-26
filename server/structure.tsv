@@ -13,7 +13,7 @@ server/migrations	postgres	SQL migrations
 server/internal/core	auth,user,school,account,schedule,signing,photo,audit,notify,diagnostic,clock,status,errs,mask,retry,egress,plan,capacity,image,scope,window,rate	pure domain packages
 server/internal/app	auth,user,school,account,admin,schedule,timepref,signing,photo,photos,audit,notify,diagnostic,egress,worker	use cases
 server/internal/adapters	pg,session,config,audit,mail,sse,image,storage,upstream	infrastructure packages
-server/internal/entry/http	router,respond,oapi,auth,user,school,account,admin,schedule,signing,photo,audit,notify,diagnostic	http handlers
+server/internal/entry/http	router,respond,oapi,auth,user,school,account,admin,schedule,signing,photo,photos,audit,notify,diagnostic	http handlers
 ui/src	app,pages,features,components,lib,styles	frontend layers
 ui/src/features	auth,dashboard,design,user,school,account,schedule,signing,photo,audit,notify,diagnostic	domain features
 ui/src/components	shell,ui	shared components

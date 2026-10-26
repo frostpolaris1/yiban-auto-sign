@@ -32,6 +32,7 @@ tags:
   - name: admins
   - name: accounts
   - name: schedule
+  - name: photos
   - name: health
 security:
   - sessionCookie: []
@@ -723,6 +724,114 @@ paths:
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         default: { $ref: '#/components/responses/DefaultError' }
+  /api/me/photos:
+    get:
+      tags: [photos]
+      operationId: PhotoList
+      summary: List the signed-in user's photos.
+      x-roles: [user]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Photo page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PhotoPage'
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+    post:
+      tags: [photos]
+      operationId: PhotoUpload
+      summary: Upload one image into the library.
+      description: |
+        multipart/form-data with a single `image` file part. The server
+        decodes, rotates, strips metadata, re-encodes and stores the bytes.
+        The raw upload limit is 10 MiB. Uploading the same bytes again
+        returns the same photo id and restores a deleted photo.
+      x-roles: [user]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PhotoUpload'
+      responses:
+        '201':
+          description: Photo stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Photo'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/me/photos/{id}:
+    get:
+      tags: [photos]
+      operationId: PhotoGet
+      summary: Stream one photo.
+      description: |
+        Returns the stored bytes with their real media type and an ETag of
+        the sha256. The scope check runs before any bytes are written.
+        admin reads answer 404 until the account-photo relation exists.
+      x-roles: [user, admin]
+      parameters:
+        - $ref: '#/components/parameters/PhotoID'
+      responses:
+        '200':
+          description: Image bytes.
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+            image/png:
+              schema: { type: string, format: binary }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+    delete:
+      tags: [photos]
+      operationId: PhotoDelete
+      summary: Soft-delete one photo.
+      description: Idempotent; the blob is kept for dedupe and collected later.
+      x-roles: [user]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - $ref: '#/components/parameters/PhotoID'
+      responses:
+        '204': { description: Photo deleted. }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/me/photo-retention:
+    put:
+      tags: [photos]
+      operationId: PhotoRetentionSet
+      summary: Set the photo retention period.
+      description: |
+        days is one of 30, 90, 180 or 365. Missing retention means 90 days.
+      x-roles: [user]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PhotoRetentionUpdate'
+      responses:
+        '200':
+          description: Stored retention.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PhotoRetention'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        default: { $ref: '#/components/responses/DefaultError' }
   /healthz:
     get:
       tags: [health]
@@ -800,6 +909,11 @@ components:
       in: query
       required: true
       description: School task id from GET /api/schedule/windows.
+      schema: { type: string }
+    PhotoID:
+      name: id
+      in: path
+      required: true
       schema: { type: string }
   responses:
     ValidationError:
@@ -1296,6 +1410,59 @@ components:
           type: [integer, "null"]
           description: Null clears the preference.
 
+    Photo:
+      type: object
+      additionalProperties: false
+      required: [id, sha256, mime, width, height, bytes, created_at]
+      properties:
+        id: { type: string }
+        sha256:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: Digest of the stored (preprocessed) bytes; also the ETag.
+        mime:
+          type: string
+          enum: [image/jpeg, image/png]
+        width: { type: integer, minimum: 1 }
+        height: { type: integer, minimum: 1 }
+        bytes: { type: integer, format: int64, minimum: 1 }
+        created_at: { type: string, format: date-time }
+    PhotoPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Photo'
+        next_cursor:
+          type: string
+          description: Cursor for the next page; empty on the last page.
+    PhotoUpload:
+      type: object
+      additionalProperties: false
+      required: [image]
+      properties:
+        image:
+          type: string
+          format: binary
+          description: Original image bytes; JPEG or PNG, at most 10 MiB.
+    PhotoRetention:
+      type: object
+      additionalProperties: false
+      required: [days]
+      properties:
+        days:
+          type: integer
+          enum: [30, 90, 180, 365]
+    PhotoRetentionUpdate:
+      type: object
+      additionalProperties: false
+      required: [days]
+      properties:
+        days:
+          type: integer
+          enum: [30, 90, 180, 365]
     AccountPage:
       type: object
       required: [items, next_cursor]

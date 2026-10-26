@@ -72,6 +72,9 @@ type Config struct {
 	EdgeBack         time.Duration
 	AllowTimePref    bool
 	TimePrefCooldown time.Duration
+
+	// PhotoDir 是图片 blob 存储根目录。
+	PhotoDir string
 }
 
 // knownEnvs 是闭集。
@@ -174,6 +177,11 @@ func LoadFrom(src Source) (*Config, error) {
 		return nil, err
 	}
 	cfg.TimePrefCooldown = time.Duration(cooldown) * time.Second
+
+	cfg.PhotoDir = strings.TrimSpace(get(src, "YIBAN_PHOTO_DIR", "data/photos"))
+	if cfg.PhotoDir == "" {
+		return nil, errors.New("config: YIBAN_PHOTO_DIR must not be empty")
+	}
 	return cfg, nil
 }
 

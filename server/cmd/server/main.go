@@ -34,10 +34,12 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/config"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/session"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/storage"
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
 	appadmin "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/admin"
 	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
 	appegress "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/egress"
+	appphotos "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/photos"
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
 	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
 	apptimepref "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/timepref"
@@ -53,6 +55,7 @@ import (
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	accounthttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/account"
 	adminhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/admin"
+	photoshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/photos"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/router"
 	schedulehttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/schedule"
 	schoolhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/school"
@@ -69,6 +72,13 @@ const accountCapacityLimit = 10000
 // userCapacityLimit 是 P1 的活跃用户上限（裁决 12.11）。
 // 与账号上限同值，两道约束各自在插入事务内判定。
 const userCapacityLimit = 10000
+
+// 图片预处理上限：4000 万像素、单边 8192。
+// 覆盖主流手机原图；超限在解码前拒绝，避免解压炸弹。
+const (
+	photoMaxPixels = 40_000_000
+	photoMaxSidePx = 8192
+)
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -160,6 +170,7 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 		users    *userhttp.Handler
 		signing  *signinghttp.Handler
 		planning *schedulehttp.Handler
+		photoLib *photoshttp.Handler
 		db       *pg.DB
 		closeFn  = func() {}
 	)
@@ -318,6 +329,21 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 		// admin 只能签绑定学校的账号（跨校回 404）。
 		signing.WithAccess(accountSvc)
 
+		blobs, err := storage.NewFS(cfg.PhotoDir)
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("server: photo storage: %w", err)
+		}
+		photoSvc, err := appphotos.NewService(appphotos.Deps{
+			Store: pg.NewPhotoRepo(db), Blobs: blobs, Clock: clk,
+			Options: appphotos.Options{MaxPixels: photoMaxPixels, MaxSidePx: photoMaxSidePx},
+		})
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("server: photo service: %w", err)
+		}
+		photoLib = photoshttp.NewHandler(photoSvc, adminSvc)
+
 		prefRepo := pg.NewTimePrefRepo(db)
 		scheduleSvc, err := appschedule.NewService(appschedule.Deps{
 			Windows:  scheduleRepo,
@@ -365,6 +391,7 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 		Users:           users,
 		Signing:         signing,
 		Schedule:        planning,
+		Photos:          photoLib,
 	})
 	if err != nil {
 		closeFn()

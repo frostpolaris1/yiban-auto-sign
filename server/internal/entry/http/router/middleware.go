@@ -26,6 +26,19 @@ const contextRequestID = "request_id"
 // 合法认证请求体远小于 1 MiB，故正常调用不受影响。
 const maxRequestBodyBytes int64 = 1 << 20
 
+// maxPhotoUploadBytes 是图片上传的上界：10 MiB 原图加 multipart 头。
+// 只在 POST /api/me/photos 生效；其余路径仍是 1 MiB。
+const maxPhotoUploadBytes int64 = 10<<20 + 1<<20
+
+// requestBodyLimit 按路径返回请求体上界。
+// 端口与路径的比较用请求行原值，不解析、不重写。
+func requestBodyLimit(c *gin.Context) int64 {
+	if c.Request.Method == http.MethodPost && c.Request.URL.Path == "/api/me/photos" {
+		return maxPhotoUploadBytes
+	}
+	return maxRequestBodyBytes
+}
+
 // publicPaths 永不要求会话。其余 /api 路径一律要求。
 var publicPaths = map[string]struct{}{
 	"/healthz":                  {},
@@ -70,10 +83,10 @@ func newRequestID() string {
 // bodyLimit 把请求体包成有界读取器。它排在 requestID 之后、其余中间件之前。
 // 超界读取在处理器绑定时暴露；bindError 把它转成 413。
 // 本中间件**不**自己读请求体：读走即无法再次绑定。
-func bodyLimit(limit int64) gin.HandlerFunc {
+func bodyLimit(limitFor func(*gin.Context) int64) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if c.Request.Body != nil {
-			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limitFor(c))
 		}
 		c.Next()
 	}
