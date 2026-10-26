@@ -35,8 +35,13 @@ type Store interface {
 	ClaimDue(ctx context.Context, now time.Time, limit int) ([]coreschedule.TaskRow, error)
 	// Finish 把 running 行落终态。
 	Finish(ctx context.Context, accountID, schoolTaskID, day string, state corestatus.TaskState, result string, now time.Time) error
-	// Requeue 把 running 退回 pending 并移到新落点。
-	Requeue(ctx context.Context, taskID string, runAt time.Time, result string) error
+	// RequeueWait 是"等待型"重排：窗口未开、限速、出口不可用、
+	// 批处理中止。**不计业务尝试数**——等待不是一次失败的尝试。
+	RequeueWait(ctx context.Context, taskID string, runAt time.Time, result string) error
+	// RequeueRetry 是业务失败后的退避：计一次尝试数。
+	RequeueRetry(ctx context.Context, taskID string, runAt time.Time, result string) error
+	// Rearm 把当日 failed 行放回队列（手动签到的重试入口）。
+	Rearm(ctx context.Context, taskID string, runAt time.Time) error
 	// ResetRunning 回收孤儿 running 行（启动时调用）。
 	ResetRunning(ctx context.Context) (int64, error)
 	// GetWindow 取任务当日窗口；无缓存返回 errs.ErrNotFound。
