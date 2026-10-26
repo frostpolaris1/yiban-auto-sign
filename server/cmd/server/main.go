@@ -130,13 +130,8 @@ func newServer(cfg *config.Config, logger *slog.Logger) (*http.Server, error) {
 // 有 DSN 时：迁移 → 连接池 → 仓储 → 认证与四个业务域用例。
 // 无 DSN 时：内存会话；认证与四个业务域端点回 501，并打印警告。
 // **不静默降级**：没有数据库就没有可用登录，警告写在启动日志里。
-// buildStack 装配真实签到提供方。
+// buildStack 装配全部服务与真实签到提供方。
 func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
-	return buildStackWith(cfg, logger, nil)
-}
-
-// buildStackWith 允许测试注入签到校验器；nil 时用真实易班 Provider。
-func buildStackWith(cfg *config.Config, logger *slog.Logger, verifier signinghttp.Verifier) (*appStack, error) {
 	if cfg == nil {
 		return nil, errors.New("server: nil config")
 	}
@@ -266,10 +261,8 @@ func buildStackWith(cfg *config.Config, logger *slog.Logger, verifier signinghtt
 		admins = adminhttp.NewHandler(adminSvc, adminSvc)
 		accounts = accounthttp.NewHandler(accountSvc, adminSvc)
 		users = userhttp.NewHandler(userSvc, adminSvc)
-		if verifier == nil {
-			verifier = yiban.NewProvider(yiban.New(yiban.Config{Clock: clk}))
-		}
-		signing = signinghttp.NewHandler(accountSvc, adminSvc, verifier)
+		signing = signinghttp.NewHandler(accountSvc, adminSvc,
+			yiban.NewProvider(yiban.New(yiban.Config{Clock: clk})))
 	}
 
 	engine, err := router.New(router.Options{
