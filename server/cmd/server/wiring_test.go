@@ -2,17 +2,20 @@ package main
 
 import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/storage"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
 	appegress "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/egress"
+	appphotos "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/photos"
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
 	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
 	apptimepref "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/timepref"
 	appuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/user"
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
 	corerate "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/rate"
+	photoshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/photos"
 	schedulehttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/schedule"
 	signinghttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/signing"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/providers/yiban"
@@ -52,4 +55,8 @@ var (
 	// 手动签到的可见面判据与入队接缝。
 	_ signinghttp.AccountAccess = (*appaccount.Service)(nil)
 	_ signinghttp.ManualSigner  = (*appworker.Service)(nil)
+	// P5-B：图片仓储与 blob 存储。
+	_ appphotos.Store    = (*pg.PhotoRepo)(nil)
+	_ appphotos.Blobs    = (*storage.FS)(nil)
+	_ photoshttp.Service = (*appphotos.Service)(nil)
 )

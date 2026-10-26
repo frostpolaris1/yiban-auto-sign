@@ -108,6 +108,7 @@ func newAuthEnv(t *testing.T) *authEnv {
 		InsecureCookies: true,
 		HashPepper:      authTestPepper,
 		CredentialKey:   authTestCredentialKey,
+		PhotoDir:        t.TempDir(),
 	}
 	stack, err := buildStack(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {

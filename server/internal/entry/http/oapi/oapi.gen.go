@@ -136,6 +136,72 @@ func (e HealthStatusStatus) Valid() bool {
 	}
 }
 
+// Defines values for PhotoMime.
+const (
+	Imagejpeg PhotoMime = "image/jpeg"
+	Imagepng  PhotoMime = "image/png"
+)
+
+// Valid indicates whether the value is a known member of the PhotoMime enum.
+func (e PhotoMime) Valid() bool {
+	switch e {
+	case Imagejpeg:
+		return true
+	case Imagepng:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PhotoRetentionDays.
+const (
+	PhotoRetentionDaysN180 PhotoRetentionDays = 180
+	PhotoRetentionDaysN30  PhotoRetentionDays = 30
+	PhotoRetentionDaysN365 PhotoRetentionDays = 365
+	PhotoRetentionDaysN90  PhotoRetentionDays = 90
+)
+
+// Valid indicates whether the value is a known member of the PhotoRetentionDays enum.
+func (e PhotoRetentionDays) Valid() bool {
+	switch e {
+	case PhotoRetentionDaysN180:
+		return true
+	case PhotoRetentionDaysN30:
+		return true
+	case PhotoRetentionDaysN365:
+		return true
+	case PhotoRetentionDaysN90:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PhotoRetentionUpdateDays.
+const (
+	PhotoRetentionUpdateDaysN180 PhotoRetentionUpdateDays = 180
+	PhotoRetentionUpdateDaysN30  PhotoRetentionUpdateDays = 30
+	PhotoRetentionUpdateDaysN365 PhotoRetentionUpdateDays = 365
+	PhotoRetentionUpdateDaysN90  PhotoRetentionUpdateDays = 90
+)
+
+// Valid indicates whether the value is a known member of the PhotoRetentionUpdateDays enum.
+func (e PhotoRetentionUpdateDays) Valid() bool {
+	switch e {
+	case PhotoRetentionUpdateDaysN180:
+		return true
+	case PhotoRetentionUpdateDaysN30:
+		return true
+	case PhotoRetentionUpdateDaysN365:
+		return true
+	case PhotoRetentionUpdateDaysN90:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ScheduleWindowSource.
 const (
 	Cache    ScheduleWindowSource = "cache"
@@ -395,6 +461,52 @@ type LoginRequest struct {
 	Password string              `json:"password"`
 }
 
+// Photo defines model for Photo.
+type Photo struct {
+	Bytes     int64     `json:"bytes"`
+	CreatedAt time.Time `json:"created_at"`
+	Height    int       `json:"height"`
+	Id        string    `json:"id"`
+	Mime      PhotoMime `json:"mime"`
+
+	// Sha256 Digest of the stored (preprocessed) bytes; also the ETag.
+	Sha256 string `json:"sha256"`
+	Width  int    `json:"width"`
+}
+
+// PhotoMime defines model for Photo.Mime.
+type PhotoMime string
+
+// PhotoPage defines model for PhotoPage.
+type PhotoPage struct {
+	Items []Photo `json:"items"`
+
+	// NextCursor Cursor for the next page; empty on the last page.
+	NextCursor string `json:"next_cursor"`
+}
+
+// PhotoRetention defines model for PhotoRetention.
+type PhotoRetention struct {
+	Days PhotoRetentionDays `json:"days"`
+}
+
+// PhotoRetentionDays defines model for PhotoRetention.Days.
+type PhotoRetentionDays int
+
+// PhotoRetentionUpdate defines model for PhotoRetentionUpdate.
+type PhotoRetentionUpdate struct {
+	Days PhotoRetentionUpdateDays `json:"days"`
+}
+
+// PhotoRetentionUpdateDays defines model for PhotoRetentionUpdate.Days.
+type PhotoRetentionUpdateDays int
+
+// PhotoUpload defines model for PhotoUpload.
+type PhotoUpload struct {
+	// Image Original image bytes; JPEG or PNG, at most 10 MiB.
+	Image openapi_types.File `json:"image"`
+}
+
 // ResetPasswordRequest defines model for ResetPasswordRequest.
 type ResetPasswordRequest struct {
 	NewPassword string `json:"new_password"`
@@ -615,6 +727,9 @@ type Cursor = string
 // Limit defines model for Limit.
 type Limit = int
 
+// PhotoID defines model for PhotoID.
+type PhotoID = string
+
 // SchoolID defines model for SchoolID.
 type SchoolID = string
 
@@ -734,6 +849,36 @@ type CapacityGetParams struct {
 	Day *string `form:"day,omitempty" json:"day,omitempty"`
 }
 
+// PhotoRetentionSetParams defines parameters for PhotoRetentionSet.
+type PhotoRetentionSetParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
+// PhotoListParams defines parameters for PhotoList.
+type PhotoListParams struct {
+	// Cursor Opaque page cursor taken from next_cursor.
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Limit Page size, 1 to 200.
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// PhotoUploadParams defines parameters for PhotoUpload.
+type PhotoUploadParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
+// PhotoDeleteParams defines parameters for PhotoDelete.
+type PhotoDeleteParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
 // TimePrefSetParams defines parameters for TimePrefSet.
 type TimePrefSetParams struct {
 	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
@@ -845,6 +990,12 @@ type AuthLoginJSONRequestBody = LoginRequest
 // AuthResetPasswordJSONRequestBody defines body for AuthResetPassword for application/json ContentType.
 type AuthResetPasswordJSONRequestBody = ResetPasswordRequest
 
+// PhotoRetentionSetJSONRequestBody defines body for PhotoRetentionSet for application/json ContentType.
+type PhotoRetentionSetJSONRequestBody = PhotoRetentionUpdate
+
+// PhotoUploadMultipartRequestBody defines body for PhotoUpload for multipart/form-data ContentType.
+type PhotoUploadMultipartRequestBody = PhotoUpload
+
 // TimePrefSetJSONRequestBody defines body for TimePrefSet for application/json ContentType.
 type TimePrefSetJSONRequestBody = TimePrefUpdate
 
@@ -913,6 +1064,21 @@ type ServerInterface interface {
 	// CapacityGet Report capacity and demand for one school task.
 	// (GET /api/capacity)
 	CapacityGet(c *gin.Context, params CapacityGetParams)
+	// PhotoRetentionSet Set the photo retention period.
+	// (PUT /api/me/photo-retention)
+	PhotoRetentionSet(c *gin.Context, params PhotoRetentionSetParams)
+	// PhotoList List the signed-in user's photos.
+	// (GET /api/me/photos)
+	PhotoList(c *gin.Context, params PhotoListParams)
+	// PhotoUpload Upload one image into the library.
+	// (POST /api/me/photos)
+	PhotoUpload(c *gin.Context, params PhotoUploadParams)
+	// PhotoDelete Soft-delete one photo.
+	// (DELETE /api/me/photos/{id})
+	PhotoDelete(c *gin.Context, id PhotoID, params PhotoDeleteParams)
+	// PhotoGet Stream one photo.
+	// (GET /api/me/photos/{id})
+	PhotoGet(c *gin.Context, id PhotoID)
 	// TimePrefGet Read the signed-in user's preferred signing offset.
 	// (GET /api/me/time-pref)
 	TimePrefGet(c *gin.Context)
@@ -1540,6 +1706,204 @@ func (siw *ServerInterfaceWrapper) CapacityGet(c *gin.Context) {
 	siw.Handler.CapacityGet(c, params)
 }
 
+// PhotoRetentionSet operation middleware
+func (siw *ServerInterfaceWrapper) PhotoRetentionSet(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params PhotoRetentionSetParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.PhotoRetentionSet(c, params)
+}
+
+// PhotoList operation middleware
+func (siw *ServerInterfaceWrapper) PhotoList(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params PhotoListParams
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "cursor", c.Request.URL.Query(), &params.Cursor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter cursor: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", c.Request.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter limit: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.PhotoList(c, params)
+}
+
+// PhotoUpload operation middleware
+func (siw *ServerInterfaceWrapper) PhotoUpload(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params PhotoUploadParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.PhotoUpload(c, params)
+}
+
+// PhotoDelete operation middleware
+func (siw *ServerInterfaceWrapper) PhotoDelete(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id PhotoID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", c.Param("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params PhotoDeleteParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.PhotoDelete(c, id, params)
+}
+
+// PhotoGet operation middleware
+func (siw *ServerInterfaceWrapper) PhotoGet(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id PhotoID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", c.Param("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.PhotoGet(c, id)
+}
+
 // TimePrefGet operation middleware
 func (siw *ServerInterfaceWrapper) TimePrefGet(c *gin.Context) {
 
@@ -2150,5 +2514,10 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/me/time-pref", wrapper.TimePrefGet)
 	router.PUT(options.BaseURL+"/api/me/time-pref", wrapper.TimePrefSet)
 	router.GET(options.BaseURL+"/api/capacity", wrapper.CapacityGet)
+	router.GET(options.BaseURL+"/api/me/photos", wrapper.PhotoList)
+	router.POST(options.BaseURL+"/api/me/photos", wrapper.PhotoUpload)
+	router.DELETE(options.BaseURL+"/api/me/photos/:id", wrapper.PhotoDelete)
+	router.GET(options.BaseURL+"/api/me/photos/:id", wrapper.PhotoGet)
+	router.PUT(options.BaseURL+"/api/me/photo-retention", wrapper.PhotoRetentionSet)
 	router.GET(options.BaseURL+"/healthz", wrapper.HealthCheck)
 }

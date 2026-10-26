@@ -1854,6 +1854,18 @@
     "tier": "master",
     "reload": "restart"
   },
+  "YIBAN_PHOTO_DIR": {
+    "type": "string",
+    "default": "data/photos",
+    "group": [
+      "图片"
+    ],
+    "doc": "图片 blob 存储根目录（相对路径按进程工作目录解析）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
   "YIBAN_RETENTION_DAYS": {
     "type": "int",
     "default": 365,

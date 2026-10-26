@@ -36,9 +36,11 @@ import (
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/session"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/storage"
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
 	appadmin "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/admin"
 	appegress "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/egress"
+	appphotos "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/photos"
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
 	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
 	apptimepref "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/timepref"
@@ -52,6 +54,7 @@ import (
 	accounthttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/account"
 	adminhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/admin"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
+	photoshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/photos"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/router"
 	schedulehttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/schedule"
 	schoolhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/school"
@@ -84,6 +87,7 @@ type w2cEnv struct {
 	audits   *pg.AuditRepo
 	sched    *pg.ScheduleRepo
 	prefs    *pg.TimePrefRepo
+	photos   *pg.PhotoRepo
 	worker   *appworker.Service
 	provider *e2eProvider
 	// windows 是窗口发现脚本：任务 ID → 平台窗口。
@@ -151,6 +155,7 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 	e.accounts = pg.NewAccountRepo(db)
 	e.sched = pg.NewScheduleRepo(db)
 	e.prefs = pg.NewTimePrefRepo(db)
+	e.photos = pg.NewPhotoRepo(db)
 	e.windows = map[string]contract.Window{}
 	e.audits, err = pg.NewAuditRepo(db, []byte("w2c-audit-key-0123456789abcdef00"))
 	if err != nil {
@@ -233,6 +238,17 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 	}
 	signingHandler := signinghttp.NewHandler(accountSvc, adminSvc, e.provider).
 		WithManual(e.worker).WithAccess(accountSvc)
+	photoBlobs, err := storage.NewFS(t.TempDir())
+	if err != nil {
+		t.Fatalf("new photo storage: %v", err)
+	}
+	photoSvc, err := appphotos.NewService(appphotos.Deps{
+		Store: e.photos, Blobs: photoBlobs, Clock: clk,
+		Options: appphotos.Options{MaxPixels: 4_000_000, MaxSidePx: 4096},
+	})
+	if err != nil {
+		t.Fatalf("new photo service: %v", err)
+	}
 	scheduleHandler := schedulehttp.NewHandler(scheduleSvc, prefSvc, adminSvc, schedulehttp.Config{
 		Location: loc, Workers: 1, Avg: 60 * time.Second, Rate: 1.0, Util: 0.8,
 		SlotsPerSlice: 5, Front: true, UsePrefs: true,
@@ -248,6 +264,7 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		Accounts:        accounthttp.NewHandler(accountSvc, adminSvc),
 		Signing:         signingHandler,
 		Schedule:        scheduleHandler,
+		Photos:          photoshttp.NewHandler(photoSvc, adminSvc),
 	})
 	if err != nil {
 		t.Fatalf("router.New: %v", err)
