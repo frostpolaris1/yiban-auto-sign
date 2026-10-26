@@ -670,6 +670,22 @@ class TriggerCountTest(_Base):
         self.assertEqual("yiban-backup-wrapper.sh", report["findings"][0]["job"])
         self.assertEqual(2, report["findings"][0]["count"])
 
+    def test_drift_summary_uses_structured_flag_not_note_text(self):
+        """第 P2-1 项：摘要只认 undeclared 布尔字段，note 文案改了也不退化。"""
+        findings = [
+            {"job": "yiban-backup-wrapper.sh", "schedule": "0 2 * * *",
+             "count": 2, "sources": ["root 的 crontab"],
+             "note": "生产者改过的文案甲", "undeclared": False},
+            {"job": "yiban-backup-wrapper.sh", "schedule": "0 3 * * *",
+             "count": 1, "sources": ["root 的 crontab"],
+             "note": "生产者改过的文案乙", "undeclared": True},
+        ]
+        summary = self.mod._trigger_drift_summary(findings)
+        self.assertEqual(
+            "同一作业的触发器与仓库表声明不一致（含重复触发器与未声明排期）。",
+            summary,
+            "两形状并存时 note 文案变化不得让摘要退化成只剩「多条」")
+
     def test_findings_carry_structured_undeclared_flag(self):
         """第 P4-3 项：未声明排期用布尔字段判定，不靠 note 文案。"""
         repo = os.path.join(self.app_dir, "deploy", "prod", "cron.d")
@@ -950,8 +966,9 @@ class TriggerCountE2ETest(unittest.TestCase):
     def test_cron_d_file_name_with_dot_is_ignored_by_cron(self):
         """cron 自己的文件名规则：/etc/cron.d 下含点号的文件不被读取。
 
-        生产上有三份 `yiban-*.reconcile-20261017125303` 残留，按 cron 规则本来
-        就不执行。不实现这条规则，门会把它们误报成重复触发器。
+        生产上实测 4 份 `yiban-*.reconcile-*` 残留（2026-10-26 生产：cleanup
+        两份 + probe 一份 + sign 一份），按 cron 规则本来就不执行。不实现这条
+        规则，门会把它们误报成重复触发器。
         """
         # cron.d 形态（带身份列），与生产残留件的形态一致：若门漏了文件名规则，
         # 这一行会被算成第二条备份触发器。
@@ -1115,10 +1132,19 @@ class SentinelDocContractTest(unittest.TestCase):
         self.assertNotIn("man 5 crontab", self.src)
 
     def test_cron_d_docstring_registers_lsb_name_assumption(self):
-        """第 P4-2 项：`-l`（LSB 名字规则）假设必须写进 docstring。"""
+        """第 P4-2 项：`-l`（LSB 名字规则）假设与漏报后果必须写进 docstring。"""
         doc = self.mod._cron_d_entries.__doc__ or ""
         self.assertIn("-l", doc)
         self.assertIn("LSB", doc)
+        # P2-2：承重的是「开了 -l 会漏报」这半句，不能只断言关键词
+        self.assertIn("会变成活跃触发器，本门不会报", doc,
+                      "漏报声明被删掉了：本门不会报")
+
+    def test_cron_d_docstring_reports_the_measured_reconcile_count(self):
+        """第 P2-3 项：残留份数与口径写对（2026-10-26 生产实测 4 份）。"""
+        self.assertIn("实测 4 份", self.src)
+        self.assertIn("2026-10-26", self.src)
+        self.assertNotIn("生产上三份", self.src)
 
 
 class BackupDocsContractTest(unittest.TestCase):
