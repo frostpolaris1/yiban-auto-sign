@@ -136,7 +136,7 @@ func (c *Client) loginLocked(ctx context.Context, entry *sessionEntry, cred cont
 			return contract.Profile{}, outcome(contract.OutcomeUnknown, "auth redirect limit exceeded")
 		}
 		next, err := req.URL.Parse(resp.Header.Get("Location"))
-		if err != nil || !c.trustedAuthHost(next.Host) {
+		if err != nil || !c.trustedAuthHost(next) {
 			return contract.Profile{}, outcome(contract.OutcomeUnknown, "untrusted auth redirect")
 		}
 		authURL = next.String()
