@@ -139,7 +139,7 @@ _BARE_REDIRECT_TOKENS = frozenset({
 })
 #: 贴紧式重定向（`2>&1`、`>/dev/null`、`2>/dev/null`、`>>/var/log/x`）
 _ATTACHED_REDIRECT_RE = re.compile(r"^\d*(?:>>?|<<?)\S")
-#: cron 只读文件名匹配该字符集（man 5 crontab）；其余字符让整份文件被忽略
+#: cron 只读文件名匹配该字符集（man 8 cron）；其余字符让整份文件被忽略
 _CRON_TABLE_NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
 
 
@@ -364,8 +364,9 @@ def _job_keys_in_command(command, known_jobs):
     其它改名入口/软链名不归并（登记边界，不做 inode 归并）。
     `sh -c '<单个脚本路径>'` 会识别（引号剥除后 basename 命中）；
     `sh -c '<含多个词的整段脚本>'` 不保证。
-    边界（登记）：无值短选项（`sudo -n`、`env -i`）后的命令会被当成选项值跳过；
-    部署契约没有这种写法，出现时本门不保证认出。
+    边界（登记）：无值短选项（`sudo -n`、`env -i`、`bash -x`、`sh -eu`）后的
+    命令会被当成选项值跳过；部署契约没有这种写法，出现时本门不保证认出。
+    「跳过选项值」是降噪守卫：去掉它只会多报（安全方向），不会漏报（P4-4）。
     """
     found = set()
     for segment in _command_segments(command):
@@ -388,8 +389,8 @@ def _job_keys_in_command(command, known_jobs):
                 job = _known_job_for(name, known_jobs)
                 if job is not None:
                     found.add(job)
-            # 其值是命令（`sh -c '<脚本路径>'`），下一个 token 要参与匹配
-            prev_is_option = (False if token in ("-c", "--command")
+            # -c/--command 的值是命令；`--opt=value` 是紧贴值，下一 token 仍是命令
+            prev_is_option = (False if token in ("-c", "--command") or "=" in token
                               else token.startswith("-"))
     return found
 
@@ -465,6 +466,10 @@ def _cron_d_entries(cron_d_dir):
     其余字符（点号、波浪号、空格、`+` 等）让整份文件被忽略。生产上三份
     `yiban-*.reconcile-20261017125303` 残留因此不是活跃触发器；不实现这条规则，
     门会把它们误报成重复。
+    假设（生产实测）：cron **未开 `-l`（LSB 名字规则）**。开 `-l` 时 cron 只认
+    `^_?([a-z0-9_.]+-)+[a-z0-9]+$` 形态的 LSB 文件名，三份
+    `yiban-*.reconcile-*` 会变成活跃触发器，本门不会报（生产机
+    `ps -o args= -C cron` 无 `-l`）。
     边界（如实登记）：文件的属主/权限条件（root 且组与其他不可写）**不判**。
     权限不合的文件 cron 不执行，本门仍把它算成触发器——方向是多报，不是漏报。
     """
@@ -601,6 +606,8 @@ def _trigger_drift_report(repo_cron_dir, cron_d_dir=DEFAULT_CRON_D_DIR,
                 "count": len(production[(job, schedule)]),
                 "sources": production[(job, schedule)],
                 "note": "排期未在仓库表声明",
+                # 类型判据用布尔字段，不靠 note 文案（文案一改分流会静默退化）
+                "undeclared": True,
             })
         for schedule in sorted(observed & declared):
             count = len(production[(job, schedule)])
@@ -609,6 +616,7 @@ def _trigger_drift_report(repo_cron_dir, cron_d_dir=DEFAULT_CRON_D_DIR,
                     "job": job, "schedule": schedule, "count": count,
                     "sources": production[(job, schedule)],
                     "note": "同一作业同一排期有多条",
+                    "undeclared": False,
                 })
     report = None
     if findings:
@@ -736,8 +744,8 @@ def _missing_mail(day, backup_dir, archive, sidecar_ok, plaintext=None, *,
         parts, tips = _trigger_drift_parts(trigger_drift)
         fields += parts
         advice += tips
-        summary += (f" 另有 {len(trigger_drift['findings'])} 条作业排期的触发器"
-                    "与仓库表声明不一致（cron 会并发跑同一份作业）。")
+        summary += (f" 另有 {len(trigger_drift['findings'])} 条作业排期漂移："
+                    + _trigger_drift_summary(trigger_drift["findings"]))
     return mail_layout.Mail(summary=summary, fields=fields, advice=advice, level="urgent")
 
 
@@ -748,7 +756,7 @@ def _trigger_drift_summary(findings):
     「1 条」自相矛盾（第 6 项）。两种形状并存时用中性措辞，不单说哪一种。
     """
     has_multi = any(f["count"] > 1 for f in findings)
-    has_undeclared = any(f["note"] == "排期未在仓库表声明" for f in findings)
+    has_undeclared = any(f["undeclared"] for f in findings)
     if has_multi and has_undeclared:
         return "同一作业的触发器与仓库表声明不一致（含重复触发器与未声明排期）。"
     if has_multi:
