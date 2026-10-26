@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corelocation "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/location"
 	coreretry "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/retry"
@@ -121,7 +122,7 @@ func (s *Service) Step(ctx context.Context, limit int) (int, error) {
 		// 否则这些行停在 running 到重启（P4-E 复审 P3-1）。
 		releaseCtx := context.WithoutCancel(ctx)
 		for _, rest := range tasks[releaseFrom:] {
-			if releaseErr := s.deps.Store.RequeueWait(releaseCtx, rest.ID, rest.RunAt, waitBatchAborted); releaseErr != nil {
+			if releaseErr := s.requeueWait(releaseCtx, rest, rest.RunAt, waitBatchAborted); releaseErr != nil {
 				// 退回失败优先上报：队列卡死比单次执行失败更严重。
 				return processed, releaseErr
 			}
@@ -143,7 +144,7 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 		if isNotFound(err) {
 			// 窗口尚未发现不是结论：10 分钟后再看。若当日始终没有窗口，
 			// 行会保持 pending 到下一个业务日，由日切逻辑（P4-F）清理。
-			return false, s.deps.Store.RequeueWait(ctx, task.ID, s.deps.Clock.Now().Add(windowMissingRetry), waitWindowMissing)
+			return false, s.requeueWait(ctx, task, s.deps.Clock.Now().Add(windowMissingRetry), waitWindowMissing)
 		}
 		return false, err
 	}
@@ -156,20 +157,20 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 	}
 	if !win.Open(now) {
 		// 提前认领：退回窗口起点。等待不计业务尝试数。
-		return false, s.deps.Store.RequeueWait(ctx, task.ID, win.Start, waitWindowOpen)
+		return false, s.requeueWait(ctx, task, win.Start, waitWindowOpen)
 	}
 
 	eg, err := s.deps.Egress.Assign(ctx, task.AccountID)
 	if err != nil {
 		// 出口面问题（无启用出口/分配失败）不是账号的错：短退避，不计数。
-		return false, s.deps.Store.RequeueWait(ctx, task.ID, now.Add(time.Minute), waitEgress)
+		return false, s.requeueWait(ctx, task, now.Add(time.Minute), waitEgress)
 	}
 	if !s.deps.Limiter.Admit(eg.ID, now) {
 		wait := s.deps.Limiter.RetryAfter(eg.ID, now)
 		if wait <= 0 {
 			wait = time.Second // 桶拒绝但等待量为零：兜底 1s，防忙等
 		}
-		return false, s.deps.Store.RequeueWait(ctx, task.ID, now.Add(wait), waitRate)
+		return false, s.requeueWait(ctx, task, now.Add(wait), waitRate)
 	}
 
 	cred, err := s.deps.Creds.Credential(ctx, task.AccountID)
@@ -300,12 +301,57 @@ func (s *Service) settleOutcome(ctx context.Context, task corescheduleTask, win 
 		return s.finish(ctx, task, corestatus.TaskFailed, string(outcome))
 	}
 	// 业务失败重排要计尝试数（与等待型 RequeueWait 区分）。
-	return s.deps.Store.RequeueRetry(ctx, task.ID, now.Add(delay), string(outcome))
+	return s.requeueRetry(ctx, task, now.Add(delay), string(outcome))
+}
+
+// requeueWait 是等待型重排：成功后发 task.progress。
+// attempt 口径 = 落库后的 sign_tasks.attempts；等待不计尝试。
+func (s *Service) requeueWait(ctx context.Context, task corescheduleTask, runAt time.Time, result string) error {
+	if err := s.deps.Store.RequeueWait(ctx, task.ID, runAt, result); err != nil {
+		return err
+	}
+	s.notifyProgress(ctx, task, task.Attempts)
+	return nil
+}
+
+// requeueRetry 是业务退避重排：成功后发 task.progress。
+// RequeueRetry 计一次尝试，故 attempt 为已消耗数加一。
+func (s *Service) requeueRetry(ctx context.Context, task corescheduleTask, runAt time.Time, result string) error {
+	if err := s.deps.Store.RequeueRetry(ctx, task.ID, runAt, result); err != nil {
+		return err
+	}
+	s.notifyProgress(ctx, task, task.Attempts+1)
+	return nil
+}
+
+// notifyProgress 发布 task.progress。payload 只放 account_id 与 attempt。
+// 发布不得阻塞或改变结算语义：实现失败只丢事件，panic 就地吞掉。
+func (s *Service) notifyProgress(ctx context.Context, task corescheduleTask, attempt int) {
+	if s.deps.Notifier == nil {
+		return
+	}
+	defer func() { _ = recover() }() // 发布失败只丢事件
+	s.deps.Notifier.TaskEvent(ctx, task.SchoolID, task.SchoolTaskID, task.Day,
+		appevents.TypeTaskProgress, map[string]any{"account_id": task.AccountID, "attempt": attempt})
 }
 
 // finish 落终态。终态只认 core/status 的三值。
+// 落库成功后发 task.concluded（payload：account_id、state、attempt）。
 func (s *Service) finish(ctx context.Context, task corescheduleTask, state corestatus.TaskState, result string) error {
-	return s.deps.Store.Finish(ctx, task.AccountID, task.SchoolTaskID, task.Day, state, result, s.deps.Clock.Now())
+	if err := s.deps.Store.Finish(ctx, task.AccountID, task.SchoolTaskID, task.Day, state, result, s.deps.Clock.Now()); err != nil {
+		return err
+	}
+	if s.deps.Notifier != nil {
+		// attempt 口径 = 落库后的 sign_tasks.attempts；Finish 计一次尝试。
+		defer func() { _ = recover() }() // 发布失败只丢事件
+		s.deps.Notifier.TaskEvent(ctx, task.SchoolID, task.SchoolTaskID, task.Day,
+			appevents.TypeTaskConcluded, map[string]any{
+				"account_id": task.AccountID,
+				"state":      string(state),
+				"attempt":    task.Attempts + 1,
+			})
+	}
+	return nil
 }
 
 // attemptID 生成"按尝试唯一"的幂等键。
