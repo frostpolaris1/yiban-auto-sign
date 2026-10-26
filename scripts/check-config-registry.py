@@ -98,8 +98,8 @@ AST 里键名是 `ast.Constant`、缺省值是另一处 `ast.Constant`，"同行
   跳过必须登记在代码侧处置册的 `_meta.shell_exempt_defaults`，未登记即红——
   "跳过"是显性代价，门不把它当绿。
 - `default_symbols` 只保证**已声明**的常量被赋字面量时判红。常量与键之间没有机械
-  映射，**漏声明的承载常量**本门看不见（第四轮实测 `_DEFAULT_SIGN_START` 改
-  `(6, 31)` 仍 rc=0，本轮已补登记）。新增承载常量必须人工补登记。
+  映射，**漏声明的承载常量**本门看不见（`_DEFAULT_SIGN_START` 曾漏登记，实测改值
+  后门仍 rc=0，现由 `default_symbols` 钉住）。新增承载常量必须人工补登记。
 - 判据 2 的时刻形状臂只认 `(H, M)` / `((H, M))` / `time(H, M)`。改载体形状
   （`(H, M, S)`、字符串元组、字典）即失去保护，diff 里必须写明。
 - 判据 5 的类别事实核对：机械类别（shell/container_form/harness/prose）参与文件
