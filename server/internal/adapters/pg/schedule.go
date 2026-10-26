@@ -327,7 +327,8 @@ func (r *ScheduleRepo) RequeueRetry(ctx context.Context, taskID string, runAt ti
 // 之外的历史，attempts 保留（预算仍是当日的真实消耗）。
 func (r *ScheduleRepo) Rearm(ctx context.Context, taskID string, runAt time.Time) error {
 	ct, err := r.db.q(ctx).Exec(ctx,
-		`UPDATE sign_tasks SET state = 'pending', run_at = $2, claimed_at = NULL
+		`UPDATE sign_tasks SET state = 'pending', run_at = $2, claimed_at = NULL,
+		        result = ''
 		 WHERE id = $1::uuid AND state = 'failed'`,
 		taskID, runAt)
 	if err != nil {

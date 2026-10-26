@@ -137,6 +137,7 @@ func TestTodayTaskPicksEnabled(t *testing.T) {
 		t.Fatalf("task: %v", err)
 	}
 	acct := e.createAccount(school.ID, e.createUser("wk-today@example.com").ID, "13800020005")
+	e.activateAccount(acct.ID) // TodayTask 只认活跃账号
 	got, err := e.sched.TodayTask(e.ctx, acct.ID)
 	if err != nil || got != enabled {
 		t.Fatalf("TodayTask = (%s,%v), want %s", got, err, enabled)
