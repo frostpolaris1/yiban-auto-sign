@@ -45,7 +45,9 @@ import (
 	adminhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/admin"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/router"
 	schoolhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/school"
+	signinghttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/signing"
 	userhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/user"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/providers/yiban"
 )
 
 // accountCapacityLimit 是 P1 的活跃账号上限（裁决 12.11）。
@@ -128,7 +130,13 @@ func newServer(cfg *config.Config, logger *slog.Logger) (*http.Server, error) {
 // 有 DSN 时：迁移 → 连接池 → 仓储 → 认证与四个业务域用例。
 // 无 DSN 时：内存会话；认证与四个业务域端点回 501，并打印警告。
 // **不静默降级**：没有数据库就没有可用登录，警告写在启动日志里。
+// buildStack 装配真实签到提供方。
 func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
+	return buildStackWith(cfg, logger, nil)
+}
+
+// buildStackWith 允许测试注入签到校验器；nil 时用真实易班 Provider。
+func buildStackWith(cfg *config.Config, logger *slog.Logger, verifier signinghttp.Verifier) (*appStack, error) {
 	if cfg == nil {
 		return nil, errors.New("server: nil config")
 	}
@@ -143,6 +151,7 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 		admins   *adminhttp.Handler
 		accounts *accounthttp.Handler
 		users    *userhttp.Handler
+		signing  *signinghttp.Handler
 		db       *pg.DB
 		closeFn  = func() {}
 	)
@@ -257,6 +266,10 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 		admins = adminhttp.NewHandler(adminSvc, adminSvc)
 		accounts = accounthttp.NewHandler(accountSvc, adminSvc)
 		users = userhttp.NewHandler(userSvc, adminSvc)
+		if verifier == nil {
+			verifier = yiban.NewProvider(yiban.New(yiban.Config{Clock: clk}))
+		}
+		signing = signinghttp.NewHandler(accountSvc, adminSvc, verifier)
 	}
 
 	engine, err := router.New(router.Options{
@@ -269,6 +282,7 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 		Admins:          admins,
 		Accounts:        accounts,
 		Users:           users,
+		Signing:         signing,
 	})
 	if err != nil {
 		closeFn()

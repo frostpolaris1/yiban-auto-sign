@@ -16,7 +16,8 @@
 // 每次调用的第一个参数是作用域，漏传即编译失败。
 // 跨校读取一律 404；动作无权 403；非法状态迁移 409。
 // 写动作与审计行同事务；审计追加是事务最后一条语句。
-// 明文手机号与口令**不出本层**：手机会在入口层掩码，口令在本层加密。
+// 明文手机号与口令只经 SigningCredential 交给签到链；
+// 本层不记录、不回显，入口层负责掩码。
 package account
 
 import (
@@ -106,6 +107,16 @@ type UpdateInput struct {
 	PhoneModel *string
 }
 
+// SigningCredential 是签到链需要的明文凭据。
+// 只在本进程内交给 provider；入口层不得记录或回显。
+type SigningCredential struct {
+	SchoolID   string
+	Phone      string
+	Password   string
+	DeviceCode string
+	PhoneModel string
+}
+
 // NewService 构造账号用例。缺依赖即失败。
 func NewService(deps Deps) (*Service, error) {
 	if deps.Accounts == nil {
@@ -158,6 +169,37 @@ func (s *Service) Get(ctx context.Context, scope corescope.Scope, id string) (Re
 		return Record{}, err
 	}
 	return s.deps.Accounts.Get(ctx, scope, id)
+}
+
+// SigningCredential 读取并解密一个账号的凭据。
+// 作用域外与已软删返回 404；未配置 Cipher 即失败（fail-closed）。
+// 明文只交给签到链，本层不记录、不回显。
+func (s *Service) SigningCredential(ctx context.Context, scope corescope.Scope, id string) (SigningCredential, error) {
+	if err := app.RequireScope(scope); err != nil {
+		return SigningCredential{}, err
+	}
+	record, err := s.deps.Accounts.Get(ctx, scope, id)
+	if err != nil {
+		return SigningCredential{}, err
+	}
+	if s.deps.Cipher == nil {
+		return SigningCredential{}, errors.New("account: credential cipher is not configured")
+	}
+	credential, err := s.deps.Accounts.Credential(ctx, scope, id)
+	if err != nil {
+		return SigningCredential{}, err
+	}
+	payload, err := s.deps.Cipher.Open(credential)
+	if err != nil {
+		return SigningCredential{}, err
+	}
+	return SigningCredential{
+		SchoolID:   record.SchoolID,
+		Phone:      record.Phone,
+		Password:   payload.Password,
+		DeviceCode: payload.DeviceCode,
+		PhoneModel: payload.PhoneModel,
+	}, nil
 }
 
 // Create 建账号。状态固定为 pending。
