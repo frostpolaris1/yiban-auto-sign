@@ -228,13 +228,16 @@ func TestVerifyUnwired(t *testing.T) {
 func TestVerifyMessageCap(t *testing.T) {
 	svc := &fakeService{cred: appaccount.SigningCredential{SchoolID: "school-1"}}
 	verifier := &fakeVerifier{err: &contract.OutcomeError{
-		Outcome: contract.OutcomeRejected, Message: strings.Repeat("a", 300),
+		Outcome: contract.OutcomeRejected, Message: strings.Repeat("中", 300),
 	}}
 	engine, issued := newTestRouter(t, &fakeAuthorizer{scope: corescope.Master()}, svc, verifier)
 
 	result := decodeResult(t, callVerify(t, engine, issued, true))
 	if result.Message == nil || len([]rune(*result.Message)) != 200 {
-		t.Fatalf("message length = %v", result.Message)
+		t.Fatalf("message = %v", result.Message)
+	}
+	if len(*result.Message) != 600 {
+		t.Fatalf("message bytes = %d, want 600 (rune cap must not cut bytes)", len(*result.Message))
 	}
 }
 
