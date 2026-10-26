@@ -142,7 +142,7 @@ func TestReplayFiltersByScope(t *testing.T) {
 // 落后超过环形缓冲：先 resync，旧事件不补发。
 func TestReplayGapEmitsResync(t *testing.T) {
 	b := NewBroker()
-	const total = ringCapacity + 5 // ID 1..ringCapacity+5，最旧 ID=6
+	const total = RingCapacity + 5 // ID 1..RingCapacity+5，最旧 ID=6
 	for i := 0; i < total; i++ {
 		b.Publish([]string{"s1"}, schoolEvent(TypeTaskProgress, "s1"))
 	}
@@ -166,16 +166,16 @@ func TestReplayGapEmitsResync(t *testing.T) {
 // 回放正好覆盖边界：lastEventID = 最旧 ID - 1 时仍可回放。
 func TestReplayBoundaryIsCovered(t *testing.T) {
 	b := NewBroker()
-	const total = ringCapacity // 环满，最旧 ID=1
+	const total = RingCapacity // 环满，最旧 ID=1
 	for i := 0; i < total; i++ {
 		b.Publish([]string{"s1"}, schoolEvent(TypeTaskProgress, "s1"))
 	}
-	sub, cancel := b.Subscribe(context.Background(), nil, ringCapacity)
+	sub, cancel := b.Subscribe(context.Background(), nil, RingCapacity)
 	defer cancel()
 	// lastEventID == head：无缺口也无补发，随后 live 正常到达。
 	b.Publish([]string{"s1"}, schoolEvent(TypeTaskProgress, "s1"))
 	got := collect(t, sub, 1)
-	if got[0].ID != ringCapacity+1 {
+	if got[0].ID != RingCapacity+1 {
 		t.Fatalf("边界回放后首条 = %d", got[0].ID)
 	}
 }

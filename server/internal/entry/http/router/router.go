@@ -30,6 +30,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	accounthttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/account"
 	adminhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/admin"
+	eventshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/events"
 	locationhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/location"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
 	photoshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/photos"
@@ -70,6 +71,8 @@ type Options struct {
 	Photos *photoshttp.Handler
 	// Locations 提供账号定位策略端点。为 nil 时这些端点回 501。
 	Locations *locationhttp.Handler
+	// Events 提供管理员事件流与诊断轮询端点。为 nil 时这些端点回 501。
+	Events *eventshttp.Handler
 }
 
 // server 实现生成的契约接口。
@@ -86,6 +89,7 @@ type server struct {
 	schedule  *schedulehttp.Handler
 	photos    *photoshttp.Handler
 	locations *locationhttp.Handler
+	events    *eventshttp.Handler
 }
 
 // New 构造 HTTP 引擎。缺 SessionIssuer 时**失败关闭**。
@@ -119,6 +123,7 @@ func New(opts Options) (*gin.Engine, error) {
 	srv.schedule = opts.Schedule
 	srv.photos = opts.Photos
 	srv.locations = opts.Locations
+	srv.events = opts.Events
 
 	engine := gin.New()
 	engine.Use(

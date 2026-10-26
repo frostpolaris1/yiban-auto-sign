@@ -13,6 +13,54 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for AccountDiagnosticsSuggestion.
+const (
+	AccountDiagnosticsSuggestionContactAdmin AccountDiagnosticsSuggestion = "contact_admin"
+	AccountDiagnosticsSuggestionReArm        AccountDiagnosticsSuggestion = "re_arm"
+	AccountDiagnosticsSuggestionRetryNow     AccountDiagnosticsSuggestion = "retry_now"
+	AccountDiagnosticsSuggestionWait         AccountDiagnosticsSuggestion = "wait"
+)
+
+// Valid indicates whether the value is a known member of the AccountDiagnosticsSuggestion enum.
+func (e AccountDiagnosticsSuggestion) Valid() bool {
+	switch e {
+	case AccountDiagnosticsSuggestionContactAdmin:
+		return true
+	case AccountDiagnosticsSuggestionReArm:
+		return true
+	case AccountDiagnosticsSuggestionRetryNow:
+		return true
+	case AccountDiagnosticsSuggestionWait:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AccountDiagnosticsWindowSource.
+const (
+	AccountDiagnosticsWindowSourceCache    AccountDiagnosticsWindowSource = "cache"
+	AccountDiagnosticsWindowSourceFallback AccountDiagnosticsWindowSource = "fallback"
+	AccountDiagnosticsWindowSourceOverride AccountDiagnosticsWindowSource = "override"
+	AccountDiagnosticsWindowSourcePlatform AccountDiagnosticsWindowSource = "platform"
+)
+
+// Valid indicates whether the value is a known member of the AccountDiagnosticsWindowSource enum.
+func (e AccountDiagnosticsWindowSource) Valid() bool {
+	switch e {
+	case AccountDiagnosticsWindowSourceCache:
+		return true
+	case AccountDiagnosticsWindowSourceFallback:
+		return true
+	case AccountDiagnosticsWindowSourceOverride:
+		return true
+	case AccountDiagnosticsWindowSourcePlatform:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AccountLocationMode.
 const (
 	AccountLocationModeAuto  AccountLocationMode = "auto"
@@ -91,6 +139,30 @@ func (e AccountStatus) Valid() bool {
 	case AccountStatusPending:
 		return true
 	case AccountStatusRejected:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for DiagnosticsItemSuggestion.
+const (
+	DiagnosticsItemSuggestionContactAdmin DiagnosticsItemSuggestion = "contact_admin"
+	DiagnosticsItemSuggestionReArm        DiagnosticsItemSuggestion = "re_arm"
+	DiagnosticsItemSuggestionRetryNow     DiagnosticsItemSuggestion = "retry_now"
+	DiagnosticsItemSuggestionWait         DiagnosticsItemSuggestion = "wait"
+)
+
+// Valid indicates whether the value is a known member of the DiagnosticsItemSuggestion enum.
+func (e DiagnosticsItemSuggestion) Valid() bool {
+	switch e {
+	case DiagnosticsItemSuggestionContactAdmin:
+		return true
+	case DiagnosticsItemSuggestionReArm:
+		return true
+	case DiagnosticsItemSuggestionRetryNow:
+		return true
+	case DiagnosticsItemSuggestionWait:
 		return true
 	default:
 		return false
@@ -240,22 +312,22 @@ func (e PhotoRetentionUpdateDays) Valid() bool {
 
 // Defines values for ScheduleWindowSource.
 const (
-	Cache    ScheduleWindowSource = "cache"
-	Fallback ScheduleWindowSource = "fallback"
-	Override ScheduleWindowSource = "override"
-	Platform ScheduleWindowSource = "platform"
+	ScheduleWindowSourceCache    ScheduleWindowSource = "cache"
+	ScheduleWindowSourceFallback ScheduleWindowSource = "fallback"
+	ScheduleWindowSourceOverride ScheduleWindowSource = "override"
+	ScheduleWindowSourcePlatform ScheduleWindowSource = "platform"
 )
 
 // Valid indicates whether the value is a known member of the ScheduleWindowSource enum.
 func (e ScheduleWindowSource) Valid() bool {
 	switch e {
-	case Cache:
+	case ScheduleWindowSourceCache:
 		return true
-	case Fallback:
+	case ScheduleWindowSourceFallback:
 		return true
-	case Override:
+	case ScheduleWindowSourceOverride:
 		return true
-	case Platform:
+	case ScheduleWindowSourcePlatform:
 		return true
 	default:
 		return false
@@ -381,6 +453,40 @@ type AccountCreate struct {
 	SchoolId    string  `json:"school_id"`
 }
 
+// AccountDiagnostics defines model for AccountDiagnostics.
+type AccountDiagnostics struct {
+	AccountId string `json:"account_id"`
+	Attempts  int    `json:"attempts"`
+
+	// Egress The account's sticky egress label; null when not assigned yet.
+	Egress *struct {
+		Identity string `json:"identity"`
+	} `json:"egress,omitempty"`
+
+	// NextRetryAt When the task is queued again after a failure; null otherwise.
+	NextRetryAt *time.Time `json:"next_retry_at,omitempty"`
+	Result      string     `json:"result"`
+	RunAt       *time.Time `json:"run_at,omitempty"`
+
+	// State pending, running, success, failed or skipped; null when the account has no task row today.
+	State      *string                      `json:"state,omitempty"`
+	Suggestion AccountDiagnosticsSuggestion `json:"suggestion"`
+
+	// Window Today's planned window; null when not discovered yet.
+	Window *struct {
+		End     time.Time                      `json:"end"`
+		Source  AccountDiagnosticsWindowSource `json:"source"`
+		Start   time.Time                      `json:"start"`
+		Version int                            `json:"version"`
+	} `json:"window,omitempty"`
+}
+
+// AccountDiagnosticsSuggestion defines model for AccountDiagnostics.Suggestion.
+type AccountDiagnosticsSuggestion string
+
+// AccountDiagnosticsWindowSource defines model for AccountDiagnostics.Window.Source.
+type AccountDiagnosticsWindowSource string
+
 // AccountLocation The stored location policy. lng and lat are null for auto and always
 // present for fixed. The reason is kept by the host for audit; it is
 // not delivered to the platform yet (that lands with the upload
@@ -481,6 +587,30 @@ type CapacityReport struct {
 	TaskId      string               `json:"task_id"`
 	WindowEnd   time.Time            `json:"window_end"`
 	WindowStart time.Time            `json:"window_start"`
+}
+
+// DiagnosticsItem defines model for DiagnosticsItem.
+type DiagnosticsItem struct {
+	AccountId string `json:"account_id"`
+	Attempts  int    `json:"attempts"`
+
+	// NextRetryAt When the task is queued again after a failure; null otherwise.
+	NextRetryAt *time.Time `json:"next_retry_at,omitempty"`
+	Result      string     `json:"result"`
+	RunAt       *time.Time `json:"run_at,omitempty"`
+
+	// State pending, running, success, failed or skipped; null when the account has no task row today.
+	State      *string                   `json:"state,omitempty"`
+	Suggestion DiagnosticsItemSuggestion `json:"suggestion"`
+}
+
+// DiagnosticsItemSuggestion defines model for DiagnosticsItem.Suggestion.
+type DiagnosticsItemSuggestion string
+
+// DiagnosticsReport defines model for DiagnosticsReport.
+type DiagnosticsReport struct {
+	Items     []DiagnosticsItem `json:"items"`
+	UpdatedAt time.Time         `json:"updated_at"`
 }
 
 // Error defines model for Error.
@@ -736,6 +866,22 @@ type SessionUser struct {
 	Status             UserStatus          `json:"status"`
 }
 
+// SignStatusItem defines model for SignStatusItem.
+type SignStatusItem struct {
+	AccountId string     `json:"account_id"`
+	RunAt     *time.Time `json:"run_at,omitempty"`
+	Stale     bool       `json:"stale"`
+
+	// State pending, running, success, failed or skipped; null when the account has no task row today.
+	State *string `json:"state,omitempty"`
+}
+
+// SignStatusReport defines model for SignStatusReport.
+type SignStatusReport struct {
+	Items     []SignStatusItem `json:"items"`
+	UpdatedAt time.Time        `json:"updated_at"`
+}
+
 // TimePref defines model for TimePref.
 type TimePref struct {
 	// Allowed False when the deployment disables user time preferences.
@@ -900,6 +1046,12 @@ type AccountVerifyParams struct {
 	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
 	// state-changing request that carries a session.
 	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
+// AdminEventsParams defines parameters for AdminEvents.
+type AdminEventsParams struct {
+	// LastEventID Last event id seen by the client, for resumption.
+	LastEventID *string `json:"Last-Event-ID,omitempty"`
 }
 
 // AuthLogoutParams defines parameters for AuthLogout.
@@ -1108,6 +1260,9 @@ type ServerInterface interface {
 	// AccountUpdate Update account fields.
 	// (PATCH /api/accounts/{id})
 	AccountUpdate(c *gin.Context, id AccountID, params AccountUpdateParams)
+	// AccountDiagnostics Detailed diagnostics for one account.
+	// (GET /api/accounts/{id}/diagnostics)
+	AccountDiagnostics(c *gin.Context, id AccountID)
 	// AccountLocationSet Set the account location policy.
 	// (PUT /api/accounts/{id}/location)
 	AccountLocationSet(c *gin.Context, id AccountID, params AccountLocationSetParams)
@@ -1123,6 +1278,9 @@ type ServerInterface interface {
 	// AccountVerify Verify the stored credentials against the platform.
 	// (POST /api/accounts/{id}/verify)
 	AccountVerify(c *gin.Context, id AccountID, params AccountVerifyParams)
+	// AdminEvents Subscribe to the admin event stream (SSE).
+	// (GET /api/admin/events)
+	AdminEvents(c *gin.Context, params AdminEventsParams)
 	// AuthForgotPassword Start the password reset flow.
 	// (POST /api/auth/forgot-password)
 	AuthForgotPassword(c *gin.Context)
@@ -1141,6 +1299,9 @@ type ServerInterface interface {
 	// CapacityGet Report capacity and demand for one school task.
 	// (GET /api/capacity)
 	CapacityGet(c *gin.Context, params CapacityGetParams)
+	// MeDiagnostics Diagnostics for the signed-in user's own accounts.
+	// (GET /api/me/diagnostics)
+	MeDiagnostics(c *gin.Context)
 	// PhotoRetentionSet Set the photo retention period.
 	// (PUT /api/me/photo-retention)
 	PhotoRetentionSet(c *gin.Context, params PhotoRetentionSetParams)
@@ -1156,6 +1317,9 @@ type ServerInterface interface {
 	// PhotoGet Stream one photo.
 	// (GET /api/me/photos/{id})
 	PhotoGet(c *gin.Context, id PhotoID)
+	// MeSignStatus Polling status for the signed-in user's own accounts.
+	// (GET /api/me/sign-status)
+	MeSignStatus(c *gin.Context)
 	// TimePrefGet Read the signed-in user's preferred signing offset.
 	// (GET /api/me/time-pref)
 	TimePrefGet(c *gin.Context)
@@ -1440,6 +1604,31 @@ func (siw *ServerInterfaceWrapper) AccountUpdate(c *gin.Context) {
 	siw.Handler.AccountUpdate(c, id, params)
 }
 
+// AccountDiagnostics operation middleware
+func (siw *ServerInterfaceWrapper) AccountDiagnostics(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id AccountID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", c.Param("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AccountDiagnostics(c, id)
+}
+
 // AccountLocationSet operation middleware
 func (siw *ServerInterfaceWrapper) AccountLocationSet(c *gin.Context) {
 
@@ -1700,6 +1889,46 @@ func (siw *ServerInterfaceWrapper) AccountVerify(c *gin.Context) {
 	siw.Handler.AccountVerify(c, id, params)
 }
 
+// AdminEvents operation middleware
+func (siw *ServerInterfaceWrapper) AdminEvents(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AdminEventsParams
+
+	headers := c.Request.Header
+
+	// ------------- Optional header parameter "Last-Event-ID" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Last-Event-ID")]; found {
+		var LastEventID string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for Last-Event-ID, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Last-Event-ID", valueList[0], &LastEventID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter Last-Event-ID: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.LastEventID = &LastEventID
+
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AdminEvents(c, params)
+}
+
 // AuthForgotPassword operation middleware
 func (siw *ServerInterfaceWrapper) AuthForgotPassword(c *gin.Context) {
 
@@ -1833,6 +2062,19 @@ func (siw *ServerInterfaceWrapper) CapacityGet(c *gin.Context) {
 	}
 
 	siw.Handler.CapacityGet(c, params)
+}
+
+// MeDiagnostics operation middleware
+func (siw *ServerInterfaceWrapper) MeDiagnostics(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.MeDiagnostics(c)
 }
 
 // PhotoRetentionSet operation middleware
@@ -2031,6 +2273,19 @@ func (siw *ServerInterfaceWrapper) PhotoGet(c *gin.Context) {
 	}
 
 	siw.Handler.PhotoGet(c, id)
+}
+
+// MeSignStatus operation middleware
+func (siw *ServerInterfaceWrapper) MeSignStatus(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.MeSignStatus(c)
 }
 
 // TimePrefGet operation middleware
@@ -2637,6 +2892,10 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/accounts/:id/verify", wrapper.AccountVerify)
 	router.POST(options.BaseURL+"/api/accounts/:id/sign", wrapper.AccountSign)
 	router.PUT(options.BaseURL+"/api/accounts/:id/location", wrapper.AccountLocationSet)
+	router.GET(options.BaseURL+"/api/admin/events", wrapper.AdminEvents)
+	router.GET(options.BaseURL+"/api/me/diagnostics", wrapper.MeDiagnostics)
+	router.GET(options.BaseURL+"/api/accounts/:id/diagnostics", wrapper.AccountDiagnostics)
+	router.GET(options.BaseURL+"/api/me/sign-status", wrapper.MeSignStatus)
 	router.GET(options.BaseURL+"/api/schedule/windows", wrapper.ScheduleWindows)
 	router.GET(options.BaseURL+"/api/schedule/preview", wrapper.SchedulePreview)
 	router.POST(options.BaseURL+"/api/schedule/plan", wrapper.SchedulePlan)
