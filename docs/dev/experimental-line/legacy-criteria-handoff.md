@@ -364,5 +364,5 @@
 | 退出码 | `yiban/engine/cli_support.py`（`_EXIT_KINDS`）、`docs/dev/cli.md` §3 |
 | 七族门 | `tests/test_{pagination_contract,cron_time_equivalence,exit_code_table,truncation_literal,sse_default_parity,masking_phone_contract,weekend_parity}_*.py` |
 | 隐私暴露 | PR #201／#208；`web/routes/my_api.py`、`web/routes/accounts_api.py` |
-| 审计锚点边界 | `README.md`（审计节）、`yiban/adapters/persistence/audit_chain.py` |
+| 审计锚点边界 | `docs/guides/deploy-docker.md`（「安全运维」审计节；2026-10-26 从 README 搬入）、`yiban/adapters/persistence/audit_chain.py` |
 | 会话跨日失效实测 | 结论已写入 §8「复用前一晚会话」行；原始探针数据为 56 次跨 9 天记录（过程稿，不入库） |

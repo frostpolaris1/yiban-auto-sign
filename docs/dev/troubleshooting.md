@@ -1,7 +1,8 @@
 # 故障排查与常见问题（Q1–Q10）
 
 > 本文由仓库根 `README.md` 的「常见问题」一节拆出，正文逐字保留。
-> 文内指向部署、代理、设备绑定与 AI 说明的相对链接，以仓库根 `README.md` 为目标。
+> 文内指向部署、代理与设备绑定的相对链接，以 `docs/guides/` 下的对应文档为目标；
+> AI 说明仍在仓库根 `README.md`（2026-10-26 拆分批口径）。
 
 ### Q1 账号或密码错误（e003）
 
@@ -30,14 +31,14 @@
 ### Q3 未在签到时间内
 
 - 当前时间不在管理员设置的签到窗口内；
-- Actions 的触发延迟（实测约 55–120 分钟）可能导致实际执行时超出窗口——该通道已随 `signin.yml` 删除而退役（MF-106，见「GitHub Actions（备选）」开头说明）；服务器 cron 部署不受影响；
+- Actions 的触发延迟（实测约 55–120 分钟）可能导致实际执行时超出窗口——该通道已随 `signin.yml` 删除而退役（MF-106，见仓库根 `README.md` 的「部署方式选择」）；服务器 cron 部署不受影响；
 - 此错误**不会**让 Actions 标记为失败（退出码仍为 0）。
 
 
 ### Q4 风险访问服务禁用 / WAF 拦截
 
 - **原因**：GitHub Actions 的海外 IP 被易班 WAF 拦截；
-- **解决**：改用 [服务器部署](../../README.md#服务器部署分步详解)（国内出口）；如确需 Actions，可配置 `YIBAN_PROXY`（见 [代理配置](../../README.md#代理配置可选)）；
+- **解决**：改用 [服务器部署](../guides/deploy-baremetal.md#服务器部署分步详解)（国内出口）；如确需 Actions，可配置 `YIBAN_PROXY`（见 [代理配置](../guides/configuration.md#代理配置可选)）；
 - 脚本按失败类型自动重试（见 [重试机制](implementation-notes.md#重试机制)），仍失败则标记为错误；
 - ⚠️ 海外 IP 的反复失败可能让易班把**账号**标记为可疑，连带影响服务器签到（表现为 e003，见 [Q1](#q1-账号或密码错误e003)）。已有国内服务器时，**建议在 Actions 页面禁用该工作流**。
 
@@ -51,7 +52,7 @@
 ### Q6 请使用授权设备进行签到
 
 - **原因**：学校在校本化后台开启了「设备绑定」，签到时会校验设备型号与唯一识别码；
-- **解决**：配置 `YIBAN_PHONE_MODEL` 与 `YIBAN_PHONE_CODE`（Actions 中为 Secrets），获取方式见 [设备绑定](../../README.md#设备绑定可选)。
+- **解决**：配置 `YIBAN_PHONE_MODEL` 与 `YIBAN_PHONE_CODE`（Actions 中为 Secrets），获取方式见 [设备绑定](../guides/configuration.md#设备绑定可选)。
 
 
 ### Q7 签到成功但 Actions 显示失败
@@ -79,5 +80,5 @@
 **建议**：
 
 - 已有国内服务器签到 → **在 Actions 页面禁用工作流**（Actions → Yiban Sign-in → ⋯ → Disable workflow），让服务器成为唯一签到通道；
-- 没有服务器、必须用 Actions → 配置 `YIBAN_PROXY`（见 [代理配置](../../README.md#代理配置可选)），并避免与其他签到通道叠加同一账号；
+- 没有服务器、必须用 Actions → 配置 `YIBAN_PROXY`（见 [代理配置](../guides/configuration.md#代理配置可选)），并避免与其他签到通道叠加同一账号；
 - 恢复 Actions：同一位置 `Enable workflow`。

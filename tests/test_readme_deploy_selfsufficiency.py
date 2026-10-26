@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""README「服务器部署（分步详解）」必须自足：该节先建服务账号，再让人跑 install.sh。
+"""部署分步详解必须自足：该节先建服务账号，再让人跑 install.sh。
 
 现象（本批 F3）：按 README **全文**读，发布判据（全新干净环境从零装成、一次完成、
 零手动调整）成立；但**只按「服务器部署（分步详解）」那一节**读就不成立——该节 1~7 步
@@ -14,10 +14,11 @@
   ② 该节里第一次用 `sudo -u <服务账号>`（第 4 步写 `.env`）也不得早于账号创建；
   ③ 该节建的账号名 = `web/deploy/yiban-web.service` 的 `User=`（同一事实不两处定义）。
 
-对应实现：`README.md` 的「服务器部署（分步详解）」节；账号权威件是
-`web/deploy/yiban-web.service` 的 `User=`/`Group=`。
+对应实现：`docs/guides/deploy-baremetal.md` 的「服务器部署（分步详解）」节；
+    2026-10-26 拆分批（工单 0gbk）把该节从 `README.md` 逐字搬入，判据不变。
+    账号权威件是 `web/deploy/yiban-web.service` 的 `User=`/`Group=`。
 关键断言：段落抽取自证非空（标题改名即红）＋ 三处位置先后关系。
-依赖：只读 README 与单元文件；不起子进程、不触网。
+依赖：只读该文档与单元文件；不起子进程、不触网。
 """
 import io
 import os
@@ -25,7 +26,7 @@ import re
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-README = os.path.join(BASE, "README.md")
+DEPLOY_DOC = os.path.join(BASE, "docs", "guides", "deploy-baremetal.md")
 SERVICE_UNIT = os.path.join(BASE, "web", "deploy", "yiban-web.service")
 
 SECTION_HEADING = "## 服务器部署（分步详解）"
@@ -48,8 +49,8 @@ def _service_account():
 
 
 def _deploy_section(text):
-    """README 的「服务器部署（分步详解）」节（到下一个二级标题为止）。"""
-    m = re.search(re.escape(SECTION_HEADING) + r".*?(?=^## )", text, re.M | re.S)
+    """部署文档的「服务器部署（分步详解）」节（到下一个二级标题或文件末为止）。"""
+    m = re.search(re.escape(SECTION_HEADING) + r".*?(?=^## |\Z)", text, re.M | re.S)
     return m.group(0) if m else ""
 
 
@@ -57,14 +58,15 @@ class DeploySectionSelfSufficiencyTest(unittest.TestCase):
     """分步详解节必须自带"先建服务账号"这一步。"""
 
     def setUp(self):
-        self.text = _read(README)
+        self.text = _read(DEPLOY_DOC)
         self.section = _deploy_section(self.text)
         self.user, _group = _service_account()
 
     def test_section_is_extractable_and_mentions_the_installer(self):
         """解析式先自证：段抽取非空且真的提 install.sh，否则下面的"先后"没有意义。"""
         self.assertTrue(self.section,
-                        "README 的「服务器部署（分步详解）」节抽不到（标题被改名？）")
+                        "docs/guides/deploy-baremetal.md 的「服务器部署（分步详解）」节抽不到"
+                        "（标题被改名？）")
         self.assertRegex(self.section, r"install\.sh",
                          "该节不再提 install.sh，本门失去意义")
 
