@@ -299,6 +299,9 @@ func validateOutcomeError(method string, err error) error {
 	if !errors.As(err, &outcomeErr) {
 		return nil
 	}
+	if outcomeErr == nil {
+		return failf(CheckOutcomeError, "%s 返回类型化 nil 的 OutcomeError", method)
+	}
 	if !outcomeErr.Outcome.Valid() {
 		return failf(CheckOutcomeError, "%s 的结论 %q 不在词表内", method, outcomeErr.Outcome)
 	}
@@ -311,6 +314,25 @@ func validateOutcomeError(method string, err error) error {
 	return nil
 }
 
+// outcomeConclusion 报告 err 是否是一枚合法的非 success 结论错误。
+// 这类错误表示平台给出了结论，没有可检查的值。
+func outcomeConclusion(err error) (contract.Outcome, bool) {
+	var outcomeErr *contract.OutcomeError
+	if !errors.As(err, &outcomeErr) || outcomeErr == nil {
+		return "", false
+	}
+	if !outcomeErr.Outcome.Valid() || outcomeErr.Outcome == contract.OutcomeSuccess {
+		return "", false
+	}
+	return outcomeErr.Outcome, true
+}
+
+// conclusionNotApplicable 标记「提供方给出结论，没有值可检查」。
+// 它不是失败：Run 会打印成显性跳过（AGENTS §30）。
+func conclusionNotApplicable(outcome contract.Outcome) error {
+	return fmt.Errorf("%w: 提供方报告结论 %s，无值可检查", errNotApplicable, outcome)
+}
+
 // checkWindowShape 要求窗口符合契约形状。
 func checkWindowShape(newProvider NewProvider) error {
 	p := newProvider()
@@ -319,6 +341,9 @@ func checkWindowShape(newProvider NewProvider) error {
 	}
 	window, err := p.DiscoverWindow(context.Background(), discoverRequest())
 	if err != nil {
+		if outcome, ok := outcomeConclusion(err); ok {
+			return conclusionNotApplicable(outcome)
+		}
 		return failf(CheckWindowShape, "DiscoverWindow 返回错误: %v", err)
 	}
 	if window.Start.IsZero() || window.End.IsZero() {
@@ -361,6 +386,9 @@ func checkTargetsShape(newProvider NewProvider) error {
 	}
 	targets, err := p.DiscoverTargets(context.Background(), discoverRequest())
 	if err != nil {
+		if outcome, ok := outcomeConclusion(err); ok {
+			return conclusionNotApplicable(outcome)
+		}
 		return failf(CheckTargetsShape, "DiscoverTargets 返回错误: %v", err)
 	}
 	for i, target := range targets {
@@ -398,8 +426,12 @@ func checkTargetsCancel(newProvider NewProvider) error {
 }
 
 // checkVerifyResult 要求正常路径的校验返回 nil 错误。
+// 合法的非 success 结论错误视为「无档案可查」，显性跳过。
 func checkVerifyResult(newProvider NewProvider) error {
 	if _, err := newProvider().Verify(context.Background(), verifyRequest()); err != nil {
+		if outcome, ok := outcomeConclusion(err); ok {
+			return conclusionNotApplicable(outcome)
+		}
 		return failf(CheckVerifyResult, "Verify 返回错误: %v", err)
 	}
 	return nil
