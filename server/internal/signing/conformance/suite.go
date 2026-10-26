@@ -138,7 +138,7 @@ func Run(t *testing.T, newProvider NewProvider) {
 		}
 	}
 	if skipped > 0 {
-		fmt.Printf("conformance: %d 条判据跳过（未声明对应能力）\n", skipped)
+		fmt.Printf("conformance: %d 条判据跳过（原因见上方）\n", skipped)
 	}
 }
 
