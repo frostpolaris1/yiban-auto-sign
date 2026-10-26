@@ -299,8 +299,23 @@ func (f *fakeManual) Request(context.Context, string) (string, error) {
 	return f.taskID, f.err
 }
 
+type fakeAccess struct {
+	err   error
+	calls int
+}
+
+func (f *fakeAccess) Get(context.Context, corescope.Scope, string) (appaccount.Record, error) {
+	f.calls++
+	return appaccount.Record{}, f.err
+}
+
 // newSignRouter 装配带手动签到接缝的路由。
 func newSignRouter(t *testing.T, authz *fakeAuthorizer, manual *fakeManual) (http.Handler, coreauth.Issued) {
+	return newSignRouterWithAccess(t, authz, manual, &fakeAccess{})
+}
+
+// newSignRouterWithAccess 装配带账号可见面判据的路由。
+func newSignRouterWithAccess(t *testing.T, authz *fakeAuthorizer, manual *fakeManual, access *fakeAccess) (http.Handler, coreauth.Issued) {
 	t.Helper()
 	issuer := &fakeIssuer{secret: []byte("0123456789abcdef0123456789abcdef")}
 	issued, err := issuer.Issue(context.Background(), coreauth.User{
@@ -309,7 +324,9 @@ func newSignRouter(t *testing.T, authz *fakeAuthorizer, manual *fakeManual) (htt
 	if err != nil {
 		t.Fatalf("issue session: %v", err)
 	}
-	handler := signinghttp.NewHandler(&fakeService{}, authz, &fakeVerifier{}).WithManual(manual)
+	handler := signinghttp.NewHandler(&fakeService{}, authz, &fakeVerifier{}).
+		WithManual(manual).
+		WithAccess(access)
 	engine, err := router.New(router.Options{Sessions: issuer, InsecureCookies: true, Signing: handler})
 	if err != nil {
 		t.Fatalf("router: %v", err)
@@ -376,12 +393,32 @@ func TestSignNotFound(t *testing.T) {
 	}
 }
 
-// 普通用户无权手动签到。
-func TestSignUserForbidden(t *testing.T) {
-	engine, issued := newSignRouter(t, &fakeAuthorizer{scope: corescope.User("u1")},
-		&fakeManual{taskID: "task-1"})
+// 普通用户可签自己的账号：可见面通过即可入队。
+func TestSignUserOwnAccount(t *testing.T) {
+	access := &fakeAccess{}
+	manual := &fakeManual{taskID: "task-1"}
+	engine, issued := newSignRouterWithAccess(t,
+		&fakeAuthorizer{scope: corescope.User("u1")}, manual, access)
 	rec := callSign(t, engine, issued)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202: %s", rec.Code, rec.Body.String())
+	}
+	if access.calls != 1 || manual.calls != 1 {
+		t.Fatalf("access=%d manual=%d", access.calls, manual.calls)
+	}
+}
+
+// 可见面外（跨校/非本人）必须 404，且不得入队。
+func TestSignCrossScopeNotFound(t *testing.T) {
+	access := &fakeAccess{err: errs.New(errs.CodeNotFound, "account not found")}
+	manual := &fakeManual{taskID: "task-1"}
+	engine, issued := newSignRouterWithAccess(t,
+		&fakeAuthorizer{scope: corescope.Admin([]string{"school-1"})}, manual, access)
+	rec := callSign(t, engine, issued)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404: %s", rec.Code, rec.Body.String())
+	}
+	if manual.calls != 0 {
+		t.Fatalf("可见面失败后不得入队, manual=%d", manual.calls)
 	}
 }

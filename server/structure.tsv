@@ -11,7 +11,7 @@ server/internal	core,app,adapters,entry,signing	layers
 server/cmd	server,cli	process entrypoints
 server/migrations	postgres	SQL migrations
 server/internal/core	auth,user,school,account,schedule,signing,photo,audit,notify,diagnostic,clock,status,errs,mask,retry,egress,plan,capacity,image,scope,window,rate	pure domain packages
-server/internal/app	auth,user,school,account,admin,schedule,signing,photo,audit,notify,diagnostic,egress,worker	use cases
+server/internal/app	auth,user,school,account,admin,schedule,timepref,signing,photo,audit,notify,diagnostic,egress,worker	use cases
 server/internal/adapters	pg,session,config,audit,mail,sse,image,upstream	infrastructure packages
 server/internal/entry/http	router,respond,oapi,auth,user,school,account,admin,schedule,signing,photo,audit,notify,diagnostic	http handlers
 ui/src	app,pages,features,components,lib,styles	frontend layers

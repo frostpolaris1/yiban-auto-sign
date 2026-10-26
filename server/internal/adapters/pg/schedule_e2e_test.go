@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
+	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
 )
 
@@ -279,8 +281,8 @@ func (e *testEnv) scalarSchool(taskID string) string {
 	return e.scalarString("SELECT school_id::text FROM school_tasks WHERE id = $1::uuid", taskID)
 }
 
-// TestActiveAccountIDsStableAndFiltered：只取活跃未删账号，按手机号稳定排序。
-func TestActiveAccountIDsStableAndFiltered(t *testing.T) {
+// TestActiveAccountsStableAndFiltered：只取活跃未删账号，按手机号稳定排序。
+func TestActiveAccountsStableAndFiltered(t *testing.T) {
 	e := newEnv(t)
 	school := e.createSchool("sched-active")
 	taskID, err := e.sched.CreateSchoolTask(e.ctx, school.ID, "晨间签到")
@@ -305,20 +307,135 @@ func TestActiveAccountIDsStableAndFiltered(t *testing.T) {
 	if _, err := e.db.Exec(e.ctx, "UPDATE accounts SET deleted_at = now() WHERE id = $1::uuid", deleted.ID); err != nil {
 		t.Fatalf("soft delete: %v", err)
 	}
-	ids, err := e.sched.ActiveAccountIDs(e.ctx, school.ID)
+	ids, err := e.sched.ActiveAccounts(e.ctx, school.ID)
 	if err != nil {
 		t.Fatalf("active: %v", err)
 	}
 	if len(ids) != 2 {
 		t.Fatalf("活跃账号数 = %d, want 2: %v", len(ids), ids)
 	}
-	for _, id := range ids {
-		if id == pending.ID || id == paused.ID || id == deleted.ID {
-			t.Fatalf("不活跃账号出现在活跃面: %s", id)
+	for _, acct := range ids {
+		if acct.ID == pending.ID || acct.ID == paused.ID || acct.ID == deleted.ID {
+			t.Fatalf("不活跃账号出现在活跃面: %s", acct.ID)
 		}
 	}
 	// 顺序按手机号：7777 在 8888 前。
-	if ids[0] != a.ID || ids[1] != b.ID {
+	if ids[0].ID != a.ID || ids[1].ID != b.ID {
 		t.Fatalf("顺序不稳定: %v", ids)
+	}
+}
+
+// 人工覆盖按 (任务, 日) 覆盖写：第二次覆盖赢，缺行返回 not_found。
+func TestWindowOverrideUpsertAndGet(t *testing.T) {
+	e := newEnv(t)
+	_, taskID, _ := e.seedTask("sched-ov", "晨间签到", "ov-owner@example.com", "13800001211")
+	day := "2026-10-29"
+	first := coreschedule.WindowOverride{
+		SchoolTaskID: taskID, Day: day,
+		Start:  time.Date(2026, 10, 29, 9, 0, 0, 0, time.UTC),
+		End:    time.Date(2026, 10, 29, 9, 30, 0, 0, time.UTC),
+		Reason: "首次调整", CreatedBy: e.createUser("ov-a@example.com").ID,
+	}
+	if err := e.sched.PutOverride(e.ctx, first); err != nil {
+		t.Fatalf("put first: %v", err)
+	}
+	got, err := e.sched.GetOverride(e.ctx, taskID, day)
+	if err != nil {
+		t.Fatalf("get first: %v", err)
+	}
+	if got.Reason != first.Reason || !got.Start.Equal(first.Start) || got.CreatedBy != first.CreatedBy {
+		t.Fatalf("first = %+v, want %+v", got, first)
+	}
+
+	second := first
+	second.Start = time.Date(2026, 10, 29, 10, 0, 0, 0, time.UTC)
+	second.End = time.Date(2026, 10, 29, 11, 0, 0, 0, time.UTC)
+	second.Reason = "二次调整"
+	if err := e.sched.PutOverride(e.ctx, second); err != nil {
+		t.Fatalf("put second: %v", err)
+	}
+	got, err = e.sched.GetOverride(e.ctx, taskID, day)
+	if err != nil {
+		t.Fatalf("get second: %v", err)
+	}
+	if got.Reason != "二次调整" || !got.Start.Equal(second.Start) {
+		t.Fatalf("second = %+v", got)
+	}
+
+	if _, err := e.sched.GetOverride(e.ctx, taskID, "2026-10-30"); !errors.Is(err, errs.ErrNotFound) {
+		t.Fatalf("缺行错误 = %v, want not_found", err)
+	}
+}
+
+// 窗口列表：master 看全部；admin 只看绑定校；未缓存任务也出现。
+func TestListWindowsScopeAndUncached(t *testing.T) {
+	e := newEnv(t)
+	schoolA := e.createSchool("sched-list-a")
+	schoolB := e.createSchool("sched-list-b")
+	taskA, err := e.sched.CreateSchoolTask(e.ctx, schoolA.ID, "晨签")
+	if err != nil {
+		t.Fatalf("task A: %v", err)
+	}
+	taskB, err := e.sched.CreateSchoolTask(e.ctx, schoolB.ID, "晚签")
+	if err != nil {
+		t.Fatalf("task B: %v", err)
+	}
+	day := "2026-10-29"
+	start := time.Date(2026, 10, 29, 6, 30, 0, 0, time.UTC)
+	end := time.Date(2026, 10, 29, 7, 50, 0, 0, time.UTC)
+	if _, err := e.sched.PutWindow(e.ctx, coreschedule.WindowRecord{
+		SchoolTaskID: taskA, Day: day, Start: start, End: end, Source: "platform",
+	}, 0); err != nil {
+		t.Fatalf("put window: %v", err)
+	}
+
+	views, err := e.sched.ListWindows(e.ctx, corescope.Master(), day)
+	if err != nil {
+		t.Fatalf("list master: %v", err)
+	}
+	if len(views) != 2 {
+		t.Fatalf("master 行数 = %d, want 2: %+v", len(views), views)
+	}
+	byTask := map[string]coreschedule.WindowView{}
+	for _, v := range views {
+		byTask[v.TaskID] = v
+	}
+	if !byTask[taskA].Cached || !byTask[taskA].Start.Equal(start) || byTask[taskA].Source != "platform" {
+		t.Fatalf("缓存行 = %+v", byTask[taskA])
+	}
+	if byTask[taskB].Cached || byTask[taskB].Source != "" {
+		t.Fatalf("未缓存行 = %+v", byTask[taskB])
+	}
+
+	views, err = e.sched.ListWindows(e.ctx, corescope.Admin([]string{schoolA.ID}), day)
+	if err != nil {
+		t.Fatalf("list admin: %v", err)
+	}
+	if len(views) != 1 || views[0].TaskID != taskA {
+		t.Fatalf("admin 可见 = %+v, want only A", views)
+	}
+
+	if _, err := e.sched.ListWindows(e.ctx, corescope.User("u1"), day); err == nil {
+		t.Fatal("user 作用域应被拒绝")
+	}
+}
+
+// 任务元数据读取：字段齐全；缺行返回 not_found。
+func TestTaskLookup(t *testing.T) {
+	e := newEnv(t)
+	school := e.createSchool("sched-task")
+	taskID, err := e.sched.CreateSchoolTask(e.ctx, school.ID, "晨签")
+	if err != nil {
+		t.Fatalf("task: %v", err)
+	}
+	task, err := e.sched.Task(e.ctx, taskID)
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if task.SchoolID != school.ID || task.Name != "晨签" || !task.Enabled {
+		t.Fatalf("task = %+v", task)
+	}
+	if _, err := e.sched.Task(e.ctx, "00000000-0000-0000-0000-000000000000"); !errors.Is(err, errs.ErrNotFound) {
+		t.Fatalf("缺行错误 = %v, want not_found", err)
 	}
 }

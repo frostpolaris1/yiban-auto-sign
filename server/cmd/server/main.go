@@ -38,16 +38,23 @@ import (
 	appadmin "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/admin"
 	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
 	appegress "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/egress"
+	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
 	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
+	apptimepref "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/timepref"
 	appuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/user"
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
+	coreaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/account"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
+	corecapacity "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/capacity"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
+	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	coreplan "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/plan"
 	corerate "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/rate"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	accounthttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/account"
 	adminhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/admin"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/router"
+	schedulehttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/schedule"
 	schoolhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/school"
 	signinghttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/signing"
 	userhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/user"
@@ -152,6 +159,7 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 		accounts *accounthttp.Handler
 		users    *userhttp.Handler
 		signing  *signinghttp.Handler
+		planning *schedulehttp.Handler
 		db       *pg.DB
 		closeFn  = func() {}
 	)
@@ -285,8 +293,9 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 			closeFn()
 			return nil, fmt.Errorf("server: load timezone %q: %w", cfg.Timezone, err)
 		}
+		scheduleRepo := pg.NewScheduleRepo(db)
 		workerSvc, err := appworker.NewService(appworker.Deps{
-			Store:    pg.NewScheduleRepo(db),
+			Store:    scheduleRepo,
 			Creds:    workerCredentials{svc: accountSvc},
 			Signer:   provider,
 			Egress:   egressSvc,
@@ -305,6 +314,43 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 			logger.Info("worker: recovered orphan running rows", "count", n)
 		}
 		signing.WithManual(workerSvc)
+		// 手动签到的可见面判据：user 只能签自己的账号，
+		// admin 只能签绑定学校的账号（跨校回 404）。
+		signing.WithAccess(accountSvc)
+
+		prefRepo := pg.NewTimePrefRepo(db)
+		scheduleSvc, err := appschedule.NewService(appschedule.Deps{
+			Windows:  scheduleRepo,
+			Plans:    scheduleRepo,
+			Accounts: scheduleRepo,
+			Discover: scheduleDiscoverer{provider: provider, accounts: accountSvc, tasks: scheduleRepo},
+			Prefs:    prefRepo,
+			Tx:       db,
+		})
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("server: schedule service: %w", err)
+		}
+		prefSvc, err := apptimepref.NewService(apptimepref.Deps{
+			Store: prefRepo, Clock: clk,
+			Allow: cfg.AllowTimePref, Cooldown: cfg.TimePrefCooldown,
+		})
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("server: time preference service: %w", err)
+		}
+		// 每片槽数取一个 5 分钟片的原始吞吐（util=1）。
+		// 与容量公式同源：容量只是把全窗吞吐再乘利用系数。
+		slots := corecapacity.Capacity(coreplan.SlotSpan, cfg.Workers, cfg.AvgAttempt, cfg.EgressRate, 1.0)
+		if slots < 1 {
+			slots = 1
+		}
+		planning = schedulehttp.NewHandler(scheduleSvc, prefSvc, adminSvc, schedulehttp.Config{
+			Location: loc, Clock: clk, Workers: cfg.Workers, Avg: cfg.AvgAttempt,
+			Rate: cfg.EgressRate, Util: corecapacity.UtilDefault,
+			SlotsPerSlice: slots, Front: true, UsePrefs: cfg.AllowTimePref,
+			EdgeFront: cfg.EdgeFront, EdgeBack: cfg.EdgeBack,
+		})
 	}
 
 	engine, err := router.New(router.Options{
@@ -318,6 +364,7 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 		Accounts:        accounts,
 		Users:           users,
 		Signing:         signing,
+		Schedule:        planning,
 	})
 	if err != nil {
 		closeFn()
@@ -361,4 +408,47 @@ func (w workerCredentials) Credential(ctx context.Context, accountID string) (co
 		DeviceCode: c.DeviceCode,
 		PhoneModel: c.PhoneModel,
 	}, nil
+}
+
+// scheduleDiscoverer 用同校一个活跃账号读取平台窗口。
+//
+// 窗口属于任务，平台调用却需要登录凭据：借首个活跃账号的登录态。
+// 该校没有可用账号时返回 not_found，计划层按缓存或回退窗口继续，
+// 不把"没有可借用账号"当成平台故障。
+type scheduleDiscoverer struct {
+	provider *yiban.Provider
+	accounts *appaccount.Service
+	tasks    *pg.ScheduleRepo
+}
+
+// DiscoverWindow 读一个任务当日的平台窗口。
+func (d scheduleDiscoverer) DiscoverWindow(ctx context.Context, schoolTaskID string) (contract.Window, error) {
+	task, err := d.tasks.Task(ctx, schoolTaskID)
+	if err != nil {
+		return contract.Window{}, err
+	}
+	page, err := d.accounts.List(ctx, corescope.Master(), appaccount.ListFilter{
+		SchoolID: task.SchoolID, Status: coreaccount.StatusActive,
+	}, "", 1)
+	if err != nil {
+		return contract.Window{}, err
+	}
+	if len(page.Items) == 0 {
+		return contract.Window{}, coreerrs.New(coreerrs.CodeNotFound,
+			"no active account for window discovery")
+	}
+	acct := page.Items[0]
+	cred, err := d.accounts.SigningCredential(ctx, corescope.Master(), acct.ID)
+	if err != nil {
+		return contract.Window{}, err
+	}
+	return d.provider.DiscoverWindow(ctx, contract.DiscoverRequest{
+		Account: contract.AccountRef{ID: acct.ID, SchoolID: task.SchoolID, Platform: "yiban"},
+		Credential: contract.Credential{
+			Phone:      cred.Phone,
+			Password:   cred.Password,
+			DeviceCode: cred.DeviceCode,
+			PhoneModel: cred.PhoneModel,
+		},
+	})
 }

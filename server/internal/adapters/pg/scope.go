@@ -39,8 +39,8 @@ func scopePredicate(s corescope.Scope, argIndex int, prefix string) (string, []a
 //
 // schools 表的作用域列是 id 本身，不是 school_id。
 // 只接受 master 与 admin：user 作用域没有院校可见面，
-// **不把空集合当全量**。
-func schoolScopePredicate(s corescope.Scope, argIndex int) (string, []any, error) {
+// **不把空集合当全量**。prefix 是表别名加点，或空串。
+func schoolScopePredicate(s corescope.Scope, argIndex int, prefix string) (string, []any, error) {
 	if !s.Valid() {
 		return "", nil, errs.New(errs.CodeInternal, "invalid scope")
 	}
@@ -48,7 +48,7 @@ func schoolScopePredicate(s corescope.Scope, argIndex int) (string, []any, error
 	case corescope.KindMaster:
 		return "", nil, nil
 	case corescope.KindAdmin:
-		clause := fmt.Sprintf(" AND id = ANY($%d::text[]::uuid[])", argIndex)
+		clause := fmt.Sprintf(" AND %sid = ANY($%d::text[]::uuid[])", prefix, argIndex)
 		return clause, []any{s.SchoolIDs()}, nil
 	default:
 		return "", nil, errs.New(errs.CodeForbidden, "role cannot list schools")

@@ -9,9 +9,12 @@ import (
 	appegress "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/egress"
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
 	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
+	apptimepref "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/timepref"
 	appuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/user"
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
 	corerate "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/rate"
+	schedulehttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/schedule"
+	signinghttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/signing"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/providers/yiban"
 )
 
@@ -40,4 +43,13 @@ var (
 	_ appworker.Signer          = (*yiban.Provider)(nil)
 	_ appworker.Egress          = (*appegress.Service)(nil)
 	_ appworker.RateGate        = (*corerate.Limiter)(nil)
+	// P4-F：自选仓储同时满足计划层与自选用例两个端口。
+	_ appschedule.TimePrefs = (*pg.TimePrefRepo)(nil)
+	_ apptimepref.Store     = (*pg.TimePrefRepo)(nil)
+	// P4-F：HTTP 处理器的两个用例端口。
+	_ schedulehttp.Planner   = (*appschedule.Service)(nil)
+	_ schedulehttp.TimePrefs = (*apptimepref.Service)(nil)
+	// 手动签到的可见面判据与入队接缝。
+	_ signinghttp.AccountAccess = (*appaccount.Service)(nil)
+	_ signinghttp.ManualSigner  = (*appworker.Service)(nil)
 )
