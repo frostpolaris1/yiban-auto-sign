@@ -41,11 +41,11 @@ sudo APP_DIR=/opt/yiban-auto-sign BACKUP_GPG_PASSPHRASE='你的备份口令' \
   bash scripts/backup.sh --restore <备份包> <目标目录>
 ```
 
-> ⚠️ README 的「crontab」手工步骤（快速部署第 5 步与「6. crontab」）只在**未跑
-> `install.sh`** 时使用：安装器已把 `deploy/prod/cron.d/yiban-*` 落到 `/etc/cron.d/`。
+> ⚠️ `README.md` 的快速开始第 5 步与 `docs/guides/deploy-baremetal.md` 的「6. crontab」
+> 只在**未跑 `install.sh`** 时使用：安装器已把 `deploy/prod/cron.d/yiban-*` 落到 `/etc/cron.d/`。
 > 两处都写会让同一排期出现两条触发器——同一作业并发跑两轮，2026-10-25 备份事故即此形态。
 
-> ℹ️ **升级提示（曾装过"审计独立见证"的旧部署请清理）**：审计的独立见证纵深已移除，`deploy/prod` 不再提供 `yiban-audit-witness.sh` 与 `/etc/cron.d/yiban-audit-witness`。此前按旧文档装过见证的主机请手工删掉这两个文件——`sudo rm -f /usr/local/sbin/yiban-audit-witness.sh /etc/cron.d/yiban-audit-witness`——否则残留的 root cron 会每 10 分钟调用已删除的脚本并持续报错（仅噪声，不影响体检结论）。移除后"锚点之后的追加行被删除"这一窗口不再由本机检出（见 README「安全运维」的「诚实边界」）。
+> ℹ️ **升级提示（曾装过"审计独立见证"的旧部署请清理）**：审计的独立见证纵深已移除，`deploy/prod` 不再提供 `yiban-audit-witness.sh` 与 `/etc/cron.d/yiban-audit-witness`。此前按旧文档装过见证的主机请手工删掉这两个文件——`sudo rm -f /usr/local/sbin/yiban-audit-witness.sh /etc/cron.d/yiban-audit-witness`——否则残留的 root cron 会每 10 分钟调用已删除的脚本并持续报错（仅噪声，不影响体检结论）。移除后"锚点之后的追加行被删除"这一窗口不再由本机检出（见 `docs/guides/deploy-docker.md`「安全运维」的「诚实边界」）。
 
 > ⚠️ **异机副本默认未启用**：`REMOTE_BACKUP` 不配置时备份仅存本机——root 失陷时攻击者可一并清掉 `/var/backups/yiban` 下的备份（备份随主机同灭）。**`backup.sh` 本体只从环境变量或 stdin（fd 0 单跳，由 wrapper 注入）取口令**（`BACKUP_GPG_PASSPHRASE`，旧名 `BACKUP_AGE_PASSPHRASE` 兼容；另有 `BACKUP_GPG_RECIPIENT` 走公钥加密）；它自己不读口令文件——读 0600 口令文件的是 `yiban-backup-wrapper.sh`，且只经管道单跳给 backup.sh，口令不进任何子进程的 env。所以口令**必须另行离机保存一份**（密码管理器/离线介质；`/etc/yiban/backup-passphrase` 不算离机副本），否则主机损毁 = 备份与口令同灭、密文不可恢复。需要异地容灾时配置 `REMOTE_BACKUP`（见脚本头部说明）。
 >
