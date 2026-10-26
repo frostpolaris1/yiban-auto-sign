@@ -17,7 +17,7 @@
 # 前提：
 #   1. 应用只监听回环地址的 @YIBAN_WEB_PORT@ 端口，由 nginx 反代对外提供 443 HTTPS，
 #      该端口不对公网开放（防火墙仅放行 22/443）。
-#   2. /etc/yiban/accounts-key 为密钥文件（0600，属主 root:yiban），
+#   2. /etc/yiban/accounts-key 为密钥文件（0640，属主 root:yiban；组可读、他人不可读），
 #      由 systemd 注入为环境变量（web/app.py 会通过 .env / 环境变量读取）。
 #      若服务器不使用该密钥文件，可删除 EnvironmentFile 一行，
 #      并确保 <检出>/data/.env 中 YIBAN_SECRET_KEY 已配置。

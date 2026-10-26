@@ -211,6 +211,10 @@ command -v docker >/dev/null || pre "docker 不可用"
 # 宿主脚本的路径事实（业务日 / 按天日志名）与宿主入口同源：scripts/lib/host_paths.sh。
 . "$(dirname "${BASH_SOURCE[0]}")/lib/host_paths.sh"
 PY="$HOST_PYTHON"
+# host_paths.business_day() 从 $APP_DIR 导入 yiban.core.clock（与 run.sh 同口径）。
+# 缺它时 C6 在 `set -u` 下以「APP_DIR: unbound variable」失败（2026-10-25 实跑）。
+APP_DIR="$ROOT"
+export YIBAN_APP_DIR="$ROOT"
 # 容器形态的日志基名（compose 的 YIBAN_LOG_FILE=/data/logs/sign.log；宿主侧 bind 到
 # ./data/logs）。只在本脚本内使用，不导出。
 YIBAN_LOG_FILE="data/logs/sign.log"
@@ -285,10 +289,19 @@ rm -f data/mock.ready
 NOW_S=$(date +%s)
 WIN_S=$((NOW_S + LEAD_SEC))
 WIN_E=$((NOW_S + LEAD_SEC + SPAN_SEC))
-# 跨日判定按**北京业务日**（容器被强制 TZ=Asia/Shanghai；UTC 日界会在北京
-# 00:00-08:00 把同一业务日的窗口误判成跨日，或反之）——P12-24。
-[ "$(((WIN_S + 8 * 3600) / 86400))" -eq "$(((WIN_E + 8 * 3600) / 86400))" ] \
-  || pre "合成窗口跨日历日（北京业务日），请调小 --window-span-sec"
+# 跨日判定按**业务钟 clock.TZ**（时区唯一定义点）：宿主/容器本地时区不参与。
+# 旧写法用 +8 小时硬算日界，是第二份时区定义（R-7，2026-10-25 审查）。
+if ! "$HOST_PYTHON" - "$ROOT" "$WIN_S" "$WIN_E" <<'PY'
+import datetime, sys
+sys.path.insert(0, sys.argv[1])
+from yiban.core.clock import TZ
+s = datetime.datetime.fromtimestamp(int(sys.argv[2]), TZ)
+e = datetime.datetime.fromtimestamp(int(sys.argv[3]), TZ)
+raise SystemExit(0 if s.date() == e.date() else 1)
+PY
+then
+  pre "合成窗口跨日历日（北京业务日），请调小 --window-span-sec"
+fi
 export DRILL_TREE="$ROOT" DRILL_N="$ACCOUNTS" DRILL_WS="$WIN_S" DRILL_WE="$WIN_E"
 "$HOST_PYTHON" - > "$EV/c2-seed.log" 2>&1 <<'PY' || { cat "$EV/c2-seed.log" >&2; die "造数失败（c2-seed.log）"; }
 import contextlib, datetime, os, sys
@@ -297,6 +310,7 @@ TREE = os.environ["DRILL_TREE"]
 N = int(os.environ["DRILL_N"])
 DB, ENV = TREE + "/data/yiban.db", TREE + "/data/.env"
 
+sys.path.insert(0, TREE)
 sys.path.insert(0, TREE + "/scripts")
 os.environ["YIBAN_ENV_FILE"] = ENV
 os.environ["YIBAN_DB_FILE"] = DB
@@ -304,12 +318,10 @@ os.umask(0o77)
 os.makedirs(TREE + "/data/state", exist_ok=True)
 os.makedirs(TREE + "/data/logs", exist_ok=True)
 
-start = datetime.datetime.fromtimestamp(
-    int(os.environ["DRILL_WS"]),
-    datetime.timezone(datetime.timedelta(hours=8)))
-end = datetime.datetime.fromtimestamp(
-    int(os.environ["DRILL_WE"]),
-    datetime.timezone(datetime.timedelta(hours=8)))
+# 窗口与业务日都取 clock.TZ：与引擎同一时基，宿主时区不参与（R-7）。
+from yiban.core import clock
+start = datetime.datetime.fromtimestamp(int(os.environ["DRILL_WS"]), clock.TZ)
+end = datetime.datetime.fromtimestamp(int(os.environ["DRILL_WE"]), clock.TZ)
 assert start.date() == end.date(), "合成窗口不得跨日历日"
 
 if not os.path.exists(ENV):
@@ -326,7 +338,9 @@ db.init_db(DB, env_file=ENV, cleanup=False, migrate=True)
 # 会让本轮的 INSERT 全部被忽略** —— pending_count 归零 → 执行体一个任务都领不到 →
 # "✅ 0 成功，❌ 3 失败" 且一次请求都不发。清空当日台账行，本轮才是真正的一轮。
 # 账号/用户/密钥不动（.env 与账号密文继续复用，密钥仍自造）。
-_day = datetime.date.today().isoformat()
+# 业务日取 +8（上面 start 已按 clock.TZ 构造）：宿主是 UTC 时 date.today() 是 UTC 日，
+# 会清错那一天的台账行，上一轮的北京业日任务残留 ⇒ 本轮零任务（同 F3 形状）。
+_day = start.date().isoformat()
 _conn = db.get_conn()
 with db._conn_lock:
     _conn.execute("DELETE FROM sign_tasks WHERE day=?", (_day,))
@@ -391,7 +405,9 @@ SAN="$CADIR/san.ext"
 } > "$SAN"
 openssl req -x509 -newkey rsa:2048 -sha256 -days 2 -nodes \
   -keyout "$CADIR/ca.key" -out "$CADIR/ca.pem" \
-  -subj "/CN=yiban-drill-ca" > "$EV/c3-certs.log" 2>&1
+  -subj "/CN=yiban-drill-ca" \
+  -addext "basicConstraints=critical,CA:TRUE" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign" > "$EV/c3-certs.log" 2>&1
 openssl req -newkey rsa:2048 -sha256 -nodes \
   -keyout "$CADIR/server.key" -out "$CADIR/server.csr" \
   -subj "/CN=${DOMAINS[0]}" >> "$EV/c3-certs.log" 2>&1
@@ -414,7 +430,10 @@ for d in "${DOMAINS[@]}"; do ADD_HOST+=(--add-host "$d:127.0.0.1"); done
 
 # environment 照抄 docker-compose.yml 的 services.yiban.environment
 # （release-gate §2④：缺键会得到"打不开数据库"的假失败）
+# 端口/线程数按 compose 同口径注入：`docker run` 没有 compose 的 env_file，
+# 这里显式读同一份值表（#209 之后镜像不再有 EXPOSE/ENV 的端口字面量）。
 docker run -d --name "$CTR" --network "$NET" \
+  --env-file "$ROOT/deploy/web.env" \
   "${ADD_HOST[@]}" \
   --security-opt no-new-privileges:true --cap-drop ALL \
   --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \

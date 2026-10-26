@@ -89,8 +89,9 @@ pip3 config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 #    Gitee 是国内部署的拉取源（国内服务器直连 GitHub 常失败）；GitHub 是开发源
 #    （提交最新），两者同一仓库，直连 GitHub 顺畅时也可换。
 git clone https://gitee.com/frostpolaris/yiban-auto-sign.git /opt/yiban-auto-sign
-# 上面的 /opt/yiban-auto-sign 是生产默认目录：run.sh、systemd 单元模板与 crontab
-# 都默认用它。换目录部署必须同步改（见「网页管理后台」的 systemd 单元说明）。
+# 上面的 /opt/yiban-auto-sign 是生产默认目录。换目录部署不需要手改单元与 cron：
+# systemd 单元是模板（@YIBAN_APP_DIR@），cron 表由 install.sh 按检出根渲染；检出路径
+# 限白名单字符集（见「网页管理后台」的 systemd 单元说明）。
 
 # 3. 依赖（装进项目自带虚拟环境 .venv，与生产一致；不要装进系统 Python）
 cd /opt/yiban-auto-sign
@@ -135,7 +136,9 @@ bash run.sh && tail -20 /var/log/yiban/sign-$(date +%F).log
 
 ```bash
 apt update
-apt install -y python3 python3-venv python3-pip
+apt install -y python3 python3-venv python3-pip sqlite3 gnupg
+# sqlite3：备份的一致性快照与完整性校验（缺它时 backup.sh 回退 cp 并跳过校验）。
+# gnupg：备份加密（--require-encrypt 与故障转移都依赖它）。
 useradd -r -s /usr/sbin/nologin yiban   # 服务账号：下一步的 install.sh 要 `-o yiban`
 ```
 
@@ -169,8 +172,9 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.lock
 ```
 
-> `mkdir -p /opt/yiban-auto-sign` 是生产默认目录，run.sh、systemd 单元模板与 crontab
-> 都默认用它；换目录部署要同步改这几处（见「网页管理后台」的 systemd 单元说明）。
+> `mkdir -p /opt/yiban-auto-sign` 是生产默认目录。换目录部署不需要手改 systemd 单元与
+> cron 表：单元是模板（`@YIBAN_APP_DIR@`），cron 表由 `install.sh` 按检出根渲染；检出
+> 路径限白名单字符集（见「网页管理后台」的 systemd 单元说明）。
 >
 > 解压完后按第 6 节的顺序做两步：`sudo chown -R root:root . && sudo chmod -R go-w .`，
 > 再 `sudo bash deploy/prod/install.sh`（后者建 `data/` 并归 `yiban:yiban`）。见下方
@@ -484,7 +488,7 @@ docker compose exec yiban ls -l /backups
 > ```bash
 > cd /opt/yiban-auto-sign   # Docker 部署在容器内相应目录
 > PY=.venv/bin/python3        # 裸机用部署的 .venv；容器内依赖装在系统解释器，改成 PY=python3
-> OLD_KEY='<旧钥64hex>' NEW_KEY='<新钥64hex>' YIBAN_ENV_FILE=.env \
+> OLD_KEY='<旧钥64hex>' NEW_KEY='<新钥64hex>' YIBAN_ENV_FILE=data/.env \
 > "$PY" - <<'PY'
 > import json, os, sqlite3
 > from yiban.adapters.config import account_crypto as ac, env_io
@@ -905,9 +909,17 @@ YIBAN_ADMIN_PASSWORD='你的强口令' .venv/bin/python3 -m yiban.entry.cli init
 # 装单元前先备齐模板里引用的三样东西（缺任一样 systemd 会以 "Failed at step NAMESPACE"
 # 或 EnvironmentFile 报错启动失败）：
 #   useradd -r -s /usr/sbin/nologin yiban                     # 模板的 User=yiban（上面「服务器部署」第 1 步已建过则跳过）
-#   install -d -m 0750 -o yiban -g yiban /etc/yiban           # .env 分盘存放目录（可选）
-#   grep '^YIBAN_ACCOUNTS_KEY=' .env >/tmp/yiban-accounts-key && \
-#     install -m 0640 -o root -g yiban /tmp/yiban-accounts-key /etc/yiban/accounts-key \
+#   install -d -m 0750 -o yiban -g yiban /etc/yiban           # EnvironmentFile 目录（必需；缺它 install 报错）
+#   # 账号密钥在运行数据文件 data/.env（上面「服务器部署」第 4 步写入）。
+#   # 取钥不猜格式：ensure_accounts_key 用 env_io.parse_env_file 读、decode_accounts_key
+#   # 校验（BOM、大小写、值内空白、CRLF、NBSP 均与应用同口径）；缺键或坏值才生成，写回走
+#   # env_io.write_env_key（折叠同名行，临时件 + os.replace，0600）。
+#   test -f data/.env || { echo "缺 data/.env：先完成「服务器部署」第 4 步与 install.sh"; exit 1; }
+#   chmod 600 data/.env                                      # 第 4 步 tee 建出的文件通常是 0644
+#   .venv/bin/python3 -c 'import sys; from yiban.adapters.config import account_crypto; print("YIBAN_ACCOUNTS_KEY=" + account_crypto.ensure_accounts_key(sys.argv[1]).hex())' data/.env \
+#     >/tmp/yiban-accounts-key \
+#     || { rm -f /tmp/yiban-accounts-key; echo "data/.env 里没有合法的 YIBAN_ACCOUNTS_KEY"; exit 1; }
+#   install -m 0640 -o root -g yiban /tmp/yiban-accounts-key /etc/yiban/accounts-key \
 #     && rm -f /tmp/yiban-accounts-key                         # 模板的 EnvironmentFile：只放启动密钥这一行
 #   ⚠️ 不要把整份 .env 拷成 EnvironmentFile：非路径键的读序是 .env 优先、
 #   进程环境只补缺；四个路径键（DB_FILE/STATE_DIR/LOG_FILE）反过来
