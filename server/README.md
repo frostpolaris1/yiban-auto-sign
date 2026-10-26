@@ -18,7 +18,9 @@ server/
 ├── internal/core/retry        the only retry policy
 ├── internal/core/egress       the only egress identity
 ├── internal/core/plan         the only slot geometry
-├── internal/core/capacity     owner stub (P4)
+├── internal/core/capacity     the only capacity formula (P4)
+├── internal/core/window       the only window predicates and edge shrinking (P4)
+├── internal/core/rate         the only per-egress GCRA limiter (P4)
 ├── internal/core/account      account status, record and credential types
 ├── internal/core/audit        audit chain encoding and verification
 ├── internal/core/scope        master / admin / user authorization scope

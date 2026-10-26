@@ -138,6 +138,44 @@ class GateHappyPathTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout[-4000:] + r.stderr[-2000:])
 
 
+class ScanSurfaceGuardTest(unittest.TestCase):
+    """扫描面自检（2026-10-25 复审 P2-3）：`.go` 覆盖可被静默移除就是假的。
+
+    从门脚本源码 AST 里断言 SCAN_EXTS 含 `.go`、DEFAULT_SCAN 含 server/ui。
+    删掉任一项，本用例红——实验线 Go 生产面的键字面量从此必须受门判红。
+    用 AST 而非文本匹配：重排元组、换引号都不误伤；删除元素才红。
+    """
+
+    def _tuple_of(self, tree, name):
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for tgt in node.targets:
+                    if isinstance(tgt, ast.Name) and tgt.id == name:
+                        return node.value
+        return None
+
+    def _elements(self, tup):
+        if isinstance(tup, (ast.Tuple, ast.List)):
+            return [ast.literal_eval(e) for e in tup.elts]
+        return []
+
+    def test_go_scan_and_server_surface_are_declared(self):
+        with open(GATE, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        scan_exts = self._tuple_of(tree, "SCAN_EXTS")
+        default_scan = self._tuple_of(tree, "DEFAULT_SCAN")
+        self.assertIsNotNone(scan_exts, "SCAN_EXTS 定义丢失")
+        self.assertIsNotNone(default_scan, "DEFAULT_SCAN 定义丢失")
+        exts = self._elements(scan_exts)
+        scan = self._elements(default_scan)
+        self.assertIn(".go", exts,
+                      "SCAN_EXTS 丢了 .go：Go 生产面的配置键字面量从此不受门判红（假覆盖）")
+        self.assertIn("server", scan,
+                      "DEFAULT_SCAN 丢了 server：实验线 Go 后端被移出扫描面")
+        self.assertIn("ui", scan,
+                      "DEFAULT_SCAN 丢了 ui：实验线 React 前端被移出扫描面")
+
+
 class GateDefaultLiteralMutationTest(unittest.TestCase):
     """判据 ②：已登记键的默认值字面量在代码内清零（两种回潮形状各一条）。"""
 
