@@ -17,7 +17,8 @@ import (
 var ErrScheduleConflict = errors.New("pg: sign task already claimed")
 
 // ErrWindowStale 是窗口版本竞争失败的错误：库里已有更新的版本。
-var ErrWindowStale = errors.New("pg: window version conflict")
+// 哨兵在 core/schedule：用例层与适配器按同一对象判定。
+var ErrWindowStale = coreschedule.ErrWindowStale
 
 // ScheduleRepo 是排期四表的仓储。
 // 唯一约束 (account_id, school_task_id, day) 是 CAS 判据的库级兜底：
@@ -187,4 +188,46 @@ func (r *ScheduleRepo) CountDone(ctx context.Context, accountID, day string) (in
 		return 0, mapError(err)
 	}
 	return n, nil
+}
+
+// RearrangePlan 重排未执行行：只更新 state = 'pending' 的 run_at。
+// 运行中与终态行一律不动——当日结论比计划新（重放安全的同一条判据）。
+// 返回更新行数。
+func (r *ScheduleRepo) RearrangePlan(ctx context.Context, schoolTaskID, day string, rows []coreschedule.PlanRow) (int64, error) {
+	q := r.db.q(ctx)
+	var updated int64
+	for _, row := range rows {
+		ct, err := q.Exec(ctx,
+			`UPDATE sign_tasks SET run_at = $4
+			 WHERE account_id = $1::uuid AND school_task_id = $2::uuid AND day = $3 AND state = 'pending'`,
+			row.AccountID, schoolTaskID, day, row.RunAt)
+		if err != nil {
+			return updated, mapError(err)
+		}
+		updated += ct.RowsAffected()
+	}
+	return updated, nil
+}
+
+// ActiveAccountIDs 返回某校的活跃账号 ID，按手机号升序（稳定顺序即铺点行序号）。
+// 只取 active 且未软删的行：暂停/待审账号不占计划位。
+func (r *ScheduleRepo) ActiveAccountIDs(ctx context.Context, schoolID string) ([]string, error) {
+	rows, err := r.db.q(ctx).Query(ctx,
+		`SELECT id::text FROM accounts
+		 WHERE school_id = $1::uuid AND status = 'active' AND deleted_at IS NULL
+		 ORDER BY phone, id`,
+		schoolID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, mapError(err)
+		}
+		out = append(out, id)
+	}
+	return out, mapError(rows.Err())
 }
