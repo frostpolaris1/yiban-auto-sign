@@ -49,6 +49,14 @@ type Client struct {
 
 	mu       sync.Mutex
 	sessions map[string]*sessionEntry
+
+	posMu     sync.Mutex
+	positions map[string]positionEntry
+}
+
+type positionEntry struct {
+	at  time.Time
+	cfg protocol.SignPositionConfig
 }
 
 type sessionEntry struct {
@@ -83,6 +91,7 @@ func New(cfg Config) *Client {
 		transport: cfg.Transport,
 		random:    cfg.Random,
 		sessions:  make(map[string]*sessionEntry),
+		positions: make(map[string]positionEntry),
 	}
 }
 
@@ -128,6 +137,7 @@ func (c *Client) withSession(ctx context.Context, accountID string, cred contrac
 	err := fn(ctx, entry.http, entry.csrf)
 	var expired *protocol.SessionExpired
 	if errors.As(err, &expired) {
+		c.clearPositions(accountID)
 		entry.http = nil
 		if _, loginErr := c.loginLocked(ctx, entry, cred); loginErr != nil {
 			return loginErr
@@ -138,6 +148,39 @@ func (c *Client) withSession(ctx context.Context, accountID string, cred contrac
 		entry.expires = c.clock.Now().Add(c.ttl)
 	}
 	return err
+}
+
+// withSessionNoRetry 与 withSession 相同，但 999 不自动重试。
+// 供非幂等的签到 POST 使用：重登后重发可能重复提交。
+func (c *Client) withSessionNoRetry(ctx context.Context, accountID string, cred contract.Credential,
+	fn func(context.Context, *http.Client, string) error) error {
+	entry := c.entry(accountID)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	if !entry.valid(c.clock.Now()) {
+		if _, err := c.loginLocked(ctx, entry, cred); err != nil {
+			return err
+		}
+	}
+	err := fn(ctx, entry.http, entry.csrf)
+	if err == nil {
+		entry.expires = c.clock.Now().Add(c.ttl)
+	}
+	return err
+}
+
+func (c *Client) clearSession(accountID string) {
+	entry := c.entry(accountID)
+	entry.mu.Lock()
+	entry.http = nil
+	entry.mu.Unlock()
+	c.clearPositions(accountID)
+}
+
+func (c *Client) clearPositions(accountID string) {
+	c.posMu.Lock()
+	delete(c.positions, accountID)
+	c.posMu.Unlock()
 }
 
 func (c *Client) newHTTPClient() *http.Client {
@@ -188,6 +231,15 @@ func setUsersureHeaders(req *http.Request) {
 	req.Header.Set("User-Agent", "Yiban")
 	req.Header.Set("AppVersion", appVersion)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+	req.Header.Set("Connection", "close")
+}
+
+// setAppHeaders 是签到链的头：Origin/Referer 必须改回 App 域。
+func setAppHeaders(req *http.Request) {
+	req.Header.Set("User-Agent", "Yiban")
+	req.Header.Set("AppVersion", appVersion)
+	req.Header.Set("Origin", appOrigin)
+	req.Header.Set("Referer", appOrigin+"/")
 	req.Header.Set("Connection", "close")
 }
 
