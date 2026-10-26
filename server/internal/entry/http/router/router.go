@@ -32,6 +32,7 @@ import (
 	adminhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/admin"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/respond"
+	schedulehttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/schedule"
 	schoolhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/school"
 	signinghttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/signing"
 	userhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/user"
@@ -60,6 +61,9 @@ type Options struct {
 	Users    *userhttp.Handler
 	// Signing 校验账号凭据。为 nil 时校验端点回 501。
 	Signing *signinghttp.Handler
+	// Schedule 提供计划、容量与自选时间片端点。
+	// 为 nil 时这些端点回 501。
+	Schedule *schedulehttp.Handler
 }
 
 // server 实现生成的契约接口。
@@ -73,6 +77,7 @@ type server struct {
 	accounts *accounthttp.Handler
 	users    *userhttp.Handler
 	signing  *signinghttp.Handler
+	schedule *schedulehttp.Handler
 }
 
 // New 构造 HTTP 引擎。缺 SessionIssuer 时**失败关闭**。
@@ -103,6 +108,7 @@ func New(opts Options) (*gin.Engine, error) {
 	srv.accounts = opts.Accounts
 	srv.users = opts.Users
 	srv.signing = opts.Signing
+	srv.schedule = opts.Schedule
 
 	engine := gin.New()
 	engine.Use(

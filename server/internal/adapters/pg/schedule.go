@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
+	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
 )
 
@@ -209,11 +210,12 @@ func (r *ScheduleRepo) RearrangePlan(ctx context.Context, schoolTaskID, day stri
 	return updated, nil
 }
 
-// ActiveAccountIDs 返回某校的活跃账号 ID，按手机号升序（稳定顺序即铺点行序号）。
-// 只取 active 且未软删的行：暂停/待审账号不占计划位。
-func (r *ScheduleRepo) ActiveAccountIDs(ctx context.Context, schoolID string) ([]string, error) {
+// ActiveAccounts 返回某校的活跃账号及其所有者，按手机号升序
+// （稳定顺序即铺点行序号）。只取 active 且未软删的行：
+// 暂停/待审账号不占计划位。
+func (r *ScheduleRepo) ActiveAccounts(ctx context.Context, schoolID string) ([]coreschedule.AccountRef, error) {
 	rows, err := r.db.q(ctx).Query(ctx,
-		`SELECT id::text FROM accounts
+		`SELECT id::text, owner_user_id::text FROM accounts
 		 WHERE school_id = $1::uuid AND status = 'active' AND deleted_at IS NULL
 		 ORDER BY phone, id`,
 		schoolID)
@@ -221,15 +223,99 @@ func (r *ScheduleRepo) ActiveAccountIDs(ctx context.Context, schoolID string) ([
 		return nil, mapError(err)
 	}
 	defer rows.Close()
-	var out []string
+	var out []coreschedule.AccountRef
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var acct coreschedule.AccountRef
+		if err := rows.Scan(&acct.ID, &acct.OwnerUserID); err != nil {
 			return nil, mapError(err)
 		}
-		out = append(out, id)
+		out = append(out, acct)
 	}
 	return out, mapError(rows.Err())
+}
+
+// GetOverride 取某任务某日的人工覆盖；不存在返回 errs.ErrNotFound。
+func (r *ScheduleRepo) GetOverride(ctx context.Context, schoolTaskID, day string) (coreschedule.WindowOverride, error) {
+	var ov coreschedule.WindowOverride
+	err := r.db.q(ctx).QueryRow(ctx,
+		`SELECT school_task_id::text, day::text, start_at, end_at, reason, created_by::text
+		 FROM window_overrides WHERE school_task_id = $1::uuid AND day = $2::date`,
+		schoolTaskID, day).Scan(&ov.SchoolTaskID, &ov.Day, &ov.Start, &ov.End, &ov.Reason, &ov.CreatedBy)
+	if err != nil {
+		return coreschedule.WindowOverride{}, mapError(err)
+	}
+	return ov, nil
+}
+
+// PutOverride 覆盖写某任务某日的人工覆盖：同键只留最后一条。
+func (r *ScheduleRepo) PutOverride(ctx context.Context, ov coreschedule.WindowOverride) error {
+	_, err := r.db.q(ctx).Exec(ctx,
+		`INSERT INTO window_overrides (school_task_id, day, start_at, end_at, reason, created_by)
+		 VALUES ($1::uuid, $2::date, $3, $4, $5, $6::uuid)
+		 ON CONFLICT (school_task_id, day) DO UPDATE
+		 SET start_at = EXCLUDED.start_at, end_at = EXCLUDED.end_at,
+		     reason = EXCLUDED.reason, created_by = EXCLUDED.created_by, created_at = now()`,
+		ov.SchoolTaskID, ov.Day, ov.Start, ov.End, ov.Reason, ov.CreatedBy)
+	if err != nil {
+		return mapInsertForeignKey(err)
+	}
+	return nil
+}
+
+// ListWindows 返回作用域内任务与当日窗口缓存。
+// LEFT JOIN 保留"尚未发现窗口"的任务：管理面要看到这一行。
+func (r *ScheduleRepo) ListWindows(ctx context.Context, scope corescope.Scope, day string) ([]coreschedule.WindowView, error) {
+	clause, args, err := schoolScopePredicate(scope, 2, "sc.")
+	if err != nil {
+		return nil, err
+	}
+	query := `SELECT sc.id::text, sc.name, st.id::text, st.name, st.enabled,
+	                 wc.start_at, wc.end_at, wc.source, wc.version
+	          FROM school_tasks st
+	          JOIN schools sc ON sc.id = st.school_id
+	          LEFT JOIN window_cache wc ON wc.school_task_id = st.id AND wc.day = $1::date
+	          WHERE true` + clause + `
+	          ORDER BY sc.name, st.name, st.id`
+	rows, err := r.db.q(ctx).Query(ctx, query, append([]any{day}, args...)...)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	var out []coreschedule.WindowView
+	for rows.Next() {
+		var v coreschedule.WindowView
+		var start, end *time.Time
+		var source *string
+		var version *int
+		if err := rows.Scan(&v.SchoolID, &v.SchoolName, &v.TaskID, &v.TaskName, &v.Enabled,
+			&start, &end, &source, &version); err != nil {
+			return nil, mapError(err)
+		}
+		v.Day = day
+		if start != nil && end != nil {
+			v.Start, v.End, v.Cached = *start, *end, true
+		}
+		if source != nil {
+			v.Source = *source
+		}
+		if version != nil {
+			v.Version = *version
+		}
+		out = append(out, v)
+	}
+	return out, mapError(rows.Err())
+}
+
+// Task 读任务元数据；不存在返回 errs.ErrNotFound。
+func (r *ScheduleRepo) Task(ctx context.Context, taskID string) (coreschedule.TaskInfo, error) {
+	var t coreschedule.TaskInfo
+	err := r.db.q(ctx).QueryRow(ctx,
+		`SELECT id::text, school_id::text, name, enabled FROM school_tasks WHERE id = $1::uuid`,
+		taskID).Scan(&t.ID, &t.SchoolID, &t.Name, &t.Enabled)
+	if err != nil {
+		return coreschedule.TaskInfo{}, mapError(err)
+	}
+	return t, nil
 }
 
 // ClaimDue 认领到期任务：单条 UPDATE 批量领取。

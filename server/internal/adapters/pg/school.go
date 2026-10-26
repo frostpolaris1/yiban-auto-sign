@@ -91,7 +91,7 @@ func (r *SchoolRepo) List(ctx context.Context, s corescope.Scope, cursor string,
 	if limit < 1 || limit > 200 {
 		return nil, "", validationError("limit must be between 1 and 200")
 	}
-	clause, args, err := schoolScopePredicate(s, 1)
+	clause, args, err := schoolScopePredicate(s, 1, "")
 	if err != nil {
 		return nil, "", err
 	}

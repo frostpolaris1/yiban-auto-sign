@@ -158,3 +158,66 @@ func (s *server) AccountVerify(c *gin.Context, id oapi.AccountID, params oapi.Ac
 	}
 	s.signing.Verify(c, id, params)
 }
+
+// ScheduleWindows 委托计划处理器。未装配时仍是 501。
+func (s *server) ScheduleWindows(c *gin.Context, params oapi.ScheduleWindowsParams) {
+	if s.schedule == nil {
+		notImplemented(c)
+		return
+	}
+	s.schedule.Windows(c, params)
+}
+
+// SchedulePreview 委托计划处理器。未装配时仍是 501。
+func (s *server) SchedulePreview(c *gin.Context, params oapi.SchedulePreviewParams) {
+	if s.schedule == nil {
+		notImplemented(c)
+		return
+	}
+	s.schedule.Preview(c, params)
+}
+
+// SchedulePlan 委托计划处理器。未装配时仍是 501。
+func (s *server) SchedulePlan(c *gin.Context, params oapi.SchedulePlanParams) {
+	if s.schedule == nil {
+		notImplemented(c)
+		return
+	}
+	s.schedule.Plan(c, params)
+}
+
+// ScheduleOverride 委托计划处理器。未装配时仍是 501。
+func (s *server) ScheduleOverride(c *gin.Context, params oapi.ScheduleOverrideParams) {
+	if s.schedule == nil {
+		notImplemented(c)
+		return
+	}
+	s.schedule.Override(c, params)
+}
+
+// CapacityGet 委托容量处理器。未装配时仍是 501。
+func (s *server) CapacityGet(c *gin.Context, params oapi.CapacityGetParams) {
+	if s.schedule == nil {
+		notImplemented(c)
+		return
+	}
+	s.schedule.CapacityReport(c, params)
+}
+
+// TimePrefGet 委托自选时间片处理器。未装配时仍是 501。
+func (s *server) TimePrefGet(c *gin.Context) {
+	if s.schedule == nil {
+		notImplemented(c)
+		return
+	}
+	s.schedule.TimePrefGet(c)
+}
+
+// TimePrefSet 委托自选时间片处理器。未装配时仍是 501。
+func (s *server) TimePrefSet(c *gin.Context, params oapi.TimePrefSetParams) {
+	if s.schedule == nil {
+		notImplemented(c)
+		return
+	}
+	s.schedule.TimePrefSet(c, params)
+}

@@ -38,16 +38,25 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/session"
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
 	appadmin "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/admin"
+	appegress "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/egress"
+	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
 	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
+	apptimepref "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/timepref"
+	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	corerate "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/rate"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 	accounthttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/account"
 	adminhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/admin"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/router"
+	schedulehttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/schedule"
 	schoolhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/school"
+	signinghttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/signing"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
 
 const w2cDSNEnv = "YIBAN_TEST_DATABASE_URL"
@@ -73,6 +82,12 @@ type w2cEnv struct {
 	admins   *pg.AdminSchoolRepo
 	accounts *pg.AccountRepo
 	audits   *pg.AuditRepo
+	sched    *pg.ScheduleRepo
+	prefs    *pg.TimePrefRepo
+	worker   *appworker.Service
+	provider *e2eProvider
+	// windows 是窗口发现脚本：任务 ID → 平台窗口。
+	windows map[string]contract.Window
 
 	logs   *bytes.Buffer
 	bodies []string
@@ -134,6 +149,9 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 	e.schools = pg.NewSchoolRepo(db)
 	e.admins = pg.NewAdminSchoolRepo(db)
 	e.accounts = pg.NewAccountRepo(db)
+	e.sched = pg.NewScheduleRepo(db)
+	e.prefs = pg.NewTimePrefRepo(db)
+	e.windows = map[string]contract.Window{}
 	e.audits, err = pg.NewAuditRepo(db, []byte("w2c-audit-key-0123456789abcdef00"))
 	if err != nil {
 		t.Fatalf("new audit repo: %v", err)
@@ -180,6 +198,46 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 	}
 
 	e.sessions = session.NewMemoryWithTTL(clk, 30*time.Minute, 12*time.Hour, []byte("w2c-session-secret-0123456789abc"))
+	loc := time.FixedZone("CST", 8*3600)
+	e.provider = &e2eProvider{windows: e.windows}
+	egressSvc, err := appegress.NewService(appegress.Deps{
+		Store: pg.NewEgressRepo(db), Clock: clk,
+	})
+	if err != nil {
+		t.Fatalf("new egress service: %v", err)
+	}
+	e.worker, err = appworker.NewService(appworker.Deps{
+		Store:    e.sched,
+		Creds:    e2eCreds{},
+		Signer:   e.provider,
+		Egress:   egressSvc,
+		Limiter:  corerate.NewLimiter(corerate.DefaultRate, 6),
+		Clock:    clk,
+		Location: loc,
+	})
+	if err != nil {
+		t.Fatalf("new worker service: %v", err)
+	}
+	scheduleSvc, err := appschedule.NewService(appschedule.Deps{
+		Windows: e.sched, Plans: e.sched, Accounts: e.sched,
+		Discover: e2eDiscoverer{windows: e.windows}, Prefs: e.prefs, Tx: db,
+	})
+	if err != nil {
+		t.Fatalf("new schedule service: %v", err)
+	}
+	prefSvc, err := apptimepref.NewService(apptimepref.Deps{
+		Store: e.prefs, Clock: clk, Allow: true, Cooldown: 30 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("new time preference service: %v", err)
+	}
+	signingHandler := signinghttp.NewHandler(accountSvc, adminSvc, e.provider).
+		WithManual(e.worker).WithAccess(accountSvc)
+	scheduleHandler := schedulehttp.NewHandler(scheduleSvc, prefSvc, adminSvc, schedulehttp.Config{
+		Location: loc, Workers: 1, Avg: 60 * time.Second, Rate: 1.0, Util: 0.8,
+		SlotsPerSlice: 5, Front: true, UsePrefs: true,
+	})
+
 	e.engine, err = router.New(router.Options{
 		Sessions:        e.sessions,
 		Clock:           clk,
@@ -188,6 +246,8 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		Schools:         schoolhttp.NewHandler(schoolSvc, adminSvc),
 		Admins:          adminhttp.NewHandler(adminSvc, adminSvc),
 		Accounts:        accounthttp.NewHandler(accountSvc, adminSvc),
+		Signing:         signingHandler,
+		Schedule:        scheduleHandler,
 	})
 	if err != nil {
 		t.Fatalf("router.New: %v", err)
@@ -213,6 +273,46 @@ func w2cWithSchema(dsn, schema string) string {
 		sep = "&"
 	}
 	return dsn + sep + "search_path=" + schema
+}
+
+// e2eCreds 是执行循环的凭据接缝：本文件的用例只用 Request，
+// 不触发真实签到，故返回空凭据即可。
+type e2eCreds struct{}
+
+func (e2eCreds) Credential(context.Context, string) (contract.Credential, error) {
+	return contract.Credential{}, nil
+}
+
+// e2eProvider 是本地假提供方：只为满足校验与执行接缝，
+// 本文件的用例不触发平台调用。窗口发现由 e2eDiscoverer 直接提供。
+type e2eProvider struct{ windows map[string]contract.Window }
+
+func (p *e2eProvider) DiscoverWindow(context.Context, contract.DiscoverRequest) (contract.Window, error) {
+	return contract.Window{}, errs.New(errs.CodeUpstream, "not used in e2e")
+}
+
+func (p *e2eProvider) DiscoverTargets(context.Context, contract.DiscoverRequest) ([]contract.Target, error) {
+	return nil, errs.New(errs.CodeUpstream, "not used in e2e")
+}
+
+func (p *e2eProvider) Sign(context.Context, contract.SignRequest) (contract.Result, error) {
+	return contract.Result{}, errs.New(errs.CodeInternal, "not used in e2e")
+}
+
+func (p *e2eProvider) Verify(context.Context, contract.VerifyRequest) (contract.Profile, error) {
+	return contract.Profile{}, nil
+}
+
+// e2eDiscoverer 按任务 ID 返回测试预置的平台窗口。
+// 未预置视为平台无窗口，计划层按缓存或回退继续。
+type e2eDiscoverer struct{ windows map[string]contract.Window }
+
+func (d e2eDiscoverer) DiscoverWindow(_ context.Context, taskID string) (contract.Window, error) {
+	w, ok := d.windows[taskID]
+	if !ok {
+		return contract.Window{}, errs.ErrNotFound
+	}
+	return w, nil
 }
 
 func w2cRandomHex(n int) string {

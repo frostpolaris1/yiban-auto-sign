@@ -200,3 +200,62 @@ func TestLoadFromCredentialKeyIsBase64Of32Bytes(t *testing.T) {
 		t.Fatalf("credential key = %q, want the decoded input", got)
 	}
 }
+
+// 调度参数：缺省值来自名册；越界或形状错即启动错误。
+func TestScheduleConfigDefaultsAndBounds(t *testing.T) {
+	cfg, err := LoadFrom(baseSource())
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if cfg.Workers != 1 || cfg.AvgAttempt.Seconds() != 3 || cfg.EgressRate != 1.0 {
+		t.Fatalf("调度缺省 = workers %d avg %v rate %v", cfg.Workers, cfg.AvgAttempt, cfg.EgressRate)
+	}
+	if cfg.EdgeFront.Seconds() != 60 || cfg.EdgeBack.Seconds() != 60 {
+		t.Fatalf("边缘缺省 = front %v back %v", cfg.EdgeFront, cfg.EdgeBack)
+	}
+	if cfg.AllowTimePref || cfg.TimePrefCooldown.Seconds() != 30 {
+		t.Fatalf("自选缺省 = allow %v cooldown %v", cfg.AllowTimePref, cfg.TimePrefCooldown)
+	}
+
+	src := baseSource()
+	src["YIBAN_WORKERS"] = "4"
+	src["YIBAN_AVG_ATTEMPT_SEC"] = "5"
+	src["YIBAN_EGRESS_RATE"] = "1.5"
+	src["YIBAN_WINDOW_EDGE_FRONT_SEC"] = "30"
+	src["YIBAN_WINDOW_EDGE_BACK_SEC"] = "0"
+	src["YIBAN_ALLOW_TIME_PREF"] = "true"
+	src["YIBAN_TIME_PREF_COOLDOWN_SEC"] = "60"
+	cfg, err = LoadFrom(src)
+	if err != nil {
+		t.Fatalf("LoadFrom overrides: %v", err)
+	}
+	if cfg.Workers != 4 || cfg.AvgAttempt.Seconds() != 5 || cfg.EgressRate != 1.5 ||
+		cfg.EdgeFront.Seconds() != 30 || cfg.EdgeBack != 0 ||
+		!cfg.AllowTimePref || cfg.TimePrefCooldown.Seconds() != 60 {
+		t.Fatalf("覆盖值未生效: %#v", cfg)
+	}
+
+	bad := []struct {
+		key, value string
+	}{
+		{"YIBAN_WORKERS", "0"},
+		{"YIBAN_WORKERS", "65"},
+		{"YIBAN_WORKERS", "many"},
+		{"YIBAN_AVG_ATTEMPT_SEC", "0"},
+		{"YIBAN_AVG_ATTEMPT_SEC", "301"},
+		{"YIBAN_EGRESS_RATE", "0.1"},
+		{"YIBAN_EGRESS_RATE", "4.1"},
+		{"YIBAN_EGRESS_RATE", "fast"},
+		{"YIBAN_WINDOW_EDGE_FRONT_SEC", "301"},
+		{"YIBAN_WINDOW_EDGE_BACK_SEC", "-1"},
+		{"YIBAN_ALLOW_TIME_PREF", "yes"},
+		{"YIBAN_TIME_PREF_COOLDOWN_SEC", "3601"},
+	}
+	for _, c := range bad {
+		src := baseSource()
+		src[c.key] = c.value
+		if _, err := LoadFrom(src); err == nil {
+			t.Fatalf("%s=%q 必须被拒绝", c.key, c.value)
+		}
+	}
+}

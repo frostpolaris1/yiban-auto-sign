@@ -11,7 +11,8 @@
 // Handler、NewHandler；Service、Authorizer、Verifier 是装配接缝。
 //
 // # 口径
-// 只允许 master 与 admin；user 一律 403。
+// 校验端点只允许 master 与 admin；user 一律 403。
+// 手动签到允许三种角色，但账号必须在其可见面内，否则 404。
 // 平台结论回 200 {ok:false, code, message}；传输失败回 502。
 // 响应与消息不含手机号、口令、设备码。
 package signing
@@ -56,12 +57,19 @@ type ManualSigner interface {
 	Request(ctx context.Context, accountID string) (string, error)
 }
 
+// AccountAccess 按作用域读账号：跨校、跨用户与已软删都返回 404。
+// 手动签到先用它判可见面，再入队——否则 admin 能签未绑定学校的账号。
+type AccountAccess interface {
+	Get(ctx context.Context, scope corescope.Scope, id string) (appaccount.Record, error)
+}
+
 // Handler 处理账号凭据校验与手动签到。
 type Handler struct {
 	svc      Service
 	authz    Authorizer
 	verifier Verifier
 	manual   ManualSigner
+	access   AccountAccess
 }
 
 // NewHandler 构造处理器。
@@ -75,17 +83,34 @@ func (h *Handler) WithManual(m ManualSigner) *Handler {
 	return h
 }
 
+// WithAccess 注入账号可见面判据。未注入时 user 角色一律拒绝。
+func (h *Handler) WithAccess(a AccountAccess) *Handler {
+	h.access = a
+	return h
+}
+
 // Sign 实现 POST /api/accounts/:id/sign。
 //
 // 成功是 202（已入队，不是已完成）。三类冲突由 worker 的错误码经
 // respond 映射成 409：already_signed / sign_running / window_closed。
+// 三种角色都可发起，但账号必须在其可见面内：跨校或非本人一律 404。
 func (h *Handler) Sign(c *gin.Context, id oapi.AccountID, _ oapi.AccountSignParams) {
 	scope, ok := h.principal(c)
 	if !ok {
 		return
 	}
-	if kind := scope.Kind(); kind != corescope.KindMaster && kind != corescope.KindAdmin {
-		fail(c, errs.New(errs.CodeForbidden, "only master or admin may sign manually"))
+	switch scope.Kind() {
+	case corescope.KindMaster, corescope.KindAdmin, corescope.KindUser:
+	default:
+		fail(c, errs.New(errs.CodeForbidden, "role cannot sign manually"))
+		return
+	}
+	if h.access == nil {
+		fail(c, errs.New(errs.CodeInternal, "account access is not wired"))
+		return
+	}
+	if _, err := h.access.Get(c.Request.Context(), scope, string(id)); err != nil {
+		fail(c, err)
 		return
 	}
 	taskID, err := h.manual.Request(c.Request.Context(), string(id))

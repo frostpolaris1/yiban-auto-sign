@@ -31,6 +31,7 @@ tags:
   - name: schools
   - name: admins
   - name: accounts
+  - name: schedule
   - name: health
 security:
   - sessionCookie: []
@@ -516,7 +517,8 @@ paths:
         Ensures today's task row exists and returns 202 with its id.
         A closed window returns 409 window_closed. A run in progress returns
         409 sign_running. A concluded day returns 409 already_signed.
-      x-roles: [master, admin]
+        Cross-scope accounts return 404 for every role.
+      x-roles: [master, admin, user]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
         - $ref: '#/components/parameters/AccountID'
@@ -529,6 +531,197 @@ paths:
                 $ref: '#/components/schemas/AccountSignAccepted'
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/DefaultError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/schedule/windows:
+    get:
+      tags: [schedule]
+      operationId: ScheduleWindows
+      summary: List task windows for a business day.
+      description: |
+        master sees every school; admin sees bound schools only.
+        A task without a cached window for the day has null start and end,
+        because the window is not discovered yet.
+      x-roles: [master, admin]
+      parameters:
+        - name: day
+          in: query
+          required: false
+          description: Business day YYYY-MM-DD; defaults to today in the server time zone.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Task window list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleWindowList'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/schedule/preview:
+    get:
+      tags: [schedule]
+      operationId: SchedulePreview
+      summary: Preview the plan for one school task and day.
+      description: |
+        Reads the window from the platform, then the cache, then the fallback,
+        and returns the exact rows Build would persist. Preview writes nothing.
+      x-roles: [master, admin]
+      parameters:
+        - name: day
+          in: query
+          required: true
+          description: Business day YYYY-MM-DD.
+          schema: { type: string }
+        - $ref: '#/components/parameters/SchoolIDQuery'
+        - $ref: '#/components/parameters/TaskIDQuery'
+      responses:
+        '200':
+          description: Plan preview.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulePlan'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/schedule/plan:
+    post:
+      tags: [schedule]
+      operationId: SchedulePlan
+      summary: Build and persist the plan for one school task and day.
+      description: |
+        Writes the resolved window, rearranges pending rows when the window
+        changed, and inserts missing rows in one transaction. Running and
+        terminal rows are never moved.
+      x-roles: [master, admin]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SchedulePlanRequest'
+      responses:
+        '200':
+          description: Persisted plan.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulePlan'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        '409': { $ref: '#/components/responses/ConflictError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/schedule/override:
+    post:
+      tags: [schedule]
+      operationId: ScheduleOverride
+      summary: Replace the window of one school task for one day.
+      description: |
+        An override wins over the platform window for the same day and keeps
+        its recorded reason. Pending rows are rearranged immediately; running
+        and terminal rows are never moved.
+      x-roles: [master, admin]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduleOverrideRequest'
+      responses:
+        '200':
+          description: Plan rebuilt against the override.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulePlan'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        '409': { $ref: '#/components/responses/ConflictError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/me/time-pref:
+    get:
+      tags: [schedule]
+      operationId: TimePrefGet
+      summary: Read the signed-in user's preferred signing offset.
+      description: |
+        offset_min is the relative minute from the effective window start.
+        It must be a multiple of five. allowed reports whether the deployment
+        enables user time preferences; a stored value stays readable when the
+        feature is disabled.
+      x-roles: [user]
+      responses:
+        '200':
+          description: Time preference.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimePref'
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+    put:
+      tags: [schedule]
+      operationId: TimePrefSet
+      summary: Set or clear the signed-in user's preferred offset.
+      description: |
+        offset_min null clears the preference. A change within the cooldown
+        window returns 429 rate_limited. The deployment gate
+        YIBAN_ALLOW_TIME_PREF must be on, otherwise the call returns 403.
+      x-roles: [user]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TimePrefUpdate'
+      responses:
+        '200':
+          description: Stored preference.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimePref'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '429': { $ref: '#/components/responses/DefaultError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/capacity:
+    get:
+      tags: [schedule]
+      operationId: CapacityGet
+      summary: Report capacity and demand for one school task.
+      description: |
+        Capacity uses the same window resolution and formula as the plan.
+        A positive shortfall means demand exceeds capacity and the plan
+        compresses rows into the tail slice.
+      x-roles: [master, admin]
+      parameters:
+        - $ref: '#/components/parameters/SchoolIDQuery'
+        - $ref: '#/components/parameters/TaskIDQuery'
+        - name: day
+          in: query
+          required: false
+          description: Business day YYYY-MM-DD; defaults to today in the server time zone.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Capacity report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CapacityReport'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /healthz:
     get:
@@ -596,6 +789,17 @@ components:
       name: id
       in: path
       required: true
+      schema: { type: string }
+    SchoolIDQuery:
+      name: school_id
+      in: query
+      required: true
+      schema: { type: string }
+    TaskIDQuery:
+      name: task_id
+      in: query
+      required: true
+      description: School task id from GET /api/schedule/windows.
       schema: { type: string }
   responses:
     ValidationError:
@@ -940,6 +1144,157 @@ components:
       required: [task_id]
       properties:
         task_id: { type: string }
+
+    ScheduleWindowSource:
+      type: string
+      description: |
+        platform and cache come from discovery; fallback is the local
+        default window; override is a master or admin replacement.
+      enum: [platform, cache, fallback, override]
+    ScheduleWindow:
+      type: object
+      required: [school_id, school_name, task_id, task_name, enabled]
+      properties:
+        school_id: { type: string }
+        school_name: { type: string }
+        task_id: { type: string }
+        task_name: { type: string }
+        enabled: { type: boolean }
+        day: { type: string, description: Business day YYYY-MM-DD. }
+        start:
+          type: [string, "null"]
+          format: date-time
+          description: Null when the window is not cached for the day yet.
+        end:
+          type: [string, "null"]
+          format: date-time
+        source:
+          type: [string, "null"]
+          description: |
+            platform, cache, fallback or override; null when the window is not
+            cached for the day.
+        version: { type: integer }
+    ScheduleWindowList:
+      type: object
+      required: [day, items]
+      properties:
+        day: { type: string, description: Business day the list was resolved for. }
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScheduleWindow'
+    SchedulePlanRequest:
+      type: object
+      additionalProperties: false
+      required: [day, school_id, task_id]
+      properties:
+        day: { type: string, description: Business day YYYY-MM-DD. }
+        school_id: { type: string }
+        task_id: { type: string }
+    SchedulePlan:
+      type: object
+      required:
+        - day
+        - source
+        - window_start
+        - window_end
+        - version
+        - capacity
+        - demand
+        - shortfall
+        - histogram
+        - rows
+      properties:
+        day: { type: string }
+        source:
+          $ref: '#/components/schemas/ScheduleWindowSource'
+        window_start:
+          type: string
+          format: date-time
+          description: Effective window start after the edge trim.
+        window_end:
+          type: string
+          format: date-time
+          description: Effective window end after the edge trim.
+        version:
+          type: integer
+          description: Window cache version; zero in a pure preview.
+        capacity:
+          type: integer
+          description: Attempts the window can hold with the configured channels and rate.
+        demand: { type: integer }
+        shortfall: { type: integer }
+        histogram:
+          type: object
+          additionalProperties: { type: integer }
+          description: Account count per five-minute slice, keyed by slice index.
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScheduleRow'
+    ScheduleRow:
+      type: object
+      required: [account_id, run_at]
+      properties:
+        account_id: { type: string }
+        run_at: { type: string, format: date-time }
+    ScheduleOverrideRequest:
+      type: object
+      additionalProperties: false
+      required: [day, school_id, task_id, start, end, reason]
+      properties:
+        day: { type: string, description: Business day YYYY-MM-DD. }
+        school_id: { type: string }
+        task_id: { type: string }
+        start: { type: string, format: date-time }
+        end: { type: string, format: date-time }
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Recorded with the override for later review.
+    CapacityReport:
+      type: object
+      required:
+        - school_id
+        - task_id
+        - day
+        - source
+        - window_start
+        - window_end
+        - capacity
+        - demand
+        - shortfall
+      properties:
+        school_id: { type: string }
+        task_id: { type: string }
+        day: { type: string }
+        source:
+          $ref: '#/components/schemas/ScheduleWindowSource'
+        window_start: { type: string, format: date-time }
+        window_end: { type: string, format: date-time }
+        capacity: { type: integer }
+        demand: { type: integer }
+        shortfall: { type: integer }
+    TimePref:
+      type: object
+      additionalProperties: false
+      required: [offset_min, allowed]
+      properties:
+        offset_min:
+          type: [integer, "null"]
+          description: Relative minute from the effective window start; multiple of five.
+        allowed:
+          type: boolean
+          description: False when the deployment disables user time preferences.
+    TimePrefUpdate:
+      type: object
+      additionalProperties: false
+      required: [offset_min]
+      properties:
+        offset_min:
+          type: [integer, "null"]
+          description: Null clears the preference.
 
     AccountPage:
       type: object

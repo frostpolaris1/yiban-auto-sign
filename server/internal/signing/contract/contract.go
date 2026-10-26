@@ -64,6 +64,9 @@ const (
 	WindowPlatform WindowSource = "platform"
 	WindowCache    WindowSource = "cache"
 	WindowFallback WindowSource = "fallback"
+	// WindowOverride 是 master 或 admin 对某任务某日的人工覆盖。
+	// 优先级最高：覆盖存在时不再采信平台窗口。
+	WindowOverride WindowSource = "override"
 )
 
 // Window 是一个签到窗口。
