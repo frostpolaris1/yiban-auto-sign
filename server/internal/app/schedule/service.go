@@ -230,7 +230,10 @@ func (s *Service) Override(ctx context.Context, scope corescope.Scope, in Input,
 	if err != nil {
 		return Preview{}, err
 	}
+	// 覆盖同样可能改变容量（窗口变短/账号变多）：与 Build 同一口径
+	//（P6 审查 P3-1）。
 	s.publishWindow(ctx, in, p, changed)
+	s.publishCapacity(ctx, in, p)
 	return p, nil
 }
 
