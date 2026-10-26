@@ -283,6 +283,11 @@ type AccountReviewRequest struct {
 // AccountReviewRequestDecision defines model for AccountReviewRequest.Decision.
 type AccountReviewRequestDecision string
 
+// AccountSignAccepted defines model for AccountSignAccepted.
+type AccountSignAccepted struct {
+	TaskId string `json:"task_id"`
+}
+
 // AccountStatus pending on create; review moves to active or rejected. Pause moves
 // active to paused_admin or paused_user. credential_error is written by
 // the engine in P4 only.
@@ -552,6 +557,13 @@ type AccountReviewParams struct {
 	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
 }
 
+// AccountSignParams defines parameters for AccountSign.
+type AccountSignParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
 // AccountVerifyParams defines parameters for AccountVerify.
 type AccountVerifyParams struct {
 	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
@@ -675,6 +687,9 @@ type ServerInterface interface {
 	// AccountReview Approve or reject a pending account.
 	// (POST /api/accounts/{id}/review)
 	AccountReview(c *gin.Context, id AccountID, params AccountReviewParams)
+	// AccountSign Queue a manual sign for today.
+	// (POST /api/accounts/{id}/sign)
+	AccountSign(c *gin.Context, id AccountID, params AccountSignParams)
 	// AccountVerify Verify the stored credentials against the platform.
 	// (POST /api/accounts/{id}/verify)
 	AccountVerify(c *gin.Context, id AccountID, params AccountVerifyParams)
@@ -1061,6 +1076,58 @@ func (siw *ServerInterfaceWrapper) AccountReview(c *gin.Context) {
 	}
 
 	siw.Handler.AccountReview(c, id, params)
+}
+
+// AccountSign operation middleware
+func (siw *ServerInterfaceWrapper) AccountSign(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id AccountID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", c.Param("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AccountSignParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AccountSign(c, id, params)
 }
 
 // AccountVerify operation middleware
@@ -1597,5 +1664,6 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/accounts/:id/review", wrapper.AccountReview)
 	router.POST(options.BaseURL+"/api/accounts/:id/pause", wrapper.AccountPause)
 	router.POST(options.BaseURL+"/api/accounts/:id/verify", wrapper.AccountVerify)
+	router.POST(options.BaseURL+"/api/accounts/:id/sign", wrapper.AccountSign)
 	router.GET(options.BaseURL+"/healthz", wrapper.HealthCheck)
 }
