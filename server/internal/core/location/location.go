@@ -106,7 +106,10 @@ func Resolve(target contract.Target, loc contract.Location) bool {
 	if len(target.Polygon) >= 3 {
 		return PointInPolygon(loc.Lng, loc.Lat, target.Polygon)
 	}
-	return DistanceMeters(
-		contract.Point{Lng: loc.Lng, Lat: loc.Lat}, target.Center,
-	) <= float64(target.RadiusM)
+	return distanceWithin(float64(target.RadiusM),
+		DistanceMeters(contract.Point{Lng: loc.Lng, Lat: loc.Lat}, target.Center))
 }
+
+// distanceWithin 报告距离是否仍在半径内：恰好等于半径按在内。
+// 抽成小函数是为了让边界方向有直接的单元判据（P5-C 审查 P2-3）。
+func distanceWithin(radius, d float64) bool { return d <= radius }

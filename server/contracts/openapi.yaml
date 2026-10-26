@@ -542,7 +542,10 @@ paths:
         mode auto clears the stored point; mode fixed requires lng and lat
         inside the WGS84 range. A user may only change own accounts and an
         admin only accounts of bound schools; cross-scope writes return 404.
-        The stored reason travels to the platform when the fixed point falls
+        The reason is kept by the host for audit and review. Delivering it
+        to the platform lands with the upload protocol slice; until then the
+        sign request carries it but the provider does not include it. It
+        applies when the fixed point falls
         outside the target fence, so an out-of-range sign can be explained.
       x-roles: [user, admin]
       parameters:

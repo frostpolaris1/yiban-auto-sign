@@ -69,7 +69,7 @@ func fencedTarget() contract.Target {
 	}
 }
 
-func injectService(t *testing.T, st *fakeStore, signer *fakeSigner, locs *fakeLocations, photos *fakePhotos) *appworker.Service {
+func injectService(t *testing.T, st *fakeStore, signer *fakeSigner, locs *fakeLocations, photos appworker.PhotoSource) *appworker.Service {
 	t.Helper()
 	svc, err := appworker.NewService(appworker.Deps{
 		Store: st, Creds: fakeCreds{}, Signer: signer, Egress: fakeEgress{},
@@ -300,5 +300,26 @@ func TestFenceBoundaryStaysInside(t *testing.T) {
 	loc := fixedLoc(116.4, 39.9+500.0/111194.93, "")
 	if !corelocation.Resolve(target, loc) {
 		t.Fatal("半径恰好的点应判在内")
+	}
+}
+
+// 选图端口未装配且目标要求图片：与库空同判（fail-closed）。
+// 「nil 保持现行为」会把带图目标提交成无图请求（P5-C 审查偏差 5）。
+func TestNilPhotoSourceFailsClosed(t *testing.T) {
+	st := newStore(taskWithOwner())
+	st.windows["st-1|2026-10-29"] = openWindow()
+	signer := defaultSigner()
+	target := fencedTarget()
+	target.RequiresPhoto = true
+	signer.targets = []contract.Target{target}
+	svc := injectService(t, st, signer, &fakeLocations{}, nil)
+	if _, err := svc.Step(context.Background(), 10); err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	if st.finished["t1"] != corestatus.TaskSkipped || st.results["t1"] != string(contract.OutcomePhotoMissing) {
+		t.Fatalf("终态 = %v/%q, want skipped/photo_missing", st.finished["t1"], st.results["t1"])
+	}
+	if signer.signs != 0 {
+		t.Fatalf("nil 端口仍提交了 %d 次签到", signer.signs)
 	}
 }

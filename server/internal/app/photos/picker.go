@@ -10,6 +10,7 @@ package photos
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -35,7 +36,10 @@ func (s *Service) PickForAttempt(ctx context.Context, ownerUserID, attemptID str
 	if total == 0 {
 		return contract.ImageRef{}, false, nil
 	}
-	idx := int(sha256.Sum256([]byte(attemptID))[0]) % int(total)
+	// 取前 8 字节拼 uint64 再取模：首字节只有 256 个值，
+	// 图片库超过 256 张时高位索引永不命中，轮换退化（P5-C 审查 P3-3）。
+	sum := sha256.Sum256([]byte(attemptID))
+	idx := int(binary.BigEndian.Uint64(sum[:8]) % uint64(total))
 	rec, err := s.deps.Store.LibraryAt(ctx, ownerUserID, idx)
 	if err != nil {
 		return contract.ImageRef{}, false, err

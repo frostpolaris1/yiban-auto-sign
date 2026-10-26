@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -100,7 +101,8 @@ func TestPickForAttemptDeterministic(t *testing.T) {
 	if first.ID != second.ID {
 		t.Fatalf("同 AttemptID 选到不同图: %q vs %q", first.ID, second.ID)
 	}
-	want := int(sha256.Sum256([]byte("attempt-42"))[0]) % 3
+	sum := sha256.Sum256([]byte("attempt-42"))
+	want := int(binary.BigEndian.Uint64(sum[:8]) % 3)
 	if store.offsets[0] != want {
 		t.Fatalf("偏移 = %d, want sha256 首字节取模 %d", store.offsets[0], want)
 	}
