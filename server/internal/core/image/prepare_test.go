@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
+	"fmt"
 	"hash/crc32"
 	"image"
 	"image/color"
@@ -351,7 +352,7 @@ func TestPrepareToleratesMalformedExif(t *testing.T) {
 		tiff []byte
 	}{
 		{"非 II/MM 字节序", []byte("XY\x2A\x00\x08\x00\x00\x00\x01\x00")},
-		{"魔数错误", []byte{'I', 'I', 0x2B, 0x00, 0x08, 0x00, 0x00, 0x00}},
+		{"魔数错误", badMagicTIFF()},
 		{"IFD 偏移越界", []byte{'I', 'I', 0x2A, 0x00, 0x64, 0x00, 0x00, 0x00}},
 		{"条目不完整", []byte{'I', 'I', 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00,
 			0x01, 0x00, 0x12, 0x01, 0x03, 0x00}},
@@ -574,5 +575,155 @@ func TestPrepareChecksSizeBeforeDecode(t *testing.T) {
 				t.Fatalf("错误 = %q, want 含 %q（先解码后判上限会先报解码失败）", msg, c.want)
 			}
 		})
+	}
+}
+
+// badMagicTIFF 是小端 TIFF，魔数错（0x2B）但 IFD 完整且方向为 6。
+// 删掉魔数检查后解析器会返回 6，用例因此能抓住该突变。
+func badMagicTIFF() []byte {
+	t := exifTIFF(6)
+	t[2], t[3] = 0x2B, 0x00
+	return t
+}
+
+// beTIFF 生成大端（MM）TIFF，方向写进条目值。
+func beTIFF(orientation uint16) []byte {
+	t := []byte{
+		'M', 'M', 0x00, 0x2A, // 大端 + 魔数
+		0x00, 0x00, 0x00, 0x08, // IFD0 偏移 = 8
+		0x00, 0x01, // 条目数 = 1
+		0x01, 0x12, // tag = Orientation
+		0x00, 0x03, // 类型 = SHORT
+		0x00, 0x00, 0x00, 0x01, // 个数 = 1
+		0x00, 0x00, 0x00, 0x00, // 值，下面填入
+		0x00, 0x00, 0x00, 0x00, // 下一个 IFD = 0
+	}
+	binary.BigEndian.PutUint16(t[18:20], orientation)
+	return t
+}
+
+// jpegAPP0ThenAPP1 在 APP1 之前放一个 APP0 段。
+func jpegAPP0ThenAPP1(t *testing.T, tiff []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, whiteImage(16, 8), nil); err != nil {
+		t.Fatalf("encode jpeg: %v", err)
+	}
+	raw := buf.Bytes()
+	app0 := []byte{0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00}
+	out := append([]byte{}, raw[:2]...)
+	out = append(out, app0...)
+	out = append(out, exifAPP1(tiff)...)
+	out = append(out, raw[2:]...)
+	return out
+}
+
+// jpegWithFillByte 在 APP1 标记前插入一个 0xFF 填充字节。
+func jpegWithFillByte(t *testing.T, tiff []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, whiteImage(16, 8), nil); err != nil {
+		t.Fatalf("encode jpeg: %v", err)
+	}
+	raw := buf.Bytes()
+	out := append([]byte{}, raw[:2]...)
+	out = append(out, 0xFF)
+	out = append(out, exifAPP1(tiff)...)
+	out = append(out, raw[2:]...)
+	return out
+}
+
+// pngEXIFBeforeIEND 把 eXIf 放在 IDAT 之后、IEND 之前。
+func pngEXIFBeforeIEND(t *testing.T, tiff []byte) []byte {
+	t.Helper()
+	raw := pngBytes(t, whiteImage(16, 8))
+	if len(raw) < 12 {
+		t.Fatal("测试前提不成立：PNG 过短")
+	}
+	out := append([]byte{}, raw[:len(raw)-12]...)
+	out = append(out, pngChunk("eXIf", tiff)...)
+	out = append(out, raw[len(raw)-12:]...)
+	return out
+}
+
+// 合法但不同布局的容器必须能读方向：大端 TIFF、APP0 在前、
+// 填充字节、eXIf 在 IDAT 之后。入口短数据一律返回 1。
+func TestOrientationParsersAcceptValidLayouts(t *testing.T) {
+	cases := []struct {
+		name string
+		fn   func([]byte) int
+		data []byte
+		want int
+	}{
+		{"大端 TIFF 方向 6", tiffOrientation, beTIFF(6), 6},
+		{"大端 TIFF 方向 3", tiffOrientation, beTIFF(3), 3},
+		{"APP0 在 APP1 之前", jpegOrientation, jpegAPP0ThenAPP1(t, exifTIFF(6)), 6},
+		{"填充字节后的 APP1", jpegOrientation, jpegWithFillByte(t, exifTIFF(6)), 6},
+		{"eXIf 在 IDAT 之后", pngOrientation, pngEXIFBeforeIEND(t, exifTIFF(6)), 6},
+		{"非 JPEG 前缀但含 APP1", jpegOrientation,
+			append([]byte{0x00, 0x00}, exifAPP1(exifTIFF(6))...), 1},
+		{"JPEG 空输入", jpegOrientation, nil, 1},
+		{"PNG 空输入", pngOrientation, nil, 1},
+		{"TIFF 空输入", tiffOrientation, nil, 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.fn(c.data); got != c.want {
+				t.Fatalf("方向 = %d, want %d", got, c.want)
+			}
+		})
+	}
+}
+
+// 裁切按整像素四舍五入：cut=(N*5+50)/100。
+// 表覆盖整数边界；删掉 +50 后 30 与 50 两行变红。
+func TestCropRounding(t *testing.T) {
+	cases := []struct {
+		side, cut int
+	}{
+		{1, 0}, {5, 0}, {9, 0}, {10, 1}, {20, 1}, {30, 2}, {40, 2}, {50, 3},
+	}
+	for _, c := range cases {
+		out := crop(whiteImage(c.side, c.side), 5)
+		if got := out.Bounds().Dx(); got != c.side-2*c.cut {
+			t.Fatalf("边长 %d 裁后 = %d, want %d（cut=%d）", c.side, got, c.side-2*c.cut, c.cut)
+		}
+	}
+}
+
+// 同一 16 位输入无论有无 EXIF，输出位深必须一致（统一 8 位）。
+func TestPrepareNormalizesBitDepth(t *testing.T) {
+	src := image.NewNRGBA64(image.Rect(0, 0, 16, 8))
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 16; x++ {
+			src.SetNRGBA64(x, y, color.NRGBA64{R: 0x4000, G: 0x8000, B: 0xC000, A: 0xFFFF})
+		}
+	}
+	plain, err := Prepare(pngBytes(t, src), Options{})
+	if err != nil {
+		t.Fatalf("plain: %v", err)
+	}
+	withEXIF, err := Prepare(pngWithOrientation(t, src, 1), Options{})
+	if err != nil {
+		t.Fatalf("with exif: %v", err)
+	}
+	var plainType, exifType string
+	for name, out := range map[string]Output{"plain": plain, "exif": withEXIF} {
+		img, _, err := image.Decode(bytes.NewReader(out.Data))
+		if err != nil {
+			t.Fatalf("%s decode: %v", name, err)
+		}
+		switch img.(type) {
+		case *image.RGBA64, *image.NRGBA64:
+			t.Fatalf("%s 输出类型 = %T, want 8 位", name, img)
+		}
+		if name == "plain" {
+			plainType = fmt.Sprintf("%T", img)
+		} else {
+			exifType = fmt.Sprintf("%T", img)
+		}
+	}
+	if plainType != exifType {
+		t.Fatalf("有无 EXIF 位深不同: %s vs %s", plainType, exifType)
 	}
 }

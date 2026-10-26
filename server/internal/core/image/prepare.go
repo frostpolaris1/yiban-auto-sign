@@ -90,6 +90,10 @@ func Prepare(input []byte, opt Options) (Output, error) {
 	if err != nil {
 		return Output{}, errs.New(errs.CodeValidation, "image decode failed")
 	}
+	// 统一到 8 位 RGBA。平台原图是 8 位电话照片；
+	// 统一位深可避免同一输入因有无 EXIF 而产出不同精度
+	// （16 位输入在这里降位深，属明确口径）。
+	img = toNRGBA(img)
 	switch format {
 	case "jpeg":
 		if o := jpegOrientation(input); o != 1 {
@@ -143,7 +147,8 @@ func Prepare(input []byte, opt Options) (Output, error) {
 // 每边 5% 是名义上限；实际按整像素四舍五入：
 // cut = (边长×5+50)/100。只有边长 mod 20 ≤ 9 时保留 ≥90% 边长
 // （20→90%，30→86.67%，50→88%）。边长 ≤9 时 cut=0，实际不裁。
-// 面积比例是边长比例的平方。调用方按此口径挑图，本函数不设最小边长。
+// 面积比例是两个边长比例的乘积；两边余数相同时才等于平方。
+// 调用方按此口径挑图，本函数不设最小边长。
 // 上限在 Options 校验处拒绝，本函数不再判越界。
 func crop(src image.Image, percent int) image.Image {
 	b := src.Bounds()
@@ -152,6 +157,14 @@ func crop(src image.Image, percent int) image.Image {
 	r := image.Rect(b.Min.X+cutX, b.Min.Y+cutY, b.Max.X-cutX, b.Max.Y-cutY)
 	dst := image.NewNRGBA(image.Rect(0, 0, r.Dx(), r.Dy()))
 	draw.Draw(dst, dst.Bounds(), src, r.Min, draw.Src)
+	return dst
+}
+
+// toNRGBA 把任意图像统一为 8 位 RGBA。
+func toNRGBA(src image.Image) image.Image {
+	b := src.Bounds()
+	dst := image.NewNRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
+	draw.Draw(dst, dst.Bounds(), src, b.Min, draw.Src)
 	return dst
 }
 
