@@ -67,8 +67,10 @@ DATE_CONSTANT_KINDS = {
 #: 33/29 的增量来自 tests/test_cleanup_dotenv_parity_e2e.py 的 `STALE_STAMP`
 #: （2026-10-24，R3-019）：清理 cron 的"过期按日件"样本，取 2020-01-01，
 #: 远早于默认 365 天保留期——属**刻意的过去时刻**，不随真实今天漂移。
-BASELINE_SITES = 33
-BASELINE_FILES = 29
+# 2026-10-27 P8-E（07818df7）：test_shadow_compare.py 新增 DAY/DAY2 两个模块级
+# 日期常量（2026-01-01/02，影子对账夹具的固定业务日，非写死的今天），33→35、29→30。
+BASELINE_SITES = 35
+BASELINE_FILES = 30
 
 
 def scan_source(src):
