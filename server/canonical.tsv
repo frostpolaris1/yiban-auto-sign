@@ -26,7 +26,7 @@ env.lookup	call	internal/adapters/config/	os.LookupEnv	internal/adapters/config/
 # core/account is in the allow list because account status shares the word
 # "pending" with task status. Account status is a different vocabulary.
 status.literal	string	internal/core/status/	pending,running,success,failed,skipped	internal/core/status/,internal/signing/contract/,internal/entry/http/oapi/,internal/core/account/,cmd/server/w2c_e2e_test.go,internal/core/audit/chain_test.go,internal/core/retry/budget.go,internal/core/retry/budget_test.go,internal/adapters/pg/schedule_e2e_test.go	use status.TaskState constants; account status comes from core/account
-errors.http	call	internal/entry/http/respond/	http.Error	internal/entry/http/respond/	use respond.Error
+errors.http	forbid	*	http.Error	internal/entry/http/respond/	use respond.Error
 mask.phone	func	internal/core/mask/	MaskPhone	internal/core/mask/	use mask.MaskPhone
 mask.email	func	internal/core/mask/	MaskEmail	internal/core/mask/	use mask.MaskEmail
 mask.device	func	internal/core/mask/	MaskDevice	internal/core/mask/	use mask.MaskDevice
@@ -47,7 +47,7 @@ boundary.signing	import	internal/signing/providers/	internal/app,internal/adapte
 # file: no argon2 call and no token definition outside core/auth.
 cookie.set	call	internal/entry/http/router/cookie.go	http.SetCookie		会话 cookie 只在 entry/http/router/cookie.go 内写入
 kdf.argon.idkey	call	internal/core/auth/	argon2.IDKey		argon2 只在 core/auth 内调用
-kdf.argon.id	call	internal/core/auth/	argon2.ID		argon2 只在 core/auth 内调用
+kdf.argon.id	forbid	*	argon2.Key	internal/core/auth/	argon2 只在 core/auth 内调用
 token.csrf.func	func	internal/core/auth/	CSRFToken		CSRFToken 只在 core/auth 内定义
 token.new.func	func	internal/core/auth/	NewToken		NewToken 只在 core/auth 内定义
 # signing/fake 只服务测试。生产代码禁止导入。

@@ -502,7 +502,13 @@ func TestRunRefusesEmptyScans(t *testing.T) {
 	}
 
 	tests := t.TempDir()
-	if err := os.WriteFile(filepath.Join(tests, "x_test.go"), []byte("package x\n"), 0o644); err != nil {
+	// 只有测试文件也要让规则有落点：owner 下存在文件，且 pattern 在该文件里出现。
+	// 否则 ValidateRuleAnchors 会以「规则空转」拒绝，本用例测不到 -tests 口径。
+	if err := os.MkdirAll(filepath.Join(tests, "internal", "core", "clock"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tests, "internal", "core", "clock", "clock_test.go"),
+		[]byte("package clock\n\nimport \"time\"\n\nvar _ = time.Now()\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if code := run(tests, rules, false); code != 2 {
