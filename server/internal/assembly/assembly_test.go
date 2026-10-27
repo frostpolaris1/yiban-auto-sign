@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/config"
+	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
 )
 
 // countingHandler 记录全部日志消息，供重复装配断言使用。
@@ -163,4 +164,65 @@ func TestBuildWithoutDatabaseServesHealthz(t *testing.T) {
 	// Close 幂等：srv.Shutdown 与显式收尾都会调它。
 	stack.Close()
 	stack.Close()
+}
+
+// fakeLoop 是执行循环替身：只记录 Run 有没有启动和停止它。
+type fakeLoop struct {
+	started bool
+	stopped bool
+}
+
+func (f *fakeLoop) Start() error { f.started = true; return nil }
+
+func (f *fakeLoop) Stop(context.Context) (int64, error) {
+	f.stopped = true
+	return 0, nil
+}
+
+func (f *fakeLoop) Err() error { return nil }
+
+// TestRunStartsAndStopsWorkerLoop 钉住 Run 的启动块（派单 P2-2）。
+// 删掉 `if stack.Worker != nil` 整块时，假循环收不到 Start/Stop，本测红。
+// 装配用假 Stack：Worker 非 nil 但方法不会被调用（假循环不碰它）。
+func TestRunStartsAndStopsWorkerLoop(t *testing.T) {
+	t.Setenv("YIBAN_ENV", "test")
+	t.Setenv("YIBAN_HTTP_ADDR", "127.0.0.1:0")
+	t.Setenv("YIBAN_DATABASE_URL", "")
+	t.Setenv("YIBAN_HASH_PEPPER", "0123456789abcdef0123456789abcdef")
+	t.Setenv("YIBAN_CREDENTIAL_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	t.Setenv("YIBAN_PHOTO_DIR", t.TempDir())
+
+	fake := &fakeLoop{}
+	origLoop, origBuild := newLoop, buildStack
+	newLoop = func(*Stack, time.Duration, int) loopHandle { return fake }
+	buildStack = func(*config.Config, *slog.Logger) (*Stack, error) {
+		return &Stack{
+			Engine: http.NewServeMux(),
+			Worker: &appworker.Service{},
+			Close:  func() {},
+		}, nil
+	}
+	t.Cleanup(func() { newLoop, buildStack = origLoop, origBuild })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, slog.New(slog.NewTextHandler(io.Discard, nil))) }()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run 返回错误: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("ctx 取消后 Run 未返回")
+	}
+	if !fake.started {
+		t.Fatal("Run 必须启动执行循环：Worker 非 nil 时删掉启动块会静默无循环")
+	}
+	if !fake.stopped {
+		t.Fatal("ctx 结束后 Run 必须停止执行循环")
+	}
 }

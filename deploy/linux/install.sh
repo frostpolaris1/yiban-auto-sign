@@ -163,10 +163,10 @@ while [ "$i" -le "$RETRIES" ]; do
         echo "install complete: healthz ok at $ADDR (attempt $i/$RETRIES)"
         # 干净库还没有可登录账号：建第一个 master 是部署的最后一步。
         # .env 是 0600 root-only，新 shell 里 YIBAN_* 未设置：
-        # 先把环境载入当前 shell，再跑 create-master（派单 F15）。
+        # 先载入环境，再用管道喂口令（口令不进 argv，派单 P1-3）。
         echo "next: create the first master:"
-        echo "  set -a; . /etc/yiban/.env; set +a; yiban-cli user create-master --email <addr> --password <pass>"
-        echo "  或直接给参数: yiban-cli user create-master --email <addr> --password <pass> --dsn <DSN> --pepper <PEPPER>"
+        echo "  set -a; . /etc/yiban/.env; set +a"
+        echo '  printf "%s\n" "$PASS" | yiban-cli user create-master --email <addr> --password-stdin'
         exit 0
     fi
     sleep "$INTERVAL"

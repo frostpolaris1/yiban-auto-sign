@@ -168,6 +168,19 @@ exit 0
 	if !strings.Contains(out, "set -a; . /etc/yiban/.env; set +a") {
 		t.Fatalf("install must print how to load /etc/yiban/.env before create-master; out=%s", out)
 	}
+	// 口令只走管道：推荐用法不得把口令、DSN、pepper 写进 argv（派单 P1-3）。
+	if !strings.Contains(out, "--password-stdin") {
+		t.Fatalf("install must recommend --password-stdin; out=%s", out)
+	}
+	for _, bad := range []string{"--password <", "--dsn <", "--pepper <"} {
+		if strings.Contains(out, bad) {
+			t.Fatalf("install must not recommend argv secrets (%q); out=%s", bad, out)
+		}
+	}
+	// 安装单元必须打印一条 create-master 命令：判定是「有管道 + 子命令」同一行。
+	if !strings.Contains(out, "| yiban-cli user create-master") {
+		t.Fatalf("install must print the piped create-master command; out=%s", out)
+	}
 }
 
 // TestInstallShSecuresExistingEnv 钉住已有 .env 的权限（派单 F11）。

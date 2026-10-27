@@ -136,6 +136,12 @@ func TestBackupRestoreRoundTripReconciles(t *testing.T) {
 // runCLI 跑一次子命令函数，返回 stdout 与退出码。
 func runCLI(t *testing.T, args []string) (string, int) {
 	t.Helper()
+	return runCLIWithStdin(t, "", args)
+}
+
+// runCLIWithStdin 同 runCLI，但给 stdin 喂内容（口令走管道的路径）。
+func runCLIWithStdin(t *testing.T, stdin string, args []string) (string, int) {
+	t.Helper()
 	var out strings.Builder
 	var code int
 	switch args[0] {
@@ -144,7 +150,7 @@ func runCLI(t *testing.T, args []string) (string, int) {
 	case "restore":
 		code = runRestore(newBackupDeps(&out, &out), args[1:])
 	case "user":
-		code = runUser(args[1:], &out, &out)
+		code = runUser(args[1:], strings.NewReader(stdin), &out, &out)
 	default:
 		t.Fatalf("unknown cli verb %q", args[0])
 	}

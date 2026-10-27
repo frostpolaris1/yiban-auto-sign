@@ -14,6 +14,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -357,20 +358,41 @@ type nopCloser struct{}
 
 func (nopCloser) Close() error { return nil }
 
-// TestRedactDSNRewritesEveryShape 钉住 DSN 打印时口令不泄漏（派单 F6）。
-// 三种形状：URI、keyword/value、无 scheme 的 user:pass@host。
+// secretFragments 返回口令里所有 3 字符片段。
+// 泄漏判据是「任何片段都不许出现」：只抹到第一个空格时，
+// 尾部片段仍在输出里，单看整串会漏掉。
+func secretFragments(secret string) []string {
+	var out []string
+	for _, word := range strings.Fields(secret) {
+		for i := 0; i+3 <= len(word); i++ {
+			out = append(out, word[i:i+3])
+		}
+	}
+	return out
+}
+
+// TestRedactDSNRewritesEveryShape 钉住 DSN 打印时口令不泄漏（派单 F6、P1-2）。
+// 六种形状：URI、URI 查询串、无 scheme 的 user:pass@host、keyword 无空格、
+// = 两侧带空格、单引号含空白。输出不得含口令的任何片段。
 func TestRedactDSNRewritesEveryShape(t *testing.T) {
-	const secret = "s3cr3t&pw"
-	cases := []struct{ name, dsn, keep string }{
-		{"uri", "postgres://yiban:" + secret + "@db:5432/yiban", "db:5432/yiban"},
-		{"keyword", "host=db port=5432 user=yiban password=" + secret + " dbname=yiban", "dbname=yiban"},
-		{"bare", "yiban:" + secret + "@db:5432/yiban", "db:5432/yiban"},
+	cases := []struct{ name, dsn, secret, keep string }{
+		{"uri", "postgres://yiban:s3cr3tTail@db:5432/yiban", "s3cr3tTail", "db:5432/yiban"},
+		{"uri-query", "postgres://db:5432/yiban?password=s3cr3tTail", "s3cr3tTail", "db:5432/yiban"},
+		{"keyword", "host=db port=5432 user=yiban password=s3cr3tTail dbname=yiban", "s3cr3tTail", "dbname=yiban"},
+		{"keyword-spaced", "host=db password = s3cr3tTail dbname=yiban", "s3cr3tTail", "dbname=yiban"},
+		{"keyword-quoted", "host=db password='s3c r3t tail' dbname=yiban", "s3c r3t tail", "dbname=yiban"},
+		{"bare", "yiban:s3cr3tTail@db:5432/yiban", "s3cr3tTail", "db:5432/yiban"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := redactDSN(tc.dsn)
-			if strings.Contains(got, secret) {
-				t.Fatalf("redactDSN(%q) = %q：口令泄漏到输出", tc.dsn, got)
+			if strings.Contains(got, tc.secret) {
+				t.Fatalf("redactDSN(%q) = %q：口令整串泄漏到输出", tc.dsn, got)
+			}
+			for _, frag := range secretFragments(tc.secret) {
+				if strings.Contains(got, frag) {
+					t.Fatalf("redactDSN(%q) = %q：口令片段 %q 残留（只抹到第一个空格）", tc.dsn, got, frag)
+				}
 			}
 			if !strings.Contains(got, tc.keep) {
 				t.Fatalf("redactDSN(%q) = %q：主机与库名必须保留，否则定位不了故障", tc.dsn, got)
@@ -470,5 +492,98 @@ func TestDefaultRegistryResolvesInstalledPath(t *testing.T) {
 	got = pickRegistry("", func(string) bool { return false }, missing, "config/registry.json")
 	if got != "config/registry.json" {
 		t.Fatalf("全部缺失时返回 = %q，want 末位候选", got)
+	}
+}
+
+// TestServiceUserDefaultFollowsSystemdUnit 钉住服务用户缺省判据（派单 P1-1）。
+// 有 systemd 单元 ⇒ 服务以 User=yiban 运行；无单元 ⇒ 本进程就是服务身份
+// （容器与前台运行都走这条），属主判据必须按当前用户判。
+func TestServiceUserDefaultFollowsSystemdUnit(t *testing.T) {
+	origUnit, origUser := unitFileExists, currentUserLookup
+	t.Cleanup(func() { unitFileExists, currentUserLookup = origUnit, origUser })
+	currentUserLookup = func() (string, bool) { return "nonroot", true }
+
+	unitFileExists = func(string) bool { return false }
+	if got := defaultServiceUserResolved(); got != "nonroot" {
+		t.Fatalf("无 systemd 单元时缺省服务用户 = %q，want 当前用户 nonroot", got)
+	}
+
+	unitFileExists = func(string) bool { return true }
+	if got := defaultServiceUserResolved(); got != defaultServiceUser {
+		t.Fatalf("有 systemd 单元时缺省服务用户 = %q，want %q", got, defaultServiceUser)
+	}
+
+	// 拿不到当前用户名时回退到单元口径：宁可按 yiban 报，也不静默放宽。
+	unitFileExists = func(string) bool { return false }
+	currentUserLookup = func() (string, bool) { return "", false }
+	if got := defaultServiceUserResolved(); got != defaultServiceUser {
+		t.Fatalf("拿不到当前用户时缺省服务用户 = %q，want %q", got, defaultServiceUser)
+	}
+}
+
+// TestRunDoctorResolvesServiceUserDefault 钉住 runDoctor 的缺省真的经判据解析。
+// 只测纯函数会漏掉「入口写死 yiban」的回归：容器里那会把无害故障报成 FAIL。
+func TestRunDoctorResolvesServiceUserDefault(t *testing.T) {
+	me, ok := currentUserName()
+	if !ok {
+		t.Skip("SKIP: 当前平台拿不到用户名，服务用户缺省无法观察")
+	}
+	dir := t.TempDir()
+	origUnit, origUser := unitFileExists, currentUserLookup
+	t.Cleanup(func() { unitFileExists, currentUserLookup = origUnit, origUser })
+	currentUserLookup = func() (string, bool) { return me, true }
+
+	photoDirLine := func() string {
+		t.Helper()
+		var out strings.Builder
+		runDoctor([]string{"--photo-dir", dir}, &out, io.Discard)
+		for _, line := range strings.Split(out.String(), "\n") {
+			if strings.Contains(line, "fs.photo_dir") {
+				return line
+			}
+		}
+		t.Fatalf("doctor 输出缺 fs.photo_dir:\n%s", out.String())
+		return ""
+	}
+
+	t.Run("无 systemd 单元取当前用户", func(t *testing.T) {
+		unitFileExists = func(string) bool { return false }
+		if line := photoDirLine(); !strings.Contains(line, "服务用户 "+me) {
+			t.Fatalf("没有 systemd 单元时服务用户必须是当前用户 %q：%s", me, line)
+		}
+	})
+	t.Run("有 systemd 单元仍按 yiban", func(t *testing.T) {
+		unitFileExists = func(string) bool { return true }
+		if line := photoDirLine(); !strings.Contains(line, "服务用户 "+defaultServiceUser) {
+			t.Fatalf("有 systemd 单元时服务用户必须是 %q：%s", defaultServiceUser, line)
+		}
+	})
+}
+
+// TestDoctorContainerPhotoFixUsesHostCommand 钉住容器内的修复提示（派单 P1-1）。
+// distroless 没有 shell 与 chown：容器内打印 `chown yiban` 等于给一条
+// 不可执行的命令。修复必须在宿主机执行，或指向镜像预建的属主。
+func TestDoctorContainerPhotoFixUsesHostCommand(t *testing.T) {
+	p, _ := healthyProbe(t)
+	p.containerized = true
+	p.currentUser = func() (string, bool) { return "root", true }
+	p.serviceUser = "nonroot"
+	p.dirStat = func(string) (dirInfo, bool) {
+		return dirInfo{owner: "root", group: "root", perm: 0o700}, true
+	}
+	rep := runChecks(context.Background(), p)
+	for _, name := range []string{"fs.photo_dir", "fs.photo_owner"} {
+		row := rowOf(t, rep, name)
+		if !row.fail {
+			t.Fatalf("%s 必须 FAIL（属主 root，服务用户 nonroot 不可写）: %s", name, row.detail)
+		}
+		for _, bad := range []string{"chown -R nonroot", "chown nonroot", "chown yiban"} {
+			if strings.Contains(row.fix, bad) {
+				t.Fatalf("%s 给了容器内不可执行的修复 %q：%q", name, bad, row.fix)
+			}
+		}
+		if !strings.Contains(row.fix, "宿主机") || !strings.Contains(row.fix, "docker run") {
+			t.Fatalf("%s 的修复必须在宿主机执行：%q", name, row.fix)
+		}
 	}
 }
