@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -260,6 +261,20 @@ func withQuery(base string, values url.Values) string {
 	}
 	parsed.RawQuery = query.Encode()
 	return parsed.String()
+}
+
+// withQueryOrdered 按给定顺序拼接 query。
+// url.Values.Encode 会按字母序输出，与旧实现的请求行顺序不符时用本函数。
+func withQueryOrdered(base string, pairs [][2]string) string {
+	separator := "?"
+	if strings.Contains(base, "?") {
+		separator = "&"
+	}
+	parts := make([]string, 0, len(pairs))
+	for _, pair := range pairs {
+		parts = append(parts, url.QueryEscape(pair[0])+"="+url.QueryEscape(pair[1]))
+	}
+	return base + separator + strings.Join(parts, "&")
 }
 
 func randomHex(reader io.Reader, n int) (string, error) {

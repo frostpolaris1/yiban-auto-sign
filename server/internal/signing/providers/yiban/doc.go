@@ -14,7 +14,11 @@
 //
 // # 口径
 // 登录链固定四跳：授权页 → usersure → iframe → 认证。
-// usersure 必须不带 Origin/Referer，带了两者会得 e001。
+// usersure 必须不带 Origin/Referer，带了两者会得 e001；体以空 scope= 收尾。
+// WAF/挑战判定复刻旧实现（waf.go）：形态判据不受长度限制，关键词判据只查
+// 短响应；usersure 与认证每跳都先判 WAF 再解析。
+// 认证成功采签发回执判据：code 成功且 data 非空且非 {Action,Data} 入口步；
+// 身份字段只作展示面，缺失以空 Profile 成功。
 // 会话按账号互斥；999 失效后重登一次；空闲 30 分钟过期。
 // 网络错误保持原生 error；平台结论用 contract.OutcomeError。
 // 挑战页只检测不求解，命中即返回 OutcomeChallenge。
