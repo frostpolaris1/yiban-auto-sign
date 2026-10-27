@@ -123,7 +123,9 @@ func healthyProbe(t *testing.T) (*probe, *fakeDB) {
 		},
 		registry: reg,
 		binPath:  bin,
-		now:      func() time.Time { return base },
+		// 健康态：当前进程就是服务用户，走实测写入路径。
+		serviceUser: currentUserNameForTest(t),
+		now:         func() time.Time { return base },
 		tryListen: func(string) (closer, error) {
 			return nopCloser{}, nil
 		},
@@ -132,7 +134,14 @@ func healthyProbe(t *testing.T) (*probe, *fakeDB) {
 			return db, nil
 		},
 		diskFree: func(string) (uint64, error) { return 8 << 30, nil },
-		dirOwner: func(string) (string, bool) { return currentUserNameForTest(t), true },
+		currentUser: func() (string, bool) {
+			return currentUserNameForTest(t), true
+		},
+		dirStat: func(string) (dirInfo, bool) {
+			me := currentUserNameForTest(t)
+			return dirInfo{owner: me, group: me, perm: 0o755}, true
+		},
+		userGroups: func(name string) ([]string, bool) { return []string{name}, true },
 	}
 	return p, db
 }
@@ -144,6 +153,12 @@ func currentUserNameForTest(t *testing.T) string {
 		t.Skip("SKIP: 当前平台拿不到用户名，属主断言无法构造")
 	}
 	return name
+}
+
+// mustCurrentUser 取当前用户名；拿不到即跳过（用例无法构造）。
+func mustCurrentUser(t *testing.T) string {
+	t.Helper()
+	return currentUserNameForTest(t)
 }
 
 func rowOf(t *testing.T, rep report, name string) checkRow {
@@ -236,12 +251,19 @@ func faultCases(t *testing.T) []faultCase {
 				t.Fatalf("write blocker: %v", err)
 			}
 			p.photoDir = filepath.Join(blocker, "sub") // 父路径是文件：创建必败
+			// 与服务用户同一身份：本用例钉的是「实测写入失败」这一路。
+			p.serviceUser = mustCurrentUser(t)
+			p.currentUser = func() (string, bool) { return mustCurrentUser(t), true }
 		}, ""},
 		{"fs.disk", func(p *probe, _ *fakeDB) {
 			p.diskFree = func(string) (uint64, error) { return 64 << 20, nil } // 64 MiB
 		}, ""},
-		{"fs.photo_owner", func(p *probe, _ *fakeDB) { p.dirOwner = func(string) (string, bool) { return "root", true } },
-			"current user is root; owner mismatch cannot be constructed"},
+		{"fs.photo_owner", func(p *probe, _ *fakeDB) {
+			// 属主不是服务用户。判据只看属主，与当前进程用户无关。
+			p.dirStat = func(string) (dirInfo, bool) {
+				return dirInfo{owner: "postgres", group: "postgres", perm: 0o700}, true
+			}
+		}, ""},
 		{"net.http_addr", func(p *probe, _ *fakeDB) {
 			p.tryListen = func(string) (closer, error) { return nil, errors.New("address already in use") }
 			p.httpGet = func(string, string) (int, error) { return 0, errors.New("refused") }
@@ -260,15 +282,6 @@ func TestDoctorFaultInjectionHitsEachCheck(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.skipWindows != "" && runtime.GOOS == "windows" {
 				t.Skip("SKIP: " + tc.skipWindows)
-			}
-			if tc.name == "fs.photo_owner" {
-				if me, ok := currentUserName(); !ok {
-					t.Skip("SKIP: 当前平台拿不到用户名，属主故障注入不了")
-				} else if me == "root" {
-					// root 运行时把属主改成 root 与当前用户仍是同一人，
-					// 属主失配这个故障构造不出来。
-					t.Skip("SKIP: running as root; owner mismatch cannot be constructed")
-				}
 			}
 			p, db := healthyProbe(t)
 			tc.inject(p, db)
@@ -343,3 +356,119 @@ func TestDoctorFixTextCarriesRunnableCommand(t *testing.T) {
 type nopCloser struct{}
 
 func (nopCloser) Close() error { return nil }
+
+// TestRedactDSNRewritesEveryShape 钉住 DSN 打印时口令不泄漏（派单 F6）。
+// 三种形状：URI、keyword/value、无 scheme 的 user:pass@host。
+func TestRedactDSNRewritesEveryShape(t *testing.T) {
+	const secret = "s3cr3t&pw"
+	cases := []struct{ name, dsn, keep string }{
+		{"uri", "postgres://yiban:" + secret + "@db:5432/yiban", "db:5432/yiban"},
+		{"keyword", "host=db port=5432 user=yiban password=" + secret + " dbname=yiban", "dbname=yiban"},
+		{"bare", "yiban:" + secret + "@db:5432/yiban", "db:5432/yiban"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := redactDSN(tc.dsn)
+			if strings.Contains(got, secret) {
+				t.Fatalf("redactDSN(%q) = %q：口令泄漏到输出", tc.dsn, got)
+			}
+			if !strings.Contains(got, tc.keep) {
+				t.Fatalf("redactDSN(%q) = %q：主机与库名必须保留，否则定位不了故障", tc.dsn, got)
+			}
+		})
+	}
+}
+
+// TestRedactDSNKeepsSecretlessDSN 无口令的 DSN 原样返回。
+func TestRedactDSNKeepsSecretlessDSN(t *testing.T) {
+	for _, dsn := range []string{
+		"postgres://db:5432/yiban",
+		"host=db port=5432 dbname=yiban",
+	} {
+		if got := redactDSN(dsn); got != dsn {
+			t.Fatalf("redactDSN(%q) = %q，want unchanged", dsn, got)
+		}
+	}
+}
+
+// TestDoctorOwnerChecksUseServiceUser 钉住属主与可写性按服务用户判（派单 F7）。
+// root 跑 doctor、属主是 yiban 是生产常态：不能因为 root 自己可写就报问题，
+// 也不能把自己的可写性当成服务用户的可写性。
+func TestDoctorOwnerChecksUseServiceUser(t *testing.T) {
+	t.Run("root 跑，目录属主是服务用户", func(t *testing.T) {
+		p, _ := healthyProbe(t)
+		p.currentUser = func() (string, bool) { return "root", true }
+		p.serviceUser = "yiban"
+		p.dirStat = func(string) (dirInfo, bool) {
+			return dirInfo{owner: "yiban", group: "yiban", perm: 0o700}, true
+		}
+		rep := runChecks(context.Background(), p)
+		for _, name := range []string{"fs.photo_dir", "fs.photo_owner"} {
+			if row := rowOf(t, rep, name); row.fail {
+				t.Fatalf("%s 不得因 root 自己可写而 FAIL：%s", name, row.detail)
+			}
+		}
+	})
+
+	t.Run("目录属主是 postgres", func(t *testing.T) {
+		p, _ := healthyProbe(t)
+		p.currentUser = func() (string, bool) { return "root", true }
+		p.serviceUser = "yiban"
+		p.dirStat = func(string) (dirInfo, bool) {
+			return dirInfo{owner: "postgres", group: "postgres", perm: 0o700}, true
+		}
+		rep := runChecks(context.Background(), p)
+		for _, name := range []string{"fs.photo_dir", "fs.photo_owner"} {
+			row := rowOf(t, rep, name)
+			if !row.fail {
+				t.Fatalf("%s 必须 FAIL（服务用户 yiban 不可写）: %s", name, row.detail)
+			}
+			if !strings.Contains(row.fix, "chown") {
+				t.Fatalf("%s 的修复必须是 chown：%q", name, row.fix)
+			}
+		}
+	})
+
+	t.Run("组写位且服务用户在组内", func(t *testing.T) {
+		p, _ := healthyProbe(t)
+		p.currentUser = func() (string, bool) { return "root", true }
+		p.serviceUser = "yiban"
+		p.dirStat = func(string) (dirInfo, bool) {
+			return dirInfo{owner: "root", group: "yiban", perm: 0o770}, true
+		}
+		rep := runChecks(context.Background(), p)
+		if row := rowOf(t, rep, "fs.photo_dir"); row.fail {
+			t.Fatalf("组写位有效时不得 FAIL：%s", row.detail)
+		}
+	})
+}
+
+// TestDefaultRegistryResolvesInstalledPath 钉住名册缺省查找顺序（派单 F8）。
+// 生产不在仓库根跑 doctor：先找安装位 /etc/yiban/registry.json。
+func TestDefaultRegistryResolvesInstalledPath(t *testing.T) {
+	// 查找顺序本身也是判据：安装位必须排第一，仓库相对路径兜底。
+	if cands := registryCandidates(); len(cands) == 0 || cands[0] != "/etc/yiban/registry.json" {
+		t.Fatalf("registryCandidates() = %v，首位必须是安装位 /etc/yiban/registry.json", cands)
+	}
+	dir := t.TempDir()
+	installed := filepath.Join(dir, "etc-yiban-registry.json")
+	if err := os.WriteFile(installed, []byte(`{"_meta":{}}`), 0o644); err != nil {
+		t.Fatalf("write installed registry: %v", err)
+	}
+	missing := filepath.Join(dir, "missing.json")
+	got := pickRegistry("", func(p string) bool {
+		_, err := os.Stat(p)
+		return err == nil
+	}, missing, installed, "config/registry.json")
+	if got != installed {
+		t.Fatalf("pickRegistry = %q，want %q（首个存在的候选）", got, installed)
+	}
+	if got := pickRegistry("/explicit/path.json", func(string) bool { return false }, installed); got != "/explicit/path.json" {
+		t.Fatalf("显式 --registry 必须优先，got %q", got)
+	}
+	// 全不存在时返回最后一个候选：SKIP 文案要点名它。
+	got = pickRegistry("", func(string) bool { return false }, missing, "config/registry.json")
+	if got != "config/registry.json" {
+		t.Fatalf("全部缺失时返回 = %q，want 末位候选", got)
+	}
+}

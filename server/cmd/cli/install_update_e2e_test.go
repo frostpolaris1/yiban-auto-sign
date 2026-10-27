@@ -119,11 +119,20 @@ exit 0
 		filepath.Join(root, "usr/local/bin/yiban-server"),
 		filepath.Join(root, "usr/local/bin/yiban-cli"),
 		filepath.Join(root, "etc/yiban/.env"),
+		filepath.Join(root, "etc/yiban/registry.json"),
 		filepath.Join(root, "etc/systemd/system/yiban.service"),
 	} {
 		if _, err := os.Stat(p); err != nil {
 			t.Fatalf("install tree missing %s: %v\nout=%s", p, err, out)
 		}
+	}
+	// 名册必须与仓库内那的一份逐字节一致：doctor 的未登记键体检靠它。
+	wantReg, err := os.ReadFile(filepath.Join("..", "..", "..", "config", "registry.json"))
+	if err != nil {
+		t.Fatalf("read repo registry: %v", err)
+	}
+	if got := []byte(readAll(t, filepath.Join(root, "etc/yiban/registry.json"))); !bytes.Equal(got, wantReg) {
+		t.Fatalf("安装的名册与 config/registry.json 不一致（%d vs %d 字节）", len(got), len(wantReg))
 	}
 	envBody := readAll(t, filepath.Join(root, "etc/yiban/.env"))
 	for _, key := range []string{"YIBAN_ENV=", "YIBAN_HASH_PEPPER=", "YIBAN_CREDENTIAL_KEY=", "YIBAN_DATABASE_URL="} {
@@ -153,6 +162,53 @@ exit 0
 	//（P7 审查 P2-1）。
 	if !strings.Contains(out, "user create-master") {
 		t.Fatalf("install must print the create-master next step; out=%s", out)
+	}
+	// 提示必须给出环境载入方式：.env 是 0600 root-only，
+	// 新开的 shell 里 YIBAN_* 未设置，直接跑 create-master 会报缺 DSN（派单 F15）。
+	if !strings.Contains(out, "set -a; . /etc/yiban/.env; set +a") {
+		t.Fatalf("install must print how to load /etc/yiban/.env before create-master; out=%s", out)
+	}
+}
+
+// TestInstallShSecuresExistingEnv 钉住已有 .env 的权限（派单 F11）。
+// 预置 0644 的 .env：安装后必须是 0600，否则同机其他用户可读密钥。
+func TestInstallShSecuresExistingEnv(t *testing.T) {
+	requireBash(t)
+	root := t.TempDir()
+	binDir := t.TempDir()
+	sysctlLog := filepath.Join(t.TempDir(), "systemctl.log")
+	serverBin := fakeBin(t, binDir, "yiban-server", "while :; do sleep 1; done")
+	cliBin := fakeBin(t, binDir, "yiban-cli", "exit 0\n")
+	envDir := filepath.Join(root, "etc/yiban")
+	if err := os.MkdirAll(envDir, 0o755); err != nil {
+		t.Fatalf("mkdir env dir: %v", err)
+	}
+	envPath := filepath.Join(envDir, ".env")
+	if err := os.WriteFile(envPath, []byte("YIBAN_ENV=production\n"), 0o644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+	// 确保预置位确实是 0644：umask 可能压掉组/其他位。
+	if err := os.Chmod(envPath, 0o644); err != nil {
+		t.Fatalf("chmod .env: %v", err)
+	}
+
+	env := map[string]string{
+		"YIBAN_INSTALL_ROOT": root,
+		"SYSTEMCTL": fakeBin(t, binDir, "systemctl",
+			"echo \"systemctl $*\" >> \""+sysctlLog+"\"\nexit 0\n"),
+		"YIBAN_DATABASE_URL": "postgres://yiban:pw@127.0.0.1:5432/yiban",
+		"PATH":               binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}
+	if out, rc := runScript(t, scriptPath(t, "install.sh"), env,
+		"--server-bin", serverBin, "--cli-bin", cliBin); rc != 0 {
+		t.Fatalf("install rc=%d out=%s", rc, out)
+	}
+	info, err := os.Stat(envPath)
+	if err != nil {
+		t.Fatalf("stat .env: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf(".env 权限 = %04o，want 0600（已有文件也必须收紧）", perm)
 	}
 }
 

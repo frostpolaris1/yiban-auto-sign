@@ -94,15 +94,89 @@ type probe struct {
 	// dsn 与 photoDir 是命令行覆盖；空则回退环境。
 	dsn      string
 	photoDir string
-	registry string // 配置名册路径（config/registry.json）
+	registry string // 配置名册路径（见 registryCandidates）
 	binPath  string // 自身二进制路径
 
-	now       func() time.Time
-	tryListen func(addr string) (closer, error)
-	httpGet   func(addr, path string) (int, error)
-	openDB    func(ctx context.Context, dsn string, pepper []byte) (dbHandle, error)
-	diskFree  func(dir string) (uint64, error)
-	dirOwner  func(dir string) (name string, ok bool)
+	// serviceUser 是 systemd 单元里的运行用户（User=）。
+	// 属主与可写性都按它判，不按当前进程用户判。
+	serviceUser string
+
+	now         func() time.Time
+	tryListen   func(addr string) (closer, error)
+	httpGet     func(addr, path string) (int, error)
+	openDB      func(ctx context.Context, dsn string, pepper []byte) (dbHandle, error)
+	diskFree    func(dir string) (uint64, error)
+	currentUser func() (string, bool)
+	// dirStat 返回目录的属主、组与权限位；拿不到返回 false。
+	dirStat func(dir string) (dirInfo, bool)
+	// userGroups 返回用户所属组名；拿不到返回 false。
+	userGroups func(name string) ([]string, bool)
+}
+
+// dirInfo 是目录的身份与权限位。
+type dirInfo struct {
+	owner string
+	group string
+	perm  os.FileMode
+}
+
+// defaultServiceUser 是服务用户缺省值。
+// install.sh 的 systemd 单元写死 User=yiban，两者同源。
+const defaultServiceUser = "yiban"
+
+// registryCandidates 是名册的缺省查找顺序：安装位优先。
+// install.sh 把 config/registry.json 装到 /etc/yiban/registry.json。
+func registryCandidates() []string {
+	return []string{"/etc/yiban/registry.json", "config/registry.json"}
+}
+
+// pickRegistry 解析名册路径：显式值优先，否则取首个存在的候选。
+// 全部缺失时返回末位候选：SKIP 文案点名它，路径不出自空气。
+func pickRegistry(explicit string, exists func(string) bool, candidates ...string) string {
+	if strings.TrimSpace(explicit) != "" {
+		return explicit
+	}
+	last := ""
+	for _, c := range candidates {
+		last = c
+		if exists(c) {
+			return c
+		}
+	}
+	return last
+}
+
+// serviceUserOf 返回服务用户名：探针给定值优先，否则缺省。
+func serviceUserOf(p *probe) string {
+	if v := strings.TrimSpace(p.serviceUser); v != "" {
+		return v
+	}
+	return defaultServiceUser
+}
+
+// writableByServiceUser 按属主、组、其他三类写位判断服务用户是否可写。
+// 判据不落盘、不借用当前进程身份：doctor 常以 root 跑，
+// root 自己可写不代表服务用户可写。
+func writableByServiceUser(info dirInfo, user string, p *probe) bool {
+	if info.perm&0o002 != 0 {
+		return true
+	}
+	if info.owner == user {
+		return info.perm&0o200 != 0
+	}
+	if info.perm&0o020 == 0 {
+		return false
+	}
+	groups, ok := p.userGroups(user)
+	if !ok {
+		return false
+	}
+	for _, g := range groups {
+		if g == info.group {
+			return true
+		}
+	}
+	return false
 }
 
 // closer 是端口探针拿到的监听句柄；探完即关。
@@ -345,15 +419,64 @@ func openDBHandle(ctx context.Context, p *probe) (dbHandle, checkRow) {
 	return h, checkRow{}
 }
 
-// redactDSN 抹掉 DSN 用户信息里的口令段再打印。
+// redactDSN 抹掉 DSN 里的口令段再打印。
+// 三种载体都要覆盖：URI、keyword/value（password=...）、
+// 无 scheme 的 user:pass@host。只抹口令，主机与库名保留。
 func redactDSN(dsn string) string {
+	out := redactURIDS(dsn)
+	return redactKeywordPassword(out)
+}
+
+// redactURIDS 处理 `<scheme>://user:pass@host` 与 `user:pass@host`。
+// 只在首个空白分隔的 token 内找 userinfo；token 含 `=` 即 keyword 形，
+// 交给 redactKeywordPassword，避免把主机段当口令段切坏。
+func redactURIDS(dsn string) string {
+	start := 0
 	if i := strings.Index(dsn, "://"); i >= 0 {
-		rest := dsn[i+3:]
-		if at := strings.Index(rest, "@"); at >= 0 && strings.Contains(rest[:at], ":") {
-			return dsn[:i+3] + "****@" + rest[at+1:]
+		start = i + 3
+	}
+	rest := dsn[start:]
+	tokenEnd := len(rest)
+	for i := 0; i < len(rest); i++ {
+		if rest[i] == ' ' || rest[i] == '\t' {
+			tokenEnd = i
+			break
 		}
 	}
-	return dsn
+	at := strings.Index(rest[:tokenEnd], "@")
+	if at < 0 {
+		return dsn
+	}
+	userinfo := rest[:at]
+	if strings.Contains(userinfo, "=") {
+		return dsn
+	}
+	colon := strings.Index(userinfo, ":")
+	if colon < 0 {
+		return dsn
+	}
+	return dsn[:start] + userinfo[:colon] + ":****@" + rest[at+1:]
+}
+
+// redactKeywordPassword 处理 keyword/value 形：password=<非空白>。
+func redactKeywordPassword(dsn string) string {
+	const key = "password="
+	var b strings.Builder
+	for {
+		i := strings.Index(dsn, key)
+		if i < 0 {
+			b.WriteString(dsn)
+			return b.String()
+		}
+		end := i + len(key)
+		for end < len(dsn) && dsn[end] != ' ' && dsn[end] != '\t' {
+			end++
+		}
+		b.WriteString(dsn[:i])
+		b.WriteString(key)
+		b.WriteString("****")
+		dsn = dsn[end:]
+	}
 }
 
 // checkDSN 是数据库面的第 0 条：其余 db.* 检查以它为前置。
@@ -550,11 +673,29 @@ func checkNoRunning(ctx context.Context, p *probe) checkRow {
 
 func checkPhotoDir(_ context.Context, p *probe) checkRow {
 	dir := photoDirOf(p)
-	if err := probeWritable(dir); err != nil {
-		return checkRow{fail: true, detail: fmt.Sprintf("photo 目录 %s 不可写: %v", dir, err),
-			fix: fmt.Sprintf("mkdir -p %s && chown -R yiban:yiban %s", dir, dir)}
+	svc := serviceUserOf(p)
+	me, okMe := p.currentUser()
+	if !okMe || me == svc {
+		// 同一身份：直接实测写入，判据最硬。
+		if err := probeWritable(dir); err != nil {
+			return checkRow{fail: true, detail: fmt.Sprintf("photo 目录 %s 不可写: %v", dir, err),
+				fix: fmt.Sprintf("mkdir -p %s && chown -R %s:%s %s", dir, svc, svc, dir)}
+		}
+		return checkRow{detail: dir + " 可写"}
 	}
-	return checkRow{detail: dir + " 可写"}
+	// 当前进程不是服务用户：按属主/组/权限位推断，
+	// 不把自己的可写性当服务用户的可写性。
+	info, ok := p.dirStat(dir)
+	if !ok {
+		return checkRow{skip: true, detail: fmt.Sprintf(
+			"跳过：读不到 %s 的属主与权限位（或目录不存在）；当前用户 %s 与服务用户 %s 不同，实测写入无判别力", dir, me, svc)}
+	}
+	if !writableByServiceUser(info, svc, p) {
+		return checkRow{fail: true, detail: fmt.Sprintf("%s 属主 %s、权限 %04o：服务用户 %s 不可写",
+			dir, info.owner, info.perm.Perm(), svc),
+			fix: fmt.Sprintf("chown -R %s:%s %s（systemd 单元以 User=%s 运行）", svc, svc, dir, svc)}
+	}
+	return checkRow{detail: fmt.Sprintf("属主 %s、权限 %04o：服务用户 %s 可写", info.owner, info.perm.Perm(), svc)}
 }
 
 func checkDisk(_ context.Context, p *probe) checkRow {
@@ -570,21 +711,21 @@ func checkDisk(_ context.Context, p *probe) checkRow {
 	return checkRow{detail: fmt.Sprintf("剩余 %d MiB", free>>20)}
 }
 
+// checkPhotoOwner 比对目录属主与服务用户。
+// 服务用户是 systemd 单元声明的运行用户（--service-user，缺省 yiban）；
+// 不是 doctor 自己的进程用户。
 func checkPhotoOwner(_ context.Context, p *probe) checkRow {
 	dir := photoDirOf(p)
-	owner, ok := p.dirOwner(dir)
+	svc := serviceUserOf(p)
+	info, ok := p.dirStat(dir)
 	if !ok {
-		return checkRow{skip: true, detail: "跳过：本平台拿不到文件属主（Windows）"}
+		return checkRow{skip: true, detail: "跳过：本平台拿不到文件属主（Windows）或目录不存在"}
 	}
-	me, okMe := currentUserName()
-	if !okMe {
-		return checkRow{skip: true, detail: "跳过：本平台拿不到当前用户名"}
+	if info.owner != svc {
+		return checkRow{fail: true, detail: fmt.Sprintf("%s 属主是 %s，服务用户是 %s", dir, info.owner, svc),
+			fix: fmt.Sprintf("chown -R %s:%s %s（systemd 单元以 User=%s 运行）", svc, svc, dir, svc)}
 	}
-	if owner != me {
-		return checkRow{fail: true, detail: fmt.Sprintf("%s 属主是 %s，服务用户是 %s", dir, owner, me),
-			fix: fmt.Sprintf("chown -R yiban:yiban %s（systemd 单元以 User=yiban 运行）", dir)}
-	}
-	return checkRow{detail: fmt.Sprintf("属主 %s 与当前用户一致", owner)}
+	return checkRow{detail: fmt.Sprintf("属主 %s 与服务用户一致", info.owner)}
 }
 
 func checkHTTPAddr(_ context.Context, p *probe) checkRow {
@@ -657,19 +798,23 @@ func base64StdDecode(s string) ([]byte, error) {
 }
 
 // newProbe 装配生产探针：真环境、真网络、真 statfs。
-func newProbe(dsn, photoDir, registry, binPath string) *probe {
+func newProbe(dsn, photoDir, registry, binPath, serviceUser string) *probe {
 	if binPath == "" {
 		if self, err := os.Executable(); err == nil {
 			binPath = self
 		}
 	}
+	if registry == "" {
+		registry = pickRegistry("", fileExists, registryCandidates()...)
+	}
 	return &probe{
-		src:      config.Env{},
-		dsn:      dsn,
-		photoDir: photoDir,
-		registry: registry,
-		binPath:  binPath,
-		now:      func() time.Time { return coreclock.System{}.Now() },
+		src:         config.Env{},
+		dsn:         dsn,
+		photoDir:    photoDir,
+		registry:    registry,
+		binPath:     binPath,
+		serviceUser: serviceUser,
+		now:         func() time.Time { return coreclock.System{}.Now() },
 		tryListen: func(addr string) (closer, error) {
 			return net.Listen("tcp", addr)
 		},
@@ -683,10 +828,18 @@ func newProbe(dsn, photoDir, registry, binPath string) *probe {
 			_, _ = io.Copy(io.Discard, resp.Body)
 			return resp.StatusCode, nil
 		},
-		openDB:   openPgProbe,
-		diskFree: statfsFree,
-		dirOwner: fileOwnerName,
+		openDB:      openPgProbe,
+		diskFree:    statfsFree,
+		currentUser: currentUserName,
+		dirStat:     dirStatOf,
+		userGroups:  userGroupNames,
 	}
+}
+
+// fileExists 是 pickRegistry 的存在判定。
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // runDoctor 是 doctor 子命令入口。返回进程退出码。
@@ -694,13 +847,14 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("doctor", stderr)
 	dsn := fs.String("dsn", "", "覆盖 YIBAN_DATABASE_URL")
 	photoDir := fs.String("photo-dir", "", "覆盖 YIBAN_PHOTO_DIR")
-	registry := fs.String("registry", "config/registry.json", "配置名册路径")
+	registry := fs.String("registry", "", "配置名册路径（缺省依次试 /etc/yiban/registry.json 与 config/registry.json）")
 	binPath := fs.String("bin", "", "被检二进制路径（缺省为自身）")
+	serviceUser := fs.String("service-user", defaultServiceUser, "systemd 单元的运行用户（User=）")
 	fs.Usage = func() { doctorUsage(fs, stderr) }
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	p := newProbe(*dsn, *photoDir, *registry, *binPath)
+	p := newProbe(*dsn, *photoDir, *registry, *binPath, *serviceUser)
 	rep := runChecks(context.Background(), p)
 	fmt.Fprint(stdout, rep.text())
 	if rep.failed > 0 {

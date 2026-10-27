@@ -15,8 +15,12 @@ var errDiskUnsupported = errors.New("disk free probe unsupported on windows")
 // statfsFree 在 Windows 上不可用：调用方按 SKIP 处理。
 func statfsFree(dir string) (uint64, error) { return 0, errDiskUnsupported }
 
-// fileOwnerName 在 Windows 上拿不到 POSIX 属主。
-func fileOwnerName(dir string) (string, bool) { return "", false }
+// dirStatOf 在 Windows 上拿不到属主、组与 POSIX 权限位：
+// 调用方按 SKIP 带原因处理，绝不装绿。
+func dirStatOf(dir string) (dirInfo, bool) { return dirInfo{}, false }
+
+// userGroupNames 在 Windows 上不可用：组模型与 POSIX 不同。
+func userGroupNames(string) ([]string, bool) { return nil, false }
 
 // isExecutable 恒返回可执行：Windows 的模式位没有 POSIX 语义
 // （Go 的 os.Stat 从不报告执行位），本平台不存在「无执行位」状态。
