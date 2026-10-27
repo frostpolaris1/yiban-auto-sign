@@ -480,6 +480,11 @@ func redactDSN(dsn string) string {
 	if masked, ok := redactKeywordDSN(out); ok {
 		return masked
 	}
+	// 含 '=' 却不是合法 keyword DSN（多余参数、# 注释）：词法解析放弃时
+	// 绝不原样返回——那会把口令整串打进终端与 CI 日志。失败关闭成占位符。
+	if strings.Contains(out, "=") {
+		return "<无法脱敏的 DSN>"
+	}
 	return out
 }
 
