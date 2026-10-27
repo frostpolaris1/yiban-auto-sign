@@ -41,13 +41,13 @@ import (
 // 恢复时按它找回备份时的行数基线。
 const manifestMarker = "-- yiban-backup-manifest"
 
-// manifestTables 是行数对账的表清单：迁移 00001–00016 的业务表全集。
+// manifestTables 是行数对账的表清单：迁移 00001–00017 的业务表全集。
 // 新增迁移加表时必须同批加进本表，否则恢复后丢行不会被发现。
 // 完整性由两道门钉住：TestManifestTablesCoverEveryBusinessTable（静态）
 // 与 TestManifestTablesCoverLiveSchema（真库 information_schema）。
 var manifestTables = []string{
 	"account_egress", "account_location", "accounts", "admin_schools",
-	"audit_logs", "credentials", "egresses", "password_resets",
+	"audit_logs", "credentials", "egresses", "legacy_ids", "password_resets",
 	"photo_retention", "photos", "school_tasks", "schools", "sessions",
 	"sign_tasks", "time_prefs", "users", "window_cache", "window_overrides",
 }
