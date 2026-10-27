@@ -118,7 +118,7 @@ func encryptDump(records []wireRecord, passphrase, outPath string) error {
 	if _, err := rand.Read(nonce); err != nil {
 		return err
 	}
-	key := scryptKey([]byte(passphrase), salt)
+	key := deriveCaptureKey([]byte(passphrase), salt)
 	payload, err := json.MarshalIndent(records, "", " ")
 	if err != nil {
 		return err
@@ -141,9 +141,9 @@ func encryptDump(records []wireRecord, passphrase, outPath string) error {
 	return err
 }
 
-// scryptKey 用 stdlib 可达的最简 KDF：SHA-256 迭代。探针是一次性件，
-// 抓取物只在生产机落盘几小时；不为此引入 x/crypto 依赖。
-func scryptKey(pass, salt []byte) []byte {
+// deriveCaptureKey 用 stdlib 可达的最简 KDF：SHA-256 迭代（名字如实，不是 scrypt）。
+// 探针是一次性件，抓取物只在生产机落盘几小时；不为此引入 x/crypto 依赖。
+func deriveCaptureKey(pass, salt []byte) []byte {
 	out := sha256Sum(append(append([]byte("yiban-probe-go.v1"), salt...), pass...))
 	for i := 1; i < 4096; i++ {
 		out = sha256Sum(out)

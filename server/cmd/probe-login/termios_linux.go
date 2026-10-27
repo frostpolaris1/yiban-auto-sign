@@ -14,6 +14,7 @@ func readPassword(prompt string) (string, error) {
 	fd := int(syscall.Stdin)
 	old, err := unix.IoctlGetTermios(fd, unix.TCGETS)
 	if err != nil {
+		fmt.Println("(警告: stdin 不是终端，无法关闭回显，密码将显示在屏幕上)")
 		return readLine(prompt), nil
 	}
 	noEcho := *old
