@@ -378,28 +378,9 @@ class DbLayerB12Test(unittest.TestCase):
         self.assertTrue(ok3, "参照点推进后下一轮必须恢复清理")
 
     # ---- B12-10 db_export ----
-    def test_db_export_passes_migrate_false(self):
-        import db_export
-        out_dir = os.path.join(self.tmp, "export")
-        captured = {}
-
-        orig_init = db.init_db
-
-        def spy_init(*a, **kw):
-            captured.update(kw)
-            return orig_init(*a, **kw)
-
-        with mock.patch.object(db, "init_db", side_effect=spy_init):
-            db_export.main(["--out", out_dir])
-        self.assertFalse(captured.get("migrate", True), "导出工具必须禁迁移（B12-10）")
-        self.assertFalse(captured.get("cleanup", True))
-        self.assertTrue(os.path.exists(os.path.join(out_dir, "accounts.json")))
-        # 导出留痕审计（B12-14 的一部分）
-        with db._conn_lock:
-            r = db.get_conn().execute(
-                "SELECT COUNT(*) FROM audit_logs WHERE action='db_export'"
-            ).fetchone()
-        self.assertGreaterEqual(r[0], 1)
+    # 旧用例 test_db_export_passes_migrate_false 已删：P8-A 导出器不再经 init_db
+    # （全程只读连接、不写导出留痕审计）。「源库零改动」的接手者是
+    # tests/test_db_export_jsonl.py::DbExportJsonlTest.test_8_source_db_untouched。
 
 
 class BackupDockerScriptTest(unittest.TestCase):
