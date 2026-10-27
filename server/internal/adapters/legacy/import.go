@@ -1,18 +1,22 @@
 package legacy
 
-// 导入编排：读导出物 → 校验 → 单事务写入 → 对账输出。
+// 导入编排：读导出物 → 校验 → 单事务写入 → 提交前对账 → 报告输出。
 //
 // 退出码语义（由 cmd/cli 落到进程退出码）：
 //   - 2：用法/校验失败（缺文件、school/owner 不存在、schools 非空、
-//     导出物对账表对不上）。零写入。
-//   - 1：--strict 下有孤儿，或存在行级错误（插入失败、解密失败）。
-//     默认档行级错误：好行照常提交、坏行显性计数。
+//     导出物对账表对不上）。对账比对在事务提交**前**执行，
+//     不一致即回滚，exit 2 零写入。
+//   - 1：--strict 下有孤儿，或存在行级错误。行级写入是原子单元
+//     （主行＋legacy_ids 映射＋凭据同存亡）：单元失败整行回滚，
+//     好行照常提交、坏行显性计数。
 //   - 0：全部成功（默认档孤儿跳过也算成功，计数可见）。
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -82,6 +86,9 @@ type Options struct {
 	Sealer Sealer
 	// Now 是迁移时刻（deleted_at 缺失的软删行与 created_at 空值用它）。
 	Now time.Time
+	// Err 是行级错误的输出端（nil 时用 os.Stderr）。
+	// cmd/cli 注入进程 stderr；e2e 注入缓冲以断言输出内容。
+	Err io.Writer
 }
 
 // Run 执行一次导入。err 非 nil 为致命错误（退出码在 Error.Code）；
@@ -134,6 +141,12 @@ func Run(ctx context.Context, opts Options) (summary map[string]any, exitCode in
 
 	state := newState(orphanRows)
 	state.sealer = opts.Sealer
+	state.err = opts.Err
+	if state.err == nil {
+		state.err = os.Stderr
+	}
+	// 全部写与对账比对同在一个事务内：提交前比对不一致即回滚，
+	// 「exit 2 零写入」由事务保证，不靠事后补偿。
 	txErr := opts.DB.InTx(ctx, func(ctx context.Context) error {
 		for _, row := range rows["users"] {
 			state.importUser(ctx, opts, row)
@@ -141,29 +154,28 @@ func Run(ctx context.Context, opts Options) (summary map[string]any, exitCode in
 		for _, row := range rows["accounts"] {
 			state.importAccount(ctx, opts, row)
 		}
+		// time_prefs / audit 不入库（裁决见包注释），但行进对账表：
+		// 与导出物对账表逐行比对才能钉住导出物完整性。
+		for _, row := range rows["time_prefs"] {
+			state.appendRecon("time_prefs", row, coremask.MaskPhone(valueString(row["phone"])))
+		}
+		for _, row := range rows["audit"] {
+			state.appendRecon("audit", row, valueString(row["id"]))
+		}
+		// 行级错误行不入对账表；此时与导出物的全量比对不成立，
+		// 跳过比对并在 summary 留痕（row_errors 已是显性计数）。
+		if state.rowErrors == 0 {
+			return compareRecon(opts.Dir, state.reconLines)
+		}
+		state.summary["recon_compare"] = "not compared: row errors present"
 		return nil
 	})
 	if txErr != nil {
-		return nil, 1, fatal(1, "import transaction failed: %v", txErr)
-	}
-
-	// time_prefs / audit 不入库（裁决见包注释），但行进对账表：
-	// 与导出物对账表逐行比对才能钉住导出物完整性。
-	for _, row := range rows["time_prefs"] {
-		state.appendRecon("time_prefs", row, coremask.MaskPhone(valueString(row["phone"])))
-	}
-	for _, row := range rows["audit"] {
-		state.appendRecon("audit", row, valueString(row["id"]))
-	}
-
-	// 行级错误行不入对账表；此时与导出物的全量比对不成立，
-	// 跳过比对并在 summary 留痕（row_errors 已是显性计数）。
-	if state.rowErrors == 0 {
-		if err := compareRecon(opts.Dir, state.reconLines); err != nil {
-			return nil, 2, err
+		var fatalErr *Error
+		if errors.As(txErr, &fatalErr) {
+			return nil, fatalErr.Code, fatalErr
 		}
-	} else {
-		state.summary["recon_compare"] = "not compared: row errors present"
+		return nil, 1, fatal(1, "import transaction failed: %v", txErr)
 	}
 
 	if err := writeReports(opts.OutDir, state); err != nil {
@@ -206,6 +218,7 @@ func newState(orphanRows int) *importState {
 // importState 是一次导入内的可变状态。全部写入发生在单事务闭包内。
 type importState struct {
 	sealer     Sealer
+	err        io.Writer // 行级错误输出端（Run 里从 Options.Err 装配）
 	summary    map[string]any
 	reconLines []string
 	rowErrors  int
@@ -228,7 +241,7 @@ func (s *importState) bumpRead(table string) {
 func (s *importState) addRowError(group, what string, err error) {
 	s.rowErrors++
 	s.bump("row_errors", group)
-	fmt.Fprintf(os.Stderr, "migrate-legacy: row error in %s (%s): %v\n", group, what, err)
+	fmt.Fprintf(s.err, "migrate-legacy: row error in %s (%s): %v\n", group, what, err)
 }
 
 func (s *importState) appendRecon(table string, row map[string]any, key string) {
@@ -238,6 +251,8 @@ func (s *importState) appendRecon(table string, row map[string]any, key string) 
 }
 
 // importUser 重建一行旧 users。幂等判据＝legacy_ids。
+// 写段（主行＋映射）在保存点内同存亡：任一失败整行回滚，
+// 落地行必有 legacy_ids 映射。
 func (s *importState) importUser(ctx context.Context, opts Options, row map[string]any) {
 	s.bumpRead("users")
 	oldID, ok := valueInt(row["id"])
@@ -289,18 +304,23 @@ func (s *importState) importUser(ctx context.Context, opts Options, row map[stri
 		deletedAt = &at
 	}
 
-	createdID, err := opts.DB.QueryString(ctx,
-		`INSERT INTO users (email, password_hash, role, created_at, deleted_at)
-		 VALUES ($1, $2, $3, $4, $5) RETURNING id::text`,
-		email, valueString(row["password_hash"]), role, createdAt, deletedAt)
-	if err != nil {
-		s.addRowError("users", "insert", fmt.Errorf("user %d (%s): %v", oldID, email, err))
-		return
-	}
-	if _, err := opts.DB.Exec(ctx,
-		`INSERT INTO legacy_ids (old_table, old_id, new_id) VALUES ('users', $1, $2::uuid)`,
-		oldID, createdID); err != nil {
-		s.addRowError("users", "legacy_ids insert", fmt.Errorf("user %d: %v", oldID, err))
+	txErr := opts.DB.InSavepoint(ctx, func(ctx context.Context) error {
+		createdID, err := opts.DB.QueryString(ctx,
+			`INSERT INTO users (email, password_hash, role, created_at, deleted_at)
+			 VALUES ($1, $2, $3, $4, $5) RETURNING id::text`,
+			email, valueString(row["password_hash"]), role, createdAt, deletedAt)
+		if err != nil {
+			return err
+		}
+		if _, err := opts.DB.Exec(ctx,
+			`INSERT INTO legacy_ids (old_table, old_id, new_id) VALUES ('users', $1, $2::uuid)`,
+			oldID, createdID); err != nil {
+			return err
+		}
+		return nil
+	})
+	if txErr != nil {
+		s.addRowError("users", "insert", fmt.Errorf("user %d (%s): %v", oldID, email, txErr))
 		return
 	}
 	s.bump("rows_imported", "users")
@@ -321,6 +341,9 @@ func mapLegacyRole(old string) (string, bool) {
 }
 
 // importAccount 重建一行旧 accounts 与其凭据。幂等判据＝legacy_ids。
+// 写段（主行＋凭据＋映射）在保存点内同存亡：任一失败整行回滚，
+// 落地行必有 legacy_ids 映射，不留无凭据的半行（凭据缺行/解密失败除外，
+// 见 importCredential——那是裁决 5 的「账号照建」语义）。
 func (s *importState) importAccount(ctx context.Context, opts Options, row map[string]any) {
 	s.bumpRead("accounts")
 	oldID, ok := valueInt(row["id"])
@@ -367,22 +390,27 @@ func (s *importState) importAccount(ctx context.Context, opts Options, row map[s
 		deletedAt = &at
 	}
 
-	createdID, err := opts.DB.QueryString(ctx,
-		`INSERT INTO accounts (school_id, owner_user_id, phone, status, reject_reason, deleted_at)
-		 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6) RETURNING id::text`,
-		opts.SchoolID, opts.OwnerUserID, phone, newStatus,
-		valueString(row["reject_reason"]), deletedAt)
-	if err != nil {
-		s.addRowError("accounts", "insert", fmt.Errorf("account %d (%s): %v", oldID, phone, err))
-		return
-	}
-
-	s.importCredential(ctx, opts, row, phone, createdID)
-
-	if _, err := opts.DB.Exec(ctx,
-		`INSERT INTO legacy_ids (old_table, old_id, new_id) VALUES ('accounts', $1, $2::uuid)`,
-		oldID, createdID); err != nil {
-		s.addRowError("accounts", "legacy_ids insert", fmt.Errorf("account %d: %v", oldID, err))
+	txErr := opts.DB.InSavepoint(ctx, func(ctx context.Context) error {
+		createdID, err := opts.DB.QueryString(ctx,
+			`INSERT INTO accounts (school_id, owner_user_id, phone, status, reject_reason, deleted_at)
+			 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6) RETURNING id::text`,
+			opts.SchoolID, opts.OwnerUserID, phone, newStatus,
+			valueString(row["reject_reason"]), deletedAt)
+		if err != nil {
+			return err
+		}
+		if err := s.importCredential(ctx, opts, row, phone, createdID); err != nil {
+			return err
+		}
+		if _, err := opts.DB.Exec(ctx,
+			`INSERT INTO legacy_ids (old_table, old_id, new_id) VALUES ('accounts', $1, $2::uuid)`,
+			oldID, createdID); err != nil {
+			return err
+		}
+		return nil
+	})
+	if txErr != nil {
+		s.addRowError("accounts", "insert", fmt.Errorf("account %d (%s): %v", oldID, coremask.MaskPhone(phone), txErr))
 		return
 	}
 	s.bump("rows_imported", "accounts")
@@ -425,25 +453,31 @@ func mapLegacyStatus(row map[string]any) (string, bool) {
 
 // importCredential 重建一行凭据：旧信封解密（AAD=手机号）→ 新负载（三键
 // 全出现，device_code 置空串）→ 新信封（AAD=school_id|account_id）。
-// 明文只在内存。缺行/解密失败：账号照建，凭据行缺省，显性计数（裁决 5）。
-func (s *importState) importCredential(ctx context.Context, opts Options, row map[string]any, phone, accountID string) {
+// 明文只在内存。
+//
+// 返回 nil：凭据缺行（口令空）与解密失败（裁决 5）——账号照建、
+// 凭据行缺省、显性计数，不撤行。
+// 返回非 nil：信封形状违约（裸串、意外类型）与封装/插入失败——
+// 调用方整行回滚，不留无凭据的半行。
+// 错误文本一律用掩码手机号，不透出明文。
+func (s *importState) importCredential(ctx context.Context, opts Options, row map[string]any, phone, accountID string) error {
+	masked := coremask.MaskPhone(phone)
 	switch pw := row["password"].(type) {
 	case nil:
 		s.bump("credentials", "missing")
 	case string:
 		if pw == "" {
 			s.bump("credentials", "missing")
-			return
+			return nil
 		}
-		// 导出器契约保证非空必为信封对象；裸串是契约违约，显性报错不透传。
-		s.addRowError("accounts", "credential envelope",
-			fmt.Errorf("account %s: password field is a bare string (contract violation)", phone))
+		// 导出器契约保证非空必为信封对象；裸串是契约违约，整行拒绝。
+		return fmt.Errorf("account %s: password field is a bare string (contract violation)", masked)
 	case map[string]any:
 		plain, err := LegacyOpenEnvelope(pw, phone, opts.LegacyKey)
 		if err != nil {
-			s.addRowError("accounts", "credential decrypt", fmt.Errorf("account %s: %v", phone, err))
+			s.addRowError("accounts", "credential decrypt", fmt.Errorf("account %s: %v", masked, err))
 			s.bump("credentials", "decrypt_failed")
-			return
+			return nil
 		}
 		cred, err := s.sealer.Seal(opts.SchoolID, accountID, CredentialPayload{
 			DeviceCode: "",
@@ -451,25 +485,23 @@ func (s *importState) importCredential(ctx context.Context, opts Options, row ma
 			PhoneModel: valueString(row["phone_model"]),
 		})
 		if err != nil {
-			s.addRowError("accounts", "credential seal", fmt.Errorf("account %s: %v", phone, err))
-			return
+			return fmt.Errorf("account %s: seal credential: %v", masked, err)
 		}
 		if _, err := opts.DB.Exec(ctx,
 			`INSERT INTO credentials (account_id, school_id, alg, kid, aad_version, nonce, ciphertext, version)
 			 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, 1)`,
 			accountID, opts.SchoolID, cred.Alg, cred.KID, cred.AADVersion, cred.Nonce, cred.Ciphertext); err != nil {
-			s.addRowError("accounts", "credential insert", fmt.Errorf("account %s: %v", phone, err))
-			return
+			return fmt.Errorf("account %s: insert credential: %v", masked, err)
 		}
 		s.bump("credentials", "created")
 	default:
-		s.addRowError("accounts", "credential envelope",
-			fmt.Errorf("account %s: password field has unexpected type %T", phone, row["password"]))
+		return fmt.Errorf("account %s: password field has unexpected type %T", masked, row["password"])
 	}
 	// 旧 phone_code（验证码信封）在新负载无对应键，弃置并显性计数（裁决 7）。
 	if _, isEnvelope := row["phone_code"].(map[string]any); isEnvelope {
 		s.bump("credentials", "phone_code_dropped")
 	}
+	return nil
 }
 
 // legacyIDHit 查 legacy_ids；命中返回新 id。查无此行是「未导入过」，不是错误。

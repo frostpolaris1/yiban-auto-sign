@@ -215,15 +215,16 @@ func e2eSetupDB(t *testing.T) (string, string, string) {
 }
 
 // e2eRun 用给定旗跑一次 migrate-legacy，返回退出码与合并输出。
+// 旧钥只走环境变量 YIBAN_LEGACY_ACCOUNTS_KEY（argv 不传钥）。
 func e2eRun(t *testing.T, dsn, dir, out string, schoolID, ownerID, legacyKey string, strict bool) (int, string) {
 	t.Helper()
 	t.Setenv("YIBAN_CREDENTIAL_KEY", e2eNewKeyB64)
+	if legacyKey != "" {
+		t.Setenv("YIBAN_LEGACY_ACCOUNTS_KEY", legacyKey)
+	}
 	args := []string{
 		"--dir", dir, "--out", out, "--dsn", dsn,
 		"--school-id", schoolID, "--owner-user-id", ownerID,
-	}
-	if legacyKey != "" {
-		args = append(args, "--legacy-credential-key", legacyKey)
 	}
 	if strict {
 		args = append(args, "--strict")
@@ -246,6 +247,22 @@ func e2eCount(t *testing.T, dsn, sql string) int64 {
 		t.Fatalf("count %s: %v", sql, err)
 	}
 	return n
+}
+
+// e2eAssertLegacyInvariant 断言不变式：任何落地行必有 legacy_ids 映射。
+// owner 用户与学校是迁移前置件，不经导入器，不在断言内。
+func e2eAssertLegacyInvariant(t *testing.T, dsn string) {
+	t.Helper()
+	if n := e2eCount(t, dsn,
+		`SELECT count(*) FROM users u WHERE u.email <> '`+e2eOwnerEmail+`' AND NOT EXISTS
+		 (SELECT 1 FROM legacy_ids l WHERE l.old_table = 'users' AND l.new_id = u.id)`); n != 0 {
+		t.Fatalf("%d landed users have no legacy_ids mapping", n)
+	}
+	if n := e2eCount(t, dsn,
+		`SELECT count(*) FROM accounts a WHERE NOT EXISTS
+		 (SELECT 1 FROM legacy_ids l WHERE l.old_table = 'accounts' AND l.new_id = a.id)`); n != 0 {
+		t.Fatalf("%d landed accounts have no legacy_ids mapping", n)
+	}
 }
 
 // TestNewCipherAcceptsEmptyDeviceCode 钉住 cipher 解码侧的裁决前提：
@@ -298,6 +315,7 @@ func TestMigrateLegacyImportReconcileE2E(t *testing.T) {
 	if n := e2eCount(t, dsn, "SELECT count(*) FROM legacy_ids"); n != 6 {
 		t.Fatalf("legacy_ids = %d, want 6", n)
 	}
+	e2eAssertLegacyInvariant(t, dsn)
 
 	// 状态映射：active→active、软删→deleted_at、rejected 带理由、user_paused→paused_user。
 	if n := e2eCount(t, dsn, "SELECT count(*) FROM accounts WHERE status = 'active' AND deleted_at IS NULL"); n != 1 {
@@ -610,5 +628,127 @@ func TestMigrateLegacyLoginOldPasswordE2E(t *testing.T) {
 	}
 	if _, err := svc.Login(ctx, e2eLiveEmail, e2ePlainPW); err != nil {
 		t.Fatalf("login after upgrade: %v", err)
+	}
+}
+
+// TestMigrateLegacyTamperedReconZeroWritesE2E 守卫（审查 H1-a）：
+// strict 档导入中途致命错误（对账表被篡改）→ 退出码 2 且全部相关表 0 行。
+// 契约是「exit 2 零写入」；比对必须发生在提交前，行已提交即契约假。
+func TestMigrateLegacyTamperedReconZeroWritesE2E(t *testing.T) {
+	dsn, schoolID, ownerID := e2eSetupDB(t)
+	root := t.TempDir()
+	dir, _ := e2eWriteExport(t, filepath.Join(root, "tamp"))
+	// 去掉孤儿 time_prefs：strict 会在入口截停，到不了「导入中途」的致命错。
+	// 同步从对账表里删掉该行的 recon 项，保持导出物自洽。
+	// time_prefs.jsonl 存裸手机号，对账表存掩码，两个文件用各自的键过滤。
+	for name, key := range map[string]string{
+		"time_prefs.jsonl": e2ePhoneOrphan, "reconciliation.jsonl": coremask.MaskPhone(e2ePhoneOrphan),
+	} {
+		raw, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		var kept []string
+		for _, line := range strings.Split(string(raw), "\n") {
+			if line != "" && !strings.Contains(line, key) {
+				kept = append(kept, line)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(strings.Join(kept, "\n")+"\n"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	reconPath := filepath.Join(dir, "reconciliation.jsonl")
+	raw, err := os.ReadFile(reconPath)
+	if err != nil {
+		t.Fatalf("read recon: %v", err)
+	}
+	bad := strings.Replace(string(raw), "138****0001", "138****0002", 1)
+	if bad == string(raw) {
+		t.Fatal("tamper no-op; fixture drift")
+	}
+	if err := os.WriteFile(reconPath, []byte(bad), 0o600); err != nil {
+		t.Fatalf("write tampered recon: %v", err)
+	}
+
+	code, output := e2eRun(t, dsn, dir, filepath.Join(root, "report"), schoolID, ownerID, e2eLegacyKeyHex, true)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2:\n%s", code, output)
+	}
+	for _, check := range []struct {
+		table string
+		want  int64
+	}{
+		{"users", 1}, // 仅 owner 前置件
+		{"accounts", 0},
+		{"legacy_ids", 0},
+		{"credentials", 0},
+	} {
+		if n := e2eCount(t, dsn, "SELECT count(*) FROM "+check.table); n != check.want {
+			t.Fatalf("%s = %d, want %d (exit 2 must write nothing)", check.table, n, check.want)
+		}
+	}
+}
+
+// TestMigrateLegacyRowErrorAtomicNoPhoneLeakE2E 守卫（审查 H1-b＋M1）：
+// 行级失败不污染其余行、失败行零残留、落地行必有 legacy_ids 映射、
+// 行级错误输出零明文手机号（撞唯一约束行故意夹带）。
+func TestMigrateLegacyRowErrorAtomicNoPhoneLeakE2E(t *testing.T) {
+	dsn, schoolID, ownerID := e2eSetupDB(t)
+	root := t.TempDir()
+	dir, _ := e2eWriteExport(t, root)
+	// 追加两条必撞唯一约束的行（不入对账表；行级错误时比对跳过）：
+	// 用户 id=3 撞 email、账号 id=5 撞 phone。
+	dupUser := map[string]any{
+		"id": json.Number("3"), "email": e2eLiveEmail, "password_hash": e2eScryptHash,
+		"role": "user", "created_at": "2026-01-03T00:00:00", "pw_version": json.Number("1"),
+		"deleted": json.Number("0"), "deleted_at": "", "mail_notify": json.Number("1"),
+	}
+	dupAcct := map[string]any{
+		"id": json.Number("5"), "sort_order": json.Number("4"), "name": "acct-dup",
+		"phone": e2ePhoneA, "password": "", "phone_model": "", "phone_code": "",
+		"owner": "admin", "status": "active", "reject_reason": "", "deleted": json.Number("0"),
+		"deleted_at": "", "deleted_by": "", "user_paused": json.Number("0"),
+	}
+	for name, row := range map[string]map[string]any{
+		"users.jsonl": dupUser, "accounts.jsonl": dupAcct,
+	} {
+		f, err := os.OpenFile(filepath.Join(dir, name), os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatalf("open %s: %v", name, err)
+		}
+		if _, err := f.WriteString(legacy.CanonicalLine(row) + "\n"); err != nil {
+			t.Fatalf("append %s: %v", name, err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatalf("close %s: %v", name, err)
+		}
+	}
+
+	code, output := e2eRun(t, dsn, dir, filepath.Join(root, "report"), schoolID, ownerID, e2eLegacyKeyHex, false)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (row errors):\n%s", code, output)
+	}
+
+	// 好行照常落地；坏行零残留（行级原子，主行不裸留）。
+	if n := e2eCount(t, dsn, "SELECT count(*) FROM users"); n != 3 {
+		t.Fatalf("users = %d, want 3 (2 imported + owner; dup-email row must leave nothing)", n)
+	}
+	if n := e2eCount(t, dsn, "SELECT count(*) FROM accounts"); n != 4 {
+		t.Fatalf("accounts = %d, want 4 (dup-phone row must leave nothing)", n)
+	}
+	if n := e2eCount(t, dsn, "SELECT count(*) FROM legacy_ids"); n != 6 {
+		t.Fatalf("legacy_ids = %d, want 6", n)
+	}
+	e2eAssertLegacyInvariant(t, dsn)
+
+	// M1：行级错误输出零明文手机号；掩码形式可见（证明错误确实走了掩码口径）。
+	for _, phone := range []string{e2ePhoneA, e2ePhoneB, e2ePhoneC, e2ePhoneD, e2ePhoneOrphan} {
+		if strings.Contains(output, phone) {
+			t.Fatalf("row error output leaks plaintext phone %s", coremask.MaskPhone(phone))
+		}
+	}
+	if !strings.Contains(output, "138****0001") {
+		t.Fatalf("row error output must carry the masked phone, got:\n%s", output)
 	}
 }

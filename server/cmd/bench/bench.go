@@ -155,7 +155,10 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	defer dropCancel()
 	defer func() {
 		if !cfg.KeepSchema {
-			_, _ = admin.Exec(dropCtx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE")
+			if _, err := admin.Exec(dropCtx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE"); err != nil {
+				// 清理失败只报一行 stderr，退出语义不变：压测结果已产出。
+				fmt.Fprintf(os.Stderr, "bench: drop schema %s: %v\n", schema, err)
+			}
 		}
 		admin.Close()
 	}()
