@@ -1,7 +1,11 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -34,13 +38,18 @@ func Now() time.Time { return time.Now() }
 
 func TestValidateRuleAnchorsRejectsVacuousOwner(t *testing.T) {
 	root := t.TempDir()
+	// pattern 存在、owner 不存在：单独钉住 owner 检查，删掉它会红。
 	writeFile(t, root, "internal/app/a.go", `package app
-var _ = 1
+import "time"
+var _ = time.Now()
 `)
-	// owner 目录被删/改名：规则检查零个文件。
 	rules := []Rule{testRule("clock.now", "call", "internal/core/clock/", "time.Now", "")}
-	if err := ValidateRuleAnchors(root, rules, false); err == nil {
+	err := ValidateRuleAnchors(root, rules, false)
+	if err == nil {
 		t.Fatal("rule whose owner matches no file must fail")
+	}
+	if !strings.Contains(err.Error(), "owner") {
+		t.Fatalf("错误必须点名 owner：%v", err)
 	}
 }
 
@@ -103,5 +112,41 @@ func TestCanonicalRuleIDsPinned(t *testing.T) {
 			t.Fatalf("rule %d = %q, pinned %q; rename must be an explicit decision",
 				i, rule.ID, want[i])
 		}
+	}
+}
+
+// 规则整行快照：kind/owner/pattern/allow 的改动同样必须是一次显式决定。
+// 只钉 ID 会让「call 改 forbid」「pattern 改错」静默通过（r4c 复审 P2-1/P2-2）。
+// 哈希变了就确认改动，然后更新本常量。
+func TestCanonicalRuleRowsPinned(t *testing.T) {
+	rules, err := LoadRules(filepath.Join("..", "..", "canonical.tsv"))
+	if err != nil {
+		t.Fatalf("load canonical: %v", err)
+	}
+	h := sha256.New()
+	for _, r := range rules {
+		fmt.Fprintf(h, "%s\t%s\t%s\t%s\t%s\n", r.ID, r.Kind, r.Owner, r.Pattern, r.Allow)
+	}
+	got := hex.EncodeToString(h.Sum(nil))
+	const want = "337b893ad3594662d651806bed59af9121acb4a72804fc25b4eef9a537b157e0"
+	if got != want {
+		t.Fatalf("canonical 规则内容变了（hash %s）；确认改动后更新 TestCanonicalRuleRowsPinned 的哈希", got)
+	}
+}
+
+// anchors 的 includeTests=false 路径：只看生产文件时，仅测试里出现的
+// pattern 应判为「没有落点」；includeTests=true 时才找到。
+func TestValidateRuleAnchorsIncludeTests(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "internal/core/clock/clock_test.go", `package clock
+import "time"
+var _ = time.Now()
+`)
+	rules := []Rule{testRule("clock.now", "call", "internal/core/clock/", "time.Now", "")}
+	if err := ValidateRuleAnchors(root, rules, false); err == nil {
+		t.Fatal("不含测试文件时，只有测试落点的规则必须判无落点")
+	}
+	if err := ValidateRuleAnchors(root, rules, true); err != nil {
+		t.Fatalf("含测试文件时应找到落点: %v", err)
 	}
 }

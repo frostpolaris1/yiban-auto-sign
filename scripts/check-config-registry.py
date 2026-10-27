@@ -98,8 +98,8 @@ TOKEN_QUOTED = re.compile(
     r"""|\$\{?(YIBAN_[A-Z0-9_]+)""")           # bash 展开 `${YIBAN_X…` / `$YIBAN_X`
 TOKEN_KEYLINE = re.compile(r"(?:^|[\s\-\[])(YIBAN_[A-Z0-9_]+)\s*[=:]")
 #: 被扫文件里必须出现的最小文件数（防"扫描面塌了 ⇒ 零命中 ⇒ 全绿"）。
-#: 2026-10-27 实测 661 个文件（WSL、含 server/ui）；旧值 100 允许删掉八成扫描面
-#: 仍报绿，取 600 留出前端构建目录增删的余量。
+#: 2026-10-27 实测：develop 635 个文件、P7 分支 667（WSL、含 server/ui）。
+#: 旧值 100 允许删掉八成扫描面仍报绿，取 600 留出前端构建目录增删的余量。
 DEFAULT_MIN_FILES = 600
 #: 额外豁免的顶层目录。扫描面残缺守卫先按 **git 跟踪集**排除无被跟踪文件的目录
 #: （见 `_guard_scan_surface`），故被忽略/未入库的本地工具目录不必在此登记。
@@ -408,7 +408,7 @@ def main(argv=None):
     ap.add_argument("--registry", default=None)
     ap.add_argument("--scan", action="append", default=None,
                     help="扫描面条目（可重复）；缺省扫生产树")
-    # 2026-10-27 实测 167 键（P7 分支；主线 163）。旧值 50 允许删掉七成名册
+    # 2026-10-27 实测：develop 163 键、P7 分支 169。旧值 50 允许删掉七成名册
     # 仍报绿；取 150 保留正常增删余量。
     ap.add_argument("--min-keys", type=int, default=150)
     ap.add_argument("--min-files", type=int, default=DEFAULT_MIN_FILES)
