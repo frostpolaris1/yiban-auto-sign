@@ -14,6 +14,7 @@ import (
 	coreaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/account"
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	coreschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/school"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
@@ -280,6 +281,19 @@ func wantError(t *testing.T, err error, what string) {
 	if err == nil {
 		t.Fatalf("%s: want an error, got nil", what)
 	}
+}
+
+// codeOf 返回错误对应的稳定码。
+// err 为 nil 时以 Fatal 终止：errs.From(nil) 返回 nil，
+// 取 .Code 会 SIGSEGV，整包余下用例随之不再运行（AGENTS §30）。
+//
+// **断言写错的用例必须红，不能把整包打成 panic。**
+func codeOf(t *testing.T, err error) errs.Code {
+	t.Helper()
+	if err == nil {
+		t.Fatal("want an error, got nil: the assertion or the guard under test is wrong")
+	}
+	return errs.From(err).Code
 }
 
 func mustNotError(t *testing.T, err error, what string) {

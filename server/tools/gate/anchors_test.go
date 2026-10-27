@@ -128,7 +128,9 @@ func TestCanonicalRuleRowsPinned(t *testing.T) {
 		fmt.Fprintf(h, "%s\t%s\t%s\t%s\t%s\t%s\n", r.ID, r.Kind, r.Owner, r.Pattern, r.Allow, r.Message)
 	}
 	got := hex.EncodeToString(h.Sum(nil))
-	const want = "31b586e19159272577ac56e3ff1c8ce19c65f1810c851cef57ae75a4dbca9d40"
+	// rb3：boundary.adapters 的 allow 增列
+	// internal/adapters/pg/usecase_e2e_test.go（用例层 e2e 需要真实 PG 适配器）。
+	const want = "72be2bddc091a698c2bd847d5b1ed30dc403c8d4fe779a95c7a2441004aca8e6"
 	if got != want {
 		t.Fatalf("canonical 规则内容变了（hash %s）；确认改动后更新 TestCanonicalRuleRowsPinned 的哈希", got)
 	}

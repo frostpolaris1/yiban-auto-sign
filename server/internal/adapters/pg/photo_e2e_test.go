@@ -162,7 +162,7 @@ func TestPhotoRepoRetention(t *testing.T) {
 	if err == nil {
 		t.Fatal("闭集外值应被拒绝")
 	}
-	if code := errs.From(err).Code; code != errs.CodeValidation {
+	if code := codeOf(t, err); code != errs.CodeValidation {
 		t.Fatalf("错误码 = %q, want validation", code)
 	}
 }
