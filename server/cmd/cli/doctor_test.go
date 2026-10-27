@@ -170,13 +170,33 @@ func TestDoctorHealthyProbePasses(t *testing.T) {
 	}
 }
 
-func TestDoctorFaultInjectionHitsEachCheck(t *testing.T) {
-	// 每条一例：注入一种故障，断言该条 FAIL 且给出修复命令。
-	cases := []struct {
-		name        string
-		inject      func(p *probe, db *fakeDB)
-		skipWindows string // 非 Windows 才能注入时写明原因
-	}{
+// checks 与故障注入用例表必须一一对应：新增检查不带用例不得通过
+// （P7 审查 P3-7）。
+func TestDoctorFaultCasesCoverEveryCheck(t *testing.T) {
+	byName := map[string]bool{}
+	for _, c := range faultCases(t) {
+		byName[c.name] = true
+	}
+	for _, chk := range checks {
+		if !byName[chk.name] {
+			t.Fatalf("检查 %q 没有对应的故障注入用例", chk.name)
+		}
+	}
+	if got := len(faultCases(t)); got != len(checks) {
+		t.Fatalf("用例数 %d != 检查数 %d（多出的用例表项是死代码）", got, len(checks))
+	}
+}
+
+type faultCase struct {
+	name        string
+	inject      func(p *probe, db *fakeDB)
+	skipWindows string // 非 Windows 才能注入时写明原因
+}
+
+// faultCases 构造故障注入用例表。两个条目要用 t.TempDir()，
+// 所以是函数而不是包级变量；覆盖断言与注入测试共用同一张表。
+func faultCases(t *testing.T) []faultCase {
+	return []faultCase{
 		{"env.config", func(p *probe, _ *fakeDB) { p.src = fakeSource{"YIBAN_ENV": "prod"} }, ""},
 		{"env.pepper", func(p *probe, _ *fakeDB) {
 			p.src = fakeSource{"YIBAN_ENV": "production", "YIBAN_HASH_PEPPER": "short", "YIBAN_CREDENTIAL_KEY": testKeyB64}
@@ -231,7 +251,10 @@ func TestDoctorFaultInjectionHitsEachCheck(t *testing.T) {
 			}
 		}, "Windows FileMode always carries the exec bit"},
 	}
-	for _, tc := range cases {
+}
+
+func TestDoctorFaultInjectionHitsEachCheck(t *testing.T) {
+	for _, tc := range faultCases(t) {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.skipWindows != "" && runtime.GOOS == "windows" {
 				t.Skip("SKIP: " + tc.skipWindows)

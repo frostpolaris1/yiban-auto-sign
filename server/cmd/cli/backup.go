@@ -372,6 +372,7 @@ func runRestore(deps *backupDeps, args []string) int {
 		return 1
 	}
 	fmt.Fprintln(deps.stdout, "对账一致。")
+	fmt.Fprintln(deps.stdout, "提醒：blob 目录（YIBAN_PHOTO_DIR）不在本归档内；恢复到新主机时须另行迁移，否则图片行在、文件缺失。")
 	return 0
 }
 

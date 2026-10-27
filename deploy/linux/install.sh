@@ -136,6 +136,9 @@ i=1
 while [ "$i" -le "$RETRIES" ]; do
     if "$(dest /usr/local/bin/yiban-cli)" healthcheck --addr "$ADDR" --timeout 2s; then
         echo "install complete: healthz ok at $ADDR (attempt $i/$RETRIES)"
+        # 干净库还没有可登录账号：建第一个 master 是部署的最后一步。
+        echo "next: create the first master:"
+        echo "  yiban-cli user create-master --email <addr> --password <pass>"
         exit 0
     fi
     sleep "$INTERVAL"

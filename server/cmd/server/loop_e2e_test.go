@@ -170,7 +170,12 @@ func TestLoopGracefulStopLeavesNoRunningRows(t *testing.T) {
 	}
 
 	loop := appworker.NewLoop(workerSvc, workerSvc, 20*time.Millisecond, 1)
-	loop.Start()
+	if err := loop.Start(); err != nil {
+		t.Fatalf("start loop: %v", err)
+	}
+	if err := loop.Start(); err == nil {
+		t.Fatal("重复 Start 应返回错误（防 done 双关 panic）")
+	}
 
 	// 等任务被认领（state=running）：停机判据要先有在飞。
 	waitFor(t, 3*time.Second, "task claimed", func() bool {

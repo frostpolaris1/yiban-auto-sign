@@ -18,7 +18,7 @@
 clock.now	call	internal/core/clock/	time.Now	internal/core/clock/,cmd/server/auth_e2e_test.go,internal/adapters/pg/main_test.go,internal/adapters/pg/pg_e2e_test.go,internal/app/auth/service_test.go,internal/signing/fake/provider_test.go,internal/adapters/pg/schedule_e2e_test.go,internal/adapters/pg/diagnostic_e2e_test.go,internal/app/events/broker_test.go	use clock.Clock.Now
 clock.location	call	internal/core/clock/	time.LoadLocation	internal/core/clock/,internal/adapters/config/	load a timezone only in clock or config
 clock.tz	string	internal/core/clock/	Asia/Shanghai	internal/core/clock/,internal/adapters/config/,internal/entry/http/oapi/,cmd/server/main_test.go,cmd/server/w2c_e2e_test.go	use the configured timezone
-env.get	call	internal/adapters/config/	os.Getenv	internal/adapters/config/,cmd/cli/backup_restore_e2e_test.go,cmd/cli/install_update_e2e_test.go,cmd/server/auth_e2e_test.go,cmd/server/loop_e2e_test.go,cmd/server/w2c_e2e_test.go,internal/adapters/pg/main_test.go	read environment only in adapters/config
+env.get	call	internal/adapters/config/	os.Getenv	internal/adapters/config/,cmd/cli/backup_restore_e2e_test.go,cmd/cli/install_update_e2e_test.go,cmd/cli/update_health_e2e_test.go,cmd/cli/user_e2e_test.go,cmd/server/auth_e2e_test.go,cmd/server/loop_e2e_test.go,cmd/server/w2c_e2e_test.go,internal/adapters/pg/main_test.go	read environment only in adapters/config
 env.lookup	call	internal/adapters/config/	os.LookupEnv	internal/adapters/config/	read environment only in adapters/config
 # core/retry/budget.go(+test) is in the allow list because BudgetFor maps
 # signing contract outcome words, two of which collide with task-state
@@ -44,7 +44,8 @@ boundary.adapters	import	internal/adapters/	internal/app,internal/entry,internal
 boundary.entry	import	internal/entry/	internal/adapters,internal/assembly		entry must not import adapters or assembly
 boundary.signing	import	internal/signing/providers/	internal/app,internal/adapters,internal/assembly		providers must not import the host
 # 组合根只能被 cmd 消费：internal 下任何包导入 assembly 即红。
-# ValidateCheckedScopes 保证 internal 下有文件可查，规则不会静默失守。
+# 防静默失守是双门分工：canonical 保证被查范围内有文件，
+# 目标目录改名/搬走由 structure.tsv 门拦（P7 审查 P3-6）。
 boundary.assembly	import	internal/	internal/assembly		assembly is the composition root; only cmd may import it
 # owner and allow are directory prefixes. An owner that ends in .go pins one
 # file instead of a directory: cookie.set is the only such rule, and it pins the
