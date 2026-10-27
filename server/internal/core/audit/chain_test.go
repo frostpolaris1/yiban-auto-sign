@@ -271,6 +271,13 @@ func TestEncodeDetailAcceptsPhotoUploadKeys(t *testing.T) {
 			t.Fatalf("crop_l = %d 应被拒绝", bad)
 		}
 	}
+	// 限幅挂键名不挂类型：同键异型（int8/int64/float64）必须同样被拒，
+	// 否则守卫按类型开口、换一个数值类型就静默绕过。
+	for _, bad := range []any{int8(11), int64(-1), float64(11), uint16(11)} {
+		if _, err := coreaudit.EncodeDetail(map[string]any{"crop_l": bad}); err == nil {
+			t.Fatalf("crop_l = %v（%T）应被拒绝", bad, bad)
+		}
+	}
 	if _, err := coreaudit.EncodeDetail(map[string]any{"sha256": strings.Repeat("a", 63)}); err == nil {
 		t.Fatal("63 位 sha256 应被拒绝")
 	}
