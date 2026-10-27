@@ -3,6 +3,8 @@
 -- owner_user_id is NOT NULL and ON DELETE RESTRICT: a user that still owns an
 -- account cannot be physically deleted. A soft delete writes deleted_at and
 -- deleted_by. Only active rows take part in signing.
+--
+-- Governance: migrations are forward-only. There is no Down section.
 
 -- +goose Up
 CREATE TYPE account_status AS ENUM (

@@ -4,6 +4,8 @@
 -- holds the partial unique indexes and the query-support indexes, in table
 -- order. Names match the schema design; do not rename them: error mapping and
 -- later migrations locate constraints by name.
+--
+-- Governance: migrations are forward-only. There is no Down section.
 
 -- +goose Up
 -- users

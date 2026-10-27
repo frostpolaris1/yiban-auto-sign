@@ -3,6 +3,8 @@
 -- A school is never deleted. Disabling writes status = 'disabled'. The column
 -- is named time_zone to avoid shadowing the SQL function timezone(text,
 -- timestamptz).
+--
+-- Governance: migrations are forward-only. There is no Down section.
 
 -- +goose Up
 CREATE TYPE school_status AS ENUM ('active', 'disabled');

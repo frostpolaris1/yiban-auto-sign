@@ -3,6 +3,8 @@
 -- The composite foreign key (account_id, school_id) makes the credential
 -- school always equal the account school, so a copied ciphertext cannot be
 -- decrypted under another account without the AES-GCM AAD check failing too.
+--
+-- Governance: migrations are forward-only. There is no Down section.
 
 -- +goose Up
 CREATE TABLE credentials (
