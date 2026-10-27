@@ -58,7 +58,7 @@ func TestUpdateShRollsBackOnFailedHealth(t *testing.T) {
 		t.Fatalf("seed installed: %v", err)
 	}
 	// 更新前：单元已 active，守护进程跑的是 OLD。
-	running := filepath.Join(stateDir, "running")
+	running := filepath.Join(stateDir, "proc")
 	if err := os.WriteFile(filepath.Join(stateDir, "active"), nil, 0o644); err != nil {
 		t.Fatalf("seed active: %v", err)
 	}

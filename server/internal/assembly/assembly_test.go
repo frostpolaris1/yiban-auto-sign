@@ -116,7 +116,7 @@ func TestBuildWithoutDatabaseServesHealthz(t *testing.T) {
 	cfg := &config.Config{
 		Env:           "test",
 		HTTPAddr:      "127.0.0.1:0",
-		Timezone:      "Asia/Shanghai",
+		Timezone:      config.DefaultTimezone,
 		DatabaseURL:   "",
 		HashPepper:    []byte("0123456789abcdef0123456789abcdef"),
 		CredentialKey: make([]byte, 32),
