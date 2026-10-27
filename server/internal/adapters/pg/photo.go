@@ -143,7 +143,7 @@ func (r *PhotoRepo) PurgeExpired(ctx context.Context, now time.Time, limit int) 
 		   LEFT JOIN photo_retention r ON r.user_id = p2.owner_user_id
 		   WHERE COALESCE(p2.deleted_at, p2.created_at)
 		         <= $1::timestamptz - make_interval(days => COALESCE(r.days, 90))
-		   ORDER BY COALESCE(p2.deleted_at, p2.created_at)
+		   ORDER BY COALESCE(p2.deleted_at, p2.created_at), p2.id
 		   LIMIT $2
 		 )`,
 		now, limit)
