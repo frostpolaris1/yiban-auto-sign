@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -35,11 +36,37 @@ type Source interface {
 	Lookup(key string) (string, bool)
 }
 
+// EnumeratedSource 是能枚举全部键值对的 Source。
+// 进程环境天然支持；doctor 的「未登记键」体检需要枚举面。
+type EnumeratedSource interface {
+	Source
+	// Environ 返回全部键值对，形状同 os.Environ()（KEY=VALUE）。
+	Environ() []string
+}
+
 // Env 读取进程环境。
 type Env struct{}
 
 // Lookup 实现 Source。
 func (Env) Lookup(key string) (string, bool) { return os.LookupEnv(key) }
+
+// Environ 实现 EnumeratedSource。
+func (Env) Environ() []string { return os.Environ() }
+
+// PrefixedKeys 返回 src 里以 prefix 开头的键名，**不含值**。
+// doctor 的「未登记键」体检用它枚举 YIBAN_*；枚举语义只住在 config，
+// 枚举结果永不携带值，敏感值不出本包。
+func PrefixedKeys(src EnumeratedSource, prefix string) []string {
+	var keys []string
+	for _, kv := range src.Environ() {
+		name, _, ok := strings.Cut(kv, "=")
+		if ok && strings.HasPrefix(name, prefix) {
+			keys = append(keys, name)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
 
 // Config 是定型后的运行时配置。
 //
@@ -87,6 +114,18 @@ var knownEnvs = map[string]bool{
 	"production":  true,
 }
 
+// DefaultTimezone 是 YIBAN_TZ 未设置时的缺省时区。
+// doctor 的时区体检与 LoadFrom 共用本常量，口径只有一份。
+const DefaultTimezone = "Asia/Shanghai"
+
+// DefaultHTTPAddr 是 YIBAN_HTTP_ADDR 未设置时的缺省监听地址。
+// 只绑回环：暴露需显式改。doctor 的端口体检共用本常量。
+const DefaultHTTPAddr = "127.0.0.1:47183"
+
+// DefaultPhotoDir 是 YIBAN_PHOTO_DIR 未设置时的缺省存储根。
+// doctor 的文件系统面体检共用本常量。
+const DefaultPhotoDir = "data/photos"
+
 // Load 读取进程环境。
 func Load() (*Config, error) { return LoadFrom(Env{}) }
 
@@ -105,15 +144,15 @@ func LoadFrom(src Source) (*Config, error) {
 	}
 	cfg := &Config{
 		Env:         env,
-		HTTPAddr:    get(src, "YIBAN_HTTP_ADDR", "127.0.0.1:47183"),
+		HTTPAddr:    get(src, "YIBAN_HTTP_ADDR", DefaultHTTPAddr),
 		DatabaseURL: strings.TrimSpace(get(src, "YIBAN_DATABASE_URL", "")),
-		Timezone:    get(src, "YIBAN_TZ", "Asia/Shanghai"),
+		Timezone:    get(src, "YIBAN_TZ", DefaultTimezone),
 		// 本地 HTTP 无法设置 Secure cookie，
 		// 故无前缀名只在 development 与 test 下作为默认。
 		InsecureCookies: env == "development" || env == "test",
 	}
 	if cfg.Timezone == "" {
-		cfg.Timezone = "Asia/Shanghai"
+		cfg.Timezone = DefaultTimezone
 	}
 	if raw, ok := src.Lookup("YIBAN_INSECURE_COOKIES"); ok && raw != "" {
 		flag, err := strconv.ParseBool(raw)
@@ -178,7 +217,7 @@ func LoadFrom(src Source) (*Config, error) {
 	}
 	cfg.TimePrefCooldown = time.Duration(cooldown) * time.Second
 
-	cfg.PhotoDir = strings.TrimSpace(get(src, "YIBAN_PHOTO_DIR", "data/photos"))
+	cfg.PhotoDir = strings.TrimSpace(get(src, "YIBAN_PHOTO_DIR", DefaultPhotoDir))
 	if cfg.PhotoDir == "" {
 		return nil, errors.New("config: YIBAN_PHOTO_DIR must not be empty")
 	}

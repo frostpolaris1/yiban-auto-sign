@@ -2,6 +2,10 @@ package config
 
 import (
 	"encoding/base64"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -263,5 +267,51 @@ func TestScheduleConfigDefaultsAndBounds(t *testing.T) {
 		if _, err := LoadFrom(src); err == nil {
 			t.Fatalf("%s=%q 必须被拒绝", c.key, c.value)
 		}
+	}
+}
+
+// TestRegistryDomainMatchesCodeBounds 钉住名册域与代码边界同源（派单 F16）。
+// 名册是配置的唯一定义点：域与 getInt 的上下界漂移时，
+// doctor 的 env.unknown_keys/域校验与启动校验会给出两套答案。
+func TestRegistryDomainMatchesCodeBounds(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "config", "registry.json"))
+	if err != nil {
+		t.Fatalf("read registry: %v", err)
+	}
+	var reg map[string]json.RawMessage
+	if err := json.Unmarshal(body, &reg); err != nil {
+		t.Fatalf("parse registry: %v", err)
+	}
+	raw, ok := reg["YIBAN_TIME_PREF_COOLDOWN_SEC"]
+	if !ok {
+		t.Fatal("名册缺 YIBAN_TIME_PREF_COOLDOWN_SEC")
+	}
+	var spec struct {
+		Domain []int `json:"domain"`
+	}
+	if err := json.Unmarshal(raw, &spec); err != nil {
+		t.Fatalf("parse registry entry: %v", err)
+	}
+	if len(spec.Domain) != 2 || spec.Domain[0] != 0 || spec.Domain[1] != 3600 {
+		t.Fatalf("名册域 = %v，want [0 3600]（与 config.go 的 getInt 上下界一致）", spec.Domain)
+	}
+
+	// 两端必须接受，越界一档必须拒绝：域的实际判别力。
+	for _, value := range []string{"0", "3600"} {
+		src := baseSource()
+		src["YIBAN_TIME_PREF_COOLDOWN_SEC"] = value
+		cfg, err := LoadFrom(src)
+		if err != nil {
+			t.Fatalf("冷却 %s 在域内必须接受: %v", value, err)
+		}
+		want, _ := strconv.Atoi(value)
+		if got := int(cfg.TimePrefCooldown.Seconds()); got != want {
+			t.Fatalf("冷却 = %v 秒，want %s", got, value)
+		}
+	}
+	src := baseSource()
+	src["YIBAN_TIME_PREF_COOLDOWN_SEC"] = "3601"
+	if _, err := LoadFrom(src); err == nil {
+		t.Fatal("3601 越界必须拒绝")
 	}
 }
