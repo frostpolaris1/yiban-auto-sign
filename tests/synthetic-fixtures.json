@@ -1,5 +1,8 @@
 {
  "note": "登记过的合成测试值。手机号只允许此表；新增值必须同批登记。坐标按 Null Island 网格、令牌用单字符重复、标识用零前缀序号，均由 tests/test_public_exposure_gate.py 校验。",
+ "phone_runtime_blocks": [
+  "138 + 8 位零填充序号（自 13800000000 起连续 100000 个）；使用方 server/cmd/bench 造数运行期拼号，2026-10-27 P8-C 登记"
+ ],
  "phones": [
   "13000000000",
   "13100000000",
