@@ -278,32 +278,29 @@ func validateDetailValue(key string, value any) error {
 		}
 		return nil
 	case int:
-		if cropPercentKeys[key] && (typed < 0 || typed > 10) {
-			return fmt.Errorf("%w: %q must be within 0..10", ErrDetailShape, key)
-		}
-		return validateDetailNumber(float64(typed))
+		return validateDetailNumberWithLimits(key, float64(typed))
 	case int8:
-		return validateDetailNumber(float64(typed))
+		return validateDetailNumberWithLimits(key, float64(typed))
 	case int16:
-		return validateDetailNumber(float64(typed))
+		return validateDetailNumberWithLimits(key, float64(typed))
 	case int32:
-		return validateDetailNumber(float64(typed))
+		return validateDetailNumberWithLimits(key, float64(typed))
 	case int64:
-		return validateDetailNumber(float64(typed))
+		return validateDetailNumberWithLimits(key, float64(typed))
 	case uint:
-		return validateDetailNumber(float64(typed))
+		return validateDetailNumberWithLimits(key, float64(typed))
 	case uint8:
-		return validateDetailNumber(float64(typed))
+		return validateDetailNumberWithLimits(key, float64(typed))
 	case uint16:
-		return validateDetailNumber(float64(typed))
+		return validateDetailNumberWithLimits(key, float64(typed))
 	case uint32:
-		return validateDetailNumber(float64(typed))
+		return validateDetailNumberWithLimits(key, float64(typed))
 	case uint64:
-		return validateDetailNumber(float64(typed))
+		return validateDetailNumberWithLimits(key, float64(typed))
 	case float32:
-		return validateDetailNumber(float64(typed))
+		return validateDetailNumberWithLimits(key, float64(typed))
 	case float64:
-		return validateDetailNumber(typed)
+		return validateDetailNumberWithLimits(key, typed)
 	}
 	// nil 指针编码为 null，不携带数据。
 	if rv := reflect.ValueOf(value); rv.Kind() == reflect.Ptr && rv.IsNil() {
@@ -362,6 +359,15 @@ func validateDetailNumber(value float64) error {
 		return fmt.Errorf("%w: numeric phone shape", ErrDetailPII)
 	}
 	return nil
+}
+
+// validateDetailNumberWithLimits 是数值族的公共入口：先按按键限幅（crop_* 限
+// 0..10），再走通用数值规则。限幅挂键名而不是挂类型，同键异型不会绕过。
+func validateDetailNumberWithLimits(key string, value float64) error {
+	if cropPercentKeys[key] && (value < 0 || value > 10) {
+		return fmt.Errorf("%w: %q must be within 0..10", ErrDetailShape, key)
+	}
+	return validateDetailNumber(value)
 }
 
 // Payload 构造 Hash 签名的字节。布局冻结：
