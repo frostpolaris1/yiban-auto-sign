@@ -37,8 +37,12 @@ import (
 )
 
 // irreversibleMarker 是「本迁移没有 Down 段」的文件头声明句。
-// 无 Down 段的迁移必须在文件头写这一句；TestMigrationDownCoverage 检查它。
-const irreversibleMarker = "There is no Down section."
+// 无 Down 段的迁移必须在首个 Up 注解之前的注释里写这一行。
+const irreversibleMarker = "-- Governance: migrations are forward-only. There is no Down section."
+
+// downTask14 是 00014 Down 用例的固定 school_tasks 主键。
+// 固定值让断言按 (school_task, day) 精确定位行，不取任意行。
+const downTask14 = "01900000-0000-7000-8000-000000000014"
 
 // migrationDownCase 描述一个迁移的 Down 契约。
 // seed 在 Down 之前把库变成有数据的形状。
@@ -143,34 +147,53 @@ var migrationDownCases = map[int64]migrationDownCase{
 		seed: func(m *migrationDownEnv) {
 			m.exec("INSERT INTO users (email, password_hash) VALUES ('mig-down-14@example.com', 'argon2id$test')")
 			m.exec("INSERT INTO schools (code, name) VALUES ('mig-down-14', 'Migration Down')")
-			m.exec("INSERT INTO school_tasks (school_id, name) SELECT id, 'mig-task' FROM schools")
+			m.exec(`INSERT INTO school_tasks (id, school_id, name)
+			        SELECT $1::uuid, id, 'mig-task' FROM schools`, downTask14)
+			// override 行：Down 必须降级它。
 			m.exec(`INSERT INTO window_cache (school_task_id, day, start_at, end_at, source)
-			        SELECT id, DATE '2026-10-27', TIMESTAMPTZ '2026-10-27 07:00:00+00',
-			               TIMESTAMPTZ '2026-10-27 08:00:00+00', 'override' FROM school_tasks`)
+			        VALUES ($1::uuid, DATE '2026-10-27',
+			                TIMESTAMPTZ '2026-10-27 07:00:00+00',
+			                TIMESTAMPTZ '2026-10-27 08:00:00+00', 'override')`, downTask14)
+			// platform 行：Down 不得改写它。
+			m.exec(`INSERT INTO window_cache (school_task_id, day, start_at, end_at, source)
+			        VALUES ($1::uuid, DATE '2026-10-28',
+			                TIMESTAMPTZ '2026-10-28 09:00:00+00',
+			                TIMESTAMPTZ '2026-10-28 10:00:00+00', 'platform')`, downTask14)
 			m.exec(`INSERT INTO window_overrides (school_task_id, day, start_at, end_at, reason, created_by)
-			        SELECT t.id, DATE '2026-10-27', TIMESTAMPTZ '2026-10-27 07:00:00+00',
-			               TIMESTAMPTZ '2026-10-27 08:00:00+00', 'migration down seed', u.id
-			        FROM school_tasks t, users u`)
+			        SELECT $1::uuid, DATE '2026-10-27', TIMESTAMPTZ '2026-10-27 07:00:00+00',
+			               TIMESTAMPTZ '2026-10-27 08:00:00+00', 'migration down seed', id
+			        FROM users`, downTask14)
 			m.exec("INSERT INTO time_prefs (user_id, offset_min) SELECT id, 30 FROM users")
 		},
 		wantDown: func(m *migrationDownEnv) {
 			m.wantRelation("window_overrides", false)
 			m.wantRelation("time_prefs", false)
 
-			// Down 必须把 override 行降级为 cache。
-			// 留下任何 override 行都会让收窄语句失败。
-			if got := m.scalarString(
-				"SELECT source FROM window_cache WHERE day = DATE '2026-10-27'"); got != "cache" {
-				m.t.Fatalf("window_cache.source = %q after Down; want \"cache\"", got)
+			// 只降级 override 行：来源变 cache，窗口时间不变。
+			source, start, end := m.windowRow(downTask14, "2026-10-27")
+			if source != "cache" {
+				m.t.Fatalf("override row source = %q after Down; want \"cache\"", source)
 			}
-			if n := m.scalarInt(
-				"SELECT count(*) FROM window_cache WHERE source = 'override'"); n != 0 {
+			wantStart := time.Date(2026, 10, 27, 7, 0, 0, 0, time.UTC)
+			if !start.Equal(wantStart) || !end.Equal(wantStart.Add(time.Hour)) {
+				m.t.Fatalf("override row window = %v..%v after Down; want %v..%v",
+					start, end, wantStart, wantStart.Add(time.Hour))
+			}
+
+			// platform 行不得被改写。
+			other, _, _ := m.windowRow(downTask14, "2026-10-28")
+			if other != "platform" {
+				m.t.Fatalf("platform row source = %q after Down; want \"platform\"", other)
+			}
+
+			if n := m.scalarInt(`SELECT count(*) FROM window_cache
+			        WHERE school_task_id = $1::uuid AND source = 'override'`, downTask14); n != 0 {
 				m.t.Fatalf("%d row(s) still carry source 'override' after Down", n)
 			}
 
 			// 收窄后的约束必须拒绝 override，且由该约束拒绝。
-			err := m.tryExec(
-				"UPDATE window_cache SET source = 'override' WHERE day = DATE '2026-10-27'")
+			err := m.tryExec(`UPDATE window_cache SET source = 'override'
+			        WHERE school_task_id = $1::uuid AND day = DATE '2026-10-27'`, downTask14)
 			var pgErr *pgconn.PgError
 			if !errors.As(err, &pgErr) {
 				m.t.Fatalf("override write after Down: want a PostgreSQL error, got %v", err)
@@ -184,7 +207,8 @@ var migrationDownCases = map[int64]migrationDownCase{
 			m.wantRelation("time_prefs", true)
 			m.wantRelation("window_overrides", true)
 			// 放宽后的约束必须再次接受 override。
-			m.exec("UPDATE window_cache SET source = 'override' WHERE day = DATE '2026-10-27'")
+			m.exec(`UPDATE window_cache SET source = 'override'
+			        WHERE school_task_id = $1::uuid AND day = DATE '2026-10-27'`, downTask14)
 		},
 	},
 	15: {
@@ -292,7 +316,7 @@ func TestMigrationDownCoverage(t *testing.T) {
 			t.Errorf("migration %s has a Down section but no case in migrationDownCases", name)
 		case !hasDown && covered:
 			t.Errorf("migration %s has no Down section but migrationDownCases names it", name)
-		case !hasDown && !strings.Contains(text, irreversibleMarker):
+		case !hasDown && !hasIrreversibleDeclaration(text):
 			t.Errorf("migration %s has no Down section and its header does not say %q",
 				name, irreversibleMarker)
 		}
@@ -310,29 +334,58 @@ func TestMigrationDownCoverage(t *testing.T) {
 	}
 }
 
-// hasDownSection 按 goose 的注解规则判断文件是否带 Down 段。
-// goose 把以 "--" 开头且含 "+goose" 的注释行都当注解（internal/sqlparser），
-// 故不能用固定字面量匹配：门识别的形状必须等于执行面（AGENTS §29）。
+// annotationName 按 goose 的规则取出注解名（Up、Down 等）。
+// goose 把以 "--" 开头且含 "+goose" 的注释行都当注解，
+// 名字比较用 strings.EqualFold（internal/sqlparser/parser.go）。
+// 门识别的形状必须等于执行面（AGENTS §29）。
+func annotationName(line string) string {
+	// goose 拒绝带前导空白的注解行；那种行不是可执行的注解。
+	if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+		return ""
+	}
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "--") || !strings.Contains(line, "+goose") {
+		return ""
+	}
+	cmd := strings.ReplaceAll(line, "--", "")
+	cmd = strings.Replace(cmd, "+goose", "", 1)
+	return strings.TrimSpace(cmd)
+}
+
+// hasDownSection 判断文件是否带 goose 能执行的 Down 段。
+// 大小写不敏感，与 goose 的 EqualFold 一致。
 func hasDownSection(text string) bool {
 	for _, line := range strings.Split(text, "\n") {
-		// goose 拒绝带前导空白的注解行；那种行不是可执行的 Down 段。
-		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
-			continue
-		}
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "--") || !strings.Contains(line, "+goose") {
-			continue
-		}
-		cmd := strings.ReplaceAll(line, "--", "")
-		cmd = strings.Replace(cmd, "+goose", "", 1)
-		if strings.TrimSpace(cmd) == "Down" {
+		if strings.EqualFold(annotationName(line), "Down") {
 			return true
 		}
 	}
 	return false
 }
 
-// TestDownAnnotationRecognition 钉住 hasDownSection 与 goose 的识别规则一致。
+// headerBeforeUp 返回首个 Up 注解之前的全部行。
+// 不可逆声明只认这个区间：Up 之后的注释不是文件头。
+func headerBeforeUp(text string) string {
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		if strings.EqualFold(annotationName(line), "Up") {
+			return strings.Join(lines[:i], "\n")
+		}
+	}
+	return text
+}
+
+// hasIrreversibleDeclaration 判断文件头是否按行首注释写了声明句。
+func hasIrreversibleDeclaration(text string) bool {
+	for _, line := range strings.Split(headerBeforeUp(text), "\n") {
+		if strings.HasPrefix(line, irreversibleMarker) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestDownAnnotationRecognition 钉住注解识别与 goose 的规则一致。
 func TestDownAnnotationRecognition(t *testing.T) {
 	for _, tc := range []struct {
 		text string
@@ -341,12 +394,28 @@ func TestDownAnnotationRecognition(t *testing.T) {
 		{"-- +goose Down", true},
 		{"--+goose Down", true},
 		{"-- +goose  Down", true},
+		{"-- +goose down", true},
+		{"-- +goose DOWN", true},
 		{"-- +goose Up", false},
 		{"-- Governance: migrations are forward-only. There is no Down section.", false},
 		{"  -- +goose Down", false},
 	} {
 		if got := hasDownSection(tc.text); got != tc.want {
 			t.Errorf("hasDownSection(%q) = %v; want %v", tc.text, got, tc.want)
+		}
+	}
+
+	// 声明句只认首个 Up 之前的行首注释。
+	for _, tc := range []struct {
+		text string
+		want bool
+	}{
+		{irreversibleMarker + "\n\n-- +goose Up\nCREATE TABLE t ();", true},
+		{"-- +goose Up\n" + irreversibleMarker, false},
+		{"-- 说明：" + irreversibleMarker + " 不在此行首\n-- +goose Up", false},
+	} {
+		if got := hasIrreversibleDeclaration(tc.text); got != tc.want {
+			t.Errorf("hasIrreversibleDeclaration(%q) = %v; want %v", tc.text, got, tc.want)
 		}
 	}
 }
@@ -463,6 +532,20 @@ func (m *migrationDownEnv) scalarInt(sql string, args ...any) int64 {
 		m.t.Fatalf("query %q: %v", sql, err)
 	}
 	return out
+}
+
+// windowRow 按 (school_task, day) 读一行 window_cache。
+// 精确键让断言不依赖行序，也不取到旁行。
+func (m *migrationDownEnv) windowRow(taskID, day string) (string, time.Time, time.Time) {
+	m.t.Helper()
+	var source string
+	var start, end time.Time
+	if err := m.db.QueryRowContext(m.ctx, `SELECT source, start_at, end_at FROM window_cache
+	        WHERE school_task_id = $1::uuid AND day = $2::date`,
+		taskID, day).Scan(&source, &start, &end); err != nil {
+		m.t.Fatalf("window_cache row for task %s on %s: %v", taskID, day, err)
+	}
+	return source, start, end
 }
 
 func (m *migrationDownEnv) hasRelation(name string) bool {

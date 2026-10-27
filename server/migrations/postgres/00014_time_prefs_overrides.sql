@@ -8,10 +8,11 @@
 --   It wins over the platform window for that day. The reason is kept so the
 --   decision stays reviewable after the fact.
 --
--- Rollback: the Down section is reversible. Down relabels window_cache rows
---   with source 'override' to 'cache' before it narrows the constraint back to
---   three values. The window times stay. The next discovery overwrites the
---   row with its platform source, so the transient label is self-healing.
+-- Rollback: the Down section is reversible. Down drops the rows of
+--   window_overrides and time_prefs; that data is lost. It relabels
+--   window_cache rows with source 'override' to 'cache' before it narrows the
+--   constraint back to three values; the window times stay. The next discovery
+--   overwrites the row with its platform source, so the label self-heals.
 
 -- +goose Up
 -- Manual overrides are copied into window_cache as source 'override',
