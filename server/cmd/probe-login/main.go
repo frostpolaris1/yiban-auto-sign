@@ -283,9 +283,58 @@ func shredCredentials() {
 	}
 }
 
+// runSignFlow 登录成功后走发现→签到全程，返回摘要行（不含敏感值）。
+// 每一步的失败都照记不误：探针的职责是抓真实走向，不是保证签成。
+func runSignFlow(ctx context.Context, provider *yiban.Provider, phone, password string) []string {
+	account := contract.AccountRef{ID: "probe", Platform: "yiban"}
+	cred := contract.Credential{Phone: phone, Password: password}
+	req := contract.DiscoverRequest{Account: account, Credential: cred}
+
+	var lines []string
+	window, werr := provider.DiscoverWindow(ctx, req)
+	if werr != nil {
+		var oe *contract.OutcomeError
+		if errors.As(werr, &oe) {
+			return append(lines, fmt.Sprintf("窗口: %s (%s)", oe.Outcome, oe.Message))
+		}
+		return append(lines, fmt.Sprintf("窗口: error: %v", werr))
+	}
+	lines = append(lines, fmt.Sprintf("窗口: %s ~ %s",
+		window.Start.Format("15:04:05"), window.End.Format("15:04:05")))
+
+	targets, terr := provider.DiscoverTargets(ctx, req)
+	if terr != nil {
+		var oe *contract.OutcomeError
+		if errors.As(terr, &oe) {
+			return append(lines, fmt.Sprintf("候选点: %s (%s)", oe.Outcome, oe.Message))
+		}
+		return append(lines, fmt.Sprintf("候选点: error: %v", terr))
+	}
+	if len(targets) == 0 {
+		return append(lines, "候选点: 空")
+	}
+	target := targets[0]
+	lines = append(lines, fmt.Sprintf("候选点: %d 个，取第 1 个「%s」", len(targets), target.Title))
+
+	result, serr := provider.Sign(ctx, contract.SignRequest{
+		AttemptID:  "probe-" + clock.System{}.Now().Format("150405"),
+		Account:    account,
+		Credential: cred,
+		Window:     window,
+		Target:     target,
+		Location:   contract.Location{Mode: contract.LocationAuto, Lng: target.Center.Lng, Lat: target.Center.Lat, Reason: "probe: target center"},
+	})
+	if serr != nil {
+		return append(lines, fmt.Sprintf("签到: error: %v", serr))
+	}
+	lines = append(lines, fmt.Sprintf("签到: %s (%s)", result.Outcome, result.Message))
+	return lines
+}
+
 func main() {
 	stage := flag.Bool("stage", false, "今晚录入凭据：加密落盘两件 0600 文件后退出，等 -fire 到点开跑")
 	fire := flag.Bool("fire", false, "定时模式：读取 -stage 落盘的凭据开跑，跑完立即粉碎凭据文件")
+	sign := flag.Bool("sign", false, "登录成功后继续发现窗口/候选点并执行一次真实签到（默认只登录）")
 	decrypt := flag.String("decrypt", "", "解密指定抓取文件：口令从 stdin 读入，明文 JSON 打到 stdout")
 	flag.Parse()
 
@@ -342,6 +391,11 @@ func main() {
 		summary = "error: " + verr.Error()
 	}
 
+	var signLines []string
+	if *sign && verr == nil {
+		signLines = runSignFlow(ctx, provider, phone, password)
+	}
+
 	ts := clock.System{}.Now().Format("20060102-150405")
 	outPath := "yiban-go-probe-" + ts + ".bin"
 	passBytes := make([]byte, 16)
@@ -355,6 +409,9 @@ func main() {
 
 	fmt.Println("抓取条数:", len(cap.records))
 	fmt.Println("登录:", summary)
+	for _, line := range signLines {
+		fmt.Println(line)
+	}
 	fmt.Println("抓取文件:", outPath)
 	fmt.Println("解开口令（只显示这一次，抄下来）:", passphrase)
 }
