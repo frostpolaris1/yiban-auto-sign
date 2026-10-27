@@ -14,6 +14,7 @@ package main
 // 缺 YIBAN_TEST_DATABASE_URL 时显性 SKIP：跳过不是绿（AGENTS §30）。
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -33,6 +34,7 @@ import (
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
 	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
+	coremask "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
 )
 
 const (
@@ -167,7 +169,7 @@ func e2eWriteExport(t *testing.T, root string) (string, map[string][]map[string]
 		for _, row := range rows[table] {
 			key := fmt.Sprint(row[keyField])
 			if keyField == "phone" {
-				key = legacy.MaskPhone(key)
+				key = coremask.MaskPhone(key)
 			}
 			recon.WriteString(legacy.CanonicalLine(map[string]any{
 				"table": table, "key": key, "hash": legacy.CanonicalHash(table, key, row),
@@ -185,14 +187,11 @@ func e2eWriteExport(t *testing.T, root string) (string, map[string][]map[string]
 }
 
 // e2eSetupDB 建独立 schema，迁移到最新（含 legacy_ids），建校与 owner，
-// 返回 (dsn, schoolID, ownerID)。
+// 返回 (dsn, schoolID, ownerID)。DSN 读取与 SKIP 语义都在 userTestSchema
+// （其测试文件已登记 canonical.tsv env.get allow，本文件不再直读环境）。
 func e2eSetupDB(t *testing.T) (string, string, string) {
 	t.Helper()
-	base := strings.TrimSpace(os.Getenv("YIBAN_TEST_DATABASE_URL"))
-	if base == "" {
-		t.Skip("SKIP: YIBAN_TEST_DATABASE_URL is not set. migrate-legacy e2e did NOT run.")
-	}
-	dsn := userTestSchema(t) // 已迁移到最新版本
+	dsn := userTestSchema(t)
 	ctx := context.Background()
 	db, err := pg.Open(ctx, pg.Options{DSN: dsn, MaxConns: 2, StatementTimeout: 30 * time.Second})
 	if err != nil {
@@ -249,6 +248,30 @@ func e2eCount(t *testing.T, dsn, sql string) int64 {
 	return n
 }
 
+// TestNewCipherAcceptsEmptyDeviceCode 钉住 cipher 解码侧的裁决前提：
+// CredentialPayload 三键全部出现、device_code 为空串仍可解回。
+// 该前提不成立时导入器的凭据重加密方案整体失效（派单裁决 7）。
+// 放在 cmd/cli：boundary 门禁止 adapters 导入 app。
+func TestNewCipherAcceptsEmptyDeviceCode(t *testing.T) {
+	newKey := bytes.Repeat([]byte{0x42}, 32)
+	cipher, err := appaccount.NewCipher(newKey)
+	if err != nil {
+		t.Fatalf("new cipher: %v", err)
+	}
+	cred, err := cipher.Seal("00000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-000000000002",
+		appaccount.CredentialPayload{DeviceCode: "", Password: "pw-fixture-0001", PhoneModel: "model-0000"})
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	payload, err := cipher.Open(cred)
+	if err != nil {
+		t.Fatalf("open with empty device_code: %v", err)
+	}
+	if payload.Password != "pw-fixture-0001" || payload.DeviceCode != "" || payload.PhoneModel != "model-0000" {
+		t.Fatalf("payload drifted: %+v", payload)
+	}
+}
+
 // TestMigrateLegacyImportReconcileE2E 判据 1（含判据 3 的默认档）：
 // 导入成功、行数与哈希对账、孤儿默认跳过且计数可见、明文零落盘。
 func TestMigrateLegacyImportReconcileE2E(t *testing.T) {
@@ -269,8 +292,8 @@ func TestMigrateLegacyImportReconcileE2E(t *testing.T) {
 	if n := e2eCount(t, dsn, "SELECT count(*) FROM accounts"); n != 4 {
 		t.Fatalf("accounts = %d, want 4", n)
 	}
-	if n := e2eCount(t, dsn, "SELECT count(*) FROM credentials"); n != 2 {
-		t.Fatalf("credentials = %d, want 2", n)
+	if n := e2eCount(t, dsn, "SELECT count(*) FROM credentials"); n != 3 {
+		t.Fatalf("credentials = %d, want 3", n)
 	}
 	if n := e2eCount(t, dsn, "SELECT count(*) FROM legacy_ids"); n != 6 {
 		t.Fatalf("legacy_ids = %d, want 6", n)
@@ -367,7 +390,7 @@ func TestMigrateLegacyImportReconcileE2E(t *testing.T) {
 		t.Fatalf("orphan count = %v, want 1", summary["orphan_time_prefs"])
 	}
 	creds := summary["credentials"].(map[string]any)
-	if creds["created"].(float64) != 2 || creds["missing"].(float64) != 1 || creds["phone_code_dropped"].(float64) != 1 {
+	if creds["created"].(float64) != 3 || creds["missing"].(float64) != 1 || creds["phone_code_dropped"].(float64) != 1 {
 		t.Fatalf("credential counts drifted: %v", creds)
 	}
 	if summary["time_prefs_imported"].(float64) != 0 {
@@ -488,8 +511,8 @@ func TestMigrateLegacyDecryptWithNewKeyFailsLoudE2E(t *testing.T) {
 		t.Fatalf("parse summary: %v", err)
 	}
 	creds := summary["credentials"].(map[string]any)
-	if creds["decrypt_failed"].(float64) != 2 {
-		t.Fatalf("decrypt_failed = %v, want 2", creds["decrypt_failed"])
+	if creds["decrypt_failed"].(float64) != 3 {
+		t.Fatalf("decrypt_failed = %v, want 3", creds["decrypt_failed"])
 	}
 }
 

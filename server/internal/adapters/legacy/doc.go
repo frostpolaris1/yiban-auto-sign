@@ -31,6 +31,7 @@
 //
 // # 归属
 // adapters 层一次性迁移件。SQL 直写（仓储端口表达不了状态回填、
-// deleted_at 与 created_at 迁移语义）；凭据重封装复用 app/account 的
-// Cipher，不重写 AES-GCM。
+// deleted_at 与 created_at 迁移语义）。凭据封装走 Sealer 缝：实现在是
+// app/account 的 Cipher，由 cmd/cli 装配注入——boundary 门禁止 adapters
+// 导入 app，本包不重写 AES-GCM。
 package legacy

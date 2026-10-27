@@ -9,6 +9,8 @@ package legacy
 
 import (
 	"testing"
+
+	coremask "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
 )
 
 func TestCanonicalHashGolden(t *testing.T) {
@@ -85,7 +87,7 @@ func TestMaskPhoneRule(t *testing.T) {
 		{"23800000001", "23800000001"}, // 非 1 开头原样
 	}
 	for _, tc := range cases {
-		if got := MaskPhone(tc.in); got != tc.want {
+		if got := coremask.MaskPhone(tc.in); got != tc.want {
 			t.Fatalf("MaskPhone(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
