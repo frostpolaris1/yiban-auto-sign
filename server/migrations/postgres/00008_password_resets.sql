@@ -2,6 +2,8 @@
 --
 -- Decision 12.14. The table stores only the SHA-256 of the token. used_at is
 -- the single-use mark; expires_at bounds the token lifetime.
+--
+-- Governance: migrations are forward-only. There is no Down section.
 
 -- +goose Up
 CREATE TABLE password_resets (
