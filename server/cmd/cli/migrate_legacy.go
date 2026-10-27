@@ -7,7 +7,8 @@
 // 退出码：0 成功（默认档孤儿跳过含在内）；1 孤儿 strict 失败或行级错误；
 // 2 用法/校验失败（缺旗、钥形状错、school/owner 不存在、导出物不全或被改）。
 // 钥来源：新 KEK 只走环境变量 YIBAN_CREDENTIAL_KEY（与新栈装配方同一来源）；
-// 旧钥 --legacy-credential-key 或环境变量 YIBAN_LEGACY_ACCOUNTS_KEY。
+// 旧钥只走环境变量 YIBAN_LEGACY_ACCOUNTS_KEY（64 位 hex），不收 argv——
+// 命令行参数会进 shell 历史与 ps 输出，钥不过 argv。
 package main
 
 import (
@@ -57,8 +58,6 @@ func runMigrateLegacy(args []string, stdout, stderr io.Writer) int {
 	schoolID := fs.String("school-id", "", "目标学校 id（须已存在于新库，必填）")
 	ownerID := fs.String("owner-user-id", "", "账号归属用户 id（须已存在于新库，必填）")
 	strict := fs.Bool("strict", false, "存在孤儿 time_prefs 即失败（默认跳过＋计数）")
-	legacyKeyFlag := fs.String("legacy-credential-key", "",
-		"旧账号密钥（64 位 hex）；缺省读环境变量 YIBAN_LEGACY_ACCOUNTS_KEY")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -80,13 +79,10 @@ func runMigrateLegacy(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "migrate-legacy: %v\n", err)
 		return 2
 	}
-	legacyKeyHex := strings.TrimSpace(*legacyKeyFlag)
+	envKey, _ := config.Env{}.Lookup("YIBAN_LEGACY_ACCOUNTS_KEY")
+	legacyKeyHex := strings.TrimSpace(envKey)
 	if legacyKeyHex == "" {
-		v, _ := config.Env{}.Lookup("YIBAN_LEGACY_ACCOUNTS_KEY")
-		legacyKeyHex = strings.TrimSpace(v)
-	}
-	if legacyKeyHex == "" {
-		fmt.Fprintln(stderr, "migrate-legacy: 旧钥缺失：用 --legacy-credential-key 或环境变量 YIBAN_LEGACY_ACCOUNTS_KEY（64 位 hex）")
+		fmt.Fprintln(stderr, "migrate-legacy: 旧钥缺失：设置环境变量 YIBAN_LEGACY_ACCOUNTS_KEY（64 位 hex）")
 		return 2
 	}
 	legacyKey, err := hex.DecodeString(legacyKeyHex)
@@ -123,6 +119,7 @@ func runMigrateLegacy(args []string, stdout, stderr io.Writer) int {
 		LegacyKey:   legacyKey,
 		Sealer:      cipherSealer{c: cipher},
 		Now:         coreclock.System{}.Now().UTC(),
+		Err:         stderr,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "%v\n", err)

@@ -12,7 +12,7 @@
 //
 // # 复用
 // DB、Options、Open 及默认值常量；
-// InTx、Exec、QueryInt64、QueryString；
+// InTx、InSavepoint、Exec、QueryInt64、QueryString；
 // Migrate、EmbeddedVersion、ErrDatabaseAhead、ErrNoTransaction；
 // 各仓储：UserRepo、SessionRepo、SchoolRepo、AdminSchoolRepo、
 // AccountRepo、AuditRepo、PasswordResetRepo。
@@ -113,29 +113,29 @@ func (d *DB) Close() {
 // Ping 确认服务端应答。
 func (d *DB) Ping(ctx context.Context) error { return d.pool.Ping(ctx) }
 
-// Exec 在显式事务之外执行一条语句。
-// 它只服务维护任务与测试；用例一律走仓储。返回受影响行数。
+// Exec 执行一条语句。ctx 携带显式事务时在事务内执行，
+// 否则在连接池上执行。返回受影响行数。
 func (d *DB) Exec(ctx context.Context, sql string, args ...any) (int64, error) {
-	tag, err := d.pool.Exec(ctx, sql, args...)
+	tag, err := d.q(ctx).Exec(ctx, sql, args...)
 	if err != nil {
 		return 0, mapError(err)
 	}
 	return tag.RowsAffected(), nil
 }
 
-// QueryInt64 从单行读一个整数列。
+// QueryInt64 从单行读一个整数列。事务路由同 Exec。
 func (d *DB) QueryInt64(ctx context.Context, sql string, args ...any) (int64, error) {
 	var value int64
-	if err := d.pool.QueryRow(ctx, sql, args...).Scan(&value); err != nil {
+	if err := d.q(ctx).QueryRow(ctx, sql, args...).Scan(&value); err != nil {
 		return 0, mapError(err)
 	}
 	return value, nil
 }
 
-// QueryString 从单行读一个文本列。
+// QueryString 从单行读一个文本列。事务路由同 Exec。
 func (d *DB) QueryString(ctx context.Context, sql string, args ...any) (string, error) {
 	var value string
-	if err := d.pool.QueryRow(ctx, sql, args...).Scan(&value); err != nil {
+	if err := d.q(ctx).QueryRow(ctx, sql, args...).Scan(&value); err != nil {
 		return "", mapError(err)
 	}
 	return value, nil
