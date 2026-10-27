@@ -2165,5 +2165,29 @@
     "web_editable": false,
     "tier": "master",
     "reload": "restart"
+  },
+  "YIBAN_DOCKER_E2E": {
+    "type": "bool",
+    "default": false,
+    "group": [
+      "部署"
+    ],
+    "doc": "容器构建 e2e 开关（1=构建镜像并跑真容器；缺省跳过并打印 SKIP 行）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_DOCKER_GOPROXY": {
+    "type": "string",
+    "default": "",
+    "group": [
+      "部署"
+    ],
+    "doc": "容器构建 e2e 的 Go 模块代理覆盖（受限网络用；空=用镜像默认）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
   }
 }
