@@ -768,7 +768,7 @@
     "group": [
       "调度"
     ],
-    "doc": "旧裁剪键（前后对称，上界更宽）",
+    "doc": "旧裁剪键（前后对称，上界更宽）。仅 Python 旧线生效；Go server 有意不读（用 FRONT/BACK 两键），豁免由 Go 侧测试显式登记",
     "sensitive": false,
     "web_editable": false,
     "tier": "master",

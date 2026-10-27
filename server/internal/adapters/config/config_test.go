@@ -47,7 +47,7 @@ func TestLoadFromDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadFrom: %v", err)
 	}
-	if cfg.Env != "development" || cfg.HTTPAddr != "127.0.0.1:47183" || cfg.Timezone != "Asia/Shanghai" {
+	if cfg.Env != "development" || cfg.HTTPAddr != DefaultHTTPAddr || cfg.Timezone != "Asia/Shanghai" {
 		t.Fatalf("unexpected defaults: %#v", cfg)
 	}
 	if cfg.DatabaseURL != "" {

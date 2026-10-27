@@ -4,8 +4,9 @@
 --   dedupe key: re-uploading the same bytes restores a soft-deleted row
 --   instead of creating a second one. sha256 is the blob key; the bytes
 --   live in the storage adapter, never in PostgreSQL.
--- photo_retention: one row per user. Missing row means the default 90 days;
---   the closed set is enforced here and in core/photo.
+-- photo_retention: one row per user. Missing row means the default in
+--   core/photo.DefaultRetentionDays; the closed set lives in
+--   core/photo.RetentionDays and is mirrored by ck_photo_retention_days.
 
 -- +goose Up
 CREATE TABLE photos (

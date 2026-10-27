@@ -22,6 +22,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -193,12 +195,23 @@ func (s *Service) SetRetention(ctx context.Context, scope corescope.Scope, days 
 		return 0, err
 	}
 	if !corephoto.ValidRetention(days) {
-		return 0, errs.New(errs.CodeValidation, "retention must be one of 30, 90, 180, 365")
+		return 0, errs.New(errs.CodeValidation, "retention must be one of "+retentionChoices())
 	}
 	if err := s.deps.Store.PutRetention(ctx, scope.UserID(), days, s.deps.Clock.Now()); err != nil {
 		return 0, err
 	}
 	return days, nil
+}
+
+// retentionChoices 从闭集生成错误文案。
+// 文案里的天数表只许由 core/photo.RetentionDays 派生：复写一份就是第二个定义点。
+func retentionChoices() string {
+	days := corephoto.RetentionDays()
+	parts := make([]string, len(days))
+	for i, d := range days {
+		parts[i] = strconv.Itoa(d)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // PurgeResult 是一轮保留期清理的结果。

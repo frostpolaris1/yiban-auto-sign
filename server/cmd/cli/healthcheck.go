@@ -13,12 +13,14 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/config"
 )
 
 // runHealthcheck 探活一次。返回进程退出码。
 func runHealthcheck(args []string, stderr io.Writer) int {
 	fs := newFlagSet("healthcheck", stderr)
-	addr := fs.String("addr", "127.0.0.1:47183", "被探的 host:port")
+	addr := fs.String("addr", config.DefaultHTTPAddr, "被探的 host:port")
 	timeout := fs.Duration("timeout", 3*time.Second, "单次请求超时")
 	if err := fs.Parse(args); err != nil {
 		return 2
