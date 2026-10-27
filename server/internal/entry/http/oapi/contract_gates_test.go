@@ -420,29 +420,30 @@ func TestNullablePropertiesAreRequired(t *testing.T) {
 	}
 }
 
-// additionalPropertiesExemptions 是显式豁免登记。
-// 只活在契约里的约束等于违反时静默：新增声明必须在这里登记。
-var additionalPropertiesExemptions = map[string]string{
-	"AccountSignAccepted":     "响应对象；未知字段被编码器忽略",
-	"AccountLocation":         "响应对象；未知字段被编码器忽略",
-	"AccountLocationUpdate":   "请求对象；解码器忽略未知字段",
-	"SchedulePlanRequest":     "请求对象；解码器忽略未知字段",
-	"ScheduleOverrideRequest": "请求对象；解码器忽略未知字段",
-	"TimePref":                "响应对象；未知字段被编码器忽略",
-	"TimePrefUpdate":          "请求对象；解码器忽略未知字段",
-	"Photo":                   "响应对象；未知字段被编码器忽略",
-	"PhotoUpload":             "multipart 表单；解码器忽略未知字段",
-	"PhotoRetention":          "响应对象；未知字段被编码器忽略",
-	"PhotoRetentionUpdate":    "请求对象；解码器忽略未知字段",
+// additionalPropertiesExemptions 是显式豁免登记：每个 schema 一处一条理由。
+// 只活在契约里的约束等于违反时静默：新增声明（含嵌套）必须在这里登记。
+var additionalPropertiesExemptions = map[string][]string{
+	"AccountSignAccepted":     {"响应对象；未知字段被编码器忽略"},
+	"AccountLocation":         {"响应对象；未知字段被编码器忽略"},
+	"AccountLocationUpdate":   {"请求对象；解码器忽略未知字段"},
+	"SchedulePlanRequest":     {"请求对象；解码器忽略未知字段"},
+	"ScheduleOverrideRequest": {"请求对象；解码器忽略未知字段"},
+	"TimePref":                {"响应对象；未知字段被编码器忽略"},
+	"TimePrefUpdate":          {"请求对象；解码器忽略未知字段"},
+	"Photo":                   {"响应对象；未知字段被编码器忽略"},
+	"PhotoUpload":             {"multipart 表单；解码器忽略未知字段"},
+	"PhotoRetention":          {"响应对象；未知字段被编码器忽略"},
+	"PhotoRetentionUpdate":    {"请求对象；解码器忽略未知字段"},
 }
 
-// schemasDeclaringNoAdditionalProperties 返回声明 additionalProperties: false 的 schema。
-func schemasDeclaringNoAdditionalProperties(t *testing.T, doc string) []string {
+// schemasDeclaringNoAdditionalProperties 全树扫描 components.schemas。
+// 返回 schema → 每处声明的行号；嵌套对象里的声明同样计入。
+func schemasDeclaringNoAdditionalProperties(t *testing.T, doc string) map[string][]int {
 	t.Helper()
-	var out []string
+	out := map[string][]int{}
 	inSchemas := false
 	schema := ""
-	for _, raw := range strings.Split(doc, "\n") {
+	for i, raw := range strings.Split(doc, "\n") {
 		line := strings.TrimRight(raw, " \t\r")
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
@@ -464,43 +465,71 @@ func schemasDeclaringNoAdditionalProperties(t *testing.T, doc string) []string {
 			schema = strings.TrimSuffix(trimmed, ":")
 			continue
 		}
-		if indent == 6 && trimmed == "additionalProperties: false" {
-			out = append(out, schema)
+		// 任意深度都算：嵌套对象的声明与 schema 级声明同权。
+		if indent > 4 && trimmed == "additionalProperties: false" && schema != "" {
+			out[schema] = append(out[schema], i+1)
 		}
 	}
-	if len(out) == 0 {
+	total := 0
+	for _, lines := range out {
+		total += len(lines)
+	}
+	if total == 0 {
 		t.Fatal("openapi 里没有 additionalProperties: false；门没有扫到东西")
 	}
 	return out
 }
 
 // 运行时**不**执行 additionalProperties: false：解码器忽略未知字段。
-// 豁免必须逐条登记；登记与契约两边都不许静默漂移。
+// 豁免必须逐条登记；声明数与登记数（含嵌套）两边都不许静默漂移。
 func TestAdditionalPropertiesExemptionsRegistered(t *testing.T) {
 	spec := contractRead(t, contractSpecPath)
 	readme := contractRead(t, contractReadmePath)
 	declared := schemasDeclaringNoAdditionalProperties(t, spec)
 
-	seen := map[string]bool{}
-	for _, name := range declared {
-		seen[name] = true
-		reason, ok := additionalPropertiesExemptions[name]
+	names := make([]string, 0, len(declared))
+	for name := range declared {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	total := 0
+	for _, name := range names {
+		lines := declared[name]
+		total += len(lines)
+		reasons, ok := additionalPropertiesExemptions[name]
 		if !ok {
-			t.Errorf("%s 声明 additionalProperties: false 但未登记豁免（新增约束必须显式裁决）", name)
+			t.Errorf("%s 有 %d 处 additionalProperties: false（行 %v）但未登记豁免",
+				name, len(lines), lines)
 			continue
 		}
-		if strings.TrimSpace(reason) == "" {
-			t.Errorf("%s 的豁免理由为空", name)
+		if len(reasons) != len(lines) {
+			t.Errorf("%s 声明 %d 处（行 %v），只登记 %d 条理由",
+				name, len(lines), lines, len(reasons))
+		}
+		for _, reason := range reasons {
+			if strings.TrimSpace(reason) == "" {
+				t.Errorf("%s 的豁免理由为空", name)
+			}
 		}
 	}
-	for name := range additionalPropertiesExemptions {
-		if !seen[name] {
+	for name, reasons := range additionalPropertiesExemptions {
+		if _, ok := declared[name]; !ok {
 			t.Errorf("豁免登记过期：%s 不再声明 additionalProperties: false", name)
 		}
+		if len(reasons) == 0 {
+			t.Errorf("%s 的登记没有任何理由条目", name)
+		}
 	}
-	if len(declared) != len(additionalPropertiesExemptions) {
-		t.Fatalf("声明 %d 条，登记 %d 条；两边必须逐条相等",
-			len(declared), len(additionalPropertiesExemptions))
+	if total < 11 {
+		t.Fatalf("声明总数 = %d, want at least 11；门没有扫到东西", total)
+	}
+	registered := 0
+	for _, reasons := range additionalPropertiesExemptions {
+		registered += len(reasons)
+	}
+	if total != registered {
+		t.Fatalf("声明 %d 处，登记 %d 条；两边必须逐条相等", total, registered)
 	}
 	if !strings.Contains(readme, "additionalProperties") {
 		t.Error("README 未写明 additionalProperties 的豁免口径")

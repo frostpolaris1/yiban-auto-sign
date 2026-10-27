@@ -246,7 +246,8 @@ func TestR4BCblOversizedBodiesAre413(t *testing.T) {
 	}
 }
 
-// limit 的下界是 1。0 不得静默取缺省：同一参数在四个列表上必须同口径。
+// limit 的下界是 1。0 不得静默取缺省，同一参数在所有列表上同口径。
+// schools 的同一判据由 TestW2CLimitBounds 钉住；本用例覆盖其余三个列表。
 func TestR4BCblListLimitZeroIs400(t *testing.T) {
 	e := w2cNewEnv(t)
 	master := e.user("r4b-limit-master@example.com", coreauth.RoleMaster)
@@ -308,15 +309,15 @@ func TestR4BCblSchoolChangeIs409(t *testing.T) {
 }
 
 // additionalProperties: false 未在运行时执行，本批显式豁免。
-// 本用例钉住豁免事实：未知字段被忽略，请求成功。
+// 本用例打的是已声明该键的请求对象 TimePrefUpdate：未知字段被忽略，请求成功。
 // 豁免登记见 contracts/README.md 与 oapi 包的契约对账门。
 func TestR4BCblUnknownFieldsAreIgnored(t *testing.T) {
 	e := w2cNewEnv(t)
-	master := e.user("r4b-extra-master@example.com", coreauth.RoleMaster)
-	issued := e.login(master)
+	user := e.user("r4b-extra-user@example.com", coreauth.RoleUser)
+	issued := e.login(user)
 
-	rec := e.do(http.MethodPost, "/api/schools", map[string]any{
-		"code": "r4b-extra", "name": "Extra School", "unknown_field": "ignored",
+	rec := e.do(http.MethodPut, "/api/me/time-pref", map[string]any{
+		"offset_min": 30, "unknown_field": "ignored",
 	}, issued)
-	w2cWantStatus(t, rec, http.StatusCreated)
+	w2cWantStatus(t, rec, http.StatusOK)
 }
