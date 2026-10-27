@@ -1,23 +1,26 @@
 package assembly
 
-// 部署件的静态门禁（派单 F4、F5）。
+// 部署件的静态门禁（派单 F4、F5、P2-3、P2-4）。
 //
 // # 功能
-// 1. docker-compose 的 stop_grace_period 必须大于 shutdownBudget：
-//    否则 docker stop 在优雅收尾完成前发 SIGKILL，残余 running 行
-//    只能靠下次启动的 Recover 回收。
-// 2. 镜像必须预建 /data/photos 并归 nonroot(65532)：
+// 1. docker-compose 的 services.app.stop_grace_period 必须大于
+//    shutdownBudget：否则 docker stop 在优雅收尾完成前发 SIGKILL，
+//    残余 running 行只能靠下次启动的 Recover 回收。
+// 2. install.sh 写的 systemd 单元 TimeoutStopSec 必须大于同一预算：
+//    两个入口同形状，缺一道门就有一半静默。
+// 3. 镜像必须预建 /data/photos 并归 nonroot(65532)：
 //    命名卷首次挂载继承镜像内目录的属主；不预建则 Docker 以 root
 //    建空目录，distroless nonroot 不可写。
 //
 // # 口径
-// 只读文件，不启容器：两个判据都在构建产物里可判。
+// 只读文件，不启容器：判据都在构建产物里可判。
 // 真容器写文件另由 YIBAN_DOCKER_E2E=1 的 e2e 覆盖（cmd/cli）。
 
 import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -41,16 +44,74 @@ func deployFile(t *testing.T, rel string) string {
 	return string(body)
 }
 
+// yamlKeyValue 拆一行 YAML 的 `key: value`。列表项返回 ok=false。
+func yamlKeyValue(line string) (key, value string, ok bool) {
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "- ") || trimmed == "-" {
+		return "", "", false
+	}
+	k, v, found := strings.Cut(trimmed, ":")
+	if !found || strings.TrimSpace(k) == "" {
+		return "", "", false
+	}
+	return strings.TrimSpace(k), strings.Trim(strings.TrimSpace(v), `"'`), true
+}
+
+// leadingIndent 返回行首空格数。
+func leadingIndent(line string) int {
+	return len(line) - len(strings.TrimLeft(line, " "))
+}
+
+// composeBlockValue 取 `section.service.key` 的值。
+// 按缩进入块：只认 services → app 块内的键。
+// 把 stop_grace_period 挪到 db 服务下时这里取不到，门必红。
+func composeBlockValue(body, section, service, key string) (string, bool) {
+	inSection, inService := false, false
+	sectionIndent, serviceIndent := -1, -1
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		indent := leadingIndent(line)
+		k, v, ok := yamlKeyValue(trimmed)
+		if !ok {
+			continue
+		}
+		// 缩进回到块头层级即离开该块。
+		if inService && indent <= serviceIndent {
+			inService = false
+		}
+		if inSection && indent <= sectionIndent {
+			inSection = false
+		}
+		switch {
+		case !inSection:
+			if k == section && v == "" {
+				inSection = true
+				sectionIndent = indent
+			}
+		case !inService:
+			if k == service && v == "" {
+				inService = true
+				serviceIndent = indent
+			}
+		default:
+			if k == key {
+				return v, true
+			}
+		}
+	}
+	return "", false
+}
+
 // composeStopGrace 从 compose 文本里取 app 服务的 stop_grace_period。
 func composeStopGrace(t *testing.T, body string) time.Duration {
 	t.Helper()
-	// 取最后一个 stop_grace_period：本文件只在 app 服务下声明。
-	re := regexp.MustCompile(`(?m)^\s*stop_grace_period:\s*"?([0-9]+[smh][0-9smh]*)"?\s*$`)
-	all := re.FindAllStringSubmatch(body, -1)
-	if len(all) == 0 {
-		t.Fatalf("docker-compose.yml 未声明 stop_grace_period")
+	raw, ok := composeBlockValue(body, "services", "app", "stop_grace_period")
+	if !ok {
+		t.Fatalf("docker-compose.yml 的 services.app 未声明 stop_grace_period")
 	}
-	raw := all[len(all)-1][1]
 	d, err := time.ParseDuration(raw)
 	if err != nil {
 		t.Fatalf("stop_grace_period %q 不是合法时长: %v", raw, err)
@@ -64,6 +125,25 @@ func TestComposeStopGraceExceedsShutdownBudget(t *testing.T) {
 	if grace <= shutdownBudget {
 		t.Fatalf("stop_grace_period=%s 必须大于 shutdownBudget=%s；否则 SIGKILL 打断优雅收尾",
 			grace, shutdownBudget)
+	}
+}
+
+// TestInstallUnitStopTimeoutExceedsShutdownBudget 钉住 systemd 单元的停机预算（派单 P2-4）。
+// TimeoutStopSec 小于 shutdownBudget 时，systemd 在优雅收尾完成前发 SIGKILL。
+func TestInstallUnitStopTimeoutExceedsShutdownBudget(t *testing.T) {
+	body := deployFile(t, "linux/install.sh")
+	re := regexp.MustCompile(`(?m)^TimeoutStopSec=(\d+)$`)
+	m := re.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatal("deploy/linux/install.sh 的 systemd 单元缺 TimeoutStopSec=<秒>")
+	}
+	secs, err := strconv.Atoi(m[1])
+	if err != nil {
+		t.Fatalf("TimeoutStopSec=%q 不是整数秒: %v", m[1], err)
+	}
+	if d := time.Duration(secs) * time.Second; d <= shutdownBudget {
+		t.Fatalf("TimeoutStopSec=%ds 必须大于 shutdownBudget=%s；否则 SIGKILL 打断优雅收尾",
+			secs, shutdownBudget)
 	}
 }
 

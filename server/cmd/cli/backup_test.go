@@ -489,3 +489,45 @@ func TestManifestTablesCoverEveryBusinessTable(t *testing.T) {
 		}
 	}
 }
+
+// TestParseKeywordDSNBackslashEscapes 钉住 libpq 引号内转义（派单 P2-5）。
+// 引号内反斜杠转义下一字符；两个相邻单引号也是一个字面单引号。
+// 不认转义会把后续字段吞进口令，或把残值当口令（凭据错）。
+func TestParseKeywordDSNBackslashEscapes(t *testing.T) {
+	// bs 用码点构造：反斜杠不经过源码转义层，读起来就是它本身。
+	bs := string(rune(92))
+	cases := []struct{ name, dsn, password, dbname string }{
+		{"escaped-quote", "host=db user=u password='a" + bs + "'b' dbname=keep", "a'b", "keep"},
+		{"doubled-quote", `host=db user=u password='a''b' dbname=keep`, "a'b", "keep"},
+		{"escaped-backslash", "host=db user=u password='a" + bs + bs + "b' dbname=keep", "a" + bs + "b", "keep"},
+		{"spaced-values", `host=db user=u password = 'a b' dbname=keep`, "a b", "keep"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := parseDSN(tc.dsn)
+			if err != nil {
+				t.Fatalf("parseDSN(%q): %v", tc.dsn, err)
+			}
+			if p.password != tc.password {
+				t.Fatalf("password = %q, want %q", p.password, tc.password)
+			}
+			if p.dbname != tc.dbname {
+				t.Fatalf("dbname = %q, want %q：后续字段被吞进口令", p.dbname, tc.dbname)
+			}
+		})
+	}
+	// 未闭合引号必须失败关闭：不能把残值当口令。
+	if _, err := parseDSN(`host=db password='oops`); err == nil {
+		t.Fatal("未闭合引号必须报错")
+	}
+}
+
+// TestManifestExemptionsAreWhitelisted 钉住豁免面（派单 P2-6）。
+// 只准迁移工具簿记表：新业务表写条理由就双绿是缺陷形状。
+func TestManifestExemptionsAreWhitelisted(t *testing.T) {
+	for table, reason := range manifestExemptTables {
+		if !manifestExemptWhitelist[table] {
+			t.Fatalf("表 %q 已豁免（理由 %q）但不在白名单：业务表不得豁免", table, reason)
+		}
+	}
+}

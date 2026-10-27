@@ -4,13 +4,15 @@ package main
 //
 // # 功能
 // 模拟真实部署动作：构建镜像 → 用命名卷挂 /data/photos →
-// 以镜像自带用户跑 `yiban-cli doctor --photo-dir /data/photos`。
-// 断言 fs.photo_dir 检查通过：distroless nonroot(65532) 能写卷。
-// 镜像若未预建并 chown 该目录，命名卷以 root 属主挂载，写入即失败。
+// 以镜像自带用户跑 `yiban-cli doctor --photo-dir /data/photos --service-user nonroot`。
+// 断言 fs.photo_dir 与 fs.photo_owner 都通过：distroless nonroot(65532)
+// 既能写卷，属主也是服务用户。
+// 镜像若未预建并 chown 该目录，命名卷以 root 属主挂载，两项都会 FAIL。
 //
 // # 口径
 // 构建镜像耗时且需要 daemon，默认跳过；置 YIBAN_DOCKER_E2E=1 才跑。
-// 跳过行显性打印（AGENTS §30）。卷名带随机后缀，用毕删除。
+// server/scripts/verify.sh 的容器段默认带该开关跑（docker 可用时）。
+// 跳过行显性打印（AGENTS §30）。卷先删后建，用毕删除。
 
 import (
 	"bytes"
@@ -77,15 +79,20 @@ func TestContainerPhotoDirWritableByNonroot(t *testing.T) {
 	t.Cleanup(func() { dockerRun(t, "volume", "rm", "-f", vol) })
 
 	// 以镜像缺省用户（nonroot）跑 doctor 的文件系统面。
+	// --service-user nonroot 显式钉住服务身份：镜像里没有 systemd 单元，
+	// 缺省虽已解析为当前用户，e2e 不靠缺省值证明容器语义。
 	out, rc = dockerRun(t, "run", "--rm", "--entrypoint", "/usr/local/bin/yiban-cli",
-		"-v", vol+":/data/photos", image, "doctor", "--photo-dir", "/data/photos")
-	if !strings.Contains(out, "fs.photo_dir") {
-		t.Fatalf("doctor 输出缺 fs.photo_dir 行:\n%s", out)
-	}
-	if strings.Contains(out, "[FAIL] fs.photo_dir") {
-		t.Fatalf("nonroot 不能写 /data/photos（镜像未预建属主）:\n%s", out)
-	}
-	if !strings.Contains(out, "[ OK ] fs.photo_dir") {
-		t.Fatalf("fs.photo_dir 未判 OK（rc=%d）:\n%s", rc, out)
+		"-v", vol+":/data/photos", image,
+		"doctor", "--photo-dir", "/data/photos", "--service-user", "nonroot")
+	for _, name := range []string{"fs.photo_dir", "fs.photo_owner"} {
+		if !strings.Contains(out, name) {
+			t.Fatalf("doctor 输出缺 %s 行:\n%s", name, out)
+		}
+		if strings.Contains(out, "[FAIL] "+name) {
+			t.Fatalf("%s 失败：nonroot 不能写 /data/photos 或属主不是 nonroot:\n%s", name, out)
+		}
+		if !strings.Contains(out, "[ OK ] "+name) {
+			t.Fatalf("%s 未判 OK（rc=%d）:\n%s", name, rc, out)
+		}
 	}
 }

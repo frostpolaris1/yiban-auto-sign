@@ -46,7 +46,7 @@ func main() {
 	case "restore":
 		code = runRestore(newBackupDeps(os.Stdout, os.Stderr), os.Args[2:])
 	case "user":
-		code = runUser(os.Args[2:], os.Stdout, os.Stderr)
+		code = runUser(os.Args[2:], os.Stdin, os.Stdout, os.Stderr)
 	case "--help", "-h", "help":
 		usage(os.Stdout)
 	default:

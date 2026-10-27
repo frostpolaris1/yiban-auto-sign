@@ -100,6 +100,9 @@ type probe struct {
 	// serviceUser 是 systemd 单元里的运行用户（User=）。
 	// 属主与可写性都按它判，不按当前进程用户判。
 	serviceUser string
+	// containerized 表示本进程跑在容器里：distroless 无 shell 与 chown，
+	// 修复提示必须在宿主机执行。
+	containerized bool
 
 	now         func() time.Time
 	tryListen   func(addr string) (closer, error)
@@ -120,9 +123,54 @@ type dirInfo struct {
 	perm  os.FileMode
 }
 
-// defaultServiceUser 是服务用户缺省值。
-// install.sh 的 systemd 单元写死 User=yiban，两者同源。
+// defaultServiceUser 是 systemd 单元里的服务用户。
+// install.sh 的单元写死 User=yiban，两者同源。
 const defaultServiceUser = "yiban"
+
+// systemdUnitPath 是 install.sh 写的单元路径。
+// 它存在 ⇒ 服务以 User=yiban 运行；不存在 ⇒ 本进程就是服务身份
+// （容器或前台运行），缺省按当前用户判。
+const systemdUnitPath = "/etc/systemd/system/yiban.service"
+
+// unitFileExists 是单元存在性判定；测试替换它构造两种部署环境。
+var unitFileExists = func(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// currentUserLookup 是当前用户读取的接缝；测试替换它避免依赖真实账户。
+var currentUserLookup = currentUserName
+
+// resolveServiceUser 是缺省服务用户的纯判据（派单 P1-1）。
+// 有 systemd 单元按 yiban；无单元按当前用户；拿不到当前用户回退 yiban。
+func resolveServiceUser(exists func(string) bool, current func() (string, bool)) string {
+	if exists(systemdUnitPath) {
+		return defaultServiceUser
+	}
+	if name, ok := current(); ok && strings.TrimSpace(name) != "" {
+		return name
+	}
+	return defaultServiceUser
+}
+
+// defaultServiceUserResolved 解析本机的缺省服务用户。
+func defaultServiceUserResolved() string {
+	return resolveServiceUser(unitFileExists, currentUserLookup)
+}
+
+// containerMarkers 是容器运行时留下的标记文件（Docker、Podman）。
+var containerMarkers = []string{"/.dockerenv", "/run/.containerenv"}
+
+// inContainer 判本进程是否跑在容器里。判据只看标记文件，不看 systemd：
+// 没有 systemd 的裸机仍可在本机执行 chown。
+func inContainer() bool {
+	for _, path := range containerMarkers {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+	}
+	return false
+}
 
 // registryCandidates 是名册的缺省查找顺序：安装位优先。
 // install.sh 把 config/registry.json 装到 /etc/yiban/registry.json。
@@ -419,17 +467,65 @@ func openDBHandle(ctx context.Context, p *probe) (dbHandle, checkRow) {
 	return h, checkRow{}
 }
 
-// redactDSN 抹掉 DSN 里的口令段再打印。
-// 三种载体都要覆盖：URI、keyword/value（password=...）、
-// 无 scheme 的 user:pass@host。只抹口令，主机与库名保留。
+// redactDSN 抹掉 DSN 里的口令段再打印（派单 F6、P1-2）。
+// 三种载体都要覆盖：URI、keyword/value、无 scheme 的 user:pass@host。
+// keyword 形按 libpq 词法切分：= 两侧可带空格，值可用单引号包住空白。
+// URI 的查询串另抹 password 参数（?password=... 同样不能打印）。
+// 只抹口令，主机与库名保留。
 func redactDSN(dsn string) string {
 	out := redactURIDS(dsn)
-	return redactKeywordPassword(out)
+	if strings.Contains(out, "://") {
+		return redactURIPasswordQuery(out)
+	}
+	if masked, ok := redactKeywordDSN(out); ok {
+		return masked
+	}
+	return out
+}
+
+// redactURIPasswordQuery 抹掉 URI 查询串里的 password 参数。
+// 逐参数切分，只替换口令值；其他参数原样保留。
+func redactURIPasswordQuery(dsn string) string {
+	q := strings.Index(dsn, "?")
+	if q < 0 {
+		return dsn
+	}
+	parts := strings.Split(dsn[q+1:], "&")
+	for i, part := range parts {
+		key, _, ok := strings.Cut(part, "=")
+		if ok && strings.EqualFold(strings.TrimSpace(key), "password") {
+			parts[i] = key + "=****"
+		}
+	}
+	return dsn[:q+1] + strings.Join(parts, "&")
+}
+
+// redactKeywordDSN 逐字段重建 keyword/value DSN，password 的整值换成 ****。
+// 带引号时连引号一起替换：只抹到首个空格会留下尾部片段。
+// ok=false 表示不是键值形（无 = 的裸 user:pass@host）。
+func redactKeywordDSN(dsn string) (string, bool) {
+	fields := splitKeywordFields(dsn)
+	if len(fields) == 0 {
+		return dsn, false
+	}
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
+		key, _, ok := strings.Cut(field, "=")
+		if !ok || strings.TrimSpace(key) == "" {
+			return dsn, false
+		}
+		if strings.EqualFold(strings.TrimSpace(key), "password") {
+			out = append(out, key+"=****")
+			continue
+		}
+		out = append(out, field)
+	}
+	return strings.Join(out, " "), true
 }
 
 // redactURIDS 处理 `<scheme>://user:pass@host` 与 `user:pass@host`。
 // 只在首个空白分隔的 token 内找 userinfo；token 含 `=` 即 keyword 形，
-// 交给 redactKeywordPassword，避免把主机段当口令段切坏。
+// 本函数不动它，避免把主机段当口令段切坏。
 func redactURIDS(dsn string) string {
 	start := 0
 	if i := strings.Index(dsn, "://"); i >= 0 {
@@ -456,27 +552,6 @@ func redactURIDS(dsn string) string {
 		return dsn
 	}
 	return dsn[:start] + userinfo[:colon] + ":****@" + rest[at+1:]
-}
-
-// redactKeywordPassword 处理 keyword/value 形：password=<非空白>。
-func redactKeywordPassword(dsn string) string {
-	const key = "password="
-	var b strings.Builder
-	for {
-		i := strings.Index(dsn, key)
-		if i < 0 {
-			b.WriteString(dsn)
-			return b.String()
-		}
-		end := i + len(key)
-		for end < len(dsn) && dsn[end] != ' ' && dsn[end] != '\t' {
-			end++
-		}
-		b.WriteString(dsn[:i])
-		b.WriteString(key)
-		b.WriteString("****")
-		dsn = dsn[end:]
-	}
 }
 
 // checkDSN 是数据库面的第 0 条：其余 db.* 检查以它为前置。
@@ -679,9 +754,9 @@ func checkPhotoDir(_ context.Context, p *probe) checkRow {
 		// 同一身份：直接实测写入，判据最硬。
 		if err := probeWritable(dir); err != nil {
 			return checkRow{fail: true, detail: fmt.Sprintf("photo 目录 %s 不可写: %v", dir, err),
-				fix: fmt.Sprintf("mkdir -p %s && chown -R %s:%s %s", dir, svc, svc, dir)}
+				fix: photoDirFix(p, dir, svc)}
 		}
-		return checkRow{detail: dir + " 可写"}
+		return checkRow{detail: fmt.Sprintf("%s 可写（服务用户 %s）", dir, svc)}
 	}
 	// 当前进程不是服务用户：按属主/组/权限位推断，
 	// 不把自己的可写性当服务用户的可写性。
@@ -693,9 +768,35 @@ func checkPhotoDir(_ context.Context, p *probe) checkRow {
 	if !writableByServiceUser(info, svc, p) {
 		return checkRow{fail: true, detail: fmt.Sprintf("%s 属主 %s、权限 %04o：服务用户 %s 不可写",
 			dir, info.owner, info.perm.Perm(), svc),
-			fix: fmt.Sprintf("chown -R %s:%s %s（systemd 单元以 User=%s 运行）", svc, svc, dir, svc)}
+			fix: photoOwnerFix(p, dir, svc)}
 	}
 	return checkRow{detail: fmt.Sprintf("属主 %s、权限 %04o：服务用户 %s 可写", info.owner, info.perm.Perm(), svc)}
+}
+
+// photoDirFix 是 photo 目录不可写时的修复提示。
+func photoDirFix(p *probe, dir, svc string) string {
+	if p.containerized {
+		return containerPhotoFix(dir)
+	}
+	return fmt.Sprintf("mkdir -p %s && chown -R %s:%s %s", dir, svc, svc, dir)
+}
+
+// photoOwnerFix 是目录属主与服务用户不一致时的修复提示。
+func photoOwnerFix(p *probe, dir, svc string) string {
+	if p.containerized {
+		return containerPhotoFix(dir)
+	}
+	return fmt.Sprintf("chown -R %s:%s %s（systemd 单元以 User=%s 运行）", svc, svc, dir, svc)
+}
+
+// containerPhotoFix 给宿主机可执行的修复。
+// distroless 镜像没有 shell 与 chown：容器内跑 chown 必然失败。
+// 结构性修法是让镜像预建目录并 chown（deploy/docker/Dockerfile）。
+func containerPhotoFix(dir string) string {
+	return fmt.Sprintf("在宿主机执行（distroless 镜像内无 shell/chown）："+
+		"docker run --rm -u 0 -v <照片卷>:%s busybox chown -R 65532:65532 %s；"+
+		"或让镜像预建并 chown %s（deploy/docker/Dockerfile 的 COPY --chown=65532:65532）",
+		dir, dir, dir)
 }
 
 func checkDisk(_ context.Context, p *probe) checkRow {
@@ -723,7 +824,7 @@ func checkPhotoOwner(_ context.Context, p *probe) checkRow {
 	}
 	if info.owner != svc {
 		return checkRow{fail: true, detail: fmt.Sprintf("%s 属主是 %s，服务用户是 %s", dir, info.owner, svc),
-			fix: fmt.Sprintf("chown -R %s:%s %s（systemd 单元以 User=%s 运行）", svc, svc, dir, svc)}
+			fix: photoOwnerFix(p, dir, svc)}
 	}
 	return checkRow{detail: fmt.Sprintf("属主 %s 与服务用户一致", info.owner)}
 }
@@ -808,13 +909,14 @@ func newProbe(dsn, photoDir, registry, binPath, serviceUser string) *probe {
 		registry = pickRegistry("", fileExists, registryCandidates()...)
 	}
 	return &probe{
-		src:         config.Env{},
-		dsn:         dsn,
-		photoDir:    photoDir,
-		registry:    registry,
-		binPath:     binPath,
-		serviceUser: serviceUser,
-		now:         func() time.Time { return coreclock.System{}.Now() },
+		src:           config.Env{},
+		dsn:           dsn,
+		photoDir:      photoDir,
+		registry:      registry,
+		binPath:       binPath,
+		serviceUser:   serviceUser,
+		containerized: inContainer(),
+		now:           func() time.Time { return coreclock.System{}.Now() },
 		tryListen: func(addr string) (closer, error) {
 			return net.Listen("tcp", addr)
 		},
@@ -849,7 +951,8 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	photoDir := fs.String("photo-dir", "", "覆盖 YIBAN_PHOTO_DIR")
 	registry := fs.String("registry", "", "配置名册路径（缺省依次试 /etc/yiban/registry.json 与 config/registry.json）")
 	binPath := fs.String("bin", "", "被检二进制路径（缺省为自身）")
-	serviceUser := fs.String("service-user", defaultServiceUser, "systemd 单元的运行用户（User=）")
+	serviceUser := fs.String("service-user", defaultServiceUserResolved(),
+		"systemd 单元的运行用户（User=）；无单元时取当前用户")
 	fs.Usage = func() { doctorUsage(fs, stderr) }
 	if err := fs.Parse(args); err != nil {
 		return 2

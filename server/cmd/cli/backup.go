@@ -59,6 +59,14 @@ var manifestExemptTables = map[string]string{
 	"goose_db_version": "goose 的迁移版本簿记表，不是业务数据；恢复后由 migrate 重建",
 }
 
+// manifestExemptWhitelist 是允许豁免的表名白名单。
+// 只有迁移工具的簿记表在册；业务表一张都不许豁免。
+// 新表加进 manifestExemptTables 而不在此登记会被门直接判红
+// （TestManifestExemptionsAreWhitelisted）：写条理由就双绿是缺陷形状。
+var manifestExemptWhitelist = map[string]bool{
+	"goose_db_version": true,
+}
+
 // cmdRunner 是外部命令的执行缝。
 type cmdRunner interface {
 	// Run 执行 name args，stdin 为口令等输入。
@@ -169,10 +177,13 @@ func parseKeywordDSN(dsn string) (dsnParts, bool) {
 	found := false
 	for _, field := range splitKeywordFields(dsn) {
 		key, value, ok := strings.Cut(field, "=")
+		if !ok || strings.TrimSpace(key) == "" {
+			return dsnParts{}, false
+		}
+		value, ok = unquoteKeyword(value)
 		if !ok {
 			return dsnParts{}, false
 		}
-		value = unquoteKeyword(value)
 		switch strings.ToLower(strings.TrimSpace(key)) {
 		case "host":
 			p.host = value
@@ -192,37 +203,90 @@ func parseKeywordDSN(dsn string) (dsnParts, bool) {
 	return p, found
 }
 
-// splitKeywordFields 按空白切分，单引号内的空白不切。
+// splitKeywordFields 按 libpq conninfo 词法切分 `key = value` 串。
+// 返回的每项形如 `key=value`，值保留原始引号与反斜杠转义。
+// 规则：= 两侧空白可选；单引号内空白与 = 不切；反斜杠转义下一字符；
+// 引号内相邻两个单引号表示一个字面单引号。
+// 不是键值形的片段原样返回：调用方按「无 =」判解析失败。
 func splitKeywordFields(s string) []string {
 	var out []string
-	var cur strings.Builder
-	inQuote := false
-	for _, r := range s {
-		switch {
-		case r == '\'':
-			inQuote = !inQuote
-			cur.WriteRune(r)
-		case !inQuote && (r == ' ' || r == '\t' || r == '\n' || r == '\r'):
-			if cur.Len() > 0 {
-				out = append(out, cur.String())
-				cur.Reset()
-			}
-		default:
-			cur.WriteRune(r)
+	i, n := 0, len(s)
+	isSpace := func(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
+	for i < n {
+		for i < n && isSpace(s[i]) {
+			i++
 		}
-	}
-	if cur.Len() > 0 {
-		out = append(out, cur.String())
+		if i >= n {
+			break
+		}
+		keyStart := i
+		for i < n && s[i] != '=' && !isSpace(s[i]) {
+			i++
+		}
+		key := s[keyStart:i]
+		for i < n && isSpace(s[i]) {
+			i++
+		}
+		if i >= n || s[i] != '=' {
+			// 非键值片段：原样交出，调用方判失败。
+			out = append(out, key)
+			continue
+		}
+		i++ // '='
+		for i < n && isSpace(s[i]) {
+			i++
+		}
+		valueStart := i
+		if i < n && s[i] == '\'' {
+			i++ // 开引号
+			for i < n {
+				switch {
+				case s[i] == '\\' && i+1 < n:
+					i += 2
+				case s[i] == '\'' && i+1 < n && s[i+1] == '\'':
+					i += 2 // '' = 字面单引号
+				case s[i] == '\'':
+					i++ // 闭引号
+					goto valueDone
+				default:
+					i++
+				}
+			}
+		} else {
+			for i < n && !isSpace(s[i]) {
+				i++
+			}
+		}
+	valueDone:
+		out = append(out, key+"="+s[valueStart:i])
 	}
 	return out
 }
 
-// unquoteKeyword 去掉值两端的成对单引号。
-func unquoteKeyword(v string) string {
-	if len(v) >= 2 && v[0] == '\'' && v[len(v)-1] == '\'' {
-		return v[1 : len(v)-1]
+// unquoteKeyword 去掉值两端的成对单引号，并还原 libpq 转义。
+// 引号内反斜杠转义下一字符；两个相邻单引号也是一个字面单引号。
+// ok=false 表示引号未闭合：坏 DSN 必须失败关闭，不能把残值当口令。
+func unquoteKeyword(v string) (string, bool) {
+	if len(v) < 2 || v[0] != '\'' {
+		return v, true
 	}
-	return v
+	var b strings.Builder
+	for i := 1; i < len(v); {
+		switch {
+		case v[i] == '\\' && i+1 < len(v):
+			b.WriteByte(v[i+1])
+			i += 2
+		case v[i] == '\'' && i+1 < len(v) && v[i+1] == '\'':
+			b.WriteByte('\'')
+			i += 2
+		case v[i] == '\'':
+			return b.String(), true
+		default:
+			b.WriteByte(v[i])
+			i++
+		}
+	}
+	return "", false
 }
 
 // libpqArgs 把连接字段展开成 pg_dump/psql 的分项参数。

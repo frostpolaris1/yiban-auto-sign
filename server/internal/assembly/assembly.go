@@ -121,10 +121,12 @@ func Run(ctx context.Context, logger *slog.Logger) error {
 
 	// 执行循环只在有数据库（Worker 已装配）时启动；
 	// 批量取 Workers：认领 SQL 每账号至多一行，批内并行度与之对齐。
-	var loop *appworker.Loop
+	var loop loopHandle
 	if stack.Worker != nil {
-		loop = appworker.NewLoop(stack.Worker, stack.Worker, workerPollInterval, cfg.Workers)
+		loop = newLoop(stack, workerPollInterval, cfg.Workers)
 		if err := loop.Start(); err != nil {
+			// 循环没起来也要释放连接池：别把半个进程留给退出路径。
+			stack.Close()
 			return fmt.Errorf("server: start worker loop: %w", err)
 		}
 		logger.Info("worker: loop started", "poll_interval", workerPollInterval.String(), "batch", cfg.Workers)
@@ -160,7 +162,7 @@ const workerPollInterval = 2 * time.Second
 // 顺序判据（派单 P7）：先停 worker 领取，再等在飞结算，
 // 最后打印在飞清零结果；HTTP 关闭与它并行，不互相等。
 // 预算耗尽而循环未停时，残余 running 行由下次启动的 Recover 回收。
-func stopStack(srv *http.Server, stack *Stack, loop *appworker.Loop, logger *slog.Logger) error {
+func stopStack(srv *http.Server, stack *Stack, loop loopHandle, logger *slog.Logger) error {
 	shutdown, cancel := context.WithTimeout(context.Background(), shutdownBudget)
 	defer cancel()
 
@@ -209,6 +211,20 @@ type Stack struct {
 // buildStack 是 Build 的调用接缝。
 // Run 与 NewServer 都经由它；装配次数由测试计数（见 assembly_test.go）。
 var buildStack = Build
+
+// loopHandle 是执行循环的启停面。Run 只依赖这三个方法；
+// 测试注入假循环，断言启动块被真的执行（派单 P2-2）。
+type loopHandle interface {
+	Start() error
+	Stop(ctx context.Context) (int64, error)
+	Err() error
+}
+
+// newLoop 是执行循环的构造接缝。删除 Run 的启动块时测试必红：
+// 假循环收不到 Start/Stop。
+var newLoop = func(stack *Stack, interval time.Duration, limit int) loopHandle {
+	return appworker.NewLoop(stack.Worker, stack.Worker, interval, limit)
+}
 
 // NewServer 装配进程但不启动它。
 // 测试通过返回的 server 绑定临时端口。
