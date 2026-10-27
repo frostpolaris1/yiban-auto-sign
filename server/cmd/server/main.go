@@ -4,7 +4,8 @@
 // 装配配置、数据库、会话签发器、四个业务域与路由，然后服务到 SIGINT 或 SIGTERM。
 // 配置了 YIBAN_DATABASE_URL 时启动前执行迁移，
 // 并接线真实认证、用户、学校、管理员与账号端点。
-// 本命令**不**跑后台任务、**不**读命令行参数。
+// 同一条件下启动图片保留期清理循环：启动即一轮，之后每 24h 一轮。
+// 本命令**不**读命令行参数。
 //
 // # 归属
 // entry 层可执行件。main 只做信号与退出码；装配在 run 与 buildStack。
@@ -13,7 +14,7 @@
 // main、run、newServer、buildStack、appStack。
 //
 // # 口径
-// 优雅关闭上限 10s。
+// 优雅关闭上限 10s。清理循环的取消与等待由 StartRetention 自己收口。
 // 无数据库时认证端点不可用，进程打印警告，健康检查仍可服务。
 package main
 
@@ -326,6 +327,18 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 		if err != nil {
 			closeFn()
 			return nil, fmt.Errorf("server: photo service: %w", err)
+		}
+		// 保留期清理的生产调用者：启停细节在 app/photos.StartRetention。
+		// 合并 P7 后这一处随装配迁到 assembly.Run。
+		stopRetention, err := appphotos.StartRetention(context.Background(), photoSvc, logger)
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("server: retention loop: %w", err)
+		}
+		stopStack := closeFn
+		closeFn = func() {
+			stopRetention()
+			stopStack()
 		}
 		locationSvc, err := applocation.NewService(applocation.Deps{
 			Store:    pg.NewLocationRepo(db),

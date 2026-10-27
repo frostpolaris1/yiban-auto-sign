@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/storage"
 )
@@ -144,5 +145,106 @@ func TestFSPutRejectsMismatchedDigest(t *testing.T) {
 	wrong := storage.Digest([]byte("other bytes"))
 	if err := fs.Put(context.Background(), wrong, data); err == nil {
 		t.Fatal("摘要不匹配应被拒绝")
+	}
+}
+
+// List 返回已落盘 blob 的摘要与修改时间；回收判据需要修改时间。
+func TestFSListReturnsStoredBlobs(t *testing.T) {
+	dir := t.TempDir()
+	fs, err := storage.NewFS(dir)
+	if err != nil {
+		t.Fatalf("NewFS: %v", err)
+	}
+	want := map[[32]byte]bool{}
+	for _, data := range [][]byte{[]byte("first blob"), []byte("second blob")} {
+		sha := storage.Digest(data)
+		if err := fs.Put(context.Background(), sha, data); err != nil {
+			t.Fatalf("put: %v", err)
+		}
+		want[sha] = true
+	}
+	infos, err := fs.List(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(infos) != len(want) {
+		t.Fatalf("摘要数 = %d, want %d", len(infos), len(want))
+	}
+	for _, info := range infos {
+		if !want[info.Digest] {
+			t.Fatalf("未知摘要 %x", info.Digest)
+		}
+		if info.ModTime.IsZero() {
+			t.Fatal("修改时间为零值")
+		}
+		if age := time.Since(info.ModTime); age < 0 || age > time.Minute {
+			t.Fatalf("修改时间不合理: %v (age %v)", info.ModTime, age)
+		}
+	}
+}
+
+// List 跳过临时件与非法文件名：回收不得把它们当 blob。
+func TestFSListSkipsTemporaryAndInvalidNames(t *testing.T) {
+	dir := t.TempDir()
+	fs, err := storage.NewFS(dir)
+	if err != nil {
+		t.Fatalf("NewFS: %v", err)
+	}
+	data := []byte("kept blob")
+	sha := storage.Digest(data)
+	if err := fs.Put(context.Background(), sha, data); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	shard := filepath.Join(dir, hexOf(sha)[:2])
+	for _, name := range []string{"put-123456", "not-hex", hexOf(sha) + "0"} {
+		if err := os.WriteFile(filepath.Join(shard, name), []byte("x"), 0o600); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "put-root-temp"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("seed root temp: %v", err)
+	}
+	infos, err := fs.List(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(infos) != 1 || infos[0].Digest != sha {
+		t.Fatalf("listed = %+v, want only %x", infos, sha)
+	}
+}
+
+// Remove 删除已落盘 blob；重复删除幂等。
+func TestFSRemove(t *testing.T) {
+	dir := t.TempDir()
+	fs, err := storage.NewFS(dir)
+	if err != nil {
+		t.Fatalf("NewFS: %v", err)
+	}
+	data := []byte("removable blob")
+	sha := storage.Digest(data)
+	if err := fs.Put(context.Background(), sha, data); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if err := fs.Remove(context.Background(), sha); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if _, err := fs.Open(context.Background(), sha); err == nil {
+		t.Fatal("删除后仍可打开")
+	}
+	if err := fs.Remove(context.Background(), sha); err != nil {
+		t.Fatalf("重复删除 = %v, want nil", err)
+	}
+}
+
+// 取消的上下文不删除文件。
+func TestFSRemoveCanceledContext(t *testing.T) {
+	fs, err := storage.NewFS(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFS: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := fs.Remove(ctx, storage.Digest([]byte("x"))); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 }

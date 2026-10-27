@@ -129,8 +129,9 @@ func (r *PhotoRepo) PutRetention(ctx context.Context, userID string, days int, n
 	return mapInsertForeignKey(err)
 }
 
-// PurgeExpired 删除按各用户保留期已到期的行，返回删除行数。
-// 缺省保留期 90 天与 core/photo 一致；软删行不在本判据内。
+// PurgeExpired 物理删除按各用户保留期已到期的行，返回删除行数。
+// 判据是 COALESCE(deleted_at, created_at)：软删行从删除时刻起算。
+// 缺省保留期 90 天与 core/photo 一致。一次最多删 limit 行。
 func (r *PhotoRepo) PurgeExpired(ctx context.Context, now time.Time, limit int) (int64, error) {
 	if limit < 1 {
 		limit = 1
@@ -140,9 +141,9 @@ func (r *PhotoRepo) PurgeExpired(ctx context.Context, now time.Time, limit int) 
 		 WHERE p.id IN (
 		   SELECT p2.id FROM photos p2
 		   LEFT JOIN photo_retention r ON r.user_id = p2.owner_user_id
-		   WHERE p2.deleted_at IS NULL
-		     AND p2.created_at <= $1::timestamptz - make_interval(days => COALESCE(r.days, 90))
-		   ORDER BY p2.created_at
+		   WHERE COALESCE(p2.deleted_at, p2.created_at)
+		         <= $1::timestamptz - make_interval(days => COALESCE(r.days, 90))
+		   ORDER BY COALESCE(p2.deleted_at, p2.created_at)
 		   LIMIT $2
 		 )`,
 		now, limit)
@@ -150,6 +151,33 @@ func (r *PhotoRepo) PurgeExpired(ctx context.Context, now time.Time, limit int) 
 		return 0, mapError(err)
 	}
 	return ct.RowsAffected(), nil
+}
+
+// ReferencedDigests 返回 photos 表仍被任意行引用的摘要集合。
+// 含软删行：未到期的软删行可恢复，其 blob 不得回收。
+func (r *PhotoRepo) ReferencedDigests(ctx context.Context) (map[[32]byte]struct{}, error) {
+	rows, err := r.db.q(ctx).Query(ctx, `SELECT DISTINCT sha256 FROM photos`)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	out := make(map[[32]byte]struct{})
+	for rows.Next() {
+		var sha []byte
+		if err := rows.Scan(&sha); err != nil {
+			return nil, mapError(err)
+		}
+		if len(sha) != 32 {
+			return nil, errs.New(errs.CodeInternal, "photo digest has the wrong length")
+		}
+		var key [32]byte
+		copy(key[:], sha)
+		out[key] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapError(err)
+	}
+	return out, nil
 }
 
 // CountLibrary 报告属主未删图片数（P5-C 选图定界用）。
