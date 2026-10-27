@@ -290,7 +290,10 @@ func TestBackupKeepsDSNOutOfArgv(t *testing.T) {
 	if call.passfilePath == "" {
 		t.Fatalf("环境缺 PGPASSFILE：%v", call.env)
 	}
-	if call.passfileMode != 0o600 {
+	// Windows 的 FileMode 是合成值，不支持 POSIX 权限位；该断言只在 POSIX 生效。
+	if runtime.GOOS == "windows" {
+		t.Log("SKIP: Windows FileMode 不携带 POSIX 权限位，0600 断言不适用")
+	} else if call.passfileMode != 0o600 {
 		t.Fatalf("PGPASSFILE 权限 = %04o，want 0600", call.passfileMode)
 	}
 	if want := "db.example:5433:yiban:yiban:s3cr3t\n"; string(call.passfileBody) != want {
