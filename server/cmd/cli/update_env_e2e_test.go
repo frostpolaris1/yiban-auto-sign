@@ -13,6 +13,7 @@ package main
 // 干跑前缀：不碰真 /etc、不需要 root。
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -89,6 +90,14 @@ exit 0
 	}
 	if got := readAll(t, pepperOut); got != "0123456789abcdef" {
 		t.Fatalf("成对单引号必须去掉：pepper = %q", got)
+	}
+	// 名册随升级一起落位：与仓库内那份逐字节一致（派单 F8 同族）。
+	wantReg, err := os.ReadFile(filepath.Join("..", "..", "..", "config", "registry.json"))
+	if err != nil {
+		t.Fatalf("read repo registry: %v", err)
+	}
+	if got := []byte(readAll(t, filepath.Join(root, "etc/yiban/registry.json"))); !bytes.Equal(got, wantReg) {
+		t.Fatalf("升级后的名册与 config/registry.json 不一致（%d vs %d 字节）", len(got), len(wantReg))
 	}
 	if strings.Contains(out, "command not found") {
 		t.Fatalf("脚本里出现 command not found：.env 被当脚本执行了\n%s", out)
