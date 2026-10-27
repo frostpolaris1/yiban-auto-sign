@@ -533,3 +533,39 @@ func TestRunReportsViolations(t *testing.T) {
 		t.Fatalf("outside owner: code = %d, want 1", code)
 	}
 }
+
+func TestLoadRulesRejectsDuplicateIDs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "canonical.tsv")
+	writeFile(t, "", path, "a\tcall\tinternal/x/\tX\t\tm\na\tforbid\t*\tY\t\tm\n")
+	if _, err := LoadRules(path); err == nil {
+		t.Fatal("duplicate rule id must fail")
+	}
+}
+
+// forbid * 表示检查全部被扫文件；allow 内的文件豁免。
+func TestScanForbidStar(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "internal/app/a.go", `package app
+import "time"
+var _ = time.Now()
+`)
+	block := testRule("errors.http", "forbid", "*", "time.Now", "")
+	violations, err := Scan(root, []Rule{block}, false)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(violations) != 1 {
+		t.Fatalf("forbid * 应命中 1 处，got %d", len(violations))
+	}
+	allowed := testRule("errors.http", "forbid", "*", "time.Now", "internal/app/")
+	violations, err = Scan(root, []Rule{allowed}, false)
+	if err != nil {
+		t.Fatalf("Scan allowed: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("allow 内的文件应豁免，got %#v", violations)
+	}
+	if err := ValidateCheckedScopes(root, []Rule{block}); err != nil {
+		t.Fatalf("forbid * 的检查范围必须非空: %v", err)
+	}
+}

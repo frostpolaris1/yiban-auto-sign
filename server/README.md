@@ -85,12 +85,20 @@ id  kind  owner  pattern  allow  message
 - `kind=func` / `kind=type`: forbidden definitions outside `owner`.
 - `kind=import`: forbidden imports inside `owner`.
 - `kind=forbid`: forbidden `pkg.Func` calls **inside** `owner`; the inverse of
-  `call`. `owner` is the checked scope and must be non-empty. `owner *` is only
-  valid for `import`.
+  `call`. `owner` is the checked scope and must be non-empty. `owner *` is valid
+  for `import` and `forbid`: it means "check every scanned file", with `allow`
+  still exempting prefixes.
 
 `import` and `forbid` owners are checked scopes: each must match at least one Go
 file. A rule that matches no files is an error (exit 2). A test-file owner is
 counted here but only scanned in the `-tests` pass.
+
+`call`, `string`, `func` and `type` rules also have anchors. Their `owner` must
+match at least one Go file, and their `pattern` must appear in the widest scan
+(test files included). A rule whose owner or pattern has been renamed is an
+error (exit 2), not a silent green. A `string` pattern may list several values;
+one surviving value is enough. When the thing to guard does not exist yet, use
+`forbid`; a `call` rule for an absent pattern is rejected.
 
 The gate is empty-safe: an empty rule file is an error, never a green run.
 

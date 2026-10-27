@@ -40,6 +40,7 @@ func LoadRules(path string) ([]Rule, error) {
 	defer f.Close()
 
 	var rules []Rule
+	seen := make(map[string]bool)
 	sc := bufio.NewScanner(f)
 	lineNo := 0
 	for sc.Scan() {
@@ -63,6 +64,11 @@ func LoadRules(path string) ([]Rule, error) {
 		if r.ID == "" || r.Kind == "" || r.Pattern == "" {
 			return nil, fmt.Errorf("%s:%d: empty id, kind or pattern", path, lineNo)
 		}
+		// 重复 ID 会让锚点检查串味：后一条的落点会替前一条作证。
+		if seen[r.ID] {
+			return nil, fmt.Errorf("%s:%d: duplicate rule id %q", path, lineNo, r.ID)
+		}
+		seen[r.ID] = true
 		switch r.Kind {
 		case "call", "string", "func", "type", "import", "forbid":
 		default:

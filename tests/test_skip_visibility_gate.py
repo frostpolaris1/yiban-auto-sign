@@ -5,8 +5,8 @@
 
 **本门挡的缺陷形状**：一条检查因环境不满足而**跳过**，整套却没跑却报绿。
 `pyproject.toml` 的 `addopts = "-ra --tb=short"` 只让 skip 在**输出里可见**，它
-**不阻止**"整套没跑却报绿"——可见 ≠ 有门。实测（140 §五 S13）：全仓 **144 个真实
-skip 点、53 文件、350 条用例、23 族**，其中 6 族**在任何一轨都不跑**（本地权威 root
+**不阻止**"整套没跑却报绿"——可见 ≠ 有门。2026-10-27 口径：全仓 **131 个
+(marker, reason) 去重对、74 个文件**，其中 6 族**在任何一轨都不跑**（本地权威 root
 轨实测亦 `SKIPPED`），而它们挡的是部署归属、状态目录不可写、锁目录属主、生产机防呆、
 真 SIGKILL 收场这类**要紧**的性质。
 
@@ -1053,6 +1053,23 @@ class RuntimeSkipPolicyTest(unittest.TestCase):
                            capture_output=True, text=True, timeout=60)
         self.assertNotEqual(r.returncode, 0, "报告缺失在 strict 档必须判红")
 
+
+
+class BareDecoratorTest(unittest.TestCase):
+    """无括号装饰器也是跳过点：漏扫等于判定面静默缩小（r4c 复审 P1-2）。"""
+
+    def test_bare_mark_skip_is_seen(self):
+        src = "import pytest\n\n\n@pytest.mark.skip\ndef test_x():\n    pass\n"
+        self.assertIn(("mark.skip", DYNAMIC), scan_source(src))
+
+    def test_bare_skip_name_is_seen(self):
+        src = "from unittest import skip\n\n\n@skip\ndef test_x():\n    pass\n"
+        self.assertIn(("skip", DYNAMIC), scan_source(src))
+
+    def test_call_decorator_keeps_reason(self):
+        src = ("import pytest\n\n\n@pytest.mark.skipif(True, reason='why')\n"
+               "def test_x():\n    pass\n")
+        self.assertIn(("mark.skipif", "why"), scan_source(src))
 
 
 if __name__ == "__main__":
