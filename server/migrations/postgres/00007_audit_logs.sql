@@ -5,6 +5,8 @@
 --
 -- detail is text, not jsonb: jsonb does not guarantee a stable text form
 -- across versions, which would produce false chain failures.
+--
+-- Governance: migrations are forward-only. There is no Down section.
 
 -- +goose Up
 CREATE TABLE audit_logs (

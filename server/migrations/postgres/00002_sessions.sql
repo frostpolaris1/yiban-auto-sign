@@ -3,6 +3,8 @@
 -- Sessions are mutable: revocation is an UPDATE and expiry cleanup is a
 -- DELETE. There is no csrf_hash column (decision 15.1): the CSRF token is
 -- derived from the session token on each request and never stored.
+--
+-- Governance: migrations are forward-only. There is no Down section.
 
 -- +goose Up
 CREATE TABLE sessions (

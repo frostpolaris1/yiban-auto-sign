@@ -7,6 +7,11 @@
 -- window_overrides: a master or admin replacement for one (task, day).
 --   It wins over the platform window for that day. The reason is kept so the
 --   decision stays reviewable after the fact.
+--
+-- Rollback: the Down section is reversible. Down relabels window_cache rows
+--   with source 'override' to 'cache' before it narrows the constraint back to
+--   three values. The window times stay. The next discovery overwrites the
+--   row with its platform source, so the transient label is self-healing.
 
 -- +goose Up
 -- Manual overrides are copied into window_cache as source 'override',
@@ -41,6 +46,9 @@ CREATE TABLE window_overrides (
 -- +goose Down
 DROP TABLE window_overrides;
 DROP TABLE time_prefs;
+-- The narrower constraint rejects 'override'. Relabel those rows first;
+-- dropping them would discard the cached window, which is still valid.
+UPDATE window_cache SET source = 'cache' WHERE source = 'override';
 ALTER TABLE window_cache DROP CONSTRAINT ck_window_cache_source;
 ALTER TABLE window_cache ADD CONSTRAINT ck_window_cache_source
     CHECK (source IN ('platform', 'cache', 'fallback'));
