@@ -94,6 +94,9 @@ type w2cEnv struct {
 	sched     *pg.ScheduleRepo
 	prefs     *pg.TimePrefRepo
 	photos    *pg.PhotoRepo
+	photoBlob *storage.FS
+	photoDir  string
+	photoSvc  *appphotos.Service
 	locations *pg.LocationRepo
 	worker    *appworker.Service
 	provider  *e2eProvider
@@ -221,10 +224,12 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		t.Fatalf("new egress service: %v", err)
 	}
 	// 图片库与定位策略先于执行循环装配：worker 的两个注入端口引用同例。
-	photoBlobs, err := storage.NewFS(t.TempDir())
+	photoDir := t.TempDir()
+	photoBlobs, err := storage.NewFS(photoDir)
 	if err != nil {
 		t.Fatalf("new photo storage: %v", err)
 	}
+	e.photoBlob, e.photoDir = photoBlobs, photoDir
 	photoSvc, err := appphotos.NewService(appphotos.Deps{
 		Store: e.photos, Blobs: photoBlobs, Clock: clk,
 		Options: appphotos.Options{MaxPixels: 4_000_000, MaxSidePx: 4096},
@@ -232,6 +237,7 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 	if err != nil {
 		t.Fatalf("new photo service: %v", err)
 	}
+	e.photoSvc = photoSvc
 	locationSvc, err := applocation.NewService(applocation.Deps{
 		Store: e.locations, Accounts: accountSvc, Audit: e.audits, Tx: db, Clock: clk,
 	})
