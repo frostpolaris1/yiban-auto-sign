@@ -361,7 +361,9 @@ DATA_DIR="$REPO_ROOT/data"
 # 与 YIBAN_DB_FILE 两枚默认值从检出根改到 data/，故旧件就是 `.env` 与库本体连同
 # SQLite 的同目录 `-wal`/`-shm`（本项目统一 WAL 模式，见 yiban/adapters/persistence/db.py）。
 # `accounts.json` 的默认值未动（仍是检出根），不属本集合。
-LEGACY_RUNTIME_FILES=(.env yiban.db yiban.db-wal yiban.db-shm)
+# `photos` 是目录：YIBAN_PHOTO_DIR 的默认值已落到 data/photos，旧布局落点是检出根。
+# 目录与文件同用 -Rh：-R 对目录递归，-h 不跟随符号链接指向的目标。
+LEGACY_RUNTIME_FILES=(.env yiban.db yiban.db-wal yiban.db-shm photos)
 if [ "$(id -u)" -eq 0 ] && [ -z "$DESTDIR" ]; then
     if ! install -d -m 0700 -o "$SERVICE_USER" -g "$SERVICE_GROUP" "$DATA_DIR"; then
         echo "yiban-install: 无法建立运行数据目录 $DATA_DIR（属主 $SERVICE_USER:$SERVICE_GROUP）。" >&2
@@ -407,9 +409,9 @@ if [ "$(id -u)" -eq 0 ] && [ -z "$DESTDIR" ]; then
         if [ ! -e "$_legacy" ] && [ ! -L "$_legacy" ]; then continue; fi
         # 同文件系统内 mv = rename：不复制、不留旧件（旧位置的第二份权威必须消失）。
         mv -- "$_legacy" "$_target"
-        # `chown -h`：迁入件若是符号链接（把数据指到别的盘是合法部署形态），只改链接
-        # 自身，不跟随到目标——跟随会把链接指向的那个外部文件改属主。
-        chown -h "$SERVICE_USER:$SERVICE_GROUP" "$_target"
+        # `chown -Rh`：目录递归、符号链接只改链接自身（把数据指到别的盘是合法部署
+        # 形态，跟随会把链接指向的那个外部文件改属主）。
+        chown -Rh "$SERVICE_USER:$SERVICE_GROUP" "$_target"
         echo "adopted legacy runtime data: $_name -> data/$_name"
     done
 else
