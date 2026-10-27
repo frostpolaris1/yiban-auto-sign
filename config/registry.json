@@ -892,6 +892,7 @@
   },
   "YIBAN_TIME_PREF_COOLDOWN_SEC": {
     "type": "seconds",
+    "domain": [0, 3600],
     "default": 30,
     "group": [
       "节流"
