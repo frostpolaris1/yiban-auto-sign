@@ -17,7 +17,7 @@ func TestCapacity(t *testing.T) {
 		util     float64
 		want     int
 	}{
-		{"缺省口径", 80 * time.Minute, 6, 3 * time.Second, 1.0, 0.8, 3840},
+		{"缺省口径", 80 * time.Minute, 6, 3 * time.Second, 1.0, UtilDefault, 3840},
 		{"通道是瓶颈", 10 * time.Minute, 2, 3 * time.Second, 10.0, 0.8, 320},
 		{"速率是瓶颈", 10 * time.Minute, 8, 3 * time.Second, 0.5, 0.8, 240},
 		{"小窗口仍有吞吐", 2 * time.Second, 6, 3 * time.Second, 1.0, 0.8, 1},

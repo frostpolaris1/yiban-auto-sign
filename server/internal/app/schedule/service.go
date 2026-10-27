@@ -35,14 +35,6 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
 
-// DefaultEdge 是有效窗口两端让出的缺省缓冲：
-// 防止在窗口边界发起请求。显式传 0 表示不裁剪。
-const DefaultEdge = 60 * time.Second
-
-// DefaultUtil 是容量公式的利用系数缺省值。
-// 留出两成余量吸收平台抖动；与旧引擎的 0.8 同口径。
-const DefaultUtil = 0.8
-
 // fallbackStartHM / fallbackEndHM 是平台与缓存都不可用时的回退窗口（06:30~07:50）。
 // 只是作者部署的典型时段；来源会标 fallback，UI 必须显示。
 const (

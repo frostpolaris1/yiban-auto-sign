@@ -240,6 +240,16 @@ func NewServer(cfg *config.Config, logger *slog.Logger) (*http.Server, error) {
 	return newServerFromStack(cfg, stack), nil
 }
 
+// HTTP 服务器超时预算。
+// 写超时是 SSE 清本次连接截止时间前的上限，也是慢客户端被切断的时刻；
+// 数值只在常量里出现一次，独立校验见 timeouts_test.go。
+const (
+	httpReadHeaderTimeout = 5 * time.Second
+	httpReadTimeout       = 15 * time.Second
+	httpWriteTimeout      = 30 * time.Second
+	httpIdleTimeout       = 60 * time.Second
+)
+
 // newServerFromStack 用已装配好的 Stack 构造未启动的 server。
 // HTTP 关闭时释放连接池（RegisterOnShutdown）。
 // Stack.Close 幂等：srv.Shutdown 与显式收尾都会调用它。
@@ -247,10 +257,10 @@ func newServerFromStack(cfg *config.Config, stack *Stack) *http.Server {
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           stack.Engine,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		ReadHeaderTimeout: httpReadHeaderTimeout,
+		ReadTimeout:       httpReadTimeout,
+		WriteTimeout:      httpWriteTimeout,
+		IdleTimeout:       httpIdleTimeout,
 	}
 	srv.RegisterOnShutdown(stack.Close)
 	return srv
