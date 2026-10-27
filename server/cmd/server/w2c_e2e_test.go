@@ -47,6 +47,7 @@ import (
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
 	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
 	apptimepref "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/timepref"
+	appuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/user"
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/assembly"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
@@ -65,6 +66,7 @@ import (
 	schedulehttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/schedule"
 	schoolhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/school"
 	signinghttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/signing"
+	userhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/user"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
 
@@ -286,6 +288,12 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		Location: loc, Workers: 1, Avg: 60 * time.Second, Rate: 1.0, Util: 0.8,
 		SlotsPerSlice: 5, Front: true, UsePrefs: true,
 	})
+	userSvc, err := appuser.NewService(appuser.Deps{
+		Users: e.users, Audit: e.audits, Tx: db, Clock: clk, Limit: 10000,
+	})
+	if err != nil {
+		t.Fatalf("new user service: %v", err)
+	}
 
 	e.engine, err = router.New(router.Options{
 		Sessions:        e.sessions,
@@ -295,6 +303,7 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		Schools:         schoolhttp.NewHandler(schoolSvc, adminSvc),
 		Admins:          adminhttp.NewHandler(adminSvc, adminSvc),
 		Accounts:        accounthttp.NewHandler(accountSvc, adminSvc),
+		Users:           userhttp.NewHandler(userSvc, adminSvc),
 		Signing:         signingHandler,
 		Schedule:        scheduleHandler,
 		Photos:          photoshttp.NewHandler(photoSvc, adminSvc),

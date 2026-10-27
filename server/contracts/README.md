@@ -1,6 +1,8 @@
 # Host API v1 — frozen shape
 
-P0 freezes the shape. The OpenAPI 3.1 YAML is generated in P1 from this file.
+The OpenAPI 3.1 YAML is the machine-readable form and the source of the Go
+transport types. This document mirrors it; for role assignments the YAML is
+authoritative and a gate keeps both tables equal.
 
 ## Conventions
 
@@ -26,15 +28,19 @@ P0 freezes the shape. The OpenAPI 3.1 YAML is generated in P1 from this file.
 
 ## Endpoints
 
+`contracts/openapi.yaml` is the authoritative role table. This table mirrors
+it row by row; `internal/entry/http/oapi/contract_gates_test.go` fails when
+either side drifts.
+
 | Method | Path | Roles | Phase |
 |---|---|---|---|
 | POST | `/api/auth/login` | public | P1 |
-| POST | `/api/auth/logout` | any | P1 |
-| GET | `/api/auth/me` | any | P1 |
+| POST | `/api/auth/logout` | public | P1 |
+| GET | `/api/auth/me` | master/admin/user | P1 |
 | POST | `/api/auth/forgot-password` | public | P1 |
 | POST | `/api/auth/reset-password` | public | P1 |
 | POST | `/api/users` | master | P1 |
-| GET | `/api/schools` | master | P1 |
+| GET | `/api/schools` | master/admin | P1 |
 | POST | `/api/schools` | master | P1 |
 | PATCH | `/api/schools/:id` | master | P1 |
 | GET | `/api/schools/:id/admins` | master | P1 |
@@ -47,7 +53,7 @@ P0 freezes the shape. The OpenAPI 3.1 YAML is generated in P1 from this file.
 | POST | `/api/accounts/:id/review` | master/admin | P1 |
 | POST | `/api/accounts/:id/pause` | master/admin/user | P1 |
 | DELETE | `/api/accounts/:id` | master/admin/user | P1 |
-| POST | `/api/accounts/:id/verify` | master/admin/user | P3 |
+| POST | `/api/accounts/:id/verify` | master/admin | P3 |
 | GET | `/api/schedule/windows` | master/admin | P4 |
 | GET | `/api/schedule/preview` | master/admin | P4 |
 | POST | `/api/schedule/plan` | master/admin | P4 |
@@ -62,11 +68,30 @@ P0 freezes the shape. The OpenAPI 3.1 YAML is generated in P1 from this file.
 | GET | `/api/me/photos/:id` | user/admin | P5 |
 | PUT | `/api/me/photo-retention` | user | P5 |
 | PUT | `/api/accounts/:id/location` | user/admin | P5 |
-| GET | `/api/admin/events` | master/admin (SSE) | P6 |
+| GET | `/api/admin/events` | master/admin | P6 |
 | GET | `/api/me/diagnostics` | user/admin | P6 |
 | GET | `/api/accounts/:id/diagnostics` | user/admin | P6 |
-| GET | `/api/me/sign-status` | user (polling) | P6 |
+| GET | `/api/me/sign-status` | user | P6 |
 | GET | `/healthz` | public | P7 |
+
+## Enforcement notes
+
+`additionalProperties: false` is declarative only. The Go JSON decoder
+ignores unknown fields, so a client typo does not fail the request. Every
+schema that declares the keyword is registered in
+`internal/entry/http/oapi/contract_gates_test.go`
+(`additionalPropertiesExemptions`). A new declaration without a registry
+entry fails that test.
+
+Nullable response fields are always `required`. The generated Go type
+therefore has no `omitempty`: the key is present and carries `null` when no
+value exists. `offset_min` in `TimePrefUpdate` is the same shape on the
+request side: a missing key is 400 `validation_failed`, while an explicit
+`null` clears the preference.
+
+A request body over the entry limit is 413 `validation_failed` on every
+endpoint that accepts a body. The status code separates a size failure from
+a shape failure.
 
 ## Stable codes
 
