@@ -90,8 +90,8 @@ type Config struct {
 	// **必填**：缺少它的部署无法加密新凭据。
 	CredentialKey []byte
 
-	// 以下为调度面参数。缺省值见 config/registry.json；
-	// 越界即启动错误，不静默夹取。
+	// 以下为调度面参数。缺省值与域见 config/registry.json；
+	// 两侧相等由 registry_parity_test 钉住。越界即启动错误，不静默夹取。
 	Workers          int
 	AvgAttempt       time.Duration
 	EgressRate       float64
@@ -119,12 +119,122 @@ var knownEnvs = map[string]bool{
 const DefaultTimezone = "Asia/Shanghai"
 
 // DefaultHTTPAddr 是 YIBAN_HTTP_ADDR 未设置时的缺省监听地址。
-// 只绑回环：暴露需显式改。doctor 的端口体检共用本常量。
+// 只绑回环：暴露需显式改。doctor 的端口体检与 healthcheck 子命令共用本常量。
 const DefaultHTTPAddr = "127.0.0.1:47183"
 
 // DefaultPhotoDir 是 YIBAN_PHOTO_DIR 未设置时的缺省存储根。
 // doctor 的文件系统面体检共用本常量。
 const DefaultPhotoDir = "data/photos"
+
+// keySpec 是名册对照测试看到的读取规格视图。
+// domain 为 nil 表示名册不登记域；fallback 的类型就是键的类型。
+type keySpec struct {
+	key      string
+	fallback any
+	domain   []float64
+}
+
+// intKey 是整数配置键的读取规格。
+type intKey struct {
+	key      string
+	fallback int
+	min, max int
+}
+
+func (k intKey) read(src Source) (int, error) {
+	return getInt(src, k.key, k.fallback, k.min, k.max)
+}
+
+func (k intKey) spec() keySpec {
+	return keySpec{
+		key:      k.key,
+		fallback: k.fallback,
+		domain:   []float64{float64(k.min), float64(k.max)},
+	}
+}
+
+// floatKey 是浮点配置键的读取规格。
+type floatKey struct {
+	key      string
+	fallback float64
+	min, max float64
+}
+
+func (k floatKey) read(src Source) (float64, error) {
+	return getFloat(src, k.key, k.fallback, k.min, k.max)
+}
+
+func (k floatKey) spec() keySpec {
+	return keySpec{
+		key:      k.key,
+		fallback: k.fallback,
+		domain:   []float64{k.min, k.max},
+	}
+}
+
+// boolKey 是布尔配置键的读取规格。
+type boolKey struct {
+	key      string
+	fallback bool
+}
+
+func (k boolKey) read(src Source) (bool, error) {
+	return getBool(src, k.key, k.fallback)
+}
+
+func (k boolKey) spec() keySpec {
+	return keySpec{key: k.key, fallback: k.fallback}
+}
+
+// stringKey 是字符串配置键的读取规格。
+type stringKey struct {
+	key      string
+	fallback string
+}
+
+func (k stringKey) read(src Source) string {
+	return get(src, k.key, k.fallback)
+}
+
+func (k stringKey) spec() keySpec {
+	return keySpec{key: k.key, fallback: k.fallback}
+}
+
+// 读取规格表：缺省与域在代码里只出现一次。
+// LoadFrom 逐键取规格读取；registry_parity_test 用同一张表对 config/registry.json。
+// 浮点键的域取 core/rate 的常量，不在本包复写 0.2/4.0。
+var (
+	keyWorkers          = intKey{"YIBAN_WORKERS", 1, 1, 64}
+	keyAvgAttemptSec    = intKey{"YIBAN_AVG_ATTEMPT_SEC", 3, 1, 300}
+	keyWindowEdgeFront  = intKey{"YIBAN_WINDOW_EDGE_FRONT_SEC", 60, 0, 300}
+	keyWindowEdgeBack   = intKey{"YIBAN_WINDOW_EDGE_BACK_SEC", 60, 0, 300}
+	keyTimePrefCooldown = intKey{"YIBAN_TIME_PREF_COOLDOWN_SEC", 30, 0, 3600}
+	keyEgressRate       = floatKey{"YIBAN_EGRESS_RATE", corerate.DefaultRate, corerate.RateMin, corerate.RateMax}
+	keyAllowTimePref    = boolKey{"YIBAN_ALLOW_TIME_PREF", false}
+	keyHTTPAddr         = stringKey{"YIBAN_HTTP_ADDR", DefaultHTTPAddr}
+	keyTimezone         = stringKey{"YIBAN_TZ", DefaultTimezone}
+	keyPhotoDir         = stringKey{"YIBAN_PHOTO_DIR", DefaultPhotoDir}
+	keyDatabaseURL      = stringKey{"YIBAN_DATABASE_URL", ""}
+)
+
+// configSpecs 汇总静态缺省/域的读取规格。
+// 新增读取点必须同批进本表：TestEveryConfigReadHasRegistryComparison 扫 config.go
+// 的键字面量，表外出现即红。
+func configSpecs() []keySpec {
+	return []keySpec{
+		keyWorkers.spec(),
+		keyAvgAttemptSec.spec(),
+		keyWindowEdgeFront.spec(),
+		keyWindowEdgeBack.spec(),
+		keyTimePrefCooldown.spec(),
+		keyEgressRate.spec(),
+		keyAllowTimePref.spec(),
+		keyHTTPAddr.spec(),
+		keyTimezone.spec(),
+		keyPhotoDir.spec(),
+		keyDatabaseURL.spec(),
+	}
+}
 
 // Load 读取进程环境。
 func Load() (*Config, error) { return LoadFrom(Env{}) }
@@ -144,15 +254,12 @@ func LoadFrom(src Source) (*Config, error) {
 	}
 	cfg := &Config{
 		Env:         env,
-		HTTPAddr:    get(src, "YIBAN_HTTP_ADDR", DefaultHTTPAddr),
-		DatabaseURL: strings.TrimSpace(get(src, "YIBAN_DATABASE_URL", "")),
-		Timezone:    get(src, "YIBAN_TZ", DefaultTimezone),
+		HTTPAddr:    keyHTTPAddr.read(src),
+		DatabaseURL: strings.TrimSpace(keyDatabaseURL.read(src)),
+		Timezone:    keyTimezone.read(src),
 		// 本地 HTTP 无法设置 Secure cookie，
 		// 故无前缀名只在 development 与 test 下作为默认。
 		InsecureCookies: env == "development" || env == "test",
-	}
-	if cfg.Timezone == "" {
-		cfg.Timezone = DefaultTimezone
 	}
 	if raw, ok := src.Lookup("YIBAN_INSECURE_COOKIES"); ok && raw != "" {
 		flag, err := strconv.ParseBool(raw)
@@ -187,37 +294,37 @@ func LoadFrom(src Source) (*Config, error) {
 
 	// 调度参数：名册登记的域名在启动时校验。
 	// 非法值必须失败：静默夹取会让容量与限速口径悄悄改变。
-	if cfg.Workers, err = getInt(src, "YIBAN_WORKERS", 1, 1, 64); err != nil {
+	if cfg.Workers, err = keyWorkers.read(src); err != nil {
 		return nil, err
 	}
-	avg, err := getInt(src, "YIBAN_AVG_ATTEMPT_SEC", 3, 1, 300)
+	avg, err := keyAvgAttemptSec.read(src)
 	if err != nil {
 		return nil, err
 	}
 	cfg.AvgAttempt = time.Duration(avg) * time.Second
-	if cfg.EgressRate, err = getFloat(src, "YIBAN_EGRESS_RATE", corerate.DefaultRate, 0.2, 4.0); err != nil {
+	if cfg.EgressRate, err = keyEgressRate.read(src); err != nil {
 		return nil, err
 	}
-	edgeFront, err := getInt(src, "YIBAN_WINDOW_EDGE_FRONT_SEC", 60, 0, 300)
+	edgeFront, err := keyWindowEdgeFront.read(src)
 	if err != nil {
 		return nil, err
 	}
 	cfg.EdgeFront = time.Duration(edgeFront) * time.Second
-	edgeBack, err := getInt(src, "YIBAN_WINDOW_EDGE_BACK_SEC", 60, 0, 300)
+	edgeBack, err := keyWindowEdgeBack.read(src)
 	if err != nil {
 		return nil, err
 	}
 	cfg.EdgeBack = time.Duration(edgeBack) * time.Second
-	if cfg.AllowTimePref, err = getBool(src, "YIBAN_ALLOW_TIME_PREF", false); err != nil {
+	if cfg.AllowTimePref, err = keyAllowTimePref.read(src); err != nil {
 		return nil, err
 	}
-	cooldown, err := getInt(src, "YIBAN_TIME_PREF_COOLDOWN_SEC", 30, 0, 3600)
+	cooldown, err := keyTimePrefCooldown.read(src)
 	if err != nil {
 		return nil, err
 	}
 	cfg.TimePrefCooldown = time.Duration(cooldown) * time.Second
 
-	cfg.PhotoDir = strings.TrimSpace(get(src, "YIBAN_PHOTO_DIR", DefaultPhotoDir))
+	cfg.PhotoDir = strings.TrimSpace(keyPhotoDir.read(src))
 	if cfg.PhotoDir == "" {
 		return nil, errors.New("config: YIBAN_PHOTO_DIR must not be empty")
 	}

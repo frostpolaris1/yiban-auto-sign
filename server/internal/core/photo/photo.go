@@ -12,14 +12,20 @@
 //
 // # 口径
 // SHA256 是**预处理后**字节的摘要，与 blob 存储键一致。
-// 保留期只接受 30/90/180/365 天；未设置时用 90 天。
+// 保留期闭集见 RetentionDays；未设置时用 DefaultRetentionDays。
 // 到期判据从 COALESCE(deleted_at, created_at) 起算。
 package photo
 
 import "time"
 
+// RetentionDays 是允许的保留期闭集（天），严格升序。
+// 它是唯一权威：ValidRetention 与迁移 CHECK 约束都由本表派生语义，
+// SQL 无法引用 Go 常量，故由 retention_single_source_test 钉住两侧相等。
+var RetentionDays = []int{30, 90, 180, 365}
+
 const (
 	// DefaultRetentionDays 是用户未设置保留期时的天数。
+	// 必须属于 RetentionDays；由测试钉住。
 	DefaultRetentionDays = 90
 	// MaxBytes 是单张图片的原始上传上限（10 MiB）。
 	MaxBytes = 10 << 20
@@ -27,12 +33,12 @@ const (
 
 // ValidRetention 报告 days 是否属于允许的保留期闭集。
 func ValidRetention(days int) bool {
-	switch days {
-	case 30, 90, 180, 365:
-		return true
-	default:
-		return false
+	for _, allowed := range RetentionDays {
+		if days == allowed {
+			return true
+		}
 	}
+	return false
 }
 
 // Record 是一张已入库的图片。
