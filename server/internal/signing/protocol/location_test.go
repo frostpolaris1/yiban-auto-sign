@@ -1,6 +1,9 @@
 package protocol
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestExtractVerifyRequestFixture(t *testing.T) {
 	token, ok := ExtractVerifyRequest(string(readFixture(t, "iframe_location.txt")))
@@ -10,8 +13,10 @@ func TestExtractVerifyRequestFixture(t *testing.T) {
 	if len(token) != 512 {
 		t.Fatalf("token length = %d, want 512", len(token))
 	}
-	if token[:8] != "00000000" {
-		t.Fatalf("token prefix = %q", token[:8])
+	// 只判形状：实拍值已按 AGENTS §十六 换成等长合成串，
+	// 钉住实拍前缀等于把令牌片段写回仓库。
+	if strings.Trim(token, "0123456789abcdef") != "" {
+		t.Fatalf("token 不是小写十六进制：%q", token[:16])
 	}
 }
 
