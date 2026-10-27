@@ -33,6 +33,7 @@ import (
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	appphotos "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/photos"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
+	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corephoto "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/photo"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
@@ -73,11 +74,16 @@ type Handler struct {
 	svc    Service
 	authz  Authorizer
 	logger *slog.Logger
+	// clock 只服务于路由级 deadline：截止时间必须取真实时间。
+	clock coreclock.Clock
 }
 
 // NewHandler 构造处理器。日志缺省用进程 default logger。
 func NewHandler(svc Service, authz Authorizer) *Handler {
-	return &Handler{svc: svc, authz: authz, logger: slog.Default()}
+	return &Handler{
+		svc: svc, authz: authz,
+		logger: slog.Default(), clock: coreclock.System{},
+	}
 }
 
 // WithLogger 覆盖处理器日志。装配层传进程 logger。
@@ -228,7 +234,7 @@ func uploadFile(c *gin.Context) (io.ReadCloser, error) {
 // 不支持 deadline 的 Writer（如测试 recorder）只记 warn：
 // 全局 ReadTimeout 仍在，状态码不变。
 func (h *Handler) extendReadDeadline(c *gin.Context, budget time.Duration) {
-	err := http.NewResponseController(c.Writer).SetReadDeadline(time.Now().Add(budget))
+	err := http.NewResponseController(c.Writer).SetReadDeadline(h.clock.Now().Add(budget))
 	if err != nil {
 		h.logger.WarnContext(c.Request.Context(), "photo: cannot extend the read deadline",
 			"error", err.Error(), "path", c.Request.URL.Path)
@@ -237,7 +243,7 @@ func (h *Handler) extendReadDeadline(c *gin.Context, budget time.Duration) {
 
 // extendWriteDeadline 把本次连接的写截止时间推后，失败处理同上。
 func (h *Handler) extendWriteDeadline(c *gin.Context, budget time.Duration) {
-	err := http.NewResponseController(c.Writer).SetWriteDeadline(time.Now().Add(budget))
+	err := http.NewResponseController(c.Writer).SetWriteDeadline(h.clock.Now().Add(budget))
 	if err != nil {
 		h.logger.WarnContext(c.Request.Context(), "photo: cannot extend the write deadline",
 			"error", err.Error(), "path", c.Request.URL.Path)

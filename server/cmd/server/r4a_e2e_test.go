@@ -33,6 +33,9 @@ import (
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
+// testNow 取真实时间。e2e 判的是真实时钟下的保留期与截止时间。
+func testNow() time.Time { return clock.System{}.Now() }
+
 // r4aBlob 写入一份 blob 并返回摘要。
 func (e *w2cEnv) r4aBlob(t *testing.T, data []byte) [32]byte {
 	t.Helper()
@@ -48,7 +51,7 @@ func (e *w2cEnv) r4aSetBlobAge(t *testing.T, sha [32]byte, age time.Duration) {
 	t.Helper()
 	name := hex.EncodeToString(sha[:])
 	path := filepath.Join(e.photoDir, name[:2], name)
-	at := time.Now().Add(-age)
+	at := testNow().Add(-age)
 	if err := os.Chtimes(path, at, at); err != nil {
 		e.t.Fatalf("chtimes %s: %v", name, err)
 	}
@@ -77,7 +80,7 @@ func (e *w2cEnv) r4aPhotoRow(t *testing.T, owner string, seed byte, sha [32]byte
 // 一轮清理同时处理行与 blob，按各用户保留期与删除时刻判定。
 func TestR4APhotoRetentionSweepsRowsAndBlobs(t *testing.T) {
 	e := w2cNewEnv(t)
-	now := clock.System{}.Now().UTC()
+	now := testNow().UTC()
 	userA := e.user("r4a-ret-a@example.com", "user")
 	userB := e.user("r4a-ret-b@example.com", "user")
 	userC := e.user("r4a-ret-c@example.com", "user")
@@ -165,7 +168,7 @@ func TestR4APhotoRetentionSweepsRowsAndBlobs(t *testing.T) {
 // 日循环：启动即清理；取消后 Run 在 1s 内返回。
 func TestR4ARetentionLoopRunsAndStops(t *testing.T) {
 	e := w2cNewEnv(t)
-	now := clock.System{}.Now().UTC()
+	now := testNow().UTC()
 	owner := e.user("r4a-loop@example.com", "user")
 	if err := e.photos.PutRetention(e.ctx, owner.ID, 30, now); err != nil {
 		t.Fatalf("put retention: %v", err)
@@ -184,12 +187,12 @@ func TestR4ARetentionLoopRunsAndStops(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); loop.Run(ctx) }()
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := testNow().Add(2 * time.Second)
 	for {
 		if e.scalarInt("SELECT count(*) FROM photos WHERE id = $1::uuid", rec.ID) == 0 {
 			break
 		}
-		if time.Now().After(deadline) {
+		if testNow().After(deadline) {
 			cancel()
 			t.Fatal("循环两跳内没有删到期行")
 		}
@@ -207,7 +210,7 @@ func TestR4ARetentionLoopRunsAndStops(t *testing.T) {
 // buildStack 返回后首轮清理已排上，到期行必须在 2s 内消失；close 不得挂住。
 func TestR4ABuildStackRunsRetentionLoop(t *testing.T) {
 	e := w2cNewEnv(t)
-	now := clock.System{}.Now().UTC()
+	now := testNow().UTC()
 	owner := e.user("r4a-wire@example.com", "user")
 	if err := e.photos.PutRetention(e.ctx, owner.ID, 30, now); err != nil {
 		t.Fatalf("put retention: %v", err)
@@ -215,10 +218,11 @@ func TestR4ABuildStackRunsRetentionLoop(t *testing.T) {
 	rec := e.r4aPhotoRow(t, owner.ID, 1, e.r4aBlob(t, []byte("wire blob")), now.Add(-31*24*time.Hour))
 
 	cfg := &config.Config{
-		Env:             "test",
-		HTTPAddr:        "127.0.0.1:0",
-		DatabaseURL:     w2cWithSchema(w2cRequireDSN(t), e.schema),
-		Timezone:        "Asia/Shanghai",
+		Env:         "test",
+		HTTPAddr:    "127.0.0.1:0",
+		DatabaseURL: w2cWithSchema(w2cRequireDSN(t), e.schema),
+		// 本用例不判业务日界；UTC 也是合法 IANA 区名。
+		Timezone:        "UTC",
 		HashPepper:      []byte("0123456789abcdef0123456789abcdef"),
 		CredentialKey:   []byte("0123456789abcdef0123456789abcdef"),
 		PhotoDir:        e.photoDir,
@@ -233,12 +237,12 @@ func TestR4ABuildStackRunsRetentionLoop(t *testing.T) {
 		t.Fatalf("buildStack: %v", err)
 	}
 	closed := make(chan struct{})
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := testNow().Add(2 * time.Second)
 	for {
 		if e.scalarInt("SELECT count(*) FROM photos WHERE id = $1::uuid", rec.ID) == 0 {
 			break
 		}
-		if time.Now().After(deadline) {
+		if testNow().After(deadline) {
 			stack.close()
 			t.Fatalf("装配后首轮清理没有执行：RetentionLoop 未接线；logs=%s", logs.String())
 		}
