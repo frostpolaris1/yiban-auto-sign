@@ -892,6 +892,7 @@
   },
   "YIBAN_TIME_PREF_COOLDOWN_SEC": {
     "type": "seconds",
+    "domain": [0, 3600],
     "default": 30,
     "group": [
       "节流"
@@ -1974,6 +1975,56 @@
     "tier": "master",
     "reload": "restart"
   },
+  "YIBAN_INSTALL_ROOT": {
+    "type": "path",
+    "default": null,
+    "group": [
+      "部署"
+    ],
+    "doc": "安装路径前缀（空=根文件系统；设了即干跑，不建用户、不启服务）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_HEALTH_RETRIES": {
+    "type": "int",
+    "domain": [1, 100],
+    "default": 10,
+    "group": [
+      "部署"
+    ],
+    "doc": "安装/更新后 /healthz 探测次数（每次间隔见 YIBAN_HEALTH_RETRY_INTERVAL）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_HEALTH_RETRY_INTERVAL": {
+    "type": "seconds",
+    "domain": [0, 60],
+    "default": 1,
+    "group": [
+      "部署"
+    ],
+    "doc": "安装/更新后 /healthz 探测间隔秒数（0=不留间隔，供 e2e 用）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_PG_PASSWORD": {
+    "type": "string",
+    "default": null,
+    "group": [
+      "部署"
+    ],
+    "doc": "容器部署的 PostgreSQL 口令（compose 必填，未设即拒绝启动）",
+    "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
   "YIBAN_SSE_ENABLED": {
     "type": "bool",
     "default": true,
@@ -2111,6 +2162,30 @@
     ],
     "doc": "实验线 PostgreSQL e2e 的测试库 DSN。缺省空：server/scripts/verify.sh 跳过 pg/auth e2e 并打印 SKIP 行（跳过≠绿，跳过必须显性可见）",
     "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_DOCKER_E2E": {
+    "type": "bool",
+    "default": false,
+    "group": [
+      "部署"
+    ],
+    "doc": "容器构建 e2e 开关（1=构建镜像并跑真容器；缺省跳过并打印 SKIP 行）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_DOCKER_GOPROXY": {
+    "type": "string",
+    "default": "",
+    "group": [
+      "部署"
+    ],
+    "doc": "容器构建 e2e 的 Go 模块代理覆盖（受限网络用；空=用镜像默认）",
+    "sensitive": false,
     "web_editable": false,
     "tier": "master",
     "reload": "restart"

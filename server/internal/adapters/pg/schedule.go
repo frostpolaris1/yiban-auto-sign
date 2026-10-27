@@ -427,6 +427,13 @@ func (r *ScheduleRepo) Rearm(ctx context.Context, taskID string, runAt time.Time
 	return nil
 }
 
+// CountRunning 数当前 running 行。优雅停机与 doctor 复用；
+// 词表经参数传入，不在 SQL 里写状态字面量。
+func (r *ScheduleRepo) CountRunning(ctx context.Context) (int64, error) {
+	return r.db.QueryInt64(ctx,
+		"SELECT count(*) FROM sign_tasks WHERE state = $1", string(corestatus.TaskRunning))
+}
+
 // ResetRunning 回收孤儿 running 行（启动时调用）：
 // 单进程下启动瞬间的 running 必然来自上次崩溃。落点改为 now，立即可执行。
 func (r *ScheduleRepo) ResetRunning(ctx context.Context) (int64, error) {

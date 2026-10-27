@@ -16,19 +16,20 @@ import (
 	"crypto/sha256"
 	"testing"
 
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/assembly"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 )
 
 func TestDeriveAuditKey(t *testing.T) {
 	pepper := []byte("0123456789abcdef0123456789abcdef")
 
-	first, err := deriveAuditKey(pepper)
+	first, err := assembly.DeriveAuditKey(pepper)
 	if err != nil {
-		t.Fatalf("deriveAuditKey: %v", err)
+		t.Fatalf("DeriveAuditKey: %v", err)
 	}
-	second, err := deriveAuditKey(pepper)
+	second, err := assembly.DeriveAuditKey(pepper)
 	if err != nil {
-		t.Fatalf("deriveAuditKey(second): %v", err)
+		t.Fatalf("DeriveAuditKey(second): %v", err)
 	}
 	if !bytes.Equal(first, second) {
 		t.Fatal("two derivations of the same pepper differ; old chains would stop verifying")
@@ -51,7 +52,7 @@ func TestDeriveAuditKey(t *testing.T) {
 	if string(first) == coreauth.CSRFToken(pepper, "yiban.audit.key.v1") {
 		t.Fatal("audit key collides with the CSRF derivation")
 	}
-	if _, err := deriveAuditKey(nil); err == nil {
-		t.Fatal("deriveAuditKey accepted an empty pepper")
+	if _, err := assembly.DeriveAuditKey(nil); err == nil {
+		t.Fatal("DeriveAuditKey accepted an empty pepper")
 	}
 }

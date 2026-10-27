@@ -86,6 +86,11 @@ func (s *Service) Recover(ctx context.Context) (int64, error) {
 	return s.deps.Store.ResetRunning(ctx)
 }
 
+// CountRunning 数当前 running 行。优雅停机用它报在飞清零。
+func (s *Service) CountRunning(ctx context.Context) (int64, error) {
+	return s.deps.Store.CountRunning(ctx)
+}
+
 // Step 认领并执行至多 limit 个到期任务，返回处理数。
 //
 // 两类失败要分清：

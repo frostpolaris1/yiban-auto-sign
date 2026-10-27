@@ -50,7 +50,7 @@ Layer and domain names are fixed by the repository map in `../STRUCTURE.md`.
 ```bash
 cd server
 ./scripts/verify.sh
-go test ./...
+go test -count=1 ./...
 go run ./tools/gate -root . -rules canonical.tsv
 go run ./tools/structure -root .. -rules structure.tsv
 ./scripts/generate.sh --check

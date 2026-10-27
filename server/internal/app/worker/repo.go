@@ -44,6 +44,8 @@ type Store interface {
 	Rearm(ctx context.Context, taskID string, runAt time.Time) error
 	// ResetRunning 回收孤儿 running 行（启动时调用）。
 	ResetRunning(ctx context.Context) (int64, error)
+	// CountRunning 数当前 running 行。优雅停机用它报在飞清零。
+	CountRunning(ctx context.Context) (int64, error)
 	// GetWindow 取任务当日窗口；无缓存返回 errs.ErrNotFound。
 	GetWindow(ctx context.Context, schoolTaskID, day string) (coreschedule.WindowRecord, error)
 	// EnsureTask 为手动签到建或取当日任务行；created 表示本次插入。
