@@ -58,6 +58,7 @@ type fakeStore struct {
 	gotAccountIDs []string
 	gotTaskIDs    []string
 	gotScope      corescope.Scope
+	stateCalls    int
 }
 
 func (f *fakeStore) TodayTasks(_ context.Context, accountIDs []string, _ string) ([]corediag.TaskRow, error) {
@@ -82,6 +83,7 @@ func (f *fakeStore) Egresses(_ context.Context, accountIDs []string) (map[string
 
 func (f *fakeStore) StateCounts(_ context.Context, scope corescope.Scope, _ string) (map[string]int, error) {
 	f.gotScope = scope
+	f.stateCalls++
 	return f.counts, nil
 }
 
@@ -223,5 +225,44 @@ func TestSnapshotPassesScopeAndCounts(t *testing.T) {
 	}
 	if st.gotScope.Kind() != corescope.KindMaster {
 		t.Fatalf("scope kind = %v", st.gotScope.Kind())
+	}
+}
+
+// Snapshot 必须把非 Master 作用域原样下传。
+// 判据：admin 作用域进、admin 作用域出。
+// 把作用域替换为 Master（或忽略入参）时本用例红。
+func TestSnapshotForwardsNonMasterScope(t *testing.T) {
+	st := &fakeStore{counts: map[string]int{string(corestatus.TaskSuccess): 1}}
+	svc := newDiagService(t, &fakeAccounts{}, st)
+
+	schools := []string{"school-1"}
+	view, err := svc.Snapshot(context.Background(), corescope.Admin(schools))
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if view.States[string(corestatus.TaskSuccess)] != 1 {
+		t.Fatalf("states = %v", view.States)
+	}
+	if kind := st.gotScope.Kind(); kind != corescope.KindAdmin {
+		t.Fatalf("scope kind = %v; want admin (the use case replaced the caller scope)", kind)
+	}
+	if got := st.gotScope.SchoolIDs(); !reflect.DeepEqual(got, schools) {
+		t.Fatalf("school ids = %v; want %v", got, schools)
+	}
+}
+
+// Snapshot 拒绝零值作用域：查库之前报 internal_error。
+// 删掉 RequireScope 时零值会被下传——本用例红。
+func TestSnapshotRejectsZeroValueScope(t *testing.T) {
+	st := &fakeStore{counts: map[string]int{string(corestatus.TaskSuccess): 1}}
+	svc := newDiagService(t, &fakeAccounts{}, st)
+
+	if _, err := svc.Snapshot(context.Background(), corescope.Scope{}); err == nil {
+		t.Fatal("Snapshot accepted a zero-value scope")
+	} else if code := coreerrs.From(err).Code; code != coreerrs.CodeInternal {
+		t.Fatalf("zero-value scope maps to %q; want internal_error", code)
+	}
+	if st.stateCalls != 0 {
+		t.Fatalf("StateCounts was called %d times with a zero-value scope", st.stateCalls)
 	}
 }
