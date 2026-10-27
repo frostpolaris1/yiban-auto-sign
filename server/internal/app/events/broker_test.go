@@ -203,9 +203,17 @@ func TestSlowSubscriberDropsPerSubscriber(t *testing.T) {
 
 	const total = 100000
 	var received atomic.Int64
+	// progress 只在读侧真的收到事件时唤醒等待方：排干不以固定采样窗口判定。
+	// 负载下读侧可能几十毫秒拿不到 CPU；固定窗口会把"还没排干"误判成
+	// "已排干"，进而假红（r4 门审计 P2）。
+	progress := make(chan struct{}, 1)
 	go func() {
 		for range fast.C {
 			received.Add(1)
+			select {
+			case progress <- struct{}{}:
+			default:
+			}
 		}
 	}()
 
@@ -217,16 +225,17 @@ func TestSlowSubscriberDropsPerSubscriber(t *testing.T) {
 	if elapsed > 10*time.Second {
 		t.Fatalf("1e5 次 Publish 耗时 %s，超过 10s 上限：发布方被阻塞", elapsed)
 	}
-	// 发布已停：等读侧把缓冲排干（计数停止增长）再对账。
-	prev := int64(-1)
-	for stable := 0; stable < 50; {
-		cur := received.Load()
-		if cur == prev {
-			stable++
-		} else {
-			stable, prev = 0, cur
+	// 发布已停：等读侧把通道里剩余的事件读完。每收到一条就唤醒一次，
+	// 因此负载只延长等待，不改变判据；超时上限只防真卡死。
+	drainDeadline := time.After(10 * time.Second)
+	for received.Load()+int64(fast.Dropped()) < total {
+		select {
+		case <-progress:
+		case <-drainDeadline:
+			t.Fatalf("排干超时：收到 %d + 丢发 %d = %d, want %d",
+				received.Load(), fast.Dropped(),
+				received.Load()+int64(fast.Dropped()), total)
 		}
-		time.Sleep(2 * time.Millisecond)
 	}
 	if got := received.Load() + int64(fast.Dropped()); got != total {
 		t.Fatalf("快订阅者收到 %d + 丢发 %d = %d, want %d", received.Load(), fast.Dropped(), got, total)

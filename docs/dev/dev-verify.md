@@ -73,9 +73,11 @@ audit_transaction 1 条 + path_env_read_gate 1 条）；同文件内两条 share
 **都不是门禁**：两档都会打印免责声明。推送前跑全量（默认模式）或确认 CI 绿；fast 的绿
 不得当成门禁的绿。
 
-**对账**：全量 = `--fast` 的 covered + 4 条剔除（两侧都取自 pytest 汇总行）。
-这条对账证明剔除清单只减"跑了的用例数"，没有隐藏红。历史数字（2026-10-16）见上一段；
-条数从 5 改为 4 的来由见 R3-025（2026-10-24），4 条由 `run_slow` 的长尾轨执行。
+**对账**：全量 ＝ 快集 ＋ 慢集 ＋ 串行轨（用例数同一口径：`pytest tests/ --collect-only -q`
+的 node id 计数）。`--fast` 只跑快集，并在快集内 `--deselect` 4 条长尾（由 `run_slow`
+执行）。它**不等于**全量减 4：慢集与串行轨整条不在 `--fast` 面内。现量数字与测量命令见
+§3「现量口径」。旧口径「全量 = fast covered + 4」只算了 4 条长尾，漏掉两条轨，已废弃。
+条数从 5 改为 4 的来由见 R3-025（2026-10-24）。
 
 **退出码 3 的语义**：范围档没测到任何真实用例——① 改动集为空，或 ② 改动存在但反查不到
 任何相邻用例。这两种情况只跑 `tests/test_dev_verify_entry.py`（入口自检），退出码用 **3**。
@@ -206,12 +208,18 @@ python -m pytest tests/test_import_linter_gate.py -q -p no:randomly
 slow 行 + `FAST_KNOWN_SLOW` 长尾 4 条），与 verify 并行、每次 push 都跑——
 **slow 行与长尾不再只靠本地全量覆盖**。
 
-**现量口径（2026-10-18，PR #138 后）**：全量 301 个文件 ＝ 快集 286 ＋ 慢集 14 ＋ 串行轨 1；
-用例数口径 4813 ＝ 4639 ＋ 172 ＋ 2。**`slow` 与 `serial` 都是串行执行**（slow 由 `run_slow`
+**现量口径（2026-10-27 本树）**：全量 352 个文件 ＝ 快集 337 ＋ 慢集 14 ＋ 串行轨 1
+（文件数口径：`tests/lane-roster.tsv` 的非注释行按车道计数；测量命令
+`awk -F'\t' '!/^#/ && ($1=="fast" || $1=="slow" || $1=="serial") {print $1}' tests/lane-roster.tsv | sort | uniq -c`）。
+用例数口径 5236 ＝ 快集 5065 ＋ 慢集 169 ＋ 串行轨 2
+（口径：`pytest tests/ --collect-only -q` 的 `tests/…::…` 行按文件归道计数；测量命令
+`python -m pytest tests/ --collect-only -q -p no:randomly --no-header`）。
+**`slow` 与 `serial` 都是串行执行**（slow 由 `run_slow`
 不带 `-n`，serial 由 verify 里的单独一步），故真进程树类用例在两条道上都独占核；区别只在
 **跑在哪个作业**：`slow` 在并行的 `slow-lane` 作业（不占 verify 关键路径），`serial` 在
 verify 里（占）。⇒ 重且必须独占核的用例，优先放 `slow`，别放 `serial`。
-墙钟现量：CI verify **7m55s**（上限 10m）、`slow-lane` **4m2s**、本机 `--fast` **62s**。
+墙钟现量（2026-10-18 口径，PR #138 后，未在本轮重测）：CI verify **7m55s**（上限 10m）、
+`slow-lane` **4m2s**、本机 `--fast` **62s**。
 把重活从 `fast` 挪到 `slow` 的判据始终是那条：**墙钟真按"等外面"计费**（真实进程树／
 真实定时等待／全仓扫描）；纯计算重（bcrypt 重算等）**不挪**——那会破坏快集的覆盖口径。
 
