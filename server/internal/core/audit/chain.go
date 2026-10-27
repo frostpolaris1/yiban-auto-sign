@@ -49,7 +49,7 @@ const MaxDetailBytes = 4096
 // 本处词表是动作取值的唯一来源；数据库 CHECK 只校验形状，不校验集合。
 type Action string
 
-// P1 动作词表。P4 补任务类动作，见下方 task.* 三项。
+// P1 动作词表。P4 补任务类与凭据状态类动作。
 const (
 	ActionAuthLogin           Action = "auth.login"
 	ActionAuthLoginFailed     Action = "auth.login_failed"
@@ -74,9 +74,13 @@ const (
 	ActionAccountRestore      Action = "account.restore"
 	ActionCredentialUpdate    Action = "credential.update"
 	ActionCredentialRekey     Action = "credential.rekey"
-	ActionTaskReclaim         Action = "task.reclaim"
-	ActionTaskClaim           Action = "task.claim"
-	ActionTaskSettle          Action = "task.settle"
+	// P4 引擎：明确登录失败把账号移出排期（active → credential_error）。
+	ActionAccountCredentialError Action = "account.credential_error"
+	// 凭据更新把 credential_error 账号放回排期（credential_error → active）。
+	ActionAccountCredentialRecovered Action = "account.credential_recovered"
+	ActionTaskReclaim                Action = "task.reclaim"
+	ActionTaskClaim                  Action = "task.claim"
+	ActionTaskSettle                 Action = "task.settle"
 	// P5-C：账号定位策略写入。detail 只记 mode 与 has_reason。
 	ActionLocationSet Action = "location.set"
 )

@@ -280,7 +280,8 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 //   - 成功面：success、already_done → success；
 //   - 有结论但不该告警：no_target、invalid_target、photo_missing、
 //     challenge、device_unbound → skipped（当日不再动，且不算"失败"）；
-//   - 确定性失败：rejected、photo_rejected、credential_invalid → failed；
+//   - 确定性失败：rejected、photo_rejected → failed；
+//   - 凭据错：credential_invalid → failed，并把账号移出排期；
 //   - 可重试面：transient、pending_upstream、unknown → 预算内退避。
 func (s *Service) settleOutcome(ctx context.Context, task corescheduleTask, win corewindow.Window, now time.Time, outcome contract.Outcome) error {
 	switch outcome {
@@ -290,9 +291,10 @@ func (s *Service) settleOutcome(ctx context.Context, task corescheduleTask, win 
 		contract.OutcomePhotoMissing, contract.OutcomeChallenge,
 		contract.OutcomeDeviceUnbound:
 		return s.finish(ctx, task, corestatus.TaskSkipped, string(outcome))
-	case contract.OutcomeRejected, contract.OutcomePhotoRejected,
-		contract.OutcomeCredentialBad:
+	case contract.OutcomeRejected, contract.OutcomePhotoRejected:
 		return s.finish(ctx, task, corestatus.TaskFailed, string(outcome))
+	case contract.OutcomeCredentialBad:
+		return s.finishCredentialInvalid(ctx, task)
 	}
 	// 重试面：预算耗尽或窗口放不下即落 failed。
 	// NextDelay 的 last 固定为 0：退避从基础间隔起步，抖动交给后续批次
@@ -346,17 +348,37 @@ func (s *Service) finish(ctx context.Context, task corescheduleTask, state cores
 	if err := s.deps.Store.Finish(ctx, task.AccountID, task.SchoolTaskID, task.Day, state, result, s.deps.Clock.Now()); err != nil {
 		return err
 	}
-	if s.deps.Notifier != nil {
-		// attempt 口径 = 落库后的 sign_tasks.attempts；Finish 计一次尝试。
-		defer func() { _ = recover() }() // 发布失败只丢事件
-		s.deps.Notifier.TaskEvent(ctx, task.SchoolID, task.SchoolTaskID, task.Day,
-			appevents.TypeTaskConcluded, map[string]any{
-				"account_id": task.AccountID,
-				"state":      string(state),
-				"attempt":    task.Attempts + 1,
-			})
-	}
+	s.notifyConcluded(ctx, task, state)
 	return nil
+}
+
+// finishCredentialInvalid 落 failed(credential_invalid)，并由存储层
+// 在同一事务里把账号移出排期。落库成功后同样发 task.concluded。
+//
+// 为什么不能复用 finish：账号状态是排期输入。只落任务不落账号，
+// 次日仍会认领同一账号并再打一次失败登录（验收 3）。
+func (s *Service) finishCredentialInvalid(ctx context.Context, task corescheduleTask) error {
+	if err := s.deps.Store.FinishCredentialInvalid(ctx, task.SchoolID, task.AccountID, task.SchoolTaskID, task.Day, s.deps.Clock.Now()); err != nil {
+		return err
+	}
+	s.notifyConcluded(ctx, task, corestatus.TaskFailed)
+	return nil
+}
+
+// notifyConcluded 发布 task.concluded。
+// attempt 口径 = 落库后的 sign_tasks.attempts：两条落库路径都计一次尝试。
+// 发布不得阻塞或改变结算语义：实现失败只丢事件，panic 就地吞掉。
+func (s *Service) notifyConcluded(ctx context.Context, task corescheduleTask, state corestatus.TaskState) {
+	if s.deps.Notifier == nil {
+		return
+	}
+	defer func() { _ = recover() }() // 发布失败只丢事件
+	s.deps.Notifier.TaskEvent(ctx, task.SchoolID, task.SchoolTaskID, task.Day,
+		appevents.TypeTaskConcluded, map[string]any{
+			"account_id": task.AccountID,
+			"state":      string(state),
+			"attempt":    task.Attempts + 1,
+		})
 }
 
 // attemptID 生成"按尝试唯一"的幂等键。

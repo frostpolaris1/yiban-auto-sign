@@ -130,7 +130,9 @@ func TestCanonicalRuleRowsPinned(t *testing.T) {
 	got := hex.EncodeToString(h.Sum(nil))
 	// rb3：boundary.adapters 的 allow 增列
 	// internal/adapters/pg/usecase_e2e_test.go（用例层 e2e 需要真实 PG 适配器）。
-	const want = "72be2bddc091a698c2bd847d5b1ed30dc403c8d4fe779a95c7a2441004aca8e6"
+	// db1：allow 再增列 internal/adapters/pg/credential_state_e2e_test.go
+	// （凭据错结算与恢复的用例层 e2e 同样需要真实 PG 适配器）。
+	const want = "d621c05d90ee710977ee937ed965a454a020f9e82c427c200ae0f138e566224c"
 	if got != want {
 		t.Fatalf("canonical 规则内容变了（hash %s）；确认改动后更新 TestCanonicalRuleRowsPinned 的哈希", got)
 	}
