@@ -29,13 +29,19 @@ RUN if [ -n "${GOPROXY:-}" ]; then go env -w GOPROXY="${GOPROXY}"; fi \
 
 COPY server/ ./
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/yiban-server ./cmd/server \
- && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/yiban-cli ./cmd/cli
+ && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/yiban-cli ./cmd/cli \
+ && mkdir -p /out/photos
 
 # ---- 运行段 ----------------------------------------------------------------
 FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=build /out/yiban-server /usr/local/bin/yiban-server
 COPY --from=build /out/yiban-cli /usr/local/bin/yiban-cli
+
+# 照片目录必须在镜像里预建并归 nonroot(65532)：
+# 命名卷首次挂载继承镜像内目录的属主；不预建时 Docker 以 root
+# 建空目录，distroless nonroot 写入即 permission denied。
+COPY --chown=65532:65532 --from=build /out/photos /data/photos
 
 # 容器内必须监听全部接口；照片目录独立卷，便于备份与迁移。
 ENV YIBAN_HTTP_ADDR=0.0.0.0:8080 \
