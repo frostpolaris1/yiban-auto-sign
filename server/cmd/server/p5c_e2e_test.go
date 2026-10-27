@@ -250,6 +250,20 @@ func TestP5CLocationEndpointGuards(t *testing.T) {
 	if body := rec.Body.String(); !strings.Contains(body, `"mode":"fixed"`) || !strings.Contains(body, `"reason":"宿舍"`) {
 		t.Fatalf("响应体 = %s", body)
 	}
+	// master 不在契约 x-roles [user, admin] 内：403。
+	master := e.user("p5c-master@example.com", coreauth.RoleMaster)
+	masterIssued := e.login(master)
+	rec = e.do("PUT", "/api/accounts/"+acct+"/location", map[string]any{"mode": "auto"}, masterIssued)
+	if rec.Code != 403 {
+		t.Fatalf("master 写入 status = %d: %s", rec.Code, rec.Body.String())
+	}
+	// 绑定本账号所在校的 admin 可写：契约允许 admin，可见面仍是本校本账号。
+	schoolID := e.scalarString("SELECT school_id::text FROM accounts WHERE id = $1::uuid", acct)
+	e.bind(admin.ID, schoolID)
+	rec = e.do("PUT", "/api/accounts/"+acct+"/location", map[string]any{"mode": "auto"}, adminIssued)
+	if rec.Code != 200 {
+		t.Fatalf("本校 admin 写入 status = %d: %s", rec.Code, rec.Body.String())
+	}
 	// 非法 mode：400。
 	rec = e.do("PUT", "/api/accounts/"+acct+"/location", map[string]any{"mode": "gps"}, issued)
 	if rec.Code != 400 {

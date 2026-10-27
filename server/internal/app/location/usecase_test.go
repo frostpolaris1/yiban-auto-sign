@@ -310,3 +310,19 @@ func merge(base applocation.Deps, mutate func(*applocation.Deps)) applocation.De
 
 // 编译期断言：可见面判据与 app/account 的公开形状对齐。
 var _ applocation.Accounts = fakeAccounts{}
+
+// 契约 x-roles 是 [user, admin]：master 写定位回 403，不落行不记审计。
+func TestSetMasterForbidden(t *testing.T) {
+	store, audit := newFakeStore(), &fakeAudit{}
+	svc, tx := newService(store, fakeAccounts{recs: map[string]coreaccount.Record{"acct-a": acctA}}, audit)
+	actor := appaudit.Actor{UserID: "master-1", Role: coreauth.RoleMaster}
+
+	_, err := svc.Set(context.Background(), corescope.Master(), "acct-a", fixedInput(1, 2, ""), actor)
+	if code := errs.From(err).Code; code != errs.CodeForbidden {
+		t.Fatalf("master 写入 err = %v, want forbidden", err)
+	}
+	if len(store.sets) != 0 || len(audit.entries) != 0 || tx.committed != 0 {
+		t.Fatalf("拒绝后仍有副作用: sets=%d audit=%d tx=%d",
+			len(store.sets), len(audit.entries), tx.committed)
+	}
+}
