@@ -1974,6 +1974,56 @@
     "tier": "master",
     "reload": "restart"
   },
+  "YIBAN_INSTALL_ROOT": {
+    "type": "path",
+    "default": null,
+    "group": [
+      "部署"
+    ],
+    "doc": "安装路径前缀（空=根文件系统；设了即干跑，不建用户、不启服务）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_HEALTH_RETRIES": {
+    "type": "int",
+    "domain": [1, 100],
+    "default": 10,
+    "group": [
+      "部署"
+    ],
+    "doc": "安装/更新后 /healthz 探测次数（每次间隔见 YIBAN_HEALTH_RETRY_INTERVAL）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_HEALTH_RETRY_INTERVAL": {
+    "type": "seconds",
+    "domain": [0, 60],
+    "default": 1,
+    "group": [
+      "部署"
+    ],
+    "doc": "安装/更新后 /healthz 探测间隔秒数（0=不留间隔，供 e2e 用）",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_PG_PASSWORD": {
+    "type": "string",
+    "default": null,
+    "group": [
+      "部署"
+    ],
+    "doc": "容器部署的 PostgreSQL 口令（compose 必填，未设即拒绝启动）",
+    "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
   "YIBAN_SSE_ENABLED": {
     "type": "bool",
     "default": true,
