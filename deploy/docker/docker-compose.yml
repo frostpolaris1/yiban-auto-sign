@@ -60,6 +60,10 @@ services:
       retries: 6
       start_period: 15s
     restart: unless-stopped
+    # 停机宽限期必须大于进程内 shutdownBudget（10s）：先停 worker 领取、
+    # 等在飞结算，再停 HTTP。给到 30s 留余量；否则 SIGKILL 打断收尾，
+    # 残余 running 行只能靠下次启动的 Recover 回收。
+    stop_grace_period: 30s
 
 volumes:
   pgdata:
