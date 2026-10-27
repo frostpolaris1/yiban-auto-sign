@@ -432,6 +432,19 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			closeFn()
 			return nil, fmt.Errorf("assembly: photo service: %w", err)
 		}
+		// 保留期清理的生产调用者：启动即一轮，之后每 24h 一轮。
+		// 用独立 context：Build 的超时 context 在返回时取消，会把循环一起停掉。
+		// 关闭路径先停循环再关池；Stack.Close 已包 sync.Once，重复调用安全。
+		stopRetention, err := appphotos.StartRetention(context.Background(), photoSvc, logger)
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("assembly: retention loop: %w", err)
+		}
+		closeDB := closeFn
+		closeFn = func() {
+			stopRetention()
+			closeDB()
+		}
 		locationSvc, err := applocation.NewService(applocation.Deps{
 			Store:    pg.NewLocationRepo(db),
 			Accounts: accountSvc,

@@ -125,10 +125,10 @@ func TestCanonicalRuleRowsPinned(t *testing.T) {
 	}
 	h := sha256.New()
 	for _, r := range rules {
-		fmt.Fprintf(h, "%s\t%s\t%s\t%s\t%s\n", r.ID, r.Kind, r.Owner, r.Pattern, r.Allow)
+		fmt.Fprintf(h, "%s\t%s\t%s\t%s\t%s\t%s\n", r.ID, r.Kind, r.Owner, r.Pattern, r.Allow, r.Message)
 	}
 	got := hex.EncodeToString(h.Sum(nil))
-	const want = "dd6a5e5b77e36d28e3b75cc5e3b6c404b2d5dc1f692292887f107c8bda937987"
+	const want = "31b586e19159272577ac56e3ff1c8ce19c65f1810c851cef57ae75a4dbca9d40"
 	if got != want {
 		t.Fatalf("canonical 规则内容变了（hash %s）；确认改动后更新 TestCanonicalRuleRowsPinned 的哈希", got)
 	}
