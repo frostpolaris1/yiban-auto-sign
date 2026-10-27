@@ -45,11 +45,16 @@ type Loop struct {
 
 	mu      sync.Mutex
 	started bool
+	stopped bool
 	lastErr error
 }
 
 // errLoopAlreadyStarted 是 Start 的重入错误。
 var errLoopAlreadyStarted = errors.New("worker: loop already started")
+
+// errLoopStopped 是 Stop 之后再 Start 的错误。
+// Stop 关闭了 stop 与 done 通道，重启会二次关闭 panic。
+var errLoopStopped = errors.New("worker: loop already stopped")
 
 // NewLoop 构造循环。interval 是空转轮询间隔；limit 是每次认领上限。
 func NewLoop(svc Stepper, counter RunningCounter, interval time.Duration, limit int) *Loop {
@@ -70,12 +75,15 @@ func NewLoop(svc Stepper, counter RunningCounter, interval time.Duration, limit 
 }
 
 // Start 起循环。每个实例只允许 Start 一次。
-// Start 启动循环。重复 Start 与 Stop 后再 Start 都返回错误：
+// 重复 Start 与 Stop 后再 Start 都返回错误：
 // run() 的 defer close(done) 与 Stop 的 close 是同一通道，
 // 重入会双关 panic（P7 审查 P3-1）。
 func (l *Loop) Start() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.stopped {
+		return errLoopStopped
+	}
 	if l.started {
 		return errLoopAlreadyStarted
 	}
@@ -112,6 +120,7 @@ func (l *Loop) run() {
 func (l *Loop) Stop(ctx context.Context) (int64, error) {
 	l.mu.Lock()
 	neverStarted := !l.started
+	l.stopped = true
 	l.mu.Unlock()
 	l.once.Do(func() {
 		close(l.stop)

@@ -153,3 +153,34 @@ func TestLoopStopsClaimingAfterStop(t *testing.T) {
 		t.Fatalf("Stop 后仍有新领取：at-return=%d after-wait=%d", n1, n2)
 	}
 }
+
+// TestLoopStartAfterStopFails 钉住 Stop 之后不能再 Start（派单 F13）。
+// Stop 会关闭 done 通道；未启动过的实例 Start 后 run() 的
+// defer close(done) 会二次关闭，直接 panic。
+func TestLoopStartAfterStopFails(t *testing.T) {
+	loop := NewLoop(&fakeStepper{release: make(chan struct{})}, &fakeCounter{}, time.Second, 1)
+	if _, err := loop.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := loop.Start(); err == nil {
+		t.Fatal("Stop 之后 Start 必须返回错误，不得启动循环")
+	}
+}
+
+// TestLoopRestartAfterStopFails 覆盖已启动实例的同一条边界。
+func TestLoopRestartAfterStopFails(t *testing.T) {
+	release := make(chan struct{})
+	close(release)
+	loop := NewLoop(&fakeStepper{release: release}, &fakeCounter{}, 5*time.Millisecond, 1)
+	if err := loop.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := loop.Stop(ctx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := loop.Start(); err == nil {
+		t.Fatal("Stop 之后 Start 必须返回错误")
+	}
+}

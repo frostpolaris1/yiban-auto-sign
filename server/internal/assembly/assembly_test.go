@@ -16,7 +16,11 @@ package assembly
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -103,4 +107,60 @@ func TestRunAssemblesOnce(t *testing.T) {
 	if got := handler.count("auth endpoints are disabled"); got != 1 {
 		t.Fatalf("认证禁用警告 %d 条，want 1：一次 Run 只允许一次装配", got)
 	}
+}
+
+// TestBuildWithoutDatabaseServesHealthz 是装配冒烟（派单 F19）。
+// 无数据库是受支持的启动形态：Engine 必须可用、Worker 必须为 nil、
+// Close 可重复调用不 panic，且 /healthz 应答 200。
+func TestBuildWithoutDatabaseServesHealthz(t *testing.T) {
+	cfg := &config.Config{
+		Env:           "test",
+		HTTPAddr:      "127.0.0.1:0",
+		Timezone:      "Asia/Shanghai",
+		DatabaseURL:   "",
+		HashPepper:    []byte("0123456789abcdef0123456789abcdef"),
+		CredentialKey: make([]byte, 32),
+		PhotoDir:      t.TempDir(),
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	stack, err := Build(cfg, logger)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if stack == nil {
+		t.Fatal("Build 返回 nil Stack")
+	}
+	if stack.Engine == nil {
+		t.Fatal("Engine 不得为 nil：无数据库时认证端点回 501，但路由必须存在")
+	}
+	if stack.Worker != nil {
+		t.Fatal("无数据库时 Worker 必须为 nil（执行循环无库可跑）")
+	}
+	if stack.Close == nil {
+		t.Fatal("Close 不得为 nil")
+	}
+
+	srv := httptest.NewServer(stack.Engine)
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/healthz")
+	if err != nil {
+		t.Fatalf("GET /healthz: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/healthz = %d, want 200", resp.StatusCode)
+	}
+	var body struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode healthz: %v", err)
+	}
+	if body.Status != "ok" {
+		t.Fatalf("healthz status = %q, want ok", body.Status)
+	}
+
+	// Close 幂等：srv.Shutdown 与显式收尾都会调它。
+	stack.Close()
+	stack.Close()
 }
