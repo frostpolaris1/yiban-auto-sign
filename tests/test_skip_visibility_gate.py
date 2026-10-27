@@ -5,8 +5,8 @@
 
 **本门挡的缺陷形状**：一条检查因环境不满足而**跳过**，整套却没跑却报绿。
 `pyproject.toml` 的 `addopts = "-ra --tb=short"` 只让 skip 在**输出里可见**，它
-**不阻止**"整套没跑却报绿"——可见 ≠ 有门。实测（140 §五 S13）：全仓 **144 个真实
-skip 点、53 文件、350 条用例、23 族**，其中 6 族**在任何一轨都不跑**（本地权威 root
+**不阻止**"整套没跑却报绿"——可见 ≠ 有门。2026-10-27 口径：全仓 **131 个
+(marker, reason) 去重对、74 个文件**，其中 6 族**在任何一轨都不跑**（本地权威 root
 轨实测亦 `SKIPPED`），而它们挡的是部署归属、状态目录不可写、锁目录属主、生产机防呆、
 真 SIGKILL 收场这类**要紧**的性质。
 
@@ -785,19 +785,34 @@ def _reason(node):
     return DYNAMIC
 
 
+def _record(out, dotted, reason):
+    """把一次点串判定写进结果集。"""
+    tail = dotted.split(".")[-1]
+    if dotted.startswith(("pytest.mark.", "mark.")) and tail in ("skip", "skipif"):
+        out.add(("mark." + tail, reason))
+    elif tail in _SKIP_MARKERS and not dotted.startswith(("pytest.mark.", "mark.")):
+        out.add((tail, reason))
+
+
 def scan_source(src):
-    """返回该源码里的跳过点集合 `{(标记, 理由)}`。"""
+    """返回该源码里的跳过点集合 `{(标记, 理由)}`。
+
+    判据覆盖两种写法：调用式 `pytest.mark.skip(reason=...)` / `skipUnless(...)`，
+    以及**无括号的装饰器** `@pytest.mark.skip`（ast.Attribute，不是 ast.Call）。
+    后者曾整类漏扫：跳过面少算，登记表对不上也发现不了。
+    """
+    tree = ast.parse(src)
     out = set()
-    for node in ast.walk(ast.parse(src)):
-        if not isinstance(node, ast.Call):
-            continue
-        dotted = _dotted(node.func)
-        tail = dotted.split(".")[-1]
-        if dotted.startswith(("pytest.mark.", "mark.")) and tail in ("skip", "skipif"):
-            out.add(("mark." + tail, _reason(node)))
-        elif tail in _SKIP_MARKERS and not dotted.startswith(("pytest.mark.", "mark.")):
-            out.add((tail, _reason(node)))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            _record(out, _dotted(node.func), _reason(node))
+    for node in ast.walk(tree):
+        for dec in getattr(node, "decorator_list", ()):
+            if isinstance(dec, ast.Call):
+                continue  # 调用式装饰器已在上面的 Call 分支登记
+            _record(out, _dotted(dec), DYNAMIC)
     return out
+
 
 
 def scan_tests():
@@ -870,10 +885,14 @@ class SkipSurfaceRegisteredTest(unittest.TestCase):
         found, unparsed = scan_tests()
         self.assertEqual(unparsed, [], "这些用例件解析不了：%s" % unparsed)
         total = sum(len(v) for v in found.values())
-        self.assertGreater(
-            total, 0,
-            "一个跳过点都没扫到：判定面已失效（本仓现量有近百个），门在空转")
-        self.assertGreater(len(KNOWN_SKIP_SITES), 0, "登记表为空：门在空转")
+        # 下限取现量（131 处，2026-10-27 口径）下方的整数档：
+        # 删掉一大片跳过点仍可能合规，但判定面塌到百处以下就是门在空转。
+        self.assertGreaterEqual(
+            total, 120,
+            "跳过点只剩 %d 处（2026-10-27 现量 131）：判定面可能已失效" % total)
+        self.assertGreaterEqual(
+            len(KNOWN_SKIP_SITES), 50,
+            "登记表只剩 %d 个文件：判定面可能已失效" % len(KNOWN_SKIP_SITES))
 
 
 class NeverRunsRegisteredTest(unittest.TestCase):
@@ -1034,6 +1053,23 @@ class RuntimeSkipPolicyTest(unittest.TestCase):
                            capture_output=True, text=True, timeout=60)
         self.assertNotEqual(r.returncode, 0, "报告缺失在 strict 档必须判红")
 
+
+
+class BareDecoratorTest(unittest.TestCase):
+    """无括号装饰器也是跳过点：漏扫等于判定面静默缩小（r4c 复审 P1-2）。"""
+
+    def test_bare_mark_skip_is_seen(self):
+        src = "import pytest\n\n\n@pytest.mark.skip\ndef test_x():\n    pass\n"
+        self.assertIn(("mark.skip", DYNAMIC), scan_source(src))
+
+    def test_bare_skip_name_is_seen(self):
+        src = "from unittest import skip\n\n\n@skip\ndef test_x():\n    pass\n"
+        self.assertIn(("skip", DYNAMIC), scan_source(src))
+
+    def test_call_decorator_keeps_reason(self):
+        src = ("import pytest\n\n\n@pytest.mark.skipif(True, reason='why')\n"
+               "def test_x():\n    pass\n")
+        self.assertIn(("mark.skipif", "why"), scan_source(src))
 
 
 if __name__ == "__main__":

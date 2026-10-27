@@ -1,8 +1,12 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -176,5 +180,61 @@ func TestCheckFrontendEmptyScanFails(t *testing.T) {
 	}
 	if len(problems) != 1 || !strings.Contains(problems[0], "no TypeScript files") {
 		t.Fatalf("problems = %#v", problems)
+	}
+}
+
+// 受管 scope 清单是钉子：删 scope 或改 scope 名必须同步改这里。
+// 删一条 scope 等于把该目录从结构门里摘掉（其下新目录全放行），
+// 必须是一次显式决定，而不是一次静默的绿（AGENTS §29）。
+func TestStructureScopesPinned(t *testing.T) {
+	want := []string{
+		"root",
+		"server/internal",
+		"server/cmd",
+		"server/migrations",
+		"server/internal/core",
+		"server/internal/app",
+		"server/internal/adapters",
+		"server/internal/entry/http",
+		"ui/src",
+		"ui/src/features",
+		"ui/src/components",
+	}
+	rules, err := loadRules(filepath.Join("..", "..", "structure.tsv"))
+	if err != nil {
+		t.Fatalf("load structure: %v", err)
+	}
+	if len(rules) != len(want) {
+		t.Fatalf("structure has %d scopes, pinned list has %d; add or remove must update this list",
+			len(rules), len(want))
+	}
+	for i, r := range rules {
+		if r.scope != want[i] {
+			t.Fatalf("scope %d = %q, pinned %q; rename must be an explicit decision",
+				i, r.scope, want[i])
+		}
+	}
+}
+
+// 结构表整行快照：scope、allowlist 与 optional 的改动都要显式决定。
+// 只钉 scope 序列会让 allowlist 的删项静默通过（r4c 复审 P2）。
+func TestStructureRowsPinned(t *testing.T) {
+	rules, err := loadRules(filepath.Join("..", "..", "structure.tsv"))
+	if err != nil {
+		t.Fatalf("load structure: %v", err)
+	}
+	h := sha256.New()
+	for _, r := range rules {
+		keys := make([]string, 0, len(r.allow))
+		for k := range r.allow {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		fmt.Fprintf(h, "%s\t%s\t%t\n", r.scope, strings.Join(keys, ","), r.optional)
+	}
+	got := hex.EncodeToString(h.Sum(nil))
+	const want = "23c7aa4562cb3fb7cbd03b07cd5bfc5a612da4412d841aa05c92935725658c7a"
+	if got != want {
+		t.Fatalf("structure 内容变了（hash %s）；确认改动后更新 TestStructureRowsPinned 的哈希", got)
 	}
 }

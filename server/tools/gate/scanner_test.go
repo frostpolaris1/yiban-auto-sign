@@ -502,7 +502,13 @@ func TestRunRefusesEmptyScans(t *testing.T) {
 	}
 
 	tests := t.TempDir()
-	if err := os.WriteFile(filepath.Join(tests, "x_test.go"), []byte("package x\n"), 0o644); err != nil {
+	// 只有测试文件也要让规则有落点：owner 下存在文件，且 pattern 在该文件里出现。
+	// 否则 ValidateRuleAnchors 会以「规则空转」拒绝，本用例测不到 -tests 口径。
+	if err := os.MkdirAll(filepath.Join(tests, "internal", "core", "clock"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tests, "internal", "core", "clock", "clock_test.go"),
+		[]byte("package clock\n\nimport \"time\"\n\nvar _ = time.Now()\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if code := run(tests, rules, false); code != 2 {
@@ -525,5 +531,41 @@ func TestRunReportsViolations(t *testing.T) {
 	writeFile(t, root, "internal/app/x.go", "package app\n\nimport \"time\"\n\nvar _ = time.Now()\n")
 	if code := run(root, rules, false); code != 1 {
 		t.Fatalf("outside owner: code = %d, want 1", code)
+	}
+}
+
+func TestLoadRulesRejectsDuplicateIDs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "canonical.tsv")
+	writeFile(t, "", path, "a\tcall\tinternal/x/\tX\t\tm\na\tforbid\t*\tY\t\tm\n")
+	if _, err := LoadRules(path); err == nil {
+		t.Fatal("duplicate rule id must fail")
+	}
+}
+
+// forbid * 表示检查全部被扫文件；allow 内的文件豁免。
+func TestScanForbidStar(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "internal/app/a.go", `package app
+import "time"
+var _ = time.Now()
+`)
+	block := testRule("errors.http", "forbid", "*", "time.Now", "")
+	violations, err := Scan(root, []Rule{block}, false)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(violations) != 1 {
+		t.Fatalf("forbid * 应命中 1 处，got %d", len(violations))
+	}
+	allowed := testRule("errors.http", "forbid", "*", "time.Now", "internal/app/")
+	violations, err = Scan(root, []Rule{allowed}, false)
+	if err != nil {
+		t.Fatalf("Scan allowed: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("allow 内的文件应豁免，got %#v", violations)
+	}
+	if err := ValidateCheckedScopes(root, []Rule{block}); err != nil {
+		t.Fatalf("forbid * 的检查范围必须非空: %v", err)
 	}
 }
