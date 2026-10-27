@@ -35,6 +35,10 @@ type Store interface {
 	ClaimDue(ctx context.Context, now time.Time, limit int) ([]coreschedule.TaskRow, error)
 	// Finish 把 running 行落终态。
 	Finish(ctx context.Context, accountID, schoolTaskID, day string, state corestatus.TaskState, result string, now time.Time) error
+	// FinishCredentialInvalid 把 running 行落 failed(credential_invalid)，
+	// 并在同一事务里把 active 账号改为 credential_error 且写引擎审计。
+	// 账号已非 active 时保持原状：不改状态，也不写审计。
+	FinishCredentialInvalid(ctx context.Context, schoolID, accountID, schoolTaskID, day string, now time.Time) error
 	// RequeueWait 是"等待型"重排：窗口未开、限速、出口不可用、
 	// 批处理中止。**不计业务尝试数**——等待不是一次失败的尝试。
 	RequeueWait(ctx context.Context, taskID string, runAt time.Time, result string) error

@@ -40,7 +40,7 @@ image.prepare	func	internal/core/image/	Prepare	internal/core/image/	use image.P
 # 只被 cmd 引用：五条规则同步收紧，防止它成为层间旁路。
 boundary.core	import	internal/core/	internal/app,internal/adapters,internal/entry,internal/assembly		core must not import app, adapters, entry or assembly
 boundary.app	import	internal/app/	internal/adapters,internal/entry,internal/assembly		app must not import adapters, entry or assembly
-boundary.adapters	import	internal/adapters/	internal/app,internal/entry,internal/assembly	internal/adapters/pg/usecase_e2e_test.go	adapters must not import app, entry or assembly
+boundary.adapters	import	internal/adapters/	internal/app,internal/entry,internal/assembly	internal/adapters/pg/usecase_e2e_test.go,internal/adapters/pg/credential_state_e2e_test.go	adapters must not import app, entry or assembly
 boundary.entry	import	internal/entry/	internal/adapters,internal/assembly		entry must not import adapters or assembly
 boundary.signing	import	internal/signing/providers/	internal/app,internal/adapters,internal/assembly		providers must not import the host
 # 组合根只能被 cmd 消费：internal 下任何包导入 assembly 即红。
