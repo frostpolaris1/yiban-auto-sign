@@ -10,6 +10,7 @@ package pg_test
 import (
 	"bytes"
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,6 +96,10 @@ func newUsecaseEnv(t *testing.T) *usecaseEnv {
 	}
 }
 
+// auditBlockMessage 是注入触发器抛出的文本。
+// 子用例据此确认失败来自审计追加，而不是别的前置判据。
+const auditBlockMessage = "audit writes are blocked by the test harness"
+
 // blockAuditWrites 让 audit_logs 的 INSERT 立即失败。
 // 返回撤销函数；用例必须在断言前调用它，否则后续种子写不进审计。
 func (e *testEnv) blockAuditWrites(t *testing.T) func() {
@@ -104,7 +109,7 @@ func (e *testEnv) blockAuditWrites(t *testing.T) func() {
 		"DROP TRIGGER IF EXISTS test_block_audit ON audit_logs",
 		"DROP FUNCTION IF EXISTS " + fn + "()",
 		"CREATE FUNCTION " + fn + "() RETURNS trigger LANGUAGE plpgsql AS $body$ " +
-			"BEGIN RAISE EXCEPTION 'audit writes are blocked by the test harness'; END $body$",
+			"BEGIN RAISE EXCEPTION '" + auditBlockMessage + "'; END $body$",
 		"CREATE TRIGGER test_block_audit BEFORE INSERT ON audit_logs " +
 			"FOR EACH ROW EXECUTE FUNCTION " + fn + "()",
 	}
@@ -127,11 +132,14 @@ type auditedWrite struct {
 	setup func(t *testing.T, u *usecaseEnv) (write func() error, unchanged func())
 }
 
-// TestAuditWriteFailureRollsBackTargetRows 钉住九个受审计写路径的事务边界。
+// TestAuditWriteFailureRollsBackTargetRows 钉住十一个受审计写路径的事务边界。
 //
-// 判据：审计追加失败时，用例返回 internal_error（HTTP 500），
-// 且该路径写入的目标行一条都不落地。
-// 把审计追加移出调用方事务时，目标行先提交——本用例红。
+// 判据一：审计追加失败时，用例返回 internal_error（HTTP 500）。
+// 判据二：失败原因必须是审计触发器的异常，不是别的前置判据。
+// 判据三：该路径写入的目标行一条都不落地。
+//
+// 判据二不能省：仓储的 hasTx 前置判据也报 internal_error。
+// 只断错误码时，删掉事务包装仍会绿（独立审查 D1）。
 func TestAuditWriteFailureRollsBackTargetRows(t *testing.T) {
 	u := newUsecaseEnv(t)
 	for _, tc := range auditedWrites() {
@@ -144,6 +152,9 @@ func TestAuditWriteFailureRollsBackTargetRows(t *testing.T) {
 			unchanged()
 			if err == nil {
 				t.Fatal("an audit write failure must fail the use case, got nil")
+			}
+			if !strings.Contains(err.Error(), auditBlockMessage) {
+				t.Fatalf("the use case failed for another reason (not the audit trigger): %v", err)
 			}
 			if got := codeOf(t, err); got != errs.CodeInternal {
 				t.Fatalf("audit failure maps to %q; want internal_error (HTTP 500): %v", got, err)
@@ -232,6 +243,22 @@ func auditedWrites() []auditedWrite {
 			},
 		},
 		{
+			name: "account.Review",
+			setup: func(t *testing.T, u *usecaseEnv) (func() error, func()) {
+				school := u.createSchool("rb-review")
+				owner := u.createUser("rb-review-owner@example.com")
+				account := u.createAccount(school.ID, owner.ID, "13500010007")
+				return func() error {
+						_, err := u.accounts.Review(u.ctx, corescope.Master(), account.ID, true, "", u.actor)
+						return err
+					}, func() {
+						if got := u.scalarString("SELECT status::text FROM accounts WHERE id = $1::uuid", account.ID); got != string(coreaccount.StatusPending) {
+							t.Fatalf("account.Review left status %q after the audit failure", got)
+						}
+					}
+			},
+		},
+		{
 			name: "school.Update",
 			setup: func(t *testing.T, u *usecaseEnv) (func() error, func()) {
 				school := u.createSchool("rb-school")
@@ -243,6 +270,21 @@ func auditedWrites() []auditedWrite {
 					}, func() {
 						if got := u.scalarString("SELECT name FROM schools WHERE id = $1::uuid", school.ID); got == name {
 							t.Fatalf("school.Update left the new name %q after the audit failure", got)
+						}
+					}
+			},
+		},
+		{
+			name: "school.Create",
+			setup: func(t *testing.T, u *usecaseEnv) (func() error, func()) {
+				const code = "rb-school-create"
+				return func() error {
+						_, err := u.schools.Create(u.ctx, corescope.Master(),
+							appschool.New{Code: code, Name: "RB School Create"}, u.actor)
+						return err
+					}, func() {
+						if n := u.scalarInt("SELECT count(*) FROM schools WHERE code = $1", code); n != 0 {
+							t.Fatalf("school.Create left %d school rows after the audit failure", n)
 						}
 					}
 			},
