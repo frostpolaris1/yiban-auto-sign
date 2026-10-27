@@ -33,7 +33,7 @@ func TestUpdateShLoadsEnvWithoutShellExpansion(t *testing.T) {
 	if err := os.WriteFile(installed, []byte("#!/bin/sh\necho OLD-SERVER\n"), 0o755); err != nil {
 		t.Fatalf("seed installed: %v", err)
 	}
-	running := filepath.Join(stateDir, "running")
+	running := filepath.Join(stateDir, "proc")
 	if err := os.WriteFile(filepath.Join(stateDir, "active"), nil, 0o644); err != nil {
 		t.Fatalf("seed active: %v", err)
 	}
