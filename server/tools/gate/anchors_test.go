@@ -88,7 +88,7 @@ func TestCanonicalRuleIDsPinned(t *testing.T) {
 		"capacity.func", "retry.type", "egress.func",
 		"plan.slot", "image.prepare",
 		"boundary.core", "boundary.app", "boundary.adapters",
-		"boundary.entry", "boundary.signing",
+		"boundary.entry", "boundary.signing", "boundary.assembly",
 		"cookie.set",
 		"kdf.argon.idkey", "kdf.argon.id",
 		"token.csrf.func", "token.new.func",
@@ -128,7 +128,7 @@ func TestCanonicalRuleRowsPinned(t *testing.T) {
 		fmt.Fprintf(h, "%s\t%s\t%s\t%s\t%s\n", r.ID, r.Kind, r.Owner, r.Pattern, r.Allow)
 	}
 	got := hex.EncodeToString(h.Sum(nil))
-	const want = "337b893ad3594662d651806bed59af9121acb4a72804fc25b4eef9a537b157e0"
+	const want = "dd6a5e5b77e36d28e3b75cc5e3b6c404b2d5dc1f692292887f107c8bda937987"
 	if got != want {
 		t.Fatalf("canonical 规则内容变了（hash %s）；确认改动后更新 TestCanonicalRuleRowsPinned 的哈希", got)
 	}
