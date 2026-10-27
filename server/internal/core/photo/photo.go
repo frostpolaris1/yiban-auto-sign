@@ -8,11 +8,12 @@
 // core 层纯领域包。app/photos 声明端口，adapters/pg 与 adapters/storage 实现。
 //
 // # 复用
-// Record、ValidRetention、DefaultRetentionDays、MaxBytes；Expired、Deleted。
+// Record、Blob、ValidRetention、DefaultRetentionDays、MaxBytes；Expired、Deleted。
 //
 // # 口径
 // SHA256 是**预处理后**字节的摘要，与 blob 存储键一致。
 // 保留期只接受 30/90/180/365 天；未设置时用 90 天。
+// 到期判据从 COALESCE(deleted_at, created_at) 起算。
 package photo
 
 import "time"
@@ -48,14 +49,26 @@ type Record struct {
 	DeletedAt   *time.Time
 }
 
+// Blob 是一份已落盘图片字节的摘要与修改时间。
+// 回收判据需要修改时间：刚落盘但行事务尚未提交的文件必须保留。
+type Blob struct {
+	Digest  [32]byte
+	ModTime time.Time
+}
+
 // Deleted 报告该行是否已软删。
 func (r Record) Deleted() bool { return r.DeletedAt != nil }
 
 // Expired 报告该行按 retentionDays 是否已到期。
-// 软删行不算到期：它们由删除路径处理，避免重复清理。
+// 判据是 COALESCE(deleted_at, created_at)：软删行从删除时刻起算，
+// 未到期不物理删。重传恢复同一行的语义依赖这段保留期。
 func (r Record) Expired(now time.Time, retentionDays int) bool {
-	if r.Deleted() || retentionDays <= 0 {
+	if retentionDays <= 0 {
 		return false
 	}
-	return now.Sub(r.CreatedAt) >= time.Duration(retentionDays)*24*time.Hour
+	from := r.CreatedAt
+	if r.DeletedAt != nil {
+		from = *r.DeletedAt
+	}
+	return now.Sub(from) >= time.Duration(retentionDays)*24*time.Hour
 }

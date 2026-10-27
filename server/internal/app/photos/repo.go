@@ -29,8 +29,13 @@ type Store interface {
 	Retention(ctx context.Context, userID string) (int, error)
 	// PutRetention 覆盖写用户保留期。
 	PutRetention(ctx context.Context, userID string, days int, now time.Time) error
-	// PurgeExpired 删除按各用户保留期已到期的行，返回删除行数。
+	// PurgeExpired 物理删除按各用户保留期已到期的行，返回删除行数。
+	// 到期判据从 COALESCE(deleted_at, created_at) 起算。
+	// 一次最多删除 limit 行；调用方循环到返回 0。
 	PurgeExpired(ctx context.Context, now time.Time, limit int) (int64, error)
+	// ReferencedDigests 返回 photos 表仍被任意行引用的摘要集合。
+	// 含软删行：未到期的软删行可恢复，其 blob 不得回收。
+	ReferencedDigests(ctx context.Context) (map[[32]byte]struct{}, error)
 	// CountLibrary 报告属主未删图片数（P5-C 选图用）。
 	CountLibrary(ctx context.Context, ownerUserID string) (int64, error)
 	// LibraryAt 按 (created_at, id) 升序取第 offset 张（0 基）。
@@ -42,7 +47,11 @@ type Store interface {
 //
 // Put 必须幂等：同一 sha 重复写不报错。
 // Open 对缺失键返回错误；错误不得吞成空流。
+// List 列出全部已落盘 blob 的摘要与修改时间；回收判据需要时间戳。
+// Remove 删除一份 blob；缺失即视为已删除，不报错。
 type Blobs interface {
 	Put(ctx context.Context, sha [32]byte, data []byte) error
 	Open(ctx context.Context, sha [32]byte) (io.ReadCloser, error)
+	List(ctx context.Context) ([]corephoto.Blob, error)
+	Remove(ctx context.Context, sha [32]byte) error
 }

@@ -9,6 +9,7 @@ import (
 	"image/color"
 	"image/png"
 	"io"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -26,6 +27,12 @@ type fakeStore struct {
 	byKey     map[string]string
 	retention map[string]int
 	next      int
+	// purgeCalls 记录 PurgeExpired 调用次数：用例必须循环到 0 行。
+	purgeCalls int
+	// purgeFailures 是前若干次清理的失败次数，用来钉「失败后继续」。
+	purgeFailures int
+	// purged 在首次真实删行后关闭，供循环用例等待。
+	purged chan struct{}
 }
 
 func newFakeStore() *fakeStore {
@@ -105,19 +112,45 @@ func (f *fakeStore) PutRetention(_ context.Context, userID string, days int, _ t
 	return nil
 }
 
-func (f *fakeStore) PurgeExpired(_ context.Context, now time.Time, _ int) (int64, error) {
-	var n int64
+func (f *fakeStore) PurgeExpired(_ context.Context, now time.Time, limit int) (int64, error) {
+	f.purgeCalls++
+	if f.purgeFailures > 0 {
+		f.purgeFailures--
+		return 0, errors.New("purge failed")
+	}
+	var ids []string
 	for id, rec := range f.recs {
 		days := f.retention[rec.OwnerUserID]
 		if days == 0 {
 			days = corephoto.DefaultRetentionDays
 		}
 		if rec.Expired(now, days) {
-			delete(f.recs, id)
-			n++
+			ids = append(ids, id)
 		}
 	}
-	return n, nil
+	if limit > 0 && len(ids) > limit {
+		ids = ids[:limit]
+	}
+	for _, id := range ids {
+		delete(f.recs, id)
+	}
+	if len(ids) > 0 && f.purged != nil {
+		select {
+		case <-f.purged:
+		default:
+			close(f.purged)
+		}
+	}
+	return int64(len(ids)), nil
+}
+
+// ReferencedDigests 返回全部行（含软删）仍引用的摘要。
+func (f *fakeStore) ReferencedDigests(context.Context) (map[[32]byte]struct{}, error) {
+	out := make(map[[32]byte]struct{}, len(f.recs))
+	for _, rec := range f.recs {
+		out[rec.SHA256] = struct{}{}
+	}
+	return out, nil
 }
 
 // CountLibrary/LibraryAt 实现选图端口：本文件不测选图，
@@ -147,11 +180,17 @@ func (f *fakeStore) LibraryAt(_ context.Context, ownerUserID string, offset int)
 
 type fakeBlobs struct {
 	data map[[32]byte][]byte
+	// mods 是每份 blob 的修改时间；缺省为 fixedNow。
+	mods map[[32]byte]time.Time
 	puts int
 	fail error
+	// removed 记录真实删除顺序，供断言。
+	removed [][32]byte
 }
 
-func newFakeBlobs() *fakeBlobs { return &fakeBlobs{data: map[[32]byte][]byte{}} }
+func newFakeBlobs() *fakeBlobs {
+	return &fakeBlobs{data: map[[32]byte][]byte{}, mods: map[[32]byte]time.Time{}}
+}
 
 func (f *fakeBlobs) Put(_ context.Context, sha [32]byte, data []byte) error {
 	f.puts++
@@ -159,6 +198,7 @@ func (f *fakeBlobs) Put(_ context.Context, sha [32]byte, data []byte) error {
 		return f.fail
 	}
 	f.data[sha] = append([]byte(nil), data...)
+	f.mods[sha] = fixedNow
 	return nil
 }
 
@@ -168,6 +208,28 @@ func (f *fakeBlobs) Open(_ context.Context, sha [32]byte) (io.ReadCloser, error)
 		return nil, errors.New("blob not found")
 	}
 	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
+func (f *fakeBlobs) List(context.Context) ([]corephoto.Blob, error) {
+	out := make([]corephoto.Blob, 0, len(f.data))
+	for sha := range f.data {
+		mod := f.mods[sha]
+		if mod.IsZero() {
+			mod = fixedNow
+		}
+		out = append(out, corephoto.Blob{Digest: sha, ModTime: mod})
+	}
+	return out, nil
+}
+
+func (f *fakeBlobs) Remove(_ context.Context, sha [32]byte) error {
+	if _, ok := f.data[sha]; !ok {
+		return nil
+	}
+	delete(f.data, sha)
+	delete(f.mods, sha)
+	f.removed = append(f.removed, sha)
+	return nil
 }
 
 // ---- 辅助 ----
@@ -356,6 +418,140 @@ func TestPurgeExpired(t *testing.T) {
 	if _, ok := store.recs["photo-new"]; !ok {
 		t.Fatal("未到期行被删")
 	}
+}
+
+// Purge 循环调用仓储直到 0 行：单次大事务会被批大小限制。
+func TestPurgeLoopsUntilEmpty(t *testing.T) {
+	store, blobs := newFakeStore(), newFakeBlobs()
+	svc := newService(t, store, blobs)
+	old := fixedNow.Add(-100 * 24 * time.Hour)
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("photo-%d", i)
+		store.recs[id] = corephoto.Record{ID: id, OwnerUserID: "u1", CreatedAt: old}
+	}
+	n, err := svc.Purge(context.Background(), 2)
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if n != 5 {
+		t.Fatalf("删除行数 = %d, want 5", n)
+	}
+	if len(store.recs) != 0 {
+		t.Fatalf("残留行 = %d", len(store.recs))
+	}
+	// 2+2+1 后必须再问一次拿 0，否则「删满一批」会被当成清空。
+	if store.purgeCalls != 4 {
+		t.Fatalf("清理调用次数 = %d, want 4", store.purgeCalls)
+	}
+}
+
+// blob 回收只删无引用且超过安全期的文件。
+// 引用集合含软删行；未满 1h 的新 blob 必须保留（上传事务未提交窗口）。
+func TestCollectBlobsRespectsReferencesAndSafetyWindow(t *testing.T) {
+	store, blobs := newFakeStore(), newFakeBlobs()
+	svc := newService(t, store, blobs)
+
+	live := digestOf(1)
+	deleted := digestOf(2)
+	fresh := digestOf(3)
+	stale := digestOf(4)
+	store.recs["photo-live"] = corephoto.Record{ID: "photo-live", OwnerUserID: "u1", SHA256: live}
+	store.recs["photo-deleted"] = corephoto.Record{
+		ID: "photo-deleted", OwnerUserID: "u1", SHA256: deleted,
+		DeletedAt: &fixedNow,
+	}
+	for _, sha := range [][32]byte{live, deleted, fresh, stale} {
+		blobs.data[sha] = []byte("blob")
+	}
+	// 被引用的 blob 也做旧：否则安全期会掩盖「漏查引用集合」的缺陷。
+	blobs.mods[live] = fixedNow.Add(-2 * time.Hour)
+	blobs.mods[deleted] = fixedNow.Add(-2 * time.Hour)
+	blobs.mods[fresh] = fixedNow.Add(-30 * time.Minute)
+	blobs.mods[stale] = fixedNow.Add(-2 * time.Hour)
+
+	removed, err := svc.CollectBlobs(context.Background())
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if removed != 1 || len(blobs.removed) != 1 || blobs.removed[0] != stale {
+		t.Fatalf("删除数 = %d, 顺序 = %x", removed, blobs.removed)
+	}
+	for name, sha := range map[string][32]byte{"live": live, "deleted": deleted, "fresh": fresh} {
+		if _, ok := blobs.data[sha]; !ok {
+			t.Fatalf("%s blob 被误删", name)
+		}
+	}
+}
+
+// Sweep 先删行再回收 blob；结果分别计数。
+func TestSweepReportsRowsAndBlobs(t *testing.T) {
+	store, blobs := newFakeStore(), newFakeBlobs()
+	svc := newService(t, store, blobs)
+	old := digestOf(5)
+	store.recs["photo-old"] = corephoto.Record{ID: "photo-old", OwnerUserID: "u1", SHA256: old, CreatedAt: fixedNow.Add(-100 * 24 * time.Hour)}
+	blobs.data[old] = []byte("blob")
+	blobs.mods[old] = fixedNow.Add(-2 * time.Hour)
+
+	res, err := svc.Sweep(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if res.RowsDeleted != 1 || res.BlobsDeleted != 1 {
+		t.Fatalf("结果 = %+v, want 1 row 1 blob", res)
+	}
+}
+
+// 循环启动即清理；一次失败不终止循环；取消后 1s 内返回。
+func TestRetentionLoopRetriesAfterErrorAndStops(t *testing.T) {
+	store, blobs := newFakeStore(), newFakeBlobs()
+	svc := newService(t, store, blobs)
+	store.recs["photo-old"] = corephoto.Record{
+		ID: "photo-old", OwnerUserID: "u1",
+		CreatedAt: fixedNow.Add(-100 * 24 * time.Hour),
+	}
+	store.purgeFailures = 1
+	store.purged = make(chan struct{})
+	loop, err := appphotos.NewRetentionLoop(appphotos.RetentionOptions{
+		Service:  svc,
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Interval: 10 * time.Millisecond,
+		Batch:    10,
+	})
+	if err != nil {
+		t.Fatalf("NewRetentionLoop: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); loop.Run(ctx) }()
+
+	select {
+	case <-store.purged:
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("失败后循环没有继续下一轮")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("取消后 Run 未在 1s 内返回")
+	}
+	if _, ok := store.recs["photo-old"]; ok {
+		t.Fatal("到期行仍在")
+	}
+	if store.purgeCalls < 2 {
+		t.Fatalf("清理调用次数 = %d, want >= 2", store.purgeCalls)
+	}
+}
+
+// digestOf 构造形状合法的测试摘要。
+func digestOf(seed byte) [32]byte {
+	var sha [32]byte
+	for i := range sha {
+		sha[i] = seed
+	}
+	return sha
 }
 
 // Open 返回可读字节流；跨用户被拒绝。
