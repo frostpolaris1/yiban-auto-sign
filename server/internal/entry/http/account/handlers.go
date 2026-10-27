@@ -147,6 +147,7 @@ func (h *Handler) Update(c *gin.Context, id oapi.AccountID, _ oapi.AccountUpdate
 		return
 	}
 	record, err := h.svc.Update(c.Request.Context(), scope, id, appaccount.UpdateInput{
+		SchoolID:   body.SchoolId,
 		Phone:      body.Phone,
 		Password:   body.Password,
 		DeviceCode: body.DeviceCode,

@@ -430,8 +430,8 @@ type Account struct {
 	// PhoneMasked Masked phone. The raw phone never leaves the server.
 	PhoneMasked  string     `json:"phone_masked"`
 	RejectReason string     `json:"reject_reason"`
-	ReviewedAt   *time.Time `json:"reviewed_at,omitempty"`
-	ReviewedBy   *string    `json:"reviewed_by,omitempty"`
+	ReviewedAt   *time.Time `json:"reviewed_at"`
+	ReviewedBy   *string    `json:"reviewed_by"`
 	SchoolId     string     `json:"school_id"`
 
 	// Status pending on create; review moves to active or rejected. Pause moves
@@ -461,15 +461,15 @@ type AccountDiagnostics struct {
 	// Egress The account's sticky egress label; null when not assigned yet.
 	Egress *struct {
 		Identity string `json:"identity"`
-	} `json:"egress,omitempty"`
+	} `json:"egress"`
 
 	// NextRetryAt When the task is queued again after a failure; null otherwise.
-	NextRetryAt *time.Time `json:"next_retry_at,omitempty"`
+	NextRetryAt *time.Time `json:"next_retry_at"`
 	Result      string     `json:"result"`
-	RunAt       *time.Time `json:"run_at,omitempty"`
+	RunAt       *time.Time `json:"run_at"`
 
 	// State pending, running, success, failed or skipped; null when the account has no task row today.
-	State      *string                      `json:"state,omitempty"`
+	State      *string                      `json:"state"`
 	Suggestion AccountDiagnosticsSuggestion `json:"suggestion"`
 
 	// Window Today's planned window; null when not discovered yet.
@@ -478,7 +478,7 @@ type AccountDiagnostics struct {
 		Source  AccountDiagnosticsWindowSource `json:"source"`
 		Start   time.Time                      `json:"start"`
 		Version int                            `json:"version"`
-	} `json:"window,omitempty"`
+	} `json:"window"`
 }
 
 // AccountDiagnosticsSuggestion defines model for AccountDiagnostics.Suggestion.
@@ -487,13 +487,13 @@ type AccountDiagnosticsSuggestion string
 // AccountDiagnosticsWindowSource defines model for AccountDiagnostics.Window.Source.
 type AccountDiagnosticsWindowSource string
 
-// AccountLocation The stored location policy. lng and lat are null for auto and always
-// present for fixed. The reason is kept by the host for audit; it is
-// not delivered to the platform yet (that lands with the upload
-// protocol slice).
+// AccountLocation The stored location policy. lng and lat are null for auto and carry
+// the fixed point otherwise; both keys are always present. The reason
+// is kept by the host for audit; it is not delivered to the platform
+// yet (that lands with the upload protocol slice).
 type AccountLocation struct {
-	Lat  *float64            `json:"lat,omitempty"`
-	Lng  *float64            `json:"lng,omitempty"`
+	Lat  *float64            `json:"lat"`
+	Lng  *float64            `json:"lng"`
 	Mode AccountLocationMode `json:"mode"`
 
 	// Reason Free text explaining an out-of-range fixed point; may be empty.
@@ -559,6 +559,10 @@ type AccountUpdate struct {
 	Password   *string `json:"password,omitempty"`
 	Phone      *string `json:"phone,omitempty"`
 	PhoneModel *string `json:"phone_model,omitempty"`
+
+	// SchoolId A different value returns 409 conflict. Changing school is
+	// forbidden in P1 (decision 12.3).
+	SchoolId *string `json:"school_id,omitempty"`
 }
 
 // AccountVerifyResult defines model for AccountVerifyResult.
@@ -595,12 +599,12 @@ type DiagnosticsItem struct {
 	Attempts  int    `json:"attempts"`
 
 	// NextRetryAt When the task is queued again after a failure; null otherwise.
-	NextRetryAt *time.Time `json:"next_retry_at,omitempty"`
+	NextRetryAt *time.Time `json:"next_retry_at"`
 	Result      string     `json:"result"`
-	RunAt       *time.Time `json:"run_at,omitempty"`
+	RunAt       *time.Time `json:"run_at"`
 
 	// State pending, running, success, failed or skipped; null when the account has no task row today.
-	State      *string                   `json:"state,omitempty"`
+	State      *string                   `json:"state"`
 	Suggestion DiagnosticsItemSuggestion `json:"suggestion"`
 }
 
@@ -765,16 +769,16 @@ type ScheduleWindow struct {
 	// Day Business day YYYY-MM-DD.
 	Day        *string    `json:"day,omitempty"`
 	Enabled    bool       `json:"enabled"`
-	End        *time.Time `json:"end,omitempty"`
+	End        *time.Time `json:"end"`
 	SchoolId   string     `json:"school_id"`
 	SchoolName string     `json:"school_name"`
 
 	// Source platform, cache, fallback or override; null when the window is not
 	// cached for the day.
-	Source *string `json:"source,omitempty"`
+	Source *string `json:"source"`
 
 	// Start Null when the window is not cached for the day yet.
-	Start    *time.Time `json:"start,omitempty"`
+	Start    *time.Time `json:"start"`
 	TaskId   string     `json:"task_id"`
 	TaskName string     `json:"task_name"`
 	Version  *int       `json:"version,omitempty"`
@@ -869,11 +873,11 @@ type SessionUser struct {
 // SignStatusItem defines model for SignStatusItem.
 type SignStatusItem struct {
 	AccountId string     `json:"account_id"`
-	RunAt     *time.Time `json:"run_at,omitempty"`
+	RunAt     *time.Time `json:"run_at"`
 	Stale     bool       `json:"stale"`
 
 	// State pending, running, success, failed or skipped; null when the account has no task row today.
-	State *string `json:"state,omitempty"`
+	State *string `json:"state"`
 }
 
 // SignStatusReport defines model for SignStatusReport.
@@ -902,7 +906,7 @@ type User struct {
 	CreatedAt          time.Time           `json:"created_at"`
 	Email              openapi_types.Email `json:"email"`
 	Id                 string              `json:"id"`
-	LastLoginAt        *time.Time          `json:"last_login_at,omitempty"`
+	LastLoginAt        *time.Time          `json:"last_login_at"`
 	MustChangePassword bool                `json:"must_change_password"`
 	Role               UserRole            `json:"role"`
 	Status             UserStatus          `json:"status"`

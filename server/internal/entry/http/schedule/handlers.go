@@ -19,6 +19,8 @@ package schedule
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"strconv"
 	"time"
 
@@ -141,7 +143,7 @@ func (h *Handler) Preview(c *gin.Context, params oapi.SchedulePreviewParams) {
 func (h *Handler) Plan(c *gin.Context, _ oapi.SchedulePlanParams) {
 	var body oapi.SchedulePlanRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
-		fail(c, errs.New(errs.CodeValidation, "invalid request body"))
+		respond.BindError(c.Writer, c.Request, err)
 		return
 	}
 	scope, ok := h.principal(c)
@@ -165,7 +167,7 @@ func (h *Handler) Plan(c *gin.Context, _ oapi.SchedulePlanParams) {
 func (h *Handler) Override(c *gin.Context, _ oapi.ScheduleOverrideParams) {
 	var body oapi.ScheduleOverrideRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
-		fail(c, errs.New(errs.CodeValidation, "invalid request body"))
+		respond.BindError(c.Writer, c.Request, err)
 		return
 	}
 	scope, user, ok := h.adminPrincipal(c)
@@ -227,9 +229,26 @@ func (h *Handler) TimePrefGet(c *gin.Context) {
 }
 
 // TimePrefSet 实现 PUT /api/me/time-pref。
+// offset_min 是必填键：缺键回 400；显式 null 才表示清除。
+// 键存在性只能在解码原始 JSON 时判定，故这里不用 ShouldBindJSON。
 func (h *Handler) TimePrefSet(c *gin.Context, _ oapi.TimePrefSetParams) {
+	raw, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		// 超过入口上界时是 *http.MaxBytesError；BindError 把它转成 413。
+		respond.BindError(c.Writer, c.Request, err)
+		return
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		fail(c, errs.New(errs.CodeValidation, "invalid request body"))
+		return
+	}
+	if _, ok := fields["offset_min"]; !ok {
+		fail(c, errs.New(errs.CodeValidation, "offset_min is required"))
+		return
+	}
 	var body oapi.TimePrefUpdate
-	if err := c.ShouldBindJSON(&body); err != nil {
+	if err := json.Unmarshal(raw, &body); err != nil {
 		fail(c, errs.New(errs.CodeValidation, "invalid request body"))
 		return
 	}
