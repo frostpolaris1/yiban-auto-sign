@@ -68,8 +68,15 @@ UNREGISTERED_FIXED_NAME = {
 }
 #: 名字像状态件、但不是状态件的固定名（扫描误命中，逐条给理由）。
 NON_STATE_FIXED_NAME = {
-    "accounts.json": "scripts/db_export.py 导出的账号清单（仓外产物，不在状态目录）",
-    "users.json": "scripts/db_export.py 导出的用户清单（仓外产物，不在状态目录）",
+    "accounts.json": "scripts/db_export.py 的旧版账号清单（仓外产物，不在状态目录）",
+    "users.json": "scripts/db_export.py 的旧版用户清单（仓外产物，不在状态目录）",
+    "accounts.jsonl": "scripts/db_export.py 的 P8 导出物（仓外产物，不在状态目录）",
+    "users.jsonl": "scripts/db_export.py 的 P8 导出物（仓外产物，不在状态目录）",
+    "schools.jsonl": "scripts/db_export.py 的 P8 导出物（旧库无学校表，恒空文件）",
+    "time_prefs.jsonl": "scripts/db_export.py 的 P8 导出物（仓外产物，不在状态目录）",
+    "audit.jsonl": "scripts/db_export.py 的 P8 导出物（仓外产物，不在状态目录）",
+    "reconciliation.jsonl": "scripts/db_export.py 的对账表（仓外产物，不在状态目录）",
+    "summary.json": "scripts/db_export.py 的导出汇总（仓外产物，不在状态目录）",
     "manifest.json": "web/services/vue_assets.py 的前端构建产物清单（静态资源，非状态件）",
     "registry.json": "config/registry.json 是配置名册（104 第一批·A）：入库的源码数据件，"
                      "由 yiban/adapters/config/loader.py 读；不落状态目录、不进清理与备份名册",

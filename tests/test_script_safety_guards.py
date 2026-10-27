@@ -6,8 +6,9 @@
   · `scripts/generate_demo_data.py`：既有库只校验 schema、绝不在清空前迁移
     （迁移会用当前密钥回填审计链，抹平"链被动过"的证据）；新库照常迁移到当前
     schema（否则 `db.audit` 需要的 `prev_hash`/`hash` 列不存在）。
-  · `scripts/db_export.py`：默认拒绝覆盖既有 `accounts.json` / `users.json`；
-    `--force` 才替换；`--dry-run` 零写盘；明文警告出现在写盘之前。
+  · `scripts/db_export.py`：默认拒绝覆盖既有导出物（五个 .jsonl＋对账表＋汇总）；
+    `--force` 才替换；`--dry-run` 零写盘。P8-A 起导出全程只读、明文零落盘，
+    源库零改动与明文不泄漏的判据接手者是 tests/test_db_export_jsonl.py。
   · `scripts/state_cleanup.py`：留痕写不进去时退出码抬到 1，stderr 点名日志路径。
   · `scripts/list_duplicate_owners.py`：输出里的手机号与 owner 邮箱走
     `yiban.core.masking` 的同一份脱敏实现。
@@ -154,7 +155,11 @@ class DemoDataMigrationGuardTest(unittest.TestCase):
 
 
 class DbExportOverwriteGuardTest(unittest.TestCase):
-    """ba-p11-06：默认拒绝覆盖既有 JSON 回滚基线。"""
+    """ba-p11-06：默认拒绝覆盖既有导出物（P8-A 起＝七个输出文件）。"""
+
+    EXPORT_NAMES = ("users.jsonl", "schools.jsonl", "accounts.jsonl",
+                    "time_prefs.jsonl", "audit.jsonl",
+                    "reconciliation.jsonl", "summary.json")
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="yiban-export-guard-")
@@ -168,13 +173,13 @@ class DbExportOverwriteGuardTest(unittest.TestCase):
         os.makedirs(self.out)
 
     def _sentinel(self):
-        for name in ("accounts.json", "users.json"):
+        for name in self.EXPORT_NAMES:
             with open(os.path.join(self.out, name), "w", encoding="utf-8") as f:
                 f.write("SENTINEL")
 
     def _contents(self):
         out = {}
-        for name in ("accounts.json", "users.json"):
+        for name in self.EXPORT_NAMES:
             with open(os.path.join(self.out, name), encoding="utf-8") as f:
                 out[name] = f.read()
         return out
@@ -196,20 +201,16 @@ class DbExportOverwriteGuardTest(unittest.TestCase):
         self.assertIn("[dry-run]", dry.stdout)
         self.assertEqual(self._contents(), before)
 
-        forced = _run("db_export.py", ["--out", self.out, "--db", self.db_file, "--force"],
+        forced = _run("db_export.py",
+                      ["--out", self.out, "--db", self.db_file, "--force"],
                       self.env, self.root)
         self.assertEqual(forced.returncode, 0, forced.stdout + forced.stderr)
-        self.assertEqual(len(json.loads(self._contents()["accounts.json"])), 1)
-        self.assertEqual(json.loads(self._contents()["users.json"]), [])
-
-    def test_plaintext_warning_precedes_writing(self):
-        r = _run("db_export.py",
-                 ["--out", self.out, "--db", self.db_file, "--plaintext", "--force"],
-                 self.env, self.root)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("即将导出明文凭据", r.stderr)
-        self.assertNotIn("已导出明文凭据", r.stderr,
-                         "警告文案必须指向将要发生的动作，不能在写盘后才提示")
+        accounts = [json.loads(line)
+                    for line in self._contents()["accounts.jsonl"].splitlines()]
+        self.assertEqual(len(accounts), 1)
+        users = [json.loads(line)
+                 for line in self._contents()["users.jsonl"].splitlines()]
+        self.assertEqual(users, [])
 
 
 class StateCleanupLogFailureTest(unittest.TestCase):

@@ -105,6 +105,7 @@ fast	tests/test_csp_header_contract.py
 fast	tests/test_dashboard_stats_caliber_js.py
 fast	tests/test_db_init_selfheal.py
 fast	tests/test_db_integrity.py
+fast	tests/test_db_export_jsonl.py	# P8-A 导出器判据（子进程跑脚本，秒级）
 fast	tests/test_db_migrations.py
 fast	tests/test_db_owner_constraint.py
 fast	tests/test_delay_ack_frontend.py
