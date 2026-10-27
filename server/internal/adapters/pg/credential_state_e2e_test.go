@@ -403,6 +403,68 @@ func TestCredentialUpdateRecoversWhenEngineCommitsAfterFirstRead(t *testing.T) {
 	}
 }
 
+// TestCredentialUpdateWaitsForEngineCommit 钉住 GetForUpdate 的行锁：
+// 引擎事务未提交时，凭据更新必须阻塞；提交后才判定并恢复。
+// 去掉 FOR UPDATE 时更新会提前返回，本用例红。
+func TestCredentialUpdateWaitsForEngineCommit(t *testing.T) {
+	u := newUsecaseEnv(t)
+	school := u.createSchool("db1-lock")
+	owner := u.createUser("db1-lock-owner@example.com")
+	account := u.createAccount(school.ID, owner.ID, "13500051004")
+	u.activateAccount(account.ID)
+
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	engineDone := make(chan error, 1)
+	now := time.Date(2026, 10, 29, 6, 30, 0, 0, time.UTC)
+	go func() {
+		engineDone <- u.db.InTx(u.ctx, func(ctx context.Context) error {
+			_, err := u.accts.SetStatus(ctx, corescope.Master(), account.ID,
+				coreaccount.StatusActive, coreaccount.StatusCredentialError, now, "")
+			if err != nil {
+				return err
+			}
+			close(locked)
+			<-release
+			return nil
+		})
+	}()
+	<-locked
+
+	updateDone := make(chan error, 1)
+	password := "new-secret"
+	go func() {
+		_, err := u.accounts.Update(u.ctx, corescope.Master(), account.ID,
+			appaccount.UpdateInput{Password: &password}, u.actor)
+		updateDone <- err
+	}()
+	select {
+	case err := <-updateDone:
+		close(release)
+		<-engineDone
+		t.Fatalf("credential update returned before the engine committed (err=%v); the account row lock is not held", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(release)
+	if err := <-engineDone; err != nil {
+		t.Fatalf("engine transaction: %v", err)
+	}
+	select {
+	case err := <-updateDone:
+		if err != nil {
+			t.Fatalf("credential update after the engine commit: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("credential update did not finish after the engine commit")
+	}
+	if got := u.accountStatus(account.ID); got != coreaccount.StatusActive {
+		t.Fatalf("stored status = %q, want active", got)
+	}
+	if got := u.db1RecoveredAuditRows(account.ID); got != 1 {
+		t.Fatalf("recovery audit rows = %d, want 1", got)
+	}
+}
+
 // TestPhoneUpdateRecoversCredentialError 钉住「改绑也恢复」：
 // 手机号是登录用户名，改绑属凭据变更，账号回到 active 并写恢复审计。
 func TestPhoneUpdateRecoversCredentialError(t *testing.T) {
