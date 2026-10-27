@@ -5,7 +5,9 @@
 // 本包**不**做 HTTP 编码、**不**编排用例、**不**持有业务判据。
 //
 // # 归属
-// adapters 层设施包。**全仓只有本包写 SQL 与读 SQLSTATE**；
+// adapters 层设施包。**全仓只有本包与 adapters/legacy（一次性迁移导入器）
+// 写 SQL**；SQLSTATE 归一仍只在 Adapters/pg。legacy 是显式登记的例外，
+// 不是旁路先例。
 // 数据库失败在此映射为 core/errs 码，用例层不见驱动错误。
 //
 // # 复用
