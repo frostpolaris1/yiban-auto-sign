@@ -33,6 +33,7 @@ type rule struct {
 	scope    string
 	optional bool
 	allow    map[string]bool
+	note     string
 }
 
 var (
@@ -114,7 +115,11 @@ func loadRules(path string) ([]rule, error) {
 		if len(allow) == 0 {
 			return nil, fmt.Errorf("%s:%d: empty allowlist", path, line)
 		}
-		rules = append(rules, rule{scope: scope, optional: optional, allow: allow})
+		note := ""
+		if len(parts) >= 3 {
+			note = strings.TrimSpace(parts[2])
+		}
+		rules = append(rules, rule{scope: scope, optional: optional, allow: allow, note: note})
 	}
 	if err := sc.Err(); err != nil {
 		return nil, err

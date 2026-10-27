@@ -28,6 +28,7 @@ import (
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/config"
 	appphotos "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/photos"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/assembly"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	corephoto "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/photo"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
@@ -207,8 +208,8 @@ func TestR4ARetentionLoopRunsAndStops(t *testing.T) {
 }
 
 // 装配层真的启动清理循环：无调用者正是原始缺陷。
-// buildStack 返回后首轮清理已排上，到期行必须在 2s 内消失；close 不得挂住。
-func TestR4ABuildStackRunsRetentionLoop(t *testing.T) {
+// assembly.Build 返回后首轮清理已排上，到期行必须在 2s 内消失；Close 不得挂住。
+func TestAssemblyRunsRetentionLoop(t *testing.T) {
 	e := w2cNewEnv(t)
 	now := testNow().UTC()
 	owner := e.user("r4a-wire@example.com", "user")
@@ -232,9 +233,9 @@ func TestR4ABuildStackRunsRetentionLoop(t *testing.T) {
 		InsecureCookies: true,
 	}
 	var logs bytes.Buffer
-	stack, err := buildStack(cfg, slog.New(slog.NewTextHandler(&logs, nil)))
+	stack, err := assembly.Build(cfg, slog.New(slog.NewTextHandler(&logs, nil)))
 	if err != nil {
-		t.Fatalf("buildStack: %v", err)
+		t.Fatalf("assembly.Build: %v", err)
 	}
 	closed := make(chan struct{})
 	deadline := testNow().Add(2 * time.Second)
@@ -243,12 +244,12 @@ func TestR4ABuildStackRunsRetentionLoop(t *testing.T) {
 			break
 		}
 		if testNow().After(deadline) {
-			stack.close()
+			stack.Close()
 			t.Fatalf("装配后首轮清理没有执行：RetentionLoop 未接线；logs=%s", logs.String())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	go func() { defer close(closed); stack.close() }()
+	go func() { defer close(closed); stack.Close() }()
 	select {
 	case <-closed:
 	case <-time.After(2 * time.Second):
