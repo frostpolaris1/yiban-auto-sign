@@ -25,6 +25,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	corephoto "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/photo"
 )
@@ -162,15 +163,34 @@ func (f *FS) List(ctx context.Context) ([]corephoto.Blob, error) {
 	return out, nil
 }
 
-// Remove 删除一份 blob。缺失即视为已删除，不报错。
-func (f *FS) Remove(ctx context.Context, sha [32]byte) error {
+// Touch 刷新一份 blob 的修改时间。
+//
+// Put 对已存在的摘要不重写文件，修改时间仍是首次落盘的旧值。
+// 回收方按修改时间判安全期，去重上传必须在这里重新起算。
+// 缺失返回错误：调用方刚 Put 过，文件不该缺。
+func (f *FS) Touch(ctx context.Context, sha [32]byte, at time.Time) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := os.Remove(f.path(sha)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("storage: remove blob: %w", err)
+	if err := os.Chtimes(f.path(sha), at, at); err != nil {
+		return fmt.Errorf("storage: touch blob: %w", err)
 	}
 	return nil
+}
+
+// Remove 删除一份 blob，返回是否真的删掉了文件。
+// 缺失视为已删除，返回 false、不报错：回收方只按真实删除计数。
+func (f *FS) Remove(ctx context.Context, sha [32]byte) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if err := os.Remove(f.path(sha)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("storage: remove blob: %w", err)
+	}
+	return true, nil
 }
 
 // path 返回摘要对应的绝对路径。

@@ -330,12 +330,24 @@ func TestMaskTextMasksEveryFusedPhone(t *testing.T) {
 
 // 检测口径必须看出段内连写的号码：审计守卫据此拒绝原文。
 func TestTextHasPhoneDetectsFusedPhones(t *testing.T) {
+	if !TextHasPhone("1380013800013800138001") {
+		t.Fatal("22 位连写号码必须被抓")
+	}
+}
+
+// 11 至 21 位整段保持对齐口径：秒/毫秒/微秒/纳秒时间戳不得被冤成号码。
+// 12 至 21 位段内嵌的号码不判，属已登记限制；掩码仍会改写它。
+func TestTextHasPhoneLeavesTimestampsAlone(t *testing.T) {
 	for _, s := range []string{
-		"1380013800013800138001",
-		"13900139000100",
+		"1735689600",          // 秒
+		"1735689600000",       // 毫秒
+		"1735689600000000",    // 微秒
+		"1735689600000000000", // 纳秒
+		"13900139000100",      // 14 位：嵌入号码不判（已登记）
+		"138001380001",        // 12 位：同上
 	} {
-		if !TextHasPhone(s) {
-			t.Fatalf("TextHasPhone(%q) = false; 连写号码必须被抓", s)
+		if TextHasPhone(s) {
+			t.Fatalf("TextHasPhone(%q) = true; 时间戳/短整段不得被判为号码", s)
 		}
 	}
 }

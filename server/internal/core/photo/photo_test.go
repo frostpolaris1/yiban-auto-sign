@@ -37,7 +37,12 @@ func TestRecordExpired(t *testing.T) {
 	deletedAt := now
 	rec.DeletedAt = &deletedAt
 	if rec.Expired(now, 90) {
-		t.Fatal("软删行不由到期判据处理")
+		t.Fatal("软删未满保留期不得到期（从删除时刻起算）")
+	}
+	oldDelete := now.Add(-91 * 24 * time.Hour)
+	recent := corephoto.Record{CreatedAt: now.Add(-time.Hour), DeletedAt: &oldDelete}
+	if !recent.Expired(now, 90) {
+		t.Fatal("软删满 91 天应到期，即使创建时间很近")
 	}
 	if !rec.Deleted() {
 		t.Fatal("Deleted() 应为真")

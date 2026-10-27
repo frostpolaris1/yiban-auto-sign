@@ -186,6 +186,8 @@ type fakeBlobs struct {
 	fail error
 	// removed 记录真实删除顺序，供断言。
 	removed [][32]byte
+	// removeMiss 模拟「清单里有、删除时已不在」：Remove 返回 false。
+	removeMiss bool
 }
 
 func newFakeBlobs() *fakeBlobs {
@@ -196,6 +198,11 @@ func (f *fakeBlobs) Put(_ context.Context, sha [32]byte, data []byte) error {
 	f.puts++
 	if f.fail != nil {
 		return f.fail
+	}
+	// 与 FS 同形：同一摘要重复写不重写文件，修改时间保持旧值。
+	// 刷新只能由 Touch 完成，否则回收竞态用例没有判别力。
+	if _, ok := f.data[sha]; ok {
+		return nil
 	}
 	f.data[sha] = append([]byte(nil), data...)
 	f.mods[sha] = fixedNow
@@ -222,14 +229,25 @@ func (f *fakeBlobs) List(context.Context) ([]corephoto.Blob, error) {
 	return out, nil
 }
 
-func (f *fakeBlobs) Remove(_ context.Context, sha [32]byte) error {
+func (f *fakeBlobs) Touch(_ context.Context, sha [32]byte, at time.Time) error {
 	if _, ok := f.data[sha]; !ok {
-		return nil
+		return errors.New("blob not found")
+	}
+	f.mods[sha] = at
+	return nil
+}
+
+func (f *fakeBlobs) Remove(_ context.Context, sha [32]byte) (bool, error) {
+	if f.removeMiss {
+		return false, nil
+	}
+	if _, ok := f.data[sha]; !ok {
+		return false, nil
 	}
 	delete(f.data, sha)
 	delete(f.mods, sha)
 	f.removed = append(f.removed, sha)
-	return nil
+	return true, nil
 }
 
 // ---- 辅助 ----
@@ -480,6 +498,46 @@ func TestCollectBlobsRespectsReferencesAndSafetyWindow(t *testing.T) {
 		if _, ok := blobs.data[sha]; !ok {
 			t.Fatalf("%s blob 被误删", name)
 		}
+	}
+}
+
+// 去重上传必须刷新 blob 修改时间。
+// 否则「删后重传」的文件仍是旧时间，回收方会在新行提交前删掉它。
+func TestUploadRefreshesBlobTimestampOnDedup(t *testing.T) {
+	store, blobs := newFakeStore(), newFakeBlobs()
+	svc := newService(t, store, blobs)
+	raw := pngBytes(t, 20, 20)
+
+	first, err := svc.Upload(context.Background(), owner("u1"), raw)
+	if err != nil {
+		t.Fatalf("first upload: %v", err)
+	}
+	// Put 对已存在摘要不重写文件；把时间做旧，模拟很久以前落盘的那一份。
+	blobs.mods[first.SHA256] = fixedNow.Add(-2 * time.Hour)
+
+	if _, err := svc.Upload(context.Background(), owner("u1"), raw); err != nil {
+		t.Fatalf("dedup upload: %v", err)
+	}
+	if got := blobs.mods[first.SHA256]; !got.Equal(fixedNow) {
+		t.Fatalf("去重上传后修改时间 = %v, want %v（未刷新会被回收）", got, fixedNow)
+	}
+}
+
+// 回收计数只认真实删除：清单里有、删除时已不在的文件不计数。
+func TestCollectBlobsCountsOnlyRealRemovals(t *testing.T) {
+	store, blobs := newFakeStore(), newFakeBlobs()
+	svc := newService(t, store, blobs)
+	gone := digestOf(9)
+	blobs.data[gone] = []byte("blob")
+	blobs.mods[gone] = fixedNow.Add(-2 * time.Hour)
+	blobs.removeMiss = true
+
+	removed, err := svc.CollectBlobs(context.Background())
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if removed != 0 {
+		t.Fatalf("删除数 = %d, want 0（文件已不在，不得计入）", removed)
 	}
 }
 
