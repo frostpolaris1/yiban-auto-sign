@@ -136,10 +136,8 @@ HEXRUN = re.compile(r"[0-9a-fA-F]{32,}")
 
 
 def _inside_hex(line, start, end):
-    for m in HEXRUN.finditer(line):
-        if m.start() <= start and end <= m.end():
-            return True
-    return False
+    return any(m.start() <= start and end <= m.end()
+               for m in HEXRUN.finditer(line))
 
 
 def scan_text(rel, text):
