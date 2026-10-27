@@ -1,8 +1,8 @@
 // Package storage 提供内容寻址的本地 blob 存储。
 //
 // # 功能
-// 按 SHA256 写入、读取图片字节；写入用临时文件加原子 rename。
-// 本包**不**遍历目录、**不**做 GC、**不**生成 URL。
+// 按 SHA256 写入、读取、列出与删除图片字节；写入用临时文件加原子 rename。
+// 本包**不**决定回收判据（安全期与引用集合由 app/photos 判定）、**不**生成 URL。
 //
 // # 归属
 // adapters 层设施包。app/photos 的 Blobs 端口实现。
@@ -13,6 +13,7 @@
 // # 口径
 // 路径只由摘要决定，不含用户输入，故无路径穿越面。
 // Put 幂等：目标已存在直接返回成功。半写文件只在临时文件名下可见。
+// List 只认布局内的条目；put-* 临时件与非法文件名不在结果内。
 package storage
 
 import (
@@ -24,6 +25,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
+
+	corephoto "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/photo"
 )
 
 // FS 是本地内容寻址存储。
@@ -106,6 +110,87 @@ func (f *FS) Open(ctx context.Context, sha [32]byte) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("storage: open blob: %w", err)
 	}
 	return file, nil
+}
+
+// List 返回存储根下全部 blob 的摘要与修改时间。
+//
+// 只认布局内的条目：<root>/<hex 前两位>/<64 位小写 hex>。
+// put-* 临时件、非法文件名与其他目录一律跳过：
+// 回收方按本结果删除文件，误收就会删掉正在写的临时件。
+// 修改时间取自文件系统，回收安全期由调用方判定。
+func (f *FS) List(ctx context.Context) ([]corephoto.Blob, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	shards, err := os.ReadDir(f.root)
+	if err != nil {
+		return nil, fmt.Errorf("storage: list root: %w", err)
+	}
+	var out []corephoto.Blob
+	for _, shard := range shards {
+		if !shard.IsDir() || len(shard.Name()) != 2 {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		entries, err := os.ReadDir(filepath.Join(f.root, shard.Name()))
+		if err != nil {
+			return nil, fmt.Errorf("storage: list shard %s: %w", shard.Name(), err)
+		}
+		for _, entry := range entries {
+			if !entry.Type().IsRegular() {
+				continue
+			}
+			name := entry.Name()
+			// 目录名必须等于文件名前缀：错位的文件不是本布局。
+			if len(name) != 64 || name[:2] != shard.Name() {
+				continue
+			}
+			raw, err := hex.DecodeString(name)
+			if err != nil || len(raw) != 32 {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return nil, fmt.Errorf("storage: stat blob %s: %w", name, err)
+			}
+			var sha [32]byte
+			copy(sha[:], raw)
+			out = append(out, corephoto.Blob{Digest: sha, ModTime: info.ModTime()})
+		}
+	}
+	return out, nil
+}
+
+// Touch 刷新一份 blob 的修改时间。
+//
+// Put 对已存在的摘要不重写文件，修改时间仍是首次落盘的旧值。
+// 回收方按修改时间判安全期，去重上传必须在这里重新起算。
+// 缺失返回错误：调用方刚 Put 过，文件不该缺。
+func (f *FS) Touch(ctx context.Context, sha [32]byte, at time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := os.Chtimes(f.path(sha), at, at); err != nil {
+		return fmt.Errorf("storage: touch blob: %w", err)
+	}
+	return nil
+}
+
+// Remove 删除一份 blob，返回是否真的删掉了文件。
+// 缺失视为已删除，返回 false、不报错：回收方只按真实删除计数。
+func (f *FS) Remove(ctx context.Context, sha [32]byte) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if err := os.Remove(f.path(sha)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("storage: remove blob: %w", err)
+	}
+	return true, nil
 }
 
 // path 返回摘要对应的绝对路径。

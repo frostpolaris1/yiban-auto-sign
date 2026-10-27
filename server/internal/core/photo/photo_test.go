@@ -21,7 +21,7 @@ func TestValidRetention(t *testing.T) {
 	}
 }
 
-// 到期判据：恰好满保留期即到期；软删行不算到期。
+// 到期判据：恰好满保留期即到期；软删行从删除时刻起算。
 func TestRecordExpired(t *testing.T) {
 	now := time.Date(2026, 10, 27, 8, 0, 0, 0, time.UTC)
 	rec := corephoto.Record{CreatedAt: now.Add(-90 * 24 * time.Hour)}
@@ -37,7 +37,12 @@ func TestRecordExpired(t *testing.T) {
 	deletedAt := now
 	rec.DeletedAt = &deletedAt
 	if rec.Expired(now, 90) {
-		t.Fatal("软删行不由到期判据处理")
+		t.Fatal("软删未满保留期不得到期（从删除时刻起算）")
+	}
+	oldDelete := now.Add(-91 * 24 * time.Hour)
+	recent := corephoto.Record{CreatedAt: now.Add(-time.Hour), DeletedAt: &oldDelete}
+	if !recent.Expired(now, 90) {
+		t.Fatal("软删满 91 天应到期，即使创建时间很近")
 	}
 	if !rec.Deleted() {
 		t.Fatal("Deleted() 应为真")

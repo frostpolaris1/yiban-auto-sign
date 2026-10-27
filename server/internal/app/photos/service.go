@@ -2,6 +2,7 @@
 //
 // # 功能
 // 上传、列表、读取、软删与保留期设置；上传前完成预处理与去重。
+// 到期行清理与无引用 blob 回收由 RetentionLoop 每日执行。
 // 处理顺序固定：预处理 → 写 blob → 写记录。
 // 本包**不**发 HTTP 请求、**不**写 SQL、**不**生成公开 URL。
 //
@@ -21,6 +22,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync"
+	"time"
 
 	appcore "github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
@@ -53,8 +56,14 @@ type Deps struct {
 }
 
 // Service 是图片库用例服务。
+//
+// mu 把「上传落盘」与「回收扫描」互斥。单进程是设计不变量（AGENTS §26），
+// 因此一把进程内读写锁就能结构性排除这个交错：
+// 回收按 List 快照的 mtime 判安全期，而上传的去重 Touch 可能发生在快照之后；
+// 没有互斥时，回收会用过期快照删掉「刚刷新、行刚提交」的文件。
 type Service struct {
 	deps Deps
+	mu   sync.RWMutex
 }
 
 // NewService 构造服务。缺依赖即失败。
@@ -93,7 +102,15 @@ func (s *Service) Upload(ctx context.Context, scope corescope.Scope, raw []byte)
 	}
 	// 先写 blob 再写行：行写失败只会留下无引用的内容寻址 blob，
 	// 由后续 GC 回收；反过来会留下指向空 blob 的行。
+	// 读锁挡住回收：Put→Touch→Create 全程不得与回收扫描交错。
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if err := s.deps.Blobs.Put(ctx, out.SHA256, out.Data); err != nil {
+		return corephoto.Record{}, err
+	}
+	// 去重命中时 Put 不重写文件，修改时间仍是首次落盘的旧值。
+	// GC 按修改时间判安全期；不刷新就可能删掉「刚重传、行还未提交」的文件。
+	if err := s.deps.Blobs.Touch(ctx, out.SHA256, s.deps.Clock.Now()); err != nil {
 		return corephoto.Record{}, err
 	}
 	return s.deps.Store.Create(ctx, corephoto.Record{
@@ -184,13 +201,93 @@ func (s *Service) SetRetention(ctx context.Context, scope corescope.Scope, days 
 	return days, nil
 }
 
-// Purge 删除到期的图片行。返回删除行数。blob 回收留后续批次。
+// PurgeResult 是一轮保留期清理的结果。
+type PurgeResult struct {
+	RowsDeleted  int64
+	BlobsDeleted int
+}
+
+// blobSafetyWindow 是 blob 回收的安全期。
+// 上传先写 blob 再写行；行事务未提交的窗口内不得删文件。
+// 一小时远大于任何提交延迟，也远小于一天的清理周期。
+const blobSafetyWindow = time.Hour
+
+// Purge 循环删除到期行，直到一次调用返回 0 行。
+// limit 是单次删除上限：单条大事务会长时间持锁。
 func (s *Service) Purge(ctx context.Context, limit int) (int64, error) {
 	limit, err := appcore.NormalizeLimit(limit)
 	if err != nil {
 		return 0, err
 	}
-	return s.deps.Store.PurgeExpired(ctx, s.deps.Clock.Now(), limit)
+	var total int64
+	for {
+		n, err := s.deps.Store.PurgeExpired(ctx, s.deps.Clock.Now(), limit)
+		if err != nil {
+			return total, err
+		}
+		total += n
+		if n == 0 {
+			return total, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+	}
+}
+
+// CollectBlobs 回收无行引用的 blob，返回真实删除数。
+//
+// 只删修改时间早于 now-blobSafetyWindow 的文件：
+// 刚落盘或刚去重上传（Touch 刷新）的文件必须保留。
+// 引用集合含软删行，故可恢复的行不会指向空文件。
+// 全程持写锁：与 Upload 的 Put→Touch→Create 互斥。
+// 没有这把锁，List 快照之后发生的去重 Touch 不会被本轮看到，
+// 回收会按过期 mtime 删掉「刚提交行」的文件（复审 P1）。
+func (s *Service) CollectBlobs(ctx context.Context) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	files, err := s.deps.Blobs.List(ctx)
+	if err != nil {
+		return 0, err
+	}
+	referenced, err := s.deps.Store.ReferencedDigests(ctx)
+	if err != nil {
+		return 0, err
+	}
+	cutoff := s.deps.Clock.Now().Add(-blobSafetyWindow)
+	removed := 0
+	for _, file := range files {
+		if err := ctx.Err(); err != nil {
+			return removed, err
+		}
+		if !file.ModTime.Before(cutoff) {
+			continue
+		}
+		if _, ok := referenced[file.Digest]; ok {
+			continue
+		}
+		reallyRemoved, err := s.deps.Blobs.Remove(ctx, file.Digest)
+		if err != nil {
+			return removed, err
+		}
+		if reallyRemoved {
+			removed++
+		}
+	}
+	return removed, nil
+}
+
+// Sweep 执行一轮保留期清理：先删到期行，再回收无引用 blob。
+// 返回部分结果与首个错误，调用方可记录已完成的数目。
+func (s *Service) Sweep(ctx context.Context, batch int) (PurgeResult, error) {
+	rows, err := s.Purge(ctx, batch)
+	result := PurgeResult{RowsDeleted: rows}
+	if err != nil {
+		return result, err
+	}
+	blobs, err := s.CollectBlobs(ctx)
+	result.BlobsDeleted = blobs
+	return result, err
 }
 
 // requireUser 限定图片库端点只给 user 角色。

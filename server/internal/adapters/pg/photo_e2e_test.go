@@ -167,58 +167,125 @@ func TestPhotoRepoRetention(t *testing.T) {
 	}
 }
 
-// 清理按各用户保留期：30 天用户的 40 天前图被删；
-// 未到期图与缺省 90 天用户的 40 天前图保留。
+// 清理按各用户保留期执行。判据是 COALESCE(deleted_at, created_at)：
+// 软删行从删除时刻起算保留期，未到期不物理删。
 func TestPhotoRepoPurgeExpired(t *testing.T) {
 	e := newEnv(t)
 	repo := pg.NewPhotoRepo(e.db)
 	u30 := e.createUser("photo-purge-30@example.com")
 	u90 := e.createUser("photo-purge-90@example.com")
+	u365 := e.createUser("photo-purge-365@example.com")
 	now := clock.System{}.Now().UTC()
-	if err := repo.PutRetention(e.ctx, u30.ID, 30, now); err != nil {
-		t.Fatalf("retention: %v", err)
+	for id, days := range map[string]int{u30.ID: 30, u365.ID: 365} {
+		if err := repo.PutRetention(e.ctx, id, days, now); err != nil {
+			t.Fatalf("retention %d: %v", days, err)
+		}
 	}
-	old := now.Add(-40 * 24 * time.Hour)
-	expired, err := repo.Create(e.ctx, photoRecord(u30.ID, 31, old))
-	if err != nil {
-		t.Fatalf("create expired: %v", err)
+
+	expired := mustPhoto(t, repo, e, photoRecord(u30.ID, 31, now.Add(-31*24*time.Hour)))
+	fresh := mustPhoto(t, repo, e, photoRecord(u30.ID, 32, now.Add(-5*24*time.Hour)))
+	keptDefault := mustPhoto(t, repo, e, photoRecord(u90.ID, 33, now.Add(-40*24*time.Hour)))
+	keptLong := mustPhoto(t, repo, e, photoRecord(u365.ID, 34, now.Add(-60*24*time.Hour)))
+	softOld := mustPhoto(t, repo, e, photoRecord(u30.ID, 35, now.Add(-90*24*time.Hour)))
+	softNew := mustPhoto(t, repo, e, photoRecord(u30.ID, 36, now.Add(-90*24*time.Hour)))
+	if _, err := repo.SoftDelete(e.ctx, corescope.User(u30.ID), softOld.ID, now.Add(-31*24*time.Hour)); err != nil {
+		t.Fatalf("soft delete old: %v", err)
 	}
-	fresh, err := repo.Create(e.ctx, photoRecord(u30.ID, 32, now.Add(-5*24*time.Hour)))
-	if err != nil {
-		t.Fatalf("create fresh: %v", err)
-	}
-	kept, err := repo.Create(e.ctx, photoRecord(u90.ID, 33, old))
-	if err != nil {
-		t.Fatalf("create kept: %v", err)
-	}
-	// 软删行不参与物理清理：重传恢复同一 id 的语义依赖它。
-	soft, err := repo.Create(e.ctx, photoRecord(u30.ID, 34, old))
-	if err != nil {
-		t.Fatalf("create soft: %v", err)
-	}
-	if _, err := repo.SoftDelete(e.ctx, corescope.User(u30.ID), soft.ID, now); err != nil {
-		t.Fatalf("soft delete: %v", err)
+	if _, err := repo.SoftDelete(e.ctx, corescope.User(u30.ID), softNew.ID, now.Add(-24*time.Hour)); err != nil {
+		t.Fatalf("soft delete new: %v", err)
 	}
 
 	n, err := repo.PurgeExpired(e.ctx, now, 100)
 	if err != nil {
 		t.Fatalf("purge: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("删除行数 = %d, want 1", n)
+	if n != 2 {
+		t.Fatalf("删除行数 = %d, want 2", n)
 	}
-	if _, err := repo.Get(e.ctx, corescope.User(u30.ID), expired.ID); !errors.Is(err, errs.ErrNotFound) {
-		t.Fatalf("到期行仍存在: %v", err)
+	for name, id := range map[string]string{
+		"到期行":      expired.ID,
+		"软删 31 天前": softOld.ID,
+	} {
+		if left := e.scalarInt("SELECT count(*) FROM photos WHERE id = $1::uuid", id); left != 0 {
+			t.Fatalf("%s 未被物理删除, rows=%d", name, left)
+		}
 	}
-	if _, err := repo.Get(e.ctx, corescope.User(u30.ID), fresh.ID); err != nil {
-		t.Fatalf("未到期行被删: %v", err)
+	for name, id := range map[string]string{
+		"未到期行":     fresh.ID,
+		"缺省 90 天行": keptDefault.ID,
+		"365 天保留行": keptLong.ID,
+		"软删 1 天前行": softNew.ID,
+	} {
+		if left := e.scalarInt("SELECT count(*) FROM photos WHERE id = $1::uuid", id); left != 1 {
+			t.Fatalf("%s 被误删, rows=%d", name, left)
+		}
 	}
-	if _, err := repo.Get(e.ctx, corescope.User(u90.ID), kept.ID); err != nil {
-		t.Fatalf("缺省 90 天行被删: %v", err)
+}
+
+// PurgeExpired 一次最多删 limit 行；调用方循环到 0 才是清空。
+func TestPhotoRepoPurgeExpiredBatch(t *testing.T) {
+	e := newEnv(t)
+	repo := pg.NewPhotoRepo(e.db)
+	u := e.createUser("photo-purge-batch@example.com")
+	now := clock.System{}.Now().UTC()
+	if err := repo.PutRetention(e.ctx, u.ID, 30, now); err != nil {
+		t.Fatalf("retention: %v", err)
 	}
-	if left := e.scalarInt("SELECT count(*) FROM photos WHERE id = $1::uuid", soft.ID); left != 1 {
-		t.Fatalf("软删行被物理清除, rows=%d", left)
+	for i := 0; i < 3; i++ {
+		mustPhoto(t, repo, e, photoRecord(u.ID, byte(60+i), now.Add(-40*24*time.Hour)))
 	}
+	for i, want := range []int64{1, 1, 1, 0} {
+		n, err := repo.PurgeExpired(e.ctx, now, 1)
+		if err != nil {
+			t.Fatalf("purge %d: %v", i, err)
+		}
+		if n != want {
+			t.Fatalf("第 %d 次删除行数 = %d, want %d", i+1, n, want)
+		}
+	}
+}
+
+// ReferencedDigests 覆盖全部行，含未到期的软删行。
+// blob 回收只信本集合；漏掉软删行会把可恢复的行指向空文件。
+func TestPhotoRepoReferencedDigests(t *testing.T) {
+	e := newEnv(t)
+	repo := pg.NewPhotoRepo(e.db)
+	u1 := e.createUser("photo-ref-a@example.com")
+	u2 := e.createUser("photo-ref-b@example.com")
+	now := clock.System{}.Now().UTC()
+
+	live := mustPhoto(t, repo, e, photoRecord(u1.ID, 70, now))
+	soft := mustPhoto(t, repo, e, photoRecord(u2.ID, 71, now))
+	if _, err := repo.SoftDelete(e.ctx, corescope.User(u2.ID), soft.ID, now); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+
+	got, err := repo.ReferencedDigests(e.ctx)
+	if err != nil {
+		t.Fatalf("ReferencedDigests: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("摘要数 = %d, want 2", len(got))
+	}
+	for name, sha := range map[string][32]byte{"live": live.SHA256, "soft": soft.SHA256} {
+		if _, ok := got[sha]; !ok {
+			t.Fatalf("%s 摘要不在引用集合内", name)
+		}
+	}
+	absent := photoRecord(u1.ID, 72, now).SHA256
+	if _, ok := got[absent]; ok {
+		t.Fatal("未入库的摘要出现在引用集合内")
+	}
+}
+
+// mustPhoto 写入一行；失败即终止用例。
+func mustPhoto(t *testing.T, repo *pg.PhotoRepo, e *testEnv, rec corephoto.Record) corephoto.Record {
+	t.Helper()
+	out, err := repo.Create(e.ctx, rec)
+	if err != nil {
+		t.Fatalf("create photo: %v", err)
+	}
+	return out
 }
 
 // created_at 纳秒被库截到微秒后仍可稳定读回，游标不抖。

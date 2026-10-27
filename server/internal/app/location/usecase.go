@@ -14,6 +14,7 @@
 // # 口径
 // 可见面判据与账号域一致：user 只能改自己的账号，admin 只能改
 // 绑定学校的账号，跨校一律 404（403 会泄漏存在性）。
+// 写入角色按契约 x-roles 收紧为 user 与 admin；master 回 403。
 // 审计只记 mode 与 has_reason：原因原文可能含任意词句，
 // 进审计链必须先过掩码口径，本切片不存原文。
 package location
@@ -90,7 +91,7 @@ type Input struct {
 // Set 校验可见面与参数，覆盖写定位策略并记 location.set 审计。
 // 跨校、跨用户与已软删账号一律 404。
 func (s *Service) Set(ctx context.Context, scope corescope.Scope, accountID string, in Input, actor appaudit.Actor) (contract.Location, error) {
-	if err := app.RequireScope(scope); err != nil {
+	if err := requireWriter(scope); err != nil {
 		return contract.Location{}, err
 	}
 	record, err := s.deps.Accounts.Get(ctx, scope, accountID)
@@ -165,6 +166,20 @@ func (s *Service) Resolve(ctx context.Context, accountID string) (contract.Locat
 	return contract.Location{
 		Mode: contract.LocationFixed, Lng: row.Lng, Lat: row.Lat, Reason: row.Reason,
 	}, nil
+}
+
+// requireWriter 限定定位写入只给 user 与 admin。
+// 契约 x-roles 是 [user, admin]：master 不得经本端点改定位。
+// 形状与 app/photos 的 requireUser 相同，只是多放行 admin。
+func requireWriter(scope corescope.Scope) error {
+	if err := app.RequireScope(scope); err != nil {
+		return err
+	}
+	switch scope.Kind() {
+	case corescope.KindUser, corescope.KindAdmin:
+		return nil
+	}
+	return errs.New(errs.CodeForbidden, "role cannot change the account location")
 }
 
 // validatePoint 拒绝非有限值与越界经纬度。

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
 )
 
 // TestEncodeDetailRejectsPersonalData 钉住 schema §8.5 的 detail 规则。
@@ -252,5 +253,20 @@ func TestEncodeDetailAcceptsLocationSetKeys(t *testing.T) {
 	}
 	if _, err := coreaudit.EncodeDetail(map[string]any{"has_reason": "yes"}); err == nil {
 		t.Fatal("has_reason 字符串未被拒绝")
+	}
+}
+
+// R4A：段内连写的手机号不得进审计链；掩码后的文本必须通过。
+func TestEncodeDetailRejectsFusedPhone(t *testing.T) {
+	const raw = "1380013800013800138001"
+	if _, err := coreaudit.EncodeDetail(map[string]any{"reason": raw}); !errors.Is(err, coreaudit.ErrDetailPII) {
+		t.Fatalf("原始连写号码 err = %v, want ErrDetailPII", err)
+	}
+	masked := mask.MaskText(raw)
+	if masked == raw {
+		t.Fatalf("MaskText 未改写: %q", masked)
+	}
+	if _, err := coreaudit.EncodeDetail(map[string]any{"reason": masked}); err != nil {
+		t.Fatalf("掩码后 err = %v, want nil (%q)", err, masked)
 	}
 }

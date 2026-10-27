@@ -58,6 +58,19 @@ func (b pickBlobs) Open(_ context.Context, sha [32]byte) (io.ReadCloser, error) 
 	return io.NopCloser(bytes.NewReader(data)), nil
 }
 
+// 选图不碰回收面：List/Touch/Remove 只为满足端口。
+func (b pickBlobs) List(context.Context) ([]corephoto.Blob, error) {
+	return nil, errors.New("not used")
+}
+
+func (b pickBlobs) Touch(context.Context, [32]byte, time.Time) error {
+	return errors.New("not used")
+}
+
+func (b pickBlobs) Remove(context.Context, [32]byte) (bool, error) {
+	return false, errors.New("not used")
+}
+
 func pickService(t *testing.T, store *pickStore, blobs pickBlobs) *appphotos.Service {
 	t.Helper()
 	svc, err := appphotos.NewService(appphotos.Deps{
