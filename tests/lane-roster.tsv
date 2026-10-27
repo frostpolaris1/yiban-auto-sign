@@ -293,6 +293,7 @@ fast	tests/test_settings_copy_truthful.py	# 只读入库文本：六处权限文
 fast	tests/test_settings_tiers_frontend_parity.py
 fast	tests/test_settlement_status_ownership.py
 fast	tests/test_shared_facts_gate.py
+fast	tests/test_shadow_compare.py	# P8-E 影子对账判据（子进程跑脚本，秒级）
 fast	tests/test_shell_chrome_shard.py
 fast	tests/test_sign_dist_default_parity.py
 fast	tests/test_sign_events.py
