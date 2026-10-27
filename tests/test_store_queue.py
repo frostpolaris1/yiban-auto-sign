@@ -24,6 +24,7 @@ result 截断、requeue_task 的 priority/attempts 递增，以及 day_counts �
 import contextlib
 import datetime
 import os
+import re
 import shutil
 import tempfile
 import unittest
@@ -37,7 +38,23 @@ from yiban import clock  # noqa: E402
 from yiban.store import queue_store  # noqa: E402
 
 TEST_KEY = "a" * 64
-DAY = "2026-09-22"
+
+
+def _day(days_ago):
+    """按业务时区取相对业务日：0 是今日，1 是昨日。
+
+    写死日历日期会随运行日老化：夹具日期滑出保留窗后，用例在某个日历日突然变红。
+    """
+    return (clock.now() - datetime.timedelta(days=days_ago)).strftime("%Y-%m-%d")
+
+
+# 主夹具业务日必须在保留窗（14 天）内，且严格早于今日：
+# `owners_since(days=0)` 的 cutoff 是今日，只有早于今日的行才判成窗外。
+DAY = _day(1)
+# 更早但仍在窗内的业务日：用于「存在更旧记录」场景。
+OLDER_DAY = _day(3)
+# 远期业务日：不插入任何行，用于空结果口径。
+EMPTY_DAY = _day(3650)
 OWNER = "hostA:100:090000"
 OTHER = "hostB:200:090001"
 MY_SHARDS = (0, 1) # 只认领两片：7 号片的行必须原样不动，跨界领取是最贵的那类 bug
@@ -289,10 +306,10 @@ class DisplayReadsTest(_Base):
 
     def test_latest_day_and_owners_for_day(self):
         self._add_task(_phone(1), state="done", owner=OWNER, day=DAY)
-        self._add_task(_phone(2), state="done", owner=OWNER, day="2026-09-20")
+        self._add_task(_phone(2), state="done", owner=OWNER, day=OLDER_DAY)
         self.assertEqual(queue_store.latest_day(), DAY)
         self.assertEqual(queue_store.owners_for_day(DAY), {_phone(1): OWNER})
-        self.assertEqual(queue_store.owners_for_day("2026-01-01"), {})
+        self.assertEqual(queue_store.owners_for_day(EMPTY_DAY), {})
 
     def test_activity_folds_states_into_kpi_keys(self):
         # 同一 owner：done/skipped 归 done、claimed/stolen 归 claimed、pending/failed 归 failed
@@ -352,7 +369,7 @@ class PurgeTasksClockGuardTest(_Base):
         self.assertNotIn(old_day, self._days())
 
     def test_normal_purge_keeps_window_and_deletes_older(self):
-        """cutoff 前的保留、cutoff 外的删除：当日行必须留着。"""
+        """cutoff 前的保留、cutoff 外的删除：保留窗内的行必须留着。"""
         old_day = self._add_old_row()
         self._add_task(_phone(2), day=DAY, state="done")
         self.assertEqual(queue_store.purge(14), 1)
@@ -384,13 +401,27 @@ class DayCountsTest(_Base):
 
     def test_stats_style_keys_present_when_day_is_empty(self):
         """空 day（含库不可用路径）也要给出 claims.stats 口径的键，调用方不得 KeyError。"""
-        got = queue_store.day_counts("2026-01-01")
+        got = queue_store.day_counts(EMPTY_DAY)
         for key in ("claimed", "done", "failed", "settled", "open", "total"):
             self.assertIn(key, got)
         self.assertEqual(got["settled"], 0)
         self.assertEqual(got["open"], 0)
         self.assertEqual(got["total"], 0)
         self.assertTrue(all(n == 0 for n in got.values()), got)
+
+
+class NoHardcodedDateTest(unittest.TestCase):
+    """防回归钉子：本文件的业务日必须相对 clock 构造，不得写死日历日期。
+
+    写死日期是时间老化形状。窗口类断言按业务日算，夹具滑出窗口就在某个日历日变红。
+    本断言钉住「文件内不出现写死的 YYYY-MM-DD 字面量」：回退成写死日期即红。
+    """
+
+    def test_no_hardcoded_calendar_date_literal(self):
+        with open(__file__, encoding="utf-8") as f:
+            src = f.read()
+        hits = re.findall(r"\d{4}-\d{2}-\d{2}", src)
+        self.assertEqual(hits, [], f"写死日历日期会随运行日老化，改用 _day() 相对构造：{hits}")
 
 
 if __name__ == "__main__":
