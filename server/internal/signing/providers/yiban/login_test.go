@@ -1,6 +1,13 @@
 package yiban
 
+// 本文件登录链夹具标注：**旧实现复刻（ref develop@1d1c5ccf，
+// yiban/platform.py::login_killyiban + yiban/security.py + yiban/challenge.py），
+// 未经真实抓包验证**。协议解析夹具（auth_response.json 等）沿用
+// protocol/testdata 的既有登记；本文件新增的内联响应体只按旧实现行为构造，
+// 实拍对齐是 4sk 后续生产探针步骤，不 claim 真实性。
+
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -10,6 +17,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -67,11 +75,15 @@ type upstream struct {
 	signInBody          []byte
 	signInStatus        int
 
+	usersureBody []byte
+
 	mu           sync.Mutex
 	codeQuery    url.Values
 	usersureForm url.Values
+	usersureRaw  []byte
 	decrypted    string
 	authQuery    url.Values
+	authRawQuery string
 	authCookie   string
 	signForm     url.Values
 	signQuery    url.Values
@@ -122,6 +134,11 @@ func newUpstream(t *testing.T) *upstream {
 			w.Write([]byte("<html><script>var page_use = '" + testPageUse +
 				"';</script><input type=\"test\" id=\"key\" value=\"" + up.public + "\"></html>"))
 		case "/code/usersure":
+			raw, _ := io.ReadAll(r.Body)
+			r.Body = io.NopCloser(bytes.NewReader(raw))
+			up.mu.Lock()
+			up.usersureRaw = raw
+			up.mu.Unlock()
 			if err := r.ParseForm(); err != nil {
 				w.WriteHeader(http.StatusBadRequest)
 				return
@@ -129,6 +146,7 @@ func newUpstream(t *testing.T) *upstream {
 			up.mu.Lock()
 			up.usersureForm = r.PostForm
 			code := up.usersureCode
+			custom := up.usersureBody
 			up.mu.Unlock()
 			if got := r.URL.Query().Get("ajax_sign"); got != testPageUse {
 				w.WriteHeader(http.StatusBadRequest)
@@ -147,6 +165,10 @@ func newUpstream(t *testing.T) *upstream {
 			up.mu.Lock()
 			up.decrypted = string(plain)
 			up.mu.Unlock()
+			if custom != nil {
+				w.Write(custom)
+				return
+			}
 			if code != "" {
 				fmt.Fprintf(w, `{"code":%q,"msg":"denied"}`, code)
 				return
@@ -207,6 +229,7 @@ func newUpstream(t *testing.T) *upstream {
 func (u *upstream) handleAuth(w http.ResponseWriter, r *http.Request) {
 	u.mu.Lock()
 	u.authQuery = r.URL.Query()
+	u.authRawQuery = r.URL.RawQuery
 	if cookie, err := r.Cookie("csrf_token"); err == nil {
 		u.authCookie = cookie.Value
 	}
@@ -373,6 +396,14 @@ func testCredential() contract.Credential {
 	return contract.Credential{Phone: testPhone, Password: testPassword}
 }
 
+// authQueryRaw 取认证跳的原始 query 串（顺序敏感断言用）。
+func authQueryRaw(t *testing.T, up *upstream) string {
+	t.Helper()
+	up.mu.Lock()
+	defer up.mu.Unlock()
+	return up.authRawQuery
+}
+
 func TestVerifyLoginChainSuccess(t *testing.T) {
 	up := newUpstream(t)
 	client := New(Config{Endpoints: up.endpoints()})
@@ -385,8 +416,8 @@ func TestVerifyLoginChainSuccess(t *testing.T) {
 	}
 
 	up.mu.Lock()
-	form, decrypted, codeQuery, authQuery, authCookie :=
-		up.usersureForm, up.decrypted, up.codeQuery, up.authQuery, up.authCookie
+	form, decrypted, codeQuery, authQuery, authCookie, usersureRaw :=
+		up.usersureForm, up.decrypted, up.codeQuery, up.authQuery, up.authCookie, up.usersureRaw
 	headers := up.headers
 	up.mu.Unlock()
 
@@ -399,6 +430,13 @@ func TestVerifyLoginChainSuccess(t *testing.T) {
 		form.Get("display") != "authorize" {
 		t.Fatalf("usersure form = %v", form)
 	}
+	// 旧实现（ref develop@1d1c5ccf）传空 scope：线上体以 "&scope=" 空值字段收尾。
+	if !form.Has("scope") || form.Get("scope") != "" {
+		t.Fatalf("usersure form missing empty scope = %v", form)
+	}
+	if !strings.HasSuffix(string(usersureRaw), "&scope=") {
+		t.Fatalf("usersure body must end with empty scope, got %q", string(usersureRaw))
+	}
 	if codeQuery.Get("client_id") != oauthClientID ||
 		codeQuery.Get("redirect_uri") != redirectURI {
 		t.Fatalf("code query = %v", codeQuery)
@@ -407,6 +445,11 @@ func TestVerifyLoginChainSuccess(t *testing.T) {
 		authQuery.Get("CSRF") == "" ||
 		authCookie != authQuery.Get("CSRF") {
 		t.Fatalf("auth query=%v cookie=%q", authQuery, authCookie)
+	}
+	// 旧实现 query 顺序：verifyRequest 在前、CSRF 在后（ref develop@1d1c5ccf）。
+	if i, j := strings.Index(authQueryRaw(t, up), "verifyRequest="),
+		strings.Index(authQueryRaw(t, up), "CSRF="); i < 0 || j < 0 || i > j {
+		t.Fatalf("auth query order = %q, want verifyRequest before CSRF", authQueryRaw(t, up))
 	}
 
 	if got := headers["/code/usersure"].Get("Origin"); got != "" {
@@ -460,31 +503,109 @@ func TestVerifySessionExpired(t *testing.T) {
 
 func TestVerifyBrokenAuth(t *testing.T) {
 	up := newUpstream(t)
-	up.authBody = []byte(`{"code":0`)
+	// 截断体里带身份字段：解析错误消息不得带原始片段（ParseError.Fragment 外溢即泄漏）。
+	up.authBody = []byte(`{"code":0,"PersonName":"张三"`)
 	client := New(Config{Endpoints: up.endpoints()})
 	_, err := client.Verify(context.Background(), "acct-1", testCredential())
 	var outcomeErr *contract.OutcomeError
 	if !errors.As(err, &outcomeErr) || outcomeErr.Outcome != contract.OutcomeUnknown {
 		t.Fatalf("error = %v, want OutcomeUnknown", err)
 	}
+	if strings.Contains(outcomeErr.Message, "张三") {
+		t.Fatalf("error message leaked identity: %q", outcomeErr.Message)
+	}
 }
 
-func TestVerifyAuthDataNotObject(t *testing.T) {
+// 旧实现回执判据（ref develop@1d1c5ccf）：code 成功后只要 data 非空且非
+// {Action,Data} 入口步即成功；data 是数组也放行，身份字段只是展示面。
+func TestVerifyAuthDataArrayIsReceipt(t *testing.T) {
 	up := newUpstream(t)
 	up.authBody = []byte(`{"code":0,"data":[]}`)
 	client := New(Config{Endpoints: up.endpoints()})
+	profile, err := client.Verify(context.Background(), "acct-1", testCredential())
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if profile.DisplayName != "" || profile.SchoolName != "" {
+		t.Fatalf("profile = %+v, want empty", profile)
+	}
+}
+
+// data={} 是旧实现录制到的真实成功形状，登录必须成功。
+func TestVerifyEmptyReceiptObjectSucceeds(t *testing.T) {
+	up := newUpstream(t)
+	up.authBody = []byte(`{"code":0,"data":{}}`)
+	client := New(Config{Endpoints: up.endpoints()})
+	if _, err := client.Verify(context.Background(), "acct-1", testCredential()); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+}
+
+// data 键缺失：code=0 但无签发回执，登录失败。
+func TestVerifyMissingReceiptRejected(t *testing.T) {
+	up := newUpstream(t)
+	up.authBody = []byte(`{"code":0,"msg":"ok"}`)
+	client := New(Config{Endpoints: up.endpoints()})
 	_, err := client.Verify(context.Background(), "acct-1", testCredential())
 	var outcomeErr *contract.OutcomeError
 	if !errors.As(err, &outcomeErr) || outcomeErr.Outcome != contract.OutcomeUnknown {
 		t.Fatalf("error = %v, want OutcomeUnknown", err)
 	}
-	if outcomeErr.Message != "auth data is not an object" {
-		t.Fatalf("message = %q", outcomeErr.Message)
+}
+
+// data 是 {Action,Data} 入口步形状：未签发会话，登录失败。
+func TestVerifyEntryStepPayloadRejected(t *testing.T) {
+	up := newUpstream(t)
+	up.authBody = []byte(`{"code":0,"data":{"Action":"login","Data":"https://oauth.yiban.cn/x"}}`)
+	client := New(Config{Endpoints: up.endpoints()})
+	_, err := client.Verify(context.Background(), "acct-1", testCredential())
+	var outcomeErr *contract.OutcomeError
+	if !errors.As(err, &outcomeErr) || outcomeErr.Outcome != contract.OutcomeUnknown {
+		t.Fatalf("error = %v, want OutcomeUnknown", err)
 	}
 }
 
-// 解析错误不得带身份字段：Fragment 会含 PersonName/PersonId。
-func TestVerifyParseErrorHidesIdentity(t *testing.T) {
+// WAF 短响应关键词拦截不得判成凭据错（旧实现 usersure 步先判 WAF 再解析，
+// ref develop@1d1c5ccf is_waf_blocked；\uXXXX 转义需先解码）。
+func TestVerifyUsersureWAFKeywordBlock(t *testing.T) {
+	up := newUpstream(t)
+	up.usersureBody = []byte(`{"code":"x001","msg":"\u98ce\u9669\u8bbf\u95ee"}`)
+	client := New(Config{Endpoints: up.endpoints()})
+	_, err := client.Verify(context.Background(), "acct-1", testCredential())
+	var outcomeErr *contract.OutcomeError
+	if !errors.As(err, &outcomeErr) || outcomeErr.Outcome != contract.OutcomeTransient {
+		t.Fatalf("error = %v, want OutcomeTransient", err)
+	}
+}
+
+// 长响应（>2000 字符）合法含"风控"字样：不判拦截，照常解析（防误伤口径）。
+func TestVerifyUsersureWAFKeywordLongBodyPassesThrough(t *testing.T) {
+	up := newUpstream(t)
+	up.usersureCode = "e001"
+	up.usersureBody = []byte(`{"code":"e001","msgCN":"` + strings.Repeat("说明文本", 600) + `风控说明` + `","msg":"x"}`)
+	client := New(Config{Endpoints: up.endpoints()})
+	_, err := client.Verify(context.Background(), "acct-1", testCredential())
+	var outcomeErr *contract.OutcomeError
+	if !errors.As(err, &outcomeErr) || outcomeErr.Outcome != contract.OutcomeCredentialBad {
+		t.Fatalf("error = %v, want OutcomeCredentialBad", err)
+	}
+}
+
+// 挑战页双 JS 特征（旧实现 challenge.py 强信号）命中即 Challenge。
+func TestVerifyDoubleJSChallenge(t *testing.T) {
+	up := newUpstream(t)
+	up.usersureBody = []byte(`<html><script>window.onload=setTimeout;eval("qo=eval;qo(po);")</script></html>`)
+	client := New(Config{Endpoints: up.endpoints()})
+	_, err := client.Verify(context.Background(), "acct-1", testCredential())
+	var outcomeErr *contract.OutcomeError
+	if !errors.As(err, &outcomeErr) || outcomeErr.Outcome != contract.OutcomeChallenge {
+		t.Fatalf("error = %v, want OutcomeChallenge", err)
+	}
+}
+
+// 身份字段缺失不回退登录结论：旧实现回执判据只看 data 载荷存在性；
+// 身份字段是展示面，缺字段以空 Profile 成功（ref develop@1d1c5ccf）。
+func TestVerifyPartialIdentityStillSucceeds(t *testing.T) {
 	up := newUpstream(t)
 	var obj map[string]any
 	if err := json.Unmarshal(up.authFixture, &obj); err != nil {
@@ -501,13 +622,12 @@ func TestVerifyParseErrorHidesIdentity(t *testing.T) {
 	}
 	up.authBody = body
 	client := New(Config{Endpoints: up.endpoints()})
-	_, err = client.Verify(context.Background(), "acct-1", testCredential())
-	var outcomeErr *contract.OutcomeError
-	if !errors.As(err, &outcomeErr) || outcomeErr.Outcome != contract.OutcomeUnknown {
-		t.Fatalf("error = %v, want OutcomeUnknown", err)
+	profile, err := client.Verify(context.Background(), "acct-1", testCredential())
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
 	}
-	if strings.Contains(outcomeErr.Message, "张三") || strings.Contains(outcomeErr.Message, "ff4640") {
-		t.Fatalf("error message leaked identity: %q", outcomeErr.Message)
+	if profile.DisplayName != "" {
+		t.Fatalf("DisplayName = %q, want empty", profile.DisplayName)
 	}
 }
 

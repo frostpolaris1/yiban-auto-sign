@@ -385,7 +385,7 @@ func sec(v float64) string { return strconv.FormatFloat(v, 'f', 3, 64) }
 
 // sec6 用于亚毫秒级测量：3 位小数会吞成 0.000。
 func sec6(v float64) string { return strconv.FormatFloat(v, 'f', 6, 64) }
-func num(v float64) string { return strconv.FormatFloat(v, 'f', 1, 64) }
+func num(v float64) string  { return strconv.FormatFloat(v, 'f', 1, 64) }
 func rate(n int, s float64) float64 {
 	if s <= 0 {
 		return 0
