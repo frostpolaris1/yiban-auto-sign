@@ -262,7 +262,10 @@ jobs:
 
   # 新栈（Go 后端 + React 前端）的自动门。与 verify job 分开：
   # Python 旧栈与 Go/React 新栈的依赖与工具链不同，混在一个 job 里会让
-  # 任一栈的安装失败拖垮另一栈。两侧都跑同一个本地入口 scripts/verify-stacks.sh。
+  # 任一栈的安装失败拖垮另一栈。本 job 只调同一个本地入口
+  # `bash scripts/verify-stacks.sh`；执行点只住该脚本一份，测试只做
+  # 逐字冻结断言（tests/test_dev_verify_entry.py::StacksCiWiringTest），
+  # 不复制命令语义。
   # 视觉回归不在本 job：基线目前只有 win32（见 ui/README.md），Linux 基线未生成。
   stacks:
     runs-on: ubuntu-latest
@@ -302,14 +305,14 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
 
-      - name: Server gates (gofmt, vet, test, canonical, drift, structure)
-        working-directory: server
+      # npm ci 必须先做：入口脚本只跑 `npm run verify`，不在门禁里联网装依赖。
+      - name: Install UI dependencies (locked)
+        working-directory: ui
+        run: npm ci
+
+      # 真调入口脚本（不是内联命令）。命令原文只存在 scripts/verify-stacks.sh；
+      # tests/test_dev_verify_entry.py::StacksCiWiringTest 钉住这条执行行。
+      - name: New-stack gates (scripts/verify-stacks.sh)
         env:
           YIBAN_TEST_DATABASE_URL: postgres://yiban:yiban@127.0.0.1:5432/yiban?sslmode=disable
-        run: ./scripts/verify.sh
-
-      - name: UI gates (types, token gate, contract drift, structure, build)
-        working-directory: ui
-        run: |
-          npm ci
-          npm run verify
+        run: bash scripts/verify-stacks.sh

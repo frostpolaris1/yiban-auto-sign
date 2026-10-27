@@ -43,9 +43,19 @@ ENTRY = os.path.join(BASE, "scripts", "dev-verify.sh")
 #: 否则"车道名未知"判红（这是有意的：车道是判据的一部分）。
 LANES = ("fast", "slow", "serial")
 
-#: 扫描/收集的下限（AGENTS §30：扫空不得当绿）。本树实测 299 个测试文件。
-#: 下限取 100：真实套件远在其上，环境坏掉/路径写错时远在其下。
-MIN_FILES = 100
+#: 扫描/收集的下限（AGENTS §30：扫空不得当绿）。本树实测 352 个测试文件
+#: （2026-10-27 口径：`_scan_test_files()` 计数；测量命令
+#: `find tests -name 'test_*.py' | wc -l` 输出 352）。
+#: 下限取 300：实测下方留 52 个文件余量；解析坏掉/路径写错时远在其下。
+MIN_FILES = 300
+
+DOC = os.path.join(BASE, "docs", "dev", "dev-verify.md")
+
+#: 文档 §3 的现量口径行。数字顺序：全量 / 快集 / 慢集 / 串行轨。
+_FILE_NUMBERS = re.compile(
+    r"全量\s+(\d+)\s+个文件\s*＝\s*快集\s+(\d+)\s*＋\s*慢集\s+(\d+)\s*＋\s+串行轨\s+(\d+)")
+_CASE_NUMBERS = re.compile(
+    r"用例数口径\s+(\d+)\s*＝\s*快集\s+(\d+)\s*＋\s*慢集\s+(\d+)\s*＋\s*串行轨\s+(\d+)")
 
 #: 名册表头里声明的列数（lane / path / 可选理由）
 _ROW = re.compile(r"^(fast|slow|serial)\s*\t\s*([^\t]+?)\s*(?:\t.*)?$")
@@ -67,12 +77,21 @@ def _scan_test_files():
     return sorted(out)
 
 
-def _collect_test_files():
-    """真实 pytest 收集：把 `--collect-only -q` 的 node id 前缀去重成本文件集。
+#: 收集结果缓存：`(文件集, {文件: nodeid 数})`。收集子进程只跑一次，
+#: 供名册对账与文档数字门共用（重复收集会各付 ~10s）。
+_COLLECTED = None
+
+
+def _collect_tests():
+    """真实 pytest 收集：把 `--collect-only -q` 的 node id 前缀去重成本文件集，
+    并给出每个文件的 nodeid 数（文档用例数门用同一份事实）。
 
     这一半防的是"文件在盘上但 pytest 收不到"（testpaths/命名口径被改窄）时假绿。
     用与当前解释器同一个 `sys.executable`：口径必须与本套件自身一致。
     """
+    global _COLLECTED
+    if _COLLECTED is not None:
+        return _COLLECTED
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", "tests/", "--collect-only", "-q",
          "-p", "no:randomly", "--no-header"],
@@ -80,12 +99,54 @@ def _collect_test_files():
         timeout=600,
     )
     files = set()
+    counts = {}
     for raw in proc.stdout.decode("utf-8", "replace").splitlines():
         line = raw.strip()
         if "::" not in line or not line.startswith("tests/"):
             continue
-        files.add(line.split("::", 1)[0].strip())
-    return sorted(files)
+        rel = line.split("::", 1)[0].strip()
+        files.add(rel)
+        counts[rel] = counts.get(rel, 0) + 1
+    _COLLECTED = (sorted(files), counts)
+    return _COLLECTED
+
+
+def _collect_test_files():
+    """真实 pytest 收集：测试文件集（口径见 `_collect_tests`）。"""
+    return _collect_tests()[0]
+
+
+def _doc_number_violations(text, file_counts, case_counts):
+    """纯函数：文档声明的两组数字必须等于名册与真实收集的现量。
+
+    `file_counts` / `case_counts` 的形状均为 `(全量, 快集, 慢集, 串行轨)`。
+    单独成函数是为了能被**突变自证**调用：喂过期数字必须判红。
+    """
+    bad = []
+    for label, pattern, expected in (
+            ("文件数", _FILE_NUMBERS, file_counts),
+            ("用例数", _CASE_NUMBERS, case_counts)):
+        m = pattern.search(text)
+        if m is None:
+            bad.append("文档里找不到%s口径行（`%s`）" % (label, pattern.pattern))
+            continue
+        got = tuple(int(x) for x in m.groups())
+        if got[0] != sum(got[1:]):
+            bad.append("%s口径行自身不相加：%r" % (label, got))
+        if got != tuple(expected):
+            bad.append("%s口径过期：文档 %r，实测 %r" % (label, got, tuple(expected)))
+    return bad
+
+
+def _numbers_text(file_counts, case_counts):
+    """把一组现量数字排成文档里的两行口径（自证与文档门共用同一形状）。
+
+    形状必须与 `docs/dev/dev-verify.md` 的现量口径行一致；两边一旦分叉，
+    文档门会找不到口径行并判红。
+    """
+    return ("全量 %d 个文件 ＝ 快集 %d ＋ 慢集 %d ＋ 串行轨 %d\n"
+            "用例数口径 %d ＝ 快集 %d ＋ 慢集 %d ＋ 串行轨 %d\n"
+            % (tuple(file_counts) + tuple(case_counts)))
 
 
 def _parse_roster(text):
@@ -146,19 +207,12 @@ def _empty_lane_violations(rows):
 class LaneRosterGuardTest(unittest.TestCase):
     """① 名册与现实三方一致（这是本批的主守卫）。"""
 
-    #: 收集结果是**本次进程内不变的**事实：每个用例各自重跑一次
-    #: `pytest --collect-only` 会让 6 条用例各付 ~10s（实测合计 60s，占全量四成）。
-    #: 缓存到类级只跑一次；`_collect_test_files` 的"收集为空"判据仍由
-    #: `test_collection_is_not_empty` 单独钉住，缓存不削弱它。
-    _collected_cache = None
-
     def setUp(self):
         with io.open(ROSTER, encoding="utf-8") as f:
             self.text = f.read()
         self.disk = _scan_test_files()
-        if LaneRosterGuardTest._collected_cache is None:
-            LaneRosterGuardTest._collected_cache = _collect_test_files()
-        self.collected = LaneRosterGuardTest._collected_cache
+        # 收集结果在模块级缓存：本类与文档数字门共用同一份事实，只付一次 ~10s。
+        self.collected = _collect_test_files()
         self.rows, self.row_errors = _parse_roster(self.text)
         self.lane_of = {}
         for lane, path in self.rows:
@@ -323,6 +377,71 @@ class LaneRosterCheckerMutationTest(unittest.TestCase):
         self.assertTrue(_empty_lane_violations(rows),
                         "空/残集名册必须被判红：下限断言失效会让'名册==空集'恒真")
 
+
+
+class DocNumbersMatchRealityTest(unittest.TestCase):
+    """③ 文档里的现量文件数/用例数必须等于名册与真实收集（AGENTS §31/§40b）。
+
+    过期数字是**静默的**：文档说"全量 = 快集 + 4"而真实全量还含慢集与串行轨，
+    读者据此对账就会漏掉一整条轨。本门把文档数字变成可复测的事实。
+    """
+
+    def _expected(self):
+        with io.open(ROSTER, encoding="utf-8") as f:
+            rows, errors = _parse_roster(f.read())
+        self.assertEqual(errors, [], "名册解析失败：%r" % errors)
+        lane_files = {lane: 0 for lane in LANES}
+        lane_cases = {lane: 0 for lane in LANES}
+        lane_of = {}
+        for lane, path in rows:
+            lane_files[lane] += 1
+            lane_of[path] = lane
+        _files, counts = _collect_tests()
+        unknown = sorted(set(counts) - set(lane_of))
+        self.assertEqual(unknown, [], "收集到但名册没归类的文件：%s" % unknown)
+        for path, n in counts.items():
+            lane_cases[lane_of[path]] += n
+        file_counts = (len(rows), lane_files["fast"], lane_files["slow"],
+                       lane_files["serial"])
+        case_counts = (sum(counts.values()), lane_cases["fast"],
+                       lane_cases["slow"], lane_cases["serial"])
+        return file_counts, case_counts
+
+    @staticmethod
+    def text():
+        with io.open(DOC, encoding="utf-8") as f:
+            return f.read()
+
+    def test_doc_numbers_match_roster_and_collection(self):
+        file_counts, case_counts = self._expected()
+        bad = _doc_number_violations(self.text(), file_counts, case_counts)
+        self.assertEqual(bad, [], "文档数字与现量不符：\n  - " + "\n  - ".join(bad))
+
+    def test_doc_states_the_measurement_method(self):
+        """数字必须带口径与测量命令（AGENTS §31）：读者要能自己复测。"""
+        text = self.text()
+        self.assertIn("pytest tests/ --collect-only", text,
+                      "文档没给用例数的测量命令")
+        self.assertIn("tests/lane-roster.tsv", text,
+                      "文档没给文件数的口径来源")
+
+    def test_checker_rejects_wrong_numbers(self):
+        """突变自证：把现量数字改错必须判红；原样必须判绿（防恒红/恒绿）。
+
+        期望值从 `_expected()` 现取，不写字面量；写死会随测试集增长过期，
+        正是本门要防的漂移（复审 D6）。
+        """
+        file_counts, case_counts = self._expected()
+        good = _numbers_text(file_counts, case_counts)
+        self.assertEqual(
+            _doc_number_violations(good, file_counts, case_counts), [],
+            "现量数字被判红：判据写反了")
+        wrong_file = (file_counts[0] + 1, *file_counts[1:])
+        wrong_case = (case_counts[0] + 1, *case_counts[1:])
+        for label, text in (("文件数", _numbers_text(wrong_file, case_counts)),
+                            ("用例数", _numbers_text(file_counts, wrong_case))):
+            bad = _doc_number_violations(text, file_counts, case_counts)
+            self.assertTrue(bad, "%s改错必须判红（实得绿）" % label)
 
 
 if __name__ == "__main__":
