@@ -320,7 +320,7 @@ func (s *importState) importUser(ctx context.Context, opts Options, row map[stri
 		return nil
 	})
 	if txErr != nil {
-		s.addRowError("users", "insert", fmt.Errorf("user %d (%s): %v", oldID, email, txErr))
+		s.addRowError("users", "insert", fmt.Errorf("user %d (%s): %v", oldID, coremask.MaskEmail(email), txErr))
 		return
 	}
 	s.bump("rows_imported", "users")
