@@ -143,6 +143,8 @@ func runCLI(t *testing.T, args []string) (string, int) {
 		code = runBackup(newBackupDeps(&out, &out), args[1:])
 	case "restore":
 		code = runRestore(newBackupDeps(&out, &out), args[1:])
+	case "user":
+		code = runUser(args[1:], &out, &out)
 	default:
 		t.Fatalf("unknown cli verb %q", args[0])
 	}

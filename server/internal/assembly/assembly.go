@@ -81,9 +81,10 @@ import (
 // P1 不提供配置项；改上限只改本常量。
 const accountCapacityLimit = 10000
 
-// userCapacityLimit 是 P1 的活跃用户上限（裁决 12.11）。
+// UserCapacityLimit 是 P1 的活跃用户上限（裁决 12.11）；
+// CLI 的 create-master 与装配共用同一口径。
 // 与账号上限同值，两道约束各自在插入事务内判定。
-const userCapacityLimit = 10000
+const UserCapacityLimit = 10000
 
 // 图片预处理上限：4000 万像素、单边 8192。
 // 覆盖主流手机原图；超限在解码前拒绝，避免解压炸弹。
@@ -121,7 +122,9 @@ func Run(ctx context.Context, logger *slog.Logger) error {
 	var loop *appworker.Loop
 	if stack.Worker != nil {
 		loop = appworker.NewLoop(stack.Worker, stack.Worker, workerPollInterval, cfg.Workers)
-		loop.Start()
+		if err := loop.Start(); err != nil {
+			return fmt.Errorf("server: start worker loop: %w", err)
+		}
 		logger.Info("worker: loop started", "poll_interval", workerPollInterval.String(), "batch", cfg.Workers)
 	}
 
@@ -355,7 +358,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			Audit: audits,
 			Tx:    db,
 			Clock: clk,
-			Limit: userCapacityLimit,
+			Limit: UserCapacityLimit,
 		})
 		if err != nil {
 			closeFn()

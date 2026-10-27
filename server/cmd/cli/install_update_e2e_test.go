@@ -149,6 +149,11 @@ exit 0
 	if rc != 0 {
 		t.Fatalf("install with healthy probe: rc=%d out=%s", rc, out)
 	}
+	// 部署的最后一步必须被点名：干净库还没有可登录账号
+	//（P7 审查 P2-1）。
+	if !strings.Contains(out, "user create-master") {
+		t.Fatalf("install must print the create-master next step; out=%s", out)
+	}
 }
 
 func touchHealthFlag(t *testing.T, path string) {

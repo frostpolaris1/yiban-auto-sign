@@ -17,6 +17,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 )
@@ -47,6 +48,9 @@ type Loop struct {
 	lastErr error
 }
 
+// errLoopAlreadyStarted 是 Start 的重入错误。
+var errLoopAlreadyStarted = errors.New("worker: loop already started")
+
 // NewLoop 构造循环。interval 是空转轮询间隔；limit 是每次认领上限。
 func NewLoop(svc Stepper, counter RunningCounter, interval time.Duration, limit int) *Loop {
 	if interval <= 0 {
@@ -66,11 +70,18 @@ func NewLoop(svc Stepper, counter RunningCounter, interval time.Duration, limit 
 }
 
 // Start 起循环。每个实例只允许 Start 一次。
-func (l *Loop) Start() {
+// Start 启动循环。重复 Start 与 Stop 后再 Start 都返回错误：
+// run() 的 defer close(done) 与 Stop 的 close 是同一通道，
+// 重入会双关 panic（P7 审查 P3-1）。
+func (l *Loop) Start() error {
 	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.started {
+		return errLoopAlreadyStarted
+	}
 	l.started = true
-	l.mu.Unlock()
 	go l.run()
+	return nil
 }
 
 // run 是循环体：先跑一轮再等间隔，收 Stop 即退。
