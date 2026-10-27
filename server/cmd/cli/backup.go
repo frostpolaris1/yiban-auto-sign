@@ -14,8 +14,10 @@
 // 测试不依赖真实 pg_dump/psql/gpg。
 //
 // # 口径
-// 口令来源：--passphrase-file（0600）> 环境变量 YIBAN_BACKUP_PASSPHRASE。
-// 口令经 stdin（--passphrase-fd 0）单跳进 gpg，不进 argv 与子进程 env。
+// 口令来源：--passphrase-file（必须 0600）> 环境变量 YIBAN_BACKUP_PASSPHRASE。
+// 口令经 stdin（--passphrase-fd 0）单跳进 gpg，不进 argv。
+// 数据库口令经 0600 的 PGPASSFILE 传给 pg_dump/psql；
+// 子进程 argv 只带 -h/-p/-U/-d，避免 /proc/<pid>/cmdline 泄漏。
 // 退出码：0 成功；对账不一致或工具失败 1；用法错误 2。
 package main
 
@@ -25,7 +27,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -37,23 +41,40 @@ import (
 // 恢复时按它找回备份时的行数基线。
 const manifestMarker = "-- yiban-backup-manifest"
 
-// manifestTables 是行数对账的表清单。
-// photos 只对 photos 表计数；photo 的 blob 字节在文件系统上，
-// 不在本归档内，输出会另行点名。
-var manifestTables = []string{"users", "accounts", "school_tasks", "sign_tasks", "photos"}
+// manifestTables 是行数对账的表清单：迁移 00001–00016 的业务表全集。
+// 新增迁移加表时必须同批加进本表，否则恢复后丢行不会被发现。
+// 完整性由两道门钉住：TestManifestTablesCoverEveryBusinessTable（静态）
+// 与 TestManifestTablesCoverLiveSchema（真库 information_schema）。
+var manifestTables = []string{
+	"account_egress", "account_location", "accounts", "admin_schools",
+	"audit_logs", "credentials", "egresses", "password_resets",
+	"photo_retention", "photos", "school_tasks", "schools", "sessions",
+	"sign_tasks", "time_prefs", "users", "window_cache", "window_overrides",
+}
+
+// manifestExemptTables 是**不**进对账的表与理由。
+// 只放迁移工具的簿记表：它不是业务数据，备份与恢复由工具自身保证。
+// 业务表一张都不豁免；空豁免也必须能解释（当前唯一项即 goose 版本表）。
+var manifestExemptTables = map[string]string{
+	"goose_db_version": "goose 的迁移版本簿记表，不是业务数据；恢复后由 migrate 重建",
+}
 
 // cmdRunner 是外部命令的执行缝。
 type cmdRunner interface {
-	// Run 执行 name args，stdin 为口令等输入；失败时错误含 stderr。
-	Run(ctx context.Context, name string, args []string, stdin []byte) ([]byte, error)
+	// Run 执行 name args，stdin 为口令等输入。
+	// env 非空时追加在进程环境之后（连接口令走 PGPASSFILE）。
+	Run(ctx context.Context, name string, args []string, stdin []byte, env []string) ([]byte, error)
 }
 
 // execRunner 是生产实现：真实 exec，stderr 折进错误。
 type execRunner struct{}
 
 // Run 实现 cmdRunner。
-func (execRunner) Run(ctx context.Context, name string, args []string, stdin []byte) ([]byte, error) {
+func (execRunner) Run(ctx context.Context, name string, args []string, stdin []byte, env []string) ([]byte, error) {
 	cmd := execCommand(ctx, name, args...)
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	if stdin != nil {
 		cmd.Stdin = strings.NewReader(string(stdin))
 	}
@@ -103,25 +124,166 @@ func resolveDSN(flagValue string) string {
 	return strings.TrimSpace(v)
 }
 
-// libpqDSN 去掉 DSN 里的 search_path 参数：libpq（pg_dump/psql）的
-// URI 解析不认它，而转储与导入都用 schema 限定名，不依赖 search_path。
-// Go 侧（pgx）仍用原 DSN：两族工具的参数面不同。
-func libpqDSN(dsn string) string {
-	i := strings.Index(dsn, "search_path=")
-	if i < 0 {
-		return dsn
+// dsnParts 是 libpq 子进程需要的连接字段。
+// 口令单独写 PGPASSFILE，不进 argv：/proc/<pid>/cmdline 全局可读。
+type dsnParts struct {
+	host     string
+	port     string
+	user     string
+	dbname   string
+	password string
+}
+
+// parseDSN 解析 URI 与 keyword/value 两种 DSN。
+// 解析失败即报错：**不**回退到把整串塞进 argv（那等于把口令写回 /proc）。
+func parseDSN(dsn string) (dsnParts, error) {
+	if u, err := url.Parse(dsn); err == nil && (u.Scheme == "postgres" || u.Scheme == "postgresql") {
+		p := dsnParts{
+			host:   u.Hostname(),
+			port:   u.Port(),
+			dbname: strings.TrimPrefix(u.Path, "/"),
+		}
+		if u.User != nil {
+			p.user = u.User.Username()
+			p.password, _ = u.User.Password()
+		}
+		// 主机与端口可写在查询串里（unix socket 部署常见）。
+		if p.host == "" {
+			p.host = u.Query().Get("host")
+		}
+		if p.port == "" {
+			p.port = u.Query().Get("port")
+		}
+		return p, nil
 	}
-	start, end := i, i+len("search_path=")
-	for end < len(dsn) && dsn[end] != '&' && dsn[end] != ' ' {
-		end++
+	if p, ok := parseKeywordDSN(dsn); ok {
+		return p, nil
 	}
-	for start > 0 && (dsn[start-1] == '&' || dsn[start-1] == ' ') {
-		start--
+	return dsnParts{}, errors.New("无法解析 DSN：既不是 postgres:// URI 也不是 key=value 串")
+}
+
+// parseKeywordDSN 解析 `host=... user=... password=...` 形。
+// 值两端的成对单引号剥掉：libpq 用单引号承载含空白的值。
+func parseKeywordDSN(dsn string) (dsnParts, bool) {
+	var p dsnParts
+	found := false
+	for _, field := range splitKeywordFields(dsn) {
+		key, value, ok := strings.Cut(field, "=")
+		if !ok {
+			return dsnParts{}, false
+		}
+		value = unquoteKeyword(value)
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "host":
+			p.host = value
+		case "port":
+			p.port = value
+		case "user":
+			p.user = value
+		case "dbname":
+			p.dbname = value
+		case "password":
+			p.password = value
+		default:
+			continue
+		}
+		found = true
 	}
-	trimmed := dsn[:start] + dsn[end:]
-	trimmed = strings.ReplaceAll(trimmed, "?&", "?")
-	trimmed = strings.ReplaceAll(trimmed, "&&", "&")
-	return strings.TrimRight(trimmed, "?& ")
+	return p, found
+}
+
+// splitKeywordFields 按空白切分，单引号内的空白不切。
+func splitKeywordFields(s string) []string {
+	var out []string
+	var cur strings.Builder
+	inQuote := false
+	for _, r := range s {
+		switch {
+		case r == '\'':
+			inQuote = !inQuote
+			cur.WriteRune(r)
+		case !inQuote && (r == ' ' || r == '\t' || r == '\n' || r == '\r'):
+			if cur.Len() > 0 {
+				out = append(out, cur.String())
+				cur.Reset()
+			}
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
+	}
+	return out
+}
+
+// unquoteKeyword 去掉值两端的成对单引号。
+func unquoteKeyword(v string) string {
+	if len(v) >= 2 && v[0] == '\'' && v[len(v)-1] == '\'' {
+		return v[1 : len(v)-1]
+	}
+	return v
+}
+
+// libpqArgs 把连接字段展开成 pg_dump/psql 的分项参数。
+// 口令**不**在 argv 里：调用方通过 PGPASSFILE 传。
+func libpqArgs(p dsnParts) []string {
+	var args []string
+	if p.host != "" {
+		args = append(args, "-h", p.host)
+	}
+	if p.port != "" {
+		args = append(args, "-p", p.port)
+	}
+	if p.user != "" {
+		args = append(args, "-U", p.user)
+	}
+	if p.dbname != "" {
+		args = append(args, "-d", p.dbname)
+	}
+	return args
+}
+
+// writePassfile 写 0600 临时口令文件（libpq .pgpass 形状），返回路径与清理函数。
+// 无口令时返回空路径与空清理函数：不必让 libpq 读空文件。
+func writePassfile(p dsnParts) (string, func(), error) {
+	noop := func() {}
+	if p.password == "" {
+		return "", noop, nil
+	}
+	f, err := os.CreateTemp("", "yiban-pgpass-*")
+	if err != nil {
+		return "", noop, err
+	}
+	path := f.Name()
+	cleanup := func() { _ = os.Remove(path) }
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		cleanup()
+		return "", noop, err
+	}
+	line := passfileField(p.host) + ":" + passfileField(p.port) + ":" +
+		passfileField(p.dbname) + ":" + passfileField(p.user) + ":" +
+		passfileField(p.password) + "\n"
+	if _, err := f.WriteString(line); err != nil {
+		f.Close()
+		cleanup()
+		return "", noop, err
+	}
+	if err := f.Close(); err != nil {
+		cleanup()
+		return "", noop, err
+	}
+	return path, cleanup, nil
+}
+
+// passfileField 转义 .pgpass 字段：冒号与反斜杠前加反斜杠。
+// 空字段按 libpq 语义写成通配符 `*`。
+func passfileField(s string) string {
+	if s == "" {
+		return "*"
+	}
+	return strings.NewReplacer(`\`, `\\`, ":", `\:`).Replace(s)
 }
 
 // schemaOf 从 DSN 里取 search_path 值；没有则返回空串（整库备份）。
@@ -140,8 +302,19 @@ func schemaOf(dsn string) string {
 }
 
 // readPassphrase 取口令：口令文件 > 环境变量。错误即显性失败。
+// 口令文件必须是普通文件且 0600：组/其他位非零即可被同机其他用户读走。
 func readPassphrase(passFile string) ([]byte, error) {
 	if passFile != "" {
+		info, err := os.Stat(passFile)
+		if err != nil {
+			return nil, fmt.Errorf("read passphrase file: %w", err)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("passphrase file %s 不是普通文件", passFile)
+		}
+		if err := checkPassFileMode(info); err != nil {
+			return nil, err
+		}
 		body, err := os.ReadFile(passFile)
 		if err != nil {
 			return nil, fmt.Errorf("read passphrase file: %w", err)
@@ -153,6 +326,21 @@ func readPassphrase(passFile string) ([]byte, error) {
 		return nil, errors.New("no passphrase: use --passphrase-file (0600) or YIBAN_BACKUP_PASSPHRASE")
 	}
 	return []byte(v), nil
+}
+
+// checkPassFileMode 拒绝组/其他位非零的口令文件。
+// Windows 的 FileMode 权限位是合成的（恒 0666），POSIX 判据在那里
+// 无判别力：本函数在 Windows 放行，门禁在 Linux/WSL 上执行
+// （见 backup_test.go 的显性 SKIP 行）。
+func checkPassFileMode(info os.FileInfo) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		return fmt.Errorf("passphrase file %s 权限 %04o：口令文件必须 0600（chmod 600 后重试）",
+			info.Name(), perm)
+	}
+	return nil
 }
 
 // gpgCommonArgs 是 gpg 的公共参数：批量、无交互、口令走 stdin fd 0。
@@ -198,6 +386,24 @@ func runBackup(deps *backupDeps, args []string) int {
 		return 1
 	}
 
+	// 连接口令只经 0600 的 PGPASSFILE 传给子进程；
+	// argv 只放 -h/-p/-U/-d，避免 /proc/<pid>/cmdline 泄漏。
+	parts, err := parseDSN(dsn)
+	if err != nil {
+		fmt.Fprintln(deps.stderr, "backup:", err)
+		return 1
+	}
+	passfile, cleanup, err := writePassfile(parts)
+	if err != nil {
+		fmt.Fprintln(deps.stderr, "backup: 写临时口令文件失败：", err)
+		return 1
+	}
+	defer cleanup()
+	var connEnv []string
+	if passfile != "" {
+		connEnv = []string{"PGPASSFILE=" + passfile}
+	}
+
 	dump, err := os.CreateTemp("", "yiban-dump-*.sql")
 	if err != nil {
 		fmt.Fprintln(deps.stderr, "backup: 建临时转储失败：", err)
@@ -207,12 +413,12 @@ func runBackup(deps *backupDeps, args []string) int {
 	defer os.Remove(dumpPath)
 	dump.Close()
 
-	dumpArgs := []string{"--no-owner", "--no-privileges", "--file=" + dumpPath,
-		"--dbname=" + libpqDSN(dsn)}
+	dumpArgs := append([]string{"--no-owner", "--no-privileges", "--file=" + dumpPath},
+		libpqArgs(parts)...)
 	if schema := schemaOf(dsn); schema != "" {
 		dumpArgs = append([]string{"-n", schema}, dumpArgs...)
 	}
-	if _, err := deps.runner.Run(ctx, pgDump, dumpArgs, nil); err != nil {
+	if _, err := deps.runner.Run(ctx, pgDump, dumpArgs, nil, connEnv); err != nil {
 		fmt.Fprintln(deps.stderr, "backup: pg_dump 失败：", err)
 		return 1
 	}
@@ -222,7 +428,7 @@ func runBackup(deps *backupDeps, args []string) int {
 	}
 	if _, err := deps.runner.Run(ctx, gpg,
 		append(append([]string{}, gpgCommonArgs...),
-			"--symmetric", "--cipher-algo", "AES256", "--output="+*out, dumpPath), pass); err != nil {
+			"--symmetric", "--cipher-algo", "AES256", "--output="+*out, dumpPath), pass, nil); err != nil {
 		fmt.Fprintln(deps.stderr, "backup: gpg 加密失败：", err)
 		return 1
 	}
@@ -318,6 +524,22 @@ func runRestore(deps *backupDeps, args []string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
+	parts, err := parseDSN(dsn)
+	if err != nil {
+		fmt.Fprintln(deps.stderr, "restore:", err)
+		return 1
+	}
+	passfile, cleanup, err := writePassfile(parts)
+	if err != nil {
+		fmt.Fprintln(deps.stderr, "restore: 写临时口令文件失败：", err)
+		return 1
+	}
+	defer cleanup()
+	var connEnv []string
+	if passfile != "" {
+		connEnv = []string{"PGPASSFILE=" + passfile}
+	}
+
 	dump, err := os.CreateTemp("", "yiban-restore-*.sql")
 	if err != nil {
 		fmt.Fprintln(deps.stderr, "restore: 建临时转储失败：", err)
@@ -329,7 +551,7 @@ func runRestore(deps *backupDeps, args []string) int {
 
 	if _, err := deps.runner.Run(ctx, gpg,
 		append(append([]string{}, gpgCommonArgs...),
-			"--decrypt", "--output="+dumpPath, *in), pass); err != nil {
+			"--decrypt", "--output="+dumpPath, *in), pass, nil); err != nil {
 		fmt.Fprintln(deps.stderr, "restore: gpg 解密失败（口令不对或归档损坏）：", err)
 		return 1
 	}
@@ -339,8 +561,9 @@ func runRestore(deps *backupDeps, args []string) int {
 		return 1
 	}
 
-	if _, err := deps.runner.Run(ctx, psql,
-		[]string{"--set", "ON_ERROR_STOP=1", "--dbname=" + libpqDSN(dsn), "--file=" + dumpPath}, nil); err != nil {
+	psqlArgs := append([]string{"--set", "ON_ERROR_STOP=1", "--file=" + dumpPath},
+		libpqArgs(parts)...)
+	if _, err := deps.runner.Run(ctx, psql, psqlArgs, nil, connEnv); err != nil {
 		fmt.Fprintln(deps.stderr, "restore: psql 导入失败（目标须为空；schema 限量的转储会自建 schema，勿预建）：", err)
 		return 1
 	}
