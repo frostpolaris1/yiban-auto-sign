@@ -17,6 +17,11 @@ var utilDefRe = regexp.MustCompile(`(?m)^\s*(?:const\s+)?([A-Za-z_]\w*)\s*=\s*0\
 // pyUtilRe 匹配旧引擎的利用系数定义。
 var pyUtilRe = regexp.MustCompile(`(?m)^_DEFAULT_UTIL\s*=\s*([0-9.]+)\s*$`)
 
+// pyUtilParamRe 匹配旧引擎 util 形参的缺省表达式。
+// 只认带 `: float` 注解的签名：函数体里的 `util = min(...)` 不是缺省值。
+// 已知限制：未注解的签名（`def f(util=0.8)`）不在扫描面内。
+var pyUtilParamRe = regexp.MustCompile(`(?m)\butil\s*:\s*float\s*=\s*([^,\n)]+)`)
+
 // TestUtilDefaultHasSingleDefinition 钉住利用系数只有一个定义点。
 //
 // 两个包各定义一份 0.8 时，改一份不改另一份就是静默漂移：
@@ -80,5 +85,16 @@ func TestUtilDefaultHasSingleDefinition(t *testing.T) {
 	}
 	if pyUtil != UtilDefault {
 		t.Fatalf("两线 util 漂移：Go %v，Python %v", UtilDefault, pyUtil)
+	}
+
+	// 旧引擎的形参缺省也必须引用该常量：再写一份 0.8 就是第二个定义点。
+	params := pyUtilParamRe.FindAllStringSubmatch(string(pyBody), -1)
+	if len(params) == 0 {
+		t.Fatal("旧引擎里没有 util 形参缺省——扫描面塌了即拒判")
+	}
+	for _, m := range params {
+		if def := strings.TrimSpace(m[1]); def != "_DEFAULT_UTIL" {
+			t.Fatalf("旧引擎 util 形参缺省写了 %q，want _DEFAULT_UTIL", def)
+		}
 	}
 }

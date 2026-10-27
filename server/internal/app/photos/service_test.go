@@ -421,7 +421,7 @@ func TestRetention(t *testing.T) {
 	if _, err := svc.SetRetention(context.Background(), owner("u1"), 45); err == nil {
 		t.Fatal("非闭集值应被拒绝")
 	}
-	for _, want := range corephoto.RetentionDays {
+	for _, want := range corephoto.RetentionDays() {
 		got, err := svc.SetRetention(context.Background(), owner("u1"), want)
 		if err != nil || got != want {
 			t.Fatalf("set %d = %d, %v", want, got, err)

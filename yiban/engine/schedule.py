@@ -236,7 +236,7 @@ def channel_count(bucket_rate: float, avg: int | None = None) -> int:
 
 def capacity_accounts_v3(window_sec: float, k: int = 1, avg: int | None = None,
                          bucket_rate: float = _DEFAULT_BUCKET_RATE,
-                         util: float = 0.8,
+                         util: float = _DEFAULT_UTIL,
                          env: Mapping[str, str] | None = None) -> int:
     """V3 全局容量：`容量 = K × min(M/avg, bucket_rate) × W × util`。
 
@@ -245,7 +245,7 @@ def capacity_accounts_v3(window_sec: float, k: int = 1, avg: int | None = None,
     较小者**。只按通道吞吐算容量、忽略桶封顶，会把容量高估 2.3 倍（桶 1/s、avg 3s 时
     2.67 次/s 并非有效速率）。
 
-    `util` 缺省 0.8（重试与尾延迟降额）；`k` 是执行体数（默认 1 = 单执行体零额外配置）。
+    `util` 缺省 `_DEFAULT_UTIL`（重试与尾延迟降额）；`k` 是执行体数（默认 1 = 单执行体零额外配置）。
     单位是**账号尝试数**（单账号 ≈6 次 HTTP 请求），不是请求数。
     `avg`/`env` 口径同 `capacity_accounts`（同一次估算同一配置层）。
     """
@@ -264,7 +264,7 @@ def capacity_accounts_v3(window_sec: float, k: int = 1, avg: int | None = None,
 
 def capacity_of(window_sec: float, *, gap: float = 0, avg: int | None = None,
                 k: int | None = None, bucket_rate: float = _DEFAULT_BUCKET_RATE,
-                util: float = 0.8, enabled: bool | None = None,
+                util: float = _DEFAULT_UTIL, enabled: bool | None = None,
                 env: Mapping[str, str] | None = None, retry_reserve: bool = False) -> int:
     """按当日生效的调度版本选容量公式（**唯一选择函数**：四处调用点统一走它）。
 
@@ -288,7 +288,7 @@ def capacity_of(window_sec: float, *, gap: float = 0, avg: int | None = None,
 
     `retry_reserve`（**只喂 v2 公式分支**）：把每账号周期放大到 `MAX_ATTEMPTS×(avg+gap)`，
     重试同样吃墙钟——按零重试排满窗口正是 122–360 静默死带的根（计划/展示/闸门不传）。
-    v3 不参与：`util` 缺省 0.8 本身就是重试降额，再扣一次是双重计算。
+    v3 不参与：`util` 缺省 `_DEFAULT_UTIL` 本身就是重试降额，再扣一次是双重计算。
     """
     if enabled is None:
         # 局部导入：executor_v3 反向依赖本模块（配置快照、通道数），模块级互引会成环；

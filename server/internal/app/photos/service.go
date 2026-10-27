@@ -206,9 +206,10 @@ func (s *Service) SetRetention(ctx context.Context, scope corescope.Scope, days 
 // retentionChoices 从闭集生成错误文案。
 // 文案里的天数表只许由 core/photo.RetentionDays 派生：复写一份就是第二个定义点。
 func retentionChoices() string {
-	parts := make([]string, len(corephoto.RetentionDays))
-	for i, days := range corephoto.RetentionDays {
-		parts[i] = strconv.Itoa(days)
+	days := corephoto.RetentionDays()
+	parts := make([]string, len(days))
+	for i, d := range days {
+		parts[i] = strconv.Itoa(d)
 	}
 	return strings.Join(parts, ", ")
 }

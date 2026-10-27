@@ -9,7 +9,7 @@ import (
 
 // 保留期只接受闭集。
 func TestValidRetention(t *testing.T) {
-	for _, days := range corephoto.RetentionDays {
+	for _, days := range corephoto.RetentionDays() {
 		if !corephoto.ValidRetention(days) {
 			t.Fatalf("%d 应在闭集内", days)
 		}
