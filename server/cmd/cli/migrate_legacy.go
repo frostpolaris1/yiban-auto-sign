@@ -15,6 +15,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -24,7 +25,28 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/config"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/legacy"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
+	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
+	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 )
+
+// cipherSealer 把 app/account 的 Cipher 适配成 legacy.Sealer。
+// boundary 门禁止 adapters 导入 app，装配只能在 cmd 层完成。
+type cipherSealer struct{ c *appaccount.Cipher }
+
+func (s cipherSealer) Seal(schoolID, accountID string, p legacy.CredentialPayload) (legacy.CredentialOut, error) {
+	cred, err := s.c.Seal(schoolID, accountID, appaccount.CredentialPayload{
+		DeviceCode: p.DeviceCode,
+		Password:   p.Password,
+		PhoneModel: p.PhoneModel,
+	})
+	if err != nil {
+		return legacy.CredentialOut{}, err
+	}
+	return legacy.CredentialOut{
+		Alg: cred.Alg, KID: cred.KID, AADVersion: cred.AADVersion,
+		Nonce: cred.Nonce, Ciphertext: cred.Ciphertext,
+	}, nil
+}
 
 func runMigrateLegacy(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("migrate-legacy", flag.ContinueOnError)
@@ -72,6 +94,11 @@ func runMigrateLegacy(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "migrate-legacy: 旧钥必须是 64 位 hex（32 字节），解码得 %d 字节\n", len(legacyKey))
 		return 2
 	}
+	cipher, err := appaccount.NewCipher(newKey)
+	if err != nil {
+		fmt.Fprintf(stderr, "migrate-legacy: 新栈凭据钥: %v\n", err)
+		return 2
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -94,12 +121,17 @@ func runMigrateLegacy(args []string, stdout, stderr io.Writer) int {
 		OwnerUserID: *ownerID,
 		Strict:      *strict,
 		LegacyKey:   legacyKey,
-		NewKey:      newKey,
-		Now:         time.Now().UTC(),
+		Sealer:      cipherSealer{c: cipher},
+		Now:         coreclock.System{}.Now().UTC(),
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "%v\n", err)
-		return 2
+		code := 2
+		var fatalErr *legacy.Error
+		if errors.As(err, &fatalErr) {
+			code = fatalErr.Code
+		}
+		return code
 	}
 	encoded, encErr := json.MarshalIndent(summary, "", "  ")
 	if encErr != nil {

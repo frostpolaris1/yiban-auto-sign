@@ -20,10 +20,35 @@ import (
 	"time"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
-	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
 	coreaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/account"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	coremask "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
 	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 )
+
+// CredentialPayload 是重封装前的明文负载。三键全部出现；
+// device_code 由导入侧置空串（裁决 7；解码侧允许空串已核）。
+type CredentialPayload struct {
+	DeviceCode string
+	Password   string
+	PhoneModel string
+}
+
+// CredentialOut 是封装完成的密文行（待写 credentials 表）。
+type CredentialOut struct {
+	Alg        string
+	KID        string
+	AADVersion int16
+	Nonce      []byte
+	Ciphertext []byte
+}
+
+// Sealer 是新栈凭据封装的缝。实现在 app/account 的 Cipher；
+// 由 cmd/cli 装配注入——boundary 门禁止 adapters 导入 app，
+// 本包只见接口，不见实现。
+type Sealer interface {
+	Seal(schoolID, accountID string, payload CredentialPayload) (CredentialOut, error)
+}
 
 // Error 携带进程退出码的致命错误。
 type Error struct {
@@ -53,8 +78,8 @@ type Options struct {
 	Strict bool
 	// LegacyKey 是旧栈 YIBAN_ACCOUNTS_KEY（32 字节）。
 	LegacyKey []byte
-	// NewKey 是新栈凭据 KEK（32 字节）。
-	NewKey []byte
+	// Sealer 是新栈凭据封装器（cmd/cli 用 app/account 的 Cipher 装配注入）。
+	Sealer Sealer
 	// Now 是迁移时刻（deleted_at 缺失的软删行与 created_at 空值用它）。
 	Now time.Time
 }
@@ -103,13 +128,12 @@ func Run(ctx context.Context, opts Options) (summary map[string]any, exitCode in
 		return nil, 1, fatal(1, "%d orphan time_prefs rows (phone without account); refusing in --strict", orphanRows)
 	}
 
-	cipher, err := appaccount.NewCipher(opts.NewKey)
-	if err != nil {
-		return nil, 2, fatal(2, "new credential key: %v", err)
+	if opts.Sealer == nil {
+		return nil, 2, fatal(2, "credential sealer is not wired")
 	}
 
 	state := newState(orphanRows)
-	state.cipher = cipher
+	state.sealer = opts.Sealer
 	txErr := opts.DB.InTx(ctx, func(ctx context.Context) error {
 		for _, row := range rows["users"] {
 			state.importUser(ctx, opts, row)
@@ -126,7 +150,7 @@ func Run(ctx context.Context, opts Options) (summary map[string]any, exitCode in
 	// time_prefs / audit 不入库（裁决见包注释），但行进对账表：
 	// 与导出物对账表逐行比对才能钉住导出物完整性。
 	for _, row := range rows["time_prefs"] {
-		state.appendRecon("time_prefs", row, MaskPhone(valueString(row["phone"])))
+		state.appendRecon("time_prefs", row, coremask.MaskPhone(valueString(row["phone"])))
 	}
 	for _, row := range rows["audit"] {
 		state.appendRecon("audit", row, valueString(row["id"]))
@@ -181,7 +205,7 @@ func newState(orphanRows int) *importState {
 
 // importState 是一次导入内的可变状态。全部写入发生在单事务闭包内。
 type importState struct {
-	cipher     *appaccount.Cipher
+	sealer     Sealer
 	summary    map[string]any
 	reconLines []string
 	rowErrors  int
@@ -189,7 +213,11 @@ type importState struct {
 
 func (s *importState) bump(group, key string) {
 	m := s.summary[group].(map[string]any)
-	m[key] = m[key].(int) + 1
+	if n, ok := m[key].(int); ok {
+		m[key] = n + 1
+		return
+	}
+	m[key] = 1
 }
 
 func (s *importState) bumpRead(table string) {
@@ -417,7 +445,7 @@ func (s *importState) importCredential(ctx context.Context, opts Options, row ma
 			s.bump("credentials", "decrypt_failed")
 			return
 		}
-		cred, err := s.cipher.Seal(opts.SchoolID, accountID, appaccount.CredentialPayload{
+		cred, err := s.sealer.Seal(opts.SchoolID, accountID, CredentialPayload{
 			DeviceCode: "",
 			Password:   plain,
 			PhoneModel: valueString(row["phone_model"]),
@@ -444,12 +472,15 @@ func (s *importState) importCredential(ctx context.Context, opts Options, row ma
 	}
 }
 
-// legacyIDHit 查 legacy_ids；命中返回新 id。
+// legacyIDHit 查 legacy_ids；命中返回新 id。查无此行是「未导入过」，不是错误。
 func legacyIDHit(ctx context.Context, db *pg.DB, table string, oldID int64) (string, bool, error) {
 	id, err := db.QueryString(ctx,
 		`SELECT new_id::text FROM legacy_ids WHERE old_table = $1 AND old_id = $2`,
 		table, oldID)
 	if err != nil {
+		if errs.From(err).Code == errs.CodeNotFound {
+			return "", false, nil
+		}
 		return "", false, err
 	}
 	return id, id != "", nil

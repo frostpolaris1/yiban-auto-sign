@@ -34,17 +34,15 @@ const (
 	itemSep = "\x1e"
 )
 
-// MaskPhone 是掩码规则的转发点（canonical.tsv mask.phone 门）。
-func MaskPhone(phone string) string { return coremask.MaskPhone(phone) }
-
 // CanonicalHash 按导出器同一口径计算一行的对账哈希。
+// 掩码唯一实现在 core/mask（canonical.tsv mask.phone 门），直呼不转发。
 func CanonicalHash(table, key string, row map[string]any) string {
 	keys := sortedKeys(row)
 	parts := make([]string, 0, len(keys))
 	for _, k := range keys {
 		v := row[k]
 		if k == "phone" {
-			v = MaskPhone(valueString(v))
+			v = coremask.MaskPhone(valueString(v))
 		}
 		parts = append(parts, k+"="+canonicalValue(v))
 	}

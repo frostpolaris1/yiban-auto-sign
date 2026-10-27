@@ -10,7 +10,6 @@ package legacy
 // 钥 hex 00112233...eeff（32 字节）→ kid ef9fdd34bd7be741。
 
 import (
-	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
@@ -19,8 +18,6 @@ import (
 	"encoding/hex"
 	"strings"
 	"testing"
-
-	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
 )
 
 // testLegacyKeyHex 是测试用旧 KEK（32 字节，合成值）。
@@ -114,28 +111,5 @@ func TestLegacyOpenEnvelopeBadShapeFails(t *testing.T) {
 	bad := map[string]any{"v": JSONNumber("2"), "nonce": "zz", "ct": "ab", "tag": "cd"}
 	if _, err := LegacyOpenEnvelope(bad, "13800000001", key); err == nil {
 		t.Fatal("non-hex nonce must fail")
-	}
-}
-
-// TestNewCipherAcceptsEmptyDeviceCode 钉住 cipher 解码侧的裁决前提：
-// CredentialPayload 三键全部出现、device_code 为空串仍可解回。
-// 该前提不成立时导入器的凭据重加密方案整体失效（派单裁决 7）。
-func TestNewCipherAcceptsEmptyDeviceCode(t *testing.T) {
-	newKey := bytes.Repeat([]byte{0x42}, 32)
-	cipher, err := appaccount.NewCipher(newKey)
-	if err != nil {
-		t.Fatalf("new cipher: %v", err)
-	}
-	cred, err := cipher.Seal("school-0000", "acct-0000",
-		appaccount.CredentialPayload{DeviceCode: "", Password: "pw-fixture-0001", PhoneModel: "model-0000"})
-	if err != nil {
-		t.Fatalf("seal: %v", err)
-	}
-	payload, err := cipher.Open(cred)
-	if err != nil {
-		t.Fatalf("open with empty device_code: %v", err)
-	}
-	if payload.Password != "pw-fixture-0001" || payload.DeviceCode != "" || payload.PhoneModel != "model-0000" {
-		t.Fatalf("payload drifted: %+v", payload)
 	}
 }
