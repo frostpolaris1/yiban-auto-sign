@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -151,11 +152,128 @@ func deriveCaptureKey(pass, salt []byte) []byte {
 	return out
 }
 
-func main() {
+// 预存凭据的两件文件名。密钥与密文同机同目录（0600）：对 root 等于明文，
+// 换取的是「到点无人值守开跑」；这台机器单用户、一次性，用户已接受该口径。
+const (
+	credBinPath = "cred.bin"
+	credKeyPath = "cred.key"
+)
+
+func sealWithKey(key, payload []byte) ([]byte, error) {
+	nonce := make([]byte, 12)
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	return append(append([]byte("YPC1"), nonce...), gcm.Seal(nil, nonce, payload, nil)...), nil
+}
+
+func openWithKey(key, data []byte) ([]byte, error) {
+	if len(data) < 4+12+16 || string(data[:4]) != "YPC1" {
+		return nil, errors.New("credential blob malformed")
+	}
+	nonce, ct := data[4:16], data[16:]
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	return gcm.Open(nil, nonce, ct, nil)
+}
+
+func writeFile0600(path string, data []byte) error {
+	return os.WriteFile(path, data, 0o600)
+}
+
+func stageCredentials() {
 	phone := readLine("测试账号手机号: ")
 	password, err := readPassword("密码（不回显）: ")
 	if err != nil {
 		fatal("读取密码失败: %v", err)
+	}
+	if phone == "" || password == "" {
+		fatal("凭据为空，退出")
+	}
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		fatal("生成密钥失败: %v", err)
+	}
+	blob, err := sealWithKey(key, append(append([]byte(phone), 0), []byte(password)...))
+	if err != nil {
+		fatal("加密凭据失败: %v", err)
+	}
+	if err := writeFile0600(credKeyPath, key); err != nil {
+		fatal("落盘密钥失败: %v", err)
+	}
+	if err := writeFile0600(credBinPath, blob); err != nil {
+		fatal("落盘凭据失败: %v", err)
+	}
+	fmt.Println("凭据已加密预存（cred.bin/cred.key，0600）。")
+	fmt.Println("现在可以退出（Ctrl+B 然后 D）；06:31 探针自动开跑，跑完凭据文件即被粉碎。")
+}
+
+func loadCredentials() (phone, password string, err error) {
+	key, err := os.ReadFile(credKeyPath)
+	if err != nil {
+		return "", "", err
+	}
+	blob, err := os.ReadFile(credBinPath)
+	if err != nil {
+		return "", "", err
+	}
+	plain, err := openWithKey(key, blob)
+	if err != nil {
+		return "", "", err
+	}
+	sep := bytes.IndexByte(plain, 0)
+	if sep < 0 {
+		return "", "", errors.New("credential payload malformed")
+	}
+	return string(plain[:sep]), string(plain[sep+1:]), nil
+}
+
+func shredCredentials() {
+	for _, p := range []string{credBinPath, credKeyPath} {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "probe: 粉碎 %s 失败: %v\n", p, err)
+		}
+	}
+}
+
+func main() {
+	stage := flag.Bool("stage", false, "今晚录入凭据：加密落盘两件 0600 文件后退出，等 -fire 到点开跑")
+	fire := flag.Bool("fire", false, "定时模式：读取 -stage 落盘的凭据开跑，跑完立即粉碎凭据文件")
+	flag.Parse()
+
+	var phone, password string
+	switch {
+	case *stage:
+		stageCredentials()
+		return
+	case *fire:
+		var err error
+		phone, password, err = loadCredentials()
+		if err != nil {
+			fatal("读取预存凭据失败（先跑 -stage）: %v", err)
+		}
+		defer shredCredentials()
+	default:
+		phone = readLine("测试账号手机号: ")
+		var perr error
+		password, perr = readPassword("密码（不回显）: ")
+		if perr != nil {
+			fatal("读取密码失败: %v", perr)
+		}
 	}
 	if phone == "" || password == "" {
 		fatal("凭据为空，退出")
