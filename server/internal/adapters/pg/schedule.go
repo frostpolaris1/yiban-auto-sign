@@ -224,7 +224,8 @@ func (r *ScheduleRepo) FinishCredentialInvalid(ctx context.Context, schoolID, ac
 		}
 		ct, err = q.Exec(ctx,
 			`UPDATE accounts SET status = $2::account_status, updated_at = $3
-			 WHERE id = $1::uuid AND status = 'active'::account_status`,
+			 WHERE id = $1::uuid AND status = 'active'::account_status
+			   AND deleted_at IS NULL`,
 			accountID, string(coreaccount.StatusCredentialError), now)
 		if err != nil {
 			return mapError(err)

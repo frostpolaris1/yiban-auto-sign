@@ -8,6 +8,7 @@ package pg_test
 // 判据全部落在真实 PostgreSQL 的行与审计列上。
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -45,13 +46,19 @@ func (db1Creds) Credential(context.Context, string) (contract.Credential, error)
 }
 
 // db1Signer 在提交阶段返回凭据错结论。
-type db1Signer struct{}
+// beforeSign 在返回结论前执行，用于制造"认领后、结算前"的状态变化。
+type db1Signer struct {
+	beforeSign func()
+}
 
 func (db1Signer) DiscoverTargets(context.Context, contract.DiscoverRequest) ([]contract.Target, error) {
 	return []contract.Target{{ID: "pos-1", Title: "东门"}}, nil
 }
 
-func (db1Signer) Sign(context.Context, contract.SignRequest) (contract.Result, error) {
+func (s db1Signer) Sign(context.Context, contract.SignRequest) (contract.Result, error) {
+	if s.beforeSign != nil {
+		s.beforeSign()
+	}
 	return contract.Result{Outcome: contract.OutcomeCredentialBad}, nil
 }
 
@@ -95,10 +102,16 @@ func db1SeedDueTask(t *testing.T, e *testEnv, code, phone string) (schoolID, acc
 // db1Worker 构造执行循环。Store 必须是带审计仓储的排期仓储。
 func db1Worker(t *testing.T, store appworker.Store) *appworker.Service {
 	t.Helper()
+	return db1WorkerWith(t, store, db1Signer{})
+}
+
+// db1WorkerWith 用指定 signer 构造执行循环。
+func db1WorkerWith(t *testing.T, store appworker.Store, signer db1Signer) *appworker.Service {
+	t.Helper()
 	svc, err := appworker.NewService(appworker.Deps{
 		Store:    store,
 		Creds:    db1Creds{},
-		Signer:   db1Signer{},
+		Signer:   signer,
 		Egress:   db1Egress{},
 		Limiter:  db1Limiter{},
 		Clock:    coreclock.Fixed{T: db1At()},
@@ -212,6 +225,35 @@ func TestCredentialInvalidSettleRollsBackOnAuditFailure(t *testing.T) {
 	}
 }
 
+// TestSoftDeletedAccountKeepsStatusOnCredentialInvalid 钉住软删判据：
+// 认领后账号被软删时，任务仍落 failed，但账号状态不变、不写审计。
+func TestSoftDeletedAccountKeepsStatusOnCredentialInvalid(t *testing.T) {
+	e := newEnv(t)
+	_, accountID, _ := db1SeedDueTask(t, e, "db1-soft-delete", "13800021003")
+	ownerID := e.scalarString("SELECT owner_user_id::text FROM accounts WHERE id = $1::uuid", accountID)
+	store := pg.NewScheduleRepoWithAudit(e.db, e.audits)
+	// 模拟认领后、结算前发生的软删：账号行仍在，status 仍是 active。
+	signer := db1Signer{beforeSign: func() {
+		if err := e.accts.SoftDelete(e.ctx, corescope.Master(), accountID, ownerID, db1At()); err != nil {
+			t.Fatalf("soft delete the account: %v", err)
+		}
+	}}
+	svc := db1WorkerWith(t, store, signer)
+	if _, err := svc.Step(e.ctx, 1); err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	if got := e.scalarString("SELECT state::text FROM sign_tasks WHERE account_id = $1::uuid", accountID); got != string(corestatus.TaskFailed) {
+		t.Fatalf("task state = %q, want failed", got)
+	}
+	if got := e.scalarString("SELECT status::text FROM accounts WHERE id = $1::uuid", accountID); got != string(coreaccount.StatusActive) {
+		t.Fatalf("soft-deleted account status = %q, want active (unchanged)", got)
+	}
+	if got := e.scalarInt("SELECT count(*) FROM audit_logs WHERE action = $1 AND target_id = $2",
+		string(coreaudit.ActionAccountCredentialError), accountID); got != 0 {
+		t.Fatalf("engine audit rows for a soft-deleted account = %d, want 0", got)
+	}
+}
+
 // db1CredentialErrorAccount 建一个带凭据的活跃账号，并直接置于 credential_error。
 func db1CredentialErrorAccount(t *testing.T, u *usecaseEnv, code, phone string) (schoolID, accountID, ownerID string) {
 	t.Helper()
@@ -246,12 +288,14 @@ func TestCredentialUpdateRecoversCredentialError(t *testing.T) {
 	cases := []struct {
 		name  string
 		code  string
+		phone string
 		scope func(ownerID string) corescope.Scope
 		actor func(u *usecaseEnv, ownerID, email string) appaudit.Actor
 	}{
 		{
 			name:  "owner",
 			code:  "db1-recover-owner",
+			phone: "13500051001",
 			scope: func(ownerID string) corescope.Scope { return corescope.User(ownerID) },
 			actor: func(u *usecaseEnv, ownerID, email string) appaudit.Actor {
 				return appaudit.NewActor(coreauth.User{ID: ownerID, Email: email, Role: coreauth.RoleUser})
@@ -260,6 +304,7 @@ func TestCredentialUpdateRecoversCredentialError(t *testing.T) {
 		{
 			name:  "admin",
 			code:  "db1-recover-admin",
+			phone: "13500051002",
 			scope: func(string) corescope.Scope { return corescope.Master() },
 			actor: func(u *usecaseEnv, _, _ string) appaudit.Actor { return u.actor },
 		},
@@ -267,7 +312,7 @@ func TestCredentialUpdateRecoversCredentialError(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			u := newUsecaseEnv(t)
-			_, accountID, ownerID := db1CredentialErrorAccount(t, u, tc.code, "1350005100"+map[string]string{"owner": "1", "admin": "2"}[tc.name])
+			_, accountID, ownerID := db1CredentialErrorAccount(t, u, tc.code, tc.phone)
 			actor := tc.actor(u, ownerID, tc.code+"-owner@example.com")
 			password := "new-secret"
 			record, err := u.accounts.Update(u.ctx, tc.scope(ownerID), accountID,
@@ -293,24 +338,98 @@ func TestCredentialUpdateRecoversCredentialError(t *testing.T) {
 	}
 }
 
-// TestPhoneOnlyUpdateKeepsCredentialError 钉住「只改手机号不恢复」。
-func TestPhoneOnlyUpdateKeepsCredentialError(t *testing.T) {
+// db1StaleGetRepo 让事务外的 Get 返回过期快照，其余方法直通。
+// 用来制造「首次读取后、事务开始前引擎提交 credential_error」的交错。
+type db1StaleGetRepo struct {
+	*pg.AccountRepo
+	stale coreaccount.Record
+}
+
+func (r db1StaleGetRepo) Get(context.Context, corescope.Scope, string) (coreaccount.Record, error) {
+	return r.stale, nil
+}
+
+// TestCredentialUpdateRecoversWhenEngineCommitsAfterFirstRead 钉住恢复判定
+// 必须在事务内读状态：首次读取看到 active，引擎随后提交 credential_error，
+// 本次更新仍要恢复账号。判定用事务外快照时本用例红。
+func TestCredentialUpdateRecoversWhenEngineCommitsAfterFirstRead(t *testing.T) {
 	u := newUsecaseEnv(t)
-	_, accountID, _ := db1CredentialErrorAccount(t, u, "db1-phone-only", "13500051003")
+	school := u.createSchool("db1-stale-read")
+	owner := u.createUser("db1-stale-read-owner@example.com")
+	account := u.createAccount(school.ID, owner.ID, "13500051005")
+	u.activateAccount(account.ID)
+	stale, err := u.accts.Get(u.ctx, corescope.Master(), account.ID)
+	if err != nil {
+		t.Fatalf("read the active snapshot: %v", err)
+	}
+	if stale.Status != coreaccount.StatusActive {
+		t.Fatalf("snapshot status = %q, want active", stale.Status)
+	}
+	// 引擎在首次读取之后提交 credential_error。
+	if _, err := u.db.Exec(u.ctx,
+		"UPDATE accounts SET status = 'credential_error' WHERE id = $1::uuid", account.ID); err != nil {
+		t.Fatalf("commit credential_error: %v", err)
+	}
+	cipher, err := appaccount.NewCipher(bytes.Repeat([]byte{7}, appaccount.CredentialKeyBytes))
+	if err != nil {
+		t.Fatalf("new cipher: %v", err)
+	}
+	svc, err := appaccount.NewService(appaccount.Deps{
+		Accounts: db1StaleGetRepo{AccountRepo: u.accts, stale: stale},
+		Schools:  u.testEnv.schools,
+		Audit:    u.audits,
+		Tx:       u.db,
+		Clock:    coreclock.Fixed{T: time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)},
+		Cipher:   cipher,
+		Limit:    10000,
+	})
+	if err != nil {
+		t.Fatalf("new account service: %v", err)
+	}
+	password := "new-secret"
+	record, err := svc.Update(u.ctx, corescope.Master(), account.ID,
+		appaccount.UpdateInput{Password: &password}, u.actor)
+	if err != nil {
+		t.Fatalf("update password: %v", err)
+	}
+	if record.Status != coreaccount.StatusActive {
+		t.Fatalf("returned status = %q, want active", record.Status)
+	}
+	if got := u.accountStatus(account.ID); got != coreaccount.StatusActive {
+		t.Fatalf("stored status = %q, want active", got)
+	}
+	if got := u.db1RecoveredAuditRows(account.ID); got != 1 {
+		t.Fatalf("recovery audit rows = %d, want 1", got)
+	}
+}
+
+// TestPhoneUpdateRecoversCredentialError 钉住「改绑也恢复」：
+// 手机号是登录用户名，改绑属凭据变更，账号回到 active 并写恢复审计。
+func TestPhoneUpdateRecoversCredentialError(t *testing.T) {
+	u := newUsecaseEnv(t)
+	_, accountID, _ := db1CredentialErrorAccount(t, u, "db1-phone-recover", "13500051003")
 	phone := "13500051004"
 	record, err := u.accounts.Update(u.ctx, corescope.Master(), accountID,
 		appaccount.UpdateInput{Phone: &phone}, u.actor)
 	if err != nil {
 		t.Fatalf("update phone: %v", err)
 	}
-	if record.Status != coreaccount.StatusCredentialError {
-		t.Fatalf("returned status = %q, want credential_error", record.Status)
+	if record.Status != coreaccount.StatusActive {
+		t.Fatalf("returned status = %q, want active", record.Status)
 	}
-	if got := u.accountStatus(accountID); got != coreaccount.StatusCredentialError {
-		t.Fatalf("stored status = %q, want credential_error", got)
+	if got := u.accountStatus(accountID); got != coreaccount.StatusActive {
+		t.Fatalf("stored status = %q, want active", got)
 	}
-	if got := u.db1RecoveredAuditRows(accountID); got != 0 {
-		t.Fatalf("recovery audit rows after a phone-only update = %d, want 0", got)
+	if got := u.scalarString("SELECT phone FROM accounts WHERE id = $1::uuid", accountID); got != phone {
+		t.Fatalf("stored phone = %q, want %q", got, phone)
+	}
+	if got := u.db1RecoveredAuditRows(accountID); got != 1 {
+		t.Fatalf("recovery audit rows after a phone update = %d, want 1", got)
+	}
+	if got := u.scalarString(`SELECT actor_label FROM audit_logs
+		WHERE action = $1 AND target_id = $2`,
+		string(coreaudit.ActionAccountCredentialRecovered), accountID); got != u.actor.Label {
+		t.Fatalf("recovery actor label = %q, want %q", got, u.actor.Label)
 	}
 }
 

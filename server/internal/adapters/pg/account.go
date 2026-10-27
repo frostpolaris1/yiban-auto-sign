@@ -80,6 +80,26 @@ func (r *AccountRepo) Get(ctx context.Context, s corescope.Scope, id string) (co
 	return r.fetch(ctx, s, id, false)
 }
 
+// GetForUpdate 在范围内返回一个未删除账号，并持有行锁到事务结束。
+//
+// **必须在事务内运行**：无事务报 ErrNoTransaction。
+// 恢复判定用它在锁下读状态：事务外的快照会漏掉已提交的 credential_error。
+// 锁把引擎的状态写与本次凭据更新串行化，两者不再交叉判定。
+func (r *AccountRepo) GetForUpdate(ctx context.Context, s corescope.Scope, id string) (coreaccount.Record, error) {
+	if !r.db.hasTx(ctx) {
+		return coreaccount.Record{}, ErrNoTransaction
+	}
+	scopeSQL, scopeArgs, err := scopePredicate(s, 2, "")
+	if err != nil {
+		return coreaccount.Record{}, err
+	}
+	args := append([]any{id}, scopeArgs...)
+	row := r.db.q(ctx).QueryRow(ctx,
+		`SELECT `+accountColumns+` FROM accounts WHERE id = $1::uuid AND deleted_at IS NULL`+scopeSQL+` FOR UPDATE`, args...)
+	record, err := scanAccount(row)
+	return recordOrNotFound(record, err)
+}
+
 // List 按作用域与可选过滤条件列账号，游标分页。
 //
 // 作用域与过滤条件是**与**关系：admin 指定未绑定院校时结果为空。
