@@ -256,6 +256,29 @@ func TestEncodeDetailAcceptsLocationSetKeys(t *testing.T) {
 	}
 }
 
+// P5 图片入库审计的键：crop_* 只接受 0..10 整数，
+// sha256 只接受 64 位小写十六进制（输出摘要，无 PII 容量）。
+func TestEncodeDetailAcceptsPhotoUploadKeys(t *testing.T) {
+	detail := map[string]any{
+		"crop_l": 0, "crop_r": 10, "crop_t": 5, "crop_b": 3,
+		"sha256": strings.Repeat("a", 64),
+	}
+	if _, err := coreaudit.EncodeDetail(detail); err != nil {
+		t.Fatalf("裁切审计 detail 被拒绝: %v", err)
+	}
+	for _, bad := range []int{11, -1} {
+		if _, err := coreaudit.EncodeDetail(map[string]any{"crop_l": bad}); err == nil {
+			t.Fatalf("crop_l = %d 应被拒绝", bad)
+		}
+	}
+	if _, err := coreaudit.EncodeDetail(map[string]any{"sha256": strings.Repeat("a", 63)}); err == nil {
+		t.Fatal("63 位 sha256 应被拒绝")
+	}
+	if _, err := coreaudit.EncodeDetail(map[string]any{"sha256": strings.Repeat("A", 64)}); err == nil {
+		t.Fatal("大写 sha256 应被拒绝")
+	}
+}
+
 // R4A：段内连写的手机号不得进审计链；掩码后的文本必须通过。
 func TestEncodeDetailRejectsFusedPhone(t *testing.T) {
 	const raw = "1380013800013800138001"

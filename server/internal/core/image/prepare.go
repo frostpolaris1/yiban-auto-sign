@@ -7,6 +7,7 @@ import (
 	"image/draw"
 	"image/jpeg"
 	"image/png"
+	mrand "math/rand/v2"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 )
@@ -15,14 +16,48 @@ const (
 	mimeJPEG = "image/jpeg"
 	mimePNG  = "image/png"
 
-	// cropPercentMax 是每边裁切百分比上限。
-	cropPercentMax = 5
-
 	// jpegQuality 是重编码质量。90 保留主体细节，体积可控。
 	jpegQuality = 90
 )
 
-// Options 是预处理参数。零值表示不限尺寸、不裁切、保持输入格式。
+// Rand 是裁切比例的随机源。生产用 systemRand，测试注入确定性实现。
+// 本接口只覆盖 [0,n) 取整数的单一能力：注入面最小化。
+type Rand interface {
+	// IntN 返回 [0,n) 内的一个整数。
+	IntN(n int) int
+}
+
+// systemRand 是生产随机源。math/rand/v2 顶层函数自动播种，
+// 并发安全，进程内无用户可见种子，不构成新全局配置面。
+type systemRand struct{}
+
+func (systemRand) IntN(n int) int { return mrand.IntN(n) }
+
+// CropSides 是四边裁切百分比。每边独立取值，口径见 Prepare。
+type CropSides struct {
+	Left   int
+	Right  int
+	Top    int
+	Bottom int
+}
+
+// cropPercentSpan 是单边比例的取值个数：[0,10] 闭区间共 11 个值。
+const cropPercentSpan = 11
+
+// drawCropSides 按固定顺序（左、右、上、下）各取一个独立随机比例。
+// 顺序固定是绘制口径：测试脚本按同序断言。
+func drawCropSides(r Rand) CropSides {
+	return CropSides{
+		Left:   r.IntN(cropPercentSpan),
+		Right:  r.IntN(cropPercentSpan),
+		Top:    r.IntN(cropPercentSpan),
+		Bottom: r.IntN(cropPercentSpan),
+	}
+}
+
+// Options 是预处理参数。零值表示不限尺寸、保持输入格式。
+// 裁切比例是固定随机口径，不是配置项：无配置键、无环境变量、
+// 无管理员面。Rand 只服务测试注入。
 type Options struct {
 	// MaxPixels 是像素总数上限。非正值表示不限。
 	MaxPixels int
@@ -30,8 +65,8 @@ type Options struct {
 	// MaxSidePx 是单边像素上限。非正值表示不限。
 	MaxSidePx int
 
-	// CropPercent 是每边裁切百分比，取值 0..5。0 表示不裁切。
-	CropPercent int
+	// Rand 是裁切比例随机源。nil 用 systemRand。测试注入确定性源。
+	Rand Rand
 
 	// TargetMime 是输出格式。空串表示保持输入格式。
 	// 只接受 "image/jpeg" 与 "image/png"。
@@ -40,33 +75,35 @@ type Options struct {
 
 // Output 是预处理结果。
 // Data 是最终字节。SHA256 是 Data 的摘要，供去重与审计引用。
+// Crop 是本次实际使用的四边比例，审计按此记录。
 type Output struct {
 	Data   []byte
 	Mime   string
 	Width  int
 	Height int
 	SHA256 [32]byte
+	Crop   CropSides
 }
 
-// Prepare 解码、方向归一、裁切并重编码一张图片。
+// Prepare 解码、方向归一、随机裁切并重编码一张图片。
 //
-// # 为什么重编码能去元数据
-// JPEG 与 PNG 编码器只遍历像素，重新生成文件结构。
-// 原始 EXIF、XMP、IPTC、GPS 与缩略图都不会被复制。
-// 因此输出不带任何元数据段，无需逐段删除。
+// # 裁切口径（固定，不可调）
+// 四边各自独立在 [0%,10%] 均匀随机取比例，单边可为 0。
+// 随机裁切破坏按像素内容复用同一张图的匹配；上限 10% 保住主体。
+// 每次调用独立抽取；同一用户重复上传同一字节会得到不同裁切，
+// 去重判据因此按预处理后字节比较（见 app/photos）。
 //
-// # 为什么方向归一必须在宿主侧完成
-// signing/contract.ImageRef 只接收预处理后的图。
-// 提供方只上传与提交，不做旋转。
-// 重编码又会剥掉 EXIF，故方向必须在剥离前写进像素。
+// # 变换顺序
+// 解码即剥元数据（编码器只重写像素），随后方向归一，再裁切，
+// 最后重编码。裁切在像素域进行，输出不含 EXIF。
+//
+// # 取整
+// cut = 边长×比例/100，向下取整。实际裁切比例恒不超 10%；
+// 边长 ≤9 时 cut=0，等于不裁。四边合计至多 20%，不会裁出空图。
 //
 // # 失败口径
-// 无效图片、超出上限、裁切参数越界都返回 errs.CodeValidation。
-// 本函数不 panic。
+// 无效图片、超出上限都返回 errs.CodeValidation。本函数不 panic。
 func Prepare(input []byte, opt Options) (Output, error) {
-	if opt.CropPercent < 0 || opt.CropPercent > cropPercentMax {
-		return Output{}, errs.New(errs.CodeValidation, "crop percent must be between 0 and 5")
-	}
 	if opt.TargetMime != "" && opt.TargetMime != mimeJPEG && opt.TargetMime != mimePNG {
 		return Output{}, errs.New(errs.CodeValidation, "target mime must be image/jpeg or image/png")
 	}
@@ -104,9 +141,12 @@ func Prepare(input []byte, opt Options) (Output, error) {
 			img = orient(img, o)
 		}
 	}
-	if opt.CropPercent > 0 {
-		img = crop(img, opt.CropPercent)
+	rand := opt.Rand
+	if rand == nil {
+		rand = systemRand{}
 	}
+	crops := drawCropSides(rand)
+	img = crop(img, crops)
 
 	mime := mimePNG
 	if format == "jpeg" {
@@ -136,26 +176,21 @@ func Prepare(input []byte, opt Options) (Output, error) {
 		Width:  b.Dx(),
 		Height: b.Dy(),
 		SHA256: sha256.Sum256(data),
+		Crop:   crops,
 	}, nil
 }
 
-// crop 按每边百分比裁切，返回值原点在 (0,0)。
-//
-// # 为什么上限是 5%
-// 裁切只用于去掉边缘水印与黑边。
-// 每边超过 5% 就可能切掉主体，而平台按主体判定通过。
-// 每边 5% 是名义上限；实际按整像素四舍五入：
-// cut = (边长×5+50)/100。只有边长 mod 20 ≤ 9 时保留 ≥90% 边长
-// （20→90%，30→86.67%，50→88%）。边长 ≤9 时 cut=0，实际不裁。
-// 面积比例 = 宽保留比 × 高保留比，逐图计算。
-// 只有两边都 ≡ 0 (mod 20) 时，面积比例才等于 0.81。
-// 调用方按此口径挑图，本函数不设最小边长。
-// 上限在 Options 校验处拒绝，本函数不再判越界。
-func crop(src image.Image, percent int) image.Image {
+// crop 按四边独立比例裁切，返回值原点在 (0,0)。
+// cut = 边长×比例/100，向下取整：实际比例恒不超比例上限。
+// 边长 ≤9 时 cut=0，该边等于不裁；比例可为 0，结果相同。
+// 本函数不设最小边长：四边合计至多 20%，不会裁出空图。
+func crop(src image.Image, c CropSides) image.Image {
 	b := src.Bounds()
-	cutX := (b.Dx()*percent + 50) / 100 // 四舍五入到像素
-	cutY := (b.Dy()*percent + 50) / 100
-	r := image.Rect(b.Min.X+cutX, b.Min.Y+cutY, b.Max.X-cutX, b.Max.Y-cutY)
+	cutL := b.Dx() * c.Left / 100
+	cutR := b.Dx() * c.Right / 100
+	cutT := b.Dy() * c.Top / 100
+	cutB := b.Dy() * c.Bottom / 100
+	r := image.Rect(b.Min.X+cutL, b.Min.Y+cutT, b.Max.X-cutR, b.Max.Y-cutB)
 	dst := image.NewNRGBA(image.Rect(0, 0, r.Dx(), r.Dy()))
 	draw.Draw(dst, dst.Bounds(), src, r.Min, draw.Src)
 	return dst

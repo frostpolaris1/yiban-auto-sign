@@ -16,6 +16,36 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 )
 
+// noCrop 恒返 0：四边都不裁。钉住与裁切无关的既有不变式时注入。
+var noCrop zeroRand
+
+type zeroRand struct{}
+
+func (zeroRand) IntN(int) int { return 0 }
+
+// scriptRand 按脚本逐个返回值，并记录每次请求的上限 n。
+// 判据要求 n 恒为 11：单边取值集是 [0,10] 闭区间的 11 个值。
+type scriptRand struct {
+	vals []int
+	i    int
+	ns   []int
+}
+
+func (s *scriptRand) IntN(n int) int {
+	s.ns = append(s.ns, n)
+	if s.i >= len(s.vals) {
+		return 0
+	}
+	v := s.vals[s.i]
+	s.i++
+	return v
+}
+
+// draws 按绘制顺序读取四边：左、右、上、下。
+func (s *scriptRand) draws() CropSides {
+	return CropSides{Left: s.vals[0], Right: s.vals[1], Top: s.vals[2], Bottom: s.vals[3]}
+}
+
 // whiteImage 生成 w×h 的纯白图。
 func whiteImage(w, h int) *image.NRGBA {
 	img := image.NewNRGBA(image.Rect(0, 0, w, h))
@@ -185,11 +215,11 @@ func wantValidation(t *testing.T, err error) {
 // 重编码路径若不稳，下游按 SHA256 去重会失效。
 func TestPrepareJPEGDeterministic(t *testing.T) {
 	src := jpegWithOrientation(t, whiteImage(60, 40), 1)
-	first, err := Prepare(src, Options{})
+	first, err := Prepare(src, Options{Rand: noCrop})
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
-	second, err := Prepare(src, Options{})
+	second, err := Prepare(src, Options{Rand: noCrop})
 	if err != nil {
 		t.Fatalf("Prepare second: %v", err)
 	}
@@ -212,7 +242,7 @@ func TestPrepareJPEGDeterministic(t *testing.T) {
 // 元数据含拍摄时间、设备与位置，带出去就是隐私泄漏。
 func TestPrepareStripsMetadata(t *testing.T) {
 	src := jpegWithOrientation(t, whiteImage(60, 40), 1)
-	out, err := Prepare(src, Options{})
+	out, err := Prepare(src, Options{Rand: noCrop})
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
@@ -229,7 +259,7 @@ func TestPrepareStripsMetadata(t *testing.T) {
 // 方向为 1 时最容易走「原样直通」捷径，故专门钉住。
 func TestPrepareStripsPNGMetadata(t *testing.T) {
 	src := pngWithOrientation(t, whiteImage(60, 40), 1)
-	out, err := Prepare(src, Options{})
+	out, err := Prepare(src, Options{Rand: noCrop})
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
@@ -265,7 +295,7 @@ func TestPrepareOrientation(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			out, err := Prepare(jpegWithOrientation(t, src, c.orientation), Options{})
+			out, err := Prepare(jpegWithOrientation(t, src, c.orientation), Options{Rand: noCrop})
 			if err != nil {
 				t.Fatalf("Prepare: %v", err)
 			}
@@ -285,7 +315,7 @@ func TestPrepareOrientation(t *testing.T) {
 
 // PNG 的 eXIf 块同样携带方向。
 func TestPreparePNGOrientation(t *testing.T) {
-	out, err := Prepare(pngWithOrientation(t, markedImage(16, 8), 6), Options{})
+	out, err := Prepare(pngWithOrientation(t, markedImage(16, 8), 6), Options{Rand: noCrop})
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
@@ -365,11 +395,11 @@ func TestPrepareToleratesMalformedExif(t *testing.T) {
 	src := markedImage(w, h)
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			jpegOut, err := Prepare(jpegWithAPP1(t, src, c.tiff), Options{})
+			jpegOut, err := Prepare(jpegWithAPP1(t, src, c.tiff), Options{Rand: noCrop})
 			if err != nil {
 				t.Fatalf("JPEG 路径: %v", err)
 			}
-			pngOut, err := Prepare(pngWithEXIF(t, src, c.tiff), Options{})
+			pngOut, err := Prepare(pngWithEXIF(t, src, c.tiff), Options{Rand: noCrop})
 			if err != nil {
 				t.Fatalf("PNG 路径: %v", err)
 			}
@@ -389,7 +419,7 @@ func TestPrepareToleratesMalformedExif(t *testing.T) {
 // TargetMime 为空时保持输入格式；指定时转换。
 func TestPrepareTargetMime(t *testing.T) {
 	pngSrc := pngBytes(t, whiteImage(20, 10))
-	keep, err := Prepare(pngSrc, Options{})
+	keep, err := Prepare(pngSrc, Options{Rand: noCrop})
 	if err != nil {
 		t.Fatalf("Prepare png: %v", err)
 	}
@@ -421,44 +451,127 @@ func TestPrepareTargetMime(t *testing.T) {
 	decoded(t, toPNG)
 }
 
-// 每边裁 5% 后，宽与高各留 90%，容差 1px。
-// 同时断言像素确实被搬移：1 像素黑边框裁掉，中心标记保留。
-// 只查宽高的用例挡不住「返回同尺寸空图」这类退化。
-func TestPrepareCrop(t *testing.T) {
-	const w, h = 40, 20
-	src := whiteImage(w, h)
-	black := color.NRGBA{R: 0, G: 0, B: 0, A: 255}
-	for x := 0; x < w; x++ {
-		src.SetNRGBA(x, 0, black)
-		src.SetNRGBA(x, h-1, black)
+// 判据 1：注入固定随机源后，四边比例逐边生效；输出尺寸等于
+// 原图按四边比例缩减。取值覆盖 0%、10%、中间值与混合。
+// 像素断言钉住裁切原点：左切 0 时输出最左列必须是源最左列。
+func TestPrepareCropPerSide(t *testing.T) {
+	cases := []struct {
+		name  string
+		vals  []int // 绘制顺序：左、右、上、下
+		wantW int
+		wantH int
+	}{
+		{"四边全 0 不裁", []int{0, 0, 0, 0}, 100, 80},
+		{"四边全 10% 裁 20%", []int{10, 10, 10, 10}, 80, 64},
+		{"中间值 5% 上下对称", []int{5, 5, 5, 5}, 90, 72},
+		{"混合 0/10/5/3", []int{0, 10, 5, 3}, 90, 74},
 	}
-	for y := 0; y < h; y++ {
-		src.SetNRGBA(0, y, black)
-		src.SetNRGBA(w-1, y, black)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			src := whiteImage(100, 80)
+			black := color.NRGBA{R: 0, G: 0, B: 0, A: 255}
+			for y := 0; y < 80; y++ {
+				src.SetNRGBA(0, y, black)  // 最左列
+				src.SetNRGBA(99, y, black) // 最右列
+			}
+			rnd := &scriptRand{vals: c.vals}
+			out, err := Prepare(pngBytes(t, src), Options{Rand: rnd})
+			if err != nil {
+				t.Fatalf("Prepare: %v", err)
+			}
+			if got := rnd.draws(); got != (CropSides{Left: c.vals[0], Right: c.vals[1], Top: c.vals[2], Bottom: c.vals[3]}) {
+				t.Fatalf("四边比例 = %+v, want %+v", got, c.vals)
+			}
+			if out.Crop != rnd.draws() {
+				t.Fatalf("Output.Crop = %+v, want 与绘制一致 %+v", out.Crop, c.vals)
+			}
+			if out.Width != c.wantW || out.Height != c.wantH {
+				t.Fatalf("输出尺寸 = %dx%d, want %dx%d", out.Width, out.Height, c.wantW, c.wantH)
+			}
+			for _, n := range rnd.ns {
+				if n != 11 {
+					t.Fatalf("IntN 上限 = %d, want 11（[0,10] 闭区间）", n)
+				}
+			}
+			if c.vals[0] == 0 && c.vals[1] == 10 {
+				// 左切 0、右切 10：输出最左列保留源最左列的黑。
+				img := decoded(t, out)
+				if got := luma(t, img, image.Rect(0, 0, 1, out.Height)); got > 90 {
+					t.Fatalf("输出最左列亮度 = %.0f, want ≤90（左缘未对齐）", got)
+				}
+			}
+		})
 	}
-	// 中心 4×2 标记，源坐标 (18..21, 9..10)。
-	for y := 9; y < 11; y++ {
-		for x := 18; x < 22; x++ {
-			src.SetNRGBA(x, y, black)
+}
+
+// 判据 2：无注入时随机源走生产路径。
+// 多次调用每边落点都在 [0,10]，且每边都不恒为 0。
+func TestPrepareCropRandomSmoke(t *testing.T) {
+	const runs = 48
+	seen := make([][]int, 0, runs)
+	nonzero := [4]int{}
+	for i := 0; i < runs; i++ {
+		out, err := Prepare(pngBytes(t, whiteImage(200, 100)), Options{})
+		if err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+		c := out.Crop
+		for _, v := range []int{c.Left, c.Right, c.Top, c.Bottom} {
+			if v < 0 || v > 10 {
+				t.Fatalf("边比例 %d 越出 [0,10]", v)
+			}
+		}
+		for j, v := range []int{c.Left, c.Right, c.Top, c.Bottom} {
+			if v != 0 {
+				nonzero[j]++
+			}
+		}
+		seen = append(seen, []int{c.Left, c.Right, c.Top, c.Bottom})
+	}
+	sides := []string{"left", "right", "top", "bottom"}
+	for j, name := range sides {
+		if nonzero[j] == 0 {
+			t.Fatalf("%s 边 %d 次全为 0：随机源退化", name, runs)
 		}
 	}
-	out, err := Prepare(pngBytes(t, src), Options{CropPercent: 5})
+}
+
+// 判据 3：裁切生效时输出仍无 EXIF。裁切与重编码同批：
+// 重编码只遍历像素，APP1 段不会进入输出。
+func TestPrepareCropStillStripsExif(t *testing.T) {
+	src := jpegWithOrientation(t, whiteImage(100, 80), 1)
+	out, err := Prepare(src, Options{Rand: &scriptRand{vals: []int{5, 5, 5, 5}}})
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
-	if d := out.Width - w*90/100; d < -1 || d > 1 {
-		t.Fatalf("裁切后宽 = %d, want %d±1", out.Width, w*90/100)
+	if out.Width == 100 || out.Height == 80 {
+		t.Fatal("裁切未生效：测试前提不成立")
 	}
-	if d := out.Height - h*90/100; d < -1 || d > 1 {
-		t.Fatalf("裁切后高 = %d, want %d±1", out.Height, h*90/100)
+	if bytes.Contains(out.Data, []byte{0xFF, 0xE1}) {
+		t.Fatal("裁切后输出仍含 APP1 段")
 	}
-	img := decoded(t, out)
-	// 裁切原点 (2,1)：中心标记落在输出 (16..19, 8..9)。
-	if got := luma(t, img, image.Rect(16, 8, 20, 10)); got > 90 {
-		t.Fatalf("中心标记亮度 = %.0f, want ≤90（主体被裁掉）", got)
+	if bytes.Contains(out.Data, []byte("Exif\x00\x00")) {
+		t.Fatal("裁切后输出仍含 EXIF 标识")
 	}
-	if got := luma(t, img, image.Rect(0, 0, 4, 2)); got < 165 {
-		t.Fatalf("输出左上亮度 = %.0f, want ≥165（黑边框未被裁掉）", got)
+	decoded(t, out)
+}
+
+// 判据 5（极小图）：整数像素向下取整，边长 ≤9 的边 cut=0。
+// 裁切后不得小于原图，也不得为空。本仓无最小尺寸约束，口径=不发明。
+func TestPrepareCropTinyImage(t *testing.T) {
+	for _, size := range []int{1, 5, 9, 10} {
+		out, err := Prepare(pngBytes(t, whiteImage(size, size)), Options{Rand: &scriptRand{vals: []int{10, 10, 10, 10}}})
+		if err != nil {
+			t.Fatalf("size %d: %v", size, err)
+		}
+		want := size - 2*(size*10/100)
+		if out.Width != want || out.Height != want {
+			t.Fatalf("size %d 输出 = %dx%d, want %dx%d", size, out.Width, out.Height, want, want)
+		}
+		if want <= 0 {
+			t.Fatalf("size %d 裁出空图", size)
+		}
+		decoded(t, out)
 	}
 }
 
@@ -486,8 +599,6 @@ func TestPrepareRejectsInvalidOptions(t *testing.T) {
 		name string
 		opt  Options
 	}{
-		{"每边裁切超过 5%", Options{CropPercent: 6}},
-		{"每边裁切为负", Options{CropPercent: -1}},
 		{"未知输出格式", Options{TargetMime: "image/gif"}},
 	}
 	for _, c := range cases {
@@ -512,7 +623,7 @@ func TestPrepareRejectsInvalidInput(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := Prepare(c.data, Options{})
+			_, err := Prepare(c.data, Options{Rand: noCrop})
 			wantValidation(t, err)
 		})
 	}
@@ -675,16 +786,17 @@ func TestOrientationParsersAcceptValidLayouts(t *testing.T) {
 	}
 }
 
-// 裁切按整像素四舍五入：cut=(N*5+50)/100。
-// 表覆盖整数边界；删掉 +50 后 10、30、50 三行变红。
+// 裁切按整像素向下取整：cut = 边长×比例/100。
+// 取整后实际比例恒不超 10%；边长 ≤9 时 cut=0。
+// 表覆盖整数边界；删掉向下取整语义后 9、30 两行变红。
 func TestCropRounding(t *testing.T) {
 	cases := []struct {
 		side, cut int
 	}{
-		{1, 0}, {5, 0}, {9, 0}, {10, 1}, {20, 1}, {30, 2}, {40, 2}, {50, 3},
+		{1, 0}, {5, 0}, {9, 0}, {10, 1}, {20, 2}, {30, 3}, {40, 4}, {50, 5},
 	}
 	for _, c := range cases {
-		out := crop(whiteImage(c.side, c.side), 5)
+		out := crop(whiteImage(c.side, c.side), CropSides{Left: 10, Right: 10, Top: 10, Bottom: 10})
 		if got := out.Bounds().Dx(); got != c.side-2*c.cut {
 			t.Fatalf("边长 %d 裁后 = %d, want %d（cut=%d）", c.side, got, c.side-2*c.cut, c.cut)
 		}
@@ -699,11 +811,11 @@ func TestPrepareNormalizesBitDepth(t *testing.T) {
 			src.SetNRGBA64(x, y, color.NRGBA64{R: 0x4000, G: 0x8000, B: 0xC000, A: 0xFFFF})
 		}
 	}
-	plain, err := Prepare(pngBytes(t, src), Options{})
+	plain, err := Prepare(pngBytes(t, src), Options{Rand: noCrop})
 	if err != nil {
 		t.Fatalf("plain: %v", err)
 	}
-	withEXIF, err := Prepare(pngWithOrientation(t, src, 6), Options{})
+	withEXIF, err := Prepare(pngWithOrientation(t, src, 6), Options{Rand: noCrop})
 	if err != nil {
 		t.Fatalf("with exif: %v", err)
 	}

@@ -2,8 +2,10 @@
 //
 // # 功能
 // 上传、列表、读取、软删与保留期设置；上传前完成预处理与去重。
-// 到期行清理与无引用 blob 回收由 RetentionLoop 每日执行。
-// 处理顺序固定：预处理 → 写 blob → 写记录。
+// 上传即随机安全裁切（每边 0–10%，固定不可调），并写 photo.upload
+// 审计（四边比例与输出摘要）。到期行清理与无引用 blob 回收由
+// RetentionLoop 每日执行。
+// 处理顺序固定：预处理 → 写 blob → 事务内写记录与审计。
 // 本包**不**发 HTTP 请求、**不**写 SQL、**不**生成公开 URL。
 //
 // # 归属
@@ -20,6 +22,7 @@ package photos
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"io"
 	"strconv"
@@ -28,6 +31,8 @@ import (
 	"time"
 
 	appcore "github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
+	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
+	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/image"
@@ -35,12 +40,14 @@ import (
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
-// Options 是图片预处理参数。零值表示不限尺寸、不裁切、保持输入格式。
+// Options 是图片预处理参数。零值表示不限尺寸、保持输入格式。
+// 裁切是固定随机口径（每边 0–10%），不是配置项：无配置键、
+// 无环境变量、无管理员面。Rand 只服务测试注入。
 type Options struct {
-	MaxPixels   int
-	MaxSidePx   int
-	CropPercent int
-	TargetMime  string
+	MaxPixels  int
+	MaxSidePx  int
+	TargetMime string
+	Rand       image.Rand
 }
 
 // Page 是一页图片记录。
@@ -53,6 +60,8 @@ type Page struct {
 type Deps struct {
 	Store   Store
 	Blobs   Blobs
+	Audit   appaudit.Repo
+	Tx      appcore.TxManager
 	Clock   coreclock.Clock
 	Options Options
 }
@@ -76,6 +85,12 @@ func NewService(deps Deps) (*Service, error) {
 	if deps.Blobs == nil {
 		return nil, errors.New("photos: nil blob store")
 	}
+	if deps.Audit == nil {
+		return nil, errors.New("photos: nil audit repo")
+	}
+	if deps.Tx == nil {
+		return nil, errors.New("photos: nil tx manager")
+	}
 	if deps.Clock == nil {
 		return nil, errors.New("photos: nil clock")
 	}
@@ -83,7 +98,10 @@ func NewService(deps Deps) (*Service, error) {
 }
 
 // Upload 预处理一张图片并入库。同一用户重复上传同一字节返回同一行。
-func (s *Service) Upload(ctx context.Context, scope corescope.Scope, raw []byte) (corephoto.Record, error) {
+// 每次上传写一行 photo.upload 审计：TargetID 是落库行 id，
+// detail 只含四边裁切比例与输出摘要（无 PII，无自由文本）。
+// 追加与落行同事务；审计失败则上传失败，不静默放行。
+func (s *Service) Upload(ctx context.Context, scope corescope.Scope, actor appaudit.Actor, raw []byte) (corephoto.Record, error) {
 	if err := requireUser(scope); err != nil {
 		return corephoto.Record{}, err
 	}
@@ -94,10 +112,10 @@ func (s *Service) Upload(ctx context.Context, scope corescope.Scope, raw []byte)
 		return corephoto.Record{}, errs.New(errs.CodeValidation, "image is too large")
 	}
 	out, err := image.Prepare(raw, image.Options{
-		MaxPixels:   s.deps.Options.MaxPixels,
-		MaxSidePx:   s.deps.Options.MaxSidePx,
-		CropPercent: s.deps.Options.CropPercent,
-		TargetMime:  s.deps.Options.TargetMime,
+		MaxPixels:  s.deps.Options.MaxPixels,
+		MaxSidePx:  s.deps.Options.MaxSidePx,
+		TargetMime: s.deps.Options.TargetMime,
+		Rand:       s.deps.Options.Rand,
 	})
 	if err != nil {
 		return corephoto.Record{}, err
@@ -115,15 +133,47 @@ func (s *Service) Upload(ctx context.Context, scope corescope.Scope, raw []byte)
 	if err := s.deps.Blobs.Touch(ctx, out.SHA256, s.deps.Clock.Now()); err != nil {
 		return corephoto.Record{}, err
 	}
-	return s.deps.Store.Create(ctx, corephoto.Record{
-		OwnerUserID: scope.UserID(),
-		SHA256:      out.SHA256,
-		Mime:        out.Mime,
-		Width:       out.Width,
-		Height:      out.Height,
-		Bytes:       int64(len(out.Data)),
-		CreatedAt:   s.deps.Clock.Now(),
+	var created corephoto.Record
+	err = s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
+		rec, err := s.deps.Store.Create(ctx, corephoto.Record{
+			OwnerUserID: scope.UserID(),
+			SHA256:      out.SHA256,
+			Mime:        out.Mime,
+			Width:       out.Width,
+			Height:      out.Height,
+			Bytes:       int64(len(out.Data)),
+			CreatedAt:   s.deps.Clock.Now(),
+		})
+		if err != nil {
+			return err
+		}
+		// detail 只承载比例与摘要：EncodeDetail 的键白名单与形状
+		// 规则兜底；本调用点不得加自由文本键。
+		if _, err := s.deps.Audit.Append(ctx, coreaudit.Entry{
+			TS:          s.deps.Clock.Now().UTC(),
+			ActorUserID: actor.UserID,
+			ActorRole:   actor.Role,
+			ActorLabel:  actor.Label,
+			Action:      coreaudit.ActionPhotoUpload,
+			TargetType:  "photo",
+			TargetID:    rec.ID,
+			Detail: map[string]any{
+				"crop_l": out.Crop.Left,
+				"crop_r": out.Crop.Right,
+				"crop_t": out.Crop.Top,
+				"crop_b": out.Crop.Bottom,
+				"sha256": hex.EncodeToString(out.SHA256[:]),
+			},
+		}); err != nil {
+			return err
+		}
+		created = rec
+		return nil
 	})
+	if err != nil {
+		return corephoto.Record{}, err
+	}
+	return created, nil
 }
 
 // List 按作用域列一页图片。limit 为 0 时取默认页大小。

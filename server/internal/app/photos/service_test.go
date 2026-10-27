@@ -3,6 +3,7 @@ package photos_test
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"image"
@@ -10,10 +11,14 @@ import (
 	"image/png"
 	"io"
 	"log/slog"
+	"reflect"
 	"testing"
 	"time"
 
+	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	appphotos "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/photos"
+	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
+	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corephoto "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/photo"
@@ -282,28 +287,77 @@ func pngBytes(t *testing.T, w, h int) []byte {
 	return buf.Bytes()
 }
 
-func newService(t *testing.T, store *fakeStore, blobs *fakeBlobs) *appphotos.Service {
+// fakeAudit 捕获审计追加。fail 注入失败，inTx 记录追加时是否在事务内。
+type fakeAudit struct {
+	entries []coreaudit.Entry
+	fail    error
+	inTx    []bool
+	txDepth int
+}
+
+func (f *fakeAudit) Verify(context.Context, int64, int64) (coreaudit.Report, error) {
+	return coreaudit.Report{}, nil
+}
+
+func (f *fakeAudit) Append(_ context.Context, in coreaudit.Entry) (coreaudit.Row, error) {
+	f.entries = append(f.entries, in)
+	f.inTx = append(f.inTx, f.txDepth > 0)
+	if f.fail != nil {
+		return coreaudit.Row{}, f.fail
+	}
+	return coreaudit.Row{}, nil
+}
+
+// fakeTx 直接运行 fn，并让 fakeAudit 感知事务边界。
+// fn 出错时回滚 fakeStore 的行快照：对齐真事务的回滚语义。
+type fakeTx struct {
+	audit *fakeAudit
+	store *fakeStore
+}
+
+func (f *fakeTx) InTx(_ context.Context, fn func(context.Context) error) error {
+	f.audit.txDepth++
+	defer func() { f.audit.txDepth-- }()
+	snap := make(map[string]corephoto.Record, len(f.store.recs))
+	for k, v := range f.store.recs {
+		snap[k] = v
+	}
+	if err := fn(context.Background()); err != nil {
+		f.store.recs = snap
+		return err
+	}
+	return nil
+}
+
+func newService(t *testing.T, store *fakeStore, blobs *fakeBlobs) (*appphotos.Service, *fakeAudit) {
 	t.Helper()
+	audits := &fakeAudit{}
 	svc, err := appphotos.NewService(appphotos.Deps{
-		Store: store, Blobs: blobs, Clock: coreclock.Fixed{T: fixedNow},
-		Options: appphotos.Options{MaxPixels: 4_000_000, MaxSidePx: 4096},
+		Store: store, Blobs: blobs, Audit: audits, Tx: &fakeTx{audit: audits, store: store},
+		Clock:   coreclock.Fixed{T: fixedNow},
+		Options: appphotos.Options{MaxPixels: 4_000_000, MaxSidePx: 4096, Rand: appRandZero},
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	return svc
+	return svc, audits
 }
 
 func owner(id string) corescope.Scope { return corescope.User(id) }
+
+// actorOf 是与 scope 同源的审计主体。角色恒为 user：上传端口只收 user。
+func actorOf(id string) appaudit.Actor {
+	return appaudit.Actor{UserID: id, Role: coreauth.RoleUser, Label: "unknown"}
+}
 
 // ---- 用例 ----
 
 // 上传：预处理后入库，所有者来自作用域，blob 先写。
 func TestUploadStoresImage(t *testing.T) {
 	store, blobs := newFakeStore(), newFakeBlobs()
-	svc := newService(t, store, blobs)
+	svc, _ := newService(t, store, blobs)
 	raw := pngBytes(t, 12, 8)
-	rec, err := svc.Upload(context.Background(), owner("u1"), raw)
+	rec, err := svc.Upload(context.Background(), owner("u1"), actorOf("u1"), raw)
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
@@ -318,12 +372,98 @@ func TestUploadStoresImage(t *testing.T) {
 	}
 }
 
+// appRand 按脚本返回四边比例，实现 core/image.Rand。
+// 绘制顺序与 core/image 一致：左、右、上、下。
+type appRand struct {
+	vals []int
+	i    int
+}
+
+func (r *appRand) IntN(int) int {
+	if r.i >= len(r.vals) {
+		return 0
+	}
+	v := r.vals[r.i]
+	r.i++
+	return v
+}
+
+// appRandZero 恒返 0：四边不裁，保持既有尺寸断言的前提。
+var appRandZero = &appRand{}
+
+// 判据 4：上传写一行 photo.upload 审计。
+// detail 只含四边比例与输出摘要（无 PII、无自由文本），
+// TargetID 是落库行 id，追加发生在事务内；审计失败则上传失败。
+func TestUploadWritesAudit(t *testing.T) {
+	store, blobs := newFakeStore(), newFakeBlobs()
+	audits := &fakeAudit{}
+	svc, err := appphotos.NewService(appphotos.Deps{
+		Store: store, Blobs: blobs, Audit: audits, Tx: &fakeTx{audit: audits, store: store},
+		Clock:   coreclock.Fixed{T: fixedNow},
+		Options: appphotos.Options{MaxPixels: 4_000_000, MaxSidePx: 4096, Rand: &appRand{vals: []int{3, 7, 0, 10}}},
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	rec, err := svc.Upload(context.Background(), owner("u1"), actorOf("u1"), pngBytes(t, 100, 80))
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if len(audits.entries) != 1 {
+		t.Fatalf("审计行数 = %d, want 1", len(audits.entries))
+	}
+	e := audits.entries[0]
+	if e.Action != coreaudit.ActionPhotoUpload {
+		t.Fatalf("Action = %q, want %q", e.Action, coreaudit.ActionPhotoUpload)
+	}
+	if e.TargetType != "photo" || e.TargetID != rec.ID {
+		t.Fatalf("Target = %s/%s, want photo/%s", e.TargetType, e.TargetID, rec.ID)
+	}
+	if e.ActorUserID != "u1" || e.ActorRole != coreauth.RoleUser || e.ActorLabel != "unknown" {
+		t.Fatalf("Actor = %+v", e)
+	}
+	if !audits.inTx[0] {
+		t.Fatal("审计追加未在事务内运行")
+	}
+	want := map[string]any{
+		"crop_l": 3, "crop_r": 7, "crop_t": 0, "crop_b": 10,
+		"sha256": hex.EncodeToString(rec.SHA256[:]),
+	}
+	if !reflect.DeepEqual(e.Detail, want) {
+		t.Fatalf("Detail = %+v, want %+v", e.Detail, want)
+	}
+	// 值必须能过审计链编码：键在白名单、形状合法。
+	if _, err := coreaudit.EncodeDetail(e.Detail); err != nil {
+		t.Fatalf("detail 编码被拒绝: %v", err)
+	}
+}
+
+// 审计追加失败必须让上传失败且不落行：审计是入库的一部分，不是旁路。
+func TestUploadFailsWhenAuditFails(t *testing.T) {
+	store, blobs := newFakeStore(), newFakeBlobs()
+	audits := &fakeAudit{fail: errors.New("chain locked")}
+	svc, err := appphotos.NewService(appphotos.Deps{
+		Store: store, Blobs: blobs, Audit: audits, Tx: &fakeTx{audit: audits, store: store},
+		Clock:   coreclock.Fixed{T: fixedNow},
+		Options: appphotos.Options{MaxPixels: 4_000_000, MaxSidePx: 4096, Rand: appRandZero},
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := svc.Upload(context.Background(), owner("u1"), actorOf("u1"), pngBytes(t, 20, 20)); err == nil {
+		t.Fatal("审计失败时上传必须报错")
+	}
+	if len(store.recs) != 0 {
+		t.Fatalf("审计失败仍落了 %d 行", len(store.recs))
+	}
+}
+
 // 无效字节与空输入必须报 validation，且不写 blob。
 func TestUploadRejectsInvalid(t *testing.T) {
 	for _, raw := range [][]byte{nil, []byte("not an image")} {
 		store, blobs := newFakeStore(), newFakeBlobs()
-		svc := newService(t, store, blobs)
-		_, err := svc.Upload(context.Background(), owner("u1"), raw)
+		svc, _ := newService(t, store, blobs)
+		_, err := svc.Upload(context.Background(), owner("u1"), actorOf("u1"), raw)
 		if err == nil {
 			t.Fatal("应报错")
 		}
@@ -339,14 +479,14 @@ func TestUploadRejectsInvalid(t *testing.T) {
 // 上传只给 user 角色；admin 与无效作用域都拒绝。
 func TestUploadRoleGate(t *testing.T) {
 	store, blobs := newFakeStore(), newFakeBlobs()
-	svc := newService(t, store, blobs)
+	svc, _ := newService(t, store, blobs)
 	raw := pngBytes(t, 4, 4)
-	if _, err := svc.Upload(context.Background(), corescope.Admin([]string{"s1"}), raw); err == nil {
+	if _, err := svc.Upload(context.Background(), corescope.Admin([]string{"s1"}), actorOf("u1"), raw); err == nil {
 		t.Fatal("admin 上传应被拒绝")
 	} else if code := errs.From(err).Code; code != errs.CodeForbidden {
 		t.Fatalf("错误码 = %q, want forbidden", code)
 	}
-	if _, err := svc.Upload(context.Background(), corescope.Scope{}, raw); err == nil {
+	if _, err := svc.Upload(context.Background(), corescope.Scope{}, actorOf("u1"), raw); err == nil {
 		t.Fatal("无效作用域应被拒绝")
 	}
 }
@@ -354,20 +494,20 @@ func TestUploadRoleGate(t *testing.T) {
 // 同一用户重复上传同一字节返回同一行；不同用户各自一行。
 func TestUploadDedupesPerOwner(t *testing.T) {
 	store, blobs := newFakeStore(), newFakeBlobs()
-	svc := newService(t, store, blobs)
+	svc, _ := newService(t, store, blobs)
 	raw := pngBytes(t, 6, 6)
-	first, err := svc.Upload(context.Background(), owner("u1"), raw)
+	first, err := svc.Upload(context.Background(), owner("u1"), actorOf("u1"), raw)
 	if err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	second, err := svc.Upload(context.Background(), owner("u1"), raw)
+	second, err := svc.Upload(context.Background(), owner("u1"), actorOf("u1"), raw)
 	if err != nil {
 		t.Fatalf("second: %v", err)
 	}
 	if first.ID != second.ID || len(store.recs) != 1 {
 		t.Fatalf("未去重: %s vs %s, rows=%d", first.ID, second.ID, len(store.recs))
 	}
-	other, err := svc.Upload(context.Background(), owner("u2"), raw)
+	other, err := svc.Upload(context.Background(), owner("u2"), actorOf("u2"), raw)
 	if err != nil {
 		t.Fatalf("other owner: %v", err)
 	}
@@ -379,8 +519,8 @@ func TestUploadDedupesPerOwner(t *testing.T) {
 // 跨用户读取与已软删读取都返回 not_found。
 func TestGetScopesAndDelete(t *testing.T) {
 	store, blobs := newFakeStore(), newFakeBlobs()
-	svc := newService(t, store, blobs)
-	rec, err := svc.Upload(context.Background(), owner("u1"), pngBytes(t, 5, 5))
+	svc, _ := newService(t, store, blobs)
+	rec, err := svc.Upload(context.Background(), owner("u1"), actorOf("u1"), pngBytes(t, 5, 5))
 	if err != nil {
 		t.Fatalf("upload: %v", err)
 	}
@@ -402,7 +542,7 @@ func TestGetScopesAndDelete(t *testing.T) {
 		t.Fatalf("重复删除应幂等: %v, %+v", err, again)
 	}
 	// 重新上传同字节应恢复同一行。
-	restored, err := svc.Upload(context.Background(), owner("u1"), pngBytes(t, 5, 5))
+	restored, err := svc.Upload(context.Background(), owner("u1"), actorOf("u1"), pngBytes(t, 5, 5))
 	if err != nil {
 		t.Fatalf("restore: %v", err)
 	}
@@ -413,7 +553,7 @@ func TestGetScopesAndDelete(t *testing.T) {
 
 // 保留期：缺省取 core/photo 的单一定义；闭集之外拒绝。
 func TestRetention(t *testing.T) {
-	svc := newService(t, newFakeStore(), newFakeBlobs())
+	svc, _ := newService(t, newFakeStore(), newFakeBlobs())
 	days, err := svc.Retention(context.Background(), owner("u1"))
 	if err != nil || days != corephoto.DefaultRetentionDays {
 		t.Fatalf("缺省保留期 = %d, %v", days, err)
@@ -435,7 +575,7 @@ func TestRetention(t *testing.T) {
 // 到期清理按用户保留期执行；未到期的行保留。
 func TestPurgeExpired(t *testing.T) {
 	store, blobs := newFakeStore(), newFakeBlobs()
-	svc := newService(t, store, blobs)
+	svc, _ := newService(t, store, blobs)
 	old := fixedNow.Add(-100 * 24 * time.Hour)
 	store.recs["photo-old"] = corephoto.Record{ID: "photo-old", OwnerUserID: "u1", CreatedAt: old}
 	store.recs["photo-new"] = corephoto.Record{ID: "photo-new", OwnerUserID: "u1", CreatedAt: fixedNow}
@@ -454,7 +594,7 @@ func TestPurgeExpired(t *testing.T) {
 // Purge 循环调用仓储直到 0 行：单次大事务会被批大小限制。
 func TestPurgeLoopsUntilEmpty(t *testing.T) {
 	store, blobs := newFakeStore(), newFakeBlobs()
-	svc := newService(t, store, blobs)
+	svc, _ := newService(t, store, blobs)
 	old := fixedNow.Add(-100 * 24 * time.Hour)
 	for i := 0; i < 5; i++ {
 		id := fmt.Sprintf("photo-%d", i)
@@ -480,7 +620,7 @@ func TestPurgeLoopsUntilEmpty(t *testing.T) {
 // 引用集合含软删行；未满 1h 的新 blob 必须保留（上传事务未提交窗口）。
 func TestCollectBlobsRespectsReferencesAndSafetyWindow(t *testing.T) {
 	store, blobs := newFakeStore(), newFakeBlobs()
-	svc := newService(t, store, blobs)
+	svc, _ := newService(t, store, blobs)
 
 	live := digestOf(1)
 	deleted := digestOf(2)
@@ -518,17 +658,17 @@ func TestCollectBlobsRespectsReferencesAndSafetyWindow(t *testing.T) {
 // 否则「删后重传」的文件仍是旧时间，回收方会在新行提交前删掉它。
 func TestUploadRefreshesBlobTimestampOnDedup(t *testing.T) {
 	store, blobs := newFakeStore(), newFakeBlobs()
-	svc := newService(t, store, blobs)
+	svc, _ := newService(t, store, blobs)
 	raw := pngBytes(t, 20, 20)
 
-	first, err := svc.Upload(context.Background(), owner("u1"), raw)
+	first, err := svc.Upload(context.Background(), owner("u1"), actorOf("u1"), raw)
 	if err != nil {
 		t.Fatalf("first upload: %v", err)
 	}
 	// Put 对已存在摘要不重写文件；把时间做旧，模拟很久以前落盘的那一份。
 	blobs.mods[first.SHA256] = fixedNow.Add(-2 * time.Hour)
 
-	if _, err := svc.Upload(context.Background(), owner("u1"), raw); err != nil {
+	if _, err := svc.Upload(context.Background(), owner("u1"), actorOf("u1"), raw); err != nil {
 		t.Fatalf("dedup upload: %v", err)
 	}
 	if got := blobs.mods[first.SHA256]; !got.Equal(fixedNow) {
@@ -541,10 +681,10 @@ func TestUploadRefreshesBlobTimestampOnDedup(t *testing.T) {
 // 回收按过期 mtime 删文件，随后行提交，留下悬空行。
 func TestCollectBlobsExcludesConcurrentUpload(t *testing.T) {
 	store, blobs := newFakeStore(), newFakeBlobs()
-	svc := newService(t, store, blobs)
+	svc, _ := newService(t, store, blobs)
 	raw := pngBytes(t, 20, 20)
 
-	rec, err := svc.Upload(context.Background(), owner("u1"), raw)
+	rec, err := svc.Upload(context.Background(), owner("u1"), actorOf("u1"), raw)
 	if err != nil {
 		t.Fatalf("seed upload: %v", err)
 	}
@@ -566,7 +706,7 @@ func TestCollectBlobsExcludesConcurrentUpload(t *testing.T) {
 
 	uploadDone := make(chan error, 1)
 	go func() {
-		_, err := svc.Upload(context.Background(), owner("u1"), raw)
+		_, err := svc.Upload(context.Background(), owner("u1"), actorOf("u1"), raw)
 		uploadDone <- err
 	}()
 	select {
@@ -603,10 +743,10 @@ func TestCollectBlobsExcludesConcurrentUpload(t *testing.T) {
 // Touch 失败时上传报错且不落行；已落盘的 blob 留给回收。
 func TestUploadFailsWhenTouchFails(t *testing.T) {
 	store, blobs := newFakeStore(), newFakeBlobs()
-	svc := newService(t, store, blobs)
+	svc, _ := newService(t, store, blobs)
 	blobs.touchErr = errors.New("chtimes failed")
 
-	if _, err := svc.Upload(context.Background(), owner("u1"), pngBytes(t, 20, 20)); err == nil {
+	if _, err := svc.Upload(context.Background(), owner("u1"), actorOf("u1"), pngBytes(t, 20, 20)); err == nil {
 		t.Fatal("Touch 失败时上传必须报错")
 	}
 	if len(store.recs) != 0 {
@@ -617,7 +757,7 @@ func TestUploadFailsWhenTouchFails(t *testing.T) {
 // 回收计数只认真实删除：清单里有、删除时已不在的文件不计数。
 func TestCollectBlobsCountsOnlyRealRemovals(t *testing.T) {
 	store, blobs := newFakeStore(), newFakeBlobs()
-	svc := newService(t, store, blobs)
+	svc, _ := newService(t, store, blobs)
 	gone := digestOf(9)
 	blobs.data[gone] = []byte("blob")
 	blobs.mods[gone] = fixedNow.Add(-2 * time.Hour)
@@ -635,7 +775,7 @@ func TestCollectBlobsCountsOnlyRealRemovals(t *testing.T) {
 // Sweep 先删行再回收 blob；结果分别计数。
 func TestSweepReportsRowsAndBlobs(t *testing.T) {
 	store, blobs := newFakeStore(), newFakeBlobs()
-	svc := newService(t, store, blobs)
+	svc, _ := newService(t, store, blobs)
 	old := digestOf(5)
 	store.recs["photo-old"] = corephoto.Record{ID: "photo-old", OwnerUserID: "u1", SHA256: old, CreatedAt: fixedNow.Add(-100 * 24 * time.Hour)}
 	blobs.data[old] = []byte("blob")
@@ -653,7 +793,7 @@ func TestSweepReportsRowsAndBlobs(t *testing.T) {
 // 循环启动即清理；一次失败不终止循环；取消后 1s 内返回。
 func TestRetentionLoopRetriesAfterErrorAndStops(t *testing.T) {
 	store, blobs := newFakeStore(), newFakeBlobs()
-	svc := newService(t, store, blobs)
+	svc, _ := newService(t, store, blobs)
 	store.recs["photo-old"] = corephoto.Record{
 		ID: "photo-old", OwnerUserID: "u1",
 		CreatedAt: fixedNow.Add(-100 * 24 * time.Hour),
@@ -706,8 +846,8 @@ func digestOf(seed byte) [32]byte {
 // Open 返回可读字节流；跨用户被拒绝。
 func TestOpenStreamsBlob(t *testing.T) {
 	store, blobs := newFakeStore(), newFakeBlobs()
-	svc := newService(t, store, blobs)
-	rec, err := svc.Upload(context.Background(), owner("u1"), pngBytes(t, 7, 7))
+	svc, _ := newService(t, store, blobs)
+	rec, err := svc.Upload(context.Background(), owner("u1"), actorOf("u1"), pngBytes(t, 7, 7))
 	if err != nil {
 		t.Fatalf("upload: %v", err)
 	}
@@ -732,8 +872,8 @@ func TestOpenStreamsBlob(t *testing.T) {
 // 这条钉同时是 P5-B pg 实现的规格：非 user 作用域返回 not_found。
 func TestAdminCannotTouchPhotos(t *testing.T) {
 	store, blobs := newFakeStore(), newFakeBlobs()
-	svc := newService(t, store, blobs)
-	rec, err := svc.Upload(context.Background(), owner("u1"), pngBytes(t, 5, 5))
+	svc, _ := newService(t, store, blobs)
+	rec, err := svc.Upload(context.Background(), owner("u1"), actorOf("u1"), pngBytes(t, 5, 5))
 	if err != nil {
 		t.Fatalf("upload: %v", err)
 	}
