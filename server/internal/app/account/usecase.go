@@ -274,8 +274,9 @@ func (s *Service) Create(ctx context.Context, scope corescope.Scope, in CreateIn
 
 // Update 改账号字段。换校返回 conflict。
 //
-// 唯一的状态副作用：凭据更新（password/device_code/phone_model）把
-// credential_error 账号恢复为 active。只改手机号不恢复。
+// 唯一的状态副作用：账号凭据变更把 credential_error 恢复为 active。
+// 凭据面含手机号：provider 用手机号登录，改绑等同凭据变更。
+// 恢复判定在事务内、行锁下读取，避免漏掉引擎刚提交的 credential_error。
 // 账号行、凭据行与审计同事务；恢复时 account.credential_recovered
 // 与 account.update 相邻追加。
 func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, in UpdateInput, actor appaudit.Actor) (Record, error) {
@@ -319,6 +320,18 @@ func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, 
 	record := current
 	err = s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
 		now := s.deps.Clock.Now().UTC()
+		touchesCredential := needCredential || in.Phone != nil
+		// 状态判定必须在事务内、行锁下读：事务外的快照会把引擎刚提交的
+		// credential_error 看丢，从而漏掉恢复。
+		var locked Record
+		if touchesCredential {
+			var err error
+			locked, err = s.deps.Accounts.GetForUpdate(ctx, scope, id)
+			if err != nil {
+				return err
+			}
+			record = locked
+		}
 		if in.Phone != nil {
 			var err error
 			record, err = s.deps.Accounts.UpdatePhone(ctx, scope, id, *in.Phone, now)
@@ -326,30 +339,28 @@ func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, 
 				return err
 			}
 		}
-		// 凭据写回把 credential_error 账号放回排期。只改手机号不恢复：
-		// 手机号不是登录凭据，改它不构成"凭据已被改正"的证据。
-		recovered := needCredential && record.Status == StatusCredentialError
+		// 手机号是登录用户名。改绑与改密码同属凭据变更，都恢复 credential_error。
+		recovered := touchesCredential && locked.Status == StatusCredentialError
 		if needCredential {
 			if err := s.rewriteCredential(ctx, scope, record, in); err != nil {
 				return err
 			}
-			if recovered {
-				// CAS credential_error → active。并发改状态时零行，
-				// SetStatus 报冲突：本次更新不成立，由调用方重试。
-				var err error
-				record, err = s.deps.Accounts.SetStatus(ctx, scope, id,
-					StatusCredentialError, StatusActive, now, "")
-				if err != nil {
-					return err
-				}
-			} else {
-				// 凭据写回不更新 accounts.updated_at；重读一次让响应带真实时间。
-				refreshed, err := s.deps.Accounts.Get(ctx, scope, id)
-				if err != nil {
-					return err
-				}
-				record = refreshed
+		}
+		if recovered {
+			// 行锁已在本事务内，CAS 必然命中；并发状态写已被锁挡住。
+			var err error
+			record, err = s.deps.Accounts.SetStatus(ctx, scope, id,
+				StatusCredentialError, StatusActive, now, "")
+			if err != nil {
+				return err
 			}
+		} else if needCredential {
+			// 凭据写回不更新 accounts.updated_at；重读一次让响应带真实时间。
+			refreshed, err := s.deps.Accounts.Get(ctx, scope, id)
+			if err != nil {
+				return err
+			}
+			record = refreshed
 		}
 		if _, err := s.deps.Audit.Append(ctx, coreaudit.Entry{
 			TS:          now,
