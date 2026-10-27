@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync"
 	"time"
 
 	appcore "github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
@@ -55,8 +56,14 @@ type Deps struct {
 }
 
 // Service 是图片库用例服务。
+//
+// mu 把「上传落盘」与「回收扫描」互斥。单进程是设计不变量（AGENTS §26），
+// 因此一把进程内读写锁就能结构性排除这个交错：
+// 回收按 List 快照的 mtime 判安全期，而上传的去重 Touch 可能发生在快照之后；
+// 没有互斥时，回收会用过期快照删掉「刚刷新、行刚提交」的文件。
 type Service struct {
 	deps Deps
+	mu   sync.RWMutex
 }
 
 // NewService 构造服务。缺依赖即失败。
@@ -95,6 +102,9 @@ func (s *Service) Upload(ctx context.Context, scope corescope.Scope, raw []byte)
 	}
 	// 先写 blob 再写行：行写失败只会留下无引用的内容寻址 blob，
 	// 由后续 GC 回收；反过来会留下指向空 blob 的行。
+	// 读锁挡住回收：Put→Touch→Create 全程不得与回收扫描交错。
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if err := s.deps.Blobs.Put(ctx, out.SHA256, out.Data); err != nil {
 		return corephoto.Record{}, err
 	}
@@ -230,9 +240,12 @@ func (s *Service) Purge(ctx context.Context, limit int) (int64, error) {
 // 只删修改时间早于 now-blobSafetyWindow 的文件：
 // 刚落盘或刚去重上传（Touch 刷新）的文件必须保留。
 // 引用集合含软删行，故可恢复的行不会指向空文件。
-// 先取文件清单、再取引用集合：清单之后才落盘的上传不在清单里，
-// 不会被本轮删除；清单之前落盘的上传已刷新修改时间，受安全期保护。
+// 全程持写锁：与 Upload 的 Put→Touch→Create 互斥。
+// 没有这把锁，List 快照之后发生的去重 Touch 不会被本轮看到，
+// 回收会按过期 mtime 删掉「刚提交行」的文件（复审 P1）。
 func (s *Service) CollectBlobs(ctx context.Context) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	files, err := s.deps.Blobs.List(ctx)
 	if err != nil {
 		return 0, err

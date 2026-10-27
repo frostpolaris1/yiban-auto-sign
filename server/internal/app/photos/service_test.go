@@ -33,6 +33,9 @@ type fakeStore struct {
 	purgeFailures int
 	// purged 在首次真实删行后关闭，供循环用例等待。
 	purged chan struct{}
+	// refsEntered/refsRelease 让并发用例卡在引用查询里。
+	refsEntered chan struct{}
+	refsRelease chan struct{}
 }
 
 func newFakeStore() *fakeStore {
@@ -145,7 +148,12 @@ func (f *fakeStore) PurgeExpired(_ context.Context, now time.Time, limit int) (i
 }
 
 // ReferencedDigests 返回全部行（含软删）仍引用的摘要。
+// 设置了 refsEntered/refsRelease 时，先在通道上握手，供并发用例制造交错。
 func (f *fakeStore) ReferencedDigests(context.Context) (map[[32]byte]struct{}, error) {
+	if f.refsEntered != nil {
+		close(f.refsEntered)
+		<-f.refsRelease
+	}
 	out := make(map[[32]byte]struct{}, len(f.recs))
 	for _, rec := range f.recs {
 		out[rec.SHA256] = struct{}{}
@@ -188,6 +196,8 @@ type fakeBlobs struct {
 	removed [][32]byte
 	// removeMiss 模拟「清单里有、删除时已不在」：Remove 返回 false。
 	removeMiss bool
+	// touchErr 模拟 Touch 失败。
+	touchErr error
 }
 
 func newFakeBlobs() *fakeBlobs {
@@ -230,6 +240,9 @@ func (f *fakeBlobs) List(context.Context) ([]corephoto.Blob, error) {
 }
 
 func (f *fakeBlobs) Touch(_ context.Context, sha [32]byte, at time.Time) error {
+	if f.touchErr != nil {
+		return f.touchErr
+	}
 	if _, ok := f.data[sha]; !ok {
 		return errors.New("blob not found")
 	}
@@ -520,6 +533,84 @@ func TestUploadRefreshesBlobTimestampOnDedup(t *testing.T) {
 	}
 	if got := blobs.mods[first.SHA256]; !got.Equal(fixedNow) {
 		t.Fatalf("去重上传后修改时间 = %v, want %v（未刷新会被回收）", got, fixedNow)
+	}
+}
+
+// 回收扫描与上传必须互斥。
+// 没有互斥时，去重 Touch 可以落在 List 快照之后；
+// 回收按过期 mtime 删文件，随后行提交，留下悬空行。
+func TestCollectBlobsExcludesConcurrentUpload(t *testing.T) {
+	store, blobs := newFakeStore(), newFakeBlobs()
+	svc := newService(t, store, blobs)
+	raw := pngBytes(t, 20, 20)
+
+	rec, err := svc.Upload(context.Background(), owner("u1"), raw)
+	if err != nil {
+		t.Fatalf("seed upload: %v", err)
+	}
+	// 去掉行引用并把文件做旧：回收会把它当无引用旧件。
+	delete(store.recs, rec.ID)
+	delete(store.byKey, keyOf(rec))
+	blobs.mods[rec.SHA256] = fixedNow.Add(-2 * time.Hour)
+
+	store.refsEntered = make(chan struct{})
+	store.refsRelease = make(chan struct{})
+	gcDone := make(chan struct{})
+	var gcRemoved int
+	var gcErr error
+	go func() {
+		defer close(gcDone)
+		gcRemoved, gcErr = svc.CollectBlobs(context.Background())
+	}()
+	<-store.refsEntered
+
+	uploadDone := make(chan error, 1)
+	go func() {
+		_, err := svc.Upload(context.Background(), owner("u1"), raw)
+		uploadDone <- err
+	}()
+	select {
+	case err := <-uploadDone:
+		t.Fatalf("上传未被回收锁挡住，交错窗口仍开着: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(store.refsRelease)
+	<-gcDone
+	if gcErr != nil {
+		t.Fatalf("collect: %v", gcErr)
+	}
+	if gcRemoved != 1 {
+		t.Fatalf("回收删除数 = %d, want 1", gcRemoved)
+	}
+	if err := <-uploadDone; err != nil {
+		t.Fatalf("upload after collect: %v", err)
+	}
+	if _, ok := blobs.data[rec.SHA256]; !ok {
+		t.Fatal("行已提交但 blob 被删：悬空行")
+	}
+	found := false
+	for _, r := range store.recs {
+		if r.SHA256 == rec.SHA256 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("上传未落行")
+	}
+}
+
+// Touch 失败时上传报错且不落行；已落盘的 blob 留给回收。
+func TestUploadFailsWhenTouchFails(t *testing.T) {
+	store, blobs := newFakeStore(), newFakeBlobs()
+	svc := newService(t, store, blobs)
+	blobs.touchErr = errors.New("chtimes failed")
+
+	if _, err := svc.Upload(context.Background(), owner("u1"), pngBytes(t, 20, 20)); err == nil {
+		t.Fatal("Touch 失败时上传必须报错")
+	}
+	if len(store.recs) != 0 {
+		t.Fatalf("Touch 失败仍落了 %d 行", len(store.recs))
 	}
 }
 

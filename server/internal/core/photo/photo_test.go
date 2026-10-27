@@ -21,7 +21,7 @@ func TestValidRetention(t *testing.T) {
 	}
 }
 
-// 到期判据：恰好满保留期即到期；软删行不算到期。
+// 到期判据：恰好满保留期即到期；软删行从删除时刻起算。
 func TestRecordExpired(t *testing.T) {
 	now := time.Date(2026, 10, 27, 8, 0, 0, 0, time.UTC)
 	rec := corephoto.Record{CreatedAt: now.Add(-90 * 24 * time.Hour)}
