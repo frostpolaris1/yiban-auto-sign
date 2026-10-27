@@ -19,7 +19,8 @@
 | `ui/` | React 前端。Adminator 视觉语言 | 新，活跃 |
 | `docs/` | 入库文档。架构、运行手册、重构记录 | 共用 |
 | `work/` | 过程稿：计划、交接、审查产物。**不入库** | 本地 |
-| `deploy/`、`docker/`、`docker-compose.yml` | 旧部署件 | 旧，冻结 |
+| `deploy/docker/`、`deploy/linux/` | 新栈部署件：容器编排、裸机安装/升级 | 新，活跃 |
+| `deploy/prod/`、`docker/`、`docker-compose.yml` | 旧 Python 栈部署件 | 旧，冻结 |
 | `scripts/` | 旧运维脚本 | 旧，冻结 |
 | `yiban/` | Python 旧引擎：调度、领取、协议 | 旧，冻结 |
 | `web/` | Python 旧 Web 与静态资源 | 旧，冻结 |

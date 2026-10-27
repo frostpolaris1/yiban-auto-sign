@@ -6,9 +6,10 @@
 **本门挡的缺陷形状**：一条检查因环境不满足而**跳过**，整套却没跑却报绿。
 `pyproject.toml` 的 `addopts = "-ra --tb=short"` 只让 skip 在**输出里可见**，它
 **不阻止**"整套没跑却报绿"——可见 ≠ 有门。2026-10-27 口径：全仓 **131 个
-(marker, reason) 去重对、74 个文件**，其中 5 族**在任何一轨都不跑**（本地权威 root
-轨实测亦 `SKIPPED`），而它们挡的是部署归属、状态目录不可写、锁目录属主、生产机防呆、
-真 SIGKILL 收场这类**要紧**的性质。
+(文件, 标记, 理由) 三元组、74 个文件**（口径：`scan_tests()` 按文件累计去重对；
+测量命令 `python -m pytest tests/test_skip_visibility_gate.py -q`），其中 5 族
+**在任何一轨都不跑**（本地权威 root 轨实测亦 `SKIPPED`），而它们挡的是部署归属、
+状态目录不可写、锁目录属主、生产机防呆、真 SIGKILL 收场这类**要紧**的性质。
 
 **本门钉的性质（两条）**：
   ① **跳过面不得静默变化**：全仓每个 `(文件, 跳过标记, 理由)` 三元组都必须在
@@ -885,14 +886,17 @@ class SkipSurfaceRegisteredTest(unittest.TestCase):
         found, unparsed = scan_tests()
         self.assertEqual(unparsed, [], "这些用例件解析不了：%s" % unparsed)
         total = sum(len(v) for v in found.values())
-        # 下限取现量（131 处，2026-10-27 口径）下方的整数档：
-        # 删掉一大片跳过点仍可能合规，但判定面塌到百处以下就是门在空转。
+        # 下限取现量下方留余量（2026-10-27 口径：131 处/74 个文件；口径＝
+        # `scan_tests()` 的 (文件, 标记, 理由) 去重对按文件累计，测量命令
+        # `python -m pytest tests/test_skip_visibility_gate.py -q`）。
+        # 删掉一大片跳过点仍可能合规，但判定面塌掉 5% 以上就是门在空转。
         self.assertGreaterEqual(
-            total, 120,
+            total, 125,
             "跳过点只剩 %d 处（2026-10-27 现量 131）：判定面可能已失效" % total)
         self.assertGreaterEqual(
-            len(KNOWN_SKIP_SITES), 50,
-            "登记表只剩 %d 个文件：判定面可能已失效" % len(KNOWN_SKIP_SITES))
+            len(KNOWN_SKIP_SITES), 70,
+            "登记表只剩 %d 个文件（2026-10-27 现量 74）：判定面可能已失效"
+            % len(KNOWN_SKIP_SITES))
 
 
 class NeverRunsRegisteredTest(unittest.TestCase):
