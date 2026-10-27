@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -57,7 +58,7 @@ func main() {
 }
 
 // usage 打印子命令清单。新增子命令在此登记。
-func usage(w *os.File) {
+func usage(w io.Writer) {
 	fmt.Fprint(w, `用法: yiban-cli <子命令> [选项]
 
 子命令:
@@ -67,6 +68,7 @@ func usage(w *os.File) {
   healthcheck  探活 /healthz（容器 healthcheck 用）
   backup       pg_dump + GPG 对称加密备份（含行数清单）
   restore      解密导入 + 迁移 + 行数对账（--force 或交互确认）
+  user         建号；user create-master 是干净部署建第一个 master 的入口
   help         打印本清单
 `)
 }
