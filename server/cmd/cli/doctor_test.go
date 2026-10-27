@@ -413,6 +413,22 @@ func TestRedactDSNKeepsSecretlessDSN(t *testing.T) {
 	}
 }
 
+// 解析不了的 keyword DSN 必须失败关闭：不能因为词法放弃就把原文打出去。
+func TestRedactDSNFailsClosedOnMalformedKeyword(t *testing.T) {
+	for _, dsn := range []string{
+		"host=db user=u password=s3cr3tTail dbname=yiban --prod",
+		"host=db user=u password='s3c r3t' dbname=yiban #comment",
+	} {
+		got := redactDSN(dsn)
+		if strings.Contains(got, "s3cr3t") || strings.Contains(got, "s3c") {
+			t.Fatalf("redactDSN(%q) = %q：解析失败时口令泄漏", dsn, got)
+		}
+		if got != "<无法脱敏的 DSN>" {
+			t.Fatalf("redactDSN(%q) = %q，want placeholder", dsn, got)
+		}
+	}
+}
+
 // TestDoctorOwnerChecksUseServiceUser 钉住属主与可写性按服务用户判（派单 F7）。
 // root 跑 doctor、属主是 yiban 是生产常态：不能因为 root 自己可写就报问题，
 // 也不能把自己的可写性当成服务用户的可写性。
