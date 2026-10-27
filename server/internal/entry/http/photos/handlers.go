@@ -22,8 +22,10 @@ import (
 	"context"
 	"encoding/hex"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -36,6 +38,19 @@ import (
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/respond"
+)
+
+// 路由级 deadline 预算。
+//
+// 全局 http.Server 的 ReadTimeout/WriteTimeout 从**读到请求头**起算：
+// 10 MiB 上传与慢链路下载都会越过它，连接在 handler 中途被切断。
+// 本文件只对照片路由放宽本次连接的截止时间，不放宽全局值。
+// 机制与 SSE 清写超时相同（events/sse.go）：Gin 的 ResponseWriter
+// 实现 Unwrap，ResponseController 因此能拿到底层连接。
+const (
+	photoUploadReadBudget  = 2 * time.Minute
+	photoUploadWriteBudget = 2 * time.Minute
+	photoGetWriteBudget    = 5 * time.Minute
 )
 
 // Service 是图片库用例端口（实现为 app/photos.Service）。
@@ -55,13 +70,22 @@ type Authorizer interface {
 
 // Handler 处理 /api/me/photos 下的端点。
 type Handler struct {
-	svc   Service
-	authz Authorizer
+	svc    Service
+	authz  Authorizer
+	logger *slog.Logger
 }
 
-// NewHandler 构造处理器。
+// NewHandler 构造处理器。日志缺省用进程 default logger。
 func NewHandler(svc Service, authz Authorizer) *Handler {
-	return &Handler{svc: svc, authz: authz}
+	return &Handler{svc: svc, authz: authz, logger: slog.Default()}
+}
+
+// WithLogger 覆盖处理器日志。装配层传进程 logger。
+func (h *Handler) WithLogger(logger *slog.Logger) *Handler {
+	if logger != nil {
+		h.logger = logger
+	}
+	return h
 }
 
 // PhotoList 实现 GET /api/me/photos。
@@ -91,7 +115,13 @@ func (h *Handler) PhotoList(c *gin.Context, params oapi.PhotoListParams) {
 }
 
 // PhotoUpload 实现 POST /api/me/photos。
+//
+// 请求体可到 11 MiB，慢链路读取会超过全局 ReadTimeout；
+// 读与写都按本路由的预算放宽。写也放宽：请求体读完时全局
+// WriteTimeout 往往已过期，不放宽则 201 写不出去。
 func (h *Handler) PhotoUpload(c *gin.Context, _ oapi.PhotoUploadParams) {
+	h.extendReadDeadline(c, photoUploadReadBudget)
+	h.extendWriteDeadline(c, photoUploadWriteBudget)
 	scope, ok := h.principal(c)
 	if !ok {
 		return
@@ -137,6 +167,8 @@ func (h *Handler) PhotoGet(c *gin.Context, id oapi.PhotoID) {
 		return
 	}
 	defer body.Close()
+	// 大图在慢链路上超过全局 WriteTimeout；写头前放宽本次连接的写截止时间。
+	h.extendWriteDeadline(c, photoGetWriteBudget)
 	// 响应头在写第一个字节前固定：作用域判据已通过。
 	c.Header("Content-Type", rec.Mime)
 	c.Header("Content-Length", strconv.FormatInt(rec.Bytes, 10))
@@ -190,6 +222,26 @@ func uploadFile(c *gin.Context) (io.ReadCloser, error) {
 		return nil, errs.New(errs.CodeValidation, "image field is required")
 	}
 	return file, nil
+}
+
+// extendReadDeadline 把本次连接的读截止时间推后。
+// 不支持 deadline 的 Writer（如测试 recorder）只记 warn：
+// 全局 ReadTimeout 仍在，状态码不变。
+func (h *Handler) extendReadDeadline(c *gin.Context, budget time.Duration) {
+	err := http.NewResponseController(c.Writer).SetReadDeadline(time.Now().Add(budget))
+	if err != nil {
+		h.logger.WarnContext(c.Request.Context(), "photo: cannot extend the read deadline",
+			"error", err.Error(), "path", c.Request.URL.Path)
+	}
+}
+
+// extendWriteDeadline 把本次连接的写截止时间推后，失败处理同上。
+func (h *Handler) extendWriteDeadline(c *gin.Context, budget time.Duration) {
+	err := http.NewResponseController(c.Writer).SetWriteDeadline(time.Now().Add(budget))
+	if err != nil {
+		h.logger.WarnContext(c.Request.Context(), "photo: cannot extend the write deadline",
+			"error", err.Error(), "path", c.Request.URL.Path)
+	}
 }
 
 // principal 解析作用域；未登录 401，解析失败按错误码回。

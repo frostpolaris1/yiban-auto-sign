@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -321,5 +322,141 @@ func TestPhotoUploadCleansTempFiles(t *testing.T) {
 		if strings.HasPrefix(entry.Name(), "multipart-") {
 			t.Fatalf("临时文件残留: %s", entry.Name())
 		}
+	}
+}
+
+// ---- 路由级 deadline ----
+//
+// 全局 http.Server 的 ReadTimeout/WriteTimeout 从读到请求头起算，
+// 10 MiB 上传与慢链路下载都会越过它。下列用例在真实 TCP 端口上
+// 用 100ms 全局超时钉住路由级放宽；没有放宽时连接被切断。
+
+// serveWithTimeouts 在真实端口上服务路由，全局读写超时都很短。
+func serveWithTimeouts(t *testing.T, engine http.Handler, read, write time.Duration) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := &http.Server{Handler: engine, ReadTimeout: read, WriteTimeout: write}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	return "http://" + ln.Addr().String()
+}
+
+// authenticate 给请求带上会话 cookie 与 CSRF 头。
+func authenticate(req *http.Request, issued coreauth.Issued) {
+	req.AddCookie(&http.Cookie{Name: coreauth.InsecureCookieName, Value: issued.Token})
+	req.Header.Set("X-CSRF-Token", issued.CSRFToken)
+}
+
+// 慢上传：请求体分 5 段、每段间隔 40ms，总时长超过全局 ReadTimeout。
+// 期望仍拿到 201 与完整原始字节。
+func TestPhotoUploadSurvivesServerReadTimeout(t *testing.T) {
+	svc := &fakeService{uploadRec: sampleRecord()}
+	engine, issued := newRouter(t, corescope.User("u1"), svc)
+	baseURL := serveWithTimeouts(t, engine, 100*time.Millisecond, 100*time.Millisecond)
+
+	raw := bytes.Repeat([]byte{'x'}, 4<<10)
+	full, contentType := uploadBody(t, "image", raw)
+	pr, pw := io.Pipe()
+	defer pr.Close()
+	go func() {
+		defer pw.Close()
+		data := full.Bytes()
+		chunk := (len(data) + 4) / 5
+		for start := 0; start < len(data); start += chunk {
+			end := start + chunk
+			if end > len(data) {
+				end = len(data)
+			}
+			if _, err := pw.Write(data[start:end]); err != nil {
+				return
+			}
+			time.Sleep(40 * time.Millisecond)
+		}
+	}()
+
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/api/me/photos", pr)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	authenticate(req, issued)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("慢上传被切断: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d: %s", resp.StatusCode, body)
+	}
+	if !bytes.Equal(svc.lastRaw, raw) {
+		t.Fatalf("上传字节不完整: %d, want %d", len(svc.lastRaw), len(raw))
+	}
+}
+
+// slowReader 每 chunk 字节产出一次，间隔 delay：
+// 模拟磁盘或慢链路的写入节奏。
+type slowReader struct {
+	data  []byte
+	chunk int
+	delay time.Duration
+}
+
+func (r *slowReader) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, io.EOF
+	}
+	n := r.chunk
+	if n > len(p) {
+		n = len(p)
+	}
+	if n > len(r.data) {
+		n = len(r.data)
+	}
+	copy(p, r.data[:n])
+	r.data = r.data[n:]
+	if len(r.data) > 0 {
+		time.Sleep(r.delay)
+	}
+	return n, nil
+}
+
+// 慢下载：字节以每 1KiB / 20ms 的节奏产出，总时长超过全局 WriteTimeout。
+// 期望状态 200 且读回全部字节。
+func TestPhotoGetSurvivesServerWriteTimeout(t *testing.T) {
+	data := bytes.Repeat([]byte("png"), 4<<10)
+	rec := sampleRecord()
+	rec.Bytes = int64(len(data))
+	svc := &fakeService{
+		getRec:  rec,
+		getBody: io.NopCloser(&slowReader{data: data, chunk: 1 << 10, delay: 20 * time.Millisecond}),
+	}
+	engine, issued := newRouter(t, corescope.User("u1"), svc)
+	baseURL := serveWithTimeouts(t, engine, 100*time.Millisecond, 100*time.Millisecond)
+
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/api/me/photos/photo-1", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	authenticate(req, issued)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("慢下载被切断: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("读取被切断: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatalf("字节不完整: %d, want %d", len(got), len(data))
 	}
 }

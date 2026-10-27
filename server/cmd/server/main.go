@@ -381,7 +381,7 @@ func buildStack(cfg *config.Config, logger *slog.Logger) (*appStack, error) {
 		// admin 只能签绑定学校的账号（跨校回 404）。
 		signing.WithAccess(accountSvc)
 
-		photoLib = photoshttp.NewHandler(photoSvc, adminSvc)
+		photoLib = photoshttp.NewHandler(photoSvc, adminSvc).WithLogger(logger)
 		locLib = locationhttp.NewHandler(locationSvc, adminSvc)
 
 		prefRepo := pg.NewTimePrefRepo(db)
