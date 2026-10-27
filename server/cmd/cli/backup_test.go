@@ -18,6 +18,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -35,6 +36,11 @@ type fakeCall struct {
 	name  string
 	args  []string
 	stdin []byte
+	env   []string
+	// passfile 是本次调用时 PGPASSFILE 指向文件的内容与权限（缺失时为空）。
+	passfilePath string
+	passfileBody []byte
+	passfileMode os.FileMode
 }
 
 type fakeRunResult struct {
@@ -47,8 +53,20 @@ type fakeRunResult struct {
 	captureIn bool
 }
 
-func (f *fakeRunner) Run(_ context.Context, name string, args []string, stdin []byte) ([]byte, error) {
-	call := fakeCall{name: name, args: args, stdin: stdin}
+func (f *fakeRunner) Run(_ context.Context, name string, args []string, stdin []byte, env []string) ([]byte, error) {
+	call := fakeCall{name: name, args: args, stdin: stdin, env: env}
+	// 口令文件必须在子进程运行期间存在且 0600：调用时读取，事后无法伪造。
+	for _, kv := range env {
+		if path, ok := strings.CutPrefix(kv, "PGPASSFILE="); ok {
+			call.passfilePath = path
+			if info, err := os.Stat(path); err == nil {
+				call.passfileMode = info.Mode().Perm()
+			}
+			if body, err := os.ReadFile(path); err == nil {
+				call.passfileBody = body
+			}
+		}
+	}
 	f.calls = append(f.calls, call)
 	if len(f.script) > 0 {
 		r := f.script[0]
@@ -166,6 +184,16 @@ func contains(args []string, want string) bool {
 	return false
 }
 
+// containsSub 判 args 里是否有含 sub 的项。
+func containsSub(args []string, sub string) bool {
+	for _, a := range args {
+		if strings.Contains(a, sub) {
+			return true
+		}
+	}
+	return false
+}
+
 func stderrOf(deps *backupDeps) string { return deps.stderr.(*bytes.Buffer).String() }
 
 func TestBackupRejectsMissingPgDump(t *testing.T) {
@@ -201,6 +229,86 @@ func TestBackupRejectsMissingPassphrase(t *testing.T) {
 	if !strings.Contains(stderr.String(), "passphrase") {
 		t.Fatalf("stderr must name passphrase: %q", stderr.String())
 	}
+}
+
+// TestBackupRejectsLoosePassphraseFile 钉住口令文件必须 0600（派单 F10）。
+// Windows 的 FileMode 权限位是合成的（恒 0666），POSIX 判据无判别力：
+// 本用例在 Windows 显性跳过，门禁在 Linux/WSL 上执行。
+func TestBackupRejectsLoosePassphraseFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("SKIP: Windows 的 FileMode 权限位是合成的（0666），0600 判据无判别力；Linux/WSL 上有牙")
+	}
+	deps, _, _, stderr := newTestDeps(t)
+	p := filepath.Join(t.TempDir(), "pass")
+	if err := os.WriteFile(p, []byte("secret"), 0o644); err != nil {
+		t.Fatalf("write pass: %v", err)
+	}
+	if err := os.Chmod(p, 0o644); err != nil {
+		t.Fatalf("chmod pass: %v", err)
+	}
+	code := runBackup(deps, []string{"--out", filepath.Join(t.TempDir(), "b.gpg"),
+		"--dsn", testDSN, "--passphrase-file", p})
+	if code != 1 {
+		t.Fatalf("code = %d, want 1（0644 口令文件必须拒绝）", code)
+	}
+	if !strings.Contains(stderr.String(), "0600") {
+		t.Fatalf("stderr must name the 0600 requirement: %q", stderr.String())
+	}
+}
+
+// TestBackupKeepsDSNOutOfArgv 钉住口令不进 argv（派单 F9）。
+// 判据：pg_dump 的 argv 不含口令、不含 --dbname=<DSN>；
+// 环境带 PGPASSFILE，文件在子进程运行期存在、0600、内容正确；
+// 备份结束后临时口令文件已删除。
+func TestBackupKeepsDSNOutOfArgv(t *testing.T) {
+	const dsn = "postgres://yiban:s3cr3t@db.example:5433/yiban?sslmode=disable"
+	deps, runner, _, _ := newTestDeps(t)
+	out := filepath.Join(t.TempDir(), "b.gpg")
+	runner.script = []fakeRunResult{{}, {}}
+	code := runBackup(deps, []string{"--out", out, "--dsn", dsn, "--passphrase-file", passFileOf(t)})
+	if code != 0 {
+		t.Fatalf("code = %d, stderr=%q", code, stderrOf(deps))
+	}
+	dumps := runner.callsOf("pg_dump")
+	if len(dumps) != 1 {
+		t.Fatalf("pg_dump calls = %d, want 1", len(dumps))
+	}
+	call := dumps[0]
+	if containsSub(call.args, "s3cr3t") {
+		t.Fatalf("argv 含口令：%v", call.args)
+	}
+	if containsSub(call.args, "--dbname=") {
+		t.Fatalf("argv 不得带 --dbname=<DSN>：%v", call.args)
+	}
+	// 连接参数改为分项：-h/-p/-U/-d。
+	for _, pair := range [][2]string{{"-h", "db.example"}, {"-p", "5433"}, {"-U", "yiban"}, {"-d", "yiban"}} {
+		i := indexOf(call.args, pair[0])
+		if i < 0 || i+1 >= len(call.args) || call.args[i+1] != pair[1] {
+			t.Fatalf("argv 缺 %s %s：%v", pair[0], pair[1], call.args)
+		}
+	}
+	if call.passfilePath == "" {
+		t.Fatalf("环境缺 PGPASSFILE：%v", call.env)
+	}
+	if call.passfileMode != 0o600 {
+		t.Fatalf("PGPASSFILE 权限 = %04o，want 0600", call.passfileMode)
+	}
+	if want := "db.example:5433:yiban:yiban:s3cr3t\n"; string(call.passfileBody) != want {
+		t.Fatalf("PGPASSFILE 内容 = %q，want %q", call.passfileBody, want)
+	}
+	if _, err := os.Stat(call.passfilePath); !os.IsNotExist(err) {
+		t.Fatalf("备份结束后临时口令文件必须删除：%v", err)
+	}
+}
+
+// indexOf 返回 args 里第一个等于 want 的下标。
+func indexOf(args []string, want string) int {
+	for i, a := range args {
+		if a == want {
+			return i
+		}
+	}
+	return -1
 }
 
 func TestBackupRequiresOutAndDSN(t *testing.T) {
@@ -241,8 +349,9 @@ func TestBackupRunsScopedDumpWithManifest(t *testing.T) {
 			t.Fatalf("pg_dump args missing %s: %v", want, args)
 		}
 	}
-	if dbName, _ := valueOf(args, "--dbname"); strings.Contains(dbName, "search_path") {
-		t.Fatalf("--dbname must not carry search_path (libpq rejects it): %q", dbName)
+	// search_path 只进 -n 的 schema 参数，不进连接参数。
+	if i := indexOf(args, "-d"); i < 0 || i+1 >= len(args) || args[i+1] != "db" {
+		t.Fatalf("pg_dump 的库名参数应为 -d db（不带 search_path）：%v", args)
 	}
 	dumpPath, _ := valueOf(args, "--file")
 	body := string(runner.captured[dumpPath])
@@ -351,5 +460,32 @@ func TestRestoreSuccessReconciles(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "一致") {
 		t.Fatalf("stdout must report reconciliation: %q", stdout.String())
+	}
+}
+
+// TestManifestTablesCoverEveryBusinessTable 钉住对账表的完整性（派单 F17）。
+// 判据源是 doctor 的 expectedTables（迁移 00001–00016 的表全集）：
+// 对账表必须覆盖它，且不得有重复。
+func TestManifestTablesCoverEveryBusinessTable(t *testing.T) {
+	have := map[string]bool{}
+	for _, table := range manifestTables {
+		if have[table] {
+			t.Fatalf("manifestTables 有重复项 %q", table)
+		}
+		have[table] = true
+	}
+	for _, table := range expectedTables {
+		if !have[table] {
+			t.Fatalf("manifestTables 缺业务表 %q：备份对账不覆盖它，恢复后丢行不会被发现", table)
+		}
+		if reason, exempt := manifestExemptTables[table]; exempt {
+			t.Fatalf("业务表 %q 不得豁免（豁免理由 %q）", table, reason)
+		}
+	}
+	// 豁免面必须非空且每条带理由：空豁免也要能解释。
+	for table, reason := range manifestExemptTables {
+		if strings.TrimSpace(reason) == "" {
+			t.Fatalf("豁免表 %q 没有理由", table)
+		}
 	}
 }
