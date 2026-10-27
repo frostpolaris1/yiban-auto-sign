@@ -142,7 +142,7 @@ func TestEgressAssignBadAccount(t *testing.T) {
 	e1 := e.seedEgress("https://fk.example", true)
 	_, err := repo.AssignOrGet(e.ctx, "00000000-0000-0000-0000-000000000000", e1)
 	// 插入点外键失败映射为 *errs.Error（CodeNotFound），不是裸哨兵。
-	if got := coreerrs.From(err).Code; got != coreerrs.CodeNotFound {
+	if got := codeOf(t, err); got != coreerrs.CodeNotFound {
 		t.Fatalf("坏账号应 not_found, got %v (%v)", got, err)
 	}
 }

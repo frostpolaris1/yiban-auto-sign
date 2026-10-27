@@ -27,6 +27,7 @@ import (
 	"errors"
 	"time"
 
+	appcore "github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	corediag "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/diagnostic"
@@ -206,7 +207,13 @@ func (s *Service) Account(ctx context.Context, scope corescope.Scope, accountID 
 }
 
 // Snapshot 返回作用域内当日的状态计数，供 SSE 的 snapshot 帧。
+//
+// 零值作用域是调用方缺陷：在查库之前拒绝。
+// 否则错误晚一步由适配器给出，SSE 侧只表现为丢一帧。
 func (s *Service) Snapshot(ctx context.Context, scope corescope.Scope) (corediag.View, error) {
+	if err := appcore.RequireScope(scope); err != nil {
+		return corediag.View{}, err
+	}
 	now := s.deps.Clock.Now()
 	day := clock.BusinessDay(now, s.deps.Location)
 	counts, err := s.deps.Store.StateCounts(ctx, scope, day)
