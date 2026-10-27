@@ -411,7 +411,7 @@ func TestGetScopesAndDelete(t *testing.T) {
 	}
 }
 
-// 保留期：缺省 90；闭集之外拒绝。
+// 保留期：缺省取 core/photo 的单一定义；闭集之外拒绝。
 func TestRetention(t *testing.T) {
 	svc := newService(t, newFakeStore(), newFakeBlobs())
 	days, err := svc.Retention(context.Background(), owner("u1"))
@@ -421,7 +421,7 @@ func TestRetention(t *testing.T) {
 	if _, err := svc.SetRetention(context.Background(), owner("u1"), 45); err == nil {
 		t.Fatal("非闭集值应被拒绝")
 	}
-	for _, want := range []int{30, 90, 180, 365} {
+	for _, want := range corephoto.RetentionDays() {
 		got, err := svc.SetRetention(context.Background(), owner("u1"), want)
 		if err != nil || got != want {
 			t.Fatalf("set %d = %d, %v", want, got, err)
