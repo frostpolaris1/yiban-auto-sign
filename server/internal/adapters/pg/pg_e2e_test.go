@@ -123,7 +123,7 @@ func TestCapacityAdmitsExactlyOneWinner(t *testing.T) {
 		switch {
 		case err == nil:
 			succeeded++
-		case errs.From(err).Code == errs.CodeCapacity:
+		case codeOf(t, err) == errs.CodeCapacity:
 			capacity++
 		default:
 			t.Fatalf("unexpected create error: %v (%+v)", err, errs.From(err))
@@ -184,7 +184,7 @@ func TestInsertForeignKeyViolationMapsToNotFound(t *testing.T) {
 		}, 10000)
 		return err
 	})
-	if got := errs.From(err).Code; got != errs.CodeNotFound {
+	if got := codeOf(t, err); got != errs.CodeNotFound {
 		t.Fatalf("account with a missing school: got %v (%s); want not_found", err, got)
 	}
 
@@ -199,7 +199,7 @@ func TestInsertForeignKeyViolationMapsToNotFound(t *testing.T) {
 			Version:    1,
 		})
 	})
-	if got := errs.From(err).Code; got != errs.CodeNotFound {
+	if got := codeOf(t, err); got != errs.CodeNotFound {
 		t.Fatalf("credential for a missing account: got %v (%s); want not_found", err, got)
 	}
 
@@ -209,14 +209,14 @@ func TestInsertForeignKeyViolationMapsToNotFound(t *testing.T) {
 		Now:       time.Now().UTC(),
 		ExpiresAt: time.Now().UTC().Add(time.Hour),
 	})
-	if got := errs.From(err).Code; got != errs.CodeNotFound {
+	if got := codeOf(t, err); got != errs.CodeNotFound {
 		t.Fatalf("reset token for a missing user: got %v (%s); want not_found", err, got)
 	}
 
 	// 契约的另一半：删除受限仍是冲突（409）。
 	account := e.createAccount(school.ID, owner.ID, "13400134001")
 	_, err = e.db.Exec(e.ctx, "DELETE FROM users WHERE id = $1", owner.ID)
-	if got := errs.From(err).Code; got != errs.CodeConflict {
+	if got := codeOf(t, err); got != errs.CodeConflict {
 		t.Fatalf("delete of a user that owns an account: got %v (%s); want conflict", err, got)
 	}
 	if _, err := e.accts.Get(e.ctx, corescope.Master(), account.ID); err != nil {
@@ -389,7 +389,7 @@ func TestRevokeAllForUserRevokesOnlyThatUser(t *testing.T) {
 	}
 
 	for _, token := range []string{"alice-1", "alice-2"} {
-		if _, err := e.ses.Resolve(e.ctx, tokenHash(token), now.Add(3*time.Minute), 30*time.Minute); errs.From(err).Code != errs.CodeNotFound {
+		if _, err := e.ses.Resolve(e.ctx, tokenHash(token), now.Add(3*time.Minute), 30*time.Minute); codeOf(t, err) != errs.CodeNotFound {
 			t.Fatalf("%s still resolves after RevokeAllForUser: %v", token, err)
 		}
 	}
@@ -412,7 +412,7 @@ func TestSessionExpiryAndRevocationAreNotResolvable(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create expired session: %v", err)
 	}
-	if _, err := e.ses.Resolve(e.ctx, tokenHash("expired"), now, 30*time.Minute); errs.From(err).Code != errs.CodeNotFound {
+	if _, err := e.ses.Resolve(e.ctx, tokenHash("expired"), now, 30*time.Minute); codeOf(t, err) != errs.CodeNotFound {
 		t.Fatalf("expired session resolved: %v", err)
 	}
 	deleted, err := e.ses.DeleteExpired(e.ctx, now, 10)
@@ -430,14 +430,14 @@ func TestSessionExpiryAndRevocationAreNotResolvable(t *testing.T) {
 	if _, err := e.ses.Resolve(e.ctx, tokenHash("idle"), now.Add(39*time.Minute), 30*time.Minute); err != nil {
 		t.Fatalf("sliding refresh did not extend the idle window: %v", err)
 	}
-	if _, err := e.ses.Resolve(e.ctx, tokenHash("idle"), now.Add(70*time.Minute), 30*time.Minute); errs.From(err).Code != errs.CodeNotFound {
+	if _, err := e.ses.Resolve(e.ctx, tokenHash("idle"), now.Add(70*time.Minute), 30*time.Minute); codeOf(t, err) != errs.CodeNotFound {
 		t.Fatalf("idle session resolved after the window: %v", err)
 	}
 
 	// 撤销立即关闭会话。
 	e.newSession(user.ID, "revoked", now)
 	mustNotError(t, e.ses.Revoke(e.ctx, tokenHash("revoked"), now.Add(time.Minute)), "revoke one session")
-	if _, err := e.ses.Resolve(e.ctx, tokenHash("revoked"), now.Add(2*time.Minute), 30*time.Minute); errs.From(err).Code != errs.CodeNotFound {
+	if _, err := e.ses.Resolve(e.ctx, tokenHash("revoked"), now.Add(2*time.Minute), 30*time.Minute); codeOf(t, err) != errs.CodeNotFound {
 		t.Fatalf("revoked session resolved: %v", err)
 	}
 }
@@ -513,7 +513,7 @@ func TestNewSessionEvictsTheOldestBeyondTheCap(t *testing.T) {
 	if live != 20 {
 		t.Fatalf("live session count is %d; want the cap of 20", live)
 	}
-	if _, err := e.ses.Resolve(e.ctx, tokenHash("cap-00"), now.Add(25*time.Minute), 30*time.Minute); errs.From(err).Code != errs.CodeNotFound {
+	if _, err := e.ses.Resolve(e.ctx, tokenHash("cap-00"), now.Add(25*time.Minute), 30*time.Minute); codeOf(t, err) != errs.CodeNotFound {
 		t.Fatalf("oldest session was not evicted: %v", err)
 	}
 	if _, err := e.ses.Resolve(e.ctx, tokenHash("cap-20"), now.Add(25*time.Minute), 30*time.Minute); err != nil {
@@ -545,7 +545,7 @@ func TestPasswordResetTokenIsSingleUse(t *testing.T) {
 	if used.UsedAt == nil {
 		t.Fatal("consumed reset row has no used_at")
 	}
-	if _, err := e.resets.Consume(e.ctx, tokenHash("reset-ok"), now.Add(2*time.Minute)); errs.From(err).Code != errs.CodeNotFound {
+	if _, err := e.resets.Consume(e.ctx, tokenHash("reset-ok"), now.Add(2*time.Minute)); codeOf(t, err) != errs.CodeNotFound {
 		t.Fatalf("a reset token was accepted twice: %v", err)
 	}
 
@@ -561,7 +561,7 @@ func TestPasswordResetTokenIsSingleUse(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create expired reset token: %v", err)
 	}
-	if _, err := e.resets.Consume(e.ctx, tokenHash("reset-expired"), now); errs.From(err).Code != errs.CodeNotFound {
+	if _, err := e.resets.Consume(e.ctx, tokenHash("reset-expired"), now); codeOf(t, err) != errs.CodeNotFound {
 		t.Fatalf("an expired reset token was accepted: %v", err)
 	}
 }
@@ -591,7 +591,7 @@ func TestSoftDeleteAndRestoreRespectCapacity(t *testing.T) {
 	mustNotError(t, err, "create first account")
 	second, err := create("13800138002", 2)
 	mustNotError(t, err, "create second account")
-	if _, err := create("13800138003", 2); errs.From(err).Code != errs.CodeCapacity {
+	if _, err := create("13800138003", 2); codeOf(t, err) != errs.CodeCapacity {
 		t.Fatalf("third account at the cap: want capacity_exceeded, got %v", err)
 	}
 
@@ -612,7 +612,7 @@ func TestSoftDeleteAndRestoreRespectCapacity(t *testing.T) {
 		})
 		return rec, err
 	}
-	if _, err := restore(first.ID); errs.From(err).Code != errs.CodeCapacity {
+	if _, err := restore(first.ID); codeOf(t, err) != errs.CodeCapacity {
 		t.Fatalf("restore beyond the cap: want capacity_exceeded, got %v", err)
 	}
 
@@ -672,7 +672,7 @@ func TestCredentialSchoolMustMatchAccount(t *testing.T) {
 	cred.Version = 3
 	if err := e.db.InTx(e.ctx, func(ctx context.Context) error {
 		return e.accts.ReplaceCredential(ctx, cred, 1)
-	}); errs.From(err).Code != errs.CodeConflict {
+	}); codeOf(t, err) != errs.CodeConflict {
 		t.Fatalf("stale credential version: want conflict, got %v", err)
 	}
 }
@@ -740,7 +740,7 @@ func TestReplaceCredentialIncrementsVersion(t *testing.T) {
 		switch {
 		case err == nil:
 			succeeded++
-		case errs.From(err).Code == errs.CodeConflict:
+		case codeOf(t, err) == errs.CodeConflict:
 			conflicted++
 		default:
 			t.Fatalf("unexpected replace error: %v (%+v)", err, errs.From(err))
@@ -780,7 +780,7 @@ func TestScopeFiltersAccounts(t *testing.T) {
 				if visible != tc.visible[account.ID] {
 					t.Fatalf("account %s visible=%v, want %v (err=%v)", account.ID, visible, tc.visible[account.ID], err)
 				}
-				if !visible && errs.From(err).Code != errs.CodeNotFound {
+				if !visible && codeOf(t, err) != errs.CodeNotFound {
 					t.Fatalf("out-of-scope account must be not_found, got %v", err)
 				}
 			}
@@ -828,7 +828,7 @@ func TestDisabledAndDeletedUserSessionsDoNotResolve(t *testing.T) {
 		t.Fatalf("live session of an active user: %v", err)
 	}
 	mustNotError(t, e.users.SetStatus(e.ctx, user.ID, coreauth.StatusDisabled, now), "disable user")
-	if _, err := e.ses.Resolve(e.ctx, tokenHash("life"), now.Add(2*time.Minute), 30*time.Minute); errs.From(err).Code != errs.CodeNotFound {
+	if _, err := e.ses.Resolve(e.ctx, tokenHash("life"), now.Add(2*time.Minute), 30*time.Minute); codeOf(t, err) != errs.CodeNotFound {
 		t.Fatalf("session of a disabled user resolved: %v", err)
 	}
 
@@ -841,7 +841,7 @@ func TestDisabledAndDeletedUserSessionsDoNotResolve(t *testing.T) {
 	mustNotError(t, e.users.MarkLogin(e.ctx, user.ID, now), "mark login")
 
 	mustNotError(t, e.users.SoftDelete(e.ctx, user.ID, user.ID, now), "soft delete user")
-	if _, err := e.users.GetByID(e.ctx, user.ID); errs.From(err).Code != errs.CodeNotFound {
+	if _, err := e.users.GetByID(e.ctx, user.ID); codeOf(t, err) != errs.CodeNotFound {
 		t.Fatalf("deleted user is still readable: %v", err)
 	}
 }
@@ -850,7 +850,7 @@ func TestSchoolAndAdminBindings(t *testing.T) {
 	e := newEnv(t)
 	school := e.createSchool("alpha")
 
-	if _, err := e.schools.Create(e.ctx, coreschool.New{Code: "alpha", Name: "Duplicate"}); errs.From(err).Code != errs.CodeConflict {
+	if _, err := e.schools.Create(e.ctx, coreschool.New{Code: "alpha", Name: "Duplicate"}); codeOf(t, err) != errs.CodeConflict {
 		t.Fatalf("duplicate school code: want conflict, got %v", err)
 	}
 
@@ -882,7 +882,7 @@ func TestSchoolAndAdminBindings(t *testing.T) {
 	if len(ids) != 0 {
 		t.Fatalf("admin still bound to %v", ids)
 	}
-	if err := e.admins.Revoke(e.ctx, admin.ID, school.ID); errs.From(err).Code != errs.CodeNotFound {
+	if err := e.admins.Revoke(e.ctx, admin.ID, school.ID); codeOf(t, err) != errs.CodeNotFound {
 		t.Fatalf("second revoke: want not_found, got %v", err)
 	}
 }
@@ -914,11 +914,11 @@ func TestAccountStatusCompareAndSet(t *testing.T) {
 	}
 
 	if _, err := e.accts.SetStatus(e.ctx, master, account.ID,
-		coreaccount.StatusPending, coreaccount.StatusActive, now, ""); errs.From(err).Code != errs.CodeConflict {
+		coreaccount.StatusPending, coreaccount.StatusActive, now, ""); codeOf(t, err) != errs.CodeConflict {
 		t.Fatalf("repeated transition: want conflict, got %v", err)
 	}
 	if _, err := e.accts.SetStatus(e.ctx, master, account.ID,
-		coreaccount.StatusActive, coreaccount.StatusRejected, now, "  "); errs.From(err).Code != errs.CodeValidation {
+		coreaccount.StatusActive, coreaccount.StatusRejected, now, "  "); codeOf(t, err) != errs.CodeValidation {
 		t.Fatalf("reject without a reason: want validation, got %v", err)
 	}
 	rejected, err := e.accts.SetStatus(e.ctx, master, account.ID,
