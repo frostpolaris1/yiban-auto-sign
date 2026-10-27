@@ -23,18 +23,26 @@ ROOT="${YIBAN_INSTALL_ROOT:-}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 UNIT="yiban.service"
 
+# 仓库根由脚本自身位置推出：名册缺省取 <repo>/config/registry.json。
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
 SERVER_BIN=""
 CLI_BIN=""
+REGISTRY=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --server-bin) SERVER_BIN="${2:?}"; shift 2 ;;
         --cli-bin) CLI_BIN="${2:?}"; shift 2 ;;
+        --registry) REGISTRY="${2:?}"; shift 2 ;;
         *) echo "update: unknown argument: $1" >&2; exit 2 ;;
     esac
 done
 
 [ -n "$SERVER_BIN" ] || { echo "update: --server-bin is required" >&2; exit 2; }
 [ -x "$SERVER_BIN" ] || { echo "update: new server binary missing: $SERVER_BIN" >&2; exit 2; }
+REGISTRY="${REGISTRY:-$REPO_ROOT/config/registry.json}"
+[ -f "$REGISTRY" ] || { echo "update: config registry missing: $REGISTRY" >&2; exit 2; }
 
 dest() { printf '%s%s' "$ROOT" "$1"; }
 SERVER_DEST="$(dest /usr/local/bin/yiban-server)"
@@ -52,6 +60,15 @@ if [ -n "$CLI_BIN" ]; then
     STAGED_CLI="$CLI_DEST.new"
 fi
 install -m 0755 "$SERVER_BIN" "$SERVER_NEW"
+
+# 名册随二进制一起升级：新版本可能新增配置键，
+# 只换二进制不换名册会让 doctor 的未登记键体检过时。
+# 落在停服务之前：失败时服务仍在跑旧件。
+mkdir -p "$(dest /etc/yiban)"
+install -m 0644 "$REGISTRY" "$(dest /etc/yiban/registry.json)"
+if [ -z "$ROOT" ]; then
+    chown root:root "$(dest /etc/yiban/registry.json)"
+fi
 
 # 载入 /etc/yiban/.env 的 KEY=VALUE（systemd 同源），DSN 由此而来。
 # **不** source：DSN 含 `&` 或 `#` 时 shell 会切开赋值，变量落进子 shell
