@@ -12,6 +12,7 @@
 //  3. SSE 订阅扇出：internal/app/events/broker.go 的 (*Broker).Subscribe，
 //     订阅 N 端＋发布一条到全部订阅端。
 //  4. 内存峰值：runtime.ReadMemStats，判据 ≤1 GiB。//
+//
 // 本二进制只测量，不优化。发现判据达不到时如实报数字。
 //
 // # 输出契约
