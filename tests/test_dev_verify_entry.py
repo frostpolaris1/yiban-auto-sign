@@ -734,11 +734,16 @@ class StacksCiWiringTest(unittest.TestCase):
                       "依赖安装步不见了：入口脚本不负责联网装依赖")
 
     def test_entry_script_runs_both_stacks(self):
-        src = _read(STACKS_ENTRY)
-        self.assertIn("(cd server && ./scripts/verify.sh)", src,
-                      "入口脚本没有真跑 server 门禁")
-        self.assertIn("(cd ui && npm run verify)", src,
-                      "入口脚本没有真跑 ui 门禁")
+        """两条栈命令必须是未注释的独立执行行（注释掉一行即红）。"""
+        # 不能对原文 assertIn：给命令加 `# ` 前缀后原文仍命中，注释洞会放过
+        # "脚本只跑一栈"（复审 D1）。先过滤注释行，再要求整行恰好出现一次。
+        lines = [ln.strip() for ln in _read(STACKS_ENTRY).splitlines()
+                 if not ln.strip().startswith("#")]
+        for cmd, label in (("(cd server && ./scripts/verify.sh)", "server"),
+                           ("(cd ui && npm run verify)", "ui")):
+            self.assertEqual(
+                lines.count(cmd), 1,
+                "入口脚本没有未注释地真跑 %s 门禁：%r" % (label, cmd))
 
 
 if __name__ == "__main__":

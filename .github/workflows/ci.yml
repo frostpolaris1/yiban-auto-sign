@@ -263,8 +263,9 @@ jobs:
   # 新栈（Go 后端 + React 前端）的自动门。与 verify job 分开：
   # Python 旧栈与 Go/React 新栈的依赖与工具链不同，混在一个 job 里会让
   # 任一栈的安装失败拖垮另一栈。本 job 只调同一个本地入口
-  # `bash scripts/verify-stacks.sh`；命令原文只住在该脚本里一份，避免
-  # “注释说跑了脚本、steps 里却内联命令”的双定义点。
+  # `bash scripts/verify-stacks.sh`；执行点只住该脚本一份，测试只做
+  # 逐字冻结断言（tests/test_dev_verify_entry.py::StacksCiWiringTest），
+  # 不复制命令语义。
   # 视觉回归不在本 job：基线目前只有 win32（见 ui/README.md），Linux 基线未生成。
   stacks:
     runs-on: ubuntu-latest

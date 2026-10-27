@@ -7,7 +7,8 @@
 `pyproject.toml` 的 `addopts = "-ra --tb=short"` 只让 skip 在**输出里可见**，它
 **不阻止**"整套没跑却报绿"——可见 ≠ 有门。2026-10-27 口径：全仓 **131 个
 (文件, 标记, 理由) 三元组、74 个文件**（口径：`scan_tests()` 按文件累计去重对；
-测量命令 `python -m pytest tests/test_skip_visibility_gate.py -q`），其中 5 族
+测量命令 `/root/.venv-yiban-wsl/bin/python -c 'import sys;sys.path.insert(0,"tests");import test_skip_visibility_gate as g;f,_=g.scan_tests();print(sum(map(len,f.values())),len(f))'`
+输出 `131 74`），其中 5 族
 **在任何一轨都不跑**（本地权威 root 轨实测亦 `SKIPPED`），而它们挡的是部署归属、
 状态目录不可写、锁目录属主、生产机防呆、真 SIGKILL 收场这类**要紧**的性质。
 
@@ -887,8 +888,8 @@ class SkipSurfaceRegisteredTest(unittest.TestCase):
         self.assertEqual(unparsed, [], "这些用例件解析不了：%s" % unparsed)
         total = sum(len(v) for v in found.values())
         # 下限取现量下方留余量（2026-10-27 口径：131 处/74 个文件；口径＝
-        # `scan_tests()` 的 (文件, 标记, 理由) 去重对按文件累计，测量命令
-        # `python -m pytest tests/test_skip_visibility_gate.py -q`）。
+        # `scan_tests()` 的 (文件, 标记, 理由) 去重对按文件累计）。测量命令见
+        # 模块 docstring（输出 `131 74`；裸 `python` 在本 WSL 不存在）。
         # 删掉一大片跳过点仍可能合规，但判定面塌掉 5% 以上就是门在空转。
         self.assertGreaterEqual(
             total, 125,

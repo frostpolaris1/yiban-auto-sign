@@ -134,12 +134,14 @@ ui/src/
 前端导入方向由 `ui/scripts/structure-gate.mjs` 解析模块路径后判定。
 该门只扫 `ui/`。`docs/`、`server/`、`tests/` 不在它扫描面内，`server/` 的 `work/` 引用无自动门，靠审查。
 Python 文档门只管 `docs/…` 路径是否存在，不管 `work/` 引用。
+第 2 节的状态列（新/旧、活跃/冻结）没有自动门；它靠审查维护。
 
 两条入口：
 
 - 旧 Python 栈：`scripts/dev-verify.sh`。
 - 新 Go + React 栈：`bash scripts/verify-stacks.sh`。
-- CI 的两个 job 分别跑这两条。
+- CI 的三个 job 合起来跑这两条入口：`verify` 与 `slow-lane` 跑旧 Python 入口
+  （`--ci` / `--slow`），`stacks` 跑新栈入口。
 
 运行：`cd server && ./scripts/verify.sh`。
 

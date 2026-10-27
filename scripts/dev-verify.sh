@@ -639,9 +639,9 @@ read_lane_roster() { # 名册缺失 / 车道名未知 / 同文件进两道 / 文
             die "名册 $LANE_ROSTER_REL 的非快集项在文件系统上不存在：$f（文件改名后名册变废纸，须同批改名册）"
     done
     # 扫空不得当绿（AGENTS §30）：解析坏掉（IFS 错、换行形态错）会让各条道都读空或只剩几行。
-    # 下限取 100 —— 真实套件远在其上（现量见 docs/dev/dev-verify.md §3），解析坏掉远在其下。
-    [ "${#LANE_FAST_FILES[@]}" -ge 100 ] ||
-        die "名册 $LANE_ROSTER_REL 只读出 ${#LANE_FAST_FILES[@]} 个快集文件（下限 100）：空集/残集不得当绿"
+    # 下限取 300 —— 实测 337 个快集文件（口径见 docs/dev/dev-verify.md §3），留 37 个余量。
+    [ "${#LANE_FAST_FILES[@]}" -ge 300 ] ||
+        die "名册 $LANE_ROSTER_REL 只读出 ${#LANE_FAST_FILES[@]} 个快集文件（下限 300）：空集/残集不得当绿"
     [ "$((${#LANE_SLOW_FILES[@]} + ${#LANE_SERIAL_FILES[@]}))" -ge 1 ] ||
         die "名册 $LANE_ROSTER_REL 读不出任何非快集文件（空集不得当绿：非快集为空时全量轨与快集同集，本机制失去意义）"
     echo "DEV-VERIFY lane-roster: 快集 ${#LANE_FAST_FILES[@]} 个文件 ｜ 慢集 ${#LANE_SLOW_FILES[@]} ｜ 串行轨 ${#LANE_SERIAL_FILES[@]}（名册 $LANE_ROSTER_REL）"
