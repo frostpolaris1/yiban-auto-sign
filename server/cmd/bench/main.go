@@ -21,8 +21,8 @@
 //
 // # 口径
 //
-//   - 造数：合成值运行期拼号。手机号＝"138"+8 位零填充序号
-//     （13800000000..13809999999，已登记 tests/synthetic-fixtures.json
+//   - 造数：合成值运行期拼号。手机号＝"138"+8 位零填充序号，自
+//     13800000000 起连续 100000 个（已登记 tests/synthetic-fixtures.json
 //     的 phone_runtime_blocks）；邮箱＝bench-<序号>@example.com。
 //   - Discoverer 用固定窗口替身（非平台实拍）：测的是仓库与构建路径，
 //     不是平台发现。
@@ -41,17 +41,25 @@ import (
 	"fmt"
 	"os"
 	"time"
+
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/config"
 )
 
 func main() {
 	var (
-		dsn        = flag.String("dsn", os.Getenv("YIBAN_TEST_DATABASE_URL"), "PostgreSQL DSN；缺省读 YIBAN_TEST_DATABASE_URL")
+		dsn        = flag.String("dsn", "", "PostgreSQL DSN；缺省读 YIBAN_TEST_DATABASE_URL")
 		accounts   = flag.Int("accounts", 10000, "合成账号数")
 		schools    = flag.Int("schools", 1, "学校数；1=单校形状，>1=多校形状")
 		claimBatch = flag.Int("claim-batch", 500, "单次 ClaimDue 的 limit")
 		keep       = flag.Bool("keep", false, "保留压测 schema 不删除")
 	)
 	flag.Parse()
+	env := config.Env{}
+	if *dsn == "" {
+		if v, ok := env.Lookup("YIBAN_TEST_DATABASE_URL"); ok {
+			*dsn = v
+		}
+	}
 	if *dsn == "" {
 		fmt.Fprintln(os.Stderr, "bench: 需要 -dsn 或环境变量 YIBAN_TEST_DATABASE_URL")
 		os.Exit(2)

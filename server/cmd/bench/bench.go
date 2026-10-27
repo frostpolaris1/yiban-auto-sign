@@ -20,6 +20,7 @@ import (
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
 	coreaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/account"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
+	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	coreschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/school"
 	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
@@ -189,7 +190,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	}
 
 	// 造数：用户＋账号按批同事务；批后统一激活。
-	start := time.Now()
+	start := coreclock.System{}.Now()
 	if err := seedAccounts(ctx, db, users, accts, schoolIDs, cfg.Accounts); err != nil {
 		return res, err
 	}
@@ -201,7 +202,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	memSample()
 
 	// 计划构建：窗口用固定替身，业务日取 UTC 当天。
-	day := time.Now().UTC().Format("2006-01-02")
+	day := coreclock.System{}.Now().UTC().Format("2006-01-02")
 	dayStart, err := time.ParseInLocation("2006-01-02", day, time.UTC)
 	if err != nil {
 		return res, fmt.Errorf("bench: parse day: %w", err)
@@ -220,7 +221,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		return res, fmt.Errorf("bench: build schedule service: %w", err)
 	}
 
-	start = time.Now()
+	start = coreclock.System{}.Now()
 	for k, taskID := range taskIDs {
 		_, err := svc.Build(ctx, appschedule.Input{
 			SchoolID: schoolIDs[k], SchoolTaskID: taskID, Day: day, Location: time.UTC,
@@ -236,7 +237,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	memSample()
 
 	// 认领吞吐：now 取窗口结束之后，全部计划行一次性到期。
-	start = time.Now()
+	start = coreclock.System{}.Now()
 	claimed := 0
 	claimNow := winEnd.Add(time.Hour)
 	for {
@@ -331,7 +332,7 @@ func runSSE(n int) (subSec, fanoutSec float64, subscribers int, err error) {
 	defer cancel()
 	cancels := make([]context.CancelFunc, 0, n)
 	subs := make([]appevents.Subscription, 0, n)
-	start := time.Now()
+	start := coreclock.System{}.Now()
 	for i := 0; i < n; i++ {
 		s, c := b.Subscribe(ctx, nil, 0)
 		subs = append(subs, s)
@@ -339,9 +340,9 @@ func runSSE(n int) (subSec, fanoutSec float64, subscribers int, err error) {
 	}
 	subSec = time.Since(start).Seconds()
 
-	start = time.Now()
+	start = coreclock.System{}.Now()
 	b.Publish(nil, appevents.Event{
-		Type: appevents.TypeTaskProgress, SchoolID: "bench-school-01", Day: "2000-01-01", At: time.Now(),
+		Type: appevents.TypeTaskProgress, SchoolID: "bench-school-01", Day: "2000-01-01", At: coreclock.System{}.Now(),
 	})
 	for i := range subs {
 		select {
