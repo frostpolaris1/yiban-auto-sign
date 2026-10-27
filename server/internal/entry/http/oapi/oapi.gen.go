@@ -436,7 +436,7 @@ type Account struct {
 
 	// Status pending on create; review moves to active or rejected. Pause moves
 	// active to paused_admin or paused_user. credential_error is written by
-	// the engine in P4 only.
+	// the engine in P4 only; a credential or phone update returns it to active.
 	Status    AccountStatus `json:"status"`
 	UpdatedAt time.Time     `json:"updated_at"`
 }
@@ -550,7 +550,7 @@ type AccountSignAccepted struct {
 
 // AccountStatus pending on create; review moves to active or rejected. Pause moves
 // active to paused_admin or paused_user. credential_error is written by
-// the engine in P4 only.
+// the engine in P4 only; a credential or phone update returns it to active.
 type AccountStatus string
 
 // AccountUpdate defines model for AccountUpdate.

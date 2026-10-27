@@ -96,6 +96,28 @@ func (f *fakeStore) Finish(_ context.Context, accountID, schoolTaskID, day strin
 	return coreerrs.ErrNotFound
 }
 
+// FinishCredentialInvalid 按库语义落 failed(credential_invalid)。
+// 账号状态是存储层副作用，由 pg e2e 钉住，本 fake 不复制。
+func (f *fakeStore) FinishCredentialInvalid(_ context.Context, _ /*schoolID*/, accountID, schoolTaskID, day string, _ time.Time) error {
+	if f.finishErr != nil {
+		return f.finishErr
+	}
+	for i := range f.tasks {
+		t := &f.tasks[i]
+		if t.AccountID == accountID && t.SchoolTaskID == schoolTaskID && t.Day == day {
+			if t.State != string(corestatus.TaskRunning) {
+				return coreerrs.ErrNotFound
+			}
+			t.State = string(corestatus.TaskFailed)
+			t.Attempts++
+			f.finished[t.ID] = corestatus.TaskFailed
+			f.results[t.ID] = "credential_invalid"
+			return nil
+		}
+	}
+	return coreerrs.ErrNotFound
+}
+
 // requeue 是两种重排的公共实现；bumpAttempts 区分"等待"与"业务重试"。
 func (f *fakeStore) requeue(taskID string, runAt time.Time, result string, bumpAttempts bool) error {
 	for i := range f.tasks {
