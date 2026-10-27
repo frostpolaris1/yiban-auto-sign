@@ -98,6 +98,11 @@ func (s *Service) Upload(ctx context.Context, scope corescope.Scope, raw []byte)
 	if err := s.deps.Blobs.Put(ctx, out.SHA256, out.Data); err != nil {
 		return corephoto.Record{}, err
 	}
+	// 去重命中时 Put 不重写文件，修改时间仍是首次落盘的旧值。
+	// GC 按修改时间判安全期；不刷新就可能删掉「刚重传、行还未提交」的文件。
+	if err := s.deps.Blobs.Touch(ctx, out.SHA256, s.deps.Clock.Now()); err != nil {
+		return corephoto.Record{}, err
+	}
 	return s.deps.Store.Create(ctx, corephoto.Record{
 		OwnerUserID: scope.UserID(),
 		SHA256:      out.SHA256,
@@ -223,14 +228,16 @@ func (s *Service) Purge(ctx context.Context, limit int) (int64, error) {
 // CollectBlobs 回收无行引用的 blob，返回真实删除数。
 //
 // 只删修改时间早于 now-blobSafetyWindow 的文件：
-// 刚落盘但行事务未提交的上传必须保留。
+// 刚落盘或刚去重上传（Touch 刷新）的文件必须保留。
 // 引用集合含软删行，故可恢复的行不会指向空文件。
+// 先取文件清单、再取引用集合：清单之后才落盘的上传不在清单里，
+// 不会被本轮删除；清单之前落盘的上传已刷新修改时间，受安全期保护。
 func (s *Service) CollectBlobs(ctx context.Context) (int, error) {
-	referenced, err := s.deps.Store.ReferencedDigests(ctx)
+	files, err := s.deps.Blobs.List(ctx)
 	if err != nil {
 		return 0, err
 	}
-	files, err := s.deps.Blobs.List(ctx)
+	referenced, err := s.deps.Store.ReferencedDigests(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -246,10 +253,13 @@ func (s *Service) CollectBlobs(ctx context.Context) (int, error) {
 		if _, ok := referenced[file.Digest]; ok {
 			continue
 		}
-		if err := s.deps.Blobs.Remove(ctx, file.Digest); err != nil {
+		reallyRemoved, err := s.deps.Blobs.Remove(ctx, file.Digest)
+		if err != nil {
 			return removed, err
 		}
-		removed++
+		if reallyRemoved {
+			removed++
+		}
 	}
 	return removed, nil
 }

@@ -48,10 +48,12 @@ type Store interface {
 // Put 必须幂等：同一 sha 重复写不报错。
 // Open 对缺失键返回错误；错误不得吞成空流。
 // List 列出全部已落盘 blob 的摘要与修改时间；回收判据需要时间戳。
-// Remove 删除一份 blob；缺失即视为已删除，不报错。
+// Touch 把一份已有 blob 的修改时间刷到 at；去重命中后重新起算回收安全期。
+// Remove 删除一份 blob，返回是否真的删掉了文件；缺失返回 false、不报错。
 type Blobs interface {
 	Put(ctx context.Context, sha [32]byte, data []byte) error
 	Open(ctx context.Context, sha [32]byte) (io.ReadCloser, error)
 	List(ctx context.Context) ([]corephoto.Blob, error)
-	Remove(ctx context.Context, sha [32]byte) error
+	Touch(ctx context.Context, sha [32]byte, at time.Time) error
+	Remove(ctx context.Context, sha [32]byte) (bool, error)
 }

@@ -213,7 +213,7 @@ func TestFSListSkipsTemporaryAndInvalidNames(t *testing.T) {
 	}
 }
 
-// Remove 删除已落盘 blob；重复删除幂等。
+// Remove 删除已落盘 blob；重复删除幂等，返回值区分真实删除。
 func TestFSRemove(t *testing.T) {
 	dir := t.TempDir()
 	fs, err := storage.NewFS(dir)
@@ -225,14 +225,42 @@ func TestFSRemove(t *testing.T) {
 	if err := fs.Put(context.Background(), sha, data); err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	if err := fs.Remove(context.Background(), sha); err != nil {
-		t.Fatalf("remove: %v", err)
+	removed, err := fs.Remove(context.Background(), sha)
+	if err != nil || !removed {
+		t.Fatalf("remove = (%v, %v), want (true, nil)", removed, err)
 	}
 	if _, err := fs.Open(context.Background(), sha); err == nil {
 		t.Fatal("删除后仍可打开")
 	}
-	if err := fs.Remove(context.Background(), sha); err != nil {
-		t.Fatalf("重复删除 = %v, want nil", err)
+	if removed, err := fs.Remove(context.Background(), sha); err != nil || removed {
+		t.Fatalf("重复删除 = (%v, %v), want (false, nil)", removed, err)
+	}
+}
+
+// Touch 刷新修改时间；缺失文件报错。
+func TestFSTouch(t *testing.T) {
+	fs, err := storage.NewFS(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFS: %v", err)
+	}
+	data := []byte("touch me")
+	sha := storage.Digest(data)
+	if err := fs.Put(context.Background(), sha, data); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	at := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	if err := fs.Touch(context.Background(), sha, at); err != nil {
+		t.Fatalf("touch: %v", err)
+	}
+	blobs, err := fs.List(context.Background())
+	if err != nil || len(blobs) != 1 {
+		t.Fatalf("list = (%v, %v)", blobs, err)
+	}
+	if !blobs[0].ModTime.Equal(at) {
+		t.Fatalf("modtime = %v, want %v", blobs[0].ModTime, at)
+	}
+	if err := fs.Touch(context.Background(), storage.Digest([]byte("absent")), at); err == nil {
+		t.Fatal("缺失 blob 的 Touch 必须报错")
 	}
 }
 
@@ -244,7 +272,7 @@ func TestFSRemoveCanceledContext(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := fs.Remove(ctx, storage.Digest([]byte("x"))); !errors.Is(err, context.Canceled) {
+	if _, err := fs.Remove(ctx, storage.Digest([]byte("x"))); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 }
