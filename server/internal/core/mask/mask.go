@@ -22,8 +22,10 @@
 // 域名带点且 TLD 至少 2 个字母。
 // 下列系统接受的形状不在检测口径内，属已登记限制：
 // 无点域、TLD 不是至少 2 个字母、Punycode TLD、符号或 emoji 本地部。
-// 审计守卫与符合性套件用检测口径。连写进更长数字串的手机号检测不到，
-// 属已登记限制；掩码仍会处理它。
+// 审计守卫与符合性套件用检测口径。
+// 段内滑动检测只对 14 位以上的数字段生效；11 至 13 位的整段数字
+// 只认对齐窗口，避免纪元毫秒与编号被冤成号码（R3-002）。
+// 故 12 至 13 位数字串内嵌的号码不判，属已登记限制；掩码仍会处理。
 // 下划线、逗号与全角数字不在分隔符或数字集合内，属同一类已登记限制。
 // 多段窗口每段超过 4 位的分组不判（如 13800 138000）；掩码仍会处理。
 package mask
@@ -114,6 +116,8 @@ func MaskDevice(s string) string {
 // 判定做**两遍窗口扫描**：先取跨段的「对齐窗口」，再掩段内遗留窗口。
 // 「139-0013-9000 100」与「2026-10-25 13900139000」都能正确处理：
 // 手机号被掩，日期与数量保持原样。
+// 段内遗留窗口扫描到**没有命中为止**：一个数字段里连写两个号码时
+// 两个都要掩，只掩最左会把第二个号码明文留下。
 // 改写非号码的数字会破坏原文，故窗口之外的数字一律不动。
 //
 // **调用方判「是否含 PII」用下面两个检测入口，不看本函数返回值**：
@@ -127,11 +131,16 @@ func MaskText(s string) string {
 
 // TextHasPhone 报告文本里是否还有未掩码的手机号形态。
 //
-// 这是**检测口径**：只认**对齐窗口**（数字段开头到段结尾）且
-// 11 位以 1[3-9] 开头、13 位以 86+1[3-9] 开头。
+// 这是**检测口径**：只认 1[3-9] 开头的 11 位，或 86+1[3-9] 开头的 13 位。
 // 掩码口径（MaskText）宁多勿漏，会把时间戳形态也改写；
 // 检测若沿用同一口径，纪元毫秒与编号会被冤成手机号（W2C-R2-02）。
-// 融进更长数字串的手机号检测不到，属已登记限制。
+//
+// 窗口规则分两种：
+// 多段（数字之间有分隔符）只认**对齐窗口**，且每段不超过 4 位；
+// 单段（连续数字）在 14 位以上按**滑动窗口**判，抓段内连写的号码。
+// 11 至 13 位的整段数字仍只认对齐窗口：13 位整段既是纪元毫秒的常见长度，
+// 也是 86 前缀号码的长度，滑动会把时间戳冤成号码。
+// 故 12 至 13 位数字串内嵌的号码不判，属已登记限制。
 // 审计守卫与符合性套件都用本函数做失败关闭判定。
 func TextHasPhone(s string) bool {
 	for _, run := range phoneInText.FindAllString(s, -1) {
@@ -143,15 +152,53 @@ func TextHasPhone(s string) bool {
 				if j > i && !segmentsFitPhone(segs[i:j+1]) {
 					continue
 				}
-				dd := digitsOnly(run[segs[i].start:segs[j].end])
-				switch {
-				case len(dd) == 11 && dd[0] == '1' && dd[1] >= '3' && dd[1] <= '9':
-					return true
-				case len(dd) == 13 && strings.HasPrefix(dd, "86") && dd[2] == '1' && dd[3] >= '3' && dd[3] <= '9':
+				if isPhoneDigits(digitsOnly(run[segs[i].start:segs[j].end])) {
 					return true
 				}
 			}
 		}
+		// 段内滑动：只对长过 maxAlignedDigits 的段生效，见函数注释。
+		for _, seg := range segs {
+			if seg.end-seg.start <= maxAlignedDigits {
+				continue
+			}
+			if hasEmbeddedPhone(run[seg.start:seg.end]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// maxAlignedDigits 是仍按「整段对齐」判定的最大位数。
+// 11 至 13 位的整段数字可能是时间戳或编号；14 位以上只能是复合串。
+const maxAlignedDigits = 13
+
+// hasEmbeddedPhone 在连续数字串里滑动查找手机号形态。
+// 只用于长过 maxAlignedDigits 的段；每个起点都用严格检测口径判。
+func hasEmbeddedPhone(digits string) bool {
+	for start := 0; start+11 <= len(digits); start++ {
+		if isPhoneDigits(digits[start : start+11]) {
+			return true
+		}
+	}
+	for start := 0; start+13 <= len(digits); start++ {
+		if isPhoneDigits(digits[start : start+13]) {
+			return true
+		}
+	}
+	return false
+}
+
+// isPhoneDigits 是检测口径的形状判定：11 位以 1[3-9] 开头，
+// 或 13 位以 86+1[3-9] 开头。与掩码口径 phoneShape 刻意不同。
+func isPhoneDigits(digits string) bool {
+	switch len(digits) {
+	case 11:
+		return digits[0] == '1' && digits[1] >= '3' && digits[1] <= '9'
+	case 13:
+		return strings.HasPrefix(digits, "86") &&
+			digits[2] == '1' && digits[3] >= '3' && digits[3] <= '9'
 	}
 	return false
 }
@@ -220,7 +267,8 @@ func splitSegments(run string) []segment {
 // 又不会把「日期 + 手机号」的日期尾巴并进窗口。
 //
 // 第二遍：**段内遗留**。对第一遍没动过、位数仍 ≥11 的段，
-// 掩掉段内最左的匹配窗口。它处理「手机号与数字连写」的输入；
+// 掩掉段内**每一个**匹配窗口，直到没有命中。
+// 它处理「手机号与数字连写」的输入；只掩最左会让第二个号码明文留下。
 // 对纯日期段（位数不足 11）无影响。
 //
 // 顺序固定：先对齐、后遗留；两遍都只消费未掩码的原文偏移。
@@ -253,7 +301,7 @@ func maskPhoneRun(run string) string {
 			continue
 		}
 		segText := run[segs[i].start:segs[i].end]
-		if m := maskLeftmostInSegment(segText); m != segText {
+		if m := maskAllInSegment(segText); m != segText {
 			b.WriteString(run[consumed:segs[i].start])
 			b.WriteString(m)
 			consumed = segs[i].end
@@ -264,20 +312,39 @@ func maskPhoneRun(run string) string {
 	return b.String()
 }
 
-// maskLeftmostInSegment 掩掉段内最左的手机号窗口。
+// maskAllInSegment 掩掉段内全部手机号窗口。
 // 段是无分隔符的纯数字；窗口取 11 位或 86 前缀的 13 位。
-func maskLeftmostInSegment(seg string) string {
-	for start := 0; start+11 <= len(seg); start++ {
-		if dd := seg[start : start+11]; phoneShape(dd) {
-			return seg[:start] + MaskPhone(dd) + seg[start+11:]
+// 掩掉一个后从下一个偏移继续扫，直到没有命中：
+// 一个段里连写两个号码时两个都掩。
+func maskAllInSegment(seg string) string {
+	if len(seg) < 11 {
+		return seg
+	}
+	var b strings.Builder
+	consumed := 0
+	for start := 0; start < len(seg); {
+		if start+11 <= len(seg) {
+			if dd := seg[start : start+11]; phoneShape(dd) {
+				b.WriteString(seg[consumed:start])
+				b.WriteString(MaskPhone(dd))
+				consumed = start + 11
+				start += 11
+				continue
+			}
 		}
 		if start+13 <= len(seg) {
 			if dd := seg[start : start+13]; strings.HasPrefix(dd, "86") && phoneShape(dd) {
-				return seg[:start] + MaskPhone(dd[2:]) + seg[start+13:]
+				b.WriteString(seg[consumed:start])
+				b.WriteString(MaskPhone(dd[2:]))
+				consumed = start + 13
+				start += 13
+				continue
 			}
 		}
+		start++
 	}
-	return seg
+	b.WriteString(seg[consumed:])
+	return b.String()
 }
 
 // phoneShape 判定数字串是否为手机号形态：11 位以 1 开头，

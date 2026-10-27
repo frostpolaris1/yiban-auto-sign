@@ -1,6 +1,7 @@
 package mask
 
 import (
+	"regexp"
 	"testing"
 	"unicode/utf8"
 )
@@ -307,3 +308,37 @@ func TestTextHasEmailCoversNonASCII(t *testing.T) {
 		}
 	}
 }
+
+// R4A：段内连写两个手机号必须全部掩掉。
+// 只掩最左会给审计链留下一个明文号码（审计底稿 P2）。
+func TestMaskTextMasksEveryFusedPhone(t *testing.T) {
+	const raw = "1380013800013800138001"
+	got := MaskText(raw)
+	if want := "138****8000138****8001"; got != want {
+		t.Fatalf("MaskText(%q) = %q, want %q", raw, got, want)
+	}
+	if TextHasPhone(got) {
+		t.Fatalf("掩码后仍检测到手机号: %q", got)
+	}
+	if phoneShapePattern.MatchString(got) {
+		t.Fatalf("掩码后仍残留完整 11 位号码: %q", got)
+	}
+	if twice := MaskText(got); twice != got {
+		t.Fatalf("幂等失败: %q -> %q", got, twice)
+	}
+}
+
+// 检测口径必须看出段内连写的号码：审计守卫据此拒绝原文。
+func TestTextHasPhoneDetectsFusedPhones(t *testing.T) {
+	for _, s := range []string{
+		"1380013800013800138001",
+		"13900139000100",
+	} {
+		if !TextHasPhone(s) {
+			t.Fatalf("TextHasPhone(%q) = false; 连写号码必须被抓", s)
+		}
+	}
+}
+
+// phoneShapePattern 是「完整 11 位手机号」的检测形状，只用于断言残留。
+var phoneShapePattern = regexp.MustCompile(`1[3-9][0-9]{9}`)
