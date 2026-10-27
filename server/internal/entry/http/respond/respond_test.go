@@ -3,6 +3,7 @@ package respond
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -49,5 +50,37 @@ func TestErrorValidation(t *testing.T) {
 	Error(rec, nil, errs.New(errs.CodeValidation, "bad input"))
 	if rec.Code != 400 {
 		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+// 错误码到状态码的映射是契约面：调用方按状态码分流，码值按业务分流。
+// 这两层任何一层漂移都会让客户端走错分支，故逐码钉住。
+// 422 是校验类语义（图片、定位），429 是限流与容量。
+func TestStatusForEveryCode(t *testing.T) {
+	want := map[errs.Code]int{
+		errs.CodeValidation:      http.StatusBadRequest,
+		errs.CodeUnauthorized:    http.StatusUnauthorized,
+		errs.CodeForbidden:       http.StatusForbidden,
+		errs.CodeNotFound:        http.StatusNotFound,
+		errs.CodeConflict:        http.StatusConflict,
+		errs.CodeAlreadySigned:   http.StatusConflict,
+		errs.CodeSignRunning:     http.StatusConflict,
+		errs.CodeWindowClosed:    http.StatusConflict,
+		errs.CodeRateLimited:     http.StatusTooManyRequests,
+		errs.CodeCapacity:        http.StatusTooManyRequests,
+		errs.CodePhotoMissing:    http.StatusUnprocessableEntity,
+		errs.CodePhotoInvalid:    http.StatusUnprocessableEntity,
+		errs.CodePhotoRejected:   http.StatusUnprocessableEntity,
+		errs.CodeLocationOutside: http.StatusUnprocessableEntity,
+		errs.CodeUpstream:        http.StatusBadGateway,
+		errs.CodeInternal:        http.StatusInternalServerError,
+	}
+	if len(want) != 16 {
+		t.Fatalf("映射表录入 %d 个码，want 16", len(want))
+	}
+	for code, status := range want {
+		if got := statusFor(code); got != status {
+			t.Errorf("statusFor(%s) = %d, want %d", code, got, status)
+		}
 	}
 }

@@ -61,6 +61,7 @@ paths:
                 $ref: '#/components/schemas/SessionUser'
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/auth/logout:
     post:
@@ -112,6 +113,7 @@ paths:
       responses:
         '204': { description: Request accepted. }
         '400': { $ref: '#/components/responses/ValidationError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/auth/reset-password:
     post:
@@ -133,6 +135,7 @@ paths:
         '204': { description: Password replaced. }
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/users:
     post:
@@ -162,6 +165,7 @@ paths:
         '400': { $ref: '#/components/responses/ValidationError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '409': { $ref: '#/components/responses/ConflictError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/schools:
     get:
@@ -180,6 +184,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SchoolPage'
+        '400': { $ref: '#/components/responses/ValidationError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         default: { $ref: '#/components/responses/DefaultError' }
     post:
@@ -233,6 +238,7 @@ paths:
         '400': { $ref: '#/components/responses/ValidationError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/schools/{id}/admins:
     get:
@@ -251,6 +257,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SchoolAdminPage'
+        '400': { $ref: '#/components/responses/ValidationError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         default: { $ref: '#/components/responses/DefaultError' }
@@ -338,6 +345,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AccountPage'
+        '400': { $ref: '#/components/responses/ValidationError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         default: { $ref: '#/components/responses/DefaultError' }
     post:
@@ -368,6 +376,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/ConflictError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        '429': { $ref: '#/components/responses/DefaultError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/accounts/{id}:
     get:
@@ -414,6 +423,7 @@ paths:
         '400': { $ref: '#/components/responses/ValidationError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/ConflictError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         default: { $ref: '#/components/responses/DefaultError' }
     delete:
       tags: [accounts]
@@ -454,6 +464,7 @@ paths:
         '400': { $ref: '#/components/responses/ValidationError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/ConflictError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/accounts/{id}/pause:
     post:
@@ -485,6 +496,7 @@ paths:
         '400': { $ref: '#/components/responses/ValidationError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/ConflictError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/accounts/{id}/verify:
     post:
@@ -567,6 +579,7 @@ paths:
                 $ref: '#/components/schemas/AccountLocation'
         '400': { $ref: '#/components/responses/ValidationError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/admin/events:
     get:
@@ -742,6 +755,7 @@ paths:
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/ConflictError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/schedule/override:
     post:
@@ -772,6 +786,7 @@ paths:
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/ConflictError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/me/time-pref:
     get:
@@ -819,6 +834,7 @@ paths:
                 $ref: '#/components/schemas/TimePref'
         '400': { $ref: '#/components/responses/ValidationError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         '429': { $ref: '#/components/responses/DefaultError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/capacity:
@@ -866,6 +882,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PhotoPage'
+        '400': { $ref: '#/components/responses/ValidationError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         default: { $ref: '#/components/responses/DefaultError' }
     post:
@@ -895,6 +912,7 @@ paths:
                 $ref: '#/components/schemas/Photo'
         '400': { $ref: '#/components/responses/ValidationError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/me/photos/{id}:
     get:
@@ -957,6 +975,7 @@ paths:
                 $ref: '#/components/schemas/PhotoRetention'
         '400': { $ref: '#/components/responses/ValidationError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /healthz:
     get:
@@ -1149,7 +1168,7 @@ components:
           description: Token the client sends back in X-CSRF-Token.
     User:
       type: object
-      required: [id, email, role, status, must_change_password, created_at]
+      required: [id, email, role, status, must_change_password, created_at, last_login_at]
       properties:
         id: { type: string }
         email: { type: string, format: email }
@@ -1290,6 +1309,8 @@ components:
         - phone_masked
         - status
         - reject_reason
+        - reviewed_at
+        - reviewed_by
         - created_at
         - updated_at
       properties:
@@ -1327,6 +1348,11 @@ components:
       type: object
       minProperties: 1
       properties:
+        school_id:
+          type: string
+          description: |
+            A different value returns 409 conflict. Changing school is
+            forbidden in P1 (decision 12.3).
         phone:
           type: string
           pattern: '^1[0-9]{10}$'
@@ -1387,12 +1413,12 @@ components:
     AccountLocation:
       type: object
       additionalProperties: false
-      required: [mode, reason]
+      required: [mode, lng, lat, reason]
       description: |
-        The stored location policy. lng and lat are null for auto and always
-        present for fixed. The reason is kept by the host for audit; it is
-        not delivered to the platform yet (that lands with the upload
-        protocol slice).
+        The stored location policy. lng and lat are null for auto and carry
+        the fixed point otherwise; both keys are always present. The reason
+        is kept by the host for audit; it is not delivered to the platform
+        yet (that lands with the upload protocol slice).
       properties:
         mode: { type: string, enum: [auto, fixed] }
         lng: { type: [number, "null"], format: double, minimum: -180, maximum: 180 }
@@ -1422,7 +1448,7 @@ components:
       enum: [platform, cache, fallback, override]
     ScheduleWindow:
       type: object
-      required: [school_id, school_name, task_id, task_name, enabled]
+      required: [school_id, school_name, task_id, task_name, enabled, start, end, source]
       properties:
         school_id: { type: string }
         school_name: { type: string }
@@ -1647,7 +1673,7 @@ components:
             $ref: '#/components/schemas/DiagnosticsItem'
     DiagnosticsItem:
       type: object
-      required: [account_id, attempts, result, suggestion]
+      required: [account_id, state, run_at, attempts, result, next_retry_at, suggestion]
       properties:
         account_id: { type: string }
         state:
@@ -1669,6 +1695,7 @@ components:
       allOf:
         - $ref: '#/components/schemas/DiagnosticsItem'
         - type: object
+          required: [window, egress]
           properties:
             window:
               type: [object, "null"]
@@ -1698,7 +1725,7 @@ components:
             $ref: '#/components/schemas/SignStatusItem'
     SignStatusItem:
       type: object
-      required: [account_id, stale]
+      required: [account_id, state, run_at, stale]
       properties:
         account_id: { type: string }
         state:

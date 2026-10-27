@@ -100,9 +100,11 @@ func (h *Handler) PhotoList(c *gin.Context, params oapi.PhotoListParams) {
 	if !ok {
 		return
 	}
-	limit := app.DefaultPageSize
-	if params.Limit != nil {
-		limit = int(*params.Limit)
+	// limit 与其余列表同口径：缺省取 50，越界回 400。
+	limit, err := app.PageLimit(params.Limit)
+	if err != nil {
+		fail(c, err)
+		return
 	}
 	cursor := ""
 	if params.Cursor != nil {
@@ -134,7 +136,8 @@ func (h *Handler) PhotoUpload(c *gin.Context, _ oapi.PhotoUploadParams) {
 	}
 	file, err := uploadFile(c)
 	if err != nil {
-		fail(c, err)
+		// 超过路由上限时是 *http.MaxBytesError；BindError 把它转成 413。
+		respond.BindError(c.Writer, c.Request, err)
 		return
 	}
 	raw, err := io.ReadAll(io.LimitReader(file, corephoto.MaxBytes+1))
@@ -202,7 +205,7 @@ func (h *Handler) PhotoDelete(c *gin.Context, id oapi.PhotoID, _ oapi.PhotoDelet
 func (h *Handler) PhotoRetentionSet(c *gin.Context, _ oapi.PhotoRetentionSetParams) {
 	var body oapi.PhotoRetentionUpdate
 	if err := c.ShouldBindJSON(&body); err != nil {
-		fail(c, errs.New(errs.CodeValidation, "invalid request body"))
+		respond.BindError(c.Writer, c.Request, err)
 		return
 	}
 	scope, ok := h.principal(c)
@@ -218,10 +221,11 @@ func (h *Handler) PhotoRetentionSet(c *gin.Context, _ oapi.PhotoRetentionSetPara
 }
 
 // uploadFile 取出 multipart 的 image 文件部分。
+// 解析失败原样返回：调用方经 respond.BindError 把超界转成 413。
 func uploadFile(c *gin.Context) (io.ReadCloser, error) {
 	// 1 MiB 留在内存，其余落临时文件；请求体总上限由路由层控制。
 	if err := c.Request.ParseMultipartForm(1 << 20); err != nil {
-		return nil, errs.New(errs.CodeValidation, "invalid multipart body")
+		return nil, err
 	}
 	file, _, err := c.Request.FormFile("image")
 	if err != nil {

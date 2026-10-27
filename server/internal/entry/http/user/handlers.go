@@ -93,7 +93,7 @@ func (h *Handler) principal(c *gin.Context) (corescope.Scope, appaudit.Actor, bo
 }
 
 // userResponse 把用户行映射成契约 shape。
-// 邮箱已归一；last_login_at 缺省时省略。
+// 邮箱已归一；last_login_at 为 nil 时输出 null（契约要求键存在）。
 func userResponse(record appuser.Record) oapi.User {
 	return oapi.User{
 		Id:                 record.ID,
