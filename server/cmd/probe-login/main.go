@@ -152,6 +152,39 @@ func deriveCaptureKey(pass, salt []byte) []byte {
 	return out
 }
 
+// decryptDump 用与加密完全相同的代码路径解抓取文件，明文 JSON 打到 stdout。
+func decryptDump(path string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if len(raw) < 4+16+12+16 || string(raw[:4]) != "YPG1" {
+		return errors.New("capture file malformed")
+	}
+	salt, nonce := raw[4:20], raw[20:32]
+	body := raw[32:]
+	tag, ct := body[len(body)-16:], body[:len(body)-16]
+	passphrase, err := readPassword("解开口令: ")
+	if err != nil {
+		return err
+	}
+	key := deriveCaptureKey([]byte(passphrase), salt)
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return err
+	}
+	pt, err := gcm.Open(nil, nonce, append(append([]byte{}, ct...), tag...), nil)
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(pt))
+	return nil
+}
+
 // 预存凭据的两件文件名。密钥与密文同机同目录（0600）：对 root 等于明文，
 // 换取的是「到点无人值守开跑」；这台机器单用户、一次性，用户已接受该口径。
 const (
@@ -253,7 +286,15 @@ func shredCredentials() {
 func main() {
 	stage := flag.Bool("stage", false, "今晚录入凭据：加密落盘两件 0600 文件后退出，等 -fire 到点开跑")
 	fire := flag.Bool("fire", false, "定时模式：读取 -stage 落盘的凭据开跑，跑完立即粉碎凭据文件")
+	decrypt := flag.String("decrypt", "", "解密指定抓取文件：口令从 stdin 读入，明文 JSON 打到 stdout")
 	flag.Parse()
+
+	if *decrypt != "" {
+		if err := decryptDump(*decrypt); err != nil {
+			fatal("解密失败: %v", err)
+		}
+		return
+	}
 
 	var phone, password string
 	switch {
