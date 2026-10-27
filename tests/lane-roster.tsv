@@ -89,6 +89,7 @@ fast	tests/test_comment_symbol_ownership.py	# 纯 AST+正则扫生产树（工�
 fast	tests/test_config_input_caps.py
 fast	tests/test_config_loader.py
 fast	tests/test_config_registry_gate.py
+fast	tests/test_public_exposure_gate.py
 fast	tests/test_constraint_registry_gate.py	# 读 docs/dev/constraints.tsv 并真跑四个检查器
 fast	tests/test_conftest_mail_guard.py
 fast	tests/test_conftest_umask_guard.py
