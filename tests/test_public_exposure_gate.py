@@ -183,9 +183,9 @@ class PublicExposureGateTest(unittest.TestCase):
             "masked-phone": "1" + "39" + "****" + "5678",
             "coordinate": "118." + "101837,32." + "003954",
             "yb_uid": "yb_uid=" + "85118634",
-            "token": "ajax_sign=" + "0000000000000000000000000000000000000000",
+            "token": "ajax_sign=" + "f299" + "671307328edb6025f4645e103d2583cf75b7",
             "school-or-person-id":
-                '"UniversityId": "' + "00000000000000000000000000000003" + '"',
+                '"UniversityId": "' + "cb49cdd7" + "4db8bb035e927bd8b8ab4ab9" + '"',
         }
         for kind, sample in cases.items():
             with self.subTest(kind=kind):
