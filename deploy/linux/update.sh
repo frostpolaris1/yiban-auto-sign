@@ -53,14 +53,38 @@ if [ -n "$CLI_BIN" ]; then
 fi
 install -m 0755 "$SERVER_BIN" "$SERVER_NEW"
 
-# 迁移读 /etc/yiban/.env（systemd 同源），DSN 由此而来。
+# 载入 /etc/yiban/.env 的 KEY=VALUE（systemd 同源），DSN 由此而来。
+# **不** source：DSN 含 `&` 或 `#` 时 shell 会切开赋值，变量落进子 shell
+# 不外泄，迁移收到空 DSN。本函数只做四件事：跳过空行与 `#` 注释、
+# 取第一个 `=` 分割键值、去掉值两端的成对单/双引号、只导出合法键名。
+load_env_file() {
+    local file="$1" line key value
+    [ -f "$file" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"
+        case "$line" in
+            ''|'#'*) continue ;;
+        esac
+        case "$line" in
+            *=*) ;;
+            *) continue ;;
+        esac
+        key="${line%%=*}"
+        value="${line#*=}"
+        # 键名必须匹配 ^[A-Za-z_][A-Za-z0-9_]*$；其余行不是配置项。
+        case "$key" in
+            ''|[0-9]*|*[!A-Za-z0-9_]*) continue ;;
+        esac
+        case "$value" in
+            \"*\") value="${value:1:${#value}-2}" ;;
+            \'*\') value="${value:1:${#value}-2}" ;;
+        esac
+        export "$key=$value"
+    done < "$file"
+}
+
 ENV_FILE="$(dest /etc/yiban/.env)"
-if [ -f "$ENV_FILE" ]; then
-    set -a
-    # shellcheck disable=SC1090
-    . "$ENV_FILE"
-    set +a
-fi
+load_env_file "$ENV_FILE"
 
 echo "update: stopping $UNIT"
 "$SYSTEMCTL" stop "$UNIT"
@@ -110,6 +134,9 @@ if probe; then
 fi
 
 echo "update: healthz failed after swap; rolling back to $BAK" >&2
+# 必须先 stop：旧进程仍持有新二进制，对 active 单元 start 是 no-op，
+# 只换文件不重启则回滚后的「旧件在跑」是假的。
+"$SYSTEMCTL" stop "$UNIT"
 mv "$BAK" "$SERVER_DEST"
 "$SYSTEMCTL" start "$UNIT"
 if probe; then
