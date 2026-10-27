@@ -37,6 +37,8 @@ func main() {
 		code = runServer(os.Args[2:])
 	case "migrate":
 		code = runMigrate(os.Args[2:], os.Stdout, os.Stderr)
+	case "migrate-legacy":
+		code = runMigrateLegacy(os.Args[2:], os.Stdout, os.Stderr)
 	case "doctor":
 		code = runDoctor(os.Args[2:], os.Stdout, os.Stderr)
 	case "healthcheck":
@@ -64,6 +66,7 @@ func usage(w io.Writer) {
 子命令:
   server       启动 HTTP API（与 cmd/server 同一装配与优雅关闭）
   migrate      应用数据库迁移并打印 schema 版本
+  migrate-legacy 旧栈导出物导入（P8-A 导出物 → 新库；凭据重加密）
   doctor       故障模式体检（每条 FAIL 附修复命令）
   healthcheck  探活 /healthz（容器 healthcheck 用）
   backup       pg_dump + GPG 对称加密备份（含行数清单）
