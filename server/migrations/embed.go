@@ -14,6 +14,9 @@
 // 文件名形如 <数字>_<名称>.sql；最大数字即本二进制版本。
 // 生产回滚靠恢复备份；
 // **改数据列的 Down 绝不对线上执行**。
+// goose 对没有 Down 段的文件执行 Down 时打印 EMPTY、
+// 删除版本行、**保留**全部 schema 对象。
+// 故 00001–00009 禁止执行 Down；它们的文件头声明 forward-only。
 package migrations
 
 import "embed"
