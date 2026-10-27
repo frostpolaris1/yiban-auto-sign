@@ -130,11 +130,25 @@ def _synthetic_token(value):
     return len(set(body)) == 1 and body[0] in "0A"
 
 
+#: 32 位以上的十六进制串是哈希/摘要/标识，里面的 11 位数字片段不是手机号。
+#: 代价：把真号写进长十六进制串会被漏判；那种形状本身不是正常配置或文案。
+HEXRUN = re.compile(r"[0-9a-fA-F]{32,}")
+
+
+def _inside_hex(line, start, end):
+    for m in HEXRUN.finditer(line):
+        if m.start() <= start and end <= m.end():
+            return True
+    return False
+
+
 def scan_text(rel, text):
     """返回 `[(行号, 判据, 值)]`；空列表表示该文件合规。"""
     bad = []
     for lineno, line in enumerate(text.splitlines(), 1):
         for m in PHONE.finditer(line):
+            if _inside_hex(line, m.start(), m.end()):
+                continue
             if m.group(0) not in SYNTH_PHONES:
                 bad.append((lineno, "phone", m.group(0)))
         for m in MASKED.finditer(line):
@@ -221,6 +235,8 @@ class PublicExposureGateTest(unittest.TestCase):
             "ajax_sign=" + "0" * 40,
             "oauth_upwd=" + "A" * 40 + "=",
             '"UniversityId": "00000000000000000000000000000001"',
+            # 64 位哈希里可能出现 11 位数字片段：不是手机号，必须放行。
+            "31b586e19159272577ac56e3ff1c8ce19c65f1810c851cef57ae75a4dbca9d40",
         ])
         self.assertEqual(scan_text("fixture.txt", ok), [])
 
