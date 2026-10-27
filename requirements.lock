@@ -14,10 +14,12 @@
 #     .venv 本地未安装，无实测版本可引）
 #   - 2026-09-15 补录 portalocker==4.3.2（BSD-3-Clause，零强制依赖，纯 Python wheel；
 #     选它而非自写跨平台文件锁的理由见 scripts/locks.py 与 requirements.txt 注释）
+#   - 2026-10-27 certifi 2026.7.22→2026.10.19：PYSEC-2026-4320，修复版 2026.10.19。
+#     develop 线 3c7917a2（2026-10-23）取值相同；d2309385（2026-10-24）加哈希后仍同。
 # 恢复 pip-tools 后可用 pip-compile --output-file=requirements.lock requirements.txt 重新生成
 #
 blinker==1.9.0
-certifi==2026.7.22
+certifi==2026.10.19
 charset-normalizer==3.5.0
 click==8.4.2
 colorama==0.4.6 ; platform_system == "Windows"
