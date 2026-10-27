@@ -2,6 +2,7 @@ package pg_test
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -202,37 +203,16 @@ func TestOnlyOneRunningPerAccount(t *testing.T) {
 }
 
 // TestSignTaskStateEnumMatchesStatus：库层 ENUM 与 core/status 五常量同形
-// （P4-B 复审 P2-4 的门）。漂移即红：词表在库与代码两处定义，必须钉住。
+// （P4-B 复审 P2-4 的门）。漂移即红：词表在多处定义，必须钉住。
+// 常量从源文件读，故新增状态无需改本测试（审查 D1）。
 func TestSignTaskStateEnumMatchesStatus(t *testing.T) {
 	e := newEnv(t)
-	want := []string{
-		string(corestatus.TaskPending),
-		string(corestatus.TaskRunning),
-		string(corestatus.TaskSuccess),
-		string(corestatus.TaskFailed),
-		string(corestatus.TaskSkipped),
-	}
-	// DB 层无多行查询助手（PG e2e 全走单行标量）：按序聚合成逗号串比对。
-	joined := ""
-	for i, w := range want {
-		if i > 0 {
-			joined += ","
-		}
-		joined += w
-	}
-	// current_schema 过滤：测试库并发跑多个 schema 时，
-	// 只聚合本 schema 的枚举（否则跨 schema 词表拼接、偶发红）。
-	got, err := e.db.QueryString(e.ctx,
-		`SELECT string_agg(e.enumlabel, ',' ORDER BY e.enumsortorder)
-		 FROM pg_enum e
-		 JOIN pg_type t ON t.oid = e.enumtypid
-		 JOIN pg_namespace n ON n.oid = t.typnamespace
-		 WHERE t.typname = 'sign_task_state' AND n.nspname = current_schema()`)
-	if err != nil {
-		t.Fatalf("query pg_enum: %v", err)
-	}
-	if got != joined {
-		t.Fatalf("ENUM 词表 = %q, want %q（库与 status 词表漂移）", got, joined)
+	// 按声明序比较：库侧 enumsortorder 与 core 常量顺序必须一致。
+	// 整目录扫描：词表可以分多文件（D4）。
+	want := strings.Join(sourceEnumValues(t, "../../core/status", "TaskState", "Task", 5), ",")
+	// 查询与 schema 过滤在 enumLabels（enum_gate_e2e_test.go）。
+	if got := strings.Join(enumLabels(t, e, "sign_task_state"), ","); got != want {
+		t.Fatalf("ENUM 词表 = %q, want %q（库与 status 词表漂移）", got, want)
 	}
 }
 
