@@ -73,8 +73,11 @@ func (b pickBlobs) Remove(context.Context, [32]byte) (bool, error) {
 
 func pickService(t *testing.T, store *pickStore, blobs pickBlobs) *appphotos.Service {
 	t.Helper()
+	// 选图不写审计：审计替身只为满足依赖判据。
+	audits := &fakeAudit{}
 	svc, err := appphotos.NewService(appphotos.Deps{
 		Store: store, Blobs: blobs, Clock: coreclock.Fixed{},
+		Audit: audits, Tx: &fakeTx{audit: audits, store: &fakeStore{}},
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

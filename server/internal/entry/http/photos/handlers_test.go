@@ -47,7 +47,7 @@ type fakeService struct {
 	retentionErr  error
 }
 
-func (f *fakeService) Upload(_ context.Context, scope corescope.Scope, raw []byte) (corephoto.Record, error) {
+func (f *fakeService) Upload(_ context.Context, scope corescope.Scope, _ appaudit.Actor, raw []byte) (corephoto.Record, error) {
 	if scope.Kind() != corescope.KindUser {
 		return corephoto.Record{}, errs.New(errs.CodeForbidden, "photo library is for user accounts")
 	}

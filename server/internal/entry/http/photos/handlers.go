@@ -56,7 +56,7 @@ const (
 
 // Service 是图片库用例端口（实现为 app/photos.Service）。
 type Service interface {
-	Upload(ctx context.Context, scope corescope.Scope, raw []byte) (corephoto.Record, error)
+	Upload(ctx context.Context, scope corescope.Scope, actor appaudit.Actor, raw []byte) (corephoto.Record, error)
 	List(ctx context.Context, scope corescope.Scope, cursor string, limit int) (appphotos.Page, error)
 	Get(ctx context.Context, scope corescope.Scope, id string) (corephoto.Record, error)
 	Open(ctx context.Context, scope corescope.Scope, id string) (corephoto.Record, io.ReadCloser, error)
@@ -96,7 +96,7 @@ func (h *Handler) WithLogger(logger *slog.Logger) *Handler {
 
 // PhotoList 实现 GET /api/me/photos。
 func (h *Handler) PhotoList(c *gin.Context, params oapi.PhotoListParams) {
-	scope, ok := h.principal(c)
+	scope, _, ok := h.principal(c)
 	if !ok {
 		return
 	}
@@ -130,7 +130,7 @@ func (h *Handler) PhotoList(c *gin.Context, params oapi.PhotoListParams) {
 func (h *Handler) PhotoUpload(c *gin.Context, _ oapi.PhotoUploadParams) {
 	h.extendReadDeadline(c, photoUploadReadBudget)
 	h.extendWriteDeadline(c, photoUploadWriteBudget)
-	scope, ok := h.principal(c)
+	scope, actor, ok := h.principal(c)
 	if !ok {
 		return
 	}
@@ -156,7 +156,7 @@ func (h *Handler) PhotoUpload(c *gin.Context, _ oapi.PhotoUploadParams) {
 		fail(c, errs.New(errs.CodeValidation, "image is too large"))
 		return
 	}
-	rec, err := h.svc.Upload(c.Request.Context(), scope, raw)
+	rec, err := h.svc.Upload(c.Request.Context(), scope, actor, raw)
 	if err != nil {
 		fail(c, err)
 		return
@@ -166,7 +166,7 @@ func (h *Handler) PhotoUpload(c *gin.Context, _ oapi.PhotoUploadParams) {
 
 // PhotoGet 实现 GET /api/me/photos/{id}。
 func (h *Handler) PhotoGet(c *gin.Context, id oapi.PhotoID) {
-	scope, ok := h.principal(c)
+	scope, _, ok := h.principal(c)
 	if !ok {
 		return
 	}
@@ -190,7 +190,7 @@ func (h *Handler) PhotoGet(c *gin.Context, id oapi.PhotoID) {
 
 // PhotoDelete 实现 DELETE /api/me/photos/{id}。
 func (h *Handler) PhotoDelete(c *gin.Context, id oapi.PhotoID, _ oapi.PhotoDeleteParams) {
-	scope, ok := h.principal(c)
+	scope, _, ok := h.principal(c)
 	if !ok {
 		return
 	}
@@ -208,7 +208,7 @@ func (h *Handler) PhotoRetentionSet(c *gin.Context, _ oapi.PhotoRetentionSetPara
 		respond.BindError(c.Writer, c.Request, err)
 		return
 	}
-	scope, ok := h.principal(c)
+	scope, _, ok := h.principal(c)
 	if !ok {
 		return
 	}
@@ -254,19 +254,19 @@ func (h *Handler) extendWriteDeadline(c *gin.Context, budget time.Duration) {
 	}
 }
 
-// principal 解析作用域；未登录 401，解析失败按错误码回。
-func (h *Handler) principal(c *gin.Context) (corescope.Scope, bool) {
+// principal 解析作用域与审计主体；未登录 401，解析失败按错误码回。
+func (h *Handler) principal(c *gin.Context) (corescope.Scope, appaudit.Actor, bool) {
 	session, ok := coreauth.FromContext(c.Request.Context())
 	if !ok {
 		fail(c, errs.New(errs.CodeUnauthorized, "authentication required"))
-		return corescope.Scope{}, false
+		return corescope.Scope{}, appaudit.Actor{}, false
 	}
-	scope, _, err := h.authz.Authorize(c.Request.Context(), session.User)
+	scope, actor, err := h.authz.Authorize(c.Request.Context(), session.User)
 	if err != nil {
 		fail(c, err)
-		return corescope.Scope{}, false
+		return corescope.Scope{}, appaudit.Actor{}, false
 	}
-	return scope, true
+	return scope, actor, true
 }
 
 // photoView 把领域记录转成传输形状。

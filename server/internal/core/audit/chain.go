@@ -18,7 +18,7 @@
 // # 口径
 // 摘要算法固定 HMAC-SHA256，密钥由调用方注入。
 // 时间戳统一 UTC RFC3339Nano，跨进程字节稳定。
-// detail 只允许 8 个键，自由文本只有 reason，上限 200 字符。
+// detail 只允许白名单内的键（见 detailKeys），自由文本只有 reason，上限 200 字符。
 package audit
 
 import (
@@ -83,6 +83,9 @@ const (
 	ActionTaskSettle                 Action = "task.settle"
 	// P5-C：账号定位策略写入。detail 只记 mode 与 has_reason。
 	ActionLocationSet Action = "location.set"
+	// P5：图片入库。detail 只记四边裁切比例与输出摘要，
+	// 无自由文本，无用户标识之外的主体信息。
+	ActionPhotoUpload Action = "photo.upload"
 )
 
 // Entry 是一次追加的输入。
@@ -174,6 +177,8 @@ var (
 	traceIDShape = regexp.MustCompile(`^([0-9a-f]{32}|req-[0-9]{1,6})$`)
 	// kidShape 匹配凭据密钥 id：16 位小写十六进制。
 	kidShape = regexp.MustCompile(`^[0-9a-f]{16}$`)
+	// digestShape 匹配输出摘要：64 位小写十六进制（SHA-256 hex）。
+	digestShape = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	// fieldShape 是列名或配置项名。
 	fieldShape = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 	// wordShape 是状态或原因码。
@@ -191,6 +196,21 @@ var detailKeys = map[string]bool{
 	"trace_id":   true,
 	"mode":       true,
 	"has_reason": true,
+	// P5 图片入库审计：四边比例 0..10 整数；输出摘要 64 位小写十六进制。
+	// 四者是数值与摘要，无自由文本容量，不构成隐私面。
+	"crop_l": true,
+	"crop_r": true,
+	"crop_t": true,
+	"crop_b": true,
+	"sha256": true,
+}
+
+// cropPercentKeys 是裁切比例 detail 键集。取值限 0..10 闭区间。
+var cropPercentKeys = map[string]bool{
+	"crop_l": true,
+	"crop_r": true,
+	"crop_t": true,
+	"crop_b": true,
 }
 
 // ZeroHash 是新链首行的 prev_hash：32 字节全零。
@@ -258,6 +278,9 @@ func validateDetailValue(key string, value any) error {
 		}
 		return nil
 	case int:
+		if cropPercentKeys[key] && (typed < 0 || typed > 10) {
+			return fmt.Errorf("%w: %q must be within 0..10", ErrDetailShape, key)
+		}
 		return validateDetailNumber(float64(typed))
 	case int8:
 		return validateDetailNumber(float64(typed))
@@ -310,6 +333,11 @@ func validateDetailString(key, text string) error {
 	case "from", "to", "mode":
 		if !wordShape.MatchString(text) {
 			return fmt.Errorf("%w: %q has the wrong value shape", ErrDetailShape, key)
+		}
+		return nil
+	case "sha256":
+		if !digestShape.MatchString(text) {
+			return fmt.Errorf("%w: %q has the wrong digest shape", ErrDetailShape, key)
 		}
 		return nil
 	case "reason":

@@ -436,6 +436,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		}
 		photoSvc, err := appphotos.NewService(appphotos.Deps{
 			Store: pg.NewPhotoRepo(db), Blobs: blobs, Clock: clk,
+			Audit:   audits,
+			Tx:      db,
 			Options: appphotos.Options{MaxPixels: photoMaxPixels, MaxSidePx: photoMaxSidePx},
 		})
 		if err != nil {
