@@ -30,11 +30,12 @@ type fakeStore struct {
 	todayTask string
 
 	// 观测面
-	claimed  []string
-	finished map[string]corestatus.TaskState
-	results  map[string]string
-	requeued map[string]time.Time // 最近一次重排落点（含等待型）
-	resets   int64
+	claimed          []string
+	finished         map[string]corestatus.TaskState
+	results          map[string]string
+	requeued         map[string]time.Time // 最近一次重排落点（含等待型）
+	resets           int64
+	credentialErrors []string // 凭据错结算标记过的账号
 }
 
 func newStore(tasks ...coreschedule.TaskRow) *fakeStore {
@@ -90,6 +91,29 @@ func (f *fakeStore) Finish(_ context.Context, accountID, schoolTaskID, day strin
 			t.Attempts++
 			f.finished[t.ID] = state
 			f.results[t.ID] = result
+			return nil
+		}
+	}
+	return coreerrs.ErrNotFound
+}
+
+// FinishCredentialInvalid 按库语义落 failed(credential_invalid)。
+// 账号状态是存储层副作用：fake 记录被标记的账号，供断言使用。
+func (f *fakeStore) FinishCredentialInvalid(_ context.Context, _ /*schoolID*/, accountID, schoolTaskID, day string, _ time.Time) error {
+	if f.finishErr != nil {
+		return f.finishErr
+	}
+	for i := range f.tasks {
+		t := &f.tasks[i]
+		if t.AccountID == accountID && t.SchoolTaskID == schoolTaskID && t.Day == day {
+			if t.State != string(corestatus.TaskRunning) {
+				return coreerrs.ErrNotFound
+			}
+			t.State = string(corestatus.TaskFailed)
+			t.Attempts++
+			f.finished[t.ID] = corestatus.TaskFailed
+			f.results[t.ID] = "credential_invalid"
+			f.credentialErrors = append(f.credentialErrors, accountID)
 			return nil
 		}
 	}

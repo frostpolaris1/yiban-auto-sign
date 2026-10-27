@@ -272,8 +272,12 @@ func (s *Service) Create(ctx context.Context, scope corescope.Scope, in CreateIn
 	return record, nil
 }
 
-// Update 改账号字段。**从不改状态**；换校返回 conflict。
-// 账号行、凭据行与 account.update 审计同事务。
+// Update 改账号字段。换校返回 conflict。
+//
+// 唯一的状态副作用：凭据更新（password/device_code/phone_model）把
+// credential_error 账号恢复为 active。只改手机号不恢复。
+// 账号行、凭据行与审计同事务；恢复时 account.credential_recovered
+// 与 account.update 相邻追加。
 func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, in UpdateInput, actor appaudit.Actor) (Record, error) {
 	if err := app.RequireScope(scope); err != nil {
 		return Record{}, err
@@ -322,18 +326,32 @@ func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, 
 				return err
 			}
 		}
+		// 凭据写回把 credential_error 账号放回排期。只改手机号不恢复：
+		// 手机号不是登录凭据，改它不构成"凭据已被改正"的证据。
+		recovered := needCredential && record.Status == StatusCredentialError
 		if needCredential {
 			if err := s.rewriteCredential(ctx, scope, record, in); err != nil {
 				return err
 			}
-			// 凭据写回不更新 accounts.updated_at；重读一次让响应带真实时间。
-			refreshed, err := s.deps.Accounts.Get(ctx, scope, id)
-			if err != nil {
-				return err
+			if recovered {
+				// CAS credential_error → active。并发改状态时零行，
+				// SetStatus 报冲突：本次更新不成立，由调用方重试。
+				var err error
+				record, err = s.deps.Accounts.SetStatus(ctx, scope, id,
+					StatusCredentialError, StatusActive, now, "")
+				if err != nil {
+					return err
+				}
+			} else {
+				// 凭据写回不更新 accounts.updated_at；重读一次让响应带真实时间。
+				refreshed, err := s.deps.Accounts.Get(ctx, scope, id)
+				if err != nil {
+					return err
+				}
+				record = refreshed
 			}
-			record = refreshed
 		}
-		_, err := s.deps.Audit.Append(ctx, coreaudit.Entry{
+		if _, err := s.deps.Audit.Append(ctx, coreaudit.Entry{
 			TS:          now,
 			SchoolID:    record.SchoolID,
 			ActorUserID: actor.UserID,
@@ -343,6 +361,27 @@ func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, 
 			TargetType:  "account",
 			TargetID:    record.ID,
 			Detail:      map[string]any{"field": field},
+		}); err != nil {
+			return err
+		}
+		if !recovered {
+			return nil
+		}
+		// 两条审计相邻追加：中间不做任何工作，链锁只多持一次插入。
+		_, err := s.deps.Audit.Append(ctx, coreaudit.Entry{
+			TS:          now,
+			SchoolID:    record.SchoolID,
+			ActorUserID: actor.UserID,
+			ActorRole:   actor.Role,
+			ActorLabel:  actor.Label,
+			Action:      coreaudit.ActionAccountCredentialRecovered,
+			TargetType:  "account",
+			TargetID:    record.ID,
+			Detail: map[string]any{
+				"field": "status",
+				"from":  string(StatusCredentialError),
+				"to":    string(StatusActive),
+			},
 		})
 		return err
 	})

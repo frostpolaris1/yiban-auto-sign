@@ -466,7 +466,9 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			closeFn()
 			return nil, fmt.Errorf("assembly: location service: %w", err)
 		}
-		scheduleRepo := pg.NewScheduleRepo(db)
+		// 排期仓储同时是 worker 的 Store：凭据错结算要写账号状态与引擎审计，
+		// 故注入审计仓储。缺它时结算报错（不静默跳过审计）。
+		scheduleRepo := pg.NewScheduleRepoWithAudit(db, audits)
 		workerSvc, err = appworker.NewService(appworker.Deps{
 			Store:    scheduleRepo,
 			Creds:    workerCredentials{svc: accountSvc},

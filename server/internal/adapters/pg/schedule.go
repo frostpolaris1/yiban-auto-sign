@@ -8,6 +8,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	coreaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/account"
+	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
@@ -21,15 +23,32 @@ var ErrScheduleConflict = errors.New("pg: sign task already claimed")
 // 哨兵在 core/schedule：用例层与适配器按同一对象判定。
 var ErrWindowStale = coreschedule.ErrWindowStale
 
+// ErrScheduleAuditMissing 表示一次写账号状态的结算没有审计仓储。
+// **缺依赖即报错**：引擎写状态必须带审计，不得静默跳过。
+var ErrScheduleAuditMissing = errors.New("pg: schedule repo has no audit repo")
+
+// credentialInvalidResult 是凭据错的结算结果词。
+// 与 signing/contract.OutcomeCredentialBad 同词：本层不导入 signing 包，
+// 故按字面复写，并由结算 e2e 逐字钉住。
+const credentialInvalidResult = "credential_invalid"
+
 // ScheduleRepo 是排期四表的仓储。
 // 唯一约束 (account_id, school_task_id, day) 是 CAS 判据的库级兜底：
 // 应用层条件 UPDATE 之外，重复插行必然失败。
 type ScheduleRepo struct {
-	db *DB
+	db     *DB
+	audits *AuditRepo
 }
 
-// NewScheduleRepo 构造排期仓储。
+// NewScheduleRepo 构造排期仓储。未注入审计仓储时，
+// 任何写账号状态的结算都返回 ErrScheduleAuditMissing。
 func NewScheduleRepo(db *DB) *ScheduleRepo { return &ScheduleRepo{db: db} }
+
+// NewScheduleRepoWithAudit 构造带审计仓储的排期仓储。
+// 引擎写账号状态的结算必须用它装配。
+func NewScheduleRepoWithAudit(db *DB, audits *AuditRepo) *ScheduleRepo {
+	return &ScheduleRepo{db: db, audits: audits}
+}
 
 // CreateSchoolTask 建一条学校任务。同名任务返回既有行（幂等）。
 func (r *ScheduleRepo) CreateSchoolTask(ctx context.Context, schoolID, name string) (string, error) {
@@ -175,6 +194,61 @@ func (r *ScheduleRepo) Finish(ctx context.Context, accountID, schoolTaskID, day 
 		return ErrScheduleConflict
 	}
 	return nil
+}
+
+// FinishCredentialInvalid 结算一次凭据错：任务落 failed(credential_invalid)，
+// 账号从 active 改为 credential_error，并写引擎审计。三件事同一事务。
+//
+// 判据：
+//   - 任务行必须是 running；零行报 ErrScheduleConflict（不猜、不补写）。
+//   - 账号 CAS 只认 active；零行不算错误——账号已被暂停/删除/标记时保持原状。
+//     状态没变就不写审计：detail 声明 from=active 时，那必须是事实。
+//   - 审计必须同事务：审计失败则任务与账号一并回滚，结算重试时不漏状态。
+//
+// schoolID 取自任务行（worker 认领时带回），审计据此落院校面。
+func (r *ScheduleRepo) FinishCredentialInvalid(ctx context.Context, schoolID, accountID, schoolTaskID, day string, now time.Time) error {
+	if r.audits == nil {
+		return ErrScheduleAuditMissing
+	}
+	return r.db.InTx(ctx, func(ctx context.Context) error {
+		q := r.db.q(ctx)
+		ct, err := q.Exec(ctx,
+			`UPDATE sign_tasks SET state = $4, result = $5, attempts = attempts + 1
+			 WHERE account_id = $1::uuid AND school_task_id = $2::uuid AND day = $3 AND state = 'running'`,
+			accountID, schoolTaskID, day, string(corestatus.TaskFailed), credentialInvalidResult)
+		if err != nil {
+			return mapError(err)
+		}
+		if ct.RowsAffected() == 0 {
+			return ErrScheduleConflict
+		}
+		ct, err = q.Exec(ctx,
+			`UPDATE accounts SET status = $2::account_status, updated_at = $3
+			 WHERE id = $1::uuid AND status = 'active'::account_status`,
+			accountID, string(coreaccount.StatusCredentialError), now)
+		if err != nil {
+			return mapError(err)
+		}
+		if ct.RowsAffected() == 0 {
+			return nil
+		}
+		_, err = r.audits.Append(ctx, coreaudit.Entry{
+			TS:          now.UTC(),
+			SchoolID:    schoolID,
+			ActorUserID: "",
+			ActorRole:   "",
+			ActorLabel:  "engine",
+			Action:      coreaudit.ActionAccountCredentialError,
+			TargetType:  "account",
+			TargetID:    accountID,
+			Detail: map[string]any{
+				"field": "status",
+				"from":  string(coreaccount.StatusActive),
+				"to":    string(coreaccount.StatusCredentialError),
+			},
+		})
+		return err
+	})
 }
 
 // CountDone 报告某账号某日的已了结行数（success/skipped 计入）。
