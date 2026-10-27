@@ -31,14 +31,20 @@ UNIT="yiban.service"
 SERVICE_USER="yiban"
 SERVICE_HOME="/var/lib/yiban"
 
+# 仓库根由脚本自身位置推出：名册缺省取 <repo>/config/registry.json。
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
 SERVER_BIN=""
 CLI_BIN=""
 DSN_FLAG=""
+REGISTRY=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --server-bin) SERVER_BIN="${2:?}"; shift 2 ;;
         --cli-bin) CLI_BIN="${2:?}"; shift 2 ;;
         --database-url) DSN_FLAG="${2:?}"; shift 2 ;;
+        --registry) REGISTRY="${2:?}"; shift 2 ;;
         *) echo "install: unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -47,6 +53,8 @@ done
 [ -n "$CLI_BIN" ] || { echo "install: --cli-bin is required" >&2; exit 2; }
 [ -x "$SERVER_BIN" ] || { echo "install: server binary missing or not executable: $SERVER_BIN" >&2; exit 2; }
 [ -x "$CLI_BIN" ] || { echo "install: cli binary missing or not executable: $CLI_BIN" >&2; exit 2; }
+REGISTRY="${REGISTRY:-$REPO_ROOT/config/registry.json}"
+[ -f "$REGISTRY" ] || { echo "install: config registry missing: $REGISTRY" >&2; exit 2; }
 DATABASE_URL="${DSN_FLAG:-${YIBAN_DATABASE_URL:-}}"
 [ -n "$DATABASE_URL" ] || { echo "install: --database-url or YIBAN_DATABASE_URL is required" >&2; exit 2; }
 command -v openssl >/dev/null 2>&1 || { echo "install: openssl is required" >&2; exit 2; }
@@ -91,6 +99,22 @@ else
     echo "install: $ENV_FILE exists; keeping it (secrets are never regenerated in place)"
 fi
 
+# 已有 .env 也必须收紧：密钥只给 root 读。
+# 干跑（有前缀）时跳过 chown：非特权用户改不了属主。
+chmod 600 "$ENV_FILE"
+if [ -z "$ROOT" ]; then
+    chown root:root "$ENV_FILE"
+else
+    echo "install: dry-run: skip chown root:root on $ENV_FILE"
+fi
+
+# 配置名册随二进制一起落位：doctor 的未登记键体检要有名册，
+# 否则该检查在生产永远 SKIP。名册不含密钥，0644 可读。
+install -m 0644 "$REGISTRY" "$(dest /etc/yiban/registry.json)"
+if [ -z "$ROOT" ]; then
+    chown root:root "$(dest /etc/yiban/registry.json)"
+fi
+
 # 生成的密钥只在这里打印一次；丢了就只能重新生成并承担轮换口径。
 if [ "$GENERATED" -eq 1 ]; then
     echo "install: generated secrets (shown ONCE, store them elsewhere):"
@@ -128,7 +152,8 @@ EOF
 
 # 6) /healthz 重试探测。间隔与次数可用环境变量缩放（e2e 用小值）。
 ENV_BODY="$(dest /etc/yiban/.env)"
-ADDR="$(grep -E '^YIBAN_HTTP_ADDR=' "$ENV_BODY" | head -n 1 | cut -d= -f2-)"
+# 键缺失不是错误：手写的 .env 可能没有该行，按缺省地址探活。
+ADDR="$(grep -E '^YIBAN_HTTP_ADDR=' "$ENV_BODY" | head -n 1 | cut -d= -f2- || true)"
 ADDR="${ADDR:-127.0.0.1:47183}"
 RETRIES="${YIBAN_HEALTH_RETRIES:-10}"
 INTERVAL="${YIBAN_HEALTH_RETRY_INTERVAL:-1}"
@@ -137,8 +162,11 @@ while [ "$i" -le "$RETRIES" ]; do
     if "$(dest /usr/local/bin/yiban-cli)" healthcheck --addr "$ADDR" --timeout 2s; then
         echo "install complete: healthz ok at $ADDR (attempt $i/$RETRIES)"
         # 干净库还没有可登录账号：建第一个 master 是部署的最后一步。
+        # .env 是 0600 root-only，新 shell 里 YIBAN_* 未设置：
+        # 先把环境载入当前 shell，再跑 create-master（派单 F15）。
         echo "next: create the first master:"
-        echo "  yiban-cli user create-master --email <addr> --password <pass>"
+        echo "  set -a; . /etc/yiban/.env; set +a; yiban-cli user create-master --email <addr> --password <pass>"
+        echo "  或直接给参数: yiban-cli user create-master --email <addr> --password <pass> --dsn <DSN> --pepper <PEPPER>"
         exit 0
     fi
     sleep "$INTERVAL"

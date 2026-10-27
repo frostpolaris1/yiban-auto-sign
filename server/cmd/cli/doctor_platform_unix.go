@@ -20,21 +20,44 @@ func statfsFree(dir string) (uint64, error) {
 	return st.Bavail * uint64(st.Bsize), nil
 }
 
-// fileOwnerName 返回文件属主的用户名。ok=false 表示拿不到（调用方跳过）。
-func fileOwnerName(dir string) (string, bool) {
+// dirStatOf 返回目录的属主名、组名与权限位。ok=false 表示拿不到。
+func dirStatOf(dir string) (dirInfo, bool) {
 	st, err := os.Stat(dir)
 	if err != nil {
-		return "", false
+		return dirInfo{}, false
 	}
 	sys, ok := st.Sys().(*syscall.Stat_t)
 	if !ok {
-		return "", false
+		return dirInfo{}, false
 	}
-	u, err := user.LookupId(fmt.Sprint(sys.Uid))
+	owner := fmt.Sprint(sys.Uid)
+	if u, err := user.LookupId(owner); err == nil {
+		owner = u.Username
+	}
+	group := fmt.Sprint(sys.Gid)
+	if g, err := user.LookupGroupId(group); err == nil {
+		group = g.Name
+	}
+	return dirInfo{owner: owner, group: group, perm: st.Mode().Perm()}, true
+}
+
+// userGroupNames 返回用户所属的组名。ok=false 表示拿不到。
+func userGroupNames(name string) ([]string, bool) {
+	u, err := user.Lookup(name)
 	if err != nil {
-		return fmt.Sprint(sys.Uid), true // 有 uid 无名字：仍可与当前 uid 比较
+		return nil, false
 	}
-	return u.Username, true
+	ids, err := u.GroupIds()
+	if err != nil {
+		return nil, false
+	}
+	names := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if g, err := user.LookupGroupId(id); err == nil {
+			names = append(names, g.Name)
+		}
+	}
+	return names, true
 }
 
 // isExecutable 判 POSIX 执行位（属主/组/其他任一即可）。
