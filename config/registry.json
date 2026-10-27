@@ -2172,7 +2172,7 @@
     "group": [
       "部署"
     ],
-    "doc": "旧线账号列密钥（64 位 hex，32 字节）。仅 server/cmd/cli migrate-legacy 消费：旧 SQLite JSONL 导入新库时解密旧账号密文。缺省空：可用 --legacy-credential-key 传入；两处皆空则 migrate-legacy 拒绝启动。一次性迁移键，不进网页面",
+    "doc": "旧线账号列密钥（64 位 hex，32 字节）。仅 server/cmd/cli migrate-legacy 消费：旧 SQLite JSONL 导入新库时解密旧账号密文。缺省空：仅环境变量注入（钥不过 argv）；缺省空则 migrate-legacy 拒绝启动。一次性迁移键，不进网页面",
     "sensitive": true,
     "web_editable": false,
     "tier": "master",
