@@ -2,7 +2,9 @@ package config
 
 import (
 	"encoding/json"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -65,8 +67,9 @@ func entryOf(t *testing.T, reg map[string]json.RawMessage, key string) (registry
 func TestRegistryMatchesCodeSpecs(t *testing.T) {
 	reg := loadRegistry(t)
 	specs := configSpecs()
-	if len(specs) < 8 {
-		t.Fatalf("规格表只有 %d 条——表被删空即拒判", len(specs))
+	// 2026-10-27 实测 11 条。下限取实测值：删一条规格即红。
+	if len(specs) < 11 {
+		t.Fatalf("规格表只有 %d 条（实测 11）——删规格即拒判", len(specs))
 	}
 	for _, spec := range specs {
 		entry, ok := entryOf(t, reg, spec.key)
@@ -226,6 +229,9 @@ var specialRegistryKeys = []string{
 //
 // 没有本测试，新加一个读取点就能绕过名册对照；
 // 门看的东西必须等于实际读的东西。
+//
+// 已知限制：只认引号字面量（双引号与反引号）。用变量拼出的键名
+// （"YIBAN_" + name）不在扫描面内；与 check-config-registry.py 同一已知弱化点。
 func TestEveryConfigReadHasRegistryComparison(t *testing.T) {
 	body, err := os.ReadFile("config.go")
 	if err != nil {
@@ -238,13 +244,13 @@ func TestEveryConfigReadHasRegistryComparison(t *testing.T) {
 	for _, key := range specialRegistryKeys {
 		covered[key] = true
 	}
-	quoted := regexp.MustCompile(`"YIBAN_[A-Z0-9_]+"`)
+	quoted := regexp.MustCompile("[`\"]YIBAN_[A-Z0-9_]+[`\"]")
 	reads := quoted.FindAllString(string(body), -1)
 	if len(reads) < 8 {
 		t.Fatalf("config.go 只扫到 %d 个键字面量——扫描面塌了即拒判", len(reads))
 	}
 	for _, raw := range reads {
-		key := strings.Trim(raw, `"`)
+		key := strings.Trim(raw, "`\"")
 		if !covered[key] {
 			t.Errorf("%s 出现在 config.go，但不在对照表——新读取点必须同时进名册对照", key)
 		}
@@ -260,21 +266,58 @@ func TestEveryConfigReadHasRegistryComparison(t *testing.T) {
 var legacyNonGoKeys = []string{"YIBAN_WINDOW_EDGE_SEC"}
 
 // TestLegacyKeysAreRegisteredButNotReadByGo 钉住旧键的豁免边界。
+// 扫描面是整个 server 生产树（不含 _test.go）：包外引用同样判红。
 func TestLegacyKeysAreRegisteredButNotReadByGo(t *testing.T) {
 	reg := loadRegistry(t)
-	body, err := os.ReadFile("config.go")
-	if err != nil {
-		t.Fatalf("读 config.go 失败: %v", err)
-	}
 	if len(legacyNonGoKeys) == 0 {
 		t.Fatal("豁免表为空——删空即拒判")
 	}
+	files := productionGoFiles(t)
 	for _, key := range legacyNonGoKeys {
 		if _, ok := reg[key]; !ok {
 			t.Errorf("%s 不在名册：Python 旧线仍在读它，删名册会让旧线判红", key)
 		}
-		if strings.Contains(string(body), `"`+key+`"`) {
-			t.Errorf("%s 已被 Go 读取：从豁免表删除，并处理与 FRONT/BACK 新键的优先级", key)
+		for _, path := range files {
+			body, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("读 %s 失败: %v", path, err)
+			}
+			text := string(body)
+			if strings.Contains(text, `"`+key+`"`) || strings.Contains(text, "`"+key+"`") {
+				t.Errorf("%s 被 Go 生产代码引用（%s）：从豁免表删除，并处理与 FRONT/BACK 新键的优先级", key, path)
+			}
 		}
 	}
+}
+
+// productionGoFiles 列出 server 根下的生产 Go 文件（不含 _test.go）。
+// cwd = server/internal/adapters/config；server 根是三跳。
+// 2026-10-27 实测 152 个；少于 150 视为扫描面塌陷。
+func productionGoFiles(t *testing.T) []string {
+	t.Helper()
+	root := filepath.Join("..", "..", "..")
+	var out []string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", "node_modules", "testdata":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasSuffix(d.Name(), ".go") && !strings.HasSuffix(d.Name(), "_test.go") {
+			out = append(out, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("扫描生产 Go 源失败: %v", err)
+	}
+	if len(out) < 150 {
+		t.Fatalf("只扫到 %d 个生产 Go 文件——扫描面塌了即拒判", len(out))
+	}
+	return out
 }

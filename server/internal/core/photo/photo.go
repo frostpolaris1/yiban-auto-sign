@@ -18,10 +18,17 @@ package photo
 
 import "time"
 
-// RetentionDays 是允许的保留期闭集（天），严格升序。
-// 它是唯一权威：ValidRetention 与迁移 CHECK 约束都由本表派生语义，
-// SQL 无法引用 Go 常量，故由 retention_single_source_test 钉住两侧相等。
-var RetentionDays = []int{30, 90, 180, 365}
+// retentionDays 是允许的保留期闭集（天），严格升序。
+// 不导出：ValidRetention 与错误文案都从本表派生，外部只能拿副本。
+var retentionDays = [...]int{30, 90, 180, 365}
+
+// RetentionDays 返回保留期闭集的副本。
+// 调用方改副本不影响判据；这是 ValidRetention 不依赖可变包状态的边界。
+func RetentionDays() []int {
+	out := make([]int, len(retentionDays))
+	copy(out, retentionDays[:])
+	return out
+}
 
 const (
 	// DefaultRetentionDays 是用户未设置保留期时的天数。
@@ -33,7 +40,7 @@ const (
 
 // ValidRetention 报告 days 是否属于允许的保留期闭集。
 func ValidRetention(days int) bool {
-	for _, allowed := range RetentionDays {
+	for _, allowed := range retentionDays {
 		if days == allowed {
 			return true
 		}
