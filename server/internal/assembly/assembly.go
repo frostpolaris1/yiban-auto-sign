@@ -99,6 +99,12 @@ const shutdownBudget = 10 * time.Second
 
 // Run 装配并服务到 ctx 结束。错误只来自装配失败与关闭失败。
 //
+// # 一次装配
+// Run 只装配一次，并把同一份 Stack 交给 HTTP 与执行循环。
+// 双装配会带来双连接池、双迁移与双 Recover；更严重的是
+// 执行循环发布事件进第一份 broker，SSE 订阅第二份，
+// 管理员永远收不到任务事件。故禁止调用 NewServer。
+//
 // 有数据库时同时启动执行循环：周期认领到期任务并结算。
 // ctx 结束后并行做两件事：停执行循环的领取并等在飞结算、
 // 停 HTTP 的在途请求。两者共享 shutdownBudget。
@@ -107,15 +113,11 @@ func Run(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	stack, err := Build(cfg, logger)
+	stack, err := buildStack(cfg, logger)
 	if err != nil {
 		return err
 	}
-	srv, err := NewServer(cfg, logger)
-	if err != nil {
-		stack.Close()
-		return err
-	}
+	srv := newServerFromStack(cfg, stack)
 
 	// 执行循环只在有数据库（Worker 已装配）时启动；
 	// 批量取 Workers：认领 SQL 每账号至多一行，批内并行度与之对齐。
@@ -204,16 +206,28 @@ type Stack struct {
 	Close  func()
 }
 
+// buildStack 是 Build 的调用接缝。
+// Run 与 NewServer 都经由它；装配次数由测试计数（见 assembly_test.go）。
+var buildStack = Build
+
 // NewServer 装配进程但不启动它。
 // 测试通过返回的 server 绑定临时端口。
+// 每次调用都完整装配一次；生产路径 Run 不调用它（见 Run 的「一次装配」）。
 func NewServer(cfg *config.Config, logger *slog.Logger) (*http.Server, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	stack, err := Build(cfg, logger)
+	stack, err := buildStack(cfg, logger)
 	if err != nil {
 		return nil, err
 	}
+	return newServerFromStack(cfg, stack), nil
+}
+
+// newServerFromStack 用已装配好的 Stack 构造未启动的 server。
+// HTTP 关闭时释放连接池（RegisterOnShutdown）。
+// Stack.Close 幂等：srv.Shutdown 与显式收尾都会调用它。
+func newServerFromStack(cfg *config.Config, stack *Stack) *http.Server {
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           stack.Engine,
@@ -222,9 +236,8 @@ func NewServer(cfg *config.Config, logger *slog.Logger) (*http.Server, error) {
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-	// 关闭路径释放连接池。srv.Close 不触发，但它只用于测试。
 	srv.RegisterOnShutdown(stack.Close)
-	return srv, nil
+	return srv
 }
 
 // Build 装配数据库、用例与路由。
@@ -515,7 +528,10 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		closeFn()
 		return nil, err
 	}
-	return &Stack{Engine: engine, DB: db, Worker: workerSvc, Close: closeFn}, nil
+	// Close 幂等：srv.Shutdown 触发一次，Run 的收尾再显式调一次。
+	var closeOnce sync.Once
+	closeAll := func() { closeOnce.Do(closeFn) }
+	return &Stack{Engine: engine, DB: db, Worker: workerSvc, Close: closeAll}, nil
 }
 
 // DeriveAuditKey 从服务器 pepper 派生审计链密钥。
