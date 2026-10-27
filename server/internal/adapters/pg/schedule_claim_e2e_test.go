@@ -74,7 +74,8 @@ func TestClaimDueClaimsOnlyPendingRows(t *testing.T) {
 // failed 行重新入队：state 回 pending、result 清空、claimed_at 清空、落点更新。
 // attempts **保留**：重排不退还当日已消耗的预算。
 //
-// 删掉 result = ” 时旧结论残留——本用例红。
+// 删掉清空 result 的赋值时旧结论残留——本用例红。
+// 删掉清空 claimed_at 的赋值时旧认领时刻残留——本用例红。
 func TestRearmClearsResultAndKeepsAttempts(t *testing.T) {
 	e := newEnv(t)
 	_, taskID, accountID := e.seedTask(
@@ -87,12 +88,15 @@ func TestRearmClearsResultAndKeepsAttempts(t *testing.T) {
 		t.Fatalf("insert plan: %v", err)
 	}
 	if _, err := e.db.Exec(e.ctx, `
-		UPDATE sign_tasks SET state = $4, result = 'rejected', attempts = 2
+		UPDATE sign_tasks SET state = $4, result = 'rejected', attempts = 2, claimed_at = $5
 		 WHERE account_id = $1::uuid AND school_task_id = $2::uuid AND day = $3`,
-		accountID, taskID, day, string(corestatus.TaskFailed)); err != nil {
+		accountID, taskID, day, string(corestatus.TaskFailed), oldAt); err != nil {
 		t.Fatalf("seed the failed row: %v", err)
 	}
 	rowID := e.taskRowID(accountID, taskID, day)
+	if got := e.scalarInt("SELECT count(*) FROM sign_tasks WHERE id = $1::uuid AND claimed_at = $2::timestamptz", rowID, oldAt); got != 1 {
+		t.Fatalf("seed did not set claimed_at; the clear assertion would be vacuous")
+	}
 
 	newAt := oldAt.Add(90 * time.Minute)
 	if err := e.sched.Rearm(e.ctx, rowID, newAt); err != nil {
