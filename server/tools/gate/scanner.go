@@ -69,11 +69,11 @@ func LoadRules(path string) ([]Rule, error) {
 			return nil, fmt.Errorf("%s:%d: unknown kind %q", path, lineNo, r.Kind)
 		}
 		// under 把 prefix == "*" 解释为「匹配全部文件」。
-		// 对非 import 规则，owner 命中表示豁免：owner 为 * 会让 call 类规则永不生效。
-		// forbid 的 owner 是检查范围，* 虽可解释为全查，但规则要求写明具体范围。
-		// load 时拒绝这两种写法；否则门会静默报绿。
-		if r.Kind != "import" && strings.TrimSpace(r.Owner) == "*" {
-			return nil, fmt.Errorf("%s:%d: rule %q must use a concrete owner (owner * is only for import rules)",
+		// import 与 forbid 的 owner 是**检查范围**：* 表示全查，语义成立。
+		// 其余规则的 owner 是**唯一属主**（命中即豁免）：owner 为 * 会让
+		// call/string/func/type 规则永不生效，load 时拒绝。
+		if r.Kind != "import" && r.Kind != "forbid" && strings.TrimSpace(r.Owner) == "*" {
+			return nil, fmt.Errorf("%s:%d: rule %q must use a concrete owner (owner * is only for import and forbid rules)",
 				path, lineNo, r.ID)
 		}
 		// forbid 的 owner 为空等于检查零个文件。接受它就是一条永不触发的规则。
@@ -304,6 +304,115 @@ func ValidateCheckedScopes(root string, rules []Rule) error {
 		}
 	}
 	return nil
+}
+
+// ValidateRuleAnchors 要求每条非 import/forbid 规则的 owner 与 pattern 都还有落点。
+//
+// 这几类规则（call/func/type/string）的 owner 是**唯一属主**：owner 下的文件放行，
+// 其余文件被检查。owner 目录改名或 pattern 符号改名后，规则仍会「通过」，
+// 但它实际什么都没检查（AGENTS §29：静默的不重合比红更危险）。
+// 本检查把两种空转变成 rc=2：
+//   - owner 在 root 下匹配零个文件；
+//   - pattern 在整棵树里一次都没出现（call 看选择子调用，func/type 看声明名，
+//     string 看字符串字面量）。
+//
+// string 的 pattern 可能是逗号分隔的多个值；只要其中一个仍存在即视为有落点。
+// 个别值被删除是正常演进，整组改名才是要拦的形状。
+func ValidateRuleAnchors(root string, rules []Rule, includeTests bool) error {
+	found := make(map[string]bool)
+	owners := make(map[string]bool)
+	err := walkGoFiles(root, includeTests, func(path string) error {
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		for _, r := range rules {
+			if r.Kind == "import" || r.Kind == "forbid" {
+				continue
+			}
+			if under(rel, r.Owner) {
+				owners[r.ID] = true
+			}
+		}
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			return fmt.Errorf("%s: %w", rel, err)
+		}
+		for _, r := range rules {
+			if r.Kind == "import" || r.Kind == "forbid" {
+				continue
+			}
+			if patternPresent(file, r) {
+				found[r.ID] = true
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for _, r := range rules {
+		if r.Kind == "import" || r.Kind == "forbid" {
+			continue
+		}
+		if !owners[r.ID] {
+			return fmt.Errorf("%s rule %q: owner %q matches no Go file under %q; refused to pass",
+				r.Kind, r.ID, r.Owner, root)
+		}
+		if !found[r.ID] {
+			return fmt.Errorf("%s rule %q: pattern %q is absent from the scanned tree; the rule checks nothing",
+				r.Kind, r.ID, r.Pattern)
+		}
+	}
+	return nil
+}
+
+// patternPresent 报告一条规则的 pattern 是否在本文件里有落点。
+// 判据与 inspectFile 的匹配口径一致，避免两处漂移。
+func patternPresent(file *ast.File, r Rule) bool {
+	present := false
+	ast.Inspect(file, func(n ast.Node) bool {
+		if present {
+			return false
+		}
+		switch r.Kind {
+		case "call":
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if name, ok := selectorName(call.Fun); ok && name == r.Pattern {
+				present = true
+			}
+		case "func":
+			if fn, ok := n.(*ast.FuncDecl); ok && fn.Name != nil && fn.Name.Name == r.Pattern {
+				present = true
+			}
+		case "type":
+			if ts, ok := n.(*ast.TypeSpec); ok && ts.Name != nil && ts.Name.Name == r.Pattern {
+				present = true
+			}
+		case "string":
+			lit, ok := n.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING || strings.HasPrefix(lit.Value, "`") {
+				return true
+			}
+			value, err := strconv.Unquote(lit.Value)
+			if err != nil {
+				return true
+			}
+			for _, pattern := range strings.Split(r.Pattern, ",") {
+				if value == pattern {
+					present = true
+					break
+				}
+			}
+		}
+		return true
+	})
+	return present
 }
 
 // CountGoFiles 返回同一 includeTests 口径下扫描会考虑的文件数。

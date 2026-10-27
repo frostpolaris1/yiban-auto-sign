@@ -178,3 +178,36 @@ func TestCheckFrontendEmptyScanFails(t *testing.T) {
 		t.Fatalf("problems = %#v", problems)
 	}
 }
+
+// 受管 scope 清单是钉子：删 scope 或改 scope 名必须同步改这里。
+// 删一条 scope 等于把该目录从结构门里摘掉（其下新目录全放行），
+// 必须是一次显式决定，而不是一次静默的绿（AGENTS §29）。
+func TestStructureScopesPinned(t *testing.T) {
+	want := []string{
+		"root",
+		"server/internal",
+		"server/cmd",
+		"server/migrations",
+		"server/internal/core",
+		"server/internal/app",
+		"server/internal/adapters",
+		"server/internal/entry/http",
+		"ui/src",
+		"ui/src/features",
+		"ui/src/components",
+	}
+	rules, err := loadRules(filepath.Join("..", "..", "structure.tsv"))
+	if err != nil {
+		t.Fatalf("load structure: %v", err)
+	}
+	if len(rules) != len(want) {
+		t.Fatalf("structure has %d scopes, pinned list has %d; add or remove must update this list",
+			len(rules), len(want))
+	}
+	for i, r := range rules {
+		if r.scope != want[i] {
+			t.Fatalf("scope %d = %q, pinned %q; rename must be an explicit decision",
+				i, r.scope, want[i])
+		}
+	}
+}

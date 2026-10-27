@@ -36,6 +36,12 @@ func run(root, rulesPath string, includeTests bool) int {
 		fmt.Fprintln(os.Stderr, "gate:", err)
 		return 2
 	}
+	// 锚点按**含测试文件**的最宽口径检查：canonical 允许把测试文件登记为
+	// 唯一使用点（如 os.Getenv 只在 e2e 里出现），默认口径看不到这些落点。
+	if err := ValidateRuleAnchors(root, rules, true); err != nil {
+		fmt.Fprintln(os.Stderr, "gate:", err)
+		return 2
+	}
 	violations, err := Scan(root, rules, includeTests)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "gate:", err)
