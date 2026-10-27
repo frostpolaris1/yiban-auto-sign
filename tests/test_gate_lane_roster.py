@@ -45,9 +45,9 @@ LANES = ("fast", "slow", "serial")
 
 #: 扫描/收集的下限（AGENTS §30：扫空不得当绿）。本树实测 352 个测试文件
 #: （2026-10-27 口径：`_scan_test_files()` 计数；测量命令
-#: `find tests -name 'test_*.py' | wc -l`）。
-#: 下限取 100：真实套件远在其上，环境坏掉/路径写错时远在其下。
-MIN_FILES = 100
+#: `find tests -name 'test_*.py' | wc -l` 输出 352）。
+#: 下限取 300：实测下方留 52 个文件余量；解析坏掉/路径写错时远在其下。
+MIN_FILES = 300
 
 DOC = os.path.join(BASE, "docs", "dev", "dev-verify.md")
 
@@ -136,6 +136,17 @@ def _doc_number_violations(text, file_counts, case_counts):
         if got != tuple(expected):
             bad.append("%s口径过期：文档 %r，实测 %r" % (label, got, tuple(expected)))
     return bad
+
+
+def _numbers_text(file_counts, case_counts):
+    """把一组现量数字排成文档里的两行口径（自证与文档门共用同一形状）。
+
+    形状必须与 `docs/dev/dev-verify.md` 的现量口径行一致；两边一旦分叉，
+    文档门会找不到口径行并判红。
+    """
+    return ("全量 %d 个文件 ＝ 快集 %d ＋ 慢集 %d ＋ 串行轨 %d\n"
+            "用例数口径 %d ＝ 快集 %d ＋ 慢集 %d ＋ 串行轨 %d\n"
+            % (tuple(file_counts) + tuple(case_counts)))
 
 
 def _parse_roster(text):
@@ -415,19 +426,22 @@ class DocNumbersMatchRealityTest(unittest.TestCase):
                       "文档没给文件数的口径来源")
 
     def test_checker_rejects_wrong_numbers(self):
-        """突变自证：喂过期数字必须判红；喂现量必须判绿（防恒红/恒绿）。"""
-        stale = ("全量 301 个文件 ＝ 快集 286 ＋ 慢集 14 ＋ 串行轨 1\n"
-                 "用例数口径 4813 ＝ 快集 4639 ＋ 慢集 172 ＋ 串行轨 2\n")
-        current = ("全量 352 个文件 ＝ 快集 337 ＋ 慢集 14 ＋ 串行轨 1\n"
-                   "用例数口径 5229 ＝ 快集 5058 ＋ 慢集 169 ＋ 串行轨 2\n")
-        bad = _doc_number_violations(stale, (352, 337, 14, 1),
-                                     (5229, 5058, 169, 2))
-        self.assertEqual(len(bad), 2,
-                         "两组过期数字都必须判红，实得：%r" % bad)
+        """突变自证：把现量数字改错必须判红；原样必须判绿（防恒红/恒绿）。
+
+        期望值从 `_expected()` 现取，不写字面量；写死会随测试集增长过期，
+        正是本门要防的漂移（复审 D6）。
+        """
+        file_counts, case_counts = self._expected()
+        good = _numbers_text(file_counts, case_counts)
         self.assertEqual(
-            _doc_number_violations(current, (352, 337, 14, 1),
-                                   (5229, 5058, 169, 2)), [],
+            _doc_number_violations(good, file_counts, case_counts), [],
             "现量数字被判红：判据写反了")
+        wrong_file = (file_counts[0] + 1, *file_counts[1:])
+        wrong_case = (case_counts[0] + 1, *case_counts[1:])
+        for label, text in (("文件数", _numbers_text(wrong_file, case_counts)),
+                            ("用例数", _numbers_text(file_counts, wrong_case))):
+            bad = _doc_number_violations(text, file_counts, case_counts)
+            self.assertTrue(bad, "%s改错必须判红（实得绿）" % label)
 
 
 if __name__ == "__main__":
