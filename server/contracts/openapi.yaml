@@ -763,8 +763,11 @@ paths:
       summary: List task windows for a business day.
       description: |
         master sees every school; admin sees bound schools only.
-        A task without a cached window for the day has null start and end,
-        because the window is not discovered yet.
+        A day without a cached window is discovered once and then cached, so
+        the default request costs at most one platform call per task. When the
+        cache already holds the day, the default request makes no platform
+        call. Set refresh=true to discover again.
+        A task whose platform reports no window keeps null start and end.
       x-roles: [master, admin]
       parameters:
         - name: day
@@ -772,6 +775,14 @@ paths:
           required: false
           description: Business day YYYY-MM-DD; defaults to today in the server time zone.
           schema: { type: string }
+        - name: refresh
+          in: query
+          required: false
+          description: |
+            Discover the platform window again and store the result. Default
+            false reads the daily cache first. A valid override keeps the
+            cached window unchanged (discovery still runs).
+          schema: { type: boolean, default: false }
       responses:
         '200':
           description: Task window list.
@@ -790,6 +801,8 @@ paths:
       description: |
         Reads the window from the platform, then the cache, then the fallback,
         and returns the exact rows Build would persist. Preview writes nothing.
+        A disabled task can be previewed: enabled is false and the window is
+        still reported. Build and override reject a disabled task.
       x-roles: [master, admin]
       parameters:
         - name: day
@@ -818,7 +831,8 @@ paths:
       description: |
         Writes the resolved window, rearranges pending rows when the window
         changed, and inserts missing rows in one transaction. Running and
-        terminal rows are never moved.
+        terminal rows are never moved. A disabled task returns 409 conflict
+        and writes nothing.
       x-roles: [master, admin]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -849,7 +863,8 @@ paths:
       description: |
         An override wins over the platform window for the same day and keeps
         its recorded reason. Pending rows are rearranged immediately; running
-        and terminal rows are never moved.
+        and terminal rows are never moved. A disabled task returns 409 conflict
+        and stores no override.
       x-roles: [master, admin]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -930,6 +945,9 @@ paths:
         Capacity uses the same window resolution and formula as the plan.
         A positive shortfall means demand exceeds capacity and the plan
         compresses rows into the tail slice.
+        The window is read from the daily cache by default: a cached day makes
+        no platform call, a missing day is discovered once and then cached.
+        Set refresh=true to discover again. An override still wins over both.
       x-roles: [master, admin]
       parameters:
         - $ref: '#/components/parameters/SchoolIDQuery'
@@ -939,6 +957,14 @@ paths:
           required: false
           description: Business day YYYY-MM-DD; defaults to today in the server time zone.
           schema: { type: string }
+        - name: refresh
+          in: query
+          required: false
+          description: |
+            Discover the platform window again and store the result. Default
+            false reads the daily cache first. A valid override keeps the
+            cached window unchanged (discovery still runs).
+          schema: { type: boolean, default: false }
       responses:
         '200':
           description: Capacity report.
@@ -1553,14 +1579,16 @@ components:
         start:
           type: [string, "null"]
           format: date-time
-          description: Null when the window is not cached for the day yet.
+          description: |
+            Null when no window is cached for the day. An uncached day is
+            discovered once, so null means no platform window was reported.
         end:
           type: [string, "null"]
           format: date-time
         source:
           type: [string, "null"]
           description: |
-            platform, cache, fallback or override; null when the window is not
+            platform, cache, fallback or override; null when no window is
             cached for the day.
         version: { type: integer }
     ScheduleWindowList:
@@ -1584,6 +1612,7 @@ components:
       type: object
       required:
         - day
+        - enabled
         - source
         - window_start
         - window_end
@@ -1595,6 +1624,11 @@ components:
         - rows
       properties:
         day: { type: string }
+        enabled:
+          type: boolean
+          description: |
+            Whether the school task is enabled. A disabled task can be
+            previewed, but Build and override reject it with 409 conflict.
         source:
           $ref: '#/components/schemas/ScheduleWindowSource'
         window_start:

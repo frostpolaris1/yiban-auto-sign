@@ -35,15 +35,24 @@ type fakePlanner struct {
 	listErr    error
 
 	builds      int
+	reportCalls int
 	lastInput   appschedule.Input
 	lastActor   string
 	lastStart   time.Time
 	lastEnd     time.Time
 	lastReason  string
 	overrideErr error
+	lastRefresh bool
 }
 
 func (f *fakePlanner) Preview(_ context.Context, in appschedule.Input) (appschedule.Preview, error) {
+	f.lastInput = in
+	return f.preview, f.previewErr
+}
+
+// Report 记录调用次数与输入：容量报告必须走 Report 而不是 Preview（k0y-4）。
+func (f *fakePlanner) Report(_ context.Context, in appschedule.Input) (appschedule.Preview, error) {
+	f.reportCalls++
 	f.lastInput = in
 	return f.preview, f.previewErr
 }
@@ -65,7 +74,8 @@ func (f *fakePlanner) Task(context.Context, corescope.Scope, string) (coreschedu
 	return f.task, f.taskErr
 }
 
-func (f *fakePlanner) ListWindows(context.Context, corescope.Scope, string) ([]coreschedule.WindowView, error) {
+func (f *fakePlanner) ListWindows(_ context.Context, _ corescope.Scope, _ string, refresh bool) ([]coreschedule.WindowView, error) {
+	f.lastRefresh = refresh
 	return f.views, f.listErr
 }
 
@@ -207,6 +217,17 @@ func TestWindowsList(t *testing.T) {
 	if body.Items[1].Start != nil || body.Items[1].Source != nil {
 		t.Fatalf("未缓存行不应带窗口: %+v", body.Items[1])
 	}
+	// k0y-4：缺省不刷新。
+	if planner.lastRefresh {
+		t.Fatal("缺省 refresh 必须为假：默认只读缓存")
+	}
+	rec = do(t, engine, issued, http.MethodGet, "/api/schedule/windows?day=2026-10-29&refresh=true", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("refresh status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if !planner.lastRefresh {
+		t.Fatal("refresh=true 未透传到用例层")
+	}
 }
 
 // 非 master/admin 不得看计划管理面。
@@ -340,6 +361,23 @@ func TestCapacityReport(t *testing.T) {
 	}
 	if raw["day"].(string) == "" {
 		t.Fatal("缺省日期应补今天")
+	}
+	// k0y-4：容量报告走 Report，缺省不刷新（只读缓存）。
+	if planner.reportCalls != 1 {
+		t.Fatalf("容量报告应调用 Report：calls = %d", planner.reportCalls)
+	}
+	if planner.lastInput.Refresh {
+		t.Fatal("缺省 refresh 必须为假：默认只读缓存")
+	}
+
+	rec = do(t, engine, issued, http.MethodGet,
+		"/api/capacity?school_id=s1&task_id=t1&refresh=true", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("refresh status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if planner.reportCalls != 2 || !planner.lastInput.Refresh {
+		t.Fatalf("refresh 未透传：calls = %d refresh = %v",
+			planner.reportCalls, planner.lastInput.Refresh)
 	}
 }
 

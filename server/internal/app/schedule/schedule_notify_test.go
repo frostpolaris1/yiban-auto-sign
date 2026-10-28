@@ -64,7 +64,7 @@ func notifyAccounts(n int) fakeAccounts {
 // 窗口首次落库（缓存为空）：Build 后发 window.changed。
 // capacity.changed 随 Shortfall>0 出现、随 Shortfall==0 缺席。
 func TestBuildPublishesWindowChanged(t *testing.T) {
-	w := &fakeWindowStore{}
+	w := &fakeWindowStore{task: enabledTask()}
 	p := &fakePlanStore{}
 	d := &fakeDiscover{window: platformWindow(6, 30, 7, 50)}
 	n := &recordingPlanNotifier{}
@@ -101,7 +101,7 @@ func TestBuildPublishesWindowChanged(t *testing.T) {
 
 // 窗口未变化的重算不发 window.changed（TestBuildUnchangedSkipsRearrange 同款设置）。
 func TestBuildUnchangedDoesNotPublishWindowChanged(t *testing.T) {
-	w := &fakeWindowStore{}
+	w := &fakeWindowStore{task: enabledTask()}
 	d := &fakeDiscover{window: platformWindow(6, 30, 7, 50)}
 	n := &recordingPlanNotifier{}
 	svc := newNotifyingSchedule(t, w, &fakePlanStore{}, notifyAccounts(2), d, n)

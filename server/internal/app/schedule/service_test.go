@@ -195,6 +195,12 @@ func platformWindow(h, m, eh, em int) contract.Window {
 	}
 }
 
+// enabledTask 是建计划用例的默认任务夹具：存在且启用，
+// 与 baseInput 的 school-1 / task-1 配套。
+func enabledTask() coreschedule.TaskInfo {
+	return coreschedule.TaskInfo{ID: "task-1", SchoolID: "school-1", Enabled: true}
+}
+
 func newService(t *testing.T, w *fakeWindowStore, p *fakePlanStore, a fakeAccounts, d *fakeDiscover) *appschedule.Service {
 	t.Helper()
 	return newServiceWithPrefs(t, w, p, a, d, nil)
@@ -213,7 +219,7 @@ func newServiceWithPrefs(t *testing.T, w *fakeWindowStore, p *fakePlanStore, a f
 
 // 预览就是计划：行、直方图、落库行三者逐值相等（复审 P2-2 的钉子）。
 func TestPreviewEqualsBuild(t *testing.T) {
-	w := &fakeWindowStore{}
+	w := &fakeWindowStore{task: enabledTask()}
 	p := &fakePlanStore{}
 	ids := make([]string, 25)
 	for i := range ids {
@@ -376,7 +382,7 @@ func TestCapacityShortfallReported(t *testing.T) {
 
 // 窗口**仅起点**变化也必须重排（复审 P2-6：Start 比较的钉子）。
 func TestWindowStartOnlyChangeRearranges(t *testing.T) {
-	w := &fakeWindowStore{ok: true, record: coreschedule.WindowRecord{
+	w := &fakeWindowStore{task: enabledTask(), ok: true, record: coreschedule.WindowRecord{
 		Start:  time.Date(2026, 10, 29, 6, 30, 0, 0, shanghai),
 		End:    time.Date(2026, 10, 29, 7, 50, 0, 0, shanghai),
 		Source: string(contract.WindowPlatform), Version: 1,
@@ -401,7 +407,7 @@ func TestWindowStartOnlyChangeRearranges(t *testing.T) {
 
 // 窗口未变化：不写窗口、不重排，只做幂等补插。
 func TestBuildUnchangedSkipsRearrange(t *testing.T) {
-	w := &fakeWindowStore{ok: true, record: coreschedule.WindowRecord{
+	w := &fakeWindowStore{task: enabledTask(), ok: true, record: coreschedule.WindowRecord{
 		Start:  time.Date(2026, 10, 29, 6, 30, 0, 0, shanghai),
 		End:    time.Date(2026, 10, 29, 7, 50, 0, 0, shanghai),
 		Source: string(contract.WindowPlatform), Version: 4,
@@ -466,7 +472,7 @@ func TestCacheReadErrorPropagates(t *testing.T) {
 
 // 版本竞争：整体重试一次，最终成功且重排一次（复审 P2-4/P3-4）。
 func TestStaleRetriesOnce(t *testing.T) {
-	w := &fakeWindowStore{ok: true, staleOnce: true, record: coreschedule.WindowRecord{
+	w := &fakeWindowStore{task: enabledTask(), ok: true, staleOnce: true, record: coreschedule.WindowRecord{
 		Start:  time.Date(2026, 10, 29, 6, 30, 0, 0, shanghai),
 		End:    time.Date(2026, 10, 29, 7, 50, 0, 0, shanghai),
 		Source: string(contract.WindowPlatform), Version: 1,
@@ -732,17 +738,49 @@ func TestListWindowsScope(t *testing.T) {
 		Source: string(contract.WindowPlatform), Version: 2, Cached: true,
 	}}}
 	svc := newService(t, w, &fakePlanStore{}, fakeAccounts{}, &fakeDiscover{})
-	views, err := svc.ListWindows(context.Background(), corescope.Master(), "2026-10-29")
+	views, err := svc.ListWindows(context.Background(), corescope.Master(), "2026-10-29", false)
 	if err != nil {
 		t.Fatalf("ListWindows: %v", err)
 	}
 	if len(views) != 1 || views[0].TaskID != "task-1" {
 		t.Fatalf("views = %+v", views)
 	}
-	if _, err := svc.ListWindows(context.Background(), corescope.User("u1"), "2026-10-29"); err == nil {
+	if _, err := svc.ListWindows(context.Background(), corescope.User("u1"), "2026-10-29", false); err == nil {
 		t.Fatal("user 角色应被拒绝")
 	}
-	if _, err := svc.ListWindows(context.Background(), corescope.Master(), "2026/10/29"); err == nil {
+	if _, err := svc.ListWindows(context.Background(), corescope.Master(), "2026/10/29", false); err == nil {
 		t.Fatal("非法日期应被拒绝")
+	}
+}
+
+// Report 带 Refresh 且存在合法覆盖：发现照做，缓存行不改写。
+// 依据：缓存行是 worker 的窗口判据（只读缓存）；改写它会让覆盖失效。
+func TestReportRefreshKeepsOverrideCache(t *testing.T) {
+	ovStart := time.Date(2026, 10, 29, 9, 0, 0, 0, shanghai)
+	ovEnd := ovStart.Add(30 * time.Minute)
+	w := &fakeWindowStore{
+		override: coreschedule.WindowOverride{
+			SchoolTaskID: "task-1", Day: "2026-10-29",
+			Start: ovStart, End: ovEnd, Reason: "平台窗口错误", CreatedBy: "u1",
+		},
+		overrideOK: true,
+	}
+	d := &fakeDiscover{window: platformWindow(6, 30, 7, 50)}
+	svc := newService(t, w, &fakePlanStore{}, fakeAccounts{ids: []string{"a1"}}, d)
+	in := baseInput()
+	in.Refresh = true
+
+	prev, err := svc.Report(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	if d.calls != 1 {
+		t.Fatalf("平台发现 = %d, want 1", d.calls)
+	}
+	if w.saves != 0 {
+		t.Fatalf("覆盖存在时不应改写缓存行: saves = %d", w.saves)
+	}
+	if prev.Source != contract.WindowOverride || !prev.WindowStart.Equal(ovStart) {
+		t.Fatalf("报告 = source %s start %v, want override %v", prev.Source, prev.WindowStart, ovStart)
 	}
 }

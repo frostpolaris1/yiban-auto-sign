@@ -15,6 +15,8 @@
 // # 口径
 // 计划管理面只给 master 与 admin；自选只给 user。
 // 跨校任务一律 404；响应不含凭据与手机号。
+// 停用任务可预览，建计划与写覆盖回 409（k0y-6）。
+// 窗口列表与容量默认只读缓存，refresh=true 才重新发现（k0y-4）。
 package schedule
 
 import (
@@ -45,8 +47,9 @@ type Planner interface {
 	Build(ctx context.Context, in appschedule.Input) (appschedule.Preview, error)
 	Override(ctx context.Context, scope corescope.Scope, in appschedule.Input,
 		start, end time.Time, reason, actorID string) (appschedule.Preview, error)
+	Report(ctx context.Context, in appschedule.Input) (appschedule.Preview, error)
 	Task(ctx context.Context, scope corescope.Scope, taskID string) (coreschedule.TaskInfo, error)
-	ListWindows(ctx context.Context, scope corescope.Scope, day string) ([]coreschedule.WindowView, error)
+	ListWindows(ctx context.Context, scope corescope.Scope, day string, refresh bool) ([]coreschedule.WindowView, error)
 }
 
 // TimePrefs 是自选用例端口（实现为 app/timepref.Service）。
@@ -109,7 +112,7 @@ func (h *Handler) Windows(c *gin.Context, params oapi.ScheduleWindowsParams) {
 	if day == "" {
 		day = h.today()
 	}
-	views, err := h.planner.ListWindows(c.Request.Context(), scope, day)
+	views, err := h.planner.ListWindows(c.Request.Context(), scope, day, refreshFlag(params.Refresh))
 	if err != nil {
 		fail(c, err)
 		return
@@ -127,7 +130,8 @@ func (h *Handler) Preview(c *gin.Context, params oapi.SchedulePreviewParams) {
 	if !ok {
 		return
 	}
-	if !h.authorizeTask(c, scope, string(params.SchoolId), string(params.TaskId)) {
+	task, ok := h.authorizeTask(c, scope, string(params.SchoolId), string(params.TaskId))
+	if !ok {
 		return
 	}
 	in := h.input(params.Day, string(params.SchoolId), string(params.TaskId))
@@ -136,7 +140,7 @@ func (h *Handler) Preview(c *gin.Context, params oapi.SchedulePreviewParams) {
 		fail(c, err)
 		return
 	}
-	respond.JSON(c.Writer, 200, planResponse(p))
+	respond.JSON(c.Writer, 200, planResponse(p, task.Enabled))
 }
 
 // Plan 实现 POST /api/schedule/plan。
@@ -151,7 +155,9 @@ func (h *Handler) Plan(c *gin.Context, _ oapi.SchedulePlanParams) {
 		return
 	}
 	// 任务归属与作用域先判：跨校任务在建计划前回 404。
-	if !h.authorizeTask(c, scope, body.SchoolId, body.TaskId) {
+	// 停用任务的 409 由用例层给出：判据只在一处（k0y-6）。
+	task, ok := h.authorizeTask(c, scope, body.SchoolId, body.TaskId)
+	if !ok {
 		return
 	}
 	in := h.input(body.Day, body.SchoolId, body.TaskId)
@@ -160,7 +166,7 @@ func (h *Handler) Plan(c *gin.Context, _ oapi.SchedulePlanParams) {
 		fail(c, err)
 		return
 	}
-	respond.JSON(c.Writer, 200, planResponse(p))
+	respond.JSON(c.Writer, 200, planResponse(p, task.Enabled))
 }
 
 // Override 实现 POST /api/schedule/override。
@@ -181,16 +187,18 @@ func (h *Handler) Override(c *gin.Context, _ oapi.ScheduleOverrideParams) {
 		fail(c, err)
 		return
 	}
-	respond.JSON(c.Writer, 200, planResponse(p))
+	// 覆盖只在启用任务上成功：用例层守卫保证（k0y-6）。
+	respond.JSON(c.Writer, 200, planResponse(p, true))
 }
 
 // CapacityReport 实现 GET /api/capacity。
+// 默认只读缓存；refresh=true 才重新发现平台窗口（k0y-4）。
 func (h *Handler) CapacityReport(c *gin.Context, params oapi.CapacityGetParams) {
 	scope, ok := h.principal(c)
 	if !ok {
 		return
 	}
-	if !h.authorizeTask(c, scope, string(params.SchoolId), string(params.TaskId)) {
+	if _, ok := h.authorizeTask(c, scope, string(params.SchoolId), string(params.TaskId)); !ok {
 		return
 	}
 	day := ""
@@ -201,7 +209,8 @@ func (h *Handler) CapacityReport(c *gin.Context, params oapi.CapacityGetParams) 
 		day = h.today()
 	}
 	in := h.input(day, string(params.SchoolId), string(params.TaskId))
-	p, err := h.planner.Preview(c.Request.Context(), in)
+	in.Refresh = refreshFlag(params.Refresh)
+	p, err := h.planner.Report(c.Request.Context(), in)
 	if err != nil {
 		fail(c, err)
 		return
@@ -264,20 +273,26 @@ func (h *Handler) TimePrefSet(c *gin.Context, _ oapi.TimePrefSetParams) {
 	respond.JSON(c.Writer, 200, timePrefView(view))
 }
 
-// authorizeTask 判任务在作用域内且属于声明的学校。
+// authorizeTask 判任务在作用域内且属于声明的学校，并返回任务元数据。
 // 跨校任务回 404（不区分"没有"与"不给你看"）；
 // 同校但 school_id 与 task_id 不配套是参数错误，回 400。
-func (h *Handler) authorizeTask(c *gin.Context, scope corescope.Scope, schoolID, taskID string) bool {
+func (h *Handler) authorizeTask(c *gin.Context, scope corescope.Scope, schoolID, taskID string) (coreschedule.TaskInfo, bool) {
 	task, err := h.planner.Task(c.Request.Context(), scope, taskID)
 	if err != nil {
 		fail(c, err)
-		return false
+		return coreschedule.TaskInfo{}, false
 	}
 	if task.SchoolID != schoolID {
 		fail(c, errs.New(errs.CodeValidation, "task does not belong to the school"))
-		return false
+		return coreschedule.TaskInfo{}, false
 	}
-	return true
+	return task, true
+}
+
+// refreshFlag 把可选的 refresh 查询参数折成布尔值。
+// 缺省即只读缓存：只有显式 refresh=true 才重新发现（k0y-4）。
+func refreshFlag(v *bool) bool {
+	return v != nil && *v
 }
 
 // input 组装计划输入。day 为空由调用方决定是否补今天。
@@ -375,7 +390,8 @@ func windowView(v coreschedule.WindowView) oapi.ScheduleWindow {
 }
 
 // planResponse 把预览转成传输形状。
-func planResponse(p appschedule.Preview) oapi.SchedulePlan {
+// enabled 来自任务元数据：停用任务只可预览，计划响应必须能辨识（k0y-6）。
+func planResponse(p appschedule.Preview, enabled bool) oapi.SchedulePlan {
 	rows := make([]oapi.ScheduleRow, len(p.Rows))
 	for i, r := range p.Rows {
 		rows[i] = oapi.ScheduleRow{AccountId: r.AccountID, RunAt: r.RunAt}
@@ -385,7 +401,7 @@ func planResponse(p appschedule.Preview) oapi.SchedulePlan {
 		hist[strconv.Itoa(k)] = v
 	}
 	return oapi.SchedulePlan{
-		Day: p.Day, Source: oapi.ScheduleWindowSource(p.Source),
+		Day: p.Day, Enabled: enabled, Source: oapi.ScheduleWindowSource(p.Source),
 		WindowStart: p.WindowStart, WindowEnd: p.WindowEnd, Version: p.Version,
 		Capacity: p.Capacity, Demand: p.Demand, Shortfall: p.Shortfall,
 		Histogram: hist, Rows: rows,

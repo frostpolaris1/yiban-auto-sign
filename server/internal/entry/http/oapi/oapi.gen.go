@@ -731,6 +731,10 @@ type SchedulePlan struct {
 	Day      string `json:"day"`
 	Demand   int    `json:"demand"`
 
+	// Enabled Whether the school task is enabled. A disabled task can be
+	// previewed, but Build and override reject it with 409 conflict.
+	Enabled bool `json:"enabled"`
+
 	// Histogram Account count per five-minute slice, keyed by slice index.
 	Histogram map[string]int `json:"histogram"`
 	Rows      []ScheduleRow  `json:"rows"`
@@ -773,11 +777,12 @@ type ScheduleWindow struct {
 	SchoolId   string     `json:"school_id"`
 	SchoolName string     `json:"school_name"`
 
-	// Source platform, cache, fallback or override; null when the window is not
+	// Source platform, cache, fallback or override; null when no window is
 	// cached for the day.
 	Source *string `json:"source"`
 
-	// Start Null when the window is not cached for the day yet.
+	// Start Null when no window is cached for the day. An uncached day is
+	// discovered once, so null means no platform window was reported.
 	Start    *time.Time `json:"start"`
 	TaskId   string     `json:"task_id"`
 	TaskName string     `json:"task_name"`
@@ -1099,6 +1104,11 @@ type CapacityGetParams struct {
 
 	// Day Business day YYYY-MM-DD; defaults to today in the server time zone.
 	Day *string `form:"day,omitempty" json:"day,omitempty"`
+
+	// Refresh Discover the platform window again and store the result. Default
+	// false reads the daily cache first. A valid override keeps the
+	// cached window unchanged (discovery still runs).
+	Refresh *bool `form:"refresh,omitempty" json:"refresh,omitempty"`
 }
 
 // PhotoRetentionSetParams defines parameters for PhotoRetentionSet.
@@ -1172,6 +1182,11 @@ type SchedulePreviewParams struct {
 type ScheduleWindowsParams struct {
 	// Day Business day YYYY-MM-DD; defaults to today in the server time zone.
 	Day *string `form:"day,omitempty" json:"day,omitempty"`
+
+	// Refresh Discover the platform window again and store the result. Default
+	// false reads the daily cache first. A valid override keeps the
+	// cached window unchanged (discovery still runs).
+	Refresh *bool `form:"refresh,omitempty" json:"refresh,omitempty"`
 }
 
 // SchoolListParams defines parameters for SchoolList.
@@ -2152,6 +2167,14 @@ func (siw *ServerInterfaceWrapper) CapacityGet(c *gin.Context) {
 		return
 	}
 
+	// ------------- Optional query parameter "refresh" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "refresh", c.Request.URL.Query(), &params.Refresh, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter refresh: %w", err), http.StatusBadRequest)
+		return
+	}
+
 	for _, middleware := range siw.HandlerMiddlewares {
 		middleware(c)
 		if c.IsAborted() {
@@ -2609,6 +2632,14 @@ func (siw *ServerInterfaceWrapper) ScheduleWindows(c *gin.Context) {
 	err = runtime.BindQueryParameterWithOptions("form", true, false, "day", c.Request.URL.Query(), &params.Day, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
 	if err != nil {
 		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter day: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "refresh" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "refresh", c.Request.URL.Query(), &params.Refresh, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter refresh: %w", err), http.StatusBadRequest)
 		return
 	}
 
