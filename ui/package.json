@@ -27,11 +27,14 @@
     "verify": "npm run lint && npm run check:api && npm run test:unit && node scripts/token-gate.mjs --self-test && npm run gate:tokens && node scripts/structure-gate.mjs --self-test && npm run gate:structure && node scripts/doc-ref-gate.mjs --self-test && npm run gate:docs && node scripts/license-gate.mjs --self-test && npm run gate:license && npm run build"
   },
   "dependencies": {
+    "@formkit/auto-animate": "0.10.0",
+    "@number-flow/react": "0.6.2",
     "@tanstack/react-query": "5.104.5",
     "@tanstack/react-router": "1.170.46",
     "radix-ui": "1.8.1",
     "react": "19.3.1",
-    "react-dom": "19.3.1"
+    "react-dom": "19.3.1",
+    "sonner": "2.0.8"
   },
   "devDependencies": {
     "@babel/parser": "7.29.11",

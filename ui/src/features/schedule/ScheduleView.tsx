@@ -12,17 +12,18 @@
  * 日期写入查询串；缺省取上海日历的今天（应用统一按 Asia/Shanghai 渲染）。
  * 「重新发现」只对这一次请求追加 refresh=true，不改变后续默认读缓存。
  * 预览只读；落库与覆盖都要先过确认弹窗，确认前不发写请求。
+ * 写操作成功的反馈走 toast；错误反馈留在确认层内，可回看。
  * Esc 只关最上层弹窗，关哪层由本页状态决定，不依赖 Radix 的层栈。
  */
 
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Alert } from '@/components/ui/Alert'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { ConfirmModal } from '@/components/ui/ConfirmModal'
 import { DeniedCard } from '@/components/ui/DeniedCard'
 import { PageHeader } from '@/components/ui/PageHeader'
+import { notifySuccess } from '@/components/ui/toast'
 import { TextInput } from '@/components/ui/Input'
 import type { Role } from '@/lib/api/auth'
 import {
@@ -84,7 +85,6 @@ export function ScheduleView({ day, onDayChange }: ScheduleViewProps) {
   const [confirm, setConfirm] = useState<ConfirmState | null>(null)
   const [confirmReturn, setConfirmReturn] = useState<HTMLElement | null>(null)
   const [confirmError, setConfirmError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<{ id: number; text: string } | null>(null)
 
   const previewKey = [
     'schedule-preview',
@@ -118,7 +118,7 @@ export function ScheduleView({ day, onDayChange }: ScheduleViewProps) {
       // 写进预览缓存：预览显示落库后的版本与来源，不再滞留写库前状态。
       queryClient.setQueryData(previewKey, plan)
       void queryClient.invalidateQueries({ queryKey: ['schedule-windows'] })
-      setNotice({ id: Date.now(), text: `已落库 ${activeDay} 的计划` })
+      notifySuccess(`已落库 ${activeDay} 的计划`)
     },
     onError: (error) => setConfirmError(scheduleErrorText(error)),
   })
@@ -132,7 +132,7 @@ export function ScheduleView({ day, onDayChange }: ScheduleViewProps) {
       setConfirmError(null)
       setOverrideOpen(false)
       void queryClient.invalidateQueries({ queryKey: ['schedule-windows'] })
-      setNotice({ id: Date.now(), text: `已写入覆盖，计划已重建（v${plan.version}）` })
+      notifySuccess(`已写入覆盖，计划已重建（v${plan.version}）`)
     },
     onError: (error) => setConfirmError(scheduleErrorText(error)),
   })
@@ -217,14 +217,6 @@ export function ScheduleView({ day, onDayChange }: ScheduleViewProps) {
         }
         subtitle="按日查看任务窗口。预览只读；落库与覆盖会写库，覆盖会立即重排 pending 行。"
       />
-
-      {notice ? (
-        <div className="app-alert-block">
-          <Alert key={notice.id} tone="success" title="操作结果" dismissible>
-            {notice.text}
-          </Alert>
-        </div>
-      ) : null}
 
       {!allowed ? (
         <DeniedCard eyebrow="Schedule" reason={DENY_REASON} />

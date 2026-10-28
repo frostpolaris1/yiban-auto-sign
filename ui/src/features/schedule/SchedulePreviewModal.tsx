@@ -9,14 +9,16 @@
  * 预览只读：本件不发请求。两个写动作的确认由调用方管。
  * 停用任务照样可预览，但「落库此计划」「写入覆盖」置灰并给原因。
  * 窗口版本 `v0` 表示纯预览；覆盖重建后版本非零。
+ * 三个数字用滚动组件渲染，颜色继承 `app-metric-*` 容器。
  */
 
 import type { SchedulePlan, ScheduleWindow } from '@/lib/api/schedule'
 import { Alert } from '@/components/ui/Alert'
+import { AnimatedNumber } from '@/components/ui/AnimatedNumber'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
-import { formatDateTime, formatNumber } from '@/lib/format'
+import { formatDateTime } from '@/lib/format'
 import { histogramBars } from './drafts'
 import { sourceLabel, sourceTone } from './display'
 import { ScheduleHistogram } from './ScheduleHistogram'
@@ -128,18 +130,22 @@ export function SchedulePreviewModal({
           <div className="app-metric-grid">
             <div className="app-metric">
               <span className="app-metric-label">容量</span>
-              <span className="app-metric-value">{formatNumber(plan.capacity)}</span>
+              <span className="app-metric-value">
+                <AnimatedNumber value={plan.capacity} />
+              </span>
             </div>
             <div className="app-metric">
               <span className="app-metric-label">需求</span>
-              <span className="app-metric-value">{formatNumber(plan.demand)}</span>
+              <span className="app-metric-value">
+                <AnimatedNumber value={plan.demand} />
+              </span>
             </div>
             <div className="app-metric">
               <span className="app-metric-label">缺口</span>
               <span
                 className={`app-metric-value${plan.shortfall > 0 ? ' app-metric-alert' : ''}`}
               >
-                {formatNumber(plan.shortfall)}
+                <AnimatedNumber value={plan.shortfall} />
               </span>
             </div>
           </div>

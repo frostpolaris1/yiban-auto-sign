@@ -22,6 +22,8 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | @floating-ui/dom | 1.8.0 | MIT | 运行时 |
 | @floating-ui/react-dom | 2.1.9 | MIT | 运行时 |
 | @floating-ui/utils | 0.2.12 | MIT | 运行时 |
+| @formkit/auto-animate | 0.10.0 | MIT | 运行时 |
+| @number-flow/react | 0.6.2 | MIT | 运行时 |
 | @oxc-project/types | 0.155.0 | MIT | 开发 |
 | @playwright/test | 1.64.1 | Apache-2.0 | 开发 |
 | @radix-ui/number | 1.1.3 | MIT | 运行时 |
@@ -136,6 +138,7 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | csstype | 3.2.3 | MIT | 运行时 |
 | detect-libc | 2.1.2 | Apache-2.0 | 开发 |
 | detect-node-es | 1.1.0 | MIT | 运行时 |
+| esm-env | 1.2.2 | MIT | 运行时 |
 | fdir | 6.5.0 | MIT | 开发 |
 | fsevents | 2.3.3 | MIT | 开发 |
 | get-nonce | 1.0.1 | MIT | 运行时 |
@@ -153,6 +156,7 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | lightningcss-win32-arm64-msvc | 1.33.0 | MPL-2.0 | 开发 |
 | lightningcss-win32-x64-msvc | 1.33.0 | MPL-2.0 | 开发 |
 | nanoid | 3.3.20 | MIT | 开发 |
+| number-flow | 0.6.2 | MIT | 运行时 |
 | picocolors | 1.1.1 | ISC | 开发 |
 | picomatch | 4.0.7 | MIT | 开发 |
 | playwright | 1.64.1 | Apache-2.0 | 开发 |
@@ -168,6 +172,7 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | scheduler | 0.28.0 | MIT | 运行时 |
 | seroval | 1.7.2 | MIT | 运行时 |
 | seroval-plugins | 1.7.2 | MIT | 运行时 |
+| sonner | 2.0.8 | MIT | 运行时 |
 | source-map-js | 1.2.2 | BSD-3-Clause | 开发 |
 | tinyglobby | 0.2.17 | MIT | 开发 |
 | tslib | 2.8.1 | 0BSD | 运行时 |
@@ -178,4 +183,4 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | use-sync-external-store | 1.7.0 | MIT | 运行时 |
 | vite | 8.3.5 | MIT | 开发 |
 
-共 163 个包（运行时 92，开发 71）。
+共 168 个包（运行时 97，开发 71）。

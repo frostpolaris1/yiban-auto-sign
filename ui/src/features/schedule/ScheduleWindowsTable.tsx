@@ -9,8 +9,12 @@
  * 窗口只显示上海墙钟时分；start 或 end 缺一即视为平台未报窗口。
  * 平台未报窗口的行禁用「查看计划」：没有窗口就没有可预览的计划。
  * 行高沿用 `app-row-table` 的 48px 拍板值。
+ * 行增删与重排走 180ms 过渡；不改行内按钮的点击语义。
+ * 过渡库会永久给 tbody 写 `position: relative`：表体文字由次像素抗锯齿变为灰度。
+ * 视觉基线按此口径拍，不是颜色或字号变化。
  */
 
+import { useAutoAnimate } from '@formkit/auto-animate/react'
 import type { ScheduleWindow } from '@/lib/api/schedule'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
@@ -37,6 +41,11 @@ export function ScheduleWindowsTable({
   onRetry,
   onPreview,
 }: ScheduleWindowsTableProps) {
+  // 列表过渡：180ms 与 vendor 过渡同量级；尊重系统「减少动态效果」偏好。
+  const [tbodyRef] = useAutoAnimate<HTMLTableSectionElement>({
+    duration: 180,
+    disrespectUserMotionPreference: false,
+  })
   return (
     <div className="table-scroll">
       <table className="data-table app-row-table">
@@ -51,7 +60,7 @@ export function ScheduleWindowsTable({
             <th scope="col">操作</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody ref={tbodyRef}>
           {error ? (
             <tr>
               <td colSpan={6}>

@@ -1,24 +1,19 @@
 /**
  * **功能**
- * 数字、百分比与时间格式化，加上日期解析与窗口时间换算。全仓只此一份。
+ * 百分比与时间格式化，加上日期解析与窗口时间换算。全仓只此一份。
  *
  * **归属**
  * `lib` 工具层：纯计算，无 React 依赖。
  *
  * **口径**
- * 语言固定 `zh-CN`，千分位随该语言。
+ * 语言固定 `zh-CN`。
+ * 数字由组件层渲染。本文件只格式化百分比与时间。
  * 百分比小数位由调用方给。缺省 0 位即整数。
  * 时间固定按 `Asia/Shanghai` 渲染，换机器不改文本。
  * 格式化函数对空值与非日期文本原样退回，不抛错。
  * 业务日 `YYYY-MM-DD` 与上海墙钟的换算也在此处：上海时区固定 +08:00，没有夏令时。
  * `shanghaiInputToRfc3339` 是唯一的例外：非法输入抛错，由调用方先校验。
  */
-
-const numberFormatter = new Intl.NumberFormat('zh-CN')
-
-export function formatNumber(value: number): string {
-  return numberFormatter.format(value)
-}
 
 export function formatPercent(value: number, fractionDigits = 0): string {
   return `${value.toFixed(fractionDigits)}%`

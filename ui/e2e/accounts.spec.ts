@@ -416,9 +416,13 @@ test('rows are 48px high and the status wears a badge', async ({ page }) => {
   await openAccounts(page)
 
   const row = page.getByRole('row').filter({ has: page.getByRole('button', { name: '查看 138****8000' }) })
-  const box = await row.boundingBox()
-  expect(box, 'the row is rendered').not.toBeNull()
-  expect(Math.round(box!.height), 'row height').toBe(48)
+  // 行进入有 180ms 过渡：缩放期间的包围盒不是布局高度。等过渡落定再量。
+  await expect
+    .poll(async () => {
+      const box = await row.boundingBox()
+      return box === null ? null : Math.round(box.height)
+    })
+    .toBe(48)
   await expect(row.locator('.badge')).toHaveText('待审核')
 
   const layout = await page.evaluate(() => {

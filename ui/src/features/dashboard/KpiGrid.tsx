@@ -8,11 +8,12 @@
  * **口径**
  * 派生计数在 `display.ts`；本组件不认角色，也不认端点。
  * `value === null` 显示 `—`：没有数据就不编数字。
- * 数字用 `formatNumber`，千分位随 `zh-CN`。
+ * 数字用滚动组件渲染，语言 `zh-CN`，千分位与该语言一致。
+ * 终值是可见文本：数据到位后直接等于期望数字。
  */
 
+import { AnimatedNumber } from '@/components/ui/AnimatedNumber'
 import { Icon } from '@/components/ui/Icon'
-import { formatNumber } from '@/lib/format'
 import type { KpiCard } from './display'
 
 /** 卡片 DOM 照 Adminator `src/index.html`；环比与趋势标记已去掉。 */
@@ -30,7 +31,7 @@ export function KpiGrid({ cards }: { cards: KpiCard[] }) {
             </div>
           </div>
           <div className="kpi-value">
-            {card.value === null ? '—' : formatNumber(card.value)}
+            {card.value === null ? '—' : <AnimatedNumber value={card.value} />}
             {card.value === null ? null : <sup>{card.unit}</sup>}
           </div>
           <div className="kpi-compare">

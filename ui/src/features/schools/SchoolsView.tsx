@@ -10,16 +10,17 @@
  * 只渲染无权限卡片；导航项由 `nav.ts` 的角色元数据隐藏。
  * 页内动作无权限时置灰并给原因（admin 的编辑与管理员入口）。
  * 列表与管理员列表走 react-query；写操作成功后失效对应缓存。
+ * 写操作成功的反馈走 toast；错误反馈留在原模态内，可回看。
  * 学校没有删除端点，页面不出删除入口。
  */
 
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Alert } from '@/components/ui/Alert'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { DeniedCard } from '@/components/ui/DeniedCard'
 import { PageHeader } from '@/components/ui/PageHeader'
+import { notifySuccess } from '@/components/ui/toast'
 import type { Role } from '@/lib/api/auth'
 import { describeApiError } from '@/lib/api/client'
 import {
@@ -83,8 +84,6 @@ export function SchoolsView() {
   const [removeReturnFocus, setRemoveReturnFocus] = useState<HTMLElement | null>(null)
   const [removeError, setRemoveError] = useState<string | null>(null)
 
-  const [notice, setNotice] = useState<{ id: number; text: string } | null>(null)
-
   /** 学校改名会影响账号页的学校下拉；两处缓存同批失效。 */
   const invalidateSchools = () => {
     void queryClient.invalidateQueries({ queryKey: ['schools-page'] })
@@ -99,7 +98,7 @@ export function SchoolsView() {
       setStack(emptyCursorStack())
       setCreateOpen(false)
       setCreateError(null)
-      setNotice({ id: Date.now(), text: `已新建 ${school.name}` })
+      notifySuccess(`已新建 ${school.name}`)
     },
     onError: (error) => setCreateError(describeApiError(error)),
   })
@@ -112,7 +111,7 @@ export function SchoolsView() {
       setEditError(null)
       // 抽屉可能开着同一所学校：用服务端响应替换快照。
       setDetail((previous) => (previous && previous.id === school.id ? school : previous))
-      setNotice({ id: Date.now(), text: `已保存 ${school.name}` })
+      notifySuccess(`已保存 ${school.name}`)
     },
     onError: (error) => setEditError(describeApiError(error)),
   })
@@ -123,18 +122,21 @@ export function SchoolsView() {
     onSuccess: (_admin, input) => {
       void queryClient.invalidateQueries({ queryKey: ['school-admins', input.schoolId] })
       setAdminsError(null)
+      notifySuccess(`已添加管理员 ${input.userId}`)
     },
     onError: (error) => setAdminsError(describeApiError(error)),
   })
 
   const removeMutation = useMutation({
-    mutationFn: (input: { schoolId: string; uid: string }) =>
+    // `email` 只用于成功文案，不进请求体。
+    mutationFn: (input: { schoolId: string; uid: string; email: string }) =>
       removeSchoolAdmin(input.schoolId, input.uid),
     onSuccess: (_result, input) => {
       void queryClient.invalidateQueries({ queryKey: ['school-admins', input.schoolId] })
       setRemoveTarget(null)
       setRemoveError(null)
       setAdminsError(null)
+      notifySuccess(`已移除管理员 ${input.email}`)
     },
     onError: (error) => setRemoveError(describeApiError(error)),
   })
@@ -202,14 +204,6 @@ export function SchoolsView() {
           </div>
         }
       />
-
-      {notice ? (
-        <div className="app-alert-block">
-          <Alert key={notice.id} tone="success" title="操作结果" dismissible>
-            {notice.text}
-          </Alert>
-        </div>
-      ) : null}
 
       {!allowed ? (
         <DeniedCard eyebrow="Schools" reason={denyReason(role, 'view') ?? ''} />
@@ -319,7 +313,11 @@ export function SchoolsView() {
         onConfirm={() => {
           if (!adminsTarget || !removeTarget) return
           setRemoveError(null)
-          removeMutation.mutate({ schoolId: adminsTarget.id, uid: removeTarget.user_id })
+          removeMutation.mutate({
+            schoolId: adminsTarget.id,
+            uid: removeTarget.user_id,
+            email: removeTarget.email,
+          })
         }}
       />
     </>

@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
+import { visibleText } from './support/visible-text'
 import {
   type DashboardApiCall,
   capacityCalls,
@@ -46,8 +47,9 @@ async function openDashboard(page: Page) {
   await expect(page.getByRole('heading', { level: 1 })).toContainText('签到运行')
 }
 
-async function expectKpi(page: Page, label: string, value: RegExp | string) {
-  await expect(kpiCard(page, label).locator('.kpi-value')).toHaveText(value)
+/** 数字由滚动组件渲染：读用户可见文本，不读 DOM 里的全部字形。 */
+async function expectKpi(page: Page, label: string, value: string) {
+  await expect.poll(() => visibleText(kpiCard(page, label).locator('.kpi-value'))).toBe(value)
 }
 
 function capacityParams(api: DashboardApiCall | undefined, name: string): string | undefined {
@@ -89,10 +91,10 @@ test('invariant 2: the four KPI counts match the rows', async ({ page }) => {
   await mockDashboardApi(page, { role: 'user', signStatusItems: items })
   await openDashboard(page)
 
-  await expectKpi(page, '账号总数', /^7\s*个$/)
-  await expectKpi(page, '已签', /^2\s*个$/)
-  await expectKpi(page, '进行中/待签', /^2\s*个$/)
-  await expectKpi(page, '异常', /^2\s*个$/)
+  await expectKpi(page, '账号总数', '7个')
+  await expectKpi(page, '已签', '2个')
+  await expectKpi(page, '进行中/待签', '2个')
+  await expectKpi(page, '异常', '2个')
   await expect(signTable(page).locator('tbody tr')).toHaveCount(7)
 })
 
@@ -100,10 +102,10 @@ test('invariant 2: no accounts means zero KPI and two empty cards', async ({ pag
   await mockDashboardApi(page, { role: 'user', signStatusItems: [], diagnosticsItems: [] })
   await openDashboard(page)
 
-  await expectKpi(page, '账号总数', /^0\s*个$/)
-  await expectKpi(page, '已签', /^0\s*个$/)
-  await expectKpi(page, '进行中/待签', /^0\s*个$/)
-  await expectKpi(page, '异常', /^0\s*个$/)
+  await expectKpi(page, '账号总数', '0个')
+  await expectKpi(page, '已签', '0个')
+  await expectKpi(page, '进行中/待签', '0个')
+  await expectKpi(page, '异常', '0个')
   await expect(page.getByText('今日暂无签到任务')).toHaveCount(2)
   await expect(signTable(page).locator('tbody tr')).toHaveCount(1)
 })
@@ -192,7 +194,7 @@ test('invariant 5: capacity defaults to the first usable task and follows the pi
   const card = capacityCard(page)
   const gap = card.locator('.app-metric').filter({ hasText: '缺口' })
   await expect(gap.locator('.badge')).toHaveClass(/success/)
-  await expect(gap).toContainText('0')
+  await expect.poll(() => visibleText(gap.locator('.badge'))).toBe('0')
   await expect(card).toContainText('08:30–09:00')
   await expect(card.locator('.badge').filter({ hasText: '平台' })).toBeVisible()
 
@@ -200,7 +202,7 @@ test('invariant 5: capacity defaults to the first usable task and follows the pi
   await expect.poll(() => capacityParams(lastCapacityCall(api), 'school_id')).toBe('school-beta')
   expect(capacityParams(lastCapacityCall(api), 'task_id')).toBe('task-night')
   expect(capacityParams(lastCapacityCall(api), 'day')).toMatch(/^\d{4}-\d{2}-\d{2}$/)
-  await expect(gap).toContainText('6')
+  await expect.poll(() => visibleText(gap.locator('.badge'))).toBe('6')
   await expect(gap.locator('.badge')).toHaveClass(/danger/)
 })
 
@@ -211,7 +213,7 @@ test('invariant 6: an empty window list says so and sends no capacity request', 
   await openDashboard(page)
 
   await expect(page.getByText('今日无可用窗口')).toBeVisible()
-  await expectKpi(page, '任务总数', /^0\s*项$/)
+  await expectKpi(page, '任务总数', '0项')
   expect(capacityCalls(api), 'no task means no capacity request').toHaveLength(0)
 })
 
@@ -233,12 +235,12 @@ test('invariant 6: a failing sign-status read leaves the diagnostics card usable
   await expect(card).toContainText('签到状态暂不可用')
   await expect(card.getByRole('button', { name: '重试' })).toBeVisible()
   // 取不到数据时 KPI 回退占位；重试成功后回升（两步都钉住）。
-  await expectKpi(page, '账号总数', /^—$/)
+  await expectKpi(page, '账号总数', '—')
   await expect(diagnosticsTable(page).locator('tbody tr')).toHaveCount(4)
 
   await card.getByRole('button', { name: '重试' }).click()
   await expect(signTable(page).locator('tbody tr')).toHaveCount(4)
-  await expectKpi(page, '账号总数', /^4\s*个$/)
+  await expectKpi(page, '账号总数', '4个')
 })
 
 test('invariant 6: a failing diagnostics read leaves the sign-status card usable', async ({
@@ -259,7 +261,7 @@ test('invariant 6: a failing diagnostics read leaves the sign-status card usable
   await expect(card).toContainText('诊断暂不可用')
   await expect(card.getByRole('button', { name: '重试' })).toBeVisible()
   await expect(signTable(page).locator('tbody tr')).toHaveCount(4)
-  await expectKpi(page, '账号总数', /^4\s*个$/)
+  await expectKpi(page, '账号总数', '4个')
 
   await card.getByRole('button', { name: '重试' }).click()
   await expect(diagnosticsTable(page).locator('tbody tr')).toHaveCount(4)
@@ -282,13 +284,15 @@ test('invariant 6: a failing capacity read leaves the KPI usable and recovers on
   const card = capacityCard(page)
   await expect(card).toContainText('容量暂不可用')
   await expect(card.getByRole('button', { name: '重试' })).toBeVisible()
-  await expectKpi(page, '任务总数', /^4\s*项$/)
-  await expectKpi(page, '窗口已报', /^3\s*项$/)
-  await expectKpi(page, '停用任务', /^1\s*项$/)
+  await expectKpi(page, '任务总数', '4项')
+  await expectKpi(page, '窗口已报', '3项')
+  await expectKpi(page, '停用任务', '1项')
 
   await card.getByRole('button', { name: '重试' }).click()
   await expect(card.locator('.app-metric')).toHaveCount(3)
-  await expect(card.locator('.app-metric').filter({ hasText: '容量' })).toContainText('40')
+  await expect
+    .poll(() => visibleText(card.locator('.app-metric').filter({ hasText: '容量' })))
+    .toBe('容量40')
 })
 
 test('invariant 6: a failing window read marks the capacity card and leaves KPI dashes', async ({

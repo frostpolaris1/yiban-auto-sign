@@ -9,17 +9,19 @@
  * 端点 `GET /api/capacity` 的 `x-roles` 是 master/admin；本卡不自行取数。
  * 选项只取「启用且起止时间都非 null」的今日窗口；默认选第一项。
  * `shortfall>0` 用 danger 徽章；其余用 success。
+ * 三个数字用滚动组件渲染，颜色继承所在容器（正文色或徽章色）。
  * 窗口失败与容量失败各有错误态与「重试」，不整页挂。
  * 无可用任务时只说「今日无可用窗口」，不发容量请求。
  */
 
 import { Alert } from '@/components/ui/Alert'
+import { AnimatedNumber } from '@/components/ui/AnimatedNumber'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { SelectInput } from '@/components/ui/Input'
 import type { CapacityReport } from '@/lib/api/schedule'
-import { formatClock, formatNumber } from '@/lib/format'
+import { formatClock } from '@/lib/format'
 import {
   EMPTY_WINDOW_TEXT,
   type CapacityOption,
@@ -101,17 +103,21 @@ export function CapacityCard({
               <div className="app-metric-grid">
                 <div className="app-metric">
                   <div className="app-metric-label">容量</div>
-                  <div className="app-metric-value">{formatNumber(report.capacity)}</div>
+                  <div className="app-metric-value">
+                    <AnimatedNumber value={report.capacity} />
+                  </div>
                 </div>
                 <div className="app-metric">
                   <div className="app-metric-label">需求</div>
-                  <div className="app-metric-value">{formatNumber(report.demand)}</div>
+                  <div className="app-metric-value">
+                    <AnimatedNumber value={report.demand} />
+                  </div>
                 </div>
                 <div className="app-metric">
                   <div className="app-metric-label">缺口</div>
                   <div className="app-metric-value">
                     <Badge tone={report.shortfall > 0 ? 'danger' : 'success'}>
-                      {formatNumber(report.shortfall)}
+                      <AnimatedNumber value={report.shortfall} />
                     </Badge>
                   </div>
                 </div>

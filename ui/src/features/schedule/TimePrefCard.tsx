@@ -10,6 +10,7 @@
  * `allowed=false` 是部署开关关闭：读数照常，控件禁用并说明原因。
  * 保存与清除都先经确认弹窗；确认前不发 PUT。
  * 请求体只含 offset_min；null 表示清除。
+ * 保存成功的反馈走 toast；429／403 等错误留在确认层内，可回看。
  */
 
 import { useState } from 'react'
@@ -19,6 +20,7 @@ import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { ConfirmModal } from '@/components/ui/ConfirmModal'
 import { SelectInput } from '@/components/ui/Input'
+import { notifySuccess } from '@/components/ui/toast'
 import { ApiError } from '@/lib/api/client'
 import { getTimePref, setTimePref, type TimePref } from '@/lib/api/schedule'
 import {
@@ -47,7 +49,6 @@ export function TimePrefCard() {
   const [returnFocus, setReturnFocus] = useState<HTMLElement | null>(null)
   const [confirmError, setConfirmError] = useState<string | null>(null)
   const [inlineError, setInlineError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
 
   const updateMutation = useMutation({
     mutationFn: setTimePref,
@@ -57,7 +58,7 @@ export function TimePrefCard() {
       setConfirmError(null)
       setInlineError(null)
       setDraft(null)
-      setNotice(
+      notifySuccess(
         pref.offset_min === null
           ? '已清除时间偏好'
           : `已保存时间偏好：${timePrefLabel(pref.offset_min)}`,
@@ -142,7 +143,6 @@ export function TimePrefCard() {
           onChange={(event) => {
             setDraft(event.target.value)
             setInlineError(null)
-            setNotice(null)
           }}
         />
         <Button
@@ -165,14 +165,6 @@ export function TimePrefCard() {
         <div className="app-alert-block">
           <Alert tone="danger" title="输入有误">
             {inlineError}
-          </Alert>
-        </div>
-      ) : null}
-
-      {notice ? (
-        <div className="app-alert-block">
-          <Alert tone="success" title="操作结果" dismissible>
-            {notice}
           </Alert>
         </div>
       ) : null}
