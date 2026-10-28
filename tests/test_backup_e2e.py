@@ -671,6 +671,21 @@ class BomEnvKeyExtractionTest(_BackupRunBase):
         self.assertNotIn("keys/secret-key.env", names, "缺键时不得留空密钥件：%s" % names)
         self.assertIn("警告", out, "缺键必须留下可见告警")
 
+    def test_key_file_without_data_key_and_env_without_key_leaves_no_file(self):
+        # KEY_FILE 存在但缺数据密钥、.env 也没有：accounts-key.env 同样不得留空文件。
+        session_key = os.path.join(self.tmp, "accounts-key")
+        with io.open(session_key, "w", encoding="utf-8", newline="\n") as f:
+            f.write("YIBAN_SECRET_KEY=legacy-session-key\n")
+        env = os.path.join(self.app, "data", ".env")
+        with io.open(env, "w", encoding="utf-8-sig", newline="\n") as f:
+            f.write("YIBAN_SECRET_KEY=e2e-not-a-real-secret\n")
+        r, out = self._run_plaintext({"KEY_FILE": session_key})
+        self.assertEqual(r.returncode, 6, f"明文轮 rc 契约不变：{out}")
+        with tarfile.open(self._archive_name()) as t:
+            names = t.getnames()
+        self.assertNotIn("keys/accounts-key.env", names, "缺键时不得留空密钥件：%s" % names)
+        self.assertIn("警告", out, "缺键必须留下可见告警")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
