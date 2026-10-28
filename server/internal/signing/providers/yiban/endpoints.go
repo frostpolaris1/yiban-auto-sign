@@ -21,6 +21,7 @@ type Endpoints struct {
 	SignPosition string
 	SignIn       string
 	DeviceState  string
+	UploadUri    string
 }
 
 // DefaultEndpoints 返回平台默认端点。
@@ -33,5 +34,6 @@ func DefaultEndpoints() Endpoints {
 		SignPosition: "https://api.uyiban.com/nightAttendance/student/index/signPosition",
 		SignIn:       "https://api.uyiban.com/nightAttendance/student/index/signIn",
 		DeviceState:  "https://api.uyiban.com/device/student/index/getState",
+		UploadUri:    "https://api.uyiban.com/nightAttendance/student/index/uploadUri",
 	}
 }
