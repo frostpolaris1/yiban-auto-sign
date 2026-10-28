@@ -39,6 +39,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/image"
 	corephoto "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/photo"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
+	"github.com/google/uuid"
 )
 
 // Options 是图片预处理参数。零值表示不限尺寸、保持输入格式。
@@ -265,6 +266,10 @@ func (s *Service) GetSchoolDefault(ctx context.Context, scope corescope.Scope, s
 func (s *Service) SetSchoolDefault(ctx context.Context, scope corescope.Scope, schoolID string, photoID *string, actor appaudit.Actor) (SchoolDefaultPhoto, error) {
 	if err := requireSchoolWriter(scope); err != nil {
 		return SchoolDefaultPhoto{}, err
+	}
+	// 审计 TargetID 与库内形状统一小写：路径里的 UUID 大小写不敏感。
+	if u, err := uuid.Parse(schoolID); err == nil {
+		schoolID = u.String()
 	}
 	// 院校面先判：跨校 admin 与不存在的学校一律 404，
 	// 不借照片校验的 400 泄漏照片可见性。

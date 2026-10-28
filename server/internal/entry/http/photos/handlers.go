@@ -23,6 +23,7 @@ package photos
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -162,14 +163,28 @@ func (h *Handler) SchoolDefaultPhotoGet(c *gin.Context, id oapi.SchoolID) {
 }
 
 // SchoolDefaultPhotoSet 实现 PUT /api/schools/{id}/default-photo。
-// photo_id 缺失与 null 同义：清除默认图。
+// photo_id 键必须出现；显式 null 才是「清除默认图」（契约 required）。
 func (h *Handler) SchoolDefaultPhotoSet(c *gin.Context, id oapi.SchoolID, _ oapi.SchoolDefaultPhotoSetParams) {
 	scope, actor, ok := h.principal(c)
 	if !ok {
 		return
 	}
+	raw, err := io.ReadAll(io.LimitReader(c.Request.Body, 1<<20))
+	if err != nil {
+		respond.BindError(c.Writer, c.Request, err)
+		return
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		respond.BindError(c.Writer, c.Request, err)
+		return
+	}
+	if _, present := keys["photo_id"]; !present {
+		fail(c, errs.New(errs.CodeValidation, "photo_id is required; send null to clear the default photo"))
+		return
+	}
 	var body oapi.SchoolDefaultPhotoUpdate
-	if err := c.ShouldBindJSON(&body); err != nil {
+	if err := json.Unmarshal(raw, &body); err != nil {
 		respond.BindError(c.Writer, c.Request, err)
 		return
 	}
