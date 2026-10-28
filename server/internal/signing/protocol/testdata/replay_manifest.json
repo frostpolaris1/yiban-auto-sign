@@ -31,6 +31,12 @@
       "state": "ok",
       "provenance": "captured"
     },
+    "sign_position_done": {
+      "file": "sign_position_done.json",
+      "endpoint": "GET /nightAttendance/student/index/signPosition",
+      "state": "already_done",
+      "provenance": "captured"
+    },
     "device_state_ok": {
       "file": "device_state.json",
       "endpoint": "GET /device/student/index/getState",

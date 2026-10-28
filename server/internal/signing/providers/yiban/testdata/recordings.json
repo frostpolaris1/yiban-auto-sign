@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "note": "录播链登记。形状取自 2026-10-28 实拍（bd yiban-auto-sign-4sk 注释）；全部夹具值为合成值，不是抓包原文。响应体在 server/internal/signing/protocol/testdata/，只取 captured 档。",
+  "scenarios": {
+    "already_done": {
+      "note": "已签档。实拍链为登录 4 跳＋getState＋signPosition；本栈 DiscoverWindow 不读设备态，只发登录 4 跳＋signPosition。State=3 是唯一实拍证实的终态档位。",
+      "driver": "DiscoverWindow",
+      "hops": [
+        "GET /code/html",
+        "POST /code/usersure",
+        "GET /iframe/index",
+        "GET /base/c/auth/yiban",
+        "GET /nightAttendance/student/index/signPosition"
+      ],
+      "responses": {
+        "signPosition": "sign_position_done.json"
+      }
+    },
+    "sign_ok": {
+      "note": "签到成功全链。实拍顺序：登录 4 跳、signPosition、getState、signIn；signIn 回执 data=true。",
+      "driver": "Sign",
+      "hops": [
+        "GET /code/html",
+        "POST /code/usersure",
+        "GET /iframe/index",
+        "GET /base/c/auth/yiban",
+        "GET /nightAttendance/student/index/signPosition",
+        "GET /device/student/index/getState",
+        "POST /nightAttendance/student/index/signIn"
+      ],
+      "responses": {
+        "signPosition": "sign_position.json",
+        "deviceState": "device_state.json",
+        "signIn": "sign_in_response.json"
+      }
+    }
+  },
+  "unrecorded": {
+    "signPosition.state=2": "未实拍，未知：State=2 的 signPosition 响应从未录制；无 Position 语义按旧实现映射，未验证。",
+    "signPosition.state=4": "未实拍，未知：State=4 的 signPosition 响应从未录制；映射按旧实现，未验证。",
+    "signPosition.state=5": "未实拍，未知：State=5 的 signPosition 响应从未录制；映射按旧实现，未验证。",
+    "signIn.code=999": "未实拍，未知：会话失效回执 code=999 从未录制；只有合成样本，仅作解析分支输入。",
+    "challenge.page": "未实拍，未知：挑战页真实触发从未捕获；只有合成标志物样本，仅作识别分支输入。"
+  }
+}

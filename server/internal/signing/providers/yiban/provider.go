@@ -46,6 +46,8 @@ func (p *Provider) Verify(ctx context.Context, req contract.VerifyRequest) (cont
 // DiscoverWindow 读取签到时间窗。
 // 平台给出「无需签到 / 已签到 / 补签中」时返回 OutcomeError，
 // 由宿主映射成 skipped 或 success。
+// State=3 已由 2026-10-28 实拍证实为已签到；
+// State=2/4/5 的映射沿用旧实现，**未实拍，未知**。
 func (p *Provider) DiscoverWindow(ctx context.Context, req contract.DiscoverRequest) (contract.Window, error) {
 	cfg, err := p.client.SignPosition(ctx, req.Account.ID, req.Credential)
 	if err != nil {
@@ -260,6 +262,10 @@ func receiptOf(data any) (string, bool) {
 	return "", false
 }
 
+// stateOutcome 把 signPosition 的 State 映射成契约结论。
+// State=3 → already_done 由 2026-10-28 实拍证实（bd yiban-auto-sign-4sk）。
+// State=2/4/5 的映射沿用旧实现，**未实拍，未知**：
+// 没有对应响应体，不得据本映射声称平台语义。
 func stateOutcome(state *int) (contract.Outcome, bool) {
 	if state == nil {
 		return "", false
