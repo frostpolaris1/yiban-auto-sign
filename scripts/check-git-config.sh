@@ -32,7 +32,12 @@ elif [ -f "$gitpath" ]; then
     gd=${line//\\//}
     case "$gd" in
         /* | [A-Za-z]:*) ;;
-        *) gd=$(cd "$repo" && cd "$gd" && pwd) ;;
+        *)
+            if ! gd=$(cd "$repo" && cd "$gd" 2>/dev/null && pwd); then
+                echo "check-git-config: $gitpath 的相对 gitdir 无法解析——门无法判定，拒绝放行" >&2
+                exit 2
+            fi
+            ;;
     esac
     # 只认 worktree gitdir 形态；不是则该文件指向别处（裸库等），无可查之物。
     case "$gd" in

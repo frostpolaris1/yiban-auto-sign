@@ -294,6 +294,11 @@ func newUpstream(t *testing.T) *upstream {
 				status := up.putStatus
 				up.mu.Unlock()
 				if status != 0 && status != http.StatusOK {
+					if status >= 300 && status < 400 {
+						// 带 Location 且目标 200：跟随重定向的实现会把 302 变成
+						// 一次成功的 GET——用于给「PUT 禁跟随」立牙。
+						w.Header().Set("Location", "/upload/redirected.jpg")
+					}
 					w.WriteHeader(status)
 					return
 				}
