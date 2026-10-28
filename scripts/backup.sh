@@ -822,15 +822,22 @@ fi
 
 # 2) 密钥：优先 /etc/yiban/accounts-key（systemd EnvironmentFile，应含数据加密密钥
 #    YIBAN_ACCOUNTS_KEY）——密钥与数据一起备份但分开放置（keys/ 子目录）
+#
+# 提取 `KEY=` 行的唯一实现：先剥 UTF-8 BOM（只可能在首行）。
+# BOM 是仓内已承认的真实形态（env_io / scripts/lib/host_paths.sh 同样显式剥）；
+# 行模型判据只此一份，不许在调用点再写裸 grep（工单 iv8：BOM 版 .env 曾被漏收）。
+env_key_lines() { # $1=文件 $2=键名
+    sed -e '1s/^\xEF\xBB\xBF//' "$1" | grep -E "^[[:space:]]*$2="
+}
 if [ -f "${KEY_FILE}" ]; then
     cp -p "${KEY_FILE}" "${TMPDIR_BAK}/keys/accounts-key"
     log "密钥来源：${KEY_FILE}"
     # 2026-08-21 修复（密钥语义冲突）：历史部署可能按旧清单把会话签名密钥
     # YIBAN_SECRET_KEY 写进了该文件——校验内容，缺数据密钥时从 .env 兜底提取
-    if ! grep -qE '^[[:space:]]*YIBAN_ACCOUNTS_KEY=' "${KEY_FILE}"; then
+    if ! env_key_lines "${KEY_FILE}" YIBAN_ACCOUNTS_KEY | grep -q .; then
         log "警告：${KEY_FILE} 内未找到 YIBAN_ACCOUNTS_KEY（疑似旧清单写入的会话密钥），尝试从 .env 兜底提取"
         if [ -f "${ENV_FILE}" ]; then
-            grep -E '^[[:space:]]*YIBAN_ACCOUNTS_KEY=' "${ENV_FILE}" > "${TMPDIR_BAK}/keys/accounts-key.env" \
+            env_key_lines "${ENV_FILE}" YIBAN_ACCOUNTS_KEY > "${TMPDIR_BAK}/keys/accounts-key.env" \
                 && log "已从 ${ENV_FILE} 兜底提取 YIBAN_ACCOUNTS_KEY（keys/accounts-key.env）" \
                 || log "警告：.env 中也未找到 YIBAN_ACCOUNTS_KEY，数据密钥未备份！恢复时 yiban.db 密文将不可解！"
         fi
@@ -839,7 +846,7 @@ else
     # 兜底：从 .env 提取 YIBAN_ACCOUNTS_KEY（账号密码 AES-GCM 数据加密密钥，
     # 见 yiban/adapters/config/account_crypto.py；会话签名密钥是另一把 YIBAN_SECRET_KEY）
     if [ -f "${ENV_FILE}" ]; then
-        grep -E '^[[:space:]]*YIBAN_ACCOUNTS_KEY=' "${ENV_FILE}" > "${TMPDIR_BAK}/keys/secret-key.env" \
+        env_key_lines "${ENV_FILE}" YIBAN_ACCOUNTS_KEY > "${TMPDIR_BAK}/keys/secret-key.env" \
             && log "密钥来源：${ENV_FILE} 内 YIBAN_ACCOUNTS_KEY（已单独提取）" \
             || log "警告：.env 中未找到 YIBAN_ACCOUNTS_KEY，密钥未备份！"
     else
