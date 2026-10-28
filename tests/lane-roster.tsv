@@ -112,6 +112,7 @@ fast	tests/test_delay_ack_frontend.py
 fast	tests/test_delete_timeline_consistency.py
 fast	tests/test_demo_data_guard.py
 fast	tests/test_deploy_deps_sync.py
+fast	tests/test_deploy_e2e_wiring.py	# 读文本 + bash -n：部署 e2e 脚本与 CI 接线（本机 8s）
 fast	tests/test_deploy_entry_imports.py
 fast	tests/test_deploy_gate_wiring.py
 fast	tests/test_deploy_gate_skip_verdict.py	# 夹具副本跑闸门摘要：SKIP 计入结论（本机 3s）

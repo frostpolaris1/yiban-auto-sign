@@ -226,3 +226,96 @@ func TestRunStartsAndStopsWorkerLoop(t *testing.T) {
 		t.Fatal("ctx 结束后 Run 必须停止执行循环")
 	}
 }
+
+// TestRunClosesPoolAfterWorkerDrain 钉住 Run 的停机顺序（工单 6jk）。
+//
+// 不变式：连接池不得在 worker 在飞结算完成前关闭。
+// 旧形状 srv.RegisterOnShutdown(stack.Close) 让 srv.Shutdown 与 loop.Stop
+// 并行关池：CountRunning 报 closed pool，在飞清零失败。
+// 本测走 Run 的真实收尾路径（ctx 取消），用协调通道把竞态变成确定性判据：
+//   - 修复后：Stop 等 100ms 仍未见关池 → sawClosed=false，收尾后才关池；
+//   - 旧形状：Shutdown 立刻并行关池 → Stop 期间看到关池 → 红。
+func TestRunClosesPoolAfterWorkerDrain(t *testing.T) {
+	t.Setenv("YIBAN_ENV", "test")
+	t.Setenv("YIBAN_HTTP_ADDR", "127.0.0.1:0")
+	t.Setenv("YIBAN_DATABASE_URL", "")
+	t.Setenv("YIBAN_HASH_PEPPER", "0123456789abcdef0123456789abcdef")
+	t.Setenv("YIBAN_CREDENTIAL_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	t.Setenv("YIBAN_PHOTO_DIR", t.TempDir())
+
+	var closed atomic.Bool
+	closedCh := make(chan struct{})
+	loop := &closeWatchingLoop{closedCh: closedCh}
+	origLoop, origBuild := newLoop, buildStack
+	newLoop = func(*Stack, time.Duration, int) loopHandle { return loop }
+	buildStack = func(*config.Config, *slog.Logger) (*Stack, error) {
+		return &Stack{
+			Engine: http.NewServeMux(),
+			Worker: &appworker.Service{},
+			Close: func() {
+				if closed.CompareAndSwap(false, true) {
+					close(closedCh)
+				}
+			},
+		}, nil
+	}
+	t.Cleanup(func() { newLoop, buildStack = origLoop, origBuild })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, slog.New(slog.NewTextHandler(io.Discard, nil))) }()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run 返回错误: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("ctx 取消后 Run 未返回")
+	}
+	if loop.sawClosed.Load() {
+		t.Fatal("连接池在 worker 结算完成前被关闭：CountRunning 会报 closed pool")
+	}
+	if !closed.Load() {
+		t.Fatal("Run 收尾后必须关闭连接池")
+	}
+}
+
+// closeWatchingLoop 在 Stop 期间观察连接池是否被关闭（最多 100ms）。
+type closeWatchingLoop struct {
+	closedCh  <-chan struct{}
+	sawClosed atomic.Bool
+}
+
+func (l *closeWatchingLoop) Start() error { return nil }
+
+func (l *closeWatchingLoop) Stop(context.Context) (int64, error) {
+	select {
+	case <-l.closedCh:
+		l.sawClosed.Store(true)
+	case <-time.After(100 * time.Millisecond):
+	}
+	return 0, nil
+}
+
+func (l *closeWatchingLoop) Err() error { return nil }
+
+// TestNewServerClosesPoolOnHTTPShutdown 钉住 NewServer 的既有契约：
+// 调用方没有显式收尾，Shutdown 必须释放连接池。
+func TestNewServerClosesPoolOnHTTPShutdown(t *testing.T) {
+	var closed atomic.Bool
+	stack := &Stack{Engine: http.NewServeMux(), Close: func() { closed.Store(true) }}
+	srv := newServerFromStack(&config.Config{HTTPAddr: "127.0.0.1:0"}, stack, true)
+	if err := srv.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	// Shutdown 用 goroutine 跑 onShutdown，给它一个调度窗口。
+	deadline := time.Now().Add(time.Second)
+	for !closed.Load() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !closed.Load() {
+		t.Fatal("NewServer 的 server 在 Shutdown 后必须释放连接池")
+	}
+}
