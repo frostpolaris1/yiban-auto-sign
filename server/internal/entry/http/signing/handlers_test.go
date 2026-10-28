@@ -334,6 +334,28 @@ func newSignRouterWithAccess(t *testing.T, authz *fakeAuthorizer, manual *fakeMa
 	return engine, issued
 }
 
+// k0y-8：可见面判据未接线＝装配错误。已知角色走到 nil 判据时必须 500
+// 响亮失败（fail-closed），不得静默放行或假装「user 被拒绝」。
+func TestSignWithoutAccessWiringFailsLoud(t *testing.T) {
+	issuer := &fakeIssuer{secret: []byte("0123456789abcdef0123456789abcdef")}
+	issued, err := issuer.Issue(context.Background(), coreauth.User{
+		ID: "u1", Email: "boss@example.com", Role: coreauth.RoleMaster, Status: coreauth.StatusActive,
+	})
+	if err != nil {
+		t.Fatalf("issue session: %v", err)
+	}
+	handler := signinghttp.NewHandler(&fakeService{}, &fakeAuthorizer{scope: corescope.Master()}, &fakeVerifier{}).
+		WithManual(&fakeManual{})
+	engine, err := router.New(router.Options{Sessions: issuer, InsecureCookies: true, Signing: handler})
+	if err != nil {
+		t.Fatalf("router: %v", err)
+	}
+	rec := callSign(t, engine, issued)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("未接线 status = %d, want 500: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func callSign(t *testing.T, engine http.Handler, issued coreauth.Issued) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/api/accounts/acc-1/sign", nil)

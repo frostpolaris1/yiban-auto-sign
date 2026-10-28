@@ -374,6 +374,14 @@ func TestTimePrefRoutes(t *testing.T) {
 	if prefs.sets != 1 {
 		t.Fatalf("缺键不得调用 Set：sets = %d", prefs.sets)
 	}
+	// 显式 null 是合法清除：键在、值为 nil → 200 且 Set 收到 nil。
+	rec = do(t, engine, issued, http.MethodPut, "/api/me/time-pref", map[string]any{"offset_min": nil})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("显式 null put status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if prefs.sets != 2 || prefs.lastOffset != nil {
+		t.Fatalf("null 清除未生效：sets=%d lastOffset=%v", prefs.sets, prefs.lastOffset)
+	}
 
 	engine, issued = newRouter(t, corescope.Master(), &fakePlanner{}, prefs)
 	rec = do(t, engine, issued, http.MethodGet, "/api/me/time-pref", nil)

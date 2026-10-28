@@ -58,7 +58,6 @@ func TestTimePrefRepoUpsertAndClear(t *testing.T) {
 	}
 }
 
-
 // k0y-3：冷却判定与写入是同一条语句——冷却内第二次写零行、值不变；
 // 冷却归零后放行。并发写只有一个能落由同一条 WHERE 保证（单行 UPSERT）。
 func TestTimePrefRepoPutWithinCooldown(t *testing.T) {
@@ -82,12 +81,70 @@ func TestTimePrefRepoPutWithinCooldown(t *testing.T) {
 	if pref.OffsetMin == nil || *pref.OffsetMin != 30 {
 		t.Fatalf("冷却内写入改了值：%+v", pref)
 	}
+	if !pref.UpdatedAt.Equal(now) {
+		t.Fatalf("冷却内写入改了 updated_at：%v, want %v", pref.UpdatedAt, now)
+	}
 	if ok, err := repo.PutWithin(e.ctx, user.ID, &second, now.Add(2*time.Minute), time.Minute); err != nil || !ok {
 		t.Fatalf("冷却过后写入 = ok=%v err=%v, want ok=true", ok, err)
 	}
 	third := 15
 	if ok, err := repo.PutWithin(e.ctx, user.ID, &third, now.Add(3*time.Minute), 0); err != nil || !ok {
 		t.Fatalf("冷却归零应放行 = ok=%v err=%v", ok, err)
+	}
+	pref, err = repo.Get(e.ctx, user.ID)
+	if err != nil {
+		t.Fatalf("get after cooldown-zero write: %v", err)
+	}
+	if pref.OffsetMin == nil || *pref.OffsetMin != 15 {
+		t.Fatalf("冷却归零写入未生效：%+v", pref)
+	}
+}
+
+// k0y-3 并发面：两个并发 PutWithin 只能有一个落（条件 UPSERT 的原子性）。
+// 用同一起跑栅栏把两次写压在一起；断言恰好一个 ok、最终值属于胜者。
+func TestTimePrefRepoPutWithinConcurrentSingleWinner(t *testing.T) {
+	e := newEnv(t)
+	repo := pg.NewTimePrefRepo(e.db)
+	user := e.createUser("pref-race@example.com")
+	now := time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)
+
+	start := make(chan struct{})
+	type outcome struct {
+		ok     bool
+		err    error
+		offset int
+	}
+	results := make(chan outcome, 2)
+	for _, offset := range []int{30, 45} {
+		offset := offset
+		go func() {
+			<-start
+			ok, err := repo.PutWithin(e.ctx, user.ID, &offset, now, time.Minute)
+			results <- outcome{ok: ok, err: err, offset: offset}
+		}()
+	}
+	close(start)
+	winners := 0
+	winnerOffset := 0
+	for i := 0; i < 2; i++ {
+		got := <-results
+		if got.err != nil {
+			t.Fatalf("并发写错误：%v", got.err)
+		}
+		if got.ok {
+			winners++
+			winnerOffset = got.offset
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("并发写胜者 = %d, want 恰好 1", winners)
+	}
+	pref, err := repo.Get(e.ctx, user.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if pref.OffsetMin == nil || *pref.OffsetMin != winnerOffset {
+		t.Fatalf("最终值 = %+v, want 胜者的 %d", pref, winnerOffset)
 	}
 }
 

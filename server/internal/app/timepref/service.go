@@ -38,7 +38,8 @@ const (
 // Get 在无记录时必须返回 errs.ErrNotFound；其他错误原样上抛。
 // Store 是自选持久化端口。
 // **冷却判定在存储侧一次完成**（条件 UPSERT＋受影响行数）：先读后写会在两次
-// 并发写之间留下竞态窗口（k0y-3）。updated=false 表示冷却未过、未写入。
+// 并发写之间留下竞态窗口（k0y-3，并发面由 pg 真库用例钉住）。
+// updated=false 表示冷却未过、未写入。
 type Store interface {
 	Get(ctx context.Context, userID string) (coreschedule.TimePref, error)
 	PutWithin(ctx context.Context, userID string, offset *int, now time.Time, cooldown time.Duration) (bool, error)
