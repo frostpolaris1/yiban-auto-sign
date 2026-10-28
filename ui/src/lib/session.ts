@@ -14,6 +14,7 @@
 import { useSyncExternalStore } from 'react'
 import { useQuery, type UseQueryResult } from '@tanstack/react-query'
 import { fetchMe, type SessionUser } from './api/auth'
+import { SHOWCASE } from './showcase-mode'
 
 export const ME_QUERY_KEY = ['me'] as const
 
@@ -21,10 +22,10 @@ export const ME_QUERY_KEY = ['me'] as const
  * 展示模式（VITE_SHOWCASE=1 构建）：不发会话请求，返回合成 master 会话。
  * 用于纯静态展示部署（如 probe 机）：访客可浏览全部页面与组件画廊，
  * 各页数据取展示夹具（showcase.ts），无任何网络请求。
- * 正常构建（不带该变量）零行为变化。判据必须是全等 '1'：
- * Vite 注入的是字符串，`"0"` 也是真值。
+ * 写入口由各 feature 按 `READ_ONLY_REASON` 置灰。
+ * 判定唯一实现在 `showcase-mode.ts`，此处转出给历史读者。
  */
-export const SHOWCASE: boolean = import.meta.env.VITE_SHOWCASE === '1'
+export { SHOWCASE }
 
 const SHOWCASE_USER: SessionUser = {
   id: 'showcase',

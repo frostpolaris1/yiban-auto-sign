@@ -12,15 +12,21 @@
  * 暂停与恢复是 (角色, 状态) 二元谓词：
  * 暂停只从 active 出发；恢复只认匹配的暂停种类。
  * 无会话角色时一律禁用，原因与「有角色但权限不足」分开写。
+ * 展示构建（`VITE_SHOWCASE=1`）只读：全部写动作返回同一条原因，
+ * 该原因优先于角色与状态判断；读动作（schoolFilter）不受影响。
  */
 
 import type { AccountStatus } from '../../lib/api/account'
 import type { Role } from '../../lib/api/auth'
+import { READ_ONLY_REASON, SHOWCASE } from '../../lib/showcase-mode'
 
 export type AccountAction = 'sign' | 'verify' | 'review' | 'schoolFilter'
 
 /** 行内写操作的两种暂停方向：暂停与恢复共用一个端点。 */
 export type AccountActionKind = 'pause' | 'resume' | 'sign' | 'verify' | 'review'
+
+/** 写动作清单。展示构建下这些一律禁用；读动作不在其中。 */
+const WRITE_ACTIONS: readonly AccountAction[] = ['sign', 'verify', 'review']
 
 const ALLOWED: Record<AccountAction, readonly Role[]> = {
   sign: ['master', 'admin', 'user'],
@@ -39,6 +45,7 @@ export function denyReason(
   role: Role | null | undefined,
   action: AccountAction,
 ): string | null {
+  if (SHOWCASE && WRITE_ACTIONS.includes(action)) return READ_ONLY_REASON
   if (can(role, action)) return null
   if (!role) return '会话角色未识别'
   return '需要管理员权限'
@@ -70,6 +77,7 @@ export function pauseDenyReason(
   role: Role | null | undefined,
   status: AccountStatus,
 ): string | null {
+  if (SHOWCASE) return READ_ONLY_REASON
   if (canChangePause(role, status)) return null
   if (!role) return '会话角色未识别'
   if (pauseDirection(status) === 'resume') return '该暂停种类只能由对应角色恢复'
@@ -94,6 +102,7 @@ export function menuDenyReason(
   role: Role | null | undefined,
   item: RowMenuItem,
 ): string | null {
+  if (SHOWCASE) return READ_ONLY_REASON
   if (canUseMenu(role, item)) return null
   if (!role) return '会话角色未识别'
   return '仅 user/admin 可设置'

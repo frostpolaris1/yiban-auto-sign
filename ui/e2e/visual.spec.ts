@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect, type Locator, type Page } from '@playwright/test'
 import { mockAccountsApi } from './support/fake-accounts-api'
 import { mockDashboardApi } from './support/fake-dashboard-api'
 import { SCHEDULE_DAY, mockScheduleApi } from './support/fake-schedule-api'
@@ -10,8 +10,10 @@ import { visibleText } from './support/visible-text'
  *
  * 矩阵：4 条常驻路由 + 仪表盘两视角，× 2 套主题 × 2 个宽度 = 24 张截图。
  * 仪表盘按角色分视角：user 是签到状态／诊断，admin 是窗口／容量体检。
- * 时间片页按固定业务日另拍（缺省日期会随日历漂移，不能进常驻矩阵）。
+ * 时间片页按固定业务日另拍（缺省日期会随日历漂移，不能进常驻矩阵），
+ * 补 1440 与 390 两个宽度。
  * 另有抽屉／模态／菜单态、无权限页与时间偏好卡等按需快照。
+ * 溢出判据跑全部常驻路由与时间片页；`/` 另跑 user 视角（另一套布局）。
  * 基线随 spec 入库，目录是 `e2e/visual.spec.ts-snapshots/`。
  * 首次运行 `npm run test:visual:update`。此后每次必须 0 差异。
  */
@@ -87,6 +89,15 @@ async function openWithTheme(
   await page.waitForTimeout(200)
 }
 
+/** 等一组滚动数字全部落定：逐个断言可见终值，避免拍到中间帧。 */
+async function expectNumbers(scope: Locator, expected: readonly string[]) {
+  // 个数也要钉：新增一格而没写期望值时，这里会红而不是静默跳过。
+  await expect(scope).toHaveCount(expected.length)
+  for (let index = 0; index < expected.length; index += 1) {
+    await expect.poll(() => visibleText(scope.nth(index))).toBe(expected[index])
+  }
+}
+
 for (const theme of THEMES) {
   for (const viewport of VIEWPORTS) {
     for (const view of DASHBOARD_VIEWS) {
@@ -99,19 +110,12 @@ for (const theme of THEMES) {
           await expect(page.getByRole('table', { name: '今日签到状态' })).toContainText(
             '账号 #1',
           )
-          await expect
-            .poll(() =>
-              visibleText(
-                page.locator('.kpi-card').filter({ hasText: '账号总数' }).locator('.kpi-value'),
-              ),
-            )
-            .toBe('4个')
+          await expectNumbers(page.locator('.kpi-card .kpi-value'), ['4个', '1个', '1个', '1个'])
         } else {
           await expect(page.getByLabel('任务')).toHaveValue('school-alpha:task-daily')
           await expect(page.locator('.app-metric')).toHaveCount(3)
-          await expect
-            .poll(() => visibleText(page.locator('.app-metric').filter({ hasText: '容量' })))
-            .toBe('容量40')
+          await expectNumbers(page.locator('.app-metric'), ['容量40', '需求12', '缺口0'])
+          await expectNumbers(page.locator('.kpi-card .kpi-value'), ['4项', '3项', '1项', '2项'])
         }
         await expect(page).toHaveScreenshot(`${view.name}-${theme}-${viewport.name}.png`, {
           fullPage: true,
@@ -265,6 +269,16 @@ for (const theme of THEMES) {
     await expect(page).toHaveScreenshot(`schedule-${theme}-1440.png`, { fullPage: true })
   })
 
+  test(`visual schedule narrow ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await openWithTheme(page, `/schedule?day=${SCHEDULE_DAY}`, theme)
+    // 表格在取数前就以「加载中…」占位存在：等首行数据到位再拍。
+    const table = page.getByRole('table', { name: '时间片窗口' })
+    await expect(table).toBeVisible()
+    await expect(table).toContainText('合成学校甲')
+    await expect(page).toHaveScreenshot(`schedule-${theme}-390.png`, { fullPage: true })
+  })
+
   test(`visual schedule preview ${theme}`, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })
     await openWithTheme(page, `/schedule?day=${SCHEDULE_DAY}`, theme)
@@ -273,9 +287,8 @@ for (const theme of THEMES) {
     await expect(dialog).toBeVisible()
     await expect(dialog).toContainText('窗口版本')
     await expect(dialog).toContainText('v0')
-    await expect
-      .poll(() => visibleText(dialog.locator('.app-metric').nth(0)))
-      .toBe('容量40')
+    // 三个数字并行滚动：三格都落定再拍，避免高负载下拍到中间帧。
+    await expectNumbers(dialog.locator('.app-metric'), ['容量40', '需求12', '缺口0'])
     await expect(page).toHaveScreenshot(`schedule-preview-${theme}-1440.png`)
   })
 
@@ -302,13 +315,7 @@ for (const theme of THEMES) {
     await page.setViewportSize({ width: 1440, height: 900 })
     await openWithTheme(page, '/', theme, 'user')
     await expect(page.locator('.app-pref-current')).toHaveText('窗口开始 + 15 分钟')
-    await expect
-      .poll(() =>
-        visibleText(
-          page.locator('.kpi-card').filter({ hasText: '账号总数' }).locator('.kpi-value'),
-        ),
-      )
-      .toBe('4个')
+    await expectNumbers(page.locator('.kpi-card .kpi-value'), ['4个', '1个', '1个', '1个'])
     await expect(page).toHaveScreenshot(`dashboard-time-pref-${theme}-1440.png`, {
       fullPage: true,
     })
@@ -336,18 +343,23 @@ for (const theme of THEMES) {
 
 test('no horizontal overflow at either width, in either theme', async ({ page }) => {
   // 时间片页不进口径矩阵（缺省日期会漂移），但溢出判据一样要钉：固定业务日补拍。
-  const paths = [...ROUTES.map((route) => route.path), `/schedule?day=${SCHEDULE_DAY}`]
+  // 看板的 user 视角是另一套布局：`/` 追加 user 一遍；其余路由 master 即可。
+  const targets = [
+    ...ROUTES.map((route) => ({ path: route.path, role: 'master' as const })),
+    { path: `/schedule?day=${SCHEDULE_DAY}`, role: 'master' as const },
+    { path: '/', role: 'user' as const },
+  ]
   for (const theme of THEMES) {
-    for (const path of paths) {
+    for (const { path, role } of targets) {
       await page.setViewportSize({ width: 390, height: 844 })
-      await openWithTheme(page, path, theme)
+      await openWithTheme(page, path, theme, role)
       const narrow = await page.evaluate(() => ({
         scrollWidth: document.documentElement.scrollWidth,
         clientWidth: document.documentElement.clientWidth,
       }))
       expect(
         narrow.scrollWidth,
-        `${path} overflows at 390px in ${theme}: ${narrow.scrollWidth} > ${narrow.clientWidth}`,
+        `${role} ${path} overflows at 390px in ${theme}: ${narrow.scrollWidth} > ${narrow.clientWidth}`,
       ).toBeLessThanOrEqual(narrow.clientWidth + 1)
 
       await page.setViewportSize({ width: 1440, height: 900 })
@@ -357,7 +369,7 @@ test('no horizontal overflow at either width, in either theme', async ({ page })
       }))
       expect(
         wide.scrollWidth,
-        `${path} overflows at 1440px in ${theme}: ${wide.scrollWidth} > ${wide.clientWidth}`,
+        `${role} ${path} overflows at 1440px in ${theme}: ${wide.scrollWidth} > ${wide.clientWidth}`,
       ).toBeLessThanOrEqual(wide.clientWidth + 1)
     }
   }

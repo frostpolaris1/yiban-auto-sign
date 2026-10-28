@@ -9,6 +9,7 @@
  * 打开即按 `next_cursor` 拉全部页，封顶 10 页（`lib/api/school`）。
  * 添加只收 user_id：契约没有用户选择器，也没有邀请流。
  * 移除先发到调用方的确认模态；本组件不发 DELETE。
+ * 展示构建只读：添加与移除都置灰，原因写在添加按钮下方。
  */
 
 import { useEffect, useState } from 'react'
@@ -22,7 +23,7 @@ import { TextInput } from '@/components/ui/Input'
 import { Modal } from '@/components/ui/Modal'
 import { formatDateTime } from '@/lib/format'
 import { roleLabel } from '@/lib/identity'
-import { SHOWCASE } from '@/lib/session'
+import { READ_ONLY_REASON, SHOWCASE } from '@/lib/showcase-mode'
 import { showcaseSchoolAdmins } from '@/lib/showcase'
 
 type SchoolAdminsModalProps = {
@@ -65,6 +66,7 @@ export function SchoolAdminsModal({
 
   const admins = adminsQuery.data ?? []
   const listError = adminsQuery.isError ? describeApiError(adminsQuery.error) : null
+  const readOnlyReason = SHOWCASE ? READ_ONLY_REASON : null
 
   return (
     <Modal
@@ -93,7 +95,8 @@ export function SchoolAdminsModal({
         />
         <Button
           variant="primary"
-          disabled={adding || userId.trim() === ''}
+          disabled={adding || userId.trim() === '' || readOnlyReason !== null}
+          title={readOnlyReason ?? undefined}
           onClick={() => {
             const id = userId.trim()
             if (id === '') return
@@ -103,6 +106,7 @@ export function SchoolAdminsModal({
         >
           添加管理员
         </Button>
+        {readOnlyReason ? <span className="app-deny-note">{readOnlyReason}</span> : null}
       </div>
 
       {error ? (
@@ -142,7 +146,8 @@ export function SchoolAdminsModal({
                 variant="ghost"
                 size="sm"
                 aria-label={`移除 ${admin.email}`}
-                disabled={adding}
+                title={readOnlyReason ?? undefined}
+                disabled={adding || readOnlyReason !== null}
                 onClick={(event) => {
                   event.stopPropagation()
                   onRemove(admin, event.currentTarget)

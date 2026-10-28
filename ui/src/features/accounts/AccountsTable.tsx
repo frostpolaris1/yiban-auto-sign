@@ -9,6 +9,8 @@
  * 服务端游标分页，没有总数。页脚只报当前位置与本页条数。
  * 行高固定 48px；表格最小宽度由内容决定，窄屏在 `.table-scroll` 内滚动。
  * 无权限与不可评审一律置灰，并给一句可见原因。
+ * 置灰判据只取原因：原因非空即可用性为假，二者不会分叉。
+ * 展示构建只读时原因统一为 `展示模式只读`，不再追加状态类说明。
  * 行增删与重排走 180ms 过渡；不改行点击、菜单与焦点还原的语义。
  * 过渡库会永久给 tbody 写 `position: relative`：表体文字由次像素抗锯齿变为灰度。
  * 视觉基线按此口径拍，不是颜色或字号变化。
@@ -21,11 +23,11 @@ import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Icon } from '@/components/ui/Icon'
 import { formatDateTime } from '@/lib/format'
+import { SHOWCASE } from '@/lib/showcase-mode'
 import { isPending, statusLabel, statusTone } from './display'
 import { AccountRowMenu } from './AccountRowMenu'
 import {
   can,
-  canChangePause,
   denyReason,
   pauseDenyReason,
   pauseDirection,
@@ -119,7 +121,6 @@ export function AccountsTable({
             {rows.map((account) => {
               const pauseKind: AccountActionKind = pauseDirection(account.status)
               const pauseLabel = pauseKind === 'pause' ? '暂停' : '恢复'
-              const pauseAllowed = canChangePause(role, account.status)
               const pauseReason = pauseDenyReason(role, account.status)
               const reviewBlockedByStatus = can(role, 'review') && !isPending(account.status)
 
@@ -129,7 +130,8 @@ export function AccountsTable({
                 if (reason) notes.add(reason)
               }
               if (pauseReason) notes.add(pauseReason)
-              if (reviewBlockedByStatus) notes.add('仅待审核账号可评审')
+              // 展示构建只读时状态类说明是噪声：写动作都不可用。
+              if (!SHOWCASE && reviewBlockedByStatus) notes.add('仅待审核账号可评审')
 
               const signReason = denyReason(role, 'sign')
               const verifyReason = denyReason(role, 'verify')
@@ -177,7 +179,7 @@ export function AccountsTable({
                         size="sm"
                         aria-label={`${pauseLabel} ${account.phone_masked}`}
                         title={pauseReason ?? undefined}
-                        disabled={!pauseAllowed}
+                        disabled={pauseReason !== null}
                         onClick={(event) => {
                           event.stopPropagation()
                           onAction(account, pauseKind, event.currentTarget)
@@ -190,7 +192,7 @@ export function AccountsTable({
                         size="sm"
                         aria-label={`签到 ${account.phone_masked}`}
                         title={signReason ?? undefined}
-                        disabled={!can(role, 'sign')}
+                        disabled={signReason !== null}
                         onClick={(event) => {
                           event.stopPropagation()
                           onAction(account, 'sign', event.currentTarget)
@@ -203,7 +205,7 @@ export function AccountsTable({
                         size="sm"
                         aria-label={`验证 ${account.phone_masked}`}
                         title={verifyReason ?? undefined}
-                        disabled={!can(role, 'verify')}
+                        disabled={verifyReason !== null}
                         onClick={(event) => {
                           event.stopPropagation()
                           onAction(account, 'verify', event.currentTarget)
@@ -216,7 +218,7 @@ export function AccountsTable({
                         size="sm"
                         aria-label={`评审 ${account.phone_masked}`}
                         title={reviewReason ?? undefined}
-                        disabled={!can(role, 'review') || !isPending(account.status)}
+                        disabled={reviewReason !== null}
                         onClick={(event) => {
                           event.stopPropagation()
                           onAction(account, 'review', event.currentTarget)

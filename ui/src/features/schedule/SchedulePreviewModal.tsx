@@ -8,6 +8,7 @@
  * **口径**
  * 预览只读：本件不发请求。两个写动作的确认由调用方管。
  * 停用任务照样可预览，但「落库此计划」「写入覆盖」置灰并给原因。
+ * 展示构建只读：两个写按钮始终置灰，原因写在正文顶部。
  * 窗口版本 `v0` 表示纯预览；覆盖重建后版本非零。
  * 三个数字用滚动组件渲染，颜色继承 `app-metric-*` 容器。
  */
@@ -19,6 +20,7 @@ import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
 import { formatDateTime } from '@/lib/format'
+import { READ_ONLY_REASON, SHOWCASE } from '@/lib/showcase-mode'
 import { histogramBars } from './drafts'
 import { sourceLabel, sourceTone } from './display'
 import { ScheduleHistogram } from './ScheduleHistogram'
@@ -48,8 +50,9 @@ export function SchedulePreviewModal({
   onOverride,
   onBuild,
 }: SchedulePreviewModalProps) {
-  const writable = plan?.enabled === true && !pending
-  const denyTitle = '任务已停用，无法落库或覆盖'
+  const readOnlyReason = SHOWCASE ? READ_ONLY_REASON : null
+  const writable = plan?.enabled === true && !pending && readOnlyReason === null
+  const denyTitle = readOnlyReason ?? '任务已停用，无法落库或覆盖'
 
   return (
     <Modal
@@ -87,6 +90,12 @@ export function SchedulePreviewModal({
         </>
       }
     >
+      {readOnlyReason ? (
+        <p>
+          <span className="app-deny-note">{readOnlyReason}</span>
+        </p>
+      ) : null}
+
       {pending && !plan ? <p className="app-muted">正在取计划…</p> : null}
 
       {error ? (
