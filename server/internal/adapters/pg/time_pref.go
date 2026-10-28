@@ -31,16 +31,20 @@ func (r *TimePrefRepo) Get(ctx context.Context, userID string) (coreschedule.Tim
 	return p, nil
 }
 
-// Put 覆盖写一个用户的自选。offset 为 nil 时写 NULL（清除偏好）。
-func (r *TimePrefRepo) Put(ctx context.Context, userID string, offset *int, now time.Time) error {
-	_, err := r.db.q(ctx).Exec(ctx,
+// PutWithin 覆盖写一个用户的自选（offset 为 nil 时写 NULL＝清除偏好），
+// 但仅当距上次写入已过 cooldown。冷却判定与写入是同一条语句（条件 UPSERT），
+// 并发两次写只有一个能落（k0y-3）；返回 updated=false 表示冷却未过。
+func (r *TimePrefRepo) PutWithin(ctx context.Context, userID string, offset *int, now time.Time, cooldown time.Duration) (bool, error) {
+	tag, err := r.db.q(ctx).Exec(ctx,
 		`INSERT INTO time_prefs (user_id, offset_min, updated_at) VALUES ($1::uuid, $2, $3)
-		 ON CONFLICT (user_id) DO UPDATE SET offset_min = EXCLUDED.offset_min, updated_at = EXCLUDED.updated_at`,
-		userID, offset, now)
+		 ON CONFLICT (user_id) DO UPDATE SET offset_min = EXCLUDED.offset_min, updated_at = EXCLUDED.updated_at
+		 WHERE $4::double precision <= 0
+		    OR time_prefs.updated_at <= $3::timestamptz - make_interval(secs => $4::double precision)`,
+		userID, offset, now, cooldown.Seconds())
 	if err != nil {
-		return mapInsertForeignKey(err)
+		return false, mapInsertForeignKey(err)
 	}
-	return nil
+	return tag.RowsAffected() == 1, nil
 }
 
 // Offsets 批量读一组用户的有效偏好，返回 userID → offset_min。

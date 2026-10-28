@@ -23,7 +23,7 @@ func TestTimePrefRepoUpsertAndClear(t *testing.T) {
 		t.Fatalf("缺行错误 = %v, want not_found", err)
 	}
 	offset := 30
-	if err := repo.Put(e.ctx, user.ID, &offset, now); err != nil {
+	if _, err := repo.PutWithin(e.ctx, user.ID, &offset, now, 0); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	pref, err := repo.Get(e.ctx, user.ID)
@@ -35,7 +35,7 @@ func TestTimePrefRepoUpsertAndClear(t *testing.T) {
 	}
 
 	later := 45
-	if err := repo.Put(e.ctx, user.ID, &later, now.Add(time.Minute)); err != nil {
+	if _, err := repo.PutWithin(e.ctx, user.ID, &later, now.Add(time.Minute), 0); err != nil {
 		t.Fatalf("put again: %v", err)
 	}
 	pref, err = repo.Get(e.ctx, user.ID)
@@ -46,7 +46,7 @@ func TestTimePrefRepoUpsertAndClear(t *testing.T) {
 		t.Fatalf("覆盖失败: %+v", pref)
 	}
 
-	if err := repo.Put(e.ctx, user.ID, nil, now.Add(2*time.Minute)); err != nil {
+	if _, err := repo.PutWithin(e.ctx, user.ID, nil, now.Add(2*time.Minute), 0); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
 	pref, err = repo.Get(e.ctx, user.ID)
@@ -55,6 +55,39 @@ func TestTimePrefRepoUpsertAndClear(t *testing.T) {
 	}
 	if pref.OffsetMin != nil {
 		t.Fatalf("清除后仍有偏移: %+v", pref)
+	}
+}
+
+
+// k0y-3：冷却判定与写入是同一条语句——冷却内第二次写零行、值不变；
+// 冷却归零后放行。并发写只有一个能落由同一条 WHERE 保证（单行 UPSERT）。
+func TestTimePrefRepoPutWithinCooldown(t *testing.T) {
+	e := newEnv(t)
+	repo := pg.NewTimePrefRepo(e.db)
+	user := e.createUser("pref-cool@example.com")
+	now := time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)
+
+	first := 30
+	if ok, err := repo.PutWithin(e.ctx, user.ID, &first, now, time.Minute); err != nil || !ok {
+		t.Fatalf("首次写入 = ok=%v err=%v", ok, err)
+	}
+	second := 45
+	if ok, err := repo.PutWithin(e.ctx, user.ID, &second, now.Add(30*time.Second), time.Minute); err != nil || ok {
+		t.Fatalf("冷却内写入 = ok=%v err=%v, want ok=false", ok, err)
+	}
+	pref, err := repo.Get(e.ctx, user.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if pref.OffsetMin == nil || *pref.OffsetMin != 30 {
+		t.Fatalf("冷却内写入改了值：%+v", pref)
+	}
+	if ok, err := repo.PutWithin(e.ctx, user.ID, &second, now.Add(2*time.Minute), time.Minute); err != nil || !ok {
+		t.Fatalf("冷却过后写入 = ok=%v err=%v, want ok=true", ok, err)
+	}
+	third := 15
+	if ok, err := repo.PutWithin(e.ctx, user.ID, &third, now.Add(3*time.Minute), 0); err != nil || !ok {
+		t.Fatalf("冷却归零应放行 = ok=%v err=%v", ok, err)
 	}
 }
 
@@ -67,10 +100,10 @@ func TestTimePrefRepoOffsets(t *testing.T) {
 	missing := e.createUser("pref-d@example.com")
 	now := time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)
 	offset := 60
-	if err := repo.Put(e.ctx, withPref.ID, &offset, now); err != nil {
+	if _, err := repo.PutWithin(e.ctx, withPref.ID, &offset, now, 0); err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	if err := repo.Put(e.ctx, cleared.ID, nil, now); err != nil {
+	if _, err := repo.PutWithin(e.ctx, cleared.ID, nil, now, 0); err != nil {
 		t.Fatalf("put nil: %v", err)
 	}
 	got, err := repo.Offsets(e.ctx, []string{withPref.ID, cleared.ID, missing.ID})
@@ -82,7 +115,7 @@ func TestTimePrefRepoOffsets(t *testing.T) {
 	}
 
 	bad := 7
-	if err := repo.Put(e.ctx, missing.ID, &bad, now); err == nil {
+	if _, err := repo.PutWithin(e.ctx, missing.ID, &bad, now, 0); err == nil {
 		t.Fatal("非 5 分钟粒度应被拒绝")
 	}
 }

@@ -25,11 +25,15 @@ func (f *fakeStore) Get(context.Context, string) (coreschedule.TimePref, error) 
 	return f.pref, nil
 }
 
-func (f *fakeStore) Put(_ context.Context, userID string, offset *int, now time.Time) error {
+func (f *fakeStore) PutWithin(_ context.Context, userID string, offset *int, now time.Time, cooldown time.Duration) (bool, error) {
+	// 与 pg 的条件 UPSERT 同语义：已有记录且未过冷却则零写。
+	if f.found && cooldown > 0 && now.Sub(f.pref.UpdatedAt) < cooldown {
+		return false, nil
+	}
 	f.pref = coreschedule.TimePref{UserID: userID, OffsetMin: offset, UpdatedAt: now}
 	f.found = true
 	f.puts = append(f.puts, offset)
-	return nil
+	return true, nil
 }
 
 func newService(t *testing.T, store *fakeStore, now time.Time, allow bool, cooldown time.Duration) *apptimepref.Service {
