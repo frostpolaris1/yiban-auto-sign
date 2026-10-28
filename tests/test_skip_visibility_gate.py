@@ -630,6 +630,12 @@ KNOWN_SKIP_SITES = json.loads(r"""
    "需要 bash（Git Bash/WSL）"
   ]
  ],
+ "tests/test_script_safety_guards.py": [
+  [
+   "skipUnless",
+   "bash 不可用：配置卫生门无法就地跑"
+  ]
+ ],
  "tests/test_sentinel_db_readonly.py": [
   [
    "SkipTest",
