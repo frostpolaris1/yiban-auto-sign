@@ -52,6 +52,13 @@ export function getCsrfToken(): string | null {
   return csrfToken
 }
 
+/** 错误信封的统一展示文本：`code · message`。非 ApiError 退回自身消息。 */
+export function describeApiError(error: unknown): string {
+  if (error instanceof ApiError) return `${error.code} · ${error.message}`
+  if (error instanceof Error) return error.message
+  return String(error)
+}
+
 export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const method = (init?.method ?? 'GET').toUpperCase()
   const response = await fetch(path, {

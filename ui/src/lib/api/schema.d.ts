@@ -325,6 +325,358 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/accounts/{id}/sign": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Queue a manual sign for today.
+         * @description Ensures today's task row exists and returns 202 with its id.
+         *     A closed window returns 409 window_closed. A run in progress returns
+         *     409 sign_running. A concluded day returns 409 already_signed.
+         *     Cross-scope accounts return 404 for every role.
+         */
+        post: operations["AccountSign"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounts/{id}/location": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the account location policy.
+         * @description mode auto clears the stored point; mode fixed requires lng and lat
+         *     inside the WGS84 range. A user may only change own accounts and an
+         *     admin only accounts of bound schools; cross-scope writes return 404.
+         *     The reason is kept by the host for audit and review. Delivering it
+         *     to the platform lands with the upload protocol slice; until then the
+         *     sign request carries it but the provider does not include it. It
+         *     applies when the fixed point falls
+         *     outside the target fence, so an out-of-range sign can be explained.
+         */
+        put: operations["AccountLocationSet"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Subscribe to the admin event stream (SSE).
+         * @description text/event-stream. Events carry id, event and data lines. master
+         *     receives every school; admin receives bound schools only (filtering
+         *     happens at the broker, not the client). Send Last-Event-ID to resume:
+         *     events buffered in-process are replayed in order; a gap larger than
+         *     the buffer answers resync followed by a snapshot. A 15s heartbeat
+         *     keeps the stream alive; 60s without an event closes the stream with
+         *     an end event. Cache-Control: no-store; X-Accel-Buffering: no.
+         */
+        get: operations["AdminEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/diagnostics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Diagnostics for the signed-in user's own accounts.
+         * @description One item per account owned by the caller, with today's task state,
+         *     run time, attempts, result word, next retry time and a closed
+         *     vocabulary suggestion (wait, retry_now, re_arm, contact_admin).
+         *     Admins see their own accounts, the same as users. No credential
+         *     detail and no raw platform text.
+         */
+        get: operations["MeDiagnostics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounts/{id}/diagnostics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Detailed diagnostics for one account.
+         * @description Single-account version of /api/me/diagnostics plus the planned
+         *     window and the bound egress label when present. Cross-user and
+         *     cross-school reads return 404.
+         */
+        get: operations["AccountDiagnostics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/sign-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Polling status for the signed-in user's own accounts.
+         * @description Lightweight per-account state for 30-60s polling. stale is true when
+         *     the row has not been updated for more than 90 seconds. Polling role
+         *     is user only.
+         */
+        get: operations["MeSignStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/schedule/windows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List task windows for a business day.
+         * @description master sees every school; admin sees bound schools only.
+         *     A task without a cached window for the day has null start and end,
+         *     because the window is not discovered yet.
+         */
+        get: operations["ScheduleWindows"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/schedule/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Preview the plan for one school task and day.
+         * @description Reads the window from the platform, then the cache, then the fallback,
+         *     and returns the exact rows Build would persist. Preview writes nothing.
+         */
+        get: operations["SchedulePreview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/schedule/plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Build and persist the plan for one school task and day.
+         * @description Writes the resolved window, rearranges pending rows when the window
+         *     changed, and inserts missing rows in one transaction. Running and
+         *     terminal rows are never moved.
+         */
+        post: operations["SchedulePlan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/schedule/override": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Replace the window of one school task for one day.
+         * @description An override wins over the platform window for the same day and keeps
+         *     its recorded reason. Pending rows are rearranged immediately; running
+         *     and terminal rows are never moved.
+         */
+        post: operations["ScheduleOverride"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/time-pref": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the signed-in user's preferred signing offset.
+         * @description offset_min is the relative minute from the effective window start.
+         *     It must be a multiple of five. allowed reports whether the deployment
+         *     enables user time preferences; a stored value stays readable when the
+         *     feature is disabled.
+         */
+        get: operations["TimePrefGet"];
+        /**
+         * Set or clear the signed-in user's preferred offset.
+         * @description offset_min null clears the preference. A change within the cooldown
+         *     window returns 429 rate_limited. The deployment gate
+         *     YIBAN_ALLOW_TIME_PREF must be on, otherwise the call returns 403.
+         */
+        put: operations["TimePrefSet"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/capacity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Report capacity and demand for one school task.
+         * @description Capacity uses the same window resolution and formula as the plan.
+         *     A positive shortfall means demand exceeds capacity and the plan
+         *     compresses rows into the tail slice.
+         */
+        get: operations["CapacityGet"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/photos": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the signed-in user's photos. */
+        get: operations["PhotoList"];
+        put?: never;
+        /**
+         * Upload one image into the library.
+         * @description multipart/form-data with a single `image` file part. The server
+         *     decodes, rotates, strips metadata, re-encodes and stores the bytes.
+         *     The raw upload limit is 10 MiB. Uploading the same bytes again
+         *     returns the same photo id and restores a deleted photo.
+         */
+        post: operations["PhotoUpload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/photos/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Stream one photo.
+         * @description Returns the stored bytes with their real media type and an ETag of
+         *     the sha256. The scope check runs before any bytes are written.
+         *     admin reads answer 404 until the account-photo relation exists.
+         */
+        get: operations["PhotoGet"];
+        put?: never;
+        post?: never;
+        /**
+         * Soft-delete one photo.
+         * @description Idempotent; the blob is kept for dedupe and collected later.
+         */
+        delete: operations["PhotoDelete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/photo-retention": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the photo retention period.
+         * @description days is one of 30, 90, 180 or 365. Missing retention means 90 days.
+         */
+        put: operations["PhotoRetentionSet"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -389,7 +741,7 @@ export interface components {
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
-            last_login_at?: string | null;
+            last_login_at: string | null;
         };
         LoginRequest: {
             /** Format: email */
@@ -466,7 +818,7 @@ export interface components {
         /**
          * @description pending on create; review moves to active or rejected. Pause moves
          *     active to paused_admin or paused_user. credential_error is written by
-         *     the engine in P4 only.
+         *     the engine in P4 only; a credential or phone update returns it to active.
          * @enum {string}
          */
         AccountStatus: "pending" | "active" | "rejected" | "paused_admin" | "paused_user" | "credential_error";
@@ -479,8 +831,8 @@ export interface components {
             status: components["schemas"]["AccountStatus"];
             reject_reason: string;
             /** Format: date-time */
-            reviewed_at?: string | null;
-            reviewed_by?: string | null;
+            reviewed_at: string | null;
+            reviewed_by: string | null;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -496,6 +848,11 @@ export interface components {
             phone_model?: string;
         };
         AccountUpdate: {
+            /**
+             * @description A different value returns 409 conflict. Changing school is
+             *     forbidden in P1 (decision 12.3).
+             */
+            school_id?: string;
             phone?: string;
             password?: string;
             device_code?: string;
@@ -530,6 +887,175 @@ export interface components {
             /** @description Masked platform text; absent when empty. */
             message?: string;
         };
+        AccountSignAccepted: {
+            task_id: string;
+        };
+        /**
+         * @description The stored location policy. lng and lat are null for auto and carry
+         *     the fixed point otherwise; both keys are always present. The reason
+         *     is kept by the host for audit; it is not delivered to the platform
+         *     yet (that lands with the upload protocol slice).
+         */
+        AccountLocation: {
+            /** @enum {string} */
+            mode: "auto" | "fixed";
+            /** Format: double */
+            lng: number | null;
+            /** Format: double */
+            lat: number | null;
+            /** @description Free text explaining an out-of-range fixed point; may be empty. */
+            reason: string;
+        };
+        /**
+         * @description mode auto ignores and clears lng/lat; mode fixed requires both.
+         *     The reason is stored verbatim and never audited in full.
+         */
+        AccountLocationUpdate: {
+            /** @enum {string} */
+            mode: "auto" | "fixed";
+            /** Format: double */
+            lng?: number;
+            /** Format: double */
+            lat?: number;
+            reason?: string;
+        };
+        /**
+         * @description platform and cache come from discovery; fallback is the local
+         *     default window; override is a master or admin replacement.
+         * @enum {string}
+         */
+        ScheduleWindowSource: "platform" | "cache" | "fallback" | "override";
+        ScheduleWindow: {
+            school_id: string;
+            school_name: string;
+            task_id: string;
+            task_name: string;
+            enabled: boolean;
+            /** @description Business day YYYY-MM-DD. */
+            day?: string;
+            /**
+             * Format: date-time
+             * @description Null when the window is not cached for the day yet.
+             */
+            start: string | null;
+            /** Format: date-time */
+            end: string | null;
+            /**
+             * @description platform, cache, fallback or override; null when the window is not
+             *     cached for the day.
+             */
+            source: string | null;
+            version?: number;
+        };
+        ScheduleWindowList: {
+            /** @description Business day the list was resolved for. */
+            day: string;
+            items: components["schemas"]["ScheduleWindow"][];
+        };
+        SchedulePlanRequest: {
+            /** @description Business day YYYY-MM-DD. */
+            day: string;
+            school_id: string;
+            task_id: string;
+        };
+        SchedulePlan: {
+            day: string;
+            source: components["schemas"]["ScheduleWindowSource"];
+            /**
+             * Format: date-time
+             * @description Effective window start after the edge trim.
+             */
+            window_start: string;
+            /**
+             * Format: date-time
+             * @description Effective window end after the edge trim.
+             */
+            window_end: string;
+            /** @description Window cache version; zero in a pure preview. */
+            version: number;
+            /** @description Attempts the window can hold with the configured channels and rate. */
+            capacity: number;
+            demand: number;
+            shortfall: number;
+            /** @description Account count per five-minute slice, keyed by slice index. */
+            histogram: {
+                [key: string]: number;
+            };
+            rows: components["schemas"]["ScheduleRow"][];
+        };
+        ScheduleRow: {
+            account_id: string;
+            /** Format: date-time */
+            run_at: string;
+        };
+        ScheduleOverrideRequest: {
+            /** @description Business day YYYY-MM-DD. */
+            day: string;
+            school_id: string;
+            task_id: string;
+            /** Format: date-time */
+            start: string;
+            /** Format: date-time */
+            end: string;
+            /** @description Recorded with the override for later review. */
+            reason: string;
+        };
+        CapacityReport: {
+            school_id: string;
+            task_id: string;
+            day: string;
+            source: components["schemas"]["ScheduleWindowSource"];
+            /** Format: date-time */
+            window_start: string;
+            /** Format: date-time */
+            window_end: string;
+            capacity: number;
+            demand: number;
+            shortfall: number;
+        };
+        TimePref: {
+            /** @description Relative minute from the effective window start; multiple of five. */
+            offset_min: number | null;
+            /** @description False when the deployment disables user time preferences. */
+            allowed: boolean;
+        };
+        TimePrefUpdate: {
+            /** @description Null clears the preference. */
+            offset_min: number | null;
+        };
+        Photo: {
+            id: string;
+            /** @description Digest of the stored (preprocessed) bytes; also the ETag. */
+            sha256: string;
+            /** @enum {string} */
+            mime: "image/jpeg" | "image/png";
+            width: number;
+            height: number;
+            /** Format: int64 */
+            bytes: number;
+            /** Format: date-time */
+            created_at: string;
+        };
+        PhotoPage: {
+            items: components["schemas"]["Photo"][];
+            /** @description Cursor for the next page; empty on the last page. */
+            next_cursor: string;
+        };
+        PhotoUpload: {
+            /**
+             * Format: binary
+             * @description Original image bytes; JPEG or PNG, at most 10 MiB.
+             */
+            image: string;
+        };
+        PhotoRetention: {
+            /** @enum {integer} */
+            days: 30 | 90 | 180 | 365;
+        };
+        PhotoRetentionUpdate: {
+            /** @enum {integer} */
+            days: 30 | 90 | 180 | 365;
+        };
         AccountPage: {
             items: components["schemas"]["Account"][];
             /** @description Cursor for the next page; empty on the last page. */
@@ -538,6 +1064,56 @@ export interface components {
         HealthStatus: {
             /** @constant */
             status: "ok";
+        };
+        DiagnosticsReport: {
+            /** Format: date-time */
+            updated_at: string;
+            items: components["schemas"]["DiagnosticsItem"][];
+        };
+        DiagnosticsItem: {
+            account_id: string;
+            /** @description pending, running, success, failed or skipped; null when the account has no task row today. */
+            state: string | null;
+            /** Format: date-time */
+            run_at: string | null;
+            attempts: number;
+            result: string;
+            /**
+             * Format: date-time
+             * @description When the task is queued again after a failure; null otherwise.
+             */
+            next_retry_at: string | null;
+            /** @enum {string} */
+            suggestion: "wait" | "retry_now" | "re_arm" | "contact_admin";
+        };
+        AccountDiagnostics: components["schemas"]["DiagnosticsItem"] & {
+            /** @description Today's planned window; null when not discovered yet. */
+            window: {
+                /** Format: date-time */
+                start: string;
+                /** Format: date-time */
+                end: string;
+                /** @enum {string} */
+                source: "platform" | "cache" | "fallback" | "override";
+                version: number;
+            } | null;
+            /** @description The account's sticky egress label; null when not assigned yet. */
+            egress: {
+                identity: string;
+            } | null;
+        };
+        SignStatusReport: {
+            /** Format: date-time */
+            updated_at: string;
+            items: components["schemas"]["SignStatusItem"][];
+        };
+        SignStatusItem: {
+            account_id: string;
+            /** @description pending, running, success, failed or skipped; null when the account has no task row today. */
+            state: string | null;
+            /** Format: date-time */
+            run_at: string | null;
+            stale: boolean;
         };
     };
     responses: {
@@ -623,6 +1199,10 @@ export interface components {
         SchoolID: string;
         UserID: string;
         AccountID: string;
+        SchoolIDQuery: string;
+        /** @description School task id from GET /api/schedule/windows. */
+        TaskIDQuery: string;
+        PhotoID: string;
     };
     requestBodies: never;
     headers: never;
@@ -654,6 +1234,7 @@ export interface operations {
             };
             400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
+            413: components["responses"]["PayloadTooLargeError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -725,6 +1306,7 @@ export interface operations {
                 content?: never;
             };
             400: components["responses"]["ValidationError"];
+            413: components["responses"]["PayloadTooLargeError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -750,6 +1332,7 @@ export interface operations {
             };
             400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
+            413: components["responses"]["PayloadTooLargeError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -784,6 +1367,7 @@ export interface operations {
             400: components["responses"]["ValidationError"];
             403: components["responses"]["ForbiddenError"];
             409: components["responses"]["ConflictError"];
+            413: components["responses"]["PayloadTooLargeError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -810,6 +1394,7 @@ export interface operations {
                     "application/json": components["schemas"]["SchoolPage"];
                 };
             };
+            400: components["responses"]["ValidationError"];
             403: components["responses"]["ForbiddenError"];
             default: components["responses"]["DefaultError"];
         };
@@ -882,6 +1467,7 @@ export interface operations {
             400: components["responses"]["ValidationError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
+            413: components["responses"]["PayloadTooLargeError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -910,6 +1496,7 @@ export interface operations {
                     "application/json": components["schemas"]["SchoolAdminPage"];
                 };
             };
+            400: components["responses"]["ValidationError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
             default: components["responses"]["DefaultError"];
@@ -1017,6 +1604,7 @@ export interface operations {
                     "application/json": components["schemas"]["AccountPage"];
                 };
             };
+            400: components["responses"]["ValidationError"];
             403: components["responses"]["ForbiddenError"];
             default: components["responses"]["DefaultError"];
         };
@@ -1054,6 +1642,7 @@ export interface operations {
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["DefaultError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -1142,6 +1731,7 @@ export interface operations {
             400: components["responses"]["ValidationError"];
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
+            413: components["responses"]["PayloadTooLargeError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -1178,6 +1768,7 @@ export interface operations {
             400: components["responses"]["ValidationError"];
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
+            413: components["responses"]["PayloadTooLargeError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -1214,6 +1805,7 @@ export interface operations {
             400: components["responses"]["ValidationError"];
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
+            413: components["responses"]["PayloadTooLargeError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -1245,6 +1837,533 @@ export interface operations {
             };
             404: components["responses"]["NotFoundError"];
             502: components["responses"]["DefaultError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AccountSign: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["AccountID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Task accepted. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountSignAccepted"];
+                };
+            };
+            404: components["responses"]["NotFoundError"];
+            409: components["responses"]["DefaultError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AccountLocationSet: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["AccountID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccountLocationUpdate"];
+            };
+        };
+        responses: {
+            /** @description Location policy stored. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountLocation"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            404: components["responses"]["NotFoundError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AdminEvents: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Last event id seen by the client, for resumption. */
+                "Last-Event-ID"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Event stream opened. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    MeDiagnostics: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Today's diagnostics per own account. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiagnosticsReport"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AccountDiagnostics: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["AccountID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Detailed diagnostics. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountDiagnostics"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            404: components["responses"]["NotFoundError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    MeSignStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sign status items. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignStatusReport"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    ScheduleWindows: {
+        parameters: {
+            query?: {
+                /** @description Business day YYYY-MM-DD; defaults to today in the server time zone. */
+                day?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Task window list. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleWindowList"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            403: components["responses"]["ForbiddenError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    SchedulePreview: {
+        parameters: {
+            query: {
+                /** @description Business day YYYY-MM-DD. */
+                day: string;
+                school_id: components["parameters"]["SchoolIDQuery"];
+                /** @description School task id from GET /api/schedule/windows. */
+                task_id: components["parameters"]["TaskIDQuery"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Plan preview. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SchedulePlan"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    SchedulePlan: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SchedulePlanRequest"];
+            };
+        };
+        responses: {
+            /** @description Persisted plan. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SchedulePlan"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            409: components["responses"]["ConflictError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    ScheduleOverride: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScheduleOverrideRequest"];
+            };
+        };
+        responses: {
+            /** @description Plan rebuilt against the override. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SchedulePlan"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            409: components["responses"]["ConflictError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    TimePrefGet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Time preference. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TimePref"];
+                };
+            };
+            403: components["responses"]["ForbiddenError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    TimePrefSet: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TimePrefUpdate"];
+            };
+        };
+        responses: {
+            /** @description Stored preference. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TimePref"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["DefaultError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    CapacityGet: {
+        parameters: {
+            query: {
+                school_id: components["parameters"]["SchoolIDQuery"];
+                /** @description School task id from GET /api/schedule/windows. */
+                task_id: components["parameters"]["TaskIDQuery"];
+                /** @description Business day YYYY-MM-DD; defaults to today in the server time zone. */
+                day?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Capacity report. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapacityReport"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    PhotoList: {
+        parameters: {
+            query?: {
+                /** @description Opaque page cursor taken from next_cursor. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size, 1 to 200. */
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Photo page. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PhotoPage"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            403: components["responses"]["ForbiddenError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    PhotoUpload: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["PhotoUpload"];
+            };
+        };
+        responses: {
+            /** @description Photo stored. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Photo"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    PhotoGet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PhotoID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Image bytes. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/jpeg": string;
+                    "image/png": string;
+                };
+            };
+            404: components["responses"]["NotFoundError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    PhotoDelete: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["PhotoID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Photo deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    PhotoRetentionSet: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PhotoRetentionUpdate"];
+            };
+        };
+        responses: {
+            /** @description Stored retention. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PhotoRetention"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["PayloadTooLargeError"];
             default: components["responses"]["DefaultError"];
         };
     };

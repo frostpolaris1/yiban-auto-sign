@@ -182,3 +182,190 @@
   color: var(--t-muted);
   font-size: 12px;
 }
+
+/* ---------- 账号页 ----------
+ * 行高 48px 是全局拍板值。表格不限宽，窄屏在 vendor 的 `.table-scroll` 内滚动。
+ * `.app-deny-note` 是所有置灰原因的可见落点，颜色取 `--t-muted` 保证两套主题可读。
+ */
+
+.app-accounts-table tbody tr {
+  height: 48px;
+}
+
+/* 行高是固定值。去掉单元格上下内边距，48px 才不被内容顶高。 */
+.app-accounts-table tbody td {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.app-accounts-table tbody tr:hover {
+  background: var(--bg-hover);
+}
+
+.app-accounts-table tbody tr:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+.app-cell-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.app-cell-link:hover {
+  color: var(--primary);
+}
+
+.app-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  align-items: flex-end;
+  margin-bottom: 16px;
+}
+
+.app-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.app-filter .select {
+  width: auto;
+  min-width: 168px;
+  padding: 7px 32px 7px 10px;
+  font-size: 12px;
+}
+
+.app-filter-label {
+  color: var(--t-muted);
+  font-size: 11.5px;
+}
+
+.app-filter-q {
+  flex: 1;
+  min-width: 240px;
+  max-width: 360px;
+}
+
+.app-account-actions {
+  align-items: center;
+  gap: 6px;
+}
+
+.app-account-actions .btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.app-deny-note {
+  color: var(--t-muted);
+  font-size: 11.5px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.app-form-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.app-modal-error {
+  margin-top: 12px;
+}
+
+/* ---------- 账号详情抽屉 ---------- */
+
+.app-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 190;
+  background: var(--overlay);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+  animation: app-fade-in 160ms ease-out;
+}
+
+.app-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  width: min(440px, 100vw);
+  background: var(--bg-card);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  animation: app-drawer-in 180ms ease-out;
+}
+
+.app-drawer:focus {
+  outline: none;
+}
+
+.app-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.app-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 20px;
+}
+
+.app-drawer-foot {
+  display: flex;
+  justify-content: flex-end;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border-soft);
+  background: var(--bg-card);
+}
+
+.app-detail-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 10px 16px;
+  margin: 16px 0 0;
+  font-size: 12.5px;
+}
+
+.app-detail-list dt {
+  color: var(--t-muted);
+}
+
+.app-detail-list dd {
+  margin: 0;
+  color: var(--t-base);
+  word-break: break-all;
+}
+
+@keyframes app-drawer-in {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes app-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
