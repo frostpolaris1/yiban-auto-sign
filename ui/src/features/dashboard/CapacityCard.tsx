@@ -1,74 +1,133 @@
 /**
  * **功能**
- * 窗口与容量卡：三条容量进度、四个统计格。
+ * 容量体检卡：任务选择器、容量／需求／缺口三个指标，来源与窗口起止。
  *
  * **归属**
- * `features/dashboard` 域组件。
+ * `features/dashboard` 展示层：数据与回调由 `DashboardView` 给。
  *
  * **口径**
- * 百分比与统计格全是演示值。
- * 真实窗口 80 分钟、时间片 5 分钟由调度层定义。本页不复制该判据。
+ * 端点 `GET /api/capacity` 的 `x-roles` 是 master/admin；本卡不自行取数。
+ * 选项只取「启用且起止时间都非 null」的今日窗口；默认选第一项。
+ * `shortfall>0` 用 danger 徽章；其余用 success。
+ * 窗口失败与容量失败各有错误态与「重试」，不整页挂。
+ * 无可用任务时只说「今日无可用窗口」，不发容量请求。
  */
 
-type CapacityRow = {
-  label: string
-  percent: number
-  fillClass: string
+import { Alert } from '@/components/ui/Alert'
+import { Badge } from '@/components/ui/Badge'
+import { Button } from '@/components/ui/Button'
+import { Card } from '@/components/ui/Card'
+import { SelectInput } from '@/components/ui/Input'
+import type { CapacityReport } from '@/lib/api/schedule'
+import { formatClock, formatNumber } from '@/lib/format'
+import {
+  EMPTY_WINDOW_TEXT,
+  type CapacityOption,
+  capacitySourceLabel,
+  capacitySourceTone,
+} from './display'
+
+type CapacityCardProps = {
+  options: CapacityOption[]
+  selectedValue: string
+  onSelect: (value: string) => void
+  report: CapacityReport | undefined
+  windowsLoading: boolean
+  windowsError: string | null
+  capacityLoading: boolean
+  capacityError: string | null
+  onRetryWindows: () => void
+  onRetryCapacity: () => void
 }
 
-const ROWS: CapacityRow[] = [
-  { label: '北校区 · 早签', percent: 62, fillClass: '' },
-  { label: '南校区 · 早签', percent: 88, fillClass: 'warning' },
-  { label: '北校区 · 晚签', percent: 31, fillClass: 'success' },
-]
-
-/** 进度条与统计格取 Adminator `.progress` 与 `.monthly-footer`。 */
-export function CapacityCard() {
+export function CapacityCard({
+  options,
+  selectedValue,
+  onSelect,
+  report,
+  windowsLoading,
+  windowsError,
+  capacityLoading,
+  capacityError,
+  onRetryWindows,
+  onRetryCapacity,
+}: CapacityCardProps) {
   return (
-    <section className="col-6 card">
-      <div className="card-head">
-        <div className="card-title-wrap">
-          <span className="eyebrow">Capacity</span>
-          <h2 className="card-title">窗口与容量</h2>
+    <Card
+      className="col-12"
+      eyebrow="Capacity"
+      title="容量体检"
+      action={<span className="app-caption">缺省读当日窗口缓存</span>}
+    >
+      {windowsError !== null ? (
+        <div className="app-alert-block">
+          <Alert tone="danger" title="读取失败">
+            {windowsError}{' '}
+            <Button variant="ghost" size="sm" onClick={onRetryWindows}>
+              重试
+            </Button>
+          </Alert>
         </div>
-        <span className="badge primary">示例</span>
-      </div>
-
-      <div className="app-demo-stack">
-        {ROWS.map((row) => (
-          <div key={row.label}>
-            <div className="app-progress-row" style={{ justifyContent: 'space-between' }}>
-              <span className="app-muted">{row.label}</span>
-              <span className="app-caption">{row.percent}%</span>
-            </div>
-            <div className="progress">
-              <div
-                className={`progress-fill ${row.fillClass}`.trim()}
-                style={{ width: `${row.percent}%` }}
-              />
-            </div>
+      ) : windowsLoading && options.length === 0 ? (
+        <p className="app-muted">加载中…</p>
+      ) : options.length === 0 ? (
+        <p className="app-muted">{EMPTY_WINDOW_TEXT}</p>
+      ) : (
+        <>
+          <div className="app-schedule-toolbar">
+            <SelectInput
+              id="capacity-task"
+              label="任务"
+              options={options.map((option) => ({ value: option.value, label: option.label }))}
+              value={selectedValue}
+              disabled={capacityLoading}
+              onChange={(event) => onSelect(event.target.value)}
+            />
           </div>
-        ))}
-      </div>
 
-      <div className="monthly-footer">
-        <div className="stat-cell">
-          <div className="stat-cell-label">时间片</div>
-          <div className="stat-cell-value">5 分钟</div>
-        </div>
-        <div className="stat-cell">
-          <div className="stat-cell-label">窗口</div>
-          <div className="stat-cell-value">80 分钟</div>
-        </div>
-        <div className="stat-cell">
-          <div className="stat-cell-label">配速</div>
-          <div className="stat-cell-value">front</div>
-        </div>
-        <div className="stat-cell">
-          <div className="stat-cell-label">出口</div>
-          <div className="stat-cell-value">3</div>
-        </div>
-      </div>
-    </section>
+          {capacityError !== null ? (
+            <div className="app-alert-block">
+              <Alert tone="danger" title="读取失败">
+                {capacityError}{' '}
+                <Button variant="ghost" size="sm" onClick={onRetryCapacity}>
+                  重试
+                </Button>
+              </Alert>
+            </div>
+          ) : report === undefined ? (
+            <p className="app-muted">加载中…</p>
+          ) : (
+            <>
+              <div className="app-metric-grid">
+                <div className="app-metric">
+                  <div className="app-metric-label">容量</div>
+                  <div className="app-metric-value">{formatNumber(report.capacity)}</div>
+                </div>
+                <div className="app-metric">
+                  <div className="app-metric-label">需求</div>
+                  <div className="app-metric-value">{formatNumber(report.demand)}</div>
+                </div>
+                <div className="app-metric">
+                  <div className="app-metric-label">缺口</div>
+                  <div className="app-metric-value">
+                    <Badge tone={report.shortfall > 0 ? 'danger' : 'success'}>
+                      {formatNumber(report.shortfall)}
+                    </Badge>
+                  </div>
+                </div>
+              </div>
+
+              <p className="app-muted app-capacity-meta">
+                <Badge tone={capacitySourceTone(report.source)}>
+                  {capacitySourceLabel(report.source)}
+                </Badge>{' '}
+                窗口 {formatClock(report.window_start)}–{formatClock(report.window_end)} · 业务日{' '}
+                {report.day}
+              </p>
+            </>
+          )}
+        </>
+      )}
+    </Card>
   )
 }

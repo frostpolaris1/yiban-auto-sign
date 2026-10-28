@@ -10,17 +10,28 @@
  * 展示机无后端：各页查询以这些函数为 queryFn，页面完整可看、零网络请求。
  * 值全部为合成标识（school-a/b、合成学校甲/乙、登记手机号掩码）。
  * 时间偏好卡对 user 才渲染，而展示会话固定 master ⇒ 不提供 TimePref 夹具。
+ * 看板在展示机走 master 视角：窗口与容量各有夹具，两卡零请求。
  */
 
 import type { Account, AccountPage, AccountStatus } from './api/account'
 import type { School, SchoolAdmin, SchoolPage } from './api/school'
 import type {
+  CapacityReport,
   SchedulePlan,
   ScheduleWindow,
   ScheduleWindowList,
 } from './api/schedule'
 
 let seq = 0
+
+/** 容量报告要求来源是枚举，而窗口行的来源是 `string | null`；用这张表收窄。 */
+const SCHEDULE_SOURCES: readonly CapacityReport['source'][] = [
+  'platform',
+  'cache',
+  'fallback',
+  'override',
+]
+
 function iso(base: string, addMinutes: number): string {
   const d = new Date(`${base}T00:00:00+08:00`)
   d.setMinutes(d.getMinutes() + addMinutes)
@@ -185,4 +196,37 @@ function plan(day: string, startMin: number, endMin: number, source: SchedulePla
 /** 计划预览／落库／覆盖共用的合成计划。 */
 export function showcasePlan(day: string): SchedulePlan {
   return plan(day && /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : today(), 8 * 60 + 30, 9 * 60, 'override')
+}
+
+/**
+ * 看板容量体检的合成报告。窗口必须先在 `showcaseWindows` 里存在；
+ * 找不到就抛错，让展示机暴露夹具缺口，不静默给零。
+ * 任务 `task-night` 故意需求超容量，展示 danger 缺口态。
+ */
+export function showcaseCapacity(query: {
+  day: string
+  schoolId: string
+  taskId: string
+}): CapacityReport {
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(query.day) ? query.day : today()
+  const row = showcaseWindows(day).items.find(
+    (item) => item.school_id === query.schoolId && item.task_id === query.taskId,
+  )
+  const source = SCHEDULE_SOURCES.find((item) => item === row?.source) ?? null
+  if (!row || row.start === null || row.end === null || source === null) {
+    throw new Error(`showcaseCapacity: 没有可用的合成窗口 ${query.schoolId}:${query.taskId}`)
+  }
+  const numbers =
+    row.task_id === 'task-night'
+      ? { capacity: 20, demand: 26, shortfall: 6 }
+      : { capacity: 24, demand: 8, shortfall: 0 }
+  return {
+    school_id: row.school_id,
+    task_id: row.task_id,
+    day,
+    source,
+    window_start: row.start,
+    window_end: row.end,
+    ...numbers,
+  }
 }

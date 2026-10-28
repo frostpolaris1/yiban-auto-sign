@@ -2,7 +2,9 @@
 
 React 19 + Vite 8 + TypeScript 7。视觉语言复用 Adminator 4.4.0。
 
-本批包含 P1F 骨架、登录接线、账号页、学校页与时间片页。仪表盘与画廊只渲染界面；账号页、学校页、时间片页与登录页调用契约端点。仪表盘的时间偏好卡只对 user 渲染，并调用 `/api/me/time-pref`。
+本批包含 P1F 骨架、登录接线、账号页、学校页、时间片页与看板数据接线。画廊只渲染界面。
+看板按角色取数：user 读签到状态与诊断，master/admin 读窗口与容量体检。
+仪表盘的时间偏好卡只对 user 渲染，并调用 `/api/me/time-pref`。
 
 ## 命令
 
@@ -18,8 +20,9 @@ React 19 + Vite 8 + TypeScript 7。视觉语言复用 Adminator 4.4.0。
 | `npm run gate:structure` | 导入方向门 |
 | `npm run gate:docs` | 入库文档门。禁止指向未入库目录 |
 | `npm run gate:license` | 依赖许可证门。禁用许可证或清单漂移即红 |
-| `npm run test:unit` | fetch、查询默认值、游标、账号页、学校页、时间片页与认证纯逻辑单测，运行器为 `node:test` |
-| `npm run test:visual` | Playwright。先跑 `npm run build` |
+| `npm run test:unit` | fetch、查询默认值、游标、账号页、学校页、时间片页、看板与认证纯逻辑单测，运行器为 `node:test` |
+| `npm run build:showcase` | 构建 `VITE_SHOWCASE=1` 的展示产物到 `dist-showcase/` |
+| `npm run test:visual` | Playwright。先跑 `npm run build`；脚本自己构建展示产物 |
 | `npm run test:visual:update` | 重写视觉基线。先跑 `npm run build` |
 | `npm run verify` | 类型检查 + 契约漂移 + 单测 + 各门自测 + 四门 + 构建 |
 
@@ -85,14 +88,18 @@ node scripts/token-gate.mjs
 
 ## 视觉回归
 
-矩阵：5 条常驻路由 × 2 套主题 × 2 个宽度（1440 / 390） = 20 张截图。
+矩阵：4 条常驻路由与看板的两个视角（user/admin）× 2 套主题 × 2 个宽度 = 24 张截图。
 时间片页按固定业务日 `2026-10-28` 另拍，不进 390 常驻矩阵（缺省业务日会随日历漂移）。
 另有账号页 6 种开态 × 2 套主题 = 12 张，学校页 6 种开态 × 2 套主题 = 12 张，
 时间片页列表／预览／覆盖／无权限与仪表盘偏好卡共 5 种开态 × 2 套主题 = 10 张，
-profile 菜单与会话过期提示各 2 张，共 58 张。
+profile 菜单与会话过期提示各 2 张，共 62 张。
 
-行为用例 101 条：账号页 27 条、认证 23 条、画廊 9 条、学校页 21 条、时间片页与时间偏好 21 条。
-视觉文件另有无溢出 1 条。Playwright 总计 160 条。
+行为用例 116 条：账号页 27 条、认证 23 条、看板 14 条、画廊 9 条、学校页 21 条、
+时间片页与时间偏好 21 条、展示模式 1 条。
+视觉文件另有无溢出 1 条。Playwright 总计 179 条。
+
+展示模式用例由 `npm run build:showcase` 构建的 `dist-showcase` 提供。
+Playwright 的第二个 webServer 在 4174 端口预览它；`e2e/showcase.spec.ts` 用它钉零请求。
 
 基线目录：`e2e/visual.spec.ts-snapshots/`。
 
@@ -131,7 +138,8 @@ WSL 读 `-chromium-linux.png`，Windows 读 `-chromium-win32.png`。
 
 ## 本批不做
 
-- 仪表盘的占位数字不调后端；只有 user 的时间偏好卡调用 `/api/me/time-pref`。`lib/api/*` 的认证、账号、学校与时间片域已接线，其余仍是契约桩。
+- 看板已接线：user 读 `/api/me/sign-status`（30 秒轮询）与 `/api/me/diagnostics`，
+  master/admin 读 `/api/schedule/windows` 与 `/api/capacity`。看板不画图表。
 - 不接 TanStack Table、Chart.js、react-day-picker、SSE。
 - 忘记/重置密码页与登录态改密不做。契约只有公开的令牌流；登录态改密没有端点。
 - 不引 Tailwind、shadcn、Element Plus、Bootstrap、Lucide、Recharts。

@@ -1,80 +1,114 @@
 /**
  * **功能**
- * 今日签到状态卡：四行账号与状态标签。
+ * 今日签到状态卡：每账号一行，状态徽章、时刻与过期标记。
  *
  * **归属**
- * `features/dashboard` 域组件。
+ * `features/dashboard` 展示层：数据与回调由 `DashboardView` 给。
  *
  * **口径**
- * 行数据是演示值。标签色只表达视觉分类。
- * 状态语义以引擎定论为准。本页不定义状态判据。
+ * 端点 `GET /api/me/sign-status` 只对 user 开放；本卡不自行取数。
+ * 账号只有 `account_id`，没有掩码手机号：主行显示序号，副行显示短 id。
+ * `stale=true` 的行在时刻后加「数据已过期」徽章。
+ * 空列表说「今日暂无签到任务」，不渲染空白表。
+ * 状态标签与色取契约词汇，未知值原样显示。
  */
 
-import { Link } from '@tanstack/react-router'
-import { Icon } from '@/components/ui/Icon'
-import { Tag, type TagTone } from '@/components/ui/Badge'
+import { Badge } from '@/components/ui/Badge'
+import { Button } from '@/components/ui/Button'
+import { Card } from '@/components/ui/Card'
+import type { SignStatusItem } from '@/lib/api/me'
+import { formatClock } from '@/lib/format'
+import { AccountLabel } from './AccountLabel'
+import { EMPTY_SIGN_TEXT, STALE_TEXT, stateLabel, stateTone } from './display'
 
-type StatusRow = {
-  name: string
-  school: string
-  status: string
-  tone: TagTone
-  time: string
+type SignStatusCardProps = {
+  items: readonly SignStatusItem[]
+  updatedAt: string | null
+  loading: boolean
+  error: string | null
+  onRetry: () => void
 }
 
-const ROWS: StatusRow[] = [
-  { name: 'stu-1042', school: '北校区', status: '已签到', tone: 't-active', time: '06:41' },
-  { name: 'stu-1043', school: '北校区', status: '等待中', tone: 't-old', time: '06:52' },
-  { name: 'stu-2088', school: '南校区', status: '凭据错误', tone: 't-unavail', time: '—' },
-  { name: 'stu-2090', school: '南校区', status: '已签到', tone: 't-active', time: '07:03' },
-]
+const COLUMNS = 3
 
-/**
- * 表格标记照 Adminator 的 `src/index.html` 与 `src/basic-table.html`。
- * 结构为 `.table` 套 `.table-scroll`，状态用 `.tag` 药丸。
- */
-export function SignStatusCard() {
+export function SignStatusCard({
+  items,
+  updatedAt,
+  loading,
+  error,
+  onRetry,
+}: SignStatusCardProps) {
   return (
-    <section className="col-6 card">
-      <div className="card-head">
-        <div className="card-title-wrap">
-          <span className="eyebrow">Today</span>
-          <h2 className="card-title">今日签到状态</h2>
-        </div>
-        <Link className="card-action" to="/design">
-          查看组件
-          <Icon name="arrowRight" />
-        </Link>
-      </div>
-
+    <Card
+      className="col-12"
+      eyebrow="Status"
+      title="今日签到状态"
+      action={
+        <span className="app-caption">
+          {updatedAt === null ? '每 30 秒刷新' : `更新于 ${formatClock(updatedAt)}`}
+        </span>
+      }
+    >
       <div className="table-scroll">
         <table className="table">
+          <caption className="app-visually-hidden">今日签到状态</caption>
           <thead>
             <tr>
               <th scope="col">账号</th>
-              <th scope="col">学校</th>
               <th scope="col">状态</th>
-              <th scope="col" style={{ textAlign: 'right' }}>
-                时刻
-              </th>
+              <th scope="col">时刻</th>
             </tr>
           </thead>
           <tbody>
-            {ROWS.map((row) => (
-              <tr key={row.name}>
-                <td className="cell-name">{row.name}</td>
-                <td className="cell-date">{row.school}</td>
-                <td>
-                  <Tag tone={row.tone}>{row.status}</Tag>
+            {error ? (
+              <tr>
+                <td colSpan={COLUMNS}>
+                  <span className="app-muted">{error}</span>{' '}
+                  <Button variant="ghost" size="sm" onClick={onRetry}>
+                    重试
+                  </Button>
                 </td>
-                <td className="cell-date" style={{ textAlign: 'right' }}>
-                  {row.time}
+              </tr>
+            ) : null}
+
+            {!error && loading && items.length === 0 ? (
+              <tr>
+                <td colSpan={COLUMNS} className="app-muted">
+                  加载中…
+                </td>
+              </tr>
+            ) : null}
+
+            {!error && !loading && items.length === 0 ? (
+              <tr>
+                <td colSpan={COLUMNS} className="app-muted">
+                  {EMPTY_SIGN_TEXT}
+                </td>
+              </tr>
+            ) : null}
+
+            {items.map((item, index) => (
+              <tr key={item.account_id}>
+                <td className="cell-name">
+                  <AccountLabel accountId={item.account_id} index={index} />
+                </td>
+                <td>
+                  <Badge tone={stateTone(item.state)}>{stateLabel(item.state)}</Badge>
+                </td>
+                <td>
+                  <span className="data-cell-mono">{formatClock(item.run_at)}</span>
+                  {item.stale ? (
+                    <>
+                      {' '}
+                      <Badge tone="warning">{STALE_TEXT}</Badge>
+                    </>
+                  ) : null}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
-    </section>
+    </Card>
   )
 }
