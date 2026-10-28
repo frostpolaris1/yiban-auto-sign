@@ -168,14 +168,20 @@ e2e_secret_hex() {
     od -An -N"$n" -tx1 /dev/urandom | tr -d ' \n'
 }
 
-# e2e_secret_b64 <字节数>：base64 随机串（openssl 输出带换行，去掉）。
+# e2e_secret_b64 <字节数>：标准 base64 随机串（单行，解码后恰好 n 字节）。
+#
+# 只走 /dev/urandom + base64 一条路径：openssl 分支与兜底分支曾产出不同形状，
+# 兜底产出的是 hex；配置要求该键 base64 解码后 32 字节，缺 openssl 时服务拒启。
+# 产出后立刻自检解码长度；不合格按环境错误返回非 0（调用方的 ERR 兜底会点名步骤）。
 e2e_secret_b64() {
-    local n="$1"
-    if command -v openssl >/dev/null 2>&1; then
-        openssl rand -base64 "$n" | tr -d '\n'
-        return
+    local n="$1" v got
+    v="$(head -c "$n" /dev/urandom | base64 | tr -d '\n')" || return 1
+    got="$(printf '%s' "$v" | base64 -d 2>/dev/null | wc -c | tr -d ' ')"
+    if [ "$got" != "$n" ]; then
+        printf 'e2e_secret_b64: 产出解码后 %s 字节，期望 %s\n' "$got" "$n" >&2
+        return 1
     fi
-    od -An -N"$n" -tx1 /dev/urandom | tr -d ' \n'
+    printf '%s' "$v"
 }
 
 # e2e_sha256 <文件>：优先 sha256sum，其次 shasum。

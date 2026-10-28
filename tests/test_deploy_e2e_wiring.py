@@ -96,6 +96,29 @@ def _job_block(text, job):
     return "\n".join(out)
 
 
+#: 自动触发事件：push 或 pull_request。只有 workflow_dispatch 不算自动轨。
+_AUTO_TRIGGER = re.compile(r"^\s{2}(push|pull_request)\s*:", re.M)
+
+
+def _on_block(text):
+    """取出 `on:` 的块内容（到下一个顶格键为止）；找不到返回空串。"""
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if line.rstrip() in ("on:", "'on':", '"on":'):
+            out = []
+            for follow in lines[i + 1:]:
+                if follow.strip() and not follow.startswith((" ", "\t")):
+                    break
+                out.append(follow)
+            return "\n".join(out)
+    return ""
+
+
+def _has_auto_trigger(text):
+    """workflow 是否至少有一个自动触发事件（push / pull_request）。"""
+    return bool(_AUTO_TRIGGER.search(_on_block(text)))
+
+
 class DeployE2EScriptsTest(unittest.TestCase):
     def _assert_parses(self, path, rel):
         self.assertTrue(os.path.isfile(path), "缺 %s" % rel)
@@ -124,6 +147,18 @@ class ContainerE2EWiringTest(unittest.TestCase):
         block = _job_block(_read(path), "container-deploy-e2e")
         self.assertTrue(block, "deploy-gate.yml 里没有 container-deploy-e2e job")
         self.assertIn("timeout-minutes:", block, "container-deploy-e2e 没有超时门")
+
+    def test_invoking_workflow_has_automated_trigger(self):
+        """调用容器 e2e 的 workflow 必须至少有一个自动触发事件。
+
+        只剩 `workflow_dispatch` 时，job 还在、命令还在，但推送不会触发它：
+        自动轨静默消失（AGENTS §30）。本测钉住 push / pull_request 之一在场。
+        """
+        hits = _workflows_invoking(WORKFLOWS, _CONTAINER_INVOCATION)
+        self.assertTrue(hits, "没有 workflow 真的调用 %s" % CONTAINER_REL)
+        automated = [n for n in hits if _has_auto_trigger(_read(os.path.join(WORKFLOWS, n)))]
+        self.assertTrue(automated,
+                        "调用容器 e2e 的 workflow 只有 workflow_dispatch：自动触发被删也不会红")
 
 
 class ManualRegistrationTest(unittest.TestCase):
@@ -163,6 +198,16 @@ class WiringCheckerLiveCounterExampleTest(unittest.TestCase):
     def test_real_invocation_is_found(self):
         text = "    - run: bash %s\n" % CONTAINER_REL
         self.assertEqual(["x.yml"], self._scan(text))
+
+    def test_workflow_dispatch_only_is_not_automated(self):
+        text = "on:\n  workflow_dispatch:\n"
+        self.assertFalse(_has_auto_trigger(text),
+                         "只有 workflow_dispatch 被误判为自动轨")
+
+    def test_pull_request_trigger_is_automated(self):
+        text = "on:\n  workflow_dispatch:\n  pull_request:\n    branches: [develop]\n"
+        self.assertTrue(_has_auto_trigger(text),
+                        "pull_request 触发未被识别为自动轨")
 
 
 if __name__ == "__main__":
