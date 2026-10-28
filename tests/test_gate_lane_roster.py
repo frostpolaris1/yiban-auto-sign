@@ -396,6 +396,11 @@ class MetaGatesStayFastTest(unittest.TestCase):
         "tests/test_module_date_constant_gate.py",
         "tests/test_skip_visibility_gate.py",
         "tests/test_gate_lane_roster.py",
+        "tests/test_repo_structure_gate.py",
+        "tests/test_constraint_registry_gate.py",
+        "tests/test_import_linter_gate.py",
+        "tests/test_no_literal_date_in_fixtures.py",
+        "tests/test_path_env_read_gate.py",
     })
 
     def test_named_meta_gates_are_fast(self):
