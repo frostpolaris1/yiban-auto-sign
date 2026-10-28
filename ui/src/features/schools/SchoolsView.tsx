@@ -18,6 +18,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Alert } from '@/components/ui/Alert'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
+import { DeniedCard } from '@/components/ui/DeniedCard'
 import { PageHeader } from '@/components/ui/PageHeader'
 import type { Role } from '@/lib/api/auth'
 import { describeApiError } from '@/lib/api/client'
@@ -32,11 +33,11 @@ import {
   type SchoolUpdate,
 } from '@/lib/api/school'
 import { currentCursor, emptyCursorStack, goNext, goPrevious, hasPreviousPage } from '@/lib/cursor'
-import { useMe } from '@/lib/session'
+import { SHOWCASE, useMe } from '@/lib/session'
+import { showcaseSchools } from '@/lib/showcase'
 import { SchoolAdminRemoveModal } from './SchoolAdminRemoveModal'
 import { SchoolAdminsModal } from './SchoolAdminsModal'
 import { SchoolCreateModal } from './SchoolCreateModal'
-import { SchoolDeniedCard } from './SchoolDeniedCard'
 import { SchoolDetailDrawer } from './SchoolDetailDrawer'
 import { SchoolEditModal } from './SchoolEditModal'
 import { SchoolsTable } from './SchoolsTable'
@@ -59,7 +60,7 @@ export function SchoolsView() {
     queryKey: ['schools-page', cursor ?? null],
     // 列表随时可变。缓存键回到旧游标时必须重新取数，不能给旧页。
     staleTime: 0,
-    queryFn: () => listSchools({ cursor }),
+    queryFn: () => (SHOWCASE ? Promise.resolve(showcaseSchools()) : listSchools({ cursor })),
     enabled: allowed,
   })
 
@@ -211,7 +212,7 @@ export function SchoolsView() {
       ) : null}
 
       {!allowed ? (
-        <SchoolDeniedCard reason={denyReason(role, 'view') ?? ''} />
+        <DeniedCard eyebrow="Schools" reason={denyReason(role, 'view') ?? ''} />
       ) : (
         <Card
           eyebrow="Schools"

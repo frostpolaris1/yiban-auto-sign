@@ -10,9 +10,10 @@
  * 关闭动作走 `onOpenChange`，调用方持有开合状态。
  */
 
-import type { ReactNode } from 'react'
+import { useId, type ReactNode } from 'react'
 import { Dialog } from 'radix-ui'
 import { Icon } from '@/components/ui/Icon'
+import { cx } from '@/lib/cx'
 
 type ModalProps = {
   open: boolean
@@ -26,6 +27,16 @@ type ModalProps = {
    * 时保持 Radix 默认行为，焦点归属由调用方在成功回调里指定。
    */
   returnFocusTo?: HTMLElement | null
+  /**
+   * 叠层序号，缺省 1。每高一档遮罩与内容各高 20：
+   * 第 2 层压暗第 1 层，第 3 层压暗第 2 层。焦点陷阱由 Radix 的层栈管，只陷最上层。
+   */
+  layer?: number
+  /**
+   * 正文可能超出视口时置真：内容限高、正文滚动、页脚常驻。
+   * 短弹窗不要开，保持既有布局逐像素不变。
+   */
+  scrollBody?: boolean
 }
 
 /**
@@ -42,14 +53,25 @@ export function Modal({
   children,
   footer,
   returnFocusTo,
+  layer,
+  scrollBody,
 }: ModalProps) {
+  // 叠层时两份弹窗同时在场。固定 id 会重复，故每个实例各取一个。
+  const descriptionId = useId()
+  // 弹窗层级：遮罩 190 起，内容 200 起；每层各加 20。
+  const level = Math.max(1, Math.trunc(layer ?? 1))
+  const contentZ = 200 + (level - 1) * 20
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Overlay className="app-modal-backdrop" />
+        <Dialog.Overlay
+          className="app-modal-backdrop"
+          style={{ zIndex: contentZ - 10 }}
+        />
         <Dialog.Content
-          className="modal-demo app-modal"
-          aria-describedby={description ? 'app-modal-description' : undefined}
+          className={cx('modal-demo app-modal', scrollBody && 'app-modal-scroll')}
+          style={{ zIndex: contentZ }}
+          aria-describedby={description ? descriptionId : undefined}
           onCloseAutoFocus={(event) => {
             if (!returnFocusTo) return
             if (!returnFocusTo.isConnected) return
@@ -68,7 +90,7 @@ export function Modal({
           </div>
           <div className="modal-body">
             {description ? (
-              <p id="app-modal-description" className="app-muted">
+              <p id={descriptionId} className="app-muted">
                 {description}
               </p>
             ) : null}

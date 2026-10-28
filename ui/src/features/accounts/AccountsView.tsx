@@ -35,7 +35,8 @@ import {
 import type { Role } from '@/lib/api/auth'
 import { describeApiError } from '@/lib/api/client'
 import { listAllSchools } from '@/lib/api/school'
-import { useMe } from '@/lib/session'
+import { SHOWCASE, useMe } from '@/lib/session'
+import { showcaseAccounts, showcaseAllSchools } from '@/lib/showcase'
 import { AccountActionModal, type AccountActionState, type ReviewInput } from './AccountActionModal'
 import { AccountDeleteModal } from './AccountDeleteModal'
 import { AccountDetailDrawer } from './AccountDetailDrawer'
@@ -81,7 +82,7 @@ export function AccountsView() {
 
   const schoolsQuery = useQuery({
     queryKey: ['schools'],
-    queryFn: listAllSchools,
+    queryFn: () => (SHOWCASE ? Promise.resolve(showcaseAllSchools()) : listAllSchools()),
     enabled: can(role, 'schoolFilter'),
   })
   const schools = schoolsQuery.data ?? []
@@ -111,13 +112,15 @@ export function AccountsView() {
     ],
     // 列表随时可变。缓存键回到旧筛选时必须重新取数，不能给旧页。
     staleTime: 0,
-    queryFn: () =>
-      listAccounts({
+    queryFn: () => {
+      if (SHOWCASE) return Promise.resolve(showcaseAccounts())
+      return listAccounts({
         status: filters.status,
         school_id: filters.schoolId,
         q: filters.q,
         cursor,
-      }),
+      })
+    },
   })
 
   const [detailAccount, setDetailAccount] = useState<Account | null>(null)

@@ -17,7 +17,7 @@ import { Navigate } from '@tanstack/react-router'
 import { SessionLoading } from '@/components/ui/SessionLoading'
 import { AuthAside } from '@/features/auth/AuthAside'
 import { LoginForm } from '@/features/auth/LoginForm'
-import { useMe, useSessionExpired } from '@/lib/session'
+import { SHOWCASE, useMe, useSessionExpired } from '@/lib/session'
 
 type LoginPageProps = {
   /** 守卫写入的回跳地址。 */
@@ -33,7 +33,8 @@ export function LoginPage({ redirect }: LoginPageProps) {
 
   if (meQuery.isPending) return <SessionLoading />
   // 已登录不得停在登录页；过期标记除外（等用户重新登录）。
-  if (meQuery.data && !expired && !signingIn) return <Navigate to="/" replace />
+  // 展示模式例外：合成会话常驻，登录页保留可达，供演示表单与主题。
+  if (meQuery.data && !expired && !signingIn && !SHOWCASE) return <Navigate to="/" replace />
 
   return (
     <div className="auth-shell">

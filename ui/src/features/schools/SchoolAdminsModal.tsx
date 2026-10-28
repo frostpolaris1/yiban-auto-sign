@@ -22,6 +22,8 @@ import { TextInput } from '@/components/ui/Input'
 import { Modal } from '@/components/ui/Modal'
 import { formatDateTime } from '@/lib/format'
 import { roleLabel } from '@/lib/identity'
+import { SHOWCASE } from '@/lib/session'
+import { showcaseSchoolAdmins } from '@/lib/showcase'
 
 type SchoolAdminsModalProps = {
   school: School | null
@@ -55,7 +57,8 @@ export function SchoolAdminsModal({
 
   const adminsQuery = useQuery({
     queryKey: ['school-admins', school?.id ?? null],
-    queryFn: () => listAllSchoolAdmins(school!.id),
+    queryFn: () =>
+      SHOWCASE ? Promise.resolve(showcaseSchoolAdmins()) : listAllSchoolAdmins(school!.id),
     enabled: school !== null,
     staleTime: 0,
   })

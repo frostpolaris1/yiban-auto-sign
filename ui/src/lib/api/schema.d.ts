@@ -2191,7 +2191,8 @@ export interface operations {
                 day?: string;
                 /**
                  * @description Discover the platform window again and store the result. Default
-                 *     false reads the daily cache first.
+                 *     false reads the daily cache first. A valid override keeps the
+                 *     cached window unchanged (discovery still runs).
                  */
                 refresh?: boolean;
             };
@@ -2384,7 +2385,8 @@ export interface operations {
                 day?: string;
                 /**
                  * @description Discover the platform window again and store the result. Default
-                 *     false reads the daily cache first.
+                 *     false reads the daily cache first. A valid override keeps the
+                 *     cached window unchanged (discovery still runs).
                  */
                 refresh?: boolean;
             };

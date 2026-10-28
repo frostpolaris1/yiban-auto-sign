@@ -1,6 +1,6 @@
 /**
  * **功能**
- * 路由表：根路由、壳布局、五条页面路由。
+ * 路由表：根路由、壳布局、六条页面路由。
  *
  * **归属**
  * `app` 装配层：只做装配，页面逻辑留在 `pages`。
@@ -10,14 +10,16 @@
  * 新增页面必须同时改本文件与 `nav.ts`，否则导航缺项。
  */
 
-import { createRootRoute, createRoute, createRouter, Outlet } from '@tanstack/react-router'
+import { createRootRoute, createRoute, createRouter, Outlet, useNavigate } from '@tanstack/react-router'
 import { AppShell } from '@/components/shell/AppShell'
 import { AccountsPage } from '@/pages/AccountsPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { DesignPage } from '@/pages/DesignPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { NotFoundPage } from '@/pages/NotFoundPage'
+import { SchedulePage } from '@/pages/SchedulePage'
 import { SchoolsPage } from '@/pages/SchoolsPage'
+import { parseDay } from '@/lib/format'
 import { sanitizeRedirect } from '@/lib/redirect'
 
 const rootRoute = createRootRoute({
@@ -60,6 +62,34 @@ const schoolsRoute = createRoute({
 })
 
 /**
+ * 时间片路由的自定义 search：`?day=YYYY-MM-DD`。
+ * 校验即净化：非法日期在解析时丢弃，容器回落到今天。
+ */
+const scheduleRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: '/schedule',
+  validateSearch: (search: Record<string, unknown>): { day?: string } => {
+    const day = parseDay(search.day)
+    return day ? { day } : {}
+  },
+  component: ScheduleRouteComponent,
+})
+
+/** 把类型化的 search 传给页面，并让页面通过回调写回查询串。 */
+function ScheduleRouteComponent() {
+  const { day } = scheduleRoute.useSearch()
+  const navigate = useNavigate()
+  return (
+    <SchedulePage
+      day={day}
+      onDayChange={(next) => {
+        void navigate({ to: '/schedule', search: { day: next }, replace: true })
+      }}
+    />
+  )
+}
+
+/**
  * 登录路由的自定义 search：`?redirect=`。
  * 校验即净化：站外地址在解析时丢弃，后续读者拿不到它。
  */
@@ -80,7 +110,7 @@ function LoginRouteComponent() {
 }
 
 const routeTree = rootRoute.addChildren([
-  shellRoute.addChildren([dashboardRoute, designRoute, accountsRoute, schoolsRoute]),
+  shellRoute.addChildren([dashboardRoute, designRoute, accountsRoute, schoolsRoute, scheduleRoute]),
   loginRoute,
 ])
 

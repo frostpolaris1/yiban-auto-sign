@@ -539,3 +539,175 @@
   max-width: 400px;
   margin: 0 auto 16px;
 }
+
+/* ---------- 弹窗层级与限高 ----------
+ * 叠层序号由 `Modal` 的 `layer` 写成行内 z-index：遮罩 190 起，内容 200 起，每层加 20。
+ * 高层遮罩因此压暗低层弹窗，焦点陷阱仍由 Radix 的层栈只陷最上层。
+ * 限高与正文滚动只对内容可能超出视口的弹窗生效（当前只有计划预览）；
+ * 其余弹窗不套这组规则，布局与既有基线保持逐像素一致。 */
+.app-modal-scroll {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 32px);
+  overflow: hidden;
+}
+
+.app-modal-scroll .modal-body {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.app-modal-scroll .modal-head,
+.app-modal-scroll .modal-foot {
+  flex-shrink: 0;
+}
+
+/* vendor 没有 `.btn:disabled` 样式：禁用动作必须看得出来，
+ * 否则停用任务的两个写按钮看起来可点。 */
+.app-modal-scroll .modal-foot .btn:disabled,
+.app-time-pref-row .btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ---------- 时间片页 ----------
+ * 工具栏、计划指标、直方图与逐行表。
+ * 直方图是纯 CSS 柱：柱高按 count/峰值 的百分比，不引图表库。
+ * 颜色全部取令牌，明暗两套同源。
+ */
+
+.app-schedule-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.app-schedule-toolbar .field {
+  min-width: 184px;
+}
+
+.app-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.app-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg-muted);
+}
+
+.app-metric-label {
+  color: var(--t-muted);
+  font-size: 11.5px;
+}
+
+.app-metric-value {
+  color: var(--t-base);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+/* 正缺口是真问题：用警示色，不靠字重区分。 */
+.app-metric-alert {
+  color: var(--warning);
+}
+
+.app-histogram {
+  margin-top: 16px;
+}
+
+.app-histogram-bars {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  height: 136px;
+  padding: 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg-muted);
+}
+
+.app-histogram-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+  min-width: 0;
+}
+
+.app-histogram-count {
+  color: var(--t-muted);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.app-histogram-track {
+  flex: 1;
+  display: flex;
+  align-items: flex-end;
+  width: 100%;
+  max-width: 28px;
+}
+
+.app-histogram-bar {
+  display: block;
+  width: 100%;
+  min-height: 2px;
+  border-radius: 3px 3px 0 0;
+  background: var(--primary);
+}
+
+.app-histogram-bar.is-empty {
+  background: var(--border);
+}
+
+.app-histogram-slice {
+  color: var(--t-light);
+  font-size: 9.5px;
+  line-height: 1;
+}
+
+.app-histogram .app-caption {
+  margin: 6px 0 0;
+}
+
+/* 逐行计划表可滚动：12 行以上不能把弹窗顶出视口。 */
+.app-plan-rows {
+  max-height: 220px;
+  margin-top: 16px;
+  overflow: auto;
+  border-top: 1px solid var(--border-soft);
+}
+
+.app-plan-retry {
+  margin-top: 8px;
+}
+
+.app-time-pref-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.app-time-pref-row .field {
+  flex: 1;
+  min-width: 180px;
+}
+
+.app-pref-current {
+  font-weight: 600;
+}

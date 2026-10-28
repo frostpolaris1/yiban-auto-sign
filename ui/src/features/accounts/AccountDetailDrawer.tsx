@@ -20,6 +20,7 @@ import { describeApiError } from '@/lib/api/client'
 import type { School } from '@/lib/api/school'
 import { formatDateTime } from '@/lib/format'
 import { statusLabel, statusTone } from './display'
+import { SHOWCASE } from '@/lib/session'
 
 type AccountDetailDrawerProps = {
   account: Account | null
@@ -36,7 +37,8 @@ export function AccountDetailDrawer({
 }: AccountDetailDrawerProps) {
   const detail = useQuery({
     queryKey: ['account', account?.id ?? null],
-    queryFn: () => getAccount(account!.id),
+    // 展示模式：无后端，列表摘要已够展示，不发详情请求。
+    queryFn: () => (SHOWCASE ? Promise.resolve(account!) : getAccount(account!.id)),
     enabled: account !== null,
   })
 
