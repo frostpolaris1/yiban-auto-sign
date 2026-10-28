@@ -1008,9 +1008,16 @@ paths:
         the sha256. The scope check runs before any bytes are written.
         A user reads own photos. An admin reads photos whose owner has a
         non-deleted account in a bound school. Cross-scope reads answer 404.
+        When If-None-Match (weak comparison, comma lists and `*` honoured)
+        matches the current ETag the answer is 304 without a body.
       x-roles: [user, admin]
       parameters:
         - $ref: '#/components/parameters/PhotoID'
+        - name: If-None-Match
+          in: header
+          required: false
+          description: ETag(s) the client already holds; a match answers 304.
+          schema: { type: string }
       responses:
         '200':
           description: Image bytes.
@@ -1019,6 +1026,8 @@ paths:
               schema: { type: string, format: binary }
             image/png:
               schema: { type: string, format: binary }
+        '304':
+          description: Not modified (ETag matched); no body.
         '404': { $ref: '#/components/responses/NotFoundError' }
         default: { $ref: '#/components/responses/DefaultError' }
     delete:

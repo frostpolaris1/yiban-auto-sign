@@ -152,6 +152,69 @@ func request(t *testing.T, engine http.Handler, issued coreauth.Issued, method, 
 	return rec
 }
 
+func requestWithHeaders(t *testing.T, engine http.Handler, issued coreauth.Issued,
+	method, path string, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, nil)
+	req.AddCookie(&http.Cookie{Name: coreauth.InsecureCookieName, Value: issued.Token})
+	req.Header.Set("X-CSRF-Token", issued.CSRFToken)
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+	return rec
+}
+
+// 7x2-3：If-None-Match 命中回 304（无体、保留 ETag）；弱比较/列表/* 均认，
+// 不匹配与缺头回 200 带体。
+func TestPhotoGetNotModified(t *testing.T) {
+	data := []byte("png-bytes")
+	head := sampleRecord()
+	etag := `"` + hex.EncodeToString(head.SHA256[:]) + `"`
+	cases := []struct {
+		name string
+		inm  string
+		want int
+	}{
+		{"exact", etag, http.StatusNotModified},
+		{"weak", "W/" + etag, http.StatusNotModified},
+		{"list", `"other", ` + etag, http.StatusNotModified},
+		{"star", "*", http.StatusNotModified},
+		{"mismatch", `"other"`, http.StatusOK},
+		{"absent", "", http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &fakeService{getRec: sampleRecord(), getBody: io.NopCloser(bytes.NewReader(data))}
+			engine, issued := newRouter(t, corescope.User("u1"), svc)
+			headers := map[string]string{}
+			if tc.inm != "" {
+				headers["If-None-Match"] = tc.inm
+			}
+			rec := requestWithHeaders(t, engine, issued, http.MethodGet, "/api/me/photos/photo-1", headers)
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.want, rec.Body.String())
+			}
+			if got := rec.Header().Get("ETag"); got != etag {
+				t.Fatalf("etag = %q, want %q", got, etag)
+			}
+			if tc.want == http.StatusNotModified {
+				if rec.Body.Len() != 0 {
+					t.Fatalf("304 不得带体：%q", rec.Body.Bytes())
+				}
+				if ct := rec.Header().Get("Content-Type"); ct != "" {
+					t.Fatalf("304 不应声明 Content-Type：%q", ct)
+				}
+				return
+			}
+			if !bytes.Equal(rec.Body.Bytes(), data) {
+				t.Fatalf("200 body = %q", rec.Body.Bytes())
+			}
+		})
+	}
+}
+
 func uploadBody(t *testing.T, field string, data []byte) (*bytes.Buffer, string) {
 	t.Helper()
 	var buf bytes.Buffer

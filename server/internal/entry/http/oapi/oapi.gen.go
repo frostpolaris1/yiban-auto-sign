@@ -1131,6 +1131,12 @@ type PhotoDeleteParams struct {
 	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
 }
 
+// PhotoGetParams defines parameters for PhotoGet.
+type PhotoGetParams struct {
+	// IfNoneMatch ETag(s) the client already holds; a match answers 304.
+	IfNoneMatch *string `json:"If-None-Match,omitempty"`
+}
+
 // TimePrefSetParams defines parameters for TimePrefSet.
 type TimePrefSetParams struct {
 	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
@@ -1358,7 +1364,7 @@ type ServerInterface interface {
 	PhotoDelete(c *gin.Context, id PhotoID, params PhotoDeleteParams)
 	// PhotoGet Stream one photo.
 	// (GET /api/me/photos/{id})
-	PhotoGet(c *gin.Context, id PhotoID)
+	PhotoGet(c *gin.Context, id PhotoID, params PhotoGetParams)
 	// MeSignStatus Polling status for the signed-in user's own accounts.
 	// (GET /api/me/sign-status)
 	MeSignStatus(c *gin.Context)
@@ -2357,6 +2363,30 @@ func (siw *ServerInterfaceWrapper) PhotoGet(c *gin.Context) {
 		return
 	}
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params PhotoGetParams
+
+	headers := c.Request.Header
+
+	// ------------- Optional header parameter "If-None-Match" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("If-None-Match")]; found {
+		var IfNoneMatch string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for If-None-Match, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "If-None-Match", valueList[0], &IfNoneMatch, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter If-None-Match: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.IfNoneMatch = &IfNoneMatch
+
+	}
+
 	for _, middleware := range siw.HandlerMiddlewares {
 		middleware(c)
 		if c.IsAborted() {
@@ -2364,7 +2394,7 @@ func (siw *ServerInterfaceWrapper) PhotoGet(c *gin.Context) {
 		}
 	}
 
-	siw.Handler.PhotoGet(c, id)
+	siw.Handler.PhotoGet(c, id, params)
 }
 
 // MeSignStatus operation middleware
