@@ -3,6 +3,7 @@ import { mockAccountsApi } from './support/fake-accounts-api'
 import { mockDashboardApi } from './support/fake-dashboard-api'
 import { SCHEDULE_DAY, mockScheduleApi } from './support/fake-schedule-api'
 import { mockSchoolsApi } from './support/fake-schools-api'
+import { visibleText } from './support/visible-text'
 
 /**
  * Adminator 壳的视觉回归基线。
@@ -93,13 +94,24 @@ for (const theme of THEMES) {
         await page.setViewportSize({ width: viewport.width, height: viewport.height })
         await openWithTheme(page, '/', theme, view.role)
         // 数据态到位再拍：不等就会拍到「加载中…」。
+        // 数字先断言终值再拍：滚动中间帧不得进基线。
         if (view.role === 'user') {
           await expect(page.getByRole('table', { name: '今日签到状态' })).toContainText(
             '账号 #1',
           )
+          await expect
+            .poll(() =>
+              visibleText(
+                page.locator('.kpi-card').filter({ hasText: '账号总数' }).locator('.kpi-value'),
+              ),
+            )
+            .toBe('4个')
         } else {
           await expect(page.getByLabel('任务')).toHaveValue('school-alpha:task-daily')
           await expect(page.locator('.app-metric')).toHaveCount(3)
+          await expect
+            .poll(() => visibleText(page.locator('.app-metric').filter({ hasText: '容量' })))
+            .toBe('容量40')
         }
         await expect(page).toHaveScreenshot(`${view.name}-${theme}-${viewport.name}.png`, {
           fullPage: true,
@@ -177,6 +189,22 @@ for (const theme of THEMES) {
 }
 
 for (const theme of THEMES) {
+  test(`visual toast ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await openWithTheme(page, '/accounts', theme)
+    await page.getByRole('button', { name: '暂停 139****9000' }).click()
+    await page
+      .getByRole('dialog', { name: '暂停账号？' })
+      .getByRole('button', { name: '确认暂停' })
+      .click()
+    const toast = page.locator('[data-sonner-toast]')
+    await expect(toast).toBeVisible()
+    await expect(toast).toContainText('已暂停 139****9000')
+    await expect(page).toHaveScreenshot(`toast-${theme}-1440.png`)
+  })
+}
+
+for (const theme of THEMES) {
   test(`visual schools drawer ${theme}`, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })
     await openWithTheme(page, '/schools', theme)
@@ -245,6 +273,9 @@ for (const theme of THEMES) {
     await expect(dialog).toBeVisible()
     await expect(dialog).toContainText('窗口版本')
     await expect(dialog).toContainText('v0')
+    await expect
+      .poll(() => visibleText(dialog.locator('.app-metric').nth(0)))
+      .toBe('容量40')
     await expect(page).toHaveScreenshot(`schedule-preview-${theme}-1440.png`)
   })
 
@@ -271,6 +302,13 @@ for (const theme of THEMES) {
     await page.setViewportSize({ width: 1440, height: 900 })
     await openWithTheme(page, '/', theme, 'user')
     await expect(page.locator('.app-pref-current')).toHaveText('窗口开始 + 15 分钟')
+    await expect
+      .poll(() =>
+        visibleText(
+          page.locator('.kpi-card').filter({ hasText: '账号总数' }).locator('.kpi-value'),
+        ),
+      )
+      .toBe('4个')
     await expect(page).toHaveScreenshot(`dashboard-time-pref-${theme}-1440.png`, {
       fullPage: true,
     })

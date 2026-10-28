@@ -9,8 +9,12 @@
  * 服务端游标分页，没有总数。页脚只报当前位置与本页条数。
  * 行高固定 48px；表格最小宽度由内容决定，窄屏在 `.table-scroll` 内滚动。
  * 无权限与不可评审一律置灰，并给一句可见原因。
+ * 行增删与重排走 180ms 过渡；不改行点击、菜单与焦点还原的语义。
+ * 过渡库会永久给 tbody 写 `position: relative`：表体文字由次像素抗锯齿变为灰度。
+ * 视觉基线按此口径拍，不是颜色或字号变化。
  */
 
+import { useAutoAnimate } from '@formkit/auto-animate/react'
 import type { Account } from '@/lib/api/account'
 import type { Role } from '@/lib/api/auth'
 import { Badge } from '@/components/ui/Badge'
@@ -63,6 +67,11 @@ export function AccountsTable({
   onLocation,
   onDelete,
 }: AccountsTableProps) {
+  // 列表过渡：180ms 与 vendor 过渡同量级；尊重系统「减少动态效果」偏好。
+  const [tbodyRef] = useAutoAnimate<HTMLTableSectionElement>({
+    duration: 180,
+    disrespectUserMotionPreference: false,
+  })
   return (
     <>
       <div className="table-scroll">
@@ -78,7 +87,7 @@ export function AccountsTable({
               <th scope="col">操作</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody ref={tbodyRef}>
             {error ? (
               <tr>
                 <td colSpan={6}>

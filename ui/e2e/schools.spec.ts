@@ -448,9 +448,13 @@ test('rows are 48px high, the content is not capped and the status wears a badge
   const row = page
     .getByRole('row')
     .filter({ has: page.getByRole('button', { name: '查看 合成学校甲' }) })
-  const box = await row.boundingBox()
-  expect(box, 'the row is rendered').not.toBeNull()
-  expect(Math.round(box!.height), 'row height').toBe(48)
+  // 行进入有 180ms 过渡：缩放期间的包围盒不是布局高度。等过渡落定再量。
+  await expect
+    .poll(async () => {
+      const box = await row.boundingBox()
+      return box === null ? null : Math.round(box.height)
+    })
+    .toBe(48)
   await expect(row.locator('.badge')).toHaveText('正常')
 
   const layout = await page.evaluate(() => {

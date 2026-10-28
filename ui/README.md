@@ -37,7 +37,7 @@ ui/src/
 ├── features/       按域组织：auth / dashboard / design / accounts / schools / schedule
 ├── components/
 │   ├── shell/      Sidebar / Topbar / Footer / AppShell / nav 配置
-│   └── ui/         Button / Input / Card / Table / Modal / Drawer / Tabs / Switch / Badge / Menu / Icon
+│   └── ui/         Button / Input / Card / Table / Modal / Drawer / Tabs / Switch / Badge / Menu / Icon / Toaster
 ├── lib/            api 按域拆分 / query / theme / format / cursor / roles / cx
 └── styles/         tokens.css / adminator.css / app.css
 ```
@@ -86,17 +86,29 @@ node scripts/token-gate.mjs
 - `index.html` 的内联脚本先于 CSS 执行。它写入 `data-theme`，避免闪烁。
 - 切换按钮是 Topbar 的 `#themeToggle`。
 
+## 微交互
+
+- 成功反馈走 toast：右上角，落在顶栏下方。文案含操作结果与对象标识。
+  `Toaster` 只映射常规与成功两组槽位（六键），成功配色对齐站内 `Alert.success`，
+  颜色全部取自 `tokens.css`，不写颜色字面量。
+- 错误反馈留在发起的模态或表单内，不改 toast。错误要可回看。
+- 登录与登出靠整页跳转反馈，不发 toast。
+- 看板 KPI、容量三格与预览三格的数字由 `@number-flow/react` 渲染，颜色继承外层。
+  终值是可见文本：数据到位后可直接断言等于期望数字。
+- 账号表、学校表与时间片窗口表的行增删与重排走 180ms 过渡，
+  尊重系统「减少动态效果」偏好。行点击、菜单与焦点还原语义不变。
+
 ## 视觉回归
 
 矩阵：4 条常驻路由与看板的两个视角（user/admin）× 2 套主题 × 2 个宽度 = 24 张截图。
 时间片页按固定业务日 `2026-10-28` 另拍，不进 390 常驻矩阵（缺省业务日会随日历漂移）。
 另有账号页 6 种开态 × 2 套主题 = 12 张，学校页 6 种开态 × 2 套主题 = 12 张，
 时间片页列表／预览／覆盖／无权限与仪表盘偏好卡共 5 种开态 × 2 套主题 = 10 张，
-profile 菜单与会话过期提示各 2 张，共 62 张。
+profile 菜单与会话过期提示各 2 张，toast 明暗各 1 张，共 64 张。
 
-行为用例 116 条：账号页 27 条、认证 23 条、看板 14 条、画廊 9 条、学校页 21 条、
-时间片页与时间偏好 21 条、展示模式 1 条。
-视觉文件另有无溢出 1 条。Playwright 总计 179 条。
+行为用例 141 条：账号页 27 条、认证 23 条、看板 14 条、画廊 9 条、学校页 21 条、
+时间片页与时间偏好 21 条、展示模式 2 条、微交互 24 条。
+视觉文件另有无溢出 1 条。Playwright 总计 206 条。
 
 展示模式用例由 `npm run build:showcase` 构建的 `dist-showcase` 提供。
 Playwright 的第二个 webServer 在 4174 端口预览它；`e2e/showcase.spec.ts` 用它钉零请求。

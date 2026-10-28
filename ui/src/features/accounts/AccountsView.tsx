@@ -8,6 +8,7 @@
  * **口径**
  * 筛选变更重置游标栈。手机号输入防抖 250ms。
  * 列表与详情走 react-query；写操作成功后失效两者的缓存。
+ * 写操作成功的反馈走 toast；错误反馈留在原模态内，可回看。
  * 角色来自 `GET /api/auth/me`。取不到时一切写操作置灰并给原因。
  */
 
@@ -16,6 +17,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Alert } from '@/components/ui/Alert'
 import { Card } from '@/components/ui/Card'
 import { PageHeader } from '@/components/ui/PageHeader'
+import { notifySuccess } from '@/components/ui/toast'
 import {
   deleteAccount,
   listAccounts,
@@ -65,7 +67,7 @@ function successText(kind: AccountActionKind, account: Account): string {
     case 'review':
       return `已完成 ${account.phone_masked} 的评审`
     case 'verify':
-      return ''
+      return `已验证 ${account.phone_masked}`
   }
 }
 
@@ -130,7 +132,6 @@ export function AccountsView() {
   const [actionReturnFocus, setActionReturnFocus] = useState<HTMLElement | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [verifyResult, setVerifyResult] = useState<AccountVerifyResult | null>(null)
-  const [notice, setNotice] = useState<{ id: number; text: string } | null>(null)
   const [editTarget, setEditTarget] = useState<Account | null>(null)
   const [editReturnFocus, setEditReturnFocus] = useState<HTMLElement | null>(null)
   const [editError, setEditError] = useState<string | null>(null)
@@ -164,11 +165,14 @@ export function AccountsView() {
       void queryClient.invalidateQueries({ queryKey: ['account', input.account.id] })
       setActionError(null)
       if (input.kind === 'verify') {
-        setVerifyResult(result as AccountVerifyResult)
+        const verify = result as AccountVerifyResult
+        setVerifyResult(verify)
+        // 平台拒绝是结论，不是成功：结论留在模态里，只有通过才发成功 toast。
+        if (verify.ok) notifySuccess(successText('verify', input.account))
         return
       }
       setAction(null)
-      setNotice({ id: Date.now(), text: successText(input.kind, input.account) })
+      notifySuccess(successText(input.kind, input.account))
     },
     onError: (error) => {
       setActionError(describeApiError(error))
@@ -237,8 +241,12 @@ export function AccountsView() {
         setDeleteReturnFocus(null)
         focusAfterRowRemoval()
         setDeleteTarget(null)
+        notifySuccess(`已删除 ${input.account.phone_masked}`)
       }
-      if (input.op === 'update') setEditTarget(null)
+      if (input.op === 'update') {
+        setEditTarget(null)
+        notifySuccess(`已保存 ${input.account.phone_masked}`)
+      }
       if (input.op === 'location') {
         // 契约无读端点：成功响应进会话内缓存，供下次预填（专档 §七.4 口径）。
         // 该 key 无订阅者，默认 gcTime 5 分钟即回收——此处声明永不过期，
@@ -246,6 +254,7 @@ export function AccountsView() {
         queryClient.setQueryDefaults(['account-location'], { gcTime: Infinity })
         queryClient.setQueryData(['account-location', input.account.id], result as AccountLocation)
         setLocationTarget(null)
+        notifySuccess(`已保存 ${input.account.phone_masked} 的位置策略`)
       }
     },
     onError: (error, input) => {
@@ -288,14 +297,6 @@ export function AccountsView() {
         }
         subtitle="按学校、状态与手机号筛选。点击任意行查看只读详情。"
       />
-
-      {notice ? (
-        <div className="app-alert-block">
-          <Alert key={notice.id} tone="success" title="操作结果" dismissible>
-            {notice.text}
-          </Alert>
-        </div>
-      ) : null}
 
       <Card
         eyebrow="Accounts"

@@ -187,7 +187,7 @@ test('invariant 4: build waits for confirmation and sends the contract fields', 
     school_id: 'school-alpha',
     task_id: 'task-daily',
   })
-  await expect(page.getByText('已落库')).toBeVisible()
+  await expect(page.locator('[data-sonner-toast]').filter({ hasText: '已落库' })).toBeVisible()
   await expect.poll(() => windowsCalls(api).length).toBeGreaterThan(before)
   // 预览滞留写库前状态是缺陷：落库响应（v7/cache）必须已写进预览缓存。
   await expect(preview.getByText('v7')).toBeVisible()
@@ -331,7 +331,9 @@ test('invariant 6: a user reads and saves the offset through a confirmation', as
   await confirm.getByRole('button', { name: '确认保存' }).click()
   await expect.poll(() => timePrefPutCalls(api).length).toBe(1)
   expect(timePrefPutCalls(api)[0].body).toEqual({ offset_min: 20 })
-  await expect(page.getByText('已保存时间偏好')).toBeVisible()
+  await expect(
+    page.locator('[data-sonner-toast]').filter({ hasText: '已保存时间偏好' }),
+  ).toBeVisible()
   await expect(page.locator('.app-pref-current')).toHaveText('窗口开始 + 20 分钟')
 })
 
@@ -348,7 +350,9 @@ test('invariant 6: clearing the preference also asks first', async ({ page }) =>
   await confirm.getByRole('button', { name: '确认清除' }).click()
   await expect.poll(() => timePrefPutCalls(api).length).toBe(1)
   expect(timePrefPutCalls(api)[0].body).toEqual({ offset_min: null })
-  await expect(page.getByText('已清除时间偏好')).toBeVisible()
+  await expect(
+    page.locator('[data-sonner-toast]').filter({ hasText: '已清除时间偏好' }),
+  ).toBeVisible()
   await expect(page.locator('.app-pref-current')).toHaveText('未设置')
 })
 
