@@ -537,8 +537,11 @@ export interface paths {
         /**
          * List task windows for a business day.
          * @description master sees every school; admin sees bound schools only.
-         *     A task without a cached window for the day has null start and end,
-         *     because the window is not discovered yet.
+         *     A day without a cached window is discovered once and then cached, so
+         *     the default request costs at most one platform call per task. When the
+         *     cache already holds the day, the default request makes no platform
+         *     call. Set refresh=true to discover again.
+         *     A task whose platform reports no window keeps null start and end.
          */
         get: operations["ScheduleWindows"];
         put?: never;
@@ -560,6 +563,8 @@ export interface paths {
          * Preview the plan for one school task and day.
          * @description Reads the window from the platform, then the cache, then the fallback,
          *     and returns the exact rows Build would persist. Preview writes nothing.
+         *     A disabled task can be previewed: enabled is false and the window is
+         *     still reported. Build and override reject a disabled task.
          */
         get: operations["SchedulePreview"];
         put?: never;
@@ -583,7 +588,8 @@ export interface paths {
          * Build and persist the plan for one school task and day.
          * @description Writes the resolved window, rearranges pending rows when the window
          *     changed, and inserts missing rows in one transaction. Running and
-         *     terminal rows are never moved.
+         *     terminal rows are never moved. A disabled task returns 409 conflict
+         *     and writes nothing.
          */
         post: operations["SchedulePlan"];
         delete?: never;
@@ -605,7 +611,8 @@ export interface paths {
          * Replace the window of one school task for one day.
          * @description An override wins over the platform window for the same day and keeps
          *     its recorded reason. Pending rows are rearranged immediately; running
-         *     and terminal rows are never moved.
+         *     and terminal rows are never moved. A disabled task returns 409 conflict
+         *     and stores no override.
          */
         post: operations["ScheduleOverride"];
         delete?: never;
@@ -655,6 +662,9 @@ export interface paths {
          * @description Capacity uses the same window resolution and formula as the plan.
          *     A positive shortfall means demand exceeds capacity and the plan
          *     compresses rows into the tail slice.
+         *     The window is read from the daily cache by default: a cached day makes
+         *     no platform call, a missing day is discovered once and then cached.
+         *     Set refresh=true to discover again. An override still wins over both.
          */
         get: operations["CapacityGet"];
         put?: never;
@@ -996,13 +1006,14 @@ export interface components {
             day?: string;
             /**
              * Format: date-time
-             * @description Null when the window is not cached for the day yet.
+             * @description Null when no window is cached for the day. An uncached day is
+             *     discovered once, so null means no platform window was reported.
              */
             start: string | null;
             /** Format: date-time */
             end: string | null;
             /**
-             * @description platform, cache, fallback or override; null when the window is not
+             * @description platform, cache, fallback or override; null when no window is
              *     cached for the day.
              */
             source: string | null;
@@ -1021,6 +1032,11 @@ export interface components {
         };
         SchedulePlan: {
             day: string;
+            /**
+             * @description Whether the school task is enabled. A disabled task can be
+             *     previewed, but Build and override reject it with 409 conflict.
+             */
+            enabled: boolean;
             source: components["schemas"]["ScheduleWindowSource"];
             /**
              * Format: date-time
@@ -2173,6 +2189,11 @@ export interface operations {
             query?: {
                 /** @description Business day YYYY-MM-DD; defaults to today in the server time zone. */
                 day?: string;
+                /**
+                 * @description Discover the platform window again and store the result. Default
+                 *     false reads the daily cache first.
+                 */
+                refresh?: boolean;
             };
             header?: never;
             path?: never;
@@ -2361,6 +2382,11 @@ export interface operations {
                 task_id: components["parameters"]["TaskIDQuery"];
                 /** @description Business day YYYY-MM-DD; defaults to today in the server time zone. */
                 day?: string;
+                /**
+                 * @description Discover the platform window again and store the result. Default
+                 *     false reads the daily cache first.
+                 */
+                refresh?: boolean;
             };
             header?: never;
             path?: never;

@@ -30,6 +30,13 @@ const ICON_PATHS = {
       <circle cx="12" cy="7" r="4" />
     </>
   ),
+  school: (
+    <>
+      <path d="M3 21h18" />
+      <path d="M5 21V8l7-5 7 5v13" />
+      <path d="M9 21v-6h6v6" />
+    </>
+  ),
   design: (
     <>
       <circle cx="12" cy="12" r="9" />

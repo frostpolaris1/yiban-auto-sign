@@ -4,13 +4,6 @@ import test from 'node:test'
 import { buildAccountSearch } from '../../src/lib/api/account.ts'
 import { listAllSchools } from '../../src/lib/api/school.ts'
 import {
-  currentCursor,
-  emptyCursorStack,
-  goNext,
-  goPrevious,
-  hasPreviousPage,
-} from '../../src/features/accounts/cursor.ts'
-import {
   can,
   canChangePause,
   denyReason,
@@ -22,9 +15,9 @@ import {
  * 账号页纯逻辑的不变式。
  *
  * 查询串：只带非空筛选。空串与 undefined 都不出现在 URL 里。
- * 游标栈：上一页只能回到已访问过的游标。空游标不前进。
  * 暂停谓词：暂停只从 active 出发；恢复只认匹配的种类与角色。
  * 学校列表：按 next_cursor 取全，封顶 10 页。
+ * 游标栈是共享原语，其单测在 `cursor.test.mjs`。
  */
 
 function queryParams(search) {
@@ -59,47 +52,6 @@ test('buildAccountSearch carries each filter with its contract name', () => {
       cursor: 'c2',
     },
   )
-})
-
-test('an untouched cursor stack has no previous page', () => {
-  const stack = emptyCursorStack()
-  assert.equal(currentCursor(stack), undefined)
-  assert.equal(hasPreviousPage(stack), false)
-})
-
-test('next pushes the returned cursor and previous walks back to it', () => {
-  const first = emptyCursorStack()
-  const second = goNext(first, 'c2')
-  assert.equal(currentCursor(second), 'c2')
-  assert.equal(hasPreviousPage(second), true)
-  assert.equal(currentCursor(first), undefined, 'goNext must not mutate its input')
-
-  const back = goPrevious(second)
-  assert.equal(currentCursor(back), undefined)
-  assert.equal(hasPreviousPage(back), false)
-})
-
-test('previous never walks below the first page', () => {
-  const stack = goPrevious(goPrevious(emptyCursorStack()))
-  assert.equal(currentCursor(stack), undefined)
-  assert.equal(hasPreviousPage(stack), false)
-})
-
-test('an empty next cursor does not open a new page', () => {
-  const stack = goNext(emptyCursorStack(), '')
-  assert.equal(currentCursor(stack), undefined)
-  assert.equal(hasPreviousPage(stack), false)
-})
-
-test('a new branch drops the abandoned forward pages', () => {
-  let stack = goNext(emptyCursorStack(), 'c2')
-  stack = goNext(stack, 'c3')
-  stack = goPrevious(stack)
-  assert.equal(currentCursor(stack), 'c2')
-
-  stack = goNext(stack, 'cx')
-  assert.equal(currentCursor(stack), 'cx')
-  assert.equal(currentCursor(goPrevious(stack)), 'c2', 'c3 must not be reachable again')
 })
 
 const STATUSES = [

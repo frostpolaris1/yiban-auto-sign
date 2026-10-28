@@ -16,7 +16,8 @@ import type { Role } from '@/lib/api/auth'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Icon } from '@/components/ui/Icon'
-import { formatDateTime, isPending, statusLabel, statusTone } from './display'
+import { formatDateTime } from '@/lib/format'
+import { isPending, statusLabel, statusTone } from './display'
 import { AccountRowMenu } from './AccountRowMenu'
 import {
   can,
@@ -65,7 +66,7 @@ export function AccountsTable({
   return (
     <>
       <div className="table-scroll">
-        <table className="data-table app-accounts-table">
+        <table className="data-table app-row-table">
           <caption className="app-visually-hidden">账号列表</caption>
           <thead>
             <tr>

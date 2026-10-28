@@ -1,13 +1,13 @@
 /**
  * **功能**
- * 账号状态的文案、徽章色与时间格式。
+ * 账号状态的文案与徽章色。
  *
  * **归属**
  * `features/accounts` 展示层：纯函数，无 React、无网络。
  *
  * **口径**
  * 状态值只取自契约 `AccountStatus`，标签是全仓唯一一份。
- * 时间固定按 `Asia/Shanghai` 渲染，换机器不改文本。
+ * 时间格式化在 `lib/format`，与学校页共用一份。
  */
 
 import type { Tone } from '@/components/ui/Badge'
@@ -46,22 +46,4 @@ export function statusTone(status: AccountStatus): Tone {
 
 export function isPending(status: AccountStatus): boolean {
   return status === 'pending'
-}
-
-const dateTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
-  timeZone: 'Asia/Shanghai',
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-  hour: '2-digit',
-  minute: '2-digit',
-  hour12: false,
-})
-
-/** 空值与非日期文本原样退回，不抛错。 */
-export function formatDateTime(value: string | null | undefined): string {
-  if (!value) return '—'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return dateTimeFormatter.format(date)
 }

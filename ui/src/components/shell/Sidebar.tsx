@@ -17,7 +17,7 @@ import { cx } from '@/lib/cx'
 import type { SessionUser } from '@/lib/api/auth'
 import { displayNameFor, initialsFor, roleLabel } from '@/lib/identity'
 import { BrandMark, Icon } from '@/components/ui/Icon'
-import { isNavGroup, NAV, type NavGroup, type NavLeaf } from './nav'
+import { isNavGroup, visibleNav, type NavGroup, type NavLeaf } from './nav'
 
 type SidebarProps = {
   me: SessionUser
@@ -27,6 +27,8 @@ type SidebarProps = {
 
 export function Sidebar({ me, pathname, onNavigate }: SidebarProps) {
   const [manualOpen, setManualOpen] = useState<Record<string, boolean>>({})
+  // 整页无权限的导航项不渲染：判据来自 nav 的 roles 元数据。
+  const sections = visibleNav(me.role)
 
   return (
     <aside className="d-sidebar" aria-label="主导航">
@@ -40,7 +42,7 @@ export function Sidebar({ me, pathname, onNavigate }: SidebarProps) {
         </div>
       </div>
 
-      {NAV.map((section) => (
+      {sections.map((section) => (
         <nav className="nav-section" key={section.label} aria-label={section.label}>
           <div className="nav-label">{section.label}</div>
           {section.items.map((item) => {

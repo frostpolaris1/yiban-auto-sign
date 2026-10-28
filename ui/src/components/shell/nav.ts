@@ -9,9 +9,13 @@
  * 每个 `to` 必须在 `router.tsx` 里有对应路由。
  * 面包屑与标题都从这里派生，不另写一份。
  * `/login` 不在表内：壳内路由需要会话，登录页只对未登录可见。
+ * 整页无权限＝导航项不渲染（2026-10-28 用户裁决）；`roles` 是唯一判据。
+ * 页内动作级无权限仍走各 feature 的「置灰不隐藏」。
  */
 
 import type { IconName } from '@/components/ui/Icon'
+import type { Role } from '@/lib/api/auth'
+import { SCHOOL_VIEW_ROLES, roleAllowed } from '../../lib/roles'
 
 /**
  * 导航唯一来源。取代 Adminator `Shell.js` 里的 `NAV`。
@@ -33,6 +37,8 @@ export type NavLeaf = {
   icon: IconName
   badge?: NavBadge
   crumbs: string[]
+  /** 缺省＝全体可见。给出时只对这些角色渲染。 */
+  roles?: readonly Role[]
 }
 
 export type NavGroup = {
@@ -71,6 +77,14 @@ export const NAV: NavSection[] = [
         icon: 'accounts',
         crumbs: ['工作区', '账号'],
       },
+      {
+        key: 'schools',
+        text: '学校',
+        to: '/schools',
+        icon: 'school',
+        roles: SCHOOL_VIEW_ROLES,
+        crumbs: ['工作区', '学校'],
+      },
     ],
   },
   {
@@ -99,6 +113,27 @@ export const NAV: NavSection[] = [
 export const NAV_LEAVES: NavLeaf[] = NAV.flatMap((section) =>
   section.items.flatMap((item) => (isNavGroup(item) ? item.children : [item])),
 )
+
+function navLeafVisible(leaf: NavLeaf, role: Role | null | undefined): boolean {
+  return leaf.roles === undefined || roleAllowed(role, leaf.roles)
+}
+
+/**
+ * 按角色过滤后的导航。整页无权限的叶子不渲染；子项全被过滤的分组一起消失。
+ * 面包屑仍用 `NAV_LEAVES`：直接访问无权限页时标题与面包屑照常可解析。
+ */
+export function visibleNav(role: Role | null | undefined): NavSection[] {
+  return NAV.flatMap((section): NavSection[] => {
+    const items = section.items.flatMap((item): NavItem[] => {
+      if (isNavGroup(item)) {
+        const children = item.children.filter((child) => navLeafVisible(child, role))
+        return children.length > 0 ? [{ ...item, children }] : []
+      }
+      return navLeafVisible(item, role) ? [item] : []
+    })
+    return items.length > 0 ? [{ ...section, items }] : []
+  })
+}
 
 export function crumbsFor(pathname: string): string[] {
   const leaf = NAV_LEAVES.find((item) => item.to === pathname)
