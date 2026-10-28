@@ -8,8 +8,8 @@
 备案信息、分享摘要/配图、签到窗口前后裁剪秒数，以及注册邮箱域名的可用性审查。
 
 **归属**
-`web/app.py` 的原模块级渲染与展示辅助，唯一真源在本模块；`web/app.py` 只保留
-转发（`# noqa: F401` 名字面 + 少量注入胶水），不再持有实现。
+`web/app.py` 的原模块级渲染与展示辅助，唯一真源在本模块。批 3-d 删除 `web/app.py`
+的转发包装：路由与测试直取本模块。
 
 **复用**
 Markdown 渲染子集只被合规文档族共用（`_inline_md` 是 `_render_md` 的行内格式唯一入口）；
@@ -18,9 +18,9 @@ Markdown 渲染子集只被合规文档族共用（`_inline_md` 是 `_render_md`
 
 **通信**
 本模块不反向导入 `web.app`（本仓测试以别名加载 `app.py`，普通 import 会再执行一份
-副本模块）。读 `web.app` 模块级状态的三项——`.env` 路径、文档根 `_REPO_ROOT`、渲染缓存
-`_doc_cache`——以显式参数接收：它们可被测试改写、也会随运行方式不同而不同，本模块
-另持一份绑定会让改写静默失效，故一律由调用方在调用时刻现取后传入。
+副本模块）。读宿主模块级状态的各项——`.env` 路径与读取器、文档根、渲染缓存、默认简介
+文案——经 `configure(...)` 登记，本模块按调用时刻从 `_hooks` 取。登记 lambda 而不是值：
+测试改写与 `--config` 都在调用时刻生效。未登记即 `RuntimeError`（fail-closed）。
 """
 
 import html
@@ -30,23 +30,70 @@ import re
 import sys
 
 # 包导入引导：本模块按**文件路径**被直接导入时（`web/app.py` 的别名加载、部署入口的
-# 独立探针等），`sys.path[0]` 只是该文件所在目录，仓库根与 scripts/ 都不在上面。
-# 本模块 `import email_policy`（scripts/ 下的域名审查实现）与 `from yiban import ...`
-# 取共享包，故**两段都要**先入 sys.path——缺任一段都会在无引导环境里 ModuleNotFoundError。
-# 已存在则不重复插入。本模块**刻意不叫 `_REPO_ROOT`**：该名字是 web.app 注入本模块的
+# 独立探针等），`sys.path[0]` 只是该文件所在目录，仓库根不在上面。
+# 本模块的共享导入（`yiban.core.email_policy` 与 `from yiban import ...`）都在 `yiban`
+# 包内，故只需把仓库根补进 sys.path。已存在则不重复插入。
+# 本模块**刻意不叫 `_REPO_ROOT`**：该名字是 web.app 注入本模块的
 # 文档根参数名，render 拆分契约禁止本模块持有同名绑定（防「另存一份绑定」以更隐蔽的
 # 形态回归），引导元变量因此另起一名。
 _PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for _p in (os.path.join(_PACKAGE_ROOT, "scripts"), _PACKAGE_ROOT):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+if _PACKAGE_ROOT not in sys.path:
+    sys.path.insert(0, _PACKAGE_ROOT)
 
-import email_policy  # noqa: E402
-
-from yiban import window as yb_window  # noqa: E402
+from yiban.adapters.config import loader as config_loader  # noqa: E402
+from yiban.core import email_policy  # noqa: E402
+from yiban.core import window as yb_window  # noqa: E402
 
 # 与 web.app 同名的日志通道：合规文档渲染失败的告警落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")
+
+# ---------------------------------------------------------------------------
+# 宿主注入登记点（批 3-d）
+# ---------------------------------------------------------------------------
+# 本模块原由 `web/app.py` 的转发包装在调用时刻现取宿主名字后注入。批 3-d 删除那层
+# 包装，改由宿主在 import 末尾登记 lambda；本模块按调用时刻从 `_hooks` 取。
+# 登记 lambda 而不是值：`--env-file` 改写 `ENV_FILE`、测试打桩 `read_env` 与替换
+# `_doc_cache` 都必须在调用时刻生效。未登记即 fail-closed（抛 `RuntimeError`）。
+_hooks = {}
+
+
+def configure(env_file=None, read_env=None, repo_root=None, doc_cache=None,
+              site_description_default=None):
+    """注入宿主侧依赖（登记 lambda，见上方说明）。可重复调用（测试用）。
+
+    只覆盖显式传入的键：未传的保持上一次登记。
+    """
+    if env_file is not None:
+        _hooks["env_file"] = env_file
+    if read_env is not None:
+        _hooks["read_env"] = read_env
+    if repo_root is not None:
+        _hooks["repo_root"] = repo_root
+    if doc_cache is not None:
+        _hooks["doc_cache"] = doc_cache
+    if site_description_default is not None:
+        _hooks["site_description_default"] = site_description_default
+
+
+def _host(key):
+    """取宿主登记的依赖。未登记即 fail-closed。
+
+    **`try` 只包住取键，不包住调用**：宿主 lambda 内部抛的 `KeyError` 是真实业务
+    错误，必须原样传出。
+    """
+    try:
+        fn = _hooks[key]
+    except KeyError:
+        raise RuntimeError(
+            "web.render 尚未登记宿主依赖 %r：请确认 web/app.py 的 import 末尾调用了 "
+            "web.render.configure(...)" % (key,)
+        ) from None
+    return fn()
+
+
+def _env():
+    """按调用时刻现读 `.env` 键值（路径与读取器都从宿主取）。"""
+    return _host("read_env")(_host("env_file"))
 
 # 合规文档（隐私政策 / 用户协议）渲染：从仓库根目录的 .md 文件读取并转为 HTML，
 # 供注册页弹窗与 /privacy、/terms 独立页共用，避免多份副本漂移。
@@ -152,14 +199,16 @@ def _render_md(md_text):
     return "\n".join(out)
 
 
-def _read_doc_html(filename, repo_root, cache):
+def _read_doc_html(filename):
     """读取仓库根目录的合规文档并渲染为 HTML；缺失/空模板/出错均回退兜底提示。
 
-    渲染结果按 (mtime_ns, size) 缓存在调用方传入的 cache 里：登录页为公开高频入口，
+    渲染结果按 (mtime_ns, size) 缓存在宿主登记的 cache 里：登录页为公开高频入口，
     每次请求读盘+全量正则渲染会放大 I/O 与 DoS 面；部署者更新文件后 key 变化自动失效。
-    repo_root / cache 由调用方按调用时刻传入——它们是 web.app 上可被测试或运行方式
-    改写的模块级名字，另持绑定会让改写静默失效。
+    文档根与缓存都按调用时刻从 `_hooks` 取——它们是可被测试或运行方式改写的模块级
+    名字，另持绑定会让改写静默失效。
     """
+    repo_root = _host("repo_root")
+    cache = _host("doc_cache")
     if filename not in _DOC_FILES:
         return "<p>未知文档。</p>"
     path = os.path.join(repo_root, filename)
@@ -187,7 +236,7 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path="", polic
     """把渲染后的合规文档包成独立 HTML 页面（footer / 链接用）。
     base_path：挂载前缀（子路径部署如 /tools/yiban-auto-sign/demo，根路径为空串），
     由调用方（路由内 request.script_root）传入，避免本函数脱离请求上下文时访问 request。
-    description：分享/搜索摘要（调用方负责在留空时取 site_description() 默认文案）。
+    description：分享/搜索摘要（留空时本函数取 site_description() 默认文案）。
 
     （反射型 XSS 防护）：base_path 来自 request.script_root——攻击者可构造
     形如 /x"><script>…/privacy 的任意前缀路径，未转义时脚本原样落进 href 与正文；
@@ -203,6 +252,7 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path="", polic
     /terms 与 /privacy）只传"用户协议""隐私政策"两个字面量，若将来把 title 改成用户可控来源，
     必须先按上面同一口径转义。police_link 在本函数与 footer 模板两条出口上都被转义过，
     协议白名单在 `police_link()` 源头，两回事。"""
+    description = description or site_description()
     base_path = html.escape(str(base_path), quote=True)
     icp_text = html.escape(str(icp_text), quote=True)
     police_text = html.escape(str(police_text), quote=True)
@@ -262,38 +312,44 @@ def _doc_page(title, body_html, icp_text="", police_text="", base_path="", polic
 </html>"""
 
 
-def email_domain_error(email, env):
+def email_domain_error(email):
     """邮箱域名可用性审查（白名单/黑名单）。通过返回 None，否则返回用户可读错误。
 
     名单配置走 .env：YIBAN_EMAIL_DOMAIN_ALLOWLIST（可选白名单，逗号分隔，
     非空则仅名单内域名可注册）、YIBAN_EMAIL_DOMAIN_BLOCKLIST_EXTRA（追加
     黑名单）。内置保留域名与一次性邮箱域名数据在 email_policy 模块内维护。
     """
+    env = _env()
     return email_policy.review_email(
         email,
-        allowlist=env.get("YIBAN_EMAIL_DOMAIN_ALLOWLIST", ""),
-        blocklist_extra=env.get("YIBAN_EMAIL_DOMAIN_BLOCKLIST_EXTRA", ""),
+        allowlist=env.get("YIBAN_EMAIL_DOMAIN_ALLOWLIST",
+                          config_loader.default_of("YIBAN_EMAIL_DOMAIN_ALLOWLIST")),
+        blocklist_extra=env.get(
+            "YIBAN_EMAIL_DOMAIN_BLOCKLIST_EXTRA",
+            config_loader.default_of("YIBAN_EMAIL_DOMAIN_BLOCKLIST_EXTRA")),
     )
 
 
-def icp_info(env):
+def icp_info():
     """网站 ICP 备案信息（可选）：.env 的 YIBAN_ICP_INFO，留空不显示。
 
     解耦设计：未配置时模板 `{% if icp_info %}` 块不输出，footer 保持旧样式；
     配置后所有页面底部显示该文本（模板经 Jinja autoescape 转义，无 XSS）。
     """
-    return env.get("YIBAN_ICP_INFO", "").strip()
+    return _env().get("YIBAN_ICP_INFO",
+                      config_loader.default_of("YIBAN_ICP_INFO")).strip()
 
 
-def police_info(env):
+def police_info():
     """公安备案信息（可选）：.env 的 YIBAN_POLICE_INFO，留空不显示。
 
     与 ICP 备案分开独立预留位；未配置时模板 `{% if police_info %}` 块不输出。
     """
-    return env.get("YIBAN_POLICE_INFO", "").strip()
+    return _env().get("YIBAN_POLICE_INFO",
+                      config_loader.default_of("YIBAN_POLICE_INFO")).strip()
 
 
-def police_link(env):
+def police_link():
     """公安备案查询链接（可选）：.env 的 YIBAN_POLICE_LINK。
 
     备案号属于运营者身份信息，不入仓库：模板与文档页外壳回落到公安部通用
@@ -304,46 +360,58 @@ def police_link(env):
     破坏标签结构，**挡不住协议**：`javascript:` 转义后照样是可执行链接，所以协议只能在源头判——
     不在白名单（含空值）一律回落公安部通用门户。
     """
-    link = env.get("YIBAN_POLICE_LINK", "").strip()
+    link = _env().get("YIBAN_POLICE_LINK",
+                      config_loader.default_of("YIBAN_POLICE_LINK")).strip()
     if link and link.lower().startswith(_SAFE_LINK_SCHEMES):
         return link
     return "https://beian.mps.gov.cn/"
 
 
-def site_description(env, default):
+def site_description():
     """站点简介（分享预览/搜索引擎摘要用）：.env 的 YIBAN_SITE_DESCRIPTION 优先。
 
     全站此前无 meta description 与 og:* 标签，分享链接解析出的卡片只有标题、
-    没有摘要。本值经 Jinja autoescape 进 content 属性，无注入面。
+    没有摘要。本值经 Jinja autoescape 进 content 属性，无注入面。默认文案由宿主登记。
     """
-    return env.get("YIBAN_SITE_DESCRIPTION", "").strip() or default
+    return _env().get(
+        "YIBAN_SITE_DESCRIPTION",
+        config_loader.default_of("YIBAN_SITE_DESCRIPTION")).strip() or _host(
+            "site_description_default")
 
 
-def site_image(env):
+def site_image():
     """分享预览配图绝对地址（可选）：.env 的 YIBAN_SITE_IMAGE，留空不输出 og:image。
 
     必须为绝对 https 地址（分享抓取方无法解析相对路径）；不在 https 白名单
     一律忽略——该值进公开页 meta content，配置 javascript:/data: 无意义且有害。
     """
-    url = env.get("YIBAN_SITE_IMAGE", "").strip()
+    url = _env().get("YIBAN_SITE_IMAGE",
+                     config_loader.default_of("YIBAN_SITE_IMAGE")).strip()
     return url if url.lower().startswith("https://") else ""
 
 
 # 掐头去尾（前后独立，秒级，0.5 分钟=30s 粒度）：
 # 新键 YIBAN_WINDOW_EDGE_FRONT_SEC / _BACK_SEC 优先（合法域 0~300 秒）；
 # 旧键 YIBAN_WINDOW_EDGE_SEC（前后对称）只补新键缺席的那一边，合法域 0~600 秒。
-def edge_config(env):
-    """返回 (front_sec, back_sec)：签到窗口前后裁剪秒数（解析见 yiban.window.parse_edges）。"""
+def _edge_config_from(env):
+    """`edge_config` 的取值入口：返回 (front_sec, back_sec)（解析见 yiban.core.window.parse_edges）。"""
     return yb_window.parse_edges(env)
 
 
-def edge_front_sec(env):
-    """前裁秒数的便捷入口（等价 `edge_config(env)[0]`），**本仓无生产调用点**。
+def edge_config(env=None):
+    """返回 (front_sec, back_sec)：签到窗口前后裁剪秒数（解析见 yiban.core.window.parse_edges）。
 
-    要取前裁秒数的地方都直接调 `edge_config()`：`web/routes/my.py:280`、
-    `web/routes/settings_api.py:225-227`、`web/services/capacity.py:85`、`web/app.py:889`。
-    现存唯一消费者是 `web/app.py:875` 的同名转发；那条转发存在只为保留拆分前的模块级名字
-    （`tests/test_web_boundary.py` 的再导出清单与 `edge_front_sec() == 90` 的取值断言在守它），
-    不代表还有旧调用方在跑。函数本身按要求保留。
+    跨进程写锁与 `--config` 都会改写 `.env` 路径，故键值在 `env` 缺省时按调用时刻现读。
+    显式传 `env` 保留给"同一份键值喂多个读者"的对拍用例（单源口径不变）。
     """
-    return edge_config(env)[0]
+    return _edge_config_from(_env() if env is None else env)
+
+
+def edge_front_sec(env):
+    """前裁秒数的便捷入口（等价 `edge_config()[0]`），**本仓无生产调用点**。
+
+    要取前裁秒数的地方都直接调 `edge_config()`。现存唯一消费者是 `web/app.py` 的同名
+    转发；那条转发存在只为保留拆分前的模块级名字（`tests/test_web_boundary.py` 的再导出
+    清单与取值断言在守它），不代表还有旧调用方在跑。参数 `env` 是调用方现读的键值。
+    """
+    return _edge_config_from(env)[0]

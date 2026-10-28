@@ -34,8 +34,9 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # 邮件/推送正文入参已放宽为 layout.Mail | str，断言前统一渲染成文本
 from _mail_body import render_body  # noqa: E402
+from werkzeug.security import generate_password_hash  # noqa: E402
 
-# 邮件组件的打桩目标：引擎直连 `yiban.mail`（旧的 scripts/mailer.py 兼容壳已删除），
+# 邮件组件的打桩目标：引擎直连 `yiban.adapters.notifier.mail`（旧的 scripts/mailer.py 兼容壳已删除），
 # 故打桩打在 `signin.mailer`（即实现包）上——与套件其余调用点同口径。
 
 TEST_KEY = "c" * 64
@@ -253,7 +254,7 @@ class VerifyPrescreenWebTest(unittest.TestCase):
         db.init_db(self.db_file, env_file=self.env_file)
         # 普通注册用户 + 关闭 mail 告警噪音
         db.create_user("u1@test.local",
-                       self.webapp.generate_password_hash(USER_PASS))
+                       generate_password_hash(USER_PASS))
 
     def _login_user(self, c):
         r = c.post("/api/login", json={"username": "u1@test.local", "password": USER_PASS})
@@ -314,15 +315,18 @@ class UserFailMailDailyCapTest(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="yiban-mailcap-")
         self._old = os.environ.get("YIBAN_STATE_DIR")
         os.environ["YIBAN_STATE_DIR"] = self.tmp
-        self._old_cap = signin.USER_FAIL_MAIL_DAILY_CAP
-        signin.USER_FAIL_MAIL_DAILY_CAP = 1
+        self._old_cap = os.environ.get("YIBAN_MAIL_USER_FAIL_DAILY_CAP")
+        os.environ["YIBAN_MAIL_USER_FAIL_DAILY_CAP"] = "1"
 
     def tearDown(self):
         if self._old is None:
             os.environ.pop("YIBAN_STATE_DIR", None)
         else:
             os.environ["YIBAN_STATE_DIR"] = self._old
-        signin.USER_FAIL_MAIL_DAILY_CAP = self._old_cap
+        if self._old_cap is None:
+            os.environ.pop("YIBAN_MAIL_USER_FAIL_DAILY_CAP", None)
+        else:
+            os.environ["YIBAN_MAIL_USER_FAIL_DAILY_CAP"] = self._old_cap
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _seed_user(self):
@@ -367,9 +371,40 @@ class UserFailMailDailyCapTest(unittest.TestCase):
             signin.send_user_fail_mail("owner@test.local", "13800138001", "a")
             signin.send_user_fail_mail("owner@test.local", "13900139002", "b")
             self.assertEqual(len(sent), 2, "不同账号互不挤占额度")
-            signin.USER_FAIL_MAIL_DAILY_CAP = 0
+            os.environ["YIBAN_MAIL_USER_FAIL_DAILY_CAP"] = "0"
             signin.send_user_fail_mail("owner@test.local", "13800138001", "c")
             self.assertEqual(len(sent), 3, "cap<=0 恢复不限频旧行为")
+
+    def test_cap_change_at_runtime_takes_effect(self):
+        """hot 配置键：导入后改 env 必须立刻生效，不得在模块导入期快照。
+
+        常驻进程（兜底执行体）改 .env 后只经 `workers._reload_env_into_environ()`
+        并回进程环境；额度若在导入期取过一次，这里写 0（不限频）也不会生效。
+        """
+        self._seed_user()
+        sent = []
+
+        def _ok(to, s_, t):
+            sent.append(to)
+            return True
+
+        os.environ["YIBAN_MAIL_USER_FAIL_DAILY_CAP"] = "0"
+        with mock.patch.object(signin.mailer, "send_user", side_effect=_ok):
+            signin.send_user_fail_mail("owner@test.local", "13800138001", "a")
+            signin.send_user_fail_mail("owner@test.local", "13800138001", "b")
+        self.assertEqual(len(sent), 2, "改成 0（不限频）后同一账号两封都应发出")
+
+    def test_reload_env_whitelist_carries_daily_cap(self):
+        """兜底常驻每轮只并回白名单键：hot 键不在名单里 ⇒ .env 改了也读不到。"""
+        from yiban.workers import workers
+
+        self._seed_user()
+        with open(os.environ["YIBAN_ENV_FILE"], "w", encoding="utf-8") as f:
+            f.write("YIBAN_MAIL_USER_FAIL_DAILY_CAP=0\n")
+        os.environ["YIBAN_MAIL_USER_FAIL_DAILY_CAP"] = "1"
+        workers._reload_env_into_environ()
+        self.assertEqual(os.environ["YIBAN_MAIL_USER_FAIL_DAILY_CAP"], "0",
+                         "hot 键必须进 _ENV_RELOAD_KEYS，否则常驻进程永远看不到新值")
 
 
 class MailSummaryTruncationTest(unittest.TestCase):
@@ -537,7 +572,9 @@ class MailerPortFallbackTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         global mailer_mod
-        from yiban.mail import config as mailer_mod  # 配置层：get_config/smtp_list
+        from yiban.adapters.notifier.mail import (
+            config as mailer_mod,  # 配置层：get_config/smtp_list
+        )
         # 2026-09-01 修复：_get 在环境变量为空时回退读 .env 文件——本机工作区
         # 若有 .env 含 YIBAN_MAIL_SMTP_PORT，`_cfg_with_port("")` 清掉环境变量后
         # 仍取到文件值 → port_fallback 断言失败（CI 无 .env 反而通过）。隔离到

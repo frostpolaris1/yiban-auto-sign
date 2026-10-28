@@ -4,7 +4,8 @@
 加上登录握手与签到两接口的请求顺序与会话簿记。
 
 **纯解析/构造不在本文件**：授权页解析、usersure 表单构造、verify_request 提取、签到体
-构造、响应信封解析都在洁净室协议库 `yiban.protocol`（契约见其 `SPEC.md`）；本文件只保留
+构造、响应信封解析都在洁净室协议库 `yiban.adapters.protocol_yiban`（契约见其 `SPEC.md`）；
+本文件只保留
 **编排层**——请求顺序、端点、注入策略与重试/会话语义。
 
 **来源按事实分类**（三类，逐条见下方注释标注）：
@@ -26,18 +27,19 @@
 - URL 白名单、WAF 拦截判定、脱敏与诊断措辞一律经 `policy`（`RequestPolicy`）注入，
   由 `yiban/security.py` 实现、`yiban/client.py` 组装；
 - 会话缓存（我们减少登录频率的手段，非平台概念）经 `session_store` 注入，未注入时即
-  "不缓存"，本层不反向依赖 `yiban.store` / `yiban.client`。
+  "不缓存"，本层不反向依赖 `yiban.adapters.persistence` / `yiban.client`。
 
 **复用**
 端点/参数常量（`OAUTH_CLIENT_ID`、`API_AUTH_URL` 等）、平台请求头常量（`HEADERS` /
 `KILLYIBAN_HEADERS` / `APP_SIGN_HEADERS` / `YIBAN_APP_VERSION`）、`RequestPolicy` /
 `SessionStore` 协议与登录/签到函数是本层的对外接口；解析与构造一律委托
-`yiban.protocol`，本文件不得再内联一份正则或表单字段表。
+`yiban.adapters.protocol_yiban`，本文件不得再内联一份正则或表单字段表。
 
 **通信**
 输入：`requests.Session`、注入的 `policy` 与 `session_store`、账号/密码与点位参数。
 输出：签到结果与会话；每一步跳转都过 `policy.require_*` 校验，本层不自算裁决。
-调用谁：`requests`、`yiban.protocol`、`yiban.challenge`、注入的 `policy` / `session_store`。
+调用谁：`requests`、`yiban.adapters.protocol_yiban`、`yiban.challenge`、
+注入的 `policy` / `session_store`。
 谁调用：`yiban/client.py`（唯一生产调用方，负责组装 policy 与 session_store）。
 前端调用点：无直接调用点。
 """
@@ -51,19 +53,32 @@ from Crypto.PublicKey import RSA
 from requests.utils import cookiejar_from_dict, dict_from_cookiejar
 
 from yiban import challenge
-from yiban.protocol import (
+from yiban.adapters.protocol_yiban import (
     ParseError,
     SessionExpired,
     build_sign_in_body,
     build_usersure_form,
+    code_is_ok,
     extract_verify_request,
     parse_api_envelope,
     parse_authorize_page,
     parse_sign_position,
 )
-from yiban.protocol import crypto as _lib_crypto
+from yiban.adapters.protocol_yiban import crypto as _lib_crypto
+from yiban.core import masking
 
 logger = logging.getLogger("yiban.platform")
+
+#: 单账号一次完整尝试的 HTTP 请求数（census-P2-req6，**唯一定义点**）。
+#:
+#: 六跳链路 = 登录链 4 跳（OAuth 页 / usersure / iframe / auth）＋
+#: 签到链 2 跳（signPosition / signIn）。容量与限速的"账号尝试数 ↔ 请求数"换算
+#: 只认这一枚常量；过去这个数只活在 7 处散文里，协议层的调用点没有东西在数它。
+#: **会话缓存命中时登录链被跳过**（实际 < 6）：这是按最坏形态给的**上限**，
+#: 容量评估宁可略保守，不要据此当成"每次必有 6 次请求"。
+LOGIN_CHAIN_REQUESTS = 4
+SIGNIN_CHAIN_REQUESTS = 2
+REQUESTS_PER_ACCOUNT = LOGIN_CHAIN_REQUESTS + SIGNIN_CHAIN_REQUESTS
 
 # ---------------------------------------------------------------------------
 # 平台事实：客户端标识、端点、请求头与版本
@@ -73,6 +88,11 @@ logger = logging.getLogger("yiban.platform")
 #: 清单版本号一致（`yiban/platform.py` 的常量是唯一来源，测试钉住同值关系）。
 YIBAN_APP_VERSION = "5.2.3"
 
+#: 签到站点（App 域）的**唯一字面量定义点**：`HEADERS` 与 `APP_SIGN_HEADERS` 都引用它。
+#: 同一域名的字面量全仓只此一处（`tests/test_login_session_single_point.py` 钉住）。
+#: 新增同域请求头请引用本常量，不要重写域名——重写一处就是第二份定义。
+APP_ORIGIN = "https://app.uyiban.com"
+
 #: 易班 iOS 客户端 UA（旧流程 `YIBAN_LEGACY_LOGIN=1` 使用）
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) "
@@ -80,8 +100,8 @@ HEADERS = {
     "Chrome/104.0.5112.97 Mobile Safari/537.36 yiban_iOS/" + YIBAN_APP_VERSION,
     "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
     "X-Requested-With": "com.yiban.app",
-    "Origin": "https://app.uyiban.com",
-    "Referer": "https://app.uyiban.com/",
+    "Origin": APP_ORIGIN,
+    "Referer": APP_ORIGIN + "/",
     "Connection": "close",
 }
 
@@ -97,11 +117,11 @@ KILLYIBAN_HEADERS = {
 }
 
 #: 签到接口（nightAttendance）的目标站点特征：旧流程走 App 域。
-#: 登录链把 Origin/Referer 改成了 OAuth/回调域，签到时必须**改回来**，
+#: 登录链把 Origin/Referer 改成了 `c.uyiban.com`（KillYiBan 客户端域），签到时必须**改回来**，
 #: 故单独成一份常量而不是复用上面的整份头。
 APP_SIGN_HEADERS = {
-    "Origin": "https://app.uyiban.com",
-    "Referer": "https://app.uyiban.com/",
+    "Origin": APP_ORIGIN,
+    "Referer": APP_ORIGIN + "/",
 }
 
 #: 端点与客户端标识（平台侧固定值）
@@ -113,6 +133,9 @@ OAUTH_USERSURE_URL = "https://oauth.yiban.cn/code/usersure"
 IFRAME_INDEX_URL = "https://f.yiban.cn/iframe/index"
 SIGN_POSITION_URL = "https://api.uyiban.com/nightAttendance/student/index/signPosition"
 SIGN_IN_URL = "https://api.uyiban.com/nightAttendance/student/index/signIn"
+#: 设备登记读取：返回该账号**已登记设备**的 {authorize, Code, PhoneModel, UpdateTime}。
+#: 平台 2026-10-16 起对签到强制校验设备绑定；签到时须回传这里的 Code/PhoneModel。
+DEVICE_STATE_URL = "https://api.uyiban.com/device/student/index/getState"
 
 #: 单请求超时（秒）：登录链与签到链一致
 REQUEST_TIMEOUT = 15
@@ -200,7 +223,7 @@ class SignResponse(NamedTuple):
 def encrypt_password(password, public_key_pem):
     """RSA-1024 + PKCS1_v1_5 加密密码，返回 base64 密文（str，与 urlencode 兼容）。
 
-    委托 `yiban.protocol.crypto.encrypt_password`（输入 PEM 文本）。本层保留发送前的
+    委托 `yiban.adapters.protocol_yiban.crypto.encrypt_password`（输入 PEM 文本）。本层保留发送前的
     长度守卫：RSA-1024 单次最多 117 字节，超长时库底层的 pycryptodome 异常难以理解，
     这里换成可执行的处置建议。
     """
@@ -258,8 +281,11 @@ def build_sign_info(lng, lat, address):
 def _sign_in_body(phone_code, phone_model, sign_info, out_state):
     """把 `sign_info` 字典还原为库 `build_sign_in_body` 的入参并构造提交体。
 
-    与实拍流量逐字节同构的保证在库侧（键序 Reason/AttachmentFileName/LngLat/Address、
-    JSON 默认分隔符、整串 urlencode）。
+    请求体的形状保证在库侧：顶层五字段序、`SignInfo` 键序
+    `Reason/AttachmentFileName/LngLat/Address`、JSON 默认分隔符、整串 urlencode。
+    该形态与**本站自己的夹具**逐字节相等；与官方 SPA 的编码形态不同（SPA 走
+    `encodeURIComponent` 与紧凑 `JSON.stringify`），服务端两种都解——口径见
+    `yiban/adapters/protocol_yiban/SPEC.md` §2.6。
     """
     lng_text, _, lat_text = str(sign_info.get("LngLat", "")).partition(",")
     return build_sign_in_body(
@@ -273,18 +299,34 @@ def _sign_in_body(phone_code, phone_model, sign_info, out_state):
     )
 
 
+_UPSTREAM_MSG_LIMIT = 120
+
+
+def _safe_upstream_msg(msg):
+    """把上游 msg 收成可落日志的一行：脱敏、去控制字符、截断。"""
+    text = masking.sanitize_text(msg)
+    text = "".join(ch for ch in text if ch.isprintable()).strip()
+    if len(text) > _UPSTREAM_MSG_LIMIT:
+        return text[:_UPSTREAM_MSG_LIMIT] + "…"
+    return text
+
+
 def _parse_api_body(resp):
     """解析 uyiban API 信封；`code == 999` 翻译为"会话失效→重登"。
 
     库 `parse_api_envelope` 的 `SessionExpired` 是本层唯一会引入的"会话已失效"信号，
     适配层把它翻成既有引擎能识别的消息（含 `会话失效` 词元，落
     `yiban.engine.attempts.SESSION_STALE_FAIL_KEYWORDS` 的会话陈旧档：清缓存后强制
-    真重登），不新造异常面。非 JSON 响应沿用 requests `.json()` 的既有报错口径
+    真重登），不新造异常面。上游 `msg` 脱敏后一并带出，否则诊断时只剩固定文案。
+    非 JSON 响应沿用 requests `.json()` 的既有报错口径
     （"Expecting value…" 是 `security.HARD_FAIL_TOKENS` 的硬失败词元）。
     """
     try:
         envelope = parse_api_envelope(resp.text)
     except SessionExpired as exc:
+        detail = _safe_upstream_msg(str(exc))
+        if detail:
+            raise RuntimeError(f"会话失效（上游 code=999）：{detail}，需重新登录") from exc
         raise RuntimeError("会话失效（上游 code=999），需重新登录") from exc
     except ParseError:
         return resp.json()
@@ -294,11 +336,12 @@ def _parse_api_body(resp):
 def _validate_sign_position(data):
     """成功信封里的签到配置过一次库解析（实拍契约）——结构不合即抛 ParseError。
 
-    只在"形状已足以进入客户端点位分支"时才解析：`code == 0`、`Position` 为非空数组、
+    只在"形状已足以进入客户端点位分支"时才解析：`code` 为成功码（`0` 或 `"0"`，
+    口径与协议库 `code_is_ok` 同一容忍度）、`Position` 为非空数组、
     顶层 `Range` 带 `StartTime/EndTime`。这样既不改变既有"缺 Range / 空 Position"的
     容错分支，又让完整响应真实走库解析路径（含 `Range` 时间窗对象与 `IsNeedPhoto`）。
     """
-    if not isinstance(data, dict) or data.get("code") != 0:
+    if not isinstance(data, dict) or not code_is_ok(data.get("code")):
         return
     data_obj = data.get("data")
     if not isinstance(data_obj, dict):
@@ -333,7 +376,7 @@ def login_legacy(session, *, phone, password, csrf, policy):
     )
     policy.require_not_blocked(resp)
     data = resp.json()
-    if data.get("code") != 0:
+    if not code_is_ok(data.get("code")):
         raise RuntimeError(f"获取登录入口失败: {policy.sanitize(data.get('msg'))}")
 
     # 2. 跳转到 OAuth 页面，解析 RSA 公钥与 page_use
@@ -414,7 +457,7 @@ def login_legacy(session, *, phone, password, csrf, policy):
     )
     policy.require_not_blocked(resp)
     data = resp.json()
-    if data.get("code") != 0:
+    if not code_is_ok(data.get("code")):
         raise RuntimeError(f"最终认证失败: {policy.sanitize(data.get('msg'))}")
     if "csrf_token" not in dict_from_cookiejar(session.cookies):
         raise RuntimeError("登录失败：未获取到 csrf_token")
@@ -536,19 +579,27 @@ def login_killyiban(session, *, phone, password, csrf, policy, session_store=Non
     else:
         raise RuntimeError("最终认证重定向层数过多，疑似重定向环")
     data = resp.json()
-    if data.get("code") != 0:
+    if not code_is_ok(data.get("code")):
         raise RuntimeError(f"最终认证失败: {policy.sanitize(data.get('msg'))}")
     # **本项目自有判定**（非平台知识）：code==0 只代表"签发方没有否认"，不代表签发
-    # 发生过：成功签发附带的回执在 data 载荷（同一端点的入口步应答即 `data.Data`，
-    # 签到成功门也 code/data 并读）。`data` 键缺失或为 null 即无签发信封形状——
-    # 网关/降级层伪造 code:0 的假成功正落在这一形状上，不得写"登录成功"日志、更不得
-    # 把残破会话送进缓存密文库。空容器（`{}`）是录制到的真实成功形状之一，放行；
-    # 判据只拒"无回执"。错误文案含 security.HARD_FAIL_TOKENS 词元——重试同一无回执
-    # 应答必然同果，落不可重试档并联动清会话。
-    if data.get("data") is None:
+    # 发生过：成功签发附带的回执在 data 载荷。`data` 键缺失/为 null 是无回执形状；
+    # 入口步应答 `{Action,Data}` 是未认证回退，也不是回执。两者都不得写"登录成功"
+    # 日志、更不得把残破会话送进缓存密文库。空容器（`{}`）与完整 profile 是录制到的
+    # 真实成功形状，放行。错误文案含 security.HARD_FAIL_TOKENS 词元——重试同一应答
+    # 必然同果，落不可重试档并联动清会话。
+    payload = data.get("data")
+    if payload is None:
         _msg = data.get("msg")
         raise RuntimeError("最终认证失败: 无签发方回执（code=0 但 data 载荷缺失）"
                            + (f": msg={policy.sanitize(_msg)}" if _msg else ""))
+    if isinstance(payload, dict) and ("Action" in payload or "Data" in payload):
+        # 入口步只带重定向 URL，不带 cpi/is_certified；放行会污染会话缓存。
+        # 只记键名与 cookie 名，不记值，避免把凭据面写进日志。
+        logger.warning(
+            f"[{policy.mask_account(phone)}] 最终认证返回入口步: "
+            f"data_keys={sorted(payload)} cookies={sorted(dict_from_cookiejar(session.cookies))}"
+        )
+        raise RuntimeError("最终认证失败: 无签发方回执（平台返回入口步 Action/Data，未签发会话）")
     logger.info(f"[{policy.mask_account(phone)}] 登录成功")
     if session_store is not None:
         # 完整登录成功：保存会话缓存供下次免登录复用（失败仅告警，不影响签到）
@@ -574,6 +625,26 @@ def fetch_sign_position(session, csrf, policy):
     data = _parse_api_body(resp)
     _validate_sign_position(data)
     return SignResponse(data=data)
+
+
+def fetch_device_state(session, csrf, policy):
+    """读回服务端登记的设备（`device/student/index/getState`）。返回 `SignResponse`。
+
+    这是**读回**不是生成：真实客户端用原生桥 `window.yiban.getUUID()` 生成设备码一次
+    并登记到服务端，此后各处（含签到提交）都回传同一个值。我们读回登记值照实回传，
+    既不需要原生桥，也不涉及任何伪造。
+
+    与 `fetch_sign_position` 同口径：WAF 拦截降级为 `blocked`；信封解析走库
+    （`code == 999` → 会话失效）。**语义解析（`parse_device_state`）由调用方做**——
+    本层只负责"取回信封"。
+    """
+    resp = session.get(
+        DEVICE_STATE_URL, params={"CSRF": csrf},
+        allow_redirects=False, timeout=REQUEST_TIMEOUT,
+    )
+    if policy.is_blocked(resp):
+        return SignResponse(data=None, blocked=True)
+    return SignResponse(data=_parse_api_body(resp))
 
 
 def submit_sign_in(session, csrf, *, phone_code, phone_model, sign_info, out_state, policy):

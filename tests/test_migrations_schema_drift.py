@@ -15,8 +15,8 @@
 标签：C · 存储：迁移与库完整性
 覆盖：v6 回填失败后的库态（列/索引/记录/版本）、迁移体内提前提交的消失、
 链尾产物门对非核心档的可见性、events 单条与批量两条写入路径的出声口径。
-对应实现：`yiban/store/migrations.py`（migrate_v6 的保存点、`_commit_if_free` 闸、
-`_ARTIFACTS` 登记表与 `_verify_migration_integrity`）、`yiban/store/events.py`
+对应实现：`yiban/adapters/persistence/migrations.py`（migrate_v6 的保存点、`_commit_if_free` 闸、
+`_ARTIFACTS` 登记表与 `_verify_migration_integrity`）、`yiban/adapters/persistence/events.py`
 （`add_sign_event` / `add_sign_events_batch` 的告警文本）。
 关键断言：断言**库态**而不是日志格式——列在不在、索引在不在、user_version 是几、
 记录有没有；日志只断言"点名了缺哪个产物"。旧库形态由用例手工 DROP 出来，
@@ -36,13 +36,13 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402  (tests/conftest 注入 yiban/store 到 sys.path)
 
-from yiban.store import migrations  # noqa: E402
+from yiban.adapters.persistence import migrations  # noqa: E402
 
 TEST_KEY = "a" * 64
 PHONE = "13800000001"
 
 #: 链尾产物门必须登记的档：(版本号, 表, 列|None=只要表)。
-#: 依据是各迁移里的建表/补列 DDL，逐档见 yiban/store/migrations.py。
+#: 依据是各迁移里的建表/补列 DDL，逐档见 yiban/adapters/persistence/migrations.py。
 REQUIRED_ARTIFACTS = (
     (4, "sign_events", None),
     (6, "sign_events", "account_id"),
@@ -54,6 +54,10 @@ REQUIRED_ARTIFACTS = (
     (15, "verify_jobs", None),
     (16, "verify_jobs", "prev_status"),
     (21, "run_events", None),
+    (23, "egress_state", "half_open_until"),
+    (24, "emit_ledger", None),
+    (25, "accounts", "profile"),
+    (25, "accounts", "profile_expose"),
 )
 
 

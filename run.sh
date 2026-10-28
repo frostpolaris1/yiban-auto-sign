@@ -1,88 +1,59 @@
 #!/bin/bash
 umask 077
+
+# ---- stderr 出口：全部警告/致命统一带时间戳（工单 yiban-auto-sign-2k1i，2026-10-10）----
+# 面向 stderr 的行落进 run-cron.log。原实现无时间戳，跨日累积的同类行（例如每日
+# cron 各留 1 条）会被读成"同日被反复调用多次"，是 10-10 误判的直接原因。统一经本
+# 函数出口，前缀与 _log 同格式（`%F %T` 即 `%Y-%m-%d %H:%M:%S`）。新增警告/致命
+# 一律走 _err；不经 _err 的裸 stderr 写入由 tests/test_run_sh_stderr_timestamps.py 结构门拦下。
+# 位置约束：本定义必须先于首次使用（下面 `cd "$APP_DIR"` 的失败分支即最先使用）。
+_err() {
+    echo "[$(date '+%F %T')] $*" >&2
+}
+
 # 易班自动签到运行脚本
 #
-# 应用目录：默认生产路径；可用 YIBAN_APP_DIR 覆盖。原实现把 /opt/yiban-auto-sign
-# 硬编码在多处，导致本脚本无法在任意目录下被回归测试或本地演练——改为变量后
-# 生产行为完全不变（默认值仍是 /opt/yiban-auto-sign）。
-APP_DIR="${YIBAN_APP_DIR:-/opt/yiban-auto-sign}"
-cd "$APP_DIR" || { echo "致命: 无法进入应用目录 $APP_DIR" >&2; exit 1; }
-ENV_PATH="$APP_DIR/.env"
+# 应用目录：唯一环境键 YIBAN_APP_DIR；未设时按本脚本所在检出反推（见
+# `scripts/lib/host_paths.sh`）。旧实现把 /opt/yiban-auto-sign 硬编码，导致本脚本
+# 无法在任意目录下被回归测试或本地演练——生产检出就在 /opt，反推值与旧默认相同。
+. "$(dirname "${BASH_SOURCE[0]}")/scripts/lib/host_paths.sh"
+APP_DIR="$(yiban_app_dir)"
+cd "$APP_DIR" 2>/dev/null || { _err "致命: 无法进入应用目录 $APP_DIR"; exit 1; }
+# .env 在检出内的 data/ 下（工单 ybg8）：运行数据与代码分离，检出根才能属 root
+# 且组/其他不可写（install.sh 的 M01 门要求）。data/ 由 install.sh 建立（属服务
+# 账号、0700）——本脚本不自建：检出根变只读后 mkdir 会失败。
+ENV_PATH="$APP_DIR/data/.env"
 
 # Python 解释器：优先项目虚拟环境，缺失时回退系统 Python（须在按天文件名之前定好：
-# 业务日取时经它走 yiban.clock，与引擎同源）
+# 业务日取时经它走 yiban.core.clock，与引擎同源）
 if [ -x "$APP_DIR/.venv/bin/python3" ]; then
     PY="$APP_DIR/.venv/bin/python3"
 else
     PY=/usr/bin/python3
 fi
 
-# 业务日唯一来源（MF-109）：yiban.clock 的北京钟，与引擎/web 同一事实源。宿主时区
-# ≠北京（UTC 16:00-24:00 窗口）时宿主 `date` 的"当天"与引擎业务日差一天——状态文件、
-# 日志、触发标记、收尾标记与库内"当日事实"查询一律取这里。取不到 yiban.clock
-# （python 缺失/损坏）时退化 `TZ=Asia/Shanghai date`（需宿主 tzdata），再退化宿主
-# `date`（保持可运行的降级形态，此时与引擎业务日可能差一天）。
-business_day() {
-    # 只信任形如 YYYY-MM-DD 的输出：解释器在但打印为空/异常时（venv 损坏、版本不匹配）
-    # 必须退到下一级——否则按天文件名会变成 `sign-.log` / `yiban-.tar.gz` 这种静默错位。
-    local _d
-    _d="$("$PY" -c "import sys; sys.path.insert(0, sys.argv[1]); from yiban.clock import today as t; print(t())" "$APP_DIR" 2>/dev/null)"
-    case "$_d" in
-        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) echo "$_d"; return 0 ;;
-    esac
-    TZ=Asia/Shanghai date +%F 2>/dev/null && return 0
-    date +%F
-}
+# 业务日（`business_day`）与按天日志名（`yiban_day_log_file`）来自
+# `scripts/lib/host_paths.sh`：宿主脚本的唯一 bash 定义点，与
+# `yiban/adapters/config/env_io.py` 逐字同形（守卫 tests/test_path_single_definition.py）。
 
 # 加载环境变量（逐行安全解析，显式 export；必须先于日志/状态路径计算：
 # YIBAN_STATE_DIR / YIBAN_LOG_FILE 可能由 .env 提供）
 #
-# **优先级口径（M27，全仓统一）：`.env` 优先，进程环境只补缺。** 本脚本一直就是
-# `.env` 覆盖进程环境（下面是无条件 export）；此前 `scripts/yiban-fallback.sh`
-# 恰好相反（"环境变量优先"）、容器调度器/引擎 `build_child_env` 又是第三种说法，
-# 2026-10-01 把后两者对齐成本口径。含义：
-#   · cron / systemd 行上写的 `YIBAN_XXX=v` 前缀**会被 `.env` 同名键顶掉**；
-#   · `.env` 里没有的键，才由进程环境补缺（如 compose 注入的路径类变量）；
-#   · 要临时改一项，改 `.env`（网页设置页写的也是 `.env`），别指望命令行前缀。
-# 这不是"命令行从此不能覆盖"，而是"配置只有一个事实源"——否则会出现页面显示关闭、
-# 排程却照跑这种两处同时为真的状态，排查时没人说得清算哪个生效了。
+# **优先级口径（工单 71z7，2026-10-20 裁定）：**
+# · **非路径键**：`.env` 优先，进程环境只补缺（M27）。网页设置页写的是 `.env`，
+#   读侧若反过来，页面显示关闭而排程照跑——两处同时为真没人说得清。
+# · **四个路径键**（库文件、状态目录、日志文件）：**进程环境优先，
+#   `.env` 只补缺**（与 `env_io.resolve_path` / `yiban/infra/env_child.build_child_env`
+#   同一口径）。真实用途：测试/CI 用进程环境把数据目录重定向到临时目录，不该被
+#   `.env` 里的旧路径拉回。
+# · 环境文件指针固定 `$APP_DIR/data/.env`（下面显式 export）；它不参与 `.env` 覆盖
+#   （p12-13：旧注释声称可由该指针环境变量覆盖，实现从未读它）。
 #
-# `.env` 路径**不受这条口径约束**（它是"读哪个文件"的指针，不是被管的配置）：
-# 一律 $APP_DIR/.env，与 run_probe.sh / 容器调度器一致。
-#
-# 安全说明：绝不能使用 `source`/`.` 加载 .env。Web 普通管理员可写入公告等文本，
-# 若公告含 `; $(...)` 等 shell 元字符，source 会把文本当作 shell 命令执行（命令注入）。
-# 这里只做 key=value 赋值导出，值不会再次被 shell 求值。
-if [ -r "$ENV_PATH" ]; then
-    while IFS='=' read -r key value || [ -n "$key$value" ]; do
-        # 兼容 CRLF 编辑产生的行尾 CR
-        value=${value%$'\r'}
-        # 兼容 UTF-8 BOM 开头的 .env（Windows 记事本保存常见）：否则首行键名带 BOM
-        # 前缀被键名校验拒掉，宿主 cron 与 web 侧（utf-8-sig，见 yiban/infra/env_io.py）
-        # 对同一文件读出不同配置（2026-09-08）
-        key="${key#$'\xEF\xBB\xBF'}"
-        # key/value 首尾空白去除（与 env_io.parse_env_file 的两侧 strip 同口径；
-        # 原实现 value 只剥尾部 CR，`KEY = v` / 值带尾随空格时两侧漂移）
-        key="${key#"${key%%[![:space:]]*}"}"
-        key="${key%"${key##*[![:space:]]}"}"
-        value="${value#"${value%%[![:space:]]*}"}"
-        value="${value%"${value##*[![:space:]]}"}"
-        [ -z "$key" ] && continue
-        case "$key" in \#*) continue ;; esac
-        if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-            echo "警告: .env 含非法键名，已跳过: $key" >&2
-            continue
-        fi
-        # 2026-08-21 对抗性审查加固：仅导出 YIBAN_* 前缀键——防止 .env 被写入
-        # PATH/LD_PRELOAD 等敏感变量覆盖后续命令解析（纵深防御；当前能写 .env 的
-        # web 设置页只产 YIBAN_* 键，此白名单同时约束未来变更）
-        if [[ ! "$key" =~ ^YIBAN_ ]]; then
-            echo "警告: .env 含非 YIBAN_ 前缀键，已跳过导出: $key" >&2
-            continue
-        fi
-        export "$key=$value"
-    done < "$ENV_PATH"
-else
+# 解析实现**不在本文件**：唯一副本是 `scripts/lib/host_paths.sh` 的 `yiban_load_env`
+# （清 cron `scripts/yiban-cleanup.sh` 读同一函数）。抄两份的后果实测过：清理 cron
+# 不读 `.env`，状态目录配在 `.env` 时清默认目录、真实目录永不清理（R3-019）。
+# 安全说明：绝不能使用 `source`/`.` 加载 .env（命令注入），函数内只做 key=value 导出。
+if ! yiban_load_env "$ENV_PATH" _err; then
     # MF-81④：.env 缺失/不可读过去完全静默——所有配置（STATE_DIR、通知、窗口时间）
     # 悄悄回落默认值，排障时无人知道"配置读没读到"。现在显式告警（下面 _log 可用后
     # 写入日志）。选择"告警后继续"而不是退出：现网可能以读不到 root-only .env 的身份跑
@@ -94,7 +65,11 @@ else
     fi
 fi
 
-# 状态/日志根目录：优先 YIBAN_STATE_DIR
+# 指针与库路径**显式导出给子进程**（本脚本读的是上面那个固定 `$APP_DIR/data/.env`，
+# 子进程不得与它分叉：一侧读 data/.env、另一侧读别处 = 引擎与 cron 用两份配置）。
+# 位置约束：必须排在**上面 .env 装载之后**——装载循环把路径键排除在覆盖之外，
+# 这里再无条件写一次，保证本脚本与子进程读同一份文件（p12-13）。
+export YIBAN_ENV_FILE="$ENV_PATH"
 STATE_DIR="${YIBAN_STATE_DIR:-/var/log/yiban}"
 # MF-81：状态目录承载全部"跑/不跑"判定件（RUN_MARKER / 状态文件 / 收尾标记），
 # 它的可用性必须显式校验，对齐下面锁目录的既有做法——旧实现 `mkdir -p || true`
@@ -104,7 +79,7 @@ STATE_DIR="${YIBAN_STATE_DIR:-/var/log/yiban}"
 # 此刻 _log/LOG_FILE 尚不可用，声音只能走 stderr + 非零退出码。
 if [ ! -d "$STATE_DIR" ]; then
     if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
-        echo "致命: 无法创建状态目录 $STATE_DIR，无法完成跑/不跑判定，拒绝运行" >&2
+        _err "致命: 无法创建状态目录 $STATE_DIR，无法完成跑/不跑判定，拒绝运行"
         exit 1
     fi
 fi
@@ -112,18 +87,17 @@ fi
 # 新建分支内，同机其他用户预建的目录（或早期版本留下的非本用户属主目录）完全不查，
 # 可长期压住签到或伪造状态锚点。
 if ! { [ -O "$STATE_DIR" ] && chmod 700 "$STATE_DIR" 2>/dev/null; }; then
-    echo "致命: 状态目录 $STATE_DIR 不安全（非本用户属主或权限收紧失败），拒绝运行" >&2
+    _err "致命: 状态目录 $STATE_DIR 不安全（非本用户属主或权限收紧失败），拒绝运行"
     exit 1
 fi
 if [ ! -w "$STATE_DIR" ]; then
-    echo "致命: 状态目录 $STATE_DIR 不可写，无法完成跑/不跑判定，拒绝运行" >&2
+    _err "致命: 状态目录 $STATE_DIR 不可写，无法完成跑/不跑判定，拒绝运行"
     exit 1
 fi
 
 # 日志按天分文件（2026-08-16）：sign-YYYY-MM-DD.log，web 端按日期直接读取对应文件；
-# 保留 YIBAN_LOG_FILE 配置的目录语义（默认 $STATE_DIR/sign.log）。
-LOG_FILE="${YIBAN_LOG_FILE:-$STATE_DIR/sign.log}"
-LOG_FILE="$(dirname "$LOG_FILE")/sign-$(business_day).log"
+# 保留 YIBAN_LOG_FILE 配置的目录语义。名字由 host_paths.sh 给出（bash 侧唯一定义点）。
+LOG_FILE="$(yiban_day_log_file "$STATE_DIR")"
 
 # ---- 触发来源前缀与退出码留痕 ----
 # 排程（cron / systemd / 容器调度）与手工执行共用同一个 sign-YYYY-MM-DD.log，光看时间
@@ -148,14 +122,14 @@ _log() {
 # .env 缺失/不可读的告警在此补报（解析处 _log 尚未定义，见上面 ENV_WARNING 赋值处）。
 # fail-open（继续用默认值跑）+ 双声音：stderr + 当日日志。
 if [ -n "${ENV_WARNING:-}" ]; then
-    echo "警告: $ENV_WARNING" >&2
+    _err "警告: $ENV_WARNING"
     _log "警告: $ENV_WARNING"
 fi
 
 # ---- 告警频次口径（2026-10-05 裁定）----
 # 判一处告警是否合规前，先分事件性质。两类各按各的档位出声，不许由同一个理由得出两种结论。
 #   一、状态突变类（配置面整体丢失）：每次响亮，不去重、不设进程内闩。
-#       承载者 `scripts/child_env.py`：.env 读不到即全局配置失效。
+#       承载者 `yiban/infra/env_child.py`：.env 读不到即全局配置失效。
 #       理由：常驻调度器一旦"只喊一次"，退化状态可在其后数月的静默中持续。
 #   二、反复可容忍类：允许静默或去重。
 #       承载者 `scripts/yiban-fallback.sh`（cron 高频拉起，开关关闭时静默退出）
@@ -180,8 +154,10 @@ trap 'exit 130' INT
 
 # 识别「当日已触发过」标记。
 # 06:31 与 07:12 是同一脚本的两次 cron 调用，仅靠 sign-status 状态文件无法区分——
-# 首签轮被 timeout 击杀（exit 124）或异常失败（exit 1）时不写状态文件，07:12 补签
-# 轮读到的状态文件可能不存在，与首签轮无异。
+# 状态文件只记"本次触发的结果"文本（**取值表只住一处**：见下方 `_write_status_from_exit`
+# 上方），不记"第几轮"：首签轮被 timeout 击杀（exit 124）或异常失败（exit 1）后，07:12
+# 那一轮读到的文本与首签轮无异（f7va 前这两种码根本不写文件；现在会落盘一份非 SUCCESS
+# 文本，但仍不区分轮次）。
 # 标记语义（M6 修订）：「当日 run.sh 已触发过」（而非「首签轮已抢到锁」）——标记
 # 写入前移到 flock 之前，06:31 触发被 flock 弹开（上一触发进程仍在运行）时同样
 # 留痕；此后任意一次成功拿到锁的触发读到标记即以补签轮身份运行（导出
@@ -203,7 +179,7 @@ else
     # 被占成目录等），不是"已触发过"。旧实现把两者混为一谈：静默导出
     # YIBAN_SECOND_RUN=1 → 进程内补签轮被关掉（漏签，而现网补签只剩这一条通道）。
     # fail-closed：无法判定首签/补签 ⇒ 不跑并告警（stderr + 日志 + 非零码）。
-    echo "警告: 无法写入当日触发标记 $RUN_MARKER，无法判定首签/补签，拒绝运行" >&2
+    _err "警告: 无法写入当日触发标记 $RUN_MARKER，无法判定首签/补签，拒绝运行"
     _log "警告: 当日触发标记写入失败（$RUN_MARKER 不存在且不可创建），拒绝运行本轮"
     exit 1
 fi
@@ -219,7 +195,7 @@ fi
 LOCK_DIR="${YIBAN_LOCK_DIR:-/var/lock/yiban}"
 if [ ! -d "$LOCK_DIR" ]; then
     if ! mkdir -p "$LOCK_DIR" 2>/dev/null; then
-        echo "致命: 无法创建锁目录 $LOCK_DIR，拒绝运行（如需替代路径请显式设置 YIBAN_LOCK_DIR）" >&2
+        _err "致命: 无法创建锁目录 $LOCK_DIR，拒绝运行（如需替代路径请显式设置 YIBAN_LOCK_DIR）"
         _log "致命: 无法创建锁目录 $LOCK_DIR，拒绝运行"
         exit 1
     fi
@@ -227,7 +203,7 @@ fi
 # M07：属主 + 700 硬检查对【已存在】锁目录同样执行——旧实现只在新建分支执行，
 # 同机其他用户预建锁目录（或符号链接）即可抢占锁使签到长期静默跳过。
 if ! { [ -O "$LOCK_DIR" ] && chmod 700 "$LOCK_DIR" 2>/dev/null; }; then
-    echo "致命: 锁目录 $LOCK_DIR 不安全（非本用户属主或权限收紧失败），拒绝运行" >&2
+    _err "致命: 锁目录 $LOCK_DIR 不安全（非本用户属主或权限收紧失败），拒绝运行"
     exit 1
 fi
 exec 9>"$LOCK_DIR/sign.lock"
@@ -244,9 +220,12 @@ STATUS_FILE="$STATE_DIR/sign-status-$(business_day).txt"
 # 没有本标记它会因为状态非 SUCCESS 再跑一轮（幂等但多一轮真实登录请求）。
 SECOND_DONE_MARKER="$STATE_DIR/yiban-settled-$(business_day).marker"
 # sign-status 采信的交叉核对源库（MF-82）：与引擎同一个键 YIBAN_DB_FILE、同一
-# 默认值口径（引擎 resolve_path = 进程环境 → .env → 默认 "yiban.db"；此处 .env
-# 已 export，cwd 即 APP_DIR，与引擎子进程的相对路径基准一致）。
-DB_FILE="${YIBAN_DB_FILE:-yiban.db}"
+# 默认值口径（引擎 resolve_path = 进程环境 → .env → env_io.DEFAULT_DB_FILE
+# "data/yiban.db"；此处 .env 已 export，cwd 即 APP_DIR，与引擎子进程的相对路径
+# 基准一致）。库与 .env 同住检出内的 data/（工单 ybg8）。
+DB_FILE="${YIBAN_DB_FILE:-data/yiban.db}"
+# 库路径显式导出：与上面的 .env 指针同理——子进程按同一份库取数，不靠默认值对齐。
+export YIBAN_DB_FILE="$DB_FILE"
 
 # ---------------------------------------------------------------------------
 # 进程内补签轮（2026-09-10 批次20 B3，用户裁决方案一）
@@ -262,13 +241,13 @@ DB_FILE="${YIBAN_DB_FILE:-yiban.db}"
 # 缺省值必须与 yiban/window.DEFAULT_RETRY_HM 一致（signin 的告警抑制按该值判断
 # "是否还有下一轮兜底"；tests/test_retry_slot_time.py 会比对两处字面量）。
 SECOND_HHMM="${YIBAN_SECOND_RUN_TIME:-07:12}"
-# 导出给子进程：signin 从环境读同一键（见 yiban.window.retry_hm），
+# 导出给子进程：signin 从环境读同一键（见 yiban.core.window.retry_hm），
 # 使"改了补签时刻"在所有取用点同时生效
 export YIBAN_SECOND_RUN_TIME="$SECOND_HHMM"
 # 逃生开关：显式置 0 可关闭进程内补签轮（仅调试/特殊运维场景用）
 SECOND_ROUND_ENABLED="${YIBAN_HOST_SECOND_ROUND:-1}"
 
-# 开关真值判定。字面量口径的**单一事实源**在 yiban/infra/env_io.py 的
+# 开关真值判定。字面量口径的**单一事实源**在 yiban/adapters/config/env_io.py 的
 # ENV_TRUTHY_LITERALS（Python 侧 parse_env_flag 用它）；bash 无法 import，此处逐字
 # 复刻同一份（1/true/yes/on，大小写不敏感、两侧空白忽略）。两边结论一致性由
 # tests/test_pause_flag_truthiness_e2e.py 真跑本函数与 Python 逐值比对钉住。
@@ -408,31 +387,65 @@ _run_signin_round() {
     return $?
 }
 
-# 状态文件只在"确实执行过签到"时写 SUCCESS（退出码 0）：
-# 全部 skip（无实际执行，退出码 2）写 SKIPPED，避免把"没签到"记录成成功
-# 从而吞掉后续任务；其他失败（退出码 1）不写状态文件
-# 退出码 2 同时覆盖「存在窗口外/缺失未了结账号」的混合场景
-# （部分成功 + 部分 skipped_window/norange）——signin.py 此时返回 2，
-# 这里写 SKIPPED 而非 SUCCESS，补签才会重跑，
-# 窗口外账号不因"有账号成功"而失去当天兜底（容器调度器同语义）。
+# 状态文件记的是**"本次触发的结果"**，不是"当日最终结论"（工单 yiban-auto-sign-f7va，
+# 2026-10-12）。它是审计/巡检的机器可读留痕。**唯一读者**是"当日已 SUCCESS ⇒ 跳过本轮"
+# 的采信闸门（`_status_credible_success` 只认字面 SUCCESS）；**补签判定与封存判定都不
+# 读它**——补签走 `signin --second-run-check`（读 sign-state json 与库内未了结计数），
+# 封存走 `--second-run-check` 的判 0/10。故这里多写的文本不改变任何"跑/不跑/补签"判定。
+#
+# 取值表——**逐码派生**自 `yiban/engine/cli_support.py::_EXIT_KINDS`（码表本身"只增不改"
+# 既有码含义）。**不许有 catch-all 把已知码悄悄归进"失败"**：
+#   码   _EXIT_KINDS kind     状态文本            理由
+#   0    ok                   SUCCESS            确实执行并成功
+#   1    failure              FAILED             有真实失败（账号/网络/配置）
+#   2    skipped              SKIPPED            全部跳过 / 存在窗口外未了结
+#        （YIBAN_GLOBAL_PAUSE 时写 GLOBAL_PAUSED——人为暂停与普通跳过分开）
+#   3    locked               BUSY               队列忙：本轮**没跑**（另有持有者持有运行锁，
+#                                                或互斥不可得）。**不是失败**
+#   4    schema_migration     SCHEMA_MIGRATION   迁移拒启：本轮没跑，需运维介入（不伪装成账号失败）
+#   10   second_run_check     NEED_SECOND_RUN    判定码，**不是轮结果码**（只由
+#                                                `--second-run-check` 产生）。正常轮不可达
+#                                                （见下），出现即管道接错——响亮记日志
+#   124  （不在码表内）         TIMEOUT            timeout(1) 击杀整轮（外部杀）
+#   其余非零  unknown          FAILED             未知码：安全方向（见下），绝不写 SUCCESS
+#
+# rc=3/rc=4/rc=10 曾被 `else` 一并吞成 FAILED——那是**假失败/归族**：3 是"另有持有者正在跑"、
+# 4 是"schema 半升级"、10 是"判定码漏进结果通道"，三者都不是账号签到失败（本项目 10-07
+# 栽过"执行体领不到任务被上报成批假失败"那族缺陷，见记忆 fallback-gates-and-yield）。
+# 故逐码分列，已知码**一律不许**被 catch-all 归族。
+# rc=10 不可达证据（当前代码）：run.sh 的轮调用不带 `--second-run-check`（见 `_run_signin_round`
+# 的 `"$PY" scripts/signin.py ${workers_args...}`）；监督进程给子进程的命令行只是剔掉
+# `--workers`（workers.py 的 child_argv），故子进程也不带它；`SECOND_RUN_CHECK_NEED` 只在
+# `runner.main` 的 `args.second_run_check` 分支返回。但**契约承认**"轮退出码 10"这一形态
+# （监督进程汇总会原样透出子码 10，workers.py；用例 `([10,-9],10)` 钉住），故仍显式分列。
+# 旧口径"非 0/2 不写文件"另让失败轮当天两件判据全缺（v0.6.2 生产实测 10-12：✅229/❌1、
+# 两件产物都缺），同批改为"每个跑过一轮的码都落盘"。
+# 退出码 2 同时覆盖「存在窗口外/缺失未了结账号」的混合场景（部分成功 + 部分
+# skipped_window/norange）——signin.py 此时返回 2，这里写 SKIPPED 而非 SUCCESS，
+# 补签才会重跑；窗口外账号不因"有账号成功"而失去当天兜底（容器调度器同语义）。
+#
+# 未知码为何落 FAILED（安全方向）：未知意味着"本轮没走完正常收场链路"。写 SUCCESS 会
+# 谎报成功（不可逆地吃掉当天兜底）；写 FAILED 只多一条"未成功"留痕，且采信侧本就不认
+# 非 SUCCESS ⇒ 方向偏安全。护栏测试显式钉住"未知码→FAILED"。
+#
 # 原子写：写临时文件 + mv，防止掉电/被杀时文件处于半写状态。
 # MF-81：mktemp/echo/mv 三步全部判码——状态文件决定后续触发"跑/不跑"，任何一步
 # 失败都必须显式失败返回（rc 1），由调用方升级退出码，绝不静默续跑。
 _status_write() {
     local content="$1" tmp
     if ! tmp=$(mktemp "${STATUS_FILE}.tmp.XXXXXX" 2>/dev/null); then
-        echo "警告: 状态文件临时件创建失败（mktemp ${STATUS_FILE}.tmp.*）" >&2
+        _err "警告: 状态文件临时件创建失败（mktemp ${STATUS_FILE}.tmp.*）"
         return 1
     fi
     if ! echo "$content" > "$tmp" 2>/dev/null; then
-        echo "警告: 状态文件临时件写入失败: $tmp" >&2
+        _err "警告: 状态文件临时件写入失败: $tmp"
         rm -f "$tmp" 2>/dev/null
         return 1
     fi
     # 目标是已存在目录时 `mv -f` 会把临时件**搬进目录里**并返回 0（GNU 语义）——
     # 状态看似写成功、实际没写：这正是"写失败==已完成"的等价类，必须显式拒绝。
     if [ -d "$STATUS_FILE" ] || ! mv -f "$tmp" "$STATUS_FILE" 2>/dev/null; then
-        echo "警告: 状态文件原子替换失败: $STATUS_FILE" >&2
+        _err "警告: 状态文件原子替换失败: $STATUS_FILE"
         rm -f "$tmp" 2>/dev/null
         return 1
     fi
@@ -441,20 +454,32 @@ _status_write() {
 
 _write_status_from_exit() {
     local exit_code="$1" want=""
-    if [ "$exit_code" -eq 0 ]; then
-        want="SUCCESS"
-    elif [ "$exit_code" -eq 2 ]; then
-        # 语义区分（0.22.0 审查修复）：全局暂停（YIBAN_GLOBAL_PAUSE）写 GLOBAL_PAUSED，
-        # 与窗口/配置导致的普通 SKIPPED 分开——运维/监控可直接区分"人为暂停"与"技术性跳过"。
-        # MF-81⑤：与 _need_second_round 统一走 _is_truthy 一处解析，不再两套取值域。
-        if _is_truthy "${YIBAN_GLOBAL_PAUSE:-0}"; then
-            want="GLOBAL_PAUSED"
-        else
-            want="SKIPPED"
-        fi
-    else
-        return 0   # 其余退出码不写状态文件（既有口径）
-    fi
+    # 逐码派生自 cli_support._EXIT_KINDS（见表与护栏测试）；无 catch-all 归族：
+    # 3=locked、4=schema_migration 各有专属文本，不被"其余非零"吞进 FAILED。
+    case "$exit_code" in
+        0)   want="SUCCESS" ;;          # _EXIT_KINDS 0 = ok
+        1)   want="FAILED" ;;           # _EXIT_KINDS 1 = failure
+        2)                              # _EXIT_KINDS 2 = skipped
+            # 语义区分（0.22.0 审查修复）：全局暂停（YIBAN_GLOBAL_PAUSE）写 GLOBAL_PAUSED，
+            # 与窗口/配置导致的普通 SKIPPED 分开——运维/监控可区分"人为暂停"与"技术性跳过"。
+            # MF-81⑤：与 _need_second_round 统一走 _is_truthy 一处解析，不再两套取值域。
+            if _is_truthy "${YIBAN_GLOBAL_PAUSE:-0}"; then
+                want="GLOBAL_PAUSED"
+            else
+                want="SKIPPED"
+            fi ;;
+        3)   want="BUSY" ;;             # _EXIT_KINDS 3 = locked（队列忙，本轮没跑，非失败）
+        4)   want="SCHEMA_MIGRATION" ;; # _EXIT_KINDS 4 = schema_migration（迁移拒启，需运维）
+        10)  # _EXIT_KINDS 10 = second_run_check：**判定码，不是轮结果码**。正常轮不可达
+             # （见上方注释的不可达证据）；出现即"判定码漏进了结果通道"＝管道接错，
+             # 不得伪装成账号失败，故独立文本 + 响亮留痕（stderr + 当日日志）。
+            want="NEED_SECOND_RUN"
+            _err "警告: 轮退出码 10（second_run_check）是 --second-run-check 的判定码，不是轮结果码；正常轮不该以它收场，出现即管道接错"
+            _log "警告: 轮退出码 10（second_run_check）出现——判定码被当成轮结果码透出，请核管道/调用配置"
+            ;;
+        124) want="TIMEOUT" ;;          # _EXIT_KINDS 外：timeout(1) 击杀整轮
+        *)   want="FAILED" ;;           # 未知非零：安全方向（唯一允许的兜底档）
+    esac
     if ! _status_write "$want"; then
         _log "警告: 状态文件写入失败（本轮结果 $want 未落盘），本轮不得按已完成处理"
         return 1
@@ -504,13 +529,13 @@ _status_credible_success() {
     content=$(cat "$STATUS_FILE" 2>/dev/null) || return 1
     [ "$content" = "SUCCESS" ] || return 1   # 非 SUCCESS 文本：不是"谎报成功"，静默不采信
     if ! facts=$(_db_settled_today); then
-        echo "警告: sign-status 声称 SUCCESS，但当日库内事实查询失败（$DB_FILE），拒绝采信" >&2
+        _err "警告: sign-status 声称 SUCCESS，但当日库内事实查询失败（$DB_FILE），拒绝采信"
         _log "警告: sign-status 拒绝采信（库内事实查询失败: $DB_FILE），按未完成处理"
         return 1
     fi
     case "$facts" in ''|*[!0-9]*) facts=0 ;; esac
     if [ "$facts" -le 0 ]; then
-        echo "警告: sign-status 声称 SUCCESS，但库内当日无已了结任务（疑似伪造/搬运 STATE_DIR），拒绝采信" >&2
+        _err "警告: sign-status 声称 SUCCESS，但库内当日无已了结任务（疑似伪造/搬运 STATE_DIR），拒绝采信"
         _log "警告: sign-status 与库内当日事实不符（了结数=$facts），拒绝采信、按未完成处理"
         return 1
     fi
@@ -541,7 +566,7 @@ _log "Python版本: $("$PY" --version 2>&1)"
 # 拿到锁、确实要跑本轮时核对一次。存活判定复用唯一口径 `state_io.fallback_alive`
 # （心跳文件新鲜度 ≤ 2×扫描间隔；以文件内时间戳而非"文件在不在"为准——被 kill -9
 # 的进程不会清心跳）。不在跑 ⇒ 双声音告警 + 后台拉起与 cron 件**同一条入口**
-# （`-m yiban.cli sign --fallback`）。周末/暂停/窗口门不在此重复实现：引擎每轮自
+# （`-m yiban.entry.cli sign --fallback`）。周末/暂停/窗口门不在此重复实现：引擎每轮自
 # 重判并自行退出，误拉起一个"该休息"的进程只会立刻安静结束；独立锁
 # `signin-run.lock.fallback` 保证撞上已在跑的兜底以退出码 3 结束，绝不叠进程。
 # 子进程不得继承 fd 9（本轮持有的全局运行锁）：兜底与全量轮并存靠让位+领取池，
@@ -552,16 +577,16 @@ _check_fallback_wiring() {
 import os
 import sys
 sys.path.insert(0, os.getcwd())
-from yiban.engine import state_io
+from yiban.adapters.statefiles import state_io
 _alive, _age = state_io.fallback_alive()
 sys.exit(0 if _alive else 1)
 PYEOF
     then
         return 0
     fi
-    echo "警告: YIBAN_FALLBACK_ENABLE=1 但未检测到兜底执行体在跑（心跳缺失或已过期），本轮启动即拉起" >&2
-    _log "警告: 兜底开关置 1 而无兜底进程（心跳缺失/过期），拉起兜底常驻执行体（-m yiban.cli sign --fallback）"
-    nohup "$PY" -m yiban.cli sign --fallback < /dev/null >> "$LOG_FILE" 2>&1 9<&- &
+    _err "警告: YIBAN_FALLBACK_ENABLE=1 但未检测到兜底执行体在跑（心跳缺失或已过期），本轮启动即拉起"
+    _log "警告: 兜底开关置 1 而无兜底进程（心跳缺失/过期），拉起兜底常驻执行体（-m yiban.entry.cli sign --fallback）"
+    nohup "$PY" -m yiban.entry.cli sign --fallback < /dev/null >> "$LOG_FILE" 2>&1 9<&- &
     return 0
 }
 _check_fallback_wiring
@@ -597,7 +622,15 @@ if _need_second_round; then
         _log "=== 补签轮结束，退出码: $EXIT_CODE ==="
     fi
 else
-    _log "补签轮：无需补跑（当日已收尾且无未了结账号）"
+    # P12-18：_need_second_round 的四条返回 1 的路径里，只有"判定码 != 10"跑过
+    # --second-run-check（SEAL_CHECK_RC 有值）；开关关闭/本轮即补签轮/全站暂停三条
+    # 根本没跑判定（SEAL_CHECK_RC 为空）。else 一律说"已收尾且无未了结"是把未判
+    # 说成已判——恰是排查漏签时最需要区分的一种假象。
+    case "${SEAL_CHECK_RC}" in
+        "") _log "补签轮：无需补跑——未做库内事实判定（补签开关关闭、本轮即补签轮或全站暂停）" ;;
+        10) _log "补签轮：无需补跑——库内判定为需要补跑但条件未成立（不应到达）" ;;
+        *)  _log "补签轮：无需补跑——库内判定退出 ${SEAL_CHECK_RC}（无未了结账号）" ;;
+    esac
 fi
 
 # ---- 当日收尾标记的封存：前置 = 库内事实"确实无未了结" ----
@@ -618,8 +651,22 @@ _seal_second_done_marker() {
         SEAL_CHECK_RC=$?
     fi
     if [ "$SEAL_CHECK_RC" = "0" ]; then
-        if ! : > "$SECOND_DONE_MARKER" 2>/dev/null; then
-            echo "警告: 当日收尾标记写入失败（$SECOND_DONE_MARKER），下一触发可能重判未收尾而多跑一轮" >&2
+        # census-P2-settled-marker：`: > "$SECOND_DONE_MARKER"` 是裸覆盖（非 noclobber、
+        # 非 tmp+mv），写到一半被杀会留下半截/空文件；权限只靠 umask 077，不显式。
+        # 改 mktemp + mv（同目录原子 rename）+ 显式 0600。
+        local _tmp_marker="" _marker_ok=0
+        if [ -e "$SECOND_DONE_MARKER" ] && [ ! -f "$SECOND_DONE_MARKER" ]; then
+            # 目标被占成目录/设备：mv 会把临时件挪进去且"看似成功"，先拒。
+            _marker_ok=0
+        elif _tmp_marker="$(mktemp "${SECOND_DONE_MARKER}.tmp.XXXXXX" 2>/dev/null)" \
+            && : > "$_tmp_marker" && chmod 600 "$_tmp_marker" \
+            && mv -f "$_tmp_marker" "$SECOND_DONE_MARKER" \
+            && [ -f "$SECOND_DONE_MARKER" ]; then
+            _marker_ok=1
+        fi
+        if [ "$_marker_ok" -eq 0 ]; then
+            [ -n "$_tmp_marker" ] && rm -f "$_tmp_marker"
+            _err "警告: 当日收尾标记写入失败（$SECOND_DONE_MARKER），下一触发可能重判未收尾而多跑一轮"
             _log "警告: 当日收尾标记写入失败，下一触发或重复整轮签到"
             if [ "$EXIT_CODE" -eq 0 ]; then EXIT_CODE=1; fi
         fi
@@ -629,7 +676,7 @@ _seal_second_done_marker() {
         _log "收尾标记：库内仍有未了结账号（判定 10），不封存，留给 07:12 兜底轮继续处理"
         return 0
     fi
-    echo "警告: 收尾标记封存判定不可得（--second-run-check 退出 $SEAL_CHECK_RC），不封存；下一触发将重判" >&2
+    _err "警告: 收尾标记封存判定不可得（--second-run-check 退出 $SEAL_CHECK_RC），不封存；下一触发将重判"
     _log "警告: 收尾标记封存判定不可得（--second-run-check 退出 $SEAL_CHECK_RC），不封存"
     if [ "$EXIT_CODE" -eq 0 ]; then EXIT_CODE=1; fi
     return 0

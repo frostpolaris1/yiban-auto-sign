@@ -3,14 +3,14 @@
 
 标签：F · 前端与界面守卫
 覆盖：设置页缓冲滑块上限 `edgeMaxMin(winSec)` 与服务端夹取口径的逐值对拍，以及上限落到 `data-max`、回填消费服务端异常提示的源码形态
-对应实现：`frontend/src/settings/model.js` 的 `edgeMaxMin`（Vue 滑杆上限）；`yiban.window.edge_cap_sec`
+对应实现：`frontend/src/settings/model.js` 的 `edgeMaxMin`（Vue 滑杆上限）；`yiban.core.window.edge_cap_sec`
 关键断言：前端上限（分钟）逐值等于 `edge_cap_sec / 60`——前端宽服务端窄会让用户「保存后数字变小」，反之合法值存不进；窗口不可用（0）时上限为 0（fail-closed，与服务端一致），不把滑块放到最大；上限确实 `setAttribute("data-max"`，回填时消费 `window_fallback_text`
-依赖：⚠ **需要 node 真跑**——`edgeMaxMin` 抽出后交给 node 执行，`shutil.which("node")` 取不到时整类 `skipUnless`；另需能导入 `yiban.window`（纯本地计算，不联网）
+依赖：⚠ **需要 node 真跑**——`edgeMaxMin` 抽出后交给 node 执行，`shutil.which("node")` 取不到时整类 `skipUnless`；另需能导入 `yiban.core.window`（纯本地计算，不联网）
 
 **为什么需要**：前端滑块的可选上限与服务端保存时的夹取必须是同一条式子。前端宽、
 服务端窄 → 用户点了保存却看到数字被改小（"保存坏了"）；前端窄、服务端宽 → 用户
 存不进合法值。两边各写一遍必然漂移，故这里把 JS 里那条式子抽出来在 node 里真跑，
-与 `yiban.window.edge_cap_sec` 逐值比对。
+与 `yiban.core.window.edge_cap_sec` 逐值比对。
 
 逐项明细：
 - `edgeMaxMin(winSec)` 与 `edge_cap_sec(winSec) / 60` 在多个窗口宽度下逐值一致
@@ -23,7 +23,7 @@ import shutil
 import subprocess
 import unittest
 
-from yiban import window
+from yiban.core import window
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # 设置页迁到 Vue 后，`edgeMaxMin` 从 settings-schedule.js 搬进口径层 model.js；

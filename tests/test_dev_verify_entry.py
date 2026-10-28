@@ -13,6 +13,11 @@
     ①′ 抽出"执行行"的口径认三种调用形态：`"$py" -m 模块`、`bash 脚本`、
        `"$py" 脚本路径`（B1 的 AST 门与 B2 的名册门都用第三种）。认少一种，那一步
        就不进冻结清单，命令原文就此多出第二份事实源。
+    ①″ **长尾剔除清单必须有自动执行点**（R3-025）：`FAST_KNOWN_SLOW` 的每条 nodeid
+       在快集里被 `--deselect`，故必须由 `run_slow` 的长尾轨执行，而 `run_slow` 由
+       CI 的 `slow-lane` 作业调用。三者缺一即红——缺了就是"任何自动轨都不跑"。
+    ①‴ 注释里的条数口径必须等于数组长度（AGENTS §十三 第 31 条：数必须带口径，
+       口径漂移要由机器发现，不靠人记）。
     ② **全量参数固定**：默认模式 `-n auto --dist loadfile`。`--dist loadfile`
        不得去掉：套内存在文件内先后依赖与进程级 DB 单例，按单条分发即误红。
     ③ **固定 venv**：全量模式只认 `/root/.venv-yiban-wsl/bin/python`，不可用就
@@ -34,25 +39,66 @@ import re
 import shlex
 import signal
 import subprocess
+import sys
 import tempfile
 import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENTRY = os.path.join(BASE, "scripts", "dev-verify.sh")
+CI_YML = os.path.join(BASE, ".github", "workflows", "ci.yml")
+
+#: 注释里关于 FAST_KNOWN_SLOW 条数的口径声明（AGENTS §十三 第 31 条的机器化）。
+#: 新增注释时按这三种写法之一定口径；换写法本组就核不到它（口径声明本身也会漂）。
+_COUNT_CLAIM = re.compile(
+    r"(?:FAST_KNOWN_SLOW 的|剔除清单共)\s*(\d+)\s*条"
+    r"|全量\s*[-−]\s*(\d+)\s*条")
+#: 同一批注释里的"分属 N 个文件"声明（文件数也是跨数比较，不许人记）。
+_FILE_CLAIM = re.compile(r"分属\s*(\d+)\s*个文件")
 
 #: `run_ci` 里必须逐字出现、且按此顺序执行的关键子集命令。
 #: `"$py"` = `--ci` 解析出的解释器绝对路径（CI 上是 setup-python 那个）。
+#: 2026-10-17（工单 vckk 阶段 2-a）：第 4 条从 `-k` 关键词子集换成**车道名册推导的快集**——
+#: 旧子集是关键词命中面，改动落在命中面之外时子集绿、全量红且**不重合本身静默**
+#: （AGENTS.md §十三 第 29 条）。改前原文：
+#:   "$py" -m pytest tests/ --ignore=tests/test_multi_executor_drill_e2e.py -q -n 4
+#:     --dist loadfile -k "security or mask or audit or login or private or csrf or ratelimit or claim or queue"
+#: 同批另两处：靶场的串行专轨（第 5 条）从**硬编码文件名**改成名册的 serial 行；
+#: shared-facts / path-env-reads 两个元测试步补 `FAST_DESELECT_ARGS`（那 4 条全仓扫描在 CI 上
+#: 实测占该两步 162s / 60s，剔掉后只剩十几秒；它们已由全量与 nightly 覆盖）。
 EXPECTED_CI_COMMANDS = (
-    '"$py" -m ruff check yiban/ tests/ scripts/ web/ --quiet',
-    '"$py" -m pytest tests/ -q -n 4 --dist loadfile -k '
-    '"security or mask or audit or login or private or csrf or ratelimit"',
+    '"$py" -m ruff check yiban/ tests/ scripts/ web/ docker/ tools/ --quiet',
+    # 工单 dq2n（2026-10-20）：mypy 用隔离缓存目录。mypy 在 (path,size,mtime) 相同时
+    # 不校验内容哈希，会信任上一轮缓存里的错误；--ci 就地跑，最容易被脏 .mypy_cache
+    # 影响。缓存目录每次 mktemp -d 新建（见 run_ci），故同一代码同一结论。
+    '"$py" -m mypy --cache-dir "$CI_MYPY_CACHE"',
+    '"$py" -m pytest tests/test_mypy_type_gate.py -q -p no:randomly',
+    # 快集：目标 tests/，排除项全部由名册/名单**数组**装配（不许在这里写死文件名）。
+    # 下面的期望值写成**续行已拼合**的形态（行尾反斜杠在拼合时被吃掉）——抽出口径见
+    # test_ci_subset_commands_are_frozen_byte_for_byte 的注释。
+    '"$py" -m pytest tests/ -q -n 4 --dist loadfile'
+    ' ${LANE_IGNORE_ARGS[@]+"${LANE_IGNORE_ARGS[@]}"}'
+    ' ${FAST_DESELECT_ARGS[@]+"${FAST_DESELECT_ARGS[@]}"}'
+    ' --junitxml="$CI_SKIP_XML"',
+    # 串行专轨：文件名来自名册的 serial 行，不带 -n（需独占 runner 的核，工单 zdvd）。
+    '"$py" -m pytest ${LANE_SERIAL_FILES[@]} -q -p no:randomly',
     '"$py" -m pytest tests/test_login_e2e_mock.py -q -p no:randomly',
     "bash scripts/check-shared-facts.sh",
-    '"$py" -m pytest tests/test_shared_facts_gate.py -q -p no:randomly',
+    '"$py" -m pytest tests/test_shared_facts_gate.py -q -p no:randomly'
+    ' ${FAST_DESELECT_ARGS[@]+"${FAST_DESELECT_ARGS[@]}"}',
     '"$py" scripts/check-path-env-reads.py',
-    '"$py" -m pytest tests/test_path_env_read_gate.py -q -p no:randomly',
+    '"$py" -m pytest tests/test_path_env_read_gate.py -q -p no:randomly'
+    ' ${FAST_DESELECT_ARGS[@]+"${FAST_DESELECT_ARGS[@]}"}',
     '"$py" scripts/check-config-registry.py',
     '"$py" -m pytest tests/test_config_registry_gate.py -q -p no:randomly',
+    '"$py" scripts/check-import-linter.py',
+    '"$py" -m pytest tests/test_import_linter_gate.py -q -p no:randomly',
+    # 2026-10-13（工单 j06f，复审指定）：依赖同步门的元测试进 CI 子集。
+    # 为什么是元测试而不是门本体：CI 的解释器刚按 lock 装过，门本体在那里是同义反复。
+    '"$py" -m pytest tests/test_deploy_deps_sync.py -q -p no:randomly',
+    # 2026-10-25（S1 门收紧批）：Vue 构建可复现门进 --ci。node/npm 缺席时打显式
+    # SKIPPED＋原因（跳过≠绿，AGENTS §十三.30）；CI 侧覆盖＝frontend job 跑同一脚本
+    # full 模式（.github/workflows/ci.yml）。
+    "bash scripts/check-vue-build-reproducible.sh",
 )
 
 
@@ -166,8 +212,21 @@ class DevVerifyEntryTest(unittest.TestCase):
                            "抽不出 run_ci 函数体——结构改了？本条会因此变废断言")
         # 抽"执行行"的口径必须盖住全部三种调用形态：`-m 模块`、`bash 脚本`、
         # `"$py" 脚本路径`（B1 的 AST 门是第三种）。漏一种 = 那一步不进冻结清单。
-        got = [line.strip() for line in self.ci_body.splitlines()
-               if line.strip().startswith(('"$py" ', "bash scripts/"))]
+        # 续行必须**拼进上一条**（2026-10-17 补）：不拼时，写在续行上的参数
+        # （`${LANE_IGNORE_ARGS[@]}` / `${FAST_DESELECT_ARGS[@]}`）根本不进冻结清单，
+        # 于是"把排除项从命令行里删掉"这类改动**静默通过**——那正是本条要挡的形状
+        # （AGENTS.md §十三 第 29 条：门看的东西 ≠ 实际改的东西，且不重合是静默的）。
+        got = []
+        for raw in self.ci_body.splitlines():
+            line = raw.strip()
+            if got and got[-1].endswith("\\"):
+                # 续行链还没结束：这一行是上一条命令的续行，**不看前缀**也要拼进去
+                # （续行常以 `${ARR[@]}` 这种非命令开头，按前缀过滤会把参数整段丢掉）
+                got[-1] = got[-1][:-1].rstrip() + " " + line
+                continue
+            if not line.startswith(('"$py" ', "bash scripts/")):
+                continue
+            got.append(line)
         self.assertEqual(
             got, list(EXPECTED_CI_COMMANDS),
             "CI 关键子集命令漂了：命令原文只应存在 scripts/dev-verify.sh 一份。"
@@ -341,6 +400,10 @@ class DevVerifyFastModeTest(unittest.TestCase):
         自查墙钟从 57s 回到 146s，且绿色是假象。本条钉住"拼接承重"：抽真跑命令
         （执行行 + 续行，不含 echo 回显）断言数组拼接在场。
         突变验证：删掉该段 ⇒ 本条红（见 work/m3-mutant.log）。
+
+        2026-10-17（工单 vckk 阶段 2-a）：装配点从 fast 模式的一行内联循环搬进
+        `build_fast_deselect_args`（快集与 CI 的各门步骤**共用**同一份 `--deselect`，
+        内联会把同一判据写成两处），故这里改钉"装配点仍只有一处 + 真跑命令仍拼它"。
         """
         cmd = _pytest_exec_command(self.text)
         self.assertGreater(len(cmd), 50, "抽不出真跑 pytest 命令——结构改了？本条会因此变废断言")
@@ -348,10 +411,18 @@ class DevVerifyFastModeTest(unittest.TestCase):
             cmd, r"\$\{DESELECT\[@\]",
             "真跑 pytest 命令没拼 DESELECT 数组：--deselect 不会生效，长尾静默溜回 --fast。"
             "只留 echo 回显不算——回显不是跑测命令")
+        # 装配点：`FAST_DESELECT_ARGS` 只许由 FAST_KNOWN_SLOW 逐条装配，且只有一处。
         build = [ln for ln in self.text.splitlines()
-                 if "DESELECT+=(" in ln and "--deselect" in ln]
+                 if "FAST_DESELECT_ARGS+=(" in ln and "--deselect" in ln]
         self.assertEqual(len(build), 1,
-                         "DESELECT 数组必须由 FAST_KNOWN_SLOW 逐条装配 --deselect（装配点应只有一处）")
+                         "FAST_DESELECT_ARGS 必须由 FAST_KNOWN_SLOW 逐条装配 --deselect（装配点应只有一处）")
+        # 拼接点：fast 模式真跑命令必须引用装配出来的数组（引用被删即红）。
+        self.assertIn('FAST_DESELECT_ARGS[@]', self.text,
+                      "真跑命令没引用 FAST_DESELECT_ARGS：装配了但没拼进去")
+        splices = [ln for ln in self.text.splitlines()
+                   if ln.strip().startswith("DESELECT+=(") and "FAST_DESELECT_ARGS[@]" in ln]
+        self.assertEqual(len(splices), 1,
+                         "fast 模式的 DESELECT 拼接点应只有一处（拼两次会让同一判据有两个定义点）")
 
     # ---- F4：空覆盖必须与"真覆盖"可区分 ----
 
@@ -396,8 +467,8 @@ class DevVerifyFastModeTest(unittest.TestCase):
             rc, out = _bash("%s\nresolve_exit_code %d %d %d\n" % (src, ruff_rc, py_rc, empty))
             self.assertEqual((rc, out.strip()), (0, want),
                              f"final rc 不对：ruff={ruff_rc} pytest={py_rc} 空覆盖={empty} → {out.strip()}")
-        self.assertIn('resolve_exit_code "$ruff_rc" "$py_rc" "${FAST_EMPTY:-0}"', self.text,
-                      "调用点必须把空覆盖标记传进裁决点")
+        self.assertIn('resolve_exit_code "$lint_rc" "$py_rc" "${FAST_EMPTY:-0}"', self.text,
+                      "调用点必须把空覆盖标记传进裁决点；第一参是 ruff+mypy 归一后的静态检查码")
         self.assertIn("DEV-VERIFY(fast): covered=", self.text,
                       "fast 档汇总行必须打覆盖数：只跑入口自检与真覆盖要能区分")
 
@@ -405,6 +476,8 @@ class DevVerifyFastModeTest(unittest.TestCase):
         """归一为 1 之后原始码必须仍逐行打印：否则定位信息随归一一起丢失。"""
         self.assertIn('echo "DEV-VERIFY ruff_exit=$ruff_rc"', self.text,
                       "ruff 原始退出码必须进日志")
+        self.assertIn('echo "DEV-VERIFY mypy_exit=$mypy_rc"', self.text,
+                      "mypy 原始退出码必须进日志")
         self.assertIn('echo "DEV-VERIFY pytest_exit=$py_rc"', self.text,
                       "pytest 原始退出码必须进日志")
 
@@ -430,19 +503,158 @@ class DevVerifyFastModeTest(unittest.TestCase):
         self.assertGreater(m.start(), self.text.index('rc=$(resolve_exit_code'),
                            "提示必须在最终 rc 算出之后打印：只看 FAST_EMPTY 会与真红报的码矛盾")
 
-    # ---- low#4：日志目录必须按模式分开（fast 与全量走不同的锁，可并发）----
+    # ---- 4kl：副本与锁必须按源仓分键（并行批的跨树污染）----
 
-    def test_default_log_dir_is_separate_per_mode(self):
-        src = _func_source(self.text, "default_log_dir")
-        self.assertGreater(len(src), 50, "抽不出 default_log_dir——结构改了？")
-        rc, out = _bash("%s\ndefault_log_dir /x/y fast\necho\ndefault_log_dir /x/y full\n" % src)
+    def test_copy_slot_and_lock_are_keyed_by_source_repo(self):
+        """副本路径与锁必须按源仓分键（4kl）。
+
+        缺陷形状（ziy B1 审查实测）：缓存路径只有一个固定键 `fast-worktree`，
+        两个 worktree 的 `--fast` 共用同一份副本——一方整体替换另一方的缓存
+        （HEAD 从 0323353b 变 9e1191b5），跨树伪红 rc=2。
+        判据：同一模式 + 不同源仓 → 两个槽；同一源仓 → 同一槽（增量复用仍成立）；
+        不同模式 → 不同槽（fast 与全量仍隔离）。锁与槽同键：不同源仓不互相排队。
+        """
+        parts = [_func_source(self.text, name)
+                 for name in ("repo_digest", "copy_dest", "copy_lock")]
+        for name, src in zip(("repo_digest", "copy_dest", "copy_lock"), parts, strict=True):
+            self.assertGreater(len(src), 30,
+                               f"抽不出 {name}——结构改了？本条会因此变废断言")
+        script = ("WORKDIR=/root/.cache/yiban-dev-verify\n"
+                  + "".join(parts)
+                  + "\ncopy_dest fast /x/repo-a\n"
+                  + "copy_dest fast /x/repo-b\n"
+                  + "copy_dest fast /x/repo-a\n"
+                  + "copy_dest full /x/repo-a\n"
+                  + "copy_lock fast /x/repo-a\n"
+                  + "copy_lock fast /x/repo-b\n")
+        rc, out = _bash(script)
+        self.assertEqual(rc, 0, f"抽出的分键函数跑失败：{out}")
+        lines = out.split()
+        self.assertEqual(len(lines), 6, f"期望 6 行输出，实得：{lines}")
+        dest_a, dest_b, dest_a_again, dest_full, lock_a, lock_b = lines
+        self.assertNotEqual(
+            dest_a, dest_b,
+            "两个不同源仓拿到同一个副本槽：并行跑 --fast 会互相整体覆盖（4kl）")
+        self.assertEqual(dest_a, dest_a_again,
+                         "同一源仓必须复用同一槽：否则每次 --fast 都整树重建")
+        self.assertNotEqual(dest_a, dest_full,
+                            "fast 与全量的副本槽必须不同（两者的锁与重建策略不同）")
+        self.assertNotEqual(lock_a, lock_b,
+                            "两个不同源仓共用一把锁：并行批会互相排队")
+        for dest in (dest_a, dest_b, dest_full):
+            self.assertTrue(dest.startswith("/root/.cache/yiban-dev-verify/"),
+                            f"副本槽没落在 WORKDIR 下：{dest}")
+            self.assertNotIn("repo-a", dest,
+                             f"槽名直接拼了源仓路径（含空格/斜杠会坏路径）：{dest}")
+        # 在场性：算出来的槽必须真被入口脚本使用，**实参也要钉死**。只断言
+        # `copy_dest(` 在场时，`copy_dest "$MODE" "$MODE"` 这种实参传错仍会绿
+        # （4kl 缺陷原样回来，门却不响；审查突变实测）。行尾允许 `|| die` 续写。
+        self.assertRegex(self.text,
+                         r'(?m)^DEST=\$\(copy_dest "\$MODE" "\$REPO"\)(?: \|\||$)',
+                         "入口脚本的 DEST 没按「模式, 源仓」调用 copy_dest："
+                         "传错实参会重新引入跨树互覆")
+        self.assertRegex(self.text,
+                         r'(?m)^LOCKFILE=\$\(copy_lock "\$MODE" "\$REPO"\)(?: \|\||$)',
+                         "入口脚本的 LOCKFILE 没按「模式, 源仓」调用 copy_lock："
+                         "传错实参会重新引入共锁/共槽")
+
+    def test_legacy_copy_is_migrated_or_cleaned_only_when_idle(self):
+        """旧键缓存（只按模式）的兼容处理（4kl）。
+
+        三种分支都必须成立：无新槽 → 整体改名到本槽（首跑仍走增量同步）；
+        新槽已在 → 删旧键垃圾；旧版锁被占 → 不动（旧进程可能正在用那份副本）。
+        迁移/删除都是 `rm -rf` 级动作，静默走错会毁掉正在用的缓存。
+        """
+        parts = [_func_source(self.text, name)
+                 for name in ("legacy_copy_dest", "legacy_copy_lock", "migrate_legacy_copy")]
+        for name, src in zip(("legacy_copy_dest", "legacy_copy_lock", "migrate_legacy_copy"),
+                             parts, strict=True):
+            self.assertGreater(len(src), 30,
+                               f"抽不出 {name}——结构改了？本条会因此变废断言")
+        srcs = "".join(parts)
+        with tempfile.TemporaryDirectory() as d:
+            script = (
+                "WORKDIR=%s\n%s\n"
+                "mkdir -p \"$WORKDIR/fast-worktree\"\n"
+                "echo marker >\"$WORKDIR/fast-worktree/marker\"\n"
+                "migrate_legacy_copy fast \"$WORKDIR/fast-worktree-abc\"\n"
+                "[ -f \"$WORKDIR/fast-worktree-abc/marker\" ] && [ ! -d \"$WORKDIR/fast-worktree\" ]\n"
+                % (shlex.quote(d), srcs))
+            rc, out = _bash(script)
+            self.assertEqual(rc, 0, f"旧键迁移分支失败：{out}")
+        with tempfile.TemporaryDirectory() as d:
+            script = (
+                "WORKDIR=%s\n%s\n"
+                "mkdir -p \"$WORKDIR/fast-worktree\" \"$WORKDIR/fast-worktree-abc\"\n"
+                "echo old >\"$WORKDIR/fast-worktree/old\"\n"
+                "echo new >\"$WORKDIR/fast-worktree-abc/marker\"\n"
+                "migrate_legacy_copy fast \"$WORKDIR/fast-worktree-abc\"\n"
+                "[ -f \"$WORKDIR/fast-worktree-abc/marker\" ] && [ ! -d \"$WORKDIR/fast-worktree\" ]\n"
+                % (shlex.quote(d), srcs))
+            rc, out = _bash(script)
+            self.assertEqual(rc, 0, f"新槽已在时没清掉旧键垃圾：{out}")
+        with tempfile.TemporaryDirectory() as d:
+            script = (
+                "WORKDIR=%s\n%s\n"
+                "mkdir -p \"$WORKDIR/fast-worktree\"\n"
+                "echo marker >\"$WORKDIR/fast-worktree/marker\"\n"
+                "exec 7>\"$WORKDIR/dev-verify-fast-runlock\"\n"
+                "flock 7\n"
+                "migrate_legacy_copy fast \"$WORKDIR/fast-worktree-abc\"\n"
+                "[ -f \"$WORKDIR/fast-worktree/marker\" ] && [ ! -d \"$WORKDIR/fast-worktree-abc\" ]\n"
+                % (shlex.quote(d), srcs))
+            rc, out = _bash(script)
+            self.assertEqual(rc, 0, f"旧键锁被占时不得动旧缓存：{out}")
+
+    # ---- dix 低-5：日志目录必须按模式与源仓分开（轮转互删与跨树混日志）----
+
+    def test_default_log_dir_is_separate_per_mode_and_repo(self):
+        parts = [_func_source(self.text, name) for name in ("repo_digest", "default_log_dir")]
+        for name, src in zip(("repo_digest", "default_log_dir"), parts, strict=True):
+            self.assertGreater(len(src), 40, f"抽不出 {name}——结构改了？")
+        script = ("WORKDIR=/root/.cache/yiban-dev-verify\n"
+                  + "".join(parts)
+                  + "\ndefault_log_dir /x/y fast\n"
+                  + "default_log_dir /x/y full\n"
+                  + "default_log_dir /x/z fast\n"
+                  + "default_log_dir /x/y fast\n")
+        rc, out = _bash(script)
         self.assertEqual(rc, 0, f"default_log_dir 跑失败：{out}")
-        self.assertEqual(out.split(),
-                         ["/x/yiban-dev-verify-logs-fast", "/x/yiban-dev-verify-logs"],
-                         "fast 与全量的默认日志目录必须不同：两者走不同的锁、可并发，"
-                         "共用目录会让 prune_logs 轮转删掉对方的日志")
+        lines = out.split()
+        self.assertEqual(len(lines), 4, f"期望 4 行输出，实得：{lines}")
+        fast_y, full_y, fast_z, fast_y_again = lines
+        self.assertTrue(fast_y.startswith("/x/yiban-dev-verify-logs-fast-"),
+                        f"fast 日志目录没按源仓分键：{fast_y}")
+        self.assertTrue(full_y.startswith("/x/yiban-dev-verify-logs-"), full_y)
+        self.assertFalse(full_y.startswith("/x/yiban-dev-verify-logs-fast-"),
+                         f"全量日志目录不得落进 fast 前缀：{full_y}")
+        self.assertNotEqual(
+            fast_y, fast_z,
+            "两个源仓共用一个 fast 日志目录：prune_logs 会轮转删掉对方的日志（dix 低-5）")
+        self.assertEqual(fast_y, fast_y_again, "同一源仓必须复用同一日志目录")
+        self.assertNotEqual(fast_y, full_y, "fast 与全量的日志目录必须不同")
         self.assertIn('LOG_DIR=$(default_log_dir "$REPO" "$MODE")', self.text,
-                      "默认日志目录必须由模式决定（调用点在场性）")
+                      "默认日志目录必须由模式与源仓决定（调用点在场性）")
+
+    def test_repo_digest_fails_closed_when_sha256sum_is_unavailable(self):
+        """摘要取不到时必须失败，不许让两个源仓共用一个空键槽（dix 低-3）。
+
+        旧实现把 `die` 放在命令替换里：`die` 只杀子壳，`copy_dest` 的 `printf` 照样
+        返回 0，两个源仓都得到 `fast-worktree-`（4kl 缺陷原样回来且 rc=0）。
+        """
+        parts = [_func_source(self.text, name) for name in ("repo_digest", "copy_dest")]
+        for name, src in zip(("repo_digest", "copy_dest"), parts, strict=True):
+            self.assertGreater(len(src), 40, f"抽不出 {name}——结构改了？")
+        script = ("set -o pipefail\n"
+                  "WORKDIR=/tmp/probe-workdir\n"
+                  "sha256sum() { return 127; }\n"
+                  + "".join(parts)
+                  + "\ncopy_dest fast /x/repo-a\n")
+        rc, out = _bash(script)
+        self.assertNotEqual(rc, 0,
+                            f"sha256sum 不可用时 copy_dest 仍返回 0（fail-open）：{out!r}")
+        self.assertEqual(out.strip(), "",
+                         f"摘要取不到时不得输出槽路径（两个源仓会共槽）：{out!r}")
 
     # ---- low#2 / low#3：参数不许静默忽略 ----
 
@@ -488,6 +700,125 @@ class DevVerifyFastModeTest(unittest.TestCase):
         rc, out = _run_entry(["--repo", BASE, "--ci", "--base", "HEAD"], timeout=30)
         self.assertNotEqual(rc, 0, "--ci 静默忽略了 --base")
         self.assertIn("--base", out, f"拒绝信息必须点名 --base：{out[-400:]}")
+
+
+class DevVerifyTailLaneTest(unittest.TestCase):
+    """R3-025：`FAST_KNOWN_SLOW` 的每条 nodeid 必须有**一个会被 CI 执行**的集合。
+
+    缺陷形状（复审 R3-025）：这 4 条在快集里被 `--deselect` 剔除，而它们所在的文件在
+    名册里登记为 `fast` 行 ⇒ `slow-lane` 只取 slow 行。结果**两个 CI 作业都不跑**它们，
+    且不重合本身是静默的（AGENTS §十三 第 29 条）。
+
+    执行点定在 `run_slow`（`--slow` 的唯一实现）：`--deselect` 只作用于快集，故长尾轨
+    直接跑 nodeid 是它们唯一的自动执行点。本组钉三件事：
+      ① 执行点在 `run_slow` 里**真的生效**（真跑函数，pytest 换成打印参数的桩）；
+      ② `run_slow` 被 CI 的 `slow-lane` 作业调用（未注释的执行行在场）；
+      ③ 名单不指向空气（真 pytest 能收集全部 nodeid）；
+      ④ 注释里的条数口径等于数组长度（AGENTS §31）。
+    """
+
+    #: 假 pytest 打印参数的标记；用单元分隔符避免与路径里的字符相撞。
+    _SEP = "\x1f"
+
+    def setUp(self):
+        self.text = _read(ENTRY)
+        self.entries = _bash_array_items(self.text, "FAST_KNOWN_SLOW")
+        self.assertGreaterEqual(
+            len(self.entries), 1,
+            "抽不到 FAST_KNOWN_SLOW 条目——结构改了？本条会因此变废断言")
+
+    def _run_slow_with_stub(self):
+        """真跑 `run_slow`，把 `-m pytest` 解析到打印参数的桩上。
+
+        用 `PYTHONPATH` 上的假 `pytest` 模块而不是可执行脚本：不依赖可执行位，
+        WSL 与 Windows 两侧同口径。返回 (退出码, 输出, [每次调用的参数表])。
+        """
+        src = _func_source(self.text, "run_slow")
+        self.assertGreater(len(src), 100, "抽不出 run_slow——结构改了？")
+        with tempfile.TemporaryDirectory(prefix="dev-verify-tail-") as d:
+            with io.open(os.path.join(d, "pytest.py"), "w", encoding="utf-8") as f:
+                f.write("import sys\nprint(%r + %r.join(sys.argv[1:]))\n"
+                        % ("FAKE_PYTEST " + self._SEP, self._SEP))
+            arr = " ".join('"%s"' % e for e in self.entries)
+            script = (
+                "export DEV_VERIFY_PY=%s\n"          # run_slow 用它当解释器
+                "export PYTHONPATH=%s\n"             # 让 `-m pytest` 解析到桩
+                "REPO=%s\n"
+                "LANE_SLOW_FILES=(tests/test_dev_verify_entry.py)\n"
+                "FAST_KNOWN_SLOW=(%s)\n"
+                "die() { echo \"环境错误：$*\" >&2; exit 2; }\n"
+                "%s\nrun_slow\n"
+                % (shlex.quote(sys.executable), shlex.quote(d),
+                   shlex.quote(BASE), arr, src))
+            rc, out = _bash(script, timeout=60)
+        calls = [ln[len("FAKE_PYTEST "):].split(self._SEP)
+                 for ln in out.splitlines() if ln.startswith("FAKE_PYTEST ")]
+        return rc, out, calls
+
+    def test_every_entry_is_executed_by_run_slow(self):
+        """执行点在场性：每个 nodeid 都必须被 `run_slow` 传给一次 pytest。"""
+        rc, out, calls = self._run_slow_with_stub()
+        self.assertEqual(rc, 0, f"run_slow 跑不过（桩模式）：{out}")
+        self.assertEqual(len(calls), 2,
+                         "run_slow 应恰好发起两次 pytest（名册 slow 行 1 次 ＋ 长尾轨 1 次），"
+                         f"实得 {len(calls)} 次：{out}")
+        argv_seen = {arg for call in calls for arg in call}
+        for e in self.entries:
+            self.assertIn(e, argv_seen,
+                          f"FAST_KNOWN_SLOW 条目没有进任何 pytest 调用：{e}——"
+                          "它在快集被 --deselect，此后再没有自动执行点（R3-025）")
+        # 名册 slow 行不许被长尾轨挤掉：同一条轨要跑两件事。
+        self.assertIn("tests/test_dev_verify_entry.py", argv_seen,
+                      "run_slow 不再跑名册的 slow 行：长尾轨不能替代慢集")
+
+    def test_run_slow_is_wired_into_ci(self):
+        """执行点被 CI 调用：`slow-lane` 作业的执行行必须在场且未被注释。"""
+        yml = _read(CI_YML)
+        # 只认**执行行**（去掉首尾空白后整行相等）：注释掉的一行以 `#` 开头，不算。
+        runs = [ln.strip() for ln in yml.splitlines()
+                if ln.strip() == "run: bash scripts/dev-verify.sh --slow"]
+        self.assertEqual(
+            len(runs), 1,
+            "ci.yml 里没有一条未注释的 `run: bash scripts/dev-verify.sh --slow`："
+            "长尾轨于是没有任何自动执行点（R3-025）")
+
+    def test_every_entry_is_collectable(self):
+        """名单不指向空气：真 pytest 能收齐全部 nodeid（假 nodeid 会判红）。"""
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", *self.entries,
+             "--collect-only", "-q", "-p", "no:randomly"],
+            cwd=BASE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, timeout=300)
+        self.assertEqual(
+            proc.returncode, 0,
+            "FAST_KNOWN_SLOW 里有收集不到的 nodeid（改名后剔除与长尾轨同时指向空气）："
+            f"{proc.stdout[-800:]}")
+        m = re.search(r"(\d+) tests? collected", proc.stdout)
+        self.assertIsNotNone(m, f"读不到收集数（口径丢了）：{proc.stdout[-400:]}")
+        self.assertEqual(
+            int(m.group(1)), len(self.entries),
+            "收集数不等于数组长度：有条目指向空气或被重复登记")
+
+    def test_comment_node_counts_match_the_array(self):
+        """注释里的条数口径必须等于数组长度（AGENTS §31 的机器化）。"""
+        claims = [int(a or b) for a, b in _COUNT_CLAIM.findall(self.text)]
+        self.assertGreaterEqual(
+            len(claims), 2,
+            "脚本注释里找不到条数口径声明（`FAST_KNOWN_SLOW 的 N 条` / `剔除清单共 N 条` /"
+            "`全量 − N 条`）：口径没了，漂移就不可见")
+        for n in claims:
+            self.assertEqual(
+                n, len(self.entries),
+                f"注释声称 {n} 条，FAST_KNOWN_SLOW 实有 {len(self.entries)} 条——"
+                "数必须带口径，且两侧量同一对象（AGENTS §31）")
+        files = {e.split("::", 1)[0] for e in self.entries}
+        file_claims = [int(x) for x in _FILE_CLAIM.findall(self.text)]
+        self.assertGreaterEqual(len(file_claims), 1,
+                                "脚本注释里找不到「分属 N 个文件」声明")
+        for n in file_claims:
+            self.assertEqual(
+                n, len(files),
+                f"注释声称分属 {n} 个文件，实有 {len(files)} 个：{sorted(files)}")
 
 
 if __name__ == "__main__":

@@ -18,10 +18,10 @@
 4. 打点写入异常被隔离，签到主流程照常跑完（打点是观测面，不是业务面）。
 
 标签：B · 调度：领取/队列/执行体
-覆盖：`yiban/store/run_events.py`（表写入与保留期清理）、`yiban/store/migrations.py`
-    的 v21 建表与产物登记、`yiban/engine/executor_v3.py` 与 `yiban/engine/runner.py`
-    的打点调用点、`yiban/store/cleanup.py` 的每日清理编排。
-对应实现：同覆盖清单；事件表列序见 `yiban/store/run_events.py`。
+覆盖：`yiban/adapters/persistence/run_events.py`（表写入与保留期清理）、`yiban/adapters/persistence/migrations.py`
+    的 v21 建表与产物登记、`yiban/engine/executor_v3.py` 与 `yiban/app/runner.py`
+    的打点调用点、`yiban/adapters/persistence/cleanup.py` 的每日清理编排。
+对应实现：同覆盖清单；事件表列序见 `yiban/adapters/persistence/run_events.py`。
 关键断言：节点值集合与逐节点行数、每行身份/账号/业务日/时刻非空、同账号的
     领取→开始→终态先后、旧行退役新行保留、缺表时迁移完整性拒启、
     以及删表后签到仍了结（主流程不被观测面拖垮）。
@@ -39,10 +39,11 @@ from unittest import mock
 
 import db  # pyproject.toml 的 pythonpath 把 scripts/ 加进 sys.path
 
-from yiban import clock, egress
-from yiban.engine import executor_v3, hrw, token_bucket
-from yiban.engine import runner as runner_mod
-from yiban.store import migrations, run_events
+from yiban import egress
+from yiban.adapters.persistence import migrations, run_events
+from yiban.app import runner as runner_mod
+from yiban.core import clock, hrw
+from yiban.engine import executor_v3, token_bucket
 
 TEST_KEY = "a" * 64
 DAY = "2026-09-22"          # 周二：周末门不会拦下用例
@@ -246,7 +247,7 @@ class _E2EBase(unittest.TestCase):
         conn.commit()
 
     def _seed_v(self, v=8, day=DAY):
-        from yiban.store import clock_meta
+        from yiban.adapters.persistence import clock_meta
         clock_meta.set_meta(executor_v3.V_META_KEY_PREFIX + day, v)
 
     def _task_state(self, phone, day=DAY):
@@ -258,7 +259,7 @@ class _E2EBase(unittest.TestCase):
         """跑一轮真实执行体：真实补货领取（claim_batch）+ 替身登录。"""
         patches = [
             mock.patch.object(executor_v3, "_persist_loop", _never),
-            mock.patch.object(executor_v3, "_make_limiter", lambda channels: _Limiter()),
+            mock.patch.object(executor_v3, "_make_limiter", lambda channels, shares=1: _Limiter()),
             mock.patch.object(executor_v3, "_make_gap_gate", lambda: _Gate()),
             mock.patch.object(executor_v3, "_make_global_limiter",
                               lambda: token_bucket.GlobalLimiter("")),
@@ -331,14 +332,14 @@ class NodeRowsTest(_E2EBase):
         self.assertEqual([r["ts"] for r in rows], sorted(r["ts"] for r in rows),
                          "行序（id）必须与时刻先后一致")
 
-        # 顺序：同账号 领取 → 开始 → 终态
+        # 顺序：同账号 领取 → 开始 → 终态。
+        # **不钉"全部领取行先于全部开始行"**——那是编舞（AGENTS §一 6a）：claim-at-dispatch
+        # 下每条通道各自"领一行、领到即跑"，账号 A 的 start 完全可能落在账号 B 的 claim
+        # 之前，这仍是正确行为。真正的不变式是**逐账号**的 claim 先于它的 start（上一条）。
         for phone, terminal in ((ok, NODE_SUCCESS), (bad, NODE_FAIL)):
             seq = [r["node"] for r in rows if r["phone"] == phone]
             self.assertEqual(seq, [NODE_CLAIM, NODE_START, terminal],
                              f"{phone} 的节点先后必须与实际执行顺序一致: {seq}")
-        # 领取行必须先于任何开始行落地（领取是开始之前的事实）
-        self.assertLess(max(i for i, n in enumerate(nodes) if n == NODE_CLAIM),
-                        min(i for i, n in enumerate(nodes) if n == NODE_START))
 
     def test_run_finalize_row_is_recorded(self):
         ok = _phone(1)
@@ -488,7 +489,7 @@ class MessageSanitizationTest(unittest.TestCase):
     """
 
     def test_server_text_is_escaped_and_masked_before_insert(self):
-        from yiban.masking import sanitize_text
+        from yiban.core.masking import sanitize_text
         raw = "13800000002 登录失败\n第二行 password=abc123"
         self.assertEqual(
             run_events._row(NODE_FAIL, DAY, OWNER, "13800000002", raw)[5],

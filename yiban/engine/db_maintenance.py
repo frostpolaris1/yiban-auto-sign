@@ -4,13 +4,13 @@
 `db` 子命令的实现：只读状态 / 完整性检查、在线备份（覆盖守卫）、从副本恢复（恢复前校验
 + 覆盖前副本 + 指纹确认）。
 
-**为什么单独成模块**：`yiban/cli.py` 是命令行门面的唯一宿主，已贴近体量门上限；`db` 维护
+**为什么单独成模块**：`yiban/entry/cli/__init__.py` 是命令行门面的唯一宿主，已贴近体量门上限；`db` 维护
 这一族（快照读取、备份、恢复）服务的是"库文件本身的运维动作"这一独立变更轴，且被
 `capacity` / `version` 子命令复用（只读快照），故从入口模块外移（体量门登记的下一步拆法）。
 
 **归属**
 `yiban.engine` 的命令行子命令实现层（同族先例：`config_check` 承担 `config` 的输出装配）；
-SQLite 只读打开、账号只读装载与目标指纹分别复用 `yiban.store` 的
+SQLite 只读打开、账号只读装载与目标指纹分别复用 `yiban.adapters.persistence` 的
 `connection.open_readonly` / `accounts.load_accounts_readonly` / `purge_guard`，本模块不另写
 第二套。
 
@@ -24,18 +24,18 @@ SQLite 只读打开、账号只读装载与目标指纹分别复用 `yiban.store
 解析出的路径 dict。
 输出：stdout 一行 JSON（`--json`）或 stderr 人类可读汇总；退出码由 `cmd_db` 返回（0 / 1 /
 2，含义见 `docs/dev/cli.md` §3）。
-调用谁：`yiban.store.db`（只读打开、账号只读装载）、`yiban.store.purge_guard`（内容指纹与
+调用谁：`yiban.adapters.persistence.db`（只读打开、账号只读装载）、`yiban.adapters.persistence.purge_guard`（内容指纹与
 回显比对）、`yiban.engine.cli_support`（输出收口）。
-谁调用：`yiban/cli.py` 的 `_dispatch`。
+谁调用：`yiban/entry/cli/__init__.py` 的 `_dispatch`。
 """
 import datetime
 import os
 import sqlite3
 
+from yiban.adapters.persistence import accounts as store_accounts
+from yiban.adapters.persistence import db as store_db
+from yiban.adapters.persistence import purge_guard
 from yiban.engine.cli_support import _emit_json, _fail, _say
-from yiban.store import accounts as store_accounts
-from yiban.store import db as store_db
-from yiban.store import purge_guard
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +54,7 @@ def account_counts(conn):
     """→ (未删除账号数, 会签到的账号数)。
 
     "会签到"的判据与 web/signin 同源：未删除且审核态不在
-    `yiban.store.accounts.ACCOUNT_AUDIT_INACTIVE`——那个元组是**库内落库值**的唯一
+    `yiban.adapters.persistence.accounts.ACCOUNT_AUDIT_INACTIVE`——那个元组是**库内落库值**的唯一
     列举点（`signs_in` 用的就是它），此处按它拼 SQL 条件，不另写一套字面量。
     """
     inactive = tuple(store_accounts.ACCOUNT_AUDIT_INACTIVE)
@@ -318,7 +318,7 @@ def restore_fingerprint(db_file, backup):
 
 def _pre_restore_path(db_file):
     """覆盖前副本路径：`<库文件>.pre-restore-<本地时间戳>`；同秒重名自动加后缀。"""
-    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")  # noqa: DTZ005 备份文件名戳，只求唯一（含同秒后缀），与业务钟无关
     base = f"{db_file}.pre-restore-{stamp}"
     path = base
     seq = 1

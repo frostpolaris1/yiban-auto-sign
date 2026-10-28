@@ -4,7 +4,9 @@
 标签：J · 运维：部署/备份/发布
 覆盖：flock 弹开、当日已签到成功、当日已收尾、timeout 击杀、正常收尾五条路径的留痕；
     行首触发来源前缀（排程/手工，按 stdin 有无控制终端自动判，`YIBAN_TRIGGER` 可覆盖）；
-    退出码 0/1/2/3/10 逐字透传；状态文件口径（0 写 SUCCESS、2 写 SKIPPED、其余不写）。
+    退出码 0/1/2/3/10 逐字透传；状态文件口径（0 写 SUCCESS、2 写 SKIPPED/GLOBAL_PAUSED、
+    3 写 BUSY、4 写 SCHEMA_MIGRATION、10 写 NEED_SECOND_RUN、124 写 TIMEOUT、其余非零写
+    FAILED——每个确实跑过一轮的退出码都落盘，逐码派生自 `cli_support._EXIT_KINDS`，f7va）。
 对应实现：`run.sh`（shell 侧，无 Python 对应物）。
 关键断言：① 每条退出路径都有 `=== run.sh 退出，退出码: N ===`——原先只有正常收尾
     那一行，日志里看不出"这轮到底跑过没有、为什么没签"；② 加日志不得顺手改退出码。
@@ -23,7 +25,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime
+
+from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUN_SH = os.path.join(BASE, "run.sh")
@@ -42,7 +45,8 @@ exit ${FAKE_EXIT_CODE:-0}
 
 
 def _today():
-    return datetime.now().strftime("%Y-%m-%d")
+    """run.sh 按日日志/状态文件名取业务日（北京 +8），与生产 `business_day` 同源。"""
+    return clock.today()
 
 
 @unittest.skipIf(shutil.which("bash") is None, "需要 bash（Git Bash/WSL）")
@@ -92,12 +96,11 @@ class RunShExitTrailTest(unittest.TestCase):
                 f.write(body)
             os.chmod(path, 0o755)  #假件必须可执行且抢在 PATH 前面，否则 run.sh 调到真 flock/timeout
 
-    def _run(self, state, extra_env=None):
-        """跑一次 run.sh；返回 (退出码, 日志文本)。状态目录由调用方准备。
+    def _run_full(self, state, extra_env=None):
+        """跑一次 run.sh；返回 (退出码, 当日日志文本, stderr 文本)。
 
-        stdin 显式钉成 DEVNULL：触发来源判据看的是 stdin 有没有控制终端，而用例宿主
-        自身的 stdin 可能是终端（开发者在终端里跑 pytest）——不钉死的话"排程"这条
-        断言会随宿主的终端而变。
+        两个声音分列是为了能**各自**被断言：run.sh 的 `_log` 写当日日志文件、`_err`
+        写 stderr（见 run.sh 顶部两处出口）。只读其一证不了"双声音到位"。
         """
         env = dict(self.env)
         env["YIBAN_STATE_DIR"] = state
@@ -110,7 +113,17 @@ class RunShExitTrailTest(unittest.TestCase):
         if os.path.exists(log_path):
             with io.open(log_path, encoding="utf-8", errors="replace") as f:
                 text = f.read()
-        return r.returncode, text
+        return r.returncode, text, r.stderr.decode("utf-8", "replace")
+
+    def _run(self, state, extra_env=None):
+        """跑一次 run.sh；返回 (退出码, 日志文本)。状态目录由调用方准备。
+
+        stdin 显式钉成 DEVNULL：触发来源判据看的是 stdin 有没有控制终端，而用例宿主
+        自身的 stdin 可能是终端（开发者在终端里跑 pytest）——不钉死的话"排程"这条
+        断言会随宿主的终端而变。
+        """
+        code, text, _err = self._run_full(state, extra_env)
+        return code, text
 
     @staticmethod
     def _exit_line(code, tag="排程"):
@@ -187,6 +200,53 @@ class ExitTrailTest(RunShExitTrailTest):
         self.assertIn("拒绝采信", text)
         self.assertIn("run.sh 开始执行", text, "拒绝采信 ⇒ 按未完成继续跑本轮")
 
+    def test_non_success_status_texts_are_never_credible(self):
+        """所有非 SUCCESS 文本一律拒绝采信（f7va：防"写了 FAILED 反被当成功"）。
+
+        库内当日有 done 行（SUCCESS 本会被采信）、状态文本却是别的取值 ⇒ 不得走
+        "今天已签到成功，跳过执行"。正对照（SUCCESS ⇒ 跳过）由
+        test_already_success_path_logs_exit_zero 钉住；安全论证落在本用例上：
+        新写的 FAILED/TIMEOUT/BUSY/SCHEMA_MIGRATION/SKIPPED/GLOBAL_PAUSED 不改变任何
+        跑/不跑判定。
+        """
+        for text in ("FAILED", "TIMEOUT", "BUSY", "SCHEMA_MIGRATION", "NEED_SECOND_RUN",
+                     "SKIPPED", "GLOBAL_PAUSED"):
+            with self.subTest(text=text):
+                state = tempfile.mkdtemp(prefix="state-", dir=self.tmp)
+                db = self._seed_success_facts()
+                with io.open(os.path.join(state, f"sign-status-{_today()}.txt"), "w",
+                             encoding="utf-8") as f:
+                    f.write(text)
+                _code, log = self._run(state, {"YIBAN_DB_FILE": db})
+                self.assertNotIn("今天已签到成功，跳过执行", log,
+                                 f"{text} 被当成成功采信了（采信只认 SUCCESS）")
+
+    def test_rc10_warning_is_audible_on_both_voices(self):
+        """rc=10（second_run_check）的"双声音"留痕必须**各自**被钉住（f7va 复审 G1）。
+
+        背景：状态文件落 `NEED_SECOND_RUN` 只证明"文件写了"，证不了"人看得见"。本批把
+        "轮退出码 10 = 管道接错"定为修复边界，其**可见性即交付语义的一部分**（§15）：
+        删掉任一声音而不变红，这条边界就会重新退成静默事件。
+
+        两个声音各钉一条（run.sh 顶部的两处出口）：
+          · `_err` → stderr；删该行 ⇒ 本用例红；
+          · `_log` → 当日日志文件；删该行 ⇒ 本用例红（直接读当日日志文件，不把"写了
+            stderr"当成"双声音都到位"）。
+        粒度：钉**稳定片段**（关键词 `判定码` ＋ `second_run_check` ＋ 码值 `轮退出码 10`），
+        不整句逐字比对——本仓测试瘦身方向是减少"读源码文本"式脆性断言。
+        负向佐证：rc=10 的其它既有日志（如封存闸门的"判定 10"）不含 `判定码`/`second_run_check`，
+        故这两枚片段对本告警是**判别性**的。
+        """
+        state = tempfile.mkdtemp(prefix="state-", dir=self.tmp)
+        code, log, err = self._run_full(state, {"FAKE_EXIT_CODE": "10"})
+        self.assertEqual(code, 10, "退出码照旧原样透传")
+        self.assertIn("轮退出码 10", err, "rc=10 必须在 stderr 响亮告警（_err 声音）: %r" % err)
+        self.assertIn("判定码", err, "stderr 告警须点明这是判定码: %r" % err)
+        self.assertIn("second_run_check", err, "stderr 告警须点名该码: %r" % err)
+        self.assertIn("轮退出码 10", log, "rc=10 必须在当日日志留痕（_log 声音）: %r" % log)
+        self.assertIn("判定码", log, "当日日志留痕须点明这是判定码: %r" % log)
+        self.assertIn("second_run_check", log, "当日日志留痕须点名该码: %r" % log)
+
     def test_settled_marker_path_logs_exit_zero(self):
         state = tempfile.mkdtemp(prefix="state-", dir=self.tmp)
         open(os.path.join(state, f"yiban-settled-{_today()}.marker"), "w").close()  #收尾标记只看存在性，内容不参与判定
@@ -221,18 +281,27 @@ class ExitCodeContractTest(RunShExitTrailTest):
                 self.assertEqual(got, code, f"退出码 {code} 必须原样透传")
                 self._assert_exit_line(text, code)
 
-    def test_success_status_file_only_written_for_zero(self):
-        """留痕逻辑不得改变状态文件口径：0 写 SUCCESS，2 写 SKIPPED，其余不写。"""
-        for code, want in ((0, "SUCCESS"), (2, "SKIPPED"), (1, None), (3, None)):
+    def test_status_file_written_for_every_round_exit_code(self):
+        """留痕逻辑不得改变状态文件口径之外的东西：每个跑过一轮的码都落盘文本。
+
+        f7va 行为变更（旧断言写错了，不是行为错了）：旧口径"非 0/2 不写文件"让
+        失败轮当天两件判据全缺，恰在最需要当日判据的那天失去机器可读证据。
+        文本**逐码派生**自 `cli_support._EXIT_KINDS`：0→SUCCESS、1→FAILED、
+        2→SKIPPED、3→BUSY（locked，队列忙＝本轮没跑，非失败）、4→SCHEMA_MIGRATION
+        （迁移拒启）、10→NEED_SECOND_RUN（判定码，不得伪装成 FAILED）、124→TIMEOUT。
+        已知码不得被 catch-all 归进 FAILED（假失败）。
+        """
+        for code, want in ((0, "SUCCESS"), (1, "FAILED"), (2, "SKIPPED"),
+                           (3, "BUSY"), (4, "SCHEMA_MIGRATION"),
+                           (10, "NEED_SECOND_RUN"), (124, "TIMEOUT")):
             with self.subTest(code=code):
                 state = tempfile.mkdtemp(prefix="state-", dir=self.tmp)
                 self._run(state, {"FAKE_EXIT_CODE": str(code)})
                 path = os.path.join(state, f"sign-status-{_today()}.txt")
-                if want is None:
-                    self.assertFalse(os.path.exists(path), f"退出码 {code} 不该写状态文件")
-                else:
-                    with io.open(path, encoding="utf-8") as f:
-                        self.assertEqual(f.read().strip(), want)
+                self.assertTrue(os.path.exists(path),
+                                f"退出码 {code} 必须写状态文件（每个跑过一轮的码都落盘）")
+                with io.open(path, encoding="utf-8") as f:
+                    self.assertEqual(f.read().strip(), want)
 
 
 class TriggerTagTest(RunShExitTrailTest):
@@ -308,11 +377,18 @@ class SourceContractTest(unittest.TestCase):
         self.assertLess(trap_at, self.src.index("已有签到进程在运行"))
 
     def test_all_log_writes_carry_the_tag(self):
-        """所有日志走 _log（唯一带前缀的出口），不再散落裸 echo "[时间戳]"。"""
-        self.assertEqual(self.src.count('echo "[$(date '), 2,
-                         "带时间戳的 echo 只应剩 _log 与 _on_exit 两处（其余走 _log）")
+        """日志文件出口只有 `_log` / `_on_exit` 两处且必带触发来源前缀；stderr 出口只有 `_err` 一处。
+
+        2026-10-10（工单 yiban-auto-sign-2k1i）：新增 `_err` 给面向 stderr 的警告/致命
+        统一加时间戳（落 run-cron.log）。故带时间戳的 echo 由 2 处变 3 处；其中只有落
+        **日志文件**的 `_log` / `_on_exit` 两处带 `[$TRIGGER_TAG]`，`_err` 只带时间戳。
+        """
+        self.assertEqual(self.src.count('echo "[$(date '), 3,
+                         "带时间戳的 echo 应为 _log / _on_exit（落日志文件）与 _err（落 stderr）三处")
         self.assertEqual(self.src.count("[$TRIGGER_TAG]"), 2,
-                         "两处时间戳日志都必须带触发来源前缀")
+                         "两处落日志文件的时间戳行都必须带触发来源前缀")
+        self.assertIn('echo "[$(date \'+%F %T\')] $*" >&2', self.src,
+                      "stderr 出口必须是 _err（统一时间戳前缀）")
 
     def test_trigger_tag_judges_on_stdin(self):
         """判据取 stdin（fd 0）：手工执行常把输出重定向进日志，按 stdout/stderr 判会误报排程。"""

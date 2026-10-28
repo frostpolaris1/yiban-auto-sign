@@ -21,8 +21,8 @@ accounts_data`，不复用本模块。
 输入：`db`（accounts 表，密文经 `account_crypto` 解密）、`YIBAN_ACCOUNTS_JSON` /
 旧格式环境变量。输出：`Account` 列表（含 owner / account_id 等运行期字段）。
 调用谁：`db`、`account_crypto`、`config_check`。
-谁调用：`runner.main`、`workers`（监督进程与其子进程）与 `yiban/cli.py`（`config` /
-`--check-config` 传 `migrate=False`）。探针 `probe` 直取 `yiban.store.accounts`，不经本模块。
+谁调用：`runner.main`、`workers`（监督进程与其子进程）与 `yiban/entry/cli/__init__.py`（`config` /
+`--check-config` 传 `migrate=False`）。探针 `probe` 直取 `yiban.adapters.persistence.accounts`，不经本模块。
 前端调用点：`/api/accounts`（`web/static/js/pages/work_accounts.js`、
 `web/static/js/components/account-ops.js`）与 `/api/my-accounts`（`web/static/js/components/my-accounts.js`）
 的增删改由本模块在下一轮装载生效——优先级/去重/审核态口径变化会改变这些页面看到的
@@ -34,12 +34,12 @@ import logging
 import os
 from dataclasses import dataclass
 
+from yiban.adapters.config import account_crypto, env_io
+from yiban.adapters.notifier.mail.config import _mask_addr
+from yiban.adapters.persistence import db
+from yiban.core.masking import mask_phone as _mask_phone
+from yiban.core.masking import sanitize_text as _sanitize_text
 from yiban.engine import config_check
-from yiban.infra import account_crypto, env_io
-from yiban.mail.config import _mask_addr
-from yiban.masking import mask_phone as _mask_phone
-from yiban.masking import sanitize_text as _sanitize_text
-from yiban.store import db
 
 logger = logging.getLogger("yiban")
 
@@ -220,12 +220,17 @@ def _load_accounts_from_legacy_env():
                 f"{_sanitize_text(_mask_phone(item) if item.isdigit() else item)}")
             continue
         phone, pwd = item.split(":", 1)
-        accounts.append(Account(phone.strip(), pwd.strip()))
+        # 与数据库 / JSON 两条来源共用**同一个必填校验**（`_parse_account_dict`）：
+        # 旧格式漏写口令（`13800000000:`）会产出空口令账号，装载阶段零告警，随后每轮
+        # 拿空密码打一次真实登录；失败文案落在凭据档后，三天把账号推进熔断（工单
+        # ba-p04-06）。空 phone/password 在这里直接抛 ValueError，错误在装载期暴露。
+        accounts.append(_parse_account_dict({"phone": phone.strip(),
+                                             "password": pwd.strip()}))
     if not accounts:
         phone = os.environ.get("YIBAN_PHONE", "").strip()
         pwd = os.environ.get("YIBAN_PASSWORD", "").strip()
         if phone and pwd:
-            accounts.append(Account(phone, pwd))
+            accounts.append(_parse_account_dict({"phone": phone, "password": pwd}))
     return accounts
 
 

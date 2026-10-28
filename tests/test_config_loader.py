@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""配置名册加载器 `yiban/config_loader.py` 的行为契约（104 第一批·A）。
+"""配置名册加载器 `yiban/adapters/config/loader.py` 的行为契约（104 第一批·A）。
 
 标签：A · 配置：名册与加载器
 覆盖：① **优先级链**——进程环境 → `.env` → 名册缺省（F18 / 工单 71z7 裁决口径，
@@ -8,11 +8,16 @@
     越界值原样返回，不夹取、不回退默认；③ **未知键告警不静默**；④ **零配置启动**：
     空 `.env` + 空进程环境不炸，取值恒等于名册缺省（本单验收"现有部署零改动启动"）；
     ⑤ `reload` 字段**仅声明**，不改变既有重启语义（本批不实现热重载）。
-对应实现：`yiban/config_loader.py`、`config/registry.json`。
+对应实现：`yiban/adapters/config/loader.py`、`config/registry.json`。
 关键断言：优先级链的方向由测试钉住，不许由实现自述——顺序写反（名册缺省压过 `.env`）
     在单键取值上表现为"配置改了不生效"，正是本模块存在的理由。
 依赖：无网络；临时 `.env` 文件 + 注入的 registry 映射。**一处子进程**——"零配置启动"
     那条起一次 `python -c "import yiban.engine..."`，证明 `.env` 缺失时引擎照旧可导入。
+
+2026-10-16 饮食批：`RegistryValidationTest` 整类删除——它逐条（域无序、缺省在域外、
+未知类型、缺 group/doc…）断言 `CL.validate_registry`，而同一实现的负例已由 CI 门
+`scripts/check-config-registry.py` 的元测试 `tests/test_config_registry_gate.py::GateRegistrySelfCheckTest`
+与 `GateDefaultLiteralMutationTest` 覆盖（门禁脚本与加载器共用同一份校验）。留着＝同一判据两份载体。
 """
 import ast
 import logging
@@ -20,7 +25,8 @@ import os
 import tempfile
 import unittest
 
-from yiban import config_loader as CL
+from web.services import limits as _limits
+from yiban.adapters.config import loader as CL
 
 # 合成名册：故意与真实 config/registry.json 解耦，让行为断言不受名册内容漂移影响。
 # 真实名册的**结构合法性**由 scripts/check-config-registry.py 判（见 gate 自测）。
@@ -225,7 +231,7 @@ class UnparseableValueTest(unittest.TestCase):
         `1_0:30` / `6:0030`，引擎都收）+ 4 个两边都拒（`99:99` / `abc` / `12:` / `60`）
         + 2 个两边都收（`7:05` / `23:59`）。
         """
-        from yiban import window
+        from yiban.core import window
         sentinel = object()
         samples = ("7:05", "23:59", "006:30", "021:00", "+6:30", "6 :30",
                    "6: 30", "1_0:30", "6:0030", "99:99", "abc", "12:", "60")
@@ -252,7 +258,7 @@ class UnparseableValueTest(unittest.TestCase):
         全部用例仍绿——名册端没有守卫。本用例的期望值同样从引擎现算，13 个样本逐条
         构造名册条目：引擎收的缺省必须通过名册自校验，引擎不收的必须抛 `RegistryError`。
         """
-        from yiban import window
+        from yiban.core import window
         sentinel = object()
         samples = ("7:05", "23:59", "006:30", "021:00", "+6:30", "6 :30",
                    "6: 30", "1_0:30", "6:0030", "99:99", "abc", "12:", "60")
@@ -281,6 +287,52 @@ class UnparseableValueTest(unittest.TestCase):
                     "doc": "签到窗口开始时刻", "sensitive": False,
                     "web_editable": True, "tier": "master", "reload": "next-round"},
             })
+
+
+class RegistryGateDeclarationTest(unittest.TestCase):
+    """`default_literal_gate` 的声明形状：承载常量必须显式声明，可为空列表。
+
+    审查员 7yf 高-1：允许"没有承载常量"时如果连字段都可省，"忘了登记"与"确认无
+    载体"就长得一样，判据 2 的常量臂会静默消失。故 `default_symbols: []` 是
+    **显式声明无载体**；缺字段/null/非列表一律拒判。
+    """
+
+    def _spec(self, **extra):
+        spec = {
+            "type": "int", "default": 10, "group": ["调度"], "doc": "缺省 10",
+            "sensitive": False, "web_editable": False, "tier": "master",
+            "reload": "restart", "default_literal_gate": True,
+        }
+        spec.update(extra)
+        return {"_meta": {"version": 1}, "YIBAN_KNOB": spec}
+
+    def test_gate_with_empty_symbol_list_is_valid(self):
+        CL.validate_registry(self._spec(default_symbols=[]))
+
+    def test_gate_with_symbols_is_valid(self):
+        CL.validate_registry(self._spec(default_symbols=["KNOB_DEFAULT"]))
+
+    def test_gate_without_symbols_field_is_rejected(self):
+        with self.assertRaises(CL.RegistryError):
+            CL.validate_registry(self._spec())
+
+    def test_gate_with_null_symbols_is_rejected(self):
+        with self.assertRaises(CL.RegistryError):
+            CL.validate_registry(self._spec(default_symbols=None))
+
+    def test_gate_with_non_list_symbols_is_rejected(self):
+        with self.assertRaises(CL.RegistryError):
+            CL.validate_registry(self._spec(default_symbols="KNOB_DEFAULT"))
+
+    def test_gate_with_blank_symbol_member_is_rejected(self):
+        with self.assertRaises(CL.RegistryError):
+            CL.validate_registry(self._spec(default_symbols=[""]))
+
+    def test_gate_without_default_is_rejected(self):
+        spec = self._spec(default_symbols=[])
+        del spec["YIBAN_KNOB"]["default"]
+        with self.assertRaises(CL.RegistryError):
+            CL.validate_registry(spec)
 
 
 class UnknownKeyTest(unittest.TestCase):
@@ -369,126 +421,6 @@ class ZeroConfigStartTest(unittest.TestCase):
         self.assertIsNot(cfg1, cfg2, "纯函数式：每次调用产出新对象，不共享可变状态")
 
 
-class RegistryValidationTest(unittest.TestCase):
-    """名册自校验：类型合法、域有序、默认值在域内（加载器与 CI 门禁同一实现）。"""
-
-    def _with(self, key, spec):
-        data = {k: dict(v) for k, v in REGISTRY.items()}
-        data[key] = spec
-        return data
-
-    def test_unordered_domain_is_rejected(self):
-        with self.assertRaises(CL.RegistryError):
-            CL.validate_registry(self._with("YIBAN_WORKERS", {
-                "type": "int", "domain": [64, 1], "default": 1, "group": ["x"],
-                "doc": "d", "sensitive": False, "web_editable": True,
-                "tier": "master", "reload": "restart"}))
-
-    def test_default_outside_domain_is_rejected(self):
-        with self.assertRaises(CL.RegistryError):
-            CL.validate_registry(self._with("YIBAN_WORKERS", {
-                "type": "int", "domain": [1, 64], "default": 99, "group": ["x"],
-                "doc": "d", "sensitive": False, "web_editable": True,
-                "tier": "master", "reload": "restart"}))
-
-    def test_unknown_type_is_rejected(self):
-        with self.assertRaises(CL.RegistryError):
-            CL.validate_registry(self._with("YIBAN_WORKERS", {
-                "type": "intt", "default": 1, "group": ["x"], "doc": "d",
-                "sensitive": False, "web_editable": True, "tier": "master",
-                "reload": "restart"}))
-
-    def test_unknown_tier_and_reload_are_rejected(self):
-        with self.assertRaises(CL.RegistryError):
-            CL.validate_registry(self._with("YIBAN_WORKERS", {
-                "type": "int", "default": 1, "group": ["x"], "doc": "d",
-                "sensitive": False, "web_editable": True, "tier": "root",
-                "reload": "restart"}))
-        with self.assertRaises(CL.RegistryError):
-            CL.validate_registry(self._with("YIBAN_WORKERS", {
-                "type": "int", "default": 1, "group": ["x"], "doc": "d",
-                "sensitive": False, "web_editable": True, "tier": "master",
-                "reload": "sometimes"}))
-
-    def test_default_and_derived_are_mutually_exclusive(self):
-        bad = self._with("YIBAN_CAPACITY_MAX", {
-            "derived": "f()", "default": 1, "group": ["x"], "doc": "d",
-            "sensitive": False, "web_editable": False, "tier": "master",
-            "reload": "restart"})
-        with self.assertRaises(CL.RegistryError):
-            CL.validate_registry(bad)
-
-    def test_path_and_proxy_keys_may_not_be_web_editable(self):
-        """§5.4：路径类与代理类默认不入网页白名单（改路径=任意文件写）。
-
-        夹具必须带 `default`，否则先撞上"既非派生键也没有缺省值"那条判据，本用例就
-        变成了"因为别的守卫而红"——**断言与被测行为脱钩**（委托审查 medium-1）。
-        """
-        for key in ("YIBAN_DB_FILE", "YIBAN_STATE_DIR", "YIBAN_PROXY",
-                    "YIBAN_ACCOUNTS_FILE"):
-            with self.assertRaises(CL.RegistryError) as ctx:
-                CL.validate_registry(self._with(key, {
-                    "type": "path" if key != "YIBAN_PROXY" else "string",
-                    "default": None, "group": ["x"], "doc": "d", "sensitive": False,
-                    "web_editable": True, "tier": "master", "reload": "restart"}))
-            self.assertIn("网页白名单", str(ctx.exception),
-                          "红的必须是路径/代理白名单守卫本身：%s" % ctx.exception)
-        # 反向：同一枚路径键把 web_editable 改成 false 即通过（否则上面的红说明不了什么）
-        CL.validate_registry(self._with("YIBAN_DB_FILE", {
-            "type": "path", "default": None, "group": ["x"], "doc": "d",
-            "sensitive": False, "web_editable": False, "tier": "master",
-            "reload": "restart"}))
-
-    def test_enum_domain_must_list_choices(self):
-        with self.assertRaises(CL.RegistryError):
-            CL.validate_registry(self._with("YIBAN_SIGN_ORDER", {
-                "type": "enum", "domain": [1, 3], "default": "sequence",
-                "group": ["x"], "doc": "d", "sensitive": False,
-                "web_editable": True, "tier": "master", "reload": "restart"}))
-
-    def test_domain_must_match_type(self):
-        """数值域配字符串类型的键判不合法（不许在域内比较处抛 TypeError）。
-
-        `hhmm` / `string` / `bool` / `json` 都不接受域声明——只有数值型与 enum 能声明。
-        """
-        for key, type_name, default in (("YIBAN_SIGN_START", "hhmm", "06:30"),
-                                        ("YIBAN_ADMIN_USER", "string", "admin"),
-                                        ("YIBAN_MAIL_ENABLE", "bool", False),
-                                        ("YIBAN_ACCOUNTS_JSON", "json", [1])):
-            with self.assertRaises(CL.RegistryError):
-                CL.validate_registry(self._with(key, {
-                    "type": type_name, "domain": [0, 10], "default": default,
-                    "group": ["x"], "doc": "d", "sensitive": False,
-                    "web_editable": False, "tier": "master", "reload": "restart"}))
-        with self.assertRaises(CL.RegistryError):
-            CL.validate_registry(self._with("YIBAN_SIGN_DIST", {
-                "type": "enum", "domain": ["uniform", "normal"], "default": 1,
-                "group": ["x"], "doc": "d", "sensitive": False,
-                "web_editable": True, "tier": "master", "reload": "restart"}))
-
-    def test_json_default_must_be_json_value(self):
-        """`json` 键的缺省必须是可序列化的 JSON 值（对象/数组/标量）。"""
-        with self.assertRaises(CL.RegistryError):
-            CL.validate_registry(self._with("YIBAN_ACCOUNTS_JSON", {
-                "type": "json", "default": object(), "group": ["x"], "doc": "d",
-                "sensitive": False, "web_editable": False, "tier": "master",
-                "reload": "restart"}))
-        CL.validate_registry(self._with("YIBAN_ACCOUNTS_JSON", {
-            "type": "json", "default": [{"phone": "1"}], "group": ["x"], "doc": "d",
-            "sensitive": False, "web_editable": False, "tier": "master",
-            "reload": "restart"}))
-
-    def test_real_registry_is_valid_and_covers_the_gate_keys(self):
-        """真实名册自身合法，且三枚多副本默认值键都在册。"""
-        registry = CL.load_registry()
-        CL.validate_registry(registry)
-        for key in ("YIBAN_EGRESS_RATE", "YIBAN_ACCOUNT_GAP_MAX",
-                    "YIBAN_MIN_EXEC_GAP"):
-            self.assertIn(key, registry, "多副本默认值键必须登记在册")
-            self.assertIsNotNone(CL.default_of(key, registry=registry),
-                                 "登记了就要有缺省（该键的默认值唯一来源）")
-
-
 class ZeroChangeDefaultsTest(unittest.TestCase):
     """验收：**现有部署零改动启动**。收口只是把默认值的定义点搬进名册，值逐位不变。"""
 
@@ -522,7 +454,8 @@ class ZeroChangeDefaultsTest(unittest.TestCase):
         env["PYTHONPATH"] = base + os.pathsep + env.get("PYTHONPATH", "")
         r = subprocess.run(
             [sys.executable, "-c",
-             "from yiban.engine import runner, schedule, token_bucket;"
+             "from yiban.app import runner;"
+             "from yiban.engine import schedule, token_bucket;"
              "print(token_bucket.RATE_DEFAULT, token_bucket.DEFAULT_ACCOUNT_GAP_SEC,"
              " token_bucket.DEFAULT_MIN_EXEC_GAP_SEC, schedule._DEFAULT_BUCKET_RATE)"],
             cwd=base, env=env, capture_output=True, text=True, timeout=120)
@@ -564,10 +497,10 @@ class InternalComponentTest(unittest.TestCase):
     """加载器是内部件，不作为使用者概念导出。"""
 
     def test_not_exported_from_package_root(self):
-        """包根不导入也不导出它（`from yiban import config_loader` 是子模块绑定，
+        """包根不导入也不导出它（加载器已迁到 `yiban.adapters.config.loader`；
         不是"暴露为使用者概念"——判据看包根的源码文本与 `__all__`）。"""
         import yiban
-        base = os.path.dirname(os.path.dirname(os.path.abspath(CL.__file__)))
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         with open(os.path.join(base, "yiban", "__init__.py"), encoding="utf-8") as f:
             init_src = f.read()
         self.assertNotIn("config_loader", init_src,
@@ -624,14 +557,15 @@ class PriorityWiringTest(unittest.TestCase):
         self.assertEqual(gap, 10, "现有部署的账号间隔缺省是 10s，收口不得改值")
 
         # ① CLI：空环境跑一次容量计算，它用的间隔必须就是名册缺省
-        from yiban import cli
+        from yiban.entry import cli
         numbers = cli._capacity_numbers({}, 10)
         self.assertEqual(numbers["gap_sec"], gap,
                          "CLI 容量命令的账号间隔缺省没走名册")
 
         # ② 引擎入口（runner.py）：其默认值必须是名册访问器的调用，不是字面量
-        runner_src = os.path.join(os.path.dirname(os.path.abspath(CL.__file__)),
-                                  "engine", "runner.py")
+        runner_src = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "yiban", "app", "runner.py")
         with open(runner_src, encoding="utf-8") as f:
             tree = ast.parse(f.read())
         accessor_calls = [
@@ -657,7 +591,7 @@ class PriorityWiringTest(unittest.TestCase):
             spec.loader.exec_module(webapp)
         except ImportError as exc:   # 只有依赖缺失才跳过；缺省缺失等错误必须响亮失败
             self.skipTest("web/app.py 的依赖不可用：%s" % exc)
-        self.assertEqual(webapp.DEFAULT_ACCOUNT_GAP_MAX, gap)
+        self.assertEqual(_limits.DEFAULT_ACCOUNT_GAP_MAX, gap)
 
 
 if __name__ == "__main__":

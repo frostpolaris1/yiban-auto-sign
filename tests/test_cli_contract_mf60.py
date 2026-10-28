@@ -6,11 +6,12 @@
     摘要不得混入 stdout、每个成功 `--json` 都带 `exit_code`、`db --backup` 覆盖守卫
     （目标已存在须 `--force`）、`db --restore` 破坏性守卫（默认 dry-run / 指纹回显 /
     覆盖前副本 / 损坏备份拒绝，仅用自造库与自造副本）、`--help` 列明四个路径环境变量。
-对应实现：`yiban/cli.py`（`_emit_json_error` / `_fail` / `_UsageError` / `main` 解析兜底）
+对应实现：`yiban/entry/cli/__init__.py`（`_emit_json_error` / `_fail` / `_UsageError` /
+    `main` 解析兜底；旧入口转发壳已于 `145-E` 退役）
     与 `yiban/engine/config_check.print_config_summary`。
 关键断言：`--json` 的任意参数组合下 stdout 恰为一行、可 `json.loads`、含 `exit_code`；
     人类可读 usage/摘要仍走 stderr。
-依赖：起 `sys.executable -m yiban.cli` 子进程（纯 Python）；临时 STATE/LOG/DB/ENV，
+依赖：起 `sys.executable -m yiban.entry.cli` 子进程（纯 Python）；临时 STATE/LOG/DB/ENV，
     不碰本机真实 .env；无网络/bash/docker。
 """
 import json
@@ -52,7 +53,7 @@ def _cli_env(tmp_path):
 
 
 def _run(argv, env, timeout=120, cwd=BASE):
-    return subprocess.run([sys.executable, "-m", "yiban.cli", *argv], cwd=cwd, env=env,
+    return subprocess.run([sys.executable, "-m", "yiban.entry.cli", *argv], cwd=cwd, env=env,
                           capture_output=True, text=True, encoding="utf-8",
                           errors="replace", stdin=subprocess.DEVNULL, timeout=timeout)
 
@@ -170,11 +171,11 @@ class ReadOnlyPromiseTest(unittest.TestCase):
 
     def test_readonly_commands_leave_existing_db_untouched(self):
         """已有库：mtime、user_version、文件集合全不变（连 WAL 的 -shm/-wal 都不新增）。"""
-        from yiban.store import migrations
+        from yiban.adapters.persistence import migrations
         work = os.path.join(self.root, "hasdb")
         os.makedirs(work)
         db_file = os.path.join(work, "yiban.db")
-        code = ("import sys; from yiban.store import db;"
+        code = ("import sys; from yiban.adapters.persistence import db;"
                 "db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False);"
                 "db.get_conn().close()")
         env = dict(self.db_env, YIBAN_DB_FILE=db_file)
@@ -223,7 +224,7 @@ class BackupOverwriteGuardTest(unittest.TestCase):
         self._init_db()
 
     def _init_db(self):
-        code = ("import sys; from yiban.store import db;"
+        code = ("import sys; from yiban.adapters.persistence import db;"
                 "db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False);"
                 "db.get_conn().close()")
         r = subprocess.run([sys.executable, "-c", code, self.db_file,
@@ -281,7 +282,7 @@ class RestoreGuardTest(unittest.TestCase):
         self.backup = os.path.join(self.root, "copy.db")
         self.env = dict(_cli_env(self.root), YIBAN_DB_FILE=self.db_file)
         self._sqlite(self.db_file,
-                     "import sys; from yiban.store import db;"
+                     "import sys; from yiban.adapters.persistence import db;"
                      "db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False);"
                      "db.get_conn().close()", os.path.join(self.root, ".env"))
         self.assertEqual(
@@ -492,7 +493,7 @@ class ProbeExitFamilyTest(unittest.TestCase):
                         password="p", account_id=0)
 
     def _run_probe_main(self, probe_result, lock_exc=None):
-        from yiban.engine import runner
+        from yiban.app import runner
         lock = (mock.patch.object(runner.cli_support, "_acquire_run_lock",
                                   side_effect=lock_exc) if lock_exc is not None
                 else mock.patch.object(runner.cli_support, "_acquire_run_lock",
@@ -522,7 +523,7 @@ class ProbeExitFamilyTest(unittest.TestCase):
 
     def test_zero_accounts_probe_is_noop_success(self):
         """零账号 = 无需执行（0）；探针分支先于零账号守卫，不落 ERROR。"""
-        from yiban.engine import runner
+        from yiban.app import runner
         with mock.patch.object(runner.cli_support, "_setup_cli_logging"), \
                 mock.patch.object(runner.accounts_mod, "load_accounts", return_value=[]), \
                 mock.patch.object(runner.schedule_mod, "day_off", return_value=None), \

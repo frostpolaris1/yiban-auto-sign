@@ -8,7 +8,7 @@
    last_executor 的口径、限频实测端点的冷却与窗口判据、校验失败文案不回填凭据。
 对应实现：yiban/egress.py（resolve、describe、assignments、replace_slot、worker_owner/fallback_owner/single_owner/parse_owner/role_label、worker_presence）、web/app.py
    的 /api/scheduler/executors* 与
-   /api/accounts、yiban/store/claims.py（activity、owners_since）、scripts/state_io
+   /api/accounts、yiban/adapters/persistence/claims.py（activity、owners_since）、scripts/state_io
    的心跳文件。
 关键断言：分配规则唯一：拉起执行体的一方与展示接口必须得到同一答案（列表按序取、不足循环、空位=直连、未配列表退回单出口）。任何响应与审计都不得出现代理凭据或含主机名的身份原串，只许
    scheme://host[:port] 与角色 + 1-based
@@ -39,10 +39,12 @@ from unittest import mock
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
-from yiban import (  # noqa: E402
-    clock,
-    egress,
-)
+from werkzeug.security import generate_password_hash  # noqa: E402
+
+from web.services import executor_env as _executor_env  # noqa: E402
+from web.services import signstatus as _signstatus  # noqa: E402
+from yiban import egress  # noqa: E402
+from yiban.core import clock  # noqa: E402
 
 ADMIN_PASS = "TestPass1234!"
 
@@ -259,6 +261,15 @@ class OwnerTagTest(unittest.TestCase):
         stable = egress.worker_owner(1, "myhost")
         self.assertEqual(egress.owner_tag(egress.runtime_owner(stable, pid=9, gen="101010")),
                          egress.owner_tag(stable))
+
+    def test_default_runtime_gen_carries_the_date(self):
+        """默认代次是 `YYYYMMDDHHMMSS`（14 位）：只到时分秒会让跨天同秒同 pid 重合。
+
+        容器里重启后 pid 恒为 1，缺日期这一维时代次只剩时分秒——两代进程可能拿到
+        完全相同的运行时身份，领取池按 owner 认"自己人"（工单 ba-p08-15）。
+        """
+        self.assertRegex(egress._RUNTIME_GEN, r"^\d{14}$",
+                         "代次必须含日期（%Y%m%d%H%M%S），不能只到时分秒")
 
 
 class _WebBase(unittest.TestCase):
@@ -496,7 +507,7 @@ class ActivityEndpointTest(_WebBase):
 
     def _seed(self):
         """造三类身份 + 一条历史遗留串的当日队列行（直接写 sign_tasks，单池后唯一台账）。"""
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import db as store_db
         day = clock.today()
         store_db.init_db(os.environ["YIBAN_DB_FILE"], env_file=self.env_file,
                          cleanup=False)
@@ -933,10 +944,10 @@ class SlotEgressEndpointTest(_WebBase):
                 r = anon.put(path, json={"egress": "http://x:1"},
                              headers={"X-CSRF-Token": "x"})
                 self.assertIn(r.status_code, (401, 403))
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import db as store_db
         store_db.init_db(os.environ["YIBAN_DB_FILE"], env_file=self.env_file, cleanup=False)
         store_db.create_user("admin2@test.local",
-                             self.webapp.generate_password_hash("UserPass1234!"),
+                             generate_password_hash("UserPass1234!"),
                              role="admin")
         c = self.webapp.create_app().test_client()
         self.assertEqual(c.post("/api/login", json={
@@ -1122,7 +1133,7 @@ class AccountsLastExecutorTest(_WebBase):
     PHONES = ("13900000011", "13900000012", "13900000013", "13900000014")
 
     def _seed_accounts(self, phones):
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import db as store_db
         store_db.init_db(os.environ["YIBAN_DB_FILE"], env_file=self.env_file, cleanup=False)
         for phone in phones:
             store_db.add_account({
@@ -1135,7 +1146,7 @@ class AccountsLastExecutorTest(_WebBase):
 
     def _seed_task(self, phone, day, owner):
         """在任务队列（单池后的唯一台账）里造一条归属行。"""
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import db as store_db
         conn = store_db.get_conn()
         with store_db._conn_lock:
             conn.execute(
@@ -1182,7 +1193,7 @@ class AccountsLastExecutorTest(_WebBase):
                           "label": "故障转移"})
 
     def test_no_record_and_unavailable_db_are_not_errors(self):
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import db as store_db
         self._seed_accounts(self.PHONES[:1])
         self.assertIsNone(self._last_executor_of()[self.webapp._mask_phone(self.PHONES[0])])
         # 库不存在/未初始化：一次取全的查询必须按空表返回，而不是抛（新部署很正常）
@@ -1245,7 +1256,7 @@ class MeasureEndpointTest(_WebBase):
 
     def _seed_accounts(self, rows):
         """rows = [(phone, status, user_paused)]"""
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import db as store_db
         store_db.init_db(os.environ["YIBAN_DB_FILE"], env_file=self.env_file, cleanup=False)
         for phone, status, paused in rows:
             store_db.add_account({
@@ -1289,9 +1300,9 @@ class MeasureEndpointTest(_WebBase):
         anon = self.webapp.create_app().test_client()
         self.assertIn(self._post(anon).status_code, (401, 403))
         # 普通管理员（注册用户）也不许：它真的会用一个真实账号去登录一次
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import db as store_db
         store_db.create_user("admin2@test.local",
-                             self.webapp.generate_password_hash("UserPass1234!"),
+                             generate_password_hash("UserPass1234!"),
                              role="admin")
         c = self.webapp.create_app().test_client()
         self.assertEqual(c.post("/api/login", json={
@@ -1305,7 +1316,7 @@ class MeasureEndpointTest(_WebBase):
     def test_window_inside_is_409_and_costs_no_cooldown(self):
         self._seed_accounts([(self.PHONE, "active", False)])
         c = self._login()
-        with mock.patch.object(self.webapp, "_in_sign_window", return_value=True), \
+        with mock.patch.object(_signstatus, "_in_sign_window", return_value=True), \
                 self._no_network_no_sign_writes() as (verify, _audit, spies):
             r = self._post(c, csrf=c.csrf)
             self.assertEqual(r.status_code, 409, r.get_data(as_text=True))
@@ -1318,7 +1329,7 @@ class MeasureEndpointTest(_WebBase):
     def test_cooldown_second_call_is_429_with_remaining(self):
         self._seed_accounts([(self.PHONE, "active", False)])
         c = self._login()
-        with mock.patch.object(self.webapp, "_in_sign_window", return_value=False), \
+        with mock.patch.object(_signstatus, "_in_sign_window", return_value=False), \
                 self._no_network_no_sign_writes() as (verify, _audit, spies):
             self.assertEqual(self._post(c, csrf=c.csrf).status_code, 200)
             r2 = self._post(c, csrf=c.csrf)
@@ -1334,7 +1345,7 @@ class MeasureEndpointTest(_WebBase):
         self._seed_accounts([(self.PHONE, "active", False)])
         c = self._login()
         env_before = self._read_env()
-        with mock.patch.object(self.webapp, "_in_sign_window", return_value=False), \
+        with mock.patch.object(_signstatus, "_in_sign_window", return_value=False), \
                 self._no_network_no_sign_writes() as (verify, audit, spies):
             r = self._post(c, csrf=c.csrf, payload={"phone": self.PHONE})
             self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -1349,7 +1360,7 @@ class MeasureEndpointTest(_WebBase):
         self.assertEqual(body["next_allowed_in"], 0, "本次已实测，不必再等")
         # 容量 = 文档公式（有效窗口 ÷ 单账号周期），不复用别的口径；
         # 建议值含余量：int(容量 × 2/3) 且严格小于容量
-        win_sec = self.webapp._executors_window().full_sec()
+        win_sec = _executor_env._executors_window().full_sec()
         expected = (win_sec - 1) // (1 + self.DOC_GAP) + 1
         self.assertEqual(body["per_executor_capacity"], expected)
         self.assertEqual(body["recommended_per_executor"], int(expected * 2 / 3))
@@ -1388,7 +1399,7 @@ class MeasureEndpointTest(_WebBase):
                       "13800000022",           # 未过审（按设计不产生任何易班请求）
                       "13800000023"):          # 用户自暂停
             with self.subTest(phone=phone), \
-                    mock.patch.object(self.webapp, "_in_sign_window", return_value=False), \
+                    mock.patch.object(_signstatus, "_in_sign_window", return_value=False), \
                     self._no_network_no_sign_writes() as (verify, _audit, spies):
                 r = self._post(c, csrf=c.csrf, payload={"phone": phone})
                 self.assertEqual(r.status_code, 404, r.get_data(as_text=True))
@@ -1400,7 +1411,7 @@ class MeasureEndpointTest(_WebBase):
         """登录/拉任务失败 → 502 且回脱敏原因；此时冷却**已消耗**（真实登录已发生）。"""
         self._seed_accounts([(self.PHONE, "active", False)])
         c = self._login()
-        with mock.patch.object(self.webapp, "_in_sign_window", return_value=False), \
+        with mock.patch.object(_signstatus, "_in_sign_window", return_value=False), \
                 self._no_network_no_sign_writes(
                     verify_result=(False, "登录失败（账号或密码错误）" + chr(10) + "第二行")
                 ) as (verify, _audit, spies):
@@ -1465,13 +1476,13 @@ class EgressErrorMustNotLeakCredentialsTest(_WebBase):
 class _TaskRowMixin:
     """往 `sign_tasks` 直接写当日行（聚合端点的取数源，单池后唯一台账）。
 
-    `state` 用队列的真实词汇（与 `yiban.status` 同一套），聚合端点的"已签/待签/失败"
+    `state` 用队列的真实词汇（与 `yiban.core.status` 同一套），聚合端点的"已签/待签/失败"
     就是它们各自的计数——展示层不另造一套状态名，否则两套词表必然漂。
     """
 
     def _insert_tasks(self, rows, day=None):
         """`rows` = `((phone, owner, state), …)`；返回写入的业务日。"""
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import db as store_db
         day = day or clock.today()
         store_db.init_db(os.environ["YIBAN_DB_FILE"], env_file=self.env_file,
                          cleanup=False)

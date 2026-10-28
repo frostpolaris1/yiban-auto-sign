@@ -11,22 +11,37 @@
 CSRF / 安全响应头）与共享状态仍留在 `web/app.py`。
 
 **复用**
-`appmod()` 供各域模块按属性延迟取用 web.app 的模块级名字（打桩面要求）；
+`appmod()` 供各域模块按属性延迟取用 web.app 的模块级名字（打桩面要求）；批 3-a 拆墙后
+它只承担 app.py **自有**的那批名字（env 句柄、缓存、SID 签发、窗口常量、`_json_body`
+等）；app.py 以 import 形态转发的名字（A 类）已由各域从真源模块直取；
 `login_fails()` 是登录失败计数表的唯一取用点，认证与个人两域共用同一份账；
 `high_risk_gate()` / `reconfirm_admin_password()` 取回留在 web.app 里的高危门禁闭包，
 `admin_delete_limited()` 取回同族的"删除/通道变更"限速判定；
 `verify_limits()` / `verify_fails()` 是账号验证配额与冷却的唯一取用点（管理员添加与
 用户自助提交共用同一份账），`detail_limits()` 是账号详情读取限速表，`export_limits()`
 是日志导出限速表，`read_audit_trace()` / `read_audit_denied_trace()` 是只读面聚合留痕
-的两个入口。
+的两个入口；`page_args()` 是列表接口（账号 / 用户 / 日志）可选分页参数的唯一解析点，
+`page_window()` 是列表三域共用的唯一分页切片点，`page_meta()` 是账号 / 用户两域
+分页元数据的唯一取用点，`json_conditional()` 是两域条件请求（ETag/304）的唯一实现（日志域的总数沿用既有键名 `total_lines`，故不走它）。
 
 **通信**
 `web.app` 在 create_app 尾部 `register_all(app)` 一次接入；本包不在导入期反向导入
 web.app——`appmod()` 在调用时才解析，避免与 `web/app.py` 形成导入环。
 """
+import hashlib
+import json
 import sys
 
-from flask import current_app
+from flask import current_app, jsonify, request
+
+#: limit/offset 列表分页的上下限与缺省：**唯一定义点**。
+#: 读者：本模块 `page_args()`、`web.routes.data.api_admin_sign_events`（只取上下限），
+#: 以及 `tests/test_pagination_contract_gate.py` 对 `docs/dev/api-contract.md` §1.8
+#: 与前端档位的互检门。改这里必须同批改 §1.8 与前端档位，否则门红。
+PAGE_LIMIT_MIN = 1
+PAGE_LIMIT_MAX = 200
+#: limit 缺省（参数缺失或非法时取它）。
+PAGE_LIMIT_DEFAULT = 100
 
 
 def appmod():
@@ -44,6 +59,93 @@ def appmod():
         import web.app
         mod = web.app
     return mod
+
+
+def session_abs_ttl():
+    """会话绝对过期秒数（`web.app.SESSION_ABS_TTL_SECONDS` 的唯一路由侧取用点）。
+
+    必须按调用时刻现取，不能 `from web.app import SESSION_ABS_TTL_SECONDS`：后者固化
+    导入期值，而 `create_app` 依 `YIBAN_SESSION_ABS_DAYS` 把它重新解析后回写模块全局。
+    取错了不会报错，只会让"被盗 Cookie 最多续命 N 天"的硬上限静默失准。
+
+    与 `appmod()` 同源（按 `current_app.import_name` 认领本尊模块），理由见该函数：
+    测试以别名加载 `app.py`，`import web.app` 会再执行一份副本。
+    """
+    return appmod().SESSION_ABS_TTL_SECONDS
+
+
+def page_args():
+    """解析列表接口的可选分页参数 `limit` / `offset`（唯一取用点）。
+
+    返回三元组 (limit, offset, paged)：
+      - 两个参数都未出现时：paged=False、limit=None、offset=0。调用方必须返回
+        **与分页前逐字相同**的整表响应（向后兼容，旧调用方不受影响）。
+      - 出现任一参数时：paged=True。limit 夹取到 [1, 200]，offset 夹取到 >= 0。
+      - 参数存在但不是十进制整数时回落到缺省（limit=100 / offset=0），不抛异常。
+        这一口径与仓内日志列表（`web.routes.data.api_admin_sign_events` 的 limit）
+        的处理一致：客户端把参数写坏时仍拿到有界的一页，而不是 500。
+    上限 200 沿用日志列表的 1–200 口径，也落在 124 §B.2.3 的
+    "limit=100 → 约 45 KiB/页"外推以内。两域（账号 / 用户）共用本函数，避免各写一份。
+    """
+    args = request.args
+    if "limit" not in args and "offset" not in args:
+        return None, 0, False
+    try:
+        limit = int(args.get("limit", PAGE_LIMIT_DEFAULT))
+    except (TypeError, ValueError):
+        limit = PAGE_LIMIT_DEFAULT
+    limit = min(max(limit, PAGE_LIMIT_MIN), PAGE_LIMIT_MAX)
+    try:
+        offset = int(args.get("offset", 0))
+    except (TypeError, ValueError):
+        offset = 0
+    offset = max(offset, 0)
+    return limit, offset, True
+
+
+def page_window(items, limit, offset):
+    """列表分页的唯一切片点：返回 `[offset, offset+limit)`。
+
+    账号 / 用户 / 日志三域共用本函数。切片表达式只有一处，故"任一 offset 都不许
+    返回越界行或重复行"这条不变式只有一份承重实现。`offset` 已由 `page_args()`
+    夹到 >= 0；`limit` 已由 `page_args()` 夹到 [1, 200]。切片超出末尾返回空列表
+    （不报错），与"空页/越界"的常规工程语义一致。
+    """
+    return items[offset:offset + limit]
+
+
+def page_meta(total, limit, offset, returned):
+    """分页元数据四键（`total`/`limit`/`offset`/`returned`，账号 / 用户两域同形）。
+
+    日志域的总数沿用既有键名 `total_lines`，不另立 `total`，故不走本函数。
+    只在分页时下发；不传分页参数时不得出现（向后兼容，旧调用方不受影响）。
+    `total` 是**整表**条数（不随页窗口变化），`returned` 是本页实际条数。
+    """
+    return {"total": total, "limit": limit, "offset": offset, "returned": returned}
+
+
+def json_conditional(payload):
+    """列表 GET 的条件请求出口：按响应体算 ETag，命中 `If-None-Match` 时回 304。
+
+    账号与用户列表共用本函数（唯一实现）。ETag 取规范化 JSON 的摘要，故只要负载
+    有一个字节变化（含分页元数据与 group_totals），标签就变；命中时回空体 304，
+    前端沿用上一次解析结果。`Cache-Control: private, no-cache` 表示“可存但每次
+    必须回源校验”，不会让浏览器直接复用旧体。
+    """
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    etag = '"' + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32] + '"'
+    inm = request.headers.get("If-None-Match", "")
+    tags = [t.strip() for t in inm.split(",")] if inm else []
+    # If-None-Match 用弱比较（RFC 9110 §13.1.2）：客户端回传 W/"..." 时也要命中。
+    opaque = [t[2:].strip() if t.startswith("W/") else t for t in tags]
+    if etag in opaque or "*" in tags:
+        resp = current_app.response_class(status=304)
+    else:
+        resp = jsonify(payload)
+    resp.headers["ETag"] = etag
+    resp.headers["Cache-Control"] = "private, no-cache"
+    resp.headers["Vary"] = "Cookie"
+    return resp
 
 
 def login_fails():
@@ -150,24 +252,30 @@ def register_all(app):
         audit_api,
         auth,
         data,
-        me,
-        my,
+        executor_health_api,
+        me_api,
+        my_api,
         notify,
         pages,
+        queue_api,
         run_events_api,
         settings_api,
         signin_api,
+        stream_api,
         users_api,
     )
     pages.register(app)
     auth.register(app)
-    me.register(app)
+    me_api.register(app)
     notify.register(app)
     accounts_api.register(app)
-    my.register(app)
+    my_api.register(app)
     data.register(app)
     users_api.register(app)
     audit_api.register(app)
     run_events_api.register(app)
+    executor_health_api.register(app)
+    stream_api.register(app)
     settings_api.register(app)
     signin_api.register(app)
+    queue_api.register(app)

@@ -22,8 +22,8 @@ SQL 标识符转义（v5 含单引号的索引名、v13 含双引号的表名）
 
 标签：C · 存储：迁移与库完整性
 覆盖：迁移链分级 fail-closed（缺 `epoch`/记录 ⇒ 拒启并点名缺项）、`schema_migrations` 记录表与提升同事务、blocked 不记、存量库继承回填、记录缺失拒启、中途 kill 残留断点重跑收敛、行数守恒+版本推进、tmp 先权限后内容且 replace 失败无明文残留、v20 状态目录不可读不提升版本+告警、v17→全链健康对照组、SQL 标识符转义。
-对应实现：`yiban/store/migrations.py`（分级/记录/校验/原子性/守恒/权限）、
-`yiban/engine/runner.py` + `workers.py`（拒启退出码 4）、`yiban/engine/planner.py`
+对应实现：`yiban/adapters/persistence/migrations.py`（分级/记录/校验/原子性/守恒/权限）、
+`yiban/app/runner.py` + `workers.py`（拒启退出码 4）、`yiban/engine/planner.py`
 （计划接管）、`tests/test_cli_contract.py` 同族子进程口径。
 关键断言：以真子进程实跑的退出码/产物/日志为准——守卫失败分支用 must-fail 桩直接证、残留重跑必须收敛、tmp 写内容前已是 0600；不 grep migrations.py 源码字符串。
 依赖：临时库/临时目录/子进程，无网络；chmod 用例在无 euid==0 前提跑（root 无视权限位）。
@@ -44,10 +44,11 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402  (tests/conftest 注入 yiban/store 到 sys.path)
 
-from yiban import clock  # noqa: E402
-from yiban.engine import cli_support, planner, workers  # noqa: E402
-from yiban.infra import account_crypto  # noqa: E402
-from yiban.store import migrations, queue_store  # noqa: E402
+from yiban.adapters.config import account_crypto  # noqa: E402
+from yiban.adapters.persistence import migrations, queue_store  # noqa: E402
+from yiban.core import clock  # noqa: E402
+from yiban.engine import cli_support, planner  # noqa: E402
+from yiban.workers import workers  # noqa: E402
 
 TEST_KEY = "a" * 64
 PHONE_A = "13800000001"
@@ -699,7 +700,7 @@ class StartupExitCodeTest(unittest.TestCase):
         return env
 
     def _run(self, argv):
-        return subprocess.run([sys.executable, "-m", "yiban.cli", *argv],
+        return subprocess.run([sys.executable, "-m", "yiban.entry.cli", *argv],
                               cwd=BASE, env=self._env(), capture_output=True,
                               text=True, encoding="utf-8", errors="replace",
                               timeout=180)
@@ -715,7 +716,7 @@ class StartupExitCodeTest(unittest.TestCase):
         绝不是迁移拒启），库被提升到链顶。"""
         self._build_db(
             "import sys;"
-            "from yiban.store import db;"
+            "from yiban.adapters.persistence import db;"
             "db._MIGRATIONS=[m for m in db._MIGRATIONS if m[0]<=17];"
             "conn=db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False);"
             "conn.close()")
@@ -736,7 +737,7 @@ class StartupExitCodeTest(unittest.TestCase):
         """不变量①进程级：user_version 声称过 v19 但 epoch 缺失 ⇒ 拒启 rc=4 + 点名。"""
         self._build_db(
             "import sys;"
-            "from yiban.store import db;"
+            "from yiban.adapters.persistence import db;"
             "db._MIGRATIONS=[m for m in db._MIGRATIONS if m[0]<=18];"
             "conn=db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False);"
             "conn.execute('PRAGMA user_version = 19');conn.commit();conn.close()")

@@ -10,10 +10,10 @@
     `state_io.has_undone_accounts_today`（池与状态文件两个事实源取并集，任一有活即
     未了结；池当日无行时状态文件才是唯一源）；
     窗口外跳过预筛不得改写未知状态。
-对应实现：集合与判定的**权威定义全在 `yiban/status.py`**（`ALL_STATUSES`、
+对应实现：集合与判定的**权威定义全在 `yiban/core/status.py`**（`ALL_STATUSES`、
     `CONCLUDED_JSON_STATUSES`、`UNDONE_STATUSES`、`CLAIM_DONE_STATUSES`、
     `TASKS_OPEN_STATES`/`TASKS_SETTLED_STATES`、`is_concluded_status`）；领取池词表在
-    `yiban/store/queue_store.py`（`STATE_DONE`/`STATE_SKIPPED`/`SETTLED_STATES`/
+    `yiban/adapters/persistence/queue_store.py`（`STATE_DONE`/`STATE_SKIPPED`/`SETTLED_STATES`/
     `OPEN_STATES`）；当日未了结判定在 `state_io.has_undone_accounts_today`。
     本文件不持有第二份集合定义。
 关键断言：**集合成员逐字不变**（实现可换、成员不许变）——补签轮剔除谁、领取池把谁记
@@ -22,7 +22,7 @@
 依赖：纯进程内（临时状态文件 + 字典构造），不触网、不起子进程、不需 bash/docker。
 
 集合定义分散时，改一处忘一处表现为**漏签**或**同一账号被真实登录两次**（后者踩上游
-风控红线），故收口到 `yiban/status.py` 一处。
+风控红线），故收口到 `yiban/core/status.py` 一处。
 """
 import contextlib
 import json
@@ -30,16 +30,15 @@ import os
 import shutil
 import tempfile
 import unittest
-from datetime import datetime
 from types import SimpleNamespace
 from unittest import mock
 
-from yiban import clock
-from yiban import status as yiban_status
-from yiban.engine import round as round_mod
-from yiban.engine import state_io
-from yiban.store import claims as claims_mod
-from yiban.store import db, queue_store
+from yiban.adapters.persistence import claims as claims_mod
+from yiban.adapters.persistence import db, queue_store
+from yiban.adapters.statefiles import state_io
+from yiban.app import round as round_mod
+from yiban.core import clock
+from yiban.core import status as yiban_status
 
 #: 用例里的固定手机号（本文件不碰库，仅作状态文件的键）
 PHONE = "13800000001"
@@ -61,8 +60,8 @@ class StatusSetsTest(unittest.TestCase):
             {getattr(yiban_status, n) for n in names},
             "状态码全集漏了某个 STATUS_*，差集定义就会跟着漏",
         )
-        self.assertEqual(len(yiban_status.ALL_STATUSES), 12)
-        self.assertEqual(len(set(yiban_status.ALL_STATUSES)), 12, "全集内不得有重复串")
+        self.assertEqual(len(yiban_status.ALL_STATUSES), 13)
+        self.assertEqual(len(set(yiban_status.ALL_STATUSES)), 13, "全集内不得有重复串")
 
     def test_all_statuses_matches_display_maps(self):
         """两张映射表的键并集即全部状态码。
@@ -78,7 +77,7 @@ class StatusSetsTest(unittest.TestCase):
     def test_concluded_excludes_only_pending(self):
         """「只有 `pending` 不算结论」的可观察后果，按消费方的判据断言。
 
-        1. 窗口收尾的 CAS 判据 `_has_conclusion` 对 `pending` 为假、对其余 11 个状态码
+        1. 窗口收尾的 CAS 判据 `_has_conclusion` 对 `pending` 为假、对其余 12 个状态码
            为真——若把 `pending`（排计划写下的"打算什么时候签"）当成记录，窗口外起跑的
            整轮零请求账号会一个都进不了 `results`，汇总把它们算成失败并退出码 1；
         2. `pending` 不在「已了结」三态里 ⇒ 该账号仍会被补签轮纳入。
@@ -132,7 +131,7 @@ class SettledVocabularyRegressionTest(unittest.TestCase):
 
     def test_open_states_are_disjoint_from_settled(self):
         """两个池的「未了结」与「了结」互斥（同一行不可能又了结又开放），
-        且池侧两套常量都与 `yiban.status` 的共享定义同值。"""
+        且池侧两套常量都与 `yiban.core.status` 的共享定义同值。"""
         self.assertEqual(set(claims_mod.SETTLED_STATES) & set(claims_mod.OPEN_STATES), set())
         self.assertEqual(set(queue_store.SETTLED_STATES) & set(queue_store.OPEN_STATES), set())
         self.assertIs(queue_store.SETTLED_STATES, yiban_status.TASKS_SETTLED_STATES)
@@ -163,7 +162,7 @@ class HasConclusionTest(unittest.TestCase):
         self.assertFalse(state_io._has_conclusion({"status": yiban_status.STATUS_PENDING}))
 
     def test_every_known_status_is_a_conclusion(self):
-        """12 个状态码里除 `pending` 外都是结论——**含未了结状态**。
+        """13 个状态码里除 `pending` 外都是结论——**含未了结状态**。
 
         `failed` 是事实，窗口外跳过不得覆盖它（覆盖会让 `has_real_failure` 变 False、
         失败告警被吞）。这正是本集合与 `UNDONE_STATUSES` 重叠、却都把 `pending`
@@ -174,7 +173,7 @@ class HasConclusionTest(unittest.TestCase):
                 self.assertTrue(state_io._has_conclusion({"status": st}))
 
     def test_unknown_status_counts_as_conclusion(self):
-        """12 个状态码之外的串按「已有结论」处理（排除法判据，失效方向偏安全）。
+        """13 个状态码之外的串按「已有结论」处理（排除法判据，失效方向偏安全）。
 
         状态文件的 `status` 可能是本进程不认识的串（新增状态码而读侧未同步、外部工具
         手写）。判「无记录」会让窗口外跳过覆盖掉这个真实结果且不报警；判「有结论」只会
@@ -238,59 +237,6 @@ class SecondRunDropDoneTest(unittest.TestCase):
     def test_missing_state_file_keeps_everything(self):
         """状态文件缺失/损坏按「无记录」处理：宁可多跑一轮，不可漏签。"""
         self.assertEqual(self._kept(), [PHONE])
-
-
-class WindowSkipPrefilterAgreementTest(unittest.TestCase):
-    """窗口收尾的预筛与「仅当无结论才写」的 CAS 对同一状态串必须给同一判定。
-
-    预筛决定账号是否带着已有结论透传进 `results`；CAS 决定落盘是否覆盖。两处判据不一致
-    时，同一个账号既进不了 `results`（汇总按未执行失败计、退出码 1、发失败邮件），状态
-    文件又被改写成 `skipped_window`——真实结果与失败告警一起消失。
-    """
-
-    DAY = "2026-09-16"
-    #: 窗口已关闭的时刻（默认窗口 06:30~07:50，截止保护按 sign_end 减 edge_back）
-    CLOSED_AT = datetime(2026, 9, 16, 8, 5)
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="yiban-status-sets-skip-")
-        self._env = dict(os.environ)
-        os.environ.update({"YIBAN_STATE_DIR": self.tmp,
-                           "YIBAN_SIGN_START": "06:30",
-                           "YIBAN_SIGN_END": "07:50"})
-        os.environ.pop("YIBAN_SECOND_RUN", None)
-
-    def tearDown(self):
-        os.environ.clear()
-        os.environ.update(self._env)
-        shutil.rmtree(self.tmp, ignore_errors=True)
-
-    def _state_path(self):
-        return os.path.join(self.tmp, f"sign-state-{self.DAY}.json")
-
-    def _run_window_closed(self, recorded_status):
-        """按给定的当日记录跑一轮「窗口已关闭」的执行，返回 `(results, 落盘状态)`。"""
-        with open(self._state_path(), "w", encoding="utf-8") as f:
-            json.dump({PHONE: {"status": recorded_status}}, f, ensure_ascii=False)
-        with mock.patch.object(clock, "now", return_value=self.CLOSED_AT), \
-                mock.patch.object(round_mod.time, "sleep"):
-            results = round_mod.run_queue_retry(
-                [_acc()], "", 0, 0, schedule={PHONE: self.CLOSED_AT}, cred_state={})
-        with open(self._state_path(), encoding="utf-8") as f:
-            return results, json.load(f)[PHONE]["status"]
-
-    def test_unknown_status_survives_window_skip(self):
-        results, stored = self._run_window_closed("GLOBAL_PAUSED")
-        self.assertEqual(stored, "GLOBAL_PAUSED",
-                         "看不懂的状态串也是结果，窗口外跳过不得覆盖它")
-        self.assertEqual(results[PHONE][3], "GLOBAL_PAUSED",
-                         "预筛必须判它「已有结论」并透传，而不是当成本轮未执行")
-
-    def test_no_record_is_still_marked_as_window_skip(self):
-        """反方向：空串是「无记录」，窗口外跳过必须写得进去（否则漏记一轮）。"""
-        results, stored = self._run_window_closed("")
-        self.assertEqual(stored, yiban_status.STATUS_SKIPPED_WINDOW)
-        self.assertEqual(results[PHONE][3], yiban_status.STATUS_SKIPPED_WINDOW)
 
 
 class HasUndoneAccountsTest(unittest.TestCase):

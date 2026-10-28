@@ -11,12 +11,12 @@ import { statusLabel } from "../logs/format";
 const CODES = Object.keys(STATUS_VOCAB);
 
 describe("STATUS_VOCAB（唯一事实源）", () => {
-  it("覆盖全部 12 个状态码，每条含 full/short/icon/tone", () => {
+  it("覆盖全部 13 个状态码，每条含 full/short/icon/tone", () => {
     expect(CODES.sort()).toEqual(
       [
         "already", "failed", "global_paused", "no_position", "no_task", "paused",
         "pending", "retrying", "skipped_norange", "skipped_window", "success",
-        "user_cancelled",
+        "supplementing", "user_cancelled",
       ].sort(),
     );
     for (const k of CODES) {
@@ -28,6 +28,11 @@ describe("STATUS_VOCAB（唯一事实源）", () => {
       expect(typeof e.icon, k).toBe("string");
       expect(["ok", "bad", "warn", "info", "muted"]).toContain(e.tone);
     }
+  });
+
+  it("跳过类状态不用「禁止」图标：跳过是时序结果，不是禁止", () => {
+    expect(STATUS_VOCAB.skipped_window.icon).toBe("refresh-cw");
+    expect(STATUS_VOCAB.skipped_norange.icon).toBe("refresh-cw");
   });
 
   it("statusField 对未知码返回调用方兜底值（信息不丢）", () => {

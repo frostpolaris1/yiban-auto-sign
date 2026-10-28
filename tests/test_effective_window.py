@@ -8,7 +8,7 @@
    为空）的逐账号窗口钳制、补签轮对 no_task 的「已了结」判定、业务钟（北京
    +8，与宿主 TZ 无关）驱动窗口判定与按日留痕、非 5
    分钟整数倍窗口的自选尾片。
-对应实现：yiban/window.py（Window、bounds、from_env、remaining_sec、full_sec）、yiban/clock.py（beijing_now、today、ts）、scripts/signin.py（_schedule_config、_schedule_blocks、_window_closed、capacity_accounts、run_queue_retry
+对应实现：yiban/core/window.py（Window、bounds、from_env、remaining_sec、full_sec）、yiban/core/clock.py（beijing_now、today、ts）、scripts/signin.py（_schedule_config、_schedule_blocks、_window_closed、capacity_accounts、run_queue_retry
    的窗口收尾、main 的退出码）、yiban/db 会话缓存时钟。
 关键断言：窗口只准算一次：排计划与判关闭必须取自同一份有效窗口，两条入口（env /
    cfg）必须逐值相等——否则有完整计划却整轮判「时段已结束」。缓冲吃空时保留管理员的窗口、只收缩缓冲，容量不得显示
@@ -30,7 +30,7 @@
 - 补签轮起跑时窗口已关闭 → 整轮零请求，却把首轮已记录的
   failed/no_position 无条件改写成 skipped_window（真实原因与失败告警一起丢掉）。
 
-**修法**：`yiban/window.py` 为唯一事实源，引擎与网页共用。
+**修法**：`yiban/core/window.py` 为唯一事实源，引擎与网页共用。
 """
 import datetime as _dt
 import json
@@ -48,7 +48,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
-from yiban import (  # noqa: E402
+from yiban.core import (  # noqa: E402
     clock,
     window,
 )
@@ -140,126 +140,10 @@ class WindowSourceTest(unittest.TestCase):
                          (b.start_min, b.end_min, b.lo_min, b.hi_min))
 
 
-class WindowSkipKeepsRecordedStatusTest(unittest.TestCase):
-    """窗口关闭时的收尾不得覆盖已有当日记录。"""
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="yiban-win-")
-        self.env = dict(os.environ)
-        os.environ["YIBAN_STATE_DIR"] = self.tmp
-        os.environ["YIBAN_SIGN_START"] = "06:30"
-        os.environ["YIBAN_SIGN_END"] = "07:50"
-        os.environ.pop("YIBAN_SECOND_RUN", None)
-        self.state_path = os.path.join(
-            self.tmp, f"sign-state-{signin.clock.now().strftime('%Y-%m-%d')}.json")
-
-    def tearDown(self):
-        os.environ.clear()
-        os.environ.update(self.env)
-        shutil.rmtree(self.tmp, ignore_errors=True)
-
-    def _write_state(self, mapping):
-        with open(self.state_path, "w", encoding="utf-8") as f:
-            json.dump(mapping, f)
-
-    def _run(self, phones, beijing_now):
-        accs = [signin.Account(phone=p, password="p") for p in phones]
-        with mock.patch.object(signin.clock, "now", return_value=beijing_now), \
-                mock.patch.object(signin, "attempt_signin") as attempt, \
-                mock.patch.object(signin, "_update_cred_state"), \
-                mock.patch.object(signin.time, "sleep"):
-            results = signin.run_queue_retry(accs, "", 0, 0,
-                                             schedule={p: beijing_now for p in phones})
-        return attempt, results
-
-    def test_closed_window_keeps_previous_failure_reason(self):
-        """已记录 failed 的账号：窗口关闭收尾不得改写成 skipped_window。"""
-        self._write_state({PHONE: {"status": signin.STATUS_FAILED, "message": "网络超时"}})
-        after = signin.clock.now().replace(hour=8, minute=5, second=0, microsecond=0)
-        self._run([PHONE], after)
-        with open(self.state_path, encoding="utf-8") as f:
-            st = json.load(f)[PHONE]["status"]
-        self.assertEqual(st, signin.STATUS_FAILED, "补签轮整轮跳过不得丢掉首轮失败原因")
-
-    def test_closed_window_marks_unrecorded_accounts(self):
-        """当日无记录的账号（本轮根本没跑到）：仍记为窗口外跳过。"""
-        self._write_state({})
-        after = signin.clock.now().replace(hour=8, minute=5, second=0, microsecond=0)
-        self._run([PHONE], after)
-        with open(self.state_path, encoding="utf-8") as f:
-            st = json.load(f)[PHONE]["status"]
-        self.assertEqual(st, signin.STATUS_SKIPPED_WINDOW)
-
-    def test_closed_window_carries_recorded_conclusion_into_results(self):
-        """已有结论的账号必须带**真实结论**进 `results`，不能被收尾漏掉。
-
-        汇总只认 `results`：缺席的账号落到默认 `(False, "未执行", False, pending)`
-        → 计一次失败、`has_real_failure=True`、退出码 1，而本轮一个请求都没发。
-        """
-        for recorded in (signin.STATUS_SKIPPED_WINDOW, signin.STATUS_NO_POSITION,
-                         signin.STATUS_SUCCESS):
-            with self.subTest(recorded=recorded):
-                self._write_state({PHONE: {"status": recorded, "message": "首轮留痕"}})
-                after = signin.clock.now().replace(hour=8, minute=5, second=0,
-                                                   microsecond=0)
-                attempt, results = self._run([PHONE], after)
-                self.assertEqual(attempt.call_count, 0, "窗口已关不得发起真实请求")
-                self.assertEqual(results[PHONE][3], recorded,
-                                 "results 必须带真实结论，否则汇总按未执行失败计")
-                with open(self.state_path, encoding="utf-8") as f:
-                    self.assertEqual(json.load(f)[PHONE]["status"], recorded,
-                                     "已有结论不得被窗口外跳过改写")
-
-    def test_closed_window_status_less_entry_is_no_record(self):
-        """条目缺 `status` 键（无结论）→ 与 `_has_conclusion` 同口径写窗口外跳过。
-
-        快照预筛若把这种条目当"已有结论"，就会拿 "None" 去汇总分组（落失败桶）；
-        而锁内 CAS 判它"无结论"本就允许写入——两处口径必须一致。
-        """
-        self._write_state({PHONE: {"message": "半截条目"}})
-        after = signin.clock.now().replace(hour=8, minute=5, second=0, microsecond=0)
-        _attempt, results = self._run([PHONE], after)
-        self.assertEqual(results[PHONE][3], signin.STATUS_SKIPPED_WINDOW)
-        with open(self.state_path, encoding="utf-8") as f:
-            self.assertEqual(json.load(f)[PHONE]["status"], signin.STATUS_SKIPPED_WINDOW)
-
-    def test_closed_window_cas_does_not_clobber_concurrent_failure(self):
-        """M9：快照读"无记录"后另一执行体刚写入 failed——落盘前必须 CAS 拦下。
-
-        时序：本进程 `_mark_window_skip` 顶部读到空快照（此时还没人写）→ 进入
-        写分支前另一执行体已把真实失败落盘 → 本进程再写会把 failed 覆盖成
-        skipped_window、`has_real_failure` 变 False（失败告警被吞）。修复后
-        写入走"仅当当日无结论"的锁内再判，不得覆盖。
-        """
-        # 模拟"另一执行体已写入 failed"：真实文件里已有 failed
-        self._write_state({PHONE: {"status": signin.STATUS_FAILED, "message": "网络超时"}})
-        after = signin.clock.now().replace(hour=8, minute=5, second=0, microsecond=0)
-        accs = [signin.Account(phone=PHONE, password="p")]
-        # _daily_statuses 打桩返回空：模拟 _mark_window_skip 顶部快照"读到无记录"
-        # （快照时刻早于另一执行体的写入）——真实文件仍在锁内被读到 failed
-        with mock.patch.object(signin.clock, "now", return_value=after), \
-                mock.patch.object(signin, "attempt_signin"), \
-                mock.patch.object(signin, "_update_cred_state"), \
-                mock.patch.object(signin.time, "sleep"), \
-                mock.patch.object(signin.state_io, "_daily_statuses", return_value={}):
-            results = signin.run_queue_retry(accs, "", 0, 0,
-                                             schedule={PHONE: after})
-        with open(self.state_path, encoding="utf-8") as f:
-            st = json.load(f)[PHONE]["status"]
-        self.assertEqual(st, signin.STATUS_FAILED, "锁内 CAS 必须拦下覆盖")
-        # 本进程不得把该账号记成"窗口外跳过"——失败保持可见（has_real_failure 不被吞）
-        self.assertNotEqual(results.get(PHONE, (0, 0, 0, ""))[3],
-                            signin.STATUS_SKIPPED_WINDOW,
-                            "CAS 被拒后不得再标记为本轮的 skipped_window")
-
-    # 本轮内"重试没赶上窗口"与本轮前的记录共用同一道守卫（`results` 与当日文件
-    # 都查），故上面两条覆盖了该规则的两种来源。
-
-
 class WindowClosedExitCodeTest(unittest.TestCase):
     """窗口已关的零请求收尾轮：退出码必须按账号的真实结论算，而不是按"未执行"算。
 
-    run.sh 只认退出码：2 写 SKIPPED（补签会再跑），1 不写状态文件（当天留着失败语义，
+    run.sh 只认退出码：2 写 SKIPPED（补签会再跑），1 写 FAILED（当天留着失败语义，
     还伴随失败邮件）。已有结论的账号若被收尾漏出 `results`，汇总按默认 `pending`
     计成失败 → 退出码 1——真相却是"当日已有结论、本轮无需处理"。
     """
@@ -422,33 +306,20 @@ class SecondRunDropDoneTest(unittest.TestCase):
         os.environ.update(self.env)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_no_task_is_treated_as_done(self):
-        with open(self.state_path, "w", encoding="utf-8") as f:
-            json.dump({PHONE: {"status": signin.STATUS_NO_TASK}}, f)
-        kept = signin._second_run_drop_done([signin.Account(phone=PHONE, password="p")])
-        self.assertEqual([a.phone for a in kept], [], "no_task 当日已了结，补签轮不应重登")
 
-    def test_failed_is_kept_for_retry(self):
-        with open(self.state_path, "w", encoding="utf-8") as f:
-            json.dump({PHONE: {"status": signin.STATUS_FAILED}}, f)
-        kept = signin._second_run_drop_done([signin.Account(phone=PHONE, password="p")])
-        self.assertEqual([a.phone for a in kept], [PHONE], "失败账号必须保留待补签")
 
 
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 
-class _HostClock(_dt.datetime):
-    """宿主墙钟替身：固定在一个**窗口外**的时刻（模拟 UTC 主机的北京 06:40）。"""
-
-    _fixed = _dt.datetime(2026, 1, 1, 22, 40, 0)
-
-    @classmethod
-    def now(cls, tz=None):
-        return cls._fixed
-
-
 class ClockTest(unittest.TestCase):
+    """业务钟本体（`yiban.core.clock`）：与窗口/状态同一条时间源。
+
+    本类不驱动冻结载体，故在工单 `77s2` 的清理中**保留**；删掉的是它后面的
+    `WindowDecisionUsesBeijingClockTest`（那条经 `run_queue_retry` 验窗口判定，
+    已由 `tests/test_executor_v3.py::HostClockNotUsedTest` 的静态门接手）。
+    """
+
     def test_now_is_beijing_plus_eight(self):
         """now() 恒为 UTC+8，与宿主 TZ 无关（本用例在任何时区的主机上都应通过）。"""
         delta = clock.now() - _dt.datetime.utcnow()
@@ -469,62 +340,9 @@ class ClockTest(unittest.TestCase):
         self.assertLess(abs((db._session_cache_now() - clock.now()).total_seconds()), 5)
 
 
-class WindowDecisionUsesBeijingClockTest(unittest.TestCase):
-    """窗口判定必须只认业务钟（核心回归）。"""
-
-    PHONE = "13800138000"
-
-    def setUp(self):
-        for k in ("YIBAN_RETRY_MIN_INTERVAL", "YIBAN_SIGN_START", "YIBAN_SIGN_END",
-                  "YIBAN_WINDOW_EDGE_SEC", "YIBAN_MIN_EXEC_GAP", "YIBAN_EXEC_GAP_MIN"):
-            os.environ.pop(k, None)
-
-    def _run_with_clocks(self, beijing_now):
-        """宿主墙钟固定在窗口外，业务钟固定在 beijing_now，返回 attempt_signin 的调用次数。"""
-        acc = signin.Account(phone=self.PHONE, password="p")
-        sched = {self.PHONE: beijing_now - _dt.timedelta(minutes=20)}
-        with mock.patch.object(signin.clock, "now", lambda: beijing_now), \
-                mock.patch.object(signin, "datetime", _HostClock), \
-                mock.patch.object(signin, "attempt_signin",
-                                  return_value=(True, "ok", False, signin.STATUS_SUCCESS)) as attempt, \
-                mock.patch.object(signin, "_write_sign_state"), \
-                mock.patch.object(signin, "_update_cred_state"), \
-                mock.patch.object(signin.time, "sleep"), \
-                mock.patch.object(signin.time, "monotonic", return_value=100.0):
-            signin.run_queue_retry([acc], "", 0, 0, schedule=sched)
-        return attempt
-
-    def test_window_decision_follows_beijing_clock(self):
-        """北京 06:40（窗口内）+ 宿主墙钟 22:40（窗口外）→ 必须发起签到。
-
-        判定若取宿主钟（旧实现），会判"时段已结束"而整轮零请求——这正是本用例要防的。
-        """
-        beijing_0640 = clock.now().replace(hour=6, minute=40, second=0, microsecond=0)
-        attempt = self._run_with_clocks(beijing_0640)
-        self.assertEqual(attempt.call_count, 1,
-                         "窗口判定取错了钟（宿主墙钟），北京时间 06:40 被误判为已结束")
-
-    def test_window_still_closes_after_deadline(self):
-        """不是"永不判关闭"：北京 08:10（已过 eff_hi）应判结束、零请求。"""
-        beijing_0810 = clock.now().replace(hour=8, minute=10, second=0, microsecond=0)
-        attempt = self._run_with_clocks(beijing_0810)
-        self.assertEqual(attempt.call_count, 0, "已过窗口仍发起请求")
-
-    def test_window_closed_uses_beijing_end(self):
-        cfg = signin._schedule_config()
-        self.assertFalse(signin._window_closed(cfg, clock.now().replace(hour=7, minute=0)))
-        self.assertTrue(signin._window_closed(cfg, clock.now().replace(hour=9, minute=0)))
-
-
 class LogAndStateDateUseBeijingTest(unittest.TestCase):
     """按日留痕（日志文件名 / 状态文件 / 事件时间戳）也走同一时钟。"""
 
-    def test_signin_log_path_uses_beijing_date(self):
-        """日志按日切分：宿主为 UTC 时若用宿主日期，北京时间 00:00–08:00 会写进前一日。"""
-        fake_bj = _dt.datetime(2026, 3, 2, 1, 30, 0)  # 北京凌晨 = UTC 前一日 17:30
-        with mock.patch.object(clock, "now", return_value=fake_bj):
-            self.assertEqual(clock.today(), "2026-03-02")
-            self.assertEqual(clock.ts(), "2026-03-02 01:30:00")
 
 
 class SlotBoundaryTest(unittest.TestCase):

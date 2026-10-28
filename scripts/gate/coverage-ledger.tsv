@@ -1,0 +1,16 @@
+# 覆盖面对账登记表（工单 drqw 最小版）
+# 列：pattern<TAB>处置<TAB>理由
+#   处置 = covered_by=<测试文件>  —— 该测试确实看这件改动（必须在车道名册里）
+#        | uncovered=<理由>       —— 显式登记"已知未覆盖"
+# 未命中任何行且没有测试提到 ⇒ scripts/check-coverage-ledger.py 退 1。
+docs/*	uncovered=过程/契约文档，无运行期测试
+*.md	uncovered=文档，无运行期测试
+frontend/*	uncovered=前端归用户独立完成，不在本批判据面
+tests/lane-roster.tsv	covered_by=tests/test_gate_lane_roster.py
+scripts/dev-verify.sh	covered_by=tests/test_dev_verify_entry.py
+scripts/gate/import-linter-baseline.txt	covered_by=tests/test_import_linter_gate.py
+.importlinter	covered_by=tests/test_import_linter_gate.py
+requirements.txt	covered_by=tests/test_constraint_registry_gate.py
+requirements.lock	covered_by=tests/test_constraint_registry_gate.py
+.gitignore	uncovered=仓库配置，由各自门禁读取；无独立运行期测试
+.github/*	uncovered=CI 定义，命令表由 tests/test_dev_verify_entry.py 逐字冻结

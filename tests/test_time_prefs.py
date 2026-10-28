@@ -13,7 +13,7 @@
    读写、purge/delete_user_with_accounts/replace_accounts
    的连带清理）、scripts/signin.py（build_schedule
    的自选分支、run_queue_retry）、web/app.py（my-time-pref、stats、accounts、settings、capacity、pause
-   各接口）、web.services 与 yiban/window.py 的共用几何。
+   各接口）、web.services 与 yiban/core/window.py 的共用几何。
 关键断言：自选是硬约束但有溢出语义：选中的片内 100% 落点，超容量的晚者按 updated_at
    就近顺延而不是丢号。用户侧只许看到已选百分比（10% 粗粒度、未满封顶
    90、满员恰好
@@ -27,6 +27,12 @@
 用法（项目根目录）：
     py -m pytest tests/test_time_prefs.py -v
     py tests/test_time_prefs.py
+
+2026-10-16 饮食批：`TimePrefsTest` 的 `test_run_queue_retry_skips_paused` 与
+`test_run_queue_retry_window_over_zero_request` 两条已删——它们驱动的是**冻结的**
+`signin.run_queue_retry`（生产零调用点，工单 `77s2`）。同一性质在 v3 侧有活判据：
+暂停账号不发起请求见 `tests/test_executor_v3.py::TerminalStateTest::test_paused_credential_skips_without_request`，
+窗口外零请求见同文件 `ProductContractTest` 与 `tests/test_effective_window.py::WindowClosedExitCodeTest`。
 """
 import contextlib
 import datetime as _datetime_TPREF
@@ -43,8 +49,14 @@ from unittest import mock
 
 import db
 import signin
+from werkzeug.security import generate_password_hash
 
-from yiban import clock
+from web.services import accounts_data as _accounts_data
+from web.services import capacity as _capacity
+from web.services import env_io as _env_io_svc
+from web.services import limits as _limits
+from web.services import signstatus as _signstatus
+from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -116,8 +128,8 @@ class TimePrefsTest(unittest.TestCase):
         with open(self.accounts_file, "w", encoding="utf-8") as f:
             json.dump([], f)
         db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
-        db.create_user("admin@test.local", self.webapp.generate_password_hash(ADMIN_PASS), role="admin")
-        db.create_user("user1@test.local", self.webapp.generate_password_hash(USER_PASS))
+        db.create_user("admin@test.local", generate_password_hash(ADMIN_PASS), role="admin")
+        db.create_user("user1@test.local", generate_password_hash(USER_PASS))
         db.add_account({"name": "U1", "phone": "13800138001", "password": "p1",
                         "status": "active", "owner": "user1@test.local"})
 
@@ -217,9 +229,9 @@ class TimePrefsTest(unittest.TestCase):
         self.assertTrue(data["allowed"])
         self.assertEqual(len(data["slots"]), 16)
         self.assertIsNone(data["pref"])
-        # 预计签到时段：顺序排序（默认）→ 非空可预期
-        self.assertIsNotNone(data["estimated"], "顺序排序应返回预计时段")
-        self.assertRegex(data["estimated"], r"\d{2}:\d{2}")
+        # 预计签到时段：取自台账 run_at；当日未写计划行 → 「待生成」，不再回退旧算法
+        self.assertIsNone(data["estimated"], "当日无计划行时不返回任何钟点")
+        self.assertEqual(data["estimate_note"], "待生成")
         # 保存 slot 0（06:30 片）
         r = c.put("/api/my-time-pref", json={"slot_min": 0}, headers=self._csrf(token))
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
@@ -230,8 +242,22 @@ class TimePrefsTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertIsNone(c.get("/api/my-time-pref").get_json()["pref"])
 
-    def test_api_pref_estimate_random_order_null(self):
-        """随机排序：预计时段为 None + 提示文案（随机才不提醒）。"""
+    def test_api_pref_estimate_ignores_order_key(self):
+        """排序键不再改变预计时段：显示只读台账 `run_at`（v2 自算分支已撤除）。
+
+        旧实现按 `YIBAN_SIGN_ORDER=random` 返回固定提示（不提醒钟点）——那是网页侧自算
+        几何的一部分，与 v3 执行计划分叉（工单 m9bi）。置位该键不得改变台账取到的钟点。
+        """
+        day = clock.now().strftime("%Y-%m-%d")
+        conn = db.get_conn()
+        conn.execute(
+            "INSERT INTO sign_tasks (phone, day, vshard, owner, run_at, priority, state, "
+            "attempts, lease_until, result, epoch, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("13800138001", day, 0, "", f"{day} 06:41:00", 5, "pending", 0, "", "", 0,
+             f"{day} 00:00:00"),
+        )
+        conn.commit()
         c = self.webapp.create_app().test_client()
         self._login(c, "user1@test.local", USER_PASS)
         env = open(self.env_file, "a", encoding="utf-8")
@@ -239,8 +265,8 @@ class TimePrefsTest(unittest.TestCase):
         env.close()
         try:
             data = c.get("/api/my-time-pref").get_json()
-            self.assertIsNone(data["estimated"])
-            self.assertIn("当天 06:31 后可见", data["estimate_note"])
+            self.assertEqual(data["estimated"], "06:41",
+                             "排序键不得改变预计时段来源（仍读台账 run_at）")
         finally:
             s = open(self.env_file, encoding="utf-8").read()
             open(self.env_file, "w", encoding="utf-8").write(
@@ -350,13 +376,13 @@ class TimePrefsTest(unittest.TestCase):
             db.set_time_pref(phone, 0, f"2026-08-15 0{i+1}:00:00")
         c = self.webapp.create_app().test_client()
         self._login(c, "user1@test.local", USER_PASS)
-        with mock.patch.object(self.webapp, "load_accounts_raw",
+        with mock.patch.object(_accounts_data, "load_accounts_raw",
                                return_value=self._fake_active(300, "136")):
             data = c.get("/api/my-time-pref").get_json()
         slot0 = next(s for s in data["slots"] if s["slot_min"] == 0)
         self.assertEqual(slot0["pct"], 80, "16/19=84.2% → 80% 档（不是固定 cap=15 的 100%）")
         # 反证：同样 16 人若 K=15（未压缩）→ 判满 100，证明压缩口径真的在起作用
-        with mock.patch.object(self.webapp, "load_accounts_raw",
+        with mock.patch.object(_accounts_data, "load_accounts_raw",
                                return_value=self._fake_active(16, "136")):
             data2 = c.get("/api/my-time-pref").get_json()
         slot0b = next(s for s in data2["slots"] if s["slot_min"] == 0)
@@ -422,7 +448,7 @@ class TimePrefsTest(unittest.TestCase):
         db.set_time_pref("13800138001", 0, "2026-08-15 10:00:00")
         c = self.webapp.create_app().test_client()
         self._login(c, "user1@test.local", USER_PASS)
-        with mock.patch.object(self.webapp, "read_env",
+        with mock.patch.object(_env_io_svc, "read_env",
                                return_value={"YIBAN_BLOCK_CAP": "20",
                                              "YIBAN_ALLOW_TIME_PREF": "1"}):
             data = c.get("/api/my-time-pref").get_json()
@@ -446,12 +472,12 @@ class TimePrefsTest(unittest.TestCase):
         )
         c = self.webapp.create_app().test_client()
         self._login(c, "admin", ADMIN_PASS)
-        with mock.patch.object(self.webapp, "load_accounts_raw", return_value=active + junk):
+        with mock.patch.object(_accounts_data, "load_accounts_raw", return_value=active + junk):
             cap = c.get("/api/time-prefs/stats").get_json()["slots"][0]["cap"]
         self.assertEqual(cap, 15, "非 active 行不得计入 n（否则会被压到 19）")
         # 反证：把 junk 也当 active（总量 300）→ cap 压缩为 19，证明是过滤在起作用
         all_active = [dict(a, status="active", deleted=False) for a in (active + junk)]
-        with mock.patch.object(self.webapp, "load_accounts_raw", return_value=all_active):
+        with mock.patch.object(_accounts_data, "load_accounts_raw", return_value=all_active):
             cap2 = c.get("/api/time-prefs/stats").get_json()["slots"][0]["cap"]
         self.assertEqual(cap2, 19)
 
@@ -687,7 +713,7 @@ class TimePrefsTest(unittest.TestCase):
         token = self._login(c, "admin", ADMIN_PASS)
         data = c.get("/api/settings").get_json()
         self.assertEqual(data["sign_order"], "sequence")
-        self.assertEqual(data["sign_dist"], "uniform")
+        self.assertEqual(data["sign_dist"], "front")
         self.assertEqual(data["window_edge_sec"], 60)
         self.assertEqual(data["edge_front_sec"], 60)  # 0.22.0 前后独立（默认各 60s）
         self.assertEqual(data["edge_back_sec"], 60)
@@ -828,13 +854,13 @@ class TimePrefsTest(unittest.TestCase):
         """窗口不可用（已回退默认）：设置页拿到可见提示（"已按 X~Y 运行"）。"""
         from unittest import mock
 
-        from yiban import window as yb_window
+        from yiban.core import window as yb_window
         c = self.webapp.create_app().test_client()
         self._login(c, "admin", ADMIN_PASS)
         dead = yb_window.bounds({"sign_start": (7, 0), "sign_end": (6, 0),
                                  "edge_front_sec": 60, "edge_back_sec": 60})
         self.assertTrue(dead.fell_back)
-        with mock.patch.object(self.webapp, "sign_window_bounds", return_value=dead):
+        with mock.patch.object(_signstatus, "sign_window_bounds", return_value=dead):
             data = c.get("/api/settings").get_json()
         self.assertTrue(data["window_fallback"])
         self.assertIn("配置异常", data["window_fallback_text"])
@@ -977,7 +1003,7 @@ class TimePrefsTest(unittest.TestCase):
         self._login(c, "admin", ADMIN_PASS)
         # 管理员无 my-phone（owner=admin 的账号不属于普通用户自选）→ has_account 为 False
         # 管理员本身走内置认证，不查账号；直接用无账号用户验证
-        db.create_user("user2@test.local", self.webapp.generate_password_hash(USER_PASS))
+        db.create_user("user2@test.local", generate_password_hash(USER_PASS))
         c2 = self.webapp.create_app().test_client()
         token = self._login(c2, "user2@test.local", USER_PASS)
         data = c2.get("/api/my-time-pref").get_json()
@@ -992,7 +1018,7 @@ class TimePrefsTest(unittest.TestCase):
         cases = [("pending", "13600138001"), ("rejected", "13600138002")]
         for status, phone in cases:
             user = f"{status}@test.local"
-            db.create_user(user, self.webapp.generate_password_hash(USER_PASS))
+            db.create_user(user, generate_password_hash(USER_PASS))
             db.add_account({"name": status, "phone": phone, "password": "p",
                             "status": status, "owner": user})
             c = self.webapp.create_app().test_client()
@@ -1027,7 +1053,7 @@ class TimePrefsTest(unittest.TestCase):
         r2 = c.put(f"/api/my-accounts/{acc['index']}/pause", json={"paused": False}, headers=h)
         self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))
         # 注册管理员自己提交的账号（owner=本人邮箱）仍可暂停——只有系统管理员账号受保护
-        db.create_user("admin2@test.local", self.webapp.generate_password_hash(USER_PASS), role="admin")
+        db.create_user("admin2@test.local", generate_password_hash(USER_PASS), role="admin")
         db.add_account({"name": "A2", "phone": "13600999001", "password": "p3",
                         "status": "active", "owner": "admin2@test.local"})
         c2 = self.webapp.create_app().test_client()
@@ -1046,7 +1072,7 @@ class TimePrefsTest(unittest.TestCase):
         db.add_account({"name": "内置管理员", "phone": "13900139099", "password": "p2",
                         "status": "active", "owner": "admin"})
         db.set_time_pref("13900139099", 5, "2026-08-15 10:00:00")
-        db.create_user("admin2@test.local", self.webapp.generate_password_hash(USER_PASS), role="admin")
+        db.create_user("admin2@test.local", generate_password_hash(USER_PASS), role="admin")
         db.add_account({"name": "A2", "phone": "13600999001", "password": "p3",
                         "status": "active", "owner": "admin2@test.local"})
         # admin2 保存选片 → 应写入自己的账号（13600999001），不得覆盖内置管理员账号
@@ -1129,43 +1155,6 @@ class TimePrefsTest(unittest.TestCase):
         self.assertEqual(len(sched), 4)
         self.assertNotIn(accs[2].phone, sched)
 
-    def test_run_queue_retry_skips_paused(self):
-        """端到端确认：user_paused 账号在 run_queue_retry 中零请求、状态写 user_cancelled。"""
-        import unittest.mock as mock
-
-        accs = [signin.Account(phone="13800138001", password="p")]
-        accs[0].user_paused = True
-        state_dir = tempfile.mkdtemp(prefix="yiban-pause-")
-        self.addCleanup(shutil.rmtree, state_dir, ignore_errors=True)
-        with mock.patch.object(signin, "_write_sign_state") as w, \
-             mock.patch.object(signin, "attempt_signin") as attempt:
-            results = signin.run_queue_retry(accs, "", 0, 0)
-        attempt.assert_not_called()  # 零请求
-        self.assertEqual(results["13800138001"][3], signin.STATUS_USER_CANCELLED)
-        w.assert_called_once()
-        self.assertEqual(w.call_args[0][1], signin.STATUS_USER_CANCELLED)
-
-    def test_run_queue_retry_window_over_zero_request(self):
-        """对抗（2026-08-15）：窗口已过（08:30 > 07:50）→ 全部零请求跳过，不登录不发通知。"""
-        import unittest.mock as mock
-        from datetime import datetime as _dt
-
-        accs = [signin.Account(phone="13800138001", password="p")]
-
-        class FakeNow:
-            @staticmethod
-            def now():
-                return _dt(2026, 8, 15, 8, 30, 0)
-
-        sched = {"13800138001": _dt(2026, 8, 15, 6, 40)}
-        with mock.patch.object(signin.clock, "now", FakeNow.now), \
-             mock.patch.object(signin, "attempt_signin") as attempt, \
-             mock.patch.object(signin, "_write_sign_state") as w, \
-             mock.patch.object(signin, "_update_cred_state"):
-            results = signin.run_queue_retry(accs, "http://notify.invalid", 0, 0, schedule=sched)
-        attempt.assert_not_called()
-        self.assertEqual(results["13800138001"][3], signin.STATUS_SKIPPED_WINDOW)
-        self.assertEqual(w.call_args[0][1], signin.STATUS_SKIPPED_WINDOW)
 
     def test_api_capacity_user_registration_limit(self):
         """对抗性审查补：注册总人数上限（YIBAN_MAX_USERS）——超限拒绝。"""
@@ -1223,7 +1212,7 @@ class TimePrefsTest(unittest.TestCase):
             self.assertEqual(r3.status_code, 400, r3.get_data(as_text=True))
             self.assertIn("只能提交一个账号", r3.get_json()["error"])
             # 4) 新注册用户提交 → 403
-            db.create_user("capuser@test.local", self.webapp.generate_password_hash(USER_PASS))
+            db.create_user("capuser@test.local", generate_password_hash(USER_PASS))
             c4 = app.test_client()
             token4 = self._login(c4, "capuser@test.local", USER_PASS)
             r4 = c4.post("/api/my-accounts", json={
@@ -1253,8 +1242,8 @@ class TimePrefsTest(unittest.TestCase):
         """2026-09-08 口径修订：用户 = 全部未删除注册用户（含空用户，上限 500）；
         账号 = 全部非删除活跃账号（上限 200，含 admin 直属裸账号——同样参与签到
         占负载），空用户不计入账号。"""
-        self.assertEqual(self.webapp.DEFAULT_MAX_USERS, 500)
-        self.assertEqual(self.webapp.DEFAULT_MAX_ACCOUNTS, 200)
+        self.assertEqual(_limits.DEFAULT_MAX_USERS, 500)
+        self.assertEqual(_limits.DEFAULT_MAX_ACCOUNTS, 200)
         app = self.webapp.create_app()
         c = app.test_client()
         self._login(c, "admin", ADMIN_PASS)
@@ -1292,21 +1281,21 @@ class TimePrefsTest(unittest.TestCase):
         cur = len(db.load_users())
         # 0 = 不限：永不触发
         self.webapp.write_env_key(self.env_file, "YIBAN_MAX_USERS", "0")
-        self.assertFalse(self.webapp._users_at_capacity())
+        self.assertFalse(_capacity._users_at_capacity())
         # 上限 = 当前用户数：已满，再注册将超限 → 拒绝
         self.webapp.write_env_key(self.env_file, "YIBAN_MAX_USERS", str(cur))
-        self.assertTrue(self.webapp._users_at_capacity())
+        self.assertTrue(_capacity._users_at_capacity())
         # 上限 = 当前用户数 + 1：再注册 1 人恰好到顶（<= 上限）→ 放行
         self.webapp.write_env_key(self.env_file, "YIBAN_MAX_USERS", str(cur + 1))
-        self.assertFalse(self.webapp._users_at_capacity())
+        self.assertFalse(_capacity._users_at_capacity())
         # 上限 = 当前用户数 + 2：余位更足 → 放行
         self.webapp.write_env_key(self.env_file, "YIBAN_MAX_USERS", str(cur + 2))
-        self.assertFalse(self.webapp._users_at_capacity())
+        self.assertFalse(_capacity._users_at_capacity())
         # 与旧内联判定逐值等价（0 为不限需单独处理）
         for maxv in (cur, cur + 1, cur + 2, 0):
             self.webapp.write_env_key(self.env_file, "YIBAN_MAX_USERS", str(maxv))
             expect = (maxv > 0 and len(db.load_users()) >= maxv)
-            self.assertEqual(self.webapp._users_at_capacity(), expect,
+            self.assertEqual(_capacity._users_at_capacity(), expect,
                              f"max={maxv} 时语义必须与旧判定一致")
 
     def test_api_settings_sched_tier_split(self):
@@ -1316,7 +1305,7 @@ class TimePrefsTest(unittest.TestCase):
         「影响半径 × 能否造成静默漏签」的判据改判：这里同时钉住改判后的两侧。
         """
         app = self.webapp.create_app()
-        db.create_user("admin2@test.local", self.webapp.generate_password_hash(USER_PASS), role="admin")
+        db.create_user("admin2@test.local", generate_password_hash(USER_PASS), role="admin")
         c = app.test_client()
         token = self._login(c, "admin2@test.local", USER_PASS)
         h = self._csrf(token)
@@ -1397,7 +1386,7 @@ class TimePrefsTest(unittest.TestCase):
         而 A 档（周末/窗口/边缘）连口令带过去也不给普通管理员写。
         """
         app = self.webapp.create_app()
-        db.create_user("admin2@test.local", self.webapp.generate_password_hash(USER_PASS), role="admin")
+        db.create_user("admin2@test.local", generate_password_hash(USER_PASS), role="admin")
         c = app.test_client()
         token = self._login(c, "admin2@test.local", USER_PASS)
         h = self._csrf(token)

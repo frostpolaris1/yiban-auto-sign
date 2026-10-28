@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Vue 翻新试点页契约测试（P0 管线守卫，docs/refactor/29-frontend-vue-refactor-plan.md）。
+"""Vue 翻新试点页契约测试（P0 管线守卫）。
 
 标签：F · 前端与界面守卫（Vue 线新增，33 文件处置表之外的第一个新范式测试）
 覆盖：/work/pilot 渲染契约（挂载点、manifest 解析出的哈希资产真实在盘、模块脚本形态、
@@ -21,6 +21,8 @@ import sys
 import tempfile
 import time
 import unittest
+
+from werkzeug.security import generate_password_hash
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VUE_DIR = os.path.join(BASE, "web", "static", "vue")
@@ -77,7 +79,7 @@ class VuePilotPageTest(unittest.TestCase):
             spec.loader.exec_module(cls.webapp)
 
         db.init_db(cls.db_file, migrate_from=cls.accounts_file, env_file=cls.env_file)
-        db.create_user(USER_EMAIL, cls.webapp.generate_password_hash(USER_PASS))
+        db.create_user(USER_EMAIL, generate_password_hash(USER_PASS))
 
     @classmethod
     def tearDownClass(cls):

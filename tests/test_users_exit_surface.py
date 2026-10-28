@@ -19,8 +19,8 @@ node 真跑另钉）：
 
 标签：G · 安全：脱敏/审计/配置注入
 覆盖：上述 ①③④⑤⑥⑦ 各出口至少一条"遮罩形态"断言 + 一条"明文不得出现"反例断言
-对应实现：`yiban/masking.py`、`yiban/store/audit_chain.py::actor_tag`、
-`yiban/store/events.py::_actor_forms`、`yiban/store/users.py::find_user_by_id/purge_deleted_users_hard`、
+对应实现：`yiban/core/masking.py`、`yiban/adapters/persistence/audit_chain.py::actor_tag`、
+`yiban/adapters/persistence/events.py::_actor_forms`、`yiban/adapters/persistence/users.py::find_user_by_id/purge_deleted_users_hard`、
 `web/routes/users_api.py`、`web/routes/notify.py::_bounded_audit_json`、
 `web/services/accounts_data.py::_owner_display_of`
 关键断言：所有断言打的是**真函数/真路由**的输出（test client + 真 SQLite 审计行），
@@ -37,6 +37,8 @@ import shutil
 import sys
 import tempfile
 import unittest
+
+from werkzeug.security import generate_password_hash
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -138,13 +140,13 @@ class _Base(unittest.TestCase):
 class OwnerDisplayTest(_Base):
     def test_mask_email_local_phone_form(self):
         """本地部即手机号 → 号遮罩形态；**不是**整段本地部直出（旧行为）。"""
-        from yiban.masking import mask_email_local
+        from yiban.core.masking import mask_email_local
         self.assertEqual(mask_email_local("13800000000"), MASKED_PHONE_LOCAL)
         # RED 可能性：把号形态也走"前3+***"（138***）会让归属列失去"这是个号"的可辨性，
         # 也钉住"改回整段直出"（泄漏）——两个退化方向都红。
 
     def test_mask_email_local_general_and_idempotent(self):
-        from yiban.masking import mask_email_local
+        from yiban.core.masking import mask_email_local
         self.assertEqual(mask_email_local("alice"), "ali***")
         self.assertEqual(mask_email_local("ab"), "ab***")
         self.assertEqual(mask_email_local("ali***"), "ali***")   # 幂等
@@ -170,7 +172,7 @@ class OwnerDisplayTest(_Base):
     def test_api_users_row_has_masked_display(self):
         """/api/users 每行带不透明 id 与遮罩 display（前端禁止再算第二套）。"""
         db.create_user(PHONE_LOCAL_EMAIL,
-                       self.webapp.generate_password_hash("UserPass#123"))
+                       generate_password_hash("UserPass#123"))
         c, hdr = self._master_client()
         users = c.get("/api/users", headers=hdr).get_json()["users"]
         row = [u for u in users if u["email"] == PHONE_LOCAL_EMAIL]
@@ -208,7 +210,7 @@ class OpaqueIdRoutingTest(_Base):
 
     def test_role_change_by_id_works_and_url_has_no_email(self):
         """真 id 定位：设为/取消管理员生效，且审计/响应面不含操作目标邮箱明文。"""
-        db.create_user(PLAIN_EMAIL, self.webapp.generate_password_hash("UserPass#123"))
+        db.create_user(PLAIN_EMAIL, generate_password_hash("UserPass#123"))
         db.add_account({"name": "A", "phone": "13900139001", "password": "pw",
                         "status": "active", "owner": PLAIN_EMAIL})
         uid = db.find_user(PLAIN_EMAIL)["id"]
@@ -246,7 +248,7 @@ class ActorSurfaceTest(_Base):
     def test_pause_cooldown_dual_form_across_upgrade(self):
         """冷却查询双形态：新行 actor 是遮罩态，但按**明文邮箱**查仍命中
         （升级边界历史行为明文形态，两套同查，暂停冷却在升级前后都成立）。"""
-        from yiban.store import events
+        from yiban.adapters.persistence import events
         db.audit(PLAIN_EMAIL, "my_account_pause", "", "")   # 写入即遮罩
         ts = events.last_pause_at(PLAIN_EMAIL)             # 传入明文
         self.assertIsNotNone(ts, "遮罩收口后冷却不得哑火")
@@ -256,7 +258,7 @@ class ActorSurfaceTest(_Base):
 
     def test_purge_target_masked_per_address(self):
         """purge 的 target 逐条遮罩（旧形态整表明文），计数与 detail 语义不变。"""
-        db.create_user(PLAIN_EMAIL, self.webapp.generate_password_hash("UserPass#123"))
+        db.create_user(PLAIN_EMAIL, generate_password_hash("UserPass#123"))
         db.soft_delete_user_with_accounts(PLAIN_EMAIL)
         purged = db.purge_deleted_users_hard(
             [PLAIN_EMAIL], audit_spec={"username": "admin", "action": "user_deleted_purge"})
@@ -274,7 +276,7 @@ class ActorSurfaceTest(_Base):
 class MF111SanitizeTest(_Base):
     def test_quoted_key_credential_full_table(self):
         """整张凭据名表的**引号键形态**（vars()/json.dumps 调试输出）都要被拦。"""
-        from yiban.masking import sanitize_text
+        from yiban.core.masking import sanitize_text
         for key in ("access_token", "refresh_token", "api_key", "session_id",
                     "csrf_token", "password", "phone_code", "authorization"):
             samples = (
@@ -289,7 +291,7 @@ class MF111SanitizeTest(_Base):
                     self.assertIn("***", out)
 
     def test_authorization_basic_tail_swallowed(self):
-        from yiban.masking import sanitize_text
+        from yiban.core.masking import sanitize_text
         out = sanitize_text("req header Authorization: Basic ZGVmOg== sent")
         self.assertNotIn("ZGVmOg", out, "base64 尾巴（含 == ）必须整体收口，不得留尾")
         self.assertIn("authorization=***", out)
@@ -299,7 +301,7 @@ class MF111SanitizeTest(_Base):
     def test_benign_json_not_harmed(self):
         """"不误伤 JSON 正文"判据：非凭据键的值、数字/布尔/null 叶子原样保留；
         凭据键遮罩后仍是合法 JSON（解析/还原能力不丢）。"""
-        from yiban.masking import sanitize_text
+        from yiban.core.masking import sanitize_text
         benign = ('{"user": "bob", "note": "the token expires soon", '
                   '"count": 42, "ratio": -1.5, "ok": true, "nil": null}')
         self.assertEqual(sanitize_text(benign), benign,
@@ -311,7 +313,7 @@ class MF111SanitizeTest(_Base):
         self.assertEqual(parsed["user"], "bob")
 
     def test_cookie_pairs_still_masked_individually(self):
-        from yiban.masking import sanitize_text
+        from yiban.core.masking import sanitize_text
         out = sanitize_text("Set-Cookie: session=abc123; path=/; csrf=xy")
         self.assertNotIn("abc123", out)
         self.assertNotIn("xy", out.split("csrf=")[1].split(";")[0])
@@ -320,7 +322,7 @@ class MF111SanitizeTest(_Base):
     def test_numeric_leaf_invariant(self):
         """数字叶子不变量（2-9a 入册）：凭据键后的**数字**不被改写——
         遮罩数字会破坏 JSON 类型契约；裸号只允许以字符串形态进 payload。"""
-        from yiban.masking import sanitize_text
+        from yiban.core.masking import sanitize_text
         s = '{"password": 123456, "n": true}'
         self.assertEqual(json.loads(sanitize_text(s)), {"password": 123456, "n": True})
 
@@ -381,7 +383,7 @@ class AccountReprSwallowTest(_Base):
     def test_apostrophe_name_repr_swallowed(self):
         """撇号名让 dataclass repr 改用**双引号**包裹——旧吞除正则只配单引号，
         在双引号段前失效整段外泄；2-9b 收口后两种引号各自配对。"""
-        from yiban.masking import sanitize_text
+        from yiban.core.masking import sanitize_text
         s = "failed for Account(name=\"O'Brien\", password='sup3r-secret!', phone='13800000000')"
         out = sanitize_text(s)
         self.assertNotIn("sup3r-secret", out)

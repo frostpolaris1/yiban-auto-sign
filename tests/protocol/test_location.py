@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from yiban.protocol import extract_verify_request
+from yiban.adapters.protocol_yiban import extract_verify_request
 
 _HEX = set("0123456789abcdef")
 

@@ -107,6 +107,36 @@ export function dangerousSubmit(options: DangerousSubmitOptions): Promise<unknow
   return fn(options);
 }
 
+export interface PromptOptions {
+  title?: string;
+  label?: string;
+  placeholder?: string;
+  maxlength?: number;
+  required?: boolean;
+  requiredMessage?: string;
+  confirmText?: string;
+  cancelText?: string;
+  defaultValue?: string;
+  password?: boolean;
+}
+
+/**
+ * 文本输入弹窗（**委托 `YB.promptDialog`**，core.js 的唯一实现；账号 ops 的驳回理由
+ * 同一入口）。resolve 输入值；取消 / 关闭一律 resolve(null)。
+ * 外壳缺失时 resolve(null)——与确认框同一安全默认：拿不到输入就不动作。
+ */
+export function promptDialog(options: PromptOptions): Promise<string | null> {
+  const fn = (raw() as { promptDialog?: (o: PromptOptions) => Promise<string | null> }).promptDialog;
+  if (!fn) return Promise.resolve(null);
+  return fn(options);
+}
+
+/** 导航徽标重取（core.js 唯一实现）。审核类写操作后调用，让侧栏计数立即跟上。 */
+export function refreshNavBadges(): void {
+  const fn = (raw() as { refreshNavBadges?: () => void }).refreshNavBadges;
+  if (fn) fn();
+}
+
 export function toast(): ShellToast {
   const t = raw().toast;
   if (t) return t;
@@ -278,6 +308,19 @@ export function swapMs(): number {
   return typeof v === "number" ? v : 160;
 }
 
+/**
+ * 外壳节拍（毫秒）——**全站唯一的 10 秒定义**在 `web/static/js/core.js` 的 `POLL_MS`。
+ *
+ * 导航徽标刷新、账号/用户列表、总览 KPI 三处"待审核"取数点必须同拍（工单 vff0）。
+ * 页面一律经 `usePolling(fn, { intervalMs: pollMs() })` 取节拍，**不得**再写数字
+ * （同一件事两个数就是两处漂移）。守卫见
+ * `tests/test_review_refresh_cadence_single_source.py`。
+ */
+export function pollMs(): number {
+  const v = (raw() as { POLL_MS?: number }).POLL_MS;
+  return typeof v === "number" ? v : 10000;
+}
+
 export interface ShellApiError extends Error {
   status?: number;
   data?: unknown;
@@ -303,9 +346,17 @@ export function shellBase(): string {
  * 形状。**不含 CSRF**，故仅适用于只读请求——写请求在外壳缺失时直接拒绝，避免"看起来成功
  * 实际上被后端 CSRF 拒绝"。
  */
-export async function api<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
-  const shellApi = (raw() as { api?: (m: string, p: string, b?: unknown) => Promise<unknown> }).api;
-  if (shellApi) return (await shellApi(method, path, body)) as T;
+export interface ApiOptions {
+  /**
+   * 允许外壳带 If-None-Match 做条件请求（**显式 opt-in**）。
+   * 只有能处理 `notModified` 哨兵并保留上一次数据的调用方才能声明；
+   * 默认关闭，避免徽标计数等只读标量调用被 304 空体读成 0。
+   */
+  conditional?: boolean;
+}
+export async function api<T = unknown>(method: string, path: string, body?: unknown, opts?: ApiOptions): Promise<T> {
+  const shellApi = (raw() as { api?: (m: string, p: string, b?: unknown, o?: ApiOptions) => Promise<unknown> }).api;
+  if (shellApi) return (await shellApi(method, path, body, opts)) as T;
 
   if (method !== "GET") {
     throw new Error("外壳未就绪：写请求缺少 CSRF 保护，已拒绝执行");

@@ -34,7 +34,7 @@ write_env_batch 的注入校验只挡 `\n` / `\r`，而它自己读文件用的�
 认得全 10 个字符）、② 告警正文落盘前的行安全化、③ `write_env_batch` 的值/键注入拒绝
 与键名白名单、④ 公告→设置的端到端杀链不再生效，外加"同键空白影子行折叠"与
 `verify_admin` 对哈希行歧义的 fail-closed。
-对应实现：`yiban/infra/env_io.py` 的 `has_line_break` / `write_env_keys` / `parse_env_file`、
+对应实现：`yiban/adapters/config/env_io.py` 的 `has_line_break` / `write_env_keys` / `parse_env_file`、
 web 的公告与设置写接口、`verify_admin` 的主凭据判定。
 关键断言：`test_predicate_matches_splitlines_over_whole_charspace` 是**成对核对**的锚点——
 它拿 `str.splitlines()` 的真行为去校验收口函数，改任何一侧的字符集都会红；
@@ -54,7 +54,13 @@ import tempfile
 import unittest
 from unittest import mock
 
-from yiban.infra import env_io  # pythonpath 已含 scripts/（pyproject.toml）
+from werkzeug.security import check_password_hash, generate_password_hash
+
+from web import security as _security
+from web.services import env_io as _env_io_svc
+from web.services import notify_mail as _notify_mail
+from web.services import startup_cache as _startup_cache
+from yiban.adapters.config import env_io  # pythonpath 已含 scripts/（pyproject.toml）
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -80,7 +86,7 @@ def _load_webapp(tag):
     with contextlib.suppress(Exception):
         spec.loader.exec_module(mod)
     # 加载失败不能静默滑过去：届时报的是后文的 AttributeError，与真因隔了十万八千里
-    assert hasattr(mod, "write_env_batch"), "web/app.py 加载失败（exec_module 异常被抑制）"
+    assert callable(getattr(mod, "create_app", None)), "web/app.py 加载失败（exec_module 异常被抑制）"
     return _db, mod
 
 
@@ -160,7 +166,9 @@ class _Base(unittest.TestCase):
         with io.open(self.env_file, "w", encoding="utf-8") as f:
             f.write(self._pristine_env)
         self.webapp.ENV_FILE = self.env_file
-        self.webapp._announcement_cache[0] = None
+        # 公告缓存是进程内全局：不清零会把上一例的已发布文本带进本例。
+        # 批 3-c S2 起真源在 web/services/startup_cache.py，故打桩点落在新家。
+        _startup_cache._announcement_cache[0] = None
         self.db.init_db(self.db_file, migrate_from=self.accounts_file,
                         env_file=self.env_file)
 
@@ -175,7 +183,7 @@ class _Base(unittest.TestCase):
 
     def _sub_admin(self):
         """注册管理员（普通管理员）会话：主管理员凭据对它不可见，正是攻击者视角。"""
-        self.db.create_user(SUB_ADMIN, self.webapp.generate_password_hash(SUB_PASS),
+        self.db.create_user(SUB_ADMIN, generate_password_hash(SUB_PASS),
                             role="admin")
         c = self.webapp.create_app().test_client()
         return c, self._csrf(self._login(c, SUB_ADMIN, SUB_PASS))
@@ -197,14 +205,14 @@ class LineBreakPredicateTest(_Base):
 
     def test_predicate_exists_and_rejects_all_breaks(self):
         self.assertTrue(
-            callable(getattr(self.webapp, "_has_line_break", None)),
-            "缺少模块级谓词 _has_line_break（校验与写入口径须单源）")
+            callable(getattr(env_io, "has_line_break", None)),
+            "缺少谓词 env_io.has_line_break（校验与写入口径须单源）")
         for ch in ALL_BREAKS:
             with self.subTest(ch=hex(ord(ch))):
                 self.assertTrue(
-                    self.webapp._has_line_break(f"A{ch}B"),
+                    env_io.has_line_break(f"A{ch}B"),
                     f"U+{ord(ch):04X} 是 splitlines 的行分隔符，谓词必须判 True")
-                self.assertTrue(self.webapp._has_line_break(ch), "单独一个分隔符也要判 True")
+                self.assertTrue(env_io.has_line_break(ch), "单独一个分隔符也要判 True")
 
     def test_predicate_matches_splitlines_over_whole_charspace(self):
         """谓词与 splitlines 逐字符等价（抽样覆盖：其他空白/控制符不得误伤）。
@@ -221,7 +229,7 @@ class LineBreakPredicateTest(_Base):
         for ch in probe:
             expect = len(("A" + ch + "B").splitlines()) > 1
             self.assertEqual(
-                self.webapp._has_line_break("A" + ch + "B"), expect,
+                env_io.has_line_break("A" + ch + "B"), expect,
                 f"U+{ord(ch):04X}：谓词判据与 splitlines 不一致（应为 {expect}）")
 
     def test_constant_is_frozenset_of_the_documented_chars(self):
@@ -277,7 +285,7 @@ class WriteEnvBatchInjectionTest(_Base):
                 before = _read(self.env_file)
                 payload = f"notify{ch}YIBAN_ADMIN_PASSWORD_HASH=scrypt:attacker"
                 with self.assertRaises(ValueError) as cm:
-                    self.webapp.write_env_batch(self.env_file, {"YIBAN_ANNOUNCEMENT": payload})
+                    _env_io_svc.write_env_batch(self.env_file, {"YIBAN_ANNOUNCEMENT": payload})
                 self.assertIn("YIBAN_ANNOUNCEMENT", str(cm.exception))
                 self.assertEqual(_read(self.env_file), before,
                                  "拒绝就必须零写盘（不能留下半成品配置）")
@@ -289,7 +297,7 @@ class WriteEnvBatchInjectionTest(_Base):
                 self._poisoned_env()
                 before = _read(self.env_file)
                 with self.assertRaises(ValueError):
-                    self.webapp.write_env_batch(
+                    _env_io_svc.write_env_batch(
                         self.env_file, {f"YIBAN_X{ch}Y": "1"})
                 self.assertEqual(_read(self.env_file), before)
 
@@ -305,25 +313,25 @@ class WriteEnvBatchInjectionTest(_Base):
         for bad in ("yiban_x", "YIBAN X", "YIBAN_X=1", "#YIBAN_X", "1YIBAN",
                     "", "YIBAN-KEY", "YIBAN_Ö"):
             with self.subTest(key=bad), self.assertRaises(ValueError):
-                self.webapp.write_env_batch(self.env_file, {bad: "1"})
+                _env_io_svc.write_env_batch(self.env_file, {bad: "1"})
         self.assertEqual(_read(self.env_file), before, "拒绝必须零写盘")
         # 反向：不得把规则写成只认 YIBAN_ 前缀之类的过窄判定（正常键要能存）
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_OK_2": "1"})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_OK_2": "1"})
         self.assertEqual(self.webapp.read_env(self.env_file)["YIBAN_OK_2"], "1")
 
     def test_ordinary_values_still_write(self):
         """不得为安全把 .env 写成只能填 ASCII 单字——空格/制表/中文/URL 都要能存。"""
         self._poisoned_env()
         val = "维护通知 https://example.com/a?b=1#c\t尾注 空格"
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_ANNOUNCEMENT": val})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_ANNOUNCEMENT": val})
         self.assertEqual(self.webapp.read_env(self.env_file)["YIBAN_ANNOUNCEMENT"], val)
         self.assertEqual(_physical_lines(self.env_file), 4)
 
     def test_empty_value_still_deletes_key(self):
         """.env 删除语义（空值=删行）不得被新校验改掉。"""
         self._poisoned_env()
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_ANNOUNCEMENT": "abc"})
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_ANNOUNCEMENT": ""})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_ANNOUNCEMENT": "abc"})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_ANNOUNCEMENT": ""})
         self.assertNotIn("YIBAN_ANNOUNCEMENT", _read(self.env_file))
 
 
@@ -334,7 +342,7 @@ class EnvInjectionKillChainTest(_Base):
     """活体复现链必须整条死掉（普通管理员发起）。"""
 
     def _attacker_hash(self):
-        return self.webapp.generate_password_hash(
+        return generate_password_hash(
             ATTACK_PASS, method=self.webapp.SCRYPT_METHOD)
 
     def test_announcement_then_settings_write_cannot_take_over_master(self):
@@ -452,7 +460,7 @@ class EnvDuplicateKeyFoldingTest(_Base):
             "YIBAN_MAX_USERS  =  3",
             "YIBAN_KEEP=1",
         )
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_MAX_USERS": "5"})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_MAX_USERS": "5"})
         hits = [ln for ln in _wide_lines(self.env_file)
                 if ln.strip().split("=", 1)[0].strip() == "YIBAN_MAX_USERS"]
         self.assertEqual(len(hits), 1, f"旧行未被折叠，留下重复行: {hits}")
@@ -463,7 +471,7 @@ class EnvDuplicateKeyFoldingTest(_Base):
 
     def test_similar_longer_key_is_not_folded(self):
         self._write_env("YIBAN_MAX_USERS=3", "YIBAN_MAX_USERS_EXTRA=9")
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_MAX_USERS": "5"})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_MAX_USERS": "5"})
         env = self.webapp.read_env(self.env_file)
         self.assertEqual(env["YIBAN_MAX_USERS"], "5")
         self.assertEqual(env["YIBAN_MAX_USERS_EXTRA"], "9",
@@ -474,7 +482,7 @@ class EnvDuplicateKeyFoldingTest(_Base):
         self._write_env("YIBAN_ADMIN_USER=admin@test.local",
                         "YIBAN_ADMIN_PASSWORD_HASH = scrypt:old",
                         "YIBAN_SECRET_KEY=x")
-        self.webapp.write_env_batch(
+        _env_io_svc.write_env_batch(
             self.env_file, {"YIBAN_ADMIN_PASSWORD_HASH": "scrypt:new"})
         hits = [ln for ln in _wide_lines(self.env_file)
                 if ln.strip().split("=", 1)[0].strip() == "YIBAN_ADMIN_PASSWORD_HASH"]
@@ -492,7 +500,7 @@ class AmbiguousAdminHashTest(_Base):
     """
 
     def _hash_of(self, password):
-        return self.webapp.generate_password_hash(password, method=self.webapp.SCRYPT_METHOD)
+        return generate_password_hash(password, method=self.webapp.SCRYPT_METHOD)
 
     def _two_hash_lines(self, legal_last=True):
         """写两行主凭据（legal_last=True 时后写生效的正是合法行）。返回生效行哈希。"""
@@ -511,12 +519,12 @@ class AmbiguousAdminHashTest(_Base):
         effective = self._two_hash_lines(legal_last=True)
         self.assertEqual(self._master_hash_line(), effective,
                          "前置条件失败：生效行应是合法哈希（修复前本例应能登录成功）")
-        self.assertTrue(self.webapp.check_password_hash(effective, ADMIN_PASS),
+        self.assertTrue(check_password_hash(effective, ADMIN_PASS),
                         "前置条件失败：口令与生效哈希本身要匹配")
-        with mock.patch.object(self.webapp, "send_notification") as sn, \
+        with mock.patch.object(_notify_mail, "send_notification") as sn, \
                 self.assertLogs("web", level="ERROR") as logs:
             self.assertFalse(
-                self.webapp.verify_admin("admin@test.local", ADMIN_PASS),
+                _security.verify_admin("admin@test.local", ADMIN_PASS),
                 "主凭据歧义时不得判定认证成功（生效行是谁由写入顺序决定，不可信）")
         self.assertTrue(any("YIBAN_ADMIN_PASSWORD_HASH" in m for m in logs.output),
                         f"ERROR 日志应点名该键，实际: {logs.output}")
@@ -528,12 +536,12 @@ class AmbiguousAdminHashTest(_Base):
         """注入行排在后面（提权成功态）时同样必须拒绝——两条口令都不给过。"""
         effective = self._two_hash_lines(legal_last=False)
         self.assertEqual(self._master_hash_line(), effective)
-        self.assertTrue(self.webapp.check_password_hash(effective, ATTACK_PASS),
+        self.assertTrue(check_password_hash(effective, ATTACK_PASS),
                         "前置条件失败：修复前正是这一行让攻击者登录成功")
-        with mock.patch.object(self.webapp, "send_notification"):
-            self.assertFalse(self.webapp.verify_admin("admin@test.local", ATTACK_PASS),
+        with mock.patch.object(_notify_mail, "send_notification"):
+            self.assertFalse(_security.verify_admin("admin@test.local", ATTACK_PASS),
                              "歧义态下攻击者哈希不得带来认证成功")
-            self.assertFalse(self.webapp.verify_admin("admin@test.local", ADMIN_PASS))
+            self.assertFalse(_security.verify_admin("admin@test.local", ADMIN_PASS))
 
     def test_padded_duplicate_line_counts_as_ambiguous(self):
         """`KEY = v` 写法与紧凑写法重复 = 同一处歧义（折叠口径与检测口径须一致）。"""
@@ -543,8 +551,8 @@ class AmbiguousAdminHashTest(_Base):
                         f"YIBAN_ADMIN_PASSWORD_HASH={good}")
         self.assertEqual(self._master_hash_line(), good,
                          "前置条件失败：紧凑写法一行应是生效行")
-        with mock.patch.object(self.webapp, "send_notification"):
-            self.assertFalse(self.webapp.verify_admin("admin@test.local", ADMIN_PASS))
+        with mock.patch.object(_notify_mail, "send_notification"):
+            self.assertFalse(_security.verify_admin("admin@test.local", ADMIN_PASS))
 
     def test_latent_u2028_payload_counts_as_ambiguous(self):
         """升级前埋下的潜伏载荷：解析器仍取到合法哈希（证明潜伏），宽模型计数照样数出第二行。
@@ -563,10 +571,10 @@ class AmbiguousAdminHashTest(_Base):
         self.assertEqual(self._master_hash_line(), good,
                          "前置条件失败：潜伏态下解析器应仍取到合法哈希")
         # 宽模型计数已能看到它：任何一次实体化之前认证就被拒
-        with mock.patch.object(self.webapp, "send_notification") as sn, \
+        with mock.patch.object(_notify_mail, "send_notification") as sn, \
                 self.assertLogs("web", level="ERROR"):
             self.assertFalse(
-                self.webapp.verify_admin("admin@test.local", ADMIN_PASS),
+                _security.verify_admin("admin@test.local", ADMIN_PASS),
                 "潜伏分隔符撑出的第二行哈希 = 主凭据歧义，必须 fail-closed")
         self.assertTrue(sn.called, "潜伏载荷构成的歧义同样要发紧急告警")
 
@@ -576,8 +584,8 @@ class AmbiguousAdminHashTest(_Base):
         self._write_env("YIBAN_ADMIN_USER=admin@test.local",
                         "# YIBAN_ADMIN_PASSWORD_HASH=scrypt:old-rotated-out",
                         f"YIBAN_ADMIN_PASSWORD_HASH={good}")
-        with mock.patch.object(self.webapp, "send_notification") as sn:
-            self.assertTrue(self.webapp.verify_admin("admin@test.local", ADMIN_PASS))
+        with mock.patch.object(_notify_mail, "send_notification") as sn:
+            self.assertTrue(_security.verify_admin("admin@test.local", ADMIN_PASS))
         self.assertFalse(sn.called)
 
     def test_single_hash_still_authenticates(self):
@@ -585,24 +593,24 @@ class AmbiguousAdminHashTest(_Base):
         good = self._hash_of(ADMIN_PASS)
         self._write_env("YIBAN_ADMIN_USER=admin@test.local",
                         f"YIBAN_ADMIN_PASSWORD_HASH={good}")
-        with mock.patch.object(self.webapp, "send_notification") as sn:
-            self.assertTrue(self.webapp.verify_admin("admin@test.local", ADMIN_PASS))
-            self.assertFalse(self.webapp.verify_admin("admin@test.local", ATTACK_PASS),
+        with mock.patch.object(_notify_mail, "send_notification") as sn:
+            self.assertTrue(_security.verify_admin("admin@test.local", ADMIN_PASS))
+            self.assertFalse(_security.verify_admin("admin@test.local", ATTACK_PASS),
                              "口令不匹配仍应照常拒绝")
         self.assertFalse(sn.called, "正常单行配置不得触发歧义告警")
 
     def test_ambiguity_recovery_is_one_write_away(self):
         """「不 brick」的另一半：把 .env 折叠成唯一一行即恢复登录（无需重启/改代码）。"""
         effective = self._two_hash_lines(legal_last=True)
-        with mock.patch.object(self.webapp, "send_notification"):
-            self.assertFalse(self.webapp.verify_admin("admin@test.local", ADMIN_PASS))
+        with mock.patch.object(_notify_mail, "send_notification"):
+            self.assertFalse(_security.verify_admin("admin@test.local", ADMIN_PASS))
         # 旧行折叠（同一处修复）保证一次写入就能清掉重复行
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_ADMIN_PASSWORD_HASH": effective})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_ADMIN_PASSWORD_HASH": effective})
         hits = [ln for ln in _wide_lines(self.env_file)
                 if ln.strip().split("=", 1)[0].strip() == "YIBAN_ADMIN_PASSWORD_HASH"]
         self.assertEqual(len(hits), 1, f"折叠后仍有多行主凭据: {hits}")
-        with mock.patch.object(self.webapp, "send_notification") as sn:
-            self.assertTrue(self.webapp.verify_admin("admin@test.local", ADMIN_PASS),
+        with mock.patch.object(_notify_mail, "send_notification") as sn:
+            self.assertTrue(_security.verify_admin("admin@test.local", ADMIN_PASS),
                             "修成唯一一行后应恢复正常认证能力")
         self.assertFalse(sn.called, "恢复后不得继续告警")
 
@@ -663,7 +671,7 @@ class StartupCollisionReportTest(_Base):
         )
         self.webapp._env_collision_reported = False   # 类内其他用例可能已置位
         with self.assertLogs("web", level="ERROR") as logs, \
-                mock.patch.object(self.webapp, "send_notification") as sn:
+                mock.patch.object(_notify_mail, "send_notification") as sn:
             self.webapp.create_app().test_client()
         self.assertTrue(any("YIBAN_AUDIT_KEY" in m for m in logs.output),
                         f"ERROR 日志应点名歧义键: {logs.output}")
@@ -673,7 +681,7 @@ class StartupCollisionReportTest(_Base):
 
     def test_clean_env_startup_sends_no_collision_alert(self):
         self.webapp._env_collision_reported = False
-        with mock.patch.object(self.webapp, "send_notification") as sn:
+        with mock.patch.object(_notify_mail, "send_notification") as sn:
             self.webapp.create_app().test_client()
         for call in sn.call_args_list:
             self.assertNotIn("歧义", call.args[0],

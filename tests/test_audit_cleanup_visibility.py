@@ -10,7 +10,7 @@
 标签：G · 安全：脱敏/审计/配置注入
 覆盖：清理量（累计留痕条数 + 最近一次清理截止点）随 `/api/health`、日报邮件事实、
 `scripts/audit_verify.py` stdout 三个出口出箱；另钉"指向别的库时不得沿用本部署锚点"。
-对应实现：`yiban/store/audit_chain.py` 的清理留痕与 `audit_health`、
+对应实现：`yiban/adapters/persistence/audit_chain.py` 的清理留痕与 `audit_health`、
 `scripts/audit_verify.py` 的输出段、web 告警事实的组装处。
 关键断言：出箱的是**数字与截止点**而非"有没有这句提示"——本机自校验防不住本机时钟
 （容差内每天小幅拨快即可合法清掉整段保留期），只有让量离开本机才可能被异机发现；

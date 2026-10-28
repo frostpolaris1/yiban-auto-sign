@@ -6,8 +6,8 @@
    `mail.config._get` 与 `_ALLOW_PRIVATE_KEY` 的取值优先级，以及"`.env` 没有该键时
    仍回退进程环境"这一兜底不得被翻掉。
 
-对应实现：yiban/notify/config.py（`_env_str`）、yiban/notify/ledger.py
-   （`_loginfail_daily_limit`）、yiban/mail/config.py（`_get`、私有 CA 开关）。
+对应实现：yiban/adapters/notifier/notify/config.py（`_env_str`）、yiban/adapters/notifier/notify/ledger.py
+   （`_loginfail_daily_limit`）、yiban/adapters/notifier/mail/config.py（`_get`、私有 CA 开关）。
 
 关键断言：**写侧是 `.env` 优先，读侧也必须是**。本组件的写侧（设置页落盘）与 web 读侧
    都以 `.env` 为事实源；读侧若"环境变量优先"，键一旦进了 web 进程环境，设置页的写入
@@ -21,9 +21,9 @@ import shutil
 import tempfile
 import unittest
 
-from yiban.mail import config as mail_config
-from yiban.notify import config as notify_config
-from yiban.notify import ledger as notify_ledger
+from yiban.adapters.notifier.mail import config as mail_config
+from yiban.adapters.notifier.notify import config as notify_config
+from yiban.adapters.notifier.notify import ledger as notify_ledger
 
 ENV_KEY = "YIBAN_NOTIFY_COOLDOWN"
 MAIL_KEY = "YIBAN_MAIL_ENABLE"

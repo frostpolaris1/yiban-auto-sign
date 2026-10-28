@@ -19,7 +19,7 @@
      探针成功落 done、探针失败按 INFO 报级（设计内路径不得按 ERROR 报）、
      三个 best-effort 跳过分支（冷却 / 待办队列满 / 配额用尽）各留一条可见记录
 对应实现：`web/routes/accounts_api.py` 的 api_account_update、
-     `web/routes/my.py` 的 api_my_account_update、`web/services/verify_queue.py` 的
+     `web/routes/my_api.py` 的 api_my_account_update、`web/services/verify_queue.py` 的
      start_edit_probe 与 _reject_account
 关键断言：编辑口令为错值 → 200 且产生 status=rejected 的校验任务、账号 status 不变；
      编辑正确凭据 → 任务 status=done；只改名称 → 零任务（零误报）；
@@ -45,6 +45,10 @@ import tempfile
 import time
 import unittest
 from unittest import mock
+
+from werkzeug.security import generate_password_hash
+
+from yiban.attempt import jobs as verify_jobs
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -143,7 +147,7 @@ class _ProbeBase(unittest.TestCase):
         with io.open(self.accounts_file, "w", encoding="utf-8") as f:
             json.dump([], f)
         db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
-        db.create_user(OWNER, self.webapp.generate_password_hash(USER_PASS))
+        db.create_user(OWNER, generate_password_hash(USER_PASS))
 
     def tearDown(self):
         mock.patch.stopall()
@@ -195,10 +199,27 @@ class _ProbeBase(unittest.TestCase):
         end = time.time() + timeout
         while time.time() < end:
             rows = self._jobs()
-            if len(rows) == 1 and rows[0]["status"] in self.webapp.VERIFY_JOB_TERMINAL:
+            if len(rows) == 1 and rows[0]["status"] in verify_jobs.TERMINAL_STATUSES:
                 return rows[0]
             time.sleep(0.05)
         self.fail(f"编辑探针任务未落终态：{self._jobs()}")
+
+    def _wait_log(self, cm, predicate, timeout=10.0):
+        """轮询 `assertLogs` 的记录，直到 `predicate` 命中；超时即失败。
+
+        **为什么不能直接读 `cm.records`**：探针是后台线程。`yiban/attempt/jobs.py`
+        先 `store.finish` 落终态、后 `_reject` 写日志，故"任务已到终态"不等于
+        "日志已落"。满载时后台线程会在两步之间被换下 CPU，`assertLogs` 窗口随即
+        关闭，INFO 落在窗口外。本方法把判据钉在**日志自身出现**上，不钉线程调度。
+        """
+        end = time.time() + timeout
+        while time.time() < end:
+            for rec in list(cm.records):
+                if predicate(rec):
+                    return rec
+            time.sleep(0.01)
+        self.fail("等待日志落点超时（%.1fs）：%s" % (
+            timeout, [r.getMessage() for r in cm.records]))
 
     def _audit_actions(self):
         import db
@@ -264,6 +285,8 @@ class AdminEditProbeTest(_ProbeBase):
                       headers={"X-CSRF-Token": t})
             self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
             job = self._wait_one_job()
+            # 终态先于日志落（jobs.py 的 finish 在 _reject 之前），故必须再等日志。
+            self._wait_log(cm, lambda rec: "不改账号状态" in rec.getMessage())
         self.assertEqual(job["status"], "rejected", dict(job))
         hits = [rec for rec in cm.records if "不改账号状态" in rec.getMessage()]
         self.assertEqual([(r.levelname, r.getMessage()) for r in hits],

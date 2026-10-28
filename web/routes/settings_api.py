@@ -21,21 +21,36 @@
 `admin_delete_limited()` 取回同族的窗口限速判定。
 
 **通信**
-视图体不直接读 web.app 的模块级名字，一律经 `web.routes.appmod()` 按属性取——测试用
-`mock.patch.object(web.app, …)` 打桩（db / logger / clock / signin / yb_egress /
-write_env_batch / read_env / ENV_FILE / _in_sign_window / edge_config 等）必须继续生效。
-`.env` 写入一律经 `write_env_batch` 原子批写；被 `web.app` 的 `register_all(app)` 一次接入。
+A 类转发名（`db` / `clock` / `signin` / `yb_egress` / `read_env` / `load_env_int` /
+`_in_sign_window` 等）经真源模块直取（批 3-a 拆墙），故测试打桩点落在**真源**上；
+app.py 自有的模块级名字（`logger` / `ENV_FILE` / `write_env_batch` / `edge_config` 等）
+仍经 `web.routes.appmod()` 按属性取。`.env` 写入一律经 `write_env_batch` 原子批写；被 `web.app` 的 `register_all(app)` 一次接入。
 """
 import logging
 import os
 import time
 from datetime import datetime, timedelta
 
+import signin
 from flask import jsonify, session
 
+# A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
+from web import render as _render
+from web import security as _security
 from web.routes import admin_delete_limited, sensitive_password_gate
 from web.routes import appmod as _appmod
+from web.routes import session_abs_ttl as _session_abs_ttl
+from web.services import accounts_data as _accounts_data
+from web.services import capacity as _capacity
+from web.services import env_io as _env_io_svc
+from web.services import executor_env as _executor_env
+from web.services import http_request as _http
+from web.services import limits as _limits
+from web.services import logs as _logs_svc
+from web.services import measure as _measure
+from web.services import notify_mail as _notify_mail
 from web.services import signstatus as _signstatus
+from web.services import startup_cache as _startup_cache
 from web.services.env_io import (
     SCHEDULE_DIST_DEFAULTS,
     SCHEDULE_DIST_ENV_KEYS,
@@ -45,9 +60,16 @@ from web.services.env_io import (
     health_report_weekday_setting,
 )
 from web.services.env_io import env_write_refused_response as _env_write_refused_response
-from yiban import window as yb_window
-from yiban.infra.env_io import EnvWriteRefused as _EnvWriteRefused
-from yiban.infra.env_io import parse_env_flag as _parse_env_flag
+from yiban import egress as yb_egress
+from yiban import platform as yb_platform
+from yiban.adapters.config import env_io
+from yiban.adapters.config import loader as config_loader
+from yiban.adapters.config.env_io import EnvWriteRefused as _EnvWriteRefused
+from yiban.adapters.config.env_io import parse_env_flag as _parse_env_flag
+from yiban.adapters.persistence import db
+from yiban.core import clock
+from yiban.core import masking as _masking
+from yiban.core import window as yb_window
 
 # 与 web 日志同通道：面板读到的非预期开关取值落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")
@@ -77,12 +99,11 @@ def _executor_write_guard(data, action, changed):
     改出口、增删执行体、关掉兜底——而这恰恰是最容易造成**静默漏签**的一类配置。
     属"配置类"动作，故可被 TTL 豁免（刚复核过口令的同一出口不必再输一次）。
     """
-    m = _appmod()
     if not changed:
         return None
     denied = sensitive_password_gate()(data, f"执行体写操作: {action}")
     if denied is not None:
-        m.db.audit(session.get("username") or "?", "executors_pw_fail", "executors",
+        db.audit(session.get("username") or "?", "executors_pw_fail", "executors",
                  action)
         return denied
     return None
@@ -102,14 +123,14 @@ def _executor_change_alert(action, changed):
     用户输入，一律不进正文。
     """
     m = _appmod()
-    if not changed or m._pw_gate_tier(m.ENV_FILE) == m.PW_GATE_FULL:
+    if not changed or _security._pw_gate_tier() == _security.PW_GATE_FULL:
         return
     try:
-        m.send_notification(
+        _notify_mail.send_notification(
             "系统设置变更告警",
-            m._change_mail(
+            _notify_mail._change_mail(
                 "执行体配置已变更。",
-                detail=[("动作", m._nl_safe(action))],
+                detail=[("动作", _notify_mail._nl_safe(action))],
                 advice=["如非本人操作，请核对 .env 的执行体清单与出口并回滚"],
             ),
             urgent=True,
@@ -136,46 +157,46 @@ def _reply_slot_egress(env_key, index):
     或 `YIBAN_EXECUTORS[2]`），代理串可能带凭据，绝不进审计链。
     """
     m = _appmod()
-    data = m._json_body()
+    data = _http._json_body()
     if "egress" not in data:
         # 缺键不给"什么都不改"的歧义：清空必须显式写 null 或空串
         return jsonify({"error": "缺少 egress 字段（该槽位要直连请显式传 null 或空串）"}), 400
-    value, err = m._validated_proxy_value(data["egress"])
+    value, err = _executor_env._validated_proxy_value(data["egress"])
     if err:
         return jsonify({"error": err}), 400
-    rows = m.yb_egress.parse_manifest(m.read_env(m.ENV_FILE).get(m.yb_egress.ENV_MANIFEST))
+    rows = yb_egress.parse_manifest(_env_io_svc.read_env(m.ENV_FILE).get(yb_egress.ENV_MANIFEST))
     if rows is not None:
         # "值真的变了"才要口令（与其他执行体写端点同一口径）：清单模式下比该行的现值，
         # 没有那一行（如兜底行尚未建立）也算要改。
-        cur_row = (m.yb_egress.fallback_row(rows) if index is None
-                   else m.yb_egress.row_by_slot(rows, index))
+        cur_row = (yb_egress.fallback_row(rows) if index is None
+                   else yb_egress.row_by_slot(rows, index))
         cur_value = "" if cur_row is None else str(cur_row.get("proxy") or "")
-        audit_detail = (f"{m.yb_egress.ENV_MANIFEST}[fallback]" if index is None
-                        else f"{m.yb_egress.ENV_MANIFEST}[{index}]")
+        audit_detail = (f"{yb_egress.ENV_MANIFEST}[fallback]" if index is None
+                        else f"{yb_egress.ENV_MANIFEST}[{index}]")
     else:
-        env_now = m.read_env(m.ENV_FILE)
-        role_now = m.yb_egress.ROLE_FALLBACK if index is None else m.yb_egress.ROLE_WORKER
-        cur_value = str(m.yb_egress.resolve(role_now, index or 0, env=env_now) or "")
+        env_now = _env_io_svc.read_env(m.ENV_FILE)
+        role_now = yb_egress.ROLE_FALLBACK if index is None else yb_egress.ROLE_WORKER
+        cur_value = str(yb_egress.resolve(role_now, index or 0, env=env_now) or "")
         audit_detail = env_key if index is None else f"{env_key}[{index}]"
     changed = value != cur_value
     denied = _executor_write_guard(data, f"{audit_detail} 改出口", changed)
     if denied:
         return denied
     if rows is not None:
-        err, code = (m._save_fallback_egress(m.ENV_FILE, value) if index is None
-                     else m._save_row_egress(m.ENV_FILE, index, value))
+        err, code = (_executor_env._save_fallback_egress(m.ENV_FILE, value) if index is None
+                     else _executor_env._save_row_egress(m.ENV_FILE, index, value))
         # 清单模式下该行的出口**就是刚提交的值**（不经过旧键），故不能拿 resolve 读
-        desc = m.yb_egress.describe(value)
+        desc = yb_egress.describe(value)
     else:
-        err, code = m._save_slot_egress(m.ENV_FILE, env_key, index, value)
+        err, code = _executor_env._save_slot_egress(m.ENV_FILE, env_key, index, value)
         # 回"该槽位此刻生效的描述串"：与 GET 的 assignments[i].egress 同走
         # yiban.egress.resolve，故 PUT 之后 GET 读到的与这里回的**是同一个值**
-        role = m.yb_egress.ROLE_FALLBACK if index is None else m.yb_egress.ROLE_WORKER
-        desc = m.yb_egress.describe(
-            m.yb_egress.resolve(role, index or 0, env=m.read_env(m.ENV_FILE)))
+        role = yb_egress.ROLE_FALLBACK if index is None else yb_egress.ROLE_WORKER
+        desc = yb_egress.describe(
+            yb_egress.resolve(role, index or 0, env=_env_io_svc.read_env(m.ENV_FILE)))
     if err:
         return jsonify({"error": err}), code
-    m.db.audit(m._audit_actor(), "settings", "executors", audit_detail)
+    db.audit(_notify_mail._audit_actor(), "settings", "executors", audit_detail)
     _executor_change_alert(f"{audit_detail} 改出口", changed)
     return jsonify({"ok": True,
                     "index": index if index is not None else "fallback",
@@ -184,7 +205,7 @@ def _reply_slot_egress(env_key, index):
 
 def api_settings():
     m = _appmod()
-    env = m.read_env(m.ENV_FILE)
+    env = _env_io_svc.read_env(m.ENV_FILE)
 
     def _bool_field(key):
         """面板布尔键的**唯一**读法：与引擎/run.sh 同一真值口径（1/true/on/yes=开）。
@@ -196,11 +217,11 @@ def api_settings():
                                     key=key, log=logger) else 0
 
     mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()
-    sw = m._sign_window()
+    sw = _signstatus._sign_window()
     # 窗口不可用（已回退默认）时把"配置异常、已按 X~Y 运行"暴露给设置页：那才是管理员
     # 会去修的地方，只写日志+邮件等于让他继续按错的窗口签到。文案与 /api/clock 同源
     # （`signstatus.window_fallback_text`），正常窗口为空串（响应逐字不变）。
-    _fallback_text = _signstatus.window_fallback_text(m.sign_window_bounds())
+    _fallback_text = _signstatus.window_fallback_text(_signstatus.sign_window_bounds())
     # 容量口径（与配额检查同源 `_capacity_account_count`）：
     #   用户 = 全部未删除注册用户（含尚未添加账号的空用户，仅注册名额口径）
     #   账号 = **会发起易班请求的账号**（非删除且审核态已通过，含 admin 直属裸账号）
@@ -209,11 +230,11 @@ def api_settings():
     # ~13.5 rps。此处四处
     # 用途（计数/三分类/未通过审核数/owners 集合）都只用明文列，共享同一快照还
     # 消除并发下 _cur_accounts 与三分类求和不一致的可能。
-    _users = m.db.load_users()
-    _accts_raw = m.load_accounts_raw()
+    _users = db.load_users()
+    _accts_raw = _accounts_data.load_accounts_raw()
     _cap_users = len(_users)
     # 与 _capacity_account_count() 同口径，只是复用同一快照
-    _cur_accounts = sum(1 for a in _accts_raw if m.db.account_signs_in(a))
+    _cur_accounts = sum(1 for a in _accts_raw if db.account_signs_in(a))
     # 账号容量拆解（**纯展示**）：名额制下"停签/故障账号占满名额、
     # 新账号被拒但实际负载不高"是管理者的真实困惑，故展示分类计数。
     # 三桶互斥且求和 = _cur_accounts（= 计容量的账号数），优先级：
@@ -221,12 +242,12 @@ def api_settings():
     # 那是用户主动行为，先说清楚"是他自己要停的"）。
     # 未通过审核的行**不属于任何一桶**（它们不计容量，见 accounts_audit），
     # 归进"正常"会让管理者以为名额被有效账号占满。
-    _cred_paused = m._cred_paused_phones()
+    _cred_paused = _logs_svc._cred_paused_phones()
     _bd_normal = _bd_user_paused = _bd_cred_paused = _bd_audit = 0
     for _a in _accts_raw:
         if _a.get("deleted"):
             continue
-        if not m.db.account_signs_in(_a):
+        if not db.account_signs_in(_a):
             _bd_audit += 1
         elif _a.get("user_paused"):
             _bd_user_paused += 1
@@ -238,16 +259,18 @@ def api_settings():
     _owners = {a.get("owner") for a in _accts_raw if not a["deleted"] and a.get("owner")}
     _potential = sum(1 for u in _users if u["email"] not in _owners)
     # gap 缺省取 DEFAULT_ACCOUNT_GAP_MAX（10），与设置页展示一致
-    _est_start = m.load_env_int(m.ENV_FILE, "YIBAN_START_DELAY_MAX", 0)
-    _est_gap = m.load_env_int(m.ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", m.DEFAULT_ACCOUNT_GAP_MAX)
-    _est_accounts = m._capacity_estimate(_est_gap)
+    _est_start = _env_io_svc.load_env_int(
+        m.ENV_FILE, "YIBAN_START_DELAY_MAX",
+        config_loader.default_of("YIBAN_START_DELAY_MAX"))
+    _est_gap = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", _limits.DEFAULT_ACCOUNT_GAP_MAX)
+    _est_accounts = _capacity._capacity_estimate(_est_gap)
     return jsonify(
         {
             "ok": True,
             "start_delay_max": _est_start,
             "gap_max": _est_gap,
-            "default_start_delay_max": m.DEFAULT_START_DELAY_MAX,
-            "default_gap_max": m.DEFAULT_ACCOUNT_GAP_MAX,
+            "default_start_delay_max": _limits.DEFAULT_START_DELAY_MAX,
+            "default_gap_max": _limits.DEFAULT_ACCOUNT_GAP_MAX,
             # 容量预估（单档口径）：签到容量按当前账号间隔与有效窗口
             # （已扣掐头去尾）估算；前端已用（或含潜在负载）超容量仅警示变色
             "capacity_estimate": {
@@ -261,17 +284,17 @@ def api_settings():
             "sign_order": env.get("YIBAN_SIGN_ORDER", "").strip().lower() or (
                 "random" if mode == "random" else "sequence"),
             "sign_dist": env.get("YIBAN_SIGN_DIST", "").strip().lower() or (
-                "normal" if mode == "normal" else "uniform"),
+                "normal" if mode == "normal" else "front"),
             # 掐头去尾（前后独立，秒；window_edge_sec 兼容旧前端 = 前裁）
-            "window_edge_sec": m.edge_config()[0],
-            "edge_front_sec": m.edge_config()[0],
-            "edge_back_sec": m.edge_config()[1],
+            "window_edge_sec": _render.edge_config()[0],
+            "edge_front_sec": _render.edge_config()[0],
+            "edge_back_sec": _render.edge_config()[1],
             # 正态 μ/σ 区间四键（%，定义的是区间、每天在区间内取一次值）。A 档：
             # 仅主管理员可改。回显与"生效值"同源（`load_env_int` + 引擎缺省），
             # 否则提交一个等于回显的值会被判成"没改"、A 档口令门禁被绕过。
-            **{_k: m.load_env_int(m.ENV_FILE, _env_key, SCHEDULE_DIST_DEFAULTS[_k])
+            **{_k: _env_io_svc.load_env_int(m.ENV_FILE, _env_key, SCHEDULE_DIST_DEFAULTS[_k])
                for _k, _env_key in SCHEDULE_DIST_ENV_KEYS.items()},
-            "allow_time_pref": m.load_env_int(m.ENV_FILE, "YIBAN_ALLOW_TIME_PREF", 0),
+            "allow_time_pref": _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_ALLOW_TIME_PREF", 0),
             "sign_window": f"{sw[0][0]:02d}:{sw[0][1]:02d} ~ {sw[1][0]:02d}:{sw[1][1]:02d}",
             # 窗口不可用（已回退默认）的可见提示；正常窗口时 false + 空串
             "window_fallback": bool(_fallback_text),
@@ -279,9 +302,9 @@ def api_settings():
             # 容量状态：注册用户/计容量账号 当前使用量 vs 上限（管理员知情）
             "capacity": {
                 "users": _cap_users,
-                "users_max": m.load_env_int(m.ENV_FILE, "YIBAN_MAX_USERS", m.DEFAULT_MAX_USERS),
+                "users_max": _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_USERS", _limits.DEFAULT_MAX_USERS),
                 "accounts": _cur_accounts,
-                "accounts_max": m.load_env_int(m.ENV_FILE, "YIBAN_MAX_ACCOUNTS", m.DEFAULT_MAX_ACCOUNTS),
+                "accounts_max": _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MAX_ACCOUNTS", _limits.DEFAULT_MAX_ACCOUNTS),
                 # 账号容量拆解（仅展示）：三桶互斥、求和 = accounts。
                 # 定义见 api_settings 顶部注释；配额判定与 accounts 同源。
                 "accounts_breakdown": {
@@ -308,8 +331,10 @@ def api_settings():
             # 注册账号验证 + 探针模式（任意管理员可改）
             "account_verify": _bool_field("YIBAN_ACCOUNT_VERIFY"),
             "probe_enable": _bool_field("YIBAN_PROBE_ENABLE"),
-            "probe_time": env.get("YIBAN_PROBE_TIME", "20:00").strip() or "20:00",
-            "probe_interval": env.get("YIBAN_PROBE_INTERVAL_DAYS", "1").strip() or "1",
+            "probe_time": (env.get("YIBAN_PROBE_TIME") or "").strip()
+            or config_loader.default_of("YIBAN_PROBE_TIME"),
+            "probe_interval": (env.get("YIBAN_PROBE_INTERVAL_DAYS") or "").strip()
+            or config_loader.default_of("YIBAN_PROBE_INTERVAL_DAYS"),
             # 告警通道健康报告发送时刻（issue #23）：空串 = 未配置 = 沿用"例行日唤醒即发"。
             # 时刻不补默认钟点：把"没配"显示成"配了 09:00"会让用户以为改过、也看不出
             # 报告的到达时间仍跟着部署节拍走。取值经同一处归一（`9:00` → `09:00`），
@@ -329,18 +354,19 @@ def api_settings():
 
 def api_settings_save():
     m = _appmod()
-    data = m._json_body()
-    is_master = m._is_builtin_admin_session()
-    # 本次请求的 A 档键集：`web/app.py` 的 `MASTER_ONLY_KEYS` 加正态 μ/σ 区间四键。
-    # 四键因本轮 file-scope 限制不能进 app.py 的档位表，故其 A 档判定（403 + 当次口令）
-    # 复刻在这里；键名清单单源在 env_io.SCHEDULE_DIST_KEYS，不在本路由另抄一遍字面量。
-    master_only = set(m.MASTER_ONLY_KEYS) | SCHEDULE_DIST_KEYS
+    data = _http._json_body()
+    is_master = _security._is_builtin_admin_session()
+    # 本次请求的 A 档键集：`web/services/env_io.py` 的 `MASTER_ONLY_KEYS` 加正态 μ/σ 区间四键。
+    # 四键因本轮 file-scope 限制不能进 app.py 的档位表，故其 A 档判定（403 ＋ 口令门禁）
+    # 复刻在这里。口令要求跟档位走：缺省 risk 档同出口免口令，换出口或 full 档才要。
+    # 键名清单单源在 env_io.SCHEDULE_DIST_KEYS，不在本路由另抄一遍字面量。
+    master_only = set(_env_io_svc.MASTER_ONLY_KEYS) | SCHEDULE_DIST_KEYS
     # 档位判定读单源常量（见 MASTER_ONLY_KEYS 的定义处）：只看"键是否出现"、不看值，
     # 与普通管理员即便提交同值也无从改动这些键的既有 403 语义一致。
     # global_pause 是唯一例外——0→1「急停」任意管理员都能做，1→0「恢复签到」仍仅
     # 主管理员：能把全站停下去是止损，能放开来是权力。
     gp_req = None
-    gp_key = m.GLOBAL_PAUSE_KEY
+    gp_key = _env_io_svc.GLOBAL_PAUSE_KEY
     if gp_key in data:
         gp_req = 1 if _parse_env_flag(data.get(gp_key, ""), default=False,
                                       key=gp_key, log=logger) else 0
@@ -348,7 +374,7 @@ def api_settings_save():
     if not is_master:
         wanted_a = master_only.intersection(data)
         if gp_req == 0:
-            wanted_a.add(m.GLOBAL_PAUSE_KEY)
+            wanted_a.add(_env_io_svc.GLOBAL_PAUSE_KEY)
     if wanted_a:
         return jsonify({"error": "仅主管理员可修改调度设置"}), 403
     # 字段携带才写——若缺省即 0 且无条件写两个键，
@@ -360,9 +386,12 @@ def api_settings_save():
         gap = int(data.get("gap_max", 0))
     except (TypeError, ValueError):
         return jsonify({"error": "延迟秒数必须是整数"}), 400
-    # 上限 1 小时：防止误填超大值破坏签到随机延迟
-    start = min(max(start, 0), 3600)
-    gap = min(max(gap, 0), 3600)
+    # 区间校验（0~3600 秒）。不静默夹取：管理员提交 99999 却看到 200、实际存 3600，
+    # 会以为保存坏了；与同函数 edge/μ/σ/max_* 的显式区间范式一致（ba-p05-07）。
+    if not 0 <= start <= 3600:
+        return jsonify({"error": "启动延迟应为 0~3600 秒"}), 400
+    if not 0 <= gap <= 3600:
+        return jsonify({"error": "账号间隔应为 0~3600 秒"}), 400
     # 随机延迟影响自动+手动签到节奏，且新设置预估容量不足（当前活跃账号
     # 超过预估值）时拒绝保存。口令复核按档位收在下面的统一门禁块里（不在这里各判一次），
     # 本段只留"就算口令对也不该落盘"的容量硬门。
@@ -373,10 +402,10 @@ def api_settings_save():
         # gap 未携带（部分更新只改启动延迟）时必须按 `.env` 现值算：用请求缺省的 0
         # 会把预估容量顶到窗口上限，硬门被"乐观上限"整个绕过。现值读法与 GET
         # /api/settings 的 gap_max 展示同源（0 是合法间隔，即不留间隔）。
-        gate_gap = gap if has_gap else m.load_env_int(
-            m.ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", m.DEFAULT_ACCOUNT_GAP_MAX)
-        est_accounts = m._capacity_estimate(gate_gap)
-        cur_accounts = m._capacity_account_count()
+        gate_gap = gap if has_gap else _env_io_svc.load_env_int(
+            m.ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", _limits.DEFAULT_ACCOUNT_GAP_MAX)
+        est_accounts = _capacity._capacity_estimate(gate_gap)
+        cur_accounts = _capacity._capacity_account_count()
         if cur_accounts > est_accounts:
             return jsonify({
                 "error": f"按新设置预估账号容量仅 {est_accounts} 个，当前活跃账号 {cur_accounts} 个，"
@@ -393,8 +422,8 @@ def api_settings_save():
     sign_dist = str(data.get("sign_dist", "")).strip().lower()
     if sign_order and sign_order not in ("sequence", "random"):
         return jsonify({"error": "排序方式取值应为 sequence 或 random"}), 400
-    if sign_dist and sign_dist not in ("uniform", "normal"):
-        return jsonify({"error": "分布方式取值应为 uniform 或 normal"}), 400
+    if sign_dist and sign_dist not in ("uniform", "normal", "front"):
+        return jsonify({"error": "分布方式取值应为 uniform、normal 或 front"}), 400
     # 掐头去尾（前后独立）：window_edge_sec 兼容旧前端（对称写）；
     # edge_front_sec / edge_back_sec 各自独立（秒，0~300，30 的倍数 = 0.5 分钟粒度）。
     # 0 是合法值（不裁切），不能用 write_env_int（其语义为 <=0 删除行）。
@@ -514,8 +543,10 @@ def api_settings_save():
                 n = int(pi)
             except (TypeError, ValueError):
                 return jsonify({"error": "探针触发频率应为正整数（每 N 天）或 once（单次）"}), 400
-            if n <= 0:
-                return jsonify({"error": "探针触发频率应为正整数（每 N 天）或 once（单次）"}), 400
+            # 上界 3650 天（约 10 年）：无上界时 100000 会以 200 落盘、探针从此不再
+            # 触发，凭据失效/被风控这类事实静默失去监测（ba-p05-07）。
+            if not 1 <= n <= 3650:
+                return jsonify({"error": "探针触发频率应为 1~3650 天，或 once（单次）"}), 400
             probe_interval = str(n)
     # 容量上限（主管理员专属；0=不限，钳位 0~100000）：
     # 字段携带才写——部分更新不得把未携带的 max_* 静默清零
@@ -544,16 +575,16 @@ def api_settings_save():
         try:
             _v = int(data[_k])
         except (TypeError, ValueError):
-            return jsonify({"error": f"{m._settings_label(_k)}必须是整数（%）"}), 400
+            return jsonify({"error": f"{_env_io_svc._settings_label(_k)}必须是整数（%）"}), 400
         if not (0 <= _v <= 100):
-            return jsonify({"error": f"{m._settings_label(_k)}应为 0~100（%）"}), 400
+            return jsonify({"error": f"{_env_io_svc._settings_label(_k)}应为 0~100（%）"}), 400
         dist_params[_k] = _v
     # ---- 档位门禁：A/B 档的口令复核只在这一处判（档位表见 MASTER_ONLY_KEYS）----
     # 只带其中一个边缘键时另一侧保持现值——先按写侧同一口径补齐，否则"改了前裁、
     # 后裁跟着变"这件事在变更判定里是隐形的
     edge_note = ""
     if edge_front is not None or edge_back is not None:
-        _cur_edge = m.edge_config()
+        _cur_edge = _render.edge_config()
         if edge_front is None:
             edge_front = _cur_edge[0]
         if edge_back is None:
@@ -565,7 +596,7 @@ def api_settings_save():
         if win_start_str is not None:
             _win_lo, _win_hi = (sh, sm), (eh, em)
         else:
-            _win_lo, _win_hi = m._sign_window()
+            _win_lo, _win_hi = _signstatus._sign_window()
         _win_sec = ((_win_hi[0] * 60 + _win_hi[1]) - (_win_lo[0] * 60 + _win_lo[1])) * 60
         _cap = yb_window.edge_cap_sec(_win_sec)
         _edge_before = (edge_front, edge_back)
@@ -577,7 +608,7 @@ def api_settings_save():
     # gap 写 0 是删键、生效值回到默认，按 0 比会把"没改"当成"改了"（反之亦然）。
     proposed = {
         "start_delay_max": str(start) if has_start else None,
-        "gap_max": str(gap if gap > 0 else m.DEFAULT_ACCOUNT_GAP_MAX) if has_gap else None,
+        "gap_max": str(gap if gap > 0 else _limits.DEFAULT_ACCOUNT_GAP_MAX) if has_gap else None,
         "sign_window": None if win_start_str is None else f"{win_start_str}~{win_end_str}",
         "edge_front_sec": None if edge_front is None else str(edge_front),
         "edge_back_sec": None if edge_back is None else str(edge_back),
@@ -603,144 +634,151 @@ def api_settings_save():
     # 正态 μ/σ 区间四键：与 GET 回显同形（整数字符串），未携带的键不进变更判定
     for _k in SCHEDULE_DIST_KEYS:
         proposed[_k] = None if _k not in dist_params else str(dist_params[_k])
-    cur_vals = m._settings_effective_values(m.ENV_FILE)
-    # 真变化的档位键（旧值现读，绝不用请求自带的旧值——抄一份当前值即可自称"没改"）
-    changes = []
-    for _k in sorted(set(data).intersection(
-            master_only | m.GATED_KEYS | {m.GLOBAL_PAUSE_KEY})):
-        _new, _old = proposed.get(_k), cur_vals.get(_k)
-        if _new is not None and _new != _old:
-            # 旧值**原样**进元组：`_old or "-"` 会在 `_settings_value_text` 之前把空串换成
-            # "-"，让"空串是有意义的值"（未配置/清空）的键永远印不出人话——旧值位从此全是"-"。
-            changes.append((_k, _old, _new))
-    a_changes = [c for c in changes if c[0] in master_only]
-    b_changes = [c for c in changes if c[0] in m.GATED_KEYS]
-    pause_change = next((c for c in changes if c[0] == m.GLOBAL_PAUSE_KEY), None)
+    # 变更判定与落盘必须同持 .env 写锁：判据是「值真变了才要口令」，若比对用的是
+    # 旧版、写入时覆盖了并发改动，方向上恰好 fail-open（ba-p05-09）。同域执行体
+    # 写口已把比对搬进写锁内（见 write_env_batch 段上方注释）。锁可重入，
+    # write_env_batch 内部的写锁不会与外层重复获取。
+    with _env_io_svc._env_write_lock(m.ENV_FILE):
+        cur_vals = _env_io_svc._settings_effective_values(m.ENV_FILE)
+        # 真变化的档位键（旧值现读，绝不用请求自带的旧值——抄一份当前值即可自称"没改"）
+        changes = []
+        for _k in sorted(set(data).intersection(
+                master_only | _env_io_svc.GATED_KEYS | {_env_io_svc.GLOBAL_PAUSE_KEY})):
+            _new, _old = proposed.get(_k), cur_vals.get(_k)
+            if _new is not None and _new != _old:
+                # 旧值**原样**进元组：`_old or "-"` 会在 `_settings_value_text` 之前把空串换成
+                # "-"，让"空串是有意义的值"（未配置/清空）的键永远印不出人话——旧值位从此全是"-"。
+                changes.append((_k, _old, _new))
+        a_changes = [c for c in changes if c[0] in master_only]
+        b_changes = [c for c in changes if c[0] in _env_io_svc.GATED_KEYS]
+        pause_change = next((c for c in changes if c[0] == _env_io_svc.GLOBAL_PAUSE_KEY), None)
 
-    def _change_text(key, value):
-        """变更明细里的值文本：先过 `_settings_value_text`（空串=未配置这类"有意义的值"
-        翻成人话），再兜底 `-`（值本来就空、又不在那张表里的键，别印出半个等号）。
+        def _change_text(key, value):
+            """变更明细里的值文本：先过 `_settings_value_text`（空串=未配置这类"有意义的值"
+            翻成人话），再兜底 `-`（值本来就空、又不在那张表里的键，别印出半个等号）。
 
-        两处消费点（变更明细、口令门禁留痕）共用本函数——各写一份必然再漂移一次。
-        """
-        return m._settings_value_text(key, value) or "-"
+            两处消费点（变更明细、口令门禁留痕）共用本函数——各写一份必然再漂移一次。
+            """
+            return _env_io_svc._settings_value_text(key, value) or "-"
 
-    def _tier_gate(action_label, always_required, attempted, irreversible=False):
-        """档位口令门禁被拒时的统一处置：留痕 + 把响应交回调用方直接 return。
+        def _tier_gate(action_label, always_required, attempted, irreversible=False):
+            """档位口令门禁被拒时的统一处置：留痕 + 把响应交回调用方直接 return。
 
-        `irreversible=True`（0→1 急停）在非 `full` 档还要求请求体带倒计时确认凭据；
-        `always_required` 只在 `full` 档区分 A/B 档，其余档由门禁按档位自行决定
-        （见 `_sensitive_password_gate`）。
-        """
-        denied = sensitive_password_gate()(data, action_label,
-                                          always_required=always_required,
-                                          irreversible=irreversible)
-        if denied is not None:
-            m.db.audit(
-                session.get("username") or "?",
-                "settings_switch_pw_fail",
-                "settings",
-                f"「{action_label}」口令复核未通过（尝试变更："
-                + "、".join(f"{m._settings_label(k)}={_change_text(k, o)}→{_change_text(k, n)}"
-                            for k, o, n in attempted)
-                + "）",
-            )
-        return denied
-
-    if a_changes or pause_change:
-        # A 档**不吃豁免**：豁免给的是"刚复核过的同一出口不必再输一次"，而 A 档
-        # 要防的恰是持被窃会话者改一次配好手感、再连改全站停摆项。
-        _action = "、".join(
-            ([f"破坏性设置（{('、'.join(m._settings_label(k) for k, _, _ in a_changes))}）"]
-             if a_changes else [])
-            + (["系统开关"] if pause_change else []))
-        denied = _tier_gate(_action, True,
-                            (a_changes or []) + ([pause_change] if pause_change else []),
-                            # 0→1 急停不可逆（当场把全站停下来）；1→0 恢复可逆
-                            irreversible=bool(pause_change and pause_change[2] == "1"))
-        if denied is not None:
+            `irreversible=True`（0→1 急停）在非 `full` 档还要求请求体带倒计时确认凭据；
+            `always_required` 只在 `full` 档区分 A/B 档，其余档由门禁按档位自行决定
+            （见 `_sensitive_password_gate`）。
+            """
+            denied = sensitive_password_gate()(data, action_label,
+                                              always_required=always_required,
+                                              irreversible=irreversible)
+            if denied is not None:
+                db.audit(
+                    session.get("username") or "?",
+                    "settings_switch_pw_fail",
+                    "settings",
+                    f"「{action_label}」口令复核未通过（尝试变更："
+                    + "、".join(f"{_env_io_svc._settings_label(k)}={_change_text(k, o)}→{_change_text(k, n)}"
+                                for k, o, n in attempted)
+                    + "）",
+                )
             return denied
-    if pause_change and pause_change[2] == "1" and admin_delete_limited()():
-        # 急停与"删数据/拆报警器"同属一次点击即全站停摆，故共用同一套高危额度
-        # （判定即占用，必须排在口令复核之后——否则不知口令者能用错口令刷光额度）。
-        return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
-    if b_changes:
-        denied = _tier_gate("调度配置", False, b_changes)
-        if denied is not None:
-            return denied
-    # ---- 全部校验通过，批量原子写入（避免多次独立写导致配置不一致）----
-    # 仅请求携带的字段才写入（缺失不重置）
-    updates = {}
-    if has_start:
-        updates["YIBAN_START_DELAY_MAX"] = str(start) if start > 0 else ""
-    if has_gap:
-        updates["YIBAN_ACCOUNT_GAP_MAX"] = str(gap) if gap > 0 else ""
-    if sign_mode:
-        updates["YIBAN_SIGN_MODE"] = sign_mode
-    if sign_order:
-        updates["YIBAN_SIGN_ORDER"] = sign_order
-    if sign_dist:
-        updates["YIBAN_SIGN_DIST"] = sign_dist
-    if edge_front is not None or edge_back is not None:
-        # 写入新键并删除旧键（迁移）；未携带的一侧已在门禁块前按现值补齐
-        updates["YIBAN_WINDOW_EDGE_FRONT_SEC"] = str(edge_front)
-        updates["YIBAN_WINDOW_EDGE_BACK_SEC"] = str(edge_back)
-        updates["YIBAN_WINDOW_EDGE_SEC"] = ""  # 旧键删除（前后对称语义已拆分为两键）
-    if pref is not None:
-        updates["YIBAN_ALLOW_TIME_PREF"] = str(pref)
-    if win_start_str is not None:
-        updates["YIBAN_SIGN_START"] = win_start_str
-        updates["YIBAN_SIGN_END"] = win_end_str
-    if sunday_sign is not None:
-        updates["YIBAN_SUNDAY_SIGN"] = "1" if sunday_sign else ""
-    if saturday_sign is not None:
-        # 显式写 0/1（默认已是 0，显式落盘自文档化；不改写 sunday 的删键风格以保持各自历史口径）
-        updates["YIBAN_SATURDAY_SIGN"] = "1" if saturday_sign else "0"
-    if global_pause is not None:
-        updates["YIBAN_GLOBAL_PAUSE"] = "1" if global_pause else ""
-    if registration_pause is not None:
-        # ""=开放（删键，读侧默认 0），与 global_pause 同口径；"1"=暂停
-        updates["YIBAN_REGISTRATION_PAUSE"] = "1" if registration_pause else ""
-    if account_verify is not None:
-        updates["YIBAN_ACCOUNT_VERIFY"] = "1" if account_verify else ""
-    if probe_enable is not None:
-        updates["YIBAN_PROBE_ENABLE"] = "1" if probe_enable else ""
-    if probe_time is not None:
-        updates["YIBAN_PROBE_TIME"] = probe_time
-    if probe_interval is not None:
-        updates["YIBAN_PROBE_INTERVAL_DAYS"] = probe_interval
-    if health_report_time is not None:
-        # "" = 删键（回落到"唤醒即发"），与其它设置键的"空值=删键"同口径
-        updates["YIBAN_HEALTH_REPORT_TIME"] = health_report_time
-    if health_report_weekday is not None:
-        updates["YIBAN_HEALTH_REPORT_WEEKDAY"] = health_report_weekday
-    if max_users_val is not None:
-        # 0=不限须显式落盘 "0"（删键会回退默认 500/200，语义不同）
-        updates["YIBAN_MAX_USERS"] = str(max_users_val)
-    if max_accounts_val is not None:
-        updates["YIBAN_MAX_ACCOUNTS"] = str(max_accounts_val)
-    # 正态 μ/σ 区间四键：携带才写（缺失不重置），环境键名取自 env_io 的映射表
-    for _k, _env_key in SCHEDULE_DIST_ENV_KEYS.items():
-        if _k in dist_params:
-            updates[_env_key] = str(dist_params[_k])
-    try:
-        m.write_env_batch(m.ENV_FILE, updates)
-    except _EnvWriteRefused as e:
-        # 行模型 fail-closed：既有行含潜伏分隔符、或写入会改动本次未请求的键 ⇒ 拒绝落盘
-        # （异常消息只含键名/行号，不带值；此处仍不回显给前端）。给 409 而非 500：配置
-        # 冲突需要人工清理 .env 后才能保存，不是服务器故障。响应体与其它 .env 写点同源。
-        m.logger.error("设置写入被拒绝（.env 行模型/键集合 diff）: %s", e)
-        return _env_write_refused_response(e, m.ENV_FILE)
-    except ValueError as e:
-        # 入参本身不合法（键名非法 / 值含行分隔符或超长）：**不是** .env 歧义，不得套用
-        # "请人工清理 .env"的文案把人指错方向。给 400（提交内容有误），并带 reason 供前端
-        # 区分。"行分隔符"这类值错误与"潜伏分隔符"文件态是两回事，故文案分开。
-        m.logger.error("设置写入值非法: %s", e)
-        return jsonify({
-            "error": "配置值不合法（键名非法，或值包含行分隔符/超出长度上限），未写入；"
-                     "请修正后重试",
-            "reason": "invalid_value",
-        }), 400
+
+        if a_changes or pause_change:
+            # A 档**不吃豁免**：豁免给的是"刚复核过的同一出口不必再输一次"，而 A 档
+            # 要防的恰是持被窃会话者改一次配好手感、再连改全站停摆项。
+            _action = "、".join(
+                ([f"破坏性设置（{('、'.join(_env_io_svc._settings_label(k) for k, _, _ in a_changes))}）"]
+                 if a_changes else [])
+                + (["系统开关"] if pause_change else []))
+            denied = _tier_gate(_action, True,
+                                (a_changes or []) + ([pause_change] if pause_change else []),
+                                # 0→1 急停不可逆（当场把全站停下来）；1→0 恢复可逆
+                                irreversible=bool(pause_change and pause_change[2] == "1"))
+            if denied is not None:
+                return denied
+        if pause_change and pause_change[2] == "1" and admin_delete_limited()():
+            # 急停与"删数据/拆报警器"同属一次点击即全站停摆，故共用同一套高危额度
+            # （判定即占用，必须排在口令复核之后——否则不知口令者能用错口令刷光额度）。
+            return jsonify({"error": "操作过于频繁，请稍后再试"}), 429
+        if b_changes:
+            denied = _tier_gate("调度配置", False, b_changes)
+            if denied is not None:
+                return denied
+        # ---- 全部校验通过，批量原子写入（避免多次独立写导致配置不一致）----
+        # 仅请求携带的字段才写入（缺失不重置）
+        updates = {}
+        if has_start:
+            # 0 = 关闭随机延迟：写空值即删键，生效值回落到名册缺省。
+            start_value = str(start) if start > 0 else ""
+            updates["YIBAN_START_DELAY_MAX"] = start_value
+        if has_gap:
+            updates["YIBAN_ACCOUNT_GAP_MAX"] = str(gap) if gap > 0 else ""
+        if sign_mode:
+            updates["YIBAN_SIGN_MODE"] = sign_mode
+        if sign_order:
+            updates["YIBAN_SIGN_ORDER"] = sign_order
+        if sign_dist:
+            updates["YIBAN_SIGN_DIST"] = sign_dist
+        if edge_front is not None or edge_back is not None:
+            # 写入新键并删除旧键（迁移）；未携带的一侧已在门禁块前按现值补齐
+            updates["YIBAN_WINDOW_EDGE_FRONT_SEC"] = str(edge_front)
+            updates["YIBAN_WINDOW_EDGE_BACK_SEC"] = str(edge_back)
+            updates["YIBAN_WINDOW_EDGE_SEC"] = ""  # 旧键删除（前后对称语义已拆分为两键）
+        if pref is not None:
+            updates["YIBAN_ALLOW_TIME_PREF"] = str(pref)
+        if win_start_str is not None:
+            updates["YIBAN_SIGN_START"] = win_start_str
+            updates["YIBAN_SIGN_END"] = win_end_str
+        if sunday_sign is not None:
+            updates["YIBAN_SUNDAY_SIGN"] = "1" if sunday_sign else ""
+        if saturday_sign is not None:
+            # 显式写 0/1（默认已是 0，显式落盘自文档化；不改写 sunday 的删键风格以保持各自历史口径）
+            updates["YIBAN_SATURDAY_SIGN"] = "1" if saturday_sign else "0"
+        if global_pause is not None:
+            updates["YIBAN_GLOBAL_PAUSE"] = "1" if global_pause else ""
+        if registration_pause is not None:
+            # ""=开放（删键，读侧默认 0），与 global_pause 同口径；"1"=暂停
+            updates["YIBAN_REGISTRATION_PAUSE"] = "1" if registration_pause else ""
+        if account_verify is not None:
+            updates["YIBAN_ACCOUNT_VERIFY"] = "1" if account_verify else ""
+        if probe_enable is not None:
+            updates["YIBAN_PROBE_ENABLE"] = "1" if probe_enable else ""
+        if probe_time is not None:
+            updates["YIBAN_PROBE_TIME"] = probe_time
+        if probe_interval is not None:
+            updates["YIBAN_PROBE_INTERVAL_DAYS"] = probe_interval
+        if health_report_time is not None:
+            # "" = 删键（回落到"唤醒即发"），与其它设置键的"空值=删键"同口径
+            updates["YIBAN_HEALTH_REPORT_TIME"] = health_report_time
+        if health_report_weekday is not None:
+            updates["YIBAN_HEALTH_REPORT_WEEKDAY"] = health_report_weekday
+        if max_users_val is not None:
+            # 0=不限须显式落盘 "0"（删键会回退默认 500/200，语义不同）
+            updates["YIBAN_MAX_USERS"] = str(max_users_val)
+        if max_accounts_val is not None:
+            updates["YIBAN_MAX_ACCOUNTS"] = str(max_accounts_val)
+        # 正态 μ/σ 区间四键：携带才写（缺失不重置），环境键名取自 env_io 的映射表
+        for _k, _env_key in SCHEDULE_DIST_ENV_KEYS.items():
+            if _k in dist_params:
+                updates[_env_key] = str(dist_params[_k])
+        try:
+            _env_io_svc.write_env_batch(m.ENV_FILE, updates)
+        except _EnvWriteRefused as e:
+            # 行模型 fail-closed：既有行含潜伏分隔符、或写入会改动本次未请求的键 ⇒ 拒绝落盘
+            # （异常消息只含键名/行号，不带值；此处仍不回显给前端）。给 409 而非 500：配置
+            # 冲突需要人工清理 .env 后才能保存，不是服务器故障。响应体与其它 .env 写点同源。
+            m.logger.error("设置写入被拒绝（.env 行模型/键集合 diff）: %s", e)
+            return _env_write_refused_response(e, m.ENV_FILE)
+        except ValueError as e:
+            # 入参本身不合法（键名非法 / 值含行分隔符或超长）：**不是** .env 歧义，不得套用
+            # "请人工清理 .env"的文案把人指错方向。给 400（提交内容有误），并带 reason 供前端
+            # 区分。"行分隔符"这类值错误与"潜伏分隔符"文件态是两回事，故文案分开。
+            m.logger.error("设置写入值非法: %s", e)
+            return jsonify({
+                "error": "配置值不合法（键名非法，或值包含行分隔符/超出长度上限），未写入；"
+                         "请修正后重试",
+                "reason": "invalid_value",
+            }), 400
     sunday_display = "不变" if sunday_sign is None else sunday_sign
     saturday_display = "不变" if saturday_sign is None else saturday_sign
     pause_display = "不变" if global_pause is None else ("暂停" if global_pause else "恢复")
@@ -766,25 +804,34 @@ def api_settings_save():
     # 真变化键的旧→新明细（一次请求只算一份）。**只进下面的审计正文**——设置变更不外发
     # 告警；日志行另用 health_report_display 等字段，不引用本串。
     changes_desc = "、".join(
-        f"{m._settings_label(k)}={_change_text(k, o)}→{_change_text(k, n)}"
+        f"{_env_io_svc._settings_label(k)}={_change_text(k, o)}→{_change_text(k, n)}"
         for k, o, n in changes) or "无实质变更"
+    # 原始请求值只用于判定；日志与审计一律写**规范化后的生效值**（ba-p05-05）。
+    # pref_raw / win 可携带内嵌换行（int() 容忍首尾空白），按原值写入按天日志与审计
+    # 正文就等于允许伪造行结构。
+    pref_display = "不变" if pref is None else pref
+    win_display = ("不变" if win_start_str is None
+                   else f"{win_start_str}~{win_end_str}")
+    pref_audit = "-" if pref is None else pref
+    win_audit = ("-" if win_start_str is None
+                 else f"{win_start_str}~{win_end_str}")
     m.logger.info(
         "更新设置: 启动=%s 间隔=%s 签到模式=%s 排序=%s 分布=%s 掐头去尾=%s 自选=%s 窗口=%s 周日=%s 周六=%s 暂停=%s 注册=%s 账号验证=%s 探针=%s 健康报告=%s 容量上限=%s",
         start, gap, sign_mode or "不变", sign_order or "不变", sign_dist or "不变",
-        edge_display, pref_raw if pref_raw is not None else "不变",
-        win or "不变", sunday_display, saturday_display, pause_display,
+        edge_display, pref_display,
+        win_display, sunday_display, saturday_display, pause_display,
         reg_pause_display,
         "不变" if account_verify is None else ("开" if account_verify else "关"),
         probe_display, health_report_display, cap_limits_display,
     )
     # 设置变更审计（否则调度/系统设置保存无留痕，与其他管理操作不一致）
-    m.db.audit(
+    db.audit(
         session.get("username") or "?",
         "settings_save",
         "settings",
         f"启动延迟={start} 间隔={gap} 模式={sign_mode or '-'} 排序={sign_order or '-'} "
         f"分布={sign_dist or '-'} 掐头去尾={edge_display} "
-        f"自选={pref_raw if pref_raw is not None else '-'} 窗口={win or '-'} 周日={sunday_display} "
+        f"自选={pref_audit} 窗口={win_audit} 周日={sunday_display} "
         f"周六={saturday_display} "
         f"全局暂停={pause_display} 注册={reg_pause_display} "
         f"账号验证={'开' if account_verify else '关'} "
@@ -792,11 +839,6 @@ def api_settings_save():
         f"容量上限={cap_limits_display} "
         f"变更=[{changes_desc}]",
     )
-    # 变更告警：整次请求**合并成一条**（一键一封会被拿来刷告警日额度与邮箱）。
-    # A 档/急停 → urgent（进手机推送），但只有"全停急停"才 force 跳过同类节流与
-    # 推送日额度——它要立刻叫醒；其余 A 档变更沿用既有的同类节流与紧急账日额度。
-    # 纯 B 档变更非紧急。值全部来自现读+本次落盘的配置项，不含凭据，仍过一道
-    # _nl_safe 只为杜绝换行伪造告警正文。
     # 变更不再逐次外发告警：改设置是高频管理动作，一次一键一封会刷爆告警邮件与推送
     # 额度，也让真故障淹没在"谁改了哪个滑块"里。留痕由上面的审计行承担——它逐键记
     # 旧值→新值，事后可查可回滚；需要"当场叫醒"的只有不可逆操作、凭据改写与告警通道
@@ -812,15 +854,16 @@ def api_settings_save():
 def api_changelog():
     """更新日志：读取项目根 CHANGELOG.md（公开，无需登录；启动后缓存，部署重启自然失效）。"""
     m = _appmod()
-    if m._changelog_cache[0] is None:
+    if _startup_cache._changelog_cache[0] is None:
+        # `m.__file__` 是 app.py 自身属性，仍从 `m` 取：dirname 两次即仓库根。
         base = os.path.dirname(os.path.dirname(os.path.abspath(m.__file__)))
         path = os.path.join(base, "CHANGELOG.md")
         try:
             with open(path, encoding="utf-8") as f:
-                m._changelog_cache[0] = f.read()
+                _startup_cache._changelog_cache[0] = f.read()
         except OSError:
-            m._changelog_cache[0] = "暂无更新日志"
-    return jsonify({"ok": True, "text": m._changelog_cache[0]})
+            _startup_cache._changelog_cache[0] = "暂无更新日志"
+    return jsonify({"ok": True, "text": _startup_cache._changelog_cache[0]})
 
 
 def api_executors():
@@ -860,15 +903,15 @@ def api_executors():
     `yiban.egress.parse_owner`（判不出即 `unknown`，照实回不猜）。
     """
     m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可查看执行体配置"}), 403
-    env = m.read_env(m.ENV_FILE)
+    env = _env_io_svc.read_env(m.ENV_FILE)
     # 执行体清单（唯一口径 yiban.egress）：清单缺失时按旧三键回退读，并在首次读到
     # 旧键时一次性迁移写回（旧键保留）。清单存在时**以清单为准**。
-    rows = m._executor_rows()
+    rows = _executor_env._executor_rows()
     # `workers.configured` 只数 `worker` 行（disabled 与 fallback 都不计，
     # 与"建议值分母只数 worker"同一口径）；列表项 index 就是清单槽位号。
-    active = m.yb_egress.worker_rows(rows)
+    active = yb_egress.worker_rows(rows)
     # 如实计数：0 条并行行就报 0。旧实现 max(1, len(active)) 把"没有并行执行体、
     # 按单执行体形态运行"包装成"并行 1"，两种世界在页面上长得一样；单执行体这个
     # 事实改由 workers.single_mode 显式表达（assignments 的 index 0 条目仍是那条
@@ -876,55 +919,59 @@ def api_executors():
     configured = len(active)
     if active:
         assignments = [
-            {"index": r["slot"], "egress": m.yb_egress.describe(r["proxy"]),
-             "role": m.yb_egress.ROLE_WORKER,
-             "label": m.yb_egress.executor_label(m.yb_egress.TYPE_WORKER, r["slot"])}
+            {"index": r["slot"], "egress": yb_egress.describe(r["proxy"]),
+             "role": yb_egress.ROLE_WORKER,
+             "label": yb_egress.executor_label(yb_egress.TYPE_WORKER, r["slot"])}
             for r in active
         ]
         # 存活四态的心跳角色档：有并行行时读 worker 心跳（身份键 = 角色 + 槽位号）
-        presence_role = m.yb_egress.ROLE_WORKER
+        presence_role = yb_egress.ROLE_WORKER
     else:
         # 清单里没有并行执行体行（全被停用/删除）→ 运行时按旧口径的单执行体形态跑：
         # 出口走 `single` 角色（= `YIBAN_PROXY`）——这正是这种情况下**实际运行**的
         # 单执行体用的出口（停用行的出口不参与分配）。并行条数照实为 0，
         # 形态由 workers.single_mode=true 说明。
-        fallback_single = m.yb_egress.resolve(m.yb_egress.ROLE_SINGLE, 0, env=env)
-        assignments = [{"index": 0, "egress": m.yb_egress.describe(fallback_single),
-                        "role": m.yb_egress.ROLE_WORKER,
-                        "label": m.yb_egress.role_label(m.yb_egress.ROLE_WORKER, 0)}]
+        fallback_single = yb_egress.resolve(yb_egress.ROLE_SINGLE, 0, env=env)
+        assignments = [{"index": 0, "egress": yb_egress.describe(fallback_single),
+                        "role": yb_egress.ROLE_WORKER,
+                        "label": yb_egress.role_label(yb_egress.ROLE_WORKER, 0)}]
         # 这条 index 恒为 0 的行**跑的是单执行体身份**（`single@{主机}`），心跳也写在
         # single 的身份键上：若仍按 worker-0 读，会与并行执行体的 worker-0 撞 key
         # （兜底/单执行体收尾会把 worker-0 的心跳洗成 finished）。
-        presence_role = m.yb_egress.ROLE_SINGLE
+        presence_role = yb_egress.ROLE_SINGLE
     # 每个并行执行体的存活四态：后端算好，前端不必自己拼（也不用知道心跳周期）。
     # `last_seen_at` 是最后一次见到它活着的时间串；**不含 pid/主机名**。
     for item in assignments:
-        item["state"], item["last_seen_at"] = m.signin.worker_presence(
+        item["state"], item["last_seen_at"] = signin.worker_presence(
             item["index"], role=presence_role)
     # 兜底出口：清单里有兜底行就用它（值在迁移时已按旧口径落定）；没有该行
     # （被删除/停用）则继续按旧键解析，接口字段与旧口径保持一致。
-    fb_row = m.yb_egress.fallback_row(rows)
+    fb_row = yb_egress.fallback_row(rows)
     fallback_proxy = (fb_row["proxy"] if fb_row is not None
-                      else m.yb_egress.resolve(m.yb_egress.ROLE_FALLBACK, env=env))
+                      else yb_egress.resolve(yb_egress.ROLE_FALLBACK, env=env))
     # 窗口：`_executors_window()`（与引擎同一份解析：_sign_window + window.bounds）
-    bounds = m._executors_window()
-    measured = m.load_env_int(m.ENV_FILE, "YIBAN_CAPACITY_MEASURED", 0)
-    cur_accounts = m._capacity_account_count()
-    fallback_interval = m.load_env_int(m.ENV_FILE, "YIBAN_FALLBACK_INTERVAL", 60)
+    bounds = _executor_env._executors_window()
+    measured = _env_io_svc.load_env_int(
+        m.ENV_FILE, "YIBAN_CAPACITY_MEASURED",
+        config_loader.default_of("YIBAN_CAPACITY_MEASURED"))
+    cur_accounts = _capacity._capacity_account_count()
+    fallback_interval = _env_io_svc.load_env_int(
+        m.ENV_FILE, "YIBAN_FALLBACK_INTERVAL",
+        config_loader.default_of("YIBAN_FALLBACK_INTERVAL"))
     # 是否在跑：按心跳新鲜度判定（进程被强杀时心跳会过期，故不能只看文件在不在）
-    fallback_alive = m.signin.fallback_alive(fallback_interval)[0]
+    fallback_alive = signin.fallback_alive(fallback_interval)[0]
     # 声明的开关（.env 里网页写入的键）与"实际在跑"分开回，让前端能分辨
     # "声明了没跑起来"（要查 cron）与"没声明却在跑"（人工起的进程）
-    fallback_enabled = m._env_flag(env.get("YIBAN_FALLBACK_ENABLE"))
+    fallback_enabled = _signstatus._env_flag(env.get("YIBAN_FALLBACK_ENABLE"))
     # `in_window` 用"本应运行时段"口径（窗口内 且 今天没被周末门/暂停门挡下）：
     # 兜底在这两种日子会直接退出，只按钟点算会让页面每逢周末/暂停就误报"开了没跑起来"
-    in_window = m._in_run_period(bounds)
+    in_window = _signstatus._in_run_period(bounds)
     if fallback_enabled:
         fallback_status = "running" if fallback_alive else "declared_not_running"
     else:
         fallback_status = "running_not_declared" if fallback_alive else "off"
-    day = m.clock.today()
-    by_executor, activity_totals = m._executor_activity(day)
+    day = clock.today()
+    by_executor, activity_totals = _executor_env._executor_activity(day)
     payload = {
         "ok": True,
         "workers": {
@@ -934,21 +981,21 @@ def api_executors():
             "single_mode": configured == 0,
             "assignments": assignments,
             "env_keys": {
-                "list": m.yb_egress.ENV_WORKER_LIST,
-                "single": m.yb_egress.ENV_SINGLE,
+                "list": yb_egress.ENV_WORKER_LIST,
+                "single": yb_egress.ENV_SINGLE,
                 # 清单键名一并给出：前端不硬编码字符串（与 env_keys 的用意一致）
-                "manifest": m.yb_egress.ENV_MANIFEST,
+                "manifest": yb_egress.ENV_MANIFEST,
             },
         },
         # 执行体清单逐行（含 disabled/fallback）：`workers.assignments` 只列会真正
         # 被拉起的并行执行体，停用行只有在这里才看得到（页面据此做"重新启用"）。
-        "executors": [m._executor_row_payload(r) for r in rows],
+        "executors": [_executor_env._executor_row_payload(r) for r in rows],
         "fallback": {
-            "egress": m.yb_egress.describe(fallback_proxy),
+            "egress": yb_egress.describe(fallback_proxy),
             "interval_sec": fallback_interval,
-            "env_key": m.yb_egress.ENV_FALLBACK,
-            "role": m.yb_egress.ROLE_FALLBACK,
-            "label": m.yb_egress.role_label(m.yb_egress.ROLE_FALLBACK),
+            "env_key": yb_egress.ENV_FALLBACK,
+            "role": yb_egress.ROLE_FALLBACK,
+            "label": yb_egress.role_label(yb_egress.ROLE_FALLBACK),
             "alive": fallback_alive,
             # 声明开关（读 .env）与四态 status 的键名一并给出，前端不必硬编码
             "enabled": fallback_enabled,
@@ -999,30 +1046,30 @@ def api_scheduler_executors_save():
     才是"实际在不在跑"的判据。
     """
     m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
-    data = m._json_body()
+    data = _http._json_body()
     updates = {}
     if "workers" in data:
         try:
             workers = int(data["workers"])
         except (TypeError, ValueError):
             return jsonify({"error": "执行体数量必须是整数"}), 400
-        if not (m.yb_egress.WORKERS_MIN <= workers <= m.yb_egress.WORKERS_MAX):
-            return jsonify({"error": f"执行体数量应为 {m.yb_egress.WORKERS_MIN}"
-                                     f"~{m.yb_egress.WORKERS_MAX}"}), 400
+        if not (yb_egress.WORKERS_MIN <= workers <= yb_egress.WORKERS_MAX):
+            return jsonify({"error": f"执行体数量应为 {yb_egress.WORKERS_MIN}"
+                                     f"~{yb_egress.WORKERS_MAX}"}), 400
         updates["YIBAN_WORKERS"] = str(workers)
-    for field, env_key in (("proxy_list", m.yb_egress.ENV_WORKER_LIST),
-                           ("proxy_fallback", m.yb_egress.ENV_FALLBACK)):
+    for field, env_key in (("proxy_list", yb_egress.ENV_WORKER_LIST),
+                           ("proxy_fallback", yb_egress.ENV_FALLBACK)):
         if field not in data:
             continue
         raw = str(data[field] or "").strip()
-        if m.env_io.has_line_break(raw):
+        if env_io.has_line_break(raw):
             return jsonify({"error": "代理配置不能包含换行"}), 400
-        items = m.yb_egress.parse_list(raw) if field == "proxy_list" else [raw]
+        items = yb_egress.parse_list(raw) if field == "proxy_list" else [raw]
         for item in items:
-            if item and not m._is_http_proxy_url(item):
-                return jsonify({"error": f"代理地址格式不正确: {m._mask_url_userinfo(item)[:40]}"}), 400
+            if item and not _env_io_svc._is_http_proxy_url(item):
+                return jsonify({"error": f"代理地址格式不正确: {_masking.mask_url_userinfo(item)[:40]}"}), 400
         updates[env_key] = raw
     if "capacity_measured" in data:
         try:
@@ -1042,20 +1089,20 @@ def api_scheduler_executors_save():
     if not updates:
         return jsonify({"error": "没有可更新的字段"}), 400
     try:
-        with m._env_write_lock(m.ENV_FILE):
-            current_env = m.read_env(m.ENV_FILE)
+        with _env_io_svc._env_write_lock(m.ENV_FILE):
+            current_env = _env_io_svc.read_env(m.ENV_FILE)
             # 清单已存在时同步维护它：旧键写入否则会被"以清单为准"的读接口盖过，
             # 表现为这次保存"点了没生效"。槽位保留（只增不复用），停用行不动。
-            current_rows = m.yb_egress.parse_manifest(
-                current_env.get(m.yb_egress.ENV_MANIFEST))
+            current_rows = yb_egress.parse_manifest(
+                current_env.get(yb_egress.ENV_MANIFEST))
             if current_rows is not None and any(
-                    k in updates for k in (m.yb_egress.ENV_WORKER_COUNT,
-                                           m.yb_egress.ENV_WORKER_LIST,
-                                           m.yb_egress.ENV_FALLBACK)):
+                    k in updates for k in (yb_egress.ENV_WORKER_COUNT,
+                                           yb_egress.ENV_WORKER_LIST,
+                                           yb_egress.ENV_FALLBACK)):
                 env_after = dict(current_env)
                 env_after.update(updates)
-                updates[m.yb_egress.ENV_MANIFEST] = m.yb_egress.dump_manifest(
-                    m.yb_egress.apply_legacy_config(current_rows, env_after))
+                updates[yb_egress.ENV_MANIFEST] = yb_egress.dump_manifest(
+                    yb_egress.apply_legacy_config(current_rows, env_after))
             # 口令门：**逐键比对"这次真会写下去的值"与文件里的现值**——值没变（或该键
             # 未携带）就不要求口令，日常保存零影响。比对放在写锁内、用同一份 current_env，
             # 免得"比的时候是一版、写的时候又一版"。失败时不写盘、提前返回（with 会释放锁）。
@@ -1065,13 +1112,14 @@ def api_scheduler_executors_save():
                 data, "整条保存:" + ",".join(changed_keys)[:160], bool(changed_keys))
             if denied:
                 return denied
-            m.write_env_batch(m.ENV_FILE, updates)
+            _env_io_svc.write_env_batch(m.ENV_FILE, updates)
     except _EnvWriteRefused:
         raise  # .env 写拒绝交 Flask 统一 409（须在 ValueError 之前，否则被吞成 400）
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     # 审计只记键名：代理串可能带凭据，不得进审计链
-    m.db.audit(m._audit_actor(), "settings", "executors", ",".join(sorted(updates))[:200])
+    db.audit(_notify_mail._audit_actor(), "settings", "executors",
+             ",".join(sorted(updates))[:db.AUDIT_DETAIL_LIMIT])
     _executor_change_alert("整条保存:" + ",".join(changed_keys)[:160], bool(changed_keys))
     return jsonify({"ok": True, "applied": sorted(updates),
                     "note": "已写入配置；下一轮定时任务或容器重启后生效"})
@@ -1094,21 +1142,21 @@ def api_scheduler_executor_worker_egress(index):
     **只写 `.env`，不重启也不拉起进程**——下一轮定时任务或重启执行体后生效。
     """
     m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
-    env_now = m.read_env(m.ENV_FILE)
-    manifest_rows = m.yb_egress.parse_manifest(env_now.get(m.yb_egress.ENV_MANIFEST))
+    env_now = _env_io_svc.read_env(m.ENV_FILE)
+    manifest_rows = yb_egress.parse_manifest(env_now.get(yb_egress.ENV_MANIFEST))
     if manifest_rows is None:
         # 执行体数只有 `egress.legacy_worker_count` 一个口径：含合法域判定与"越界 ⇒
         # 单执行体"的回退。此前这里另读一次原始值，于是 .env 写 65 时界面按 65 个槽位
         # 放行、引擎只起 1 个执行体（census P1-3 的同一处分叉）。
-        configured = m.yb_egress.legacy_worker_count(env_now)
-        if not (0 <= index <= m.EXECUTOR_INDEX_MAX) or index >= configured:
+        configured = yb_egress.legacy_worker_count(env_now)
+        if not (0 <= index <= yb_egress.SLOT_MAX) or index >= configured:
             return jsonify({"error": f"槽位 {index} 未被使用（当前执行体数 {configured}）"}), 400
-    elif not (0 <= index <= m.EXECUTOR_INDEX_MAX) or \
-            m.yb_egress.row_by_slot(manifest_rows, index) is None:
+    elif not (0 <= index <= yb_egress.SLOT_MAX) or \
+            yb_egress.row_by_slot(manifest_rows, index) is None:
         return jsonify({"error": f"槽位 {index} 不在执行体清单里"}), 400
-    return _reply_slot_egress(m.yb_egress.ENV_WORKER_LIST, index)
+    return _reply_slot_egress(yb_egress.ENV_WORKER_LIST, index)
 
 
 def api_scheduler_executor_fallback_egress():
@@ -1124,10 +1172,9 @@ def api_scheduler_executor_fallback_egress():
     **缺 `egress` 键 → 400**。响应：`{"ok": true, "index": "fallback", "egress": "…"}`。
     **只写 `.env`，不重启也不拉起进程**——下一轮定时任务或重启兜底执行体后生效。
     """
-    m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
-    return _reply_slot_egress(m.yb_egress.ENV_FALLBACK, None)
+    return _reply_slot_egress(yb_egress.ENV_FALLBACK, None)
 
 
 def api_scheduler_executor_row_add():
@@ -1145,15 +1192,14 @@ def api_scheduler_executor_row_add():
     不计数、失败 403 + 审计）；同规矩：**只写 `.env`，不重启也不拉起进程**；
     审计只落槽位名，不记凭据、不记自定义名。
     """
-    m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
-    data = m._json_body()
-    rtype = str(data.get("type") or m.yb_egress.TYPE_WORKER).strip()
-    value, err = m._validated_proxy_value(data.get("proxy"))
+    data = _http._json_body()
+    rtype = str(data.get("type") or yb_egress.TYPE_WORKER).strip()
+    value, err = _executor_env._validated_proxy_value(data.get("proxy"))
     if err:
         return jsonify({"error": err}), 400
-    name, err = m._validated_name(data.get("name"))
+    name, err = _executor_env._validated_name(data.get("name"))
     if err:
         return jsonify({"error": err}), 400
     denied = _executor_write_guard(data, "追加执行体行", True)
@@ -1161,19 +1207,19 @@ def api_scheduler_executor_row_add():
         return denied
 
     def _apply(rows):
-        slot = m._next_executor_slot(rows)
-        return m.yb_egress.add_row(rows, rtype, value, min_slot=slot, name=name), slot
+        slot = _executor_env._next_executor_slot(rows)
+        return yb_egress.add_row(rows, rtype, value, min_slot=slot, name=name), slot
 
     try:
-        slot = m._mutate_executor_rows(_apply)
+        slot = _executor_env._mutate_executor_rows(_apply)
     except _EnvWriteRefused:
         raise  # .env 写拒绝交 Flask 统一 409（须在 ValueError 之前，否则被吞成 400）
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
-    m.db.audit(m._audit_actor(), "settings", "executors", f"{m.yb_egress.ENV_MANIFEST}[{slot}]")
+    db.audit(_notify_mail._audit_actor(), "settings", "executors", f"{yb_egress.ENV_MANIFEST}[{slot}]")
     _executor_change_alert("追加执行体行", True)
     return jsonify({"ok": True, "slot": slot, "type": rtype,
-                    "egress": m.yb_egress.describe(value),
+                    "egress": yb_egress.describe(value),
                     "name": name or None,
                     "note": "已写入配置；下一轮定时任务或容器重启后生效"})
 
@@ -1191,47 +1237,46 @@ def api_scheduler_executor_row_update(slot):
     响应：`{"ok": true, "slot": <int>, "type": ..., "egress": "<脱敏描述串>",
     "name": <自定义名或 null>}`。
     """
-    m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
-    data = m._json_body()
+    data = _http._json_body()
     if "type" not in data and "proxy" not in data and "name" not in data:
         return jsonify({"error": "没有可更新的字段（type / proxy / name 至少给一个）"}), 400
     rtype = str(data["type"] or "").strip() if "type" in data else None
     value = None
     if "proxy" in data:
-        value, err = m._validated_proxy_value(data["proxy"])
+        value, err = _executor_env._validated_proxy_value(data["proxy"])
         if err:
             return jsonify({"error": err}), 400
     name = None
     if "name" in data:
-        name, err = m._validated_name(data["name"])
+        name, err = _executor_env._validated_name(data["name"])
         if err:
             return jsonify({"error": err}), 400
     # 现值（用于"真的会变吗"的判断）：读一次清单，找不到该行由写路径给 400。
-    _cur = m.yb_egress.row_by_slot(m._executor_rows(), slot)
+    _cur = yb_egress.row_by_slot(_executor_env._executor_rows(), slot)
     _changed = _cur is None or (
         (rtype is not None and rtype != _cur["type"])
         or (value is not None and value != str(_cur.get("proxy") or ""))
     )
-    denied = _executor_write_guard(data, f"{m.yb_egress.ENV_MANIFEST}[{slot}] 改行", _changed)
+    denied = _executor_write_guard(data, f"{yb_egress.ENV_MANIFEST}[{slot}] 改行", _changed)
     if denied:
         return denied
 
     def _apply(rows):
-        new_rows = m.yb_egress.update_row(rows, slot, rtype=rtype, proxy=value, name=name)
-        return new_rows, m.yb_egress.row_by_slot(new_rows, slot)
+        new_rows = yb_egress.update_row(rows, slot, rtype=rtype, proxy=value, name=name)
+        return new_rows, yb_egress.row_by_slot(new_rows, slot)
 
     try:
-        row = m._mutate_executor_rows(_apply)
+        row = _executor_env._mutate_executor_rows(_apply)
     except _EnvWriteRefused:
         raise  # .env 写拒绝交 Flask 统一 409（须在 ValueError 之前，否则被吞成 400）
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
-    m.db.audit(m._audit_actor(), "settings", "executors", f"{m.yb_egress.ENV_MANIFEST}[{slot}]")
-    _executor_change_alert(f"{m.yb_egress.ENV_MANIFEST}[{slot}] 改行", _changed)
+    db.audit(_notify_mail._audit_actor(), "settings", "executors", f"{yb_egress.ENV_MANIFEST}[{slot}]")
+    _executor_change_alert(f"{yb_egress.ENV_MANIFEST}[{slot}] 改行", _changed)
     return jsonify({"ok": True, "slot": slot, "type": row["type"],
-                    "egress": m.yb_egress.describe(row["proxy"]),
+                    "egress": yb_egress.describe(row["proxy"]),
                     "name": row.get("name") or None,
                     "note": "已写入配置；下一轮定时任务或容器重启后生效"})
 
@@ -1246,28 +1291,27 @@ def api_scheduler_executor_row_delete(slot):
     只比对不计数、失败 403 + 审计，且此时行不会被删）。
     响应：`{"ok": true, "slot": <int>, "type": "<被删行的类型>", "deleted": true}`。
     """
-    m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可修改执行体设置"}), 403
-    data = m._json_body()
-    denied = _executor_write_guard(data, f"{m.yb_egress.ENV_MANIFEST}[{slot}] 删行", True)
+    data = _http._json_body()
+    denied = _executor_write_guard(data, f"{yb_egress.ENV_MANIFEST}[{slot}] 删行", True)
     if denied:
         return denied
 
     def _apply(rows):
-        row = m.yb_egress.row_by_slot(rows, slot)
+        row = yb_egress.row_by_slot(rows, slot)
         if row is None:
             raise ValueError(f"槽位 {slot} 不在执行体清单里")
-        return m.yb_egress.delete_row(rows, slot), row["type"]
+        return yb_egress.delete_row(rows, slot), row["type"]
 
     try:
-        rtype = m._mutate_executor_rows(_apply)
+        rtype = _executor_env._mutate_executor_rows(_apply)
     except _EnvWriteRefused:
         raise  # .env 写拒绝交 Flask 统一 409（须在 ValueError 之前，否则被吞成 400）
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
-    m.db.audit(m._audit_actor(), "settings", "executors", f"{m.yb_egress.ENV_MANIFEST}[{slot}]")
-    _executor_change_alert(f"{m.yb_egress.ENV_MANIFEST}[{slot}] 删行", True)
+    db.audit(_notify_mail._audit_actor(), "settings", "executors", f"{yb_egress.ENV_MANIFEST}[{slot}]")
+    _executor_change_alert(f"{yb_egress.ENV_MANIFEST}[{slot}] 删行", True)
     return jsonify({"ok": True, "slot": slot, "type": rtype, "deleted": True,
                     "note": "已写入配置；下一轮定时任务或容器重启后生效"})
 
@@ -1290,8 +1334,9 @@ def api_scheduler_executors_measure():
     响应结构与错误码见 `docs/dev/api-executors.md`。
 
     ⚠ **两次约束叠加后有个结构性偏差，页面与文档都必须说清**：
-    本端点走的是"登录 + 拉任务"这条**只读链路**（5 次请求：登录 4 + 拉任务 1），
-    而真实签到还要往下走**定位计算 + 提交签到**（6 次请求 + 一段 CPU 计算）；
+    本端点走的是"登录 + 拉任务"这条**只读链路**（`LOGIN_CHAIN_REQUESTS + 1` 次请求），
+    而真实签到还要往下走**定位计算 + 提交签到**（`REQUESTS_PER_ACCOUNT` 次请求
+    ＋一段 CPU 计算；两个数都定义在 `yiban.platform`）；
     又因为窗口内被拒（409），**它永远只测得到窗口外的最小链路**——服务端在窗口外
     本来就没有可提交的任务。所以这里量出的秒数**天然偏小、据此换算的容量偏乐观**。
     本数只作**现场粗值参考**，与部署者按完整链路量取后录入 `YIBAN_CAPACITY_MEASURED`
@@ -1299,38 +1344,38 @@ def api_scheduler_executors_measure():
     自己量取的完整链路基准为准"。
     """
     m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可做耗时实测"}), 403
-    bounds = m._executors_window()
-    if m._in_sign_window(bounds):
+    bounds = _executor_env._executors_window()
+    if _signstatus._in_sign_window(bounds):
         return jsonify({"error": "签到窗口内不做实测（避免抢占本轮资源）"}), 409
-    data = m._json_body()
-    acc = m._pick_measure_account(m.load_accounts(), data.get("phone"))
+    data = _http._json_body()
+    acc = _measure._pick_measure_account(_accounts_data.load_accounts(), data.get("phone"))
     if acc is None:
         return jsonify({"error": "没有可用于实测的账号（不存在、未过审、已删除或已被暂停）"}), 404
 
-    sample = m._mask_phone(acc.get("phone", ""))
-    cooldown_sec = m.load_env_int(m.ENV_FILE, "YIBAN_MEASURE_COOLDOWN", m.MEASURE_COOLDOWN_SEC)
-    state_path = m._measure_state_path()
+    sample = _masking.mask_phone(acc.get("phone", ""))
+    cooldown_sec = _env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_MEASURE_COOLDOWN", _limits.MEASURE_COOLDOWN_SEC)
+    state_path = _measure._measure_state_path()
     # 冷却**先占位再联网**：连点/多管理员同时点也只有一次真实登录（占位在锁内
     # 判定并写入，跨进程串行）。代价是登录失败也消耗一次冷却——但这正是想要的：
     # 真实登录已经发生过，风控暴露已经产生。
-    with m.signin._state_file_lock(state_path):
-        remaining = m._measure_cooldown_remaining(m._read_measure_state(state_path),
+    with signin._state_file_lock(state_path):
+        remaining = _measure._measure_cooldown_remaining(_measure._read_measure_state(state_path),
                                                 cooldown_sec)
         if remaining > 0:
             return jsonify({"error": "实测冷却中", "next_allowed_in": remaining}), 429
-        started_at = m.clock.now()
-        m._write_measure_state(state_path, {
+        started_at = clock.now()
+        _measure._write_measure_state(state_path, {
             "at": started_at.strftime("%Y-%m-%d %H:%M:%S"),
             "seconds": None, "sample": sample,
         })
 
     started = time.monotonic()
-    ok, message = m.signin.verify_account(m._as_signin_account(acc))
+    ok, message = signin.verify_account(_accounts_data._as_signin_account(acc))
     seconds = time.monotonic() - started
-    with m.signin._state_file_lock(state_path):
-        m._write_measure_state(state_path, {
+    with signin._state_file_lock(state_path):
+        _measure._write_measure_state(state_path, {
             "at": started_at.strftime("%Y-%m-%d %H:%M:%S"),
             "seconds": round(seconds, 2), "sample": sample,
         })
@@ -1343,14 +1388,14 @@ def api_scheduler_executors_measure():
     # 的那一份），单账号周期用实测秒数，间隔用 YIBAN_ACCOUNT_GAP_MAX。
     # k=1 钉住"实测**单执行体**容量"的字面语义：本接口量的是"这台机器一个执行体能签几个"，
     # 不是全站总容量。公式走 `capacity_of` 并显式固定 v2 口径（`enabled=False`，逐值不变）。
-    per_exec = m.signin.capacity_of(
+    per_exec = signin.capacity_of(
         bounds.full_sec(),
-        gap=m.load_env_int(m.ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", m.DEFAULT_ACCOUNT_GAP_MAX),
+        gap=_env_io_svc.load_env_int(m.ENV_FILE, "YIBAN_ACCOUNT_GAP_MAX", _limits.DEFAULT_ACCOUNT_GAP_MAX),
         avg=seconds, k=1, enabled=False)
     # 建议值保留 ×2/3 余量：实测值是这台机器这一刻的成绩，留余量才对得上
     # "换机器/换网络都要重新量"的现实。
     recommended = max(1, int(per_exec * 2 / 3))
-    m.db.audit(m._audit_actor(), "executors_measure", sample,
+    db.audit(_notify_mail._audit_actor(), "executors_measure", sample,
              f"实测单账号耗时 {seconds:.2f}s（单执行体容量 {per_exec}）")
     return jsonify({
         "ok": True,
@@ -1364,9 +1409,10 @@ def api_scheduler_executors_measure():
         # 机器可判字段——目前只有"窗口外粗量"这一种口径；将来出现第二种口径不同的实测
         # （如容器形态、带尾延迟的档位）时再加，届时前端会主动来要。
         "note": ("实测单账号耗时 × 有效窗口的容量估算；建议值含余量（×2/3）。"
-                 "注意：本次只覆盖「窗口外的最小链路」（登录 + 拉任务，5 次请求），"
-                 "真实签到还要加定位计算与提交（6 次请求），所以这里的秒数偏小、据此换算的"
-                 "容量偏乐观；正式定档请以部署者自行量取的完整链路基准为准，两种数字不要混用。"),
+                 "注意：本次只覆盖「窗口外的最小链路」（登录 + 拉任务，%d 次请求），"
+                 "真实签到还要加定位计算与提交（%d 次请求），所以这里的秒数偏小、据此换算的"
+                 "容量偏乐观；正式定档请以部署者自行量取的完整链路基准为准，两种数字不要混用。"
+                 % (yb_platform.LOGIN_CHAIN_REQUESTS + 1, yb_platform.REQUESTS_PER_ACCOUNT)),
     })
 
 
@@ -1386,27 +1432,26 @@ def api_scheduler_executors_progress():
     `totals` 读不通时全 0 并置 `totals_unreadable: true`，同时 `note` 里写明。
     "读数不可用"与"当日无记录（全 0）"是两件事，不许合成一件（ba-p01-01）。
     """
-    m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可查看签到进度"}), 403
-    day = m.db.task_latest_day() or m.clock.today()
-    by_executor, activity_totals = m._executor_activity(day)
+    day = db.task_latest_day() or clock.today()
+    by_executor, activity_totals = _executor_env._executor_activity(day)
     # 全站按 state 的分布（day_counts 读不通回 None 哨兵：那是"读不出来"，不许画成全 0）。
     # 兜底吞异常：展示面不得因一个计数读不到就把整页打成 5xx——与 `latest_day` /
     # `owners_for_day` / `activity` 的"展示面不抛"是同一条纪律。
     try:
-        counts = m.db.task_stats(day)
+        counts = db.task_stats(day)
     except Exception as e:
         logger.warning("读取当日任务队列计数失败（页面按读数不可用显示）: %s", e)
         counts = None
     totals_unreadable = counts is None
-    bounds = m._executors_window()
+    bounds = _executor_env._executors_window()
     return jsonify({
         "ok": True,
         "day": day,
         # 今天没跑过记录时 day 是历史日；页面据此提示"下面是最近一次记录"，别当成实时
-        "is_today": day == m.clock.today(),
-        "in_window": m._in_run_period(bounds),
+        "is_today": day == clock.today(),
+        "in_window": _signstatus._in_run_period(bounds),
         # 全站分布：state 计数 + 派生的 settled/open/total（派生口径见 queue_store.day_counts）
         "totals": {k: int(counts.get(k, 0)) for k in _PROGRESS_STATE_KEYS}
                   if counts is not None else dict.fromkeys(_PROGRESS_STATE_KEYS, 0),
@@ -1438,17 +1483,16 @@ def api_scheduler_executors_ownership():
     `compared: false` 且 `migration: []`——不猜、不拿更早的日子凑，前端据 `compared`
     决定要不要显示这一段。
     """
-    m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可查看归属分布"}), 403
-    day = m.db.task_latest_day() or m.clock.today()
-    owners_now = m.db.task_owners_for_day(day)
+    day = db.task_latest_day() or clock.today()
+    owners_now = db.task_owners_for_day(day)
     prev_day = _prev_business_day(day)
-    owners_prev = m.db.task_owners_for_day(prev_day) if prev_day else {}
+    owners_prev = db.task_owners_for_day(prev_day) if prev_day else {}
 
     def _fold(owner):
         """owner 原串 → 折成聚合键（角色 + 槽位序号 + 后端标签），不回原串。"""
-        parsed = m.yb_egress.parse_owner(owner)
+        parsed = yb_egress.parse_owner(owner)
         return parsed["role"], parsed["index"], parsed["label"]
 
     by_exec = {}
@@ -1459,7 +1503,7 @@ def api_scheduler_executors_ownership():
     # 同族，前端两处排序行为才一致（否则同一份数据在两页顺序不同会被当成两个口径）。
     by_executor = [
         {"role": role, "index": index, "label": label,
-         "slot": (index + 1) if isinstance(index, int) and role == m.yb_egress.ROLE_WORKER else None,
+         "slot": (index + 1) if isinstance(index, int) and role == yb_egress.ROLE_WORKER else None,
          "accounts": count}
         for (role, index, label), count in sorted(
             by_exec.items(),
@@ -1506,7 +1550,7 @@ def _prev_business_day(day):
     手动轮），跳周末会让"迁移"两端的日期间隔变得不固定，前端无法解释。
     """
     try:
-        return (datetime.strptime(str(day), "%Y-%m-%d")
+        return (datetime.strptime(str(day), "%Y-%m-%d")  # noqa: DTZ007 仅解析 YYYY-MM-DD 业务日期串，无时区语义
                 - timedelta(days=1)).strftime("%Y-%m-%d")
     except (TypeError, ValueError):
         return None
@@ -1516,23 +1560,25 @@ def api_announcement():
     """公告读取：对外只给**已发布**文本；管理员会话额外看到待发布草稿三键。
 
     公开响应的形状是契约（登录页与全站顶横幅都取它，且未登录也要能读）：
-    `{"ok": true, "text": <已发布>}` 两键一字不动。草稿刻意不进 `_announcement_cache`
+    `{"ok": true, "text": <已发布>}` 两键一字不动。草稿刻意不进
+    `web.services.startup_cache._announcement_cache`
     ——它按会话现读，缓存它等于把"尚不成立的事实"广播给所有匿名请求。
     """
     m = _appmod()
     env = None
-    if m._announcement_cache[0] is None:
-        env = m.read_env(m.ENV_FILE)
-        m._announcement_cache[0] = env.get(m.ANNOUNCEMENT_KEY, "").strip()
-    body = {"ok": True, "text": m._announcement_cache[0]}
-    if m._current_role() == "admin":
+    if _startup_cache._announcement_cache[0] is None:
+        env = _env_io_svc.read_env(m.ENV_FILE)
+        _startup_cache._announcement_cache[0] = env.get(
+            _env_io_svc.ANNOUNCEMENT_KEY, "").strip()
+    body = {"ok": True, "text": _startup_cache._announcement_cache[0]}
+    if _security._current_role(_session_abs_ttl()) == "admin":
         if env is None:
-            env = m.read_env(m.ENV_FILE)
-        draft_by, draft_at = m._parse_announcement_meta(
-            env.get(m.ANNOUNCEMENT_DRAFT_META_KEY, ""))
-        pub_by, pub_at = m._parse_announcement_meta(
-            env.get(m.ANNOUNCEMENT_PUBLISHED_META_KEY, ""))
-        body["draft"] = env.get(m.ANNOUNCEMENT_DRAFT_KEY, "").strip()
+            env = _env_io_svc.read_env(m.ENV_FILE)
+        draft_by, draft_at = _env_io_svc._parse_announcement_meta(
+            env.get(_env_io_svc.ANNOUNCEMENT_DRAFT_META_KEY, ""))
+        pub_by, pub_at = _env_io_svc._parse_announcement_meta(
+            env.get(_env_io_svc.ANNOUNCEMENT_PUBLISHED_META_KEY, ""))
+        body["draft"] = env.get(_env_io_svc.ANNOUNCEMENT_DRAFT_KEY, "").strip()
         body["draft_by"] = draft_by
         body["draft_at"] = draft_at
         body["published_by"] = pub_by
@@ -1546,8 +1592,7 @@ def api_registration_paused():
     仅暴露一个布尔——暂停注册本就是面向访客的全局状态（提示文案公开显示），
     无敏感信息，无需鉴权。
     """
-    m = _appmod()
-    return jsonify({"paused": m._registration_paused()})
+    return jsonify({"paused": _capacity._registration_paused()})
 
 
 def api_announcement_save():
@@ -1558,11 +1603,11 @@ def api_announcement_save():
     （200 字、行分隔符）——草稿与正式同格式单行存进 .env，注入面一分没小。
     """
     m = _appmod()
-    data = m._json_body()
+    data = _http._json_body()
     text = str(data.get("text", "")).strip()
     if len(text) > 200:  # 后端长度限制（与前端 maxlength=200 一致）
         return jsonify({"error": "公告内容过长（最多 200 字）"}), 400
-    if m._has_line_break(text):
+    if env_io.has_line_break(text):
         # 公告存入 .env 单行键值，换行会注入新配置行（如
         # YIBAN_ADMIN_PASSWORD_HASH），普通管理员即可借此提权为主管理员。
         # 前端为 textarea 但展示端换行本就折叠，直接拒绝而非剥掉（write_env_batch
@@ -1570,34 +1615,34 @@ def api_announcement_save():
         # 读写用的 splitlines() 同字符集，故 \v \f \x1c \x1d \x1e \x85 \u2028 \u2029
         # 一并拒——它们会作为"潜伏分隔符"被下一次读-改-写实体化成新配置行。
         return jsonify({"error": "公告内容不能包含换行或行分隔符（单行存储）"}), 400
-    updates = {m.ANNOUNCEMENT_DRAFT_KEY: text}
+    updates = {_env_io_svc.ANNOUNCEMENT_DRAFT_KEY: text}
     if text:
         author = str(session.get("username") or "?").strip().lower()[:64]
-        meta = (f"{author}{m.ANNOUNCEMENT_DRAFT_META_SEP}"
-                f"{m.clock.now().strftime(m.ANNOUNCEMENT_DRAFT_META_FMT)}")
-        if m._has_line_break(meta):
+        meta = (f"{author}{_env_io_svc.ANNOUNCEMENT_DRAFT_META_SEP}"
+                f"{clock.now().strftime(_env_io_svc.ANNOUNCEMENT_DRAFT_META_FMT)}")
+        if env_io.has_line_break(meta):
             # 用户名走登录侧校验后不该带分隔符，这里是兜底：宁可拒绝保存，也不留
             # 一条作者被截断/污染的草稿——双人发布的全部价值就在于发布人看得见作者。
             return jsonify({"error": "草稿作者标识非法，未能保存"}), 400
-        updates[m.ANNOUNCEMENT_DRAFT_META_KEY] = meta
+        updates[_env_io_svc.ANNOUNCEMENT_DRAFT_META_KEY] = meta
     else:
-        updates[m.ANNOUNCEMENT_DRAFT_META_KEY] = ""  # 空草稿 = 两键一起删
+        updates[_env_io_svc.ANNOUNCEMENT_DRAFT_META_KEY] = ""  # 空草稿 = 两键一起删
     # 一次批量写：正文与作者/时刻要么同时生效、要么都不生效（不存在"有草稿无作者"）
-    m.write_env_batch(m.ENV_FILE, updates)
-    m.db.audit(
+    _env_io_svc.write_env_batch(m.ENV_FILE, updates)
+    db.audit(
         session.get("username") or "?",
         "announcement_draft_save",
         "announcement",
-        f"草稿待发布｜{m._nl_safe(text[:150])}" if text else "草稿已清除",
+        f"草稿待发布｜{_notify_mail._nl_safe(text[:150])}" if text else "草稿已清除",
     )
     m.logger.info("公告草稿已更新: %s", text[:50] or "（已清除）")
     # 草稿不改变对外可见内容，故沿用非紧急告警（紧急账每天只有几条，得留给真发布）
-    m.send_notification(
+    _notify_mail.send_notification(
         "公告变更告警",
-        m._change_mail(
+        _notify_mail._change_mail(
             f"公告草稿{'已更新' if text else '已清除'}"
             + ("，待主管理员发布。" if text else "。"),
-            detail=([("公告内容", m._nl_safe(text[:80]))] if text else []),
+            detail=([("公告内容", _notify_mail._nl_safe(text[:80]))] if text else []),
             level="warn",
         ),
     )
@@ -1609,84 +1654,87 @@ def api_announcement_save():
 def api_announcement_publish():
     """双人发布的后半程：有草稿即发布，草稿为空则**下线**线上公告。
 
-    仅主管理员 + **当次口令**（`always_required=True`，短时豁免不适用）：这一键改动
-    会即时出现在全体学生的顶横幅与登录页上，是全站影响面最大的对外写操作。
+    权限＝仅主管理员。口令要求跟档位走：缺省 risk 档下，同出口的已登录会话可直接
+    发布或下线，换出口才要一次；full 档每次都要（`always_required=True` 关掉 full
+    档的短时豁免）。这一键改动会即时出现在全体学生的顶横幅与登录页上，是全站
+    影响面最大的对外写操作。
     下线刻意复用本端点（用户裁决）：一收一发走同一条通道、权限档一致，避免"发布了
     错的却撤不下来，只能 SSH 改 .env 重启"。草稿与线上都为空时报 400 而不是静默成功
     ——那种点击多半是误按，报错比按钮亮一下什么也没发生更有信息量。
     响应：`{"ok": true, "msg": …, "text": <刚发布/清空后的文本>}`，前端据此刷新横幅。
     """
     m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可发布公告"}), 403
-    denied = sensitive_password_gate()(m._json_body(), "发布全站公告", always_required=True)
+    denied = sensitive_password_gate()(_http._json_body(), "发布全站公告", always_required=True)
     if denied is not None:
         return denied
-    env = m.read_env(m.ENV_FILE)
-    draft = env.get(m.ANNOUNCEMENT_DRAFT_KEY, "").strip()
-    before = env.get(m.ANNOUNCEMENT_KEY, "").strip()
+    env = _env_io_svc.read_env(m.ENV_FILE)
+    draft = env.get(_env_io_svc.ANNOUNCEMENT_DRAFT_KEY, "").strip()
+    before = env.get(_env_io_svc.ANNOUNCEMENT_KEY, "").strip()
     who = str(session.get("username") or "?")
-    now_ts = m.clock.now().strftime(m.ANNOUNCEMENT_DRAFT_META_FMT)
+    now_ts = clock.now().strftime(_env_io_svc.ANNOUNCEMENT_DRAFT_META_FMT)
     if not draft:
         if not before:
             # 无事可做。刻意不"静默成功"：空草稿 + 空线上时点发布多半是误按，
             # 让它报错比让按钮亮一下什么也没发生更有信息量。
             return jsonify({"error": "当前既没有待发布草稿，线上也没有公告"}), 400
         # 空草稿 + 线上有内容 = 下线（用户裁决：不另设 clear 端点，一收一发走同一条
-        # 双人发布的后半程，权限档完全一致——主管理员 + 当次口令）
-        m.write_env_batch(m.ENV_FILE, {
-            m.ANNOUNCEMENT_KEY: "",
-            m.ANNOUNCEMENT_PUBLISHED_META_KEY: "",
-            m.ANNOUNCEMENT_DRAFT_KEY: "",
-            m.ANNOUNCEMENT_DRAFT_META_KEY: "",
+        # 双人发布的后半程，权限档完全一致——仅主管理员；口令要求同发布
+        # （缺省 risk 档同出口免口令，full 档要）
+        _env_io_svc.write_env_batch(m.ENV_FILE, {
+            _env_io_svc.ANNOUNCEMENT_KEY: "",
+            _env_io_svc.ANNOUNCEMENT_PUBLISHED_META_KEY: "",
+            _env_io_svc.ANNOUNCEMENT_DRAFT_KEY: "",
+            _env_io_svc.ANNOUNCEMENT_DRAFT_META_KEY: "",
         })
-        m._announcement_cache[0] = ""
-        m.db.audit(who, "announcement_publish", "announcement",
-                 f"下线｜原: {m._nl_safe(before[:60])} → 新: （空）")
+        _startup_cache._announcement_cache[0] = ""
+        db.audit(who, "announcement_publish", "announcement",
+                 f"下线｜原: {_notify_mail._nl_safe(before[:60])} → 新: （空）")
         m.logger.info("公告已下线: %s", before[:50])
-        m.send_notification(
+        _notify_mail.send_notification(
             "公告发布告警",
-            m._change_mail(
+            _notify_mail._change_mail(
                 "全站公告已由主管理员下线。",
-                detail=[("下线前", m._nl_safe(before[:80]))],
-                operator=m._nl_safe(who),
+                detail=[("下线前", _notify_mail._nl_safe(before[:80]))],
+                operator=_notify_mail._nl_safe(who),
                 advice=["如非本人操作，请立即改主管理员口令并按"
                         "README「主管理员权限追回」处理"],
             ),
             urgent=True, force=True,
         )
         return jsonify({"ok": True, "msg": "线上公告已下线", "text": ""})
-    if m._has_line_break(draft):
+    if env_io.has_line_break(draft):
         # 解析器按行切，正常读不回带分隔符的值；会走到这里只可能是 .env 被手改成
         # 多行。那种内容没被任何人在 UI 上看过，一律拒绝发布而非照抄进正式键。
         return jsonify({"error": "草稿含行分隔符（.env 疑似被手工改动），未能发布"}), 400
-    author, _at = m._parse_announcement_meta(
-        env.get(m.ANNOUNCEMENT_DRAFT_META_KEY, ""))
+    author, _at = _env_io_svc._parse_announcement_meta(
+        env.get(_env_io_svc.ANNOUNCEMENT_DRAFT_META_KEY, ""))
     # 单批写入 = 一次读-改-写 + 一次原子替换：不存在"正式已被清、草稿还没落"的中间态
-    m.write_env_batch(m.ENV_FILE, {
-        m.ANNOUNCEMENT_KEY: draft,
-        m.ANNOUNCEMENT_PUBLISHED_META_KEY: f"{who.strip().lower()}{m.ANNOUNCEMENT_DRAFT_META_SEP}{now_ts}",
-        m.ANNOUNCEMENT_DRAFT_KEY: "",
-        m.ANNOUNCEMENT_DRAFT_META_KEY: "",
+    _env_io_svc.write_env_batch(m.ENV_FILE, {
+        _env_io_svc.ANNOUNCEMENT_KEY: draft,
+        _env_io_svc.ANNOUNCEMENT_PUBLISHED_META_KEY: f"{who.strip().lower()}{_env_io_svc.ANNOUNCEMENT_DRAFT_META_SEP}{now_ts}",
+        _env_io_svc.ANNOUNCEMENT_DRAFT_KEY: "",
+        _env_io_svc.ANNOUNCEMENT_DRAFT_META_KEY: "",
     })
-    m._announcement_cache[0] = draft  # 同步内存缓存（与 PUT 不同：这次真改了对外文本）
+    _startup_cache._announcement_cache[0] = draft  # 同步内存缓存（与 PUT 不同：这次真改了对外文本）
     change = "新发布" if not before else "覆盖发布"
-    m.db.audit(
+    db.audit(
         who, "announcement_publish", "announcement",
-        f"{change}｜原: {m._nl_safe(before[:60]) or '（空）'}"
-        f" → 新: {m._nl_safe(draft[:60])}",
+        f"{change}｜原: {_notify_mail._nl_safe(before[:60]) or '（空）'}"
+        f" → 新: {_notify_mail._nl_safe(draft[:60])}",
     )
     m.logger.info("公告已发布（%s）: %s", change, draft[:50])
     # 对外可见内容变了才走紧急 + force：被盗主管理员发布伪造公告是本系统最坏的
     # 单点，这条必须送达（同类节流会吞掉第二条，运维反而看不到）
-    m.send_notification(
+    _notify_mail.send_notification(
         "公告发布告警",
-        m._change_mail(
+        _notify_mail._change_mail(
             f"全站公告已由主管理员 {change}。",
-            detail=[("草稿作者", m._nl_safe(author) or "（元数据不可用）"),
-                    ("发布前", m._nl_safe(before[:80]) or "（空）"),
-                    ("发布后", m._nl_safe(draft[:80]))],
-            operator=m._nl_safe(who),
+            detail=[("草稿作者", _notify_mail._nl_safe(author) or "（元数据不可用）"),
+                    ("发布前", _notify_mail._nl_safe(before[:80]) or "（空）"),
+                    ("发布后", _notify_mail._nl_safe(draft[:80]))],
+            operator=_notify_mail._nl_safe(who),
             advice=["如非本人操作，请立即改主管理员口令并按"
                     "README「主管理员权限追回」处理"],
         ),
@@ -1705,9 +1753,9 @@ def api_env_cleanup():
     （跨进程写锁、失败按原字节回滚、审计留痕），成功后前端提示重试保存。
     """
     m = _appmod()
-    if not m._is_builtin_admin_session():
+    if not _security._is_builtin_admin_session():
         return jsonify({"error": "仅主管理员可操作"}), 403
-    data = m._json_body()
+    data = _http._json_body()
     try:
         line_no = int(data.get("line"))
     except (TypeError, ValueError):
@@ -1715,7 +1763,7 @@ def api_env_cleanup():
     if line_no < 1:
         return jsonify({"error": "line 参数无效（须为 1-based 行号）"}), 400
     ok, message, _remaining = cleanup_env_ambiguous_line(
-        m.ENV_FILE, line_no, audit=lambda code, detail: m.db.audit(
+        m.ENV_FILE, line_no, audit=lambda code, detail: db.audit(
             session.get("username") or "?", code, ".env", detail))
     if not ok:
         # 400：调用方拿着过期的定位信息来清理（行已被人工处理/行号越界/行本身干净）

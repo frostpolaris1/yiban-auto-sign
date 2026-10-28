@@ -12,7 +12,10 @@
  *    会要求二次确认（副标题里对用户的承诺"若被他人改过会先提示你确认"）。
  *    ⇒ 取不到快照就不允许提交，避免"基于过期视图覆盖别人改动"。
  * 3. **凭据门禁判定（`credsWritten`）**：只有"写了新密码"或"改绑了手机号"才算改写他人
- *    易班凭据、才走受门禁提交；只改名称/设备型号不进门禁（与后端 `creds_written` 同口径）。
+ *    易班凭据、才走受门禁提交；只改名称不进门禁（与后端 `creds_written` 同口径）。
+ *    设备识别码这一格只存在于**管理面**（`Accounts.vue` 写 `/api/accounts`）：那边
+ *    "只改/只清识别码"同样免门、但事后信号一个不少；**自助面已不收这两个字段**
+ *    （2026-10-16 裁决），故自助页的 `credsWritten` 只看口令与手机号。
  *
  * 另有两条**已知但刻意不动**的地方（属契约，不是缺陷）：
  * · 手机号/识别码只做必填与长度限制，格式交后端判定（前端不做正则前置，避免与后端
@@ -61,7 +64,11 @@ export function availableUserItems(
 }
 
 /**
- * 字段文案（两套口径各自沿用既有措辞；改一处别忘了另一处）。
+ * 字段文案（两套口径各自沿用既有措辞；**共有的键**改一处别忘了另一处）。
+ *
+ * 两套的**键集不再相同**：`admin` 多四个设备字段文案（`modelLabel`/`modelHelp`/
+ * `codeLabel`/`codeHelp`）——自助面已不收这两个字段（2026-10-16 裁决），该变体
+ * 不留这些文案（留了就是随包发的"教用户手填"死文本）。
  *
  * 两条硬口径：
  * ① 口令字段的标签必须带「易班」限定词，并配一行「不是本站登录密码」的区分说明——
@@ -75,36 +82,33 @@ export const FORM_TEXTS = {
     namePlaceholder: "如：电力123张三",
     nameHelp: "会显示给管理员，便于审核。",
     phoneLabel: "易班手机号",
-    phonePlaceholder: "登录易班的手机号",
+    phonePlaceholder: "11 位手机号",
     passwordLabel: "易班密码",
-    passwordNewPlaceholder: "用于自动登录签到",
+    passwordNewPlaceholder: "易班登录密码",
     // 本站也有自己的登录密码（本页的「修改密码」改的是它）。缺这一行区分说明时，用户与
     // 管理员都会把本字段当成本站密码——生产实证：管理员据此改错凭据，账号归属人登不上。
     passwordHelp: "用于自动登录易班签到，不是本站登录密码。",
-    modelLabel: "设备型号（可选，不清楚就留空）",
-    modelHelp: "仅在提示「请使用授权设备」时填写，不确定就留空。",
-    codeLabel: "设备识别码（可选，不清楚就留空）",
-    codeHelp: "仅在提示「请使用授权设备」时填写，不确定就留空。",
+    // 设备型号/识别码的文案例**只存在于 admin 变体**：自助面已不收这两个字段
+    // （2026-10-16 裁决），留在这里只会随包发一份"教用户手填"的死文本。
     phoneEditHelp: "",
   },
   admin: {
     nameLabel: "名称（选填）",
-    namePlaceholder: "如：电力123示例站",
-    nameHelp: "留空时在列表里按顺序显示为「账号1」「账号2」，便于区分。",
+    namePlaceholder: "如：电力123张三",
+    nameHelp: "留空时按「账号1」「账号2」显示。",
     phoneLabel: "手机号",
-    phonePlaceholder: "易班登录手机号",
+    phonePlaceholder: "11 位手机号",
     // 限定词不可省：管理端丢了「易班」二字时，管理员会把它读成"用户在本站的登录密码"。
     // 该字段是易班凭据，**有意不做本地口令策略校验**（必须与易班平台逐字一致），
     // 故标签一旦误导，错误凭据会被静默接受。
     passwordLabel: "易班密码",
     passwordNewPlaceholder: "易班登录密码",
-    passwordHelp: "用于自动登录易班签到，不是本站登录密码（改它不影响该用户登录本站）。",
+    passwordHelp: "用于自动登录易班签到，不是本站登录密码。",
     modelLabel: "设备型号（选填）",
     modelHelp: "学校开启设备绑定时建议填写；不确定就留空。",
     codeLabel: "设备识别码（选填）",
-    codeHelp: "64 位十六进制串；学校开启设备绑定时建议填写。",
-    phoneEditHelp:
-      "为保护隐私，手机号已打码显示；如需修改请填写完整新号码。若这条账号在你编辑期间被别人改过，保存时会先提示你确认。",
+    codeHelp: "学校开启设备绑定时填写；没有就留空。",
+    phoneEditHelp: "已打码；改号请填完整号码，保存前会核对。",
   },
 } as const;
 
@@ -143,10 +147,11 @@ export interface AccountFormInput {
   /** 管理端编辑时来自列表项的完整号（仅内存，不回显） */
   phoneFull?: string | null;
   password: string;
-  phoneModel: string;
-  phoneCode: string;
-  /** 是否处于"清除已配置识别码"态 */
-  clearCode: boolean;
+  /** 设备字段：只有管理面（`allowDeviceFields` 为真）会读，自助面不再提供输入框 */
+  phoneModel?: string;
+  phoneCode?: string;
+  /** 是否处于"清除已配置识别码"态（同上，只有管理面读） */
+  clearCode?: boolean;
   /** 绑定用户下拉的当前值（仅 allowEmail 且非编辑时有意义） */
   email?: string;
   /** 手填邮箱（下拉选 __manual__ 时生效） */
@@ -158,8 +163,9 @@ export interface AccountPayload {
   name: string;
   phone: string;
   password: string;
-  phone_model: string;
-  phone_code: string;
+  /** 仅管理面携带（`opts.allowDeviceFields`）；用户面不收这两个字段（2026-10-16 裁决）。 */
+  phone_model?: string;
+  phone_code?: string;
   email?: string;
   initial_password?: string;
   _snapshot?: string;
@@ -188,6 +194,12 @@ export function buildAccountPayload(
     requiresSnapshot?: boolean;
     policyOk?: (pw: string) => boolean;
     policyHint?: string;
+    /**
+     * 是否携带设备型号/识别码。**默认 true（管理面）**；用户面传 false ——
+     * 这两个字段由签到前自动补全填入，或由管理面手工填，用户面不留写入面
+     * （用户 2026-10-16 裁决：不给用户任何编辑这两个字段的入口）。
+     */
+    allowDeviceFields?: boolean;
   },
 ): BuildResult {
   // 口径 2：要求快照却没拿到 → 不得提交（防基于过期视图覆盖别人的改动）
@@ -207,9 +219,13 @@ export function buildAccountPayload(
     name: String(input.name || "").trim(),
     phone: phone.value,
     password: input.password || "",
-    phone_model: String(input.phoneModel || "").trim(),
-    phone_code: input.clearCode ? CODE_CLEAR : String(input.phoneCode || "").trim(),
   };
+
+  if (opts.allowDeviceFields !== false) {
+    // 键缺席时后端不动该列，库里的既有值（自动补全填的）因此不会被空值冲掉
+    payload.phone_model = String(input.phoneModel || "").trim();
+    payload.phone_code = input.clearCode ? CODE_CLEAR : String(input.phoneCode || "").trim();
+  }
 
   if (opts.allowEmail && !opts.editing) {
     const manual = input.email === "__manual__";
@@ -288,11 +304,11 @@ export function formTitle(opts: { editing: boolean; variant: FormVariant; index:
 
 export function formSubtitle(opts: { editing: boolean; variant: FormVariant }): string {
   if (opts.editing) {
-    return opts.variant === "user" ? "修改后需重新提交审核。" : "手机号已打码显示；不改动则按原号提交。";
+    return opts.variant === "user" ? "修改后需重新提交审核。" : "手机号已打码；不改则按原号提交。";
   }
   return opts.variant === "user"
-    ? "提交后等待管理员审核，通过即自动签到。"
-    : "不绑定用户＝管理员自有账号，保存后立即生效；绑定用户＝进入待审核队列。";
+    ? "提交后等待审核，通过即自动签到。"
+    : "不绑定＝管理员自有；绑定＝待审核。";
 }
 
 export const PASSWORD_UNCHANGED_PLACEHOLDER = "留空表示不修改密码";

@@ -3,15 +3,15 @@
 """配置检查：密钥文件定位、整数环境变量、账号配置脱敏打印、`--only` 过滤。
 
 全是"读配置 / 把配置讲清楚"的纯本地逻辑（零网络请求），供入口与账号装载复用。
-脱敏口径与 `yiban/masking.py` 一致：手机号必须打码——本模块的输出会落在 CI 日志、
+脱敏口径与 `yiban/core/masking.py` 一致：手机号必须打码——本模块的输出会落在 CI 日志、
 终端记录与他人可读的会话里（运维常贴到群里排查）。
 """
 import logging
 import os
 import sys
 
-from yiban.infra import env_io
-from yiban.masking import mask_phone as _mask_phone
+from yiban.adapters.config import env_io
+from yiban.core.masking import mask_phone as _mask_phone
 
 logger = logging.getLogger("yiban")
 

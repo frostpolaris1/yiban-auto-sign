@@ -6,11 +6,11 @@
     路径都传 `create_default_context`）与密钥/盐落盘临时文件创建即 0600 且无残留；
     其余条目跨子系统：`db_export`/`generate_demo_data` 不触发启动清理、env_lock
     Windows msvcrt 跨进程锁、`audit_verify` 只读化（缺库报错退出、不执行迁移）、
-    child_env 的 `YIBAN_` 白名单与非法键名丢弃、SSH 重设主管理员密码触发 PW_VERSION
+    env_child 的 `YIBAN_` 白名单与非法键名丢弃、SSH 重设主管理员密码触发 PW_VERSION
     递增、批量端点单次 10 上限、settings 部分更新不清空延迟字段、
     `start_delay_max`/`gap_max` 收归主管理员、登录成功写审计（IP 匿名化）。
-对应实现：`yiban/mail/transport.py`（TLS 上下文）、`yiban/infra/env_lock.py`、
-    `scripts/audit_verify.py`、`yiban/infra/child_env.py`、`web/app.py` 批量与设置端点。
+对应实现：`yiban/adapters/notifier/mail/transport.py`（TLS 上下文）、`yiban/infra/env_lock.py`、
+    `scripts/audit_verify.py`、`yiban/infra/env_child.py`、`web/app.py` 批量与设置端点。
 关键断言：TLS 必须带证书校验（不接受"能连上就算对"）；只读工具不得顺手跑迁移；
     白名单之外的环境变量不得被子进程继承。
 依赖：⚠ 混合回归文件，按主题 importlib 单独加载多个脚本 + mock `smtplib`；
@@ -31,8 +31,9 @@ from unittest import mock
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402
+from werkzeug.security import generate_password_hash  # noqa: E402
 
-from yiban.store.audit_chain import actor_tag  # noqa: E402
+from yiban.adapters.persistence.audit_chain import actor_tag  # noqa: E402
 
 TEST_KEY = "a" * 64
 ADMIN_PASS = "MasterPass#2026"
@@ -41,7 +42,7 @@ USER_PASS = "secret1"
 
 class ChildEnvTest(unittest.TestCase):
     def test_parse_env_file_filters_and_overrides(self):
-        import child_env
+        from yiban.infra import env_child as child_env
 
         tmp = tempfile.mkdtemp(prefix="childenv-")
         try:
@@ -76,8 +77,8 @@ class MailerTlsContextTest(unittest.TestCase):
         # 直连实现包（旧的 scripts/mailer.py 兼容壳已删除）：配置名（is_enabled/_get）
         # 打在 config 上（transport 内部正是以 `config.is_enabled()` 读它），
         # 发送名（smtplib / _send）在 transport 上打。
-        from yiban.mail import config as mailer
-        from yiban.mail import transport as mailer_transport
+        from yiban.adapters.notifier.mail import config as mailer
+        from yiban.adapters.notifier.mail import transport as mailer_transport
 
         captured = {}
 
@@ -103,8 +104,13 @@ class MailerTlsContextTest(unittest.TestCase):
             "USER": "a@example.com",
             "PASS": "secret",
         }
-        with mock.patch.object(mailer, "is_enabled", lambda: True), \
-             mock.patch.object(mailer, "_get", lambda k: cfg.get(k)), \
+        entry = {"host": cfg["SMTP_HOST"], "port": 465,
+                 "user": cfg["USER"], "pass": cfg["PASS"]}
+        # `_send` 现在一轮只取一份 .env 快照并复用已解析条目（ba-p09-07），
+        # 故打桩点从 `_get` 改到 `smtp_list`（与 is_enabled 一起接收 envs 参数）。
+        with mock.patch.object(mailer, "_read_env_file", lambda: {}), \
+             mock.patch.object(mailer, "is_enabled", lambda *a, **k: True), \
+             mock.patch.object(mailer, "smtp_list", lambda *a, **k: [entry]), \
              mock.patch.object(mailer_transport.smtplib, "SMTP_SSL", _FakeSMTP):
             mailer_transport._send("标题", "正文", "to@example.com")
         ctx = captured.get("context")
@@ -332,7 +338,7 @@ class BatchCapAndSettingsTest(unittest.TestCase):
         return c, t
 
     def _reg_admin(self):
-        h = self.webapp.generate_password_hash
+        h = generate_password_hash
         db.create_user("reg-admin@test.local", h(USER_PASS), role="admin")
         c = self.webapp.create_app().test_client()
         t = self._login(c, "reg-admin@test.local", USER_PASS)

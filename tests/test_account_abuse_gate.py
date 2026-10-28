@@ -30,6 +30,9 @@ import unittest
 from unittest import mock
 
 from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-9b）
+from werkzeug.security import generate_password_hash
+
+from web.services import notify_mail as _notify_mail
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -102,7 +105,7 @@ class _B13WebBase(unittest.TestCase):
         self.alerts = []
         if self.PATCH_NOTIFY:
             p = mock.patch.object(
-                self.webapp, "send_notification",
+                _notify_mail, "send_notification",
                 # send_notification 新增 force=（先告警后落盘），假实现同步接收
                 # 新增 ledger=（M8 登录失败告警独立账本），假实现同步接收
                 side_effect=lambda t, c, urgent=False, force=False, ledger=None: self.alerts.append((t, c)),
@@ -120,7 +123,7 @@ class _B13WebBase(unittest.TestCase):
         return {"X-CSRF-Token": token}
 
     def _make_user(self, email, password=None):
-        db.create_user(email, self.webapp.generate_password_hash(password or USER_PASS))
+        db.create_user(email, generate_password_hash(password or USER_PASS))
         return email
 
 
@@ -151,9 +154,9 @@ class MailAlertThrottleTest(_B13WebBase):
                                side_effect=lambda url, t, c: hooks.append(url)):
             os.environ["YIBAN_NOTIFY_URL"] = "https://example.com/hook"
             try:
-                self.webapp.send_notification("高危管理操作告警", "第一次")
-                self.webapp.send_notification("高危管理操作告警", "第二次（窗口内，应仅 webhook）")
-                self.webapp.send_notification("密码重置告警", "不同标题不受节流")
+                _notify_mail.send_notification("高危管理操作告警", "第一次")
+                _notify_mail.send_notification("高危管理操作告警", "第二次（窗口内，应仅 webhook）")
+                _notify_mail.send_notification("密码重置告警", "不同标题不受节流")
             finally:
                 os.environ.pop("YIBAN_NOTIFY_URL", None)
         self.assertEqual(
@@ -243,7 +246,7 @@ class HighRiskDeleteTest(_B13WebBase):
 
     def test_registered_admin_uses_own_password(self):
         db.create_user("radmin@test.local",
-                       self.webapp.generate_password_hash(ADMIN_PASS), role="admin")
+                       generate_password_hash(ADMIN_PASS), role="admin")
         self._make_user("ru1@test.local")
         c = self.webapp.create_app().test_client()
         t = self._login(c, "radmin@test.local", ADMIN_PASS)

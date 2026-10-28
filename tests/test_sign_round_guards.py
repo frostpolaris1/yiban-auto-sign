@@ -2,14 +2,16 @@
 """签到轮守卫回归（2026-09-08）。
 
 标签：B · 调度：领取/队列/执行体
-覆盖：补签轮只重跑未了结账号（含全了结静默退出、首签不过滤、状态文件缺失时宁多勿漏）、暂停/周末关闭期间探针跳过、死号先判后睡、SIGTERM
-   前冲刷管理员告警汇总、疑似首签但已过补签触发点的告警、窗口外起跑轮次的结果归类、批量与单条手动签到的全局冷却与速率上限（含判定次序契约）。
-对应实现：scripts/signin.py（main 的补签过滤与探针分支、run_queue_retry
-   的先判后睡、SIGTERM 处理器与
+覆盖：补签轮只重跑未了结账号（含全了结静默退出、首签不过滤、状态文件缺失时宁多勿漏）、暂停/周末关闭期间探针跳过、SIGTERM
+   前冲刷管理员告警汇总、疑似首签但已过补签触发点的告警、批量与单条手动签到的全局冷却与速率上限（含判定次序契约）。
+   2026-10-20（工单 `77s2`）：原先驱动冻结载体 `run_queue_retry` 的"死号先判后睡"（3 条）
+   与"窗口外起跑轮次的结果归类"（2 条）已删；同一批判据改由 `tests/test_executor_v3.py`
+   的暂停账号用例与窗口收尾用例承担（v3 没有"槽位睡眠"这一概念，故"先判后睡"无对应面）。
+对应实现：scripts/signin.py（main 的补签过滤与探针分支）、SIGTERM 处理器与
    _flush_admin_mail_summary、_maybe_alert_zero_success）、web/app.py
-   的批量/单条签到入口与冷却、速率上限键。
+web/app.py 的批量/单条签到入口与冷却、速率上限键。
 关键断言：补签轮的过滤发生在 main
-   读状态文件处，因此「今天周几」这个外部输入必须被钉成工作日，否则整组用例在周六/周日跑必红。探针在暂停/周末关闭期间不得发起完整登录（那等于白送风控暴露）。要跳过的账号不得先睡满间隔。被超时击杀时已收集的告警必须先发出再退出，否则唯一的失败线索随进程死亡。冷却先于速率上限判定：顺序反了会把「冷却中」误报成「过于频繁」。
+   读状态文件处，因此「今天周几」这个外部输入必须被钉成工作日，否则整组用例在周六/周日跑必红。探针在暂停/周末关闭期间不得发起完整登录（那等于白送风控暴露）。被超时击杀时已收集的告警必须先发出再退出，否则唯一的失败线索随进程死亡。冷却先于速率上限判定：顺序反了会把「冷却中」误报成「过于频繁」。
 依赖：临时状态目录 + 固定业务日期（与运行当天的星期解耦）+ Flask test
    client；批量触发的 Popen 在 setUp 级打桩防真实 spawn。BatchSignCooldownTest
    的三条冷却用例是已知的负载敏感项（并发全量下偶发红，单文件串行复跑为绿）。不发网络请求。
@@ -17,8 +19,7 @@
 逐项活体复现 + 修复钉版：
 1. 补签轮只重跑未了结账号（当日已 success/already 不再二次登录）
 2. 一键暂停/周末签到关闭期间探针跳过（门在探针分支内部判定）
-3. 死号（自取消/熔断暂停）先判后睡：不再先睡满账号间隔/时段槽位再跳过
-4. SIGTERM 超时终止前冲刷已收集的管理员告警汇总（汇总不随进程死亡）
+3. SIGTERM 超时终止前冲刷已收集的管理员告警汇总（汇总不随进程死亡）
 5. 疑似首签轮但已过补签触发点：部分成功+窗口外仍告警（无第三次兜底）
 """
 import contextlib
@@ -41,6 +42,13 @@ import signin
 
 # 邮件正文入参已放宽为 layout.Mail | str，断言前统一渲染成文本
 from _mail_body import render_body
+
+#: 批量/单条手动签到用例的账号密钥（64 hex；被 `BatchSignCooldownTest` 写进临时 .env）。
+TEST_KEY = "a" * 64
+#: 同一组用例的管理员口令（与 `TEST_KEY` 一起写进临时 .env）。
+ADMIN_PASS = "TestPass1234!"
+
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class _FakeDT(datetime):
@@ -221,79 +229,12 @@ class ProbeGateTest(unittest.TestCase):
         m_probe.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# 死号先判后睡
-# ---------------------------------------------------------------------------
-class DeadAccountSkipTest(unittest.TestCase):
-    """将跳过的账号（自取消/熔断暂停）不得先睡满间隔再判跳过。"""
-
-    def setUp(self):
-        # 窗口拉满全天；请求间隔下限压到 1s，隔离干扰
-        env = {
-            "YIBAN_SIGN_START": "00:01", "YIBAN_SIGN_END": "23:59",
-            "YIBAN_MIN_EXEC_GAP": "1", "YIBAN_EXEC_GAP_MIN": "0",
-        }
-        p = mock.patch.dict(os.environ, env)
-        p.start()
-        self.addCleanup(p.stop)
-
-    def _run(self, accounts, schedule=None, cred_state=None, gap_max=0):
-        sleeps = []
-        with mock.patch.object(signin.time, "sleep", side_effect=sleeps.append), \
-             mock.patch.object(signin, "attempt_signin",
-                               return_value=(True, "已签到", False, "already")):
-            results = signin.run_queue_retry(
-                accounts, "", 0, gap_max, schedule=schedule, cred_state=cred_state)
-        return results, sleeps
-
-    def test_schedule_branch_dead_account_skips_without_slot_sleep(self):
-        """调度 v2 分支：熔断暂停号的槽位在 +180s，活号立即执行——
-        修复前主循环会先睡到死号槽位才发现可跳过（活号被挤出窗口）。"""
-        dead = SimpleNamespace(phone="13800000001", user_paused=False, owner="")
-        live = SimpleNamespace(phone="13800000002", user_paused=False, owner="")
-        now = signin.clock.now()
-        schedule = {
-            "13800000001": datetime.fromtimestamp(now.timestamp() + 180),
-            "13800000002": datetime.fromtimestamp(now.timestamp() - 5),
-        }
-        cred_state = {"13800000001": {"paused_since": "2026-09-01 00:00:00",
-                                      "probe_date": "2099-01-01"}}
-        results, sleeps = self._run([live, dead], schedule=schedule,
-                                    cred_state=cred_state)
-        self.assertEqual(results["13800000001"][3], signin.STATUS_PAUSED)
-        self.assertTrue(
-            all(s < 60 for s in sleeps),
-            f"死号不得睡满时段槽位（记录到的 sleep: {sleeps}）",
-        )
-        self.assertEqual(results["13800000002"][3], "already", "活号照常执行")
-
-    def test_queue_branch_dead_account_skips_without_gap_sleep(self):
-        """队列分支：[活号, 熔断暂停号]，死号不得先睡满账号间隔（gap_max=10）。"""
-        dead = SimpleNamespace(phone="13800000001", user_paused=False, owner="")
-        live = SimpleNamespace(phone="13800000002", user_paused=False, owner="")
-        cred_state = {"13800000001": {"paused_since": "2026-09-01 00:00:00",
-                                      "probe_date": "2099-01-01"}}
-        results, sleeps = self._run([live, dead], cred_state=cred_state, gap_max=10)
-        self.assertEqual(results["13800000001"][3], signin.STATUS_PAUSED)
-        self.assertTrue(
-            all(s < 5 for s in sleeps),
-            f"死号不得睡满账号间隔（记录到的 sleep: {sleeps}）",
-        )
-
-    def test_queue_branch_user_cancelled_skips_without_gap_sleep(self):
-        """队列分支：用户自取消账号同样先判后睡（不得消耗 10s 间隔）。"""
-        dead = SimpleNamespace(phone="13800000001", user_paused=True, owner="")
-        live = SimpleNamespace(phone="13800000002", user_paused=False, owner="")
-        results, sleeps = self._run([live, dead], gap_max=10)
-        self.assertEqual(results["13800000001"][3], signin.STATUS_USER_CANCELLED)
-        self.assertTrue(all(s < 5 for s in sleeps), f"sleeps={sleeps}")
-
-
-# ---------------------------------------------------------------------------
-# SIGTERM 超时终止前冲刷告警汇总
-# ---------------------------------------------------------------------------
 class SigtermFlushTest(unittest.TestCase):
-    """签到轮被超时击杀（SIGTERM）时，已收集的管理员告警汇总先发出再退出。"""
+    """签到轮被超时击杀（SIGTERM）时，已收集的管理员告警汇总仍会发出。
+
+    信号处理器本身零 I/O：它只标记终止并存下一次退出钩子；发送发生在
+    解释器退出（`atexit`）阶段。测试直接调用钩子以在进程内观察发送。
+    """
 
     def setUp(self):
         self._summary_backup = list(signin._mail_summary)
@@ -308,20 +249,23 @@ class SigtermFlushTest(unittest.TestCase):
         with mock.patch.object(signin.mailer, "send_admin_alert",
                                return_value=True) as m_send, \
              mock.patch.object(signin.db, "admin_mail_recipients",
-                               return_value=["a@b.c"]), \
-             self.assertRaises(SystemExit):
-            signin._flush_mail_on_sigterm(15, None)
-        self.assertEqual(m_send.call_count, 1, "终止前必须把已收集的告警发出")
+                               return_value=["a@b.c"]):
+            with self.assertRaises(SystemExit):
+                signin._flush_mail_on_sigterm(15, None)
+            m_send.assert_not_called()  # 处理器零 I/O：发送推迟到退出钩子
+            signin._flush_admin_mail_on_exit()
+        self.assertEqual(m_send.call_count, 1, "退出钩子必须把已收集的告警发出")
         args, kwargs = m_send.call_args
         body = render_body(kwargs.get("body") or (args[1] if len(args) > 1 else ""))
         self.assertIn("超时", body, "汇总需标明本轮被超时终止")
         self.assertEqual(signin._mail_summary, [], "发送后清空，正常收尾不重复")
 
     def test_sigterm_noop_without_pending_mail(self):
-        """无待发告警：不产生任何发送（不重复告警）。"""
-        with mock.patch.object(signin.mailer, "send_admin_alert") as m_send, \
-             self.assertRaises(SystemExit):
-            signin._flush_mail_on_sigterm(15, None)
+        """无待发告警：退出钩子不产生任何发送（不重复告警）。"""
+        with mock.patch.object(signin.mailer, "send_admin_alert") as m_send:
+            with self.assertRaises(SystemExit):
+                signin._flush_mail_on_sigterm(15, None)
+            signin._flush_admin_mail_on_exit()
         m_send.assert_not_called()
 
     def test_main_registers_sigterm_handler(self):
@@ -389,91 +333,6 @@ class LateFirstRunAlertTest(unittest.TestCase):
     def test_before_second_trigger_time_stays_silent(self):
         """07:10 之前的首签轮：补签会重跑，维持既有不打扰语义。"""
         self.assertFalse(self._alert((6, 50)))
-
-
-# ---------------------------------------------------------------------------
-# 窗口外起跑的全量轮：跳过 ≠ 失败
-# ---------------------------------------------------------------------------
-class WindowClosedRoundTest(unittest.TestCase):
-    """窗口外起跑的全量轮：被跳过的账号必须真的进 `results`，不能算成"失败"。
-
-    **实测缺陷**（2026-09-17 在测试机上复现，base 提交 c696aaf 同样如此）：排计划阶段
-    会给每个账号写 `pending`（"计划 HH:MM"）到当日状态文件，而 `_mark_window_skip` 把
-    "状态文件里有记录"一律当作"已有结论"跳过——于是窗口外起跑时**一个账号都进不了
-    `results`**，汇总按"未执行"把它们算成失败（❌ N 失败 / 退出码 1 / 发失败邮件），
-    真相却是一个请求都没发；`run.sh` 也因此写不出 SKIPPED，补签链跟着断掉。
-    """
-
-    PHONE = "13800000009"
-
-    class _WindowClosedDT(_FakeDT):
-        """固定为 2026-09-17 08:30（周四）：配合"早已结束"的窗口，任何时刻跑都成立。"""
-
-        _date = (2026, 9, 17)
-        _hm = (8, 30)
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="yiban-window-skip-")
-        p = mock.patch.object(signin.clock, "now", self._WindowClosedDT.now)
-        p.start()
-        self.addCleanup(p.stop)
-        self._old_env = {
-            k: os.environ.get(k) for k in (
-                "YIBAN_STATE_DIR", "YIBAN_LOG_FILE", "YIBAN_DB_FILE",
-                "YIBAN_SIGN_START", "YIBAN_SIGN_END")
-        }
-        os.environ.update({
-            "YIBAN_STATE_DIR": self.tmp,
-            "YIBAN_LOG_FILE": os.path.join(self.tmp, "sign.log"),
-            "YIBAN_DB_FILE": os.path.join(self.tmp, "yiban.db"),
-            # 窗口 00:10~00:20：配合上面的固定时刻，永远落在窗口外
-            "YIBAN_SIGN_START": "00:10",
-            "YIBAN_SIGN_END": "00:20",
-        })
-
-    def tearDown(self):
-        for k, v in self._old_env.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
-        shutil.rmtree(self.tmp, ignore_errors=True)
-
-    def _run(self, recorded=None):
-        """跑一轮；时间表非空 ⇒ 走"计划"分支（与真实全量轮同一条路径）。"""
-        if recorded:
-            signin._write_sign_state(self.PHONE, recorded, "测试留痕")
-        acc = SimpleNamespace(phone=self.PHONE, user_paused=False)
-        return signin.run_queue_retry(
-            [acc], "", 0, 0,
-            schedule={self.PHONE: datetime(2026, 9, 17, 0, 11)}, cred_state={})
-
-    def test_pending_account_is_marked_window_skip(self):
-        res = self._run(recorded=signin.STATUS_PENDING)
-        got = res.get(self.PHONE)
-        self.assertIsNotNone(got, "排计划留下的 pending 不该让这个账号漏掉窗口外标记")
-        self.assertEqual(got[3], signin.STATUS_SKIPPED_WINDOW)
-        self.assertTrue(got[2], "窗口外跳过必须 skip=True（退出码 2，而不是算失败）")
-
-    def test_real_conclusion_is_not_overwritten(self):
-        """已有真实结论（failed）的账号仍不得被改写成"窗口外"，且失败保持可见。"""
-        res = self._run(recorded=signin.STATUS_FAILED)
-        got = res.get(self.PHONE)
-        self.assertIsNotNone(got, "已有结论的账号也必须进 results，否则汇总按未执行失败计")
-        self.assertEqual(got[3], signin.STATUS_FAILED, "真实失败原因必须透传")
-        with io.open(os.path.join(self.tmp, "sign-state-2026-09-17.json"),
-                     encoding="utf-8") as f:
-            self.assertEqual(json.load(f)[self.PHONE]["status"], signin.STATUS_FAILED,
-                             "真实失败原因不该被窗口外覆盖")
-
-
-BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
-TEST_KEY = "a" * 64
-
-
-ADMIN_PASS = "TestPass1234!"
 
 
 class _FakeProc:

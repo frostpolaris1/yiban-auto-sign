@@ -19,7 +19,7 @@ tmp 文件。机制：Windows 的 `open()` 不带 `FILE_SHARE_DELETE`，**读者
 标签：G · 安全：脱敏/审计/配置注入
 覆盖：`.env` 原子写的瞬态失败面——重试后成功、一直失败时原样抛出且必须清掉 tmp、
 尝试预算有限（不得无限重试）、真并发（读线程 + 连续写）不再失败。
-对应实现：`yiban/infra/env_io.py` 的原子写（`write_env_keys` 的 tmp + `os.replace` 路径）
+对应实现：`yiban/adapters/config/env_io.py` 的原子写（`write_env_keys` 的 tmp + `os.replace` 路径）
 与其重试包装。
 关键断言：失败分支必须**成对**断"抛出"与"tmp 已清"——留下的是含密钥与管理员口令哈希的
 完整 `.env` 副本，只断抛出等于把泄露留在原地；`test_attempt_budget_is_finite` 守的是
@@ -170,7 +170,7 @@ class ConcurrentReadWriteTest(unittest.TestCase):
 
     @staticmethod
     def _reader(target, stop, counter, time_mod):
-        from yiban.infra import env_io
+        from yiban.adapters.config import env_io
         while not stop.is_set():
             with contextlib.suppress(Exception):
                 env_io.parse_env_file(target)

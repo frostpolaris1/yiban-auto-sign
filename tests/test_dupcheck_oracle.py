@@ -7,17 +7,17 @@
     窗口内第 N 次）、连续命中达 DUPCHECK_MAX 后改答 429 且被拒留痕每窗口至多一行、
     未重号的正常提交不占额度不写命中审计；另钉窗口翻窗后额度复位、按会话隔离计数、
     单账号/容量拦截仍排在判重之前（错误优先级不变）。
-对应实现：`web/routes/my.py` 的 `api_my_account_add` 预检分支；限速表
+对应实现：`web/routes/my_api.py` 的 `api_my_account_add` 预检分支；限速表
     `web.routes.dupcheck_limits()`（app 实例 extensions，键为会话用户名）；配额原语
     `web.security._bump_window_count` / `_ip_store_trim`；被拒留痕复用
     `web.app` 的 `_read_audit_denied_trace`（limit=1）；常量 `DUPCHECK_WINDOW` /
-    `DUPCHECK_MAX` 在 `web/app.py`。
+    `DUPCHECK_MAX` 在 `web/services/limits.py`（批 3-b 由 web/app.py 搬入）。
 关键断言：预检命中是"该号码在册"的对外确认——可达者拿它零成本、零留痕地定向探号
     等于免检预言机；配额只计命中（不伤正常路径），留痕必须可归因（actor + 遮罩号），
     拒绝面不能反过来把审计表刷成打字机（2 次 429 只许 1 行被拒审计）。
 依赖：纯本地 Flask test client + 临时 `.env`/SQLite（`import db` 走 scripts 门面），
     不联网、不起子进程、无需 node/bash；`YIBAN_ACCOUNT_VERIFY` 不开（预筛路径不触
-    外呼）；翻窗用例以 `mock.patch` 拨 `web.routes.my` 的 `time.time`。
+    外呼）；翻窗用例以 `mock.patch` 拨 `web.routes.my_api` 的 `time.time`。
 """
 import contextlib
 import importlib.util
@@ -30,7 +30,10 @@ import time
 import unittest
 from unittest import mock
 
-from yiban.store.audit_chain import actor_tag
+from werkzeug.security import generate_password_hash
+
+from web.services import limits as _limits
+from yiban.adapters.persistence.audit_chain import actor_tag
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -104,8 +107,8 @@ class DupcheckOracleTest(unittest.TestCase):
             if os.path.exists(p):
                 os.remove(p)
         db.init_db(self.db_file, env_file=self.env_file)
-        db.create_user(ACTOR, self.webapp.generate_password_hash(USER_PASS))
-        db.create_user(OTHER, self.webapp.generate_password_hash(USER_PASS))
+        db.create_user(ACTOR, generate_password_hash(USER_PASS))
+        db.create_user(OTHER, generate_password_hash(USER_PASS))
         db.add_account({"name": "occupied", "phone": PHONE_TAKEN, "password": "p",
                         "phone_model": "", "phone_code": "", "status": "active",
                         "owner": OWNER_OTHER})
@@ -166,7 +169,7 @@ class DupcheckOracleTest(unittest.TestCase):
         app = self._app()
         c = app.test_client()
         token = self._login(c, ACTOR)
-        quota = self.webapp.DUPCHECK_MAX
+        quota = _limits.DUPCHECK_MAX
         codes = [_post_account(c, token, PHONE_TAKEN).status_code
                  for _ in range(quota)]
         self.assertEqual(codes, [400] * quota, "前 DUPCHECK_MAX 次命中维持原 400")
@@ -197,8 +200,8 @@ class DupcheckOracleTest(unittest.TestCase):
         c2 = app.test_client()
         token2 = self._login(c2, OTHER)
         codes = [_post_account(c2, token2, PHONE_TAKEN).status_code
-                 for _ in range(self.webapp.DUPCHECK_MAX)]
-        self.assertEqual(codes, [400] * self.webapp.DUPCHECK_MAX,
+                 for _ in range(_limits.DUPCHECK_MAX)]
+        self.assertEqual(codes, [400] * _limits.DUPCHECK_MAX,
                          "计数按会话隔离")
         self.assertEqual(_post_account(c2, token2, PHONE_TAKEN).status_code, 429)
 
@@ -206,15 +209,15 @@ class DupcheckOracleTest(unittest.TestCase):
         app = self._app()
         c = app.test_client()
         token = self._login(c, ACTOR)
-        quota = self.webapp.DUPCHECK_MAX
+        quota = _limits.DUPCHECK_MAX
         t0 = time.time()
-        with mock.patch("web.routes.my.time.time", side_effect=lambda: t0):
+        with mock.patch("web.routes.my_api.time.time", side_effect=lambda: t0):
             for _ in range(quota):
                 self.assertEqual(_post_account(c, token, PHONE_TAKEN).status_code, 400)
             self.assertEqual(_post_account(c, token, PHONE_TAKEN).status_code, 429)
         # 拨过 DUPCHECK_WINDOW 后额度复位：回到 400 契约并继续留痕
-        with mock.patch("web.routes.my.time.time",
-                        side_effect=lambda: t0 + self.webapp.DUPCHECK_WINDOW + 1):
+        with mock.patch("web.routes.my_api.time.time",
+                        side_effect=lambda: t0 + _limits.DUPCHECK_WINDOW + 1):
             r = _post_account(c, token, PHONE_TAKEN)
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
         hits = self._audit(DUP_HIT)

@@ -19,7 +19,7 @@
    &）也必须提取——曾因此全站登录失败。已登录标志必须同时认主机与路径，子域伪装
    f.yiban.cn.evil.com 不得命中。断言走真实 requests.Session（只换
    send），Origin 置 None 这类删头手法只有真实 prepare_request 才观察得到。
-依赖：真实 requests.Session + 脚本化 send 替身、`tests/fake_yiban_server.py` 里固定的
+依赖：真实 requests.Session + 脚本化 send 替身、`yiban/adapters/protocol_fake/__init__.py` 里固定的
    1024 位测试公钥（不现场生成，跨进程同值）、会话缓存用例走真 db 门面 + 临时库/临时 .env（测试密钥）；
    不发任何真实网络请求。整文件在本机执行，无 skip。
 
@@ -48,9 +48,9 @@ from urllib.parse import parse_qsl, urlsplit
 
 import requests
 import signin
-from fake_yiban_server import DEFAULT_PUBKEY_PEM, waf_challenge_body
 
 from yiban import security
+from yiban.adapters.protocol_fake import DEFAULT_PUBKEY_PEM, waf_challenge_body
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -58,7 +58,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #
 # 夹具必须是**仓内固定字节**，不靠现场生成：随机 PEM 的 base64 正文能撞出 ASCII 词元
 # `WAF`，抽中它的那个 xdist worker 里所有嵌这枚 PEM 的用例全被判成"被风控拦截"
-# （工单 `yiban-auto-sign-u21x`）。名册只有一处定义——`tests/fake_yiban_server.py` 的
+# （工单 `yiban-auto-sign-u21x`）。名册只有一处定义——`yiban/adapters/protocol_fake/__init__.py` 的
 # `DEFAULT_PUBKEY_PEM`，本文件与 `tests/test_protocol_masking.py` 共用它。
 def _pubkey_pem():
     """测试公钥 PEM（固定常量：同进程重复调用同值、跨进程同值）。"""
@@ -185,7 +185,7 @@ def _run(recorder, fn):
 
 def _killyiban_happy_responses():
     """默认流四步的成功脚本。最终认证载荷带**签发回执**（`data` 存在，可为空容器）：
-    形状对照 `tests/fake_yiban_server.py` 录制的 `/base/c/auth/yiban` 成功应答。"""
+    形状对照 `yiban/adapters/protocol_fake/__init__.py` 录制的 `/base/c/auth/yiban` 成功应答。"""
     return [
         _resp(text=_KILLYIBAN_PAGE % _pubkey_pem(),
               url="https://oauth.yiban.cn/code/html"),
@@ -444,6 +444,38 @@ class KillyibanLoginShapeTest(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "请求被 WAF 风控拦截"):
                     _run(rec, client.login_killyiban)
 
+class StringZeroEnvelopeCodeTest(unittest.TestCase):
+    """登录链的成功判据必须与协议库同一容忍度：数字 `0` 与字符串 `"0"` 都算成功。
+
+    上游同一字段可能发数字也可能发数字字符串（协议库 SPEC §3.1；`code=999` 已按双态
+    收敛）。登录链若仍用严格 `!= 0`，载荷完好的字符串 `"0"` 会被判成失败，落到
+    通用档打满 3 次真实登录（工单 ba-p08-05）。
+    """
+
+    def test_killyiban_final_auth_accepts_string_zero(self):
+        responses = _killyiban_happy_responses()
+        responses[3] = _resp({"code": "0", "data": {}, "msg": ""})
+        client, rec = _killyiban_client(responses)
+        _run(rec, client.login_killyiban)
+        self.assertTrue(client.logged_in, "字符串 '0' 必须与数字 0 同判成功")
+
+    def test_legacy_entry_and_final_auth_accept_string_zero(self):
+        oauth_page_url = "https://oauth.yiban.cn/code/html?client_id=95626fa3080300ea"
+        responses = [
+            _resp({"code": "0", "data": {"Data": oauth_page_url}}),
+            _resp(text=_legacy_page(_pubkey_pem()), url=oauth_page_url),
+            _resp({"reUrl": "https://f.yiban.cn/iapp7463?verify_request=TOK"}),
+            _resp(text="", headers={"Location": "https://f.yiban.cn/x"},
+                  url="https://f.yiban.cn/x"),
+            _resp(text="", headers={"Location": "https://c.uyiban.com/?verify_request=VTOK"},
+                  url="https://c.uyiban.com/"),
+            _resp({"code": "0", "msg": ""}),
+        ]
+        client, rec = _legacy_client(responses)
+        _run(rec, client.login)
+        self.assertTrue(client.logged_in, "旧流入口与终步的字符串 '0' 都必须判成功")
+
+
 _TEST_ACCOUNTS_KEY = "a" * 64  # 测试专用密钥，与生产无任何关系
 _TEST_AUDIT_KEY = "b" * 64
 
@@ -607,6 +639,15 @@ class KillyibanSessionStoreTest(_RealSessionStoreFixture):
             with self.subTest(body=body):
                 self._assert_receiptless_rejected(body)
 
+    def test_fake_success_entry_step_rejected(self):
+        """入口步 {Action,Data} 是未认证回退，不是签发回执：拒绝、零缓存、无成功日志。"""
+        self._assert_receiptless_rejected({
+            "code": 0,
+            "data": {"Action": "redirect",
+                     "Data": "https://openapi.yiban.cn/oauth/authorize?client_id=x"},
+            "msg": "",
+        })
+
     def test_fake_success_does_not_update_existing_cache(self):
         """已有缓存行时遇假成功：拒绝路径自身零写入（行只会被既有探针判死清掉）。"""
         resp = _killyiban_happy_responses()
@@ -638,11 +679,16 @@ class KillyibanSessionStoreTest(_RealSessionStoreFixture):
 # ---------------------------------------------------------------------------
 # 签到两个接口的形状与三态
 # ---------------------------------------------------------------------------
-def _sign_position_data(*, msg="", positions=None, rng=None):
+def _sign_position_data(*, state=0, msg="", positions=None, rng=None):
+    """signPosition 信封：判定走 `State`（平台 stateEnum），`msg` 只作日志原文。
+
+    默认 `state=0`（可签到）＝照常取点位并提交；判定用例逐值传 `state`。
+    """
     now = int(signin.datetime.now().timestamp())
     return {
         "code": 0,
         "data": {
+            "State": state,
             "Msg": msg,
             "IsNeedPhoto": 2,
             "Position": positions if positions is not None else [{
@@ -724,10 +770,16 @@ class SigninShapeTest(unittest.TestCase):
                          "application/x-www-form-urlencoded; charset=UTF-8")
 
     def test_three_states_and_window_skips(self):
+        # 判定逐值走 `State`（平台 stateEnum）：3 已签到 / 4 已更改（班委手动补签，2026-10-08
+        # 实拍形态：Msg="已更改"、Position 为空）/ 2 无需签到；`msg` 只作日志原文。
         cases = [
-            (_sign_position_data(msg="今日已签到"), signin.STATUS_ALREADY, "已签到"),
-            (_sign_position_data(msg="今日无需签到"), signin.STATUS_NO_TASK, "无需签到"),
-            (_sign_position_data(positions=[]), signin.STATUS_NO_POSITION, "未找到签到位置数据"),
+            (_sign_position_data(state=3, msg="已签到"), signin.STATUS_ALREADY, "已签到"),
+            (_sign_position_data(state=4, msg="已更改", positions=[]),
+             signin.STATUS_ALREADY, "已签到"),
+            (_sign_position_data(state=2, msg="今日无需签到", positions=[]),
+             signin.STATUS_NO_TASK, "无需签到"),
+            (_sign_position_data(state=1, positions=[]), signin.STATUS_NO_POSITION,
+             "未找到签到位置数据"),
             (_sign_position_data(rng={}), signin.STATUS_SKIPPED_NORANGE, "时间窗口缺失"),
             (_sign_position_data(rng={"StartTime": 1, "EndTime": 2}),
              signin.STATUS_SKIPPED_WINDOW, "未在签到时间内"),
@@ -762,8 +814,35 @@ class SigninShapeTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "会话失效") as ctx:
             self._run_sign(client, rec)
         msg = str(ctx.exception)
+        self.assertIn("登录已超时", msg)
         self.assertEqual(signin._retry_budget(msg),
                          (signin.SESSION_STALE_MAX_ATTEMPTS, True))
+
+    def test_session_expired_999_keeps_sanitized_upstream_msg(self):
+        """999 的上游 msg 必须带进异常；换行转义、手机号打码、长度受限。
+
+        日志会被导出/转发；上游 msg 是服务端可控文本，只能以脱敏形态落库。
+        """
+        client, rec = self._client([
+            _resp({"code": 999, "msg": "登录已超时\n手机号 13800138000 请重登"})
+        ])
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run_sign(client, rec)
+        msg = str(ctx.exception)
+        self.assertIn("登录已超时", msg)
+        self.assertIn("138****8000", msg)
+        self.assertNotIn("\n", msg)
+        self.assertEqual(signin._retry_budget(msg),
+                         (signin.SESSION_STALE_MAX_ATTEMPTS, True))
+
+    def test_session_expired_999_truncates_long_upstream_msg(self):
+        """上游 msg 超长时必须截断，防整段进日志/审计。"""
+        client, rec = self._client([_resp({"code": 999, "msg": "超时" * 200})])
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run_sign(client, rec)
+        msg = str(ctx.exception)
+        self.assertTrue(msg.endswith("…，需重新登录"))
+        self.assertLess(len(msg), 200)
 
 
 # ---------------------------------------------------------------------------

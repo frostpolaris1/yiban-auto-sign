@@ -2,7 +2,12 @@
 """账密熔断器（circuit breaker）测试：v0.18.4 核心行为防回归。
 
 标签：I · 容量、熔断与账号有效性
-覆盖：账密熔断（连续 3 天失败→暂停 + 试探日、成功清除、网络类失败不计数）、`run_queue_retry` 的绕过与解冻、cred-state 的增量合并与跨进程锁、慢签到的耗时留痕与告警收敛
+覆盖：账密熔断（连续 3 天失败→暂停 + 试探日、成功清除、网络类失败不计数）、生产路径
+    （`runner.main` → `executor_v3`）上的暂停绕过与试探解冻、cred-state 的增量合并与跨进程锁。
+    2026-10-20（工单 `77s2`）：原先驱动冻结载体 `run_queue_retry` 的三条试探解冻用例与两条
+    慢签告警用例已删；试探解冻改由 `tests/test_executor_v3.py::ProbeDayUnfreezeTest` 钉住，
+    慢签告警随冻结载体一起退场（`alerts._alert_slow_sign` 的直接单测仍在
+    `tests/test_alert_channel_dispatch.py`）。
 对应实现：`scripts/signin.py` 的 `attempt_signin` / `_load_cred_state` / `_save_cred_state` / `_write_sign_state` 与 cred-state 存储的 `update` / `clear`；web 侧编辑账号的清熔断路径
 关键断言：同一天多次失败只计 1 天；试探日「登录已成功但窗口外 / 无 Range 被跳过」要解冻而非再冻 7 天，凭据类失败仍保持暂停并顺延试探日；调用方持有的空 dict 必须**就地**收到 `fail_days`（runner 收尾保存的正是同一个 dict，否则计数永不落盘）；旧快照不得复活被 Web 清掉的暂停；Web 清除与签到保存共用同一把文件锁，因而不可能交错
 依赖：纯本地——临时目录与文件、`attempt_signin` 打桩（不联网）。既可 `pytest` 收集，也可 `python tests/test_breaker.py` 直接运行。无需 node
@@ -14,7 +19,7 @@
 逐项明细：
 - 凭据失败计数：连续 3 天 → 暂停 + 试探日；同一天多次失败只计 1 天
 - 成功清除计数；网络类失败不计数
-- run_queue_retry：暂停中零请求；--only 手动签到绕过；半开试探日执行并恢复
+- 生产路径：暂停中零请求；--only 手动签到绕过；半开试探日执行并恢复
 - web：编辑账号（改密码）清除 cred-state 暂停记录
 """
 import contextlib
@@ -27,6 +32,7 @@ import tempfile
 import unittest
 import unittest.mock as mock
 from datetime import datetime
+from types import SimpleNamespace
 
 import signin
 
@@ -34,7 +40,8 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
-from yiban import cred_state  # noqa: E402
+from yiban.adapters.statefiles import cred_state  # noqa: E402
+from yiban.engine import attempts as attempts_mod  # noqa: E402
 
 
 class BreakerTest(unittest.TestCase):
@@ -100,7 +107,7 @@ class BreakerTest(unittest.TestCase):
         signin._update_cred_state(cs, "13800138000", False, "Connection timed out", self.D4)
         self.assertNotIn("13800138000", cs, "网络类失败不应计数")
 
-    # ---- 2. run_queue_retry / main 行为 ----
+    # ---- 2. main 行为（生产路径 runner.main → executor_v3）----
     def _run_main(self, fixed_dt, cred_state, only=False, attempt_result=None):
         class FakeDT(datetime):
             _f = fixed_dt
@@ -165,65 +172,6 @@ class BreakerTest(unittest.TestCase):
         self._run_main(datetime(2026, 8, 26, 6, 40), dict(cred))
         self.assertEqual(self._calls, ["13800138000"], "试探日应执行一次")
 
-    def _run_probe_with_result(self, attempt_result):
-        """试探日跑一次单账号队列，attempt_signin 返回指定结果，返回变动后的 cred_state。"""
-        class FakeDT(datetime):
-            @classmethod
-            def now(cls, tz=None):
-                return datetime(2026, 8, 26, 6, 40)  # = probe_date，试探日
-
-        cred = {"13800138000": {"fail_days": 3, "last_fail": self.D3,
-                                 "paused_since": self.D3, "probe_date": "2026-08-26"}}
-        acc = signin.Account(phone="13800138000", password="p")
-        with mock.patch.object(signin.clock, "now", FakeDT.now), \
-             mock.patch.object(signin, "attempt_signin", return_value=attempt_result), \
-             mock.patch.object(signin, "_write_sign_state"), \
-             mock.patch.object(signin.time, "sleep"):
-            signin.run_queue_retry([acc], None, 0, 0, cred_state=cred)
-        return cred
-
-    def test_probe_day_window_skip_unfreezes(self):
-        """试探日登录已成功但被签到时段跳过（窗口外）→ 凭据证实可用，应解冻而非再冻 7 天。"""
-        cred = self._run_probe_with_result(
-            (False, "未在签到时间内（08:00 ~ 22:00）", True, signin.STATUS_SKIPPED_WINDOW)
-        )
-        self.assertNotIn("13800138000", cred, "窗口跳过（登录已成功）应解除暂停")
-
-    def test_probe_day_norange_skip_unfreezes(self):
-        """试探日登录已成功但签到窗口缺失（Range 为空）→ 同样视为凭据可用，应解冻。"""
-        cred = self._run_probe_with_result(
-            (False, "签到时间窗口缺失（无 Range），已跳过", True, signin.STATUS_SKIPPED_NORANGE)
-        )
-        self.assertNotIn("13800138000", cred, "窗口缺失跳过（登录已成功）应解除暂停")
-
-    def test_probe_day_real_credential_failure_stays_paused(self):
-        """对照组：试探日仍是凭据类失败 → 保持暂停并顺延试探日（不受解冻修复影响）。"""
-        cred = self._run_probe_with_result(
-            (False, "登录失败: 账号或密码错误", False, signin.STATUS_FAILED)
-        )
-        self.assertIn("13800138000", cred, "凭据类失败应保持暂停")
-        self.assertEqual(cred["13800138000"]["probe_date"], "2026-09-02",
-                         "试探失败应顺延 7 天（8-26 + 7）")
-
-    def test_probe_day_credential_failure_postpones_on_production_path(self):
-        """生产路径（`runner.main` → `executor_v3`）上，半开试探凭据失败必须顺延试探日。
-
-        本用例走的是唯一生产执行体，不是冻结的 `run_queue_retry`：熔断到期后若这里
-        不顺延，`probe_date` 停在过去，`_probe_due` 每天为真，密码确实错的账号会被
-        每天真实登录一次（风控暴露面）。
-        """
-        probe_day = datetime(2026, 8, 26, 6, 40)  # = probe_date，周三
-        cred = {"13800138000": {"fail_days": 3, "last_fail": self.D3,
-                                "paused_since": self.D3, "probe_date": "2026-08-26"}}
-        self._run_main(
-            probe_day, dict(cred),
-            attempt_result=(False, "登录失败: 账号或密码错误", False, signin.STATUS_FAILED),
-        )
-        self.assertEqual(self._attempt_signin.call_count, 1, "试探日应真实执行一次")
-        saved = self._saved_cred_state.call_args[0][0]
-        self.assertIn("13800138000", saved, "凭据类失败应保持暂停")
-        self.assertEqual(saved["13800138000"]["probe_date"], "2026-09-02",
-                         "生产执行体上的试探失败必须顺延 7 天（8-26 + 7）")
 
     def test_probe_date_advance_has_one_owner(self):
         """`probe_date` 的写入点只有一处：`attempts._update_cred_state`。
@@ -258,32 +206,6 @@ class BreakerTest(unittest.TestCase):
     # `_load_cred_state()` 返回 {}）时轮内失败计数写进新 dict，runner/workers 收尾
     # 保存的仍是自己的空 dict：熔断计数永不落盘、"连续 3 天失败暂停"永不触发，
     # 错密码账号被每日无限次真实登录（易班侧照实计数，加重风控）。
-    def test_fresh_system_fail_count_written_back_inplace(self):
-        """单元级：调用方持有的空 dict（= 全新系统 read() 的返回值）必须就地收到
-        fail_days——runner/workers 收尾保存的正是这个 dict。"""
-        class FakeDT(datetime):
-            @classmethod
-            def now(cls, tz=None):
-                return datetime(2026, 8, 17, 6, 40)  # 周一 D1，窗口 06:30~07:50 内
-
-        # 全新系统：状态文件不存在 → 读入口返回空 dict；调用方持有该引用
-        state_path = signin._cred_state_path()
-        if os.path.exists(state_path):
-            os.remove(state_path)
-        cred = signin._load_cred_state()
-        self.assertEqual(cred, {}, "前置条件：全新系统读到的应为空 dict")
-        acc = signin.Account(phone="13800138000", password="p")
-        with mock.patch.object(signin.clock, "now", FakeDT.now), \
-             mock.patch.object(
-                 signin, "attempt_signin",
-                 return_value=(False, "登录失败: 账号或密码错误", False, signin.STATUS_FAILED)), \
-             mock.patch.object(signin, "_write_sign_state"), \
-             mock.patch.object(signin.time, "sleep"):
-            signin.run_queue_retry([acc], None, 0, 0, cred_state=cred)
-        self.assertIn("13800138000", cred,
-                      "轮内失败计数必须写进调用方持有的 dict（收尾据此落盘）")
-        self.assertEqual(cred["13800138000"]["fail_days"], 1)
-
     def test_full_run_fresh_system_saves_fail_count(self):
         """runner 级：全新系统（_load_cred_state 返回 {}）跑一轮全量签到，
         收尾 _save_cred_state 收到的 dict 必须含 fail_days（否则计数永不落盘）。"""
@@ -353,61 +275,34 @@ class BreakerTest(unittest.TestCase):
         self.assertEqual(entry["dur"], 3.45, "应记录单次尝试耗时（P6）")
         self.assertEqual(entry["status"], "success")
 
-    # ---- 6. P6 耗时告警（2026-08-16）：超阈值 → warning + 并入汇总；每账号每轮最多 1 次 ----
-    def test_slow_sign_warns_and_collects(self):
-        """单次尝试耗时超阈值（31s > 30s）→ warning + 一条汇总条目，不发即时推送。"""
-        import unittest.mock as mock
 
-        accs = [signin.Account(phone="13800138001", password="p")]
-        signin._mail_summary.clear()
-        with mock.patch.object(signin, "time") as tm, \
-             mock.patch.object(signin, "attempt_signin") as attempt, \
-             mock.patch.object(signin, "_write_sign_state"), \
-             mock.patch.object(signin, "_update_cred_state"), \
-             mock.patch.object(signin.notify, "is_configured", return_value=True), \
-             mock.patch.object(signin, "send_notification") as sn:
-            tm.monotonic.side_effect = [100.0, 131.0]  # t0=100, last_done=131 → dur=31s
-            tm.sleep = lambda *a, **k: None
-            attempt.return_value = (True, "签到成功", False, signin.STATUS_SUCCESS)
-            signin.run_queue_retry(accs, "http://notify.invalid", 0, 0)
-        sn.assert_not_called()  # 耗时属"事后可读"的慢信号：只进汇总，不即时推送
-        self.assertEqual(len(signin._mail_summary), 1, f"实际 {signin._mail_summary}")
-        subject, fields, _level = signin._mail_summary[0]
-        self.assertIn("耗时", subject)
-        by_label = dict(fields)
-        self.assertIn("31.0", by_label["耗时"], "汇总条目应含实际耗时")
-        self.assertEqual(by_label["账号"], "138****8001", "汇总条目应含脱敏账号")
-        self.assertIn("签到成功", by_label["结果"], "汇总条目应含结果说明")
+class AccountValidityAttributionTest(unittest.TestCase):
+    """`attempt_signin` 对三态复核结果的归因（`ba-p02-06` 同族残余）。
 
-    def test_slow_sign_throttled_per_round(self):
-        """同一账号两次慢尝试（失败重试）→ 耗时条目只收 1 条（防重试连击刷屏）。"""
-        import unittest.mock as mock
+    持久层把查询异常改成 fail-closed 后，返回值同时承载"确实不可签"与"状态未知"两种
+    False 语义。调用方若统一显示"账号已被删除或停用"，一次 DB 抖动就被说成删除——归因
+    错误。判据：异常分支的消息不得含"已删除"，状态码必须区分（环境故障 != 用户取消）。
+    """
 
-        accs = [signin.Account(phone="13800138001", password="p")]
-        signin._mail_summary.clear()
-        # 两次尝试：31s / 32s 均超阈值；第 3 个采样点是重试回队时的间隔对齐探测
-        # （gap_max=0 → 对齐差值必 ≤0，不产生等待，仅消耗一个时间点）
-        seq = iter([100.0, 131.0, 150.0, 200.0, 232.0])
-        with mock.patch.object(signin, "time") as tm, \
-             mock.patch.object(signin, "attempt_signin") as attempt, \
-             mock.patch.object(signin, "_write_sign_state"), \
-             mock.patch.object(signin, "_update_cred_state"), \
-             mock.patch.object(signin, "classify_failure", return_value=2) as cf, \
-             mock.patch.object(signin.notify, "is_configured", return_value=True), \
-             mock.patch.object(signin, "send_notification") as sn:
-            tm.monotonic.side_effect = lambda: next(seq)
-            tm.sleep = lambda *a, **k: None
-            attempt.return_value = (False, "登录失败", False, signin.STATUS_FAILED)
-            signin.run_queue_retry(accs, "http://notify.invalid", 0, 0)
-        cf.assert_called()  # 失败确实走了分级
-        # 2 次尝试 → 只有最终放弃那一条即时通知（耗时条目未连收）
-        self.assertEqual(sn.call_count, 1, "只有最终放弃的失败通知一条即时推送")
-        self.assertEqual(sn.call_args_list[0].args[0], "易班签到失败")
-        self.assertEqual([s for s, _t, _lv in signin._mail_summary].count("易班签到耗时告警"), 1,
-                         f"两次慢尝试只收一条耗时条目，实际 {signin._mail_summary}")
-        self.assertIn("31.0", dict(signin._mail_summary[0][1])["耗时"])
+    @staticmethod
+    def _account():
+        return SimpleNamespace(phone="13800138000", password="p", account_id=1)
 
+    def test_unknown_state_reports_db_error(self):
+        with mock.patch.object(attempts_mod, "account_still_signable", lambda a: None):
+            res = attempts_mod.attempt_signin(self._account())
+        self.assertEqual(res[2], True, "不发起请求（fail-closed）")
+        self.assertEqual(res[3], attempts_mod.STATUS_FAILED,
+                         "环境故障落 failed，不是 user_cancelled")
+        self.assertIn("复核失败", res[1])
+        self.assertNotIn("已删除", res[1], "库错误不得归因成账号被删除")
 
+    def test_confirmed_unsignable_still_says_deleted(self):
+        with mock.patch.object(attempts_mod, "account_still_signable", lambda a: False):
+            res = attempts_mod.attempt_signin(self._account())
+        self.assertEqual(res[3], attempts_mod.STATUS_USER_CANCELLED)
+        self.assertEqual(res[1], "账号已被删除或停用",
+                         "确实不可签的归因保持不变")
 
 
 P1, P2 = "13800138000", "13800138001"

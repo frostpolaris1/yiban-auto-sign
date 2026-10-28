@@ -52,7 +52,10 @@ COLUMNS = ("族", "键", "状态", "判定模式", "扫描范围", "允许上限
 #: 来把上限做小"。
 TICKET_KEYS = ("YIBAN_ENV_FILE", "YIBAN_DB_FILE", "YIBAN_STATE_DIR", "YIBAN_BASE_PATH")
 #: 垃圾目录：计数时跳过（执行器必须用同一份，见 test_scanned_file_count_matches）
-JUNK_DIRS = {"__pycache__", ".venv", ".pytest_cache", ".ruff_cache", ".git", "node_modules"}
+# `protocol_fake` 必须与执行器的排除面逐字同口径：本条断言"门扫到的文件数 ==
+# 独立数出来的文件数"，两侧清单不一致就会把口径漂移报成红。
+JUNK_DIRS = {"__pycache__", ".venv", ".pytest_cache", ".ruff_cache", ".git",
+             "node_modules", "protocol_fake"}
 #: run_ci 里必须逐字出现的两步（与本文件同 B0.5 那一对的先例：门 + 门的元测试）
 CI_GATE_CMD = '"$py" scripts/check-path-env-reads.py'
 CI_META_CMD = '"$py" -m pytest tests/test_path_env_read_gate.py -q -p no:randomly'
@@ -298,7 +301,7 @@ class GateLiveCaseTest(unittest.TestCase):
     # -- ⑧ 活体反例：resolve_path 换成裸读 ⇒ 红并点名；换回 ⇒ 绿 ----------------
     def test_resolve_path_swapped_to_bare_read_turns_red_and_back(self):
         good = ('import os\n'
-                'from yiban.infra import env_io\n'
+                'from yiban.adapters.config import env_io\n'
                 'DB = env_io.resolve_path("%s", "yiban.db")\n' % self.key)
         self._write("pkg/a.py", good)
         self._write_roster(0)
@@ -488,10 +491,20 @@ class GateCiWiringTest(unittest.TestCase):
         body = _func_body(_read(ENTRY), "run_ci")
         self.assertGreater(len(body), 100, "抽不出 run_ci 函数体——本条会因此变废断言")
         lines = [ln.strip() for ln in body.splitlines()]
-        for cmd in (CI_GATE_CMD, CI_META_CMD):
-            self.assertIn(cmd, lines,
-                          f"run_ci 必须**执行**这一行（写在注释里不算）：{cmd}")
-        self.assertLess(lines.index(CI_GATE_CMD), lines.index(CI_META_CMD),
+
+        # 按"行首前缀"匹配而非整行相等：命令行可能带续行（行尾反斜杠接剔除参数，vckk 2-a
+        # 给元测试步加了 FAST_DESELECT_ARGS）。"必须真的执行、写在注释里不算"的性质不变——
+        # 注释行剥掉空白后以 '#' 开头，前缀匹配不到。
+        def _first_line_with(prefix):
+            return next((i for i, ln in enumerate(lines) if ln.startswith(prefix)), None)
+
+        gate_i = _first_line_with(CI_GATE_CMD)
+        meta_i = _first_line_with(CI_META_CMD)
+        self.assertIsNotNone(
+            gate_i, f"run_ci 必须**执行**这一行（写在注释里不算）：{CI_GATE_CMD}")
+        self.assertIsNotNone(
+            meta_i, f"run_ci 必须**执行**这一行（写在注释里不算）：{CI_META_CMD}")
+        self.assertLess(gate_i, meta_i,
                         "门禁脚本必须先跑，元测试随后（与 B0.5 那一对同序）")
 
 

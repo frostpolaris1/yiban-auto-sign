@@ -9,7 +9,7 @@
   一键暂停挡下**时拉起 `sign --fallback`，窗口结束由进程自己退出（判据全部复用引擎
   实现，见 `_fallback_should_run`；与宿主 cron 的 `scripts/yiban-fallback.sh` 同语义）
 - 每日 03:00 清理 /data/logs 与 /data/state 下过期的按天日志/状态文件
-  （策略唯一在 yiban/state_gc.py，与宿主 cron 共用一张表）
+  （策略唯一在 yiban/adapters/statefiles/state_gc.py，与宿主 cron 共用一张表）
 - 每日 02:00 定时备份（2026-10-01 · M44）：容器形态过去**没有任何备份**——宿主形态有
   cron 那条 02:00 行，而容器部署的用户根本没有宿主 cron，容器调度器也漏了这个挂点，
   等于"看着在跑、其实从没备份过"。这里补上：复用 `docker/backup-docker.sh`（上一批刚
@@ -41,9 +41,9 @@ from datetime import datetime
 # 包导入引导（探活快路也要用它，故排在业务导入图之前）
 # ---------------------------------------------------------------------------
 # 本文件在仓库里是 `docker/scheduler.py`、在镜像里被复制为
-# `scripts/container_scheduler.py`——两处都比仓库根低一层，但**同目录的兄弟模块**
-# （signin/child_env/env_io）只在 scripts/ 一侧，而 `yiban/` 只在仓库根。故三个路径
-# 都补上，两种位置都能直接跑（2026-09-15 容器冒烟实测：漏引导会让 sched 进程
+# `scripts/container_scheduler.py`——两处都比仓库根低一层。同目录的兄弟模块
+# （signin）只在 scripts/ 一侧，而 `yiban/` 只在仓库根。故三个路径都补上，
+# 两种位置都能直接跑（2026-09-15 容器冒烟实测：漏引导会让 sched 进程
 # ModuleNotFoundError → supervisord 反复重启 → FATAL）。过渡机制，随 M1③ 清 sys.path 注入移除。
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_HERE)
@@ -55,7 +55,7 @@ for _p in (_HERE, os.path.join(_REPO_ROOT, "scripts"), _REPO_ROOT):
 # signin 等重导入链仍在 `--check-health` 之后。这笔开销必须付：状态目录可以只写在
 # `.env` 里。写心跳的一方与探活读的一方要算出同一个目录。读方若只认进程环境，它会去
 # 别的目录找心跳。健康检查于是恒判不健康，容器被反复重启。
-from yiban.infra import env_io  # noqa: E402
+from yiban.adapters.config import env_io  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # 活体心跳与探活快路（必须位于业务导入图之前）
@@ -66,7 +66,7 @@ from yiban.infra import env_io  # noqa: E402
 # ~数小时，tick-only 心跳会在正常工作状态下"陈旧"误报；线程随进程死——进程
 # 没了心跳断流，正是探活要抓的形态），探活只读一个事实：心跳 mtime。
 # `--check-health` 在 import signin 与 yiban 业务模块之前退出：30s 一次的探测不该拖着
-# 整条业务导入链（耗时）。它躲不开第三方依赖：快路为解析 STATEDIR 导 `yiban.infra.env_io`，
+# 整条业务导入链（耗时）。它躲不开第三方依赖：快路为解析 STATEDIR 导 `yiban.adapters.config.env_io`，
 # 连带 `env_lock → yiban.infra.locks → portalocker`。"观测件的判据必须比被观测对象更
 # 简单"从此只在业务模块图上成立，依赖图上快路与 sched 本体共用 portalocker。
 # 这笔导入必须付：状态目录可以只写在 `.env` 里。写心跳的一方与探活读的一方必须算出同
@@ -82,6 +82,7 @@ from yiban.infra import env_io  # noqa: E402
 #   键只在 `.env` 时读方算出 /data/state、rc=1。给镜像加 USER 或给 healthcheck 降权前
 #   先读本段。
 # 容器内整链生效待生产演练。
+# 容器形态刻意值：名册缺省 `/var/log/yiban` 是宿主路径；容器唯一可写卷是 /data。
 STATEDIR = env_io.resolve_path("YIBAN_STATE_DIR", "/data/state")
 HEARTBEAT_FILE = "sched-heartbeat.json"
 HEARTBEAT_INTERVAL = 10          # 守护线程落盘周期（秒）
@@ -106,18 +107,25 @@ if __name__ == "__main__" and "--check-health" in sys.argv[1:]:
 # signin：补签轮判定与未了结状态码的单一事实源（宿主 run.sh 的进程内补签轮
 # 复用同一套函数，两侧不再各写一份判定）。
 import signin  # noqa: E402
-from child_env import build_child_env, parse_env_file  # noqa: E402
 
-from yiban import clock, state_gc, window  # noqa: E402
-from yiban.engine import schedule, workers  # noqa: E402
+from yiban.adapters.config import loader as config_loader  # noqa: E402
+from yiban.adapters.statefiles import state_gc  # noqa: E402
+from yiban.core import (  # noqa: E402
+    clock,
+    window,
+)
+from yiban.engine import schedule  # noqa: E402
 from yiban.infra import private_json  # noqa: E402  （状态文件私有写单通道）
+from yiban.infra.env_child import build_child_env, parse_env_file  # noqa: E402
 from yiban.logging_ext import MaskingFormatter  # noqa: E402
+from yiban.workers import workers  # noqa: E402
 
-LOGDIR = os.path.dirname(env_io.resolve_path("YIBAN_LOG_FILE", "/data/logs/sign.log"))
-# LOGDIR 不借 state_gc.log_dir_from_env()：它未设键时回落到 state_dir，会把容器
-# 缺省从 /data/logs 挪到 /data/state。缺省值是部署形态，本批只统一读法。
-# 与 web / 引擎同一读法：`.env` 里的指针也要认得（基线见 env_io.env_path——进程环境
-# 未给指针时按 cwd 的 .env 定位，容器里 cwd 是 /app）。
+LOGDIR = env_io.log_dir_path(default_dir="/data/logs")
+# 缺省值 `/data/logs` 是**容器形态**的默认（裸机默认随状态目录，见
+# `env_io.log_dir_path`）。`default_dir` 显式给容器缺省，故不借 `state_gc`
+# 那条"未设键即回落 state_dir"的裸机口径。
+# 与 web / 引擎同一读法：指针走**两段自举**（进程环境 → 基线 `.env` → 缺省）。
+# 容器里 compose 的 environment 给的就是指针，故直接生效；都没给时落到下面缺省。
 ENV_FILE = env_io.resolve_path("YIBAN_ENV_FILE", "/data/.env")
 
 logger = logging.getLogger("scheduler")
@@ -213,6 +221,10 @@ def _slot_marker(kind):
     追加一轮必然 skipped_window 的全站负载并覆盖当日已 success 的状态。
     落盘标记使「同一时段二次触发不重跑」跨重启成立；标记不可写时退化为
     既有闩锁语义。按日命名，跨日自动失效。"""
+    # census-P2-sched-slot-kind：kind 段有枚举（state_gc.SCHED_SLOT_KINDS），写侧与
+    # 清理侧共用；未知拼写直接拒绝，不许生成一个永远不会被清理的按日文件。
+    if kind not in state_gc.SCHED_SLOT_KINDS:
+        raise ValueError(f"未知的调度槽位 kind：{kind!r}（允许：{state_gc.SCHED_SLOT_KINDS}）")
     return os.path.join(STATEDIR, f"sched-slot-{kind}-{clock.now():%Y-%m-%d}.json")
 
 
@@ -267,7 +279,7 @@ def _touch_heartbeat(state_dir=None):
         private_json.write_private_json(
             path,
             {"pid": os.getpid(),
-             "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
+             "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},  # noqa: DTZ005 心跳旁路观测件，与 mtime 同钟，故意用系统钟（见上方注释）
             ensure_dir=False)
 
 
@@ -308,7 +320,7 @@ def healthcheck_main(state_dir=None):
 
 
 def _cleanup_state():
-    """按天状态文件的过期清理（策略唯一在 `yiban/state_gc.py`，与宿主 cron 同一份）。
+    """按天状态文件的过期清理（策略唯一在 `yiban/adapters/statefiles/state_gc.py`，与宿主 cron 同一份）。
 
     原实现只清按天日志（`sign-*.log`）而不管状态目录：容器形态下
     `/data/state` 里的 `sched-run-*` / `sched-slot-*` / `sign-daily-*` /
@@ -317,7 +329,12 @@ def _cleanup_state():
     清理失败仅记日志：它是后台维护动作，不该影响调度循环。
     """
     try:
-        removed, _detail = state_gc.sweep(STATEDIR, LOGDIR)
+        # ba-p10-03：保留期必须按 `.env` 口径解析（M27：`.env` 优先、进程环境补缺）。
+        # 旧调用不传 env，`retention_days()` 落回 os.environ——写在 `.env` 里的
+        # YIBAN_RETENTION_DAYS / YIBAN_SNAPSHOT_RETENTION_DAYS 对容器清理恒不生效。
+        cleanup_env = dict(os.environ)
+        cleanup_env.update(parse_env_file(ENV_FILE))
+        removed, _detail = state_gc.sweep(STATEDIR, LOGDIR, env=cleanup_env)
         if removed:
             logger.info("已清理 %d 个过期状态/日志文件", removed)
     except (OSError, ValueError) as e:
@@ -356,22 +373,33 @@ def _backup_script_path():
 def _backup_env():
     """备份子进程的环境。
 
-    口径与全仓一致（**`.env` 优先、进程环境只补缺**，见 M27）：容器调度器的兜底门
-    已经这么判（`_fallback_gate_env` 的注释），备份的路径类参数必须同口径，否则
-    compose 里显式注入的 `YIBAN_BACKUP_*` 会被 Web 设置页/`.env` 里的同名键悄悄顶掉。
+    口径按**非路径键**（`YIBAN_BACKUP_*` 不在 `env_io.PATH_KEYS` 里）：`.env` 优先、
+    进程环境只补缺（M27）。容器调度器的兜底门已经这么判（`_fallback_gate_env` 的注释），
+    备份参数必须同口径，否则 compose 里显式注入的 `YIBAN_BACKUP_*` 会被
+    Web 设置页/`.env` 里的同名键悄悄顶掉。四个路径键例外（进程环境优先）由
+    `build_child_env` / `resolve_path` 统一处理，本函数不碰它们。
     口令本身**不入环境**：`backup-docker.sh` 只从 `YIBAN_BACKUP_PASSPHRASE_FILE` 读
-    0600 文件（M97），绝不用 `_PASSPHRASE` 环境变量形态。
+    0600 文件（M97），绝不用 `_PASSPHRASE` 环境变量形态。`.env` 里若残留
+    `YIBAN_BACKUP_PASSPHRASE`，`parse_env_file` 会把它并进 `src`——这里**显式剔除**
+    两个口令键，子进程拿不到口令，`/proc/<pid>/environ` 也就没有它（P12-09）。
     """
     src = dict(os.environ)
     src.update(parse_env_file(ENV_FILE))   # `.env` 优先；它只认 YIBAN_ 前缀的键
     env = dict(src)
+    for _secret_key in ("YIBAN_BACKUP_PASSPHRASE", "BACKUP_GPG_PASSPHRASE"):
+        env.pop(_secret_key, None)
+        src.pop(_secret_key, None)
     # 调度器的 YIBAN_BACKUP_* → backup-docker.sh 自己的参数名（后者才是脚本认的）。
     # 显式设了 YIBAN_BACKUP_* 就**压住**同名的进程环境变量（否则 compose 注入的
     # BACKUP_DIR 会反过来盖掉 .env —— 正是 M27 要消灭的那种"两处打架"）。
+    # 保留期缺省取自配置名册（容器形态不再写第二份 30）；两个路径键的缺省是容器内
+    # 落点，名册对它们没有应用内缺省（default: null）。
+    retain_days_default = str(
+        config_loader.default_required("YIBAN_BACKUP_RETAIN_DAYS"))
     for script_key, sched_key, default in (
             ("DATA_DIR", "YIBAN_BACKUP_DATA_DIR", "/data"),
             ("BACKUP_DIR", "YIBAN_BACKUP_DIR", "/backups"),
-            ("RETAIN_DAYS", "YIBAN_BACKUP_RETAIN_DAYS", "30")):
+            ("RETAIN_DAYS", "YIBAN_BACKUP_RETAIN_DAYS", retain_days_default)):
         if sched_key in src:
             env[script_key] = src[sched_key]
         else:
@@ -478,7 +506,13 @@ def _tick_backup(now, state):
 # 写死 23:55 的问题）。现每 PROBE_TRY_SECONDS 尝试一次 --probe（探针未开启不
 # spawn），signin.py 内部按 PROBE_TIME / 频率 / 当日防重裁决是否真正探测，
 # 与宿主 cron */10 轮询语义对齐。
-FIRST, SECOND = (6, 31), (7, 10)
+# 首签与宿主 cron 同源：读 `yiban.core.window.DEFAULT_FIRST_HM`（宿主 cron 表由
+# `tests/test_cron_time_equivalence.py` 对拍同一常量）。
+# 补签 07:10 是**有意的容器分叉**，不与宿主 07:12 统一：容器在同一循环里等首轮子进程
+# 结束后再判 SECOND，不存在宿主「07:12 cron 撞首轮 flock 而空转」的问题，故提前 2 分钟
+# 收尾；网关把 `YIBAN_SECOND_RUN_TIME` 注入子进程时才用 `SECOND`。该分叉在
+# `tests/test_cron_time_equivalence.py` 登记为显式豁免。
+FIRST, SECOND = window.DEFAULT_FIRST_HM, (7, 10)
 #: 每日定时备份时刻（M44），与宿主 cron 的 `0 2 * * *` 同点。取 02:00 而非更晚：
 #: 赶在首签（06:31）与状态清理（03:00）之前，把"昨天一天的数据"完整封存，也给
 #: 备份子进程留出足够时间在早上之前跑完。
@@ -500,7 +534,7 @@ def _child_timeout(env):
     原固定 7200s 与可配置窗口脱钩：窗口整体晚于触发点约 2 小时（如 10:00~11:00）
     时，首签/补签子进程在 sleep 等窗口途中即被杀，全天漏签。现默认 = 当日窗口
     结束（YIBAN_SIGN_END，与 signin.py _schedule_config / run.sh 同一事实源，
-    默认 07:50）− 当前时刻 + 5 分钟余量，下限 600s；YIBAN_RUN_TIMEOUT_SEC 显式
+    缺省值见配置名册）− 当前时刻 + 5 分钟余量，下限 600s；YIBAN_RUN_TIMEOUT_SEC 显式
     设置时优先（管理员手动覆盖）。键来源口径与 build_child_env 一致：
     .env（env，Web 设置页写入）优先于进程环境（compose 注入）——否则
     compose 显式设置会让设置页修改静默失效。
@@ -512,14 +546,15 @@ def _child_timeout(env):
             return max(600, int(raw))
         except (TypeError, ValueError):
             pass
-    end_hhmm = str(env.get("YIBAN_SIGN_END", "07:50")).strip()
-    # 格式校验与 run.sh / yiban.window.parse_hhmm 一致（接受 7:50 与 07:50）；非法回退
+    sign_end_default = str(config_loader.default_required("YIBAN_SIGN_END"))
+    end_hhmm = str(env.get("YIBAN_SIGN_END") or sign_end_default).strip()
+    # 格式校验与 run.sh / yiban.core.window.parse_hhmm 一致（接受 7:50 与 07:50）；非法回退
     if not re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", end_hhmm):
-        end_hhmm = "07:50"
+        end_hhmm = sign_end_default
     try:
-        end_dt = datetime.strptime(f"{clock.now():%Y-%m-%d} {end_hhmm}", "%Y-%m-%d %H:%M")
+        end_dt = datetime.strptime(f"{clock.now():%Y-%m-%d} {end_hhmm}", "%Y-%m-%d %H:%M")  # noqa: DTZ007 业务钟日期 + HH:MM 拼接，业务本地 naive
     except ValueError:
-        end_dt = datetime.strptime(f"{clock.now():%Y-%m-%d} 07:50", "%Y-%m-%d %H:%M")
+        end_dt = datetime.strptime(f"{clock.now():%Y-%m-%d} {sign_end_default}", "%Y-%m-%d %H:%M")  # noqa: DTZ007 业务钟日期 + HH:MM 拼接，业务本地 naive
     return max(600, int((end_dt - clock.now()).total_seconds()) + 300)
 
 
@@ -611,7 +646,7 @@ def _fallback_should_run(env, now=None):
 def _start_fallback_child():
     """拉起兜底常驻子进程：与宿主**同一入口**（`sign --fallback`）、同一把独立锁。
 
-    入口唯一在 `yiban.engine.workers.run_fallback_worker`（它把锁名落成
+    入口唯一在 `yiban.workers.workers.run_fallback_worker`（它把锁名落成
     `signin-run.lock.fallback`，与宿主 cron 完全一致，故容器内的兜底不占用也不影响
     宿主/定时轮的那把全局锁）。这里显式把锁名写进子进程环境，使"独立锁"成为容器
     路径的显式契约，而不依赖别人的默认值。

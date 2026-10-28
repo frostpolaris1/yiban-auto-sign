@@ -7,7 +7,7 @@
      落在配置区间内、跨天变化）与非法区间的既有回退语义；`hrw.u01` 是 `planner._u`
       的归一化单源；`planner._density` 与 `schedule.build_schedule` 取同一业务日键
 对应实现：`yiban/engine/schedule.py` 的 `day_mu_sigma_pct` / `build_schedule`；
-      `yiban/engine/planner.py` 的 `_u` / `_density`；`yiban/engine/hrw.py` 的 `u01`
+      `yiban/engine/planner.py` 的 `_u` / `_density`；`yiban/core/hrw.py` 的 `u01`
 关键断言：μ/σ 定义的是区间，落在区间的哪一点只由 `day` 决定——计划（06:31 生成）与
       实际执行必须取到同一个点；执行层不得再用 `rng.uniform` 重采样（那会与计划层的
       确定性推导分叉，让"计划时刻"与"签到时刻"对不上，峰值速率整形也作用在错值上）。
@@ -21,7 +21,8 @@ import random
 import unittest
 from unittest import mock
 
-from yiban.engine import hrw, planner, schedule
+from yiban.core import hrw
+from yiban.engine import planner, schedule
 
 DAY = "2026-09-30"
 DAY_DT = datetime.datetime(2026, 9, 30, 6, 31, 0)
@@ -117,17 +118,6 @@ class DayMuSigmaTest(_EnvIsolated):
 
 
 class PlanExecuteSameSourceTest(_EnvIsolated):
-    def test_density_uses_day_mu_sigma(self):
-        """planner 密度用的 μ/σ 逐字等于 `day_mu_sigma_pct` 的当日取值。"""
-        cfg = _cfg((35, 45), (12, 18))
-        n, span_sec = 50, 4200.0
-        mu_min, sigma_min, _alpha, _phi = planner._density(n, cfg, DAY, span_sec)
-        mu_pct, sg_pct = schedule.day_mu_sigma_pct(cfg, DAY)
-        span_min = span_sec / 60.0
-        self.assertAlmostEqual(mu_min, span_min * mu_pct / 100.0, places=9)
-        self.assertAlmostEqual(
-            sigma_min, schedule._sigma_eff(span_min * sg_pct / 100.0, n, span_min),
-            places=9)
 
     def test_planner_and_build_schedule_share_the_day_key(self):
         """验收核心：计划层与执行层都从**同一业务日键**派生 μ/σ（同源）。

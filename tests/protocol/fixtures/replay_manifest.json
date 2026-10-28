@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "fixtures": {
+    "authorize_page": {
+      "file": "authorize_page.html",
+      "endpoint": "GET /code/html",
+      "state": "ok",
+      "provenance": "captured"
+    },
+    "usersure_ok": {
+      "file": "usersure_response.json",
+      "endpoint": "POST /code/usersure",
+      "state": "ok",
+      "provenance": "captured"
+    },
+    "auth_ok": {
+      "file": "auth_response.json",
+      "endpoint": "GET /base/c/auth/yiban",
+      "state": "ok",
+      "provenance": "captured"
+    },
+    "sign_in_ok": {
+      "file": "sign_in_response.json",
+      "endpoint": "POST /nightAttendance/student/index/signIn",
+      "state": "ok",
+      "provenance": "captured"
+    },
+    "sign_position_ok": {
+      "file": "sign_position.json",
+      "endpoint": "GET /nightAttendance/student/index/signPosition",
+      "state": "ok",
+      "provenance": "captured"
+    },
+    "device_state_ok": {
+      "file": "device_state.json",
+      "endpoint": "GET /device/student/index/getState",
+      "state": "ok",
+      "provenance": "captured"
+    },
+    "session_expired": {
+      "file": "synthetic_session_expired.json",
+      "endpoint": "GET /base/c/auth/yiban",
+      "state": "session_expired",
+      "provenance": "synthetic",
+      "note": "未实拍：仅作解析分支输入，不得当作平台已知响应"
+    },
+    "session_expired_string_code": {
+      "file": "synthetic_session_expired_string_code.json",
+      "endpoint": "GET /base/c/auth/yiban",
+      "state": "session_expired_string_code",
+      "provenance": "synthetic",
+      "note": "未实拍：code 以字符串形态出现，仅作解析分支输入"
+    },
+    "challenge_ydclearance": {
+      "file": "synthetic_challenge_ydclearance.html",
+      "endpoint": "GET /iapp7463",
+      "state": "challenge_ydclearance",
+      "provenance": "synthetic",
+      "note": "未实拍：挑战页标志物样本，仅作识别分支输入"
+    },
+    "challenge_fengkongcloud": {
+      "file": "synthetic_challenge_fengkongcloud.html",
+      "endpoint": "GET /iapp7463",
+      "state": "challenge_fengkongcloud",
+      "provenance": "synthetic",
+      "note": "未实拍：挑战页标志物样本，仅作识别分支输入"
+    },
+    "challenge_captcha": {
+      "file": "synthetic_challenge_captcha.html",
+      "endpoint": "GET /iapp7463",
+      "state": "challenge_captcha",
+      "provenance": "synthetic",
+      "note": "未实拍：挑战页标志物样本，仅作识别分支输入"
+    },
+    "challenge_acw_sc": {
+      "file": "synthetic_challenge_acw_sc.html",
+      "endpoint": "GET /iapp7463",
+      "state": "challenge_acw_sc",
+      "provenance": "synthetic",
+      "note": "未实拍：挑战页标志物样本，仅作识别分支输入"
+    }
+  }
+}

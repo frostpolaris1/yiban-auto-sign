@@ -1,0 +1,4 @@
+# import-linter 基线墓碑（机制已退役，工单 jlmv）
+# 本文件只允许文件头。基线按模块对放行 = 放行整条方向，"新增即红"会失明。
+# 确需接受的边写进 .importlinter 对应契约的 ignore_imports（逐边列名）；
+# import-linter 对无匹配的豁免条目报错退 2，生命周期自证。

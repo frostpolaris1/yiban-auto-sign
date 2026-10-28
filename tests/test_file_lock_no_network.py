@@ -29,8 +29,8 @@ NOT_THE_LOCK = ("_state_file_lock", "_ledger_file_lock", "_rate_lock")
 #: 否则文件被改名/挪走会让守卫静默空扫。
 ROSTER_FILES = (
     "web/routes/accounts_api.py",
-    "web/routes/my.py",
-    "web/routes/me.py",
+    "web/routes/my_api.py",
+    "web/routes/me_api.py",
     "web/routes/users_api.py",
     "web/routes/auth.py",
 )
@@ -162,7 +162,7 @@ class FileLockNoNetworkTest(unittest.TestCase):
             "    with ledger_mod._state_file_lock('notify-throttle.json'):\n"
             "        ledger_mod.send('t', 'c')\n"
         )
-        self.assertEqual(scan_lock_regions("yiban/notify/ledger.py", src), [])
+        self.assertEqual(scan_lock_regions("yiban/adapters/notifier/notify/ledger.py", src), [])
 
 
 if __name__ == "__main__":

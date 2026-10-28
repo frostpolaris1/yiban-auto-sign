@@ -22,9 +22,9 @@
 覆盖：三处写键方（账号密钥 / 审计密钥 / 追踪盐）与 `env_io` 的行模型是否同一套；
 潜伏分隔符拒绝写入；`KEY = v` 空白影子行折叠；密钥缓存按 `env_file` 分源取值；
 env 档与文件档分叉的两侧同钥断言（含大小写不误杀正例）。
-对应实现：`yiban/infra/env_io.py` 的 `parse_env_file` / `write_env_keys` / `write_env_key` /
+对应实现：`yiban/adapters/config/env_io.py` 的 `parse_env_file` / `write_env_keys` / `write_env_key` /
 `has_line_break` / `is_valid_env_key` / `key_line_pattern`，以及
-`yiban/infra/account_crypto.py` 的 `load_key` / `encrypt_password` / `decrypt_password`。
+`yiban/adapters/config/account_crypto.py` 的 `load_key` / `encrypt_password` / `decrypt_password`。
 关键断言：拒绝写入这一支必须**同时**断三件事——抛 ValueError、磁盘字节一个未改、
 不留 `.env.tmp*`。只断抛出最容易漏：实现可以先写好 tmp 再抛，那份 tmp 是含密钥与口令哈希
 的完整 `.env` 副本。非法 key 与解密密钥不匹配都断 `ValueError` 而非宽异常——调用方只
@@ -44,8 +44,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from yiban.infra import account_crypto, env_io
-from yiban.store import audit_chain, tracking
+from yiban.adapters.config import account_crypto, env_io
+from yiban.adapters.persistence import audit_chain, tracking
 
 KEY_A = "1" * 64
 

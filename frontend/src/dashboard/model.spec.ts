@@ -11,7 +11,6 @@ import {
   distView,
   emptyState,
   noResultText,
-  normalizeDaily,
   pauseView,
   pendingKpiView,
   pingView,
@@ -25,18 +24,14 @@ import {
 } from "./model.js";
 
 /* 数据看板口径单测。
-   ⚠ 最核心的四段（`statusKind` / `normalizeDaily` / `acceptAccounts` / `rateOf`）另有
+   ⚠ 最核心的三段（`statusKind` / `acceptAccounts` / `rateOf`）另有
    `tests/test_dashboard_stats_caliber_js.py` 把 model.js 里的真函数抽到 Node 真跑——
-   本文件补充边界用例与视图层（KPI / 图表 / 日历 / 运行状态）的口径。 */
+   本文件补充边界用例与视图层（KPI / 图表 / 日历 / 运行状态）的口径。
+
+   看板只有一个口径：账号终态（2026-10-21 裁决，6l5w）。事件（尝试）口径不再进入本页。 */
 
 const DAY = "2026-09-20";
 const DAY2 = "2026-09-21";
-
-const ROWS = [
-  { day: DAY, status: "user_cancelled", cnt: 1, row_cnt: 2 },
-  { day: DAY, status: "success", cnt: 1, row_cnt: 1 },
-  { day: DAY2, status: "success", cnt: 1, row_cnt: 1 },
-];
 
 const ACCOUNTS = {
   total: 2,
@@ -66,30 +61,6 @@ describe("状态词表", () => {
     expect(statusLabel("success")).toBe("成功");
     expect(statusLabel("status_from_2035")).toBe("status_from_2035");
     expect(statusLabel("")).toBe("未知");
-  });
-});
-
-describe("事件口径 normalizeDaily", () => {
-  it("按 row_cnt 打桶、按天聚合；不读 cnt（改成 999 结果不变）", () => {
-    const out = normalizeDaily(ROWS);
-    expect(out.map[DAY]).toEqual({ success: 1, fail: 0, skip: 2, unknown: 0, total: 3 });
-    expect(out.map[DAY2].total).toBe(1);
-    expect(out.days).toEqual([DAY, DAY2]);
-
-    const mutated = ROWS.map((r) => ({ ...r, cnt: 999 }));
-    expect(normalizeDaily(mutated).map).toEqual(out.map);
-  });
-
-  it("未知状态码单列成桶，与跳过分开", () => {
-    const out = normalizeDaily([{ day: DAY, status: "brand_new", row_cnt: 4 }]);
-    expect(out.map[DAY].unknown).toBe(4);
-    expect(out.map[DAY].skip).toBe(0);
-    expect(out.map[DAY].total).toBe(4);
-  });
-
-  it("空输入 / 缺 day 的行不产生桶", () => {
-    expect(normalizeDaily([]).days).toEqual([]);
-    expect(normalizeDaily([{ status: "success", row_cnt: 1 }]).days).toEqual([]);
   });
 });
 
@@ -132,18 +103,18 @@ describe("今日成功率 KPI rateKpiView", () => {
     expect(failed.sub).toBe("签到事件加载失败");
   });
 
-  it("今日无了结尝试 → 空态文案，非灰字数字", () => {
-    const v = rateKpiView(stateWith({ signLoaded: true, dailyMap: {} }), now);
+  it("今日无了结终态 → 空态文案，非灰字数字", () => {
+    const v = rateKpiView(stateWith({ signLoaded: true, dayFinal: {} }), now);
     expect(v.empty).toBe(true);
     expect(v.value).toBe("—");
     expect(v.sub).toBe("今日暂无签到结果");
     expect(v.subCls).toBe("dash-muted");
   });
 
-  it("有昨日对比时给价值、百分比与较昨日药丸", () => {
+  it("有昨日对比时给价值、百分比与较昨日药丸（账号终态口径）", () => {
     const s = stateWith({
       signLoaded: true,
-      dailyMap: {
+      dayFinal: {
         "2026-09-21": { success: 8, fail: 2, skip: 5, unknown: 0, total: 15 },
         "2026-09-20": { success: 1, fail: 3, skip: 0, unknown: 0, total: 4 },
       },
@@ -154,13 +125,14 @@ describe("今日成功率 KPI rateKpiView", () => {
     expect(v.pill.cls).toBe("up");
     expect(v.pill.text).toBe("较昨日 +55%");
     expect(v.sub).toContain("跳过 5");
-    expect(v.valueTitle).toContain("按事件");
+    expect(v.valueTitle).toContain("按账号");
+    expect(v.valueTitle).toContain("每账号恰计一次");
   });
 
   it("无昨日数据 → 「无昨日对比」flat 药丸", () => {
     const s = stateWith({
       signLoaded: true,
-      dailyMap: { "2026-09-21": { success: 1, fail: 0, skip: 0, unknown: 0, total: 1 } },
+      dayFinal: { "2026-09-21": { success: 1, fail: 0, skip: 0, unknown: 0, total: 1 } },
     });
     const v = rateKpiView(s, now);
     expect(v.pill.text).toBe("无昨日对比");
@@ -197,7 +169,7 @@ describe("今日成功/失败账号 KPI（账号口径，替代与容量卡重�
     expect(v.success.value).toBe("7");
     expect(v.fail.value).toBe("2");
     expect(v.success.valueTitle).toContain("每账号恰计一次");
-    expect(v.success.valueTitle).toContain("事件口径");
+    expect(v.success.valueTitle).not.toContain("事件口径");
   });
 
   it("当日无终态分桶时给 0（不是 —）", () => {
@@ -243,27 +215,38 @@ describe("待处理账号 KPI", () => {
     expect(pendingKpiView({ accounts: [] }).alert).toBe(false);
     expect(pendingKpiView(null).failed).toBe(true);
   });
+
+  it("count_only 标量响应直接读 pending/rejected，不遍历账号表", () => {
+    const v = pendingKpiView({ ok: true, total: 9, pending: 2, rejected: 3 });
+    expect(v.value).toBe("5");
+    expect(v.sub).toBe("待审核 2 · 已拒绝 3");
+    expect(v.alert).toBe(true);
+    const zero = pendingKpiView({ ok: true, total: 0, pending: 0, rejected: 0 });
+    expect(zero.value).toBe("0");
+    expect(zero.alert).toBe(false);
+  });
 });
 
 describe("趋势视图 trendView", () => {
-  it("按事件桶堆叠；未知只在出现时入图，日均按天数", () => {
-    const s = stateWith({ dailyMap: normalizeDaily(ROWS).map, dailyDays: normalizeDaily(ROWS).days });
+  it("按日终态堆叠账号数；未知只在出现时入图，日均按有记录天数", () => {
+    const s = stateWith({ dayFinal: acceptAccounts(ACCOUNTS).dayFinal });
     const v = trendView(s);
     expect(v.labels).toEqual(["09-20", "09-21"]);
     expect(v.datasets.map((d: { label: string }) => d.label)).toEqual(["成功", "失败", "跳过"]);
     expect(v.datasets[0].data).toEqual([1, 1]);
+    expect(v.datasets[2].data).toEqual([1, 0]);
     expect(v.meta).toEqual([
-      ["近 30 天成功", "2"], ["近 30 天失败", "0"], ["近 30 天跳过", "2"],
-      ["日均签到事件（次）", "2"],
+      ["近 30 天成功账号", "2"], ["近 30 天失败账号", "0"], ["近 30 天跳过账号", "1"],
+      ["日均签到账号（个）", "1.5"],
     ]);
   });
 
   it("有未知时插入未知序列与元数据（在日均之前）", () => {
-    const s = stateWith({ dailyMap: { "2026-09-20": { success: 1, fail: 0, skip: 0, unknown: 3, total: 4 } }, dailyDays: ["2026-09-20"] });
+    const s = stateWith({ dayFinal: { "2026-09-20": { success: 1, fail: 0, skip: 0, unknown: 3, total: 4 } } });
     const v = trendView(s);
     expect(v.datasets.map((d: { label: string }) => d.label)).toEqual(["成功", "失败", "跳过", "未知"]);
-    expect(v.meta[3]).toEqual(["近 30 天未知", "3"]);
-    expect(v.meta[4][0]).toBe("日均签到事件（次）");
+    expect(v.meta[3]).toEqual(["近 30 天未知账号", "3"]);
+    expect(v.meta[4][0]).toBe("日均签到账号（个）");
   });
 
   it("无数据返回 null", () => {

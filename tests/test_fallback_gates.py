@@ -3,16 +3,19 @@
 
 标签：B · 调度：领取/队列/执行体
 覆盖：day_off
-   判定表（工作日放行、周末默认关、开关开则跑、暂停压过任何一天、周末优先于暂停、非真值字面量算关）、兜底主循环的门与窗口边界（周六/周日/暂停三种情形一轮不扫且不写心跳、窗口未开先等、窗口关闭即退出、周末已开与窗口内为反向控制）、兜底轮末熔断计数增量写盘、让位为**整段**（有一轮在飞时兜底一轮都不扫，与部署有没有领取池无关）、事件唤醒（池事件签名一变即接手、不变则按短轮询数满扫描间隔为上限）、兜底独立锁确实被取、全局锁探测、定时轮与兜底共用同一份门。
+   判定表（工作日放行、周末默认关、开关开则跑、暂停压过任何一天、周末优先于暂停、非真值字面量算关）、兜底主循环的门与窗口边界（周六/周日/暂停三种情形一轮不扫且不写心跳、窗口未开先等、窗口关闭即退出、周末已开与窗口内为反向控制）、兜底轮末熔断计数增量写盘、**让位由肘界谓词承担**（兜底只领 `run_at` 已过期超过 `FALLBACK_ELBOW_SEC` 的行；旧的"整段让位"与轮内锁探测已随工单 `l1rx` R4 删除）、事件唤醒（池事件签名一变即接手、不变则按短轮询数满扫描间隔为上限）、兜底独立锁确实被取、锁探测原语（`_run_lock_held`，现无生产调用点，消费者＝本文件 fail-closed 门与 reclaim 竞态用例探针；重签互斥已改由 `_acquire_run_lock` 持锁承担，工单 `uob1` X2 ＋ 审查 D1）、定时轮与兜底共用同一份门。
 对应实现：yiban/engine/schedule.py（day_off 与 DAY_OFF_*
-   常量）、yiban/engine/runner.py（兜底常驻分支与派发前的门）、yiban/engine/cli_support.py（_run_lock_held）、yiban/engine/schedule.py
+   常量）、yiban/app/runner.py（兜底常驻分支与派发前的门）、yiban/engine/schedule.py
    的窗口判定与 state_io 心跳。
 关键断言：兜底不得绕过任何一道门：它按 cron 提前拉起（06:05 起、窗口 06:30 开），而
-   run_queue_retry
-   的手动链路本身不判本项目窗口，所以「窗口未开就等」漏掉就是窗口外每个账号白登陆一次。反向控制与正中情形同权重：周末签到已开时兜底必须照跑，否则「修门」会变成误伤。判据必须走共享实现（打桩即证明没有第二套）。让位判据只有一条**运行时事实**：全局轮次锁被持有 = 有一轮在飞（旧判据把它写成 "有没有声明库路径"，与现场事实脱节；10-07 生产还证明"有池就不让位"会让兜底把那一轮计划的活整批领走）。探测**显式用全局锁名**，兜底自己的环境变量里放的是它自己的。事件唤醒的等待预算仍以扫描间隔为上限（新账号、跨日等无签名可感的事件照旧靠全量轮发现）。
+   `executor_v3.run_executor_v3` 的手动轮本身不判本项目窗口，所以「窗口未开就等」漏掉就是窗口外每个账号白登陆一次。反向控制与正中情形同权重：周末签到已开时兜底必须照跑，否则「修门」会变成误伤。判据必须走共享实现（打桩即证明没有第二套）。让位判据是**行的函数**：兜底只领已过期超过肘界的行（`elbow_sec`），不再探测"有没有一轮在飞"——旧的整段让位与轮内锁探测随 `l1rx` R4 删除。`_run_lock_held` 是带 fail-closed 校验者的锁原语，现无生产调用点（重签互斥改由 `_acquire_run_lock` 持锁承担）
+（工单 `uob1` X2：翻 `claimed` 前探兜底锁），本文件钉住它的探测语义。事件唤醒的等待预算仍以扫描间隔为上限（新账号、跨日等无签名可感的事件照旧靠全量轮发现）。
 依赖：临时状态目录 + clock.now 替身（按序列返回、超过 max_calls
-   抛错以暴露死循环）+ 打桩 run_queue_retry / 锁探测 /
-   心跳写盘 / 领取池在场判定（`pool=True` 时 `pool_db_declared`、`is_initialized` 同为真）/ 池事件签名（按 `events` 序列返回，用尽重复末值）。不起子进程、不发网络请求。两条跨进程锁用例在 Windows 上 self.skipTest（flock 仅 POSIX），其余全跑。
+   抛错以暴露死循环）+ 打桩 executor_v3.run_executor_v3 / 锁探测 /
+   心跳写盘 / 领取池在场判定（只打桩 `is_initialized`——`workers` 只读它；旧夹具还
+   打了 `pool_db_declared`，那处 patch 空转，工单 uob1 X7）/ 池事件签名（按 `events`
+   序列返回，用尽重复末值）。不起子进程、不发网络请求。两条跨进程锁用例在 Windows 上
+   self.skipTest（flock 仅 POSIX），其余全跑。
 
 钉的四条：
 1. 周末门未开时，兜底一轮都不扫（也不写心跳）；
@@ -32,8 +35,10 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from yiban.engine import cli_support, runner, schedule, workers
-from yiban.store import db
+from yiban.adapters.persistence import db
+from yiban.app import runner
+from yiban.engine import cli_support, schedule
+from yiban.workers import workers
 
 #: 2026-09 的三个样例日（下面的 weekday 断言保证它们仍是周三/周六/周日）
 WED = _dt.date(2026, 9, 2) # 这三个日期只是「星期几」的样本，_WeekdayGuard 每次先验证前提仍成立
@@ -168,25 +173,23 @@ class DayOffGateTest(_WeekdayGuard):
 class _FallbackHarness(_WeekdayGuard):
     """主循环测试骨架：把循环跑起来并记录"睡过几次、扫了几次、写没写心跳"。"""
 
-    def _run(self, times, env=None, accounts=None, results=None, lock_held=None,
+    def _run(self, times, env=None, accounts=None, results=None,
              mutate_cred=None, pool=False, events=None, on_scan=None):
         """跑一次兜底常驻主循环，返回 (退出码, 睡过的秒数, 心跳时刻, 扫描次数)。
 
-        `lock_held`：全局锁探测的返回序列（缺省全 False = 没有全量轮在跑）。
         必须显式打桩：真探测会去读宿主 `YIBAN_STATE_DIR`，测试之间会互相串味。
-        `mutate_cred`：模拟 `run_queue_retry` 就地改熔断快照；写回调用记录在
+        `mutate_cred`：模拟生产执行体就地改熔断快照；写回调用记录在
         `self.saves`（(data, touched) 列表）。
-        `pool`：领取池在场判定（`pool_db_declared` 与 `is_initialized` 一起给）——
-        池在场才走事件唤醒 + 盲间隔退路，本夹具只用于这一处判定。
+        `pool`：领取池在场判定（只给 `is_initialized`——`workers` 只读它；
+        `round.py` 消费的 `pool_db_declared` 不在这条路径上，打桩它是空转）。
         `events`：池事件签名的返回序列（用尽后重复末值；缺省一个恒定签名 = 无新事件）。
-        `on_scan`：每次扫描（`run_queue_retry` 被调用）时回调，供用例在**运行中**改
+        `on_scan`：每次扫描（`executor_v3.run_executor_v3` 被调用）时回调，供用例在**运行中**改
         `.env`（模拟管理员从网页写配置）后断言下一轮的门看到新值。
         """
         sleeps, beats, scans, saves = [], [], [], [] # 四本流水账分别对应睡过/心跳/扫过/写回，主循环的每个副作用都留痕
         self.saves = saves
-        #: 兜底腿**真实**传给 run_queue_retry 的关键字（供判定"是不是显式重领路径"）
+        #: 兜底腿**真实**传给生产执行体 `run_executor_v3` 的关键字（供判定"是不是显式重领路径"）
         self.retry_kwargs = {}
-        held = list(lock_held) if lock_held else []
         evs = list(events) if events else [("sig", "t0")]
 
         def _sig(*a, **k):
@@ -207,15 +210,13 @@ class _FallbackHarness(_WeekdayGuard):
         with mock.patch.dict(os.environ, {**BASE_ENV, **(env or {})}, clear=False), \
                 mock.patch.object(workers, "time", SimpleNamespace(sleep=sleeps.append)), \
                 mock.patch.object(workers.clock, "now", _ClockSeq(*times)), \
-                mock.patch.object(workers.cli_support, "_run_lock_held",
-                                  lambda *a, **k: held.pop(0) if held else False), \
+\
                 mock.patch.object(workers.state_io, "_write_fallback_alive",
                                   lambda now: beats.append(now)), \
                 mock.patch.object(workers.state_io, "_clear_fallback_alive", lambda: None), \
                 mock.patch.object(workers.state_io, "_load_cred_state", lambda: {}), \
                 mock.patch.object(workers.state_io, "_save_cred_state",
                                   lambda data, touched=None: saves.append((data, touched))), \
-                mock.patch.object(workers.db, "pool_db_declared", lambda: pool), \
                 mock.patch.object(workers.db, "is_initialized", lambda: pool), \
                 mock.patch.object(workers.queue_store, "fallback_event", _sig), \
                 mock.patch.object(workers.accounts_mod, "load_accounts",
@@ -320,6 +321,12 @@ class FallbackEnvReloadWhitelistTest(_FallbackHarness):
             "YIBAN_GLOBAL_PAUSE=1\n"
             "YIBAN_SIGN_START=07:10\n"
             "YIBAN_FALLBACK_INTERVAL=15\n"
+            "YIBAN_SCHEDULE_MU_MIN_PCT=35\n"
+            "YIBAN_SCHEDULE_SIGMA_MAX_PCT=30\n"
+            "YIBAN_BLOCK_CAP=77\n"
+            "YIBAN_ALLOW_TIME_PREF=1\n"
+            "YIBAN_EGRESS_RATE=0.75\n"
+            "YIBAN_EXECUTORS=[]\n"
             "YIBAN_DB_FILE=Z:/evil/other.db\n"
             "YIBAN_STATE_DIR=Z:/evil/state\n")
         keep = {"YIBAN_DB_FILE": os.path.join(tmp, "keep.db"),
@@ -335,6 +342,19 @@ class FallbackEnvReloadWhitelistTest(_FallbackHarness):
                              "窗口起点必须在白名单内")
             self.assertEqual(os.environ["YIBAN_FALLBACK_INTERVAL"], "15",
                              "兜底间隔必须在白名单内")
+            # 配置面以 `_schedule_config` / `planner_config` 实际读取的键为准
+            # （工单 ba-p03-08）：这些键漏在白名单外时，运行期降速/改执行体清单
+            # 对唯一跨整个窗口的兜底进程不生效。
+            for key, want in (
+                    ("YIBAN_SCHEDULE_MU_MIN_PCT", "35"),
+                    ("YIBAN_SCHEDULE_SIGMA_MAX_PCT", "30"),
+                    ("YIBAN_BLOCK_CAP", "77"),
+                    ("YIBAN_ALLOW_TIME_PREF", "1"),
+                    ("YIBAN_EGRESS_RATE", "0.75"),
+                    ("YIBAN_EXECUTORS", "[]")):
+                with self.subTest(key=key):
+                    self.assertEqual(os.environ[key], want,
+                                     f"{key} 是调度/限速配置，必须在热更新白名单内")
             for key, want in keep.items():
                 with self.subTest(key=key):
                     self.assertEqual(os.environ[key], want,
@@ -384,7 +404,7 @@ class FallbackEnvReloadWhitelistTest(_FallbackHarness):
 class FallbackCredStatePersistTest(_FallbackHarness):
     """兜底轮末必须把熔断计数写回磁盘。
 
-    `_load_cred_state()` 每轮返回**新 dict**，`run_queue_retry` 就地改它；若轮末不写回，
+    `_load_cred_state()` 每轮返回**新 dict**，生产执行体就地改它；若轮末不写回，
     "连续凭据失败达阈值 → 暂停"只在内存里成立，下一轮又从零读盘——错密码账号被无限次
     真实登录（易班侧照实计数，加重风控），兜底这条路成了熔断的缺口。
     """
@@ -410,17 +430,17 @@ class FallbackNotExplicitReclaimPathTest(_FallbackHarness):
     耗尽/风控档账号在领取池里默认被拦住，正是靠它防住"当日每轮重领一遍"。兜底是**常驻
     无界循环**（每 ~60s 扫一遍、窗口内可上百轮），把它当成显式路径会让这类账号在窗口内
     每轮重登一次——一轮扫描 = 一次真实登录。故兜底腿只领 `retry:` 档（窗口外/无点位）
-    与从未被领过的账号；`final:` 档的第二次机会留给一次性补签轮与手动。判据分两层：
-    先取兜底**实际**传的关键字，再把它喂给真领取池，证明 final 档领不到而 retry 档领得到
-    （领取/弃权形状与 `tests/test_claims_cross_round.py` 一致）。
+    与从未被领过的账号；`final:` 档的第二次机会留给一次性补签轮与手动。判据 = 取兜底
+    **实际**传给执行体的关键字，断言它没有打开显式重领口子。
+
+    2026-10-16 饮食批：原判据第二层"把该关键字喂给真领取池（`db.claim_sign_account`/
+    `claim_give_up`）证明 final 档领不到"已删——那一层的被测对象是**冻结的** `sign_claims`
+    旧领取池（生产零写入，工单 `77s2`）。口径分档的不变式现由 v3 侧钉住：
+    `tests/test_v3_same_day_requeue.py::SessionRequeueTest`（`retry:` 档可回炉、`final:`
+    档只走显式路径）与 `tests/test_executor_v3.py::TerminalStateTest`。
     """
 
-    FINAL_PHONE = "13800000001"
-    RETRY_PHONE = "13800000002"
-    DAY = "2026-09-02"   # 与 _at(WED, …) 的业务日一致
-
     def test_fallback_leg_reclaims_retry_tier_but_not_final_tier(self):
-        # ① 取兜底腿真实传给 run_queue_retry 的关键字（窗口内扫一轮即记录）
         _rc, _sleeps, _beats, scans = self._run([_at(WED, (6, 35)), _at(WED, (8, 30))])
         self.assertEqual(len(scans), 1, "前置：窗口内应扫一轮以记录调用参数")
         allow_failed = bool(self.retry_kwargs.get("retry_failed")
@@ -429,83 +449,6 @@ class FallbackNotExplicitReclaimPathTest(_FallbackHarness):
             allow_failed,
             "兜底是无界常驻循环，不得作为显式重领路径：传 retry_failed/requeue_final=True "
             "会让预算耗尽/风控档账号在窗口内每轮重领重登")
-
-        # ② 把该关键字喂给真领取池：final 档领不到、retry 档领得到
-        tmp = tempfile.mkdtemp(prefix="yiban-fallback-claim-")
-        self.addCleanup(shutil.rmtree, tmp, True)
-        env_file = os.path.join(tmp, ".env")
-        with open(env_file, "w", encoding="utf-8") as f:
-            f.write("YIBAN_ACCOUNTS_KEY=" + "a" * 64 + "\n")
-        keys = ("YIBAN_ACCOUNTS_KEY", "YIBAN_ENV_FILE", "YIBAN_DB_FILE",
-                "YIBAN_STATE_DIR", "YIBAN_LOG_FILE")
-        saved = {k: os.environ.get(k) for k in keys}
-        os.environ.update({
-            "YIBAN_ACCOUNTS_KEY": "a" * 64,
-            "YIBAN_ENV_FILE": env_file,
-            "YIBAN_DB_FILE": os.path.join(tmp, "yiban.db"),
-            "YIBAN_STATE_DIR": tmp,
-            "YIBAN_LOG_FILE": os.path.join(tmp, "sign.log"),
-        })
-        try:
-            if db._conn is not None:
-                with contextlib.suppress(Exception):
-                    db._conn.close()
-                db._conn = None
-            db.init_db(os.environ["YIBAN_DB_FILE"], env_file=env_file, cleanup=False)
-
-            ok, e1 = db.claim_sign_account(self.FINAL_PHONE, self.DAY, "seed:1:090000")
-            self.assertTrue(ok, "前置：final 档行先被领到")
-            db.claim_give_up(self.FINAL_PHONE, self.DAY, "seed:1:090000", "failed", epoch=e1)
-
-            ok_r, e_r = db.claim_sign_account(self.RETRY_PHONE, self.DAY, "seed:2:090000")
-            self.assertTrue(ok_r, "前置：retry 档行先被领到")
-            db.claim_give_up(self.RETRY_PHONE, self.DAY, "seed:2:090000", "skipped_window",
-                             epoch=e_r, retryable=True)
-
-            got_final, _ = db.claim_sign_account(self.FINAL_PHONE, self.DAY,
-                                                 "fallback:9:090100", allow_failed=allow_failed)
-            self.assertFalse(got_final,
-                             "预算耗尽(final)档不得被兜底腿重领——旧行为每轮重登一次")
-            got_retry, _ = db.claim_sign_account(self.RETRY_PHONE, self.DAY,
-                                                 "fallback:9:090100", allow_failed=allow_failed)
-            self.assertTrue(got_retry, "窗口外(retry)档在兜底腿下仍应可接手")
-        finally:
-            if db._conn is not None:
-                with contextlib.suppress(Exception):
-                    db._conn.close()
-                db._conn = None
-            for k, v in saved.items():
-                if v is None:
-                    os.environ.pop(k, None)
-                else:
-                    os.environ[k] = v
-
-
-class YieldWholeRoundTest(_FallbackHarness):
-    """让位是**整段**：只要有一轮在飞，兜底一轮都不扫（与部署有没有领取池无关）。
-
-    旧形态把让位收窄到"同一账号"（有池 ⇒ 全量轮持锁期间照常扫，靠池仲裁"谁做谁"）。
-    10-07 生产证明那条前提不成立：**账号级仲裁只防重复登录，不防吸收全量**——兜底是宽
-    范围领取（`claim_all`），它把那一轮计划给执行体的行先领走（64 个分片 = 两个执行体
-    全集、84/100 个账号），两个执行体到点只剩空扫，汇总出一堆假失败。故判据改成一条
-    运行时事实：**锁被持有 = 有一轮在飞 ⇒ 整段让位**（`workers._round_in_flight`），
-    并与执行体运行期的让位复检同一份事实。
-
-    两种部署形态都必须让位，是本类的主断言——判据不看 `pool_db_declared()`。
-    """
-
-    def test_yields_whole_round_regardless_of_pool(self):
-        for pool in (True, False):
-            with self.subTest(pool=pool):
-                rc, sleeps, beats, scans = self._run(
-                    [_at(WED, (6, 35))] * 3 + [_at(WED, (8, 30))],
-                    lock_held=[True] * 3, pool=pool)
-                self.assertEqual(scans, [],
-                                 "轮在飞时兜底仍在扫账号——它会把那一轮的活领走")
-                self.assertEqual(beats, [], "让位期间不该写存活心跳（它没在干活）")
-                self.assertEqual(sleeps, [workers._YIELD_POLL_SEC] * 3,
-                                 "让位期间的轮询间隔不对")
-                self.assertEqual(rc, 0)
 
 
 class FallbackEventDrivenWakeTest(_FallbackHarness):
@@ -589,11 +532,14 @@ class FallbackOwnLockTest(unittest.TestCase):
 
 
 class RunLockProbeTest(unittest.TestCase):
-    """`cli_support._run_lock_held`：全局锁探测（让位判据的事实源）。"""
+    """`cli_support._run_lock_held`：全局锁探测原语（fail-closed 语义由本类钉住）。
+    重签路径的互斥已改为**持有**兜底锁（`queue_store.reclaim_tasks` 直调
+    `_acquire_run_lock`，审查 D1）；本函数现无生产调用点，消费者＝测试侧门与
+    竞态用例探针，存删随 X6 由主会话裁决。"""
 
     def test_probe_sees_held_lock_and_frees_after(self):
         if cli_support.fcntl is None:
-            self.skipTest("跨进程 flock 仅 POSIX 可用（Windows 上探测退回 False）")
+            self.skipTest("跨进程 flock 仅 POSIX 可用（Windows 上锁退化为无互斥、fail-closed 拒跑）")
         tmp = tempfile.mkdtemp(prefix="yiban-lock-probe-")
         self.addCleanup(shutil.rmtree, tmp, True)
         with mock.patch.dict(os.environ, {"YIBAN_STATE_DIR": tmp}, clear=False):

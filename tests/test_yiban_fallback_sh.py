@@ -30,19 +30,19 @@ import subprocess
 import tempfile
 import unittest
 
-from yiban import clock
+from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC_SH = os.path.join(BASE, "scripts", "yiban-fallback.sh")
 
 #: 桩解释器：记录被调用的全部参数（`$*`），不真的跑签到。
-#: 按天命名取业务日（MF-109）后脚本会先问一次 `yiban.clock`——桩必须如实回应，
+#: 按天命名取业务日（MF-109）后脚本会先问一次 `yiban.core.clock`——桩必须如实回应，
 #: 否则脚本退到 `date` 分支，测试就失去对主路（与引擎同源）的覆盖。
 STUB_PY = (
     '#!/usr/bin/env bash\n'
     'echo "$*" >> "$STUB_LOG"\n'
     'case "$*" in\n'
-    '  *yiban.clock*) echo "${STUB_BUSINESS_DAY}"; exit 0;;\n'
+    '  *yiban.core.clock*) echo "${STUB_BUSINESS_DAY}"; exit 0;;\n'
     'esac\n'
     'exit 0\n'
 )  # 记参数而不是记退出码：「确实以 --fallback 起过 CLI」只能从它收到的东西证明
@@ -63,12 +63,18 @@ class YibanFallbackShTest(unittest.TestCase):
         self.scripts = os.path.join(self.tmp, "scripts")
         os.makedirs(self.scripts)
         shutil.copy(SRC_SH, os.path.join(self.scripts, "yiban-fallback.sh")) # 复制到临时「应用目录」而非给脚本加测试开关：APP_DIR 是由 dirname $0/.. 反推的
+        # 宿主脚本共用的路径事实（business_day / 按天日志名）：入口脚本 source 它。
+        os.makedirs(os.path.join(self.scripts, "lib"))
+        shutil.copy(os.path.join(BASE, "scripts", "lib", "host_paths.sh"),
+                    os.path.join(self.scripts, "lib", "host_paths.sh"))
         self.venv_bin = os.path.join(self.tmp, ".venv", "bin")
         os.makedirs(self.venv_bin)
         self.state = os.path.join(self.tmp, "state")
         os.makedirs(self.state)
         self.calls = os.path.join(self.tmp, "calls.log")
-        self.env_file = os.path.join(self.tmp, ".env")
+        # .env 在检出内的 data/ 下（工单 ybg8）：脚本按 ${APP_DIR}/data/.env 取。
+        os.makedirs(os.path.join(self.tmp, "data"))
+        self.env_file = os.path.join(self.tmp, "data", ".env")
         self._write_env("")
         for name, body in (("python3", STUB_PY),):
             path = os.path.join(self.venv_bin, name)
@@ -103,14 +109,14 @@ class YibanFallbackShTest(unittest.TestCase):
     def _calls(self):
         """桩 PY 收到的**签到 CLI 调用**参数（取业务日的那次探针调用不计）。
 
-        按天命名取业务日（`yiban.clock`）后，脚本会先调一次 `python -c`，
+        按天命名取业务日（`yiban.core.clock`）后，脚本会先调一次 `python -c`，
         再拉起 CLI；那一次是实现细节。本类断言的是「恰好以 --fallback 起过
-        一次签到 CLI」，所以只数含 `yiban.cli` 的调用。
+        一次签到 CLI」，所以只数含 `yiban.entry.cli` 的调用。
         """
         if not os.path.exists(self.calls):
             return []
         with io.open(self.calls, encoding="utf-8", errors="replace") as f:
-            return [ln for ln in f.read().splitlines() if "yiban.cli" in ln]
+            return [ln for ln in f.read().splitlines() if "yiban.entry.cli" in ln]
 
     def _sign_log(self):
         """按天日志文件：文件名取业务日（与脚本/引擎同源），宿主时区不参与。"""
@@ -185,6 +191,23 @@ class YibanFallbackShTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace"))
         self.assertEqual(len(self._calls()), 1)
         self.assertIsNotNone(self._sign_log(), "补缺路径下日志仍应落在进程环境给的目录")
+
+    def test_path_keys_prefer_process_env(self):
+        """四个路径键例外（工单 71z7）：`.env` 与 cron 行都写 STATE_DIR 时，进程环境胜。"""
+        dotenv_state = os.path.join(self.tmp, "dotenv-state")
+        os.makedirs(dotenv_state, exist_ok=True)
+        self._write_env("YIBAN_FALLBACK_ENABLE=1\n"
+                        f"YIBAN_STATE_DIR={_to_bash_path(dotenv_state)}\n")
+        env_state = os.path.join(self.tmp, "env-state")
+        os.makedirs(env_state, exist_ok=True)
+        r = self._run(YIBAN_STATE_DIR=_to_bash_path(env_state))
+        self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace"))
+        self.assertEqual(len(self._calls()), 1)
+        name = f"sign-{clock.today()}.log"
+        self.assertTrue(os.path.exists(os.path.join(env_state, name)),
+                        "进程环境的 STATE_DIR 必须压过 .env（测试/CI 重定向数据目录）")
+        self.assertFalse(os.path.exists(os.path.join(dotenv_state, name)),
+                         "路径键不得被 .env 顶回旧目录")
 
     def test_dotenv_is_parsed_safely(self):
         """`.env` 里带 BOM/CRLF/多余空白/杂键时仍能读到开关（与 run.sh 同源解析）。"""

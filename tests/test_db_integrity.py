@@ -15,7 +15,7 @@
 `_audit_cleanup` 不再重建哈希链、统计排除已删账号）、批量操作的事务回滚与软跳过、
 删除/改绑后的会话缓存残留清理、`executescript` 原子性与"源码不再出现 executescript"、
 备份明文策略、以及一整套加密/迁移/鉴权 smoke。
-对应实现：`yiban/store/`（accounts / users / time_prefs / audit_chain / session_cache 各域）
+对应实现：`yiban/adapters/persistence/`（accounts / users / time_prefs / audit_chain / session_cache 各域）
 与 `db` 门面、`scripts/backup.sh`。
 关键断言：`test_audit_cleanup_keeps_chain_and_detects_tamper` 与
 `tests/test_audit_anchor.py` 的锚点用例是一对——清理必须"换新根"而不是"把删掉的段重新
@@ -42,8 +42,10 @@ import unittest
 from unittest import mock
 
 import db
+from werkzeug.security import generate_password_hash
 
-from yiban import clock
+from web import security as _security
+from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -411,8 +413,8 @@ class BatchTransactionTest(unittest.TestCase):
         with open(self.accounts_file, "w", encoding="utf-8") as f:
             json.dump([], f)
         db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
-        db.create_user("user1@test.local", self.webapp.generate_password_hash(USER_PASS))
-        db.create_user("user2@test.local", self.webapp.generate_password_hash(USER_PASS))
+        db.create_user("user1@test.local", generate_password_hash(USER_PASS))
+        db.create_user("user2@test.local", generate_password_hash(USER_PASS))
 
     # ---- 工具 ----
     def _login(self, c, username, password):
@@ -806,7 +808,8 @@ class DbExecutescriptAtomicityP3Test(unittest.TestCase):
         DDL（CREATE/ALTER/DROP）随迁移域拆入 `migrations.py`，扫描面必须同时覆盖两文件
         ——只扫 db.py 会让迁移 DDL 脱离 P3-1 的绊线保护。
         """
-        for rel in ("yiban", "store", "db.py"), ("yiban", "store", "migrations.py"):
+        for rel in (("yiban", "adapters", "persistence", "db.py"),
+                    ("yiban", "adapters", "persistence", "migrations.py")):
             path = os.path.join(BASE, *rel)
             with open(path, encoding="utf-8") as f:
                 src = f.read()
@@ -870,6 +873,12 @@ class BackupPlaintextP3Test(unittest.TestCase):
         return tmp, backups, env
 
     def _run(self, env, args=()):
+        args = list(args)
+        # R3-017 起缺库默认失败且不产出归档（独立门
+        # tests/test_backup_db_presence_e2e.py 钉住）。本类测的是明文轮的
+        # 告警/退出码/异机契约，夹具不建库，故走显式例外通道。
+        if "--restore" not in args:
+            args.append("--allow-missing-db")
         return subprocess.run([shutil.which("bash"), BACKUP_SH, *args],
                               capture_output=True, env=env,
                               cwd=os.path.dirname(env["APP_DIR"]), timeout=300)
@@ -879,7 +888,8 @@ class BackupPlaintextP3Test(unittest.TestCase):
         return (raw or b"").decode("utf-8", errors="replace")
 
     def _day(self):
-        return datetime.date.today().strftime("%Y-%m-%d")
+        """归档名里的业务日：backup.sh 走 `yiban.core.clock`（北京 +8），不是宿主 date。"""
+        return clock.today()
 
     def test_plaintext_run_warns_on_stderr_and_exits_dedicated_rc6(self):
         """BACKUP_PLAINTEXT=1 ⇒ 大字告警走 stderr + 专用退出码 6 + 归档真实产出。"""
@@ -978,7 +988,7 @@ class SmokeTest(unittest.TestCase):
 
         import db
 
-        from yiban.infra import account_crypto
+        from yiban.adapters.config import account_crypto
         spec = importlib.util.spec_from_file_location("webapp", os.path.join(BASE, "web", "app.py"))
         cls.webapp = importlib.util.module_from_spec(spec)
         sys.modules["webapp"] = cls.webapp
@@ -1080,13 +1090,15 @@ class SmokeTest(unittest.TestCase):
     # ---- 3. 登录/权限基础（轻量：直接验证 verify_admin 兼容路径）----
     def test_admin_verify_plain_fallback(self):
         # 无哈希时明文回退（旧 .env 兼容）
-        if hasattr(self.webapp, "verify_admin"):
-            old_env = self.webapp.ENV_FILE
-            self.webapp.ENV_FILE = self.env_file
-            try:
-                self.assertFalse(self.webapp.verify_admin("admin", "wrong"))  # 无配置/密码错误应 False
-            finally:
-                self.webapp.ENV_FILE = old_env
+        # 批 3-c S3：verify_admin 已搬离 web/app.py 的转发墙，读者直取真源。
+        # 原写法 `if hasattr(self.webapp, "verify_admin")` 此后恒为 False ⇒ 本用例会
+        # **静默跳过**（AGENTS §30「跳过 ≠ 绿」）。故判据改指真源，断言逐字保留。
+        old_env = self.webapp.ENV_FILE
+        self.webapp.ENV_FILE = self.env_file
+        try:
+            self.assertFalse(_security.verify_admin("admin", "wrong"))  # 无配置/密码错误应 False
+        finally:
+            self.webapp.ENV_FILE = old_env
 
     # ---- 4. 批量防呆：批量 purge 不能删未软删除账号 ----
     def test_batch_purge_requires_deleted(self):
@@ -1191,7 +1203,7 @@ class SmokeTest(unittest.TestCase):
     def test_decrypt_failure_wrapped_runtime_error(self):
         """密文损坏（tag 校验失败）→ load_accounts 抛 RuntimeError（统一 JSON 收口），非 ValueError 透传。"""
         self._init_db()
-        from yiban.infra import account_crypto
+        from yiban.adapters.config import account_crypto
 
         key = account_crypto.load_key(self.env_file)
         good = account_crypto.encrypt_password("secret", key, "13800138000")
@@ -1210,7 +1222,7 @@ class SmokeTest(unittest.TestCase):
         """多线程首启 load_key：只生成一份密钥并共享（_KEY_LOCK 双检）。"""
         import threading
 
-        from yiban.infra import account_crypto
+        from yiban.adapters.config import account_crypto
 
         old_cache = account_crypto._KEY_CACHE
         old_env = os.environ.pop("YIBAN_ACCOUNTS_KEY", None)

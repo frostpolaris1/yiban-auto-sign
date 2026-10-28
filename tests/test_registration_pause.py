@@ -29,6 +29,10 @@ import sys
 import tempfile
 import unittest
 
+from werkzeug.security import generate_password_hash
+
+from web.services import logs as _logs_svc
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -115,7 +119,7 @@ class RegistrationPauseWebTest(unittest.TestCase):
 
     def _mk_admin(self, email="admin@test.local"):
         if db.find_user(email) is None:
-            db.create_user(email, self.webapp.generate_password_hash(USER_PASS),
+            db.create_user(email, generate_password_hash(USER_PASS),
                            role="admin")
 
     # ---- 注册开关 ----
@@ -149,7 +153,7 @@ class RegistrationPauseWebTest(unittest.TestCase):
     def test_paused_registration_does_not_block_login(self):
         """暂停注册期间已注册用户照常登录（用户裁决：仅关注册入口）。"""
         db.create_user("u1@test.local",
-                       self.webapp.generate_password_hash(USER_PASS))
+                       generate_password_hash(USER_PASS))
         self._set_pause_env("1")
         c = self.webapp.create_app().test_client()
         r = c.post("/api/login", json={
@@ -240,7 +244,7 @@ class RegistrationPauseWebTest(unittest.TestCase):
         """create_app 后 root logger 挂 DailyFlockFileHandler 且 INFO 落入 sign-*.log。"""
         import logging
 
-        from yiban import clock  # 按天日志 handler 按业务钟取日期：宿主 TZ 下须同源
+        from yiban.core import clock  # 按天日志 handler 按业务钟取日期：宿主 TZ 下须同源
         c = self.webapp.create_app().test_client()
         c.get("/api/registration_paused")  # 触发一条请求级日志路径
         root = logging.getLogger()
@@ -261,7 +265,7 @@ class RegistrationPauseWebTest(unittest.TestCase):
 
     def test_log_page_shows_component_warnings(self):
         """日志页解析口径（2026-09-19 改）：`yiban.*` 全级别入列，其它组件仅 WARNING+。"""
-        parse = self.webapp.parse_sign_log
+        parse = _logs_svc.parse_sign_log
         yiban_info = "[2026-09-01 10:00:00] [INFO] yiban: 签到正常"
         yiban_sub = "[2026-09-01 10:00:03] [INFO] yiban.client: [13800138000] 生成定位: (118.8, 31.9)"
         comp_warn = "[2026-09-01 10:00:01] [WARNING] mailer: 邮件通知发送失败（SMTPAuthenticationError）"
@@ -273,7 +277,7 @@ class RegistrationPauseWebTest(unittest.TestCase):
         with unittest.mock.patch.object(self.webapp, "_tail_lines",
                                         return_value=[yiban_info, comp_warn,
                                                       comp_info, yiban_debug, yiban_sub]), \
-             unittest.mock.patch.object(self.webapp, "log_path_for",
+             unittest.mock.patch.object(_logs_svc, "log_path_for",
                                         return_value=tmp_log):
             lines = parse(tmp_log)
         self.assertIn(yiban_info, lines)

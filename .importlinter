@@ -1,0 +1,209 @@
+; ============================================================================
+; import-linter 契约（P0 批）
+;
+; 注：契约本体按 P0 批的结构整理设计落盘。该设计稿是本地留存文档（不入库），
+;   不随本仓分发。契约的可执行语义以本文件为准，不依赖任何库外文档。
+;   换机检出后本文件照旧可执行。
+;
+; 为什么有这个文件
+;   后端分层此前只活在散文与人的记忆里。没有任何机械判据。
+;   本文件把依赖方向固化成可执行契约（首版四条；批 A0 补新层三条）。
+;   执行器是 scripts/check-import-linter.py。它在 dev-verify 与 CI 里跑。
+;   门禁对**任何**违规判红（工单 jlmv：基线按模块对放行会放行整条方向，
+;   "新增即红"会失明）。确需接受的边写进对应契约的 `ignore_imports`，
+;   逐边列名；import-linter 对无匹配条目报错，生命周期自证。
+;   scripts/gate/import-linter-baseline.txt 只是墓碑文件（只允许文件头）。
+;
+; 判据为什么用 import-linter
+;   依赖方向判定要处理相对导入、包与模块的包含关系、间接依赖、重叠对。
+;   自写扫描器会在这些边界上漏判。漏判等于假绿。
+;   import-linter 用 grimp 图引擎实现这套判定。它有文档、有版本、可复现。
+;   用户指令：优先经受打磨的外部库。
+;
+; 与既有门禁的关系
+;   本门不改任何既有门禁的语义。它是新增的一道。
+;   本门对任何违规红。
+;
+; root_packages 为什么是这四个
+;   yiban 是后端命名空间。web 是管理后台，P2 才并入 yiban。
+;   scripts 是兼容壳与运维脚本，tools 是开发期构建与代码生成。两目录都无 __init__.py，
+;   按 PEP 420 解析为命名空间包。
+;   契约 3 要判 "yiban/web 反向 import scripts 与 tools"。两者不进 root_packages 就判不到。
+; ============================================================================
+
+[importlinter]
+root_packages =
+    yiban
+    web
+    scripts
+    tools
+
+; ---------------------------------------------------------------------------
+; 契约 1：后端命名空间不得依赖管理后台
+;
+; 128 二节把 web 定为 L6a，最上层。依赖只许上层引下层。
+; yiban 引 web 是反向依赖。后端核心会被 Web 框架与请求上下文绑架。
+; 命令行路径与容器路径随后无法独立运行。
+; 今天实测零违规。本契约钉回归敞口。P2 把 web 并入 yiban.web 时最容易踩这条。
+; ---------------------------------------------------------------------------
+[importlinter:contract:yiban-no-web]
+name = yiban 不得 import web（管理后台属上层，不许反向依赖）
+type = forbidden
+source_modules =
+    yiban
+forbidden_modules =
+    web
+
+; ---------------------------------------------------------------------------
+; 契约 2：洁净室协议库不得依赖仓内任何其他包
+;
+; yiban.adapters.protocol_yiban 是 L2 洁净室。AGPL-3.0-only 许可随代码，SPEC.md 是契约。
+; 它要能整包独立复用与审计。它引 yiban 兄弟模块即污染洁净室。
+; 引 web 或 scripts 同理。许可与可复用性同时失效。
+;
+; 坐标（批 A2，2026-10-16）：本契约的源从 `yiban.protocol` 改为
+;   `yiban.adapters.protocol_yiban`（契约 docs/dev/architecture-target.md 第 3 节）。
+;   旧坐标不留转发壳。理由两条，都是可核对的事实：
+;     ① 本批守卫 `tests/test_protocol_yiban_relocation.py` 的
+;        `test_old_coordinate_is_gone` 要求旧目录不存在；留壳即该守卫红。
+;     ② 留壳会制造第二条 import 路径（`yiban.protocol.X` 与新坐标同时可用），
+;        而"整包独立复用"只认一条坐标。
+;   机制记录（2026-10-16 审查方反事实实测，只作留痕）：若留壳，则取决于契约源在哪：
+;     源＝新坐标（本批实际写法）⇒ 契约 KEPT；源＝旧坐标 ⇒ 才 BROKEN。
+;   即"壳会把本条判据弄红"只在**源未搬**时成立。故本处的取舍不许引用那句推断。
+;
+; 为什么 forbidden_modules 写 `yiban.*`，不写 `yiban`
+;   import-linter 的 forbidden 契约跳过重叠对。源与目标同属一棵包树时该对不参与判定。
+;   见其 _modules_overlap。写 `yiban` 会让洁净室与 yiban 重叠。
+;   整条契约随即静默失效。那是假门。
+;   写 `yiban.*` 展开成兄弟包与模块。洁净室与各兄弟不再重叠。判定才真正生效。
+;   洁净室子模块之间的内部导入不在判定面内。它们与源重叠，本就该允许。
+;
+; 已知弱化点（搬迁后新增，如实登记）：源现在嵌在 `yiban.adapters` 里，
+;   故目标 `yiban.adapters` 与源重叠、被跳过。即"洁净室直接 import 父包"这一对判不到。
+;   该缺口由 `tests/test_protocol_yiban_relocation.py` 的 AST 判据兜住（它按顶层
+;   包名判，`import yiban.adapters` 也命中）。两条判据机制不同，互补。
+;
+; web 与 scripts 与契约 1、3 有意重叠。契约 2 的语义是"洁净室不引仓内任何东西"。
+;   它应当自成一条。洁净室 → scripts 这条边不靠别的契约替它兜。
+; ---------------------------------------------------------------------------
+[importlinter:contract:protocol-clean-room]
+name = protocol 洁净室：不得 import 仓内任何其他包
+type = forbidden
+source_modules =
+    yiban.adapters.protocol_yiban
+forbidden_modules =
+    yiban.*
+    web
+    scripts
+
+; ---------------------------------------------------------------------------
+; 契约 3：兼容壳与开发工具不得被反向 import
+;
+; scripts/ 是兼容壳与运维脚本。它是 L6b 的过渡形态。
+; 它调 yiban 是允许的。yiban 或 web 反向 import 它则把脚本层拉进运行时依赖图。
+; 容器镜像里 scripts 未随包分发时立刻 ImportError。兼容壳一删核心链路就炸。
+; tools/（B1 起）更严：它不进镜像、不被任何运行期模块 import。运行期引用 tools
+; 等于把构建机目录写进部署依赖，检出不带 tools 时当场 ImportError。
+; 今天实测零违规（唯一相关导入是 tests/ 与 tools/ 自身）。
+; 本契约钉回归敞口。
+; ---------------------------------------------------------------------------
+[importlinter:contract:no-reverse-import-of-scripts]
+name = yiban/web 不得反向 import scripts 与 tools（非运行时目录只许被自己调用）
+type = forbidden
+source_modules =
+    yiban
+    web
+forbidden_modules =
+    scripts
+    tools
+
+; ---------------------------------------------------------------------------
+; 契约 4：core 级模块两两独立
+;
+; 128 二节把 L0 core 定为 clock/window/status/masking。它们是纯常量与纯函数。
+;
+; 坐标（批 B，2026-10-16）：这批模块已从 `yiban/` 根级搬进 `yiban/core/`
+;   （契约 docs/dev/architecture-target.md 第 3 节）。故本契约的坐标随片迁到
+;   `yiban.core.*`。旧根级坐标（`yiban.clock` 等）此时只剩转发壳（各引自己的实现），
+;   已不是判据对象。不变式不变：这一组模块之间没有任何依赖。
+;
+; 契约类型为什么选 independence，不选 acyclic_siblings
+;   L0 内部没有先后次序。它们是并列的纯件。
+;   正确的约束是"谁都不许引谁"。这条比"不许出环"更严。
+;   反例：A→B→C→A 是环，A→B 不是环但已违反零依赖。
+;   independence 表达"这一组模块之间没有任何依赖"。它同时隐含禁环。
+;   代价：这四个模块若要共享数据，必须显式抽出新模块。那正是想要的信号。
+; ---------------------------------------------------------------------------
+[importlinter:contract:core-layer-independence]
+name = core 级模块两两独立（core.{clock,window,status,masking} 互不依赖）
+type = independence
+modules =
+    yiban.core.clock
+    yiban.core.window
+    yiban.core.status
+    yiban.core.masking
+
+; ---------------------------------------------------------------------------
+; 契约 5–7：新层的单向依赖（仓库结构整理批 A0，2026-10-16）
+;
+; docs/dev/architecture-target.md 一节定依赖方向单向：entry → app → core，
+; adapters 实现 ports。四条既有契约只覆盖 yiban→web、protocol 洁净室、
+; scripts 反向依赖与 core 四个根级模块。新层（entry/app/core/ports/adapters/
+; workers）落位后它们的"向上依赖"没有机械判据，故同批补三条。
+;
+; 为什么每条只列"向上"的目标，不列全部反向
+;   契约本身不含传递闭包。core 不引 app 与 app 不引 entry 是两条独立事实，
+;   各写一条比写一条"全序"更好读，也不会因为漏写一端而静默放开。
+;
+; 为什么目标里不写 yiban.engine 与 yiban.store
+;   这两个坐标属迁移期形态。批 B 把它们拆完后这两个包会消失。
+;   写进契约会让契约在那天变成"零命中空转"（门自退 2）。故只写目标树的层名。
+;
+; forbidden 为什么不用通配（yiban.app.*）
+;   as_packages 默认 True，grimp 已把目标当包展开。写通配是多余的。
+;   且通配表达式在图里零子包时会让门判"空转"退 2（见执行器空转守卫）。
+;
+; 今天这三条全部 KEPT：新层只有地图，没有成员，也没有边。
+; 它们钉的是随后各批：批 A1–A4 搬入模块、批 B 搬入 app/workers 时越界即红。
+; ---------------------------------------------------------------------------
+
+; 契约 5：领域核心层不得依赖任何上层或 I/O 面。
+; core 是纯函数层。引 app/entry/workers 会把编排拉回纯层。
+; 引 adapters 会把 I/O 与时钟拉回纯层，"同一输入必得同一输出"当场失效。
+[importlinter:contract:core-no-upward]
+name = core 不得依赖 app/entry/workers/adapters（纯函数层不碰编排与 I/O）
+type = forbidden
+source_modules =
+    yiban.core
+forbidden_modules =
+    yiban.app
+    yiban.entry
+    yiban.workers
+    yiban.adapters
+
+; 契约 6：端口层不得依赖任何实现层。
+; ports 只声明接口形状。引 adapters 等于把实现写进契约。
+[importlinter:contract:ports-no-upward]
+name = ports 不得依赖 app/entry/workers/adapters（端口只声明接口）
+type = forbidden
+source_modules =
+    yiban.ports
+forbidden_modules =
+    yiban.app
+    yiban.entry
+    yiban.workers
+    yiban.adapters
+
+; 契约 7：适配器层不得反向依赖上层。
+; adapters 是最底下的 I/O 面。引 app/entry/workers 即反向依赖。
+; 契约 2 已单独管 protocol_yiban 的"不引仓内任何东西"，本条约管其余适配器。
+[importlinter:contract:adapters-no-upward]
+name = adapters 不得依赖 app/entry/workers（适配器不反向依赖上层）
+type = forbidden
+source_modules =
+    yiban.adapters
+forbidden_modules =
+    yiban.app
+    yiban.entry
+    yiban.workers

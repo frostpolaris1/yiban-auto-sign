@@ -19,7 +19,7 @@
    `masking.mask_credentials_in_text` 的接线同源、真实日志行的形状不变、已知过遮面
    登记、调用点面（`sanitize_text`）贪心取值不回退。
 对应实现：`yiban/logging_ext.py` 的 `MaskingFormatter.format`、
-   `yiban/masking.py` 的 `mask_credentials_in_text` / `_mask_credential_literals` /
+   `yiban/core/masking.py` 的 `mask_credentials_in_text` / `_mask_credential_literals` /
    `sanitize_text`。
 关键断言：**遮蔽发生在"最终成文之后"这一层**（覆写 `Formatter.format` 的返回串），
    且用的是与调用点面**同一个** `mask_credentials_in_text` 对象（换成自备的第二份
@@ -40,13 +40,14 @@ import sys
 import tempfile
 import unittest
 
-from yiban import logging_ext, masking
-from yiban.logging_ext import MaskingFormatter
-from yiban.masking import (
+from yiban import logging_ext
+from yiban.core import masking
+from yiban.core.masking import (
     mask_credentials_in_text,
     mask_phones_in_text,
     sanitize_text,
 )
+from yiban.logging_ext import MaskingFormatter
 
 FORMAT = "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s"
 DATEFMT = "%Y-%m-%d %H:%M:%S"
@@ -167,10 +168,10 @@ class ProseAfterCredentialKeySurvivesTest(unittest.TestCase):
     """
 
     def test_config_warning_keeps_its_explanation(self):
-        raw = "配置 YIBAN_SESSION_TTL_HOURS=12 非法，回退默认 168 小时"
+        raw = "配置 YIBAN_SESSION_TTL_HOURS=12 非法，回退默认 6 小时"
         out = _format(raw)
         self.assertIn("YIBAN_SESSION_TTL_HOURS=***", out, "键值对本身仍要遮")
-        self.assertIn("非法，回退默认 168 小时", out, "值后面的解释句被吞——排障信息丢失")
+        self.assertIn("非法，回退默认 6 小时", out, "值后面的解释句被吞——排障信息丢失")
 
     def test_bool_config_warning_keeps_its_explanation(self):
         raw = "配置 YIBAN_NOTIFY_SECRET=true 非法（既非真值也非假值），安全件按缺省开处理"

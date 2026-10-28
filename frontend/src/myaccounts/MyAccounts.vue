@@ -13,9 +13,11 @@ import {
   passwordPolicyOk,
   setOwnerEmailVisible,
   shellBase,
+  swapOut,
   toast,
 } from "../lib/shell";
-import { buildAccountPayload, CODE_CLEAR, CODE_CLEAR_BTN, CODE_CLEAR_CANCEL_BTN, CODE_CLEARED_PLACEHOLDER, CODE_PLACEHOLDER, CODE_UNCHANGED_PLACEHOLDER, CREDS_GATE_DESC, PASSWORD_UNCHANGED_PLACEHOLDER, availableUserItems, credsWritten, formSubtitle, formTexts, formTitle, makeSnapshot, submitLabel, type AccountPayload, type SelectItem } from "./accountform";
+import { buildAccountPayload, CREDS_GATE_DESC, PASSWORD_UNCHANGED_PLACEHOLDER, availableUserItems, credsWritten, formSubtitle, formTexts, formTitle, makeSnapshot, submitLabel, type AccountPayload, type SelectItem } from "./accountform";
+import { PRIVACY_FIELDS, buildPrivacyPayload, emptyPrivacyState, exposureHint, privacyConfirmBody, privacyDiff, privacyEndpoint, privacyFromView, privacyTitle, profileLine, type PrivacyState } from "./privacy";
 import { accountActions, accountIcon, accountMeta, auditAriaText, deletedNote, passwordAlertText, passwordAlertVisible, pendingHintText, pendingHintVisible, rejectedAlertText, statusBadge, submitButtonVisible, todayStateText, type MyAccount } from "./model";
 import { adminGateDesc, adminSaveFailedTip, adminTip, needsGate, TIP_TTL_MS, userSaveFailedTip, userTip } from "./mailnotify";
 import { DISABLED_HINT, LOAD_ERROR_TEXT, SLOT_FULL_PCT, collapseLabel, collapsedByDefault, edgeTip, estimateText, slotClass, slotPctText, slotTitle, type TimePrefData } from "./timepref";
@@ -63,12 +65,23 @@ const banner = computed(() => {
 });
 
 /* ---------------- 账号列表 ---------------- */
+const accountListEl = ref<HTMLElement | null>(null);
 async function loadAccounts(): Promise<void> {
+  const t0 = performance.now();
   loading.value = true;
   loadError.value = "";
   try {
     const data = await api<{ accounts?: MyAccount[] }>("GET", "/api/my-accounts");
-    accounts.value = data.accounts ?? [];
+    const apply = (): void => {
+      accounts.value = data.accounts ?? [];
+    };
+    // 与账号/用户页同一口径：只有已有内容、且请求够慢时才淡出换内容；首屏直接落，
+    // 避免空列表先淡出再淡入的假加载。
+    if (accounts.value.length && performance.now() - t0 > 80 && accountListEl.value) {
+      swapOut(accountListEl.value, apply);
+    } else {
+      apply();
+    }
   } catch (e) {
     loadError.value = errorMessage(e, "账号列表加载失败，请检查网络后重试");
   } finally {
@@ -169,19 +182,73 @@ const formBusy = ref(false);
 const formDetailLoading = ref(false);
 /** 管理端编辑的乐观锁快照（用户端编辑自己的账号无需：不走 detail） */
 const formSnapshot = ref<string | null>(null);
-const f = ref({ name: "", phone: "", password: "", model: "", code: "" });
-const clearCode = ref(false);
+const f = ref({ name: "", phone: "", password: "" });
 const emailItems = ref<SelectItem[]>([]);
 const formEmail = ref("");
 const formManualEmail = ref("");
 const formInitialPassword = ref("");
+
+/* ---------------- 二段：隐私资料与暴露（工单 qmz4） ----------------
+   一段只提交账号密码＋探针，行为逐字节不变；二段是可选步。
+   · 新增：一段主按钮直接建号（跳过二段，默认全关）；「下一步」建号后再写二段。
+   · 编辑：一段主按钮仍只保存账号；「下一步」保存账号后再写二段。
+   视图只下发开着的字段，故保存只提交改动过的键（见 privacy.ts）。 */
+const formStage = ref<1 | 2>(1);
+const privacy = ref<PrivacyState>(emptyPrivacyState());
+const privacyInitial = ref<PrivacyState>(emptyPrivacyState());
+const privacyError = ref("");
+const privacyBusy = ref(false);
+/** 一段是否已在本次弹窗里保存成功（二段重试时不重复写账号）。 */
+const stageOneSaved = ref(false);
+/** 新增流程是否已建号。建号成功后弹窗切编辑态，后续只走 PUT，绝不再 POST。 */
+const accountCreated = ref(false);
+/** 一段保存回包（二段写完后统一收尾：提示文案与在线校验任务 id）。 */
+const stageOneResult = ref<{ msg?: string; job_id?: string }>({});
+
+function resetPrivacy(a?: MyAccount | null): void {
+  formStage.value = 1;
+  privacy.value = privacyFromView(a?.profile);
+  privacyInitial.value = privacyFromView(a?.profile);
+  privacyError.value = "";
+  stageOneSaved.value = false;
+  accountCreated.value = false;
+  stageOneResult.value = {};
+}
+
+/**
+ * 新增建号成功后切编辑态：后续保存一律走 PUT。
+ *
+ * 这是「回一段再前进」不再重发 POST 的机制保证：只要建号成功，
+ * 弹窗的形态就从新增变成编辑（标题与请求方法随之改变）。
+ */
+async function adoptCreatedAccount(phone: string): Promise<boolean> {
+  try {
+    // 直取一次视图（不走 loadAccounts 的淡出交换）：建号后必须同步拿到新下标，
+    // 否则调用方会误判"还没就绪"。弹窗打开期间也不需要列表动画。
+    const data = await api<{ accounts?: MyAccount[] }>("GET", "/api/my-accounts");
+    const list = data.accounts ?? [];
+    accounts.value = list;
+    const idx = list.findIndex((a) => a.phone === phone && !a.deleted);
+    if (idx < 0) return false;
+    formEditing.value = true;
+    formIndex.value = idx;
+    f.value.password = ""; // 建号时已提交；后续编辑留空＝不改密码
+    if (isAdmin.value) {
+      const adminIndex = list[idx].admin_index;
+      if (adminIndex === undefined) return false;
+      await loadDetail(adminIndex);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function openForm(index: number | null): void {
   formEditing.value = index !== null;
   formIndex.value = index;
   formError.value = "";
   formSnapshot.value = null;
-  clearCode.value = false;
   formEmail.value = "";
   formManualEmail.value = "";
   formInitialPassword.value = "";
@@ -190,11 +257,19 @@ function openForm(index: number | null): void {
     name: a?.display_name ?? "",
     phone: a?.phone ?? "",
     password: "",
-    model: a?.phone_model ?? "",
-    code: "",
   };
+  resetPrivacy(a);
   formOpen.value = true;
-  if (isAdmin.value && index !== null) void loadDetail(index);
+  // detail 端点只认全局下标；本人视图下标是过滤后的，二者不可混用（R3-023）。
+  // 缺 admin_index 时 fail-closed：不回退到过滤后下标（那正是旧缺陷）。
+  if (isAdmin.value && index !== null) {
+    const detailIndex = a?.admin_index;
+    if (detailIndex === undefined) {
+      formError.value = "账号列表已更新，请刷新页面后重试";
+      return;
+    }
+    void loadDetail(detailIndex);
+  }
   if (isAdmin.value && index === null) void loadBindableUsers();
 }
 
@@ -209,14 +284,17 @@ async function loadDetail(index: number): Promise<void> {
       `/api/accounts/${index}/detail`,
     );
     const acc = d.account ?? {};
-    formSnapshot.value = makeSnapshot(acc);
-    fullPhone.value = String(acc.phone ?? "");
-    if (!accounts.value[index]?.phone) {
+    const detailPhone = String(acc.phone ?? "");
+    // `index` 是全局下标；不能再用它去查本人视图的过滤后列表（两者口径不同，R3-023）。
+    // 手机号取 detail 的返回值——它就是要编辑的那个账号。
+    if (!detailPhone) {
       f.value.phone = "";
       fullPhone.value = "";
       formSnapshot.value = null;
     } else {
-      f.value.phone = accounts.value[index].phone; // 只回显打码号
+      formSnapshot.value = makeSnapshot(acc);
+      fullPhone.value = detailPhone;
+      f.value.phone = detailPhone;
     }
   } catch {
     fullPhone.value = "";
@@ -238,18 +316,14 @@ async function loadBindableUsers(): Promise<void> {
   }
 }
 
-async function submitForm(): Promise<void> {
-  if (formBusy.value) return;
-  formError.value = "";
-  const built = buildAccountPayload(
+/** 一段表单提交体（校验顺序与文案全部走 accountform.ts 的唯一实现）。 */
+function buildStageOne() {
+  return buildAccountPayload(
     {
       name: f.value.name,
       phoneVisible: f.value.phone,
       phoneFull: fullPhone.value,
       password: f.value.password,
-      phoneModel: f.value.model,
-      phoneCode: f.value.code,
-      clearCode: clearCode.value,
       email: isAdmin.value && !formEditing.value ? formEmail.value : undefined,
       manualEmail: formManualEmail.value,
       initialPassword: formInitialPassword.value,
@@ -261,33 +335,173 @@ async function submitForm(): Promise<void> {
       snapshot: formSnapshot.value,
       policyOk: passwordPolicyOk,
       policyHint: passwordHint(false),
+      // 本页两条变体都**写 `/api/my-accounts`**（自助面），而该写口已不收设备型号/
+      // 识别码（2026-10-16 裁决）。故这里恒为 false——否则管理变体会渲染出输入框、
+      // 提交却什么也没写进库：正是"看到已保存、库里没变"那类静默空操作。
+      // 需要手填/清除这两个字段请到「账号管理」页（`/api/accounts`，管理面，仍保留写入面）。
+      allowDeviceFields: false,
     },
   );
-  if (built.error || !built.payload) {
-    formError.value = built.error ?? "表单校验未通过";
-    return;
-  }
-  const payload: AccountPayload = built.payload;
+}
+
+/** 一段写请求（受门禁分支保留调用方给的方法，R3-001）。 */
+async function submitStageOne(payload: AccountPayload): Promise<{ msg?: string; job_id?: string }> {
   const endpoint = formEditing.value ? `/api/my-accounts/${formIndex.value}` : "/api/my-accounts";
   const method = formEditing.value ? "PUT" : "POST";
   // 口径 3：只有写密码或改绑手机号才算改写凭据 ⇒ 走受门禁提交（档位只存在于后端）
   const gated = credsWritten(payload, { editing: formEditing.value, snapshot: formSnapshot.value });
+  // 受门禁提交必须**保留原方法**：编辑走 PUT，后端只注册了
+  // `PUT /api/my-accounts/<idx>`；写死 POST 会让"编辑 + 改密码"恒 405。
+  // `dangerousSubmit` 只负责在服务端回 password_required 时补口令后重发，
+  // 方法由调用方给——管理面 `Accounts.vue` 同此写法。
+  return gated
+    ? ((await dangerousSubmit({
+        method,
+        path: endpoint,
+        body: payload,
+        desc: CREDS_GATE_DESC,
+      })) as { msg?: string; job_id?: string })
+    : ((await api(method, endpoint, payload)) as { msg?: string; job_id?: string });
+}
+
+/** 保存成功后的共同收尾（关闭弹窗、刷新列表、接在线校验）。 */
+async function afterSave(data: { msg?: string; job_id?: string }): Promise<void> {
+  formOpen.value = false;
+  formStage.value = 1;
+  fullPhone.value = "";
+  toast().success(data?.msg || "已保存");
+  await loadAccounts();
+  if (data?.job_id) verify.start(data.job_id);
+  else if (formEditing.value) verify.stop();
+}
+
+async function submitForm(): Promise<void> {
+  if (formBusy.value) return;
+  formError.value = "";
+  const built = buildStageOne();
+  if (built.error || !built.payload) {
+    formError.value = built.error ?? "表单校验未通过";
+    return;
+  }
   formBusy.value = true;
   try {
-    const data = gated
-      ? ((await api("POST", endpoint, payload)) as { msg?: string; job_id?: string })
-      : ((await api(method, endpoint, payload)) as { msg?: string; job_id?: string });
-    formOpen.value = false;
-    fullPhone.value = "";
-    toast().success(data?.msg || "已保存");
-    await loadAccounts();
-    if (data?.job_id) verify.start(data.job_id);
-    else if (formEditing.value) verify.stop();
+    await afterSave(await submitStageOne(built.payload));
   } catch (e) {
     if (isCanceled(e)) return; // 取消门禁口令框不算失败
     formError.value = errorMessage(e, "保存失败，请稍后再试");
   } finally {
     formBusy.value = false;
+  }
+}
+
+/** 一段 → 二段：先按一段口径校验，不合格留在原步报错。 */
+function nextStage(): void {
+  formError.value = "";
+  const built = buildStageOne();
+  if (built.error || !built.payload) {
+    formError.value = built.error ?? "表单校验未通过";
+    return;
+  }
+  formStage.value = 2;
+}
+
+function prevStage(): void {
+  formError.value = "";
+  privacyError.value = "";
+  // 回一段可能改账号：二段最终保存时一段要重新写一次。
+  stageOneSaved.value = false;
+  formStage.value = 1;
+}
+
+/** 新增流程建号后按完整手机号定位本人视图下标（POST 回包不带 accounts）。 */
+async function resolveMyIndex(phone: string): Promise<number | null> {
+  const data = await api<{ accounts?: MyAccount[] }>("GET", "/api/my-accounts");
+  const idx = (data.accounts ?? []).findIndex((a) => a.phone === phone && !a.deleted);
+  return idx >= 0 ? idx : null;
+}
+
+function clonePrivacy(state: PrivacyState): PrivacyState {
+  return { profile: { ...state.profile }, expose: { ...state.expose } };
+}
+
+/**
+ * 二段保存：先写一段（若本次尚未保存），再写二段。
+ *
+ * 二段无改动＝跳过：直接退化为一段提交（新增回包与行为不变）。
+ * 新增流程先建号再按手机号定位下标；建号成功后重试只补二段，不重复建号。
+ */
+async function submitPrivacy(): Promise<void> {
+  if (privacyBusy.value || formBusy.value) return;
+  privacyError.value = "";
+  formError.value = "";
+  const built = buildStageOne();
+  if (built.error || !built.payload) {
+    formError.value = built.error ?? "表单校验未通过";
+    formStage.value = 1;
+    return;
+  }
+  const one = built.payload;
+  const payload = buildPrivacyPayload(privacy.value, privacyInitial.value, one.phone);
+  if (payload && "error" in payload) {
+    privacyError.value = payload.error;
+    return;
+  }
+  if (!payload) {
+    formStage.value = 1;
+    await submitForm();
+    return;
+  }
+  const diff = privacyDiff(privacy.value, privacyInitial.value);
+  const ok = await confirmDialog({
+    title: privacyTitle(),
+    body: privacyConfirmBody(diff),
+    confirmText: "保存",
+  });
+  if (!ok) return;
+  privacyBusy.value = true;
+  try {
+    if (!stageOneSaved.value) {
+      if (!formEditing.value && accountCreated.value) {
+        // 已建号但上次没切成编辑态：只补切换，绝不重发 POST。
+        if (!(await adoptCreatedAccount(one.phone))) {
+          privacyError.value = "账号已提交，但列表尚未就绪，请刷新页面后再补充隐私资料";
+          return;
+        }
+        stageOneSaved.value = true;
+      } else {
+        const wasEditing = formEditing.value;
+        try {
+          stageOneResult.value = await submitStageOne(one);
+          stageOneSaved.value = true;
+          if (!wasEditing) {
+            accountCreated.value = true;
+            // 建号成功即切编辑态；失败也继续走下面的下标定位（只写二段）。
+            await adoptCreatedAccount(one.phone);
+          }
+        } catch (e) {
+          if (isCanceled(e)) return;
+          formError.value = errorMessage(e, "保存失败，请稍后再试");
+          formStage.value = 1;
+          return;
+        }
+      }
+    }
+    // 一段写成功后按完整号定位本人视图下标：管理端并发增删行会让旧下标漂移。
+    // 定位不到就不写（宁可报错，也不拿旧下标去写别人的行）。
+    const idx = await resolveMyIndex(one.phone);
+    if (idx == null) {
+      privacyError.value = "账号已提交，但列表尚未就绪，请刷新页面后再补充隐私资料";
+      return;
+    }
+    await api("PUT", privacyEndpoint("my", idx), payload);
+    privacyInitial.value = clonePrivacy(privacy.value);
+    await afterSave(stageOneResult.value);
+  } catch (e) {
+    if (isCanceled(e)) return;
+    // 一段已写入时保留在二段：重试只补二段（stageOneSaved 为真）。
+    privacyError.value = errorMessage(e, "隐私资料保存失败，请稍后再试");
+  } finally {
+    privacyBusy.value = false;
   }
 }
 
@@ -548,7 +762,6 @@ onMounted(async () => {
         <div class="panel-head panel-head--center">
           <div class="panel-head-text">
             <h2 class="panel-title">我的账号</h2>
-            <p class="panel-sub">审核通过后自动签到。</p>
           </div>
           <button v-if="submitButtonVisible(accounts)" type="button" class="btn btn--primary" @click="openForm(null)">
             <svg aria-hidden="true"><use href="#i-plus" /></svg>提交我的易班账号
@@ -575,7 +788,7 @@ onMounted(async () => {
           <span class="empty__msg">还没有提交账号。审核通过后自动签到。</span>
         </p>
 
-        <div class="account-list">
+        <div ref="accountListEl" class="account-list">
           <div v-for="(a, i) in accounts" :key="`${a.phone}-${i}`" class="account-card">
             <div class="account-head">
               <div class="account-ident">
@@ -587,6 +800,8 @@ onMounted(async () => {
                     <span class="badge" :class="statusBadge(a).tone ? `badge--${statusBadge(a).tone}` : ''">{{ statusBadge(a).text }}</span>
                   </div>
                   <div class="account-meta">{{ accountMeta(a) }}</div>
+                  <!-- 二段资料只显示开着的字段（服务端 exposed_profile 装配，唯一出口） -->
+                  <div v-if="profileLine(a.profile)" class="account-profile" data-profile-line>{{ profileLine(a.profile) }}</div>
                   <div v-if="isAdmin && todayStateText(a)" class="account-note">{{ todayStateText(a) }}</div>
                   <div v-if="a.deleted" class="account-note">{{ deletedNote(a) }}</div>
                 </div>
@@ -699,7 +914,7 @@ onMounted(async () => {
         <div class="panel-head panel-head--center">
           <div class="panel-head-text">
             <h2 class="panel-title">修改密码</h2>
-            <p class="panel-sub">改后下次登录使用新密码，当前会话随即失效</p>
+            <p class="panel-sub">改后当前会话失效，下次登录用新密码。</p>
           </div>
           <button type="button" class="btn btn--ghost btn--sm" @click="openChangePassword({ builtinAdmin: !!me?.is_builtin_admin })">
             <svg aria-hidden="true"><use href="#i-key" /></svg>修改密码
@@ -718,7 +933,6 @@ onMounted(async () => {
         <div class="set-row">
           <div class="set-row-text">
             <span class="set-row-label">竖屏显示归属邮箱</span>
-            <p class="set-help">窄屏在名称下补一行归属邮箱（已脱敏）；宽屏归属列不受影响。</p>
           </div>
           <label class="switch" title="竖屏显示归属邮箱">
             <input v-model="ownerEmailOn" type="checkbox" @change="toggleOwnerEmail" />
@@ -734,7 +948,7 @@ onMounted(async () => {
         <div class="panel-head panel-head--center">
           <div class="panel-head-text">
             <h2 class="panel-title">注销账号</h2>
-            <p class="panel-sub">账号与自选时间一并删除，7 天内可撤销</p>
+            <p class="panel-sub">7 天内可撤销；到期删除易班账号与自选签到时间。</p>
           </div>
           <button type="button" class="btn btn--ghost btn--danger-ghost" @click="deleteSelf">
             <svg aria-hidden="true"><use href="#i-trash" /></svg>注销账号
@@ -747,13 +961,15 @@ onMounted(async () => {
     <el-dialog
       v-model="formOpen"
       :title="formTitle({ editing: formEditing, variant: props.variant, index: formIndex })"
-      width="560px"
+      width="min(560px, calc(100vw - 32px))"
+      modal-class="app-form-overlay"
+      class="app-form-dialog"
       append-to-body
     >
       <p class="panel-sub" style="margin-top: 0">{{ formSubtitle({ editing: formEditing, variant: props.variant }) }}</p>
       <el-alert v-if="formError" type="error" :title="formError" :closable="false" show-icon style="margin-bottom: 10px" />
 
-      <div class="form-stack">
+      <div v-show="formStage === 1" class="form-stack">
         <label class="field">
           <span class="field-label">{{ T.nameLabel }}</span>
           <input v-model="f.name" class="input" type="text" maxlength="50" :placeholder="T.namePlaceholder" />
@@ -787,30 +1003,55 @@ onMounted(async () => {
           <span class="field-help">{{ T.passwordHelp }}</span>
         </label>
 
-        <label class="field">
-          <span class="field-label">{{ T.modelLabel }}</span>
-          <input v-model="f.model" class="input" type="text" maxlength="50" placeholder="按易班 App 设备绑定页填写" />
-          <span class="field-help">{{ T.modelHelp }}</span>
-        </label>
+        <!-- 设备型号/识别码在本页**两个变体都不渲染**（2026-10-16 裁决：这两个字段由
+             签到前自动补全写入）。本页两条变体都写 `/api/my-accounts`（自助面），而该
+             写口不收这两个字段——渲染出来只会是"提交后库里没变"的静默空操作。
+             要手填/清除请去「账号管理」页（管理面 `/api/accounts`，那里保留输入框）。 -->
 
-        <label class="field">
-          <span class="field-label">{{ T.codeLabel }}</span>
-          <input
-            v-model="f.code"
-            class="input"
-            type="text"
-            maxlength="100"
-            :readonly="clearCode"
-            :placeholder="clearCode ? CODE_CLEARED_PLACEHOLDER : formEditing ? CODE_UNCHANGED_PLACEHOLDER : CODE_PLACEHOLDER"
+        <p class="field-help privacy-skip-hint">
+          二段（隐私资料与暴露）默认全部不暴露；可点「下一步」补充，或直接提交后随时在编辑里补充。
+        </p>
+      </div>
+
+      <!-- 二段：隐私资料与暴露（qmz4）。字段写 profile、开关写 expose；两者都是子集合并。 -->
+      <div v-show="formStage === 2" class="form-stack" data-privacy-stage>
+        <h3 class="privacy-title">{{ privacyTitle() }}</h3>
+        <p class="panel-sub" style="margin-top: 0">
+          默认全部不暴露。打开开关的字段显示在你的账号页与管理详情；管理列表始终不显示。
+        </p>
+        <el-alert v-if="privacyError" type="error" :title="privacyError" :closable="false" show-icon style="margin-bottom: 10px" />
+
+        <div v-for="pf in PRIVACY_FIELDS" :key="pf.key" class="field privacy-field" :data-privacy-field="pf.key">
+          <span class="field-label">{{ pf.label }}</span>
+          <el-input
+            v-model="privacy.profile[pf.key]"
+            :aria-label="pf.label"
+            :maxlength="pf.maxlength"
+            clearable
+            :placeholder="pf.placeholder"
           />
-          <span class="field-help">{{ T.codeHelp }}</span>
-        </label>
+          <div class="privacy-expose">
+            <el-switch v-model="privacy.expose[pf.key]" :aria-label="`暴露${pf.label}`" />
+            <span class="field-help">{{ exposureHint(privacy.expose[pf.key], props.variant) }}</span>
+          </div>
+        </div>
       </div>
       <template #footer>
-        <button type="button" class="btn btn--ghost" @click="formOpen = false">取消</button>
-        <button type="button" class="btn btn--primary" :disabled="formBusy || formDetailLoading" @click="submitForm">
-          {{ submitLabel({ editing: formEditing, variant: props.variant }) }}
-        </button>
+        <template v-if="formStage === 1">
+          <button type="button" class="btn btn--ghost" @click="formOpen = false">取消</button>
+          <button type="button" class="btn btn--ghost" @click="nextStage">
+            {{ formEditing ? "下一步：隐私资料" : "下一步：隐私资料（可跳过）" }}
+          </button>
+          <button type="button" class="btn btn--primary" :disabled="formBusy || formDetailLoading" @click="submitForm">
+            {{ submitLabel({ editing: formEditing, variant: props.variant }) }}
+          </button>
+        </template>
+        <template v-else>
+          <button type="button" class="btn btn--ghost" :disabled="privacyBusy" @click="prevStage">上一步</button>
+          <button type="button" class="btn btn--primary" :disabled="privacyBusy || formBusy" @click="submitPrivacy">
+            保存隐私资料
+          </button>
+        </template>
       </template>
     </el-dialog>
   </div>

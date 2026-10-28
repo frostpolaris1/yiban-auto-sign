@@ -6,7 +6,7 @@
    清单在场）；`--only` 的门豁免与退出码契约不变（拿不到锁仍返回 3）；一条 `--only`
    真进程树整轮 `attempt_signin` 调用数 == 1、引擎侧 `Popen` 记录 == 0、成功 rc ∈ {0}；
    web 侧 `terminate()` 杀**整个进程组**（进程组 kill，子进程随监督进程退出、不留孤儿）。
-对应实现：yiban/engine/runner.py（`_dispatch` 的 `--only` 收敛判据）、
+对应实现：yiban/app/runner.py（`_dispatch` 的 `--only` 收敛判据）、
    web/services/manual_sign.py（`_terminate_signin_proc`）、
    web/routes/signin_api.py（终止旧子进程走进程树 kill）、
    web/services/manual_sign.py::_launch_signin_proc（`start_new_session=True`）。
@@ -38,8 +38,9 @@ if BASE not in sys.path:
     sys.path.insert(0, BASE)
 
 from web.services import manual_sign  # noqa: E402
-from yiban import status as yiban_status  # noqa: E402
-from yiban.engine import runner, workers  # noqa: E402
+from yiban.app import runner  # noqa: E402
+from yiban.core import status as yiban_status  # noqa: E402
+from yiban.workers import workers  # noqa: E402
 
 PHONE = "13800138000"
 TEST_KEY = "a" * 64
@@ -165,7 +166,7 @@ except Exception:
 _DRIVER_SRC = r'''
 import os, sys
 sys.path.insert(0, os.environ["M74_REPO"])
-from yiban.engine import runner
+from yiban.app import runner
 
 rc = runner.main(["--only", os.environ["M74_PHONE"], "--workers", "2"])
 with open(os.environ["M74_REC"], "a", encoding="utf-8") as f:
@@ -260,7 +261,7 @@ class OnlyDoesNotTouchOtherAccountsE2ETest(_OnlyE2EBase):
     OTHER_FAILED = "13900000078"
 
     def _today(self):
-        from yiban import clock
+        from yiban.core import clock
         return clock.now().strftime("%Y-%m-%d")
 
     def _parent_env(self):
@@ -279,7 +280,7 @@ class OnlyDoesNotTouchOtherAccountsE2ETest(_OnlyE2EBase):
         """把**进程级单例连接**切到本轮自己的库再取连接（用例自身隔离）。
 
         为什么必须显式切：`store_db.init_db(path)` 在进程已有连接时是**空操作**——
-        `yiban/store/db.py` 的 `if conn is not None: return conn` 直接返回旧连接
+        `yiban/adapters/persistence/db.py` 的 `if conn is not None: return conn` 直接返回旧连接
         （只刷新路径元数据，句柄没换）。同一 pytest 进程里前一个用例/文件留下的连接
         会让本用例的种子行与 V 元数据写进**别人的库**，随后 `_read_other` 打开自己的
         空库读回 `None` ⇒ `tuple(None)` 抛 `TypeError`（实测复现）。`-n auto
@@ -288,8 +289,8 @@ class OnlyDoesNotTouchOtherAccountsE2ETest(_OnlyE2EBase):
         故先关掉旧连接再 `init_db`，并断言连接确实落在本轮的库文件上：将来若又漂回
         "复用别人的库"，这里会**指名报错**，而不是以 NoneType 的形式哑火。
         """
-        from yiban.store import connection
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import connection
+        from yiban.adapters.persistence import db as store_db
         stale = connection.current()
         if stale is not None:
             with contextlib.suppress(Exception):
@@ -305,9 +306,11 @@ class OnlyDoesNotTouchOtherAccountsE2ETest(_OnlyE2EBase):
 
     def _seed_other_rows(self):
         """把当日 V 钉死，并在**实际会采用的 V** 下的同一分片里种别人的行。"""
-        from yiban.engine import executor_v3, hrw, state_io
-        from yiban.store import clock_meta, connection
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import clock_meta, connection
+        from yiban.adapters.persistence import db as store_db
+        from yiban.adapters.statefiles import state_io
+        from yiban.core import hrw
+        from yiban.engine import executor_v3
         conn = self._bind_test_db()
         day = self._today()
         # 钉死当日 V：落进 app_meta 的 V 元数据键 ⇒ 真进程 `_plan_v` 只读它（不再按
@@ -342,8 +345,8 @@ class OnlyDoesNotTouchOtherAccountsE2ETest(_OnlyE2EBase):
     def _read_other(self, day):
         import json as _json
 
-        from yiban.store import connection
-        from yiban.store import db as store_db
+        from yiban.adapters.persistence import connection
+        from yiban.adapters.persistence import db as store_db
         conn = self._bind_test_db()
         with store_db._conn_lock:
             rows = {p: tuple(conn.execute(
@@ -381,10 +384,10 @@ class OnlyProcessTreeE2ETest(_OnlyE2EBase):
                          f"stderr={proc.stderr!r}\nrecords={self._records()}")
         records = self._records()
         attempts = [r for r in records if r.startswith("attempt ")]
-        # 只数**引擎自己**拉起的执行体子进程（`yiban.cli sign …`）：解释器/依赖启动期
-        # 可能另有零星的探测性 Popen（与本条无关），不能把它们混进来判 fan-out。
+        # 只数**引擎自己**拉起的执行体子进程（`yiban.entry.cli sign …`）：解释器/依赖
+        # 启动期可能另有零星的探测性 Popen（与本条无关），不能把它们混进来判 fan-out。
         engine_popens = [r for r in records
-                         if r.startswith("popen ") and "yiban.cli sign" in r]
+                         if r.startswith("popen ") and "yiban.entry.cli sign" in r]
         rcs = [r for r in records if r.startswith("rc ")]
         self.assertEqual(len(attempts), 1,
                          f"整轮 attempt_signin 必须恰好 1 次，实际 {records}")

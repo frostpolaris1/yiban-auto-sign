@@ -26,13 +26,6 @@
 {% else %}
 {{ err_body() }}
 {% endif %}
-<script>
-  // 「返回上一页」只在确有历史记录时出现：直接打开链接时它什么也做不了，显形反而误点
-  (function () {
-    var btn = document.getElementById("err-back");
-    if (!btn || window.history.length <= 1) return;
-    btn.hidden = false;
-    btn.addEventListener("click", function () { window.history.back(); });
-  })();
-</script>
+{# CSP 加固（工单 56ed）：原内联脚本外置为静态文件；defer 执行时按钮已在 DOM 中 #}
+<script defer src="{{ request.script_root }}/static/js/error-page.js?v={{ web_version }}"></script>
 {% endblock %}

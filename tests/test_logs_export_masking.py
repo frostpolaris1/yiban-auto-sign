@@ -45,6 +45,8 @@ import sys
 import tempfile
 import unittest
 
+from werkzeug.security import generate_password_hash
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "a" * 64
@@ -118,7 +120,7 @@ class LogsExportMaskingTest(unittest.TestCase):
         self.db.init_db(self.db_file, migrate_from=self.accounts_file,
                         env_file=self.env_file)
         self.db.create_user("user1@test.local",
-                            self.webapp.generate_password_hash(USER_PASS))
+                            generate_password_hash(USER_PASS))
         # 清理临时目录中的按天日志文件（跨测试隔离）
         for n in os.listdir(self.tmp):
             if n.startswith("sign-") and n.endswith(".log"):
@@ -286,6 +288,44 @@ class LogsExportMaskingTest(unittest.TestCase):
         self.assertTrue(hit, f"应捕获 CSRF 校验失败告警行: {logs.output}")
         self.assertIn(expected, hit[0], f"告警行应含 hash_ip 形态: {hit[0]}")
         self.assertNotIn("127.0.0.1", hit[0], f"告警行泄漏裸 IP: {hit[0]}")
+
+    # ---- 7. 导出全量读取：视图仍尾读 2MB，导出不得静默丢早期行 ----
+    def test_export_reads_full_day_beyond_view_tail_cap(self):
+        total = 45000
+        lines = [
+            _log_line(HIST_DATE, "INFO", "yiban",
+                      f"[{PHONE_FULL}] 全量行 {i:05d} " + "x" * 40)
+            for i in range(total)
+        ]
+        path = self._write_date_log(HIST_DATE, lines)
+        self.assertGreater(os.path.getsize(path), 2 * 1024 * 1024,
+                           "测试前置：日文件必须大于视图尾读上限 2MB")
+        c = self._admin_client()
+        r = c.get(f"/api/logs/export?date={HIST_DATE}")
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True)[:200])
+        self.assertEqual(r.headers.get("X-Yiban-Log-Coverage"), "full-day")
+        self.assertEqual(r.headers.get("X-Yiban-Log-Lines"), str(total))
+        body = r.get_data(as_text=True)
+        self.assertEqual(len(body.splitlines()), total, "导出行数必须等于日文件全量行数")
+        self.assertIn("全量行 00000", body, "导出丢了日文件最早的行（仍在尾读）")
+        self.assertIn(f"全量行 {total - 1:05d}", body)
+        # 对照组：视图仍走 2MB 尾读，同日 total_lines 明显小于全量行数。
+        view = c.get(f"/api/logs?date={HIST_DATE}&all=1&level=all").get_json()
+        self.assertLess(view["total_lines"], total,
+                        "视图分页仍在尾读上限内；导出不能跟它同一上限")
+
+    # ---- 8. 超大日文件：显式拒绝，不得静默截断 ----
+    def test_export_refuses_oversized_day_explicitly(self):
+        self._write_date_log(HIST_DATE, [
+            _log_line(HIST_DATE, "INFO", "yiban", f"[{PHONE_FULL}] 小文件"),
+        ])
+        from unittest import mock
+        with mock.patch.object(self.webapp._logs_svc, "_LOG_EXPORT_BYTE_CAP", 10):
+            r = self._admin_client().get(f"/api/logs/export?date={HIST_DATE}")
+        self.assertEqual(r.status_code, 413, r.get_data(as_text=True))
+        self.assertIn("过大", r.get_json().get("error", ""))
+        self.assertEqual(len(self._audit_rows("logs_export")), 0,
+                         "拒绝导出不得写成功审计")
 
 
 if __name__ == "__main__":

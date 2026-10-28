@@ -20,10 +20,11 @@ bash scripts/dev-verify.sh --fast-scoped       # 范围档：只跑改动相邻�
 # 选项
 --repo DIR       源仓库目录（默认 = 脚本所在仓库根）
 --target PATH    一个或多个 pytest 目标（默认 tests/）；只对默认全量模式有效
---log-dir DIR    日志目录；默认按模式分开：全量 <仓库父目录>/yiban-dev-verify-logs，
-                 fast 两档 <仓库父目录>/yiban-dev-verify-logs-fast（见 §1.1）
+--log-dir DIR    日志目录；默认按模式与源仓分开：全量
+                 <仓库父目录>/yiban-dev-verify-logs-<源仓摘要>，fast 两档
+                 <仓库父目录>/yiban-dev-verify-logs-fast-<源仓摘要>（见 §1.1）
 --keep N         日志保留最近 N 份（默认 5）；fast 两档与全量各自计数，互不影响
---fast           提交前自查·安全档：全量 − FAST_KNOWN_SLOW（5 条长尾）。无选择面损失
+--fast           提交前自查·安全档：全量 − FAST_KNOWN_SLOW（4 条长尾）。无选择面损失
 --fast-scoped    提交前自查·范围档：只跑改动相邻面。快，但未选中的用例没有跑
 --base REF       上面两档的比较基准（默认 HEAD；传 origin/develop 则算整条分支的改动）
 --fast-all       --fast 但不剔除长尾（只有改动确实落在那些文件上时才用）
@@ -48,23 +49,34 @@ bash scripts/dev-verify.sh --fast-scoped       # 范围档：只跑改动相邻�
 **由来**：全量实测 **4331 用例（passed 4325 + skipped 6）/ 146s 墙钟**（pytest 自身 144.43s），
 而瓶颈不在用例数——`--durations` 显示单个用例
 （`test_locked_db_exit_two_not_tampered`，等待锁检测超时）独占 **135.92s＝全量墙钟的 93%**
-（口径：单测点用时/全量墙钟）。剔除清单共 5 条，分属 3 个文件（shared_facts 3 条 +
-audit_transaction 1 条 + path_env_read_gate 1 条）；另 4 条被 `--dist loadfile` 串行化约 **116s**。
-删掉这 5 条，全量立刻落到 **57s**。
+（口径：单测点用时/全量墙钟）。剔除清单共 4 条，分属 3 个文件（shared_facts 2 条 +
+audit_transaction 1 条 + path_env_read_gate 1 条）；同文件内两条 shared_facts
+被 `--dist loadfile` 串行化（2026-10-24 实测 28.86s + 28.78s）。剔除后全量墙钟
+落到 **57s**（2026-10-07 口径，当时剔除 5 条；两个口径不可直接相减）。
 修一处跑一次全量再报错重修，时间全花在这些长尾上。
 
-| 档 | 命令 | 实测墙钟（2026-10-07，本树空载） | 覆盖 | 什么时候用 |
+**2026-10-16 复测（口径变了，务必读本节表格）**：那条 135.92s 的长尾已改为
+**opt-in**（`YIBAN_DRILL_REAL_DB_LOCK=1` 才跑），所以它不再压全量；用例数涨到 4825
+（passed）。此时全量的成本**不再由用例数决定**——117s 里有 103.7s 是 pytest，余下是
+建副本与各门；而"建副本"这一步曾独占 200s（见下"副本只带 CI 检出会有 的内容"）。
+故提速主杠杆是**剪枝副本**，不是删用例或分层。
+
+| 档 | 命令 | 实测墙钟（2026-10-16，本树空载） | 覆盖 | 什么时候用 |
 |---|---|---|---|---|
-| 安全档 | `--fast` | **57s**（covered=4326：passed 4320 + skipped 6） | 全量 − 5 条已知长尾，**无选择面损失** | 提交前默认用这个 |
-| 范围档 | `--fast-scoped` | **9~11s**（目标为入口自检时 covered=18） | 只覆盖改动相邻面，**其余没跑**；空覆盖退出码 **3** | 改一处只想快速看一眼 |
+| 全量 | `bash scripts/dev-verify.sh` | **117s**（pytest 自身 103.7s，passed 4825） | 全部用例 | **门禁**：推送前跑，每批一次 |
+| 安全档 | `--fast` | **106s**（2026-10-16 口径，pytest 102.1s，covered=4827；当轮剔除 5 条） | 全量 − 4 条已知长尾（2026-10-24 起），**无选择面损失** | 子代理汇报前跑一次 |
+| 范围档 | `--fast-scoped` | **18s** 稳态（首跑 28s；pytest 自身 1.1s） | 只覆盖改动相邻面，**其余没跑**；空覆盖退出码 **3** | 子代理每改完一处就跑 |
+
+**谁跑哪一档（2026-10-16 定）**：**子代理**每改完一处跑范围档，汇报前跑一次安全档，
+**不跑全量**；**全量由主会话在批次收口时跑一次**。理由：全量的固定开销（建副本 + 门）
+不随目标集变化，子代理各自跑全量＝把同一笔固定开销重复付很多次。
 
 **都不是门禁**：两档都会打印免责声明。推送前跑全量（默认模式）或确认 CI 绿；fast 的绿
 不得当成门禁的绿。
 
-**对账**：全量 4331 = `--fast` 的 covered 4326 + 剔除 5 条（2026-10-08 复测：
-`--fast-all` 报 covered=4331，`--fast` 报 covered=4326，两个数都取自 pytest 汇总行）。
-这条对账证明剔除清单只减"跑了的用例数"，没有隐藏红：`--fast-all` 那一轮 4325 passed /
-0 failed / 0 errors。
+**对账**：全量 = `--fast` 的 covered + 4 条剔除（两侧都取自 pytest 汇总行）。
+这条对账证明剔除清单只减"跑了的用例数"，没有隐藏红。历史数字（2026-10-16）见上一段；
+条数从 5 改为 4 的来由见 R3-025（2026-10-24），4 条由 `run_slow` 的长尾轨执行。
 
 **退出码 3 的语义**：范围档没测到任何真实用例——① 改动集为空，或 ② 改动存在但反查不到
 任何相邻用例。这两种情况只跑 `tests/test_dev_verify_entry.py`（入口自检），退出码用 **3**。
@@ -73,19 +85,24 @@ audit_transaction 1 条 + path_env_read_gate 1 条）；另 4 条被 `--dist loa
 命中入口自检与文档相关用例（本树实测 rc=0、覆盖非空：裸词回退命中 11 个用例文件）。
 两种 fast 档都打印 `covered=<用例数>`（pytest 汇总四数之和：passed + failed + errors + skipped），
 据此区分"只跑了入口自检"与"真的覆盖了"。
+汇总之后另打 `DEV-VERIFY skip list: total=N` 与最多 5 条跳过名单（classname + 理由），
+全量明细在日志里。**全量与 `--ci` 下未登记的运行期跳过判红**（工单 1ffr，AGENTS §十三.30）：
+豁免按来源登记在 `scripts/dev-verify.sh` 的 `SKIP_EXEMPT_PATHS` / `SKIP_EXEMPT_REASONS`，
+与 `tests/test_skip_visibility_gate.py` 的 `NEVER_RUNS_IN_CI` 对账。fast 两档只要求可见，
+不判红（它们不是门禁）。
 
 **退出码只有四种**，3 **由空覆盖独占**：
 
 | 码 | 含义 |
 |---|---|
-| `0` | 通过：ruff 与 pytest 都 0，且覆盖非空 |
-| `1` | 有红：ruff 非 0，或 pytest 非 0 |
+| `0` | 通过：ruff、mypy 与 pytest 都 0，且覆盖非空、没有未登记的跳过 |
+| `1` | 有红：ruff 或 mypy 非 0、pytest 非 0，或全量下存在未登记的运行期跳过 |
 | `2` | 环境错误：守卫判红或参数被拒（见 §2 表） |
 | `3` | 空覆盖：范围档没测到任何真实用例，只跑了入口自检 |
 
-ruff 与 pytest 的**原始退出码一律归一为 1**，不再原样透出。3 因此只有一个含义：
+ruff、mypy 与 pytest 的**原始退出码一律归一为 1**，不再原样透出。3 因此只有一个含义：
 pytest 自身的 3（INTERNALERROR）也与空覆盖撞码不了。定位信息不丢——原始码仍逐行打印在
-日志里（`DEV-VERIFY ruff_exit=` 与 `DEV-VERIFY pytest_exit=`）。红优先于空覆盖：
+日志里（`DEV-VERIFY ruff_exit=`、`DEV-VERIFY mypy_exit=` 与 `DEV-VERIFY pytest_exit=`）。红优先于空覆盖：
 空覆盖同时有红时退出码是 1，不是 3；空覆盖提示会按最终退出码打印，不与它矛盾。
 
 **范围档的选择法**（无依赖、无状态）：改到 `tests/` 下的用例就直接跑它；改到源码就**按导入
@@ -97,20 +114,38 @@ pytest 自身的 3（INTERNALERROR）也与空覆盖撞码不了。定位信息�
 不在本脚本面内，范围档遇到 `frontend/` 改动会如实说"未反查到用例"——不要读成"有人覆盖"。
 并发时墙钟会涨（§6）。
 
-**fast 用独立副本与独立锁**（`…/fast-worktree`、`dev-verify-fast-runlock`）：共用一份副本会互相
-`rm -rf`，而串行化会让"自查"去等一个跑满两分半的全量。fast 还复用上一份副本做增量同步
-（`rsync -a -c --delete`），把固定开销压到几秒。**`-c` 不许去掉**：默认快检只看"尺寸 + 整秒
+**fast 用独立副本与独立锁**（`…/fast-worktree-<源仓摘要>`、`dev-verify-fast-runlock-<源仓摘要>`）：
+副本槽与锁都按「模式 + 源仓路径摘要」分键，两个 worktree 并行跑各有副本、互不覆盖
+（工单 4kl：只按模式分键时，一方会整体替换另一方的缓存，跨树伪红 rc=2）；fast 与全量仍是
+两个槽、两把锁，"自查"不去等一个跑满两分钟的全量。同一个源仓的并发运行仍用 `flock`
+串行化——共用一份副本会互相 `rm -rf`。fast 还复用上一份副本做增量同步
+（`rsync -a -c --delete`）。**`-c` 不许去掉**：默认快检只看"尺寸 + 整秒
 mtime"，同一秒内改完且尺寸不变的改动会被判成"没变"而跳过，副本因此陈旧，跑出来的是旧代码
 （可能报绿）。加上 `-c` 后按内容校验，"副本 = 当前工作树"这条不变式由 rsync 自己承重
-（rsync 非 0 退出即 die）。代价实测：本树 rsync 面内约 750 个文件（跟踪 731 个），副本已
-同步时 `rsync -a` 约 0.65s、加 `-c` 约 1.4s，多付约 0.7s。
+（rsync 非 0 退出即 die）。旧版本只按模式分键的缓存（`…/fast-worktree`、`…/worktree`）
+在混合版本期会被旧版运行反复重建：新版拿到旧锁空闲时迁移或清理它，旧版下一次只丢一次
+冷复制的时间，不丢数据；旧锁被占（旧版进程在跑）时不动它。
 
-**日志目录也按模式分开**（`default_log_dir`）：全量用 `<仓库父目录>/yiban-dev-verify-logs`，
-fast 两档用 `<仓库父目录>/yiban-dev-verify-logs-fast`。为什么必须分：日志目录按 mtime 轮转
-（`--keep`，默认 5 份），而 fast 与全量走**不同的锁**、可以同时跑；共用一个目录时，一侧的
+**副本只带"CI 检出会有"的内容（2026-10-16 起）**：副本的形状＝**跟踪文件**，与 CI 的
+全新 clone 同形。做法是按 git 的 ignored 名册剪枝
+（`git ls-files --others --ignored --exclude-standard --directory` 交给 `--exclude-from`），
+配 `--delete-excluded` 清掉旧副本里的历史残留，并用 `P`（protect）规则保住 `.git`
+（`build_copy_git` 随后重建它）。`guard_copy_pruned` 钉住这条不变式：副本里出现任何
+ignored 文件即响亮失败。
+
+这条剪枝是本脚本**最大的一笔提速**。实测（2026-10-16，本树）：rsync 面 36116 个文件
+（`work/` 21000、`frontend/node_modules/` 16133、`.venv/` 4795、余），单是 `rsync -a -c`
+一步 **200.1s**；剪枝后 814 个文件，同一步 **5.5s**。剪掉的量与 `work/` 的大小同步增长，
+故按 gitignore 名册剪，**不写死目录名**——写死的名单会随 `work/` 增长而重新漏。
+
+
+**日志目录按「模式 + 源仓」分开**（`default_log_dir`）：全量用
+`<仓库父目录>/yiban-dev-verify-logs-<源仓摘要>`，fast 两档用
+`<仓库父目录>/yiban-dev-verify-logs-fast-<源仓摘要>`。为什么必须分：日志目录按 mtime 轮转
+（`--keep`，默认 5 份），而 fast 与全量、不同 worktree 都可以同时跑；共用一个目录时，一侧的
 轮转会删掉另一侧的日志。实测（2026-10-07）：fast 档用默认目录跑几次，把同目录里他方的
-5 份日志删掉了，且那份备份落在 WSL `/tmp` 后被清空，无法还原。不同锁的两个流程不共享
-可被轮转的资源，这是根因修法。`--keep` 的语义在两档内不变，只是各自计数。
+5 份日志删掉了，且那份备份落在 WSL `/tmp` 后被清空，无法还原。不同锁的流程不共享
+可被轮转的资源，这是根因修法。`--keep` 的语义在各档、各源仓内不变，只是各自计数。
 显式传 `--log-dir` 时两档都用调用方给的目录；若两档传同一目录，轮转互删的风险由调用方承担。
 
 
@@ -118,20 +153,21 @@ fast 两档用 `<仓库父目录>/yiban-dev-verify-logs-fast`。为什么必须�
 
 | 步骤 | 固定口径 | 为什么 |
 |------|----------|--------|
-| 副本落点 | `/root/.cache/yiban-dev-verify/worktree`，每次整体重建 | 必须落在 WSL 原生文件系统；`/mnt` 走 DrvFs，全量跑测慢且文件语义有差异。只排除 `.git` 与工具缓存目录（`__pycache__` / `.pytest_cache` / `.ruff_cache`）。副本路径固定，故用 `flock` 串行化并发运行（两个 dev-verify 不能同时重建同一份副本）；后到者等前者结束。机器上没有 `flock` 时脚本直接拒绝跑测（退出码 2）——共享副本路径不能在没有串行化的情况下降级运行 |
+| 副本落点 | `/root/.cache/yiban-dev-verify/worktree-<源仓摘要>`（fast 用 `fast-worktree-<源仓摘要>`），每次整体重建 | 必须落在 WSL 原生文件系统；`/mnt` 走 DrvFs，全量跑测慢且文件语义有差异。只排除 `.git` 与工具缓存目录（`__pycache__` / `.pytest_cache` / `.ruff_cache` / `.mypy_cache`）。副本槽按「模式 + 源仓路径摘要」分键：不同 worktree 并行跑互不覆盖（4kl）；同一个源仓的并发运行用 `flock` 串行化（两个 dev-verify 不能同时重建同一份副本），后到者等前者结束。机器上没有 `flock` 时脚本直接拒绝跑测（退出码 2）——共享副本槽不能在没有串行化的情况下降级运行 |
 | `.git` | 由脚本播种：HEAD 指向源提交、对象经 `alternates` 复用源对象库、索引直接取源索引 | 入库类门禁（`tests/test_deploy_prod_artifacts.py`、`tests/test_web_vue_sources_tracked.py`）靠 `git ls-files` 判"哪些文件入库"；副本没有 `.git` 就是伪红。索引取源索引而不是 `git add -A`：源仓存在"已跟踪但被 `.gitignore` 命中"的文件（`scripts/git-hooks/commit-msg`），`git add -A` 会静默漏掉它 |
 | LF 归一 | 副本内文本先转 LF 再跑 | `.gitattributes` 只约束入库形态；Windows 侧 `core.autocrlf=true` 会让工作树出现 CRLF。CRLF 会炸 shell 门禁脚本（`set -euo pipefail` 被 CR 破坏），是伪红大头 |
 | 解释器 | 只认 `/root/.venv-yiban-wsl/bin/python`，跑测前打印绝对路径与版本 | 不许退化成 PATH 上的任意 python（历史上三轮才找到解释器） |
 | 并发 | `-n auto --dist loadfile` | `--dist loadfile` 不得去掉：套内存在文件内先后依赖与进程级 DB 单例，按单条分发即误红 |
-| 日志 | `<日志目录>/dev-verify-<时间戳>-<pid>.log`，整份 tee，保留最近 N 份 | **不截断**：只留 tail 会丢失败名单。日志目录按模式分开（全量 `yiban-dev-verify-logs`，fast 两档 `yiban-dev-verify-logs-fast`，见 §1.1）：两档走不同的锁、可并发，共用目录会互相轮转删日志。文件名带 PID：同一秒的两次运行不互相覆盖。日志内含解释器绝对路径与版本、被跑提交 sha、ruff 退出码、pytest 汇总四数、脚本退出码 |
-| ruff | `ruff check yiban/ tests/ scripts/ web/ --quiet` | 与 CI 同口径（含 `web/`） |
+| 日志 | `<日志目录>/dev-verify-<时间戳>-<pid>.log`，整份 tee，保留最近 N 份 | **不截断**：只留 tail 会丢失败名单。日志目录按「模式 + 源仓」分开（全量 `yiban-dev-verify-logs-<源仓摘要>`，fast 两档 `yiban-dev-verify-logs-fast-<源仓摘要>`，见 §1.1）：各档、各 worktree 可并发，共用目录会互相轮转删日志。文件名带 PID：同一秒的两次运行不互相覆盖。日志内含解释器绝对路径与版本、被跑提交 sha、ruff 退出码、mypy 退出码、pytest 汇总四数、脚本退出码 |
+| ruff | `ruff check yiban/ tests/ scripts/ web/ docker/ --quiet` | 与 CI 同口径（含 `web/` 与 `docker/`） |
+| mypy | `mypy --cache-dir <每次 mktemp -d 新建的目录>`（收编名单读 `pyproject.toml` 的 `[tool.mypy]`） | 静态类型门禁：收编名单住 `[tool.mypy].files`，只此一处；名单内严格档全开。与 ruff 同属静态检查，排在 ruff 之后、pytest 之前。**缓存目录每次新建**（工单 dq2n）：mypy 在 `(path,size,mtime)` 相同时不校验内容哈希，会信任上一轮缓存里的错误 ⇒ 同一份代码旧缓存红、新缓存绿；隔离后同一代码同一结论。实测（native 副本）默认冷缓存 5.38s、隔离 3.80/3.99s；`/mnt/d` 工作树 11.54s vs 2.46/2.39s |
 
 退出码（四种，全量模式与 fast 两档共用同一套裁决点）：
 
 | 码 | 含义 | 什么时候出现 |
 |---|---|---|
-| `0` | 通过 | ruff 与 pytest 都 0，且覆盖非空 |
-| `1` | 有红 | ruff 非 0，或 pytest 非 0（失败/错误都算）。**原始码不透出**，逐行打印在日志里（`ruff_exit=` / `pytest_exit=`） |
+| `0` | 通过 | ruff、mypy 与 pytest 都 0，且覆盖非空、没有未登记的跳过 |
+| `1` | 有红 | ruff 或 mypy 非 0、pytest 非 0（失败/错误都算），或全量下存在未登记的运行期跳过。**原始码不透出**，逐行打印在日志里（`ruff_exit=` / `mypy_exit=` / `pytest_exit=`） |
 | `2` | 环境错误 | 守卫判红：副本 `.git` 失活、副本残留 CRLF、副本跟踪集为空、源仓库不可解析为 git 仓库、固定 venv 不可用、参数被响亮拒绝（互斥/失效参数）、`FAST_KNOWN_SLOW` 名单坏 |
 | `3` | 空覆盖 | 只出现在 `--fast-scoped`：没测到任何真实用例，只跑了入口自检（见 §1.1）。**此码由空覆盖独占**：红优先，空覆盖同时有红时给 1 |
 
@@ -144,8 +180,15 @@ fast 两档用 `<仓库父目录>/yiban-dev-verify-logs-fast`。为什么必须�
 命令原文只住在入口脚本的 `run_ci` 一份，逐字冻结在 `tests/test_dev_verify_entry.py`：
 
 ```bash
-python -m ruff check yiban/ tests/ scripts/ web/ --quiet
-python -m pytest tests/ -q -n 4 --dist loadfile -k "security or mask or audit or login or private or csrf or ratelimit"
+python -m ruff check yiban/ tests/ scripts/ web/ docker/ --quiet
+python -m mypy --cache-dir "$CI_MYPY_CACHE"   # dq2n：每次 mktemp -d 新建
+python -m pytest tests/test_mypy_type_gate.py -q -p no:randomly
+# 快集 = tests/lane-roster.tsv 的 fast 行（2026-10-17 vckk 2-a 起取代 -k 关键词子集；
+#   改动落在关键词命中面之外时子集照样绿、全量红——静默的不重合，AGENTS §十三 第 29 条）
+python -m pytest tests/ -q -n 4 --dist loadfile --ignore=<slow ∪ serial 行> --deselect=<长尾 nodeid> --junitxml="$CI_SKIP_XML"
+# 跳过面（1ffr）：junit 报告 → skip list；未登记跳过判红
+# 串行专轨 = 名册的 serial 行（2026-10-18 起＝真起 gunicorn 打并发的限速用例；独占核才稳）
+python -m pytest tests/test_web_rate_limit_concurrency_e2e.py -q -p no:randomly
 python -m pytest tests/test_login_e2e_mock.py -q -p no:randomly
 bash scripts/check-shared-facts.sh
 python -m pytest tests/test_shared_facts_gate.py -q -p no:randomly
@@ -153,16 +196,63 @@ python scripts/check-path-env-reads.py
 python -m pytest tests/test_path_env_read_gate.py -q -p no:randomly
 python scripts/check-config-registry.py
 python -m pytest tests/test_config_registry_gate.py -q -p no:randomly
+python scripts/check-import-linter.py
+python -m pytest tests/test_import_linter_gate.py -q -p no:randomly
+python -m pytest tests/test_deploy_deps_sync.py -q -p no:randomly
+# Vue 构建可复现门（2026-10-25 S1 批接入）：有 node/npm 真跑 full 模式
+#   （LF 守卫 + 干净重建逐字节比对）；缺 node/npm 时打显式 SKIPPED＋原因——跳过≠绿
+#   （AGENTS §十三.30）。CI 侧覆盖：frontend job 跑同一脚本 full 模式。
+bash scripts/check-vue-build-reproducible.sh
 ```
 
-三道门禁各带自己的元测试同批跑：`check-shared-facts.sh` 数名册里 awk 引擎的键，
+**车道名册（`tests/lane-roster.tsv`）是目标集的唯一事实源**（2026-10-17 vckk 2-a 立）。
+每行 `车道<TAB>测试文件`，三种车道：`fast`（进快集，本地 `--fast` 与 CI verify 同集）／
+`slow`（只在全量与 CI 的 `slow-lane` 作业跑；判据＝墙钟真按"等外面"计费）／
+`serial`（CI 单独一条串行轨，独占 runner 的核）。本地 `--fast` 与 `--slow`、CI 的
+`verify` 与 `slow-lane` 作业的**文件级目标集全部由它推导**。唯一的例外是
+`FAST_KNOWN_SLOW` 的 4 条 nodeid：它们住在 fast 文件里、被快集 `--deselect`，
+由 `run_slow` 的长尾轨执行；条数与数组长度由元测试核对。
+名册漏归类（新增测试文件没登记）由 `tests/test_gate_lane_roster.py` 对真实文件系统扫描
+＋真实 pytest 收集对账，红得出来；该守卫本身登记在快集，不会被自己漏掉。
+慢集的自动轨＝CI 的 `slow-lane` 作业（`bash scripts/dev-verify.sh --slow`，串行跑
+slow 行 + `FAST_KNOWN_SLOW` 长尾 4 条），与 verify 并行、每次 push 都跑——
+**slow 行与长尾不再只靠本地全量覆盖**。
+
+**现量口径（2026-10-18，PR #138 后）**：全量 301 个文件 ＝ 快集 286 ＋ 慢集 14 ＋ 串行轨 1；
+用例数口径 4813 ＝ 4639 ＋ 172 ＋ 2。**`slow` 与 `serial` 都是串行执行**（slow 由 `run_slow`
+不带 `-n`，serial 由 verify 里的单独一步），故真进程树类用例在两条道上都独占核；区别只在
+**跑在哪个作业**：`slow` 在并行的 `slow-lane` 作业（不占 verify 关键路径），`serial` 在
+verify 里（占）。⇒ 重且必须独占核的用例，优先放 `slow`，别放 `serial`。
+墙钟现量：CI verify **7m55s**（上限 10m）、`slow-lane` **4m2s**、本机 `--fast` **62s**。
+把重活从 `fast` 挪到 `slow` 的判据始终是那条：**墙钟真按"等外面"计费**（真实进程树／
+真实定时等待／全仓扫描）；纯计算重（bcrypt 重算等）**不挪**——那会破坏快集的覆盖口径。
+
+四道门禁各带自己的元测试同批跑：`check-shared-facts.sh` 数名册里 awk 引擎的键，
 `check-path-env-reads.py` 数名册里 `ast:` 路由的键（同一枚键只许一个引擎计数），
-`check-config-registry.py` 判配置名册三条（`config/registry.json` 自校验、已登记键的
-缺省值字面量在代码内清零、未登记键不得出现在生产代码）。名册门禁的元测试是**突变
-验证**：每条放行断言都配一条同形状的污染断言，门禁判据写反即红。
+`check-config-registry.py` 判配置名册四条（`config/registry.json` 自校验、已登记键的
+缺省值字面量在代码内清零、未登记键不得出现在生产代码、模板缺省与名册等值）。模板缺省
+面由处置册 `config/default-gate-register.json` 逐键处置（154 键：开门或豁免 + 理由）。
+`check-import-linter.py` 跑
+`.importlinter` 的依赖方向契约（P0 批四条；批 A0 为新层补三条。门禁对**任何**违规
+红；确需接受的边逐条写进对应契约的 `ignore_imports`，基线文件只是墓碑）。名册门禁的
+元测试是**突变验证**：每条放行断言都配一条同形状的污染断言，门禁判据写反即红。
+第五道是 Vue 构建可复现门 `check-vue-build-reproducible.sh`（2026-10-25 S1 批接入，
+不带元测试）：钉 LF 口径与干净重建逐字节可比。有 node/npm 真跑 full 模式；缺席时打
+显式 SKIPPED＋原因（跳过≠绿）。承重段的突变证明在 `scripts/e2e/vue-build-reproducible-e2e.sh`。
 
 解释器取 `PATH` 上的 `python`（CI 由 `actions/setup-python` + 钉版 `pip install` 保证），
-可用 `DEV_VERIFY_PY` 覆盖。任一环节非 0，本步即非 0——与改前"步级失败即停"等价。
+可用 `DEV_VERIFY_PY` 覆盖。**WSL 内必须显式给**：WSL 里没有 `python` 这个名字（只有
+`python3` 或门禁 venv 的绝对路径），不给就退 2 并点名——那条红是**环境错误**，不是用例红。
+习惯写法：`DEV_VERIFY_PY=/root/.venv-yiban-wsl/bin/python bash scripts/dev-verify.sh --ci`。
+（2026-10-16 实测踩到：不给这个变量时人容易误判成"`--ci` 没跑成功"。）
+任一环节非 0，本步即非 0——与改前"步级失败即停"等价。
+静态检查的 mypy 版本由 CI 的 `pip install mypy==1.19.0`（`ci.yml`）与本地 WSL 门禁 venv 提供；
+**从未进 `requirements.lock`**（生产镜像不背门禁工具），先例同 ruff 与 pytest。
+结构门禁的 import-linter 版本同理，由 CI 的 `pip install import-linter==2.15 grimp==3.17`
+与本地 WSL 门禁 venv 提供；本地 venv 需先装一次
+（`python -m pip install import-linter==2.15 grimp==3.17`），缺件时门退 2 并点名，不静默跳过。
+`grimp==3.17` 必须一起钉：import-linter 2.15 对 grimp 只给下限、无上界，而门自己重实现了
+grimp 的 `X.*` 通配语义（空转守卫），不钉版会让判定随 grimp 升版静默改变（审查 M2）。
 
 `--ci` **就地跑、不做 LF 归一化**（CI runner 的新检出按 `.gitattributes` 是 LF）。
 若工作树的**跟踪文件**里真有 CRLF，脚本响亮拒绝（退出码 2）并点名文件，而不是
@@ -172,7 +262,9 @@ python -m pytest tests/test_config_registry_gate.py -q -p no:randomly
 CI 接线由 `tests/test_shared_facts_gate.py::SharedFactsCiWiringTest` 两跳审
 （verify job 调入口脚本 + 入口脚本的 `run_ci` 真调门禁脚本）。
 
-`nightly.yml` 的全量轨**不在本入口内**：它是独立轨（含时区专项子集），本批不动它。
+全量轨不在本入口内：默认模式（无模式标志）在本地 WSL 跑全量；CI 侧的自动覆盖由
+`verify`（fast ＋ serial）与 `slow-lane`（slow）两个作业合起来给出——每个 push 都覆盖
+名册全部文件。历史上的独立 `nightly.yml` 已删（structure extinct），不要再按它理解。
 
 ## 4. 守卫与"守卫承重"的可执行证明
 
@@ -214,7 +306,7 @@ e2e 用 `sed` 删掉该段造出变异体，再断言"伪红真的出现"。摘�
 在场性（调用行必须出现在 rsync
 之前）、rsync 行必须带 `-c`（防回退）、真跑 pytest 命令必须拼 `DESELECT` 数组（防拼接被删后
 长尾静默溜回）、空覆盖必须写标记且最终退出码为 3、退出码归一
-（ruff/pytest 非 0 一律 1，原始码留在日志）、空覆盖提示必须跟最终退出码、默认日志目录按模式
+（ruff/mypy/pytest 非 0 一律 1，原始码留在日志）、空覆盖提示必须跟最终退出码、默认日志目录按模式
 分开、`--ci --base` 与两个不同模式标志必须响亮拒绝、同一模式标志重复给必须幂等接受。
 
 ## 5. e2e（`scripts/e2e/dev-verify-e2e.sh`，必须在 WSL 内跑）
@@ -258,5 +350,5 @@ e2e 不写进 CI：CI 结果必须与改前等价，加一步即改变 CI 行为
   pytest 自己算的数，那个数与目标集无关（实测：目标集只有 1 个文件，汇总行报 `97 failed`）。
   `covered=` 跟着这个数走，于是也数出无意义的值。影响面有限：此时 `rc=1`（红），
   不会产生假绿；只是别拿那一轮的 `covered=` 与 `failed=` 当事实。要可信的数字就重跑。
-- ruff 在任何档都扫 `yiban/ tests/ scripts/ web/` 全量，不随范围档缩小；范围档省的是
+- ruff 在任何档都扫 `yiban/ tests/ scripts/ web/ docker/` 全量，不随范围档缩小；范围档省的是
   pytest 时间，不是 ruff 时间。

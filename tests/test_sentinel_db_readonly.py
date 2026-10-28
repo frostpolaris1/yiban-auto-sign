@@ -9,7 +9,7 @@
     两枚是同一条链的两个环：路径解析口径 + 只读取证初始化。
 对应实现：`scripts/yiban-backup-sentinel.sh`（薄包装只该导出 `.env` 指针与 cwd）、
     `scripts/backup_sentinel.py::_anchor_snapshot`（经 `db.init_db(create=False)`）、
-    `yiban/infra/env_io.py:resolve_path`（进程环境 → .env → 默认值的唯一解析口径）。
+    `yiban/adapters/config/env_io.py:resolve_path`（进程环境 → .env → 默认值的唯一解析口径）。
 关键断言：全部经**子进程**跑真脚本 / 真解析器，按行为判（归档里选了哪条路径、磁盘上
     多出哪些文件、外发的正文写的是"读不到"还是"空链"）。不在测试进程里调
     `db.init_db`——那是**进程级单例连接**的初始化，会把同 worker 后续用例的库指走
@@ -100,7 +100,7 @@ class WrapperDbPathTest(_TreeMixin, unittest.TestCase):
     #: 假哨兵：只回报"按 store 侧同一解析器算出来的库路径"，判据本身由本类钉
     STUB = ("import os, sys\n"
             "sys.path.insert(0, os.environ['SENTINEL_REPO'])\n"
-            "from yiban.infra import env_io\n"
+            "from yiban.adapters.config import env_io\n"
             "print(env_io.resolve_path('YIBAN_DB_FILE', 'yiban.db'))\n")
 
     @classmethod
@@ -247,7 +247,7 @@ class AnchorSnapshotReadOnlyTest(_TreeMixin, unittest.TestCase):
         built = os.path.join(self.tmp, "seeded", "audit.db")
         os.makedirs(os.path.dirname(built), exist_ok=True)
         code = ("import os, sys; sys.path.insert(0, os.environ['SENTINEL_REPO']);"
-                "from yiban.store import db;"
+                "from yiban.adapters.persistence import db;"
                 "c = db.init_db(db_file=os.environ['TARGET_DB'],"
                 " env_file=os.environ['YIBAN_ENV_FILE'], cleanup=False);"
                 "c.close()")

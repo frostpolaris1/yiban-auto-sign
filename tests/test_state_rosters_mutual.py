@@ -9,7 +9,7 @@
 再把其余各册逐枚对照过去。任一册漂移即红，并点名"哪一册、缺/多了哪一枚"。
 
 **被对照的各册（逐枚归属）**
-- R1 清理名册 `yiban/state_gc.py` 的 `ARTIFACTS`（按日件，会被清理）。
+- R1 清理名册 `yiban/adapters/statefiles/state_gc.py` 的 `ARTIFACTS`（按日件，会被清理）。
 - R2 备份收录名册 `scripts/backup.sh` 的 `state_files` + `log_files`。
 - R4 测试侧负名册 `tests/test_state_gc.py` 的 `ALLOWED_NON_STATE`。
 - R6 文档固定名表 `docs/dev/README.md` 的"运行期状态文件"表。
@@ -72,7 +72,28 @@ NON_STATE_FIXED_NAME = {
     "users.json": "scripts/db_export.py 导出的用户清单（仓外产物，不在状态目录）",
     "manifest.json": "web/services/vue_assets.py 的前端构建产物清单（静态资源，非状态件）",
     "registry.json": "config/registry.json 是配置名册（104 第一批·A）：入库的源码数据件，"
-                     "由 yiban/config_loader.py 读；不落状态目录、不进清理与备份名册",
+                     "由 yiban/adapters/config/loader.py 读；不落状态目录、不进清理与备份名册",
+    "default-gate-register.json": "config/default-gate-register.json 是配置缺省处置册（S2）："
+                                  "入库的源码数据件，由 scripts/check-config-registry.py 读；"
+                                  "不落状态目录、不进清理与备份名册",
+    "code-literal-register.json": "config/code-literal-register.json 是代码侧缺省字面量处置册"
+                                  "（工单 7yf）：入库的源码数据件，由"
+                                  " scripts/check-config-registry.py 读；不落状态目录、"
+                                  "不进清理与备份名册",
+    "mock.jsonl": "scripts/drill_multi_exec.py 的演练假上游请求轨迹：落**调用方指定的**"
+                  "证据目录或临时目录，不落状态目录、不进清理/备份名册",
+    "package.json": "Lucide 来源目录的 npm manifest（tools/build_lucide_sprite.py 的"
+                    "版本校验输入）；只在构建时读取，不落状态目录、不进清理/备份名册",
+    "monitor.jsonl": "scripts/drill_multi_exec.py 的演练协调面采样轨迹：同上（调用方指定的"
+                     "证据目录，不进状态目录）",
+    "run.json": "scripts/drill_multi_exec.py 的演练本轮结果摘要：同上（调用方指定的证据目录，"
+                "不进状态目录）",
+    "supervisor.log": "scripts/drill_multi_exec.py 捕获的演练监督进程 stdout+stderr：落**临时**"
+                      "目录（`tempfile.mkdtemp`），演练结束随目录消失；不落状态目录、不进"
+                      "清理/备份名册。**必须落文件而不是挂管道**——监督进程与执行体输出过管道"
+                      "缓冲即阻塞写，表现为'演练卡住'且真因不可见",
+    "supervisor-recover.log": "scripts/drill_multi_exec.py 恢复轮监督进程输出：同上（同一临时目录，"
+                              "按轮分文件以免两轮互相覆盖）",
 }
 #: 固定名状态件的枚举判据：抓"小写 token + 状态件扩展名"的字面量。
 #: 与 `tests/test_state_gc.py` 的按日扫描互补——非按日件从原理上逃过按日正则。
@@ -128,20 +149,35 @@ def _registered(token):
 
 
 def _artifacts_prefixes():
-    """R1：`yiban/state_gc.py` 的 `ARTIFACTS` 元组里的前缀（按定义顺序）。"""
-    src = _read(os.path.join(BASE, "yiban", "state_gc.py"))
-    body = src.split("ARTIFACTS = (", 1)[1].split("\n)", 1)[0]
-    return re.findall(r'Artifact\(\s*"([^"]+)"', body)
+    """R1：`state_gc.ARTIFACTS` 的前缀（按定义顺序）。
+
+    直接读模块对象而不是解析文本：前缀已收进 `env_io` 常量（census-P2-sign-state），
+    文本扫描看不见它们。
+    """
+    from yiban.adapters.statefiles import state_gc
+    return [art.prefix for art in state_gc.ARTIFACTS]
 
 
 def _backup_entries():
-    """R2：`scripts/backup.sh` 的 state_files + log_files 收录项（去引号后的 glob）。"""
+    """R2：`scripts/backup.sh` 的 state_files + log_files 收录项（去引号后的 glob）。
+
+    三个 `$_SIGN_*_GLOB` 是从 `env_io` 定义点导出的变量（census-P2-sign-state /
+    sign-day-log）：这里按定义点展开，名册对照的仍是"备份收哪几类件"这个事实，
+    不是 bash 变量名。
+    """
+    from yiban.adapters.config import env_io
+    derived = {
+        "$_SIGN_DAILY_GLOB": env_io.SIGN_DAILY_PREFIX + "*" + env_io.SIGN_DAILY_SUFFIX,
+        "$_SIGN_STATE_GLOB": env_io.SIGN_STATE_PREFIX + "*" + env_io.SIGN_STATE_SUFFIX,
+        "$_SIGN_LOG_GLOB": env_io.DAY_LOG_PREFIX + "*" + env_io.DAY_LOG_SUFFIX,
+    }
     src = _read(os.path.join(BASE, "scripts", "backup.sh"))
     names = []
     for var in ("state_files=(", "log_files=("):
         start = src.index(var) + len(var)
         arr = src[start:src.index(")", start)]
-        names += re.findall(r'/\*?"?([^"/\s)]+)"?', arr)
+        for name in re.findall(r'/\*?"?([^"/\s)]+)"?', arr):
+            names.append(derived.get(name, name))
     return names
 
 
@@ -325,7 +361,10 @@ class StateDirKeyDualSourceTest(unittest.TestCase):
 
     def test_app_side_reader_uses_the_unified_key(self):
         """应用侧读者用统一键：账本解析器读 `YIBAN_STATE_DIR`，不读旧键。"""
-        ledger = _read(os.path.join(BASE, "yiban", "notify", "ledger.py"))
+        # 坐标＝批 A4 后的新落点；`yiban/notify/` 转发壳已于 145-E 退役，现只有
+        # `yiban/adapters/notifier/notify/` 承载判据。
+        ledger = _read(os.path.join(BASE, "yiban", "adapters", "notifier",
+                                    "notify", "ledger.py"))
         self.assertIn(STATE_DIR_KEY, ledger,
                       "notify 账本未按统一键解析状态目录——与备份侧口径分叉")
         self.assertNotIn(LEGACY_STATE_DIR_KEY, ledger,

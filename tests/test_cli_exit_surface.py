@@ -1,16 +1,17 @@
 # -*- coding: utf-8 -*-
-"""MF-49 出口面（一）：`yiban.cli` 维护类子命令的 stdout/stderr 遮罩收口。
+"""MF-49 出口面（一）：`yiban.entry.cli` 维护类子命令的 stdout/stderr 遮罩收口。
 
 标签：G · 安全：脱敏/审计/配置注入
 覆盖：`_say`/`_emit_json` 两个出口收口的遮罩（含"字符串叶子遮、数字叶子不遮"的分型）、
     `config` 失败/成功两态、`capacity`/`state`/`db`/`version` 四个维护子命令的
     `--json`+stderr 出口、维护子命令入口的日志装配（`logging.lastResort` 裸写旁路
     必须被 `MaskingFormatter` 装配堵掉）。
-对应实现：`yiban/cli.py`（`_say`、`_emit_json`、`_masked_tree`、`main` 装配点）与
+对应实现：`yiban/entry/cli/__init__.py`（`_say`、`_emit_json`、`_masked_tree`、`main`
+    装配点；旧入口转发壳已于 `145-E` 退役）与
     `yiban/engine/cli_support.py::_setup_cli_logging`（复用，不新造）。
 关键断言：登记原文的验收不变量——构造含裸号/明文邮箱的记录 ⇒ 每个出口都是遮罩形态：
     断"遮罩形态在场"且"裸形态缺席"两侧；只断缺席会放过"字段整个消失"的假绿。
-依赖：起 `sys.executable -m yiban.cli` / `python -c` 子进程（纯 Python）；全部用
+依赖：起 `sys.executable -m yiban.entry.cli` / `python -c` 子进程（纯 Python）；全部用
     临时 STATE/LOG/DB/ENV 与随机假钥，不碰真实 .env；无 bash/node/网络。
 
 出口形态沿用 `tests/test_cli_contract.py` 的进程级口径（stdout 单行 JSON 可解析、
@@ -50,7 +51,7 @@ def _cli_env(tmp_path, env_extra=None):
 
 
 def _run_cli(argv, env, timeout=120):
-    return subprocess.run([sys.executable, "-m", "yiban.cli", *argv], cwd=BASE,
+    return subprocess.run([sys.executable, "-m", "yiban.entry.cli", *argv], cwd=BASE,
                           env=env, capture_output=True, text=True, encoding="utf-8",
                           errors="replace", stdin=subprocess.DEVNULL, timeout=timeout)
 
@@ -76,7 +77,7 @@ class _CliExitHarness(unittest.TestCase):
 
     def encrypt_password(self):
         """用 key_a 加密一个口令，返回密文对象（JSON 可嵌 dict）。"""
-        code = ("import json,sys;from yiban.infra import account_crypto;"
+        code = ("import json,sys;from yiban.adapters.config import account_crypto;"
                 "print(json.dumps(account_crypto.encrypt_password("
                 "'under-key-a', bytes.fromhex(sys.argv[1]), sys.argv[2])))")
         r = subprocess.run([sys.executable, "-c", code, self.key_a, PHONE_RAW],
@@ -95,7 +96,7 @@ class _CliExitHarness(unittest.TestCase):
 
     def _add_db_account(self):
         """临时库写一个 active 账号（phone 列即裸号明文；口令按 key_a 加密）。"""
-        code = ("import sys;from yiban.store import db;"
+        code = ("import sys;from yiban.adapters.persistence import db;"
                 "db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False);"
                 "db.add_account({'name': 'A', 'phone': sys.argv[3], 'password': 'p1',"
                 " 'status': 'active', 'owner': 'admin'});db.get_conn().close()")
@@ -112,7 +113,7 @@ class CliChokeUnitTest(_CliExitHarness):
 
     def test_say_masks_raw_phone_on_stderr(self):
         """`_say` 的 stderr 行不得带裸号：遮罩形态在场、裸形态缺席。"""
-        from yiban import cli
+        from yiban.entry import cli
         buf = io.StringIO()
         with contextlib.redirect_stderr(buf):
             cli._say(f"配置加载失败: 账号 {PHONE_RAW} 密码解密失败")
@@ -127,7 +128,7 @@ class CliChokeUnitTest(_CliExitHarness):
         对序列化后的整行打码会把 11 位整数改成 `138****0000` 这种非法 JSON——
         必须按类型放行，数字叶子保持原值、JSON 仍可解析。
         """
-        from yiban import cli
+        from yiban.entry import cli
         buf = io.StringIO()
         payload = {
             "command": "config", "ok": False,
@@ -152,7 +153,7 @@ class CliChokeUnitTest(_CliExitHarness):
 
 
 class CliSubprocessExitTest(_CliExitHarness):
-    """七个子命令里本段负责的五个：config/capacity/state/db/version（进程级真跑）。"""
+    """维护类子命令里本段负责的五个：config/capacity/state/db/version（进程级真跑）。"""
 
     def test_config_fail_masks_stderr_and_json_errors(self):
         """密文与钥不匹配 ⇒ 异常消息含裸号；`config` 的 stderr 与 `--json errors` 双出口都遮。"""
@@ -256,7 +257,7 @@ class CliProbePassthroughWiringTest(_CliExitHarness):
         """结构钉：sign/probe 经 runner.main（装配与生成点遮罩随透传自动生效）。"""
         import inspect
 
-        from yiban import cli
+        from yiban.entry import cli
         for fn in (cli._cmd_sign, cli._cmd_probe):
             src = inspect.getsource(fn)
             self.assertIn("runner.main", src)

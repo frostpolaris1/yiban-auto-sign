@@ -2,27 +2,28 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import {
   api,
+  confirmDialog,
   dangerousSubmit,
   errorMessage,
   isCanceled,
   ownerEmailVisible,
   passwordHint,
   passwordPolicyOk,
+  pollMs,
   shellBase,
-  swapOut,
   toast,
 } from "../lib/shell";
+import { usePolling } from "../lib/polling";
+import { useTabIndicator } from "../lib/tab-indicator";
 import "./ops.js"; // 注册 window.YB.accountOps（纯 JS，被 Python 侧 node 真跑钉住）
 import {
   GROUP_KEYS,
   GROUPS,
-  accountMatch,
   badgeOf,
   batchActions,
   countLabel,
   deletedAtText,
   emptyText,
-  groupAll,
   lastExecText,
   legendEntries,
   menuItems,
@@ -35,8 +36,8 @@ import {
   selectedIds,
   selectedPhones,
   stateCell,
-  statsOf,
 } from "./model.js";
+import { DEFAULT_PAGE_SIZE, PAGE_SIZES } from "../lib/pager";
 import {
   availableUserItems,
   buildAccountPayload,
@@ -56,6 +57,19 @@ import {
   submitLabel,
   type SelectItem,
 } from "../myaccounts/accountform";
+import {
+  PRIVACY_FIELDS,
+  buildPrivacyPayload,
+  emptyPrivacyState,
+  exposureHint,
+  privacyConfirmBody,
+  privacyDiff,
+  privacyEndpoint,
+  privacyFromView,
+  privacyTitle,
+  profileLine,
+  type PrivacyState,
+} from "../myaccounts/privacy";
 
 /* 账号管理（管理端 /work/accounts）—— P3 整页迁移到 Vue。
    与 legacy 的分工：口径层在 `model.js`（纯函数 + Vitest + node 真跑选中身份键），写操作
@@ -106,86 +120,126 @@ const TAB_KEYS = GROUP_KEYS;
 // 渲染的全部状态码；模板不再手写 chip。详情见 model.js 该函数与单源总账测试。
 const LEGEND = legendEntries();
 
-const accounts = ref<AccountRecord[]>([]);
-const states = ref<Record<string, string>>({});
-const stateMsgs = ref<Record<string, string>>({});
-const stateDurs = ref<Record<string, number | null>>({});
-// 「自选」列按后端能力探测隐藏：YIBAN_ALLOW_TIME_PREF 默认 0 时整列恒「—」，
-// 留着只会让用户以为功能坏了。口径与用户端横幅同一来源（/api/me 的 time_pref_allowed）。
+type Stats = { success: number; failed: number; waiting: number; skipped: number };
+interface ListPayload {
+  accounts?: AccountRecord[];
+  states?: Record<string, string>;
+  state_msgs?: Record<string, string>;
+  state_durs?: Record<string, number | null>;
+  group_totals?: Record<string, number>;
+  stats?: Stats;
+  total?: number;
+  notModified?: boolean;
+}
+
+// 服务端分组分页：每组只保存当前页的行，total/组总量/KPI 由服务端给。
+const rowsByGroup = ref<Record<string, AccountRecord[]>>({ pending: [], active: [], deleted: [] });
+const totals = ref<Record<string, number>>({ pending: 0, active: 0, deleted: 0 });
+const groupTotals = ref<Record<string, number>>({ pending: 0, active: 0, deleted: 0 });
+const stats = ref<Stats>({ success: 0, failed: 0, waiting: 0, skipped: 0 });
+const tab = ref("pending");
+const accounts = computed<AccountRecord[]>(() => rowsByGroup.value[tab.value] ?? []);
+const allRows = computed<AccountRecord[]>(() =>
+  GROUP_LIST.flatMap((g) => rowsByGroup.value[g] ?? []));
+function rowByIndex(index: number): AccountRecord | undefined {
+  return allRows.value.find((a) => a.index === index);
+}
+// 状态表按组下发（只含该组当前页的手机号）：分组保存，切页签取当前组那份。
+const statesByGroup = ref<Record<string, Record<string, string>>>({ pending: {}, active: {}, deleted: {} });
+const stateMsgsByGroup = ref<Record<string, Record<string, string>>>({ pending: {}, active: {}, deleted: {} });
+const stateDursByGroup = ref<Record<string, Record<string, number | null>>>({ pending: {}, active: {}, deleted: {} });
+const states = computed<Record<string, string>>(() => statesByGroup.value[tab.value] ?? {});
+const stateMsgs = computed<Record<string, string>>(() => stateMsgsByGroup.value[tab.value] ?? {});
+const stateDurs = computed<Record<string, number | null>>(() => stateDursByGroup.value[tab.value] ?? {});
 const me = ref<{ time_pref_allowed?: boolean } | null>(null);
 const timePrefOn = computed(() => me.value?.time_pref_allowed === true);
-const tab = ref("pending");
+const tabsEl = ref<HTMLElement | null>(null);
+const { style: tabIndicatorStyle, ready: tabIndicatorReady } = useTabIndicator(tabsEl, tab);
 const search = ref<Record<string, string>>({ pending: "", active: "", deleted: "" });
+// 分页状态（每组各持一页；页大小三组共用一个值）。服务端按组过滤后切片，
+// 组总量（group_totals）与 KPI（stats）不随当前页收窄。
+const pages = ref<Record<string, number>>({ pending: 1, active: 1, deleted: 1 });
+const pageSize = ref(DEFAULT_PAGE_SIZE);
+const PAGE_SIZE_OPTS: number[] = [...PAGE_SIZES];
 const sel = ref<Record<string, Record<string, boolean>>>({ pending: {}, active: {}, deleted: {} });
 const busy = ref(false);
-const menuOpen = ref(false);
 const narrow = ref(false);
+// 窄屏行操作抽屉：点「更多操作」从右侧滑出；动作集仍从 model.menuItems 取，
+// 与宽屏按钮同一份数据源（pending 组省略已外置的「通过」）。
+const drawerOpen = ref(false);
+const drawerGroup = ref("active");
+const drawerRow = ref<AccountRecord | null>(null);
+const drawerTrigger = ref<HTMLElement | null>(null);
+// 动作会打开确认/编辑/口令弹窗时，抽屉离场不归还焦点，交给新弹窗。
+const drawerRestoreFocus = ref(true);
 const deletedHint = ref(false);
 const ownerEmailOn = ref(ownerEmailVisible());
-// 写操作就地反馈（响应式，替代 legacy 直接改 DOM 的 markSigning/flashRow）：
-// 待签中的账号 index / 刚被移动需高亮的账号 index。由 ops.js 的 ctx 回调驱动。
 const signingIndex = ref<number | null>(null);
 const flashIndex = ref<number | null>(null);
 
 const rootEl = ref<HTMLElement | null>(null);
 
-/* ---------------- 分组视图 ---------------- */
+/* ---------------- 分组视图（行集来自服务端，已是该组当前页） ---------------- */
 function rowsOf(group: string): AccountRecord[] {
-  const kw = search.value[group] ?? "";
-  return groupAll(accounts.value, group).filter((a) => accountMatch(a, kw));
+  return rowsByGroup.value[group] ?? [];
 }
 function totalOf(group: string): number {
-  return groupAll(accounts.value, group).length;
+  return totals.value[group] ?? 0;
 }
 function groupCount(group: string): string {
-  return countLabel(totalOf(group), rowsOf(group).length, search.value[group] ?? "");
+  const kw = search.value[group] ?? "";
+  if (!kw) return countLabel(groupTotals.value[group] ?? 0, 0, "");
+  return String(totalOf(group)) + " 个匹配 / 共 " + String(groupTotals.value[group] ?? 0) + " 个";
+}
+function pageRows(group: string): AccountRecord[] {
+  return rowsOf(group);
+}
+function pageTotal(group: string): number {
+  return totalOf(group);
+}
+async function onPageChange(group: string, p: number): Promise<void> {
+  pages.value = { ...pages.value, [group]: p };
+  sel.value = { ...sel.value, [group]: {} };
+  try {
+    await fetchGroup(group);
+  } catch (e) {
+    toast().error(errorMessage(e, "账号列表加载失败，请稍后重试"));
+  }
+}
+async function onPageSizeChange(size: number): Promise<void> {
+  pageSize.value = size;
+  pages.value = { pending: 1, active: 1, deleted: 1 };
+  sel.value = { pending: {}, active: {}, deleted: {} };
+  try {
+    await load(false);
+  } catch (e) {
+    toast().error(errorMessage(e, "账号列表加载失败，请稍后重试"));
+  }
 }
 
-/**
- * 组合输入（中文输入法）进行中。
- *
- * 为什么需要一个显式标志：组合期的那次回车是「提交候选词」，浏览器**仍会对表单做隐式提交**
- * （实测 Chromium：keydown 的 isComposing 为真时 submit 照样发生一次）。提交落到 commitSearch
- * 就会让输入框失焦、收起软键盘，而拼音串还没上屏。故守卫放在提交路径上，并保证组合期不做
- * 任何拦截（不打断输入法）。同族的日志页与审计页各有一份同样的守卫。
- */
 const composing = ref(false);
 
-/**
- * 检索表单提交（回车 / 点「搜索」）。
- *
- * 桌面端的筛选本就是即时的（`search` 由 v-model 驱动 computed），故这里刻意**不引入**
- * "提交前不过滤"的第二态——那会退掉既有语义。提交只做一件用户看得见的事：让输入框失焦，
- * 收起移动端软键盘，把筛出来的结果露出来。表单本身挡住原生 GET，避免整页重载丢掉内存态
- * （选择态、快照指纹、已加载的完整手机号都只在内存里）。
- *
- * 组合期直接返回：这次提交是输入法提交候选词带来的，不是检索指令。
- */
 function commitSearch(group: string): void {
   if (composing.value) return;
-  rootEl.value?.querySelector<HTMLInputElement>(`#${group}-search`)?.blur();
+  rootEl.value?.querySelector<HTMLInputElement>("#" + group + "-search")?.blur();
 }
 function isFiltering(group: string): boolean {
-  return totalOf(group) > 0 && rowsOf(group).length === 0;
+  return !!search.value[group] && totalOf(group) === 0 && (groupTotals.value[group] ?? 0) > 0;
 }
 function emptyMessage(group: string): string {
-  // 空态文案单一口径在 model.emptyText（Vitest 钉住）：真空给组默认文案，筛出的空给
-  // 「无匹配结果」。此处不再本地重写一份。
-  return emptyText(group, groupAll(accounts.value, group), rowsOf(group));
+  if (rowsOf(group).length) return "";
+  if (isFiltering(group)) return "无匹配结果";
+  return emptyText(group, [], []);
 }
 function selCount(group: string): number {
   return Object.keys(sel.value[group] ?? {}).length;
 }
 function allState(group: string) {
-  return selectAllState(accounts.value, sel.value, group, search.value[group] ?? "");
+  return selectAllState(rowsOf(group), sel.value, group, "");
 }
-// KPI 是「今日签到统计」总览：口径覆盖**全部**正常账号，不随「正常账号」页的检索框收窄
-// （legacy renderStats(active) 用的也是未过滤的 groupAll）。检索只影响表格行。
-const kpi = computed(() => statsOf(groupAll(accounts.value, "active"), states.value));
-const pendingRows = computed(() => groupAll(accounts.value, "pending"));
+const kpi = computed(() => stats.value);
+const pendingRows = computed(() => groupTotals.value.pending ?? 0);
 
-// 状态列视图：手动签到触发后本账号先就地显示「待签中」（signingIndex），随后刷新用服务端
-// 真实状态覆盖（load() 成功即清空 signingIndex）。legacy 是直接改该行 DOM 的 className。
 function stateOf(row: AccountRecord): { tone: string; title: string; icon: string } {
   if (signingIndex.value === row.index) return { tone: "muted", title: "待签中", icon: "clock" };
   return stateCell(row.phone, states.value, stateMsgs.value, stateDurs.value);
@@ -219,7 +273,6 @@ function makeOps(): AccountOps {
     onBatchDelete: () => {
       deletedHint.value = true;
     },
-    // 就地反馈改由组件响应式状态驱动（ops.js 不碰 DOM）：手动签到 → 待签中；移动成功 → 高亮。
     onSigning: (index: number) => {
       signingIndex.value = index;
     },
@@ -232,35 +285,61 @@ function makeOps(): AccountOps {
   }) ?? {}) as unknown as AccountOps;
 }
 
-// 写操作实例**单例**：ops.js 的防重入守卫是实例内的 `inflight`（在途时第二次触发早退）。
-// 若每次动作都 makeOps() 现建一个，实例内 inflight 每次都是 false，双击 restore/move/批量
-// 就会各发一次请求——legacy 是页面初始化时建一次 ops 复用（work_accounts.js）。故这里也
-// 懒建一次复用；ctx 回调闭包引用的都是本组件稳定的 ref 与函数，无需重建。
 let opsSingleton: AccountOps | null = null;
 function ops(): AccountOps {
   if (!opsSingleton) opsSingleton = makeOps();
   return opsSingleton;
 }
 
-async function load(animate = false): Promise<void> {
-  const t0 = performance.now();
-  const data = await api<{
-    accounts?: AccountRecord[];
-    states?: Record<string, string>;
-    state_msgs?: Record<string, string>;
-    state_durs?: Record<string, number | null>;
-  }>("GET", "/api/accounts");
-  const apply = (): void => {
-    accounts.value = data.accounts ?? [];
-    states.value = data.states ?? {};
-    stateMsgs.value = data.state_msgs ?? {};
-    stateDurs.value = data.state_durs ?? {};
-    sel.value = pruneSelection(accounts.value, sel.value);
-    // 服务端真实状态已到，撤掉「待签中」的乐观标记（同 legacy：刷新后由真实状态覆盖）。
-    signingIndex.value = null;
-  };
-  if (animate && performance.now() - t0 > ANIM_MIN_MS && rootEl.value) swapOut(rootEl.value, apply);
-  else apply();
+function groupQuery(group: string): string {
+  const params = new URLSearchParams({
+    group,
+    limit: String(pageSize.value),
+    offset: String(((pages.value[group] ?? 1) - 1) * pageSize.value),
+  });
+  const kw = search.value[group] ?? "";
+  if (kw) params.set("q", kw);
+  return "/api/accounts?" + params.toString();
+}
+
+// 每组记住「当前内存态对应的查询串」：换筛选/翻页后第一次请求跳过条件请求，
+// 否则会拿别处的 ETag 换回 304，页面停在旧结果上。
+const lastQuery: Record<string, string> = {};
+
+// 每组一个请求序号：慢响应后到时不得覆盖更新的页码或检索结果（最新请求胜出）。
+const reqSeq: Record<string, number> = {};
+
+async function fetchGroup(group: string): Promise<boolean> {
+  const seq = (reqSeq[group] ?? 0) + 1;
+  reqSeq[group] = seq;
+  const q = groupQuery(group);
+  const conditional = lastQuery[group] === q;
+  const data = await api<ListPayload>("GET", q, null, conditional ? { conditional: true } : undefined);
+  if (reqSeq[group] !== seq) return false;
+  if (data.notModified) return false;
+  lastQuery[group] = q;
+  const rows = data.accounts ?? [];
+  rowsByGroup.value = { ...rowsByGroup.value, [group]: rows };
+  const total = typeof data.total === "number" ? data.total : rows.length;
+  totals.value = { ...totals.value, [group]: total };
+  if (data.group_totals) groupTotals.value = { ...groupTotals.value, ...data.group_totals };
+  if (data.stats) stats.value = data.stats;
+  statesByGroup.value = { ...statesByGroup.value, [group]: data.states ?? {} };
+  stateMsgsByGroup.value = { ...stateMsgsByGroup.value, [group]: data.state_msgs ?? {} };
+  stateDursByGroup.value = { ...stateDursByGroup.value, [group]: data.state_durs ?? {} };
+  const last = Math.max(1, Math.ceil(total / pageSize.value));
+  if ((pages.value[group] ?? 1) > last) {
+    pages.value = { ...pages.value, [group]: last };
+    return fetchGroup(group);
+  }
+  return true;
+}
+
+async function load(_animate = false): Promise<void> {
+  const changed = await Promise.all(GROUP_LIST.map((g) => fetchGroup(g)));
+  if (!changed.some(Boolean)) return;
+  sel.value = pruneSelection(allRows.value, sel.value);
+  signingIndex.value = null;
 }
 
 async function startLoad(): Promise<void> {
@@ -285,8 +364,8 @@ function onRowAction(row: AccountRecord, key: string): void {
   else if (key === "signin") o.signin(row);
 }
 function onBatch(group: string, key: string): void {
-  const ids = selectedIds(accounts.value, sel.value, group);
-  const phones = selectedPhones(accounts.value, sel.value, group);
+  const ids = selectedIds(rowsOf(group), sel.value, group);
+  const phones = selectedPhones(rowsOf(group), sel.value, group);
   const action = key === "remove" ? "delete" : key;
   ops().batch(action, ids, phones);
 }
@@ -307,6 +386,15 @@ function syncTabUrl(next: string): void {
   }
 }
 watch(tab, syncTabUrl);
+// 检索条件变化即回到第 1 页（否则筛完停在旧页码上、可能落在越界空页）。
+// 服务端检索：250ms 防抖后重拉三组；选中集清空（旧行可能已不在结果里）。
+let searchTimer = 0;
+watch(search, () => {
+  pages.value = { pending: 1, active: 1, deleted: 1 };
+  sel.value = { pending: {}, active: {}, deleted: {} };
+  window.clearTimeout(searchTimer);
+  searchTimer = window.setTimeout(() => { void load(false); }, 250);
+}, { deep: true });
 
 // WAI-ARIA tabs 键盘导航。本页已脱离 core.js 的 data-tab-group 契约（那套方向键只认
 // `.tab[data-tab-target]`，够不到这里的页签），且非活动页签 tabindex=-1 不可 Tab 到达，
@@ -344,11 +432,55 @@ const emailItems = ref<SelectItem[]>(emailBaseItems());
 const formEmail = ref("");
 const formManualEmail = ref("");
 const formInitialPassword = ref("");
+/* 二段：隐私资料与暴露（qmz4）。管理面写口 fail-closed（必须带 phone 令牌），
+   详情面只下发开着的字段；保存只提交改动过的键（见 myaccounts/privacy.ts）。 */
+const detailProfile = ref<Record<string, string>>({});
+const privacy = ref<PrivacyState>(emptyPrivacyState());
+const privacyInitial = ref<PrivacyState>(emptyPrivacyState());
+const privacyError = ref("");
+/** 本次弹窗内一段是否已保存，以及已保存请求体的指纹（二段失败重试时不重复写账号）。 */
+const accountSaved = ref(false);
+const accountSavedKey = ref("");
 const T = computed(() => formTexts("admin"));
 const showManual = computed(() => !formEditing.value && formEmail.value === "__manual__");
-const editingAccount = computed(() => (formIndex.value != null ? accounts.value[formIndex.value] : null));
-function onMenuVisible(v: boolean): void {
-  menuOpen.value = v;
+const editingAccount = computed(() => (formIndex.value != null ? rowByIndex(formIndex.value) : null));
+function openActions(row: AccountRecord, group: string, ev?: Event): void {
+  drawerTrigger.value = ev?.currentTarget instanceof HTMLElement ? ev.currentTarget : null;
+  drawerGroup.value = group;
+  drawerRow.value = row;
+  drawerRestoreFocus.value = true;
+  drawerOpen.value = true;
+}
+function hasVisibleOverlay(): boolean {
+  // 弹层关闭后节点仍留在 body（display:none），不能按存在性判断。
+  return Array.from(document.querySelectorAll<HTMLElement>(".pm-backdrop, .el-overlay")).some((node) => {
+    const cs = getComputedStyle(node);
+    return cs.display !== "none" && cs.visibility !== "hidden" && node.getBoundingClientRect().width > 0;
+  });
+}
+function onDrawerClosed(): void {
+  // 彻底删除会先发请求、后开口令框，弹窗可能晚于抽屉离场；按动作预判，不能只看当前可见层。
+  if (!drawerRestoreFocus.value) {
+    drawerRestoreFocus.value = true;
+    return;
+  }
+  // 动作若已打开确认/编辑弹窗，焦点归它；此处抢回会破坏新弹窗的焦点陷阱。
+  if (hasVisibleOverlay()) return;
+  // 无新弹窗时把焦点还给「更多操作」；行被移走则退回当前页签，避免焦点落回 body。
+  const trigger = drawerTrigger.value;
+  if (trigger && trigger.isConnected) trigger.focus();
+  else document.querySelector<HTMLElement>('[data-acct-tab="' + tab.value + '"]')?.focus();
+}
+const drawerActions = computed(() => {
+  const g = drawerGroup.value;
+  return g === "pending" ? menuItemsWithout("pending", ["approve"]) : menuItems(g);
+});
+function onDrawerAction(key: string): void {
+  const row = drawerRow.value;
+  // approve/reject/edit/remove 同步开弹窗；purge 的密码框在请求返回后才开。
+  drawerRestoreFocus.value = !["approve", "reject", "edit", "remove", "purge"].includes(key);
+  drawerOpen.value = false;
+  if (row) onRowAction(row, key);
 }
 
 function openForm(index: number | null): void {
@@ -361,9 +493,15 @@ function openForm(index: number | null): void {
   formEmail.value = "";
   formManualEmail.value = "";
   formInitialPassword.value = "";
+  detailProfile.value = {};
+  privacy.value = emptyPrivacyState();
+  privacyInitial.value = emptyPrivacyState();
+  privacyError.value = "";
+  accountSaved.value = false;
+  accountSavedKey.value = "";
   // 先落固定条目（同步），loadBindableUsers 成功后再覆盖为「固定条目 + 可绑定用户」。
   emailItems.value = emailBaseItems();
-  const a = index !== null ? accounts.value[index] : null;
+  const a = index !== null ? rowByIndex(index) : null;
   f.value = {
     name: a?.name ?? "",
     phone: a?.phone ?? "",
@@ -382,14 +520,21 @@ function openAdd(): void {
 async function loadDetail(index: number): Promise<void> {
   formDetailLoading.value = true;
   try {
-    const d = await api<{ account?: { phone?: string; name?: string; phone_model?: string; status?: string; deleted?: boolean } }>(
-      "GET",
-      `/api/accounts/${index}/detail`,
-    );
+    const d = await api<{
+      account?: {
+        phone?: string;
+        name?: string;
+        phone_model?: string;
+        status?: string;
+        deleted?: boolean;
+        profile?: Record<string, string>;
+      };
+    }>("GET", `/api/accounts/${index}/detail`);
     const acc = d.account ?? {};
     // 迟到响应防串号：弹窗已关，或已改成编辑另一个账号（index 变），都不得再写入表单。
     if (!formOpen.value || formIndex.value !== index) return;
-    if (!accounts.value[index]?.phone) {
+    const row = rowByIndex(index);
+    if (!row?.phone) {
       formSnapshot.value = null;
       fullPhone.value = "";
       f.value.phone = "";
@@ -397,7 +542,12 @@ async function loadDetail(index: number): Promise<void> {
     }
     fullPhone.value = String(acc.phone ?? "");
     formSnapshot.value = makeSnapshot(acc);
-    f.value.phone = accounts.value[index].phone; // 只回显打码号
+    f.value.phone = row.phone; // 只回显打码号
+    // 详情面只含开着的字段（#201 暴露出口）：键存在＝开关开，内容即展示值。
+    detailProfile.value = acc.profile ?? {};
+    privacy.value = privacyFromView(acc.profile);
+    privacyInitial.value = privacyFromView(acc.profile);
+    privacyError.value = "";
   } catch {
     // 同判据：过期/串号的失败响应不得清掉当前（可能是另一个）表单的完整号与快照。
     if (!formOpen.value || formIndex.value !== index) return;
@@ -427,11 +577,37 @@ function toggleClearCode(): void {
 function onFormClosed(): void {
   fullPhone.value = "";
   formSnapshot.value = null;
+  detailProfile.value = {};
+  privacy.value = emptyPrivacyState();
+  privacyInitial.value = emptyPrivacyState();
+  privacyError.value = "";
+  accountSaved.value = false;
+  accountSavedKey.value = "";
+}
+
+/** 只刷新乐观锁快照与完整号（不碰二段表单，避免抹掉未保存的隐私编辑）。 */
+async function refreshSnapshot(index: number): Promise<void> {
+  try {
+    const d = await api<{
+      account?: { phone?: string; name?: string; phone_model?: string; status?: string; deleted?: boolean };
+    }>("GET", `/api/accounts/${index}/detail`);
+    if (!formOpen.value || formIndex.value !== index) return;
+    const acc = d.account ?? {};
+    formSnapshot.value = makeSnapshot(acc);
+    if (acc.phone) fullPhone.value = String(acc.phone);
+  } catch {
+    // 保留旧快照：同一请求体重试会走「一段已保存」分支，不会因旧快照 409。
+  }
+}
+
+function clonePrivacy(state: PrivacyState): PrivacyState {
+  return { profile: { ...state.profile }, expose: { ...state.expose } };
 }
 
 async function submitForm(): Promise<void> {
   if (formBusy.value) return;
   formError.value = "";
+  privacyError.value = "";
   const built = buildAccountPayload(
     {
       name: f.value.name,
@@ -459,18 +635,67 @@ async function submitForm(): Promise<void> {
     return;
   }
   const payload = built.payload;
-  const endpoint = formEditing.value ? `/api/accounts/${formIndex.value}` : "/api/accounts";
-  const method = formEditing.value ? "PUT" : "POST";
-  const gated = credsWritten(payload, { editing: formEditing.value, snapshot: formSnapshot.value });
+  // 二段只在编辑态存在。管理面写口 fail-closed：必须带本次提交的完整号令牌。
+  const privacyPayload = formEditing.value
+    ? buildPrivacyPayload(privacy.value, privacyInitial.value, payload.phone, { requirePhone: true })
+    : null;
+  if (privacyPayload && "error" in privacyPayload) {
+    privacyError.value = privacyPayload.error;
+    return;
+  }
+  if (privacyPayload) {
+    const ok = await confirmDialog({
+      title: privacyTitle(),
+      body: privacyConfirmBody(privacyDiff(privacy.value, privacyInitial.value)),
+      confirmText: "保存",
+    });
+    if (!ok) return;
+  }
+  // 指纹只含用户可改字段：_snapshot 在每次一段保存后会被刷新，
+  // 若把它算进指纹，二段失败重试会被误判成"一段变了"而重复写一次。
+  const accountKey = JSON.stringify({
+    name: payload.name,
+    phone: payload.phone,
+    password: payload.password,
+    phone_model: payload.phone_model,
+    phone_code: payload.phone_code,
+    email: payload.email,
+    initial_password: payload.initial_password,
+  });
+  const needAccount = !formEditing.value || !accountSaved.value || accountKey !== accountSavedKey.value;
   formBusy.value = true;
   try {
-    const data = gated
-      ? ((await dangerousSubmit({ method, path: endpoint, body: payload, desc: CREDS_GATE_DESC })) as { msg?: string })
-      : ((await api(method, endpoint, payload)) as { msg?: string });
+    let msg = "";
+    if (needAccount) {
+      const endpoint = formEditing.value ? `/api/accounts/${formIndex.value}` : "/api/accounts";
+      const method = formEditing.value ? "PUT" : "POST";
+      const gated = credsWritten(payload, { editing: formEditing.value, snapshot: formSnapshot.value });
+      const data = gated
+        ? ((await dangerousSubmit({ method, path: endpoint, body: payload, desc: CREDS_GATE_DESC })) as { msg?: string })
+        : ((await api(method, endpoint, payload)) as { msg?: string });
+      msg = data?.msg || "";
+      if (formEditing.value) {
+        accountSaved.value = true;
+        accountSavedKey.value = accountKey;
+        // 一段已落库：刷新快照，二段失败重试时才不会拿旧快照撞 409。
+        if (formIndex.value != null) await refreshSnapshot(formIndex.value);
+      }
+    }
+    if (privacyPayload) {
+      try {
+        await api("PUT", privacyEndpoint("admin", formIndex.value as number), privacyPayload);
+        privacyInitial.value = clonePrivacy(privacy.value);
+      } catch (e) {
+        if (isCanceled(e)) return;
+        // 账号已写入、二段失败：弹窗留开，错误可见；重试只补二段。
+        privacyError.value = errorMessage(e, "隐私资料保存失败，请稍后再试");
+        return;
+      }
+    }
     formOpen.value = false;
     fullPhone.value = "";
     formSnapshot.value = null;
-    toast().success(data?.msg || "已保存");
+    toast().success(msg || "已保存");
     await load(true);
   } catch (e) {
     if (isCanceled(e)) return; // 取消门禁口令框不算失败
@@ -480,21 +705,24 @@ async function submitForm(): Promise<void> {
   }
 }
 
-/* ---------------- 轮询 / 断点 ---------------- */
-let timer: ReturnType<typeof setInterval> | null = null;
+/* ---------------- 轮询 / 断点 ----------------
+   机制（节拍 / 可见性 / 卸载清理）在 `lib/polling.ts`；本页只给**策略**：
+   弹窗或行菜单打开时不刷新（重渲染会打断在途操作与选择态）。节拍取外壳唯一来源
+   `pollMs()`（core.js 的 POLL_MS）。 */
 let mq: MediaQueryList | null = null;
-function pollTick(): void {
-  if (document.visibilityState !== "visible") return;
-  if (busy.value || menuOpen.value) return;
-  if (document.querySelector(".pm-backdrop, .el-overlay")) return;
-  void load(true).catch(() => undefined);
-}
-function onVisibility(): void {
-  pollTick();
+const pollingOn = ref(false);
+function pollGate(): boolean {
+  if (busy.value || drawerOpen.value) return false;
+  return !hasVisibleOverlay();
 }
 function onBreak(e: MediaQueryListEvent): void {
   narrow.value = e.matches;
 }
+usePolling(() => void load(true).catch(() => undefined), {
+  intervalMs: pollMs(),
+  gate: pollGate,
+  active: () => pollingOn.value,
+});
 
 onMounted(async () => {
   const wanted = new URLSearchParams(location.search).get("tab");
@@ -511,13 +739,10 @@ onMounted(async () => {
     return;
   }
   await startLoad();
-  timer = setInterval(pollTick, 10000);
-  document.addEventListener("visibilitychange", onVisibility);
+  pollingOn.value = true;   // 首屏取数完成后才开始轮询
 });
 
 onUnmounted(() => {
-  if (timer) clearInterval(timer);
-  document.removeEventListener("visibilitychange", onVisibility);
   if (mq) mq.removeEventListener("change", onBreak);
 });
 
@@ -541,7 +766,7 @@ const M = {
     <div class="page-head page-head--split">
       <div class="page-head-text">
         <h1 class="page-title">账号管理</h1>
-        <p class="page-sub">管理易班账号：审核、排序与手动签到；删除后 7 天内可恢复。</p>
+        <p class="page-sub">审核、排序与手动签到；删除后 7 天内可恢复。</p>
       </div>
       <button type="button" class="btn btn--primary" data-add-account @click="openAdd">
         <svg aria-hidden="true"><use href="#i-plus" /></svg>添加账号
@@ -551,7 +776,8 @@ const M = {
     <div id="accounts-root" ref="rootEl">
       <div data-acct-group>
         <div class="tabs-scroll">
-          <div class="tabs" role="tablist" aria-label="账号管理分区">
+          <div ref="tabsEl" class="tabs tabs--indicator" role="tablist" aria-label="账号管理分区">
+            <span class="tabs-indicator" :class="{ 'is-ready': tabIndicatorReady }" :style="tabIndicatorStyle" aria-hidden="true"></span>
             <a
               v-for="g in GROUP_LIST"
               :key="g"
@@ -626,16 +852,16 @@ const M = {
             class="alert warning acct-pending-tip"
             id="pending-tip"
             role="status"
-            :hidden="pendingRows.length === 0"
+            :hidden="pendingRows === 0"
           >
             <span class="ico"><svg aria-hidden="true"><use href="#i-clock" /></svg></span>
-            <span class="body">有 <strong id="pending-count">{{ pendingRows.length }}</strong> 个账号待处理，请及时审核。</span>
+            <span class="body">有 <strong id="pending-count">{{ pendingRows }}</strong> 个账号待处理，请及时审核。</span>
           </p>
 
           <section class="card">
             <div class="panel-head acct-group-head">
               <div class="panel-head-row">
-                <h2 class="panel-title">{{ GROUPS[g].title }}</h2>
+                <h2 class="panel-title">账号列表</h2>
                 <div class="acct-tools">
                   <!-- 检索是一段**表单**：移动端键盘的「搜索/前往」键只有落到表单提交才有去处
                        （原来只有裸 input + v-model，那个键按下去什么也不发生）。
@@ -665,16 +891,19 @@ const M = {
                      覆盖账号表**可渲染的全部**状态码（新增 no_position/global_paused 后曾只列 8 项）。
                      同 symbol 同色（icon + 账号页语气档）的状态合并为一格、标签列出全部 full 名；
                      本处不再手写 chip 表，改词表即改图例。 -->
-                <p v-if="g === 'active'" class="acct-legend">
-                  <span
-                    v-for="it in LEGEND"
-                    :key="it.icon + '|' + it.tone"
-                    class="acct-state"
-                    :class="'acct-state--' + it.tone"
-                  >
-                    <svg aria-hidden="true"><use :href="'#i-' + it.icon" /></svg>{{ it.text }}
-                  </span>
-                </p>
+                <details v-if="g === 'active'" class="acct-legend">
+                  <summary>状态图例（{{ LEGEND.length }} 项）</summary>
+                  <div class="acct-legend-grid">
+                    <span
+                      v-for="it in LEGEND"
+                      :key="it.icon + '|' + it.tone"
+                      class="acct-state"
+                      :class="'acct-state--' + it.tone"
+                    >
+                      <svg aria-hidden="true"><use :href="'#i-' + it.icon" /></svg>{{ it.text }}
+                    </span>
+                  </div>
+                </details>
 
                 <div class="acct-batch" :id="GROUPS[g].bar" role="status" aria-live="polite" :hidden="selCount(g) === 0">
                   <span class="acct-batch-count">已选 <strong :id="GROUPS[g].cnt">{{ selCount(g) }}</strong> 个</span>
@@ -707,7 +936,7 @@ const M = {
                     <thead v-if="g === 'pending'">
                       <tr>
                         <th scope="col" class="acct-cell-check"><label class="acct-check"><input type="checkbox" :id="GROUPS.pending.all" aria-label="全选待处理账号" :checked="allState('pending').checked" :indeterminate="allState('pending').indeterminate" @change="onSelectAll('pending', ($event.target as HTMLInputElement).checked)" /></label></th>
-                        <th scope="col">审核</th>
+                        <th scope="col" class="acct-cell-audit">审核</th>
                         <th scope="col" class="acct-cell-name">名称</th>
                         <th scope="col" class="acct-cell-phone">手机号</th>
                         <th scope="col" class="acct-col-lg acct-cell-lastexec" title="最近一次有记录的业务日实际领取该账号的执行体">上次实领</th>
@@ -719,7 +948,7 @@ const M = {
                     <thead v-else-if="g === 'active'">
                       <tr>
                         <th scope="col" class="acct-cell-check"><label class="acct-check"><input type="checkbox" :id="GROUPS.active.all" aria-label="全选正常账号" :checked="allState('active').checked" :indeterminate="allState('active').indeterminate" @change="onSelectAll('active', ($event.target as HTMLInputElement).checked)" /></label></th>
-                        <th scope="col">状态</th><th scope="col" title="账号在账号列表中的位置（含待处理与待删除项），非行号">序号</th>
+                        <th scope="col">状态</th><th scope="col" class="acct-cell-idx" title="账号在账号列表中的位置（含待处理与待删除项），非行号">序号</th>
                         <th scope="col" class="acct-cell-name">名称</th>
                         <th scope="col" class="acct-cell-phone">手机号</th>
                         <th scope="col" class="acct-col-lg acct-cell-lastexec" title="最近一次有记录的业务日实际领取该账号的执行体">上次实领</th>
@@ -736,7 +965,7 @@ const M = {
                         <th scope="col" class="acct-cell-phone">手机号</th>
                         <th scope="col" class="acct-col-lg acct-cell-lastexec" title="最近一次有记录的业务日实际领取该账号的执行体">上次实领</th>
                         <th scope="col" class="acct-col-md acct-cell-owner">归属</th>
-                        <th scope="col">删除时间</th>
+                        <th scope="col" class="acct-col-md">删除时间</th>
                         <th scope="col" class="acct-cell-actions">操作</th>
                       </tr>
                     </thead>
@@ -745,7 +974,7 @@ const M = {
                       <!-- key 用 index（服务端唯一位置键）而非脱敏 phone：脱敏号前 3 后 4 相同
                           的两个账号会撞成同一个 key（138****8000），导致 Vue diff 错配。 -->
                       <tr
-                        v-for="row in rowsOf(g)"
+                        v-for="row in pageRows(g)"
                         :key="g + ':' + row.index"
                         :data-acct-idx="row.index"
                         :class="{ 'acct-row-flash': flashIndex === row.index }"
@@ -777,7 +1006,7 @@ const M = {
                           <td class="acct-cell-phone">{{ row.phone }}</td>
                           <td class="acct-cell-lastexec acct-col-lg">{{ M.lastExecText(row) }}</td>
                           <td class="acct-cell-owner acct-col-md">{{ M.ownerText(row) }}</td>
-                          <td class="acct-cell-time">{{ M.deletedAtText(row) }}</td>
+                          <td class="acct-cell-time acct-col-md">{{ M.deletedAtText(row) }}</td>
                         </template>
 
                         <!-- 正常账号行 -->
@@ -822,21 +1051,9 @@ const M = {
                           </div>
                           <div v-else class="acct-row-actions acct-row-actions--narrow">
                             <button v-if="g === 'pending'" type="button" class="btn btn--primary btn--sm" @click="onRowAction(row, 'approve')">通过</button>
-                            <el-dropdown trigger="click" @visible-change="onMenuVisible">
-                              <button type="button" class="btn btn--ghost btn--icon" aria-label="更多操作" title="更多操作"><svg aria-hidden="true"><use href="#i-ellipsis" /></svg></button>
-                              <template #dropdown>
-                                <el-dropdown-menu>
-                                  <el-dropdown-item
-                                    v-for="it in g === 'pending' ? M.menuItemsWithout('pending', ['approve']) : M.menuItems(g)"
-                                    :key="it.key"
-                                    :class="{ 'is-danger': it.danger }"
-                                    @click="onRowAction(row, it.key)"
-                                  >
-                                    {{ it.label }}
-                                  </el-dropdown-item>
-                                </el-dropdown-menu>
-                              </template>
-                            </el-dropdown>
+                            <button type="button" class="btn btn--ghost btn--icon" aria-label="更多操作" title="更多操作" :data-acct-actions="row.index" @click="openActions(row, g, $event)">
+                              <svg aria-hidden="true"><use href="#i-ellipsis" /></svg>
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -844,9 +1061,33 @@ const M = {
                   </table>
                 </div>
 
-                <p class="empty" :id="GROUPS[g].empty" :hidden="rowsOf(g).length > 0">
-                  <span class="empty__icon"><svg aria-hidden="true"><use href="#i-list" /></svg></span>
-                  <span class="empty__msg">{{ emptyMessage(g) }}</span>
+                <!-- 客户端分页控件（每页大小 × 组）：只渲染当前页，5k 账号下首屏 DOM 与
+                     页大小同阶。控件走 EP（不是原生 select/range：原生弹出层样式不可控）。 -->
+                <div v-if="pageTotal(g) > pageSize" class="acct-pager" :data-acct-pager="g">
+                  <el-pagination
+                    :current-page="pages[g]"
+                    :page-size="pageSize"
+                    :total="pageTotal(g)"
+                    :page-sizes="PAGE_SIZE_OPTS"
+                    layout="sizes, prev, pager, next"
+                    background
+                    @current-change="(p: number) => onPageChange(g, p)"
+                    @size-change="(s: number) => onPageSizeChange(s)"
+                  />
+                </div>
+
+                <!-- 空态走 EP `el-empty`（uz7w：手搓空态换自带件）。外层 .empty 手搓
+                     构件不再承担布局：图/说明/动作三段由 el-empty 的 image/description/
+                     default 三个槽给出。e2e 与 Python 契约按 `#<g>-empty` 与
+                     `.empty__msg` / `data-empty-*` 取值，故这些锚点逐字保留。 -->
+                <el-empty
+                  :id="GROUPS[g].empty"
+                  :hidden="rowsOf(g).length > 0"
+                  :image-size="48"
+                >
+                  <template #description>
+                    <span class="empty__msg">{{ emptyMessage(g) }}</span>
+                  </template>
                   <span class="empty__action">
                     <button
                       v-if="isFiltering(g)"
@@ -870,7 +1111,7 @@ const M = {
                       @click="openAdd"
                     >{{ GROUPS[g].emptyAction.label }}</button>
                   </span>
-                </p>
+                </el-empty>
               </div>
             </div>
           </section>
@@ -878,11 +1119,52 @@ const M = {
       </div>
     </div>
 
+    <!-- 窄屏行操作抽屉：右侧滑入，保留账号摘要与完整动作列表 -->
+    <el-drawer
+      v-model="drawerOpen"
+      direction="rtl"
+      size="min(320px, 88vw)"
+      :with-header="false"
+      :trap-focus="true"
+      title="账号操作"
+      aria-label="账号操作"
+      class="acct-actions-drawer"
+      append-to-body
+      @closed="onDrawerClosed"
+    >
+      <div class="acct-drawer">
+        <div class="acct-drawer-head">
+          <div class="acct-drawer-account">
+            <div class="acct-drawer-name">{{ drawerRow?.display_name }}</div>
+            <div class="acct-drawer-phone">{{ drawerRow?.phone }}</div>
+          </div>
+          <button type="button" class="btn btn--ghost btn--icon" aria-label="关闭操作菜单" @click="drawerOpen = false">
+            <svg aria-hidden="true"><use href="#i-x" /></svg>
+          </button>
+        </div>
+        <div class="acct-drawer-actions">
+          <button
+            v-for="it in drawerActions"
+            :key="it.key"
+            type="button"
+            class="btn btn--ghost acct-drawer-action"
+            :class="{ 'btn--danger-ghost': it.danger }"
+            :data-acct-action="it.key"
+            @click="onDrawerAction(it.key)"
+          >
+            <svg aria-hidden="true"><use :href="'#i-' + it.icon" /></svg>{{ it.label }}
+          </button>
+        </div>
+      </div>
+    </el-drawer>
+
     <!-- 添加 / 编辑账号弹窗（校验复用 myaccounts/accountform.ts） -->
     <el-dialog
       v-model="formOpen"
       :title="formTitle({ editing: formEditing, variant: 'admin', index: formIndex })"
-      width="560px"
+      width="min(560px, calc(100vw - 32px))"
+      modal-class="app-form-overlay"
+      class="app-form-dialog"
       append-to-body
       @closed="onFormClosed"
     >
@@ -891,6 +1173,7 @@ const M = {
         <span class="ico"><svg aria-hidden="true"><use href="#i-circle-alert" /></svg></span>
         <span class="body">{{ formError }}</span>
       </div>
+      <el-alert v-if="privacyError" type="error" :title="privacyError" :closable="false" show-icon style="margin-bottom: 10px" />
 
       <div class="form-stack">
         <label class="field">
@@ -964,6 +1247,31 @@ const M = {
             @click="toggleClearCode"
           >{{ clearCode ? CODE_CLEAR_CANCEL_BTN : CODE_CLEAR_BTN }}</button>
         </label>
+
+        <!-- 二段：隐私资料与暴露（qmz4）。只在编辑态可见：详情面只含开着的字段。 -->
+        <details v-if="formEditing" class="privacy-details" data-admin-privacy>
+          <summary>{{ privacyTitle() }}</summary>
+          <p class="field-help">
+            详情只显示开着的字段；管理列表始终不显示。保存只提交改动过的键，关闭字段的既有内容不受影响。
+          </p>
+          <div v-if="profileLine(detailProfile)" class="account-profile" data-detail-profile>
+            {{ profileLine(detailProfile) }}
+          </div>
+          <div v-for="pf in PRIVACY_FIELDS" :key="pf.key" class="field privacy-field" :data-privacy-field="pf.key">
+            <span class="field-label">{{ pf.label }}</span>
+            <el-input
+              v-model="privacy.profile[pf.key]"
+              :aria-label="pf.label"
+              :maxlength="pf.maxlength"
+              clearable
+              :placeholder="pf.placeholder"
+            />
+            <div class="privacy-expose">
+              <el-switch v-model="privacy.expose[pf.key]" :aria-label="`暴露${pf.label}`" />
+              <span class="field-help">{{ exposureHint(privacy.expose[pf.key], 'admin') }}</span>
+            </div>
+          </div>
+        </details>
       </div>
       <template #footer>
         <button type="button" class="btn btn--ghost" @click="formOpen = false">取消</button>

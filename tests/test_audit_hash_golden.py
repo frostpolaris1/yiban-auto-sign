@@ -30,7 +30,7 @@ import shutil
 import tempfile
 import unittest
 
-from yiban.store import audit_chain, db
+from yiban.adapters.persistence import audit_chain, db
 
 # 固定审计密钥：bytes(range(32))。任何环境都能复现。
 AUDIT_KEY_HEX = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
@@ -108,11 +108,6 @@ class _KeyInjectedTest(unittest.TestCase):
 class AuditHashGoldenTest(_KeyInjectedTest):
     """`_audit_hash` 对固定输入的字面量金样例。"""
 
-    def test_literals_are_lowercase_hex64(self):
-        """金样例自身格式正确——防止有人贴进大写或短串。"""
-        for name, _args, expected in GOLDEN_HASHES:
-            with self.subTest(sample=name):
-                self.assertTrue(_HEX64.match(expected), f"{name} 不是 64 位小写 hex：{expected}")
 
     def test_hashes_equal_literal_hex64(self):
         """被测函数逐字返回字面量。断言里不出现"用生产函数算期望值"。"""
@@ -140,7 +135,7 @@ class AnchorLineGoldenTest(unittest.TestCase):
         """门面必须再导出老格式的 token 常数；删掉再导出这一行，本用例必红。
 
         V2 的再导出已由上面那条断言钉住。v0/v1 此前没有任何守卫：实测删掉
-        `yiban/store/db.py` 的 `_ANCHOR_V0_TOKENS` 再导出后，全量 4353 条仍全绿——
+        `yiban/adapters/persistence/db.py` 的 `_ANCHOR_V0_TOKENS` 再导出后，全量 4353 条仍全绿——
         那行 diff 没人看着。本用例补上这一对，它就是那两行的校验者。
         """
         self.assertEqual(

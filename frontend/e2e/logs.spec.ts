@@ -1,4 +1,5 @@
-import { expect, test } from "@playwright/test";
+import type { Page } from "@playwright/test";
+import { adminTest as test, expect } from "./base";
 
 import { businessDay } from "./business-day";
 
@@ -12,6 +13,15 @@ const ADMIN_PASS = "TestPass1234!";
 //: 拥挤日（V3 渲染层截断守卫的种子日）相对业务日的天数偏移。必须与
 //: `e2e/server.py::CROWDED_DAY_OFFSET`（相对**业务钟**）同值，否则日期对不上。
 const CROWDED_DAY_OFFSET = 5;
+
+/** 日志页「查看日期」入口填值：原生 input[type=date] 已换 EP el-date-picker，
+ *  走它可编辑的输入框键入 `YYYY-MM-DD`（value-format）再回车提交。 */
+async function fillLogDate(page: Page, value: string): Promise<void> {
+  const input = page.locator(".logs-date input");
+  await input.click();
+  await input.fill(value);
+  await input.press("Enter");
+}
 
 /** 用例要 pin 的两个业务日（今天 / 三天前）；按**业务时区**（UTC+8）算，不读宿主时区。 */
 function dates(): { today: string; older: string } {
@@ -33,7 +43,9 @@ test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、�
   // 本用例含一段 11.5 秒的轮询观测（轮询沿用在途选择），默认 30 秒超时不够。
   test.setTimeout(90_000);
   // 整个套件只在这里走一次真实登录表单（同 IP 10 秒内第 4 次访问 /login 会被
-  // 服务端的「登录页访问循环」守卫打断——那是给真实用户的保护，测试不该反复撞）
+  // 服务端的「登录页访问循环」守卫打断——那是给真实用户的保护，测试不该反复撞）。
+  // admin project 默认带管理员 Cookie，先清掉才是匿名登录页。
+  await page.context().clearCookies();
   await page.goto("/login");
   await page.fill("#username", ADMIN_USER);
   await page.fill("#password", ADMIN_PASS);
@@ -42,7 +54,89 @@ test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、�
 
   await page.goto("/data/logs");
 
+  // ── 卡头结构守卫（2026-10-11 结构修）────────────────────────────────────────
+  // 缺陷（真实浏览器 1468×900 实测）：签到日志卡头 `.logs-head`＝标题（左）＋
+  // `.logs-tools`（margin-left:auto 右贴：检索框 320px ＋「显示全部日志」＋「导出日志」
+  // ＋ 状态文本 `.logs-info`）。状态文本当时住在 `.logs-tools` 里、排在最末。右组自然宽
+  // 超出可用宽时，flex 收缩把最软的 `.logs-info` 挤到第二行（落在检索框正下方）；
+  // 而 `.logs-head` 是 align-items:center，标题对齐"两行整块"⇒ 标题悬在两行中间、
+  // 与控件行错位。状态文本是"看不见的事实"类文案，不是控件，不该与按钮抢同一行。
+  // 用户已拍板**结构修**：状态文本移出控件行，独立成次要行。
+  // 本守卫钉三件事：① `.logs-info` 不再是 `.logs-tools` 的子元素；② 卡头第一行只有
+  // 标题与控件（状态文本落到控件行之下）；③ 标题与第一行控件垂直居中对齐（误差 ≤1px）。
+  // 逐档量：宽档 1366/1468/1920/2560；移动档 360×792 验堆叠形态不回归。
+  const ACCEPT = 1; // px：抗锯齿与子像素取整余量
+  const logHead = page.locator(".logs-head:has(.logs-search)"); // 只看「签到日志」卡头
+  const centerY = (b: { y: number; height: number }): number => b.y + b.height / 2;
+  const headGeom = async () => {
+    const title = await logHead.locator(".logs-title").boundingBox();
+    const tools = await logHead.locator(".logs-tools").boundingBox();
+    const form = await logHead.locator(".logs-search").boundingBox();
+    const info = await page.locator(".logs-info").boundingBox();
+    if (!title || !tools || !form || !info) throw new Error("日志卡头元素取不到位置");
+    return { title, tools, form, info };
+  };
+
+  // ① 结构：状态文本不得留在控件组内
+  await expect(
+    logHead.locator(".logs-tools .logs-info"),
+    "状态文本仍住在控件组 .logs-tools 内（未移出控件行）",
+  ).toHaveCount(0);
+  // ①b 卡头直属子元素只许是标题、控件组、状态文本三者
+  const headKids = await logHead.evaluate((el) =>
+    Array.from(el.children).map((c) => c.className.split(/\s+/)[0]),
+  );
+  expect(
+    headKids.every((c) => ["logs-title", "logs-tools", "logs-info"].includes(c)),
+    `卡头出现预期外的直属子元素：${headKids.join(" / ")}`,
+  ).toBe(true);
+
+  for (const vw of [1024, 1366, 1468, 1920, 2560]) {
+    await page.setViewportSize({ width: vw, height: 900 });
+    await page.waitForTimeout(120);
+    const g = await headGeom();
+    // ② 状态文本独立成行：顶边不低于控件组底边
+    expect(
+      g.info.y,
+      `${vw}px 状态文本与控件同行（未独立成行）：info.y=${g.info.y} tools.bottom=${g.tools.y + g.tools.height}`,
+    ).toBeGreaterThanOrEqual(g.tools.y + g.tools.height - ACCEPT);
+    // ③ 标题与第一行控件对齐
+    expect(
+      Math.abs(centerY(g.title) - centerY(g.form)),
+      `${vw}px 标题未与控件行对齐：title.cy=${centerY(g.title)} form.cy=${centerY(g.form)}`,
+    ).toBeLessThanOrEqual(ACCEPT);
+    // 控件单行：检索表单与两枚按钮中心 y 一致
+    const btnCenters = await logHead
+      .locator(".logs-tools > .btn")
+      .evaluateAll((els) => els.map((e) => e.getBoundingClientRect().y + e.getBoundingClientRect().height / 2));
+    const centers = [centerY(g.form), ...btnCenters];
+    expect(
+      Math.max(...centers) - Math.min(...centers),
+      `${vw}px 控件不在同一行：${centers.join(" / ")}`,
+    ).toBeLessThanOrEqual(ACCEPT);
+    // 页面无横向溢出
+    const over = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(over, `${vw}px 整页横向溢出`).toBeLessThanOrEqual(ACCEPT);
+  }
+
+  // 移动档：堆叠形态不回归（三者都可见、整页无横向溢出）
+  await page.setViewportSize({ width: 360, height: 792 });
+  await page.waitForTimeout(120);
+  await expect(logHead.locator(".logs-title")).toBeVisible();
+  await expect(logHead.locator(".logs-search")).toBeVisible();
+  await expect(page.locator(".logs-info")).toBeVisible();
+  const mOver = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  expect(mOver, "360px 整页横向溢出").toBeLessThanOrEqual(ACCEPT);
+  await page.setViewportSize({ width: 1280, height: 720 }); // 还原默认视口
+  await page.waitForTimeout(120);
+
   // 0) 巡检首块（本批新增）：可见窗口必须显式写明；轮级摘要一行一轮；时间线按轮展开。
+  //    运行巡检已拆成独立页签（日志首屏只留日志），先切过去再断言。
+  await page.getByRole("tab", { name: "运行巡检" }).click();
   //    种子（见 e2e/server.py::_seed_run_events）：**同一业务日两轮**——最新一轮 3 个账号
   //    （1 成一败 1 未开始，耗时 21 秒），较早一轮是并行执行体。两轮是刻意的：下面
   //    「点开较早一轮 + 轮询沿用选择」的行为只有在存在另一轮时才可观测。
@@ -57,6 +151,64 @@ test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、�
   await expect(tl).toContainText("收尾");
   // 执行体只回角色与槽位：身份原串（带主机名）绝不进 DOM
   await expect(tl).not.toContainText("e2e-host");
+
+  // 0c) 运行巡检卡头构图（hr68）：1024 档标题与「刷新进度」同排，可见窗口行独立成行；
+  //     360 档两者都可见、整页无横向溢出。窗口行若留在控件行内，1024 会把整组挤到第二行，
+  //     标题（align-items:center）随之错位。
+  await expect(
+    page.locator("#run-panel .logs-tools #run-window"),
+    "#run-window 仍住在控件组内（未移出控件行）",
+  ).toHaveCount(0);
+  for (const vw of [1024, 360]) {
+    await page.setViewportSize({ width: vw, height: 800 });
+    await page.waitForTimeout(120);
+    const head = await page.locator("#run-panel .logs-head").boundingBox();
+    const title = await page.locator("#run-panel .logs-title").boundingBox();
+    const btn = await page.locator("#run-panel .logs-tools > .btn").boundingBox();
+    const win = await page.locator("#run-window").boundingBox();
+    if (!head || !title || !btn || !win) throw new Error("运行巡检卡头元素取不到位置（" + vw + "px）");
+    const cy = (b: { y: number; height: number }) => b.y + b.height / 2;
+    if (vw >= 1024) {
+      expect(
+        Math.abs(cy(title) - cy(btn)),
+        vw + "px 标题与「刷新进度」不在同一行：title.cy=" + cy(title) + " btn.cy=" + cy(btn),
+      ).toBeLessThanOrEqual(ACCEPT);
+    } else {
+      // 360 档标题与控件按堆叠形态分行，控件整行落在标题之下。
+      expect(btn.y, "360px 控件未落到标题下方").toBeGreaterThanOrEqual(title.y + title.height - ACCEPT);
+    }
+    expect(
+      win.y,
+      vw + "px 可见窗口行仍在控件行内：win.y=" + win.y + " head.bottom=" + (head.y + head.height),
+    ).toBeGreaterThanOrEqual(head.y + head.height - ACCEPT);
+    const over = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(over, vw + "px 运行巡检卡头横向溢出").toBeLessThanOrEqual(ACCEPT);
+  }
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.waitForTimeout(120);
+
+  // 0a) 运行进度（实时）：SSE 流自动建连，快照在首帧到达。一屏两带：六节点总数 +
+  //     每执行体一行 + 最近事件。事件计数**不去重**（≠ 首页「今日成功账号」）。
+  await expect(page.locator("#live-status")).toContainText("流已连接");
+  await expect(page.locator("#live-totals .live-total")).toHaveCount(6);
+  // 种子（_seed_run_events，今日两轮）：claim 4（单执行体 3 + 较早轮 1）、start 2、
+  // success 2、fail 1、finalize 1。finalize 单独一列，不并入任何"完成数"。
+  const liveTotal = (label: string) =>
+    page.locator("#live-totals .live-total", { hasText: label }).locator(".live-total-value");
+  await expect(liveTotal("领取")).toHaveText("4");
+  await expect(liveTotal("开始")).toHaveText("2");
+  await expect(liveTotal("成功")).toHaveText("2");
+  await expect(liveTotal("收尾")).toHaveText("1");
+  await expect(page.locator("#live-execs .el-table__row")).toHaveCount(2);
+  await expect(page.locator("#live-recent")).toContainText("最近事件");
+  // 口径防火墙：本块显式写明"事件计数"，与首页按账号去重的 KPI 区分
+  await expect(page.locator("#run-live")).toContainText("事件计数");
+  // 隐私：流 DOM 不含原始手机号，也不含执行体主机名
+  const liveHtml = await page.locator("#run-live").innerHTML();
+  expect(liveHtml).not.toContain("13800138001");
+  expect(liveHtml).not.toContain("e2e-host");
 
   // 0b) 轮询沿用在途选择（F5）：点开**较早的一轮**后，10 秒自动刷新（默认开）不得把
   //     选中改回最新一轮。改回即「查昨天那轮」的主用途失效——用户点开的旧轮在 ≤10 秒内
@@ -74,6 +226,7 @@ test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、�
   ).toHaveText("当前");
 
   // 1) 日志正文：级别档**默认收起 INFO**（巡检只看 WARN／ERROR），且信息栏如实报出收起数
+  await page.getByRole("tab", { name: "日志", exact: true }).click();
   const box = page.locator(".log-box");
   await expect(page.locator(".logs-info")).toContainText("已收起");
   await expect(box).toBeVisible();
@@ -88,6 +241,8 @@ test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、�
   const text = await box.innerText();
   expect(text).toContain("138****8001");
   expect(text).not.toContain("13800138001");
+  // 时间线在「运行巡检」页签里；切回去再读它的 innerText（隐藏页签不渲染文本）。
+  await page.getByRole("tab", { name: "运行巡检" }).click();
   const tlText = await tl.innerText();
   expect(tlText).toContain("138****8001");
   expect(tlText).not.toContain("13800138001");
@@ -106,18 +261,94 @@ test("登录 → 日志页：正文渲染、完整手机号不出现在 DOM、�
   // 5) 空态：pin 一个没有数据的合法日期 → 日志空态（含「最近有数据日期」跳转出口）
   //    注意先切回「日志」分区：日期输入框在日志面板内，面板未激活时不可见、填不进去
   await page.getByRole("tab", { name: "日志", exact: true }).click();
-  await page.fill('input[type="date"]', "2000-01-01");
+  await fillLogDate(page, "2000-01-01");
   await page.getByRole("button", { name: "查看该日日志" }).click();
   const logPane = page.locator(".el-tab-pane:visible");
   await expect(logPane.locator(".logs-empty")).toContainText("（2000-01-01 无签到日志）");
   await expect(logPane.locator(".logs-empty")).toContainText("查看"); // 「最近有数据日期」跳转出口
+
+  // 6) 降级：流端点被拒（403）→ EventSource 判不可恢复 → 页面明说"已回退 10 秒轮询"，
+  //    不让人把"流断了"误读成"没在跑"（125 §4.3 首屏第 1 条）。
+  await page.route("**/api/stream/progress", (route) =>
+    route.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ error: "无权限" }) }),
+  );
+  await page.reload();
+  await page.getByRole("tab", { name: "运行巡检" }).click();
+  await expect(page.locator("#live-status")).toContainText("回退");
+
+  // 7) 巡检面第二刀 ④⑤ 的**渲染层**守卫（执行体健康卡 + 审计链自洽状态块）。
+  //    为什么并入本用例而不是单开 spec：/api/login 有 60 秒 10 次/IP 限速（见 auth.py），
+  //    单开一条用例会多一次登录、把后面的 myaccounts 顶到 429（实测：加两条独立用例后
+  //    整套 e2e 的 myaccounts 两条全红）。本文件既有 4 处「并入用例」先例同此理由。
+  //    为什么必须有渲染层守卫：后端用例与 Vitest 单测只钉到"服务端下发什么 / 纯函数返回
+  //    什么"——删掉页面元素或改掉文案它们全绿（本仓上一次巡检批的 V3 缺口正是这个形状）。
+  //    种子见 e2e/server.py::_seed_heartbeats / _seed_audit_health_snapshot。
+  const execPanel = page.locator("#exec-health");
+  await expect(execPanel).toBeVisible();
+  // 三个身份：清单里的 worker-0（无记录）、心跳文件里的 fallback（新鲜）、worker-3（过期）
+  const execRows = execPanel.locator("#exec-health-table .el-table__row");
+  await expect(execRows).toHaveCount(3);
+
+  // ① 身份以**心跳文件名**为准：兜底的心跳记录体自称 {"role":"worker","index":0}
+  //    （ba-p03-09），页面必须显示 `fallback`，不得出现"worker-0 挂着兜底心跳"。
+  const fbRow = execRows.filter({ hasText: "fallback" });
+  await expect(fbRow).toHaveCount(1);
+  await expect(fbRow).toContainText("故障转移");
+  await expect(fbRow).toContainText("运行中");
+  await expect(fbRow).toContainText("心跳");
+
+  // ② 过期心跳：状态"可疑中断"，文案里必须出现「无心跳 · 已过期」（不留白、不显示 0），
+  //    且清单外的槽位要标出来（"配置说没有、机器上在跑"）。
+  const staleRow = execRows.filter({ hasText: "worker-3" });
+  await expect(staleRow).toHaveCount(1);
+  await expect(staleRow).toContainText("可疑中断");
+  await expect(staleRow).toContainText("无心跳");
+  await expect(staleRow).toContainText("已过期");
+  await expect(staleRow).toContainText("清单外");
+
+  // ③ 无记录的执行体：必须显式「无心跳」，且不是 0 秒/0 分钟
+  const idleRow = execRows.filter({ hasText: "worker-0" });
+  await expect(idleRow).toHaveCount(1);
+  await expect(idleRow).toContainText("未运行");
+  await expect(idleRow).toContainText("无心跳");
+  await expect(idleRow).not.toContainText("0 秒前");
+  // 吞吐口径写在页面上（分子/分母都说得出）
+  await expect(page.locator("#exec-health-caliber")).toContainText("已了结");
+
+  // ⑤ 审计链自洽状态块：三态之一的「健康」显示（绿），锚点与数据时刻随附，
+  //    已知欠账**单独一行**且不带状态色（不与「篡改」混色），健康态下没有"判不出来"的区间。
+  const auditBadge = page.locator("#audit-state");
+  await expect(auditBadge).toHaveText("健康");
+  await expect(auditBadge).toHaveClass(/badge--ok/);
+  await expect(page.locator("#audit-anchor")).toContainText("2026-09-01 00:00:31");
+  await expect(page.locator("#audit-anchor")).toContainText("第 3 行");
+  // 数据时刻取业务钟的当下（种子不写死日期，否则第二天过期降级、假红）；
+  // 同时没有"已超龄"字样——超龄降级由 pytest 与 vitest 两侧钉住。
+  await expect(page.locator("#audit-data-at")).toContainText(businessDay(0));
+  await expect(page.locator("#audit-data-at")).not.toContainText("已超龄");
+  await expect(page.locator("#audit-indeterminate")).toHaveCount(0);
+  const debt = page.locator("#audit-known-debt");
+  await expect(debt.locator("li")).toHaveCount(1);
+  await expect(debt).toContainText("已知欠账");
+  await expect(debt).toContainText("2 行");
+  await expect(debt).toContainText("2026-08-28");
+  await expect(debt.locator(".badge")).toHaveCount(0);
+
+  // ④ 密度：360px 与 4K 两档都不许整页横向溢出（窄屏由 el-table 自身横滚）
+  for (const vw of [360, 2560]) {
+    await page.setViewportSize({ width: vw, height: 900 });
+    await page.waitForTimeout(120);
+    const over = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(over, `${vw}px 整页横向溢出`).toBeLessThanOrEqual(ACCEPT);
+  }
 });
 
 test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账号管理（复用同一管理员会话）", async ({ page }) => {
-  // 会话走 API 登录（表单登录已在上一条覆盖）
-  const resp = await page.request.post("/api/login", { data: { username: ADMIN_USER, password: ADMIN_PASS } });
-  expect(resp.ok()).toBeTruthy();
-
+  // 本用例把日志/看板/账号/用户/设置五页串成一条会话，默认 30 秒不够（实测 54.8s）。
+  test.setTimeout(120_000);
+  // 管理员会话由 admin project 注入（.auth/admin.json）；表单登录已在上一条覆盖。
   const { today, older } = dates();
   await page.goto("/data/logs");
 
@@ -130,15 +361,20 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   //    偏移与 server.py 的 CROWDED_DAY_OFFSET 同值：落在 14 天保留窗口内，不撞今天/三天前。
   //    日期按**业务时区**算（businessDay）：本段跑在 Node 进程里，timezoneId 帮不上忙。
   const crowded = businessDay(CROWDED_DAY_OFFSET);
-  await page.fill('input[type="date"]', crowded);
+  await fillLogDate(page, crowded);
   await page.getByRole("button", { name: "查看该日日志" }).click();
+  // 轮级摘要现在住在「运行巡检」页签；切过去读，读完切回日志页签操作日期栏。
+  await page.getByRole("tab", { name: "运行巡检" }).click();
   const trunc = page.locator("#run-summary-truncated");
   await expect(trunc).toBeVisible();
   await expect(trunc).toContainText("已截断");
   await expect(trunc).toContainText("200"); // 上限数字必须来自服务端 rounds_limit
+  await page.getByRole("tab", { name: "日志", exact: true }).click();
   await page.getByRole("button", { name: "回到今天" }).click();
+  await page.getByRole("tab", { name: "运行巡检" }).click();
   await expect(page.locator("#run-summary .el-table__row")).toHaveCount(2); // 今天两轮，未超限
   await expect(page.locator("#run-summary-truncated")).toHaveCount(0);
+  await page.getByRole("tab", { name: "日志", exact: true }).click();
 
   // 级别档默认收起 INFO：本用例的下文都在核日志正文，先切到全量档（级别档本身
   // 由第一条用例与 tests/test_logs_level_filter.py 钉住）。等到 INFO 行真的出现再往下走：
@@ -151,7 +387,7 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
 
   // ① 日期导航——**这一条是 blocking 回归的守卫**：原实现用服务端回显日期覆盖用户选择，
   //    日期栏整体失效（点了没反应、深链被忽略），此处必红。
-  await page.fill('input[type="date"]', older);
+  await fillLogDate(page, older);
   await page.getByRole("button", { name: "查看该日日志" }).click();
   await expect(box).toContainText(older);
   await expect(box).toContainText("（older）");
@@ -194,10 +430,10 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   // 为什么合并在日志用例里：/api/login 有 60 秒窗口 10 次/IP 的独立限速，整套 e2e 共用
   // 同一 Flask 实例与 127.0.0.1，单开一条看板/账号用例会多一次登录、把后面的用例顶到 429
   // （2026-10-03 实测：账号管理页单开 spec 时 myaccounts 的管理员登录被顶到 429）。
-  // 种子数据与本文件同源（今天 2 条签到：success + failed；两个 active 账号；一个用户；
-  // 另有三条账号管理页种子：待审核 1 + 已拒绝 1 + 软删除 1，供下方账号管理页断言用），
-  // 故看板口径可精确断言：成功率 50.0%、趋势 成功 2 · 失败 1 · 跳过 0、分布总数 1、
-  // 待处理账号 = 待审核 1 + 已拒绝 1 = 2。
+  // 种子数据与本文件同源（两个 active 账号，其中 13800138001 今日终态 failed、
+  // 13900139002 今日无记录；另有三条账号管理页种子：待审核 1 + 已拒绝 1 + 软删除 1）。
+  // 看板按**账号当日终态**计：成功 0、失败 1 ⇒ 成功率 0.0%、分布总数 1、
+  // 待处理账号 = 待审核 1 + 已拒绝 1 = 2。事件表今天有 2 条事件，但每账号恰计一次。
   await page.goto("/data/dashboard");
   await expect(page.locator("#dashboard-root")).toBeVisible();
 
@@ -206,17 +442,17 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   await expect(page.locator("#kpi-accounts-value")).toHaveText("0"); // 今日成功账号
   await expect(page.locator("#kpi-users-value")).toHaveText("1"); // 今日失败账号
   await expect(page.locator("#kpi-users-sub")).toContainText("按账号统计");
-  await expect(page.locator("#kpi-rate-value")).toContainText("50.0");
-  await expect(page.locator("#kpi-rate-sub")).toContainText("成功 1 · 失败 1");
+  await expect(page.locator("#kpi-rate-value")).toContainText("0.0");
+  await expect(page.locator("#kpi-rate-sub")).toContainText("成功 0 · 失败 1");
   await expect(page.locator("#kpi-rate-pill")).toContainText("无昨日对比");
   await expect(page.locator("#kpi-pending-value")).toContainText("2");
   await expect(page.locator("#kpi-pending-sub")).toContainText("待审核 1 · 已拒绝 1");
 
   // 三张图：Canvas 真实绘制（Chart.js 由 vendor defer 先行加载）+ 元数据行
-  await expect(page.locator("#trend-coverage")).toHaveText("最近 30 天 · 仅真实签到");
+  await expect(page.locator("#trend-coverage")).toHaveText("最近 30 天 · 账号终态");
   const trendBox = await page.locator("#chart-trend").boundingBox();
   expect(trendBox && trendBox.width > 100 && trendBox.height > 50).toBeTruthy();
-  await expect(page.locator("#trend-meta")).toContainText("日均签到事件（次）");
+  await expect(page.locator("#trend-meta")).toContainText("日均签到账号（个）");
   await expect(page.locator("#dist-meta .chart-meta-cell").first()).toContainText("1");
   await expect(page.locator("#slots-meta")).toContainText("最热门时段");
 
@@ -309,9 +545,10 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   await expect(page.getByRole("tab", { name: /正常账号/ })).toContainText("2");
   await expect(page.getByRole("tab", { name: /待删除账号/ })).toContainText("1");
   // KPI 卡（今日签到统计）：成功/失败/待签/跳过。
+  // 种子里 13800138001 今日终态 failed、13900139002 无记录 ⇒ 失败 1、待签 1。
   await expect(page.locator("#stat-success")).toHaveText("0");
-  await expect(page.locator("#stat-failed")).toHaveText("0");
-  await expect(page.locator("#stat-waiting")).toHaveText("2");
+  await expect(page.locator("#stat-failed")).toHaveText("1");
+  await expect(page.locator("#stat-waiting")).toHaveText("1");
   await expect(page.locator("#stat-skipped")).toHaveText("0");
   await expect(page.locator("#pending-tip")).toBeVisible();
   await expect(page.locator("#pending-count")).toHaveText("2");
@@ -370,7 +607,56 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   // 取消后仍是待处理，计数不变
   await expect(page.getByRole("tab", { name: /待处理账号/ })).toContainText("2");
 
-  // ⑦ 添加账号表单：打开 → 必填校验 → 取消
+  // ⑦ 审核通过就地重拉：徽标与两个页签不等 10 秒外壳节拍（工单 inq9 验收③）
+  // 旧实现只在 ② 的表单成功分支里刷新，审核/驳回走 review() 分支，徽标要等 setInterval。
+  // 不改动种子账号：另建一个待审核账号，通过后软删，后续 spec 的徽标/KPI 仍是初始值。
+  const badge = page.locator('[data-nav-badge="work-accounts"]');
+  await expect(badge).toHaveText("2");
+  const csrf = String((await (await page.request.get("/api/me")).json()).csrf_token ?? "");
+  const created = await page.request.post("/api/accounts", {
+    data: {
+      name: "e2e-badge-refresh",
+      phone: "13712340009",
+      password: "e2e-phone-pw",
+      email: "e2e-badge@refresh-e2e.dev",
+      initial_password: "RefreshPass123",
+    },
+    headers: { "X-CSRF-Token": csrf },
+  });
+  expect(created.ok(), `新建待审核账号失败：${created.status()} ${await created.text()}`).toBeTruthy();
+  await page.reload();
+  // 新页面的徽标计数走 10s 缓存；先手动丢缓存取一次，才能把基线钉在 3。
+  await page.evaluate(() => (window as unknown as { YB: { refreshNavBadges(): void } }).YB.refreshNavBadges());
+  await expect(badge).toHaveText("3");
+  const badgeRow = page.locator("tbody tr[data-acct-idx]", { hasText: "e2e-badge-refresh" });
+  await expect(badgeRow).toBeVisible();
+  const badgeRefreshed = page.waitForResponse(
+    (resp) =>
+      resp.request().method() === "GET" &&
+      new URL(resp.url()).pathname === "/api/accounts" &&
+      new URL(resp.url()).searchParams.get("count_only") === "1",
+    { timeout: 5000 },
+  );
+  await badgeRow.getByRole("button", { name: "通过" }).click();
+  await acctModal.getByRole("button", { name: "通过", exact: true }).click();
+  await badgeRefreshed;
+  await expect(badge).toHaveText("2", { timeout: 2000 });
+  await expect(page.getByRole("tab", { name: /待处理账号/ })).toContainText("2");
+  await expect(page.getByRole("tab", { name: /正常账号/ })).toContainText("3");
+
+  // 复原：软删刚通过的账号（删除接口要手机号二次确认），徽标与页签回到种子状态。
+  const listing = await (await page.request.get("/api/accounts")).json();
+  const target = (listing.accounts as Array<{ index: number; name: string; phone: string }>).find(
+    (a) => a.name === "e2e-badge-refresh",
+  );
+  expect(target, "待清理账号 e2e-badge-refresh 不在 /api/accounts 里").toBeTruthy();
+  const removed = await page.request.delete(`/api/accounts/${target!.index}`, {
+    data: { phone: target!.phone },
+    headers: { "X-CSRF-Token": csrf },
+  });
+  expect(removed.ok(), `清理账号失败：${removed.status()} ${await removed.text()}`).toBeTruthy();
+
+  // ⑧ 添加账号表单：打开 → 必填校验 → 取消
   await page.locator("[data-add-account]").first().click();
   const acctForm = page.locator(".pm-backdrop, .el-dialog").first();
   await expect(acctForm).toBeVisible();
@@ -378,8 +664,8 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   // 口令字段的标签必须带「易班」限定词，并有一行区分说明（工单 0h7p 的验收锚点）：
   // 管理端丢限定词时，管理员会把易班凭据读成"用户在本站的登录密码"，据此改错凭据。
   await expect(acctForm.locator(".field-label", { hasText: "易班密码" }).first()).toBeVisible();
-  await expect(acctForm.locator(".field-help", { hasText: "不影响该用户登录本站" }).first()).toBeVisible();
-  await acctForm.getByPlaceholder(/易班登录手机号/).fill("");
+  await expect(acctForm.locator(".field-help", { hasText: "不是本站登录密码" }).first()).toBeVisible();
+  await acctForm.getByPlaceholder(/11 位手机号/).fill("");
   await acctForm.getByRole("button", { name: "添加账号" }).last().click();
   await expect(acctForm.locator(".alert.danger, .el-alert--error").first()).toBeVisible();
   await acctForm.getByRole("button", { name: /取消/ }).first().click();
@@ -404,7 +690,7 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   // 下拉取两栈共通的 data-select-field 锚点（legacy 自研控件根 / Vue 包裹层都用它），
   // 不用 getByText——选项文本与触发器文本会同时命中（strict mode 冲突）。
   await expect(page.locator('[data-select-field="ss-order"]')).toContainText("列表顺序");
-  await expect(page.locator('[data-select-field="ss-dist"]')).toContainText("均匀分布");
+  await expect(page.locator('[data-select-field="ss-dist"]')).toContainText("提前铺完");
   await expect(page.locator("#ss-gap")).toHaveValue("10");
   await expect(page.locator(".time-pair")).toContainText("06:30 至 07:50");
 
@@ -501,10 +787,21 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   await page.getByRole("tab", { name: "签到调度", exact: true }).click();
   await expect(page.locator("#set-panel-schedule")).toBeVisible();
 
-  // ⑧a 画布按分布态降级：默认「均匀分布」下不渲染 210px 钟形画布（均匀态没有钟形可画，
-  //     画布只是空矩形 + 解释不存在之物的图例），改由一行紧凑说明承担；切到正态才出现画布。
-  //     data-dist-state 是重设计新增的稳定锚点。
+  // ⑧a 画布按分布态降级：默认「提前铺完」（front）下不渲染 210px 钟形画布（非正态态没有钟形
+  //     可画，画布只是空矩形 + 解释不存在之物的图例），改由一行紧凑说明承担；切到正态才出现画布。
+  //     front / uniform / normal 三态都写进 data-dist-state 这个稳定锚点。
   const distViz = page.locator("[data-dist-viz]");
+  await expect(distViz).toHaveAttribute("data-dist-state", "front");
+  await expect(page.locator("[data-dist-viz] canvas")).toHaveCount(0);
+  await expect(distViz).toContainText("提前铺完");
+
+  // ⑧a-1 分布三态：切到「均匀分布」仍无画布（uniform 亦无钟形可画），文案随之改口。
+  const distSelect = page.locator('[data-select-field="ss-dist"] .el-select__wrapper');
+  const pickDist = async (name: string): Promise<void> => {
+    await distSelect.click();
+    await page.getByRole("option", { name }).click();
+  };
+  await pickDist("均匀分布");
   await expect(distViz).toHaveAttribute("data-dist-state", "uniform");
   await expect(page.locator("[data-dist-viz] canvas")).toHaveCount(0);
   await expect(distViz).toContainText("均匀分布");
@@ -513,13 +810,14 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   //     在窄屏有误触风险，默认一律只读，按下显式「编辑」按钮才可操作。门必须是真的状态
   //     切换（不是视觉覆盖）：只读态指针事件不得到达处理函数、键盘微调不生效、滑杆真禁用。
   //     峰尖拖拽只在正态分布下武装，故先把分布切到「正态分布」再验。
-  await page.locator('[data-select-field="ss-dist"] .el-select__wrapper').click();
-  await page.getByRole("option", { name: "正态分布（钟形拟人）" }).click();
+  await pickDist("正态分布（钟形拟人）");
   await expect(distViz).toHaveAttribute("data-dist-state", "normal");
   const canvas = page.locator("[data-dist-viz] canvas");
   await expect(canvas).toBeVisible();
   await canvas.scrollIntoViewIfNeeded();
-  const muInput = page.locator('[data-ed="muMid"]');
+  // 峰值中心已换 EP el-time-picker（原生 type=time 退役）：data-ed="muMid" 落在包裹层，
+  // 显示的输入框是 EP 内层 <input>，故锚点 + input 两级取到可读值的输入框。
+  const muInput = page.locator('[data-ed="muMid"] input');
   const sgLoInput = page.locator('[data-ed="sgLo"]');
   const editBtn = page.locator("#ss-edit");
 
@@ -764,6 +1062,7 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   // 把已经锚在 pwForm 上的 locator 传进去会变成双侧锚定、一条也命不中）。
   // 添加入口默认「不绑定」，手填分支（含「初始密码」）不渲染 ⇒ 本页只有一个 password 输入。
   const pwField = pwForm.locator('label.field:has(input[type="password"])').first();
+  await expect(pwField.locator(".field-label"), "管理端口令标签不可见").toBeVisible();
   await expect(pwField.locator(".field-label"), "管理端口令标签丢了「易班」限定词").toHaveText(/易班密码/);
   await expect(pwField.locator(".field-help"), "缺「不是本站登录密码」区分说明").toContainText("不是本站登录密码");
   await pwForm.getByRole("button", { name: /取消/ }).first().click();
@@ -910,6 +1209,18 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
   await acctInput2.press("Enter");
   await expect.poll(focusedId, { message: "非组合期回车没失焦（对照失败）" }).not.toBe("active-search");
 
+  // ---- A2. 移动端同一条「易班密码」标签断言（l065：此前移动段只断搜索按钮与溢出）----
+  // 判据与桌面 A 段同族：标签必须读得出「易班」限定词，并带区分说明。
+  await mp.locator("[data-add-account]").first().click();
+  const mpwForm = mp.locator(".pm-backdrop, .el-dialog").first();
+  await expect(mpwForm).toBeVisible();
+  const mpwField = mpwForm.locator('label.field:has(input[type="password"])').first();
+  await expect(mpwField.locator(".field-label"), "移动端口令标签不可见").toBeVisible();
+  await expect(mpwField.locator(".field-label"), "移动端口令标签丢了「易班」限定词").toHaveText(/易班密码/);
+  await expect(mpwField.locator(".field-help"), "移动端缺「不是本站登录密码」区分说明").toContainText("不是本站登录密码");
+  await mpwForm.getByRole("button", { name: /取消/ }).first().click();
+  await expect(mpwForm).toBeHidden();
+
   // 日志页：检索是服务端查询（关键字随请求发出），回车与按钮两条路径都要生效
   await mp.goto("/data/logs");
   const logForm = mp.locator('form[role="search"]');
@@ -999,4 +1310,66 @@ test("管理端数据面：日志页日期导航/事件表 + 数据看板 + 账�
     const dy = Math.abs(boxes[0]!.y - boxes[1]!.y);
     expect(dy, `${vw}px 起止日期两框不在同一行：y=${boxes[0]!.y} / ${boxes[1]!.y}`).toBeLessThanOrEqual(1);
   }
+});
+
+/** 日志正文服务端分页（p37f）：5000 行跨 25 页，首屏只渲染最后一页，翻页只发一条 /api/logs。
+ *  种子日 = 业务日 40 天前（e2e/server.py::PAGING_DAY_OFFSET）；用 ?date= 深链直接 pin 住。 */
+test("日志分页：首屏只渲染最后一页，翻页只重拉日志正文", async ({ page }) => {
+  const day = businessDay(40);
+  await page.goto("/data/logs?date=" + day);
+
+  const box = page.locator(".log-box");
+  const info = page.locator(".logs-info");
+  await expect(info).toContainText("第 4801–5000 行 / 共 5000 行");
+  await expect(page.locator("[data-log-pager]")).toBeVisible();
+
+  const firstPage = await box.innerText();
+  const firstLines = firstPage.split("\n").filter(Boolean);
+  expect(firstLines, "5k 行首屏只渲染最后一页的 200 行").toHaveLength(200);
+  expect(firstLines[0], "末页首行应为第 4801 行（0 基序号 4800）").toContain("分页行 4800");
+  expect(firstLines[199]).toContain("分页行 4999");
+
+  const requests: string[] = [];
+  page.on("request", (req) => {
+    const u = req.url();
+    if (u.includes("/api/")) requests.push(u);
+  });
+
+  const prevResp = page.waitForResponse(
+    (r) => r.url().includes("/api/logs?") && r.url().includes("offset=4600") && r.url().includes("limit=200"),
+  );
+  await page.locator("[data-log-pager] .btn-prev").click();
+  await prevResp;
+  await expect(info).toContainText("第 4601–4800 行 / 共 5000 行");
+
+  const secondLines = (await box.innerText()).split("\n").filter(Boolean);
+  expect(secondLines, "上一页应渲染 200 行").toHaveLength(200);
+  expect(secondLines[0]).toContain("分页行 4600");
+  expect(secondLines[199]).toContain("分页行 4799");
+
+  // 翻页只重拉日志正文：不得连带重拉运行巡检/执行体健康。
+  const pageReqs = requests.filter((u) => u.includes("/api/logs?"));
+  expect(pageReqs.length, "翻页应恰发一条 /api/logs").toBe(1);
+  expect(
+    requests.filter((u) => u.includes("/api/admin/run-events") || u.includes("/api/admin/exec-health")),
+    "翻页不得重拉运行巡检或执行体健康",
+  ).toEqual([]);
+
+  // 360px：正文与分页器都不许把页面撑出横向滚动。
+  await page.setViewportSize({ width: 360, height: 792 });
+  await expect(page.locator("[data-log-pager]")).toBeVisible();
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow, "360px 日志页出现横向溢出").toBeLessThanOrEqual(1);
+
+  // 正文限高后必须内滚；否则 200 行会画到分页器上（2026-10-22 截图审查实测）。
+  const logGeom = await box.evaluate((el) => {
+    const cs = getComputedStyle(el);
+    const r = el.getBoundingClientRect();
+    return { overflow: cs.overflow, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, bottom: r.bottom };
+  });
+  expect(logGeom.overflow, "360px 日志正文应内滚").toBe("auto");
+  expect(logGeom.scrollHeight, "200 行正文应高于限高").toBeGreaterThan(logGeom.clientHeight);
+  const pagerTop = await page.locator("[data-log-pager]").evaluate((el) => el.getBoundingClientRect().top);
+  expect(pagerTop, "分页器不得被日志正文覆盖").toBeGreaterThanOrEqual(logGeom.bottom - 1);
+  await page.setViewportSize({ width: 1280, height: 800 });
 });

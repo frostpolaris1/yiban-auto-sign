@@ -43,7 +43,6 @@
     <div class="auth-aside-body">
       <span class="auth-aside-eyebrow">YIBAN AUTO SIGN-IN</span>
       <h1>把每天的签到<br>交给调度器</h1>
-      <p>{{ site_description | default('自动完成易班签到，多账号统一管理、失败重试与告警通知。', true) }}</p>
       <ul class="auth-points">
         <li>{{ icon('calendar') }}<span>按时间偏好自动签到，失败自动重试</span></li>
         <li>{{ icon('bell') }}<span>签到结果推送与异常告警通知</span></li>
@@ -72,16 +71,9 @@
     </div>
     {% endblock %}
 
-    {# 公告与卡片成组居中：公告紧贴表单上方 16px，且与顶部工具条保持 ≥16px 距离
-       （曾把公告直接放在主列首元素：与顶部组件零间距、与表单隔着一个 auto 外边距 → 
-        实测"离上面太近、离表单太远"，窄屏还会顶到工具条上）。 #}
+    {# 登录页只保留表单卡片。公告自 2026-10-21 起不再用横幅：管理端与用户端
+       都收进右上角通知铃铛，登录页不显示（未登录时没有通知入口，也不该被弹窗打断登录）。 #}
     <div class="auth-main-center">
-      <div class="alert warning auth-announce" data-announcement-bar role="status" hidden>
-        <span class="ico">{{ icon('triangle-alert') }}</span>
-        <span class="body" data-announcement-text></span>
-        <button type="button" class="close" data-announcement-dismiss
-                title="关闭公告" aria-label="关闭公告">{{ icon('x') }}</button>
-      </div>
       <div class="auth-card">
         {% block content %}{% endblock %}
       </div>
@@ -106,19 +98,13 @@
   <div class="progress thin"><div class="progress-fill boot-fill"></div></div>
   <span class="sr-only">正在加载页面…</span>
 </div>
-<script>
-  (function () {
-    var el = document.getElementById("boot-loader");
-    if (!el) return;
-    var t1 = setTimeout(function () { if (!el.classList.contains("is-ready")) el.classList.add("is-visible"); }, 120);
-    function done() { clearTimeout(t1); el.classList.remove("is-visible"); el.classList.add("is-ready"); }
-    window.addEventListener("load", done);
-    var t2 = setInterval(function () { if (window.YB && window.YB.__ready) { clearInterval(t2); done(); } }, 60);
-    setTimeout(function () { clearInterval(t2); done(); }, 5000);   // 兜底：异常时不常驻
-  })();
-</script>
-{# 外部脚本一律 defer：按文档顺序在解析完成后执行，不阻塞 HTML 解析。 #}
+<script defer src="{{ request.script_root }}/static/js/boot-loader.js?v={{ web_version }}"></script>
+{# 外部脚本一律 defer：按文档顺序在解析完成后执行，不阻塞 HTML 解析。
+   首屏指示脚本已外置（CSP 加固，工单 56ed），defer 执行时元素已在 DOM 中。
+   **shell-chrome 必须紧邻排在 core 之前**：core 载入时要捕获它的命名空间
+   （window.YB.__chrome），缺了就抛错（拆壳第一刀，见 core.js 文件头）。 #}
 <script defer src="{{ request.script_root }}/static/vendor/md-render.js?v={{ web_version }}"></script>
+<script defer src="{{ request.script_root }}/static/js/shell-chrome.js?v={{ web_version }}"></script>
 <script defer src="{{ request.script_root }}/static/js/core.js?v={{ web_version }}"></script>
 {% block scripts %}{% endblock %}
 </body>

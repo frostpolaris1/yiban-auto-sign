@@ -16,7 +16,7 @@
 覆盖：`mask_phones_in_text` / `mask_phone` / `sanitize_url` 的号码形态口径；
       `/api/logs` 与 `/api/accounts` 的响应出口；前端遮罩公式的**定义点门禁**
       （core.js / frontend/src / 已入库 Vue 产物）。
-对应实现：`yiban/masking.py`（唯一号码口径）、`web/services/logs.py`、
+对应实现：`yiban/core/masking.py`（唯一号码口径）、`web/services/logs.py`、
       `web/routes/data.py`、`web/services/accounts_data.py`；
       被删除方：`web/static/js/core.js::maskPhone`、`frontend/src/lib/shell.ts::maskPhone`。
 关键断言：号码形态用真函数跑；前端公式门禁是**已知形态的黑名单**（6 条形状正则 × 产品
@@ -33,15 +33,32 @@ import sys
 import tempfile
 import unittest
 
+from web.services import logs as _logs_svc
+from web.services.accounts_data import PHONE_RE
+from yiban.core import clock
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _write_side_phones():
+    """由 `PHONE_RE` 派生样本族：第二位取 0..9，其余位固定。
+
+    返回**写侧校验接受**的号码列表；调用方仍逐枚 `PHONE_RE.fullmatch` 复核，
+    拒绝"正则与样本族脱钩"（例如写侧收紧到 `1[3-9]` 时本族只剩 7 枚，判据会红）。
+    """
+    return [f"1{d}012345678" for d in range(10)]
+
 
 TEST_KEY = "a" * 64
 ADMIN_PASS = "TestPass1234!"
-PHONE = "13800138001"
-MASKED = "138****8001"
+PHONE = _write_side_phones()[3]
+MASKED = PHONE[:3] + "****" + PHONE[7:]
+#: 次位 0–2 的已入库号（写侧校验收、旧 `1[3-9]` 遮罩口径漏）：由同一族派生。
+LOW_SECOND_PHONE = _write_side_phones()[2]
+LOW_SECOND_MASKED = LOW_SECOND_PHONE[:3] + "****" + LOW_SECOND_PHONE[7:]
 
 #: 号码遮罩公式的"指纹"正则：任何一处出现即代表又长出一个公式定义点。
-#: 只允许命中 `yiban/masking.py`（唯一真源）。
+#: 只允许命中 `yiban/core/masking.py`（唯一真源）。
 FORMULA_RES = (
     re.compile(r"\[\s*:\s*3\s*\]\s*\+\s*[\"'`]\*{4}"),            # p[:3] + "****"
     re.compile(r"\[\s*:\s*3\s*\]\s*\}\*{4}"),                      # f"{p[:3]}****"
@@ -85,7 +102,7 @@ class PhoneTextFormMaskingTest(unittest.TestCase):
     """行为一：`+86` 前缀与空格/连字符分段形态一律遮成同一规范形。"""
 
     def _mask(self, text):
-        from yiban.masking import mask_phones_in_text
+        from yiban.core.masking import mask_phones_in_text
         return mask_phones_in_text(text)
 
     def test_every_written_form_masks_to_canonical_form(self):
@@ -109,7 +126,7 @@ class PhoneTextFormMaskingTest(unittest.TestCase):
         self.assertEqual(self._mask(once), once, "重复脱敏不得再变形")
 
     def test_masked_value_helper_covers_same_forms(self):
-        from yiban.masking import mask_phone
+        from yiban.core.masking import mask_phone
         for raw in ("13800138000", "+8613800138000", "+86 138 0013 8000", "138 0013 8000"):
             with self.subTest(raw=raw):
                 self.assertEqual(mask_phone(raw), "138****8000")
@@ -124,8 +141,12 @@ class PhoneTextFormMaskingTest(unittest.TestCase):
         写侧收下的号遮罩侧必须遮得住：只放宽值口径时，次位 0–2 的已入库号会从日志出口
         （`_mask_log_phones` → `mask_phones_in_text`）原样下发，而前端已不再自遮。
         """
-        from yiban.masking import mask_phone, mask_phones_in_text
-        for raw in ("12012345678", "10012345678"):
+        from yiban.core.masking import mask_phone, mask_phones_in_text
+        samples = _write_side_phones()
+        accepted = [raw for raw in samples if PHONE_RE.fullmatch(raw)]
+        self.assertEqual(accepted, samples,
+                         "PHONE_RE 不再接受派生样本族（写侧口径变了，判据需重定）")
+        for raw in accepted:
             want = raw[:3] + "****" + raw[7:]
             with self.subTest(raw=raw, caliber="value"):
                 self.assertEqual(mask_phone(raw), want)
@@ -134,7 +155,7 @@ class PhoneTextFormMaskingTest(unittest.TestCase):
 
     def test_value_form_is_whole_string_only(self):
         """整串必须是号码：带前后缀散文的值不得被剥离出号码段（否则 `_mask_phone` 会吞正文）。"""
-        from yiban.masking import mask_phone
+        from yiban.core.masking import mask_phone
         for raw in ("tel:13800138000", "13800138000 (备用)", "138.0000.8000"):
             with self.subTest(raw=raw):
                 self.assertEqual(mask_phone(raw), raw)
@@ -152,7 +173,7 @@ class SanitizeUrlPhoneTest(unittest.TestCase):
     """出口③：URL 参数值里的号码（含 `+86`）必须与文本同口径。"""
 
     def test_url_value_phone_forms_masked(self):
-        from yiban.masking import sanitize_url
+        from yiban.core.masking import sanitize_url
         for query in (
             "u=13800138000",
             "u=%2B8613800138000",
@@ -168,7 +189,7 @@ class SanitizeUrlPhoneTest(unittest.TestCase):
 
     def test_url_value_with_embedded_phone_masked(self):
         """号码嵌在散文里的值同样遮——只认"整值即号码"时，前后缀一加就整串放行入日志。"""
-        from yiban.masking import sanitize_url
+        from yiban.core.masking import sanitize_url
         for query in ("u=tel:13800138000", "u=13800138000%20(%E5%A4%87%E7%94%A8)"):
             with self.subTest(query=query):
                 out = sanitize_url("https://host/p?" + query)
@@ -188,7 +209,7 @@ class NoFrontendMaskFormulaTest(unittest.TestCase):
     """
 
     def test_no_phone_mask_formula_outside_the_single_source(self):
-        allowed = os.path.join("yiban", "masking.py")
+        allowed = os.path.join("yiban", "core", "masking.py")
         offenders = []
         for path in _iter_scan_files():
             rel = os.path.relpath(path, BASE)
@@ -267,18 +288,9 @@ class DisplaySurfacesAreMaskedTest(unittest.TestCase):
         global db
         import db  # 裸模块名：pyproject 的 pythonpath 已含 scripts
 
-        # 库单例是**进程级**的：先清掉上一个测试模块可能留下的连接。不清就会踩
-        # `init_db` 的既有语义——已存在连接时它复用旧连接、跳过 JSON→SQLite 迁移，
-        # 于是本类的 accounts.json→SQLite 迁移被整段跳过、`/api/accounts` 回空表
-        # （判据见 test_accounts_response_has_no_plaintext_phone 的"账号未按预期装载"断言）。
-        # 这是**绕过**，不是根因修法：根因单 `yiban-auto-sign-mgq5` 修好后应删除本段。
-        # 口径是「机制复现 ＋ 加固」：机制用已知留下连接的模块确定性复现（旧树红、新树绿），
-        # 不是"全量实测伪红"。加固的校验者见
-        # tests/test_run_events_inspection.py::LeftoverConnectionFixtureGuardTest。
-        if db._conn is not None:
-            with contextlib.suppress(Exception):
-                db._conn.close()
-            db._conn = None
+        # 库单例是**进程级**的：由 `tests/conftest.py::_fresh_db_connection_per_class`
+        # 在每个测试类开始时丢弃继承来的连接（工单 mgq5）。本类不再自己清——
+        # 根因修法（`init_db` 拒绝静默换库）已经承担这条保证。
 
         spec = importlib.util.spec_from_file_location(
             "webapp_mask_contract", os.path.join(BASE, "web", "app.py"))
@@ -289,15 +301,15 @@ class DisplaySurfacesAreMaskedTest(unittest.TestCase):
 
         db.init_db(cls.db_file, migrate_from=cls.accounts_file, env_file=cls.env_file)
 
-        from datetime import datetime
-        cls.today = datetime.now().strftime("%Y-%m-%d")
+        # 按天日志名取业务日（北京 +8）：`log_path_for` 与 web/引擎同一口径。
+        cls.today = clock.today()
         # 日志文本里放四种未遮形态：裸号、次位 0–2 的已入库号（写侧校验收、旧 `1[3-9]` 口径漏）、
         # `+86` 前缀、空格分段。写入**按天文件名**（`log_path_for` 的派生规则），故用它的返回值。
-        with open(cls.webapp.log_path_for(cls.today), "w", encoding="utf-8") as fh:
+        with open(_logs_svc.log_path_for(cls.today), "w", encoding="utf-8") as fh:
             fh.write("\n".join([
                 f"[{cls.today} 06:31:01] [INFO] yiban: [{PHONE}] 签到成功",
                 f"[{cls.today} 06:31:02] [WARNING] yiban: 上游回显 +8613800138000 与 138 0013 8000",
-                f"[{cls.today} 06:31:03] [WARNING] yiban: 旧口径漏网号 12012345678",
+                f"[{cls.today} 06:31:03] [WARNING] yiban: 旧口径漏网号 {LOW_SECOND_PHONE}",
             ]) + "\n")
 
     @classmethod
@@ -326,7 +338,7 @@ class DisplaySurfacesAreMaskedTest(unittest.TestCase):
         unittest 直跑则落真实部署路径，故仍须自设。
         隔离一旦被改回，这条红；`tearDownClass` 删整个临时目录，故植入行不残留。
         """
-        path = self.webapp.log_path_for(self.today)
+        path = _logs_svc.log_path_for(self.today)
         self.assertEqual(os.path.dirname(path), self.tmp,
                          f"日志路径未隔离到临时目录：{path}")
         self.assertTrue(os.path.isfile(path), "临时按天日志未按夹具写入")
@@ -338,9 +350,9 @@ class DisplaySurfacesAreMaskedTest(unittest.TestCase):
         self.assertNotIn(PHONE, body, "日志响应含 11 位明文手机号")
         self.assertNotIn("+8613800138000", body, "+86 前缀形态未遮")
         self.assertNotIn("138 0013 8000", body, "空格分段形态未遮")
-        self.assertNotIn("12012345678", body, "写侧校验收下的号（次位 0–2）未遮")
+        self.assertNotIn(LOW_SECOND_PHONE, body, "写侧校验收下的号（次位 0–2）未遮")
         self.assertIn(MASKED, body)
-        self.assertIn("120****5678", body)
+        self.assertIn(LOW_SECOND_MASKED, body)
 
     def test_accounts_response_has_no_plaintext_phone(self):
         body = self._admin_client().get("/api/accounts").get_data(as_text=True)

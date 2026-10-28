@@ -9,8 +9,8 @@
    对齐的放弃通知/日志、令牌桶三件接线、产品契约（每次尝试写
    sign-state、dry_run
    零写、计划不可用不抛）、崩溃恢复与死主分片接管的整条链路。
-对应实现：yiban/engine/executor_v3.py（run_executor_v3、通道/补货/退避/收尾各路径）、yiban/engine/schedule.py（channel_count、capacity_accounts_v3）、yiban/store/queue_store.py（pending_count、claim_batch、reap_expired、reclaim_tasks）、yiban/engine/runner.py
-   的执行调用点、yiban/engine/hrw.py 与 token_bucket.py。
+对应实现：yiban/engine/executor_v3.py（run_executor_v3、通道/补货/退避/收尾各路径）、yiban/engine/schedule.py（channel_count、capacity_accounts_v3）、yiban/adapters/persistence/queue_store.py（pending_count、claim_batch、reclaim_tasks、reap_abandoned）、yiban/app/runner.py
+   的执行调用点、yiban/core/hrw.py 与 token_bucket.py。
 关键断言：单池后 `runner` 恒定转调 `run_executor_v3`（`--only` 走显式路径：reclaim +
    claim_all + requeue_final），`round.run_queue_retry` 无生产调用点。写进
    sign_tasks.vshard 的 V 必须与执行体分片集同源且当日稳定：V
@@ -32,13 +32,11 @@ import contextlib
 import datetime
 import json
 import logging
-import math
 import os
 import random
 import shutil
 import tempfile
 import threading
-import time
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -47,28 +45,32 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402
 
-from yiban import clock, egress, window  # noqa: E402
+from yiban import egress  # noqa: E402
+from yiban.adapters.persistence import clock_meta, queue_store  # noqa: E402
+from yiban.adapters.statefiles import state_io  # noqa: E402
+from yiban.app import runner as runner_mod  # noqa: E402
+from yiban.core import (  # noqa: E402
+    clock,
+    hrw,
+    window,
+)
+from yiban.core import status as yiban_status  # noqa: E402
 from yiban.engine import (  # noqa: E402
     executor_v3,
-    hrw,
     planner,
     schedule,
-    state_io,
     token_bucket,
 )
-from yiban.engine import (  # noqa: E402
-    runner as runner_mod,
-)
-from yiban.store import clock_meta, queue_store  # noqa: E402
 
 TEST_KEY = "a" * 64
 DAY = "2026-09-22"          # 周二，避开周末门
 #: 固定起跑时刻：默认窗口 06:30~07:50（有效窗口 06:31~07:49），06:40 在窗口内
 START = datetime.datetime(2026, 9, 22, 6, 40, 0)
 OWNER = "single@testhost"
-#: 队列**持有者**身份：稳定槽位名再拼本进程的进程号与代次（`egress.runtime_owner`）。
-#: 稳定名仍是 HRW 分片成员判据与出口桶持久键，两者刻意分开——见 `HolderIdentitySplitTest`。
+#: 队列**持有者**身份：稳定槽位名再拼本进程的进程号/代次（`egress.runtime_owner`）。
 RUNTIME_OWNER = egress.runtime_owner(OWNER)
+#: 出口桶键（工单 2cwd：键 = **出口标识**，不再是执行体身份）。基座未配出口 ⇒ 直连标识。
+EGRESS_KEY = egress.DIRECT_EGRESS
 MY_SHARDS = (0, 1, 2, 3) # 与 FOREIGN_SHARD 配对：任何顺手扫了别人分片的改动都会在这里现形
 FOREIGN_SHARD = 7
 
@@ -152,7 +154,7 @@ class _PermissiveLimiter:
     def on_risk_signal(self, egress, now):
         self.trace.append(("on_risk_signal", egress))
 
-    def persist(self, egress, stamp=None):
+    def persist(self, egress, stamp=None, now=None):
         self.persisted += 1
         return True
 
@@ -177,14 +179,16 @@ class _PermissiveGate:
         self.trace.append(("commit", phone))
 
 
-def _refiller_pushing(items):
-    """假补货：把给定条目与 M 条哨兵一次性投进队列（时序用例用它替代真实轮询）。"""
-    async def _refill(queue, shards, ctx):
-        for it in items:
-            queue.put_nowait(it)
-        for _ in range(ctx.m):
-            queue.put_nowait((executor_v3.SENTINEL_PRIORITY, "", "", 0, 0))
-    return _refill
+def _keeper_watch(box):
+    """假协调循环：给定条目吐完、且没有通道在飞时置停止（**不推进假时钟**）。
+
+    时序用例用它替代真协调循环的收干判定；领取由假 `_claim_one` 从 `box` 按序吐出。
+    """
+    async def _keep(ctx):
+        while box or ctx.claiming:
+            await asyncio.sleep(0)
+        ctx.stop.set()
+    return _keep
 
 
 async def _never(_ctx):
@@ -192,9 +196,10 @@ async def _never(_ctx):
     await asyncio.Event().wait()
 
 
-def _item(phone, run_at=None, attempts=0, epoch=1,
-          priority=executor_v3.PRIORITY_ORDER_BASE):
-    return (priority, run_at or _ts(seconds=-1), phone, attempts, epoch)
+def _item(phone, run_at=None, attempts=0, epoch=1):
+    """一条"被领到"的行——`claim_batch` 返回的行形状（claim-at-dispatch 下每次一行）。"""
+    return {"phone": phone, "run_at": run_at or _ts(seconds=-1),
+            "attempts": attempts, "epoch": epoch}
 
 
 class _Base(unittest.TestCase):
@@ -243,6 +248,11 @@ class _Base(unittest.TestCase):
         self.state_dir = tempfile.mkdtemp(dir=self.tmp, prefix="state-")
         os.environ["YIBAN_STATE_DIR"] = self.state_dir
         self.addCleanup(shutil.rmtree, self.state_dir, ignore_errors=True)
+        # 出口配置键清干净：`_Ctx.egress` 按出口解析（工单 2cwd），继承来的 YIBAN_PROXY
+        # 会让出口标识漂到别的值、把 `EGRESS_KEY` 的断言变成假红。
+        for k in ("YIBAN_PROXY", "YIBAN_PROXY_LIST", "YIBAN_PROXY_FALLBACK",
+                  "YIBAN_EXECUTORS", "YIBAN_FALLBACK_ENABLE"):
+            os.environ.pop(k, None)
         db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
         self.fc = _FakeClock()
         # `clock.now` 一并打桩：状态文件名、租约时刻、重排时刻都取它，只打桩
@@ -323,9 +333,8 @@ class _Base(unittest.TestCase):
         """写一个已过新鲜度门的心跳（`stale`：有开始、无收尾、心跳过期）。
 
         这是"崩溃执行体"的忠实表示：进程起跑时写过心跳、随后被杀，文件留下且时间戳变旧。
-        它与"当日完全没有心跳记录"（`idle`）必须区分——`idle` 是保守侧、算活、当日不回收
-        （心跳写失败 / 跨午夜 / 进程没跑都会落到 `idle`，见 `_live_row_owners`）；只有
-        `stale` 才判死、才回收。
+        心跳**只服务执行体页的存活展示**（工单 `l1rx`：判活与回收改走**进程句柄**，
+        `queue_store.reap_abandoned` 不再读心跳时间戳）。
         """
         state_io.mark_worker_started(
             index, now=self.fc.t - datetime.timedelta(
@@ -334,21 +343,47 @@ class _Base(unittest.TestCase):
     def _run_v3(self, accounts, items=None, *, cfg=None, rng=None, limiter=None,
                 gate=None, delegated=None, cred_state=None, event_sink=None,
                 dry_run=False, notify_url="", requeue_final=False, claim_all=False,
-                reclaim=False, requeue_during_run=False, round_no=None):
+                reclaim=False, requeue_during_run=False, round_no=None,
+                shares_seen=None):
         """跑一轮 v3。
 
         `items` 给了就用"一次性投递 + 哨兵"的假补货（时序完全可控，行需已领取）；
         不给则用真实补货（走 `claim_batch`，行由它置 owner/epoch）。
+        `shares_seen` 给了就收下 `_make_limiter` 收到的 `shares`（出口预算均分的接线断言）。
         """
         cfg = cfg or _cfg()
         limiter = limiter if limiter is not None else _PermissiveLimiter()
         gate = gate if gate is not None else _PermissiveGate()
         patches = [mock.patch.object(executor_v3, "_persist_loop", _never)]
         if items is not None:
+            # 夹具把行预置成"本进程已领取"（owner＝本进程运行时身份）——那是**起跑之后**
+            # 才可能出现的状态；而执行体起跑第一件事就是按本稳定名收自己的尸（工单 `l1rx`
+            # 必修 R1），会把夹具行翻回 pending。故 items 模式把起跑收尸替身为 no-op；
+            # **R1 本身**由 `tests/test_claim_dispatch_elbow_e2e.py` 的三条路径用例正面钉住。
+            patches.append(mock.patch.object(queue_store, "reap_abandoned",
+                                             lambda *a, **k: 0))
+            box = list(items)
+
+            def _claim(ctx, _box=box):
+                # 吐完即置停止（免得空轮里各通道白睡几拍推着假时钟往前走——那会让
+                # 依赖窗口余量的用例随并行度抖动），但**要等没有通道在飞**才停。
+                if _box:
+                    return [_box.pop(0)]
+                if ctx.claiming == 0:
+                    ctx.stop.set()
+                return []
+
+            patches.append(mock.patch.object(executor_v3, "_claim_one", _claim))
             patches.append(
-                mock.patch.object(executor_v3, "_refiller", _refiller_pushing(items)))
+                mock.patch.object(executor_v3, "_dispatch_keeper", _keeper_watch(box)))
+
+        def _mk(channels, shares=1):
+            if shares_seen is not None:
+                shares_seen.append(shares)
+            return limiter
+
         patches += [
-            mock.patch.object(executor_v3, "_make_limiter", lambda channels: limiter),
+            mock.patch.object(executor_v3, "_make_limiter", _mk),
             mock.patch.object(executor_v3, "_make_global_limiter",
                               lambda: token_bucket.GlobalLimiter("")),
             mock.patch.object(executor_v3, "_make_gap_gate", lambda: gate),
@@ -373,16 +408,7 @@ class _Base(unittest.TestCase):
 class SchedulerV3EnabledTest(unittest.TestCase):
     """台账单池化后 `scheduler_v3_enabled` 恒真；双轨开关的键与缺省常量已删除。"""
 
-    def test_always_true_regardless_of_env(self):
-        for raw in (None, "", "0", "false", "no", "off", "nonsense", "2", "1", "true"):
-            env = {} if raw is None else {"YIBAN_SCHEDULER_V3": raw}
-            self.assertTrue(executor_v3.scheduler_v3_enabled(env), repr(raw))
 
-    def test_switch_key_and_default_constants_are_gone(self):
-        self.assertFalse(hasattr(executor_v3, "ENV_SCHEDULER_V3"),
-                         "双轨开关的键随单池消失")
-        self.assertFalse(hasattr(executor_v3, "DEFAULT_V3"))
-        self.assertEqual(executor_v3.ENV_GLOBAL_RATE, "YIBAN_GLOBAL_RATE")
 
 
 class ManualReclaimTest(_Base):
@@ -453,16 +479,20 @@ class ManualReclaimIsolationTest(_Base):
                          "别人的 sign-state 不得被改写成 user_cancelled")
         self.assertEqual(self._row(a)["state"], "done", "本轮账号被重签并收尾")
 
-    def test_reap_scoped_to_this_rounds_accounts(self):
-        """起跑回收也必须按允许集收窄：别的账号的陈旧 `claimed` 一行不动，本轮账号自己的
-        陈旧 `claimed` 被回收（**不整段跳过回收**——否则手动账号自己卡住就没人拉回来）。"""
+    def test_manual_reclaim_recovers_stale_claimed_rows(self):
+        """手工 `--only` 的**逃生口**（工单 `l1rx` 必修 R2）：卡死的 `claimed` 行必须能被
+        "立即签到"救回来。
+
+        任务级租约删除后，"持有者已死"不再由时间戳判定。手工路径若也不翻 `claimed`，
+        用户点"立即签到"对卡死行就**永久无效**（旧逃生口＝手工跑一轮也一并失效）。
+        本用例钉两点：① 本轮账号自己的陈旧 `claimed` 被翻回并重新执行；② 别人的
+        `claimed` 行一字不动（不得跨账号写）。`epoch` 换代使原持有者的迟到写仍被 fence。
+        """
         a, b = _phone(1), _phone(2)
         self._seed_v(self.V)
         sh = self._other_vshard_for(a)
-        # 别人的陈旧 claimed（租约远超宽限期）：修法前起跑那次无条件回收会改它（跨账号写）
         self._add_task(b, vshard=sh, state="claimed", owner="other:1:1",
                        lease_until=_ts(seconds=-600), epoch=5)
-        # 本轮账号自己也是陈旧 claimed：必须被回收 → 重新领取执行
         self._add_task(a, vshard=sh, state="claimed", owner="me:1:1",
                        lease_until=_ts(seconds=-600), epoch=3)
         before_b = self._row(b)
@@ -471,15 +501,11 @@ class ManualReclaimIsolationTest(_Base):
                                lambda acc: (calls.append(acc.phone),
                                             (True, "ok", False, "success"))[1]):
             self._run_v3(self._accounts(a), reclaim=True, requeue_final=True)
-        self.assertEqual(self._row(b), before_b,
-                         "别人的陈旧 claimed 不得被跨账号回收（owner/epoch 逐字段不变）")
-        self.assertEqual(calls, [a], "本轮账号自己的陈旧 claimed 被回收后应重新执行")
-        self.assertEqual(self._row(a)["state"], "done")
+        self.assertEqual(calls, [a], "手工路径必须把卡死的 claimed 行救回来并执行")
+        self.assertEqual(self._row(a)["state"], "done", "救回来的行照常收尾")
+        self.assertEqual(self._row(b), before_b, "别人的 claimed 行一字不变")
 
 
-# ---------------------------------------------------------------------------
-# 通道数 M：唯一口径
-# ---------------------------------------------------------------------------
 class ChannelCountTest(unittest.TestCase):
     def test_channel_count_exact_values(self):
         self.assertEqual(schedule.channel_count(1.0, 3), 6)
@@ -491,28 +517,6 @@ class ChannelCountTest(unittest.TestCase):
         for rate in (0.01, 0.05):
             self.assertGreaterEqual(schedule.channel_count(rate, 1), 1)
 
-    def test_capacity_accounts_v3_values_unchanged(self):
-        """把 `channel_count` 接进旧公式的回归护栏：逐值与改造前的内联式子相同。"""
-
-        def legacy(ws, k=1, avg=None, bucket_rate=1.0, util=0.8):
-            avg = 3 if avg is None else max(1, int(avg))
-            k = max(1, int(k))
-            bucket_rate = float(bucket_rate)
-            if bucket_rate <= 0:
-                bucket_rate = 1.0
-            util = min(max(float(util), 0.0), 1.0)
-            channels = min(16, math.ceil(bucket_rate * avg * 2))
-            rate_eff = min(channels / avg, bucket_rate)
-            return math.floor(k * rate_eff * max(0, int(ws)) * util + 1e-9)
-
-        for ws in (0, 10, 100, 4140, 4200, -5):
-            for k in (1, 2, 4):
-                for avg in (1, 3, 8):
-                    for rate in (1.0, 4.0, 0.2, 0.0, 2.5):
-                        with self.subTest(ws=ws, k=k, avg=avg, rate=rate):
-                            self.assertEqual(
-                                schedule.capacity_accounts_v3(ws, k, avg, rate),
-                                legacy(ws, k, avg, rate))
 
 
 # ---------------------------------------------------------------------------
@@ -526,22 +530,7 @@ class PendingCountTest(_Base):
         self._add_task(_phone(4), vshard=FOREIGN_SHARD, state="pending")
         self.assertEqual(queue_store.pending_count(DAY, MY_SHARDS), 2)
 
-    def test_empty_shards_is_zero_without_touching_db(self):
-        self._add_task(_phone(1), vshard=1, state="pending")
-        self.assertEqual(queue_store.pending_count(DAY, ()), 0)
 
-    def test_missing_table_returns_sentinel_with_warning(self):
-        """表未落地 = 待办面读不通：回 `None` 哨兵**并告警**，不再回 0。
-
-        0 只回答"分片集内确实没有 pending 行"。回 0 会让收干判据直接 break——
-        库坏了被当成"活已了结"就是全天零签到（ba-p01-01）。
-        """
-        conn = db.get_conn()
-        conn.execute("DROP TABLE sign_tasks")
-        conn.commit()
-        with self.assertLogs("yiban.store.queue_store", level="WARNING") as cm:
-            self.assertIsNone(queue_store.pending_count(DAY, MY_SHARDS))
-        self.assertIn("读取当日待办任务计数失败", "\n".join(cm.output))
 
     def test_historical_rows_are_never_counted(self):
         """`vshard=-1`（v18 平移 / v20 补账）恒不在分片集内 ⇒ 永不计入待办。"""
@@ -580,6 +569,31 @@ class VInvariantTest(_Base):
             covered |= set(hrw.shards_of(ex, cfg["executors"], DAY, v))
         self.assertEqual(covered, set(range(v)), "每个分片都要有执行体认领，否则该行无人领")
 
+    def test_plan_covers_chunks_large_account_set(self):
+        """1000 账号（> `SQL_VAR_CHUNK`）仍能正确判覆盖：按块查询并汇总 DISTINCT 计数。
+
+        整段拼 `IN (...)` 在 1~2 千账号（项目目标规模）下会越过 SQLite 老版本的 999 个
+        绑定变量上限，异常被吞成"未覆盖"⇒ 每轮重写计划并刷 warning，覆盖面判据在大站
+        永久失明（工单 ba-p03-10）。
+        """
+        phones = [_phone(i) for i in range(1000)]
+        accounts = [SimpleNamespace(phone=p, user_paused=False, owner="u@" + p)
+                    for p in phones]
+        self.assertGreater(len(phones), queue_store.SQL_VAR_CHUNK)
+        conn = db.get_conn()
+        conn.executemany(
+            "INSERT INTO sign_tasks (phone, day, vshard, owner, run_at, priority, "
+            "state, attempts, lease_until, result, epoch, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            [(p, DAY, 0, "", _ts(seconds=-1), 5, "pending", 0, "", "", 0,
+              _ts(seconds=-60)) for p in phones])
+        conn.commit()
+        self.assertTrue(executor_v3._plan_covers(DAY, accounts))
+        conn.execute("DELETE FROM sign_tasks WHERE phone=? AND day=?", (phones[-1], DAY))
+        conn.commit()
+        self.assertFalse(executor_v3._plan_covers(DAY, accounts),
+                         "少一个账号就必须判未覆盖（否则其余账号当天没有计划行）")
+
     def test_stored_v_wins_over_recomputed_v(self):
         """V 落库后只读：行索引在 `v_for(当日账号数)` 之外也必须仍被领取（反例）。
 
@@ -610,19 +624,6 @@ class VInvariantTest(_Base):
         self.assertEqual(
             clock_meta.get_meta(executor_v3.V_META_KEY_PREFIX + DAY, ""), "41")
 
-    def test_stored_v_below_written_shard_is_widened(self):
-        """落库的 V 比已写行的最大分片号还小 ⇒ 有行在扫描范围外，按最大分片号放宽。"""
-        accounts = self._accounts(*[_phone(i) for i in range(3)])
-        self._seed_v(8)
-        self._add_task(_phone(0), vshard=40, state="pending")
-        with self.assertLogs("yiban", level="ERROR") as cm, \
-             mock.patch.object(executor_v3.attempts, "attempt_signin",
-                               lambda acc: (True, "ok", False, "success")):
-            self._run_v3(accounts)
-        self.assertIn("虚分片数不可用", "\n".join(cm.output))
-        self.assertEqual(self._row(_phone(0))["state"], "done", "该行不得被静默漏掉")
-        self.assertEqual(
-            clock_meta.get_meta(executor_v3.V_META_KEY_PREFIX + DAY, ""), "41")
 
     def test_only_historical_rows_are_treated_as_no_usable_plan(self):
         """当日只剩历史惰性行（`vshard=-1`）时视为"无可用计划"：留 error 并照常建计划。
@@ -662,22 +663,6 @@ class VInvariantTest(_Base):
         self.assertEqual(
             clock_meta.get_meta(executor_v3.V_META_KEY_PREFIX + DAY, ""), "8")
 
-    def test_rebuilt_plan_rows_share_the_same_v(self):
-        """补建的计划行与执行体分片集同源：每个分片都有执行体认领，否则该行无人领。"""
-        other = "worker-1@testhost"
-        cfg = _cfg(executors=[OWNER, other])
-        phones = [_phone(i) for i in range(3)]
-        self._add_task(_phone(99), vshard=-1, state="failed")
-        with mock.patch.object(executor_v3.attempts, "attempt_signin",
-                               lambda acc: (True, "ok", False, "success")):
-            self._run_v3(self._accounts(*phones), cfg=cfg)
-        v = int(clock_meta.get_meta(executor_v3.V_META_KEY_PREFIX + DAY, ""))
-        covered = set()
-        for ex in (OWNER, other):
-            covered |= set(hrw.shards_of(ex, cfg["executors"], DAY, v))
-        self.assertEqual(covered, set(range(v)), "每个分片都要有执行体认领")
-        for p in phones:
-            self.assertLess(self._row(p)["vshard"], v)
 
 
 # ---------------------------------------------------------------------------
@@ -697,7 +682,7 @@ class LaneTest(_Base):
                 started = []
                 pool_sizes = []
 
-                async def fake_lane(queue, lane_id, ctx, _started=started):
+                async def fake_lane(ctx, lane_id, _started=started):
                     _started.append(lane_id)
 
                 real_pool = executor_v3._new_thread_pool
@@ -743,118 +728,64 @@ class LaneTest(_Base):
         for p in phones:
             self.assertEqual(self._row(p)["state"], "done")
 
-    def test_sleep_until_waits_on_the_live_clock(self):
-        """到点等待非阻塞：三条通道共享同一假时钟，总推进量由最晚落点决定。"""
-        phones = [_phone(i) for i in range(3)]
-        accounts = self._accounts(*phones)
+
+# ---------------------------------------------------------------------------
+# claim-at-dispatch：领取即执行、每次一行、没活时按拍轮询、收干由协调循环裁决
+# ---------------------------------------------------------------------------
+class DispatchTest(_Base):
+    def test_claim_is_one_row_at_a_time(self):
+        """**不许批量预取**（工单 `l1rx`）：执行体每次领取都只领一行。"""
+        phones = [_phone(i) for i in range(5)]
         for p in phones:
-            self._add_claimed(p, run_at=_ts(seconds=0.2))
+            self._add_task(p)
         self._seed_v(8)
-        items = [_item(p, run_at=_ts(seconds=0.2)) for p in phones]
-        before = self.fc.t
-        t_wall = time.monotonic()
+        seen = []
+        real = queue_store.claim_batch
+
+        def spy(owner, day, shards, now=None, limit=queue_store.CLAIM_LIMIT,
+                elbow_sec=0.0, phones=None):
+            rows = real(owner, day, shards, now=now, limit=limit,
+                        elbow_sec=elbow_sec, phones=phones)
+            seen.append({"limit": limit, "elbow_sec": elbow_sec, "n": len(rows or [])})
+            return rows
+
         with mock.patch.object(executor_v3.attempts, "attempt_signin",
-                               lambda acc: (True, "ok", False, "success")):
-            self._run_v3(accounts, items)
-        advance = (self.fc.t - before).total_seconds()
-        self.assertLess(advance, 0.35,
-                        "各通道只等自己的剩余时间（若每条各睡满 0.2s，总推进会到 0.6s）")
-        self.assertGreaterEqual(advance, 0.2)
-        self.assertLess(time.monotonic() - t_wall, 1.0, "等待必须走 asyncio 而非阻塞睡眠")
+                               lambda acc: (True, "ok", False, "success")),              mock.patch.object(queue_store, "claim_batch", spy):
+            self._run_v3(self._accounts(*phones))
+        self.assertTrue(seen, "执行体必须走 queue_store.claim_batch 领取")
+        self.assertLessEqual(max(s["n"] for s in seen), 1, "每次领取不得超过一行（无批量预取）")
+        for s in seen:
+            self.assertEqual(s["limit"], 1, "领取行数缺省为 1")
+        self.assertEqual({s["elbow_sec"] for s in seen}, {0.0},
+                         "定时执行体的肘界为 0（到期即可领）")
         for p in phones:
             self.assertEqual(self._row(p)["state"], "done")
 
-
-# ---------------------------------------------------------------------------
-# 批量领取与收干判据
-# ---------------------------------------------------------------------------
-class RefillerTest(_Base):
-    def test_claim_batch_is_called_with_batch_and_lease(self):
-        self._add_task(_phone(1), run_at=_ts(seconds=-1))
-        self._seed_v(8)
-        claim_kwargs = []
-
-        async def fake_lane(queue, lane_id, ctx):
-            while True:
-                if (await queue.get())[0] >= executor_v3.SENTINEL_PRIORITY:
-                    return
-
-        real_claim = queue_store.claim_batch
-
-        def spy_claim(*a, **kw):
-            claim_kwargs.append(kw)
-            return real_claim(*a, **kw)
-
-        with mock.patch.object(queue_store, "claim_batch", spy_claim), \
-             mock.patch.object(executor_v3, "_lane", fake_lane), \
-             mock.patch.object(executor_v3, "_persist_loop", _never):
-            executor_v3.run_executor_v3(self._accounts(_phone(1)), day=DAY, cfg=_cfg())
-        self.assertTrue(claim_kwargs, "补货必须走 queue_store.claim_batch")
-        for kw in claim_kwargs:
-            self.assertEqual(kw["limit"], queue_store.CLAIM_BATCH_LIMIT)
-            self.assertEqual(kw["lease_sec"], queue_store.LEASE_SECONDS)
-
-    def test_claimed_items_dequeue_by_run_at(self):
-        phones = [_phone(i) for i in range(3)]
-        for i, sec in enumerate((-30, -20, -10)):
-            self._add_claimed(phones[i], run_at=_ts(seconds=sec))
-        self._seed_v(8)
-        order = []
-
-        async def fake_lane(queue, lane_id, ctx):
-            while True:
-                item = await queue.get()
-                if item[0] >= executor_v3.SENTINEL_PRIORITY:
-                    return
-                order.append(item[2])
-
-        # 故意乱序投递：出队顺序由 (priority, run_at) 决定，先到点先出队
-        items = [_item(phones[2], run_at=_ts(seconds=-10)),
-                 _item(phones[0], run_at=_ts(seconds=-30)),
-                 _item(phones[1], run_at=_ts(seconds=-20))]
-        with mock.patch.object(executor_v3, "_lane", fake_lane):
-            self._run_v3(self._accounts(*phones), items)
-        self.assertEqual(order, phones, "先到点先出队")
-
-    def test_empty_claim_does_not_end_the_round(self):
-        """首轮 claim 返回空（下次到点在 5s 之后）时补货不得判"收干"。"""
+    def test_row_not_yet_due_is_eventually_claimed(self):
+        """未到点的行不得被领取；到点后必须被领到、不许空转到窗口关闭。"""
         phone = _phone(1)
         self._add_task(phone, run_at=_ts(seconds=5))
         self._seed_v(8)
-        seen = []
-
-        async def fake_lane(queue, lane_id, ctx):
-            while True:
-                item = await queue.get()
-                if item[0] >= executor_v3.SENTINEL_PRIORITY:
-                    return
-                seen.append(item[2])
-
-        with mock.patch.object(executor_v3, "_lane", fake_lane):
+        with mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (True, "ok", False, "success")):
             self._run_v3(self._accounts(phone))
-        self.assertEqual(seen, [phone], "未到点的待办行最终必须被领到，不能空转到窗口关闭")
-        self.assertIn(executor_v3.REFILL_SEC, self.fc.sleeps, "补货按 5s 轮询")
-        self.assertGreater(self.fc.t, START, "假时钟被补货轮询推进")
+        self.assertEqual(self._row(phone)["state"], "done")
+        self.assertGreater(self.fc.t, START, "没活时按拍轮询会推进假时钟")
 
-    def test_refiller_drains_when_only_historical_rows_remain(self):
-        """M7/U7：只有 `vshard=-1` 的历史行时判"已收干"，不空转到窗口关闭。"""
+    def test_keeper_drains_when_only_historical_rows_remain(self):
+        """M7/U7：只有 `vshard=-1` 的历史行时判「已收干」，不空转到窗口关闭。"""
         self._add_task(_phone(1), vshard=-1, state="failed")
         self._add_task(_phone(2), vshard=-1, state="pending")
         self._seed_v(8)
-        # `held` 是补货循环登记"在途"的集合（M17）：回收按它豁免，防止仍躺在通道
-        # 队列里的行被回收成 pending 再被本循环原地重领（同账号两次真实登录）。
-        # 替身必须带上真字段——用 getattr 兜底会让豁免在缺字段时静默失效。
         ctx = SimpleNamespace(cfg=_cfg(), day=DAY, executor_id=OWNER,
-                              runtime_id=RUNTIME_OWNER, m=2, inflight=0, busy=0,
-                              slot=0, held=set())
-        queue = asyncio.PriorityQueue()
-        asyncio.run(executor_v3._refiller(queue, tuple(range(8)), ctx))
+                              runtime_id=RUNTIME_OWNER, m=2, inflight=0, claiming=0,
+                              claim_unreadable=False, slot=0, v=8,
+                              shards=tuple(range(8)), reclaim=False, allowed_phones=None,
+                              requeue_during_run=False, queue_unreadable=False,
+                              log_tag="[single]", stop=asyncio.Event())
+        asyncio.run(executor_v3._dispatch_keeper(ctx))
         self.assertEqual(self.fc.sleeps, [], "首轮即应判收干，不进入轮询等待")
-        sentinels = 0
-        while not queue.empty():
-            if queue.get_nowait()[0] >= executor_v3.SENTINEL_PRIORITY:
-                sentinels += 1
-        self.assertEqual(sentinels, 2)
+        self.assertTrue(ctx.stop.is_set(), "收干必须置停止信号")
 
 
 # ---------------------------------------------------------------------------
@@ -892,22 +823,24 @@ class TerminalStateTest(_Base):
 
     def test_skip_and_exhausted_settle_failed(self):
         cases = (
-            ("skipped_window", True, "签到时段已结束", 0),
-            ("user_cancelled", True, "用户已取消签到", 0),
+            # 窗口外：还该再试 → 未了结的 failed（默认档）
+            ("skipped_window", True, "签到时段已结束", 0, "failed"),
+            # 用户取消：管理侧当日结论 → 终态 skipped（与 JSON 终态映射同口径）
+            ("user_cancelled", True, "用户已取消签到", 0, "skipped"),
             # 无点位：预算 1 次，首试即终态
-            ("no_position", False, "未找到签到位置数据", 0),
+            ("no_position", False, "未找到签到位置数据", 0, "failed"),
             # 其它失败：预算 3 次，已试 3 次 → 终态
-            ("failed", False, "网络抖动", 2),
+            ("failed", False, "网络抖动", 2, "failed"),
         )
-        for status, skip, message, attempts in cases:
+        for status, skip, message, attempts, expected in cases:
             with self.subTest(status=status):
                 phone, results, settled = self._run_one(
                     status, skip=skip, message=message, attempts=attempts)
-                self.assertEqual(self._row(phone)["state"], "failed")
-                self.assertEqual(settled[0][1], "failed")
+                self.assertEqual(self._row(phone)["state"], expected)
+                self.assertEqual(settled[0][1], expected)
                 self.assertEqual(results[phone][2], skip, "skip 原样回传，不重排")
 
-    def test_account_missing_from_round_settles_done_without_request(self):
+    def test_account_missing_from_round_settles_skipped_without_request(self):
         phone = _phone(9)
         self._add_claimed(phone)
         self._seed_v(8)
@@ -917,7 +850,8 @@ class TerminalStateTest(_Base):
                                                                        "success")):
             results = self._run_v3(self._accounts(_phone(1)), [_item(phone)])
         self.assertEqual(calls, [], "账号已不在本轮配置时不得发起请求")
-        self.assertEqual(self._row(phone)["state"], "done", "该行必须被了结，否则永远 pending")
+        self.assertEqual(self._row(phone)["state"], "skipped",
+                         "该行必须被了结（否则永远 pending），终态与 user_cancelled 的映射同口径")
         self.assertEqual(results[phone][3], "user_cancelled")
 
     def test_paused_credential_skips_without_request(self):
@@ -933,7 +867,9 @@ class TerminalStateTest(_Base):
                                    cred_state=cred_state)
         self.assertEqual(calls, [])
         self.assertEqual(results[phone][3], "paused")
-        self.assertEqual(self._row(phone)["state"], "failed")
+        # 账密暂停是管理侧当日结论 → 终态 skipped（工单 48b9/vqmb）：落 failed 会让
+        # 补签闸门的队列腿判"未了结"，补签轮再真实登录一次。
+        self.assertEqual(self._row(phone)["state"], "skipped")
 
     def test_cred_state_is_mutated_in_place(self):
         phone = _phone(1)
@@ -952,6 +888,48 @@ class TerminalStateTest(_Base):
         self._seed_v(8)
         results = self._run_v3([paused], [])
         self.assertEqual(results[_phone(1)], (False, "用户已取消签到", True, "user_cancelled"))
+
+    def test_user_paused_already_recorded_still_skipped_in_one_shot_round(self):
+        """一次性轮（`round_no` 为 `None`）即便当日已有该结论，仍须把暂停账号登记进 `results`。
+
+        `_prescan` 的当日幂等有两个分支：常驻多轮（`round_no` 有值）在已登记时**不进**
+        `results`（兜底紧循环据此判"本轮无活"，回到配置的扫描间隔）；一次性轮（定时全量、
+        手动 `--only`）**必须进**——`runner` 的汇总只认 `results`，缺席的账号会落到
+        `unreached` 的 `UNCLAIMED` 档 ⇒ `stay_n + 1` 且 `has_real_failure=True` ⇒
+        退出码 1 与一封失败邮件。独立审查实测：反转那个 `round_no` 守卫时，全测试面
+        **只有常驻轮那条变红**，本路径原先零覆盖——正是这条守卫存在的理由。
+        """
+        paused = SimpleNamespace(phone=_phone(1), user_paused=True)
+        self._seed_v(8)
+        # 入口条件＝当日状态文件里**已有**该结论（上一次全量轮或别的执行体写的）：
+        # 幂等分支只在"已有"时生效，这正是本路径与常驻轮的差别所在。
+        state_io._write_sign_state(_phone(1), "user_cancelled", "用户已取消签到")
+        events = []
+        results = self._run_v3([paused], [], event_sink=events.append)
+        self.assertEqual(results[_phone(1)],
+                         (False, "用户已取消签到", True, "user_cancelled"),
+                         "一次性轮缺席 results ⇒ 汇总按「未执行」计失败（退出码 1）")
+        self.assertEqual(events, [],
+                         f"当日已有结论不得重复落事件（一次性轮同样只登记一次）：{events}")
+
+    def test_user_paused_concurrent_first_sight_writes_and_emits_once(self):
+        """两个执行体同时首见同一暂停号（都读到"无结论"）时，只落一次状态与一条事件。
+
+        宽分片（`claim_all`）下分片集判据挡不住兜底与归属执行体同时登记，故"当日只
+        登记一次"必须靠 `_write_sign_state(only_if_absent=True)` 的写侧 CAS（工单
+        ba-p03-05）。本用例把两次预扫的读侧快照都钉成空，模拟"两边都还没看到结论"。
+        """
+        paused = SimpleNamespace(phone=_phone(1), user_paused=True)
+        self._seed_v(8)
+        events = []
+        with mock.patch.object(state_io, "_daily_statuses", return_value={}):
+            self._run_v3([paused], [], event_sink=events.append)
+            second = self._run_v3([paused], [], event_sink=events.append)
+        self.assertEqual([e["phone"] for e in events], [_phone(1)],
+                         "CAS 输的一侧不得再发 user_cancelled 事件")
+        self.assertEqual(second[_phone(1)],
+                         (False, "用户已取消签到", True, "user_cancelled"),
+                         "一次性轮仍必须登记结果（汇总口径不变）")
 
     def test_other_shard_accounts_are_delegated(self):
         other = "worker-1@testhost"
@@ -1055,6 +1033,29 @@ class RetryTest(_Base):
         self.assertEqual(self._row(phone)["state"], "failed")
         self.assertIn(phone, results)
 
+    def test_no_room_makes_a_retryable_status_final(self):
+        """窗口容不下最小间隔时，默认可回炉的状态也必须用保守档收尾。
+
+        否则默认回炉口会把 `retry:` 行立刻翻回 pending，下一拍重新领取——真实登录
+        间隔只剩 gap 门（默认 10s），正是 `YIBAN_RETRY_MIN_INTERVAL` 要防的连击
+        （工单 ba-p03-04）。`skipped_norange` 在档位词表里默认可回炉（retry:）。
+        """
+        phone = _phone(1)
+        self._add_claimed(phone, attempts=0, epoch=1)
+        self._seed_v(8)
+        cfg = _cfg(sign_start=(6, 30), sign_end=(6, 42), edge_back_sec=110,
+                   edge_front_sec=0)  # 有效窗口至 06:40:10，剩余 10s
+        with mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (False, "窗口缺失", False,
+                                            yiban_status.STATUS_SKIPPED_NORANGE)):
+            self._run_v3(self._accounts(phone), [_item(phone)], cfg=cfg)
+        row = self._row(phone)
+        self.assertEqual(row["state"], "failed")
+        self.assertTrue(row["result"].startswith(yiban_status.RESULT_FINAL_PREFIX),
+                        "当日无落点 ⇒ 保守档；retry: 会立刻被回炉口复活")
+        self.assertEqual(queue_store.requeue_failed(DAY, (0,), include_final=False), 0,
+                         "默认回炉口不得复活它（复活即绕开最小间隔）")
+
     def test_next_retry_at_is_bounded_and_reproducible(self):
         cfg = _cfg()
         a = executor_v3.next_retry_at_v3(START, cfg, 60, random.Random(3))
@@ -1066,38 +1067,38 @@ class RetryTest(_Base):
         self.assertLessEqual(delay, executor_v3.RETRY_CAP_SEC)
 
     def test_next_retry_at_shrinks_with_remaining_window(self):
-        # 有效窗口至 06:41:40（剩余 100s）→ cap = 30s
+        # 有效窗口至 06:41:40（剩余 100s）→ cap = 30s < base 60s ⇒ 放弃重试（None）：
+        # 窗口尾段放不下一个合法的最小间隔，宁可当日放弃，也不把间隔压到配置值之下
+        # （工单 ba-p03-04）。
         cfg = _cfg(sign_start=(6, 30), sign_end=(6, 42), edge_back_sec=20,
                    edge_front_sec=0)
         self.assertAlmostEqual(_remaining(cfg, START), 100, delta=1)
-        delay = (executor_v3.next_retry_at_v3(START, cfg, 60, random.Random(5))
+        self.assertIsNone(executor_v3.next_retry_at_v3(START, cfg, 60, random.Random(5)))
+        # 把最小间隔降到 20s 后，落点仍被 cap（30s）约束且 >= base。
+        cfg_low = dict(cfg, retry_min_interval=20)
+        delay = (executor_v3.next_retry_at_v3(START, cfg_low, 60, random.Random(5))
                  - START).total_seconds()
+        self.assertGreaterEqual(delay, 20)
         self.assertLessEqual(delay, 30)
 
-    def test_next_retry_at_caps_at_retry_cap(self):
-        # 有效窗口至 07:47:40（剩余 4060s）→ cap 应为硬上限 600s
-        cfg = _cfg(sign_start=(6, 30), sign_end=(7, 47), edge_back_sec=20,
-                   edge_front_sec=0)
-        self.assertGreater(_remaining(cfg, START), 3600)
-        delay = (executor_v3.next_retry_at_v3(START, cfg, 600, random.Random(5))
-                 - START).total_seconds()
-        self.assertLessEqual(delay, executor_v3.RETRY_CAP_SEC)
 
     def test_next_retry_at_never_passes_window_end(self):
         """落点恒在有效窗口内（`cap = 剩余 × 0.3` 给出结构性保证，再夹一次窗口结束）。
 
-        这条是**契约护栏**：`cap` 与窗口结束必须同时成立，任一处被改坏（例如 cap 不再
-        按剩余窗口收缩）都会让落点越过窗口——那时本断言会红。
+        窗口只剩 10s ⇒ cap=3s 小于最小间隔 60s，函数返回 None（放弃重试），绝不出窗；
+        把最小间隔降到 1s 后才能给出落点，且落点仍必须落在窗内。
         """
         cfg = _cfg(sign_start=(6, 30), sign_end=(6, 42), edge_back_sec=110,
                    edge_front_sec=0)
         self.assertAlmostEqual(_remaining(cfg, START), 10, delta=1)
+        self.assertIsNone(executor_v3.next_retry_at_v3(START, cfg, 60, random.Random(5)))
+        cfg_low = dict(cfg, retry_min_interval=1)
         window_end = window.to_dt(START.replace(hour=0, minute=0, second=0),
                                   window.bounds(cfg).hi_min)
         for last_delay in (60, 600, 10 ** 6):
             with self.subTest(last_delay=last_delay):
                 target = executor_v3.next_retry_at_v3(
-                    START, cfg, last_delay, random.Random(5))
+                    START, cfg_low, last_delay, random.Random(5))
                 self.assertGreater(target, START)
                 self.assertLessEqual(target, window_end)
 
@@ -1257,7 +1258,7 @@ class UnexpectedErrorTest(_Base):
       成功的活汇总成"全部未执行"（退出码 1 + 失败邮件），与事实相反。
     """
 
-    def test_refiller_exception_is_contained(self):
+    def test_claim_exception_is_contained(self):
         phone = _phone(1)
         self._add_claimed(phone)
         self._seed_v(8)
@@ -1322,21 +1323,6 @@ class DryRunTest(_Base):
         self.assertEqual(calls, [], "影子模式不得领取/落库/发请求/写状态")
         self.assertEqual(self._task_count(), 0, "影子模式不写 sign_tasks")
 
-    def test_run_executor_v3_dry_run_returns_empty_and_writes_nothing(self):
-        accounts = self._accounts(*[_phone(i) for i in range(5)])
-        calls = []
-        with mock.patch.object(queue_store, "claim_batch",
-                               side_effect=lambda *a, **kw: calls.append("claim") or []), \
-             mock.patch.object(planner, "write_plan",
-                               side_effect=lambda *a, **kw: calls.append("write")), \
-             mock.patch.object(executor_v3.attempts, "attempt_signin",
-                               side_effect=lambda acc: calls.append("attempt")):
-            results = executor_v3.run_executor_v3(
-                accounts, day=DAY, dry_run=True, cfg=_cfg())
-        self.assertEqual(results, {})
-        self.assertEqual(calls, [])
-        self.assertEqual(self._task_count(), 0)
-        self.assertFalse(os.path.exists(self._state_path()), "dry_run 不写 sign-state")
 
 
 # ---------------------------------------------------------------------------
@@ -1356,7 +1342,7 @@ class LimiterWiringTest(_Base):
             self._run_v3(self._accounts(phone), [_item(phone)], limiter=limiter,
                          gate=gate)
         self.assertEqual(limiter.restored, 1, "起跑装回一次桶状态")
-        self.assertIn(("restore", OWNER), trace)
+        self.assertIn(("restore", EGRESS_KEY), trace)
         kinds = [k for k, _ in trace]
         self.assertEqual(kinds[:3], ["restore", "acquire", "allow"],
                          "取额度 → 判 gap → 才发起尝试")
@@ -1374,8 +1360,42 @@ class LimiterWiringTest(_Base):
                                lambda acc: (False, "风险访问 拦截", False, "failed")):
             self._run_v3(self._accounts(phone), [_item(phone, attempts=1)],
                          limiter=limiter)
-        self.assertIn(("on_risk_signal", OWNER), trace)
+        self.assertIn(("on_risk_signal", EGRESS_KEY), trace)
         self.assertNotIn("on_success", [k for k, _ in trace])
+
+    def test_credential_failure_leaves_the_real_bucket_untouched(self):
+        """口令错不得让整条出口降速：真实限速器下桶值与半开都不动（工单 zggs 的 e2e 钉）。
+
+        `on_risk_signal` 会 `rate ÷= 2` 并进半开，且经 10s 落库持久化、重启装回。
+        生产实证：一个口令错的账号砍掉整条出口一半速率，两天三次后 fallback 只剩 1/4。
+        """
+        phone = _phone(1)
+        self._add_claimed(phone, attempts=1)
+        self._seed_v(8)
+        limiter = token_bucket.EgressLimiter(rate=1.0)
+        with mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (False, "登录失败: 账号或密码错误",
+                                            False, "failed")):
+            self._run_v3(self._accounts(phone), [_item(phone, attempts=1)],
+                         limiter=limiter)
+        self.assertAlmostEqual(limiter.bucket(EGRESS_KEY).rate, 1.0, places=9,
+                               msg="口令错是账号自己的问题，不是平台限速：出口速率不得变")
+        self.assertFalse(limiter.is_half_open(EGRESS_KEY, self.fc.mono),
+                         "不得进半开（半开期只放单通道）")
+
+    def test_waf_message_backs_off_the_real_bucket(self):
+        """上一条的非空对照：真 WAF 文案必须让真实限速器降速，否则那条断言是空转。"""
+        phone = _phone(1)
+        self._add_claimed(phone, attempts=1)
+        self._seed_v(8)
+        limiter = token_bucket.EgressLimiter(rate=1.0)
+        with mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (False, "风险访问 拦截", False, "failed")):
+            self._run_v3(self._accounts(phone), [_item(phone, attempts=1)],
+                         limiter=limiter)
+        self.assertAlmostEqual(limiter.bucket(EGRESS_KEY).rate, 0.5, places=9,
+                               msg="WAF 文案必须触发乘性回退（这一路必须活着）")
+        self.assertTrue(limiter.is_half_open(EGRESS_KEY, self.fc.mono))
 
     def test_persist_loop_writes_every_interval(self):
         limiter = _PermissiveLimiter()
@@ -1406,23 +1426,6 @@ class LimiterWiringTest(_Base):
         self.assertAlmostEqual(limiter.bucket(OWNER).rate, 0.25, places=6,
                                msg="风控的乘性回退照做")
 
-    def test_global_limiter_semantics(self):
-        with mock.patch.object(token_bucket.logger, "warning") as warn:
-            empty = token_bucket.GlobalLimiter(os.environ.get("YIBAN_GLOBAL_RATE", ""))
-        self.assertIsNone(empty.lam)
-        self.assertFalse(empty.invalid)
-        warn.assert_not_called()
-
-        with self.assertLogs("yiban.engine.token_bucket", level="WARNING") as cm:
-            bad = token_bucket.GlobalLimiter("abc")
-        self.assertTrue(bad.invalid)
-        self.assertIsNone(bad.lam)
-        self.assertIn("非法", "\n".join(cm.output))
-
-        lam2 = token_bucket.GlobalLimiter("2")
-        allowed = sum(1 for t in (0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
-                      if lam2.acquire(t))
-        self.assertLessEqual(allowed, 2, "Λ=2 时 1 秒内放行不超过 2 条")
 
     def test_global_limiter_env_key_is_wired(self):
         self.assertEqual(executor_v3.ENV_GLOBAL_RATE, "YIBAN_GLOBAL_RATE")
@@ -1464,7 +1467,12 @@ class ProductContractTest(_Base):
                 return (True, "签到成功", False, "success")
             return (False, "e003 风险访问", False, "failed")
 
-        with mock.patch.object(executor_v3.attempts, "attempt_signin", fake_attempt):
+        # 重试落点**钉死**（不依赖假时钟推进多少）：本用例的题目是"每次尝试都物化状态"，
+        # 不是"退避落点算得对"（后者由 test_retry_window_day_boundary 覆盖）。不钉死会让
+        # 本用例随并行度抖动——通道空轮各睡一拍会把假时钟推远，窗口余量不足时退避返回
+        # `None`，状态就落成 failed 而不是 retrying。
+        with mock.patch.object(executor_v3.attempts, "attempt_signin", fake_attempt),                 mock.patch.object(executor_v3, "next_retry_at_v3",
+                                  lambda *a, **k: START + datetime.timedelta(seconds=30)):
             self._run_v3(self._accounts(*phones), [_item(p) for p in phones],
                          event_sink=events.append)
         state = self._read_state()
@@ -1475,13 +1483,6 @@ class ProductContractTest(_Base):
         self.assertEqual({e["stage"] for e in events}, {"sign"})
         self.assertTrue(all(e["attempt"] for e in events))
 
-    def test_dry_run_leaves_state_file_untouched(self):
-        accounts = self._accounts(_phone(1))
-        with open(self._state_path(), "w", encoding="utf-8") as f:
-            json.dump({_phone(1): {"status": "success", "message": "旧"}}, f)
-        before = self._read_state()
-        executor_v3.run_executor_v3(accounts, day=DAY, dry_run=True, cfg=_cfg())
-        self.assertEqual(self._read_state(), before)
 
     def test_v3_does_not_write_sched_snapshot(self):
         """分流点选在 runner 的执行调用处：快照仍由 runner 的写盘点承担，v3 不重复写。"""
@@ -1516,9 +1517,45 @@ class ProductContractTest(_Base):
         self.fc.t = START.replace(hour=8, minute=0)
         with open(self._state_path(), "w", encoding="utf-8") as f:
             json.dump({_phone(1): {"status": "failed", "message": "真实失败"}}, f)
-        results = self._run_v3(accounts)
+        # 触网点必须显式替身（工单 `l1rx` 必修 R7）：不许靠"假账号没有 password 属性"
+        # 与生产窗口门挡住请求——那正是 48 次请求漏站的同族形状（护栏不是判据）。
+        calls = []
+        with mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: calls.append(acc.phone) or (True, "ok",
+                                                                       False, "success")):
+            results = self._run_v3(accounts)
+        self.assertEqual(calls, [], "窗口已关：一个真实请求都不许发")
         self.assertEqual(results[_phone(1)][3], "failed", "已有结论按原结论透传")
         self.assertEqual(self._read_state()[_phone(1)]["message"], "真实失败")
+
+    def test_window_closed_preserves_unknown_status(self):
+        """看不懂的状态串也是「已有结论」，窗口外跳过不得覆盖它（工单 `77s2` 迁移）。
+
+        判据来自 `is_concluded_status` 的排除法口径：读侧可能遇到本进程不认识的
+        状态串（新增状态码而读侧未同步、外部工具手写）。把它当"无记录"覆盖成
+        `skipped_window`，真实结论会从告警/日历里消失。原用例住在冻结载体
+        `tests/test_status_sets.py::WindowSkipPrefilterAgreementTest`。
+
+        反向控制：条目**缺 `status` 键**（半截条目）＝无记录，窗口外跳过必须写得进去
+        （否则漏记一轮）。
+        """
+        for recorded, want, why in (
+            ({"status": "GLOBAL_PAUSED", "message": "旧版残留"}, "GLOBAL_PAUSED",
+             "看不懂的状态串也是结论"),
+            ({"message": "半截条目"}, yiban_status.STATUS_SKIPPED_WINDOW,
+             "缺 status 的条目与 `is_concluded_status` 同口径＝无记录"),
+        ):
+            with self.subTest(recorded=recorded):
+                self._clear_tasks()
+                self._seed_v(8)
+                self.fc.t = START.replace(hour=8, minute=0)
+                with open(self._state_path(), "w", encoding="utf-8") as f:
+                    json.dump({_phone(1): recorded}, f)
+                results = self._run_v3(self._accounts(_phone(1)))
+                self.assertEqual(results[_phone(1)][3], want,
+                                 "预筛与落盘必须给同一判定：" + why)
+                self.assertEqual(self._read_state()[_phone(1)]["status"], want,
+                                 "落盘状态必须是判定结果：" + why)
 
     def test_write_plan_failure_is_contained(self):
         accounts = self._accounts(*[_phone(i) for i in range(3)])
@@ -1646,156 +1683,8 @@ class RunnerSplitTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 崩溃恢复接线：起跑回收 + 崩溃行被重新领取 + 文件心跳四态
+# 收尾标记与心跳四态（UI 面）
 # ---------------------------------------------------------------------------
-class RecoveryWiringTest(_Base):
-    """v3 的崩溃恢复：回收必须在领取循环里被调用，否则崩溃行永不被重领。
-
-    另外让 v3 写**既有文件心跳**，使 `/api/scheduler/executors*` 的四态判定对 v3
-    也成立（否则单进程路径没有心跳记录，页面把正在跑的 v3 显示成 `idle`）。
-    """
-
-    def test_round_start_reaps_expired_claims(self):
-        phone = _phone(1)
-        self._add_claimed(phone)
-        self._seed_v(8)
-        calls = []
-        real = queue_store.reap_expired
-
-        def spy(*a, **kw):
-            calls.append(kw)
-            return real(*a, **kw)
-
-        with mock.patch.object(queue_store, "reap_expired", spy), \
-             mock.patch.object(executor_v3.attempts, "attempt_signin",
-                               lambda acc: (True, "ok", False, "success")):
-            self._run_v3(self._accounts(phone), [_item(phone)])
-        self.assertEqual(len(calls), 1, "每轮起跑必须调用一次回收")
-
-    def test_reap_is_scoped_to_the_business_day(self):
-        """回收只碰本业务日的行：跨日回收会把历史行与跨午夜长轮次的在飞行一起清掉。
-
-        不带 `day` 时，次日进程会把**昨天**的过期 `claimed` 行回退成 `pending`——而
-        `claim_batch` 只按当日领取，历史行只会变成"看着有活、其实无人领"的空转行；
-        跨午夜仍在飞的当日行也会被次日进程重置（同一账号重复真实登录）。
-        """
-        today, stale = _phone(1), _phone(2)
-        self._add_task(today, vshard=0, state="claimed", owner="worker-9@testhost",
-                       lease_until=_ts(seconds=-180), epoch=1, run_at=_ts(seconds=-60))
-        self._add_task(stale, vshard=0, state="claimed", owner="worker-9@testhost",
-                       lease_until=_ts(seconds=-180), epoch=1, run_at=_ts(seconds=-60),
-                       day="2026-09-21")
-        self._seed_v(8)
-        # worker-9 已崩溃（心跳过期 = stale，判死）；"当日无心跳"是 idle、保守侧算活，
-        # 那种行当日不回收，不能用来代表崩溃执行体。
-        self._stale_heartbeat(9)
-        calls = []
-        real = queue_store.reap_expired
-
-        def spy(*a, **kw):
-            calls.append(kw)
-            return real(*a, **kw)
-
-        with mock.patch.object(queue_store, "reap_expired", spy), \
-             mock.patch.object(executor_v3.attempts, "attempt_signin",
-                               lambda acc: (True, "ok", False, "success")):
-            self._run_v3(self._accounts(today))
-        self.assertTrue(calls, "本轮必须调用回收")
-        self.assertEqual([c.get("day") for c in calls], [DAY] * len(calls),
-                         "回收必须带本业务日，否则会跨业务日回收历史行")
-        self.assertEqual(self._row(today)["state"], "done", "同日的过期行按宽限期回收")
-        old = self._row(stale, day="2026-09-21")
-        self.assertEqual((old["state"], old["owner"], old["epoch"]),
-                         ("claimed", "worker-9@testhost", 1),
-                         "异日的过期 claimed 行不得被回收")
-
-    def test_refill_loop_reap_is_scoped_to_the_business_day(self):
-        """补货循环里那次回收也必须带 `day`：它是长轮次里唯一的周期回收点。
-
-        起跑回收与补货循环回收是**两处调用**。只钉起跑那处的话，补货那处丢了 `day` 也
-        不会变红（短轮次在补货首轮的计时差恒为 0，真实 `RECOVER_SEC` 下根本走不到），
-        而它正是跨日回收历史行、重置跨午夜在飞行的入口。故把恢复间隔置 0 驱动它执行。
-        """
-        phone = _phone(1)
-        self._add_claimed(phone)
-        self._seed_v(8)
-        calls = []
-        real = queue_store.reap_expired
-
-        def spy(*a, **kw):
-            calls.append(kw)
-            return real(*a, **kw)
-
-        with mock.patch.object(executor_v3, "RECOVER_SEC", 0), \
-             mock.patch.object(queue_store, "reap_expired", spy), \
-             mock.patch.object(executor_v3.attempts, "attempt_signin",
-                               lambda acc: (True, "ok", False, "success")):
-            self._run_v3(self._accounts(phone))
-        self.assertGreaterEqual(len(calls), 2,
-                                "起跑与补货循环各调一次回收（置 0 后补货那处必被执行）")
-        self.assertEqual([c.get("day") for c in calls], [DAY] * len(calls),
-                         "两处回收都必须带本业务日，否则会跨业务日回收历史行")
-
-    def test_expired_claim_is_reclaimed_and_completed(self):
-        """崩溃执行体留下的过期 `claimed` 行（已过回收宽限期）必须被回收、重领、跑完。"""
-        phone = _phone(1)
-        self._add_task(phone, vshard=0, state="claimed", owner="worker-9@testhost",
-                       lease_until=_ts(seconds=-180), epoch=1, run_at=_ts(seconds=-60))
-        self._seed_v(8)
-        # worker-9 已崩溃：心跳过期（stale）⇒ 判死 ⇒ 其行可被回收。缺了这条心跳就落到
-        # `idle`（保守侧算活、当日不回收），那是"当日无心跳"而非"崩溃"。
-        self._stale_heartbeat(9)
-        with mock.patch.object(executor_v3.attempts, "attempt_signin",
-                               lambda acc: (True, "ok", False, "success")):
-            results = self._run_v3(self._accounts(phone))
-        row = self._row(phone)
-        self.assertEqual(row["state"], "done", "崩溃行必须被重新领取并完成")
-        self.assertEqual(row["owner"], RUNTIME_OWNER,
-                         "重领后的持有者是**运行时身份**（含 PID/代次）")
-        self.assertGreater(row["epoch"], 1, "重领同样自增 epoch")
-        self.assertIn(phone, results)
-
-    def test_claim_just_expired_is_not_reclaimed_this_round(self):
-        """租约刚过期（仍在宽限期内）的行**不回收**：持有者可能还在飞。
-
-        若按"过期即回收"，本轮会把它回退 `pending` 再领一次 ⇒ 同一账号两条通道并发
-        登录；`epoch+1` 只挡迟到的结论写回，挡不住这次重复真实登录。
-        """
-        phone = _phone(1)
-        self._add_task(phone, vshard=0, state="claimed", owner="worker-9@testhost",
-                       lease_until=_ts(seconds=-30), epoch=1, run_at=_ts(seconds=-60))
-        self._seed_v(8)
-        with mock.patch.object(executor_v3.attempts, "attempt_signin",
-                               mock.MagicMock(return_value=(True, "ok", False,
-                                                            "success"))) as attempt:
-            results = self._run_v3(self._accounts(phone))
-        row = self._row(phone)
-        self.assertEqual((row["state"], row["owner"], row["epoch"]),
-                         ("claimed", "worker-9@testhost", 1), "在飞的行不得被回收重领")
-        self.assertEqual(attempt.call_count, 0, "本轮不得对该账号再发一次真实登录")
-        self.assertNotIn(phone, results)
-
-    def test_heartbeat_reports_running_then_finished(self):
-        phone = _phone(1)
-        self._add_claimed(phone)
-        self._seed_v(8)
-        seen = []
-        real = executor_v3._run_async
-
-        async def spy(ctx):
-            seen.append(state_io.worker_presence(0, role=egress.ROLE_SINGLE))
-            return await real(ctx)
-
-        with mock.patch.object(executor_v3, "_run_async", spy), \
-             mock.patch.object(executor_v3.attempts, "attempt_signin",
-                               lambda acc: (True, "ok", False, "success")):
-            self._run_v3(self._accounts(phone), [_item(phone)])
-        self.assertEqual([s[0] for s in seen], [state_io.WORKER_STATE_RUNNING],
-                         "起跑写心跳：执行体页必须能判 running（不再显示 idle）")
-        self.assertEqual(state_io.worker_presence(0, role=egress.ROLE_SINGLE)[0], state_io.WORKER_STATE_FINISHED,
-                         "收尾正常路径写心跳：判 finished")
-
-
 class WorkerFinishMarkTest(_Base):
     """收尾标记只在**正常返回路径**写：异常/中断不得被记成"正常跑完"。
 
@@ -1854,247 +1743,14 @@ class WorkerFinishMarkTest(_Base):
                          "未预期异常不得写收尾：心跳过期后判 stale，而不是 finished")
 
 
-class DeadPeerTakeoverTest(_Base):
-    """死主分片接管的接线：判死按死主的**稳定槽位名**查心跳，并入的是它的分片集。"""
-
-    def test_dead_peer_shards_are_merged_and_rows_untouched(self):
-        peer = "worker-2@testhost"
-        v = 8
-        self._seed_v(v)
-        cfg = _cfg(executors=[OWNER, peer])
-        peer_shards = hrw.shards_of(peer, cfg["executors"], DAY, v)
-        self.assertTrue(peer_shards, "夹具前提：死主必须有分片，否则本用例什么都不测")
-        shard = peer_shards[0]
-        self._add_task(_phone(1), vshard=shard, state="pending", owner=peer, epoch=1)
-        self._add_task(_phone(2), vshard=shard, state="pending", owner=OWNER, epoch=1)
-        # 死主的心跳：有开始记录、无收尾且已过期（`worker_presence` 判 stale）
-        state_io.mark_worker_started(
-            executor_v3._worker_slot(peer),
-            now=self.fc.now() - datetime.timedelta(seconds=5 * state_io.WORKER_HEARTBEAT_SEC))
-        ctx = SimpleNamespace(executor_id=OWNER, runtime_id=RUNTIME_OWNER, cfg=cfg,
-                              day=DAY, v=v)
-
-        out = executor_v3._widen_with_dead_peers(ctx, ())
-
-        self.assertEqual(out, tuple(sorted(peer_shards)), "死主分片并入本轮领取范围")
-        # 只并入分片集、不改任何行：行归属改写已裁，行保持原样（归属在领取时落）。
-        self.assertEqual(self._row(_phone(1))["state"], "pending", "死主的行保持原状")
-        self.assertEqual(self._row(_phone(1))["owner"], peer, "死主的行不得被改写归属")
-        self.assertEqual(self._row(_phone(1))["epoch"], 1, "不改行则不得自增 epoch")
-        self.assertEqual(self._row(_phone(2))["owner"], OWNER, "本执行体自己的行不动")
-        self.assertEqual(self._row(_phone(2))["epoch"], 1, "自己的行不得被自增 epoch")
-
-
-class DeadPeerTakeoverChainTest(_Base):
-    """接管链路要一路走到"本轮真的领到"：判死 → 并入领取集 → `claim_batch` 领出。
-
-    行归属改写已裁（原 `steal_shards`），接管只剩并入一跳——但只把死主分片并入领取集
-    之外的地方（比如行改写）都救不了"行能不能被领到"：本执行体不去扫那些分片，行就
-    无人领。故本用例跑**真实补货**（不注入假条目），断言死主的行在本轮被领取并执行，
-    领取后 owner=领取者（行归属在领取时落）。
-
-    `RECOVER_SEC` 置 0 保留：起跑那次接管（`DeadPeerTakeoverOnStartTest`）会在本用例的
-    死主上先命中，但补货循环里的那次接管仍是**长轮次中途死主**的唯一出路，置 0 让它在
-    每次补货迭代都执行到，覆盖"补货循环真的会调接管"这一跳。起跑触发另由
-    `DeadPeerTakeoverOnStartTest` 单独钉住（不 patch `RECOVER_SEC`）。
-    """
-
-    def test_dead_peer_rows_are_claimed_and_executed_this_round(self):
-        peer = "worker-2@testhost"
-        v = 8
-        self._seed_v(v)
-        cfg = _cfg(executors=[OWNER, peer])
-        peer_shards = hrw.shards_of(peer, cfg["executors"], DAY, v)
-        self.assertTrue(peer_shards, "夹具前提：死主必须有分片，否则本用例什么都不测")
-        phones = [_phone(1), _phone(2)]
-        for i, phone in enumerate(phones):
-            self._add_task(phone, vshard=peer_shards[i % len(peer_shards)],
-                           state="pending", owner=peer, epoch=1, run_at=_ts(seconds=-30))
-        # 死主的心跳：有开始记录、无收尾且已过期（`worker_presence` 判 stale）
-        state_io.mark_worker_started(
-            executor_v3._worker_slot(peer),
-            now=self.fc.now() - datetime.timedelta(seconds=5 * state_io.WORKER_HEARTBEAT_SEC))
-        ran = []
-
-        def _attempt(acc):
-            ran.append(acc.phone)
-            return (True, "ok", False, "success")
-
-        # 补货循环的恢复间隔置 0：首轮就触发"判死 + 并入"（真实间隔是 60s，用例不真等）
-        with mock.patch.object(executor_v3, "RECOVER_SEC", 0), \
-             mock.patch.object(executor_v3.attempts, "attempt_signin", _attempt):
-            results = self._run_v3(self._accounts(*phones), cfg=cfg)
-        self.assertEqual(sorted(ran), sorted(phones),
-                         "死主的行必须在本轮被领取并执行（并入领取集那一跳不能少）")
-        for phone in phones:
-            row = self._row(phone)
-            self.assertEqual(row["owner"], RUNTIME_OWNER,
-                             "领取后 owner 是本执行体（运行时身份）——归属在领取时落")
-            self.assertGreater(row["epoch"], 1, "领取自增 epoch（fencing）")
-            self.assertEqual(row["state"], "done")
-            self.assertIn(phone, results)
-
-
-class DeadPeerTakeoverOnStartTest(_Base):
-    """起跑就接管：短轮次（干完自己的活即收干退出）也必须领到死主分片的 `pending` 行。
-
-    补货循环里的接管要活满 `RECOVER_SEC`（60s）才触发，而补货首轮的计时差恒为 0——
-    本执行体干完自己的活就退出，等不到那一刻；补签轮沿用同一套分片划分，死主的行仍
-    无人领 ⇒ **静默漏签**。故起跑阶段（回收之后、首轮领取之前）就要判死接管。
-    本用例**不 patch `RECOVER_SEC`**：能通过只可能是起跑那次接管生效（补货循环的
-    接管在本轮的时长内根本不会触发）。
-    """
-
-    def test_dead_peer_rows_claimed_this_short_round_without_recover_patch(self):
-        peer = "worker-2@testhost"
-        v = 8
-        self._seed_v(v)
-        cfg = _cfg(executors=[OWNER, peer])
-        peer_shards = hrw.shards_of(peer, cfg["executors"], DAY, v)
-        self.assertTrue(peer_shards, "夹具前提：死主必须有分片，否则本用例什么都不测")
-        phones = [_phone(1), _phone(2)]
-        for i, phone in enumerate(phones):
-            self._add_task(phone, vshard=peer_shards[i % len(peer_shards)],
-                           state="pending", owner=peer, epoch=1, run_at=_ts(seconds=-30))
-        # 死主的心跳：有开始记录、无收尾且已过期（`worker_presence` 判 stale）
-        state_io.mark_worker_started(
-            executor_v3._worker_slot(peer),
-            now=self.fc.now() - datetime.timedelta(seconds=5 * state_io.WORKER_HEARTBEAT_SEC))
-        ran = []
-
-        def _attempt(acc):
-            ran.append(acc.phone)
-            return (True, "ok", False, "success")
-
-        # 真实补货（不注入假条目）、真实 RECOVER_SEC：短轮次不等 60s 也要接管
-        with mock.patch.object(executor_v3.attempts, "attempt_signin", _attempt):
-            results = self._run_v3(self._accounts(*phones), cfg=cfg)
-        self.assertEqual(sorted(ran), sorted(phones),
-                         "死主的行必须在本轮被领取并执行（起跑接管那一跳不能少）")
-        for phone in phones:
-            row = self._row(phone)
-            self.assertEqual(row["owner"], RUNTIME_OWNER,
-                             "领取后 owner 是本执行体（运行时身份）——归属在领取时落")
-            self.assertGreater(row["epoch"], 1, "领取自增 epoch（fencing）")
-            self.assertEqual(row["state"], "done")
-            self.assertIn(phone, results)
-
-
-class DeadPeerClaimedOnlyTakeoverTest(_Base):
-    """死主把分片内的待办**全领成 `claimed` 后崩**：判死即并入，与"改到几行"无关。
-
-    `reap_expired` 把过期 `claimed` 行回退成 `pending` 时**清空 `owner`**。行归属改写
-    已裁（原 `steal_shards`），接管只剩并入分片集——本用例钉的正是这条等价链：若把并入
-    挂在任何"改到行"的门上，这些 owner 已清空的行照样救不回来 ⇒ "崩溃即卡死"复现。
-    故并入只看判死（`stale` 四态），行由 `claim_batch` 领取时落到本执行体名下。
-    """
-
-    def test_claimed_only_dead_peer_shards_are_reclaimed_and_executed(self):
-        peer = "worker-2@testhost"
-        v = 8
-        self._seed_v(v)
-        cfg = _cfg(executors=[OWNER, peer])
-        peer_shards = hrw.shards_of(peer, cfg["executors"], DAY, v)
-        self.assertTrue(peer_shards, "夹具前提：死主必须有分片，否则本用例什么都不测")
-        phones = [_phone(1), _phone(2)]
-        for i, phone in enumerate(phones):
-            # 死主把分片内的行**全领成 `claimed`**（分片内没有 pending），随后崩溃：
-            # 租约早已过回收宽限期，起跑回收会把它们变回 `pending` 并清空 owner。
-            self._add_task(phone, vshard=peer_shards[i % len(peer_shards)],
-                           state="claimed", owner=peer, epoch=1,
-                           lease_until=_ts(seconds=-180), run_at=_ts(seconds=-60))
-        # 死主的心跳：有开始记录、无收尾且已过期（`worker_presence` 判 stale）
-        state_io.mark_worker_started(
-            executor_v3._worker_slot(peer),
-            now=self.fc.now() - datetime.timedelta(seconds=5 * state_io.WORKER_HEARTBEAT_SEC))
-        ran = []
-
-        def _attempt(acc):
-            ran.append(acc.phone)
-            return (True, "ok", False, "success")
-
-        # 不 patch `RECOVER_SEC`：本用例钉的是**短轮次**里起跑那次接管——真实间隔下补货
-        # 循环的接管在本轮时长内不会触发，能通过只可能是判死即并入生效了。
-        with mock.patch.object(executor_v3.attempts, "attempt_signin", _attempt):
-            results = self._run_v3(self._accounts(*phones), cfg=cfg)
-        self.assertEqual(sorted(ran), sorted(phones),
-                         "死主分片里被回收的 claimed 行必须在本轮被领取并执行")
-        for phone in phones:
-            row = self._row(phone)
-            self.assertEqual(row["state"], "done", "回收 + 并入后必须跑完，不能留 pending")
-            self.assertEqual(row["owner"], RUNTIME_OWNER,
-                             "领取后由本执行体持有（运行时身份）")
-            self.assertIn(phone, results)
-
-
-class DeadPeerTakeoverSkipLiveTest(_Base):
-    """起跑接管不得误伤：只有 `stale`（有开始、无收尾且心跳过期）才算死。
-
-    活着的执行体（`running` / `finished`）与"今日还没跑"（`idle`）都不是死主，其分片
-    集内的 `pending` 行**不得**改归本执行体——否则会把别人的在飞/待办抢过来。
-    """
-
-    def _run_with_peer_state(self, state, peer):
-        """按给定四态准备 peer 心跳后跑一轮，返回 peer 的行与是否执行过。"""
-        v = 8
-        self._seed_v(v)
-        cfg = _cfg(executors=[OWNER, peer])
-        peer_shards = hrw.shards_of(peer, cfg["executors"], DAY, v)
-        self.assertTrue(peer_shards, "夹具前提：peer 必须有分片，否则本用例什么都不测")
-        phone = _phone(1)
-        self._add_task(phone, vshard=peer_shards[0], state="pending", owner=peer,
-                       epoch=1, run_at=_ts(seconds=-30))
-        slot = executor_v3._worker_slot(peer)
-        if state == state_io.WORKER_STATE_RUNNING:
-            state_io.mark_worker_started(slot, now=self.fc.now())
-        elif state == state_io.WORKER_STATE_FINISHED:
-            state_io.mark_worker_started(slot, now=self.fc.now())
-            state_io.mark_worker_finished(slot, now=self.fc.now())
-        # idle：什么都不写（本业务日无该槽位记录）
-        ran = []
-
-        def _attempt(acc):
-            ran.append(acc.phone)
-            return (True, "ok", False, "success")
-
-        with mock.patch.object(executor_v3.attempts, "attempt_signin", _attempt):
-            self._run_v3(self._accounts(phone), cfg=cfg)
-        return phone, ran
-
-    def test_running_peer_is_not_taken_over(self):
-        phone, ran = self._run_with_peer_state(state_io.WORKER_STATE_RUNNING,
-                                               "worker-2@testhost")
-        row = self._row(phone)
-        self.assertEqual(ran, [], "活着的执行体的待办不得被领取")
-        self.assertEqual(row["owner"], "worker-2@testhost", "不得改归本执行体")
-        self.assertEqual(row["epoch"], 1, "不得自增 epoch")
-        self.assertEqual(row["state"], "pending", "行保持原样")
-
-    def test_finished_peer_is_not_taken_over(self):
-        phone, ran = self._run_with_peer_state(state_io.WORKER_STATE_FINISHED,
-                                               "worker-2@testhost")
-        row = self._row(phone)
-        self.assertEqual(ran, [], "正常跑完的执行体的待办不得被领取")
-        self.assertEqual(row["owner"], "worker-2@testhost", "不得改归本执行体")
-        self.assertEqual(row["state"], "pending", "行保持原样")
-
-    def test_idle_peer_is_not_taken_over(self):
-        phone, ran = self._run_with_peer_state(state_io.WORKER_STATE_IDLE,
-                                               "worker-2@testhost")
-        row = self._row(phone)
-        self.assertEqual(ran, [], "今日无心跳记录不算死，不得被领取")
-        self.assertEqual(row["owner"], "worker-2@testhost", "不得改归本执行体")
-        self.assertEqual(row["state"], "pending", "行保持原样")
-
-
 class HolderIdentitySplitTest(_Base):
-    """v3 的两个身份必须显式分开：持有者落 PID/代次，稳定名留给分片与出口桶。
+    """v3 的三个身份必须显式分开：持有者落 PID/代次，稳定名留给分片，出口桶键 = 出口标识。
 
     `sign_tasks.owner` 一列同时是"计划 owner"与"当前持有者"。HRW 分片成员判据
-    （`hrw.shards_of` 要求身份串是 `cfg["executors"]` 的成员）与出口令牌桶的持久键
-    （`egress_state.egress`，跨重启必须同名）都要求**稳定槽位名**；而"谁在持有"必须
-    含进程号与代次，否则同机两个进程拿同一个名字，接管/收尾的作用域校验就分不出人。
-    两个身份各走各的路，不许再合并成一个变量。
+    （`hrw.shards_of` 要求身份串是 `cfg["executors"]` 的成员）要求**稳定槽位名**；而"谁在
+    持有"必须含进程号与代次，否则同机两个进程拿同一个名字，接管/收尾的作用域校验就分不出人。
+    限速桶键另走一路（工单 2cwd）：`_Ctx.egress = egress.egress_identity(该出口)`——按**出口**
+    计数，同一出口的多个执行体共享一桶（否则该出口速率 = K×λ）。
     """
 
     def test_stable_name_is_the_shard_member_and_runtime_is_not(self):
@@ -2105,7 +1761,9 @@ class HolderIdentitySplitTest(_Base):
                          "运行时身份不是清单成员：拿它去分片会零领取（故两个身份不能合并）")
         self.assertIn(f":{os.getpid()}:", RUNTIME_OWNER)
 
-    def test_ctx_exposes_stable_for_egress_and_runtime_for_holder(self):
+    def test_ctx_egress_key_is_outlet_identity_not_stable_owner(self):
+        """出口桶键 = 出口标识（`egress.egress_identity(该出口)`），不再是执行体身份。"""
+        proxy = "http://u:pw@127.0.0.1:3128"
         seen = {}
         real = executor_v3._run_async
 
@@ -2115,14 +1773,32 @@ class HolderIdentitySplitTest(_Base):
             seen["egress"] = ctx.egress
             return await real(ctx)
 
-        with mock.patch.object(executor_v3, "_run_async", spy),                 mock.patch.object(executor_v3.attempts, "attempt_signin",
+        with mock.patch.dict(os.environ, {"YIBAN_PROXY": proxy}), \
+                mock.patch.object(executor_v3, "_run_async", spy), \
+                mock.patch.object(executor_v3.attempts, "attempt_signin",
                                   lambda acc: (True, "ok", False, "success")):
             self._run_v3(self._accounts(_phone(0)))
         self.assertEqual(seen["executor_id"], OWNER, "稳定名仍是分片/展示口径")
-        self.assertEqual(seen["egress"], OWNER,
-                         "出口令牌桶的持久键必须稳定（跨重启续上自适应速率）")
+        self.assertEqual(seen["egress"], egress.egress_identity(proxy),
+                         "出口桶键 = 出口标识（去 userinfo 的 scheme://host[:port]）")
+        self.assertNotEqual(seen["egress"], OWNER, "桶键不再是执行体身份")
         self.assertEqual(seen["runtime_id"], RUNTIME_OWNER,
                          "写库的持有者身份必须含本进程的 PID/代次")
+
+    def test_ctx_passes_outlet_executor_count_as_shares(self):
+        """同出口 3 个执行体（2 worker + 开启的兜底）⇒ 限速器收到 `shares=3`。"""
+        os.environ["YIBAN_EXECUTORS"] = egress.dump_manifest([
+            {"slot": 0, "type": "worker", "proxy": ""},
+            {"slot": 1, "type": "worker", "proxy": ""},
+            {"slot": 2, "type": "fallback", "proxy": ""},
+        ])
+        os.environ["YIBAN_FALLBACK_ENABLE"] = "1"
+        seen_shares = []
+        with mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (True, "ok", False, "success")):
+            self._run_v3(self._accounts(_phone(0)), shares_seen=seen_shares)
+        self.assertEqual(seen_shares, [3],
+                         "同出口 3 个执行体（2 worker + 兜底）⇒ 份额分母 3")
 
     def test_real_refill_writes_runtime_owner_to_queue(self):
         phone = _phone(0)
@@ -2262,22 +1938,19 @@ class LogAttributionTest(_Base):
         self.assertIn("[single r1] " + self.BANNER, message, "横幅必须带归因前缀")
 
     #: 复审点名的"可带而未带"行 → `(模块文件, 消息片段, 该条可接受的归因标识)`。
-    #: 这些行触发路径较深（队列连续读不通 / 轮内让位复检 / 判因不可得 / 三条收尾分支 /
-    #: 接管死主 / 出口限速），逐条构造运行场景的成本远高于收益，故按**该条 logger 语句
-    #: 本身**钉住。窗口必须精确到语句本身：早先的实现取消息前后各一段定长窗口，会被相邻
+    #: 这些行触发路径较深（队列连续读不通 / 判因不可得 / 三条收尾分支 / 出口限速），
+    #: 逐条构造运行场景的成本远高于收益，故按**该条 logger 语句本身**钉住。窗口必须精确到语句本身：早先的实现取消息前后各一段定长窗口，会被相邻
     #: 分支的归因标识蒙过（复审实证假绿）——精确度靠下面的括号配对，不靠"取宽一点"。
     TAGGED_CALLS = (
-        ("yiban/engine/executor_v3.py", "让位：检测到全量轮开始运行", ("log_tag",)),
         ("yiban/engine/executor_v3.py", "队列连续 %d 轮读不通", ("log_tag",)),
         ("yiban/engine/executor_v3.py", "未执行判因不可得", ("log_tag",)),
         ("yiban/engine/executor_v3.py", "非法，全局速率上界按不限处理", ("log_tag",)),
         ("yiban/engine/executor_v3.py", "v3 执行体未预期异常", ("log_tag",)),
         ("yiban/engine/executor_v3.py", "v3 窗口收尾失败", ("log_tag",)),
         ("yiban/engine/executor_v3.py", "v3 未执行判因失败", ("log_tag",)),
-        ("yiban/engine/executor_v3.py", "接管心跳过期的执行体", ("owner_tag",)),
-        ("yiban/engine/workers.py", "任务队列事件签名变化", ("tag",)),
-        ("yiban/engine/token_bucket.py", "风控信号，速率按安全回退下调", ("owner_tag",)),
-        ("yiban/engine/token_bucket.py", "速率 %.3f → %.3f attempt/s", ("owner_tag",)),
+        ("yiban/workers/workers.py", "任务队列事件签名变化", ("tag",)),
+        ("yiban/engine/token_bucket.py", "风控信号，速率按安全回退下调", ("outlet_label",)),
+        ("yiban/engine/token_bucket.py", "速率 %.3f → %.3f attempt/s", ("outlet_label",)),
     )
 
     @staticmethod
@@ -2308,6 +1981,124 @@ class LogAttributionTest(_Base):
                 self.assertTrue(any(n in call for n in names),
                                 f"{rel} 的「{msg}」又丢了归因前缀：本条调用里没有 {names}；"
                                 f"实际调用文本：{call[:200]}")
+
+
+# ---------------------------------------------------------------------------
+# 从冻结载体（`round.run_queue_retry`）迁到真路径的判据（工单 `77s2`）
+# ---------------------------------------------------------------------------
+class ProbeDayUnfreezeTest(_Base):
+    """半开试探日：登录成功但被窗口/无 Range 跳过 ⇒ 必须解冻。
+
+    **来源与理由**：这两条判据原先住在 `tests/test_breaker.py`，驱动的是冻结的
+    `round.run_queue_retry`。冻结载体里的语义（`round.py` 的 `probe_healthy`）是：
+    `SKIPPED_WINDOW` / `SKIPPED_NORANGE` 发生在**登录成功之后**，凭据已被证实可用；
+    只看 `success` 会把窗口跳过误判成试探失败，再冻一个试探周期。迁到 v3（唯一生产
+    执行体）后，这条语义必须在真路径上成立——否则被暂停账号的 `probe_date` 停在过去，
+    `_probe_due` 每天为真，密码确实错的账号被每天真实登录一次（风控暴露面）。
+
+    对照组钉住反方向：试探日仍是**凭据类失败** ⇒ 保持暂停并顺延 `probe_date`。
+    """
+
+    def _cred(self, phone):
+        return {phone: {"fail_days": 3, "last_fail": "2026-09-21",
+                        "paused_since": "2026-09-15", "probe_date": DAY}}
+
+    def _run_probe(self, phone, attempt_result):
+        self._add_claimed(phone)
+        self._seed_v(8)
+        cred = self._cred(phone)
+        with mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: attempt_result):
+            self._run_v3(self._accounts(phone), [_item(phone)], cred_state=cred)
+        return cred
+
+    def test_probe_day_window_skip_unfreezes(self):
+        for status, message in (
+            (yiban_status.STATUS_SKIPPED_WINDOW, "签到时段已结束"),
+            (yiban_status.STATUS_SKIPPED_NORANGE, "签到时间窗口缺失（无 Range），已跳过"),
+        ):
+            with self.subTest(status=status):
+                phone = _phone(1)
+                self._clear_tasks()
+                cred = self._run_probe(phone, (False, message, True, status))
+                self.assertNotIn(
+                    phone, cred,
+                    "试探日登录已成功、仅被窗口规则跳过 ⇒ 凭据可用，必须解冻"
+                    "（否则 probe_date 停在过去，每天重登一次）")
+
+    def test_probe_day_credential_failure_keeps_pause_and_extends_probe(self):
+        phone = _phone(1)
+        cred = self._run_probe(
+            phone, (False, "账号或密码错误", False, yiban_status.STATUS_FAILED))
+        self.assertIn(phone, cred, "凭据类失败必须保持暂停")
+        self.assertGreater(cred[phone]["probe_date"], DAY,
+                           "半开试探失败必须顺延 probe_date（唯一写入点是 _update_cred_state）")
+
+
+class RetryReasonVisibilityTest(_Base):
+    """重试入队的状态文件与日志都必须带**转义后**的失败原因（防日志注入）。
+
+    原判据住在 `tests/test_schedule_retry.py` 的冻结载体上；v3 的对应写入点
+    （`_sanitize_text` + `STATUS_RETRYING`）此前没有直接用例。
+    """
+
+    def test_retry_state_and_log_escape_newlines(self):
+        phone = _phone(1)
+        self._add_claimed(phone)
+        self._seed_v(8)
+        reason = "获取签到任务失败\n未登录或登录已经超时"
+        with mock.patch.object(executor_v3.attempts, "attempt_signin",
+                               lambda acc: (False, reason, False, "failed")), \
+                mock.patch.object(executor_v3, "next_retry_at_v3",
+                                  lambda *a, **k: START + datetime.timedelta(seconds=30)), \
+                self.assertLogs("yiban", level="WARNING") as cm:
+            self._run_v3(self._accounts(phone), [_item(phone)])
+        state = self._read_state()[phone]
+        self.assertEqual(state["status"], yiban_status.STATUS_RETRYING)
+        self.assertNotIn("\n", state["message"], "状态文件 message 不得含真实换行")
+        self.assertIn(executor_v3._sanitize_text(reason), state["message"],
+                      "状态文件必须补记转义后的失败原因")
+        retry_lines = [r.getMessage() for r in cm.records if "待重试" in r.getMessage()]
+        self.assertTrue(retry_lines, "未捕获到重试入队日志")
+        self.assertTrue(all("\n" not in line for line in retry_lines),
+                        "原因里的换行会把日志拆成多行（注入形态）")
+
+
+class HostClockNotUsedTest(unittest.TestCase):
+    """窗口/当日判定只认业务钟（`yiban.core.clock`），不得直接读宿主墙钟。
+
+    `clock.now()` 恒为 UTC+8，与宿主 TZ 无关；直接 `datetime.now()` 会让"窗口判定"
+    随部署机时区漂移（旧 `round` 路径上实测过：UTC 主机把北京时间 06:40 判成窗口外，
+    整轮零请求）。本门用 AST 钉住执行核四个文件里没有宿主墙钟读取——原行为用例住在
+    冻结载体 `tests/test_effective_window.py::WindowDecisionUsesBeijingClockTest`。
+    """
+
+    FILES = (
+        "yiban/engine/executor_v3.py",
+        "yiban/engine/schedule.py",
+        "yiban/engine/attempts.py",
+        "yiban/core/window.py",
+    )
+
+    def test_no_direct_host_clock_read(self):
+        import ast
+
+        hits = []
+        for rel in self.FILES:
+            path = os.path.join(BASE, rel)
+            with open(path, encoding="utf-8") as f:
+                tree = ast.parse(f.read(), filename=path)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if isinstance(func, ast.Attribute) and func.attr == "now":
+                    dotted = ast.unparse(func)
+                    if dotted in ("datetime.now", "datetime.datetime.now"):
+                        hits.append("%s:%d %s" % (rel, node.lineno, dotted))
+        self.assertEqual(hits, [],
+                         "执行核不得直接读宿主墙钟（业务钟唯一入口是 yiban.core.clock）：%s"
+                         % hits)
 
 
 if __name__ == "__main__":

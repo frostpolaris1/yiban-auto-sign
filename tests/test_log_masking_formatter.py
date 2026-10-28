@@ -7,7 +7,7 @@
 时间戳/普通数字。展示层 `_mask_log_phones` 与本兜底共用同一实现。
 
 功能：日志格式化与文本脱敏的行为回归。
-归属：`yiban.masking`（文本口径）+ `yiban.logging_ext`（输出面）。
+归属：`yiban.core.masking`（文本口径）+ `yiban.logging_ext`（输出面）。
 复用：`mask_phones_in_text` / `MaskingFormatter` / `mask_phone`。
 通信：直接构造 `logging.LogRecord` 格式化；另经临时文件 handler 落盘读回；
 由 pytest 收集 `unittest.TestCase`。
@@ -16,7 +16,7 @@
 覆盖：`mask_phones_in_text` 的文本口径（裸号/方括号/多号/幂等/不误伤）与
 `MaskingFormatter` 的输出面兜底（成文行、异常文本、临时文件 handler 落盘结果），
 再加两条"同一实现"的接线断言。
-对应实现：`yiban/masking.py` 的 `mask_phones_in_text` / `mask_phone`、
+对应实现：`yiban/core/masking.py` 的 `mask_phones_in_text` / `mask_phone`、
 `yiban/logging_ext.py` 的 `MaskingFormatter.format`，展示层 `_mask_log_phones` 复用同一实现。
 关键断言：**遮罩发生在"最终成文之后"这一层**——`format()` 覆写的是
 `Formatter.format` 的返回串，所以 `%s` 插值后的号和 traceback 里的号都在射程内
@@ -38,8 +38,8 @@ import tempfile
 import time
 import unittest
 
+from yiban.core.masking import mask_phone, mask_phones_in_text
 from yiban.logging_ext import MaskingFormatter
-from yiban.masking import mask_phone, mask_phones_in_text
 
 FORMAT = "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s"
 DATEFMT = "%Y-%m-%d %H:%M:%S"

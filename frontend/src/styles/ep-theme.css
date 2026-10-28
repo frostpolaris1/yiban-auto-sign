@@ -40,10 +40,12 @@
   --el-bg-color: var(--bg-card);
   --el-bg-color-page: var(--bg-body);
   --el-bg-color-overlay: var(--bg-card);
+  /* 遮罩基态：先用不依赖 blur 的强底（与 .pm-backdrop 同口径）。 */
+  --el-overlay-color-lighter: var(--overlay-strong);
   --el-text-color-primary: var(--t-base);
   --el-text-color-regular: var(--t-base);
   --el-text-color-secondary: var(--t-muted);
-  --el-text-color-placeholder: var(--t-light);
+  --el-text-color-placeholder: var(--t-weak);
   --el-border-color: var(--border);
   --el-border-color-light: var(--border-soft);
   --el-border-color-lighter: var(--border-soft);
@@ -53,12 +55,30 @@
   --el-fill-color-lighter: var(--bg-hover);
   --el-fill-color-blank: var(--bg-card);
 
-  /* 形体 */
-  --el-border-radius-base: 8px;
-  --el-border-radius-small: 6px;
+  /* 形体：控件高、圆角、表格、三级阴影全部接到 Adminator 令牌。
+     尺寸刻度以 app.css §0 为单一事实源；本文件只消费，不再写裸值。 */
+  /* 潜伏修正：EP 输入/下拉的高度从 --el-component-size 派生，EP 默认 32px。
+     本仓 5 个消费面（账号 / 我的账号 / 设置 / 日志 / 审计）的 EP 输入都在
+     app.css 的区域覆盖内（工具栏 32、表单 40），故本次为零可见变化。
+     共 15 个实例（审计 3 / 日志 1 / 账号 1 / 我的账号 1 / 设置 9）。
+     根档改为 --ctl-h 后，未来新增的区域外输入自动落到页面控件档。 */
+  --el-component-size: var(--ctl-h);
+  --el-border-radius-base: var(--r-ctl);
+  /* small 在本仓零消费。EP 另有 .el-color-picker__color 与 .el-menu--popup
+     消费；本仓最小档为 --r-ctl，故接 8px（10/14 会把 14px 方框画成圆）。 */
+  --el-border-radius-small: var(--r-ctl);
+  /* round 是「胶囊」修饰，只有 .el-button.is-round 消费。令牌阶没有胶囊档；
+     改成 8/10/14 会改变该修饰的用户可见语义，故保留 999px。 */
   --el-border-radius-round: 999px;
   --el-font-family: var(--font-sans);
   --el-font-size-base: 14px;
+
+  /* 三级阴影：浮层底 = 卡级，轻浮层 = 细阴影，抽屉/弹窗 = 大阴影。
+     Adminator 的 --shadow-sm / --shadow-card / --shadow-lg 随主题翻转。 */
+  --el-box-shadow: var(--shadow-card);
+  --el-box-shadow-light: var(--shadow-sm);
+  --el-box-shadow-lighter: var(--shadow-sm);
+  --el-box-shadow-dark: var(--shadow-lg);
 }
 
 /* ---------- 开关「关」态轨道（WCAG 1.4.11 非文字 3:1） ----------
@@ -72,4 +92,114 @@
 :root[data-theme="light"] .el-switch,
 :root[data-theme="dark"] .el-switch {
   --el-switch-off-color: var(--switch-off-bg);
+  /* EP 把开关高写死 32px；消费紧凑档令牌，与原生 .btn--sm / .input 同源。 */
+  height: var(--ctl-h-md);
+}
+
+/* ---------- 按钮形态 ----------
+ * 高度跟随所在区域的 --ctl-h（工具栏 32 / 表单 40）；内距取 Adminator .btn 的
+ * 9px 14px；聚焦环取 --primary-ring。EP 把默认高写死 32px、padding 8/15，
+ * 且把 --el-button-outline-color 声明在组件自身，故这里落到组件选择器。
+ * 选择器带 :root[data-theme] (0,2,0)，高于 EP 的组件规则 (0,1,0)。
+ * is-link 是文字链形态（EP 给它 height:auto、padding:2px、无底无边），
+ * 高度规则必须排除它，否则链接会被撑成 40px 的块。
+ * is-round 的胶囊圆角来自 EP `.el-button.is-round`(0,2,0)；本仓零使用。
+ * 下方小档圆角规则排除 .is-round，登记这一档必须留给胶囊（防退化）。 */
+:root[data-theme="light"] .el-button,
+:root[data-theme="dark"] .el-button {
+  --el-button-outline-color: var(--primary-ring);
+}
+:root[data-theme="light"] .el-button:not(.is-link),
+:root[data-theme="dark"] .el-button:not(.is-link) {
+  height: var(--ctl-h);
+  padding: 9px 14px;
+}
+:root[data-theme="light"] .el-button--small:not(.is-link),
+:root[data-theme="dark"] .el-button--small:not(.is-link) {
+  height: var(--ctl-h-md);
+  padding: 5px 11px;
+}
+/* EP 的小档圆角是 calc(base - 1px)=7px，落在令牌阶外。is-round 保留胶囊。 */
+:root[data-theme="light"] .el-button--small:not(.is-round),
+:root[data-theme="dark"] .el-button--small:not(.is-round) {
+  border-radius: var(--r-ctl);
+}
+:root[data-theme="light"] .el-button--large:not(.is-link),
+:root[data-theme="dark"] .el-button--large:not(.is-link) {
+  height: var(--ctl-h-lg);
+  padding: 12px 19px;
+}
+
+/* ---------- 表格形态 ----------
+ * 表格变量在 EP 里声明在 `.el-table` 自身（不是 :root），故必须落到组件选择器；
+ * 只写 :root 会被 EP 的组件局部声明盖住（实测 hover 仍是 --bg-muted）。
+ * 行高 48 由 app.css 的 .el-table__cell 上下内距承担（已拍板，不改）。
+ * 这里补齐横向内距与两级分隔线：表头 --border（硬），行 --border-soft（软）。
+ * 内距取 Adminator .data-table 的 12px 14px 刻度中的横向 14px；
+ * 纵向由 48px 行高公式给出，避免两处各自计算。 */
+:root[data-theme="light"] .el-table,
+:root[data-theme="dark"] .el-table {
+  --el-table-border-color: var(--border-soft);
+  --el-table-header-bg-color: var(--bg-card);
+  --el-table-tr-bg-color: var(--bg-card);
+  --el-table-bg-color: var(--bg-card);
+  --el-table-row-hover-bg-color: var(--bg-hover);
+}
+:root[data-theme="light"] .el-table th.el-table__cell .cell,
+:root[data-theme="dark"] .el-table th.el-table__cell .cell,
+:root[data-theme="light"] .el-table td.el-table__cell:not(.el-table__expand-column) .cell,
+:root[data-theme="dark"] .el-table td.el-table__cell:not(.el-table__expand-column) .cell {
+  padding-left: 14px;
+  padding-right: 14px;
+}
+:root[data-theme="light"] .el-table th.el-table__cell.is-leaf,
+:root[data-theme="dark"] .el-table th.el-table__cell.is-leaf {
+  border-bottom-color: var(--border);
+}
+
+/* ---------- 弹层形态 ----------
+ * 弹窗/确认框：Adminator .modal-demo 的刻度 = 14px 圆角 + 1px --border + --shadow-lg。
+ * 抽屉：贴边全高，圆角保持 0；左侧 1px --border 与阴影分级同源。
+ * EP 的圆角/阴影变量声明在组件自身，故落到组件选择器。 */
+:root[data-theme="light"] .el-dialog,
+:root[data-theme="dark"] .el-dialog {
+  --el-dialog-border-radius: var(--r-card);
+  --el-dialog-box-shadow: var(--shadow-lg);
+  border: 1px solid var(--border);
+}
+:root[data-theme="light"] .el-message-box,
+:root[data-theme="dark"] .el-message-box {
+  --el-messagebox-border-radius: var(--r-card);
+  --el-messagebox-box-shadow: var(--shadow-lg);
+  border: 1px solid var(--border);
+}
+/* 只给右侧滑入（.rtl）画左边线：ltr 抽屉的贴边在左侧，
+   无条件 border-left 会在未来 ltr 抽屉上画错边。 */
+:root[data-theme="light"] .el-drawer.rtl,
+:root[data-theme="dark"] .el-drawer.rtl {
+  border-left: 1px solid var(--border);
+}
+
+/* ---------- 弹窗遮罩：与 app.css §5 的 .pm-backdrop 同口径 ----------
+ * 支持 backdrop-filter 时用半透明底 + 3px 模糊；浏览器不支持时保留强底。
+ * 2560px 起全屏模糊实测 max=83.4ms、3840 p95=150ms，去 blur 并回退强底。 */
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root[data-theme="light"],
+  :root[data-theme="dark"] {
+    --el-overlay-color-lighter: var(--overlay);
+  }
+  .el-overlay {
+    -webkit-backdrop-filter: blur(var(--modal-blur));
+    backdrop-filter: blur(var(--modal-blur));
+  }
+}
+@media (min-width: 2560px) {
+  :root[data-theme="light"],
+  :root[data-theme="dark"] {
+    --el-overlay-color-lighter: var(--overlay-strong);
+  }
+  .el-overlay {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
 }

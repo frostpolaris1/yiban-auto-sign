@@ -12,7 +12,7 @@
 `0/1/2` 三档、全窗口与单日窗口同结论、第三方写入者破坏计数、零覆盖与空状态文件
 都算 2、白名单补项，以及异常消息落 stdout 前必须脱敏。
 对应实现：`scripts/ledger_check.py`（含 `ALLOWED_TABLES` 白名单）与它读的
-`sign_tasks` / 状态文件；状态词表口径来自 `yiban/status.py` 的 `ALL_STATUSES`。
+`sign_tasks` / 状态文件；状态词表口径来自 `yiban/core/status.py` 的 `ALL_STATUSES`。
 关键断言：退出码是**契约**不是实现细节——"缺行"回 1（数据不一致）、"跑不动"回 2
 （环境不可用），两者混成同一个码会让运维把环境问题当数据丢失处理；
 `test_unexpected_exception_message_is_sanitized` 钉的是对账工具自己把异常打出来时
@@ -37,9 +37,9 @@ import unittest
 from datetime import timedelta
 from unittest import mock
 
-from yiban import clock
-from yiban.masking import mask_phone
-from yiban.store import migrations
+from yiban.adapters.persistence import migrations
+from yiban.core import clock
+from yiban.core.masking import mask_phone
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(BASE, "scripts", "ledger_check.py")
@@ -253,7 +253,7 @@ class LedgerCheckTest(unittest.TestCase):
         """兜底打印的异常消息含凭据形态时必须脱敏（与迁移侧同一口径）。
 
         异常文本多来自连接层/`.env` 解析，可能带出配置值；原样打印等于把它写进
-        运维终端与日志。判定与实现共用 `yiban.masking.sanitize_text`。
+        运维终端与日志。判定与实现共用 `yiban.core.masking.sanitize_text`。
 
         前置条件必须**在本用例内自建**：`main()` 在进程内跑，读的是进程环境；缺库
         守卫（拒绝新建空库）排在 `open_readonly` 注入点**之前**，环境没指到位就短路返回，

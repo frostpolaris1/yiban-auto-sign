@@ -9,7 +9,7 @@ r""".env 单一行模型 + 单一校验器 + 写入前后键集合 diff（web �
 还归零）。反向：引擎写入口对传入 value/key 一字不校验；前端对行分隔符零校验。
 
 **本文件钉住的修复**：
-- 一处行模型：`yiban.infra.env_io.split_env_lines`（窄行：`\n` / `\r\n` / `\r`），
+- 一处行模型：`yiban.adapters.config.env_io.split_env_lines`（窄行：`\n` / `\r\n` / `\r`），
   web 服务层不得再出现第二份 `splitlines(`；读取侧对历史文件里的换行族字符**容忍读取**，
   只在写入/校验路径拒绝；
 - 一处校验器：键名白名单 + 值禁换行族 + 值长度上限，web 与引擎两侧消费同一函数
@@ -25,7 +25,7 @@ r""".env 单一行模型 + 单一校验器 + 写入前后键集合 diff（web �
 
 标签：G · 安全：脱敏/审计/配置注入
 覆盖：`.env` 行模型单源（web 服务层无第二份 splitlines）、10 分隔符实测清单、含 U+0085 潜伏注释的 V2 实体化反例（GLOBAL_PAUSE 与 ADMIN_PASSWORD_HASH 两变体）、两侧同一句拒绝、8 分隔符单载荷两侧同拒、写入前后键集合 diff 强制与 BOM/CRLF 字节级回滚审计、值长度上限、路由级拒绝钉死 409（设置与公告两写点）、内置管理员脏 .env 登录降级非 500、notify/mail 保存路径密钥自动生成写拒统一 409（不伪装成"加密失败 500"）+ 干净 .env 阳性对照、读取容忍与合法流逐字节回归
-对应实现：`yiban/infra/env_io.py` 的 `split_env_lines` / `env_key_values` / `validate_env_key` / `validate_env_value` / `render_env_write` / `write_env_keys` / `EnvWriteRefused`，以及 `web/services/env_io.py` 的 `write_env_batch` / `ensure_secret_key`、`web/app.py:write_env_batch`、`web/routes/notify.py`（`EnvWriteRefused` 放行次序）、`yiban/infra/account_crypto.py:load_key`
+对应实现：`yiban/adapters/config/env_io.py` 的 `split_env_lines` / `env_key_values` / `validate_env_key` / `validate_env_value` / `render_env_write` / `write_env_keys` / `EnvWriteRefused`，以及 `web/services/env_io.py` 的 `write_env_batch` / `ensure_secret_key`、`web/app.py:write_env_batch`、`web/routes/notify.py`（`EnvWriteRefused` 放行次序）、`yiban/adapters/config/account_crypto.py:load_key`
 关键断言：拒绝必须**同时**断"抛错 + .env 字节不变 + 不实体化出未请求的键 + 有审计记录"；只断抛错会漏掉"先实体化再报错"的半生效；两侧同一句拒绝要断言**消息字符串相等**而不是各自含关键词，否则两份校验器可以各写一句都过
 依赖：临时 `.env` + Flask test client + 临时 DB，无网络、无 skip；分隔符按码位逐个枚举
 
@@ -33,6 +33,11 @@ r""".env 单一行模型 + 单一校验器 + 写入前后键集合 diff（web �
 > 10 分隔符实测清单三条并一条；V2 潜伏注释两目标键并一条；引擎值内分隔符全循环与
 > 「两侧同句」两条并一条（宽分隔符支逐字符保留两侧文案相等断言）。
 > 主 owner `test_env_line_break_injection.py`（CRITICAL 活体回归执行器）一字未动。
+
+2026-10-16 饮食批：`SingleLineModelSourceTest` 整类删除——两条都是**源码文本**断言
+（`hasattr` 名字面在场 + 读 `web/services/env_io.py` 断言其中不出现 `splitlines(`）。
+"行模型只许一份"这条约束的行为面由本文件其余用例承担（同一入参两侧同一句拒绝、
+写入前后键集合 diff 等）；剩下的只是"文本里不许出现某个 token"，属实现长相。
 """
 import contextlib
 import importlib.util
@@ -44,7 +49,11 @@ import tempfile
 import unittest
 from unittest import mock
 
-from yiban.infra import env_io
+from werkzeug.security import generate_password_hash
+
+from web.services import env_io as _env_io_svc
+from web.services import notify_mail as _notify_mail
+from yiban.adapters.config import env_io
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -66,7 +75,7 @@ def _load_webapp(tag):
     sys.modules[f"webapp_{tag}"] = mod
     with contextlib.suppress(Exception):
         spec.loader.exec_module(mod)
-    assert hasattr(mod, "write_env_batch"), "web/app.py 加载失败（exec_module 异常被抑制）"
+    assert callable(getattr(mod, "create_app", None)), "web/app.py 加载失败（exec_module 异常被抑制）"
     return _db, mod
 
 
@@ -111,23 +120,6 @@ class SeparatorLineModelTest(unittest.TestCase):
         for ch in ALL_BREAKS:
             with self.subTest(ch=hex(ord(ch))):
                 self.assertTrue(env_io.has_line_break(f"A{ch}B"))
-
-
-class SingleLineModelSourceTest(unittest.TestCase):
-    """web 服务层不得再持有第二份 .env 行模型（读写都收敛到 yiban.infra.env_io）。"""
-
-    def test_engine_exposes_the_canonical_line_model(self):
-        for name in ("split_env_lines", "env_key_values", "validate_env_key",
-                     "validate_env_value", "render_env_write", "EnvWriteRefused"):
-            self.assertTrue(hasattr(env_io, name),
-                            f"yiban.infra.env_io 缺少单一行模型/校验器的公开面：{name}")
-
-    def test_web_env_service_has_no_second_splitlines(self):
-        src = _read_text(os.path.join(BASE, "web", "services", "env_io.py"))
-        self.assertNotIn(
-            "splitlines(", src,
-            "web/services/env_io.py 又出现 splitlines() —— .env 的读写行模型只允许"
-            "yiban.infra.env_io 一份（宽模型会把潜伏分隔符实体化成新配置行）")
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +206,7 @@ class _WebBase(unittest.TestCase):
         return [r[0] for r in conn.execute("SELECT detail FROM audit_logs")]
 
     def _sub_admin_client(self):
-        self.db.create_user(SUB_ADMIN, self.webapp.generate_password_hash(SUB_PASS),
+        self.db.create_user(SUB_ADMIN, generate_password_hash(SUB_PASS),
                             role="admin")
         c = self.webapp.create_app().test_client()
         r = c.post("/api/login", json={"username": SUB_ADMIN, "password": SUB_PASS})
@@ -238,7 +230,7 @@ class V2LatentCommentTest(_WebBase):
 
         with self.assertRaises(ValueError):
             # "只改签到模式"的例行保存——攻击的实体化触发点
-            self.webapp.write_env_batch(self.env_file, {"YIBAN_SIGN_ORDER": "random"})
+            _env_io_svc.write_env_batch(self.env_file, {"YIBAN_SIGN_ORDER": "random"})
 
         self.assertEqual(_read_bytes(self.env_file), before_bytes,
                          "拒绝写入时 .env 必须一个字节都不改")
@@ -302,7 +294,7 @@ class BuiltinAdminDirtyEnvLoginTest(_WebBase):
     """
 
     def test_builtin_admin_login_degrades_on_dirty_env(self):
-        real_hash = self.webapp.generate_password_hash(
+        real_hash = generate_password_hash(
             ADMIN_PASS, method=self.webapp.SCRYPT_METHOD)
         env = self.base_env.replace(
             "YIBAN_ADMIN_PASSWORD_HASH=scrypt:frozen-hash-not-used-in-login",
@@ -311,7 +303,7 @@ class BuiltinAdminDirtyEnvLoginTest(_WebBase):
         lines.insert(1, "# 例行备注\u0085YIBAN_GLOBAL_PAUSE=1")
         self._write_fixture("\n".join(lines))
         self.webapp._env_collision_reported = False
-        with mock.patch.object(self.webapp, "send_notification"):
+        with mock.patch.object(_notify_mail, "send_notification"):
             app = self.webapp.create_app()
         c = app.test_client()
         with self.assertLogs("web", level="ERROR") as logs:
@@ -338,7 +330,7 @@ class SecretAutoGenDirtyEnvTest(_WebBase):
     """
 
     def _dirty_env_without_accounts_key(self):
-        real_hash = self.webapp.generate_password_hash(
+        real_hash = generate_password_hash(
             ADMIN_PASS, method=self.webapp.SCRYPT_METHOD)
         lines = []
         for ln in self.base_env.split("\n"):
@@ -352,7 +344,7 @@ class SecretAutoGenDirtyEnvTest(_WebBase):
 
     def _login_master(self):
         self.webapp._env_collision_reported = False
-        with mock.patch.object(self.webapp, "send_notification"):
+        with mock.patch.object(_notify_mail, "send_notification"):
             app = self.webapp.create_app()
         c = app.test_client()
         r = c.post("/api/login",
@@ -375,7 +367,7 @@ class SecretAutoGenDirtyEnvTest(_WebBase):
                          "被拒后不得留下半写的新密钥")
 
     def test_notify_secret_save_refused_as_409(self):
-        from yiban.infra import account_crypto
+        from yiban.adapters.config import account_crypto
         self._dirty_env_without_accounts_key()
         before = _read_bytes(self.env_file)
         c, csrf = self._login_master()
@@ -388,7 +380,7 @@ class SecretAutoGenDirtyEnvTest(_WebBase):
         self._no_key_written(before)
 
     def test_mail_smtps_save_refused_as_409(self):
-        from yiban.infra import account_crypto
+        from yiban.adapters.config import account_crypto
         self._dirty_env_without_accounts_key()
         before = _read_bytes(self.env_file)
         c, csrf = self._login_master()
@@ -403,8 +395,8 @@ class SecretAutoGenDirtyEnvTest(_WebBase):
 
     def test_clean_env_auto_key_generation_still_succeeds(self):
         """阳性对照：干净 .env 上自动生成写回照常 200（本清扫不改这条路径）。"""
-        from yiban.infra import account_crypto
-        real_hash = self.webapp.generate_password_hash(
+        from yiban.adapters.config import account_crypto
+        real_hash = generate_password_hash(
             ADMIN_PASS, method=self.webapp.SCRYPT_METHOD)
         lines = []
         for ln in self.base_env.split("\n"):
@@ -445,7 +437,7 @@ class BothSidesSameSentenceTest(_WebBase):
                 if ch not in EXTRA_BREAKS:
                     continue
                 with self.assertRaises(ValueError) as cw:
-                    self.webapp.write_env_batch(self.env_file,
+                    _env_io_svc.write_env_batch(self.env_file,
                                                 {"YIBAN_SIGN_ORDER": payload})
                 self.assertEqual(str(cw.exception), str(ce.exception),
                                  "两侧拒绝文案必须同源（同一校验器同一句）")
@@ -460,7 +452,7 @@ class BothSidesSameSentenceTest(_WebBase):
         before = _read_bytes(self.env_file)
         payload = "x" + "".join(EXTRA_BREAKS) + "y"
         with self.assertRaises(ValueError) as cw:
-            self.webapp.write_env_batch(self.env_file, {"YIBAN_SIGN_ORDER": payload})
+            _env_io_svc.write_env_batch(self.env_file, {"YIBAN_SIGN_ORDER": payload})
         with self.assertRaises(ValueError) as ce:
             env_io.write_env_keys(self.env_file, {"YIBAN_SIGN_ORDER": payload})
         self.assertEqual(str(cw.exception), str(ce.exception),
@@ -602,16 +594,16 @@ class ReadToleranceAndLegalFlowTest(_WebBase):
 
     def test_legal_change_touches_only_target_line(self):
         before = self.base_env
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_SIGN_ORDER": "random"})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_SIGN_ORDER": "random"})
         expected = before.replace("YIBAN_SIGN_ORDER=sequence",
                                   "YIBAN_SIGN_ORDER=random")
         self.assertEqual(_read_text(self.env_file), expected,
                          "合法保存只应改动目标行（逐字节回归）")
 
     def test_legal_add_and_delete(self):
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_NEW": "v1"})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_NEW": "v1"})
         self.assertEqual(self.webapp.read_env(self.env_file)["YIBAN_NEW"], "v1")
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_NEW": ""})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_NEW": ""})
         self.assertNotIn("YIBAN_NEW", self.webapp.read_env(self.env_file))
         # 其他键一个不动
         self.assertEqual(self.webapp.read_env(self.env_file)["YIBAN_SIGN_ORDER"],

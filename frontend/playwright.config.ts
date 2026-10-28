@@ -1,24 +1,11 @@
-import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { defineConfig, devices } from "@playwright/test";
+
+import { pythonCommand } from "./e2e/python-command";
 
 // e2e 只用本机 Chromium，跑在 frontend/e2e/server.py 拉起的临时 Flask 实例上
 // （临时 .env/SQLite + 预置审计行；不碰仓库真实数据、不联外网）。
 const PORT = Number(process.env.YB_E2E_PORT ?? 8765);
-
-/** 解释器探测：优先显式 YB_E2E_PYTHON（CI / 其他机器），否则试常见 venv 位置。 */
-function pythonCommand(): string {
-  if (process.env.YB_E2E_PYTHON) return process.env.YB_E2E_PYTHON;
-  const candidates = [
-    "../.venv/Scripts/python.exe", // 本 worktree 自带
-    "../../yiban-auto-sign/.venv/Scripts/python.exe", // 主检出（worktree 通常无 venv）
-    "../.venv/bin/python",
-  ];
-  for (const rel of candidates) {
-    if (existsSync(fileURLToPath(new URL(rel, import.meta.url)))) return rel;
-  }
-  return "python";
-}
+const SETUP_PORT = Number(process.env.YB_E2E_SETUP_PORT ?? 8766);
 
 export default defineConfig({
   testDir: "./e2e",
@@ -31,7 +18,10 @@ export default defineConfig({
   reporter: [["list"]],
   timeout: 30_000,
   expect: { timeout: 10_000 },
+  // 每条用例用 e2e/base.ts 的登录夹具新建会话，**不共享** Cookie：
+  // 管理员/用户每次登录都会换发 sid，上一份 Cookie 立刻作废（详见 base.ts）。
   use: {
+    ...devices["Desktop Chrome"],
     baseURL: `http://127.0.0.1:${PORT}`,
     trace: "off",
     // 浏览器时区固定为北京（UTC+8）：e2e/server.py 按业务钟 `yiban.clock`（固定 +8）
@@ -41,12 +31,22 @@ export default defineConfig({
     // （`logs.spec.ts::dates()` 与 `crowded`）不受它影响，另走 `e2e/business-day.ts`。
     timezoneId: "Asia/Shanghai",
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
-  webServer: {
-    command: `"${pythonCommand()}" e2e/server.py`,
-    url: `http://127.0.0.1:${PORT}/login`,
-    reuseExistingServer: false,
-    timeout: 60_000,
-    stdout: "pipe",
-  },
+  webServer: [
+    {
+      command: `"${pythonCommand()}" e2e/server.py`,
+      url: `http://127.0.0.1:${PORT}/login`,
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "pipe",
+    },
+    {
+      // F4 首次启动引导需要「.env 还没有管理员」的独立实例：与主实例状态互斥，
+      // 故另起一个进程/端口（见 e2e/setup_server.py 文件头）。
+      command: `"${pythonCommand()}" e2e/setup_server.py`,
+      url: `http://127.0.0.1:${SETUP_PORT}/setup`,
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: "pipe",
+    },
+  ],
 });

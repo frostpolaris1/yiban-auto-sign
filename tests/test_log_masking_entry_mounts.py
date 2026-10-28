@@ -5,7 +5,7 @@
 兜底脱敏（`yiban.logging_ext.MaskingFormatter`）的价值在"任何调用点都不可能留下
 裸号"——但前提是每个常驻入口真的把它挂上。全仓三个日志装配入口：CLI
 （`yiban/engine/cli_support.py::_setup_cli_logging`，经 `runner.main` 调用，覆盖
-`scripts/signin.py` 与 `yiban.cli` 的 sign/probe）、web（`web/app.py::create_app`
+`scripts/signin.py` 与 `yiban.entry.cli` 的 sign/probe）、web（`web/app.py::create_app`
 的 `DailyFlockFileHandler`）、容器调度器（`docker/scheduler.py::_setup_logging`，
 supervisord 常驻形态，stdout 进 sched.log）。本文件对每个入口各钉两层：
 装配点挂出的 handler 必须带 `MaskingFormatter`（换成裸 `logging.Formatter` 即红），
@@ -46,7 +46,7 @@ import sys
 import tempfile
 import unittest
 
-from yiban import clock
+from yiban.core import clock
 from yiban.logging_ext import MaskingFormatter
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -219,10 +219,10 @@ class CliEntryMountTest(_MountHarness):
         return new[0]
 
     def test_runner_main_wires_setup_cli_logging(self):
-        """CLI 真实入口是 `runner.main`（scripts/signin.py 与 yiban.cli 都转交它）。"""
+        """CLI 真实入口是 `runner.main`（scripts/signin.py 与 yiban.entry.cli 都转交它）。"""
         import inspect
 
-        from yiban.engine import runner
+        from yiban.app import runner
         src = inspect.getsource(runner.main)
         self.assertIn("_setup_cli_logging()", src,
                       "runner.main 未装配 CLI 日志——防线在 CLI 形态缺席")

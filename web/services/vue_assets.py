@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Vue 构建资产清单读取（前端翻新 P0；计划：docs/refactor/29-frontend-vue-refactor-plan.md §3.2）。
+"""Vue 构建资产清单读取（前端翻新 P0）。
 
 **为什么存在**：Vue（Vite）产物是内容哈希文件名，每次构建都变，模板无法写死。
 `vite build` 的 `manifest: true` 产出 `web/static/vue/.vite/manifest.json`；本模块把它

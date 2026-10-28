@@ -4,10 +4,11 @@
 标签：H · 通知：邮件与推送
 覆盖：正文/主题携带**孤立代理对**（utf-8 编码必然失败）时 `_send` 只记日志、返回
     False，绝不抛异常；构造级失败**不**逐条目重试（换条目重投的是同一封，必然同样
-    失败）；运输级失败（连接/SMTP 异常）的主备 failover 行为逐字不变。
-对应实现：`yiban/mail/transport.py::_send`（排版定稿进 try + MIME 构造进 try +
+    失败）；运输级失败（连接失败类）先在同一个条目内重试 2 次（退避 5s/15s），
+    重试用尽后再换下一条目（工单 0eul）。
+对应实现：`yiban/adapters/notifier/mail/transport.py::_send`（排版定稿进 try + MIME 构造进 try +
     Exception 收口分支）。
-关键断言：本层既有契约"发送异常只记日志、绝不抛出"（`yiban/mail/__init__.py` 模块
+关键断言：本层既有契约"发送异常只记日志、绝不抛出"（`yiban/adapters/notifier/mail/__init__.py` 模块
     头）此前对 UnicodeEncodeError 不成立——排版/构造在 try 外，一次坏字符会沿
     `send_user`/`send_notification` 抛回**持 `_file_lock` 同步发信**的路由（锁内 500，
     且把排在其后的审计留痕一起带走；`ba-p05-01` 起锁内发信改走 `run_after_file_lock`，
@@ -19,8 +20,8 @@ import contextlib
 import unittest
 from unittest import mock
 
-from yiban.mail import config as mailer
-from yiban.mail import transport as mailer_transport
+from yiban.adapters.notifier.mail import config as mailer
+from yiban.adapters.notifier.mail import transport as mailer_transport
 
 _LONE_SURROGATE = "\ud800"  # 孤立高代理：任何 utf-8 encode 在此必抛 UnicodeEncodeError
 
@@ -55,8 +56,9 @@ class SendNeverRaisesTest(unittest.TestCase):
         _NeverReachedSMTP.calls = 0
 
     def _send_with_body(self, subject, body):
-        with mock.patch.object(mailer, "is_enabled", lambda: True), \
-             mock.patch.object(mailer, "smtp_list", lambda: [_entry()]), \
+        with mock.patch.object(mailer, "_read_env_file", lambda: {}), \
+             mock.patch.object(mailer, "is_enabled", lambda *a, **k: True), \
+             mock.patch.object(mailer, "smtp_list", lambda *a, **k: [_entry()]), \
              mock.patch.object(mailer_transport.smtplib, "SMTP_SSL", _NeverReachedSMTP):
             return mailer_transport._send(subject, body, "to@example.com")
 
@@ -80,15 +82,16 @@ class SendNeverRaisesTest(unittest.TestCase):
                 seen.append(host)
                 raise UnicodeEncodeError("utf-8", host, 0, 1, "simulated 构造级失败")
 
-        with mock.patch.object(mailer, "is_enabled", lambda: True), \
-             mock.patch.object(mailer, "smtp_list", lambda: entries), \
+        with mock.patch.object(mailer, "_read_env_file", lambda: {}), \
+             mock.patch.object(mailer, "is_enabled", lambda *a, **k: True), \
+             mock.patch.object(mailer, "smtp_list", lambda *a, **k: entries), \
              mock.patch.object(mailer_transport.smtplib, "SMTP_SSL", _ExplodingSMTP):
             ok = mailer_transport._send("标题", "正文", "to@example.com")
         self.assertFalse(ok)
         self.assertEqual(seen, ["first.example"], "第二条目不该接手一封必坏的信")
 
     def test_transport_failure_still_fails_over(self):
-        """回归防线：运输级失败（连接错误）的主备 failover 与本修复前逐字一致。"""
+        """运输级失败（连接错误）仍换下一条目；同条目先按 0eul 有界重试 2 次。"""
         attempts = []
         payload = {}
 
@@ -110,13 +113,17 @@ class SendNeverRaisesTest(unittest.TestCase):
             def sendmail(self, f, t, msg):
                 payload["msg"] = msg
 
-        with mock.patch.object(mailer, "is_enabled", lambda: True), \
+        with mock.patch.object(mailer, "_read_env_file", lambda: {}), \
+             mock.patch.object(mailer, "is_enabled", lambda *a, **k: True), \
              mock.patch.object(mailer, "smtp_list",
-                               lambda: [_entry("first.example"), _entry("second.example")]), \
-             mock.patch.object(mailer_transport.smtplib, "SMTP_SSL", _FlakySMTP):
+                               lambda *a, **k: [_entry("first.example"), _entry("second.example")]), \
+             mock.patch.object(mailer_transport.smtplib, "SMTP_SSL", _FlakySMTP), \
+             mock.patch.object(mailer_transport.time, "sleep", lambda _s: None):
             ok = mailer_transport._send("标题", "正文", "to@example.com")
         self.assertTrue(ok)
-        self.assertEqual(attempts, ["first.example", "second.example"])
+        self.assertEqual(attempts,
+                         ["first.example", "first.example", "first.example", "second.example"],
+                         "连接失败先在同条目内重试 2 次，用尽后换下一条目")
         # 正文在 MIME 里是 base64 段，不逐字可比；可比的判据是"第二条目真的把这封
         # 投了出去"（sendmail 被调用）与"重投的是同一封"（同 Message-ID 幂等键）。
         self.assertIn("msg", payload)

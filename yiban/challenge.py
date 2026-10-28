@@ -4,7 +4,7 @@
 
 **归属**：本项目自研的"平台特征识别"层。挑战页特征取自**平台观察**（响应正文的挑战
 脚本形态、`Set-Cookie` 下发的令牌名），不是任何第三方项目的代码；检测本体委托洁净室
-协议库 `yiban.protocol.looks_like_challenge`（其弱信号 `captcha` 带 HTML 上下文门槛，
+协议库 `yiban.adapters.protocol_yiban.looks_like_challenge`（其弱信号 `captcha` 带 HTML 上下文门槛，
 不误报正常页）。
 
 **为什么不求解**：`https_ydclearance` 挑战的纯 Python 求解器在生产全历史零触发，已按
@@ -14,12 +14,14 @@
 **复用**：`looks_like_challenge` 被 `yiban/platform.py` 与 `yiban/security.py` 复用。
 
 **通信**：输入：响应文本、`Set-Cookie`。输出：布尔检测结果。不执行任何远程 JS、不访问
-网络。调用谁：`yiban.protocol`。谁调用：`yiban/platform.py`（登录握手遇挑战时）、
+网络。调用谁：`yiban.adapters.protocol_yiban`。谁调用：`yiban/platform.py`（登录握手遇挑战时）、
 `yiban/security.py`（拦截判定）。
 前端调用点：无直接调用点；WAF 拦截最终经 `yiban/security.py` 的文案进入签到日志与
 `/api/my-logs`、`/api/admin/sign-events` 页面。
 """
-from yiban.protocol import looks_like_challenge as _lib_looks_like_challenge
+from yiban.adapters.protocol_yiban import (
+    looks_like_challenge as _lib_looks_like_challenge,
+)
 
 #: 挑战检测命中后的响亮失败文案（不求解；词元 "ydclearance" 令其落不可重试硬失败档并清会话）。
 CHALLENGE_DETECTED_MESSAGE = (

@@ -6,7 +6,7 @@
    ——把出口交给执行体的那一次环境写入：
    ①监督进程按槽位拉起执行体时，父环境里的 `YIBAN_PROXY` 不得留在被显式配成直连
       （清单行 `proxy` 为空）的那个槽位上；旧口径 `YIBAN_PROXY_LIST` 的空元素同判；
-   ②同一份槽位配置经 `.env` 覆盖注入（`scripts/child_env.build_child_env`——web 手动
+   ②同一份槽位配置经 `.env` 覆盖注入（`yiban.infra.env_child.build_child_env`——web 手动
       签到与容器调度器共用的环境底座）交进来，也必须落到直连；
    ③兜底常驻执行体（角色 `fallback`，写的是本进程 `os.environ`）同判；
    ④`describe()` 给管理员看的显示必须等于执行体实际出网的出口（工单点名的"两侧都
@@ -14,7 +14,7 @@
    ⑤非空出口照旧生效——本单不得把另一头改成直连；什么都没配时不得凭空长出代理；
    ⑥边界守卫：生产树里把出口写进环境的地方只许有一处（`yiban/egress.py` 的单点
       `apply_egress`），两个调用点都必须调它。
-对应实现：`yiban/egress.py::apply_egress`（唯一落实点）、`yiban/engine/workers.py`
+对应实现：`yiban/egress.py::apply_egress`（唯一落实点）、`yiban/workers/workers.py`
    （两处调用点：并行执行体按槽位、兜底常驻按角色）。
 关键断言：改前①②③④⑥红——旧代码只在解析出**非空**串时写键，空出口那一格什么都不做，
    继承来的父级代理原地留存，配置被静默吞掉。④单独钉"显示直连、实际走代理"这个最危险
@@ -33,10 +33,9 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-import child_env  # scripts/ 在 pytest 的 pythonpath 里
-
 from yiban import egress
-from yiban.engine import workers
+from yiban.infra import env_child as child_env
+from yiban.workers import workers
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -129,7 +128,7 @@ class DirectSlotChildEnvTest(unittest.TestCase):
         child_env_map = dict(envs[0])
         child_env_map["YIBAN_ENV_FILE"] = env_file
         with mock.patch.dict(os.environ, child_env_map, clear=True):
-            from yiban.engine import probe
+            from yiban.app import probe
             self.assertEqual(
                 egress.resolve(egress.ROLE_SINGLE, env=probe._egress_env()).strip(), "",
                 "子进程里按 `.env` 补缺合并出的出口必须仍是直连")
@@ -251,7 +250,7 @@ class EgressEnvWriteSinglePointTest(unittest.TestCase):
 
     def test_supervisor_and_fallback_call_the_single_point(self):
         """两个调用点必须经单点，不得各自保留一份 if/else 写法。"""
-        with io.open(os.path.join(BASE, "yiban", "engine", "workers.py"),
+        with io.open(os.path.join(BASE, "yiban", "workers", "workers.py"),
                      encoding="utf-8") as fh:
             text = fh.read()
         self.assertEqual(text.count("egress.apply_egress("), 2,

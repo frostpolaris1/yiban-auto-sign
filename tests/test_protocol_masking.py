@@ -20,20 +20,20 @@
 这类断言是行为级而非文本级；另配 `test_valid_page_still_parses` 一条正向对照，
 防止靠"任何页面都解析失败"把损坏分支伪造成通过。
 本文件守的是协议层自身的两处出口，不覆盖上层（web/日志）如何再处理这条消息。
-依赖：`tests/fake_yiban_server.py` 里固定的 1024 位测试公钥构造假页（不现场生成），
+依赖：`yiban/adapters/protocol_fake/__init__.py` 里固定的 1024 位测试公钥构造假页（不现场生成），
 `Crypto.PublicKey.RSA` 只用于比对导入结果；无网络、无 skip。
 """
 import unittest
 
 from Crypto.PublicKey import RSA
-from fake_yiban_server import DEFAULT_PUBKEY_PEM
 
 from yiban import platform as yiban_protocol
+from yiban.adapters.protocol_fake import DEFAULT_PUBKEY_PEM
 from yiban.security import ProtocolPolicy
 
 
 def _pubkey_pem():
-    """测试用 RSA-1024 公钥：取 `tests/fake_yiban_server.py` 的固定常量，不现场生成。
+    """测试用 RSA-1024 公钥：取 `yiban/adapters/protocol_fake/__init__.py` 的固定常量，不现场生成。
 
     随机 PEM 的 base64 正文能撞出 ASCII 词元 `WAF`；本文件的 `login_legacy` 走
     `policy.require_not_blocked`，抽中即整条用例被判"被风控拦截"（工单 `yiban-auto-sign-u21x`

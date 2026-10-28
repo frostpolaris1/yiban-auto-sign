@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
-"""`yiban/store/queue_store.py`：sign_tasks 的批量领取 / 批量收尾 / 重排 / 当日计数。
+"""`yiban/adapters/persistence/queue_store.py`：sign_tasks 的批量领取 / 批量收尾 / 重排 / 当日计数。
 
 标签：B · 调度：领取/队列/执行体
 覆盖：sign_tasks 的批量领取（分片集过滤、limit 截断、priority + run_at
    排序、不改动不相关行、领到的行落 state
-   与任务级短租约、二次领取为空、空分片集不碰库）、表缺失与「只是没到期行」的告警分档、settle_tasks
+   与 owner、二次领取为空、空分片集不碰库）、表缺失与「只是没到期行」的告警分档、settle_tasks
    的 owner 作用域与 result 截断、requeue_task 的 priority/attempts
    递增、day_counts 与直接 SQL 的一致口径及派生键。
-对应实现：yiban/store/queue_store.py（claim_batch、settle_tasks、requeue_task、day_counts）、scripts/db.py
-   的建表迁移、yiban/store/claims.py 的 stats 键口径。
+对应实现：yiban/adapters/persistence/queue_store.py（claim_batch、settle_tasks、requeue_task、day_counts）、scripts/db.py
+   的建表迁移、yiban/adapters/persistence/claims.py 的 stats 键口径。
 关键断言：「表未落地」与「表在但无到期行」必须是两件事：前者要回 `None` 哨兵并告警（调用方据此计入有界放弃闸门），后者静默，不能天天喊库坏了。limit
    截断时的取舍必须显式排序（priority 小者、同优先级 run_at 早者），因为 UPDATE
    ... RETURNING 的行序不保证。空 day（表在、当日无行）也要给出与 claims.stats
@@ -17,7 +17,7 @@
    假时间戳助手；无网络请求、不起应用。整文件在本机执行，无 skip。
 
 覆盖 claim_batch 的四条边界（分片集过滤、limit 截断、priority+run_at 排序、
-不改动不相关行）、领取后的 state 与任务级短租约、settle_tasks 的 owner 作用域与
+不改动不相关行）、领取后的 state 与 owner（`lease_until` 零写入）、settle_tasks 的 owner 作用域与
 result 截断、requeue_task 的 priority/attempts 递增，以及 day_counts 与直接 SQL
 计数的一致口径（空 day 不抛）。
 """
@@ -34,8 +34,8 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402
 
-from yiban import clock  # noqa: E402
-from yiban.store import queue_store  # noqa: E402
+from yiban.adapters.persistence import queue_store  # noqa: E402
+from yiban.core import clock  # noqa: E402
 
 TEST_KEY = "a" * 64
 
@@ -134,7 +134,7 @@ class _Base(unittest.TestCase):
 
 
 class ClaimBatchTest(_Base):
-    def test_returns_only_my_shards_and_respects_limit(self):
+    def test_returns_only_my_shards_and_defaults_to_one(self):
         conn = db.get_conn()
         rows = []
         for i in range(40):
@@ -150,12 +150,19 @@ class ClaimBatchTest(_Base):
         conn.commit()
 
         got = queue_store.claim_batch(OWNER, DAY, MY_SHARDS, now=_ts())
-        self.assertEqual(len(got), 32, "limit 缺省 32 = 通道数 × 预取系数")
+        self.assertEqual(len(got), 1, "claim-at-dispatch：缺省只领一行")
         for r in got:
             self.assertEqual(set(r), {"phone", "run_at", "attempts", "epoch"})
             self.assertIn(self._row(r["phone"])["vshard"], MY_SHARDS)
         mine = {p for p, r in self._all().items() if r["state"] == "claimed"}
         self.assertEqual(mine, {r["phone"] for r in got}, "领到的恰好是返回的那些行")
+
+    def test_limit_is_honoured_but_production_never_batches(self):
+        """`limit` 只在测试/迁移场景用；生产调用点（executor 的 `_claim_one`）只领一行。"""
+        for i in range(5):
+            self._add_task(_phone(i))
+        got = queue_store.claim_batch(OWNER, DAY, MY_SHARDS, now=_ts(), limit=3)
+        self.assertEqual(len(got), 3)
 
     def test_selection_prefers_low_priority(self):
         """limit 截断时先领 priority 小的（0 最高）——`UPDATE ... RETURNING` 的行序不保证
@@ -172,18 +179,16 @@ class ClaimBatchTest(_Base):
         got = queue_store.claim_batch(OWNER, DAY, MY_SHARDS, now=_ts(), limit=1)
         self.assertEqual([r["phone"] for r in got], [_phone(2)])
 
-    def test_claimed_rows_get_state_and_short_lease(self):
+    def test_claimed_row_has_state_owner_and_no_lease(self):
+        """claim-at-dispatch：领取写 state/owner/epoch，**不再写任务级租约**（`lease_until`
+        零写入，工单 `l1rx`）——持有时间由"领取即执行"保证有界，不靠时间戳回收。"""
         self._add_task(_phone(1))
-        before = clock.now()
         got = queue_store.claim_batch(OWNER, DAY, MY_SHARDS, now=_ts())
         self.assertEqual([r["phone"] for r in got], [_phone(1)])
         row = self._row(_phone(1))
         self.assertEqual(row["state"], "claimed")
         self.assertEqual(row["owner"], OWNER)
-        lease = datetime.datetime.strptime(row["lease_until"], "%Y-%m-%d %H:%M:%S.%f")
-        expected = before + datetime.timedelta(seconds=60)
-        self.assertLess(abs((lease - expected).total_seconds()), 2,
-                        "任务级短租约应为 now+60s（±2s）")
+        self.assertEqual(row["lease_until"], "", "领取不得写租约（租约族已删）")
 
     def test_untouched_rows_keep_original_values(self):
         self._add_task(_phone(1))                                    # 我的：会被领
@@ -204,18 +209,6 @@ class ClaimBatchTest(_Base):
         self._add_task(_phone(1))
         self.assertEqual(queue_store.claim_batch(OWNER, DAY, (), now=_ts()), [])
 
-    def test_missing_table_returns_sentinel_with_warning(self):
-        """表未落地 = 队列读不通：回 `None` 哨兵**并告警**，调用方据此计入有界放弃闸门。
-
-        `[]` 只回答"表在、但没有到期行"；用 `[]` 回答"读不通"会让执行体把库坏了
-        当成"今天没活了"（全天零签到而现场只有两条 WARNING，ba-p01-01）。
-        """
-        conn = db.get_conn()
-        conn.execute("DROP TABLE sign_tasks")
-        conn.commit()
-        with self.assertLogs("yiban.store.queue_store", level="WARNING") as cm:
-            self.assertIsNone(queue_store.claim_batch(OWNER, DAY, MY_SHARDS, now=_ts()))
-        self.assertIn("批量领取签到任务失败", "\n".join(cm.output))
 
     def test_no_due_rows_is_silent(self):
         """表在、只是没有到期行 ⇒ 空返回但**不告警**：与"库坏了"必须是两件事。"""
@@ -238,7 +231,6 @@ class SettleTasksTest(_Base):
         for i in range(33):
             row = self._row(_phone(i))
             self.assertEqual(row["state"], "done")
-            self.assertEqual(row["lease_until"], "")
             self.assertNotEqual(row["result"], "")
         self.assertEqual(len(self._row(_phone(32))["result"]), 200, "result 截断 200 字")
         foreign = self._row(_phone(900))
@@ -263,7 +255,6 @@ class RequeueTaskTest(_Base):
         self.assertEqual(row["priority"], 6, "priority 恰好 +1")
         self.assertEqual(row["attempts"], 3, "attempts 恰好 +1")
         self.assertEqual(row["state"], "pending")
-        self.assertEqual(row["lease_until"], "")
 
     def test_priority_delta_is_honoured(self):
         self._add_task(_phone(1), state="pending", priority=5)
@@ -272,7 +263,9 @@ class RequeueTaskTest(_Base):
 
 
 class ReclaimTasksTest(_Base):
-    """`reclaim_tasks`：手动 `--only` 的显式重签——只翻终态、`run_at` 置现在、不动在飞。"""
+    """`reclaim_tasks`：手动 `--only` 的显式重签——翻终态行与在飞行行、`run_at` 置现在。
+    兜底锁被持有时在飞行行整行跳过（本类不持锁，故 `claimed` 行照翻；跨进程守卫见
+    `tests/test_reclaim_fallback_lock_e2e.py`）。"""
 
     def test_terminal_rows_flip_to_pending_with_bumped_epoch(self):
         self._add_task(_phone(1), state="done", owner=OWNER, attempts=1)
@@ -283,17 +276,19 @@ class ReclaimTasksTest(_Base):
             row = self._row(p)
             self.assertEqual(row["state"], "pending")
             self.assertEqual(row["owner"], "")
-            self.assertEqual(row["lease_until"], "")
             self.assertGreater(row["epoch"], 0, "翻态必须换一代 token（fence 迟到旧代写）")
 
-    def test_inflight_and_failed_rows_are_not_state_changed(self):
-        """`claimed`（他人在飞）不改状态、不动 token；`failed` 由回炉口管，不在此翻。"""
+    def test_stale_claimed_is_flipped_but_failed_is_not(self):
+        """`claimed`（在飞行）**翻回 pending 并换代**——手工 `--only` 的卡死行逃生口
+        （工单 `l1rx` 必修 R2）；`failed` 由回炉口管，不在此翻。"""
         self._add_task(_phone(1), state="claimed", owner="other:1:1", epoch=7)
         self._add_task(_phone(2), state="failed", owner="other:1:1", epoch=3)
         queue_store.reclaim_tasks(DAY, [_phone(1), _phone(2)])
         r1 = self._row(_phone(1))
-        self.assertEqual((r1["state"], r1["owner"], r1["epoch"]),
-                         ("claimed", "other:1:1", 7), "在飞行不得被手动重签打断")
+        self.assertEqual((r1["state"], r1["owner"]), ("pending", ""),
+                         "卡死的 claimed 行必须被手动重签救回（否则用户点立即签到无效）")
+        self.assertGreater(r1["epoch"], 7,
+                           "翻动必须换代——原持有者迟到的写要被 fence")
         r2 = self._row(_phone(2))
         self.assertEqual((r2["state"], r2["epoch"]), ("failed", 3),
                          "failed 不归重签口管（走 requeue_failed）")
@@ -305,6 +300,16 @@ class ReclaimTasksTest(_Base):
         self.assertEqual(n, 1, "只翻在册且分片内的那一行")
         self.assertEqual(self._row(_phone(1))["state"], "done", "vshard=-1 历史行不碰")
         self.assertEqual(self._row(_phone(2))["state"], "pending")
+
+    def test_only_flipped_rows_gain_attempts(self):
+        """`attempts` 只随**翻态**行 +1：`pending`／`failed` 行被刷新 `run_at` 时不得白吃预算。"""
+        self._add_task(_phone(1), state="pending", attempts=2)
+        self._add_task(_phone(2), state="failed", attempts=1)
+        self._add_task(_phone(3), state="done", attempts=0)
+        queue_store.reclaim_tasks(DAY, [_phone(1), _phone(2), _phone(3)])
+        self.assertEqual(self._row(_phone(1))["attempts"], 2, "pending 不翻态，预算不动")
+        self.assertEqual(self._row(_phone(2))["attempts"], 1, "failed 归回炉口，预算不动")
+        self.assertEqual(self._row(_phone(3))["attempts"], 1, "done 翻态＝一次新尝试记账")
 
 
 class DisplayReadsTest(_Base):
@@ -417,6 +422,72 @@ class DayCountsTest(_Base):
         self.assertEqual(got["open"], 0)
         self.assertEqual(got["total"], 0)
         self.assertTrue(all(n == 0 for n in got.values()), got)
+
+
+class FallbackEventOwnerPrefixTest(_Base):
+    """兜底事件签名剔除自己时，前缀必须带分隔符（工单 ba-p01-06）。
+
+    `worker-1` 与 `worker-12:...` 互为字节前缀：旧实现把不带冒号的稳定名塞进
+    `instr(owner, ?)`，于是 `worker-1` 会把别人名下的行一起剔出唤醒签名——兜底
+    漏掉一次「变化即接手」，最坏退化为等满扫描间隔。同仓其余三处同族匹配
+    （reap_expired / reap_abandoned / requeue_failed）一律按 `owner + ":"` 前缀。
+    """
+
+    def test_prefix_named_owner_does_not_hide_other_owner_rows(self):
+        from yiban.core import status as yiban_status
+
+        retry = yiban_status.RESULT_RETRY_PREFIX + "skipped_window"
+        self._add_task("13900009001", state="failed", owner="worker-1:111:090000",
+                       result=retry)
+        self._add_task("13900009002", state="failed", owner="worker-12:222:090000",
+                       result=retry)
+
+        sig = queue_store.fallback_event(DAY, "worker-1")
+        self.assertEqual(
+            sig[0], 1,
+            "剔除自己的槽位只能按 `worker-1:` 前缀；按裸名匹配会把 worker-12 的行"
+            "一起剔掉，兜底漏掉一次唤醒",
+        )
+
+
+class ReclaimAttemptNumberTest(_Base):
+    """重签是**第二次真实登录**：它的事件必须有自己的 attempt 号，不得被去重键吞掉。
+
+    判据是用户可见结果（`sign_events` 里两条尝试各留一行），不是「attempts 字段等于几」。
+    """
+
+    def _event_rows(self, phone):
+        return db.get_conn().execute(
+            "SELECT COUNT(*) FROM sign_events WHERE phone=?", (phone,)).fetchone()[0]
+
+    def test_second_real_attempt_after_reclaim_is_not_deduped(self):
+        phone = _phone(1)
+        self._add_task(phone, state="done", owner=OWNER, attempts=0)
+        db.add_sign_event(f"{DAY} 06:30:00", phone, "success", "第一次",
+                          stage="sign", attempt=1)
+        queue_store.reclaim_tasks(DAY, [phone])
+        row = self._row(phone)
+        db.add_sign_event(f"{DAY} 06:40:00", phone, "success", "第二次",
+                          stage="sign", attempt=row["attempts"] + 1)
+        self.assertEqual(self._event_rows(phone), 2,
+                         "重签后的第二次真实尝试被当成同一次观测而丢弃")
+
+
+class ReapAttemptNumberTest(_Base):
+    """崩溃回收后重试同样是**下一次真实尝试**：事件必须有自己的 attempt 号。"""
+
+    def test_second_real_attempt_after_reap_is_not_deduped(self):
+        phone = _phone(2)
+        self._add_task(phone, state="claimed", owner=OWNER + ":1:1", attempts=0)
+        db.add_sign_event(f"{DAY} 06:30:00", phone, "failed", "崩溃前那次",
+                          stage="sign", attempt=1)
+        queue_store.reap_abandoned(OWNER, DAY)
+        row = self._row(phone)
+        db.add_sign_event(f"{DAY} 06:40:00", phone, "failed", "回收后重试仍失败",
+                          stage="sign", attempt=row["attempts"] + 1)
+        n = db.get_conn().execute(
+            "SELECT COUNT(*) FROM sign_events WHERE phone=?", (phone,)).fetchone()[0]
+        self.assertEqual(n, 2, "回收后重试被当成同一次观测而丢弃")
 
 
 class NoHardcodedDateTest(unittest.TestCase):

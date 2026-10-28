@@ -5,7 +5,7 @@
 覆盖：`capacity_of` 两套公式的逐值等价（`enabled=False` ↔ `capacity_accounts`、
 `enabled=True` ↔ `capacity_accounts_v3`）、K 的唯一口径 `executor_count` 的边界，以及
 四处调用点在单池化后的数值不变（展示/闸门/预检均显式固定 v2 口径）
-对应实现：`schedule.capacity_of` / `schedule.executor_count`、`web/services/capacity.py::_capacity_estimate`、`yiban/engine/runner.py` 的容量预检、CLI `capacity` 与现场实测换算、`scripts/signin.py` 的转发壳
+对应实现：`schedule.capacity_of` / `schedule.executor_count`、`web/services/capacity.py::_capacity_estimate`、`yiban/app/runner.py` 的容量预检、CLI `capacity` 与现场实测换算、`scripts/signin.py` 的转发壳
 关键断言：`enabled=False` 时 k / bucket_rate / util 一律不参与（v2 公式逐字不变）；`executor_count` 夹在 `[1, 出口数]`、随 N 单调不减、`bucket_rate` 变小则 K 不变或变大；双轨开关已随单池消失，`enabled` 缺省**恒为 v3 口径**（`scheduler_v3_enabled` 保留但恒真），生产调用点则显式传 `enabled=False` 以守住批 4 取值；另两处调用点用「包住 `capacity_of` 看它收到什么」来断言 `k=1`——源码文本断言会被无关重构误伤
 依赖：纯本地——假时钟与假配置快照（runner 预检不读真实 `.env`、不联网、不落库）。无需 node
 
@@ -15,7 +15,7 @@
 3. `executor_count`（K 的唯一口径）的边界：夹到 `[1, 出口数]`、随 N 单调不减、
    `bucket_rate` 变小则 K 不变或变大；
 4. 四处调用点**数值不变**：`web/services/capacity.py` 与
-   `yiban/engine/runner.py` 两处用显式期望值钉住；另两处（`settings_api` / `cli`）
+   `yiban/app/runner.py` 两处用显式期望值钉住；另两处（`settings_api` / `cli`）
    以"包住 `capacity_of` 看它收到什么"作行为断言，验证 `k=1`（单执行体语义）。
 
 """
@@ -28,7 +28,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from web.services import capacity as cap_service
-from yiban.engine import runner as runner_mod
+from yiban.app import runner as runner_mod
 from yiban.engine import schedule
 
 DAY = "2026-09-22"
@@ -163,9 +163,13 @@ class WebCapacityEstimateSwitchOffTest(unittest.TestCase):
     """`web/services/capacity.py::_capacity_estimate` 显式固定 v2 公式，逐值不变。"""
 
     def _estimate(self, gap):
-        return cap_service._capacity_estimate(
-            gap, sign_window=lambda: ((6, 30), (7, 50)),
-            edge_config=lambda: (60, 60))
+        # 批 3-d：宿主依赖改由 hook 接缝解析；用例只换窗口/裁剪与空 `.env`。
+        with mock.patch.dict(cap_service._hooks, {
+                "sign_window": lambda: (lambda: ((6, 30), (7, 50))),
+                "edge_config": lambda: (lambda: (60, 60)),
+                "read_env": lambda: (lambda path: {}),
+                "env_file": lambda: "<test>"}):
+            return cap_service._capacity_estimate(gap)
 
     def test_explicit_values_unchanged(self):
         with mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
@@ -199,7 +203,7 @@ class OtherCallSitesRouteThroughCapacityOfTest(unittest.TestCase):
         return spy
 
     def test_cli_capacity_per_executor_value_unchanged(self):
-        from yiban import cli
+        from yiban.entry import cli
         view = {
             "YIBAN_SIGN_START": "06:30", "YIBAN_SIGN_END": "07:50",
             "YIBAN_WINDOW_EDGE_FRONT_SEC": "60", "YIBAN_WINDOW_EDGE_BACK_SEC": "60",
@@ -224,8 +228,21 @@ class OtherCallSitesRouteThroughCapacityOfTest(unittest.TestCase):
         import contextlib
 
         import flask
+        import signin
 
+        from web import security as _security
         from web.routes import settings_api
+        from web.services import accounts_data as _accounts_data
+        from web.services import env_io as _env_io_svc
+        from web.services import executor_env as _executor_env
+        from web.services import http_request as _http
+        from web.services import limits as _limits
+        from web.services import measure as _measure
+        from web.services import notify_mail as _notify_mail
+        from web.services import signstatus as _signstatus
+        from yiban.adapters.persistence import db as _db
+        from yiban.core import clock as _clock
+        from yiban.core import masking as _masking
         seen = []
 
         class _Bounds:
@@ -233,31 +250,56 @@ class OtherCallSitesRouteThroughCapacityOfTest(unittest.TestCase):
             def full_sec():
                 return 4680
 
-        m = SimpleNamespace(
-            ENV_FILE=".env", DEFAULT_ACCOUNT_GAP_MAX=10, MEASURE_COOLDOWN_SEC=300,
-            clock=SimpleNamespace(now=datetime.now),
-            db=SimpleNamespace(audit=lambda *a, **kw: None),
-            _is_builtin_admin_session=lambda: True,
-            _executors_window=lambda: _Bounds(),
-            _in_sign_window=lambda bounds: False,
-            _json_body=lambda: {},
-            load_accounts=lambda: [{"phone": "13800000001"}],
-            _pick_measure_account=lambda accounts, phone: {"phone": "13800000001"},
-            _as_signin_account=lambda acc: SimpleNamespace(),
-            _mask_phone=lambda p: "138****0001",
-            load_env_int=lambda *a: 10,
-            _measure_state_path=lambda: os.path.join(tempfile.gettempdir(), "m.json"),
-            _read_measure_state=lambda p: {},
-            _write_measure_state=lambda p, d: None,
-            _measure_cooldown_remaining=lambda st, cd: 0,
-            _audit_actor=lambda: "admin",
-            signin=SimpleNamespace(
-                _state_file_lock=lambda p: contextlib.nullcontext(),
-                verify_account=lambda acc: (True, "ok"),
-                capacity_of=self._spy(seen)),
-        )
-        with mock.patch.object(settings_api, "_appmod", lambda: m), \
-                flask.Flask(__name__).app_context():
+        # 假 app 模块只剩 app.py **自有**的名字（A 类转发名已不由转发墙供，见批 3-a；
+        # 纯常量与纯助手已搬 web/services/*，见批 3-b，故这两类的打桩点落在新家上）。
+        m = SimpleNamespace(ENV_FILE=".env")
+        state_path = os.path.join(tempfile.gettempdir(), "m.json")
+        # 批 3-c S3：`_is_builtin_admin_session` 已从 app.py 的转发墙搬走，路由直取
+        # `web.security`。原先把桩挂在假 app 模块上 ⇒ 路由不再读到它 ⇒ 真源在无请求
+        # 上下文时抛 RuntimeError（本用例当场红）。故打桩点改到真源上。
+        # 用 ExitStack 而不是一条长 `with`：批 3-d 新增 3 个真源桩后超过 CPython
+        # 静态嵌套块上限（"too many statically nested blocks"）。
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(flask.Flask(__name__).app_context())
+            stack.enter_context(mock.patch.object(settings_api, "_appmod", lambda: m))
+            stack.enter_context(mock.patch.object(
+                _security, "_is_builtin_admin_session", lambda: True))
+            stack.enter_context(mock.patch.object(_limits, "DEFAULT_ACCOUNT_GAP_MAX", 10))
+            stack.enter_context(mock.patch.object(_limits, "MEASURE_COOLDOWN_SEC", 300))
+            stack.enter_context(mock.patch.object(_http, "_json_body", lambda: {}))
+            stack.enter_context(mock.patch.object(
+                _signstatus, "_in_sign_window", lambda bounds: False))
+            stack.enter_context(mock.patch.object(
+                _executor_env, "_executors_window", lambda: _Bounds()))
+            stack.enter_context(mock.patch.object(
+                _measure, "_measure_state_path", lambda: state_path))
+            stack.enter_context(mock.patch.object(
+                _measure, "_write_measure_state", lambda p, d: None))
+            stack.enter_context(mock.patch.object(
+                _measure, "_pick_measure_account",
+                lambda accounts, phone: {"phone": "13800000001"}))
+            stack.enter_context(mock.patch.object(
+                _accounts_data, "load_accounts",
+                lambda: [{"phone": "13800000001"}]))
+            stack.enter_context(mock.patch.object(
+                _accounts_data, "_as_signin_account", lambda acc: SimpleNamespace()))
+            stack.enter_context(mock.patch.object(
+                _masking, "mask_phone", lambda p: "138****0001"))
+            stack.enter_context(mock.patch.object(_env_io_svc, "load_env_int", lambda *a: 10))
+            stack.enter_context(mock.patch.object(
+                _measure, "_read_measure_state", lambda p: {}))
+            stack.enter_context(mock.patch.object(
+                _measure, "_measure_cooldown_remaining", lambda st, cd: 0))
+            stack.enter_context(mock.patch.object(_clock, "now", datetime.now))
+            stack.enter_context(mock.patch.object(_db, "audit", lambda *a, **kw: None))
+            stack.enter_context(mock.patch.object(_notify_mail, "_audit_actor",
+                                                  lambda: "admin"))
+            stack.enter_context(mock.patch.object(
+                signin, "_state_file_lock", lambda p: contextlib.nullcontext()))
+            stack.enter_context(mock.patch.object(
+                signin, "verify_account", lambda acc: (True, "ok")))
+            stack.enter_context(mock.patch.object(
+                signin, "capacity_of", self._spy(seen)))
             resp = settings_api.api_scheduler_executors_measure()
         self.assertTrue(resp.get_json()["ok"])
         args, kw = seen[0]

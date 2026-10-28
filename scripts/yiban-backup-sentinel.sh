@@ -11,37 +11,50 @@
 # 那封邮件才是外部参照（恢复后与该包日期当天的哈希比对即可）。
 # 锚点外发**每天必发**（失败时 stderr 留一行，不改退出码）；失败告警仍只在异常时发。
 #
-# 安装（08:05 排期在 02:00 备份之后，留足打包与异机同步的时间）：
+# 安装与排期（08:05 在 02:00 备份之后，留足打包与异机同步的时间）：
+#   **权威载体在仓库，走一键安装器落位**：
+#   sudo bash deploy/prod/install.sh         # 落位本包装 + cron 表（见 install.sh 头注释）
+#   手工等价（仅 install.sh 不可用时；mode/属主与 manifest.tsv 一致）：
 #   sudo install -m 0700 -o root -g root scripts/yiban-backup-sentinel.sh \
 #       /usr/local/sbin/yiban-backup-sentinel.sh
-#   sudo crontab -e
-#   5 8 * * * APP_DIR=/opt/yiban-auto-sign /usr/local/sbin/yiban-backup-sentinel.sh >> /var/log/yiban/backup.log 2>&1
+#   排期件 = deploy/prod/cron.d/yiban-backup-sentinel（装到 /etc/cron.d/，0644 root:root）。
+#   身份列 = **root**（与 02:00 备份同链）：root 要读 0700 root:root 的已装
+#   yiban-backup.sh 做防漂移比对，yiban 读不到会每日误报。命令逐字：
+#   5 8 * * * root YIBAN_STATE_DIR=/var/lib/yiban-backup-sentinel APP_DIR=/opt/yiban-auto-sign /usr/local/sbin/yiban-backup-sentinel.sh >> /var/log/yiban/backup.log 2>&1
 #   # 退出码 0 = 检查完成（含"缺失但告警已发出"、含"锚点外发没成功"）；1 = 检查本身失败或告警发不出去。
 #   ⚠ 上面这行把 stderr 并进了 backup.log，所以 cron 不会发报错邮件（全仓无 MAILTO
 #   设置）：退出码 1 只在有人翻日志时才看得见，别把它当成告警。要它自己响，得去掉
 #   `2>&1` 并配 `MAILTO`，或把退出码接进监控。日志与 backup.sh 同文件，排查时按时间挨着看。
 #
 # 环境变量（与 backup.sh / run.sh 同口径）：
-#   BACKUP_DIR（默认 /var/backups）、APP_DIR（默认 /opt/yiban-auto-sign）、
+#   BACKUP_DIR（默认 /var/backups/yiban，与 backup.sh / pull-prod-backup.sh 同值）、
+#   APP_DIR（默认 /opt/yiban-auto-sign）、
 #   YIBAN_BACKUP_INSTALLED（默认 /usr/local/sbin/yiban-backup.sh，防漂移比对对象）、
-#   YIBAN_ENV_FILE（默认 <APP_DIR>/.env，由本脚本导出）、
+#   YIBAN_ENV_FILE（默认 <APP_DIR>/data/.env，由本脚本导出）、
+#   YIBAN_CRON_D_DIR（触发器条数门读的生产 cron.d 目录，默认 /etc/cron.d）、
+#   YIBAN_SYSTEM_CRONTAB（系统级 cron 表，默认 /etc/crontab）、
 #   YIBAN_DB_FILE（本脚本**不设**这枚键。库路径由 store 侧 `resolve_path` 三档解析：
-#     进程环境 → .env → 默认 "yiban.db"。默认值按 cwd 解析，而本脚本已 cd 到
-#     APP_DIR，所以缺省档就是 <APP_DIR>/yiban.db。本脚本插一手就会顶掉 .env 的声明）、
-#   YIBAN_STATE_DIR（默认 .env 所在目录，即 <APP_DIR>：节流表落
-#   <APP_DIR>/notify-throttle.json）——后两个给收件人算法与节流表定位；
+#     进程环境 → .env → env_io.DEFAULT_DB_FILE "data/yiban.db"。默认值按 cwd 解析，
+#     而本脚本已 cd 到 APP_DIR，所以缺省档就是 <APP_DIR>/data/yiban.db。本脚本插一手
+#     就会顶掉 .env 的声明）、
+#   YIBAN_STATE_DIR（排期件**显式设为 root 私有目录** /var/lib/yiban-backup-sentinel：
+#   节流表落 <该目录>/notify-throttle.json。**不可**沿用 yiban 属主的共享状态目录——
+#   哨兵以 root 跑，首家写入即留下 root 属主文件，yiban 侧（web/signin）随即拿不到
+#   跨进程锁、节流表被判损坏。该目录由 deploy/prod/tmpfiles.d/yiban.conf 声明为 0700 root:root）、
 #   未配置推送/邮件时告警只落日志（退出码 1），锚点外发同样落 stderr。
 #
 # 工作目录：本脚本自己 cd 到 APP_DIR，**这是哨兵能出声的前提**。cron 的 cwd 是
-# $HOME，而哨兵侧所有 cwd 相对的回落（`yiban/infra/env_io.py` 的 env_path() 默认
-# ".env"、`yiban/store/connection.py` 的 DB_DEFAULT "yiban.db"）都以 cwd 为基准：
+# $HOME，而哨兵侧所有 cwd 相对的回落（`yiban/adapters/config/env_io.py` 的 env_path() 默认
+# "data/.env"、`yiban/adapters/persistence/connection.py` 的 DB_DEFAULT "data/yiban.db"）都以 cwd 为基准：
 # 不 cd 就读不到 .env，收件人解析为空 ⇒ 告警发不出去（退出码 1，恰是本脚本要消灭的
 # 那种静默），并在 $HOME 就地新建一份野 yiban.db。
-# 部署：以 yiban 用户运行（与 run.sh 同属主），日志**不要**写 sign-*.log。
+# 部署：以 **root** 运行（与 02:00 备份同链；排期件 /etc/cron.d/yiban-backup-sentinel
+# 的身份列 = root）。日志**不要**写 sign-*.log。
 # 解释器：优先项目虚拟环境（与 run.sh 同一套解析），缺失时回退系统 python3。
 umask 077
 
-APP_DIR="${APP_DIR:-/opt/yiban-auto-sign}"
+# 部署根：唯一环境键 YIBAN_APP_DIR；APP_DIR 只作旧部署别名（census-P2-repo-root）。
+APP_DIR="${YIBAN_APP_DIR:-${APP_DIR:-/opt/yiban-auto-sign}}"
 # 从仓库里直接跑（未安装）时，没有 APP_DIR 也能定位到仓库根：本脚本就在 scripts/ 下
 if [ ! -f "$APP_DIR/scripts/backup_sentinel.py" ]; then
     APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -50,16 +63,16 @@ export APP_DIR
 cd "$APP_DIR" || { echo "致命: 无法进入应用目录 $APP_DIR" >&2; exit 1; }
 # .env 路径显式导出：哨兵的收件人算法与节流表都按 YIBAN_ENV_FILE 定位 .env（缺省
 # 回落 cwd 相对 ".env"，那正是上面 cd 要治的病症）；已由部署方给出时沿用其值。
-export YIBAN_ENV_FILE="${YIBAN_ENV_FILE:-$APP_DIR/.env}"
+export YIBAN_ENV_FILE="${YIBAN_ENV_FILE:-$APP_DIR/data/.env}"
 # 库路径**不在这里给值**（工单 ba-p02-02 订正）。库路径的唯一解析器在 Python 侧。
 # `env_io.resolve_path` 的三档是：进程环境 → .env → 默认值。第一档压过第二档。
-# 这里原先写的是 `export YIBAN_DB_FILE="${YIBAN_DB_FILE:-$APP_DIR/yiban.db}"`。
+# 这里原先用 `${YIBAN_DB_FILE:-<旧默认>}` 现造一个值（键名带前缀，但把缺省值塞进第一档）。
 # 部署方没设进程环境时，它会造出一个值，并把该值放进第一档。
 # 于是 `.env` 里声明的自定义库路径被顶掉——哨兵读到另一份（通常不存在的）库。
 # 头注释当时写的理由是"免得锚点悄悄读到一个空库"。这与代码的实际行为相反，
 # 属假担保，同批订正。
-# 不设这行之后，缺省档仍落在 <APP_DIR>/yiban.db：本脚本已 cd 到 APP_DIR，
-# 默认值 "yiban.db" 按 cwd 解析就是它（与上面 cd 段的口径同一条）。
+# 不设这行之后，缺省档仍落在 <APP_DIR>/data/yiban.db：本脚本已 cd 到 APP_DIR，
+# 默认值 "data/yiban.db" 按 cwd 解析就是它（与上面 cd 段的口径同一条）。
 
 if [ -x "$APP_DIR/.venv/bin/python3" ]; then
     PY="$APP_DIR/.venv/bin/python3"

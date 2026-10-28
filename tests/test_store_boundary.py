@@ -1,44 +1,29 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""store 层拆分边界：门面读写转发 + 表级 CRUD 真实可用。
+"""store 层拆分后的**行为**回归：经 db 门面走一遍各域的真实读写。
 
-`yiban/store/db.py` 从「唯一实现」退成门面：各域定义点在同包 `accounts` / `clock_meta` /
-`connection` / `session_cache` / `time_prefs` / `tracking` 等模块，db 用**模块级读写转发**
-（`_FORWARDED_STATE`）暴露它们，而不是快照式再导出。本文件把各域拆分契约并到一处，钉住：
+`yiban/adapters/persistence/db.py` 是门面：各域定义点在同包 `accounts` / `clock_meta` / `connection` /
+`session_cache` / `time_prefs` / `tracking` 等模块。本文件钉住的是**经门面能真用**：
 
-1. **同一对象**：`db.<名字> is <域模块>.<名字>`，且 db 自己的 `__dict__` 里不再持有该绑定。
-2. **写转发落真定义点**：`db.<名字> = 替身` 必须改到域模块上，只换门面那一份就是打桩静默失效。
-3. **打桩可见于模块内部调用点**：域模块内部互相调用也要看到门面上的替身（否则测试仍绿、
-   打桩点却不是它以为的那一个）。
-4. **delattr 隐藏名语义**：`del db.<名字>` 只把名字从门面摘下，撤销时 `setattr` 能恢复，
-   `mock.patch.object` / `monkeypatch.delattr` 依赖这条。
-5. **真实可用**：经门面走一遍该域的读/写/改绑/删除，确认跨域助手仍通。
-6. **布局记账**：`yiban/store/db.py` 行数与裸导入（`import db` 一类）不得回潮。
-7. **机制总账（6c3-B）**：上述 ①②④ 里逐域复制的桩机制断言（原 45 条）收敛为
-   `StoreForwardingMechanismLedgerTest` 的 8 条参数化——新域登记 `_MECH_DOMAINS`
-   即被同一组机制钉住；各域**行为**用例（FacadeBehaviourTest_* 等）一字未动。
-
-功能：store 层各行级模块与 db 门面之间的读写转发契约与端到端可用性。
-归属：`yiban/store/` 数据层的测试。
-复用：`BASE` / `TEST_KEY` / 各域 `MOVED_*` 名字清单、`_import_shell()` 兼容壳装载助手。
-通信：导入 `yiban.store.db` 与各域模块，读写临时 SQLite 与临时 `.env`；由 pytest 收集
-`unittest.TestCase`。
+- 各域 CRUD 往返（accounts 账号、clock_meta 单键、session_cache 作废、time_prefs 统计与
+  冷却、tracking 加盐哈希与盐缓存）；
+- `init_db` 各分支语义、`YIBAN_DB_FILE` 只写进 `.env` 时的库路径解析；
+- 解密在锁外完成（A2）；
+- web 侧行为：用户侧写端点的错位请求守卫、同号去重、`--check-config` 摘要脱敏；
+- 包内不得裸 `import db/mailer/notify/signin`（依赖 `scripts/` 在 `sys.path` 的旧写法）。
 
 标签：C · 存储：迁移与库完整性
-覆盖：`yiban/store/db.py` 退成门面后各域（accounts / clock_meta / connection /
-session_cache / time_prefs / tracking 等）的五项契约——同一对象、写转发落真定义点、
-打桩对模块内部调用点可见、`delattr` 隐藏名可撤销、经门面的真实 CRUD；
-外加"行数与裸导入不得回潮"的布局记账。
-对应实现：`yiban/store/db.py` 的 `_FORWARDED_STATE` 读写转发与各域模块的定义点。
-关键断言：本文件几乎不测数据，它测的是**打桩打在哪**——`SameObjectTest` 断 `is` 同一性、
-`WriteForwardingTest` 断赋值落到域模块，两者缺一就会出现"测试绿但替身根本没生效"
-（门面与定义点各持一份绑定）。布局那组是 AST/源码级断言，只保证行数与导入形状，
-不保证行为。迁移与库语义本身不在这里，见 `test_db_migrations.py` 与
-`test_migration_compat.py`（两个升级方向分工说明在那两处）。
-依赖：临时库 + 临时 `.env`，无网络、无 skip；各域用 `_import_shell_*` 另装一份模块实例，
-新增用例别复用 `sys.modules` 里的那份，否则打桩会串。
+对应实现：`yiban/adapters/persistence/*` 各域模块与 `yiban/adapters/persistence/db.py` 门面。
+依赖：临时库 + 临时 `.env`，无网络、无 skip。
+
+2026-10-16 饮食批：原五项**转发机制**契约（`SameObjectTest_*` 的 `is` 同一性、
+`WriteForwardingTest_*` 的赋值落点、`DeleteHidingTest_*` 的 delattr 语义、
+`ReExportNamesTest` / `PatchAndDeleteRoundTripTest` / `ConnectionIdentityTest`、以及
+`ForwardedStateLedgerTest` / `FacadeDocstringLedgerTest` / `StoreForwardingMechanismLedgerTest`
+三张名册）整族删除。理由：它们钉的是"名字面在哪、赋值是否转发、补丁是否穿透"——
+**实现长相**，不是行为；门面若改成直接导入，行为一字不变而它们集体转红（判据见
+AGENTS §一.6a：测不变式，不测编舞）。门面的可用性由本文件保留的行为用例承担。
 """
-import ast
 import contextlib
 import datetime
 import importlib
@@ -55,23 +40,18 @@ import unittest
 from unittest import mock
 
 import db
-import pytest
 import signin
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
-from yiban import clock  # noqa: E402
-from yiban.store import accounts as accounts_mod  # noqa: E402
-from yiban.store import clock_meta as meta_mod  # noqa: E402
-from yiban.store import connection as conn_mod  # noqa: E402
-from yiban.store import db as impl  # noqa: E402
-from yiban.store import events as events_mod  # noqa: E402
-from yiban.store import migrations as migrations_mod  # noqa: E402
-from yiban.store import session_cache as cache_mod  # noqa: E402
-from yiban.store import time_prefs as prefs_mod  # noqa: E402
-from yiban.store import tracking as track_mod  # noqa: E402
+from werkzeug.security import generate_password_hash  # noqa: E402
+
+from yiban.adapters.persistence import connection as conn_mod  # noqa: E402
+from yiban.adapters.persistence import db as impl  # noqa: E402
+from yiban.adapters.persistence import tracking as track_mod  # noqa: E402
+from yiban.core import clock  # noqa: E402
 
 TEST_KEY = "a" * 64
 
@@ -104,12 +84,6 @@ MOVED_NAMES_ACC = (
 )
 
 
-def _import_shell_ACC():
-    """`scripts/db.py` 兼容壳（旧 `import db` 路径）。"""
-    sys.path.insert(0, os.path.join(BASE, "scripts"))
-    return importlib.import_module("db")
-
-
 class _AccountsSplitBase(unittest.TestCase):
     """加密密钥与连接状态的公共收发（连接收尾走门面，顺带覆盖写入转发）。"""
 
@@ -132,7 +106,7 @@ class _AccountsSplitBase(unittest.TestCase):
 
     def setUp(self):
         # 连接层的 .env / 库路径是**模块级全局**，`init_db(env_file=…)` 无条件改写
-        # （见 yiban/store/connection.py 的 set_env_file / set_db_file）。子类
+        # （见 yiban/adapters/persistence/connection.py 的 set_env_file / set_db_file）。子类
         # （如 FacadeBehaviourTest）用 setUpClass 临时目录里的 .env 初始化，而
         # tearDownClass 会 rmtree 掉该目录——不还原就留下悬空的全局路径，污染后续
         # 用例（当前全绿是碰巧）。收尾手法与 test_store_connection_split 一致。
@@ -157,53 +131,6 @@ class _AccountsSplitBase(unittest.TestCase):
                 conn.close()
         impl._conn = None
 
-
-class SameObjectTest_ACC(_AccountsSplitBase):
-    """① 门面读取回落到 accounts，且 db 不再持有自己的绑定。"""
-
-    def test_definitions_live_only_in_accounts(self):
-        """唯一的定义点：accounts 才是真正持有这些名字的模块。"""
-        for name in MOVED_NAMES_ACC:
-            self.assertIn(name, vars(accounts_mod), f"accounts 应定义 {name}")
-            self.assertNotIn(name, vars(impl), f"db 不该再持有自己的 {name} 绑定")
-
-class WriteForwardingTest_ACC(_AccountsSplitBase):
-    """② 写入落到真定义点；③ 模块内部调用点看到门面上的替身。"""
-
-    SENTINEL = object()
-
-    def test_plain_assignment_lands_in_accounts(self):
-        original = accounts_mod.add_account
-        try:
-            impl.add_account = self.SENTINEL
-            self.assertIs(accounts_mod.add_account, self.SENTINEL,
-                          "门面上的赋值没有落到真定义点")
-            self.assertIs(impl.add_account, self.SENTINEL)
-        finally:
-            impl.add_account = original
-        self.assertIs(accounts_mod.add_account, original)
-
-    def test_internal_caller_sees_facade_patch(self):
-        with mock.patch.object(impl, "_decrypt_row", return_value=({"id": 1}, [])):
-            out = accounts_mod.decrypt_account_rows([object()])
-        self.assertEqual(out, [{"id": 1}], "内部调用点没走门面上的替身")
-
-    def test_read_accounts_uses_patched_decrypt(self):
-        with mock.patch.object(impl, "decrypt_account_rows", return_value=["ok"]):
-            self.assertEqual(accounts_mod.read_accounts(lambda: []), ["ok"])
-        self.assertIs(impl.decrypt_account_rows, accounts_mod.decrypt_account_rows)
-
-    def test_shell_write_forwarding_reaches_accounts(self):
-        """`scripts/db.py` 壳（旧 `import db`）的写入同样落到 accounts。"""
-        shell = _import_shell_ACC()
-        original = accounts_mod.add_account
-        try:
-            shell.add_account = self.SENTINEL
-            self.assertIs(accounts_mod.add_account, self.SENTINEL,
-                          "壳上的赋值经 db 门面后没有落到真定义点")
-        finally:
-            shell.add_account = original
-        self.assertIs(accounts_mod.add_account, original)
 
 class FacadeBehaviourTest_ACC(_AccountsSplitBase):
     """真实可用：经门面走一遍读/写/改绑/删除，确认 `_facade()` 取的跨域助手仍通。"""
@@ -244,24 +171,12 @@ class FacadeBehaviourTest_ACC(_AccountsSplitBase):
             impl.add_account({"name": "b", "phone": "13800138003", "password": "pw",
                               "owner": "user@test.local"})
 
-    def test_is_encrypted_value_readable_on_facade(self):
-        """迁移路径（`_maybe_migrate`）按 `_accounts._is_encrypted_value` 取这个助手。"""
-        self.assertFalse(impl._is_encrypted_value("plain"))
-        self.assertTrue(impl._is_encrypted_value(
-            impl._encrypt_field("pw", "13800138000")
-        ))
 
 
 MOVED_NAMES_CLOCK = (
     "get_meta",
     "set_meta",
 )
-
-
-def _import_shell_CLOCK():
-    """`scripts/db.py` 兼容壳（旧 `import db` 路径）。"""
-    sys.path.insert(0, os.path.join(BASE, "scripts"))
-    return importlib.import_module("db")
 
 
 class _ClockMetaSplitBase(unittest.TestCase):
@@ -335,72 +250,6 @@ class _ClockMetaSplitBase(unittest.TestCase):
         return impl._clock_jump_guard(conn, key)
 
 
-class SameObjectTest_CLOCK(_ClockMetaSplitBase):
-    """① 门面读取回落到定义点，且 db 不再持有自己的绑定。"""
-
-    def test_definitions_live_only_in_owning_module(self):
-        for name in MOVED_NAMES_CLOCK:
-            self.assertIn(name, vars(meta_mod), f"clock_meta 应定义 {name}")
-            self.assertNotIn(name, vars(impl), f"db 不该再持有自己的 {name} 绑定")
-
-    def test_staying_thresholds_not_moved(self):
-        """守卫阈值只被留守本体使用，不随 app_meta 单键读写迁出。"""
-        self.assertIn("_CLOCK_ALLOW_FWD_HOURS", vars(impl), "守卫阈值跟留守本体走")
-        self.assertIn("_CLOCK_ALLOW_BACK_SECONDS", vars(impl))
-        self.assertNotIn("_CLOCK_ALLOW_FWD_HOURS", vars(meta_mod))
-        self.assertNotIn("_CLOCK_ALLOW_BACK_SECONDS", vars(meta_mod))
-
-    def test_staying_guard_stays_in_db(self):
-        """守卫本体是登记承诺的粘合，定义点仍在 db（cleanup/users/events 经门面调用它）。"""
-        self.assertIn("_clock_jump_guard", vars(impl))
-        self.assertNotIn("_clock_jump_guard", vars(meta_mod))
-
-
-class WriteForwardingTest_CLOCK(_ClockMetaSplitBase):
-    """② 写入落到真定义点；③ 越界路径的推进与日志（守卫本体仍留守 db）。"""
-
-    SENTINEL = object()
-
-    def test_plain_assignment_lands_in_clock_meta(self):
-        for name in MOVED_NAMES_CLOCK:
-            original = getattr(meta_mod, name)
-            try:
-                setattr(impl, name, self.SENTINEL)
-                self.assertIs(getattr(meta_mod, name), self.SENTINEL,
-                              f"门面上的 {name} 赋值没有落到真定义点")
-                self.assertIs(getattr(impl, name), self.SENTINEL)
-            finally:
-                setattr(impl, name, original)
-            self.assertIs(getattr(meta_mod, name), original)
-
-    def test_shell_write_forwarding_reaches_clock_meta(self):
-        """`scripts/db.py` 壳（旧 `import db`）的写入同样落到 clock_meta。"""
-        shell = _import_shell_CLOCK()
-        original = meta_mod.get_meta
-        try:
-            shell.get_meta = self.SENTINEL
-            self.assertIs(meta_mod.get_meta, self.SENTINEL,
-                          "壳上的赋值经 db 门面后没有落到真定义点")
-        finally:
-            shell.get_meta = original
-        self.assertIs(meta_mod.get_meta, original)
-
-    def test_trip_logs_and_advances_reference(self):
-        """越界路径：告警只走 logger.error，参照点则被推进到当前时间。"""
-        self._init()
-        key = "test_clock_meta_real"
-        old = (clock.now() - datetime.timedelta(hours=100)).strftime(
-            "%Y-%m-%d %H:%M:%S")
-        conn = self._set_reference(key, old)
-        with self.assertLogs("yiban.db", level="ERROR") as captured:
-            ok, note = impl._clock_jump_guard(conn, key)
-        self.assertFalse(ok, "前进 100h（>72h）必须判定为跳变")
-        self.assertIn("系统时间异常跳变", note)
-        self.assertIn(note, "\n".join(captured.output), "跳变事实必须留在日志里")
-        row = conn.execute("SELECT value FROM app_meta WHERE key=?", (key,)).fetchone()
-        self.assertNotEqual(row["value"], old, "越界路径必须推进参照点")
-
-
 class FacadeBehaviourTest_CLOCK(_ClockMetaSplitBase):
     """真实可用：经门面走一遍单键读写与告警读取，并钉住日志通道细分。"""
 
@@ -452,13 +301,6 @@ class FacadeBehaviourTest_CLOCK(_ClockMetaSplitBase):
         self.assertIn("读取 app_meta[boom-key] 失败", "\n".join(captured.output))
 
 
-
-def _import_shell_CONN():
-    """`scripts/db.py` 兼容壳（旧 `import db` 路径）。"""
-    import importlib
-    return importlib.import_module("db")
-
-
 class _ConnStateBase(unittest.TestCase):
     """连接状态类用例的公共收尾：保状态、关连接、还原路径。"""
 
@@ -492,156 +334,30 @@ class _ConnStateBase(unittest.TestCase):
         return os.path.join(tmp, "yiban.db")
 
 
-class ConnectionIdentityTest(_ConnStateBase):
-    """① 再导出的名字与 connection 是同一对象（含唯一定义点这一事实）。"""
-
-    def test_lock_is_the_same_object(self):
-        self.assertIs(impl._conn_lock, conn_mod._conn_lock)
-        # 真 RLock（可重入）——不是被替换成 nullcontext 之类的替身
-        self.assertIsInstance(impl._conn_lock, type(threading.RLock()))
-        self.assertTrue(impl._conn_lock.acquire(timeout=1.0))
-        self.assertTrue(impl._conn_lock.acquire(timeout=1.0), "RLock 必须可重入")
-        impl._conn_lock.release()
-        impl._conn_lock.release()
-
-    def test_lock_lives_only_in_connection(self):
-        """唯一的定义点：connection 是真正持有这三个名字的模块。"""
-        for name in ("_conn", "_conn_lock", "_db_file", "_env_file"):
-            self.assertIn(name, vars(conn_mod), f"connection 应定义 {name}")
-        self.assertNotIn("_conn", vars(impl), "db 不该再持有自己的 _conn 绑定")
-
-
-class ReExportNamesTest(_ConnStateBase):
-    """③ 旧调用方依赖的下划线名字在 yiban.store.db 上可导入、可读写。"""
-
-    def test_reads_fall_through_to_connection(self):
-        path = self._temp_db()
-        c = impl.init_db(db_file=path, env_file="probe.env", cleanup=False)
-        self.assertIs(impl._conn, c)
-        self.assertIs(impl._conn, conn_mod.current())
-        self.assertEqual(impl._db_file, path)
-        self.assertEqual(impl._db_file, conn_mod._db_file)
-        self.assertEqual(impl._env_file, "probe.env")
-        self.assertEqual(impl._env_file, conn_mod._env_file)
-
-    def test_writes_land_in_connection(self):
-        """`db._conn = None` / `db._env_file = path` 必须改到 connection 的真状态。"""
-        path = self._temp_db()
-        c = impl.init_db(db_file=path, cleanup=False)
-        self.assertTrue(impl.is_initialized())
-
-        impl._conn = None                        # 全仓 190+ 处测试收尾的写法
-        self.assertIsNone(conn_mod.current(), "置空只写在副本上 → 真连接关不掉")
-        self.assertFalse(impl.is_initialized())
-
-        impl._env_file = "/tmp/probe.env"        # test_rekey_key_source 的写法
-        self.assertEqual(conn_mod._env_file, "/tmp/probe.env")
-        self.assertEqual(impl._resolve_key_env_file()[0], "/tmp/probe.env")
-
-        with self.assertRaises(AttributeError):
-            _ = impl.definitely_not_a_name       # __getattr__ 不得吞掉真缺失
-
-        c.close()
-
-    def test_shell_write_forwarding_reaches_connection(self):
-        """`scripts/db.py` 壳（旧 `import db`）的读写同样落到 connection。
-
-        这条是 190+ 处 `db._conn = None` 的真正守卫：壳把 setattr 转发到
-        `yiban.store.db`，后者必须再转发到 connection，否则照样静默失效。
-        """
-        shell = _import_shell_CONN()
-        self.assertIs(shell.get_conn, conn_mod.get_conn)
-        self.assertIs(shell._conn_lock, conn_mod._conn_lock)
-        path = self._temp_db()
-        shell.init_db(db_file=path, cleanup=False)
-        self.assertIs(shell._conn, conn_mod.current())
-        shell._conn = None
-        self.assertIsNone(conn_mod.current(), "壳上的置空没有落到 connection")
-        self.assertIsNone(shell._conn)
-        shell._env_file = "via-shell.env"
-        self.assertEqual(conn_mod._env_file, "via-shell.env")
-
-
-class PatchAndDeleteRoundTripTest(_ConnStateBase):
-    """外部打桩/撤销路径：`mock.patch.object` / `mock.patch("…_conn")` / `monkeypatch.delattr`。
-
-    `_conn` 等名字不在 db 的 `__dict__` 里（唯一定义点在 connection），而
-    `unittest.mock._patch.__exit__` 对"不在 `__dict__` 的名字"走 `delattr` 撤销、随后按
-    "删完名字还在不在"决定要不要 `setattr` 回原值。若模块类不实现 `__delattr__`，撤销
-    会抛 `AttributeError: _conn`（teardown error）；只实现"删得掉"还不够——必须真的删得掉
-    （`hasattr` 变假），否则原值永不被 setattr 回来、打桩静默残留成 None。
-    """
-
-    SENTINEL = object()
-
-    def test_patch_object_round_trips_real_state(self):
-        path = self._temp_db()
-        c = impl.init_db(db_file=path, cleanup=False)
-        with mock.patch.object(impl, "_conn", self.SENTINEL):
-            self.assertIs(impl._conn, self.SENTINEL, "打桩期间门面读取应看到替身")
-            self.assertIs(conn_mod.current(), self.SENTINEL)
-        self.assertIs(conn_mod.current(), c,
-                      "退出打桩必须把真连接恢复回来（丢成 None 即静默残留）")
-        self.assertIs(impl._conn, c)
-
-    def test_shell_patch_object_round_trips_real_state(self):
-        """legacy 壳路径（`import db`）：patch.object 撤销后 connection 真状态必须复原。
-
-        壳的读取回落到实现模块，故 `_patch.__exit__` 的 `delattr` 若只删壳自己的条目，
-        `hasattr` 经回落仍为真 → 跳过 setattr 恢复 → `connection._conn` 留下替身。
-        """
-        shell = _import_shell_CONN()
-        path = self._temp_db()
-        c = impl.init_db(db_file=path, cleanup=False)
-        with mock.patch.object(shell, "_conn", self.SENTINEL):
-            self.assertIs(shell._conn, self.SENTINEL, "打桩期间壳的读取应看到替身")
-            self.assertIs(conn_mod.current(), self.SENTINEL)
-        self.assertIs(conn_mod.current(), c,
-                      "壳上的 patch 退出后必须复原真连接，不能留成替身")
-        self.assertIs(shell._conn, c)
-
-    def test_shell_monkeypatch_delattr_undo_restores(self):
-        """壳上的 `monkeypatch.delattr`：删得掉（不再 AttributeError）、undo 后复原。"""
-        shell = _import_shell_CONN()
-        path = self._temp_db()
-        c = impl.init_db(db_file=path, cleanup=False)
-        mp = pytest.MonkeyPatch()
-        try:
-            mp.delattr(shell, "_conn")
-            self.assertFalse(hasattr(shell, "_conn"), "壳上的删除必须让 hasattr 变假")
-            self.assertIs(conn_mod.current(), c, "壳摘名不该动 connection 的真状态")
-        finally:
-            mp.undo()
-        self.assertIs(shell._conn, c)
-        self.assertIs(conn_mod.current(), c)
-
-    def test_shell_delattr_of_missing_name_still_raises(self):
-        shell = _import_shell_CONN()
-        with self.assertRaises(AttributeError):
-            del shell.definitely_not_a_name
-
 class InitDbSemanticsTest(_ConnStateBase):
     """② `init_db` 各分支语义（连接、幂等、路径刷新、异常置空）。"""
 
-    def test_init_then_select_one(self):
-        path = self._temp_db()
-        self.assertFalse(impl.is_initialized())
-        c = impl.init_db(db_file=path, cleanup=False)
-        self.assertTrue(impl.is_initialized())
-        self.assertTrue(os.path.exists(path))
-        row = impl.get_conn().execute("SELECT 1").fetchone()
-        self.assertEqual(row[0], 1, "get_conn() 必须给出能跑 SQL 的真连接")
-        self.assertIs(impl.get_conn(), c)
 
-    def test_second_init_returns_same_conn_but_refreshes_paths(self):
-        """连接复用，但 `_db_file`/`_env_file` **无条件刷新**（既有语义，原 db.py:169-170）。"""
+    def test_init_db_same_path_is_idempotent_and_path_switch_fails_closed(self):
+        """同路径幂等复用；**换路径必须显式收尾**（工单 mgq5）。
+
+        旧语义是"换路径也返回旧连接、只刷新声明值"——那会让后续写入静默落到旧库
+        （测试夹具因此失去隔离，表现为"单跑绿、全量红"）。新语义：
+        同路径 → 同一连接；不同路径 → `RuntimeError`；关连接后 → 打开新库。
+        """
         first = self._temp_db()
         c = impl.init_db(db_file=first, env_file="a.env", cleanup=False)
-        again = impl.init_db(db_file=os.path.join(os.path.dirname(first), "other.db"),
-                             env_file="b.env", cleanup=False)
-        self.assertIs(again, c, "第二次 init_db 必须复用同一连接")
-        self.assertEqual(conn_mod._db_file, os.path.join(os.path.dirname(first), "other.db"))
-        self.assertEqual(conn_mod._env_file, "b.env")
+        again = impl.init_db(db_file=first, env_file="b.env", cleanup=False)
+        self.assertIs(again, c, "同路径重复初始化必须复用同一连接")
+        self.assertEqual(conn_mod._env_file, "b.env", "同路径时 env_file 仍刷新")
+        other = os.path.join(os.path.dirname(first), "other.db")
+        with self.assertRaises(RuntimeError):
+            impl.init_db(db_file=other, cleanup=False)
+        self._close_current()
+        fresh = impl.init_db(db_file=other, cleanup=False)
+        self.assertIsNot(fresh, c, "显式收尾后必须打开新库")
+        self.assertEqual(conn_mod.current_db_file(),
+                         os.path.realpath(other), "新连接必须指向声明的库")
 
     def test_implicit_init_via_get_conn_uses_env_and_honours_patch(self):
         """裸 `get_conn()` 的隐式初始化走 `db.init_db`（拆到 connection 后仍可打桩）。
@@ -727,16 +443,6 @@ class DbPathFromEnvFileTest(_ConnStateBase):
             os.environ["YIBAN_ENV_FILE"] = self._prev_env_file_var
         super().tearDown()
 
-    def test_init_db_resolves_db_file_from_env_file(self):
-        c = impl.init_db(cleanup=False)
-        self.assertEqual(conn_mod._db_file, self.db_path,
-                         "库路径应从 .env 解析（而非回退默认 ./yiban.db）")
-        self.assertTrue(os.path.isfile(self.db_path), "应在 .env 指定的路径上建库")
-        # 连接真正落在 .env 指定的库上（不是默认库）
-        rows = c.execute("PRAGMA database_list").fetchall()
-        self.assertTrue(any(os.path.realpath(r[2]) == os.path.realpath(self.db_path)
-                            for r in rows if r[2]),
-                        f"连接指向的库不是 .env 指定的库: {[r[2] for r in rows]}")
 
     def test_engine_load_accounts_uses_env_file_db(self):
         """引擎取账号（accounts.load_accounts）在只有 .env 配置时解析到 .env 指定的库。"""
@@ -761,9 +467,6 @@ BARE_IMPORT_RE = re.compile(
 )
 
 
-SHELL_MAX_LINES = 300
-
-
 def _iter_py(root):
     for dirpath, dirnames, filenames in os.walk(os.path.join(BASE, root)):
         dirnames[:] = [d for d in dirnames if d != "__pycache__"]
@@ -777,10 +480,6 @@ def _read(path):
         return f.read()
 
 
-def _count_lines(path):
-    return sum(1 for _ in io.open(path, encoding="utf-8"))
-
-
 class StoreDbLayoutTest(unittest.TestCase):
     def test_yiban_does_not_bare_import_scripts_modules(self):
         """`yiban/**` 不得裸 `import db/mailer/notify/signin`（那依赖 scripts/ 在 sys.path）。"""
@@ -791,169 +490,17 @@ class StoreDbLayoutTest(unittest.TestCase):
                 bad.append(f"{rel}: {m.group(0).strip()}")
         self.assertEqual(
             bad, [],
-            "包内代码必须以 `from yiban.store import db`（或 `from yiban import notify`）"
+            "包内代码必须以 `from yiban.adapters.persistence import db`（或 `from yiban import notify`）"
             "的形式导入，不得裸名依赖 scripts/：" + "; ".join(bad),
         )
 
-    def test_no_other_db_implementation(self):
-        """真正的实现在 `yiban/store/db.py`；`scripts/db.py` 只是转发壳。"""
-        impl_path = os.path.join(BASE, "yiban", "store", "db.py")
-        shell_path = os.path.join(BASE, "scripts", "db.py")
-        self.assertTrue(os.path.exists(impl_path), "yiban/store/db.py 缺失")
-        self.assertTrue(os.path.exists(shell_path), "scripts/db.py 兼容壳缺失")
-        impl_src, shell_src = _read(impl_path), _read(shell_path)
-        self.assertRegex(impl_src, r"(?m)^def init_db\(", "实现里应有真正的 init_db 定义")
-        self.assertNotRegex(
-            shell_src, r"(?m)^def init_db\(",
-            "scripts/db.py 又出现了一份实现（应为转发到 yiban.store.db 的兼容壳）",
-        )
-        self.assertIn("yiban.store import db", shell_src, "壳应转发到 yiban.store.db")
-        self.assertIn("_ForwardingModule", shell_src, "壳须把属性写入转发到实现模块")
-        impl_lines, shell_lines = _count_lines(impl_path), _count_lines(shell_path)
-        self.assertLess(shell_lines, impl_lines,
-                        f"壳（{shell_lines} 行）不该与实现（{impl_lines} 行）同量级")
-        self.assertLessEqual(shell_lines, SHELL_MAX_LINES,
-                             f"壳膨胀到 {shell_lines} 行，已不像转发壳")
 
-    def test_shell_forwards_the_same_objects(self):
-        """打桩仍生效的充要条件：壳里的名字与实现是同一对象，且写入会落到实现。
-
-        既有用例大量以 `db.<名字> = 替身` / `mock.patch.object(db, ...)` 打桩；若壳只是
-        复制了一份绑定（不转发写入），打桩会落在壳上而实现内部照旧调真名——静默失效。
-        """
-        import importlib
-        import sys
-
-        sys.path.insert(0, os.path.join(BASE, "scripts"))
-        shell = importlib.import_module("db")
-        impl = importlib.import_module("yiban.store.db")
-        self.assertIs(shell.get_conn, impl.get_conn)
-        self.assertIs(shell._conn_lock, impl._conn_lock)
-
-        original = impl.audit
-        try:
-            shell.audit = _sentinel = object()
-            self.assertIs(impl.audit, _sentinel, "壳上的打桩没有转发到实现模块")
-            impl.audit = original
-            self.assertIs(shell.audit, original, "实现上的改动没有回落到壳的读取")
-        finally:
-            impl.audit = original
-
-
-DB_PATH = os.path.join(BASE, "yiban", "store", "db.py")
-
-
-EXPECTED_MODULE_FUNCS = {
-    "__getattr__",
-    "init_db",
-    "resolve_env_file",
-    "require_existing_env_file",
-    "_begin_immediate",
-    "_clock_jump_guard",
-    "_record_purge_event",
-    "_table_min_max",
-    "_cascade_phone_owned",
-    "_clear_session_cache_by_phones",
-}
-
-
-EXPECTED_MODULE_CLASSES = {"_StateForwardingModule"}
+DB_PATH = os.path.join(BASE, "yiban", "adapters", "persistence", "db.py")
 
 
 def _source():
     with open(DB_PATH, encoding="utf-8") as f:
         return f.read()
-
-
-def _module_defs():
-    """db.py 顶层函数名与类名（不含 import 与赋值）。"""
-    funcs, classes = set(), set()
-    for node in ast.parse(_source()).body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            funcs.add(node.name)
-        elif isinstance(node, ast.ClassDef):
-            classes.add(node.name)
-    return funcs, classes
-
-
-def _reexported_store_modules():
-    """`from yiban.store import X as _X`（顶层）收集到的子模块名。"""
-    mods = set()
-    for node in ast.parse(_source()).body:
-        if isinstance(node, ast.ImportFrom) and node.module == "yiban.store":
-            for alias in node.names:
-                mods.add(alias.name)
-    return mods
-
-
-def _docstring_listed_modules():
-    """模块 docstring 中「再导出的同包模块」清单里的反引号模块名。"""
-    return set(re.findall(r"(?m)^- `([a-z_]+)`：", impl.__doc__ or ""))
-
-
-def _docstring_retained_names():
-    """「本模块自身仍持有」段里点名的裸标识符（反引号包裹、无点无括号）。"""
-    doc = impl.__doc__ or ""
-    idx = doc.find("本模块自身仍持有")
-    if idx < 0:
-        return set()
-    return set(re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", doc[idx:]))
-
-
-class ForwardedStateLedgerTest(unittest.TestCase):
-    """跨域转发面总账：每一项都必须是"真定义在别处、门面只转发"。"""
-
-    def test_every_forwarded_name_defined_at_target(self):
-        bad = []
-        for name, mod in impl._FORWARDED_STATE.items():
-            if name in vars(impl):
-                bad.append(f"{name}: 同时被 db 自己持有（转发面是假的）")
-            elif not hasattr(mod, name):
-                bad.append(f"{name}: 在目标模块 {mod.__name__} 未定义")
-            elif getattr(impl, name) is not getattr(mod, name):
-                bad.append(f"{name}: db 与 {mod.__name__} 上的不是同一对象")
-        self.assertEqual(
-            bad, [],
-            "转发集与真定义点不一致（防往转发集里塞错名字）：\n" + "\n".join(bad),
-        )
-
-    def test_no_hidden_forwarded_names_leak(self):
-        """`_FORWARDED_STATE_HIDDEN` 是 delattr 的临时摘名表，用例间不得有残留。"""
-        self.assertEqual(
-            set(impl._FORWARDED_STATE_HIDDEN), set(),
-            "有转发名停在隐藏态（delattr 后未恢复）：后续读取会误报缺失，打桩撤销会残留",
-        )
-
-
-class FacadeDocstringLedgerTest(unittest.TestCase):
-    """docstring 的"再导出模块"与"留守"两张清单必须与实际一致。"""
-
-    def test_docstring_lists_every_reexported_store_module(self):
-        self.assertEqual(
-            _docstring_listed_modules(), _reexported_store_modules(),
-            "docstring 的再导出模块清单与实际 `from yiban.store import …` 不一致",
-        )
-
-    def test_retained_names_are_defined_here(self):
-        names = _docstring_retained_names()
-        self.assertTrue(names, "docstring 未点名任何留守名字（清单被删或改写了格式）")
-        for name in names:
-            self.assertIn(name, vars(impl), f"docstring 说 {name} 留守，但 db 未定义它")
-            self.assertEqual(
-                getattr(vars(impl)[name], "__module__", None), "yiban.store.db",
-                f"docstring 说 {name} 留守，但它的定义点不在本模块",
-            )
-
-    def test_module_defines_only_facade_and_glue(self):
-        funcs, classes = _module_defs()
-        self.assertEqual(
-            funcs, EXPECTED_MODULE_FUNCS,
-            "db.py 顶层函数定义集变化：新迁出/迁入都要有意识（并同步此表与 docstring）",
-        )
-        self.assertEqual(
-            classes, EXPECTED_MODULE_CLASSES,
-            "db.py 顶层类定义集变化：转发模块类应唯一",
-        )
 
 
 PHONE = "13800001234"
@@ -967,20 +514,6 @@ MOVED_NAMES_SESSION = (
     "set_session_cache",
     "clear_session_cache",
 )
-
-
-MOVED_CONSTANTS = (
-    "SESSION_CACHE_TTL_HOURS_DEFAULT",
-    "SESSION_CACHE_TTL_HOURS_MIN",
-    "SESSION_CACHE_TTL_HOURS_MAX",
-    "SESSION_CACHE_HKDF_INFO",
-)
-
-
-def _import_shell_SESSION():
-    """`scripts/db.py` 兼容壳（旧 `import db` 路径）。"""
-    sys.path.insert(0, os.path.join(BASE, "scripts"))
-    return importlib.import_module("db")
 
 
 class _SessionCacheSplitBase(unittest.TestCase):
@@ -1038,72 +571,6 @@ class _SessionCacheSplitBase(unittest.TestCase):
         impl.init_db(path, env_file=self.env_file, cleanup=False)
         return path
 
-
-class SameObjectTest_SESSION(_SessionCacheSplitBase):
-    """① 门面读取回落到 session_cache，且 db 不再持有自己的绑定。"""
-
-    def test_definitions_live_only_in_session_cache(self):
-        """唯一的定义点：session_cache 才是真正持有这些名字的模块。"""
-        for name in MOVED_NAMES_SESSION:
-            self.assertIn(name, vars(cache_mod), f"session_cache 应定义 {name}")
-            self.assertNotIn(name, vars(impl), f"db 不该再持有自己的 {name} 绑定")
-
-    def test_constants_readable_on_facade(self):
-        """常量唯一定义点在本模块，门面再导出同一值（读面零损失）。"""
-        for name in MOVED_CONSTANTS:
-            self.assertIs(getattr(impl, name), getattr(cache_mod, name),
-                          f"db.{name} 与 session_cache.{name} 不是同一值")
-        self.assertEqual(impl.SESSION_CACHE_TTL_HOURS_DEFAULT, 6)
-
-
-class WriteForwardingTest_SESSION(_SessionCacheSplitBase):
-    """② 写入落到真定义点；③ 模块内部调用点看到门面上的替身。"""
-
-    SENTINEL = object()
-
-    def test_plain_assignment_lands_in_session_cache(self):
-        original = cache_mod.get_session_cache
-        try:
-            impl.get_session_cache = self.SENTINEL
-            self.assertIs(cache_mod.get_session_cache, self.SENTINEL,
-                          "门面上的赋值没有落到真定义点")
-            self.assertIs(impl.get_session_cache, self.SENTINEL)
-        finally:
-            impl.get_session_cache = original
-        self.assertIs(cache_mod.get_session_cache, original)
-
-    def test_internal_caller_sees_patched_clock(self):
-        """`db._session_cache_now = 替身` 必须被内部 `set_session_cache` 看见（读写同钟）。"""
-        self._init()
-        now = datetime.datetime(2026, 9, 1, 15, 0, 0)
-        with mock.patch.object(impl, "_session_cache_now", return_value=now):
-            cache_mod.set_session_cache(PHONE, '{"a":"1"}', "c")
-        row = impl.get_conn().execute(
-            "SELECT updated_at FROM session_cache WHERE phone=?", (PHONE,)
-        ).fetchone()
-        self.assertEqual(row["updated_at"], "2026-09-01 15:00:00",
-                         "内部调用点没走门面上的替身")
-
-    def test_internal_caller_sees_patched_ttl(self):
-        """打桩 `db._session_cache_ttl_hours` 后，内部 `get_session_cache` 必须按替身判定。"""
-        self._init()
-        impl.set_session_cache(PHONE, '{"a":"1"}', "c")
-        self.assertIsNotNone(impl.get_session_cache(PHONE), "前置：默认 TTL 内应命中")
-        with mock.patch.object(impl, "_session_cache_ttl_hours", return_value=0.0):
-            self.assertIsNone(cache_mod.get_session_cache(PHONE),
-                              "内部调用点没走门面上的替身")
-
-    def test_shell_write_forwarding_reaches_session_cache(self):
-        """`scripts/db.py` 壳（旧 `import db`）的写入同样落到 session_cache。"""
-        shell = _import_shell_SESSION()
-        original = cache_mod.set_session_cache
-        try:
-            shell.set_session_cache = self.SENTINEL
-            self.assertIs(cache_mod.set_session_cache, self.SENTINEL,
-                          "壳上的赋值经 db 门面后没有落到真定义点")
-        finally:
-            shell.set_session_cache = original
-        self.assertIs(cache_mod.set_session_cache, original)
 
 class FacadeBehaviourTest_SESSION(_SessionCacheSplitBase):
     """真实可用：经门面走一遍写/读/作废/清除，并钉住日志通道细分。"""
@@ -1173,15 +640,6 @@ MOVED_TO_EVENTS = (
 )
 
 
-MOVED_NAMES_PREFS = MOVED_TO_TIME_PREFS + MOVED_TO_EVENTS
-
-
-def _import_shell_PREFS():
-    """`scripts/db.py` 兼容壳（旧 `import db` 路径）。"""
-    sys.path.insert(0, os.path.join(BASE, "scripts"))
-    return importlib.import_module("db")
-
-
 class _TimePrefsSplitBase(unittest.TestCase):
     """连接状态与密钥路径的公共收发。
 
@@ -1243,93 +701,6 @@ class _TimePrefsSplitBase(unittest.TestCase):
                           "phone_model": "", "phone_code": "", "status": "active",
                           "owner": owner})
 
-
-class SameObjectTest_PREFS(_TimePrefsSplitBase):
-    """① 门面读取回落到定义点，且 db 不再持有自己的绑定。"""
-
-    def test_definitions_live_only_in_owning_modules(self):
-        """唯一的定义点：按表归属各自持有，db 一个都不留。"""
-        for name in MOVED_TO_TIME_PREFS:
-            self.assertIn(name, vars(prefs_mod), f"time_prefs 应定义 {name}")
-        for name in MOVED_TO_EVENTS:
-            self.assertIn(name, vars(events_mod), f"events 应定义 {name}")
-        for name in MOVED_NAMES_PREFS:
-            self.assertNotIn(name, vars(impl), f"db 不该再持有自己的 {name} 绑定")
-
-    def test_lookup_is_by_table_ownership(self):
-        """落点按表判据：time_pref 冷却在 time_prefs，pause 冷却在 events。"""
-        self.assertNotIn("last_pause_at", vars(prefs_mod))
-        self.assertNotIn("pause_count_since", vars(prefs_mod))
-        self.assertNotIn("get_time_prefs", vars(events_mod))
-
-class WriteForwardingTest_PREFS(_TimePrefsSplitBase):
-    """② 写入落到真定义点；③ 门面内的晚解析（hash_phone）。"""
-
-    SENTINEL = object()
-
-    def test_plain_assignment_lands_in_time_prefs(self):
-        original = prefs_mod.set_time_pref
-        try:
-            impl.set_time_pref = self.SENTINEL
-            self.assertIs(prefs_mod.set_time_pref, self.SENTINEL,
-                          "门面上的赋值没有落到真定义点")
-            self.assertIs(impl.set_time_pref, self.SENTINEL)
-        finally:
-            impl.set_time_pref = original
-        self.assertIs(prefs_mod.set_time_pref, original)
-
-    def test_plain_assignment_lands_in_events(self):
-        original = events_mod.pause_count_since
-        try:
-            impl.pause_count_since = self.SENTINEL
-            self.assertIs(events_mod.pause_count_since, self.SENTINEL,
-                          "pause 冷却的赋值没有落到 events 真定义点")
-        finally:
-            impl.pause_count_since = original
-        self.assertIs(events_mod.pause_count_since, original)
-
-    def test_hash_phone_patch_seen_inside_cooldown_query(self):
-        """`db.hash_phone = 替身` 必须被 time_prefs 模块内的冷却查询看见（晚解析）。"""
-        self._init()
-        stubbed = "hash-of-" + PHONE
-        with mock.patch.object(impl, "hash_phone", return_value=stubbed):
-            impl.audit(ADMIN, "time_pref_set", stubbed, "")
-            self.assertIsNotNone(impl.last_time_pref_set_at(PHONE),
-                                 "替身哈希没被内部查询用上")
-            self.assertEqual(impl.time_pref_set_count_since(PHONE, "1970-01-01 00:00:00"), 1)
-        # 换回真 hash_phone：同一个 phone 查不到替身写入的那条审计
-        self.assertIsNone(impl.last_time_pref_set_at(PHONE),
-                          "真 hash_phone 不该命中替身哈希写下的审计行")
-
-    def test_patch_object_round_trips_on_events_names(self):
-        real = events_mod.last_pause_at
-        with mock.patch.object(impl, "last_pause_at", self.SENTINEL):
-            self.assertIs(events_mod.last_pause_at, self.SENTINEL)
-        self.assertIs(events_mod.last_pause_at, real)
-        self.assertIs(impl.last_pause_at, real)
-
-    def test_shell_write_forwarding_reaches_time_prefs(self):
-        """`scripts/db.py` 壳（旧 `import db`）的写入同样落到 time_prefs。"""
-        shell = _import_shell_PREFS()
-        original = prefs_mod.time_pref_stats
-        try:
-            shell.time_pref_stats = self.SENTINEL
-            self.assertIs(prefs_mod.time_pref_stats, self.SENTINEL,
-                          "壳上的赋值经 db 门面后没有落到真定义点")
-        finally:
-            shell.time_pref_stats = original
-        self.assertIs(prefs_mod.time_pref_stats, original)
-
-class DeleteHidingTest_PREFS(_TimePrefsSplitBase):
-    """④ delattr 只摘门面上的名字，真定义与模块内部调用不受影响。"""
-
-    def test_delattr_hides_events_name_on_facade(self):
-        real = events_mod.pause_count_since
-        del impl.pause_count_since
-        self.assertFalse(hasattr(impl, "pause_count_since"))
-        self.assertIs(events_mod.pause_count_since, real)
-        impl.pause_count_since = real
-        self.assertIs(impl.pause_count_since, real)
 
 class FacadeBehaviourTest_PREFS(_TimePrefsSplitBase):
     """真实可用：经门面走一遍写/读/统计/冷却，并钉住日志通道细分。"""
@@ -1421,18 +792,6 @@ MOVED_TO_MIGRATIONS = (
 )
 
 
-MOVED_NAMES_TRACK = MOVED_TO_TRACKING + MOVED_TO_MIGRATIONS
-
-
-FORWARDED_STATE_NAME = "_TRACK_SALT_CACHE"
-
-
-def _import_shell_TRACK():
-    """`scripts/db.py` 兼容壳（旧 `import db` 路径）。"""
-    sys.path.insert(0, os.path.join(BASE, "scripts"))
-    return importlib.import_module("db")
-
-
 class _TrackingSplitBase(unittest.TestCase):
     """连接状态、密钥/盐路径与盐缓存的公共收发。
 
@@ -1498,100 +857,6 @@ class _TrackingSplitBase(unittest.TestCase):
         with io.open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
 
-
-class SameObjectTest_TRACK(_TrackingSplitBase):
-    """① 门面读取回落到定义点，且 db 不再持有自己的绑定。"""
-
-    def test_definitions_live_only_in_owning_modules(self):
-        for name in (*MOVED_NAMES_TRACK, FORWARDED_STATE_NAME):
-            self.assertNotIn(name, vars(impl), f"db 不该再持有自己的 {name} 绑定")
-        for name in MOVED_TO_TRACKING:
-            self.assertIn(name, vars(track_mod), f"tracking 应定义 {name}")
-        for name in MOVED_TO_MIGRATIONS:
-            self.assertIn(name, vars(migrations_mod), f"migrations 应定义 {name}")
-        self.assertIn(FORWARDED_STATE_NAME, vars(track_mod))
-        # 盐缓存锁只被本域内部使用、全仓无外部引用 → 随域朴素搬走，不做门面再导出
-        self.assertIn("_TRACK_SALT_LOCK", vars(track_mod))
-        self.assertNotIn("_TRACK_SALT_LOCK", vars(impl))
-
-    def test_account_crypto_binding_kept_on_facade(self):
-        """唯一自用点随迁移域迁走，但 `db.account_crypto` 仍被测试取用 → 绑定保留。"""
-        self.assertIn("account_crypto", vars(impl))
-
-
-class WriteForwardingTest_TRACK(_TrackingSplitBase):
-    """② 写入落到真定义点；③ 可变状态转发；④ 门面内的晚解析。"""
-
-    SENTINEL = object()
-
-    def test_plain_assignment_lands_in_defining_module(self):
-        for name in MOVED_TO_TRACKING + MOVED_TO_MIGRATIONS:
-            owner = track_mod if name in MOVED_TO_TRACKING else migrations_mod
-            original = getattr(owner, name)
-            try:
-                setattr(impl, name, self.SENTINEL)
-                self.assertIs(getattr(owner, name), self.SENTINEL,
-                              f"门面上的 {name} 赋值没有落到真定义点")
-                self.assertIs(getattr(impl, name), self.SENTINEL)
-            finally:
-                setattr(impl, name, original)
-            self.assertIs(getattr(owner, name), original)
-
-    def test_salt_cache_assignment_lands_in_tracking(self):
-        original = track_mod._TRACK_SALT_CACHE
-        try:
-            impl._TRACK_SALT_CACHE = self.SENTINEL
-            self.assertIs(track_mod._TRACK_SALT_CACHE, self.SENTINEL,
-                          "盐缓存的赋值没有落到定义点（清缓存会静默失效）")
-            self.assertIs(impl._TRACK_SALT_CACHE, self.SENTINEL)
-        finally:
-            impl._TRACK_SALT_CACHE = original
-        self.assertIs(track_mod._TRACK_SALT_CACHE, original)
-
-    def test_patch_object_round_trips_on_migrations_name(self):
-        real = migrations_mod._rename_backup
-        with mock.patch.object(impl, "_rename_backup", self.SENTINEL):
-            self.assertIs(migrations_mod._rename_backup, self.SENTINEL)
-        self.assertIs(migrations_mod._rename_backup, real)
-        self.assertIs(impl._rename_backup, real)
-
-    def test_shell_write_forwarding_reaches_tracking(self):
-        """`scripts/db.py` 壳（旧 `import db`）的写入同样落到 tracking。"""
-        shell = _import_shell_TRACK()
-        original = track_mod.hash_ip
-        try:
-            shell.hash_ip = self.SENTINEL
-            self.assertIs(track_mod.hash_ip, self.SENTINEL,
-                          "壳上的赋值经 db 门面后没有落到真定义点")
-        finally:
-            shell.hash_ip = original
-        self.assertIs(track_mod.hash_ip, original)
-
-    def test_maybe_migrate_stub_seen_by_init_db(self):
-        """门面内的 `init_db` 必须看见 `db._maybe_migrate = 替身`（晚解析）。"""
-        db_path = self._fresh_db_path()
-        accounts_json = os.path.join(os.path.dirname(db_path), "accounts.json")
-        with open(accounts_json, "w", encoding="utf-8") as f:
-            json.dump([{"phone": "13800138000", "password": "pw"}], f)
-        stub = mock.MagicMock()
-        with mock.patch.object(impl, "_maybe_migrate", stub):
-            conn = impl.init_db(db_path, migrate_from=accounts_json,
-                                env_file=self.env_file, cleanup=False)
-        stub.assert_called_once_with(conn, accounts_json)
-        self.assertTrue(os.path.exists(accounts_json),
-                        "替身在场时真导入一次也没跑（JSON 未被改名 .bak）")
-
-
-class DeleteHidingTest_TRACK(_TrackingSplitBase):
-    """⑤ delattr 只摘门面上的名字，真定义与模块内部调用不受影响。"""
-
-    def test_delattr_hides_migration_name_on_facade(self):
-        real = migrations_mod._maybe_migrate
-        del impl._maybe_migrate
-        self.assertFalse(hasattr(impl, "_maybe_migrate"))
-        self.assertIs(migrations_mod._maybe_migrate, real)
-        impl._maybe_migrate = real
-        self.assertIs(impl._maybe_migrate, real)
 
 class SaltBehaviourTest(_TrackingSplitBase):
     """真实可用：加盐哈希对盐敏感、盐缓存转发可清、落盘保留其他行。"""
@@ -1877,7 +1142,7 @@ class _WebBase(unittest.TestCase):
             if os.path.exists(p):
                 os.remove(p)
         db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
-        db.create_user(EMAIL, self.webapp.generate_password_hash(USER_PASS))
+        db.create_user(EMAIL, generate_password_hash(USER_PASS))
         db.add_account({"name": "我的号", "phone": PHONE_D6, "password": "pw",
                         "owner": EMAIL, "status": "active",
                         "phone_model": "", "phone_code": ""})
@@ -1948,6 +1213,18 @@ class AccountDedupeTest(unittest.TestCase):
         os.environ.pop("YIBAN_ACCOUNTS", None)
         os.environ.pop("YIBAN_PHONE", None)
         os.environ["YIBAN_DB_FILE"] = os.path.join(tempfile.mkdtemp(prefix="yiban-dedupe-"), "x.db")
+        # 本用例每例换库；`init_db` 现在拒绝在已有连接上静默换库（工单 mgq5），
+        # 故必须先丢弃继承来的连接，否则 `load_accounts()` 会以 RuntimeError 失败。
+        # （旧行为是复用旧连接 ⇒ 本用例其实一直跑在别的类的库上。）
+        def _drop_conn():
+            conn = conn_mod.current()
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    conn.close()
+            impl._conn = None
+
+        _drop_conn()
+        self.addCleanup(_drop_conn)
 
     def tearDown(self):
         os.environ.clear()
@@ -1987,215 +1264,13 @@ class ConfigSummaryMaskingTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 6c3-B 机制总账
+# 笔记：原「6c3-B 机制总账」段已随饮食批删除
 # ---------------------------------------------------------------------------
-# 原六域类（SameObjectTest_* / WriteForwardingTest_* / DeleteHidingTest_*）逐域复制的
-# 45 条桩机制断言收敛为下面 8 条参数化用例：钉的是 db 门面（`_FORWARDED_STATE` +
-# `_StateForwardingModule`）的**通用**正确性——同一身份、可导入、写转发落真定义点
-# （patch/delattr/undo 往返）。各域**行为**测试（FacadeBehaviourTest_*、
-# plain_assignment、shell_write_forwarding、晚解析、日志通道）仍留在原域类一字未动。
-# 新增域只需往 `_MECH_DOMAINS` 登记一行。
-
-_MECH_DOMAINS = (
-    {
-        "tag": "accounts", "home": accounts_mod,
-        "names": (*MOVED_NAMES_ACC, "DuplicatePhoneError"),
-        "names2": (),
-        "extra_import": (),
-        "patch_obj": ("_decrypt_row",),
-        "patch_str": "load_accounts", "patch_str_db": False,
-        "shell_patch": ("_decrypt_row", "decrypt_account_rows", accounts_mod),
-        "hides": "add_account",
-        "monkey": ("read_accounts", False),
-    },
-    {
-        "tag": "clock_meta", "home": meta_mod, "names": MOVED_NAMES_CLOCK,
-        "names2": (), "extra_import": (),
-        "patch_obj": MOVED_NAMES_CLOCK,
-        "patch_str": "get_meta", "patch_str_db": False,
-        "shell_patch": ("set_meta", None, None),
-        "hides": "get_meta", "monkey": ("set_meta", False),
-    },
-    {
-        "tag": "connection", "home": conn_mod,
-        "names": ("get_conn", "is_initialized", "DB_DEFAULT"),
-        "names2": (),
-        "extra_import": ("_conn", "_conn_lock", "_db_file", "_env_file"),
-        # connection 侧的 patch/shell-patch 真状态语义由 PatchAndDeleteRoundTripTest
-        # 的 `_real_state` 组逐点钉住（需要活连接，非通用属性机制），不进本总账。
-        "patch_obj": (),
-        "patch_str": "_conn", "patch_str_db": True,
-        "shell_patch": None, "hides": None,
-        "monkey": ("_conn", True),
-    },
-    {
-        "tag": "session_cache", "home": cache_mod, "names": MOVED_NAMES_SESSION,
-        "names2": (), "extra_import": (),
-        "patch_obj": ("_session_cache_now",),
-        "patch_str": "get_session_cache", "patch_str_db": False,
-        "shell_patch": ("_session_cache_now", "get_session_cache", cache_mod),
-        "hides": "clear_session_cache",
-        "monkey": ("_session_cache_key", False),
-    },
-    {
-        "tag": "time_prefs", "home": prefs_mod, "names": MOVED_TO_TIME_PREFS,
-        "names2": ((events_mod, MOVED_TO_EVENTS),), "extra_import": (),
-        "patch_obj": ("get_time_prefs",),
-        "patch_str": "clear_time_pref", "patch_str_db": False,
-        "shell_patch": ("get_time_pref", "last_pause_at", events_mod),
-        "hides": "clear_time_pref",
-        "monkey": ("last_time_pref_set_at", False),
-    },
-    {
-        "tag": "tracking", "home": track_mod,
-        "names": (*MOVED_TO_TRACKING, "_TRACK_SALT_CACHE"),
-        "names2": ((migrations_mod, MOVED_TO_MIGRATIONS),), "extra_import": (),
-        "patch_obj": ("hash_ip",),
-        "patch_str": "hash_phone", "patch_str_db": False,
-        "shell_patch": ("_track_salt", None, None),
-        "hides": "hash_ip",
-        "monkey": ("_track_salt", False),
-    },
-)
+# 该段（`StoreForwardingMechanismLedgerTest` 的 8 条参数化 + `_MECH_DOMAINS` 登记表，
+# 以及更早六域各自的 SameObjectTest_* / WriteForwardingTest_* / DeleteHidingTest_*）
+# 钉的是 db 门面 `_FORWARDED_STATE` 的**转发机制**：同一身份、可导入、写转发落真定义点、
+# patch/delattr/undo 往返。它属"测实现长相"——门面若改成直接导入，行为一字不变而它集体
+# 转红。2026-10-16 整族删除，判据见 AGENTS §一.6a。门面的**可用性**由本文件保留的
+# `FacadeBehaviourTest_*`（各域 CRUD 往返）与 `UserIndexDriftGuardTest` 等行为用例承担。
 
 
-class StoreForwardingMechanismLedgerTest(_ConnStateBase):
-    """门面转发机制总账：六域复制组（45 条）的通用正确性（6c3-B）。"""
-
-    SENTINEL = object()
-
-    @staticmethod
-    def _shell():
-        """`scripts/db.py` 兼容壳（旧 `import db` 路径）——六域助手同一实现。"""
-        sys.path.insert(0, os.path.join(BASE, "scripts"))
-        return importlib.import_module("db")
-
-    def _all_names(self, d):
-        """→ [(name, home)]：主定义点 + 按表分治的第二归属 + 连接态补名。"""
-        out = [(n, d["home"]) for n in d["names"]]
-        for home2, names2 in d["names2"]:
-            out += [(n, home2) for n in names2]
-        out += [(n, d["home"]) for n in d["extra_import"]]
-        return out
-
-    def test_facade_reads_share_the_definition_point(self):
-        """`db.<名字>` 读回落真定义点（快照式再导出即红——各域原逐名复制的同一条）。"""
-        for d in _MECH_DOMAINS:
-            with self.subTest(domain=d["tag"]):
-                for name, home in self._all_names(d):
-                    self.assertIs(getattr(impl, name), getattr(home, name),
-                                  f"db.{name} 与 {home.__name__}.{name} 不是同一对象")
-
-    def test_moved_names_importable_from_db(self):
-        """`from yiban.store.db import <名字>` 的查找路径可用且给回同一对象。"""
-        db_mod = importlib.import_module("yiban.store.db")
-        for d in _MECH_DOMAINS:
-            with self.subTest(domain=d["tag"]):
-                for name, home in self._all_names(d):
-                    self.assertIs(getattr(db_mod, name), getattr(home, name),
-                                  f"db 的 {name} 与定义点不再同一（导入面漂移）")
-
-    def test_patch_object_round_trips(self):
-        """`mock.patch.object(db, 名)` ⇒ 定义点现见替身，退出必复原（静默残留即红）。"""
-        for d in _MECH_DOMAINS:
-            for name in d["patch_obj"]:
-                with self.subTest(domain=d["tag"], name=name):
-                    home = d["home"]
-                    real = getattr(home, name)
-                    with mock.patch.object(impl, name, self.SENTINEL):
-                        self.assertIs(getattr(home, name), self.SENTINEL,
-                                      f"门面打桩没有落到真定义点（写转发断了）：{name}")
-                    self.assertIs(getattr(home, name), real,
-                                  "退出打桩必须把真函数恢复回来（丢成 None 即静默残留）")
-                    self.assertIs(getattr(impl, name), real)
-
-    def test_patch_string_target_round_trips(self):
-        """`mock.patch("yiban.store.db.<名>")` 字符串靶点同样现取现还原。"""
-        for d in _MECH_DOMAINS:
-            name = d["patch_str"]
-            if name is None:
-                continue
-            with self.subTest(domain=d["tag"]):
-                home = d["home"]
-                if d["patch_str_db"]:
-                    path = self._temp_db()
-                    c = impl.init_db(db_file=path, cleanup=False)
-                    expect = c
-                else:
-                    expect = getattr(home, name)
-                with mock.patch(f"yiban.store.db.{name}", self.SENTINEL):
-                    self.assertIs(getattr(impl, name), self.SENTINEL)
-                    self.assertIs(getattr(home, name), self.SENTINEL,
-                                  f"字符串靶点没有穿到定义点：{name}")
-                self.assertIs(getattr(home, name), expect,
-                              "字符串靶点退出后真状态必须复原")
-                self.assertIs(getattr(impl, name), expect)
-
-    def test_shell_patch_object_round_trips(self):
-        """兼容壳上的 `patch.object(shell, 名)` 经门面落到定义点，且不误伤伴名。"""
-        for d in _MECH_DOMAINS:
-            if d["shell_patch"] is None:
-                continue
-            name, guard, guard_home = d["shell_patch"]
-            with self.subTest(domain=d["tag"]):
-                shell = self._shell()
-                home = d["home"]
-                real = getattr(home, name)
-                guard_real = getattr(guard_home, guard) if guard else None
-                with mock.patch.object(shell, name, self.SENTINEL):
-                    self.assertIs(getattr(home, name), self.SENTINEL,
-                                  "壳上的打桩经门面后没有落到真定义点")
-                    if guard:
-                        self.assertIs(getattr(guard_home, guard), guard_real,
-                                      "只打一个名字不得把伴名一起换掉")
-                self.assertIs(getattr(home, name), real)
-                self.assertIs(getattr(impl, name), real)
-
-    def test_delattr_hides_name_on_facade(self):
-        """`del db.<名>` 只摘门面：读取即 AttributeError，真定义不动，setattr 可复原。"""
-        for d in _MECH_DOMAINS:
-            name = d["hides"]
-            if name is None:
-                continue
-            with self.subTest(domain=d["tag"]):
-                home = d["home"]
-                real = getattr(home, name)
-                try:
-                    delattr(impl, name)
-                    self.assertFalse(hasattr(impl, name),
-                                     "删不掉的话 patch 撤销不会 setattr 回原值")
-                    with self.assertRaises(AttributeError):
-                        _ = getattr(impl, name)
-                    self.assertIs(getattr(home, name), real, "摘名不该动真定义")
-                finally:
-                    setattr(impl, name, real)
-                self.assertIs(getattr(impl, name), real)
-
-    def test_monkeypatch_delattr_undo_restores(self):
-        """pytest `monkeypatch.delattr` 式撤销：delattr 得掉、undo 后定义点与门面都复原。"""
-        for d in _MECH_DOMAINS:
-            name, db_needed = d["monkey"]
-            with self.subTest(domain=d["tag"]):
-                home = d["home"]
-                if db_needed:
-                    path = self._temp_db()
-                    c = impl.init_db(db_file=path, cleanup=False)
-                    real = c
-                else:
-                    real = getattr(home, name)
-                mp = pytest.MonkeyPatch()
-                try:
-                    mp.delattr(impl, name)
-                    self.assertFalse(hasattr(impl, name),
-                                     "删不掉的话 undo 不会 setattr 回原值（mock 同理）")
-                    self.assertIs(getattr(home, name), real, "门面摘名不该动真状态")
-                finally:
-                    mp.undo()
-                self.assertIs(getattr(impl, name), real)
-                self.assertIs(getattr(home, name), real)
-
-    def test_delattr_of_unknown_name_still_raises(self):
-        """真缺失仍抛 AttributeError（__getattr__/__delattr__ 不得吞掉）——
-        这条原六域各复制一份、断言逐字相同，总账留一份。"""
-        with self.assertRaises(AttributeError):
-            del impl.definitely_not_a_name

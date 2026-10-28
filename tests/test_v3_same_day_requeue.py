@@ -9,9 +9,9 @@
    （`requeue_during_run`）、`claim_all` 全分片扫尾（兜底身份的领取范围）、
    兜底 worker 按 `YIBAN_SCHEDULER_V3` 分流（v3 走任务队列执行体、v2 走领取池路径）、
    `runner` 补签轮把 `requeue_final` 透传给 v3。
-对应实现：yiban/store/queue_store.py（requeue_failed）、yiban/engine/executor_v3.py
+对应实现：yiban/adapters/persistence/queue_store.py（requeue_failed）、yiban/engine/executor_v3.py
    （_tier_prefix、run_executor_v3 的 requeue_final/claim_all/requeue_during_run/slot）、
-   yiban/engine/workers.py（run_fallback_worker 的分流）、yiban/engine/runner.py（分流点透传）。
+   yiban/workers/workers.py（run_fallback_worker 的分流）、yiban/app/runner.py（分流点透传）。
 关键断言：`retry:` 档 failed 必须当日被普通轮回炉（`claim_batch` 只取 pending，不回炉
    就是"当日无人接手"）；`final:` 档与普通 unprefixed 历史行绝不自动复活——复活等于
    风控账号每轮重登，只有显式路径（`requeue_final=True`，对齐补签轮的 `retry_failed`）
@@ -39,10 +39,13 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402
 
-from yiban import clock, egress  # noqa: E402
-from yiban.engine import executor_v3, hrw, token_bucket, workers  # noqa: E402
-from yiban.engine import runner as runner_mod  # noqa: E402
-from yiban.store import claims, clock_meta, queue_store  # noqa: E402
+from yiban import egress  # noqa: E402
+from yiban.adapters.persistence import clock_meta, queue_store  # noqa: E402
+from yiban.app import runner as runner_mod  # noqa: E402
+from yiban.core import clock, hrw  # noqa: E402
+from yiban.core import status as yiban_status  # noqa: E402  # 分档词表唯一家（128-P1）
+from yiban.engine import executor_v3, token_bucket  # noqa: E402
+from yiban.workers import workers  # noqa: E402
 
 TEST_KEY = "a" * 64
 DAY = "2026-09-22"          # 周二，避开周末门
@@ -128,9 +131,19 @@ async def _never(_ctx):
     await asyncio.Event().wait()
 
 
-def _item(phone, run_at=None, attempts=0, epoch=1,
-          priority=executor_v3.PRIORITY_ORDER_BASE):
-    return (priority, run_at or _ts(seconds=-1), phone, attempts, epoch)
+def _item(phone, run_at=None, attempts=0, epoch=1):
+    """一条"被领到"的行——`claim_batch` 返回的行形状（claim-at-dispatch 下每次一行）。"""
+    return {"phone": phone, "run_at": run_at or _ts(seconds=-1),
+            "attempts": attempts, "epoch": epoch}
+
+
+def _keeper_watch(box):
+    """假协调循环：给定条目吐完、且没有通道在飞时置停止（**不推进假时钟**）。"""
+    async def _keep(ctx):
+        while box or ctx.claiming:
+            await asyncio.sleep(0)
+        ctx.stop.set()
+    return _keep
 
 
 class _Base(unittest.TestCase):
@@ -226,14 +239,20 @@ class _Base(unittest.TestCase):
         gate = gate if gate is not None else _PermissiveGate()
         patches = [mock.patch.object(executor_v3, "_persist_loop", _never)]
         if items is not None:
-            async def _refill(queue, shards, ctx):
-                for it in items:
-                    queue.put_nowait(it)
-                for _ in range(ctx.m):
-                    queue.put_nowait((executor_v3.SENTINEL_PRIORITY, "", "", 0, 0))
-            patches.append(mock.patch.object(executor_v3, "_refiller", _refill))
+            # 夹具把行预置成"本进程已领取"（owner＝本进程运行时身份）——那是**起跑之后**
+            # 才可能出现的状态；而执行体起跑第一件事就是按本稳定名收自己的尸（工单 `l1rx`
+            # 必修 R1），会把夹具行翻回 pending。故 items 模式把起跑收尸替身为 no-op；
+            # **R1 本身**由 `tests/test_claim_dispatch_elbow_e2e.py::CrashRecoveryPathsTest`
+            # 的三条路径用例正面钉住。
+            patches.append(mock.patch.object(queue_store, "reap_abandoned",
+                                             lambda *a, **k: 0))
+            box = list(items)
+            patches.append(mock.patch.object(
+                executor_v3, "_claim_one", lambda ctx: [box.pop(0)] if box else []))
+            patches.append(mock.patch.object(
+                executor_v3, "_dispatch_keeper", _keeper_watch(box)))
         patches += [
-            mock.patch.object(executor_v3, "_make_limiter", lambda channels: limiter),
+            mock.patch.object(executor_v3, "_make_limiter", lambda channels, shares=1: limiter),
             mock.patch.object(executor_v3, "_make_global_limiter",
                               lambda: token_bucket.GlobalLimiter("")),
             mock.patch.object(executor_v3, "_make_gap_gate", lambda: gate),
@@ -276,18 +295,24 @@ class TierPrefixSettleTest(_Base):
         phone, _res = self._settle_one("skipped_window", skip=True, message="签到时段已结束")
         row = self._row(phone)
         self.assertEqual(row["state"], "failed")
-        self.assertTrue(row["result"].startswith(claims.RESULT_RETRY_PREFIX),
+        self.assertTrue(row["result"].startswith(yiban_status.RESULT_RETRY_PREFIX),
                         "窗口外属默认档：不写 retry: 前缀，当日回炉口就认不出它")
 
     def test_no_position_carries_retry_prefix(self):
         phone, _res = self._settle_one("no_position", message="未找到签到位置数据", attempts=0)
-        self.assertTrue(self._row(phone)["result"].startswith(claims.RESULT_RETRY_PREFIX))
+        self.assertTrue(self._row(phone)["result"].startswith(yiban_status.RESULT_RETRY_PREFIX))
 
     def test_exhausted_budget_carries_final_prefix(self):
         phone, _res = self._settle_one("failed", message="网络抖动", attempts=2)
-        self.assertTrue(self._row(phone)["result"].startswith(claims.RESULT_FINAL_PREFIX))
+        self.assertTrue(self._row(phone)["result"].startswith(yiban_status.RESULT_FINAL_PREFIX))
 
-    def test_paused_zero_request_carries_final_prefix(self):
+    def test_paused_zero_request_settles_skipped(self):
+        """账密暂停落终态 `skipped`（与 JSON 终态映射同口径），不是可回炉的 `failed`。
+
+        落 `failed` 会让补签闸门的队列腿（`task_open_count`）判"未了结"，补签轮把该
+        账号再真实登录一次（工单 48b9/vqmb）。`skipped` 不在 `REQUEUEABLE_STATES`，
+        也不需要档位前缀——它不会进回炉口。
+        """
         phone = _phone(1)
         self._add_claimed_one(phone)
         self._seed_v(8)
@@ -296,24 +321,25 @@ class TierPrefixSettleTest(_Base):
                                lambda acc: (True, "ok", False, "success")):
             self._run_v3(self._accounts(phone), [_item(phone)], cred_state=cred_state)
         row = self._row(phone)
-        self.assertEqual(row["state"], "failed")
-        self.assertTrue(row["result"].startswith(claims.RESULT_FINAL_PREFIX),
-                        "账密暂停不是默认档：自动回炉会绕开熔断（保守档）")
+        self.assertEqual(row["state"], "skipped")
+        self.assertFalse(row["result"].startswith(yiban_status.RESULT_FINAL_PREFIX))
+        self.assertEqual(queue_store.requeue_failed(DAY, (0,), include_final=True), 0,
+                         "skipped 是终态：显式路径也不得把它翻回 pending")
 
     def test_done_result_has_no_prefix(self):
         phone, _res = self._settle_one("success", success=True, message="签到成功")
         row = self._row(phone)
         self.assertEqual(row["state"], "done")
-        self.assertFalse(row["result"].startswith(claims.RESULT_RETRY_PREFIX))
-        self.assertFalse(row["result"].startswith(claims.RESULT_FINAL_PREFIX))
+        self.assertFalse(row["result"].startswith(yiban_status.RESULT_RETRY_PREFIX))
+        self.assertFalse(row["result"].startswith(yiban_status.RESULT_FINAL_PREFIX))
 
     def test_tier_authority_is_the_same_set_as_v2(self):
-        """分档判据只有一份：与 v2 `_settle_claims` 共用 `RETRYABLE_GIVE_UP_STATUSES`。"""
-        for st in claims.RETRYABLE_GIVE_UP_STATUSES:
+        """分档判据只有一份：执行侧与收尾侧共用 `yiban.core.status.RETRYABLE_GIVE_UP_STATUSES`。"""
+        for st in yiban_status.RETRYABLE_GIVE_UP_STATUSES:
             with self.subTest(status=st):
-                self.assertEqual(executor_v3._tier_prefix(st), claims.RESULT_RETRY_PREFIX)
-        self.assertEqual(executor_v3._tier_prefix("failed"), claims.RESULT_FINAL_PREFIX)
-        self.assertEqual(executor_v3._tier_prefix("paused"), claims.RESULT_FINAL_PREFIX)
+                self.assertEqual(executor_v3._tier_prefix(st), yiban_status.RESULT_RETRY_PREFIX)
+        self.assertEqual(executor_v3._tier_prefix("failed"), yiban_status.RESULT_FINAL_PREFIX)
+        self.assertEqual(executor_v3._tier_prefix("paused"), yiban_status.RESULT_FINAL_PREFIX)
 
 
 # ---------------------------------------------------------------------------
@@ -374,8 +400,8 @@ class RequeueFailedStoreTest(unittest.TestCase):
 
     def test_default_tier_flips_conservative_needs_explicit(self):
         retry_p, final_p, legacy_p = _phone(1), _phone(2), _phone(3)
-        self._add(retry_p, result=claims.RESULT_RETRY_PREFIX + "skipped_window")
-        self._add(final_p, result=claims.RESULT_FINAL_PREFIX + "网络抖动")
+        self._add(retry_p, result=yiban_status.RESULT_RETRY_PREFIX + "skipped_window")
+        self._add(final_p, result=yiban_status.RESULT_FINAL_PREFIX + "网络抖动")
         self._add(legacy_p, result="网络抖动")   # 历史无前缀 = 保守档
         flipped = queue_store.requeue_failed(
             DAY, (0,), run_at=f"{DAY} 07:00:00.000")
@@ -394,16 +420,67 @@ class RequeueFailedStoreTest(unittest.TestCase):
 
     def test_attempts_and_priority_advance_through_requeue_task(self):
         p = _phone(1)
-        self._add(p, result=claims.RESULT_RETRY_PREFIX + "no_position", attempts=1)
+        self._add(p, result=yiban_status.RESULT_RETRY_PREFIX + "no_position", attempts=1)
         queue_store.requeue_failed(DAY, (0,), run_at=f"{DAY} 07:00:00.000")
         row = self._row(p)
         self.assertEqual(row["attempts"], 2, "回炉一次=一次跨执行体重试预算，必须记账")
         self.assertEqual(row["priority"], 6, "回炉排在新任务之后（requeue_task 同一条纪律）")
 
+    def test_day_requeue_is_capped(self):
+        """R3-011：`retry:` 档的默认回炉有当日上限，超限不再复活。
+
+        每回炉一次就是一次新的真实登录。旧实现不限次数，兜底腿每 60 秒复活一次。
+        显式路径（补签/手动）不受限，仍可复活。
+        """
+        p = _phone(1)
+        retry_result = yiban_status.RESULT_RETRY_PREFIX + "no_position"
+        self._add(p, result=retry_result, attempts=0)
+        conn = db.get_conn()
+
+        def _back_to_failed():
+            conn.execute("UPDATE sign_tasks SET state='failed', result=? WHERE phone=?",
+                         (retry_result, p))
+            conn.commit()
+
+        self.assertEqual(queue_store.requeue_failed(
+            DAY, (0,), run_at=f"{DAY} 07:00:00.000"), 1, "首轮回炉必须生效")
+        self.assertEqual(self._row(p)["attempts"], 1)
+        _back_to_failed()
+        self.assertEqual(queue_store.requeue_failed(
+            DAY, (0,), run_at=f"{DAY} 07:10:00.000"), 1, "上限内仍可回炉")
+        self.assertEqual(self._row(p)["attempts"], 2)
+        _back_to_failed()
+        self.assertEqual(queue_store.requeue_failed(
+            DAY, (0,), run_at=f"{DAY} 07:20:00.000"), 0,
+            "达到 MAX_DAY_REQUEUES 后不得再复活（否则每次都是真实登录）")
+        self.assertEqual(self._row(p)["state"], "failed")
+        self.assertEqual(queue_store.requeue_failed(
+            DAY, (0,), include_final=True, run_at=f"{DAY} 07:30:00.000"), 1,
+            "显式路径（补签/手动）不受当日上限约束")
+
+    def test_cap_covers_all_retryable_statuses(self):
+        """三类默认可回炉状态都受同一上限约束（R3-011）。"""
+        statuses = (yiban_status.STATUS_NO_POSITION,
+                    yiban_status.STATUS_SKIPPED_WINDOW,
+                    yiban_status.STATUS_SKIPPED_NORANGE)
+        for i, st in enumerate(statuses):
+            self._add(_phone(10 + i),
+                      result=yiban_status.RESULT_RETRY_PREFIX + st,
+                      attempts=queue_store.MAX_DAY_REQUEUES)
+            self._add(_phone(20 + i),
+                      result=yiban_status.RESULT_RETRY_PREFIX + st,
+                      attempts=0)
+        self.assertEqual(queue_store.requeue_failed(
+            DAY, (0,), run_at=f"{DAY} 07:00:00.000"), 3,
+            "未达上限的三类状态都必须回炉（正向对照）")
+        self.assertEqual(queue_store.requeue_failed(
+            DAY, (0,), run_at=f"{DAY} 07:10:00.000"), 0,
+            "三类状态达到上限后都不得再回炉")
+
     def test_primitive_reuse_and_epoch_gate(self):
         """回炉必须经 requeue_task 原语并带上 SELECT 时的 epoch（不另造第二套写路径）。"""
         p = _phone(1)
-        self._add(p, result=claims.RESULT_RETRY_PREFIX + "x", epoch=7)
+        self._add(p, result=yiban_status.RESULT_RETRY_PREFIX + "x", epoch=7)
         seen = []
         real = queue_store.requeue_task
 
@@ -416,7 +493,7 @@ class RequeueFailedStoreTest(unittest.TestCase):
             queue_store.requeue_failed(DAY, (0,), run_at=f"{DAY} 07:00:00.000")
         self.assertEqual(seen, [(p, DAY, 7)], "必须逐行带领取时读到的 epoch 走 requeue_task")
         # 迟到的回炉：行已被人重领（epoch 变了）→ 写不进去
-        self._add(_phone(2), result=claims.RESULT_RETRY_PREFIX + "x", epoch=3)
+        self._add(_phone(2), result=yiban_status.RESULT_RETRY_PREFIX + "x", epoch=3)
         queue_store.requeue_task(_phone(2), DAY, f"{DAY} 07:00:00.000", epoch=3)  # → pending
         conn = db.get_conn()
         conn.execute("UPDATE sign_tasks SET state='claimed', epoch=epoch+1 "
@@ -437,10 +514,10 @@ class RequeueFailedStoreTest(unittest.TestCase):
         self.assertEqual(self._row(_phone(3))["state"], "skipped")
 
     def test_scope_shard_day_and_history_rows(self):
-        self._add(_phone(1), vshard=3, result=claims.RESULT_RETRY_PREFIX + "x")
-        self._add(_phone(2), vshard=5, result=claims.RESULT_RETRY_PREFIX + "x")
-        self._add(_phone(3), day="2026-09-21", result=claims.RESULT_RETRY_PREFIX + "x")
-        self._add(_phone(4), vshard=-1, result=claims.RESULT_RETRY_PREFIX + "x")
+        self._add(_phone(1), vshard=3, result=yiban_status.RESULT_RETRY_PREFIX + "x")
+        self._add(_phone(2), vshard=5, result=yiban_status.RESULT_RETRY_PREFIX + "x")
+        self._add(_phone(3), day="2026-09-21", result=yiban_status.RESULT_RETRY_PREFIX + "x")
+        self._add(_phone(4), vshard=-1, result=yiban_status.RESULT_RETRY_PREFIX + "x")
         flipped = queue_store.requeue_failed(DAY, (3, 4), run_at=f"{DAY} 07:00:00.000")
         self.assertEqual(flipped, 1)
         self.assertEqual(self._row(_phone(1))["state"], "pending")
@@ -451,7 +528,7 @@ class RequeueFailedStoreTest(unittest.TestCase):
                          "vshard=-1 的历史行不属于任何分片集")
 
     def test_idempotent_second_pass_zero(self):
-        self._add(_phone(1), result=claims.RESULT_RETRY_PREFIX + "x")
+        self._add(_phone(1), result=yiban_status.RESULT_RETRY_PREFIX + "x")
         stamp = f"{DAY} 07:00:00.000"
         self.assertEqual(queue_store.requeue_failed(DAY, (0,), run_at=stamp), 1)
         self.assertEqual(queue_store.requeue_failed(DAY, (0,), run_at=stamp), 0)
@@ -475,7 +552,7 @@ class SessionRequeueTest(_Base):
     def test_retry_tier_is_reflown_by_normal_round(self):
         """反例 (a)：retry: 档 failed → 普通轮轮首回炉 → 本轮领到并签成。"""
         phone = _phone(1)
-        self._failed_row(phone, claims.RESULT_RETRY_PREFIX)
+        self._failed_row(phone, yiban_status.RESULT_RETRY_PREFIX)
         self._seed_v(8)
         calls = []
         with mock.patch.object(executor_v3.attempts, "attempt_signin",
@@ -488,7 +565,7 @@ class SessionRequeueTest(_Base):
     def test_final_tier_needs_explicit_path(self):
         """反例 (b)：final: 档普通轮绝不自动复活；显式路径（requeue_final=True）才回炉。"""
         phone = _phone(2)
-        self._failed_row(phone, claims.RESULT_FINAL_PREFIX)
+        self._failed_row(phone, yiban_status.RESULT_FINAL_PREFIX)
         self._seed_v(8)
         calls = []
         with mock.patch.object(executor_v3.attempts, "attempt_signin",
@@ -520,7 +597,7 @@ class SessionRequeueTest(_Base):
 
     def test_other_day_failed_not_touched(self):
         phone = _phone(4)
-        self._failed_row(phone, claims.RESULT_RETRY_PREFIX, day="2026-09-21")
+        self._failed_row(phone, yiban_status.RESULT_RETRY_PREFIX, day="2026-09-21")
         self._seed_v(8)
         calls = []
         # 不把这个号放进本轮账号列表：在册账号缺当日计划行时，建计划会**正当**补
@@ -555,7 +632,7 @@ class SessionRequeueTest(_Base):
         phone = _phone(6)
         due = _ts(seconds=70)              # 稍后到点的一行：把循环撑过首个恢复周期
         self._add_task(_phone(7), run_at=due, state="pending")
-        self._add_task(phone, state="failed", result=claims.RESULT_RETRY_PREFIX + "x",
+        self._add_task(phone, state="failed", result=yiban_status.RESULT_RETRY_PREFIX + "x",
                        epoch=1)
         seen = []
         flips = []
@@ -568,32 +645,24 @@ class SessionRequeueTest(_Base):
                               phones=phones))
             return flips[-1]
 
-        async def fake_lane(queue, lane_id, ctx):
-            while True:
-                if (await queue.get())[0] >= executor_v3.SENTINEL_PRIORITY:
-                    return
-
-        # `held` 是补货循环登记"在途"的集合（M17）：周期回收按它豁免，防止仍躺在
-        # 通道队列里的行被回收成 pending 再被本循环原地重领（同账号两次真实登录）。
-        # 替身必须带真字段——getattr 兜底会让豁免在缺字段时静默失效。
+        # 协调循环的替身必须带**全部真字段**（claim-at-dispatch 后收干看 `claiming`）。
         ctx = SimpleNamespace(cfg=_cfg(), day=DAY, executor_id=OWNER,
-                              runtime_id=RUNTIME_OWNER, m=1, inflight=0, busy=0,
-                              slot=0, shards=tuple(range(8)), v=8,
-                              requeue_during_run=True, held=set())
-        queue = asyncio.PriorityQueue()
+                              runtime_id=RUNTIME_OWNER, m=1, inflight=0, claiming=0,
+                              claim_unreadable=False, slot=0, shards=tuple(range(8)), v=8,
+                              requeue_during_run=True, reclaim=False, allowed_phones=None,
+                              queue_unreadable=False, log_tag="[single]",
+                              stop=asyncio.Event())
         with mock.patch.object(executor_v3.queue_store, "requeue_failed", spy), \
-             mock.patch.object(executor_v3, "_lane", fake_lane), \
              mock.patch.object(executor_v3, "_persist_loop", _never):
-            asyncio.run(executor_v3._refiller(queue, tuple(range(8)), ctx))
+            asyncio.run(executor_v3._dispatch_keeper(ctx))
         self.assertTrue(seen, "requeue_during_run 的会话必须按恢复周期回炉")
         self.assertTrue(all(c["include_final"] is False for c in seen),
                         "会话内周期只回炉默认档——final: 档的第二次机会只留给有界显式路径")
         self.assertIn(1, flips, "刚弃权的 retry: 档必须在恢复周期被翻回 pending")
-        # 回炉的目的地是"本轮就被领走"：本用例没起通道（claimed 行无消费者、不会
-        # 落库了结），行翻回 pending 后会被下一次 claim_batch 领成 claimed，租约
-        # 到期又由 reap_expired 放回来——终态停在 pending/claimed 之一都是"已回炉
-        # 且在本轮领取集里"。断言"永远 pending"反而要求"回炉了但绝不接手"，与
-        # requeue_during_run 的存在意义相反。
+        # 回炉的目的地是"本轮就被领走"：本用例没起通道（行无消费者、不会落库了结），
+        # 行翻回 pending 后停在 pending 即"已回炉且在本轮领取集里"（claim-at-dispatch
+        # 下没人领它就一直是 pending；租约族已删，不再有"租约到期放回来"这一说）。
+        # 断言"永远 failed"才是反的。
         self.assertIn(self._row(phone)["state"], ("pending", "claimed"),
                       "回炉=当日接手：不得停留在 failed")
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from "vue";
-import { ApiError, apiGet } from "../lib/api";
+import { api, errorMessage } from "../lib/shell";
 
 /** GET /api/clock（core.js clockInfo 同源字段）。 */
 interface ClockInfo {
@@ -48,8 +48,8 @@ async function loadAll(): Promise<void> {
   errorText.value = "";
   try {
     const [clockData, usersData] = await Promise.all([
-      apiGet<ClockInfo>("/api/clock"),
-      apiGet<{ users: UserRow[] }>("/api/users"),
+      api<ClockInfo>("GET", "/api/clock"),
+      api<{ users: UserRow[] }>("GET", "/api/users"),
     ]);
     clock.value = clockData;
     clockBaseMs = (clockData.server_ts + clockData.tz_offset_min * 60) * 1000;
@@ -57,7 +57,7 @@ async function loadAll(): Promise<void> {
     users.value = usersData.users;
     tickClock();
   } catch (err) {
-    errorText.value = err instanceof ApiError ? err.message : "网络错误，请重试";
+    errorText.value = errorMessage(err, "网络错误，请重试");
   } finally {
     loading.value = false;
   }
@@ -187,7 +187,7 @@ function roleTagType(role: string): "danger" | "primary" | "info" {
 }
 .panel-title {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--fs-title);
   font-weight: 700;
   color: var(--t-base);
 }
@@ -217,7 +217,7 @@ function roleTagType(role: string): "danger" | "primary" | "info" {
 .token-chip {
   width: 22px;
   height: 22px;
-  border-radius: 6px;
+  border-radius: 8px;
   border: 1px solid var(--border);
   display: inline-block;
 }

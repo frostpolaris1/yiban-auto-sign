@@ -8,7 +8,7 @@
     落进当天日志的那份）、`signin_api._launch_signin_proc` 的 argv/env 面清点钉、
     `run.sh` 自身文本不 echo 凭据键的静态实证。
 对应实现：`yiban/engine/cli_support.py::report_fatal_error`、
-    `yiban/cli.py::_cmd_sign/_cmd_probe`（消费 `last_fatal_error`）、
+    `yiban/entry/cli/__init__.py::_cmd_sign/_cmd_probe`（消费 `last_fatal_error`）、
     `web/routes/signin_api.py::_launch_signin_proc`、`run.sh`。
 关键断言：生成点遮——同一份原语（`sanitize_text` + `mask_phones_in_text`），不新造
     第二套口径；摘要"一行"契约不破；argv 只允许承载标识符（裸号=已登记残余，
@@ -35,6 +35,8 @@ import types
 import unittest
 from unittest import mock
 
+from web.services import logs as _logs_svc
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 PHONE_RAW = "13800001234"
@@ -44,9 +46,9 @@ FAKE_PASSWORD = "hunter2-under-key-a"
 
 
 def _load_child_env():
-    """按文件路径装载 `scripts/child_env.py`（非包内模块，沿用既有装载方式）。"""
+    """按文件路径装载 `yiban/infra/env_child.py`（包内模块；按路径装载以隔离模块状态）。"""
     spec = importlib.util.spec_from_file_location(
-        "yiban_child_env_exit", os.path.join(BASE, "scripts", "child_env.py"))
+        "yiban_child_env_exit", os.path.join(BASE, "yiban", "infra", "env_child.py"))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -108,7 +110,7 @@ class _JsonEnvFixture(unittest.TestCase):
         return env
 
     def broken_accounts_env(self):
-        code = ("import json,sys;from yiban.infra import account_crypto;"
+        code = ("import json,sys;from yiban.adapters.config import account_crypto;"
                 "print(json.dumps([{'phone': sys.argv[1],"
                 "'password': account_crypto.encrypt_password("
                 "sys.argv[3], bytes.fromhex(sys.argv[2]), sys.argv[1])}]))")
@@ -126,7 +128,7 @@ class SignJsonErrorExitTest(_JsonEnvFixture):
     def test_sign_json_error_field_masked(self):
         env = self.env()
         env.update(self.broken_accounts_env())
-        r = subprocess.run([sys.executable, "-m", "yiban.cli", "sign", "--json"],
+        r = subprocess.run([sys.executable, "-m", "yiban.entry.cli", "sign", "--json"],
                            cwd=BASE, env=env, capture_output=True, text=True,
                            encoding="utf-8", errors="replace",
                            stdin=subprocess.DEVNULL, timeout=120)
@@ -190,7 +192,6 @@ class SpawnArgvEnvironSurfaceTest(unittest.TestCase):
             ENV_FILE=env_file,
             DB_FILE=os.path.join(root, "yiban.db"),
             child_env=_load_child_env(),
-            log_path_for=lambda: os.path.join(root, "sign.log"),
         )
         captured = {}
 
@@ -203,7 +204,9 @@ class SpawnArgvEnvironSurfaceTest(unittest.TestCase):
         for k in saved:
             del os.environ[k]
         try:
-            with mock.patch.object(subprocess, "Popen", fake_popen):
+            with mock.patch.object(subprocess, "Popen", fake_popen), \
+                    mock.patch.object(_logs_svc, "log_path_for",
+                                      lambda: os.path.join(root, "sign.log")):
                 signin_api._launch_signin_proc(m, PHONE_RAW)
         finally:
             os.environ.update(saved)

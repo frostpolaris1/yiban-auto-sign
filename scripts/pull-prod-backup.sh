@@ -33,7 +33,9 @@
 #
 # 环境变量（均可覆盖）：
 #   YIBAN_SSH_HOST       ssh 别名，默认 yiban（~/.ssh/config 中已配置，禁止直连 IP）
-#   REMOTE_BACKUP_DIR    生产备份目录，默认 /var/backups
+#   REMOTE_BACKUP_DIR    生产备份目录，默认 /var/backups/yiban
+#                        （必须与 scripts/backup.sh 的 BACKUP_DIR 默认同值：
+#                        生产备份落在专用子目录，拉取端去旧目录会静默拉不到）
 #   LOCAL_MIRROR_DIR     本地镜像目录，默认 $HOME/yiban-prod-mirror
 #                        （运维若想落在别处——例如非系统盘——请显式传入该变量，
 #                        不要把个人目录布局写进脚本默认值：本仓库公开）
@@ -43,12 +45,13 @@
 #                        远端，均视为异常并非 0 退出
 #
 # 退出码：0=成功且新鲜；1=失败/校验不过/不新鲜；2=用法错误；
-#         3=环境变量非法（MF-78 注入白名单拒绝，发生在构建任何远端命令之前）
+#         3=环境变量非法（MF-78 注入白名单拒绝，或 STALE_DAYS/LOCAL_KEEP 非整数；
+#           都发生在构建任何远端命令之前）
 umask 077
 set -u
 
 SSH_HOST="${YIBAN_SSH_HOST:-yiban}"
-REMOTE_DIR="${REMOTE_BACKUP_DIR:-/var/backups}"
+REMOTE_DIR="${REMOTE_BACKUP_DIR:-/var/backups/yiban}"
 LOCAL_KEEP="${LOCAL_KEEP:-60}"
 MAX_FETCH="${PULL_MAX_FETCH:-30}"
 STALE_DAYS="${STALE_DAYS:-2}"
@@ -95,28 +98,34 @@ if [[ ! "$MAX_FETCH" =~ ^[0-9]+$ ]]; then
         "$(printf '，收到 %q' "$MAX_FETCH")" >&2
     exit 3
 fi
+# STALE_DAYS / LOCAL_KEEP 直接参与判据：非法值时 `[ "$age_days" -gt "$STALE_DAYS" ]`
+# 返回 2（被 if 当假 ⇒ 新鲜度门静默放行），`$((LOCAL_KEEP + 1))` 展开失败会让整条
+# 删除管道不执行（本地轮转静默失效）。与上面三个注入面同一白名单、同一退出码
+# （P12-16；MF-78）。
+if [[ ! "$STALE_DAYS" =~ ^[0-9]+$ ]]; then
+    printf '配置非法：STALE_DAYS 必须是非负整数（用于新鲜度判据）%s\n' \
+        "$(printf '，收到 %q' "$STALE_DAYS")" >&2
+    exit 3
+fi
+if [[ ! "$LOCAL_KEEP" =~ ^[0-9]+$ ]]; then
+    printf '配置非法：LOCAL_KEEP 必须是非负整数（用于本地保留份数判据）%s\n' \
+        "$(printf '，收到 %q' "$LOCAL_KEEP")" >&2
+    exit 3
+fi
 
 mkdir -p "$LOCAL_MIRROR_DIR" || { echo "无法创建本地镜像目录 $LOCAL_MIRROR_DIR" >&2; exit 1; }
 LOG="$LOCAL_MIRROR_DIR/pull.log"
-# 项目根（脚本在 <repo>/scripts/ 下）：业务日取时经 yiban.clock 与引擎同源
-APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# 项目根（脚本在 <repo>/scripts/ 下）：业务日取时经 yiban.core.clock 与引擎同源
+# 项目根（唯一环境键 YIBAN_APP_DIR；未设时按检出反推）与业务日唯一来源
+# （`business_day`）来自 `scripts/lib/host_paths.sh`——宿主脚本的唯一 bash 定义点。
+# 业务日取时经 yiban.core.clock 与引擎同源；退化链与 backup.sh 同口径。
+. "$(dirname "${BASH_SOURCE[0]}")/lib/host_paths.sh"
+APP_DIR="$(yiban_app_dir)"
 if [ -x "$APP_DIR/.venv/bin/python3" ]; then
     PY="$APP_DIR/.venv/bin/python3"
 else
     PY="$(command -v python3 || echo /usr/bin/python3)"
 fi
-# 业务日唯一来源（MF-109）：yiban.clock 的北京钟；退化链与 backup.sh 同口径
-business_day() {
-    # 只信任形如 YYYY-MM-DD 的输出：解释器在但打印为空/异常时（venv 损坏、版本不匹配）
-    # 必须退到下一级——否则按天文件名会变成 `sign-.log` / `yiban-.tar.gz` 这种静默错位。
-    local _d
-    _d="$("$PY" -c "import sys; sys.path.insert(0, sys.argv[1]); from yiban.clock import today as t; print(t())" "$APP_DIR" 2>/dev/null)"
-    case "$_d" in
-        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) echo "$_d"; return 0 ;;
-    esac
-    TZ=Asia/Shanghai date +%F 2>/dev/null && return 0
-    date +%F
-}
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG" >&2; }
 
@@ -195,9 +204,9 @@ freshness_check() {
         log "新鲜度：本地镜像为空（尚未成功拉取过）"
         return 1
     fi
-    # 新鲜度锚定业务日（MF-109）：备份包名由 backup.sh 按业务日（yiban.clock 北京钟）
+    # 新鲜度锚定业务日（MF-109）：备份包名由 backup.sh 按业务日（yiban.core.clock 北京钟）
     # 生成，宿主时区≠北京时"今天"与包名差一天，会把新鲜副本误判成陈旧。取不到
-    # yiban.clock 时退化 TZ=Asia/Shanghai date，再退化宿主 date。
+    # yiban.core.clock 时退化 TZ=Asia/Shanghai date，再退化宿主 date。
     _biz_today="$(business_day)"
     today_epoch="$(date -d "$_biz_today" +%s 2>/dev/null || date +%s)"
     r_epoch="$(date -d "$rdate" +%s 2>/dev/null || echo "")"
@@ -318,7 +327,9 @@ done
 
 if [ "$MODE" = "check" ]; then
     log "=== 检查完成：待拉取 $fetched 份，已同步 $skipped 份，隔离 $failed 份 ==="
-    freshness_check
+    # P12-15：--check 是"不下载、只看状态"的自动化入口，必须与 --status/--verify/默认
+    # pull 一样把新鲜度结论接进退出码；旧实现丢弃返回值，副本早已停更仍报 0。
+    freshness_check || exit 1
     [ "$failed" -eq 0 ] || exit 1
     exit 0
 fi

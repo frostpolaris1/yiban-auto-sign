@@ -5,38 +5,44 @@
 # 为什么有它（2026-10-05 合流实证）：解释器三轮才找到、副本缺 .git 造成伪红、
 #   CRLF 炸门禁、两负责人分组跑法不同致伪红、tail 截断两轮丢名单。
 #   这些都不是被测代码的缺陷，是"跑法"没有唯一入口造成的。本脚本把跑法固化为
-#   一条命令：建带 .git 的 WSL 副本 → 转 LF → 固定 venv → ruff → 全量并发 pytest
+#   一条命令：建带 .git 的 WSL 副本 → 转 LF → 固定 venv → ruff → mypy → 全量并发 pytest
 #   → 完整输出 tee 到固定日志路径。
 #
 # 用法：
 #   # 本地（Windows Git Bash 或 WSL 内，同一条命令；脚本自己进 WSL）
 #   bash scripts/dev-verify.sh
-#   # CI（ubuntu runner 上就地跑关键子集，不建副本）
+#   # CI（ubuntu runner 上就地跑快集，不建副本）
 #   bash scripts/dev-verify.sh --ci
 #   # 提交前自查（最快；两档）
-#   bash scripts/dev-verify.sh --fast              # 安全档：全量减已知长尾（实测 57s）
+#   bash scripts/dev-verify.sh --fast              # 安全档：快集（与 CI 的 verify 同集）
 #   bash scripts/dev-verify.sh --fast-scoped       # 范围档：只跑改动相邻面（实测 9~11s，覆盖面不全）
 #                                                  # 空覆盖（无改动/无命中）退出码 3，不是 0
 #
 # 选项：
-#   --ci             跑 CI 关键子集（ruff + 安全子集 -n 4 + e2e smoke + shared-facts
-#                    + path-env-reads + config-registry 三道门禁，各带自己的元测试），
-#                    就地跑：不建副本、不归一化、不落日志
-#   --fast           **提交前自查·安全档**：跑全量，但剔除已实测的 5 条长尾
-#                    （等待型/全仓扫描型，见 FAST_KNOWN_SLOW）。实测 146s → 57s，
-#                    覆盖面无选择损失。**仍非门禁**：推送前跑全量或确认 CI 绿。
+#   --ci             跑 CI 的关键集（ruff + mypy + 快集 -n 4 + 名册的串行专轨 + e2e smoke
+#                    + shared-facts + path-env-reads + config-registry + import-linter 四道
+#                    门禁，各带自己的元测试 + Vue 构建可复现门（缺 node/npm 时显式 SKIPPED，
+#                    不静默），就地跑：不建副本、不归一化、不落日志。
+#                    **快集 = 车道名册 tests/lane-roster.tsv 的 fast 行**（2026-10-17 起；
+#                    此前是 `-k` 关键词子集，改动落在命中面外会静默漏测）。
+#   --fast           **提交前自查·安全档**：跑**快集**——与 CI 的 verify 同一集合
+#                    （由名册推导；本机实测见 docs/dev/dev-verify.md §1.2）。
+#                    **仍非门禁**：推送前跑全量或确认 CI 绿。
 #   --fast-scoped    **提交前自查·范围档**：只跑"改动相邻面"（目标为入口自检时实测 9~11s，
 #                    目标集越大越久）。覆盖面明确不全，输出会声明"未被选中的用例没有跑"；
 #                    空覆盖时退出码 3（见下）。
 #   --base REF       --fast / --fast-scoped 的比较基准（默认 HEAD = 只算工作树与暂存区改动；
 #                    传 origin/develop 则算整条分支的改动）
-#   --fast-all       --fast 但不剔除长尾（只有改动确实落在那些文件上时才用）
-#   （--ci / --fast / --fast-scoped / --fast-all 四者互斥：给两个**不同**模式即报错退出 2；
+#   --fast-all       --fast 但不排除非快集文件、也不剔除长尾（只有改动确实落在那些文件上时才用）
+#   --slow           慢集专轨：就地串行跑名册的 slow 行 ＋ FAST_KNOWN_SLOW 长尾轨（CI 单独
+#                     一条作业跑它，与 verify 并行；本地一般不用——默认全量模式本来就含这些用例）
+#   （--ci / --fast / --fast-scoped / --fast-all / --slow 五者互斥：给两个**不同**模式即报错退出 2；
 #     同一模式标志重复给（如 --fast --fast）按幂等接受）
 #   --repo DIR       源仓库目录（默认 = 本脚本所在仓库根）
 #   --target PATH    一个或多个 pytest 目标（默认 tests/）；只对默认全量模式有效
-#   --log-dir DIR    日志目录（默认按模式分开：全量 <仓库父目录>/yiban-dev-verify-logs，
-#                    fast 两档 <仓库父目录>/yiban-dev-verify-logs-fast——两档走不同的锁、
+#   --log-dir DIR    日志目录（默认按模式与源仓分开：全量
+#                    <仓库父目录>/yiban-dev-verify-logs-<源仓摘要>，fast 两档
+#                    <仓库父目录>/yiban-dev-verify-logs-fast-<源仓摘要>——两档走不同的锁、
 #                    可以并发，共用目录会互相轮转删掉对方的日志）
 #   --keep N         日志保留最近 N 份（默认 5）；fast 两档与全量各自计数
 #                    （--ci 跑固定关键子集、就地跑不落日志：--log-dir / --keep 传了会被拒绝；
@@ -44,10 +50,11 @@
 #   -h, --help       打印本帮助
 #
 # 全量模式（默认）的固定口径，逐条都是踩过的坑：
-#   1. 副本落在 WSL 原生文件系统（/root/.cache/yiban-dev-verify/worktree），
+#   1. 副本落在 WSL 原生文件系统（/root/.cache/yiban-dev-verify/<模式>-worktree-<源仓摘要>），
 #      不放 /mnt（DrvFs 慢）。每次运行整体重建，保证"副本 = 当前工作树"；
-#      只排除 .git 与工具缓存目录（__pycache__ / .pytest_cache / .ruff_cache）。
-#      副本路径固定，故并发跑时用 flock 串行化——两个运行不能同时重建同一份副本。
+#      只排除 .git 与工具缓存目录（__pycache__ / .pytest_cache / .ruff_cache / .mypy_cache）。
+#      副本槽与锁都按「模式 + 源仓路径摘要」分键：不同 worktree 并行跑不会互相覆盖
+#      （4kl）；同一个源仓的并发运行仍用 flock 串行化。
 #   2. 副本带**能用的** git 仓库：.git 由本脚本播种（HEAD 指向源提交、
 #      对象经 alternates 复用源对象库、索引直接取源索引）。为什么必须带：
 #      tests/test_deploy_prod_artifacts.py 与 tests/test_web_vue_sources_tracked.py
@@ -64,7 +71,7 @@
 #      文件内先后依赖与进程级 DB 单例，按单条分发即误红。
 #   6. 输出整份 tee 到 <日志目录>/dev-verify-<时间戳>-<pid>.log，保留最近 N 份。
 #      **不截断**（只留 tail 会丢失败名单）。日志内含：解释器绝对路径与版本、
-#      被跑提交 sha、ruff 退出码、pytest 汇总四数、脚本退出码。
+#      被跑提交 sha、ruff 退出码、mypy 退出码、pytest 汇总四数、脚本退出码。
 #   7. 脚本不改测试本身的行为，也不需要任何人先改环境变量。
 #
 # fast 模式口径（2026-10-07 立，依据实测）：
@@ -75,11 +82,12 @@
 #      为什么要有它：全量实测 4331 用例（passed 4325 + skipped 6）约 146s，
 #      单次改动后反复跑全量 + 报错重修极费时间。
 #      墙钟随机器负载变：并发跑测时本档从约 57s 涨到约 104s（见 docs/dev/dev-verify.md）。
-#   9. 长尾剔除依据（实测 `--durations`）：单个用例 135.92s（占全量墙钟 93%，口径：单测点
-#      用时/全量墙钟）＋"另 4 条被 --dist loadfile 串行化约 116s"。剔除清单共 5 条、分属 3 个
-#      文件（shared_facts 3 条 + audit_transaction 1 条 + path_env_read_gate 1 条）。它们只与
-#      全仓扫描/等待超时有关，与提交前自查无关。
-#      剔除清单硬编码在 FAST_KNOWN_SLOW，改它要连着重测墙钟。
+#   9. 长尾剔除依据（`--durations` 实测）：剔除清单共 4 条、分属 3 个文件（shared_facts /
+#      audit_transaction / path_env_read_gate）。3 条是"全仓扫描/等锁"型，本机实测
+#      28.86s / 28.78s / 29.53s（2026-10-24，WSL 固定 venv，单点串行）。第 4 条为 opt-in
+#      演练、恒 skip；开启后按 2026-10-07 口径单点 135.92s，占当时全量墙钟 93%。
+#      它们只与全仓扫描/等待超时有关，与提交前自查无关。剔除清单硬编码在 FAST_KNOWN_SLOW，
+#      改它要连着重测墙钟。剔除 ≠ 没人跑：这 4 条由 run_slow 的长尾轨执行（CI 的 slow-lane 跑它）。
 #   10. 范围档的选择法（无依赖、无状态）：改动文件 → 测试目标。
 #      · 改到 tests/ 下的用例 → 直接跑它；
 #      · 改到源码 → **按导入路径**反查（裸词会大面积误命中：实测 `window` 裸词命中 70 个文件＝29%，
@@ -88,12 +96,13 @@
 #   11. 两档都必须打印"选了什么、依据是什么、没覆盖什么"——防止把 fast 的绿读成门禁的绿。
 #      另：本脚本只跑 pytest。**前端改动**（frontend/ 下的 vitest / playwright）不在本脚本面内，
 #      范围档遇到 frontend/ 改动会如实说"未反查到用例"，不要读成"有人覆盖"。
-#   12. 退出码只有四种：0 = 通过；1 = 有红（ruff 或 pytest 非 0）；2 = 环境错误；3 = **空覆盖**。
+#   12. 退出码只有四种：0 = 通过；1 = 有红（ruff/mypy、pytest 非 0，或全量下有未登记的
+#      运行期跳过）；2 = 环境错误；3 = **空覆盖**。
 #      3 的语义是"没测到东西"，不是"测了但失败"：范围档没测到任何真实用例、只跑了入口自检。
 #      只有改动集反查零命中才是 3（改 docs/dev/dev-verify.md 本身会命中入口自检与文档相关
 #      用例，不属零命中）。推送前仍要跑全量。两种 fast 档都打印 covered=<用例数>
-#      （pytest 汇总四数之和）。**3 由空覆盖独占**：ruff 或 pytest 的原始码一律归一为 1，
-#      不被透出（原始码逐行打印在日志里：ruff_exit= / pytest_exit=），否则 pytest 自己的
+#      （pytest 汇总四数之和）。**3 由空覆盖独占**：ruff/mypy 或 pytest 的原始码一律归一为 1，
+#      不被透出（原始码逐行打印在日志里：ruff_exit= / mypy_exit= / pytest_exit=），否则 pytest 自己的
 #      3（INTERNALERROR）会与空覆盖撞码、语义两用。
 #
 # 守卫与自证：副本 .git 失活、副本残留 CRLF、副本跟踪集为空，
@@ -158,14 +167,93 @@ prune_logs() { # $1 = 目录，$2 = 保留份数
     return 0
 }
 
+repo_digest() { # $1 = 规范化后的仓库绝对路径；输出 16 位十六进制摘要；取不到返回非 0
+    # 副本槽、锁与默认日志目录都按「模式 + 源仓路径」分键。只按模式分键时（旧实现），
+    # 两个 worktree 的 --fast 共用一份副本：一方整体替换另一方的缓存
+    # （4kl，实测 HEAD 被换掉后伪红 rc=2）。
+    # 失败必须返回非 0：命令替换里 `die` 只杀子壳，调用方拿到的会是空串；
+    # 两个源仓都拿空摘要＝又回到共槽（dix 低-3）。调用点统一 `|| die`。
+    local digest
+    digest=$(printf '%s' "$1" | sha256sum 2>/dev/null) || return 1
+    digest=${digest%% *}
+    digest=${digest:0:16}
+    [ -n "$digest" ] || return 1
+    printf '%s\n' "$digest"
+}
+
 default_log_dir() { # $1 = 仓库目录；$2 = 模式（full / fast）；返回默认日志目录
-    # fast 两档与全量走**不同的锁**，两者可以同时跑。日志目录按 mtime 轮转（--keep），
-    # 共用一个目录就会互相删掉对方的日志——实测：fast 档用默认目录跑几次，把同目录里
-    # 他方的 5 份日志轮转删掉了。不同锁的两个流程不许共享可被轮转的资源，故按模式分目录。
+    # 日志目录按 mtime 轮转（--keep）。它按「模式 + 源仓」分键：两个 worktree 并行跑
+    # 各有日志目录，prune_logs 不会轮转删掉对方的日志（dix 低-5）。fast 与全量也分开，
+    # 两者走不同的锁、可以同时跑。
+    local key
+    key=$(repo_digest "$1") || return 1
     case "$2" in
-        fast) printf '%s\n' "$(dirname "$1")/yiban-dev-verify-logs-fast" ;;
-        *) printf '%s\n' "$(dirname "$1")/yiban-dev-verify-logs" ;;
+        fast) printf '%s\n' "$(dirname "$1")/yiban-dev-verify-logs-fast-$key" ;;
+        *) printf '%s\n' "$(dirname "$1")/yiban-dev-verify-logs-$key" ;;
     esac
+}
+
+copy_dest() { # $1 = 模式（fast / 其他），$2 = 仓库绝对路径；摘要取不到即返回非 0
+    local key
+    key=$(repo_digest "$2") || return 1
+    if [ "$1" = fast ]; then
+        printf '%s\n' "$WORKDIR/fast-worktree-$key"
+    else
+        printf '%s\n' "$WORKDIR/worktree-$key"
+    fi
+}
+
+copy_lock() { # $1 = 模式，$2 = 仓库绝对路径；锁与副本槽同键：不同源仓不互相排队
+    local key
+    key=$(repo_digest "$2") || return 1
+    if [ "$1" = fast ]; then
+        printf '%s\n' "$WORKDIR/dev-verify-fast-runlock-$key"
+    else
+        printf '%s\n' "$WORKDIR/dev-verify-runlock-$key"
+    fi
+}
+
+legacy_copy_dest() { # 旧版本只按模式分键的副本路径（首跑迁移用）
+    if [ "$1" = fast ]; then
+        printf '%s\n' "$WORKDIR/fast-worktree"
+    else
+        printf '%s\n' "$WORKDIR/worktree"
+    fi
+}
+
+legacy_copy_lock() { # 旧版本只按模式分键的锁文件（迁移前确认没有旧版在跑）
+    if [ "$1" = fast ]; then
+        printf '%s\n' "$WORKDIR/dev-verify-fast-runlock"
+    else
+        printf '%s\n' "$WORKDIR/dev-verify-runlock"
+    fi
+}
+
+migrate_legacy_copy() { # $1 = 模式，$2 = 新键副本目录
+    # 旧键缓存可能属于**任意**源仓，且旧版进程可能正在用它。旧锁拿不到就不动：
+    # 迁移与清理都只在没有旧版运行的情况下进行。
+    # 混合版本期旧版每次运行都会重建旧键缓存。拿得到锁时：新槽已在则删旧
+    # （旧版下一次只丢一次冷复制的时间，不丢数据），否则整体改名到新槽。
+    local legacy lock
+    legacy=$(legacy_copy_dest "$1")
+    [ -d "$legacy" ] || return 0
+    lock=$(legacy_copy_lock "$1")
+    exec 8>"$lock" 2>/dev/null || return 0
+    if flock -n 8; then
+        if [ -d "$2" ]; then
+            rm -rf "$legacy"
+            echo "DEV-VERIFY: 已清理旧键缓存（$legacy；旧版下次冷复制）"
+        elif mv "$legacy" "$2" 2>/dev/null; then
+            echo "DEV-VERIFY: 旧键缓存已迁移到按源仓分键的槽（$2）"
+        else
+            echo "DEV-VERIFY: 旧键缓存迁移失败，保留原处（不阻断跑测）：$legacy"
+        fi
+        flock -u 8
+    else
+        echo "DEV-VERIFY: 旧键缓存正被另一个 dev-verify 使用，本次不动（$legacy）"
+    fi
+    exec 8>&-
+    return 0
 }
 
 resolve_gitdir() { # 源仓库的 git 目录（.git 目录，或 .git 文件里 gitdir 指过去的目录）
@@ -217,6 +305,17 @@ guard_copy_git() { # 副本必须是一个"能用的 git 仓库"：可 rev-parse
     echo "DEV-VERIFY copy-git: HEAD=$h tracked=$n"
 }
 
+guard_copy_pruned() { # 副本内不得有 gitignore 内容：副本形状必须等于 CI 检出（只有跟踪文件）
+    # 判据不是"文件数少"而是"ignored 集为空"：文件数会随源树变化，ignored 集恒为空才是
+    # 这条不变式本身。来源：CI 是全新 clone，只有跟踪文件；本地副本多带 gitignore 内容
+    # 既不是 CI 的形状，又让 rsync -c 每次多付数百秒（2026-10-16 实测 36116 个文件 200.1s）。
+    local dest=$1 hits n
+    hits=$(cd "$dest" && git ls-files --others --ignored --exclude-standard 2>/dev/null | head -5)
+    [ -z "$hits" ] || die "副本含 gitignore 内容（rsync 剪枝失效）：$(printf '%s' "$hits" | tr '\n' ' ')——副本形状必须等于 CI 检出，拒绝以此跑测"
+    n=$(cd "$dest" && git ls-files | wc -l)
+    echo "DEV-VERIFY copy-prune: 副本无 gitignore 内容（跟踪 $n 个文件）"
+}
+
 normalize_lf() { # 副本内文本一律转 LF（只动行尾 CR，行内 CR 不动；二进制跳过）
     local dest=$1 f n=0
     while IFS= read -r f; do
@@ -262,9 +361,123 @@ guard_worktree_crlf() { # --ci 就地跑不做归一化：工作树真有 CRLF �
         die "跟踪文件含 CRLF 行尾：$(printf '%s' "$hits" | tr '\n' ' ')——--ci 就地跑不做归一化（CI runner 的新检出按 .gitattributes 是 LF）；本地请用默认全量模式（它会先归一化），或先把工作树修成 LF"
 }
 
+#: 运行期跳过豁免（工单 1ffr / AGENTS §十三.30"跳过 ≠ 绿"）。
+#: 全量/--ci 下，未登记的跳过判红；这里登记的是**已知且正当**的跳过来源。
+#: 与 tests/test_skip_visibility_gate.py 的 NEVER_RUNS_IN_CI 对账：那张表登记
+#: "任何一轨都不跑"的族，这张表登记"运行期允许跳过"的来源。新增跳过要么修掉，
+#: 要么在此登记并写明理由（守卫：RuntimeSkipPolicyTest）。
+SKIP_EXEMPT_PATHS=(
+    # M01 归属门族：CI 非 root 恒跳（1ffr）
+    "tests/test_deploy_prod_artifacts.py"
+    # 状态目录不可写族：非 root 恒跳（1ffr）
+    "tests/test_run_sh_workers.py"
+    # 锁目录属主族：非 root 恒跳（1ffr）
+    "tests/test_scheduler_exception_surface.py"
+    # 生产机防呆族：CI 特征不成立（1ffr）
+    "tests/test_deploy_paths_and_restore_verdict.py"
+    # 真 SIGKILL 族：opt-in（plo2）
+    "tests/test_second_round_rc_contract.py"
+    # root 下 chmod 反例不成立（平台条件）
+    "tests/test_migrations_fail_closed.py"
+    # 运行期数据布局族：root/POSIX 条件用例在 CI 非 root 恒跳；其余用例照常运行。
+    # 故不登记 NEVER_RUNS_IN_CI（整族并非不跑），只登记运行期豁免（1ffr 同族）。
+    "tests/test_runtime_data_layout.py"
+    # 真占写锁演练 opt-in（9×busy_timeout）
+    "tests/test_audit_transaction.py"
+    # 清理 cron 同源 e2e（R3-019）：CI 解释器不是项目 venv、且无特权 unshare，
+    # 两条前置不成立时显式 skip；本地 WSL venv/root 会真跑。
+    "tests/test_cleanup_dotenv_parity_e2e.py"
+    # 安装器建日志目录 e2e（R3-009）：CI 非 root 无法在新挂载命名空间 bind mount。
+    "tests/test_install_log_dir_e2e.py"
+)
+SKIP_EXEMPT_REASONS=(
+    # unittest SkipTest 丢失用例文件，按理由认（plo2）
+    "真信号杀演练为 opt-in"
+)
+
+skip_policy_check() { # $1 = junit xml；$2 = strict(1/0)；$3 = python（默认 python3）
+    local xml="$1" strict="${2:-0}" py="${3:-python3}" cls msg total=0 shown=0 badn=0
+    local exempt p r dotted line out
+    local badlines=()
+    local ENTRIES=()
+    if [ ! -s "$xml" ]; then
+        # 报告缺失 = 跳过面不可见。strict 档必须红（§30），fast 档只警告。
+        echo "DEV-VERIFY skip policy: 未产出跳过报告（$xml）——跳过面不可见"
+        [ "$strict" = "1" ] && return 1
+        return 0
+    fi
+    # junit XML 不是一行一条 testcase（pytest 会把多个 testcase 写在同一行），
+    # 按行 grep 会把相邻条目的 classname/message 拼错。用 XML 解析器逐条取。
+    out="$(mktemp)"
+    if ! "$py" - "$xml" > "$out" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+try:
+    root = ET.parse(sys.argv[1]).getroot()
+except Exception:
+    sys.exit(2)
+for tc in root.iter("testcase"):
+    for sk in tc.findall("skipped"):
+        msg = (sk.get("message") or "").replace("\t", " ").replace("\n", " ")
+        print("%s\t%s" % (tc.get("classname") or "", msg))
+PY
+    then
+        rm -f "$out"
+        echo "DEV-VERIFY skip policy: 报告解析失败（$xml）——跳过面不可见"
+        [ "$strict" = "1" ] && return 1
+        return 0
+    fi
+    mapfile -t ENTRIES < "$out"
+    rm -f "$out"
+    total="${#ENTRIES[@]}"
+    echo "DEV-VERIFY skip list: total=$total（最多列 5 条；全量明细见日志）"
+    if [ "$total" -gt 0 ]; then
+        for line in "${ENTRIES[@]}"; do
+            cls="${line%%$'\t'*}"
+            msg="${line#*$'\t'}"
+            shown=$((shown + 1))
+            if [ "$shown" -le 5 ]; then
+                echo "  - ${cls:-?} :: ${msg:-?}"
+            fi
+            exempt=0
+            for p in ${SKIP_EXEMPT_PATHS[@]+"${SKIP_EXEMPT_PATHS[@]}"}; do
+                dotted="${p%.py}"
+                dotted="${dotted//\//.}"
+                case "$cls" in "$dotted"|"$dotted".*) exempt=1; break ;; esac
+            done
+            if [ "$exempt" = "0" ]; then
+                for r in ${SKIP_EXEMPT_REASONS[@]+"${SKIP_EXEMPT_REASONS[@]}"}; do
+                    case "$msg" in *"$r"*) exempt=1; break ;; esac
+                done
+            fi
+            if [ "$exempt" = "0" ]; then
+                badn=$((badn + 1))
+                [ "$badn" -le 20 ] && badlines+=("${cls:-?} :: ${msg:-?}")
+            fi
+        done
+    fi
+    if [ "$shown" -gt 5 ]; then
+        echo "  …（另 $((shown - 5)) 条）"
+    fi
+    if [ "$badn" -eq 0 ]; then
+        echo "DEV-VERIFY skip policy: OK（$shown 条跳过全部已登记）"
+        return 0
+    fi
+    echo "DEV-VERIFY skip policy: FAIL（未登记的跳过 $badn 条）"
+    for line in "${badlines[@]}"; do echo "  ! $line"; done
+    if [ "$badn" -gt 20 ]; then echo "  …（其余 $((badn - 20)) 条省略）"; fi
+    [ "$strict" = "1" ] && return 1
+    return 0
+}
+
 run_ci() { # CI 关键子集：就地跑，不建副本；命令逐字冻结在 tests/test_dev_verify_entry.py，加一步必须同批改那份清单
     local py
-    trap 'rc=$?; echo "DEV-VERIFY(ci) exit_code=$rc"' EXIT
+    # 隔离缓存（工单 dq2n）：mypy 在 (path,size,mtime) 相同时不校验内容哈希，会信任
+    # 上一轮缓存里的错误。就地跑最容易踩到脏 .mypy_cache，故每次新建缓存目录。
+    CI_MYPY_CACHE=""
+    CI_SKIP_XML=""
+    trap 'rc=$?; if [ -n "${CI_MYPY_CACHE:-}" ]; then rm -rf "$CI_MYPY_CACHE"; fi; if [ -n "${CI_SKIP_XML:-}" ]; then rm -f "$CI_SKIP_XML"; fi; echo "DEV-VERIFY(ci) exit_code=$rc"' EXIT
     py=${DEV_VERIFY_PY:-python}
     command -v "$py" >/dev/null 2>&1 || die "找不到解释器：$py"
     py=$(command -v "$py")
@@ -273,36 +486,125 @@ run_ci() { # CI 关键子集：就地跑，不建副本；命令逐字冻结在 
     guard_worktree_crlf
     cd "$REPO"
     echo "DEV-VERIFY(ci) lint"
-    "$py" -m ruff check yiban/ tests/ scripts/ web/ --quiet
-    echo "DEV-VERIFY(ci) security subset"
-    "$py" -m pytest tests/ -q -n 4 --dist loadfile -k "security or mask or audit or login or private or csrf or ratelimit"
+    "$py" -m ruff check yiban/ tests/ scripts/ web/ docker/ tools/ --quiet
+    CI_MYPY_CACHE="$(mktemp -d)"
+    echo "DEV-VERIFY(ci) mypy（收编名单住 pyproject.toml 的 [tool.mypy] files；隔离缓存 $CI_MYPY_CACHE）"
+    "$py" -m mypy --cache-dir "$CI_MYPY_CACHE"
+    "$py" -m pytest tests/test_mypy_type_gate.py -q -p no:randomly
+    echo "DEV-VERIFY(ci) 快集（车道名册的 fast 行；与本地 --fast 同集）"
+    # 关键词子集 → 车道名册（2026-10-17，工单 vckk 阶段 2-a）。旧子集是 `-k` 关键词命中面：
+    # 改动落在命中面之外时子集绿、全量红，且**不重合本身是静默的**（AGENTS §十三 第 29 条）。
+    # 现在目标集由 tests/lane-roster.tsv 推导，覆盖 295/299 个测试文件，剔除项逐条带形状理由。
+    # 覆盖面对账（快集 vs 全量，文件数与用例数两口径）写在 docs/dev/dev-verify.md §1.2 与
+    # 本批 PR 描述里。
+    # FAST_KNOWN_SLOW 的 4 条 nodeid 一并剔除：它们是"等锁超时 / 全仓扫描"型。本机实测
+    # （2026-10-24，WSL 固定 venv，单点串行）：28.86s / 28.78s / 29.53s；第 4 条为 opt-in
+    # 演练、恒 skip。不剔，快集临界路径由两个 shared_facts 用例决定（同文件、--dist
+    # loadfile 串行 ⇒ 约 57.6s），再叠固定开销即破 90s。
+    # 这 4 条由 run_slow 的长尾轨执行（见 FAST_KNOWN_SLOW 注释），CI 的 slow-lane 跑它。
+    # 跳过面（工单 1ffr）：快集产出 junit 报告，运行期跳过逐条点名；未登记即红。
+    CI_SKIP_XML="$(mktemp)"
+    "$py" -m pytest tests/ -q -n 4 --dist loadfile \
+        ${LANE_IGNORE_ARGS[@]+"${LANE_IGNORE_ARGS[@]}"} \
+        ${FAST_DESELECT_ARGS[@]+"${FAST_DESELECT_ARGS[@]}"} \
+        --junitxml="$CI_SKIP_XML"
+    if ! skip_policy_check "$CI_SKIP_XML" 1 "$py"; then
+        echo "DEV-VERIFY(ci): 未登记的跳过 ⇒ 判红（AGENTS §十三.30；豁免登记见 SKIP_EXEMPT_PATHS）" >&2
+        exit 1
+    fi
+    # 串行专轨：车道名册的 serial 行（本树＝多执行体靶场）。它拉起 mock 服务 ＋ 监督进程 ＋
+    # 执行体进程树，需要独占 runner 的核——与快集同抢 4 核时实测在 ubuntu runner 上**跑不起来**
+    # （真登录 0 次，工单 zdvd）。沿用 zdvd 的处置，但**从硬编码步骤改成名册的一行数据**：
+    # 加/减这条轨只改名册，不改本函数（这是"修形状"：特例不再是代码里的分支）。
+    if [ "${#LANE_SERIAL_FILES[@]}" -gt 0 ]; then
+        echo "DEV-VERIFY(ci) 串行专轨（车道名册的 serial 行；不带 -n，独占机器）"
+        # shellcheck disable=SC2086
+        "$py" -m pytest ${LANE_SERIAL_FILES[@]} -q -p no:randomly
+    else
+        echo "DEV-VERIFY(ci) 串行专轨：名册里没有 serial 行（跳过——这是数据决定的，不是静默跳过）"
+    fi
     echo "DEV-VERIFY(ci) e2e smoke"
     "$py" -m pytest tests/test_login_e2e_mock.py -q -p no:randomly
     echo "DEV-VERIFY(ci) shared facts gate"
     bash scripts/check-shared-facts.sh
-    "$py" -m pytest tests/test_shared_facts_gate.py -q -p no:randomly
+    # 元测试与门同一步（绑定不变，见 tests/test_shared_facts_gate.py::SharedFactsCiWiringTest）。
+    # 这里也剔掉 FAST_KNOWN_SLOW：那 4 条全仓扫描在 CI 上实测占本步 162s（本机 80.4s），
+    # 剔掉后只剩十几秒。它们已由全量与 nightly 覆盖。
+    "$py" -m pytest tests/test_shared_facts_gate.py -q -p no:randomly \
+        ${FAST_DESELECT_ARGS[@]+"${FAST_DESELECT_ARGS[@]}"}
     echo "DEV-VERIFY(ci) path env bare-read gate"
     "$py" scripts/check-path-env-reads.py
-    "$py" -m pytest tests/test_path_env_read_gate.py -q -p no:randomly
+    "$py" -m pytest tests/test_path_env_read_gate.py -q -p no:randomly \
+        ${FAST_DESELECT_ARGS[@]+"${FAST_DESELECT_ARGS[@]}"}
     echo "DEV-VERIFY(ci) config registry gate"
     "$py" scripts/check-config-registry.py
     "$py" -m pytest tests/test_config_registry_gate.py -q -p no:randomly
+    echo "DEV-VERIFY(ci) import-linter structure gate"
+    "$py" scripts/check-import-linter.py
+    "$py" -m pytest tests/test_import_linter_gate.py -q -p no:randomly
+    echo "DEV-VERIFY(ci) deps lock gate"
+    # 工单 j06f（复审指定）：这里跑的是那道门的**元测试**，不是门本体。
+    # 门本体在 CI 上跑是同义反复——verify job 的解释器上一行刚按 requirements.lock
+    # 装过，它必然"一致"。要判的形态是"venv 落后 lock"，那由该文件的假 dist-info
+    # 与 stub 造出来；门本体在部署点跑（deploy/prod/install.sh 同步后即跑）。
+    "$py" -m pytest tests/test_deploy_deps_sync.py -q -p no:randomly
+    echo "DEV-VERIFY(ci) vue build reproducible gate"
+    if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+        bash scripts/check-vue-build-reproducible.sh
+    else
+        echo "DEV-VERIFY(ci) SKIPPED: vue build reproducible gate 缺 node/npm——跳过≠绿（AGENTS §十三.30）；覆盖关系：CI frontend job（.github/workflows/ci.yml）跑同一脚本 full 模式" >&2
+    fi
     echo "DEV-VERIFY(ci) done"
 }
 
 # ------------------------------------------------------------
 # fast 模式：改动 → 测试目标（无依赖、无状态；只做文件级反查）
 # ------------------------------------------------------------
-#: --fast 默认剔除的长尾用例（2026-10-07 实测：第一条单点 135.92s，占全量墙钟 93%，
-#: 口径：单测点用时/全量墙钟；余下 4 条分属 2 个文件、被 --dist loadfile 串行化合计约 116s）。
-#: 剔除清单共 5 条、分属 3 个文件。均为"等待超时/全仓扫描"型。
+#: --fast 默认剔除的长尾用例。本机实测（2026-10-24，WSL 固定 venv，单点串行）：
+#: 28.86s / 28.78s / 29.53s；第 4 条为 opt-in 演练（恒 skip，设
+#: YIBAN_DRILL_REAL_DB_LOCK=1 后约 135s）。剔除清单共 4 条、分属 3 个文件。
+#: 均为"等待超时/全仓扫描"型。剔除只作用于快集：这 4 条由 run_slow 的长尾轨执行。
 FAST_KNOWN_SLOW=(
     "tests/test_audit_transaction.py::CliExitCodeTest::test_locked_db_exit_two_not_tampered"
     "tests/test_shared_facts_gate.py::SharedFactsGateLiveTest::test_current_repo_tree_is_green"
-    "tests/test_shared_facts_gate.py::SharedFactsNewFamilyCoverageTest::test_gate_is_silent_when_a_registered_key_is_dropped"
     "tests/test_shared_facts_gate.py::SharedFactsNewFamilyCoverageTest::test_cap_equals_measured_hit_count_for_both_new_families"
     "tests/test_path_env_read_gate.py::GateNoDoubleCountTest::test_routed_key_is_counted_by_exactly_one_engine"
 )
+
+run_slow() { # 慢集专轨：就地串行跑 ① 名册的 slow 行 ② FAST_KNOWN_SLOW 长尾轨
+    # 为什么单独一条命令（而不把 slow 行并进 run_ci）：slow 行的贵是**真实的等外面**
+    # （真子进程 / 真定时等待），快集剔除它们的理由在 CI 上同样成立——并进 verify 会把
+    # 该作业拱向 10 分钟上限（工单 i9gl）。单独成轨后与 verify 并行，总墙钟不变。
+    # 名册仍是唯一事实源：这里不另写名单，行集从 LANE_SLOW_FILES 来（read_lane_roster 已验：
+    # 缺失 / 未知车道 / 同文件进两道 / 文件不存在 / 读空，全都当场 die）。
+    # 长尾轨（2026-10-24，R3-025）：FAST_KNOWN_SLOW 的 nodeid 在快集里被 --deselect，
+    # 而它们所在文件在名册里是 fast 行 ⇒ slow-lane 只取 slow 行，此前**任何自动轨都不跑
+    # 它们**。--deselect 只作用于快集，故本轨直接跑 nodeid，是它们的唯一执行点。
+    echo "DEV-VERIFY(slow) 慢集专轨（车道名册的 slow 行；串行，不带 -n）"
+    # $py 是 run_ci 的局部变量，这里自己解析（与 run_ci 同口径：DEV_VERIFY_PY 覆盖）。
+    local py=${DEV_VERIFY_PY:-python}
+    command -v "$py" >/dev/null 2>&1 || die "找不到解释器：$py"
+    # 两条命令都跑到底再汇总：一条红不许把另一条藏起来（否则"跳过 ≠ 绿"换个形式复发）。
+    local rc=0
+    if [ "${#LANE_SLOW_FILES[@]}" -eq 0 ]; then
+        # 跳过 ≠ 绿（AGENTS §十三 第 30 条）：没有 slow 行是**数据决定的**，必须说出口，
+        # 不许静默退出让人误以为"跑过了"。
+        echo "DEV-VERIFY(slow) 名册里没有 slow 行（跳过——这是数据决定的，不是静默跳过）"
+    else
+        printf 'DEV-VERIFY(slow) 目标集（%d 个文件）：\n' "${#LANE_SLOW_FILES[@]}"
+        printf '  %s\n' "${LANE_SLOW_FILES[@]}"
+        # shellcheck disable=SC2086
+        "$py" -m pytest ${LANE_SLOW_FILES[@]+"${LANE_SLOW_FILES[@]}"} -q -p no:randomly ||
+            rc=$?
+    fi
+    [ "${#FAST_KNOWN_SLOW[@]}" -gt 0 ] ||
+        die "FAST_KNOWN_SLOW 读空：长尾轨没有目标，剔除清单不得静默变空"
+    printf 'DEV-VERIFY(slow) 长尾轨（FAST_KNOWN_SLOW %d 条 nodeid；快集已 --deselect，本轨是唯一执行点）：\n' "${#FAST_KNOWN_SLOW[@]}"
+    printf '  %s\n' "${FAST_KNOWN_SLOW[@]}"
+    "$py" -m pytest ${FAST_KNOWN_SLOW[@]+"${FAST_KNOWN_SLOW[@]}"} -q -p no:randomly ||
+        rc=$?
+    return "$rc"
+}
 
 guard_fast_known_slow() { # 名单防漂移：nodeid 的文件、类、用例三层都必须存在，且不许有前缀嵌套条目
     # 名单是硬编码。文件、类或用例改名后 --deselect 指向空气：pytest 对不存在的
@@ -356,6 +658,99 @@ guard_fast_known_slow() { # 名单防漂移：nodeid 的文件、类、用例三
     [ -z "$nested" ] ||
         die "FAST_KNOWN_SLOW 有前缀嵌套条目（短条目已覆盖长条目，长条目多余）：$nested"
     echo "DEV-VERIFY fast-guard: FAST_KNOWN_SLOW ${#FAST_KNOWN_SLOW[@]} 条的文件/类/用例全部存在，无前缀嵌套"
+}
+
+# ------------------------------------------------------------
+# 车道名册（2026-10-17 立，工单 vckk 阶段 2-a）
+# ------------------------------------------------------------
+# 快集 = **除非快集车道之外的全部测试文件**。判据来自覆盖，不来自口味：只有墙钟真按
+# "等外面"计费的用例才离开快集（真实进程树 / 真实定时等待 / 全仓扫描），其余一律进快集。
+# 故快集大（本树 299 个文件里 295 个），任何一次改动都可能弄坏的测试都在里面。
+#
+# 为什么需要它（AGENTS.md §十三 第 29 条）：CI 此前跑的是**关键词子集**，改动落在关键词
+# 命中面之外时子集绿、全量红——**静默的不重合**。名册把"哪条用例进哪条道"写成可穷举的
+# 数据，并由 tests/test_gate_lane_roster.py 与"真实文件系统扫描 + 真实 pytest 收集"对账：
+# 任何测试文件漏归类即红；名册读空也不得当绿（§30）。
+#
+# 车道三种（列车道的判据见 tests/lane-roster.tsv 的行内理由）：
+#   fast   —— 进快集：CI 的 verify 与本地 --fast 都跑。
+#   slow   —— 不进快集：只在全量（默认模式）与 nightly 全量轨跑。
+#   serial —— 不进快集：CI 里单独一条**串行**轨（本树只有多执行体靶场：zdvd 实测它需要
+#             独占 runner 的核）。本地 --fast 不跑它（那 66s 会把自查拱到两分钟）。
+#
+# 名册是**唯一事实源**：本脚本不另写一份慢集名单，快集目标集与 CI 串行专轨都由它推导。
+# 故"守卫看的东西"与"实际跑的东西"结构上不会分叉——这是 §29 要的那条性质。
+LANE_ROSTER_REL="tests/lane-roster.tsv"
+LANE_FAST_FILES=()       # CI 的 verify 与本地 --fast 的目标集
+LANE_SLOW_FILES=()       # 只在全量（默认模式）与 nightly 全量轨跑
+LANE_SERIAL_FILES=()     # CI 单独一条串行轨（不进快集；本地 --fast 也不跑）
+LANE_IGNORE_ARGS=()      # --ignore=<慢集 ∪ 串行轨>，直接喂给快集的 pytest
+
+read_lane_roster() { # 名册缺失 / 车道名未知 / 同文件进两道 / 文件不存在 / 读空 —— 全部 die
+    LANE_FAST_FILES=()
+    LANE_SLOW_FILES=()
+    LANE_SERIAL_FILES=()
+    local roster="$REPO/$LANE_ROSTER_REL" lane path seen_fast=" " seen_slow=" "
+    [ -f "$roster" ] ||
+        die "车道名册缺失（$LANE_ROSTER_REL）：快集/慢集无法判定，拒绝跑测"
+    while IFS=$'\t' read -r lane path _reason || [ -n "$lane" ]; do
+        # CRLF 防护：工作树里若有一行 CR 结尾（Windows core.autocrlf 的产物），读出的
+        # path 会多一个 \r、与文件系统对不上。这里去掉 CR，下面的存在性检查负责响亮失败。
+        path=${path%$'\r'}
+        case "$lane" in '' | '#'*) continue ;; esac
+        case "$lane" in
+            fast) LANE_FAST_FILES+=("$path"); seen_fast="$seen_fast$path " ;;
+            slow) LANE_SLOW_FILES+=("$path"); seen_slow="$seen_slow$path " ;;
+            serial) LANE_SERIAL_FILES+=("$path") ;;
+            *) die "名册 $LANE_ROSTER_REL 有未知车道 '$lane'（只认 fast / slow / serial）：$path" ;;
+        esac
+    done <"$roster"
+    local f
+    # 同一文件不得同时进快集与任一非快集车道（判据是"哪条道"，故 slow 与 serial 一起查）
+    for f in ${LANE_SLOW_FILES[@]+"${LANE_SLOW_FILES[@]}"} ${LANE_SERIAL_FILES[@]+"${LANE_SERIAL_FILES[@]}"}; do
+        case "$seen_fast" in
+            *" $f "*) die "名册 $LANE_ROSTER_REL 把 $f 同时归进快集与非快集车道（一个文件只许一条道）" ;;
+        esac
+    done
+    # slow 与 serial 之间也不得重名（同文件两条道 = 判据有两个定义点）
+    for f in ${LANE_SERIAL_FILES[@]+"${LANE_SERIAL_FILES[@]}"}; do
+        case "$seen_slow" in
+            *" $f "*) die "名册 $LANE_ROSTER_REL 把 $f 同时归进慢集与串行轨（一个文件只许一条道）" ;;
+        esac
+    done
+    # 名册提到的文件必须在文件系统上真存在：改名后名册变废纸，而 --ignore/目标集指向空气时
+    # pytest 会**静默忽略**（与 --deselect 同形状），剔除静默失效。
+    for f in ${LANE_SLOW_FILES[@]+"${LANE_SLOW_FILES[@]}"} ${LANE_SERIAL_FILES[@]+"${LANE_SERIAL_FILES[@]}"}; do
+        [ -f "$REPO/$f" ] ||
+            die "名册 $LANE_ROSTER_REL 的非快集项在文件系统上不存在：$f（文件改名后名册变废纸，须同批改名册）"
+    done
+    # 扫空不得当绿（AGENTS §30）：解析坏掉（IFS 错、换行形态错）会让各条道都读空或只剩几行。
+    # 本树实测 299 个文件；下限取 100 —— 真实套件远在其上，解析坏掉远在其下。
+    [ "${#LANE_FAST_FILES[@]}" -ge 100 ] ||
+        die "名册 $LANE_ROSTER_REL 只读出 ${#LANE_FAST_FILES[@]} 个快集文件（下限 100）：空集/残集不得当绿"
+    [ "$((${#LANE_SLOW_FILES[@]} + ${#LANE_SERIAL_FILES[@]}))" -ge 1 ] ||
+        die "名册 $LANE_ROSTER_REL 读不出任何非快集文件（空集不得当绿：非快集为空时全量轨与快集同集，本机制失去意义）"
+    echo "DEV-VERIFY lane-roster: 快集 ${#LANE_FAST_FILES[@]} 个文件 ｜ 慢集 ${#LANE_SLOW_FILES[@]} ｜ 串行轨 ${#LANE_SERIAL_FILES[@]}（名册 $LANE_ROSTER_REL）"
+    echo "DEV-VERIFY lane-roster: 非快集＝$(printf '%s ' ${LANE_SLOW_FILES[@]+"${LANE_SLOW_FILES[@]}"} ${LANE_SERIAL_FILES[@]+"${LANE_SERIAL_FILES[@]}"})"
+}
+
+build_lane_ignore_args() { # 由名册派生 pytest 的 --ignore（名册是唯一事实源，不另写名单）
+    LANE_IGNORE_ARGS=()
+    local f
+    for f in ${LANE_SLOW_FILES[@]+"${LANE_SLOW_FILES[@]}"} ${LANE_SERIAL_FILES[@]+"${LANE_SERIAL_FILES[@]}"}; do
+        LANE_IGNORE_ARGS+=("--ignore=$f")
+    done
+}
+
+#: 快集与 CI 各步共用的 --deselect 参数（由 FAST_KNOWN_SLOW 派生）。
+FAST_DESELECT_ARGS=()
+
+build_fast_deselect_args() { # 由 FAST_KNOWN_SLOW 派生 --deselect；两处（快集与各门步骤）共用
+    FAST_DESELECT_ARGS=()
+    local n
+    for n in "${FAST_KNOWN_SLOW[@]}"; do
+        FAST_DESELECT_ARGS+=("--deselect" "$n")
+    done
 }
 
 fast_collect_changed() { # $1 = 基准 ref；$2 = 输出文件（临时）；git 失败即 die
@@ -521,7 +916,7 @@ mark_mode() { # $1 = 本次给的模式标志名；同名重复幂等接受，�
         return 0
     fi
     [ "$MODE_FLAG" = "$1" ] ||
-        die "模式标志互斥（--ci / --fast / --fast-scoped / --fast-all）：已给 $MODE_FLAG，又给 $1"
+        die "模式标志互斥（--ci / --fast / --fast-scoped / --fast-all / --slow）：已给 $MODE_FLAG，又给 $1"
 }
 
 while [ $# -gt 0 ]; do
@@ -543,6 +938,10 @@ while [ $# -gt 0 ]; do
             mark_mode --fast-all
             MODE=fast
             FAST_KEEP_SLOW=1
+            ;;
+        --slow)
+            mark_mode --slow
+            MODE=slow
             ;;
         --base)
             BASE=${2:?--base 需要取值}
@@ -568,7 +967,7 @@ while [ $# -gt 0 ]; do
         *) die "未知参数：$1（用 -h 看用法）" ;;
     esac
     case "$1" in
-        --ci | --fast | --fast-scoped | --fast-all) shift ;;
+        --ci | --fast | --fast-scoped | --fast-all | --slow) shift ;;
         *) shift 2 ;;
     esac
 done
@@ -583,6 +982,13 @@ case "$KEEP" in
 esac
 [ "$KEEP" -ge 1 ] || die "--keep 至少为 1：$KEEP"
 
+# 车道名册在**分派之前**读：三种模式都要它（--ci 的快集、fast 的忽略集、全量不需要但它
+# 是名册的在场性检查——名册坏了就该立刻响亮失败，而不是等到某条道跑出结论）。
+# 位置在 REPO 解析之后、`--ci` 分派之前，故 --ci 也走同一条读入与守卫。
+read_lane_roster
+build_lane_ignore_args
+build_fast_deselect_args
+
 if [ "$MODE" = ci ]; then
     # --ci 跑的是固定关键子集、就地跑不落日志：不接受只对全量模式生效的参数。
     # 静默忽略会让调用方以为"我点的目标/我设的日志目录生效了"——口径必须响亮一致。
@@ -595,6 +1001,21 @@ if [ "$MODE" = ci ]; then
     [ "$BASESET" = "0" ] ||
         die "--base 在 --ci 模式下不生效（--ci 跑固定关键子集）：去掉 --base"
     run_ci
+    exit 0
+fi
+
+if [ "$MODE" = slow ]; then
+    # --slow 与 --ci 同一权限模型：就地跑固定行集，不接受只对全量模式生效的参数。
+    # 静默忽略会让人以为"点的目标/设的日志生效了"——口径必须响亮一致（与 --ci 同理）。
+    [ "$TARGET_SET" = "0" ] ||
+        die "--target 在 --slow 模式下不生效（--slow 跑名册的 slow 行）：去掉 --target，或改用默认全量模式"
+    [ "$LOGDIR_SET" = "0" ] ||
+        die "--log-dir 在 --slow 模式下不生效（--slow 就地跑、不落日志）：去掉 --log-dir"
+    [ "$KEEP_SET" = "0" ] ||
+        die "--keep 在 --slow 模式下不生效（--slow 就地跑、不落日志）：去掉 --keep"
+    [ "$BASESET" = "0" ] ||
+        die "--base 在 --slow 模式下不生效（--slow 跑名册的 slow 行）：去掉 --base"
+    run_slow
     exit 0
 fi
 
@@ -617,7 +1038,10 @@ if [ "${DEV_VERIFY_LOGGED:-0}" = "1" ] && [ -z "${DEV_VERIFY_LOG:-}" ]; then
     die "DEV_VERIFY_LOGGED=1 但 DEV_VERIFY_LOG 为空：拒绝在没有日志的情况下跑测"
 fi
 if [ "${DEV_VERIFY_LOGGED:-0}" != "1" ]; then
-    [ -n "$LOG_DIR" ] || LOG_DIR=$(default_log_dir "$REPO" "$MODE")
+    if [ -z "$LOG_DIR" ]; then
+        LOG_DIR=$(default_log_dir "$REPO" "$MODE") ||
+            die "默认日志目录算不出来（sha256sum 不可用？）：拒绝在无法落盘时跑测"
+    fi
     mkdir -p "$LOG_DIR" || die "日志目录建不了：$LOG_DIR"
     LOG="$LOG_DIR/dev-verify-$(date +%Y%m%d-%H%M%S)-$$.log"
     set +e
@@ -638,7 +1062,14 @@ fi
 PY="$FIXED_VENV/bin/python"
 [ -x "$PY" ] || die "固定 venv 不可用：$PY（不许退化成 PATH 上的任意 python）"
 TMPOUT=$(mktemp)
-trap 'rm -f "$TMPOUT"' EXIT
+# mypy 隔离缓存（工单 dq2n）：mypy 的缓存校验只看 (path,size,mtime)，三者相同时
+# **不校验内容哈希**，会信任上一轮记录的错误 ⇒ 同一份代码旧缓存红、新缓存绿。
+# 每次运行新建目录，把上一轮（含 Windows 侧）的缓存排除在判定之外。
+MYPY_CACHE=$(mktemp -d)
+# 跳过面报告（工单 1ffr）：pytest 的 junit 报告给运行期跳过名单；路径每次新建。
+SKIP_XML=$(mktemp)
+IGNORE_LIST=
+trap 'rm -f "$TMPOUT" "$IGNORE_LIST" "$SKIP_XML"; rm -rf "$MYPY_CACHE"' EXIT
 
 echo "DEV-VERIFY log: ${LOG:-<未落盘>}"
 echo "DEV-VERIFY repo: $REPO"
@@ -653,54 +1084,69 @@ SHA=$(git --git-dir="$GITDIR" --work-tree="$REPO" rev-parse HEAD) || die "源 HE
 echo "DEV-VERIFY sha: $SHA"
 # dev-verify-mutant-end: source-git
 
-if [ "$MODE" = fast ]; then
-    # fast 用**独立副本 + 独立锁**：共用同一份副本会互相 rm -rf（既有的 flock 就是防这个），
-    # 而串行化会让"提交前自查"去等一个可能跑满两分半的全量——那正是 fast 要消灭的等待。
-    DEST="$WORKDIR/fast-worktree"
-    LOCKFILE="$WORKDIR/dev-verify-fast-runlock"
-else
-    DEST="$WORKDIR/worktree"
-    LOCKFILE="$WORKDIR/dev-verify-runlock"
-fi
-# 并发保护：副本路径固定，是共享资源；两个 dev-verify 同时跑会互相 rm -rf 掉对方的副本
-# （正是本脚本要消灭的那类伪红）。后到者等前者结束，不把对方的副本删掉。
-# 日志目录也是共享的轮转资源，但**按模式分目录**（default_log_dir）：fast 两档与全量
-# 走不同的锁、可以并发，共用一个目录就会互相轮转删除。日志文件名带 PID，同目录也不互撞。
+# 副本槽与锁都按「模式 + 源仓路径」分键（copy_dest / copy_lock）：两个 worktree 并行跑
+# 各有副本与锁，不会互相整体覆盖（4kl）。fast 与全量仍是两个槽、两把锁：fast 的
+# "提交前自查"不去等一个可能跑满两分半的全量。
+DEST=$(copy_dest "$MODE" "$REPO") ||
+    die "副本槽算不出来（sha256sum 不可用？）：无法按源仓分键，拒绝跑测"
+LOCKFILE=$(copy_lock "$MODE" "$REPO") ||
+    die "锁文件算不出来（sha256sum 不可用？）：无法按源仓分键，拒绝跑测"
+# 并发保护：同一个源的副本槽是共享资源；两个 dev-verify 同时跑会互相 rm -rf 掉对方的
+# 副本（正是本脚本要消灭的那类伪红）。后到者等前者结束，不把对方的副本删掉。
+# 日志目录也是可被轮转的资源，但**按模式与源仓分目录**（default_log_dir）：两个 worktree
+# 并行跑、fast 与全量并行跑都不共用目录，prune_logs 不会删掉对方的日志。文件名带 PID。
 mkdir -p "$WORKDIR" || die "副本根目录建不了：$WORKDIR"
 exec 9>"$LOCKFILE" || die "锁文件不可写：$LOCKFILE"
 if command -v flock >/dev/null 2>&1; then
     if ! flock -n 9; then
-        echo "DEV-VERIFY: 另一个 dev-verify 正在跑，等它结束（共享副本目录不能被并发清空）"
+        echo "DEV-VERIFY: 同一个源仓的另一个 dev-verify 正在跑，等它结束（共用副本槽不能被并发清空）"
         flock 9
     fi
 else
-    # 副本路径是共享的固定路径：没有 flock 就没有串行化，两个运行会互相 rm -rf。
+    # 副本槽是共享的固定路径（同一源仓）：没有 flock 就没有串行化，两个运行会互相 rm -rf。
     # "并发跑法互相清副本"正是本脚本要消灭的伪红形状，故这里响亮拒绝，不许降级跑。
-    die "没有 flock（util-linux）：共享副本目录 $DEST 无法串行化，拒绝跑测；装上 flock 后再跑"
+    die "没有 flock（util-linux）：副本槽 $DEST 无法串行化，拒绝跑测；装上 flock 后再跑"
 fi
+# 旧版本只按模式分键（$WORKDIR/fast-worktree）；首跑把它迁到本源的槽，或在新槽已在时清掉。
+migrate_legacy_copy "$MODE" "$DEST"
 if [ "$MODE" = fast ] && [ -d "$DEST" ]; then
     # fast 复用上一份副本、走增量同步：不变的文件不再重传，把"提交前自查"的固定开销
     # 从"整树重建"降到"只同步改动"。不变式仍是"副本 = 当前工作树"——靠 rsync --delete
-    # 删掉源里已不存在的文件（**不加** --delete-excluded，故副本自带的 .git 存活）。
+    # 删掉源里已不存在的文件。
     echo "DEV-VERIFY(fast): 增量同步已有副本（$DEST）"
 else
     rm -rf "$DEST"
     mkdir -p "$DEST"
 fi
-# 只排除 .git 与工具缓存目录：副本 = 当前工作树的可跑形态，不带 VCS 元数据与缓存残渣。
 # -c 是"副本 = 当前工作树"这条不变式的守卫本体：默认快检只看尺寸 + 整秒 mtime，
 # 同一秒内改完且尺寸不变的改动会被判成"没变"而跳过，副本陈旧后跑出来的是旧代码，
 # 可能报绿。加了 -c 就按内容校验，rsync 非 0 退出即 die，故不变式由 rsync 承重。
-# 代价实测（本树 rsync 面内约 750 个文件，2026-10-07）：副本已同步时 rsync -a 约 0.65s，
-# 加 -c 约 1.4s，多付约 0.7s；--fast-scoped 整跑墙钟 9~11s（含选中用例自身的执行）。
-rsync -a -c --delete --exclude='.git' --exclude='__pycache__' --exclude='.pytest_cache' \
-    --exclude='.ruff_cache' "$REPO/" "$DEST/" || die "rsync 复制失败：$REPO -> $DEST"
+#
+# 剪枝：副本只带"CI 检出会有"的内容。CI 是全新 clone，只有跟踪文件；本地副本若把
+# gitignore 内容一并搬进去，既不是 CI 的形状，又让 rsync -c 逐文件校验这些与跑测无关的
+# 字节。代价实测（2026-10-16，本树）：rsync 面 36116 个文件（work/ 21000、
+# frontend/node_modules/ 16133、.venv/ 4795、余），单这一步 200.1s；剪掉后 814 个文件，
+# 同一步 5.5s。被剪掉的量随本机 work/ 增长而增长，故按 git 的 ignored 名册剪，不写死目录名。
+# --delete-excluded 是必须的：排除项不参与传输，不加它，旧副本里的历史残留永远清不掉。
+# 代价是 .git 也在删除面内，故用 P（protect）规则保住它（build_copy_git 会在其后重建）。
+PRUNE_ARGS=()
+# dev-verify-mutant-begin: copy-prune
+IGNORE_LIST=$(mktemp)
+git --git-dir="$GITDIR" --work-tree="$REPO" ls-files --others --ignored --exclude-standard --directory \
+    >"$IGNORE_LIST" || die "gitignore 名册取不到（$REPO）：副本剪枝不可信，拒绝跑测"
+PRUNE_ARGS=(--delete-excluded --filter='P .git' --exclude-from="$IGNORE_LIST")
+# dev-verify-mutant-end: copy-prune
+rsync -a -c --delete --exclude='.git' ${PRUNE_ARGS[@]+"${PRUNE_ARGS[@]}"} "$REPO/" "$DEST/" ||
+    die "rsync 复制失败：$REPO -> $DEST"
 echo "DEV-VERIFY copy: $DEST"
 
 # dev-verify-mutant-begin: copy-git
 build_copy_git "$DEST" "$GITDIR" "$SHA"
 guard_copy_git "$DEST" "$SHA"
 # dev-verify-mutant-end: copy-git
+# dev-verify-mutant-begin: copy-prune-guard
+guard_copy_pruned "$DEST"
+# dev-verify-mutant-end: copy-prune-guard
 # dev-verify-mutant-begin: lf
 normalize_lf "$DEST"
 guard_lf "$DEST"
@@ -722,31 +1168,44 @@ if [ "$MODE" = fast ]; then
         echo "DEV-VERIFY(fast-scoped): 基准 $BASE ｜ 目标集：$TARGET"
         echo "DEV-VERIFY(fast-scoped): ⚠ 只覆盖改动相邻面 —— 未被选中的用例**没有跑**，它们照样可能红"
     else
-        # 安全档（默认）：**全量 − 已知长尾**。零启发式、无漏选风险，只是剔掉 5 条与
-        # "提交前自查"无关的长尾（实测 146s → 57s）。目标保持默认 tests/。
-        echo "DEV-VERIFY(fast): 覆盖＝全量（tests/）减去已知长尾，无选择面丢失"
+        # 安全档（默认）：**快集**（车道名册的 fast 行）。2026-10-17（工单 vckk 阶段 2-a）前
+        # 它是"全量 − 4 条长尾"，与 CI 跑的集合**不同**——本地绿不保证 CI 绿。现在本地
+        # --fast 与 CI 的 verify 跑同一个快集（由 tests/lane-roster.tsv 推导），covered 数
+        # 应当一致。目标保持默认 tests/，非快集文件由 LANE_IGNORE_ARGS 逐条排除。
+        echo "DEV-VERIFY(fast): 覆盖＝快集（车道名册的 fast 行；与 CI 的 verify 同集）"
     fi
     if [ "$FAST_KEEP_SLOW" = "1" ]; then
-        echo "DEV-VERIFY(fast): --fast-all：不剔除长尾（本跑可能长达数分钟）"
+        echo "DEV-VERIFY(fast): --fast-all：不剔除长尾、不排除非快集文件（本跑可能长达两分钟）"
     else
-        for _n in "${FAST_KNOWN_SLOW[@]}"; do DESELECT+=(--deselect "$_n"); done
-        echo "DEV-VERIFY(fast): 已剔除 ${#FAST_KNOWN_SLOW[@]} 条已知长尾（等待型/全仓扫描型；全量与 CI 仍覆盖）"
+        DESELECT+=(${LANE_IGNORE_ARGS[@]+"${LANE_IGNORE_ARGS[@]}"})
+        DESELECT+=(${FAST_DESELECT_ARGS[@]+"${FAST_DESELECT_ARGS[@]}"})
+        echo "DEV-VERIFY(fast): 已排除名册的非快集文件 $((${#LANE_SLOW_FILES[@]} + ${#LANE_SERIAL_FILES[@]})) 个（慢集 ${#LANE_SLOW_FILES[@]} + 串行专轨 ${#LANE_SERIAL_FILES[@]}；全量与 nightly 仍覆盖）"
+        echo "DEV-VERIFY(fast): 已剔除 ${#FAST_KNOWN_SLOW[@]} 条已知长尾（等待型/全仓扫描型；全量与 nightly 仍覆盖）"
     fi
     echo "DEV-VERIFY(fast): ⚠ 本模式仍不是门禁——推送前跑全量，或至少确认 CI 绿"
 fi
 
-echo "DEV-VERIFY ruff: ruff check yiban/ tests/ scripts/ web/ --quiet"
+echo "DEV-VERIFY ruff: ruff check yiban/ tests/ scripts/ web/ docker/ tools/ --quiet"
 set +e
-"$PY" -m ruff check yiban/ tests/ scripts/ web/ --quiet
+"$PY" -m ruff check yiban/ tests/ scripts/ web/ docker/ tools/ --quiet
 ruff_rc=$?
 set -e
 echo "DEV-VERIFY ruff_exit=$ruff_rc"
+
+# mypy 静态类型门禁（收编名单住 pyproject.toml 的 [tool.mypy] files）：与 ruff 同属静态检查，
+# 排在 ruff 之后、pytest 之前。裸 `mypy` 即读 [tool.mypy] 的 files 白名单——收编名单只此一处。
+echo "DEV-VERIFY mypy: mypy（收编名单见 pyproject.toml [tool.mypy] files；隔离缓存 $MYPY_CACHE）"
+set +e
+"$PY" -m mypy --cache-dir "$MYPY_CACHE"
+mypy_rc=$?
+set -e
+echo "DEV-VERIFY mypy_exit=$mypy_rc"
 
 # $TARGET 故意不加引号：允许 `--target "tests/a.py tests/b.py"` 传多个目标
 echo "DEV-VERIFY pytest: pytest $TARGET -q -p no:randomly -n auto --dist loadfile ${DESELECT[*]:-}"
 set +e
 "$PY" -m pytest $TARGET -q -p no:randomly -n auto --dist loadfile \
-    ${DESELECT[@]+"${DESELECT[@]}"} 2>&1 | tee "$TMPOUT"
+    ${DESELECT[@]+"${DESELECT[@]}"} --junitxml="$SKIP_XML" 2>&1 | tee "$TMPOUT"
 py_rc=${PIPESTATUS[0]}
 set -e
 echo "DEV-VERIFY pytest_exit=$py_rc"
@@ -768,10 +1227,18 @@ else
     echo "DEV-VERIFY summary: 无（pytest 未产出汇总行）"
 fi
 
-# 退出码裁决只有这一处：0 = 通过；1 = 有红（ruff 或 pytest 非 0）；
+# 运行期跳过名单（工单 1ffr）：全量判红，fast 只要求可见（它不是门禁）。
+skip_strict=0
+[ "$MODE" = full ] && skip_strict=1
+skip_extra=0
+if ! skip_policy_check "$SKIP_XML" "$skip_strict" "$PY"; then
+    skip_extra=1
+fi
+
+# 退出码裁决只有这一处：0 = 通过；1 = 有红（ruff/mypy、pytest 非 0，或全量下未登记的跳过）；
 # 2 = 环境错误（die）；3 = 空覆盖（没测到真实用例）。
-# 原始码不丢：ruff_exit= 与 pytest_exit= 已逐行打印在上面。
-resolve_exit_code() { # $1 = ruff 退出码；$2 = pytest 退出码；$3 = 空覆盖(1/0)
+# 原始码不丢：ruff_exit= / mypy_exit= / pytest_exit= 已逐行打印在上面。
+resolve_exit_code() { # $1 = 静态检查退出码（ruff 与 mypy 归一后）；$2 = pytest 退出码；$3 = 空覆盖(1/0)
     if [ "$1" != "0" ] || [ "$2" != "0" ]; then
         printf '1'
         return 0
@@ -791,7 +1258,12 @@ note_fast_empty_coverage() { # $1 = 空覆盖标记（1/0）；$2 = 最终退出
     fi
 }
 
-rc=$(resolve_exit_code "$ruff_rc" "$py_rc" "${FAST_EMPTY:-0}")
+# 静态检查（ruff + mypy）与运行期跳过策略任一非 0 即归一到 lint 码：统一裁决点只认
+# 一个"静态检查"入参。原始码已在上面逐行打印（ruff_exit= / mypy_exit=），此处只做归一。
+lint_rc=$ruff_rc
+[ "$mypy_rc" = "0" ] || lint_rc=1
+[ "$skip_extra" = "0" ] || lint_rc=1
+rc=$(resolve_exit_code "$lint_rc" "$py_rc" "${FAST_EMPTY:-0}")
 note_fast_empty_coverage "${FAST_EMPTY:-0}" "$rc"
 echo "DEV-VERIFY exit_code=$rc"
 exit "$rc"

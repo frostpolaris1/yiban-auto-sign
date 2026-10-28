@@ -20,16 +20,16 @@ from yiban import client as yiban_client
 from yiban import geo as yiban_geo
 from yiban import platform as yiban_platform
 from yiban import security
-from yiban import status as yiban_status
-from yiban.masking import mask_url_userinfo as _mask_url_userinfo
-from yiban.masking import sanitize_text as _sanitize_text
-from yiban.masking import sanitize_url as _sanitize_url
-from yiban.store import accounts as accounts_store
-from yiban.store import db
+from yiban.adapters.persistence import accounts as accounts_store
+from yiban.adapters.persistence import db
+from yiban.core import status as yiban_status
+from yiban.core.masking import mask_url_userinfo as _mask_url_userinfo
+from yiban.core.masking import sanitize_text as _sanitize_text
+from yiban.core.masking import sanitize_url as _sanitize_url
 
 logger = logging.getLogger("yiban")
 
-# 状态码别名（与 yiban.status 同一对象）
+# 状态码别名（与 yiban.core.status 同一对象）
 STATUS_USER_CANCELLED = yiban_status.STATUS_USER_CANCELLED
 STATUS_FAILED = yiban_status.STATUS_FAILED
 
@@ -46,7 +46,9 @@ RETRY_MIN_INTERVAL = 60
 RETRY_GAP_MAX = 30
 # 会话陈旧类失败（总尝试上限 2 次：1 次复用缓存 + 1 次强制真重登）
 SESSION_STALE_MAX_ATTEMPTS = 2
-# 易班侧无签到点位（总尝试上限 1 次）：属数据/任务配置问题，重试拿不到就是拿不到
+# 易班侧无签到点位（**单轮**尝试上限 1 次）：属数据/任务配置问题，本次领取内不再立即重试。
+# 当日是否允许后续轮次再领，是另一层判据（`RETRYABLE_GIVE_UP_STATUSES`），并受
+# `queue_store.MAX_DAY_REQUEUES` 的当日上限约束——两层预算不可混为一谈。
 NO_POSITION_MAX_ATTEMPTS = 1
 # 挑战解析/白名单/非 JSON/假成功（无签发方回执）硬失败（总尝试上限 1 次）：判据词元在 `yiban.security.HARD_FAIL_TOKENS`
 # （唯一真值源，档位与探针共用）。同一输入必然同一结果，重试只是把同一死页重发；会话停在
@@ -143,7 +145,7 @@ _is_yiban_trusted_url = security.is_yiban_trusted_url
 _is_strict_yiban_url = security.is_strict_yiban_url
 
 # 运行期账号复核（"启动快照跑完整轮期间账号可能被删/停用"）的实现在
-# `yiban/store/accounts.py::account_still_signable`——会话缓存的写入闸门
+# `yiban/adapters/persistence/accounts.py::account_still_signable`——会话缓存的写入闸门
 # （`yiban.client`）与本模块必须用**同一份**判据，各写一份会分叉。
 account_still_signable = accounts_store.account_still_signable
 
@@ -152,7 +154,12 @@ account_still_signable = accounts_store.account_still_signable
 # 公开入口
 # ---------------------------------------------------------------------------
 def matches_risk_keywords(message):
-    """失败消息是否命中风控族——档位与执行体风控信号的同一判据。
+    """失败消息是否命中"风控**或**凭据"族——**只给重试档位用**。
+
+    读者只有 `classify_failure`（档位语义：凭据错重试无用，故少给重试）。**不要**拿它当
+    "平台在限我们"的判据：执行体的风控信号另有一套只认 WAF 族与挑战形态的判据
+    （`executor_v3._is_risk_signal`）——两处语义相反，共用会把口令错的账号当成平台风控
+    （工单 `yiban-auto-sign-zggs`）。
 
     本层自有词元按子串（都是服务端文案原文，无误报面）；WAF 族走
     `security.matches_waf_keywords`——ASCII 词元要求两侧非字母数字，否则失败消息里嵌的
@@ -204,7 +211,14 @@ def attempt_signin(account):
     统一通知一次。
     """
     phone = account.phone
-    if not account_still_signable(account):
+    still_signable = account_still_signable(account)
+    if still_signable is None:
+        # 复核**查询本身失败**（DB 错/锁超时）：fail-closed 不发起登录，但归因必须与
+        # "账号确实不可签"分开（工单 ba-p02-06 同族残余）。落 failed 而不是
+        # user_cancelled/paused：这是环境故障，不是账号结论；文案不得说"已删除"。
+        return (False, "账号状态复核失败（数据库查询异常），本次不发起登录",
+                True, STATUS_FAILED)
+    if not still_signable:
         # 运行期复核：账号在本轮执行期间被删除/停用 → 不发起任何请求。
         # 只在启动时筛一次的话，被删账号仍会被完整登录并签退，还会把会话缓存
         # 写回一个已不存在的账号（孤儿行，见 db.account_is_signable 的说明）。
@@ -271,7 +285,7 @@ def _is_credential_failure(message):
 
 def _next_probe_date(today):
     """从 `today` 顺延一个半开试探周期，返回新的试探日。"""
-    return (datetime.strptime(today, "%Y-%m-%d")
+    return (datetime.strptime(today, "%Y-%m-%d")  # noqa: DTZ007 仅解析 YYYY-MM-DD 业务日期串，无时区语义
             + timedelta(days=PROBE_INTERVAL_DAYS)).strftime("%Y-%m-%d")
 
 

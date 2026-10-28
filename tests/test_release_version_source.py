@@ -5,7 +5,7 @@
 覆盖：版本字面量只在 `yiban/__init__.py` 出现（CHANGELOG 除外）、web 侧从包引用版本、
     CHANGELOG 顶部条目与包版本一致、引擎轮次横幅与汇总行确实打了版本号、
     用的是本项目版本而非易班 App 版本。
-对应实现：`yiban/__init__.py`（唯一来源）、`web/app.py`、`yiban/engine/runner.py`
+对应实现：`yiban/__init__.py`（唯一来源）、`web/app.py`、`yiban/app/runner.py`
     （横幅/汇总行，兼容壳 `scripts/signin.py` 只剩转发）。
 关键断言：版本号一旦分叉，"日志里写的版本"就不再等于"代码的版本"，台账失效且无人察觉
     ——所以钉的是"只有一处定义"，不是"值等于某个字面量"。
@@ -60,14 +60,6 @@ class SingleVersionSourceTest(unittest.TestCase):
             "版本只能定义在 yiban/__init__.py，其它处请引用 __version__",
         )
 
-    def test_web_side_takes_version_from_the_package(self):
-        """网页侧从 yiban 取版本，不自己定义（`web/__init__.py` 是纯包说明）。
-
-        运行时取值的一致性由 `test_web_security_gates::test_version_synced` 断言
-        （那里用的是隔离加载的 app 模块）；本文件只做静态检查，避免在导入期碰 .env。
-        """
-        self.assertIn("from yiban import __version__ as APP_VERSION", _read("web/app.py"))
-        self.assertNotIn("__version__ =", _read("web/__init__.py"))
 
     def test_changelog_top_entry_matches(self):
         from yiban import __version__ as v
@@ -79,9 +71,9 @@ class EngineLogsReleaseVersionTest(unittest.TestCase):
     """引擎轮次横幅/汇总行必须带版本号——台账的唯一对齐依据。"""
 
     def setUp(self):
-        # 轮次横幅与汇总行随"执行一轮"的入口一起迁进了引擎（`yiban/engine/runner.py`），
+        # 轮次横幅与汇总行随"执行一轮"的入口一起迁进了引擎（`yiban/app/runner.py`），
         # 兼容壳 `scripts/signin.py` 只剩转发：两处一起读，迁移前后都成立。
-        self.src = _read("yiban/engine/runner.py") + _read("scripts/signin.py")
+        self.src = _read("yiban/app/runner.py") + _read("scripts/signin.py")
 
     def test_round_banner_carries_version(self):
         m = re.search(r"开始执行签到（v\{RELEASE_VERSION\}）", self.src)

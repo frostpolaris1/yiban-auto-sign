@@ -7,7 +7,7 @@
     `/api/settings` 的 GET 默认 0、POST 显式写 0/1、部分更新不清空其他延迟字段、
     普通管理员可改（非主管理员专属）。
 对应实现：开关常量与分支在签到入口（`scripts/signin.py` →
-    `yiban/engine/runner.py`），文案在 `web/app.py` 的 `sign_status`，读写走
+    `yiban/app/runner.py`），文案在 `web/app.py` 的 `sign_status`，读写走
     `/api/settings` 与 `.env`。
 关键断言：**默认语义是关闭**——反转前"周六默认也签"会让学校在无任务的周六白打一次；
     部分更新不得把未提交的字段清空。
@@ -29,6 +29,9 @@ from unittest import mock
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import signin  # noqa: E402
+from werkzeug.security import generate_password_hash  # noqa: E402
+
+from web.services import signstatus as _signstatus  # noqa: E402
 
 TEST_KEY = "a" * 64
 ADMIN_PASS = "MasterPass#2026"
@@ -158,7 +161,7 @@ class SaturdaySignStatusTest(unittest.TestCase):
         """周六 + 缺省（默认关闭）→ 「今日无需打卡（周六）」（v0.29.0 语义反转）。"""
         self._env("")
         with mock.patch.object(self.webapp, "ENV_FILE", self.sat_env):
-            text, color = self.webapp.sign_status(now=_weekday_dt(5))
+            text, color = _signstatus.sign_status(now=_weekday_dt(5))
         self.assertEqual(text, "今日无需打卡（周六）")
         self.assertEqual(color, "#a1a1aa")
 
@@ -166,7 +169,7 @@ class SaturdaySignStatusTest(unittest.TestCase):
         """周六 + 显式开启 → 走正常窗口逻辑（此时 10:00 已过 07:50 → 已结束）。"""
         self._env("YIBAN_SATURDAY_SIGN=1\n")
         with mock.patch.object(self.webapp, "ENV_FILE", self.sat_env):
-            text, _ = self.webapp.sign_status(now=_weekday_dt(5))
+            text, _ = _signstatus.sign_status(now=_weekday_dt(5))
         self.assertNotEqual(text, "今日无需打卡（周六）")
         self.assertIn("已结束", text)
 
@@ -179,7 +182,7 @@ class SaturdaySignStatusTest(unittest.TestCase):
         """
         self._env("YIBAN_SATURDAY_SIGN=true\n")
         with mock.patch.object(self.webapp, "ENV_FILE", self.sat_env):
-            text, _ = self.webapp.sign_status(now=_weekday_dt(5))
+            text, _ = _signstatus.sign_status(now=_weekday_dt(5))
         self.assertNotEqual(text, "今日无需打卡（周六）")
         self.assertIn("已结束", text)
 
@@ -253,7 +256,7 @@ class SaturdaySettingsWebTest(unittest.TestCase):
         return c, t
 
     def _reg_admin(self):
-        h = self.webapp.generate_password_hash
+        h = generate_password_hash
         self.db.create_user("reg-admin@test.local", h(USER_PASS), role="admin")
         c = self.webapp.create_app().test_client()
         t = self._login(c, "reg-admin@test.local", USER_PASS)

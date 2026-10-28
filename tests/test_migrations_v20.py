@@ -9,7 +9,7 @@
 5. 容错（某日损坏 / 目录缺失 → 跳过，不抛）；
 6. `run_at` 时间回退与批量提交不丢行。
 
-另有一条守卫：冻结映射表与 `yiban.status.ALL_STATUSES` 的键绑定（少一格即两头静默失效）。
+另有一条守卫：冻结映射表与 `yiban.core.status.ALL_STATUSES` 的键绑定（少一格即两头静默失效）。
 
 库是**手工搭到 v19** 的（v17 建 `sign_claims`、v18 建 `sign_tasks`+`epoch`、v19 补
 `sign_claims.epoch`）——不借 `db` 的全局连接，免得多用例共享单例连接互相干扰。
@@ -20,8 +20,8 @@
 不覆盖已有行（`INSERT OR IGNORE`）、某日损坏或目录缺失只跳过不抛（目录**在而读不动**
 ⇒ 延后不提版本，反例见 `tests/test_migrations_fail_closed.py`）、`run_at` 时间回退
 与批量提交不丢行；另钉映射表与 `ALL_STATUSES` 的键绑定。
-对应实现：`yiban/store/` 的 v20 backfill 与 `yiban/status.py::ALL_STATUSES`、
-`yiban/engine/state_io.py` 写出的状态文件形状。
+对应实现：`yiban/adapters/persistence/` 的 v20 backfill 与 `yiban/core/status.py::ALL_STATUSES`、
+`yiban/adapters/statefiles/state_io.py` 写出的状态文件形状。
 关键断言：`TerminalMapGuardTest` 是**防静默失效**的一条——映射表少一格时两侧都不报错、
 只是那一类的终态永远补不进账本，故断"键集合 = 全词表减在途集合"而不是逐条抽查；
 `test_sign_daily_symbol_table_is_not_an_input` 与"某日损坏跳过"合起来守的是
@@ -38,9 +38,8 @@ import unittest
 from datetime import timedelta
 from unittest import mock
 
-from yiban import clock, status
-from yiban.engine import hrw
-from yiban.store import connection, migrations, queue_store
+from yiban.adapters.persistence import connection, migrations, queue_store
+from yiban.core import clock, hrw, status
 
 PHONE_A = "13800000001"
 PHONE_B = "13800000002"

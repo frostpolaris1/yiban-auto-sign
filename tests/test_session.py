@@ -15,7 +15,7 @@
 cookies 密文存储且绑 phone 作 AAD、作废日志的调用点脱敏、时钟守卫下的清理跳一轮后续跑、
 `/api/me/restore` 的会话恢复与被盗 Cookie 失效、purge 的权限档位与通知覆盖面、
 签到 stale 分类的尝试预算。
-对应实现：`yiban/store/session_cache.py`（读写与 TTL 判定）、`yiban/infra/account_crypto.py`
+对应实现：`yiban/adapters/persistence/session_cache.py`（读写与 TTL 判定）、`yiban/adapters/config/account_crypto.py`
 的加解密（AAD 用手机号）、web 的 restore / purge 路由与 `alerts` 的清理闸门。
 关键断言：**TTL 与跨业务日是两道独立的门**——`test_ttl_env_override_extends_validity`
 放宽前者、`test_cross_day_row_dies_even_with_seventy_two_hour_ttl` 必须仍然判死后者；
@@ -43,8 +43,10 @@ from unittest import mock
 import db
 import signin
 from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-9b）
+from werkzeug.security import generate_password_hash
 
-from yiban.infra import account_crypto
+from web.services import notify_mail as _notify_mail
+from yiban.adapters.config import account_crypto
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -505,7 +507,7 @@ class _Batch11WebBase(unittest.TestCase):
         # 告警/邮件全量 mock（conftest 已禁用真实发信；此处再拦截调用便于断言）
         self.alerts = []
         self.user_mails = []
-        p1 = mock.patch.object(self.webapp, "send_notification",
+        p1 = mock.patch.object(_notify_mail, "send_notification",
                                # send_notification 新增 force=，假实现同步接收
                                # 新增 ledger=（M8 登录失败告警独立账本）
                                side_effect=lambda t, c, urgent=False, force=False, ledger=None: self.alerts.append((t, c)))
@@ -564,7 +566,7 @@ class Batch11RestoreSidTest(_Batch11WebBase):
 
     def _register_login_delete_restore(self, email):
         """建号→登录→注销→恢复，返回 (注销前 client, 恢复后 client)。"""
-        db.create_user(email, self.webapp.generate_password_hash(USER_PASS))
+        db.create_user(email, generate_password_hash(USER_PASS))
         c = self.webapp.create_app().test_client()
         t = self._login(c, email, USER_PASS)
         r = c.post("/api/me/delete", json={"password": USER_PASS}, headers=self._csrf(t))
@@ -582,7 +584,7 @@ class Batch11RestoreSidTest(_Batch11WebBase):
 
     def test_stolen_cookie_dead_after_restore(self):
         email = "n1b@test.local"
-        db.create_user(email, self.webapp.generate_password_hash(USER_PASS))
+        db.create_user(email, generate_password_hash(USER_PASS))
         c = self.webapp.create_app().test_client()
         t = self._login(c, email, USER_PASS)
         name, val = self._session_cookie(c)
@@ -603,14 +605,14 @@ class Batch11PurgeMasterOnlyTest(_Batch11WebBase):
     """N3：purge 收归主管理员 + N6 即时告警。"""
 
     def _make_victim(self, email):
-        db.create_user(email, self.webapp.generate_password_hash(USER_PASS))
+        db.create_user(email, generate_password_hash(USER_PASS))
         c = self.webapp.create_app().test_client()
         t = self._login(c, email, USER_PASS)
         r = c.post("/api/me/delete", json={"password": USER_PASS}, headers=self._csrf(t))
         self.assertEqual(r.status_code, 200)
 
     def _make_registered_admin(self, email):
-        db.create_user(email, self.webapp.generate_password_hash(USER_PASS))
+        db.create_user(email, generate_password_hash(USER_PASS))
         return email
 
     def test_registered_admin_forbidden(self):
@@ -643,7 +645,7 @@ class Batch11NotifyCoverageTest(_Batch11WebBase):
     """N6：受害者安全邮件 + 管理员告警补齐。"""
 
     def _user_with_account(self, email, phone):
-        db.create_user(email, self.webapp.generate_password_hash(USER_PASS))
+        db.create_user(email, generate_password_hash(USER_PASS))
         c = self.webapp.create_app().test_client()
         t = self._login(c, email, USER_PASS)
         r = c.post("/api/my-accounts", json={"name": "n", "phone": phone, "password": "p"},

@@ -34,7 +34,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime
+
+from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUN_SH = os.path.join(BASE, "run.sh")
@@ -102,7 +103,12 @@ FAKE_TIMEOUT = '#!/usr/bin/env bash\necho "$*" >> "$FAKE_TIMEOUT_LOG"\nexit 0\n'
 
 
 def _today():
-    return datetime.now().strftime("%Y-%m-%d")
+    """run.sh 按日文件（sign-<day>.log / sign-status-<day>.txt）取业务日（北京 +8）。
+
+    生产入口走 `scripts/lib/host_paths.sh::business_day`（即 `yiban.core.clock`）。
+    测试若用宿主 `datetime.now()` 推导，UTC 16:00–24:00 窗口内会差一天（P0 2026-10-25）。
+    """
+    return clock.today()
 
 
 @unittest.skipIf(shutil.which("bash") is None, "需要 bash（Git Bash/WSL）")
@@ -188,10 +194,6 @@ class RunShWorkersTest(unittest.TestCase):
                 self.assertTrue(calls)
                 self.assertNotIn("--workers", calls[0], calls)
                 self.assertIn("YIBAN_WORKERS", self._log(), "非法值应留告警痕迹")
-
-
-def _today():
-    return datetime.now().strftime("%Y-%m-%d")
 
 
 FAKE_FLOCK_K3 = "#!/usr/bin/env bash\nexit ${FAKE_FLOCK_EXIT:-0}\n"
@@ -512,8 +514,15 @@ class RunShMarkerTest(unittest.TestCase):
 
     @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root 无视权限位")
     def test_env_unreadable_warns_but_continues(self):
-        """.env 存在但不可读 ⇒ 显式告警并继续用默认值。"""
-        env_file = os.path.join(self.tmp, ".env")
+        """.env 存在但不可读 ⇒ 显式告警并继续用默认值。
+
+        路径必须是 run.sh 现行的 `<APP_DIR>/data/.env`（ybg8 把运行数据搬出检出根）。
+        本用例此前写 `<tmp>/.env`：本地 root 被 skipIf 跳过、CI 旧 `-k` 词集不含它
+        ⇒ 布局搬迁后从未真正跑过；车道分层把它带进快集才现形（CI 实测红：警告打成
+        「不存在」而非「不可读」）。
+        """
+        env_file = os.path.join(self.tmp, "data", ".env")
+        os.makedirs(os.path.dirname(env_file), exist_ok=True)
         with io.open(env_file, "w", encoding="utf-8") as f:
             f.write("YIBAN_SIGN_END=07:50\n")
         try:

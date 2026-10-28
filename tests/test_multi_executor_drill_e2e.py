@@ -1,0 +1,449 @@
+# -*- coding: utf-8 -*-
+"""多执行体协调面的**靶场 e2e**：两条不变式 ＋ 有牙证明。
+
+标签：B · 调度：领取/队列/执行体
+覆盖：本靶场（`scripts/drill_multi_exec.py`）在**本地、零外联**的环境里拉起真实的
+   监督进程与真实执行体子进程（真值路径 `workers.run_worker_supervisor` →
+   `executor_v3` → `signin`），子进程的全部 https 请求经传输层改写钉回回环假上游
+   （`yiban/adapters/protocol_fake/__init__.py --no-tls`）。四条：
+   ① 两个执行体领同一批账号时 I1／I2 绿、账号全部了结、无多余真登录；
+   ② 在某执行体的在飞行上 SIGKILL 后，它的在飞行被收尸（回退待领 ＋ `epoch+1`），
+      其余账号不重不丢，且**恢复轮**能把被收尸的账号领走签成；
+   ③ 以旧 owner ＋ 旧 epoch 发收尾写被 `settle_tasks` fence（0 行命中、行不变）；
+   ④ 慢执行体持有在飞行时，兜底身份带 60s 肘界领不到该行（让位判向）。
+对应实现：yiban/workers/workers.py（run_worker_supervisor、_reap_dead_worker）、
+   yiban/adapters/persistence/queue_store.py（claim_batch / settle_tasks / reap_abandoned）、
+   yiban/engine/executor_v3.py（领取/收尾/肘界）。
+关键断言（**不变式**，不是编舞）：
+   I1 —— 同一账号在同一时刻不得被两个执行体持有。判据：`sign_tasks` 一行的 `state`
+   连续两次采样都是 `claimed`，而 `owner` 变了（持有者还在飞，另一个执行体把它抢走）。
+   I2 —— 任何时刻都不该有"无人持有且不可再领"的账号（那等于漏签）。判据：一轮结束后
+   不得留下 `state='claimed'` 的行。
+   断言顺序**三段不可换**：① **"确实发生过"**（`_assert_round_ran`：真登录次数与真签成
+   行数达阈）→ ② **变异贴上**（哨兵断言标记 ＋ 行为）→ ③ **不变式因此变红**。
+   少了①，"靶场什么都没跑"会让两条不变式**天然全绿**，此时"不变式必须红"的红/绿都与
+   被测性质无关（CI 实测：`TZ=UTC` 时窗口被宿主本地时区写错，执行体零领取）。
+   ①的**牙**由 `test_did_run_guard_has_teeth_when_nothing_runs` 证明：变异 `window-off`
+   让靶场确定性地什么都不跑，①必须红。
+   确定性来自**屏障 ＋ 同伴**：目标执行体领到后卡在可注入的持有闸门上等放行，驱动侧
+   见到就绪标记才动手（杀它／让同伴抢它那一行），不靠调度运气。
+   还有一条**前提**：账号集必须**铺满每个执行体**。账号归谁由 HRW 纯函数
+   `H(手机号 ‖ 日期 ‖ 执行体名)` 决定，而执行体名含**主机名** ⇒ 固定一批手机号时，
+   "哪个执行体分到账号"随 (主机名, 日期) 变（实测 6200 对里 14.69% 会让某个执行体一件
+   活都没有）。那时"多执行体"只剩一个在跑、屏障恒不就绪，用例红在**前提没搭起来**。
+   故造号由 `spread_phones` 按当日 HRW 归属**反查**（同一条纯函数），不挑号碰运气；
+   这条前提由 `test_spread_phones_covers_every_executor` 钉住。
+依赖：临时 sqlite ＋ 真子进程（POSIX：SIGKILL ／ `/proc` 查进程环境）；本地假上游；
+   传输层改写结构性保证零外联。非 POSIX 平台整组 skip。
+"""
+import ast
+import datetime
+import inspect
+import os
+import shutil
+import sys
+import tempfile
+import unittest
+
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(BASE, "scripts"))
+
+import drill_multi_exec as drill  # noqa: E402
+
+from yiban import egress  # noqa: E402
+from yiban.adapters import protocol_fake  # noqa: E402
+from yiban.core import hrw  # noqa: E402
+
+_POSIX = (os.name == "posix"
+          and hasattr(__import__("signal"), "SIGKILL")
+          and os.path.isdir("/proc"))
+
+
+@unittest.skipUnless(_POSIX, "SIGKILL 与 /proc 查进程环境仅 POSIX 可用")
+class MultiExecutorDrillInvariantsTest(unittest.TestCase):
+    """两条不变式 ＋ 四个旋钮的靶场 e2e。"""
+
+    #: 用例规模压到最小：2 执行体 × 4 账号，判据不变、墙钟最短。
+    EXECUTORS = 2
+    ACCOUNTS = 4
+
+    def _run(self, **kw):
+        kw.setdefault("executors", self.EXECUTORS)
+        kw.setdefault("accounts", self.ACCOUNTS)
+        # 全量并发跑测（-n auto）时机器争用重：靶场拉起的是**真子进程**，超时给足，
+        # 否则夹具被饿死会让"注入没跑到"伪装成"不变式没红"。
+        kw.setdefault("timeout_sec", 300)
+        # **不重试**（工单 `zdvd`）：删掉的是"零真登录就重跑一次"那条。它的来历是
+        # "CI 偶发整轮零真登录"，而该症状的根因已查明并连根修掉——**账号集没铺满每个
+        # 执行体**（见 `test_spread_phones_covers_every_executor`）：目标槽位一件活都领
+        # 不到 ⇒ 零真登录，与被测性质无关，且随 (主机名, 日期) 漂移。修后"零真登录"只剩
+        # 两种**确定性**来源：① 变异 `window-off`（按设计什么都不跑）；② 靶场真坏了。
+        # 前者不需要重跑，后者重跑也只是把同一份坏再跑一遍——按 `AGENTS.md §一`，不许
+        # 留"复跑就绿"的重试来掩盖。故直接跑一次，断言看这一份结果。
+        return drill.run_drill(**kw)
+
+    def test_baseline_two_executors_invariants_green(self):
+        """两个执行体领同一批账号：I1／I2 绿、全部了结、无多余真登录。"""
+        res = self._run()
+        # **先断言"确实发生过"**：不然"什么都没跑"也会让两条不变式天然全绿。
+        self._assert_round_ran(res, min_signins=self.ACCOUNTS, min_done=self.ACCOUNTS)
+        self.assertTrue(res["i1_ok"], "I1 必须绿：无并发双持有；违规=%s" % res["i1_violations"])
+        self.assertTrue(res["i2_ok"], "I2 必须绿：无残留 claimed；残留=%s" % res["i2_claimed_left"])
+        self.assertEqual(res["done_count"], self.ACCOUNTS, "每个账号都应签成")
+        self.assertLessEqual(res["signin_excess"], 0,
+                             "正常一轮每账号恰好一次真登录（无超额=%s）" % res["signin_excess"])
+        self.assertEqual(res["i2_claimed_left"], [])
+
+    def test_kill_reaps_recovers_stale_write_and_yields(self):
+        """SIGKILL 在飞行持有者：收尸（回退待领＋epoch+1）、旧代写被 fence、恢复轮不丢。"""
+        res = self._run(kill_at="claim", stale_write=True)
+        # **先断言"确实发生过"**：杀点命中与全量签成都以"靶场真跑起来"为前提。
+        self._assert_round_ran(res, min_signins=self.ACCOUNTS, min_done=self.ACCOUNTS)
+        self._assert_barrier_ready(res)
+        kill = res["kill"]
+        self.assertIsNotNone(kill.get("killed_pid"), "杀点必须真的命中一个执行体子进程")
+        phone = kill["killed_phone"]
+        self.assertIsNotNone(phone, "杀点必须在一个在飞行上命中")
+        # 收尸证据：第一轮结束时该行已回退待领，且换代 +1、不再归任何执行体。
+        first = res["first_round_rows"][phone]
+        self.assertEqual(first["state"], "pending",
+                         "被杀执行体的在飞行必须被收尸回退待领（不是留 claimed）")
+        self.assertEqual(int(first["epoch"]), int(kill["killed_epoch"]) + 1,
+                         "收尸必须换代 +1（fence 迟到旧代写）")
+        self.assertEqual(first["owner"], "", "回退后的行不再归任何执行体")
+        # 迟到旧代写：用被杀者旧 owner ＋ 旧 epoch，必须被 fence（0 行、行不变）。
+        stale = res["stale_write"]
+        self.assertTrue(stale.get("attempted"), "迟到旧代写注入必须真的发出去")
+        self.assertEqual(stale["rows_affected"], 0, "旧代写必须 0 行命中（被 epoch fence）")
+        self.assertTrue(stale["fenced"], "旧代写必须被 fence：行不变")
+        # 不丢：恢复轮把被收尸的账号领走，全量签成；两条不变式全程仍绿。
+        self.assertEqual(res["done_count"], self.ACCOUNTS,
+                         "恢复轮必须把被收尸的账号领走（不丢）；pending=%s"
+                         % res.get("first_round_pending"))
+        self.assertTrue(res["i1_ok"] and res["i2_ok"], "恢复全程两条不变式仍须绿")
+        self.assertLessEqual(res["signin_excess"], 0)
+        # 让位判向：慢持有者在飞时，兜底带 60s 肘界领不到它的行。
+        probe = res.get("elbow_probe") or {}
+        self.assertTrue(probe.get("ran"), "持有期探针必须跑到")
+        self.assertEqual(probe["fallback_claimed_rows"], [],
+                         "兜底带 60s 肘界不得领走刚到的行")
+        self.assertTrue(probe["no_yield_violation"])
+
+    # ---- 有牙证明：对协调逻辑变异，两条不变式必须红 ----
+    #
+    # 两段断言**分开**，顺序不可换：
+    # ① 哨兵：变异真的贴上并改变了行为——不过就报"**变异未生效**"，与不变式无关；
+    # ② 不变式：因此变红。
+    # 这样红的时候一眼可分"变异没贴"与"不变式没被打破"（CI 实测过这两种被混成一条）。
+
+    def test_teeth_i2_reap_off_leaves_claimed_row(self):
+        """变异①：去掉轮末收尸 ⇒ 被杀执行体的在飞行留在 claimed ⇒ I2 红。"""
+        # **旧理由已证伪，挂起只剩"墙钟"这一条。**
+        # 2026-10-16 记的理由是"runner 环境差异（首要嫌疑 Python 3.11），未定论"。真因＝
+        # **账号集没铺满每个执行体**：本用例的"确实发生过"口径是 `min_signins=1`，它要求
+        # **非目标**执行体真登录一次；那个执行体若一件活都没有（槽位全被另一个占走），就
+        # 必然报"真登录 0 次"。该形态由 (主机名, 日期) 决定（执行体名含主机名）：实测 6200
+        # 对里 7.48% 是"槽位 0 全包"（＝本用例独红、同族另外 4 条全过，与 CI 的观察逐条
+        # 对上，且不依赖负载 ⇒ 解释了"串行独占仍复现"），7.21% 是"槽位 0 零活"（＝本机
+        # 2026-10-17 的形态，三条一起红）。两者同源，本批已由造号反查（`spread_phones`）
+        # 连根修掉，判据一字未动。
+        # **为什么仍挂**：本批不得推高 CI 墙钟（工单 `i9gl`）——靶场这条轨在 CI 上是串行
+        # 单跑的，放它回来约 +10 秒。恢复覆盖＝删掉下面这个 `if`，并同批删
+        # `tests/test_skip_visibility_gate.py` 名册里对应那条（否则门判陈旧）。
+        if os.environ.get("CI"):
+            self.skipTest(
+                "真因（账号集没铺满执行体）已修；本挂起只为不推高 CI 墙钟（i9gl）而留，删本 if ＋ 名册条目即恢复。见工单 zdvd。"
+            )
+        res = self._run(kill_at="claim", mutate="reap-off", recover=False)
+        # 顺序不可换：先"确实发生过"，再"变异贴上"，最后"不变式红"。
+        # I2 的变异轮**不会**全量签成（被杀者的行本就要留在 claimed），故"确实发生过"
+        # 只要求"至少一次真登录 ＋ 至少一行真签成"——它挡的是"什么都没跑"。
+        self._assert_round_ran(res, min_signins=1, min_done=1)
+        self._assert_barrier_ready(res)
+        self._assert_mutation_applied(res, "reap-off")
+        self.assertFalse(res["i2_ok"], "收尸已成空操作，I2 必须红")
+        self.assertTrue(res["i2_claimed_left"],
+                        "必须留下 state='claimed' 的行（漏签形态）")
+        self.assertFalse(res["terminal_or_pending"],
+                         "留下的 claimed 行不是可再领态；应有账号不可再领")
+        left = {r["phone"] for r in res["i2_claimed_left"]}
+        self.assertIn(res["kill"]["killed_phone"], left,
+                      "留下的必须正是被杀执行体那一行")
+
+    def test_teeth_i1_claim_steal_double_holds(self):
+        """变异②：去掉领取互斥（可抢在飞行）⇒ 同一账号被两个执行体持有 ⇒ I1 红。
+
+        确定性来自**屏障 ＋ 同伴**：屏障让真执行体 A 持着在飞行并卡住；同伴进程（带
+        放宽后的领取谓词、用执行体 B 的身份）去抢**A 正持有的那一行**。同伴抢成功后
+        监控必然看到 `claimed(A)` → `claimed(B)` 的换手——不再指望两条腿恰好撞上。
+        """
+        res = self._run(mutate="claim-steal")
+        # 顺序不可换：先"确实发生过"，再"变异贴上"，最后"不变式红"。
+        #
+        # **口径为什么是 `ACCOUNTS - 1` 而不是 `ACCOUNTS`**（`AGENTS.md §一.6a` 测不变式不测编舞）：
+        # 这一齿**故意**让同伴抢走一行、且同伴只领不签 ⇒ 那一行的收尾会被 epoch fence 掉。
+        # 它最终成不成 `done`，取决于"是否恰好被某个真执行体接手"，**那是一场比赛**——
+        # 全量并发下实测同一参数 `done_count` 在 3 与 4 之间摆动。把"必须 4"钉成判据，
+        # 钉的就不是被测性质，而是这场比赛的偶然结果（会假红）。
+        # 真正的不变式只有两条：① 4 个账号**都真登录过**（`mock_signin_count`，这一齿强制
+        # 多发一次真登录）；② 同伴**只抢一次**（`_stole` 一次性）⇒ 被孤儿化的行**至多一行**，
+        # 其余账号必须全部签成。故 `min_done = ACCOUNTS - 1`。
+        self._assert_round_ran(res, min_signins=self.ACCOUNTS,
+                               min_done=self.ACCOUNTS - 1)
+        self._assert_barrier_ready(res)
+        self._assert_mutation_applied(res, "claim-steal")
+        probe = res["mutation_probe"]
+        self.assertEqual(probe.get("state_before_peer_claim"), "claimed",
+                         "哨兵前提：目标行在同伴动手前**本就被持有**（否则'抢'只是合法领取）")
+        self.assertFalse(res["i1_ok"], "领取互斥已不在，I1 必须红；违规=%s"
+                         % res["i1_violations"])
+        viol_phones = {v["phone"] for v in res["i1_violations"]}
+        self.assertIn(res.get("barrier_phone"), viol_phones,
+                      "违规必须落在屏障观测到的那一行（确定性：同伴抢的就是这一行）")
+
+    def _assert_barrier_ready(self, res):
+        """屏障必须就绪：它是本组确定性断言的**前提**。
+
+        不就绪时不许继续往下断言——那时"不变式绿"或"杀点没命中"都不是被测性质
+        的结论，而是前提没搭起来。**先报这一条**，红的时候一眼看出卡在哪。
+        """
+        self.assertTrue(
+            res.get("barrier_ready"),
+            "屏障未就绪：目标执行体没能在 %s 秒内'领到一行并持着在飞行'——"
+            "本组断言的确定性前提不成立，后面每条断言都不作数。取证=%s"
+            % (drill.BARRIER_WAIT_SEC, res.get("barrier_diag")))
+
+    def _assert_round_ran(self, res, *, min_signins, min_done):
+        """**"到底跑了没有"守卫**：靶场必须真的跑起来，再谈不变式红不红。
+
+        为什么必须排在"不变式必须红"之前：靶场**什么都没跑**时，两条不变式**天然全绿**
+        （无领取 ⇒ 无并发双持有、无残留 claimed）。此时"不变式必须红"的断言照样会失败，
+        但红的原因**不是**被测性质——把"靶场没跑"误报成"有牙"，这比没有断言更坏
+        （CI 实测：`TZ=UTC` 时窗口判关，执行体零领取，两条不变式全绿）。
+
+        口径（**事实字段**，都来自 `drill.run_drill`）：
+        - `mock_signin_count`：假上游收到的 `/signIn` **真登录**次数。靶场零外联，这些
+          请求只可能是执行体子进程发的；
+        - `done_count`：库内终态为 `done` 的行数（真签成的账号数）。
+        """
+        self.assertGreaterEqual(
+            res.get("mock_signin_count", 0), min_signins,
+            "'确实发生过'守卫：本轮真登录 %s 次 < %d 次——靶场没跑起来，"
+            "后面'不变式红'不作数（此刻不变式绿是**假绿**）。取证=%s"
+            % (res.get("mock_signin_count"), min_signins, self._round_diag(res)))
+        self.assertGreaterEqual(
+            res.get("done_count", 0), min_done,
+            "'确实发生过'守卫：本轮真签成 %s 行 < %d 行——靶场没跑起来，"
+            "后面'不变式红'不作数（此刻不变式绿是**假绿**）。取证=%s"
+            % (res.get("done_count"), min_done, self._round_diag(res)))
+
+    @staticmethod
+    def _round_diag(res):
+        """一轮"没跑起来"时的**紧凑取证**：只取能分辨"哪一环断了"的事实。
+
+        没有它就只能看到"真登录 0 次"这一个数——而零真登录可能是执行体没起来、
+        屏障没就绪、假上游没起、或窗口没开，**四种修法完全不同**（CI 上已因缺取证
+        白跑两轮）。刻意**不含**完整 `barrier_diag`（它带逐行 owner，太长会淹掉日志）。
+        """
+        d = res.get("barrier_diag") or {}
+        rows = d.get("rows") or {}
+        states = {}
+        for r in rows.values():
+            states[r.get("state")] = states.get(r.get("state"), 0) + 1
+        return {
+            "barrier_ready": res.get("barrier_ready"),
+            "ready_exists": d.get("ready_exists"),
+            "row_states": states,               # 空 = 一行都没建；全 pending = 没被领
+            "claimed_owners": d.get("claimed_owners"),
+            "pids_for_target": d.get("pids_for_target"),
+            "supervisor_rc": d.get("supervisor_rc"),
+            "mock_requests": res.get("mock_requests"),
+            "supervisor_log_tail": (d.get("supervisor_log_tail") or "")[-600:],
+            "engine_log_tail": (d.get("engine_log_tail") or "")[-600:],
+        }
+
+    def test_did_run_guard_has_teeth_when_nothing_runs(self):
+        """守卫的**牙**：让靶场确定性地"什么都不跑"，`_assert_round_ran` 必须红。
+
+        造法＝变异 `window-off`：把窗口门钉成"永远已关"。执行体在**领取之前**就判窗口，
+        于是零领取、零真登录、监督进程 rc=2——正是 CI 上真实发生过的形状
+        （见 `now_dt` 的说明：`TZ=UTC` 时窗口被宿主本地时区写错，引擎判其已结束）。
+        靶场回 `mutation_probe.window_closed_forced=True` 证明变异确已贴上（与"跑没跑"
+        分开报）。本用例证明：这条守卫在"什么都没跑"时**真的会红**，不是永远绿的摆设。
+        """
+        res = self._run(mutate="window-off", recover=False)
+        self.assertTrue(res.get("mutation_applied"),
+                        "变异 window-off 必须真的贴上；哨兵=%s" % res.get("mutation_probe"))
+        # "什么都没跑"的事实形状：零真登录、零签成、零领取，而两条不变式天然全绿。
+        self.assertEqual(res["mock_signin_count"], 0, "窗口门恒关时不该有任何真登录")
+        self.assertEqual(res["done_count"], 0)
+        self.assertEqual(res["claimed_rows_seen"], [], "不该有行被领取")
+        self.assertTrue(res["i1_ok"] and res["i2_ok"],
+                        "无领取时两条不变式天然全绿——这正是'假绿'的形状")
+        # 守卫必须红（用与牙齿测试同一套口径与阈值）：
+        with self.assertRaises(AssertionError):
+            self._assert_round_ran(res, min_signins=self.ACCOUNTS, min_done=self.ACCOUNTS)
+
+    def test_spread_phones_covers_every_executor(self):
+        """**造号前提的守卫**：每个执行体都必须分到账号（工单 `zdvd` 的根因钉住）。
+
+        被测性质是"多执行体怎么协调"。账号归谁由 HRW 纯函数
+        `H(手机号 ‖ 日期 ‖ 执行体名)` 决定，而执行体名含**主机名**（`egress.worker_owner`）
+        ⇒ "哪个执行体分到账号"随 (主机名, 日期) 变。实测 6200 个 (主机名, 日期) 对：
+        14.69% 会让某个执行体一件活都没有——7.21% 是"槽位 0 零活"（本机 2026-10-17，
+        屏障恒不就绪 ⇒ kill／i1／i2 三条一起红），7.48% 是"槽位 0 全包"（CI 2026-10-16，
+        非目标执行体零活 ⇒ i2 的 `min_signins=1` 报"真登录 0 次"，同族另外 4 条全过）。
+        两种形态同源：**账号集没铺满执行体** ⇒ 多执行体退化成单执行体。
+
+        本用例对多台（合成）主机 × 多日扫一遍，钉住"造号按当日 HRW 归属反查"这条不变式：
+        `spread_phones` 一旦退回"写死一批手机号"，这里必然红（不是可能红）——扫描面
+        3 主机 × 120 日 ＝ 360 个样本，写死号的实现要在 360 个样本上全部侥幸铺满，
+        而单样本退化率实测 14.69% ⇒ 侥幸概率约 10⁻²⁵。
+        另附**在场性**断言：只测 helper 的输出不闭"helper 留着不用"这个洞——`seed` 必须
+        真的调它（`AGENTS.md §十三.29`：门看的东西要＝实际改的东西）。
+        """
+        # 在场性用 **AST** 判"真有调用"，不用文本 grep：`seed` 的 docstring 本身就写着
+        # `spread_phones`，文本匹配会被文档骗过（假绿）。AST 只认真正的 `Call`。
+        calls = [n for n in ast.walk(ast.parse(inspect.getsource(drill.seed)))
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                 and n.func.id == "spread_phones"]
+        self.assertEqual(
+            len(calls), 1,
+            "在场性：`seed` 必须真的调 `spread_phones` 一次；实际 %d 处"
+            "（留着函数不用 ⇒ 造号可能退回写死）" % len(calls))
+        v = hrw.v_for(self.ACCOUNTS)
+        # 合成主机名走 `worker_owner` 的显式 hostname 参数（真实路径同一条构造）；
+        # 与 `_owner_host` 的规范化无关的写法不影响结论——本用例只要求"跨主机都成立"。
+        for host in ("drill-guard-a", "drill-guard-b", "drill-guard-c"):
+            executors = [egress.worker_owner(i, hostname=host)
+                         for i in range(self.EXECUTORS)]
+            for offset in range(120):
+                day = (datetime.date(2026, 1, 1)
+                       + datetime.timedelta(days=offset)).isoformat()
+                phones = drill.spread_phones(executors, day, self.ACCOUNTS)
+                self.assertEqual(len(set(phones)), self.ACCOUNTS,
+                                 "手机号必须互不相同：%s %s %s" % (host, day, phones))
+                shards = {e: set(hrw.shards_of(e, executors, day, v)) for e in executors}
+                for e in executors:
+                    owned = [p for p in phones if hrw.vshard_of(p, day, v) in shards[e]]
+                    self.assertTrue(
+                        owned,
+                        "执行体 %s 在 %s(%s) 名下零账号 ⇒ 多执行体退化成单执行体：%s"
+                        % (e, day, host, phones))
+
+    def _assert_mutation_applied(self, res, mutate):
+        """哨兵断言：变异已生效。不过则报**变异未生效**（与不变式红与否无关）。"""
+        probe = res.get("mutation_probe") or {}
+        self.assertIn("mutation_applied", res, "靶场未回哨兵结论（mutation_applied 缺失）")
+        self.assertTrue(
+            res["mutation_applied"],
+            "变异未生效：DRILL_MUTATE=%s 未真正改变被测函数（哨兵结论=%s）——"
+            "此时不变式绿是**假绿**，与'不变式没被打破'是两件事"
+            % (mutate, probe))
+
+
+class FindChildPidsInstanceIsolationTest(unittest.TestCase):
+    """wkx8：pid 查找按演练实例隔离，同机两个演练不得互指对方的 `worker-0`。
+
+    假 `/proc` 树即可：被测性质是"匹配键"，与真实进程无关（不需要真起进程）。
+    """
+
+    EID = "worker-0@drill-host"
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="yiban-fakeproc-")
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def _proc(self, pid, **env):
+        d = os.path.join(self.root, str(pid))
+        os.makedirs(d)
+        with open(os.path.join(d, "environ"), "wb") as f:
+            f.write(b"\x00".join(("%s=%s" % kv).encode() for kv in env.items()) + b"\x00")
+
+    def test_each_drill_only_matches_its_own_worker(self):
+        self._proc(101, YIBAN_EXECUTOR_ID=self.EID, DRILL_INSTANCE_TOKEN="drill-a")
+        self._proc(102, YIBAN_EXECUTOR_ID=self.EID, DRILL_INSTANCE_TOKEN="drill-b")
+        self._proc(103, YIBAN_EXECUTOR_ID="worker-1@drill-host",
+                   DRILL_INSTANCE_TOKEN="drill-a")
+        self.assertEqual(
+            drill.find_child_pids(self.EID, proc_root=self.root,
+                                  instance_token="drill-a"), [101],
+            "drill-a 只能命中自己的 worker-0")
+        self.assertEqual(
+            drill.find_child_pids(self.EID, proc_root=self.root,
+                                  instance_token="drill-b"), [102],
+            "drill-b 只能命中自己的 worker-0")
+
+    def test_worker_without_instance_token_is_not_matched(self):
+        """无 token 的进程不能算"本次演练的子树"——宁可杀注入放空枪，也不误杀。"""
+        self._proc(201, YIBAN_EXECUTOR_ID=self.EID)
+        self.assertEqual(
+            drill.find_child_pids(self.EID, proc_root=self.root,
+                                  instance_token="drill-a"), [])
+
+    def test_token_inside_another_value_is_not_a_match(self):
+        """匹配的是完整 env 条目，token 只出现在别的变量值里不算数。"""
+        self._proc(301, YIBAN_EXECUTOR_ID=self.EID,
+                   OTHER="DRILL_INSTANCE_TOKEN=drill-a")
+        self.assertEqual(
+            drill.find_child_pids(self.EID, proc_root=self.root,
+                                  instance_token="drill-a"), [])
+
+
+@unittest.skipUnless(_POSIX, "真监督进程与执行体子进程仅 POSIX 可用")
+class EngineRoundMultiAccountE2ETest(unittest.TestCase):
+    """引擎级一轮多账号：N 个账号走**真**执行体（`executor_v3`），假上游注入人工延迟。
+
+    标签：B · 调度：领取/队列/执行体
+    **本用例补的缺口（工单 `6mru` 关闭条件 3）**：套件此前没有"多账号过 executor_v3
+    （asyncio 通道 ＋ 令牌桶 ＋ 领取 ＋ 结算）跑一轮"的用例。它验的是**真实用户动作下的
+    不变式**（每个账号一轮内恰好一次真登录、全部了结、无并发双持有），**不是性能压测**：
+    不产出吞吐/容量数字，也不把墙钟当判据（`elapsed_sec` 只记录"延迟真的进了请求路径"）。
+
+    **口径**：假上游是回环 ＋ 人工延迟，与生产网络无关；本用例的任何时间读数
+    **不得**写成生产吞吐或容量推荐值。
+
+    **不是编舞**：断言只钉"全部了结 / 无超额登录 / 延迟在路径上"三条性质，不钉请求
+    顺序或调度落点。
+    """
+
+    #: 账号数：足够形成"一批"（>1），又让 1 req/s 的出口桶把墙钟控制在十秒量级。
+    ACCOUNTS = 8
+    #: 每请求人工延迟（毫秒）。取值要显著大于计时粒度，又能被 `dur_ms` 逐请求核对。
+    DELAY_MS = 20.0
+
+    def test_one_engine_round_over_n_accounts_with_delay(self):
+        res = drill.run_drill(executors=1, accounts=self.ACCOUNTS,
+                              mock_delay_ms=self.DELAY_MS, timeout_sec=300,
+                              keep_tree=True)
+        # 留下现场只为读 `mock.jsonl` 的逐请求 `dur_ms`；用例结束必须清掉（不能把
+        # 证据目录变成工作树垃圾——工单 `qg8f` 的不变式同样约束测试自己）。
+        self.addCleanup(shutil.rmtree, res["tmp"], True)
+        diag = ("executors=1 accounts=%s signin=%s done=%s elapsed=%ss"
+                % (self.ACCOUNTS, res.get("mock_signin_count"), res.get("done_count"),
+                   res.get("elapsed_sec")))
+        # ① 确实发生过：不先钉这一条，"全了结"在空跑时也天然成立。
+        self.assertFalse(res.get("timed_out"), "引擎一轮未在预算内结束：" + diag)
+        self.assertEqual(res.get("done_count"), self.ACCOUNTS,
+                         "N 个账号必须全部签成：" + diag)
+        self.assertEqual(res.get("mock_signin_count"), self.ACCOUNTS,
+                         "每账号恰好一次真登录：" + diag)
+        self.assertLessEqual(res.get("signin_excess", 1), 0,
+                             "不得出现重复真登录：" + diag)
+        self.assertTrue(res.get("i1_ok"), "无并发双持有：%s" % res.get("i1_violations"))
+        self.assertTrue(res.get("i2_ok"), "无残留 claimed：%s" % res.get("i2_claimed_left"))
+
+        # ② 延迟真的进了请求路径：假上游逐请求记的 `dur_ms` 就是注入值。
+        trace = drill.mock_trace(protocol_fake.trace_path(res["tmp"]))
+        self.assertTrue(trace, "假上游没有记录任何请求：" + diag)
+        delayed = [float(r.get("dur_ms") or 0) for r in trace]
+        self.assertGreaterEqual(
+            min(delayed), self.DELAY_MS * 0.99,
+            "有请求没走注入延迟 ⇒ '等待行为'这一维没被触发（口径：逐请求 dur_ms）："
+            "min=%s n=%d" % (min(delayed), len(delayed)))
+        # ③ 墙钟字段存在且只作记录（**不**据此断言吞吐；它不是生产口径）。
+        self.assertGreater(res.get("elapsed_sec", 0), 0, "整轮墙钟必须可读：" + diag)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

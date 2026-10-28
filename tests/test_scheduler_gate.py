@@ -25,6 +25,11 @@
 
 用法（项目根目录）：
     py -m pytest tests/test_scheduler_gate.py -v
+
+2026-10-16 饮食批：`SignEventWriteTest` 整类删除——两条用例驱动的是**冻结的**
+`signin.run_queue_retry` 的 `event_sink`（生产零调用点，工单 `77s2`）。签到事件的活判据在
+`tests/test_executor_v3.py::EmitEventAttemptNotNullTest` 与
+`tests/test_progress_events_e2e.py`（`sign_events` 列约束与节点值域）。
 """
 import contextlib
 import importlib.util
@@ -45,12 +50,15 @@ from unittest import mock
 
 import signin
 
-from yiban import clock
+from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import db  # noqa: E402
 import scheduler  # noqa: E402  （docker/scheduler.py，容器调度器）
+
+from web.services import limits as _limits  # noqa: E402
+from web.services import notify_mail as _notify_mail  # noqa: E402
 
 TEST_KEY = "c" * 64
 AUDIT_KEY = "d" * 64
@@ -200,45 +208,6 @@ class ZeroSuccessAlertTest(unittest.TestCase):
         accounts = [SimpleNamespace(phone="13800000001")]
         results = {"13800000001": (False, "无需签到", True, "no_task")}
         self.assertFalse(signin._maybe_alert_zero_success(accounts, results, ok_n=0))
-
-
-class SignEventWriteTest(unittest.TestCase):
-    """run_queue_retry 经 event_sink 上报签到事件。"""
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="b12-events-")
-        self._old_state = os.environ.get("YIBAN_STATE_DIR")
-        os.environ["YIBAN_STATE_DIR"] = self.tmp
-        signin._mail_summary.clear()
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
-        if self._old_state is not None:
-            os.environ["YIBAN_STATE_DIR"] = self._old_state
-        else:
-            os.environ.pop("YIBAN_STATE_DIR", None)
-        signin._mail_summary.clear()
-
-    def test_run_queue_retry_emits_events(self):
-        accounts = [signin.Account(phone="13800000001", password="x")]
-        rows = []
-        with mock.patch.object(signin, "attempt_signin", return_value=(True, "已签到", False, "already")):
-            results = signin.run_queue_retry(accounts, "", 0, 0, schedule=None, cred_state={},
-                                             event_sink=rows.append)
-        self.assertTrue(results["13800000001"][0])
-        self.assertEqual(len(rows), 1)
-        row = rows[0]
-        self.assertEqual(row["stage"], "sign")
-        self.assertEqual(row["phone"], "13800000001")
-        self.assertEqual(row["status"], "already")
-        self.assertEqual(row["attempt"], 1)
-        self.assertIn("finished_at", row)
-
-    def test_run_queue_retry_without_sink_unchanged(self):
-        accounts = [signin.Account(phone="13800000002", password="x")]
-        with mock.patch.object(signin, "attempt_signin", return_value=(True, "已签到", False, "already")):
-            results = signin.run_queue_retry(accounts, "", 0, 0, schedule=None, cred_state={})
-        self.assertTrue(results["13800000002"][0])
 
 
 class DbLayerB12Test(unittest.TestCase):
@@ -475,6 +444,12 @@ fi
         env["DATA_DIR"] = "data"
         env["BACKUP_DIR"] = "backups"
         env["FAKEBIN"] = fakebin
+        # P12-21：缺审计锚点即失败；夹具按生产形态造一份（DATA_DIR/state 内）。
+        os.makedirs(os.path.join(tmp, "data", "state"), exist_ok=True)
+        anchor = os.path.join(tmp, "data", "state", "audit-anchor.log")
+        if not os.path.exists(anchor):
+            with io.open(anchor, "w", encoding="utf-8") as f:
+                f.write("anchor\n")
         if extra_env:
             env.update(extra_env)
         # PATH 注入假 gpg（Git Bash 需 POSIX 路径；无 cygpath 时做朴素转换）
@@ -630,6 +605,11 @@ fi
         env = {k: v for k, v in os.environ.items()
                if not k.startswith(("YIBAN_", "BACKUP_"))}
         env.update({"DATA_DIR": "data", "BACKUP_DIR": "backups", "FAKEBIN": fakebin})
+        os.makedirs(os.path.join(tmp, "data", "state"), exist_ok=True)
+        anchor = os.path.join(tmp, "data", "state", "audit-anchor.log")
+        if not os.path.exists(anchor):
+            with io.open(anchor, "w", encoding="utf-8") as f:
+                f.write("anchor\n")
         env.update(extra or {})
         env["PATH"] = fakebin + os.pathsep + env.get("PATH", "")
         return env
@@ -788,7 +768,7 @@ class WebB12Test(unittest.TestCase):
     # ---- B12-8 内置管理员改密告警 ----
     def test_builtin_admin_password_change_alerts(self):
         self._login_admin()
-        with mock.patch.object(self.webapp, "send_notification") as notify:
+        with mock.patch.object(_notify_mail, "send_notification") as notify:
             r = self.c.post(
                 "/api/me/password",
                 json={"old_password": ADMIN_PASS, "new_password": "Rotated#2026", "confirm_password": "Rotated#2026"},
@@ -809,7 +789,7 @@ class WebB12Test(unittest.TestCase):
     # ---- B12-14 登录失败 / 越权审计 ----
     def test_login_failure_threshold_audited(self):
         # 阈值取 app 常量：另抄字面量会在阈值调整后"再也到不了阈值"而静默失测
-        for _ in range(self.webapp.LOGIN_FAIL_NOTIFY):
+        for _ in range(_limits.LOGIN_FAIL_NOTIFY):
             self.c.post("/api/login", json={"username": EMAIL, "password": "wrong-pass"})
         rows = self._audit_rows("login_failed")
         self.assertGreaterEqual(len(rows), 1, "达到失败阈值必须留痕审计链（B12-14）")

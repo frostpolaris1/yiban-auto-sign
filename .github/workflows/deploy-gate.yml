@@ -1,0 +1,61 @@
+name: Deploy gate
+
+# 发布判据的守卫（工单 c9uz）。AGENTS.md §六 第 16/17 条：可发布＝全新干净环境按 README
+# 从零装成、一次完成、零手动调整；且部署流程必须有 e2e 钉住（干净容器内按 README 走通、
+# 服务健康检查通过）。那条 e2e 的唯一载体是 scripts/deploy_gate.sh——它此前被 CI/测试
+# 引用 0 次，可整个失败而无人红，唯一的"守卫"是有人记得手跑。本 workflow 让它进自动轨：
+# 闸门坏了，这条检查就红。
+#
+# 跑的是 README 的形态：**不传 GATE_PIP_INDEX_URL**（走默认索引，同 README 的
+# `docker compose up -d --build`）。国内镜像旁路只供本机用（GATE_PIP_INDEX_URL=...），
+# 不在 CI 里设——否则跑的就是另一条同义命令，不再是 README 那条（工单 c9uz 关闭条件 2）。
+#
+# fetch-depth: 0 是必须的：B 阶段迁移演练要 `git archive v0.6.2` 起旧库。
+# 钉不可变 tag 而不是分支：分支会被删（`release/0.6.2` 于 2026-10-17 被删，B0 无法解析）。
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [develop, server-web, main]
+  push:
+    branches: [develop, server-web, main]
+
+# 最小权限：仅读取代码
+permissions:
+  contents: read
+
+# 闸门是重活（构建两次镜像 + 起全栈 + 迁移/备份演练）：同一 ref 上只保留最新一次运行，
+# 新推送取消在跑的那次，避免 PR 上堆积冗余运行（评审规则：push/PR 无 concurrency 会
+# 产生冗余运行）。
+concurrency:
+  group: deploy-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout (full history — phase B archives v0.6.2)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # 线路自检（先跑、快）：必须有 workflow 引用部署闸门，且闸门跑的是 README 的形态。
+      # 这是"守卫的守卫"——与 dev-verify 全量/nightly 里同一枚用例（tests/
+      # test_deploy_gate_wiring.py）互为独立轨：删掉本 workflow 时那条轨仍会红。
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - name: Wiring meta-test (pins this job's existence + README form)
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest==9.1.1
+          python -m pytest tests/test_deploy_gate_wiring.py -q -p no:randomly
+
+      # 闸门本体：干净 docker 环境按 README 起全栈 + 迁移/回滚演练（期望版本取自迁移登记表） + 备份恢复。
+      # 它自己失败（任一 PASS/FAIL 项为 FAIL）即非 0 退出 ⇒ 本 job 红。
+      - name: Deploy gate — README clean deploy + migration/rollback + backup restore
+        run: bash scripts/deploy_gate.sh

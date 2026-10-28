@@ -7,7 +7,7 @@
 读它。排障时"谁签的、走到哪一步"只能靠文件日志猜。本文件钉住新开的读取面。
 
 覆盖的三件交付（逐件一组）：
-1. 读取层 + 轮级摘要：`yiban/store/run_events.py::summarize`（每轮一行——领取数 /
+1. 读取层 + 轮级摘要：`yiban/adapters/persistence/run_events.py::summarize`（每轮一行——领取数 /
    成功数 / 失败数 / 未执行数 / 耗时）；
 2. 事件时间线：`run_events.py::timeline`（按轮展开 claim → start → success/fail →
    finalize）与 `GET /api/admin/run-events` 的 `events` 字段；
@@ -16,13 +16,13 @@
 契约（本文件钉住的硬性质）：
 - 只读：不写表、不自行写审计、**不调 `verify_audit_chain`**（读接口不触发全表哈希）；
 - 鉴权：`/api/*` 默认要登录（管理员面），普通用户 403、匿名 401；
-- 隐私：账号一律掩码（复用 `yiban.masking.mask_phone` 单源），执行体只回角色与槽位
+- 隐私：账号一律掩码（复用 `yiban.core.masking.mask_phone` 单源），执行体只回角色与槽位
   （`yiban.egress.owner_tag`），**响应体里既无 11 位明文号、也无主机名**；
 - 保留期：响应回显 `retention_days` 与窗口起止；窗口外的日期给 `in_window=false`，
   页面据此给"跨月回溯请走审计日志页"的指引，不静默出空表。
 
 标签：A · 内核：队列/领取/执行体
-覆盖：`yiban/store/run_events.py`（读取层）、`web/routes/run_events_api.py`（新端点）、
+覆盖：`yiban/adapters/persistence/run_events.py`（读取层）、`web/routes/run_events_api.py`（新端点）、
     `web/app.py` 的登录守卫（默认拒绝）。
 对应实现：同覆盖清单；节点值域唯一出处仍是 `run_events.NODES`。
 关键断言：轮级计数与"领取未开始"的口径、耗时来自时刻差、时间线按写入序、掩码与
@@ -35,15 +35,16 @@ import importlib.util
 import json
 import os
 import shutil
-import sqlite3
 import sys
 import tempfile
 import time
 import unittest
 from unittest import mock
 
-from yiban import clock
-from yiban.store import run_events
+from werkzeug.security import generate_password_hash
+
+from yiban.adapters.persistence import run_events
+from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -63,20 +64,6 @@ db = None  # setUpClass 装载（裸模块名，pyproject pythonpath 已含 scri
 
 def _ts(day, hhmmss):
     return f"{day} {hhmmss}"
-
-
-def _reset_db_singleton():
-    """清掉进程级库单例连接。
-
-    机制：`db.init_db` 在 `db._conn` 非空时**复用旧连接**、跳过 JSON→SQLite 迁移
-    （根因单 `yiban-auto-sign-mgq5`）。本文件与 `test_masking_phone_contract.py` 的
-    夹具先清库单例是**绕过**，不是根因修法。mgq5 修好后应删除本函数、它的调用点
-    与校验用例 `LeftoverConnectionFixtureGuardTest`，让根因修法自己承担这条保证。
-    """
-    if db._conn is not None:
-        with contextlib.suppress(Exception):
-            db._conn.close()
-        db._conn = None
 
 
 class InspectionCase(unittest.TestCase):
@@ -120,10 +107,9 @@ class InspectionCase(unittest.TestCase):
 
         global db
         import db
-        # 库单例是**进程级**的：先清掉上一个测试模块可能留下的连接。不清就会踩
-        # `init_db` 的既有语义——已存在连接时它复用旧连接、只刷新"声明的路径"，
-        # 于是本夹具的库根本没被打开、迁移被跳过。机制与根因单见 `_reset_db_singleton`。
-        _reset_db_singleton()
+        # 库单例由 `tests/conftest.py::_fresh_db_connection_per_class` 在类边界丢弃
+        # （工单 mgq5 的根因修法：`init_db` 拒绝在已有连接上静默换库）。本夹具不再
+        # 自己清连接——那只是绕过，且会让"根因是否真修好"不可见。
         spec = importlib.util.spec_from_file_location(
             "webapp_runevents", os.path.join(BASE, "web", "app.py"))
         cls.webapp = importlib.util.module_from_spec(spec)
@@ -131,7 +117,7 @@ class InspectionCase(unittest.TestCase):
         with contextlib.suppress(Exception):
             spec.loader.exec_module(cls.webapp)
         db.init_db(cls.db_file, migrate_from=cls.accounts_file, env_file=cls.env_file)
-        db.create_user(USER_EMAIL, cls.webapp.generate_password_hash(USER_PASS))
+        db.create_user(USER_EMAIL, generate_password_hash(USER_PASS))
         cls.admin_client = cls.webapp.create_app().test_client()
         r = cls.admin_client.post("/api/login",
                                   json={"username": "admin", "password": ADMIN_PASS})
@@ -678,7 +664,7 @@ class RunEventsApiTest(InspectionCase):
     def test_read_does_not_verify_the_audit_chain(self):
         """只读端点不得触发全表哈希校验（照 audit_api 的先例）。"""
         self._seed_round()
-        from yiban.store import audit_chain
+        from yiban.adapters.persistence import audit_chain
         with mock.patch.object(audit_chain, "verify_audit_chain",
                                side_effect=AssertionError("读接口触发了全表哈希校验")):
             r = self.admin_client.get("/api/admin/run-events")
@@ -743,36 +729,5 @@ class InspectionPageWiringTest(InspectionCase):
 
 
 # ---------------------------------------------------------------------------
-# 夹具加固的校验者：留下连接的模块之后本类仍按预期装载
-# ---------------------------------------------------------------------------
-class LeftoverConnectionFixtureGuardTest(InspectionCase):
-    """夹具加固的校验者：在留下连接的模块之后，本类仍按预期装载。
-
-    机制：`db.init_db` 在 `db._conn` 非空时**复用旧连接**、跳过 JSON→SQLite 迁移
-    （根因单 `yiban-auto-sign-mgq5`）。本类 `setUpClass` 先清库单例是**绕过**，
-    不是根因修法。根因修好后应删除 `_reset_db_singleton` 与本类。
-    """
-
-    def test_reset_db_singleton_restores_the_class_load(self):
-        # ① 机制：留下活连接时 init_db 复用旧连接，本类的库根本没被打开
-        stale = sqlite3.connect(os.path.join(self.tmp, "leftover.db"))
-        db._conn = stale
-        reused = db.init_db(self.db_file, migrate_from=self.accounts_file,
-                            env_file=self.env_file)
-        self.assertIs(reused, stale, "机制：init_db 在已有连接时复用旧连接")
-        # ② 加固：按本类口径清连接后，装载按预期
-        try:
-            _reset_db_singleton()
-            db.init_db(self.db_file, migrate_from=self.accounts_file,
-                       env_file=self.env_file)
-            self.assertIsNot(db.get_conn(), stale,
-                             "清连接后必须打开本类自己的库，而不是复用遗留连接")
-            self.assertIsNotNone(db.find_user(USER_EMAIL),
-                                 "清连接后本类的用户必须按预期装载")
-        finally:
-            with contextlib.suppress(Exception):
-                stale.close()
-
-
 if __name__ == "__main__":
     unittest.main(verbosity=2)

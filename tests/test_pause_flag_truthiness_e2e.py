@@ -5,7 +5,7 @@
 覆盖：`YIBAN_GLOBAL_PAUSE=true` 时"引擎停、run.sh 记 GLOBAL_PAUSED、面板却说未暂停"
     的反向假安心；跨语言（Python ↔ bash）真值口径一致性；面板布尔键不再用
     `load_env_int` 读；非预期取值出声；写读往返相容（空值=关）。
-对应实现：`yiban.infra.env_io.parse_env_flag`（唯一真值判定）、
+对应实现：`yiban.adapters.config.env_io.parse_env_flag`（唯一真值判定）、
     `yiban.engine.schedule._env_flag`、`web/routes/settings_api.py` 面板读、
     `web/services/env_io._settings_effective_values`、`web/services/capacity._registration_paused`、
     `yiban/engine/state_io._is_second_run`、`run.sh` 的 `_is_truthy`、
@@ -30,6 +30,8 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+
+from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUN_SH = os.path.join(BASE, "run.sh")
@@ -91,7 +93,7 @@ class EnvFlagParityTest(unittest.TestCase):
 
     @unittest.skipIf(shutil.which("bash") is None, "需要 bash（Git Bash/WSL）")
     def test_is_truthy_copies_match_python_parse_env_flag(self):
-        from yiban.infra import env_io
+        from yiban.adapters.config import env_io
         for label, path in BASH_FUNC_CARRIERS:
             func = _extract_bash_func(path, "_is_truthy")
             script = func + '\nfor v in "$@"; do _is_truthy "$v" && echo 1 || echo 0; done\n'
@@ -125,7 +127,9 @@ class RunProbeShTruthinessTest(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _run(self, value, tag):
-        env_file = os.path.join(self.app, ".env")
+        # .env 在检出内的 data/ 下（工单 ybg8）：run_probe.sh 按 $APP_DIR/data/.env 取。
+        os.makedirs(os.path.join(self.app, "data"), exist_ok=True)
+        env_file = os.path.join(self.app, "data", ".env")
         with io.open(env_file, "w", encoding="utf-8", newline="\n") as f:
             f.write("YIBAN_PROBE_ENABLE=%s\n" % value)
         lock = os.path.join(self.tmp, "lock-" + tag)
@@ -147,7 +151,7 @@ class RunProbeShTruthinessTest(unittest.TestCase):
     def test_gate_matches_python_parse_env_flag(self):
         """run_probe.sh 是第三份 bash 副本（内联门，非函数）：真跑脚本，以"锁目录是否
         创建"为门的物证，逐值与 Python `parse_env_flag` 比对结论。"""
-        from yiban.infra import env_io
+        from yiban.adapters.config import env_io
         for i, v in enumerate(PARITY_VALUES):
             with self.subTest(YIBAN_PROBE_ENABLE=v):
                 r, passed = self._run(v, "m%d" % i)
@@ -161,13 +165,13 @@ class SecondRunFlagParityTest(unittest.TestCase):
     两侧必须同结论：`1/true/on/yes`（含大小写与两侧空白）都算补签轮，旧实现只认 `"1"`（D2）。"""
 
     def _is_second_run(self, value):
-        from yiban.engine import state_io
+        from yiban.adapters.statefiles import state_io
         with mock.patch.dict(os.environ, {"YIBAN_SECOND_RUN": value}), \
                 mock.patch.object(state_io, "_sched_marker_exists", return_value=False):
             return state_io._is_second_run()
 
     def test_engine_side_matches_parse_env_flag_domain(self):
-        from yiban.infra import env_io
+        from yiban.adapters.config import env_io
         for v in PARITY_VALUES:
             with self.subTest(YIBAN_SECOND_RUN=v):
                 self.assertEqual(self._is_second_run(v),
@@ -215,7 +219,9 @@ class GlobalPauseRedLineE2ETest(unittest.TestCase):
         with io.open(os.path.join(cls.app, "scripts", "signin.py"), "w",
                      encoding="utf-8", newline="\n") as f:
             f.write(_CHAIN_SHIM % 2)
-        cls.env_file = os.path.join(cls.app, ".env")
+        # .env 在检出内的 data/ 下（工单 ybg8）：run.sh 按 $APP_DIR/data/.env 取。
+        os.makedirs(os.path.join(cls.app, "data"), exist_ok=True)
+        cls.env_file = os.path.join(cls.app, "data", ".env")
         with io.open(cls.env_file, "w", encoding="utf-8", newline="\n") as f:
             f.write(_BASE_ENV)
         cls.db_file = os.path.join(cls.tmp, "yiban.db")
@@ -248,7 +254,7 @@ class GlobalPauseRedLineE2ETest(unittest.TestCase):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def setUp(self):
-        from yiban.infra import env_io
+        from yiban.adapters.config import env_io
         env_io._env_flag_warned.clear()   # 告警"只喊一次"的进程内闩：每用例归零，避免互相吞
         self.webapp.ENV_FILE = self.env_file
         self._set_env({"YIBAN_GLOBAL_PAUSE": "true"})
@@ -390,8 +396,8 @@ class GlobalPauseRedLineE2ETest(unittest.TestCase):
 
 
 def _today():
-    from datetime import datetime
-    return datetime.now().strftime("%Y-%m-%d")
+    """run.sh 按日状态文件名取业务日（北京 +8），与生产 `business_day` 同源。"""
+    return clock.today()
 
 
 if __name__ == "__main__":

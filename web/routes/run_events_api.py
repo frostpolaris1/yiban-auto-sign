@@ -42,11 +42,12 @@
 
 **复用**
 `register(app)` 供 `web.routes.register_all` 装配。只读实现住在
-`yiban/store/run_events.py` 的读取面。访问留痕复用 `read_audit_trace()`。
+`yiban/adapters/persistence/run_events.py` 的读取面。访问留痕复用 `read_audit_trace()`。
 
 **通信**
-视图体经 `web.routes.appmod()` 取 web.app 的模块级名字（`logger`、
-`_is_valid_date_str`），避免与 `web/app.py` 形成导入环。
+视图体经 `web.routes.appmod()` 取 web.app 自有的模块级名字（`logger`）；A 类转发名
+`_is_valid_date_str` 经真源模块直取（批 3-a 拆墙）。两条路径都不与 `web/app.py`
+形成导入环。
 """
 
 import re
@@ -55,7 +56,10 @@ from flask import jsonify, request
 
 from web.routes import appmod as _appmod
 from web.routes import read_audit_trace
-from yiban.store import run_events as _run_events
+
+# A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
+from web.services import logs as _logs_svc
+from yiban.adapters.persistence import run_events as _run_events
 
 _DEFAULT_LIMIT = 200
 _MAX_LIMIT = 500
@@ -72,7 +76,7 @@ def api_run_events():
             return jsonify({"error": f"不支持的过滤字段: {key}"}), 400
 
     raw_day = (request.args.get("day") or "").strip()
-    if raw_day and not m._is_valid_date_str(raw_day):
+    if raw_day and not _logs_svc._is_valid_date_str(raw_day):
         return jsonify({"error": "日期格式不正确，应为 YYYY-MM-DD"}), 400
 
     raw_limit = (request.args.get("limit") or "").strip()

@@ -1,0 +1,768 @@
+{
+  "_meta": {
+    "version": 1,
+    "doc": "配置缺省字面量逐键处置册（判据 4/6）。每个名册键必须恰好一条模板侧处置：default_literal_gate=true 表示三份模板载体里的 KEY=值 必须等于名册缺省；default_literal_gate_exempt 必须给 class（no_default/no_template_value/example_diverges）与 reason。名册缺省为 null 的键若三份载体示例值刻意不同，再加 carrier_example.reason 逐键登记（判据 6）；有缺省的键不许用它。代码侧处置另见 config/code-literal-register.json（判据 5），与本册正交。"
+  },
+  "YIBAN_ENV_FILE": {
+    "default_literal_gate": true
+  },
+  "YIBAN_DB_FILE": {
+    "default_literal_gate": true
+  },
+  "YIBAN_STATE_DIR": {
+    "default_literal_gate": true
+  },
+  "YIBAN_LOG_FILE": {
+    "default_literal_gate": true
+  },
+  "YIBAN_LOCK_DIR": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_ACCOUNTS_FILE": {
+    "default_literal_gate_exempt": {
+      "class": "example_diverges",
+      "reason": "示例写法等价：./accounts.json 与 accounts.json 解析同一相对路径；名册缺省不写前导 ./"
+    }
+  },
+  "YIBAN_USERS_FILE": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "三份模板均无该键的取值行；名册缺省 null"
+    }
+  },
+  "YIBAN_APP_DIR": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_APP_ROOT": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_BASE_PATH": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_BACKUP_DIR": {
+    "default_literal_gate_exempt": {
+      "class": "example_diverges",
+      "reason": "部署形态分叉：docker 模板给命名卷 /backups（docker/scheduler.py 同值），名册缺省是宿主布局 /var/backups/yiban"
+    }
+  },
+  "YIBAN_BACKUP_DATA_DIR": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "三份模板均无该键的取值行；名册缺省 null"
+    }
+  },
+  "YIBAN_BACKUP_SCRIPT": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_BACKUP_PASSPHRASE_FILE": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_WIRE_DUMP": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_WEB_PORT": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "部署面启动参数：值唯一定义在 deploy/web.env，名册无应用内缺省"
+    }
+  },
+  "YIBAN_WEB_THREADS": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "部署面启动参数：值唯一定义在 deploy/web.env，名册无应用内缺省"
+    }
+  },
+  "YIBAN_WORKERS": {
+    "default_literal_gate_exempt": {
+      "class": "example_diverges",
+      "reason": "示意值：模板示范并行执行体配置（=4）；名册缺省 1=单执行体"
+    }
+  },
+  "YIBAN_EXECUTORS": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "三份模板均无该键的取值行；名册缺省 null"
+    }
+  },
+  "YIBAN_EXECUTOR_ID": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "三份模板均无该键的取值行；名册缺省 null"
+    }
+  },
+  "YIBAN_PROXY": {
+    "default_literal_gate_exempt": {
+      "class": "example_diverges",
+      "reason": "占位符：模板给本机代理示例地址；名册缺省空=直连"
+    }
+  },
+  "YIBAN_PROXY_LIST": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "模板取值 .env.example=http://a:1,http://b:2,,http://d:4；README.md 自 2026-10-26 拆分批后不再写该键的取值行（示例已搬入 docs/guides/operations.md）；名册缺省 null；仅一处取值——归 yiban-auto-sign-7yf 拍板"
+    }
+  },
+  "YIBAN_PROXY_FALLBACK": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "模板取值 .env.example=http://fb:8080；README.md 自 2026-10-26 拆分批后不再写该键的取值行（示例已搬入 docs/guides/configuration.md）；名册缺省 null；仅一处取值——归 yiban-auto-sign-7yf 拍板"
+    }
+  },
+  "YIBAN_FALLBACK_ENABLE": {
+    "default_literal_gate": true
+  },
+  "YIBAN_FALLBACK_INTERVAL": {
+    "default_literal_gate": true
+  },
+  "YIBAN_SIGN_STATE_FLUSH_MAX": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_SIGN_STATE_FLUSH_SEC": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_QUOTA_STATE_FLUSH_MAX": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_QUOTA_STATE_FLUSH_SEC": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_EGRESS_RATE": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_GLOBAL_RATE": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "三份模板均无该键的取值行；名册缺省 null"
+    }
+  },
+  "YIBAN_AVG_ATTEMPT_SEC": {
+    "default_literal_gate": true
+  },
+  "YIBAN_MIN_EXEC_GAP": {
+    "default_literal_gate": true
+  },
+  "YIBAN_ACCOUNT_GAP_MAX": {
+    "default_literal_gate": true
+  },
+  "YIBAN_ACCOUNT_GAP_ENFORCE": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_RETRY_MIN_INTERVAL": {
+    "default_literal_gate": true
+  },
+  "YIBAN_SLOW_SIGN_SEC": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_EXEC_GAP_MIN": {
+    "default_literal_gate": true
+  },
+  "YIBAN_RUN_LOCK_NAME": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "三份模板均无该键的取值行；名册缺省 null"
+    }
+  },
+  "YIBAN_RUN_LOCK_WAIT": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_RUN_TIMEOUT_SEC": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "模板取值 .env.example=1800；.env.docker.example=3600；名册缺省 null；载体间不一致——归 yiban-auto-sign-7yf 拍板"
+    },
+    "carrier_example": {
+      "reason": "宿主示例 1800、容器示例 3600；两载体注释都写明缺省按窗口动态计算（名册 default=null），数字只是显式覆盖示例"
+    }
+  },
+  "YIBAN_HOST_SECOND_ROUND": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_SIGN_ORDER": {
+    "default_literal_gate": true
+  },
+  "YIBAN_SIGN_DIST": {
+    "default_literal_gate": true
+  },
+  "YIBAN_SIGN_MODE": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "三份模板均无该键的取值行；名册缺省 null"
+    }
+  },
+  "YIBAN_SIGN_START": {
+    "default_literal_gate": true
+  },
+  "YIBAN_SIGN_END": {
+    "default_literal_gate": true
+  },
+  "YIBAN_SECOND_RUN_TIME": {
+    "default_literal_gate": true
+  },
+  "YIBAN_WINDOW_EDGE_FRONT_SEC": {
+    "default_literal_gate": true
+  },
+  "YIBAN_WINDOW_EDGE_BACK_SEC": {
+    "default_literal_gate": true
+  },
+  "YIBAN_WINDOW_EDGE_SEC": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_BLOCK_CAP": {
+    "default_literal_gate": true
+  },
+  "YIBAN_SCHEDULE_MU_MIN_PCT": {
+    "default_literal_gate": true
+  },
+  "YIBAN_SCHEDULE_MU_MAX_PCT": {
+    "default_literal_gate": true
+  },
+  "YIBAN_SCHEDULE_SIGMA_MIN_PCT": {
+    "default_literal_gate": true
+  },
+  "YIBAN_SCHEDULE_SIGMA_MAX_PCT": {
+    "default_literal_gate": true
+  },
+  "YIBAN_SUNDAY_SIGN": {
+    "default_literal_gate": true
+  },
+  "YIBAN_SATURDAY_SIGN": {
+    "default_literal_gate": true
+  },
+  "YIBAN_ALLOW_TIME_PREF": {
+    "default_literal_gate": true
+  },
+  "YIBAN_TIME_PREF_COOLDOWN_SEC": {
+    "default_literal_gate": true
+  },
+  "YIBAN_PAUSE_COOLDOWN_SEC": {
+    "default_literal_gate": true
+  },
+  "YIBAN_BATCH_SIGN_COOLDOWN_SEC": {
+    "default_literal_gate": true
+  },
+  "YIBAN_SIGNIN_RATE_WINDOW_SEC": {
+    "default_literal_gate": true
+  },
+  "YIBAN_SIGNIN_RATE_MAX": {
+    "default_literal_gate": true
+  },
+  "YIBAN_CAPACITY_MEASURED": {
+    "default_literal_gate_exempt": {
+      "class": "example_diverges",
+      "reason": "示意值：名册 0=未实测；模板填 354 演示'已实测'形态（键 doc 明示 0=未实测）"
+    }
+  },
+  "YIBAN_START_DELAY_MAX": {
+    "default_literal_gate_exempt": {
+      "class": "example_diverges",
+      "reason": "不再参与调度，仅设置页读取展示（web/routes/settings_api.py:261、web/services/env_io.py:357）；名册缺省 0，模板保留历史值 60"
+    }
+  },
+  "YIBAN_ACCOUNTS": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "模板取值 .env.example=13800138000:your_password#13900139000:another_password；README.md 自 2026-10-26 拆分批后不再写该键的取值行（示例已搬入 docs/guides/deploy-baremetal.md）；名册缺省 null；仅一处取值——归 yiban-auto-sign-7yf 拍板"
+    }
+  },
+  "YIBAN_ACCOUNTS_JSON": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "模板取值 .env.example=[{\"phone\":\"13800138000\",\"password\":\"pwd\",\"phone_model\":\"Vivo-XXXX\",\"phone_code\":\"xxxx...\"}]；README.md 自 2026-10-26 拆分批后不再写该键的取值行（示例已搬入 docs/guides/deploy-baremetal.md）；名册缺省 null；仅一处取值——归 yiban-auto-sign-7yf 拍板"
+    }
+  },
+  "YIBAN_ACCOUNTS_KEY": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "模板取值 .env.example=<64位随机十六进制>（生成：python3 -c \"import secrets;print(secrets.token_hex(32))\"）；名册缺省 null；仅一处取值——归 yiban-auto-sign-7yf 拍板"
+    }
+  },
+  "YIBAN_PHONE": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "模板取值 .env.example=13800138000；名册缺省 null；仅一处取值——归 yiban-auto-sign-7yf 拍板"
+    }
+  },
+  "YIBAN_PASSWORD": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "模板取值 .env.example=your_password；名册缺省 null；仅一处取值——归 yiban-auto-sign-7yf 拍板"
+    }
+  },
+  "YIBAN_PHONE_MODEL": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "模板取值 .env.example=Vivo-XXXX；.env.docker.example（说明行:App 上报的机型名；示例行:Vivo-XXXX）；名册缺省 null；载体间不一致——归 yiban-auto-sign-7yf 拍板"
+    },
+    "carrier_example": {
+      "reason": "解析伪差异：.env.docker.example 的说明行被模板解析器当成取值行；真实取值两载体同为 Vivo-XXXX"
+    }
+  },
+  "YIBAN_PHONE_CODE": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "模板取值 .env.example=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx；.env.docker.example（说明行:App 上报的设备唯一识别码；示例行:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx）；名册缺省 null；载体间不一致——归 yiban-auto-sign-7yf 拍板"
+    },
+    "carrier_example": {
+      "reason": "解析伪差异：.env.docker.example 的说明行被模板解析器当成取值行；真实取值两载体同为 64 位 x 占位串"
+    }
+  },
+  "YIBAN_ACCOUNT_VERIFY": {
+    "default_literal_gate": true
+  },
+  "YIBAN_VERIFY_ASYNC": {
+    "default_literal_gate": true
+  },
+  "YIBAN_PROBE_ENABLE": {
+    "default_literal_gate": true
+  },
+  "YIBAN_PROBE_TIME": {
+    "default_literal_gate": true
+  },
+  "YIBAN_PROBE_INTERVAL_DAYS": {
+    "default_literal_gate": true
+  },
+  "YIBAN_HEALTH_REPORT_TIME": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "模板取值 .env.example=09:00；名册缺省 null；仅一处取值——归 yiban-auto-sign-7yf 拍板"
+    }
+  },
+  "YIBAN_HEALTH_REPORT_WEEKDAY": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "模板取值 .env.example=0；名册缺省 null；仅一处取值——归 yiban-auto-sign-7yf 拍板"
+    }
+  },
+  "YIBAN_AUDIT_KEY": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "三份模板均无该键的取值行；名册缺省 null"
+    }
+  },
+  "YIBAN_TRACK_SALT": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "三份模板均无该键的取值行；名册缺省 null"
+    }
+  },
+  "YIBAN_LEGACY_LOGIN": {
+    "default_literal_gate": true
+  },
+  "YIBAN_MAX_USERS": {
+    "default_literal_gate": true
+  },
+  "YIBAN_MAX_ACCOUNTS": {
+    "default_literal_gate": true
+  },
+  "YIBAN_MEASURE_COOLDOWN": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_ADMIN_DELETE_MAX": {
+    "default_literal_gate": true
+  },
+  "YIBAN_ADMIN_DELETE_COOLDOWN_SEC": {
+    "default_literal_gate": true
+  },
+  "YIBAN_ADMIN_CREDS_MAX": {
+    "default_literal_gate": true
+  },
+  "YIBAN_ADMIN_CREDS_COOLDOWN_SEC": {
+    "default_literal_gate": true
+  },
+  "YIBAN_MAIL_ALERT_COOLDOWN": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_ADMIN_USER": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "模板取值 .env.example=admin；名册缺省 null；仅一处取值——归 yiban-auto-sign-7yf 拍板"
+    }
+  },
+  "YIBAN_ADMIN_PASSWORD": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "名册缺省 null；仅出现在 CLI 命令示例（env 前缀写法，不是模板取值行）；仅有命令示例行（.env.docker.example:10、README.md:145，README 行号口径＝2026-10-26 拆分批后实测），值为命令串，不是配置值"
+    },
+    "carrier_example": {
+      "reason": "两处都是命令行示例（环境变量内联），差异只在解释器路径（容器 python3 / 宿主 .venv/bin/python3）；示例值，名册无缺省"
+    }
+  },
+  "YIBAN_ADMIN_PASSWORD_HASH": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "模板取值 .env.example=scrypt:65536:8:1$...；名册缺省 null；仅一处取值——归 yiban-auto-sign-7yf 拍板"
+    }
+  },
+  "YIBAN_ADMIN_PW_VERSION": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_ADMIN_SID": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "模板取值 .env.example=；名册缺省 null；仅一处取值——归 yiban-auto-sign-7yf 拍板"
+    }
+  },
+  "YIBAN_SECRET_KEY": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "三份模板均无该键的取值行；名册缺省 null"
+    }
+  },
+  "YIBAN_COOKIE_SECURE": {
+    "default_literal_gate_exempt": {
+      "class": "example_diverges",
+      "reason": "部署形态分叉：docker 模板经容器内 nginx HTTPS 反代，模板显式给 1（compose 注入同值）"
+    }
+  },
+  "YIBAN_SESSION_ABS_DAYS": {
+    "default_literal_gate": true
+  },
+  "YIBAN_SESSION_TTL_HOURS": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_PW_CONFIRM_TTL": {
+    "default_literal_gate": true
+  },
+  "YIBAN_PW_CONFIRM_COOLDOWN_SEC": {
+    "default_literal_gate": true
+  },
+  "YIBAN_PW_GATE": {
+    "default_literal_gate": true
+  },
+  "YIBAN_TRUST_FORWARDED_HEADERS": {
+    "default_literal_gate_exempt": {
+      "class": "example_diverges",
+      "reason": "示意值：模板示范反代部署须显式置 1；名册缺省 0=不信任（fail-closed）"
+    }
+  },
+  "YIBAN_REGISTRATION_PAUSE": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_GLOBAL_PAUSE": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_ANNOUNCEMENT": {
+    "default_literal_gate": true
+  },
+  "YIBAN_ANNOUNCEMENT_DRAFT": {
+    "default_literal_gate": true
+  },
+  "YIBAN_ANNOUNCEMENT_DRAFT_META": {
+    "default_literal_gate": true
+  },
+  "YIBAN_ANNOUNCEMENT_PUBLISHED_META": {
+    "default_literal_gate": true
+  },
+  "YIBAN_EMAIL_DOMAIN_ALLOWLIST": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_EMAIL_DOMAIN_BLOCKLIST_EXTRA": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_DISABLE_PURGE_LOOP": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_ICP_INFO": {
+    "default_literal_gate_exempt": {
+      "class": "example_diverges",
+      "reason": "占位符：模板给示例备案号；名册缺省空=页脚不显示"
+    }
+  },
+  "YIBAN_POLICE_INFO": {
+    "default_literal_gate": true
+  },
+  "YIBAN_POLICE_LINK": {
+    "default_literal_gate": true
+  },
+  "YIBAN_SITE_DESCRIPTION": {
+    "default_literal_gate_exempt": {
+      "class": "example_diverges",
+      "reason": "占位符：模板给示例简介文案；名册缺省空=用内置文案"
+    }
+  },
+  "YIBAN_SITE_IMAGE": {
+    "default_literal_gate_exempt": {
+      "class": "example_diverges",
+      "reason": "占位符：模板给示例配图地址；名册缺省空=不输出 og:image"
+    }
+  },
+  "YIBAN_NOTIFY_TYPE": {
+    "default_literal_gate_exempt": {
+      "class": "example_diverges",
+      "reason": "占位符：模板给 serverchan 示例；名册缺省空=关闭推送"
+    }
+  },
+  "YIBAN_NOTIFY_URL": {
+    "default_literal_gate_exempt": {
+      "class": "example_diverges",
+      "reason": "占位符：模板给 Server酱 webhook 示例；名册缺省空=未配置"
+    }
+  },
+  "YIBAN_NOTIFY_SECRET_ENC": {
+    "default_literal_gate": true
+  },
+  "YIBAN_NOTIFY_COOLDOWN": {
+    "default_literal_gate": true
+  },
+  "YIBAN_NOTIFY_URGENT_ONLY": {
+    "default_literal_gate_exempt": {
+      "class": "example_diverges",
+      "reason": "容器示例刻意关掉紧急过滤（全量通知）；名册缺省 true（仅紧急）——2026-08-31 初始提交即如此，改示例会变更复制示例部署的行为，留独立产品决定"
+    }
+  },
+  "YIBAN_NOTIFY_DAILY_MAX": {
+    "default_literal_gate": true
+  },
+  "YIBAN_NOTIFY_URGENT_DAILY_MAX": {
+    "default_literal_gate": true
+  },
+  "YIBAN_LOGINFAIL_DAILY_MAX": {
+    "default_literal_gate": true
+  },
+  "YIBAN_MAIL_ENABLE": {
+    "default_literal_gate": true
+  },
+  "YIBAN_MAIL_SMTP_HOST": {
+    "default_literal_gate": true
+  },
+  "YIBAN_MAIL_SMTP_PORT": {
+    "default_literal_gate": true
+  },
+  "YIBAN_MAIL_ALLOW_PRIVATE_HOST": {
+    "default_literal_gate": true
+  },
+  "YIBAN_MAIL_USER": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "模板取值 .env.example=your@qq.com；.env.docker.example=your@qq.com；README.md 自 2026-10-26 拆分批后不再写该键的取值行（示例已搬入 docs/guides/configuration.md）；名册缺省 null；仅一处取值——归 yiban-auto-sign-7yf 拍板"
+    }
+  },
+  "YIBAN_MAIL_PASS": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "模板取值 .env.example=你的QQ邮箱授权码；.env.docker.example=你的QQ邮箱授权码（敏感凭据，只填 data/.env，勿写本模板）；README.md 自 2026-10-26 拆分批后不再写该键的取值行（示例已搬入 docs/guides/configuration.md）；名册缺省 null；载体间不一致——归 yiban-auto-sign-7yf 拍板"
+    },
+    "carrier_example": {
+      "reason": "占位文案不同（docker 额外注明敏感凭据只填 data/.env）；占位示例，名册无缺省"
+    }
+  },
+  "YIBAN_MAIL_ADMIN_TO": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "模板取值 .env.example=your@qq.com；.env.docker.example=your@qq.com；README.md 自 2026-10-26 拆分批后不再写该键的取值行（示例已搬入 docs/guides/configuration.md）；名册缺省 null；仅一处取值——归 yiban-auto-sign-7yf 拍板"
+    }
+  },
+  "YIBAN_MAIL_SMTPS_ENC": {
+    "default_literal_gate": true
+  },
+  "YIBAN_MAIL_ADMIN_NOTIFY": {
+    "default_literal_gate": true
+  },
+  "YIBAN_MAIL_USER_FAIL_DAILY_CAP": {
+    "default_literal_gate": true
+  },
+  "YIBAN_LOG_LEVEL": {
+    "default_literal_gate": true
+  },
+  "YIBAN_RETENTION_DAYS": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_SNAPSHOT_RETENTION_DAYS": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_SECOND_RUN": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_TRIGGER": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "三份模板均无该键的取值行；名册缺省 null"
+    }
+  },
+  "YIBAN_BACKUP_INSTALLED": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_CRON_D_DIR": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_SYSTEM_CRONTAB": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_BACKUP_RETAIN_DAYS": {
+    "default_literal_gate": true
+  },
+  "YIBAN_BACKUP_PASSPHRASE": {
+    "default_literal_gate_exempt": {
+      "class": "no_default",
+      "reason": "三份模板均无该键的取值行；名册缺省 null"
+    }
+  },
+  "YIBAN_READ_PASSPHRASE_STDIN": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_SSH_HOST": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_SSE_ENABLED": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_SSE_POLL_SEC": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_SSE_HEARTBEAT_SEC": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_SSE_GAP_MAX": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_SSE_SESSION_MAX": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_SSE_CONNECTIONS_MAX": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_SSE_USER_CONNECTIONS_MAX": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_SSE_IDLE_SEC": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_SSE_SESSION_RECHECK_SEC": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  },
+  "YIBAN_SSE_CONNECTION_MAX_SEC": {
+    "default_literal_gate_exempt": {
+      "class": "no_template_value",
+      "reason": "三份模板载体都没有该键的 KEY=值 行；无字面量可断言"
+    }
+  }
+}

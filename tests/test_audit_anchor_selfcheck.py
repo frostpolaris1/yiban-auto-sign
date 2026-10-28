@@ -16,10 +16,12 @@
 覆盖：`_anchor_file_state_ex` 的行数三支与不可解析行、`_anchor_status` 的四态结论
 （ok/none/tampered/indeterminate）、`audit_health` 对"无法定论"的汇总与事实清单呈现、
 `record_audit_anchor` 对不可解析文件的拒绝续写、三字段（v0）历史锚点行的兼容与
-兼容不得放掉篡改检测、以及 `scripts/audit_verify.py` 对"无法定论"的 exit 2。
-对应实现：`yiban/store/audit_chain.py`（`_anchor_status` / `_anchor_file_state_ex` /
+兼容不得放掉篡改检测、**老格式前缀的识别锚在可核性质上**（开头连续 + 日期不晚于
+2026-08-28 + 无行间链字段；前缀之外的三字段行判"无法定论"）、"无法定论"与"检出问题"
+的日志级别/文案分档，以及 `scripts/audit_verify.py` 对"无法定论"的 exit 2。
+对应实现：`yiban/adapters/persistence/audit_chain.py`（`_anchor_status` / `_anchor_file_state_ex` /
 `audit_health`）、`web/services/notify_mail.py` 的 `_audit_alert_facts`、
-`scripts/audit_verify.py`。
+`web/app.py` 的 `_audit_unhealthy_log` / `_alert_audit_unhealthy`、`scripts/audit_verify.py`。
 关键断言：**"无法定论"必须与"无异常"和"确证篡改"两个结论都不同**——混进任一侧，
 要么让一条非法字节把当日校验静默掉，要么把编码事故当失陷去响应；"变多"与"变少"
 同等判红（正常写入每加一行都会抬高库内指纹高水位）。
@@ -42,6 +44,8 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+
+from web.services import notify_mail as _notify_mail
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -450,6 +454,238 @@ class LegacyThreeFieldAnchorTest(_Fixture):
                 self.assertFalse(h["healthy"], h["anchor_msg"])
 
 
+class LegacyPrefixIdentityTest(_Fixture):
+    """老格式前缀的识别必须锚在**可核性质**上，不是"凡三字段行都算老格式"。
+
+    三条性质缺一不可：
+      1. 文件开头**连续**的一段（锚点文件只增不改，老行只可能留在头部）；
+      2. 时间戳的日期部分成形，且不晚于 `LEGACY_ANCHOR_LAST_DAY`（2026-08-28，含当日）；
+      3. 确实没有行间链字段（v0 形态）。
+
+    缺任一条就不是那批历史行：可能是一次磁盘损坏，也可能是人为写入。三字段行不受
+    行间链约束、也不带 min_id/max_id，若只按 token 数认它，文件任意位置留下的一条
+    三字段行都会被当成"已知欠账"静默放过——那正是本单禁止的"放宽判据去迁就"。
+    """
+
+    def _production_shape(self):
+        """复刻生产锚点文件形状：三字段前缀（08-21..08-28）+ v1 + v2；指纹登记总行数。"""
+        self._seed(6)
+        v0 = [f"2026-08-21 00:00:31 {self._row_hash(1)}",
+              f"2026-08-25 00:00:31 {self._row_hash(2)}",
+              f"2026-08-28 00:00:31 {self._row_hash(3)}"]   # 含边界日：当日仍属老前缀
+        v1 = f"2026-08-28 00:00:41 1 4 {self._row_hash(4)}"
+        v2 = "2026-09-01 00:00:51 1 6 6 0 {} {}".format(
+            self._row_hash(6), db._anchor_line_sha(v1))
+        return [*v0, v1, v2]
+
+    def _write(self, lines):
+        """写文件并同步库内指纹（绕开行数判据，单独考"老格式识别"这一维）。"""
+        self._write_lines(lines)
+        self._set_meta(len(lines), db._anchor_line_sha(lines[-1]))
+
+    @staticmethod
+    def _out(r):
+        enc = locale.getpreferredencoding(False) or "utf-8"
+        try:
+            return r.stdout.decode(enc)
+        except (LookupError, UnicodeDecodeError):
+            return r.stdout.decode("utf-8", errors="replace")
+
+    def _run_cli(self):
+        env = dict(os.environ)
+        env["YIBAN_DB_FILE"] = self.db_file
+        env["YIBAN_ENV_FILE"] = self.env_file
+        env["YIBAN_STATE_DIR"] = self.tmp
+        return subprocess.run(
+            [sys.executable, os.path.join(BASE, "scripts", "audit_verify.py"),
+             "--anchor", self.anchor],
+            capture_output=True, env=env, cwd=BASE,
+        )
+
+    def test_production_shape_prefix_is_healthy_and_explained(self):
+        """生产形状 ⇒ 健康、exit 0（该告警 0 次），且老前缀单独成一条已知欠账。
+
+        `audit_known_debt` 就是工单要的"一次性历史说明"：它不是篡改、也不是
+        "无法定论"，在巡检面单独一行显示，不参与告警判据。
+        """
+        lines = self._production_shape()
+        self._write(lines)
+        h = self._health()
+        self.assertEqual(h["anchor_status"], "ok", h["anchor_msg"])
+        self.assertTrue(h["healthy"], h["anchor_msg"])
+        self.assertEqual(db.audit_verdict(h)["state"], "healthy")
+        self.assertEqual(db.audit_verdict(h)["code"], 0, "健康 ⇒ exit 0 ⇒ 每日告警 0 次")
+        self.assertEqual(db._legacy_prefix_end(lines), 3, "含 08-28 当日：边界必须收进前缀")
+        # 可核性质只钉"日期在区间内"这一维：时刻写法变了（历史写入方的分隔符/精度）
+        # 不该把合法历史行判成非历史行；非成形串必须被挡在外面。
+        self.assertTrue(db._is_legacy_ts("2026-08-28T23:59:59"))
+        self.assertTrue(db._is_legacy_ts("2026-08-28 23:59:59"))
+        self.assertFalse(db._is_legacy_ts("2026-08-29 00:00:00"))
+        self.assertFalse(db._is_legacy_ts("totally broken"))
+        self.assertEqual(db.audit_anchor_summary(self.anchor)["old_format_lines"], 3)
+        debt = [d for d in db.audit_known_debt(self.anchor)
+                if d["code"] == "old_format_anchor_lines"]
+        self.assertEqual([d["count"] for d in debt], [3], debt)
+        self.assertTrue(debt[0]["reason"])
+        r = self._run_cli()
+        self.assertEqual(r.returncode, 0, self._out(r))
+        self.assertNotIn("中止", self._out(r))
+
+    def test_three_field_line_outside_prefix_is_indeterminate(self):
+        """前缀之外的三字段行不是历史行 ⇒ 不得静默放过。
+
+        尾部追加三类（日期晚于截止日的成形行；**日期落在窗口内的 08-28 行**——它证明
+        判据是"位置在前缀之外"而不是"日期越界"；恰好 3 token 的垃圾行——旧实现把它
+        解析成 v0 行并判 ok，是同一漏洞的另一形态）判"无法定论"；插在 v1 与 v2 之间的
+        那一条由行间链当场判"篡改"。四条都必须非健康。
+
+        "窗口内日期"那一支单独在列：只测 08-29 的话，把 `_legacy_prefix_end` 的
+        "开头连续"去掉、或把判据换成"日期越界即非历史行"，都仍会绿——那一支才钉得住
+        "位置"这一维。
+
+        已知边界（不在本用例）：插在**老前缀内部**的三字段行无法与真历史行区分——
+        老行之间本来就没有行间链保护（该性质 v1 时代已存在，见 `audit_known_debt` 的
+        理由）。补偿判据是行数三支与末行哈希，即本用例夹具必须同步改写库内指纹才能
+        制造出那个形状。
+        """
+        scenarios = (
+            ("尾部追加 08-29 的三字段行", "indeterminate",
+             lambda ls: [*ls, f"2026-08-29 00:00:59 {'c' * 64}"]),
+            ("尾部追加窗口内日期（08-28）的三字段行", "indeterminate",
+             lambda ls: [*ls, f"2026-08-28 23:59:59 {'e' * 64}"]),
+            ("尾部追加恰好 3 token 的垃圾行", "indeterminate",
+             lambda ls: [*ls, "totally broken line"]),
+            ("插在 v1 与 v2 之间（行间链当场判篡改）", "tampered",
+             lambda ls: [*ls[:4], f"2026-08-27 00:00:59 {'d' * 64}", *ls[4:]]),
+        )
+        for label, expect, mutate in scenarios:
+            with self.subTest(case=label):
+                self._reset_state()
+                lines = mutate(self._production_shape())
+                self.assertNotEqual(lines, self._production_shape(), "前提：本场景真的改了文件")
+                self._write(lines)
+                h = self._health()
+                self.assertEqual(h["anchor_status"], expect, h["anchor_msg"])
+                self.assertFalse(h["healthy"], h["anchor_msg"])
+                self.assertEqual(db.audit_verdict(h)["state"], expect)
+                # 边界用**计数**钉：前缀外三字段行不得抬高老格式行数（它不属历史前缀）。
+                # 不得改回断言 label 不存在——合法前缀本来就会产出那条 label，
+                # `assertNotIn(<label 全文>, [label])` 这类写法恒真，等于不守。
+                self.assertEqual(
+                    db.audit_anchor_summary(self.anchor)["old_format_lines"], 3,
+                    "前缀外三字段行不得被算进老格式行数")
+                self.assertEqual(
+                    [d["count"] for d in db.audit_known_debt(self.anchor)], [3],
+                    "已知欠账的计数与摘要同源，也不得被前缀外行抬高")
+
+    def test_prefix_line_after_cutoff_is_not_legacy(self):
+        """开头连续但日期晚于截止日的三字段行不是历史行 ⇒ 无法定论。"""
+        lines = self._production_shape()
+        lines[0] = f"2026-09-02 00:00:31 {self._row_hash(1)}"
+        self._write(lines)
+        h = self._health()
+        self.assertEqual(h["anchor_status"], "indeterminate", h["anchor_msg"])
+        self.assertEqual(db._legacy_prefix_end(lines), 0, "首行日期越界 ⇒ 前缀长度 0")
+
+
+class NewIndeterminateStillAlertsTest(_Fixture):
+    """反向：非老格式的"无法定论"必须照旧 exit 2 并外发告警。
+
+    没有这一条，上面的收紧就只是"把告警关掉"的一种写法。
+    """
+
+    def _cli(self):
+        env = dict(os.environ)
+        env["YIBAN_DB_FILE"] = self.db_file
+        env["YIBAN_ENV_FILE"] = self.env_file
+        env["YIBAN_STATE_DIR"] = self.tmp
+        return subprocess.run(
+            [sys.executable, os.path.join(BASE, "scripts", "audit_verify.py"),
+             "--anchor", self.anchor],
+            capture_output=True, env=env, cwd=BASE,
+        )
+
+    def test_corrupt_meta_still_indeterminate_exits_two_and_alerts(self):
+        self._seed(4)
+        db.record_audit_anchor(self.anchor)
+        self._raw("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?,?)",
+                  ("audit_anchor_meta",
+                   json.dumps({"lines": "x", "last_hash": "", "ts": "x"})))
+        h = self._health()
+        self.assertEqual(db.audit_verdict(h)["state"], "indeterminate", h["anchor_msg"])
+        self.assertEqual(db.audit_verdict(h)["code"], 2)
+        self.assertFalse(h["healthy"])
+        webapp = _load_webapp("legacy_prefix_alert")
+        facts = dict(webapp._audit_alert_facts(h))
+        self.assertIn("无法定论", facts["库外锚点"])
+        with mock.patch.object(_notify_mail, "send_notification", return_value=True) as m:
+            self.assertTrue(webapp._alert_audit_unhealthy(h), "无法定论仍必须外发")
+        self.assertEqual(m.call_count, 1)
+        title, mail = m.call_args[0][0], m.call_args[0][1]
+        self.assertIn("未能定论", str(title), "无法定论必须自报「没验成」")
+        self.assertNotIn("异常告警", str(title), "不得写成「检出问题」的告警标题")
+        self.assertNotIn("篡改/删除", str(mail.summary), "不得把「没验成」写成「被篡改」")
+        r = self._cli()
+        self.assertEqual(r.returncode, 2, r.stdout)
+
+    def test_unhealthy_log_level_separates_indeterminate_from_tamper(self):
+        """日志级别/文案必须分得开：无法定论 → WARNING，检出篡改 → ERROR。"""
+        import logging as _logging
+        webapp = _load_webapp("legacy_prefix_log_level")
+        ind = {"broken": 0, "chain_ok": True, "anchor_status": "indeterminate",
+               "anchor_ok": False, "anchor_msg": "x", "write_failures": 0,
+               "empty_hash_rows": 0, "healthy": False, "note": ""}
+        tam = dict(ind, anchor_status="tampered", anchor_msg="y")
+        lvl_ind, label_ind = webapp._audit_unhealthy_log(ind)
+        lvl_tam, label_tam = webapp._audit_unhealthy_log(tam)
+        self.assertEqual(lvl_ind, _logging.WARNING, label_ind)
+        self.assertEqual(lvl_tam, _logging.ERROR, label_tam)
+        self.assertNotEqual(label_ind, label_tam)
+
+    def test_dedupe_log_line_uses_the_same_level(self):
+        """去重行与主日志行是同族出口：它也必须按结论分档，不得恒为 ERROR。
+
+        这条钉的是"同批只改了一半"：上一版只把主日志行改成 `_audit_unhealthy_log`，
+        去重行仍是 `logger.error("审计链异常态…")`——indeterminate 只要命中过基线，
+        日志里照样出现一条 ERROR。把去重行改回 `logger.error` 时本用例必红。
+        """
+        import logging as _logging
+        webapp = _load_webapp("legacy_prefix_dedupe_level")
+        self._seed(2)
+        h = self._health()
+        with mock.patch.object(_notify_mail, "send_notification", return_value=True):
+            self.assertTrue(webapp._alert_audit_unhealthy(h), "首次外发（推进基线）")
+        with self.assertLogs(webapp.logger, level=_logging.DEBUG) as cap, \
+             mock.patch.object(_notify_mail, "send_notification", return_value=True) as m2:
+            # 第二次同一结论：走"不重复外发"的去重分支
+            self.assertFalse(webapp._alert_audit_unhealthy(h))
+            self.assertEqual(m2.call_count, 0, "同结论不重复外发")
+        dedupe = [r for r in cap.records if "不重复外发" in r.getMessage()]
+        self.assertEqual(len(dedupe), 1, [r.getMessage() for r in cap.records])
+        self.assertEqual(dedupe[0].levelno, _logging.WARNING,
+                         f"去重行必须与主日志行同级（实测 {dedupe[0].levelname}）")
+        self.assertIn("未能定论", dedupe[0].getMessage())
+        self.assertNotIn("异常", dedupe[0].getMessage())
+
+    def test_dedupe_log_line_is_error_for_tampered(self):
+        """对照：确证篡改的去重行仍是 ERROR（分档是双向的，不是一律降级）。"""
+        import logging as _logging
+        webapp = _load_webapp("legacy_prefix_dedupe_level_tamper")
+        self._seed(2)
+        db.record_audit_anchor(self.anchor)
+        self._raw("DELETE FROM audit_logs WHERE id = 2")     # 删锚点定点行 ⇒ tampered
+        h = self._health()
+        self.assertEqual(h["anchor_status"], "tampered", h["anchor_msg"])
+        with mock.patch.object(_notify_mail, "send_notification", return_value=True):
+            self.assertTrue(webapp._alert_audit_unhealthy(h))
+        with self.assertLogs(webapp.logger, level=_logging.DEBUG) as cap, \
+             mock.patch.object(_notify_mail, "send_notification", return_value=True):
+            self.assertFalse(webapp._alert_audit_unhealthy(h))
+        dedupe = [r for r in cap.records if "不重复外发" in r.getMessage()]
+        self.assertEqual(len(dedupe), 1)
+        self.assertEqual(dedupe[0].levelno, _logging.ERROR, dedupe[0].getMessage())
+
+
 class AnchorPointRowNotExemptTest(_Fixture):
     """锚点定点行不享有清理留痕豁免：删它 + 种假留痕事件仍须判红。
 
@@ -543,28 +779,28 @@ class AlertDeliveryGatingTest(_Fixture):
              mock.patch.object(webapp._notify_mail.mailer, "send_admin_alert",
                                return_value=True), \
              mock.patch.object(webapp._notify_mail.notify, "send", return_value=False):
-            self.assertTrue(webapp.send_notification("t", "c"), "邮件送达即算送达")
+            self.assertTrue(_notify_mail.send_notification("t", "c"), "邮件送达即算送达")
         with mock.patch.object(webapp._notify_mail, "_alert_mail_recipients",
                                return_value=["a@test.local"]), \
              mock.patch.object(webapp, "_mail_alert_due", return_value=True), \
              mock.patch.object(webapp._notify_mail.mailer, "send_admin_alert",
                                return_value=False), \
              mock.patch.object(webapp._notify_mail.notify, "send", return_value=True):
-            self.assertTrue(webapp.send_notification("t", "c"), "推送送达即算送达")
+            self.assertTrue(_notify_mail.send_notification("t", "c"), "推送送达即算送达")
         with mock.patch.object(webapp._notify_mail, "_alert_mail_recipients",
                                return_value=["a@test.local"]), \
              mock.patch.object(webapp, "_mail_alert_due", return_value=True), \
              mock.patch.object(webapp._notify_mail.mailer, "send_admin_alert",
                                return_value=False), \
              mock.patch.object(webapp._notify_mail.notify, "send", return_value=False):
-            self.assertFalse(webapp.send_notification("t", "c"), "两路皆失败必须返回 False")
+            self.assertFalse(_notify_mail.send_notification("t", "c"), "两路皆失败必须返回 False")
 
     def test_unhealthy_alert_marks_baseline_only_when_delivered(self):
         webapp = _load_webapp("alert_gate_mark")
         self._seed(2)
         h = self._health()
         self.assertTrue(db.audit_alert_needs_attention(h), "夹具前提：首次结论待发")
-        with mock.patch.object(webapp, "send_notification", return_value=True) as m_send:
+        with mock.patch.object(_notify_mail, "send_notification", return_value=True) as m_send:
             self.assertTrue(webapp._alert_audit_unhealthy(h))
         self.assertEqual(m_send.call_count, 1)
         self.assertFalse(db.audit_alert_needs_attention(h),
@@ -574,12 +810,12 @@ class AlertDeliveryGatingTest(_Fixture):
         webapp = _load_webapp("alert_gate_retry")
         self._seed(2)
         h = self._health()
-        with mock.patch.object(webapp, "send_notification", return_value=False):
+        with mock.patch.object(_notify_mail, "send_notification", return_value=False):
             self.assertFalse(webapp._alert_audit_unhealthy(h))
         self.assertTrue(db.audit_alert_needs_attention(h),
                         "全通道失败不得推进基线——下一轮必须仍待发")
         # 下一轮通道恢复：同一故障态重新外发并推进基线（未被上次失败永久静默）
-        with mock.patch.object(webapp, "send_notification", return_value=True) as m_send:
+        with mock.patch.object(_notify_mail, "send_notification", return_value=True) as m_send:
             self.assertTrue(webapp._alert_audit_unhealthy(h))
         self.assertEqual(m_send.call_count, 1, "恢复送达后本次真正外发")
         self.assertFalse(db.audit_alert_needs_attention(h))

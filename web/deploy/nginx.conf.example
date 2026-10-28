@@ -6,8 +6,9 @@
 # ⚠️ 切勿改成网上教程常见的 $proxy_add_x_forwarded_for（追加式）：那会让客户端
 # 自报的伪造值留在 XFF 首位，登录锁定/API 限速/注册限速全部按伪造 IP 分桶而失效。
 #
-# 用法：替换 server_name 与证书路径后放入 /etc/nginx/conf.d/ 或 sites-available，
-# reload nginx。应用本身监听 127.0.0.1:17892（systemd 单元默认）。
+# 用法：先按部署面值表替换 @YIBAN_WEB_PORT@（deploy/web.env 的 YIBAN_WEB_PORT），
+# 再替换 server_name 与证书路径，放入 /etc/nginx/conf.d/ 或 sites-available 后
+# reload nginx。应用本身只监听回环的该端口（systemd 单元用同一张表渲染）。
 #
 # 【两种部署形态，二选一】
 #   形态 A（下方 server 块）：应用占独立域名/子域根路径（如 yiban.example.com）。
@@ -58,10 +59,31 @@ server {
     # 管理后台仅一人使用，无需大上传体；64KB 与应用 MAX_CONTENT_LENGTH 对齐
     client_max_body_size 64k;
 
+    # SSE 实时进度流：必须单独一条 location（nginx 默认缓冲事件流 ⇒ 等于没有 SSE；
+    # proxy_read_timeout 默认 60s 会每 60 秒切断长连接）。应用侧同时回
+    # X-Accel-Buffering: no 与 Cache-Control: no-cache（双保险）。
+    # 刻意**不**加 limit_req：长连接不重复计数，建连只占 1 次额度。
+    # ⚠️ 子路径形态（文件末尾形态 B）部署时，前缀按实际挂载点拼接
+    #    （如 /tools/yiban-auto-sign/demo/api/stream/），且此处一条 location 也要同步。
+    location /api/stream/ {
+        proxy_pass http://127.0.0.1:@YIBAN_WEB_PORT@;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        # 覆盖式 XFF（丢弃客户端自报值），应用按此取真实客户端 IP
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+        proxy_connect_timeout 5s;
+        gzip off;
+        add_header X-Accel-Buffering no;
+    }
+
     location / {
         limit_req zone=yiban_perip burst=40 nodelay;
         limit_req_status 429;
-        proxy_pass http://127.0.0.1:17892;
+        proxy_pass http://127.0.0.1:@YIBAN_WEB_PORT@;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
 
@@ -92,7 +114,7 @@ server {
 #
 #     # 关键：proxy_pass 后【不加 "/"】，完整 URI 原样透传，应用自动识别前缀
 #     location /tools/yiban-auto-sign/demo/ {
-#         proxy_pass http://127.0.0.1:17892;
+#         proxy_pass http://127.0.0.1:@YIBAN_WEB_PORT@;
 #         proxy_http_version 1.1;
 #         proxy_set_header Host $host;
 #         proxy_set_header X-Forwarded-For $remote_addr;   # 覆盖式（勿用追加式）

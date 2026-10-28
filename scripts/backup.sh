@@ -3,7 +3,7 @@
 # backup.sh —— 易班自动签到数据每日备份脚本
 # ============================================================
 # 功能：
-#   1. 本地打包数据文件 → /var/backups/yiban-YYYY-MM-DD.tar.gz（0600）
+#   1. 本地打包数据文件 → /var/backups/yiban/yiban-YYYY-MM-DD.tar.gz（0600）
 #      - yiban.db（SQLite：账号+用户表；用 sqlite3 .backup 一致性快照，WAL 安全）
 #      - .env（管理员口令 / YIBAN_ACCOUNTS_KEY 等敏感配置）
 #      - 密钥文件：/etc/yiban/accounts-key（存在则单独置于 keys/ 子目录）
@@ -22,13 +22,16 @@
 #      密文并删除明文 tar.gz——明文落盘需显式 BACKUP_PLAINTEXT=1（大字告警）。
 #      无可用加密方式（未配置口令/公钥且无交互终端）保持明文 + 大字告警，
 #      不改变既有部署行为。--restore 对 .tar.gz / .gpg / .age 均可直接恢复。
-#   4. 保留策略：本地与异机各保留 30 天（find -mtime +30 -delete，含 .sha256 侧车）。
+#   4. 保留策略：本地与异机各保留 30 天（find -mtime +30 -delete，含 .sha256 侧车）；
+#      写清单期间被硬杀留下的 `*.sha256.tmp.*` 孤儿按 mtime >60 分钟清。
 #   5. --restore 模式：从备份包恢复到指定目录（恢复演练 / 真实恢复），并在解包后
 #      跑 PRAGMA integrity_check + scripts/audit_verify.py 验证恢复件可用。
 #
 # 用法：
 #   ./backup.sh                      # 执行备份（有加密条件时本地默认密文）
 #   ./backup.sh --require-encrypt    # 本轮必须加密成功，否则不生成任何归档
+#   ./backup.sh --allow-missing-db   # 允许"本轮不含库"的备份（部署初始化等已知场景）；
+#                                    # 默认缺库 = 失败且不产出归档（见退出码 1）
 #   ./backup.sh --restore <备份包> <目标目录>   # 恢复演练/恢复（支持 .gpg/.age）
 #   REMOTE_BACKUP=user@host:/backup/yiban ./backup.sh
 #   REMOTE_BACKUP="user@host:/backup/yiban" BACKUP_GPG_PASSPHRASE=xxx ./backup.sh
@@ -38,22 +41,33 @@
 #   M3 批次0 起生产执行件收编在 deploy/prod/（校验和对账 + 一键安装）：
 #   sudo DESTDIR= bash deploy/prod/install.sh    # 本脚本→/usr/local/sbin/yiban-backup.sh
 #   （或手工：sudo install -m 0700 -o root -g root scripts/backup.sh /usr/local/sbin/yiban-backup.sh）
-#   sudo crontab -e
+#   触发器唯一来源是 cron.d 表，不是 root crontab。备份的唯一触发器是
+#   deploy/prod/cron.d/yiban-backup（install.sh 落位）；手工安装就把该表
+#   `install -m 0644` 到 /etc/cron.d/yiban-backup，**不要**用 `crontab -e` 抄同一条
+#   命令——root crontab 与 cron.d 同时有它时，02:00 会并发跑两轮同一备份
+#   （2026-10-25 事故：gpg 互相覆写，当天备份全失）。
 #   # 备份——务必带 --require-encrypt：不带时一旦加密配置失效，cron 会静默产出
 #   # 含全部密钥与管理员口令哈希的【明文】归档（备份目录被读 = 全库凭据泄露）。
 #   # 口令经 wrapper 的 stdin fd 0 单跳注入（见 deploy/prod/yiban-backup-wrapper.sh），
 #   # 别再往 crontab 行/env 里写 BACKUP_GPG_PASSPHRASE——那会把口令带进整棵子进程树。
-#   0 2 * * * /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
-#   # 异机副本走 REMOTE_BACKUP：放 wrapper 之后的同一行 env 前缀即可（非机密主机名）：
-#   # 0 2 * * * REMOTE_BACKUP=user@host:/backup/yiban /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
+#   # 备份目录默认 /var/backups/yiban：与 pull-prod-backup.sh 的 REMOTE_BACKUP_DIR、
+#   # backup_sentinel.py 的 DEFAULT_BACKUP_DIR 同值，改一处必须三处同改（有门钉住）。
+#   # 表内命令行（身份列 root）：
+#   0 2 * * * root /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
+#   # 异机副本走 REMOTE_BACKUP：在表内命令行 wrapper 前加 env 前缀（非机密主机名）；
+#   # 改完要与检出里的表同步，否则 install.sh 的 sha256 对账拒装：
+#   # 0 2 * * * root REMOTE_BACKUP=user@host:/backup/yiban /usr/local/sbin/yiban-backup-wrapper.sh >> /var/log/yiban/backup.log 2>&1
 #   # 取证校验——锚点判据的另一半（离机留痕对照）不能只挂在 web 每日线程上：
 #   # web 没起来 / 每日线程没跑到，删链与"锚点文件被截断"就永远没人查。
-#   30 2 * * * cd /opt/yiban-auto-sign && python3 scripts/audit_verify.py --db yiban.db --env .env >> /var/log/yiban/audit-verify.log 2>&1
+#   30 2 * * * cd /opt/yiban-auto-sign && .venv/bin/python3 scripts/audit_verify.py --db data/yiban.db --env data/.env >> /var/log/yiban/audit-verify.log 2>&1
 #   # 上一条的退出码 1 = 检出篡改/删除，2 = 无法定论（密钥缺失等）；0 才是健康。
 #   # 想让 cron 直接告警，可包一层：|| mail -s 'yiban 审计校验失败' root@localhost
+#   # 权威件 deploy/prod/cron.d/yiban-audit（身份 yiban）里 `cd` 目标带**尾斜杠**
+#   # `/opt/yiban-auto-sign/`——承重：check-cron-provenance.sh 只认 `$APP_ROOT/*` 可回指仓库，
+#   # 去掉即判红。上面的手工命令不带尾斜杠（等价），别照抄进 cron.d。
 #   # 备份哨兵——本脚本的加密配置一旦失效会 fail-closed 不产出任何归档，cron 拿不到
 #   # 任何信号：08:05 的哨兵就是替这里发声的那一步（详见 scripts/yiban-backup-sentinel.sh）
-#   5 8 * * * APP_DIR=/opt/yiban-auto-sign /usr/local/sbin/yiban-backup-sentinel.sh >> /var/log/yiban/backup.log 2>&1
+#   5 8 * * * root YIBAN_STATE_DIR=/var/lib/yiban-backup-sentinel APP_DIR=/opt/yiban-auto-sign /usr/local/sbin/yiban-backup-sentinel.sh >> /var/log/yiban/backup.log 2>&1
 #
 # 依赖：
 #   - 本地打包：tar / find / sqlite3（系统自带）
@@ -62,7 +76,8 @@
 #
 # 退出码（M3 批次0 起完整口径；4/5 为既有契约，6/7/8 为本轮新增，互不重叠）：
 #   0  正常（密文归档且回环自检通过）
-#   1  拒绝执行/一般失败（RETENTION_DAYS 非法、--require-encrypt 不满足、解密失败等）
+#   1  拒绝执行/一般失败（RETENTION_DAYS 非法、--require-encrypt 不满足、解密失败、
+#      **源库缺失或快照未落盘且未加 --allow-missing-db**、**已有备份进程在运行**等）
 #   4  本轮归档照留，但【源库】integrity_check 未过（垂死库的最后素材）
 #   5  本轮归档照留，但快照因缺 sqlite3 未经 integrity 核验
 #   6  本轮产物是【明文】归档（显式 BACKUP_PLAINTEXT=1，或无可用加密方式回退）——
@@ -78,8 +93,15 @@ umask 077
 # ------------------------------------------------------------
 # 配置（按需调整；也可通过环境变量覆盖）
 # ------------------------------------------------------------
-APP_DIR="${APP_DIR:-/opt/yiban-auto-sign}"          # 项目部署目录
-BACKUP_DIR="${BACKUP_DIR:-/var/backups}"            # 本地备份目录
+# 项目部署目录：唯一环境键 YIBAN_APP_DIR；`APP_DIR` 只作旧部署别名。
+# 本脚本会被安装到 /usr/local/sbin（不在检出内），故**不从自身路径反推**——部署根
+# 只能来自环境键或生产默认值（manifest 与 cron.d 都按 /opt/yiban-auto-sign 装配）。
+APP_DIR="${YIBAN_APP_DIR:-${APP_DIR:-/opt/yiban-auto-sign}}"
+# `.env` 的绝对路径：**单点定义**（工单 ybg8——运行数据与代码分离，`.env` 与库都在
+# 检出内的 data/ 下，检出根才能属 root 且组/其他不可写）。下面多处引用它，不各写一遍：
+# 同一路径写 N 遍就是"同一事实多处定义"，改一处必漏一处。
+ENV_FILE="${APP_DIR}/data/.env"
+BACKUP_DIR="${BACKUP_DIR:-/var/backups/yiban}"     # 本地备份目录（专用子目录；不收紧共享系统目录）
 RETENTION_DAYS="${RETENTION_DAYS:-30}"              # 保留天数
 REMOTE_BACKUP="${REMOTE_BACKUP:-}"                  # 异机目标，如 user@host:/backup/yiban；留空 = 仅本地
 # gpg 对称加密口令（生产推荐经 yiban-backup-wrapper.sh 的 **stdin fd 0 单跳**注入，
@@ -116,53 +138,67 @@ if [ "${YIBAN_READ_PASSPHRASE_STDIN:-0}" = "1" ]; then
 fi
 
 # 待备份数据文件（均为相对 APP_DIR 的路径；文件不存在时静默跳过）
-DATA_FILES=(.env)
+DATA_FILES=(data/.env)
 # SQLite 数据库的取值在下面的 env_get 之后（同一套双源口径，见 DB_FILE 段）
 # 可选：签到状态文件目录（/var/log/yiban 根下，含 sign-daily-*.json 旧格式、
 #      sign-state-*.json 结构化状态 与 cred-state.json 熔断状态；目录不存在则跳过）
-# 应用侧统一键为 YIBAN_STATE_DIR（web/app.py、yiban/store/db.py、
+# 应用侧统一键为 YIBAN_STATE_DIR（web/app.py、yiban/adapters/persistence/db.py、
 #     .env.example），原 SIGN_STATE_DIR 与其脱钩——自定义状态目录时
 #     sign-daily/sign-state/cred-state 静默不入备份包（影响"当天是否已签"的
 #     判定恢复）。现以 YIBAN_STATE_DIR 优先，SIGN_STATE_DIR 仅作旧部署回退。
 # cron / systemd 直接跑本脚本时进程环境里没有这些键（它们不读 .env），只按环境变量取会
 # 让备份**抓错目录**：自定义状态或日志目录的部署会去抓 /var/log/yiban——同一台机器上
-# 第二份部署的日志与状态就此混进别人的归档。故 .env 是第二来源，键名与 .env.example 一致。
-env_get() {  # $1=键名；进程环境优先，回退 ${APP_DIR}/.env（剥 BOM + 两侧 strip，与 run.sh/env_io 同口径）
-    local v
-    v="$(printenv "$1" 2>/dev/null || true)"
-    if [ -z "${v}" ] && [ -f "${APP_DIR}/.env" ]; then
-        v="$(sed -n "s/^\xEF\xBB\xBF//;s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "${APP_DIR}/.env" \
-            | head -1 | tr -d '\r')"
+# 第二份部署的日志与状态就此混进别人的归档。故 .env 是**第一来源**，键名与 .env.example 一致。
+#
+# 优先级口径（M27，全仓统一）：**`.env` 优先，进程环境只补缺**。
+# 同名键在 `.env` 里出现多行时**末写生效**（与 run.sh 的逐行无条件 export、以及
+# `env_io.parse_env_file` 的 dict 后写覆盖同口径）。旧实现取 `head -1`（首写生效），
+# 于是网页设置页折叠旧行失败/人工追加一行时，run.sh 与备份读到的目录不同——备份抓错
+# 状态目录，闸门标记/审计锚点/账本整类静默不入包。
+env_get() {  # $1=键名；`.env` 优先（末个匹配行），进程环境只补缺（M27）
+    local v=""
+    if [ -f "${ENV_FILE}" ]; then
+        v="$(sed -n "s/^\xEF\xBB\xBF//;s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "${ENV_FILE}" \
+            | tail -1 | tr -d '\r')"
         # 两侧 strip：与 run.sh 的 key/value strip 及 env_io.parse_env_file 同口径。
         # 旧实现只认行首 `KEY=`（不剥 BOM、不认键名前导空格、不 strip），带 BOM 或
         # `KEY = v` 写法时与 run.sh 读出不同配置——备份会静默抓错状态/日志目录。
         v="${v#"${v%%[![:space:]]*}"}"
         v="${v%"${v##*[![:space:]]}"}"
     fi
+    if [ -z "${v}" ]; then
+        v="$(printenv "$1" 2>/dev/null || true)"
+    fi
     printf '%s' "${v}"
 }
-YIBAN_STATE_DIR="${YIBAN_STATE_DIR:-$(env_get YIBAN_STATE_DIR)}"
-YIBAN_LOG_FILE="${YIBAN_LOG_FILE:-$(env_get YIBAN_LOG_FILE)}"
+YIBAN_STATE_DIR="$(env_get YIBAN_STATE_DIR)"
+YIBAN_LOG_FILE="$(env_get YIBAN_LOG_FILE)"
 SIGN_STATE_DIR="${YIBAN_STATE_DIR:-${SIGN_STATE_DIR:-/var/log/yiban}}"
 # 可选：按天签到日志目录（sign-YYYY-MM-DD.log；过期清理由 yiban-cleanup.sh 负责，此处仅备份现存量）
-# 跟随 YIBAN_LOG_FILE 所在目录（两者都没配，才回落到与状态目录同级的默认值）
-SIGN_LOG_DIR="${SIGN_LOG_DIR:-$(dirname "${YIBAN_LOG_FILE:-${SIGN_STATE_DIR}/sign.log}")}"
+# 跟随 YIBAN_LOG_FILE 所在目录；未配置时日志就在状态目录下（默认 <state>/sign.log 的 dirname）。
+# 名字形状不在这里写：默认基名唯一在 `env_io.LOG_BASENAME`（census-P2-log-file）。
+if [ -n "${YIBAN_LOG_FILE}" ]; then
+    SIGN_LOG_DIR="${SIGN_LOG_DIR:-$(dirname "${YIBAN_LOG_FILE}")}"
+else
+    SIGN_LOG_DIR="${SIGN_LOG_DIR:-${SIGN_STATE_DIR}}"
+fi
 # ------------------------------------------------------------
 # SQLite 数据库（账号+用户表；用 sqlite3 .backup 一致性快照，WAL 安全）
 # 键名与引擎同一枚：YIBAN_DB_FILE。
-# 取值口径三档：进程环境 → ${APP_DIR}/.env → 默认值。
+# 取值口径三档：进程环境 → ${ENV_FILE} → 默认值。
 # 上面的 env_get 就是这三档的本文件实现。
 # 本文件不再另写第二套 `.env` 读法。
-# 引擎侧的同一口径在 `yiban/store/db.py` 的 `init_db`，它经
+# 引擎侧的同一口径在 `yiban/adapters/persistence/db.py` 的 `init_db`，它经
 # `env_io.resolve_path("YIBAN_DB_FILE", DB_DEFAULT)`。
-# 过去的写法是 `${DB_FILE:-yiban.db}`：键名没有前缀，也从不查 `.env`。
-# 部署把库放在自定义路径时，备份抓的是 `${APP_DIR}/yiban.db`。
+# 过去的写法是 `${DB_FILE:-<无前缀默认>}`：键名没有前缀，也从不查 `.env`。
+# 部署把库放在自定义路径时，备份抓的是检出根下的库。
 # 归档里没有现役库，脚本照旧收工——静默丢数据。
 # 无前缀的 `DB_FILE` 留作旧部署回退，与 SIGN_STATE_DIR 同一处置。
 # 值可为绝对路径：绝对值原样用，相对值按 APP_DIR 拼接。
 # 引擎侧相对值按 cwd 拼接；cron 的形态是先 cd 到 APP_DIR，两者同形。
-YIBAN_DB_FILE="${YIBAN_DB_FILE:-$(env_get YIBAN_DB_FILE)}"
-DB_PATH="${YIBAN_DB_FILE:-${DB_FILE:-yiban.db}}"
+YIBAN_DB_FILE="$(env_get YIBAN_DB_FILE)"
+# 缺省值取引擎侧同一口径（`env_io.DEFAULT_DB_FILE` = "data/yiban.db"，检出内 data/）。
+DB_PATH="${YIBAN_DB_FILE:-${DB_FILE:-data/yiban.db}}"
 case "${DB_PATH}" in
     /*) DB_SRC="${DB_PATH}" ;;
     *)  DB_SRC="${APP_DIR}/${DB_PATH}" ;;
@@ -172,23 +208,20 @@ esac
 DB_FILE="${DB_PATH##*/}"
 # ------------------------------------------------------------
 
-# 密钥文件：systemd 单元 EnvironmentFile 指向的密钥（0600，root:yiban）
+# 密钥文件：systemd 单元 EnvironmentFile 指向的密钥（0640，root:yiban）
 KEY_FILE="${KEY_FILE:-/etc/yiban/accounts-key}"
 
-# 业务日唯一来源（MF-109）：yiban.clock 的北京钟，与引擎/web 同一事实源——备份包名
-# 与保留期"当天件"判定必须落在引擎业务日上（宿主时区≠北京时差一天，会把"当天归档
-# 失踪"误报或漏报）。取不到 yiban.clock 时退化 TZ=Asia/Shanghai date，再退化宿主 date。
-business_day() {
-    # 只信任形如 YYYY-MM-DD 的输出：解释器在但打印为空/异常时（venv 损坏、版本不匹配）
-    # 必须退到下一级——否则按天文件名会变成 `sign-.log` / `yiban-.tar.gz` 这种静默错位。
-    local _d
-    _d="$("$PY" -c "import sys; sys.path.insert(0, sys.argv[1]); from yiban.clock import today as t; print(t())" "$APP_DIR" 2>/dev/null)"
-    case "$_d" in
-        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) echo "$_d"; return 0 ;;
-    esac
-    TZ=Asia/Shanghai date +%F 2>/dev/null && return 0
-    date +%F
-}
+# 业务日唯一来源（MF-109）：与 run.sh / run_probe.sh / 兜底脚本共用
+# `scripts/lib/host_paths.sh`（宿主脚本的唯一 bash 定义点）。安装到 /usr/local/sbin 时
+# 本文件旁边没有 lib，按部署根找；整棵树缺失（极端破坏态）时退到 TZ 日期并响亮告警，
+# 不让备份因为一个助手文件缺席而整体失败。
+_LIB="$APP_DIR/scripts/lib/host_paths.sh"
+if [ -r "$_LIB" ]; then
+    # shellcheck source=scripts/lib/host_paths.sh
+    . "$_LIB"
+else
+    echo "[$(date '+%F %T')] 警告：缺少 $_LIB，业务日退回 TZ=Asia/Shanghai date（可能与引擎业务日差一天）" >&2
+fi
 
 # Python 解释器：备份本体零第三方依赖，系统 python3 即可（venv 缺失不拦备份）。
 if [ -x "$APP_DIR/.venv/bin/python3" ]; then
@@ -197,10 +230,28 @@ else
     PY="$(command -v python3 || echo /usr/bin/python3)"
 fi
 
-DATE="$(business_day)"
+if declare -F business_day >/dev/null; then
+    DATE="$(business_day)"
+else
+    DATE="$(TZ=Asia/Shanghai date +%F 2>/dev/null || date +%F)"
+fi
 ARCHIVE="${BACKUP_DIR}/yiban-${DATE}.tar.gz"
 TMPDIR_BAK="$(mktemp -d "${TMPDIR:-/tmp}/yiban-bak.XXXXXX")"
-trap 'rm -rf "${TMPDIR_BAK}"' EXIT
+# 先把自己的清单临时件变量置空：调用者若在环境里预置了同名 SIDECAR_TMP，
+# 下方 trap 会把它当成"本脚本的临时件"删掉。本脚本只允许删自己写的那一个。
+SIDECAR_TMP=""
+# 退出清理：临时目录 + 清单临时件。SIDECAR_TMP 在写清单段才赋值，用 :- 兜空
+# （set -u 下直接引用未赋值变量会让 trap 自己失败）。
+# 旧 trap 只清 TMPDIR_BAK：`kill`（TERM 亦会走 EXIT trap）与一般失败路径都会把
+# 0 字节 `${FINAL_LOCAL}.sha256.tmp.$$` 留在备份目录——正是 2026-10-25 事故残留的
+# 同形。SIGKILL 不可捕获，那种孤儿由下方轮转段按 mtime 清（两条修法各管一段）。
+_cleanup() {
+    rm -rf "${TMPDIR_BAK}"
+    if [ -n "${SIDECAR_TMP:-}" ]; then
+        rm -f "${SIDECAR_TMP}"
+    fi
+}
+trap '_cleanup' EXIT
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
@@ -269,16 +320,25 @@ try_encrypt() {
 # age 是交互口令加密（仅手动运行时可用），无法无人值守解密——只能做尺寸下限并
 # 大字提醒立刻手工跑 --restore；这是刻意保留的最小核查，报告里已声明该边界。
 # 解密产物只落在 TMPDIR_BAK（0700，trap 统一清理），不新增第二处明文驻留。
+#
+# 返回值（P12-03/P12-26：调用方必须能区分「通过」与「只做了尺寸下限」）：
+#   0 = 解密→解包→integrity_check 全部通过（或源库损坏时按设计跳过 integrity，
+#       见 CORRUPT_SOURCE；那一路由收尾的 rc=4 表达）
+#   2 = 密文尺寸合格、但**没有做过 integrity 断言**（公钥无私钥 / age / 缺 sqlite3）。
+#       调用方必须改用降级措辞，不得打印「回环自检通过」。
+#   1 = 失败（不得删明文、不出清单、rc=7）。
 # ------------------------------------------------------------
 MIN_ENC_BYTES=200
 # M23②：收件人模式下"解不开"不等于"密文坏"——密钥受口令保护、gpg-agent 不可用、
 # 密钥环临时不可读都会让 `--decrypt` 失败，此时删掉密文＝删掉唯一可恢复副本（与主诉
 # 同源）。置位后调用方保留密文、不出清单、仍以 rc=7 交人工核查。
 VERIFY_KEEP_ENC=""
+VERIFY_NOTE=""   # 返回值 2 时的原因（调用方据此写降级措辞）
 verify_encrypted_archive() {
     local enc="$1" vdir="${TMPDIR_BAK}/roundtrip" plain="${TMPDIR_BAK}/roundtrip.tar.gz"
     local bytes ic
     VERIFY_KEEP_ENC=""
+    VERIFY_NOTE=""
     rm -rf "${vdir}" "${plain}"
     mkdir -p "${vdir}"
     bytes="$(wc -c < "${enc}" 2>/dev/null || echo 0)"
@@ -300,8 +360,9 @@ verify_encrypted_archive() {
                 # M23：公钥模式（README 推荐的 BACKUP_GPG_RECIPIENT，服务器只存公钥）本机
                 # 永远解不开——回环自检不可能通过，旧实现在此判 rc=7 并删掉唯一的好密文、
                 # 连带跳过整段异机副本/校验清单/保留期轮转。按同函数 *.age 分支的既有先例
-                # 降级：只做尺寸下限核查（上面已过）即返回 0，密文完好性由异机副本与备份
-                # 哨兵兜底。
+                # 降级：只做尺寸下限核查（上面已过）即返回"降级"状态，密文完好性由异机副本
+                # 与备份哨兵兜底。**返回 2 而不是 0**：调用方据此改用降级措辞，
+                # 不得再说「回环自检通过」（P12-26）。
                 # 判据必须是"解不开**这一份**"，不能是"本机没有别的私钥"：密钥环里只要
                 # 另有一把与收件人无关的私钥（轮换后旧私钥残留、该主机另有 GPG 私钥），
                 # `gpg --list-secret-keys` 就有输出，按"有没有私钥"判会落回下面的
@@ -316,7 +377,8 @@ verify_encrypted_archive() {
                 # 本地只剩坏密文；哨兵要求"归档 + .sha256 旁挂件同在"，此时会判它健康。
                 # 消解只有两条路且都得离开本机：(a) 计划内 `--restore` 演练（唯一的真判据），
                 # (b) 异机侧真解一次。两者都做不了就别用公钥模式——口令模式可回环自检。
-                return 0
+                VERIFY_NOTE="公钥模式仅做尺寸下限核查（本机无收件人私钥）"
+                return 2
             elif ! gpg --batch --yes --decrypt -o "${plain}" "${enc}"; then
                 # 收件人模式：本机持有对应私钥却解不开（口令保护/无 gpg-agent/密钥环异常）
                 # ——可能是好包，删不得。置位交由调用方保留密文（见 VERIFY_KEEP_ENC 说明）。
@@ -332,7 +394,8 @@ verify_encrypted_archive() {
         *.age)
             log "回环自检：age 密文无法无人值守解密——本轮仅做尺寸下限核查，" \
                 "请立刻手工跑一次 --restore 演练（${enc}）" >&2
-            return 0
+            VERIFY_NOTE="age 密文仅做尺寸下限核查（无法无人值守解密）"
+            return 2
             ;;
     esac
     if ! tar -tzf "${plain}" > /dev/null; then
@@ -343,7 +406,27 @@ verify_encrypted_archive() {
         log "回环自检：解密产物解包失败" >&2
         return 1
     fi
-    if [ -f "${vdir}/data/${DB_FILE}" ] && command -v sqlite3 > /dev/null 2>&1; then
+    # P12-03：包内有没有库不能"看情况跳过"。源库存在（DB_SNAPSHOT_PRESENT=1）而
+    # 归档里没有它 ⇒ 这份密文不可用于恢复，必须失败。
+    if [ "${DB_SNAPSHOT_PRESENT:-0}" -eq 1 ] && [ ! -f "${vdir}/data/${DB_FILE}" ]; then
+        log "回环自检：源库存在，但归档内没有 data/${DB_FILE}——本轮备份漏了库，密文不可用于恢复" >&2
+        return 1
+    fi
+    if [ -f "${vdir}/data/${DB_FILE}" ]; then
+        if ! command -v sqlite3 > /dev/null 2>&1; then
+            # 解密+解包都过了，但没有 integrity 判据。不得说"通过"（P12-03）。
+            log "回环自检：解密→解包通过，但本机缺 sqlite3，未能做 integrity_check——本轮为降级核查" >&2
+            VERIFY_NOTE="解密→解包通过，但缺 sqlite3 未做 integrity_check"
+            return 2
+        fi
+        if [ "${CORRUPT_SOURCE:-0}" -eq 1 ]; then
+            # P12-06：源库已损坏时，同一份坏快照必然过不了 integrity；若照常断言，
+            # 脚本会以 rc=7 收场，而 rc=4「归档照留」这条出口在默认加密链上不可达。
+            # 源库损坏已由打包段判定并响亮报告；这里只核验密文可解、可解包。
+            log "回环自检：源库损坏，按设计跳过 integrity 断言（归档保留，收尾以 rc=4 报告）" >&2
+            VERIFY_NOTE="源库损坏，integrity 断言按设计跳过"
+            return 2
+        fi
         ic="$(sqlite3 "${vdir}/data/${DB_FILE}" "PRAGMA integrity_check;")" \
             || { log "回环自检：integrity_check 无法执行" >&2; return 1; }
         if [ "${ic}" != "ok" ]; then
@@ -450,7 +533,7 @@ restore() {
     find "$dest" -type f -exec ls -l {} \;
     log "落位说明（生产路径按 APP_DIR / YIBAN_STATE_DIR 调整）："
     log "  - data/${DB_FILE} → ${DB_SRC}"
-    log "  - data/.env       → ${APP_DIR}/.env"
+    log "  - data/.env       → ${ENV_FILE}"
     log "  - keys/           → ${KEY_FILE}（或与 .env 合并）"
     log "  - state/          → \${YIBAN_STATE_DIR}（含 sched-run-*/sched-slot-*/sched-snapshot-*/"
     log "                      notify-ledger.json/notify-throttle.json/cred-state.json）"
@@ -529,9 +612,14 @@ restore() {
 # 未知参数被当"没有参数"直接跑一轮备份。故必须扫全部参数，未知/移位一律在重活前拒绝。
 # ------------------------------------------------------------
 RESTORE_MODE=0 RESTORE_ARCHIVE="" RESTORE_TARGET="" REQUIRE_ENCRYPT=0
+# 缺库不许当成功（R3-017）：默认 fail-closed，唯一例外是本开关。
+ALLOW_MISSING_DB=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --require-encrypt) REQUIRE_ENCRYPT=1 ;;
+        # 显式"允许无库备份"：只给部署初始化（库尚未建）这类已知场景。
+        # 放行时仍打印"本轮不含库、不可用于恢复"，cron 与巡检照样看得见。
+        --allow-missing-db) ALLOW_MISSING_DB=1 ;;
         # 每个位置参数各自判 $# 再 shift：`--restore <包>` 这类只剩 1 个参数时，
         # 无条件的尾部 shift 会让 $# 归 0 而 shift 返回 1——set -euo pipefail 下
         # 整个脚本立刻退出 1 且零输出（连"备份包不存在"的诊断都看不到）。
@@ -605,15 +693,53 @@ fi
 # ------------------------------------------------------------
 # 本地打包
 # ------------------------------------------------------------
-# MF-79：归档内是 .env（管理员口令哈希/数据密钥）+ 整库 + accounts-key——文件 0600
-# 但目录从不设防（umask 077 只护新建文件，已有目录、以及此前建的目录都不在保护范围）。
+# MF-79：归档内是 .env（管理员口令哈希/数据密钥；源权限随部署，通常 0600，cp -p 原样带入）
+# + 整库 + accounts-key（0640）——归档文件本身 0600，但目录从不设防（umask 077 只护新建
+# 文件，已有目录、以及此前建的目录都不在保护范围）。
 # 备份目录与主库同机时"目录被列 = 全部备份可枚举"，这里显式收紧 0700；收紧失败
 # （目录属主不是运行用户）必须当场失败，不能让裸奔的旧 0755 混过本轮。
+#
+# P12-07：只收紧**本项目的专用子目录**。`/var/backups` 是 Debian 系统级备份目录
+# （dpkg 等也往里写），对它无条件 chmod 0700 会打断以非 root 运行的巡检/监控/其他
+# 服务的备份读取。默认值因此改为 `/var/backups/yiban`；显式把它指到共享目录时
+# 在改模式之前拒绝，并点名正确处置。
+case "${BACKUP_DIR}" in
+    /|/var|/var/backups|/tmp|/home|/root)
+        echo "错误：BACKUP_DIR=${BACKUP_DIR} 是共享/系统目录，本脚本会把它收紧为 0700 并打断其他读者；请指向专用子目录（如 /var/backups/yiban）" >&2
+        exit 1
+        ;;
+esac
 mkdir -p "${BACKUP_DIR}"
 if ! chmod 0700 "${BACKUP_DIR}"; then
     echo "错误：无法将备份目录 ${BACKUP_DIR} 收紧为 0700（属主不对/只读挂载？），拒绝继续" >&2
     exit 1
 fi
+
+# ------------------------------------------------------------
+# 跨进程互斥（R3-020）：同一时刻只允许一轮备份。
+#
+# 为什么必须有：两跑并行时各自打包、各自轮转，最终只剩一份归档——"跑了两轮"
+# 在任何输出里都不成立（实测两跑都 rc=0）。锁文件放在专用备份目录内（该目录
+# 已收紧为 0700），不占共享的 /tmp。
+# 语义：**第二跑立即失败（rc=1）并说明原因**，不静默丢一轮、也不排队等到
+# 窗口过后。cron 的邮件会把这行带给运维。
+# fail-closed：缺 flock（util-linux）时拒绝执行——本机版本无法保证互斥时
+# 宁可今天不备份，也不产出"两轮同时写同一份归档"的未知状态。
+# ------------------------------------------------------------
+if ! command -v flock > /dev/null 2>&1; then
+    echo "错误：缺 flock 命令（util-linux），无法保证同一时刻只有一轮备份——拒绝执行" >&2
+    exit 1
+fi
+BACKUP_LOCK="${BACKUP_DIR}/.backup.lock"
+exec 9>"${BACKUP_LOCK}" || {
+    echo "错误：无法打开备份锁文件 ${BACKUP_LOCK}" >&2
+    exit 1
+}
+if ! flock -n 9; then
+    echo "错误：已有备份进程在运行（锁 ${BACKUP_LOCK} 被占用）——本次不执行，避免两轮同时写同一份归档" >&2
+    exit 1
+fi
+
 mkdir -p "${TMPDIR_BAK}/data" "${TMPDIR_BAK}/keys"
 
 log "=== 易班自动签到备份开始（${DATE}）==="
@@ -697,6 +823,24 @@ else
     DB_SNAPSHOT_PRESENT=0
 fi
 
+# 缺库判据（R3-017）：**"缺库 ⇒ 失败"**，不是"PRESENT=1 时才校验"。
+# 旧形状只在 PRESENT=1 时才要求库进包，于是"源库不存在"这一支永远不参与判定：
+# 归档照常生成、rc=0，恢复日才发现包里没有库。这里在落任何归档**之前**拦下。
+# 唯一例外是显式 --allow-missing-db（部署初始化等已知场景），放行时照样响亮说明。
+if [ "${DB_SNAPSHOT_PRESENT}" -ne 1 ]; then
+    if [ "${ALLOW_MISSING_DB:-0}" -eq 1 ]; then
+        log "警告：本轮归档不含数据库 ${DB_FILE}（${DB_SRC}）——人工开关 --allow-missing-db 放行，此归档不可用于恢复" >&2
+    else
+        if [ -f "${DB_SRC}" ]; then
+            echo "错误：源库存在（${DB_SRC}）但快照未落盘（${DB_FILE}），本轮不产出归档——缺库的归档不可用于恢复" >&2
+        else
+            echo "错误：源库不存在（${DB_SRC}），本轮不产出归档——'跳过（不存在）'不等于'备份完成'" >&2
+        fi
+        echo "  处置：确认 YIBAN_DB_FILE 与部署初始化状态；确需无库备份时加 --allow-missing-db。" >&2
+        exit 1
+    fi
+fi
+
 # 2) 密钥：优先 /etc/yiban/accounts-key（systemd EnvironmentFile，应含数据加密密钥
 #    YIBAN_ACCOUNTS_KEY）——密钥与数据一起备份但分开放置（keys/ 子目录）
 if [ -f "${KEY_FILE}" ]; then
@@ -706,18 +850,18 @@ if [ -f "${KEY_FILE}" ]; then
     # YIBAN_SECRET_KEY 写进了该文件——校验内容，缺数据密钥时从 .env 兜底提取
     if ! grep -qE '^[[:space:]]*YIBAN_ACCOUNTS_KEY=' "${KEY_FILE}"; then
         log "警告：${KEY_FILE} 内未找到 YIBAN_ACCOUNTS_KEY（疑似旧清单写入的会话密钥），尝试从 .env 兜底提取"
-        if [ -f "${APP_DIR}/.env" ]; then
-            grep -E '^[[:space:]]*YIBAN_ACCOUNTS_KEY=' "${APP_DIR}/.env" > "${TMPDIR_BAK}/keys/accounts-key.env" \
-                && log "已从 ${APP_DIR}/.env 兜底提取 YIBAN_ACCOUNTS_KEY（keys/accounts-key.env）" \
+        if [ -f "${ENV_FILE}" ]; then
+            grep -E '^[[:space:]]*YIBAN_ACCOUNTS_KEY=' "${ENV_FILE}" > "${TMPDIR_BAK}/keys/accounts-key.env" \
+                && log "已从 ${ENV_FILE} 兜底提取 YIBAN_ACCOUNTS_KEY（keys/accounts-key.env）" \
                 || log "警告：.env 中也未找到 YIBAN_ACCOUNTS_KEY，数据密钥未备份！恢复时 yiban.db 密文将不可解！"
         fi
     fi
 else
     # 兜底：从 .env 提取 YIBAN_ACCOUNTS_KEY（账号密码 AES-GCM 数据加密密钥，
-    # 见 yiban/infra/account_crypto.py；会话签名密钥是另一把 YIBAN_SECRET_KEY）
-    if [ -f "${APP_DIR}/.env" ]; then
-        grep -E '^[[:space:]]*YIBAN_ACCOUNTS_KEY=' "${APP_DIR}/.env" > "${TMPDIR_BAK}/keys/secret-key.env" \
-            && log "密钥来源：${APP_DIR}/.env 内 YIBAN_ACCOUNTS_KEY（已单独提取）" \
+    # 见 yiban/adapters/config/account_crypto.py；会话签名密钥是另一把 YIBAN_SECRET_KEY）
+    if [ -f "${ENV_FILE}" ]; then
+        grep -E '^[[:space:]]*YIBAN_ACCOUNTS_KEY=' "${ENV_FILE}" > "${TMPDIR_BAK}/keys/secret-key.env" \
+            && log "密钥来源：${ENV_FILE} 内 YIBAN_ACCOUNTS_KEY（已单独提取）" \
             || log "警告：.env 中未找到 YIBAN_ACCOUNTS_KEY，密钥未备份！"
     else
         log "警告：未找到密钥文件（${KEY_FILE}）与 .env，密钥未备份！"
@@ -725,7 +869,7 @@ else
 fi
 
 # 3) 状态文件（可选）：/var/log/yiban 根下的当日闸门标记、通知账本与审计链锚点
-#    ——glob 匹配多个模式；无匹配时静默跳过。
+#    ——glob 匹配多个模式；无匹配时留一行说明（不得静默）。
 #    清单里每一类"可重建"程度不同，缺了会怎样都记在这里：
 #      sign-daily-*/sign-state-*  当天是否已签的判定（缺 → 当天可能重签）
 #      cred-state.json            熔断状态（缺 → 已熔断的账号被立即再试）
@@ -737,44 +881,103 @@ fi
 #      audit-anchor.log           审计链外部锚点（缺 → 恢复出来的库再也无法检出
 #                                 删尾/删前缀/整表清空：锚点是链的唯一外部参照，
 #                                 只备 yiban.db 等于把"防删除"那半边一起丢掉）
+#
+# P12-05：通知账本/节流表另有**历史落点** `dirname(.env)`（= APP_DIR/data）——旧版
+# `notify/ledger._state_dir()` 在该处回落。现版 `_state_dir()` 走
+# `env_io.resolve_path("YIBAN_STATE_DIR", …)`，缺省 /var/log/yiban，已由上面的
+# SIGN_STATE_DIR 收录；历史文件仍须归档，故这里单独解析一遍再合并去重。
+# sign-daily / sign-state / 按天日志的匹配形状由唯一事实源导出（census-P2-sign-state /
+# sign-day-log）：改形状只改 `env_io` 的前后缀，这里跟着变，不会静默漏收。
+# 解释器不可用（备份允许 venv 缺失）时退化为"整目录收录"，宁多勿漏。
+_sign_patterns="$("$PY" -c 'import sys; sys.path.insert(0, sys.argv[1]); from yiban.adapters.config import env_io; print(env_io.SIGN_DAILY_PREFIX + "*" + env_io.SIGN_DAILY_SUFFIX); print(env_io.SIGN_STATE_PREFIX + "*" + env_io.SIGN_STATE_SUFFIX); print(env_io.DAY_LOG_PREFIX + "*" + env_io.DAY_LOG_SUFFIX)' "$APP_DIR" 2>/dev/null)" || _sign_patterns=""
+_SIGN_DAILY_GLOB="$(printf '%s\n' "$_sign_patterns" | sed -n '1p')"
+_SIGN_STATE_GLOB="$(printf '%s\n' "$_sign_patterns" | sed -n '2p')"
+_SIGN_LOG_GLOB="$(printf '%s\n' "$_sign_patterns" | sed -n '3p')"
+
 if [ -d "${SIGN_STATE_DIR}" ]; then
     shopt -s nullglob
-    state_files=(
-        "${SIGN_STATE_DIR}"/sign-daily-*.json
-        "${SIGN_STATE_DIR}"/sign-state-*.json
-        "${SIGN_STATE_DIR}"/cred-state.json
-        "${SIGN_STATE_DIR}"/sched-run-*.json
-        "${SIGN_STATE_DIR}"/sched-slot-*.json
-        "${SIGN_STATE_DIR}"/sched-snapshot-*.json
-        "${SIGN_STATE_DIR}"/notify-ledger.json
-        "${SIGN_STATE_DIR}"/notify-throttle.json
-        "${SIGN_STATE_DIR}"/audit-anchor.log
+    if [ -n "$_SIGN_DAILY_GLOB" ] && [ -n "$_SIGN_STATE_GLOB" ]; then
+        state_files=(
+            "${SIGN_STATE_DIR}"/$_SIGN_DAILY_GLOB
+            "${SIGN_STATE_DIR}"/$_SIGN_STATE_GLOB
+            "${SIGN_STATE_DIR}"/cred-state.json
+            "${SIGN_STATE_DIR}"/sched-run-*.json
+            "${SIGN_STATE_DIR}"/sched-slot-*.json
+            "${SIGN_STATE_DIR}"/sched-snapshot-*.json
+            "${SIGN_STATE_DIR}"/notify-ledger.json
+            "${SIGN_STATE_DIR}"/notify-throttle.json
+            "${SIGN_STATE_DIR}"/audit-anchor.log
+        )
+    else
+        log "警告：无法从 yiban.adapters.config.env_io 取得状态件形状，改为收录状态目录下全部文件（宁多勿漏）"
+        state_files=()
+        _state_root="${SIGN_STATE_DIR}"
+        for _f in "$_state_root"/*; do
+            [ -f "$_f" ] && state_files+=("$_f")
+        done
+    fi
+    shopt -u nullglob
+else
+    state_files=()
+fi
+# 通知账本/节流表：历史落点（YIBAN_STATE_DIR 未设时取 dirname(.env)）。
+# 当前账本由 SIGN_STATE_DIR 收录（见上），两处取并集后去重。
+NOTIFY_STATE_DIR="${YIBAN_STATE_DIR:-$(dirname "${ENV_FILE}")}"
+notify_files=()
+if [ -d "${NOTIFY_STATE_DIR}" ]; then
+    shopt -s nullglob
+    notify_files=(
+        "${NOTIFY_STATE_DIR}"/notify-ledger.json
+        "${NOTIFY_STATE_DIR}"/notify-throttle.json
     )
     shopt -u nullglob
-    if [ ${#state_files[@]} -gt 0 ]; then
-        mkdir -p "${TMPDIR_BAK}/state"
-        cp -p "${state_files[@]}" "${TMPDIR_BAK}/state/" 2>/dev/null \
-            && log "已备份状态/闸门/账本/审计锚点文件（${#state_files[@]} 个）"
-        # 锚点在包内却没有库内"曾经写入"痕迹可对照时同样是盲区——这里只保证它在包里
-        if [ -f "${SIGN_STATE_DIR}/audit-anchor.log" ]; then
-            log "已包含审计链外部锚点：${SIGN_STATE_DIR}/audit-anchor.log"
-        else
-            log "提示：未发现审计锚点（${SIGN_STATE_DIR}/audit-anchor.log）——" \
-                "web 未跑过每日线程或被配到别处时属正常，恢复后审计防删除判据不可用"
+fi
+# 两个目录重合时（显式设了 YIBAN_STATE_DIR）去重，避免同一文件 cp 两次。
+if [ ${#notify_files[@]} -gt 0 ]; then
+    for f in "${notify_files[@]}"; do
+        dup=0
+        if [ ${#state_files[@]} -gt 0 ]; then
+            for g in "${state_files[@]}"; do
+                [ "$f" = "$g" ] && { dup=1; break; }
+            done
         fi
+        [ "$dup" -eq 0 ] && state_files+=("$f")
+    done
+fi
+if [ ${#state_files[@]} -gt 0 ]; then
+    mkdir -p "${TMPDIR_BAK}/state"
+    cp -p "${state_files[@]}" "${TMPDIR_BAK}/state/" 2>/dev/null \
+        && log "已备份状态/闸门/账本/审计锚点文件（${#state_files[@]} 个）"
+    # 锚点在包内却没有库内"曾经写入"痕迹可对照时同样是盲区——这里只保证它在包里
+    if [ -f "${SIGN_STATE_DIR}/audit-anchor.log" ]; then
+        log "已包含审计链外部锚点：${SIGN_STATE_DIR}/audit-anchor.log"
+    else
+        log "提示：未发现审计锚点（${SIGN_STATE_DIR}/audit-anchor.log）——" \
+            "web 未跑过每日线程或被配到别处时属正常，恢复后审计防删除判据不可用"
     fi
+else
+    log "警告：状态目录 ${SIGN_STATE_DIR} 与通知目录 ${NOTIFY_STATE_DIR} 下均无状态件——" \
+        "闸门标记/审计锚点/通知账本本轮未入包（恢复当日可能重签或漏签）"
+fi
+if [ ${#notify_files[@]} -eq 0 ]; then
+    log "提示：未发现通知账本/节流表（${NOTIFY_STATE_DIR}/notify-{ledger,throttle}.json）——" \
+        "未启用通知时属正常；启用后它们必须入包，否则日额度与节流窗口会重置"
 fi
 
 # 4) 按天签到日志（可选）：/var/log/yiban 下 sign-YYYY-MM-DD.log
 #    ——glob 匹配；无匹配时静默跳过（日志可重建，非关键；过期清理由 yiban-cleanup.sh 负责）
 if [ -d "${SIGN_LOG_DIR}" ]; then
     shopt -s nullglob
-    log_files=("${SIGN_LOG_DIR}"/sign-*.log)
+    if [ -n "$_SIGN_LOG_GLOB" ]; then
+        log_files=("${SIGN_LOG_DIR}"/$_SIGN_LOG_GLOB)
+    else
+        log_files=("${SIGN_LOG_DIR}"/*)
+    fi
     shopt -u nullglob
     if [ ${#log_files[@]} -gt 0 ]; then
         mkdir -p "${TMPDIR_BAK}/logs"
         cp -p "${log_files[@]}" "${TMPDIR_BAK}/logs/" 2>/dev/null \
-            && log "已备份按天签到日志（${#log_files[@]} 个：sign-*.log）"
+            && log "已备份按天签到日志（${#log_files[@]} 个）"
     fi
 fi
 
@@ -830,9 +1033,17 @@ elif try_encrypt; then
     # 唯一能证明可解的路径，而它没有任何自动调用点）。现在先解密→解包→integrity
     # 回环一次，通过才删明文；失败则保留明文、删除坏密文、不出清单、rc=7 结束。
     # M23②：收件人模式例外——本机解不开不证明密文坏，密文一并保留（见 VERIFY_KEEP_ENC）。
-    if verify_encrypted_archive "${ENC_FILE}"; then
+    # P12-03/P12-26：返回值 2 = 密文合格但没有 integrity 断言（公钥/age/缺 sqlite3）。
+    # 明文仍按"可解才删"移除（解密+解包已做过），但措辞必须降级，不得说「通过」。
+    verify_rc=0
+    verify_encrypted_archive "${ENC_FILE}" || verify_rc=$?
+    if [ "$verify_rc" -eq 0 ] || [ "$verify_rc" -eq 2 ]; then
         rm -f "${ARCHIVE}"
-        log "已启用本地默认加密：回环自检通过，明文归档已移除，本轮密文为 ${ENC_FILE}"
+        if [ "$verify_rc" -eq 0 ]; then
+            log "已启用本地默认加密：回环自检通过，明文归档已移除，本轮密文为 ${ENC_FILE}"
+        else
+            log "已启用本地默认加密：密文已落盘，但回环自检为【降级核查】——${VERIFY_NOTE}；明文归档已移除，本轮密文为 ${ENC_FILE}"
+        fi
     else
         log "════════════════════════════════════════════════════════════" >&2
         log "⚠⚠⚠ 密文回环自检失败：无法证明 ${ENC_FILE} 可解且完好        ⚠⚠⚠" >&2
@@ -873,8 +1084,28 @@ fi
 # 密文包以 .sha256 清单核验完整性，二次副本下载流程无需人工调整。
 FINAL_LOCAL="${ENC_FILE:-${ARCHIVE}}"
 if command -v sha256sum > /dev/null 2>&1; then
-    sha256sum "${FINAL_LOCAL}" > "${FINAL_LOCAL}.sha256"
-    chmod 0600 "${FINAL_LOCAL}.sha256"
+    # 前置断言必须在重定向**之前**：`sha256sum 缺失文件 > 清单` 会让 shell 先建出
+    # 0 字节清单，再因 sha256sum 失败而中止（set -e）。2026-10-25 02:00 生产事故的
+    # 残留件正是它：并发第二跑删掉 ENC_FILE 后留下 0 字节 .sha256，当天备份全失。
+    # 0 字节清单会被 `sha256sum -c` 与备份哨兵当成"清单在"，比没有清单更危险。
+    if [ ! -s "${FINAL_LOCAL}" ]; then
+        echo "错误：待校验文件缺失或为空（${FINAL_LOCAL}）——不生成校验清单，请排查后重跑备份" >&2
+        exit 1
+    fi
+    # 原子写：先写同目录临时件，校验非空后再 mv 覆盖。任一步失败只清临时件，
+    # 绝不留下 0 字节 .sha256（清单的存在本身就是"可核验"信号）。
+    SIDECAR_TMP="${FINAL_LOCAL}.sha256.tmp.$$"
+    if ! sha256sum "${FINAL_LOCAL}" > "${SIDECAR_TMP}" || [ ! -s "${SIDECAR_TMP}" ]; then
+        rm -f "${SIDECAR_TMP}"
+        echo "错误：sha256sum 失败或输出为空（${FINAL_LOCAL}）——未生成校验清单" >&2
+        exit 1
+    fi
+    chmod 0600 "${SIDECAR_TMP}"
+    if ! mv -f "${SIDECAR_TMP}" "${FINAL_LOCAL}.sha256"; then
+        rm -f "${SIDECAR_TMP}"
+        echo "错误：无法落位校验清单（${FINAL_LOCAL}.sha256）" >&2
+        exit 1
+    fi
     # 加密切换当天避免新旧两份清单并存混淆
     [ -n "${ENC_FILE}" ] && rm -f "${ARCHIVE}.sha256"
     log "已生成校验清单：${FINAL_LOCAL}.sha256"
@@ -992,7 +1223,18 @@ rotate_pass 'yiban-*.tar.gz.age' "${RETENTION_DAYS}"
 rotate_pass 'yiban-*.tar.gz.age.sha256' "${RETENTION_DAYS}"
 # 兜底：旧命名/孤儿的其它 yiban-*.sha256 侧车按主保留期清（防止回到"侧车永久堆积"）
 rotate_pass 'yiban-*.sha256' "${RETENTION_DAYS}"
-log "本地清理完成（密文 ${RETENTION_DAYS} 天/明文 ${PLAIN_DAYS} 天，含 .sha256 侧车；密文受最近 ${MIN_KEEP_ARCHIVES} 组下界保护，明文过期即删·豁免下界）"
+# 写清单期间的硬杀残留：`yiban-*.sha256.tmp.<pid>`（0 字节最常见）。上面的 6 个
+# pattern 都不匹配 .tmp，旧实现的这类孤儿永不清理——与 2026-10-25 事故的 0 字节
+# 残留同形，只是换了名字。
+# 为什么按 mtime >60 分钟而不是无条件删：无条件删会与"正在写清单"的进程抢同一个
+# 临时件（手工并行跑、或旧版没有 flock 的脚本是真实路径），把对方的原子写打断。
+# 本脚本持有 flock，同一时刻只允许一轮；60 分钟远大于单次 sha256sum 的耗时，
+# 因此超龄件只可能是上一轮被硬杀留下的孤儿。清理必须逐件留日志（删错要可追溯）。
+while IFS= read -r _orphan; do
+    rm -f "${_orphan}"
+    log "清理孤儿临时件（> 60 分钟）：$(basename "${_orphan}")"
+done < <(find "${BACKUP_DIR}" -maxdepth 1 -name 'yiban-*.sha256.tmp.*' -mmin +60)
+log "本地清理完成（密文 ${RETENTION_DAYS} 天/明文 ${PLAIN_DAYS} 天，含 .sha256 侧车与超龄临时件；密文受最近 ${MIN_KEEP_ARCHIVES} 组下界保护，明文过期即删·豁免下界）"
 
 # 删后自检（MF-77）：轮转"删完不数不验"正是历史被清而无人知的成因之一。
 # 当日归档是整条保留策略的锚点——它不在就说明轮转（或别的什么）删错了东西，

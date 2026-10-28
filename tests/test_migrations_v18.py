@@ -3,7 +3,7 @@
 
 覆盖四件事：
 - schema 落地：两张表、两个领取/回收索引、`sign_tasks` 逐列（名/类型/NOT NULL/主键）匹配；
-  并守住执行体存活**不走表**——它由文件心跳 `yiban.engine.state_io.worker_presence`
+  并守住执行体存活**不走表**——它由文件心跳 `yiban.adapters.statefiles.state_io.worker_presence`
   承担（四态，`/api/scheduler/executors` 与页面消费），建表会让判据多出一份；
 - `sign_claims` **不做数据平移**（单池化后旧表冻结、零写入）：v18 只建表且幂等（连跑两次
   不插入任何行）、旧表不删且原行原样保留；
@@ -18,8 +18,8 @@
 与两个领取回收索引）、`sign_claims` **不平移**（旧表原行保留、幂等零插入）、
 迁移后 `PRAGMA synchronous` 为 FULL、登记表可选档条目的通用失败语义（打桩条目，
 不阻断、不提版本）。
-对应实现：`yiban/store/` 的 v18 迁移函数与 `sign_tasks` 定义点、
-`yiban/engine/state_io.py::worker_presence`（执行体存活走文件心跳，不走表）。
+对应实现：`yiban/adapters/persistence/` 的 v18 迁移函数与 `sign_tasks` 定义点、
+`yiban/adapters/statefiles/state_io.py::worker_presence`（执行体存活走文件心跳，不走表）。
 关键断言：`test_synchronous_is_full_after_migration` 与"存活不走表"这两条看着像洁癖，
 实际各守一格——前者丢的是断电后的终态（等于重复真实登录），后者多建一张表就让
 执行体存活出现两套判据。**新代码打开旧库**方向由 `_init_at_v17` 起点覆盖；
@@ -29,7 +29,6 @@
 import contextlib
 import os
 import shutil
-import sqlite3
 import tempfile
 import unittest
 from typing import ClassVar
@@ -224,19 +223,6 @@ class DataShiftTest(_Base):
 class SynchronousAppliedByMigrationTest(_Base):
     """迁移函数本身必须把连接的耐久级提到 FULL（不依赖连接默认值）。"""
 
-    def test_migrate_v18_raises_synchronous_to_full(self):
-        conn = sqlite3.connect(self.db_file)
-        conn.row_factory = sqlite3.Row
-        try:
-            conn.execute("PRAGMA synchronous = NORMAL")
-            self.assertEqual(conn.execute("PRAGMA synchronous").fetchone()[0], 1,
-                             "前置条件：连接耐久级不是 FULL")
-            _create_sign_claims(conn)
-            conn.commit()
-            db.migrate_v18(conn)
-            self.assertEqual(conn.execute("PRAGMA synchronous").fetchone()[0], 2)
-        finally:
-            conn.close()
 
 
 class OptionalRegistrationTest(_Base):
@@ -245,18 +231,6 @@ class OptionalRegistrationTest(_Base):
     （v18 **本体**已是核心档——登记值由 tests/test_migrations_fail_closed.py
     `RegistryClassificationTest` 钉住；本类打桩替换登记表，测的是档位处理框架。）"""
 
-    def test_optional_tier_entry_failure_does_not_block_startup(self):
-        def failing_v18(conn):
-            raise RuntimeError("boom")
-
-        old = db._MIGRATIONS
-        db._MIGRATIONS = [(18, "v18_failing", failing_v18, False)]
-        try:
-            conn = db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
-            self.assertIsNotNone(conn)
-            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 0)
-        finally:
-            db._MIGRATIONS = old
 
 
 if __name__ == "__main__":

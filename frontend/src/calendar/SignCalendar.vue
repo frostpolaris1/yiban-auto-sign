@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from "vue";
-import { api, swapMs, swapOut } from "../lib/shell";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { api, getServerNow, swapMs, swapOut } from "../lib/shell";
 import {
   ANIM_MIN_MS,
   BLANK_CLS,
@@ -13,7 +13,7 @@ import {
   monthKey,
   monthLabel,
   shiftMonth,
-  todayStr,
+  dateStr,
 } from "./model.js";
 import type { CalendarCtx, CalendarFlags, CalendarPayload } from "./types";
 
@@ -49,12 +49,15 @@ const emit = defineEmits<{
   (e: "tones", tones: string[]): void;
 }>();
 
-const now = new Date();
-const today = todayStr();
+/* 「今天」取**服务端校准钟**（getServerNow 的本地字段即服务器墙上时间），不读浏览器本地
+   日期：浏览器时区不是 +8 时，后者会与服务端结算日错位（zvj1）。校准请求可能晚于首屏
+   到达，故监听 yiban:clock，在用户尚未操作时把月份与选中态一并跟到新的今天。 */
+const boot = getServerNow();
+const today = ref(dateStr(boot));
 const SWAP_MS = swapMs();
 
 /** 待取月份（点击即改）与已渲染月份（数据落地才改）——见 ★1。 */
-const pend = ref({ year: now.getFullYear(), month: now.getMonth() + 1 });
+const pend = ref({ year: boot.getFullYear(), month: boot.getMonth() + 1 });
 const view = ref({ year: pend.value.year, month: pend.value.month });
 const viewKey = computed(() => monthKey(view.value.year, view.value.month));
 const label = computed(() => monthLabel(view.value.year, view.value.month));
@@ -77,7 +80,7 @@ const grid = computed(() =>
     year: view.value.year,
     month: view.value.month,
     selected: selected.value,
-    today,
+    today: today.value,
     flags: flags.value,
     ctx: props.ctx,
   }),
@@ -187,8 +190,8 @@ async function render(selectDate?: string): Promise<void> {
   // 选中落地：显式日期 > 用户已有选择（含请求在途时的新点选）> 当月默认今天（★4）
   let sel = selectDate || selected.value;
   let auto = false;
-  if (!sel && key === monthKey(now.getFullYear(), now.getMonth() + 1)) {
-    sel = today;
+  if (!sel && key === today.value.slice(0, 7)) {
+    sel = today.value;
     auto = true;
   }
 
@@ -215,26 +218,50 @@ async function render(selectDate?: string): Promise<void> {
   }
 }
 
+/** 用户已主动换月/选日：此刻的校准钟事件不再改视野（只更新「今天」高亮口径）。 */
+let userMoved = false;
+
 function step(delta: number): void {
+  userMoved = true;
   pend.value = shiftMonth(pend.value, delta);
   void render();
 }
 
 function goToday(): void {
-  const parts = today.split("-");
+  userMoved = true;
+  const parts = today.value.split("-");
   pend.value = { year: Number(parts[0]), month: Number(parts[1]) };
-  void render(today);
+  void render(today.value);
 }
 
 function pick(date: string): void {
   // 不做"同一天就跳过"的短路：重复点同一天要能**重新拉一次当天日志**（legacy 的 select
   // 每次都会 loadLog）——这是页面里唯一的手动刷新入口，去掉等于少一条退路。
+  userMoved = true;
   selected.value = date;
   emit("select", date, false);
 }
 
+/* 校准钟晚于首屏到达：若「今天」跨了月且用户尚未操作，整体跟到新的今天；否则只更新口径。 */
+function followClock(): void {
+  const next = dateStr(getServerNow());
+  if (next === today.value) return;
+  const oldMonth = today.value.slice(0, 7);
+  today.value = next;
+  if (userMoved) return;
+  if (monthKey(view.value.year, view.value.month) !== oldMonth) return;
+  const parts = next.split("-");
+  pend.value = { year: Number(parts[0]), month: Number(parts[1]) };
+  void render(next);
+}
+
 onMounted(() => {
+  document.addEventListener("yiban:clock", followClock);
   void render();
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener("yiban:clock", followClock);
 });
 </script>
 

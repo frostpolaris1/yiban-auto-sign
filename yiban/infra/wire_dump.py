@@ -47,8 +47,8 @@ import time
 
 import requests
 
-from yiban import masking
-from yiban.clock import now
+from yiban.core import masking
+from yiban.core.clock import now
 
 logger = logging.getLogger(__name__)
 
@@ -76,11 +76,16 @@ class WireDumpAdapter(requests.adapters.HTTPAdapter):
         resp = self._inner.send(request, **kwargs)
         try:
             self._dump(request, resp, time.monotonic() - t0)
-        except Exception as e:  # 落盘失败绝不影响签到主流程（仅警告一次）
+        except Exception as e:  # 落盘失败绝不影响签到主流程（首次 WARNING，其后 DEBUG）
             global _warned
             if not _warned:
                 _warned = True
-                logger.debug("线路落盘失败（仅警告一次）: %s", e)
+                # 首次必须 WARNING：本模块唯一用途是协议核验取证，"文件写不出来"必须比
+                # "没有请求"更容易发现——DEBUG 在生产 INFO 级别下完全不可见，缺页会被
+                # 读成"该端点从未被调用"（工单 ba-p08-16）。后续只 DEBUG 防刷屏。
+                logger.warning("线路落盘失败（首次告警，后续同因失败降为 debug）: %s", e)
+            else:
+                logger.debug("线路落盘失败: %s", e)
         return resp
 
     # requests 兼容：证书校验等参数透传给内层；close 同步关闭内层
@@ -194,7 +199,7 @@ def _mask_json_pair(m):
 def _redact_body(body):
     """请求体脱敏：凭据字段值换占位、手机号值打码；不做"有无凭据"的前置判定。
 
-    键名表与手机号口径都取自 `yiban.masking`（唯一事实源）：凭据字段由
+    键名表与手机号口径都取自 `yiban.core.masking`（唯一事实源）：凭据字段由
     `_QKEYED_CRED` 识别（`oauth_upwd` 命中 `pwd` 片段，`phone_code` 由宽表命中），
     签到体字段 `Code` 另由 wire 侧精确名补齐；`oauth_uname` 这类承载手机号但键名不含
     凭据片段的字段由 `mask_phones_in_text` 按值打码。全量走同一条链，所以**不再**有

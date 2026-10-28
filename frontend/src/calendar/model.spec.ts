@@ -8,6 +8,7 @@ import {
   ROWS,
   SKELETON_CLS,
   WEEK,
+  dateStr,
   dayCell,
   gridCells,
   logEmptyText,
@@ -28,6 +29,13 @@ import {
    tests/test_calendar_state_visibility.py 在 Node 里真跑（它按字面量从 model.js 抽段，
    见该文件头部的约束说明）——这里只补它够不到的：格组合、换月方向、图例并集、周末门、
    日志空态。刻意**不**重复它已覆盖的断言集，避免两处维护同一份期望值。 */
+
+describe("dateStr（业务日期串）", () => {
+  it("只格式化传入的时刻，不读当前时钟", () => {
+    expect(dateStr(new Date(2026, 0, 1))).toBe("2026-01-01");
+    expect(dateStr(new Date(2026, 8, 12, 23, 59, 59))).toBe("2026-09-12");
+  });
+});
 
 function ctxFixture(over: Partial<CalendarCtx> = {}): CalendarCtx {
   return {

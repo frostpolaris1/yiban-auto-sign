@@ -1,0 +1,833 @@
+# -*- coding: utf-8 -*-
+# SPDX-License-Identifier: AGPL-3.0-only
+"""**功能**
+`python -m yiban.entry.cli <子命令> [选项]`：agent 侧统一入口（契约见 `docs/dev/cli.md`）。
+
+本模块是命令行**唯一入口**，`scripts/signin.py` / `scripts/db.py` / `scripts/state_cleanup.py`
+是部署面（run.sh / cron / 容器调度器按文件路径调用）的兼容壳，二者行为同源。
+
+**坐标**
+本模块是入口层（`yiban/entry/`）的 `cli` 条目
+（目标架构契约 `docs/dev/architecture-target.md` 第 3 节）。
+批 A1 留下的旧坐标转发壳已由 `145-E` 删净，旧坐标不再是合法 import 路径。
+入口一律 `python -m yiban.entry.cli`；`--help` 与用法错误里的 `prog` 也写它。
+理由：那是契约文档 `docs/dev/cli.md` 记载的调用形态。
+壳退役后本段与 `prog` 一并改成新坐标。
+
+## 硬性约定的落地方式（`docs/dev/cli.md` §2）
+
+1. **不交互**：不读 stdin，不做 y/N 确认；不认识子命令就打一行用法到 stderr 并返回 2。
+2. **stdout 只放结果**：`--json` 时是一整行 JSON 对象（`json.loads` 直接可解析）；
+   人类可读汇总一律走 stderr（`_say`），日志走 stderr/日志文件。
+3. **`--json` 字段名稳定**（见下表；新增字段只追加，不改名、不复用旧名）。
+4. **破坏性操作默认只报告**：`state` 默认 dry-run、`db --backup` 不加 `--yes` 不写盘。
+5. **配置只从 .env 与环境变量读**：命令行不接受任何敏感值（口令/密钥/代理凭据）。
+6. **路径解析与 run.sh 同源**：`YIBAN_STATE_DIR` / `YIBAN_LOG_FILE` / `YIBAN_DB_FILE` /
+   `YIBAN_ENV_FILE`，见 `_env_view`。
+7. **未配置的可选能力不影响退出码**（如未配通知照常跑；`.env` 缺失按未配置处理）。
+
+## 子命令与 `--json` 字段
+
+| 子命令 | 做什么 | `--json` 顶层字段 | 退出码 |
+|--------|--------|-------------------|--------|
+| `init` | 首次初始化内置管理员（写 .env 的 scrypt 哈希） | `command` `ok` `exit_code` `admin_user` `env_file` `secret_key_created` `registration_paused` | 0 / 1 已配置或写入失败 / 2 账号或口令不合规 |
+| `sign` | 一轮签到（选项原样透传给引擎） | `command` `exit_code`（非 0 时附 `error` 摘要） | 0/1/2/3/10（引擎口径） |
+| `probe` | 只读健康检查（引擎 `--probe` 语义） | `command` `exit_code`（非 0 时附 `error` 摘要） | 同上 |
+| `config` | 账号配置检查（脱敏、不联网、只读不迁移） | `command` `ok` `accounts` `accounts_missing_device` `phones_masked` `paths` `errors` | 0 正常 / 1 配置错误 |
+| `capacity` | 容量建议（实测值 → 建议执行体数） | `command` `ok` `accounts` `accounts_total` `window_effective_sec` `avg_attempt_sec` `gap_sec` `capacity_per_executor` `measured_per_executor` `recommended_per_executor` `executors_needed` `paths` | 0 / 1 |
+| `state` | 状态文件清理（默认 dry-run） | `command` `ok` `dry_run` `state_dir` `log_dir` `retention_days` `candidates` `removed` `detail` | 0 正常 / 1 保留期非法或目录不可用 |
+| `egress` | 出口令牌桶状态 / 速率复位（默认只读；`--reset` 不加 `--yes` 只报告） | `command` `ok` `dry_run` `action` `db_file` `target_rate` `target_rate_source` `rows` `changes` `applied` `written` | 0 正常 / 1 库读不了或出口不在库中 / 2 开关互斥 |
+| `db` | 数据库维护（状态/完整性/备份/恢复） | `command` `ok` `mode` `db_file` `user_version` `size_bytes` `tables` `accounts` `accounts_signable` `integrity_ok` `integrity_detail` `backup_path` `backup_exists` `overwrite_allowed` `restore_from` `fingerprint` `backup_user_version` `backup_size_bytes` `pre_restore_copy` `dry_run` | 0 / 1 / 2 |
+| `version` | 打印版本 | `command` `version` `python` `user_version` | 0 |
+
+`db --backup` 的取舍、以及"人类可读输出不进 stdout"的落地细节
+见各自函数的文档字符串。
+
+**归属**
+入口层 `yiban/entry/cli/`；引擎逻辑在 `yiban.engine`（`runner.main`），本模块只做子命令
+分派、退出码包装与 `--json` 输出。
+
+**复用**
+`main(argv=None) -> int` 是唯一入口；`_say`、`_env_view` 与退出码常量供同族子命令共用；
+`sign` / `probe` 直接转发 `runner.main`。
+
+**通信**
+输入：`argv`（子命令 + 选项）与环境变量/.env（敏感值只从环境读）。
+输出：stdout 一行 JSON（`--json`）或 stderr 人类可读汇总；退出码见上表。
+调用谁：`yiban.app.runner`（`sign`/`probe`）、`yiban.adapters.statefiles.state_gc`（`state`）、
+`yiban.adapters.persistence.db`（`db`）、`yiban.engine.egress_admin`（`egress`）、
+配置检查与容量计算（`config`/`capacity`）。
+谁调用：`scripts/signin.py` / `scripts/db.py` / `scripts/state_cleanup.py` 兼容壳、
+`run.sh`、`docker/scheduler.py`，以及 web 手动签到经 `scripts/signin.py --only`
+（`web/services/manual_sign.py`）拉起。
+前端调用点：手动签到 `/api/signin`、调度器 `/api/scheduler/executors*` 经子进程落到
+`sign`/`probe` 子命令；系统设置页 `/api/settings`（`web/static/js/components/settings-*.js`）的
+容量与执行体建议与 `capacity` 子命令同口径——子命令退出码或 `--json` 字段变化会影响
+这些页面。
+"""
+import argparse
+import os
+import re
+import secrets
+import sqlite3
+import sys
+
+from yiban import __version__ as RELEASE_VERSION
+from yiban.adapters.config import env_io
+from yiban.adapters.config import loader as config_loader
+from yiban.adapters.persistence import db as store_db
+from yiban.adapters.persistence import purge_guard
+from yiban.adapters.statefiles import state_gc
+from yiban.app import runner
+from yiban.core import password_policy, window
+from yiban.core.masking import mask_phone
+from yiban.engine import accounts as accounts_mod
+from yiban.engine import cli_support, db_maintenance, egress_admin
+from yiban.engine import schedule as schedule_mod
+from yiban.engine.cli_support import (
+    _emit_json,
+    _emit_json_error,
+    _exit_code,
+    _fail,
+    _guess_command,
+    _say,
+    _UsageError,
+    exit_kind,
+)
+
+USAGE = (
+    "用法: python -m yiban.entry.cli <子命令> [选项]\n"
+    "子命令: init | sign | probe | config | capacity | state | egress | db | version\n"
+    "（见 `python -m yiban.entry.cli <子命令> --help`；stdout 只放结果，人类可读汇总走 stderr）"
+)
+
+#: 路径相关环境变量的说明：根 `--help` 与 `config` / `db` 子命令描述共用同一份，避免
+#: 三处各写一遍而漂移（`YIBAN_DB_FILE` 此前不在任何 help 里，`.env` 写了账号仍报
+#: "未配置任何账号"却回显 `env_file:.env`，就是"唯一改道变量不可见"造成的误判）。
+_PATHS_HELP = (
+    "路径相关环境变量：YIBAN_ENV_FILE（.env 密钥来源）/ YIBAN_DB_FILE（库文件）/ "
+    "YIBAN_STATE_DIR（状态目录）/ YIBAN_LOG_FILE（日志文件）；相对路径一律按当前工作目录解析。"
+)
+
+#: 参数原样透传给引擎、CLI 只接 `--json` 的子命令
+_PASSTHROUGH = ("sign", "probe")
+
+
+# ---------------------------------------------------------------------------
+# 配置视图与路径（与 run.sh 同源）
+# ---------------------------------------------------------------------------
+#: 四个路径键（`docs/dev/cli.md` §1.1）：它们保留"进程环境优先"。
+#: 其余 `YIBAN_*` 键按 M27 统一口径"`.env` 优先、进程环境只补缺"。
+#: 键集合只有一处定义（`env_io.PATH_KEYS`），本别名不另抄一份。
+_ENV_FIRST_PATH_KEYS = env_io.PATH_KEYS
+
+
+def _env_view():
+    """.env 文件 + 进程环境变量 → 配置视图（**`.env` 优先、进程环境只补缺**；只读、不写盘）。
+
+    优先级（M27，2026-10-01 起全仓统一，`README.md` 部署章节）：`.env` 里的键压过
+    进程环境；`.env` 没有的键才由进程环境补缺。三个**可配置路径键**例外——它们按
+    `docs/dev/cli.md` §1.1 保持"进程环境优先"，因为 run.sh 会先 `cd` 再 export，
+    显式 export 的路径必须压过 `.env`（否则同一条命令会被 `.env` 改道）。
+
+    为什么两者都读：run.sh 先把 `.env` 逐键导出为环境变量，引擎读的正是那套值；
+    而 agent/CI 直接调用 CLI 时没有宿主导出，此时 `.env` 就是部署配置的载体。
+    两者按上面的优先级取并集后，同一个键在两条路径下解析到同一个值——不会出现
+    "配置一样、清理目录不同"（`docs/dev/cli.md` §2 第 8 条）。`.env` 缺失 = 未配置。
+    """
+    view = {k: v for k, v in os.environ.items() if k.startswith("YIBAN_")}
+    view.update(env_io.parse_env_file(env_io.env_path()))
+    for key in _ENV_FIRST_PATH_KEYS:
+        value = os.environ.get(key)
+        if value is not None and str(value).strip():
+            view[key] = value
+    return view
+
+
+def _cfg_value(view, key, default=""):
+    """取字符串配置：两侧去空白，空值按缺省（与引擎读环境变量同口径）。"""
+    return str(view.get(key, "") or "").strip() or default
+
+
+def _cfg_int(view, key, default, lo=None, hi=None):
+    """取整数配置：缺失/非法/越界一律回退默认（口径同 `config_check.parse_env_int` 与
+    `schedule._env_int`——配置校验"回退 + 不崩溃"，绝不让一个坏数字把命令打挂）。"""
+    raw = _cfg_value(view, key)
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    if (lo is not None and value < lo) or (hi is not None and value > hi):
+        return default
+    return value
+
+
+def _paths(view):
+    """四个路径键（与 run.sh 同源）→ dict；`db_file` 的缺省取自数据层常量。"""
+    state_dir = state_gc.state_dir_from_env(view)
+    return {
+        "env_file": env_io.env_path(),
+        "state_dir": state_dir,
+        "log_file": _cfg_value(view, "YIBAN_LOG_FILE") or os.path.join(state_dir, "sign.log"),
+        "db_file": _cfg_value(view, "YIBAN_DB_FILE") or store_db.DB_DEFAULT,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 子命令：sign / probe（引擎参数的透传）
+# ---------------------------------------------------------------------------
+def _cmd_sign(json_mode, extra):
+    """一轮签到：`--workers` / `--fallback` / `--only` / `--second-run-check` 等原样透传。
+
+    引擎的机器可读输出**就是退出码**（`docs/dev/cli.md` §3），故 `--json` 只把退出码
+    也写成一行对象；人类可读日志仍由引擎写往 stderr / 日志文件。`--json` 在透传前
+    已被 argparse 取走，不会漏给子进程（`--workers N` 拉起的执行体不会各打一行 JSON
+    把 stdout 撑花）。
+
+    退出码非 0 时附带可选 `error` 字段（引擎致命错误的 stderr 摘要，"未配置任何账号"/
+    "配置加载失败"类）：否则调用方只拿到一个光秃秃的 exit_code，失败原因仍埋在按天
+    日志文件里。
+
+    引擎自身的 argparse 拒绝（`sign --bogus`）会以 SystemExit(2) 直接结束进程：`--json`
+    下这里必须把它转成一行结构化错误，否则 stdout 又是零字节（引擎的 usage 仍照原样
+    留在 stderr）。
+    """
+    try:
+        code = runner.main(extra)
+    except SystemExit as e:
+        code = _exit_code(e)
+        if json_mode:
+            _emit_json_error("sign", code, [f"引擎参数错误: {' '.join(extra)}"],
+                             error_kind="usage_engine")
+        return code
+    if json_mode:
+        payload = {"command": "sign", "exit_code": code, "error_kind": exit_kind(code)}
+        if code != 0:
+            error = cli_support.last_fatal_error()
+            if error:
+                payload["error"] = error
+        _emit_json(payload)
+    return code
+
+
+def _cmd_probe(json_mode, extra):
+    """只读健康检查：转引擎的 `--probe` 语义（是否真跑由探针开关/频率/暂停门决定）。
+
+    退出码分族见 `docs/dev/cli.md` §3：真跑通过 0 / 真跑有失败 1 / 未做检查（开关关、
+    窗口外、暂停/周末门）2 / 队列忙 3。引擎 argparse 拒绝同样要落成一行 JSON（同
+    `_cmd_sign`）。
+    """
+    try:
+        code = runner.main(["--probe", *extra])
+    except SystemExit as e:
+        code = _exit_code(e)
+        if json_mode:
+            _emit_json_error("probe", code, [f"引擎参数错误: {' '.join(extra)}"],
+                             error_kind="usage_engine")
+        return code
+    if json_mode:
+        payload = {"command": "probe", "exit_code": code, "error_kind": exit_kind(code)}
+        if code != 0:
+            error = cli_support.last_fatal_error()
+            if error:
+                payload["error"] = error
+        _emit_json(payload)
+    return code
+
+
+# ---------------------------------------------------------------------------
+# 子命令：config（脱敏、不联网）
+# ---------------------------------------------------------------------------
+def _cmd_config(args, view):
+    """账号配置检查：只读配置与账号，不发任何网络请求（与引擎 `--check-config` 同源）。
+
+    退出码 0 正常 / 1 配置错误（账号加载失败，或一个账号都没有 —— 与引擎入口的
+    "零账号守卫"同一判据，免得"CLI 说没问题、签到却直接报未配置"）。
+
+    `migrate=False`：本命令宣称"脱敏、不联网/只读"，就不能经 `load_accounts() →
+    db.init_db()` 建库/建表/迁移/切 WAL——曾实测到宣称只读的 config 把库迁到旧 schema 顶，
+    并在空目录当场建出 69632B 的伪库。只读装载由 `db.load_accounts_readonly` 承担
+    （独立只读连接；库/表不存在即按"无账号"回落其它来源）。
+    """
+    paths = _paths(view)
+    try:
+        accounts = accounts_mod.load_accounts(migrate=False)
+    except (RuntimeError, ValueError) as e:  # ValueError=账号字段缺失，同按配置错误处理
+        return _fail("config", 1, [f"配置加载失败: {e}"], args.json,
+                     error_kind="config_error",
+                     accounts=0, phones_masked=[], paths=paths)
+    if not accounts:
+        return _fail("config", 1, ["未配置任何账号（数据库 / YIBAN_ACCOUNTS_JSON / "
+                                  "YIBAN_ACCOUNTS / YIBAN_PHONE 均为空）"], args.json,
+                     error_kind="config_error",
+                     accounts=0, phones_masked=[], paths=paths)
+    masked = [mask_phone(a.phone) for a in accounts]
+    missing_device = sum(1 for a in accounts if not a.has_device_info)
+    payload = {
+        "command": "config",
+        "ok": True,
+        "exit_code": 0,
+        "accounts": len(accounts),
+        "accounts_missing_device": missing_device,
+        "phones_masked": masked,
+        "paths": paths,
+        "errors": [],
+    }
+    _say(f"==== 账号配置检查 ==== 共 {len(accounts)} 个账号，配置检查通过")
+    for i, (acc, shown) in enumerate(zip(accounts, masked, strict=True), 1):
+        device = (f"设备: {acc.phone_model} / 识别码已配置" if acc.has_device_info
+                  else "设备: 未配置（如学校开启设备绑定，签到将失败）")
+        _say(f"  {i}. {shown} | 密码: {'*' * 8} | {device}")
+    if missing_device:
+        _say(f"警告: {missing_device} 个账号未配置设备信息")
+    _say(f"路径: {paths['env_file']} | 状态目录: {paths['state_dir']} | 库: {paths['db_file']}")
+    if args.json:
+        _emit_json(payload)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# 子命令：capacity（容量建议；实测值与口径都与网页 /api/scheduler/executors 同源）
+# ---------------------------------------------------------------------------
+def _capacity_numbers(view, signable):
+    """容量三数（**与网页 `/api/scheduler/executors` 同一口径**，不另写公式）。
+
+    - `capacity_per_executor`：有效窗口能容纳的账号数 = `schedule.capacity_of`（本口径
+      显式固定 v2 公式 `enabled=False`，逐值不变；窗口用 `yiban.core.window.bounds(...).full_sec()`
+      ——网页侧同样是"完整有效窗口"，即"这套配置能容纳几个"，不是"今天还剩几个"）；
+      `k=1` 钉住"每执行体"的字面语义；
+    - `recommended_per_executor`：部署者实测值（`YIBAN_CAPACITY_MEASURED`，由部署者
+      在本机量取后录入）× 2/3（与网页建议值同一余量口径）；未实测为 None；
+    - `executors_needed`：⌈账号数 ÷ 建议每执行体账号数⌉（与网页同一算法）。
+    """
+    start, end, _invalid = window.parse_window(view)
+    front, back = window.parse_edges(view)
+    bounds = window.bounds({
+        "sign_start": start, "sign_end": end,
+        "edge_front_sec": front, "edge_back_sec": back,
+    })
+    gap = _cfg_int(view, "YIBAN_ACCOUNT_GAP_MAX",
+                   config_loader.default_required("YIBAN_ACCOUNT_GAP_MAX"), 0, 3600)
+    avg = _cfg_int(view, "YIBAN_AVG_ATTEMPT_SEC", schedule_mod.avg_attempt_sec(), 1, 300)
+    measured = _cfg_int(view, "YIBAN_CAPACITY_MEASURED",
+                        config_loader.default_of("YIBAN_CAPACITY_MEASURED"), 0)
+    recommended = None
+    needed = None
+    if measured > 0:
+        recommended = max(1, int(measured * 2 / 3))
+        needed = -(-signable // recommended)
+    return {
+        "window_effective_sec": bounds.full_sec(),
+        "avg_attempt_sec": avg,
+        "gap_sec": gap,
+        "capacity_per_executor": schedule_mod.capacity_of(
+            bounds.full_sec(), gap=gap, avg=avg, k=1, enabled=False),
+        "measured_per_executor": measured,
+        "recommended_per_executor": recommended,
+        "executors_needed": needed,
+    }
+
+
+def _cmd_capacity(args, view):
+    """容量建议：**只读**（读 .env 实测值 + 账号数 → 建议执行体数），不联网、不写盘。
+
+    `YIBAN_CAPACITY_MEASURED` 是部署者在自己的机器上量取后手工录入的值——本命令只
+    消费它、不生产它（2026-09 前的离线容量基准工具族已移除）。
+    """
+    paths = _paths(view)
+    # 账号数口径与网页 `_capacity_account_count` 同源；库不存在按 0（新部署没有库很正常）
+    try:
+        snapshot = db_maintenance.db_snapshot(paths["db_file"])
+    except sqlite3.Error as e:
+        return _fail("capacity", 1, [f"读取账号数失败（{paths['db_file']}）: {e}"], args.json,
+                     error_kind="runtime_error", accounts=0, paths=paths)
+    accounts, signable = (0, 0) if snapshot is None else (snapshot[3], snapshot[4])
+    if snapshot is not None:
+        snapshot[0].close()
+    numbers = _capacity_numbers(view, signable)
+    payload = {
+        "command": "capacity",
+        "ok": True,
+        "exit_code": 0,
+        "accounts": signable,
+        "accounts_total": accounts,
+        "paths": paths,
+        "errors": [],
+        **numbers,
+    }
+    _say("==== 容量建议 ====")
+    _say(f"账号数（会签到的）: {signable}（未删除合计 {accounts}）")
+    _say(f"有效窗口 {numbers['window_effective_sec']}s ÷（单账号 {numbers['avg_attempt_sec']}s"
+         f" + 账号间隔 {numbers['gap_sec']}s）→ 单执行体可容纳 "
+         f"{numbers['capacity_per_executor']} 个")
+    if numbers["measured_per_executor"]:
+        _say(f"本机实测单执行体容量: {numbers['measured_per_executor']}"
+             f"（余量 2/3 → 建议每执行体 {numbers['recommended_per_executor']} 个）")
+        _say(f"建议执行体数: {numbers['executors_needed']}（建议，不是程序上限）")
+    else:
+        _say("尚无本机实测容量（YIBAN_CAPACITY_MEASURED 未配置）："
+             "请在本机量取单执行体容量后写入 .env，本命令会给出建议执行体数")
+    if args.json:
+        _emit_json(payload)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# 子命令：state（状态文件清理，默认 dry-run）
+# ---------------------------------------------------------------------------
+def _state_fingerprint(state_dir, log_dir, candidates, detail):
+    """状态清理的目标指纹：由**目录内容**（目录、将删清单）派生，不是路径字符串比较。
+
+    误指生产状态目录时，条目数/清单差异会让指纹明显不同；`--yes` 必须逐字回显它
+    （见 `_cmd_state` 的确认门），单凭 `--yes` 不构成放行。
+    """
+    parts = [state_dir, log_dir, str(candidates), *sorted(detail)]
+    return purge_guard.content_fingerprint("state-dir", parts)
+
+
+def _cmd_state(args, view):
+    """状态文件清理：**默认只报告不删**，`--yes` 才真删（`docs/dev/cli.md` §2 第 6 条）。
+
+    路径与保留期口径全在 `yiban/adapters/statefiles/state_gc.py`（宿主 `scripts/state_cleanup.py` 与容器
+    调度器共用同一份），本子命令只做"报告 / 执行"与退出码翻译：
+    0 正常（没有过期文件也是 0）/ 1 保留期配置非法或状态目录不可用。
+    `--yes` 是删除类入口，必须回显目标指纹（`--fingerprint`）并写一条审计留痕；
+    留痕写不进去就拒绝清理（fail-closed）——"删了但没留痕"正是要防的形态。
+    运维日志 `cleanup.log` 仍由宿主脚本记录——CLI 只做清理本身，不重复写一份日志。
+    """
+    state_dir = state_gc.state_dir_from_env(view)
+    log_dir = state_gc.log_dir_from_env(state_dir, view)
+    retention = {"log": None, "snapshot": None}
+    if not os.path.isdir(state_dir):
+        return _fail("state", 1, [f"状态目录不存在: {state_dir}"], args.json,
+                     error_kind="runtime_error",
+                     dry_run=not args.yes, state_dir=state_dir, log_dir=log_dir,
+                     retention_days=retention, candidates=0, removed=0, detail=[],
+                     fingerprint=None)
+    try:
+        retention["log"] = state_gc.retention_days("log", view)
+        retention["snapshot"] = state_gc.retention_days("snapshot", view)
+        if args.yes:
+            # 先算"将删清单"再核指纹：指纹出自与 sweep 同一套判定（plan/sweep 共用
+            # 迭代器），不会出现"确认的是 A、删的是 B"。
+            candidates, detail = state_gc.plan(state_dir, log_dir, view)
+            fp = _state_fingerprint(state_dir, log_dir, candidates, detail)
+            if not purge_guard.confirmation_ok(fp, getattr(args, "fingerprint", "")):
+                return _fail("state", 2, [
+                    "state --yes 是删除类入口：请先跑 `state --dry-run --json` 拿到目标指纹，"
+                    "再以 `--yes --fingerprint <指纹>` 逐字回显确认",
+                    f"目标指纹: {fp}",
+                ], args.json, error_kind="confirmation_required",
+                    dry_run=False, state_dir=state_dir, log_dir=log_dir,
+                    retention_days=retention, candidates=candidates, removed=0,
+                    detail=detail, fingerprint=fp)
+            # 留痕先于不可逆删除；写不进去即拒绝（fail-closed），零删除。
+            # 库路径**显式传入**（`_paths` 的同一份口径）：不传就让被调方自行解析默认值，
+            # 库搬进 `data/` 后那条路径会与 CLI 报告/清点用的库不是同一个。
+            if not purge_guard.write_purge_audit(
+                    "state_purge", fp,
+                    f"清理状态目录 {state_dir}：{candidates} 个过期文件",
+                    db_file=_paths(view)["db_file"]):
+                return _fail("state", 1, [
+                    "清库留痕写入失败（审计不可写），按 fail-closed 拒绝清理（未删除任何文件）",
+                ], args.json, error_kind="runtime_error",
+                    dry_run=False, state_dir=state_dir, log_dir=log_dir,
+                    retention_days=retention, candidates=candidates, removed=0,
+                    detail=detail, fingerprint=fp)
+            removed, detail = state_gc.sweep(state_dir, log_dir, view)
+            if state_gc.sweep_empty_cred_state(state_dir):
+                removed += 1
+                detail.append("cred-state.json（空内容）")
+        else:
+            candidates, detail = state_gc.plan(state_dir, log_dir, view)
+            removed = 0
+    except ValueError as e:
+        return _fail("state", 1, [f"保留期配置非法，未清理: {e}"], args.json,
+                     error_kind="config_error",
+                     dry_run=not args.yes, state_dir=state_dir, log_dir=log_dir,
+                     retention_days=retention, candidates=0, removed=0, detail=[],
+                     fingerprint=None)
+    fp = _state_fingerprint(state_dir, log_dir, candidates, detail)
+    payload = {
+        "command": "state",
+        "ok": True,
+        "exit_code": 0,
+        "dry_run": not args.yes,
+        "state_dir": state_dir,
+        "log_dir": log_dir,
+        "retention_days": retention,
+        "candidates": candidates,
+        "removed": removed,
+        "detail": detail,
+        "fingerprint": fp,
+    }
+    verb = "已清理" if args.yes else "将清理（dry-run，加 --yes 才动手）"
+    _say("==== 状态文件清理 ====")
+    _say(f"状态目录 {state_dir} | 日志目录 {log_dir} | 保留 "
+         f"{retention['log']} 天（快照 {retention['snapshot']} 天）")
+    if candidates:
+        _say(f"{verb} {candidates} 个过期文件: " + "、".join(detail[:20])
+             + ("…" if len(detail) > 20 else ""))
+    else:
+        _say("无过期文件")
+    if not args.yes:
+        _say(f"目标指纹（--yes 时需逐字回显）: {fp}")
+    if args.json:
+        _emit_json(payload)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# 子命令：init
+# ---------------------------------------------------------------------------
+_ADMIN_USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@-]*$")
+
+
+def _cmd_init(args, view):
+    """首次初始化内置管理员：写 .env 的账号与 scrypt 哈希，明文口令不落盘。
+
+    口令只从环境变量或既有 .env 读（CLI 契约 §2 第 7 条）。已配置管理员时拒绝，
+    避免把现网管理员静默顶掉。写入走 `write_env_keys`：跨进程锁、行模型校验、
+    未请求键 diff 与回滚都在那一处。
+    """
+    env_file = _paths(view)["env_file"]
+    try:
+        env = env_io.parse_env_file(env_file, strict=True)
+    except OSError as e:
+        return _fail("init", 1, [f"无法读取 .env：{e}"], args.json,
+                     error_kind="config_write_failed")
+    username = str(args.username or env.get("YIBAN_ADMIN_USER", "") or "").strip()
+    password = str(view.get("YIBAN_ADMIN_PASSWORD", "") or "")
+    if env.get("YIBAN_ADMIN_USER", "").strip() and (
+            env.get("YIBAN_ADMIN_PASSWORD_HASH", "").strip()
+            or env.get("YIBAN_ADMIN_PASSWORD", "").strip()):
+        return _fail("init", 1, ["管理员已配置；如需改密请登录网页管理后台"],
+                     args.json, error_kind="admin_configured")
+    if not (3 <= len(username) <= 64) or not _ADMIN_USERNAME_RE.fullmatch(username):
+        return _fail("init", 2,
+                     ["账号需为 3–64 位字母、数字、点、下划线、@ 或连字符，且以字母或数字开头"],
+                     args.json, error_kind="invalid_username")
+    if not password:
+        return _fail("init", 2, ["未提供 YIBAN_ADMIN_PASSWORD 环境变量"],
+                     args.json, error_kind="invalid_password")
+    policy_error = password_policy.admin_password_policy_error(password)
+    if policy_error:
+        return _fail("init", 2, [policy_error], args.json, error_kind="invalid_password")
+
+    # werkzeug 是 Web 依赖；CLI 的只读子命令不应因缺少它而启动失败，故延迟导入。
+    from werkzeug.security import check_password_hash, generate_password_hash
+
+    pw_hash = generate_password_hash(password, method=password_policy.SCRYPT_METHOD)
+    secret_key = env.get("YIBAN_SECRET_KEY", "").strip()
+    secret_key_created = not secret_key
+    new_deployment = not env
+    updates = {
+        "YIBAN_ADMIN_USER": username,
+        "YIBAN_ADMIN_PASSWORD_HASH": pw_hash,
+        "YIBAN_ADMIN_PASSWORD": "",
+        "YIBAN_ADMIN_PW_VERSION": str(
+            config_loader.default_required("YIBAN_ADMIN_PW_VERSION")),
+        # 清掉可能残留的旧服务端 sid：新管理员不复用旧会话标识。
+        "YIBAN_ADMIN_SID": "",
+    }
+    if secret_key_created:
+        updates["YIBAN_SECRET_KEY"] = secrets.token_hex(32)
+    if new_deployment:
+        updates["YIBAN_REGISTRATION_PAUSE"] = "1"
+    try:
+        env_io.write_env_keys(env_file, updates, delete_empty=True)
+        written = env_io.parse_env_file(env_file, strict=True)
+    except (OSError, ValueError) as e:
+        return _fail("init", 1, [f"写入 .env 失败：{e}"], args.json,
+                     error_kind="config_write_failed")
+
+    stored_hash = written.get("YIBAN_ADMIN_PASSWORD_HASH", "")
+    ok = (
+        written.get("YIBAN_ADMIN_USER", "") == username
+        and stored_hash.startswith("scrypt:")
+        and check_password_hash(stored_hash, password)
+        and len(written.get("YIBAN_SECRET_KEY", "")) == 64
+        and not written.get("YIBAN_ADMIN_PASSWORD", "").strip()
+    )
+    if not ok:
+        return _fail("init", 1, ["写入后自检失败：请检查 .env 内容"],
+                     args.json, error_kind="config_write_failed")
+    payload = {
+        "command": "init",
+        "ok": True,
+        "exit_code": 0,
+        "admin_user": username,
+        "env_file": env_file,
+        "secret_key_created": secret_key_created,
+        "registration_paused": new_deployment,
+    }
+    if args.json:
+        _emit_json(payload)
+    else:
+        _say(f"已创建内置管理员 {username}（配置：{env_file}）")
+        if new_deployment:
+            _say("新部署已默认暂停注册；可在网页「系统设置」开启。")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# 子命令：version
+# ---------------------------------------------------------------------------
+def _cmd_version(args, view):
+    """打印本项目版本（`yiban.__version__` 是唯一来源）+ Python 版本 + 库 schema 版本。
+
+    库不可用时 `user_version` 报 null 并**照常返回 0**：查版本不该因为没建库而失败。
+    """
+    payload = {
+        "command": "version",
+        "exit_code": 0,
+        "version": RELEASE_VERSION,
+        "python": "%d.%d.%d" % sys.version_info[:3],
+        "user_version": None,
+    }
+    try:
+        conn = db_maintenance.open_ro(_paths(view)["db_file"])
+    except sqlite3.Error:
+        conn = None
+    if conn is not None:
+        try:
+            payload["user_version"] = db_maintenance.read_user_version(conn)
+        except sqlite3.Error:
+            payload["user_version"] = None
+        finally:
+            conn.close()
+    if args.json:
+        _emit_json(payload)
+    else:
+        _say(f"易班自动签到 v{payload['version']}（Python {payload['python']}，"
+             f"库 schema user_version={payload['user_version']}）")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# 参数解析与分发
+# ---------------------------------------------------------------------------
+def _build_parser():
+    """构造根解析器与子解析器（每个子命令都有 `--help`；根解析器带用法错误处理）。"""
+    parser = argparse.ArgumentParser(
+        prog="python -m yiban.entry.cli",
+        description="易班自动签到统一入口（agent 侧；契约见 docs/dev/cli.md）",
+        epilog=("stdout 只放结果（--json 时是一整行 JSON 对象），人类可读汇总走 stderr；"
+                "本命令不读 stdin、不做交互确认。 " + _PATHS_HELP),
+    )
+    subs = parser.add_subparsers(
+        dest="command", metavar="{init,sign,probe,config,capacity,state,egress,db,version}")
+    sub_parsers = {}
+
+    def _sub(name, **kwargs):
+        """注册子命令并记账（分发阶段要用它打"该子命令"的用法错误）。"""
+        sub = subs.add_parser(name, **kwargs)
+        sub_parsers[name] = sub
+        return sub
+
+    p = _sub(
+        "init", help="首次初始化内置管理员（写入 .env 的 scrypt 哈希）",
+        description=("首次部署时创建内置管理员。账号取 --username（缺省读 YIBAN_ADMIN_USER），"
+                     "口令只从 YIBAN_ADMIN_PASSWORD 环境变量或 .env 读取，**不接受命令行口令**"
+                     "（CLI 契约 §2 第 7 条：命令行会进 shell 历史与进程列表）。成功时写 "
+                     "YIBAN_ADMIN_USER / YIBAN_ADMIN_PASSWORD_HASH / YIBAN_ADMIN_PW_VERSION，"
+                     "删除明文口令键，并在缺 YIBAN_SECRET_KEY 时生成新钥。已配置管理员时拒绝。"
+                     + _PATHS_HELP),
+    )
+    p.add_argument("--username", default=None,
+                   help="管理员账号（3–64 位；缺省读 YIBAN_ADMIN_USER）")
+    p.add_argument("--json", action="store_true", help="结果打成一整行 JSON 写 stdout")
+
+    p = _sub(
+        "sign", help="执行一轮签到（选项原样透传给引擎）",
+        description=("执行一轮签到。以下引擎选项原样透传：--workers N（多执行体）、"
+                     "--fallback（兜底常驻）、--only 手机号（只签指定账号）、"
+                     "--second-run-check（补签轮判定，退出码 10）。退出码语义见 "
+                     "docs/dev/cli.md §3。"),
+    )
+    p.add_argument("--json", action="store_true",
+                   help="结果打成一整行 JSON 写 stdout（字段 command/exit_code）")
+
+    p = _sub(
+        "probe", help="只读健康检查（引擎 --probe 语义）",
+        description=("对全部账号做只读健康检查（登录 + 拉任务，不提交签到）。"
+                     "是否真跑受 .env 的探针开关/频率、一键暂停与周末门约束，"
+                     "与引擎 --probe 完全同一路径。"),
+    )
+    p.add_argument("--json", action="store_true",
+                   help="结果打成一整行 JSON 写 stdout（字段 command/exit_code）")
+
+    p = _sub(
+        "config", help="配置检查（脱敏、不联网）",
+        description=("检查账号配置并脱敏打印，不发起任何网络请求；含本次解析到的路径。"
+                     + _PATHS_HELP),
+    )
+    p.add_argument("--json", action="store_true", help="结果打成一整行 JSON 写 stdout")
+
+    p = _sub(
+        "capacity", help="容量建议（实测值 → 建议执行体数）",
+        description=("默认只读：按 .env 的实测容量（YIBAN_CAPACITY_MEASURED）与账号数，"
+                     "给出建议每执行体账号数与执行体数；口径与网页"
+                     " /api/scheduler/executors 一致，未实测就不编数字。"),
+    )
+    p.add_argument("--json", action="store_true", help="结果打成一整行 JSON 写 stdout")
+
+    p = _sub(
+        "state", help="状态文件清理（默认 dry-run）",
+        description=("清理过期的按日状态文件（策略在 yiban/adapters/statefiles/state_gc.py，与宿主清理脚本、"
+                     "容器调度共用）。默认只报告不删；--yes 才真删。"),
+    )
+    p.add_argument("--yes", action="store_true", help="真的删除（默认只报告）")
+    p.add_argument("--dry-run", action="store_true", help="只报告不删（默认行为，显式声明用）")
+    p.add_argument("--fingerprint", default="",
+                   help="回显目标指纹（--yes 删除类操作必填；由 `state --dry-run --json` 打印）")
+    p.add_argument("--json", action="store_true", help="结果打成一整行 JSON 写 stdout")
+
+    p = _sub(
+        "egress", help="出口令牌桶状态 / 速率复位（默认只读）",
+        description=("列出各出口的令牌桶速率与上次落库时刻；--reset <出口> 或 --reset-all "
+                     "把速率复位到引擎出厂速率（默认只报告，--yes 才写库）。出口按"
+                     "角色+槽位指定（fallback / worker-2 / single，与日志行的 [fallback] "
+                     "同一个词）——输出里不回含主机名的原键。"
+                     + _PATHS_HELP),
+    )
+    group = p.add_mutually_exclusive_group()
+    group.add_argument("--status", action="store_true", help="只读列出各出口桶状态（默认）")
+    group.add_argument("--reset", metavar="出口", default=None,
+                       help="复位该出口的速率（默认只报告，--yes 才写）")
+    group.add_argument("--reset-all", action="store_true",
+                       help="复位所有出口的速率（默认只报告，--yes 才写）")
+    p.add_argument("--rate", default=None, metavar="值",
+                   help="复位到的目标速率（attempt/s；默认 = 引擎出厂速率）")
+    p.add_argument("--yes", action="store_true", help="真的写库（默认只报告计划）")
+    p.add_argument("--dry-run", action="store_true", help="只报告不写（默认行为，显式声明用）")
+    p.add_argument("--json", action="store_true", help="结果打成一整行 JSON 写 stdout")
+
+    p = _sub(
+        "db", help="数据库维护（状态 / 完整性 / 备份 / 恢复）",
+        description=("默认 --status（只读：user_version、表清单、账号数、文件大小）；"
+                     "--integrity 跑 PRAGMA integrity_check；--backup 写一致性副本"
+                     "（在线备份 API，不加 --yes 只报告计划；目标已存在需 --force）；"
+                     "--restore 从该副本恢复（默认只报告，--yes 需回显 --fingerprint，"
+                     "覆盖前自动留副本）。只读路径全程只读连接，不建库、不迁移。"
+                     + _PATHS_HELP),
+    )
+    group = p.add_mutually_exclusive_group()
+    group.add_argument("--status", action="store_true", help="只读状态（默认）")
+    group.add_argument("--integrity", action="store_true", help="SQLite 完整性检查")
+    group.add_argument("--backup", nargs="?", const="", default=None, metavar="路径",
+                       help=("写一致性副本（默认 <库文件>.backup；不加 --yes 只报告计划；"
+                             "目标已存在时必须加 --force）"))
+    group.add_argument("--restore", nargs="?", const="", default=None, metavar="路径",
+                       help=("从 db --backup 写的副本恢复（默认 <库文件>.backup；"
+                             "不加 --yes 只报告计划，--yes 需 --fingerprint 且先校验备份）"))
+    p.add_argument("--yes", action="store_true", help="备份/恢复时真的动手（默认只报告）")
+    p.add_argument("--force", action="store_true",
+                   help="允许覆盖已存在的备份目标（拒绝静默顶掉上一份副本）")
+    p.add_argument("--fingerprint", default="",
+                   help="回显目标指纹（--restore --yes 必填；由 `db --restore --dry-run --json` 打印）")
+    p.add_argument("--dry-run", action="store_true", help="只报告不写盘（默认行为，显式声明用）")
+    p.add_argument("--json", action="store_true", help="结果打成一整行 JSON 写 stdout")
+
+    p = _sub(
+        "version", help="打印版本（本项目 / Python / 库 schema）",
+        description="打印本项目版本（yiban.__version__ 是唯一来源）、Python 版本与库 user_version。",
+    )
+    p.add_argument("--json", action="store_true", help="结果打成一整行 JSON 写 stdout")
+
+    return parser, sub_parsers
+
+
+def _dispatch(args, extra, subs):
+    """按子命令分发（返回值即退出码；用法错误抛 `_UsageError`，由入口统一落成 2）。"""
+    cmd = args.command
+    if cmd in _PASSTHROUGH:
+        handler = _cmd_sign if cmd == "sign" else _cmd_probe
+        return handler(args.json, extra)
+    if extra:
+        # 多余参数只在 sign/probe 合法（原样透传给引擎，见上）。其余是用法错误 →
+        # stderr 用法 + 退出码 2
+        raise _UsageError("无法识别的参数: " + " ".join(extra), subs[cmd], cmd,
+                          kind="usage_extra_args")
+    # `--dry-run` / `--yes` 只有 state / egress 与 db 定义（其余子命令没有这两个开关）
+    if getattr(args, "dry_run", False) and getattr(args, "yes", False):
+        raise _UsageError("--dry-run 与 --yes 互斥（默认就是 dry-run）", subs[cmd], cmd,
+                          kind="usage_conflict")
+    view = _env_view()
+    if cmd == "db":
+        # db 维护族（快照 / 备份）实现在 yiban/engine/db_maintenance.py：入口模块只做
+        # 路径解析与分派，避免体量门继续膨胀（见该模块头部说明）。
+        return db_maintenance.cmd_db(args, _paths(view))
+    if cmd == "egress":
+        # 同族的独立变更轴（出口桶状态的只读快照与速率复位）在
+        # yiban/engine/egress_admin.py，理由同 db 族（见该模块头部说明）。
+        return egress_admin.cmd_egress(args, _paths(view), view)
+    handlers = {
+        "init": _cmd_init,
+        "config": _cmd_config,
+        "capacity": _cmd_capacity,
+        "state": _cmd_state,
+        "version": _cmd_version,
+    }
+    return handlers[cmd](args, view)
+
+
+def _fail_usage(exc, json_mode):
+    """CLI 用法错误的统一收口：stderr 保留 argparse 形态的 usage，`--json` 再打一行对象。"""
+    sys.stderr.write(exc.parser.format_usage())
+    sys.stderr.write(f"{exc.parser.prog}: error: {exc}\n")
+    sys.stderr.flush()
+    if json_mode:
+        _emit_json_error(exc.command, 2, [str(exc)], error_kind=exc.kind)
+    return 2
+
+
+def main(argv=None) -> int:
+    """执行子命令并**返回**退出码（调用方决定是否 `sys.exit`；本函数不抛 SystemExit）。
+
+    空子命令与未知子命令都会在 stderr 打用法并返回 2（`docs/dev/cli.md` §2 第 1/4 条），
+    全程不读 stdin。`--help` 由 argparse 打印后返回 0。任何带 `--json` 的调用（含上面的
+    用法错误路径）都在 stdout 留下一整行结构化错误对象（见 `_emit_json_error`）。
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # 进程 umask 077——与引擎入口同口径：本进程创建的文件（数据库备份副本等）
+    # 创建即 0600（Windows 无实际效果，忽略）。
+    os.umask(0o077)
+    json_mode = "--json" in argv
+    parser, subs = _build_parser()
+    command = _guess_command(argv, subs)
+    try:
+        args, extra = parser.parse_known_args(argv)
+    except SystemExit as e:
+        # argparse 的 --help（0）与用法错误（2）都以此形式退出：转成返回值，
+        # 使 `main(argv)` 对调用方始终是"返回码"而非异常。--json 下补一行结构化错误。
+        code = _exit_code(e)
+        if json_mode and code != 0:
+            _emit_json_error(command, code, [f"用法错误: {' '.join(argv)}"],
+                             error_kind="usage")
+        return code
+    if args.command is None:
+        _say(USAGE)
+        if json_mode:
+            _emit_json_error(command, 2, ["未指定子命令"], error_kind="usage_no_command")
+        return 2
+    # 全子命令接**同一处**脱敏装配（幂等；sign/probe 在 `runner.main` 里也会调）：
+    # 不装配时 `logging.lastResort` 会把 load/清理链路里的 WARNING+ 裸写 stderr
+    # （formatter 缺席 = 手机号兜底整条防线被旁路）；装配后这些记录经
+    # `MaskingFormatter` 落按天日志或降级 handler。
+    cli_support._setup_cli_logging()
+    try:
+        return _dispatch(args, extra, subs)
+    except _UsageError as e:
+        return _fail_usage(e, json_mode)
+    except SystemExit as e:
+        code = _exit_code(e)
+        if json_mode and code != 0:
+            _emit_json_error(command, code, [f"用法错误: {' '.join(argv)}"], error_kind="usage")
+        return code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

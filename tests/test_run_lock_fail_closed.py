@@ -9,8 +9,8 @@
    `_run_lock_held` 探测不出锁状态时按"有人在跑"处置；两个真子进程抢同一把锁时恰一个
    运行、另一个以 rc=3 拒绝且日志有因。
 对应实现：yiban/engine/cli_support.py（`_acquire_run_lock` / `_run_lock_held` /
-   `_RunLockUnavailable`）、yiban/engine/runner.py（三处调用点）、
-   yiban/engine/workers.py（监督进程的全局锁）。
+   `_RunLockUnavailable`）、yiban/app/runner.py（三处调用点）、
+   yiban/workers/workers.py（监督进程的全局锁）。
 关键断言：三条路径都必须**抛**，而不是交出未加锁句柄或静默继续——"拿不到锁就继续"
    在多执行体下等于同一账号被两个进程并发真实登录（本项目第一红线）；只改判据不改状态
    是不够的，四个调用点必须真的中断本轮（退出码在 0/1/2/3/10 契约内，不新增码值）。
@@ -33,7 +33,9 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE not in sys.path:
     sys.path.insert(0, BASE)
 
-from yiban.engine import cli_support, runner, workers  # noqa: E402
+from yiban.app import runner  # noqa: E402
+from yiban.engine import cli_support  # noqa: E402
+from yiban.workers import workers  # noqa: E402
 
 
 def _unavailable(reason="锁不可用（测试注入）"):
@@ -177,7 +179,7 @@ class TwoProcessLockContentionE2ETest(_StateDirBase):
     """两个真子进程抢同一把锁：恰一个运行，另一个按既定退出码拒绝且日志有因。"""
 
     def _log_path(self):
-        from yiban import clock
+        from yiban.core import clock
         return os.path.join(self.tmp, f"sign-{clock.now():%Y-%m-%d}.log")
 
     def test_second_process_refused_with_recorded_reason(self):
@@ -205,7 +207,7 @@ class TwoProcessLockContentionE2ETest(_StateDirBase):
             contender_env["YIBAN_RUN_LOCK_NAME"] = workers.FALLBACK_LOCK_NAME
             contender_env["PYTHONPATH"] = BASE
             proc = subprocess.run(
-                [sys.executable, "-m", "yiban.cli", "sign", "--fallback"],
+                [sys.executable, "-m", "yiban.entry.cli", "sign", "--fallback"],
                 env=contender_env, cwd=BASE, capture_output=True, text=True, timeout=120)
             self.assertEqual(proc.returncode, 3,
                              f"抢输的一方必须按'锁忙'退出 3，实际 {proc.returncode}；"

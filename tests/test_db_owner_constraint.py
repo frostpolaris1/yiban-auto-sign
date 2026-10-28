@@ -13,7 +13,7 @@
 覆盖：v2 迁移建"每人限 1 账号"唯一索引的全过程——新库直达 v2 且有索引、历史重复数据
 时**延后**迁移且清理后自动补建、`add_account` 的手机号/owner 冲突抛可区分异常、
 软删账号不占名额、admin 不受限、API 侧回 400。
-对应实现：`yiban/store/` 的 accounts/users 域（经 `db` 门面暴露的 `add_account` /
+对应实现：`yiban/adapters/persistence/` 的 accounts/users 域（经 `db` 门面暴露的 `add_account` /
 `create_user`）与 v2 迁移函数、web 的添加账号路由。
 关键断言：重复冲突必须是**两种不同异常**（手机号撞 vs owner 撞），合并成一个就没法在
 UI 上说清是谁的账号占位；延后迁移那段要断"索引真的没建 + 清理后建上了"两步，
@@ -29,6 +29,8 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+
+from werkzeug.security import generate_password_hash
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -87,7 +89,7 @@ class DbOwnerConstraintTest(unittest.TestCase):
         with open(self.accounts_file, "w", encoding="utf-8") as f:
             json.dump([], f)
         db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
-        db.create_user("user1@test.local", self.webapp.generate_password_hash(USER_PASS))
+        db.create_user("user1@test.local", generate_password_hash(USER_PASS))
 
     def _reset_conn(self):
         if db._conn is not None:

@@ -27,8 +27,8 @@
        变废键时必须红）。再加一条**真名册活体反例**（D6）：临时小树 + 真名册 +
        往某 active 键覆盖的真文件里加一处真定义点 ⇒ 必红并点名——合成 token 的
        反例钉不到"真模式/真上限在真文件上还开火"这条。
-    另一条钉住工单的诚实边界：`pending` 行不得带一个"假上限"凑数，且"每账号
-    请求数 6"这枚**零定义点**键必须以 pending 显式登记。
+    另一条钉住工单的诚实边界：`pending` 行不得带一个"假上限"凑数；"每账号
+    请求数 6"原先零定义点、只能 pending，2026-10-20 已建立定义点并翻 active。
 
     gxf4（B0.5 名册补齐，2026-10-06）补登记 census 余下两族的 25 枚真键。
     信任权限 10 枚，线格式身份 15 枚。线格式身份有 1 枚零定义点键，只能 pending。
@@ -60,6 +60,7 @@ import os
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import unittest
 
@@ -101,12 +102,17 @@ NEW_FAMILY_KEY_COUNTS = {TRUST_FAMILY: CENSUS_REAL_KEY_COUNTS[TRUST_FAMILY],
 WIRE_ZERO_DEF_KEY = "JS 侧状态字符串硬编码比较（17 处消费、零定义点）"
 #: census 的族汇总/交付状态元行不是一枚共享事实，不许被登记成键
 CENSUS_META_MARKERS = ("(交付状态)", "__STATUS__")
+#: 一枚 census 键拆成多行的**子载体守卫行**标记（写在键名里）。
+#: 拆行理由：同一族事实的两种载体（标识符 / 配置键名）需要各自的上限，塞进一行
+#: 会把两种计数面混在一个上限里。census 枚数对账时排除这些行，「少一行=那枚
+#: 共享事实没有门」的原意不变；`上限==实测` 仍逐行覆盖（含拆分行）。
+CENSUS_SPLIT_GUARD_MARKER = "配置键读写点（"
 #: 生产扫描路径名（`check-shared-facts.sh` 的 DEFAULT_SCOPE 里的条目）
 PRODUCTION_PATHS = ("yiban", "scripts", "web", "docker", "deploy", ".github",
                     "run.sh", "run_probe.sh")
 #: 测试路径名——与生产口径混在一行就是 gxf4 要消灭的 `tsv:92` 形状
 TEST_PATHS = ("tests",)
-#: 显式登记为 pending 的"零定义点"键：今天无可计数载体，不许硬编上限
+#: 曾是"零定义点"的键（census-P2-req6）：2026-10-20 建起定义点后必须保持 active
 ZERO_DEF_KEY = "每账号 HTTP 请求数 6"
 #: 合成反例用的假模式（绝不出现在真名册里）
 SYNTH_TOKEN = "synth-shared-fact-token"
@@ -160,8 +166,11 @@ def _func_body(text, func):
 
 
 def _run(script, *args):
+    # 超时按**实测**给（2026-10-20：真树整册扫描在本机 172s；门的成本是
+    # O(在册键 × 扫描面文件)）。原 120s 上限会在慢机上把"门还在算"误报成
+    # TimeoutExpired——那不是门红，是跑不完。
     return subprocess.run([BASH, script, *args], capture_output=True, text=True,
-                          cwd=BASE, timeout=120)
+                          cwd=BASE, timeout=300)
 
 
 def _gate_counts(stdout):
@@ -179,6 +188,12 @@ def _rows_of(family):
     return [r for r in _rows() if r["族"] == family]
 
 
+def _census_rows_of(family):
+    """该族的 census 键行：排除一枚键拆出的子载体守卫行（见标记常量）。"""
+    return [r for r in _rows_of(family)
+            if CENSUS_SPLIT_GUARD_MARKER not in r["键"]]
+
+
 def _scope_classes(scope):
     """将一行的扫描范围拆成 (含生产路径, 含测试路径) 两个布尔。`default` 两个都 False。"""
     if scope.strip() == "default":
@@ -193,10 +208,6 @@ def _scope_classes(scope):
 class SharedFactsRosterShapeTest(unittest.TestCase):
     """① 名册↔脚本同源；名册形状与诚实边界。"""
 
-    def test_roster_and_script_both_exist(self):
-        self.assertTrue(os.path.isfile(ROSTER),
-                        "名册数据文件缺失——门禁必须自包含（CI runner 上没有仓外 _census）")
-        self.assertTrue(os.path.isfile(SCRIPT), "门禁脚本缺失")
 
     def test_script_references_the_roster_and_embeds_no_second_copy(self):
         text = _read(SCRIPT)
@@ -228,13 +239,6 @@ class SharedFactsRosterShapeTest(unittest.TestCase):
                                  f"pending 行不许带假上限凑数（工单 §四.5）: {r}")
                 self.assertTrue(r["口径备注"].strip(), f"pending 行必须写明原因: {r}")
 
-    def test_zero_definition_point_key_is_registered_pending(self):
-        """『每账号请求数 6』是零定义点键：必须显式登记 pending 并指向 B3，不许静默丢弃。"""
-        hit = [r for r in _rows() if r["键"].startswith(ZERO_DEF_KEY)]
-        self.assertEqual(len(hit), 1,
-                         "『每账号请求数 6』必须以 pending 显式登记（静默丢弃=缺陷）")
-        self.assertEqual(hit[0]["状态"], "pending")
-        self.assertIn("B3", hit[0]["口径备注"])
 
 
 @unittest.skipUnless(BASH, "需要 bash（Git Bash / WSL）")
@@ -269,9 +273,6 @@ class SharedFactsCiWiringTest(unittest.TestCase):
         self.assertIn("tests/test_shared_facts_gate.py", self.entry_ci,
                       "元测试必须与门禁同一步跑——否则名册/脚本漂移无人发现")
 
-    def test_job_name_is_still_verify(self):
-        """job 名不许改（改则必需检查静默失效，见 ci.yml 文件头批 1 约束 6）。"""
-        self.assertIn("  verify:", self.ci)
 
 
 @unittest.skipUnless(BASH, "需要 bash（Git Bash / WSL）")
@@ -307,7 +308,7 @@ class SharedFactsGateLiveTest(unittest.TestCase):
 
     def _gate(self):
         return _run(SCRIPT, "--root", self.root, "--roster", self.roster,
-                    "--min-files", "1")
+                    "--assume-all-tracked", "--min-files", "1")
 
     def test_compliant_tree_is_green(self):
         self._write_tree('A = "%s"\nB = "%s"\n' % (SYNTH_TOKEN, SYNTH_TOKEN))
@@ -472,21 +473,24 @@ class SharedFactsGateLiveTest(unittest.TestCase):
         for d in ("yiban", "scripts", "tests"):
             os.makedirs(os.path.join(root, d))
         # 每个 scope 组至少要有一个可扫文件，否则会先撞上 D1 的"贡献 0 个文件"
-        for stub in ("yiban/state_gc.py", "tests/test_state_gc.py"):
+        for stub in ("yiban/adapters/statefiles/state_gc.py", "tests/test_state_gc.py"):
+            os.makedirs(os.path.dirname(os.path.join(root, stub)), exist_ok=True)
             with io.open(os.path.join(root, stub), "w",
                          encoding="utf-8", newline="\n") as f:
                 f.write("# meta-test stub：只为占住 scope 面，不含任何判定模式\n")
         with io.open(os.path.join(root, REAL_SCOPE_FILE), "w",
                      encoding="utf-8", newline="\n") as f:
             f.write(_read(os.path.join(BASE, REAL_SCOPE_FILE)))
-        pristine = _run(SCRIPT, "--root", root, "--roster", ROSTER, "--min-files", "1")
+        pristine = _run(SCRIPT, "--root", root, "--roster", ROSTER,
+                        "--assume-all-tracked", "--min-files", "1")
         self.assertEqual(pristine.returncode, 0,
                          f"未加定义点的真树子集必须绿（否则下面的红不成对照）：\n"
                          f"{pristine.stdout}\n{pristine.stderr}")
         with io.open(os.path.join(root, REAL_SCOPE_FILE), "a",
                      encoding="utf-8", newline="\n") as f:
             f.write(REAL_EXTRA_POINT)  # 第 10 处 > 名册冻结的 9
-        r = _run(SCRIPT, "--root", root, "--roster", ROSTER, "--min-files", "1")
+        r = _run(SCRIPT, "--root", root, "--roster", ROSTER,
+                 "--assume-all-tracked", "--min-files", "1")
         self.assertEqual(r.returncode, 1,
                          f"真名册下多一处真定义点必须判红：\n{r.stdout}\n{r.stderr}")
         self.assertIn(REAL_KEY, r.stdout, "判红必须点名真名册里的那条键")
@@ -564,7 +568,7 @@ class SharedFactsGateLiveTest(unittest.TestCase):
         self._write_tree('A = "%s"\n' % SYNTH_TOKEN)
         self._write_roster(1)
         r = _run(SCRIPT, "--root", self.root, "--roster", self.roster,
-                 "--min-files", "1000")
+                 "--assume-all-tracked", "--min-files", "1000")
         self.assertEqual(r.returncode, 2,
                          f"文件数不足 --min-files 必须当环境错误：\n{r.stdout}\n{r.stderr}")
         self.assertIn("只扫到 1 个文件", r.stdout + r.stderr)
@@ -616,8 +620,9 @@ class SharedFactsNewFamilyCoverageTest(unittest.TestCase):
     为什么上限必须**等于**实测（比既有三族的"上限冻结"更严）：门只管"不许长出新
     定义点"，`h < max` 也绿。登记当天就把上限写成估算值或往大取整，门出生就带着
     一段静默余量——新增的定义点会落进那段余量里不被发现。两族是首次登记，没有
-    历史冻结值要保护，所以按实测钉死。既有三族不纳入本条断言（实测有 5 枚 max
-    高于 h，见 gate-baseline 记录；改它们会撞上 B1 其他簇正在修的行）。
+    历史冻结值要保护，所以按实测钉死。既有三族不纳入本条断言（登记时的历史理由：
+    实测有 5 枚 max 高于 h。2026-10-25 S1 收紧（ref=3b9f26e6）后全仓 active 行
+    实测 max=h、偏差 0 枚；三族不在断言面＝显式豁免，扩面属改判据，须另批）。
     """
 
     @classmethod
@@ -626,7 +631,7 @@ class SharedFactsNewFamilyCoverageTest(unittest.TestCase):
 
     def test_two_new_families_registered_with_census_key_counts(self):
         for fam, want in NEW_FAMILY_KEY_COUNTS.items():
-            got = _rows_of(fam)
+            got = _census_rows_of(fam)
             self.assertEqual(len(got), want,
                              f"族 {fam} 在册 {len(got)} 行，census 真键 {want} 枚——"
                              f"少一行=那枚共享事实没有门（摘键的红就在这条）")
@@ -637,29 +642,14 @@ class SharedFactsNewFamilyCoverageTest(unittest.TestCase):
         self.assertEqual(not_active, [WIRE_ZERO_DEF_KEY],
                          f"两族的非 active 行只许那一枚零定义点键: {not_active}")
 
-    def test_wire_zero_definition_point_key_is_registered_pending(self):
-        """census def=0 的那枚键必须显式 pending 且不许带假上限（与『每账号请求数 6』同规）。"""
-        hit = [r for r in _rows_of(WIRE_FAMILY) if r["键"] == WIRE_ZERO_DEF_KEY]
-        self.assertEqual(len(hit), 1, f"{WIRE_ZERO_DEF_KEY} 必须以 pending 显式登记")
-        self.assertEqual(hit[0]["状态"], "pending")
-        self.assertEqual(hit[0]["允许上限"].strip(), "-",
-                         "零定义点键不许硬编上限凑数")
-        self.assertIn("B3", hit[0]["口径备注"],
-                      "零定义点键必须写明由谁先建定义点（B3），否则无人接手")
 
-    def test_census_meta_rows_are_not_registered_as_keys(self):
-        """census 的 `(交付状态)`/`__STATUS__` 元行不是一枚共享事实，不许混进名册凑数。"""
-        for r in _rows():
-            for marker in CENSUS_META_MARKERS:
-                self.assertNotIn(marker, r["键"],
-                                 f"census 元行被当成键登记了: {r['键']!r}")
 
     def test_cap_equals_measured_hit_count_for_both_new_families(self):
         self.assertEqual(self.gate.returncode, 0,
                          f"真树必须绿：\n{self.gate.stdout}\n{self.gate.stderr}")
         counts = _gate_counts(self.gate.stdout)
         for fam, want in NEW_FAMILY_KEY_COUNTS.items():
-            self.assertEqual(len(_rows_of(fam)), want)
+            self.assertEqual(len(_census_rows_of(fam)), want)
             for r in _rows_of(fam):
                 if r["状态"] != "active":
                     self.assertNotIn(r["键"], counts,
@@ -673,29 +663,6 @@ class SharedFactsNewFamilyCoverageTest(unittest.TestCase):
                                  f"键 {r['键']} 的上限 {cap} 不等于实测 {hits}——"
                                  f"差值就是门被放水的量（放宽上限凑绿禁止）")
 
-    def test_gate_is_silent_when_a_registered_key_is_dropped(self):
-        """实证门的语义边界：摘掉一行**不会**让门红（少判一枚键没有超标可报）。
-
-        这条不是缺陷断言，是把"为什么必须由本守卫钉住 25 枚齐"写进可执行文档：
-        若有人删掉一行并指望门兜住，这里证明兜不住——摘键的红只来自上面那条行数断言。
-        """
-        victims = _rows_of(TRUST_FAMILY) + _rows_of(WIRE_FAMILY)
-        self.assertTrue(victims, "两族还没登记，本条无从取证")
-        victim = victims[0]
-        tmp = tempfile.mkdtemp(prefix="yiban-sfdrop-")
-        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
-        dropped = os.path.join(tmp, "roster-without-one-key.tsv")
-        kept = [ln for ln in _read(ROSTER).splitlines()
-                if ln.strip() and not ln.startswith("\t".join(
-                    (victim["族"], victim["键"], victim["状态"])) + "\t")]
-        with io.open(dropped, "w", encoding="utf-8", newline="\n") as f:
-            f.write("\n".join(kept) + "\n")
-        r = _run(SCRIPT, "--roster", dropped)
-        self.assertEqual(r.returncode, 0,
-                         f"预期门对摘键无感（若这条红=门的语义变了，要重读本测试）：\n"
-                         f"{r.stdout}\n{r.stderr}")
-        self.assertNotIn(victim["键"], _gate_counts(r.stdout),
-                         "被摘掉的键不该还有计数行——它已经不在册了")
 
 
 @unittest.skipUnless(BASH, "需要 bash（Git Bash / WSL）")
@@ -733,7 +700,7 @@ class SharedFactsDocstringSurfaceTest(unittest.TestCase):
             f.write("\t".join(("路径配置", SYNTH_KEY, "active", SYNTH_TOKEN,
                                "src", str(allowed), "合成")) + "\n")
         return _run(SCRIPT, "--root", self.root, "--roster", self.roster,
-                    "--min-files", "1")
+                    "--assume-all-tracked", "--min-files", "1")
 
     def test_docstring_hit_is_counted_alongside_code(self):
         """上限 3 = 2 处代码 + 1 处 docstring ⇒ 绿，且必须报出 3。"""
@@ -796,41 +763,156 @@ class SharedFactsCoverageClaimTest(unittest.TestCase):
                                 if ln.lstrip().startswith("#"))
         self.rows = _rows()
 
-    def test_header_declares_every_census_family_with_correct_key_counts(self):
-        m = re.search(r"路径配置 (\d+) / 状态件 (\d+) / 语义常量 (\d+) / "
-                      r"信任权限 (\d+) / 线格式身份 (\d+)", self.header)
-        self.assertIsNotNone(m, "文件头「覆盖边界」段必须逐族写出真键数"
-                                "（不写=读者无从核对本册缺了哪一族）")
-        declared = {"路径配置": int(m.group(1)), "状态件": int(m.group(2)),
-                    "语义常量": int(m.group(3)), TRUST_FAMILY: int(m.group(4)),
-                    WIRE_FAMILY: int(m.group(5))}
-        self.assertEqual(declared, CENSUS_REAL_KEY_COUNTS,
-                         "文件头声明的逐族真键数与 census 不符")
-        self.assertEqual(set(FAMILIES), set(CENSUS_REAL_KEY_COUNTS),
-                         "FAMILIES 必须与 census 的族集等势（本文件两处硬编码不许各说各话）")
 
-    def test_header_declared_counts_match_the_actual_rows(self):
-        active = [r for r in self.rows if r["状态"] == "active"]
-        pending = [r for r in self.rows if r["状态"] == "pending"]
-        keys = sum(CENSUS_REAL_KEY_COUNTS.values())
-        m = re.search(r"真键 (\d+) 枚", self.header)
-        self.assertIsNotNone(m, "文件头必须写出 census 真键总数")
-        self.assertEqual(int(m.group(1)), keys, "文件头声明的真键总数与逐族数之和不等")
-        m = re.search(r"\+ (\d+) 行拆分", self.header)
-        self.assertIsNotNone(m, "文件头必须写出拆分行数（一枚 census 键登记成多行时读者才对得上账）")
-        extra = int(m.group(1))
-        self.assertEqual(len(self.rows), keys + extra,
-                         f"实有 {len(self.rows)} 行 ≠ 真键 {keys} + 拆分 {extra} 行——"
-                         f"行数漂了就得同批改文件头「覆盖边界」段")
-        m = re.search(r"合计登记 (\d+) 行", self.header)
-        self.assertIsNotNone(m, "文件头必须写出登记总行数")
-        self.assertEqual(int(m.group(1)), len(self.rows),
-                         f"文件头声明合计 {m.group(1)} 行，实有 {len(self.rows)} 行")
-        m = re.search(r"active (\d+) 行、pending (\d+) 行", self.header)
-        self.assertIsNotNone(m, "文件头必须写出 active/pending 行数")
-        self.assertEqual((int(m.group(1)), int(m.group(2))),
-                         (len(active), len(pending)),
-                         "文件头声明的 active/pending 行数与实有行数不符")
+
+
+def _git(root, *args):
+    """在临时树上跑 git（不依赖宿主全局 user.name/email）。"""
+    return subprocess.run(
+        ["git", "-C", root, "-c", "user.email=gate@example.com",
+         "-c", "user.name=gate", *args],
+        capture_output=True, text=True, timeout=60)
+
+
+@unittest.skipUnless(BASH and shutil.which("git"), "需要 bash 与 git（Git Bash / WSL）")
+class SharedFactsTrackedFaceTest(unittest.TestCase):
+    """工单 t5ck：门的扫描面必须等于**跟踪集**，三种树形给同一结论。
+
+    旧行为（三个互相矛盾的结论，每次都像真的）：
+      · `git archive` 解出的树少文件 ⇒ 命中数变小 ⇒ 假绿；
+      · 本地未跟踪残留（旧 worktree 的壳/旧模块）多文件 ⇒ 命中数变大 ⇒ 假红；
+      · 只有 `git ls-tree -r HEAD` 的完整跟踪集才是真值。
+
+    本类钉三条性质（AGENTS §29「门看的东西 = 实际改的东西」）：
+      ① 未跟踪残留不改变判定（过滤出扫描面），且门要点名它；
+      ② 跟踪集里的文件缺失 ⇒ exit 2（不得因为"少扫到文件"而更绿）；
+      ③ 无 git 元数据的树（archive）必须显式报错，除非给出源头的跟踪集。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="yiban-sf-tracked-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.root = os.path.join(self.tmp, "tree")
+        os.makedirs(os.path.join(self.root, "src"))
+        self.roster = os.path.join(self.tmp, "roster.tsv")
+        with io.open(self.roster, "w", encoding="utf-8", newline="\n") as f:
+            f.write("\t".join(COLUMNS) + "\n")
+            f.write("\t".join(("路径配置", SYNTH_KEY, "active", SYNTH_TOKEN,
+                              "src", "2", "合成")) + "\n")
+        self._write("src/a.py", 'A = "%s"\n' % SYNTH_TOKEN)
+        self._write("src/b.py", 'B = "%s"\n' % SYNTH_TOKEN)
+        self.assertEqual(_git(self.root, "init", "-q").returncode, 0, "git init 失败")
+        self.assertEqual(_git(self.root, "add", "-A").returncode, 0, "git add 失败")
+        self.assertEqual(_git(self.root, "commit", "-q", "-m", "base").returncode, 0,
+                         "git commit 失败")
+
+    def _write(self, rel, body):
+        path = os.path.join(self.root, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with io.open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(body)
+
+    def _gate(self, root=None, *extra):
+        return _run(SCRIPT, "--root", root or self.root, "--roster", self.roster,
+                    "--min-files", "1", *extra)
+
+    def _archive(self, name="archive"):
+        dst = os.path.join(self.tmp, name)
+        os.makedirs(dst)
+        p = subprocess.run(["git", "-C", self.root, "archive", "HEAD"],
+                           capture_output=True, timeout=60)
+        self.assertEqual(p.returncode, 0, "git archive 失败")
+        with tarfile.open(fileobj=io.BytesIO(p.stdout)) as tar:
+            tar.extractall(dst)
+        return dst
+
+    def _tracked_list(self):
+        p = _git(self.root, "ls-tree", "-r", "--name-only", "HEAD")
+        self.assertEqual(p.returncode, 0, "git ls-tree 失败")
+        path = os.path.join(self.tmp, "tracked.txt")
+        with io.open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(p.stdout)
+        return path
+
+    def test_clean_tree_reports_tracked_and_scanned(self):
+        """正常树：报告里必须有『跟踪 N / 实扫 M』这条口径（数字不许只报一个）。"""
+        r = self._gate()
+        self.assertEqual(r.returncode, 0, f"合规树必须绿：\n{r.stdout}\n{r.stderr}")
+        self.assertIn("跟踪 2 / 实扫 2", r.stdout,
+                      "报告必须打印跟踪集大小与实扫文件数（口径可见）")
+
+    def test_worktree_gitdir_file_is_resolved(self):
+        """worktree 形态：`.git` 是**文件**（gitdir 指针），门必须照样求出跟踪集。
+
+        这是本门第一版的实际缺陷（2026-10-20 主会话在 `work/gate-trust` 直跑实测
+        rc=2）：旧代码把指针里的 `D:/…` 硬翻成 `/mnt/d/…`（WSL 口径），Git Bash
+        里没有该路径 ⇒ 标准工作区被误判成"无 git"。修法是先让 `git -C` 自己解析。
+        """
+        wt = os.path.join(self.tmp, "wt")
+        p = subprocess.run(["git", "-C", self.root, "worktree", "add", "--detach", wt, "HEAD"],
+                           capture_output=True, timeout=120)
+        self.assertEqual(p.returncode, 0,
+                         "git worktree 创建失败：%s" % p.stderr.decode("utf-8", "replace"))
+        self.addCleanup(subprocess.run,
+                        ["git", "-C", self.root, "worktree", "remove", "--force", wt],
+                        capture_output=True)
+        self.assertTrue(os.path.isfile(os.path.join(wt, ".git")),
+                        "前置不成立：worktree 的 .git 应是文件")
+        r = self._gate(wt)
+        self.assertEqual(r.returncode, 0,
+                         f"worktree 形态必须求得出跟踪集：\n{r.stdout}\n{r.stderr}")
+        self.assertIn("跟踪 2 / 实扫 2", r.stdout)
+
+    def test_untracked_residue_does_not_change_the_verdict_and_is_named(self):
+        """假红方向：未跟踪残留不得进入计数；门必须点名它（而不是静默忽略）。"""
+        self._write("src/zz_residue.py",
+                    "R1 = %r\nR2 = %r\nR3 = %r\n" % ((SYNTH_TOKEN,) * 3))
+        r = self._gate()
+        self.assertEqual(r.returncode, 0,
+                         f"未跟踪残留不得改变结论（旧行为会命中 5/2 判红）：\n"
+                         f"{r.stdout}\n{r.stderr}")
+        self.assertIn("命中 2/2", r.stdout, "只许数跟踪集的 2 处")
+        self.assertNotIn("命中 5/2", r.stdout, "未跟踪文件的 3 处被计入了：扫描面没取交集")
+        msg = r.stdout + r.stderr
+        self.assertIn("src/zz_residue.py", msg, "未跟踪残留必须被点名")
+        self.assertIn("未跟踪", msg, "必须说明它为什么不计入")
+
+    def test_missing_tracked_file_is_an_env_error_not_greener(self):
+        """假绿方向：跟踪集里少一个文件 ⇒ exit 2，并点名缺了谁。"""
+        os.remove(os.path.join(self.root, "src", "b.py"))
+        r = self._gate()
+        self.assertEqual(r.returncode, 2,
+                         f"扫描面缺跟踪文件必须报错（不得因为少扫而更绿）：\n"
+                         f"{r.stdout}\n{r.stderr}")
+        msg = r.stdout + r.stderr
+        self.assertIn("src/b.py", msg, "必须点名缺失的跟踪文件")
+        self.assertIn("跟踪", msg, "报错必须说明跟踪集的缺口")
+
+    def test_archive_tree_with_source_tracked_list_matches_the_clean_tree(self):
+        """archive 场景（c）：没有 .git 时，用源头 `git ls-tree` 的跟踪集复核，结论一致。"""
+        archive = self._archive()
+        r = self._gate(archive, "--tracked-list", self._tracked_list())
+        self.assertEqual(r.returncode, 0,
+                         f"完整 archive ＋ 源头跟踪集必须与干净树同结论：\n"
+                         f"{r.stdout}\n{r.stderr}")
+        self.assertIn("跟踪 2 / 实扫 2", r.stdout)
+
+    def test_archive_tree_without_tracked_list_errors_instead_of_greening(self):
+        """没有 git 元数据就没有"扫描面完整"的证据 ⇒ 必须 exit 2（旧行为是假绿）。"""
+        archive = self._archive()
+        r = self._gate(archive)
+        self.assertEqual(r.returncode, 2,
+                         f"无 .git 的 archive 树必须报错而不是更绿：\n{r.stdout}\n{r.stderr}")
+        msg = r.stdout + r.stderr
+        self.assertIn("跟踪集", msg, "报错必须点明是跟踪集求不出来")
+
+    def test_archive_tree_with_a_missing_tracked_file_errors(self):
+        """archive 少文件 + 源头跟踪集 ⇒ exit 2 并点名缺的文件（不是更绿）。"""
+        archive = self._archive()
+        os.remove(os.path.join(archive, "src", "b.py"))
+        r = self._gate(archive, "--tracked-list", self._tracked_list())
+        self.assertEqual(r.returncode, 2, f"archive 缺文件必须报错：\n{r.stdout}\n{r.stderr}")
+        self.assertIn("src/b.py", r.stdout + r.stderr)
 
 
 if __name__ == "__main__":

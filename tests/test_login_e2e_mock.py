@@ -5,8 +5,8 @@
 覆盖：默认 KillYiBan 流程的整链演练（登录 + 探针 + 一次签到）、旧 iOS
    流程的演练、usersure
    与登录页两种被风控位置的表现差异、签到最后一步被服务端拒绝的业务层判定、按落盘
-   JSONL 断言握手顺序。
-对应实现：tests/fake_yiban_server.py（假服务端）、yiban/platform.py 与
+   JSONL 断言握手**不变式**（签到只提交一次、提交前先取到设备码、登录链四步在先、无 4xx）。
+对应实现：`yiban/adapters/protocol_fake/__init__.py`（假服务端）、yiban/platform.py 与
    client 外观、scripts/signin.py 的登录与签到编排。
 关键断言：端到端跑的是真 HTTP
    往返：脚本化响应的单测只能证明「我们发的确实是这个形状」，证明不了「这套形状能跑完一整条链」。因此必须响亮失败地确认回环流量没被本机加速器/TUN
@@ -44,7 +44,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
 #: 共享假上游替身（2026-09 自 scripts/loadtest/mock_yiban.py 迁入）：按 __file__ 相对
 #: 路径装载，不依赖 sys.path 里的 `loadtest.*` 命名空间包。
-_FAKE_YIBAN = os.path.join(_HERE, "fake_yiban_server.py")
+_FAKE_YIBAN = os.path.join(_ROOT, "yiban", "adapters", "protocol_fake", "__init__.py")
 _spec = importlib.util.spec_from_file_location("_fake_yiban_server", _FAKE_YIBAN)
 mock_yiban = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mock_yiban)
@@ -188,6 +188,21 @@ class _FakeYiban:
             time.sleep(0.02)
         return [r["path"] for r in self.requests()]
 
+    def wait_for_path(self, path, timeout=3.0):
+        """等落盘记录里出现 `path` 为止，返回**全量**路径序列。
+
+        与 `wait_paths(count)` 的分工：那条要调用方先知道"一共几个请求"，等于把请求
+        总数写成常量；这条等的是**要断言的那件事本身**（例：签到提交已发生），
+        请求总数变化不会让它假红。
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            paths = [r["path"] for r in self.requests()]
+            if path in paths:
+                return paths
+            time.sleep(0.02)
+        return [r["path"] for r in self.requests()]
+
 
 def _waf_body(path_fragment):
     """构造"某个路径的响应变成 WAF 拦截页"的适配器补丁。"""
@@ -249,17 +264,22 @@ class KillYiBanE2ETest(_E2EBase):
         self.assertFalse(skip)
         self.assertEqual(status, signin.STATUS_SUCCESS)
 
-        # 握手顺序（假服务端按发生顺序落盘，是这条链的"真实轨迹"）
-        paths = self.mock.wait_paths(7)
+        # 握手**不变式**（不钉"第 N 个请求恰好是谁"）：任何实现都不该违反的三条性质。
+        # 钉编舞的断言会在重构时集体假红、在编舞本身出错时又集体假绿（AGENTS §一.6a）。
+        paths = self.mock.wait_for_path("/nightAttendance/student/index/signIn")
+        self.assertEqual(paths.count("/nightAttendance/student/index/signIn"), 1,
+                         f"签到提交必须出现且只出现一次：{paths}")
+        sign_in_at = paths.index("/nightAttendance/student/index/signIn")
+        self.assertIn("/device/student/index/getState", paths[:sign_in_at],
+                      f"提交前必须先取到设备码（平台 10-16 起签到强制校验设备绑定）：{paths}")
+        # 登录链四步必须先发生：没有会话，后面两步无从谈起（前四位的次序是
+        # 平台契约本身——OAuth 页 → 提交账密 → 取 verify_request → 完成认证）
         self.assertEqual(paths[:4], [
             "/code/html",                        # OAuth 登录页
             "/code/usersure",                    # 提交账号密码
             "/iframe/index",                     # 取 verify_request
             "/base/c/auth/yiban",                # 完成认证
         ], paths)
-        self.assertEqual(paths[4], "/nightAttendance/student/index/signPosition")  # 探针
-        self.assertEqual(paths[5], "/nightAttendance/student/index/signPosition")  # 签到前拉任务
-        self.assertEqual(paths[6], "/nightAttendance/student/index/signIn")
         # 全程没有 404：形状与假服务端的路由一一对应
         self.assertEqual([r["status"] for r in self.mock.requests() if r["status"] >= 400], [])
 

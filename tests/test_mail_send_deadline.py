@@ -20,7 +20,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE not in sys.path:
     sys.path.insert(0, BASE)
 
-from yiban.mail import transport  # noqa: E402
+from yiban.adapters.notifier.mail import transport  # noqa: E402
 
 OP_SEC = 15  # 单个 socket 操作的耗时与超时（= 现值，本单不许把它调小）
 BUDGET_SEC = 45  # 契约：整封预算 = 一个条目 3 次 socket 操作 × 15 秒
@@ -33,13 +33,18 @@ def _entries(n):
 
 
 class _Clock:
-    """假单调钟：只有显式 advance 会让时间走。"""
+    """假单调钟：只有显式 advance 会让时间走。sleep 也要推进（重试退避同样吃预算）。"""
 
     def __init__(self):
         self.now = 0.0
+        self.sleeps = []  # 退避调用记录：断言「预算不足时不睡」
 
     def monotonic(self):
         return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.advance(seconds)
 
     def advance(self, seconds):
         self.now += seconds
@@ -64,8 +69,8 @@ class MailTotalBudgetTest(unittest.TestCase):
         self.addCleanup(lambda: self.logger.removeHandler(handler))
         for p in (
             mock.patch.object(transport, "time", self.clock, create=True),
-            mock.patch.object(transport.config, "is_enabled", lambda: True),
-            mock.patch.object(transport.config, "smtp_list", lambda: _entries(10)),
+            mock.patch.object(transport.config, "is_enabled", lambda *a, **k: True),
+            mock.patch.object(transport.config, "smtp_list", lambda *a, **k: _entries(10)),
             mock.patch.object(transport.smtplib, "SMTP_SSL", _half_open),
         ):
             p.start()
@@ -107,6 +112,20 @@ class MailTotalBudgetTest(unittest.TestCase):
             self.assertLessEqual(t, OP_SEC, "单操作上限仍是既有的 15 秒")
         self.assertIn(OP_SEC, timeouts, "预算内的操作必须照旧拿满 15 秒")
 
+    def test_retry_backoff_cannot_outlive_the_budget(self):
+        """条目 op_timeout < 15（剩余预算不足）时，退避不得越过预算：不睡、不重试。
+
+        突变判据：删掉 `_send` 里「睡醒后没有剩余预算就不再开新连接」的预检，
+        本用例变红（退避会睡在已过期的预算上）。
+        """
+        deadline = self.clock.now + 10  # 首次连接的 op_timeout = 10，小于 OP_SEC
+        ok = transport._send("主题", "正文", "admin@example.test", deadline=deadline)
+        self.assertFalse(ok)
+        self.assertEqual(self.clock.sleeps, [], "预算已不足以容纳退避时不得睡")
+        self.assertEqual(len(self.attempts), 1, "预算耗尽后不得再开下一次连接")
+        self.assertLess(self.attempts[0][2], OP_SEC,
+                        "前置条件：本场景的 op_timeout 必须小于 15 秒")
+
     def test_healthy_send_still_completes_inside_budget(self):
         """正常路径不受影响：一次成功的投递照旧返回 True，且远早于预算。"""
         clock, delivered = _Clock(), []
@@ -130,8 +149,8 @@ class MailTotalBudgetTest(unittest.TestCase):
                 return {}
 
         with mock.patch.object(transport, "time", clock), \
-                mock.patch.object(transport.config, "is_enabled", lambda: True), \
-                mock.patch.object(transport.config, "smtp_list", lambda: _entries(10)), \
+                mock.patch.object(transport.config, "is_enabled", lambda *a, **k: True), \
+                mock.patch.object(transport.config, "smtp_list", lambda *a, **k: _entries(10)), \
                 mock.patch.object(transport.smtplib, "SMTP_SSL", _Good):
             ok = transport._send("主题", "正文", "admin@example.test")
         self.assertTrue(ok, "健康端点必须仍然发得出去，且不换条目")

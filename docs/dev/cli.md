@@ -8,41 +8,50 @@
 
 ## 1. 形态（**M3 已实施**）
 
-统一入口已落地，七个子命令与 `--json` 全部可用：
+统一入口已落地，九个子命令与 `--json` 全部可用：
 
 ```
-python3 -m yiban.cli <子命令> [选项]
+python3 -m yiban.entry.cli <子命令> [选项]
+  init      首次初始化内置管理员（口令只从 YIBAN_ADMIN_PASSWORD 环境变量读）
   sign      一轮签到（可 --workers N / --only 手机号 / --fallback / --second-run-check）
   probe     只读健康检查
   config    配置检查（脱敏打印，不联网）
   capacity  容量基准与建议（只读展示与换算建议；实测值由部署者自行量取后录入设置页）
   state     状态文件清理（默认 dry-run，--yes 才动手）
+  egress    出口令牌桶状态 / 速率复位（默认只读；--reset 不加 --yes 只报告）
   db        数据库维护（--status / --integrity / --backup [路径] / --restore [路径]）
   version   版本与库版本
 ```
 
 `scripts/signin.py`、`scripts/db.py`、`scripts/state_cleanup.py` 是**兼容壳**：旧调用方式
 （`run.sh`、cron、容器调度器、本文档 §4 的写法）继续可用并与新入口同退出码。
-`scripts/notify.py`、`scripts/mailer.py` 两个壳**已删除**，调用方直连 `yiban.notify` / `yiban.mail`。
+`scripts/notify.py`、`scripts/mailer.py` 两个壳**已删除**，调用方直连
+`yiban.adapters.notifier.notify` / `yiban.adapters.notifier.mail`。
 
-模块落位：引擎在 `yiban/engine/`（runner / round / schedule / attempts / probe / alerts /
-state_io / accounts / workers / config_check / cli_support / db_maintenance），SQLite 层在
-`yiban/store/db.py`。入口一律 `python3 -m yiban.cli`（以文件路径直接跑既不支持也不需要）；
-开发机在 WSL 下用 `~/.venv-yiban-wsl/bin/python -m yiban.cli`（cwd 为仓库根）。
+模块落位：入口实现在 `yiban/entry/cli/`（旧入口转发壳已于 `145-E` 退役），
+引擎在 `yiban/engine/`（runner / round / schedule / attempts / probe / alerts /
+state_io / accounts / workers / config_check / cli_support / db_maintenance / egress_admin），SQLite 层在
+`yiban/adapters/persistence/db.py`。入口一律 `python3 -m yiban.entry.cli`
+（以文件路径直接跑既不支持也不需要）；
+开发机在 WSL 下用 `~/.venv-yiban-wsl/bin/python -m yiban.entry.cli`（cwd 为仓库根）。
 
 ## 1.1 路径相关环境变量（四个，与 run.sh 同源）
 
 | 变量 | 作用 | 默认 |
 |------|------|------|
-| `YIBAN_ENV_FILE` | `.env` 文件路径（加密密钥 / 审计密钥来源） | `.env`（当前目录） |
-| `YIBAN_DB_FILE` | SQLite 库文件路径 | `yiban.db` |
+| `YIBAN_ENV_FILE` | `.env` 文件路径（加密密钥 / 审计密钥来源） | `data/.env`（相对检出根） |
+| `YIBAN_DB_FILE` | SQLite 库文件路径 | `data/yiban.db`（相对检出根） |
 | `YIBAN_STATE_DIR` | 状态目录（状态文件 / 锁 / 库外锚点） | `/var/log/yiban` |
 | `YIBAN_LOG_FILE` | 日志文件路径（按天文件按它的目录落） | `<YIBAN_STATE_DIR>/sign.log` |
 
 **相对路径一律按当前工作目录解析**（`run.sh` 先 `cd` 到部署目录再 export，故"相对路径"
 在两条路径下都应指向同一处；在别处直接调用 CLI 时请用绝对路径或先 `cd`）。解析优先级：
-进程环境 → `.env` → 默认值。四个变量名在根 `--help`、`config --help`、`db --help` 的
-文本里都列明。
+进程环境 → `.env` → 默认值（这三个**可配置路径键**是工单 71z7 的例外，2026-10-20 裁定；
+`run.sh` 的显式 export 优先）。指针 `YIBAN_ENV_FILE` 是**两段自举**：进程环境 →
+基线 `.env`（默认 `data/.env`）→ 默认值；三个 bash 入口固定 `$APP_DIR/data/.env`。
+其余 `YIBAN_*` 配置键按 **`.env` 优先、进程环境只补缺**（M27，2026-10-01）——
+`_env_view()` 因此先取进程环境作底座、再用 `.env` 覆盖，最后只把上面四个路径键按进程
+环境回填。四个变量名在根 `--help`、`config --help`、`db --help` 的文本里都列明。
 
 ## 2. 硬性约定（实施与评审都按这几条）
 
@@ -71,6 +80,11 @@ state_io / accounts / workers / config_check / cli_support / db_maintenance）�
 | 10 | `--second-run-check` 专用：需要补跑第二轮 | 仅该子命令使用 |
 
 `--workers N` 的汇总码取"最严重者"：`4 > 10 > 1 > 3 > 2 > 0`（4 = 任一执行体迁移拒启，整轮不可信，优先于补签判定）。
+
+`--workers N` 的合法域是 `WORKERS_MIN~WORKERS_MAX`（唯一定义点 `yiban/egress.py`，与
+`YIBAN_WORKERS`、网页执行体设置同一对常量）。越界是**用法错误**：rc=2、不拉起任何
+执行体（`error_kind=usage_engine`）。宿主 `run.sh` 在传参前已按同一域校验并回退单
+执行体，故 cron/脚本路径不受这条拒启动影响。
 
 `probe` 沿用同一套码值分族（不新增码）：真跑通过 = 0；真跑有失败（存在未通过健康检查的
 账号）= 1；**这一轮没做检查**（探针开关关 / 未到触发时间与频率 / 一键暂停或周末门）= 2；
@@ -109,19 +123,25 @@ state_io / accounts / workers / config_check / cli_support / db_maintenance）�
 新入口（推荐给脚本/agent；`--json` 时 stdout 是**单行** JSON 对象）：
 
 ```bash
-python3 -m yiban.cli version --json
-python3 -m yiban.cli config --json            # 脱敏配置检查（不联网）
-python3 -m yiban.cli db --status --json       # user_version / 表 / 账号数
-python3 -m yiban.cli db --backup /tmp/copy.db --yes          # 写一致性副本（目标不存在）
-python3 -m yiban.cli db --backup /tmp/copy.db --yes --force  # 目标已存在：必须显式 --force
-python3 -m yiban.cli db --restore /tmp/copy.db --json        # 默认 dry-run：只报告计划 + 目标指纹
-python3 -m yiban.cli db --restore /tmp/copy.db --yes --fingerprint <指纹>  # 覆盖当前库
-python3 -m yiban.cli state                    # 默认 dry-run，只报告
-python3 -m yiban.cli state --yes              # 真删（保留期见 .env）
-python3 -m yiban.cli capacity --json          # 读实测值给建议
-python3 -m yiban.cli sign --workers 4
-python3 -m yiban.cli sign --fallback
-python3 -m yiban.cli sign --second-run-check  # 退出码 10 = 需要补跑
+YIBAN_ADMIN_PASSWORD='强口令' python3 -m yiban.entry.cli init --username admin --json  # 首次初始化
+python3 -m yiban.entry.cli version --json
+python3 -m yiban.entry.cli config --json            # 脱敏配置检查（不联网）
+python3 -m yiban.entry.cli db --status --json       # user_version / 表 / 账号数
+python3 -m yiban.entry.cli db --backup /tmp/copy.db --yes          # 写一致性副本（目标不存在）
+python3 -m yiban.entry.cli db --backup /tmp/copy.db --yes --force  # 目标已存在：必须显式 --force
+python3 -m yiban.entry.cli db --restore /tmp/copy.db --json        # 默认 dry-run：只报告计划 + 目标指纹
+python3 -m yiban.entry.cli db --restore /tmp/copy.db --yes --fingerprint <指纹>  # 覆盖当前库
+python3 -m yiban.entry.cli state                    # 默认 dry-run，只报告
+python3 -m yiban.entry.cli state --yes              # 真删（保留期见 .env）
+python3 -m yiban.entry.cli egress --status --json   # 各出口速率（只读，不回含主机名的旧键）
+python3 -m yiban.entry.cli egress --reset direct --json            # 默认只报告：要写什么、写后速率
+python3 -m yiban.entry.cli egress --reset direct --yes             # 真写：速率回到引擎出厂值
+python3 -m yiban.entry.cli egress --reset http://127.0.0.1:3128 --yes  # 按代理出口标识复位
+python3 -m yiban.entry.cli egress --reset-all --rate 1.5 --yes     # 全体复位到显式速率
+python3 -m yiban.entry.cli capacity --json          # 读实测值给建议
+python3 -m yiban.entry.cli sign --workers 4
+python3 -m yiban.entry.cli sign --fallback
+python3 -m yiban.entry.cli sign --second-run-check  # 退出码 10 = 需要补跑
 ```
 
 等价的旧写法（兼容壳，退出码一致；`run.sh` / cron / 容器调度器用的就是这些）：
@@ -139,6 +159,13 @@ bash run.sh                                   # 宿主入口：读 .env（含 YI
 > `capacity` 只消费 `YIBAN_CAPACITY_MEASURED`（部署者自行量取后录入），自己不联网、
 > 不转发任何工具。原先的 `capacity --measure` 转发开关随离线容量基准工具族于 2026-09
 > 一并移除，传入即按"无法识别的参数"退 2。
+
+`init` 只在 `.env` 尚无管理员时可用：账号取 `--username`（缺省读 `YIBAN_ADMIN_USER`），
+口令只从 `YIBAN_ADMIN_PASSWORD` 环境变量或既有 `.env` 读取，**不接受命令行口令**
+（§2 第 7 条）。成功时写 `YIBAN_ADMIN_USER` / `YIBAN_ADMIN_PASSWORD_HASH` /
+`YIBAN_ADMIN_PW_VERSION`，删除明文口令键与旧 `YIBAN_ADMIN_SID`；缺
+`YIBAN_SECRET_KEY` 时生成新钥，全新部署同时写 `YIBAN_REGISTRATION_PAUSE=1`。
+已配置管理员时退出码 1、`error_kind=admin_configured`，不覆盖现网管理员。
 
 `db --backup` 的目标已存在时**不得静默覆盖**上一份副本：不带 `--force` 的 `--yes` 直接
 拒绝（退出码 1、零写入），dry-run 只报告"需 `--force`"。这与 §2 第 5 条"幂等"的边界是：
@@ -158,8 +185,29 @@ dry-run、只报告计划。真正的恢复需要 `--yes --fingerprint <指纹>`
 `--json` 的 `user_version` 字段只在 `--status` 模式出现；`--restore` 模式报的是**备份的**
 schema 版本 `backup_user_version`（恢复后的库版本已由 `--integrity` 独立回读校验）。
 
+`egress` 是出口令牌桶的**受支持撤销入口**。限速按**出口**计数：`egress_state` 表
+**一个出口一行**（键 = 出口标识，工单 2cwd），运行期由该出口上的执行体**均分**其速率预算
+（每进程子桶速率 = 出口级 λ ÷ 同出口执行体数，合计 ≤ λ）。命中风控信号时出口级速率减半
+（乘性回退），此后靠 AIMD 每约 200 次干净尝试 ×1.2 慢慢爬回。风控信号被误报一次，整条出口
+就要带几周的降速——本子命令把速率直接写回目标值。三条口径：
+
+- **出口怎么指定**：写**出口标识**——`direct`（直连），或 `scheme://host[:port]` 的代理
+  地址（去 userinfo）；也可写 `--status` 报出的方括号标签（`[direct]` / `[http://host:port]`）。
+  旧执行体身份键（改键前的存量行）渲染为 `[已弃用（旧执行体身份键）]`，**不回含主机名的原串**；
+  同标签命中多行时**拒绝**而不是任选一行。空选择串（`--reset ''`）退 2，不退化成只读查询。
+- **只改一列**：只写 `rate` 与 `updated_at`；`burst` / `tat` 逐字保留（`tat` 不再被引擎更新，
+  保留它只为不动无关列）。不加 `--yes` 时一字不写。
+- **目标速率**：默认取引擎出厂速率（显式写了 `YIBAN_EGRESS_RATE` 就取该值），`--rate` 可
+  显式指定。两条来源过**同一道**域校验，但时点不同：配置键的域外旧值在读取侧**钳到
+  边界并 WARN**（日志含原值与钳后值）；`--rate` 的显式越域值**一律拒绝**（不夹、不猜）。
+  该键的名册声明域与引擎域**同值**（`[0.2, 4.0]`，读取侧对域外值钳边并 WARN）；
+  `--rate` 必须在同一域内，不能高于 `YIBAN_EGRESS_RATE` 的引擎上限。
+- **何时生效**：复位写的是库里的记忆，进程内的桶不受影响。执行体每 10s 把内存态落库一次，
+  故它持有该出口时会**把复位覆盖回去**。`--json` 的 `held_by_live_process`（按 `updated_at`
+  是否在一分钟内判定）给出这个风险；稳妥做法是先停执行体再复位，复位后重启执行体。
+
 ## 5. 相关文档
 
-- 人类教程与常见问题：仓库根 `README.md`（含「多执行体并行签到」「代理配置」章节）；
+- 人类教程与常见问题：`README.md`（总入口）；「多执行体并行签到」见 `docs/guides/operations.md`，「代理配置」见 `docs/guides/configuration.md`，常见问题见 `docs/dev/troubleshooting.md`；
 - 执行体接口（前端用）：`docs/dev/api-executors.md`；
 - 模块地图与依赖方向：`docs/dev/README.md`。

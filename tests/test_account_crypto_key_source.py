@@ -11,7 +11,7 @@ db 依赖本模块不能反向 import，故判定就地复刻）。
 标签：G · 安全：脱敏/审计/配置注入
 覆盖：自动建钥的四个来源分支——三者全缺（拒绝）／cwd 已有 `.env`／显式 `env_file`／
 `YIBAN_ENV_FILE`（这三条照常生成），外加只读解密路径一条。
-对应实现：`yiban/infra/account_crypto.py` 的 `load_key` 自动建钥分支、`has_key`、
+对应实现：`yiban/adapters/config/account_crypto.py` 的 `load_key` 自动建钥分支、`has_key`、
 模块级密钥缓存 `_KEY_CACHE`。
 关键断言：拒绝时抛 ValueError 且消息含"来源不确定"，**并且**临时空目录里不得出现新建的
 `.env`——只断"抛了"不够，落盘和抛出是两个独立动作，守卫失效的典型形态正是"照样落盘"。
@@ -24,7 +24,7 @@ import shutil
 import tempfile
 import unittest
 
-from yiban.infra import account_crypto
+from yiban.adapters.config import account_crypto
 
 TEST_KEY = "a" * 64
 
@@ -60,18 +60,42 @@ class KeySourceGuardTest(unittest.TestCase):
         finally:
             os.chdir(os.path.dirname(os.path.abspath(__file__)))
         self.assertIn("来源不确定", str(ctx.exception))
-        self.assertFalse(os.path.exists(os.path.join(self.tmp, ".env")),
+        # 判据 = 实现会写的那个路径（默认 `data/.env`，相对 cwd）。查旧路径会空转。
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "data", ".env")),
                          "拒绝生成时不得在错误目录落 .env")
 
+    def test_has_key_honors_yiban_env_file(self):
+        """`has_key()` 与 `load_key` / `assert_key_sources_agree` 同一三级路径口径。
+
+        容器形态下 cwd 没有 `.env`，密钥在 `YIBAN_ENV_FILE` 指向的文件里；只走两级
+        口径的 `has_key` 会答"没有钥"，同一份部署在两个函数眼里一个有钥一个没钥
+        （工单 ba-p08-13）。
+        """
+        env_file = os.path.join(self.tmp, "custom.env")
+        with open(env_file, "w", encoding="utf-8") as f:
+            f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n")
+        os.environ["YIBAN_ENV_FILE"] = env_file
+        self.assertTrue(account_crypto.has_key(),
+                        "YIBAN_ENV_FILE 指向的 .env 里有钥，has_key 必须看见")
+        other = os.path.join(self.tmp, "other.env")
+        with open(other, "w", encoding="utf-8") as f:
+            f.write("")
+        self.assertFalse(account_crypto.has_key(other),
+                         "显式 env_file 优先于 YIBAN_ENV_FILE（三级口径的第一档）")
+
     def test_existing_cwd_dotenv_still_generates(self):
-        """cwd 已有 .env（来源确定）→ 行为不变（正常首启在应用根生成）。"""
+        """cwd 的**默认 .env 路径**已有文件（来源确定）→ 行为不变（就近生成）。
+
+        默认路径已是 `data/.env`（工单 ybg8：运行数据收进检出内 data/）。
+        """
         os.chdir(self.tmp)
         try:
-            with open(".env", "w", encoding="utf-8") as f:
+            os.makedirs("data", exist_ok=True)
+            with open(os.path.join("data", ".env"), "w", encoding="utf-8") as f:
                 f.write("OTHER_KEY=1\n")
             key = account_crypto.load_key()
             self.assertEqual(len(key), 32)
-            with open(".env", encoding="utf-8") as f:
+            with open(os.path.join("data", ".env"), encoding="utf-8") as f:
                 self.assertIn("YIBAN_ACCOUNTS_KEY=", f.read())
         finally:
             os.chdir(os.path.dirname(os.path.abspath(__file__)))

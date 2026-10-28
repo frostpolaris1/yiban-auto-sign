@@ -2,8 +2,8 @@
 """签到日历状态可见性：状态表单一源（日期格渲染 + 图例）与急停/周末门真值显示。
 
 标签：F · 前端与界面守卫
-覆盖：状态显示表 `yiban.status.DISPLAY` 覆盖全部状态码并被日历图例与前端状态行两侧消费；`global_paused`/`no_position` 不再渲染成"排队待签"；日历格对有结论的日子渲染语气档色点（色彩即语义，emoji 不上界面）；急停/周末门在 web 侧读 `.env` 真值（与引擎同源）
-对应实现：`yiban/status.py`（`DISPLAY` / `legend_items` / `display_payload`）、`web/routes/pages.py`
+覆盖：状态显示表 `yiban.core.status.DISPLAY` 覆盖全部状态码并被日历图例与前端状态行两侧消费；`global_paused`/`no_position` 不再渲染成"排队待签"；日历格对有结论的日子渲染语气档色点（色彩即语义，emoji 不上界面）；急停/周末门在 web 侧读 `.env` 真值（与引擎同源）
+对应实现：`yiban/core/status.py`（`DISPLAY` / `legend_items` / `display_payload`）、`web/routes/pages.py`
 （`_calendar_page_context` 把表与图例同车下发）、`web/templates/partials/page_sign_calendar.html`
 （内联载荷）、`frontend/src/calendar/model.js`（`statusLine` / `stateEntry` / `dayCell`）、
 `frontend/src/calendar/CalendarPage.vue`（图例与状态行渲染）、`web/services/signstatus.py`
@@ -53,7 +53,10 @@ from datetime import datetime
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
-from yiban import status as yiban_status  # noqa: E402
+from werkzeug.security import generate_password_hash  # noqa: E402
+
+from web.services import signstatus as _signstatus  # noqa: E402
+from yiban.core import status as yiban_status  # noqa: E402
 
 #: 日历前端口径（**刻意保留纯 JS**，Node 对拍用例按字面量抽函数——见该文件头部说明）。
 #: 迁移前这里是 legacy 的 components/sign-calendar-view.js 与 js/calendar.js。
@@ -142,6 +145,9 @@ class StatusDisplayTableTest(unittest.TestCase):
             yiban_status.STATUS_USER_CANCELLED: "muted",
             yiban_status.STATUS_PENDING: "warn",
             yiban_status.STATUS_NO_POSITION: "warn",
+            # 补签中（平台 State=5）：结果未定，与"待签/无点位"同档——需要人看着，
+            # 且不许渲染成已完成（它不是 `ok`，也不是"有意不签"的 `muted`）。
+            yiban_status.STATUS_SUPPLEMENTING: "warn",
             yiban_status.STATUS_PAUSED: "warn",
             yiban_status.STATUS_GLOBAL_PAUSED: "warn",
             yiban_status.STATUS_RETRYING: "busy",
@@ -403,7 +409,7 @@ class _WebAppMixin:
         email = "cal-state-user@example.com"
         user = self._db.find_user(email)
         if user is None:
-            self._db.create_user(email, self.webapp.generate_password_hash("UserPass123!"))
+            self._db.create_user(email, generate_password_hash("UserPass123!"))
             user = self._db.find_user(email)
         c = self.webapp.create_app().test_client()
         with c.session_transaction() as s:
@@ -447,7 +453,7 @@ class CalendarPageRendersTableTest(_WebAppMixin, unittest.TestCase):
     def test_payload_carries_every_legend_item_of_the_table(self):
         ctx = self._inline_context(self._calendar_html())
         self.assertEqual(ctx["legend"], yiban_status.legend_items(),
-                         "内联载荷的图例项与 yiban.status.legend_items() 分叉")
+                         "内联载荷的图例项与 yiban.core.status.legend_items() 分叉")
         for item in yiban_status.legend_items():
             with self.subTest(tone=item["tone"]):
                 self.assertTrue(item["label"], "图例条目缺中文短名")
@@ -503,7 +509,7 @@ class DayOffTruthTest(_WebAppMixin, unittest.TestCase):
         # 引擎侧：真值来自同一份 .env
         self.assertEqual(yb_schedule.day_off(WEDNESDAY, env=self_env_file()), "paused")
         # web 侧：显示判定与页面上下文
-        self.assertEqual(self.webapp._day_off_reason(WEDNESDAY), "paused")
+        self.assertEqual(_signstatus._day_off_reason(WEDNESDAY), "paused")
         ctx = self._inline_context(self._calendar_html())
         self.assertEqual(ctx["day_off"]["reason"], "paused")
         self.assertIn("急停", ctx["day_off"]["text"])
@@ -511,7 +517,7 @@ class DayOffTruthTest(_WebAppMixin, unittest.TestCase):
         self._write_env("YIBAN_SIGN_START=06:30\nYIBAN_SIGN_END=07:50\n"
                         "YIBAN_SATURDAY_SIGN=1\nYIBAN_SUNDAY_SIGN=1\nYIBAN_GLOBAL_PAUSE=0\n")
         self.assertEqual(yb_schedule.day_off(WEDNESDAY, env=self_env_file()), "")
-        self.assertEqual(self.webapp._day_off_reason(WEDNESDAY), "")
+        self.assertEqual(_signstatus._day_off_reason(WEDNESDAY), "")
         ctx = self._inline_context(self._calendar_html())
         self.assertIsNone(ctx["day_off"])
 
@@ -519,27 +525,27 @@ class DayOffTruthTest(_WebAppMixin, unittest.TestCase):
         """周末门同源：`.env` 关周六签到 ⇒ 周六 web 侧判"周六不签"（原先恒不生效）。"""
         self._write_env("YIBAN_SIGN_START=06:30\nYIBAN_SIGN_END=07:50\n"
                         "YIBAN_SATURDAY_SIGN=0\nYIBAN_SUNDAY_SIGN=0\n")
-        self.assertEqual(self.webapp._day_off_reason(SATURDAY), "saturday")
-        self.assertEqual(self.webapp._day_off_reason(SUNDAY), "sunday")
-        self.assertEqual(self.webapp._day_off_reason(WEDNESDAY), "")
+        self.assertEqual(_signstatus._day_off_reason(SATURDAY), "saturday")
+        self.assertEqual(_signstatus._day_off_reason(SUNDAY), "sunday")
+        self.assertEqual(_signstatus._day_off_reason(WEDNESDAY), "")
 
     def test_weekend_gate_open_when_env_file_says_so(self):
         """`.env` 开启周六签到 ⇒ 周六不再被判"不签"（读到的是真值而不是缺省）。"""
         self._write_env("YIBAN_SIGN_START=06:30\nYIBAN_SIGN_END=07:50\n"
                         "YIBAN_SATURDAY_SIGN=1\nYIBAN_SUNDAY_SIGN=1\n")
-        self.assertEqual(self.webapp._day_off_reason(SATURDAY), "")
-        self.assertEqual(self.webapp._day_off_reason(SUNDAY), "")
+        self.assertEqual(_signstatus._day_off_reason(SATURDAY), "")
+        self.assertEqual(_signstatus._day_off_reason(SUNDAY), "")
 
     def test_day_off_reason_never_raises_on_missing_env(self):
         """`.env` 读不到 ⇒ 按"照常"返回空串（展示侧不得因为读不到配置而 500）。"""
         with contextlib.suppress(OSError):
             os.remove(self.env_file)
-        self.assertEqual(self.webapp._day_off_reason(WEDNESDAY), "")
+        self.assertEqual(_signstatus._day_off_reason(WEDNESDAY), "")
 
 
 def self_env_file():
     """测试期读当前 `.env` 的映射（与 web 侧同一份解析口径）。"""
-    from yiban.infra import env_io
+    from yiban.adapters.config import env_io
     return env_io.parse_env_file(os.environ["YIBAN_ENV_FILE"])
 
 

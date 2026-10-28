@@ -1,19 +1,50 @@
-import { expect, test } from "@playwright/test";
+import { userTest as test, expect } from "./base";
+
+const USER_EMAIL = "e2e-user@example.com";
 
 // 用户端账号页真浏览器端到端（P2 整页迁移后）。
 // 数据由 e2e/server.py 预置：普通用户 e2e-user@example.com 名下有一个生效账号
 // （e2e-user-acct / 13800138001）。会话走 API 登录（表单登录由 logs.spec 覆盖一次即可，
 // 避免反复访问 /login 撞上服务端的登录循环守卫）。
-const USER_EMAIL = "e2e-user@example.com";
-const USER_PASS = "UserPass123!";
+// 会话由 playwright.config.ts 的 user project 注入（.auth/user.json）。
+/* ---- 待审核刷新的外部变化制造器（工单 vff0）----
+   变化一律直连后端、不经页面 JS：页面只能靠轮询发现，正是被测行为。
+   写请求必须自带头 CSRF（登录后 /api/me 下发 session 内的 token）。 */
+async function csrfToken(page: import("@playwright/test").Page): Promise<string> {
+  const me = await (await page.request.get("/api/me")).json();
+  return String(me.csrf_token ?? "");
+}
 
-async function loginUser(page: import("@playwright/test").Page): Promise<void> {
-  const resp = await page.request.post("/api/login", { data: { username: USER_EMAIL, password: USER_PASS } });
-  expect(resp.ok()).toBeTruthy();
+/** 新建一个归属新用户、状态 pending 的账号（该用户随即进入「待处理用户」组）。
+ *  把账号置为 pending 的唯一入口就是账号创建，故用这条路径制造"外部新提交待审核"。 */
+async function addPendingUser(
+  page: import("@playwright/test").Page,
+  name: string,
+  email: string,
+  phone: string,
+): Promise<void> {
+  const resp = await page.request.post("/api/accounts", {
+    data: { name, phone, password: "e2e-phone-pw", email, initial_password: "RefreshPass123" },
+    headers: { "X-CSRF-Token": await csrfToken(page) },
+  });
+  expect(resp.ok(), `新建待审核账号失败：${resp.status()} ${await resp.text()}`).toBeTruthy();
+}
+
+/** 软删该账号 → 归属用户回到「空用户」组，待处理组与徽标复归初始（本用例可重跑）。 */
+async function softDeleteAccount(page: import("@playwright/test").Page, name: string): Promise<void> {
+  const list = await (await page.request.get("/api/accounts")).json();
+  const target = (list.accounts as Array<{ index: number; name: string; phone: string }>).find(
+    (a) => a.name === name,
+  );
+  expect(target, `待清理账号 ${name} 不在 /api/accounts 里`).toBeTruthy();
+  const resp = await page.request.delete(`/api/accounts/${target!.index}`, {
+    data: { phone: target!.phone },
+    headers: { "X-CSRF-Token": await csrfToken(page) },
+  });
+  expect(resp.ok(), `清理账号失败：${resp.status()} ${await resp.text()}`).toBeTruthy();
 }
 
 test("用户端账号页：账号行/调度提示/自选时段/邮件开关/改密入口，且无管理端专有卡", async ({ page }) => {
-  await loginUser(page);
   await page.goto("/user/account");
 
   // 页头 + 调度提示条（由 /api/me 填充）
@@ -65,14 +96,17 @@ test("用户端账号页：账号行/调度提示/自选时段/邮件开关/改�
 });
 
 test("用户端账号页：暂停/恢复往返、编辑保存、改密弹窗、注销确认（取消）", async ({ page }) => {
-  await loginUser(page);
   await page.goto("/user/account");
   const card = page.locator(".account-card").first();
   const badge = card.locator(".account-title-row .badge");
 
   // ① 暂停：确认框 → 就地状态行 + 徽标变「已取消」
+  // 确认族已换 EP（ElMessageBox，uz7w）；选择器同时认两种模态，判据不变。
   await card.getByRole("button", { name: "暂停签到" }).click();
-  await page.locator(".modal-foot .btn:not(.btn--ghost)").click();
+  await page
+    .locator(".el-message-box__btns .el-button--primary, .modal-foot .btn:not(.btn--ghost)")
+    .first()
+    .click();
   await expect(card.locator(".state-line--flash")).toContainText("已暂停签到");
   await expect(badge).toHaveText("已取消");
 
@@ -103,25 +137,182 @@ test("用户端账号页：暂停/恢复往返、编辑保存、改密弹窗、�
   await page.keyboard.press("Escape");
 
   // ⑤ 注销账号：确认框出现（此处只验证入口与文案，不真的注销——那会销毁会话）
+  // 确认族走 EP（ElMessageBox）；两种模态都认，文案与按钮标签判据不变。
   await page.getByRole("button", { name: /注销账号/ }).click();
-  await expect(page.locator(".pm-backdrop")).toContainText("7 天内可撤销恢复");
-  await expect(page.locator(".modal-foot .btn:not(.btn--ghost)")).toHaveText("继续注销");
+  const resignBox = page.locator(".el-message-box, .pm-panel").first();
+  await expect(resignBox).toContainText("7 天内可撤销恢复");
+  await expect(
+    page.locator(".el-message-box__btns .el-button--danger, .modal-foot .btn:not(.btn--ghost)").first(),
+  ).toHaveText("继续注销");
   await page.keyboard.press("Escape");
+  await expect(resignBox).toBeHidden();
+});
+
+/** 种子账号（e2e-user-acct / 13800138001）的原始易班口令（见 e2e/server.py 的账号种子）。 */
+const SEED_PASSWORD = "p1";
+
+/** 关掉可能留在屏幕上的编辑弹窗。
+ *  保存失败（含「PUT 已发、响应不回」）时弹窗不关，遮罩会拦住「编辑」按钮，
+ *  还原动作就点不到（实测：点击超时吃满 test 预算）。 */
+async function dismissOpenDialog(page: import("@playwright/test").Page): Promise<void> {
+  const dialog = page.locator(".el-dialog");
+  if (await dialog.isVisible()) {
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden({ timeout: 5_000 });
+  }
+}
+
+/** 一次「编辑 + 填易班口令 + 保存」。成功 = 弹窗自行关闭；失败时弹窗留开。 */
+async function saveWithPassword(
+  page: import("@playwright/test").Page,
+  card: import("@playwright/test").Locator,
+  pw: string,
+  hiddenTimeout = 10_000,
+): Promise<void> {
+  await card.getByRole("button", { name: "编辑" }).click();
+  const dialog = page.locator(".el-dialog");
+  await expect(dialog).toBeVisible();
+  await dialog.locator('input[type="password"]').fill(pw);
+  await dialog.locator(".el-dialog__footer .btn--primary").click();
+  // 保存成功 = 对话框自行关闭；失败时表单留在原处并显示错误文案
+  await expect(dialog).toBeHidden({ timeout: hiddenTimeout });
+}
+
+/** 改密并保证还原种子口令：保存可能已落库但响应不回，此时弹窗留开——
+ *  还原前先关框，否则遮罩拦点击。还原无条件执行：口径口令写 p1 是幂等的。 */
+async function changePasswordWithRestore(
+  page: import("@playwright/test").Page,
+  card: import("@playwright/test").Locator,
+  pw: string,
+  hiddenTimeout = 10_000,
+): Promise<void> {
+  try {
+    await saveWithPassword(page, card, pw, hiddenTimeout);
+  } finally {
+    try {
+      await dismissOpenDialog(page);
+      await saveWithPassword(page, card, SEED_PASSWORD, 5_000);
+    } catch {
+      // 还原失败不能掩盖原始失败；下一轮 e2e 的种子会重置库。
+    }
+  }
+}
+
+test("用户端改自己账号的易班密码：保存必须走 PUT 并成功（R3-001）", async ({ page }) => {
+  // 缺陷形状：受门禁分支把方法写死成 POST，而自助面只注册 `PUT /api/my-accounts/<idx>`
+  // ⇒ 「编辑 + 改密码」恒 405。判据是**请求方法与最终落库结果**，不是某一次响应的状态码：
+  // 写请求带 X-CSRF-Token，页面在 403 后会重取 /api/me 的 token 再重发一次（既有自愈），
+  // 故一次流程里可能出现两条 PUT，只有第一条 403。断言 POST 为零、PUT 至少一条、对话框
+  // 关闭（失败时表单留开并显示错误），才是用户可见结果。
+  const methods: string[] = [];
+  page.on("request", (r) => {
+    if (/\/api\/my-accounts\/\d+$/.test(new URL(r.url()).pathname) && r.method() !== "GET") {
+      methods.push(r.method());
+    }
+  });
+
+  await page.goto("/user/account");
+  const card = page.locator(".account-card").first();
+  await expect(card.locator(".account-name")).toBeVisible();
+  // 首卡就是种子账号（同文件前序用例会改其名称，故不能用名称断言身份）。
+  // 它的原始口令是 SEED_PASSWORD（见 e2e/server.py 的账号种子）。
+
+  // 改成新密码（命中"写密码 ⇒ 受门禁提交"分支），并在任何失败路径上还原，
+  // 否则本用例中途失败会把夹具账号留在新密码，污染后续用例。
+  await changePasswordWithRestore(page, card, "E2eNewPass#2026");
+
+  expect(methods.filter((m) => m === "POST"),
+    "自助面没有注册 POST，发 POST 必然 405（R3-001 的缺陷形状）").toEqual([]);
+  expect(methods.filter((m) => m === "PUT").length).toBeGreaterThan(0);
+});
+
+test("改密响应丢失时还原仍执行：夹具口令不被污染（dix A-1）", async ({ page }) => {
+  // 真实用户动作：点「保存」后网络断——请求已到服务端（口令已改），响应没回来。
+  // 用户可见结果：本次保存失败、弹窗留开并显示错误；还原仍必须把种子口令写回，
+  // 否则后续用例拿着旧口令登录，整个套件被夹具污染（还原点不到「编辑」）。
+  await page.goto("/user/account");
+  const card = page.locator(".account-card").first();
+  await expect(card.locator(".account-name")).toBeVisible();
+
+  // 每次 PUT 的请求体与服务端状态码。403（CSRF 自愈的第一发）要原样回给页面，
+  // 只掐掉**第一条成功**（200）的响应：服务端已落库，浏览器侧看到网络错误。
+  const puts: Array<{ body: string; status: number }> = [];
+  let landedResponse: { status: number; body: string } | null = null;
+  let lost = false;
+  await page.route(/\/api\/my-accounts\/\d+$/, async (route) => {
+    const req = route.request();
+    if (req.method() !== "PUT") {
+      await route.continue();
+      return;
+    }
+    const body = req.postData() ?? "";
+    const resp = await route.fetch();
+    puts.push({ body, status: resp.status() });
+    if (!lost && resp.status() === 200) {
+      lost = true;
+      // 回包是落库之后生成的：留证后掐掉响应。
+      landedResponse = { status: resp.status(), body: await resp.text() };
+      await route.abort("failed");
+      return;
+    }
+    await route.fulfill({ response: resp });
+  });
+
+  let firstSaveFailed = false;
+  try {
+    await changePasswordWithRestore(page, card, "E2eNewPass#2026", 3_000);
+  } catch {
+    firstSaveFailed = true;
+  }
+  expect(firstSaveFailed, "响应丢失后第一次保存必须失败（否则本用例没测到窗口）").toBe(true);
+  expect(landedResponse, "必须有一次成功（200）的写被掐掉响应").toBeTruthy();
+  expect(landedResponse!.status, "服务端必须接受改写（写已落库）").toBe(200);
+  // 回包在 db.update_account 之后生成。JSON 里的中文是 \uXXXX 转义，必须解析后比。
+  const landedJson = JSON.parse(landedResponse!.body) as { ok?: boolean; msg?: string };
+  expect(landedJson.ok, "服务端回包必须在落库成功后才生成").toBe(true);
+  expect(landedJson.msg).toContain("已保存");
+  const landed = puts.find((p) => p.status === 200);
+  expect(landed, "第一次保存必须真落库一次（200）").toBeTruthy();
+  expect(landed!.body).toContain("E2eNewPass#2026");
+  const last = puts[puts.length - 1];
+  expect(last.status, "还原 PUT 必须成功").toBe(200);
+  expect(last.body, "还原 PUT 必须把种子口令 p1 写回").toContain('"p1"');
+  await expect(page.locator(".el-dialog")).toBeHidden();
 });
 
 test("管理端我的账号：归属邮箱偏好可用、无注销卡、账号行与改密入口在位", async ({ page }) => {
+  // 末尾的「待审核刷新」段各等 1 个 10 秒轮询节拍，30 秒默认预算不够；标 slow 放宽到 3×。
+  test.slow();
   const resp = await page.request.post("/api/login", { data: { username: "admin", password: "TestPass1234!" } });
   expect(resp.ok()).toBeTruthy();
   await page.goto("/my/account");
 
   await expect(page.locator("h1.page-title")).toHaveText("我的账号");
   await expect(page.locator(".account-card").first().locator(".account-name")).toHaveText("e2e-admin-acct");
+
+  // R3-023：管理员编辑自己的账号，detail 必须按全局下标取，不能按本人视图的过滤后下标。
+  // 旧实现取到他人详情 ⇒ 快照手机号不匹配 ⇒ 提交必 409、弹窗不关。
+  const adminCard = page.locator(".account-card").first();
+  await adminCard.getByRole("button", { name: "编辑" }).click();
+  const adminDialog = page.locator(".el-dialog");
+  await expect(adminDialog).toBeVisible();
+  await expect(adminDialog.locator('input[placeholder="如：电力123张三"]')).toHaveValue("e2e-admin-acct");
+  await adminDialog.locator(".el-dialog__footer .btn--primary").click();
+  await expect(adminDialog).toBeHidden();
+
   await expect(page.getByRole("button", { name: /修改密码/ })).toBeVisible();
   await expect(page.locator(".card", { hasText: "邮件提醒" }).first()).toBeVisible();
 
   // 管理端专有：显示偏好在位且可切换（本机偏好，落 localStorage，不写服务端）
   const prefCard = page.locator(".card", { hasText: "显示偏好" }).first();
   await expect(prefCard).toBeVisible();
+  // 说明块吃满行内剩余宽度：旧实现是固定 167px 的收缩盒，长说明被省略号截断。
+  const prefRow = prefCard.locator(".set-row").first();
+  const prefText = prefRow.locator(".set-row-text");
+  const rowBox = await prefRow.boundingBox();
+  const textBox = await prefText.boundingBox();
+  expect(rowBox && textBox).toBeTruthy();
+  expect(textBox!.width, "说明块未吃满行宽（旧固定 167px）").toBeGreaterThan(rowBox!.width - 100);
   const sw = prefCard.locator("input[type=checkbox]");
   const label = prefCard.locator("label.switch");
   await expect(sw).toBeChecked(); // 默认开（键缺失=开）
@@ -186,4 +377,44 @@ test("管理端我的账号：归属邮箱偏好可用、无注销卡、账号�
   await expect(normal.locator(".empty__msg")).toHaveText("无匹配结果");
   await normal.locator("[data-empty-clear]").click();
   await expect(row.locator(".usr-cell-mail")).toContainText("e2e***@example.com");
+
+  // ---- 待审核刷新（工单 vff0）----
+  // 判据：列表、导航徽标与总览 KPI **不经任何用户操作**，在数据外部变化后 ≤1 个轮询
+  // 周期（10 秒）内更新。并进本用例（而非单开 spec）：/api/login 有 60 秒 10 次/IP 限速，
+  // 本套件已贴上限，多一次登录会把别处顶到 429（同本文件既有并入先例）。
+  // 外部变化（直连后端、不经页面 JS）→ 页面只能靠轮询发现，正是被测行为。
+  //
+  // 段一：/work/users 列表 + work-users 导航徽标（此刻在 /work/users，待处理组为空）。
+  const pendingPanel = page.locator('[data-usr-panel="pending"]');
+  const usersBadge = page.locator('[data-nav-badge="work-users"]');
+  await expect(pendingPanel.locator(".empty__msg")).toHaveText("暂无待处理用户");
+  await expect(usersBadge).toBeHidden();
+
+  await addPendingUser(page, "e2e刷新A", "e2e-refresh-a@refresh-e2e.dev", "13712340001");
+  // 超时取 14 秒：够 1 个 10 秒节拍 + 响应余量，且明显小于 2 个节拍（20 秒），
+  // 故断言成立即证明"≤1 个轮询周期"，而不是"碰巧在某次刷新里看到"。
+  await expect(pendingPanel.locator("tbody .usr-cell-mail").first()).toContainText("e2e***@refresh-e2e.dev", {
+    timeout: 14_000,
+  });
+  await expect(page.locator('[data-usr-tab="pending"]')).toContainText("1 人", { timeout: 14_000 });
+  await expect(usersBadge).toHaveText("1", { timeout: 14_000 });
+  await expect(pendingPanel.locator(".empty__msg")).toBeHidden();
+
+  // 复原：软删该账号 → 用户回到空用户组。同一节拍也应把徽标收回。
+  await softDeleteAccount(page, "e2e刷新A");
+  await expect(pendingPanel.locator(".empty__msg")).toHaveText("暂无待处理用户", { timeout: 14_000 });
+  await expect(usersBadge).toBeHidden({ timeout: 14_000 });
+
+  // 段二：总览 KPI「待处理账号」（与账号管理页/徽标同源：待审核 + 已拒绝）。
+  await page.goto("/data/dashboard");
+  const kpiValue = page.locator("#kpi-pending-value");
+  const kpiSub = page.locator("#kpi-pending-sub");
+  await expect(kpiValue).toHaveText("2");
+  await expect(kpiSub).toContainText("待审核 1 · 已拒绝 1");
+
+  await addPendingUser(page, "e2e刷新B", "e2e-refresh-b@refresh-e2e.dev", "13712340002");
+  await expect(kpiValue).toHaveText("3", { timeout: 14_000 });
+  await expect(kpiSub).toContainText("待审核 2 · 已拒绝 1", { timeout: 14_000 });
+
+  await softDeleteAccount(page, "e2e刷新B");
 });

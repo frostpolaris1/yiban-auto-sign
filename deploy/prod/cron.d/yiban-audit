@@ -1,0 +1,17 @@
+# /etc/cron.d/yiban-audit —— 每日 02:30 审计取证校验（生产 cron 执行件，MF-42 收编）
+# 仓库源：deploy/prod/cron.d/yiban-audit（install.sh 装到 /etc/cron.d/，0644 root:root）
+# **模板**：命令行里的 @YIBAN_APP_DIR@ 由 install.sh 渲染成检出根（默认 /opt/yiban-auto-sign）。
+#   仓库里的这份留占位符，源码不再硬写一个部署路径；来源断言按同一口径解析。
+# 谁调用：scripts/audit_verify.py（链自洽 + 库外锚点比对 + 写入欠账；与 web 每日线程共用）
+# 退出码：0 通过、1 检出篡改/删除、2 无法定论（详见 scripts/audit_verify.py 头部）
+# 身份：yiban（与既有 cron.d 表同）。audit_verify.py 只读，对象是 yiban 属主的 db/.env/锚点。
+# 命令行先 `cd @YIBAN_APP_DIR@/`（检出根**带尾斜杠**）：--db/--env 是相对路径，必须先
+# 定位检出根。尾斜杠保留旧形态；check-cron-provenance.sh 把占位符解析成同一检出根后
+# 按 `$APP_ROOT/*` 判可回指。
+# --db/--env 落在检出内的 data/（工单 ybg8）：运行数据与代码分离，检出根才能属 root
+# 且组/其他不可写（install.sh 的 M01 门）。该目录由 install.sh 建立（属 yiban、0700）。
+# 排期在 02:00 备份之后（README「备份与恢复」）：校验当日备份前的库与锚点。
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+30 2 * * * yiban cd @YIBAN_APP_DIR@/ && .venv/bin/python3 scripts/audit_verify.py --db data/yiban.db --env data/.env >> /var/log/yiban/audit-verify.log 2>&1

@@ -1,14 +1,19 @@
-"""SPEC §5 ``信封``、``usersure`` 与 ``挑战检测`` 用例组。"""
+"""SPEC §5 ``信封``、``usersure`` 与 ``挑战检测`` 用例组。
+
+999 与挑战页用例的输入走回放层。那几份夹具标 synthetic（未实拍）。
+回放清单逐份登记来源。
+"""
 
 from __future__ import annotations
 
 import pytest
 
-from yiban.protocol import (
+from yiban.adapters.protocol_yiban import (
     Envelope,
     ParseError,
     SessionExpired,
     UsersureResult,
+    code_is_ok,
     looks_like_challenge,
     parse_api_envelope,
     parse_usersure_response,
@@ -30,6 +35,14 @@ _ALL_GOOD_FIXTURES = [
 
 
 # --- 信封 ------------------------------------------------------------------
+
+def test_code_is_ok_accepts_numeric_and_string_zero():
+    """成功判据与解析层同一容忍度：0 与 "0" 都成功，其余都不是（SPEC §3.1）。"""
+    assert code_is_ok(0) is True
+    assert code_is_ok("0") is True
+    for bad in (None, 1, "1", "e001", "", False):
+        assert code_is_ok(bad) is False, f"{bad!r} 不得判成功"
+
 
 def test_code_zero_returned_verbatim():
     """code:0 的信封原样返回。"""
@@ -53,15 +66,15 @@ def test_accepts_bytes_input():
     assert env.code == 0
 
 
-def test_code_999_raises_session_expired():
+def test_code_999_raises_session_expired(read_replay):
     with pytest.raises(SessionExpired) as excinfo:
-        parse_api_envelope('{"code":999,"msg":"expired","data":null}')
+        parse_api_envelope(read_replay("session_expired"))
     assert "expired" in str(excinfo.value)
 
 
-def test_code_999_as_string_also_raises():
+def test_code_999_as_string_also_raises(read_replay):
     with pytest.raises(SessionExpired):
-        parse_api_envelope('{"code":"999","msg":"","data":null}')
+        parse_api_envelope(read_replay("session_expired_string_code"))
 
 
 def test_truncated_json_raises_parse_error():
@@ -112,21 +125,20 @@ def test_normal_fixtures_are_not_challenges(name, read_fixture):
     assert looks_like_challenge(read_fixture(name)) is False
 
 
-def test_ydclearance_marker_detected():
-    assert looks_like_challenge("<html><body>ydclearance=abc</body></html>") is True
+def test_ydclearance_marker_detected(read_replay):
+    assert looks_like_challenge(read_replay("challenge_ydclearance")) is True
 
 
-def test_fengkongcloud_marker_detected():
-    assert looks_like_challenge("... fengkongcloud ...") is True
+def test_fengkongcloud_marker_detected(read_replay):
+    assert looks_like_challenge(read_replay("challenge_fengkongcloud")) is True
 
 
-def test_captcha_marker_case_insensitive():
-    assert looks_like_challenge("<html>CAPTCHA</html>") is True
+def test_captcha_marker_case_insensitive(read_replay):
+    assert looks_like_challenge(read_replay("challenge_captcha")) is True
 
 
-def test_acw_sc_challenge_script_detected():
-    page = "<html><head><script>var acw_sc__v2 = 'x';</script></head></html>"
-    assert looks_like_challenge(page) is True
+def test_acw_sc_challenge_script_detected(read_replay):
+    assert looks_like_challenge(read_replay("challenge_acw_sc")) is True
 
 
 def test_plain_json_is_not_a_challenge():

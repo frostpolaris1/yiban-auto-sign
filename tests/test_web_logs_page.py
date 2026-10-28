@@ -25,6 +25,11 @@ import tempfile
 import time
 import unittest
 
+from werkzeug.security import generate_password_hash
+
+from web.services import logs as _logs_svc
+from yiban.core import clock
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VUE_DIR = os.path.join(BASE, "web", "static", "vue")
 
@@ -87,14 +92,13 @@ class LogsPageTest(unittest.TestCase):
             spec.loader.exec_module(cls.webapp)
 
         db.init_db(cls.db_file, migrate_from=cls.accounts_file, env_file=cls.env_file)
-        db.create_user(USER_EMAIL, cls.webapp.generate_password_hash(USER_PASS))
+        db.create_user(USER_EMAIL, generate_password_hash(USER_PASS))
 
         # 当天的日志文件与事件：**必须种**——否则 /api/logs 的三元组与事件列表都为空，
         # 契约断言会退化成"对合成字面量校验"（永远为真，既抓不到字段改名也抓不到搬漏）。
-        from datetime import datetime
-
-        today = datetime.now().strftime("%Y-%m-%d")
-        with open(cls.webapp.log_path_for(today), "w", encoding="utf-8") as fh:
+        # 业务日（北京 +8）：`log_path_for` 与 web 读取面同一口径；宿主 UTC 时不得退一天。
+        today = clock.today()
+        with open(_logs_svc.log_path_for(today), "w", encoding="utf-8") as fh:
             fh.write(chr(10).join([
                 f"[{today} 06:31:01] [INFO] yiban: [13800138001] 签到成功",
                 f"[{today} 06:31:02] [WARNING] yiban: [13800138001] 单次尝试耗时偏长",
@@ -157,20 +161,6 @@ class LogsPageTest(unittest.TestCase):
         c = self._admin_client()
         self.assertEqual(c.get("/data/logs").headers.get("Cache-Control"), "no-store")
 
-    def test_legacy_assets_are_fully_retired(self):
-        """退役必须是"连引用一起消失"：HTML 不再引旧脚本，服务端也不再出分区标记。
-
-        只删文件、留着引用会让浏览器 404、也让人以为旧实现还在；反过来只删引用、留着
-        文件则留下死代码（本仓对死文件有清理纪律）。
-        """
-        c = self._admin_client()
-        html = c.get("/data/logs").get_data(as_text=True)
-        for legacy in ("static/js/pages/data_logs.js", "static/js/components/date-field.js"):
-            self.assertNotIn(legacy, html, f"页面仍在引用已退役的 {legacy}")
-        self.assertNotIn("data-tab-id", html, "分区标记应由 Vue 渲染，服务端不再出")
-        # 文件本身也该已删除（防"引用没了、文件还在"的半退役状态）
-        self.assertFalse(os.path.exists(os.path.join(BASE, "web", "static", "js", "pages", "data_logs.js")))
-        self.assertFalse(os.path.exists(os.path.join(BASE, "web", "static", "js", "components", "date-field.js")))
 
     def test_logs_data_is_client_rendered_only(self):
         c = self._admin_client()

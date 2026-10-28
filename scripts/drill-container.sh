@@ -3,8 +3,7 @@
 # drill-container.sh —— 47 号测试机「容器形态 e2e 演练」一键脚本
 # ============================================================
 # 用途：
-#   把 docs/dev/production-isolation-rehearsal-plan-20260925.md §5 的容器形态
-#   操作单（C0~C6）从 1.5 小时手工操作压成一条命令：造数 → 构建 → 起内部网
+#   把容器形态操作单（C0~C6）从 1.5 小时手工操作压成一条命令：造数 → 构建 → 起内部网
 #   容器 → 起 mock 上游 → 整轮真签到 → 逐条自动断言 → 清理，全程证据落 evidence/。
 #   验证的链路是**容器形态的真实签到路径**：
 #     supervisord → scripts/container_scheduler.py → 子进程 scripts/signin.py
@@ -38,7 +37,7 @@
 #   2. 本机时钟必须已过 06:31（见下方"为什么窗口起点只留 60s 余量"）。
 #   3. 宿主可用 docker；证书由 openssl 直产（CA 一张 + 服务器证书，SAN 含五域名）。
 #   4. 宿主 python 需能 import db（脚本走仓库内 scripts/db.py 兼容壳，复用宿主 venv）。
-#   5. mock = tests/fake_yiban_server.py。镜像按 M84 不含 tests/，用 docker cp 注入
+#   5. mock = yiban/adapters/protocol_fake/__init__.py（随 `COPY yiban/` 已进镜像；
 #      后 docker exec -d 拉起（scripts/loadtest/ 工具族已裁撤，此为现状适配）。
 #
 # 为什么窗口起点只留 60s 余量（2026-10-02 实测修正了操作单的 +4min）：
@@ -115,8 +114,14 @@ DRILL_ENV_HEAD="# 容器演练专用 .env"
 STEP="init"
 CLEANED=0
 EV=""
+# P12-25：探测脚本落私有临时目录（0700、mktemp 随机名），不用世界可写的
+# /tmp/drill_*.py 固定名——同机其他本地用户可预建同名文件/符号链接，替换掉
+# "隔离红线破了没破"的判据本身。目录纳入 cleanup 与 C7 残留对账。
+DRILL_TMP="$(mktemp -d "${TMPDIR:-/tmp}/yiban-drill.XXXXXX")" \
+  || { printf '\n[FAIL] 前提不满足：无法创建私有临时目录（mktemp -d 失败）\n' >&2; exit 2; }
+chmod 700 "$DRILL_TMP"
 
-usage() { sed -n '2,75p' "$SELF"; }
+usage() { sed -n '2,74p' "$SELF"; }
 
 die()  { printf '\n[FAIL] 步骤「%s」失败：%s\n' "$STEP" "$*" >&2; exit 1; }
 pre()  { printf '\n[FAIL] 前提不满足：%s\n' "$*" >&2; exit 2; }
@@ -143,6 +148,7 @@ drill_owned_data() {
 
 cleanup() {
   rc=$?
+  rm -rf "$DRILL_TMP" 2>/dev/null || true
   if [ "$CLEANED" -eq 0 ]; then
     CLEANED=1
     docker rm -f "$CTR" >/dev/null 2>&1 || true
@@ -199,12 +205,28 @@ done
 [ -f "$ROOT/docker/Dockerfile" ]  || pre "不在演练树根目录（缺 docker/Dockerfile）"
 [ -f "$ROOT/yiban/__init__.py" ] || pre "缺 yiban/__init__.py"
 [ -f "$ROOT/docker/scheduler.py" ] || pre "缺 docker/scheduler.py"
-[ -f "$ROOT/tests/fake_yiban_server.py" ] || pre "缺 tests/fake_yiban_server.py"
+[ -f "$ROOT/yiban/adapters/protocol_fake/__init__.py" ] || pre "缺 yiban/adapters/protocol_fake/__init__.py"
 command -v docker >/dev/null || pre "docker 不可用"
 [ -x "$HOST_PYTHON" ] || pre "宿主解释器不可用：$HOST_PYTHON"
+# 宿主脚本的路径事实（业务日 / 按天日志名）与宿主入口同源：scripts/lib/host_paths.sh。
+. "$(dirname "${BASH_SOURCE[0]}")/lib/host_paths.sh"
+PY="$HOST_PYTHON"
+# host_paths.business_day() 从 $APP_DIR 导入 yiban.core.clock（与 run.sh 同口径）。
+# 缺它时 C6 在 `set -u` 下以「APP_DIR: unbound variable」失败（2026-10-25 实跑）。
+APP_DIR="$ROOT"
+export YIBAN_APP_DIR="$ROOT"
+# 容器形态的日志基名（compose 的 YIBAN_LOG_FILE=/data/logs/sign.log；宿主侧 bind 到
+# ./data/logs）。只在本脚本内使用，不导出。
+YIBAN_LOG_FILE="data/logs/sign.log"
+# 假上游轨迹的固定基名唯一在 protocol_fake（census-P2-fake-server）：容器里写、
+# 宿主读，两端必须同名。取不到即无可依据的落点，直接拒绝开跑。
+MOCK_TRACE_BASENAME="$("$HOST_PYTHON" -c 'import sys; sys.path.insert(0, sys.argv[1]); from yiban.adapters.protocol_fake import TRACE_BASENAME; print(TRACE_BASENAME)' "$ROOT")" \
+  || pre "无法从 protocol_fake 取得轨迹基名（TRACE_BASENAME）"
+[ -n "$MOCK_TRACE_BASENAME" ] || pre "protocol_fake.TRACE_BASENAME 为空"
 command -v openssl >/dev/null || pre "openssl 不可用"
-# 调度器首签闩锁是无上界判定，本机时钟未过 06:31 则整轮永不触发
-NOW_HM="$(date +%H:%M)"
+# 调度器首签闩锁是无上界判定（容器被强制 TZ=Asia/Shanghai），本机时钟未过 06:31
+# 则整轮永不触发。判据必须按**北京钟**取，不能取宿主本地钟（P12-24）。
+NOW_HM="$(TZ=Asia/Shanghai date +%H:%M)"
 if [ "$NOW_HM" \< "$FIRST_LATCH" ]; then
   pre "本机时钟 $NOW_HM 未过容器调度器首签闩锁 $FIRST_LATCH，本轮不会自动触发；请稍后再跑"
 fi
@@ -267,7 +289,19 @@ rm -f data/mock.ready
 NOW_S=$(date +%s)
 WIN_S=$((NOW_S + LEAD_SEC))
 WIN_E=$((NOW_S + LEAD_SEC + SPAN_SEC))
-[ "$((WIN_S / 86400))" -eq "$((WIN_E / 86400))" ] || pre "合成窗口跨日历日，请调小 --window-span-sec"
+# 跨日判定按**业务钟 clock.TZ**（时区唯一定义点）：宿主/容器本地时区不参与。
+# 旧写法用 +8 小时硬算日界，是第二份时区定义（R-7，2026-10-25 审查）。
+if ! "$HOST_PYTHON" - "$ROOT" "$WIN_S" "$WIN_E" <<'PY'
+import datetime, sys
+sys.path.insert(0, sys.argv[1])
+from yiban.core.clock import TZ
+s = datetime.datetime.fromtimestamp(int(sys.argv[2]), TZ)
+e = datetime.datetime.fromtimestamp(int(sys.argv[3]), TZ)
+raise SystemExit(0 if s.date() == e.date() else 1)
+PY
+then
+  pre "合成窗口跨日历日（北京业务日），请调小 --window-span-sec"
+fi
 export DRILL_TREE="$ROOT" DRILL_N="$ACCOUNTS" DRILL_WS="$WIN_S" DRILL_WE="$WIN_E"
 "$HOST_PYTHON" - > "$EV/c2-seed.log" 2>&1 <<'PY' || { cat "$EV/c2-seed.log" >&2; die "造数失败（c2-seed.log）"; }
 import contextlib, datetime, os, sys
@@ -276,6 +310,7 @@ TREE = os.environ["DRILL_TREE"]
 N = int(os.environ["DRILL_N"])
 DB, ENV = TREE + "/data/yiban.db", TREE + "/data/.env"
 
+sys.path.insert(0, TREE)
 sys.path.insert(0, TREE + "/scripts")
 os.environ["YIBAN_ENV_FILE"] = ENV
 os.environ["YIBAN_DB_FILE"] = DB
@@ -283,8 +318,10 @@ os.umask(0o77)
 os.makedirs(TREE + "/data/state", exist_ok=True)
 os.makedirs(TREE + "/data/logs", exist_ok=True)
 
-start = datetime.datetime.fromtimestamp(int(os.environ["DRILL_WS"]))
-end = datetime.datetime.fromtimestamp(int(os.environ["DRILL_WE"]))
+# 窗口与业务日都取 clock.TZ：与引擎同一时基，宿主时区不参与（R-7）。
+from yiban.core import clock
+start = datetime.datetime.fromtimestamp(int(os.environ["DRILL_WS"]), clock.TZ)
+end = datetime.datetime.fromtimestamp(int(os.environ["DRILL_WE"]), clock.TZ)
 assert start.date() == end.date(), "合成窗口不得跨日历日"
 
 if not os.path.exists(ENV):
@@ -292,7 +329,7 @@ if not os.path.exists(ENV):
         f.write("# 容器演练专用 .env（drill-container.sh 生成，密钥自造，严禁入库）\n")
 
 import db  # noqa: E402  scripts/db.py 兼容壳
-from yiban.infra import env_io  # noqa: E402
+from yiban.adapters.config import env_io  # noqa: E402
 
 db.init_db(DB, env_file=ENV, cleanup=False, migrate=True)
 
@@ -301,7 +338,9 @@ db.init_db(DB, env_file=ENV, cleanup=False, migrate=True)
 # 会让本轮的 INSERT 全部被忽略** —— pending_count 归零 → 执行体一个任务都领不到 →
 # "✅ 0 成功，❌ 3 失败" 且一次请求都不发。清空当日台账行，本轮才是真正的一轮。
 # 账号/用户/密钥不动（.env 与账号密文继续复用，密钥仍自造）。
-_day = datetime.date.today().isoformat()
+# 业务日取 +8（上面 start 已按 clock.TZ 构造）：宿主是 UTC 时 date.today() 是 UTC 日，
+# 会清错那一天的台账行，上一轮的北京业日任务残留 ⇒ 本轮零任务（同 F3 形状）。
+_day = start.date().isoformat()
 _conn = db.get_conn()
 with db._conn_lock:
     _conn.execute("DELETE FROM sign_tasks WHERE day=?", (_day,))
@@ -333,7 +372,7 @@ env_io.write_env_keys(ENV, {
     "YIBAN_GLOBAL_PAUSE": "0",
     "YIBAN_ACCOUNT_GAP_MAX": "2",
     "YIBAN_SIGN_ORDER": "sequence",
-    "YIBAN_SIGN_DIST": "uniform",
+    "YIBAN_SIGN_DIST": "front",
     # 演练轮可能落在周末；置位周末门，否则 day_off 直接退出一轮不发请求
     "YIBAN_SATURDAY_SIGN": "1",
     "YIBAN_SUNDAY_SIGN": "1",
@@ -366,7 +405,9 @@ SAN="$CADIR/san.ext"
 } > "$SAN"
 openssl req -x509 -newkey rsa:2048 -sha256 -days 2 -nodes \
   -keyout "$CADIR/ca.key" -out "$CADIR/ca.pem" \
-  -subj "/CN=yiban-drill-ca" > "$EV/c3-certs.log" 2>&1
+  -subj "/CN=yiban-drill-ca" \
+  -addext "basicConstraints=critical,CA:TRUE" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign" > "$EV/c3-certs.log" 2>&1
 openssl req -newkey rsa:2048 -sha256 -nodes \
   -keyout "$CADIR/server.key" -out "$CADIR/server.csr" \
   -subj "/CN=${DOMAINS[0]}" >> "$EV/c3-certs.log" 2>&1
@@ -389,7 +430,10 @@ for d in "${DOMAINS[@]}"; do ADD_HOST+=(--add-host "$d:127.0.0.1"); done
 
 # environment 照抄 docker-compose.yml 的 services.yiban.environment
 # （release-gate §2④：缺键会得到"打不开数据库"的假失败）
+# 端口/线程数按 compose 同口径注入：`docker run` 没有 compose 的 env_file，
+# 这里显式读同一份值表（#209 之后镜像不再有 EXPOSE/ENV 的端口字面量）。
 docker run -d --name "$CTR" --network "$NET" \
+  --env-file "$ROOT/deploy/web.env" \
   "${ADD_HOST[@]}" \
   --security-opt no-new-privileges:true --cap-drop ALL \
   --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
@@ -408,24 +452,24 @@ docker run -d --name "$CTR" --network "$NET" \
   -e CURL_CA_BUNDLE=/data/loadtest/ca/ca.pem \
   -v "$ROOT/data:/data" \
   "$IMAGE" > "$EV/c4-container-id.txt"
-# 不发布任何宿主端口（-p 一个都没有）：web 只在容器内 127.0.0.1:17892 可达
+# 不发布任何宿主端口（-p 一个都没有）：web 只在容器内回环可达（端口见部署面值表）
 docker port "$CTR" > "$EV/c4-ports.txt"
 [ ! -s "$EV/c4-ports.txt" ] || die "容器发布了宿主端口（红线），见 c4-ports.txt"
 
 # ---- C5 mock 上游 + 判据（web / sched / RestartCount / 自签负向 / 出口） ---
 step "C5 mock 上游 + 容器判据"
-docker cp tests/fake_yiban_server.py "$CTR:/tmp/fake_yiban_server.py"
+docker cp yiban/adapters/protocol_fake/__init__.py "$CTR:/tmp/fake_yiban_server.py"
 docker exec -d "$CTR" python3 /tmp/fake_yiban_server.py \
   --host 127.0.0.1 --port 443 --no-ipv6 \
   --cert /data/loadtest/ca/server.pem --key /data/loadtest/ca/server.key \
-  --log /data/logs/mock.jsonl --ready-file /data/mock.ready
+  --log "/data/logs/$MOCK_TRACE_BASENAME" --ready-file /data/mock.ready
 for _ in $(seq 1 30); do
   if [ -f data/mock.ready ]; then break; fi
   sleep 1
 done
 [ -f data/mock.ready ] || die "mock 未在 30s 内就绪"
 
-cat > /tmp/drill_tls_pos.py <<'PY'
+cat > "$DRILL_TMP/drill_tls_pos.py" <<'PY'
 import sys, requests
 try:
     r = requests.get("https://oauth.yiban.cn/__health", timeout=5)
@@ -435,7 +479,7 @@ except Exception as e:
     print("POS-FAIL", type(e).__name__, e)
     sys.exit(4)
 PY
-cat > /tmp/drill_tls_neg.py <<'PY'
+cat > "$DRILL_TMP/drill_tls_neg.py" <<'PY'
 import sys, requests
 try:
     r = requests.get("https://oauth.yiban.cn/__health", timeout=5)
@@ -448,7 +492,7 @@ except Exception as e:
     print("NEG-OTHER", type(e).__name__, e)
     sys.exit(6)
 PY
-cat > /tmp/drill_egress.py <<'PY'
+cat > "$DRILL_TMP/drill_egress.py" <<'PY'
 import socket, sys
 # RFC 5737 文档地址；--internal 网络里必须连不通（结构性隔离的实证）
 try:
@@ -460,9 +504,9 @@ except OSError as e:
     print("EGRESS-BLOCKED", type(e).__name__, e)
     sys.exit(0)
 PY
-docker cp /tmp/drill_tls_pos.py "$CTR:/tmp/pos.py"
-docker cp /tmp/drill_tls_neg.py "$CTR:/tmp/neg.py"
-docker cp /tmp/drill_egress.py "$CTR:/tmp/egress.py"
+docker cp "$DRILL_TMP/drill_tls_pos.py" "$CTR:/tmp/pos.py"
+docker cp "$DRILL_TMP/drill_tls_neg.py" "$CTR:/tmp/neg.py"
+docker cp "$DRILL_TMP/drill_egress.py" "$CTR:/tmp/egress.py"
 
 {
   echo "== 挂 CA 时 mock 必须可达 =="
@@ -479,9 +523,12 @@ grep -q "^EGRESS-BLOCKED " "$EV/c5-egress.log" || die "出口探测结果异常�
 note "自签证书挂 CA 可达 / 摘 CA SSLError；出口 203.0.113.7:80 连不通"
 
 WEB=""
+# 端口从容器环境读（值表 deploy/web.env 经 entrypoint 导出），不在此再写一份字面量。
+WEB_PORT="$(docker exec "$CTR" printenv YIBAN_WEB_PORT 2>/dev/null || true)"
+[ -n "$WEB_PORT" ] || die "容器环境缺 YIBAN_WEB_PORT（值表未进镜像）"
 for _ in $(seq 1 60); do
   WEB="$(docker exec "$CTR" python3 -c \
-    "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:17892/login',timeout=3).status)" \
+    "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:${WEB_PORT}/login',timeout=3).status)" \
     2>/dev/null || true)"
   if [ "$WEB" = "200" ]; then break; fi
   sleep 1
@@ -497,13 +544,14 @@ note "web=200（容器内回环）、sched 进程在位、RestartCount=0、心�
 
 # ---- C6 整轮签到 -----------------------------------------------------------
 step "C6 整轮签到（等窗口开闸 → 真签到链 → 汇总）"
-TODAY="$(date +%F)"
+TODAY="$(business_day)"
+DAY_LOG="$(yiban_day_log_file data/state)"
 LOG=""
 DEADLINE=$(( $(date +%s) + TIMEOUT_SEC ))
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-  if [ -f "data/logs/sign-$TODAY.log" ] \
-     && grep -qF '==== 签到汇总' "data/logs/sign-$TODAY.log" 2>/dev/null; then
-    LOG="data/logs/sign-$TODAY.log"
+  if [ -f "$DAY_LOG" ] \
+     && grep -qF '==== 签到汇总' "$DAY_LOG" 2>/dev/null; then
+    LOG="$DAY_LOG"
     break
   fi
   sleep 5
@@ -519,7 +567,7 @@ note "签到整轮完成：✅ $ACCOUNTS 成功，❌ 0 失败"
 
 # ---- C7 mock 轨迹 + 宿主零副作用 + 清理对账 --------------------------------
 step "C7 mock 请求轨迹 / 宿主零副作用 / 清理对账"
-cp -f data/logs/mock.jsonl "$EV/c7-mock.jsonl" 2>/dev/null || true
+cp -f "data/logs/$MOCK_TRACE_BASENAME" "$EV/c7-mock.jsonl" 2>/dev/null || true
 if ! "$HOST_PYTHON" - "$ACCOUNTS" "$EV/c7-mock.jsonl" > "$EV/c7-mock-trace.txt" 2>&1 <<'PY'
 import json, sys
 from collections import Counter
@@ -572,6 +620,9 @@ note "宿主 ss -ltnp 与 /etc/hosts md5 前后零变化"
 docker rm -f "$CTR" >/dev/null
 docker network rm "$NET" >/dev/null
 CLEANED=1
+# P12-25：临时探测目录也纳入残留对账（与容器/网络同等对待），删后自检。
+rm -rf "$DRILL_TMP"
+[ ! -e "$DRILL_TMP" ] || die "私有临时目录残留（$DRILL_TMP）"
 docker ps -a --filter "name=^${CTR}$" --format '{{.Names}}' > "$EV/c7-leftover-ctr.txt"
 docker network ls --filter "name=^${NET}$" --format '{{.Name}}' > "$EV/c7-leftover-net.txt"
 [ ! -s "$EV/c7-leftover-ctr.txt" ] || die "容器残留（见 c7-leftover-ctr.txt）"
@@ -583,7 +634,8 @@ note "容器与网络已清理、无残留；镜像 $IMAGE 保留供复跑"
 # ---- 汇总 ------------------------------------------------------------------
 step "演练结论"
 printf 'window=%s~%s\nfinished=%s\nresult=PASS\n' \
-  "$(date -d "@$WIN_S" +%H:%M:%S)" "$(date -d "@$WIN_E" +%H:%M:%S)" "$(date -Is)" >> "$EV/run.meta"
+  "$(TZ=Asia/Shanghai date -d "@$WIN_S" +%H:%M:%S)" \
+  "$(TZ=Asia/Shanghai date -d "@$WIN_E" +%H:%M:%S)" "$(date -Is)" >> "$EV/run.meta"
 
 cat <<EOF
 

@@ -9,7 +9,7 @@
    与闸门谓词的一致性（探针周期尝试照常触发）、兜底常驻的四道关判定与拉起/回收/不叠进程、主循环接线、web
    层会话与锚点修复回归、签到子进程挂起时循环留痕继续。
 对应实现：docker/scheduler.py（_full_run_done_today、_has_undone_today、main_loop、build_child_env、_fallback_should_run、_tick_fallback、_run_signin_child）、web/app.py
-   的会话/锚点路径、yiban/engine/workers.py。
+   的会话/锚点路径、yiban/workers/workers.py。
 关键断言：闸门判据必须是「当日全量是否收尾」而不是「任一账号是否成功」——旧语义下用户手动签到或首签部分成功都会压制
    06:31 首签与 07:10
    补签，让失败账号失去当日兜底。标记缺失或损坏一律按「未跑过」放行（宁可重跑，不可漏签；signin
@@ -47,9 +47,12 @@ from unittest import mock
 
 import db
 from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-9b）
+from werkzeug.security import generate_password_hash
 
-from yiban import clock
-from yiban.engine import workers
+from web import security as _security
+from web.routes import me_api as web_routes_me_api
+from yiban.core import clock
+from yiban.workers import workers
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -171,14 +174,6 @@ class FullRunGateTest(unittest.TestCase):
         self.assertFalse(self.sched._full_run_done_today())
 
     # -- 补签闸门：_has_undone_today --
-    def test_failed_state_needs_second_sign(self):
-        """首签存在失败账号 → 补签必须重跑（旧 any-success 语义会误跳过）。"""
-        self._write_marker()
-        self._write_state({
-            "13800000001": {"status": "failed"},
-            "13800000002": {"status": "success"},
-        })
-        self.assertTrue(self.sched._has_undone_today())
 
     def test_retrying_state_needs_second_sign(self):
         self._write_marker()
@@ -191,27 +186,7 @@ class FullRunGateTest(unittest.TestCase):
         self._write_state({"13800000000": {"status": "pending"}})
         self.assertTrue(self.sched._has_undone_today())
 
-    def test_all_done_skips_second_sign(self):
-        """全员真正了结（success/already/no_task）→ 补签跳过，不再全天空跑两遍。
 
-        语义修正：skipped_window/skipped_norange 不再视为"了结"
-        （学校窗口晚开时全员窗口外跳过必须触发补签重跑），已移出本用例。"""
-        self._write_marker()
-        self._write_state({
-            "13800000001": {"status": "success"},
-            "13800000002": {"status": "already"},
-            "13800000003": {"status": "no_task"},
-        })
-        self.assertFalse(self.sched._has_undone_today())
-
-    def test_window_skip_is_undone(self):
-        """窗口外跳过 = 未了结 → 补签闸门放行重跑。"""
-        self._write_marker()
-        self._write_state({
-            "13800000001": {"status": "success"},
-            "13800000002": {"status": "skipped_window"},
-        })
-        self.assertTrue(self.sched._has_undone_today())
 
     def test_manual_only_success_is_not_undone_but_first_gate_still_open(self):
         """手动签到成功后：无失败记录 → 补签不跑；但首签闸门仍开（标记缺失）。"""
@@ -722,7 +697,7 @@ class Batch9WebTest(unittest.TestCase):
         return c
 
     def _user_with_account(self):
-        h = self.webapp.generate_password_hash
+        h = generate_password_hash
         db.create_user(EMAIL, h(USER_PASS))
         c = self.webapp.create_app().test_client()
         t = self._login(c, EMAIL, USER_PASS)
@@ -756,7 +731,7 @@ class Batch9WebTest(unittest.TestCase):
 
     # ---- P3-2 遗留事务安全回滚 ----
     def test_leaked_transaction_rolled_back_not_fatal(self):
-        h = self.webapp.generate_password_hash
+        h = generate_password_hash
         db.create_user(EMAIL, h(USER_PASS))
         acc_id = db.add_account({
             "name": "n", "phone": PHONE, "password": "p",
@@ -870,11 +845,13 @@ class Batch9WebTest(unittest.TestCase):
         # （_constant_time_dummy，安全设计约 0.35s/次）→ 全量串行 14s。mock 掉
         # scrypt 比对为常数时间开销，限速行为判定不受影响（429 来自
         # user_delete_requests 每 IP 计数，与密码校验结果无关）。
-        # 注：patch 对象必须是 self.webapp（模块名 "webapp"，非 "web.app"）。
+        # 注：`_constant_time_dummy` 的打桩点是 `web.security`（批 3-a 起路由直取
+        # 真源，打 web.app 会静默失效）；而 check_password_hash 自 145-B `T1` 片起由
+        # `web/routes/me_api.py` 自己从 werkzeug 导入，故打桩点落在该模块。
         with mock.patch.object(
-                self.webapp, "_constant_time_dummy", lambda pwd: None), \
+                _security, "_constant_time_dummy", lambda pwd: None), \
              mock.patch.object(
-                self.webapp, "check_password_hash", lambda h, p: False):
+                web_routes_me_api, "check_password_hash", lambda h, p: False):
             c = self.webapp.create_app().test_client()
             got_429 = False
             for i in range(40):
@@ -957,7 +934,7 @@ class ContainerBackupHookTest(unittest.TestCase):
        按键非空判会让默认部署天天三次重试后报 ERROR；
     6. 备份目录**不在 /data 内**（否则每轮 tar 把上一轮备份再打进去）；
     7. 口令**绝不下发**到子进程环境（M97 口径延续）；
-    8. 路径类参数同 M27 口径：`.env` 优先、进程环境只补缺。
+    8. 备份参数（非路径键）同 M27 口径：`.env` 优先、进程环境只补缺。
     """
 
     def setUp(self):

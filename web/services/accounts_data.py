@@ -3,50 +3,53 @@
 """账号数据族：读取、展示序列化、字段校验与账号审核态词表。
 
 **功能**
-账号与用户的读取 `load_accounts` / `load_accounts_raw` / `load_users`、出站展示序列化
+账号与用户的读取 `load_accounts` / `load_accounts_raw` / `load_account_at` /
+`load_users`、出站展示序列化
 `mask_account`（含邮箱脱敏 `_mask_email` 与归属展示名 `_owner_display_of`）、按手机号
 定位 `find_account_index`、字段清洗与重提冲突文案 `validate_account` /
 `_duplicate_phone_error` / `_owner_has_other_live`、设备识别码表单协议折算
 `fold_phone_code`（`CLEAR_SENTINEL` 唯一真源）、按 idx 寻址的错位守卫 `_stale_idx_guard`、
 注销冷却剩余 `_delete_grace_remaining`、口令策略 `_password_policy_error` /
-`_admin_password_policy_error`、自选时间片的展示与预计时段 `_slot_to_label` / `_estimate_slot`，
-以及只读验证的入参构造 `_as_signin_account` 与验证包装 `_verify_account_clean`。
+`_admin_password_policy_error`、自选时间片的展示与预计时段 `_slot_to_label` / `_estimate_slot`、
+当日计划映射 `today_plan_map`、计划文案 `plan_message` / `plan_state_message`，
+以及只读验证的入参构造 `_as_signin_account` 与验证包装 `_verify_account_clean`；
+二段资料（工单 qmz4）的请求清洗、审计文案与出站装配
+`normalize_profile_input` / `profile_audit_detail` / `exposed_profile`
+（词表真源在存储层 `yiban.adapters.persistence.accounts.PROFILE_FIELDS`）。
 
 **归属**
-原 `web/app.py` 的模块级账号数据辅助，唯一真源在本模块；`web/app.py` 只保留名字面与
-转发，把它自己持有、而本模块需要的模块级名字——有效窗口视图 `sign_window_bounds`、
-`.env` 路径与读取器、账号读入口 `load_accounts`——在调用
-时刻现取后注入。账号审核态词表、口令策略常量、手机号正则与注销宽限期随本族搬入本模块，
-`web/app.py` 再导出以免 `m.*` 名字面损失。
+原 `web/app.py` 的模块级账号数据辅助，唯一真源在本模块。批 3-d 删除 `web/app.py`
+的转发包装：路由与测试直取本模块。账号审核态词表、口令策略常量、手机号正则与注销
+宽限期随本族搬入本模块。
 
 **复用**
 `mask_account` 只经 `_mask_email` / `_owner_display_of` 出站脱敏，不各自实现一份；读取族
-（`load_accounts` / `load_accounts_raw` / `load_users`）共用 `web.services.locks` 的
+（`load_accounts` / `load_accounts_raw` / `load_account_at` / `load_users`）共用
+`web.services.locks` 的
 `_file_lock`，避免同进程内读到未提交事务的部分结果；口令策略与只读验证各只有一处判据
 （`signin.verify_account`），注册、编辑与校验队列都经它取用。
 
 **通信**
 本模块不反向导入 `web.app`（本仓测试以别名加载 `app.py`，普通 import 会再执行一份副本
-模块）。有效窗口视图、`.env` 路径与读取器、账号读入口都作为显式参数接收：它们在
-`web.app` 上是会被测试打桩或赋值改写的模块级名字（`_sign_window` / `edge_config` /
-`read_env` / `load_accounts` 在既有测试里被打桩，`ENV_FILE` 被直接赋值；窗口打桩经
-`sign_window_bounds` 现取后穿透到本模块），本模块另持一份绑定会让这些改写静默失效。
-只读验证复用 `scripts/signin.py` 的 `signin.verify_account` 真源（登录 + 拉任务，
-不提交签到），不自建第二套探针。
+模块）。有效窗口视图按调用时刻从 `web.services.signstatus` 取（模块属性读法，故
+`_sign_window` / `edge_config` / `sign_window_bounds` 的打桩继续穿透）。只读验证复用
+`scripts/signin.py` 的 `signin.verify_account` 真源（登录 + 拉任务，不提交签到），
+不自建第二套探针。
 """
 
-import random
+import json
 import re
 from datetime import datetime, timedelta
 
 import signin  # 探针/子进程模块（scripts/ 在 sys.path 上，由 web.app 的引导保证）
 
+from web.services import signstatus as _signstatus
 from web.services.locks import _file_lock
-from yiban import clock
-from yiban.engine import schedule as yb_schedule
-from yiban.masking import mask_email, mask_email_local
-from yiban.masking import mask_phone as _mask_phone
-from yiban.store import db
+from yiban.adapters.persistence import db
+from yiban.core import clock
+from yiban.core import status as yiban_status
+from yiban.core.masking import mask_device_code, mask_email, mask_email_local
+from yiban.core.masking import mask_phone as _mask_phone
 
 # ---------------------------------------------------------------------------
 # 账号审核态词表（与签到状态码 STATUS_* 同名异义，故独立命名空间）
@@ -74,28 +77,29 @@ DELETE_GRACE_DAYS = db.SOFT_DELETE_RETENTION_DAYS
 # ---------------------------------------------------------------------------
 # 口令策略（普通用户与主管理员两档）
 # ---------------------------------------------------------------------------
-# 密码策略：至少 10 位且包含大写/小写/数字/符号中至少两类（只对新建/修改生效，存量密码不受影响）
-PASSWORD_MIN_LEN = 10
-# 口令"字符类别"单一事实源：四个类别正则按文案顺序排列，与 _PASSWORD_CLASS_LABELS
-# 同序同数。判定语义是"命中类别数 >= _PASSWORD_MIN_CLASSES 即通过"——符号算一类，不额外要求含符号。
-# 前端各页各内联一份同名同序的 PW_CLASS_PATTERNS（不跨文件共享脚本），由元测试从模板源码
-# 提取后与本元组逐字比对，任一侧漂移即红。
-_PASSWORD_CLASS_PATTERNS = (r"[A-Z]", r"[a-z]", r"\d", r"[^A-Za-z0-9]")
-_PASSWORD_CLASS_LABELS = ("大写字母", "小写字母", "数字", "符号")
-# 类别下限：文案里的中文"两"须与本常量一致（元测试同时钉住数值与措辞，防只改一处）
-_PASSWORD_MIN_CLASSES = 2
-# 统一口径文案（前后端同句）：数量下限一律写成"…中的至少 + 本常量值 + 类别"那种形式。
-# 少了限定词就会被读成恰好值，换用别的比较词又会被读成再多一档；这两种歧义写法由
-# tests/test_rekey_key_source.py::PasswordPolicyParityB14Test 按字面量拦——它连注释一起扫，
-# 所以此处只描述规则，不复述被禁写法。
-# 大小写在文案里合并（精简），判定仍按四类各自计数，所以 _PASSWORD_CLASS_LABELS 保持
-# 四元组：主管理员"至少三类"的消息必须把四类列全。
-_PASSWORD_CLASS_HINT = "大小写字母、数字、符号中的至少两类"
-_PASSWORD_POLICY_HINT = f"至少 {PASSWORD_MIN_LEN} 位，且包含{_PASSWORD_CLASS_HINT}"
-# 主管理员（内置 .env 管理员）口令单独提档：至少 12 位且命中至少三类，与启动期的
-# reject_default_admin_password 同一策略（普通用户维持原口径）。
-ADMIN_PASSWORD_MIN_LEN = 12
-ADMIN_PASSWORD_MIN_CLASSES = 3
+# 常量的唯一真源在 yiban.core.password_policy（CLI 与 Web 共用）；本模块保留原有
+# 名字面（含下划线别名），供路由与元测试继续按名取用。
+from yiban.core.password_policy import (  # noqa: E402
+    PASSWORD_CLASS_HINT as _PASSWORD_CLASS_HINT,
+)
+from yiban.core.password_policy import (  # noqa: E402
+    PASSWORD_CLASS_LABELS as _PASSWORD_CLASS_LABELS,  # noqa: F401
+)
+from yiban.core.password_policy import (  # noqa: E402
+    PASSWORD_CLASS_PATTERNS as _PASSWORD_CLASS_PATTERNS,
+)
+from yiban.core.password_policy import (  # noqa: E402
+    PASSWORD_MIN_CLASSES as _PASSWORD_MIN_CLASSES,
+)
+from yiban.core.password_policy import (  # noqa: E402
+    PASSWORD_MIN_LEN,
+)
+from yiban.core.password_policy import (  # noqa: E402
+    PASSWORD_POLICY_HINT as _PASSWORD_POLICY_HINT,
+)
+from yiban.core.password_policy import (  # noqa: E402
+    admin_password_policy_error as _shared_admin_password_policy_error,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +117,29 @@ def load_accounts():
             return db.accounts_snapshot()
 
     return db.read_accounts(_snap)
+
+
+def load_account_at(index):
+    """按**整表绝对下标**取单个账号（已解密）；越界返回 None。
+
+    详情端点专用：只读目标行，不为取一行解密整表（工单 dnox-B）。下标口径与列表
+    一致（`sort_order, id` 全序，见 persistence 层 `_ACCOUNTS_ORDER_BY`）。
+    锁口径与 `load_accounts` 相同：`_file_lock` 只护住"取快照"这一步。
+    """
+    def _snap():
+        with _file_lock:
+            return db.account_row_at(index)
+
+    return db.read_account_at(_snap)
+
+
+def purge_account(account_id, audit_spec=None):
+    """物理删除账号（R3-005 / R3-006）。
+
+    DB 删除与审计同事务；文件面手机号清理已收口到 persistence 层
+    （`db._purge_file_facts`，所有物理删除路径共用），本函数只做转发。
+    """
+    return db.purge_account(account_id, audit_spec=audit_spec)
 
 
 def load_accounts_raw():
@@ -138,7 +165,7 @@ def load_users():
 def _mask_email(e):
     """日志/列表脱敏：邮箱 → abc***@example.com（幂等）。
 
-    真源在 `yiban.masking.mask_email`——展示面与审计 `actor` 列共用同一份口径，
+    真源在 `yiban.core.masking.mask_email`——展示面与审计 `actor` 列共用同一份口径，
     这里只是 web 侧的名字转发（前端 `maskEmail` 由对拍测试钉住同口径）。
     """
     return mask_email(e)
@@ -163,17 +190,25 @@ def mask_account(acc, index, masked=True):
     """账号展示序列化（列表默认脱敏手机号/归属邮箱，网络层不泄露完整 PII）。
 
     masked=False 时返回完整信息（仅详情接口使用，按需取完整号用于编辑/签到等操作）。
-    密码始终不下发（has_password 布尔）；设备识别码始终不下发（has_phone_code 布尔）。
+    密码始终不下发（has_password 布尔）；设备识别码**原文始终不下发**，只给布尔
+    `has_phone_code` 与展示用 `phone_code_masked`（`前4…后4`，掩码口径唯一一处见
+    `yiban.core.masking.mask_device_code`）。
+
+    二段资料（qmz4）：**只有详情面**（masked=False）按暴露开关装配 `profile`；管理
+    列表是逐行广播面（全量枚举、默认脱敏），永不下发——即使开关全开，列表回包也
+    逐字节不变（回包零变化硬判据）。字段装配唯一取点是 `exposed_profile`。
     """
     phone = acc.get("phone", "")
     owner = acc.get("owner", "admin")
-    return {
+    out = {
         "index": index,
         "name": acc.get("name", ""),
         "phone": _mask_phone(phone) if masked else phone,
         "phone_model": acc.get("phone_model", ""),
         "has_password": bool(acc.get("password")),
         "has_phone_code": bool(acc.get("phone_code")),
+        # 展示只读字段：首尾各 4 位，够用户认出"是我那台设备"，不构成可用凭据
+        "phone_code_masked": mask_device_code(acc.get("phone_code", "")),
         "display_name": acc.get("name") or f"账号{index + 1}",
         # 普通用户体系：owner=提交者邮箱（'admin'=管理员添加），status=待审核/已生效
         "owner": _mask_email(owner) if masked else owner,
@@ -185,6 +220,98 @@ def mask_account(acc, index, masked=True):
         "deleted": bool(acc.get("deleted")),
         "deleted_at": acc.get("deleted_at", ""),
     }
+    if not masked:
+        prof = exposed_profile(acc)
+        if prof:
+            out["profile"] = prof
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 二段资料与暴露开关（工单 qmz4）
+# ---------------------------------------------------------------------------
+#: 资料字段的长度上限（清洗口径唯一真源）；词表本身在存储层 `accounts.PROFILE_FIELDS`。
+_PROFILE_FIELDS = ("real_name", "student_id", "college", "class_name", "email")
+_PROFILE_MAXLEN = {"real_name": 50, "student_id": 50, "college": 50,
+                   "class_name": 50, "email": 254}
+
+
+def normalize_profile_input(data):
+    """维护端点请求体清洗：→ (错误 or None, profile 子集, expose 子集)。
+
+    `profile` / `expose` 都可选，但至少给一个且非空；键必须都在词表内；
+    profile 值一律字符串（strip 后计长度上限，`""` = 清空该字段）；expose 值一律
+    布尔。返回的 dicts 只含**提供的**键，交给 `db.update_account_profile` 合并。
+    """
+    profile_raw = data.get("profile")
+    expose_raw = data.get("expose")
+    missing = "请求体缺少可变更字段（profile / expose 至少给一个）"
+    profile = {}
+    if profile_raw is not None:
+        if not isinstance(profile_raw, dict):
+            return "profile 应为 JSON 对象", None, None
+        for k, v in profile_raw.items():
+            if k not in _PROFILE_FIELDS:
+                return f"未知资料字段: {k}", None, None
+            if not isinstance(v, str):
+                return f"资料字段 {k} 的值应为字符串", None, None
+            v = v.strip()
+            if len(v) > _PROFILE_MAXLEN[k]:
+                return f"资料字段 {k} 过长（最多 {_PROFILE_MAXLEN[k]} 字）", None, None
+            profile[k] = v
+    expose = {}
+    if expose_raw is not None:
+        if not isinstance(expose_raw, dict):
+            return "expose 应为 JSON 对象", None, None
+        for k, v in expose_raw.items():
+            if k not in _PROFILE_FIELDS:
+                return f"未知资料字段: {k}", None, None
+            if not isinstance(v, bool):
+                return f"暴露开关 {k} 应为布尔值", None, None
+            expose[k] = v
+    if not profile and not expose:
+        return missing, None, None
+    return None, profile, expose
+
+
+def profile_audit_detail(profile, expose):
+    """维护动作的审计 detail：**只列字段名，绝不列字段值**（审计面是 PII 出站面）。"""
+    parts = []
+    if profile:
+        parts.append("资料:" + ",".join(sorted(profile)))
+    if expose:
+        on = sorted(k for k, v in expose.items() if v)
+        off = sorted(k for k, v in expose.items() if not v)
+        if on:
+            parts.append("开暴露:" + ",".join(on))
+        if off:
+            parts.append("关暴露:" + ",".join(off))
+    return "；".join(parts)
+
+
+def exposed_profile(acc):
+    """出站暴露装配：开关开启的字段才出现；返回 {} = 无暴露（视图不出 profile 键）。
+
+    内容来自已解密行的 `profile`（JSON 串）；解析失败按 {} 处理——读取面不对单行
+    脏数据 500（写口在存储层拒改坏底子，读面宁可少显示）。开关列明文 JSON，损坏
+    同样按全关（少暴露方向）。本函数是"哪些字段出站"的唯一裁定，列表/详情/我的
+    三视图共用，视图自身不得再各自拼一遍。
+    """
+    raw = acc.get("profile") or ""
+    try:
+        content = json.loads(raw) if raw else {}
+    except (TypeError, ValueError):
+        content = {}
+    if not isinstance(content, dict):
+        content = {}
+    raw_flags = acc.get("profile_expose") or ""
+    try:
+        flags = json.loads(raw_flags) if raw_flags else {}
+    except (TypeError, ValueError):
+        flags = {}
+    if not isinstance(flags, dict):
+        flags = {}
+    return {k: str(content.get(k, "")) for k in _PROFILE_FIELDS if flags.get(k) is True}
 
 
 # ---------------------------------------------------------------------------
@@ -226,8 +353,17 @@ def _owner_has_other_live(accounts, acc):
     )
 
 
-def validate_account(data, require_password):
-    """校验账号字段。require_password=True 时密码必填；返回 (错误信息 or None, 清洗后的账号 dict)。"""
+def validate_account(data, require_password, allow_device_fields=True):
+    """校验账号字段。require_password=True 时密码必填；返回 (错误信息 or None, 清洗后的账号 dict)。
+
+    `allow_device_fields=False`（**用户面**：`/api/my-accounts*`）时**丢弃**请求体里的
+    设备型号与设备识别码：这两个字段由签到前自动补全写入（`yiban/client.py`）或由
+    **管理面**手工填写，用户面不留写入面（用户 2026-10-16 裁决）。
+
+    丢弃而不是报错：旧前端仍会发这两个键，报错会把整张表单变成 400。丢弃是**写口
+    级的**收口——手工构造的请求同样写不进；键不存在时 `update_account` 不动该列，
+    库里的既有值（自动补全填的）不会被空值冲掉。
+    """
     name = str(data.get("name", "")).strip()
     if len(name) > 50:
         return "名称过长（最多 50 字）", None
@@ -239,19 +375,21 @@ def validate_account(data, require_password):
         return "手机号格式不正确（应为 1 开头的 11 位数字）", None
     if require_password and not password:
         return "密码为必填项", None
-    phone_model = str(data.get("phone_model", "")).strip()
-    if len(phone_model) > 50:
-        return "设备型号过长（最多 50 字）", None
-    phone_code = str(data.get("phone_code", "")).strip()
-    if len(phone_code) > 128:
-        return "设备识别码过长", None
-    return None, {
+    clean = {
         "name": name,
         "phone": phone,
         "password": password,
-        "phone_model": phone_model,
-        "phone_code": phone_code,
     }
+    if allow_device_fields:
+        phone_model = str(data.get("phone_model", "")).strip()
+        if len(phone_model) > 50:
+            return "设备型号过长（最多 50 字）", None
+        phone_code = str(data.get("phone_code", "")).strip()
+        if len(phone_code) > 128:
+            return "设备识别码过长", None
+        clean["phone_model"] = phone_model
+        clean["phone_code"] = phone_code
+    return None, clean
 
 
 def fold_phone_code(clean, old_code=None):
@@ -307,7 +445,7 @@ def _delete_grace_remaining(deleted_at):
     if not deleted_at:
         return 0
     try:
-        d = datetime.strptime(deleted_at, "%Y-%m-%d %H:%M:%S")
+        d = datetime.strptime(deleted_at, "%Y-%m-%d %H:%M:%S")  # noqa: DTZ007 解析库内业务本地 naive 时间串（注销冷却）
     except ValueError:
         try:
             d = datetime.fromisoformat(str(deleted_at))
@@ -338,105 +476,105 @@ def _password_policy_error(password):
 def _admin_password_policy_error(password):
     """主管理员（内置 .env 管理员）口令策略：至少 12 位且命中至少三类。
 
-    主管理员口令单独提档（普通用户维持原口径不变），与 reject_default_admin_password
-    的启动 fail-closed 同一策略。
+    判据在 yiban.core.password_policy，CLI init 与本函数共用同一实现。
     """
-    if len(password) < ADMIN_PASSWORD_MIN_LEN:
-        return f"至少 {ADMIN_PASSWORD_MIN_LEN} 位，且包含大写字母、小写字母、数字、符号中的至少三类"
-    classes = sum(bool(re.search(pat, password)) for pat in _PASSWORD_CLASS_PATTERNS)
-    if classes < ADMIN_PASSWORD_MIN_CLASSES:
-        return f"需包含{'、'.join(_PASSWORD_CLASS_LABELS)}中的至少三类"
-    return None
+    return _shared_admin_password_policy_error(password)
 
 
 # ---------------------------------------------------------------------------
 # 自选时间片展示与预计时段
 # ---------------------------------------------------------------------------
-def _slot_to_label(slot_min, sign_window_bounds):
+def _slot_to_label(slot_min):
     """自选片相对**有效窗口起点**的分钟偏移 → "HH:MM"（偏移 0 = 窗口起点，与调度侧同号）。
 
     基准必须是有效窗口起点：片号是相对窗口起点的偏移，而裁剪把有效窗口吃空时
     `window.bounds` 回退默认窗口——直读原始窗口起点会让片卡（按有效窗口）显示 06:30、
     而偏好标签与保存提示（按原始窗口）说 07:00，同一页面出现两个钟点。
 
-    参数注入口径见模块头「通信」（`sign_window_bounds` 是既有打桩点）。
+    有效窗口视图按调用时刻从 `web.services.signstatus` 取（模块属性读法，打桩穿透）。
     """
     if slot_min is None:
         return None  # 没选片就没有偏移：不出"07:00"这种假默认值
-    win = sign_window_bounds()
+    win = _signstatus.sign_window_bounds()
     m = win.start_min + int(slot_min)
     return f"{m // 60:02d}:{m % 60:02d}"
 
 
-def _estimate_slot(phone, load_accounts, read_env, env_file, sign_window_bounds):
-    """预计签到时段（调度 v2）：
-    顺序排序 = 可预期（线性填块区间 / 锚点中心 / 小人数确定性等分）；
-    随机排序 = 每天重排，返回 None + 提示文案。
-    返回 (estimated_str|None, note_str)。
+def _plan_clock(run_at):
+    """台账 `run_at`（"YYYY-MM-DD HH:MM:SS[.mmm]"）→ "HH:MM"；空值 / 短串返回 ""。
 
-    几何一律取自**有效窗口视图**（`window.bounds`，含裁剪吃空时的回退）：自己按原始
-    窗口与原始裁剪拼 `eff_lo/eff_hi` 会在回退时得到空区间（span=0），预计时段静默变空。
-    找不到可用片时仍返回 `(None, "")`（fail-closed，不回退成某个默认片）。
-
-    块容量取引擎唯一源 `schedule.block_capacity`，env 用本函数已读的 `.env` 结果传入
-    （MF-93：不能读 web 进程环境，那里没有 `.env` 的键）。
-
-    参数注入口径见模块头「通信」（`load_accounts` / `read_env` / `ENV_FILE` /
-    `sign_window_bounds` 都可被打桩或赋值改写）。
+    只取时分：展示口径与状态文案「计划 HH:MM」同一精度（秒不展示）。截断而非解析，
+    是因为本仓时间串格式单一（`yiban.core.clock` 产出），多一次解析只多一处失败点。
     """
-    env = read_env(env_file)
-    mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()  # 旧的模式键，下面两个新键缺省时用它
-    order = env.get("YIBAN_SIGN_ORDER", "").strip().lower() or (
-        "random" if mode == "random" else "sequence")
-    dist = env.get("YIBAN_SIGN_DIST", "").strip().lower() or (
-        "normal" if mode == "normal" else "uniform")
-    if order != "sequence":
-        return None, "随机模式每日重排，签到时间当天 06:31 后可见"
-    accounts = load_accounts()
-    # 与引擎同源的三重过滤：软删 / 待审 / 已拒（工程装载器）+ 自暂停（build_schedule 开头），
-    # 均不参与调度；旧数据缺 status 字段=视为已过审，必须放行。预计时段按实际参与人计算。
-    live = [
-        a for a in accounts
-        if not a.get("deleted")
-        and a.get("status") not in ("pending", "rejected")
-        and not a.get("user_paused")
-    ]
-    idx = next((i for i, a in enumerate(live) if a.get("phone") == phone), None)
-    if idx is None or not live:
-        return None, ""
-    win = sign_window_bounds()
-    start_min, end_min = win.start_min, win.end_min
-    eff_lo, eff_hi = win.lo_min, win.hi_min
-    span = eff_hi - eff_lo
+    text = str(run_at or "").strip()
+    return text[11:16] if len(text) >= 16 else ""
 
-    def fmt(m):
-        m = int(m)
-        return f"{m // 60:02d}:{m % 60:02d}"
 
-    if dist == "uniform":
-        # 线性填块（与 schedule._schedule_blocks 同口径：块从窗口起点步进 5、裁到有效窗口、
-        # 被缓冲吃掉的无效块跳过；压缩模式等极端场景按末块估算）
-        valid = []
-        b = start_min
-        while b < end_min:
-            lo = max(b, eff_lo)
-            hi = min(b + 5, eff_hi)
-            if hi > lo:
-                valid.append((lo, hi))
-            b += 5
-        if not valid:
-            return None, ""
-        # 块容与引擎同源：`block_capacity` 内部对 YIBAN_BLOCK_CAP 做 [1,200] 夹取、
-        # 非法/越界回退 15（含显式 0），压缩模式放大为 ceil(n/块数)。网页侧不再有
-        # "k<=0=不限容量" 特判——该口径在引擎侧本就不存在，对齐后此分支不可达。
-        k = yb_schedule.block_capacity(len(live), len(valid), env=env)
-        bi = min(idx // k, len(valid) - 1)
-        lo, hi = valid[bi]
-        return f"{fmt(lo)}~{fmt(hi)}", "（每日固定时段，块内时刻每天略有抖动）"
-    # 顺序 × 正态：锚点 z 固定 → 预期中心（μ 中值 50%、σ 中值 20%）
-    z = random.Random(str(phone)).gauss(0, 1)
-    center = max(eff_lo, min(eff_hi, eff_lo + span * 0.5 + span * 0.20 * z))
-    return f"约 {fmt(center)}", "（每日波动约 ±10 分钟）"
+def plan_message(run_at):
+    """台账计划时刻 → 展示文案：有计划行 → "计划 HH:MM"；无行 / 读不通 → "待生成"。
+
+    文案前缀是**跨端契约**：以"计划"开头时日历状态行才追加"· 今日计划 HH:MM"
+    （`frontend/src/calendar/model.js` 的 `statusLine`），故前缀不可改。
+    未了结账号用它展示今日计划；有结论的账号由调用方保留各自结论文案。
+    """
+    clock_label = _plan_clock(run_at)
+    return f"计划 {clock_label}" if clock_label else "待生成"
+
+
+def plan_state_message(acc, prev, plan_at):
+    """账号行状态文案的**唯一取点**：满足"参与调度且未了结"⇒ 台账计划文案；否则留结论文案。
+
+    - 参与调度 = 已生效（`active`）且未软删、未自暂停（与引擎装载器同口径）。
+    - 未了结 = 状态文件无该账号条目，或条目状态为 `pending`
+      （`yiban_status.is_concluded_status` 取反：`retrying`/`failed` 等有结论）。
+
+    两个消费端点（`web/routes/my_api.py` 与 `web/routes/accounts_api.py`）共用本函数，
+    谓词只此一处——故同一账号同一输入必得同一文案（跨端点等值由守卫钉住）。
+    `prev` 是状态文件条目（dict 或 None）；`plan_at` 是 `{phone: run_at}`（可为 None）。
+    """
+    prev_status = (
+        prev.get("status", yiban_status.STATUS_PENDING)
+        if isinstance(prev, dict) else yiban_status.STATUS_PENDING
+    )
+    schedulable = (
+        acc.get("status") == ACCOUNT_STATUS_ACTIVE
+        and not acc.get("deleted")
+        and not acc.get("user_paused", False)
+    )
+    if schedulable and not yiban_status.is_concluded_status(prev_status):
+        return plan_message((plan_at or {}).get(acc.get("phone", "")))
+    return prev.get("message", "") if isinstance(prev, dict) else ""
+
+
+def today_plan_map():
+    """当日 `phone -> run_at` 台账映射（执行计划时刻的唯一事实源）。
+
+    展示层的**唯一取日点**：本函数按业务钟算出"今天"，再向台账层取当日计划。三条读路径
+    （`_estimate_slot` / `web/routes/my_api.py` / `web/routes/accounts_api.py`）都经此取数，
+    避免各写一遍"今天"的日期口径。读不通回 `None` 哨兵（透传 `run_at_by_phone`），
+    调用方按同一"待生成"降级处理，**绝不回退旧的派生算法**（显示不得有两套算法）。
+    """
+    return db.task_run_at_by_phone(clock.now().strftime("%Y-%m-%d"))
+
+
+def _estimate_slot(phone):
+    """预计签到时段 = **当日台账计划时刻**（`sign_tasks.run_at`，唯一事实源）。
+
+    显示与执行必须同源。本函数曾自抄调度 v2 的线性填块算法，与真正执行的 v3 计划
+    （分层抖动 `i % n_slices`）在 uniform 下实测差 47 分钟（工单 m9bi）。现在只读台账
+    `run_at`——它正是执行体 `claim_batch` 的领取依据，读它即读执行事实，残差恒为 0。
+
+    当日无计划行（通常 06:31 前）→ 返回 `(None, "待生成")`，**不回退旧算法**：计划未生成
+    时没有真值可比，编造钟点只会再次分叉。库读不通同样走"待生成"（`None` 哨兵与无行同一
+    失败方向，fail-closed）。自选（pinned）与重试/重签改写过的行一并读台账当前值。
+
+    账号有效性由调用方 `_my_phone()` 已保证（仅 active 账号可查）。
+    """
+    run_at = today_plan_map()
+    plan_clock = _plan_clock((run_at or {}).get(phone))
+    if not plan_clock:
+        return None, "待生成"
+    return plan_clock, "（今日计划）"
 
 
 # ---------------------------------------------------------------------------

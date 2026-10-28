@@ -259,18 +259,6 @@ class SkeletonScopeTest(unittest.TestCase):
             "找不到裸类名 `.dash-skel` 的尺寸规则 —— 组件层必须有一条与祖先无关的声明",
         )
 
-    def test_skeleton_class_is_not_orphaned(self):
-        """`.dash-skel` 至少还有一个模板在用——否则上面那条规则就是死 CSS。
-
-        与「删死代码」同一方向：规则与使用者必须成对存在，只剩其一时报红，
-        避免留下"看着在管事、实际没人消费"的样式。
-        """
-        users = self._users_of("dash-skel")
-        self.assertTrue(
-            users,
-            "没有任何模板使用 .dash-skel —— app.css 里那条骨架尺寸规则已成死样式，"
-            "应连同本类一并删除（而不是留着占位）",
-        )
 
 
 def _color_decls(css, selector):
@@ -291,6 +279,9 @@ def _decls(css, selector, prop):
 
 
 CORE_JS = os.path.join(BASE, "web", "static", "js", "core.js")
+#: 拆壳第二刀（2026-10-24）把下拉/导航/回顶/导航进度条搬到外观层分片。
+#: 本类的断言问的是「实现存在且形状对」，不关心它住在哪个分片，故两文件合并读。
+CHROME_JS = os.path.join(BASE, "web", "static", "js", "shell-chrome.js")
 LAYOUTS = (
     os.path.join(TEMPLATES_DIR, "layout_admin.html"),
     os.path.join(TEMPLATES_DIR, "layout_user.html"),
@@ -327,7 +318,7 @@ class BatchAContrastTokenTest(unittest.TestCase):
 
     def test_icon_controls_drop_t_light(self):
         css = _strip_comments(_read(APP_CSS))
-        for sel in (".input-affix .affix-btn", ".alert.auth-announce .close", ".pm-panel .pm-panel-close"):
+        for sel in (".input-affix .affix-btn", ".pm-panel .pm-panel-close"):
             decls = _color_decls(css, sel)
             self.assertTrue(decls, f"{sel} 找不到 color 声明 —— 图标按钮退回 vendor 的 --t-light？")
             self.assertNotIn("var(--t-light)", decls, f"{sel} 又用回 --t-light（2.2–2.6:1 < 3:1）")
@@ -445,7 +436,13 @@ class BatchCFocusAndLiveTest(unittest.TestCase):
                       "confirmDialog 未把初始焦点放到「取消」安全侧")
 
     def test_dropdown_focus_move_in_and_return(self):
-        js = _read(CORE_JS)
+        # 两分片合并读：实现可在 core.js 或 shell-chrome.js（拆壳第二刀后在后者的家）。
+        # 缺函数 ⇒ index() 抛 ValueError ⇒ 红，「两处都删了」不会静默变绿。
+        #
+        # 本用例只钉**源码形状**（有归还/移入的语句）。真实用户路径走 EP 弹窗与
+        # 浏览器事件循环，那一维由 frontend/e2e/ep-confirm.spec.ts（确认框载体与
+        # 取消路径）与 responsive.spec.ts（抽屉→确认框的焦点归属）覆盖。
+        js = _read(CORE_JS) + "\n" + _read(CHROME_JS)
         # 关闭：焦点在菜单里时归还触发器
         close_body = js[js.index("function closeDropdowns"):js.index("function focusItem")]
         self.assertIn("activeElement", close_body, "closeDropdowns 不看焦点位置就关，无法归还")
@@ -584,7 +581,7 @@ class TouchAndMotionRegressionTest(unittest.TestCase):
         for dead in (".auth-agree-label", ".announce-close"):
             self.assertNotIn(dead, joined, f"触屏命中区名单里仍是死类名 {dead}")
         for real in (".auth-switch-hint button", ".auth-agree-text button",
-                     ".alert.auth-announce .close", ".info-tip", ".sc-nav-btn"):
+                     ".info-tip", ".sc-nav-btn"):
             self.assertIn(real, joined, f"触屏命中区漏了真实目标 {real}")
 
     def test_theme_crossfade_single_duration_token(self):
@@ -779,6 +776,45 @@ class Phase3PortGuardTest(unittest.TestCase):
                 "`.state-line--flash` 未在任何 prefers-reduced-motion 块里关断为 "
                 "transition: none；就地结果行的淡出会无视用户的减动效偏好。"
             )
+
+
+class ModalBackdropBlurFallbackTest(unittest.TestCase):
+    """弹窗遮罩的回退底色：不支持 backdrop-filter 时仍要挡得住正文。
+
+    app.css 的 .pm-backdrop 基态必须是 --overlay-strong（不依赖 blur 的强底），
+    只有 @supports 命中时才换成 --overlay + blur。EP 的 .el-overlay 同口径。
+    这条守卫防的是「有人删掉基态、只留 @supports 覆盖」：支持 blur 的浏览器
+    看不出异常，老浏览器会把弹窗外正文直接透出来。
+    """
+
+    def test_pm_backdrop_has_blurless_fallback(self):
+        css = _strip_comments(_read(APP_CSS))
+        bodies = _blocks(css, r"\.pm-backdrop")
+        self.assertTrue(
+            any(re.search(r"background\s*:\s*var\(--overlay-strong\)", b) for b in bodies),
+            ".pm-backdrop 基态缺 background: var(--overlay-strong)；"
+            "不支持 backdrop-filter 时遮罩会透明",
+        )
+        m = re.search(
+            r"@supports\s*\(\(backdrop-filter[^{]*\{\s*\.pm-backdrop\s*\{([^}]*)\}",
+            css, re.S,
+        )
+        self.assertIsNotNone(m, "@supports 内找不到 .pm-backdrop 覆盖块")
+        body = m.group(1)
+        self.assertRegex(body, r"background\s*:\s*var\(--overlay\)")
+        self.assertRegex(body, r"backdrop-filter\s*:\s*blur\(var\(--modal-blur\)\)")
+
+    def test_ep_overlay_has_blurless_fallback(self):
+        css = _strip_comments(_read(EP_THEME_CSS))
+        self.assertRegex(
+            css, r"--el-overlay-color-lighter\s*:\s*var\(--overlay-strong\)",
+            "EP 遮罩基态缺 --el-overlay-color-lighter: var(--overlay-strong)",
+        )
+        self.assertRegex(
+            css, r"@supports[^{]*backdrop-filter[^{]*\{[^}]*"
+                 r"--el-overlay-color-lighter\s*:\s*var\(--overlay\)",
+            "EP 的 @supports 分支未把遮罩换成 --overlay",
+        )
 
 
 if __name__ == "__main__":

@@ -19,10 +19,10 @@
    `mock.patch.object(signin, ...)` 会落到**真正持有该名字的实现模块**，实现内部的调用点
    也能看到替身。不转发就会出现"打桩静默失效"——打桩只改了壳，实现内部照旧调真名，
    测试表面通过、实则什么都没测到。
-3. **入口 `main()`**：把命令行参数转交 `yiban.engine.runner.main`，并把返回的退出码交给
+3. **入口 `main()`**：把命令行参数转交 `yiban.app.runner.main`，并把返回的退出码交给
    `sys.exit`（runner 自身不再 `sys.exit`；退出码语义逐字不变，见 `docs/dev/cli.md` §3）。
 
-新代码请直接 `from yiban.engine import ...`，命令行请走 `python -m yiban.cli sign`；
+新代码请直接 `from yiban.engine import ...`，命令行请走 `python -m yiban.entry.cli sign`；
 本壳只为部署面（run.sh / cron / 容器调度器直接执行本文件）与既有调用方保留。
 
 **外部集成不得调用 `run_queue_retry`**：它是旧领取池（`sign_claims`）时代的**冻结**执行
@@ -39,27 +39,18 @@ import types
 
 # 包导入引导：`yiban/` 在仓库根，而直接运行本脚本时 sys.path[0] 是 scripts/。这是
 # **部署契约**（run.sh / cron / 容器调度器都按文件路径调用本脚本），故保留；命令行
-# 侧的等价物是 `python -m yiban.cli sign`（由仓库根执行，无需引导）。
+# 侧的等价物是 `python -m yiban.entry.cli sign`（由仓库根执行，无需引导）。
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 # 说明：`round` 模块名与内置函数同名，isort 会把带别名的导入单独成块（见下一条）。
-from yiban.engine import (  # noqa: E402
-    accounts,
-    alerts,
-    attempts,
-    cli_support,
-    config_check,
-    probe,
-    runner,
-    schedule,
-    state_io,
-    workers,
-)
-from yiban.engine import (  # noqa: E402
-    round as round_mod,
-)
+from yiban.adapters.notifier import report as alerts  # noqa: E402
+from yiban.adapters.statefiles import state_io  # noqa: E402
+from yiban.app import probe, runner  # noqa: E402
+from yiban.app import round as round_mod  # noqa: E402
+from yiban.engine import accounts, attempts, cli_support, config_check, schedule  # noqa: E402
+from yiban.workers import workers  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # 兼容壳机制（两条转发纪律见模块说明第 2 条）

@@ -3,11 +3,12 @@
 
 标签：M · 架构分层与基础设施
 覆盖：基础设施层的依赖单向与无重复实现：旧 scripts
-   路径已消失且新路径在场、四个模块可按包导入且有
+   路径已消失且新路径在场、五个模块可按包导入且有
    docstring、不导入业务层与上层、包内互引不走裸名；两个兼容壳（notify /
    mailer）已删除、运行时目录不再裸名导入它们、包暴露的公共面与壳曾转发的公共名一致。
-对应实现：yiban/infra/（locks.py、env_io.py、env_lock.py、account_crypto.py）、yiban/notify
-   与 yiban/mail 的包公共面。
+对应实现：`yiban/infra/`（locks.py、env_lock.py）、`yiban/adapters/config/`
+   （env_io.py、account_crypto.py）、`yiban/adapters/notifier/` 两个组件的包公共面
+   （批 1 起按 `MODULE_COORD` 取永久坐标，不再经转发壳）。
 关键断言：这是结构断言而非行为断言：被测的是「谁导入了谁」与「某个文件还在不在」。裸名
    import 依赖 sys.path[0]=scripts/，迁移后必错，且在缺 scripts/
    的部署形态下当场炸——所以宁可写正则守卫，也不要留一份「看着无害」的兼容壳（壳存在就等于允许第二份实现存在）。测试代码不列入裸名守卫（那里出现裸名会直接
@@ -18,6 +19,7 @@
 同时锁住"只有一份实现"：四个模块原先散在 `scripts/` 下，迁移后旧路径必须消失
 （留同名文件会让人 import 到另一份，正是本项目反复踩过的"两份实现"坑）。
 """
+import importlib
 import io
 import os
 import re
@@ -25,7 +27,18 @@ import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-INFRA_MODULES = ("locks", "env_io", "env_lock", "account_crypto") # 清单加一项，下面几组守卫自动覆盖它；新模块漏登记才是真正的漏洞
+INFRA_MODULES = ("locks", "env_io", "env_lock", "account_crypto", "env_child") # 清单加一项，下面几组守卫自动覆盖它；新模块漏登记才是真正的漏洞
+
+#: 成员搬家后的模块坐标（批 1 起，读者一律走这里）。未搬的仍在 `yiban.infra`。
+MODULE_COORD = {
+    "env_io": "yiban.adapters.config.env_io",
+    "account_crypto": "yiban.adapters.config.account_crypto",
+}
+
+
+def _coord(name):
+    """该成员的当前模块坐标（搬家后是永久坐标，不再经转发壳）。"""
+    return MODULE_COORD.get(name, "yiban.infra." + name)
 
 # 基础设施层不得导入的东西：业务模块与上层（web/signin/db/notify/mailer/child_env）
 FORBIDDEN = (
@@ -36,8 +49,17 @@ FORBIDDEN = (
 
 class InfraLayerTest(unittest.TestCase):
     def _src(self, name):
-        with io.open(os.path.join(BASE, "yiban", "infra", name + ".py"),
-                     encoding="utf-8") as f:
+        """读该模块的**真实源文件**（按其当前模块坐标解析）。
+
+        批 B 把 `env_io` / `account_crypto` 搬出 `yiban/infra/`
+        （→ `yiban/adapters/config/`）。批 1 起读者改指**永久坐标**
+        （见 `MODULE_COORD`），不再经转发壳取实现——壳的"同一对象"判据
+        由 `tests/test_batch_b_relocation.py` 单独钉。
+        硬编码 `yiban/infra/<name>.py` 会读到壳，使"不导入业务层"判据退化为空转；
+        故锚点按坐标取真实源文件：不变式不变，成员搬家后仍生效。
+        """
+        mod = importlib.import_module(_coord(name))
+        with io.open(mod.__file__, encoding="utf-8") as f:
             return f.read()
 
     def test_old_paths_are_gone(self):
@@ -47,16 +69,17 @@ class InfraLayerTest(unittest.TestCase):
                     os.path.exists(os.path.join(BASE, "scripts", name + ".py")),
                     f"scripts/{name}.py 仍在：会出现第二份实现",
                 )
+                mod = importlib.import_module(_coord(name))
                 self.assertTrue(
-                    os.path.exists(os.path.join(BASE, "yiban", "infra", name + ".py")),
-                    f"yiban/infra/{name}.py 缺失",
+                    os.path.isfile(mod.__file__),
+                    f"{_coord(name)} 解析不到真实源文件（{mod.__file__!r}）",
                 )
 
     def test_importable_as_package(self):
         import importlib
         for name in INFRA_MODULES:
             with self.subTest(module=name):
-                mod = importlib.import_module(f"yiban.infra.{name}")
+                mod = importlib.import_module(_coord(name))
                 self.assertTrue(hasattr(mod, "__doc__") and mod.__doc__,
                                 "模块需有文档字符串说明职责")
 
@@ -135,26 +158,29 @@ class LegacyShellRemovalTest(unittest.TestCase):
                            f"{m.group(0).strip()}")
         self.assertEqual(
             bad, [],
-            "运行时模块不得裸名导入 notify/mailer（应为 `from yiban import notify` / "
-            "`from yiban import mail as mailer`）：" + "; ".join(bad),
+            "运行时模块不得裸名导入 notify/mailer"
+            "（应为 `from yiban.adapters.notifier import notify` / "
+            "`from yiban.adapters.notifier import mail as mailer`）：" + "; ".join(bad),
         )
 
     def test_packages_expose_the_public_surface(self):
-        """壳曾转发的**公共名**必须能从包直接拿到（下划线名走子模块）。"""
+        """两个组件的**公共名**必须能从包直接拿到（下划线名走子模块）。"""
         import importlib
 
-        notify_pkg = importlib.import_module("yiban.notify")
-        mail_pkg = importlib.import_module("yiban.mail")
+        notify_pkg = importlib.import_module("yiban.adapters.notifier.notify")
+        mail_pkg = importlib.import_module("yiban.adapters.notifier.mail")
         for name in ("send", "send_test", "get_config", "get_secret", "is_configured",
                      "is_safe_url", "budget_exhausted_today", "pop_exhaustion_notice",
                      "BudgetTicket", "logger"):
-            with self.subTest(pkg="yiban.notify", name=name):
-                self.assertTrue(hasattr(notify_pkg, name), f"yiban.notify 缺公共名 {name}")
+            with self.subTest(pkg="yiban.adapters.notifier.notify", name=name):
+                self.assertTrue(hasattr(notify_pkg, name),
+                                f"yiban.adapters.notifier.notify 缺公共名 {name}")
         for name in ("send_admin_alert", "send_user", "get_config", "is_enabled",
                      "smtp_list", "smtp_channel_state", "admin_recipients",
                      "admin_notify_enabled", "logger"):
-            with self.subTest(pkg="yiban.mail", name=name):
-                self.assertTrue(hasattr(mail_pkg, name), f"yiban.mail 缺公共名 {name}")
+            with self.subTest(pkg="yiban.adapters.notifier.mail", name=name):
+                self.assertTrue(hasattr(mail_pkg, name),
+                                f"yiban.adapters.notifier.mail 缺公共名 {name}")
 
 
 if __name__ == "__main__":

@@ -15,11 +15,11 @@
 只能靠这两个数字发现保留期清理被异常前移。
 
 **归属**
-取证/运维侧脚本（`scripts/`）；判据本体在 `yiban.store.audit_chain`，本脚本只做参数
+取证/运维侧脚本（`scripts/`）；判据本体在 `yiban.adapters.persistence.audit_chain`，本脚本只做参数
 解析与取证口径落定，与 web 每日线程共用同一 `audit_health()`。
 
 **复用**
-无对外可复用函数；核心判据复用 `yiban.store.audit_chain.audit_health` /
+无对外可复用函数；核心判据复用 `yiban.adapters.persistence.audit_chain.audit_health` /
 `audit_anchor_path`，web 与容器侧都应调那一份，不得另写第二套校验。
 
 **通信**
@@ -34,7 +34,10 @@
   2  无法定论（"未查"）：密钥缺失、链校验过程异常、`database is locked` 等库/锁
      故障、锚点自检无法定论、**从未写过锚点**（没得比对）——一律不得印成通过，
      也不得用 1 冒充一次成功的取证。
-调用谁：`db`（`yiban.store.db` / `audit_chain` 的兼容壳）。
+三态与退出码的**唯一映射**在 `yiban.adapters.persistence.audit_chain.audit_verdict`（巡检面「审计链
+自洽」块读同一份）：本脚本只按它给出的状态决定退出码，不另排一份。健 → 0、检出篡改 → 1、
+无法定论 → 2。
+调用谁：`db`（`yiban.adapters.persistence.db` / `audit_chain` 的兼容壳）。
 谁调用：运维手工取证；`scripts/backup.sh` 恢复件双验（restore 流程在解包后调它做审计
 链核验，非 0 视为恢复件不可信）；backup.sh 头部示例还给了 cron 每日 02:30 定排的一条
 命令，把输出重定向到 `audit-verify.log`。只读，无写盘。
@@ -57,13 +60,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
 # 路径键的唯一解析器；repo root 由 scripts/db.py 壳放上 sys.path
-from yiban.infra import env_io
+from yiban.adapters.config import env_io
+
+#: "无法定论"的退出码。取自三态→退出码的**唯一映射**（巡检面显示的三态与这里的
+#: 退出码是同一份：页面说"无法定论"就必须是 2，不许各写一份数）。
+_INDETERMINATE_CODE = db.VERDICT_EXIT_CODES["indeterminate"]
 
 
 def _indeterminate(msg):
     """按"无法定论"中止（exit 2）：既不是通过，也不是确证篡改。"""
     print(f"审计校验中止：{msg}")
-    sys.exit(2)
+    sys.exit(_INDETERMINATE_CODE)
 
 
 def _is_locked_error(exc):
@@ -151,22 +158,25 @@ def _verify(args):
     # 并把库切到 WAL，对一次"只读取证"是多余的写。
     db.init_db(db_file=db_path, env_file=env_file, create=False)
     health = db.audit_health(path=anchor_path)
-    # 链校验过程异常/密钥缺失（broken == -1）不是"检出篡改"而是"无法定论"——
-    # 按中止处理（exit 2），绝不用 exit 1 冒充一次成功的取证。
-    if health["broken"] == -1:
-        _indeterminate("哈希链校验过程异常或未配置 YIBAN_AUDIT_KEY（无法定论）")
-    # 锚点自检"无法定论"（非法编码/坏行/读不出）同理：它既不是通过也不是确证篡改，
-    # 编成 exit 1 会让运维把一次编码事故当成失陷响应，编成 0 等于把"没验成"印成通过。
-    if health.get("anchor_status") == "indeterminate":
-        _indeterminate(
-            f"锚点自检无法定论——{health['anchor_msg']}\n"
-            "（这不等于审计被篡改，也不等于无异常；请修好锚点文件后重跑，"
-            "确认之前不要据此下任何结论）"
-        )
-    # 从未写过锚点 = "未查"，不是"通过"：没有锚点就无从比对删尾/整表重签，此时把
-    # exit 0 印成"校验通过"会让一次没做的比对冒充取证结论。首次运行可接受，但必须
-    # 以独立返回值（exit 2 族）暴露"本次未比对"，不得与 0 混同。
-    if health.get("anchor_status") == "none":
+    # 三态裁决取**唯一映射**（`audit_chain.audit_verdict`，巡检面同一份）：本脚本只按
+    # 它给出的状态决定退出码，不再自己排一遍 if 链——两处各排一份就是"页面与 CLI
+    # 对同一份体检给出不同结论"的来源。
+    verdict = db.audit_verdict(health)
+    if verdict["state"] == db.VERDICT_INDETERMINATE:
+        # 具体原因仍分三支说清楚（运维要看得出该修密钥、修锚点文件，还是先写锚点）
+        if health["broken"] == -1:
+            _indeterminate("哈希链校验过程异常或未配置 YIBAN_AUDIT_KEY（无法定论）")
+        if health.get("anchor_status") == "indeterminate":
+            # 锚点自检"无法定论"（非法编码/坏行/读不出）同理：它既不是通过也不是确证篡改，
+            # 编成 exit 1 会让运维把一次编码事故当成失陷响应，编成 0 等于把"没验成"印成通过。
+            _indeterminate(
+                f"锚点自检无法定论——{health['anchor_msg']}\n"
+                "（这不等于审计被篡改，也不等于无异常；请修好锚点文件后重跑，"
+                "确认之前不要据此下任何结论）"
+            )
+        # 从未写过锚点 = "未查"，不是"通过"：没有锚点就无从比对删尾/整表重签，此时把
+        # exit 0 印成"校验通过"会让一次没做的比对冒充取证结论。首次运行可接受，但必须
+        # 以独立返回值（exit 2 族）暴露"本次未比对"，不得与 0 混同。
         _indeterminate(
             "从未记录过锚点（audit-anchor.log 不存在且无锚点留痕）——本次未做"
             "锚点比对，'未查'不等于'通过'。请先让每日线程写入锚点后重跑"
@@ -189,11 +199,11 @@ def _verify(args):
     ))
     if health["note"]:
         print(f"附加诊断：{health['note']}")
-    if health["healthy"]:
+    if verdict["code"] == 0:
         print("审计可追溯性校验通过（链自洽 + 锚点一致 + 无写入欠账）")
         return
     print("审计可追溯性校验失败：审计记录可能被篡改/删除，或存在未留痕的管理操作")
-    sys.exit(1)
+    sys.exit(verdict["code"])
 
 
 if __name__ == "__main__":

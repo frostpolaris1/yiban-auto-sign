@@ -22,6 +22,8 @@ import threading
 import unittest
 from unittest import mock
 
+from werkzeug.security import generate_password_hash
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEST_KEY = "a" * 64
 ADMIN_PASS = "TestPass1234!"
@@ -136,7 +138,7 @@ class FileLockSendTest(unittest.TestCase):
                   ("u2@test.local", "13800138002"),
                   ("u3@test.local", "13800138003")]
         for email, phone in owners:
-            self.db.create_user(email, self.webapp.generate_password_hash(USER_PASS))
+            self.db.create_user(email, generate_password_hash(USER_PASS))
             self._submit(email, phone)
         c, token = self._admin()
         accounts = c.get("/api/accounts").get_json()["accounts"]
@@ -167,15 +169,16 @@ class FileLockSendTest(unittest.TestCase):
         def fake_send_notification(title, content, urgent=False, **kw):
             sent.append((title, _probe_other_thread_can_take(self.lock)))
 
-        with self.lock:
-            cap._notify_capacity_once("users", 5, "注册上限",
-                                     send_notification=fake_send_notification)
-            self.assertEqual(sent, [], "持锁期间不得真的发信")
-        self.assertEqual(len(sent), 1, "出锁后必须发出去，一封都不许少")
-        self.assertTrue(sent[0][1], "发信时刻锁必须已释放")
-        with self.lock:
-            cap._notify_capacity_once("users", 5, "注册上限",
-                                     send_notification=fake_send_notification)
+        # 批 3-d：告警出口改由 hook 接缝解析，用例只换这一个宿主依赖。
+        with mock.patch.dict(cap._hooks,
+                             {"send_notification": lambda: fake_send_notification}):
+            with self.lock:
+                cap._notify_capacity_once("users", 5, "注册上限")
+                self.assertEqual(sent, [], "持锁期间不得真的发信")
+            self.assertEqual(len(sent), 1, "出锁后必须发出去，一封都不许少")
+            self.assertTrue(sent[0][1], "发信时刻锁必须已释放")
+            with self.lock:
+                cap._notify_capacity_once("users", 5, "注册上限")
         self.assertEqual(len(sent), 1, "每进程每种资源仍只发一次（去重旗不许被挪出锁）")
 
     def test_nested_lock_flushes_registry_exactly_once(self):

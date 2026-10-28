@@ -7,7 +7,9 @@
     check_password_hash），与**冻结的存量清单**逐条对照：不得多（新增即失败）、
     不得少（还掉一处债就更新清单，防"账还在、测试假装看不见"）。
 对应实现：判据对象是 `web/services/locks.py` 的 `_file_lock`（进程级 RLock，
-    gunicorn `-w 1 --threads 8` 下一堵八条线程全等）与各路由的持锁发信/哈希段。
+    gunicorn `-w 1` 多线程下所有线程全等；线程数由部署面值表 deploy/web.env 定义，
+    实配见 web/deploy/yiban-web.service 与 docker/supervisord.conf）
+    与各路由的持锁发信/哈希段。
 关键断言：**为什么是静态判据而不是运行时持锁时长断言**——"锁内不做 scrypt"
     在当前架构下尚不成立（存量锁内慢调用是登记在案的债），任何"秒级上限"的计时
     断言都会被一次 SMTP 超时随机打挂，等于没有。本用例把现状冻结成账，慢操作的
@@ -39,9 +41,9 @@ SLOW_CALLS = {"send_user", "send_admin_alert", "send_notification",
 # `run_after_file_lock`，逐条销账）。
 KNOWN_SLOW_IN_LOCK = {
     ("web/routes/auth.py", "api_register", "generate_password_hash"),
-    ("web/routes/me.py", "api_me_password", "check_password_hash"),
-    ("web/routes/me.py", "api_me_password", "generate_password_hash"),
-    ("web/routes/me.py", "api_me_delete", "check_password_hash"),
+    ("web/routes/me_api.py", "api_me_password", "check_password_hash"),
+    ("web/routes/me_api.py", "api_me_password", "generate_password_hash"),
+    ("web/routes/me_api.py", "api_me_delete", "check_password_hash"),
     ("web/routes/users_api.py", "api_user_password", "generate_password_hash"),
 }
 

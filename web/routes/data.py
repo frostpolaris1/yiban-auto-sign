@@ -3,7 +3,8 @@
 """数据组路由：签到日志的查看/导出、签到事件的结构化查询与系统状态探针（管理员面）。
 
 **功能**
-`GET /api/logs` 按天签到日志（检索 q / 全量 all / 探针与签到事件摘要）；
+`GET /api/logs` 按天签到日志（检索 q / 全量 all / 可选 limit+offset 分页 /
+探针与签到事件摘要）；
 `GET /api/logs/export` 某日日志的脱敏导出（与展示层同一条可见性过滤管线）；
 `GET /api/admin/sign-events` 单账号时间线 / 实时事件流 / 按天统计；
 `GET /api/clock` 与 `POST /api/ping` 是数据总览页「系统状态」卡的两条探针
@@ -17,19 +18,35 @@
 每 IP 限速表（每 app 实例一份），`read_audit_trace()` 是只读面聚合留痕入口。
 
 **通信**
-视图体不直接读 web.app 的模块级名字，一律经 `web.routes.appmod()` 按属性取——测试用
-`mock.patch.object(web.app, …)` 打桩（db / logger / clock / signin / 日志解析助手 /
-ENV_FILE 等）必须继续生效。日志行一律经 `_log_lines_for()` 过滤、`_mask_log_phones()`
-脱敏后才出 HTTP；被 `web.app` 的 `register_all(app)` 一次接入。
+A 类转发名（`db` / `clock` / `signin` / `_client_ip` / `_mask_log_phones` / `LOG_LEVELS`
+等）经真源模块直取（批 3-a 拆墙），故测试打桩点落在**真源**上；app.py 自有的模块级名字
+（`logger` / `ENV_FILE` / 日志解析助手等）仍经 `web.routes.appmod()` 按属性取。
+日志行一律经 `_log_lines_for()` 过滤、`_mask_log_phones()` 脱敏后才出 HTTP；
+被 `web.app` 的 `register_all(app)` 一次接入。
 """
 import os
 import time
 from datetime import timedelta
 
+import signin
 from flask import Response, jsonify, request, session
 
+# A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
+from web import security as _security
+from web.routes import PAGE_LIMIT_DEFAULT as _PAGE_LIMIT_DEFAULT
+from web.routes import PAGE_LIMIT_MAX as _PAGE_LIMIT_MAX
+from web.routes import PAGE_LIMIT_MIN as _PAGE_LIMIT_MIN
 from web.routes import appmod as _appmod
 from web.routes import export_limits, read_audit_trace
+from web.routes import page_args as _page_args
+from web.routes import page_window as _page_window
+from web.services import limits as _limits
+from web.services import locks as _locks
+from web.services import logs as _logs_svc
+from web.services import signstatus as _signstatus
+from yiban.adapters.config import env_io
+from yiban.adapters.persistence import db
+from yiban.core import clock
 
 # 全量查看的封顶行数：模块级常量而非分支内局部值——三元组（total/truncated/
 # returned）必须按同一个 cap 判定，"是否还有更多"才只有一份答案。
@@ -42,34 +59,62 @@ def api_logs_export():
     date 必填且强校验（防路径穿越），文件名仅含日期。响应体不是磁盘原
     文件：按天日志在盘上按设计保留完整手机号（signin 状态解析 / run.sh
     依赖），HTTP 出口必须与 /api/logs 展示层同一契约——经 _log_lines_for
-    （yiban 全量 + 其余组件仅告警级，同一尾部读取封顶）过滤后逐行
-    _mask_log_phones 脱敏，任何登录身份都无法经 HTTP 取得未脱敏号码。
-    成功导出写 logs_export 审计留痕（400/404 不写），并受每 IP 窗口限速。
+    （yiban 全量 + 其余组件仅告警级）过滤后逐行 _mask_log_phones 脱敏，
+    任何登录身份都无法经 HTTP 取得未脱敏号码。
+
+    导出必须整读当日文件（full=True），不得沿用展示面的 2MB 尾读上限：
+    否则归档会静默丢掉早期行（p37f）。文件超过 _LOG_EXPORT_BYTE_CAP 时
+    返回 413 显式拒绝。成功导出写 logs_export 审计留痕（400/404/413 不写），
+    并受每 IP 窗口限速。
     """
-    m = _appmod()
     date = str(request.args.get("date", "")).strip()
-    if not m._is_valid_date_str(date):
+    if not _logs_svc._is_valid_date_str(date):
         return jsonify({"error": "日期格式不正确，应为 YYYY-MM-DD"}), 400
-    ip = m._client_ip()
+    ip = _security._client_ip()
     now = time.time()
-    with m._rate_lock:
-        m._ip_store_trim(export_limits(), m.EXPORT_WINDOW + m._IP_STORE_MAX_AGE)
-    _cnt, _start, allowed = m._bump_window_count(
-        export_limits(), ip, now, m.EXPORT_WINDOW, limit=m.EXPORT_MAX
+    with _locks._rate_lock:
+        _security._ip_store_trim(export_limits(), _limits.EXPORT_WINDOW + _security._IP_STORE_MAX_AGE)
+    _cnt, _start, allowed = _security._bump_window_count(
+        export_limits(), ip, now, _limits.EXPORT_WINDOW, limit=_limits.EXPORT_MAX
     )
     if not allowed:
         return jsonify({"error": "导出过于频繁，请稍后再试"}), 429
-    if not os.path.exists(m.log_path_for(date)):
+    log_path = _logs_svc.log_path_for(date)
+    if not os.path.exists(log_path):
         return jsonify({"error": f"{date} 无签到日志"}), 404
-    text = "".join(m._mask_log_phones(ln) + "\n" for ln in m._log_lines_for(date))
-    m.db.audit(
+    try:
+        size = os.path.getsize(log_path)
+    except OSError:
+        return jsonify({"error": f"{date} 无签到日志"}), 404
+    max_bytes = _logs_svc._LOG_EXPORT_BYTE_CAP
+    if size > max_bytes:
+        # 显式拒绝优于静默截断：调用方必须知道本次没有拿到完整归档。
+        return jsonify({
+            "error": f"日志文件过大（{size} 字节，上限 {max_bytes} 字节），已拒绝导出",
+        }), 413
+    # 与展示层同一契约（ba-p06-03）：stats 出参必须传——不传时 _log_lines_for
+    # 丢弃的残缺行在导出物里一个字都不留（管理员拿到看似完整、实际缺行的归档）。
+    _line_stats = {}
+    full_lines = _logs_svc._log_lines_for(date, _line_stats, full=True)
+    text = "".join(_logs_svc._mask_log_phones(ln) + "\n" for ln in full_lines)
+    dropped = int(_line_stats.get("dropped", 0))
+    if dropped:
+        # 缺行必须可见：响应头给下游归档脚本，审计 detail 给事后取证（两者同数）。
+        _appmod().logger.warning(
+            "签到日志导出丢弃 %d 行（宽行模型劈开的残缺行）：%s", dropped, date)
+    db.audit(
         session.get("username") or "?",
         "logs_export",
         date,
-        f"导出 {date} 签到日志（脱敏）",
+        f"导出 {date} 签到日志（脱敏；全量 {len(full_lines)} 行；丢弃 {dropped} 行）",
     )
     return Response(text, mimetype="text/plain", headers={
-        "Content-Disposition": f"attachment; filename=sign-{date}.log",
+        "Content-Disposition": f"attachment; filename={env_io.day_log_name(date)}",
+        # 0 也显式回执：下游无需区分"字段缺失"与"没有丢行"
+        "X-Yiban-Dropped-Lines": str(dropped),
+        # 覆盖口径与行数：调用方可据此确认本次是整日全量，不是尾读片段。
+        "X-Yiban-Log-Coverage": "full-day",
+        "X-Yiban-Log-Lines": str(len(full_lines)),
     })
 
 
@@ -80,16 +125,19 @@ def api_logs():
     指定日期时 logs 为该日日志、states 仍为今日状态（账号表格图标语义不随历史日期变化）。
     ?level=warn|all（可选，默认 warn）：warn 只留 WARNING 及以上（巡检口径），
     all 保留可见性口径下的全量；被收起多少行由 `collapsed_lines` 回显。
+    ?limit&offset（可选，见 `web.routes.page_args`）：出现任一参数时按
+    [offset, offset+limit) 切片过滤后的结果集，并回执 `limit`/`offset`；
+    不传时行为与分页前逐字相同（all=1 → 当日全量封顶；缺省 → 最后 80 行）。
     """
     m = _appmod()
     date = str(request.args.get("date", "")).strip()
-    if date and not m._is_valid_date_str(date):
+    if date and not _logs_svc._is_valid_date_str(date):
         return jsonify({"error": "日期格式不正确，应为 YYYY-MM-DD"}), 400
     # 默认：今天有日志则显示今天，否则找最近有日志的一天（_most_recent_log_date 内部先查今天）
     if not date:
-        date = m._most_recent_log_date()
+        date = _logs_svc._most_recent_log_date()
     _line_stats = {}
-    logs = m._log_lines_for(date, _line_stats)
+    logs = _logs_svc._log_lines_for(date, _line_stats)
     # 检索与全量查看。q=子串过滤（大小写不敏感，作用于当日全量行）；
     # all=1 返回当日全部行（封顶 _LOG_VIEW_CAP 防拖垮浏览器）；
     # 缺省仍返回最后 80 行（轮询口径不变，靠前日志经 all=1 或导出获取）。
@@ -102,26 +150,36 @@ def api_logs():
     # 级别档（巡检口径）：默认收起 INFO/DEBUG，只留 WARN/ERROR。`level=all` 恢复全量。
     # 两级过滤共用同一份档次表（web/services/logs.py::LEVEL_RANK）——本行的可见性口径
     # 已由 _log_lines_for 施加，这里只加第二层（人看面从哪一级起）。
-    level = str(request.args.get("level", "")).strip() or m.LOG_LEVEL_DEFAULT
-    if level not in m.LOG_LEVELS:
-        return jsonify({"error": f"level 参数不合法（可选 {' / '.join(m.LOG_LEVELS)}）"}), 400
-    logs, collapsed_lines = m._filter_log_level(logs, level)
-    masked_all = [m._mask_log_phones(ln) for ln in logs]
+    level = str(request.args.get("level", "")).strip() or _logs_svc.LOG_LEVEL_DEFAULT
+    if level not in _logs_svc.LOG_LEVELS:
+        return jsonify({"error": f"level 参数不合法（可选 {' / '.join(_logs_svc.LOG_LEVELS)}）"}), 400
+    logs, collapsed_lines = _logs_svc._filter_log_level(logs, level)
+    masked_all = [_logs_svc._mask_log_phones(ln) for ln in logs]
     if q:
         _ql = q.lower()
         masked_all = [ln for ln in masked_all if _ql in ln.lower()]
     total_lines = len(masked_all)
-    out_lines = masked_all[:_LOG_VIEW_CAP] if show_all else masked_all[-80:]
+    # 分页（可选 `limit`/`offset`，与账号 / 用户列表同一口径，唯一解析点在
+    # `web.routes.page_args`）：出现任一参数时按 [offset, offset+limit) 切片当日
+    # **过滤后**的结果集，次序与 all=1 全量视图逐行一致（不重不漏）。三分支互斥且
+    # 向后兼容：不传参数时走旧口径（all=1 → 当日全量封顶；缺省 → 最后 80 行）。
+    limit, offset, paged = _page_args()
+    if paged:
+        out_lines = _page_window(masked_all, limit, offset)
+    elif show_all:
+        out_lines = masked_all[:_LOG_VIEW_CAP]
+    else:
+        out_lines = masked_all[-80:]
     truncated = len(masked_all) > len(out_lines)
     # 探针结构化事件：stage="probe" 若无 HTTP 出口只落库不可见，故随日志接口
     # 附带当日探测记录（独立字段，不混入签到文本流；手机号打码，条数封顶）。
     probe_events = []
     try:
-        for ev in m.db.probe_events_on(date, limit=100):
+        for ev in db.probe_events_on(date, limit=100):
             msg = str(ev.get("message") or "")
             probe_events.append({
                 "time": str(ev.get("ts", ""))[-8:] if ev.get("ts") else "",
-                "phone": m.signin._mask_phone(str(ev.get("phone") or "")),
+                "phone": signin._mask_phone(str(ev.get("phone") or "")),
                 "status": str(ev.get("status") or ""),
                 "message": (msg[:160] + "…") if len(msg) > 160 else msg,
             })
@@ -131,11 +189,11 @@ def api_logs():
     # 当日签到事件（stage="sign"）与探针记录同口径脱敏展示（手机号打码、条数封顶）。
     sign_events = []
     try:
-        for ev in m.db.sign_events_on(date, limit=100):
+        for ev in db.sign_events_on(date, limit=100):
             msg = str(ev.get("message") or "")
             sign_events.append({
                 "time": str(ev.get("ts", ""))[-8:] if ev.get("ts") else "",
-                "phone": m.signin._mask_phone(str(ev.get("phone") or "")),
+                "phone": signin._mask_phone(str(ev.get("phone") or "")),
                 "status": str(ev.get("status") or ""),
                 "attempt": int(ev.get("attempt") or 0),
                 "message": (msg[:160] + "…") if len(msg) > 160 else msg,
@@ -150,15 +208,15 @@ def api_logs():
     recent_probe_date = ""
     recent_sign_date = ""
     if not logs and not q:
-        candidate = m._most_recent_log_date()
+        candidate = _logs_svc._most_recent_log_date()
         if candidate and candidate != date:
             recent_log_date = candidate
     if not probe_events:
-        candidate = m.db.sign_events_recent_date("probe")
+        candidate = db.sign_events_recent_date("probe")
         if candidate and candidate != date:
             recent_probe_date = candidate
     if not sign_events:
-        candidate = m.db.sign_events_recent_date("sign")
+        candidate = db.sign_events_recent_date("sign")
         if candidate and candidate != date:
             recent_sign_date = candidate
     # 响应层脱敏：日志行内手机号不落完整号（唯一出口 `_mask_log_phones`，覆盖裸号 /
@@ -167,50 +225,62 @@ def api_logs():
     # 日志符号（✅/❌）与状态码（success/failed）语义不同，曾造成前端图标/统计卡被
     # 符号污染。
     read_audit_trace()("logs_read", f"{date} {total_lines} 行")
-    return jsonify(
-        {
-            "ok": True,
-            "logs": out_lines,
-            "total_lines": total_lines,
-            "returned": len(out_lines),
-            "truncated": truncated,
-            # 宽行模型（splitlines）把含裸 NEL/LS/PS 的行劈成两半后，后半行
-            # 过不了解析、原先整块静默消失。不改切行语义，只把丢了多少数出来：
-            # 返回面上 `dropped_lines` > 0 即"另有 N 行没被算进去"。
-            "dropped_lines": _line_stats.get("dropped", 0),
-            "q": q,
-            # 级别档与其结果：前端据此显示「已收起 N 行 INFO」，不静默出空表。
-            "level": level,
-            "collapsed_lines": collapsed_lines,
-            "log_file": f"sign-{date}.log",  # 只暴露文件名，不暴露服务器路径
-            "date": date,
-            "is_today": date == m.clock.now().strftime("%Y-%m-%d"),
-            "probe_events": probe_events,
-            "sign_events": sign_events,
-            # 三块各自的「最近有数据日期」（空态一键跳转用；当前日期即最近时为空串）
-            "recent_log_date": recent_log_date,
-            "recent_probe_date": recent_probe_date,
-            "recent_sign_date": recent_sign_date,
-        }
-    )
+    payload = {
+        "ok": True,
+        "logs": out_lines,
+        "total_lines": total_lines,
+        "returned": len(out_lines),
+        "truncated": truncated,
+        # 宽行模型（splitlines）把含裸 NEL/LS/PS 的行劈成两半后，后半行
+        # 过不了解析、原先整块静默消失。不改切行语义，只把丢了多少数出来：
+        # 返回面上 `dropped_lines` > 0 即"另有 N 行没被算进去"。
+        "dropped_lines": _line_stats.get("dropped", 0),
+        "q": q,
+        # 级别档与其结果：前端据此显示「已收起 N 行 INFO」，不静默出空表。
+        "level": level,
+        "collapsed_lines": collapsed_lines,
+        "log_file": env_io.day_log_name(date),  # 只暴露文件名，不暴露服务器路径
+        "date": date,
+        "is_today": date == clock.now().strftime("%Y-%m-%d"),
+        "probe_events": probe_events,
+        "sign_events": sign_events,
+        # 三块各自的「最近有数据日期」（空态一键跳转用；当前日期即最近时为空串）
+        "recent_log_date": recent_log_date,
+        "recent_probe_date": recent_probe_date,
+        "recent_sign_date": recent_sign_date,
+    }
+    if paged:
+        # 分页元数据只在分页时出现：不传参数时响应与分页前逐字相同（向后兼容）。
+        # 日志域的总数沿用既有键名 `total_lines`（同一事实不另立第二个名字），
+        # 本处只补 `limit`/`offset` 两个新参数的回执。
+        payload["limit"] = limit
+        payload["offset"] = offset
+    return jsonify(payload)
 
 
 def api_admin_sign_events():
-    """sign_events 结构化查询：单账号时间线 / 实时事件流 / 按天统计。
+    """sign_events 结构化查询：单账号时间线 / 实时事件流 / 按天统计 + 看板账号终态统计。
 
     权限：路径不在普通用户白名单，require_login 统一 403（普通用户越权访问
     会另记 forbidden_path 审计）。手机号一律打码后返回，条数封顶 200。
+
+    `accounts_stats` 是**终态口径**（账号终态统计），来源是按日状态文件
+    （`web/services/logs.py::accounts_terminal_summary`），**不读事件表**；
+    `stage` 只作用于 `events` 与 `daily_stats`（事件表口径），对 `accounts_stats`
+    不适用（用户 2026-10-18 裁定：统计按终态，过程只出现在日志里）。
     """
-    m = _appmod()
     phone = str(request.args.get("phone", "")).strip()
     try:
         days = min(max(int(request.args.get("days", 7)), 1), 90)
     except (TypeError, ValueError):
         days = 7
     try:
-        limit = min(max(int(request.args.get("limit", 100)), 1), 200)
+        # 与 page_args() 同一份上下限常量：本端点不接受 offset，故只复用上下限，
+        # 不调用 page_args()（它会把"只传 offset"也判成分页）。
+        limit = min(max(int(request.args.get("limit", _PAGE_LIMIT_DEFAULT)),
+                        _PAGE_LIMIT_MIN), _PAGE_LIMIT_MAX)
     except (TypeError, ValueError):
-        limit = 100
+        limit = _PAGE_LIMIT_DEFAULT
     # stage 过滤：sign=真实签到、probe=健康探针；缺省不过滤（两者混算，保持旧行为）。
     # 两种事件共用 sign_events 表，不区分会让探针的成功/失败污染签到成功率，
     # 故需要「签到口径」的调用方显式传 stage=sign。取值走白名单 + 参数绑定。
@@ -218,24 +288,13 @@ def api_admin_sign_events():
     if stage not in ("sign", "probe"):
         stage = ""
 
-    def _mask(ev):
-        msg = str(ev.get("message") or "")
-        return {
-            "ts": str(ev.get("ts", "")),
-            "phone": m.signin._mask_phone(str(ev.get("phone") or "")),
-            "status": str(ev.get("status") or ""),
-            "message": (msg[:160] + "…") if len(msg) > 160 else msg,
-            "stage": str(ev.get("stage") or ""),
-            "attempt": int(ev.get("attempt") or 0),
-            "dur_sec": ev.get("dur_sec"),
-        }
-
+    # 事件行脱敏序列化：与 /api/queue/<idx>/events 共用唯一实现（services/logs.mask_event）。
     events = []
     if phone:
-        events = [_mask(ev) for ev in m.db.sign_events_by_phone(phone, days=days)][:limit]
+        events = [_logs_svc.mask_event(ev) for ev in db.sign_events_by_phone(phone, days=days)][:limit]
     else:
-        cutoff = (m.clock.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
-        events = [_mask(ev) for ev in m.db.sign_events_since(cutoff, limit=limit)]
+        cutoff = (clock.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        events = [_logs_svc.mask_event(ev) for ev in db.sign_events_since(cutoff, limit=limit)]
     if stage:
         # 事件流本身不带 stage 过滤（sign_events_since 无该参数），故在此收口；
         # 代价是过滤后条数可能少于 limit，对展示样本无影响。
@@ -244,13 +303,16 @@ def api_admin_sign_events():
     # 只有取数量可摘要，与"谁在按天拖事件流"这一威胁问题同粒度
     read_audit_trace()(
         "sign_events_read",
-        m.signin._mask_phone(phone) if phone else f"{days} 天 {len(events)} 条事件",
+        signin._mask_phone(phone) if phone else f"{days} 天 {len(events)} 条事件",
     )
-    stats = m.db.sign_event_stats(days=days, stage=stage or None)
+    stats = db.sign_event_stats(days=days, stage=stage or None)
     # 账号数终值：`daily_stats.cnt` 按 (day,status) 各自去重、桶间不互斥，前端拿不到
     # phone 明细也无从自行去重——「涉及多少账号」「按日最终态」只能在这里出权威值
     # （把 cnt 跨天跨状态直加当总数是现网 953 vs 真值 94 的来源，MF-55）。
-    accounts_stats = m.db.sign_event_accounts_summary(days=days, stage=stage or None)
+    # 来源是**按日状态文件**（终态载体），不读事件表——旧实现取"每账号当日最后一条事件"
+    # 当终态，2026-10-16 的收尾 pending 观测把 311 个账号刷成待签（真值是 failed 233 /
+    # already 78），工单 yiban-auto-sign-v5ty。`stage` 对终态口径不适用。
+    accounts_stats = _logs_svc.accounts_terminal_summary(days=days)
     return jsonify(
         {
             "ok": True,
@@ -265,24 +327,21 @@ def api_admin_sign_events():
 
 
 def api_ping():
-    m = _appmod()
-    ok, detail = m.check_connectivity()
+    ok, detail = _signstatus.check_connectivity()
     return jsonify({"ok": True, "reachable": ok, "detail": detail})
 
 
 def api_clock():
-    m = _appmod()
-    text, color = m.sign_status()
-    try:
-        tz_offset_min = int(m.clock.now().astimezone().utcoffset().total_seconds() // 60)
-    except Exception:
-        tz_offset_min = 0
+    text, color = _signstatus.sign_status()
+    # 偏移必须与 `now` 同源：`clock.now()` 是 naive 北京墙上时间，`.astimezone()` 会按
+    # **宿主**时区解释它（UTC 主机得 0），前端按 (tz−浏览器时区) 平移后「今天」退一天。
+    tz_offset_min = int(clock.TZ.utcoffset(None).total_seconds() // 60)
     return jsonify(
         {
             "ok": True,
-            "now": m.clock.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "now": clock.now().strftime("%Y-%m-%d %H:%M:%S"),
             "server_ts": int(time.time()),  # 服务器 epoch 秒，供前端平滑走秒与校准
-            "tz_offset_min": tz_offset_min,  # 服务器本地时区相对 UTC 的分钟偏移
+            "tz_offset_min": tz_offset_min,  # 服务器业务时区（CST，与 now 同源）相对 UTC 的分钟偏移
             "sign_status": text,
             "color": color,
         }

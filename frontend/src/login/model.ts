@@ -171,9 +171,9 @@ export function networkErrorText(e: unknown): string {
 
 export type AuthMode = "login" | "register";
 
-export const AUTH_TITLES: Record<AuthMode, [string, string]> = {
-  login: ["登录", "使用注册邮箱进入签到管理面板。"],
-  register: ["注册", "创建账号后即可添加并管理易班签到。"],
+export const AUTH_TITLES: Record<AuthMode, string> = {
+  login: "登录",
+  register: "注册",
 };
 
 /**

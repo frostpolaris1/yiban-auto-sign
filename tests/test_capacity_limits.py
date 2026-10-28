@@ -3,7 +3,7 @@
 
 标签：I · 容量、熔断与账号有效性
 覆盖：保存延迟时的容量单门、`_accounts_at_capacity` 口径（裸账号计数与 `extra_accounts` 语义）、max_users / max_accounts 设置项（权限、钳位、携带才写、热读）、`capacity_estimate` 字段收敛、三分类拆解与设置页统计的解密读取
-对应实现：`webapp._capacity_estimate`、`_accounts_at_capacity`、`/api/settings` 读写路由、`signin.capacity_accounts`
+对应实现：`web.services.capacity` 的 `_capacity_estimate` 与 `_accounts_at_capacity`、`/api/settings` 读写路由、`signin.capacity_accounts`
 关键断言：注册用户多但活跃账号少应放行（旧 users 分支已删）；只带一个延迟字段的部分更新必须按 `.env` 现存的账号间隔算容量——缺省取 0 会把预估顶到窗口上限、把硬门整个绕过；0=不限、钳位 0~100000、字段未携带不得把已有值清零；引擎预检与 web 预估同一条公式（含「缓冲过大只收缩缓冲、窗口 1 分钟保留」的退化分支）；`cred-state.json` 损坏或缺失时接口仍 200 且 `cred_paused=0`（不得 500）
 依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node；多处 importlib 以独立模块名装载 `web/app.py`（共用模块对象会读到别人的 `.env`）。各基类与多数用例都显式写 `YIBAN_PW_GATE=full`——默认档 `risk` 下这些写操作不再当次要口令
 
@@ -30,6 +30,12 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+
+from werkzeug.security import generate_password_hash
+
+from web import render as _render
+from web.services import capacity as _capacity
+from web.services import signstatus as _signstatus
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -179,9 +185,9 @@ class AccountsAtCapacityTest(_Base):
         self.webapp.write_env_key(self.env_file, "YIBAN_MAX_ACCOUNTS", "1")
         try:
             # 占用 1（裸账号计入）+ 本次新增 1 = 2 > 1 → True
-            self.assertTrue(self.webapp._accounts_at_capacity(1))
+            self.assertTrue(_capacity._accounts_at_capacity(1))
             # 已满但本次不新增（extra=0）：1 > 1 不成立 → False
-            self.assertFalse(self.webapp._accounts_at_capacity(0))
+            self.assertFalse(_capacity._accounts_at_capacity(0))
         finally:
             self.webapp.write_env_key(self.env_file, "YIBAN_MAX_ACCOUNTS", "")
 
@@ -190,7 +196,7 @@ class AccountsAtCapacityTest(_Base):
                              "status": "active", "owner": "admin"})
         self.webapp.write_env_key(self.env_file, "YIBAN_MAX_ACCOUNTS", "0")
         try:
-            self.assertFalse(self.webapp._accounts_at_capacity(1))
+            self.assertFalse(_capacity._accounts_at_capacity(1))
         finally:
             self.webapp.write_env_key(self.env_file, "YIBAN_MAX_ACCOUNTS", "")
 
@@ -200,7 +206,7 @@ class MaxLimitsSettingsTest(_Base):
 
     def test_non_master_admin_forbidden(self):
         self.db.create_user("admin2@test.local",
-                            self.webapp.generate_password_hash(USER_PASS), role="admin")
+                            generate_password_hash(USER_PASS), role="admin")
         c = self.webapp.create_app().test_client()
         self.assertEqual(c.post("/api/login", json={
             "username": "admin2@test.local", "password": USER_PASS}).status_code, 200)
@@ -451,7 +457,7 @@ class CapacitySettingsTest(_Base_B19):
     def test_delay_requires_confirm_password(self):
         """随机延迟属 A 档：缺口令/错口令都由设置路由统一的 403 拒绝（不落盘）。
 
-        留门口径（见 web/app.py 的 MASTER_ONLY_KEYS 逐键复核）：在不当时间改它**能静默搞炸
+        留门口径（见 web/services/env_io.py 的 MASTER_ONLY_KEYS 逐键复核）：在不当时间改它**能静默搞炸
         签到序列**——大延迟叠加窄窗口会把后段账号整体推出窗口，且不会当场报错。
         """
         c, h = self._master()
@@ -520,26 +526,26 @@ class CapacityFormulaTest(_Base_B19):
     """
 
     def test_formula_single_tier(self):
-        with mock.patch.object(self.webapp, "_sign_window",
+        with mock.patch.object(_signstatus, "_sign_window",
                                return_value=((6, 30), (7, 50))), \
-             mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
+             mock.patch.object(_render, "edge_config", return_value=(0, 0)), \
              mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
             # 4800s 窗口、无间隔：(4800-8)/8+1 = 600（单档返回单值 int）
-            self.assertEqual(self.webapp._capacity_estimate(0), 600)
+            self.assertEqual(_capacity._capacity_estimate(0), 600)
             # gap=10：(4800-8)/18+1 = 267
-            self.assertEqual(self.webapp._capacity_estimate(10), (4800 - 8) // 18 + 1)
+            self.assertEqual(_capacity._capacity_estimate(10), (4800 - 8) // 18 + 1)
             # gap=3600：4792/3608+1 = 2
-            self.assertEqual(self.webapp._capacity_estimate(3600), 2)
+            self.assertEqual(_capacity._capacity_estimate(3600), 2)
 
     def test_edge_shrinks_capacity(self):
         # 掐头去尾计入有效窗口：前后各裁 60s → 有效 4680s，容量较 4800s 变小
-        with mock.patch.object(self.webapp, "_sign_window",
+        with mock.patch.object(_signstatus, "_sign_window",
                                return_value=((6, 30), (7, 50))), \
              mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
-            with mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)):
-                full = self.webapp._capacity_estimate(10)
-            with mock.patch.object(self.webapp, "edge_config", return_value=(60, 60)):
-                trimmed = self.webapp._capacity_estimate(10)
+            with mock.patch.object(_render, "edge_config", return_value=(0, 0)):
+                full = _capacity._capacity_estimate(10)
+            with mock.patch.object(_render, "edge_config", return_value=(60, 60)):
+                trimmed = _capacity._capacity_estimate(10)
             self.assertEqual(full, (4800 - 8) // 18 + 1)
             self.assertEqual(trimmed, (4680 - 8) // 18 + 1)
             self.assertLess(trimmed, full)
@@ -549,11 +555,11 @@ class CapacityFormulaTest(_Base_B19):
         # 一致地回退默认窗口（06:30~07:50、默认裁剪各 60s），故容量**不是** 0。
         # 原实现网页内联算"原始窗口 − 裁剪"、引擎按回退窗口排计划 → 出现
         # "引擎有完整计划、网页容量显示 0"的自相矛盾。
-        with mock.patch.object(self.webapp, "_sign_window",
+        with mock.patch.object(_signstatus, "_sign_window",
                                return_value=((7, 50), (7, 50))), \
-             mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
+             mock.patch.object(_render, "edge_config", return_value=(0, 0)), \
              mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
-            self.assertEqual(self.webapp._capacity_estimate(0), (4680 - 8) // 8 + 1)
+            self.assertEqual(_capacity._capacity_estimate(0), (4680 - 8) // 8 + 1)
 
     def test_trimmed_empty_window_matches_engine_plan(self):
         """缓冲过大 → 只收缩缓冲（窗口 1 分钟保留）；网页容量与引擎计划同源。
@@ -562,21 +568,21 @@ class CapacityFormulaTest(_Base_B19):
         有效窗口 ≈48s；容量 = (47 - 8) / 8 + 1 = 5（**不是** 0，也不是回退默认窗口；
         47 是 `capacity_accounts` 对窗口秒数取整的结果）。
         """
-        with mock.patch.object(self.webapp, "_sign_window",
+        with mock.patch.object(_signstatus, "_sign_window",
                                return_value=((7, 0), (7, 1))), \
-             mock.patch.object(self.webapp, "edge_config", return_value=(300, 300)), \
+             mock.patch.object(_render, "edge_config", return_value=(300, 300)), \
              mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
-            self.assertEqual(self.webapp._capacity_estimate(0), 5)
+            self.assertEqual(_capacity._capacity_estimate(0), 5)
 
     def test_engine_and_web_share_one_formula(self):
         """引擎容量预检与 web 容量预估必须同口径（同概念不得两套阈值）。"""
         import signin
-        with mock.patch.object(self.webapp, "_sign_window",
+        with mock.patch.object(_signstatus, "_sign_window",
                                return_value=((6, 30), (7, 50))), \
-             mock.patch.object(self.webapp, "edge_config", return_value=(60, 60)):
+             mock.patch.object(_render, "edge_config", return_value=(60, 60)):
             for gap in (0, 10, 60):
                 self.assertEqual(
-                    self.webapp._capacity_estimate(gap),
+                    _capacity._capacity_estimate(gap),
                     signin.capacity_accounts(4680, gap),
                 )
 
@@ -598,22 +604,22 @@ class CapacityFormulaTest(_Base_B19):
             with io.open(env2, "w", encoding="utf-8") as f:
                 f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\nYIBAN_AVG_ATTEMPT_SEC={avg}\n")
 
-        with mock.patch.object(self.webapp, "_sign_window",
+        with mock.patch.object(_signstatus, "_sign_window",
                                return_value=((6, 30), (7, 50))), \
-             mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
+             mock.patch.object(_render, "edge_config", return_value=(0, 0)), \
              mock.patch.dict(os.environ, {}, clear=False), \
              mock.patch.object(self.webapp, "ENV_FILE", env2):
             os.environ.pop("YIBAN_AVG_ATTEMPT_SEC", None)
             os.environ.pop("YIBAN_SCHEDULER_V3", None)
             # 有效窗口 4800s、gap=10：avg=12 → (4800-12)//22+1 = 218
             _write_env_avg("12")
-            self.assertEqual(self.webapp._capacity_estimate(10), (4800 - 12) // 22 + 1)
+            self.assertEqual(_capacity._capacity_estimate(10), (4800 - 12) // 22 + 1)
             # 陈旧环境值压不住 `.env` 真值（.env 覆盖优先级与 run.sh 一致）
             os.environ["YIBAN_AVG_ATTEMPT_SEC"] = "3"
-            self.assertEqual(self.webapp._capacity_estimate(10), (4800 - 12) // 22 + 1)
+            self.assertEqual(_capacity._capacity_estimate(10), (4800 - 12) // 22 + 1)
             # 改 `.env` ⇒ 两侧共同的这个出口同步变化：avg=3 → (4800-3)//13+1 = 370
             _write_env_avg("3")
-            self.assertEqual(self.webapp._capacity_estimate(10), (4800 - 3) // 13 + 1)
+            self.assertEqual(_capacity._capacity_estimate(10), (4800 - 3) // 13 + 1)
 
 
 def _load_webapp_CAP():
@@ -760,7 +766,7 @@ class CapacityBreakdownTest(_Base_CAP):
         try:
             # 2 个非删除账号（含 1 个自暂停）已到上限 → 再新增 1 个应被拒
             self.assertTrue(
-                self.webapp._accounts_at_capacity(1),
+                _capacity._accounts_at_capacity(1),
                 "暂停账号必须仍占名额（配额判定口径未变）",
             )
             cap = self._capacity()
@@ -833,7 +839,7 @@ class CapacityBreakdownTest(_Base_CAP):
             side_effect=AssertionError("计数不应触发解密"),
         ):
             self.assertEqual(self.webapp._capacity_account_count(), len(live))
-            self.assertFalse(self.webapp._accounts_at_capacity(0))
+            self.assertFalse(_capacity._accounts_at_capacity(0))
 
 
 class BatchApproveCapacityTest(_Base):

@@ -73,10 +73,10 @@ logout_ok。三元组口径与既有 forbidden_path 逐字同构（target 只存
 至多一封、通道不可用先落审计痕迹）、通道健康播报的降级判据取结构化字段而非正文符号；
 ③ 账号侧物理清除的三层加固（口令二次鉴权 / 冷却 / 节流）与 PUT 防错位 409；
 ④ 登录/登出/恢复的审计三元组留痕；⑤ 口令策略前后端与文案对拍。
-对应实现：`yiban/store/audit_chain.py`（`_audit_key` / `_track_salt`）、
+对应实现：`yiban/adapters/persistence/audit_chain.py`（`_audit_key` / `_track_salt`）、
 `scripts/audit_verify.py` 与 `scripts/list_duplicate_owners.py`、
 `web/app.py` 的高危门禁与 `_alert_channel_status`、`web/routes/*` 的账号删除与 PUT 路由、
-`yiban/engine/state_io.py` 的冷却账本。
+`yiban/adapters/statefiles/state_io.py` 的冷却账本。
 关键断言：负例一律断"零副作用"（行未删、额度未耗、`.env` 未被新建），只断状态码等于
 放过"先动手后回 403"；`test_wrong_password_tries_do_not_consume_budget` 与
 `test_mail_budget_still_enforced_after_auth` 是一对方向相反的钉（前者防运维 DoS、
@@ -111,8 +111,14 @@ from _user_ids import user_path  # 单条操作的不透明 id 路径助手（2-
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-from yiban.infra import account_crypto  # noqa: E402
-from yiban.notify import ledger as notify_ledger  # noqa: E402  # 账本内部态走子模块
+from werkzeug.security import check_password_hash, generate_password_hash  # noqa: E402
+
+from web.services import limits as _limits  # noqa: E402
+from web.services import notify_mail as _notify_mail  # noqa: E402
+from yiban.adapters.config import account_crypto  # noqa: E402
+from yiban.adapters.notifier.notify import (  # noqa: E402
+    ledger as notify_ledger,  # 账本内部态走子模块
+)
 
 OLD_KEY = "a" * 64
 NEW_KEY = "b" * 64
@@ -213,6 +219,18 @@ def _close_db():
         db._conn = None
 
 
+def _stray_env_in(cwd):
+    """cwd 下**实现会去写**的那个 .env 路径上有没有残留（`.env*` 全部列出）。
+
+    判据必须等于实现会写的路径：默认值已从 cwd/.env 改到 cwd/data/.env（工单 ybg8）。
+    只查旧路径会让本条变成空转（写没写都绿）——那正是"门看的东西≠改的东西"。
+    """
+    d = os.path.join(cwd, "data")
+    if not os.path.isdir(d):
+        return []
+    return [n for n in os.listdir(d) if n.startswith(".env")]
+
+
 def _run_cli(script, cli, cwd, extra_env=None):
     """在指定 cwd 下运行 scripts/ 工具；子进程输出固定 UTF-8（Windows 默认 GBK 会乱码）。
 
@@ -251,7 +269,10 @@ class _B14Fixture(unittest.TestCase):
         cls.work = tempfile.mkdtemp(prefix="b14-work-")     # 模拟"应用根之外的任意 cwd"
         cls.keydir = tempfile.mkdtemp(prefix="b14-env-")    # 模拟真正的部署目录
         cls.env_file = os.path.join(cls.work if cls.ENV_IN_CWD else cls.keydir, ".env")
-        cls.db_file = os.path.join(cls.work, "yiban.db")
+        # 库落在 cwd 的**默认路径** `data/yiban.db`（工单 ybg8）：audit_verify 的
+        # "是不是本部署的库"判据按同一默认值比路径，两侧必须同基。
+        os.makedirs(os.path.join(cls.work, "data"), exist_ok=True)
+        cls.db_file = os.path.join(cls.work, "data", "yiban.db")
 
     @classmethod
     def tearDownClass(cls):
@@ -270,7 +291,7 @@ class _B14Fixture(unittest.TestCase):
             p = self.db_file + suffix
             if os.path.exists(p):
                 os.remove(p)
-        for p in (self.env_file, os.path.join(self.work, ".env")):
+        for p in (self.env_file, os.path.join(self.work, "data", ".env")):
             if os.path.exists(p):
                 os.remove(p)
         # 锚点文件随类只建一份且只追加：留到下一用例，文件里就有属于上一个库化身
@@ -374,7 +395,10 @@ class KeySourceFallbackB14Test(unittest.TestCase):
                                     "YIBAN_TRACK_SALT=salt-via-init-db"])
         _write_env(cls.f_env_var, [f"YIBAN_AUDIT_KEY={KEY_VIA_ENV_VAR}",
                                    "YIBAN_TRACK_SALT=salt-via-env-var"])
-        _write_env(os.path.join(cls.cwd_dir, ".env"),
+        # cwd 兜底档的 .env 落在**默认路径**（`data/.env`，相对 cwd）——工单 ybg8 把
+        # 运行数据收进检出内 data/，密钥来源的第三档随之改到那里。
+        os.makedirs(os.path.join(cls.cwd_dir, "data"), exist_ok=True)
+        _write_env(os.path.join(cls.cwd_dir, "data", ".env"),
                    [f"YIBAN_AUDIT_KEY={KEY_VIA_CWD}", "YIBAN_TRACK_SALT=salt-via-cwd"])
 
     @classmethod
@@ -400,7 +424,7 @@ class KeySourceFallbackB14Test(unittest.TestCase):
                 self.assertEqual(db._audit_key(), bytes.fromhex(KEY_VIA_ENV_VAR))
             # 两者皆无：靠 cwd 兜底——文件存在时行为完全不变（仍读到旧钥）
             with _db_env_file(None), _os_env(YIBAN_ENV_FILE=None):
-                self.assertEqual(db._resolve_key_env_file(), (".env", True))
+                self.assertEqual(db._resolve_key_env_file(), ("data/.env", True))
                 self.assertEqual(db._audit_key(), bytes.fromhex(KEY_VIA_CWD))
 
     def test_track_salt_uses_same_fallback(self):
@@ -423,12 +447,14 @@ class KeySourceFallbackB14Test(unittest.TestCase):
                 str(cm.exception),
                 "审计密钥来源不确定，拒绝生成新密钥；请用 --env 或 YIBAN_ENV_FILE 指定 .env 路径",
             )
-            self.assertFalse(os.path.exists(os.path.join(stray_dir, ".env")),
+            # 判据必须等于**实现会去写的那个路径**（默认值 `data/.env`，相对 cwd）：
+            # 查错路径会让本条变成空转（写没写都绿）。
+            self.assertFalse(os.path.exists(os.path.join(stray_dir, "data", ".env")),
                              "拒绝生成就必须真的什么都不写——游离 .env 正是本次要治的病")
             with self.assertRaises(ValueError) as cm2:
                 db._track_salt()
             self.assertIn("追踪盐来源不确定", str(cm2.exception))
-            self.assertFalse(os.path.exists(os.path.join(stray_dir, ".env")))
+            self.assertFalse(os.path.exists(os.path.join(stray_dir, "data", ".env")))
 
     def test_readonly_verify_path_still_returns_none(self):
         """create=False（校验路径）在同样场景仍返回 None：只读工具不得被新检查打断。"""
@@ -449,10 +475,11 @@ class KeySourceFallbackB14Test(unittest.TestCase):
     def test_existing_env_without_key_still_generates(self):
         """cwd 有 .env 但没配密钥：照常就地生成（判据只看文件是否存在，行为不变）。"""
         d = tempfile.mkdtemp(prefix="b14-exists-", dir=self.tmp)
-        _write_env(os.path.join(d, ".env"), ["YIBAN_OTHER=1"])
+        os.makedirs(os.path.join(d, "data"), exist_ok=True)
+        _write_env(os.path.join(d, "data", ".env"), ["YIBAN_OTHER=1"])
         with _cwd(d), _db_env_file(None), _os_env(YIBAN_ENV_FILE=None):
             key = db._audit_key()
-        content = _read_env(os.path.join(d, ".env"))
+        content = _read_env(os.path.join(d, "data", ".env"))
         self.assertEqual(len(key), 32)
         self.assertIn("YIBAN_AUDIT_KEY=", content)
         self.assertIn("YIBAN_OTHER=1", content, "生成不得丢掉 .env 里的其它配置")
@@ -495,14 +522,14 @@ class ForensicCliKeySourceB14Test(_B14Fixture):
                      cwd=self.work)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("校验通过", r.stdout)
-        self.assertEqual([n for n in os.listdir(self.work) if n.startswith(".env")], [])
+        self.assertEqual(_stray_env_in(self.work), [])
 
     def test_list_duplicate_owners_reads_key_from_env_flag(self):
         """list_duplicate_owners 会跑迁移（v3 审计链回填要用审计密钥）：同样不得依赖 cwd。"""
         r = _run_cli("list_duplicate_owners.py",
                      ["--db", self.db_file, "--env", self.env_file], cwd=self.work)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual([n for n in os.listdir(self.work) if n.startswith(".env")], [])
+        self.assertEqual(_stray_env_in(self.work), [])
         ok, broken, first = self.verify_chain_with_prod_env()
         self.assertTrue(ok, f"只读清点改动了审计链：broken={broken} first={first}")
 
@@ -513,7 +540,7 @@ class ForensicCliKeySourceB14Test(_B14Fixture):
                      extra_env={"YIBAN_ENV_FILE": self.env_file})
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("校验通过", r.stdout)
-        self.assertEqual([n for n in os.listdir(self.work) if n.startswith(".env")], [])
+        self.assertEqual(_stray_env_in(self.work), [])
 
     def test_cli_with_no_env_source_at_all_refuses_generation(self):
         """修复轮1⑤：什么都不传 + cwd 下没有 .env → 拒绝生成密钥，且不落游离 .env。
@@ -530,7 +557,7 @@ class ForensicCliKeySourceB14Test(_B14Fixture):
         for script, cli in cases:
             with self.subTest(script=script):
                 r = _run_cli(script, cli, cwd=empty)
-                residues = [n for n in os.listdir(empty) if n.startswith(".env")]
+                residues = _stray_env_in(empty)
                 self.assertEqual(
                     residues, [],
                     f"{script} 在来源不确定时仍落了游离 .env: {residues}\n"
@@ -646,7 +673,7 @@ class _B14AlertGateBase(unittest.TestCase):
         self.alerts = []
         if self.PATCH_NOTIFY:
             p = mock.patch.object(
-                self.webapp, "send_notification",
+                _notify_mail, "send_notification",
                 # send_notification 新增 force=（先告警后落盘），假实现同步接收
                 # 新增 ledger=（M8 登录失败告警独立账本），假实现同步接收
                 # 返回 True = "送达"：MF-44 后日报的去重标记只在 send_notification 返回
@@ -861,7 +888,8 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
                          "0=不限 → 剩余应为 None（get_config 口径）")
         r2 = c.put("/api/notify-config",
                    json={"urgent_daily_max": -5, "confirm_password": ADMIN_PASS}, headers=self._csrf(t))
-        self.assertEqual(r2.status_code, 200, r2.get_data(as_text=True))  # max(0,…) 与 daily_max 一致
+        # ba-p05-10：负值不再 max(0,·) 钳成「不限额」，而是越界 400、零落盘
+        self.assertEqual(r2.status_code, 400, r2.get_data(as_text=True))
         self.assertIn("YIBAN_NOTIFY_URGENT_DAILY_MAX=0", _read_env(self.env_file))
         r3 = c.put("/api/notify-config", json={"urgent_daily_max": "many"}, headers=self._csrf(t))
         self.assertEqual(r3.status_code, 400, r3.get_data(as_text=True))
@@ -947,7 +975,7 @@ class AlertChannelGateB14Test(_B14AlertGateBase):
     def test_registered_admin_still_403_on_both_endpoints(self):
         """权限前置不变：注册管理员（非内置主管理员）连口令带上也仍是 403，且在鉴权之前。"""
         db.create_user("radmin@test.local",
-                       self.webapp.generate_password_hash(ADMIN_PASS), role="admin")
+                       generate_password_hash(ADMIN_PASS), role="admin")
         c = self._client()
         t = self._login(c, "radmin@test.local", ADMIN_PASS)
         before = _read_env(self.env_file)
@@ -1016,7 +1044,7 @@ class HighRiskGateOrderB14Test(_B14AlertGateBase):
         """既有三处高危删除同口径：错口令尝试不得挤占删除额度。"""
         self._append_env("YIBAN_ADMIN_DELETE_MAX=1\n")
         db.create_user("victim@test.local",
-                       self.webapp.generate_password_hash(ADMIN_PASS))
+                       generate_password_hash(ADMIN_PASS))
         c = self._client()
         t = self._login(c, "admin", ADMIN_PASS)
         for _ in range(2):
@@ -1195,7 +1223,7 @@ class ChannelHealthReportB14Test(_B14AlertGateBase):
             "type": "", "confirm_password": ADMIN_PASS}).status_code, 200)
         self.alerts.clear()
         with mock.patch.object(self.webapp.notify, "pop_exhaustion_notice", return_value=[]), \
-             mock.patch.object(self.webapp, "send_notification",
+             mock.patch.object(_notify_mail, "send_notification",
                                side_effect=RuntimeError("模拟两条通道同时失效")), \
              self.assertRaises(RuntimeError):
             self.webapp._send_channel_health_report()
@@ -1282,7 +1310,7 @@ class ChannelHealthReportB14Test(_B14AlertGateBase):
         """
         meta_key = self.webapp._HEALTH_REPORT_META_KEY
         with mock.patch.object(self.webapp.notify, "pop_exhaustion_notice", return_value=[]), \
-             mock.patch.object(self.webapp, "send_notification",
+             mock.patch.object(_notify_mail, "send_notification",
                                side_effect=RuntimeError("模拟 SMTP 瞬断")), \
              self.assertRaises(RuntimeError):
             self.webapp._send_channel_health_report()
@@ -1414,7 +1442,7 @@ class ChannelHealthReportB14Test(_B14AlertGateBase):
                 "mail_recipients": 2, "push_ever_configured": False, "push_usable": False}
 
     def _due_at(self, moment, status, exhausted=False):
-        """在指定时刻判闸门：时刻经 `yiban.clock.now` 注入，额度状态按需打桩。"""
+        """在指定时刻判闸门：时刻经 `yiban.core.clock.now` 注入，额度状态按需打桩。"""
         with mock.patch.object(self.webapp.clock, "now", return_value=moment), \
                 mock.patch.object(self.webapp.notify, "budget_exhausted_today",
                                   return_value=exhausted):
@@ -1449,7 +1477,7 @@ class ChannelHealthReportB14Test(_B14AlertGateBase):
         general / urgent 两本推送账的余额，攻击当天（非例行日）这封报告不发，告知
         就在次日归零时永久消失。
 
-        占用与判闸门都在同一时刻（同一天）里做：账本按 `yiban.clock` 的北京日归零，
+        占用与判闸门都在同一时刻（同一天）里做：账本按 `yiban.core.clock` 的北京日归零，
         两者跨日会被正常归零，测的就不是闸门了。
         """
         tuesday = datetime(2026, 9, 22, 9, 0, 0)
@@ -1544,7 +1572,7 @@ class ExhaustionNoticeWiringB14Test(_B14AlertGateBase):
              mock.patch.object(self.webapp.mailer, "send_admin_alert",
                                side_effect=lambda s, t, to=None: mails.append((s, t, to))), \
              mock.patch.object(self.webapp, "_mail_alert_due", return_value=True):
-            self.webapp.send_notification("测试告警一", "正文一")
+            _notify_mail.send_notification("测试告警一", "正文一")
             ns.assert_called_once()
         self.assertEqual([m[0] for m in mails], ["测试告警一"],
                          f"告警路径不该再补发耗尽告知，实际 {[m[0] for m in mails]}")
@@ -1676,7 +1704,7 @@ class AccountBatchPurgeGateB14Test(_B14AccountBase):
     def test_batch_param_errors_still_checked_before_gate(self):
         """既有 400 校验优先级不变：未知动作/空选择/超上限都不该被改成交给门禁判。"""
         c, h = self._master()
-        cap = self.webapp.BATCH_OP_LIMIT
+        cap = _limits.BATCH_OP_LIMIT
         for body in ({"action": "nope", "ids": [0]},
                      {"action": "purge", "ids": []},
                      {"action": "purge", "ids": list(range(cap + 1))}):
@@ -1772,7 +1800,7 @@ class AccountSinglePurgeGateB14Test(_B14AccountBase):
         走 users 表 password_hash；两条路径不得互相顶用。
         """
         db.create_user("radmin2@test.local",
-                       self.webapp.generate_password_hash(REG_ADMIN_PASS), role="admin")
+                       generate_password_hash(REG_ADMIN_PASS), role="admin")
         self._one_deleted()
         c = self._client()
         t = self._login(c, "radmin2@test.local", REG_ADMIN_PASS)
@@ -1915,7 +1943,7 @@ class LoginTrailB14Test(_B14AlertGateBase):
     """
 
     def _user(self, email="trail-user@test.local", password=TRAIL_PASS, role="user"):
-        db.create_user(email, self.webapp.generate_password_hash(password), role=role)
+        db.create_user(email, generate_password_hash(password), role=role)
         return email, password
 
     @staticmethod
@@ -1930,7 +1958,7 @@ class LoginTrailB14Test(_B14AlertGateBase):
         这里仍按"真实会话用户名的遮罩态"钉死 actor（不是"任意值"），并额外断言整行
         不含完整邮箱明文——防的就是 actor 面回潮。
         """
-        from yiban.masking import mask_email
+        from yiban.core.masking import mask_email
         self.assertEqual(row["username"], mask_email(want_username),
                          "actor 必须是真实会话用户名的遮罩形态")
         self.assertLessEqual(len(row["username"]), 64, "username 必须截断到 64")
@@ -1989,7 +2017,7 @@ class LoginTrailB14Test(_B14AlertGateBase):
         email, pw = self._user()
         c = self._client()
         bad = "wrong-" + pw
-        th = self.webapp.LOGIN_FAIL_NOTIFY
+        th = _limits.LOGIN_FAIL_NOTIFY
         # 告警阈值与锁定阈值同值：第 th 次既留痕又锁定（429），之前都是 401
         for i in range(th):
             r = c.post("/api/login", json={"username": email, "password": bad})
@@ -2005,7 +2033,7 @@ class LoginTrailB14Test(_B14AlertGateBase):
         """红线：留痕不得改动锁定与返回码语义——第 5 次仍 429，其后仍 429 且无成功行。"""
         email, pw = self._user("lockme@test.local")
         c = self._client()
-        for _ in range(self.webapp.LOGIN_MAX_FAILS):
+        for _ in range(_limits.LOGIN_MAX_FAILS):
             r = c.post("/api/login", json={"username": email, "password": "nope-" + pw})
         self.assertEqual(r.status_code, 429, r.get_data(as_text=True))
         r2 = c.post("/api/login", json={"username": email, "password": pw})
@@ -2137,7 +2165,7 @@ class LoginTrailB14Test(_B14AlertGateBase):
                          ["login_ok", "logout_ok"] * 2,
                          "起止两端必须成对且按时间顺序可重建")
         # actor 遮罩态（MF-49·2-9b）：同输入同输出，取证仍可聚到同一操作者。
-        from yiban.masking import mask_email
+        from yiban.core.masking import mask_email
         want_actor = mask_email(email)
         self.assertTrue(all(r["username"] == want_actor for r in rows))
         ok, broken, first = db.verify_audit_chain()
@@ -2246,15 +2274,17 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
         self.assertEqual(w._PASSWORD_MIN_CLASSES, 2,
                          "判定下限仍是 2 类：不得改成 3 类，也不得要求必须含符号")
         self.assertEqual(w.PASSWORD_MIN_LEN, 10, "长度下限不变")
-        # 后端侧的四类正则与两条文案随账号数据族（含口令策略）住在
-        # web/services/accounts_data.py：判据是「符号类正则全后端只出现一次＝唯一定义点」。
+        # 后端侧的四类正则与两条文案住在 yiban/core/password_policy.py：判据是
+        # 「符号类正则全后端只出现一次＝唯一定义点」。CLI 与 Web 共用该模块，
+        # accounts_data 只保留原名别名，不再定义第二份。
         # 覆盖**消费面**而不只定义点——两侧消费点各按来源不同：
         #   web/security.py 的 reject_default_admin_password 与 web/app.py 的转发/再导出
         #   都只能按名取用（导入常量），一律不得内联那份正则。
         # 说明（评审 Minor 消解）：此前只扫定义文件，任一消费面把 `[^A-Za-z0-9]`
         # 抄一份都会被漏掉；web/app.py 纵深同样纳入后，三处一起钉住。
         backends = {
-            "web/services/accounts_data.py": 1,  # 唯一定义点（_PASSWORD_CLASS_PATTERNS）
+            "yiban/core/password_policy.py": 1,  # 唯一定义点（PASSWORD_CLASS_PATTERNS）
+            "web/services/accounts_data.py": 0,  # 只保留原名别名
             "web/security.py": 0,                # 启动弱口令检测按名取用
             "web/app.py": 0,                     # 只转发/再导出
         }
@@ -2263,7 +2293,7 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
             self.assertEqual(
                 src.count("A-Za-z0-9"), want,
                 f"{rel} 的符号类正则出现 {src.count('A-Za-z0-9')} 处（应为 {want}）："
-                f"全后端只允许 web/services/accounts_data.py 的 _PASSWORD_CLASS_PATTERNS "
+                f"全后端只允许 yiban/core/password_policy.py 的 PASSWORD_CLASS_PATTERNS "
                 f"定义一次，其余位置按名取用；内联第二份即回到多份正则各自漂移的老问题")
         fn = inspect.getsource(w._password_policy_error)
         self.assertIn("_PASSWORD_CLASS_PATTERNS", fn,
@@ -2482,7 +2512,7 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
 
     def test_me_password_endpoint_prefix_unchanged(self):
         email, old = "pwcopyme@test.local", "OldPass#2026"
-        db.create_user(email, self.webapp.generate_password_hash(old))
+        db.create_user(email, generate_password_hash(old))
         c = self._client()
         token = self._login(c, email, old)
         r = c.post("/api/me/password",
@@ -2491,12 +2521,12 @@ class PasswordPolicyParityB14Test(_B14AlertGateBase):
         self.assertEqual(r.status_code, 400, r.get_data(as_text=True))
         self.assertEqual(r.get_json()["error"], f"新密码不符合要求：密码需包含{PW_CLASS_SENTENCE}",
                          "端点前缀「新密码不符合要求：」不得随文案订正而变")
-        self.assertTrue(self.webapp.check_password_hash(
+        self.assertTrue(check_password_hash(
             db.find_user(email)["password_hash"], old), "校验失败不得改到存量哈希")
 
     def test_admin_reset_password_endpoint_prefix_unchanged(self):
         email = "pwcopyadmin@test.local"
-        db.create_user(email, self.webapp.generate_password_hash("OldPass#2026"))
+        db.create_user(email, generate_password_hash("OldPass#2026"))
         c = self._client()
         token = self._login(c, "admin", ADMIN_PASS)
         r = c.post(user_path(db, email, "/password"), json={"password": "1234567890"},

@@ -3,20 +3,27 @@
 """q1to 校验者：汇总把「未执行」计为「失败」+ 执行层零留痕。
 
 标签：B · 调度：领取/队列/执行体
-覆盖：`yiban/engine/runner.py`（轮末汇总的计数桶与汇总文本、退出码）、
+覆盖：`yiban/app/runner.py`（轮末汇总的计数桶与汇总文本、退出码）、
      `yiban/engine/executor_v3.py`（轮末"未执行"判因与事件留痕）、
-     `yiban/store/queue_store.py`（当日行的 `state`/`owner` 读取）。
+     `yiban/adapters/persistence/queue_store.py`（当日行的 `state`/`owner` 读取）。
 
 **故障现场（2026-10-07 生产 v0.5.1）**：兜底把两个执行体的任务领走（84/100），两个
 worker 到点领不到自己的行、`results` 里没有条目，汇总把它们记成"失败"（07:16 一行
 "❌ 51"、07:29 一行 "❌ 33"）；同时 `sign_events` 当日只有 16 条 success + 6 条
 user_cancelled——这 84 条"失败"零事件、零日志。运维从数据侧完全看不出"任务被别人领走"。
 
-**本文件钉住的三条**：
+**本文件钉住的四条**：
 1. 任务被别人领走 ⇒ 汇总出现**独立桶**（不是失败），并落 `sign_events` 可查记录
    （状态与文本都能与真失败区分）；
-2. 反向控制（红线）：真"没人接手"的账号**仍算失败**——统计口径不许被改成"看起来对"；
-3. 同源同口径：汇总计数与事件写入出自同一份判因（同一分桶函数），两者数量一致。
+2. **「已由他人负责」收成一条批量**（工单 81xt）：事件与日志按扫描产出 O(1) 条，
+   不随账号数线性增长——2026-10-10 生产该扫描对每个账号各落一行 pending 事件
+   （×1830），事件表与日志被按账号数灌噪声；
+3. 反向控制（红线）：真"没人接手"的账号**仍算失败**——统计口径不许被改成"看起来对"；
+   这类真异常同样收成**一条批量**（带账号数与分因明细，摘要行不进账号聚合），可查性由
+   批量计数 + `unreached` 判因（喂汇总桶）+ 台账 `sign_tasks` 行状态承担（工单 81xt；
+   逐账号落事件会按账号数线性灌噪声，并抢成账号当日最后一条事件、打穿看板——2026-10-13
+   生产实证）；
+4. 同源同口径：汇总计数与批量事件计数出自同一份判因（同一分桶），两者数量一致。
 
 **依赖**：临时 SQLite（真迁移链）+ 真 `runner.main` + 真执行体补货循环（只替身登录与
 限速）+ 假时钟。不发任何网络请求。
@@ -34,18 +41,18 @@ from unittest import mock
 
 import db
 
-from yiban import clock, egress
-from yiban import status as yiban_status
+from yiban import egress
+from yiban.adapters.persistence import clock_meta, queue_store
+from yiban.adapters.persistence import connection as store_conn  # current_db_file 的唯一定义点
+from yiban.app import runner
+from yiban.core import clock, hrw
+from yiban.core import status as yiban_status
 from yiban.engine import (
     executor_v3,
-    hrw,
     planner,
-    runner,
     schedule,
     token_bucket,
 )
-from yiban.store import clock_meta, queue_store
-from yiban.store import connection as store_conn  # current_db_file 的唯一定义点
 
 TEST_KEY = "a" * 64
 DAY = "2026-09-22"          # 周二：周末门不拦
@@ -149,6 +156,8 @@ class _Harness(unittest.TestCase):
         # 共享 DB 单例教训（2026-10-07 复核 F1）：上一个文件/用例留下的 `db._conn` 会让
         # 本用例的 `db.init_db` 复用旧连接、读到陈旧库。setUp 第一件事就把它关掉。
         self._close_conn()
+        # 组成去重现在由库（`emit_ledger`）承担，每个用例一套临时库 ⇒ 天然从"没说过"
+        # 开始，不需要再清进程内变量（单 3zr5）。
         self.root = tempfile.mkdtemp(prefix="yiban-unreach-")
         self.db_file = os.path.join(self.root, "yiban.db")
         self.state_dir = os.path.join(self.root, "state")
@@ -245,6 +254,13 @@ class _Harness(unittest.TestCase):
             "ORDER BY id")
         return [dict(r) for r in cur.fetchall()]
 
+    def _run_events(self):
+        """`run_events` 的收尾摘要行（批量留痕的新住址，单 3zr5）。"""
+        cur = db.get_conn().execute(
+            "SELECT ts, day, node, executor, phone, message FROM run_events "
+            "WHERE node='finalize' AND message LIKE '%摘要：%' ORDER BY id")
+        return [dict(r) for r in cur.fetchall()]
+
     def _run(self, *, attempt=None, claim_batch=None, row_owners="__unset__"):
         """跑一轮真 `runner.main`，返回 (rc, 日志正文)。
 
@@ -274,7 +290,7 @@ class _Harness(unittest.TestCase):
             mock.patch.object(runner.cli_support, "_acquire_run_lock",
                               lambda *a, **k: None),
             mock.patch.object(executor_v3, "_persist_loop", _never),
-            mock.patch.object(executor_v3, "_make_limiter", lambda channels: _Limiter()),
+            mock.patch.object(executor_v3, "_make_limiter", lambda channels, shares=1: _Limiter()),
             mock.patch.object(executor_v3, "_make_gap_gate", lambda: _Gate()),
             mock.patch.object(executor_v3, "_make_global_limiter",
                               lambda: token_bucket.GlobalLimiter("")),
@@ -319,24 +335,33 @@ class PeerClaimedWorkerTest(_Harness):
                       "独立桶的条数必须等于被领走的账号数")
         self.assertNotEqual(rc, 1, "全被别人领走时不得报「有真失败」（那是假失败）")
 
-    def test_execution_layer_leaves_queryable_events(self):
+    def test_peer_claimed_leaves_one_batch_event_not_per_account(self):
+        """判据 B2：被别人领走 ⇒ **一条批量**观测（O(1)），不逐账号落库。
+
+        故障现场（2026-10-10 生产）：兜底收尾扫描对每个被别人领走的账号各落一行
+        `sign_events`（status=pending）×1830，当天 pending 事件 1893 条、日志 1934 行
+        ——事件表与日志被按账号数线性灌噪声。本用例只断言"留痕条数与账号数解耦"：
+        6 个账号全部被别人领走，留痕仍是 1 条。
+
+        留痕住在 `run_events`（观测表，无账号行是正常形态）：`sign_events` 只装
+        账号级事实，摘要行写不进去（单 f7or／3zr5）。
+        """
         self._plan()
         self._peer_settles_all()
         self._run()
 
-        rows = self._events()
-        self.assertEqual(len(rows), len(self.phones),
-                         f"未执行的账号没有留痕（执行层零记录）：{rows}")
-        for row in rows:
-            self.assertEqual(row["stage"], "sign")
-            self.assertNotEqual(row["status"], yiban_status.STATUS_FAILED,
-                                "留痕不得写成真失败（两者必须可区分）")
-            self.assertEqual(row["status"], yiban_status.STATUS_PENDING,
-                             "未执行应当落 pending 档，而不是成功或失败")
-            self.assertIn("已由其他执行体领取", row["message"],
-                          f"留痕无法区分「被别人领走」与真失败：{row}")
-        self.assertEqual({r["phone"] for r in rows}, set(self.phones),
-                         "留痕必须逐账号可查（运维据此定位是哪几个账号）")
+        rows = self._run_events()
+        self.assertEqual(len(rows), 1,
+                         f"「已由他人负责」必须收成一条批量（O(1)），实得 {len(rows)} 行：{rows}")
+        row = rows[0]
+        self.assertEqual(row["node"], "finalize")
+        self.assertIn("已由其他执行体领取", row["message"],
+                      f"批量留痕无法区分「被别人领走」与真失败：{row}")
+        self.assertIn(str(len(self.phones)), row["message"],
+                      f"批量留痕必须带计数（运维据此知道有多少个账号）：{row}")
+        self.assertEqual(row["phone"], "", "摘要行没有单一账号（观测表的正常形态）")
+        self.assertEqual(self._events(), [],
+                         "摘要行不得再写进 sign_events（哨兵已撤）")
 
 
 class TrulyUnreachedStillFailsTest(_Harness):
@@ -361,12 +386,19 @@ class TrulyUnreachedStillFailsTest(_Harness):
         self.assertNotIn(f"✅ {len(self.phones)}", summary[0],
                          "没人接手的账号不得被算成成功（藏进成功即掩盖）")
         self.assertEqual(rc, 1, "存在无人接手的账号必须是真失败（退出码 1）")
-        rows = self._events()
-        self.assertEqual(len(rows), len(self.phones), "无人接手的账号同样要留痕")
-        self.assertTrue(all(r["status"] == yiban_status.STATUS_PENDING for r in rows),
-                        f"「未执行」的留痕状态不得写成 failed/success：{rows}")
-        self.assertTrue(all("未执行" in r["message"] for r in rows),
-                        f"留痕文本必须能读出「本执行体未执行」：{rows}")
+        rows = self._run_events()
+        # 留痕收成**一条批量**（O(1)）：账号数与分因明细都在正文里，摘要行没有单一账号。
+        # 逐账号落行是 2026-10-13 生产 `pending` 洪泛的形状，也是这里必须拒的形状。
+        self.assertEqual(len(rows), 1,
+                         f"无人接手的留痕必须收成一条批量（O(1)），实得 {len(rows)} 行：{rows}")
+        self.assertEqual(rows[0]["phone"], "", "摘要行没有单一账号（观测表的正常形态）")
+        self.assertEqual(rows[0]["node"], "finalize", "摘要行是收尾观测节点")
+        self.assertIn("未执行", rows[0]["message"],
+                      f"留痕文本必须能读出「本执行体未执行」：{rows[0]}")
+        self.assertIn(str(len(self.phones)), rows[0]["message"],
+                      f"批量必须带账号数（运维据此知道规模）：{rows[0]}")
+        self.assertEqual(self._events(), [],
+                         "摘要行不得再写进 sign_events（哨兵已撤）")
 
 
 class RetryRequeuedIsNotUnreachedTest(_Harness):
@@ -386,13 +418,14 @@ class RetryRequeuedIsNotUnreachedTest(_Harness):
         real_claim = queue_store.claim_batch
         seen = {"n": 0}
 
-        def _once_then_unreadable(*a, **k):
-            # 第一拍照常领取（每个账号真的被跑一次并回炉成 `retry:` 档），其后模拟读不通：
-            # 轮次以"读不通"收尾时窗口仍开着、回炉行留在 `pending`——这正是"跑过但没收尾"。
+        def _due_then_unreadable(*a, **k):
+            # 前 ACCOUNTS 次照常领取（claim-at-dispatch：每次一行，每个账号真被跑一次并
+            # 回炉成 `retry:` 档）；其后模拟读不通。轮次以"读不通"收尾时窗口仍开着、回炉
+            # 行留在 `pending`——这正是"跑过但没收尾"的形状。
             seen["n"] += 1
-            return real_claim(*a, **k) if seen["n"] == 1 else None
+            return real_claim(*a, **k) if seen["n"] <= self.ACCOUNTS else None
 
-        rc, log = self._run(attempt=_retryable, claim_batch=_once_then_unreadable)
+        rc, log = self._run(attempt=_retryable, claim_batch=_due_then_unreadable)
         summary = next(ln for ln in log.splitlines() if "==== 签到汇总" in ln)
         self.assertGreater(seen["n"], 1, "前置：补货循环应当反复尝试领取（本用例的收尾条件）")
         self.assertIn(f"❌ {self.ACCOUNTS} 失败", summary,
@@ -433,12 +466,12 @@ class SentinelDirectionGuardTest(_Harness):
         self.assertNotIn("已由其他执行体领取", summary,
                          f"读不通被说成「别人做了」——那是掩盖：{summary}")
         self.assertEqual(rc, 1, "读不通不得把账号从真失败里划走")
-        rows = self._events()
+        rows = self._run_events()
         self.assertTrue(rows, "读不通同样要留痕")
         self.assertTrue(all("判因不可得" in r["message"] for r in rows),
                         f"留痕必须写明判因不可得：{rows}")
-        self.assertTrue(all(r["status"] == yiban_status.STATUS_PENDING for r in rows),
-                        f"未执行的留痕不得写成成功或失败：{rows}")
+        self.assertTrue(all(r["node"] == "finalize" for r in rows),
+                        f"留痕是收尾观测节点，不得写成成功或失败：{rows}")
 
     def _day_rows(self):
         """当日任务行（只读配对；判因守卫的前置断言用）。"""
@@ -447,21 +480,26 @@ class SentinelDirectionGuardTest(_Harness):
 
 
 class CaliberConsistencyTest(_Harness):
-    """同源同口径：汇总计数与事件写入出自同一份判因（数量必须一致）。"""
+    """同源同口径：汇总计数、批量事件计数、账号数三者出自同一份判因。"""
 
-    def test_summary_bucket_count_equals_event_rows(self):
+    def test_summary_bucket_count_equals_batch_event_count(self):
         self._plan()
         self._peer_settles_all()
         _rc, log = self._run()
         summary = next(ln for ln in log.splitlines() if "==== 签到汇总" in ln)
-        events = self._events()
-        self.assertEqual(len(events), len(self.phones))
-        # 汇总里的独立桶数字与事件条数必须同源：改一处不改另一处即红。
+        events = self._run_events()
         import re
-        m = re.search(r"(\d+) 已由其他执行体领取", summary)
-        self.assertIsNotNone(m, f"汇总缺独立桶：{summary}")
-        self.assertEqual(int(m.group(1)), len(events),
-                         "汇总计数与事件条数不一致（两套口径）")
+        # 「已由他人负责」收成一条批量（O(1)）：汇总的独立桶数字、批量留痕里的计数、
+        # 账号数三者必须同源。改一处不改另一处即红。
+        self.assertEqual(len(events), 1, f"应恰有一条批量留痕：{events}")
+        m_sum = re.search(r"(\d+) 已由其他执行体领取", summary)
+        self.assertIsNotNone(m_sum, f"汇总缺独立桶：{summary}")
+        m_ev = re.search(r"(\d+) 个账号", events[0]["message"])
+        self.assertIsNotNone(m_ev, f"批量留痕缺计数：{events[0]}")
+        self.assertEqual(int(m_sum.group(1)), int(m_ev.group(1)),
+                         "汇总计数与批量事件计数不一致（两套口径）")
+        self.assertEqual(int(m_sum.group(1)), len(self.phones),
+                         "计数必须等于被领走的账号数")
 
 
 class QueueOwnershipReadTest(_Harness):
@@ -485,6 +523,247 @@ class QueueOwnershipReadTest(_Harness):
         db.get_conn().commit()
         self.assertIsNone(queue_store.row_owners(DAY, self.phones),
                           "读不通被折成了「什么都没有」——判因会静默把别人的活当我自己的失败")
+
+
+class PeerBatchDedupTest(_Harness):
+    """LOW-1 守卫（工单 81xt 返修）：同一组成的批量留痕**只落一次**。
+
+    兜底常驻循环每 ~5s 一拍、窗口内可上百轮。同一批被别人领走的账号在每轮组成不变
+    （账号数与分因明细都不变），旧实现每轮各落一条日志 + 一条摘要事件——按轮数线性
+    灌噪声。修法是**按组成去重**：组成不变则整段跳过；组成一变（换执行体、账号数变、
+    或同数下分因明细变）立刻回到留痕。载体是库（`emit_ledger`，单 3zr5）：
+    身份与跨天复位由键承担，不再有进程内变量。
+
+    直接调真 `_mark_unreached`：本用例的题目是留痕的**去重**，队列归属用打桩事实喂入；
+    库只用来承载账本与 `run_events` 收尾观测行。
+    """
+
+    TAG = "[fallback]"
+    LOG_MARK = "未领取：任务已由其他执行体领取"
+
+    def setUp(self):
+        super().setUp()
+        self._plan()   # 建库（真迁移链）
+        self._last_id = self._max_run_event_id()
+
+    def _max_run_event_id(self):
+        row = db.get_conn().execute("SELECT MAX(id) AS m FROM run_events").fetchone()
+        return int((row["m"] if row else 0) or 0)
+
+    def _scan(self, phones, owners, executor_id=WORKER0, attempted=()):
+        """跑一拍 `_mark_unreached`，返回 (本拍 run_events 摘要行, 本拍批量日志文本)。"""
+        ctx = SimpleNamespace(
+            attempted=set(attempted), results={}, delegated=(), day=DAY,
+            executor_id=executor_id, runtime_id=executor_id,
+            log_tag=self.TAG, unreached={}, event_sink=[].append)
+        cap = _LogCapture()
+        logger = logging.getLogger("yiban")
+        logger.addHandler(cap)
+        self.addCleanup(logger.removeHandler, cap)
+        _prev = logger.level
+        logger.setLevel(logging.INFO)
+        self.addCleanup(logger.setLevel, _prev)
+        with mock.patch.object(executor_v3.queue_store, "row_owners",
+                               lambda *a, **k: owners):
+            executor_v3._mark_unreached(
+                ctx, [SimpleNamespace(phone=p) for p in phones])
+        cur = db.get_conn().execute(
+            "SELECT id, node, phone, message FROM run_events WHERE id > ? ORDER BY id",
+            (self._last_id,))
+        rows = [dict(r) for r in cur.fetchall()]
+        if rows:
+            self._last_id = rows[-1]["id"]
+        return rows, [t for t in cap.texts if self.LOG_MARK in t]
+
+    @staticmethod
+    def _owners(phones, state="done"):
+        return {p: (state, PEER) for p in phones}
+
+    def test_repeated_same_composition_emits_one_log_and_one_event(self):
+        """同一组成连扫两拍 ⇒ 只落 1 条日志 + 1 条事件（LOW-1 的刷屏）。"""
+        phones = [_phone(i) for i in range(1, 4)]
+        owners = self._owners(phones)
+
+        ev1, log1 = self._scan(phones, owners)
+        self.assertEqual(len(ev1), 1, f"第一拍应落一条摘要事件：{ev1}")
+        self.assertEqual(len(log1), 1, f"第一拍应落一条批量日志：{log1}")
+
+        ev2, log2 = self._scan(phones, owners)
+        self.assertEqual(len(ev2), 0,
+                         f"同一组成再扫一拍不得重复落事件（按轮刷屏）：{ev2}")
+        self.assertEqual(len(log2), 0, "同一组成再扫一拍不得重复落日志")
+
+    def test_composition_change_emits_again(self):
+        """组成变（账号数变 / 同数下分因明细变）⇒ 必须再落一条，不许吞掉真变化。"""
+        first = [_phone(i) for i in range(1, 4)]
+        ev1, log1 = self._scan(first, self._owners(first))
+        self.assertEqual((len(ev1), len(log1)), (1, 1), "第一拍应落一条")
+
+        more = [*first, _phone(4)]
+        ev2, log2 = self._scan(more, self._owners(more))
+        self.assertEqual((len(ev2), len(log2)), (1, 1),
+                         "账号数由 3 变 4 必须再落一条")
+        self.assertIn("共 4 个账号", ev2[0]["message"])
+
+        ev3, log3 = self._scan(more, self._owners(more, state="canceled"))
+        self.assertEqual((len(ev3), len(log3)), (1, 1),
+                         "同数下分因明细变化（done→canceled）必须再落一条")
+
+    def test_identity_change_emits_per_executor(self):
+        """同进程换执行体、组成相同 ⇒ 两个执行体各落一条（身份在去重键里）。
+
+        去重键不含身份时，第二个执行体会被判成"没变"而漏掉它唯一的一条批量——
+        与 `_log_banner` 的 `_BANNER_LAST` 同一形状（同文件姊妹做法）：同进程换执行体
+        必须各自留痕，不许互相压掉。
+        """
+        phones = [_phone(i) for i in range(1, 4)]
+        owners = self._owners(phones)
+
+        ev1, log1 = self._scan(phones, owners, executor_id=WORKER0)
+        self.assertEqual((len(ev1), len(log1)), (1, 1), "第一个执行体应落一条")
+
+        other = egress.worker_owner(1)
+        self.assertNotEqual(other, WORKER0, "前置：两个执行体身份不同")
+        ev2, log2 = self._scan(phones, owners, executor_id=other)
+        self.assertEqual((len(ev2), len(log2)), (1, 1),
+                         "换执行体后同一组成必须再落一条（身份被判成没变）")
+
+    def test_zero_composition_resets_so_reappearance_emits(self):
+        """组成 N→0→N：中间的 0 拍把键清空，N 再现必须再落一条。"""
+        phones = [_phone(i) for i in range(1, 4)]
+        owners = self._owners(phones)
+
+        ev1, log1 = self._scan(phones, owners)
+        self.assertEqual((len(ev1), len(log1)), (1, 1), "第一拍应落一条")
+
+        # 0 拍：全部账号本执行体跑过（retry 档）⇒ 无 peer 批量，键被清回 None
+        ev0, log0 = self._scan(phones, {}, attempted=set(phones))
+        self.assertEqual((len(ev0), len(log0)), (0, 0), "peer 为 0 时不得落批量")
+
+        ev2, log2 = self._scan(phones, owners)
+        self.assertEqual((len(ev2), len(log2)), (1, 1),
+                         "组成再现必须再落一条（同组成 N→0→N 不得吞第三次留痕）")
+
+
+class UnclaimedBatchDedupTest(_Harness):
+    """无人接手档的同一条去重守卫（工单 81xt 的另一半）：同一组成只落一次。
+
+    该档在健康运行时为 0，但**队列读不通**时本执行体全部账号落进它——逐账号落库就是
+    O(账号数)（2026-10-13 生产的 `pending` 洪泛形状）。修法与 PEER 档同一条：
+    组成不变即整段跳过（账本在库，单 3zr5），组成一变即再落。
+    三条性质必须与 PEER 档逐条对齐：身份在键里、组成 N→0→N 能复活、组成一变即再落。
+    形状差别（peer 的组成含账号数、本档是明细之和）不该让这三条漏钉。
+
+    直接调真 `_mark_unreached`：本用例的题目是留痕的**去重**，队列归属用打桩事实喂入；
+    库只用来承载账本与 `run_events` 收尾观测行。
+    """
+
+    TAG = "[fallback]"
+    LOG_MARK = "未执行："
+
+    def setUp(self):
+        super().setUp()
+        self._plan()   # 建库（真迁移链）
+        row = db.get_conn().execute("SELECT MAX(id) AS m FROM run_events").fetchone()
+        self._last_id = int((row["m"] if row else 0) or 0)
+
+    def _scan(self, phones, owners, executor_id=WORKER0, attempted=(), unreadable=False):
+        """跑一拍 `_mark_unreached`，返回 (本拍 run_events 摘要行, 本拍无人接手档日志)。"""
+        ctx = SimpleNamespace(
+            attempted=set(attempted), results={}, delegated=(), day=DAY,
+            executor_id=executor_id, runtime_id=executor_id,
+            log_tag=self.TAG, unreached={}, event_sink=[].append)
+        cap = _LogCapture()
+        logger = logging.getLogger("yiban")
+        logger.addHandler(cap)
+        self.addCleanup(logger.removeHandler, cap)
+        _prev = logger.level
+        logger.setLevel(logging.INFO)
+        self.addCleanup(logger.setLevel, _prev)
+        with mock.patch.object(executor_v3.queue_store, "row_owners",
+                               lambda *a, **k: (None if unreadable else owners)):
+            executor_v3._mark_unreached(
+                ctx, [SimpleNamespace(phone=p) for p in phones])
+        cur = db.get_conn().execute(
+            "SELECT id, node, phone, message FROM run_events WHERE id > ? ORDER BY id",
+            (self._last_id,))
+        rows = [dict(r) for r in cur.fetchall()]
+        if rows:
+            self._last_id = rows[-1]["id"]
+        return rows, [t for t in cap.texts if self.LOG_MARK in t]
+
+    @staticmethod
+    def _owners(phones, state="done"):
+        """无归属执行体的已了结行 ⇒ 判因落 `UNCLAIMED`（"行状态=done 且无归属执行体"）。"""
+        return {p: (state, "") for p in phones}
+
+    def test_repeated_same_composition_emits_one_log_and_one_event(self):
+        """同一组成连扫两拍 ⇒ 只落 1 条日志 + 1 条事件（按轮刷屏）。"""
+        phones = [_phone(i) for i in range(1, 4)]
+        owners = self._owners(phones)
+
+        ev1, log1 = self._scan(phones, owners)
+        self.assertEqual(len(ev1), 1, f"第一拍应落一条摘要事件：{ev1}")
+        self.assertEqual(len(log1), 1, f"第一拍应落一条批量日志：{log1}")
+
+        ev2, log2 = self._scan(phones, owners)
+        self.assertEqual(len(ev2), 0, f"同一组成再扫一拍不得重复落事件：{ev2}")
+        self.assertEqual(len(log2), 0, "同一组成再扫一拍不得重复落日志")
+
+    def test_composition_change_emits_again(self):
+        """组成变（账号数变 / 同数下分因明细变）⇒ 必须再落一条，不许吞掉真变化。"""
+        first = [_phone(i) for i in range(1, 4)]
+        ev1, log1 = self._scan(first, self._owners(first))
+        self.assertEqual((len(ev1), len(log1)), (1, 1), "第一拍应落一条")
+
+        more = [*first, _phone(4)]
+        ev2, log2 = self._scan(more, self._owners(more))
+        self.assertEqual((len(ev2), len(log2)), (1, 1),
+                         "账号数由 3 变 4 必须再落一条")
+        self.assertIn("4 个账号", ev2[0]["message"])
+
+        ev3, log3 = self._scan(more, self._owners(more, state="failed"))
+        self.assertEqual((len(ev3), len(log3)), (1, 1),
+                         "同数下分因明细变化（done→failed）必须再落一条")
+
+    def test_unreadable_judgement_has_its_own_composition(self):
+        """「判因不可得」是另一个分因明细 ⇒ 与「无归属行」互不压掉（各落一条）。"""
+        phones = [_phone(i) for i in range(1, 4)]
+        ev1, _log1 = self._scan(phones, self._owners(phones))
+        self.assertEqual(len(ev1), 1, f"第一拍应落一条：{ev1}")
+        ev2, _log2 = self._scan(phones, {}, unreadable=True)
+        self.assertEqual(len(ev2), 1, f"换成判因不可得必须再落一条：{ev2}")
+        self.assertIn("判因不可得", ev2[0]["message"], f"分因文本不对：{ev2[0]}")
+
+    def test_identity_change_emits_per_executor(self):
+        """同进程换执行体、组成相同 ⇒ 两个执行体各落一条（身份在去重键里）。"""
+        phones = [_phone(i) for i in range(1, 4)]
+        owners = self._owners(phones)
+
+        ev1, log1 = self._scan(phones, owners, executor_id=WORKER0)
+        self.assertEqual((len(ev1), len(log1)), (1, 1), "第一个执行体应落一条")
+
+        other = egress.worker_owner(1)
+        self.assertNotEqual(other, WORKER0, "前置：两个执行体身份不同")
+        ev2, log2 = self._scan(phones, owners, executor_id=other)
+        self.assertEqual((len(ev2), len(log2)), (1, 1),
+                         "换执行体后同一组成必须再落一条（身份被判成没变）")
+
+    def test_zero_composition_resets_so_reappearance_emits(self):
+        """组成 N→0→N：中间的 0 拍把键清空，N 再现必须再落一条。"""
+        phones = [_phone(i) for i in range(1, 4)]
+        owners = self._owners(phones)
+
+        ev1, log1 = self._scan(phones, owners)
+        self.assertEqual((len(ev1), len(log1)), (1, 1), "第一拍应落一条")
+
+        # 0 拍：全部账号本执行体跑过（retry 档）⇒ 无明细，键被清回 None
+        ev0, log0 = self._scan(phones, {}, attempted=set(phones))
+        self.assertEqual((len(ev0), len(log0)), (0, 0), "该档为 0 时不得落批量")
+
+        ev2, log2 = self._scan(phones, owners)
+        self.assertEqual((len(ev2), len(log2)), (1, 1),
+                         "组成再现必须再落一条（N→0→N 不得吞第三次留痕）")
 
 
 if __name__ == "__main__":

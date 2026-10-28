@@ -247,8 +247,7 @@ function openDoc(kind: "agreement" | "privacy"): void {
   });
 }
 
-const title = computed(() => AUTH_TITLES[mode.value][0]);
-const sub = computed(() => AUTH_TITLES[mode.value][1]);
+const title = computed(() => AUTH_TITLES[mode.value]);
 
 onMounted(() => {
   void probeRegistrationPause();
@@ -258,7 +257,6 @@ onMounted(() => {
 <template>
   <div class="auth-page">
     <h2 id="auth-title">{{ title }}</h2>
-    <p id="auth-sub" class="sub">{{ sub }}</p>
 
     <div class="tabs pills auth-tabs auth-seg" role="tablist" aria-label="登录 / 注册切换">
       <button

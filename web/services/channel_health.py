@@ -36,10 +36,11 @@ import json
 import logging
 
 from web.services.notify_mail import _NOTIFY_LEDGER_LABELS, _alert_mail_recipients, _nl_safe
-from yiban import clock, notify
-from yiban import mail as mailer
-from yiban.mail import layout as mail_layout
-from yiban.store import db
+from yiban.adapters.notifier import mail as mailer
+from yiban.adapters.notifier import notify
+from yiban.adapters.notifier.mail import layout as mail_layout
+from yiban.adapters.persistence import db
+from yiban.core import clock
 
 # 与 web.app 同名的日志通道：本族的告警落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")
@@ -221,10 +222,10 @@ def _channel_status_lines(alert_channel_status, status=None):
             # 配过但当前不可用（密钥被清 / 换钥后解不开 = 已知病症）
             lines.append("推送通道：⚠ 已配置但不可用（密钥缺失或解密失败，需重新配置）")
         else:
-            # 「未配置」同样标 ⚠ 并计入降级。旧写法把它当正常文本，于是
-            # "只关 admin_notify + 关闭推送（type 置空后 configured 一并转假）" 这个
-            # 组合变体两行都不带 ⚠ —— 日报既发不出去、又一条痕迹不落。手机推送这路
-            # 不存在是真实的致盲风险（邮件一挂就零告警），必须看得见。
+            # 纯展示行：说明"推送这路不存在"这一事实，**不挂降级旗标**。
+            # 降级判据由 `_channel_health_degraded()` 独立回答（见其 docstring 的 (c)：
+            # 只有 push_ever_configured 且当前不可用才算降级；从未配置推送是合法终态）。
+            # 本行的 ⚠ 只是正文提示，不回过来被任何判据嗅探——**不要**按它把判据改回去。
             lines.append("推送通道：⚠ 未配置（手机推送这路不存在，告警只剩邮件一条出口）")
         lines.extend(_daily_budget_desc(st))
     return lines
@@ -279,9 +280,9 @@ def _channel_health_facts(status, exhausted=()):
     两侧都不带 ⚠（或只有一侧带），detail 就只剩半条链，"推送侧也被拆了"这个关键
     事实直接丢在取证之外。这里**无条件**把两侧各写一段，健康的那一侧也记——
     事后要能回答"坏的是哪一路、另一路当时是不是好的"。
-    刻意用短串而不是整句人话：db.audit 会把 detail 截到 200 字符
-    （见 yiban/store/db.py 的 audit），拼完整句子在最坏情况下会把后半句（推送侧）截没，
-    等于重犯同一个错。
+    刻意用短串而不是整句人话：db.audit 会把 detail 截到
+    `db.AUDIT_DETAIL_LIMIT` 字符（定义点 `yiban/adapters/persistence/audit_chain.py`），
+    拼完整句子在最坏情况下会把后半句（推送侧）截没，等于重犯同一个错。
     """
     if status["mail_error"]:
         mail = f"读取失败({status['mail_error']})"
@@ -319,7 +320,7 @@ def _audit_channel_health_degraded(facts):
     facts 必须由 _channel_health_facts()（结构化状态）产出，不得改为拼正文里含 ⚠
     的行——那正是失准的来源。
     """
-    detail = f"degraded=1 {facts}"[:200]
+    detail = f"degraded=1 {facts}"[:db.AUDIT_DETAIL_LIMIT]
     if not db.audit("system", "channel_health", "alert_channels", detail):
         # 审计也写不进去时只剩日志这条退路（此时大概率两通道与库都在打架）
         logger.error("告警通道降级痕迹未能落审计链，请人工核查: %s", detail)
@@ -350,7 +351,7 @@ def _send_channel_health_report(force=False, *, alert_channel_status, status_lin
     被吞失败（send_notification 返回 False）都不落——两种失败都保留当日重试资格，
     "送达才销账"与额度占用不变量同一口径（MF-44 验收不变量第 1 条）。
     未送达时取走的额度耗尽告知同步退还（pending 重挂，见
-    `yiban.notify.restore_exhaustion_notice`），重试的那封仍带得出"哪本账用尽"。
+    `yiban.adapters.notifier.notify.restore_exhaustion_notice`），重试的那封仍带得出"哪本账用尽"。
 
     状态生产者、状态行生产者与发信出口都由调用方传入（`web.app` 的
     `_alert_channel_status` / `_channel_status_lines` / `send_notification`）：三者在

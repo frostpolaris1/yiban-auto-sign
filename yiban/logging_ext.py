@@ -11,19 +11,18 @@
   装上这个 formatter 的那些 handler——三个入口各装配一处：CLI
   `yiban.engine.cli_support._setup_cli_logging`、web `create_app`、容器调度器
   `docker/scheduler.py::_setup_logging`；别处自建 handler 写的日志不在保护范围内。
-  两族口径都取自 `yiban.masking`（`mask_phones_in_text` / `mask_credentials_in_text`），
+  两族口径都取自 `yiban.core.masking`（`mask_phones_in_text` / `mask_credentials_in_text`），
   本层不另造规则：号码写成编码形态（凑不出号码数字串）仍照漏，凭据键名被百分号编码
   （`tok%65n=v`）仍照漏——绕过面与那两族各自登记的同一份。
 
-日期口径取 `yiban.clock`（北京时间），与签到事件/状态文件一致。
+日期口径取 `yiban.core.clock`（北京时间），与签到事件/状态文件一致。
 """
 import logging
 import os
 
+from yiban.adapters.config import env_io
+from yiban.core.masking import mask_credentials_in_text, mask_phones_in_text
 from yiban.infra import locks
-from yiban.masking import mask_credentials_in_text, mask_phones_in_text
-
-from . import clock
 
 
 class MaskingFormatter(logging.Formatter):
@@ -39,7 +38,7 @@ class MaskingFormatter(logging.Formatter):
     覆盖 `format`（而非 `formatMessage`）：异常栈文本由 `Formatter.format` 追加，
     它可能内嵌上游回显的手机号与令牌，只有对最终串替换才兜得住。
 
-    两族都用 `yiban.masking` 的**同一个**原语对象（改口径只改那一处）；顺序是凭据先、
+    两族都用 `yiban.core.masking` 的**同一个**原语对象（改口径只改那一处）；顺序是凭据先、
     号码后——号码规则幂等，且凭据规则不看数字形态，两者互不干扰。
     """
 
@@ -71,25 +70,25 @@ class DailyFlockFileHandler(FlockFileHandler):
 
     def __init__(self, log_dir):
         self._log_dir = log_dir
-        self._day = clock.now().strftime("%Y-%m-%d")
+        # 滚动判据是**文件名**（`sign-<业务日>.log`），不是另存一份日期：
+        # 名字的唯一来源是 `env_io.day_log_name`，跨天时名字变了就重开。
+        self._name = env_io.day_log_name()
         super().__init__(
-            os.path.join(log_dir, f"sign-{self._day}.log"), encoding="utf-8"
+            os.path.join(log_dir, self._name), encoding="utf-8"
         )
 
     def emit(self, record):
         # 滚动分支（close/baseFilename 更新/_open）整体 try 兜底——跨天滚动 +
         # 日志目录故障（如目录被删）时，FileNotFoundError 不得传播到业务请求线程
-        # 引发 500；失败仅 handleError（降级不阻断业务），且 _day/stream 状态保证
+        # 引发 500；失败仅 handleError（降级不阻断业务），且 _name/stream 状态保证
         # 下一条日志仍会重试 _open（stream 置 None → 重新打开）。
         try:
-            today = clock.now().strftime("%Y-%m-%d")
-            if today != self._day:
-                self._day = today
+            name = env_io.day_log_name()
+            if name != self._name:
+                self._name = name
                 self.close()  # 关闭旧日期文件句柄
                 # 换目标文件：FileHandler 在 stream 为 None 时按 baseFilename 惰性重开
-                self.baseFilename = os.path.abspath(
-                    os.path.join(self._log_dir, f"sign-{today}.log")
-                )
+                self.baseFilename = os.path.abspath(os.path.join(self._log_dir, name))
                 self.stream = None
             if self.stream is None:
                 # 先打开再交给父类 emit：父类的 flock 依赖已打开的 stream

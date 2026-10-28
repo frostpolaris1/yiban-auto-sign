@@ -15,15 +15,32 @@ setUpClass 保持一致（临时目录 + YIBAN_* 指向其中 + importlib 装载
 → has_more=true → 加载更多）。链式 prev_hash 由 record_in_txn 逐条读取，故同事务顺序写
 不会分叉。
 
+**冻结钟（可选，`YB_E2E_FROZEN_NOW`）**：只在本启动壳里打桩，产品代码零改动。
+- `YB_E2E_FROZEN_NOW=2026-10-26T23:55:00`：`clock.now()` 从该北京时间起步。
+- `YB_E2E_FROZEN_ADVANCE=1` 让钟按真实时间前进；`YB_E2E_FROZEN_SCALE` 设倍速。
+  默认恒定冻结。跨业务日用例用「前进＋倍速」，避免真等 5 分钟。
+- `/api/clock` 的 `server_ts` 同步改成冻结 epoch（只在 `api_clock` 的返回处替换该字段）。
+  不补这一处，浏览器「今天」会跟随真实日期（前端按 `server_ts` 重建墙上时间）。
+- 覆盖的消费面：`clock.now/today/ts` 的全部属主调用；`/api/clock` 的 `now` 与
+  `server_ts`；种子、心跳、审计快照、按日日志与状态文件。
+- `wire_dump.py:51` 的模块级 `from yiban.core.clock import now` 也在覆盖面内：
+  `client.py:252` 懒导入它，导入时取到冻结的 `now`。它不在 e2e 请求路径上。
+- 不在覆盖面：`datetime.now()` 的登记豁免点（进程标记、mtime 比对、展示时刻）；
+  会话与限速的真实钟（含导出限速窗口 `data.py:74`）。
+- 前端校准钟按 1x 走秒；跨日后必须让页面重新校准（例如 reload）。
+
 用法（一般由 playwright 配置调用）：
     YB_E2E_PYTHON=<解释器> python e2e/server.py      # 默认 127.0.0.1:8765
 """
+import atexit
 import importlib.util
 import json
 import os
 import sys
 import tempfile
-from datetime import timedelta
+import threading
+import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -33,13 +50,28 @@ for _p in (ROOT, ROOT / "scripts", ROOT / "web"):
 # 业务钟：读取面（`web` / `yiban`）一律按北京时间取"今天"。种子若用宿主钟
 # （`datetime.now()`），宿主时区 > UTC+8 时种子的"今天"行会变成未来业务日，
 # 被新上界排除，前端用例随即数不到那两轮（潜伏形状，CST / UTC 都不触发）。
-# 故种子的每一处日期都走 `yiban.clock.now()`，与读取面同一个钟。
+# 故种子的每一处日期都走 `yiban.core.clock.now()`，与读取面同一个钟。
 # 导入必须在本文件把 ROOT 加进 sys.path 之后：直接跑 `python e2e/server.py` 时
 # `yiban` 不在默认导入路径上。
-from yiban import clock  # noqa: E402
+from yiban.core import clock  # noqa: E402
+from yiban.adapters.config import env_io  # noqa: E402
+# 日志路径直接取服务层真源：批 3-d 已删除 `web/app.py` 的 `log_path_for` 转发包装，
+# 旧写法 `webapp.log_path_for(...)` 会让本启动器在建种子时 `AttributeError`（pytest
+# 全绿、CI 不跑 Playwright ⇒ 静默断点）。宿主 hook 由 `webapp` 载入时登记，调用时刻已就绪。
+from web.services import logs as _logs_svc  # noqa: E402
 
 PORT = int(os.environ.get("YB_E2E_PORT", "8765"))
 SEED_ROWS = int(os.environ.get("YB_E2E_SEED_ROWS", "60"))
+#: e2e 冻结钟（可选）。设置后服务端时钟从该北京时间起步，不动产品代码。
+#: 格式：`YYYY-MM-DDTHH:MM:SS`（无时区按北京时间解释，可带 `+08:00`）。
+#: 用途：把「今天」钉在一个已知时刻，运行期不受真实日历影响。
+FROZEN_NOW = os.environ.get("YB_E2E_FROZEN_NOW", "").strip()
+#: `1` = 冻结钟按真实时间前进（从锚点起步），`0`（默认）= 恒定冻结。
+#: 跨业务日用例用 `1`：锚点放在 23:55，等时钟真的跨过零点。
+FROZEN_ADVANCE = os.environ.get("YB_E2E_FROZEN_ADVANCE", "") == "1"
+#: 冻结钟倍速（只对 ADVANCE=1 生效）。默认 1（与真实时间同速）。
+#: 跨日边界用例用 15：5 个虚拟分钟＝20 秒真实时间。
+FROZEN_SCALE = float(os.environ.get("YB_E2E_FROZEN_SCALE", "1") or "1")
 #: V3 渲染层截断守卫的种子：单日执行体分组数必须**超过**读取层轮级上限
 #: （`yiban/store/run_events.py::MAX_ROUNDS` = 200）。205 > 200，端点回
 #: `rounds_truncated=true`，页面「已截断」说明才有可断言的内容。
@@ -47,11 +79,104 @@ CROWDED_ROUNDS = 205
 #: 上述拥挤日相对今天的天数偏移。取 5 = 落在 14 天保留窗口内（新的窗口下界不挡它），
 #: 且不撞今天 / 三天前（older）/ 取样工作日（_probe_day 取月初）。logs.spec.ts 用同一个偏移。
 CROWDED_DAY_OFFSET = 5
+#: 分页种子日相对业务日的天数偏移与行数：5000 行跨 25 页（末页 200 行）。
+#: 取 40 天前：必然落在上一个月，永不与「当月首个工作日」的 _probe_day 撞日。
+PAGING_DAY_OFFSET = 40
+PAGING_LOG_LINES = 5000
 ADMIN_USER = "admin"
 ADMIN_PASS = "TestPass1234!"  # 满足主管理员 12 位三类策略
 E2E_USER_EMAIL = "e2e-user@example.com"
 USER_PASS = "UserPass123!"
 TEST_KEY = "a" * 64
+
+
+def _parse_frozen_now(raw):
+    """把 `YB_E2E_FROZEN_NOW` 解析成北京时间 naive datetime。
+
+    无时区的串按北京时间解释（与 `yiban.core.clock` 同口径）。
+    带 `+08:00`/`Z` 的串先归一到北京时间，再去掉 tzinfo。
+    """
+    text = raw.strip().replace(" ", "T")
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is not None:
+        return parsed.astimezone(clock.TZ).replace(tzinfo=None)
+    return parsed
+
+
+#: 冻结钟的可变状态：锚点与 ADVANCE 的实际起点。
+_FROZEN = {"anchor": None, "advance_from": None}
+
+
+def _install_frozen_clock():
+    """把 `clock.now` 换成测试夹具时钟。返回冻结锚点（未设置则 None）。
+
+    **只改 e2e 启动壳，不改产品代码**。覆盖面：
+    · `clock.now()`：唯一取时出口；`clock.today()` / `clock.ts()` 在模块内
+      按名字查 `now`，故同被覆盖。
+    · 所有 `from yiban.core import clock` 的读者：按属性调用，调用时取到补丁。
+    · 模块级 `from yiban.core.clock import now` 的读者（`yiban/infra/wire_dump.py:51`）
+      也在覆盖面内：`client.py:252` 懒导入它，导入时取到冻结的 `now`。
+      它不在 e2e 服务端请求路径上。
+
+    ADVANCE=0：每次调用返回同一时刻（严格冻结）。
+    ADVANCE=1：从锚点按真实时间前进，倍速 FROZEN_SCALE。
+    """
+    if not FROZEN_NOW:
+        return None
+    anchor = _parse_frozen_now(FROZEN_NOW)
+    _FROZEN["anchor"] = anchor
+
+    def _frozen_now():
+        if not FROZEN_ADVANCE or _FROZEN["advance_from"] is None:
+            return anchor
+        elapsed = (time.monotonic() - _FROZEN["advance_from"]) * FROZEN_SCALE
+        return anchor + timedelta(seconds=elapsed)
+
+    clock.now = _frozen_now
+    return anchor
+
+
+def _start_frozen_advance():
+    """种子与装配完成后，让冻结钟从锚点开始走（未设置冻结钟时是空操作）。
+
+    为什么不在导入时就走：冷启动要建种子（5000 行日志、迁移、审计）。
+    这一段会按倍速吃掉边界前的余量，让「23:55 种子」名不副实。
+    种子阶段固定在锚点，就绪后从锚点起步。
+    """
+    if _FROZEN["anchor"] is not None and FROZEN_ADVANCE:
+        _FROZEN["advance_from"] = time.monotonic()
+
+
+def _install_frozen_epoch():
+    """让 `/api/clock` 的 `server_ts` 与冻结钟同源。
+
+    为什么必须补这一处：前端 `serverNow()` 不用 `now` 字段，它用
+    `server_ts`（epoch 秒）＋ `tz_offset_min` 重建墙上时间。
+    只冻结 `clock.now` 而 `server_ts` 仍取真实 `time.time()` 时，
+    浏览器「今天」会跟随真实日期，冻结面就不等价（AGENTS §32）。
+
+    做法：包住 `web.routes.data.api_clock` 的返回，只替换 `server_ts` 一个字段。
+    不替换模块的 `time` 名字：同模块 `data.py:74` 用 `time.time()` 供导出限速，
+    替换会冻住限速窗口。
+    """
+    if not FROZEN_NOW:
+        return
+    from flask import jsonify
+    from web.routes import data as _data_routes
+
+    original_view = _data_routes.api_clock
+
+    def _clock_view():
+        payload = original_view().get_json()
+        payload["server_ts"] = int(clock.now().replace(tzinfo=clock.TZ).timestamp())
+        return jsonify(payload)
+
+    # endpoint 名由 view 函数名推导：保持 `api_clock`，`url_for("api_clock")` 不因打桩断裂。
+    _clock_view.__name__ = "api_clock"
+    _data_routes.api_clock = _clock_view
+
+
+FROZEN_ANCHOR = _install_frozen_clock()
 
 
 def _probe_day():
@@ -75,12 +200,14 @@ def _probe_day():
 
 
 def _seed_log_file(webapp):
-    """写**三天**的假日志（今天 / 三天前 / 取样工作日）。
+    """写**四天**的假日志（今天 / 三天前 / 取样工作日 / 分页日）。
 
     为什么不止一天：日期导航（查看该日 / 回到今天 / ?date= 深链）只有在存在"另一天"时才
     可观测——2026-10-03 的 blocking 回归（load 用服务端回显日期覆盖用户选择，导致日期栏整体
     失效）就是因为只种了一天、e2e 从未切换过日期。取样工作日（见 _probe_day）让日历页也能
     断言"点某个非今天的格子 → 面板拉到那天的日志"。日志行含完整手机号，用于断言端到端脱敏。
+    分页日（`PAGING_DAY_OFFSET`，40 天前）种 5000 行：日志正文按服务端 limit/offset 分页，
+    首屏只该渲染最后一页（200 行），翻页只发一条 /api/logs。
 
     行格式与 `tests/test_logs_by_date.py::_log_line` 一致（yiban 组件全级别入列）。
     事件由 `_seed_events()` 另种（须在 db.init_db 之后）。
@@ -90,7 +217,7 @@ def _seed_log_file(webapp):
     probe = _probe_day()
 
     def write_day(date_str: str, marker: str) -> None:
-        path = Path(webapp.log_path_for(date_str))
+        path = Path(_logs_svc.log_path_for(date_str))
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             "\n".join([
@@ -105,6 +232,16 @@ def _seed_log_file(webapp):
     write_day(older, "older")
     if probe is not None:
         write_day(probe.isoformat(), "probe")
+    paging = (clock.now() - timedelta(days=PAGING_DAY_OFFSET)).strftime("%Y-%m-%d")
+    path = Path(_logs_svc.log_path_for(paging))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(
+            f"[{paging} 06:31:01] [ERROR] yiban: [13800138001] 分页行 {i:04d}"
+            for i in range(PAGING_LOG_LINES)
+        ) + "\n",
+        encoding="utf-8",
+    )
 
 
 
@@ -189,17 +326,109 @@ def _seed_run_events_crowded() -> None:
 def _seed_state_files() -> None:
     """取样工作日（见 `_probe_day`）的假签到状态：让日历底色与图例端到端可见。
 
-    文件形态与 web/routes/my.py 的月历读取一致（`sign-daily-YYYY-MM-DD.json`，值 =
+    文件形态与 web/routes/my_api.py 的月历读取一致（`sign-daily-YYYY-MM-DD.json`，值 =
     账号键 → 状态符号）。只种这一个账号的状态：管理端日历用另一张卡，正好顺带验证
     "状态按账号过滤"。
     """
-    day = _probe_day()
-    if day is None:
-        return
     state_dir = Path(os.environ["YIBAN_STATE_DIR"])
     state_dir.mkdir(parents=True, exist_ok=True)
-    (state_dir / f"sign-daily-{day.isoformat()}.json").write_text(
-        json.dumps({"13800138001": "✅"}), encoding="utf-8"
+    day = _probe_day()
+    if day is not None:
+        Path(env_io.sign_daily_path(day.isoformat(), state_dir=str(state_dir))).write_text(
+            json.dumps({"13800138001": "✅"}), encoding="utf-8"
+        )
+    # 今天：终态与日志种子最后一条事件一致（13800138001 第三次尝试 = failed，见
+    # _seed_events）。看板「今日失败账号」读的是**按日终态文件**（不是事件表），
+    # 缺这份文件时该 KPI 恒为 0，logs.spec.ts 的 0/1 断言就测不到真实口径。
+    # 文件名走唯一命名处 sign_state_path；终态文件优先于旧符号文件。
+    today = clock.now().strftime("%Y-%m-%d")
+    Path(env_io.sign_state_path(today, state_dir=str(state_dir))).write_text(
+        json.dumps(
+            {"13800138001": {"status": "failed", "message": "密码错误",
+                             "time": clock.now().strftime("%H:%M:%S"),
+                             "task": "default"}},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _seed_heartbeats() -> None:
+    """执行体心跳种子（巡检面第二刀 ④，断言见 `logs.spec.ts`（并入既有用例，省一次 /api/login））。
+
+    两个身份，各钉一条不变式：
+    · **兜底**（新鲜心跳）：`worker-alive-fallback.json` 的记录体自称
+      `{"role": "worker", "index": 0}`（写侧 `_alive_record` 把 role 写死、槽位折成 0，
+      ba-p03-09）。页面据此必须显示身份 `fallback`——若有人改成读记录体字段，这一条会红。
+      文件名走 `state_io.worker_alive_path`（唯一命名处），不手写文件名。
+    · **槽位 3**（过期心跳、无收尾）：状态必须落到"可疑中断"，文案里出现「无心跳 ·
+      已过期」——心跳过期不许留白，也不许显示成 0。
+    """
+    from yiban import egress
+    from yiban.adapters.statefiles import state_io
+
+    now = clock.now().replace(microsecond=0)
+    state_io.mark_worker_started(0, now=now, role=egress.ROLE_FALLBACK)
+    state_io.mark_worker_started(3, now=now - timedelta(minutes=10))
+
+
+def _start_fallback_heartbeat_refresh(interval_sec: int = 10):
+    """让兜底执行体的"运行中"心跳像真执行体一样持续刷新（后台守护线程）。
+
+    为什么必须刷新：新鲜度判据是 `now - ts <= 2 × WORKER_HEARTBEAT_SEC`（30s ⇒ 60s）。
+    旧夹具只在服务启动时写一次心跳，整条 Playwright 套件串行跑到该用例时常已超过 60s，
+    页面如实显示「可疑中断 · 已过期」——测试期望"运行中"，红的是夹具不是实现。
+    真执行体由 `mark_worker_beat` 周期刷新（`yiban/workers/workers.py`）。本线程改用
+    `mark_worker_started` 整条重写：`worker_alive_facts` 先比 `day`，只刷 `ts` 时跨北京
+    零点会被判回 `idle`（心跳文件仍写着昨天）。重写会把 `started_at` 刷新为当下——
+    夹具里只断言"运行中/心跳"，不受影响。
+
+    退出：守护线程 + `atexit` 置停止位。Playwright 结束 webServer 时进程退出即可回收，
+    不会跨用例累积。槽位 3 的过期种子不刷新（它要钉"过期"那条不变式）。
+    """
+    from yiban import egress
+    from yiban.adapters.statefiles import state_io
+
+    stop = threading.Event()
+
+    def _loop():
+        while not stop.wait(interval_sec):
+            state_io.mark_worker_started(0, now=clock.now(), role=egress.ROLE_FALLBACK)
+
+    atexit.register(stop.set)
+    threading.Thread(target=_loop, name="e2e-heartbeat", daemon=True).start()
+    return stop
+
+
+def _seed_audit_health_snapshot() -> None:
+    """审计体检快照种子（巡检面第二刀 ⑤，断言见 `logs.spec.ts`（并入既有用例，省一次 /api/login））。
+
+    - 一份**健康**快照（形状与 web 每日线程写的那份一致）：页面必须显示绿色「健康」，
+      并带上数据时刻与校验到的锚点。
+    - 锚点文件里放两行 2026-08-28 前的**老格式（三字段）行**：`audit_known_debt` 据此
+      产出"已知欠账"一条，页面必须**单独一行**显示它（中性色，不与「篡改」同色）。
+
+    本种子只写 app_meta 快照与锚点文件，**不跑全表哈希**，也不动 `audit_logs` 行
+    （audit.spec.ts 的断言读那些行，与本种子无关）。
+
+    数据时刻取**业务钟的当下**（不是写死的日期）：端点对超龄快照（>36 小时）会把
+    "健康"降级成"无法定论"，写死一个日期会让这条 e2e 在第二天自动变红（假红）。
+    """
+    import db
+
+    anchor = Path(os.environ["YIBAN_STATE_DIR"]) / "audit-anchor.log"
+    anchor.write_text(
+        "\n".join([
+            f"2026-08-21 00:00:31 {'a' * 64}",
+            f"2026-08-22 00:00:31 {'b' * 64}",
+            f"2026-09-01 00:00:31 1 3 {'c' * 64}",
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    db.write_audit_health_snapshot(
+        {"chain_ok": True, "broken": 0, "anchor_ok": True, "anchor_status": "ok",
+         "anchor_msg": "", "write_failures": 0, "empty_hash_rows": 0, "healthy": True},
+        path=str(anchor), at=clock.now(),
     )
 
 
@@ -238,6 +467,10 @@ def main():
     sys.modules["webapp_e2e"] = webapp
     spec.loader.exec_module(webapp)
 
+    # 冻结钟的 HTTP 面：/api/clock 的 server_ts 必须与 clock.now 同源。
+    # 必须在本步之后：data.py 的导入依赖上面的环境变量与 sys.path。
+    _install_frozen_epoch()
+
     _seed_log_file(webapp)
 
     import db  # 裸模块名：sys.path 已含 scripts
@@ -249,7 +482,12 @@ def main():
     )
     # 一个普通用户 + 两个生效账号：用户侧页面（/user/account、/user/calendar）与
     # 账号列表的"有数据"形态需要它；主管理员名下也放一个，便于对照 /my/account。
-    db.create_user(E2E_USER_EMAIL, webapp.generate_password_hash(USER_PASS))
+    # 口令哈希走 werkzeug 本体，不经 `webapp`（`web/app.py`）的转发名——那个名字随
+    # 145-E 删壳消失。`webapp.generate_password_hash` 本就是 werkzeug 的同名函数
+    # （`web/app.py:64` 只做再导出），故本替换零行为变化。
+    from werkzeug.security import generate_password_hash
+
+    db.create_user(E2E_USER_EMAIL, generate_password_hash(USER_PASS))
     db.add_account({"name": "e2e-user-acct", "phone": "13800138001", "password": "p1",
                     "status": "active", "owner": E2E_USER_EMAIL})
     db.add_account({"name": "e2e-admin-acct", "phone": "13900139002", "password": "p2",
@@ -265,16 +503,54 @@ def main():
     _deleted_id = db.add_account({"name": "e2e-deleted-acct", "phone": "13500135005",
                                   "password": "p5", "status": "active", "owner": ADMIN_USER})
     db.set_account_deleted(_deleted_id, 1, deleted_at="2026-09-30 10:00:00", deleted_by="admin")
+    # 规模种子（工单 p37f 验收）：`YB_E2E_BULK_ACCOUNTS=N` 时再灌 N 个 active 账号，
+    # 供分页控件在 5k 规模下量首屏 DOM 节点数。默认 0 = 不灌，其余 spec 不受影响。
+    # 手机号造在 1 号段且长度 11 位（与真实号同形，前端遮罩/搜索按真形状走）。
+    bulk = int(os.environ.get("YB_E2E_BULK_ACCOUNTS", "0"))
+    for i in range(bulk):
+        db.add_account({"name": f"bulk-{i:05d}", "phone": f"1{i:010d}", "password": "p",
+                        "status": "active", "owner": ADMIN_USER})
     _seed_events()
     _seed_run_events()
     _seed_run_events_crowded()
     _seed_state_files()
+    _seed_heartbeats()
+    _start_fallback_heartbeat_refresh()
+    _seed_audit_health_snapshot()
+
+    # 体检快照必须**签名**：巡检端点先验签再读内容（web/routes/audit_api.py:287），
+    # 未签名一律答「无法定论」。每日线程写完快照后调同一函数（web/app.py:2559）。
+    # 密钥在首启时由 init_db/审计链写入 .env；此处显式确保已生成再签。
+    from web import security as _security_mod
+    from yiban.adapters.persistence import audit_chain as _audit_chain
+
+    _audit_chain._audit_key()
+    if not _security_mod.sign_audit_health_snapshot():
+        raise RuntimeError("e2e 种子：体检快照签名失败，巡检页将答『无法定论』")
     with db.audit_unit(ADMIN_USER, "e2e_seed_open", target="e2e", detail="seed batch") as conn:
         for i in range(SEED_ROWS):
             db.record_in_txn(conn, ADMIN_USER, f"e2e_seed_{i}", target=f"acct-{i}", detail=f"seed detail {i}")
 
     app = webapp.create_app()
+
+    # e2e 专用：登录限速是 60 秒 10 次/IP（web/routes/auth.py:90）。本套件 20+ 条用例
+    # 各用独立会话登录一次（管理员/用户每次登录会换发 sid，不能共享 Cookie），同一
+    # 127.0.0.1 必然越限。限速语义由 pytest 覆盖；这里只把该窗口上限抬高，生产零改动。
+    _orig_bump = _security_mod._bump_window_count
+
+    def _bump_e2e(store, key, now, window, limit=None):
+        if window == 60 and limit == 10:
+            limit = 10_000
+        return _orig_bump(store, key, now, window, limit)
+
+    _security_mod._bump_window_count = _bump_e2e
+
+    # 种子与装配已全部完成：冻结钟从锚点起步（恒定模式为空操作）。
+    _start_frozen_advance()
     print(f"[e2e] 临时实例就绪 http://127.0.0.1:{PORT}（种子 {SEED_ROWS} 条审计行）", flush=True)
+    if FROZEN_ANCHOR is not None:
+        mode = "前进" if FROZEN_ADVANCE else "恒定"
+        print(f"[e2e] 时钟已冻结：{FROZEN_ANCHOR}（{mode}，倍速 {FROZEN_SCALE}）", flush=True)
     app.run(host="127.0.0.1", port=PORT, threaded=True, use_reloader=False)
 
 

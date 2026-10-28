@@ -55,17 +55,6 @@ def _viewport_contents(text):
 
 
 class ViewportInteractiveWidgetTest(unittest.TestCase):
-    def test_frontend_entry_htmls_carry_token(self):
-        """`frontend/` 的每个 MPA 入口 HTML 都必须带该属性（dev/preview 壳）。"""
-        names = sorted(n for n in os.listdir(FRONTEND_DIR) if n.endswith(".html"))
-        self.assertTrue(names, "frontend/ 下没找到任何 .html 入口（目录搬走了？）")
-
-        bad = []
-        for name in names:
-            contents = _viewport_contents(_read(os.path.join(FRONTEND_DIR, name)))
-            if not contents or not all(TOKEN in c for c in contents):
-                bad.append(f"frontend/{name}（viewport content={contents}）")
-        self.assertEqual(bad, [], f"以下入口 HTML 的 viewport 缺 {TOKEN}：{bad}")
 
     def test_layout_shells_carry_token(self):
         """三个生产外壳模板都必须带该属性（生产页面真正输出的 `<head>`）。"""

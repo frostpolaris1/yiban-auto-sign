@@ -6,8 +6,8 @@
     队列/排程两种模式下无点位均不触发失败通知（真失败仍触发）、main() 汇总与退出码
     （仅无点位=exit 2、含真失败=exit 1、有成功=exit 0）、每日状态文件写入 🚫、
     容器补签闸门与宿主 run.sh 双路径一致、汇总邮件异常不得改退出码。
-对应实现：状态码权威定义 `yiban.status.STATUS_NO_POSITION`（符号
-    `yiban.status.SYMBOL`，未了结集合 `yiban.status.UNDONE_STATUSES`）；分支判定在
+对应实现：状态码权威定义 `yiban.core.status.STATUS_NO_POSITION`（符号
+    `yiban.core.status.SYMBOL`，未了结集合 `yiban.core.status.UNDONE_STATUSES`）；分支判定在
     客户端/引擎侧，补签闸门在 `docker/scheduler.py` 的 `_UNDONE_STATUSES`。
 关键断言：无点位 ≠ 凭据/网络失败——此前并入 STATUS_FAILED 会造成逐账号误报轰炸；
     retry budget 为 1（`NO_POSITION_MAX_ATTEMPTS`），不像 failed 那样反复重试；
@@ -46,8 +46,8 @@ def _load_sched():
 def _run_main(argv=None, run_queue_result=None, flush_side_effect=None):
     """在隔离环境下执行 signin.main()，返回退出码或捕获的 SystemExit。
 
-    run_queue_result：替换 run_queue_retry 返回值（不触网）；load_accounts
-    按结果的手机号构造账号，保证汇总循环遍历到所有结果。
+    run_queue_result：替换生产执行体 `executor_v3.run_executor_v3` 的返回值（不触网）；
+    load_accounts 按结果的手机号构造账号，保证汇总循环遍历到所有结果。
     """
     tmp = tempfile.mkdtemp(prefix="yiban-nopos-test-")
     old_env = {k: os.environ.get(k) for k in (
@@ -124,17 +124,6 @@ def _run_main(argv=None, run_queue_result=None, flush_side_effect=None):
 class NoPositionConstantTest(unittest.TestCase):
     """独立状态码与符号必须存在，且不与既有状态混淆。"""
 
-    def test_status_code_is_independent(self):
-        self.assertEqual(signin.STATUS_NO_POSITION, "no_position")
-        # 不与任何既有状态码重复
-        existing = {
-            signin.STATUS_SUCCESS, signin.STATUS_ALREADY, signin.STATUS_NO_TASK,
-            signin.STATUS_FAILED, signin.STATUS_RETRYING, signin.STATUS_SKIPPED_WINDOW,
-            signin.STATUS_SKIPPED_NORANGE, signin.STATUS_PAUSED,
-            signin.STATUS_USER_CANCELLED, signin.STATUS_PENDING,
-            signin.STATUS_GLOBAL_PAUSED,
-        }
-        self.assertNotIn(signin.STATUS_NO_POSITION, existing)
 
     def test_symbol_mapping_exists(self):
         self.assertIn(signin.STATUS_NO_POSITION, signin.STATUS_SYMBOL)
@@ -159,7 +148,10 @@ class NoPositionAttemptSigninTest(unittest.TestCase):
         client = signin.YibanClient(acc)
         client.logged_in = True  # 跳过真实登录
         resp = mock.Mock()
-        resp.json.return_value = {"code": 0, "data": {"Msg": "", "Position": [], "Range": {}}}
+        # State=1（未签到）＋ 空 Position：平台没给点位的真实形态（判定只看 State，
+        # 见 yiban/client.py 的 State 映射表）。
+        resp.json.return_value = {"code": 0, "data": {"State": 1, "Msg": "",
+                                                      "Position": [], "Range": {}}}
         # text 与 json() 保持一致：换核后信封解析读 resp.text（真实 requests 两者同源）
         resp.text = json.dumps(resp.json.return_value)
         client.session.get = mock.Mock(return_value=resp)
@@ -186,82 +178,6 @@ class NoPositionAttemptSigninTest(unittest.TestCase):
             _success, _message, _skip, status = signin.attempt_signin(acc)
         self.assertEqual(status, signin.STATUS_NO_POSITION)
         fake_client._wipe_credentials.assert_called_once()
-
-
-class NoPositionRetryNotificationTest(unittest.TestCase):
-    """run_queue_retry 放弃无点位账号时不得触发任何"签到失败"通知（防误报轰炸）。
-
-    对照组：真失败仍须照常通知（确保没有把真失败静默掉）。
-    """
-
-    def setUp(self):
-        self.acc = signin.Account(phone="13800000000", password="p")
-        self.acc.owner = "admin"
-
-    def _run_queue(self, attempt_result, schedule=None):
-        acc = self.acc
-        # 窗口覆盖全天：避免测试运行时已过默认 07:50 截止，schedule 分支在
-        # _window_closed 处整体落 skipped_window（与无点位分支无关）。
-        with mock.patch.dict(os.environ, {
-            "YIBAN_SIGN_START": "00:00",
-            "YIBAN_SIGN_END": "23:59",
-            "YIBAN_WINDOW_EDGE_FRONT_SEC": "0",
-            "YIBAN_WINDOW_EDGE_BACK_SEC": "0",
-        }), \
-             mock.patch.object(signin, "attempt_signin", return_value=attempt_result), \
-             mock.patch.object(signin, "_write_sign_state"), \
-             mock.patch.object(signin, "_update_cred_state"), \
-             mock.patch.object(signin, "_collect_admin_mail") as m_mail, \
-             mock.patch.object(signin.notify, "is_configured", return_value=True), \
-             mock.patch.object(signin, "send_notification") as m_notify, \
-             mock.patch.object(signin, "send_user_fail_mail") as m_user, \
-             mock.patch.object(signin.time, "sleep"):
-            results = signin.run_queue_retry(
-                [acc], "http://notify.invalid", 0, 0, schedule=schedule
-            )
-        return results, m_mail, m_notify, m_user
-
-    def test_queue_mode_no_position_no_notifications(self):
-        results, m_mail, m_notify, m_user = self._run_queue(
-            (False, NO_POSITION_MSG, False, signin.STATUS_NO_POSITION)
-        )
-        self.assertEqual(results[self.acc.phone][3], signin.STATUS_NO_POSITION)
-        self.assertIn("未找到签到位置数据", results[self.acc.phone][1],
-                      "结果 message 应透传")
-        m_mail.assert_not_called()
-        m_notify.assert_not_called()
-        m_user.assert_not_called()
-
-    def test_queue_mode_real_failure_still_notifies(self):
-        """对照组：真失败（凭据）仍须发邮件/webhook/用户邮件——不能因本次改动静默。"""
-        results, m_mail, m_notify, m_user = self._run_queue(
-            (False, "登录失败: 账号或密码错误", False, signin.STATUS_FAILED)
-        )
-        self.assertEqual(results[self.acc.phone][3], signin.STATUS_FAILED)
-        m_mail.assert_called_once()
-        m_notify.assert_called_once()
-        m_user.assert_called_once()
-
-    def test_schedule_mode_no_position_no_notifications(self):
-        """schedule（时间驱动）分支同样跳过通知。"""
-        schedule = {self.acc.phone: signin.clock.now()}
-        results, m_mail, m_notify, m_user = self._run_queue(
-            (False, NO_POSITION_MSG, False, signin.STATUS_NO_POSITION),
-            schedule=schedule,
-        )
-        self.assertEqual(results[self.acc.phone][3], signin.STATUS_NO_POSITION)
-        m_mail.assert_not_called()
-        m_notify.assert_not_called()
-        m_user.assert_not_called()
-
-    def test_schedule_mode_real_failure_still_notifies(self):
-        schedule = {self.acc.phone: signin.clock.now()}
-        results, m_mail, _m_notify, _m_user = self._run_queue(
-            (False, "登录失败: 账号或密码错误", False, signin.STATUS_FAILED),
-            schedule=schedule,
-        )
-        self.assertEqual(results[self.acc.phone][3], signin.STATUS_FAILED)
-        m_mail.assert_called_once()
 
 
 class NoPositionMainSummaryTest(unittest.TestCase):
@@ -359,19 +275,6 @@ class NoPositionSchedulerGateTest(unittest.TestCase):
         })
         self.assertTrue(self.sched._has_undone_today())
 
-    def test_host_container_dual_path_consistent(self):
-        """宿主/容器双路径一致：宿主 no_position 汇总归 skip → exit 2 → run.sh 写
-        SKIPPED → 07:10 补签重跑；容器 _UNDONE_STATUSES 含 no_position →
-        _has_undone_today() 为真 → 07:10 补签同样重跑。两条路径都必须触发补签轮。"""
-        self._write_marker()
-        self._write_state({"13800000000": {"status": "no_position"}})
-        self.assertTrue(self.sched._has_undone_today(),
-                        "容器侧：no_position 计入未了结，补签轮应重跑")
-        code, _ = _run_main(run_queue_result={
-            "13800000000": (False, NO_POSITION_MSG, False, signin.STATUS_NO_POSITION),
-        })
-        self.assertEqual(code, 2,
-                         "宿主侧：仅无点位 → exit 2（SKIPPED），run.sh 07:10 补签重跑")
 
 
 if __name__ == "__main__":

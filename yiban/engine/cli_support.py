@@ -8,7 +8,7 @@ CLI 支撑：日志装配、进程级运行锁、状态文件读改写锁，以�
 并发登录同一账号）、日志写哪儿（按天文件 handler，装配延迟到入口、导入零副作用）、
 状态文件怎么安全读改写（跨进程文件锁）。输出收口（`_emit_json` / `_say` / `_fail` /
 `_emit_json_error` / `_UsageError` / `_exit_code`）与退出码常量同属"命令行契约"这一
-独立变更轴：调用方（`yiban/cli.py`）按它们解析 stdout 与退出码，引擎侧不碰。
+独立变更轴：调用方（`yiban/entry/cli/__init__.py`）按它们解析 stdout 与退出码，引擎侧不碰。
 
 **归属**
 `yiban.engine` 的进程外壳与命令行契约支撑层（`runner` / `workers` / `round` / `probe`
@@ -16,18 +16,24 @@ CLI 支撑：日志装配、进程级运行锁、状态文件读改写锁，以�
 
 **复用**
 `_setup_cli_logging`（幂等日志装配）、`_state_file_lock`（状态文件读改写锁）、
-`GLOBAL_RUN_LOCK_NAME`、`_acquire_run_lock` 与 `_run_lock_held`；锁原语来自 `yiban.infra.locks`。
+`GLOBAL_RUN_LOCK_NAME`、兜底锁名常量、`_acquire_run_lock`（互斥取锁）与
+`_run_lock_held`（探测原语）。
+锁原语来自 `yiban.infra.locks`。重签路径的互斥由 `_acquire_run_lock` 承担：
+`yiban.adapters.persistence.queue_store.reclaim_tasks` **持有**兜底锁跨事务
+（工单 `uob1` X2 ＋ 审查 D1 整改）；`_run_lock_held` 现无生产调用点，
+消费者＝测试侧 fail-closed 门与竞态用例探针（存删随 X6 裁决）。
 运行锁的两种拒绝信号是 `_RunLockHeld`（别人在跑）与 `_RunLockUnavailable`（本进程拿不到
 互斥：锁文件不可写 / 平台无锁后端 / 等待超时），两者都 fail-closed，调用点按既有退出码族透出。
-输出收口供 `yiban/cli.py` 复用（`_say` 人话走 stderr、`_emit_json` 结果走 stdout、失败
+输出收口供 `yiban/entry/cli/__init__.py` 复用（`_say` 人话走 stderr、`_emit_json` 结果走 stdout、失败
 一律 `_emit_json_error` 保证 `--json` 下 stdout 可解析）。
 
 **通信**
 输入：日志级别/路径等环境配置、状态文件路径与加锁范围、结果对象。
 输出：配置好的 logger/handler、被加锁的读改写上下文、stdout 单行 JSON / stderr 人话。
-调用谁：`yiban.infra.env_io`、`yiban.infra.locks`、`yiban.logging_ext.FlockFileHandler`。
-谁调用：`yiban/cli.py`（输出收口、`last_fatal_error` 的 `--json` 摘要）、`runner`、
-`workers`、`state_io`、`probe`、`alerts` 与 `scripts/signin.py` 兼容壳；web 服务层不调用本模块。
+调用谁：`yiban.adapters.config.env_io`、`yiban.infra.locks`、`yiban.logging_ext.FlockFileHandler`。
+谁调用：`yiban/entry/cli/__init__.py`（输出收口、`last_fatal_error` 的 `--json` 摘要）、`runner`、
+`workers`、`state_io`、`probe`、`alerts`、`queue_store`（重签前的兜底锁探测）与
+`scripts/signin.py` 兼容壳；web 服务层不调用本模块。
 前端调用点：无直接调用点（前端经 `runner` / `state_io` 间接受影响）；执行体与手动签到
 页面的"正在跑/存活"判定依赖本模块的全局运行锁。
 本模块内部用裸名，跨模块一律走模块属性访问。
@@ -39,10 +45,11 @@ import sys
 import time
 from contextlib import contextmanager, suppress
 
-from yiban import clock
-from yiban.infra import env_io, locks
+from yiban.adapters.config import env_io
+from yiban.adapters.config import loader as config_loader
+from yiban.core.masking import mask_phones_in_text, sanitize_text
+from yiban.infra import locks
 from yiban.logging_ext import FlockFileHandler, MaskingFormatter
-from yiban.masking import mask_phones_in_text, sanitize_text
 
 logger = logging.getLogger("yiban")
 
@@ -52,16 +59,24 @@ except ImportError:
     fcntl = None
 
 # 日志级别可用 YIBAN_LOG_LEVEL 调整：DEBUG / INFO / WARNING / ERROR
-LOG_LEVEL = os.environ.get("YIBAN_LOG_LEVEL", "INFO").upper()
+LOG_LEVEL = os.environ.get(
+    "YIBAN_LOG_LEVEL", config_loader.default_required("YIBAN_LOG_LEVEL")).upper()
 
 # 进程级签到单实例锁：全量模式等待其他进程退出的上限（秒）。
 # 手动 --only 通常几十秒结束；cron 全量队列被手动阻塞时最多等这么久。
-_RUN_LOCK_WAIT_DEFAULT = 600
+_RUN_LOCK_WAIT_DEFAULT = config_loader.default_required("YIBAN_RUN_LOCK_WAIT")
 
 #: **全局轮次锁**的文件名（"此刻是否有一轮全量/多执行体在跑"的唯一判据）。
 #: 多执行体形态下只有监督进程持它、各子进程用各自的 `signin-run.lock.w{i}`；
-#: 兜底常驻靠探测它决定是否让位（见 `_run_lock_held`）。
+#: 多执行体子进程用各自的锁名（`YIBAN_RUN_LOCK_NAME`）；全局锁由监督进程持有。
 GLOBAL_RUN_LOCK_NAME = "signin-run.lock"
+
+#: **兜底常驻的独立锁**文件名。兜底进程（`runner.main --fallback`）在进程存活期间持有它；
+#: 它与全局锁不同文件，故兜底能与定时全量、手动 `--only`、其他执行体并存（账号级互斥
+#: 交给领取池）。定义放在本模块是**单一来源**：`yiban.workers.workers` 以别名转出，
+#: 既有读者（`runner` / 容器调度器 / 测试）不变；探测方（`queue_store.reclaim_tasks`）
+#: 与持有方（`runner` 的兜底分支）取同一个名字，不各写一份字面量。
+FALLBACK_LOCK_NAME = "signin-run.lock.fallback"
 
 #: 迁移完整性拒启的专用退出码（MF-40）。`docs/dev/cli.md` §3 的 0/1/2/3/10 家族
 #: **只增不改**，4 未被占用。触发链：`init_db(migrate=True)` →
@@ -70,6 +85,13 @@ GLOBAL_RUN_LOCK_NAME = "signin-run.lock"
 #: `workers.run_worker_supervisor` 捕获后以此码退出——调用方据此把"schema
 #: 半升级（下次启动重试/人工介入）"与"配置错误(1)"区分开。
 EXIT_SCHEMA_MIGRATION = 4
+
+#: `--second-run-check` 的"需要补跑第二轮"退出码：**唯一定义点**。
+#: `runner.SECOND_RUN_CHECK_NEED`（供命令帮助文案与判定返回）与
+#: `workers._SECOND_RUN_CHECK_NEED`（供监督进程透传）都引用本常量，不再各写 10。
+#: 方向不能反：`workers` 不导入 `runner`（`runner` 反向依赖 `workers`），本模块是
+#: 两者共同的低层。
+SECOND_RUN_CHECK_NEED = 10
 
 # CLI 日志装配幂等标记（见 _setup_cli_logging）
 _cli_logging_ready = False
@@ -101,7 +123,7 @@ class _RunLockUnavailable(RuntimeError):
     """
 
 
-#: `_run_lock_held` 的"探测不出"告警去重标记：兜底常驻每 `_YIELD_POLL_SEC` 探一次，
+#: `_run_lock_held` 的"探测不出"告警去重标记：每次探测失败只报一次，
 #: 不去重会把同一条平台缺陷刷满日志。
 _PROBE_UNAVAILABLE_WARNED = False
 
@@ -112,7 +134,7 @@ def _acquire_run_lock(only_mode, name=None):
     web 端的防抖/terminate 只覆盖 web 自己 spawn 的子进程，与 cron 全量队列之间没有
     任何互斥——同账号被两个进程并发登录易班会导致重复打卡/会话异常/风控画像。
     锁文件 <STATE_DIR>/signin-run.lock：
-    - 全量模式：阻塞等待至多 YIBAN_RUN_LOCK_WAIT 秒（默认 600s），等到就继续；
+    - 全量模式：阻塞等待至多 YIBAN_RUN_LOCK_WAIT 秒（缺省见配置名册），等到就继续；
       **超时即拒绝运行**（抛 `_RunLockUnavailable`）——旧行为是告警后"无锁继续"，
       那等于把"另一轮全量正在签同一批账号"这个事实忽略掉，两边各登录一次；
     - --only 模式：立即尝试一次，被持有则抛 `_RunLockHeld`（调用方退出并留痕，
@@ -128,7 +150,8 @@ def _acquire_run_lock(only_mode, name=None):
     再退到 `GLOBAL_RUN_LOCK_NAME`。**显式传参可绕过环境变量**——探测全局锁必须显式
     传（兜底进程自己的环境变量里放的是它自己的锁名）。
     """
-    state_dir = env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
+    state_dir = env_io.resolve_path(
+        "YIBAN_STATE_DIR", config_loader.default_required("YIBAN_STATE_DIR"))
     # 多执行体形态下每个子进程用**各自的**锁文件（YIBAN_RUN_LOCK_NAME），全局锁由
     # 拉起它们的监督进程持有：这样既保住"散落的另一轮全量不得与本轮并发"的原有保护，
     # 又不让子进程之间互相阻塞。
@@ -182,10 +205,13 @@ def _run_lock_held(name=None):
     """此刻是否**有一支全量轮在跑**——兜底让位的唯一事实源。
 
     判据与部署形态无关：**锁被持有 = 有一轮在飞**（监督进程持它覆盖整轮，含全部子执行体）。
-    调用方 `workers._round_in_flight` 据它决定整段让位；同一份事实也交给执行体做**轮内
-    复检**（`run_executor_v3(yield_probe=…)`），故让位不依赖"进入这一轮那一刻"的锁状态。
-    2026-10-07 之前，让位判据写成"有没有声明领取池"——那判的是配置键，生产用默认库时
-    被判成"纯状态文件部署"，判据退化成"此刻能否探到锁"，兜底先起飞、锁后持有即抢跑成功。
+
+    **消费现状（复评 F2 订正）**：重签路径的互斥已改为**持有**兜底锁——
+    `queue_store.reclaim_tasks` 直接调 `_acquire_run_lock`（锁名显式传兜底锁常量）
+    跨事务（审查 D1 整改），本函数退回"探测原语 ＋ fail-closed 语义门"：
+    生产代码零调用点，消费者是 `tests/test_fallback_gates.py`（fail-closed 门）与
+    `tests/test_reclaim_fallback_lock_e2e.py`（竞态用例的事务中探针）。删它须连
+    `tests/test_run_lock_fail_closed.py` 与这两处同批动。
 
     做法就是"拿一下立刻放"：flock 只能靠尝试获取来问，拿到说明没人跑、当场释放。
     `name` 缺省即**全局轮次锁名**（取值见 `_acquire_run_lock`：它**不读**
@@ -195,10 +221,10 @@ def _run_lock_held(name=None):
     概率极低且只影响一次手动触发；相比"兜底把全量轮计划给执行体的活先领走"这个代价是划算的。
 
     **探测不出锁状态时按"有人在跑"处置**（`_RunLockUnavailable`，进程内只告警一次）：
-    本函数只服务"该不该让位"这一个决策，而两种判错的代价不对称——错报"没人跑"会让
-    兜底领走那一轮计划的活（10-07 生产 84/100）、把精心错峰的分工冲掉；错报"有人在跑"
-    只是兜底这一轮不捡活（下一轮还会再看）。安全的判错方向是让位，故不再返回 False
-    假装锁不存在。
+    两种判错的代价不对称——错报"没人跑"会让重签翻掉在飞行的行（同账号并发真实登录，
+    第一红线），也会让兜底领走计划轮该做的活（10-07 生产 84/100）；错报"有人在跑"
+    只是这一次少翻一行、或少捡一轮活（下一轮还会再看）。安全的判错方向是"按在跑处置"，
+    故不再返回 False 假装锁不存在。
     """
     global _PROBE_UNAVAILABLE_WARNED
     try:
@@ -209,8 +235,8 @@ def _run_lock_held(name=None):
         if not _PROBE_UNAVAILABLE_WARNED:
             _PROBE_UNAVAILABLE_WARNED = True
             logger.warning(
-                "运行锁不可用（%s），无法探测是否有全量轮在跑：按'有人在跑'处置，"
-                "兜底本轮让位（这条告警每进程只报一次）", e)
+                "运行锁不可用（%s），无法探测锁是否被持有：按'有人在跑'处置，"
+                "本进程不再把探测读成'没人跑'（这条告警每进程只报一次）", e)
         return True
     if fh is not None:
         with suppress(OSError):
@@ -218,11 +244,10 @@ def _run_lock_held(name=None):
     return False
 
 
-# 按天日志文件路径（与 web/app.py log_path_for 一致）
+# 按天日志文件路径（形状唯一在 `env_io.day_log_path`：与 web 的 `log_path_for`、
+# 宿主脚本同一事实源，census-P2-sign-day-log）
 def _signin_log_path():
-    date_str = clock.now().strftime("%Y-%m-%d")
-    log_file = env_io.resolve_path("YIBAN_LOG_FILE", "/var/log/yiban/sign.log")
-    return os.path.join(os.path.dirname(log_file), f"sign-{date_str}.log")
+    return env_io.day_log_path()
 
 
 def _make_log_handler():
@@ -271,10 +296,10 @@ def report_fatal_error(summary):
     """致命错误（配置加载失败/未配置任何账号类）：stderr 一行摘要 + 记录给 `--json`。
 
     为什么不能只靠 `logger.error`：CLI 日志装配只挂**按天文件** handler，stderr 上
-    什么都没有——agent/CI 直调 `python -m yiban.cli sign` 时退出码 1 而 stdout/stderr
+    什么都没有——agent/CI 直调 `python -m yiban.entry.cli sign` 时退出码 1 而 stdout/stderr
     全空，错误只进日志文件。stdout 仍保持"只有结果"
     （`docs/dev/cli.md` §2.2），摘要一律走 stderr；`--json` 的 error 字段由调用方
-    （`yiban/cli.py`）经 `last_fatal_error()` 取用。
+    （`yiban/entry/cli/__init__.py`）经 `last_fatal_error()` 取用。
 
     **脱敏必须在生成本处做，不能指望 formatter**：这条摘要的下游出口全都不经过
     日志装配——stderr 会被 run.sh 的 `2>&1` 与 web 手动签到的 `stdout=log_fh`
@@ -384,7 +409,7 @@ _EXIT_KINDS = {
     2: "skipped",
     3: "locked",
     EXIT_SCHEMA_MIGRATION: "schema_migration",
-    10: "second_run_check",
+    SECOND_RUN_CHECK_NEED: "second_run_check",
 }
 
 

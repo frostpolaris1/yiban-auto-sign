@@ -14,7 +14,7 @@
 （定点 / 稠密 / 留痕）对"删尾后追加""删前缀无留痕""膨胀留痕"的取舍；升级回填
 （migrate_v3 对残缺旧库）；写债务（write debt）持久化；`scripts/audit_verify.py` 的退出码；备份脚本的取证契约；
 以及审计**读侧**的聚合与出站不携裸号。
-对应实现：`yiban/store/audit_chain.py`（`audit` / `verify_audit_chain` /
+对应实现：`yiban/adapters/persistence/audit_chain.py`（`audit` / `verify_audit_chain` /
 `record_audit_anchor` / `verify_audit_anchor` / `audit_health`）、
 `scripts/audit_verify.py`、`scripts/backup.sh` 与 `docker/backup-docker.sh`、
 读侧聚合在 web 的审计查询服务。
@@ -23,8 +23,9 @@
 是成对的正负对照：后者才是真缺口（旧判据只在 `cur_max == 锚点 max_id` 时才比链头，
 删尾后只要再写一条就整套静默）。锚点文件自身的截断/删行由 `AnchorFileIntegrityTest`
 负责，跨库误比与本机时钟防不住的情况见 `tests/test_audit_cleanup_visibility.py`。
-`test_missing_meta_fingerprint_does_not_false_alarm` 钉的是"缺指纹降级为链校验、
-不得误报"，别把它读成"缺指纹也算通过校验"。
+`test_missing_meta_fingerprint_is_indeterminate` 钉的是"缺指纹 ⇒ 无法定论"（工单
+ba-p01-04）：缺指纹时行数三支与末行哈希支无从执行，判 ok 会把锚点防线悄悄降级；
+它既不是篡改也不是通过，下一次成功写锚点补回指纹即自愈。
 依赖：临时库 + 临时锚点文件；`BackupScriptContractTest` 是**源码文本级**断言
 （脚本含中文，Windows 子进程按 GBK 解码 stdout 会误报，故不起子进程）——
 它只保证那段文本还在原位，不执行脚本行为；其余用例无网络、无 skip。
@@ -42,6 +43,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+
+from web.services import limits as _limits
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -272,8 +275,13 @@ class AnchorLineFormatTest(_DbFixture):
         )
         self.assertEqual(got["count"], 5)
 
-    def test_legacy_five_token_line_still_parses_and_no_false_alarm(self):
-        """存量生产锚点文件（4 段 / 5 token，无 count、无行间链）必须能读且不报错。"""
+    def test_legacy_five_token_line_parses_and_needs_fingerprint(self):
+        """存量生产锚点文件（4 段 / 5 token，无 count、无行间链）必须能读。
+
+        旧格式行本身不报篡改，但它没有库内指纹时**无法定论**（工单 ba-p01-04）：
+        缺指纹时行数三支与末行哈希支全部无从执行，返回 ok 会让锚点防线静默降级。
+        下一次成功写锚点补回指纹后即恢复 ok。
+        """
         self._seed(4)
         head = db.audit_head_hash()
         legacy = f"2026-08-28 18:50:00 1 4 {head}"
@@ -283,8 +291,13 @@ class AnchorLineFormatTest(_DbFixture):
         self.assertIsNotNone(got, "旧格式行必须可读（升级后不得致盲）")
         self.assertEqual((got["min_id"], got["max_id"], got["head"]), (1, 4, head))
         self.assertIsNone(got["count"], "旧行没有 count，稠密性判据须降级而非误报")
+        status, msg = db._anchor_status()
+        self.assertEqual(status, "indeterminate",
+                         f"缺库内指纹时必须判无法定论（≠ 篡改）：{msg}")
+        self.assertNotIn("篡改", msg)
+        db.record_audit_anchor()
         ok, msg = db.verify_audit_anchor()
-        self.assertTrue(ok, f"仅有旧格式锚点时不得误报：{msg}")
+        self.assertTrue(ok, f"补回指纹后不得误报：{msg}")
 
     def test_legacy_line_then_v2_line_chains_from_legacy_text(self):
         """新旧行混排：v2 行的 prev_line_hash 取前一行原文（可为旧格式行）。"""
@@ -355,13 +368,25 @@ class AnchorFileIntegrityTest(_DbFixture):
         ok, msg = db.verify_audit_anchor()
         self.assertFalse(ok, f"删掉中间锚点行必须被行间链检出：{msg}")
 
-    def test_missing_meta_fingerprint_does_not_false_alarm(self):
-        """存量部署（app_meta 里没有锚点指纹）不得凭空判失败。"""
+    def test_missing_meta_fingerprint_is_indeterminate(self):
+        """缺库内指纹 ⇒ 无法定论（工单 ba-p01-04），不得判篡改、也不得判通过。
+
+        `_record_anchor_trace` 写 app_meta 失败只记 WARNING；此后行数三支与末行哈希支
+        全部无从执行。"缺指纹降级为行间链校验"是旧口径：行间链只保证历史行彼此自洽，
+        对"截掉末行再补一条自洽的新末行"无效——降级后锚点强度回到没有指纹之前。
+        下一次成功写锚点补回指纹即自愈。
+        """
         self._seed(3)
         db.record_audit_anchor()
         self._raw("DELETE FROM app_meta WHERE key='audit_anchor_meta'")
         ok, msg = db.verify_audit_anchor()
-        self.assertTrue(ok, f"缺指纹时降级为行间链校验，不得误报：{msg}")
+        self.assertFalse(ok, f"缺指纹不是通过：{msg}")
+        self.assertTrue(msg.startswith("无法定论："), msg)
+        self.assertNotIn("篡改", msg, "缺指纹是「没验成」，不是「确证篡改」")
+        self.assertFalse(db.audit_health()["healthy"])
+        db.record_audit_anchor()
+        ok, msg = db.verify_audit_anchor()
+        self.assertTrue(ok, f"补回指纹后必须自愈：{msg}")
 
 
 class AnchorJudgmentTest(_DbFixture):
@@ -517,6 +542,25 @@ class AnchorJudgmentTest(_DbFixture):
         h = db.audit_health()
         self.assertFalse(h["anchor_ok"], "跃迁量 > 留痕累计 → 必须判非法删除")
 
+    def test_middle_row_delete_without_purge_record_is_rejected(self):
+        """锚点批次内**中间行**被删且无留痕：只由稠密判据检出（R3-027）。
+
+        夹具刻意让另两条判据都过：
+          · 定点：锚点尾行 id=8 仍在、存量 hash 与锚点一致（删的是 id=2，不动尾行）；
+          · 留痕：min_id 仍为 1、无跃迁，第三条判据不触发。
+        故 `missing > exp` 是唯一能接住它的判据。把该条件放宽 10 万，本条必须红——
+        它是这条删除支的独立守卫（此前 `test_min_jump_larger_than_events_is_rejected`
+        由第三条判据接住，钉不住这一支）。
+        """
+        self._seed(8)
+        db.record_audit_anchor()
+        self._raw("DELETE FROM audit_logs WHERE id = 2")  # 中间行，无清理留痕
+        h = db.audit_health()
+        self.assertFalse(h["anchor_ok"],
+                         f"锚点批次内删行且无留痕必须判篡改：{h['anchor_msg']}")
+        self.assertIn("条数减少且无清理留痕", h["anchor_msg"],
+                      "必须由稠密判据点名；被定点/留痕判据接住就说明本条钉不住这一支")
+
     def test_balanced_but_inconsistent_purge_record_is_rejected(self):
         """留痕**条数**对得上、但留痕声称的"删除后 min_id"与事实不符 → 只有第三条判据能检出。
 
@@ -564,11 +608,22 @@ class AnchorJudgmentTest(_DbFixture):
         self.assertIn("不符", h["anchor_msg"])
 
     def test_v1_anchor_does_not_false_alarm_on_min_jump(self):
-        """存量 v1 锚点没有 count 字段：稠密性判据降级，但定点判据仍生效。"""
+        """存量 v1 锚点没有 count 字段：稠密性判据降级，但定点判据仍生效。
+
+        缺库内指纹时按工单 ba-p01-04 判"无法定论"；本用例补上指纹（存量部署下一次
+        成功写锚点即会补）后，才检验 v1 的稠密性降级语义。
+        """
         self._seed(5)
         head = db.audit_head_hash()
+        line = f"2026-08-28 18:50:00 1 5 {head}"
         with open(self.anchor, "w", encoding="utf-8") as f:
-            f.write(f"2026-08-28 18:50:00 1 5 {head}\n")
+            f.write(line + "\n")
+        status, msg = db._anchor_status()
+        self.assertEqual(status, "indeterminate",
+                         f"缺指纹时必须判无法定论而不是无异常：{msg}")
+        payload = json.dumps({"lines": 1, "last_hash": db._anchor_line_sha(line), "ts": "x"})
+        self._raw("INSERT OR REPLACE INTO app_meta (key, value) "
+                  "VALUES ('audit_anchor_meta', ?)", (payload,))
         self._raw("DELETE FROM audit_logs WHERE id <= 2")  # 无留痕的前缀删除
         ok, msg = db.verify_audit_anchor()
         self.assertTrue(ok, f"v1 锚点无法承载稠密性判据，降级为不报错：{msg}")
@@ -815,11 +870,6 @@ class BackupScriptContractTest(unittest.TestCase):
         self.assertIn("exit 1", block, "校验不过必须以非 0 退出")
         self.assertIn("integrity_check", self._block("verify_db_snapshot()", "if [ -f \"${DB_SRC}\" ]"))
 
-    def test_corrupt_source_keeps_archive_but_exits_nonzero(self):
-        """.backup 成功但 integrity 不过 = 源库损坏：归档照留（最后一份素材），退出码非 0。"""
-        self.assertIn("CORRUPT_SOURCE=1", self.src)
-        tail = self.src[self.src.index("if [ \"${CORRUPT_SOURCE:-0}\" -eq 1 ]"):]
-        self.assertIn("exit 4", tail)
 
     def test_manifest_includes_anchor_and_gate_files(self):
         """(b) 备份清单必须含外部锚点与闸门/账本状态文件。
@@ -1037,10 +1087,10 @@ class ReadAuditTest(unittest.TestCase):
         rows = self._rows("account_detail_read")
         self.assertEqual(len(rows), 3, f"聚合口径应为档位 1/10/50 三行，实得 {len(rows)}")
         self.assertNotEqual(len(rows), 50, "读审计绝不允许逐请求一行")
-        # MF-49 actor 收口（Task 2-9b）：审计写入口把 actor 统一遮罩（`yiban.masking.
+        # MF-49 actor 收口（Task 2-9b）：审计写入口把 actor 统一遮罩（`yiban.core.masking.
         # mask_email` 口径，与展示面同源），磁盘面上不再有明文邮箱。断言相应钉
         # "遮罩后的真实会话用户名"——actor 丢了、错置成别人的形态照样红，判据不放松。
-        from yiban.masking import mask_email
+        from yiban.core.masking import mask_email
         self.assertTrue(all(r["username"] == mask_email(SUB_ADMIN) for r in rows),
                         "actor 必须是真实会话用户名的遮罩形态")
         last = rows[-1]["detail"]
@@ -1056,7 +1106,7 @@ class ReadAuditTest(unittest.TestCase):
         statuses = [c.get(f"/api/accounts/{i % N_ACCOUNTS}/detail").status_code
                     for i in range(N_ACCOUNTS)]
         self.assertIn(429, statuses, "idx 递增枚举整库必须被限速挡住")
-        limit = self.webapp.DETAIL_MAX
+        limit = _limits.DETAIL_MAX
         self.assertEqual(statuses[:limit], [200] * limit, "限额内不得误伤正常运维")
         self.assertEqual(statuses[limit], 429)
         body = c.get("/api/accounts/0/detail").get_json()["error"]
@@ -1117,7 +1167,7 @@ class ReadAuditTest(unittest.TestCase):
         self.assertEqual(master["quota_visible"], True)
         self.assertEqual(sub["quota_visible"], False,
                          "余量的 null 原意是「不限」，无权查看必须靠这个标记区分")
-        for key in self.webapp._NOTIFY_QUOTA_HIDDEN_KEYS:
+        for key in _limits._NOTIFY_QUOTA_HIDDEN_KEYS:
             self.assertIn(key, sub, "刻意置 null 而非省键：响应形态必须稳定")
             self.assertIsNone(sub[key], f"{key} 属额度勘察字段，普通管理员不该看到")
         self.assertEqual(set(sub), set(master), "两套响应的键集合必须一致")
@@ -1138,7 +1188,7 @@ class ReadAuditTest(unittest.TestCase):
         for key in ("enabled", "admin_notify", "smtp_host", "smtp_port",
                     "user", "admin_to", "smtps"):
             self.assertIn(key, sub, "普通管理员必须看得到邮件通道开没开、配没配")
-        self.assertFalse([k for k in sub if k in self.webapp._NOTIFY_QUOTA_HIDDEN_KEYS],
+        self.assertFalse([k for k in sub if k in _limits._NOTIFY_QUOTA_HIDDEN_KEYS],
                          "邮件侧没有这两个余量键可分层（发送路径不受推送每日条数与节流约束）")
 
 

@@ -10,9 +10,9 @@
 `_log_manual_sign_exit`（写当天签到日志）。
 
 **归属**
-原 `web/app.py` 的模块级手动签到辅助，唯一真源在本模块；`web/app.py` 只保留名字面与
-转发，把它自己持有、而本模块需要的入口——按天日志文件路径 `log_path_for`——在调用
-时刻现取后注入（它内部还要现取本进程的 `LOG_FILE`，会被测试赋值改写）。
+原 `web/app.py` 的模块级手动签到辅助，唯一真源在本模块。批 3-d 删除 `web/app.py`
+的转发包装：路由与测试直取本模块。按天日志文件路径 `log_path_for` 经
+`configure(...)` 登记进 `_hooks`，按调用时刻解析。
 
 **复用**
 `_log_manual_sign_exit` 复用 `_manual_sign_failure_reason` 的退出码词表，两处不会各写
@@ -22,8 +22,8 @@
 
 **通信**
 本模块不反向导入 `web.app`（本仓测试以别名加载 `app.py`，普通 import 会再执行一份副本
-模块）。`log_path_for` 作为显式参数接收：它在 `web.app` 上是转发包装（现取 `LOG_FILE`），
-本模块另持绑定会让改日志目录的测试静默失效。本族函数**不读 `session` / `request`**：
+模块）。`log_path_for` 经 `configure(...)` 登记，调用时刻解析；本模块另持绑定会让改
+日志目录的测试静默失效。本族函数**不读 `session` / `request`**：
 `_log_manual_sign_exit` 由 `web/routes/signin_api.py` 的批量队列后台线程与子进程回收
 线程调用（非请求上下文），只依赖时钟与日志路径两样进程级事实。子进程模块经
 `import subprocess` 取用（测试以 `webapp.subprocess.Popen` 打桩，同一模块对象）。
@@ -35,10 +35,36 @@ import os
 import signal
 import subprocess
 
-from yiban import clock
+from yiban.core import clock
 
 # 与 web.app 同名的日志通道：本族的告警落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")
+
+# ---------------------------------------------------------------------------
+# 宿主注入登记点（批 3-d）
+# ---------------------------------------------------------------------------
+# 本模块原由 `web/app.py` 的转发包装在调用时刻现取 `log_path_for` 后注入。批 3-d
+# 删除那层包装，改由宿主登记 lambda；本模块按调用时刻从 `_hooks` 取。
+# 未登记即 fail-closed（抛 `RuntimeError`）。
+_hooks = {}
+
+
+def configure(log_path_for=None):
+    """注入宿主侧依赖（登记 lambda，见上方说明）。可重复调用（测试用）。"""
+    if log_path_for is not None:
+        _hooks["log_path_for"] = log_path_for
+
+
+def _host(key):
+    """取宿主登记的依赖。未登记即 fail-closed；`try` 只包取键、不包调用。"""
+    try:
+        fn = _hooks[key]
+    except KeyError:
+        raise RuntimeError(
+            "web.services.manual_sign 尚未登记宿主依赖 %r：请确认 web/app.py 的 import "
+            "末尾调用了 web.services.manual_sign.configure(...)" % (key,)
+        ) from None
+    return fn()
 
 
 def _terminate_signin_proc(proc, hard=False):
@@ -133,18 +159,18 @@ def _manual_sign_failure_reason(returncode):
     )
 
 
-def _log_manual_sign_exit(phone_label, returncode, log_path_for):
+def _log_manual_sign_exit(phone_label, returncode):
     """手动签到子进程异常退出写入签到日志——前端「结果稍后出现在日志」的
     唯一结果通道：exit 3（队列忙）等此前被静默吞掉，用户看到已触发实际没签。
 
-    日志路径由调用方传入（`web.app` 的 `log_path_for`）：它现取本进程的 `LOG_FILE`，
-    而该路径会被测试赋值改写、也会随运行方式变化；本函数另持绑定会让那些改写失效。
+    日志路径从宿主取（`log_path_for` 现取本进程的 `LOG_FILE`）：该路径会被测试赋值
+    改写、也会随运行方式变化；本函数另持绑定会让那些改写失效。
     """
     reason = _manual_sign_failure_reason(returncode)
     if not reason:
         return
     try:
-        with open(log_path_for(), "a", encoding="utf-8") as fh:
+        with open(_host("log_path_for")(), "a", encoding="utf-8") as fh:
             fh.write(f"[{clock.now():%Y-%m-%d %H:%M:%S}] "
                      f"[{phone_label}] ⚠️ 手动签到未完成: {reason}\n")
     except OSError:

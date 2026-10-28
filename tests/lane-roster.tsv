@@ -1,0 +1,396 @@
+# 车道名册（lane roster）—— 工单 vckk 阶段 2-a（2026-10-17 立）
+#
+# 为什么有它：CI 的 `verify` 作业此前跑的是**关键词子集**（`-k "security or mask or
+# audit or login or ..."`）。改动落在关键词命中面之外时，子集照样绿、全量红——**静默的
+# 不重合**，比红更危险（AGENTS.md §十三 第 29 条）。本名册把"哪条用例进哪条道"变成
+# **可穷举、可对账的数据**：每个被 pytest 收集到的测试文件都必须在此出现**恰好一次**。
+# 漏归类（新增文件没加行）⇒ tests/test_gate_lane_roster.py 判红。
+#
+# 列（制表符分隔）：lane<TAB>path[<TAB># 理由]
+#   fast —— 进快集：CI 的 `verify` 作业与本地 `--fast` 都跑它
+#   slow —— 进慢集：只在全量（`bash scripts/dev-verify.sh`）与 CI 的 `slow-lane` 作业
+#             （与 verify 并行、串行独占核）跑
+#   serial —— CI 的 verify 里单独一条**串行**轨（不进快集）：独占 runner 的核——
+#             真起服务/真并发的用例与快集同抢核时会失真（先例 zdvd：真登录 0 次）。
+#             CI 跑它，本地 --fast 不跑。
+# 三条道互斥，且并集必须等于全部测试文件。
+#
+# 快集 = 除 slow 之外的全部文件，故快集**大**（B1 收口态 367 个文件里 352 个进快集；
+# 口径＝`git ls-files` 的 `tests/**/test_*.py`）。只有
+# 墙钟真按"等外面"计费的用例才进 slow；判据是**形状**、不是口味：用例的时间由真实进程树 /
+# 真实定时等待 / 全仓扫描决定，而不是由进程内逻辑决定。逐条理由在行内。
+#
+# 口径与对账数字见 docs/dev/dev-verify.md §1.2；名册与实跑集合的对账由
+# tests/test_gate_lane_roster.py 在**快集内**常跑（它自己必须是 fast 行，否则它也会被漏掉）。
+#
+# lane	path
+fast	tests/protocol/test_crypto.py
+fast	tests/protocol/test_device.py
+fast	tests/protocol/test_envelopes.py
+fast	tests/protocol/test_forms.py
+fast	tests/protocol/test_identity.py
+fast	tests/protocol/test_location.py
+fast	tests/protocol/test_page.py
+fast	tests/protocol/test_position.py
+fast	tests/protocol/test_replay.py	# 夹具回放（ziqz）：字节/字段一致＋未实拍拒答；回环 HTTP，本机 <2s
+fast	tests/test_account_abuse_gate.py
+fast	tests/test_account_ciphertext_kid.py
+fast	tests/test_account_crypto_key_source.py
+fast	tests/test_account_detail_narrow_read.py	# 详情窄读：golden 逐字节＋解密计数＋掩码不变量（本机 1.2s）
+fast	tests/test_account_liveness_gate.py
+fast	tests/test_account_ops_reentry.py
+fast	tests/test_account_plaintext_patch.py
+fast	tests/test_account_profile_exposure.py	# 二段资料暴露建模（qmz4）：三视图 golden＋逐字段开关＋权限＋落库密文（本机 ~2s）
+fast	tests/test_account_row_rebuild_coverage.py	# 行重建列覆盖门（qmz4 §27）：INSERT 列清单 vs schema 对账＋源码突变自证（本机 <1s）
+fast	tests/test_admin_creds_masked_ops.py
+fast	tests/test_admin_privilege_web.py
+fast	tests/test_alert_channel_dispatch.py
+fast	tests/test_alert_frequency_caliber.py
+fast	tests/test_alerts_level_gate.py
+fast	tests/test_alerts_summary_level.py
+fast	tests/test_api_clock_business_tz.py	# /api/clock 的 tz_offset_min 必须恒为业务时区 +480（P0 2026-10-25）
+fast	tests/test_api_contract_coverage.py
+fast	tests/test_anchor_gate.py
+fast	tests/test_audit_anchor.py
+fast	tests/test_audit_anchor_field_source.py
+fast	tests/test_audit_anchor_hardening.py
+fast	tests/test_audit_anchor_selfcheck.py
+fast	tests/test_audit_chain.py
+fast	tests/test_audit_cleanup_visibility.py
+fast	tests/test_audit_hash_golden.py
+fast	tests/test_audit_read_api.py
+fast	tests/test_audit_status_block.py
+fast	tests/test_audit_transaction.py
+fast	tests/test_backup_db_path.py
+fast	tests/test_backup_db_presence_e2e.py	# 真跑 backup.sh：缺库必须失败且不产出归档（本机 2s）
+fast	tests/test_backup_docker_hardening.py	# docker 备份脚本旗标/口令/锚点/轮转（stub gpg，本机 2s）
+slow	tests/test_backup_docker_script.py	# 真子进程＋遍历：真跑 docker/backup-docker.sh 并扫 DATA_DIR（本机 6.7s）
+slow	tests/test_backup_e2e.py	# 真子进程：真跑 scripts/backup.sh＋真 gpg/tar 回环（本机 4.4s）
+fast	tests/test_backup_flag_parsing.py
+fast	tests/test_backup_hardening.py	# backup.sh 回环/优先级/状态件（stub gpg，本机 9s）
+slow	tests/test_backup_lock_e2e.py	# 真双进程＋真等待 2s×2：并行第二跑必须明确失败（本机 14s）
+fast	tests/test_backup_require_encrypt.py
+fast	tests/test_backup_sentinel.py
+slow	tests/test_breaker.py	# 真等待：4 条用例各等一次真实 5s 超时（本机 31.1s）
+fast	tests/test_builtin_admin_sid.py
+fast	tests/test_business_day_source_gate.py	# 业务日事实源静态门：测试不得用宿主/浏览器钟取日（P0 2026-10-25）
+fast	tests/test_calendar_state_visibility.py
+fast	tests/test_capacity_audit_scope.py
+fast	tests/test_capacity_limits.py
+fast	tests/test_capacity_of.py
+fast	tests/test_child_env_degrade_loud.py
+fast	tests/test_ci_dependency_audit_gate.py
+fast	tests/test_claim_dispatch_elbow_e2e.py
+fast	tests/test_claim_write_path_single_source.py
+fast	tests/test_clock_single_source_gate.py	# 产品代码时间门：clock.py 之外不得取宿主钟（ont ① 2026-10-25）
+slow	tests/test_claims_reap_e2e.py	# 真子进程：子进程领取后自杀，轮末收尸（本机 2.0s）
+fast	tests/test_cleanup_dotenv_parity_e2e.py	# unshare 挂载命名空间内跑清理 cron（本机 1.6s）
+fast	tests/test_cli_contract.py
+fast	tests/test_cli_contract_mf60.py
+fast	tests/test_cli_egress_reset.py
+fast	tests/test_cli_env_priority.py	# 子进程跑 state --dry-run：.env/进程环境优先级
+fast	tests/test_cli_exit_surface.py
+fast	tests/test_comment_symbol_ownership.py	# 纯 AST+正则扫生产树（工单 mr50 的形状门）
+fast	tests/test_concurrency_fidelity_gate.py
+fast	tests/test_config_input_caps.py
+fast	tests/test_config_loader.py
+fast	tests/test_config_registry_gate.py
+fast	tests/test_public_exposure_gate.py
+fast	tests/test_conftest_mail_guard.py
+fast	tests/test_conftest_umask_guard.py
+fast	tests/test_connection_pool_declared.py
+fast	tests/test_constraint_registry_gate.py	# 读 docs/dev/constraints.tsv 并真跑四个检查器
+fast	tests/test_container_scheduler.py
+fast	tests/test_count_only.py
+fast	tests/test_crash_semantics.py
+fast	tests/test_creds_write_accounting.py
+fast	tests/test_cron_provenance_paths.py	# 真跑 cron 来源门：/tmp 与相对路径判红（本机 3s）
+fast	tests/test_cron_time_equivalence.py
+slow	tests/test_cross_process_file_lock_e2e.py	# 真子进程争用：3 个独立进程同刻抢同一把文件锁（本机 5.6s）
+fast	tests/test_csp_header_contract.py
+fast	tests/test_dashboard_stats_caliber_js.py
+fast	tests/test_db_init_selfheal.py
+fast	tests/test_db_integrity.py
+fast	tests/test_db_migrations.py
+fast	tests/test_db_owner_constraint.py
+fast	tests/test_delay_ack_frontend.py
+fast	tests/test_delete_timeline_consistency.py
+fast	tests/test_demo_data_guard.py
+fast	tests/test_deploy_deps_sync.py
+fast	tests/test_deploy_entry_imports.py
+fast	tests/test_deploy_gate_skip_verdict.py	# 夹具副本跑闸门摘要：SKIP 计入结论（本机 3s）
+fast	tests/test_deploy_gate_wiring.py
+fast	tests/test_deploy_paths_and_restore_verdict.py
+fast	tests/test_deploy_prod_artifacts.py
+fast	tests/test_deploy_parameterization_gate.py	# 只读文本+git 名册：六载体无字面量、渲染等值与突变自证
+fast	tests/test_dev_verify_entry.py
+fast	tests/test_device_autofill_api.py
+fast	tests/test_device_identification.py
+fast	tests/test_device_registry_methods.py
+fast	tests/test_doc_reference_gate.py
+fast	tests/test_docker_image_contents.py
+fast	tests/test_docker_image_inputs_gate.py
+fast	tests/test_drill_mutate_exit_gate.py	# 纯判定路径：--mutate 不得豁免 i1/i2（桩替换 run_drill）
+slow	tests/test_drill_redline_e2e.py	# 真子进程：逐个真跑 scripts/drill-container.sh（本机 10.9s）
+fast	tests/test_dupcheck_oracle.py
+fast	tests/test_edit_credential_probe.py
+fast	tests/test_effective_window.py
+fast	tests/test_egress_and_executors_api.py
+fast	tests/test_egress_bucket_key.py
+fast	tests/test_egress_budget_split_e2e.py
+fast	tests/test_egress_direct_applied.py
+fast	tests/test_egress_rate_domain_single_source.py
+fast	tests/test_elbow_predicate.py
+fast	tests/test_elbow_shadow.py
+fast	tests/test_email_domain_review.py
+fast	tests/test_emit_ledger.py
+fast	tests/test_env_export_line_divergence.py
+fast	tests/test_env_fail_loud.py
+fast	tests/test_env_file_precedence.py
+fast	tests/test_env_key_line_model.py
+fast	tests/test_env_line_break_frontend.py
+fast	tests/test_env_line_break_injection.py
+fast	tests/test_env_line_model_unified.py
+fast	tests/test_env_mailer_tls.py
+fast	tests/test_env_parse_cache_and_has_key_loop.py
+fast	tests/test_env_write_transient_failure.py
+fast	tests/test_env_writers_take_lock.py
+fast	tests/test_executor_health_card.py
+fast	tests/test_executor_manifest.py
+fast	tests/test_executor_v3.py
+fast	tests/test_executor_write_guard.py
+fast	tests/test_exit_code_table_gate.py
+fast	tests/test_exit_surface_generation.py
+fast	tests/test_exit_surface_repr_mail.py
+fast	tests/test_fake_upstream_fault_knobs_gate.py
+fast	tests/test_fallback_cron_cwd_e2e.py	# 极简环境从 $HOME 起兜底脚本，桩入口留痕（本机 1.5s）
+fast	tests/test_fallback_elbow_discrimination_e2e.py
+fast	tests/test_fallback_event_yield.py
+fast	tests/test_fallback_gates.py
+fast	tests/test_fallback_log_noise.py
+fast	tests/test_fallback_scan_yield.py
+fast	tests/test_file_lock_no_network.py
+fast	tests/test_forwarded_trust_forms.py
+fast	tests/test_frontend_paging_wiring.py
+fast	tests/test_frozen_carrier_usage_gate.py
+fast	tests/test_gate_empty_input_red.py	# 空输入/零 token 的门必须非 0（本机 2s）
+fast	tests/test_gate_lane_roster.py
+fast	tests/test_gate_manifest_sync.py
+fast	tests/test_gate_narrowing_e2e.py
+fast	tests/test_generated_artifacts_gate.py	# 子进程跑 --check：字体打标与 Lucide 精灵图
+fast	tests/test_geo_sampling.py
+fast	tests/test_global_pause.py
+slow	tests/test_global_pause_chain_e2e.py	# 真子进程：真跑 run.sh 全链引擎（本机 4.9s）
+fast	tests/test_health_report_schedule_e2e.py
+fast	tests/test_host_exit_semantics.py
+fast	tests/test_hrw.py
+fast	tests/test_import_linter_gate.py
+fast	tests/test_infra_layer.py
+fast	tests/test_install_log_dir_e2e.py	# unshare 命名空间内跑 install.sh + cron 行（本机 2s）
+fast	tests/test_json_import_fail_closed.py
+fast	tests/test_key_sources_startup_assert.py
+fast	tests/test_ledger_check.py
+fast	tests/test_list_pagination.py
+slow	tests/test_live_claim_cross_process_contention_e2e.py	# 真子进程争用：每用例起 3 个独立进程，全部就绪后统一发令抢同一行（本树单文件 5.8s；2026-10-20 实测）
+fast	tests/test_locks.py
+fast	tests/test_log_masking_credentials.py
+fast	tests/test_log_masking_entry_mounts.py
+fast	tests/test_log_masking_formatter.py
+fast	tests/test_login_e2e_mock.py
+fast	tests/test_login_protocol_shape.py
+fast	tests/test_login_session_single_point.py	# AST 判据：签到域请求头切换只有一个实现点（vq97）
+fast	tests/test_logs_by_date.py
+fast	tests/test_logs_export_masking.py
+fast	tests/test_logs_level_filter.py
+fast	tests/test_logs_pagination.py
+fast	tests/test_m9bi_display_reads_ledger.py
+fast	tests/test_mail_layout.py
+fast	tests/test_mail_notify.py
+fast	tests/test_mail_outside_file_lock.py
+fast	tests/test_mail_send_deadline.py
+fast	tests/test_mail_send_never_raises.py
+fast	tests/test_mail_smtp_connect_retry_e2e.py
+fast	tests/test_mail_smtp_target.py
+fast	tests/test_mailer.py
+fast	tests/test_maintenance_readonly.py
+fast	tests/test_manual_paused_spawn_filter.py
+fast	tests/test_manual_sign_reporting.py
+fast	tests/test_masking_phone_contract.py
+fast	tests/test_masking_ssrf_gaps.py
+fast	tests/test_masking_tokens.py
+fast	tests/test_masking_tree_parity.py
+fast	tests/test_migration_compat.py
+slow	tests/test_migrations_fail_closed.py	# 真子进程：真起子进程验迁移拒启/kill 重跑收敛（本机 3.0s）
+fast	tests/test_migrations_schema_drift.py
+fast	tests/test_migrations_v18.py
+fast	tests/test_migrations_v19.py
+fast	tests/test_migrations_v20.py
+fast	tests/test_migrations_v25.py	# v25 补列：24→25 升级保数据＋幂等＋产物登记（本机 <1s）
+fast	tests/test_module_date_constant_gate.py
+slow	tests/test_multi_executor_drill_e2e.py	# 真进程树＋真登录：慢集专轨本就串行独占核（与 serial 轨同性质），移到并行慢集轨后不再占 verify 关键路径（本机 66.1s）
+fast	tests/test_multi_executor_engine.py
+fast	tests/test_multi_task.py
+fast	tests/test_mypy_type_gate.py
+fast	tests/test_naming_gate.py
+fast	tests/test_no_literal_date_in_fixtures.py
+fast	tests/test_no_position.py
+fast	tests/test_notify_ledger.py
+fast	tests/test_notify_p05_routes.py
+fast	tests/test_notify_throttle.py
+fast	tests/test_notify_webhook.py
+slow	tests/test_only_single_process.py	# 真进程组：起真进程树并 terminate 整组（本机 10.9s）
+fast	tests/test_pagination_contract_gate.py
+fast	tests/test_panel_false_signals.py
+fast	tests/test_path_env_priority_single_source.py
+fast	tests/test_path_env_read_gate.py
+fast	tests/test_path_single_definition.py
+slow	tests/test_pause_flag_truthiness_e2e.py	# 真子进程：真跑 run.sh/fallback/probe 三份 bash（本机 1.5s）
+fast	tests/test_planner.py
+fast	tests/test_pr_template_gate.py
+fast	tests/test_precheck_scale_by_k_e2e.py
+fast	tests/test_probe.py
+fast	tests/test_probe_egress_proxy.py
+fast	tests/test_probe_egress_rate.py
+fast	tests/test_progress_events_e2e.py
+fast	tests/test_protocol_fake_relocation.py
+fast	tests/test_protocol_masking.py
+fast	tests/test_protocol_yiban_relocation.py
+fast	tests/test_provenance_guard.py
+fast	tests/test_public_example_key_blocked.py
+fast	tests/test_purge_guard.py
+fast	tests/test_pw_gate_tiers.py
+fast	tests/test_queue_api_authz.py
+fast	tests/test_queue_api_recent_window.py
+fast	tests/test_queue_failclosed.py
+fast	tests/test_rate_limit_tiers.py
+fast	tests/test_readme_accounts_key_e2e.py	# README 账号密钥块：静态路径/目标 + 沙箱执行后 0640 root:yiban 且内容与 data/.env 一致
+fast	tests/test_readme_deploy_selfsufficiency.py
+fast	tests/test_reclaim_fallback_lock_e2e.py	# 工单 uob1 X2：两个真子进程（A 持兜底锁在飞、B 走重签）
+fast	tests/test_register_admin_email_indist.py
+fast	tests/test_registration_pause.py
+fast	tests/test_rekey_key_source.py
+fast	tests/test_release_gate_scripts.py	# 读文档 + git ls-files + bash -n（工单 fdfn 的引用门）
+fast	tests/test_release_version_source.py
+fast	tests/test_repo_structure_gate.py	# 顶层条目白名单（跟踪集的顶层形状）
+fast	tests/test_resolve_path_bypass_collapse.py
+fast	tests/test_result_vocab_home.py
+fast	tests/test_retry_window_day_boundary.py
+fast	tests/test_review_bypass_and_fake_success.py
+fast	tests/test_review_flow.py
+fast	tests/test_review_refresh_cadence_single_source.py
+fast	tests/test_root_artifacts.py	# 仓库根 glob（128-P0-B 的 NoRootArtifacts 门）
+fast	tests/test_ruff_config_guard.py
+fast	tests/test_run_entry_hardening.py	# 探针/兜底/run.sh 收尾标记（stub python，本机 4s）
+fast	tests/test_run_events_inspection.py
+fast	tests/test_run_lock_fail_closed.py
+fast	tests/test_run_sh_logging.py
+fast	tests/test_run_sh_stderr_timestamps.py
+fast	tests/test_run_sh_workers.py
+fast	tests/test_runsh_env_parse.py
+fast	tests/test_runtime_data_layout.py
+fast	tests/test_saturday_sign.py
+fast	tests/test_schedule_day_params.py
+fast	tests/test_schedule_edge_limit_js.py
+fast	tests/test_schedule_params_settings.py
+fast	tests/test_schedule_retry.py
+fast	tests/test_schedule_v2.py
+fast	tests/test_scheduler_env_probe.py
+fast	tests/test_scheduler_exception_surface.py
+fast	tests/test_scheduler_gate.py
+fast	tests/test_script_safety_guards.py	# 四个运维脚本的破坏性动作守卫（子进程跑脚本，秒级）
+fast	tests/test_scripts_gate_hardening.py	# 拉取/闸门脚本退出码与 cron 来源门（stub ssh/git，本机 2s）
+slow	tests/test_second_round_rc_contract.py	# 真子进程：真跑 run.sh＋真监督进程（本机 2.8s）
+fast	tests/test_secret_key_strict_read.py
+fast	tests/test_sentinel_db_readonly.py
+fast	tests/test_session.py
+fast	tests/test_settings_copy_truthful.py	# 只读入库文本：六处权限文案不得再宣称「要口令」
+fast	tests/test_settings_tiers_frontend_parity.py
+fast	tests/test_settlement_status_ownership.py
+fast	tests/test_shared_facts_gate.py
+fast	tests/test_shell_chrome_shard.py
+fast	tests/test_sign_dist_default_parity.py
+fast	tests/test_sign_events.py
+fast	tests/test_sign_position_state.py
+fast	tests/test_sign_round_guards.py
+fast	tests/test_sign_touchpoint_singleton.py
+fast	tests/test_skip_visibility_gate.py
+fast	tests/test_slot_geometry.py
+fast	tests/test_smtp_identity_frontend.py
+fast	tests/test_sse_default_parity.py
+fast	tests/test_state_file_writes.py
+fast	tests/test_state_gc.py
+fast	tests/test_state_helpers_hardening.py	# sched-run/slot kind/清理不可读目录（本机 1.5s）
+fast	tests/test_state_purge_guard.py
+fast	tests/test_state_rosters_mutual.py
+fast	tests/test_state_write_batching.py
+fast	tests/test_static_routes.py
+fast	tests/test_status_sets.py
+fast	tests/test_store_accounts_hardening.py
+fast	tests/test_store_boundary.py
+fast	tests/test_store_cleanup_accounts.py
+fast	tests/test_store_events_quantile.py
+fast	tests/test_store_queue.py
+fast	tests/test_store_users_hard_purge.py
+fast	tests/test_store_verify_jobs_purge.py
+fast	tests/test_stream_api.py
+fast	tests/test_subpath_deploy.py
+fast	tests/test_suite_cwd_isolation_gate.py
+fast	tests/test_supervisor_recursion_guard.py
+fast	tests/test_switch_password_gate.py
+fast	tests/test_time_field_norm.py
+fast	tests/test_time_prefs.py
+fast	tests/test_token_bucket.py
+fast	tests/test_truncation_literal_gate.py
+fast	tests/test_unreached_summary_bucket.py
+fast	tests/test_url_userinfo_masking.py
+fast	tests/test_user_deregistration_db.py
+fast	tests/test_user_deregistration_web.py
+fast	tests/test_user_soft_delete.py
+fast	tests/test_users_exit_surface.py
+fast	tests/test_users_exit_surface_frontend.py
+fast	tests/test_v3_same_day_requeue.py
+fast	tests/test_verify_job_watchdog_scope.py
+serial	tests/test_verify_jobs.py	# 异步校验任务用真实墙钟等终态，且该文件自己 docstring 记着「上一个文件的校验线程还在飞」的泄漏形状。2026-10-26 在快集里连续两次红：job 停在 running、席位 1/2 未归还。移串行轨独占核；全量仍跑它。根因另单。
+fast	tests/test_visual_seed_generation.py	# 子进程真跑 seed()：随机钥、状态覆盖、导入失败不静默
+fast	tests/test_vue_build_reproducible.py
+fast	tests/test_waf_failure_tier.py
+fast	tests/test_wall_direct_reads.py
+fast	tests/test_web_accounts_page.py
+fast	tests/test_web_api_security.py
+fast	tests/test_web_audit_page.py
+fast	tests/test_web_auth_security.py
+fast	tests/test_web_boundary.py
+fast	tests/test_web_calendar_parity.py
+fast	tests/test_web_css_contrast.py
+fast	tests/test_web_dashboard_page.py
+fast	tests/test_web_file_lock_slow_ops.py
+fast	tests/test_web_font_closure.py
+fast	tests/test_web_hardening_batch.py
+fast	tests/test_web_js_modules.py
+fast	tests/test_web_login_page.py
+fast	tests/test_web_logs_page.py
+fast	tests/test_web_mask_email_parity.py
+fast	tests/test_web_native_pickers.py
+fast	tests/test_web_page_consistency.py
+fast	tests/test_web_queue_page.py
+serial	tests/test_web_rate_limit_concurrency_e2e.py	# 真起 gunicorn 服务并打并发请求：串行轨独占核（原在快集，移此保持 serial 道非空且给并发面独占核）（本机 1.2s）
+fast	tests/test_web_render_golden.py
+fast	tests/test_web_security_gates.py
+fast	tests/test_web_settings_page.py
+fast	tests/test_web_setup_bootstrap.py
+fast	tests/test_web_style_tokens.py
+fast	tests/test_web_users_page.py
+fast	tests/test_web_viewport_meta.py
+fast	tests/test_web_vue_pilot.py
+fast	tests/test_web_vue_sources_tracked.py
+fast	tests/test_webui_inline_context.py
+fast	tests/test_weekend_parity.py
+fast	tests/test_window_alert_reset.py
+fast	tests/test_window_edge_clamp.py
+fast	tests/test_window_edge_single_source.py
+fast	tests/test_wire_dump.py
+fast	tests/test_work_accounts_selection.py
+fast	tests/test_workers_domain_single_source.py
+fast	tests/test_yiban_fallback_sh.py
+fast	tests/test_yiban_status_single_source.py
+fast	tests/test_zero_old_coordinates.py

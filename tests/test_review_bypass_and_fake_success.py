@@ -7,8 +7,8 @@
     ② `POST /api/my-accounts` 异步校验路径：配额已扣而 `_start_verify_job` 抛
     `VerifyGateBusy` 时，响应不得静默 `ok:true` 装作无事发生——如实给
     `status=verify_deferred` 并在 msg 交代"本次未排上在线校验"。
-对应实现：`yiban/store/accounts.py::replace_accounts`；
-    `web/routes/my.py::api_my_account_add` 的 VerifyGateBusy 分支。
+对应实现：`yiban/adapters/persistence/accounts.py::replace_accounts`；
+    `web/routes/my_api.py::api_my_account_add` 的 VerifyGateBusy 分支。
 关键断言：①含引擎选号面（`_load_accounts_from_file` 只跳 pending/rejected/deleted，
     pending 的行必须缺席）；②账号仍入库待审核（拒绝的是"假装在验证"，不是提交本身）。
 依赖：纯本地 SQLite + Flask test client，patch 掉 `_verify_queue_full`/
@@ -22,6 +22,10 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+
+from werkzeug.security import generate_password_hash
+
+from web.services import verify_queue as _verify_queue
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -128,15 +132,15 @@ class VerifyGateBusyHonestTest(unittest.TestCase):
             if os.path.exists(p):
                 os.remove(p)
         db.init_db(self.db_file4a, env_file=self.env_file4a)
-        db.create_user(USER_EMAIL, self.webapp.generate_password_hash(GOODPW))
+        db.create_user(USER_EMAIL, generate_password_hash(GOODPW))
 
     def test_gate_busy_response_is_honest(self):
         c = self.webapp.create_app().test_client()
         r = c.post("/api/login", json={"username": USER_EMAIL, "password": GOODPW})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         token = c.get("/api/me").get_json()["csrf_token"]
-        with mock.patch.object(self.webapp, "_verify_queue_full", return_value=False), \
-             mock.patch.object(self.webapp, "_start_verify_job",
+        with mock.patch.object(_verify_queue, "_verify_queue_full", return_value=False), \
+             mock.patch.object(_verify_queue, "_start_verify_job",
                                side_effect=self.webapp.VerifyGateBusy()):
             r = c.post("/api/my-accounts", json={
                 "name": "验证竞态", "phone": VERIFY_PHONE, "password": "pw12345678",

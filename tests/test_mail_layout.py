@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""邮件排版层 `yiban/mail/layout.py` 的专属测试。
+"""邮件排版层 `yiban/adapters/notifier/mail/layout.py` 的专属测试。
 
 标签：H · 通知：邮件与推送
 覆盖：主动断行按**显示宽度**（全角算 2 列）在标点边界切；纯文本不靠等宽列对齐、
     结构只靠缩进与项目符；HTML 出口对用户可控字段转义；推送变体裁剪条目与字段值。
-对应实现：`yiban/mail/layout.py`。
+对应实现：`yiban/adapters/notifier/mail/layout.py`。
 关键断言：不把英文词与括号补充劈成两半；**裁剪必须如实标注被裁掉多少**，不静默丢——
     发信与推送的测试只验"正文里有没有某句话"，排版本身的这四条纪律只有本文件守。
 依赖：纯字符串断言（直接 import layout），无 SMTP、无文件读写、无网络。
@@ -17,7 +17,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE not in sys.path:
     sys.path.insert(0, BASE)
 
-from yiban.mail import layout  # noqa: E402
+from yiban.adapters.notifier.mail import layout  # noqa: E402
 
 
 class DisplayWidthTest(unittest.TestCase):
@@ -231,7 +231,7 @@ class ChannelEntryPointsTest(unittest.TestCase):
 
     def test_default_timestamp_is_beijing_time(self):
         """默认时间戳走 clock.ts()（北京时间），宿主时区为 UTC 时也不能写成 UTC 时刻。"""
-        from yiban import clock
+        from yiban.core import clock
         got = layout.Mail(summary="s").time
         self.assertRegex(got, r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
         self.assertLess(abs((clock.now() - __import__("datetime").datetime.strptime(
@@ -247,12 +247,12 @@ class ChannelEntryPointsTest(unittest.TestCase):
 class FoldLineBreakFamilyTest(unittest.TestCase):
     """MF-44 D10：`_fold` 此前只 split("\\n")，9 个换行族字符原样穿进正文可伪造行。
 
-    收口到全项目唯一的单行安全原语（`yiban.infra.env_io.escape_line_breaks`，与
+    收口到全项目唯一的单行安全原语（`yiban.adapters.config.env_io.escape_line_breaks`，与
     `.env` 写侧同一字符集）；`\\n` 保留为内容自身的换行语义。
     """
 
     def test_non_lf_breaks_become_visible_literals(self):
-        from yiban.infra.env_io import ENV_LINE_BREAK_CHARS
+        from yiban.adapters.config.env_io import ENV_LINE_BREAK_CHARS
         forged = "真行\u2028伪造A\u0085伪造B\u2029伪造C\x0b\x0c\x1c\x1d\x1e\x0d完"
         plain = layout.Mail(fields=[("用户", forged)]).to_plain()
         for ch in ENV_LINE_BREAK_CHARS - {"\n"}:

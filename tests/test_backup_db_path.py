@@ -5,11 +5,12 @@
 标签：J · 运维：部署/备份/发布
 覆盖：`scripts/backup.sh` 的库路径取值——① `.env` 里声明的 `YIBAN_DB_FILE` 必须真的
     被备份进归档（改前红：只按 `${APP_DIR}/${DB_FILE}` 拼，从不读 `.env`，归档里没有
-    现役数据库而脚本仍按 rc=0/6 收工）；② 进程环境已设该键时进程环境赢；
-    ③ 同一条输入，bash 选中的库与 Python 侧 `env_io.resolve_path` 解析出的库必须
-    是同一份文件（两侧各测一次）。
-对应实现：`scripts/backup.sh` 的 `env_get`（进程环境 → `${APP_DIR}/.env`）与
-    `yiban/infra/env_io.py:resolve_path`（进程环境 → .env → 默认值）。
+    现役数据库而脚本仍按 rc=0/6 收工）；② `.env` 已设该键时 `.env` 赢（M27：
+    `.env` 优先、进程环境只补缺）——备份与 run.sh 读同一份配置；③ 同一条输入，
+    bash 选中的库与 Python 侧 `env_io.parse_env_file`（run.sh 的同一口径）解析出的
+    库必须是同一份文件（两侧各测一次）。
+对应实现：`scripts/backup.sh` 的 `env_get`（`.env` 末写生效 → 进程环境补缺）与
+    `yiban/adapters/config/env_io.py:parse_env_file`（文件内后写覆盖先写）。
 关键断言：判据全部是**行为断言**——跑真脚本、解真归档、读归档里那份 sqlite 的表名、
     真跑一次 `--restore` 演练。唯一的源码断言是下面那条边界守卫，它钉的是"实现形态"
     而非行为，没有可观察的行为形状。
@@ -78,7 +79,11 @@ class BackupDbPathTest(unittest.TestCase):
         self.logs = os.path.join(self.tmp, "logs")
         for d in (self.app, self.backups, self.state, self.logs):
             os.makedirs(d)
-        self.env_file = os.path.join(self.app, ".env")
+        # .env 与库落在检出内的 data/（工单 ybg8）：运行数据与代码分离，检出根才能
+        # 属 root 且组/其他不可写（install.sh 的 M01 门）。
+        self.data_dir = os.path.join(self.app, "data")
+        os.makedirs(self.data_dir)
+        self.env_file = os.path.join(self.data_dir, ".env")
         self._write_env("")
         # 继承环境里与本轮无关的键全部摘除，保证"进程环境不设"是真的不设
         self.env = {k: v for k, v in os.environ.items()
@@ -93,7 +98,7 @@ class BackupDbPathTest(unittest.TestCase):
             "KEY_FILE": os.path.join(self.tmp, "no-accounts-key"),
             "BACKUP_PLAINTEXT": "1",
         })
-        self.db_default = os.path.join(self.app, "yiban.db")
+        self.db_default = os.path.join(self.data_dir, "yiban.db")
         self.db_from_env = os.path.join(self.tmp, "data", "custom.db")
         self.db_from_proc = os.path.join(self.tmp, "procenv", "proc.db")
         _make_db(self.db_default, TBL_DEFAULT)
@@ -156,11 +161,14 @@ class BackupDbPathTest(unittest.TestCase):
         return got
 
     def _python_side_choice(self):
-        """Python 侧唯一解析器对同一输入的答案（子进程，与 web/引擎同形态）。"""
-        code = ("import sys; sys.path.insert(0, sys.argv[1]);"
-                "from yiban.infra import env_io;"
-                "print(env_io.resolve_path('YIBAN_DB_FILE', 'yiban.db'))")
-        r = subprocess.run([sys.executable, "-c", code, BASE], capture_output=True,
+        """Python 侧 run.sh 同口径（`.env` 优先、进程环境补缺）对同一输入的答案。"""
+        code = ("import os, sys; sys.path.insert(0, sys.argv[2]);"
+                "from yiban.adapters.config import env_io;"
+                "v = env_io.parse_env_file(os.path.join(sys.argv[1], 'data', '.env'))"
+                ".get('YIBAN_DB_FILE', '');"
+                "v = v or os.environ.get('YIBAN_DB_FILE', '');"
+                "print(v or 'data/yiban.db')")
+        r = subprocess.run([sys.executable, "-c", code, self.app, BASE], capture_output=True,
                            env=self.env, cwd=self.app, timeout=120, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         return os.path.abspath(r.stdout.strip())
@@ -193,15 +201,18 @@ class BackupDbPathTest(unittest.TestCase):
                          "恢复核对段找不到包内的库——归档内落点与核对落点不同名：" + drill)
 
     # ---------------- 判据 ②③：两侧同输入同答案 ----------------
-    def test_process_env_beats_dotenv_on_both_sides(self):
-        """进程环境已设该键 ⇒ 进程环境赢；bash 与 Python 对同一输入同答案。"""
+    def test_dotenv_beats_process_env_on_both_sides(self):
+        """`.env` 已设该键 ⇒ `.env` 赢（M27）；bash 与 Python 对同一输入同答案。"""
         self._write_env(f"YIBAN_DB_FILE={self.db_from_env}\n")
         self.env["YIBAN_DB_FILE"] = self.db_from_proc
         py_choice = self._python_side_choice()
         got, out, _ = self._archived_db()
-        self.assertEqual([TBL_FROM_PROC], got.get(os.path.basename(self.db_from_proc)),
-                         f"进程环境应压过 .env（归档里是 {got}）：{out}")
-        self.assertEqual(py_choice, os.path.abspath(self.db_from_proc),
+        self.assertEqual([TBL_FROM_ENV], got.get(os.path.basename(self.db_from_env)),
+                         f"`.env` 应压过进程环境（归档里是 {got}）：{out}")
+        self.assertNotIn(TBL_FROM_PROC,
+                         [t for tbls in got.values() for t in tbls],
+                         f"进程环境压过了 .env（M27 口径分叉）：{got}")
+        self.assertEqual(py_choice, os.path.abspath(self.db_from_env),
                          "bash 侧与 Python 侧选中的库不是同一份——优先级口径分叉")
 
     def test_dotenv_value_is_the_choice_on_both_sides(self):
@@ -222,17 +233,16 @@ class BackupDbPathTest(unittest.TestCase):
                          f"未声明时归档里应是且仅是默认库（归档里是 {got}）：{out}")
 
     # ---------------- 边界守卫（AGENTS §15） ----------------
-    def test_dotenv_reader_stays_single(self):
-        """库路径必须复用本文件已有的 `env_get`：全文件只许一套 `.env` 解析。"""
+
+    def test_env_file_path_is_single_definition(self):
+        """`.env` 的绝对路径只许定义一次：写 N 遍就是"同一事实多处定义"。"""
         with io.open(SCRIPT, encoding="utf-8") as f:
             src = f.read()
-        self.assertIn("env_get YIBAN_DB_FILE", src,
-                      "库路径没走本文件已有的 env_get 双源口径")
-        readers = [line for line in src.splitlines()
-                   if "APP_DIR}/.env" in line and "sed -n" in line]
-        self.assertEqual(1, len(readers),
-                         f"backup.sh 里按行解析 .env 的实现应只有 env_get 一处"
-                         f"（实测 {len(readers)} 处）——再添一套就是根没找到")
+        assigns = [line for line in src.splitlines()
+                   if line.startswith("ENV_FILE=")]
+        self.assertEqual(1, len(assigns), f"ENV_FILE 应恰好定义一次：{assigns}")
+        self.assertEqual(1, src.count("${APP_DIR}/data/.env"),
+                         "其余位置必须引用 ${ENV_FILE}，不得再写一次绝对路径")
 
 
 if __name__ == "__main__":

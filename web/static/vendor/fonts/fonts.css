@@ -10,7 +10,7 @@
  *
  * 版本化（防止重切片后旧缓存 404，勿退化）：
  *   · 子 css 由外壳以 ?v={{web_version}}（进程启动时间戳）版本化，每次发版 URL 变化；
- *   · 子 css 内的 woff2 分片由 scripts/stamp_font_versions.py 打内容短哈希 ?v=<sha256 前 8 位>，
+ *   · 子 css 内的 woff2 分片由 tools/stamp_font_versions.py 打内容短哈希 ?v=<sha256 前 8 位>，
  *     内容不变则 URL 不变（30 天强缓存继续生效），内容/文件名一变 URL 即变。
  *   两级共同保证：重切片后旧访客不会按缓存的旧子 css 引用已删除的旧分片。
  *
@@ -20,6 +20,6 @@
  *   notosanssc/     Noto Sans SC 400/700，unicode-range 分片（动态中文内容）
  * 各分片 unicode-range 保留，浏览器按页面实际码点按需加载。
  *
- * 本文件保留为目录说明与 scripts/build_cjk_font_slices.py 的 scope 哨兵（存在即对整个
+ * 本文件保留为目录说明与 tools/build_cjk_font_slices.py 的 scope 哨兵（存在即对整个
  * fonts 目录打标），不再被任何模板引用。
  */

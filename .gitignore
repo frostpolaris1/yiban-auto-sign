@@ -28,12 +28,13 @@ config.local.py
 *.local
 # 账号配置文件（含密码，严禁入库）
 accounts.json
-# 迁移/升级产出的按日备份（yiban/store/migrations.py 的 _rename_backup；M39）
+# 迁移/升级产出的按日备份（yiban/adapters/persistence/migrations.py 的 _rename_backup；M39）
 accounts.json.bak-*
 users.json.bak-*
-# 通知额度/限速运行时状态（web 进程按 cwd 生成，严禁入库）
-notify-ledger.json
-notify-throttle.json
+# 通知额度/限速运行时状态（现落 YIBAN_STATE_DIR；历史版本曾按 cwd 落在检出根，
+# 保留忽略以防回潮）。带 * 覆盖 .lock 与 .corrupt-<ts>-<pid> 两种伴生件。
+notify-ledger.json*
+notify-throttle.json*
 *.local.lock
 
 # SQLite 数据库（含账号密文/用户哈希/审计日志，严禁入库）
@@ -55,7 +56,15 @@ logs/
 # 只有构建产物、没有源码（新检出无法 npm run build，test_logs_by_date 引用的
 # date-guard.js 也不存在）。负向规则必须紧跟在排除规则之后。
 !frontend/src/logs/
+# 2026-10-21 补：ocr 审查工具不展开「负向目录规则」，只认 `!目录/**`。
+# 缺此行的后果：审查清单漏 13 个 logs 源码文件，审查假绿。
+# 该行与上一行并存；git 本身两行都认，ocr 只认这一行。
+!frontend/src/logs/**
 data/
+# 裸机演练（scripts/drill-baremetal.sh）在演练树根生成的运行件
+/.venv-bare/
+/bare-data/
+/bare-restore/
 
 # Docker 部署本地目录（含加密密钥/数据库/证书私钥，严禁入库）
 certs/
@@ -83,6 +92,10 @@ demo/
 # 备份目录（防历史敏感文件被误提交）
 backup-*/
 .backup-*/
+# 2026-10-20 P13-01：无尾斜杠形态同时覆盖文件与目录——README 教部署者在仓库根创建
+# `backup-passphrase`（解密全部历史备份的口令），旧规则只写了目录形式，文件形态漏网：
+# 它会以 untracked 出现在 `git status` 里，一次 `git add -A` 即泄密。
+backup-*
 # 2026-08-20 对抗性审查修复：复数形式 backups/ 此前漏网（内含 deploy-local
 # 敏感文档副本与源码快照，一次 git add -A 即泄露）
 backups/
@@ -111,11 +124,32 @@ docs/*
 !docs/dev/
 docs/dev/*
 !docs/dev/README.md
+!docs/dev/api-contract.md
 !docs/dev/api-executors.md
 !docs/dev/cli.md
 !docs/dev/dev-verify.md
+!docs/dev/constraints.tsv
+!docs/dev/acceptance-criteria.md
+!docs/dev/umask-decision.md
 !docs/dev/release-gate.md
 !docs/dev/scheduler-v3.md
+!docs/dev/architecture-target.md
+!docs/dev/target-tree.md
+!docs/dev/backup-restore.md
+!docs/dev/implementation-notes.md
+!docs/dev/troubleshooting.md
+# 双线交接文档（2026-10-25）：旧系统判据交给实验线，契约类入库
+!docs/dev/experimental-line/
+docs/dev/experimental-line/*
+!docs/dev/experimental-line/legacy-criteria-handoff.md
+# 用户指南与法务声明（2026-10-26 README 拆分）：README 拆分后的正文落点，读者面契约类。
+# 同样先放行目录，再排除其余内容，最后逐件放行 .md（git 的目录包含语义）。
+!docs/guides/
+docs/guides/*
+!docs/guides/*.md
+!docs/legal/
+docs/legal/*
+!docs/legal/*.md
 .superpowers/
 
 # ZCode 工具目录
@@ -123,6 +157,7 @@ docs/dev/*
 .jspace/
 .ruff_cache/
 .pytest_cache/
+.mypy_cache/
 
 # 内部 AI 工作记忆（含服务器 IP/部署细节，严禁入库，2026-08-15 对抗性审查 F1）
 .workbuddy/
@@ -143,6 +178,10 @@ web/static/vendor/logo.png
 .claude/
 agent/
 skills-lock.json
+# 审查工具（mimosa）在本仓库落下的运行台账：finding-ledger/v1、history、hook-state、
+# hook-status、reports。2026-10-11 一次批量审查的遗留，与运行时/部署/文档都无关，
+# 不入版本控制（原样保留在本地，不删——工具自身可能还要读它）。
+.mimosa/
 web/static/vendor/favicon.png
 # 页脚备案图标（备案号对应官方图标，部署者自放；缺失时页脚 onerror 隐藏，不入库）
 web/static/vendor/gongan-beian.png
@@ -150,13 +189,15 @@ web/static/vendor/gongan-beian.png
 # 运营者本地完整版合规文档（不入库，仅自己的服务器用；仓库内相应文件为只含注释的空模板）
 deploy-local/
 
-# 根目录 agent 记忆入口（2026-08-16 归并：AI-HANDOFF / TODO / .workbuddy 记忆 / WORKFLOW / CONTRIBUTING，非开源）
+# 根目录 agent 记忆入口（2026-08-16 归并：AI-HANDOFF / TODO / .workbuddy 记忆 / WORKFLOW，非开源）
 memory.md
 AGENTS.md
 
 # 协作备用文件（未启用；等协作场景再决定入库，2026-08-16 补忽略）
 WORKFLOW.md
-CONTRIBUTING.md
+# 2026-10-26：CONTRIBUTING.md 解除忽略并入库。理由：贡献指南必须入库才对
+# 外部贡献者可见；内容只含流程、边界与工单清单，无内部信息。守卫见
+# tests/test_repo_structure_gate.py 的 ALLOWED_TOP（登记项消失即红）。
 # 2026-10-05 n4c 第一刀：.github/pull_request_template.md **移出**忽略清单。
 # 理由：模板必须入库才生效（GitHub 从仓库里的模板文件生成 PR 正文），而 develop
 # 分支保护要求所有变更经 PR——自检清单（e2e 先行 / 门禁 / changelog）靠它承载。
@@ -192,6 +233,9 @@ memory/
 HANDOFF*.md
 # 工具运行期在本仓库内创建的隔离 worktree 与任务输出目录，与项目内容无关
 .qoder/
+# 子代理/演练的临时产物根目录（AGENTS.md 第七节：与代码无关的内容一律存 work/）。
+# 通用名、不泄密；显式忽略以保证**新克隆**也忽略（不依赖各机器的 .git/info/exclude）。
+/work/
 
 # 本地 AI/技能工具产物（skills 工具生成，非项目产物，2026-09-19 补忽略）
 .agents/
@@ -203,3 +247,6 @@ skills-lock.json
 
 # 会话临时产物（pytest tmp_path / 截图 / visual-seed 演示数据），纪律见 .tmp/README.md；2026-09-30 起 C 盘禁写
 .tmp/
+
+# DSH 文件工具的更新锁（工具产物，非代码）
+.dsh-ops-update-*.lock

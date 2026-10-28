@@ -1,0 +1,206 @@
+# -*- coding: utf-8 -*-
+# SPDX-License-Identifier: AGPL-3.0-only
+"""连接层地基：SQLite 连接单例、进程内互斥锁、库/密钥来源路径。
+
+本模块是下列名字的**唯一定义点**（连接状态的真身在此；`yiban/adapters/persistence/db.py` 再导出这些
+名字，既有调用方与 `scripts/db.py` 兼容壳照旧用 `db.xxx`）：
+
+- `_conn`：模块级单例连接（`db.init_db` 建、调用方自行关闭后置空）
+- `_conn_lock`：进程内 RLock，所有读写串行化；定义后**永不重绑**
+- `_db_file` / `_env_file`：最近一次 `init_db(...)` 的库路径 / .env 路径
+- `DB_DEFAULT`：库路径默认值（按 `env_io.resolve_path` 解析：进程环境 → `.env` →
+  `env_io.DEFAULT_DB_FILE`，即 `<检出>/data/yiban.db`）
+- `get_conn()` / `is_initialized()` / `current_db_file()` / `pool_db_declared()`
+
+**为什么 `init_db` 不在这里**：真正的 `init_db` 定义在 `yiban/adapters/persistence/db.py`
+（建连与建表/迁移同属启动序列，还要与冻结的历史迁移函数共存）。故本模块对外只多一组**显式读写 API**（`current`/`set_conn`/`reset_conn`/
+`set_db_file`/`set_env_file`），由 `db.init_db` 逐分支调用；迁移异常路径用
+`reset_conn()` 清空单例（连接由调用方关闭），与正常路径共用同一套 API。
+
+**读写纪律**：`db` 层经本模块访问这几个量（`_connection._db_file` 等）；`db._conn` /
+`db._db_file` / `db._env_file` 的读取与**写入**都由 `yiban/adapters/persistence/db.py` 的模块级转发落到
+本模块（全仓 190+ 处测试收尾 `db._conn = None` 依赖这一点，否则它们只会写在一份陈旧
+副本上、真连接关不掉——详见 db.py 里 `__getattr__` 与 `_StateForwardingModule` 的说明）。
+"""
+import os
+import pathlib
+import sqlite3
+import threading
+
+from yiban.adapters.config import env_io
+
+# 模块级共享（web 通过环境变量注入路径后调用 init_db）
+# 默认值单点在 `env_io.DEFAULT_DB_FILE`（`data/yiban.db`，相对检出根）——库与 .env
+# 同住检出内的 `data/`，检出根因此可属 root 且组/其他不可写（install.sh 的 M01 门）。
+DB_DEFAULT = env_io.resolve_path("YIBAN_DB_FILE", env_io.DEFAULT_DB_FILE)
+
+_conn = None
+# RLock：所有读写操作统一串行化（SQLite 连接非线程安全，多线程并发裸 execute
+# 会触发 "cannot start a transaction" / InterfaceError misuse——2026-08-15 本地并发验证暴露）
+_conn_lock = threading.RLock()
+_db_file = DB_DEFAULT
+# .env 路径（加密密钥来源）：None = 未显式指定，由 _resolve_key_env_file 按
+# YIBAN_ENV_FILE → env_io.DEFAULT_ENV_FILE（`data/.env`，相对检出根）回落
+# （此时若回落值来自 cwd 且文件不存在，生成新密钥会被 _assert_key_source_certain
+# 拒绝，避免游离密钥）
+_env_file = None
+
+
+def current():
+    """当前连接；未初始化时为 None。**不触发**隐式初始化（与 is_initialized 同口径）。"""
+    return _conn
+
+
+def get_conn():
+    if _conn is None:
+        # 函数内延迟导入：依赖方向单向（db → connection），本模块只在确需初始化时
+        # 反向取一次 db.init_db。按**属性**取而不是模块级 from-import：既有的
+        # `mock.patch.object(db, "init_db", …)`（如 test_scheduler_gate 的 db_export
+        # 用例）必须在隐式初始化路径上仍然生效。
+        from yiban.adapters.persistence import db as _db
+        _db.init_db()
+    return _conn
+
+
+def is_initialized():
+    """db 层是否已显式初始化（不触发隐式 init_db）。
+
+    供 signin 判断会话缓存可用性：环境变量账号模式（CI 等）未初始化 db，
+    不启用缓存——避免 get_conn 隐式 init 在工作目录创建空库。
+    """
+    return _conn is not None
+
+
+def current_db_file():
+    """当前单例连接**实际**指向的库文件（`PRAGMA database_list` 的 main）；取不到 → ""。
+
+    与 `_db_file` 的分工：`_db_file` 是"最近一次 `init_db` 声明的路径"，而 `init_db`
+    在单例连接已存在时会刷新 `_db_file` 却直接复用旧连接——此时两者不一致。凡"必须
+    写进目标库"的调用（如清库留痕）都要按**实际连接**判定，否则审计会落到另一个库。
+    """
+    if _conn is None:
+        return ""
+    try:
+        for row in _conn.execute("PRAGMA database_list"):
+            if row[1] == "main":
+                return row[2] or ""
+    except sqlite3.Error:
+        return ""
+    return ""
+
+
+def set_conn(conn):
+    """登记单例连接（`db.init_db` 建连后立即调用，早于建表/迁移）。"""
+    global _conn
+    _conn = conn
+
+
+def reset_conn():
+    """清空单例连接（仅初始化失败路径；正常关闭连接由调用方负责）。"""
+    global _conn
+    _conn = None
+
+
+def set_db_file(path):
+    """刷新当前库路径（`init_db` 入口**无条件**调用，即使连接已存在）。"""
+    global _db_file
+    _db_file = path
+
+
+def set_env_file(path):
+    """刷新 .env 路径（`init_db` 入口**无条件**调用，即使连接已存在）。"""
+    global _env_file
+    _env_file = path
+
+
+def open_readonly(db_file, immutable=None):
+    """只读打开一个 SQLite 库（文件不存在 → None）；**不建库、不建表、不切 WAL**。
+
+    为什么需要独立于 `init_db` 的连接：`init_db` 会建库/建表/跑迁移/切 WAL——任何
+    自称"只读"的维护子命令（`config` / `db --status` / `db --integrity` / `version`）
+    都不该经它，否则"只读"承诺与代码行为相反（曾实测 `config` 在空目录当场建出
+    69632B 的伪库）。
+
+    URI 选择（同一份判定，调用方不再各写一套）：
+    - 库里没有 WAL 待读帧（无 `-shm`，且 `-wal` 不存在或为空）→ `mode=ro&immutable=1`：
+      SQLite 不会为只读打开创建 `-shm`/`-wal`，满足"只读命令跑完不留新文件"；
+    - 有 `-shm`（有进程正持有 WAL）或 `-wal` 非空（崩溃残留待恢复）→ `mode=ro`：
+      必须读 WAL 里的已提交帧，不能 immutable 跳过。
+
+    `immutable`：`None`（默认）按上面的静默判定自动选择；**传 `False` 强制 `mode=ro`**
+    ——取证类调用方（`scripts/audit_verify.py`）要的是"看得见并发写者与锁"：immutable
+    只读会绕过文件锁、忽略 WAL 里已提交但未合并的帧，把"库正被独占写"读成"一切正常"。
+    代价是 `mode=ro` 在 WAL 库上可能新建 `-shm`/`-wal`（SQLite 的读簿记，非数据改动）。
+    传 `True` 强制 immutable（调用方自担"读不到并发写"的责任）。
+
+    边界（**如实声明**）：`immutable=1` 只在库确实静默时才是安全快照。若库处于
+    rollback-journal 模式且有并发写者，immutable 只读可能读不到该写者已提交的改动，
+    也不会参与文件锁（锁库期间照旧读出旧快照）。本项目统一 WAL、只读运维面向静默库，
+    故自动档默认用它，风险低；取证类"必须见锁"的调用方显式传 `immutable=False`。
+
+    `mode=ro` 在个别平台/WAL 组合下仍可能打不开，此时退化为普通连接 + `PRAGMA
+    query_only=ON`（读得到、写不进），由 SQLite 自己拒绝任何写。
+    """
+    if not os.path.isfile(db_file):
+        return None
+    abs_path = os.path.abspath(db_file)
+    wal = abs_path + "-wal"
+    shm = abs_path + "-shm"
+    quiescent = not os.path.exists(shm) and not (os.path.exists(wal) and os.path.getsize(wal) > 0)
+    use_immutable = quiescent if immutable is None else bool(immutable)
+    uri = pathlib.Path(abs_path).as_uri() + ("?mode=ro&immutable=1" if use_immutable else "?mode=ro")
+    try:
+        conn = sqlite3.connect(uri, uri=True)
+    except sqlite3.Error:
+        conn = sqlite3.connect(db_file)
+        conn.execute("PRAGMA query_only=ON")
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+#: "部署是否声明了领取池库路径"的解析结果缓存：键 = (进程环境取值, .env 路径, .env 指纹)。
+#: 为什么要缓存：workers 的兜底轮询每 `_YIELD_POLL_SEC` 问一次，而解析要读 .env；
+#: 缓存使"同一条配置每次问一遍"变成一次。键必须在解析**之前**就能算出（工单
+#: ba-p02-07：旧实现先 resolve_path 再查缓存，注释宣称的收益没有兑现）。指纹取
+#: (mtime_ns, size, ino)，与 `env_io.parse_env_file` 的缓存失效口径同源——.env 改
+#: 路径后下一次即重算。只做 stat，不打开/解析文件。
+_pool_declared_cache = {}
+_POOL_DECLARED_CACHE_MAX = 8
+
+
+def _pool_declared_cache_key(env, env_file):
+    """`pool_db_declared` 的缓存键；全部为进程内数据 + 一次 stat，不读 .env 内容。"""
+    source = os.environ if env is None else env
+    raw = str(source.get("YIBAN_DB_FILE", "")).strip()
+    path = env_io.env_path() if env_file is None else env_file
+    try:
+        st = os.stat(path)
+        stamp = (st.st_mtime_ns, st.st_size, st.st_ino)
+    except OSError:
+        stamp = None
+    return (raw, str(path), stamp)
+
+
+def pool_db_declared(env=None, env_file=None):
+    """部署是否**声明**了领取池库路径（`YIBAN_DB_FILE` 在进程环境或 .env 里非空）。
+
+    执行侧要区分"部署未配库（纯状态文件形态，照旧放行）"与"配了库但当前不可用
+    （必须拒跑——放行等于让两个执行体同时登录同一账号）"。两种形态的现场都是
+    `is_initialized()` 为假，能分开它们的只有**部署声明的路径**这一条事实。
+
+    为什么判据不是别的：
+    - "磁盘上有没有库文件"会被开发机/旧部署留在工作目录里的 `yiban.db` 误判成池部署
+      （默认路径是检出根下的 `data/yiban.db`），把纯状态文件部署打成拒跑；
+    - "本进程曾连上过库"分不开"连接被人为关闭"与"库真的不可用"，而后者才需要拒跑。
+
+    只做一次只读解析（**不传 default**，故未声明时得到空串），不建连接、不建库、不建表。
+    缓存键先于解析计算，命中时不触碰 .env（见 `_pool_declared_cache_key`）。
+    """
+    key = _pool_declared_cache_key(env, env_file)
+    cached = _pool_declared_cache.get(key)
+    if cached is None:
+        cached = bool(env_io.resolve_path("YIBAN_DB_FILE", "", env=env, env_file=env_file))
+        if len(_pool_declared_cache) >= _POOL_DECLARED_CACHE_MAX:
+            _pool_declared_cache.clear()
+        _pool_declared_cache[key] = cached
+    return cached

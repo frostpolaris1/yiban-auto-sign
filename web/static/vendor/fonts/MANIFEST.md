@@ -28,7 +28,7 @@ curl -sS -H "User-Agent: $UA" -H "Accept: text/css,*/*;q=0.1" \
 - 子集化方式（**适用于 Inter / JetBrains Mono**）：**不做二次子集化**，直接采用 Google Fonts 的
   unicode-range 分片；下载器逐条 `@font-face` 拉取 woff2、重写 `src` 为本地相对文件名，
   **完整保留 `unicode-range` / `font-weight` / `font-style` / `font-display: swap`**。
-  Noto Sans SC 不走此路径，改用 `scripts/build_cjk_font_slices.py` 重切片（见其小节）。
+  Noto Sans SC 不走此路径，改用 `tools/build_cjk_font_slices.py` 重切片（见其小节）。
 - 网络出口实测将 `fonts.gstatic.com` 重写为镜像主机 `fonts.gstatic.font.im`；文件内容为 Google
   Fonts 原始 woff2（`wOF2` 魔数校验通过），仅 URL 主机不同，不影响自托管产物。
 
@@ -70,8 +70,8 @@ cd web/static/vendor/fonts/<family> && sha256sum *.woff2 | sort -k2 | sha256sum
 | --- | --- |
 | 用途 | 中文（含用户动态中文：账号名 / 邮箱 / 驳回原因 / 日志）正文字体；400 与 700，normal |
 | 来源 | npm 包 `md2note-fonts@1.0.0`（`license: OFL-1.1`），tarball `https://registry.npmmirror.com/md2note-fonts/-/md2note-fonts-1.0.0.tgz`（SHA-256 `5bc75738d0bfac431a9bd0a202e97466211664e9235b5244e4095effb34d91c8`，15,939,052 B）；包内 `vfs_fonts.js`（SHA-256 `c1a9afc628ed138e1830032b0974a52dd8c0ebe3bf6196f89918830d631a53f3`）base64 内嵌完整 Noto Sans SC `NotoSansSC-Regular.otf`（400，8,331,336 B，SHA-256 `faa6c9df652116dde789d351359f3d7e5d2285a2b2a1f04a2d7244df706d5ea9`）与 `NotoSansSC-Bold.otf`（700，8,543,168 B，SHA-256 `c6cb5a93abaa9edc8ee7463b7ebb7f42d618d40e6ed2f7a5371c97b0b64767c0`）；备选 `mirrors.cloud.tencent.com/npm/...`、`cdn.jsdelivr.net/npm/...`、`unpkg.com/...`。两 OTF 家族名 `Noto Sans SC`，各 31,036 字形。**包许可 OFL-1.1；字体文件许可 OFL-1.1（同为 SIL OFL-1.1）** |
-| 来源评估 | 评估并拒绝 `noto-sans-sc@37.0.0`（npm，14 版本、2019–2024 持续发布，看似更成熟；**包许可 MIT / 字体文件许可 OFL-1.1**）：其实为 Google Fonts CSS API v2 网页子集的再分发（每字重 101 个编号 woff2，`scripts/download.py` 直接抓 `fonts.googleapis.com/css2`），并集仅覆盖基本区 12,242/20,992、标点 32/64、全角 149/240、扩展 A 27，采用即降级，且包内无完整字体文件。`@betteroffice/fonts-cjk@0.1.0`（仅含 Regular、0.1.0 与 0.0.1 同日出包）、`@electron-fonts/noto-sans-sc@1.2.0`（electron 字体注入用途、仅 2 版本）均无更优成熟度。结论：**保留 `md2note-fonts@1.0.0`**，详见 `docs/refactor/16-font-source-mature.md` |
-| 构建方式 | **可复现脚本** `scripts/build_cjk_font_slices.py`，下载与切片分离：`--fetch <dir>` 取回并按 SHA-256 校验上游字体；切片阶段 `--weight-font 400=… --weight-font 700=…` 离线执行。切片前 CFF/OTF 源经 cu2qu（`max_err=1.0`）转 glyf/TTF（同覆盖下 woff2 对 CFF 压缩差约 35%）→ 覆盖集合按「项目字频（模板实际用字）→ hanziDB 字频前 3,000 → 其余按码点」排序 → `pyftsubset` + brotli 产出 woff2。构建期依赖 `pip install fonttools brotli`（**不写入** `requirements.txt` / `requirements.lock`） |
+| 来源评估 | 评估并拒绝 `noto-sans-sc@37.0.0`（npm，14 版本、2019–2024 持续发布，看似更成熟；**包许可 MIT / 字体文件许可 OFL-1.1**）：其实为 Google Fonts CSS API v2 网页子集的再分发（每字重 101 个编号 woff2，`scripts/download.py` 直接抓 `fonts.googleapis.com/css2`），并集仅覆盖基本区 12,242/20,992、标点 32/64、全角 149/240、扩展 A 27，采用即降级，且包内无完整字体文件。`@betteroffice/fonts-cjk@0.1.0`（仅含 Regular、0.1.0 与 0.0.1 同日出包）、`@electron-fonts/noto-sans-sc@1.2.0`（electron 字体注入用途、仅 2 版本）均无更优成熟度。结论：**保留 `md2note-fonts@1.0.0`** |
+| 构建方式 | **可复现脚本** `tools/build_cjk_font_slices.py`，下载与切片分离：`--fetch <dir>` 取回并按 SHA-256 校验上游字体；切片阶段 `--weight-font 400=… --weight-font 700=…` 离线执行。切片前 CFF/OTF 源经 cu2qu（`max_err=1.0`）转 glyf/TTF（同覆盖下 woff2 对 CFF 压缩差约 35%）→ 覆盖集合按「项目字频（模板实际用字）→ hanziDB 字频前 3,000 → 其余按码点」排序 → `pyftsubset` + brotli 产出 woff2。构建期依赖 `pip install fonttools brotli`（**不写入** `requirements.txt` / `requirements.lock`） |
 | 分片策略 | 每字重 48 片：项目字频热区 300 字/片（893 字 ≈ 前 3 片）、高频区 300 字/片、其余按码点 500 字/片；`unicode-range` 由分片内容精确生成（逐片 cmap 与声明区段实测一致） |
 | 覆盖 | 每字重 **21,341 码点**：CJK 基本区 20,976 / 20,992、CJK 标点 64 / 64、全角 224 / 240、扩展 A 77（《通用规范汉字表》收录的常用部分）；缺失项均为上游字体本身无字形（U+9FF0–9FFF 等）。动态中文不再回退到系统字体 |
 | 文件 | `noto-sans-sc-{400,700}-{000..047}.woff2` 共 96 个；`notosanssc.css`（121,538 B，url 含内容哈希版本查询串） |
@@ -84,10 +84,10 @@ cd web/static/vendor/fonts/<family> && sha256sum *.woff2 | sort -k2 | sha256sum
 | 项 | 值 |
 | --- | --- |
 | 引入方式 | 三个外壳（`layout_admin/user/auth`）直接并行引入三个子 CSS，不再经 `fonts.css` 的 `@import`（@import 必须等聚合文件下载并解析后才发起子请求，多 1–2 个 RTT）：<br>`<link rel="stylesheet" href="…/static/vendor/fonts/inter/inter.css?v={{ web_version }}">`<br>`<link rel="stylesheet" href="…/static/vendor/fonts/jetbrains-mono/jetbrains-mono.css?v={{ web_version }}">`<br>`<link rel="stylesheet" href="…/static/vendor/fonts/notosanssc/notosanssc.css?v={{ web_version }}">` |
-| `fonts.css` 现状 | 保留为**纯注释说明文件**（不再被任何模板引用），兼作 `scripts/build_cjk_font_slices.py` 的 scope 哨兵（存在即对整个 fonts 目录打标）。 |
+| `fonts.css` 现状 | 保留为**纯注释说明文件**（不再被任何模板引用），兼作 `tools/build_cjk_font_slices.py` 的 scope 哨兵（存在即对整个 fonts 目录打标）。 |
 | URL 版本化（子 CSS） | 外壳以 `?v={{ web_version }}`（进程启动时间戳）版本化三个子 CSS —— 每次发版 URL 变化，子 CSS 自身总是新鲜。 |
-| URL 版本化（分片） | 各家族子 CSS 内的 woff2 `url()` 均带**内容短哈希**查询串（`?v=<sha256 前 8 位>`），由 `scripts/stamp_font_versions.py` 打标（幂等，可重跑；`--check` 只查不写）。内容不变 URL 不变（30 天强缓存继续生效），内容/文件名一变 URL 即变。 |
-| 缓存背景 / 为何不能退化 | `/static/` 为 30 天强缓存（`max-age=2592000`）。两级版本化共同打断失效链条：子 CSS URL 随发版变化 → 拿到新子 CSS → 其中分片 URL 因内容哈希变化也是新的。**不版本化时**重切片后旧访客会按缓存的旧子 CSS 引用已删除的分片 → 404 回退宋体，最长 30 天自愈。`build_cjk_font_slices.py` 生成完成后会自动调用 stamp 脚本刷新整个 fonts 目录。 |
+| URL 版本化（分片） | 各家族子 CSS 内的 woff2 `url()` 均带**内容短哈希**查询串（`?v=<sha256 前 8 位>`），由 `tools/stamp_font_versions.py` 打标（幂等，可重跑；`--check` 只查不写）。内容不变 URL 不变（30 天强缓存继续生效），内容/文件名一变 URL 即变。 |
+| 缓存背景 / 为何不能退化 | `/static/` 为 30 天强缓存（`max-age=2592000`）。两级版本化共同打断失效链条：子 CSS URL 随发版变化 → 拿到新子 CSS → 其中分片 URL 因内容哈希变化也是新的。**不版本化时**重切片后旧访客会按缓存的旧子 CSS 引用已删除的分片 → 404 回退宋体，最长 30 天自愈。`tools/build_cjk_font_slices.py` 生成完成后会自动调用 stamp 脚本刷新整个 fonts 目录。 |
 
 ## 许可文件
 

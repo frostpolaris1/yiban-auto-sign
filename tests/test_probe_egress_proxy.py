@@ -5,7 +5,7 @@
 覆盖：`probe._egress_env` 的两源合并口径、`probe._apply_egress_proxy` 的套用与
    "未配则不动"、`verify_account` 在登录前确实套上了出口。
 
-对应实现：yiban/engine/probe.py（`_egress_env`、`_executor_identity`、`_resolve_egress`、
+对应实现：yiban/app/probe.py（`_egress_env`、`_executor_identity`、`_resolve_egress`、
    `_apply_egress_proxy`、`verify_account`）、yiban/egress.py（`resolve`——按身份解析出的
    角色取值；web 进程无 `YIBAN_EXECUTOR_ID` ⇒ 单执行体角色 ⇒ 读 `YIBAN_PROXY`，逐字同旧）。
 
@@ -23,7 +23,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from yiban.engine import probe
+from yiban.app import probe
 
 PROXY = "http://user:pass@127.0.0.1:8888"
 PROXY_PLAIN = "http://127.0.0.1:8888"
@@ -77,7 +77,7 @@ class EgressEnvTest(_Base):
     def test_process_env_wins_so_per_slot_injected_egress_is_not_flattened(self):
         """执行体子进程被注入的出口必须压过 `.env`（否则每槽位出口被同一个值抹平）。
 
-        `yiban/engine/workers.py` 按槽位把出口写进子进程环境；`YIBAN_PROXY_LIST` /
+        `yiban/workers/workers.py` 按槽位把出口写进子进程环境；`YIBAN_PROXY_LIST` /
         清单形态下 `.env` 里那个 `YIBAN_PROXY` 只对 `single` 档有意义。
         """
         self._write_env(f"YIBAN_PROXY={PROXY}\n")
@@ -183,6 +183,30 @@ class VerifyAccountUsesProxyTest(_Base):
                                 phone_code="", account_id=0))
         self.assertFalse(ok)
         self.assertEqual(msg, "账号已被删除或停用")
+        self.assertEqual(called, [], "短路时不得构造客户端（更不得出网）")
+
+
+    def test_unknown_validity_reports_db_error_not_deletion(self):
+        """复核查询失败（None）同样短路，但文案与原因码不得说"账号已删除"。
+
+        `account_still_signable` 的异常返回是哨兵（状态未知）；把库错误显示成账号
+        被删除会误导管理员去做账号补救（工单 ba-p02-06 同族残余）。
+        """
+        self._write_env(f"YIBAN_PROXY={PROXY}\n")
+        self._use_env()
+        called = []
+        acc = SimpleNamespace(phone="13800000001", password="p", phone_model="",
+                              phone_code="", account_id=0)
+        with mock.patch.object(probe, "YibanClient",
+                               lambda a: called.append(1)), \
+             mock.patch.object(probe, "account_still_signable", lambda a: None):
+            ok, msg = probe.verify_account(acc)
+            refreshed = probe.refresh_registered_device(acc)
+        self.assertFalse(ok)
+        self.assertIn("复核失败", msg)
+        self.assertNotIn("已删除", msg)
+        self.assertEqual(refreshed["reason"], "read_failed",
+                         "设备补全路径同样要按'读不到'归因，不得回 account_inactive")
         self.assertEqual(called, [], "短路时不得构造客户端（更不得出网）")
 
 

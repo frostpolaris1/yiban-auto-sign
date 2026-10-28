@@ -1,41 +1,37 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""web 层拆分边界：名字面完整 + 转发落到 app 模块级真状态。
+"""web 应用工厂与各域服务层的**行为**回归。
 
 标签：F · 前端与界面守卫
-覆盖：`web/app.py` 拆分后的边界——各域名字面完整（含 `web/app.py` 收尾总账）、转发必须在调用时刻现取 app 模块级真状态、拆分模块不得 `import web.app`
-对应实现：`web/app.py` 的名字面与 `web/routes/*`、`web/services/*`、`web/render.py`、`web/security.py`
-关键断言：routes 里经 `m.<名字>` 或 `sys.modules[current_app.import_name].<名字>` 晚查找的名字，在 app 与真源两侧都必须可达；测试对 app 模块级常量（`.env` 路径与读取器、窗口解析器、告警出口、原子落盘、状态目录）打桩或直接赋值之后，服务层必须看到新值——服务层另存一份绑定就会**静默**失效；发现拆分模块导入 `web.app` 即判红
-依赖：纯本地——importlib 装载 `web/app.py` 与各真源模块，另起 `subprocess` 验证别名加载安全；不起常驻服务器、无需 node、不联网
+对应实现：`web/routes/*`、`web/services/*`、`web/render.py`、`web/security.py`。
+依赖：纯本地——importlib 装载 `web/app.py` 与各真源模块；不起常驻服务器、无需 node、不联网。
 
-`web/app.py` 把实现按域拆入 `web/routes/`、`web/services/`、`web/render.py`、`web/security.py`
-后只剩「应用工厂 + 跨域中间件 + 名字面（再导出与转发包装）」。本文件把各域拆分契约并到一处，
-逐域钉住同一组边界：
+各域类保留的是**行为**用例，例如：账号域的口径（脱敏、口令策略文案、席位/配额闸门、
+`_reject_account` 的 CAS 写回、席位句柄取用）；env 域的 `.env` 往返（注释与无关行保留、
+整数读写、密钥一次生成、清单迁移写回）；logs 域的解析（日期校验、倒读、按日过滤、
+旧版符号回查、`sign_status` 三段端点切换与文案）；notify 域的容量公式与手动签到收尾
+语义、子进程等待；security 域的信任代理取 IP、口令策略阈值、会话绝对过期、计数器语义；
+以及 `StaleIdxGuardE2ETest` 的 fail-closed 409。
 
-1. **名字面完整**：routes 经 `m.<名字>` 或 `sys.modules[current_app.import_name].<名字>`
-   晚查找取用的名字，在 app 模块与真源模块上都可达；`web/app.py` 收尾契约另钉名字面总账
-   （`web/routes/*.py` 命中总数与兼容名面计数）。
-2. **转发注入 app 模块级状态**：`.env` 路径与读取器、窗口解析器、告警出口、原子落盘、
-   状态目录等留在 app 且会被测试打桩或直接赋值改写；服务层若另存一份绑定，改写会**静默**
-   失效——故转发必须在调用时刻现取后传入。
-3. **别名加载安全**：拆分模块不得导入 `web.app`（普通 import 会在别名加载的测试进程里
-   造出第二份 app），发现即红。
-4. **机制总账（6c3-B）**：上述三条里逐域复制的机制头（原 38 条）收敛为
-   `BoundaryMechanismLedgerTest` 的 8 条参数化（六域别名副本共用一套判据）；
-   各域**行为**用例（*_stub_reaches_* 等）与 security/render 的别名安全变体一字未动。
-
-功能：web 应用拆分后的边界回归（名字面 / 转发注入 / 别名加载）。
-归属：`web/` 应用层测试；被测真源为 `web/services/*`、`web/render.py`、`web/security.py`。
-复用：各域 `MOVED_*` 名字面清单、`_load_webapp()` 装载助手、`BASE` / `TEST_KEY` 公共常量。
-通信：导入 `web.app` 与各真源模块，并另起 subprocess 验证别名加载；由 pytest 收集
-`unittest.TestCase`，不启动常驻服务器。
+2026-10-16 饮食批：原四大块**拆分机制**断言整族删除——
+① `*_stub_reaches_*` / `*_assignment_reaches_*`：把 `web.app` 的模块级属性打桩或赋值后
+断言服务层"看到新值"。这钉的是**转发写法**（晚查找 `m.<名字>` 而非直接导入），不是行为：
+服务层改成直接导入则行为一字不变而它们集体转红。
+② `AppNameSurfaceContractTest` 的名字面清单、`web/routes/*` 不得 `import web.app` 的正则、
+别名加载后 `sys.modules` 的检查。
+③ `BoundaryMechanismLedgerTest` 的"复制头通用正确性"总账（`is` 同对象、转发器 arity）。
+④ `WebRenderSplitContractTest` 的同类面。
+理由见 AGENTS §一.6a（测不变式，不测编舞）。本批删除的断言原本钉住的性质，
+凡属行为者已有其它判据：窗口端点切换、脱敏、口令阈值等由本文件保留用例钉住
+（已用突变抽验：把 `sign_status` 的窗口端点判据改坏 ⇒ 保留用例转红）。
 """
+import ast
 import contextlib
+import functools
 import importlib.util
 import io
+import json
 import os
-import random
-import re
 import shutil
 import subprocess
 import sys
@@ -47,9 +43,21 @@ from datetime import datetime, timedelta
 from unittest import mock
 
 import flask
+from werkzeug.security import generate_password_hash
 
-from yiban import clock
-from yiban.masking import mask_email_local
+from web import render as _render
+from web import security as _security
+from web.services import accounts_data as _accounts_data
+from web.services import capacity as _capacity
+from web.services import env_io as _env_io_svc
+from web.services import executor_env as _executor_env
+from web.services import logs as _logs_svc
+from web.services import measure as _measure
+from web.services import signstatus as _signstatus
+from web.services import verify_queue as _verify_queue
+from yiban.core import clock
+from yiban.core import status as yiban_status
+from yiban.core.masking import mask_email_local
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -61,136 +69,6 @@ PHONE = "13800138000"
 
 
 OTHER = "13900139000"
-
-
-MOVED_ACCOUNTS = (
-    "load_accounts",
-    "load_accounts_raw",
-    "load_users",
-    "mask_account",
-    "find_account_index",
-    "_duplicate_phone_error",
-    "_owner_has_other_live",
-    "validate_account",
-    "_as_signin_account",
-    "_verify_account_clean",
-    "_stale_idx_guard",
-    "_delete_grace_remaining",
-    "_slot_to_label",
-    "_estimate_slot",
-    "_owner_display_of",
-    "_password_policy_error",
-    "_admin_password_policy_error",
-    "_mask_email",
-    # 只被迁出族使用的常量，随所属域搬
-    "ACCOUNT_STATUS_PENDING",
-    "ACCOUNT_STATUS_ACTIVE",
-    "ACCOUNT_STATUS_REJECTED",
-    "PHONE_RE",
-    "DELETE_GRACE_DAYS",
-    "PASSWORD_MIN_LEN",
-    "_PASSWORD_CLASS_PATTERNS",
-    "_PASSWORD_CLASS_LABELS",
-    "_PASSWORD_MIN_CLASSES",
-    "_PASSWORD_CLASS_HINT",
-    "_PASSWORD_POLICY_HINT",
-    "ADMIN_PASSWORD_MIN_LEN",
-    "ADMIN_PASSWORD_MIN_CLASSES",
-)
-
-
-MOVED_VERIFY = (
-    "VerifyGateBusy",
-    "VerifyQuotaExceeded",
-    "run_verify_with_gate",
-    "_reject_account",
-    "_reclaim_stale_verify_jobs",
-    "_verify_queue_full",
-    "_start_verify_job",
-    "verify_async_enabled",
-    "_account_verify_enabled",
-    # 只被迁出族使用，随所属域搬
-    "VERIFY_JOBS_MAX_PENDING",
-)
-
-
-MOVED_MEASURE = (
-    "_measure_state_path",
-    "_read_measure_state",
-    "_write_measure_state",
-    "_measure_cooldown_remaining",
-    "_pick_measure_account",
-    # 只被迁出族使用，随所属域搬
-    "MEASURE_STATE_FILE",
-)
-
-
-PURE_REEXPORTS_ACCOUNTS = (
-    "load_accounts",
-    "load_accounts_raw",
-    "load_users",
-    "mask_account",
-    "find_account_index",
-    "_duplicate_phone_error",
-    "_owner_has_other_live",
-    "validate_account",
-    "_as_signin_account",
-    "_verify_account_clean",
-    "_stale_idx_guard",
-    "_delete_grace_remaining",
-    "_owner_display_of",
-    "_password_policy_error",
-    "_admin_password_policy_error",
-    "_mask_email",
-)
-
-
-PURE_REEXPORTS_VERIFY = (
-    "VerifyGateBusy",
-    "VerifyQuotaExceeded",
-    "_reject_account",
-    "_reclaim_stale_verify_jobs",
-    "_verify_queue_full",
-    "_start_verify_job",
-)
-
-
-PURE_REEXPORTS_MEASURE = (
-    "_read_measure_state",
-    "_measure_cooldown_remaining",
-    "_pick_measure_account",
-)
-
-
-FORWARDED_ACCOUNTS = ("_slot_to_label", "_estimate_slot")
-
-
-FORWARDED_VERIFY = ("run_verify_with_gate", "verify_async_enabled", "_account_verify_enabled")
-
-
-FORWARDED_MEASURE = ("_measure_state_path", "_write_measure_state")
-
-
-APP_HELD_STATE_ACC = {
-    "web/services/accounts_data.py": (
-        "ENV_FILE", "LOG_FILE", "STATE_DIR", "_atomic_write", "_verify_sem",
-        "_verify_attempt_allowed", "_rate_lock", "send_notification", "verify_jobs",
-    ),
-    "web/services/verify_queue.py": (
-        "ENV_FILE", "STATE_DIR", "_atomic_write", "_verify_sem",
-        "_verify_attempt_allowed", "_file_lock", "verify_jobs", "_sign_window",
-    ),
-    "web/services/measure.py": (
-        "ENV_FILE", "LOG_FILE", "STATE_DIR", "_atomic_write", "_file_lock", "verify_jobs",
-    ),
-}
-
-
-SERVICE_SOURCES_ACC = (
-    "web/services/accounts_data.py",
-    "web/services/verify_queue.py",
-    "web/services/measure.py",
-)
 
 
 class WebServicesAccountsSplitContractTest(unittest.TestCase):
@@ -242,174 +120,52 @@ class WebServicesAccountsSplitContractTest(unittest.TestCase):
     # ------------------------------------------------------------------
     # 1. 名字面
     # ------------------------------------------------------------------
-    def test_verify_jobs_name_not_taken_by_new_module(self):
-        """`web.app.verify_jobs` 仍是 yiban 真源；新模块不得占用这个名字（否则
-        `from web.services.verify_queue import *` 之类会遮蔽宿主名字面）。"""
-        from web.services import verify_queue as vq
-        from yiban.attempt import jobs as yb_jobs
-        self.assertIs(self.webapp.verify_jobs, yb_jobs,
-                      "m.verify_jobs 必须仍是 yiban.attempt.jobs 真源")
-        self.assertFalse(hasattr(vq, "verify_jobs"),
-                         "web/services/verify_queue.py 不得定义/别名 verify_jobs")
-        self.assertIs(vq.attempt_jobs, yb_jobs, "新模块须用真源（别名 attempt_jobs）")
 
-    def test_load_accounts_stub_reaches_estimate_slot(self):
-        """`web.app.load_accounts` 是全仓最高频的打桩名：替换后 `_estimate_slot` 必须跟着变。"""
-        accounts = [
-            {"phone": OTHER, "status": "active", "deleted": False},
-            {"phone": PHONE, "status": "active", "deleted": False},
-        ]
-        with mock.patch.object(self.webapp, "read_env",
-                               return_value={}), \
-                mock.patch.object(self.webapp, "_sign_window",
-                                  return_value=((6, 30), (7, 50))), \
-                mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
-                mock.patch.object(self.webapp, "load_accounts", return_value=accounts) as spy:
-            got = self.webapp._estimate_slot(PHONE)
-        self.assertEqual(spy.call_count, 1, "转发必须现取 load_accounts（而非服务层自持绑定）")
-        self.assertEqual(got, ("06:30~06:35", "（每日固定时段，块内时刻每天略有抖动）"))
-        # 打桩换成"没有这个号"的列表 → 结果随之变化（证明确实用了桩）
-        with mock.patch.object(self.webapp, "read_env", return_value={}), \
-                mock.patch.object(self.webapp, "load_accounts", return_value=[]):
-            self.assertEqual(self.webapp._estimate_slot(PHONE), (None, ""))
+    def test_estimate_slot_reads_ledger_via_app(self):
+        """`_estimate_slot` 的取值来源是台账 `sign_tasks.run_at`（与执行同源）。
 
-    def test_sign_window_and_edge_stubs_reach_slot_labels(self):
-        """`web.app._sign_window` / `edge_config` 的既有打桩点对迁出后的两处消费方生效。"""
-        with mock.patch.object(self.webapp, "_sign_window",
-                               return_value=((8, 0), (9, 0))):
-            self.assertEqual(self.webapp._slot_to_label(0), "08:00")
-            self.assertEqual(self.webapp._slot_to_label(5), "08:05")
-        accounts = [{"phone": PHONE, "status": "active", "deleted": False}]
-        with mock.patch.object(self.webapp, "read_env", return_value={}), \
-                mock.patch.object(self.webapp, "_sign_window",
-                                  return_value=((6, 30), (7, 50))), \
-                mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
-                mock.patch.object(self.webapp, "load_accounts", return_value=accounts):
-            full = self.webapp._estimate_slot(PHONE)
-        with mock.patch.object(self.webapp, "read_env", return_value={}), \
-                mock.patch.object(self.webapp, "_sign_window",
-                                  return_value=((7, 0), (8, 0))), \
-                mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
-                mock.patch.object(self.webapp, "load_accounts", return_value=accounts):
-            shifted = self.webapp._estimate_slot(PHONE)
-        self.assertEqual(full[0], "06:30~06:35")
-        self.assertEqual(shifted[0], "07:00~07:05", "窗口打桩必须换掉预计时段")
-
-    def test_estimate_slot_block_cap_zero_falls_back_to_default(self):
-        """`YIBAN_BLOCK_CAP=0`（非法）按引擎口径回退默认 15，与显式 15 逐字一致。
-
-        旧实现把 0 当"不限容量"（全员落首块）——那是网页侧自造口径；引擎
-        `_env_int(..., 1, 200)` 本就把 0 判非法回退 15。对齐后 0 与 15 必须同结果。
+        stub 台账读口 `db.task_run_at_by_phone` 必须换掉结果——网页侧不再自算窗口/块容/
+        分布（那正是与 v3 执行计划分叉的旧算法，工单 m9bi）。
         """
-        accounts = [{"phone": f"1380013{i:04d}", "status": "active", "deleted": False}
-                    for i in range(20)]
-        target = accounts[-1]["phone"]
+        day = clock.now().strftime("%Y-%m-%d")
+        with mock.patch.object(self.webapp.db, "task_run_at_by_phone",
+                               return_value={PHONE: f"{day} 07:20:00"}) as spy:
+            got = _accounts_data._estimate_slot(PHONE)
+        self.assertEqual(spy.call_count, 1, "转发必须现取台账（服务层不自持一份快照）")
+        self.assertEqual(got[0], "07:20", "estimated 必须等于台账 run_at 的时分")
+        # 打桩换成"台账没有这个号" → （当日无计划行）返回「待生成」，不回退任何钟点
+        with mock.patch.object(self.webapp.db, "task_run_at_by_phone", return_value={}):
+            self.assertEqual(_accounts_data._estimate_slot(PHONE), (None, "待生成"))
 
-        def run(raw):
-            self._write_raw(raw)
-            with mock.patch.object(self.webapp, "_sign_window",
-                                   return_value=((6, 30), (7, 50))), \
-                    mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
-                    mock.patch.object(self.webapp, "load_accounts", return_value=accounts):
-                return self.webapp._estimate_slot(target)
 
-        zero = run("YIBAN_BLOCK_CAP=0\n")
-        fifteen = run("YIBAN_BLOCK_CAP=15\n")
-        self.assertEqual(zero, fifteen, "0 必须与 15 同口径（非法回退默认，不再是不限容量）")
-        self.assertEqual(zero[0], "06:35~06:40", "第 20 人（idx=19）在 K=15 时落第 2 块")
-        # 反证：改大 K=25 → 第 20 人回到首块（证明上面钉住的确是块容口径，而非恰好如此）
-        big = run("YIBAN_BLOCK_CAP=25\n")
-        self.assertEqual(big[0], "06:30~06:35")
+    def test_estimate_slot_no_plan_returns_pending_generation(self):
+        """fail-closed：台账读不通（`None` 哨兵）时也返回「待生成」，绝不回退旧算法。
 
-    def test_estimate_slot_nonempty_on_clamped_window(self):
-        """缓冲过大被收缩：预计签到时段按收缩后的有效窗口算，不得静默变空。
-
-        自拼 `eff_lo/eff_hi`（原始窗口 + 原始裁剪）时：原始 07:00~07:10 各 300s
-        会让 span=0、无有效块 ⇒ 返回 (None, "")，用户端"预计签到时段"整块空白。消费
-        有效窗口（窗口保留、缓冲收缩为各 60s ⇒ 有效窗口 07:01~07:09）后首块 07:01~07:05，
-        与引擎同源。
+        `None` 与空映射同一失败方向——页面标"未知"，不得编造钟点，也不得回退 v2 派生。
         """
-        self._write_raw("YIBAN_SIGN_START=07:00\nYIBAN_SIGN_END=07:10\n"
-                        "YIBAN_WINDOW_EDGE_FRONT_SEC=300\nYIBAN_WINDOW_EDGE_BACK_SEC=300\n")
-        accounts = [{"phone": PHONE, "status": "active", "deleted": False}]
-        with mock.patch.object(self.webapp, "load_accounts", return_value=accounts):
-            got = self.webapp._estimate_slot(PHONE)
-        self.assertEqual(got, ("07:01~07:05", "（每日固定时段，块内时刻每天略有抖动）"),
-                         "收缩后的有效窗口下不得返回空（span=0 → (None, \"\")）")
+        with mock.patch.object(self.webapp.db, "task_run_at_by_phone", return_value=None):
+            self.assertEqual(_accounts_data._estimate_slot(PHONE), (None, "待生成"))
 
-    def test_estimate_slot_still_fails_closed_when_no_usable_block(self):
-        """fail-closed 语义保留：确实没有可用片时仍返回 (None, "")，不回退成默认片。"""
-        import yiban.window as yb_window
-        degenerate = yb_window.Window(390, 470, 400.0, 400.0, 60, 60)
-        accounts = [{"phone": PHONE, "status": "active", "deleted": False}]
-        with mock.patch.object(self.webapp, "sign_window_bounds", return_value=degenerate), \
-                mock.patch.object(self.webapp, "load_accounts", return_value=accounts):
-            got = self.webapp._estimate_slot(PHONE)
-        self.assertEqual(got, (None, ""))
 
-    def test_read_env_and_env_file_stubs_reach_verify_switches(self):
-        """`web.app.read_env` / `ENV_FILE` 是既有开关打桩点（test_probe 的写法）。"""
-        with mock.patch.object(self.webapp, "read_env",
-                               return_value={"YIBAN_ACCOUNT_VERIFY": "1"}):
-            self.assertTrue(self.webapp._account_verify_enabled())
-        with mock.patch.object(self.webapp, "read_env", return_value={}):
-            self.assertFalse(self.webapp._account_verify_enabled())
-        self._write_raw("YIBAN_ACCOUNT_VERIFY=on\nYIBAN_VERIFY_ASYNC=yes\n")
-        self.assertTrue(self.webapp._account_verify_enabled(),
-                        "赋值 ENV_FILE 后必须读到新文件")
-        self.assertTrue(self.webapp.verify_async_enabled())
-
-    def test_os_environ_wins_over_env_file_for_async_switch(self):
+    def test_env_file_wins_over_os_environ_for_async_switch(self):
+        """M27：两个验证开关同口径——`.env` 优先，进程环境只补缺。"""
         self._write_raw("YIBAN_VERIFY_ASYNC=1\n")
         os.environ["YIBAN_VERIFY_ASYNC"] = "0"
         try:
-            self.assertFalse(self.webapp.verify_async_enabled(),
-                             "os.environ 优先（便于临时覆盖）")
+            self.assertTrue(_verify_queue.verify_async_enabled(),
+                            "`.env` 优先（与 M27 全仓口径一致）")
         finally:
             os.environ.pop("YIBAN_VERIFY_ASYNC", None)
-        self.assertTrue(self.webapp.verify_async_enabled(), "未设环境变量时读 .env")
+        self.assertTrue(_verify_queue.verify_async_enabled(), "未设环境变量时读 .env")
         self._write_raw("")
-        self.assertFalse(self.webapp.verify_async_enabled(), "默认关")
+        os.environ["YIBAN_VERIFY_ASYNC"] = "1"
+        try:
+            self.assertTrue(_verify_queue.verify_async_enabled(),
+                            "`.env` 没有该键时进程环境补缺（docker run -e / systemd）")
+        finally:
+            os.environ.pop("YIBAN_VERIFY_ASYNC", None)
+        self.assertFalse(_verify_queue.verify_async_enabled(), "默认关")
 
-    def test_verify_account_clean_stub_reaches_gate(self):
-        """`web.app._verify_account_clean` 是既有打桩点：带闸校验必须取到桩。"""
-        with mock.patch.object(self.webapp, "_verify_attempt_allowed", return_value=True), \
-                mock.patch.object(self.webapp, "_verify_account_clean",
-                                  return_value="stub-err") as spy:
-            got = self.webapp.run_verify_with_gate({"phone": PHONE}, "admin", {})
-        self.assertEqual(got, "stub-err")
-        self.assertEqual(spy.call_count, 1)
-
-    def test_gate_stub_points_are_injected(self):
-        """席位与配额判定也是现取：打桩必须改变闸门结论。"""
-        with mock.patch.object(self.webapp, "_verify_sem") as sem:
-            sem.acquire.return_value = False
-            with self.assertRaises(self.webapp.VerifyGateBusy):
-                self.webapp.run_verify_with_gate({"phone": PHONE}, "admin", {})
-            self.assertEqual(sem.release.call_count, 0, "抢不到席位不得释放别人的席位")
-        with mock.patch.object(self.webapp, "_verify_attempt_allowed", return_value=False), \
-                mock.patch.object(self.webapp, "_verify_account_clean",
-                                  return_value=None) as spy:
-            with self.assertRaises(self.webapp.VerifyQuotaExceeded):
-                self.webapp.run_verify_with_gate({"phone": PHONE}, "admin", {})
-            self.assertEqual(spy.call_count, 0, "配额用尽时不得发起外呼")
-
-    def test_state_dir_assignment_reaches_measure_path(self):
-        other = os.path.join(self.tmp, "other-state")
-        os.makedirs(other, exist_ok=True)
-        with mock.patch.object(self.webapp, "STATE_DIR", other):
-            got = self.webapp._measure_state_path()
-        self.assertTrue(got.startswith(other), "转发必须现取 STATE_DIR")
-
-    def test_atomic_write_stub_reaches_measure_write(self):
-        payload = {"at": "2026-09-19 06:00:00", "seconds": None, "sample": "138****8000"}
-        with mock.patch.object(self.webapp, "_atomic_write") as spy:
-            self.webapp._write_measure_state(os.path.join(self.tmp, "sub", "m.json"), payload)
-        self.assertEqual(spy.call_count, 1, "落盘必须经 web.app 的 _atomic_write（打桩点）")
-        path, text = spy.call_args.args
-        self.assertEqual(path, os.path.join(self.tmp, "sub", "m.json"))
-        self.assertIn("138****8000", text)
-        self.assertIs(spy.call_args.kwargs["chmod_priv"], True)
 
     # ------------------------------------------------------------------
     # 3. 行为往返（口径逐字不变）
@@ -618,14 +374,14 @@ class WebServicesAccountsSplitContractTest(unittest.TestCase):
         path = os.path.join(self.tmp, "state", "capacity-measure.json")
         self.assertEqual(self.webapp._read_measure_state(path), {}, "缺失按从未实测")
         # 先让写入路径建目录，再逐形态覆盖内容
-        self.webapp._write_measure_state(path, {"at": ""})
+        _measure._write_measure_state(path, {"at": ""})
         with io.open(path, "w", encoding="utf-8") as f:
             f.write("不是 JSON")
         self.assertEqual(self.webapp._read_measure_state(path), {})
         with io.open(path, "w", encoding="utf-8") as f:
             f.write("[1, 2]")
         self.assertEqual(self.webapp._read_measure_state(path), {}, "非 dict 按从未实测")
-        self.webapp._write_measure_state(path, {"at": "2026-09-19 06:00:00", "seconds": 1.5,
+        _measure._write_measure_state(path, {"at": "2026-09-19 06:00:00", "seconds": 1.5,
                                                 "sample": "138****8000"})
         self.assertEqual(self.webapp._read_measure_state(path),
                          {"at": "2026-09-19 06:00:00", "seconds": 1.5,
@@ -660,126 +416,23 @@ class WebServicesAccountsSplitContractTest(unittest.TestCase):
     # ------------------------------------------------------------------
     # 4/5. 别名加载安全与状态归属
     # ------------------------------------------------------------------
-    def test_estimate_slot_normal_branch_is_deterministic(self):
-        """顺序 × 正态：锚点 z 由手机号固定 → 同一账号每天同一中心（与文档公式一致）。"""
-        accounts = [{"phone": PHONE, "status": "active", "deleted": False}]
-        with mock.patch.object(self.webapp, "read_env",
-                               return_value={"YIBAN_SIGN_DIST": "normal"}), \
-                mock.patch.object(self.webapp, "_sign_window",
-                                  return_value=((6, 30), (7, 50))), \
-                mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
-                mock.patch.object(self.webapp, "load_accounts", return_value=accounts):
-            got = self.webapp._estimate_slot(PHONE)
-        z = random.Random(str(PHONE)).gauss(0, 1)
-        center = max(390.0, min(470.0, 390 + 80 * 0.5 + 80 * 0.20 * z))
-        self.assertEqual(got, (f"约 {int(center) // 60:02d}:{int(center) % 60:02d}",
-                               "（每日波动约 ±10 分钟）"))
-        with mock.patch.object(self.webapp, "read_env",
-                               return_value={"YIBAN_SIGN_ORDER": "random"}), \
-                mock.patch.object(self.webapp, "load_accounts", return_value=accounts):
-            self.assertEqual(self.webapp._estimate_slot(PHONE),
-                             (None, "随机模式每日重排，签到时间当天 06:31 后可见"))
+    def test_estimate_slot_dist_and_order_do_not_change_the_source(self):
+        """分布/排序键不再影响预计时段：取值只来自台账，与 v2 自算几何解耦。
 
-
-MOVED_ENV_IO = (
-    "read_env",
-    "load_env_int",
-    "write_env_int",
-    "write_env_key",
-    "write_env_batch",
-    "ensure_secret_key",
-    "_env_write_lock",
-    "_settings_label",
-    "_settings_value_text",
-    "_settings_effective_values",
-    "_is_http_proxy_url",
-    "_report_env_key_collisions",
-    "_parse_announcement_meta",
-    # 随解析器搬迁的格式常量（公告元数据形态的唯一真源）
-    "ANNOUNCEMENT_DRAFT_META_SEP",
-    "ANNOUNCEMENT_DRAFT_META_FMT",
-    # 只被迁出的两个展示函数使用，随所属域搬
-    "_SETTINGS_KEY_LABELS",
-    "_BOOL_SETTINGS_KEYS",
-)
-
-
-MOVED_EXECUTOR_ENV = (
-    "_executor_rows",
-    "_mutate_executor_rows",
-    "_next_executor_slot",
-    "_save_row_egress",
-    "_save_fallback_egress",
-    "_save_slot_egress",
-    "_validated_proxy_value",
-    "_validated_name",
-    "_executors_window",
-    "_last_executors",
-    "_executor_row_payload",
-    "_executor_activity",
-)
-
-
-PURE_REEXPORTS_ENV_IO = (
-    "read_env",
-    "load_env_int",
-    "_env_write_lock",
-    "_settings_label",
-    "_settings_value_text",
-    "_is_http_proxy_url",
-    "_parse_announcement_meta",
-    "_SETTINGS_KEY_LABELS",
-    "_BOOL_SETTINGS_KEYS",
-    "ANNOUNCEMENT_DRAFT_META_SEP",
-    "ANNOUNCEMENT_DRAFT_META_FMT",
-)
-
-
-PURE_REEXPORTS_EXECUTOR_ENV = (
-    "_next_executor_slot",
-    "_validated_proxy_value",
-    "_validated_name",
-    "_last_executors",
-    "_executor_row_payload",
-    "_executor_activity",
-)
-
-
-FORWARDED_ENV_IO = (
-    "write_env_batch",
-    "write_env_key",
-    "write_env_int",
-    "ensure_secret_key",
-    "_settings_effective_values",
-    "_report_env_key_collisions",
-)
-
-
-FORWARDED_EXECUTOR_ENV = (
-    "_executor_rows",
-    "_mutate_executor_rows",
-    "_save_row_egress",
-    "_save_fallback_egress",
-    "_save_slot_egress",
-    "_executors_window",
-)
-
-
-APP_HELD_STATE_ENV = (
-    "ENV_FILE",
-    "_REPO_ROOT",
-    "_doc_cache",
-    "_atomic_write",
-    "_env_flag",
-    "_sign_window",
-    "send_notification",
-    "_file_lock",
-    "_rate_lock",
-)
-
-
-SERVICE_SOURCES_ENV = ("web/services/env_io.py", "web/services/executor_env.py",
-                   "web/services/locks.py")
+        旧实现按 `YIBAN_SIGN_DIST` / `YIBAN_SIGN_ORDER` 分支自算钟点——正是与 v3 执行
+        计划分叉的那条路（工单 m9bi）。置位这两个键不得改变 `_estimate_slot` 的结果。
+        """
+        day = clock.now().strftime("%Y-%m-%d")
+        envs = ({"YIBAN_SIGN_DIST": "normal"}, {"YIBAN_SIGN_DIST": "uniform"},
+                {"YIBAN_SIGN_ORDER": "random"})
+        with mock.patch.object(self.webapp.db, "task_run_at_by_phone",
+                               return_value={PHONE: f"{day} 06:41:00"}):
+            want = _accounts_data._estimate_slot(PHONE)
+            self.assertEqual(want[0], "06:41")
+            for env in envs:
+                with mock.patch.object(self.webapp, "read_env", return_value=env):
+                    self.assertEqual(_accounts_data._estimate_slot(PHONE), want,
+                                     f"{env} 不得改变预计时段来源")
 
 
 class WebServicesEnvSplitContractTest(unittest.TestCase):
@@ -845,52 +498,7 @@ class WebServicesEnvSplitContractTest(unittest.TestCase):
     # ------------------------------------------------------------------
     # 2'. 转发注入 app 模块级状态（代表性打桩往返）
     # ------------------------------------------------------------------
-    def test_atomic_write_stub_sees_batch_and_single_key_paths(self):
-        """`web.app._atomic_write` 是"每一次 .env 落盘"的观测点：两条写路径都要经过它。"""
-        real = self.webapp._atomic_write
-        seen = []
 
-        def spy(path, text, **kw):
-            seen.append(text)
-            return real(path, text, **kw)
-
-        with mock.patch.object(self.webapp, "_atomic_write", side_effect=spy):
-            self.webapp.write_env_batch(self.env_file, {"YIBAN_B": "2"})
-            self.webapp.write_env_key(self.env_file, "YIBAN_C", "3")
-        self.assertEqual(len(seen), 2, f"两次写入都应落在 _atomic_write 上，实际 {seen}")
-        self.assertIn("YIBAN_B=2", seen[0])
-        self.assertIn("YIBAN_C=3", seen[1])
-
-    def test_write_env_batch_stub_sees_single_key_and_executor_paths(self):
-        """`web.app.write_env_batch` 打桩点对单键写与执行体写回同样生效。"""
-        from yiban import egress
-        rows = egress.add_row([], egress.TYPE_WORKER, "http://a:1")
-        self._write_raw(f"{egress.ENV_MANIFEST}={egress.dump_manifest(rows)}\n")
-        real = self.webapp.write_env_batch
-        calls = []
-
-        def spy(env_path, updates):
-            calls.append(dict(updates))
-            return real(env_path, updates)
-
-        with mock.patch.object(self.webapp, "write_env_batch", side_effect=spy):
-            self.webapp.write_env_key(self.env_file, "YIBAN_D", "4")
-            err = self.webapp._save_row_egress(self.env_file, rows[0]["slot"], "http://b:2")
-        self.assertEqual(err, (None, None))
-        self.assertEqual([sorted(c) for c in calls],
-                         [["YIBAN_D"], [egress.ENV_MANIFEST]])
-        self.assertEqual(self.webapp.read_env(self.env_file)["YIBAN_D"], "4")
-
-    def test_executors_window_reads_app_env_file_and_sign_window(self):
-        """`_executors_window` 现取 web.app 的 ENV_FILE 与 `_sign_window`（--config 同款）。"""
-        self._write_raw("YIBAN_WINDOW_EDGE_FRONT_SEC=90\nYIBAN_WINDOW_EDGE_BACK_SEC=30\n")
-        with mock.patch.object(self.webapp, "ENV_FILE", self.env_file):
-            win = self.webapp._executors_window()
-        self.assertEqual((win.front_sec, win.back_sec), (90, 30))
-        with mock.patch.object(self.webapp, "ENV_FILE", self.env_file), \
-                mock.patch.object(self.webapp, "_sign_window", return_value=((8, 0), (9, 0))):
-            win = self.webapp._executors_window()
-        self.assertEqual((win.start_min, win.end_min), (480, 540))
 
     def test_executors_window_defaults_match_engine_window(self):
         """`.env` 未写裁剪键时执行体页与引擎同窗：缺省 60s（原实现缺省 0 → 宽 1 分钟）。
@@ -898,59 +506,23 @@ class WebServicesEnvSplitContractTest(unittest.TestCase):
         示例 `.env` 把两个裁剪键注释掉，故这条缺省路径就是生产默认形态：缺省 0 会让
         页面上显示的窗口、容量换算的分母与"窗口内不做实测"的拦截都比引擎宽 1 分钟。
         """
-        import yiban.window as yb_window
+        import yiban.core.window as yb_window
         self._write_raw("YIBAN_SIGN_START=06:30\nYIBAN_SIGN_END=07:50\n")
         with mock.patch.object(self.webapp, "ENV_FILE", self.env_file):
-            win = self.webapp._executors_window()
+            win = _executor_env._executors_window()
         engine = yb_window.bounds({"sign_start": (6, 30), "sign_end": (7, 50),
                                    "edge_front_sec": 60, "edge_back_sec": 60})
         self.assertEqual((win.front_sec, win.back_sec), (60, 60))
         self.assertEqual((win.lo_min, win.hi_min), (engine.lo_min, engine.hi_min))
         self.assertEqual(win.full_sec(), 78 * 60)
 
-    def test_settings_effective_values_uses_app_side_flag_and_defaults(self):
-        """`_env_flag` 与三个容量缺省值都在调用时刻从 web.app 现取。"""
-        self._write_raw("")
-        cur = self.webapp._settings_effective_values(self.env_file)
-        self.assertEqual(cur["max_users"], str(self.webapp.DEFAULT_MAX_USERS))
-        self.assertEqual(cur["gap_max"], str(self.webapp.DEFAULT_ACCOUNT_GAP_MAX))
-        self.assertEqual(cur["sunday_sign"], "0")
-        with mock.patch.object(self.webapp, "DEFAULT_MAX_USERS", 777), \
-                mock.patch.object(self.webapp, "_env_flag",
-                                  side_effect=lambda v: str(v).strip().lower() == "yes"):
-            self._write_raw("YIBAN_SUNDAY_SIGN=yes\n")
-            cur = self.webapp._settings_effective_values(self.env_file)
-        self.assertEqual(cur["max_users"], "777", "容量缺省值必须现取注入")
-        self.assertEqual(cur["sunday_sign"], "1", "开关解析器必须现取注入")
-
-    def test_collision_report_latch_and_alert_through_app_face(self):
-        """`_env_collision_reported` 可直接改写、`send_notification` 可打桩（启动路径两块面）。"""
-        self._write_raw("YIBAN_AUDIT_KEY=abc\nYIBAN_AUDIT_KEY = def\n")
-        self.webapp._env_collision_reported = False
-        with self.assertLogs("web", level="ERROR") as logs, \
-                mock.patch.object(self.webapp, "send_notification") as sn:
-            self.webapp._report_env_key_collisions(self.env_file)
-        self.assertTrue(any("YIBAN_AUDIT_KEY" in m for m in logs.output),
-                        f"ERROR 日志应点名歧义键: {logs.output}")
-        self.assertTrue(sn.called, "歧义键必须发告警")
-        self.assertTrue(sn.call_args.kwargs.get("urgent"), f"告警须为紧急: {sn.call_args}")
-        # 闩置位后同一进程不再重复告警
-        sn.reset_mock()
-        self.webapp._report_env_key_collisions(self.env_file)
-        sn.assert_not_called()
-        # 干净配置不发告警
-        self._write_raw("YIBAN_A=1\n")
-        self.webapp._env_collision_reported = False
-        with mock.patch.object(self.webapp, "send_notification") as sn2:
-            self.webapp._report_env_key_collisions(self.env_file)
-        sn2.assert_not_called()
 
     # ------------------------------------------------------------------
     # 3. 行为往返（写入语义逐字不变）
     # ------------------------------------------------------------------
     def test_env_write_round_trip_keeps_comments_and_other_lines(self):
         self._write_raw("# 手工注释\nYIBAN_A = 1\nYIBAN_B=2\n")
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_A": "9", "YIBAN_C": "3"})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_A": "9", "YIBAN_C": "3"})
         with io.open(self.env_file, encoding="utf-8") as f:
             text = f.read()
         self.assertIn("# 手工注释", text, "注释行必须保留")
@@ -959,13 +531,13 @@ class WebServicesEnvSplitContractTest(unittest.TestCase):
         self.assertIn("YIBAN_C=3", text)
         self.assertEqual(self.webapp.read_env(self.env_file)["YIBAN_A"], "9")
         # 空值 = 删键
-        self.webapp.write_env_batch(self.env_file, {"YIBAN_B": ""})
+        _env_io_svc.write_env_batch(self.env_file, {"YIBAN_B": ""})
         self.assertNotIn("YIBAN_B", self.webapp.read_env(self.env_file))
         # 注入校验：值与键名两处都不放行行分隔符
         with self.assertRaises(ValueError):
-            self.webapp.write_env_batch(self.env_file, {"YIBAN_D": "x\ny"})
+            _env_io_svc.write_env_batch(self.env_file, {"YIBAN_D": "x\ny"})
         with self.assertRaises(ValueError):
-            self.webapp.write_env_batch(self.env_file, {"yiban_d": "x"})
+            _env_io_svc.write_env_batch(self.env_file, {"yiban_d": "x"})
 
     def test_write_env_int_and_load_env_int_semantics(self):
         self.webapp.write_env_int(self.env_file, "YIBAN_NUM", 5)
@@ -1003,7 +575,7 @@ class WebServicesEnvSplitContractTest(unittest.TestCase):
         self._write_raw("YIBAN_WORKERS=2\n"
                         "YIBAN_PROXY_LIST=http://a:1,http://b:2\n"
                         "YIBAN_PROXY_FALLBACK=http://f:1\n")
-        rows = self.webapp._executor_rows()
+        rows = _executor_env._executor_rows()
         self.assertEqual([r["proxy"] for r in egress.worker_rows(rows)],
                          ["http://a:1", "http://b:2"])
         env = self.webapp.read_env(self.env_file)
@@ -1012,7 +584,7 @@ class WebServicesEnvSplitContractTest(unittest.TestCase):
         # 迁移只发生一次：清单已在，第二次读不再落盘
         real = self.webapp._atomic_write
         with mock.patch.object(self.webapp, "_atomic_write", side_effect=real) as spy:
-            self.webapp._executor_rows()
+            _executor_env._executor_rows()
         spy.assert_not_called()
 
     def test_executor_manifest_write_round_trip_preserves_other_lines(self):
@@ -1020,11 +592,11 @@ class WebServicesEnvSplitContractTest(unittest.TestCase):
         rows = egress.add_row([], egress.TYPE_WORKER, "http://a:1", name="机一")
         self._write_raw(f"# 保留我\n{egress.ENV_MANIFEST}={egress.dump_manifest(rows)}\n")
         # 追加兜底行（清单里没有则新增）
-        self.assertEqual(self.webapp._save_fallback_egress(self.env_file, "http://fb:9"),
+        self.assertEqual(_executor_env._save_fallback_egress(self.env_file, "http://fb:9"),
                          (None, None))
         # 单行出口改写：其余行逐字保留
         self.assertEqual(
-            self.webapp._save_row_egress(self.env_file, rows[0]["slot"], "http://b:2"),
+            _executor_env._save_row_egress(self.env_file, rows[0]["slot"], "http://b:2"),
             (None, None))
         with io.open(self.env_file, encoding="utf-8") as f:
             text = f.read()
@@ -1038,15 +610,15 @@ class WebServicesEnvSplitContractTest(unittest.TestCase):
     def test_save_slot_egress_replaces_one_segment_only(self):
         self._write_raw("YIBAN_PROXY_LIST=http://a:1,http://b:2,http://c:3\n")
         self.assertEqual(
-            self.webapp._save_slot_egress(self.env_file, "YIBAN_PROXY_LIST", 1, "http://d:4"),
+            _executor_env._save_slot_egress(self.env_file, "YIBAN_PROXY_LIST", 1, "http://d:4"),
             (None, None))
         self.assertEqual(
             self.webapp.read_env(self.env_file)["YIBAN_PROXY_LIST"],
             "http://a:1,http://d:4,http://c:3", "其余段必须逐字保留")
-        err, code = self.webapp._save_slot_egress(
+        err, code = _executor_env._save_slot_egress(
             self.env_file, "YIBAN_PROXY_LIST", 1, "不是代理\n")
         self.assertEqual((err, code), ("代理配置不能包含换行", 400))
-        err, code = self.webapp._save_slot_egress(
+        err, code = _executor_env._save_slot_egress(
             self.env_file, "YIBAN_PROXY_LIST", 1, "http://u:p@h:1/x 备注")
         self.assertEqual(code, 400)
         self.assertIn("代理地址格式不正确", err)
@@ -1092,96 +664,6 @@ class WebServicesEnvSplitContractTest(unittest.TestCase):
     # ------------------------------------------------------------------
     # 4/5. 别名加载安全与状态归属
     # ------------------------------------------------------------------
-MOVED_LOGS = (
-    "_log_line_visible",
-    "_cred_paused_phones",
-    "clear_fuse_pause",
-    "clear_fuse_on_cred_change",
-    "load_sign_state",
-    "_tail_lines",
-    "parse_sign_log",
-    "_is_valid_date_str",
-    "log_path_for",
-    "_log_lines_for",
-    "_today_has_logs",
-    "_most_recent_log_date",
-    "_mask_log_phones",
-    "_LOG_TAIL_BYTES",
-    # 只被迁出族使用，随所属域搬（行正则与最近日期缓存）
-    "SIGN_LOG_RE",
-    "_most_recent_log_cache",
-)
-
-
-MOVED_SIGNSTATUS = (
-    "_sign_window",
-    "_env_flag",
-    "_in_sign_window",
-    "_in_run_period",
-    "_day_off_reason",
-    "sign_status",
-    "check_connectivity",
-    # 只被迁出的开关解析器使用，随所属域搬
-    "_TRUTHY_LITERALS",
-)
-
-
-PURE_REEXPORTS_LOGS = (
-    "_log_line_visible",
-    "_cred_paused_phones",
-    "clear_fuse_pause",
-    "clear_fuse_on_cred_change",
-    "_tail_lines",
-    "_is_valid_date_str",
-    "_mask_log_phones",
-    "_LOG_TAIL_BYTES",
-    "SIGN_LOG_RE",
-    "_most_recent_log_cache",
-)
-
-
-PURE_REEXPORTS_SIGNSTATUS = (
-    "_env_flag",
-    "_in_sign_window",
-    "check_connectivity",
-    "_TRUTHY_LITERALS",
-)
-
-
-FORWARDED_LOGS = (
-    "parse_sign_log",
-    "log_path_for",
-    "_log_lines_for",
-    "_today_has_logs",
-    "_most_recent_log_date",
-    "load_sign_state",
-)
-
-
-FORWARDED_SIGNSTATUS = (
-    "_sign_window",
-    "_in_run_period",
-    "sign_status",
-    # 注入型（非纯再导出）：调用时刻现读 `.env` 真值后交给同一份门判定——门语义未改，
-    # 改的只是"读到的是哪份值"（原先落回 os.environ，`.env` 的急停/周末在 web 侧恒不生效）
-    "_day_off_reason",
-)
-
-
-APP_HELD_STATE_LOGS = (
-    "ENV_FILE",
-    "LOG_FILE",
-    "STATE_DIR",
-    "_REPO_ROOT",
-    "_doc_cache",
-    "_atomic_write",
-    "_file_lock",
-    "_rate_lock",
-    "send_notification",
-)
-
-
-SERVICE_SOURCES_LOGS = ("web/services/logs.py", "web/services/signstatus.py")
 
 
 class WebServicesLogsSplitContractTest(unittest.TestCase):
@@ -1236,87 +718,7 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
     # ------------------------------------------------------------------
     # 1. 名字面
     # ------------------------------------------------------------------
-    def test_log_file_assignment_reaches_every_log_reader(self):
-        """`web.app.LOG_FILE` 直接赋值（既有测试写法）必须换掉整条日志读路径的目录。"""
-        today = clock.today()
-        fixture = (f"[{today} 06:40:04] [INFO] yiban: 签到开始\n"
-                   f"[{today} 06:40:05] [INFO] yiban.client: [13800138000] 生成定位\n")
-        with io.open(os.path.join(self.log_dir, f"sign-{today}.log"), "w",
-                     encoding="utf-8") as f:
-            f.write(fixture)
-        lines = self.webapp.parse_sign_log(self.webapp.log_path_for())
-        self.assertEqual(len(lines), 2, "转发必须现取 LOG_FILE，而不是服务层自持的绑定")
-        self.assertEqual(len(self.webapp._log_lines_for(today)), 2)
-        self.assertTrue(self.webapp._today_has_logs())
-        self.assertEqual(self.webapp._most_recent_log_date(3), today)
 
-    def test_tail_lines_stub_reaches_parse_and_lines_for(self):
-        """`web.app._tail_lines` 是既有打桩点：替换倒读输入后解析结果随之变化。"""
-        today = clock.today()
-        injected = [f"[{today} 06:00:00] [INFO] yiban: 注入行",
-                    "[2026-01-02 06:00:00] [WARNING] mailer: 注入告警",
-                    "[2026-01-02 06:00:00] [INFO] notify: 不该出现"]
-        with mock.patch.object(self.webapp, "_tail_lines", return_value=injected):
-            got = self.webapp.parse_sign_log("whatever")
-            self.assertEqual(got, [injected[0], injected[1]])
-            self.assertEqual(self.webapp._log_lines_for(today), [injected[0]],
-                             "当日读取仍按行首日期过滤（跨天行不混入）")
-
-    def test_state_dir_assignment_reaches_load_sign_state(self):
-        other = os.path.join(self.tmp, "other-state")
-        os.makedirs(other, exist_ok=True)
-        with io.open(os.path.join(other, "sign-state-2026-09-19.json"), "w",
-                     encoding="utf-8") as f:
-            f.write('{"13800138000": {"status": "success", "message": "", "task": "default"}}')
-        with mock.patch.object(self.webapp, "STATE_DIR", other):
-            got = self.webapp.load_sign_state("2026-09-19")
-        self.assertEqual(got, {"13800138000": {"status": "success", "message": "",
-                                               "task": "default"}},
-                         "转发必须现取 STATE_DIR，而不是服务层自持的绑定")
-
-    def test_sign_window_stub_reaches_status_executors_and_capacity(self):
-        """`web.app._sign_window` 的既有打桩点对三处消费方都生效。
-
-        `sign_status` 现经 `sign_window_bounds` 现取窗口（有效端点 = 打桩窗口 ± 默认
-        60s 裁剪），故文案为"~08:59 结束"而非打桩端点 09:00——这正是与引擎同源的结果。
-        """
-        with mock.patch.object(self.webapp, "_sign_window",
-                               return_value=((8, 0), (9, 0))):
-            win = self.webapp._executors_window()
-            self.assertEqual((win.start_min, win.end_min), (480, 540))
-            self.assertEqual(self.webapp._slot_to_label(0), "08:00")
-            now = datetime(2026, 9, 16, 8, 30)
-            self.assertEqual(self.webapp.sign_status(now),
-                             ("签到窗口进行中（~08:59 结束）", "#9ece6a"))
-        self.assertIsInstance(self.webapp._capacity_estimate(10), int)
-
-    def test_in_sign_window_stub_reaches_in_run_period(self):
-        """`web.app._in_sign_window` / `_day_off_reason` 的既有打桩点必须穿透到 `_in_run_period`。"""
-        import yiban.window as yb_window
-        bounds = yb_window.bounds({"sign_start": (6, 30), "sign_end": (7, 50),
-                                   "edge_front_sec": 0, "edge_back_sec": 0})
-        now = datetime(2026, 9, 16, 9, 0)     # 钟点上在窗口外
-        with mock.patch.object(self.webapp, "_in_sign_window", return_value=True):
-            self.assertTrue(self.webapp._in_run_period(bounds, now),
-                            "打桩后的钟点判定必须被 `_in_run_period` 取用")
-        with mock.patch.object(self.webapp, "_in_sign_window", return_value=False):
-            self.assertFalse(self.webapp._in_run_period(bounds, now))
-        # 门判定同样是现取注入：窗口内但被判为"今天不签到"时结果为 False
-        with mock.patch.object(self.webapp, "_in_sign_window", return_value=True), \
-                mock.patch.object(self.webapp, "_day_off_reason",
-                                  return_value="今日无需打卡（周六）"):
-            self.assertFalse(self.webapp._in_run_period(bounds, now),
-                             "打桩后的门判定必须被 `_in_run_period` 取用")
-
-    def test_env_flag_stub_reaches_settings_effective_values(self):
-        """`web.app._env_flag` 是设置页生效值的注入点：打桩必须生效。"""
-        self._write_raw("YIBAN_SUNDAY_SIGN=enable\n")
-        values = self.webapp._settings_effective_values(self.env_file)
-        self.assertEqual(values["sunday_sign"], "0", "默认解析器只认 1/true/on/yes")
-        with mock.patch.object(self.webapp, "_env_flag",
-                               side_effect=lambda v: str(v).strip().lower() == "enable"):
-            values = self.webapp._settings_effective_values(self.env_file)
-        self.assertEqual(values["sunday_sign"], "1", "开关解析器必须现取注入")
 
     # ------------------------------------------------------------------
     # 3. 行为往返（口径逐字不变）
@@ -1345,12 +747,12 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
             f"[{today} 06:40:08] [DEBUG] yiban: 探针跳过",
             "不是日志行",
         ]
-        path = self.webapp.log_path_for(today)
+        path = _logs_svc.log_path_for(today)
         with io.open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
-        got = self.webapp.parse_sign_log(path)
+        got = _logs_svc.parse_sign_log(path)
         self.assertEqual(got, [lines[0], lines[1], lines[2], lines[4]])
-        self.assertEqual(self.webapp._log_lines_for(today), got,
+        self.assertEqual(_logs_svc._log_lines_for(today), got,
                          "两条路径必须共用同一条可见性规则")
 
     def test_is_valid_date_str_is_calendar_strict(self):
@@ -1381,23 +783,54 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
                      encoding="utf-8") as f:
             f.write('{"13800138000": "✅", "13900139000": "❌", '
                     '"13700137000": "➖", "13600136000": "?"}')
-        got = self.webapp.load_sign_state(date)
-        self.assertEqual(got["13800138000"]["status"], self.webapp.STATUS_SUCCESS)
-        self.assertEqual(got["13900139000"]["status"], self.webapp.STATUS_FAILED)
-        self.assertEqual(got["13700137000"]["status"], self.webapp.STATUS_NO_TASK)
-        self.assertEqual(got["13600136000"]["status"], self.webapp.STATUS_PENDING)
+        got = _logs_svc.load_sign_state(date)
+        self.assertEqual(got["13800138000"]["status"], yiban_status.STATUS_SUCCESS)
+        self.assertEqual(got["13900139000"]["status"], yiban_status.STATUS_FAILED)
+        self.assertEqual(got["13700137000"]["status"], yiban_status.STATUS_NO_TASK)
+        self.assertEqual(got["13600136000"]["status"], yiban_status.STATUS_PENDING)
         # 结构化文件优先；为空 dict 时继续回退
         structured = os.path.join(self.tmp, f"sign-state-{date}.json")
         with io.open(structured, "w", encoding="utf-8") as f:
             f.write('{"13800138000": {"status": "success"}}')
-        self.assertEqual(self.webapp.load_sign_state(date),
+        self.assertEqual(_logs_svc.load_sign_state(date),
                          {"13800138000": {"status": "success"}})
         with io.open(structured, "w", encoding="utf-8") as f:
             f.write("{}")
-        self.assertEqual(len(self.webapp.load_sign_state(date)), 4, "空结构化文件回退旧格式")
+        self.assertEqual(len(_logs_svc.load_sign_state(date)), 4, "空结构化文件回退旧格式")
         for name in (structured, os.path.join(self.tmp, f"sign-daily-{date}.json")):
             os.remove(name)
-        self.assertEqual(self.webapp.load_sign_state(date), {})
+        self.assertEqual(_logs_svc.load_sign_state(date), {})
+
+    def test_legacy_daily_symbols_all_decode_to_a_real_status(self):
+        """`SYMBOL` 全表的**每个**符号，回退反查都必须解出同符的状态码（不得落 `pending`）。
+
+        反查表原先是手抄的三项（✅/❌/➖），写入侧（`runner._write_sign_daily`）却写六项。
+        手抄子集随写入侧扩表静默陈旧时，多出的符号（🚫 no_position、🕓 supplementing）
+        解不出，一律落 `pending`——日历把"已跳过/补签中"显示成"待签"。本门按**行为**钉住
+        覆盖面：把这些符号逐个写进 sign-daily，核每个解出的状态码属于该符号的状态码集。
+
+        覆盖面**取自 `yiban.core.status.SYMBOL` 全表**，不手抄一份子集：手抄的那份会在写入侧
+        扩表时静默漏格——正是本门要防的形状，写成手抄就成了同病。
+        """
+        date = "2026-09-20"
+        # 同一符号可能属多个状态码（✅ = success / already）：按符号分组，解出的码落组内即可。
+        # 本表**不含** ⏳（`STATUS_PENDING` 不在 `SYMBOL` 里），故"落组内"已等价于
+        # "不等于 `pending`"——漏格时该符号解成 `pending`，而没有任何组含 `pending`。
+        # 若日后把 `pending` 并入 `SYMBOL`，这条等价即失效，本门须补一条"不等于 pending"。
+        by_symbol = {}
+        for code, sym in yiban_status.SYMBOL.items():
+            by_symbol.setdefault(sym, set()).add(code)
+        rows = {"1380013%04d" % i: sym for i, sym in enumerate(sorted(by_symbol))}
+        with io.open(os.path.join(self.tmp, f"sign-daily-{date}.json"), "w",
+                     encoding="utf-8") as f:
+            json.dump(rows, f, ensure_ascii=False)
+        got = _logs_svc.load_sign_state(date)
+        self.assertEqual(len(got), len(rows), "每个符号都要解出一条记录")
+        for phone, sym in rows.items():
+            # 漏格时该符号解成 `pending`，而 `pending` 只同符 ⏳ ⇒ 除 ⏳ 外一律当场翻红
+            self.assertIn(got[phone]["status"], by_symbol[sym],
+                          "符号 %s（%s）解出的状态码不属于它：%r"
+                          % (sym, phone, got[phone]["status"]))
 
     def test_mask_log_phones_masks_all_bare_11_digits(self):
         mask = self.webapp._mask_log_phones
@@ -1413,7 +846,7 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
     def test_cred_paused_phones_and_clear_fuse_pause(self):
         import json
 
-        from yiban import cred_state
+        from yiban.adapters.statefiles import cred_state
         p1, p2 = "13800138000", "13900139000"
         with io.open(cred_state.path(), "w", encoding="utf-8") as f:
             json.dump({p1: {"fail_days": 3, "paused_since": "2026-09-01 00:00:00"},
@@ -1448,15 +881,15 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
 
     def test_sign_window_reads_env_and_falls_back(self):
         self._write_raw("YIBAN_SIGN_START=07:00\nYIBAN_SIGN_END=07:30\n")
-        self.assertEqual(self.webapp._sign_window(), ((7, 0), (7, 30)))
+        self.assertEqual(_signstatus._sign_window(), ((7, 0), (7, 30)))
         self._write_raw("YIBAN_SIGN_START=bad\nYIBAN_SIGN_END=07:30\n")
-        self.assertEqual(self.webapp._sign_window(), ((6, 30), (7, 30)),
+        self.assertEqual(_signstatus._sign_window(), ((6, 30), (7, 30)),
                          "非法起点回退默认、终点照取 .env（与引擎同一份逐字段解析）")
         self._write_raw("")
-        self.assertEqual(self.webapp._sign_window(), ((6, 30), (7, 50)))
+        self.assertEqual(_signstatus._sign_window(), ((6, 30), (7, 50)))
 
     def test_in_sign_window_minute_bounds(self):
-        import yiban.window as yb_window
+        import yiban.core.window as yb_window
         bounds = yb_window.bounds({"sign_start": (6, 30), "sign_end": (7, 50),
                                    "edge_front_sec": 0, "edge_back_sec": 0})
         inside = self.webapp._in_sign_window
@@ -1467,15 +900,15 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
         self.assertFalse(inside(bounds, datetime(2026, 9, 16, 23, 0, 0)))
 
     def test_in_run_period_combines_window_and_gates(self):
-        import yiban.window as yb_window
+        import yiban.core.window as yb_window
         bounds = yb_window.bounds({"sign_start": (6, 30), "sign_end": (7, 50),
                                    "edge_front_sec": 0, "edge_back_sec": 0})
         self._write_raw("YIBAN_SIGN_START=06:30\nYIBAN_SIGN_END=07:50\n")
         # 周六/周日默认关闭 → 钟点在窗口内也不算"本应运行"
-        self.assertFalse(self.webapp._in_run_period(bounds, datetime(2026, 9, 19, 6, 40)))
-        self.assertFalse(self.webapp._in_run_period(bounds, datetime(2026, 9, 20, 6, 40)))
-        self.assertTrue(self.webapp._in_run_period(bounds, datetime(2026, 9, 16, 6, 40)))
-        self.assertFalse(self.webapp._in_run_period(bounds, datetime(2026, 9, 16, 9, 0)),
+        self.assertFalse(_signstatus._in_run_period(bounds, datetime(2026, 9, 19, 6, 40)))
+        self.assertFalse(_signstatus._in_run_period(bounds, datetime(2026, 9, 20, 6, 40)))
+        self.assertTrue(_signstatus._in_run_period(bounds, datetime(2026, 9, 16, 6, 40)))
+        self.assertFalse(_signstatus._in_run_period(bounds, datetime(2026, 9, 16, 9, 0)),
                          "窗口外一律不算本应运行")
 
     def test_sign_status_texts_and_weekend_short_circuit(self):
@@ -1486,7 +919,7 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
         与引擎 06:31 开、07:49 停手分叉 1 分钟）。
         """
         self._write_raw("YIBAN_SIGN_START=06:30\nYIBAN_SIGN_END=07:50\n")
-        status = self.webapp.sign_status
+        status = _signstatus.sign_status
         self.assertEqual(status(datetime(2026, 9, 16, 6, 0)),
                          ("未到签到时间（06:31 开始）", "#7aa2f7"))
         self.assertEqual(status(datetime(2026, 9, 16, 7, 0)),
@@ -1508,7 +941,7 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
         """
         self._write_raw("YIBAN_SIGN_START=06:30\nYIBAN_SIGN_END=07:50\n"
                         "YIBAN_WINDOW_EDGE_FRONT_SEC=60\nYIBAN_WINDOW_EDGE_BACK_SEC=60\n")
-        status = self.webapp.sign_status
+        status = _signstatus.sign_status
         self.assertEqual(status(datetime(2026, 9, 16, 6, 30))[0], "未到签到时间（06:31 开始）")
         self.assertEqual(status(datetime(2026, 9, 16, 6, 31))[0], "签到窗口进行中（~07:49 结束）")
         self.assertEqual(status(datetime(2026, 9, 16, 7, 49))[0], "签到窗口进行中（~07:49 结束）")
@@ -1522,7 +955,7 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
         """
         self._write_raw("YIBAN_SIGN_START=07:00\nYIBAN_SIGN_END=07:10\n"
                         "YIBAN_WINDOW_EDGE_FRONT_SEC=300\nYIBAN_WINDOW_EDGE_BACK_SEC=300\n")
-        status = self.webapp.sign_status
+        status = _signstatus.sign_status
         self.assertEqual(status(datetime(2026, 9, 16, 6, 30)),
                          ("未到签到时间（07:01 开始）", "#7aa2f7"))
         self.assertEqual(status(datetime(2026, 9, 16, 7, 5)),
@@ -1534,12 +967,12 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
         此时管理员设的窗口根本没被采用，继续报三段状态等于谎报；这句话也是页面上唯一
         能看见该异常的出口（只写日志+邮件不够）。
         """
-        import yiban.window as yb_window
+        import yiban.core.window as yb_window
         dead = yb_window.bounds({"sign_start": (7, 0), "sign_end": (6, 0),
                                  "edge_front_sec": 60, "edge_back_sec": 60})
         self.assertTrue(dead.fell_back)
-        with mock.patch.object(self.webapp, "sign_window_bounds", return_value=dead):
-            text, color = self.webapp.sign_status(datetime(2026, 9, 16, 7, 0))
+        with mock.patch.object(_signstatus, "sign_window_bounds", return_value=dead):
+            text, color = _signstatus.sign_status(datetime(2026, 9, 16, 7, 0))
         self.assertEqual(text, "配置异常：签到窗口不可用，已按 06:31~07:49 运行")
         self.assertEqual(color, "#e0af68")
 
@@ -1565,8 +998,8 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
             f.write("[2020-01-02 06:40:00] [INFO] yiban: 签到\n")
         with mock.patch.object(self.webapp.clock, "now",
                                return_value=datetime(2020, 1, 5, 9, 0)):
-            self.assertEqual(self.webapp._most_recent_log_date(30), "2020-01-02")
-            self.assertEqual(self.webapp._most_recent_log_date(1), "2020-01-02",
+            self.assertEqual(_logs_svc._most_recent_log_date(30), "2020-01-02")
+            self.assertEqual(_logs_svc._most_recent_log_date(1), "2020-01-02",
                              "同日命中缓存：不因本次的扫描范围更窄而改写答案")
             self.assertEqual(self.webapp._most_recent_log_cache["checked_day"], "2020-01-05")
         # 今天有日志时立即返回今天（并刷新缓存）
@@ -1576,116 +1009,11 @@ class WebServicesLogsSplitContractTest(unittest.TestCase):
             f.write("[2020-01-05 06:40:00] [INFO] yiban: 签到\n")
         with mock.patch.object(self.webapp.clock, "now",
                                return_value=datetime(2020, 1, 5, 9, 0)):
-            self.assertEqual(self.webapp._most_recent_log_date(30), "2020-01-05")
+            self.assertEqual(_logs_svc._most_recent_log_date(30), "2020-01-05")
 
     # ------------------------------------------------------------------
     # 4/5. 别名加载安全与状态归属
     # ------------------------------------------------------------------
-MOVED_NOTIFY = (
-    "_nl_safe",
-    "_audit_actor",
-    "_audit_alert_facts",
-    "_last_cleanup_text",
-    "_change_mail",
-    "_review_reject_mail",
-    "_alert_mail_recipients",
-    "send_notification",
-    "_push_ever_configured",
-    # 只被迁出族使用、随所属域搬的常量
-    "_NOTIFY_LEDGER_LABELS",
-    "_MAIL_FLAG_NAMES",
-    "_PUSH_CONFIG_ENV_KEYS",
-)
-
-
-MOVED_CHANNEL = (
-    "_alert_channel_status",
-    "_channel_health_degraded",
-    "_channel_status_lines",
-    "_daily_budget_desc",
-    "_health_report_sent_today",
-    "_channel_health_facts",
-    "_audit_channel_health_degraded",
-    "_send_channel_health_report",
-    "_HEALTH_REPORT_META_KEY",
-)
-
-
-MOVED_CAPACITY = (
-    "_capacity_account_count",
-    "_capacity_audit_count",
-    "_capacity_estimate",
-    "_accounts_at_capacity",
-    "_registration_paused",
-    "_users_at_capacity",
-    "_mail_alert_due",
-    "_notify_capacity_once",
-    # 随域搬的节流状态与缺省窗口
-    "DEFAULT_MAIL_ALERT_COOLDOWN",
-    "_mail_alert_ts",
-    "_mail_alert_lock",
-    "_capacity_alerts",
-)
-
-
-MOVED_MANUAL = (
-    "_wait_signin_proc",
-    "_batch_wait_timeout",
-    "_manual_sign_failure_reason",
-    "_log_manual_sign_exit",
-    "_SIGNIN_EXIT_REASONS",
-)
-
-
-PURE_REEXPORTS_NOTIFY = {
-    "notify_mail": (
-        "_nl_safe", "_audit_actor", "_audit_alert_facts", "_last_cleanup_text",
-        "_change_mail", "_review_reject_mail", "_alert_mail_recipients",
-        "_NOTIFY_LEDGER_LABELS", "_MAIL_FLAG_NAMES", "_PUSH_CONFIG_ENV_KEYS",
-    ),
-    "channel_health": (
-        "_channel_health_degraded", "_daily_budget_desc", "_health_report_sent_today",
-        "_channel_health_facts", "_audit_channel_health_degraded", "_HEALTH_REPORT_META_KEY",
-    ),
-    "capacity": (
-        "_capacity_account_count", "_capacity_audit_count",
-        "DEFAULT_MAIL_ALERT_COOLDOWN", "_mail_alert_ts", "_mail_alert_lock", "_capacity_alerts",
-    ),
-    "manual_sign": (
-        "_wait_signin_proc", "_batch_wait_timeout", "_manual_sign_failure_reason",
-        "_SIGNIN_EXIT_REASONS",
-    ),
-}
-
-
-FORWARDED_NOTIFY = {
-    "notify_mail": ("send_notification", "_push_ever_configured"),
-    "channel_health": ("_alert_channel_status", "_channel_status_lines",
-                       "_send_channel_health_report"),
-    "capacity": ("_capacity_estimate", "_accounts_at_capacity", "_registration_paused",
-                 "_users_at_capacity", "_mail_alert_due", "_notify_capacity_once"),
-    "manual_sign": ("_log_manual_sign_exit",),
-}
-
-
-COMMON_APP_STATE = (
-    "ENV_FILE", "LOG_FILE", "STATE_DIR", "read_env", "load_env_int",
-    "_sign_window", "edge_config", "log_path_for", "_atomic_write",
-    "_file_lock", "_rate_lock",
-)
-
-
-APP_HELD_STATE_NOTIFY = {
-    "web/services/notify_mail.py": (*COMMON_APP_STATE, "_mail_alert_due"),
-    "web/services/channel_health.py": (
-        *COMMON_APP_STATE, "send_notification", "_push_ever_configured", "_mail_alert_due"),
-    "web/services/capacity.py": (
-        *COMMON_APP_STATE, "send_notification", "DEFAULT_MAX_ACCOUNTS", "DEFAULT_MAX_USERS"),
-    "web/services/manual_sign.py": COMMON_APP_STATE,
-}
-
-
-SERVICE_SOURCES_NOTIFY = tuple(APP_HELD_STATE_NOTIFY)
 
 
 class WebServicesNotifySplitContractTest(unittest.TestCase):
@@ -1753,164 +1081,23 @@ class WebServicesNotifySplitContractTest(unittest.TestCase):
         status.update(overrides)
         return status
 
-    def test_mail_alert_due_stub_reaches_send_notification(self):
-        """`web.app._mail_alert_due` 是既有打桩点：必须穿透到发送路径。"""
-        with mock.patch.object(self.webapp.mailer, "admin_recipients",
-                               return_value=["alert@test.local"]), \
-                mock.patch.object(self.webapp.mailer, "admin_notify_enabled",
-                                  return_value=True), \
-                mock.patch.object(self.webapp.mailer, "send_admin_alert") as snd, \
-                mock.patch.object(self.webapp.notify, "send"), \
-                mock.patch.object(self.webapp.notify, "pop_exhaustion_notice",
-                                  return_value=None), \
-                mock.patch.object(self.webapp, "_mail_alert_due",
-                                  return_value=False) as due:
-            self.webapp.send_notification("节流标题", "正文")
-        self.assertEqual(due.call_count, 1, "转发必须现取 _mail_alert_due")
-        snd.assert_not_called()
-        # 反面对照：节流放行时邮件照发（证明打桩值真的驱动了分支）
-        with mock.patch.object(self.webapp.mailer, "admin_recipients",
-                               return_value=["alert@test.local"]), \
-                mock.patch.object(self.webapp.mailer, "admin_notify_enabled",
-                                  return_value=True), \
-                mock.patch.object(self.webapp.mailer, "send_admin_alert") as snd, \
-                mock.patch.object(self.webapp.notify, "send"), \
-                mock.patch.object(self.webapp.notify, "pop_exhaustion_notice",
-                                  return_value=None), \
-                mock.patch.object(self.webapp, "_mail_alert_due", return_value=True):
-            self.webapp.send_notification("节流标题", "正文")
-        self.assertEqual(snd.call_count, 1)
-        self.assertEqual(snd.call_args.kwargs["to"], "alert@test.local")
-
-    def test_read_env_and_env_file_stubs_reach_push_ever_configured(self):
-        with mock.patch.object(self.webapp, "read_env",
-                               return_value={"YIBAN_NOTIFY_TYPE": "serverchan"}) as spy:
-            self.assertTrue(self.webapp._push_ever_configured())
-        self.assertEqual(spy.call_args.args[0], self.env_file,
-                         "转发必须现取本模块的 ENV_FILE")
-        with mock.patch.object(self.webapp, "read_env", return_value={}):
-            self.assertFalse(self.webapp._push_ever_configured())
-        with mock.patch.object(self.webapp, "read_env", return_value={}):
-            self.assertTrue(self.webapp._push_ever_configured(
-                {"YIBAN_NOTIFY_SECRET_ENC": "x"}), "显式传入的 envs 优先")
-
-    def test_sign_window_and_edge_stubs_reach_capacity_estimate(self):
-        """`web.app._sign_window` / `edge_config` 的既有打桩点对容量预估生效。"""
-        with mock.patch.object(self.webapp, "_sign_window",
-                               return_value=((6, 30), (7, 50))), \
-                mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
-                mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
-            self.assertEqual(self.webapp._capacity_estimate(0), 600)
-        with mock.patch.object(self.webapp, "_sign_window",
-                               return_value=((6, 30), (7, 50))), \
-                mock.patch.object(self.webapp, "edge_config", return_value=(60, 60)), \
-                mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
-            self.assertEqual(self.webapp._capacity_estimate(0), (4680 - 8) // 8 + 1,
-                             "窗口打桩与裁剪打桩都必须被现取")
-
-    def test_load_env_int_and_env_file_stubs_reach_capacity_gates(self):
-        with mock.patch.object(self.webapp, "load_env_int", return_value=1) as spy:
-            self.assertFalse(self.webapp._accounts_at_capacity(0))
-            self.assertTrue(self.webapp._accounts_at_capacity(2))
-        self.assertEqual(spy.call_args.args[0], self.env_file)
-        self.assertEqual(spy.call_args.args[1], "YIBAN_MAX_ACCOUNTS")
-        self.assertEqual(spy.call_args.args[2], self.webapp.DEFAULT_MAX_ACCOUNTS,
-                         "缺省上限必须现取本模块的常量")
-        with mock.patch.object(self.webapp, "load_env_int", return_value=0):
-            self.assertFalse(self.webapp._accounts_at_capacity(999), "0 = 不限")
-        # 注册暂停开关的判定是**布尔真值口径**（`read_env` + env_io.parse_env_flag，
-        # 认 1/true/on/yes），故按 test 打桩的注入口径现取的是 `read_env`
-        # （census P0-1 收口：原 `load_env_int(...) == 1` 会把 `=true` 读成未暂停）。
-        with mock.patch.object(self.webapp, "read_env",
-                               return_value={"YIBAN_REGISTRATION_PAUSE": "true"}):
-            self.assertTrue(self.webapp._registration_paused())
-        with mock.patch.object(self.webapp, "read_env",
-                               return_value={"YIBAN_REGISTRATION_PAUSE": "0"}):
-            self.assertFalse(self.webapp._registration_paused())
-        with mock.patch.object(self.webapp, "load_env_int", return_value=1) as spy:
-            self.webapp._users_at_capacity()
-        self.assertEqual(spy.call_args.args[1], "YIBAN_MAX_USERS")
-        self.assertEqual(spy.call_args.args[2], self.webapp.DEFAULT_MAX_USERS)
-
-    def test_mail_alert_due_uses_app_env_reader_and_shared_table(self):
-        """节流表必须与 `web.app._mail_alert_ts` 是同一份（测试按属性 .clear() 复位）。"""
-        import web.services.capacity as cap
-        self.assertIs(self.webapp._mail_alert_ts, cap._mail_alert_ts)
-        with mock.patch.object(self.webapp, "load_env_int", return_value=60) as spy:
-            self.assertTrue(self.webapp._mail_alert_due("标题"))
-            self.assertFalse(self.webapp._mail_alert_due("标题"))
-            self.assertTrue(self.webapp._mail_alert_due("另一标题"))
-        self.assertEqual(spy.call_args.args[0], self.env_file)
-        self.webapp._mail_alert_ts.clear()
-        with mock.patch.object(self.webapp, "load_env_int", return_value=0):
-            self.assertTrue(self.webapp._mail_alert_due("标题"))
-            self.assertTrue(self.webapp._mail_alert_due("标题"), "0=关闭节流")
-        # 直接写在 app 侧节流表上的时刻必须被真源看见（同一对象，非副本）。
-        # 节流键是 (title, level) 二元组（曾有第三维 target，全仓无实参调用点、
-        # 恒为 None 的死维度，已随 M33 残留清理删除），注入也按二元组。
-        self.webapp._mail_alert_ts[("注入标题", None)] = time.time()
-        with mock.patch.object(self.webapp, "load_env_int", return_value=60):
-            self.assertFalse(self.webapp._mail_alert_due("注入标题"))
-
-    def test_status_lines_and_send_stubs_reach_health_report(self):
-        """日报的状态行与发信出口都必须是 app 侧现取（既有打桩面）。"""
-        with mock.patch.object(self.webapp.db, "audit", return_value=True), \
-                mock.patch.object(self.webapp.db, "get_meta", return_value=""), \
-                mock.patch.object(self.webapp.db, "set_meta") as set_meta, \
-                mock.patch.object(self.webapp.notify, "pop_exhaustion_notice",
-                                  return_value=[]), \
-                mock.patch.object(self.webapp, "_channel_status_lines",
-                                  return_value=["改版后的状态行"]) as lines, \
-                mock.patch.object(self.webapp, "send_notification") as snd:
-            self.assertTrue(self.webapp._send_channel_health_report())
-        self.assertEqual(lines.call_count, 1, "转发必须现取 _channel_status_lines")
-        self.assertEqual(snd.call_count, 1)
-        self.assertEqual(snd.call_args.args[0], "告警通道健康日报")
-        report = snd.call_args.args[1]
-        self.assertIn("改版后的状态行", report.items, "正文必须用打桩后的状态行")
-        self.assertEqual(set_meta.call_count, 1, "成功后落当日去重标记")
-
-    def test_log_path_for_stub_reaches_manual_sign_exit_log(self):
-        """`web.app.log_path_for` 必须被现取：换日志目录后留痕跟着换。"""
-        target = os.path.join(self.tmp, "manual-exit.log")
-        with mock.patch.object(self.webapp, "log_path_for", return_value=target) as spy:
-            self.webapp._log_manual_sign_exit("138****0000", 3)
-        self.assertEqual(spy.call_count, 1)
-        with io.open(target, encoding="utf-8") as f:
-            text = f.read()
-        self.assertIn("手动签到未完成", text)
-        self.assertIn("队列忙", text)
-        # 退出码 0（正常）不写任何行
-        os.remove(target)
-        with mock.patch.object(self.webapp, "log_path_for", return_value=target):
-            self.assertIsNone(self.webapp._log_manual_sign_exit("138****0000", 0))
-        self.assertFalse(os.path.exists(target), "0 退出码不得留痕")
-
-    def test_notify_capacity_once_uses_app_send_notification(self):
-        with mock.patch.object(self.webapp, "send_notification") as snd:
-            self.webapp._notify_capacity_once("users", 500, "注册人数")
-            self.webapp._notify_capacity_once("users", 500, "注册人数")  # 每进程只一次
-        self.assertEqual(snd.call_count, 1)
-        self.assertEqual(snd.call_args.args[0], "注册人数已达上限")
-        self.assertTrue(snd.call_args.kwargs.get("urgent"))
-        self.webapp._capacity_alerts["users"] = False  # 复位进程内去重表
 
     # ------------------------------------------------------------------
     # 3. 行为逐字不变
     # ------------------------------------------------------------------
     def test_capacity_formula_verbatim(self):
-        with mock.patch.object(self.webapp, "_sign_window",
+        with mock.patch.object(_signstatus, "_sign_window",
                                return_value=((6, 30), (7, 50))), \
-                mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
+                mock.patch.object(_render, "edge_config", return_value=(0, 0)), \
                 mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
-            self.assertEqual(self.webapp._capacity_estimate(10), (4800 - 8) // 18 + 1)
-            self.assertEqual(self.webapp._capacity_estimate(3600), 2)
+            self.assertEqual(_capacity._capacity_estimate(10), (4800 - 8) // 18 + 1)
+            self.assertEqual(_capacity._capacity_estimate(3600), 2)
         # 退化窗口（起止同点）回退默认窗口 06:30~07:50（与引擎同源，故不为 0）
-        with mock.patch.object(self.webapp, "_sign_window",
+        with mock.patch.object(_signstatus, "_sign_window",
                                return_value=((7, 50), (7, 50))), \
-                mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)), \
+                mock.patch.object(_render, "edge_config", return_value=(0, 0)), \
                 mock.patch.dict(os.environ, {"YIBAN_AVG_ATTEMPT_SEC": "8"}):
-            self.assertEqual(self.webapp._capacity_estimate(0), (4680 - 8) // 8 + 1)
+            self.assertEqual(_capacity._capacity_estimate(0), (4680 - 8) // 8 + 1)
 
     def test_manual_sign_exit_semantics_verbatim(self):
         f = self.webapp._manual_sign_failure_reason
@@ -1993,13 +1180,6 @@ class WebServicesNotifySplitContractTest(unittest.TestCase):
         self.assertIn("推送额度已用尽=非紧急", facts)
         self.assertLessEqual(len(facts), 200, "摘要须能被 db.audit 的 200 字符上限容纳")
 
-    def test_capacity_alerts_and_meta_key_same_object(self):
-        import web.services.capacity as cap
-        import web.services.channel_health as ch
-        self.assertIs(self.webapp._capacity_alerts, cap._capacity_alerts)
-        self.assertEqual(self.webapp._HEALTH_REPORT_META_KEY, ch._HEALTH_REPORT_META_KEY)
-        self.assertEqual(self.webapp._HEALTH_REPORT_META_KEY, "channel_health_last")
-        self.assertEqual(self.webapp._NOTIFY_LEDGER_LABELS["login_fail"], "登录失败告警")
 
     def test_nl_safe_line_model_verbatim(self):
         for ch in ("\r", "\n", "\v", "\f", "\x1c", "\x1d", "\x1e", "\u0085", "\u2028", "\u2029"):
@@ -2029,88 +1209,6 @@ class WebServicesNotifySplitContractTest(unittest.TestCase):
     # ------------------------------------------------------------------
     # 4/5. 别名加载安全与状态归属
     # ------------------------------------------------------------------
-MOVED_SECURITY = (
-    "_new_admin_sid",
-    "_issue_admin_sid",
-    "_admin_session_facts",
-    "_builtin_admin_email",
-    "_is_builtin_admin_session",
-    "_effective_role",
-    "_current_role",
-    "migrate_admin_password_to_hash",
-    "_constant_time_dummy",
-    "reject_default_admin_password",
-    "_client_ip",
-    "_ip_store_trim",
-    "_bump_window_count",
-    "_bump_login_failure",
-    "_sensitive_gate_params",
-    "_verify_attempt_allowed",
-    "_verify_fail_cooldown_remaining",
-    "_record_verify_failure",
-    "check_admin_configured",
-    "_builtin_admin_loginable",
-    "verify_admin",
-    "_atomic_write",
-    "_replace_with_retry",
-    # 只被迁出族使用、随所属域搬的常量；另加同域的策略/口径常量
-    "SCRYPT_METHOD",
-    "ADMIN_SID_ENV_KEY",
-    "LOGIN_LOCK_SECONDS",
-    "_is_loopback_addr",
-    "_IP_STORE_LIMIT",
-    "_IP_STORE_MAX_AGE",
-    "VERIFY_MAX",
-    "VERIFY_WINDOW",
-    "VERIFY_FAIL_MAX",
-    "VERIFY_FAIL_WINDOW",
-    "VERIFY_FAIL_COOLDOWN",
-    "VERIFY_FAIL_AUTH_KEYWORDS",
-    "PW_CONFIRM_TTL_DEFAULT",
-    "PW_CONFIRM_TTL_MAX",
-    "PW_CONFIRM_COOLDOWN_DEFAULT",
-    "_DEFAULT_ADMIN_LITERALS",
-    "_REPLACE_RETRY_ATTEMPTS",
-    "_REPLACE_RETRY_BASE_SEC",
-)
-
-
-PURE_REEXPORTS_SEC = (
-    "_new_admin_sid",
-    "_constant_time_dummy",
-    "_client_ip",
-    "_ip_store_trim",
-    "_bump_window_count",
-    "_bump_login_failure",
-    "_verify_attempt_allowed",
-    "_verify_fail_cooldown_remaining",
-    "_record_verify_failure",
-    "_atomic_write",
-    "_replace_with_retry",
-)
-
-
-FORWARDED_SEC = (
-    "_issue_admin_sid",
-    "_admin_session_facts",
-    "_builtin_admin_email",
-    "_is_builtin_admin_session",
-    "_effective_role",
-    "_current_role",
-    "migrate_admin_password_to_hash",
-    "reject_default_admin_password",
-    "_sensitive_gate_params",
-    "check_admin_configured",
-    "_builtin_admin_loginable",
-    "verify_admin",
-)
-
-
-APP_HELD_STATE_SEC = (
-    "ENV_FILE", "LOG_FILE", "STATE_DIR", "read_env", "write_env_key",
-    "write_env_batch", "load_env_int", "_count_env_key_lines", "send_notification",
-    "SESSION_ABS_TTL_SECONDS", "verify_jobs", "_verify_sem", "_file_lock",
-)
 
 
 class WebSecuritySplitContractTest(unittest.TestCase):
@@ -2160,134 +1258,18 @@ class WebSecuritySplitContractTest(unittest.TestCase):
     # ------------------------------------------------------------------
     # 1. 名字面
     # ------------------------------------------------------------------
-    def test_rate_lock_single_definition_point(self):
-        """`_rate_lock` 收口在 locks.py：三处必须是同一把锁（禁止另建一把）。"""
-        import web.security as sec
-        from web.services import locks
-        self.assertIs(self.webapp._rate_lock, locks._rate_lock)
-        self.assertIs(sec._rate_lock, locks._rate_lock)
-        self.assertIsNot(self.webapp._rate_lock, self.webapp._file_lock,
-                         "限速锁与文件锁是两把不同用途的锁")
 
-    def test_verify_queue_and_measure_names_untouched(self):
-        """安全域不得占用他域名字面（`verify_jobs` 仍指 yiban 真源）。"""
-        import web.security as sec
-        from yiban.attempt import jobs as yb_jobs
-        self.assertIs(self.webapp.verify_jobs, yb_jobs)
-        self.assertFalse(hasattr(sec, "verify_jobs"))
 
     # ------------------------------------------------------------------
     # 2. 打桩往返（注入的是调用时刻的 app 侧名字）
     # ------------------------------------------------------------------
-    def test_read_env_stub_reaches_check_admin_configured(self):
-        with mock.patch.object(self.webapp, "read_env",
-                               return_value={"YIBAN_ADMIN_USER": "a",
-                                             "YIBAN_ADMIN_PASSWORD_HASH": "h"}) as spy:
-            self.assertTrue(self.webapp.check_admin_configured())
-        self.assertEqual(spy.call_count, 1, "转发必须现取 read_env")
-        with mock.patch.object(self.webapp, "read_env", return_value={}):
-            self.assertFalse(self.webapp.check_admin_configured())
 
-    def test_env_file_assignment_reaches_builtin_admin_email(self):
-        self._write_env(["YIBAN_ADMIN_USER=Root@Example.com"])
-        self.assertEqual(self.webapp._builtin_admin_email(), "root@example.com",
-                         "转发必须现取本模块的 ENV_FILE（小写化口径不变）")
-
-    def test_send_notification_and_read_env_stubs_reach_verify_admin(self):
-        """verify_admin 的两条打桩面：.env 读取器与告警出口。"""
-        # 只有明文、没有哈希 = M1 明文回退 fail-closed（迁移失败降级态）
-        with mock.patch.object(self.webapp, "read_env",
-                               return_value={"YIBAN_ADMIN_USER": "a",
-                                             "YIBAN_ADMIN_PASSWORD": "Plain#1234"}) as spy:
-            self.assertFalse(self.webapp.verify_admin("a", "Plain#1234"))
-        self.assertEqual(spy.call_count, 1)
-        # 哈希歧义（统计得 2 行）→ 拒绝 + 经 app 侧 send_notification 告警
-        with mock.patch.object(self.webapp, "read_env",
-                               return_value={"YIBAN_ADMIN_USER": "a",
-                                             "YIBAN_ADMIN_PASSWORD_HASH": "h"}), \
-                mock.patch.object(self.webapp, "_count_env_key_lines", return_value=2), \
-                mock.patch.object(self.webapp, "send_notification") as sn, \
-                mock.patch.object(self.webapp, "_constant_time_dummy") as dummy:
-            self.assertFalse(self.webapp.verify_admin("a", "x"))
-        self.assertTrue(sn.called, "歧义态必须经 app 侧告警出口告警")
-        self.assertTrue(sn.call_args.kwargs.get("urgent"))
-        self.assertEqual(sn.call_args.kwargs.get("ledger"), "login_fail")
-        self.assertEqual(dummy.call_count, 1, "拒绝分支必须走 app 侧的时延拉平")
-
-    def test_constant_time_dummy_stub_reaches_verify_admin(self):
-        with mock.patch.object(self.webapp, "read_env", return_value={}), \
-                mock.patch.object(self.webapp, "_constant_time_dummy") as dummy:
-            self.assertFalse(self.webapp.verify_admin("a", "x"))
-        self.assertEqual(dummy.call_count, 1, "凭据未配齐分支须现取 _constant_time_dummy")
-
-    def test_session_abs_ttl_assignment_reaches_current_role(self):
-        """`SESSION_ABS_TTL_SECONDS` 在 create_app 里会按 .env 回写模块全局：转发必须现取。"""
-        now = int(time.time())
-        with mock.patch.object(self.webapp, "read_env", return_value={}), \
-                self.flask_app.test_request_context():
-            flask.session["auth"] = True
-            flask.session["username"] = ""
-            flask.session["login_ts"] = now - 100
-            with mock.patch.object(self.webapp, "SESSION_ABS_TTL_SECONDS", 1000):
-                self.assertIsNone(self.webapp._current_role(), "未登录（无角色）仍是 None")
-            with mock.patch.object(self.webapp, "SESSION_ABS_TTL_SECONDS", 10):
-                self.assertIsNone(self.webapp._current_role(),
-                                  "绝对期被打桩成 10 秒后超龄会话必须失效")
-
-    def test_load_env_int_stub_reaches_sensitive_gate_params(self):
-        with mock.patch.object(self.webapp, "load_env_int",
-                               return_value=99999) as spy:
-            ttl, cooldown = self.webapp._sensitive_gate_params(self.env_file)
-        self.assertEqual(ttl, self.webapp.PW_CONFIRM_TTL_MAX,
-                         "TTL 上界硬钳在真源里生效（打桩值 99999 只按 900）")
-        self.assertEqual(cooldown, 99999, "冷却不钳制（0=关闭）")
-        self.assertEqual(spy.call_count, 2, "两个旋钮各读一次，且都经 app 侧读取器")
-
-    def test_write_env_key_and_read_env_stubs_reach_issue_admin_sid(self):
-        with mock.patch.object(self.webapp, "write_env_key") as w, \
-                mock.patch.object(self.webapp, "read_env",
-                                  return_value={self.webapp.ADMIN_SID_ENV_KEY: "old-sid"}):
-            sid = self.webapp._issue_admin_sid(self.env_file)
-        self.assertEqual(w.call_args.args[0], self.env_file)
-        self.assertEqual(w.call_args.args[1], self.webapp.ADMIN_SID_ENV_KEY)
-        self.assertNotEqual(sid, "old-sid")
-        # 落盘失败（OSError）→ 返回 .env 里的旧值，不把会话锁在门外
-        with mock.patch.object(self.webapp, "write_env_key", side_effect=OSError("ro")), \
-                mock.patch.object(self.webapp, "read_env",
-                                  return_value={self.webapp.ADMIN_SID_ENV_KEY: "old-sid"}):
-            self.assertEqual(self.webapp._issue_admin_sid(self.env_file), "old-sid")
-        with mock.patch.object(self.webapp, "read_env", return_value={}), \
-                mock.patch.object(self.webapp, "write_env_batch") as wb, \
-                mock.patch.object(self.webapp, "load_env_int", return_value=1):
-            self.webapp.migrate_admin_password_to_hash(self.env_file)
-        self.assertEqual(wb.call_count, 0, "无明文时不写 .env（幂等）")
-
-    def test_atomic_write_stub_reaches_env_and_measure_paths(self):
-        """`_atomic_write` 必须是同一函数对象，且 env_io / measure 的转发按调用时刻现取。"""
-        import web.security as sec
-        self.assertIs(self.webapp._atomic_write, sec._atomic_write,
-                      "web.app._atomic_write 必须是 web/security.py 的同一函数对象")
-        with mock.patch.object(self.webapp, "_atomic_write") as spy:
-            self.webapp.write_env_batch(self.env_file, {"YIBAN_X": "1"})
-        self.assertEqual(spy.call_count, 1, "env_io 落盘必须经 app 侧 _atomic_write（打桩点）")
-        self.assertIs(spy.call_args.kwargs["chmod_priv"], True)
-        with mock.patch.object(self.webapp, "_atomic_write") as spy:
-            self.webapp._write_measure_state(os.path.join(self.tmp, "m.json"), {"at": ""})
-        self.assertEqual(spy.call_count, 1, "实测落盘同样经 app 侧 _atomic_write")
-
-    def test_ip_store_trim_stub_is_reexport(self):
-        """计数助手是纯再导出：routes 经 m.* 打桩时命中真实现（同一对象）。"""
-        import web.security as sec
-        self.assertIs(self.webapp._ip_store_trim, sec._ip_store_trim)
-        store = {f"k{i}": (1, 0.0) for i in range(self.webapp._IP_STORE_LIMIT + 1)}
-        self.webapp._ip_store_trim(store, self.webapp._IP_STORE_MAX_AGE)
-        self.assertLess(len(store), 10, "超限且全过期必须被回收")
 
     # ------------------------------------------------------------------
     # 3. 行为逐字不变
     # ------------------------------------------------------------------
     def test_migrate_admin_password_to_hash_roundtrip(self):
-        real_write = self.webapp.write_env_batch
+        real_write = _env_io_svc.write_env_batch
         with mock.patch.object(self.webapp, "read_env",
                                return_value={"YIBAN_ADMIN_PASSWORD": "Strong#1234"}):
             self.webapp.migrate_admin_password_to_hash(self.env_file)
@@ -2295,7 +1277,7 @@ class WebSecuritySplitContractTest(unittest.TestCase):
         self.assertIn("YIBAN_ADMIN_PASSWORD_HASH=", text)
         self.assertNotIn("Strong#1234", text, "明文必须被清空（值空 → 删行）")
         self.assertNotIn("YIBAN_ADMIN_PASSWORD=", text)
-        self.assertIs(real_write, self.webapp.write_env_batch)
+        self.assertIs(real_write, _env_io_svc.write_env_batch)
 
     def test_reject_default_admin_password_verbatim_thresholds(self):
         weak = os.path.join(self.tmp, "weak.env")
@@ -2366,38 +1348,45 @@ class WebSecuritySplitContractTest(unittest.TestCase):
                         mock.patch.object(self.webapp.db, "find_user", return_value=None), \
                         self.flask_app.test_request_context():
                     flask.session.update(data)
-                    got = self.webapp._effective_role(data.get("username"), pwv)
+                    got = _security._effective_role(data.get("username"), pwv)
                 self.assertEqual(got, want)
         # 升级日存量部署兼容：.env 尚未签发 sid（空）时不强制重登
         with mock.patch.object(self.webapp, "read_env",
                                return_value={"YIBAN_ADMIN_USER": "admin"}), \
                 self.flask_app.test_request_context():
             flask.session.update({"auth_source": "builtin", "username": "admin"})
-            self.assertEqual(self.webapp._effective_role("admin", 1), "admin")
+            self.assertEqual(_security._effective_role("admin", 1), "admin")
         with mock.patch.object(self.webapp, "read_env", return_value=env), \
                 mock.patch.object(self.webapp.db, "find_user",
                                   return_value={"role": "admin", "sid": "s", "pw_version": 2}), \
                 self.flask_app.test_request_context():
             flask.session.update({"auth_source": "user", "username": "u@x.io", "sid": "s"})
-            self.assertEqual(self.webapp._effective_role("u@x.io", 2), "admin")
-            self.assertEqual(self.webapp._effective_role("u@x.io", 1), None,
+            self.assertEqual(_security._effective_role("u@x.io", 2), "admin")
+            self.assertEqual(_security._effective_role("u@x.io", 1), None,
                              "pw_version 不匹配即失效")
 
     def test_current_role_absolute_expiry_clears_session(self):
         env = {"YIBAN_ADMIN_USER": "admin"}
         with mock.patch.object(self.webapp, "read_env", return_value=env), \
                 self.flask_app.test_request_context():
-            self.assertIsNone(self.webapp._current_role(), "无 auth 即未登录")
+            self.assertIsNone(_security._current_role(
+            self.webapp.SESSION_ABS_TTL_SECONDS), "无 auth 即未登录")
             flask.session["auth"] = True
             flask.session["username"] = "u@x.io"
             flask.session["login_ts"] = int(time.time()) - self.webapp.SESSION_ABS_TTL_SECONDS - 5
             with mock.patch.object(self.webapp.db, "find_user", return_value=None):
-                self.assertIsNone(self.webapp._current_role())
+                self.assertIsNone(_security._current_role(
+            self.webapp.SESSION_ABS_TTL_SECONDS))
             self.assertEqual(len(flask.session), 0, "超限必须清空会话（视为未登录）")
 
     def test_client_ip_trusted_proxy_and_fallback(self):
-        """回环首跳采信 XFF；非回环首跳丢弃；无 XFF 时回落 remote_addr。"""
+        """显式信任档（反代形态）：回环首跳采信 XFF；非回环首跳丢弃；无 XFF 回落。
+
+        选项默认已翻转为"不信任"（ba-p07-01），故本用例显式打开开关，测的才是
+        "反代部署"那条分支；缺省档由 `test_client_ip_default_trust_is_off` 钉住。
+        """
         app = self.flask_app
+        app.config[self.webapp.FORWARDED_TRUST_ENV_KEY] = True
         with app.test_request_context("/", environ_base={"REMOTE_ADDR": "127.0.0.1"},
                                       headers={"X-Forwarded-For": "203.0.113.9, 10.0.0.1"}):
             self.assertEqual(self.webapp._client_ip(), "203.0.113.9")
@@ -2411,6 +1400,15 @@ class WebSecuritySplitContractTest(unittest.TestCase):
                              "非可信首跳的 XFF 必须被忽略（不可伪造）")
         with app.test_request_context("/", environ_base={"REMOTE_ADDR": "::1"}):
             self.assertEqual(self.webapp._client_ip(), "::1")
+        app.config[self.webapp.FORWARDED_TRUST_ENV_KEY] = False
+
+    def test_client_ip_default_trust_is_off(self):
+        """缺省档（未设开关）：回环首跳也不采信 XFF——客户端自报值不得成为 IP 桶。"""
+        app = self.flask_app
+        app.config.pop(self.webapp.FORWARDED_TRUST_ENV_KEY, None)
+        with app.test_request_context("/", environ_base={"REMOTE_ADDR": "127.0.0.1"},
+                                      headers={"X-Forwarded-For": "203.0.113.9"}):
+            self.assertEqual(self.webapp._client_ip(), "127.0.0.1")
 
     def test_atomic_write_roundtrip_and_reparse(self):
         target = os.path.join(self.tmp, "aw-security.txt")
@@ -2436,7 +1434,7 @@ class WebSecuritySplitContractTest(unittest.TestCase):
         with mock.patch.object(self.webapp, "read_env") as re_:
             re_.return_value = {"YIBAN_ADMIN_USER": "admin",
                                 "YIBAN_ADMIN_PASSWORD_HASH": "not-a-hash"}
-            self.assertFalse(self.webapp.verify_admin("admin", "pw"))
+            self.assertFalse(_security.verify_admin("admin", "pw"))
 
     def test_builtin_admin_loginable_three_states(self):
         cases = [
@@ -2450,46 +1448,12 @@ class WebSecuritySplitContractTest(unittest.TestCase):
                     mock.patch.object(self.webapp, "read_env", return_value=env), \
                     mock.patch.object(self.webapp, "_count_env_key_lines",
                                       return_value=lines):
-                self.assertEqual(self.webapp._builtin_admin_loginable(), want)
+                self.assertEqual(_security._builtin_admin_loginable(), want)
 
     # ------------------------------------------------------------------
     # 4/5. 别名加载安全与状态归属
     # ------------------------------------------------------------------
-    def test_alias_loaded_app_shares_security_module(self):
-        import web.security as sec
-        self.assertIs(self.webapp._security, sec,
-                      "别名加载的 app 副本必须复用同一个 web.security")
 
-    def test_security_module_holds_no_app_state(self):
-        import web.security as sec
-        for name in APP_HELD_STATE_SEC:
-            self.assertFalse(hasattr(sec, name),
-                             f"web/security.py 不得持有 {name}（应由 web.app 调用时刻注入）")
-
-    def test_security_source_does_not_import_app(self):
-        with io.open(os.path.join(BASE, "web", "security.py"), encoding="utf-8") as f:
-            src = f.read()
-        import re as _re
-        self.assertIsNone(_re.search(r"^\s*(?:import|from)\s+web\.app\b", src, _re.M),
-                          "web/security.py 禁止 import web.app")
-
-    def test_importing_security_does_not_execute_web_app(self):
-        """全新解释器里只 import web.security：不得把 web.app 拉进 sys.modules。"""
-        code = (
-            "import sys;"
-            f"sys.path[:0]=[{os.path.join(BASE, 'scripts')!r}, {BASE!r}];"
-            "import web.security;"
-            "print('APP_LOADED' if 'web.app' in sys.modules else 'SECURITY_ONLY_OK')"
-        )
-        env = dict(os.environ)
-        env.pop("PYTHONPATH", None)
-        r = subprocess.run([sys.executable, "-c", code], cwd=BASE, env=env,
-                           capture_output=True, text=True, timeout=120)
-        self.assertIn("SECURITY_ONLY_OK", r.stdout, r.stderr[-600:])
-        self.assertEqual(r.returncode, 0, r.stderr[-600:])
-
-
-M_ATTR_RE = re.compile(r"\bm\.([A-Za-z_]\w*)")
 
 # （名字面计数钉已随流程门禁整族裁撤，缩减批 6a：名字面漂移的可见性由
 # test_every_m_route_name_reachable_on_app_module 的可达性断言承接。）
@@ -2511,151 +1475,6 @@ SPLIT_MODULES = (
     "web.render",
     "web.security",
 )
-
-
-SPLIT_SOURCES = tuple(m.replace(".", "/") + ".py" for m in SPLIT_MODULES)
-
-
-def scan_m_route_names():
-    """扫 `web/routes/*.py` 的 `m.<名字>` 命中集（排序列表，供断言与报错用）。"""
-    names = set()
-    routes_dir = os.path.join(BASE, "web", "routes")
-    for name in sorted(os.listdir(routes_dir)):
-        if not name.endswith(".py"):
-            continue
-        with io.open(os.path.join(routes_dir, name), encoding="utf-8") as f:
-            names.update(M_ATTR_RE.findall(f.read()))
-    return sorted(names)
-
-
-class AppNameSurfaceContractTest(unittest.TestCase):
-    """以别名加载的 app 副本为靶子（routes 与测试实际看到的那一份）。"""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.tmp = tempfile.mkdtemp(prefix="yiban-appsplit-")
-        cls.env_file = os.path.join(cls.tmp, ".env")
-        cls._old_env = {k: os.environ.get(k) for k in
-                        ("YIBAN_ENV_FILE", "YIBAN_DB_FILE", "YIBAN_STATE_DIR",
-                         "YIBAN_ACCOUNTS_FILE", "YIBAN_ACCOUNTS_KEY", "YIBAN_LOG_FILE")}
-        os.environ["YIBAN_ENV_FILE"] = cls.env_file
-        os.environ["YIBAN_DB_FILE"] = os.path.join(cls.tmp, "yiban.db")
-        os.environ["YIBAN_STATE_DIR"] = cls.tmp
-        os.environ["YIBAN_ACCOUNTS_FILE"] = os.path.join(cls.tmp, "accounts.json")
-        os.environ["YIBAN_ACCOUNTS_KEY"] = TEST_KEY
-        os.environ["YIBAN_LOG_FILE"] = os.path.join(cls.tmp, "sign.log")
-        with io.open(cls.env_file, "w", encoding="utf-8") as f:
-            f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n")
-        spec = importlib.util.spec_from_file_location(
-            "webapp_appsplit", os.path.join(BASE, "web", "app.py"))
-        cls.webapp = importlib.util.module_from_spec(spec)
-        sys.modules["webapp_appsplit"] = cls.webapp
-        with contextlib.suppress(Exception):
-            spec.loader.exec_module(cls.webapp)
-        cls.flask_app = flask.Flask("webapp_appsplit")
-        cls.flask_app.secret_key = "appsplit-test-secret"
-
-    @classmethod
-    def tearDownClass(cls):
-        shutil.rmtree(cls.tmp, ignore_errors=True)
-        for k, v in cls._old_env.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
-
-    # ------------------------------------------------------------------
-    # 1. 名字面总账
-    # ------------------------------------------------------------------
-    def test_every_m_route_name_reachable_on_app_module(self):
-        """routes 经 `m.*` 取用的每个名字都必须在 app 模块上可达（别名加载的那一份）。"""
-        missing = [n for n in scan_m_route_names() if not hasattr(self.webapp, n)]
-        self.assertEqual(missing, [],
-                         f"web.app 名字面缺失 routes 取用的名字（路由体在请求期会 AttributeError）：{missing}")
-
-    def test_route_modules_do_not_import_web_app(self):
-        """正则钉：拆分模块的源文件不得 `import web.app`（别名加载会执行副本模块）。"""
-        bad = []
-        for rel in SPLIT_SOURCES:
-            with io.open(os.path.join(BASE, rel), encoding="utf-8") as f:
-                src = f.read()
-            if re.search(r"^\s*(?:import|from)\s+web\.app\b", src, re.M):
-                bad.append(rel)
-        self.assertEqual(bad, [], f"以下模块禁止 import web.app：{bad}")
-
-    # ------------------------------------------------------------------
-    # 2. 全新解释器实测：只 import 拆分模块，不得把 web.app 拉进来
-    # ------------------------------------------------------------------
-    def test_importing_split_modules_does_not_execute_web_app(self):
-        """子进程双钉：导入全部拆分模块后 web.app 不在 sys.modules，且 app 名字面仍齐。"""
-        code = (
-            "import sys, re, pathlib, importlib;"
-            f"sys.path[:0]=[{os.path.join(BASE, 'scripts')!r}, {BASE!r}];"
-            f"[importlib.import_module(m) for m in {list(SPLIT_MODULES)!r}];"
-            "print('APP_LOADED_BY_SPLIT' if 'web.app' in sys.modules else 'SPLIT_ONLY_OK');"
-            "import web.app as m;"
-            "names=set();"
-            "[names.update(re.findall(r'\\bm\\.([A-Za-z_]\\w*)', p.read_text(encoding='utf-8')))"
-            " for p in pathlib.Path('web/routes').glob('*.py')];"
-            "print('NAMES', len(names));"
-            "print('MISSING', ','.join(sorted(n for n in names if not hasattr(m, n))) or 'NONE')"
-        )
-        env = dict(os.environ)
-        env.pop("PYTHONPATH", None)
-        env["YIBAN_STATE_DIR"] = self.tmp
-        env["YIBAN_LOG_FILE"] = os.path.join(self.tmp, "sign.log")
-        env["YIBAN_DB_FILE"] = os.path.join(self.tmp, "probe.db")
-        env["YIBAN_ENV_FILE"] = self.env_file
-        r = subprocess.run([sys.executable, "-c", code], cwd=BASE, env=env,
-                           capture_output=True, text=True, timeout=120)
-        self.assertIn("SPLIT_ONLY_OK", r.stdout, r.stderr[-800:])
-        self.assertNotIn("APP_LOADED_BY_SPLIT", r.stdout, r.stderr[-800:])
-        self.assertIn("MISSING NONE", r.stdout,
-                      f"独立进程里 web.app 名字面缺名：{r.stdout!r} {r.stderr[-400:]}")
-        self.assertEqual(r.returncode, 0, r.stderr[-800:])
-
-    # ------------------------------------------------------------------
-    # 3. 晚查找机制（routes 取的就是这一份，打桩立即可见）
-    # ------------------------------------------------------------------
-    def test_appmod_resolves_alias_loaded_module(self):
-        """`appmod()` 必须指回别名加载的那一份 app，而不是另执行一份 `web.app`。"""
-        from web.routes import appmod
-        with self.flask_app.test_request_context():
-            self.assertIs(appmod(), self.webapp,
-                          "routes 的晚查找没取到在跑的那一份 app 模块")
-
-    def test_patched_app_attribute_is_visible_through_late_lookup(self):
-        """代表性往返：patch app 模块属性 → routes 晚查找取到的是同一个被改过的值。"""
-        from web.routes import appmod
-        with self.flask_app.test_request_context(), \
-                mock.patch.object(self.webapp, "ENV_FILE", os.path.join(self.tmp, "x.env")):
-            self.assertEqual(appmod().ENV_FILE, os.path.join(self.tmp, "x.env"))
-            self.assertEqual(appmod(), self.webapp)
-
-
-MOVED_NAMES = (
-    "_inline_md",
-    "_render_md",
-    "_read_doc_html",
-    "_doc_page",
-    "_DOC_FILES",
-    "_SAFE_LINK_SCHEMES",
-    "_LINK_RE",
-    "email_domain_error",
-    "icp_info",
-    "police_info",
-    "police_link",
-    "site_description",
-    "site_image",
-    "edge_config",
-    "edge_front_sec",
-)
-
-
-PURE_REEXPORTS_RENDER = ("_inline_md", "_render_md", "_DOC_FILES", "_SAFE_LINK_SCHEMES", "_LINK_RE")
-
-
-APP_HELD_STATE_RENDER = ("ENV_FILE", "_REPO_ROOT", "_doc_cache")
 
 
 class WebRenderSplitContractTest(unittest.TestCase):
@@ -2702,105 +1521,17 @@ class WebRenderSplitContractTest(unittest.TestCase):
     # ------------------------------------------------------------------
     # 1. 名字面
     # ------------------------------------------------------------------
-    def test_every_moved_name_reachable_on_app_and_render(self):
-        from web import render as render_mod
-        missing_app = [n for n in MOVED_NAMES if not hasattr(self.webapp, n)]
-        missing_render = [n for n in MOVED_NAMES if not hasattr(render_mod, n)]
-        self.assertEqual(missing_app, [], "web.app 兼容面缺失迁出名")
-        self.assertEqual(missing_render, [], "web/render.py 缺定义")
 
-    def test_env_file_stub_round_trip(self):
-        """`web.app.ENV_FILE` 改写后，站点展示族必须读到新 .env（现取而非副本绑定）。"""
-        self._write_env(
-            "YIBAN_ICP_INFO= 京ICP备测试号 \n"
-            "YIBAN_POLICE_INFO= 公安备测试号 \n"
-            "YIBAN_POLICE_LINK=https://beian.example.gov.cn/p\n"
-            "YIBAN_SITE_DESCRIPTION= 自定义摘要 \n"
-            "YIBAN_SITE_IMAGE=https://img.example.com/a.png\n"
-            "YIBAN_WINDOW_EDGE_FRONT_SEC=90\n"
-            "YIBAN_WINDOW_EDGE_BACK_SEC=30\n"
-            "YIBAN_EMAIL_DOMAIN_ALLOWLIST=qq.com\n"
-        )
-        with mock.patch.object(self.webapp, "ENV_FILE", self.env_file):
-            self.assertEqual(self.webapp.icp_info(), "京ICP备测试号")
-            self.assertEqual(self.webapp.police_info(), "公安备测试号")
-            self.assertEqual(self.webapp.police_link(), "https://beian.example.gov.cn/p")
-            self.assertEqual(self.webapp.site_description(), "自定义摘要")
-            self.assertEqual(self.webapp.site_image(), "https://img.example.com/a.png")
-            self.assertEqual(self.webapp.edge_config(), (90, 30))
-            self.assertEqual(self.webapp.edge_front_sec(), 90)
-            self.assertEqual(self.webapp.email_domain_error("a@qq.com"), None)
-            self.assertIsNotNone(self.webapp.email_domain_error("a@163.com"))
 
     def test_site_image_rejects_non_https_round_trip(self):
         self._write_env("YIBAN_SITE_IMAGE=http://img.example.com/a.png\n")
         with mock.patch.object(self.webapp, "ENV_FILE", self.env_file):
-            self.assertEqual(self.webapp.site_image(), "")
+            self.assertEqual(_render.site_image(), "")
 
-    def test_doc_root_and_cache_injected(self):
-        """`_REPO_ROOT` 改写要生效、缓存要落在 web.app 的 `_doc_cache` 上。"""
-        sub = os.path.join(self.tmp, "docs")
-        os.makedirs(sub, exist_ok=True)
-        with io.open(os.path.join(sub, "USER_AGREEMENT.md"), "w", encoding="utf-8") as f:
-            f.write("# 用户协议\n\n正文。\n")
-        with mock.patch.object(self.webapp, "_REPO_ROOT", sub):
-            self.webapp._doc_cache.clear()
-            html = self.webapp._read_doc_html("USER_AGREEMENT.md")
-            self.assertIn("<h1>用户协议</h1>", html)
-            self.assertIn("USER_AGREEMENT.md", self.webapp._doc_cache, "缓存应写回 web.app._doc_cache")
-            key_first = self.webapp._doc_cache["USER_AGREEMENT.md"][0]
-            self.webapp._read_doc_html("USER_AGREEMENT.md")
-            self.assertEqual(self.webapp._doc_cache["USER_AGREEMENT.md"][0], key_first,
-                             "文件未变更应命中缓存")
-        self.webapp._doc_cache.clear()
-
-    def test_doc_page_default_description_uses_app_state(self):
-        """`_doc_page` 摘要留空时取 `site_description()`（同样受 ENV_FILE 打桩影响）。"""
-        self._write_env("YIBAN_SITE_DESCRIPTION= 独立页摘要 \n")
-        with mock.patch.object(self.webapp, "ENV_FILE", self.env_file):
-            page = self.webapp._doc_page("用户协议", "<p>正文</p>")
-        self.assertIn('content="独立页摘要"', page)
-
-    def test_edge_config_patch_name_face(self):
-        """`mock.patch.object(webapp, "edge_config")` 仍是可打桩的名字面。"""
-        with mock.patch.object(self.webapp, "edge_config", return_value=(0, 0)):
-            self.assertEqual(self.webapp.edge_config(), (0, 0))
 
     # ------------------------------------------------------------------
     # 3/4. 别名加载安全与状态归属
     # ------------------------------------------------------------------
-    def test_alias_loaded_app_shares_render_module(self):
-        from web import render as render_mod
-        self.assertIs(self.webapp._render, render_mod,
-                      "别名加载的 app 副本必须复用同一个 web.render（不得再执行一份）")
-
-    def test_render_module_holds_no_app_state(self):
-        from web import render as render_mod
-        for name in APP_HELD_STATE_RENDER:
-            self.assertFalse(hasattr(render_mod, name),
-                             f"render 层不得持有 {name}（应由 web.app 调用时刻注入）")
-
-    def test_render_source_does_not_import_app(self):
-        path = os.path.join(BASE, "web", "render.py")
-        with io.open(path, encoding="utf-8") as f:
-            src = f.read()
-        self.assertIsNone(re.search(r"^\s*(?:import|from)\s+web\.app\b", src, re.M),
-                          "render 层禁止 import web.app（别名加载会执行副本模块）")
-
-    def test_importing_render_does_not_execute_web_app(self):
-        """全新解释器里只 import web.render：不得把 web.app 拉进 sys.modules。"""
-        code = (
-            "import sys;"
-            f"sys.path[:0]=[{os.path.join(BASE, 'scripts')!r}, {BASE!r}];"
-            "import web.render;"
-            "print('APP_LOADED' if 'web.app' in sys.modules else 'RENDER_ONLY_OK')"
-        )
-        env = dict(os.environ)
-        env.pop("PYTHONPATH", None)
-        r = subprocess.run([sys.executable, "-c", code], cwd=BASE, env=env,
-                           capture_output=True, text=True, timeout=60)
-        self.assertIn("RENDER_ONLY_OK", r.stdout, r.stderr[-600:])
-        self.assertEqual(r.returncode, 0, r.stderr[-600:])
 
 
 # ---------------------------------------------------------------------------
@@ -2813,366 +1544,6 @@ class WebRenderSplitContractTest(unittest.TestCase):
 # 用例（*_stub_reaches_* 等）仍留在原域类一字未动；security/render 的别名安全
 # 变体（*_security_module / *_render_module 四条）亦原样保留。
 # 新增域只需往各表登记一行 + 一张名字表。
-
-
-class BoundaryMechanismLedgerTest(unittest.TestCase):
-    """web 拆分边界的机制总账：38 条复制头的通用正确性（6c3-B）。"""
-
-    @classmethod
-    def setUpClass(cls):
-        cls._old_env = {k: os.environ.get(k) for k in
-                        ("YIBAN_ENV_FILE", "YIBAN_DB_FILE", "YIBAN_STATE_DIR",
-                         "YIBAN_ACCOUNTS_FILE", "YIBAN_ACCOUNTS_KEY",
-                         "YIBAN_LOG_FILE", "YIBAN_VERIFY_ASYNC")}
-        cls.tmps = {}
-        cls.webapps = {}
-        cls.env_files = {}
-        for tag, key in (("accounts", "webapp_ledger_accounts"),
-                         ("env", "webapp_ledger_env"),
-                         ("logs", "webapp_ledger_logs"),
-                         ("notify", "webapp_ledger_notify"),
-                         ("security", "webapp_ledger_security"),
-                         ("render", "webapp_ledger_render")):
-            tmp = tempfile.mkdtemp(prefix=f"yiban-ledger-{tag}-")
-            env_file = os.path.join(tmp, ".env")
-            with io.open(env_file, "w", encoding="utf-8") as f:
-                f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n")
-            os.environ["YIBAN_ENV_FILE"] = env_file
-            os.environ["YIBAN_DB_FILE"] = os.path.join(tmp, "yiban.db")
-            os.environ["YIBAN_STATE_DIR"] = tmp
-            os.environ["YIBAN_ACCOUNTS_FILE"] = os.path.join(tmp, "accounts.json")
-            os.environ["YIBAN_ACCOUNTS_KEY"] = TEST_KEY
-            if tag == "logs":
-                os.makedirs(os.path.join(tmp, "logs"), exist_ok=True)
-                os.environ["YIBAN_LOG_FILE"] = os.path.join(tmp, "logs", "sign.log")
-            elif tag in ("accounts", "notify", "security"):
-                os.environ["YIBAN_LOG_FILE"] = os.path.join(tmp, "sign.log")
-            if tag == "accounts":
-                os.environ.pop("YIBAN_VERIFY_ASYNC", None)
-            spec = importlib.util.spec_from_file_location(
-                key, os.path.join(BASE, "web", "app.py"))
-            webapp = importlib.util.module_from_spec(spec)
-            sys.modules[key] = webapp
-            with contextlib.suppress(Exception):
-                spec.loader.exec_module(webapp)
-            webapp.ENV_FILE = env_file
-            webapp.STATE_DIR = tmp
-            cls.tmps[tag] = tmp
-            cls.webapps[tag] = webapp
-            cls.env_files[tag] = env_file
-
-    @classmethod
-    def tearDownClass(cls):
-        for p in cls.tmps.values():
-            shutil.rmtree(p, ignore_errors=True)
-        for key in ("webapp_ledger_accounts", "webapp_ledger_env",
-                    "webapp_ledger_logs", "webapp_ledger_notify",
-                    "webapp_ledger_security", "webapp_ledger_render"):
-            sys.modules.pop(key, None)
-        for k, v in cls._old_env.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
-
-    @staticmethod
-    def _service_modules():
-        """六个域共用的真源模块表（供机制 1/2/3/5/6 复用）。"""
-        import web.security as sec_mod
-        from web import render as render_mod
-        from web.services import accounts_data as ad
-        from web.services import capacity as cap
-        from web.services import channel_health as ch
-        from web.services import env_io as env_mod
-        from web.services import executor_env as exec_mod
-        from web.services import locks as locks_mod
-        from web.services import logs as logs_mod
-        from web.services import manual_sign as ms_sign
-        from web.services import measure as ms_mod
-        from web.services import notify_mail as nm
-        from web.services import signstatus as ss_mod
-        from web.services import verify_queue as vq
-        return dict(sec=sec_mod, render=render_mod, ad=ad, cap=cap, ch=ch,
-                    env=env_mod, exece=exec_mod, locks=locks_mod, logs=logs_mod,
-                    msign=ms_sign, ms=ms_mod, nm=nm, ss=ss_mod, vq=vq)
-
-    # ---- 机制 1：名字面可达（原 ×5：accounts/env/logs/notify/security）----
-    def test_every_moved_name_reachable_on_app_and_home_module(self):
-        m = self._service_modules()
-        cases = {
-            "accounts": ((m["ad"], MOVED_ACCOUNTS), (m["vq"], MOVED_VERIFY), (m["ms"], MOVED_MEASURE)),
-            "env": ((m["env"], MOVED_ENV_IO), (m["exece"], MOVED_EXECUTOR_ENV)),
-            "logs": ((m["logs"], MOVED_LOGS), (m["ss"], MOVED_SIGNSTATUS)),
-            "notify": ((m["nm"], MOVED_NOTIFY), (m["ch"], MOVED_CHANNEL),
-                       (m["cap"], MOVED_CAPACITY), (m["msign"], MOVED_MANUAL)),
-            "security": ((m["sec"], MOVED_SECURITY),),
-        }
-        for tag, pairs in cases.items():
-            webapp = self.webapps[tag]
-            with self.subTest(domain=tag):
-                for home, names in pairs:
-                    for name in names:
-                        self.assertTrue(hasattr(webapp, name), f"web.app 兼容面缺失 {name}")
-                        self.assertTrue(hasattr(home, name), f"{home.__name__} 缺 {name}")
-                if tag == "env":
-                    self.assertTrue(hasattr(webapp, "_file_lock"), "web.app._file_lock 必须可达")
-
-    # ---- 机制 2：纯再导出同一性（原 ×6，含 render）+ 随域搬迁常量的值口径 ----
-    def test_pure_reexports_are_same_object(self):
-        m = self._service_modules()
-        cases = {
-            "accounts": ((m["ad"], PURE_REEXPORTS_ACCOUNTS), (m["vq"], PURE_REEXPORTS_VERIFY),
-                         (m["ms"], PURE_REEXPORTS_MEASURE)),
-            "env": ((m["env"], PURE_REEXPORTS_ENV_IO), (m["exece"], PURE_REEXPORTS_EXECUTOR_ENV)),
-            "logs": ((m["logs"], PURE_REEXPORTS_LOGS), (m["ss"], PURE_REEXPORTS_SIGNSTATUS)),
-            "notify": ((m["nm"], PURE_REEXPORTS_NOTIFY["notify_mail"]),
-                       (m["ch"], PURE_REEXPORTS_NOTIFY["channel_health"]),
-                       (m["cap"], PURE_REEXPORTS_NOTIFY["capacity"]),
-                       (m["msign"], PURE_REEXPORTS_NOTIFY["manual_sign"])),
-            "security": ((m["sec"], PURE_REEXPORTS_SEC),),
-            "render": ((m["render"], PURE_REEXPORTS_RENDER),),
-        }
-        for tag, pairs in cases.items():
-            webapp = self.webapps[tag]
-            with self.subTest(domain=tag):
-                for home, names in pairs:
-                    for name in names:
-                        self.assertIs(getattr(webapp, name), getattr(home, name),
-                                      f"{name} 应为同一个对象（web.app 只是再导出）")
-        # 随域搬迁的常量：值与来源口径保持不变（原各域复制头内的值钉，逐条登记）
-        acc = self.webapps["accounts"]
-        self.assertEqual(
-            (acc.ACCOUNT_STATUS_PENDING, acc.ACCOUNT_STATUS_ACTIVE,
-             acc.ACCOUNT_STATUS_REJECTED), ("pending", "active", "rejected"))
-        self.assertEqual(acc.PHONE_RE.pattern, r"^1\d{10}$")
-        self.assertEqual(acc.PASSWORD_MIN_LEN, 10)
-        self.assertEqual(acc._PASSWORD_MIN_CLASSES, 2)
-        self.assertEqual(acc.ADMIN_PASSWORD_MIN_LEN, 12)
-        self.assertEqual(acc.ADMIN_PASSWORD_MIN_CLASSES, 3)
-        self.assertEqual(acc.MEASURE_STATE_FILE, "capacity-measure.json")
-        self.assertEqual(acc.VERIFY_JOBS_MAX_PENDING, acc.verify_jobs.MAX_PENDING)
-        envw = self.webapps["env"]
-        self.assertIs(envw._next_executor_slot, m["exece"]._next_executor_slot)
-        self.assertEqual(envw.ANNOUNCEMENT_DRAFT_META_SEP, "|")
-        self.assertEqual(envw.ANNOUNCEMENT_DRAFT_META_FMT, "%Y-%m-%d %H:%M:%S")
-        self.assertEqual(tuple(self.webapps["logs"]._TRUTHY_LITERALS),
-                         ("1", "true", "on", "yes"))
-
-    # ---- 机制 3：注入型名字不得退化成纯再导出（原 ×5）----
-    def test_forwarders_actually_forward(self):
-        m = self._service_modules()
-        cases = {
-            "accounts": ((m["ad"], FORWARDED_ACCOUNTS), (m["vq"], FORWARDED_VERIFY),
-                         (m["ms"], FORWARDED_MEASURE)),
-            "env": ((m["env"], FORWARDED_ENV_IO), (m["exece"], FORWARDED_EXECUTOR_ENV)),
-            "logs": ((m["logs"], FORWARDED_LOGS), (m["ss"], FORWARDED_SIGNSTATUS)),
-            "notify": ((m["nm"], FORWARDED_NOTIFY["notify_mail"]),
-                       (m["ch"], FORWARDED_NOTIFY["channel_health"]),
-                       (m["cap"], FORWARDED_NOTIFY["capacity"]),
-                       (m["msign"], FORWARDED_NOTIFY["manual_sign"])),
-            "security": ((m["sec"], FORWARDED_SEC),),
-        }
-        for tag, pairs in cases.items():
-            webapp = self.webapps[tag]
-            with self.subTest(domain=tag):
-                for home, names in pairs:
-                    for name in names:
-                        self.assertIsNot(getattr(webapp, name), getattr(home, name),
-                                         f"{name} 必须是转发包装（调用时刻现取 app 侧名字）")
-
-    # ---- 机制 4：转发保持原调用签名（原 ×6，含 render）----
-    def test_forwarders_keep_original_call_arity(self):
-        for tag, fn in (("accounts", self._arity_accounts),
-                        ("env", self._arity_env),
-                        ("logs", self._arity_logs),
-                        ("notify", self._arity_notify),
-                        ("security", self._arity_security),
-                        ("render", self._arity_render)):
-            with self.subTest(domain=tag):
-                fn()
-
-    def _arity_accounts(self):
-        webapp = self.webapps["accounts"]
-        self.assertIsNone(webapp._slot_to_label(None))
-        self.assertIsInstance(webapp._estimate_slot(PHONE), tuple)
-        self.assertTrue(webapp._measure_state_path().endswith("capacity-measure.json"))
-        webapp._write_measure_state(os.path.join(self.tmps["accounts"], "m.json"), {"at": ""})
-        # 带闸校验三参、两个开关零参（与迁出前一致）
-        with mock.patch.object(webapp, "_verify_attempt_allowed", return_value=True), \
-                mock.patch.object(webapp, "_verify_account_clean", return_value=None):
-            self.assertIsNone(webapp.run_verify_with_gate(
-                {"phone": PHONE}, "admin", {"count": 0}))
-        self.assertIsInstance(webapp.verify_async_enabled(), bool)
-        self.assertIsInstance(webapp._account_verify_enabled(), bool)
-
-    def _arity_env(self):
-        webapp = self.webapps["env"]
-        webapp._env_collision_reported = False   # 歧义键闩是模块级：先复位（原类 setUp 同款）
-        env_file = self.env_files["env"]
-        webapp.write_env_batch(env_file, {})
-        webapp.write_env_key(env_file, "YIBAN_X", "")
-        webapp.write_env_int(env_file, "YIBAN_Y", 0)
-        self.assertIsInstance(webapp.ensure_secret_key(env_file), str)
-        self.assertIsInstance(webapp._executor_rows(), list)
-        self.assertIsInstance(webapp._mutate_executor_rows(lambda rows: (rows, "ok")), str)
-        self.assertEqual(webapp._save_slot_egress(env_file, "YIBAN_PROXY", None, ""),
-                         (None, None))
-        self.assertIsInstance(webapp._settings_effective_values(env_file), dict)
-        self.assertIsNone(webapp._report_env_key_collisions(env_file))
-        self.assertIsInstance(webapp._executors_window().front_sec, int)
-        self.assertIsInstance(webapp._next_executor_slot([]), int)
-
-    def _arity_logs(self):
-        import yiban.window as yb_window
-        webapp = self.webapps["logs"]
-        webapp.LOG_FILE = os.path.join(self.tmps["logs"], "logs", "sign.log")
-        webapp._most_recent_log_cache.update({"history_date": None, "checked_day": ""})
-        bounds = yb_window.bounds({"sign_start": (6, 30), "sign_end": (7, 50),
-                                   "edge_front_sec": 0, "edge_back_sec": 0})
-        self.assertEqual(webapp.parse_sign_log("nope.log"), [])
-        self.assertTrue(webapp.log_path_for().endswith(".log"))
-        self.assertEqual(webapp._log_lines_for("2020-01-01"), [])
-        self.assertIsInstance(webapp._today_has_logs(), bool)
-        self.assertIsInstance(webapp._most_recent_log_date(), str)
-        self.assertIsInstance(webapp._most_recent_log_date(3), str)
-        self.assertIsInstance(webapp.load_sign_state(), dict)
-        self.assertEqual(len(webapp._sign_window()), 2)
-        self.assertIsInstance(webapp._in_run_period(bounds), bool)
-        self.assertEqual(len(webapp.sign_status()), 2)
-
-    def _arity_notify(self):
-        webapp = self.webapps["notify"]
-        webapp._mail_alert_ts.clear()
-        webapp._capacity_alerts.update({"users": False, "accounts": False})
-        app = flask.Flask("ledger-notify-ctx")
-        app.secret_key = "ledger-notify-secret"
-        with app.test_request_context():
-            self.assertEqual(webapp._nl_safe("x"), "x")
-            self.assertIsInstance(webapp._audit_actor(), str)
-            self.assertEqual(webapp._change_mail("摘要").summary, "摘要")
-            self.assertEqual(webapp._review_reject_mail([], "").summary,
-                             "您提交的易班账号未通过管理员审核。")
-        self.assertIsInstance(webapp._push_ever_configured(), bool)
-        self.assertIsInstance(webapp._push_ever_configured({}), bool)
-        self.assertIsInstance(webapp._alert_channel_status(), dict)
-        self.assertIsInstance(webapp._channel_status_lines(), list)
-        self.assertIsInstance(webapp._capacity_estimate(0), int)
-        self.assertIsInstance(webapp._accounts_at_capacity(0), bool)
-        self.assertIsInstance(webapp._registration_paused(), bool)
-        self.assertIsInstance(webapp._users_at_capacity(), bool)
-        self.assertIsInstance(webapp._mail_alert_due("t"), bool)
-        self.assertIsInstance(
-            webapp._channel_health_degraded(
-                WebServicesNotifySplitContractTest._status_base()), bool)
-        self.assertIsInstance(webapp._daily_budget_desc({}), list)
-
-    def _arity_security(self):
-        webapp = self.webapps["security"]
-        env_file = self.env_files["security"]
-        self.assertIsInstance(webapp._builtin_admin_email(), str)
-        app = flask.Flask("ledger-security-ctx")
-        app.secret_key = "ledger-security-secret"
-        with app.test_request_context():
-            self.assertIsInstance(webapp._is_builtin_admin_session(), bool)
-        self.assertIsInstance(webapp.check_admin_configured(), bool)
-        self.assertIsInstance(webapp._builtin_admin_loginable(), bool)
-        self.assertIsNone(webapp._effective_role(None))
-        self.assertIsInstance(webapp._admin_session_facts(env_file), tuple)
-        self.assertIsInstance(webapp._issue_admin_sid(env_file), str)
-        self.assertIsInstance(webapp.verify_admin("x", "y"), bool)
-        self.assertIsInstance(webapp._sensitive_gate_params(env_file), tuple)
-
-    def _arity_render(self):
-        webapp = self.webapps["render"]
-        with io.open(self.env_files["render"], "w", encoding="utf-8") as f:
-            f.write(f"YIBAN_ACCOUNTS_KEY={TEST_KEY}\n")   # 原类 _write_env("") 同款
-        self.assertIsInstance(webapp._read_doc_html("USER_AGREEMENT.md"), str)
-        self.assertIsInstance(webapp._doc_page("t", "<p>b</p>"), str)
-        self.assertEqual(webapp.icp_info(), "")
-        self.assertEqual(webapp.edge_config(), (60, 60))
-        self.assertIsNone(webapp.email_domain_error("a@qq.com"))
-
-    # ---- 机制 5：别名副本必须复用同一份服务模块（原 ×4）----
-    def test_alias_loaded_app_shares_service_modules(self):
-        m = self._service_modules()
-        cases = {
-            "accounts": (("_accounts_data", m["ad"]), ("_measure", m["ms"]),
-                         ("_verify_queue", m["vq"])),
-            "env": (("_env_io_svc", m["env"]), ("_executor_env", m["exece"])),
-            "logs": (("_logs_svc", m["logs"]), ("_signstatus", m["ss"])),
-            "notify": (("_capacity", m["cap"]), ("_channel_health", m["ch"]),
-                       ("_manual_sign", m["msign"]), ("_notify_mail", m["nm"])),
-        }
-        for tag, pairs in cases.items():
-            with self.subTest(domain=tag):
-                for attr, home in pairs:
-                    self.assertIs(getattr(self.webapps[tag], attr), home,
-                                  "别名加载的 app 副本必须复用同一个 " + home.__name__)
-        webapp = self.webapps["env"]
-        self.assertIs(webapp._file_lock, m["locks"]._file_lock)
-        self.assertIs(webapp._rate_lock, m["locks"]._rate_lock,
-                      "限速/失败计数表与 web.app（routes 经 m.*）必须共用同一把锁")
-
-    # ---- 机制 6：拆分模块不得持有 app 模块级状态（原 ×4）----
-    def test_service_modules_hold_no_app_state(self):
-        m = self._service_modules()
-        cases = (
-            (m["ad"], APP_HELD_STATE_ACC["web/services/accounts_data.py"]),
-            (m["vq"], APP_HELD_STATE_ACC["web/services/verify_queue.py"]),
-            (m["ms"], APP_HELD_STATE_ACC["web/services/measure.py"]),
-            (m["env"], APP_HELD_STATE_ENV),
-            (m["exece"], APP_HELD_STATE_ENV),
-            # locks 本来就是进程内锁的真源（_file_lock / _rate_lock，唯一例外）：
-            (m["locks"], tuple(n for n in APP_HELD_STATE_ENV
-                               if n not in ("_file_lock", "_rate_lock"))),
-            (m["logs"], APP_HELD_STATE_LOGS),
-            (m["ss"], APP_HELD_STATE_LOGS),
-            (m["nm"], APP_HELD_STATE_NOTIFY["web/services/notify_mail.py"]),
-            (m["ch"], APP_HELD_STATE_NOTIFY["web/services/channel_health.py"]),
-            (m["cap"], APP_HELD_STATE_NOTIFY["web/services/capacity.py"]),
-            (m["msign"], APP_HELD_STATE_NOTIFY["web/services/manual_sign.py"]),
-        )
-        for mod, names in cases:
-            with self.subTest(module=mod.__name__):
-                for name in names:
-                    self.assertFalse(hasattr(mod, name),
-                                     f"{mod.__name__} 不得持有 {name}（应由 web.app 调用时刻注入）")
-
-    # ---- 机制 7：拆分源不得 import web.app（原 ×4）----
-    def test_service_sources_do_not_import_app(self):
-        for rel in SERVICE_SOURCES_ACC + SERVICE_SOURCES_ENV + SERVICE_SOURCES_LOGS \
-                + SERVICE_SOURCES_NOTIFY:
-            with self.subTest(source=rel):
-                with io.open(os.path.join(BASE, rel), encoding="utf-8") as f:
-                    src = f.read()
-                self.assertIsNone(re.search(r"^\s*(?:import|from)\s+web\.app\b", src, re.M),
-                                  f"{rel} 禁止 import web.app（别名加载会执行副本模块）")
-
-    # ---- 机制 8：只 import 服务层不得执行 web.app（原 ×4，逐域 subprocess）----
-    def test_importing_services_does_not_execute_web_app(self):
-        imports = {
-            "accounts": "import web.services.accounts_data, web.services.verify_queue,"
-                        " web.services.measure;",
-            "env": "import web.services.env_io, web.services.executor_env,"
-                   " web.services.locks;",
-            "logs": "import web.services.logs, web.services.signstatus;",
-            "notify": "import web.services.notify_mail, web.services.channel_health,"
-                      " web.services.capacity, web.services.manual_sign;",
-        }
-        for tag, stmt in imports.items():
-            with self.subTest(domain=tag):
-                code = (
-                    "import sys;"
-                    f"sys.path[:0]=[{os.path.join(BASE, 'scripts')!r}, {BASE!r}];"
-                    + stmt +
-                    "print('APP_LOADED' if 'web.app' in sys.modules else 'SERVICES_ONLY_OK')"
-                )
-                env = dict(os.environ)
-                env.pop("PYTHONPATH", None)
-                r = subprocess.run([sys.executable, "-c", code], cwd=BASE, env=env,
-                                   capture_output=True, text=True, timeout=120)
-                self.assertIn("SERVICES_ONLY_OK", r.stdout, r.stderr[-600:])
-                self.assertEqual(r.returncode, 0, r.stderr[-600:])
 
 
 class StaleIdxGuardE2ETest(unittest.TestCase):
@@ -3328,7 +1699,7 @@ class StaleIdxGuardE2ETest(unittest.TestCase):
         self.assertEqual(self._snapshot(), before)
 
     def test_ip_store_trim_runs_inside_rate_lock(self):
-        """N3：my.py / pages.py 两处 _ip_store_trim 必须在 _rate_lock 内调用。
+        """N3：my_api.py / pages.py 两处 _ip_store_trim 必须在 _rate_lock 内调用。
 
         `_ip_store_trim` 在超限时会 `store.items()` 遍历；锁外调用时并发插入会让
         迭代中的 dict 变尺寸 → RuntimeError → 500（locks.py:37 的不变量是"调用方持锁、
@@ -3340,19 +1711,19 @@ class StaleIdxGuardE2ETest(unittest.TestCase):
         app = self.webapp.create_app()
         c = app.test_client()
         self.db.create_user("trim@test.local",
-                            self.webapp.generate_password_hash("secret1"))
+                            generate_password_hash("secret1"))
         r = c.post("/api/login", json={"username": "trim@test.local", "password": "secret1"})
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         token = c.get("/api/me").get_json()["csrf_token"]
         with mock.patch.object(_sec, "_IP_STORE_LIMIT", 0):
-            # 1) my.py 的判重预检 trim：提交一个在册手机号即命中该分支
+            # 1) my_api.py 的判重预检 trim：提交一个在册手机号即命中该分支
             dup_store = _TrimProbeStore({"seed": (0, time.time())})
             app.extensions["yiban_dupcheck_limits"] = dup_store
             r = c.post("/api/my-accounts", json={
                 "name": "dup", "phone": "13800138102", "password": "pw"},
                 headers={"X-CSRF-Token": token})
             self.assertNotEqual(r.status_code, 500, r.get_data(as_text=True))
-            self.assertTrue(dup_store.saw_locked, "my.py 的 trim 未在 _rate_lock 内调用")
+            self.assertTrue(dup_store.saw_locked, "my_api.py 的 trim 未在 _rate_lock 内调用")
             self.assertFalse(dup_store.saw_unlocked)
             # 2) pages.py 的登录页循环检测 trim：已登录 GET /login 触发
             loop_store = _TrimProbeStore({"1.2.3.4": (1, time.time())})
@@ -3388,3 +1759,287 @@ class _TrimProbeStore(dict):
         for k, v in dict.items(self):
             dict.__setitem__(self, "__racing__", (1, 0.0))
             yield k, v
+
+
+# ---------------------------------------------------------------------------
+# 拆墙 W0：`web/app.py` 转发墙名集与真实读者对账
+# ---------------------------------------------------------------------------
+# 来历（工单 `128 P2`，施工方案 §1.2/§1.3/§3.1）：
+# `web/app.py` 曾把各域实现的名字再导出，供路由经 `web.routes.appmod()` 按属性取用、
+# 供测试按属性打桩。批 A1–A5 把实现迁走后，其中一批名字已**零读者**（纯转发壳），
+# 本批（W0）删除。本门钉两条不变式，防"删了还在用的名"与"零读者名回流"。
+#
+# ① **读者可解析**：路由与测试经 app 别名读到的每个名字，都必须在 `web/app.py` 有绑定。
+#    删掉一个还有读者的名字 ⇒ 红，点名 `文件:行`。
+# ② **无零读者转发名**：带 `noqa: F401` 的每个 import 绑定名，至少要有一个读者。
+#    豁免登记在 `_WALL_DEAD_F401_EXEMPT`（逐名附理由），不许空豁免。
+#    批 3-a 的过渡集 `_WALL_DEAD_F401_BATCH3A`（21 名）已在批 3-b 与墙名同批删除，
+#    故本门不再有那份过渡登记，也没有对应的腐烂断言（删名与删登记同批做）。
+# 扫描面非空：绑定名、读者、F401 名集各设下限；扫空即红（AGENTS §30）。
+#
+# 边界：① 的别名取**规范别名**（`self.webapp` 一族），不把 `w`/`mod` 等易与其他模块
+# 撞名的局部变量计入，避免误红；② 的读者面取**宽松别名**（多算读者），故它判出的
+# "零读者"更可靠——漏判只让本门更松，不会误红。测试自身仍是最终兜底：删了在用的名字，
+# 用例会以 `AttributeError` 响亮红。
+_WALL_APP = os.path.join(BASE, "web", "app.py")
+_WALL_ROUTES_DIR = os.path.join(BASE, "web", "routes")
+_WALL_TESTS_DIR = os.path.join(BASE, "tests")
+
+#: 测试里承载 `web.app` 模块对象的规范别名（现量：`self.webapp` 占绝大多数）。
+_WALL_APP_ALIASES = frozenset(("self.webapp", "cls.webapp", "webapp"))
+
+#: 宽松别名：再加少数把 app 模块装进局部变量的写法。只用于"零读者"判定。
+_WALL_APP_ALIASES_WIDE = _WALL_APP_ALIASES | frozenset(("w", "web", "mod", "impl"))
+
+#: F401 里"确实零读者但不删"的名字（显式豁免，逐条附理由）。W0 收口时为空
+#: （现存 F401 名都有读者）。留零读者名的唯一合法路径是在这里逐条登记并写明理由。
+#:
+#: 现有两条来自 145-B `T1` 片：该片把口令哈希两名的读者迁到真实实现坐标
+#: `werkzeug.security`（路由与测试各自直导入），于是这两个墙名在本片后**零读者**。
+#: **本片不删墙名**（删名归 `145-E`），故按本门的豁免机制登记。这是**过渡态**：
+#: `145-E` 删名时须同批删掉这两行——`test_exempt_names_are_still_f401` 钉住这一点。
+_WALL_DEAD_F401_EXEMPT = {
+    "generate_password_hash": (
+        "145-B T1 已迁走**自有面**（tests/web/scripts）全部读者；墙名待 145-E 删除。"
+        "**面外读者 0 处**：原 1 处（`frontend/e2e/server.py` 的 Playwright e2e 夹具）"
+        "已于 2026-10-18 经用户授权由主会话处置——该夹具改直连 `werkzeug.security`，"
+        "`_PWHASH_OUT_OF_FACE_REGISTRY` 同批清空。"),
+    "check_password_hash": "145-B T1 已迁走自有面全部读者；墙名待 145-E 删除",
+}
+
+
+@functools.lru_cache(maxsize=None)
+def _wall_app_bindings():
+    """`web/app.py` 的模块级绑定名集合与带 `F401` 标注的 import 绑定名集合。"""
+    with open(_WALL_APP, encoding="utf-8") as f:
+        src = f.read()
+    lines = src.splitlines()
+    tree = ast.parse(src)
+    bound, f401 = set(), set()
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for a in node.names:
+                nm = a.asname or (a.name.split(".")[0] if isinstance(node, ast.Import) else a.name)
+                bound.add(nm)
+                if "F401" in lines[a.lineno - 1]:
+                    f401.add(nm)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, ast.Assign):
+            bound.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            bound.add(node.target.id)
+    return bound, f401
+
+
+@functools.lru_cache(maxsize=None)
+def _wall_route_reads():
+    """路由 `m.<名字>` 的读者：`(名字, 文件, 行号)` 列表。"""
+    out = []
+    for dirpath, dirs, files in os.walk(_WALL_ROUTES_DIR):
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        for fname in sorted(files):
+            if not fname.endswith(".py"):
+                continue
+            path = os.path.join(dirpath, fname)
+            with open(path, encoding="utf-8") as f:
+                tree = ast.parse(f.read())
+            aliases = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+                    fn = getattr(node.value.func, "id", None) or getattr(node.value.func, "attr", None)
+                    if fn in ("appmod", "_appmod"):
+                        aliases.update(t.id for t in node.targets if isinstance(t, ast.Name))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) \
+                        and node.value.id in aliases and not node.attr.startswith("__"):
+                    out.append((node.attr, os.path.relpath(path, BASE).replace("\\", "/"),
+                                node.lineno))
+    return out
+
+
+#: 服务层里可以**经参数**收下 app 模块的形参名。批 3-b 实测：`web/services/device_refresh.py`
+#: 的 `refresh_account_device(m, …)` 在 except 子句里读 `m.VerifyQuotaExceeded`——那种读法
+#: 既不是 `appmod()` 别名（路由面）也不是测试别名，只看 routes/tests 会把它判成"零读者"
+#: 并删掉**还有读者的名字**（删了 429 分支变 500，实测抓到）。故本门把服务层面的读法
+#: 并入读者面：§29「门看的东西 ＝ 实际改的东西」。
+_WALL_HOST_PARAMS = frozenset(("m",))
+#: 服务层面（相对 BASE）。
+_WALL_HOST_DIR = os.path.join(BASE, "web", "services")
+
+
+def host_module_reads_in(src, rel):
+    """一段服务层源码里"经宿主模块参数读 app 属性"的读者：`(名字, rel, 行号)`。
+
+    别名＝`appmod()` 赋值名 ∪ 形参名 ∈ `_WALL_HOST_PARAMS`。纯函数，便于做突变验证。
+    """
+    tree = ast.parse(src)
+    aliases = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+            fn = getattr(node.value.func, "id", None) or getattr(node.value.func, "attr", None)
+            if fn in ("appmod", "_appmod"):
+                aliases.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            args = (list(node.args.posonlyargs) + list(node.args.args)
+                    + list(node.args.kwonlyargs))
+            aliases.update(a.arg for a in args if a.arg in _WALL_HOST_PARAMS)
+    if not aliases:
+        return []
+    out = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) \
+                and node.value.id in aliases and not node.attr.startswith("__"):
+            out.append((node.attr, rel, node.lineno))
+    return out
+
+
+@functools.lru_cache(maxsize=None)
+def _wall_host_module_reads():
+    """服务层里经宿主模块参数读 app 属性的读者：`(名字, 文件, 行号)` 列表。"""
+    out = []
+    for dirpath, dirs, files in os.walk(_WALL_HOST_DIR):
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        for fname in sorted(files):
+            if not fname.endswith(".py"):
+                continue
+            path = os.path.join(dirpath, fname)
+            with open(path, encoding="utf-8") as f:
+                src = f.read()
+            rel = os.path.relpath(path, BASE).replace("\\", "/")
+            out.extend(host_module_reads_in(src, rel))
+    return out
+
+
+def _wall_declared_app_aliases(tree):
+    """文件里显式声明的 app 模块别名：`import web.app as X` / `from web import app as X`。"""
+    out = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == "web.app":
+                    out.add(a.asname or "web")
+        elif isinstance(node, ast.ImportFrom) and node.module == "web":
+            for a in node.names:
+                if a.name == "app":
+                    out.add(a.asname or "app")
+    return out
+
+
+@functools.lru_cache(maxsize=None)
+def _wall_test_reads(aliases):
+    """测试里经 app 别名读属性或打桩的读者：`(名字, 文件, 行号)` 列表。
+
+    除入参的固定别名面外，逐文件并上**显式声明**的别名（`import web.app as w` 之类）——
+    这类别名是精确的（绑定对象就是 app 模块），并上不引入误红。
+    """
+    out = []
+    for dirpath, dirs, files in os.walk(_WALL_TESTS_DIR):
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        for fname in sorted(files):
+            if not fname.endswith(".py"):
+                continue
+            path = os.path.join(dirpath, fname)
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+            # 廉价预筛：没有任何 app 别名字样的测试文件不可能有 app 读者，跳过 AST 解析。
+            # 三种别名来源（`webapp*` / `import web.app as X` / `appmod()`）都含这三个
+            # 子串之一，故预筛不会漏掉任何受支持的别名形态（本门不支持的形态本就不算）。
+            if not any(tok in text for tok in ("webapp", "web.app", "appmod")):
+                continue
+            tree = ast.parse(text)
+            rel = os.path.relpath(path, BASE).replace("\\", "/")
+            file_aliases = aliases | _wall_declared_app_aliases(tree)
+            for node in ast.walk(tree):
+                # 用 unparse 取基表达式文本：`self.webapp.<名字>` 的基是 Attribute 而非
+                # Name，只认 Name 会漏掉绝大多数读者（现量口径）。
+                if isinstance(node, ast.Attribute) and ast.unparse(node.value) in file_aliases:
+                    out.append((node.attr, rel, node.lineno))
+                if isinstance(node, ast.Call):
+                    fn = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+                    if fn in ("patch", "object", "getattr", "setattr", "hasattr") and node.args:
+                        if ast.unparse(node.args[0]) not in file_aliases:
+                            continue
+                        last = node.args[-1]
+                        if isinstance(last, ast.Constant) and isinstance(last.value, str):
+                            out.append((last.value.split(".")[-1], rel, node.lineno))
+    return out
+
+
+class ForwardingWallReaderGateTest(unittest.TestCase):
+    """W0：`web/app.py` 转发墙的名集与真实读者对账（两条不变式，见本段模块注释）。"""
+
+    def test_route_and_test_readers_are_all_bound(self):
+        bound, _f401 = _wall_app_bindings()
+        reads = (_wall_route_reads() + _wall_test_reads(_WALL_APP_ALIASES)
+                 + _wall_host_module_reads())
+        # 绑定面下限：用途只是"解析器或路径失效 ⇒ 红"。批 3-a 末（`e5aceb07`）实测 360，
+        # 批 3-b 删 21 个零读者转发名、搬走 47 个真定义（其中 4 名改由新家导入）、
+        # 去掉 2 个已无用的 stdlib 导入 ⇒ 本批实测 294，故下限由 300 下调为 250。
+        # 批 3-d 删 39 个转发包装 + 其导入后，绑定面实测 225 个（ref=`0423b225`＋批 3-d
+        # 收口树，2026-10-20 主会话与独立审查各测一次，值相同；含 `_register_host_hooks`）。
+        # 下限只保"解析器没失效"，不表达"绑定越多越好"。
+        self.assertGreaterEqual(len(bound), 180,
+                                "web/app.py 绑定名过少——解析器或路径失效（扫空不得当绿）")
+        self.assertGreaterEqual(len(reads), 1000,
+                                "读者扫描面过小——别名探测失效（扫空不得当绿）")
+        bad = [f"{rel}:{line}: {name}" for name, rel, line in reads if name not in bound]
+        self.assertEqual(
+            bad, [],
+            "以下读者引用的名字在 web/app.py 已不存在（删了还在用的名字）：\n" + "\n".join(bad))
+
+    def test_no_dead_f401_name_beyond_registered_exemptions(self):
+        _bound, f401 = _wall_app_bindings()
+        reads = (_wall_route_reads() + _wall_test_reads(_WALL_APP_ALIASES_WIDE)
+                 + _wall_host_module_reads())
+        self.assertGreaterEqual(len(f401), 50,
+                                "F401 名集过小——注解解析失效（扫空不得当绿）")
+        self.assertGreaterEqual(len(reads), 1000,
+                                "读者扫描面过小——别名探测失效（扫空不得当绿）")
+        read_names = {name for name, _, _ in reads}
+        exempt = set(_WALL_DEAD_F401_EXEMPT)
+        dead = sorted(n for n in f401 if n not in read_names and n not in exempt)
+        self.assertEqual(dead, [],
+                         "以下带 noqa: F401 的名字没有任何读者（零读者转发名）：" + ", ".join(dead))
+
+    def test_host_module_reader_face_has_teeth(self):
+        """服务层读者面有牙：经形参 `m` 的读法必须命中；无宿主参数的文件不得误命中。
+
+        来历见 `_WALL_HOST_PARAMS` 的注释：批 3-b 删零读者名时，只看 routes/tests 面
+        会把 `m.VerifyQuotaExceeded` 判成零读者并删掉——删了 429 分支变 500（实测抓到）。
+        """
+        n = chr(10)
+        src = n.join(["def go(m, acc):",
+                      "    try:",
+                      "        return m.run_gated_call(acc)",
+                      "    except m.VerifyQuotaExceeded:",
+                      "        return None", ""])
+        got = sorted(host_module_reads_in(src, "web/services/x.py"))
+        self.assertIn(("VerifyQuotaExceeded", "web/services/x.py", 4), got)
+        self.assertIn(("run_gated_call", "web/services/x.py", 3), got)
+        self.assertEqual(
+            host_module_reads_in("def go(acc):" + n + "    return acc.run_gated_call()" + n,
+                                 "web/services/y.py"),
+            [], "没有宿主模块参数却报出读者：本面会误红")
+        self.assertGreaterEqual(
+            len(_wall_host_module_reads()), 6,
+            "服务层读者面过小——形参别名探测失效（扫空不得当绿）。"
+            "现量口径：批 3-c S3 末（refactor/3c-cred-state）实测 8 处，全在 device_refresh"
+            "（db 4 处 ＋ _mask_phone 3 处 ＋ _record_verify_failure 1 处）。"
+            "批 3-b 时是 14 处；差额来自 S3 把该文件的 m.VerifyQuotaExceeded / "
+            "m.VerifyGateBusy / m._verify_fail_cooldown_remaining / m.run_gated_call / "
+            "m.VERIFY_*_MSG 五族改为直取真源——分母缩小，那些名字本身仍被本门覆盖。"
+            "下限按实测值留 2 处余量，不是估算。")
+
+    def test_exempt_names_are_still_f401(self):
+        """豁免清单不得腐烂：登记的名字必须仍在 F401 名集里。
+
+        豁免是**过渡态**（名字待删）。名字真被删掉后，这两条登记必须同批删掉——
+        否则清单会悄悄变成"永久豁免"，让后来者以为这两个名字本来就该留着。
+        """
+        _bound, f401 = _wall_app_bindings()
+        stale = sorted(n for n in _WALL_DEAD_F401_EXEMPT if n not in f401)
+        self.assertEqual(
+            stale, [],
+            f"豁免清单登记的名字已不在 F401 名集（名字已删/已不再是转发名）：{stale}；"
+            "请把这些登记从 _WALL_DEAD_F401_EXEMPT 删掉")

@@ -8,7 +8,7 @@ v1 密文不带密钥标识，"这把钥对不对"只能在解密撞 tag 后才�
 新写入一律 v2；升级=读出旧格式按需重写，不强制全量迁移。
 
 功能：密文形状与密钥指纹的向后兼容回归（双钥族：账号口径与固定 AAD 口径）。
-归属：`yiban/infra/account_crypto.py` 的密文格式契约。
+归属：`yiban/adapters/config/account_crypto.py` 的密文格式契约。
 复用：`encrypt_password/decrypt_password/encrypt_text/decrypt_text/key_fingerprint`、
 `SCHEMA_VERSION/SUPPORTED_SCHEMA_VERSIONS`。
 
@@ -16,7 +16,7 @@ v1 密文不带密钥标识，"这把钥对不对"只能在解密撞 tag 后才�
 覆盖：新密文形状（v2+kid）；kid 稳定性与单向性；v1 手工构造密文照常解密（兼容
 矩阵核心格）；v2 错钥报双 kid；v1 错钥仍按 tag 拒；v2 缺 kid 拒；v3 版本拒；
 AAD 语义不被 kid 检查削弱；两钥族（password/text）形状一致。
-对应实现：`yiban/infra/account_crypto.py` 的 `key_fingerprint`、`_check_entry_version`、
+对应实现：`yiban/adapters/config/account_crypto.py` 的 `key_fingerprint`、`_check_entry_version`、
 `encrypt_password`、`encrypt_text`、`decrypt_password`、`decrypt_text`。
 关键断言：v1 兼容格必须**同时**断两件事——对的钥能解出、错的钥仍拒绝（只断前者
 会让"v1 全放行"的假兼容通过）；错钥消息必须含两侧 kid 才算可自证，只断抛
@@ -29,7 +29,7 @@ import unittest
 
 from Crypto.Cipher import AES
 
-from yiban.infra import account_crypto
+from yiban.adapters.config import account_crypto
 
 KEY = bytes(range(1, 33))
 OTHER_KEY = bytes(range(33, 65))

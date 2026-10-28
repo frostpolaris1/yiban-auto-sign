@@ -2,30 +2,30 @@
 r"""`export KEY=value` 行在三个 .env 读取方的解析分叉——双向钉死收敛不变量。
 
 标签：J · 运维：部署/备份/发布 · G · 安全：脱敏/审计/配置注入
-覆盖：`export KEY=value` 行在 env_io / child_env / shell 三读取方的收敛不变量——
+覆盖：`export KEY=value` 行在 env_io / env_child / shell 三读取方的收敛不变量——
     正向（真实键三处同值可读）与反向（export 键三处不可读、env_io 侧挂畸形键、
     其余整行丢弃）；不覆盖：行内 value 的逐字一致性（由 tests/test_runsh_env_parse.py
     的文本断言钉住）。
-背景：`.env` 有三个独立读取方，各用不同行模型（`yiban.infra.env_io.parse_env_file`
-    读侧宽松、`scripts/child_env.parse_env_file` YIBAN_ 前缀+合法键名双白名单、
+背景：`.env` 有三个独立读取方，各用不同行模型（`yiban.adapters.config.env_io.parse_env_file`
+    读侧宽松、`yiban.infra.env_child.parse_env_file` YIBAN_ 前缀+合法键名双白名单、
     `run.sh`/`run_probe.sh` 的 shell 键名正则判据）。`export KEY=value` 这种从 shell rc
     借来的写法，在"KEY 是否成为生效配置"上三者必须给出同一个"否"，但**分叉在形态**：
-    env_io 把它挂进畸形键 `"export KEY"`（含空格，不匹配 `get("KEY")`），child_env 与
+    env_io 把它挂进畸形键 `"export KEY"`（含空格，不匹配 `get("KEY")`），env_child 与
     shell 整行丢弃。剥前缀"归一"会把历史一向未生效的行扶正成生效配置（行内若藏
     `GLOBAL_PAUSE`/`ADMIN_PASSWORD_HASH` 即实体化提权载荷），撞"键语义不变"红线——
     故**保留三态**，只钉两条不变量：
     ①（正向）真实键 `KEY=value` 三处读到同一值；
     ②（反向）`export KEY=value` 三处都读不到 `KEY`，且不与真实键串台。
 
-对应实现：`yiban/infra/env_io.py`（`parse_env_file` / `key_line_pattern` /
-    `env_key_values` / `render_env_write`）、`scripts/child_env.py`、
+对应实现：`yiban/adapters/config/env_io.py`（`parse_env_file` / `key_line_pattern` /
+    `env_key_values` / `render_env_write`）、`yiban/infra/env_child.py`、
     `run.sh` / `run_probe.sh` 的加载循环（文本逐字一致性由
     `tests/test_runsh_env_parse.py` 钉住，本文件钉行为面收敛）。
 关键断言：反向不止断 `get("KEY")` 为空——env_io 侧另钉"export 行确实解析进了 dict
     但挂在畸形键下"（分叉形态本体；将来任何'归一'剥前缀的改动都会红在这里）；
     折叠正则不得吃掉 export 行；shell 侧先断两份脚本的解析段与本测试复刻段逐字
     同源，再以真 bash 跑判据。
-依赖：临时 `.env`；child_env 按文件路径加载（与 docker/scheduler.py 运行时同语义）；
+依赖：临时 `.env`；env_child 按文件路径加载（与调度器同语义）；
     shell 行为用例无 bash 时 skip（同 test_runsh_env_parse 惯例）。不发网络、不起 webapp。
 """
 import importlib.util
@@ -35,7 +35,7 @@ import subprocess
 import tempfile
 import unittest
 
-from yiban.infra import env_io
+from yiban.adapters.config import env_io
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASH = shutil.which("bash")
@@ -61,14 +61,14 @@ class ChildEnvLoaderMixin(unittest.TestCase):
     @staticmethod
     def _load_child_env():
         spec = importlib.util.spec_from_file_location(
-            "child_env_divergence", os.path.join(BASE, "scripts", "child_env.py"))
+            "env_child_divergence", os.path.join(BASE, "yiban", "infra", "env_child.py"))
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         return mod
 
 
 # ---------------------------------------------------------------------------
-# 读取方 1：yiban.infra.env_io（读侧宽松模型，写侧折叠同族）
+# 读取方 1：yiban.adapters.config.env_io（读侧宽松模型，写侧折叠同族）
 # ---------------------------------------------------------------------------
 class EnvIoPathTest(_EnvFixture):
     def test_real_key_read(self):
@@ -108,7 +108,7 @@ class EnvIoPathTest(_EnvFixture):
 
 
 # ---------------------------------------------------------------------------
-# 读取方 2：scripts/child_env.py（双白名单）
+# 读取方 2：yiban/infra/env_child.py（双白名单）
 # ---------------------------------------------------------------------------
 class ChildEnvPathTest(_EnvFixture, ChildEnvLoaderMixin):
     def test_real_key_read(self):
@@ -121,7 +121,7 @@ class ChildEnvPathTest(_EnvFixture, ChildEnvLoaderMixin):
         path = self._write(f"export {DECOY}={DECOY_VAL}\n")
         parsed = child_env.parse_env_file(path)
         self.assertEqual(parsed, {},
-                         "child_env 整行丢弃 export 行（与 env_io 的畸形键形态刻意不同，"
+                         "env_child 整行丢弃 export 行（与 env_io 的畸形键形态刻意不同，"
                          "但收敛一致：键永不生效）")
 
 
@@ -154,16 +154,23 @@ done < "$1"
 
 class ShellPathTest(_EnvFixture):
     def test_both_scripts_carry_the_keyname_guard(self):
-        """两份脚本都必须持有拒畸形键名的那道判据（"export KEY" 正是被它挡下）。
+        """每个 .env 解析载体都必须持有拒畸形键名的那道判据（"export KEY" 正是被它挡下）。
 
-        行为复刻见本类另两条；此处钉脚本本体——历史上 run_probe.sh 曾漂移过
+        行为复刻见本类另两条；此处钉载体本体——历史上 run_probe.sh 曾漂移过
         （只剥 key 不剥 value），判据缺位同样从这里红出来。
+        2026-10-24（R3-019）：run.sh 的解析块搬进 `scripts/lib/host_paths.sh` 的
+        `yiban_load_env`（清理 cron 也调它），故 run.sh 那一腿改判该文件；
+        同时要求 run.sh 真的调用它（否则判据在库里、入口没用上）。
         """
-        for name in ("run.sh", "run_probe.sh"):
+        for name in ("scripts/lib/host_paths.sh", "run_probe.sh"):
             with open(os.path.join(BASE, name), encoding="utf-8") as f:
                 src = f.read()
             self.assertIn('[[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]', src,
                           f"{name} 的 .env 循环缺合法键名判据——export 行可能被放行")
+        with open(os.path.join(BASE, "run.sh"), encoding="utf-8") as f:
+            run_sh = f.read()
+        self.assertIn("yiban_load_env", run_sh,
+                      "run.sh 必须调用共用解析（否则判据搬走了、入口没用上）")
 
     def test_export_key_never_exported(self):
         """反向：真 bash 跑同构判据段——export 行不导出，只告警（与另两侧收敛）。"""

@@ -7,19 +7,23 @@
     GLOBAL_PAUSED、引擎日志打暂停门措辞、假上游记账为零；把同一份 `.env` 的暂停键翻成 0
     后同一条链的 rc/状态文件/页面显示**一起翻转**（判据与显示都现读同一份文件）；
     解除轮的判码**由构造决定、不由平台/日期/用例先后决定**：台账归零 + 运行锁空置 ⇒
-    rc=2/SKIPPED（干净腿），持住运行锁构造忙态 ⇒ rc=3 且不写状态文件（活体反例
-    "忙态被拒"）；
+    rc=2/SKIPPED（干净腿），持住运行锁构造忙态 ⇒ rc=3 且状态文件落 BUSY（活体反例
+    "忙态被拒"；f7va 前 rc=3 不写文件，更早还曾被误落 FAILED，见下方判码契约注）；
     web 侧 `_day_off_reason` 与日历页内联上下文（day_off/图例/状态表载荷）与引擎判定同源；
     活体反例：伪造 web 读源（read_env 桩成空）或只翻文件一侧 ⇒ 同源性判据必须变红
 对应实现：run.sh（`.env` 装载、`_write_status_from_exit` 判码契约）、
-    yiban/engine/runner.py（`_day_off_skip`→2、取锁争抢→3）、
+    yiban/app/runner.py（`_day_off_skip`→2、取锁争抢→3）、
     yiban/engine/cli_support.py（`_acquire_run_lock`：忙/无锁后端一律 fail-closed）、
     yiban/engine/schedule.py（`day_off`
     三道门的唯一实现）、web/app.py（`_day_off_reason` 现读注入）、
-    web/services/signstatus.py（`DAY_OFF_TEXT`/`day_off_payload`）、yiban/status.py
-    （`DISPLAY`/`legend_items`/`display_payload`）、tests/fake_yiban_server.py（假上游记账）
+    web/services/signstatus.py（`DAY_OFF_TEXT`/`day_off_payload`）、yiban/core/status.py
+    （`DISPLAY`/`legend_items`/`display_payload`）、yiban/adapters/protocol_fake/__init__.py（假上游记账）
 关键断言：rc 契约本单**只钉不改**：暂停命中 ⇒ 引擎 rc=2 且 run.sh 状态文件为
-    GLOBAL_PAUSED（与窗口/账号级跳过的 SKIPPED 分文不误）；同源判据 = 引擎侧
+    GLOBAL_PAUSED（与窗口/账号级跳过的 SKIPPED 分文不误）。注（f7va，2026-10-12）：
+    run.sh 的**状态文件落盘判码**本批改为"每个跑过一轮的码都落盘文本"，且**逐码派生**
+    自 cli_support._EXIT_KINDS——rc=3（locked＝队列忙，本轮没跑）落 **BUSY**，**不是
+    FAILED**（本轮没跑≠失败）。这里钉的"忙态被拒"不变式（rc=3、**不写 SUCCESS**、
+    不写 FAILED、留痕"拒绝运行"）照旧；同源判据 = 引擎侧
     `day_off(同一份 .env)` 与 web 侧 `_day_off_reason` 相等，且页面内联 day_off 载荷
     的文案/语气档逐字段取自 `DAY_OFF_TEXT`/表派生——伪造任一侧后该等式必须不成立，
     用例里以显式 assertNotEqual 钉住"判据会咬人"，不是恒真比较
@@ -55,10 +59,15 @@ import time
 import unittest
 from unittest import mock
 
+from werkzeug.security import generate_password_hash
+
+from web.services import signstatus as _signstatus
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUN_SH = os.path.join(BASE, "run.sh")
 #: 共享假上游替身（2026-09 自 scripts/loadtest/mock_yiban.py 迁入）
-MOCK_YIBAN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fake_yiban_server.py")
+MOCK_YIBAN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "yiban", "adapters", "protocol_fake", "__init__.py")
 _HAS_BASH = shutil.which("bash") is not None
 # 运行锁争抢的构造件（忙态反例要真的"持住"锁）。注意判据必须落在 fcntl **模块本身**
 # （与引擎同源，见 yiban/engine/cli_support.py 的 try-import）：旧版在此写
@@ -192,8 +201,9 @@ class _ChainBase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.ctmp = tempfile.mkdtemp(prefix="yiban-chain-e2e-cls-")
-        # APP_DIR 与 `.env` 是类级的：run.sh 按契约只认 `$APP_DIR/.env`，web 的 ENV_FILE
-        # 也指到这同一个文件——**两侧读的就是这一个文件**（同源性判据的物质基础）。
+        # APP_DIR 与 `.env` 是类级的：run.sh 按契约只认 `$APP_DIR/data/.env`（工单 ybg8，
+        # 运行数据收进检出内 data/），web 的 ENV_FILE 也指到这同一个文件——**两侧读的
+        # 就是这一个文件**（同源性判据的物质基础）。
         # 每轮只隔离 state/lock 目录，run.sh 的标记与状态文件按轮互不沾染。
         cls.app = os.path.join(cls.ctmp, "app")
         os.makedirs(os.path.join(cls.app, "scripts"), exist_ok=True)
@@ -205,7 +215,8 @@ class _ChainBase(unittest.TestCase):
         with io.open(py_wrap, "w", encoding="utf-8", newline="\n") as f:
             f.write(_PY_WRAPPER % _posix(sys.executable))
         os.chmod(py_wrap, os.stat(py_wrap).st_mode | stat.S_IEXEC)
-        cls.env_file = os.path.join(cls.app, ".env")
+        os.makedirs(os.path.join(cls.app, "data"), exist_ok=True)
+        cls.env_file = os.path.join(cls.app, "data", ".env")
         cls.db_file = os.path.join(cls.ctmp, "yiban.db")
         cls.accounts_file = os.path.join(cls.ctmp, "accounts.json")
         with io.open(cls.accounts_file, "w", encoding="utf-8") as f:
@@ -231,7 +242,7 @@ class _ChainBase(unittest.TestCase):
             spec.loader.exec_module(cls.webapp)
         cls.user = _db.find_user(USER_EMAIL)
         if cls.user is None:
-            _db.create_user(USER_EMAIL, cls.webapp.generate_password_hash(USER_PW))
+            _db.create_user(USER_EMAIL, generate_password_hash(USER_PW))
             cls.user = _db.find_user(USER_EMAIL)
 
     @classmethod
@@ -390,9 +401,9 @@ class _ChainBase(unittest.TestCase):
     # ---- web 显示侧读法（与既有日历用例同源口径） ----
     def _engine_truth_reason(self, now):
         """引擎侧事实判定：喂**同一份 .env** 的门唯一实现（子进程内引擎读的是它）。"""
-        from yiban import clock
+        from yiban.adapters.config import env_io
+        from yiban.core import clock
         from yiban.engine import schedule as yb_schedule
-        from yiban.infra import env_io
         return yb_schedule.day_off(now or clock.now(),
                                    env=env_io.parse_env_file(self.env_file))
 
@@ -422,8 +433,8 @@ class GlobalPauseChainTest(_ChainBase):
     """.env 急停 → run.sh 真链 → rc/状态文件/页面显示三处一致。"""
 
     def test_pause_full_chain_rc2_and_display_same_source(self):
-        from yiban import clock
-        from yiban import status as yiban_status
+        from yiban.core import clock
+        from yiban.core import status as yiban_status
 
         run = self._run_chain()
         # ① 判码契约（只钉不改）：引擎在 main 的门处 return 2，run.sh 原样透传退出。
@@ -444,7 +455,7 @@ class GlobalPauseChainTest(_ChainBase):
         now = clock.now()
         engine_truth = self._engine_truth_reason(now)
         self.assertEqual(engine_truth, "paused")
-        self.assertEqual(self.webapp._day_off_reason(now), engine_truth,
+        self.assertEqual(_signstatus._day_off_reason(now), engine_truth,
                          "web 显示判定必须与引擎读同一份 .env 得同一结论")
 
         # ⑥ 页面数据源（内联上下文）与显示表逐字段一致——显示的是"已暂停"，不是"失败/未签/排队"。
@@ -486,7 +497,7 @@ class GlobalPauseChainTest(_ChainBase):
         的既有语义不再在本用例分支，改由 `test_release_run_lock_busy_is_rejected_rc3`
         对照用例钉住（构造持锁 ⇒ 无锁后端平台同码），平台差异只留这段注记，不留死分支。
         """
-        from yiban import clock
+        from yiban.core import clock
         self._write_env(pause="0", user_paused="true")
         self._zero_test_account_ledger()
         self.assertFalse(os.path.exists(self._engine_run_lock_path()),
@@ -508,7 +519,7 @@ class GlobalPauseChainTest(_ChainBase):
 
         now = clock.now()
         self.assertEqual(self._engine_truth_reason(now), "", "引擎判定未随文件翻转")
-        self.assertEqual(self.webapp._day_off_reason(now), "", "web 显示判定未随文件翻转")
+        self.assertEqual(_signstatus._day_off_reason(now), "", "web 显示判定未随文件翻转")
         ctx = self._inline_context(self._calendar_html())
         self.assertIsNone(ctx["day_off"])
 
@@ -518,9 +529,12 @@ class GlobalPauseChainTest(_ChainBase):
 
         rc=3（队列忙）族的唯一产线源头：引擎进程级运行锁 `signin-run.lock` 的争抢
         ——`_RunLockHeld`/`_RunLockUnavailable`（等待超时、无锁后端、锁件不可开）
-        一律 fail-closed 返 3（yiban/engine/runner.py），run.sh 对非 0/2 码**不写
-        状态文件**（`_write_status_from_exit`）⇒ statuses 为空。
-        构造：与干净腿同一轮型（暂停键翻 0 + 账号级自暂停）且台账同样归零——本轮
+        一律 fail-closed 返 3（yiban/app/runner.py）。run.sh 对 rc=3 落盘 **BUSY**
+        （`_EXIT_KINDS` 把 3 定名为 `locked`＝队列忙，**本轮没跑**）：真意是"不得写
+        SUCCESS"，且**不得写 FAILED**——本轮没跑≠账号签到失败（本项目栽过"领不到任务
+        被上报成批假失败"，10-07）。旧断言用"statuses 为空"当"非 SUCCESS"的代理，
+        已被 BUSY 取代，并显式加钉"不得为 SUCCESS/FAILED"。构造：与干净腿同一轮型
+        （暂停键翻 0 + 账号级自暂停）且台账同样归零——本轮
         **唯一变量是"锁忙/锁闲"**：本测试进程用 fcntl 持住该锁件（模拟"前一轮还
         活着"），`.env` 把等锁上限压到 3s（引擎等满即拒）。干净腿钉 rc=2、本用例钉
         rc=3，两侧都由构造保证，与业务日、用例先后、平台一律无关。
@@ -537,8 +551,14 @@ class GlobalPauseChainTest(_ChainBase):
         self.assertEqual(run["rc"], 3,
                          "锁忙态的解除轮必须走队列忙判码 3（拿不到互斥绝不无锁照跑）：%s"
                          % run["log"])
-        self.assertEqual(run["statuses"], [],
-                         "rc=3 不属 run.sh 写状态文件的码族（忙≠已有结论）：%s" % run["statuses"])
+        self.assertEqual(run["statuses"], ["BUSY"],
+                         "rc=3 落 BUSY（locked=队列忙，本轮没跑；非失败）：%s"
+                         % run["statuses"])
+        self.assertNotIn("SUCCESS", run["statuses"],
+                         "忙态轮不得写 SUCCESS（本轮没跑，不得谎报成功）：%s" % run["statuses"])
+        self.assertNotIn("FAILED", run["statuses"],
+                         "队列忙不得表述成失败（本轮没跑≠失败，假失败禁止）：%s"
+                         % run["statuses"])
         self.assertIn("拒绝运行", run["log"],
                       "忙态拒跑必须留痕（fail-closed 不得静默），log=%s" % run["log"])
         stats, business = self._mock_evidence()
@@ -548,16 +568,16 @@ class GlobalPauseChainTest(_ChainBase):
     def test_same_source_equality_bites_on_forged_display_side(self):
         """活体反例：把 web 读源伪造掉（旧病灶 `env=None` 落回 os.environ 的形状），
         同源性等式两侧必须不等——证明上一条用例的 assertEqual 不是恒真。"""
-        from yiban import clock
+        from yiban.core import clock
         now = clock.now()
         truth = self._engine_truth_reason(now)
         self.assertEqual(truth, "paused")            # 本轮 .env 写着急停（setUp 默认）
-        self.assertEqual(self.webapp._day_off_reason(now), truth)  # 正常态：两侧一致
+        self.assertEqual(_signstatus._day_off_reason(now), truth)  # 正常态：两侧一致
         # 伪造 web 读源（旧病灶 `env=None` 落回 os.environ 的形状）：读不到文件真值。
         # 具体落点随星期漂移（周末门可能先以 saturday/sunday 形态出现）——判据不关心
         # 它错成哪一种，只关心它**不再是 paused**：真实日期下 ''/周末原因都构成失配。
         with mock.patch.object(self.webapp, "read_env", return_value={}):
-            forged = self.webapp._day_off_reason(now)
+            forged = _signstatus._day_off_reason(now)
         self.assertNotEqual(forged, "paused",
                             "read_env 桩必须演示得出'读不到真值'的旧病灶（急停显示丢失）")
         self.assertNotEqual(forged, truth,
@@ -567,23 +587,23 @@ class GlobalPauseChainTest(_ChainBase):
         """活体反例（事实侧）：引擎事实与显示各自独立地现读**同一份文件**；
         改写文件 ⇒ 两侧同时翻转，而上一轮 run.sh 落盘的 GLOBAL_PAUSED 仍是历史事实——
         显示跟的是源，不是旧 rc。"""
-        from yiban import clock
+        from yiban.core import clock
         now = clock.now()
         self.assertEqual(self._engine_truth_reason(now), "paused")
-        self.assertEqual(self.webapp._day_off_reason(now), "paused")
+        self.assertEqual(_signstatus._day_off_reason(now), "paused")
         stale_engine_fact = "paused"  # 上一急停轮的判码结果（run.sh 已写盘的历史事实）
 
         self._write_env(pause="0", user_paused="false")
         self.assertEqual(self._engine_truth_reason(now), "",
                          "引擎判定读的是改写后的同一份 .env")
-        self.assertEqual(self.webapp._day_off_reason(now), "",
+        self.assertEqual(_signstatus._day_off_reason(now), "",
                          "web 显示判定与引擎读同一份 .env，翻页必须同步")
-        self.assertNotEqual(self.webapp._day_off_reason(now), stale_engine_fact,
+        self.assertNotEqual(_signstatus._day_off_reason(now), stale_engine_fact,
                            "显示只认源：与旧轮判码的不一致是设计上的正确行为，判据必须报出来")
         # 再翻回 1：两侧再同步回到 paused（"各读一次同一源"不是一次性快照）
         self._write_env(pause="1", user_paused="false")
         self.assertEqual(self._engine_truth_reason(now), "paused")
-        self.assertEqual(self.webapp._day_off_reason(now), "paused")
+        self.assertEqual(_signstatus._day_off_reason(now), "paused")
 
 
 if __name__ == "__main__":

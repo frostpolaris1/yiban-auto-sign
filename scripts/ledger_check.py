@@ -19,8 +19,8 @@
 
 **归属**
 运维/取证侧脚本（`scripts/`）。台账口径的落地在别处，本脚本只核对不再造第二份判据：
-终态判定取 `yiban.store.migrations.terminal_task_state`（与 v20 补账同一份逻辑），
-池状态词表取 `yiban.store.queue_store.STATES`。
+终态判定取 `yiban.adapters.persistence.migrations.terminal_task_state`（与 v20 补账同一份逻辑），
+池状态词表取 `yiban.adapters.persistence.queue_store.STATES`。
 
 **复用**
 无对外可复用函数。
@@ -30,15 +30,15 @@
 输入：命令行 `--day`（缺省今天）/ `--all-days N`（最近 N 天，含今天）；库路径与状态
 目录走环境变量与 `.env`（`YIBAN_DB_FILE` / `YIBAN_STATE_DIR`）。
 输出：逐日结论与差异行到 stdout 并逐个打一遍结论，差异行的手机号经
-`yiban.masking.mask_phone` 脱敏（对外输出不得含完整号码）。
+`yiban.core.masking.mask_phone` 脱敏（对外输出不得含完整号码）。
 退出码：`0`=对账平；`1`=有差异（已逐行打印）；`2`=无法定论（状态目录缺失 /
 库文件缺失 / 库不可用（含库尚未升到 `sign_tasks` 存在的那一版）/ 任何未预期异常 /
 零覆盖——一天的处理文件都没有，或处理文件里一条终态记录都没有 /
 补账窗口外缺行——有终态输入但因窗口外无法定论且无任何明确差异）。`1` 只留给
 **明确探测到的差异**，其余一律 `2`：把一次崩溃或空覆盖读成"对账不平/对账平"都会误导运维。
-调用谁：`yiban.store.db`（`open_readonly` 的只读连接）、`yiban.store.migrations`、
-`yiban.store.queue_store`、`yiban.infra.env_io`、`yiban.clock`。
-谁调用：运维在库升级后手工跑一次；无其它调用点（web 与 `yiban.cli` 都不调它）。
+调用谁：`yiban.adapters.persistence.db`（`open_readonly` 的只读连接）、`yiban.adapters.persistence.migrations`、
+`yiban.adapters.persistence.queue_store`、`yiban.adapters.config.env_io`、`yiban.core.clock`。
+谁调用：运维在库升级后手工跑一次；无其它调用点（web 与 `yiban.entry.cli` 都不调它）。
 """
 import argparse
 import json
@@ -52,10 +52,11 @@ _REPO_ROOT = os.path.dirname(_HERE)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from yiban import clock  # noqa: E402
-from yiban.infra import env_io  # noqa: E402
-from yiban.masking import mask_phone, sanitize_text  # noqa: E402
-from yiban.store import db, migrations, queue_store  # noqa: E402
+from yiban.adapters.config import env_io  # noqa: E402
+from yiban.adapters.config import loader as config_loader  # noqa: E402
+from yiban.adapters.persistence import db, migrations, queue_store  # noqa: E402
+from yiban.core import clock  # noqa: E402
+from yiban.core.masking import mask_phone, sanitize_text  # noqa: E402
 
 #: 台账里"平移行"的标记（v18 平移的 `sign_claims` 行取 `vshard=-1`）
 _TRANSLATED_SHARD = -1
@@ -103,7 +104,7 @@ def _read_terminals(state_dir, day):
     `terminal_task_state` 的返回值——它就是 v20 补账写入台账时用的那一份判据，
     对账必须按同一份期望比对（各写一遍会在规范化细节上漂移，报出假差异或漏报真差异）。
     """
-    path = os.path.join(state_dir, f"sign-state-{day}.json")
+    path = env_io.sign_state_path(day, state_dir=state_dir)
     try:
         # utf-8-sig：手工编辑过的状态文件可能带 BOM，BOM 会让 json.load 抛错、整日判成
         # "无输入"——那是假零覆盖，不是真没跑
@@ -143,7 +144,7 @@ def _backfill_window(conn):
     stamp = str(row["applied_at"] or "")[:10]
     if not _DAY_RE.match(stamp):
         return None
-    end = datetime.strptime(stamp, "%Y-%m-%d")
+    end = datetime.strptime(stamp, "%Y-%m-%d")  # noqa: DTZ007 仅解析 YYYY-MM-DD 业务日期串，无时区语义
     start = end - timedelta(days=migrations._BACKFILL_DAYS - 1)
     return start.strftime("%Y-%m-%d"), stamp
 
@@ -232,11 +233,12 @@ def main(argv=None):
 
 def _reconcile(args):
     """执行对账并返回退出码：`0`=平 / `1`=有差异 / `2`=无法定论。"""
-    state_dir = env_io.resolve_path("YIBAN_STATE_DIR", "/var/log/yiban")
+    state_dir = env_io.resolve_path(
+        "YIBAN_STATE_DIR", config_loader.default_required("YIBAN_STATE_DIR"))
     if not os.path.isdir(state_dir):
         print(f"对账无法定论：状态目录不存在 {state_dir}")
         return 2
-    db_path = env_io.resolve_path("YIBAN_DB_FILE", "yiban.db")
+    db_path = env_io.resolve_path("YIBAN_DB_FILE", env_io.DEFAULT_DB_FILE)
     # 库文件必须已存在：sqlite3.connect 缺库即建空库，空库上三项检查全部"通过"，
     # 对"台账对不对"什么都没说（路径写错时静默误报平账）。
     if not os.path.exists(db_path):

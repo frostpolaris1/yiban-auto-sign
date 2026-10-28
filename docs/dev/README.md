@@ -5,12 +5,27 @@
 | 文件 | 内容 |
 |------|------|
 | `README.md`（本文件） | 模块树、依赖方向、多执行体现状与出口配置 |
+| `target-tree.md` | **仓库目标树**：职责、引用纪律、分包与命名；取代 `architecture-target.md` §3 的目录树 |
 | `api-executors.md` | 执行体与出口接口契约（前端用） |
 | `cli.md` | CLI 契约（面向 agent/自动化） |
+| `constraints.tsv` | **在册约束**（id / 载体 / 门或豁免理由 / 工单）；`tests/test_constraint_registry_gate.py` 逐条真跑 |
+| `acceptance-criteria.md` | D1 验收（改坏守卫必须报警）、负数条款、对外交付逐条核对清单 |
+| `umask-decision.md` | 生产入口 `umask 077` 不还原的评估结论与影响面 |
 | `dev-verify.md` | **统一跑测入口** `scripts/dev-verify.sh` 的配方（本地 WSL 全量 + CI 子集同源） |
+| `api-contract.md` | **前端 API 契约**（`/api/my*` 只读面）；`web/routes/my_api.py` 与 `test_api_contract_coverage.py` 按此实现 |
+| `scheduler-v3.md` | **调度 v3 契约**（窗口/分片/容量/肘界唯一口径）；`yiban/core/hrw.py`、`yiban/engine/schedule.py` 按此实现 |
+| `vue-build-output.md` | Vue 构建产物与图标选型结论（`web/static/vue` 的生成口径） |
 | `release-gate.md` | **推送 `main` 的四条门槛**（安全/压力/稳定/脱敏与演练） |
+| `backup-restore.md` | **备份与恢复**：宿主（systemd/cron）与 Docker 两条路线、取证命令、威胁边界 |
+| `implementation-notes.md` | **原理与实现**：模块树、签到流程、定位算法、重试机制、WAF 检测、工作流续期 |
+| `troubleshooting.md` | **故障排查与常见问题**（Q1–Q10） |
+| `experimental-line/legacy-criteria-handoff.md` | **双线交接**：旧系统判据交给实验线 `server/`＋`ui/`——六请求链到 Provider 的映射、七族单一定义点、隐私暴露三条、脱敏双口径、审计锚点边界、退出码与「跳过≠绿」、fixtures 映射约定、不搬清单 |
 与设计/调研类文稿分开——这里的每条内容都按脱敏红线自查过：
 不含真实域名/IP/邮箱/手机号/密钥与站点注册信息，示例一律用占位值。
+
+**文稿归属（工单 b7la）**：设计/调研/计划类文稿的**唯一家**是主仓 `docs/`（本目录与
+`docs/refactor/` 等本地目录）。工作树（`work/*`）里出现的同名文稿一律视为草稿；要长期
+保留的内容必须收进主仓 `docs/`，并在 `scripts/check-doc-numbering.py` 的编号巡检下唯一。
 
 ## 目录树与职责（一句话版）
 
@@ -27,17 +42,23 @@ yiban/                        签到引擎与共享基础（可被 web / scripts
 ├── state_gc.py               按日状态文件的保留期策略与清理
 ├── logging_ext.py            按天 + flock 的日志 handler
 ├── platform.py               易班平台事实（端点/请求头/版本）+ 登录与签到编排
-├── protocol/                 ★ 洁净室协议库（纯解析/构造；MIT，见其 LICENSE/SPEC.md）
+├── adapters/protocol_yiban/  ★ 洁净室协议库（纯解析/构造；AGPL-3.0-only，见其 LICENSE/SPEC.md）
+├── adapters/protocol_fake/   测试假上游（e2e 与演练用；生产链路不引）
+├── adapters/notifier/        通知适配：notify（推送：config/ledger/transport）
+│                             与 mail（邮件：config/layout/transport）
+│                             ← 旧坐标 yiban/notify/ 与 yiban/mail/ 的转发壳已于 145-E 退役
 ├── geo.py                    多边形内随机定位点（偶奇射线法 + 拒绝采样 + 显式兜底）
 ├── challenge.py              风控挑战**检测**（只检测不求解）
 ├── infra/                    叶子工具：locks / env_io / env_lock / account_crypto
-├── cli.py                    统一命令行入口（七个子命令；见 docs/dev/cli.md）
+├── entry/cli/                统一命令行入口（九个子命令；见 docs/dev/cli.md）
+│                             ← 旧入口壳已于 145-E 退役
 ├── engine/                   签到引擎（按“执行一轮”切分）：runner / round / schedule
 │                             / attempts / probe / alerts / state_io / accounts
 │                             / workers / config_check / cli_support
+│                             / db_maintenance / egress_admin
 ├── store/                    数据层：db（连接/迁移）+ accounts / verify_jobs / claims
-├── notify/                   通知推送：config / ledger（额度与节流账本）/ transport
-└── mail/                     邮件：config / transport
+└── （entry / app / core / ports / adapters / workers 为目标分层目录；
+                                成员按 docs/dev/architecture-target.md 第 3 节逐批搬入）
 
 web/                          管理端（Flask 工厂 + 路由 + 模板 + 静态资源）
 ├── app.py                    create_app 工厂与全部路由（拆分进行中）
@@ -46,12 +67,15 @@ web/                          管理端（Flask 工厂 + 路由 + 模板 + 静�
 └── deploy/                   systemd / nginx / logrotate 部署模板
 
 scripts/                      运维 CLI（含过渡期的兼容壳）
-├── signin.py                 兼容壳 → yiban.engine.runner（旧命令行与退出码不变）
-├── db.py                     兼容壳 → yiban.store.db（旧 `import db` 仍可用）
+├── signin.py                 兼容壳 → yiban.app.runner（旧命令行与退出码不变）
+├── db.py                     兼容壳 → yiban.adapters.persistence.db（旧 `import db` 仍可用）
 ├── state_cleanup.py          状态文件清理 CLI
 ├── yiban-fallback.sh         兜底常驻执行体的 cron 薄包装（读 .env 判开关，关则静默退出）
-├── generate_demo_data.py     演示数据生成（含清库，调用方须回显目标指纹）
 └── ledger_check.py           台账对账（与 v20 补账同生，在役）
+
+tools/                        开发期构建与代码生成，不进镜像
+├── generate_demo_data.py     演示数据生成（含清库，调用方须回显目标指纹）
+└── ...                       字体切片 / 图标精灵 / 版本打标 / 视觉种子 / 肘界影子
 
 docker/                       容器：Dockerfile / entrypoint / supervisord / scheduler
 ```
@@ -62,7 +86,7 @@ docker/                       容器：Dockerfile / entrypoint / supervisord / s
 web / scripts / docker  →  yiban.*  →  infra, platform, protocol, store（`yiban` 不得裸名导入 scripts/ 模块）
 ```
 
-- `yiban/infra/`、`yiban/protocol/` 与 `yiban/geo.py` **不得导入业务模块**（`tests/test_infra_layer.py`、
+- `yiban/infra/`、`yiban/adapters/protocol_yiban/` 与 `yiban/geo.py` **不得导入业务模块**（`tests/test_infra_layer.py`、
   `tests/test_provenance_guard.py`）；
 - `yiban/platform.py` 的安全策略必须由调用方**注入**（协议层不自算白名单与拦截判定）；
 - `scripts/*.py` 直接运行时**必须先引导 `sys.path`**，且引导要早于任何 `yiban` 导入
@@ -90,7 +114,7 @@ web / scripts / docker  →  yiban.*  →  infra, platform, protocol, store（`y
 | `capacity-measure.json` | `POST /api/scheduler/executors/measure`（冷却占位 + 实测结果） | 同端点（跨进程限频） |
 | `fallback-alive.json` | 兜底常驻执行体（每轮扫描刷新，退出时删除） | 告警抑制与 `fallback.alive` |
 
-按日生成的文件（`sign-state-*` / `sched-run-*` / …）的保留期由 `yiban/state_gc.py` 统一管理；
+按日生成的文件（`sign-state-*` / `sched-run-*` / …）的保留期由 `yiban/adapters/statefiles/state_gc.py` 统一管理；
 上面这些**不是按日文件**，不参与清理（固定名 + 覆盖写，故无需清理策略）。
 
 ### 出口配置（部署者视角）
@@ -114,8 +138,8 @@ web / scripts / docker  →  yiban.*  →  infra, platform, protocol, store（`y
 
 ### 校验/取证类读库必须显式 `init_db(cleanup=False, migrate=False)`（M36 · 定档保留）
 
-`yiban.store.db.init_db(...)` 的缺省是 `cleanup=True, migrate=True`，而
-`yiban/store/connection.py` 的 `get_conn()` 在单例连接不存在时会**隐式**调一次
+`yiban.adapters.persistence.db.init_db(...)` 的缺省是 `cleanup=True, migrate=True`，而
+`yiban/adapters/persistence/connection.py` 的 `get_conn()` 在单例连接不存在时会**隐式**调一次
 `init_db()` 的**全套缺省**。这对业务进程是对的（启动时该做的清理与迁移就该做），
 对**校验/取证类工具**是错的：`scripts/audit_verify.py`、哨兵、`db_export.py` 这类调用方
 只是想**读**——
@@ -124,7 +148,7 @@ web / scripts / docker  →  yiban.*  →  infra, platform, protocol, store（`y
   "检出删除"会变成"我自己删的"）；
 - `migrate=True` 会回填审计链等结构（同样改动被校验对象）。
 
-**约定（`yiban/store/db.py` 的 `init_db` docstring 已写明）**：只读取证类调用方在第一次
+**约定（`yiban/adapters/persistence/db.py` 的 `init_db` docstring 已写明）**：只读取证类调用方在第一次
 触库前**显式** `db.init_db(cleanup=False, migrate=False)`。仓库内的既有样例：
 `scripts/backup_sentinel.py` 的 `_anchor_snapshot()`（M28 的锚点外发读链头）。
 

@@ -12,12 +12,17 @@
 （`_settings_label` / `_settings_value_text` / `_settings_effective_values`）、代理地址形状
 校验 `_is_http_proxy_url`、启动期的歧义键报告 `_report_env_key_collisions` 与公告元数据
 解析 `_parse_announcement_meta`；正态 μ/σ 区间四键的映射表 `SCHEDULE_DIST_ENV_KEYS` /
-`SCHEDULE_DIST_DEFAULTS` / `SCHEDULE_DIST_KEYS`（A 档键名单源，读写两侧与前端对拍共用）。
+`SCHEDULE_DIST_DEFAULTS` / `SCHEDULE_DIST_KEYS`（A 档键名单源，读写两侧与前端对拍共用）；
+以及**键名清单**——设置项档位（`MASTER_ONLY_KEYS` / `GATED_KEYS` / `GLOBAL_PAUSE_KEY`）
+与公告四键（`ANNOUNCEMENT_KEY` / `ANNOUNCEMENT_DRAFT_KEY` /
+`ANNOUNCEMENT_DRAFT_META_KEY` / `ANNOUNCEMENT_PUBLISHED_META_KEY`）。
+键名与键的读写同处一模块：改名或增键时只有一处要动。
 
 **归属**
-原 `web/app.py` 的模块级 env 辅助，唯一真源在本模块；`web/app.py` 只保留名字面与转发，
-把它自己持有、而本模块需要的东西——落盘用的 `_atomic_write`、设置缺省值、开关解析器
-`_env_flag`、告警出口 `send_notification`——在调用时刻现取后注入。
+原 `web/app.py` 的模块级 env 辅助，唯一真源在本模块。批 3-d 删除 `web/app.py` 的
+转发包装：路由与测试直取本模块。落盘用的 `_atomic_write`、写拒绝审计回调、开关解析器
+`_env_flag` 与告警出口 `send_notification` 经 `configure(...)` 登记进 `_hooks`，
+按调用时刻解析。设置项缺省值直接取自 `web/services/limits.py`。
 
 **复用**
 批量写是单键写与整数写的底层（`write_env_key` / `write_env_int` 都折成
@@ -28,10 +33,10 @@
 
 **通信**
 本模块不反向导入 `web.app`（本仓测试以 `spec_from_file_location` 别名加载 `app.py`，
-普通 import 会再执行一份副本模块）。落盘动作与设置项缺省值/开关判定都作为显式参数接收：
-它们在 `web.app` 上是会被测试改写、也会随运行方式变化的模块级名字（既有测试正是在
-`web.app` 上打桩 `_atomic_write` / `write_env_batch` 来观测每一次落盘），本模块另持一份
-绑定会让打桩静默失效。跨进程写锁沿用 `yiban.infra.env_lock` 的真源，不自建第二套。
+普通 import 会再执行一份副本模块）。落盘动作、审计回调与开关判定经 `configure(...)`
+登记，按调用时刻解析：测试打桩 `_atomic_write` / `write_env_batch` / `_env_flag` 仍然
+生效。未登记即 `RuntimeError`（fail-closed）。跨进程写锁沿用 `yiban.infra.env_lock`
+的真源，不自建第二套。
 """
 
 import contextlib
@@ -43,14 +48,58 @@ from datetime import datetime
 
 from flask import jsonify
 
-from yiban import window as yb_window
+from web.services.limits import (
+    DEFAULT_ACCOUNT_GAP_MAX,
+    DEFAULT_MAX_ACCOUNTS,
+    DEFAULT_MAX_USERS,
+)
+from yiban.adapters.config import env_io as _env_io
+from yiban.adapters.config import loader as config_loader
+from yiban.adapters.notifier.mail import layout as mail_layout
+from yiban.core import window as yb_window
 from yiban.engine import schedule as _schedule
-from yiban.infra import env_io as _env_io
 from yiban.infra import env_lock
-from yiban.mail import layout as mail_layout
 
 # 与 web.app 同名的日志通道：.env 读写与启动检测的告警落回既有通道，便于运维沿用同一处过滤
 logger = logging.getLogger("web")
+
+# ---------------------------------------------------------------------------
+# 宿主注入登记点（批 3-d）
+# ---------------------------------------------------------------------------
+# 本模块原由 `web/app.py` 的转发包装在调用时刻现取宿主名字后注入。批 3-d 删除那层
+# 包装，改由宿主在 import 末尾登记 lambda；本模块按调用时刻从 `_hooks` 取。
+# 登记 lambda 而不是值：测试打桩 `_atomic_write` / `write_env_batch` / `_env_flag`
+# 必须在调用时刻生效。未登记即 fail-closed（抛 `RuntimeError`）。
+_hooks = {}
+
+
+def configure(atomic_write=None, env_write_refuse_audit=None, env_flag=None):
+    """注入宿主侧依赖（登记 lambda，见上方说明）。可重复调用（测试用）。
+
+    只覆盖显式传入的键：未传的保持上一次登记。
+    """
+    if atomic_write is not None:
+        _hooks["atomic_write"] = atomic_write
+    if env_write_refuse_audit is not None:
+        _hooks["env_write_refuse_audit"] = env_write_refuse_audit
+    if env_flag is not None:
+        _hooks["env_flag"] = env_flag
+
+
+def _host(key):
+    """取宿主登记的依赖。未登记即 fail-closed。
+
+    **`try` 只包住取键，不包住调用**：宿主 lambda 内部抛的 `KeyError` 是真实业务
+    错误，必须原样传出。
+    """
+    try:
+        fn = _hooks[key]
+    except KeyError:
+        raise RuntimeError(
+            "web.services.env_io 尚未登记宿主依赖 %r：请确认 web/app.py 的 import 末尾"
+            "调用了 web.services.env_io.configure(...)" % (key,)
+        ) from None
+    return fn()
 
 
 # ---------------------------------------------------------------------------
@@ -59,17 +108,42 @@ logger = logging.getLogger("web")
 def read_env(env_path):
     """读取 .env 全部键值，返回 dict（宽松：文件缺失/读失败返回空 dict）。
 
-    解析实现单一来源见 `yiban.infra.env_io.parse_env_file`（utf-8-sig 兼容 BOM——Windows
+    解析实现单一来源见 `yiban.adapters.config.env_io.parse_env_file`（utf-8-sig 兼容 BOM——Windows
     记事本等工具保存时会带 BOM，否则首个键名会带上 \\ufeff 前缀导致读不到，
     管理员登录/改密会静默失败）。
     """
     return _env_io.parse_env_file(env_path)
 
 
-def load_env_int(env_path, key, default):
-    """读取 .env 中的整数配置，缺失/非法回退默认值。"""
+def effective_env(env_path):
+    """**生效配置层**：进程环境为底、`.env` 覆盖（M27 全仓口径，唯一实现）。
+
+    为什么需要它：`.env` 与进程环境是两层真值域，而仓库口径只承认一套——
+    `.env` 优先、进程环境只补缺（`docker-compose.yml` 的 M27 注释）。本包此前
+    有 `.env`-only（`load_env_int` / `read_env`）与 overlay（`capacity` /
+    `signstatus` 由调用方注入 overlay）两种读法：同一个"这次判定看哪份值"的概念
+    两套实现，键只配在进程环境（systemd `Environment=`、`docker run -e`）时
+    容量/口令门禁旋钮会静默读成缺省值。
+    `.env` 里写了空值仍按"未配置"处理，让进程环境补缺（与 notify 侧 `_env_str` 同语义）。
+    """
+    env = {k: v for k, v in os.environ.items() if k.startswith("YIBAN_")}
+    for key, value in read_env(env_path).items():
+        if str(value or "").strip():
+            env[key] = value
+    return env
+
+
+def load_env_int(env_path, key, default, overlay=True):
+    """读取整数配置，缺失/非法回退默认值。
+
+    `overlay=True`（缺省）按 `effective_env` 的生效配置层取值：`.env` 优先、
+    进程环境补缺（M27）。容量上限、口令门禁 TTL/冷却、暂停位这类键在"只配进程
+    环境"的部署里因此不再静默读成缺省值。需要严格只读 `.env` 的调用面显式传
+    `overlay=False`。
+    """
     try:
-        return max(0, int(read_env(env_path).get(key, "")))
+        source = effective_env(env_path) if overlay else read_env(env_path)
+        return max(0, int(source.get(key, "")))
     except (TypeError, ValueError):
         return default
 
@@ -127,6 +201,51 @@ SCHEDULE_DIST_DEFAULTS = {
 #: 四键的字段名集合（A 档清单；`settings_api` 的 403/口令门禁与前端对拍测试共用一份）。
 SCHEDULE_DIST_KEYS = frozenset(SCHEDULE_DIST_ENV_KEYS)
 
+# ---- 设置项档位（`POST /api/settings` 权限判定的**唯一事实源**）----
+# 分档判据是「影响半径 × 能否造成静默漏签」，不是"看起来危不危险"：
+#   A 档（`MASTER_ONLY_KEYS`）一次改动就波及全站签到或直接拆掉安全闸门——周末开关、
+#     签到窗口与首尾裁切决定"今天到底签不签得到"，随机延迟与容量上限决定"多少账号被
+#     挤出窗口"，account_verify / probe_* 会让服务器对**全站账号**发起真实易班登录。
+#     故仅主管理员可写。口令要求跟档位走：缺省 risk 档下，同出口的已登录会话直接生效，
+#     换出口才要一次；full 档逐次要求且不吃短时豁免。变更只留审计行，不外发告警。
+#   B 档（`GATED_KEYS`）只改排序风格与自选权，出错有 A 档参数兜底，故任意管理员可写。
+#     口令要求与 A 档同形：缺省 risk 档同出口免口令，full 档过同一门禁但允许豁免。
+# 唯一的例外是 `global_pause`：0→1「急停」任意管理员都能做（缺省 risk 档同出口免口令、
+# 只加不可逆确认；full 档要口令；占用高危额度；只留审计行，不外发告警），1→0 恢复仍仅主管理员——把
+# "先止损"的权力留在在场每个人手里，把"放开"的权力收在主管理员手里。
+# 新增设置键时必须改这里而不是在路由里再列一遍键名：此前 403 清单只写在 handler 内，
+# 与前端各页自己的收控件清单两处各写一遍、必然漂移（测试里的元测试负责比对这两份）。
+#
+# 逐键复核（2026-09-28 用户判据：**在不当时间——窗口前几秒或窗口内——改它，能不能
+# 静悄悄把签到序列搞炸？能，就留口令门**；不能的仅剩"只增摩擦"的键）：
+#   留门（能静默搞炸，或属安全网本身）：
+#     sign_window / window_edge_sec / edge_front_sec / edge_back_sec
+#       ——窗口改窄或首尾裁切吃光有效窗口 ⇒ 当天整批账号静默跳过；
+#     sunday_sign / saturday_sign —— 当天整天空签且不报错（面板会显示休息，但没人盯着看）；
+#     start_delay_max / gap_max —— 延迟或间隔 × 账号数超出窗口 ⇒ 后段账号排队到最后全落空；
+#     account_verify / registration_pause —— 关验证/重开注册 ⇒ 未验证的批量账号涌入主链
+#       对易班发起真实登录 ⇒ 平台风控封号（§5.2 明列的用户面合规事故）；
+#     probe_enable / probe_time / probe_interval —— 探针是发现账号异常的眼睛，改坏即
+#       静默失去监测（与 SMTP 条目同属"安全网本身"，故同判据留门）；
+#     global_pause 0→1 —— 全站停签（见下）。
+#   仅摩擦、按判据可以放开（本次刻意不动：这三个键半年改一次，放开要连前端面板的收控件
+#   一起改，收益不抵新增面；若日后摩擦真的咬人再动）：
+#     max_users / max_accounts —— 只影响**新提交**的配额判定（有明确报错），
+#       不触碰已排定的签到序列，改小也不会让在册账号掉队。
+MASTER_ONLY_KEYS = frozenset({
+    "sign_window", "window_edge_sec", "edge_front_sec", "edge_back_sec",
+    "sunday_sign", "saturday_sign", "registration_pause",
+    "start_delay_max", "gap_max", "max_users", "max_accounts",
+    "account_verify", "probe_enable", "probe_time", "probe_interval",
+    # 健康报告发送时刻/星期：与探针同属"安全网本身"——把时刻改到没人看的钟点、
+    # 或把星期改到别的一天，报告照发但看不见，静默失去周期性证据（同判据留门）。
+    "health_report_time", "health_report_weekday",
+})
+GATED_KEYS = frozenset({"sign_order", "sign_dist", "sign_mode", "allow_time_pref"})
+# `global_pause` 刻意不进 `MASTER_ONLY_KEYS`：它是 A 档的唯一例外，权限按**变更方向**
+# 分流（0→1 急停人人可做、1→0 恢复仅主管理员），故单独用这个键名判方向。
+GLOBAL_PAUSE_KEY = "global_pause"
+
 # 这些键的生效值是 0/1 开关：写进审计与告警正文时翻成中文，免得运维盯着 "0"→"1" 心算
 _BOOL_SETTINGS_KEYS = frozenset({
     "sunday_sign", "saturday_sign", "global_pause", "registration_pause",
@@ -176,7 +295,7 @@ def _weekday_text(value):
 def health_report_time_str(env):
     """报告发送时刻的**归一取值**（`"HH:MM"`）；未配置或写坏返回 `""`（= 未配置）。
 
-    刻意归一而不是原样回显：生效判据走 `yiban.window.parse_hhmm`，它同时收 `9:00`
+    刻意归一而不是原样回显：生效判据走 `yiban.core.window.parse_hhmm`，它同时收 `9:00`
     这种不补零写法。原样回显时前端的时间形状校验（`^\\d{2}:\\d{2}$`）会把它判成非法值
     ⇒ 界面显示"未配置"（开关关）而报告其实已按 09:00 锚定——显示值/生效值两段不等，
     正是时间类设置要消灭的病。
@@ -211,21 +330,22 @@ def health_report_weekday_setting(env):
     return str(idx) if 0 <= idx <= 6 else ""
 
 
-def _settings_effective_values(env_file, env_flag, *, gap_max_default, max_users_default,
-                               max_accounts_default):
+def _settings_effective_values(env_file):
     """A/B 档设置项的**当前生效值**（归一为字符串），取值口径与 `GET /api/settings` 一致。
 
     只用于"这次请求到底改没改配置"的判定：一律现读现算，绝不信请求自带的旧值——
-    否则把当前值原样抄进请求就能自称"无变更"，口令复核与变更告警双双被绕开
-    （系统开关门原本就是这个语义，这里把同一语义铺满全部 A/B 档键）。
+    否则把当前值原样抄进请求就能自称"无变更"，口令复核被绕开
+    （系统开关门原本就是这个语义，这里把同一语义铺满全部 A/B 档键；
+    变更留痕由审计行承担，设置保存不外发告警）。
 
     取值口径与 `GET /api/settings` 的回显**逐键**同源：回显怎么归一，这里就怎么归一——
     两边不一致时"提交一个等于回显的值"会被判成改过（多要一次口令）或没改过（设置永不落盘，
     而每次打开设置页都显示一条清不掉的脏标记）。
 
-    开关解析器与三个容量缺省值由调用方传入：它们是 `web.app` 的模块级名字（`_env_flag`
-    之后还会随签到状态域迁走），本模块另持绑定会让打桩与后续搬动静默失效。
+    开关解析器从宿主取（`_env_flag` 是既有打桩点）；三个容量缺省值直接取自
+    `web/services/limits.py`（单一事实源）。
     """
+    env_flag = _host("env_flag")
     env = read_env(env_file)
     mode = env.get("YIBAN_SIGN_MODE", "").strip().lower()
     w_start, w_end, _invalid = yb_window.parse_window(env)
@@ -235,8 +355,11 @@ def _settings_effective_values(env_file, env_flag, *, gap_max_default, max_users
         return "1" if env_flag(env.get(key, "")) else "0"
 
     vals = {
-        "start_delay_max": str(load_env_int(env_file, "YIBAN_START_DELAY_MAX", 0)),
-        "gap_max": str(load_env_int(env_file, "YIBAN_ACCOUNT_GAP_MAX", gap_max_default)),
+        "start_delay_max": str(load_env_int(
+            env_file, "YIBAN_START_DELAY_MAX",
+            config_loader.default_of("YIBAN_START_DELAY_MAX"))),
+        "gap_max": str(load_env_int(env_file, "YIBAN_ACCOUNT_GAP_MAX",
+                                    DEFAULT_ACCOUNT_GAP_MAX)),
         "sign_window": (f"{w_start[0]:02d}:{w_start[1]:02d}"
                         f"~{w_end[0]:02d}:{w_end[1]:02d}"),
         # 旧键（前后对称）**一次写两侧**：现值取「前/后」组合串。只按前裁比的话，
@@ -259,11 +382,13 @@ def _settings_effective_values(env_file, env_flag, *, gap_max_default, max_users
         "sign_order": env.get("YIBAN_SIGN_ORDER", "").strip().lower() or (
             "random" if mode == "random" else "sequence"),
         "sign_dist": env.get("YIBAN_SIGN_DIST", "").strip().lower() or (
-            "normal" if mode == "normal" else "uniform"),
+            "normal" if mode == "normal" else "front"),
         "account_verify": _flag("YIBAN_ACCOUNT_VERIFY"),
         "probe_enable": _flag("YIBAN_PROBE_ENABLE"),
-        "probe_time": env.get("YIBAN_PROBE_TIME", "20:00").strip() or "20:00",
-        "probe_interval": env.get("YIBAN_PROBE_INTERVAL_DAYS", "1").strip() or "1",
+        "probe_time": (env.get("YIBAN_PROBE_TIME") or "").strip()
+        or config_loader.default_of("YIBAN_PROBE_TIME"),
+        "probe_interval": (env.get("YIBAN_PROBE_INTERVAL_DAYS") or "").strip()
+        or config_loader.default_of("YIBAN_PROBE_INTERVAL_DAYS"),
         # 告警通道健康报告：时刻缺省是空串（未配置 = 沿用"唤醒即发"，不是某个钟点），
         # 故不能用 `or "09:00"` 那种"补一个默认钟点"的写法——那会把"没配"显示成"配了"。
         "health_report_time": health_report_time_str(env),
@@ -273,9 +398,9 @@ def _settings_effective_values(env_file, env_flag, *, gap_max_default, max_users
         # 设置页都会显示一条永远清不掉的"未保存的修改"。生效缺省（未配置 ⇒ 周一）由
         # 运行期判定 `web.app._health_report_cfg()` 承担。
         "health_report_weekday": health_report_weekday_setting(env),
-        "max_users": str(load_env_int(env_file, "YIBAN_MAX_USERS", max_users_default)),
+        "max_users": str(load_env_int(env_file, "YIBAN_MAX_USERS", DEFAULT_MAX_USERS)),
         "max_accounts": str(load_env_int(env_file, "YIBAN_MAX_ACCOUNTS",
-                                         max_accounts_default)),
+                                         DEFAULT_MAX_ACCOUNTS)),
     }
     # 正态 μ/σ 区间四键：取值口径（现读 + 引擎缺省）与 `GET /api/settings` 的回显
     # 必须逐字一致——否则提交一个等于回显的值会被判成"没改"，A 档口令门禁被绕过。
@@ -317,38 +442,40 @@ def _env_write_lock(env_path):
         yield
 
 
-def write_env_int(env_path, key, value, write_batch):
+def write_env_int(env_path, key, value):
     """把整数配置写入 .env：value<=0 删除该行，>0 写入；保留其他行。"""
-    write_env_key(env_path, key, str(value) if value > 0 else "", write_batch)
+    write_env_key(env_path, key, str(value) if value > 0 else "")
 
 
-def write_env_key(env_path, key, value, write_batch):
+def write_env_key(env_path, key, value):
     """把任意键值写入 .env：value 为空删除该行，否则写入；保留注释与其他行。
 
     单键形态 = write_env_batch({key: value})：行分隔符注入校验、写锁、原子替换
-    均单源在 write_env_batch（防两份安全校验实现漂移）。`write_batch` 由调用方传入
-    `web.app` 的 `write_env_batch`——它是既有测试观测"每一次 .env 落盘"的打桩点。
+    均单源在 write_env_batch（防两份安全校验实现漂移）。本函数按模块名调用它，
+    故测试打桩 `web.services.env_io.write_env_batch` 仍是"每一次 .env 落盘"的观测点。
     """
-    write_batch(env_path, {key: value})
+    write_env_batch(env_path, {key: value})
 
 
-def write_env_batch(env_path, updates, atomic_write, audit=None):
+def write_env_batch(env_path, updates):
     """批量写入多个键值（原子操作）：读取一次，修改多个键，写入一次。
     避免多次独立写入时进程崩溃导致配置不一致。
     updates: dict {key: value}，value 为空字符串则删除该键。
 
     行模型、键/值校验、写入前后"键集合 diff"、跨进程写锁**全部单源在**
-    `yiban.infra.env_io.write_env_keys`（web 与引擎共用一个实现，两侧拒绝文案同源）：
+    `yiban.adapters.config.env_io.write_env_keys`（web 与引擎共用一个实现，两侧拒绝文案同源）：
     本函数只负责 web 侧特有的落盘注入（`atomic_write`）。外层锁已就此去重——写锁
     下沉进 `write_env_keys` 后，这里再包一层是对同一路径的纯冗余嵌套；只在本函数
     之外还有"判定读取"要与之同临界区的调用方（改密、保存设置、执行体读-改-写）才
-    需要继续自持 `_env_write_lock`。`audit` 由调用方（web.app 转发）注入 db 审计回调：
-    写入被拒（潜伏分隔符/未请求的键变化）时必须留痕，调用方不传也不影响拒绝本身。
+    需要继续自持 `_env_write_lock`。审计回调从宿主取：
+    写入被拒（潜伏分隔符/未请求的键变化）时必须留痕。
 
     为什么不再自己用宽行模型读-改-写：宽行模型会把注释里潜伏的
     U+0085/U+2028 等先拆成两行、再把后半截实体化成真配置行（一次无关保存即可注入
     `YIBAN_GLOBAL_PAUSE=1`）。单一行模型同时是"校验行模型 = 写入行模型"的前提。
     """
+    atomic_write = _host("atomic_write")
+    audit = _host("env_write_refuse_audit")
     _env_io.write_env_keys(
         env_path, updates,
         write_text=lambda path, text: atomic_write(path, text, chmod_priv=True),
@@ -378,7 +505,7 @@ def _env_problem_snippet(env_path, line_no):
     定位，值本身不需要也不应该出现在管理界面。读不到文件/行号越界返回 None
     （409 的其余部分照常可用，定位载荷尽力而为）。
     """
-    from yiban.masking import mask_phones_in_text, sanitize_text
+    from yiban.core.masking import mask_phones_in_text, sanitize_text
     try:
         raw = _env_io._read_env_text(env_path)
         lines = _env_io.split_env_lines(raw)
@@ -432,10 +559,15 @@ def cleanup_env_ambiguous_line(env_path, line_no, audit=None):
     那是行模型歧义的唯一现场；普通配置行/注释行一律拒绝（本端点不是 .env
     编辑器，不存在借道删配置的口子）。写路径与写入口同一套纪律：跨进程写锁、
     写前字节快照、失败按原字节回滚、审计留痕（片段走同一脱敏原语链）。
+
+    **落盘必须走 `_atomic_write`**（本包声明的"每一次 .env 落盘"唯一实现）：
+    `open(env_path, "w")` 先截断成 0 字节，并发读者（run.sh 逐行 export、
+    引擎子进程、其他线程的 `read_env`）在这个窗口里会拿到空/半份 `.env`——
+    读到空配置不会报错，只会按默认值行事。原子写让读者只见旧内容或新内容，
+    失败时目标文件保持旧内容，故不再需要就地把原字节写回（那会二次制造窗口）。
     返回 (ok, message, remaining)：ok=False 时 message 说明为什么拒绝。
     """
     with env_lock.env_write_lock(env_path):
-        raw_bytes = _env_io._read_env_bytes(env_path)
         lines = _env_io.split_env_lines(_env_io._read_env_text(env_path))
         if not 1 <= line_no <= len(lines):
             return False, f"行号越界（文件共 {len(lines)} 行）", None
@@ -448,15 +580,11 @@ def cleanup_env_ambiguous_line(env_path, line_no, audit=None):
         still_bad = [i + 1 for i, ln in enumerate(remaining)
                      if _env_io.has_line_break(ln)]
         try:
-            with open(env_path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(new_text)
-            os.chmod(env_path, 0o600)
-        except OSError as e:
-            # 写失败按写前原字节回滚（与 write_env_keys 的回滚同一立场）
-            if raw_bytes is not None:
-                with contextlib.suppress(OSError), open(env_path, "wb") as f:
-                    f.write(raw_bytes)
-            return False, f"清理写入失败（已回滚）：{e}", None
+            _host("atomic_write")(env_path, new_text, chmod_priv=True)
+        except (OSError, ValueError) as e:
+            # 原子写失败时目标文件仍是旧内容（临时文件由 _atomic_write 清理），
+            # 不存在"半份 .env"需要回滚；如实报错让运维处置。
+            return False, f"清理写入失败（原文件未改动）：{e}", None
         if audit is not None:
             with contextlib.suppress(Exception):
                 audit("env_line_cleanup", f"移除第 {line_no} 行（含潜伏行分隔符），"
@@ -464,12 +592,12 @@ def cleanup_env_ambiguous_line(env_path, line_no, audit=None):
         return True, f"已移除第 {line_no} 行；剩余含分隔符行 {len(still_bad)} 行", len(still_bad)
 
 
-def ensure_secret_key(env_path, atomic_write, audit=None):
+def ensure_secret_key(env_path):
     """确保 .env 中存在 YIBAN_SECRET_KEY（缺失时自动生成随机值）。
 
     .env 不可写、或既有行含潜伏行分隔符（写入被 fail-closed 拒绝）时降级为进程内随机
     密钥并告警（服务可用，重启后会话失效）——与口令哈希迁移的降级策略一致：宁可告警后
-    带病运行，也不让启动直接失败。行模型/校验单源在 `yiban.infra.env_io.write_env_keys`。
+    带病运行，也不让启动直接失败。行模型/校验单源在 `yiban.adapters.config.env_io.write_env_keys`。
 
     判定"已有密钥/全新部署"走**严格读**（`strict=True`，与 account_crypto 建钥支、
     audit_chain 审计密钥支同口径）：宽松读把"文件存在但读不到"（权限/占用/upsert 截断
@@ -509,6 +637,8 @@ def ensure_secret_key(env_path, atomic_write, audit=None):
         if new_deployment:
             updates["YIBAN_REGISTRATION_PAUSE"] = "1"
         try:
+            atomic_write = _host("atomic_write")
+            audit = _host("env_write_refuse_audit")
             _env_io.write_env_keys(
                 env_path, updates,
                 write_text=lambda path, text: atomic_write(path, text, chmod_priv=True),
@@ -530,10 +660,19 @@ def ensure_secret_key(env_path, atomic_write, audit=None):
 
 
 # ---------------------------------------------------------------------------
-# 公告元数据（草稿与线上公告共用同一形态：`<小写邮箱>|YYYY-MM-DD HH:MM:SS`）
+# 公告：三个 .env 键的键名单源 ＋ 元数据形态（草稿与线上公告共用）
 # ---------------------------------------------------------------------------
-# 该形态存在 .env 的公告键里，故解析器与它的分隔符/时刻格式归本模块；键名本身
-# （ANNOUNCEMENT_*_KEY）仍归公告域所在的 web.app。
+# 公告会出现在**全体学生**的页面顶横幅与登录页上，是内部人/被盗会话最好用的社工面，
+# 故拆成两半：普通管理员只能写草稿，主管理员点"发布"才落成对外可见的那一键。
+# 作者与时刻单独成键（而非塞进草稿正文），为的是发布人批准前就能看见"这是谁、
+# 什么时候写的"——审计表只能事后追，双人发布要的是事前那一眼。
+ANNOUNCEMENT_KEY = "YIBAN_ANNOUNCEMENT"
+ANNOUNCEMENT_DRAFT_KEY = "YIBAN_ANNOUNCEMENT_DRAFT"
+ANNOUNCEMENT_DRAFT_META_KEY = "YIBAN_ANNOUNCEMENT_DRAFT_META"
+# 线上公告的发布人/时刻：前端要同屏显示"草稿是谁写的"与"线上是谁在何时发的"，
+# 否则管理员只能看到一串文本，分不清自己看到的到底是待发布内容还是已生效内容。
+ANNOUNCEMENT_PUBLISHED_META_KEY = "YIBAN_ANNOUNCEMENT_PUBLISHED_META"
+# 该形态存在 .env 的公告键里，故解析器与它的分隔符/时刻格式也归本模块。
 ANNOUNCEMENT_DRAFT_META_SEP = "|"
 ANNOUNCEMENT_DRAFT_META_FMT = "%Y-%m-%d %H:%M:%S"
 
@@ -552,7 +691,7 @@ def _parse_announcement_meta(raw):
     if not author or not when:
         return "", ""
     try:
-        datetime.strptime(when, ANNOUNCEMENT_DRAFT_META_FMT)
+        datetime.strptime(when, ANNOUNCEMENT_DRAFT_META_FMT)  # noqa: DTZ007 仅校验业务时间串格式，不对时刻做运算
     except ValueError:
         return "", ""
     return author, when

@@ -10,8 +10,8 @@
    兜底轮；判定不可得时不封存 + 双声音 + 本轮成功则退出码升 1）、
    `YIBAN_FALLBACK_ENABLE` 置 1 而无进程时 run.sh 启动即告警并拉起、
    **真信号杀演练**（opt-in：真 run.sh + 真监督进程 + 真子进程 + 真 SIGKILL 的整链收场）。
-对应实现：yiban/engine/workers.py（汇总与单点标记）、yiban/engine/runner.py（子执行体
-   不写标记）、yiban/engine/state_io.py（`has_undone_accounts_today`）、run.sh
+对应实现：yiban/workers/workers.py（汇总与单点标记）、yiban/app/runner.py（子执行体
+   不写标记）、yiban/adapters/statefiles/state_io.py（`has_undone_accounts_today`）、run.sh
    （封存前置与兜底接线）。
 关键断言：补签判定与 SUCCESS 必须消费同一份真实 rc——被 SIGKILL 的子执行体若被归 0，
    run.sh 就写 SUCCESS、封存收尾标记，"进程消失后的当日恢复腿"被同一条坏 rc 弹开。
@@ -45,7 +45,6 @@ import sys
 import tempfile
 import time
 import unittest
-from datetime import datetime
 from types import SimpleNamespace
 from unittest import mock
 
@@ -57,8 +56,9 @@ if BASE not in sys.path:
 
 import signin  # noqa: E402  兼容壳：打桩口径与既有监督测试一致（转发到实现模块）
 
-from yiban.engine import runner as runner_mod  # noqa: E402
-from yiban.engine import state_io  # noqa: E402
+from yiban.adapters.statefiles import state_io  # noqa: E402
+from yiban.app import runner as runner_mod  # noqa: E402
+from yiban.core import clock  # noqa: E402
 
 
 def _acc(phone):
@@ -66,7 +66,8 @@ def _acc(phone):
 
 
 def _today():
-    return datetime.now().strftime("%Y-%m-%d")
+    """run.sh 按日文件（sign-<day>.log / sign-status-<day>.txt / 收尾标记）取业务日。"""
+    return clock.today()
 
 
 class SupervisorRcAggregationTest(unittest.TestCase):
@@ -312,8 +313,8 @@ sys.path.insert(0, "%s")
 sys.path.insert(0, os.path.join("%s", "scripts"))
 _REAL_POPEN = subprocess.Popen
 from unittest import mock  # noqa: E402
-from yiban.engine import workers  # noqa: E402
-import signin  # noqa: E402  仓库里的真兼容壳（转发到 yiban.engine.runner）
+from yiban.workers import workers  # noqa: E402
+import signin  # noqa: E402  仓库里的真兼容壳（转发到 yiban.app.runner）
 
 _BODY = ("import json,os,sys,time;"
          "m=json.loads(sys.argv[1]);"
@@ -363,7 +364,8 @@ class _RunShHarness(unittest.TestCase):
         with io.open(os.path.join(self.app, "scripts", "signin.py"), "w",
                      encoding="utf-8", newline="\n") as f:
             f.write(STUB_SIGNIN_RC)
-        with io.open(os.path.join(self.app, ".env"), "w", encoding="utf-8") as f:
+        os.makedirs(os.path.join(self.app, "data"), exist_ok=True)
+        with io.open(os.path.join(self.app, "data", ".env"), "w", encoding="utf-8") as f:
             f.write("YIBAN_SIGN_END=07:50\n")
         py_wrap = os.path.join(self.app, ".venv", "bin", "python3")
         with io.open(py_wrap, "w", encoding="utf-8", newline="\n") as f:
@@ -447,9 +449,17 @@ class RunShSealGateTest(_RunShHarness):
                          "仍有未了结账号时封存收尾标记 = 弹开当日恢复腿：%s" % log)
 
     def test_signal_failure_no_success_no_seal(self):
-        """轮以真失败收场（round rc 1）⇒ 不写状态、不封存、补签判定不被闭眼。"""
+        """轮以真失败收场（round rc 1）⇒ 状态文本非 SUCCESS、不封存、补签判定不被闭眼。
+
+        f7va 行为变更：失败轮现在**落盘 FAILED**（旧断言用"文件不存在"当"非 SUCCESS"
+        的代理——那是断言写错了，不是行为错了）。真意是"不得写成 SUCCESS"；marker
+        不封存是刻意的正确设计（恢复留给 07:12 那条腿），本用例继续钉它。
+        """
         r, _log = self._run(check_exit=10, round_exit=1)
-        self.assertFalse(os.path.exists(self._status()), "失败轮不得写 SUCCESS")
+        self.assertTrue(os.path.exists(self._status()), "失败轮也要落盘机器可读判据")
+        with io.open(self._status(), encoding="utf-8") as f:
+            self.assertEqual(f.read().strip(), "FAILED", "失败轮不得写 SUCCESS")
+        self.assertFalse(os.path.exists(self._settled()), "失败轮不封存（恢复留给 07:12）")
         self.assertEqual(r.returncode, 1)
 
     def test_unjudgeable_seal_blocks_and_escalates(self):
@@ -467,8 +477,76 @@ class RunShSealGateTest(_RunShHarness):
                         "补签轮把事实清干净后应当封存（两轮语义不得被闸门误伤）：%s" % log)
 
 
+class RunShStatusTextContractTest(_RunShHarness):
+    """每个确实跑过一轮的退出码都落盘机器可读文本，且文本**逐码派生**自退出码表。
+
+    f7va：旧口径"非 0/2 不写状态文件"让失败轮当天无机器可读判据。现在 0→SUCCESS、
+    1→FAILED、2→SKIPPED（全局暂停则 GLOBAL_PAUSED）、3→BUSY（locked，队列忙＝本轮
+    **没跑**）、4→SCHEMA_MIGRATION（迁移拒启）、10→NEED_SECOND_RUN（`second_run_check`
+    ＝判定码，不是轮结果码；正常轮不可达，出现即管道接错）、124→TIMEOUT。**每个已知码
+    各有专属文本，不得被 catch-all 归进 FAILED**——那会把"另有持有者正在跑"/"schema
+    半升级"/"判定码漏进结果通道"报成账号失败（本项目 10-07 栽过"领不到任务被上报成批
+    假失败"那族）。
+    "非 SUCCESS 文本不被采信"由 tests/test_run_sh_logging.py 钉住：本夹具的 $PY 把
+    `-`（兜底存活探测）拦成桩件，库内事实查询走不了真解释器，故不在此处测采信。
+    """
+
+    #: rc → 状态文件文本（0/1/2/3/4/10/124 逐一钉住；与 cli_support._EXIT_KINDS 同源）
+    RC_TO_TEXT = ((0, "SUCCESS"), (1, "FAILED"), (2, "SKIPPED"),
+                  (3, "BUSY"), (4, "SCHEMA_MIGRATION"),
+                  (10, "NEED_SECOND_RUN"), (124, "TIMEOUT"))
+
+    def _fresh_state(self):
+        """换一个全新状态目录：每条子用例独立，避免上一轮的落盘短路本轮。"""
+        self.state = tempfile.mkdtemp(prefix="state-", dir=self.tmp)
+        return self.state
+
+    def test_each_round_exit_code_writes_its_text(self):
+        """0/1/2/3/4/10/124 各自落盘文本——各码有其名，已知码不被归进"未知"兜底。"""
+        for code, want in self.RC_TO_TEXT:
+            with self.subTest(code=code):
+                self._fresh_state()
+                _r, log = self._run(round_exit=code, second_round="0")
+                with io.open(self._status(), encoding="utf-8") as f:
+                    self.assertEqual(f.read().strip(), want,
+                                     "退出码 %d 的状态文本必须落盘为 %s：%s"
+                                     % (code, want, log))
+
+    def test_status_texts_are_derived_from_exit_kinds(self):
+        """rc→文本必须按 `cli_support._EXIT_KINDS` 逐码派生：**任何**已知码不得落"未知"兜底。
+
+        f7va 复审抓到的错：3（`locked`＝队列忙，本轮没跑）、4（`schema_migration`）、
+        10（`second_run_check`＝判定码）都曾被 catch-all 归进 FAILED＝假失败/归族。
+        本用例从码表**本身**派生要求，防"再抓一个已知码悄悄归族"：
+          · `_EXIT_KINDS` 的**每一个**码（含 10）上表都须有专属条目；码表新增码而本表未跟
+            ⇒ 本用例红（咬住"静默归族"）。
+          · `locked`(3) 与 `second_run_check`(10) 的文本都不得为 FAILED。
+        """
+        from yiban.engine import cli_support
+        expected = dict(self.RC_TO_TEXT)
+        known = set(cli_support._EXIT_KINDS)          # 含 10：判定码也要有专属文本
+        missing = sorted(known - set(expected))
+        self.assertEqual(
+            missing, [],
+            "cli_support._EXIT_KINDS 的这些码在 run.sh 的 rc→文本表里没有专属条目：%s"
+            "（新增码必须同批给文本，不得静默落进未知兜底）" % missing)
+        self.assertEqual(cli_support._EXIT_KINDS.get(3), "locked",
+                         "退出码 3 的 kind 应仍是 locked（队列忙）")
+        self.assertNotEqual(expected[3], "FAILED",
+                            "locked（队列忙）不得表述成失败：本轮没跑，不是账号签到失败")
+        self.assertEqual(cli_support._EXIT_KINDS.get(10), "second_run_check",
+                         "退出码 10 的 kind 应仍是 second_run_check（判定码）")
+        self.assertNotEqual(expected[10], "FAILED",
+                            "second_run_check（判定码）不得表述成失败：出现是管道接错，"
+                            "不是账号签到失败")
+
+
 class RunShFallbackBootTest(_RunShHarness):
     """`YIBAN_FALLBACK_ENABLE` 的文档语义兑现：开关置 1 而无进程 ⇒ 启动即告警并拉起。"""
+
+    #: 兜底子进程落盘的等待上限（秒）。判据是"最终会拉起"，不是"立刻已拉起"；
+    #: 有界等待把调度运气从判据里去掉，超时仍红（不放过真缺陷）。
+    _SPAWN_BOOT_TIMEOUT_SEC = 10.0
 
     def _spawns(self):
         p = os.path.join(self.state, "spawns.log")
@@ -483,9 +561,18 @@ class RunShFallbackBootTest(_RunShHarness):
         self.assertIn("兜底", log, "开关置 1 而探测不到进程 ⇒ 启动即告警（日志留痕）")
         self.assertIn("兜底", r.stderr.decode("utf-8", "replace"),
                       "告警必须双声音（stderr 也有一份）")
+        # 拉起是**后台子进程**（`nohup … &`）：spawns.log 由子进程写，run.sh 返回时它
+        # 可能还没落盘。读一次就断言＝把调度运气当判据（CI 实测红、本机连跑 5 次全过）。
+        # 改**等待式**（工单 nvno 同法）：有界轮询到出现即通过，超时才红；不靠固定睡眠。
         spawns = self._spawns()
+        deadline = time.monotonic() + self._SPAWN_BOOT_TIMEOUT_SEC
+        while (not any("sign --fallback" in s for s in spawns)
+               and time.monotonic() < deadline):
+            time.sleep(0.05)
+            spawns = self._spawns()
         self.assertTrue(any("sign --fallback" in s for s in spawns),
-                        "开关置 1 必须真的拉起兜底进程：%s" % spawns)
+                        "开关置 1 必须真的拉起兜底进程（等待 %.1fs 后仍无）：%s"
+                        % (self._SPAWN_BOOT_TIMEOUT_SEC, spawns))
 
     def test_enabled_with_process_stays_quiet(self):
         _r, log = self._run(check_exit=0, extra_env={"YIBAN_FALLBACK_ENABLE": "1",
@@ -580,8 +667,8 @@ class RunShRealSigkillDrillTest(_RunShHarness):
             victim = [m for ident, m in exes.items() if ident.startswith("worker-0")]
             self.assertTrue(victim, "两个执行体身份应以 worker-0/worker-1 区分: %s"
                             % sorted(exes))
-            # 真实命令行由监督进程构造（`-m yiban.cli sign`），演练只换了本体程序
-            self.assertEqual(victim[0]["cmd"][1:4], ["-m", "yiban.cli", "sign"],
+            # 真实命令行由监督进程构造（`-m yiban.entry.cli sign`），演练只换了本体程序
+            self.assertEqual(victim[0]["cmd"][1:4], ["-m", "yiban.entry.cli", "sign"],
                              "子执行体必须是监督进程真实命令行拉起的进程")
             os.kill(victim[0]["pid"], signal.SIGKILL)   # 真信号，不是打桩的假退出码
             rc = proc.wait(timeout=180)
@@ -596,12 +683,12 @@ class RunShRealSigkillDrillTest(_RunShHarness):
                       "汇总里没有真实的负退出码 ⇒ 子进程没被真信号杀（演练空转）：%s" % log)
         self.assertIn("退出码 0", log,
                       "兄弟执行体正常退出 0 也救不了整轮——单个 -9 就足以否掉 SUCCESS：%s" % log)
-        # ① 状态文件不写 SUCCESS（失败轮按既有口径根本不写）
-        self.assertFalse(os.path.exists(self._status()),
-                         "被信号杀的轮次不得写 SUCCESS：%s" % log)
-        if os.path.exists(self._status()):
-            with io.open(self._status(), encoding="utf-8") as f:
-                self.assertNotEqual(f.read().strip(), "SUCCESS")
+        # ① 状态文件不得写 SUCCESS（f7va：失败轮落盘 FAILED，真意是"内容非 SUCCESS"）
+        self.assertTrue(os.path.exists(self._status()),
+                        "被信号杀的轮次也要落盘机器可读判据：%s" % log)
+        with io.open(self._status(), encoding="utf-8") as f:
+            self.assertEqual(f.read().strip(), "FAILED",
+                             "被信号杀的轮次不得写 SUCCESS：%s" % log)
         # ② 收尾标记不封存（封存前置=库内事实，且监督进程未写全量完成标记）
         self.assertFalse(os.path.exists(self._settled()),
                          "执行体被杀 ⇒ 收尾标记一次都不该封存，否则 07:12 的恢复腿被弹开：%s"

@@ -20,6 +20,10 @@ import tempfile
 import unittest
 from unittest import mock
 
+from werkzeug.security import generate_password_hash
+
+from web import security as _security
+
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 TEST_KEY = "c" * 64
@@ -73,12 +77,12 @@ class RegisterAdminEmailTest(unittest.TestCase):
             if os.path.exists(p):
                 os.remove(p)
         db.init_db(self.db_file, env_file=self.env_file)
-        db.create_user(REGISTERED, self.webapp.generate_password_hash(GOODPW))
+        db.create_user(REGISTERED, generate_password_hash(GOODPW))
 
     def test_builtin_admin_email_indistinguishable_from_duplicate(self):
         c = self.webapp.create_app().test_client()
-        with mock.patch.object(self.webapp, "_constant_time_dummy",
-                               wraps=self.webapp._constant_time_dummy) as dummy:
+        with mock.patch.object(_security, "_constant_time_dummy",
+                               wraps=_security._constant_time_dummy) as dummy:
             r_admin = c.post("/api/register", json={
                 "email": ADMIN_EMAIL, "password": GOODPW, "agree": True})
             self.assertEqual(dummy.call_count, 1,

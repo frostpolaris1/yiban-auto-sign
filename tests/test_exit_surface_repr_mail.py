@@ -3,10 +3,10 @@
 
 标签：G · 安全：脱敏/审计/配置注入
 覆盖：`Account.__repr__`（异常消息 / traceback / `%s account` 直出的载体）、
-    `yiban.mail.layout.Mail` 构造点的正文遮罩收口（邮件 to_plain/to_html 与推送
+    `yiban.adapters.notifier.mail.layout.Mail` 构造点的正文遮罩收口（邮件 to_plain/to_html 与推送
     三条出口共享同一构造，故一处收口覆盖三条）。
 对应实现：`yiban/engine/accounts.py::Account.__repr__`、
-    `yiban/mail/layout.py::Mail.__init__` / `_masked_tree`。
+    `yiban/adapters/notifier/mail/layout.py::Mail.__init__` / `_masked_tree`。
 关键断言：脱敏口径复用单一原语——号码 `mask_phone`/`mask_phones_in_text`（与
     `MaskingFormatter` 同规则），邮箱 `_mask_addr`（与告警收件人 MF-51 同口径），
     不新造第二套；已遮文本**幂等**通过（二次遮不变形）。
@@ -17,9 +17,9 @@
 import unittest
 from unittest import mock
 
-from yiban.engine import alerts
+from yiban.adapters.notifier import report as alerts
+from yiban.adapters.notifier.mail.layout import Mail
 from yiban.engine.accounts import Account
-from yiban.mail.layout import Mail
 
 PHONE_RAW = "13800001234"
 PHONE_MASKED = "138****1234"
@@ -67,7 +67,7 @@ class AccountReprSurfaceTest(unittest.TestCase):
         新 repr 虽已自带遮罩，但 `sanitize_text` 的整对象吞除是"调用点忘了过 repr"
         时的兜底——这条钉住它对新 repr 仍生效，别在改 repr 时把它带崩。
         """
-        from yiban.masking import sanitize_text
+        from yiban.core.masking import sanitize_text
         out = sanitize_text(f"登录失败 {self._acc()} 请检查")
         self.assertIn("Account(***)", out)
         self.assertNotIn(PHONE_RAW, out)

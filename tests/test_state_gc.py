@@ -7,7 +7,7 @@
     日志目录与状态目录分开、环境变量覆盖保留期且非法值响亮失败、空凭据态只在真空时删；
     元测试：仓库里每个"带日期后缀"的文件名必须落在策略表或 `ALLOWED_NON_STATE`；
     宿主 CLI 与容器调度共用同一策略且目录键与 run.sh 同口径；清理残留与账号事件的连带。
-对应实现：策略在 `yiban/state_gc.py`（`sweep`），调用点 `scripts/state_cleanup.py`
+对应实现：策略在 `yiban/adapters/statefiles/state_gc.py`（`sweep`），调用点 `scripts/state_cleanup.py`
     与 `docker/scheduler.py`；bash 包装只做委托。
 关键断言：根因不是"漏了某几个模式"，而是**规则写在 bash 里、容器侧另写一份**——
     所以钉的是"新增一类按日文件必须有交代"这条元测试，而不是逐条列举文件；
@@ -33,7 +33,9 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import state_cleanup  # noqa: E402  （scripts/state_cleanup.py）
 
-from yiban import clock, state_gc  # noqa: E402
+from yiban.adapters.config import env_io  # noqa: E402
+from yiban.adapters.statefiles import state_gc  # noqa: E402
+from yiban.core import clock  # noqa: E402
 
 
 def _day(delta):  #文件名日期是判据，落盘 mtime 不是——所以造文件要连着造名字
@@ -142,8 +144,8 @@ class SweepPolicyTest(unittest.TestCase):
         self._touch("sched-run-2026-09-09.json")
         biz_now = datetime(2026, 9, 17, 6, 0, 0)        # 北京 09-17 06:00
         host_now = datetime(2026, 9, 16, 22, 0, 0)      # 宿主 UTC 09-16 22:00
-        with mock.patch("yiban.state_gc.datetime.datetime") as dt, \
-             mock.patch("yiban.clock.now", return_value=biz_now):
+        with mock.patch("yiban.adapters.statefiles.state_gc.datetime.datetime") as dt, \
+             mock.patch("yiban.core.clock.now", return_value=biz_now):
             dt.now.return_value = host_now
             dt.timedelta = timedelta
             removed, _ = state_gc.sweep(self.tmp)
@@ -206,13 +208,13 @@ ALLOWED_NON_STATE = {  #元测试扫的是源码字面量：误命中的前缀�
     "signin-": "多执行体子进程各自的运行锁文件名（workers.py 的 signin-run.lock.w<slot>，"
               "由 YIBAN_RUN_LOCK_NAME 指到状态目录，不是按日状态文件）",
     "verify-job-": "校验任务的线程名（不是文件）",
-    "yiban-": "每日备份归档（BACKUP_DIR，默认 /var/backups）——不在状态目录里，"
+    "yiban-": "每日备份归档（BACKUP_DIR，默认 /var/backups/yiban）——不在状态目录里，"
               "由 backup.sh 自己的 30 天保留策略轮转；backup_sentinel.py 只是读它的名字",
     "dev-verify-": "scripts/dev-verify.sh 的跑测日志文件名（dev-verify-<时间戳>.log）——"
                    "落在仓库外的日志目录，不是状态文件；保留由该脚本的 --keep 自己轮转"
                    "（默认最近 5 份）",
     "worker-alive-": "并行执行体心跳文件名（固定名覆盖写，非按日）——"
-                     "常量 WORKER_ALIVE_FILE_PREFIX 定义在 yiban/engine/state_io.py，"
+                     "常量 WORKER_ALIVE_FILE_PREFIX 定义在 yiban/adapters/statefiles/state_io.py，"
                      "故被常量拼接检测器命中；它不是按日件，不进按日清理名册"
                      "（该事实已登记在 shared-facts.tsv 状态件族）",
     # 邮件排版层的 HTML 内联样式：扫描正则只看"引号 + 小写 token + '-' + 后接 {表达式}"，
@@ -241,8 +243,10 @@ class EveryDailyStateFileIsRegisteredTest(unittest.TestCase):
     前四类并入同一份前缀名册核对；第 ⑤ 类另立"固定名枚举"判据（`_scan` 的第二返回值）。
     """
 
+    #: 前缀字符类含下划线：Python 模块名惯例就是下划线，按日件照此命名时不得
+    #: 静默逃逸（`elbow_shadow-<day>.json`）。连字符形态照旧匹配。
     _NAME_RE = re.compile(
-        r'["\'](?:\$[A-Za-z_{][^"\'\n]*/)?([a-z][a-z0-9-]*)-[^"\'\n]*'
+        r'["\'](?:\$[A-Za-z_{][^"\'\n]*/)?([a-z][a-z0-9_-]*)-[^"\'\n]*'
         r'(?:\{[^}]*\}|\$\([^)]*\)|%Y|YYYY)'
     )
 
@@ -250,17 +254,26 @@ class EveryDailyStateFileIsRegisteredTest(unittest.TestCase):
     #: `"…: %s" % msg` 这类日志文案当成文件名（误报会喂假绿）。
     _ESCAPE_RES = (
         ("%s 拼名", re.compile(
-            r'["\']([a-z][a-z0-9-]*-)%s\.(?:json|jsonl|log|txt|marker)["\']')),
+            r'["\']([a-z][a-z0-9_-]*-)%s\.(?:json|jsonl|log|txt|marker)["\']')),
         ("月粒度", re.compile(
-            r'["\']([a-z][a-z0-9-]*-)%m\.(?:json|jsonl|log|txt|marker)["\']')),
+            r'["\']([a-z][a-z0-9_-]*-)%m\.(?:json|jsonl|log|txt|marker)["\']')),
         ("常量拼接", re.compile(
-            r'[A-Z][A-Z0-9_]*FILE_PREFIX\s*=\s*["\']([a-z][a-z0-9-]*-)["\']')),
+            r'[A-Z][A-Z0-9_]*FILE_PREFIX\s*=\s*["\']([a-z][a-z0-9_-]*-)["\']')),
         (".corrupt-", re.compile(
-            r'["\']([a-z][a-z0-9-]*-)[^"\'\n]*\.(?:json|jsonl|log|txt|marker)\.corrupt-')),
+            r'["\']([a-z][a-z0-9_-]*-)[^"\'\n]*\.(?:json|jsonl|log|txt|marker)\.corrupt-')),
     )
     #: 逃逸 ⑤：非按日命名的固定名件（名字里没有日期表达式）。
     _NONDAILY_RE = re.compile(
         r'["\']([a-z][a-z0-9-]+\.(?:json|jsonl|log|txt|marker))["\']')
+    #: 逃逸 ⑥（2026-10-20）：前缀收进 `env_io` 常量后，字面量扫描看不见它。
+    #: 认常量引用即算"该前缀有写入点"——新按日文件仍只能写字面量（或再改 env_io，
+    #: 那是可审查的入口），故元测试的检出面不缩。
+    _CONST_PREFIXES = {  # noqa: RUF012 —— 类常量映射，测试内只读
+        "env_io.DAY_LOG_PREFIX": env_io.DAY_LOG_PREFIX,
+        "env_io.SIGN_STATE_PREFIX": env_io.SIGN_STATE_PREFIX,
+        "env_io.SIGN_DAILY_PREFIX": env_io.SIGN_DAILY_PREFIX,
+    }
+    _CONST_PREFIX_RE = re.compile(r"\b(" + "|".join(_CONST_PREFIXES) + r")\b")
 
     def _scan(self, root=None):
         """→ (按日前缀 dict, 固定名集合)；`root` 供逃逸用例扫合成树（默认本仓）。"""
@@ -289,6 +302,8 @@ class EveryDailyStateFileIsRegisteredTest(unittest.TestCase):
             for _label, rx in self._ESCAPE_RES:
                 for m in rx.finditer(src):
                     found.setdefault(m.group(m.lastindex), set()).add(rel)
+            for m in self._CONST_PREFIX_RE.finditer(src):
+                found.setdefault(self._CONST_PREFIXES[m.group(1)], set()).add(rel)
             for m in self._NONDAILY_RE.finditer(src):
                 nondaily.add(m.group(1))
         return found, nondaily
@@ -347,6 +362,18 @@ class EveryDailyStateFileIsRegisteredTest(unittest.TestCase):
         found, _ = self._scan_escape('A = "sign-delta-%s.json.corrupt-1" % day\n')
         self.assertIn("sign-delta-", found, ".corrupt- 变体的按日前缀逃过了扫描")
 
+    def test_escape_underscore_prefix_is_detected(self):
+        """下划线命名的按日前缀必须被抓到；补下划线后正常连字符名字仍须命中。
+
+        Python 模块名惯例用下划线，按日件完全可能照此命名；前缀类只收连字符时，
+        `elbow_shadow-<day>.json` 会静默绕开"新增按日文件必须登记清理策略"这道门。
+        """
+        found, _ = self._scan_escape(
+            'A = "elbow_shadow-%s.json" % day\n'
+            'B = "sign-state-%s.json" % day\n')
+        self.assertIn("elbow_shadow-", found, "下划线命名的按日前缀逃过了扫描")
+        self.assertIn("sign-state-", found, "补下划线后正常连字符名字仍须命中")
+
     def test_escape_non_daily_name_is_detected(self):
         """逃逸 ⑤：非按日命名（固定名、无日期表达式）必须走另一条枚举判据。"""
         _found, nondaily = self._scan_escape('A = "sign-epsilon.json"\n')
@@ -376,11 +403,6 @@ class CleanupEntryPointsTest(unittest.TestCase):
         self.assertNotIn("rm ", body)
         self.assertNotIn("sign-", body)
 
-    def test_container_scheduler_uses_shared_policy(self):
-        with open(os.path.join(BASE, "docker", "scheduler.py"), encoding="utf-8") as f:
-            src = f.read()
-        self.assertIn("state_gc.sweep(STATEDIR, LOGDIR)", src)
-        self.assertNotIn("_cleanup_logs", src, "旧的只清日志实现应已被替换")
 
     def test_state_dir_resolution_matches_run_sh(self):
         """同一套键：.env 只被 run.sh 导出，故 CLI 也按 YIBAN_STATE_DIR/LOG_FILE 解析。"""

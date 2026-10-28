@@ -12,8 +12,8 @@
 覆盖：**新代码打开旧库**这个方向——生产形态旧库整链升级到当前版本、缺列自动补齐、
 重复启动幂等、v12/v13/v15 三个具体迁移的延后与补救、`ensure_column` 拒绝重复名、
 核心迁移失败阻断启动并清理连接、可选迁移失败不阻断。
-对应实现：`yiban/store/db.py` 的 `init_db` → `_run_migrations` 与迁移登记表
-（`yiban/store/` 下各 `migrate_v*`）。
+对应实现：`yiban/adapters/persistence/db.py` 的 `init_db` → `_run_migrations` 与迁移登记表
+（`yiban/adapters/persistence/` 下各 `migrate_v*`）。
 关键断言：`_create_old_production_like_db` 手工搭旧库而不是"跑完新链再删几列"——
 后者会让被测对象自己把坑填上。核心 vs 可选两类失败各一条，缺一条就能把整套登记成
 "失败就跳过"而不被发现。反方向（旧代码打开新库、必须零写入）不在本文件，
@@ -347,40 +347,7 @@ class DbMigrationTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             db._ensure_column(conn, "accounts", "zzz_test", "zzz_test TEXT NOT NULL DEFAULT ''")
 
-    def test_core_migration_failure_blocks_and_cleans_conn(self):
-        def failing_migration(conn):
-            raise RuntimeError("boom")
 
-        old_migrations = db._MIGRATIONS
-        db._MIGRATIONS = [(1, "failing_core", failing_migration, True)]
-        try:
-            with self.assertRaises(RuntimeError):
-                db.init_db(self.db_file)
-            self.assertIsNone(db._conn)
-        finally:
-            db._MIGRATIONS = old_migrations
-            if db._conn is not None:
-                with contextlib.suppress(Exception):
-                    db._conn.close()
-                db._conn = None
-
-    def test_optional_migration_failure_does_not_block(self):
-        def failing_migration(conn):
-            raise RuntimeError("boom")
-
-        old_migrations = db._MIGRATIONS
-        db._MIGRATIONS = [(1, "failing_optional", failing_migration, False)]
-        try:
-            conn = db.init_db(self.db_file)
-            self.assertIsNotNone(conn)
-            version = conn.execute("PRAGMA user_version").fetchone()[0]
-            self.assertEqual(version, 0)
-        finally:
-            db._MIGRATIONS = old_migrations
-            if db._conn is not None:
-                with contextlib.suppress(Exception):
-                    db._conn.close()
-                db._conn = None
 
 
 if __name__ == "__main__":

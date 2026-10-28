@@ -17,9 +17,10 @@
 
 **通信**
 本模块不持有 app 实例：注册在 `register(app)` 里做，请求期需要 app 自身的东西
-（`static_folder` / `response_class`）走 Flask `current_app`。凡引用 web.app 的模块级
-名字（`_current_role`、渲染助手、版本与备案常量等）一律经 `web.routes.appmod()` 按属性
-取——`mock.patch.object(web.app, …)` 的打桩点必须继续生效（见 `appmod()`）。登录页的
+（`static_folder` / `response_class`）走 Flask `current_app`。A 类转发名
+（`APP_VERSION` / `db` / `_client_ip` / `_rate_lock` / `_ip_store_trim`）经真源模块直取
+（批 3-a 拆墙）；app.py 自有的模块级名字（`_current_role`、渲染助手、备案常量等）仍经
+`web.routes.appmod()` 按属性取。登录页的
 循环计数挂 `current_app.extensions`，保持"每个 app 实例一份"的原工厂局部变量语义。
 """
 import os
@@ -36,15 +37,22 @@ from flask import (
     url_for,
 )
 
+# A 类转发名的真源（批 3-a：路由直连，不再经 web.app 转发墙）。
+from web import render as _render
+from web import security as _security
 from web.routes import appmod as _appmod
+from web.routes import session_abs_ttl as _session_abs_ttl
+from web.services import locks as _locks
 from web.services import signstatus as _signstatus
 from web.services import vue_assets as _vue_assets
-from yiban import status as _yiban_status
-from yiban.infra import env_io as _env_io
+from yiban import __version__ as APP_VERSION
+from yiban.adapters.config import env_io as _env_io
+from yiban.adapters.persistence import db
+from yiban.core import status as _yiban_status
 
 
 # `.env` 行分隔符码点：前端"提交前拒含换行族的输入"必须与后端**同一份清单**
-# （`yiban.infra.env_io.ENV_LINE_BREAK_CHARS`），故由后端渲染进页面而不是前端另抄一份。
+# （`yiban.adapters.config.env_io.ENV_LINE_BREAK_CHARS`），故由后端渲染进页面而不是前端另抄一份。
 # 只渲染页面（不引入构建步骤）；核心符号换取时值仍与写入口字符集同源。
 def _env_line_break_codes():
     return sorted(ord(ch) for ch in _env_io.ENV_LINE_BREAK_CHARS)
@@ -53,19 +61,18 @@ def _env_line_break_codes():
 def _calendar_page_context():
     """日历页的状态显示上下文：状态表 + 图例 + 今日门真值（服务端渲染进页面的内联载荷）。
 
-    **同源方式**：状态显示表是 `yiban.status.DISPLAY`（唯一事实源）。`display_payload()`
+    **同源方式**：状态显示表是 `yiban.core.status.DISPLAY`（唯一事实源）。`display_payload()`
     把它序列化进页面的内联脚本（`window.YB_CALENDAR_STATE`）；**图例档位清单同车下发**
     （`payload["legend"] = legend_items()`），故图例与日期格/账号卡状态行消费的是同一份表
     ——新增状态码只会同时出现在两侧，不再有"渲染认得、图例不认得"的漂移（急停曾渲染成
     "排队待签"）。图例的 markup 由 Vue 渲染（前端只负责"只解释看得见的颜色"这一层收敛），
     档位与中文短名一律不落前端。
 
-    `day_off` 取 `web.app._day_off_reason`（读 `.env` 真值、与引擎同一判据）：急停/周末
+    `day_off` 取 `web.services.signstatus._day_off_reason`（读 `.env` 真值、与引擎同一判据）：急停/周末
     在日历上的口径与引擎实际行为一致，而不是"界面上说没有"。门语义一行未改。
     """
-    m = _appmod()
     payload = _yiban_status.display_payload()
-    payload["day_off"] = _signstatus.day_off_payload(m._day_off_reason())
+    payload["day_off"] = _signstatus.day_off_payload(_signstatus._day_off_reason())
     payload["legend"] = _yiban_status.legend_items()
     return {"calendar_state": payload}
 
@@ -81,29 +88,62 @@ def _render_admin_page(template, nav_key, crumbs, extra=None):
     return render_template(
         template,
         web_version=m.WEB_VERSION,
-        app_version=m.APP_VERSION,
-        icp_info=m.icp_info(),
-        police_info=m.police_info(),
-        police_link=m.police_link(),
+        app_version=APP_VERSION,
+        icp_info=_render.icp_info(),
+        police_info=_render.police_info(),
+        police_link=_render.police_link(),
         nav_active=nav_key,
         crumbs=crumbs,
         current_username=session.get("username", ""),
-        current_role=m._current_role() or "",
+        current_role=_security._current_role(_session_abs_ttl()) or "",
         env_line_break_codes=_env_line_break_codes(),
         **(extra or {}),
     )
 
 
 def _admin_page_redirect():
-    """管理端页面守卫：未登录 → 登录页；非管理员 → 用户页。合规时返回 None。
+    """管理端页面守卫（弱档）：未登录 → 登录页；非管理员 → 用户页。合规时返回 None。
 
     返回而非装饰，是因为三处守卫各自需要不同模板/导航键，装饰器会增加一层间接。
+
+    **档位配对普查（工单 tklp）**——页面守卫必须与该页**主要 API** 的档位一致，
+    否则会出现"页面弱 API 强"（能打开页面但数据全 403，界面像坏了）或
+    "页面强 API 弱"（被页面挡住、但直接调 API 仍可读）：
+      · `/data/dashboard` → clock / accounts / sign-events：弱档（role=admin）⇒ 弱档
+      · `/data/logs`      → `/api/stream/progress`：**强档**（仅 builtin，见
+        `web/routes/stream_api.py`）⇒ 本页改用 `_builtin_admin_page_redirect`
+      · `/data/audit`     → `/api/audit-logs`：弱档 ⇒ 弱档
+      · `/work/accounts`、`/work/users` → accounts/users 读接口：弱档 ⇒ 弱档
+      · `/work/settings`  → GET 设置：弱档（写接口按 A/B 档逐端点判）⇒ 弱档；
+        页面只是个壳，主管理员专属控件由服务端 403 拒绝，不构成页面越权
+      · `/my/*`           → 本人数据：弱档 ⇒ 弱档
     """
-    role = _appmod()._current_role()
+    role = _security._current_role(_session_abs_ttl())
     if role is None:
+        # 首次启动（.env 还没有管理员）：引导到创建页，而不是让用户面对一个
+        # 无法登录的登录页。已配置时行为不变。
+        if not _security.admin_configured():
+            return redirect(url_for("setup_page"))
         return redirect(url_for("login_page"))
     if role != "admin":
         return redirect(url_for("user_calendar_page"))
+    return None
+
+
+def _builtin_admin_page_redirect():
+    """强档页面守卫：在弱档之上再要求**内置主管理员**会话（与强档 API 配对）。
+
+    只用于宿主页面里挂着"仅主管理员"API 的页（当前只有 `/data/logs` 的
+    `/api/stream/progress`）。注册管理员（`users.role=admin`）不再是跳转到
+    他自己的用户页——与 `_user_page_redirect` 对管理员的处置同形。
+    """
+    blocked = _admin_page_redirect()
+    if blocked:
+        return blocked
+    if not _security._is_builtin_admin_session():
+        # 注册管理员仍是管理员：回管理端首页（不回 /user/calendar——那页会再把
+        # 管理员转回 dashboard，白多一跳）
+        return redirect(url_for("dashboard_page"))
     return None
 
 
@@ -147,7 +187,9 @@ _MOVED_PAGES = {
 
 def _moved_page_view(endpoint):
     def view():
-        # 保留查询串：theme_boot 的版本兜底跳 `/?v=<版本>`，丢掉 ?v= 会让它反复重试
+        # 保留旧路径书签/分享链接上的查询串（真实调用面：用户收藏的历史 URL
+        # 可能带 ?date= 等参数）。theme_boot 的版本兜底跳的是 `/?v=`，而 `/` 不在
+        # `_MOVED_PAGES` 里、走 root_page——那条路径不放行本函数，故不能拿它当理由。
         qs = request.query_string.decode("utf-8", "ignore")
         return redirect(url_for(endpoint) + (("?" + qs) if qs else ""), code=302)
     return view
@@ -205,8 +247,10 @@ def root_page():
     不做成到 /data/dashboard 的盲跳：未登录时会多一跳（/ → /data/dashboard → /login），
     而 theme_boot 的版本兜底跳的正是 `/?v=`，链越长越容易在弱网下闪现中间态。
     """
-    role = _appmod()._current_role()
+    role = _security._current_role(_session_abs_ttl())
     if role is None:
+        if not _security.admin_configured():
+            return redirect(url_for("setup_page"))
         return redirect(url_for("login_page"))
     if role == "admin":
         return redirect(url_for("dashboard_page"))
@@ -220,8 +264,10 @@ def _user_page_redirect():
 
     与管理端守卫同构：返回而非装饰，便于各页按需处理。
     """
-    role = _appmod()._current_role()
+    role = _security._current_role(_session_abs_ttl())
     if role is None:
+        if not _security.admin_configured():
+            return redirect(url_for("setup_page"))
         return redirect(url_for("login_page"))
     if role != "user":
         return redirect(url_for("dashboard_page"))
@@ -239,10 +285,10 @@ def _render_user_page(template, nav_key, crumbs, extra=None):
     return render_template(
         template,
         web_version=m.WEB_VERSION,
-        app_version=m.APP_VERSION,
-        icp_info=m.icp_info(),
-        police_info=m.police_info(),
-        police_link=m.police_link(),
+        app_version=APP_VERSION,
+        icp_info=_render.icp_info(),
+        police_info=_render.police_info(),
+        police_link=_render.police_link(),
         nav_active=nav_key,
         crumbs=crumbs,
         **(extra or {}),
@@ -280,16 +326,19 @@ def _login_loop():
 
 def login_page():
     m = _appmod()
+    if not session.get("auth") and not _security.admin_configured():
+        # 未配置管理员时登录必然失败，直接把首次使用者引到创建页。
+        return redirect(url_for("setup_page"))
     if session.get("auth"):
-        ip = m._client_ip()
+        ip = _security._client_ip()
         now = time.time()
         loop = _login_loop()
         # trim 与随后的读改写必须在同一把 _rate_lock 内：`_ip_store_trim` 会
         # `store.items()` 遍历（本表 > _LOGIN_LOOP_LIMIT=1000 才进入清理分支），
         # 锁外并发插入 `loop[ip]=...` 会让迭代中的 dict 变尺寸 → RuntimeError → 500。
         # 不变量见 locks.py：调用方持锁、trim 自身不取锁。
-        with m._rate_lock:
-            m._ip_store_trim(loop, 60)
+        with _locks._rate_lock:
+            _security._ip_store_trim(loop, 60)
             # 条目上限防护：超出时清理最老的 20%
             if len(loop) > _LOGIN_LOOP_LIMIT:
                 sorted_ips = sorted(loop, key=lambda k: loop[k][1])
@@ -301,9 +350,29 @@ def login_page():
             cnt += 1
             loop[ip] = (cnt, first)
         if cnt < 4:
-            return redirect(url_for("dashboard_page") if m._current_role() == "admin" else url_for("user_calendar_page"))
-        m.logger.warning("检测到登录页访问循环（IP %s），已打断并渲染登录页", m.db.hash_ip(ip))
+            return redirect(url_for("dashboard_page") if _security._current_role(_session_abs_ttl()) == "admin" else url_for("user_calendar_page"))
+        m.logger.warning("检测到登录页访问循环（IP %s），已打断并渲染登录页", db.hash_ip(ip))
     return _render_auth_vue_page("login.html", "login.html")
+
+
+def setup_page():
+    """首次启动引导页（`/setup`）：.env 还没有管理员时渲染创建表单。
+
+    已配置管理员 ⇒ 302 到登录页。创建接口自身也做同一判定（防直接 POST），
+    本页的判定只负责"页面该不该出现"。
+    """
+    m = _appmod()
+    if _security.admin_configured():
+        return redirect(url_for("login_page"))
+    return render_template(
+        "setup.html",
+        web_version=m.WEB_VERSION,
+        app_version=APP_VERSION,
+        icp_info=_render.icp_info(),
+        police_info=_render.police_info(),
+        police_link=_render.police_link(),
+        site_description=_render.site_description(),
+    )
 
 
 def _render_auth_vue_page(entry, template):
@@ -320,14 +389,14 @@ def _render_auth_vue_page(entry, template):
     return render_template(
         template,
         web_version=m.WEB_VERSION,
-        app_version=m.APP_VERSION,
-        icp_info=m.icp_info(),
-        police_info=m.police_info(),
-        police_link=m.police_link(),
-        site_description=m.site_description(),
-        site_image=m.site_image(),
-        agreement_html=m._read_doc_html("USER_AGREEMENT.md"),
-        privacy_html=m._read_doc_html("PRIVACY_POLICY.md"),
+        app_version=APP_VERSION,
+        icp_info=_render.icp_info(),
+        police_info=_render.police_info(),
+        police_link=_render.police_link(),
+        site_description=_render.site_description(),
+        site_image=_render.site_image(),
+        agreement_html=_render._read_doc_html("USER_AGREEMENT.md"),
+        privacy_html=_render._read_doc_html("PRIVACY_POLICY.md"),
         vue_js=assets["js"][0],
         vue_preloads=assets["preloads"],
         vue_css=assets["css"],
@@ -336,16 +405,16 @@ def _render_auth_vue_page(entry, template):
 
 def terms_page():
     """用户协议独立页（footer / 隐私链接可指向）。"""
-    m = _appmod()
-    return m._doc_page("用户协议", m._read_doc_html("USER_AGREEMENT.md"),
-                       m.icp_info(), m.police_info(), request.script_root, m.police_link())
+    return _render._doc_page("用户协议", _render._read_doc_html("USER_AGREEMENT.md"),
+                             _render.icp_info(), _render.police_info(),
+                             request.script_root, _render.police_link())
 
 
 def privacy_page():
     """隐私政策独立页（footer / 隐私链接可指向）。"""
-    m = _appmod()
-    return m._doc_page("隐私政策", m._read_doc_html("PRIVACY_POLICY.md"),
-                       m.icp_info(), m.police_info(), request.script_root, m.police_link())
+    return _render._doc_page("隐私政策", _render._read_doc_html("PRIVACY_POLICY.md"),
+                             _render.icp_info(), _render.police_info(),
+                             request.script_root, _render.police_link())
 
 
 # 管理端各功能页。拆页而非单页 tab：URL 可书签/可分享、刷新不丢状态，
@@ -358,7 +427,9 @@ def accounts_page():
 
 
 def logs_page():
-    blocked = _admin_page_redirect()
+    # 强档：本页宿主 `/api/stream/progress`（仅主管理员）。页面弱档会让注册管理员
+    # 看到"页面能开、数据全 403"的半坏界面（tklp 的分权错配）。
+    blocked = _builtin_admin_page_redirect()
     if blocked:
         return blocked
     return _render_vue_page("logs.html", "pages/data_logs.html", "data-logs", ["数据", "签到日志"])
@@ -378,6 +449,16 @@ def settings_page():
     return _render_vue_page("settings.html", "pages/work_settings.html", "work-settings", ["工作台", "系统设置"])
 
 
+# 工作队列（lcpx 试点 2026-10-25）：既有 8 页之外的**额外入口**，新旧共存。
+# 数据客户端拉取（GET /api/accounts?group=pending + GET /api/queue，契约见
+# web/routes/queue_api.py 模块 docstring）；服务端只出挂载点与 manifest 资产。
+def queue_page():
+    blocked = _admin_page_redirect()
+    if blocked:
+        return blocked
+    return _render_vue_page("queue.html", "pages/work_queue.html", "work-queue", ["工作台", "队列"])
+
+
 def my_account_page():
     blocked = _admin_page_redirect()
     if blocked:
@@ -395,7 +476,7 @@ def my_calendar_page():
                             ["我的", "我的日历"], extra=_calendar_page_context())
 
 
-# ---- Vue 页统一渲染（前端翻新；计划 docs/refactor/29）----
+# ---- Vue 页统一渲染（前端翻新）----
 # 三处共用同一套管道：解析 manifest 资产 → 下发模板（模板只出挂载点与模块脚本）。
 # 资产路径**不含 script_root**（模板层自行拼，子路径部署唯一收口点）；dist 缺失时 404
 # 而不是渲染一个空壳——缺资产是构建/入库错误，应显式可见。
@@ -442,9 +523,9 @@ def audit_page():
 # 需要禁缓存的页面路径：全部页面路由 + 旧的被重定向路径（含根路径）。
 # web.app 的 no_cache 中间件消费本清单（页面路径的唯一登记点在此）。
 NO_STORE_PAGES = frozenset(_MOVED_PAGES) | {
-    "/", "/login", "/terms", "/privacy",
+    "/", "/login", "/setup", "/terms", "/privacy",
     "/data/dashboard", "/data/logs", "/data/audit",
-    "/work/accounts", "/work/users", "/work/settings", "/work/pilot",
+    "/work/accounts", "/work/users", "/work/settings", "/work/pilot", "/work/queue",
     "/my/account", "/my/calendar",
     "/user/account", "/user/calendar",
 }
@@ -469,6 +550,7 @@ def register(app):
     app.add_url_rule("/", view_func=root_page)
     app.add_url_rule("/user/account", view_func=user_account_page)
     app.add_url_rule("/user/calendar", view_func=user_calendar_page)
+    app.add_url_rule("/setup", view_func=setup_page)
     app.add_url_rule("/login", view_func=login_page)
     app.add_url_rule("/terms", view_func=terms_page)
     app.add_url_rule("/privacy", view_func=privacy_page)
@@ -479,5 +561,6 @@ def register(app):
     app.add_url_rule("/work/users", view_func=users_page)
     app.add_url_rule("/work/settings", view_func=settings_page)
     app.add_url_rule("/work/pilot", view_func=vue_pilot_page)
+    app.add_url_rule("/work/queue", view_func=queue_page)
     app.add_url_rule("/my/account", view_func=my_account_page)
     app.add_url_rule("/my/calendar", view_func=my_calendar_page)

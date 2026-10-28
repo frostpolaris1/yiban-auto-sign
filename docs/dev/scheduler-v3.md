@@ -2,9 +2,7 @@
 
 面向部署与值守人员。调度 v3 是「计划 → 队列 → 领取 → 执行 → 收尾」的队列化签到形态，
 以 `sign_tasks` 为唯一事实源，按 HRW 虚分片把账号分给并行执行体。本文只讲**怎么开、
-怎么看、怎么救**；设计与公式的取舍见 `docs/dev/ledger-dual-version-design-20260923.md`、
-`docs/dev/upgrade-data-migration-design-20260923.md` 与
-`docs/dev/m1-task-rearrangement-20260923.md`。
+怎么看、怎么救**；设计与公式的取舍不在本文范围内（过程稿，不随本仓分发）。
 
 > **两条运维纪律**（先读这两条，再读全文）：
 > 1. **当 Λ（全局速率上界）存在时，加出口不再线性放大总速率**——`Σ出口速率` 被
@@ -24,18 +22,18 @@
 
 | 键 | 含义 | 缺省 | 何时改 | 回滚 |
 |----|------|------|--------|------|
-| `YIBAN_EGRESS_RATE` | 每执行体的出口桶速率（attempt/s，**每执行体一个桶**，见 §3） | `1.0` | 换出口/实测定档；**显式写入即人工接管，AIMD 停止上探** | 清空该键回出厂速率 |
+| `YIBAN_EGRESS_RATE` | 每**出口**的桶速率（attempt/s，**每出口一个桶**，见 §3） | `1.0` | 换出口/实测定档；**显式写入即人工接管，AIMD 停止上探** | 清空该键回出厂速率 |
 | `YIBAN_GLOBAL_RATE` | 全局聚合速率上界 Λ（attempt/s，**每进程一份**，总量 = 进程数×Λ，见 §3） | 空=不限 | 站点级风控压总速 | 清空该键 |
 | `YIBAN_ACCOUNT_GAP_MAX` | 每账号最小间隔（秒） | `10` | 风控收紧/放宽 | 改回 `10` |
 | `YIBAN_ACCOUNT_GAP_ENFORCE` | gap 安全件开关 | `1`（开） | **待实测裁决**（见纪律 2） | 设 `0` |
 | `YIBAN_EXECUTORS` | 执行体清单（含出口/停用行） | 空=单执行体 | 增删出口/执行体 | 删清单回旧三键 |
 | `YIBAN_WORKERS` | 并行执行体数（人工优先） | 空 | 与清单同改 | 清空 |
 
-**开闸前置清单**（摘 `docs/dev/m1-task-rearrangement-20260923.md` §7 / R-T14，逐条确认
+**开闸前置清单**（逐条确认
 才开闸）：
 
 1. **失败通知已补齐**：v3 的最终放弃会发管理员条目与用户失败邮件，与 v2 对齐；
-   `_alert_slow_sign`（慢签到告警）仍未接入，属已知缺口（见 §7）。
+   `_alert_slow_sign`（慢签到告警）仍未接入，属已知缺口。
 2. **当日单写者**：v3 **不写** `sign_claims`，只写 `sign_tasks`。同一天若先跑过 v2
    （旧表里有当日行）再切 v3，`has_undone_accounts_today` 读旧池会误判补签闸门。
    **开闸当日只允许一个写者**（要么整天 v2，要么整天 v3）；纯 v3 日旧池 `total==0`，
@@ -54,7 +52,9 @@
    `yiban-auto-sign-u21x`）：本表只留本层自有的凭据/协议措辞；WAF 族的名单与匹配口径都在
    `yiban.security`（`WAF_KEYWORDS` + `matches_waf_keywords`）。风控命中判定统一走
    `attempts.matches_risk_keywords`——ASCII 词元按非字母数字边界匹配，中文词元按子串。
-   `executor_v3._is_risk_signal` 是这条判据的第二个读者。
+   `executor_v3._is_risk_signal` **不再是这条判据的读者**（2026-10-09，工单
+   `yiban-auto-sign-zggs`）：它只认 WAF 族与挑战形态。两个消费方语义相反——档位是
+   "别浪费重试"，信号是"平台在限我们，该出口降速"；共用判据会把口令错的账号当成平台风控。
 
 **上线步骤建议**：先 `dry_run` 影子期 3 天对账落点分布 → 升级部署后的第一个当日盯
 §6 的观测项与 §8 的排障项（无开关，部署即生效）。
@@ -71,7 +71,7 @@ Planner（planner.build_plan）
    │  按 (phone, day) HRW 算 vshard，按窗口/模式算 run_at
    │  首次建计划时把当日虚分片数 V 落库（app_meta 键 scheduler_v3_v_<day>）
    ▼
-sign_tasks（唯一事实源：state / vshard / owner / run_at / epoch / lease_until）
+sign_tasks（唯一事实源：state / vshard / owner / run_at / epoch；`lease_until` 列冻结保留、零写入）
    │
    ▼
 claim_batch(owner, day, 我的分片集)      ← 只取 state='pending' 且 run_at<=now
@@ -94,12 +94,15 @@ settle_tasks(owner, day, 结果, epochs={phone: 领取时的 epoch})
 不小于它（说明有行在范围外）时，按最大分片号放宽并留 error——放宽不会改变既有索引的
 归属（`hrw.owner_of` 与 V 无关），只把扫描范围撑到盖住已写行。
 
-**崩溃恢复**（本轮补齐）：**起跑**按「回收 → 死主接管 → 首轮领取」的顺序做一次
-`queue_store.reap_expired`（租约过期**并超过宽限期**后回收本业务日的 `claimed` 行）
-与死主分片接管，此后补货循环按 `RECOVER_SEC`（60s）周期重复这两件事。起跑必须接管：
-补货循环那次按 `RECOVER_SEC` 节流，而短轮次干完自己的活即收干退出，等不到 60s，死主
-分片的 `pending` 行会整轮无人领（补签轮沿用同一分片划分仍无人领 ⇒ 静默漏签）。执行体
-起跑/存活期/收尾写文件心跳（见 §6）。
+**崩溃恢复**（2026-10-13 工单 `l1rx` 改版，**判活＝进程句柄**）：执行体**起跑**先按
+**本稳定名**收一次尸（`queue_store.reap_abandoned(executor_id, day=…)`）——判据不是
+时间戳，是**本进程持有本稳定名的运行锁**：拿到锁 ⇒ 同稳定名的上一个持有者必然已不在
+⇒ 它留下的 `claimed` 行是尸体，翻回 `pending` 并 `epoch+1`（原持有者的迟到写仍被
+`settle_tasks(..., epochs=…)` fence）。多执行体形态另有**监督进程轮末**对**每个**已退出
+槽位收尸（判据是子进程已经不在，不挂退出码条件）。任务级**租约**（`lease_until`）、
+宽限期、按时间戳的 `reap_expired`、心跳四态判活与死主分片接管**整族已删除**；心跳只服务
+执行体页的存活展示（见 §6）。崩溃后不自动重签的残留（进程内未预期异常、兜底服务永久停摆）
+由写前标记 + `crash_semantics` 识别告警，登记为残余。
 
 ---
 
@@ -124,24 +127,37 @@ settle_tasks(owner, day, 结果, epochs={phone: 领取时的 epoch})
 **K（执行体数）**：`K = clamp(ceil(N×(1+r)/(W×bucket×0.8)), 1, 出口数)`
 （`schedule.executor_count`，唯一口径）。`r` 是期望重试占比（缺省 0.2，依据分级重试预算
 `attempts.MAX_ATTEMPTS=3` 等），`util=0.8` 是重试与尾延迟降额。**K 至多不超过出口数**：
-出口行是代理地址清单，**多加执行体不会多加出口行**（纪律 1）。注意出口行数与限速桶数
-**不是一回事**：桶按执行体身份分（下一条），两个执行体指向同一条出口行时仍是两个独立的桶。
+出口行是代理地址清单，**多加执行体不会多加出口行**（纪律 1）。注意出口行数与限速预算
+**是一回事**：预算按**出口**分（下一条），两个执行体指向同一条出口行时**均分该出口的速率
+预算**（否则该出口的实际速率会叠加为 K×λ）。
 
 **限速三件**（都在 `yiban/engine/token_bucket.py`）：
 
-- **出口令牌桶（GCRA）**：**每个执行体一个桶**——桶键是该执行体的**稳定身份名**，一个执行体
-  进程一个桶，多执行体各持各的桶、**不共用同一个桶**；同名执行体跨重启续上同一行的自适应速率。
-  桶状态落 `egress_state` 表（**一个桶一行**，10s 粒度），重启不"重启即全速"。桶内 AIMD
+- **出口预算均分（GCRA 子桶）**：**持久键**是**出口标识**（`egress.egress_identity`：
+  空出口归一为 `direct`，否则取去 userinfo 的 `scheme://host[:port]`），故 `egress_state`
+  **一个出口一行**；**运行期**则按**出口预算均分**——每进程的子桶速率 = 出口级 λ ÷ 同出口
+  执行体数 n（`egress.outlet_executor_count`，**只数真会拉起的执行体**：worker 行 + **开关
+  `YIBAN_FALLBACK_ENABLE` 打开的**兜底行；停用行不计），**n 个进程运行期合计 ≤ λ**（各进程
+  首条仍即时放行，合计 ≤ n 的初始小突发属可接受）。默认部署（无清单、兜底开关未设=关）n=1，
+  出口速率不缩水（复审 F1）。故加进程**不放大**该出口的实际速率；改槽位号/换主机名不丢该出口
+  的自适应速率。出口级 `rate`/`burst` 落库共享（`tat` 不落库，见下），重启不"重启即全速"。
+  **n 是启动快照：运行期不得改清单**（改了不重算份额，`persist` 会告警一次，须重启执行体，
+  复审 F3）。**探针不计入 n**（窗口外单发动作）：`YIBAN_PROBE_TIME` 落在签到窗口内时窗口内
+  该出口瞬时可能超 λ/n 一次，探针启动会告警（复审 F2）。桶内 AIMD
   自适应：无风控连续 `SUCCESS_STREAK=200` 次后 `rate ×= 1.2`（封顶 `RATE_MAX=4.0`）；
-  风控信号（e003 / WAF / 验证码 / 被拦页）`rate ÷= 2`（下限 `RATE_MIN=0.2`）并半开
-  `HALF_OPEN_SEC=300`。**显式写了 `YIBAN_EGRESS_RATE` 即人工接管**：上探变 no-op，
-  但风控的乘性回退照做（安全反应不随接管停）。
+  风控信号（WAF 词元 / 挑战形态 / 被拦页）`rate ÷= 2`（下限 `RATE_MIN=0.2`）并半开
+  `HALF_OPEN_SEC=300`。**风控信号只认 WAF 族与挑战形态，不含凭据类文案**（口令错是账号
+  自己的问题，不是平台限速；见 `executor_v3._is_risk_signal`）。**显式写了
+  `YIBAN_EGRESS_RATE` 即人工接管**：上探变 no-op，但风控的乘性回退照做（安全反应不随
+  接管停）。被误判降档后的受支持撤销入口是
+  `python -m yiban.entry.cli egress --reset <出口> --yes`（默认只报告；活执行体会在 10s 内
+  用内存态覆盖库里的复位，故稳妥做法是先停执行体、复位后重启）。
 - **全局上界 Λ**：`YIBAN_GLOBAL_RATE`（attempt/s，缺省空=不限）。**它是「每个执行体
   进程各自一份」的计数**——限速器是进程内对象（`yiban/engine/token_bucket.py` 的
   `GlobalLimiter` 只持一个内存态 `_tat`，每个执行体进程各构造各的），**不跨进程共享**。
   真实站点总速率 = **进程数 × Λ**：单执行体部署（K=1）时 Λ 就是全站上界；多执行体
   部署时把 Λ 设成期望值，实际会得到它的 K 倍。定 Λ 时按「想要的**全站**上限 ÷ 进程数」
-  换算，或保持未配置（不限）、由上一条的出口桶层（每执行体一个桶）兜底。
+  换算，或保持未配置（不限）、由上一条的出口桶层（每出口一个桶）兜底。
   代码侧口径见 `token_bucket.GlobalLimiter` 的 docstring（已与本条同步：`_tat` 在
   实例内存里，每执行体进程各持一份；跨进程共享属 2026-10-01 裁决「不做」）。
 - **gap 门**：每账号两次尝试的最小间隔（`YIBAN_ACCOUNT_GAP_MAX` 缺省 10s），
@@ -155,18 +171,18 @@ settle_tasks(owner, day, 结果, epochs={phone: 领取时的 epoch})
 
 | state | 含义 | 谁能动它 |
 |-------|------|----------|
-| `pending` | 待办（未到点/被重排/租约过期并超过宽限期后被回收） | `claim_batch` 领取；`requeue_task` 重排；`reap_expired` 回收 |
-| `claimed` | 已被某执行体持有（带 `owner`/`lease_until`/`epoch`） | `settle_tasks` 收尾；租约过期**并超过宽限期**后由 `reap_expired` 回退 |
+| `pending` | 待办（未到点/被重排/持有者进程已不在后被收尸） | `claim_batch` 领取；`requeue_task` 重排；`reap_abandoned` 收尸 |
+| `claimed` | 已被某执行体持有（带 `owner`/`epoch`；**不再有 `lease_until`**） | `settle_tasks` 收尾；持有者进程已不在时由 `reap_abandoned` 回退 |
 | `done` | 了结（签到成功/已签/今日无任务） | 终态 |
 | `failed` | 了结（失败/跳过类终态） | 终态 |
 | `skipped` | 了结（窗口外跳过） | 终态 |
 | `stolen` | 未了结（被接管标记） | 保留字 |
 
-了结态集合是 `yiban.status.TASKS_SETTLED_STATES` 的**同一对象**（`done`+`skipped`）。
+了结态集合是 `yiban.core.status.TASKS_SETTLED_STATES` 的**同一对象**（`done`+`skipped`）。
 
 **`vshard = -1` 惰性行**：v18 平移与 v20 补账写入的行不属于任何分片集
 （`hrw.shards_of` 只产出 `0..V-1`）。它们既不被 `claim_batch` 领取，也不被分片级接管，
-`reap_expired` 也**必须排除**（回收成 `pending` 只会变成永不被领的行）。这是"升级不会
+`reap_abandoned` 也**必须排除**（回退成 `pending` 只会变成永不被领的行）。这是"升级不会
 导致重复真实登录"的关键性质。
 
 **epoch fencing**：每次领取 `epoch = epoch + 1`，收尾时把领取时的 epoch 原样传回
@@ -202,8 +218,8 @@ settle_tasks(owner, day, 结果, epochs={phone: 领取时的 epoch})
 python scripts/ledger_check.py --day 2026-09-23 [--all-days 7]
 
 # 巡检：容量建议与执行体数（只读，不联网）
-python -m yiban.cli capacity --json
-python -m yiban.cli config --json
+python -m yiban.entry.cli capacity --json
+python -m yiban.entry.cli config --json
 
 # 备份门（任何改库/迁移前先备份；脚本内含一致性快照 + 加密 + 保留策略）
 bash scripts/backup.sh
@@ -230,7 +246,7 @@ bash scripts/backup.sh
   `MaskingFormatter` 两族兜底，见 `yiban/logging_ext.py`）。
 - **事件**：每次尝试经 `event_sink` 落 `sign_events`（`stage='sign'`，含 `attempt`/`dur_sec`），
   任务结束后单事务批量落库。
-- **进度事件表**：执行体与编排层把关键节点经 `yiban.store.run_events.report` 落
+- **进度事件表**：执行体与编排层把关键节点经 `yiban.adapters.persistence.run_events.report` 落
   `run_events`（v21）——节点值域 `claim` 领取 / `start` 开始 / `success` 成功 /
   `fail` 失败 / `pause` 暂停 / `finalize` 收尾，一节点一行，字段为节点、执行体身份
   （稳定槽位名）、账号、业务日、时刻。`message` 入表前过 `masking.sanitize_text`
@@ -263,10 +279,10 @@ bash scripts/backup.sh
   `message` 在写入面净化后再于读取面复遮一次（纵深防御）。日筛选**下推到 SQL**
   （`WHERE day = ?`），故读取层的轮数上限只作用于已筛出的集合；读取面另按保留窗口
   两端过滤（`WHERE day = ? AND day >= 下界 AND day <= 上界`），窗外日期回空表。
-  窗口两端只有 `yiban/store/run_events.py::window_range()` 一个定义点，端点
+  窗口两端只有 `yiban/adapters/persistence/run_events.py::window_range()` 一个定义点，端点
   `window.start_day` / `end_day` 从它取值，不另算公式。当日轮数被截断时回
   `rounds_truncated=true` 与 `rounds_limit`，页面写明「已截断」（不许静默出空表）。
-  页面入口是 `/data/logs` 的首块「运行巡检」。读取层住在 `yiban/store/run_events.py`，
+  页面入口是 `/data/logs` 的首块「运行巡检」。读取层住在 `yiban/adapters/persistence/run_events.py`，
   路由住在 `web/routes/run_events_api.py`。
 
 ### 日志面判据
@@ -281,7 +297,7 @@ bash scripts/backup.sh
 
 **不要打**
 
-- 凭据、手机号、邮箱的明文。脱敏只有一个出口（`yiban/masking.py`）。
+- 凭据、手机号、邮箱的明文。脱敏只有一个出口（`yiban/core/masking.py`）。
 - 逐账号的重复成功明细。成功是常规态，逐条打会冲走故障痕。
 - 每条推送事件。推送走账本（`notify/ledger.py`），不逐条落日志。
 - SSE 心跳。心跳是保活流量，不是业务事件。
@@ -334,10 +350,15 @@ bash scripts/backup.sh
   仍写它；v2 未退役。
 - **`outcome_buffer` / `shadow:` 影子行 / `ledger_days` 日写者表**：未引入。
 - **`downgrade_all` 的恢复入口**：站点级熔断的"恢复"入口未接（降档入口在
-  `token_bucket.downgrade_all`，另批处理）。
+  `token_bucket.downgrade_all`，另批处理）。**单出口的速率复位已有受支持入口**
+  （2026-10-09）：`python -m yiban.entry.cli egress --reset <出口> --yes`。
 - **`_alert_slow_sign`（慢签到告警）**：v3 未接入（v2 有）。
-- **K 的自动公式**只用于引擎预检；web 保存闸门/CLI/实测换算按"每执行体"（`k=1`）口径，
-  v3 下**总容量 ≈ 该值 × 出口数**。
+- **K 的自动公式**只用于引擎预检；web 保存闸门/CLI/实测换算按"每执行体"（`k=1`）口径。
+  引擎预检的**总阈值**按**生效执行体数 K** 缩放（`egress.effective_worker_count`：清单拉起
+  列表行数 / 清单缺失时旧 `YIBAN_WORKERS` 口径 / 没被派发过恒 1）。K≥2 走计划口径
+  `capacity_accounts`，K=1 保留 `retry_reserve` 口径。K 个执行体共享出口时该口径会高估：
+  声明出口数低于 `ceil(K×(1/(avg+gap))/λ)`（λ = `YIBAN_EGRESS_RATE`）⇒ 预检另报一条
+  『出口预算不足，实际吞吐受出口限制（出口 N1 < 需要 N2）』。
 - **gap 默认开关**待实测裁决（纪律 2）；上游风控按账号还是按出口计数**尚未验证**。
 - **巡检选中态回落（`needsExecutorFallback`）的接线在 e2e 环境不可达（L7）**：该分支在
   "带 `executor` 的请求返回的 `rounds` 不含该执行体"时触发，三条路径：
@@ -362,7 +383,7 @@ bash scripts/backup.sh
 
 | 现象 | 判定 | 处置 |
 |------|------|------|
-| 某些账号当天一直不签，库里是 `claimed` 且 `lease_until` 已过 | 崩溃/被杀的通道留下的行，未被回收 | 正常应在 `租约 60s + 宽限 120s + 回收间隔 60s`（最坏约 4 分钟）内回收；宽限期存在是因为**租约到期 ≠ 持有者已死**（慢尝试可能比租约还长，立即回收会让同一账号被重领、重复真实登录）。若仍卡住，查 `reap_expired` 是否报 warning（库异常），必要时手工跑一轮或重启执行体 |
+| 某些账号当天一直不签，库里是 `claimed` 且 `owner` 指向一个**已不存在的进程** | 崩溃/被杀的执行体留下的行，未被收尸 | 收尸判据是**进程句柄**（本稳定名的运行锁在自己手里 ⇒ 上一个持有者已不在），不是时间戳。单进程/worker 的尸由**下一次起跑**收（`reap_abandoned`），多执行体的尸由**监督进程轮末**收；兜底腿的尸由它下一次起跑收。若仍卡住：查 `reap_abandoned` 是否报 warning（库异常）→ 手工 `--only` 那批账号（手工路径会翻 `claimed`），或重启该执行体 |
 | 页面执行体行显示 `stale` | 有开始、无收尾（心跳过期）：被强杀 / 超时；**单进程直跑**时内部未预期异常也不写收尾（受监督路径下子进程正常退出、含失败，会写收尾判 `finished`，不在此列） | 查进程与宿主 `timeout`、日志里的"v3 执行体未预期异常"；长轮次若仍 `stale` 说明心跳刷新没走（补货循环未运行） |
 | 页面执行体行一直 `idle` | 当日无该槽位心跳：v3 未起跑或心跳写失败 | 确认本轮真的起跑（无开关：cron 是否触发 `run.sh`、执行体清单是否解析出 worker 行）；看日志有无心跳写失败 debug |
 | 某日闸门永不了结、补签轮反复空跑 | 用 `day_counts` 的 `open` 当闸门，把 `vshard=-1` 历史行算进去了 | 改用 `pending_count(day, 分片集)`；历史行按设计保持原样 |
@@ -378,12 +399,59 @@ bash scripts/backup.sh
 ## 9. 裁撤记录与重启条件
 
 **结论**：2026-09 裁掉了三处「为更大规模预备」的机制，**出口限速分片不在其中**（无可裁面，
-每执行体一桶是 §3 的既有语义，保留）。下表是裁撤的唯一出处：机制代码的删除与本节同步或
+每出口一桶是 §3 的既有语义，保留）。下表是裁撤的唯一出处：机制代码的删除与本节同步或
 紧随其后，设计文档原件已移出仓库归档（仓外 `D:/code/archive/m3-batch6c2-docs-20260929/`）。
 
 | 机制 | 处置 | 重启条件（满足才请回来） |
 |------|------|--------------------------|
-| 分片档位多档选择（<500→64、<3000→128、否则 256，见 §2） | 删多档选择器，V **定档 64**；§2 的 V 落库与"已写行兜底放宽"不变；**恢复方法与选档公式见 `yiban/engine/hrw.py` 的 `v_for` docstring** | 账号规模显著增长（数万级），且固定档的均衡实证不够用 |
+| 分片档位多档选择（<500→64、<3000→128、否则 256，见 §2） | 删多档选择器，V **定档 64**；§2 的 V 落库与"已写行兜底放宽"不变；**恢复方法与选档公式见 `yiban/core/hrw.py` 的 `v_for` docstring** | 账号规模显著增长（数万级），且固定档的均衡实证不够用 |
 | 分片级接管的 owner 改写（§2 崩溃恢复、§6 接管日志） | 删 owner 改写，**分片并入保留**——死主分片被回收出来的行仍能被活着的执行体领到；§6 那条"改归本执行体"的日志文案随机制一并去掉 | 展示页需要「死主行归属修正」（页面 owner 仍指向已死执行体） |
 | 离线压测/容量探测工具族 | 整族删除；`YIBAN_CAPACITY_MEASURED` 的**人工录入**与页面展示保留（实测值改由部署者量取后录入） | 需要恢复可复现的离线容量实测工具链来支撑定档 |
-| 出口限速分片（每执行体一桶） | **不裁**：桶键=执行体身份，删掉会让多执行体共用一行持久状态（速率记忆互相覆写） | 不适用；仅当出口形态变化时按 §3 限速三件重评 |
+| 出口限速分片（每出口一桶 / 预算均分） | **不裁**：持久键=出口标识、运行期按出口预算均分，删掉会让同出口的多个执行体各吃一份 λ（该出口速率叠加为 K×λ） | 不适用；仅当出口形态变化时按 §3 限速三件重评 |
+
+
+---
+
+## 8. 回退闸门：人工复核（工单 `uob1` X3，2026-10-21 降格）
+
+**现状（唯一口径）**：本仓**不提供运行期回退开关**。`l3a4` 曾要求 `YIBAN_FLOW=new|old`，
+但旧流程代码本体已删（`_refiller`、进程内 `PriorityQueue`、租约回收、`yield_probe`、
+`_round_in_flight` 均不在仓内），没有"old"可切。全仓无 `YIBAN_FLOW`；**不要新增它**。
+**回退是人工动作**：`git revert` 到上一版提交 ＋ 重启。
+
+**回退动作（人工，四步）**：
+
+1. 备份：`python -m yiban.entry.cli db --backup --yes`（不加 `--yes` 只报告计划、不写盘；目标已存在时再加 `--force`）——库结构迁移只进不退，回退前先备份。
+2. `git revert <当前部署的提交>`（合并提交需 `-m 1`），得到上一版代码（不用 `reset`，保留可审计的 revert 记录）。
+3. 重建并重启：容器 `docker compose up -d --build`；裸机 `systemctl restart yiban-web`。
+4. 回退后按当日结果面自查：`sign_tasks` 行状态、`sign_events`、`run_events`、退出码。
+
+**触发判据（人工看，三条）**：由**值守管理员**判断；任意一条命中即进入人工复核。
+**三条都不是自动触发**——本仓没有自动回退的代码路径。复核确认后按上面的四步回退。
+
+| # | 判据 | 看哪里 | 触发条件 |
+|---|------|--------|----------|
+| 1 | 漏签率 ＝ 当日未了结 ÷ 当日应签 | `GET /api/scheduler/executors/progress`（仅主管理员）的 `totals.open` ÷ `totals.total`；两者同取 `queue_store.day_counts`，**同一口径** | 与最近 7 日同一时段相比明显上升；"明显"由值守管理员按当班观察定性 |
+| 2 | `unknown_outcome` 条数 | 当日日志的 WARNING 行 `崩溃语义：当日 N 个账号有 start 标记、无终态结果`；同一事实进管理员汇总邮件（主题「易班签到：崩溃遗留的未定论尝试」） | 条数 > 0 即复核 |
+| 3 | 单日管理员告警条目数 | 当日管理员汇总邮件（主题「易班签到汇总」）首行 `共 N 条异常/预警` | 高于近 14 日均值 + 3σ；未定档前以"高于近 14 日最大值"复核 |
+
+**口径说明（不许混算）**：判据 1 的分子分母都取 `day_counts`（不过滤 `vshard`）。
+**不要**用 `queue_store.open_count(day)`（带 `vshard >= 0` 过滤）当分子、配 `day_counts`
+的 `total` 当分母——两个总体不同，相除得到的数字没有意义。
+
+**阈值状态（如实登记）**：Δ1／N1／σ **未定档**（2026-10-21 复核仍无观测窗口数据）。
+故本节的"触发条件"是**可人工判定的保守口径**，不是数字闸门。定档前提是积累 ≥14 个正常
+运行日；定档后只改本表，不改代码（没有代码在读这些阈值）。
+
+**为什么降格**：`uob1` X3 的关闭条件允许"明确降格为人工复核并在文档写死"。本仓没有 CI 测、
+没有自动触发点、也没有足够观测数据把三个阈值定成可信数字。把它继续叫"闸门"而实际只有
+纸面，是**纸面闸门**（汇报时必须按此称呼），比如实降格更危险。
+
+**肘界 T 值同步复算（工单 `uob1` X4，仍开）**：`executor_v3.FALLBACK_ELBOW_SEC` 现值 60 秒
+是**估算**（P99 未测）。积累到观测窗口后用 `tools/elbow_shadow.py --db <库>` 的真实分布重定；
+本节的降格不改变这条。
+
+**结构性缺口（登记，不许静默消失）**：本批之前可以做"新旧流程逐账号对拍"（领取集合／分片
+归属／计划 `run_at`），因为旧流程代码在场。本批删除了旧流程本体（`_refiller`、进程内
+`PriorityQueue`、租约回收、`yield_probe`、`_round_in_flight`），**流程面的新旧对拍此后无法
+再做**。残余的可比对面只剩"结果面"：`sign_tasks` 行状态、`sign_events`、`run_events`、退出码。

@@ -9,8 +9,8 @@
 把"另一侧静默解不开"换成"本侧启动即崩 + 日志带两侧 kid"。
 
 功能：两侧同钥断言的判据矩阵与两侧进程启动接线回归。
-归属：`yiban/infra/account_crypto.py`（断言本体）、`web/app.py` create_app 与
-`yiban/engine/runner.py` main（两侧启动接线）。
+归属：`yiban/adapters/config/account_crypto.py`（断言本体）、`web/app.py` create_app 与
+`yiban/app/runner.py` main（两侧启动接线）。
 复用：`assert_key_sources_agree`、`load_key`、`key_fingerprint`。
 
 标签：G · 安全：脱敏/审计/配置注入
@@ -37,8 +37,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from yiban.engine import runner
-from yiban.infra import account_crypto
+from yiban.adapters.config import account_crypto
+from yiban.app import runner
 
 KEY_A = "a" * 64
 KEY_B = "b" * 64
@@ -202,7 +202,7 @@ class EngineStartupWiringTest(unittest.TestCase):
 
     def _run_main(self, argv):
         # 打桩账号加载：断言若失效、流程走到加载账号，这里以 AssertionError 暴露
-        with mock.patch("yiban.engine.runner.accounts_mod.load_accounts",
+        with mock.patch("yiban.app.runner.accounts_mod.load_accounts",
                         side_effect=AssertionError("不得走到加载账号")), \
                 contextlib.redirect_stderr(io.StringIO()):
             return runner.main(argv)
@@ -228,7 +228,7 @@ class StartupWiringSourceGuardTest(unittest.TestCase):
         self.assertIn("account_crypto.assert_key_sources_agree(",
                       self._read("web/app.py"))
         self.assertIn("account_crypto.assert_key_sources_agree(",
-                      self._read("yiban/engine/runner.py"))
+                      self._read("yiban/app/runner.py"))
 
 
 if __name__ == "__main__":

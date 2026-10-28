@@ -17,7 +17,7 @@
 
 标签：H · 通知：邮件与推送
 覆盖：A 线告警调用点的分级名册（两向钉：未登记即红、名册过期即红）。
-对应实现：`yiban/engine/alerts.py` 的 `ALERT_LEVEL_CRITICAL` / `ALERT_LEVEL_NORMAL`
+对应实现：`yiban/adapters/notifier/report.py` 的 `ALERT_LEVEL_CRITICAL` / `ALERT_LEVEL_NORMAL`
     与 `_select_summary_entries`。
 关键断言：高级别点必须写 `ALERT_LEVEL_CRITICAL` 常量名（不许把常量值抄进代码）；
     普通级点必须**不传** `level`（缺省即 NORMAL，且理由逐键写在册）；
@@ -43,42 +43,52 @@ PASSTHROUGH = "passthrough"  # 转发调用方声明的级别
 
 #: 调用点所在的生产文件（量具自证用）：扫描空转时下面那条断言会红，而不是恒绿
 ROSTER_FILES = (
-    "yiban/engine/alerts.py",
+    "yiban/adapters/notifier/report.py",
+    "yiban/engine/crash_semantics.py",
     "yiban/engine/executor_v3.py",
-    "yiban/engine/probe.py",
-    "yiban/engine/round.py",
-    "yiban/engine/runner.py",
+    "yiban/app/probe.py",
+    "yiban/app/round.py",
+    "yiban/app/runner.py",
     "yiban/engine/schedule.py",
-    "yiban/store/claims.py",
+    "yiban/adapters/persistence/claims.py",
+    "yiban/adapters/persistence/accounts.py",
 )
 
 #: 键 → (声明形态, 理由)。理由逐键写死：判级依据必须是说出来的，不是沉默的缺省。
 ROSTER = {
     # -- 转发层：形参 subject/entry 原样透传，级别由调用方给 --
-    ("yiban/engine/alerts.py", "subject"): (
+    ("yiban/adapters/notifier/report.py", "subject"): (
         PASSTHROUGH, "notify_admin_entry 的写点；级别是它自己的形参，它只负责透传"),
     # -- 逐账号明细（NORMAL）：每账号一条，量随账号数放大 --
-    ("yiban/engine/alerts.py", "易班签到耗时告警"): (
+    ("yiban/adapters/notifier/report.py", "易班签到耗时告警"): (
         DEFAULT, "单账号慢信号，逐账号一条；量随账号数放大即普通明细"),
     ("yiban/engine/executor_v3.py", "易班签到失败"): (
         DEFAULT, "v3 最终放弃，逐账号一条"),
-    ("yiban/engine/round.py", "易班签到失败"): (
+    ("yiban/app/round.py", "易班签到失败"): (
         DEFAULT, "v2 放弃与窗口不足两处放弃，均逐账号一条"),
-    ("yiban/engine/probe.py", "健康探测预警"): (
+    ("yiban/app/probe.py", "健康探测预警"): (
         DEFAULT, "逐账号一条。探针在自身进程内收集并收尾（runner 的 --probe 分支"
                  "先于签到路径返回），同进程内只有这一族条目，无轮末关键告警可被它挤出；"
                  "被截断的主题与条数由尾部名册点名，不静默"),
-    ("yiban/engine/probe.py", "健康探测提示"): (
+    ("yiban/app/probe.py", "健康探测提示"): (
         DEFAULT, "一轮至多一条，但只在零硬失败时产生（与逐账号预警互斥），"
                  "自愈类软失败不需要当机处理"),
     # -- 轮级关键告警（CRITICAL）：一轮至多一条，且它意味着"当天可能无签" --
     # 主题是局部变量 `title`：零成功与"部分成功但补签后未了结"两支共用一个写点，
     # 故键取形参名（两个标题都由它承载），理由逐支写在下面。
-    ("yiban/engine/alerts.py", "title"): (
+    ("yiban/adapters/notifier/report.py", "title"): (
         CRITICAL, "零成功（当日签到异常告警）与部分成功但补签后未了结"
                   "（签到窗口异常告警）两支，均轮末产生、落在列表尾部，正是被挤出的那条"),
-    ("yiban/engine/runner.py", "易班签到容量超载"): (
+    ("yiban/app/runner.py", "易班签到容量超载"): (
         CRITICAL, "窗口已过 / 超载，本轮不发起或跑不完：当天可能全量漏签"),
+    ("yiban/app/runner.py", "易班签到出口预算不足"): (
+        CRITICAL, "声明出口数不够 K 个执行体的产出速率：实际吞吐受出口限制，"
+                  "窗口内可能跑不完（容量预检高估方向的兜底，与『容量超载』同档）"),
+    ("yiban/app/runner.py", "易班签到出口天花板"): (
+        CRITICAL, "账号数超过出口标识数 × λ × 窗口（账号档硬顶）：加执行体不增总吞吐，"
+                  "须加出口标识或抬 λ，否则窗口内跑不完（工单 r9ro；与同族两条同档，"
+                  "互斥：出口预算够时才走本条）。贡献是**处置方向与可见天花板数**，"
+                  "独立触发面窄而非零（108 组探针仅 4 组单独触发，全在 K=出口标识数×λ×(avg+gap) 窄带）"),
     ("yiban/engine/executor_v3.py", "易班队列读不通：本轮已放弃领取"): (
         CRITICAL, "补货循环连续读不通到上界即停止领取，一轮至多一条；"
                   "库锁/磁盘坏时当天可能零签到，处置须当机进行（查库锁与磁盘空间、"
@@ -88,8 +98,16 @@ ROSTER = {
         CRITICAL, "窗口非法或回退默认：实际签到时刻与配置不符"),
     ("yiban/engine/schedule.py", "签到窗口缓冲已收缩"): (
         CRITICAL, "有效窗口被压缩到窗口宽度的 80%：与配置不符，且重试空间随之减少"),
-    ("yiban/store/claims.py", "签到领取池不可用"): (
+    ("yiban/adapters/persistence/claims.py", "签到领取池不可用"): (
         CRITICAL, "领取池不可用 ⇒ 本执行体拒绝执行签到，一轮至多一条"),
+    ("yiban/adapters/persistence/accounts.py", "账号有效性复核失败"): (
+        CRITICAL, "账号状态查询失败 ⇒ 相关账号 fail-closed 拒绝发起真实登录；"
+                  "同一场库故障进程内只报一条，可能整天漏签且原因在库，须当机处置"
+                  "（工单 ba-p02-06 新增调用点，同批定级）"),
+    ("yiban/engine/crash_semantics.py", "易班签到：崩溃遗留的未定论尝试"): (
+        CRITICAL, "崩溃遗留的 unknown_outcome：可能已发出请求未拿结果，"
+                  "当天该账号结局未定，须当机处置（读平台 State 定论或人工核对）；"
+                  "协调器启动识别一次，一轮至多一条（崩溃语义批新增，同批定级）"),
 }
 
 

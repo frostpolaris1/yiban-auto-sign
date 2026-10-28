@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""对外脱敏（`yiban/masking.py::sanitize_text`）的凭据字面量覆盖测试（M1）。
+"""对外脱敏（`yiban/core/masking.py::sanitize_text`）的凭据字面量覆盖测试（M1）。
 
 89 号对抗性审查发现两处缺口：
 1. `Account(...)` 正则用 `[^)]*` 当右界——密码**含 `)`** 时在第一个 `)` 处截断，
@@ -15,7 +15,7 @@
 标签：G · 安全：脱敏/审计/配置注入
 覆盖：`sanitize_text` 的两族规则——`Account(...)` repr 的密码字段边界，以及
 token / cookie / session / authorization 字面量被抹值；另钉一条 dict/repr 形态不回归。
-对应实现：`yiban/masking.py` 的 `sanitize_text`（`_CRED_KEY`、`_QUOTED_OR_BARE` 两条常量）。
+对应实现：`yiban/core/masking.py` 的 `sanitize_text`（`_CRED_KEY`、`_QUOTED_OR_BARE` 两条常量）。
 关键断言：全部是"整串 + 尾巴都不许出现"的双断（`assertNotIn(pw)` 之后还断
 `assertNotIn(tail)`），只断整串会放过"截半截留"这种最典型的失效；
 `test_benign_words_are_not_over_masked` 是反方向的护栏，缺了它就能靠"什么全抹掉"变绿。
@@ -27,7 +27,7 @@ token / cookie / session / authorization 字面量被抹值；另钉一条 dict/
 """
 import unittest
 
-from yiban.masking import sanitize_text
+from yiban.core.masking import sanitize_text
 
 
 class TokenMaskingTest(unittest.TestCase):
@@ -67,7 +67,7 @@ class CredentialValueSpanTest(unittest.TestCase):
     """凭据值必须整段遮没：空格/逗号/分号/引号都不许截半留明文尾。
 
     判据（"值的结束 = 下一段看起来是新的 `key=value` 对"）写在
-    `yiban/masking.py` 的 `_QUOTED_OR_BARE` 注释里；兜底层按宁过遮不漏取舍，
+    `yiban/core/masking.py` 的 `_QUOTED_OR_BARE` 注释里；兜底层按宁过遮不漏取舍，
     值后不含 `=` 的散文会被一并遮掉——对照例钉住**不该遮**的三类不被误伤。
     """
 

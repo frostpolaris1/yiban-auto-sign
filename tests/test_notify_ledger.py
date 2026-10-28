@@ -5,7 +5,7 @@
 标签：H · 通知：邮件与推送
 覆盖：账本磁盘状态机的读写（损坏文件归档后重启、首跑缺文件属正常）、跨天归零、
     只读路径不重写磁盘、多线程与"无进程内锁"情形下并发消费不丢更新不超支。
-对应实现：`yiban/notify/ledger.py`（`_consume_daily_budget`、`_general_daily`、
+对应实现：`yiban/adapters/notifier/notify/ledger.py`（`_consume_daily_budget`、`_general_daily`、
     `_urgent_daily`）；跨进程互斥复用 `yiban/infra/locks.py`（`lock_kind`）。
 关键断言：额度记在磁盘上、跨进程共享——web（常驻）与 signin（每次 cron 新进程）
     各持一份内存计数就会双发；剥掉进程内锁后仍必须靠**单次文件锁临界区**串行化
@@ -15,7 +15,7 @@
     Windows/Linux 本机正常执行；不发真实推送、不触网。
 
 功能：通知账本的持久化与并发正确性回归。
-归属：`yiban/notify/ledger.py` 的测试。
+归属：`yiban/adapters/notifier/notify/ledger.py` 的测试。
 复用：`BASE` / `KEY` 常量与临时目录隔离助手。
 通信：直接调用账本 API，读写临时账本 JSON 并另起线程/进程并发消费。
 """
@@ -40,9 +40,11 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 sys.path.insert(0, os.path.join(BASE, "scripts"))
 
-from yiban import notify  # noqa: E402
+from werkzeug.security import generate_password_hash  # noqa: E402
+
+from yiban.adapters.notifier import notify  # noqa: E402
+from yiban.adapters.notifier.notify import ledger as notify_ledger  # noqa: E402
 from yiban.infra import locks  # noqa: E402
-from yiban.notify import ledger as notify_ledger  # noqa: E402
 
 KEY = "f" * 64
 
@@ -55,7 +57,7 @@ class NotifyLedgerDiskTest(unittest.TestCase):
 
     def setUp(self):
         # 内部账本名走子模块（旧的 scripts/notify.py 兼容壳已删除）
-        from yiban.notify import ledger as notify
+        from yiban.adapters.notifier.notify import ledger as notify
         self.notify = notify
         self.tmp = tempfile.mkdtemp(prefix="yiban-ledger-")
         self.env_file = os.path.join(self.tmp, "nope.env")
@@ -120,11 +122,14 @@ class NotifyLedgerDiskTest(unittest.TestCase):
 
         UTC 主机上 `time.strftime` 的本地日期比北京晚（北京时间 09-17 00:00 时
         宿主仍是 09-16 16:00）——额度重置点错位，一个北京日历日内可动用近两份
-        额度。修复后 `_daily_today` 委托 `yiban.clock.today`：让两个来源返回
+        额度。修复后 `_daily_today` 委托 `yiban.core.clock.today`：让两个来源返回
         不同日期，断言账本落盘用的是 clock 那个。
         """
         os.environ["YIBAN_NOTIFY_DAILY_MAX"] = "5"
-        with mock.patch("yiban.notify.ledger.clock.today", return_value="2026-09-17"), \
+        # 打桩目标＝批 A4 后的新坐标。旧坐标（`yiban.notify.ledger`）是转发壳，
+        # 两条路径指向同一模块对象，故两种写法等价；新坐标是唯一权威。
+        with mock.patch("yiban.adapters.notifier.notify.ledger.clock.today",
+                        return_value="2026-09-17"), \
                 mock.patch.object(self.notify.time, "strftime",
                                   return_value="2026-09-16"):
             ticket = self.notify._consume_daily_budget("general")
@@ -157,29 +162,40 @@ class NotifyLedgerDiskTest(unittest.TestCase):
         # 导入方持有的旧模块对象"与"函数内重新解析到的新对象"同时存在，形成两份
         # 账本实例，后续用例的计数与打桩都会落在错的那一份上。
         saved_modules = {k: v for k, v in sys.modules.items()
-                         if k.startswith("yiban.notify")}
+                         if k.startswith("yiban.adapters.notifier.notify")}
 
         def _restore_notify_modules():
-            for k in [k for k in sys.modules if k.startswith("yiban.notify")]:
+            for k in [k for k in sys.modules if k.startswith("yiban.adapters.notifier.notify")]:
                 del sys.modules[k]
             sys.modules.update(saved_modules)
-            # 只还原 sys.modules 不够：`from yiban import notify` 取的是**父包上的属性**，
-            # 子模块重新导入时该属性已被换成新对象。属性不一起还原，进程里就留下两份
-            # `yiban.notify`——先导入的模块（如 web/services/notify_mail）握着旧对象，
-            # 后导入的（测试里 importlib 重载的 webapp）握着新对象，于是
-            # `mock.patch.object(webapp.notify, "send")` 打不到真正被调用的那一份，
-            # 告警用例表现为"0 次调用"（本文件先跑才复现）。
-            pkg = sys.modules.get("yiban")
-            if pkg is not None and "yiban.notify" in saved_modules:
-                pkg.notify = saved_modules["yiban.notify"]
+            # 只还原 sys.modules 不够：子模块重新导入时，导入机制会把**父包上的属性**
+            # 换成新对象。消费方经 `from yiban.adapters.notifier import notify` 取名字，
+            # 解析的正是该属性；属性不还原，进程里就留下两份 notify 模块——先导入的
+            # 模块（如 web/services/notify_mail）握着旧对象，后导入的（测试里重新
+            # 装载的 webapp）握着新对象，于是 `mock.patch.object(webapp.notify, "send")`
+            # 打不到真正被调用的那一份，告警用例表现为"0 次调用"（本文件先跑才复现）。
+            # 父包必须是 `yiban.adapters.notifier`。旧代码还原到 `yiban.notify`
+            # （已删净的旧坐标）上，实测该属性仍指向重新导入的新对象，等于没还原。
+            pkg = sys.modules.get("yiban.adapters.notifier")
+            if pkg is not None and "yiban.adapters.notifier.notify" in saved_modules:
+                pkg.notify = saved_modules["yiban.adapters.notifier.notify"]
                 for k, v in saved_modules.items():
-                    if k.startswith("yiban.notify."):
-                        setattr(saved_modules["yiban.notify"], k.rsplit(".", 1)[1], v)
+                    if k.startswith("yiban.adapters.notifier.notify."):
+                        setattr(saved_modules["yiban.adapters.notifier.notify"], k.rsplit(".", 1)[1], v)
+            # 校验者：查**消费方真正解析的那个属性**，不查上面的 `pkg` 变量。
+            # 查 `pkg` 等于"断言我刚赋过的值"——父包选错时照样绿，那是门给自己作证。
+            # 实测：把 `pkg` 改回 `yiban`（旧实现），本断言当场点名。
+            parent = sys.modules.get("yiban.adapters.notifier")
+            self.assertIs(
+                getattr(parent, "notify", None),
+                saved_modules["yiban.adapters.notifier.notify"],
+                "notify 父包属性未还原：进程内会留下两份模块对象，"
+                "后续用例的打桩将落在没人调用的那一份上")
 
         self.addCleanup(_restore_notify_modules)
         for k in list(saved_modules):
             del sys.modules[k]
-        from yiban.notify import ledger as notify_b
+        from yiban.adapters.notifier.notify import ledger as notify_b
         os.environ["YIBAN_STATE_DIR"] = self.tmp
         os.environ["YIBAN_ENV_FILE"] = self.env_file
         os.environ["YIBAN_ACCOUNTS_KEY"] = KEY
@@ -537,7 +553,7 @@ class _WebBase(unittest.TestCase):
             if os.path.exists(p):
                 os.remove(p)
         db.init_db(self.db_file, env_file=self.env_file, cleanup=False)
-        db.create_user(EMAIL, self.webapp.generate_password_hash(USER_PASS))
+        db.create_user(EMAIL, generate_password_hash(USER_PASS))
         db.add_account({"name": "我的号", "phone": PHONE, "password": "pw",
                         "owner": EMAIL, "status": "active",
                         "phone_model": "", "phone_code": ""})
@@ -558,12 +574,8 @@ class UserFailMailQuotaTest(unittest.TestCase):
         self.env = dict(os.environ)
         os.environ["YIBAN_STATE_DIR"] = self.tmp
         os.environ["YIBAN_MAIL_USER_FAIL_DAILY_CAP"] = "1"
-        # cap 在模块导入期由 parse_env_int 固定，测试内直接改常量
-        self._old_cap = signin.USER_FAIL_MAIL_DAILY_CAP
-        signin.USER_FAIL_MAIL_DAILY_CAP = 1
 
     def tearDown(self):
-        signin.USER_FAIL_MAIL_DAILY_CAP = self._old_cap
         os.environ.clear()
         os.environ.update(self.env)
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -600,3 +612,48 @@ class UserFailMailQuotaTest(unittest.TestCase):
             signin.send_user_fail_mail(EMAIL, PHONE, "网络超时")
             signin.send_user_fail_mail(EMAIL, PHONE, "网络超时")
         self.assertEqual(send.call_count, 1, "成功后当天不再重复发")
+
+
+def _reset_ledger_memory():
+    for led in notify_ledger._LEDGERS.values():
+        led["state"].update({"date": "", "count": 0})
+        led["notice"].update({"pending": False, "notified": False, "warned": False})
+
+
+def test_ledger_write_failure_denies_budget(tmp_path, monkeypatch, caplog):
+    """ba-p09-04：额度账写不进磁盘时必须 fail-closed，而不是静默按内存放行。
+
+    旧实现 `_save_ledger_file` 只 warning「额度仍按内存计数」，但
+    `_with_ledger_locked` 每次都在锁内重读磁盘、用磁盘 count 覆盖内存——内存计数
+    活不过一次调用。状态目录不可写时 count 恒读回 0 ⇒ 每次都放行 ⇒ 突破第三方
+    全局日配额。判据：无法持久化占用 ⇒ 本次不放行，并留一条 ERROR。
+    """
+    monkeypatch.setenv("YIBAN_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("YIBAN_ENV_FILE", str(tmp_path / "no-such.env"))
+    monkeypatch.setenv("YIBAN_ACCOUNTS_KEY", KEY)
+    monkeypatch.setenv("YIBAN_NOTIFY_DAILY_MAX", "5")
+    _reset_ledger_memory()
+
+    def _boom(*_a, **_k):
+        raise OSError("state dir is read-only")
+
+    monkeypatch.setattr(notify_ledger.private_json, "write_private_json", _boom)
+    with caplog.at_level(logging.WARNING, logger="notify"):
+        ticket = notify_ledger._consume_daily_budget("general")
+    assert ticket.allowed is False, "账本无法落盘时不得放行（fail-closed）"
+    assert any(r.levelno >= logging.ERROR for r in caplog.records), \
+        "账本写盘失败必须响亮告警，不能只留一行 warning"
+
+
+def test_state_dir_defaults_to_var_log_yiban(tmp_path, monkeypatch):
+    """ba-p09-05：无 YIBAN_STATE_DIR 时与 run.sh / web / audit_chain 同一口径。"""
+    monkeypatch.delenv("YIBAN_STATE_DIR", raising=False)
+    monkeypatch.setenv("YIBAN_ENV_FILE", str(tmp_path / "missing.env"))
+    assert notify_ledger._state_dir() == "/var/log/yiban", \
+        "第三档必须走 env_io.resolve_path 的缺省，不得回落到 cwd/.env 所在目录"
+
+
+def test_state_dir_honours_env_var(tmp_path, monkeypatch):
+    """对照：显式配置仍以进程环境为准（单源解析不得改变优先档）。"""
+    monkeypatch.setenv("YIBAN_STATE_DIR", str(tmp_path))
+    assert notify_ledger._state_dir() == str(tmp_path)

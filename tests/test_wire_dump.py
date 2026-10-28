@@ -4,7 +4,7 @@
 硬约束：默认关闭；请求行为零改变；凭据面（Cookie/Authorization/凭据字段/手机号）
 只记形态不记值；落盘失败绝不影响请求。
 
-凭据字段名口径只有一张表：`yiban.masking._CRED_KEY`（`pwd` 片段覆盖真实字段
+凭据字段名口径只有一张表：`yiban.core.masking._CRED_KEY`（`pwd` 片段覆盖真实字段
 `oauth_upwd`）；手机号值走 `masking.mask_phones_in_text`（覆盖 `oauth_uname`
 这类承载手机号、键名不含凭据片段的字段）。改这里必须同时改 masking 的口径。
 """
@@ -18,8 +18,8 @@ from unittest import mock
 
 import requests
 
-from yiban import protocol as yiban_protocol
-from yiban import state_gc
+from yiban.adapters import protocol_yiban as yiban_protocol
+from yiban.adapters.statefiles import state_gc
 from yiban.infra import wire_dump
 
 #: 真实登录体形态里的手机号与密码密文（本文件的红线对象）
@@ -262,7 +262,7 @@ class WireDumpTest(unittest.TestCase):
         self.assertEqual(len(self._read_lines()), 2)
 
     def test_dump_failure_warns_once_and_keeps_request(self):
-        """目录不存在时行为与现状一致：请求正常返回，落盘失败只告警一次。"""
+        """目录不存在时行为与现状一致：请求正常返回，落盘失败首次 WARNING、其后 DEBUG。"""
         wire_dump._warned = False
         missing = os.path.join(self.dir, "no-such-dir")
         broken = wire_dump.WireDumpAdapter(_Inner(), missing, LOGIN_PHONE)
@@ -270,7 +270,10 @@ class WireDumpTest(unittest.TestCase):
             for _ in range(2):
                 resp = broken.send(self._req(body="a=1"), timeout=3)
                 self.assertEqual(resp.status_code, 200, "落盘失败不得影响请求")
-        self.assertEqual(len(cm.output), 1, "落盘失败只告警一次")
+        warnings = [r for r in cm.records if r.levelname == "WARNING"]
+        self.assertEqual(len(warnings), 1,
+                         "首次落盘失败必须是 WARNING：DEBUG 在生产级别下不可见，缺页会被读成零请求")
+        self.assertIn("线路落盘失败", warnings[0].getMessage())
         self.assertFalse(os.path.exists(missing))
 
     def test_wire_artifact_is_registered_for_cleanup(self):

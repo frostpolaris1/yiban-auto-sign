@@ -18,9 +18,10 @@
    签到调度
    ========================================================================= */
 
-/* 与后端 `yiban.engine.schedule._DEFAULT_*` 同值：仅用于空输入/缺字段的兜底回显。 */
+/* 与后端 `yiban.engine.schedule._DEFAULT_*` 同值：仅用于空输入/缺字段的兜底回显。
+   `dist` 缺省是 `front`（提前铺完），与 `schedule.DEFAULT_SIGN_DIST` 及名册缺省同一个值。 */
 export var SCHEDULE_DEFAULTS = {
-  order: "sequence", dist: "uniform", edge: 60, start: "06:30", end: "07:50",
+  order: "sequence", dist: "front", edge: 60, start: "06:30", end: "07:50",
   muMin: 40, muMax: 60, sigmaMin: 15, sigmaMax: 25,
 };
 
@@ -209,7 +210,7 @@ export function pdf(x, mu, sigma) {
   return Math.exp(-((x - mu) * (x - mu)) / (2 * s * s)) / (s * Math.sqrt(2 * Math.PI));
 }
 
-/* 区间盒上包络：固定 x、μ 时对 σ 求导的最优 σ=|x−μ| 夹到区间即闭式解，μ 按 25 点网格。 */
+/* 区间盒上包络：固定 x、μ 时对 σ 求导的最优 σ=|x−μ| 夹到区间即闭式解，μ 按26 个采样点（25 段）。 */
 export function envAt(xMin, s) {
   var muL = s.effLo + s.span * s.muLo / 100, muH = s.effLo + s.span * s.muHi / 100;
   var sL = s.span * s.sgLo / 100, sH = s.span * s.sgHi / 100;

@@ -23,7 +23,7 @@
    容器内整链生效待生产演练。
 依赖：调度器用例按文件路径加载 docker/scheduler.py + subprocess/time 模块桩
    （真循环靠 sleep 抛异常打断）；心跳探活 CLI 用例不加载调度器（心跳手写落盘、
-   起 sys.executable 子进程）；快路仍先导 `yiban.infra.env_io`，连带
+   起 sys.executable 子进程）；快路仍先导 `yiban.adapters.config.env_io`，连带
    `env_lock → locks → portalocker`。缺 portalocker 的机器跑不动这条反例
    （阻断后抛 ModuleNotFoundError，走不到 sys.exit；暴露面见
    docker/scheduler.py 模块头）；
@@ -263,7 +263,7 @@ class CheckHealthCliTest(unittest.TestCase):
 
     故意不继承 _SchedBase：CLI 快路在业务导入图之前就 sys.exit，判据只看心跳
     mtime。心跳手写落盘即可，不需要业务模块图。快路躲不开第三方依赖：STATEDIR
-    收口到 resolve_path 之后，它必须先导 `yiban.infra.env_io`，连带
+    收口到 resolve_path 之后，它必须先导 `yiban.adapters.config.env_io`，连带
     `env_lock → locks → portalocker`。缺 portalocker 时这条反例抛
     ModuleNotFoundError，走不到 sys.exit。残余暴露面记在 docker/scheduler.py
     模块头。
@@ -334,7 +334,10 @@ class ComposeHealthcheckSchedTest(unittest.TestCase):
         hb = re.search(r"healthcheck:\s*\n(?:.*\n)*?\s*start_period", text)
         self.assertIsNotNone(hb, "compose 里找不到 healthcheck 块")
         block = hb.group(0)
-        self.assertIn("17892", block, "web 探活不得丢（nginx depends_on 依赖它）")
+        # 端口经容器环境取同一张值表（deploy/web.env）：compose 写 $$YIBAN_WEB_PORT，
+        # 由容器 shell 展开。web 探活不得丢（nginx depends_on 依赖它）。
+        self.assertIn("$$YIBAN_WEB_PORT", block,
+                      "web 探活必须用容器环境里的端口值（不得另写字面量）")
         self.assertIn("--check-health", block,
                       "sched 侧必须探调度器自己的活体出口（心跳），而非只有 web")
 
@@ -343,10 +346,10 @@ class ComposeHealthcheckSchedTest(unittest.TestCase):
         legacy = ("healthcheck:\n"
                   "      test: [\"CMD\", \"python3\", \"-c\",\n"
                   "             \"import urllib.request;urllib.request.urlopen"
-                  "('http://127.0.0.1:17892/login', timeout=3)\"]\n"
+                  "('http://127.0.0.1:8099/login', timeout=3)\"]\n"
                   "      interval: 30s\n      start_period: 20s\n")
         hb = re.search(r"healthcheck:\s*\n(?:.*\n)*?\s*start_period", legacy)
-        self.assertIn("17892", hb.group(0))
+        self.assertIn("127.0.0.1:8099", hb.group(0))
         self.assertNotIn("--check-health", hb.group(0))   # 判据点名：旧块缺 sched 探活
 
 
@@ -392,7 +395,8 @@ class RunShLockDirTest(unittest.TestCase):
         with io.open(os.path.join(self.app, "scripts", "signin.py"), "w",
                      encoding="utf-8") as f:
             f.write(_STUB_SIGNIN)
-        with io.open(os.path.join(self.app, ".env"), "w", encoding="utf-8") as f:
+        os.makedirs(os.path.join(self.app, "data"), exist_ok=True)
+        with io.open(os.path.join(self.app, "data", ".env"), "w", encoding="utf-8") as f:
             f.write("YIBAN_SIGN_END=07:50\n")
         py = os.path.join(self.app, ".venv", "bin", "python3")
         with io.open(py, "w", encoding="utf-8", newline="\n") as f:
@@ -570,7 +574,7 @@ class RunShHostTimezoneTest(unittest.TestCase):
                   os.path.join(self.app, ".venv", "bin"), self.state):
             os.makedirs(d, exist_ok=True)
         self._write(os.path.join(self.app, "scripts", "signin.py"), _STUB_SIGNIN_SECOND)
-        self._write(os.path.join(self.app, ".env"), "YIBAN_SIGN_END=07:50\n")
+        self._write(os.path.join(self.app, "data", ".env"), "YIBAN_SIGN_END=07:50\n")
         py = os.path.join(self.app, ".venv", "bin", "python3")
         self._write(py, '#!/bin/sh\nexec "%s" "$@"\n' % sys.executable.replace("\\", "/"), 0o755)
         self.bin = os.path.join(self.tmp, "bin")
@@ -584,6 +588,8 @@ class RunShHostTimezoneTest(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _write(self, path, text, mode=None):
+        # 父目录按需建：`.env` 现在落 `<app>/data/` 下，夹具不必各自记得先建它。
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         with io.open(path, "w", encoding="utf-8", newline="\n") as f:
             f.write(text)
         if mode is not None:
@@ -674,7 +680,8 @@ class RunProbeLockDirTest(unittest.TestCase):
         with io.open(os.path.join(self.app, "scripts", "signin.py"), "w",
                      encoding="utf-8") as f:
             f.write(_STUB_SIGNIN_PROBE)
-        with io.open(os.path.join(self.app, ".env"), "w", encoding="utf-8") as f:
+        os.makedirs(os.path.join(self.app, "data"), exist_ok=True)
+        with io.open(os.path.join(self.app, "data", ".env"), "w", encoding="utf-8") as f:
             f.write("")
         py = os.path.join(self.app, ".venv", "bin", "python3")
         with io.open(py, "w", encoding="utf-8", newline="\n") as f:

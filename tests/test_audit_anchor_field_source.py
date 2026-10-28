@@ -10,7 +10,7 @@
 标签：G · 安全：脱敏/审计/配置注入
 覆盖：锚点行 `head` 与 `max_id` 的同源性（并发写入下不得指向不同行），以及
 "链尾哈希不符 → 判篡改"这条诊断分支真的可达。
-对应实现：`yiban/store/audit_chain.py` 的 `record_audit_anchor`（按 max_id 取 head）
+对应实现：`yiban/adapters/persistence/audit_chain.py` 的 `record_audit_anchor`（按 max_id 取 head）
 与链尾不符时的判据消息。
 关键断言：两条都是**取证可用性**断言而非"检出与否"断言——检出结论本来就对，坏的是
 诊断信息；第二条用例只要结论是"篡改"且不是"锚点校验异常"即算绿。

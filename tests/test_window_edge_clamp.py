@@ -2,13 +2,13 @@
 """缓冲过大时收缩缓冲、保留窗口（`yiban/window.bounds` 的退化处置）。
 
 标签：A · 调度：计划与分片
-覆盖：yiban.window.bounds
+覆盖：yiban.core.window.bounds
    的退化处置判定表：正常窗口（默认与非默认）逐值不变、缓冲之和 >=
    窗口宽度时的等比收缩（含单边吃满）、最小可用窗口收缩后仍 lo <
    hi、收缩结果喂回不再生效（幂等）、窗口宽度 <= 0
    的防御分支回退默认、两个标记缺省为假、_schedule_blocks
    的两条告警与邮件去重。
-对应实现：yiban/window.py（Window、bounds 的 fell_back / edges_clamped
+对应实现：yiban/core/window.py（Window、bounds 的 fell_back / edges_clamped
    分支）、scripts/signin.py（_schedule_blocks 的告警与 _mail_summary
    并入、_window_clamped_notified / _window_fallback_notified 去重标记）。
 关键断言：窗口是管理员意图、缓冲只是精修：缓冲吃满时只等比收缩缓冲（有效窗口 =
@@ -25,7 +25,7 @@ from unittest import mock
 
 import signin
 
-from yiban import window
+from yiban.core import window
 
 
 def _cfg(start, end, front, back):

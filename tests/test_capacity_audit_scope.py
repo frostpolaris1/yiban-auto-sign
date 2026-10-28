@@ -3,7 +3,7 @@
 
 标签：I · 容量、熔断与账号有效性
 覆盖：容量口径修订——未通过审核（pending/rejected）的行不计容量、不进「正常」桶、单独给计数；「审核通过」这个开始产生负载的动作本身也要过容量闸门
-对应实现：判据唯一来源 `yiban.store.accounts.signs_in`、运行期复核用的 `account_is_signable`、`webapp._accounts_at_capacity` 与 `/api/settings` 的 `capacity_estimate` / `accounts_audit`
+对应实现：判据唯一来源 `yiban.adapters.persistence.accounts.signs_in`、运行期复核用的 `account_is_signable`、`web.services.capacity._accounts_at_capacity` 与 `/api/settings` 的 `capacity_estimate` / `accounts_audit`
 关键断言：`signs_in` 与 `is_signable` 对同一行必须给出一致判定（一套口径两处取用）；名额被「永不签到的存量」占满时新账号不再被误拒；approve 超容量 403、腾出名额后放行、reject 永不设门（它是减少负载的方向）、上限 0 = 不限；前端必须消费 `accounts_audit`，否则「账号管理里很多行、容量只算 N 个」在页面上无从解释
 依赖：纯本地 Flask test client + 临时 `.env`/SQLite，不联网、不访问真实易班接口；无需 node
 
@@ -14,7 +14,7 @@
 2. 在总览/设置页的容量拆解里被算成"正常"——而那三分类的**全部意义**就是解释
    "名额为什么满了而负载不高"，把永不签到的行混进"正常"正好把这层解释变成误导。
 
-修订后的口径（判据唯一来源 `yiban.store.accounts.signs_in`）：
+修订后的口径（判据唯一来源 `yiban.adapters.persistence.accounts.signs_in`）：
 - 计容量 = 非删除 且 审核态已通过（user_paused / 账密故障暂停仍计入，三分类单独展示）；
 - 审核通过是"让这一行开始产生负载"的动作 → `api_account_review` 的 approve 同样过闸门。
 
@@ -28,6 +28,8 @@ import shutil
 import sys
 import tempfile
 import unittest
+
+from web.services import capacity as _capacity
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -186,13 +188,13 @@ class CapacityExcludesAuditTest(_Base):
         self._add("13930000002", status="rejected")
         self._add("13930000003", status="rejected")
         # 计容量只有 1 个 → 还能再加 2 个（含本次新增）而不超上限
-        self.assertFalse(self.webapp._accounts_at_capacity(2))
-        self.assertTrue(self.webapp._accounts_at_capacity(3), "超过上限必须为 True")
+        self.assertFalse(_capacity._accounts_at_capacity(2))
+        self.assertTrue(_capacity._accounts_at_capacity(3), "超过上限必须为 True")
         # 暂停类账号仍占容量（那是用户主动、一键可恢复的状态）
         paused = self._add("13930000004")
         self.db.set_user_paused(paused, 1)
         self.assertEqual(self.webapp._capacity_account_count(), 2)
-        self.assertTrue(self.webapp._accounts_at_capacity(2))
+        self.assertTrue(_capacity._accounts_at_capacity(2))
 
     def test_estimate_counts_signing_accounts(self):
         """`capacity_estimate.current_accounts` 与 accounts 同口径（保存闸门要比它）。"""

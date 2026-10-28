@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
-"""`yiban.cli` 的契约用例（`docs/dev/cli.md` §2/§3 的可执行版本）。
+"""`yiban.entry.cli` 的契约用例（`docs/dev/cli.md` §2/§3 的可执行版本）。
 
 标签：J · 运维：部署/备份/发布
 覆盖：子命令与 `--help`、`--json` 单行可解析、致命错误的 stderr+JSON 双通道、
     `state` 默认不动手（dry-run）、`db --status` 只读且带 `user_version`、
     `db backup/integrity` 需 `--yes` 且拒绝目标等于源、`version` 与 `yiban.__version__`
     同源、`capacity` 建议值与网页同公式、未知/空子命令退 2 且 stdout 为空、不读 stdin。
-对应实现：`yiban/cli.py`（转发到 `yiban/store/migrations.py`、`yiban/engine` 等）。
+对应实现：`yiban/entry/cli/__init__.py`（实现；转发到 `yiban/adapters/persistence/migrations.py`、
+    `yiban/engine` 等）。旧入口转发壳（批 A1 落地）已于 `145-E` 退役。
 关键断言：退出码、stdout/stderr 分流、"默认不动手"三条都是进程级契约——断的是真实
     子进程的行为，不是 `main()` 的返回值。
-依赖：起 `sys.executable -m yiban.cli` 子进程（纯 Python，不需 bash/docker/网络）；
+依赖：起 `sys.executable -m yiban.entry.cli` 子进程（纯 Python，不需 bash/docker/网络）；
     全部用临时 STATE/LOG/DB/ENV，不碰本机真实 .env。
 
 口径（为什么全部起子进程）：退出码、stdout/stderr 分流、stdin 行为在测试进程里调
@@ -22,19 +23,20 @@ import subprocess
 import sys
 import unittest
 
-from yiban.store import migrations
+from yiban.adapters.persistence import migrations
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 #: 期望的 schema 顶（迁移登记表的最后一项）：新增迁移时本文件不必再改
 SCHEMA_TOP = migrations._MIGRATIONS[-1][0]
 
-#: 七个子命令（`docs/dev/cli.md` §1 的目标形态）
-SUBCOMMANDS = ("sign", "probe", "config", "capacity", "state", "db", "version")
+#: 子命令（`docs/dev/cli.md` §1 的目标形态）
+SUBCOMMANDS = ("init", "sign", "probe", "config", "capacity", "state", "egress", "db", "version")
 
 #: `--json` 的期望退出码：临时环境里 0 账号（config 判配置错误=1）、sign 同理=1
 JSON_EXPECTED_RC = {
-    "sign": 1, "probe": 0, "config": 1, "capacity": 0, "state": 0, "db": 0, "version": 0,
+    "sign": 1, "probe": 0, "config": 1, "capacity": 0, "state": 0, "egress": 0,
+    "db": 0, "version": 0,
 }
 
 EXPIRED_STATE_FILE = "sched-run-2020-01-01.json"
@@ -50,7 +52,7 @@ def _cli_env(tmp_path, env_extra=None):
         "YIBAN_ENV_FILE": str(tmp_path / ".env"),
         "YIBAN_ACCOUNTS_KEY": "a" * 64,   # 免得某条路径顺手生成密钥写盘
         "YIBAN_MAIL_ENABLE": "0",
-        "PYTHONPATH": BASE,               # `python -m yiban.cli` 需要仓库根在导入路径上
+        "PYTHONPATH": BASE,               # `python -m yiban.entry.cli` 需要仓库根在导入路径上
         "PYTHONIOENCODING": "utf-8",      # JSON 里的中文在任意平台都可解码
     })
     env.update(env_extra or {})
@@ -59,14 +61,14 @@ def _cli_env(tmp_path, env_extra=None):
 
 def _run(argv, env, stdin=subprocess.DEVNULL, timeout=120):
     """跑一次 CLI（cwd=仓库根）；返回 CompletedProcess。"""
-    return subprocess.run([sys.executable, "-m", "yiban.cli", *argv], cwd=BASE, env=env,  #-m 而非脚本路径：直跑文件会绕过包导入引导，与真实部署跑法不同
+    return subprocess.run([sys.executable, "-m", "yiban.entry.cli", *argv], cwd=BASE, env=env,  #-m 而非脚本路径：直跑文件会绕过包导入引导，与真实部署跑法不同
                           capture_output=True, text=True, encoding="utf-8",
                           errors="replace", stdin=stdin, timeout=timeout)
 
 
 def _make_db(tmp_path, env):
     """造一个真实 schema 的临时库（走数据层的初始化，绝不碰别的库）。"""
-    code = ("import sys; from yiban.store import db;"
+    code = ("import sys; from yiban.adapters.persistence import db;"
             "db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False);"
             "db.get_conn().close()")
     r = subprocess.run([sys.executable, "-c", code, str(tmp_path / "yiban.db"),
@@ -99,7 +101,7 @@ class CliContractTest(unittest.TestCase):
 
     def _add_account(self):
         """往临时库写一个 active 账号（走数据层，密码按密钥加密）。"""
-        code = ("import sys; from yiban.store import db;"
+        code = ("import sys; from yiban.adapters.persistence import db;"
                 "db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False);"
                 "db.add_account({'name': 'A', 'phone': '13800138000', 'password': 'p1',"
                 " 'status': 'active', 'owner': 'admin'})")
@@ -120,7 +122,7 @@ class CliContractTest(unittest.TestCase):
                 r = _run([cmd, "--help"], self.env)
                 self.assertEqual(r.returncode, 0, f"{cmd} --help 退出码应为 0：{r.stderr[-300:]}")
                 self.assertIn(cmd, r.stdout)
-        # 根用法里要列全七个子命令（agent 靠它发现能力）
+        # 根用法里要列全每个子命令（agent 靠它发现能力）
         for cmd in SUBCOMMANDS:
             with self.subTest(usage=cmd):
                 self.assertIn(cmd, root.stdout)
@@ -179,7 +181,8 @@ class CliContractTest(unittest.TestCase):
         """
         import unittest.mock as mock
 
-        from yiban.engine import cli_support, runner
+        from yiban.app import runner
+        from yiban.engine import cli_support
         with mock.patch.object(runner.accounts_mod, "load_accounts",
                                side_effect=RuntimeError("boom")), \
                 mock.patch.object(runner.cli_support, "_setup_cli_logging"):
@@ -193,6 +196,41 @@ class CliContractTest(unittest.TestCase):
         self.assertEqual(rc, 10)
         self.assertIsNone(cli_support.last_fatal_error(),
                           "上一轮的致命原因被带到了本轮（应已在 main 入口清空）")
+
+    # ---- ②c init：首次初始化只写哈希，不落明文，二次调用拒绝 ----
+
+    def test_init_creates_admin_hash_without_plaintext(self):
+        env = dict(self.env, YIBAN_ADMIN_PASSWORD="InitPass123!")
+        r = _run(["init", "--username", "admin", "--json"], env)
+        self.assertEqual(r.returncode, 0, r.stderr[-400:])
+        payload = json.loads(r.stdout)
+        self.assertEqual(payload["command"], "init")
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["admin_user"], "admin")
+        self.assertTrue(payload["secret_key_created"])
+        self.assertTrue(payload["registration_paused"])
+
+        with open(self.root / ".env", encoding="utf-8") as f:
+            lines = f.read()
+        self.assertIn("YIBAN_ADMIN_USER=admin", lines)
+        self.assertIn("YIBAN_ADMIN_PASSWORD_HASH=scrypt:", lines)
+        self.assertNotIn("YIBAN_ADMIN_PASSWORD=", lines, "明文口令键必须被删除")
+        self.assertNotIn("InitPass123!", lines, "口令明文不得落盘")
+
+        # 二次调用：管理员已配置，拒绝覆盖
+        r = _run(["init", "--username", "other", "--json"], env)
+        self.assertEqual(r.returncode, 1)
+        payload = json.loads(r.stdout)
+        self.assertEqual(payload["error_kind"], "admin_configured")
+
+    def test_init_rejects_weak_password_before_writing(self):
+        env = dict(self.env, YIBAN_ADMIN_PASSWORD="short")
+        r = _run(["init", "--username", "admin", "--json"], env)
+        self.assertEqual(r.returncode, 2)
+        payload = json.loads(r.stdout)
+        self.assertEqual(payload["error_kind"], "invalid_password")
+        self.assertIn("至少 12 位", payload["errors"][0])
+        self.assertFalse((self.root / ".env").exists(), "校验失败不得创建 .env")
 
     # ---- ③ state 默认 dry-run，--yes 需回显目标指纹才动手 ----
 
@@ -379,7 +417,7 @@ class CliContractTest(unittest.TestCase):
         # 对照组：真实路径（init_db 缺省 migrate=True）会把这个库迁到当前版本
         r = subprocess.run(
             [sys.executable, "-c",
-             "import sys; from yiban.store import db;"
+             "import sys; from yiban.adapters.persistence import db;"
              "db.init_db(db_file=sys.argv[1], env_file=sys.argv[2], cleanup=False)",
              str(self.root / "yiban.db"), str(self.root / ".env")],
             cwd=BASE, env=self.env, capture_output=True, text=True,
@@ -406,7 +444,7 @@ class CliContractTest(unittest.TestCase):
             with self.subTest(command=cmd):
                 # 关掉的 stdin（写端立刻关闭）：若真去读会 EOF 后继续，若等待输入则卡住
                 proc = subprocess.Popen(
-                    [sys.executable, "-m", "yiban.cli", cmd], cwd=BASE, env=self.env,
+                    [sys.executable, "-m", "yiban.entry.cli", cmd], cwd=BASE, env=self.env,
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     text=True, encoding="utf-8")
                 proc.stdin.close()

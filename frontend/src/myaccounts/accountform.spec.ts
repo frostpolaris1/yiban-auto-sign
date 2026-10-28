@@ -87,6 +87,18 @@ describe("buildAccountPayload（校验顺序与文案）", () => {
     expect(buildAccountPayload(input({ phoneCode: "  deadbeef  " }), { editing: true }).payload?.phone_code).toBe("deadbeef");
   });
 
+  it("用户面（allowDeviceFields=false）不带设备型号/识别码：一个键都不许出现", () => {
+    // 不变式：用户面**没有**这两个字段的写入面（2026-10-16 裁决）。用键缺席而非空串——
+    // 空串在后端是"显式清空"，会把自动补全填进去的值冲掉。
+    const r = buildAccountPayload(
+      input({ phoneModel: "M", phoneCode: "c0de", clearCode: true }),
+      { editing: true, allowDeviceFields: false },
+    );
+    expect(r.payload).toEqual({ name: "A1", phone: "13800138001", password: "pw" });
+    expect(r.payload && "phone_model" in r.payload).toBe(false);
+    expect(r.payload && "phone_code" in r.payload).toBe(false);
+  });
+
   it("绑定用户（新增）：选已注册用户 → 带 email，不带手填校验", () => {
     const r = buildAccountPayload(input({ email: "u@example.com" }), {
       editing: false,
@@ -196,8 +208,8 @@ describe("标题/副标题/主按钮文案（两变体 × 新增/编辑）", () 
   });
 
   it("副标题", () => {
-    expect(formSubtitle({ editing: false, variant: "user" })).toBe("提交后等待管理员审核，通过即自动签到。");
-    expect(formSubtitle({ editing: true, variant: "admin" })).toBe("手机号已打码显示；不改动则按原号提交。");
+    expect(formSubtitle({ editing: false, variant: "user" })).toBe("提交后等待审核，通过即自动签到。");
+    expect(formSubtitle({ editing: true, variant: "admin" })).toBe("手机号已打码；不改则按原号提交。");
   });
 
   it("主按钮", () => {
@@ -219,6 +231,18 @@ describe("口令字段文案（两套凭据必须读得出区别）", () => {
     for (const variant of ["user", "admin"] as const) {
       expect(FORM_TEXTS[variant].passwordHelp).toContain("易班");
       expect(FORM_TEXTS[variant].passwordHelp).toContain("本站");
+    }
+  });
+
+  it("设备字段文案只有管理面有：自助面留一份就是随包发的死文本", () => {
+    // 自助面已不收这两个字段（2026-10-16 裁决）。把"仅在提示「请使用授权设备」时填写"
+    // 这类文案留在 user 变体里，等于包内还挂着一份教用户手填的说明——而入口已不存在。
+    // 渲染点本身另有编译器兜底：`MyAccounts.vue` 的 T 是两变体的联合类型，user 缺键
+    // 时 `T.modelLabel` 直接类型报错。这里钉的是**文案是否还在包里**。
+    const userTexts = formTexts("user") as unknown as Record<string, unknown>;
+    for (const key of ["modelLabel", "modelHelp", "codeLabel", "codeHelp"]) {
+      expect(key in userTexts).toBe(false);
+      expect(key in (formTexts("admin") as unknown as Record<string, unknown>)).toBe(true);
     }
   });
 });

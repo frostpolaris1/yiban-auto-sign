@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { adviceLine, clockText, quotaBody, quotaSnapshot } from "./model.js";
+import { usePolling } from "../lib/polling";
 
 /* 容量配额分区：上限编辑（仅主管理员）+ 容量建议与耗时实测。
    legacy = components/settings-quota.js。实测只判主管理员 + 后端全局冷却（429 + 倒计时），
@@ -19,7 +20,6 @@ const tip = ref<{ text: string; bad: boolean }>({ text: "", bad: false });
 const measureResult = ref<{ text: string; bad: boolean }>({ text: "", bad: false });
 const coolUntil = ref(0);
 const nowTick = ref(Date.now());
-let timer: ReturnType<typeof setInterval> | null = null;
 
 const dirty = computed(() => Object.keys(quotaBody(snap.value, form.value)).length > 0);
 const coolLeft = computed(() => {
@@ -66,14 +66,13 @@ const baseResult = ref("");
 const baseBad = ref(false);
 // 冷却/在途：结果行**追加**剩余时间（"点了没反应"变成"还要等多久"）。追加而不是替换：
 // 实测结果本身就是要看的内容，倒计时只是补充说明。
+// 倒计时机制在 `lib/polling.ts`（收编前本卡自带一份自清定时器）：`active` 为假时**停表**，
+// 冷却未开始或已归零都不留空转定时器；每秒只推进 nowTick 并重绘结果行。
+usePolling(() => { nowTick.value = Date.now(); paintMeasure(); }, {
+  intervalMs: 1000,
+  active: () => coolLeft.value > 0,
+});
 function paintMeasure(): void {
-  if (coolLeft.value > 0 && !timer) {
-    timer = setInterval(() => {
-      nowTick.value = Date.now();
-      paintMeasure();
-      if (coolLeft.value <= 0 && timer) { clearInterval(timer); timer = null; }
-    }, 1000);
-  }
   const suffix = coolLeft.value > 0
     ? (baseResult.value ? "　" : "") + "冷却中：还需 " + clockText(coolLeft.value)
       + " 才能再测（后端全局冷却，连点只会产生一次真实登录）。"
@@ -109,7 +108,6 @@ function measure(): void {
   });
 }
 
-onUnmounted(() => { if (timer) clearInterval(timer); });
 defineExpose({ isDirty: () => dirty.value, save });
 </script>
 

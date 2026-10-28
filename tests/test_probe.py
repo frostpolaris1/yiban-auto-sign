@@ -6,19 +6,22 @@
     未到时间、当天已跑、每 N 天频率、once 单次；`run_probe` 的预警收集（管理员合并 +
     用户个人）、落库 stage=probe、once 跑完自动关闭；`.env` 自动关闭时写临时文件
     权限 0600 且无残留；web 侧 `_account_verify_enabled`/`_verify_account_clean`。
-对应实现：探针与账号验证的实现在 `yiban/engine/probe.py`（兼容壳
+对应实现：探针与账号验证的实现在 `yiban/app/probe.py`（兼容壳
     `scripts/signin.py` 转发），web 侧入口在 `web/app.py`。
 关键断言：探针只在"到期"时才跑、once 必须自我关闭（否则每天重复验证同一账号）；
     关闭开关写 .env 属敏感文件，必须 0600 且不留下半成品。
 依赖：全程 mock 网络与邮件（`YibanClient`、发送出口），无真实请求；临时
     STATE/DB/ENV 目录。用法（项目根目录）：py -m pytest tests/test_probe.py -v
 """
+import json
 import os
 import shutil
 import tempfile
 import unittest
 from datetime import datetime
 from unittest import mock
+
+from web.services import verify_queue as _verify_queue
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -162,7 +165,7 @@ class ProbeSigninTest(unittest.TestCase):
         并存成影子行（解析器后写覆盖先写，"自动关闭"可能被旧行悄悄顶掉）。
         单一行模型的 key_line_pattern 认两种写法。
         """
-        from yiban.infra import env_io
+        from yiban.adapters.config import env_io
         env_path = os.path.join(self._state_dir, "probe-shadow.env")
         with open(env_path, "w", encoding="utf-8") as f:
             f.write("YIBAN_PROBE_ENABLE = 1\n")
@@ -204,10 +207,14 @@ class WebVerifyTest(unittest.TestCase):
         self.assertNotIn("\n", err)
 
     def test_account_verify_enabled(self):
+        # 批 3-c S3：`_account_verify_enabled` 已从 app.py 的转发墙搬走，读者直取
+        # `web.services.verify_queue`。原写法打在 `self.w`（app 模块）上的 `read_env`
+        # 桩经 `verify_queue.configure` 登记的 lambda 仍然生效，故打桩点保留；
+        # 只把承接模块换成真源。
         with mock.patch.object(self.w, "read_env", return_value={"YIBAN_ACCOUNT_VERIFY": "1"}):
-            self.assertTrue(self.w._account_verify_enabled())
+            self.assertTrue(_verify_queue._account_verify_enabled())
         with mock.patch.object(self.w, "read_env", return_value={}):
-            self.assertFalse(self.w._account_verify_enabled())
+            self.assertFalse(_verify_queue._account_verify_enabled())
 
 
 class ProbeAccountingTest(unittest.TestCase):
@@ -221,7 +228,7 @@ class ProbeAccountingTest(unittest.TestCase):
     def test_soft_fail_records_failed_not_success(self):
         import signin
 
-        import yiban.engine.probe as probe
+        import yiban.app.probe as probe
 
         recorded = []
         soft_msg = "探测连接不可达 (ECONNREFUSED)"
@@ -252,6 +259,62 @@ class ProbeAccountingTest(unittest.TestCase):
         )
         # 软失败不出用户预警（告警口径不变：只有硬失败才发个人邮件）
         user_mail.assert_not_called()
+
+
+class ProbeQuotaWriteAmplificationTest(unittest.TestCase):
+    """探针逐号预占失败提醒额度必须整批落盘：F 个硬失败不得做 F 次读改写。
+
+    探针一次可能报出大量硬失败；旧形态每个账号各做一次"持锁＋读整个额度文件＋
+    写回"，写盘量随 F 平方增长（dnox/`hkew` 同形）。判据只看**写盘次数**：F 个
+    预占必须并成一次（批量上下文退出时落盘），不是逐号各写一次。
+    """
+
+    def test_hard_fail_quota_writes_are_batched(self):
+        import signin
+
+        import yiban.app.probe as probe
+
+        tmp = tempfile.mkdtemp(prefix="yiban-probe-quota-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        n = 6
+        accounts = [
+            signin.Account(phone=f"1380000100{i}", password="pw", owner="u@example.test")
+            for i in range(n)
+        ]
+        seen = {"n": 0}
+        real = probe.alerts.state_io._write_private_json
+
+        def spy(path, payload, **kw):
+            seen["n"] += 1
+            return real(path, payload, **kw)
+
+        quota_path = os.path.join(tmp, "mail-user-fail-today.json")
+        with mock.patch.object(probe, "PROBE_ENABLE", True), \
+                mock.patch.object(probe, "PROBE_INTERVAL", ""), \
+                mock.patch.object(probe, "_health_probe_due", return_value=True), \
+                mock.patch.object(probe, "_update_probe_state_run"), \
+                mock.patch.object(probe, "verify_account",
+                                  return_value=(False, "登录失败（账号或密码错误）")), \
+                mock.patch.object(probe.state_io, "_load_cred_state", return_value={}), \
+                mock.patch.object(probe.alerts, "_collect_admin_mail"), \
+                mock.patch.object(probe.alerts, "_flush_admin_mail_summary"), \
+                mock.patch.object(probe.db, "add_sign_event"), \
+                mock.patch.object(probe.alerts, "_user_fail_mail_daily_cap",
+                                  return_value=1), \
+                mock.patch.object(probe.alerts, "_user_fail_mail_state_path",
+                                  return_value=quota_path), \
+                mock.patch.object(probe.alerts.db, "find_user",
+                                  return_value={"mail_notify": 1}), \
+                mock.patch.object(probe.alerts.mailer, "send_user",
+                                  return_value=True), \
+                mock.patch.object(probe.alerts.state_io, "_write_private_json", spy):
+            probe.run_probe(accounts)
+
+        self.assertEqual(seen["n"], 1,
+                         f"{n} 个硬失败的额度预占必须整批落一次盘（实测 {seen['n']} 次）")
+        with open(quota_path, encoding="utf-8-sig") as f:
+            data = json.load(f)
+        self.assertEqual(len(data), n, "每个硬失败账号的预占都必须仍在盘上")
 
 
 if __name__ == "__main__":

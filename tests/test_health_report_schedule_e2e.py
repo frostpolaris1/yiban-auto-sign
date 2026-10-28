@@ -37,12 +37,14 @@ from test_rekey_key_source import (  # noqa: E402  （同目录夹具，须在 s
     _B14AlertGateBase,
     _write_env,
 )
+from werkzeug.security import generate_password_hash  # noqa: E402
 
+from web.services import env_io as _env_io_svc  # noqa: E402
 from web.services.env_io import (  # noqa: E402
     health_report_time_str,
     health_report_weekday_setting,
 )
-from yiban import config_loader  # noqa: E402
+from yiban.adapters.config import loader as config_loader  # noqa: E402
 
 TIME_KEY = "YIBAN_HEALTH_REPORT_TIME"
 WEEKDAY_KEY = "YIBAN_HEALTH_REPORT_WEEKDAY"
@@ -100,7 +102,7 @@ class _HealthScheduleBase(_B14AlertGateBase):
 
     def _due_at(self, moment, status=HEALTHY_STATUS, exhausted=False, since=None,
                 unconfigured_hm=None):
-        """在指定时刻判闸门：时刻经 `yiban.clock.now` 注入，额度状态按需打桩。
+        """在指定时刻判闸门：时刻经 `yiban.core.clock.now` 注入，额度状态按需打桩。
 
         `since` = 上一次唤醒时刻，走清理线程的区间判定（不传 = 单点判定）。
         `unconfigured_hm` = 时刻键未配置时的锚点（不传 = 无时刻门，旧签名语义）。
@@ -389,7 +391,7 @@ class SettingsEntryTest(_HealthScheduleBase):
         # 会被判成没改 ⇒ 键永不落盘，而回显仍是空串 ⇒ 每次打开设置页都有一条永远
         # 清不掉的脏标记（保存成功了，界面却说还有未保存的修改）。
         self.assertEqual(
-            self.webapp._settings_effective_values(self.env_file)["health_report_weekday"],
+            _env_io_svc._settings_effective_values(self.env_file)["health_report_weekday"],
             "", "变更判定的现值口径与 GET 回显同源")
 
     def test_master_saves_and_loader_reads_back(self):
@@ -439,7 +441,7 @@ class SettingsEntryTest(_HealthScheduleBase):
         before = "\n".join(_read_lines(self.env_file))
         self.webapp.db.create_user(
             "admin2@test.local",
-            self.webapp.generate_password_hash("PlainAdmin#2026x"), role="admin")
+            generate_password_hash("PlainAdmin#2026x"), role="admin")
         c2 = self._client()
         t2 = self._login(c2, "admin2@test.local", "PlainAdmin#2026x")
         for field, value in (("health_report_time", "07:00"),
@@ -663,9 +665,12 @@ class PurgeLoopCadenceTest(_HealthScheduleBase):
         self.assertLessEqual(sleeps[1], self.webapp._HEALTH_REPORT_TICK_SEC)
 
     def test_documented_arrival_precision_matches_the_tick(self):
-        """三处文案里的分钟数必须等于 `_HEALTH_REPORT_TICK_SEC`（防文档与常量脱钩）。"""
+        """三处文案里的分钟数必须等于 `_HEALTH_REPORT_TICK_SEC`（防文档与常量脱钩）。
+
+        人类文档已随工单 0gbk 从 README 搬入 docs/guides/configuration.md。
+        """
         minutes = self.webapp._HEALTH_REPORT_TICK_SEC // 60
-        for rel in ("README.md", ".env.example",
+        for rel in (os.path.join("docs", "guides", "configuration.md"), ".env.example",
                     os.path.join("frontend", "src", "settings", "HealthCard.vue")):
             with self.subTest(doc=rel):
                 self.assertIn(f"{minutes} 分钟", _read(os.path.join(BASE, rel)),

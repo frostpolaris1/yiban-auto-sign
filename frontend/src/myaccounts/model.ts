@@ -14,6 +14,10 @@
 export type AccountStatus = "pending" | "rejected" | "active" | (string & {});
 
 export interface MyAccount {
+  /** 本人视图的过滤后下标（自助面 PUT/DELETE/POST 的寻址口径）。 */
+  index?: number;
+  /** 账号在全局列表里的真实下标（管理端 detail 端点只认它）。 */
+  admin_index?: number;
   display_name: string;
   phone: string;
   phone_model?: string;
@@ -27,6 +31,8 @@ export interface MyAccount {
   logs?: string[];
   state_status?: string;
   queue_ahead?: number | null;
+  /** 二段资料：只含暴露开关开着的字段（服务端 `exposed_profile`；全关时键不出现）。 */
+  profile?: Record<string, string>;
 }
 
 /** 审核状态 → 图标名（白名单；缺失回落 clock）。deleted 另有表达。 */

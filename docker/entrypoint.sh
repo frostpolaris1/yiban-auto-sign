@@ -32,4 +32,16 @@ if ! chmod 0700 /backups 2>/dev/null; then
     echo "警告：/backups 权限位未能收紧到 0700，备份目录可能被其他用户读取" >&2
 fi
 
+# 端口/线程数的唯一值表（镜像内 /app/deploy/web.env，来自仓库 deploy/web.env）。
+# compose 的 env_file 通常已经注入；`docker run` 不带 compose 时靠本段兜底导出，
+# supervisord 的 %(ENV_YIBAN_WEB_PORT)s / %(ENV_YIBAN_WEB_THREADS)s 才展开得出来。
+# 缺文件即失败（fail-closed）：空值会把 command 变成非法端口，启动期更难查。
+if [ ! -f /app/deploy/web.env ]; then
+    echo "错误：/app/deploy/web.env 缺失（镜像应 COPY deploy/web.env）" >&2
+    exit 1
+fi
+set -a
+. /app/deploy/web.env
+set +a
+
 exec supervisord -c /etc/supervisord.conf

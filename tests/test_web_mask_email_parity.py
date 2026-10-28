@@ -3,7 +3,7 @@
 
 ## 为什么要对拍
 
-两端各有一份邮箱脱敏：`yiban/masking.py` 的 `mask_email`（Task 2-9b 起的唯一真源，
+两端各有一份邮箱脱敏：`yiban/core/masking.py` 的 `mask_email`（Task 2-9b 起的唯一真源，
 展示面与审计 `actor` 列共用；`accounts_data._mask_email` / `web.app` 只是名字转发）
 与 `web/static/js/core.js` 的 `maskEmail`（渲染层幂等
 脱敏）。二者是同一口径的**两份实现**，
@@ -22,18 +22,22 @@
 node 不可用时跳过（本套件其余部分不引入硬性 node 依赖）。
 
 标签：G · 安全：脱敏/审计/配置注入
-覆盖：前后端两份 `mask_email` / `maskEmail` 的**行为对拍**（11 组输入 + 幂等一条）
+覆盖：前后端两份 `mask_email` / `maskEmail` 的**行为对拍**（11 组边界输入 +
+      4 组写侧常量派生输入 + 幂等一条）
 + web 侧转发 `_mask_email` 与真源同值一条，
 另含两组与本标签无关的用例（站点描述/OG、占位字体），见下方注意。
-对应实现：`yiban/masking.py::mask_email`（唯一真源；`accounts_data._mask_email` 与
+对应实现：`yiban/core/masking.py::mask_email`（唯一真源；`accounts_data._mask_email` 与
 `web.app` 只是转发）与 `web/static/js/core.js` 的 `maskEmail`。
 关键断言：对拍跑的是真函数体（前端按花括号配对抽 JS 交给 node、后端抽 `def` 体 `exec`），
 不是"文件里有这个函数名"；`test_mask_is_idempotent_on_both_sides` 单独钉一层，
-因为"两边各遮一次"正是域名被吞的表现形式。
+因为"两边各遮一次"正是域名被吞的表现形式。合法样本由写侧真常量派生
+（`_limits.EMAIL_USER_MAX` / `_limits.EMAIL_RE`），不手抄示例。
 ⚠ 末尾两组用例（`SiteDescriptionTest`、`PlaceholderFontParityTest`）与邮箱脱敏无关，
 按文件标签归在 G 只是就近存放——`覆盖：` 不含它们，别据此以为它们受脱敏口径约束。
-依赖：**需要 node**——`@unittest.skipUnless(NODE, ...)` 挂在类上，本机没装 node 时对拍
-两组整体 skip（不是失败）；CI 若无 node，这条前后端口径实际上没人守。
+依赖：**需要 node**——`@unittest.skipUnless(NODE, ...)` 挂在类上，理由逐字登记在
+`tests/test_skip_visibility_gate.py` 的 `KNOWN_SKIP_SITES`；本机没装 node 时对拍两组
+整体 skip 并在报告里显式可见（跳过不是绿）。样本派生不依赖 node，
+`WriteSideSampleTest` 照常跑。
 后端侧靠 `importlib` 起 webapp、读写临时 `.env`，无网络。
 """
 
@@ -50,18 +54,37 @@ import unittest
 
 from _frontend_src import frontend_source
 
-from yiban.infra import env_io
+from web.services import limits as _limits
+from yiban.adapters.config import env_io
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORE_JS = os.path.join(BASE, "web", "static", "js", "core.js")
-# 后端邮箱脱敏的唯一真源：Task 2-9b 起 `mask_email` 住 `yiban/masking.py`
+# 后端邮箱脱敏的唯一真源：Task 2-9b 起 `mask_email` 住 `yiban/core/masking.py`
 # （展示面与审计 actor 共用），`accounts_data._mask_email` / `web.app` 只是名字转发。
 # 对拍必须从真源抽函数体——转发层接没接线由 `WebForwarderParityTest` 另钉。
-APP_PY = os.path.join(BASE, "yiban", "masking.py")
+APP_PY = os.path.join(BASE, "yiban", "core", "masking.py")
 WEB_ACCOUNTS_PY = os.path.join(BASE, "web", "services", "accounts_data.py")
 NODE = shutil.which("node")
 
-# (说明, 输入) —— 两端对同一输入必须给出同一结果
+
+def _derived_write_side_emails():
+    """由写侧常量派生合法邮箱：本地部长度取 1/2/3 与 `EMAIL_USER_MAX`。
+
+    样本不手抄：`EMAIL_USER_MAX` 变了，样本族跟着变；`EMAIL_RE` 拒收这些样本时
+    本函数直接抛错（写侧口径与对拍样本脱钩）。
+    """
+    lengths = sorted({1, 2, 3, _limits.EMAIL_USER_MAX})
+    out = []
+    for n in lengths:
+        address = "l" * n + "@example.com"
+        if not _limits.EMAIL_RE.fullmatch(address):
+            raise AssertionError(f"EMAIL_RE 拒收派生样本：{address!r}")
+        out.append((f"写侧合法·本地部{n}", address))
+    return tuple(out)
+
+
+# (说明, 输入) —— 两端对同一输入必须给出同一结果。
+# 前段是遮罩行为的边界，尾段由写侧常量派生（见 `_derived_write_side_emails`）。
 CASES = (
     ("正常邮箱", "user@example.com"),
     ("本地部长度 1", "a@example.com"),
@@ -74,6 +97,7 @@ CASES = (
     ("@ 在首位", "@example.com"),
     ("空串", ""),
     ("短域名", "x@q.io"),
+    *_derived_write_side_emails(),
 )
 
 
@@ -116,7 +140,7 @@ def _extract_python_function(src, name):
     return namespace[name]
 
 
-@unittest.skipUnless(NODE, "node 不可用：跳过前后端邮箱脱敏口径对拍")
+@unittest.skipUnless(NODE, "node 不可用：跳过前后端邮箱脱敏口径对拍（跳过不是绿）")
 class MaskEmailParityTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -153,7 +177,7 @@ class MaskEmailParityTest(unittest.TestCase):
                 )
         if problems:
             self.fail(
-                "YB.maskEmail 与 yiban.masking.mask_email 脱敏口径不一致（单边改动会导致错位脱敏）：\n"
+                "YB.maskEmail 与 yiban.core.masking.mask_email 脱敏口径不一致（单边改动会导致错位脱敏）：\n"
                 + "\n".join(problems)
             )
 
@@ -165,11 +189,25 @@ class MaskEmailParityTest(unittest.TestCase):
             self.assertEqual(f, value, "前端 maskEmail 对已脱敏值 %r 不幂等（返回 %r）" % (value, f))
             self.assertEqual(self.py_fn(value), value, "后端 mask_email 对 %r 不幂等" % value)
 
+class WriteSideSampleTest(unittest.TestCase):
+    """样本族必须由写侧真常量派生（**不需要 node**，node 缺席时这条仍守口径）。"""
+
+    def test_derived_samples_match_write_side_bounds(self):
+        """派生样本落在写侧合法域内；越界一枚必须被 `EMAIL_RE` 拒收。"""
+        max_len = _limits.EMAIL_USER_MAX
+        self.assertIsNotNone(
+            _limits.EMAIL_RE.fullmatch("l" * max_len + "@example.com"))
+        self.assertIsNone(
+            _limits.EMAIL_RE.fullmatch("l" * (max_len + 1) + "@example.com"))
+        for label, value in _derived_write_side_emails():
+            with self.subTest(label=label):
+                self.assertIsNotNone(_limits.EMAIL_RE.fullmatch(value))
+
 
 class WebForwarderParityTest(unittest.TestCase):
     """`accounts_data._mask_email` 必须仍与真源同值。
 
-    真源搬家（2-9b：`mask_email` 进 `yiban.masking`）后，上面的对拍只钉住
+    真源搬家（2-9b：`mask_email` 进 `yiban.core.masking`）后，上面的对拍只钉住
     "前端 ↔ 真源"；转发层若接错线（改了参、加了别的加工、或干脆另起炉灶），
     对拍不会红——这条按同样的边界输入钉"web 侧名字转发 ↔ 真源"同值。
     RED 可能性：把 `_mask_email` 改回自带实现或转发到别的口径，即红。
@@ -179,7 +217,7 @@ class WebForwarderParityTest(unittest.TestCase):
     def setUpClass(cls):
         import types
 
-        from yiban.masking import mask_email as real_mask_email
+        from yiban.core.masking import mask_email as real_mask_email
         with open(WEB_ACCOUNTS_PY, encoding="utf-8") as fh:
             src = fh.read()
         fn = _extract_python_function(src, "_mask_email")
@@ -190,7 +228,7 @@ class WebForwarderParityTest(unittest.TestCase):
             fn.__code__, {"mask_email": real_mask_email}, "_mask_email"))
 
     def test_forwarder_matches_source(self):
-        from yiban.masking import mask_email
+        from yiban.core.masking import mask_email
         for label, value in CASES:
             self.assertEqual(self.fwd(value), mask_email(value),
                              f"accounts_data._mask_email 与真源不一致（{label}）")

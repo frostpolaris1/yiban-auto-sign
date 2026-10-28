@@ -22,7 +22,9 @@
 `nightly.yml` / `e2e-nightly.yml`（不在本分支内）。
 关键断言：纯静态（读文本 + 轻量解析，**不调 GitHub API、不跑 yaml 解析器**——
 PyYAML 不在运行依赖里，门禁不得为一条注释引入一个新依赖）；活体反例：对同一
-检查器喂一份"可变 tag / 无 pip-audit / 带私钥"的合成内容必须判红。
+检查器喂一份"可变 tag / 无 pip-audit / 带私钥"的合成内容必须判红。e2e 接线另有
+元测试：spec 递归发现要用合成树钉住；把真实 `ci.yml` 的 Playwright 调用收窄
+（位置参数 / `--grep` / `--project`）必须判红（dix C-2）。
 依赖：纯文件读取，无网络、无 skip。
 """
 import io
@@ -35,6 +37,9 @@ from unittest import mock
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKFLOWS = os.path.join(BASE, ".github", "workflows")
 DOCKERFILE = os.path.join(BASE, "docker", "Dockerfile")
+CI = os.path.join(WORKFLOWS, "ci.yml")
+E2E_DIR = os.path.join(BASE, "frontend", "e2e")
+PLAYWRIGHT_CONFIG = os.path.join(BASE, "frontend", "playwright.config.ts")
 
 #: `uses: owner/repo@ref`；ref 允许 40 位十六进制（SHA）或任意可变量（tag/分支）。
 _USES = re.compile(r"^\s*-?\s*uses:\s*([^\s#]+)\s*(#.*)?$", re.M)
@@ -49,6 +54,162 @@ def _read(path):
 
 def _workflow_files():
     return sorted(n for n in os.listdir(WORKFLOWS) if n.endswith((".yml", ".yaml")))
+
+
+def _e2e_specs():
+    """`frontend/e2e/` 下的全部 Playwright spec（递归；扫空由调用方判红）。"""
+    if not os.path.isdir(E2E_DIR):
+        return []
+    specs = []
+    for root, _dirs, files in os.walk(E2E_DIR):
+        for name in files:
+            if name.endswith(".spec.ts"):
+                rel = os.path.relpath(os.path.join(root, name), E2E_DIR)
+                specs.append(rel.replace(os.sep, "/"))
+    return sorted(specs)
+
+
+def _playwright_scope_problems(cfg):
+    """配置里出现 testIgnore / testMatch 一律判红（R3-008 审查 P2）。
+
+    覆盖门要证明"每个 spec 都会跑"。ignore/match 可以单行也可以多行数组，
+    正则逐项解析容易漏第二项起；这里直接拒绝出现，确需排除先在本门登记豁免。
+    """
+    return [key for key in ("testIgnore", "testMatch")
+            if re.search(r"\b%s\s*:" % key, cfg)]
+
+
+#: 允许 Playwright 调用点携带的参数（元组）→ 理由。空表 = 一个都不允许。
+#: 任何参数都可能缩小 spec 面；确需加参数时在此登记并在 PR 写明它为什么不缩小覆盖。
+E2E_INVOCATION_ARGUMENT_EXEMPTIONS: dict[tuple[str, ...], str] = {}
+
+
+def _job_steps(block):
+    """把作业正文切成 step 文本块。
+
+    step 边界＝该作业里缩进最浅的 `- ` 行（更深的 `- ` 是 with: 里的嵌套列表）。
+    """
+    lines = block.splitlines()
+    indents = [len(m.group(1)) for ln in lines
+               if (m := re.match(r"^( *)- ", ln))]
+    if not indents:
+        return []
+    step_indent = min(indents)
+    steps = []
+    cur = []
+    for ln in lines:
+        m = re.match(r"^( *)- ", ln)
+        if m is not None and len(m.group(1)) == step_indent:
+            if cur:
+                steps.append("\n".join(cur))
+            cur = [ln]
+        elif cur:
+            cur.append(ln)
+    if cur:
+        steps.append("\n".join(cur))
+    return steps
+
+
+def _step_command(step):
+    """取 step 里第一条 `run:` 的命令正文，并剥掉 YAML 行内注释。
+
+    `run: true # npm run test:e2e` 的真实命令是 `true`，注释里的字样不算执行点。
+    """
+    for ln in step.splitlines():
+        m = re.match(r"^\s*run:\s*(.*)$", ln)
+        if m is not None:
+            return re.split(r"\s+#", m.group(1), maxsplit=1)[0].strip()
+    return ""
+
+
+def _is_e2e_invocation(cmd):
+    """命令是否**真会执行**整个 Playwright 面。
+
+    只认以 `npm` / `npx` 开头的命令：`echo npm run test:e2e`、`true # …` 都是
+    只把字样放进行里，实际不跑（dix C-2 审查的 fail-open 形态）。
+    """
+    if not cmd:
+        return False
+    first = cmd.split()[0]
+    if first not in ("npm", "npx"):
+        return False
+    return "playwright test" in cmd or "test:e2e" in cmd
+
+
+def _e2e_invocation_args(cmd):
+    """取 Playwright 调用点携带的参数；空列表 = 收整个 testDir。
+
+    两种调用形态：`npm run test:e2e -- <args>`（`--` 之后的才是传给 Playwright 的）
+    与 `npx playwright test <args>`。认不出形态时按"带了参数"处理（保守判红）。
+    """
+    m = re.search(r"\btest:e2e\b(.*)$", cmd)
+    if m is not None:
+        rest = m.group(1).strip()
+        if rest.startswith("--"):
+            rest = rest[2:].strip()
+        return rest.split() if rest else []
+    m = re.search(r"\bplaywright\s+test\b(.*)$", cmd)
+    if m is not None:
+        return m.group(1).split()
+    return [cmd]
+
+
+def _frontend_e2e_wiring_problems(yml):
+    """frontend 作业的 e2e 接线判据：空清单 = 真跑整个 e2e 面（dix C-2）。
+
+    判据不是"行里有 Playwright 字样"，而是"真有一步无条件执行整个面"。以下都算红：
+    · 执行行被注释掉、写成 `echo …`、或字样只活在行内注释里（没人跑）；
+    · 执行步骤带 `if:`（条件不满足就整步跳过）；
+    · 位置参数（`e2e/login.spec.ts`）或过滤标志（`--grep` / `--project`）只跑一部分。
+    参数豁免必须登记到 `E2E_INVOCATION_ARGUMENT_EXEMPTIONS` 并写明理由。
+    """
+    block = _job_block(yml, "frontend")
+    if not block:
+        return ["ci.yml 里找不到 frontend 作业：node 侧测试没有调用点"]
+    problems = []
+    if "working-directory: frontend" not in block:
+        problems.append(
+            "frontend 作业没有 working-directory: frontend：npm 脚本会在仓库根解析不到")
+    candidates = [(step, _step_command(step)) for step in _job_steps(block)]
+    candidates = [(step, cmd) for step, cmd in candidates if _is_e2e_invocation(cmd)]
+    if not candidates:
+        problems.append(
+            "frontend 作业里没有一条会执行的 Playwright 执行行（必须以 npm/npx 开头）："
+            "frontend/e2e 的 spec 文件存在但没人调用（R3-008）")
+        return problems
+    for step, cmd in candidates:
+        if re.search(r"(?m)^\s*if:\s*", step):
+            problems.append(
+                "Playwright 执行步骤带 if:（条件不满足就整步跳过）：%r；"
+                "如确需条件执行，先在本门登记豁免并写明不会漏跑" % cmd)
+        args = _e2e_invocation_args(cmd)
+        if args and tuple(args) not in E2E_INVOCATION_ARGUMENT_EXEMPTIONS:
+            problems.append(
+                "Playwright 调用点带参数 %s：会把 spec 面收窄，覆盖门无法证明每个 spec "
+                "都会跑；确需加参数先登记到 E2E_INVOCATION_ARGUMENT_EXEMPTIONS 并写明"
+                "它不缩小覆盖" % args)
+    return problems
+
+
+def _job_block(text, name):
+    """切出 `jobs:` 下某个作业的正文（缩进 2 的 `name:` 起，到下一个同级键止）。
+
+    返回空串表示没这个作业——调用方必须判红，否则"作业改名/删掉"会让断言恒真。
+    """
+    lines = text.splitlines()
+    start = None
+    for i, ln in enumerate(lines):
+        if re.match(r"^  %s:\s*$" % re.escape(name), ln):
+            start = i
+            break
+    if start is None:
+        return ""
+    out = []
+    for ln in lines[start + 1:]:
+        if re.match(r"^  [A-Za-z0-9_-]+:\s*$", ln):
+            break
+        out.append(ln)
+    return "\n".join(out)
 
 
 def _unpinned_refs(text):
@@ -248,6 +409,136 @@ class ScheduledWorkflowDefinitionPointTest(unittest.TestCase):
                 tmp, "# `e2e-nightly.yml` 在默认分支，checkout 用 `ref: develop`")
         self.assertEqual(bad, ["ci.yml 注释块缺少约定要素：`nightly.yml`"],
                          "锚点丢了就会被裸子串白送通过，nightly.yml 的提及被删也不红")
+
+
+class FrontendE2eCiWiringTest(unittest.TestCase):
+    """R3-008：`frontend/e2e/` 的每个 spec 必须有**一条真的会跑**的 CI 调用点。
+
+    缺陷形状：这批 Playwright 用例只挂在 `e2e-nightly.yml`（定义点在默认分支 main，
+    且那份文件 checkout 的 `object` 只在 develop）——部署分支 `server-web` 上一条都不跑。
+    "文件存在但没人调用"是**静默**的（AGENTS §十三 第 29 条），故这里把两件事对账：
+      ① `playwright.config` 的 `testDir` / `testIgnore` 是否覆盖每一个 spec；
+      ② `ci.yml` 里是否有一条**未注释**的 Playwright 执行行，且它属于 `frontend` 作业
+         （只有该作业有 node_modules 与 `working-directory: frontend`）。
+    本组只钉"有没有人跑、跑的是不是这些文件"，不钉步骤顺序——步骤细节错了 CI 会响亮
+    变红，不需要再钉一遍（同一判据两个定义点会漂）。
+    接线判据不是"有一条 Playwright 执行行"，而是**那一步没有收窄 spec 面**：位置参数
+    （`e2e/login.spec.ts`）与过滤标志（`--grep` / `--project`）都只跑一部分。递归发现与
+    "真实 ci.yml 收窄即红"各有一枚元测试（dix C-2），改窄 ci.yml 不红＝覆盖门没牙。
+    """
+
+    def test_every_spec_is_covered_by_the_playwright_config(self):
+        specs = _e2e_specs()
+        self.assertGreaterEqual(len(specs), 1, "扫空不得当绿：e2e 目录下一个 spec 都没读到")
+        cfg = _read(PLAYWRIGHT_CONFIG)
+        m = re.search(r'testDir:\s*"([^"]+)"', cfg)
+        self.assertIsNotNone(m, "读不出 playwright.config 的 testDir：口径丢了")
+        test_dir = m.group(1).strip().lstrip("./").rstrip("/")
+        self.assertTrue(test_dir, "testDir 为空串：配置坏了")
+        problems = _playwright_scope_problems(cfg)
+        self.assertEqual(
+            problems, [],
+            "playwright.config 出现 %s：覆盖门无法证明每个 spec 都会跑；"
+            "如确需排除，先在本门登记显式豁免并说明原因" % problems)
+        for spec in specs:
+            rel = "e2e/%s" % spec
+            self.assertTrue(
+                rel.startswith(test_dir + "/"),
+                "%s 不在 testDir=%r 之下：它永远不会被收集（文件存在但没人跑）" % (rel, test_dir))
+
+    def test_ci_invokes_playwright_in_the_frontend_job(self):
+        problems = _frontend_e2e_wiring_problems(_read(CI))
+        self.assertEqual(
+            problems, [],
+            "ci.yml 的 frontend 作业没接住整个 e2e 面（R3-008）：%s" % problems)
+
+    def test_scope_guard_catches_multiline_ignore_and_match(self):
+        """活体反例：多行 testIgnore、单行 testMatch 都必须被判红。"""
+        self.assertEqual(
+            _playwright_scope_problems('testIgnore: [\n  "**/a.spec.ts",\n  "**/b.spec.ts"\n]'),
+            ["testIgnore"])
+        self.assertEqual(
+            _playwright_scope_problems('testMatch: "**/*.spec.ts"'), ["testMatch"])
+        self.assertEqual(_playwright_scope_problems("testDir: './e2e'"), [])
+
+    def test_spec_discovery_recurses_into_subdirectories(self):
+        """元测试：`_e2e_specs` 必须递归扫子目录（dix C-2）。
+
+        旧断言只在真实目录上跑：把子目录里的 spec 静默漏掉，结果同样是"存在且有覆盖"。
+        这里造两层临时目录，要求两条 spec 都被发现，且返回值是相对 E2E_DIR 的 posix 路径。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            deeper = os.path.join(tmp, "sub", "deeper")
+            os.makedirs(deeper)
+            for d, name in ((tmp, "top.spec.ts"), (deeper, "nested.spec.ts")):
+                with io.open(os.path.join(d, name), "w", encoding="utf-8") as f:
+                    f.write("// spec fixture\n")
+            with mock.patch.dict(globals(), {"E2E_DIR": tmp}):
+                self.assertEqual(_e2e_specs(),
+                                 ["sub/deeper/nested.spec.ts", "top.spec.ts"],
+                                 "递归发现漏了子目录：子目录里的 spec 会静默不跑")
+
+    def test_the_wiring_checker_catches_a_narrowed_e2e_step(self):
+        """活体反例：把 ci.yml 的 e2e 面改窄必须判红（dix C-2）。
+
+        旧判据只要求"有一条未注释的 Playwright 执行行"：把 `npm run test:e2e` 改成
+        `npm run test:e2e -- e2e/login.spec.ts` 后仍然绿——一个 spec 跑、其余静默不跑。
+        这里在**真实 ci.yml** 上逐个收窄法做突变；真实接线本身必须先判绿。
+        """
+        yml = _read(CI)
+        self.assertEqual(_frontend_e2e_wiring_problems(yml), [],
+                         "真实 ci.yml 必须接住整个 e2e 面（夹具前提）")
+        self.assertIn("run: npm run test:e2e", yml,
+                      "变异锚点漂了：真实调用行不再逐字是 `run: npm run test:e2e`")
+        narrows = (
+            "npm run test:e2e -- e2e/login.spec.ts",
+            "npm run test:e2e -- --grep login",
+            "npm run test:e2e -- --project=chromium",
+            "npx playwright test e2e/login.spec.ts",
+            "npx playwright test --project=chromium",
+        )
+        for cmd in narrows:
+            mutated = yml.replace("run: npm run test:e2e", "run: " + cmd)
+            self.assertNotEqual(mutated, yml, f"变异没落到真实调用行上：{cmd}")
+            self.assertTrue(
+                _frontend_e2e_wiring_problems(mutated),
+                "把 e2e 面收窄成 %r 仍判绿：覆盖门没有牙" % cmd)
+
+    def test_the_wiring_checker_catches_a_step_that_does_not_run(self):
+        """活体反例：三种「行里有字样、实际没人跑」的形态必须判红（dix C-2 审查）。
+
+        · `if: false`：执行步被条件跳过；
+        · `run: echo npm run test:e2e`：只是打印命令，不执行；
+        · `run: true # npm run test:e2e`：字样只在行内注释里。
+        旧判据按行内子串认，三种都判绿（fail-open：没人跑也过门）。
+        """
+        yml = _read(CI)
+        anchor = "run: npm run test:e2e"
+        self.assertEqual(_frontend_e2e_wiring_problems(yml), [],
+                         "夹具前提：真实 ci.yml 必须先判绿")
+        mutations = {
+            "if-false": anchor + "\n        if: false",
+            "echo": "run: echo npm run test:e2e",
+            "inline-comment": "run: true # npm run test:e2e",
+        }
+        for label, replacement in mutations.items():
+            mutated = yml.replace(anchor, replacement)
+            self.assertNotEqual(mutated, yml, f"{label} 变异没落到真实调用行上")
+            self.assertTrue(
+                _frontend_e2e_wiring_problems(mutated),
+                "%s 形态仍判绿：没人跑的步骤被当成调用点" % label)
+
+    def test_the_wiring_checker_catches_a_commented_out_step(self):
+        """活体反例：把执行行注释掉，检查器必须判红（否则本门恒真）。"""
+        yml = _read(CI)
+        block = _job_block(yml, "frontend")
+        self.assertTrue(block, "夹具前提不成立：找不到 frontend 作业")
+        commented = yml.replace(block, "\n".join(
+            ("# " + ln if "test:e2e" in ln or "playwright test" in ln else ln)
+            for ln in block.splitlines()))
+        self.assertNotEqual(commented, yml, "变异没落到 frontend 作业上：夹具漂了")
+        self.assertTrue(_frontend_e2e_wiring_problems(commented),
+                        "被注释掉的执行行仍被判成调用点：本门的判据写反了")
 
 
 if __name__ == "__main__":

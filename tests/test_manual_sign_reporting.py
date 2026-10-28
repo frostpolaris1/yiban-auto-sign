@@ -25,8 +25,10 @@ from types import SimpleNamespace
 from unittest import mock
 
 import db
+from werkzeug.security import generate_password_hash
 
-from yiban import clock
+from web.services import accounts_data as _accounts_data
+from yiban.core import clock
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -144,7 +146,7 @@ class FuseResetGateTest(_WebAppMixin, unittest.TestCase):
             "status": "active", "deleted": False,
         }
         patcher = mock.patch.object(
-            self.webapp, "load_accounts",
+            _accounts_data, "load_accounts",
             side_effect=lambda: [dict(self._account)])
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -183,7 +185,7 @@ class FuseResetGateTest(_WebAppMixin, unittest.TestCase):
 
     def test_user_note_only_edit_keeps_fail_days(self):
         """用户侧只改备注：同样不得重置熔断计数。"""
-        db.create_user("user1@test.local", self.webapp.generate_password_hash(USER_PASS))
+        db.create_user("user1@test.local", generate_password_hash(USER_PASS))
         self._account["owner"] = "user1@test.local"
         c = self.webapp.create_app().test_client()
         r = c.post("/api/login", json={"username": "user1@test.local",
@@ -250,7 +252,7 @@ class ManualSignExitTest(_WebAppMixin, unittest.TestCase):
         proc.poll = lambda: 3
         proc.terminate = lambda: None
         proc.kill = lambda: None
-        with mock.patch.object(self.webapp, "load_accounts",
+        with mock.patch.object(_accounts_data, "load_accounts",
                                return_value=accounts), \
              mock.patch.object(self.webapp.subprocess, "Popen",
                                return_value=proc):
@@ -272,7 +274,7 @@ class ManualSignExitTest(_WebAppMixin, unittest.TestCase):
         proc.poll = lambda: 3
         proc.terminate = lambda: None
         proc.kill = lambda: None
-        with mock.patch.object(self.webapp, "load_accounts",
+        with mock.patch.object(_accounts_data, "load_accounts",
                                return_value=accounts), \
              mock.patch.object(self.webapp.subprocess, "Popen",
                                return_value=proc):

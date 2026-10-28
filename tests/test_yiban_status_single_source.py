@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""状态词汇表单一事实源：`yiban.status` 定义，signin / web 只做别名引用。
+"""状态词汇表单一事实源：`yiban.core.status` 定义，signin / web 只做别名引用。
 
 标签：D · 状态词汇与账号生命周期
-覆盖：12 个状态码常量在 `signin` 侧与 `yiban.status` 等值、`STATUS_SYMBOL`/
+覆盖：13 个状态码常量在 `signin` 侧与 `yiban.core.status` 等值、`STATUS_SYMBOL`/
     `UNDONE_STATUSES` 是**同一对象**；web 侧常量与 `STATUS_ICON`/`STATUS_TEXT` 同为
     别名；未了结集合的成员口径；两张展示映射刻意不合并；**前端三页的状态中文已收敛为
     唯一事实源 `frontend/src/lib/status-vocab.js`**（键集合 == ALL_STATUSES，三页 import 它）。
-对应实现：权威定义 = `yiban/status.py`（`STATUS_*`、`SYMBOL`、`ICON`、`TEXT`、
+对应实现：权威定义 = `yiban/core/status.py`（`STATUS_*`、`SYMBOL`、`ICON`、`TEXT`、
     `UNDONE_STATUSES`）；`scripts/signin.py` 与 `web/app.py` 里的同名符号是引用别名；
     前端词表 = `frontend/src/lib/status-vocab.js` 的 `STATUS_VOCAB`。
 关键断言：用 `assertIs` 而不是 `assertEqual`——值相等也可能是各复制一份，那正是曾经
@@ -35,13 +35,66 @@ sys.path.insert(0, os.path.join(BASE, "scripts"))
 
 import db  # noqa: E402
 
-from yiban import status as yiban_status  # noqa: E402
+from yiban.core import status as yiban_status  # noqa: E402
 
 TEST_KEY = "a" * 64
 
 #: node 解释器（急停色板真值门用**真导入**取运行时值，见 `_node_status_token`）。
 #: 与 `tests/test_dashboard_stats_caliber_js.py` 同一探测法。
 NODE = shutil.which("node")
+
+
+#: 两侧语气档的**已登记分歧**：状态码 → (前端档, 服务端档, 为什么必须有差异)。
+#:
+#: 两侧是两套档位字母表，服务不同消费语境，取值**不是同一个量**：
+#:   前端 `STATUS_VOCAB[*].tone` 服务三个前端页面（日志徽标 / 账号表 / 图表短名），
+#:   档位集 = `logs/format.ts` 的 `StatusTone`：{ok, bad, warn, info, muted}；
+#:   服务端 `DISPLAY[*].tone` 服务月历日期格与「我的账号」状态行（经 `ctx.by_code` 下发），
+#:   档位集 = `yiban/core/status.py` 的 `_LEGEND_TONES`：{ok, bad, muted, warn, busy}。
+#: 所以本册登记的是**语境对照台账**，不是缺陷豁免单：没有这一列理由，下一个人看到两个不同
+#: 的字母就分不清该保留还是该修。`frontend/src/lib/status-vocab.js` 文件头那节
+#: 「与服务端 DISPLAY 的关系（语境不同，非逐项对拍）」是同一件事的散文版。
+#:
+#: 除本册之外**任何**分歧即红（见 `test_frontend_vocab_tones_match_display`）；
+#: 本册自身陈旧（两侧改成一致、或理由列空）同样即红（见下一条用例）。
+VOCAB_TONE_DIVERGENCES = {
+    # 服务端的 `busy` 驱动"正在签到"的蓝色呼吸动画（`sc-cell--busy` / `state-line--busy`）；
+    # 前端档位集没有 busy，徽标面只能落 warn。
+    "retrying": ("warn", "busy", "服务端用 busy 表示'正在签到'（蓝、呼吸动画）；前端无该档"),
+    # 服务端把"时段外跳过"归"有意不签"族（见 `_DISPLAY_ROWS` 头部：muted=不是异常、不报警）；
+    # 前端徽标面取 warn，以便与同族的 `no_task`（muted）分开显示。
+    "skipped_window": ("warn", "muted", "服务端按'有意不签族'记 muted 不报警；前端徽标面要与 no_task 分开"),
+    "skipped_norange": ("warn", "muted", "同 skipped_window：跳过类在服务端不进异常族，前端徽标面另置一档"),
+    # JS 文件头明示："本表 tone 为 bad（账号表语义），服务端语境为 warn"。
+    "paused": ("bad", "warn", "前端账号表按'需用户改密'记红；服务端月历把账号级暂停与其它异常同列 warn"),
+    # 服务端档位集无 info；前端用它表达"待办"（蓝）。
+    "pending": ("info", "warn", "前端有 info 档表达'待办'；服务端档位集无 info，只能落 warn"),
+}
+
+
+def _node_status_vocab(vocab_js):
+    """在 node 里**真导入** `lib/status-vocab.js`，回读 `STATUS_VOCAB` 的运行时真值。
+
+    走真导入而非文本解析：由 JS 引擎自己解析源码，故注释、字符串字面量、模板串里写的
+    `码: "值"` 都不成词条。本门刻意不读源码文本——断言源码文本的脆性正是要削减的来源。
+
+    返回 `{状态码: {"full":…, "short":…, "icon":…, "tone":…}}`。
+    """
+    if NODE is None:
+        raise AssertionError("本门用 node 真导入 lib/status-vocab.js 取 STATUS_VOCAB 真值；"
+                             "取不到 node 必须响亮失败，不得跳过——跳过即本门要钉的假绿")
+    entry = (
+        "import { STATUS_VOCAB } from %s;\n"
+        "console.log(JSON.stringify(STATUS_VOCAB));\n"
+    ) % json.dumps(pathlib.Path(vocab_js).resolve().as_uri())
+    with tempfile.TemporaryDirectory() as td:
+        probe = os.path.join(td, "probe-vocab.mjs")
+        with open(probe, "w", encoding="utf-8") as fh:
+            fh.write(entry)
+        proc = subprocess.run([NODE, probe], capture_output=True, text=True, timeout=30)
+    if proc.returncode != 0:
+        raise AssertionError("node 导入 lib/status-vocab.js 失败：%s" % (proc.stderr or proc.stdout))
+    return json.loads(proc.stdout)
 
 
 def _node_status_token(dash_js):
@@ -104,22 +157,52 @@ class StatusSingleSourceTest(unittest.TestCase):
     def test_signin_is_alias_not_duplicate(self):
         for name in ("STATUS_SUCCESS", "STATUS_ALREADY", "STATUS_NO_TASK", "STATUS_FAILED",
                      "STATUS_RETRYING", "STATUS_SKIPPED_WINDOW", "STATUS_SKIPPED_NORANGE",
-                     "STATUS_NO_POSITION", "STATUS_PAUSED", "STATUS_USER_CANCELLED",
-                     "STATUS_PENDING", "STATUS_GLOBAL_PAUSED"):
+                     "STATUS_NO_POSITION", "STATUS_SUPPLEMENTING", "STATUS_PAUSED",
+                     "STATUS_USER_CANCELLED", "STATUS_PENDING", "STATUS_GLOBAL_PAUSED"):
             with self.subTest(name=name):
                 self.assertEqual(getattr(self.signin, name), getattr(yiban_status, name))
         self.assertIs(self.signin.STATUS_SYMBOL, yiban_status.SYMBOL,  #is 而非 ==：复制一份内容相同的字典同样能骗过等值断言
                       "符号表必须是同一对象（别名），不是重新构造的副本")
         self.assertIs(self.signin.UNDONE_STATUSES, yiban_status.UNDONE_STATUSES)
 
+    #: 批 3-c S1 已去壳的名字：读者直取真源，`web/app.py` 不得再留第二份面。
+    UNWRAPPED_IN_3C_S1 = (
+        "STATUS_SUCCESS", "STATUS_ALREADY", "STATUS_NO_TASK", "STATUS_USER_CANCELLED",
+        "STATUS_PENDING", "STATUS_ICON",
+    )
+
     def test_web_is_alias_not_duplicate(self):
-        for name in ("STATUS_SUCCESS", "STATUS_ALREADY", "STATUS_NO_TASK", "STATUS_FAILED",
-                     "STATUS_RETRYING", "STATUS_SKIPPED_WINDOW", "STATUS_SKIPPED_NORANGE",
-                     "STATUS_PAUSED", "STATUS_USER_CANCELLED", "STATUS_PENDING"):
+        """状态词汇只有 `yiban/core/status.py` 一处：墙上不再留名，各路径同对象。
+
+        批 3-c S1 把 `STATUS_SUCCESS` / `STATUS_ALREADY` / `STATUS_NO_TASK` /
+        `STATUS_USER_CANCELLED` / `STATUS_PENDING` / `STATUS_ICON` 六个别名从
+        `web/app.py` 删除，读者改直取真源。本用例钉两件事：
+
+          ① 这六个名字不得在 `web/app.py` 上再出现——留一个就是第二份可漂移的面；
+          ② 同一张 `ICON` 经**两条不同导入路径**（`web.app` 的再导出、
+             `/api/my-accounts` 的真实消费者 `web/routes/my_api.py`）取到的
+             必须是**同一个对象**。
+
+        ② 用 `is` 而非 `==`：复制一份内容相同的字典同样能骗过等值断言——这是原判据的
+        原话，也是本用例的"牙齿"。判据只读模块属性、不比较谁先被导入：工单 jmya 记录过
+        满载并行下对导入顺序敏感的对象同一性断言会在全量里假红。
+        """
+        for name in ("STATUS_FAILED", "STATUS_RETRYING", "STATUS_SKIPPED_WINDOW",
+                     "STATUS_SKIPPED_NORANGE", "STATUS_PAUSED"):
             with self.subTest(name=name):
                 self.assertEqual(getattr(self.webapp, name), getattr(yiban_status, name))
-        self.assertIs(self.webapp.STATUS_ICON, yiban_status.ICON)
-        self.assertIs(self.webapp.STATUS_TEXT, yiban_status.TEXT)
+        self.assertIs(self.webapp.STATUS_TEXT, yiban_status.TEXT)  #is 而非 ==：副本同样能骗过等值断言
+        for name in self.UNWRAPPED_IN_3C_S1:
+            self.assertFalse(
+                hasattr(self.webapp, name),
+                f"批 3-c S1 已去壳 {name}：web/app.py 不得再定义或转发它（读者直取真源）")
+        # 第一条路径：web.app 以 `from yiban.core import status as yiban_status` 再导出。
+        self.assertIs(self.webapp.yiban_status.ICON, yiban_status.ICON,  #is 而非 ==：复制一份内容相同的字典同样能骗过等值断言
+                      "符号表必须是同一对象（别名），不是重新构造的副本")
+        # 第二条路径：真正下发 state_icon 的消费方模块。
+        my_api = importlib.import_module("web.routes.my_api")
+        self.assertIs(my_api.yiban_status.ICON, yiban_status.ICON,
+                      "消费方 web/routes/my_api.py 看到的 ICON 必须与真源同对象")
 
     def test_undone_statuses_contents(self):
         """未了结集合的口径（补签闸门依赖它：落此集合即判定本轮未跑完）。"""
@@ -172,6 +255,65 @@ class StatusSingleSourceTest(unittest.TestCase):
                          "前端状态词表与唯一事实源的状态码集合已分叉")
         for field in ("full", "short", "icon", "tone"):
             self.assertIn(field + ":", body, "STATUS_VOCAB 词条缺 %s 字段" % field)
+
+    def test_frontend_vocab_tones_match_display(self):
+        """两侧语气档跨语言对拍：未登记的分歧即红。
+
+        为什么要有本门：`tone` 在两侧各有一份定义，且**值**此前无任何守卫——把
+        `supplementing` 的 `tone` 由 `warn` 改成 `ok` 时，前端 vitest 与既有的键集合门
+        全绿（键集合是字面量钉住的，值不是）。键集合的守卫留在上一条用例，本门管值。
+
+        形态＝**一致性 ＋ 已登记分歧名册**，不是逐值字面量断言：两侧一起改成同一个新档
+        无需改测试（值不冻在测试里，呈现层正常改色不制造测试耦合），改任一侧而不动另一侧
+        当场翻红。已登记的分歧见 `VOCAB_TONE_DIVERGENCES`（每条带理由列）。
+
+        两侧取值都走 node **真导入**取运行时真值，不读源码文本。
+        """
+        vocab = _node_status_vocab(self.VOCAB_JS)
+        # 键集合一致是本门的前提（遍历面的完整性）：少一格时下面的逐码比较会静默漏它。
+        # 上一条用例从源码文本钉同一件事；本门要的是**运行时**真值的完整性。
+        self.assertEqual(set(vocab), set(yiban_status.DISPLAY),
+                         "前端词表键集合与 DISPLAY 已分叉（对拍面不完整）")
+        unregistered, wrong_pair = {}, {}
+        for code in sorted(vocab):
+            js_tone = vocab[code].get("tone")
+            srv_tone = yiban_status.DISPLAY[code]["tone"]
+            if js_tone == srv_tone:
+                continue
+            entry = VOCAB_TONE_DIVERGENCES.get(code)
+            if entry is None:
+                unregistered[code] = (js_tone, srv_tone)
+            elif (js_tone, srv_tone) != (entry[0], entry[1]):
+                wrong_pair[code] = ((js_tone, srv_tone), (entry[0], entry[1]))
+        self.assertEqual(unregistered, {},
+                         "两侧语气档分歧且未登记（改一侧忘了另一侧？）：%r" % unregistered)
+        self.assertEqual(wrong_pair, {},
+                         "两侧语气档与登记册不符（码: 实际对, 登记对）：%r" % wrong_pair)
+
+    def test_vocab_tone_divergence_roster_is_live_and_explained(self):
+        """登记册自身不许腐化：每条仍在册、仍真分歧、且写了理由。
+
+        没有这条，两条路径会静默烂掉：
+          ① 两侧后来改成一致了，登记条目却留着——下一个人照册子"对齐"，反把差异改回来；
+          ② 新登记只填两个档位字母、不写理由——登记退化成凑绿的白名单。
+        """
+        vocab = _node_status_vocab(self.VOCAB_JS)
+        stale, missing, unexplained = [], [], []
+        for code, entry in sorted(VOCAB_TONE_DIVERGENCES.items()):
+            with self.subTest(code=code):
+                self.assertEqual(len(entry), 3, "登记项必须是 (前端档, 服务端档, 理由)")
+                if not (isinstance(entry[2], str) and entry[2].strip()):
+                    unexplained.append(code)
+                if code not in vocab or code not in yiban_status.DISPLAY:
+                    missing.append(code)
+                    continue
+                # 仍分歧？两侧一致即登记已陈旧，必须销账。
+                if vocab[code].get("tone") == yiban_status.DISPLAY[code]["tone"]:
+                    stale.append(code)
+        self.assertEqual(unexplained, [], "登记项缺理由列：%r" % unexplained)
+        self.assertEqual(missing, [], "登记项的状态码在某一侧不存在：%r" % missing)
+        self.assertEqual(stale, [],
+                         "登记项已陈旧（两侧语气档现在一致了，应销账）：%r" % stale)
 
     def test_frontend_pages_import_the_single_source(self):
         """三页必须从 status-vocab 取词，且不得再各留一份字面量表。"""
@@ -308,7 +450,7 @@ class StatusSingleSourceTest(unittest.TestCase):
         """急停（global_paused）在前端图表色板里必须落异常档，不得落"无异常"档。
 
         census P1-5：Vue 重写不得复刻旧 `data_dashboard.js` 的暂停假安心。权威口径是
-        `yiban.status.DISPLAY`——它把急停定为 `warn`（非正常，见 `_DISPLAY_ROWS`）。
+        `yiban.core.status.DISPLAY`——它把急停定为 `warn`（非正常，见 `_DISPLAY_ROWS`）。
         前端 `dashboard/model.js` 的 `STATUS_TOKEN` 是图表配色（非展示词表，见
         `SANCTIONED_MAPS`）；修复前它把急停自持为 `"muted"`（与「用户取消」同色 = 无异常
         档），于是分布图上"管理员急停"与"用户自己取消"无从区分。此门钉四条：
@@ -324,7 +466,7 @@ class StatusSingleSourceTest(unittest.TestCase):
         """
         self.assertEqual(
             yiban_status.DISPLAY[yiban_status.STATUS_GLOBAL_PAUSED]["tone"], "warn",
-            "权威口径：yiban.status 定急停语气为 warn（非正常）")
+            "权威口径：yiban.core.status 定急停语气为 warn（非正常）")
         # 缺 node 即红：静默跳过等于复现本门要钉的假绿。dev-verify 环境（WSL）与 CI
         # ubuntu 镜像均含 node，且本仓另有 node 真跑先例（test_dashboard_stats_caliber_js）。
         self.assertIsNotNone(

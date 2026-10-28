@@ -6,8 +6,8 @@
     `send_user_fail_mail` 的 owner 空 / 用户不存在 / 开关关闭三种不发送；
     开关开启则发送且内容脱敏；`/api/my-mail-notify` 的未登录默认开、401/400 防护、
     保存生效、审计留痕；汇总 flush 的空收件人与"管理员关通知则不转 admin"。
-对应实现：B 线发信与额度账本在 `yiban/engine/alerts.py`（`_user_fail_mail_reserve`）
-    与 `yiban/mail/`，迁移在 `yiban/store/migrations.py`，端点在 `web/app.py`。
+对应实现：B 线发信与额度账本在 `yiban/adapters/notifier/report.py`（`_user_fail_mail_reserve`）
+    与 `yiban/adapters/notifier/mail/`，迁移在 `yiban/adapters/persistence/migrations.py`，端点在 `web/app.py`。
 关键断言：内容必须脱敏（手机号打码、不含完整号）——正文会带上账号信息，
     漏脱敏等于把手机号寄到别人邮箱。
 依赖：临时 sqlite（走真实迁移）+ Flask test client + mock mailer；复用同目录
@@ -29,10 +29,11 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # 邮件/推送正文入参已放宽为 layout.Mail | str，断言前统一经 body() 渲染成文本
 from _mail_body import render_body  # noqa: E402
+from werkzeug.security import generate_password_hash  # noqa: E402
 
-from yiban.infra import account_crypto  # noqa: E402
-from yiban.notify import config as notify_config  # noqa: E402
-from yiban.notify import transport as notify_transport  # noqa: E402
+from yiban.adapters.config import account_crypto  # noqa: E402
+from yiban.adapters.notifier.notify import config as notify_config  # noqa: E402
+from yiban.adapters.notifier.notify import transport as notify_transport  # noqa: E402
 
 TEST_KEY = "b" * 64
 ADMIN_PASS = "TestPass1234!"
@@ -208,8 +209,8 @@ class MailNotifyApiTest(unittest.TestCase):
         with open(self.accounts_file, "w", encoding="utf-8") as f:
             json.dump([], f)
         db.init_db(self.db_file, migrate_from=self.accounts_file, env_file=self.env_file)
-        db.create_user("admin@test.local", self.webapp.generate_password_hash(ADMIN_PASS), role="admin")
-        db.create_user("user1@test.local", self.webapp.generate_password_hash(USER_PASS))
+        db.create_user("admin@test.local", generate_password_hash(ADMIN_PASS), role="admin")
+        db.create_user("user1@test.local", generate_password_hash(USER_PASS))
 
     def _login(self, c, username, password):
         r = c.post("/api/login", json={"username": username, "password": password})
@@ -297,6 +298,24 @@ class MailNotifyApiTest(unittest.TestCase):
         self._login(c, "user1@test.local", USER_PASS)
         r = c.put("/api/my-mail-notify", json={"enabled": False})
         self.assertEqual(r.status_code, 403, "缺少 X-CSRF-Token 应被全局 CSRF 校验拦截")
+
+    def test_csrf_wrong_nonempty_token_rejected(self):
+        """已登录 + **错误但非空** token ⇒ 403（R3-015）。
+
+        "缺 token"那条钉的是 `not token`；本条的才是 `compare_digest` 那一支。
+        把 `web/app.py` 的 `secrets.compare_digest(token, sess_token)` 弱化成
+        `bool(token)`，只有本条会红——故它是这条判据的回归守卫。
+        """
+        c = self.webapp.create_app().test_client()
+        self._login(c, "user1@test.local", USER_PASS)
+        r = c.put("/api/my-mail-notify", json={"enabled": False},
+                  headers={"X-CSRF-Token": "f" * 64})
+        self.assertEqual(r.status_code, 403,
+                         "错误但非空的 X-CSRF-Token 应被全局 CSRF 校验拦截")
+        self.assertIn("校验失败", r.get_json()["error"],
+                      "拒绝文案必须是 CSRF 文案（不得是业务 400）")
+        self.assertEqual(db.find_user("user1@test.local")["mail_notify"], 1,
+                         "被 CSRF 门拦下的请求不得改动数据")
 
     def test_audit_written(self):
         c = self.webapp.create_app().test_client()
