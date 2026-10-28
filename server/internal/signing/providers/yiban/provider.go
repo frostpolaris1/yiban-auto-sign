@@ -179,23 +179,25 @@ func (p *Provider) sign(ctx context.Context, req contract.SignRequest) (contract
 		return resultFor(contract.OutcomeInvalidTarget, "no location for the sign"), nil
 	}
 
-	// P5-D 待办（P5-C 登记，行为现状不改）：
-	//  1. req.Image != nil 时本实现不上传图片，也不伪造请求——图片被静默
-	//     丢弃后提交。P5-D 接 uploadUri→上传→回填；接上之前，宿主侧的
-	//     photo_missing 短路保证只有带图目标会走到这里带图提交。
-	//  2. AttachmentFileName 语义疑点：现填 Target.AttachmentName，但参考
-	//     作者公开博客与 F2 抓包显示该字段的正确语义是「上传回执返回的
-	//     文件名」。P5-D 接上传时必须改成回执值，不得沿用本行的猜测值。
-	//  3. req.Location.Reason 现在只到宿主为止，本实现不把它写进 SignInfo；
-	//     P5-D 接上传时一并送平台（协议形状 protocol/forms.go 已支持）。
-	// 以实拍为准（AGENTS §26：平台协议形状不采信第三方实现）。
+	// P5-D：带图时走上传播链（uploadUri → PUT 签名地址 → 回执文件名回填）。
+	// 形状来源为逆向还原（见 upload.go 头注），未经实拍；无图时
+	// AttachmentFileName 送空串（与 7 跳实拍的无图提交一致）。
+	attachment := ""
+	if req.Image != nil {
+		name, err := p.client.UploadAttachment(ctx, req.Account.ID, req.Credential, *req.Image)
+		if err != nil {
+			return p.resultForError(req.Account.ID, err, "upload")
+		}
+		attachment = name
+	}
 	body := protocol.BuildSignInBody(protocol.SignInBody{
 		LngLat:             point,
 		Address:            req.Target.Address,
 		OutState:           "1",
+		Reason:             req.Location.Reason,
 		Code:               deviceCode,
 		PhoneModel:         deviceModel,
-		AttachmentFileName: req.Target.AttachmentName,
+		AttachmentFileName: attachment,
 	})
 	envelope, err := p.client.SubmitSignIn(ctx, req.Account.ID, req.Credential, body)
 	if err != nil {

@@ -74,6 +74,10 @@ type upstream struct {
 	signInBody          []byte
 	signInStatus        int
 
+	// P5-D 上传播（逆向夹具，未经实拍）。
+	uploadBody []byte
+	putStatus  int
+
 	usersureBody []byte
 
 	mu           sync.Mutex
@@ -88,6 +92,11 @@ type upstream struct {
 	signQuery    url.Values
 	signCookie   string
 	signRaw      []byte
+	uploadForm   url.Values
+	uploadQuery  url.Values
+	putHeaders   http.Header
+	putBody      []byte
+	putPath      string
 	headers      map[string]http.Header
 	counts       map[string]int
 	recorded     []recordedHop
@@ -253,7 +262,42 @@ func newUpstream(t *testing.T) *upstream {
 				return
 			}
 			w.Write(body)
+		case "/nightAttendance/student/index/uploadUri":
+			// P5-D：逆向夹具（未经实拍）。回执键名取自逆向常量池。
+			raw, _ := io.ReadAll(r.Body)
+			r.Body = io.NopCloser(bytes.NewReader(raw))
+			if err := r.ParseForm(); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			up.mu.Lock()
+			up.uploadForm = r.PostForm
+			up.uploadQuery = r.URL.Query()
+			body := up.uploadBody
+			up.mu.Unlock()
+			if body == nil {
+				body = []byte(`{"code":0,"msg":"","data":{"AttachmentFileName":"` +
+					"yiban_camera_1790000000.jpg" + `","signedUrl":"` +
+					up.server.URL + "/upload/yiban_camera_1790000000.jpg" + `"}}`)
+			}
+			w.Write(body)
 		default:
+			if strings.HasPrefix(r.URL.Path, "/upload/") {
+				// P5-D：签名地址的下行（PUT 图片字节）。
+				raw, _ := io.ReadAll(r.Body)
+				up.mu.Lock()
+				up.putHeaders = r.Header.Clone()
+				up.putBody = raw
+				up.putPath = r.URL.Path
+				status := up.putStatus
+				up.mu.Unlock()
+				if status != 0 && status != http.StatusOK {
+					w.WriteHeader(status)
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+				return
+			}
 			http.NotFound(w, r)
 		}
 	}))
@@ -314,6 +358,7 @@ func (u *upstream) endpoints() Endpoints {
 		SignPosition: u.server.URL + "/nightAttendance/student/index/signPosition",
 		SignIn:       u.server.URL + "/nightAttendance/student/index/signIn",
 		DeviceState:  u.server.URL + "/device/student/index/getState",
+		UploadUri:    u.server.URL + "/nightAttendance/student/index/uploadUri",
 	}
 }
 
