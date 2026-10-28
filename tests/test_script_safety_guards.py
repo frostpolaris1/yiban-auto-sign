@@ -327,6 +327,16 @@ class GitConfigHygieneGuardTest(unittest.TestCase):
             self.assertEqual(r.returncode, 1, f"out={r.stdout!r} err={r.stderr!r}")
 
     @unittest.skipUnless(shutil.which("bash"), "bash 不可用：配置卫生门无法就地跑")
+    def test_relative_gitdir_that_cannot_resolve_exits_two(self):
+        # 相对 gitdir 指向不存在目录：无法判定 = 退 2（不能把解析失败当放行）。
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, ".git"), "w", encoding="utf-8") as f:
+                f.write("gitdir: ../nowhere/.git/worktrees/wt\n")
+            r = _run_bash("check-git-config.sh", root)
+            self.assertEqual(r.returncode, 2, f"out={r.stdout!r} err={r.stderr!r}")
+            self.assertIn("拒绝放行", r.stderr)
+
+    @unittest.skipUnless(shutil.which("bash"), "bash 不可用：配置卫生门无法就地跑")
     def test_unreadable_config_exits_two(self):
         # L2：解析器失败必须退 2（响亮），不能静默当绿。用假 awk 注入失败。
         with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as shim:

@@ -241,3 +241,60 @@ func TestSignUploadReceiptEmptySignedURLIsUnknown(t *testing.T) {
 		t.Fatalf("回执异常后不应 signIn：%d 次", n)
 	}
 }
+
+// PUT 收到 3xx：不跟随（PUT→GET 会丢 body）、按 transient 处理，不提交 signIn。
+// 评审 M3 的校验者：改回默认跟随重定向即红。
+func TestSignPutRedirectIsTransient(t *testing.T) {
+	p, up := newTestProvider(t)
+	up.mu.Lock()
+	up.putStatus = 302
+	up.mu.Unlock()
+
+	req, _ := uploadSignRequest("attempt-put-302")
+	result, err := p.Sign(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	if result.Outcome != contract.OutcomeTransient {
+		t.Fatalf("outcome = %q, want transient", result.Outcome)
+	}
+	if n := up.count("/nightAttendance/student/index/signIn"); n != 0 {
+		t.Fatalf("PUT 3xx 后不应 signIn：%d 次", n)
+	}
+}
+
+// PNG 图片：上传文件扩展名跟随 MIME（.png），回执仅含 attachment 键时也能取到文件名。
+// 评审 M4 的校验者：把扩展写死 .jpg 或删掉 attachment 兜底即红。
+func TestSignUploadPNGAndAttachmentFallback(t *testing.T) {
+	p, up := newTestProvider(t)
+	up.mu.Lock()
+	up.uploadBody = []byte(`{"code":0,"msg":"","data":{"attachment":"yiban_camera_1790000000.png","signedUrl":"` +
+		up.server.URL + `/upload/yiban_camera_1790000000.png"}}`)
+	up.mu.Unlock()
+
+	req, img := uploadSignRequest("attempt-upload-png")
+	img.Mime = "image/png"
+	req.Image = &img
+
+	result, err := p.Sign(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	if result.Outcome != contract.OutcomeSuccess {
+		t.Fatalf("outcome = %q, want success", result.Outcome)
+	}
+	up.mu.Lock()
+	name := up.uploadForm.Get("name")
+	form := up.signForm
+	putCT := up.putHeaders.Get("Content-Type")
+	up.mu.Unlock()
+	if !strings.HasSuffix(name, ".png") {
+		t.Fatalf("上传名 = %q, want .png 后缀（跟随 MIME）", name)
+	}
+	if putCT != "image/png" {
+		t.Fatalf("PUT Content-Type = %q, want image/png", putCT)
+	}
+	if got := form.Get("AttachmentFileName"); got != "yiban_camera_1790000000.png" {
+		t.Fatalf("attachment 兜底未生效：signIn 文件名 = %q", got)
+	}
+}
