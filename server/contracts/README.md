@@ -68,6 +68,9 @@ either side drifts.
 | GET | `/api/me/photos/:id` | user/admin | P5 |
 | PUT | `/api/me/photo-retention` | user | P5 |
 | PUT | `/api/accounts/:id/location` | user/admin | P5 |
+| GET | `/api/accounts/:id/photos` | user/admin | P5 |
+| GET | `/api/schools/:id/default-photo` | master/admin/user | P5 |
+| PUT | `/api/schools/:id/default-photo` | master/admin | P5 |
 | GET | `/api/admin/events` | master/admin | P6 |
 | GET | `/api/me/diagnostics` | user/admin | P6 |
 | GET | `/api/accounts/:id/diagnostics` | user/admin | P6 |

@@ -78,6 +78,8 @@ func pickService(t *testing.T, store *pickStore, blobs pickBlobs) *appphotos.Ser
 	svc, err := appphotos.NewService(appphotos.Deps{
 		Store: store, Blobs: blobs, Clock: coreclock.Fixed{},
 		Audit: audits, Tx: &fakeTx{audit: audits, store: &fakeStore{}},
+		// 选图不碰账号与默认图：替身只为满足依赖判据。
+		Accounts: stubAccounts{}, SchoolPhotos: stubSchoolPhotos{},
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

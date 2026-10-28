@@ -423,17 +423,19 @@ func TestNullablePropertiesAreRequired(t *testing.T) {
 // additionalPropertiesExemptions 是显式豁免登记：每个 schema 一处一条理由。
 // 只活在契约里的约束等于违反时静默：新增声明（含嵌套）必须在这里登记。
 var additionalPropertiesExemptions = map[string][]string{
-	"AccountSignAccepted":     {"响应对象；未知字段被编码器忽略"},
-	"AccountLocation":         {"响应对象；未知字段被编码器忽略"},
-	"AccountLocationUpdate":   {"请求对象；解码器忽略未知字段"},
-	"SchedulePlanRequest":     {"请求对象；解码器忽略未知字段"},
-	"ScheduleOverrideRequest": {"请求对象；解码器忽略未知字段"},
-	"TimePref":                {"响应对象；未知字段被编码器忽略"},
-	"TimePrefUpdate":          {"请求对象；解码器忽略未知字段"},
-	"Photo":                   {"响应对象；未知字段被编码器忽略"},
-	"PhotoUpload":             {"multipart 表单；解码器忽略未知字段"},
-	"PhotoRetention":          {"响应对象；未知字段被编码器忽略"},
-	"PhotoRetentionUpdate":    {"请求对象；解码器忽略未知字段"},
+	"AccountSignAccepted":      {"响应对象；未知字段被编码器忽略"},
+	"AccountLocation":          {"响应对象；未知字段被编码器忽略"},
+	"AccountLocationUpdate":    {"请求对象；解码器忽略未知字段"},
+	"SchedulePlanRequest":      {"请求对象；解码器忽略未知字段"},
+	"ScheduleOverrideRequest":  {"请求对象；解码器忽略未知字段"},
+	"TimePref":                 {"响应对象；未知字段被编码器忽略"},
+	"TimePrefUpdate":           {"请求对象；解码器忽略未知字段"},
+	"Photo":                    {"响应对象；未知字段被编码器忽略"},
+	"PhotoUpload":              {"multipart 表单；解码器忽略未知字段"},
+	"PhotoRetention":           {"响应对象；未知字段被编码器忽略"},
+	"PhotoRetentionUpdate":     {"请求对象；解码器忽略未知字段"},
+	"SchoolDefaultPhoto":       {"响应对象；未知字段被编码器忽略"},
+	"SchoolDefaultPhotoUpdate": {"请求对象；解码器忽略未知字段"},
 }
 
 // contractNoAdditionalProperties 匹配 YAML 映射里的一项 additionalProperties: false。

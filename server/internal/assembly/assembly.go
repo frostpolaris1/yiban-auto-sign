@@ -434,11 +434,15 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			closeFn()
 			return nil, fmt.Errorf("assembly: photo storage: %w", err)
 		}
+		// 同一仓储服务图片库与学校默认图：默认图登记在 schools.default_photo_id。
+		photoRepo := pg.NewPhotoRepo(db)
 		photoSvc, err := appphotos.NewService(appphotos.Deps{
-			Store: pg.NewPhotoRepo(db), Blobs: blobs, Clock: clk,
-			Audit:   audits,
-			Tx:      db,
-			Options: appphotos.Options{MaxPixels: photoMaxPixels, MaxSidePx: photoMaxSidePx},
+			Store: photoRepo, Blobs: blobs, Clock: clk,
+			Audit:        audits,
+			Tx:           db,
+			Options:      appphotos.Options{MaxPixels: photoMaxPixels, MaxSidePx: photoMaxSidePx},
+			Accounts:     accountSvc,
+			SchoolPhotos: photoRepo,
 		})
 		if err != nil {
 			closeFn()

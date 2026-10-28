@@ -75,6 +75,20 @@ func (f *fakeService) SetRetention(context.Context, corescope.Scope, int) (int, 
 	return f.retentionDays, f.retentionErr
 }
 
+// ListAccount、GetSchoolDefault、SetSchoolDefault 只满足端口：
+// 本文件的用例覆盖既有五端点；g1u 端点由真库 e2e 覆盖。
+func (f *fakeService) ListAccount(context.Context, corescope.Scope, string, string, int) (appphotos.Page, error) {
+	return appphotos.Page{}, errs.ErrNotFound
+}
+
+func (f *fakeService) GetSchoolDefault(context.Context, corescope.Scope, string) (appphotos.SchoolDefaultPhoto, error) {
+	return appphotos.SchoolDefaultPhoto{}, errs.ErrNotFound
+}
+
+func (f *fakeService) SetSchoolDefault(context.Context, corescope.Scope, string, *string, appaudit.Actor) (appphotos.SchoolDefaultPhoto, error) {
+	return appphotos.SchoolDefaultPhoto{}, errs.ErrNotFound
+}
+
 type fakeAuthorizer struct{ scope corescope.Scope }
 
 func (f *fakeAuthorizer) Authorize(context.Context, coreauth.User) (corescope.Scope, appaudit.Actor, error) {
