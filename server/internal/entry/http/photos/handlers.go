@@ -28,6 +28,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -239,7 +240,7 @@ func (h *Handler) PhotoUpload(c *gin.Context, _ oapi.PhotoUploadParams) {
 }
 
 // PhotoGet 实现 GET /api/me/photos/{id}。
-func (h *Handler) PhotoGet(c *gin.Context, id oapi.PhotoID) {
+func (h *Handler) PhotoGet(c *gin.Context, id oapi.PhotoID, params oapi.PhotoGetParams) {
 	scope, _, ok := h.principal(c)
 	if !ok {
 		return
@@ -250,16 +251,42 @@ func (h *Handler) PhotoGet(c *gin.Context, id oapi.PhotoID) {
 		return
 	}
 	defer body.Close()
+	etag := `"` + hex.EncodeToString(rec.SHA256[:]) + `"`
+	c.Header("ETag", etag)
+	c.Header("Cache-Control", "private, max-age=0")
+	// 条件请求：If-None-Match 命中则 304（无响应体）。只回 ETag 与缓存头，
+	// 不带 Content-Type/Content-Length——304 不许有载荷（7x2-3）。
+	inm := ""
+	if params.IfNoneMatch != nil {
+		inm = *params.IfNoneMatch
+	}
+	if ifNoneMatchHit(inm, etag) {
+		c.Status(http.StatusNotModified)
+		return
+	}
 	// 大图在慢链路上超过全局 WriteTimeout；写头前放宽本次连接的写截止时间。
 	h.extendWriteDeadline(c, photoGetWriteBudget)
 	// 响应头在写第一个字节前固定：作用域判据已通过。
 	c.Header("Content-Type", rec.Mime)
 	c.Header("Content-Length", strconv.FormatInt(rec.Bytes, 10))
-	c.Header("ETag", `"`+hex.EncodeToString(rec.SHA256[:])+`"`)
-	c.Header("Cache-Control", "private, max-age=0")
 	c.Status(http.StatusOK)
 	// 头部已发出，复制失败无法改状态码；客户端断开属正常终止。
 	_, _ = io.Copy(c.Writer, body)
+}
+
+// ifNoneMatchHit 按 RFC 9110 的 If-None-Match 语义判命中：
+// 逗号列表、弱比较（W/ 前缀两侧等价）、`*` 匹配任一表示。
+func ifNoneMatchHit(header, etag string) bool {
+	for _, candidate := range strings.Split(header, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" {
+			return true
+		}
+		if strings.TrimPrefix(candidate, "W/") == etag {
+			return true
+		}
+	}
+	return false
 }
 
 // PhotoDelete 实现 DELETE /api/me/photos/{id}。

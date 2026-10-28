@@ -250,12 +250,12 @@ func (s *server) PhotoUpload(c *gin.Context, params oapi.PhotoUploadParams) {
 }
 
 // PhotoGet 委托图片处理器。未装配时仍是 501。
-func (s *server) PhotoGet(c *gin.Context, id oapi.PhotoID) {
+func (s *server) PhotoGet(c *gin.Context, id oapi.PhotoID, params oapi.PhotoGetParams) {
 	if s.photos == nil {
 		notImplemented(c)
 		return
 	}
-	s.photos.PhotoGet(c, id)
+	s.photos.PhotoGet(c, id, params)
 }
 
 // PhotoDelete 委托图片处理器。未装配时仍是 501。
