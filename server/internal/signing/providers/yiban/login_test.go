@@ -97,6 +97,7 @@ type upstream struct {
 	putHeaders   http.Header
 	putBody      []byte
 	putPath      string
+	putMethod    string
 	headers      map[string]http.Header
 	counts       map[string]int
 	recorded     []recordedHop
@@ -289,6 +290,7 @@ func newUpstream(t *testing.T) *upstream {
 				up.putHeaders = r.Header.Clone()
 				up.putBody = raw
 				up.putPath = r.URL.Path
+				up.putMethod = r.Method
 				status := up.putStatus
 				up.mu.Unlock()
 				if status != 0 && status != http.StatusOK {
