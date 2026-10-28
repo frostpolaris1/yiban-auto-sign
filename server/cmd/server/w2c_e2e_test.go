@@ -29,6 +29,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -105,6 +106,8 @@ type w2cEnv struct {
 	broker    *appevents.Broker
 	// windows 是窗口发现脚本：任务 ID → 平台窗口。
 	windows map[string]contract.Window
+	// discover 是带计数的窗口发现替身；calls 即平台调用次数。
+	discover *e2eDiscoverer
 
 	logs   *bytes.Buffer
 	bodies []string
@@ -219,6 +222,7 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 	e.sessions = session.NewMemoryWithTTL(clk, 30*time.Minute, 12*time.Hour, []byte("w2c-session-secret-0123456789abc"))
 	loc := time.FixedZone("CST", 8*3600)
 	e.provider = &e2eProvider{windows: e.windows, targets: map[string][]contract.Target{}}
+	e.discover = &e2eDiscoverer{windows: e.windows}
 	egressSvc, err := appegress.NewService(appegress.Deps{
 		Store: pg.NewEgressRepo(db), Clock: clk,
 	})
@@ -268,7 +272,7 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 	}
 	scheduleSvc, err := appschedule.NewService(appschedule.Deps{
 		Windows: e.sched, Plans: e.sched, Accounts: e.sched,
-		Discover: e2eDiscoverer{windows: e.windows}, Prefs: e.prefs, Tx: db,
+		Discover: e.discover, Prefs: e.prefs, Tx: db,
 		Notifier: assembly.ScheduleNotifier{Broker: e.broker, Clock: clk},
 	})
 	diagSvc, err := appdiagnostic.NewService(appdiagnostic.Deps{
@@ -385,15 +389,24 @@ func (p *e2eProvider) Verify(context.Context, contract.VerifyRequest) (contract.
 
 // e2eDiscoverer 按任务 ID 返回测试预置的平台窗口。
 // 未预置视为平台无窗口，计划层按缓存或回退继续。
-type e2eDiscoverer struct{ windows map[string]contract.Window }
+// calls 是平台发现调用次数：k0y-4 用它验收节流（风控暴露面）。
+// 请求串行发出，read 面仍用原子量防数据竞争。
+type e2eDiscoverer struct {
+	windows map[string]contract.Window
+	calls   atomic.Int64
+}
 
-func (d e2eDiscoverer) DiscoverWindow(_ context.Context, taskID string) (contract.Window, error) {
+func (d *e2eDiscoverer) DiscoverWindow(_ context.Context, taskID string) (contract.Window, error) {
+	d.calls.Add(1)
 	w, ok := d.windows[taskID]
 	if !ok {
 		return contract.Window{}, errs.ErrNotFound
 	}
 	return w, nil
 }
+
+// count 返回平台发现调用次数。
+func (d *e2eDiscoverer) count() int64 { return d.calls.Load() }
 
 func w2cRandomHex(n int) string {
 	b := make([]byte, n)

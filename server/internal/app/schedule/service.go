@@ -15,6 +15,9 @@
 //
 // # 口径
 // 业务日按 Input.Location 解析；窗口来源取 contract.WindowSource 三值。
+// 预览、建计划与写覆盖用实时窗口（先问平台）。
+// 只读报告（Report、ListWindows）默认只读缓存；Refresh 为真才重新发现（k0y-4）。
+// 停用任务可预览，不可建计划与写覆盖：回 conflict（k0y-6）。
 package schedule
 
 import (
@@ -64,6 +67,10 @@ type Input struct {
 	// EdgeFront / EdgeBack 是有效窗口两端让出的时长；0 表示不裁剪。
 	EdgeFront time.Duration
 	EdgeBack  time.Duration
+	// Refresh 要求重新发现平台窗口（k0y-4）。
+	// 只对只读报告生效：Report 由入口按 refresh 查询参数置位。
+	// Preview 与 Build 恒查平台，忽略本字段。
+	Refresh bool
 }
 
 // Row 是一行计划落点。
@@ -121,9 +128,58 @@ func NewService(deps Deps) (*Service, error) {
 }
 
 // Preview 只算不写：返回窗口解析结果与完整计划行。
+// 与 Build 同一解析口径（预览就是计划），故不节流；Refresh 不影响本方法。
+// 停用任务同样可预览（k0y-6）。
 func (s *Service) Preview(ctx context.Context, in Input) (Preview, error) {
-	p, _, _, _, err := s.previewWithWindow(ctx, in)
+	p, _, err := s.previewWithWindow(ctx, in, policyLive)
 	return p, err
+}
+
+// Report 计算容量报告所需的计划指标（k0y-4）。
+//
+// 窗口解析默认只读缓存：有当日缓存时零平台调用。
+// 无缓存时发现一次并落缓存；Refresh 为真时也发现一次。
+// 两个只读端点对 refresh=true 行为一致：都做平台发现。
+// 存在合法覆盖时不写缓存（见 storeFresh）：缓存窗口保持覆盖行。
+// 报告采用的窗口仍以覆盖优先；与计划同一口径。
+// 停用任务同样可报告容量（k0y-6）。
+func (s *Service) Report(ctx context.Context, in Input) (Preview, error) {
+	p, res, err := s.previewWithWindow(ctx, in, policyCached)
+	if err != nil {
+		return Preview{}, err
+	}
+	version, err := s.storeFresh(ctx, res)
+	if err != nil {
+		return Preview{}, err
+	}
+	p.Version = version
+	return p, nil
+}
+
+// storeFresh 把本次新发现的平台窗口写进当日缓存，返回生效版本。
+// 只写 fresh：回退窗口不是发现结果，覆盖不是本路径的写入对象。
+// 存在合法覆盖时不写库：缓存行是 worker 的窗口判据（只读缓存），
+// 改写它会让覆盖失效，pending 行可能被按平台窗口判终态。
+// 与缓存同值同源时不写库：刷新是幂等的，不推版本。
+// 版本竞争（ErrWindowStale）不算失败：并发写者已写入平台窗口，
+// 本次以读到的缓存版本为准。
+func (s *Service) storeFresh(ctx context.Context, res windowResolution) (int, error) {
+	version := res.version()
+	if !res.freshOK || res.overrideOK {
+		return version, nil
+	}
+	if res.cacheOK && res.cached.Source == res.fresh.Source &&
+		res.cached.Start.Equal(res.fresh.Start) && res.cached.End.Equal(res.fresh.End) {
+		return version, nil
+	}
+	saved, err := s.deps.Windows.PutWindow(ctx, res.fresh, version)
+	if errors.Is(err, coreschedule.ErrWindowStale) {
+		return version, nil
+	}
+	if err != nil {
+		return version, err
+	}
+	return saved, nil
 }
 
 // Build 构建计划并落库：窗口变化时同事务内写窗口、重排 pending、补插。
@@ -131,7 +187,14 @@ func (s *Service) Preview(ctx context.Context, in Input) (Preview, error) {
 // 事务由本方法自开：入口层不得再包一层事务（提交时点会随之改变）。
 // 成功且窗口真实变化后发 window.changed；Shortfall>0 发 capacity.changed
 // （无历史值可比，取「有缺口即发」的保守口径，见 publishCapacity）。
+// 停用任务拒建计划（k0y-6）：回 conflict，且在发现平台窗口之前拒绝。
 func (s *Service) Build(ctx context.Context, in Input) (Preview, error) {
+	if err := validateInput(in); err != nil {
+		return Preview{}, err
+	}
+	if err := s.requireEnabled(ctx, in.SchoolTaskID); err != nil {
+		return Preview{}, err
+	}
 	p, changed, err := s.buildOnce(ctx, in)
 	if errors.Is(err, coreschedule.ErrWindowStale) {
 		// 并发写者先进：重读缓存后整体重试一次。
@@ -145,8 +208,29 @@ func (s *Service) Build(ctx context.Context, in Input) (Preview, error) {
 	return p, nil
 }
 
+// requireEnabled 读任务并拒绝停用任务。
+// 任务不存在时 ErrNotFound 原样上抛：入口层已先判作用域。
+func (s *Service) requireEnabled(ctx context.Context, taskID string) error {
+	task, err := s.deps.Windows.Task(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	return checkEnabled(task)
+}
+
+// checkEnabled 是停用判据的唯一实现：建计划与写覆盖共用（k0y-6）。
+// 停用是"任务存在但不可操作"，故回 conflict，不回 not_found；
+// 后者留给跨校与不存在，两者口径必须分开。
+func checkEnabled(task coreschedule.TaskInfo) error {
+	if task.Enabled {
+		return nil
+	}
+	return coreerrs.New(coreerrs.CodeConflict, "任务已停用")
+}
+
 // Task 按作用域读任务元数据。
-// 跨校、不存在与已停用一律 404：不区分"没有"与"不给你看"。
+// 跨校与不存在一律 404：不区分"没有"与"不给你看"。
+// 停用不影响读取：Enabled 原样下发给调用方；拒绝对停用任务的操作见 checkEnabled。
 func (s *Service) Task(ctx context.Context, scope corescope.Scope, taskID string) (coreschedule.TaskInfo, error) {
 	if err := requireScheduleScope(scope); err != nil {
 		return coreschedule.TaskInfo{}, err
@@ -166,14 +250,87 @@ func (s *Service) Task(ctx context.Context, scope corescope.Scope, taskID string
 
 // ListWindows 返回作用域内各任务当日的窗口。
 // 没有缓存的任务也返回一行（Cached=false）：管理面要看到"未发现"。
-func (s *Service) ListWindows(ctx context.Context, scope corescope.Scope, day string) ([]coreschedule.WindowView, error) {
+// 默认只读缓存（k0y-4）：有缓存的任务零平台调用。
+// 无缓存的任务发现一次并落缓存；refresh 为真时全部重新发现。
+func (s *Service) ListWindows(ctx context.Context, scope corescope.Scope, day string, refresh bool) ([]coreschedule.WindowView, error) {
 	if err := requireScheduleScope(scope); err != nil {
 		return nil, err
 	}
 	if !validDay(day) {
 		return nil, validation("day must be YYYY-MM-DD")
 	}
-	return s.deps.Windows.ListWindows(ctx, scope, day)
+	views, err := s.deps.Windows.ListWindows(ctx, scope, day)
+	if err != nil {
+		return nil, err
+	}
+	for i := range views {
+		if views[i].Cached && !refresh {
+			continue
+		}
+		if err := s.refreshView(ctx, &views[i], day); err != nil {
+			return nil, err
+		}
+	}
+	return views, nil
+}
+
+// refreshView 发现一次平台窗口，落缓存并就地刷新列表行。
+// 平台无窗口或发现失败时保留原行：不落回退窗口（见 storeFresh）。
+// 存在合法覆盖时只完成发现、不改写缓存行：缓存行是 worker 的
+// 窗口判据，改写它会让覆盖失效（同 storeFresh 的判据）。
+// 与缓存同值同源时不写库：刷新是幂等的，不推版本。
+// 版本竞争（ErrWindowStale）时保留读到的快照：并发写者已给出更新值。
+func (s *Service) refreshView(ctx context.Context, v *coreschedule.WindowView, day string) error {
+	found, err := s.deps.Discover.DiscoverWindow(ctx, v.TaskID)
+	if err != nil {
+		return nil
+	}
+	if corewindow.Validate(corewindow.Window{Start: found.Start, End: found.End}) != nil {
+		return nil
+	}
+	active, err := s.overrideActive(ctx, v.TaskID, day)
+	if err != nil {
+		return err
+	}
+	if active {
+		return nil
+	}
+	rec := coreschedule.WindowRecord{
+		SchoolTaskID: v.TaskID, Day: day,
+		Start: found.Start, End: found.End,
+		Source: string(contract.WindowPlatform),
+	}
+	if v.Cached && v.Source == rec.Source && v.Start.Equal(rec.Start) && v.End.Equal(rec.End) {
+		return nil
+	}
+	expected := 0
+	if v.Cached {
+		expected = v.Version
+	}
+	version, err := s.deps.Windows.PutWindow(ctx, rec, expected)
+	if errors.Is(err, coreschedule.ErrWindowStale) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	v.Start, v.End, v.Source = rec.Start, rec.End, rec.Source
+	v.Version, v.Cached = version, true
+	return nil
+}
+
+// overrideActive 报告某任务某日是否存在合法人工覆盖。
+// 判据与 resolveWindow 同源：覆盖存在且窗口形状合法。
+// 读失败除"没有覆盖"外一律上抛，不把错误当成无覆盖。
+func (s *Service) overrideActive(ctx context.Context, taskID, day string) (bool, error) {
+	ov, err := s.deps.Windows.GetOverride(ctx, taskID, day)
+	if err != nil {
+		if isNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return corewindow.Validate(corewindow.Window{Start: ov.Start, End: ov.End}) == nil, nil
 }
 
 // Override 写一条人工窗口覆盖，并按新窗口重建当日计划。
@@ -183,6 +340,7 @@ func (s *Service) ListWindows(ctx context.Context, scope corescope.Scope, day st
 // pending 重排与补插仍只有一条实现路径。
 // **重建失败时覆盖意图已落库，会留下部分状态**：覆盖是持久意图，下一次
 // Build 自愈；调用方遇到失败应重试，不要以为覆盖没生效（k0y-2）。
+// 停用任务拒写覆盖（k0y-6）：判据在写库之前，回 conflict 且不留覆盖行。
 func (s *Service) Override(ctx context.Context, scope corescope.Scope, in Input, start, end time.Time, reason, actorID string) (Preview, error) {
 	if err := requireScheduleScope(scope); err != nil {
 		return Preview{}, err
@@ -196,6 +354,9 @@ func (s *Service) Override(ctx context.Context, scope corescope.Scope, in Input,
 	}
 	if task.SchoolID != in.SchoolID {
 		return Preview{}, validation("task does not belong to the school")
+	}
+	if err := checkEnabled(task); err != nil {
+		return Preview{}, err
 	}
 	reason = strings.TrimSpace(reason)
 	if n := utf8.RuneCountInString(reason); n < 1 || n > 200 {
@@ -275,14 +436,15 @@ func scopeAllowsSchool(scope corescope.Scope, schoolID string) bool {
 // buildOnce 是一次完整尝试：预览 → 同事务写入。
 // 返回值带 changed：窗口是否真实重写（发布判据用）。
 func (s *Service) buildOnce(ctx context.Context, in Input) (Preview, bool, error) {
-	p, raw, changed, cachedVersion, err := s.previewWithWindow(ctx, in)
+	p, res, err := s.previewWithWindow(ctx, in, policyLive)
 	if err != nil {
 		return Preview{}, false, err
 	}
+	changed := res.changed()
 	rows := planRows(in, p.Rows)
 	err = s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
 		if changed {
-			version, err := s.deps.Windows.PutWindow(ctx, raw, cachedVersion)
+			version, err := s.deps.Windows.PutWindow(ctx, res.effective, res.version())
 			if err != nil {
 				return err
 			}
@@ -332,78 +494,138 @@ func (s *Service) publishCapacity(ctx context.Context, in Input, p Preview) {
 		})
 }
 
-// previewWithWindow 返回预览、原始窗口、是否变化、缓存版本。
-func (s *Service) previewWithWindow(ctx context.Context, in Input) (Preview, coreschedule.WindowRecord, bool, int, error) {
+// windowPolicy 是窗口解析口径。
+type windowPolicy int
+
+const (
+	// policyLive 先问平台：预览、建计划与写覆盖都用实时窗口。
+	policyLive windowPolicy = iota
+	// policyCached 默认读缓存：只读报告用（k0y-4）。
+	// 有当日缓存时零平台调用；无缓存或 Input.Refresh 为真时才发现一次。
+	policyCached
+)
+
+// windowResolution 是一次窗口解析的结果。
+// effective 是报告与计划采用的窗口：覆盖 > 平台 > 缓存 > 回退。
+// fresh 是本次新发现的平台窗口；freshOK 为真时待落缓存。
+// cached 是当日缓存行；cacheOK 为假时无意义。
+// overrideOK 为真表示存在合法人工覆盖。
+type windowResolution struct {
+	effective  coreschedule.WindowRecord
+	cached     coreschedule.WindowRecord
+	cacheOK    bool
+	fresh      coreschedule.WindowRecord
+	freshOK    bool
+	overrideOK bool
+}
+
+// version 返回当日缓存版本；无缓存为 0。
+func (r windowResolution) version() int {
+	if !r.cacheOK {
+		return 0
+	}
+	return r.cached.Version
+}
+
+// changed 报告 effective 与当日缓存是否不同；无缓存即不同。
+// 判据与 PutWindow + RearrangePlan 的触发口径同源（Build 用）。
+func (r windowResolution) changed() bool {
+	if !r.cacheOK {
+		return true
+	}
+	return !r.cached.Start.Equal(r.effective.Start) ||
+		!r.cached.End.Equal(r.effective.End) ||
+		r.cached.Source != r.effective.Source
+}
+
+// previewWithWindow 返回预览与本次窗口解析结果。
+func (s *Service) previewWithWindow(ctx context.Context, in Input, policy windowPolicy) (Preview, windowResolution, error) {
 	if err := validateInput(in); err != nil {
-		return Preview{}, coreschedule.WindowRecord{}, false, 0, err
+		return Preview{}, windowResolution{}, err
 	}
 	loc := in.Location
 	dayDate, err := time.ParseInLocation("2006-01-02", in.Day, loc)
 	if err != nil {
-		return Preview{}, coreschedule.WindowRecord{}, false, 0, validation("day must be YYYY-MM-DD")
+		return Preview{}, windowResolution{}, validation("day must be YYYY-MM-DD")
 	}
-	raw, cached, cacheOK, err := s.resolveWindow(ctx, in, dayDate, loc)
+	res, err := s.resolveWindow(ctx, in, dayDate, loc, policy)
 	if err != nil {
-		return Preview{}, coreschedule.WindowRecord{}, false, 0, err
+		return Preview{}, windowResolution{}, err
 	}
-	eff, _ := corewindow.Window{Start: raw.Start, End: raw.End}.Effective(in.EdgeFront, in.EdgeBack)
+	eff, _ := corewindow.Window{Start: res.effective.Start, End: res.effective.End}.
+		Effective(in.EdgeFront, in.EdgeBack)
 	if err := corewindow.Validate(eff); err != nil {
-		return Preview{}, coreschedule.WindowRecord{}, false, 0, validation("window has no positive span: " + err.Error())
+		return Preview{}, windowResolution{}, validation("window has no positive span: " + err.Error())
 	}
-	cachedVersion := 0
-	changed := true
-	if cacheOK {
-		cachedVersion = cached.Version
-		changed = !cached.Start.Equal(raw.Start) || !cached.End.Equal(raw.End) ||
-			cached.Source != raw.Source
-	}
-	p, err := s.buildRows(ctx, in, eff, raw)
+	p, err := s.buildRows(ctx, in, eff, res.effective)
 	if err != nil {
-		return Preview{}, coreschedule.WindowRecord{}, false, 0, err
+		return Preview{}, windowResolution{}, err
 	}
-	p.Version = cachedVersion
-	return p, raw, changed, cachedVersion, nil
+	p.Version = res.version()
+	return p, res, nil
 }
 
-// resolveWindow 按覆盖 > 平台 > 缓存 > 回退解析原始窗口。
+// resolveWindow 按覆盖 > 平台 > 缓存 > 回退解析当日窗口。
 // 平台发现失败不算错误（来源如实标注）；缓存读取失败**只有**
 // errs.ErrNotFound 才算无缓存，其他错误上抛（P4-C 复审 P2-5）。
 // 人工覆盖存在且合法时优先：覆盖是运维对当日窗口的明确决定。
-func (s *Service) resolveWindow(ctx context.Context, in Input, day time.Time, loc *time.Location) (coreschedule.WindowRecord, coreschedule.WindowRecord, bool, error) {
+// 何时问平台：policyLive 且无合法覆盖；policyCached 且无缓存或 Refresh。
+// policyCached 的刷新先于覆盖判定：两个只读端点对 refresh=true
+// 行为一致，都发现平台窗口；存在覆盖时调用方不改写缓存行。
+func (s *Service) resolveWindow(ctx context.Context, in Input, day time.Time, loc *time.Location, policy windowPolicy) (windowResolution, error) {
+	var res windowResolution
 	cached, cacheErr := s.deps.Windows.GetWindow(ctx, in.SchoolTaskID, in.Day)
 	if cacheErr != nil && !isNotFound(cacheErr) {
-		return coreschedule.WindowRecord{}, coreschedule.WindowRecord{}, false, cacheErr
+		return res, cacheErr
 	}
-	cacheOK := cacheErr == nil &&
+	res.cached = cached
+	res.cacheOK = cacheErr == nil &&
 		corewindow.Validate(corewindow.Window{Start: cached.Start, End: cached.End}) == nil
 	override, ovErr := s.deps.Windows.GetOverride(ctx, in.SchoolTaskID, in.Day)
 	if ovErr != nil && !isNotFound(ovErr) {
-		return coreschedule.WindowRecord{}, coreschedule.WindowRecord{}, false, ovErr
+		return res, ovErr
 	}
-	if ovErr == nil && corewindow.Validate(corewindow.Window{Start: override.Start, End: override.End}) == nil {
-		return coreschedule.WindowRecord{
+	res.overrideOK = ovErr == nil &&
+		corewindow.Validate(corewindow.Window{Start: override.Start, End: override.End}) == nil
+
+	discover := false
+	if policy == policyCached {
+		discover = in.Refresh || !res.cacheOK
+	} else {
+		discover = !res.overrideOK
+	}
+	if discover {
+		if platform, err := s.deps.Discover.DiscoverWindow(ctx, in.SchoolTaskID); err == nil &&
+			corewindow.Validate(corewindow.Window{Start: platform.Start, End: platform.End}) == nil {
+			res.fresh = coreschedule.WindowRecord{
+				SchoolTaskID: in.SchoolTaskID, Day: in.Day,
+				Start: platform.Start, End: platform.End,
+				Source: string(contract.WindowPlatform),
+			}
+			res.freshOK = true
+		}
+	}
+
+	switch {
+	case res.overrideOK:
+		res.effective = coreschedule.WindowRecord{
 			SchoolTaskID: in.SchoolTaskID, Day: in.Day,
 			Start: override.Start, End: override.End,
 			Source: string(contract.WindowOverride),
-		}, cached, cacheOK, nil
-	}
-	if platform, err := s.deps.Discover.DiscoverWindow(ctx, in.SchoolTaskID); err == nil &&
-		corewindow.Validate(corewindow.Window{Start: platform.Start, End: platform.End}) == nil {
-		return coreschedule.WindowRecord{
+		}
+	case res.freshOK:
+		res.effective = res.fresh
+	case res.cacheOK:
+		res.effective = res.cached
+	default:
+		res.effective = coreschedule.WindowRecord{
 			SchoolTaskID: in.SchoolTaskID, Day: in.Day,
-			Start: platform.Start, End: platform.End,
-			Source: string(contract.WindowPlatform),
-		}, cached, cacheOK, nil
+			Start:  fallbackAt(day, loc, fallbackStartHM),
+			End:    fallbackAt(day, loc, fallbackEndHM),
+			Source: string(contract.WindowFallback),
+		}
 	}
-	if cacheOK {
-		return cached, cached, true, nil
-	}
-	return coreschedule.WindowRecord{
-		SchoolTaskID: in.SchoolTaskID, Day: in.Day,
-		Start:  fallbackAt(day, loc, fallbackStartHM),
-		End:    fallbackAt(day, loc, fallbackEndHM),
-		Source: string(contract.WindowFallback),
-	}, coreschedule.WindowRecord{}, false, nil
+	return res, nil
 }
 
 func fallbackAt(day time.Time, loc *time.Location, minuteOfDay int) time.Time {
