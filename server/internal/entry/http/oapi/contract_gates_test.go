@@ -436,8 +436,20 @@ var additionalPropertiesExemptions = map[string][]string{
 	"PhotoRetentionUpdate":    {"请求对象；解码器忽略未知字段"},
 }
 
+// contractNoAdditionalProperties 匹配 YAML 映射里的一项 additionalProperties: false。
+// 块式（独占一行）与流式（行内 `{ ... }`）两种写法同权；键可带引号，值可带锚点。
+// 不覆盖的形状：值写成别名（*x）、值换行写在下一行、整张 schemas 映射写成一行。
+// 本契约不使用这三种写法；新增时须同步扩门。
+var contractNoAdditionalProperties = regexp.MustCompile(
+	`(?:^|[{,])\s*["']?additionalProperties["']?[ \t]*:[ \t]*(?:&\S+[ \t]+)?false[ \t]*(?:[,}]|$)`)
+
+// contractSchemaKey 识别 components.schemas 下的 schema 名。
+// 行内 schema 声明（`Name: { ... }`）同样识别，其上的声明不得漏计。
+var contractSchemaKey = regexp.MustCompile(`^["']?([A-Za-z0-9_]+)["']?:`)
+
 // schemasDeclaringNoAdditionalProperties 全树扫描 components.schemas。
 // 返回 schema → 每处声明的行号；嵌套对象里的声明同样计入。
+// 扫描按 YAML 映射项而不是按整行相等：流式写法里的声明也计入。
 func schemasDeclaringNoAdditionalProperties(t *testing.T, doc string) map[string][]int {
 	t.Helper()
 	out := map[string][]int{}
@@ -461,12 +473,13 @@ func schemasDeclaringNoAdditionalProperties(t *testing.T, doc string) map[string
 			inSchemas = false
 			continue
 		}
-		if indent == 4 && strings.HasSuffix(trimmed, ":") {
-			schema = strings.TrimSuffix(trimmed, ":")
-			continue
+		if indent == 4 {
+			if m := contractSchemaKey.FindStringSubmatch(trimmed); m != nil {
+				schema = m[1]
+			}
 		}
 		// 任意深度都算：嵌套对象的声明与 schema 级声明同权。
-		if indent > 4 && trimmed == "additionalProperties: false" && schema != "" {
+		if indent >= 4 && schema != "" && contractNoAdditionalProperties.MatchString(line) {
 			out[schema] = append(out[schema], i+1)
 		}
 	}
@@ -533,5 +546,40 @@ func TestAdditionalPropertiesExemptionsRegistered(t *testing.T) {
 	}
 	if !strings.Contains(readme, "additionalProperties") {
 		t.Error("README 未写明 additionalProperties 的豁免口径")
+	}
+}
+
+// 流式写法与块式写法必须同权（4nf）：只认块式时，内联新增的声明会静默放行。
+// 合法流式值（映射或 true）不得误报，否则门会逼人登记并不存在的声明。
+func TestAdditionalPropertiesScannerCoversFlowStyle(t *testing.T) {
+	doc := `components:
+  schemas:
+    Block:
+      type: object
+      additionalProperties: false
+    FlowNested:
+      type: object
+      properties:
+        probe: { type: object, additionalProperties: false }
+    FlowSchema: { type: object, additionalProperties: false }
+    LegalFlow:
+      type: object
+      properties:
+        probe: { type: object, additionalProperties: { type: integer } }
+        flag: { type: object, additionalProperties: true }
+        plain: { type: object }
+`
+	got := schemasDeclaringNoAdditionalProperties(t, doc)
+	want := map[string]int{"Block": 1, "FlowNested": 1, "FlowSchema": 1}
+	for name, n := range want {
+		if len(got[name]) != n {
+			t.Errorf("%s 检出 %d 处 additionalProperties: false，want %d（流式写法漏检）",
+				name, len(got[name]), n)
+		}
+	}
+	for name := range got {
+		if _, ok := want[name]; !ok {
+			t.Errorf("合法流式写法被误报：%s 行 %v", name, got[name])
+		}
 	}
 }
