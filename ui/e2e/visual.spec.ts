@@ -1,11 +1,12 @@
 import { test, expect, type Page } from '@playwright/test'
 import { mockAccountsApi } from './support/fake-accounts-api'
+import { mockSchoolsApi } from './support/fake-schools-api'
 
 /**
  * Adminator 壳的视觉回归基线。
  *
- * 矩阵：4 条路由 × 2 套主题 × 2 个宽度 = 16 张截图。
- * 另有抽屉／模态／菜单态与会话过期提示等按需快照，当前共 32 张。
+ * 矩阵：5 条路由 × 2 套主题 × 2 个宽度 = 20 张截图。
+ * 另有抽屉／模态／菜单态、无权限页与会话过期提示等按需快照，当前共 48 张。
  * 基线随 spec 入库，目录是 `e2e/visual.spec.ts-snapshots/`。
  * 首次运行 `npm run test:visual:update`。此后每次必须 0 差异。
  */
@@ -14,6 +15,7 @@ const ROUTES = [
   { path: '/', name: 'dashboard' },
   { path: '/design', name: 'design' },
   { path: '/accounts', name: 'accounts' },
+  { path: '/schools', name: 'schools' },
   { path: '/login', name: 'login' },
 ] as const
 
@@ -29,14 +31,28 @@ test.beforeEach(async ({ page }) => {
 })
 
 /** 登录页是没有会话的页面。壳内路由需要会话，登录页需要没有会话。 */
-async function mockSessionFor(page: Page, path: string) {
+async function mockSessionFor(
+  page: Page,
+  path: string,
+  role: 'master' | 'admin' | 'user' = 'master',
+) {
   if (path === '/login') {
     await mockAccountsApi(page, { role: null })
+    return
+  }
+  // 学校页需要完整的学校端点集合：后注册的 route 先匹配，覆盖 beforeEach 的账号 mock。
+  if (path === '/schools') {
+    await mockSchoolsApi(page, { role })
   }
 }
 
-async function openWithTheme(page: Page, path: string, theme: (typeof THEMES)[number]) {
-  await mockSessionFor(page, path)
+async function openWithTheme(
+  page: Page,
+  path: string,
+  theme: (typeof THEMES)[number],
+  role: 'master' | 'admin' | 'user' = 'master',
+) {
+  await mockSessionFor(page, path, role)
   await page.addInitScript((value) => {
     try {
       localStorage.setItem('dash26-theme', value)
@@ -120,6 +136,59 @@ for (const theme of THEMES) {
     await page.getByRole('menu').getByRole('menuitem', { name: /删除/ }).click()
     await expect(page.getByRole('dialog', { name: '删除账号？' })).toBeVisible()
     await expect(page).toHaveScreenshot(`accounts-delete-${theme}-1440.png`)
+  })
+}
+
+for (const theme of THEMES) {
+  test(`visual schools drawer ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await openWithTheme(page, '/schools', theme)
+    await page.getByRole('button', { name: '查看 合成学校甲' }).click()
+    await expect(page.getByRole('dialog', { name: '学校详情' })).toBeVisible()
+    await expect(page).toHaveScreenshot(`schools-drawer-${theme}-1440.png`)
+  })
+
+  test(`visual schools create modal ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await openWithTheme(page, '/schools', theme)
+    await page.getByRole('button', { name: '新建学校' }).click()
+    await expect(page.getByRole('dialog', { name: '新建学校？' })).toBeVisible()
+    await expect(page).toHaveScreenshot(`schools-create-${theme}-1440.png`)
+  })
+
+  test(`visual schools edit modal ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await openWithTheme(page, '/schools', theme)
+    await page.getByRole('button', { name: '更多操作 合成学校甲' }).click()
+    await page.getByRole('menu').getByRole('menuitem', { name: /编辑/ }).click()
+    await expect(page.getByRole('dialog', { name: '编辑学校？' })).toBeVisible()
+    await expect(page).toHaveScreenshot(`schools-edit-${theme}-1440.png`)
+  })
+
+  test(`visual schools admins modal ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await openWithTheme(page, '/schools', theme)
+    await page.getByRole('button', { name: '更多操作 合成学校甲' }).click()
+    await page.getByRole('menu').getByRole('menuitem', { name: /管理员/ }).click()
+    await expect(page.getByRole('dialog', { name: '学校管理员' })).toBeVisible()
+    await expect(page.getByText('admin-one@example.com')).toBeVisible()
+    await expect(page).toHaveScreenshot(`schools-admins-${theme}-1440.png`)
+  })
+
+  test(`visual schools admin row menu ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    // admin 打开行菜单：编辑与管理员两项置灰带原因，正好钉住禁用原因的可读性。
+    await openWithTheme(page, '/schools', theme, 'admin')
+    await page.getByRole('button', { name: '更多操作 合成学校甲' }).click()
+    await expect(page.getByRole('menu')).toBeVisible()
+    await expect(page).toHaveScreenshot(`schools-rowmenu-admin-${theme}-1440.png`)
+  })
+
+  test(`visual schools denied ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await openWithTheme(page, '/schools', theme, 'user')
+    await expect(page.getByText('你的角色无权查看学校管理')).toBeVisible()
+    await expect(page).toHaveScreenshot(`schools-denied-${theme}-1440.png`)
   })
 }
 

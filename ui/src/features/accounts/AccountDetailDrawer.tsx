@@ -18,7 +18,8 @@ import { Drawer } from '@/components/ui/Drawer'
 import { getAccount, type Account } from '@/lib/api/account'
 import { describeApiError } from '@/lib/api/client'
 import type { School } from '@/lib/api/school'
-import { formatDateTime, statusLabel, statusTone } from './display'
+import { formatDateTime } from '@/lib/format'
+import { statusLabel, statusTone } from './display'
 
 type AccountDetailDrawerProps = {
   account: Account | null

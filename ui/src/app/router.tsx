@@ -1,6 +1,6 @@
 /**
  * **功能**
- * 路由表：根路由、壳布局、四条页面路由。
+ * 路由表：根路由、壳布局、五条页面路由。
  *
  * **归属**
  * `app` 装配层：只做装配，页面逻辑留在 `pages`。
@@ -17,6 +17,7 @@ import { DashboardPage } from '@/pages/DashboardPage'
 import { DesignPage } from '@/pages/DesignPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { NotFoundPage } from '@/pages/NotFoundPage'
+import { SchoolsPage } from '@/pages/SchoolsPage'
 import { sanitizeRedirect } from '@/lib/redirect'
 
 const rootRoute = createRootRoute({
@@ -52,6 +53,12 @@ const accountsRoute = createRoute({
   component: AccountsPage,
 })
 
+const schoolsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: '/schools',
+  component: SchoolsPage,
+})
+
 /**
  * 登录路由的自定义 search：`?redirect=`。
  * 校验即净化：站外地址在解析时丢弃，后续读者拿不到它。
@@ -73,7 +80,7 @@ function LoginRouteComponent() {
 }
 
 const routeTree = rootRoute.addChildren([
-  shellRoute.addChildren([dashboardRoute, designRoute, accountsRoute]),
+  shellRoute.addChildren([dashboardRoute, designRoute, accountsRoute, schoolsRoute]),
   loginRoute,
 ])
 

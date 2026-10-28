@@ -43,7 +43,7 @@ import { AccountEditModal } from './AccountEditModal'
 import { AccountFilters, type AccountFilterValues } from './AccountFilters'
 import { AccountLocationModal } from './AccountLocationModal'
 import { AccountsTable } from './AccountsTable'
-import { currentCursor, emptyCursorStack, goNext, goPrevious, hasPreviousPage } from './cursor'
+import { currentCursor, emptyCursorStack, goNext, goPrevious, hasPreviousPage } from '@/lib/cursor'
 import { buildAccountUpdate, buildLocationUpdate, type AccountUpdateDraft, type LocationDraft } from './drafts'
 import { can, type AccountActionKind } from './permissions'
 

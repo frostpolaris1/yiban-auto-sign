@@ -192,26 +192,27 @@
   font-size: 12px;
 }
 
-/* ---------- 账号页 ----------
+/* ---------- 数据表行 ----------
  * 行高 48px 是全局拍板值。表格不限宽，窄屏在 vendor 的 `.table-scroll` 内滚动。
  * `.app-deny-note` 是所有置灰原因的可见落点，颜色取 `--t-muted` 保证两套主题可读。
+ * 账号页与学校页共用这一组行规则，避免两处行高漂移。
  */
 
-.app-accounts-table tbody tr {
+.app-row-table tbody tr {
   height: 48px;
 }
 
 /* 行高是固定值。去掉单元格上下内边距，48px 才不被内容顶高。 */
-.app-accounts-table tbody td {
+.app-row-table tbody td {
   padding-top: 0;
   padding-bottom: 0;
 }
 
-.app-accounts-table tbody tr:hover {
+.app-row-table tbody tr:hover {
   background: var(--bg-hover);
 }
 
-.app-accounts-table tbody tr:focus-visible {
+.app-row-table tbody tr:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: -2px;
 }
@@ -262,12 +263,28 @@
   max-width: 360px;
 }
 
-.app-account-actions {
+.app-account-actions,
+.app-row-actions {
   align-items: center;
   gap: 6px;
 }
 
-.app-account-actions .btn:disabled {
+.app-account-actions .btn:disabled,
+.app-row-actions .btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* 页头动作：置灰按钮与原因是同一行的两段，原因不能被按钮压掉。 */
+.app-page-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.app-page-actions .btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
@@ -288,6 +305,94 @@
 
 .app-modal-error {
   margin-top: 12px;
+}
+
+/* ---------- 学校页无权限卡片 ----------
+ * 图标、原因、两条出路。颜色全部取令牌，明暗两套同源。
+ * 主按钮回看板；次按钮只在有来源时渲染。
+ */
+
+.app-denied {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 480px;
+  padding: 6px 0 2px;
+}
+
+.app-denied-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.app-denied-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.app-denied-reason {
+  margin: 0;
+  padding-top: 7px;
+  color: var(--t-base);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.app-denied-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* ---------- 学校管理员模态 ----------
+ * 行式列表，不用表格：模态宽 480px，四列表格会挤成一列。
+ * 分隔线只取边框令牌，明暗两套同源。
+ */
+
+.app-admin-add {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.app-admin-add .btn {
+  align-self: flex-start;
+}
+
+.app-admin-list {
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 0;
+  border-top: 1px solid var(--border-soft);
+}
+
+.app-admin-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.app-admin-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.app-admin-main .data-cell-mono {
+  overflow-wrap: anywhere;
 }
 
 /* ---------- 行内「更多」菜单 ----------
