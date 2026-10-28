@@ -19,6 +19,9 @@ export default defineConfig({
   use: {
     baseURL: 'http://127.0.0.1:4173',
     trace: 'retain-on-failure',
+    // 行为用例不要动效：auto-animate 在减少动效偏好下不启用，退场节点不进 DOM。
+    // 视觉用例在 visual.spec.ts 里显式改回 no-preference，基线口径不变。
+    reducedMotion: 'reduce',
   },
   expect: {
     toHaveScreenshot: {

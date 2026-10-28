@@ -432,6 +432,33 @@ test('invariant 4: schedule rows stay clickable after an override rebuild', asyn
   await expect(page.getByRole('dialog', { name: '计划预览' })).toContainText('合成学校丙')
 })
 
+test.describe('motion enabled', () => {
+  // 行为用例全局减少动效；这条用真实动效跑退场节点路径，确保过渡期间列表仍可用。
+  test.use({ reducedMotion: 'no-preference' })
+
+  test('invariant 4: a deleting row keeps the remaining rows clickable while it animates out', async ({
+    page,
+  }) => {
+    const api = await mockAccountsApi(page, { role: 'user' })
+    await openAccounts(page)
+
+    await page.getByRole('button', { name: '更多操作 135****0001' }).click()
+    await page.getByRole('menu').getByRole('menuitem', { name: /删除/ }).click()
+    await page
+      .getByRole('dialog', { name: '删除账号？' })
+      .getByRole('button', { name: '确认删除' })
+      .click()
+    await expect.poll(() => deleteCalls(api, 'acc-3').length).toBe(1)
+
+    // 不等退场结束：立即点另一行，抽屉要开。
+    await page.getByRole('cell', { name: 'school-b', exact: true }).click()
+    const drawer = page.getByRole('dialog', { name: '账号详情' })
+    await expect(drawer).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(drawer).toBeHidden()
+  })
+})
+
 for (const theme of ['light', 'dark'] as const) {
   test(`invariant 5: the toast is visible in ${theme}`, async ({ page }) => {
     await page.addInitScript((value) => {
