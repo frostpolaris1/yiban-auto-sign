@@ -213,10 +213,7 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 	if len(targets) == 0 {
 		return false, s.finish(ctx, task, corestatus.TaskSkipped, string(contract.OutcomeNoTarget))
 	}
-	target := targets[0]
-
-	// 定位注入与围栏判定先于提交：越界且无原因是一次确定性的当日结论，
-	// 不发起登录、不消耗尝试数（P5-C）。
+	// 定位先于选点：固定点可能只落在部分候选围栏内。
 	location := contract.Location{Mode: contract.LocationAuto}
 	if s.deps.Locations != nil {
 		location, err = s.deps.Locations.Resolve(ctx, task.AccountID)
@@ -224,8 +221,21 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 			// 定位读取是库面依赖：失败不是账号结论，上抛退回队列。
 			return false, err
 		}
-		if !corelocation.Resolve(target, location) && location.Reason == "" {
-			return false, s.finish(ctx, task, corestatus.TaskSkipped, locationOutOfRange)
+	}
+
+	// 候选点按尝试序号轮转，并跳过固定点落不到的围栏。
+	// 全部候选都不可用是一次确定性的当日结论，不发起登录、不消耗尝试数。
+	target, ok := pickTarget(targets, task.Attempts, location)
+	if !ok {
+		return false, s.finish(ctx, task, corestatus.TaskSkipped, locationOutOfRange)
+	}
+
+	// auto 定位在围栏内取确定点：种子取本次尝试的幂等键，
+	// 故同一尝试恒得同一点。采样不成立（无多边形/退化/用尽投点）时
+	// 保持零坐标，提供方回退上游中心点。固定点由用户指定，不参与采样。
+	if location.Mode != contract.LocationFixed {
+		if point, ok := corelocation.SamplePoint(target.Polygon, attemptID(task)); ok {
+			location.Lng, location.Lat = point.Lng, point.Lat
 		}
 	}
 
@@ -379,6 +389,34 @@ func (s *Service) notifyConcluded(ctx context.Context, task corescheduleTask, st
 			"state":      string(state),
 			"attempt":    task.Attempts + 1,
 		})
+}
+
+// pickTarget 选出本次尝试的候选点。
+//
+// 起点按尝试序号轮转：第 1 次尝试取第 1 个，第 2 次取第 2 个，用完回到开头。
+// 轮转不改变总尝试次数——尝试数由重试预算决定。
+// 固定定位落在围栏外且无原因说明时，该候选不可用：从起点向后找第一个可用的。
+// 全部不可用返回 false，由调用方落 location_out_of_range。
+// 带原因说明的固定点不做围栏过滤（既有放行语义），按序号纯轮转。
+// 负数只可能来自脏数据：回落到第一个候选，不 panic。
+func pickTarget(targets []contract.Target, attempts int, loc contract.Location) (contract.Target, bool) {
+	if len(targets) == 0 {
+		return contract.Target{}, false
+	}
+	start := attempts % len(targets)
+	if start < 0 {
+		start = 0
+	}
+	if loc.Reason != "" {
+		return targets[start], true
+	}
+	for i := 0; i < len(targets); i++ {
+		candidate := targets[(start+i)%len(targets)]
+		if corelocation.Resolve(candidate, loc) {
+			return candidate, true
+		}
+	}
+	return contract.Target{}, false
 }
 
 // attemptID 生成"按尝试唯一"的幂等键。

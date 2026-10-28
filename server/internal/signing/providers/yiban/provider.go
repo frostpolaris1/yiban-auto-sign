@@ -264,15 +264,23 @@ func receiptOf(data any) (string, bool) {
 	return "", false
 }
 
-// stateOutcome 把 signPosition 的 State 映射成契约结论。
-// State=3 → already_done 由 2026-10-28 实拍证实（bd yiban-auto-sign-4sk）。
-// State=2/4/5 的映射沿用旧实现，**未实拍，未知**：
-// 没有对应响应体，不得据本映射声称平台语义。
+// stateOutcome 把平台 State 翻成结论。
+//
+// 可签集合只有 0（可签到）与 1（未签到）：两者尚无结论，继续取点位并提交。
+// 已登记结论态：2 无需签到、3 已签到、4 已更改、5 补签中。
+// 其余值（含缺失）一律 unknown：未知态绝不当作可签（工单 mks）。
+// 平台枚举来源为 APK 逆向的 stateEnum（0 可签到/1 未签到/2 无需签到/
+// 3 已签到/4 已更改/5 补签中）。
+// 实拍口径：2026-10-28 实拍确认 0 与 3（bd yiban-auto-sign-4sk）；
+// 2/4/5 的映射沿用旧实现，**未实拍，未知**：没有对应响应体，
+// 不得据本映射声称平台语义。
 func stateOutcome(state *int) (contract.Outcome, bool) {
 	if state == nil {
-		return "", false
+		return contract.OutcomeUnknown, true
 	}
 	switch *state {
+	case 0, 1:
+		return "", false
 	case 2:
 		return contract.OutcomeNoTarget, true
 	case 3, 4:
@@ -280,12 +288,12 @@ func stateOutcome(state *int) (contract.Outcome, bool) {
 	case 5:
 		return contract.OutcomePendingUpstream, true
 	}
-	return "", false
+	return contract.OutcomeUnknown, true
 }
 
 func stateMessage(state *int) string {
 	if state == nil {
-		return ""
+		return "platform state is missing"
 	}
 	switch *state {
 	case 2:
@@ -297,7 +305,7 @@ func stateMessage(state *int) string {
 	case 5:
 		return "补签中"
 	}
-	return fmt.Sprintf("platform state %d", *state)
+	return fmt.Sprintf("platform state %d is not a known state", *state)
 }
 
 func resultFor(outcome contract.Outcome, message string) contract.Result {
