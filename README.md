@@ -2,6 +2,7 @@
 
 > **仓库地图**：新架构（Go 后端 + React 前端）见 [`STRUCTURE.md`](STRUCTURE.md)。
 > 本 README 描述旧的 Python 单机版；旧栈目录已冻结，新功能只写 `server/` 与 `ui/`。
+> **新栈部署**：命令与断言见 [`docs/dev/deploy-e2e.md`](docs/dev/deploy-e2e.md)。旧栈已转安全维护。
 
 ![Python](https://img.shields.io/badge/Python-3.13+-blue?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)

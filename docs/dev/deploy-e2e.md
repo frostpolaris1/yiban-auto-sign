@@ -93,6 +93,14 @@ C7 的日志断言有独立守卫：`TestRunClosesPoolAfterWorkerDrain`
 裸机不进自动轨的理由：它要求 docker 的 `--privileged` 与 host cgroup。
 该形态尚未在 GitHub 托管 runner 上实测。
 加入自动轨前，须先在托管 runner 上跑绿一次。
+
+## 5.1 验收①的口径登记
+
+验收①要求「按 README 一次装成」。
+本仓 README 主体现描述旧 Python 栈。
+本期在 README 顶部**新增一行指针**，指向本文件。
+新栈 README 的整体刷新见工单 `n4a-readme`，不在本期。
+本期不改旧栈章节。
 同一脚本可直接作为 CI 步骤使用，无需改动。
 
 ## 6. 等价性与已知边界（AGENTS §32）
