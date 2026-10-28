@@ -612,11 +612,11 @@ func (s *Service) resolveWindow(ctx context.Context, in Input, day time.Time, lo
 				}
 				res.freshOK = true
 			} else {
-				s.logWindowFailure(in, "", mask.MaskText(verr.Error()))
+				s.logWindowFailure(ctx, in, "", mask.MaskText(verr.Error()))
 			}
 		} else {
 			outcome, reason := windowFailure(discoverErr)
-			s.logWindowFailure(in, outcome, reason)
+			s.logWindowFailure(ctx, in, outcome, reason)
 		}
 	}
 
@@ -644,9 +644,15 @@ func (s *Service) resolveWindow(ctx context.Context, in Input, day time.Time, lo
 
 // logWindowFailure 记录一次平台窗口发现失败。
 // 发现失败只回退、不报错；不记日志就没有任何痕迹（OCR M1）。
+// 级别取 app.OutcomeLogLevel：已签到这类正常结论 Info，其余 Warn。
+// 没有结论词的失败（窗口非法、传输错误）一律 Warn：它们都需要人看。
 // reason 先过 mask.MaskText：日志与审计共用同一套掩码口径。
-func (s *Service) logWindowFailure(in Input, outcome, reason string) {
-	s.log.Warn("window discovery failed",
+func (s *Service) logWindowFailure(ctx context.Context, in Input, outcome, reason string) {
+	level := slog.LevelWarn
+	if outcome != "" {
+		level = appcore.OutcomeLogLevel(contract.Outcome(outcome))
+	}
+	s.log.Log(ctx, level, "window discovery failed",
 		"school_task_id", in.SchoolTaskID,
 		"day", in.Day,
 		"outcome", outcome,

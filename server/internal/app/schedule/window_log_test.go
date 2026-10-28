@@ -87,3 +87,41 @@ func TestWindowDiscoveryPlainErrorIsLogged(t *testing.T) {
 		}
 	}
 }
+
+// 日志级别按结论分类：已签到这类正常结论 Info，未知结论 Warn。
+// 与 worker 同一口径：normal 结论不得进按级别告警的运维面。
+func TestWindowDiscoveryLevelByOutcome(t *testing.T) {
+	cases := []struct {
+		name    string
+		outcome contract.Outcome
+		want    string
+	}{
+		{"已签到", contract.OutcomeAlreadyDone, "level=INFO"},
+		{"无需签到", contract.OutcomeNoTarget, "level=INFO"},
+		{"未知", contract.OutcomeUnknown, "level=WARN"},
+		{"瞬时", contract.OutcomeTransient, "level=WARN"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			svc, err := appschedule.NewService(appschedule.Deps{
+				Windows:  &fakeWindowStore{},
+				Plans:    &fakePlanStore{},
+				Accounts: fakeAccounts{ids: []string{"acct-1"}},
+				Discover: &fakeDiscover{err: &contract.OutcomeError{
+					Outcome: c.outcome, Message: "platform message"}},
+				Tx:     &fakeTx{},
+				Logger: slog.New(slog.NewTextHandler(&buf, nil)),
+			})
+			if err != nil {
+				t.Fatalf("NewService: %v", err)
+			}
+			if _, err := svc.Preview(context.Background(), baseInput()); err != nil {
+				t.Fatalf("Preview: %v", err)
+			}
+			if !strings.Contains(buf.String(), c.want) {
+				t.Fatalf("级别 = %s, want %s", buf.String(), c.want)
+			}
+		})
+	}
+}
