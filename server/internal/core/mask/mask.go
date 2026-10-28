@@ -2,6 +2,7 @@
 //
 // # 功能
 // 掩码手机号、邮箱、设备号，以及自由文本中的手机号与邮箱。
+// 把错误换成可进日志的分类词：错误原文不回放。
 // 本包**不**脱敏姓名、学号或凭据，**不**做加解密，**不**写日志。
 //
 // # 归属
@@ -9,7 +10,8 @@
 // 调用方**不得自行复写掩码规则**。
 //
 // # 复用
-// MaskPhone、MaskEmail、MaskDevice、MaskText、TextHasPhone、TextHasEmail、EmailLabel。
+// MaskPhone、MaskEmail、MaskDevice、MaskText、TextHasPhone、TextHasEmail、
+// EmailLabel、SafeErrorText。
 //
 // # 口径
 // 所有函数幂等：对已掩码的值再掩码，返回原值。
@@ -31,10 +33,31 @@
 package mask
 
 import (
+	"errors"
+	"net"
 	"regexp"
 	"strings"
 	"unicode/utf8"
 )
+
+// SafeErrorText 把错误换成可进日志的分类词。
+//
+// 传输错误的原文带完整 URL；查询串里有会话标识（CSRF 等）。
+// 故本函数只给分类词，**不回放原文**。
+// 需要错误细节时按任务标识回查，不靠日志。
+func SafeErrorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		if netErr.Timeout() {
+			return "transport timeout"
+		}
+		return "transport error"
+	}
+	return "unclassified error"
+}
 
 var (
 	// phoneInText 匹配一个候选数字游程。

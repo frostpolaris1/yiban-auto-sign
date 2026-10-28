@@ -488,6 +488,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			Photos:    photoSvc,
 			// P6 注入面：任务事件发布。缺端口时不发事件。
 			Notifier: WorkerNotifier{Broker: broker, Clock: clk},
+			// 结论原因进日志（OCR M1）。
+			Logger: logger,
 		})
 		if err != nil {
 			closeFn()
@@ -517,6 +519,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			Tx:       db,
 			// P6 注入面：计划事件发布。缺端口时不发事件。
 			Notifier: ScheduleNotifier{Broker: broker, Clock: clk},
+			// 窗口发现失败的原因进日志（OCR M1）。
+			Logger: logger,
 		})
 		if err != nil {
 			closeFn()

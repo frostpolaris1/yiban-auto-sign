@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corelocation "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/location"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
 	coreretry "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/retry"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
@@ -50,6 +52,7 @@ const locationOutOfRange = "location_out_of_range" // 与 core/errs.CodeLocation
 // Service 是执行循环服务。
 type Service struct {
 	deps Deps
+	log  *slog.Logger
 }
 
 // NewService 构造服务。缺依赖即失败。
@@ -75,7 +78,11 @@ func NewService(deps Deps) (*Service, error) {
 	if deps.Location == nil {
 		return nil, errors.New("worker: nil location")
 	}
-	return &Service{deps: deps}, nil
+	log := deps.Logger
+	if log == nil {
+		log = slog.Default()
+	}
+	return &Service{deps: deps, log: log}, nil
 }
 
 // Recover 回收孤儿 running 行；返回回收数。进程启动时调用一次。
@@ -205,9 +212,11 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 		Account: ref, Credential: cred,
 	})
 	if err != nil {
-		if outcome, ok := outcomeOf(err); ok {
+		if outcome, reason, ok := outcomeOf(err); ok {
+			s.logOutcome(task, outcome, reason)
 			return false, s.settleOutcome(ctx, task, win, now, outcome)
 		}
+		s.logOutcome(task, contract.OutcomeTransient, mask.SafeErrorText(err))
 		return false, s.settleOutcome(ctx, task, win, now, contract.OutcomeTransient)
 	}
 	if len(targets) == 0 {
@@ -276,11 +285,14 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 		Image:    image,
 	})
 	if err != nil {
-		if outcome, ok := outcomeOf(err); ok {
+		if outcome, reason, ok := outcomeOf(err); ok {
+			s.logOutcome(task, outcome, reason)
 			return true, s.settleOutcome(ctx, task, win, now, outcome)
 		}
+		s.logOutcome(task, contract.OutcomeTransient, mask.SafeErrorText(err))
 		return true, s.settleOutcome(ctx, task, win, now, contract.OutcomeTransient)
 	}
+	s.logOutcome(task, result.Outcome, result.Message)
 	return true, s.settleOutcome(ctx, task, win, now, result.Outcome)
 }
 
@@ -437,13 +449,35 @@ func windowSource(raw string) contract.WindowSource {
 	return contract.WindowSource(raw)
 }
 
-// outcomeOf 从契约错误里取业务结论；不是 OutcomeError 返回 false。
-func outcomeOf(err error) (contract.Outcome, bool) {
+// outcomeOf 从契约错误里取业务结论与原因；不是 OutcomeError 返回 false。
+// 原因进日志：sign_tasks.result 只存结论词，词表不得扩展。
+func outcomeOf(err error) (contract.Outcome, string, bool) {
 	var oe *contract.OutcomeError
 	if errors.As(err, &oe) && oe.Outcome != "" {
-		return oe.Outcome, true
+		return oe.Outcome, oe.Message, true
 	}
-	return "", false
+	return "", "", false
+}
+
+// logOutcome 记录一次结论的原因。
+//
+// result 列只存结论词（词表不许扩展），提供方给的 message 是唯一详情。
+// 故每条结论都落一行结构化日志；unknown 即使没有原因也记，
+// 让"提供方没给原因"这个缺口本身可见。
+// reason 先过 mask.MaskText：日志与审计共用同一套掩码口径。
+func (s *Service) logOutcome(task corescheduleTask, outcome contract.Outcome, reason string) {
+	if reason == "" && outcome != contract.OutcomeUnknown {
+		return
+	}
+	s.log.Warn("signing outcome",
+		"school_id", task.SchoolID,
+		"account_id", task.AccountID,
+		"task_id", task.SchoolTaskID,
+		"day", task.Day,
+		"attempt", task.Attempts+1,
+		"outcome", string(outcome),
+		"reason", mask.MaskText(reason),
+	)
 }
 
 // Request 是手动签到入口：确保当日任务行存在并返回任务 ID。

@@ -23,6 +23,7 @@ package schedule
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -31,6 +32,7 @@ import (
 	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
 	corecapacity "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/capacity"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
 	coreplan "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/plan"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
@@ -98,6 +100,7 @@ type Preview struct {
 // Service 是计划用例服务。
 type Service struct {
 	deps Deps
+	log  *slog.Logger
 }
 
 // Notifier 是计划事件的发布端口（实现为 app/events.Broker 的适配器）。
@@ -124,7 +127,11 @@ func NewService(deps Deps) (*Service, error) {
 	if deps.Tx == nil {
 		return nil, errors.New("schedule: nil transaction manager")
 	}
-	return &Service{deps: deps}, nil
+	log := deps.Logger
+	if log == nil {
+		log = slog.Default()
+	}
+	return &Service{deps: deps, log: log}, nil
 }
 
 // Preview 只算不写：返回窗口解析结果与完整计划行。
@@ -595,14 +602,21 @@ func (s *Service) resolveWindow(ctx context.Context, in Input, day time.Time, lo
 		discover = !res.overrideOK
 	}
 	if discover {
-		if platform, err := s.deps.Discover.DiscoverWindow(ctx, in.SchoolTaskID); err == nil &&
-			corewindow.Validate(corewindow.Window{Start: platform.Start, End: platform.End}) == nil {
-			res.fresh = coreschedule.WindowRecord{
-				SchoolTaskID: in.SchoolTaskID, Day: in.Day,
-				Start: platform.Start, End: platform.End,
-				Source: string(contract.WindowPlatform),
+		platform, discoverErr := s.deps.Discover.DiscoverWindow(ctx, in.SchoolTaskID)
+		if discoverErr == nil {
+			if verr := corewindow.Validate(corewindow.Window{Start: platform.Start, End: platform.End}); verr == nil {
+				res.fresh = coreschedule.WindowRecord{
+					SchoolTaskID: in.SchoolTaskID, Day: in.Day,
+					Start: platform.Start, End: platform.End,
+					Source: string(contract.WindowPlatform),
+				}
+				res.freshOK = true
+			} else {
+				s.logWindowFailure(in, "", mask.MaskText(verr.Error()))
 			}
-			res.freshOK = true
+		} else {
+			outcome, reason := windowFailure(discoverErr)
+			s.logWindowFailure(in, outcome, reason)
 		}
 	}
 
@@ -626,6 +640,29 @@ func (s *Service) resolveWindow(ctx context.Context, in Input, day time.Time, lo
 		}
 	}
 	return res, nil
+}
+
+// logWindowFailure 记录一次平台窗口发现失败。
+// 发现失败只回退、不报错；不记日志就没有任何痕迹（OCR M1）。
+// reason 先过 mask.MaskText：日志与审计共用同一套掩码口径。
+func (s *Service) logWindowFailure(in Input, outcome, reason string) {
+	s.log.Warn("window discovery failed",
+		"school_task_id", in.SchoolTaskID,
+		"day", in.Day,
+		"outcome", outcome,
+		"reason", mask.MaskText(reason),
+	)
+}
+
+// windowFailure 把发现失败拆成结论词与可进日志的原因。
+// OutcomeError 的 Message 由提供方给出且已掩码，可直接回放；
+// 其余错误只给分类词：原文带完整 URL，查询串里有会话标识。
+func windowFailure(err error) (string, string) {
+	var outcomeErr *contract.OutcomeError
+	if errors.As(err, &outcomeErr) {
+		return string(outcomeErr.Outcome), mask.MaskText(outcomeErr.Message)
+	}
+	return "", mask.SafeErrorText(err)
 }
 
 func fallbackAt(day time.Time, loc *time.Location, minuteOfDay int) time.Time {

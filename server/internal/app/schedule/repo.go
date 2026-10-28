@@ -3,6 +3,7 @@ package schedule
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	appcore "github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
@@ -80,6 +81,8 @@ type Deps struct {
 	Tx       appcore.TxManager
 	// Notifier 可为 nil：缺端口就不发事件（P6）。
 	Notifier Notifier
+	// Logger 可为 nil：用 slog.Default。窗口发现失败的原因进日志。
+	Logger *slog.Logger
 }
 
 // isNotFound 是"无缓存"的判据：实现必须用 errs.ErrNotFound 表达。
