@@ -1,119 +1,40 @@
 /**
  * **功能**
- * 四格 KPI：今日已签、待处理、托管账号、出口健康。
+ * 四格 KPI：数字、单位与一句说明，全部由调用方给的卡片描述驱动。
  *
  * **归属**
- * `features/dashboard` 域组件。
+ * `features/dashboard` 展示层：只排版，不取数、不定义指标算法。
  *
  * **口径**
- * 数字、环比与角标文案全是演示值。
- * 本页不取数，也不定义指标算法。
+ * 派生计数在 `display.ts`；本组件不认角色，也不认端点。
+ * `value === null` 显示 `—`：没有数据就不编数字。
+ * 数字用 `formatNumber`，千分位随 `zh-CN`。
  */
 
-import { Icon, type IconName } from '@/components/ui/Icon'
+import { Icon } from '@/components/ui/Icon'
 import { formatNumber } from '@/lib/format'
+import type { KpiCard } from './display'
 
-type KpiItem = {
-  tone: 'success' | 'danger' | 'purple' | 'primary'
-  icon: IconName
-  label: string
-  pillTone: 'up' | 'down' | 'flat' | 'info'
-  pillIcon: IconName
-  pillText: string
-  value: number
-  unit: string
-  compareTone: 'up' | 'down' | 'flat' | 'info'
-  compareIcon: IconName
-  compareStrong: string
-  compareTail: string
-}
-
-const KPI_ITEMS: KpiItem[] = [
-  {
-    tone: 'success',
-    icon: 'check',
-    label: '今日已签',
-    pillTone: 'up',
-    pillIcon: 'trendUp',
-    pillText: '98.2%',
-    value: 806,
-    unit: '个',
-    compareTone: 'up',
-    compareIcon: 'trendUp',
-    compareStrong: '+11',
-    compareTail: '较昨日',
-  },
-  {
-    tone: 'danger',
-    icon: 'alertCircle',
-    label: '待处理',
-    pillTone: 'down',
-    pillIcon: 'trendDown',
-    pillText: '−3',
-    value: 12,
-    unit: '个',
-    compareTone: 'down',
-    compareIcon: 'trendDown',
-    compareStrong: '2',
-    compareTail: '含凭据错误',
-  },
-  {
-    tone: 'purple',
-    icon: 'accounts',
-    label: '托管账号',
-    pillTone: 'flat',
-    pillIcon: 'trendFlat',
-    pillText: '~2.4%',
-    value: 1024,
-    unit: '个',
-    compareTone: 'flat',
-    compareIcon: 'trendFlat',
-    compareStrong: '10,000',
-    compareTail: '注册上限',
-  },
-  {
-    tone: 'primary',
-    icon: 'shield',
-    label: '出口健康',
-    pillTone: 'info',
-    pillIcon: 'trendFlat',
-    pillText: '3 / 3',
-    value: 100,
-    unit: '%',
-    compareTone: 'info',
-    compareIcon: 'trendFlat',
-    compareStrong: '30 分钟',
-    compareTail: '稳定',
-  },
-]
-
-/** 卡片 DOM 照 Adminator `src/index.html`。数字为演示值。 */
-export function KpiGrid() {
+/** 卡片 DOM 照 Adminator `src/index.html`；环比与趋势标记已去掉。 */
+export function KpiGrid({ cards }: { cards: KpiCard[] }) {
   return (
     <section className="kpi-grid" aria-label="关键指标">
-      {KPI_ITEMS.map((item) => (
-        <article key={item.label} className={`kpi-card c-${item.tone}`}>
+      {cards.map((card) => (
+        <article key={card.label} className={`kpi-card c-${card.tone}`}>
           <div className="kpi-top">
             <div className="kpi-identity">
-              <div className={`kpi-icon ${item.tone}`}>
-                <Icon name={item.icon} />
+              <div className={`kpi-icon ${card.tone}`}>
+                <Icon name={card.icon} />
               </div>
-              <div className="kpi-label">{item.label}</div>
+              <div className="kpi-label">{card.label}</div>
             </div>
-            <span className={`kpi-pill ${item.pillTone}`}>
-              <Icon name={item.pillIcon} />
-              {item.pillText}
-            </span>
           </div>
           <div className="kpi-value">
-            {formatNumber(item.value)}
-            <sup>{item.unit}</sup>
+            {card.value === null ? '—' : formatNumber(card.value)}
+            {card.value === null ? null : <sup>{card.unit}</sup>}
           </div>
           <div className="kpi-compare">
-            <Icon name={item.compareIcon} className={item.compareTone} />
-            <strong>{item.compareStrong}</strong>
-            <span className="sep">·</span>
-            {item.compareTail}
+            <span>{card.note}</span>
           </div>
         </article>
       ))}

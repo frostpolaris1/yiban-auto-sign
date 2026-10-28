@@ -26,17 +26,20 @@ export type ScheduleRow = Schemas['ScheduleRow']
 export type ScheduleOverrideRequest = Schemas['ScheduleOverrideRequest']
 export type TimePref = Schemas['TimePref']
 export type TimePrefUpdate = Schemas['TimePrefUpdate']
+export type CapacityReport = Schemas['CapacityReport']
 
 export const SCHEDULE_PATHS = {
   windows: '/api/schedule/windows',
   preview: '/api/schedule/preview',
   plan: '/api/schedule/plan',
   override: '/api/schedule/override',
+  capacity: '/api/capacity',
   timePref: '/api/me/time-pref',
 } as const
 
 export type WindowsQuery = { day: string; refresh?: boolean }
 export type PreviewQuery = { day: string; schoolId: string; taskId: string }
+export type CapacityQuery = { day: string; schoolId: string; taskId: string; refresh?: boolean }
 
 /** 窗口一览的查询串。`refresh` 缺省不写，服务端按缓存读。 */
 export function scheduleWindowsSearch(query: WindowsQuery): string {
@@ -55,10 +58,29 @@ export function schedulePreviewSearch(query: PreviewQuery): string {
   return `?${params.toString()}`
 }
 
+/**
+ * 容量查询串。`school_id` 与 `task_id` 是契约必填；`day` 由调用方给，
+ * 使看板与窗口列表读同一个业务日。`refresh` 缺省不写。
+ */
+export function capacitySearch(query: CapacityQuery): string {
+  const params = new URLSearchParams({
+    school_id: query.schoolId,
+    task_id: query.taskId,
+    day: query.day,
+  })
+  if (query.refresh) params.set('refresh', 'true')
+  return `?${params.toString()}`
+}
+
 export function listScheduleWindows(query: WindowsQuery): Promise<ScheduleWindowList> {
   return apiRequest<ScheduleWindowList>(
     `${SCHEDULE_PATHS.windows}${scheduleWindowsSearch(query)}`,
   )
+}
+
+/** 容量体检：同一窗口解析与同一容量公式。`shortfall>0` 表示需求超容量。 */
+export function getCapacity(query: CapacityQuery): Promise<CapacityReport> {
+  return apiRequest<CapacityReport>(`${SCHEDULE_PATHS.capacity}${capacitySearch(query)}`)
 }
 
 /** 只读预览：不写库，`version` 在纯预览时为 0。 */

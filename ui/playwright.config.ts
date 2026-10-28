@@ -1,10 +1,12 @@
 import { defineConfig } from '@playwright/test'
 
 /**
- * Visual regression config.
+ * Playwright config for behaviour and visual regression.
  *
- * The webServer runs `vite preview` against the production build. Run
- * `npm run build` first, or use `npm run test:visual` after a build.
+ * Server 1 serves the normal production build from `dist` on 4173. It needs
+ * `npm run build` first.
+ * Server 2 serves the showcase build from `dist-showcase` on 4174. Its command
+ * builds that bundle, so `e2e/showcase.spec.ts` owns its own artifact.
  * Baselines live next to the spec in `e2e/visual.spec.ts-snapshots/`.
  */
 export default defineConfig({
@@ -25,12 +27,20 @@ export default defineConfig({
       maxDiffPixelRatio: 0,
     },
   },
-  webServer: {
-    command: 'npm run preview -- --host 127.0.0.1 --port 4173 --strictPort',
-    url: 'http://127.0.0.1:4173',
-    reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
-  },
+  webServer: [
+    {
+      command: 'npm run preview -- --host 127.0.0.1 --port 4173 --strictPort',
+      url: 'http://127.0.0.1:4173',
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
+    {
+      command: 'npm run build:showcase && npm run preview:showcase',
+      url: 'http://127.0.0.1:4174',
+      reuseExistingServer: !process.env.CI,
+      timeout: 180_000,
+    },
+  ],
   projects: [
     {
       name: 'chromium',

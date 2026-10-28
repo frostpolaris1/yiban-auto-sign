@@ -1,12 +1,14 @@
 import { test, expect, type Page } from '@playwright/test'
 import { mockAccountsApi } from './support/fake-accounts-api'
+import { mockDashboardApi } from './support/fake-dashboard-api'
 import { SCHEDULE_DAY, mockScheduleApi } from './support/fake-schedule-api'
 import { mockSchoolsApi } from './support/fake-schools-api'
 
 /**
  * Adminator 壳的视觉回归基线。
  *
- * 矩阵：5 条常驻路由 × 2 套主题 × 2 个宽度 = 20 张截图。
+ * 矩阵：4 条常驻路由 + 仪表盘两视角，× 2 套主题 × 2 个宽度 = 24 张截图。
+ * 仪表盘按角色分视角：user 是签到状态／诊断，admin 是窗口／容量体检。
  * 时间片页按固定业务日另拍（缺省日期会随日历漂移，不能进常驻矩阵）。
  * 另有抽屉／模态／菜单态、无权限页与时间偏好卡等按需快照。
  * 基线随 spec 入库，目录是 `e2e/visual.spec.ts-snapshots/`。
@@ -14,11 +16,15 @@ import { mockSchoolsApi } from './support/fake-schools-api'
  */
 
 const ROUTES = [
-  { path: '/', name: 'dashboard' },
   { path: '/design', name: 'design' },
   { path: '/accounts', name: 'accounts' },
   { path: '/schools', name: 'schools' },
   { path: '/login', name: 'login' },
+] as const
+
+const DASHBOARD_VIEWS = [
+  { role: 'user', name: 'dashboard-user' },
+  { role: 'admin', name: 'dashboard-admin' },
 ] as const
 
 const VIEWPORTS = [
@@ -45,6 +51,11 @@ async function mockSessionFor(
   // 时间片页需要窗口、预览与时间偏好端点；路径可能带 `?day=`。
   if (path.startsWith('/schedule')) {
     await mockScheduleApi(page, { role })
+    return
+  }
+  // 仪表盘按角色取数：两视角都要有对应端点，否则基线拍到的会是错误态。
+  if (path === '/') {
+    await mockDashboardApi(page, { role })
     return
   }
   // 学校页需要完整的学校端点集合：后注册的 route 先匹配，覆盖 beforeEach 的账号 mock。
@@ -77,6 +88,25 @@ async function openWithTheme(
 
 for (const theme of THEMES) {
   for (const viewport of VIEWPORTS) {
+    for (const view of DASHBOARD_VIEWS) {
+      test(`visual ${view.name} ${theme} ${viewport.name}`, async ({ page }) => {
+        await page.setViewportSize({ width: viewport.width, height: viewport.height })
+        await openWithTheme(page, '/', theme, view.role)
+        // 数据态到位再拍：不等就会拍到「加载中…」。
+        if (view.role === 'user') {
+          await expect(page.getByRole('table', { name: '今日签到状态' })).toContainText(
+            '账号 #1',
+          )
+        } else {
+          await expect(page.getByLabel('任务')).toHaveValue('school-alpha:task-daily')
+          await expect(page.locator('.app-metric')).toHaveCount(3)
+        }
+        await expect(page).toHaveScreenshot(`${view.name}-${theme}-${viewport.name}.png`, {
+          fullPage: true,
+        })
+      })
+    }
+
     for (const route of ROUTES) {
       test(`visual ${route.name} ${theme} ${viewport.name}`, async ({ page }) => {
         await page.setViewportSize({ width: viewport.width, height: viewport.height })
@@ -237,10 +267,9 @@ for (const theme of THEMES) {
   })
 
   test(`visual dashboard time preference card ${theme}`, async ({ page }) => {
-    // 偏好卡只对 user 渲染：先叠一层 user 会话与时间偏好端点。
-    await mockScheduleApi(page, { role: 'user' })
+    // 偏好卡只对 user 渲染：走 user 视角的看板取数面（含时间偏好端点）。
     await page.setViewportSize({ width: 1440, height: 900 })
-    await openWithTheme(page, '/', theme)
+    await openWithTheme(page, '/', theme, 'user')
     await expect(page.locator('.app-pref-current')).toHaveText('窗口开始 + 15 分钟')
     await expect(page).toHaveScreenshot(`dashboard-time-pref-${theme}-1440.png`, {
       fullPage: true,

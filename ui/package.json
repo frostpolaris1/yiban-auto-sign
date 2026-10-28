@@ -19,7 +19,9 @@
     "gate:structure": "node scripts/structure-gate.mjs",
     "gate:docs": "node scripts/doc-ref-gate.mjs",
     "gate:license": "node scripts/license-gate.mjs",
-    "test:unit": "node --import ./scripts/tests/resolve-ts.mjs --test scripts/tests/client.test.mjs scripts/tests/query.test.mjs scripts/tests/cursor.test.mjs scripts/tests/accounts.test.mjs scripts/tests/account-actions.test.mjs scripts/tests/schools.test.mjs scripts/tests/schedule.test.mjs scripts/tests/auth.test.mjs",
+    "test:unit": "node --import ./scripts/tests/resolve-ts.mjs --test scripts/tests/client.test.mjs scripts/tests/query.test.mjs scripts/tests/cursor.test.mjs scripts/tests/accounts.test.mjs scripts/tests/account-actions.test.mjs scripts/tests/schools.test.mjs scripts/tests/schedule.test.mjs scripts/tests/auth.test.mjs scripts/tests/dashboard.test.mjs",
+    "build:showcase": "node scripts/build-showcase.mjs",
+    "preview:showcase": "vite preview --outDir dist-showcase --host 127.0.0.1 --port 4174 --strictPort",
     "test:visual": "playwright test",
     "test:visual:update": "playwright test --update-snapshots",
     "verify": "npm run lint && npm run check:api && npm run test:unit && node scripts/token-gate.mjs --self-test && npm run gate:tokens && node scripts/structure-gate.mjs --self-test && npm run gate:structure && node scripts/doc-ref-gate.mjs --self-test && npm run gate:docs && node scripts/license-gate.mjs --self-test && npm run gate:license && npm run build"
