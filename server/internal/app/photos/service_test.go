@@ -17,6 +17,7 @@ import (
 
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	appphotos "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/photos"
+	coreaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/account"
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
@@ -334,13 +335,41 @@ func newService(t *testing.T, store *fakeStore, blobs *fakeBlobs) (*appphotos.Se
 	audits := &fakeAudit{}
 	svc, err := appphotos.NewService(appphotos.Deps{
 		Store: store, Blobs: blobs, Audit: audits, Tx: &fakeTx{audit: audits, store: store},
-		Clock:   coreclock.Fixed{T: fixedNow},
-		Options: appphotos.Options{MaxPixels: 4_000_000, MaxSidePx: 4096, Rand: appRandZero},
+		Clock:        coreclock.Fixed{T: fixedNow},
+		Options:      appphotos.Options{MaxPixels: 4_000_000, MaxSidePx: 4096, Rand: appRandZero},
+		Accounts:     stubAccounts{},
+		SchoolPhotos: stubSchoolPhotos{},
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
 	return svc, audits
+}
+
+// stubAccounts 与 stubSchoolPhotos 只为满足依赖判据：
+// 本文件不测按账号列照片与学校默认图（真库 e2e 覆盖）。
+type stubAccounts struct{}
+
+func (stubAccounts) Get(context.Context, corescope.Scope, string) (coreaccount.Record, error) {
+	return coreaccount.Record{}, errs.ErrNotFound
+}
+
+type stubSchoolPhotos struct{}
+
+func (stubSchoolPhotos) SchoolWritable(context.Context, corescope.Scope, string) error {
+	return errs.ErrNotFound
+}
+
+func (stubSchoolPhotos) PhotoForDefault(context.Context, corescope.Scope, string) (corephoto.Record, error) {
+	return corephoto.Record{}, errs.ErrNotFound
+}
+
+func (stubSchoolPhotos) SchoolDefault(context.Context, corescope.Scope, string) (string, string, error) {
+	return "", "", errs.ErrNotFound
+}
+
+func (stubSchoolPhotos) SetSchoolDefault(context.Context, corescope.Scope, string, *string) (*string, error) {
+	return nil, errs.ErrNotFound
 }
 
 func owner(id string) corescope.Scope { return corescope.User(id) }
@@ -399,8 +428,10 @@ func TestUploadWritesAudit(t *testing.T) {
 	audits := &fakeAudit{}
 	svc, err := appphotos.NewService(appphotos.Deps{
 		Store: store, Blobs: blobs, Audit: audits, Tx: &fakeTx{audit: audits, store: store},
-		Clock:   coreclock.Fixed{T: fixedNow},
-		Options: appphotos.Options{MaxPixels: 4_000_000, MaxSidePx: 4096, Rand: &appRand{vals: []int{3, 7, 0, 10}}},
+		Clock:        coreclock.Fixed{T: fixedNow},
+		Options:      appphotos.Options{MaxPixels: 4_000_000, MaxSidePx: 4096, Rand: &appRand{vals: []int{3, 7, 0, 10}}},
+		Accounts:     stubAccounts{},
+		SchoolPhotos: stubSchoolPhotos{},
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -444,8 +475,10 @@ func TestUploadFailsWhenAuditFails(t *testing.T) {
 	audits := &fakeAudit{fail: errors.New("chain locked")}
 	svc, err := appphotos.NewService(appphotos.Deps{
 		Store: store, Blobs: blobs, Audit: audits, Tx: &fakeTx{audit: audits, store: store},
-		Clock:   coreclock.Fixed{T: fixedNow},
-		Options: appphotos.Options{MaxPixels: 4_000_000, MaxSidePx: 4096, Rand: appRandZero},
+		Clock:        coreclock.Fixed{T: fixedNow},
+		Options:      appphotos.Options{MaxPixels: 4_000_000, MaxSidePx: 4096, Rand: appRandZero},
+		Accounts:     stubAccounts{},
+		SchoolPhotos: stubSchoolPhotos{},
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

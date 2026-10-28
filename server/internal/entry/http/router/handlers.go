@@ -276,6 +276,33 @@ func (s *server) PhotoRetentionSet(c *gin.Context, params oapi.PhotoRetentionSet
 	s.photos.PhotoRetentionSet(c, params)
 }
 
+// AccountPhotoList 委托按账号列照片处理器。未装配时仍是 501。
+func (s *server) AccountPhotoList(c *gin.Context, id oapi.AccountID, params oapi.AccountPhotoListParams) {
+	if s.photos == nil {
+		notImplemented(c)
+		return
+	}
+	s.photos.AccountPhotoList(c, id, params)
+}
+
+// SchoolDefaultPhotoGet 委托学校默认图读取处理器。未装配时仍是 501。
+func (s *server) SchoolDefaultPhotoGet(c *gin.Context, id oapi.SchoolID) {
+	if s.photos == nil {
+		notImplemented(c)
+		return
+	}
+	s.photos.SchoolDefaultPhotoGet(c, id)
+}
+
+// SchoolDefaultPhotoSet 委托学校默认图写入处理器。未装配时仍是 501。
+func (s *server) SchoolDefaultPhotoSet(c *gin.Context, id oapi.SchoolID, params oapi.SchoolDefaultPhotoSetParams) {
+	if s.photos == nil {
+		notImplemented(c)
+		return
+	}
+	s.photos.SchoolDefaultPhotoSet(c, id, params)
+}
+
 // AdminEvents 委托事件流处理器。未装配时仍是 501。
 func (s *server) AdminEvents(c *gin.Context, params oapi.AdminEventsParams) {
 	if s.events == nil {

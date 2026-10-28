@@ -838,6 +838,22 @@ type SchoolCreate struct {
 // SchoolCreateTimezone defines model for SchoolCreate.Timezone.
 type SchoolCreateTimezone string
 
+// SchoolDefaultPhoto defines model for SchoolDefaultPhoto.
+type SchoolDefaultPhoto struct {
+	// Etag sha256 (lowercase hex) of the referenced photo, the same digest
+	// as Photo.sha256; empty when photo_id is null.
+	Etag string `json:"etag"`
+
+	// PhotoId Referenced photo id; null when no default photo is set.
+	PhotoId *string `json:"photo_id"`
+}
+
+// SchoolDefaultPhotoUpdate defines model for SchoolDefaultPhotoUpdate.
+type SchoolDefaultPhotoUpdate struct {
+	// PhotoId An existing photo visible to the caller; null clears the default.
+	PhotoId *string `json:"photo_id"`
+}
+
 // SchoolPage defines model for SchoolPage.
 type SchoolPage struct {
 	Items []School `json:"items"`
@@ -1031,6 +1047,15 @@ type AccountPauseParams struct {
 	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
 }
 
+// AccountPhotoListParams defines parameters for AccountPhotoList.
+type AccountPhotoListParams struct {
+	// Cursor Opaque page cursor taken from next_cursor.
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Limit Page size, 1 to 200.
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
 // AccountReviewParams defines parameters for AccountReview.
 type AccountReviewParams struct {
 	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
@@ -1189,6 +1214,13 @@ type SchoolAdminRemoveParams struct {
 	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
 }
 
+// SchoolDefaultPhotoSetParams defines parameters for SchoolDefaultPhotoSet.
+type SchoolDefaultPhotoSetParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
 // UserCreateParams defines parameters for UserCreate.
 type UserCreateParams struct {
 	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
@@ -1244,6 +1276,9 @@ type SchoolUpdateJSONRequestBody = SchoolUpdate
 // SchoolAdminAddJSONRequestBody defines body for SchoolAdminAdd for application/json ContentType.
 type SchoolAdminAddJSONRequestBody = SchoolAdminCreate
 
+// SchoolDefaultPhotoSetJSONRequestBody defines body for SchoolDefaultPhotoSet for application/json ContentType.
+type SchoolDefaultPhotoSetJSONRequestBody = SchoolDefaultPhotoUpdate
+
 // UserCreateJSONRequestBody defines body for UserCreate for application/json ContentType.
 type UserCreateJSONRequestBody = UserCreate
 
@@ -1273,6 +1308,9 @@ type ServerInterface interface {
 	// AccountPause Pause or resume an account.
 	// (POST /api/accounts/{id}/pause)
 	AccountPause(c *gin.Context, id AccountID, params AccountPauseParams)
+	// AccountPhotoList List the photos of one account's owner.
+	// (GET /api/accounts/{id}/photos)
+	AccountPhotoList(c *gin.Context, id AccountID, params AccountPhotoListParams)
 	// AccountReview Approve or reject a pending account.
 	// (POST /api/accounts/{id}/review)
 	AccountReview(c *gin.Context, id AccountID, params AccountReviewParams)
@@ -1360,6 +1398,12 @@ type ServerInterface interface {
 	// SchoolAdminRemove Unbind an admin from the school.
 	// (DELETE /api/schools/{id}/admins/{uid})
 	SchoolAdminRemove(c *gin.Context, id SchoolID, uid UserID, params SchoolAdminRemoveParams)
+	// SchoolDefaultPhotoGet Read the school default photo reference.
+	// (GET /api/schools/{id}/default-photo)
+	SchoolDefaultPhotoGet(c *gin.Context, id SchoolID)
+	// SchoolDefaultPhotoSet Set or clear the school default photo.
+	// (PUT /api/schools/{id}/default-photo)
+	SchoolDefaultPhotoSet(c *gin.Context, id SchoolID, params SchoolDefaultPhotoSetParams)
 	// UserCreate Create a master, admin or user account.
 	// (POST /api/users)
 	UserCreate(c *gin.Context, params UserCreateParams)
@@ -1735,6 +1779,50 @@ func (siw *ServerInterfaceWrapper) AccountPause(c *gin.Context) {
 	}
 
 	siw.Handler.AccountPause(c, id, params)
+}
+
+// AccountPhotoList operation middleware
+func (siw *ServerInterfaceWrapper) AccountPhotoList(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id AccountID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", c.Param("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AccountPhotoListParams
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "cursor", c.Request.URL.Query(), &params.Cursor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter cursor: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", c.Request.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter limit: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AccountPhotoList(c, id, params)
 }
 
 // AccountReview operation middleware
@@ -2791,6 +2879,83 @@ func (siw *ServerInterfaceWrapper) SchoolAdminRemove(c *gin.Context) {
 	siw.Handler.SchoolAdminRemove(c, id, uid, params)
 }
 
+// SchoolDefaultPhotoGet operation middleware
+func (siw *ServerInterfaceWrapper) SchoolDefaultPhotoGet(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id SchoolID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", c.Param("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.SchoolDefaultPhotoGet(c, id)
+}
+
+// SchoolDefaultPhotoSet operation middleware
+func (siw *ServerInterfaceWrapper) SchoolDefaultPhotoSet(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id SchoolID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", c.Param("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params SchoolDefaultPhotoSetParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.SchoolDefaultPhotoSet(c, id, params)
+}
+
 // UserCreate operation middleware
 func (siw *ServerInterfaceWrapper) UserCreate(c *gin.Context) {
 
@@ -2883,6 +3048,8 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/schools", wrapper.SchoolList)
 	router.POST(options.BaseURL+"/api/schools", wrapper.SchoolCreate)
 	router.PATCH(options.BaseURL+"/api/schools/:id", wrapper.SchoolUpdate)
+	router.GET(options.BaseURL+"/api/schools/:id/default-photo", wrapper.SchoolDefaultPhotoGet)
+	router.PUT(options.BaseURL+"/api/schools/:id/default-photo", wrapper.SchoolDefaultPhotoSet)
 	router.GET(options.BaseURL+"/api/schools/:id/admins", wrapper.SchoolAdminList)
 	router.POST(options.BaseURL+"/api/schools/:id/admins", wrapper.SchoolAdminAdd)
 	router.DELETE(options.BaseURL+"/api/schools/:id/admins/:uid", wrapper.SchoolAdminRemove)
@@ -2896,6 +3063,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/accounts/:id/verify", wrapper.AccountVerify)
 	router.POST(options.BaseURL+"/api/accounts/:id/sign", wrapper.AccountSign)
 	router.PUT(options.BaseURL+"/api/accounts/:id/location", wrapper.AccountLocationSet)
+	router.GET(options.BaseURL+"/api/accounts/:id/photos", wrapper.AccountPhotoList)
 	router.GET(options.BaseURL+"/api/admin/events", wrapper.AdminEvents)
 	router.GET(options.BaseURL+"/api/me/diagnostics", wrapper.MeDiagnostics)
 	router.GET(options.BaseURL+"/api/accounts/:id/diagnostics", wrapper.AccountDiagnostics)
