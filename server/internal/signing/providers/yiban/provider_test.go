@@ -79,7 +79,8 @@ func TestProviderDiscoverWindow(t *testing.T) {
 		t.Fatalf("source = %q", window.Source)
 	}
 
-	up.setSignPositionState(t, 3)
+	// State=3 走录播夹具：2026-10-28 实拍已签档，值合成。
+	up.signPositionBody = readProtocolFixture(t, "sign_position_done.json")
 	p.client.clearPositions("acct-1")
 	_, err = p.DiscoverWindow(context.Background(), req)
 	var outcomeErr *contract.OutcomeError
@@ -87,6 +88,7 @@ func TestProviderDiscoverWindow(t *testing.T) {
 		t.Fatalf("state 3: error = %v, want AlreadyDone", err)
 	}
 
+	// State=5 未实拍，未知：合成改动只验证旧实现映射，不构成平台证据。
 	up.setSignPositionState(t, 5)
 	p.client.clearPositions("acct-1")
 	_, err = p.DiscoverWindow(context.Background(), req)
@@ -233,7 +235,8 @@ func TestProviderSignDeviceMissing(t *testing.T) {
 
 func TestProviderSignAlreadyDone(t *testing.T) {
 	p, up := newTestProvider(t)
-	up.setSignPositionState(t, 3)
+	// State=3 走录播夹具：2026-10-28 实拍已签档，值合成。
+	up.signPositionBody = readProtocolFixture(t, "sign_position_done.json")
 	p.client.clearPositions("acct-1")
 	result, err := p.Sign(context.Background(), providerSignRequest("attempt-done"))
 	if err != nil {
@@ -249,6 +252,7 @@ func TestProviderSignAlreadyDone(t *testing.T) {
 
 func TestProviderSignPending(t *testing.T) {
 	p, up := newTestProvider(t)
+	// State=5 未实拍，未知：合成改动只验证旧实现映射，不构成平台证据。
 	up.setSignPositionState(t, 5)
 	p.client.clearPositions("acct-1")
 	result, err := p.Sign(context.Background(), providerSignRequest("attempt-pending"))
@@ -310,6 +314,7 @@ func TestProviderSignDeviceRejected(t *testing.T) {
 
 func TestProviderSignSessionExpired(t *testing.T) {
 	up := newUpstream(t)
+	// code=999 未实拍，未知：响应体是合成值，只验证旧实现映射。
 	up.signInBody = []byte(`{"code":999,"msg":"expired"}`)
 	p := NewProvider(New(Config{Endpoints: up.endpoints()}))
 	result, err := p.Sign(context.Background(), providerSignRequest("attempt-expired"))
@@ -396,6 +401,7 @@ func TestProviderSignReceiptShapes(t *testing.T) {
 
 func TestProviderDiscoverWindowStateTwo(t *testing.T) {
 	p, up := newTestProvider(t)
+	// State=2 未实拍，未知：合成改动只验证旧实现映射，不构成平台证据。
 	up.setSignPositionState(t, 2)
 	p.client.clearPositions("acct-1")
 	_, err := p.DiscoverWindow(context.Background(),

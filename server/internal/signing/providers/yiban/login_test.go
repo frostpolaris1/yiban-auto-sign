@@ -1,10 +1,9 @@
 package yiban
 
-// 本文件登录链夹具标注：**旧实现复刻（ref develop@1d1c5ccf，
-// yiban/platform.py::login_killyiban + yiban/security.py + yiban/challenge.py），
-// 未经真实抓包验证**。协议解析夹具（auth_response.json 等）沿用
-// protocol/testdata 的既有登记；本文件新增的内联响应体只按旧实现行为构造，
-// 实拍对齐是 4sk 后续生产探针步骤，不 claim 真实性。
+// 本文件登录链夹具标注：四跳形状已由 2026-10-28 实拍逐跳命中
+// （bd yiban-auto-sign-4sk 注释）；夹具值是合成值，不是抓包原文。
+// 协议解析夹具（auth_response.json 等）沿用 protocol/testdata 的既有登记。
+// 未实拍档位登记在 replay_test.go 与 testdata/recordings.json 的 unrecorded 段。
 
 import (
 	"bytes"
@@ -88,8 +87,41 @@ type upstream struct {
 	signForm     url.Values
 	signQuery    url.Values
 	signCookie   string
+	signRaw      []byte
 	headers      map[string]http.Header
 	counts       map[string]int
+	recorded     []recordedHop
+}
+
+// recordedHop 是一次请求的快照，供录播链判据断言顺序与形状。
+type recordedHop struct {
+	Method   string
+	Path     string
+	RawQuery string
+	Header   http.Header
+	Cookie   map[string]string
+}
+
+// snapshotHop 抓取一次请求的可断言字段。
+func snapshotHop(r *http.Request) recordedHop {
+	cookies := make(map[string]string)
+	for _, cookie := range r.Cookies() {
+		cookies[cookie.Name] = cookie.Value
+	}
+	return recordedHop{
+		Method:   r.Method,
+		Path:     r.URL.Path,
+		RawQuery: r.URL.RawQuery,
+		Header:   r.Header.Clone(),
+		Cookie:   cookies,
+	}
+}
+
+// recordedHops 返回请求快照的副本。
+func (u *upstream) recordedHops() []recordedHop {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]recordedHop(nil), u.recorded...)
 }
 
 func newUpstream(t *testing.T) *upstream {
@@ -119,6 +151,7 @@ func newUpstream(t *testing.T) *upstream {
 		up.mu.Lock()
 		up.counts[r.URL.Path]++
 		up.headers[r.URL.Path] = r.Header.Clone()
+		up.recorded = append(up.recorded, snapshotHop(r))
 		up.mu.Unlock()
 
 		switch r.URL.Path {
@@ -199,11 +232,14 @@ func newUpstream(t *testing.T) *upstream {
 			up.mu.Unlock()
 			w.Write(body)
 		case "/nightAttendance/student/index/signIn":
+			raw, _ := io.ReadAll(r.Body)
+			r.Body = io.NopCloser(bytes.NewReader(raw))
 			if err := r.ParseForm(); err != nil {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
 			up.mu.Lock()
+			up.signRaw = raw
 			up.signForm = r.PostForm
 			up.signQuery = r.URL.Query()
 			if cookie, err := r.Cookie("csrf_token"); err == nil {
@@ -282,6 +318,8 @@ func (u *upstream) endpoints() Endpoints {
 }
 
 // setSignPositionState 改写 signPosition 的 State。
+// **合成改动**：State=2/4/5 的响应从未录制；
+// 只用于验证旧实现映射，不构成平台证据。
 func (u *upstream) setSignPositionState(t *testing.T, state int) {
 	t.Helper()
 	var obj map[string]any
@@ -481,6 +519,7 @@ func TestVerifyBadCredentials(t *testing.T) {
 
 func TestVerifyChallenge(t *testing.T) {
 	up := newUpstream(t)
+	// 挑战页未实拍，未知：响应体是合成标志物，只验证识别分支。
 	up.challenge = true
 	client := New(Config{Endpoints: up.endpoints()})
 	_, err := client.Verify(context.Background(), "acct-1", testCredential())
@@ -492,6 +531,7 @@ func TestVerifyChallenge(t *testing.T) {
 
 func TestVerifySessionExpired(t *testing.T) {
 	up := newUpstream(t)
+	// code=999 未实拍，未知：响应体是合成值，只验证旧实现映射。
 	up.authBody = []byte(`{"code":999,"msg":"expired"}`)
 	client := New(Config{Endpoints: up.endpoints()})
 	_, err := client.Verify(context.Background(), "acct-1", testCredential())
