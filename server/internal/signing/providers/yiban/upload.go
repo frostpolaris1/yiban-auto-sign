@@ -40,6 +40,10 @@ type uploadReceipt struct {
 // UploadAttachment 完成一次附件上传，返回回填 signIn 用的 AttachmentFileName。
 //
 // 非幂等：uploadUri 会登记一次附件，999 不自动重试（与 signIn 同档）。
+//
+// UNVERIFIED(recon)：错误分档（code≠0→photo_rejected、HTTP 非 2xx/网络→
+// transient、回执缺键→unknown）是按我方档位语义的推断映射，平台真实
+// 错误码未实拍；实拍后用真实码表替换这三处判定。
 func (c *Client) UploadAttachment(ctx context.Context, accountID string,
 	cred contract.Credential, img contract.ImageRef) (string, error) {
 	if len(img.Bytes) == 0 {
