@@ -152,7 +152,7 @@ func parseUploadReceipt(data any) (uploadReceipt, error) {
 	}
 	name, nameOK := obj["AttachmentFileName"].(string)
 	signed, signedOK := obj["signedUrl"].(string)
-	if !nameOK || !signedOK || name == "" {
+	if !nameOK || !signedOK || name == "" || signed == "" {
 		return uploadReceipt{}, outcome(contract.OutcomeUnknown,
 			"uploadUri receipt lacks AttachmentFileName or signedUrl")
 	}

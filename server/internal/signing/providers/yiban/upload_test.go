@@ -191,3 +191,23 @@ func TestSignUploadReceiptMissingKeysIsUnknown(t *testing.T) {
 		t.Fatalf("回执异常后不应 signIn：%d 次", n)
 	}
 }
+
+// 回执 signedUrl 为空串：与缺键同档判未知（fail-closed，不把空地址丢给 PUT）。
+func TestSignUploadReceiptEmptySignedURLIsUnknown(t *testing.T) {
+	p, up := newTestProvider(t)
+	up.mu.Lock()
+	up.uploadBody = []byte(`{"code":0,"msg":"","data":{"AttachmentFileName":"yiban_camera_1790000000.jpg","signedUrl":""}}`)
+	up.mu.Unlock()
+
+	req, _ := uploadSignRequest("attempt-upload-emptyurl")
+	result, err := p.Sign(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	if result.Outcome != contract.OutcomeUnknown {
+		t.Fatalf("outcome = %q, want unknown", result.Outcome)
+	}
+	if n := up.count("/nightAttendance/student/index/signIn"); n != 0 {
+		t.Fatalf("回执异常后不应 signIn：%d 次", n)
+	}
+}
