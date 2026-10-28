@@ -165,6 +165,40 @@ export interface paths {
         patch: operations["SchoolUpdate"];
         trace?: never;
     };
+    "/api/schools/{id}/default-photo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the school default photo reference.
+         * @description master reads any school; an admin reads bound schools; a user reads
+         *     schools where the caller owns at least one account that is not
+         *     deleted. A school outside that range and a missing school both
+         *     answer 404. photo_id is null when no default photo is set or the
+         *     referenced photo was soft-deleted. etag is the sha256 of the
+         *     referenced photo.
+         */
+        get: operations["SchoolDefaultPhotoGet"];
+        /**
+         * Set or clear the school default photo.
+         * @description photo_id must reference an existing, non-deleted photo visible to the
+         *     caller: master sees every photo; an admin sees photos whose owner has
+         *     a non-deleted account in a bound school. null clears the reference.
+         *     Repeating the same value answers 200. The write and a
+         *     school.default_photo_set audit row commit in one transaction; the
+         *     detail carries only the photo id and the previous value.
+         */
+        put: operations["SchoolDefaultPhotoSet"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/schools/{id}/admins": {
         parameters: {
             query?: never;
@@ -368,6 +402,30 @@ export interface paths {
          *     outside the target fence, so an out-of-range sign can be explained.
          */
         put: operations["AccountLocationSet"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounts/{id}/photos": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the photos of one account's owner.
+         * @description The photo library belongs to the account owner, so this page equals
+         *     GET /api/me/photos for that owner. The account visibility check
+         *     matches PUT /api/accounts/{id}/location: a user sees own accounts
+         *     and an admin sees accounts of bound schools. A cross-scope account
+         *     and a missing account both answer 404.
+         */
+        get: operations["AccountPhotoList"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -642,7 +700,8 @@ export interface paths {
          * Stream one photo.
          * @description Returns the stored bytes with their real media type and an ETag of
          *     the sha256. The scope check runs before any bytes are written.
-         *     admin reads answer 404 until the account-photo relation exists.
+         *     A user reads own photos. An admin reads photos whose owner has a
+         *     non-deleted account in a bound school. Cross-scope reads answer 404.
          */
         get: operations["PhotoGet"];
         put?: never;
@@ -1056,6 +1115,19 @@ export interface components {
             /** @enum {integer} */
             days: 30 | 90 | 180 | 365;
         };
+        SchoolDefaultPhoto: {
+            /** @description Referenced photo id; null when no default photo is set. */
+            photo_id: string | null;
+            /**
+             * @description sha256 (lowercase hex) of the referenced photo, the same digest
+             *     as Photo.sha256; empty when photo_id is null.
+             */
+            etag: string;
+        };
+        SchoolDefaultPhotoUpdate: {
+            /** @description An existing photo visible to the caller; null clears the default. */
+            photo_id: string | null;
+        };
         AccountPage: {
             items: components["schemas"]["Account"][];
             /** @description Cursor for the next page; empty on the last page. */
@@ -1462,6 +1534,67 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["School"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    SchoolDefaultPhotoGet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["SchoolID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Default photo reference. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SchoolDefaultPhoto"];
+                };
+            };
+            404: components["responses"]["NotFoundError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    SchoolDefaultPhotoSet: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["SchoolID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SchoolDefaultPhotoUpdate"];
+            };
+        };
+        responses: {
+            /** @description Default photo reference stored. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SchoolDefaultPhoto"];
                 };
             };
             400: components["responses"]["ValidationError"];
@@ -1904,6 +2037,37 @@ export interface operations {
             400: components["responses"]["ValidationError"];
             404: components["responses"]["NotFoundError"];
             413: components["responses"]["PayloadTooLargeError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AccountPhotoList: {
+        parameters: {
+            query?: {
+                /** @description Opaque page cursor taken from next_cursor. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size, 1 to 200. */
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["AccountID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Photo page. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PhotoPage"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
             default: components["responses"]["DefaultError"];
         };
     };

@@ -158,13 +158,47 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       return json(route, { items, next_cursor: next })
     }
 
-    const match = url.pathname.match(/^\/api\/accounts\/([^/]+)(?:\/(pause|sign|verify|review))?$/)
+    const match = url.pathname.match(
+      /^\/api\/accounts\/([^/]+)(?:\/(pause|sign|verify|review|location))?$/,
+    )
     if (!match) return fail(route, 404, 'not_found', '未找到资源')
     const [, id, action] = match
     const found = knownAccounts.find((item) => item.id === id)
     if (!found) return fail(route, 404, 'not_found', '账号不存在')
 
     if (!action && request.method() === 'GET') return json(route, found)
+
+    if (!action && request.method() === 'PATCH') {
+      const updates = (body ?? {}) as Record<string, unknown>
+      if (typeof updates.phone === 'string') {
+        found.phone_masked = `${updates.phone.slice(0, 3)}****${updates.phone.slice(-4)}`
+      }
+      found.updated_at = '2026-10-28T09:30:00Z'
+      return json(route, found)
+    }
+    if (!action && request.method() === 'DELETE') {
+      const owned = allAccounts.findIndex((item) => item.id === found.id)
+      if (owned >= 0) allAccounts.splice(owned, 1)
+      for (const key of Object.keys(pages)) {
+        const at = pages[key].findIndex((item) => item.id === found.id)
+        if (at >= 0) pages[key].splice(at, 1)
+      }
+      return route.fulfill({ status: 204 })
+    }
+    if (action === 'location' && request.method() === 'PUT') {
+      const update = (body ?? {}) as {
+        mode: 'auto' | 'fixed'
+        lng?: number
+        lat?: number
+        reason?: string
+      }
+      return json(route, {
+        mode: update.mode,
+        lng: update.mode === 'fixed' ? update.lng ?? null : null,
+        lat: update.mode === 'fixed' ? update.lat ?? null : null,
+        reason: update.reason ?? '',
+      })
+    }
 
     if (action === 'pause' && request.method() === 'POST') {
       const paused = Boolean((body as { paused?: boolean } | null)?.paused)
@@ -211,4 +245,18 @@ export function postCalls(api: FakeApi, id: string, action: string): ApiCall[] {
   return api.calls.filter(
     (call) => call.method === 'POST' && call.path === `/api/accounts/${id}/${action}`,
   )
+}
+
+export function patchCalls(api: FakeApi, id: string): ApiCall[] {
+  return api.calls.filter((call) => call.method === 'PATCH' && call.path === `/api/accounts/${id}`)
+}
+
+export function locationCalls(api: FakeApi, id: string): ApiCall[] {
+  return api.calls.filter(
+    (call) => call.method === 'PUT' && call.path === `/api/accounts/${id}/location`,
+  )
+}
+
+export function deleteCalls(api: FakeApi, id: string): ApiCall[] {
+  return api.calls.filter((call) => call.method === 'DELETE' && call.path === `/api/accounts/${id}`)
 }

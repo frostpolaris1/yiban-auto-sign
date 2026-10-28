@@ -1,20 +1,26 @@
 import { test, expect, type Page } from '@playwright/test'
 import {
   ACCOUNTS,
+  deleteCalls,
   lastListCall,
   listCalls,
+  locationCalls,
   mockAccountsApi,
+  patchCalls,
   postCalls,
 } from './support/fake-accounts-api'
 
 /**
- * 账号页的 5 条不变式。
+ * 账号页的 8 条不变式。
  *
  * 1. 筛选变更进请求；清空即移除参数。
  * 2. 游标栈只回退已访问页；无回退位时上一页禁用。
  * 3. 无权限操作置灰并给出可见原因，明暗两主题都可见。
  * 4. 写操作必经确认模态；确认前不发请求。
  * 5. 抽屉打开焦点进入；Esc 与遮罩关闭并还原焦点。
+ * 6. 编辑（PATCH）只送填写字段；空表单不可提交。
+ * 7. 位置策略：auto 不送坐标；fixed 过 WGS84 范围；master 无权置灰。
+ * 8. 删除必经确认；确认前零请求；行消失后焦点落筛选框。
  *
  * 断言用户可见结果，不钉内部调用顺序。
  */
@@ -454,4 +460,183 @@ test('the sidebar reaches the accounts page', async ({ page }) => {
   await page.locator('.d-sidebar').getByRole('link', { name: '账号', exact: true }).click()
   await expect(page).toHaveURL(/\/accounts$/)
   await expect(page.getByRole('table', { name: '账号列表' })).toBeVisible()
+})
+
+async function openRowMenu(page: Page, phone: string) {
+  await page.getByRole('button', { name: `更多操作 ${phone}` }).click()
+  const menu = page.getByRole('menu')
+  await expect(menu).toBeVisible()
+  return menu
+}
+
+test('invariant 6: PATCH sends only the filled fields', async ({ page }) => {
+  const api = await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+
+  const menu = await openRowMenu(page, '138****8000')
+  await menu.getByRole('menuitem', { name: /编辑/ }).click()
+  const dialog = page.getByRole('dialog', { name: '编辑账号？' })
+  await expect(dialog).toBeVisible()
+  expect(patchCalls(api, 'acc-1'), 'no request before save').toHaveLength(0)
+
+  const save = dialog.getByRole('button', { name: '保存修改' })
+  await expect(save, 'an empty form stays closed').toBeDisabled()
+
+  await dialog.getByLabel('设备识别码').fill('dev-1')
+  await expect(save).toBeEnabled()
+  await save.click()
+  await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(1)
+  expect(patchCalls(api, 'acc-1')[0].body).toEqual({ device_code: 'dev-1' })
+
+  // 第二次只改手机号：掩码号随列表刷新更新。
+  const menu2 = await openRowMenu(page, '138****8000')
+  await menu2.getByRole('menuitem', { name: /编辑/ }).click()
+  const dialog2 = page.getByRole('dialog', { name: '编辑账号？' })
+  await dialog2.getByLabel('手机号').fill('13800138001')
+  await dialog2.getByRole('button', { name: '保存修改' }).click()
+  await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(2)
+  expect(patchCalls(api, 'acc-1')[1].body).toEqual({ phone: '13800138001' })
+  await expect(page.getByRole('button', { name: '查看 138****8001' })).toBeVisible()
+})
+
+test('invariant 6: an invalid phone blocks the edit form', async ({ page }) => {
+  await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+
+  const menu = await openRowMenu(page, '138****8000')
+  await menu.getByRole('menuitem', { name: /编辑/ }).click()
+  const dialog = page.getByRole('dialog', { name: '编辑账号？' })
+
+  await dialog.getByLabel('手机号').fill('123')
+  await expect(dialog.getByRole('button', { name: '保存修改' })).toBeDisabled()
+  await expect(dialog).toContainText('11 位')
+
+  await dialog.getByLabel('手机号').fill('   ')
+  await expect(dialog.getByRole('button', { name: '保存修改' })).toBeDisabled()
+})
+
+for (const theme of ['light', 'dark'] as const) {
+  test(`invariant 7: location is denied to master with a readable reason in ${theme}`, async ({
+    page,
+  }) => {
+    await page.addInitScript((value) => {
+      try {
+        localStorage.setItem('dash26-theme', value)
+      } catch {
+        /* localStorage 禁用时主题退回媒体查询，下面的断言会明确失败。 */
+      }
+    }, theme)
+    await mockAccountsApi(page, { role: 'master' })
+    await openAccounts(page)
+    await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
+
+    const menu = await openRowMenu(page, '138****8000')
+    const locationItem = menu.getByRole('menuitem', { name: /位置/ })
+    await expect(locationItem, 'denied, not hidden').toHaveAttribute('data-disabled')
+    await expect(locationItem).toContainText('仅 user/admin 可设置')
+    const paint = await locationItem.evaluate((element) => {
+      const style = getComputedStyle(element)
+      return { color: style.color, opacity: style.opacity }
+    })
+    expect(paint.color, `reason must not be transparent in ${theme}`).not.toBe('rgba(0, 0, 0, 0)')
+    expect(Number(paint.opacity), `reason must stay readable in ${theme}`).toBeGreaterThan(0)
+
+    await expect(menu.getByRole('menuitem', { name: /编辑/ })).not.toHaveAttribute('data-disabled')
+    await expect(menu.getByRole('menuitem', { name: /删除/ })).not.toHaveAttribute('data-disabled')
+  })
+}
+
+test('invariant 7: location auto sends no coordinates', async ({ page }) => {
+  const api = await mockAccountsApi(page, { role: 'admin' })
+  await openAccounts(page)
+
+  const menu = await openRowMenu(page, '138****8000')
+  await menu.getByRole('menuitem', { name: /位置/ }).click()
+  const dialog = page.getByRole('dialog', { name: '设置位置策略？' })
+  await expect(dialog).toBeVisible()
+  await expect(dialog).toContainText('当前策略不可读取')
+  expect(locationCalls(api, 'acc-1'), 'no request before save').toHaveLength(0)
+
+  await expect(dialog.getByLabel('经度')).toBeDisabled()
+  await expect(dialog.getByLabel('纬度')).toBeDisabled()
+
+  const save = dialog.getByRole('button', { name: '保存策略' })
+  await expect(save).toBeEnabled()
+  await save.click()
+  await expect.poll(() => locationCalls(api, 'acc-1').length).toBe(1)
+  expect(locationCalls(api, 'acc-1')[0].body).toEqual({ mode: 'auto' })
+})
+
+test('invariant 7: fixed location validates and caches for prefill', async ({ page }) => {
+  const api = await mockAccountsApi(page, { role: 'admin' })
+  await openAccounts(page)
+
+  const menu = await openRowMenu(page, '138****8000')
+  await menu.getByRole('menuitem', { name: /位置/ }).click()
+  const dialog = page.getByRole('dialog', { name: '设置位置策略？' })
+  await dialog.getByLabel('定位模式').selectOption('fixed')
+
+  const save = dialog.getByRole('button', { name: '保存策略' })
+  await expect(save, 'missing coordinates stay closed').toBeDisabled()
+
+  await dialog.getByLabel('经度').fill('200')
+  await expect(save).toBeDisabled()
+  await dialog.getByLabel('经度').fill('1.5')
+  await dialog.getByLabel('纬度').fill('95')
+  await expect(save).toBeDisabled()
+  await dialog.getByLabel('纬度').fill('2.5')
+  await dialog.getByLabel('设置理由').fill('合成理由')
+  await expect(save).toBeEnabled()
+  await save.click()
+  await expect.poll(() => locationCalls(api, 'acc-1').length).toBe(1)
+  expect(locationCalls(api, 'acc-1')[0].body).toEqual({
+    mode: 'fixed',
+    lng: 1.5,
+    lat: 2.5,
+    reason: '合成理由',
+  })
+
+  // 成功响应进会话内缓存：再开预填，不再盲态。
+  const menu2 = await openRowMenu(page, '138****8000')
+  await menu2.getByRole('menuitem', { name: /位置/ }).click()
+  await expect(dialog).toBeVisible()
+  await expect(dialog.getByLabel('定位模式')).toHaveValue('fixed')
+  await expect(dialog.getByLabel('经度')).toHaveValue('1.5')
+  await expect(dialog.getByLabel('纬度')).toHaveValue('2.5')
+  await expect(dialog.getByLabel('设置理由')).toHaveValue('合成理由')
+  await expect(dialog).not.toContainText('当前策略不可读取')
+})
+
+test('invariant 8: delete waits for confirmation and removes the row', async ({ page }) => {
+  const api = await mockAccountsApi(page, { role: 'user' })
+  await openAccounts(page)
+
+  const menu = await openRowMenu(page, '135****0001')
+  await menu.getByRole('menuitem', { name: /删除/ }).click()
+  const dialog = page.getByRole('dialog', { name: '删除账号？' })
+  await expect(dialog).toBeVisible()
+  await expect(dialog).toContainText('软删除')
+  await expect(dialog).toContainText('凭据将被级联隐藏')
+  expect(deleteCalls(api, 'acc-3'), 'no request before confirmation').toHaveLength(0)
+
+  await dialog.getByRole('button', { name: '取消' }).click()
+  await expect(dialog).toBeHidden()
+  expect(deleteCalls(api, 'acc-3')).toHaveLength(0)
+  await expect.poll(() => activeLabel(page), 'cancel returns focus').toBe('更多操作 135****0001')
+
+  await page.getByRole('button', { name: '查看 135****0001' }).click()
+  const drawer = page.getByRole('dialog', { name: '账号详情' })
+  await expect(drawer).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(drawer).toBeHidden()
+
+  const menu2 = await openRowMenu(page, '135****0001')
+  await menu2.getByRole('menuitem', { name: /删除/ }).click()
+  await dialog.getByRole('button', { name: '确认删除' }).click()
+  await expect.poll(() => deleteCalls(api, 'acc-3').length).toBe(1)
+  await expect.poll(() => page.getByRole('button', { name: '查看 135****0001' }).count()).toBe(0)
+  await expect(drawer).toBeHidden()
+  await expect
+    .poll(() => activeLabel(page), 'the row is gone; focus lands on the filter')
+    .toBe('手机号筛选')
 })

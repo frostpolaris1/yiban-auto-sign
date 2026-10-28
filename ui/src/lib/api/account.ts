@@ -1,6 +1,6 @@
 /**
  * **功能**
- * 账号域 API：类型别名、路径表、列表查询、详情与四个写操作。
+ * 账号域 API：类型别名、路径表、列表查询、详情与全部写操作。
  *
  * **归属**
  * `lib/api` 工具层：只拼路径与查询串，不含展示逻辑。
@@ -23,6 +23,9 @@ export type AccountPauseRequest = Schemas['AccountPauseRequest']
 export type AccountReviewRequest = Schemas['AccountReviewRequest']
 export type AccountSignAccepted = Schemas['AccountSignAccepted']
 export type AccountVerifyResult = Schemas['AccountVerifyResult']
+export type AccountUpdate = Schemas['AccountUpdate']
+export type AccountLocation = Schemas['AccountLocation']
+export type AccountLocationUpdate = Schemas['AccountLocationUpdate']
 
 /** 查询串视图。字段直接取契约生成的 `AccountList` 参数，不另写一份。 */
 export type AccountQuery = NonNullable<operations['AccountList']['parameters']['query']>
@@ -35,6 +38,7 @@ export const ACCOUNT_PATHS = {
   pause: (id: string) => `/api/accounts/${encodeURIComponent(id)}/pause`,
   verify: (id: string) => `/api/accounts/${encodeURIComponent(id)}/verify`,
   sign: (id: string) => `/api/accounts/${encodeURIComponent(id)}/sign`,
+  location: (id: string) => `/api/accounts/${encodeURIComponent(id)}/location`,
 } as const
 
 /**
@@ -81,4 +85,28 @@ export function reviewAccount(id: string, body: AccountReviewRequest): Promise<A
     method: 'POST',
     body: JSON.stringify(body),
   })
+}
+
+/** PATCH 只带填写字段。school 变更在 P1 被 409，表单不提供。 */
+export function updateAccount(id: string, body: AccountUpdate): Promise<Account> {
+  return apiRequest<Account>(ACCOUNT_PATHS.detail(id), {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  })
+}
+
+/** 位置策略没有读端点：成功响应由调用方存会话内缓存。 */
+export function setAccountLocation(
+  id: string,
+  body: AccountLocationUpdate,
+): Promise<AccountLocation> {
+  return apiRequest<AccountLocation>(ACCOUNT_PATHS.location(id), {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  })
+}
+
+/** 204 软删除。成功后无响应体。 */
+export function deleteAccount(id: string): Promise<void> {
+  return apiRequest<void>(ACCOUNT_PATHS.detail(id), { method: 'DELETE' })
 }
