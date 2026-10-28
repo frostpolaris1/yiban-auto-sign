@@ -20,7 +20,7 @@ import { Icon } from '@/components/ui/Icon'
 import { TextInput } from '@/components/ui/Input'
 import { login } from '@/lib/api/auth'
 import { sanitizeRedirect } from '@/lib/redirect'
-import { clearSessionExpired, ME_QUERY_KEY } from '@/lib/session'
+import { clearSessionExpired, ME_QUERY_KEY, SHOWCASE } from '@/lib/session'
 import { buildLoginBody, isLoginPath, loginErrorMessage } from './login'
 
 type LoginFormProps = {
@@ -41,12 +41,23 @@ export function LoginForm({ redirect, expired, onSignInStart, onSignInFailed }: 
   const [password, setPassword] = useState('')
 
   const mutation = useMutation({
-    mutationFn: () => login(buildLoginBody({ email, password })),
+    mutationFn: async () => {
+      // 展示模式：无后端，任意输入都直接进入（合成会话由 useMe 常驻提供）。
+      if (SHOWCASE) {
+        await new Promise((resolve) => setTimeout(resolve, 400))
+        return null
+      }
+      return login(buildLoginBody({ email, password }))
+    },
     onSuccess: (me) => {
       clearSessionExpired()
-      // 先写缓存再导航：壳的守卫读同一份 `['me']`，不会把刚登录的人弹回登录页。
-      queryClient.setQueryData(ME_QUERY_KEY, me)
-      void queryClient.invalidateQueries({ queryKey: ME_QUERY_KEY })
+      // 正常模式：登录响应即会话，先写缓存再导航——壳的守卫读同一份
+      // `['me']`，不会把刚登录的人弹回登录页（与切片 3 行为一致）。
+      // 展示模式：会话由 useMe 常驻提供，这里只导航。
+      if (me) {
+        queryClient.setQueryData(ME_QUERY_KEY, me)
+        void queryClient.invalidateQueries({ queryKey: ME_QUERY_KEY })
+      }
       // `/login` 的各种拼写（含 URI 编码）不能当回跳目标：命中落 `/`。
       // 成功路径必然离开本页，提交锁随卸载失效，无需复位。
       const target = sanitizeRedirect(redirect)

@@ -19,7 +19,7 @@ import { Alert } from '@/components/ui/Alert'
 import { SessionLoading } from '@/components/ui/SessionLoading'
 import { logout } from '@/lib/api/auth'
 import { describeApiError } from '@/lib/api/client'
-import { clearSessionExpired, useMe, useSessionExpired } from '@/lib/session'
+import { clearSessionExpired, SHOWCASE, useMe, useSessionExpired } from '@/lib/session'
 import { crumbsFor, documentTitleFor } from './nav'
 import { Footer } from './Footer'
 import { Sidebar } from './Sidebar'
@@ -40,10 +40,14 @@ export function AppShell() {
   const [logoutError, setLogoutError] = useState<string | null>(null)
 
   const logoutMutation = useMutation({
-    mutationFn: logout,
+    mutationFn: async () => {
+      // 展示模式：无后端，退出只是回到登录页（会话由 useMe 常驻提供）。
+      if (SHOWCASE) return
+      await logout()
+    },
     onSuccess: () => {
       clearSessionExpired()
-      queryClient.clear()
+      if (!SHOWCASE) queryClient.clear()
       void navigate({ to: '/login', replace: true })
     },
     onError: (error) => setLogoutError(describeApiError(error)),

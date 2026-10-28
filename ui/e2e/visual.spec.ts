@@ -1,12 +1,14 @@
 import { test, expect, type Page } from '@playwright/test'
 import { mockAccountsApi } from './support/fake-accounts-api'
+import { SCHEDULE_DAY, mockScheduleApi } from './support/fake-schedule-api'
 import { mockSchoolsApi } from './support/fake-schools-api'
 
 /**
  * Adminator 壳的视觉回归基线。
  *
- * 矩阵：5 条路由 × 2 套主题 × 2 个宽度 = 20 张截图。
- * 另有抽屉／模态／菜单态、无权限页与会话过期提示等按需快照，当前共 48 张。
+ * 矩阵：5 条常驻路由 × 2 套主题 × 2 个宽度 = 20 张截图。
+ * 时间片页按固定业务日另拍（缺省日期会随日历漂移，不能进常驻矩阵）。
+ * 另有抽屉／模态／菜单态、无权限页与时间偏好卡等按需快照。
  * 基线随 spec 入库，目录是 `e2e/visual.spec.ts-snapshots/`。
  * 首次运行 `npm run test:visual:update`。此后每次必须 0 差异。
  */
@@ -38,6 +40,11 @@ async function mockSessionFor(
 ) {
   if (path === '/login') {
     await mockAccountsApi(page, { role: null })
+    return
+  }
+  // 时间片页需要窗口、预览与时间偏好端点；路径可能带 `?day=`。
+  if (path.startsWith('/schedule')) {
+    await mockScheduleApi(page, { role })
     return
   }
   // 学校页需要完整的学校端点集合：后注册的 route 先匹配，覆盖 beforeEach 的账号 mock。
@@ -193,6 +200,55 @@ for (const theme of THEMES) {
 }
 
 for (const theme of THEMES) {
+  test(`visual schedule page ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await openWithTheme(page, `/schedule?day=${SCHEDULE_DAY}`, theme)
+    await expect(page.getByRole('table', { name: '时间片窗口' })).toBeVisible()
+    await expect(page).toHaveScreenshot(`schedule-${theme}-1440.png`, { fullPage: true })
+  })
+
+  test(`visual schedule preview ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await openWithTheme(page, `/schedule?day=${SCHEDULE_DAY}`, theme)
+    await page.getByRole('button', { name: '查看计划 合成学校甲' }).click()
+    const dialog = page.getByRole('dialog', { name: '计划预览' })
+    await expect(dialog).toBeVisible()
+    await expect(dialog).toContainText('窗口版本')
+    await expect(dialog).toContainText('v0')
+    await expect(page).toHaveScreenshot(`schedule-preview-${theme}-1440.png`)
+  })
+
+  test(`visual schedule override ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await openWithTheme(page, `/schedule?day=${SCHEDULE_DAY}`, theme)
+    await page.getByRole('button', { name: '查看计划 合成学校甲' }).click()
+    await page.getByRole('dialog', { name: '计划预览' }).getByRole('button', { name: '写入覆盖' }).click()
+    const dialog = page.getByRole('dialog', { name: '写入窗口覆盖？' })
+    await expect(dialog).toBeVisible()
+    await expect(dialog.getByLabel('开始时间')).toHaveValue('2026-10-28T08:10')
+    await expect(page).toHaveScreenshot(`schedule-override-${theme}-1440.png`)
+  })
+
+  test(`visual schedule denied ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await openWithTheme(page, `/schedule?day=${SCHEDULE_DAY}`, theme, 'user')
+    await expect(page.getByText('你的角色无权查看时间片管理')).toBeVisible()
+    await expect(page).toHaveScreenshot(`schedule-denied-${theme}-1440.png`, { fullPage: true })
+  })
+
+  test(`visual dashboard time preference card ${theme}`, async ({ page }) => {
+    // 偏好卡只对 user 渲染：先叠一层 user 会话与时间偏好端点。
+    await mockScheduleApi(page, { role: 'user' })
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await openWithTheme(page, '/', theme)
+    await expect(page.locator('.app-pref-current')).toHaveText('窗口开始 + 15 分钟')
+    await expect(page).toHaveScreenshot(`dashboard-time-pref-${theme}-1440.png`, {
+      fullPage: true,
+    })
+  })
+}
+
+for (const theme of THEMES) {
   test(`visual profile menu ${theme}`, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })
     await openWithTheme(page, '/', theme)
@@ -212,17 +268,19 @@ for (const theme of THEMES) {
 }
 
 test('no horizontal overflow at either width, in either theme', async ({ page }) => {
+  // 时间片页不进口径矩阵（缺省日期会漂移），但溢出判据一样要钉：固定业务日补拍。
+  const paths = [...ROUTES.map((route) => route.path), `/schedule?day=${SCHEDULE_DAY}`]
   for (const theme of THEMES) {
-    for (const route of ROUTES) {
+    for (const path of paths) {
       await page.setViewportSize({ width: 390, height: 844 })
-      await openWithTheme(page, route.path, theme)
+      await openWithTheme(page, path, theme)
       const narrow = await page.evaluate(() => ({
         scrollWidth: document.documentElement.scrollWidth,
         clientWidth: document.documentElement.clientWidth,
       }))
       expect(
         narrow.scrollWidth,
-        `${route.path} overflows at 390px in ${theme}: ${narrow.scrollWidth} > ${narrow.clientWidth}`,
+        `${path} overflows at 390px in ${theme}: ${narrow.scrollWidth} > ${narrow.clientWidth}`,
       ).toBeLessThanOrEqual(narrow.clientWidth + 1)
 
       await page.setViewportSize({ width: 1440, height: 900 })
@@ -232,7 +290,7 @@ test('no horizontal overflow at either width, in either theme', async ({ page })
       }))
       expect(
         wide.scrollWidth,
-        `${route.path} overflows at 1440px in ${theme}: ${wide.scrollWidth} > ${wide.clientWidth}`,
+        `${path} overflows at 1440px in ${theme}: ${wide.scrollWidth} > ${wide.clientWidth}`,
       ).toBeLessThanOrEqual(wide.clientWidth + 1)
     }
   }

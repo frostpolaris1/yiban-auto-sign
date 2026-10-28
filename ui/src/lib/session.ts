@@ -12,17 +12,39 @@
  */
 
 import { useSyncExternalStore } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { fetchMe } from './api/auth'
+import { useQuery, type UseQueryResult } from '@tanstack/react-query'
+import { fetchMe, type SessionUser } from './api/auth'
 
 export const ME_QUERY_KEY = ['me'] as const
 
+/**
+ * 展示模式（VITE_SHOWCASE=1 构建）：不发会话请求，返回合成 master 会话。
+ * 用于纯静态展示部署（如 probe 机）：访客可浏览全部页面与组件画廊，
+ * 各页数据取展示夹具（showcase.ts），无任何网络请求。
+ * 正常构建（不带该变量）零行为变化。判据必须是全等 '1'：
+ * Vite 注入的是字符串，`"0"` 也是真值。
+ */
+export const SHOWCASE: boolean = import.meta.env.VITE_SHOWCASE === '1'
+
+const SHOWCASE_USER: SessionUser = {
+  id: 'showcase',
+  email: 'showcase@demo.local',
+  role: 'master',
+  status: 'active',
+  must_change_password: false,
+  csrf_token: 'showcase',
+}
+
 /** 守卫、登录页、账号页共用这一份查询。 */
-export function useMe() {
+export function useMe(): UseQueryResult<SessionUser> {
   return useQuery({
     queryKey: ME_QUERY_KEY,
-    queryFn: fetchMe,
+    queryFn: async (): Promise<SessionUser> => {
+      if (SHOWCASE) return SHOWCASE_USER
+      return fetchMe()
+    },
     retry: false,
+    staleTime: SHOWCASE ? Infinity : undefined,
   })
 }
 

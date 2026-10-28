@@ -17,6 +17,7 @@ import { Icon } from '@/components/ui/Icon'
 import { Menu, MenuDivider, MenuItem } from '@/components/ui/Menu'
 import type { SessionUser } from '@/lib/api/auth'
 import { initialsFor, roleLabel } from '@/lib/identity'
+import { SHOWCASE } from '@/lib/session'
 import { useTheme } from '@/lib/theme'
 
 type TopbarProps = {
@@ -148,11 +149,15 @@ export function Topbar({
             <Icon name="userCog" />
             个人信息
           </MenuItem>
-          <MenuDivider />
-          <MenuItem danger disabled={loggingOut} onSelect={onLogout}>
-            <Icon name="logout" />
-            {loggingOut ? '正在退出…' : '退出登录'}
-          </MenuItem>
+          {!SHOWCASE && (
+            <>
+              <MenuDivider />
+              <MenuItem danger disabled={loggingOut} onSelect={onLogout}>
+                <Icon name="logout" />
+                {loggingOut ? '正在退出…' : '退出登录'}
+              </MenuItem>
+            </>
+          )}
         </Menu>
       </div>
     </header>
