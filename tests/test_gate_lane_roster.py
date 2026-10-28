@@ -379,6 +379,40 @@ class LaneRosterCheckerMutationTest(unittest.TestCase):
 
 
 
+class MetaGatesStayFastTest(unittest.TestCase):
+    """47w：判**整棵活树**的元门必须留在 fast 车道。
+
+    形状：这类门判的不是本次改动，而是全树状态（共享事实名册上限、配置登记、
+    文档引用、公开面、日期常量、跳过面、名册自洽）。它们一旦沉到 slow 或某个
+    CI 子集里，本地 fast/scoped 就看不见红——一天内三批各自在 CI 才撞上。
+    本类把这份名册钉死：改名/删行/挪道都红；新增整树元门时同批加进来。
+    """
+
+    META_GATES = frozenset({
+        "tests/test_shared_facts_gate.py",
+        "tests/test_config_registry_gate.py",
+        "tests/test_doc_reference_gate.py",
+        "tests/test_public_exposure_gate.py",
+        "tests/test_module_date_constant_gate.py",
+        "tests/test_skip_visibility_gate.py",
+        "tests/test_gate_lane_roster.py",
+    })
+
+    def test_named_meta_gates_are_fast(self):
+        with io.open(ROSTER, encoding="utf-8") as f:
+            rows, errors = _parse_roster(f.read())
+        self.assertEqual(errors, [], "名册解析错误：%s" % errors)
+        lane_of = {}
+        for lane, path in rows:
+            lane_of.setdefault(path, lane)
+        missing = sorted(self.META_GATES - set(lane_of))
+        self.assertEqual(missing, [],
+                         "整树元门在名册里失踪（改名或删行）：%s" % missing)
+        not_fast = sorted(p for p in self.META_GATES if lane_of.get(p) != "fast")
+        self.assertEqual(not_fast, [],
+                         "整树元门被移出 fast 车道（47w：本地就看不见红）：%s" % not_fast)
+
+
 class DocNumbersMatchRealityTest(unittest.TestCase):
     """③ 文档里的现量文件数/用例数必须等于名册与真实收集（AGENTS §31/§40b）。
 
