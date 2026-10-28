@@ -17,6 +17,7 @@ import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Icon } from '@/components/ui/Icon'
 import { formatDateTime, isPending, statusLabel, statusTone } from './display'
+import { AccountRowMenu } from './AccountRowMenu'
 import {
   can,
   canChangePause,
@@ -39,6 +40,9 @@ type AccountsTableProps = {
   onRetry: () => void
   onOpenDetail: (account: Account, opener: HTMLElement | null) => void
   onAction: (account: Account, kind: AccountActionKind, opener: HTMLElement) => void
+  onEdit: (account: Account, opener: HTMLElement | null) => void
+  onLocation: (account: Account, opener: HTMLElement | null) => void
+  onDelete: (account: Account, opener: HTMLElement | null) => void
 }
 
 export function AccountsTable({
@@ -54,6 +58,9 @@ export function AccountsTable({
   onRetry,
   onOpenDetail,
   onAction,
+  onEdit,
+  onLocation,
+  onDelete,
 }: AccountsTableProps) {
   return (
     <>
@@ -207,6 +214,13 @@ export function AccountsTable({
                       >
                         评审
                       </Button>
+                      <AccountRowMenu
+                        account={account}
+                        role={role}
+                        onEdit={onEdit}
+                        onLocation={onLocation}
+                        onDelete={onDelete}
+                      />
                       {notes.size > 0 ? (
                         <span className="app-deny-note">{[...notes].join('；')}</span>
                       ) : null}

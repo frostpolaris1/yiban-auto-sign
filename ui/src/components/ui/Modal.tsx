@@ -21,7 +21,10 @@ type ModalProps = {
   description?: ReactNode
   children: ReactNode
   footer?: ReactNode
-  /** 打开弹窗的控件。关闭时焦点回到它。 */
+  /**
+   * 打开弹窗的控件。关闭时焦点回到它；还原点已被摘除（如删除行）
+   * 时保持 Radix 默认行为，焦点归属由调用方在成功回调里指定。
+   */
   returnFocusTo?: HTMLElement | null
 }
 
@@ -49,6 +52,7 @@ export function Modal({
           aria-describedby={description ? 'app-modal-description' : undefined}
           onCloseAutoFocus={(event) => {
             if (!returnFocusTo) return
+            if (!returnFocusTo.isConnected) return
             event.preventDefault()
             returnFocusTo.focus()
           }}

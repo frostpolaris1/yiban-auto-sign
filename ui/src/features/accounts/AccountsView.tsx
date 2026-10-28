@@ -17,23 +17,33 @@ import { Alert } from '@/components/ui/Alert'
 import { Card } from '@/components/ui/Card'
 import { PageHeader } from '@/components/ui/PageHeader'
 import {
+  deleteAccount,
   listAccounts,
   pauseAccount,
   reviewAccount,
+  setAccountLocation,
   signAccount,
+  updateAccount,
   verifyAccount,
   type Account,
+  type AccountLocation,
+  type AccountLocationUpdate,
   type AccountStatus,
+  type AccountUpdate,
   type AccountVerifyResult,
 } from '@/lib/api/account'
 import { fetchMe, type Role } from '@/lib/api/auth'
 import { describeApiError } from '@/lib/api/client'
 import { listAllSchools } from '@/lib/api/school'
 import { AccountActionModal, type AccountActionState, type ReviewInput } from './AccountActionModal'
+import { AccountDeleteModal } from './AccountDeleteModal'
 import { AccountDetailDrawer } from './AccountDetailDrawer'
+import { AccountEditModal } from './AccountEditModal'
 import { AccountFilters, type AccountFilterValues } from './AccountFilters'
+import { AccountLocationModal } from './AccountLocationModal'
 import { AccountsTable } from './AccountsTable'
 import { currentCursor, emptyCursorStack, goNext, goPrevious, hasPreviousPage } from './cursor'
+import { buildAccountUpdate, buildLocationUpdate, type AccountUpdateDraft, type LocationDraft } from './drafts'
 import { can, type AccountActionKind } from './permissions'
 
 type MutationInput = {
@@ -55,6 +65,11 @@ function successText(kind: AccountActionKind, account: Account): string {
     case 'verify':
       return ''
   }
+}
+
+/** 删除成功后行必消失：焦点直接落筛选输入，不让焦点掉到 body。 */
+function focusAfterRowRemoval() {
+  document.querySelector<HTMLElement>('[aria-label="手机号筛选"]')?.focus()
 }
 
 export function AccountsView() {
@@ -112,6 +127,15 @@ export function AccountsView() {
   const [actionError, setActionError] = useState<string | null>(null)
   const [verifyResult, setVerifyResult] = useState<AccountVerifyResult | null>(null)
   const [notice, setNotice] = useState<{ id: number; text: string } | null>(null)
+  const [editTarget, setEditTarget] = useState<Account | null>(null)
+  const [editReturnFocus, setEditReturnFocus] = useState<HTMLElement | null>(null)
+  const [editError, setEditError] = useState<string | null>(null)
+  const [locationTarget, setLocationTarget] = useState<Account | null>(null)
+  const [locationReturnFocus, setLocationReturnFocus] = useState<HTMLElement | null>(null)
+  const [locationErrorText, setLocationErrorText] = useState<string | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<Account | null>(null)
+  const [deleteReturnFocus, setDeleteReturnFocus] = useState<HTMLElement | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   const mutation = useMutation({
     mutationFn: async (input: MutationInput) => {
@@ -165,6 +189,85 @@ export function AccountsView() {
     setAction(null)
     setActionError(null)
     setVerifyResult(null)
+  }
+
+  const openEdit = (account: Account, opener: HTMLElement | null) => {
+    setEditError(null)
+    setEditReturnFocus(opener)
+    setEditTarget(account)
+  }
+
+  const openLocation = (account: Account, opener: HTMLElement | null) => {
+    setLocationErrorText(null)
+    setLocationReturnFocus(opener)
+    setLocationTarget(account)
+  }
+
+  const openDelete = (account: Account, opener: HTMLElement | null) => {
+    setDeleteError(null)
+    setDeleteReturnFocus(opener)
+    setDeleteTarget(account)
+  }
+
+  const shapeMutation = useMutation({
+    mutationFn: async (input: {
+      account: Account
+      op: 'update' | 'location' | 'delete'
+      body?: AccountUpdate | AccountLocationUpdate
+    }) => {
+      switch (input.op) {
+        case 'update':
+          return updateAccount(input.account.id, input.body as AccountUpdate)
+        case 'location':
+          return setAccountLocation(input.account.id, input.body as AccountLocationUpdate)
+        case 'delete':
+          return deleteAccount(input.account.id)
+      }
+    },
+    onSuccess: (result, input) => {
+      void queryClient.invalidateQueries({ queryKey: ['accounts'] })
+      void queryClient.invalidateQueries({ queryKey: ['account', input.account.id] })
+      if (input.op === 'delete') {
+        // 行将随刷新消失：先清还原点，让模态卸载的 onCloseAutoFocus
+        // 不把焦点抢回已注定删除的触发器，再直接落筛选输入。
+        setDeleteReturnFocus(null)
+        focusAfterRowRemoval()
+        setDeleteTarget(null)
+      }
+      if (input.op === 'update') setEditTarget(null)
+      if (input.op === 'location') {
+        // 契约无读端点：成功响应进会话内缓存，供下次预填（专档 §七.4 口径）。
+        // 该 key 无订阅者，默认 gcTime 5 分钟即回收——此处声明永不过期，
+        // 文案「本会话内可预填」的承诺才成立。
+        queryClient.setQueryDefaults(['account-location'], { gcTime: Infinity })
+        queryClient.setQueryData(['account-location', input.account.id], result as AccountLocation)
+        setLocationTarget(null)
+      }
+    },
+    onError: (error, input) => {
+      const text = describeApiError(error)
+      if (input.op === 'update') setEditError(text)
+      if (input.op === 'location') setLocationErrorText(text)
+      if (input.op === 'delete') setDeleteError(text)
+    },
+  })
+
+  const closeEdit = () => {
+    shapeMutation.reset()
+    setEditTarget(null)
+    setEditError(null)
+  }
+
+  const closeLocation = () => {
+    shapeMutation.reset()
+    setLocationTarget(null)
+    setLocationErrorText(null)
+  }
+
+  const closeDelete = () => {
+    shapeMutation.reset()
+    setDeleteTarget(null)
+    setDeleteError(null)
   }
 
   const rows = accountsQuery.data?.items ?? []
@@ -246,6 +349,9 @@ export function AccountsView() {
           }}
           onOpenDetail={openDetail}
           onAction={openAction}
+          onEdit={openEdit}
+          onLocation={openLocation}
+          onDelete={openDelete}
         />
       </Card>
 
@@ -267,6 +373,53 @@ export function AccountsView() {
           if (!action) return
           setActionError(null)
           mutation.mutate({ account: action.account, kind: action.kind, review })
+        }}
+      />
+
+      <AccountEditModal
+        account={editTarget}
+        pending={shapeMutation.isPending && shapeMutation.variables?.op === 'update'}
+        error={editError}
+        returnFocusTo={editReturnFocus}
+        onClose={closeEdit}
+        onConfirm={(draft: AccountUpdateDraft) => {
+          if (!editTarget) return
+          setEditError(null)
+          shapeMutation.mutate({
+            account: editTarget,
+            op: 'update',
+            body: buildAccountUpdate(draft),
+          })
+        }}
+      />
+
+      <AccountLocationModal
+        account={locationTarget}
+        pending={shapeMutation.isPending && shapeMutation.variables?.op === 'location'}
+        error={locationErrorText}
+        returnFocusTo={locationReturnFocus}
+        onClose={closeLocation}
+        onConfirm={(draft: LocationDraft) => {
+          if (!locationTarget) return
+          setLocationErrorText(null)
+          shapeMutation.mutate({
+            account: locationTarget,
+            op: 'location',
+            body: buildLocationUpdate(draft),
+          })
+        }}
+      />
+
+      <AccountDeleteModal
+        account={deleteTarget}
+        pending={shapeMutation.isPending && shapeMutation.variables?.op === 'delete'}
+        error={deleteError}
+        returnFocusTo={deleteReturnFocus}
+        onClose={closeDelete}
+        onConfirm={() => {
+          if (!deleteTarget) return
+          setDeleteError(null)
+          shapeMutation.mutate({ account: deleteTarget, op: 'delete' })
         }}
       />
     </>

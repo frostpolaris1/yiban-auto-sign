@@ -74,6 +74,45 @@ for (const theme of THEMES) {
     await expect(page.getByRole('dialog', { name: '暂停账号？' })).toBeVisible()
     await expect(page).toHaveScreenshot(`accounts-modal-${theme}-1440.png`)
   })
+
+  test(`visual accounts row menu ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await openWithTheme(page, '/accounts', theme)
+    // master：位置项置灰带原因，正好钉住禁用原因的可读性。
+    await page.getByRole('button', { name: '更多操作 138****8000' }).click()
+    await expect(page.getByRole('menu')).toBeVisible()
+    await expect(page).toHaveScreenshot(`accounts-rowmenu-${theme}-1440.png`)
+  })
+
+  test(`visual accounts edit modal ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await openWithTheme(page, '/accounts', theme)
+    await page.getByRole('button', { name: '更多操作 138****8000' }).click()
+    await page.getByRole('menu').getByRole('menuitem', { name: /编辑/ }).click()
+    await expect(page.getByRole('dialog', { name: '编辑账号？' })).toBeVisible()
+    await expect(page).toHaveScreenshot(`accounts-edit-${theme}-1440.png`)
+  })
+
+  test(`visual accounts location modal ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    // 位置策略只归 user/admin（beforeEach 是 master，会置灰打不开）：
+    // 叠一层 user 角色的 mock，后注册的 route 先匹配。
+    await mockAccountsApi(page, { role: 'user' })
+    await openWithTheme(page, '/accounts', theme)
+    await page.getByRole('button', { name: '更多操作 139****9000' }).click()
+    await page.getByRole('menu').getByRole('menuitem', { name: /位置/ }).click()
+    await expect(page.getByRole('dialog', { name: '设置位置策略？' })).toBeVisible()
+    await expect(page).toHaveScreenshot(`accounts-location-${theme}-1440.png`)
+  })
+
+  test(`visual accounts delete modal ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await openWithTheme(page, '/accounts', theme)
+    await page.getByRole('button', { name: '更多操作 135****0001' }).click()
+    await page.getByRole('menu').getByRole('menuitem', { name: /删除/ }).click()
+    await expect(page.getByRole('dialog', { name: '删除账号？' })).toBeVisible()
+    await expect(page).toHaveScreenshot(`accounts-delete-${theme}-1440.png`)
+  })
 }
 
 test('no horizontal overflow at either width, in either theme', async ({ page }) => {

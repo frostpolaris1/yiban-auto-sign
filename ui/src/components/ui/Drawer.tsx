@@ -43,7 +43,9 @@ export function Drawer({
           className="app-drawer"
           aria-describedby={description ? 'app-drawer-description' : undefined}
           onCloseAutoFocus={(event) => {
-            if (!returnFocusTo) return
+            // 还原点随外部刷新被摘除时不还原（与 Modal 的 guard 同款），
+            // 焦点交给 Radix 默认行为，不落到已消失的元素上。
+            if (!returnFocusTo || !returnFocusTo.isConnected) return
             event.preventDefault()
             returnFocusTo.focus()
           }}

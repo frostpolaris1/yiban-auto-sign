@@ -58,6 +58,15 @@
 
 /* ---------- Radix DropdownMenu：键盘高亮映射到 vendor 悬停色 ---------- */
 
+/* 内容经 Portal 挂到 body，脱离 `.dd-wrap` 祖先链；
+   vendor 的 `.dd-wrap.is-open .dd-menu` 显隐选择器够不着，
+   改由 Radix 的 data-state 驱动同一组过渡。 */
+.dd-menu[data-state="open"] {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
 .dd-menu-item[data-highlighted] {
   background: var(--bg-hover);
 }
@@ -279,6 +288,44 @@
 
 .app-modal-error {
   margin-top: 12px;
+}
+
+/* ---------- 行内「更多」菜单 ----------
+ * 禁用项置灰不隐藏：Radix 给 data-disabled，vendor 没有对应样式。
+ * opacity 是成组合成不是继承：条目级 opacity 会把原因行一起压暗，
+ * 子级 opacity: 1 抵消不了。故条目不用 opacity，
+ * 主标签与图标单独降透明度；原因行满不透明、单独取色。
+ * 可读性判据：原因行对卡片底色 ≥3:1（light 用 --t-base 加深一档）。
+ */
+
+.dd-menu-item[data-disabled] {
+  cursor: not-allowed;
+}
+
+.dd-menu-item[data-disabled]:hover {
+  background: none;
+}
+
+.dd-menu-item[data-disabled] > svg,
+.dd-menu-item[data-disabled] .dd-item-stack > span:first-child {
+  opacity: 0.55;
+}
+
+.dd-item-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dd-menu-item[data-disabled] .dd-item-reason {
+  color: var(--t-base);
+}
+
+.dd-item-reason {
+  color: var(--t-muted);
+  font-size: 11px;
+  line-height: 1.3;
 }
 
 /* ---------- 账号详情抽屉 ---------- */

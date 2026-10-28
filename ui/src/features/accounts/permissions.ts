@@ -75,3 +75,26 @@ export function pauseDenyReason(
   if (pauseDirection(status) === 'resume') return '该暂停种类只能由对应角色恢复'
   return '仅正常状态可暂停'
 }
+
+export type RowMenuItem = 'edit' | 'location' | 'delete'
+
+/** 行菜单各项的端点角色：PATCH 与 DELETE 对全体开放，location 只归 user/admin。 */
+const MENU_ALLOWED: Record<RowMenuItem, readonly Role[]> = {
+  edit: ['master', 'admin', 'user'],
+  location: ['user', 'admin'],
+  delete: ['master', 'admin', 'user'],
+}
+
+export function canUseMenu(role: Role | null | undefined, item: RowMenuItem): boolean {
+  if (!role) return false
+  return MENU_ALLOWED[item].includes(role)
+}
+
+export function menuDenyReason(
+  role: Role | null | undefined,
+  item: RowMenuItem,
+): string | null {
+  if (canUseMenu(role, item)) return null
+  if (!role) return '会话角色未识别'
+  return '仅 user/admin 可设置'
+}
