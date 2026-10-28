@@ -249,6 +249,24 @@ var migrationDownCases = map[int64]migrationDownCase{
 			m.wantRelation("account_location", true)
 		},
 	},
+	18: {
+		name: "school_default_photo",
+		seed: func(m *migrationDownEnv) {
+			m.exec("INSERT INTO users (email, password_hash) VALUES ('mig-down-18@example.com', 'argon2id$test')")
+			m.exec("INSERT INTO schools (code, name) VALUES ('mig-down-18', 'Migration Down')")
+			m.exec(`INSERT INTO photos (owner_user_id, sha256, mime, width, height, bytes)
+			        SELECT id, decode(repeat('cd', 32), 'hex'), 'image/png', 1, 1, 1 FROM users`)
+			m.exec(`UPDATE schools SET default_photo_id = (SELECT id FROM photos)`)
+		},
+		wantDown: func(m *migrationDownEnv) {
+			m.wantColumn("schools", "default_photo_id", false)
+		},
+		wantUp: func(m *migrationDownEnv) {
+			m.wantColumn("schools", "default_photo_id", true)
+			// 重新 Up 后列可再次写入；照片行仍在。
+			m.exec(`UPDATE schools SET default_photo_id = (SELECT id FROM photos)`)
+		},
+	},
 }
 
 // TestMigrationDownIsExecutable 在真库上执行每个已登记的 Down。
@@ -580,6 +598,20 @@ func (m *migrationDownEnv) hasConstraint(table, name string) bool {
 	return exists
 }
 
+func (m *migrationDownEnv) hasColumn(table, column string) bool {
+	m.t.Helper()
+	// to_regclass 按 search_path 解析：本用例只看自己 schema 的表。
+	// information_schema 跨全部 schema，会读到并行用例的表。
+	var exists bool
+	if err := m.db.QueryRowContext(m.ctx, `SELECT EXISTS (
+	        SELECT 1 FROM pg_attribute
+	        WHERE attrelid = to_regclass($1) AND attname = $2 AND NOT attisdropped)`,
+		table, column).Scan(&exists); err != nil {
+		m.t.Fatalf("column %s.%s: %v", table, column, err)
+	}
+	return exists
+}
+
 func (m *migrationDownEnv) wantRelation(name string, want bool) {
 	m.t.Helper()
 	if got := m.hasRelation(name); got != want {
@@ -598,5 +630,12 @@ func (m *migrationDownEnv) wantConstraint(table, name string, want bool) {
 	m.t.Helper()
 	if got := m.hasConstraint(table, name); got != want {
 		m.t.Fatalf("constraint %q on %q exists = %v; want %v", name, table, got, want)
+	}
+}
+
+func (m *migrationDownEnv) wantColumn(table, column string, want bool) {
+	m.t.Helper()
+	if got := m.hasColumn(table, column); got != want {
+		m.t.Fatalf("column %q on %q exists = %v; want %v", column, table, got, want)
 	}
 }

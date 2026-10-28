@@ -5,21 +5,22 @@ import (
 	"io"
 	"time"
 
+	coreaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/account"
 	corephoto "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/photo"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
 // Store 读写图片记录。
 //
-// admin 作用域的读取需要「账号—图片」关系，本切片尚未建立；
-// 在这之前 admin 范围的实现一律返回 errs.ErrNotFound，不放行全量。
+// user 范围读自己的照片；admin 范围读绑定院校账号属主的照片。
+// master 不在照片端点契约内，Store 的照片读取仍返回 errs.ErrNotFound。
 //
 // 去重键是 (owner_user_id, sha256)：重复上传返回既有行。
 // 已软删的同键行在再次上传时恢复（DeletedAt 清空），避免用户
 // 删掉后重新上传得到一行不可见记录。
 type Store interface {
 	Create(ctx context.Context, rec corephoto.Record) (corephoto.Record, error)
-	// Get 按作用域读一张；跨用户、已软删与不存在都返回 errs.ErrNotFound。
+	// Get 按作用域读一张；跨用户、跨校、已软删与不存在都返回 errs.ErrNotFound。
 	Get(ctx context.Context, scope corescope.Scope, id string) (corephoto.Record, error)
 	// List 按作用域列一页，游标语义与账号列表一致。
 	List(ctx context.Context, scope corescope.Scope, cursor string, limit int) ([]corephoto.Record, string, error)
@@ -56,4 +57,27 @@ type Blobs interface {
 	List(ctx context.Context) ([]corephoto.Blob, error)
 	Touch(ctx context.Context, sha [32]byte, at time.Time) error
 	Remove(ctx context.Context, sha [32]byte) (bool, error)
+}
+
+// Accounts 是账号可见面判据（实现为 app/account.Service）。
+// 跨校、跨用户与已软删都返回 errs.ErrNotFound，判据只有一份。
+type Accounts interface {
+	Get(ctx context.Context, scope corescope.Scope, id string) (coreaccount.Record, error)
+}
+
+// SchoolPhotos 是学校默认图的存储面（实现为 pg.PhotoRepo）。
+// 院校可见面在存储侧按作用域判定，与照片/账号判据同源。
+type SchoolPhotos interface {
+	// SchoolWritable 判定院校可写：master 不限，admin 限绑定校。
+	// 越权与不存在返回 errs.ErrNotFound。
+	SchoolWritable(ctx context.Context, scope corescope.Scope, schoolID string) error
+	// PhotoForDefault 读一张未软删照片；master 放行全量。
+	// 跨用户、跨校与已软删返回 errs.ErrNotFound。
+	PhotoForDefault(ctx context.Context, scope corescope.Scope, id string) (corephoto.Record, error)
+	// SchoolDefault 读学校默认图；越权与不存在返回 errs.ErrNotFound。
+	// 引用照片已软删时按未设置返回。
+	SchoolDefault(ctx context.Context, scope corescope.Scope, schoolID string) (photoID, etag string, err error)
+	// SetSchoolDefault 覆盖写并返回旧引用（nil 表示原先未设置）。
+	// **必须在事务内运行**。
+	SetSchoolDefault(ctx context.Context, scope corescope.Scope, schoolID string, photoID *string) (*string, error)
 }

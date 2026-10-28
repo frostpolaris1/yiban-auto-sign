@@ -54,3 +54,59 @@ func schoolScopePredicate(s corescope.Scope, argIndex int, prefix string) (strin
 		return "", nil, errs.New(errs.CodeForbidden, "role cannot list schools")
 	}
 }
+
+// photoScopePredicate 是 photos 表的可见面，供照片读取与默认图校验共用。
+//
+// user 按 owner_user_id；admin 按账号归属：照片属主在该 admin 的绑定
+// 院校里有未删除账号。照片没有 school_id 列，院校面只能经 accounts
+// 派生；这与 scopePredicate 的 user 面同源（所有权即可见面）。
+// master 不在本谓词内：照片端点契约 x-roles 是 [user, admin]；
+// 默认图写入单独放行 master（见 PhotoRepo.PhotoForDefault）。
+// prefix 是表别名加点，或空串。
+func photoScopePredicate(s corescope.Scope, argIndex int, prefix string) (string, []any, error) {
+	if !s.Valid() {
+		return "", nil, errs.New(errs.CodeInternal, "invalid scope")
+	}
+	switch s.Kind() {
+	case corescope.KindUser:
+		clause := fmt.Sprintf(" AND %sowner_user_id = $%d::uuid", prefix, argIndex)
+		return clause, []any{s.UserID()}, nil
+	case corescope.KindAdmin:
+		clause := fmt.Sprintf(` AND EXISTS (
+			SELECT 1 FROM accounts a
+			WHERE a.owner_user_id = %sowner_user_id
+			  AND a.deleted_at IS NULL
+			  AND a.school_id = ANY($%d::text[]::uuid[]))`, prefix, argIndex)
+		return clause, []any{s.SchoolIDs()}, nil
+	default:
+		return "", nil, errs.New(errs.CodeInternal, "photo scope is user or admin")
+	}
+}
+
+// schoolDefaultPhotoPredicate 是学校默认图读取的院校可见面。
+//
+// master 不限；admin 限绑定院校；user 限自己拥有未删除账号的院校。
+// user 没有院校绑定表，故院校面由 accounts.owner_user_id 派生。
+// **空集合仍是空集合**：admin 无绑定即看不到任何学校。
+// prefix 是表别名加点，或空串。
+func schoolDefaultPhotoPredicate(s corescope.Scope, argIndex int, prefix string) (string, []any, error) {
+	if !s.Valid() {
+		return "", nil, errs.New(errs.CodeInternal, "invalid scope")
+	}
+	switch s.Kind() {
+	case corescope.KindMaster:
+		return "", nil, nil
+	case corescope.KindAdmin:
+		clause := fmt.Sprintf(" AND %sid = ANY($%d::text[]::uuid[])", prefix, argIndex)
+		return clause, []any{s.SchoolIDs()}, nil
+	case corescope.KindUser:
+		clause := fmt.Sprintf(` AND EXISTS (
+			SELECT 1 FROM accounts a
+			WHERE a.school_id = %sid
+			  AND a.owner_user_id = $%d::uuid
+			  AND a.deleted_at IS NULL)`, prefix, argIndex)
+		return clause, []any{s.UserID()}, nil
+	default:
+		return "", nil, errs.New(errs.CodeInternal, "unsupported scope kind")
+	}
+}

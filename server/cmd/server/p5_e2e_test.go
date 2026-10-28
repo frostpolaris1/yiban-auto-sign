@@ -133,7 +133,8 @@ func TestP5PhotoLibrary(t *testing.T) {
 		t.Fatalf("sha 不是 hex: %v", err)
 	}
 
-	// 作用域：他人 404；admin 读取 404、列表 403、上传 403。
+	// 作用域：他人 404；未绑定任何学校的 admin 读取 404、列表 403、上传 403。
+	// 绑定校的 admin 读取契约见 g1u_e2e_test.go。
 	if rec = e.do("GET", "/api/me/photos/"+photo.Id, nil, otherIssued); rec.Code != http.StatusNotFound {
 		t.Fatalf("他人读取 status = %d", rec.Code)
 	}

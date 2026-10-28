@@ -234,7 +234,11 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 	e.photoBlob, e.photoDir = photoBlobs, photoDir
 	photoSvc, err := appphotos.NewService(appphotos.Deps{
 		Store: e.photos, Blobs: photoBlobs, Clock: clk,
-		Options: appphotos.Options{MaxPixels: 4_000_000, MaxSidePx: 4096},
+		Audit:        e.audits,
+		Tx:           db,
+		Options:      appphotos.Options{MaxPixels: 4_000_000, MaxSidePx: 4096, Rand: zeroRand{}},
+		Accounts:     accountSvc,
+		SchoolPhotos: e.photos,
 	})
 	if err != nil {
 		t.Fatalf("new photo service: %v", err)
@@ -335,6 +339,12 @@ func w2cWithSchema(dsn, schema string) string {
 	}
 	return dsn + sep + "search_path=" + schema
 }
+
+// zeroRand 让 e2e 的预处理确定：四边不裁，同字节上传得到同一行。
+// 裁切随机性由 core/image 的单测覆盖；e2e 钉的是端点语义。
+type zeroRand struct{}
+
+func (zeroRand) IntN(int) int { return 0 }
 
 // e2eCreds 是执行循环的凭据接缝：本文件的用例只用 Request，
 // 不触发真实签到，故返回空凭据即可。

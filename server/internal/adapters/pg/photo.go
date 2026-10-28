@@ -2,6 +2,7 @@ package pg
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"time"
 
@@ -14,8 +15,10 @@ import (
 
 // PhotoRepo 是图片记录与保留期的仓储。
 //
-// 作用域口径：本切片只认 user。admin/master 的读取需要「账号—图片」
-// 关系，尚未建立，故一律返回 errs.ErrNotFound，不放行全量。
+// 作用域口径：user 可见自己的照片；admin 可见绑定院校里账号属主的
+// 照片（照片没有 school_id，院校面经 accounts 派生）；master 不在
+// 照片端点契约内，照片读取仍返回 not_found。学校默认图是本表
+// 的第二个读者：引用登记在 schools.default_photo_id。
 type PhotoRepo struct {
 	db *DB
 }
@@ -38,16 +41,119 @@ func (r *PhotoRepo) Create(ctx context.Context, rec corephoto.Record) (corephoto
 	return scanPhoto(row)
 }
 
-// Get 按作用域读一张图片；跨用户、已软删与不存在都返回 not_found。
+// Get 按作用域读一张图片；跨用户、跨校、已软删与不存在都返回 not_found。
+// master 不在照片端点 x-roles 内，仍返回 not_found。
 func (r *PhotoRepo) Get(ctx context.Context, scope corescope.Scope, id string) (corephoto.Record, error) {
-	if scope.Kind() != corescope.KindUser {
+	if scope.Kind() == corescope.KindMaster {
 		return corephoto.Record{}, errs.ErrNotFound
+	}
+	// 前缀必须是 photos.：EXISTS 子查询里的裸列名会先解析到 a，
+	// 不加前缀等于拿自身比自身（恒真）。
+	clause, scopeArgs, err := photoScopePredicate(scope, 2, "photos.")
+	if err != nil {
+		return corephoto.Record{}, err
 	}
 	row := r.db.q(ctx).QueryRow(ctx,
 		`SELECT `+photoColumns+` FROM photos
-		 WHERE id = $1::uuid AND owner_user_id = $2::uuid AND deleted_at IS NULL`,
-		id, scope.UserID())
+		 WHERE id = $1::uuid AND deleted_at IS NULL`+clause,
+		append([]any{id}, scopeArgs...)...)
 	return scanPhoto(row)
+}
+
+// PhotoForDefault 读一张未软删照片，供学校默认图写入校验。
+// master 放行全量：契约 PUT default-photo 的 x-roles 含 master。
+// user 与 admin 走同一照片可见面。院校范围由 SetSchoolDefault 判定。
+func (r *PhotoRepo) PhotoForDefault(ctx context.Context, scope corescope.Scope, id string) (corephoto.Record, error) {
+	if !scope.Valid() {
+		return corephoto.Record{}, errs.New(errs.CodeInternal, "invalid scope")
+	}
+	clause := ""
+	args := []any{id}
+	if scope.Kind() != corescope.KindMaster {
+		scopeClause, scopeArgs, err := photoScopePredicate(scope, 2, "photos.")
+		if err != nil {
+			return corephoto.Record{}, err
+		}
+		clause = scopeClause
+		args = append(args, scopeArgs...)
+	}
+	row := r.db.q(ctx).QueryRow(ctx,
+		`SELECT `+photoColumns+` FROM photos
+		 WHERE id = $1::uuid AND deleted_at IS NULL`+clause, args...)
+	return scanPhoto(row)
+}
+
+// SchoolDefault 读学校默认图引用。
+// 学校不在作用域内与不存在都返回 not_found。
+// 引用照片已软删时按未设置返回：字节已不可读，引用不再可用。
+// etag 是引用照片的 sha256 hex；无引用时为空串。
+func (r *PhotoRepo) SchoolDefault(ctx context.Context, scope corescope.Scope, schoolID string) (photoID, etag string, err error) {
+	clause, scopeArgs, err := schoolDefaultPhotoPredicate(scope, 2, "s.")
+	if err != nil {
+		return "", "", err
+	}
+	row := r.db.q(ctx).QueryRow(ctx,
+		`SELECT s.default_photo_id::text, p.sha256
+		   FROM schools s
+		   LEFT JOIN photos p ON p.id = s.default_photo_id AND p.deleted_at IS NULL
+		  WHERE s.id = $1::uuid`+clause,
+		append([]any{schoolID}, scopeArgs...)...)
+	var id *string
+	var sha []byte
+	if err := row.Scan(&id, &sha); err != nil {
+		return "", "", mapError(err)
+	}
+	if id == nil || sha == nil {
+		// 无引用，或引用照片已软删（LEFT JOIN 无行）。
+		return "", "", nil
+	}
+	if len(sha) != 32 {
+		return "", "", errs.New(errs.CodeInternal, "photo digest has the wrong length")
+	}
+	return *id, hex.EncodeToString(sha), nil
+}
+
+// SchoolWritable 判定院校可写：master 不限，admin 限绑定校。
+// 越权与不存在都返回 not_found。写入路径在照片校验之前调用它，
+// 使「院校不可见」先于「照片不可见」判定，不借 400 泄漏照片存在性。
+func (r *PhotoRepo) SchoolWritable(ctx context.Context, scope corescope.Scope, schoolID string) error {
+	clause, scopeArgs, err := schoolScopePredicate(scope, 2, "")
+	if err != nil {
+		return err
+	}
+	var id string
+	err = r.db.q(ctx).QueryRow(ctx,
+		`SELECT id::text FROM schools WHERE id = $1::uuid`+clause,
+		append([]any{schoolID}, scopeArgs...)...).Scan(&id)
+	return mapError(err)
+}
+
+// SetSchoolDefault 覆盖写学校默认图并返回旧引用（nil 表示原先未设置）。
+// **必须在事务内运行**：读旧值并持行锁，写与审计同事务。
+// 院校范围与 schoolScopePredicate 同源：master 不限，admin 限绑定校；
+// user 不可写（契约 x-roles 是 [master, admin]）。
+func (r *PhotoRepo) SetSchoolDefault(ctx context.Context, scope corescope.Scope, schoolID string, photoID *string) (*string, error) {
+	if !r.db.hasTx(ctx) {
+		return nil, ErrNoTransaction
+	}
+	clause, scopeArgs, err := schoolScopePredicate(scope, 2, "")
+	if err != nil {
+		return nil, err
+	}
+	var previous *string
+	err = r.db.q(ctx).QueryRow(ctx,
+		`SELECT default_photo_id::text FROM schools
+		  WHERE id = $1::uuid`+clause+` FOR UPDATE`,
+		append([]any{schoolID}, scopeArgs...)...).Scan(&previous)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	if _, err := r.db.q(ctx).Exec(ctx,
+		`UPDATE schools SET default_photo_id = $2::uuid WHERE id = $1::uuid`,
+		schoolID, photoID); err != nil {
+		return nil, mapError(err)
+	}
+	return previous, nil
 }
 
 // List 按作用域列一页图片，游标语义与账号列表一致。
