@@ -19,6 +19,7 @@
 """
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -149,7 +150,7 @@ class DemoDataMigrationGuardTest(unittest.TestCase):
                   "--users", "2", "--admin-accounts", "1",
                   "--events-per-day", "1", "--days", "1"],
                  self.env, self.root)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.returncode, 0, f"out={r.stdout!r} err={r.stderr!r}")
         self.assertIn("审计链", r.stdout)
         self.assertIn("ok=True", r.stdout)
 
@@ -229,7 +230,7 @@ class StateCleanupLogFailureTest(unittest.TestCase):
         os.makedirs(os.path.join(state, "cleanup.log"))
         env = _env(root, YIBAN_STATE_DIR=state, YIBAN_RETENTION_DAYS="1")
         r = _run("state_cleanup.py", [], env, root)
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(r.returncode, 1, f"argv={r.args!r} out={r.stdout!r} err={r.stderr!r}")
         self.assertFalse(os.path.exists(expired), "过期文件应已清理（删除已发生）")
         self.assertIn("清理日志写入失败", r.stderr)
         self.assertIn("留痕丢失", r.stderr)
@@ -250,13 +251,62 @@ class DuplicateOwnerMaskingTest(unittest.TestCase):
             ("13900139000", "owner@example.cn", "乙"),
         ])
         r = _run("list_duplicate_owners.py", ["--db", db_file], env, root)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.returncode, 0, f"out={r.stdout!r} err={r.stderr!r}")
         self.assertIn("138****8000", r.stdout)
         self.assertIn("139****9000", r.stdout)
         self.assertIn("own***@example.cn", r.stdout)
         self.assertNotIn("13800138000", r.stdout)
         self.assertNotIn("13900139000", r.stdout)
         self.assertNotIn("owner@example.cn", r.stdout)
+
+
+class GitConfigHygieneGuardTest(unittest.TestCase):
+    """c8j：主仓 .git/config 的 core.worktree 卫生门。
+
+    形状：WSL 侧 git 把 core.worktree=/mnt/... 写进共享 config ⇒ Windows 侧
+    主树全部 git 命令报 `Invalid path '/mnt'`，且无声。门要求：主仓 config
+    出现该键即红并给出修复命令；无该键放行；worktree 形态（.git 是文件）不误判。
+    """
+
+    @unittest.skipUnless(shutil.which("bash"), "bash 不可用：配置卫生门无法就地跑")
+    def test_main_config_with_core_worktree_is_rejected(self):
+        with tempfile.TemporaryDirectory() as root:
+            gitdir = os.path.join(root, ".git")
+            os.makedirs(gitdir)
+            with open(os.path.join(gitdir, "config"), "w", encoding="utf-8") as f:
+                f.write("[core]\n\trepositoryformatversion = 0\n"
+                        "\tworktree = /mnt/d/example/repo\n")
+            r = _run_bash("check-git-config.sh", root)
+            self.assertEqual(r.returncode, 1, f"argv={r.args!r} out={r.stdout!r} err={r.stderr!r}")
+            self.assertIn("core.worktree", r.stderr)
+            self.assertIn("--unset core.worktree", r.stderr, "修复命令必须点名")
+
+    @unittest.skipUnless(shutil.which("bash"), "bash 不可用：配置卫生门无法就地跑")
+    def test_clean_main_config_passes(self):
+        with tempfile.TemporaryDirectory() as root:
+            gitdir = os.path.join(root, ".git")
+            os.makedirs(gitdir)
+            with open(os.path.join(gitdir, "config"), "w", encoding="utf-8") as f:
+                f.write("[core]\n\trepositoryformatversion = 0\n")
+            r = _run_bash("check-git-config.sh", root)
+            self.assertEqual(r.returncode, 0, f"out={r.stdout!r} err={r.stderr!r}")
+
+    @unittest.skipUnless(shutil.which("bash"), "bash 不可用：配置卫生门无法就地跑")
+    def test_linked_worktree_shape_is_not_misjudged(self):
+        # worktree 的 .git 是文件：键在各自 gitdir 里，主仓门不越权判它。
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, ".git"), "w", encoding="utf-8") as f:
+                f.write("gitdir: /elsewhere/.git/worktrees/wt\n")
+            r = _run_bash("check-git-config.sh", root)
+            self.assertEqual(r.returncode, 0, f"out={r.stdout!r} err={r.stderr!r}")
+
+
+def _run_bash(script, *argv):
+    return subprocess.run(
+        ["bash", os.path.join(BASE, "scripts", script), *argv],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        stdin=subprocess.DEVNULL, timeout=60,
+    )
 
 
 if __name__ == "__main__":
