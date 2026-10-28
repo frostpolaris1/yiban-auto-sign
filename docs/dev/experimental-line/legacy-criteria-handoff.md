@@ -22,6 +22,12 @@
 | 5 | `GET https://api.uyiban.com/device/student/index/getState` | 设备登记状态 | 是否需登记/是否已登记 |
 | 6 | `POST https://api.uyiban.com/nightAttendance/student/index/signIn` | 签到 | `data: true` 或失败信封 |
 
+**2026-10-28 实拍修正（详见 §10）**：业务六步对应**七个网络跳**——登录段实为 4 跳：
+`oauth.yiban.cn/code/html` → `oauth.yiban.cn/code/usersure` →
+`f.yiban.cn/iframe/index`（302 空体）→ `api.uyiban.com/base/c/auth/yiban`。
+上表第 1–2 跳的实拍主机是 `oauth.yiban.cn`（与旧实现 `yiban/platform.py:18` 一致）；
+`c.uyiban.com` 只出现在 `Origin`/`Referer` 头域，**不是请求主机**。
+
 ### 1.2 映射到 `signing/contract` 的四个方法
 
 | Provider 方法 | 承担链步 | 必须产出 |
@@ -262,6 +268,8 @@
 - `data.State` 是账号在当日链上的状态位（0＝可签），**不是签到结果**；
   不要把它当 `Outcome`。
 - `IsNeedPhoto: 2` 是照片要求档位；`2` 的语义需与上游文档或实拍确认（旧系统未定论）。
+  2026-10-28 实拍：`IsNeedPhoto=2` ＋ `OutState=1` 宽限下**无图仍签成**——`2` 不强制照片；
+  完整档位语义仍未知（见 §10.4）。
 
 另一份：`sign_in_response.json`（captured）＝ `{"code":0,"msg":"","data":true}`
 → 对应 `Sign` 的 `OutcomeSuccess`。**注意 `data` 必须是布尔 `true`**；
@@ -347,7 +355,64 @@
 
 - 分支 `test/go-p1-20261025`：140 个 `.go` / 25,497 行 / 48 个测试文件，领先 `develop` 110 个提交。
 - 最近提交集中在 `signing`：`verify` 端点、传输失败的错误信封、掩码上限、超时判据——即本文件长期标注的**唯一硬缺口**（没有真实 Provider）正在被补。
-- 仍缺：**实拍对齐**。六请求链目前的形状来自旧实现与既有夹具，不是新的真实抓包。旧系统一停，抓包窗口就没有了，这一步要在切换前做完。
+- ~~仍缺：**实拍对齐**~~ **2026-10-28 已闭环**：七跳全链在干净 IP 实跑签成
+  （`{"code":0,"data":true}`）；登录两日三次逐字节复现，signPosition 可签/已签两态、
+  getState 与 signIn 表单形状全部实获。判据以 §10 为准；残余未测项见 §10.4。
+
+---
+
+## 10. 2026-10-28 实拍确认（七跳全链，签到成功）
+
+来源：新栈 provider 代码路径 ＋ capture RoundTripper，干净 IP（空白机）实跑，
+一次真实签到成功。抓取物含真实凭据材料，只存本地过程目录，**永不入库**。
+本节只写判据级的形状与语义，不含任何真实值（主机/字段/枚举/时点除外）。
+
+### 10.1 全链与主机
+
+- 7 跳：`oauth.yiban.cn/code/html` → `oauth.yiban.cn/code/usersure` →
+  `f.yiban.cn/iframe/index`（302 空体）→ `api.uyiban.com/base/c/auth/yiban` →
+  `signPosition` → `device/student/index/getState` → `signIn`。
+- 落点主机只有 `oauth.yiban.cn` / `f.yiban.cn` / `api.uyiban.com`；
+  两次实跑均无白名单外中间落点。
+- WAF：前 3 跳 `server: WAF`；两次干净链零拦截零挑战。授权页两次均 26891 字节
+  （逐请求 token 不同），无 `challenge`/`acw_sc`/`ydclearance` 特征。
+  **同一 hop1 的 cookie 集合可变**：一次仅 `https_waf_cookie`，另一次另有
+  `_YB_OPEN_V2_0/_X/_Y/_Z/_C/_S` 标记件——挑战判定不得依赖 cookie 集合，
+  只认页面特征。
+
+### 10.2 登录段（第 1–4 跳）
+
+- `usersure` 表单字段序固定，末位 `scope=` 空值保留；`oauth_upwd` 为上游 RSA
+  公钥加密的密文（1024 位；明文超过约 117 字节即 `message too long`，
+  可作「密码材料异常」的判据）。
+- `usersure` 回执 `{"code":"s200","reUrl":"https://f.yiban.cn/iapp7463"}`；
+  `auth/yiban` 回执 `{code:0,data:{…富身份…}}`。两次实跑与 10-27 抓包
+  **逐字节一致**（仅授权页含每请求 token）。
+- 签发回执可能额外设置 `PHPSESSID`/`cpi`/`is_certified` 等 cookie；
+  实现须容忍集合差异（第二次实跑比第一次多两枚，登录仍成功）。
+
+### 10.3 签到段（第 5–7 跳）
+
+- `signPosition`：`State=0`＝可签（本次签成）、`State=3`＝已签到
+  （`Msg:"已签到"`，阻断 signIn）；`Position` 实测 2 个候选，`Points` 为
+  13 点多边形；`Range` 实测 06:30–07:50+08。
+- `IsNeedPhoto=2` ＋ `OutState=1` 宽限下**无图签成**（`AttachmentFileName` 与
+  `SignInfo.AttachmentFileName` 皆空）。
+- `getState`：`{authorize:false,Code:<hex64>,PhoneModel,UpdateTime}`；
+  `authorize:false` 不阻断签成；signIn 表单复用同 `Code`/`PhoneModel`。
+- `signIn` 表单：`OutState=1` ＋ `Code` ＋ `PhoneModel` ＋
+  `SignInfo={Reason,AttachmentFileName,LngLat,Address}`；成功回执
+  `{"code":0,"msg":"","data":true}`（`data` 必须为布尔 `true`）。
+- 与旧实现唯一结构差异：**新栈多一跳 getState 读取**（旧 client 不发、旧
+  `device.py` 只解析既有回执）；平台接受、无副作用，属对齐差异项，不是缺陷。
+
+### 10.4 仍未实拍（保持「未知」，不得编造）
+
+1. 挑战页的真实触发与判定（两次干净链未触发；只证「不误伤」，未证「真挑战时判得对」）。
+2. 业务失败信封：含「非法签到」类文案的真实 `code` 与恢复路径（本次未遇到）；
+   `code=999`（会话失效）的实拍样本同样未获得——其语义按 §1.4 登记执行。
+3. `IsNeedPhoto` 各档位的完整语义（本次仅证 `2` 在 `OutState=1` 宽限下不强制照片）。
+4. 设备未登记（`authorize` 拒绝）阻断签到的条件——本次 `authorize:false` 仍签成。
 
 ---
 
