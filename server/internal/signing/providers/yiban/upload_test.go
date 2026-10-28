@@ -79,7 +79,13 @@ func TestSignWithImageUploadsFirst(t *testing.T) {
 		t.Fatalf("uploadUri name = %q, want yiban_camera_<ts>.jpg", name)
 	}
 
-	// PUT：专用 UA、image/jpeg、字节与 ImageRef 一致。
+	// PUT：方法必须 PUT、专用 UA、image/jpeg、字节一致，且**不带会话 cookie/CSRF**。
+	up.mu.Lock()
+	putMethod := up.putMethod
+	up.mu.Unlock()
+	if putMethod != "PUT" {
+		t.Fatalf("上传方法 = %q, want PUT", putMethod)
+	}
 	if putPath != "/upload/yiban_camera_1790000000.jpg" {
 		t.Fatalf("PUT path = %q", putPath)
 	}
@@ -88,6 +94,9 @@ func TestSignWithImageUploadsFirst(t *testing.T) {
 	}
 	if got := putHeaders.Get("Content-Type"); got != "image/jpeg" {
 		t.Fatalf("PUT Content-Type = %q", got)
+	}
+	if got := putHeaders.Get("Cookie"); got != "" {
+		t.Fatalf("PUT 不应携带会话 cookie：%q", got)
 	}
 	if !bytes.Equal(putBody, img.Bytes) {
 		t.Fatalf("PUT body 与图片字节不一致：len=%d vs %d", len(putBody), len(img.Bytes))
@@ -129,11 +138,12 @@ func TestSignWithoutImageSkipsUpload(t *testing.T) {
 	}
 }
 
-// uploadUri 判失败：不发 PUT、不提交 signIn，结论落 photo_rejected。
-func TestSignUploadRejectedStopsBeforePut(t *testing.T) {
+// uploadUri 业务码非 0：码表未实拍，判 unknown（可重试）而不是 photo_rejected
+// （后者当日落 failed 不再重试，评审 M2）。不发 PUT、不提交 signIn。
+func TestSignUploadNonZeroCodeIsUnknown(t *testing.T) {
 	p, up := newTestProvider(t)
 	up.mu.Lock()
-	up.uploadBody = []byte(`{"code":4001,"msg":"photo rejected","data":null}`)
+	up.uploadBody = []byte(`{"code":4001,"msg":"unrecognised","data":null}`)
 	up.mu.Unlock()
 
 	req, _ := uploadSignRequest("attempt-upload-rejected")
@@ -141,14 +151,34 @@ func TestSignUploadRejectedStopsBeforePut(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
-	if result.Outcome != contract.OutcomePhotoRejected {
-		t.Fatalf("outcome = %q, want photo_rejected", result.Outcome)
+	if result.Outcome != contract.OutcomeUnknown {
+		t.Fatalf("outcome = %q, want unknown", result.Outcome)
 	}
 	if n := up.count("/upload/yiban_camera_1790000000.jpg"); n != 0 {
 		t.Fatalf("uploadUri 失败后不应 PUT：%d 次", n)
 	}
 	if n := up.count("/nightAttendance/student/index/signIn"); n != 0 {
 		t.Fatalf("上传失败后不应 signIn：%d 次", n)
+	}
+}
+
+// 签名地址非 https（且非环回）：fail-closed 判 unknown，不发 PUT。
+func TestSignUploadNonHTTPSignedURLRejected(t *testing.T) {
+	p, up := newTestProvider(t)
+	up.mu.Lock()
+	up.uploadBody = []byte(`{"code":0,"msg":"","data":{"AttachmentFileName":"yiban_camera_1790000000.jpg","signedUrl":"http://example.com/upload/x.jpg"}}`)
+	up.mu.Unlock()
+
+	req, _ := uploadSignRequest("attempt-upload-http-url")
+	result, err := p.Sign(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	if result.Outcome != contract.OutcomeUnknown {
+		t.Fatalf("outcome = %q, want unknown", result.Outcome)
+	}
+	if n := up.count("/nightAttendance/student/index/signIn"); n != 0 {
+		t.Fatalf("方案异常后不应 signIn：%d 次", n)
 	}
 }
 
