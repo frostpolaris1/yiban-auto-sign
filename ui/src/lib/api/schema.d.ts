@@ -702,6 +702,8 @@ export interface paths {
          *     the sha256. The scope check runs before any bytes are written.
          *     A user reads own photos. An admin reads photos whose owner has a
          *     non-deleted account in a bound school. Cross-scope reads answer 404.
+         *     When If-None-Match (weak comparison, comma lists and `*` honoured)
+         *     matches the current ETag the answer is 304 without a body.
          */
         get: operations["PhotoGet"];
         put?: never;
@@ -2446,7 +2448,10 @@ export interface operations {
     PhotoGet: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description ETag(s) the client already holds; a match answers 304. */
+                "If-None-Match"?: string;
+            };
             path: {
                 id: components["parameters"]["PhotoID"];
             };
@@ -2463,6 +2468,13 @@ export interface operations {
                     "image/jpeg": string;
                     "image/png": string;
                 };
+            };
+            /** @description Not modified (ETag matched); no body. */
+            304: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             404: components["responses"]["NotFoundError"];
             default: components["responses"]["DefaultError"];

@@ -1,6 +1,6 @@
 /**
  * **功能**
- * 认证域桩：登录、登出、取当前会话。
+ * 认证域：登录、登出、取当前会话。
  *
  * **归属**
  * `lib/api` 工具层。
@@ -48,4 +48,12 @@ export async function fetchMe(): Promise<SessionUser> {
   const me = await apiRequest<SessionUser>(AUTH_PATHS.me)
   setCsrfToken(me.csrf_token)
   return me
+}
+
+/**
+ * 401 分类：登录接口的 401 是凭据错误；`me` 的 401 是未登录常态。
+ * 其余端点的 401 才表示会话过期。
+ */
+export function isSessionExpiry(path: string): boolean {
+  return path !== AUTH_PATHS.login && path !== AUTH_PATHS.me
 }

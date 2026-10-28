@@ -7,22 +7,35 @@
  *
  * **口径**
  * 面包屑取自 `nav.ts`。与侧栏共用一张表，故两处不会分叉。
- * 通知与账号菜单是演示数据。本批不发请求。
+ * 账号菜单读真实会话：邮箱与角色来自 `GET /api/auth/me`。
+ * 通知仍是演示数据，本批不接端点。
  */
 
 import { Fragment } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { Icon } from '@/components/ui/Icon'
 import { Menu, MenuDivider, MenuItem } from '@/components/ui/Menu'
+import type { SessionUser } from '@/lib/api/auth'
+import { initialsFor, roleLabel } from '@/lib/identity'
 import { useTheme } from '@/lib/theme'
 
 type TopbarProps = {
+  me: SessionUser
   crumbs: string[]
   drawerOpen: boolean
   onOpenDrawer: () => void
+  onLogout: () => void
+  loggingOut: boolean
 }
 
-export function Topbar({ crumbs, drawerOpen, onOpenDrawer }: TopbarProps) {
+export function Topbar({
+  me,
+  crumbs,
+  drawerOpen,
+  onOpenDrawer,
+  onLogout,
+  loggingOut,
+}: TopbarProps) {
   const { theme, toggleTheme } = useTheme()
   const navigate = useNavigate()
 
@@ -119,13 +132,13 @@ export function Topbar({ crumbs, drawerOpen, onOpenDrawer }: TopbarProps) {
           profile
           trigger={
             <button type="button" className="avatar" aria-label="账号菜单">
-              OP
+              {initialsFor(me.email)}
             </button>
           }
         >
           <div className="dd-profile-head">
-            <div className="dd-profile-name">Operator</div>
-            <div className="dd-profile-email">operator@local</div>
+            <div className="dd-profile-name">{roleLabel(me.role)}</div>
+            <div className="dd-profile-email">{me.email}</div>
           </div>
           <MenuItem onSelect={() => void navigate({ to: '/design' })}>
             <Icon name="settings" />
@@ -136,9 +149,9 @@ export function Topbar({ crumbs, drawerOpen, onOpenDrawer }: TopbarProps) {
             个人信息
           </MenuItem>
           <MenuDivider />
-          <MenuItem danger onSelect={() => void navigate({ to: '/login' })}>
+          <MenuItem danger disabled={loggingOut} onSelect={onLogout}>
             <Icon name="logout" />
-            退出登录
+            {loggingOut ? '正在退出…' : '退出登录'}
           </MenuItem>
         </Menu>
       </div>

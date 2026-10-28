@@ -1,30 +1,89 @@
 /**
  * **功能**
- * 静态登录表单：邮箱、密码、提交按钮。
+ * 登录表单：邮箱、密码、提交按钮。接 `POST /api/auth/login`。
  *
  * **归属**
  * `features/auth` 域组件。
  *
  * **口径**
- * 本批不调端点，不存凭据。
- * 提交只做 `preventDefault`，页面不跳转。
- * **不得添加"保持登录"选项**。会话期限由服务端定。
+ * 提交体只含契约 `LoginRequest` 的两个字段。
+ * 成功：写入会话缓存 → 导航到 `redirect` 目标或 `/`。
+ * 失败：就地显示错误，不导航。
+ * **不得添加「保持登录」选项**。会话期限由服务端定。
  */
 
+import { useState } from 'react'
+import { useNavigate } from '@tanstack/react-router'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { Alert } from '@/components/ui/Alert'
 import { Icon } from '@/components/ui/Icon'
 import { TextInput } from '@/components/ui/Input'
+import { login } from '@/lib/api/auth'
+import { sanitizeRedirect } from '@/lib/redirect'
+import { clearSessionExpired, ME_QUERY_KEY } from '@/lib/session'
+import { buildLoginBody, isLoginPath, loginErrorMessage } from './login'
 
-/**
- * 字段逐个照 Adminator `src/signin.html`。
- * 提交停在页面边界：不发请求，不触发导航。
- */
-export function LoginForm() {
+type LoginFormProps = {
+  /** 守卫写入的回跳地址。已净化，仍再净化一次。 */
+  redirect?: string
+  /** 会话过期提示。登录成功后清除。 */
+  expired?: boolean
+  /** 提交开始。登录页据此暂停「已登录即跳转首页」的兜底守卫。 */
+  onSignInStart?: () => void
+  /** 提交失败。登录页据此恢复兜底守卫，允许重试。 */
+  onSignInFailed?: () => void
+}
+
+export function LoginForm({ redirect, expired, onSignInStart, onSignInFailed }: LoginFormProps) {
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+
+  const mutation = useMutation({
+    mutationFn: () => login(buildLoginBody({ email, password })),
+    onSuccess: (me) => {
+      clearSessionExpired()
+      // 先写缓存再导航：壳的守卫读同一份 `['me']`，不会把刚登录的人弹回登录页。
+      queryClient.setQueryData(ME_QUERY_KEY, me)
+      void queryClient.invalidateQueries({ queryKey: ME_QUERY_KEY })
+      // `/login` 的各种拼写（含 URI 编码）不能当回跳目标：命中落 `/`。
+      // 成功路径必然离开本页，提交锁随卸载失效，无需复位。
+      const target = sanitizeRedirect(redirect)
+      void navigate({
+        href: target && !isLoginPath(target) ? target : '/',
+        replace: true,
+      })
+    },
+    onError: () => {
+      // 失败可重试：恢复登录页的兜底守卫。
+      onSignInFailed?.()
+    },
+  })
+
+  const pending = mutation.isPending
+
   return (
     <div className="auth-card">
-      <h2>登录</h2>
-      <p className="sub">本页为静态表单，不连接后端。提交后停留在本页。</p>
+      {expired ? (
+        <div className="app-auth-notice">
+          <Alert tone="warning">会话已过期，请重新登录</Alert>
+        </div>
+      ) : null}
 
-      <form className="auth-form" onSubmit={(event) => event.preventDefault()}>
+      <h2>登录</h2>
+      <p className="sub">使用账号登录控制台。</p>
+
+      <form
+        className="auth-form"
+        onSubmit={(event) => {
+          event.preventDefault()
+          if (pending) return
+          mutation.reset()
+          onSignInStart?.()
+          mutation.mutate()
+        }}
+      >
         <TextInput
           id="login-email"
           label="邮箱"
@@ -33,6 +92,8 @@ export function LoginForm() {
           placeholder="name@example.com"
           autoComplete="username"
           required
+          value={email}
+          onChange={(event) => setEmail(event.target.value)}
         />
 
         <div className="field">
@@ -53,19 +114,28 @@ export function LoginForm() {
               placeholder="••••••••"
               autoComplete="current-password"
               required
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
             />
           </div>
         </div>
 
-        <button className="btn btn--primary auth-submit" type="submit">
-          登录控制台
+        {mutation.isError ? (
+          <div className="app-alert-block">
+            <Alert tone="danger">{loginErrorMessage(mutation.error)}</Alert>
+          </div>
+        ) : null}
+
+        <button
+          className="btn btn--primary auth-submit"
+          type="submit"
+          disabled={pending}
+          aria-busy={pending}
+        >
+          {pending ? '登录中…' : '登录控制台'}
           <Icon name="arrowRight" />
         </button>
       </form>
-
-      <div className="auth-main-bottom">
-        本批不接认证端点。登录、会话与 CSRF 在 P1 后端批次接入。
-      </div>
     </div>
   )
 }

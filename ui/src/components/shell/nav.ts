@@ -8,6 +8,7 @@
  * **口径**
  * 每个 `to` 必须在 `router.tsx` 里有对应路由。
  * 面包屑与标题都从这里派生，不另写一份。
+ * `/login` 不在表内：壳内路由需要会话，登录页只对未登录可见。
  */
 
 import type { IconName } from '@/components/ui/Icon'
@@ -87,13 +88,6 @@ export const NAV: NavSection[] = [
             icon: 'design',
             badge: { kind: 'new', text: 'NEW' },
             crumbs: ['系统', '设计系统', '组件画廊'],
-          },
-          {
-            key: 'login',
-            text: '登录页',
-            to: '/login',
-            icon: 'shield',
-            crumbs: ['系统', '设计系统', '登录页'],
           },
         ],
       },

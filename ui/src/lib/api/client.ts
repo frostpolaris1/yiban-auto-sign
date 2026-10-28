@@ -9,7 +9,7 @@
  * **口径**
  * 失败信封固定 `{ error: { code, message, details, trace_id } }`。
  * 请求一律带 cookie。写方法另带 `X-CSRF-Token`。
- * 本批没有调用点。P1 数据页接入。
+ * 401 另交注册的全局回调处置；分类规则在 `auth.ts`。
  */
 
 export type ApiErrorPayload = {
@@ -52,6 +52,19 @@ export function getCsrfToken(): string | null {
   return csrfToken
 }
 
+/** 401 回调。回调只收到请求路径；要不要处置由注册方判。 */
+export type UnauthorizedHandler = (path: string) => void
+
+let unauthorizedHandler: UnauthorizedHandler | null = null
+
+/**
+ * 注册全局 401 回调。装配层注册，`lib` 不反向依赖 `app`。
+ * 传 `null` 注销。
+ */
+export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): void {
+  unauthorizedHandler = handler
+}
+
 /** 错误信封的统一展示文本：`code · message`。非 ApiError 退回自身消息。 */
 export function describeApiError(error: unknown): string {
   if (error instanceof ApiError) return `${error.code} · ${error.message}`
@@ -83,6 +96,7 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
     } catch {
       /* 响应体不是 JSON 时保留兜底错误，状态码仍要传给调用方。 */
     }
+    if (response.status === 401) unauthorizedHandler?.(path)
     throw new ApiError(response.status, payload)
   }
 

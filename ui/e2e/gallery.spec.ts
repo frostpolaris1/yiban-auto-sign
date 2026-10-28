@@ -1,9 +1,15 @@
 import { test, expect, type Page } from '@playwright/test'
+import { mockAccountsApi } from './support/fake-accounts-api'
 
 /**
  * 壳与组件画廊的用户可见行为。
  * 断言结果，不钉内部调用顺序。
+ * 壳内路由受会话守卫保护，故每条用例先给一份有效会话。
  */
+
+test.beforeEach(async ({ page }) => {
+  await mockAccountsApi(page, { role: 'master' })
+})
 
 async function focusIsInsideDialog(page: Page): Promise<boolean> {
   return page.evaluate(() => {
@@ -79,6 +85,7 @@ test('theme is applied before the first paint and survives a reload', async ({ p
   // 同上下文的新标签页读到持久化值。不要重载本页：
   // 它的 init 脚本会重新种入深色值。
   const second = await context.newPage()
+  await mockAccountsApi(second, { role: 'master' })
   await second.goto('/')
   await expect(second.locator('html')).toHaveAttribute('data-theme', 'light')
   await second.close()
@@ -198,19 +205,4 @@ test('gallery: dismissible alert disappears', async ({ page }) => {
   await expect(alert).toBeVisible()
   await alert.getByRole('button', { name: '关闭提示' }).click()
   await expect(alert).toHaveCount(0)
-})
-
-test('login form stays local and offers no long-lived session option', async ({ page }) => {
-  await page.goto('/login')
-  await expect(page.getByRole('heading', { name: '登录' })).toBeVisible()
-
-  const form = page.locator('.auth-form')
-  await expect(form.locator('input[type="checkbox"]'), 'no persistence checkbox').toHaveCount(0)
-  await expect(page.getByText(/保持登录/), 'no 30-day session promise').toHaveCount(0)
-
-  await page.getByLabel('邮箱').fill('operator@example.com')
-  await page.getByLabel('密码').fill('not-a-real-password')
-  await page.getByRole('button', { name: '登录控制台' }).click()
-  await expect(page).toHaveURL(/\/login$/)
-  await expect(page.getByText('本页为静态表单')).toBeVisible()
 })

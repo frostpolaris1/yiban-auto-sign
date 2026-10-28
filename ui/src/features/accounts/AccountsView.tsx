@@ -32,9 +32,10 @@ import {
   type AccountUpdate,
   type AccountVerifyResult,
 } from '@/lib/api/account'
-import { fetchMe, type Role } from '@/lib/api/auth'
+import type { Role } from '@/lib/api/auth'
 import { describeApiError } from '@/lib/api/client'
 import { listAllSchools } from '@/lib/api/school'
+import { useMe } from '@/lib/session'
 import { AccountActionModal, type AccountActionState, type ReviewInput } from './AccountActionModal'
 import { AccountDeleteModal } from './AccountDeleteModal'
 import { AccountDetailDrawer } from './AccountDetailDrawer'
@@ -75,7 +76,7 @@ function focusAfterRowRemoval() {
 export function AccountsView() {
   const queryClient = useQueryClient()
 
-  const meQuery = useQuery({ queryKey: ['me'], queryFn: fetchMe, retry: false })
+  const meQuery = useMe()
   const role: Role | null = meQuery.data?.role ?? null
 
   const schoolsQuery = useQuery({
@@ -284,14 +285,6 @@ export function AccountsView() {
         }
         subtitle="按学校、状态与手机号筛选。点击任意行查看只读详情。"
       />
-
-      {meQuery.isError ? (
-        <div className="app-alert-block">
-          <Alert tone="warning" title="会话未就绪">
-            {describeApiError(meQuery.error)}。写操作已禁用。
-          </Alert>
-        </div>
-      ) : null}
 
       {notice ? (
         <div className="app-alert-block">

@@ -416,3 +416,21 @@
     opacity: 1;
   }
 }
+
+/* ---------- 会话守卫 ----------
+ * 会话解析期间的整页加载态。守卫在 me 返回前显示它，不先渲染登录页。
+ * 登录页的过期提示与表单同宽；`auth-card` 的 `margin:auto` 仍负责纵向居中。
+ */
+.app-session-loading {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-body);
+}
+
+.app-auth-notice {
+  width: 100%;
+  max-width: 400px;
+  margin: 0 auto 16px;
+}
