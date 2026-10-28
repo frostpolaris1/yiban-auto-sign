@@ -112,7 +112,7 @@ export function isoToShanghaiInput(value: string): string {
   return `${year}-${month}-${day}T${hour}:${minute}`
 }
 
-export const INPUT_PATTERN = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})$/
+const INPUT_PATTERN = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})$/
 
 /** 值是否是合法的 datetime-local 输入（形状、日历日、时分范围全过）。 */
 export function isValidShanghaiInput(value: string): boolean {

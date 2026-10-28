@@ -10,12 +10,19 @@
  * view 归 master/admin；create、edit、admins 只归 master。
  * 整页 view 的准入与导航共用 `lib/roles` 的一份登记。
  * 页内动作无权限时置灰不隐藏，原因由 `denyReason` 给出。
+ * 展示构建（`VITE_SHOWCASE=1`）只读：create 与 edit 返回同一条原因，
+ * 该原因优先于角色判断；view 与 admins 入口不受影响。
+ * admins 入口本身是读（打开管理员列表），模态内的写按钮自行置灰。
  */
 
 import type { Role } from '../../lib/api/auth'
 import { SCHOOL_VIEW_ROLES, roleAllowed } from '../../lib/roles'
+import { READ_ONLY_REASON, SHOWCASE } from '../../lib/showcase-mode'
 
 export type SchoolAction = 'view' | 'create' | 'edit' | 'admins'
+
+/** 写动作清单。展示构建下这些一律禁用；view 与 admins 不在其中。 */
+const WRITE_ACTIONS: readonly SchoolAction[] = ['create', 'edit']
 
 const ALLOWED: Record<SchoolAction, readonly Role[]> = {
   view: SCHOOL_VIEW_ROLES,
@@ -37,6 +44,7 @@ export function can(role: Role | null | undefined, action: SchoolAction): boolea
 
 /** 允许时返回 null；拒绝时返回一句可见原因。 */
 export function denyReason(role: Role | null | undefined, action: SchoolAction): string | null {
+  if (SHOWCASE && WRITE_ACTIONS.includes(action)) return READ_ONLY_REASON
   if (can(role, action)) return null
   if (!role) return '会话角色未识别'
   return DENY_TEXT[action]
