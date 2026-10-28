@@ -83,7 +83,9 @@ func (h *Handler) WithManual(m ManualSigner) *Handler {
 	return h
 }
 
-// WithAccess 注入账号可见面判据。未注入时 user 角色一律拒绝。
+// WithAccess 注入账号可见面判据。
+// **不注入属装配错误**：端点对全部角色回 500 响亮失败（fail-closed），
+// 不是「user 一律拒绝」——后者会掩盖漏接线。
 func (h *Handler) WithAccess(a AccountAccess) *Handler {
 	h.access = a
 	return h
