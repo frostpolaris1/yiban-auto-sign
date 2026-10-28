@@ -891,6 +891,12 @@ if [ -z "$REPO" ]; then
 fi
 [ -d "$REPO" ] || die "仓库目录不存在：$REPO"
 REPO=$(cd "$REPO" && pwd)
+# 主仓 git 配置卫生（工单 c8j）：core.worktree 被 WSL 侧写进主仓 config 时，
+# Windows 侧 git 会全挂且无声——这里在动任何东西之前响亮失败。
+if [ -f "$REPO/scripts/check-git-config.sh" ]; then
+    bash "$REPO/scripts/check-git-config.sh" "$REPO" ||
+        die "主仓 .git/config 卫生检查未过（见上），修好后重跑"
+fi
 case "$KEEP" in
     '' | *[!0-9]*) die "--keep 必须是非负整数：$KEEP" ;;
 esac
