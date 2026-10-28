@@ -181,6 +181,8 @@ func (s *Service) ListWindows(ctx context.Context, scope corescope.Scope, day st
 // 覆盖优先级最高：同任务同日存在覆盖时不再采信平台窗口。
 // 覆盖写库与计划重建分两步；重建走 buildOnce，因此窗口变化检测、
 // pending 重排与补插仍只有一条实现路径。
+// **重建失败时覆盖意图已落库，会留下部分状态**：覆盖是持久意图，下一次
+// Build 自愈；调用方遇到失败应重试，不要以为覆盖没生效（k0y-2）。
 func (s *Service) Override(ctx context.Context, scope corescope.Scope, in Input, start, end time.Time, reason, actorID string) (Preview, error) {
 	if err := requireScheduleScope(scope); err != nil {
 		return Preview{}, err

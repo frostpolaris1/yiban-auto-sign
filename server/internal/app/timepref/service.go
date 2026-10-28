@@ -36,9 +36,12 @@ const (
 
 // Store 读写用户自选。
 // Get 在无记录时必须返回 errs.ErrNotFound；其他错误原样上抛。
+// Store 是自选持久化端口。
+// **冷却判定在存储侧一次完成**（条件 UPSERT＋受影响行数）：先读后写会在两次
+// 并发写之间留下竞态窗口（k0y-3）。updated=false 表示冷却未过、未写入。
 type Store interface {
 	Get(ctx context.Context, userID string) (coreschedule.TimePref, error)
-	Put(ctx context.Context, userID string, offset *int, now time.Time) error
+	PutWithin(ctx context.Context, userID string, offset *int, now time.Time, cooldown time.Duration) (bool, error)
 }
 
 // Deps 是用例依赖。
@@ -91,6 +94,7 @@ func (s *Service) Get(ctx context.Context, userID string) (View, error) {
 
 // Set 写或清除自选。
 // 关闭开关时拒绝写入；冷却期内拒绝切换；粒度与范围在写前校验。
+// 冷却与写入是同一条语句（PutWithin）：并发两次 PUT 只有一个能落。
 func (s *Service) Set(ctx context.Context, userID string, offset *int) (View, error) {
 	if userID == "" {
 		return View{}, coreerrs.New(coreerrs.CodeInternal, "time preference requires a user")
@@ -105,20 +109,13 @@ func (s *Service) Set(ctx context.Context, userID string, offset *int) (View, er
 		}
 	}
 	now := s.deps.Clock.Now()
-	pref, err := s.deps.Store.Get(ctx, userID)
-	switch {
-	case err == nil:
-		if s.deps.Cooldown > 0 && now.Sub(pref.UpdatedAt) < s.deps.Cooldown {
-			return View{}, coreerrs.New(coreerrs.CodeRateLimited,
-				"time preference changed too recently")
-		}
-	case errors.Is(err, coreerrs.ErrNotFound):
-		// 首次写入没有冷却。
-	default:
+	updated, err := s.deps.Store.PutWithin(ctx, userID, offset, now, s.deps.Cooldown)
+	if err != nil {
 		return View{}, err
 	}
-	if err := s.deps.Store.Put(ctx, userID, offset, now); err != nil {
-		return View{}, err
+	if !updated {
+		return View{}, coreerrs.New(coreerrs.CodeRateLimited,
+			"time preference changed too recently")
 	}
 	return View{OffsetMin: offset, Allowed: true}, nil
 }
