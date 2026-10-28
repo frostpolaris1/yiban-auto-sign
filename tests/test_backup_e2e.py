@@ -613,5 +613,51 @@ class RequireEncryptRemoteFailureTest(_BackupRunBase):
                         f"已出的校验清单必须与保留的密文同在：{out}")
 
 
+class BomEnvKeyExtractionTest(_BackupRunBase):
+    """iv8：BOM 版 .env 的 accounts-key 提取不许被行首锚点静默漏掉。
+
+    形状：`^[[:space:]]*KEY=` 匹配不到带 UTF-8 BOM 的首行；备份包里就少一份
+    独立可读的密钥件（.env 本身仍在，恢复时要人工从里面挖）。修法＝提取统一走
+    剥 BOM 的单一实现；本类钉两条分支（无 KEY_FILE 的 secret-key.env 兜底、
+    KEY_FILE 缺数据密钥时的 accounts-key.env 兜底）。
+    """
+
+    _KEY_LINE = "YIBAN_ACCOUNTS_KEY=" + "f" * 64
+
+    def _write_bom_env(self):
+        path = os.path.join(self.app, "data", ".env")
+        with io.open(path, "w", encoding="utf-8-sig", newline="\n") as f:
+            f.write(self._KEY_LINE + "\n"
+                    "YIBAN_SECRET_KEY=e2e-not-a-real-secret\n"
+                    "ADMIN_USER=e2e-admin\n")
+        with open(path, "rb") as f:
+            self.assertTrue(f.read(3) == b"\xef\xbb\xbf", "夹具必须是 BOM 版 .env")
+
+    def _member_text(self, name):
+        with tarfile.open(self._archive_name()) as t:
+            member = t.extractfile(name)
+            self.assertIsNotNone(member, f"归档缺 {name}：{t.getnames()}")
+            return member.read().decode("utf-8")
+
+    def test_bom_env_without_key_file_extracts_key(self):
+        self._write_bom_env()
+        r, out = self._run_plaintext()
+        self.assertEqual(r.returncode, 6, f"明文轮 rc 契约不变：{out}")
+        text = self._member_text("keys/secret-key.env")
+        self.assertEqual(text.splitlines(), [self._KEY_LINE],
+                         "提取行必须原样（无 BOM、无多余行）")
+
+    def test_bom_env_with_session_key_file_falls_back(self):
+        self._write_bom_env()
+        session_key = os.path.join(self.tmp, "accounts-key")
+        with io.open(session_key, "w", encoding="utf-8", newline="\n") as f:
+            f.write("YIBAN_SECRET_KEY=legacy-session-key\n")
+        r, out = self._run_plaintext({"KEY_FILE": session_key})
+        self.assertEqual(r.returncode, 6, f"明文轮 rc 契约不变：{out}")
+        text = self._member_text("keys/accounts-key.env")
+        self.assertEqual(text.splitlines(), [self._KEY_LINE],
+                         "KEY_FILE 缺数据密钥时必须从 BOM 版 .env 兜底收齐")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
