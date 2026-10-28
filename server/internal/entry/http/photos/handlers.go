@@ -1,7 +1,8 @@
 // Package photos 把图片库用例映射到 HTTP。
 //
 // # 功能
-// 列表、上传、读取、软删与保留期设置五个端点。
+// 自有图片五端点（列表、上传、读取、软删、保留期）、
+// 按账号列照片、学校默认图读写。
 // 上传走 multipart/form-data，单文件字段名 image。
 // 读取直接流式写响应，先判作用域再写字节。
 // 本包**不**解码图片、**不**写库、**不**决定保留期。
@@ -16,6 +17,7 @@
 // # 口径
 // 上传原始字节上限 10 MiB；路由层的请求体上限是 11 MiB。
 // 响应不含手机号与凭据；图片字节只经 GET 单图端点返回。
+// 越权与不存在统一 404；动作无角色回 403。
 package photos
 
 import (
@@ -58,10 +60,13 @@ const (
 type Service interface {
 	Upload(ctx context.Context, scope corescope.Scope, actor appaudit.Actor, raw []byte) (corephoto.Record, error)
 	List(ctx context.Context, scope corescope.Scope, cursor string, limit int) (appphotos.Page, error)
+	ListAccount(ctx context.Context, scope corescope.Scope, accountID, cursor string, limit int) (appphotos.Page, error)
 	Get(ctx context.Context, scope corescope.Scope, id string) (corephoto.Record, error)
 	Open(ctx context.Context, scope corescope.Scope, id string) (corephoto.Record, io.ReadCloser, error)
 	Delete(ctx context.Context, scope corescope.Scope, id string) (corephoto.Record, error)
 	SetRetention(ctx context.Context, scope corescope.Scope, days int) (int, error)
+	GetSchoolDefault(ctx context.Context, scope corescope.Scope, schoolID string) (appphotos.SchoolDefaultPhoto, error)
+	SetSchoolDefault(ctx context.Context, scope corescope.Scope, schoolID string, photoID *string, actor appaudit.Actor) (appphotos.SchoolDefaultPhoto, error)
 }
 
 // Authorizer 把会话主体解析成作用域与审计主体。
@@ -115,11 +120,65 @@ func (h *Handler) PhotoList(c *gin.Context, params oapi.PhotoListParams) {
 		fail(c, err)
 		return
 	}
-	items := make([]oapi.Photo, len(page.Items))
-	for i, rec := range page.Items {
-		items[i] = photoView(rec)
+	respond.JSON(c.Writer, http.StatusOK, photoPageView(page))
+}
+
+// AccountPhotoList 实现 GET /api/accounts/{id}/photos。
+// 可见面由用例判定：跨用户、跨校与已软删账号一律 404。
+func (h *Handler) AccountPhotoList(c *gin.Context, id oapi.AccountID, params oapi.AccountPhotoListParams) {
+	scope, _, ok := h.principal(c)
+	if !ok {
+		return
 	}
-	respond.JSON(c.Writer, http.StatusOK, oapi.PhotoPage{Items: items, NextCursor: page.NextCursor})
+	limit, err := app.PageLimit(params.Limit)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	cursor := ""
+	if params.Cursor != nil {
+		cursor = string(*params.Cursor)
+	}
+	page, err := h.svc.ListAccount(c.Request.Context(), scope, string(id), cursor, limit)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	respond.JSON(c.Writer, http.StatusOK, photoPageView(page))
+}
+
+// SchoolDefaultPhotoGet 实现 GET /api/schools/{id}/default-photo。
+func (h *Handler) SchoolDefaultPhotoGet(c *gin.Context, id oapi.SchoolID) {
+	scope, _, ok := h.principal(c)
+	if !ok {
+		return
+	}
+	out, err := h.svc.GetSchoolDefault(c.Request.Context(), scope, string(id))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	respond.JSON(c.Writer, http.StatusOK, schoolDefaultView(out))
+}
+
+// SchoolDefaultPhotoSet 实现 PUT /api/schools/{id}/default-photo。
+// photo_id 缺失与 null 同义：清除默认图。
+func (h *Handler) SchoolDefaultPhotoSet(c *gin.Context, id oapi.SchoolID, _ oapi.SchoolDefaultPhotoSetParams) {
+	scope, actor, ok := h.principal(c)
+	if !ok {
+		return
+	}
+	var body oapi.SchoolDefaultPhotoUpdate
+	if err := c.ShouldBindJSON(&body); err != nil {
+		respond.BindError(c.Writer, c.Request, err)
+		return
+	}
+	out, err := h.svc.SetSchoolDefault(c.Request.Context(), scope, string(id), body.PhotoId, actor)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	respond.JSON(c.Writer, http.StatusOK, schoolDefaultView(out))
 }
 
 // PhotoUpload 实现 POST /api/me/photos。
@@ -280,6 +339,26 @@ func photoView(rec corephoto.Record) oapi.Photo {
 		Bytes:     rec.Bytes,
 		CreatedAt: rec.CreatedAt,
 	}
+}
+
+// photoPageView 把一页记录转成传输形状。
+func photoPageView(page appphotos.Page) oapi.PhotoPage {
+	items := make([]oapi.Photo, len(page.Items))
+	for i, rec := range page.Items {
+		items[i] = photoView(rec)
+	}
+	return oapi.PhotoPage{Items: items, NextCursor: page.NextCursor}
+}
+
+// schoolDefaultView 把默认图引用转成传输形状。
+// 无引用时 photo_id 为 null、etag 为空串。
+func schoolDefaultView(v appphotos.SchoolDefaultPhoto) oapi.SchoolDefaultPhoto {
+	out := oapi.SchoolDefaultPhoto{Etag: v.ETag}
+	if v.PhotoID != "" {
+		id := v.PhotoID
+		out.PhotoId = &id
+	}
+	return out
 }
 
 // fail 写标准错误信封。

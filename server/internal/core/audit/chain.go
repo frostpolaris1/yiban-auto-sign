@@ -86,6 +86,8 @@ const (
 	// P5：图片入库。detail 只记四边裁切比例与输出摘要，
 	// 无自由文本，无用户标识之外的主体信息。
 	ActionPhotoUpload Action = "photo.upload"
+	// P5：学校默认图登记。detail 只记新照片 id 与旧照片 id（可空）。
+	ActionSchoolDefaultPhotoSet Action = "school.default_photo_set"
 )
 
 // Entry 是一次追加的输入。
@@ -183,6 +185,8 @@ var (
 	fieldShape = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 	// wordShape 是状态或原因码。
 	wordShape = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+	// uuidShape 匹配小写 UUID。学校默认图只记照片 id。
+	uuidShape = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 )
 
 var detailKeys = map[string]bool{
@@ -203,6 +207,10 @@ var detailKeys = map[string]bool{
 	"crop_t": true,
 	"crop_b": true,
 	"sha256": true,
+	// P5 学校默认图：新值与旧值都是照片 id 或 null。
+	// UUID 形状无自由文本容量，不构成隐私面。
+	"photo_id":          true,
+	"previous_photo_id": true,
 }
 
 // cropPercentKeys 是裁切比例 detail 键集。取值限 0..10 闭区间。
@@ -335,6 +343,11 @@ func validateDetailString(key, text string) error {
 	case "sha256":
 		if !digestShape.MatchString(text) {
 			return fmt.Errorf("%w: %q has the wrong digest shape", ErrDetailShape, key)
+		}
+		return nil
+	case "photo_id", "previous_photo_id":
+		if !uuidShape.MatchString(text) {
+			return fmt.Errorf("%w: %q has the wrong uuid shape", ErrDetailShape, key)
 		}
 		return nil
 	case "reason":

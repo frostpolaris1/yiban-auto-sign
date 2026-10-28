@@ -16,8 +16,9 @@
 //
 // # 口径
 // 上传只允许 user 角色，所有者取 scope.UserID()。
-// admin 读取图片需要在 P5-B 建立「账号—图片」关系，本切片不开放。
+// admin 读取照片要求照片属主在绑定院校有未删除账号；越权与不存在统一 404。
 // 去重键是 (owner_user_id, sha256)：同一用户重复上传返回同一行。
+// 学校默认图只登记照片引用；本包不提交图片字节给平台（P5-D）。
 package photos
 
 import (
@@ -56,6 +57,13 @@ type Page struct {
 	NextCursor string
 }
 
+// SchoolDefaultPhoto 是学校默认图引用。
+// PhotoID 为空表示未设置；ETag 是所引照片的 sha256 hex，无引用时为空。
+type SchoolDefaultPhoto struct {
+	PhotoID string
+	ETag    string
+}
+
 // Deps 是用例依赖。
 type Deps struct {
 	Store   Store
@@ -64,6 +72,10 @@ type Deps struct {
 	Tx      appcore.TxManager
 	Clock   coreclock.Clock
 	Options Options
+	// Accounts 提供账号可见面判据（按账号列照片用）。
+	Accounts Accounts
+	// SchoolPhotos 提供学校默认图的存储面。
+	SchoolPhotos SchoolPhotos
 }
 
 // Service 是图片库用例服务。
@@ -93,6 +105,12 @@ func NewService(deps Deps) (*Service, error) {
 	}
 	if deps.Clock == nil {
 		return nil, errors.New("photos: nil clock")
+	}
+	if deps.Accounts == nil {
+		return nil, errors.New("photos: nil account reader")
+	}
+	if deps.SchoolPhotos == nil {
+		return nil, errors.New("photos: nil school photo store")
 	}
 	return &Service{deps: deps}, nil
 }
@@ -193,12 +211,113 @@ func (s *Service) List(ctx context.Context, scope corescope.Scope, cursor string
 	return Page{Items: items, NextCursor: next}, nil
 }
 
-// Get 在作用域内读一张图片。跨用户与已软删返回 404。
+// Get 在作用域内读一张图片。跨用户、跨校与已软删返回 404。
+// admin 面由属主的绑定院校账号派生；master 不在契约内，仍 404。
 func (s *Service) Get(ctx context.Context, scope corescope.Scope, id string) (corephoto.Record, error) {
 	if err := appcore.RequireScope(scope); err != nil {
 		return corephoto.Record{}, err
 	}
 	return s.deps.Store.Get(ctx, scope, id)
+}
+
+// ListAccount 按账号列一页图片。
+// 可见面判据与 /api/accounts/{id}/location 同源：复用 app/account 的 Get，
+// 即 user 限自己账号、admin 限绑定学校。跨用户、跨校与已软删账号一律 404。
+// 账号可见面判定后，图片面就是该账号属主的图片库；复用同一列表查询。
+// 契约 x-roles 是 [user, admin]：master 回 403。
+func (s *Service) ListAccount(ctx context.Context, scope corescope.Scope, accountID, cursor string, limit int) (Page, error) {
+	if err := requireAccountReader(scope); err != nil {
+		return Page{}, err
+	}
+	limit, err := appcore.NormalizeLimit(limit)
+	if err != nil {
+		return Page{}, err
+	}
+	record, err := s.deps.Accounts.Get(ctx, scope, accountID)
+	if err != nil {
+		return Page{}, err
+	}
+	items, next, err := s.deps.Store.List(ctx, corescope.User(record.OwnerUserID), cursor, limit)
+	if err != nil {
+		return Page{}, err
+	}
+	return Page{Items: items, NextCursor: next}, nil
+}
+
+// GetSchoolDefault 读学校默认图。
+// 可见面由存储侧按作用域判定：master 不限、admin 限绑定校、
+// user 限自己账号所在校。越权与不存在都 404。
+func (s *Service) GetSchoolDefault(ctx context.Context, scope corescope.Scope, schoolID string) (SchoolDefaultPhoto, error) {
+	if err := appcore.RequireScope(scope); err != nil {
+		return SchoolDefaultPhoto{}, err
+	}
+	id, etag, err := s.deps.SchoolPhotos.SchoolDefault(ctx, scope, schoolID)
+	if err != nil {
+		return SchoolDefaultPhoto{}, err
+	}
+	return SchoolDefaultPhoto{PhotoID: id, ETag: etag}, nil
+}
+
+// SetSchoolDefault 覆盖写学校默认图并记 school.default_photo_set 审计。
+// photo_id 必须引用调用者可见的未软删照片；不可见与不存在回 400
+// （契约把照片引用列为请求体校验）。null 清除；重复 PUT 同值幂等。
+// 写与审计同事务；detail 只含 photo_id 与 previous_photo_id，无 PII。
+func (s *Service) SetSchoolDefault(ctx context.Context, scope corescope.Scope, schoolID string, photoID *string, actor appaudit.Actor) (SchoolDefaultPhoto, error) {
+	if err := requireSchoolWriter(scope); err != nil {
+		return SchoolDefaultPhoto{}, err
+	}
+	// 院校面先判：跨校 admin 与不存在的学校一律 404，
+	// 不借照片校验的 400 泄漏照片可见性。
+	if err := s.deps.SchoolPhotos.SchoolWritable(ctx, scope, schoolID); err != nil {
+		return SchoolDefaultPhoto{}, err
+	}
+	var nextID *string
+	out := SchoolDefaultPhoto{}
+	if photoID != nil {
+		rec, err := s.deps.SchoolPhotos.PhotoForDefault(ctx, scope, *photoID)
+		if err != nil {
+			if errs.From(err).Code == errs.CodeNotFound {
+				return SchoolDefaultPhoto{}, errs.New(errs.CodeValidation, "photo must reference an existing visible photo")
+			}
+			return SchoolDefaultPhoto{}, err
+		}
+		// 存库与审计都用库里读回的形状（小写 UUID）。
+		nextID = &rec.ID
+		out = SchoolDefaultPhoto{PhotoID: rec.ID, ETag: hex.EncodeToString(rec.SHA256[:])}
+	}
+	err := s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
+		previous, err := s.deps.SchoolPhotos.SetSchoolDefault(ctx, scope, schoolID, nextID)
+		if err != nil {
+			return err
+		}
+		var prevValue, nextValue any
+		if previous != nil {
+			prevValue = *previous
+		}
+		if nextID != nil {
+			nextValue = *nextID
+		}
+		// detail 只承载前后照片 id；键白名单与 UUID 形状由 core/audit 兜底。
+		_, err = s.deps.Audit.Append(ctx, coreaudit.Entry{
+			TS:          s.deps.Clock.Now().UTC(),
+			SchoolID:    schoolID,
+			ActorUserID: actor.UserID,
+			ActorRole:   actor.Role,
+			ActorLabel:  actor.Label,
+			Action:      coreaudit.ActionSchoolDefaultPhotoSet,
+			TargetType:  "school",
+			TargetID:    schoolID,
+			Detail: map[string]any{
+				"photo_id":          nextValue,
+				"previous_photo_id": prevValue,
+			},
+		})
+		return err
+	})
+	if err != nil {
+		return SchoolDefaultPhoto{}, err
+	}
+	return out, nil
 }
 
 // Open 打开一张图片的字节流。作用域判据与 Get 相同。
@@ -362,4 +481,30 @@ func requireUser(scope corescope.Scope) error {
 		return errs.New(errs.CodeForbidden, "photo library is for user accounts")
 	}
 	return nil
+}
+
+// requireAccountReader 限定按账号列照片只给 user 与 admin。
+// 契约 x-roles 是 [user, admin]：master 不得经本端点列照片。
+func requireAccountReader(scope corescope.Scope) error {
+	if err := appcore.RequireScope(scope); err != nil {
+		return err
+	}
+	switch scope.Kind() {
+	case corescope.KindUser, corescope.KindAdmin:
+		return nil
+	}
+	return errs.New(errs.CodeForbidden, "role cannot list account photos")
+}
+
+// requireSchoolWriter 限定默认图写入只给 master 与 admin。
+// 契约 x-roles 是 [master, admin]：user 不得写学校默认图。
+func requireSchoolWriter(scope corescope.Scope) error {
+	if err := appcore.RequireScope(scope); err != nil {
+		return err
+	}
+	switch scope.Kind() {
+	case corescope.KindMaster, corescope.KindAdmin:
+		return nil
+	}
+	return errs.New(errs.CodeForbidden, "role cannot set the school default photo")
 }
