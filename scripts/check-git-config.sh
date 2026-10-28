@@ -15,26 +15,32 @@ gitpath="$repo/.git"
 
 # 只查主仓（.git 是目录）；worktree 的 .git 是文件，键在各自 config 里，语义不同。
 if [ -d "$gitpath" ] && [ -f "$gitpath/config" ]; then
-    # git config 的三态：0=有键（红）、1=无键（绿）、≥2=读不了配置（响亮红——
-    # 不允许把"读不动"静默当成"没设置"，这是本门自身的 fail-open 洞）。
-    # 两点必须显式处理：①`|| rc=$?` 接码——`set -e` 会让裸赋值语句在非零时直接退出；
-    # ②清空继承的 GIT_DIR/GIT_WORK_TREE——调用方 shell 若带这些变量，git 会先炸
-    #   "not a git repository" 而不是读我们指定的 -f 文件。
+    # 直接解析 config 文本，不调 git：调用方环境的 GIT_* 变量会让 `git config -f`
+    # 先炸 "not a git repository"（测试与代理 shell 都实际踩到），门自身不能被
+    # 外部环境状态左右。只认 [core] 段的 worktree 键（值为单行路径；引号值不展开，
+    # 主仓本就不该有该键，任何非空值都按违规处理）。
     rc=0
-    value=$(env -u GIT_DIR -u GIT_WORK_TREE git config -f "$gitpath/config" --get core.worktree 2>&1) || rc=$?
-    case "$rc" in
-        0)
-            echo "check-git-config: 主仓 .git/config 含 core.worktree=$value" >&2
-            echo "  主工作树不应设置 core.worktree（c8j：WSL 侧写入会挂掉 Windows 侧 git）。" >&2
-            echo "  修复：git -C \"$repo\" config --local --unset core.worktree" >&2
-            exit 1
-            ;;
-        1) : ;;
-        *)
-            echo "check-git-config: 无法读取 $gitpath/config（git config rc=$rc）——门无法判定，拒绝放行" >&2
-            echo "  git 输出：$value" >&2
-            exit 2
-            ;;
-    esac
+    value=$(awk '
+        /^[[:space:]]*\[/ {
+            sec = $0
+            gsub(/^[[:space:]]*\[|\][[:space:]]*$/, "", sec)
+            next
+        }
+        sec == "core" && /^[[:space:]]*worktree[[:space:]]*=/ {
+            sub(/^[^=]*=[[:space:]]*/, "")
+            print
+            exit
+        }
+    ' "$gitpath/config") || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "check-git-config: 无法读取 $gitpath/config（awk rc=$rc）——门无法判定，拒绝放行" >&2
+        exit 2
+    fi
+    if [ -n "$value" ]; then
+        echo "check-git-config: 主仓 .git/config 含 core.worktree=$value" >&2
+        echo "  主工作树不应设置 core.worktree（c8j：WSL 侧写入会挂掉 Windows 侧 git）。" >&2
+        echo "  修复：git -C \"$repo\" config --local --unset core.worktree" >&2
+        exit 1
+    fi
 fi
 exit 0
