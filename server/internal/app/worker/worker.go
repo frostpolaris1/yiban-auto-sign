@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	appcore "github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
 	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corelocation "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/location"
@@ -213,10 +214,10 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 	})
 	if err != nil {
 		if outcome, reason, ok := outcomeOf(err); ok {
-			s.logOutcome(task, outcome, reason)
+			s.logOutcome(ctx, task, stageDiscovery, outcome, reason)
 			return false, s.settleOutcome(ctx, task, win, now, outcome)
 		}
-		s.logOutcome(task, contract.OutcomeTransient, mask.SafeErrorText(err))
+		s.logOutcome(ctx, task, stageDiscovery, contract.OutcomeTransient, mask.SafeErrorText(err))
 		return false, s.settleOutcome(ctx, task, win, now, contract.OutcomeTransient)
 	}
 	if len(targets) == 0 {
@@ -286,13 +287,13 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 	})
 	if err != nil {
 		if outcome, reason, ok := outcomeOf(err); ok {
-			s.logOutcome(task, outcome, reason)
+			s.logOutcome(ctx, task, stageSubmit, outcome, reason)
 			return true, s.settleOutcome(ctx, task, win, now, outcome)
 		}
-		s.logOutcome(task, contract.OutcomeTransient, mask.SafeErrorText(err))
+		s.logOutcome(ctx, task, stageSubmit, contract.OutcomeTransient, mask.SafeErrorText(err))
 		return true, s.settleOutcome(ctx, task, win, now, contract.OutcomeTransient)
 	}
-	s.logOutcome(task, result.Outcome, result.Message)
+	s.logOutcome(ctx, task, stageSubmit, result.Outcome, result.Message)
 	return true, s.settleOutcome(ctx, task, win, now, result.Outcome)
 }
 
@@ -459,17 +460,26 @@ func outcomeOf(err error) (contract.Outcome, string, bool) {
 	return "", "", false
 }
 
+// 结论来源：区分发现面与提交面。
+// 无 message 的结论靠 stage 定位来源（OCR L1）。
+const (
+	stageDiscovery = "discovery"
+	stageSubmit    = "submit"
+)
+
 // logOutcome 记录一次结论的原因。
 //
 // result 列只存结论词（词表不许扩展），提供方给的 message 是唯一详情。
 // 故每条结论都落一行结构化日志；unknown 即使没有原因也记，
 // 让"提供方没给原因"这个缺口本身可见。
+// 级别取 app.OutcomeLogLevel：正常结论 Info，需人处置的 Warn。
 // reason 先过 mask.MaskText：日志与审计共用同一套掩码口径。
-func (s *Service) logOutcome(task corescheduleTask, outcome contract.Outcome, reason string) {
+func (s *Service) logOutcome(ctx context.Context, task corescheduleTask, stage string, outcome contract.Outcome, reason string) {
 	if reason == "" && outcome != contract.OutcomeUnknown {
 		return
 	}
-	s.log.Warn("signing outcome",
+	s.log.Log(ctx, appcore.OutcomeLogLevel(outcome), "signing outcome",
+		"stage", stage,
 		"school_id", task.SchoolID,
 		"account_id", task.AccountID,
 		"task_id", task.SchoolTaskID,

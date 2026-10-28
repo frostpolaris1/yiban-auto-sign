@@ -63,6 +63,17 @@ func hasReason(records []map[string]any, outcome, reason string) bool {
 	return false
 }
 
+// levelOf 返回指定结论词那条日志的级别；找不到返回空串。
+func levelOf(records []map[string]any, outcome string) string {
+	for _, rec := range records {
+		if rec["outcome"] == outcome {
+			level, _ := rec["level"].(string)
+			return level
+		}
+	}
+	return ""
+}
+
 // scriptedSigner 按脚本返回发现与签到结果；两条入口可分别注入错误。
 type scriptedSigner struct {
 	targets     []contract.Target
@@ -208,5 +219,100 @@ func TestTransportErrorDoesNotLeakURL(t *testing.T) {
 		if strings.Contains(string(line), "session-token-abc") {
 			t.Fatalf("日志泄漏会话串: %s", line)
 		}
+	}
+}
+
+// 日志级别按结论分类：正常结论 Info，需人看的结论 Warn。
+// 一个学校 N 个已签账号每天 N 条 Warn 会污染按级别告警的运维面。
+func TestOutcomeLogLevelByClass(t *testing.T) {
+	cases := []struct {
+		outcome contract.Outcome
+		want    string
+	}{
+		{contract.OutcomeSuccess, "INFO"},
+		{contract.OutcomeAlreadyDone, "INFO"},
+		{contract.OutcomeNoTarget, "INFO"},
+		{contract.OutcomePendingUpstream, "INFO"},
+		{contract.OutcomeTransient, "WARN"},
+		{contract.OutcomeUnknown, "WARN"},
+		{contract.OutcomeChallenge, "WARN"},
+		{contract.OutcomeRejected, "WARN"},
+		{contract.OutcomeDeviceUnbound, "WARN"},
+	}
+	for _, c := range cases {
+		t.Run(string(c.outcome), func(t *testing.T) {
+			st := newStore(baseTask())
+			st.windows["st-1|2026-10-29"] = openWindow()
+			sink := &logSink{}
+			signer := &scriptedSigner{
+				targets:    []contract.Target{{ID: "pos-1"}},
+				signResult: contract.Result{Outcome: c.outcome, Message: "platform message"},
+			}
+			svc := newReasonService(t, st, signer, sink)
+			if _, err := svc.Step(context.Background(), 10); err != nil {
+				t.Fatalf("Step: %v", err)
+			}
+			if got := levelOf(sink.records(t), string(c.outcome)); got != c.want {
+				t.Fatalf("%s 级别 = %q, want %q（记录 %v）", c.outcome, got, c.want, sink.records(t))
+			}
+		})
+	}
+}
+
+// 会话失效的发现结论必须留可行动原因，不得落成 unclassified。
+func TestSessionExpiredDiscoveryLogsFixedReason(t *testing.T) {
+	st := newStore(baseTask())
+	st.windows["st-1|2026-10-29"] = openWindow()
+	sink := &logSink{}
+	signer := &scriptedSigner{discoverErr: &contract.OutcomeError{
+		Outcome: contract.OutcomeTransient, Message: "session expired"}}
+	svc := newReasonService(t, st, signer, sink)
+
+	if _, err := svc.Step(context.Background(), 10); err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	records := sink.records(t)
+	if !hasReason(records, string(contract.OutcomeTransient), "session expired") {
+		t.Fatalf("日志缺少 session expired: %v", records)
+	}
+	for _, rec := range records {
+		if rec["reason"] == "unclassified error" {
+			t.Fatalf("会话失效落成未分类错误: %v", rec)
+		}
+	}
+}
+
+// unknown 日志带 stage：无 message 的 unknown 要能区分发现面与提交面。
+func TestUnknownLogCarriesStage(t *testing.T) {
+	cases := []struct {
+		name   string
+		signer *scriptedSigner
+		want   string
+	}{
+		{"发现面", &scriptedSigner{discoverErr: &contract.OutcomeError{
+			Outcome: contract.OutcomeUnknown}}, "discovery"},
+		{"提交面", &scriptedSigner{
+			targets:    []contract.Target{{ID: "pos-1"}},
+			signResult: contract.Result{Outcome: contract.OutcomeUnknown}}, "submit"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			st := newStore(baseTask())
+			st.windows["st-1|2026-10-29"] = openWindow()
+			sink := &logSink{}
+			svc := newReasonService(t, st, c.signer, sink)
+			if _, err := svc.Step(context.Background(), 10); err != nil {
+				t.Fatalf("Step: %v", err)
+			}
+			found := false
+			for _, rec := range sink.records(t) {
+				if rec["outcome"] == string(contract.OutcomeUnknown) && rec["stage"] == c.want {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("unknown 日志缺少 stage=%q: %v", c.want, sink.records(t))
+			}
+		})
 	}
 }

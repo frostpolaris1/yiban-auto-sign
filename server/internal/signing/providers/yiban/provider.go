@@ -43,15 +43,20 @@ func (p *Provider) Verify(ctx context.Context, req contract.VerifyRequest) (cont
 	return p.client.Verify(ctx, req.Account.ID, req.Credential)
 }
 
+// sessionExpiredMessage 是会话失效的固定文案。
+// 不回放上游 Msg：它可能带平台原文，也与请求细节混在一起。
+const sessionExpiredMessage = "session expired"
+
 // DiscoverWindow 读取签到时间窗。
 // 平台给出「无需签到 / 已签到 / 补签中」时返回 OutcomeError，
 // 由宿主映射成 skipped 或 success。
 // State=3 已由 2026-10-28 实拍证实为已签到；
 // State=2/4/5 的映射沿用旧实现，**未实拍，未知**。
+// 会话失效在重登一次后仍失败时返回 transient 结论（见 discoverError）。
 func (p *Provider) DiscoverWindow(ctx context.Context, req contract.DiscoverRequest) (contract.Window, error) {
 	cfg, err := p.client.SignPosition(ctx, req.Account.ID, req.Credential)
 	if err != nil {
-		return contract.Window{}, err
+		return contract.Window{}, p.discoverError(req.Account.ID, err)
 	}
 	if outcome, ok := stateOutcome(cfg.State); ok {
 		return contract.Window{}, &contract.OutcomeError{Outcome: outcome, Message: stateMessage(cfg.State)}
@@ -69,10 +74,11 @@ func (p *Provider) DiscoverWindow(ctx context.Context, req contract.DiscoverRequ
 
 // DiscoverTargets 读取候选签到点。
 // IsNeedPhoto 语义未定，不据此置 RequiresPhoto；原值进 Raw。
+// 会话失效在重登一次后仍失败时返回 transient 结论（见 discoverError）。
 func (p *Provider) DiscoverTargets(ctx context.Context, req contract.DiscoverRequest) ([]contract.Target, error) {
 	cfg, err := p.client.SignPosition(ctx, req.Account.ID, req.Credential)
 	if err != nil {
-		return nil, err
+		return nil, p.discoverError(req.Account.ID, err)
 	}
 	if outcome, ok := stateOutcome(cfg.State); ok {
 		return nil, &contract.OutcomeError{Outcome: outcome, Message: stateMessage(cfg.State)}
@@ -204,6 +210,20 @@ func (p *Provider) sign(ctx context.Context, req contract.SignRequest) (contract
 		return p.resultForError(req.Account.ID, err, "signIn")
 	}
 	return p.signResult(envelope, warning), nil
+}
+
+// discoverError 归一发现路径的错误。
+//
+// 会话失效在重登一次后仍失败：必须给出可行动的 transient 结论，
+// 并清掉本地会话，下一次调用从新登录起步（OCR M2）。
+// 其余错误原样上抛：契约要求网络与取消失败保持原生 error。
+func (p *Provider) discoverError(accountID string, err error) error {
+	var expired *protocol.SessionExpired
+	if errors.As(err, &expired) {
+		p.client.clearSession(accountID)
+		return &contract.OutcomeError{Outcome: contract.OutcomeTransient, Message: sessionExpiredMessage}
+	}
+	return err
 }
 
 // resultForError 把会话/结论/原生错误分成三类。
