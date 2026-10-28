@@ -903,7 +903,9 @@ YIBAN_ADMIN_PASSWORD='你的强口令' .venv/bin/python3 -m yiban.entry.cli init
 # 或 EnvironmentFile 报错启动失败）：
 #   useradd -r -s /usr/sbin/nologin yiban                     # 模板的 User=yiban（上面「服务器部署」第 1 步已建过则跳过）
 #   install -d -m 0750 -o yiban -g yiban /etc/yiban           # .env 分盘存放目录（可选）
-#   grep '^YIBAN_ACCOUNTS_KEY=' .env >/tmp/yiban-accounts-key && \
+#   # 先剥 UTF-8 BOM：BOM 在行首时 `^` 锚点匹配不到（与 scripts/backup.sh 的
+#   # env_key_lines 同口径；依赖 GNU sed）
+#   sed -e '1s/^\xEF\xBB\xBF//' .env | grep '^YIBAN_ACCOUNTS_KEY=' >/tmp/yiban-accounts-key && \
 #     install -m 0640 -o root -g yiban /tmp/yiban-accounts-key /etc/yiban/accounts-key \
 #     && rm -f /tmp/yiban-accounts-key                         # 模板的 EnvironmentFile：只放启动密钥这一行
 #   ⚠️ 不要把整份 .env 拷成 EnvironmentFile：非路径键的读序是 .env 优先、

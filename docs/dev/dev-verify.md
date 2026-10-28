@@ -211,10 +211,10 @@ slow 行 + `FAST_KNOWN_SLOW` 长尾 4 条），与 verify 并行、每次 push �
 **现量口径（2026-10-28 本树，gategen 批次后）**：全量 354 个文件 ＝ 快集 339 ＋ 慢集 14 ＋ 串行轨 1
 （文件数口径：`tests/lane-roster.tsv` 的非注释行按车道计数；测量命令
 `awk -F'\t' '!/^#/ && ($1=="fast" || $1=="slow" || $1=="serial") {print $1}' tests/lane-roster.tsv | sort | uniq -c`）。
-用例数口径 5266 ＝ 快集 5093 ＋ 慢集 171 ＋ 串行轨 2
+用例数口径 5267 ＝ 快集 5093 ＋ 慢集 172 ＋ 串行轨 2
 （口径：`pytest tests/ --collect-only -q` 的 `tests/…::…` 行按文件归道计数；测量命令
 `/root/.venv-yiban-wsl/bin/python -m pytest tests/ --collect-only -q -p no:randomly --no-header | grep -c '^tests/.*::'`
-输出 `5266`；分道数由 `tests/test_gate_lane_roster.py::DocNumbersMatchRealityTest` 复算，
+输出 `5267`；分道数由 `tests/test_gate_lane_roster.py::DocNumbersMatchRealityTest` 复算，
 不符时点名文档值与实测值）。
 **`slow` 与 `serial` 都是串行执行**（slow 由 `run_slow`
 不带 `-n`，serial 由 verify 里的单独一步），故真进程树类用例在两条道上都独占核；区别只在
