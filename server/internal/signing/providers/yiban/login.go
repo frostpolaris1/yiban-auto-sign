@@ -17,8 +17,8 @@ import (
 //
 // # 线上形状清单（复刻旧实现 yiban/platform.py::login_killyiban，ref develop@1d1c5ccf）
 //
-// 夹具与判据以旧实现行为为底本，标注「旧实现复刻」，未经真实抓包验证；
-// 实拍对齐是 4sk 后续生产探针步骤，本实现不 claim 真实性。
+// 四跳形状已由 2026-10-28 实拍逐跳命中（bd yiban-auto-sign-4sk 注释）；
+// 夹具值是合成值，不是抓包原文。
 //
 //  1. GET oauth.yiban.cn/code/html?client_id=…&redirect_uri=…，不跟跳。
 //     头：UA "Yiban"、AppVersion 5.2.3、Origin/Referer c.uyiban.com、Connection: close；

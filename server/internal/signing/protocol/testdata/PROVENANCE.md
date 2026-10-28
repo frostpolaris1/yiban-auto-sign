@@ -11,7 +11,9 @@
 ## 来源分档
 
 - **实拍脱敏（captured）**：结构与字段取自真实流量，个人数据已替换为虚构值。
-  清单标 `captured` 的六项属此档。
+  清单标 `captured` 的七项属此档。
+  `sign_position_done.json` 是已签档（State=3）形状，取自 2026-10-28 实拍；
+  个人与学校值已替换或为空，窗口时间沿用既有合成夹具。
 - **纯合成（synthetic）**：无真实抓包，只作解析分支输入。
   清单标 `synthetic` 的六项属此档。
 - **未知（unknown）**：`iframe_location.txt`、`usersure_form.txt`、

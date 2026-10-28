@@ -1,0 +1,1 @@
+{"code": 0, "msg": "", "data": {"AcsState": "off", "State": 3, "Msg": "已签到", "OutState": "on", "Remark": "因受不可抗因素影响导致定位有误，允许在范围之外签到，但需上传签到地点的照片", "FileUrl": "", "Type": "campus", "Position": [], "Range": {"StartTime": 1790980200, "EndTime": 1790985000, "SignDay": 1}, "IsNeedPhoto": 2, "AttachmentFileName": ""}}

@@ -21,6 +21,11 @@
       "kind": "response",
       "provenance": "captured"
     },
+    "sign_position_done.json": {
+      "kind": "response",
+      "provenance": "captured",
+      "note": "已签档形状取自 2026-10-28 实拍（bd yiban-auto-sign-4sk）；个人与学校值已替换或为空，窗口时间沿用既有合成夹具"
+    },
     "device_state.json": {
       "kind": "response",
       "provenance": "captured"
