@@ -8,20 +8,24 @@
  * **口径**
  * 导航项全部来自 `NAV`。本文件不硬编码路径。
  * 分组手动开合优先。未手动时跟随当前路由。
+ * 底部工作区块读真实会话：头像、显示名、角色都来自 `GET /api/auth/me`。
  */
 
 import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { cx } from '@/lib/cx'
+import type { SessionUser } from '@/lib/api/auth'
+import { displayNameFor, initialsFor, roleLabel } from '@/lib/identity'
 import { BrandMark, Icon } from '@/components/ui/Icon'
 import { isNavGroup, NAV, type NavGroup, type NavLeaf } from './nav'
 
 type SidebarProps = {
+  me: SessionUser
   pathname: string
   onNavigate: () => void
 }
 
-export function Sidebar({ pathname, onNavigate }: SidebarProps) {
+export function Sidebar({ me, pathname, onNavigate }: SidebarProps) {
   const [manualOpen, setManualOpen] = useState<Record<string, boolean>>({})
 
   return (
@@ -63,10 +67,10 @@ export function Sidebar({ pathname, onNavigate }: SidebarProps) {
 
       <div className="sidebar-footer">
         <div className="workspace">
-          <div className="workspace-avatar">OP</div>
+          <div className="workspace-avatar">{initialsFor(me.email)}</div>
           <div className="workspace-text">
-            <div className="workspace-name">Operator</div>
-            <div className="workspace-role">master · 骨架</div>
+            <div className="workspace-name">{displayNameFor(me.email)}</div>
+            <div className="workspace-role">{roleLabel(me.role)}</div>
           </div>
           <Icon name="chevronDown" className="workspace-chev" size={14} />
         </div>

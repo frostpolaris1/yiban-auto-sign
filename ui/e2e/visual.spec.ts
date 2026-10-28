@@ -5,7 +5,7 @@ import { mockAccountsApi } from './support/fake-accounts-api'
  * Adminator 壳的视觉回归基线。
  *
  * 矩阵：4 条路由 × 2 套主题 × 2 个宽度 = 16 张截图。
- * 另有账号页抽屉／模态各 2 张，共 20 张。
+ * 另有抽屉／模态／菜单态与会话过期提示等按需快照，当前共 32 张。
  * 基线随 spec 入库，目录是 `e2e/visual.spec.ts-snapshots/`。
  * 首次运行 `npm run test:visual:update`。此后每次必须 0 差异。
  */
@@ -28,7 +28,15 @@ test.beforeEach(async ({ page }) => {
   await mockAccountsApi(page, { role: 'master' })
 })
 
+/** 登录页是没有会话的页面。壳内路由需要会话，登录页需要没有会话。 */
+async function mockSessionFor(page: Page, path: string) {
+  if (path === '/login') {
+    await mockAccountsApi(page, { role: null })
+  }
+}
+
 async function openWithTheme(page: Page, path: string, theme: (typeof THEMES)[number]) {
+  await mockSessionFor(page, path)
   await page.addInitScript((value) => {
     try {
       localStorage.setItem('dash26-theme', value)
@@ -112,6 +120,25 @@ for (const theme of THEMES) {
     await page.getByRole('menu').getByRole('menuitem', { name: /删除/ }).click()
     await expect(page.getByRole('dialog', { name: '删除账号？' })).toBeVisible()
     await expect(page).toHaveScreenshot(`accounts-delete-${theme}-1440.png`)
+  })
+}
+
+for (const theme of THEMES) {
+  test(`visual profile menu ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await openWithTheme(page, '/', theme)
+    await page.getByRole('button', { name: '账号菜单' }).click()
+    await expect(page.getByRole('menu')).toBeVisible()
+    await expect(page).toHaveScreenshot(`profile-menu-${theme}-1440.png`)
+  })
+
+  test(`visual session expired ${theme}`, async ({ page }) => {
+    // 有会话进账号页，列表请求返回 401：真实用户路径，落到登录页并带过期提示。
+    await mockAccountsApi(page, { role: 'master', expireOn: ['/api/accounts'] })
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await openWithTheme(page, '/accounts', theme)
+    await expect(page.getByText('会话已过期，请重新登录')).toBeVisible()
+    await expect(page).toHaveScreenshot(`session-expired-${theme}-1440.png`)
   })
 }
 

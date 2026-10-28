@@ -216,16 +216,6 @@ test('invariant 3: an admin may verify, review and filter by school', async ({ p
   )
 })
 
-test('invariant 3: a missing session disables every write action', async ({ page }) => {
-  await mockAccountsApi(page, { role: null })
-  await openAccounts(page)
-
-  for (const action of ['暂停', '签到', '验证', '评审']) {
-    await expect(page.getByRole('button', { name: `${action} 139****9000` })).toBeDisabled()
-  }
-  await expect(page.locator('.app-deny-note').first()).toContainText('会话角色未识别')
-})
-
 test('invariant 4: pause waits for confirmation and sends the flag', async ({ page }) => {
   const api = await mockAccountsApi(page, { role: 'master' })
   await openAccounts(page)

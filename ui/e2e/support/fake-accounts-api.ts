@@ -17,7 +17,13 @@ export type ApiCall = {
   search: string
   params: Record<string, string>
   body: unknown
+  headers: Record<string, string>
 }
+
+/** 假会话的合成凭据。值已在仓库内登记过：邮箱是保留域，口令明示不是真口令。 */
+export const SESSION_EMAIL = 'operator@example.com'
+export const SESSION_PASSWORD = 'not-a-real-password'
+export const SESSION_CSRF = 'csrf-test'
 
 export const SCHOOLS = [
   {
@@ -75,6 +81,17 @@ export const ACCOUNTS: Account[] = [
 
 export type MockOptions = {
   role: Role | null
+  /** 有会话时 me/login 返回的邮箱。 */
+  email?: string
+  /** login 端点接受的口令。 */
+  password?: string
+  /** 登录成功后采用的会话角色。初始 role 为 null 时用这个。 */
+  loginRole?: Role
+  mustChangePassword?: boolean
+  /** 命中这些路径的请求返回 401，并清掉会话。用来模拟会话过期。 */
+  expireOn?: string[]
+  /** me 端点的人为延迟。用来观察守卫的加载态。 */
+  meDelayMs?: number
   accounts?: Account[]
   /** 键是本次请求的 cursor；首屏键是空串。 */
   pages?: Record<string, Account[]>
@@ -96,6 +113,8 @@ function errorBody(code: string, message: string) {
 
 export async function mockAccountsApi(page: Page, options: MockOptions): Promise<FakeApi> {
   const calls: ApiCall[] = []
+  // 会话角色随 login/logout/过期变化，故初始值拷贝一份。
+  let sessionRole: Role | null = options.role
   // 每个测试一份副本：写操作会改状态，不能污染共享夹具。
   const allAccounts = (options.accounts ?? ACCOUNTS).map((item) => ({ ...item }))
   const pages = Object.fromEntries(
@@ -130,22 +149,55 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       search: url.search,
       params: Object.fromEntries(url.searchParams.entries()),
       body,
+      headers: request.headers(),
     })
 
+    // 会话过期：业务端点先失效一次，后续请求按未登录处理。
+    if (
+      sessionRole &&
+      options.expireOn?.includes(url.pathname) &&
+      !url.pathname.startsWith('/api/auth/')
+    ) {
+      sessionRole = null
+      return fail(route, 401, 'unauthorized', '会话已过期')
+    }
+
+    const sessionUser = (role: Role) => ({
+      id: 'user-1',
+      email: options.email ?? SESSION_EMAIL,
+      role,
+      status: 'active' as const,
+      must_change_password: Boolean(options.mustChangePassword),
+      csrf_token: SESSION_CSRF,
+    })
+
+    if (url.pathname === '/api/auth/login' && request.method() === 'POST') {
+      const credentials = (body ?? {}) as { email?: string; password?: string }
+      if (
+        credentials.email !== (options.email ?? SESSION_EMAIL) ||
+        credentials.password !== (options.password ?? SESSION_PASSWORD)
+      ) {
+        return fail(route, 401, 'invalid_credentials', '邮箱或密码错误')
+      }
+      sessionRole = options.loginRole ?? 'master'
+      return json(route, sessionUser(sessionRole))
+    }
+
+    if (url.pathname === '/api/auth/logout' && request.method() === 'POST') {
+      sessionRole = null
+      return route.fulfill({ status: 204 })
+    }
+
     if (url.pathname === '/api/auth/me') {
-      if (!options.role) return fail(route, 401, 'unauthorized', '会话失效')
-      return json(route, {
-        id: 'user-1',
-        email: 'operator@example.com',
-        role: options.role,
-        status: 'active',
-        must_change_password: false,
-        csrf_token: 'csrf-test',
-      })
+      if (options.meDelayMs) {
+        await new Promise((resolve) => setTimeout(resolve, options.meDelayMs))
+      }
+      if (!sessionRole) return fail(route, 401, 'unauthorized', '会话失效')
+      return json(route, sessionUser(sessionRole))
     }
 
     if (url.pathname === '/api/schools' && request.method() === 'GET') {
-      if (options.role !== 'master' && options.role !== 'admin') {
+      if (sessionRole !== 'master' && sessionRole !== 'admin') {
         return fail(route, 403, 'forbidden', '无权访问')
       }
       return json(route, { items: SCHOOLS, next_cursor: '' })
@@ -259,4 +311,12 @@ export function locationCalls(api: FakeApi, id: string): ApiCall[] {
 
 export function deleteCalls(api: FakeApi, id: string): ApiCall[] {
   return api.calls.filter((call) => call.method === 'DELETE' && call.path === `/api/accounts/${id}`)
+}
+
+export function loginCalls(api: FakeApi): ApiCall[] {
+  return api.calls.filter((call) => call.method === 'POST' && call.path === '/api/auth/login')
+}
+
+export function logoutCalls(api: FakeApi): ApiCall[] {
+  return api.calls.filter((call) => call.method === 'POST' && call.path === '/api/auth/logout')
 }

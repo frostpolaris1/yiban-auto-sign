@@ -17,6 +17,7 @@ import { DashboardPage } from '@/pages/DashboardPage'
 import { DesignPage } from '@/pages/DesignPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { NotFoundPage } from '@/pages/NotFoundPage'
+import { sanitizeRedirect } from '@/lib/redirect'
 
 const rootRoute = createRootRoute({
   component: () => <Outlet />,
@@ -51,11 +52,25 @@ const accountsRoute = createRoute({
   component: AccountsPage,
 })
 
+/**
+ * 登录路由的自定义 search：`?redirect=`。
+ * 校验即净化：站外地址在解析时丢弃，后续读者拿不到它。
+ */
 const loginRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/login',
-  component: LoginPage,
+  validateSearch: (search: Record<string, unknown>): { redirect?: string } => {
+    const redirect = sanitizeRedirect(search.redirect)
+    return redirect ? { redirect } : {}
+  },
+  component: LoginRouteComponent,
 })
+
+/** 把类型化的 search 传给页面。页面不直接依赖路由定义。 */
+function LoginRouteComponent() {
+  const { redirect } = loginRoute.useSearch()
+  return <LoginPage redirect={redirect} />
+}
 
 const routeTree = rootRoute.addChildren([
   shellRoute.addChildren([dashboardRoute, designRoute, accountsRoute]),

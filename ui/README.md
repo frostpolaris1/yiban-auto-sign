@@ -2,7 +2,7 @@
 
 React 19 + Vite 8 + TypeScript 7。视觉语言复用 Adminator 4.4.0。
 
-本批是 P1F 骨架加账号页。仪表盘与画廊只渲染界面；账号页调用契约端点。
+本批是 P1F 骨架、账号页与登录接线。仪表盘与画廊只渲染界面；账号页与登录页调用契约端点。
 
 ## 命令
 
@@ -18,7 +18,7 @@ React 19 + Vite 8 + TypeScript 7。视觉语言复用 Adminator 4.4.0。
 | `npm run gate:structure` | 导入方向门 |
 | `npm run gate:docs` | 入库文档门。禁止指向未入库目录 |
 | `npm run gate:license` | 依赖许可证门。禁用许可证或清单漂移即红 |
-| `npm run test:unit` | fetch、查询默认值与账号页纯逻辑单测，运行器为 `node:test` |
+| `npm run test:unit` | fetch、查询默认值、账号页与认证纯逻辑单测，运行器为 `node:test` |
 | `npm run test:visual` | Playwright。先跑 `npm run build` |
 | `npm run test:visual:update` | 重写视觉基线。先跑 `npm run build` |
 | `npm run verify` | 类型检查 + 契约漂移 + 单测 + 各门自测 + 四门 + 构建 |
@@ -86,9 +86,9 @@ node scripts/token-gate.mjs
 ## 视觉回归
 
 矩阵：4 条路由 × 2 套主题 × 2 个宽度（1440 / 390） = 16 张截图。
-另有账号页抽屉与模态各 2 张，共 20 张。
+另有账号页 6 种开态 × 2 套主题 = 12 张，profile 菜单与会话过期提示各 2 张，共 32 张。
 
-行为用例 32 条：画廊 10 条、账号页 21 条、无溢出 1 条。Playwright 总计 52 条。
+行为用例 51 条：账号页 27 条、认证 14 条、画廊 9 条、无溢出 1 条。Playwright 总计 83 条。
 
 基线目录：`e2e/visual.spec.ts-snapshots/`。
 
@@ -127,7 +127,7 @@ WSL 读 `-chromium-linux.png`，Windows 读 `-chromium-win32.png`。
 
 ## 本批不做
 
-- 仪表盘与画廊不调后端。`lib/api/*` 其余域仍是契约桩。
+- 仪表盘与画廊不调后端。`lib/api/*` 的认证与账号域已接线，其余仍是契约桩。
 - 不接 TanStack Table、Chart.js、react-day-picker、SSE。
-- 不做登录会话与路由守卫。P1 认证批次加入。
+- 忘记/重置密码页与登录态改密不做。契约只有公开的令牌流；登录态改密没有端点。
 - 不引 Tailwind、shadcn、Element Plus、Bootstrap、Lucide、Recharts。
