@@ -9,6 +9,7 @@ import (
 	"time"
 
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
+	corelocation "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/location"
 	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
@@ -92,6 +93,51 @@ func TestFixedLocationSkipsTargetsThatExcludeIt(t *testing.T) {
 	}
 }
 
+// 多候选 ＋ auto 采样：第 2 次尝试采到的点必须落在轮转后的候选围栏内。
+// 突变守卫：把采样输入换成 targets[0].Polygon，本测试必须红。
+func TestSamplingFollowsRotatedTarget(t *testing.T) {
+	st := newStore(taskWithOwner())
+	st.windows["st-1|2026-10-29"] = openWindow()
+	signer := defaultSigner()
+	first := contract.Target{ID: "pos-1", Polygon: squareAround(100, 20)}
+	second := contract.Target{ID: "pos-2", Polygon: squareAround(110, 30)}
+	signer.targets = []contract.Target{first, second}
+	signer.outcome = contract.OutcomeTransient // 第 1 次失败，触发第 2 次尝试
+	clk := &stepClock{t: testNow()}
+	svc, err := appworker.NewService(appworker.Deps{
+		Store: st, Creds: fakeCreds{}, Signer: signer, Egress: fakeEgress{},
+		Limiter: fakeLimiter{allow: true}, Clock: clk, Location: loc,
+		Locations: &fakeLocations{}, Photos: &fakePhotos{},
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		if _, err := svc.Step(context.Background(), 10); err != nil {
+			t.Fatalf("Step %d: %v", i, err)
+		}
+		clk.t = clk.t.Add(10 * time.Minute)
+	}
+	if len(signer.requests) != 2 {
+		t.Fatalf("尝试次数 = %d, want 2", len(signer.requests))
+	}
+	firstReq, secondReq := signer.requests[0], signer.requests[1]
+	if secondReq.Target.ID != "pos-2" {
+		t.Fatalf("第 2 次尝试用 %q, want pos-2", secondReq.Target.ID)
+	}
+	if !corelocation.PointInPolygon(firstReq.Location.Lng, firstReq.Location.Lat, first.Polygon) {
+		t.Fatalf("第 1 次提交点不在第 1 个候选围栏内: %+v", firstReq.Location)
+	}
+	if !corelocation.PointInPolygon(secondReq.Location.Lng, secondReq.Location.Lat, second.Polygon) {
+		t.Fatalf("第 2 次提交点不在第 2 个候选围栏内: %+v", secondReq.Location)
+	}
+	if corelocation.PointInPolygon(secondReq.Location.Lng, secondReq.Location.Lat, first.Polygon) {
+		t.Fatalf("第 2 次提交点落在第 1 个候选围栏内：采样用了错的围栏: %+v", secondReq.Location)
+	}
+}
+
+// 边界：单候选点时轮转恒取第一个（不与既有行为分叉）。
 func TestSingleTargetStaysFirst(t *testing.T) {
 	st := newStore(baseTask())
 	st.windows["st-1|2026-10-29"] = openWindow()

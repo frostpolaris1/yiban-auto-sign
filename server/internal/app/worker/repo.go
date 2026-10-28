@@ -20,6 +20,7 @@ package worker
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
@@ -103,6 +104,7 @@ type Notifier interface {
 // Deps 是执行循环的依赖。Locations 与 Photos 可为 nil：
 // 缺哪个端口就退回哪个面的现行为（LocationAuto、无图注入）。
 // Notifier 可为 nil：缺端口就不发事件。
+// Logger 可为 nil：用 slog.Default。结论原因进日志，见 logOutcome。
 type Deps struct {
 	Store     Store
 	Creds     Credentials
@@ -114,4 +116,5 @@ type Deps struct {
 	Locations LocationSource
 	Photos    PhotoSource
 	Notifier  Notifier
+	Logger    *slog.Logger
 }

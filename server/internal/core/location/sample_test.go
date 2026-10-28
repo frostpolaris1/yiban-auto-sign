@@ -77,3 +77,15 @@ func TestSamplePointRejectsInvalidPolygon(t *testing.T) {
 		})
 	}
 }
+
+// 三点共线：包围盒非零但多边形零面积，投点必然全落在外面。
+// 该输入钉住"用尽投点后返回 false"的分支：
+// 上面的非法多边形都在包围盒检查处提前返回。
+func TestSamplePointExhaustsDegeneratePolygon(t *testing.T) {
+	collinear := []contract.Point{{Lng: 100, Lat: 20}, {Lng: 101, Lat: 21}, {Lng: 102, Lat: 22}}
+	for _, seed := range []string{"task-1#0", "task-1#1", "task-1#2"} {
+		if point, ok := location.SamplePoint(collinear, seed); ok {
+			t.Fatalf("共线多边形仍采样: %+v（种子 %s）", point, seed)
+		}
+	}
+}
