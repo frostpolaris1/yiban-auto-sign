@@ -83,10 +83,26 @@ async function openWithTheme(
   }, theme)
   await page.goto(path)
   await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
+  // 字体到位是截图的必要条件；数据态由各用例自己断言之后再拍。
   await page.evaluate(() => document.fonts.ready)
-  await page.waitForLoadState('networkidle')
-  // 首帧的字体回退与行盒可能再稳定一帧。截图前等一下，避免 1px 位移。
-  await page.waitForTimeout(200)
+}
+
+// 视觉基线在「有动效」口径下拍摄；行为用例的全局减少动效不适用于本文件。
+test.use({ reducedMotion: 'no-preference' })
+
+/** 数据锚点：截图或量宽度之前，先确认页面拿到的是数据态，不是骨架。 */
+async function expectData(page: Page, path: string) {
+  if (path === '/accounts') {
+    await expect(page.getByRole('table', { name: '账号列表' })).toContainText('138****8000')
+  } else if (path === '/schools') {
+    await expect(page.getByRole('table', { name: '学校列表' })).toContainText('合成学校甲')
+  } else if (path.startsWith('/schedule')) {
+    await expect(page.getByRole('table', { name: '时间片窗口' })).toContainText('合成学校甲')
+  } else if (path === '/') {
+    await expect(page.locator('.kpi-card')).toHaveCount(4)
+  } else if (path === '/design') {
+    await expect(page.getByRole('heading', { name: /组件画廊/ })).toBeVisible()
+  }
 }
 
 /** 等一组滚动数字全部落定：逐个断言可见终值，避免拍到中间帧。 */
@@ -96,6 +112,19 @@ async function expectNumbers(scope: Locator, expected: readonly string[]) {
   for (let index = 0; index < expected.length; index += 1) {
     await expect.poll(() => visibleText(scope.nth(index))).toBe(expected[index])
   }
+  // 入场动画（KPI 卡 rise-in、表格 fade-in）未结束时截图，整页文字会用灰度抗锯齿，
+  // 与动画结束后的基线差一层。等页面级动画全部落定再交回调用方。
+  await scope
+    .page()
+    .waitForFunction(() =>
+      document
+        .getAnimations()
+        .every(
+          (animation) =>
+            animation.playState !== 'running' ||
+            animation.effect?.getTiming().iterations === Infinity,
+        ),
+    )
 }
 
 for (const theme of THEMES) {
@@ -127,6 +156,7 @@ for (const theme of THEMES) {
       test(`visual ${route.name} ${theme} ${viewport.name}`, async ({ page }) => {
         await page.setViewportSize({ width: viewport.width, height: viewport.height })
         await openWithTheme(page, route.path, theme)
+        await expectData(page, route.path)
         await expect(page).toHaveScreenshot(`${route.name}-${theme}-${viewport.name}.png`, {
           fullPage: true,
         })
@@ -265,7 +295,9 @@ for (const theme of THEMES) {
   test(`visual schedule page ${theme}`, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })
     await openWithTheme(page, `/schedule?day=${SCHEDULE_DAY}`, theme)
-    await expect(page.getByRole('table', { name: '时间片窗口' })).toBeVisible()
+    const table = page.getByRole('table', { name: '时间片窗口' })
+    await expect(table).toBeVisible()
+    await expect(table).toContainText('合成学校甲')
     await expect(page).toHaveScreenshot(`schedule-${theme}-1440.png`, { fullPage: true })
   })
 
@@ -326,8 +358,14 @@ for (const theme of THEMES) {
   test(`visual profile menu ${theme}`, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })
     await openWithTheme(page, '/', theme)
+    // 背景是看板：滚动数字全部落定再拍，菜单态不能带中间帧。
+    await expect(page.getByLabel('任务')).toHaveValue('school-alpha:task-daily')
+    await expectNumbers(page.locator('.app-metric'), ['容量40', '需求12', '缺口0'])
+    await expectNumbers(page.locator('.kpi-card .kpi-value'), ['4项', '3项', '1项', '2项'])
     await page.getByRole('button', { name: '账号菜单' }).click()
     await expect(page.getByRole('menu')).toBeVisible()
+    // 菜单入场动画会改变整页的合成层，进而改变文字抗锯齿；等它结束再拍。
+    await page.waitForTimeout(200)
     await expect(page).toHaveScreenshot(`profile-menu-${theme}-1440.png`)
   })
 
@@ -351,8 +389,13 @@ test('no horizontal overflow at either width, in either theme', async ({ page })
   ]
   for (const theme of THEMES) {
     for (const { path, role } of targets) {
+      // mock 的 catch-all 是后注册优先：不清路由会让上一目标的兜底吞掉本目标的请求。
+      // 清完先补基础会话 mock（/design 与 /accounts 都依赖它），具体页 mock 后注册覆盖。
+      await page.unrouteAll({ behavior: 'ignoreErrors' })
+      await mockAccountsApi(page, { role })
       await page.setViewportSize({ width: 390, height: 844 })
       await openWithTheme(page, path, theme, role)
+      await expectData(page, path)
       const narrow = await page.evaluate(() => ({
         scrollWidth: document.documentElement.scrollWidth,
         clientWidth: document.documentElement.clientWidth,
