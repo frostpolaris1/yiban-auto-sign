@@ -450,6 +450,24 @@ func TestG1USchoolDefaultPhoto(t *testing.T) {
 	if got.PhotoID == nil || *got.PhotoID != p1.ID {
 		t.Fatalf("重传后 = %+v, want %s", got, p1.ID)
 	}
+
+	// 缺 photo_id 键：400（契约 required；显式 null 才是清除）。不写审计。
+	before := e.scalarInt(`SELECT count(*) FROM audit_logs WHERE action = 'school.default_photo_set'`)
+	if rec := e.do("PUT", "/api/schools/"+f.schoolA+"/default-photo", map[string]any{}, f.adminA); rec.Code != http.StatusBadRequest {
+		t.Fatalf("缺键 PUT status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if after := e.scalarInt(`SELECT count(*) FROM audit_logs WHERE action = 'school.default_photo_set'`); after != before {
+		t.Fatalf("缺键 PUT 写了审计行：%d -> %d", before, after)
+	}
+
+	// 路径里的大写 UUID：写成功且审计 TargetID 规范化为小写。
+	if code, body := g1uPutDefault(t, e, strings.ToUpper(f.schoolA), f.adminA, map[string]any{"photo_id": p1.ID}); code != http.StatusOK {
+		t.Fatalf("大写校 id PUT status = %d: %s", code, body)
+	}
+	target := e.scalarString(`SELECT target_id FROM audit_logs WHERE action = 'school.default_photo_set' ORDER BY id DESC LIMIT 1`)
+	if target != strings.ToLower(f.schoolA) {
+		t.Fatalf("审计 target = %q, want 规范化小写 %q", target, strings.ToLower(f.schoolA))
+	}
 }
 
 // 既有四端点回归：user 的列表、上传、读取、软删行为不变。
