@@ -21,14 +21,25 @@ type ModalProps = {
   description?: ReactNode
   children: ReactNode
   footer?: ReactNode
+  /** 打开弹窗的控件。关闭时焦点回到它。 */
+  returnFocusTo?: HTMLElement | null
 }
 
 /**
  * Adminator 只有静态 `.modal-demo` 标记，没有可用弹窗。
  * Radix Dialog 提供焦点陷阱、Esc 与遮罩语义。外观取 vendor 类。
  * 去掉 Radix 后键盘用户会被困在背景里。
+ * 无 `Dialog.Trigger` 时 Radix 关闭后把焦点落到 body，故由调用方给还原点。
  */
-export function Modal({ open, onOpenChange, title, description, children, footer }: ModalProps) {
+export function Modal({
+  open,
+  onOpenChange,
+  title,
+  description,
+  children,
+  footer,
+  returnFocusTo,
+}: ModalProps) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
@@ -36,6 +47,11 @@ export function Modal({ open, onOpenChange, title, description, children, footer
         <Dialog.Content
           className="modal-demo app-modal"
           aria-describedby={description ? 'app-modal-description' : undefined}
+          onCloseAutoFocus={(event) => {
+            if (!returnFocusTo) return
+            event.preventDefault()
+            returnFocusTo.focus()
+          }}
         >
           <div className="modal-head">
             <Dialog.Title className="modal-title">{title}</Dialog.Title>

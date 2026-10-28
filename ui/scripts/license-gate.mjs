@@ -2,8 +2,9 @@
 /**
  * license-gate.mjs — 生成并校验 ui 的第三方依赖许可证清单。
  *
- * 口径：`npm ls --all` 列出的全部已安装包，含 devDependencies。
- * 许可证取自各包 package.json 的 license 字段。
+ * 口径：`package-lock.json` 的全部包，含 devDependencies 与各平台可选包。
+ * 许可证取自锁文件的 `license` 字段。
+ * 平台可选包一律保留，清单与运行平台无关。
  * 根 package.json 的**直接依赖必须全部出现在扫描结果里**；缺失即扫描失败。
  * 清单写入 THIRD_PARTY_LICENSES.md，随发布件分发。
  * Adminator 的通知不在此文件，见 THIRD_PARTY_NOTICES.md。
@@ -11,7 +12,7 @@
  * 退出码：
  *   0  通过
  *   1  许可证不在允许清单内，或清单与扫描结果不一致
- *   2  扫描失败或扫描为空（门没有真正运行）；含不可解析的 package.json
+ *   2  扫描失败或扫描为空（门没有真正运行）；含不可解析的锁文件
  *
  * 用法：
  *   node scripts/license-gate.mjs            校验
@@ -19,7 +20,6 @@
  *   node scripts/license-gate.mjs --self-test 验证门本身能变红
  */
 
-import { execSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -27,6 +27,7 @@ import { fileURLToPath } from 'node:url'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const UI_ROOT = resolve(HERE, '..')
 const MANIFEST = join(UI_ROOT, 'THIRD_PARTY_LICENSES.md')
+const LOCK = join(UI_ROOT, 'package-lock.json')
 
 /**
  * 允许清单的许可证。前八项与 server 门一致。
@@ -57,7 +58,7 @@ const EXCEPTION_NOTES = {
 
 class ScanError extends Error {}
 
-/** licenseOf 读取 package.json 的许可证字段。缺字段返回 UNKNOWN。 */
+/** licenseOf 读取锁条目的许可证字段。缺字段返回 UNKNOWN。 */
 function licenseOf(pkg) {
   if (typeof pkg.license === 'string' && pkg.license.trim() !== '') {
     return pkg.license.trim()
@@ -96,28 +97,45 @@ function problemsFor(license) {
   return problems
 }
 
-function npmTree(extraArgs) {
-  const command = ['npm ls --all --parseable', ...extraArgs].join(' ')
-  try {
-    // npm ls 在依赖树有问题时退 1，树仍会打印，所以只在没有输出时判失败。
-    return execSync(command, {
-      cwd: UI_ROOT,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })
-  } catch (error) {
-    if (typeof error.stdout === 'string' && error.stdout.trim() !== '') {
-      return error.stdout
-    }
-    throw new ScanError(`npm ls failed: ${error.message}`)
+function comparePackages(a, b) {
+  if (a.name !== b.name) {
+    return a.name < b.name ? -1 : 1
   }
+  return a.version < b.version ? -1 : a.version > b.version ? 1 : 0
 }
 
-function dirsOf(output) {
-  return output
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line !== '')
+/**
+ * packagesFromLock 把锁文件转成包清单。
+ * 平台可选包（os/cpu 不匹配本机）照常保留：清单不随平台漂移。
+ */
+function packagesFromLock(lock) {
+  const packages = new Map()
+  for (const [key, entry] of Object.entries(lock.packages ?? {})) {
+    if (key === '') {
+      continue
+    }
+    const marker = 'node_modules/'
+    const at = key.lastIndexOf(marker)
+    if (at === -1) {
+      continue
+    }
+    const name = key.slice(at + marker.length)
+    if (name === '') {
+      continue
+    }
+    const version = typeof entry.version === 'string' ? entry.version : ''
+    const id = `${name}@${version}`
+    if (packages.has(id)) {
+      continue
+    }
+    packages.set(id, {
+      name,
+      version,
+      license: licenseOf(entry),
+      scope: entry.dev === true ? '开发' : '运行时',
+    })
+  }
+  return [...packages.values()].sort(comparePackages)
 }
 
 /** directDependencyNames 返回根 package.json 的直接依赖名（运行时与开发）。 */
@@ -135,57 +153,25 @@ function missingDirectDependencies(names, packages) {
   return names.filter((name) => !seen.has(name))
 }
 
-/** collect 返回按 名称、版本 排序的包清单。 */
+/** collect 返回按 名称、版本 排序的锁文件包清单。 */
 function collect() {
-  const all = dirsOf(npmTree([]))
-  if (all.length === 0) {
-    throw new ScanError('npm ls produced no packages; the gate did not run')
+  let lock
+  try {
+    lock = JSON.parse(readFileSync(LOCK, 'utf8'))
+  } catch (error) {
+    throw new ScanError(`cannot read ${LOCK}: ${error.message}`)
   }
-  const runtime = new Set(dirsOf(npmTree(['--omit=dev'])))
-
-  const packages = new Map()
-  for (const dir of all) {
-    if (resolve(dir) === UI_ROOT) {
-      continue
-    }
-    // 不可解析的 package.json 必须让门失败：静默跳过会让一个包凭空消失，
-    // 而门仍报绿。缺失 name 的包同样跳过了一个可追责的对象，一并判失败。
-    let pkg
-    try {
-      pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
-    } catch (error) {
-      throw new ScanError(`cannot read ${join(dir, 'package.json')}: ${error.message}`)
-    }
-    if (typeof pkg.name !== 'string' || pkg.name === '') {
-      throw new ScanError(`${join(dir, 'package.json')} has no package name`)
-    }
-    const key = `${pkg.name}@${pkg.version}`
-    if (packages.has(key)) {
-      continue
-    }
-    packages.set(key, {
-      name: pkg.name,
-      version: typeof pkg.version === 'string' ? pkg.version : '',
-      license: licenseOf(pkg),
-      scope: runtime.has(dir) ? '运行时' : '开发',
-    })
+  const packages = packagesFromLock(lock)
+  if (packages.length === 0) {
+    throw new ScanError('package-lock.json has no packages; the gate did not run')
   }
 
-  if (packages.size === 0) {
-    throw new ScanError('no third-party packages found; the gate did not run')
-  }
-
-  const missing = missingDirectDependencies(directDependencyNames(), [...packages.values()])
+  const missing = missingDirectDependencies(directDependencyNames(), packages)
   if (missing.length > 0) {
     throw new ScanError(`the scan missed direct dependencies: ${missing.join(', ')}`)
   }
 
-  return [...packages.values()].sort((a, b) => {
-    if (a.name !== b.name) {
-      return a.name < b.name ? -1 : 1
-    }
-    return a.version < b.version ? -1 : a.version > b.version ? 1 : 0
-  })
+  return packages
 }
 
 /** exceptionLines 按扫描结果生成例外许可证说明。scope 与包名取自实据。 */
@@ -211,8 +197,8 @@ function render(packages) {
   lines.push('')
   lines.push('> 本文件由 `npm run gate:license -- --write` 生成，禁止手改。')
   lines.push('> 允许清单与禁用清单由 `scripts/license-gate.mjs` 执行，本文件只作留档。')
-  lines.push('> 口径：`npm ls --all` 的全部已安装包，含 devDependencies。')
-  lines.push('> 许可证取自各包 package.json 的 license 字段。')
+  lines.push('> 口径：`package-lock.json` 的全部包，含 devDependencies 与各平台可选包。')
+  lines.push('> 许可证取自锁文件的 license 字段。')
   lines.push('> Adminator 的通知单列在 `THIRD_PARTY_NOTICES.md`。')
   lines.push('')
   lines.push(
@@ -251,11 +237,14 @@ function selfTest() {
     [{ license: 'UNKNOWN' }, false],
   ]
   let failed = 0
+  const fail = (message) => {
+    console.error(`license-gate self-test: ${message}`)
+    failed += 1
+  }
   for (const [pkg, want] of cases) {
     const got = problemsFor(licenseOf(pkg)).length === 0
     if (got !== want) {
-      console.error(`license-gate self-test: ${JSON.stringify(pkg)} -> ${got}, want ${want}`)
-      failed += 1
+      fail(`${JSON.stringify(pkg)} -> ${got}, want ${want}`)
     }
   }
   const sample = [
@@ -265,18 +254,15 @@ function selfTest() {
   const base = render(sample)
   const tampered = base.replace('| a | 1.0.0 | MIT |', '| a | 1.0.0 | GPL-3.0-only |')
   if (normalize(base) === normalize(tampered)) {
-    console.error('license-gate self-test: drift comparison cannot see a changed row')
-    failed += 1
+    fail('drift comparison cannot see a changed row')
   }
   // 直接依赖覆盖：缺失的直接依赖必须被报出来。
   const covered = [{ name: 'a' }, { name: 'b' }]
   if (missingDirectDependencies(['a', 'b'], covered).length !== 0) {
-    console.error('license-gate self-test: coverage check reports a false miss')
-    failed += 1
+    fail('coverage check reports a false miss')
   }
   if (missingDirectDependencies(['a', 'c'], covered).join(',') !== 'c') {
-    console.error('license-gate self-test: coverage check cannot see a missing direct dependency')
-    failed += 1
+    fail('coverage check cannot see a missing direct dependency')
   }
   // 例外说明按实际 scope 生成：运行时依赖不得写成构建期。
   const notes = exceptionLines([
@@ -285,14 +271,62 @@ function selfTest() {
   ]).join('\n')
   if (!notes.includes('MPL-2.0（lightningcss）只出现在构建期依赖') ||
       !notes.includes('Unlicense（isbot）只出现在运行时依赖')) {
-    console.error('license-gate self-test: exception wording does not follow the scan scope')
-    failed += 1
+    fail('exception wording does not follow the scan scope')
+  }
+  // 锁文件口径：另一平台的包必须被确定性含入，不许按本机 os/cpu 过滤。
+  const platformLock = {
+    packages: {
+      '': { name: 'fixture', version: '1.0.0' },
+      'node_modules/alpha': { version: '1.0.0', license: 'MIT' },
+      'node_modules/beta': { version: '2.0.0', license: 'MIT', dev: true },
+      'node_modules/binding-linux-x64': {
+        version: '3.0.0',
+        license: 'MIT',
+        os: ['linux'],
+        cpu: ['x64'],
+      },
+      'node_modules/binding-win32-x64': {
+        version: '3.0.0',
+        license: 'MIT',
+        os: ['win32'],
+        cpu: ['x64'],
+      },
+    },
+  }
+  const fromLock = packagesFromLock(platformLock)
+  const names = fromLock.map((pkg) => pkg.name)
+  const wantNames = ['alpha', 'beta', 'binding-linux-x64', 'binding-win32-x64']
+  if (JSON.stringify(names) !== JSON.stringify(wantNames)) {
+    fail(`lock scan must include every platform: got ${JSON.stringify(names)}`)
+  }
+  if (fromLock.find((pkg) => pkg.name === 'beta')?.scope !== '开发') {
+    fail('lock scan must mark dev entries')
+  }
+  const reversed = {
+    packages: Object.fromEntries(Object.entries(platformLock.packages).reverse()),
+  }
+  if (JSON.stringify(packagesFromLock(reversed)) !== JSON.stringify(fromLock)) {
+    fail('lock scan must be deterministic across key order')
+  }
+  const onlyForeign = packagesFromLock({
+    packages: { 'node_modules/only-darwin': { version: '1.0.0', license: 'MIT', os: ['darwin'] } },
+  })
+  if (onlyForeign.length !== 1) {
+    fail('a package for another platform must not be dropped')
+  }
+  const missingLicense = packagesFromLock({
+    packages: { 'node_modules/gamma': { version: '1.0.0' } },
+  })
+  if (problemsFor(missingLicense[0].license).length === 0) {
+    fail('a lock entry without a license must fail')
   }
   if (failed !== 0) {
     console.error(`license-gate self-test: FAIL (${failed})`)
     return 1
   }
-  console.log(`license-gate self-test: ok (${cases.length} cases)`)
+  console.log(
+    `license-gate self-test: ok (${cases.length} license cases + lock/platform cases)`,
+  )
   return 0
 }
 

@@ -1,6 +1,6 @@
 /**
  * **功能**
- * 路由表：根路由、壳布局、三条页面路由。
+ * 路由表：根路由、壳布局、四条页面路由。
  *
  * **归属**
  * `app` 装配层：只做装配，页面逻辑留在 `pages`。
@@ -12,6 +12,7 @@
 
 import { createRootRoute, createRoute, createRouter, Outlet } from '@tanstack/react-router'
 import { AppShell } from '@/components/shell/AppShell'
+import { AccountsPage } from '@/pages/AccountsPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { DesignPage } from '@/pages/DesignPage'
 import { LoginPage } from '@/pages/LoginPage'
@@ -44,6 +45,12 @@ const designRoute = createRoute({
   component: DesignPage,
 })
 
+const accountsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: '/accounts',
+  component: AccountsPage,
+})
+
 const loginRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/login',
@@ -51,7 +58,7 @@ const loginRoute = createRoute({
 })
 
 const routeTree = rootRoute.addChildren([
-  shellRoute.addChildren([dashboardRoute, designRoute]),
+  shellRoute.addChildren([dashboardRoute, designRoute, accountsRoute]),
   loginRoute,
 ])
 

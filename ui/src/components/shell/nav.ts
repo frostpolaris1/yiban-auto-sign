@@ -63,6 +63,13 @@ export const NAV: NavSection[] = [
         icon: 'dashboard',
         crumbs: ['工作区', '仪表盘'],
       },
+      {
+        key: 'accounts',
+        text: '账号',
+        to: '/accounts',
+        icon: 'accounts',
+        crumbs: ['工作区', '账号'],
+      },
     ],
   },
   {

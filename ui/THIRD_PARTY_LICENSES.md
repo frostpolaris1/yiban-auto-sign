@@ -2,12 +2,12 @@
 
 > 本文件由 `npm run gate:license -- --write` 生成，禁止手改。
 > 允许清单与禁用清单由 `scripts/license-gate.mjs` 执行，本文件只作留档。
-> 口径：`npm ls --all` 的全部已安装包，含 devDependencies。
-> 许可证取自各包 package.json 的 license 字段。
+> 口径：`package-lock.json` 的全部包，含 devDependencies 与各平台可选包。
+> 许可证取自锁文件的 license 字段。
 > Adminator 的通知单列在 `THIRD_PARTY_NOTICES.md`。
 
 允许的许可证：Apache-2.0、BSD-2-Clause、BSD-3-Clause、ISC、MIT、0BSD、CC0-1.0、BlueOak-1.0.0、MPL-2.0、Unlicense。
-MPL-2.0（lightningcss、lightningcss-win32-x64-msvc）只出现在构建期依赖；文件级弱著佐权，不限制本项目代码的许可证。
+MPL-2.0（lightningcss、lightningcss-android-arm64、lightningcss-darwin-arm64、lightningcss-darwin-x64、lightningcss-freebsd-x64、lightningcss-linux-arm-gnueabihf、lightningcss-linux-arm64-gnu、lightningcss-linux-arm64-musl、lightningcss-linux-x64-gnu、lightningcss-linux-x64-musl、lightningcss-win32-arm64-msvc、lightningcss-win32-x64-msvc）只出现在构建期依赖；文件级弱著佐权，不限制本项目代码的许可证。
 Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题。
 其余许可证一律使门失败。GPL 系、AGPL 系、未知与无许可证同样失败。
 门还校验根 package.json 的全部直接依赖都出现在扫描结果里。
@@ -84,6 +84,20 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | @radix-ui/react-use-size | 1.1.5 | MIT | 运行时 |
 | @radix-ui/react-visually-hidden | 1.2.13 | MIT | 运行时 |
 | @radix-ui/rect | 1.1.3 | MIT | 运行时 |
+| @rolldown/binding-android-arm-eabi | 1.2.15 | MIT | 开发 |
+| @rolldown/binding-android-arm64 | 1.2.15 | MIT | 开发 |
+| @rolldown/binding-darwin-arm64 | 1.2.15 | MIT | 开发 |
+| @rolldown/binding-darwin-x64 | 1.2.15 | MIT | 开发 |
+| @rolldown/binding-freebsd-x64 | 1.2.15 | MIT | 开发 |
+| @rolldown/binding-linux-arm-gnueabihf | 1.2.15 | MIT | 开发 |
+| @rolldown/binding-linux-arm64-gnu | 1.2.15 | MIT | 开发 |
+| @rolldown/binding-linux-arm64-musl | 1.2.15 | MIT | 开发 |
+| @rolldown/binding-linux-ppc64-gnu | 1.2.15 | MIT | 开发 |
+| @rolldown/binding-linux-s390x-gnu | 1.2.15 | MIT | 开发 |
+| @rolldown/binding-linux-x64-gnu | 1.2.15 | MIT | 开发 |
+| @rolldown/binding-linux-x64-musl | 1.2.15 | MIT | 开发 |
+| @rolldown/binding-openharmony-arm64 | 1.2.15 | MIT | 开发 |
+| @rolldown/binding-win32-arm64-msvc | 1.2.15 | MIT | 开发 |
 | @rolldown/binding-win32-x64-msvc | 1.2.15 | MIT | 开发 |
 | @rolldown/pluginutils | 1.0.1 | MIT | 开发 |
 | @tanstack/history | 1.162.5 | MIT | 运行时 |
@@ -96,6 +110,25 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | @types/node | 26.6.5 | MIT | 开发 |
 | @types/react | 19.3.0 | MIT | 运行时 |
 | @types/react-dom | 19.3.0 | MIT | 运行时 |
+| @typescript/typescript-aix-ppc64 | 7.0.2 | Apache-2.0 | 开发 |
+| @typescript/typescript-darwin-arm64 | 7.0.2 | Apache-2.0 | 开发 |
+| @typescript/typescript-darwin-x64 | 7.0.2 | Apache-2.0 | 开发 |
+| @typescript/typescript-freebsd-arm64 | 7.0.2 | Apache-2.0 | 开发 |
+| @typescript/typescript-freebsd-x64 | 7.0.2 | Apache-2.0 | 开发 |
+| @typescript/typescript-linux-arm | 7.0.2 | Apache-2.0 | 开发 |
+| @typescript/typescript-linux-arm64 | 7.0.2 | Apache-2.0 | 开发 |
+| @typescript/typescript-linux-loong64 | 7.0.2 | Apache-2.0 | 开发 |
+| @typescript/typescript-linux-mips64el | 7.0.2 | Apache-2.0 | 开发 |
+| @typescript/typescript-linux-ppc64 | 7.0.2 | Apache-2.0 | 开发 |
+| @typescript/typescript-linux-riscv64 | 7.0.2 | Apache-2.0 | 开发 |
+| @typescript/typescript-linux-s390x | 7.0.2 | Apache-2.0 | 开发 |
+| @typescript/typescript-linux-x64 | 7.0.2 | Apache-2.0 | 开发 |
+| @typescript/typescript-netbsd-arm64 | 7.0.2 | Apache-2.0 | 开发 |
+| @typescript/typescript-netbsd-x64 | 7.0.2 | Apache-2.0 | 开发 |
+| @typescript/typescript-openbsd-arm64 | 7.0.2 | Apache-2.0 | 开发 |
+| @typescript/typescript-openbsd-x64 | 7.0.2 | Apache-2.0 | 开发 |
+| @typescript/typescript-sunos-x64 | 7.0.2 | Apache-2.0 | 开发 |
+| @typescript/typescript-win32-arm64 | 7.0.2 | Apache-2.0 | 开发 |
 | @typescript/typescript-win32-x64 | 7.0.2 | Apache-2.0 | 开发 |
 | @vitejs/plugin-react | 6.1.2 | MIT | 开发 |
 | aria-hidden | 1.2.6 | MIT | 运行时 |
@@ -104,9 +137,20 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | detect-libc | 2.1.2 | Apache-2.0 | 开发 |
 | detect-node-es | 1.1.0 | MIT | 运行时 |
 | fdir | 6.5.0 | MIT | 开发 |
+| fsevents | 2.3.3 | MIT | 开发 |
 | get-nonce | 1.0.1 | MIT | 运行时 |
 | isbot | 5.2.2 | Unlicense | 运行时 |
 | lightningcss | 1.33.0 | MPL-2.0 | 开发 |
+| lightningcss-android-arm64 | 1.33.0 | MPL-2.0 | 开发 |
+| lightningcss-darwin-arm64 | 1.33.0 | MPL-2.0 | 开发 |
+| lightningcss-darwin-x64 | 1.33.0 | MPL-2.0 | 开发 |
+| lightningcss-freebsd-x64 | 1.33.0 | MPL-2.0 | 开发 |
+| lightningcss-linux-arm-gnueabihf | 1.33.0 | MPL-2.0 | 开发 |
+| lightningcss-linux-arm64-gnu | 1.33.0 | MPL-2.0 | 开发 |
+| lightningcss-linux-arm64-musl | 1.33.0 | MPL-2.0 | 开发 |
+| lightningcss-linux-x64-gnu | 1.33.0 | MPL-2.0 | 开发 |
+| lightningcss-linux-x64-musl | 1.33.0 | MPL-2.0 | 开发 |
+| lightningcss-win32-arm64-msvc | 1.33.0 | MPL-2.0 | 开发 |
 | lightningcss-win32-x64-msvc | 1.33.0 | MPL-2.0 | 开发 |
 | nanoid | 3.3.20 | MIT | 开发 |
 | picocolors | 1.1.1 | ISC | 开发 |
@@ -134,4 +178,4 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | use-sync-external-store | 1.7.0 | MIT | 运行时 |
 | vite | 8.3.5 | MIT | 开发 |
 
-共 119 个包（运行时 92，开发 27）。
+共 163 个包（运行时 92，开发 71）。
