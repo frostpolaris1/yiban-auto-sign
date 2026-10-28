@@ -117,7 +117,7 @@ func Run(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	srv := newServerFromStack(cfg, stack)
+	srv := newServerFromStack(cfg, stack, false)
 
 	// 执行循环只在有数据库（Worker 已装配）时启动；
 	// 批量取 Workers：认领 SQL 每账号至多一行，批内并行度与之对齐。
@@ -237,7 +237,7 @@ func NewServer(cfg *config.Config, logger *slog.Logger) (*http.Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newServerFromStack(cfg, stack), nil
+	return newServerFromStack(cfg, stack, true), nil
 }
 
 // HTTP 服务器超时预算。
@@ -251,9 +251,13 @@ const (
 )
 
 // newServerFromStack 用已装配好的 Stack 构造未启动的 server。
-// HTTP 关闭时释放连接池（RegisterOnShutdown）。
-// Stack.Close 幂等：srv.Shutdown 与显式收尾都会调用它。
-func newServerFromStack(cfg *config.Config, stack *Stack) *http.Server {
+//
+// closeOnShutdown 决定 HTTP 关闭是否释放连接池：
+//   - NewServer 传 true：调用方没有显式收尾，Shutdown 必须释放池。
+//   - Run 传 false：池只在 worker 在飞结算完成后由 stopStack 关闭。
+//     Shutdown 提前关池会让 loop.Stop 的 CountRunning 报 closed pool，
+//     在飞清零失败（2026-10-28 部署 e2e 实测抓到）。
+func newServerFromStack(cfg *config.Config, stack *Stack, closeOnShutdown bool) *http.Server {
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           stack.Engine,
@@ -262,7 +266,9 @@ func newServerFromStack(cfg *config.Config, stack *Stack) *http.Server {
 		WriteTimeout:      httpWriteTimeout,
 		IdleTimeout:       httpIdleTimeout,
 	}
-	srv.RegisterOnShutdown(stack.Close)
+	if closeOnShutdown {
+		srv.RegisterOnShutdown(stack.Close)
+	}
 	return srv
 }
 

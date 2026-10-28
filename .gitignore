@@ -137,6 +137,7 @@ docs/dev/*
 !docs/dev/backup-restore.md
 !docs/dev/implementation-notes.md
 !docs/dev/troubleshooting.md
+!docs/dev/deploy-e2e.md
 .superpowers/
 
 # ZCode 工具目录

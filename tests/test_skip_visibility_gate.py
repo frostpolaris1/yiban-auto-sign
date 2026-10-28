@@ -240,6 +240,12 @@ KNOWN_SKIP_SITES = json.loads(r"""
    "需要 bash"
   ]
  ],
+ "tests/test_deploy_e2e_wiring.py": [
+  [
+   "skipTest",
+   "bash 不在 PATH：部署 e2e 脚本语法检查跳过（CI/WSL 有 bash）"
+  ]
+ ],
  "tests/test_deploy_gate_skip_verdict.py": [
   [
    "skipIf",

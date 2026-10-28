@@ -18,6 +18,7 @@ func TestServerWriteTimeout(t *testing.T) {
 	srv := newServerFromStack(
 		&config.Config{HTTPAddr: "127.0.0.1:0"},
 		&Stack{Engine: http.NewServeMux(), Close: func() {}},
+		false,
 	)
 	if srv.WriteTimeout != 30*time.Second {
 		t.Fatalf("WriteTimeout = %v, want 30s", srv.WriteTimeout)

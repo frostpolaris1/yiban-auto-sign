@@ -59,3 +59,20 @@ jobs:
       # 它自己失败（任一 PASS/FAIL 项为 FAIL）即非 0 退出 ⇒ 本 job 红。
       - name: Deploy gate — README clean deploy + migration/rollback + backup restore
         run: bash scripts/deploy_gate.sh
+
+  # ---- 新栈容器部署 e2e（工单 6jk） --------------------------------------
+  # 为什么独立 job：它构建 Go 镜像、拉三个基础镜像、起 compose 栈并等健康。
+  # 与 deploy-gate 并行，不占部署闸门的关键路径。
+  # 判据来源：AGENTS.md §六 第 16/17 条（干净环境从零装成 + 健康检查通过）。
+  # 断言与跑法：scripts/e2e/deploy-container-e2e.sh 与 docs/dev/deploy-e2e.md。
+  # 裸机路径需 --privileged systemd，未在托管 runner 实测，登记为发布前手跑项。
+  # 超时门：30 分钟。正常路径约 5 分钟（镜像构建 + 健康等待）。
+  container-deploy-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Container deploy e2e — build, up, migrate, healthz, SIGTERM, down
+        run: bash scripts/e2e/deploy-container-e2e.sh
