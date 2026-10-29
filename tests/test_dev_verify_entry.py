@@ -746,5 +746,51 @@ class StacksCiWiringTest(unittest.TestCase):
                 "入口脚本没有未注释地真跑 %s 门禁：%r" % (label, cmd))
 
 
+class ServerScriptExecBitTest(unittest.TestCase):
+    """`server/scripts/*.sh` 必须带可执行位——入口脚本用 `./` 直接调它们。
+
+    `scripts/verify-stacks.sh` 的执行行是 `(cd server && ./scripts/verify.sh)`。
+    文件在 index 里是 100644 时该行返回 126（Permission denied），整条 stacks
+    作业红：2026-10-29 develop 实测。`server/README.md` 把三个脚本都写成直接
+    执行命令（`./scripts/verify.sh`、`./scripts/generate.sh --check`、
+    `./scripts/license.sh --write`），故本条按形状钉住整个目录。
+
+    模式取自 `git ls-files -s` 的 index 位，不看工作区的 core.filemode——
+    Windows 检出恒报 644，看工作区会把本门变成平台相关的哑门。
+    """
+
+    def test_server_scripts_are_executable(self):
+        out = subprocess.run(
+            ["git", "ls-files", "-s", "--", "server/scripts/"],
+            cwd=BASE, capture_output=True, text=True, check=True).stdout
+        modes = {}
+        for line in out.splitlines():
+            meta, path = line.split("\t", 1)
+            modes[path] = meta.split()[0]
+        self.assertTrue(
+            modes, "git ls-files 在 server/scripts/ 下扫不到文件——扫空不得当绿")
+        non_exec = sorted(p for p, m in modes.items() if m != "100755")
+        self.assertEqual(
+            non_exec, [],
+            "以下脚本缺可执行位（index 模式应为 100755）：%s；"
+            "修法：git update-index --chmod=+x <路径>" % non_exec)
+
+    def test_entry_script_target_is_executable(self):
+        """入口脚本里每条 `(cd server && ./scripts/X.sh)` 的目标必须可执行。"""
+        body = _read(STACKS_ENTRY)
+        targets = re.findall(r"cd server && \./(scripts/[A-Za-z0-9_./-]+\.sh)", body)
+        self.assertTrue(
+            targets, "入口脚本里找不到直接调用的 server 脚本——本条会变废断言")
+        for rel in targets:
+            full = os.path.join(BASE, "server", rel)
+            out = subprocess.run(
+                ["git", "ls-files", "-s", "--", "server/" + rel],
+                cwd=BASE, capture_output=True, text=True, check=True).stdout
+            self.assertTrue(out.strip(), "入口脚本调的 server/%s 不在库里" % rel)
+            self.assertEqual(
+                out.split()[0], "100755",
+                "入口脚本直接调用 server/%s，但它没有可执行位（实测 rc=126）" % rel)
+
+
 if __name__ == "__main__":
     unittest.main()
