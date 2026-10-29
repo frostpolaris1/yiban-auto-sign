@@ -10,7 +10,8 @@
 // 时间片如何影响落点在 app/schedule。
 //
 // # 复用
-// Service、View、Store、Deps；MaxOffsetMin、GranularityMin。
+// Service、View、Store、Deps。取值边界取自 core/schedule
+// （MaxOffsetMin、GranularityMin）；建表 CHECK（00014）取同值。
 //
 // # 口径
 // 关闭开关时不读、不写：已存值可读但计划忽略它。
@@ -25,13 +26,6 @@ import (
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
-)
-
-const (
-	// MaxOffsetMin 是偏移上限（不含）：业务日最多 1440 分钟。
-	MaxOffsetMin = 1440
-	// GranularityMin 是偏移粒度，与计划片跨度一致。
-	GranularityMin = 5
 )
 
 // Store 读写用户自选。
@@ -104,7 +98,7 @@ func (s *Service) Set(ctx context.Context, userID string, offset *int) (View, er
 		return View{}, coreerrs.New(coreerrs.CodeForbidden, "time preference is disabled")
 	}
 	if offset != nil {
-		if *offset < 0 || *offset >= MaxOffsetMin || *offset%GranularityMin != 0 {
+		if *offset < 0 || *offset >= coreschedule.MaxOffsetMin || *offset%coreschedule.GranularityMin != 0 {
 			return View{}, coreerrs.New(coreerrs.CodeValidation,
 				"offset must be a multiple of 5 between 0 and 1439")
 		}

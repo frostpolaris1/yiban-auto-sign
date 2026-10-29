@@ -17,6 +17,7 @@
 | `backup-restore.md` | **备份与恢复**：宿主（systemd/cron）与 Docker 两条路线、取证命令、威胁边界 |
 | `implementation-notes.md` | **原理与实现**：模块树、签到流程、定位算法、重试机制、WAF 检测、工作流续期 |
 | `troubleshooting.md` | **故障排查与常见问题**（Q1–Q10） |
+| `time-prefs-backfill.md` | **旧自选时间片补录**：导出、dry-run、`--apply`、报告字段与核对 SQL |
 与设计/调研类文稿分开——这里的每条内容都按脱敏红线自查过：
 不含真实域名/IP/邮箱/手机号/密钥与站点注册信息，示例一律用占位值。
 
