@@ -1,5 +1,5 @@
 import { test, expect, type Locator, type Page } from '@playwright/test'
-import { mockAccountsApi } from './support/fake-accounts-api'
+import { mockAccountsApi, RESET_TOKEN } from './support/fake-accounts-api'
 import { mockDashboardApi } from './support/fake-dashboard-api'
 import { SCHEDULE_DAY, mockScheduleApi } from './support/fake-schedule-api'
 import { mockSchoolsApi } from './support/fake-schools-api'
@@ -8,7 +8,8 @@ import { visibleText } from './support/visible-text'
 /**
  * Adminator 壳的视觉回归基线。
  *
- * 矩阵：4 条常驻路由 + 仪表盘两视角，× 2 套主题 × 2 个宽度 = 24 张截图。
+ * 矩阵：4 条常驻路由 + 密码找回两页 + 仪表盘两视角，
+ * × 2 套主题 × 2 个宽度 = 32 张截图。
  * 仪表盘按角色分视角：user 是签到状态／诊断，admin 是窗口／容量体检。
  * 时间片页按固定业务日另拍（缺省日期会随日历漂移，不能进常驻矩阵），
  * 补 1440 与 390 两个宽度。
@@ -23,6 +24,8 @@ const ROUTES = [
   { path: '/accounts', name: 'accounts' },
   { path: '/schools', name: 'schools' },
   { path: '/login', name: 'login' },
+  { path: '/forgot-password', name: 'forgot-password' },
+  { path: `/reset-password?token=${RESET_TOKEN}`, name: 'reset-password' },
 ] as const
 
 const DASHBOARD_VIEWS = [
@@ -41,13 +44,13 @@ test.beforeEach(async ({ page }) => {
   await mockAccountsApi(page, { role: 'master' })
 })
 
-/** 登录页是没有会话的页面。壳内路由需要会话，登录页需要没有会话。 */
+/** 登录与密码找回三页都没有会话。壳内路由需要会话，这几页需要没有会话。 */
 async function mockSessionFor(
   page: Page,
   path: string,
   role: 'master' | 'admin' | 'user' = 'master',
 ) {
-  if (path === '/login') {
+  if (path === '/login' || path.startsWith('/forgot-password') || path.startsWith('/reset-password')) {
     await mockAccountsApi(page, { role: null })
     return
   }
@@ -83,10 +86,31 @@ async function openWithTheme(
   }, theme)
   await page.goto(path)
   await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
+  // 字体到位是截图的必要条件；数据态由各用例自己断言之后再拍。
   await page.evaluate(() => document.fonts.ready)
-  await page.waitForLoadState('networkidle')
-  // 首帧的字体回退与行盒可能再稳定一帧。截图前等一下，避免 1px 位移。
-  await page.waitForTimeout(200)
+}
+
+// 视觉基线在「有动效」口径下拍摄；行为用例的全局减少动效不适用于本文件。
+test.use({ reducedMotion: 'no-preference' })
+
+/** 数据锚点：截图或量宽度之前，先确认页面拿到的是数据态，不是骨架。 */
+async function expectData(page: Page, path: string) {
+  if (path === '/accounts') {
+    await expect(page.getByRole('table', { name: '账号列表' })).toContainText('138****8000')
+  } else if (path === '/schools') {
+    await expect(page.getByRole('table', { name: '学校列表' })).toContainText('合成学校甲')
+  } else if (path.startsWith('/schedule')) {
+    await expect(page.getByRole('table', { name: '时间片窗口' })).toContainText('合成学校甲')
+  } else if (path === '/') {
+    await expect(page.locator('.kpi-card')).toHaveCount(4)
+  } else if (path === '/design') {
+    await expect(page.getByRole('heading', { name: /组件画廊/ })).toBeVisible()
+  } else if (path === '/forgot-password') {
+    await expect(page.getByLabel('邮箱')).toBeVisible()
+  } else if (path.startsWith('/reset-password')) {
+    // 令牌合法：页面停在表单态，不是「链接不完整」态。
+    await expect(page.getByLabel('新密码')).toBeVisible()
+  }
 }
 
 /** 等一组滚动数字全部落定：逐个断言可见终值，避免拍到中间帧。 */
@@ -96,6 +120,19 @@ async function expectNumbers(scope: Locator, expected: readonly string[]) {
   for (let index = 0; index < expected.length; index += 1) {
     await expect.poll(() => visibleText(scope.nth(index))).toBe(expected[index])
   }
+  // 入场动画（KPI 卡 rise-in、表格 fade-in）未结束时截图，整页文字会用灰度抗锯齿，
+  // 与动画结束后的基线差一层。等页面级动画全部落定再交回调用方。
+  await scope
+    .page()
+    .waitForFunction(() =>
+      document
+        .getAnimations()
+        .every(
+          (animation) =>
+            animation.playState !== 'running' ||
+            animation.effect?.getTiming().iterations === Infinity,
+        ),
+    )
 }
 
 for (const theme of THEMES) {
@@ -127,6 +164,7 @@ for (const theme of THEMES) {
       test(`visual ${route.name} ${theme} ${viewport.name}`, async ({ page }) => {
         await page.setViewportSize({ width: viewport.width, height: viewport.height })
         await openWithTheme(page, route.path, theme)
+        await expectData(page, route.path)
         await expect(page).toHaveScreenshot(`${route.name}-${theme}-${viewport.name}.png`, {
           fullPage: true,
         })
@@ -265,7 +303,9 @@ for (const theme of THEMES) {
   test(`visual schedule page ${theme}`, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })
     await openWithTheme(page, `/schedule?day=${SCHEDULE_DAY}`, theme)
-    await expect(page.getByRole('table', { name: '时间片窗口' })).toBeVisible()
+    const table = page.getByRole('table', { name: '时间片窗口' })
+    await expect(table).toBeVisible()
+    await expect(table).toContainText('合成学校甲')
     await expect(page).toHaveScreenshot(`schedule-${theme}-1440.png`, { fullPage: true })
   })
 
@@ -326,8 +366,14 @@ for (const theme of THEMES) {
   test(`visual profile menu ${theme}`, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })
     await openWithTheme(page, '/', theme)
+    // 背景是看板：滚动数字全部落定再拍，菜单态不能带中间帧。
+    await expect(page.getByLabel('任务')).toHaveValue('school-alpha:task-daily')
+    await expectNumbers(page.locator('.app-metric'), ['容量40', '需求12', '缺口0'])
+    await expectNumbers(page.locator('.kpi-card .kpi-value'), ['4项', '3项', '1项', '2项'])
     await page.getByRole('button', { name: '账号菜单' }).click()
     await expect(page.getByRole('menu')).toBeVisible()
+    // 菜单入场动画会改变整页的合成层，进而改变文字抗锯齿；等它结束再拍。
+    await page.waitForTimeout(200)
     await expect(page).toHaveScreenshot(`profile-menu-${theme}-1440.png`)
   })
 
@@ -351,8 +397,13 @@ test('no horizontal overflow at either width, in either theme', async ({ page })
   ]
   for (const theme of THEMES) {
     for (const { path, role } of targets) {
+      // mock 的 catch-all 是后注册优先：不清路由会让上一目标的兜底吞掉本目标的请求。
+      // 清完先补基础会话 mock（/design 与 /accounts 都依赖它），具体页 mock 后注册覆盖。
+      await page.unrouteAll({ behavior: 'ignoreErrors' })
+      await mockAccountsApi(page, { role })
       await page.setViewportSize({ width: 390, height: 844 })
       await openWithTheme(page, path, theme, role)
+      await expectData(page, path)
       const narrow = await page.evaluate(() => ({
         scrollWidth: document.documentElement.scrollWidth,
         clientWidth: document.documentElement.clientWidth,

@@ -2,8 +2,16 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { isSessionExpiry } from '../../src/lib/api/auth.ts'
+import { ApiError } from '../../src/lib/api/client.ts'
 import { sanitizeRedirect } from '../../src/lib/redirect.ts'
 import { buildLoginBody, isLoginPath } from '../../src/features/auth/login.ts'
+import {
+  buildForgotBody,
+  buildResetBody,
+  isValidResetToken,
+  NETWORK_ERROR_MESSAGE,
+  passwordErrorMessage,
+} from '../../src/features/auth/password-reset.ts'
 
 /**
  * 切片 3 纯逻辑不变式。
@@ -11,6 +19,7 @@ import { buildLoginBody, isLoginPath } from '../../src/features/auth/login.ts'
  * redirect：只接受站内相对路径。站外、协议相对、脚本协议、反斜杠变体一律丢弃。
  * 登录请求体：只有契约的两个字段，草稿里的其他键不外泄。
  * 401 分类：登录接口是凭据错误，me 是会话探针，其余 401 才算会话过期。
+ * 密码找回：令牌形状与请求体按契约；断网文案固定，不回显底层错误。
  */
 
 test('sanitizeRedirect keeps same-site paths with their query and hash', () => {
@@ -93,4 +102,51 @@ test('every spelling the router treats as the login page is rejected as a redire
   for (const target of ['/', '/accounts', '/loginx', '/login-report', '/design']) {
     assert.equal(isLoginPath(target), false, `must not treat ${target} as login`)
   }
+})
+
+test('a reset token must have the shape the server generator produces', () => {
+  // 32 字节经 base64url 无填充编码＝43 个字符。
+  assert.equal(isValidResetToken('A'.repeat(43)), true)
+  assert.equal(isValidResetToken('0'.repeat(43)), true)
+  assert.equal(isValidResetToken(`${'A'.repeat(42)}-_`.slice(0, 43)), true)
+
+  const rejected = [
+    undefined,
+    null,
+    '',
+    'A'.repeat(42),
+    'A'.repeat(44),
+    `${'A'.repeat(42)}!`,
+    `${'A'.repeat(42)}=`,
+    ` ${'A'.repeat(43)}`,
+    `${'A'.repeat(43)}\n`,
+  ]
+  for (const value of rejected) {
+    assert.equal(isValidResetToken(value), false, `must reject ${JSON.stringify(value)}`)
+  }
+})
+
+test('the password reset bodies carry exactly the contract fields', () => {
+  const forgot = buildForgotBody({ email: 'a@example.com', role: 'master' })
+  assert.deepEqual(Object.keys(forgot).sort(), ['email'])
+  assert.deepEqual(forgot, { email: 'a@example.com' })
+
+  const token = 'A'.repeat(43)
+  const reset = buildResetBody({ token, new_password: 'new-secret', confirmation: 'new-secret' })
+  assert.deepEqual(Object.keys(reset).sort(), ['new_password', 'token'])
+  assert.deepEqual(reset, { token, new_password: 'new-secret' })
+})
+
+test('a non-envelope failure becomes one fixed network message', () => {
+  assert.equal(passwordErrorMessage(new TypeError('Failed to fetch')), NETWORK_ERROR_MESSAGE)
+  assert.equal(
+    passwordErrorMessage(new ApiError(400, { code: 'validation_error', message: 'invalid email' })),
+    'validation_error · invalid email',
+  )
+})
+
+test('a public reset 401 is not a session expiry', () => {
+  // 两页都是 public 端点：401 只表示令牌问题，不得标记会话过期。
+  assert.equal(isSessionExpiry('/api/auth/forgot-password'), false)
+  assert.equal(isSessionExpiry('/api/auth/reset-password'), false)
 })

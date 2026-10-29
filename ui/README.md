@@ -22,11 +22,29 @@ React 19 + Vite 8 + TypeScript 7。视觉语言复用 Adminator 4.4.0。
 | `npm run gate:license` | 依赖许可证门。禁用许可证或清单漂移即红 |
 | `npm run test:unit` | fetch、查询默认值、游标、账号页、学校页、时间片页、看板与认证纯逻辑单测，运行器为 `node:test` |
 | `npm run build:showcase` | 构建 `VITE_SHOWCASE=1` 的展示产物到 `dist-showcase/` |
-| `npm run test:visual` | Playwright。先跑 `npm run build`；脚本自己构建展示产物 |
-| `npm run test:visual:update` | 重写视觉基线。先跑 `npm run build` |
+| `npm run test:e2e` | 全量 Playwright（233 条），串行。先跑 `npm run build` |
+| `npm run test:e2e:fast` | 收口快路：行为 4 并发 + 视觉 1 并发。先跑 `npm run build` |
+| `npm run test:behavior` | 只跑行为用例，4 并发（`e2e/` 下除视觉外的全部 spec） |
+| `npm run test:shots` | 只跑视觉用例，1 并发 |
+| `npm run test:shots:update` | 重写视觉基线。先跑 `npm run build` |
+| `npm run test:visual` | 旧名，等价于 `playwright test`（参数可透传） |
+| `npm run test:visual:update` | 旧名，重写全部基线 |
 | `npm run verify` | 类型检查 + 契约漂移 + 单测 + 各门自测 + 四门 + 构建 |
 
 首次运行 Playwright 需要浏览器：`npx playwright install chromium`。
+
+测试节奏（2026-10-29 实测；含两个 webServer 启动，不含 `npm run build`）：
+
+- 迭代只跑受影响的 spec 或 `--grep`，不进全量。
+- 收口跑 `test:e2e:fast`：Windows 约 2.9 分（行为 1.1–1.3＋视觉 1.7–2.0），
+  WSL 约 2.0–3.9 分（行为 39–89 秒＋视觉 1.1–2.2 分）。
+- 全量 `test:e2e`：Windows 约 4.4–4.8 分，WSL 约 2.7–5.2 分；只在整包核对时跑。
+- 视觉用例不再统一等 `networkidle` 与固定 200ms；每个用例先断言数据锚点再拍。
+  菜单入场动画会改变整页合成层，菜单态用例自带 200ms 落定等待。
+- 行为用例全局带 `reducedMotion: 'reduce'`：auto-animate 不启用，退场节点不进 DOM，
+  同名行按钮不会在过渡窗口里重复。视觉用例显式改回 `no-preference`，基线口径不变。
+- `test:behavior` 的覆盖由 `scripts/tests/test-plan.test.mjs` 守卫：
+  递归发现 `e2e/` 下全部 spec，新增行为 spec 忘了登记即红；扫空也红。
 
 ## 目录
 
@@ -100,15 +118,15 @@ node scripts/token-gate.mjs
 
 ## 视觉回归
 
-矩阵：4 条常驻路由与看板的两个视角（user/admin）× 2 套主题 × 2 个宽度 = 24 张截图。
+矩阵：6 条常驻路由与看板的两个视角（user/admin）× 2 套主题 × 2 个宽度 = 32 张截图。
 时间片页按固定业务日 `2026-10-28` 另拍 1440 与 390 两个宽度（缺省业务日会随日历漂移，不进常驻矩阵）。
 另有账号页 6 种开态 × 2 套主题 = 12 张，学校页 6 种开态 × 2 套主题 = 12 张，
 时间片页列表（1440/390）／预览／覆盖／无权限与仪表盘偏好卡共 6 种开态 × 2 套主题 = 12 张，
-profile 菜单与会话过期提示各 2 张，toast 明暗各 1 张，共 66 张（每平台；目录共 132 个文件）。
+profile 菜单与会话过期提示各 2 张，toast 明暗各 1 张，共 74 张（每平台；目录共 148 个文件）。
 
-行为用例 144 条：账号页 27 条、认证 23 条、看板 14 条、画廊 9 条、学校页 21 条、
-时间片页与时间偏好 21 条、展示模式 5 条、微交互 24 条。
-视觉文件另有无溢出 1 条。Playwright 总计 211 条。
+行为用例 158 条：账号页 27 条、认证 36 条、看板 14 条、画廊 9 条、学校页 21 条、
+时间片页与时间偏好 21 条、展示模式 5 条、微交互 25 条。
+视觉文件另有无溢出 1 条。Playwright 总计 233 条。
 
 展示模式用例由 `npm run build:showcase` 构建的 `dist-showcase` 提供。
 Playwright 的第二个 webServer 在 4174 端口预览它；`e2e/showcase.spec.ts` 用它钉零请求。
@@ -117,7 +135,7 @@ Playwright 的第二个 webServer 在 4174 端口预览它；`e2e/showcase.spec.
 
 基线按平台分套，Chromium 1248。win32 与 linux 两套都已入库。
 WSL 读 `-chromium-linux.png`，Windows 读 `-chromium-win32.png`。
-换平台或升 Chromium 必须重跑 `npm run test:visual:update`。
+换平台或升 Chromium 必须重跑 `npm run test:shots:update`（或 `npm run test:visual:update` 重写全部）。
 
 ## Adminator 源
 
@@ -132,7 +150,7 @@ WSL 读 `-chromium-linux.png`，Windows 读 `-chromium-win32.png`。
 | Adminator 源（commit 4c76854） | 提取内容 | 我们的落点 |
 |---|---|---|
 | `src/index.html` | `shell` 占位、`hero`、`kpi-grid`、`monthly-footer`、`.table` + `tag` | `AppShell`、`PageHeader`、`KpiGrid`、`SignStatusCard`、`CapacityCard` |
-| `src/signin.html` | `auth-shell`、`auth-aside`、`auth-card`、`auth-form`、`field-row` | `LoginPage`、`AuthAside`、`LoginForm` |
+| `src/signin.html` | `auth-shell`、`auth-aside`、`auth-card`、`auth-form`、`field-row` | `LoginPage`、`AuthAside`、`LoginForm`、`PublicAuthPage`、`ForgotPasswordPage`、`ResetPasswordPage` |
 | `src/ui.html` | `alert`、`badge`、`tag`、`progress`、`spinner`、`tabs`、`modal-demo`、`popover-demo`、`avatar-group` | `FeedbackSection`、`IndicatorsSection`、`OverlaysSection`、`NavigationSection`、`Alert`、`Badge`、`Modal`、`Tabs`、`Hint` |
 | `src/forms.html` | `form-grid`、`field`、`input`、`select`、`textarea`、`check`、`switch`、`form-actions` | `FormsSection`、`Input`、`SwitchControl` |
 | `src/basic-table.html` | `.table`、`.cell-name`、`.cell-date`、`.tag` | `SignStatusCard` 的表格 |
@@ -153,5 +171,6 @@ WSL 读 `-chromium-linux.png`，Windows 读 `-chromium-win32.png`。
 - 看板已接线：user 读 `/api/me/sign-status`（30 秒轮询）与 `/api/me/diagnostics`，
   master/admin 读 `/api/schedule/windows` 与 `/api/capacity`。看板不画图表。
 - 不接 TanStack Table、Chart.js、react-day-picker、SSE。
-- 忘记/重置密码页与登录态改密不做。契约只有公开的令牌流；登录态改密没有端点。
+- 忘记密码与重置密码两页已接公开的令牌流；登录态改密不做：契约没有该端点。
+  服务端尚未接线令牌投递：它只创建令牌，不发邮件。界面文案按产品要求固定。
 - 不引 Tailwind、shadcn、Element Plus、Bootstrap、Lucide、Recharts。
