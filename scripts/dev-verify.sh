@@ -404,6 +404,9 @@ run_ci() { # CI 关键子集：就地跑，不建副本；命令逐字冻结在 
     echo "DEV-VERIFY(ci) repo: $REPO"
     guard_worktree_crlf
     cd "$REPO"
+    if [ "$CI_SCOPE" = "newstack" ]; then
+        echo "DEV-VERIFY(ci) scope=newstack：跳过旧线静态检查与旧线测试（改面无旧线路径；AGENTS §37d）"
+    else
     echo "DEV-VERIFY(ci) lint"
     "$py" -m ruff check yiban/ tests/ scripts/ web/ docker/ --quiet
     CI_MYPY_CACHE="$(mktemp -d)"
@@ -444,6 +447,7 @@ run_ci() { # CI 关键子集：就地跑，不建副本；命令逐字冻结在 
     fi
     echo "DEV-VERIFY(ci) e2e smoke"
     "$py" -m pytest tests/test_login_e2e_mock.py -q -p no:randomly
+    fi
     echo "DEV-VERIFY(ci) shared facts gate"
     bash scripts/check-shared-facts.sh
     # 元测试与门同一步（绑定不变，见 tests/test_shared_facts_gate.py::SharedFactsCiWiringTest）。
@@ -786,7 +790,9 @@ case "$(uname -s)" in
         done
         here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -W)
         args=()
-        while [ $# -gt 0 ]; do
+        CI_SCOPE="${CI_SCOPE:-oldline}"
+
+while [ $# -gt 0 ]; do
             case "$1" in
                 --repo | --log-dir)
                     args+=("$1" "$(win_to_unix "${2:?$1 需要取值}")")
@@ -860,6 +866,13 @@ while [ $# -gt 0 ]; do
         --base)
             BASE=${2:?--base 需要取值}
             BASESET=1
+            ;;
+        --scope)
+            CI_SCOPE=${2:?--scope 需要取值}
+            case "$CI_SCOPE" in
+                oldline|newstack|mixed) ;;
+                *) die "--scope 只认 oldline|newstack|mixed，实得：$CI_SCOPE" ;;
+            esac
             ;;
         --repo) REPO=${2:?--repo 需要取值} ;;
         --target)
