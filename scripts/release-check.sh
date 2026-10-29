@@ -10,6 +10,8 @@
 #   bash scripts/release-check.sh --only version # 只跑一项
 #   bash scripts/release-check.sh --list         # 列出项名
 #   bash scripts/release-check.sh --require-signing  # 发布操作档：signing 的 SKIP 升为 FAIL
+#   bash scripts/release-check.sh --only signing --require-signing \
+#       [--pubkey-sha256-file /path/release-pubkey.sha256]  # 外部信任锚（不得在发布件目录内）
 #   bash scripts/release-check.sh --selftest     # 跑自带突变自测
 #
 # 状态口径（AGENTS §30：跳过 ≠ 绿）：
@@ -27,7 +29,8 @@
 #   YIBAN_RELEASE_DIR   发布件目录。默认 $ROOT/release。
 #   YIBAN_RELEASE_PUBKEY_SHA256
 #                       信任锚：发布公钥的 SHA-256 指纹（64 位十六进制）。
-#                       未设时读 $YIBAN_RELEASE_DIR/release-pubkey.sha256。
+#                       也可用 --pubkey-sha256-file <路径> 给文件。
+#                       两条来源都必须在发布件目录之外；目录内的指纹一律不认。
 #
 # 突变自测（--selftest）钉三类不变式：
 #   1. 某项被破坏时 --only 该项退出非零（临时坏夹具触发，不改真文件）；
@@ -39,6 +42,7 @@ set -u
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 ROOT="${RELEASE_CHECK_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 REQUIRE_SIGNING=0
+PUBKEY_SHA256_FILE=""
 
 ITEMS="version license generate tests container backup rollback signing"
 
@@ -209,9 +213,12 @@ check_rollback() {
 #   本项升级为可执行门——发布件目录（$ROOT/release/，env
 #   YIBAN_RELEASE_DIR 可覆盖）里三件齐全（manifest.json + manifest.json.sig
 #   + release-pubkey.pem）且信任锚匹配时跑 verify.sh 验签。
-#   信任锚（P0）：公钥指纹只认钉住值——YIBAN_RELEASE_PUBKEY_SHA256（环境）
-#   或 <发布件目录>/release-pubkey.sha256；缺锚 → SKIP（默认档）/ FAIL
-#   （--require-signing）；指纹不符 → FAIL。不得接受「随便给的公钥」。
+#   信任锚（P0，2026-10-29 裁决 4）：只认发布件目录**之外**的来源——
+#   YIBAN_RELEASE_PUBKEY_SHA256（环境）或 --pubkey-sha256-file <路径>。
+#   发布件目录内的 release-pubkey.sha256 一律不认：整包不可信时锚也不可信。
+#   缺锚 → SKIP（默认档）/ FAIL（--require-signing），并报
+#   "anchored fingerprint must come from outside the release directory"；
+#   指纹不符 → FAIL。不得接受「随便给的公钥」。
 #   --require-signing：缺件与缺 openssl 从 SKIP 升为 FAIL；发布操作必须用该档。
 #   verify.sh rc=1（验签不过）→ FAIL；rc=2（openssl 缺等，验证没跑）→ SKIP 显性。
 #   sha256 与二进制的对账由 update.sh --manifest/--signature/--pubkey 在升级时承担。
@@ -219,7 +226,6 @@ check_signing() {
     STATUS_signing=FAIL; REASON_signing=""
     local dir="${YIBAN_RELEASE_DIR:-$ROOT/release}"
     local mf="$dir/manifest.json" sig="$dir/manifest.json.sig" pub="$dir/release-pubkey.pem"
-    local pin_file="$dir/release-pubkey.sha256"
     local verifier="$ROOT/scripts/release/verify.sh"
     local missing=()
     [ -f "$mf" ] || missing+=(manifest.json)
@@ -235,21 +241,37 @@ check_signing() {
         echo "signing: SKIP — 缺件：${missing[*]}（$dir），显性跳过不记绿；签发见 docs/dev/release-signing.md（发布操作须加 --require-signing）"
         return
     fi
-    # 信任锚：先钉公钥指纹，再验签。
-    local pin="" pin_source=""
+    # 信任锚：先钉公钥指纹，再验签。锚不得来自发布件目录本身。
+    local pin="" pin_source="" anchor_problem=""
     if [ -n "${YIBAN_RELEASE_PUBKEY_SHA256:-}" ]; then
         pin="$YIBAN_RELEASE_PUBKEY_SHA256"; pin_source="env YIBAN_RELEASE_PUBKEY_SHA256"
-    elif [ -f "$pin_file" ]; then
-        pin="$(head -n1 "$pin_file" 2>/dev/null || true)"; pin_source="$pin_file"
+    elif [ -n "$PUBKEY_SHA256_FILE" ]; then
+        local dir_real pin_real
+        dir_real="$(realpath -m -- "$dir" 2>/dev/null || printf '%s' "$dir")"
+        pin_real="$(realpath -m -- "$PUBKEY_SHA256_FILE" 2>/dev/null || printf '%s' "$PUBKEY_SHA256_FILE")"
+        case "$pin_real" in
+            "$dir_real"|"$dir_real"/*)
+                anchor_problem="anchored fingerprint must come from outside the release directory ($PUBKEY_SHA256_FILE is inside $dir)" ;;
+            *)
+                if [ ! -f "$PUBKEY_SHA256_FILE" ]; then
+                    anchor_problem="pinned fingerprint file not found: $PUBKEY_SHA256_FILE"
+                else
+                    pin="$(head -n1 "$PUBKEY_SHA256_FILE" 2>/dev/null || true)"
+                    pin_source="$PUBKEY_SHA256_FILE"
+                fi ;;
+        esac
+    else
+        anchor_problem="anchored fingerprint must come from outside the release directory (set YIBAN_RELEASE_PUBKEY_SHA256 or --pubkey-sha256-file)"
     fi
     if [ -z "$pin" ]; then
+        [ -n "$anchor_problem" ] || anchor_problem="pinned fingerprint file is empty: $PUBKEY_SHA256_FILE"
         if [ "$REQUIRE_SIGNING" = "1" ]; then
-            REASON_signing="no pinned public key fingerprint (env YIBAN_RELEASE_PUBKEY_SHA256 or $pin_file)"
+            REASON_signing="$anchor_problem"
             return
         fi
         STATUS_signing=SKIP
-        REASON_signing="no pinned public key fingerprint; verification DID NOT run"
-        echo "signing: SKIP — 缺信任锚（$pin_file 或 YIBAN_RELEASE_PUBKEY_SHA256），验证没跑，不算绿"
+        REASON_signing="$anchor_problem"
+        echo "signing: SKIP — $anchor_problem（验证没跑，不算绿；发布操作须加 --require-signing）"
         return
     fi
     pin="$(printf '%s' "$pin" | tr -d '\r' | tr 'A-F' 'a-f' | awk '{print $1}')"
@@ -384,12 +406,15 @@ selftest() {
     done
 
     # 不变式 1d：signing 项有牙（AGENTS §30）。
-    # 夹具里放真 verify.sh + openssl 现场生成的三件套与信任锚：
-    #   a) 缺锚 → SKIP 显性；--require-signing 下 FAIL；
-    #   b) 三件 + 正确指纹 → PASS；
-    #   c) 篡改清单一字节 → FAIL（门必须挡得住坏发布物）；
-    #   d) 错指纹 → FAIL（不得接受随便给的公钥）；
-    #   e) 缺件 → SKIP 显性；--require-signing 下 FAIL。
+    # 夹具里放真 verify.sh + openssl 现场生成的三件套。
+    # 信任锚只认发布件目录**之外**的来源（2026-10-29 裁决 4）：
+    #   a) 缺锚 → 默认 SKIP 显性；--require-signing 下 FAIL；
+    #   b) 发布件目录内自带指纹不得被信 → 默认 SKIP；发布档 FAIL；
+    #   c) 环境变量给正确指纹 → 默认与发布档都 PASS；
+    #   d) --pubkey-sha256-file 给目录外文件 → PASS；给目录内文件 → FAIL；
+    #   e) 篡改清单一字节 → FAIL（门必须挡得住坏发布物）；
+    #   f) 错指纹 → FAIL（不得接受随便给的公钥）；
+    #   g) 缺件 → SKIP 显性；--require-signing 下 FAIL。
     # openssl 不在的机器上本组断言整组显性跳过（门自身无法构造，如实说）。
     if command -v openssl >/dev/null 2>&1; then
         tmp="$(mktemp -d)"
@@ -401,41 +426,58 @@ selftest() {
             "$(printf body | sha256sum | cut -d' ' -f1)" > "$tmp/release/manifest.json"
         bash "$(dirname "$SELF")/release/sign.sh" --key "$tmp/_k.pem" \
             --in "$tmp/release/manifest.json" --out "$tmp/release/manifest.json.sig" >/dev/null 2>&1
-        # a) 缺信任锚：默认 SKIP（可见），发布档红。
-        RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing >/dev/null 2>&1; rc=$?
-        expect "signing SKIP without trust anchor is not FAIL" 0 "$rc"
-        RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing 2>/dev/null \
-            | grep -q '^signing *SKIP' || { say "MISMATCH: anchor-missing SKIP not visible"; fails=$((fails+1)); }
-        RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing --require-signing >/dev/null 2>&1; rc=$?
-        expect "signing red without trust anchor under --require-signing" 1 "$rc"
-        # b) 钉住正确指纹 → PASS。
         pin="$(sha256sum "$tmp/release/release-pubkey.pem" | cut -d' ' -f1)"
+        # a) 缺锚：默认 SKIP（可见），发布档红。
+        YIBAN_RELEASE_PUBKEY_SHA256= RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing >/dev/null 2>&1; rc=$?
+        expect "signing SKIP without trust anchor is not FAIL" 0 "$rc"
+        YIBAN_RELEASE_PUBKEY_SHA256= RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing 2>/dev/null \
+            | grep -q '^signing *SKIP' || { say "MISMATCH: anchor-missing SKIP not visible"; fails=$((fails+1)); }
+        YIBAN_RELEASE_PUBKEY_SHA256= RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing --require-signing >/dev/null 2>&1; rc=$?
+        expect "signing red without trust anchor under --require-signing" 1 "$rc"
+        # b) 发布件目录内自带指纹不得被信：整包不可信时锚也不可信。
         printf '%s  release-pubkey.pem\n' "$pin" > "$tmp/release/release-pubkey.sha256"
-        RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing >/dev/null 2>&1; rc=$?
+        YIBAN_RELEASE_PUBKEY_SHA256= RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing --require-signing >/dev/null 2>&1; rc=$?
+        expect "signing red on in-dir fingerprint under --require-signing" 1 "$rc"
+        YIBAN_RELEASE_PUBKEY_SHA256= RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing --require-signing 2>/dev/null \
+            | grep -q 'anchored fingerprint must come from outside the release directory' \
+            || { say "MISMATCH: in-dir anchor rejection not named"; fails=$((fails+1)); }
+        YIBAN_RELEASE_PUBKEY_SHA256= RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing >/dev/null 2>&1; rc=$?
+        expect "signing SKIP on in-dir fingerprint is not FAIL" 0 "$rc"
+        # c) 环境变量给正确指纹 → 默认与发布档都 PASS。
+        YIBAN_RELEASE_PUBKEY_SHA256="$pin" RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing >/dev/null 2>&1; rc=$?
         expect "signing green on intact fixture" 0 "$rc"
-        # c) 篡改清单一字节 → 红。
+        YIBAN_RELEASE_PUBKEY_SHA256="$pin" RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing --require-signing >/dev/null 2>&1; rc=$?
+        expect "signing green under --require-signing with external anchor" 0 "$rc"
+        # d) 显式外部文件锚：目录外通过，目录内拒绝。
+        printf '%s  release-pubkey.pem\n' "$pin" > "$tmp/trusted.sha256"
+        YIBAN_RELEASE_PUBKEY_SHA256= RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing \
+            --pubkey-sha256-file "$tmp/trusted.sha256" --require-signing >/dev/null 2>&1; rc=$?
+        expect "signing green with external --pubkey-sha256-file" 0 "$rc"
+        YIBAN_RELEASE_PUBKEY_SHA256= RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing \
+            --pubkey-sha256-file "$tmp/release/release-pubkey.sha256" --require-signing >/dev/null 2>&1; rc=$?
+        expect "signing red with in-dir --pubkey-sha256-file" 1 "$rc"
+        # e) 篡改清单一字节 → 红。
         sed 's/"version":"9.9.9"/"version":"9.9.8"/' "$tmp/release/manifest.json" \
             > "$tmp/release/manifest.json.t" && mv "$tmp/release/manifest.json.t" "$tmp/release/manifest.json"
-        RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing >/dev/null 2>&1; rc=$?
+        YIBAN_RELEASE_PUBKEY_SHA256="$pin" RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing >/dev/null 2>&1; rc=$?
         expect "signing red after manifest tamper" 1 "$rc"
-        # d) 错指纹（另一把钥的 sha256）→ 红，且点名指纹不符。
+        # f) 错指纹（另一把钥的 sha256）→ 红，且点名指纹不符。
         openssl genpkey -algorithm ED25519 -out "$tmp/_k2.pem" 2>/dev/null
         other="$(sha256sum "$tmp/_k2.pem" | cut -d' ' -f1)"
-        printf '%s  release-pubkey.pem\n' "$other" > "$tmp/release/release-pubkey.sha256"
-        RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing >/dev/null 2>&1; rc=$?
+        YIBAN_RELEASE_PUBKEY_SHA256="$other" RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing >/dev/null 2>&1; rc=$?
         expect "signing red on wrong pinned fingerprint" 1 "$rc"
-        RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing 2>/dev/null \
+        YIBAN_RELEASE_PUBKEY_SHA256="$other" RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing 2>/dev/null \
             | grep -q 'does not match pinned' \
             || { say "MISMATCH: fingerprint mismatch not named in summary"; fails=$((fails+1)); }
-        # e) 缺件：默认 SKIP 显性；发布档红。
+        # g) 缺件：默认 SKIP 显性；发布档红。
         rm -f "$tmp/release/manifest.json.sig" "$tmp/release/release-pubkey.pem"
-        RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing 2>/dev/null \
+        YIBAN_RELEASE_PUBKEY_SHA256="$pin" RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing 2>/dev/null \
             | grep -q '^signing *SKIP' || { say "MISMATCH: missing artifacts not SKIP-visible"; fails=$((fails+1)); }
-        RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing >/dev/null 2>&1; rc=$?
+        YIBAN_RELEASE_PUBKEY_SHA256="$pin" RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing >/dev/null 2>&1; rc=$?
         expect "signing SKIP (missing artifacts) is not FAIL" 0 "$rc"
-        RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing --require-signing >/dev/null 2>&1; rc=$?
+        YIBAN_RELEASE_PUBKEY_SHA256="$pin" RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing --require-signing >/dev/null 2>&1; rc=$?
         expect "signing red on missing artifacts under --require-signing" 1 "$rc"
-        # f) sign.sh 不得把私钥写成输出（--out 指向 --key 会覆盖私钥）。
+        # h) sign.sh 不得把私钥写成输出（--out 指向 --key 会覆盖私钥）。
         key_before="$(sha256sum "$tmp/_k.pem" | cut -d' ' -f1)"
         bash "$(dirname "$SELF")/release/sign.sh" --key "$tmp/_k.pem" \
             --in "$tmp/release/manifest.json" --out "$tmp/_k.pem" >/dev/null 2>&1; rc=$?
@@ -465,6 +507,9 @@ main() {
                 esac ;;
             --list) echo "$ITEMS"; exit 0 ;;
             --require-signing) REQUIRE_SIGNING=1; shift ;;
+            --pubkey-sha256-file)
+                [ $# -ge 2 ] || { echo "release-check: --pubkey-sha256-file needs a path" >&2; exit 2; }
+                PUBKEY_SHA256_FILE="$2"; shift 2 ;;
             --selftest) selftest; exit $? ;;
             -h|--help) usage; exit 0 ;;
             *) echo "release-check: unknown argument: $1" >&2; exit 2 ;;

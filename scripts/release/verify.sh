@@ -10,8 +10,8 @@
 # 与文档。信任锚由调用方钉住：
 #   - update.sh：读 YIBAN_RELEASE_PUBKEY_SHA256 或 <安装根>/release-pubkey.sha256，
 #     先比对指纹再调本脚本；
-#   - scripts/release-check.sh：读同一个环境变量或
-#     <发布件目录>/release-pubkey.sha256。
+#   - scripts/release-check.sh：读同一个环境变量，或 --pubkey-sha256-file
+#     指定的文件；该文件必须在发布件目录之外（发布门只信外部锚）。
 # 本脚本只做一件事：用给定的公钥验签；它不判断这把公钥是否可信任。
 # 单独运行本脚本不构成发布校验（见 docs/dev/release-signing.md §2）。
 #
