@@ -167,6 +167,25 @@ func TestChangePasswordRejectsWrongCurrentPassword(t *testing.T) {
 	}
 }
 
+// 旧口令错且新旧口令相同：必须先判 401，不得因为「新旧相同」回 409。
+// 判据来自契约：409 只在旧口令校验通过后出现（审查 P3-1）。
+func TestChangePasswordWrongCurrentBeatsReusedPassword(t *testing.T) {
+	e := newAuthEnv(t)
+	user := e.createUser("mia@example.com", "old-pass-123")
+	_, body := e.login("mia@example.com", "old-pass-123")
+
+	resp, payload := e.changePassword(body.CSRFToken, "wrong-pass-999", "wrong-pass-999")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("wrong current + reused new status = %d, want 401; body=%q", resp.StatusCode, payload)
+	}
+	if got := e.scalarString("SELECT password_hash FROM users WHERE id = $1::uuid", user.ID); got == "" {
+		t.Fatal("password_hash 不该被清空")
+	}
+	if got := e.liveSessions(user.ID); got != 1 {
+		t.Fatalf("live sessions = %d, want 1", got)
+	}
+}
+
 // --- 改密成功：新口令可用，旧口令不可用 --------------------------------
 
 // 模拟真实用户：用临时口令登录，填旧口令与新口令，完成改密。
