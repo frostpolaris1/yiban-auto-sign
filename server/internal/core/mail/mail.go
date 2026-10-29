@@ -9,12 +9,14 @@
 // 分类词表住在这里，使用例层不导入任何传输实现。
 //
 // # 复用
-// Sender、Message、Kind 及其常量、DeliveryError、Classify。
+// Sender、Message、Kind 及其常量、DeliveryError、Classify、
+// TLSMode 常量与 TLSModes。
 //
 // # 口径
 // 失败一律是 *DeliveryError。Error() 只含分类与可重试标志，
 // **不含**底层错误文本：日志面按分类聚合，凭据与目标细节不出传输层。
 // 底层错误经 Unwrap 可达，供 errors.Is/As 使用。
+// TLS 模式词表只在本包定义：config 的闭集与 adapters/mail 的解析同源。
 package mail
 
 import (
@@ -62,7 +64,31 @@ const (
 	// KindConfig 是本地配置错误（地址形状、TLS 证书不受信）。
 	// **不可重试**：改配置之前重试没有意义。
 	KindConfig Kind = "config"
+	// KindPanic 是投递实现 panic 的兜底分类。
+	// **不可重试**：panic 是实现缺陷，重投只会再 panic。
+	// 本值不由 Classify 返回；调用方的 recover 分支直接用它记账。
+	KindPanic Kind = "panic"
 )
+
+// TLS 模式是 YIBAN_MAIL_TLS_MODE 的闭集。
+//
+// 唯一定义点：config 用它生成启动期闭集，adapters/mail 用它解析档位。
+// 新增模式必须同时改这两处的读取路径；adapters/mail 的测试钉住
+// 「本组每个取值适配器都能解析」。
+const (
+	// TLSModeAuto 按端口选档：465 走隐式 TLS，其余走 STARTTLS。
+	TLSModeAuto = "auto"
+	// TLSModeImplicit 强制隐式 TLS（连上即握手）。
+	TLSModeImplicit = "implicit"
+	// TLSModeStartTLS 强制明文连接后升级。
+	TLSModeStartTLS = "starttls"
+)
+
+// TLSModes 返回闭集，顺序固定。
+// 每次调用返回新切片：调用方可以排序或改写而不影响其他读者。
+func TLSModes() []string {
+	return []string{TLSModeAuto, TLSModeImplicit, TLSModeStartTLS}
+}
 
 // DeliveryError 是 Sender.Send 的唯一失败类型。
 //

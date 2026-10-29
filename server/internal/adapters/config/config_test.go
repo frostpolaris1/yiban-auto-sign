@@ -6,7 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
+
+	coremail "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mail"
 )
 
 type mapSource map[string]string
@@ -339,12 +342,13 @@ func TestMailConfigDefaults(t *testing.T) {
 
 // 打开开关但缺发件账号：启动即失败，不留下永远发不出信的进程。
 func TestMailConfigRejectsIncompleteEnable(t *testing.T) {
-	src := baseSource()
-	src["YIBAN_MAIL_ENABLE"] = "true"
+	src := enabledMailSource()
+	src["YIBAN_MAIL_USER"] = ""
 	if _, err := LoadFrom(src); err == nil {
 		t.Fatal("MAIL_ENABLE=true 但缺 USER/PASS 必须被拒绝")
 	}
 	src["YIBAN_MAIL_USER"] = "sender@example.test"
+	delete(src, "YIBAN_MAIL_PASS")
 	if _, err := LoadFrom(src); err == nil {
 		t.Fatal("只有 USER 没有 PASS 必须被拒绝")
 	}
@@ -354,9 +358,87 @@ func TestMailConfigRejectsIncompleteEnable(t *testing.T) {
 	}
 }
 
+// enabledMailSource 是邮件投递全开的完整环境：开关、凭据、公网基址。
+func enabledMailSource() mapSource {
+	src := baseSource()
+	src["YIBAN_MAIL_ENABLE"] = "true"
+	src["YIBAN_MAIL_USER"] = "sender@example.test"
+	src["YIBAN_MAIL_PASS"] = "secret"
+	src["YIBAN_PUBLIC_BASE_URL"] = "https://app.example.test"
+	return src
+}
+
+// 打开邮件投递时，重置链接基址必须显式指向公网。
+//
+// 四条判据对应四种部署动作：
+//  1. 启用但没设基址：缺省值把链接指向收件人自己的 127.0.0.1。
+//  2. 启用但显式设了回环地址：同样是死链。
+//  3. 启用且设了公网地址：可用。
+//  4. 没启用邮件：缺省基址无害，启动通过。
+func TestMailEnabledRequiresPublicBaseURL(t *testing.T) {
+	// 1. 未设基址：启动失败，错误点名字段与当前值。
+	src := enabledMailSource()
+	delete(src, "YIBAN_PUBLIC_BASE_URL")
+	_, err := LoadFrom(src)
+	if err == nil {
+		t.Fatal("启用邮件但未设 YIBAN_PUBLIC_BASE_URL 必须启动失败")
+	}
+	if !strings.Contains(err.Error(), "YIBAN_PUBLIC_BASE_URL") {
+		t.Fatalf("错误信息没有点名 YIBAN_PUBLIC_BASE_URL: %v", err)
+	}
+	if !strings.Contains(err.Error(), DefaultPublicBaseURL) {
+		t.Fatalf("错误信息没有给出当前值 %q: %v", DefaultPublicBaseURL, err)
+	}
+
+	// 2. 显式设成回环（IPv4 字面量、localhost、IPv6 回环、未指定地址）：启动失败。
+	for _, base := range []string{
+		"http://127.0.0.1:47183",
+		"http://localhost:47183",
+		"http://LOCALHOST.:47183",
+		"http://127.0.0.2:47183",
+		"http://[::1]:47183",
+		"http://0.0.0.0:47183",
+	} {
+		src := enabledMailSource()
+		src["YIBAN_PUBLIC_BASE_URL"] = base
+		if _, err := LoadFrom(src); err == nil {
+			t.Fatalf("启用邮件时回环基址 %q 必须被拒绝", base)
+		}
+	}
+
+	// 3. 公网地址：通过，且保留归一后的值。
+	cfg, err := LoadFrom(enabledMailSource())
+	if err != nil {
+		t.Fatalf("启用邮件时公网基址必须接受: %v", err)
+	}
+	if cfg.PublicBaseURL != "https://app.example.test" {
+		t.Fatalf("PublicBaseURL = %q", cfg.PublicBaseURL)
+	}
+
+	// 4. 未启用邮件：缺省回环基址不拦启动。
+	src = baseSource()
+	if _, err := LoadFrom(src); err != nil {
+		t.Fatalf("未启用邮件时缺省基址必须接受: %v", err)
+	}
+}
+
+// 私网基址不是死链：同一局域网的用户能打开，故不拦。
+func TestMailEnabledAcceptsPrivateBaseURL(t *testing.T) {
+	src := enabledMailSource()
+	src["YIBAN_PUBLIC_BASE_URL"] = "http://192.168.1.10:47183"
+	cfg, err := LoadFrom(src)
+	if err != nil {
+		t.Fatalf("私网基址必须接受: %v", err)
+	}
+	if cfg.PublicBaseURL != "http://192.168.1.10:47183" {
+		t.Fatalf("PublicBaseURL = %q", cfg.PublicBaseURL)
+	}
+}
+
 // TLS 模式是闭集：拼写错误不得静默落成别的模式。
+// 闭集的唯一定义点是 core/mail；本测试从那里取词表，不认识第二份清单。
 func TestMailTLSModeIsClosedSet(t *testing.T) {
-	for _, mode := range []string{"auto", "implicit", "starttls"} {
+	for _, mode := range coremail.TLSModes() {
 		src := baseSource()
 		src["YIBAN_MAIL_TLS_MODE"] = mode
 		cfg, err := LoadFrom(src)

@@ -25,6 +25,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/mail/mailtest"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	coremail "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mail"
+	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 )
 
 const (
@@ -224,6 +225,101 @@ func TestSMTPTimeoutIsRetryable(t *testing.T) {
 	kind, retryable := coremail.Classify(err)
 	if kind != coremail.KindTimeout || !retryable {
 		t.Fatalf("超时分类 = (%s, retryable=%t), want (timeout, true); err=%v", kind, retryable, err)
+	}
+}
+
+// TestSendAcceptsEveryRegistrationAddress 钉住「投递可接受集 ⊇ 注册可接受集」。
+//
+// 五个样本都通过 core/user.ValidEmail（注册口径），
+// 都被 net/mail.ParseAddress 拒绝（严格口径）。
+// 只按严格口径判，这些用户能注册却永远收不到重置信。
+// 断言用户可见结果：信真的到了服务器，信封里的地址被引用成安全形态。
+func TestSendAcceptsEveryRegistrationAddress(t *testing.T) {
+	srv, err := mailtest.Start(mailtest.StartTLS)
+	if err != nil {
+		t.Fatalf("start fake smtp: %v", err)
+	}
+	t.Cleanup(srv.Close)
+	srv.SetCredentials(testUser, testPass)
+
+	sender, err := mailadapter.NewSMTP(configFor(t, srv, "starttls"))
+	if err != nil {
+		t.Fatalf("NewSMTP: %v", err)
+	}
+	cases := []struct {
+		to       string
+		wantRcpt string
+	}{
+		{"a,b@example.com", `"a,b"@example.com`},
+		{"a;b@example.com", `"a;b"@example.com`},
+		{"a<b>@example.com", `"a<b>"@example.com`},
+		{".ab@example.com", `".ab"@example.com`},
+		{"a@e.", "a@e."},
+	}
+	for i, tc := range cases {
+		if !coreuser.ValidEmail(tc.to) {
+			t.Fatalf("样本 %q 不在注册口径内，本测试失去判别力", tc.to)
+		}
+		err := sender.Send(t.Context(), coremail.Message{
+			To: tc.to, Subject: "s", Text: "body",
+		})
+		if err != nil {
+			t.Fatalf("Send(%q) 被本地拒绝: %v", tc.to, err)
+		}
+		if !srv.WaitMessages(i+1, 3*time.Second) {
+			t.Fatalf("服务器没有收到寄往 %q 的邮件", tc.to)
+		}
+		got := srv.Messages()[i]
+		if len(got.To) != 1 || got.To[0] != tc.wantRcpt {
+			t.Fatalf("RCPT TO = %v, want [%s]（地址 %q）", got.To, tc.wantRcpt, tc.to)
+		}
+		if !strings.Contains(got.Data, "To: <"+tc.wantRcpt+">") {
+			t.Fatalf("To 头与信封不一致（地址 %q）：\n%s", tc.to, got.Data)
+		}
+	}
+}
+
+// TestSendRejectsAddressThatBreaksEnvelopeFraming 钉住宽松口径的边界。
+//
+// 域名里的 > 会提前闭合 RCPT TO 的尖括号，改变命令结构。
+// 注册口径不管这件事（ValidEmail 只查 @ 形状），投递口径必须管。
+func TestSendRejectsAddressThatBreaksEnvelopeFraming(t *testing.T) {
+	sender, err := mailadapter.NewSMTP(mailadapter.Config{
+		Host: "127.0.0.1", Port: 465, Username: testUser, Password: testPass,
+		From: testUser, TLSMode: "auto",
+	})
+	if err != nil {
+		t.Fatalf("NewSMTP: %v", err)
+	}
+	const to = "user@example.test>,b"
+	if !coreuser.ValidEmail(to) {
+		t.Fatalf("样本 %q 不在注册口径内，本测试失去判别力", to)
+	}
+	err = sender.Send(context.Background(), coremail.Message{To: to, Subject: "s", Text: "body"})
+	if err == nil {
+		t.Fatal("Send 接受了能把分隔符带出尖括号的地址")
+	}
+	if kind, retryable := coremail.Classify(err); kind != coremail.KindConfig || retryable {
+		t.Fatalf("分类 = (%s, retryable=%t), want (config, false)", kind, retryable)
+	}
+}
+
+// TestEveryDeclaredTLSModeIsAccepted 是配置闭集与解析器的对照断言。
+//
+// 词表只在 core/mail 定义。往那里加词却忘了改解析器，
+// 启动期就会接受一个永远无法投递的模式，本测试在此红。
+func TestEveryDeclaredTLSModeIsAccepted(t *testing.T) {
+	for _, mode := range coremail.TLSModes() {
+		cfg := mailadapter.Config{
+			Host: "127.0.0.1", Port: 465, Username: testUser, Password: testPass,
+			From: testUser, TLSMode: mode,
+		}
+		if _, err := mailadapter.NewSMTP(cfg); err != nil {
+			t.Fatalf("闭集里的模式 %q 适配器不认识: %v", mode, err)
+		}
+	}
+	if got := len(coremail.TLSModes()); got == 0 {
+		t.Fatal("TLS 模式闭集为空——扫空不得当绿")
 	}
 }
 

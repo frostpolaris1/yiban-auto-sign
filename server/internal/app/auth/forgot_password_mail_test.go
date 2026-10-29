@@ -163,6 +163,11 @@ func TestForgotPasswordDeliversWorkingLink(t *testing.T) {
 	if !strings.Contains(msg.Text, resetBaseURL+"/reset-password?token="+m[1]) {
 		t.Fatalf("链接基址不是配置值：\n%s", msg.Text)
 	}
+	// 有效期文案必须出现在正文里；它的具体数字由 ResetTokenTTL 派生，
+	// 派生口径由包内的 TestResetTTLTextFollowsTokenTTL 钉住。
+	if !strings.Contains(msg.Text, "小时内有效") {
+		t.Fatalf("正文缺有效期说明：\n%s", msg.Text)
+	}
 	if len(h.resets.created) != 1 {
 		t.Fatalf("令牌行 = %d, want 1", len(h.resets.created))
 	}
@@ -256,8 +261,9 @@ func TestForgotPasswordDeliveryPanicIsContained(t *testing.T) {
 		t.Fatalf("投递 panic 改变了用例结果: %v", err)
 	}
 	waitLog(t, h.logs, "password_reset.delivery_failed")
-	if !strings.Contains(h.logs.String(), "kind=panic") {
-		t.Fatalf("panic 未按失败记账：\n%s", h.logs.String())
+	// 记账用 core/mail 词表里的 panic 类，不是随手写的字面量。
+	if want := "kind=" + string(coremail.KindPanic); !strings.Contains(h.logs.String(), want) {
+		t.Fatalf("panic 未按词表记账（want %q）：\n%s", want, h.logs.String())
 	}
 	if strings.Contains(h.logs.String(), "boom") {
 		t.Fatal("panic 值落进了日志")

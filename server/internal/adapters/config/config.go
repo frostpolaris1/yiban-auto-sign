@@ -16,6 +16,8 @@
 // 环境名是闭集，未知值即启动错误。
 // YIBAN_HASH_PEPPER 至少 16 字符；production 拒绝不安全 cookie。
 // YIBAN_CREDENTIAL_KEY 是 32 字节的 base64，形状错即启动错误。
+// 打开邮件投递时，YIBAN_PUBLIC_BASE_URL 必须是显式设置的公网地址：
+// 缺省值指向本机回环，收件人点开就是死链，故启动即失败。
 package config
 
 import (
@@ -23,6 +25,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"sort"
@@ -30,6 +33,7 @@ import (
 	"strings"
 	"time"
 
+	coremail "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mail"
 	corerate "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/rate"
 )
 
@@ -117,9 +121,10 @@ type Config struct {
 	MailPass string
 	// MailFrom 是发件地址；空时用 MailUser。
 	MailFrom string
-	// MailTLSMode 取 auto、implicit 或 starttls。
+	// MailTLSMode 取 core/mail 的模式常量之一。
 	MailTLSMode string
 	// PublicBaseURL 是邮件里重置链接的基址（绝对 http(s) URL，无尾斜杠）。
+	// 打开邮件投递时它必须是显式设置的公网地址（见 publicBaseURLProblem）。
 	PublicBaseURL string
 	// MailTLSConfig 仅测试注入：非 nil 时替代系统根证书校验 SMTP 服务器。
 	// 生产恒为 nil。它**不**来自环境变量：部署面不提供"关闭证书校验"的开关。
@@ -150,11 +155,13 @@ const DefaultPhotoDir = "data/photos"
 
 // DefaultPublicBaseURL 是 YIBAN_PUBLIC_BASE_URL 未设置时的缺省基址。
 // 取本机回环监听地址：开发态下邮件链接指向本进程。
+// **只服务开发态**：打开 YIBAN_MAIL_ENABLE 时该缺省值即启动错误
+// （见 publicBaseURLProblem）。
 const DefaultPublicBaseURL = "http://127.0.0.1:47183"
 
 // mailTLSModes 是 YIBAN_MAIL_TLS_MODE 的闭集。
-// 与 adapters/mail 的模式常量同名；string 域住在这里，避免 config 导入适配器。
-var mailTLSModes = []string{"auto", "implicit", "starttls"}
+// 唯一定义点在 core/mail：适配器的解析与名册的域读同一组常量。
+var mailTLSModes = coremail.TLSModes()
 
 // keySpec 是名册对照测试看到的读取规格视图。
 // domain 为 nil 表示名册不登记数值域；enum 非空表示名册登记字符串闭集。
@@ -423,12 +430,66 @@ func LoadFrom(src Source) (*Config, error) {
 			return nil, errors.New("config: YIBAN_MAIL_ENABLE requires YIBAN_MAIL_USER and YIBAN_MAIL_PASS")
 		}
 	}
+	// 「显式设置」按原始 env 是否含非空值判定，与 get 的空值口径一致。
+	rawBase, baseOK := src.Lookup(keyPublicBaseURL.key)
+	baseSet := baseOK && rawBase != ""
 	base, err := normalizeBaseURL(keyPublicBaseURL.read(src))
 	if err != nil {
 		return nil, err
 	}
 	cfg.PublicBaseURL = base
+	if cfg.MailEnabled {
+		if problem := publicBaseURLProblem(base, baseSet); problem != "" {
+			return nil, fmt.Errorf(
+				"config: YIBAN_MAIL_ENABLE requires YIBAN_PUBLIC_BASE_URL to be an explicitly set public address (%s); current value %q",
+				problem, base)
+		}
+	}
 	return cfg, nil
+}
+
+// publicBaseURLProblem 判定重置链接基址能否用于真实投递。
+//
+// 唯一判定点：LoadFrom 用它决定启停，测试用它取口径。
+// 返回空串表示可用；非空是原因短语（不含取值，取值由调用方拼进错误）。
+//
+// 拒绝三种形状：
+//   - 未显式设置：缺省值指向本机回环，收件人点开是死链。
+//   - 主机为空：normalizeBaseURL 已挡；此处兜底，判定不依赖上游顺序。
+//   - 主机是回环或未指定地址：链接指向收件人自己的机器或不可达地址。
+//
+// 只拒绝回环与未指定，不拒绝私网地址：私网部署（如 http://192.168.1.10）
+// 对同一局域网的用户可用，不属于死链。
+func publicBaseURLProblem(base string, explicitlySet bool) string {
+	if !explicitlySet {
+		return "not set"
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return "not a URL"
+	}
+	host := u.Hostname()
+	if host == "" {
+		return "empty host"
+	}
+	if isLoopbackOrUnspecified(host) {
+		return "loopback or unspecified host"
+	}
+	return ""
+}
+
+// isLoopbackOrUnspecified 报告主机名是否指向本机或不可达地址。
+// 覆盖 localhost 与 *.localhost（RFC 6761）、回环 IP、未指定 IP（0.0.0.0、::）。
+func isLoopbackOrUnspecified(host string) bool {
+	name := strings.ToLower(strings.TrimSuffix(host, "."))
+	if name == "localhost" || strings.HasSuffix(name, ".localhost") {
+		return true
+	}
+	ip, err := netip.ParseAddr(name)
+	if err != nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsUnspecified()
 }
 
 // normalizeBaseURL 校验并归一重置链接基址。

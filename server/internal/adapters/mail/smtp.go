@@ -19,6 +19,12 @@
 // 失败分类：连接/TLS/超时可重试；认证、配置、DATA 之后的失败不可重试
 // （DATA 可能已被接收，重试会造成双发）。
 // 凭据只出现在 AUTH 命令里，不进错误文本、不进日志。
+//
+// **投递可接受集 ⊇ 注册可接受集**：注册用 core/user.ValidEmail（宽松），
+// 投递用 net/mail.ParseAddress（严格）。本包接收两者的并集：
+// 严格侧通过即接受；严格侧拒绝时再看宽松侧。
+// 收窄本行会让已注册的账号永远收不到重置信。
+// 改动此处必须同时看 parseAddress 的注释与 smtp_test 的口径用例。
 package mail
 
 import (
@@ -37,18 +43,12 @@ import (
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	coremail "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mail"
+	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 )
 
 // DefaultTimeout 是一次 Send 的总预算。
 // 取 10s：覆盖一次正常 SMTP 对话，又不会让后台投递长期占住槽位。
 const DefaultTimeout = 10 * time.Second
-
-// TLS 模式取值。与 config/registry.json 的 YIBAN_MAIL_TLS_MODE 同词表。
-const (
-	TLSModeAuto     = "auto"
-	TLSModeImplicit = "implicit"
-	TLSModeStartTLS = "starttls"
-)
 
 // Config 是 SMTP 投递的配置。全部字段由装配代码注入。
 type Config struct {
@@ -61,7 +61,7 @@ type Config struct {
 	Password string
 	// From 是信封与头部发件地址。空时用 Username。
 	From string
-	// TLSMode 取 auto、implicit、starttls。auto 按端口选择。
+	// TLSMode 取 core/mail 的模式常量。auto 按端口选择。
 	TLSMode string
 	// Timeout 是一次投递的总预算。零值用 DefaultTimeout。
 	Timeout time.Duration
@@ -135,17 +135,19 @@ func NewSMTP(cfg Config) (*SMTP, error) {
 
 // resolveTLSMode 把模式词解析成两档。
 // auto：465 走隐式 TLS，其余走 STARTTLS（与 README 的端口约定一致）。
+// 词表住在 core/mail：本函数只解析，不定义闭集。
 func resolveTLSMode(raw string, port int) (implicit bool, err error) {
 	mode := strings.ToLower(strings.TrimSpace(raw))
 	switch mode {
-	case "", TLSModeAuto:
+	case "", coremail.TLSModeAuto:
 		return port == 465, nil
-	case TLSModeImplicit:
+	case coremail.TLSModeImplicit:
 		return true, nil
-	case TLSModeStartTLS:
+	case coremail.TLSModeStartTLS:
 		return false, nil
 	default:
-		return false, fmt.Errorf("mail: unknown TLS mode %q (want auto, implicit or starttls)", raw)
+		return false, fmt.Errorf("mail: unknown TLS mode %q (want %s)",
+			raw, strings.Join(coremail.TLSModes(), ", "))
 	}
 }
 
@@ -267,18 +269,64 @@ func (s *SMTP) encode(msg coremail.Message) (string, []byte, error) {
 	return to, []byte(b.String()), nil
 }
 
-// parseAddress 解析并收紧地址：拒绝换行与控制字符。
+// parseAddress 解析地址并返回可用于信封与头部的形态。
+//
+// 判据顺序：
+//  1. 换行一律拒绝：它们能把内容挤出 SMTP 命令与头部。
+//  2. net/mail.ParseAddress 通过时，取其规范化 addr-spec。
+//  3. 否则 core/user.ValidEmail 通过时，按裸 addr-spec 接收。
+//  4. 两者都拒绝才报配置错误。
+//
+// 第 3 条钉住「投递可接受集 ⊇ 注册可接受集」：
+// 注册口径只查 @ 形状，投递口径查 RFC 5322。
+// 只按严格侧拒收，会让已注册的地址永远收不到重置信。
+// 裸 addr-spec 的域名必须是主机名形状（见 addrSpecSafe）：
+// 分隔符不得逃出尖括号。
 func parseAddress(raw string) (string, error) {
 	if strings.ContainsAny(raw, "\r\n") {
 		return "", deliveryError(coremail.KindConfig, false,
 			errors.New("mail: address contains a line break"))
 	}
-	addr, err := mail.ParseAddress(strings.TrimSpace(raw))
-	if err != nil || addr.Address == "" {
-		return "", deliveryError(coremail.KindConfig, false,
-			errors.New("mail: address is not a valid mail address"))
+	s := strings.TrimSpace(raw)
+	if addr, err := mail.ParseAddress(s); err == nil && addr.Address != "" {
+		return quoteAddress(addr.Address), nil
 	}
-	return addr.Address, nil
+	if coreuser.ValidEmail(s) && addrSpecSafe(s) {
+		return quoteAddress(s), nil
+	}
+	return "", deliveryError(coremail.KindConfig, false,
+		errors.New("mail: address is not a valid mail address"))
+}
+
+// quoteAddress 把 addr-spec 转成可放进 SMTP 命令与头部的形态。
+// 局部部分的特殊字符由 net/mail 加引号：a,b@example.com 变成 "a,b"@example.com。
+// 返回去掉尖括号的形式；调用方按需补 < >。
+func quoteAddress(addrSpec string) string {
+	quoted := (&mail.Address{Address: addrSpec}).String()
+	return strings.TrimSuffix(strings.TrimPrefix(quoted, "<"), ">")
+}
+
+// addrSpecSafe 报告裸 addr-spec 能否安全放进 SMTP 命令。
+//
+// 局部部分由 quoteAddress 引用，分隔符不会逃出引号。
+// 域名不经引用，故只接受字母、数字、点、连字符与非 ASCII 字符：
+// 其余字符（如 <>(),;）会提前闭合尖括号，改变命令结构。
+func addrSpecSafe(addrSpec string) bool {
+	local, domain, ok := strings.Cut(addrSpec, "@")
+	if !ok || local == "" || domain == "" {
+		return false
+	}
+	for _, r := range domain {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.', r == '-':
+		// 国际化域名不转 punycode：原样交给服务器，发送需 SMTPUTF8。
+		case r >= 0x80:
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // normalizeNewlines 把正文统一成 LF。smtp 的 dotWriter 负责补 CRLF 与点转义。

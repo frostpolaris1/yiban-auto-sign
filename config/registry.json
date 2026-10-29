@@ -46,7 +46,7 @@
     "group": [
       "部署"
     ],
-    "doc": "对外可访问的基址（绝对 http(s) URL，无尾斜杠）。口令重置邮件按它拼 /reset-password?token=…；部署到域名后必须显式改",
+    "doc": "对外可访问的基址（绝对 http(s) URL，无尾斜杠）。口令重置邮件按它拼 /reset-password?token=…；未显式设置或指向回环时，开启邮件投递即启动失败",
     "sensitive": false,
     "web_editable": false,
     "tier": "master",
@@ -1735,7 +1735,7 @@
     "group": [
       "通知"
     ],
-    "doc": "邮件通知开关",
+    "doc": "口令重置邮件投递开关；开启时须配基址与凭据",
     "sensitive": false,
     "web_editable": false,
     "tier": "master",

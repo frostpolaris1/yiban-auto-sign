@@ -10,6 +10,7 @@
 //
 // # 复用
 // ForgotCooldown、maxConcurrentResetMails、resetThrottle；
+// resetTTLText、resetMailText；
 // Service.deliverReset、Service.resetLink、Service.Close。
 //
 // # 口径
@@ -94,11 +95,33 @@ func (t *resetThrottle) evict(now time.Time) {
 // resetMailSubject 是重置邮件的主题。
 const resetMailSubject = "重置口令"
 
-// resetMailBody 是纯文本正文。令牌只出现在链接里。
-// %s 是完整重置链接；有效期与 ResetTokenTTL 一致，不重复写数字。
-const resetMailBody = "有人为这个邮箱申请了重置口令。\n\n" +
-	"打开以下链接设置新口令（1 小时内有效）：\n%s\n\n" +
+// resetMailBodyFmt 是纯文本正文模板。
+// %[1]s 是有效期文案，由 ResetTokenTTL 派生（见 resetTTLText）。
+// %[2]s 是完整重置链接，令牌只出现在这里。
+const resetMailBodyFmt = "有人为这个邮箱申请了重置口令。\n\n" +
+	"打开以下链接设置新口令（%[1]s）：\n%[2]s\n\n" +
 	"如果这不是你发起的，可以忽略本邮件；当前口令不会改变。\n"
+
+// resetTTLText 把令牌有效期写成正文文案。
+//
+// 输入与 ResetTokenTTL 同源：令牌过期时间与正文说法不得各自写死。
+// 整小时与整分钟按整数写；其他形状退成「尽快使用」。
+func resetTTLText(ttl time.Duration) string {
+	switch {
+	case ttl >= time.Hour && ttl%time.Hour == 0:
+		return fmt.Sprintf("%d 小时内有效", ttl/time.Hour)
+	case ttl >= time.Minute && ttl%time.Minute == 0:
+		return fmt.Sprintf("%d 分钟内有效", ttl/time.Minute)
+	default:
+		return "尽快使用"
+	}
+}
+
+// resetMailText 返回重置邮件的正文。
+// ttl 必须与写入令牌的有效期同源，否则正文说法与实际过期时间不一致。
+func resetMailText(link string, ttl time.Duration) string {
+	return fmt.Sprintf(resetMailBodyFmt, resetTTLText(ttl), link)
+}
 
 // deliverReset 把重置链接交给邮件端口。
 //
@@ -116,7 +139,7 @@ func (s *Service) deliverReset(to, token string) {
 	msg := coremail.Message{
 		To:      to,
 		Subject: resetMailSubject,
-		Text:    fmt.Sprintf(resetMailBody, s.resetLink(token)),
+		Text:    resetMailText(s.resetLink(token), ResetTokenTTL),
 	}
 	select {
 	case s.mailSlots <- struct{}{}:
@@ -132,11 +155,12 @@ func (s *Service) deliverReset(to, token string) {
 		defer s.mailWG.Done()
 		defer func() { <-s.mailSlots }()
 		// 投递实现 panic 不得拖垮进程；按失败记账，panic 值不落日志。
+		// KindPanic 是 core/mail 词表里的兜底类，不可重试。
 		defer func() {
 			if r := recover(); r != nil {
 				s.log.Error("password reset mail delivery panicked",
 					"event", "password_reset.delivery_failed",
-					"kind", "panic",
+					"kind", string(coremail.KindPanic),
 					"retryable", false,
 					"email", mask.EmailLabel(to))
 			}
