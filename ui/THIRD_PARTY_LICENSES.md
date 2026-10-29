@@ -155,6 +155,7 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | lightningcss-linux-x64-musl | 1.33.0 | MPL-2.0 | 开发 |
 | lightningcss-win32-arm64-msvc | 1.33.0 | MPL-2.0 | 开发 |
 | lightningcss-win32-x64-msvc | 1.33.0 | MPL-2.0 | 开发 |
+| lucide-react | 1.63.0 | ISC | 运行时 |
 | nanoid | 3.3.20 | MIT | 开发 |
 | number-flow | 0.6.2 | MIT | 运行时 |
 | picocolors | 1.1.1 | ISC | 开发 |
@@ -183,4 +184,4 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | use-sync-external-store | 1.7.0 | MIT | 运行时 |
 | vite | 8.3.5 | MIT | 开发 |
 
-共 168 个包（运行时 97，开发 71）。
+共 169 个包（运行时 98，开发 71）。
