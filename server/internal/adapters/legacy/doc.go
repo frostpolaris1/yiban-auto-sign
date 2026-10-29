@@ -4,7 +4,9 @@
 // 读 P8-A 导出器（scripts/db_export.py）产出的 JSONL 目录，
 // 重建 users 与 accounts（含凭据重加密），并产出可逐行比对的
 // reconciliation.jsonl 与 summary.json。
-// 本包只服务 `cmd/cli migrate-legacy`；一次性迁移件，**不**进服务装配。
+// 另含一次性补录：把旧 time_prefs（按 phone）写成新 time_prefs（按 user_id）。
+// 本包只服务 `cmd/cli migrate-legacy` 与 `cmd/cli backfill-time-prefs`；
+// 一次性迁移件，**不**进服务装配。补录的映射与跳过口径见 backfill.go。
 //
 // # 契约（与 P8-A 导出器钉死，2026-10-27 派单稿）
 //   - accounts 行的 password/phone_code 是空串或旧信封对象
@@ -29,6 +31,8 @@
 //     phone→user 映射，硬塞会让多行塌缩互相覆盖，故**不导入**、显性计数。
 //     值语义本身等价（旧 slot_min＝相对窗口起点的分钟偏移、5 对齐＝新
 //     offset_min），缺的是挂接点，不是数值口径。
+//     挂接点由 `cmd/cli backfill-time-prefs` 在导入后补齐（2gk）：
+//     它沿 legacy_ids 找新账号的 owner_user_id，按用户写一条。
 //   - 旧 audit_logs 不写入新 audit_logs：append-only 链不可跨链续。
 //   - 明文驻留行：账号照建、凭据行缺省、显性计数。
 //   - 新负载三键 device_code/password/phone_model 全部出现；
