@@ -30,7 +30,9 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$base" ] || { echo "ci-scope: 缺少 --base" >&2; exit 2; }
 
-changed=$(git diff --name-only "$base"...HEAD)
+# 两点差不用 merge-base：CI 是浅检出，三点差需要共同祖先，浅树下取不到。
+# 分支落后时两点差可能多报（把别人的改动算进来）⇒ 只会更保守地跑全套，不会少跑。
+changed=$(git diff --name-only "$base" HEAD)
 oldline=0
 if [ -n "$changed" ]; then
   if printf '%s\n' "$changed" | grep -qE '^(yiban|web|tests|frontend|docker|deploy|scripts|config)/|^(run\.sh|run_probe\.sh|docker-compose\.yml|requirements[^/]*)$'; then
