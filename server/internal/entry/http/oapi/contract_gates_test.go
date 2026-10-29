@@ -3,10 +3,10 @@ package oapi
 // 契约对账门。
 //
 // # 功能
-// 直接读 contracts/openapi.yaml 与 contracts/README.md，钉住五条不变式：
+// 直接读 contracts/openapi.yaml 与 contracts/README.md，钉住六条不变式：
 // 角色表两份逐行相等；带 limit 的列表声明 400；带请求体的端点声明 413；
 // 可空字段一律 required（保证输出 null 键）；additionalProperties: false
-// 逐条登记豁免。本文件**不**启动 HTTP 服务、**不**连数据库。
+// 逐条登记豁免；304 响应声明 ETag。本文件**不**启动 HTTP 服务、**不**连数据库。
 //
 // # 归属
 // entry/http/oapi 是生成物所在包，契约文本的唯一消费者。
@@ -583,5 +583,396 @@ func TestAdditionalPropertiesScannerCoversFlowStyle(t *testing.T) {
 		if _, ok := want[name]; !ok {
 			t.Errorf("合法流式写法被误报：%s 行 %v", name, got[name])
 		}
+	}
+}
+
+// contractBlock 是一个状态码块的摘录：状态行行号、缩进与块内各行。
+type contractBlock struct {
+	line   int
+	indent int
+	lines  []string
+}
+
+// contractNotModifiedBlocks 取出每个 304 状态行的响应块。
+// 块从状态行下一行起，到缩进不大于状态行的行止。
+func contractNotModifiedBlocks(t *testing.T, doc string) []contractBlock {
+	t.Helper()
+	var out []contractBlock
+	var cur *contractBlock
+	curIndent := -1
+	for i, raw := range strings.Split(doc, "\n") {
+		line := strings.TrimRight(raw, " \t\r")
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		indent := contractIndent(line)
+		if cur != nil && indent <= curIndent {
+			out = append(out, *cur)
+			cur = nil
+		}
+		if m := contractStatusLine.FindStringSubmatch(trimmed); m != nil {
+			if m[1] == "304" {
+				cur, curIndent = &contractBlock{line: i + 1, indent: indent}, indent
+			}
+			continue
+		}
+		if cur != nil {
+			cur.lines = append(cur.lines, line)
+		}
+	}
+	if cur != nil {
+		out = append(out, *cur)
+	}
+	if len(out) == 0 {
+		t.Fatal("openapi 里没有 304 响应；门没有扫到东西")
+	}
+	return out
+}
+
+// contractKeyValue 取出「键: 值」中的行内值。值可为空。
+var contractKeyValue = regexp.MustCompile(`^\S+:[ \t]*(.*)$`)
+
+// contractBlockScalarHead 匹配块标量头：| 或 > 开头，缩进与削波指示符
+// 可任意顺序出现，行尾可带注释。
+var contractBlockScalarHead = regexp.MustCompile(
+	`^[|>](?:[0-9][-+]?|[-+][0-9]?)?(?:[ \t]+#.*)?[ \t]*$`)
+
+// contractNodeProperty 匹配值起始的一个节点属性：锚点 &name 或标签 !tag。
+var contractNodeProperty = regexp.MustCompile(`^[&!]\S*`)
+
+// contractStripNodeProperties 剥掉值前的锚点与标签，返回标量本体。
+// 两者可同时出现，顺序不限；YAML 的普通标量不能以 & 或 ! 开头。
+func contractStripNodeProperties(value string) string {
+	for {
+		value = strings.TrimLeft(value, " \t")
+		loc := contractNodeProperty.FindStringIndex(value)
+		if loc == nil || loc[0] != 0 {
+			return value
+		}
+		value = value[loc[1]:]
+	}
+}
+
+// contractBlockScalar 判一行是否开启块标量。
+func contractBlockScalar(trimmed string) bool {
+	m := contractKeyValue.FindStringSubmatch(trimmed)
+	if m == nil {
+		return false
+	}
+	return contractBlockScalarHead.MatchString(contractStripNodeProperties(m[1]))
+}
+
+// contractOpenQuote 判一行是否开启跨行引号标量，开启时返回引号字符。
+// 同一行内闭合则返回 0。
+func contractOpenQuote(trimmed string) byte {
+	m := contractKeyValue.FindStringSubmatch(trimmed)
+	if m == nil {
+		return 0
+	}
+	value := contractStripNodeProperties(m[1])
+	if value == "" {
+		return 0
+	}
+	if value[0] != '"' && value[0] != '\'' {
+		return 0
+	}
+	if contractQuoteCloses(value[0], value[1:]) {
+		return 0
+	}
+	return value[0]
+}
+
+// contractQuoteCloses 报告引号串是否在 text 内闭合。
+// 双引号用反斜杠转义；单引号用两个连续单引号转义。
+func contractQuoteCloses(quote byte, text string) bool {
+	for i := 0; i < len(text); i++ {
+		if quote == '"' && text[i] == '\\' {
+			i++
+			continue
+		}
+		if text[i] != quote {
+			continue
+		}
+		if quote == '\'' && i+1 < len(text) && text[i+1] == '\'' {
+			i++
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// notModifiedDeclaresETag 判 304 块是否在 headers 之下声明 ETag。
+//
+// 只认 responses.<状态>.headers.<直接子键> 这一路径。
+// 块标量正文与跨行引号标量正文里的同名文字不算。
+// 子键的缩进由块内第一行决定，故缩进步长不影响判定。
+func notModifiedDeclaresETag(block contractBlock) bool {
+	inHeaders := false
+	headersIndent, childIndent := -1, -1
+	scalarIndent := -1
+	var openQuote byte
+	for _, raw := range block.lines {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			continue
+		}
+		indent := contractIndent(raw)
+		if openQuote != 0 {
+			if contractQuoteCloses(openQuote, trimmed) {
+				openQuote = 0
+			}
+			continue // 引号标量正文
+		}
+		if scalarIndent >= 0 {
+			if indent > scalarIndent {
+				continue // 块标量正文
+			}
+			scalarIndent = -1
+		}
+		if contractBlockScalar(trimmed) {
+			scalarIndent = indent
+			continue
+		}
+		if openQuote = contractOpenQuote(trimmed); openQuote != 0 {
+			continue
+		}
+		if inHeaders {
+			if indent <= headersIndent {
+				inHeaders, childIndent = false, -1
+			} else if childIndent < 0 {
+				childIndent = indent
+			}
+			if inHeaders && indent == childIndent && strings.HasPrefix(trimmed, "ETag:") {
+				return true
+			}
+			continue
+		}
+		if trimmed == "headers:" && indent > block.indent {
+			inHeaders, headersIndent, childIndent = true, indent, -1
+		}
+	}
+	return false
+}
+
+// 304 是条件请求的答案，客户端靠 ETag 把 304 与已有字节对应。
+// 生成码不消费响应头声明，故只在契约文本上验。
+func TestNotModifiedResponsesDeclareETag(t *testing.T) {
+	spec := contractRead(t, contractSpecPath)
+	blocks := contractNotModifiedBlocks(t, spec)
+
+	declared := 0
+	for _, op := range contractOps(t, spec) {
+		if op.statuses["304"] {
+			declared++
+		}
+	}
+	if declared == 0 {
+		t.Fatal("openapi 的操作里没有 304；门没有扫到东西")
+	}
+	if len(blocks) != declared {
+		t.Fatalf("304 状态行 %d 处，行扫描得 %d 块；门与契约形状不符", declared, len(blocks))
+	}
+	for _, block := range blocks {
+		if !notModifiedDeclaresETag(block) {
+			t.Errorf("304 响应未在 headers 下声明 ETag（openapi.yaml:%d）", block.line)
+		}
+	}
+}
+
+// 扫描只在 headers 之下认 ETag。说明文字里的 ETag 不算，流式 304 也不算。
+// 真实契约只有块式写法；本用例钉住其余形状，防止门被误绿。
+func TestNotModifiedScannerShapes(t *testing.T) {
+	doc := `paths:
+  /a:
+    get:
+      operationId: A
+      x-roles: [public]
+      responses:
+        '304':
+          description: Not modified (ETag matched); no body.
+  /b:
+    get:
+      operationId: B
+      x-roles: [public]
+      responses:
+        '304': { description: flow form }
+  /c:
+    get:
+      operationId: C
+      x-roles: [public]
+      responses:
+        '304':
+          description: |
+            ETag: fake
+  /d:
+    get:
+      operationId: D
+      x-roles: [public]
+      responses:
+        '304':
+          description: |
+            headers:
+              ETag: fake
+`
+	blocks := contractNotModifiedBlocks(t, doc)
+	if len(blocks) != 4 {
+		t.Fatalf("304 块 = %d, want 4", len(blocks))
+	}
+	for _, block := range blocks {
+		if notModifiedDeclaresETag(block) {
+			t.Errorf("未声明的 304 被认成有 ETag（行 %d）", block.line)
+		}
+	}
+
+	withHeader := `paths:
+  /e:
+    get:
+      operationId: E
+      x-roles: [public]
+      responses:
+        '304':
+          description: no body
+          headers:
+            ETag:
+              schema: { type: string }
+`
+	blocks = contractNotModifiedBlocks(t, withHeader)
+	if len(blocks) != 1 || !notModifiedDeclaresETag(blocks[0]) {
+		t.Fatal("headers 下的 ETag 未被识别")
+	}
+
+	// 标量保护必须覆盖全部合法起始写法；漏一种即把正文误认成声明。
+	scalars := `paths:
+  /g:
+    get:
+      operationId: G
+      x-roles: [public]
+      responses:
+        '304':
+          description: |2
+            headers:
+              ETag: fake
+  /h:
+    get:
+      operationId: H
+      x-roles: [public]
+      responses:
+        '304':
+          description: | # note
+            headers:
+              ETag: fake
+  /i:
+    get:
+      operationId: I
+      x-roles: [public]
+      responses:
+        '304':
+          description: "Not modified;
+            headers:
+              ETag: fake"
+  /j:
+    get:
+      operationId: J
+      x-roles: [public]
+      responses:
+        '304':
+          description: 'Not modified;
+            headers:
+              ETag: fake'
+`
+	blocks = contractNotModifiedBlocks(t, scalars)
+	if len(blocks) != 4 {
+		t.Fatalf("304 块 = %d, want 4", len(blocks))
+	}
+	for _, block := range blocks {
+		if notModifiedDeclaresETag(block) {
+			t.Errorf("标量正文里的 ETag 被当成头声明（行 %d）", block.line)
+		}
+	}
+
+	// 节点属性（锚点与标签）可写在标量之前，两者顺序任意。
+	// 漏剥即把标量正文里的 headers: 当成声明。
+	nodeProps := `paths:
+  /k:
+    get:
+      operationId: K
+      x-roles: [public]
+      responses:
+        '304':
+          description: &d |
+            headers:
+              ETag: fake
+  /l:
+    get:
+      operationId: L
+      x-roles: [public]
+      responses:
+        '304':
+          description: !!str |
+            headers:
+              ETag: fake
+  /m:
+    get:
+      operationId: M
+      x-roles: [public]
+      responses:
+        '304':
+          description: &d !probe |
+            headers:
+              ETag: fake
+  /n:
+    get:
+      operationId: N
+      x-roles: [public]
+      responses:
+        '304':
+          description: !probe &d |
+            headers:
+              ETag: fake
+  /o:
+    get:
+      operationId: O
+      x-roles: [public]
+      responses:
+        '304':
+          description: !!str "Not modified;
+            headers:
+              ETag: fake"
+  /p:
+    get:
+      operationId: P
+      x-roles: [public]
+      responses:
+        '304':
+          description: &d !probe 'Not modified;
+            headers:
+              ETag: fake'
+`
+	blocks = contractNotModifiedBlocks(t, nodeProps)
+	if len(blocks) != 6 {
+		t.Fatalf("304 块 = %d, want 6", len(blocks))
+	}
+	for _, block := range blocks {
+		if notModifiedDeclaresETag(block) {
+			t.Errorf("带节点属性的标量正文里的 ETag 被当成头声明（行 %d）", block.line)
+		}
+	}
+
+	deeperValue := `paths:
+  /f:
+    get:
+      operationId: F
+      x-roles: [public]
+      responses:
+        '304':
+          headers:
+            X-Probe:
+              ETag: fake
+`
+	blocks = contractNotModifiedBlocks(t, deeperValue)
+	if len(blocks) != 1 || notModifiedDeclaresETag(blocks[0]) {
+		t.Fatal("子键值里的 ETag 被当成头声明")
 	}
 }

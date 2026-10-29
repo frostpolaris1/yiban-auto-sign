@@ -713,7 +713,9 @@ export interface paths {
          *     A user reads own photos. An admin reads photos whose owner has a
          *     non-deleted account in a bound school. Cross-scope reads answer 404.
          *     When If-None-Match (weak comparison, comma lists and `*` honoured)
-         *     matches the current ETag the answer is 304 without a body.
+         *     matches the current ETag the answer is 304 without a body. Repeated
+         *     If-None-Match header lines are merged per RFC 9110 section 5.3, so a
+         *     well-formed list never answers 400.
          */
         get: operations["PhotoGet"];
         put?: never;
@@ -2500,6 +2502,8 @@ export interface operations {
             /** @description Not modified (ETag matched); no body. */
             304: {
                 headers: {
+                    /** @description Strong validator of the stored bytes (quoted sha256). */
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content?: never;
