@@ -175,12 +175,23 @@ func TestRequeueRetryCountsEveryAttempt(t *testing.T) {
 	}
 
 	// 等待退避不计尝试数：2 保持 2。
+	// 适配器把等待原因当不透明串：原样落库，不改写、不解释。
+	// 词面约定（wait_ 前缀）由 app/worker 的词表门钉住。
 	claim(base.Add(5 * time.Minute))
 	if err := e.sched.RequeueWait(e.ctx, rowID, base.Add(6*time.Minute), "wait_window_open"); err != nil {
 		t.Fatalf("requeue wait: %v", err)
 	}
 	if got := e.scalarInt("SELECT attempts FROM sign_tasks WHERE id = $1::uuid", rowID); got != 2 {
 		t.Fatalf("attempts after a wait requeue is %d; want 2 (waiting is not an attempt)", got)
+	}
+	if got := e.taskState(rowID); got != string(corestatus.TaskPending) {
+		t.Fatalf("state after a wait requeue is %q; want pending", got)
+	}
+	if got := e.scalarString("SELECT result FROM sign_tasks WHERE id = $1::uuid", rowID); got != "wait_window_open" {
+		t.Fatalf("result after a wait requeue is %q; want the wait reason verbatim", got)
+	}
+	if got := e.scalarInt("SELECT (run_at = $2::timestamptz)::int FROM sign_tasks WHERE id = $1::uuid", rowID, base.Add(6*time.Minute)); got != 1 {
+		t.Fatalf("run_at after a wait requeue is not the new slot")
 	}
 }
 

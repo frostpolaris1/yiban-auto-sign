@@ -35,6 +35,10 @@ func TestSuggestionVocabulary(t *testing.T) {
 		{string(corestatus.TaskFailed), "rejected", closedWin(), SuggestReArm},
 		{string(corestatus.TaskFailed), "rejected", nil, SuggestReArm},
 		{string(corestatus.TaskPending), "wait_window_open", openWin(), SuggestWait},
+		// 状态先于结论词：排队中的行可能带着上次失败的结论词
+		//（RequeueRetry 不擦 result），建议仍是 wait。
+		{string(corestatus.TaskPending), "credential_invalid", openWin(), SuggestWait},
+		{string(corestatus.TaskPending), string(contract.OutcomeRejected), closedWin(), SuggestWait},
 		{string(corestatus.TaskRunning), "", openWin(), SuggestWait},
 		{string(corestatus.TaskSuccess), string(contract.OutcomeSuccess), openWin(), SuggestWait},
 		{string(corestatus.TaskSkipped), "window_closed", closedWin(), SuggestWait},
