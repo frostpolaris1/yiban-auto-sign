@@ -317,3 +317,187 @@ exit 0
 		t.Fatalf("old binary must be kept at %s:\n%s", bak, body)
 	}
 }
+
+// ---- update.sh 签名发布物接线（干跑，docs/dev/release-signing.md）----
+//
+// 被测性质：给了 --manifest/--signature/--pubkey 时，update.sh 在任何文件
+// 替换之前验签＋对账 sha256；失败必须点名 (step: signing) 且不碰旧件、
+// 不停服务；三件只给一件是用法错误。清单与签名由仓库的
+// scripts/release/make-manifest.sh 与 sign.sh 现场生成（顺带钉这两个
+// 脚本可用）；密钥用 openssl 现场生成，不留任何仓库痕迹。
+
+// requireOpenssl 在缺 openssl 的环境显性跳过（跳过 ≠ 绿：原因必须可见）。
+func requireOpenssl(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("openssl"); err != nil {
+		t.Skip("SKIP: openssl 不在 PATH，签名干跑 e2e 无法构造")
+	}
+}
+
+// releaseScriptsPath 返回 scripts/release 下脚本的绝对路径。
+func releaseScriptsPath(t *testing.T, name string) string {
+	t.Helper()
+	p, err := filepath.Abs(filepath.Join("..", "..", "..", "scripts", "release", name))
+	if err != nil {
+		t.Fatalf("resolve release script: %v", err)
+	}
+	return p
+}
+
+// signedManifest 用 openssl 现场生成 Ed25519 密钥对，再调仓库的
+// make-manifest.sh 与 sign.sh 产出清单与签名。返回三者路径。
+func signedManifest(t *testing.T, dir string, files ...string) (manifest, sig, pub string) {
+	t.Helper()
+	key := filepath.Join(dir, "release-key.pem")
+	pub = filepath.Join(dir, "release-pubkey.pem")
+	if out, err := exec.Command("openssl", "genpkey", "-algorithm", "ED25519",
+		"-out", key).CombinedOutput(); err != nil {
+		t.Fatalf("openssl genpkey: %v\n%s", err, out)
+	}
+	if out, err := exec.Command("openssl", "pkey", "-in", key,
+		"-pubout", "-out", pub).CombinedOutput(); err != nil {
+		t.Fatalf("openssl pkey -pubout: %v\n%s", err, out)
+	}
+	manifest = filepath.Join(dir, "manifest.json")
+	args := append([]string{"bash", releaseScriptsPath(t, "make-manifest.sh"), "9.9.9"}, files...)
+	out, err := exec.Command(args[0], args[1:]...).Output()
+	if err != nil {
+		t.Fatalf("make-manifest.sh: %v\n%s", err, out)
+	}
+	if err := os.WriteFile(manifest, out, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	sig = filepath.Join(dir, "manifest.sig")
+	if out, err := exec.Command("bash", releaseScriptsPath(t, "sign.sh"),
+		"--key", key, "--in", manifest, "--out", sig).CombinedOutput(); err != nil {
+		t.Fatalf("sign.sh: %v\n%s", err, out)
+	}
+	return manifest, sig, pub
+}
+
+// signingFixture 摆好干跑环境：假 systemctl 日志、已装旧 server 与假 cli。
+// 返回 env 与 systemctl 日志路径。
+func signingFixture(t *testing.T) (map[string]string, string) {
+	t.Helper()
+	root := t.TempDir()
+	sysctlLog := filepath.Join(t.TempDir(), "systemctl.log")
+	binDir := t.TempDir()
+	installed := filepath.Join(root, "usr/local/bin/yiban-server")
+	if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(installed, []byte("#!/bin/sh\necho OLD-SERVER\n"), 0o755); err != nil {
+		t.Fatalf("seed installed: %v", err)
+	}
+	// 假 cli 只经 PATH 发现（update.sh 的 probe 与迁移都走安装位/PATH）；
+	// 变量本身不参与断言。
+	fakeBin(t, binDir, "yiban-cli", `
+case "$1" in
+  migrate) echo "schema version 99"; exit 0 ;;
+  healthcheck) exit 0 ;;
+esac
+exit 0
+`)
+	env := map[string]string{
+		"YIBAN_INSTALL_ROOT": root,
+		"SYSTEMCTL": fakeBin(t, binDir, "systemctl",
+			"echo \"systemctl $*\" >> \""+sysctlLog+"\"\nexit 0\n"),
+		"PATH": binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}
+	return env, sysctlLog
+}
+
+func TestUpdateShVerifiesSignedManifest(t *testing.T) {
+	requireBash(t)
+	requireOpenssl(t)
+	env, sysctlLog := signingFixture(t)
+	binDir := t.TempDir()
+	newServer := fakeBin(t, binDir, "yiban-server", "echo NEW-SERVER\n")
+	newCLI := fakeBin(t, binDir, "yiban-cli-2", "exit 0\n")
+	// 清单按基名对账：新 cli 必须叫 yiban-cli，另起名会被点名 no entry。
+	if err := os.Rename(newCLI, filepath.Join(binDir, "yiban-cli")); err != nil {
+		t.Fatalf("rename cli: %v", err)
+	}
+	newCLI = filepath.Join(binDir, "yiban-cli")
+	manifest, sig, pub := signedManifest(t, t.TempDir(), newServer, newCLI)
+
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer, "--cli-bin", newCLI,
+		"--manifest", manifest, "--signature", sig, "--pubkey", pub)
+	if rc != 0 {
+		t.Fatalf("signed update must succeed: rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "signing verification ok") {
+		t.Fatalf("must report verification ok; out=%s", out)
+	}
+	if strings.Contains(out, "WARNING") {
+		t.Fatalf("signed path must not warn; out=%s", out)
+	}
+	log := readAll(t, sysctlLog)
+	if !strings.Contains(log, "stop") || !strings.Contains(log, "start") {
+		t.Fatalf("signed update must stop then start the service:\n%s", log)
+	}
+}
+
+func TestUpdateShRejectsTamperedManifest(t *testing.T) {
+	requireBash(t)
+	requireOpenssl(t)
+	env, sysctlLog := signingFixture(t)
+	root := env["YIBAN_INSTALL_ROOT"]
+	installed := filepath.Join(root, "usr/local/bin/yiban-server")
+	oldBody := readAll(t, installed)
+	binDir := t.TempDir()
+	newServer := fakeBin(t, binDir, "yiban-server", "echo NEW-SERVER\n")
+	manifest, sig, pub := signedManifest(t, t.TempDir(), newServer)
+
+	// 篡改清单一个字节：版本号改一位。签名覆盖清单字节，验签必须红。
+	tampered := filepath.Join(t.TempDir(), "tampered.json")
+	body := []byte(strings.Replace(readAll(t, manifest), "9.9.9", "9.9.8", 1))
+	if string(body) == readAll(t, manifest) {
+		t.Fatalf("tamper no-op: version literal not found in %s", readAll(t, manifest))
+	}
+	if err := os.WriteFile(tampered, body, 0o644); err != nil {
+		t.Fatalf("write tampered: %v", err)
+	}
+
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer,
+		"--manifest", tampered, "--signature", sig, "--pubkey", pub)
+	if rc == 0 {
+		t.Fatalf("tampered manifest must fail the update; out=%s", out)
+	}
+	if !strings.Contains(out, "signing verification FAILED (step: signing)") {
+		t.Fatalf("must name the signing step; out=%s", out)
+	}
+	// 不碰旧件：安装位仍是旧字节，没有 .bak，服务从未被 stop。
+	if body := readAll(t, installed); body != oldBody {
+		t.Fatalf("installed binary must be untouched:\n%s", body)
+	}
+	if _, err := os.Stat(installed + ".bak"); err == nil {
+		t.Fatalf("no .bak may be created on verification failure")
+	}
+	// 校验失败发生在停服务之前：假 systemctl 要么从未被调用（日志不存在），
+	// 要么至少没有 stop。
+	if logBytes, err := os.ReadFile(sysctlLog); err == nil &&
+		strings.Contains(string(logBytes), "stop") {
+		t.Fatalf("service must not be stopped before verification passes:\n%s", logBytes)
+	}
+}
+
+func TestUpdateShRequiresAllThreeSigningFlags(t *testing.T) {
+	requireBash(t)
+	requireOpenssl(t)
+	env, _ := signingFixture(t)
+	binDir := t.TempDir()
+	newServer := fakeBin(t, binDir, "yiban-server", "echo NEW-SERVER\n")
+	manifest, _, _ := signedManifest(t, t.TempDir(), newServer)
+
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer, "--manifest", manifest)
+	if rc != 2 {
+		t.Fatalf("partial signing flags are a usage error: rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "must be given together") {
+		t.Fatalf("error must explain the rule; out=%s", out)
+	}
+}

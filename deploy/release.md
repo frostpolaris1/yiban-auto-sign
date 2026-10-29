@@ -114,15 +114,18 @@ go test ./cmd/cli/ -run TestUpdateShRollsBackOnFailedMigration -count=1
 红：演练退出码非 0。脚本侧红：`update.sh` 无 `.bak` 回滚路径，或守卫
 用例名消失。
 
-## 项 8　ed25519/SPA 发布件检查（item 名 `signing`，MANUAL）
+## 项 8　ed25519/SPA 发布件检查（item 名 `signing`，可执行门；2026-10-29 起）
 
-考古结论：**未发现既有门。** `scripts/`、`server/scripts/`、`deploy/`
-无 ed25519/SPA 发布件检查；`SPA` 仅作为协议注释里的 H5 页面名出现
-（`server/internal/signing/protocol/forms.go`）。
+考古（2026-10-27，ref ad5b3639）：无既有门，曾登记 MANUAL。2026-10-29 发布物签名链
+落地（`scripts/release/make-manifest.sh` / `sign.sh` / `verify.sh`；
+`docs/dev/release-signing.md`），本项升级为可执行门：
 
-无门即不装门，本项登记为人工步骤。发布操作者人工核对：发布件与构建
-物料清单一致、产物 sha256 对账、无未登记的二进制面变更。本项打 MANUAL，
-不计入退出码。
+- 发布件目录（缺省 `$ROOT/release/`，`YIBAN_RELEASE_DIR` 覆盖）三件齐全
+  （`manifest.json`＋`manifest.json.sig`＋`release-pubkey.pem`）→ 跑 `verify.sh`：
+  验签通过 PASS；rc=1 FAIL。
+- 三件不齐 → SKIP 并点名缺件；openssl 不可用 → SKIP 显性（验证没跑，不算绿）。
+- `--selftest` 含「篡改一字节必红」突变（openssl 在时执行，否则显性跳过）。
+- sha256 与本地二进制的对账由 `update.sh --manifest/--signature/--pubkey` 在升级时承担。
 
 ## 已登记缺口（待立项，本清单不现场补造）
 

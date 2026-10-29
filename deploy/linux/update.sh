@@ -11,9 +11,18 @@
 #   （--cli-bin 与服务二进制同版本发布；只给 --server-bin 时
 #     迁移用已安装的 yiban-cli。）
 #
+# 签名发布物（可选，docs/dev/release-signing.md）：
+#   sudo bash deploy/linux/update.sh --server-bin NEW \
+#       --manifest manifest.json --signature manifest.sig --pubkey release-pubkey.pem
+#   三个参数必须同时给或同时不给。给了 → 在任何文件替换之前跑
+#   scripts/release/verify.sh 验签，并把清单里的 sha256 逐一与本地新件
+#   对账（server 必须，cli 给了也算）；任一失败即非 0 退出，不碰旧件。
+#   没给 → 行为不变，但打印一行显性 WARN（跳过 ≠ 绿）。
+#
 # 干跑钩子：YIBAN_INSTALL_ROOT=前缀 SYSTEMCTL=命令覆盖（与 install.sh 同义）。
 #
-# 退出码：0 成功；1 迁移失败或回滚成功（旧件在跑）；2 回滚后仍不健康。
+# 退出码：0 成功；1 迁移失败或回滚成功（旧件在跑）或签名校验不通过；
+#         2 用法错误（含三件只给一件）或回滚后仍不健康。
 # 已知残余风险：迁移一旦应用不会随二进制回滚（没有 down 迁移）；
 # 旧二进制须能向前兼容新 schema。迁移都按向后兼容发布。
 # ============================================================
@@ -30,14 +39,28 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SERVER_BIN=""
 CLI_BIN=""
 REGISTRY=""
+MANIFEST=""
+SIGNATURE=""
+PUBKEY=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --server-bin) SERVER_BIN="${2:?}"; shift 2 ;;
         --cli-bin) CLI_BIN="${2:?}"; shift 2 ;;
         --registry) REGISTRY="${2:?}"; shift 2 ;;
+        --manifest) MANIFEST="${2:?}"; shift 2 ;;
+        --signature) SIGNATURE="${2:?}"; shift 2 ;;
+        --pubkey) PUBKEY="${2:?}"; shift 2 ;;
         *) echo "update: unknown argument: $1" >&2; exit 2 ;;
     esac
 done
+
+# 三件同给同不给：半给是操作员笔误，静默跳过校验等于没校验。
+if [ -n "$MANIFEST" ] || [ -n "$SIGNATURE" ] || [ -n "$PUBKEY" ]; then
+    if [ -z "$MANIFEST" ] || [ -z "$SIGNATURE" ] || [ -z "$PUBKEY" ]; then
+        echo "update: --manifest/--signature/--pubkey must be given together (got manifest=${MANIFEST:+yes} signature=${SIGNATURE:+yes} pubkey=${PUBKEY:+yes})" >&2
+        exit 2
+    fi
+fi
 
 [ -n "$SERVER_BIN" ] || { echo "update: --server-bin is required" >&2; exit 2; }
 [ -x "$SERVER_BIN" ] || { echo "update: new server binary missing: $SERVER_BIN" >&2; exit 2; }
@@ -51,6 +74,57 @@ SERVER_NEW="$SERVER_DEST.new"
 BAK="$SERVER_DEST.bak"
 
 [ -x "$SERVER_DEST" ] || { echo "update: no installed server at $SERVER_DEST; run install.sh first" >&2; exit 2; }
+
+# 签名发布物校验（可选）。放在任何文件替换之前：失败即退出，旧件原样。
+VERIFY_SH="$REPO_ROOT/scripts/release/verify.sh"
+if [ -n "$MANIFEST" ]; then
+    echo "update: verifying signed release manifest"
+    if [ ! -f "$VERIFY_SH" ]; then
+        echo "update: signing verification FAILED (step: signing) — verifier missing: $VERIFY_SH" >&2
+        exit 1
+    fi
+    if ! bash "$VERIFY_SH" --pubkey "$PUBKEY" --manifest "$MANIFEST" --signature "$SIGNATURE"; then
+        echo "update: signing verification FAILED (step: signing) — refusing to touch installed files" >&2
+        exit 1
+    fi
+    # 清单 sha256 与本地新件逐一对账。只对账本次要替换的文件：
+    # server 必须在清单里；cli 给了 --cli-bin 才对账。清单可以带其他
+    # 条目（全量发布清单），不在本机替换范围内的不拦。
+    manifest_hash() {
+        # 单行 JSON、键序固定（make-manifest.sh 保证）；grep -o 逐匹配提取，
+        # 不用跨条目的贪婪 sed。name 只含 [A-Za-z0-9._-]。
+        # 末尾 || true 兜住两种非零：无匹配（rc=1）与 head 提前关管的 SIGPIPE。
+        # 缺条目的失败由调用方判空后显性点名，不能让 set -e 静默退出。
+        grep -o "\"name\":\"$1\",\"sha256\":\"[0-9a-f]\{64\}\"" "$MANIFEST" 2>/dev/null \
+            | head -n1 | sed "s/.*\"sha256\":\"//; s/\"\$//" || true
+    }
+    local_check() {
+        # local_check <name> <file>
+        want="$(manifest_hash "$1")"
+        if [ -z "$want" ]; then
+            echo "update: signing verification FAILED (step: signing) — manifest has no entry for $1" >&2
+            return 1
+        fi
+        got="$(sha256sum -- "$2")" || {
+            echo "update: signing verification FAILED (step: signing) — sha256sum failed on $2" >&2
+            return 1
+        }
+        got="${got%% *}"
+        if [ "$got" != "$want" ]; then
+            echo "update: signing verification FAILED (step: signing) — $1 sha256 mismatch: manifest=$want local=$got" >&2
+            return 1
+        fi
+    }
+    if ! local_check "yiban-server" "$SERVER_BIN"; then
+        exit 1
+    fi
+    if [ -n "$CLI_BIN" ] && ! local_check "yiban-cli" "$CLI_BIN"; then
+        exit 1
+    fi
+    echo "update: signing verification ok"
+else
+    echo "update: WARNING: no --manifest/--signature/--pubkey given; skipping release verification (unsigned update)" >&2
+fi
 
 # 迁移要用新版的嵌入迁移集：给了 --cli-bin 就暂存新 cli，否则用已装的。
 STAGED_CLI=""
