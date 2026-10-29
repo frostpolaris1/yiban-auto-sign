@@ -12,7 +12,7 @@
 | `umask-decision.md` | 生产入口 `umask 077` 不还原的评估结论与影响面 |
 | `dev-verify.md` | **统一跑测入口** `scripts/dev-verify.sh` 的配方（本地 WSL 全量 + CI 子集同源） |
 | `deploy-e2e.md` | **部署 e2e**：容器与裸机两条干净环境走通命令、断言、CI 与手跑登记 |
-| `release-signing.md` | **发布物签名**：Ed25519 清单/签名/验签、密钥红线、发布与升级流程、门与测试 |
+| `release-signing.md` | **发布物签名**：Ed25519 清单/签名/验签、信任锚（公钥指纹）、密钥红线、发布与升级流程、门与测试 |
 | `release-gate.md` | **推送 `main` 的四条门槛**（安全/压力/稳定/脱敏与演练） |
 | `backup-restore.md` | **备份与恢复**：宿主（systemd/cron）与 Docker 两条路线、取证命令、威胁边界 |
 | `implementation-notes.md` | **原理与实现**：模块树、签到流程、定位算法、重试机制、WAF 检测、工作流续期 |
