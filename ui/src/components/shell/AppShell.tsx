@@ -113,6 +113,14 @@ export function AppShell() {
             </div>
           ) : null}
 
+          {SHOWCASE ? (
+            <div className="app-alert-block">
+              <Alert tone="info" title="展示模式">
+                纯静态演示：数据为示例值，写操作全部置灰。
+              </Alert>
+            </div>
+          ) : null}
+
           {me.must_change_password ? (
             <div className="app-alert-block">
               <Alert tone="warning" title="需要重置密码">

@@ -32,9 +32,11 @@ export function LoginPage({ redirect }: LoginPageProps) {
   const [signingIn, setSigningIn] = useState(false)
 
   if (meQuery.isPending) return <SessionLoading />
+  // 展示模式不设登录：静态站没有后端，停在本页只会让人以为要输口令。
+  // 直接进壳内首页；登录表单的样式仍可在 /design 组件画廊查看。
+  if (SHOWCASE) return <Navigate to="/" replace />
   // 已登录不得停在登录页；过期标记除外（等用户重新登录）。
-  // 展示模式例外：合成会话常驻，登录页保留可达，供演示表单与主题。
-  if (meQuery.data && !expired && !signingIn && !SHOWCASE) return <Navigate to="/" replace />
+  if (meQuery.data && !expired && !signingIn) return <Navigate to="/" replace />
 
   return (
     <div className="auth-shell">
