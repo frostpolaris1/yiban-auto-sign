@@ -22,6 +22,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -396,13 +397,38 @@ func TestBackfillTimePrefsRequiresDir(t *testing.T) {
 // TestBackfillTimePrefsSingleErrorPrefix 钉住 stderr 前缀单次：
 // 致命错误由 CLI 统一加前缀，库层文本不带前缀，叠加即缺陷（2gk 审查 P3）。
 // 用缺 --dir 的路径触发；该路径不连库。
-func TestBackfillTimePrefsSingleErrorPrefix(t *testing.T) {
-	var out, errOut strings.Builder
-	code := runBackfillTimePrefs([]string{"--dsn", "postgres://invalid"}, &out, &errOut)
-	if code != 2 {
-		t.Fatalf("缺 --dir code = %d, want 2", code)
+func TestPrintBackfillErrorSinglePrefix(t *testing.T) {
+	// 判据：前缀只在 printBackfillError 加一次。Msg 自带前缀＝缺陷复现，
+	// 计数必须变 2（见 2gk 审查 M5：旧用例走 --dir 缺失分支，恒真无牙）。
+	cases := []struct {
+		name string
+		err  error
+		code int
+	}{
+		{"legacy fatal", &legacy.Error{Code: 2, Msg: "read export: boom"}, 2},
+		{"ordinary", errors.New("boom"), 1},
 	}
-	if n := strings.Count(errOut.String(), "backfill-time-prefs:"); n != 1 {
-		t.Fatalf("stderr 前缀出现 %d 次, want 1：%s", n, errOut.String())
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf strings.Builder
+			if got := printBackfillError(&buf, tc.err); got != tc.code {
+				t.Fatalf("code = %d, want %d", got, tc.code)
+			}
+			if n := strings.Count(buf.String(), "backfill-time-prefs:"); n != 1 {
+				t.Fatalf("stderr 前缀出现 %d 次, want 1：%s", n, buf.String())
+			}
+		})
+	}
+}
+
+func TestPrintBackfillErrorRejectsDoublePrefix(t *testing.T) {
+	// 突变守卫：Msg 自带前缀时计数必须是 2——证明上一条测试有判别力。
+	var buf strings.Builder
+	code := printBackfillError(&buf, &legacy.Error{Code: 2, Msg: "backfill-time-prefs: read export: boom"})
+	if code != 2 {
+		t.Fatalf("code = %d, want 2", code)
+	}
+	if n := strings.Count(buf.String(), "backfill-time-prefs:"); n != 2 {
+		t.Fatalf("自带前缀的 Msg 应产生 2 次前缀（证明判据有牙），实得 %d：%s", n, buf.String())
 	}
 }

@@ -73,14 +73,7 @@ func runBackfillTimePrefs(args []string, stdout, stderr io.Writer) int {
 		Now:      coreclock.System{}.Now().UTC(),
 	})
 	if err != nil {
-		var fatalErr *legacy.Error
-		if errors.As(err, &fatalErr) {
-			// 致命错误的文本自带退出码语义但无前缀：这里统一加一次前缀。
-			fmt.Fprintf(stderr, "backfill-time-prefs: %v\n", fatalErr.Msg)
-			return fatalErr.Code
-		}
-		fmt.Fprintf(stderr, "backfill-time-prefs: %v\n", err)
-		return 1
+		return printBackfillError(stderr, err)
 	}
 	encoded, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
@@ -89,4 +82,20 @@ func runBackfillTimePrefs(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stdout, string(encoded))
 	return 0
+}
+
+// printBackfillError 给错误统一加一次前缀并映射退出码。
+//
+// # 口径
+// `legacy.Error` 的 Msg 不带前缀（前缀只在本函数加一次）；退出码取 Code。
+// 其他错误按 1 返回。双重前缀是 2gk 审查抓到的缺陷形状，
+// 判据见 TestPrintBackfillErrorSinglePrefix。
+func printBackfillError(w io.Writer, err error) int {
+	var fatalErr *legacy.Error
+	if errors.As(err, &fatalErr) {
+		fmt.Fprintf(w, "backfill-time-prefs: %v\n", fatalErr.Msg)
+		return fatalErr.Code
+	}
+	fmt.Fprintf(w, "backfill-time-prefs: %v\n", err)
+	return 1
 }
