@@ -293,6 +293,13 @@ exit 0
 	if rc == 0 {
 		t.Fatalf("failed migration must fail the update; out=%s", out)
 	}
+	// 失败路径不得留下暂存件：.new 是下次安装的直接输入，残留会掩盖失败。
+	if _, err := os.Stat(installed + ".new"); err == nil {
+		t.Fatalf("failed migration must not leave %s.new", installed)
+	}
+	if _, err := os.Stat(filepath.Join(root, "usr/local/bin/yiban-cli.new")); err == nil {
+		t.Fatalf("failed migration must not leave yiban-cli.new")
+	}
 	// 回滚断言：安装位仍是旧二进制。
 	if body := readAll(t, installed); !strings.Contains(body, oldBody) {
 		t.Fatalf("installed binary must be rolled back to old:\n%s", body)
@@ -390,7 +397,7 @@ func pinnedFingerprint(t *testing.T, pub string) string {
 }
 
 // assertUntouchedAndNotStopped 钉住「校验失败不碰旧件」：
-// 安装位字节不变、没有 .bak、服务从未被 stop。
+// 安装位字节不变、没有 .bak 或 .new 残留、服务从未被 stop。
 func assertUntouchedAndNotStopped(t *testing.T, installed, oldBody, sysctlLog string) {
 	t.Helper()
 	if body := readAll(t, installed); body != oldBody {
@@ -398,6 +405,9 @@ func assertUntouchedAndNotStopped(t *testing.T, installed, oldBody, sysctlLog st
 	}
 	if _, err := os.Stat(installed + ".bak"); err == nil {
 		t.Fatalf("no .bak may be created when verification fails")
+	}
+	if _, err := os.Stat(installed + ".new"); err == nil {
+		t.Fatalf("staged %s.new must be cleaned up on failure", installed)
 	}
 	if logBytes, err := os.ReadFile(sysctlLog); err == nil &&
 		strings.Contains(string(logBytes), "stop") {
@@ -702,6 +712,85 @@ func TestUpdateShRejectsUnexpectedVersion(t *testing.T) {
 	}
 	if !strings.Contains(out, "expect-version") {
 		t.Fatalf("error must name --expect-version; out=%s", out)
+	}
+	assertUntouchedAndNotStopped(t, installed, oldBody, sysctlLog)
+}
+
+// TestUpdateShUsesPrivateSnapshotOfInputs 钉 P2（2026-10-29 复审）：
+// 哈希、验签与安装只读暂存副本；校验开始后改写原路径不得影响结果。
+//
+// 构造：PATH 前置一个 sha256sum 包装器。第一次调用（指纹比对）时改写
+// 原始 server 二进制。旧实现会在 local_check 里读原路径 → 哈希不符 → 失败；
+// 新实现读快照 → 通过，且装到安装位的是快照字节。
+func TestUpdateShUsesPrivateSnapshotOfInputs(t *testing.T) {
+	requireBash(t)
+	requireOpenssl(t)
+	realSum, err := exec.LookPath("sha256sum")
+	if err != nil {
+		t.Skip("SKIP: sha256sum 不在 PATH，快照用例无法构造")
+	}
+	env, _ := signingFixture(t)
+	binDir := t.TempDir()
+	newServer := fakeBin(t, binDir, "yiban-server", "echo NEW-SERVER\n")
+	newCLI := fakeBin(t, binDir, "yiban-cli", "exit 0\n")
+	manifest, sig, pub := signedManifest(t, t.TempDir(), newServer, newCLI)
+	env["YIBAN_RELEASE_PUBKEY_SHA256"] = pinnedFingerprint(t, pub)
+
+	hookDir := t.TempDir()
+	swapMarker := filepath.Join(t.TempDir(), "swapped")
+	fakeBin(t, hookDir, "sha256sum",
+		"if [ ! -f \""+swapMarker+"\" ]; then\n"+
+			"  : > \""+swapMarker+"\"\n"+
+			"  printf '#!/bin/sh\necho EVIL-SERVER\n' > \""+newServer+"\"\n"+
+			"fi\n"+
+			"exec \""+realSum+"\" \"$@\"\n")
+	env["PATH"] = hookDir + string(os.PathListSeparator) + env["PATH"]
+
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer, "--cli-bin", newCLI,
+		"--manifest", manifest, "--signature", sig, "--pubkey", pub)
+	if rc != 0 {
+		t.Fatalf("snapshot must shield verification from later swaps: rc=%d out=%s", rc, out)
+	}
+	if _, err := os.Stat(swapMarker); err != nil {
+		t.Fatalf("swap hook did not fire; test did not exercise the window")
+	}
+	installed := filepath.Join(env["YIBAN_INSTALL_ROOT"], "usr/local/bin/yiban-server")
+	body := readAll(t, installed)
+	if !strings.Contains(body, "NEW-SERVER") || strings.Contains(body, "EVIL-SERVER") {
+		t.Fatalf("installed binary must be the snapshot, not the swapped original:\n%s", body)
+	}
+}
+
+// TestUpdateShRejectsWritableAnchorFile 钉 P3（2026-10-29 复审）：
+// 锚文件组/其他可写 ⇒ exit 2。可写锚等于任何人都能换锚。
+// 属主校验只在真机（无 YIBAN_INSTALL_ROOT 前缀）执行；干跑下只验权限位。
+func TestUpdateShRejectsWritableAnchorFile(t *testing.T) {
+	requireBash(t)
+	requireOpenssl(t)
+	env, sysctlLog := signingFixture(t)
+	root := env["YIBAN_INSTALL_ROOT"]
+	installed := filepath.Join(root, "usr/local/bin/yiban-server")
+	oldBody := readAll(t, installed)
+	binDir := t.TempDir()
+	newServer := fakeBin(t, binDir, "yiban-server", "echo NEW-SERVER\n")
+	manifest, sig, pub := signedManifest(t, t.TempDir(), newServer)
+	pin := filepath.Join(root, "release-pubkey.sha256")
+	if err := os.WriteFile(pin, []byte(pinnedFingerprint(t, pub)+"  release-pubkey.pem\n"), 0o644); err != nil {
+		t.Fatalf("write pin file: %v", err)
+	}
+	if err := os.Chmod(pin, 0o666); err != nil {
+		t.Fatalf("chmod pin file: %v", err)
+	}
+
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer,
+		"--manifest", manifest, "--signature", sig, "--pubkey", pub)
+	if rc != 2 {
+		t.Fatalf("group/other-writable anchor must fail closed with rc=2: rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "trust-anchor") || !strings.Contains(out, "writable") {
+		t.Fatalf("error must name the anchor permission problem; out=%s", out)
 	}
 	assertUntouchedAndNotStopped(t, installed, oldBody, sysctlLog)
 }

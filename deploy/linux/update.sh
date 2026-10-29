@@ -29,6 +29,13 @@
 # 并发：起手拿 flock（<安装位>.lock）。两次并发共用 .new/.bak，交错写会
 # 覆盖回滚件；拿不到锁即 exit 2。
 #
+# 输入快照（2026-10-29 复审 P2）：哈希、验签、安装只读 root 私有暂存目录
+# （mktemp -d，0700）里的副本。校验开始后原路径可被改写（TOCTOU），
+# 快照之后不再读原路径。失败路径清理快照与 .new 暂存件。
+#
+# 信任锚文件（P3）：锚必须 root 持有，且组/其他不可写；不符 exit 2。
+# 干跑（有安装根前缀）下不校验属主，只校验权限位。
+#
 # 干跑钩子：YIBAN_INSTALL_ROOT=前缀 SYSTEMCTL=命令覆盖（与 install.sh 同义）。
 #
 # 退出码：0 成功；1 迁移失败或回滚成功（旧件在跑）或签名/对账/版本校验不通过；
@@ -109,6 +116,54 @@ else
     echo "update: WARNING: flock not available; concurrent updates are not prevented" >&2
 fi
 
+# 输入快照（P2）：先复制，后校验。任何哈希、验签与安装都只读快照。
+STAGE="$(mktemp -d "${TMPDIR:-/tmp}/yiban-update.XXXXXX")" || {
+    echo "update: cannot create private staging directory" >&2
+    exit 2
+}
+chmod 0700 "$STAGE" || {
+    echo "update: cannot secure staging directory: $STAGE" >&2
+    exit 2
+}
+# 失败路径不留暂存件：快照目录、$SERVER_NEW 与 $CLI_DEST.new 一并删除。
+cleanup() {
+    rm -rf -- "$STAGE" 2>/dev/null || true
+    rm -f -- "$SERVER_NEW" 2>/dev/null || true
+    rm -f -- "$CLI_DEST.new" 2>/dev/null || true
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+SNAP_SERVER="$STAGE/yiban-server"
+install -m 0755 "$SERVER_BIN" "$SNAP_SERVER" || {
+    echo "update: cannot stage server binary: $SERVER_BIN" >&2
+    exit 2
+}
+SNAP_CLI=""
+if [ -n "$CLI_BIN" ]; then
+    SNAP_CLI="$STAGE/yiban-cli"
+    install -m 0755 "$CLI_BIN" "$SNAP_CLI" || {
+        echo "update: cannot stage cli binary: $CLI_BIN" >&2
+        exit 2
+    }
+fi
+SNAP_MANIFEST=""
+SNAP_SIG=""
+SNAP_PUB=""
+if [ -n "$MANIFEST" ]; then
+    SNAP_MANIFEST="$STAGE/manifest.json"
+    SNAP_SIG="$STAGE/manifest.sig"
+    SNAP_PUB="$STAGE/release-pubkey.pem"
+    if ! install -m 0600 "$MANIFEST" "$SNAP_MANIFEST" \
+        || ! install -m 0600 "$SIGNATURE" "$SNAP_SIG" \
+        || ! install -m 0600 "$PUBKEY" "$SNAP_PUB"; then
+        echo "update: signing verification FAILED (step: signing) — cannot stage release inputs" >&2
+        exit 1
+    fi
+fi
+
 # 签名发布物校验（可选）。放在任何文件替换之前：失败即退出，旧件原样。
 VERIFY_SH="$REPO_ROOT/scripts/release/verify.sh"
 if [ -n "$MANIFEST" ]; then
@@ -126,6 +181,20 @@ if [ -n "$MANIFEST" ]; then
     else
         PIN_FILE="$(dest /release-pubkey.sha256)"
         if [ -f "$PIN_FILE" ]; then
+            # 锚文件必须 root 持有且组/其他不可写（P3）：否则改一字节就能换锚。
+            # 干跑（有安装根前缀）下不校验属主：非 root 无法构造 root 属主文件。
+            PIN_STAT="$(stat -L -c '%U %a' -- "$PIN_FILE" 2>/dev/null)" || anchor_fail \
+                "cannot stat anchor file: $PIN_FILE"
+            PIN_OWNER="${PIN_STAT%% *}"
+            PIN_MODE="${PIN_STAT##* }"
+            if [ -z "$ROOT" ] && [ "$PIN_OWNER" != "root" ]; then
+                anchor_fail "anchor file must be owned by root: $PIN_FILE (owner: $PIN_OWNER)"
+            fi
+            PIN_GRP="${PIN_MODE: -2:1}"
+            PIN_OTH="${PIN_MODE: -1}"
+            if [ $(( PIN_GRP & 2 )) -ne 0 ] || [ $(( PIN_OTH & 2 )) -ne 0 ]; then
+                anchor_fail "anchor file is writable by group or others (mode $PIN_MODE): $PIN_FILE"
+            fi
             PUBKEY_PIN="$(head -n1 "$PIN_FILE" 2>/dev/null || true)"
             PIN_SOURCE="$PIN_FILE"
         fi
@@ -141,8 +210,8 @@ if [ -n "$MANIFEST" ]; then
         "pinned fingerprint is not 64 hex chars (source: $PIN_SOURCE)"
     command -v sha256sum >/dev/null 2>&1 || anchor_fail \
         "sha256sum not found; fingerprint DID NOT verify"
-    PUBKEY_GOT="$(sha256sum -- "$PUBKEY" 2>/dev/null)" || anchor_fail \
-        "cannot hash public key: $PUBKEY"
+    PUBKEY_GOT="$(sha256sum -- "$SNAP_PUB" 2>/dev/null)" || anchor_fail \
+        "cannot hash public key: $SNAP_PUB"
     PUBKEY_GOT="${PUBKEY_GOT%% *}"
     if [ "$PUBKEY_GOT" != "$PUBKEY_PIN" ]; then
         anchor_fail "public key fingerprint $PUBKEY_GOT does not match pinned $PUBKEY_PIN (source: $PIN_SOURCE)"
@@ -153,13 +222,13 @@ if [ -n "$MANIFEST" ]; then
         echo "update: signing verification FAILED (step: signing) — verifier missing: $VERIFY_SH" >&2
         exit 1
     fi
-    if ! bash "$VERIFY_SH" --pubkey "$PUBKEY" --manifest "$MANIFEST" --signature "$SIGNATURE"; then
+    if ! bash "$VERIFY_SH" --pubkey "$SNAP_PUB" --manifest "$SNAP_MANIFEST" --signature "$SNAP_SIG"; then
         echo "update: signing verification FAILED (step: signing) — refusing to touch installed files" >&2
         exit 1
     fi
     # 2) 防降级：清单版本必须等于操作员期望版本（已签名旧包的重放由此被挡）。
     if [ -n "$EXPECT_VERSION" ]; then
-        GOT_VERSION="$(grep -o '"version":"[^"]*"' "$MANIFEST" 2>/dev/null \
+        GOT_VERSION="$(grep -o '"version":"[^"]*"' "$SNAP_MANIFEST" 2>/dev/null \
             | head -n1 | sed 's/.*"version":"//; s/"$//' || true)"
         if [ -z "$GOT_VERSION" ]; then
             echo "update: signing verification FAILED (step: signing) — manifest has no version field" >&2
@@ -178,7 +247,7 @@ if [ -n "$MANIFEST" ]; then
         # 不用跨条目的贪婪 sed。name 只含 [A-Za-z0-9._-]。
         # 末尾 || true 兜住两种非零：无匹配（rc=1）与 head 提前关管的 SIGPIPE。
         # 缺条目的失败由调用方判空后显性点名，不能让 set -e 静默退出。
-        grep -o "\"name\":\"$1\",\"sha256\":\"[0-9a-f]\{64\}\"" "$MANIFEST" 2>/dev/null \
+        grep -o "\"name\":\"$1\",\"sha256\":\"[0-9a-f]\{64\}\"" "$SNAP_MANIFEST" 2>/dev/null \
             | head -n1 | sed "s/.*\"sha256\":\"//; s/\"\$//" || true
     }
     local_check() {
@@ -198,10 +267,10 @@ if [ -n "$MANIFEST" ]; then
             return 1
         fi
     }
-    if ! local_check "yiban-server" "$SERVER_BIN"; then
+    if ! local_check "yiban-server" "$SNAP_SERVER"; then
         exit 1
     fi
-    if [ -n "$CLI_BIN" ] && ! local_check "yiban-cli" "$CLI_BIN"; then
+    if [ -n "$SNAP_CLI" ] && ! local_check "yiban-cli" "$SNAP_CLI"; then
         exit 1
     fi
     echo "update: signing verification ok"
@@ -211,11 +280,11 @@ fi
 
 # 迁移要用新版的嵌入迁移集：给了 --cli-bin 就暂存新 cli，否则用已装的。
 STAGED_CLI=""
-if [ -n "$CLI_BIN" ]; then
-    install -m 0755 "$CLI_BIN" "$CLI_DEST.new"
+if [ -n "$SNAP_CLI" ]; then
+    install -m 0755 "$SNAP_CLI" "$CLI_DEST.new"
     STAGED_CLI="$CLI_DEST.new"
 fi
-install -m 0755 "$SERVER_BIN" "$SERVER_NEW"
+install -m 0755 "$SNAP_SERVER" "$SERVER_NEW"
 
 # 名册随二进制一起升级：新版本可能新增配置键，
 # 只换二进制不换名册会让 doctor 的未登记键体检过时。
