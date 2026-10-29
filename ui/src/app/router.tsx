@@ -1,13 +1,14 @@
 /**
  * **功能**
- * 路由表：根路由、壳布局、六条页面路由。
+ * 路由表：根路由、壳布局、壳内页面与公开认证页。
  *
  * **归属**
  * `app` 装配层：只做装配，页面逻辑留在 `pages`。
  *
  * **口径**
  * 路径是侧栏与面包屑的共同坐标。
- * 新增页面必须同时改本文件与 `nav.ts`，否则导航缺项。
+ * 新增壳内页面必须同时改本文件与 `nav.ts`，否则导航缺项。
+ * 公开认证页（登录、忘记密码、重置密码）挂在根路由下：不套壳。
  */
 
 import { createRootRoute, createRoute, createRouter, Outlet, useNavigate } from '@tanstack/react-router'
@@ -15,8 +16,10 @@ import { AppShell } from '@/components/shell/AppShell'
 import { AccountsPage } from '@/pages/AccountsPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { DesignPage } from '@/pages/DesignPage'
+import { ForgotPasswordPage } from '@/pages/ForgotPasswordPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { NotFoundPage } from '@/pages/NotFoundPage'
+import { ResetPasswordPage } from '@/pages/ResetPasswordPage'
 import { SchedulePage } from '@/pages/SchedulePage'
 import { SchoolsPage } from '@/pages/SchoolsPage'
 import { parseDay } from '@/lib/format'
@@ -109,9 +112,39 @@ function LoginRouteComponent() {
   return <LoginPage redirect={redirect} />
 }
 
+/**
+ * 忘记密码路由。公开页，不套壳。
+ * 无查询串：邮箱只存在于表单状态，不进 URL。
+ */
+const forgotPasswordRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/forgot-password',
+  component: ForgotPasswordPage,
+})
+
+/**
+ * 重置密码路由的自定义 search：`?token=`。
+ * 只做类型收窄，不判形状：形状判据与它的界面后果放在页面一处。
+ */
+const resetPasswordRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/reset-password',
+  validateSearch: (search: Record<string, unknown>): { token?: string } => {
+    return typeof search.token === 'string' ? { token: search.token } : {}
+  },
+  component: ResetPasswordRouteComponent,
+})
+
+function ResetPasswordRouteComponent() {
+  const { token } = resetPasswordRoute.useSearch()
+  return <ResetPasswordPage token={token} />
+}
+
 const routeTree = rootRoute.addChildren([
   shellRoute.addChildren([dashboardRoute, designRoute, accountsRoute, schoolsRoute, scheduleRoute]),
   loginRoute,
+  forgotPasswordRoute,
+  resetPasswordRoute,
 ])
 
 export const router = createRouter({

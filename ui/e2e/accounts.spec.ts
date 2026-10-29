@@ -416,7 +416,7 @@ test('rows are 48px high and the status wears a badge', async ({ page }) => {
   await openAccounts(page)
 
   const row = page.getByRole('row').filter({ has: page.getByRole('button', { name: '查看 138****8000' }) })
-  // 行进入有 180ms 过渡：缩放期间的包围盒不是布局高度。等过渡落定再量。
+  // 行为用例开减少动效；这里仍轮询到布局高度稳定，钉的是行高 48px。
   await expect
     .poll(async () => {
       const box = await row.boundingBox()
