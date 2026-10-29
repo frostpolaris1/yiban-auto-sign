@@ -43,6 +43,7 @@ DEPLOY_E2E_GOPROXY=https://goproxy.cn,direct bash scripts/e2e/deploy-container-e
 | C2 | `docker compose build` 退出 0 |
 | C3 | db 与 app 均 healthy |
 | C4 | 容器内 `yiban-cli migrate` 打印嵌入集最新版本 |
+| C4b | 签发→验签通过；错公钥必须被拒；篡改清单一字节后验签必须被拒（openssl 现场生成密钥，不入仓） |
 | C5 | 宿主 `curl /healthz` 返回 200，body 为 `{"status":"ok"}` |
 | C6 | 干净库 `users=0`；goose 最高已应用版本等于迁移目录最大编号 |
 | C7 | `compose stop` 发 SIGTERM：退出码 0；耗时 < 30s；日志含 `worker: in-flight drained` |
@@ -68,6 +69,7 @@ C7 的日志断言有独立守卫：`TestRunClosesPoolAfterWorkerDrain`
 | B2 | 一次性 OS 镜像含真 systemd（PID1）与 openssl |
 | B3 | 全新 PostgreSQL 18；public 表数为 0 |
 | B4 | 用 `golang:1.27-alpine` 真编译 server 与 cli |
+| B4b | 对真编译产物签发清单→验签通过 |
 | B5 | OS 容器 systemd 就绪；`/etc/yiban`、`yiban` 用户、二进制均不存在 |
 | B6 | `install.sh` 退出 0，输出 `install complete: healthz ok` |
 | B7 | 单元 active + enabled；独立 `yiban-cli healthcheck` 通过 |
