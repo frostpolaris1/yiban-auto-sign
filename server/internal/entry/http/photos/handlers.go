@@ -240,38 +240,53 @@ func (h *Handler) PhotoUpload(c *gin.Context, _ oapi.PhotoUploadParams) {
 }
 
 // PhotoGet 实现 GET /api/me/photos/{id}。
+//
+// 条件请求先读记录：命中 304 时不开 blob 流。
+// 未命中才 Open；记录不可变，故 ETag 取自同一条记录。
 func (h *Handler) PhotoGet(c *gin.Context, id oapi.PhotoID, params oapi.PhotoGetParams) {
 	scope, _, ok := h.principal(c)
 	if !ok {
 		return
 	}
-	rec, body, err := h.svc.Open(c.Request.Context(), scope, string(id))
+	ctx := c.Request.Context()
+	rec, err := h.svc.Get(ctx, scope, string(id))
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	defer body.Close()
 	etag := `"` + hex.EncodeToString(rec.SHA256[:]) + `"`
-	c.Header("ETag", etag)
-	c.Header("Cache-Control", "private, max-age=0")
-	// 条件请求：If-None-Match 命中则 304（无响应体）。只回 ETag 与缓存头，
-	// 不带 Content-Type/Content-Length——304 不许有载荷（7x2-3）。
+	// 条件请求：If-None-Match 命中则 304（无响应体）。
+	// 只回 ETag 与缓存头，不声明 Content-Type/Content-Length（7x2-3）。
 	inm := ""
 	if params.IfNoneMatch != nil {
 		inm = *params.IfNoneMatch
 	}
 	if ifNoneMatchHit(inm, etag) {
+		writePhotoValidator(c, etag)
 		c.Status(http.StatusNotModified)
 		return
 	}
 	// 大图在慢链路上超过全局 WriteTimeout；写头前放宽本次连接的写截止时间。
 	h.extendWriteDeadline(c, photoGetWriteBudget)
+	_, body, err := h.svc.Open(ctx, scope, string(id))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	defer body.Close()
 	// 响应头在写第一个字节前固定：作用域判据已通过。
+	writePhotoValidator(c, etag)
 	c.Header("Content-Type", rec.Mime)
 	c.Header("Content-Length", strconv.FormatInt(rec.Bytes, 10))
 	c.Status(http.StatusOK)
 	// 头部已发出，复制失败无法改状态码；客户端断开属正常终止。
 	_, _ = io.Copy(c.Writer, body)
+}
+
+// writePhotoValidator 写 ETag 与缓存指令。304 与 200 共用同一份口径。
+func writePhotoValidator(c *gin.Context, etag string) {
+	c.Header("ETag", etag)
+	c.Header("Cache-Control", "private, max-age=0")
 }
 
 // ifNoneMatchHit 按 RFC 9110 的 If-None-Match 语义判命中：

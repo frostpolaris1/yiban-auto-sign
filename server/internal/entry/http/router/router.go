@@ -13,8 +13,8 @@
 // New、Options、AuthService；server 实现生成的契约接口。
 //
 // # 口径
-// 中间件顺序固定：requestID → accessLog → recoverPanic →
-// securityHeaders → authenticate → requireCSRF。
+// 中间件顺序固定：requestID → mergeListHeaders → bodyLimit → accessLog →
+// recoverPanic → securityHeaders → authenticate → requireCSRF。
 // 不安全 cookie 名只用于本地 HTTP。
 package router
 
@@ -128,6 +128,7 @@ func New(opts Options) (*gin.Engine, error) {
 	engine := gin.New()
 	engine.Use(
 		requestID(),
+		mergeListHeaders(),
 		bodyLimit(requestBodyLimit),
 		accessLog(logger, clk),
 		recoverPanic(logger),

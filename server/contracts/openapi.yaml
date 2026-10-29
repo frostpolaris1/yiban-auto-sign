@@ -1035,7 +1035,9 @@ paths:
         A user reads own photos. An admin reads photos whose owner has a
         non-deleted account in a bound school. Cross-scope reads answer 404.
         When If-None-Match (weak comparison, comma lists and `*` honoured)
-        matches the current ETag the answer is 304 without a body.
+        matches the current ETag the answer is 304 without a body. Repeated
+        If-None-Match header lines are merged per RFC 9110 section 5.3, so a
+        well-formed list never answers 400.
       x-roles: [user, admin]
       parameters:
         - $ref: '#/components/parameters/PhotoID'
@@ -1054,6 +1056,10 @@ paths:
               schema: { type: string, format: binary }
         '304':
           description: Not modified (ETag matched); no body.
+          headers:
+            ETag:
+              description: Strong validator of the stored bytes (quoted sha256).
+              schema: { type: string }
         '404': { $ref: '#/components/responses/NotFoundError' }
         default: { $ref: '#/components/responses/DefaultError' }
     delete:
