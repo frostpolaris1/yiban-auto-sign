@@ -782,7 +782,6 @@ class ServerScriptExecBitTest(unittest.TestCase):
         self.assertTrue(
             targets, "入口脚本里找不到直接调用的 server 脚本——本条会变废断言")
         for rel in targets:
-            full = os.path.join(BASE, "server", rel)
             out = subprocess.run(
                 ["git", "ls-files", "-s", "--", "server/" + rel],
                 cwd=BASE, capture_output=True, text=True, check=True).stdout
