@@ -124,21 +124,17 @@ node scripts/token-gate.mjs
 时间片页按固定业务日 `2026-10-28` 另拍 1440 与 390 两个宽度（缺省业务日会随日历漂移，不进常驻矩阵）。
 另有账号页 6 种开态 × 2 套主题 = 12 张，学校页 6 种开态 × 2 套主题 = 12 张，
 时间片页列表（1440/390）／预览／覆盖／无权限与仪表盘偏好卡共 6 种开态 × 2 套主题 = 12 张，
-profile 菜单与会话过期提示各 2 张，toast 明暗各 1 张，共 82 张（按 spec 计，每平台应各 82 张）。
-win32 套 82 个文件已入库（2026-10-29 实测 `ls e2e/visual.spec.ts-snapshots | grep -c win32`）。
-linux 套现有 74 个，缺口见下。两平台文件数合计 156（2026-10-29 实测目录文件数）。
+profile 菜单与会话过期提示各 2 张，toast 明暗各 1 张，共 82 张（按 spec 计，每平台各 82 张）。
+win32 与 linux 两套各 82 个文件均已入库（2026-10-29 实测 `ls e2e/visual.spec.ts-snapshots | grep -c win32|linux`）。
+两平台文件数合计 164。
 
 行为用例 186 条：账号页 28 条、认证 36 条、看板 14 条、画廊 9 条、学校页 21 条、
 时间片页与时间偏好 21 条、账号设置页 14 条、用户管理页 10 条、展示模式 8 条、微交互 25 条。
 视觉文件另有无溢出 1 条。Playwright 总计 269 条（2026-10-29 实测 `npx playwright test --list`）。
 
-**基线缺口登记（2026-10-29）**：
-- linux 套缺 8 张：`/settings` 4 张与 `/users` 4 张。本机只有 win32 Chromium，未生成。
-- linux 套另有过期 16 张：它们含侧栏，导航新增「用户管理」后须重拍。
-- linux 与 win32 补法相同：在目标平台跑 `npm run test:shots:update`。
-- win32 既有偏差 5 条（本批之前即存在，本批未重拍）：`forgot-password` 四张与
-  `reset-password` 一张。2026-10-29 在本机 win32 实测差 9、2、7、4、4 像素。
-  `npm run test:shots` 因此仍报 5 条红；红集合与本批之前相同。
+**基线收口（2026-10-29）**：两平台各 82 张全部重拍并入库；此前登记的 linux 缺 8 张、
+linux 过期 16 张、win32 既有偏差 5 条（forgot ×4／reset ×1，2–9 像素）均已消除。
+`npm run test:shots` 两平台各 83 条（82 基线＋1 溢出）全绿。
 
 展示模式用例由 `npm run build:showcase` 构建的 `dist-showcase` 提供。
 Playwright 的第二个 webServer 在 4174 端口预览它；`e2e/showcase.spec.ts` 用它钉零请求。
