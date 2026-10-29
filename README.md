@@ -808,6 +808,8 @@ YIBAN_MAIL_ADMIN_TO=管理员收件邮箱@qq.com  # 逗号分隔支持多个
 
 > ❄️ 「保存即时生效」的前提（0.5.1 起的统一口径）：**非路径配置以 `.env` 优先，进程环境只补缺**——网页里保存的新值总会赢，环境变量里同名旧键被 `.env` 覆盖。四个路径键（`YIBAN_DB_FILE` / `YIBAN_STATE_DIR` / `YIBAN_LOG_FILE`）例外：进程环境优先。另有一个例外是 `YIBAN_ACCOUNTS_KEY`（账号密钥历来环境变量档优先，且与 `.env` 同键分叉时拒绝启动）。因此 systemd 部署把整份 `.env` 拷成 `EnvironmentFile`（历史装法）对非路径键虽不再压住新值，但仍属多余且易漂移——EnvironmentFile 按「网页管理后台」装法只放 `YIBAN_ACCOUNTS_KEY` 一行即可。
 
+> 🔁 **Go 服务端（`server/`）的口令重置邮件是另一套开关**：`YIBAN_RESET_MAIL_ENABLE=1` 打开投递，`YIBAN_PUBLIC_BASE_URL` 必填且必须是非回环地址（缺失或指向回环即启动失败）。Go 服务端**不读** `YIBAN_MAIL_ENABLE`，两个开关独立启停；发件账号沿用上表的 `YIBAN_MAIL_SMTP_HOST` / `_PORT` / `_USER` / `_PASS` / `_FROM` / `_TLS_MODE`。变量总表见 [`server/README.md`](server/README.md)。
+
 </details>
 
 ### 代理配置（可选）

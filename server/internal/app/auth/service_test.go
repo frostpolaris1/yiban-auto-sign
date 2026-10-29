@@ -13,6 +13,8 @@ package auth_test
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -160,6 +162,8 @@ func newHarness(t *testing.T) *harness {
 		Audits:        h.audits,
 		Tx:            fakeTx{},
 		Clock:         testClock,
+		// 本套不测日志；未配置投递的警告不污染测试输出。
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

@@ -18,14 +18,20 @@ const registryPath = "../../../../config/registry.json"
 
 // registryEntry 是本测试从名册条目里需要的两个字段。
 // Default 保留原始 JSON：类型由 keySpec.fallback 决定，禁止先猜类型。
+// Domain 同理：数值域与 enum 的字符串域形状不同，按 keySpec 分派解析。
 type registryEntry struct {
 	Default json.RawMessage `json:"default"`
-	Domain  []float64       `json:"domain"`
+	Domain  json.RawMessage `json:"domain"`
 }
 
 // hasDefault 报告名册条目是否登记了缺省值（null 与缺字段同义）。
 func (e registryEntry) hasDefault() bool {
 	return len(e.Default) > 0 && string(e.Default) != "null"
+}
+
+// hasDomain 报告名册条目是否登记了域（null 与缺字段同义）。
+func (e registryEntry) hasDomain() bool {
+	return len(e.Domain) > 0 && string(e.Domain) != "null"
 }
 
 // loadRegistry 读回名册的原始条目。
@@ -83,9 +89,15 @@ func TestRegistryMatchesCodeSpecs(t *testing.T) {
 }
 
 // compareDefault 比较一个键的代码缺省与名册缺省。
+//
+// 名册 default 为 null（无缺省）时，代码侧只接受空串兜底：
+// 空串在读取口径里等同"未设"，与 null 同义。
 func compareDefault(t *testing.T, spec keySpec, entry registryEntry) {
 	t.Helper()
 	if !entry.hasDefault() {
+		if s, ok := spec.fallback.(string); ok && s == "" {
+			return
+		}
 		t.Errorf("%s 名册没有缺省值，但代码用 %#v 兜底", spec.key, spec.fallback)
 		return
 	}
@@ -132,22 +144,41 @@ func compareDefault(t *testing.T, spec keySpec, entry registryEntry) {
 }
 
 // compareDomain 比较一个键的代码域与名册域。
-// 代码无域（domain == nil）时名册也不得登记域：多出的域会让 doctor
+// 代码无域（domain == nil 且 enum == nil）时名册也不得登记域：多出的域会让 doctor
 // 按名册判值，而启动按代码收值，两套答案。
 func compareDomain(t *testing.T, spec keySpec, entry registryEntry) {
 	t.Helper()
-	if spec.domain == nil {
-		if entry.Domain != nil {
-			t.Errorf("%s 名册登记了域 %v，代码无域", spec.key, entry.Domain)
+	if len(spec.enum) > 0 {
+		if !entry.hasDomain() {
+			t.Errorf("%s 名册没有登记字符串域 %v", spec.key, spec.enum)
+			return
+		}
+		var got []string
+		if err := json.Unmarshal(entry.Domain, &got); err != nil {
+			t.Errorf("%s 名册域不是字符串数组: %v", spec.key, err)
+			return
+		}
+		want := append([]string(nil), spec.enum...)
+		sort.Strings(got)
+		sort.Strings(want)
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("%s 闭集漂移：名册 %v，代码 %v", spec.key, got, want)
 		}
 		return
 	}
-	if len(entry.Domain) != 2 {
-		t.Errorf("%s 名册域 = %v，want 两元素", spec.key, entry.Domain)
+	if spec.domain == nil {
+		if entry.hasDomain() {
+			t.Errorf("%s 名册登记了域 %s，代码无域", spec.key, entry.Domain)
+		}
 		return
 	}
-	if entry.Domain[0] != spec.domain[0] || entry.Domain[1] != spec.domain[1] {
-		t.Errorf("%s 域漂移：名册 %v，代码 %v", spec.key, entry.Domain, spec.domain)
+	var got []float64
+	if err := json.Unmarshal(entry.Domain, &got); err != nil || len(got) != 2 {
+		t.Errorf("%s 名册域 = %s，want 两元素数值域", spec.key, entry.Domain)
+		return
+	}
+	if got[0] != spec.domain[0] || got[1] != spec.domain[1] {
+		t.Errorf("%s 域漂移：名册 %v，代码 %v", spec.key, got, spec.domain)
 	}
 }
 
@@ -259,11 +290,14 @@ func TestEveryConfigReadHasRegistryComparison(t *testing.T) {
 
 // legacyNonGoKeys 是名册登记、但 Go 服务端有意不读的旧键。
 //
-// 本表是显式豁免（AGENTS §28）：键从名册消失会让仍读它的 Python 旧线判红；
+// 本表是显式豁免（AGENTS §28）：键从名册消失会让仍读它的旧线判红；
 // Go 若开始读它，本测试也会红，迫使交接时处理新旧键优先级。
-// 当前只有 YIBAN_WINDOW_EDGE_SEC：Python 旧线按前后对称裁剪消费，
-// Go 线只用 FRONT/BACK 两个新键。
-var legacyNonGoKeys = []string{"YIBAN_WINDOW_EDGE_SEC"}
+//   - YIBAN_WINDOW_EDGE_SEC：Python 旧线按前后对称裁剪消费，
+//     Go 线只用 FRONT/BACK 两个新键。
+//   - YIBAN_MAIL_ENABLE：Python 旧线的通知邮件开关。Go 侧重置邮件只读
+//     YIBAN_RESET_MAIL_ENABLE；两个开关独立启停。合并回一个键会让
+//     只为通知邮件开过它的老部署启动失败。
+var legacyNonGoKeys = []string{"YIBAN_WINDOW_EDGE_SEC", "YIBAN_MAIL_ENABLE"}
 
 // TestLegacyKeysAreRegisteredButNotReadByGo 钉住旧键的豁免边界。
 // 扫描面是整个 server 生产树（不含 _test.go）：包外引用同样判红。
@@ -275,7 +309,7 @@ func TestLegacyKeysAreRegisteredButNotReadByGo(t *testing.T) {
 	files := productionGoFiles(t)
 	for _, key := range legacyNonGoKeys {
 		if _, ok := reg[key]; !ok {
-			t.Errorf("%s 不在名册：Python 旧线仍在读它，删名册会让旧线判红", key)
+			t.Errorf("%s 不在名册：旧线仍在读它，删名册会让旧线判红", key)
 		}
 		for _, path := range files {
 			body, err := os.ReadFile(path)
@@ -284,7 +318,7 @@ func TestLegacyKeysAreRegisteredButNotReadByGo(t *testing.T) {
 			}
 			text := string(body)
 			if strings.Contains(text, `"`+key+`"`) || strings.Contains(text, "`"+key+"`") {
-				t.Errorf("%s 被 Go 生产代码引用（%s）：从豁免表删除，并处理与 FRONT/BACK 新键的优先级", key, path)
+				t.Errorf("%s 被 Go 生产代码引用（%s）：从豁免表删除，并处理它与 Go 侧新键的优先级", key, path)
 			}
 		}
 	}

@@ -13,7 +13,7 @@
  */
 
 import { useState } from 'react'
-import { useNavigate } from '@tanstack/react-router'
+import { Link, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Alert } from '@/components/ui/Alert'
 import { Icon } from '@/components/ui/Icon'
@@ -112,7 +112,9 @@ export function LoginForm({ redirect, expired, onSignInStart, onSignInFailed }: 
             <label className="field-label" htmlFor="login-password">
               密码
             </label>
-            <span className="app-caption">联系管理员重置</span>
+            <Link className="app-inline-link" to="/forgot-password">
+              忘记密码？
+            </Link>
           </div>
           <div className="input-icon">
             <span className="ico">

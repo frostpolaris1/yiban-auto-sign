@@ -8,6 +8,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	coremail "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mail"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
 	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 )
@@ -34,7 +37,7 @@ var ErrInvalidCredentials = errs.New(errs.CodeUnauthorized, "invalid email or pa
 // 三种情形共用本值，**不区分**。
 var ErrInvalidResetToken = errs.New(errs.CodeUnauthorized, "invalid or expired reset token")
 
-// Deps 是 Service 的依赖。全部必填，缺一即构造失败。
+// Deps 是 Service 的依赖。除 Mail 外全部必填，缺一即构造失败。
 type Deps struct {
 	Users    appuser.Repo
 	Sessions coreauth.SessionIssuer
@@ -44,6 +47,13 @@ type Deps struct {
 	Audits        appaudit.Repo
 	Tx            app.TxManager
 	Clock         clock.Clock
+	// Mail 投递重置邮件。为 nil 表示 SMTP 未配置：
+	// 令牌照常生成，投递跳过，并留一条显性「未投递」日志。
+	Mail coremail.Sender
+	// MailBaseURL 是重置链接基址（无尾斜杠）。Mail 非 nil 时必填。
+	MailBaseURL string
+	// Logger 可选。缺省用 slog.Default。
+	Logger *slog.Logger
 }
 
 // Service 承载认证用例。
@@ -56,9 +66,18 @@ type Service struct {
 	audits   appaudit.Repo
 	tx       app.TxManager
 	clock    clock.Clock
+	mail     coremail.Sender
+	mailBase string
+	log      *slog.Logger
+	// mailSlots 限并发投递数。满即丢投递并记日志，**不阻塞用例**：
+	// 公开端点不得因 SMTP 慢而拖住响应。
+	mailSlots chan struct{}
+	mailWG    sync.WaitGroup
+	// throttle 按归一邮箱限制重置请求频率（见 ForgotCooldown）。
+	throttle resetThrottle
 }
 
-// NewService 构造用例服务。任一依赖缺失即失败关闭。
+// NewService 构造用例服务。任一必需依赖缺失即失败关闭。
 func NewService(d Deps) (*Service, error) {
 	switch {
 	case d.Users == nil:
@@ -76,14 +95,26 @@ func NewService(d Deps) (*Service, error) {
 	case d.Clock == nil:
 		return nil, errors.New("appauth: nil clock")
 	}
+	mailBase := strings.TrimRight(strings.TrimSpace(d.MailBaseURL), "/")
+	if d.Mail != nil && mailBase == "" {
+		return nil, errors.New("appauth: MailBaseURL is required when Mail is configured")
+	}
+	log := d.Logger
+	if log == nil {
+		log = slog.Default()
+	}
 	return &Service{
-		users:    d.Users,
-		sessions: d.Sessions,
-		others:   d.OtherSessions,
-		resets:   d.Resets,
-		audits:   d.Audits,
-		tx:       d.Tx,
-		clock:    d.Clock,
+		users:     d.Users,
+		sessions:  d.Sessions,
+		others:    d.OtherSessions,
+		resets:    d.Resets,
+		audits:    d.Audits,
+		tx:        d.Tx,
+		clock:     d.Clock,
+		mail:      d.Mail,
+		mailBase:  mailBase,
+		log:       log,
+		mailSlots: make(chan struct{}, maxConcurrentResetMails),
 	}, nil
 }
 

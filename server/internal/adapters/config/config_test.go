@@ -6,7 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
+
+	coremail "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mail"
 )
 
 type mapSource map[string]string
@@ -313,5 +316,189 @@ func TestRegistryDomainMatchesCodeBounds(t *testing.T) {
 	src["YIBAN_TIME_PREF_COOLDOWN_SEC"] = "3601"
 	if _, err := LoadFrom(src); err == nil {
 		t.Fatal("3601 越界必须拒绝")
+	}
+}
+
+// 邮件投递面的缺省值：关闭投递、465 隐式 TLS、本机基址。
+// 阈值与缺省的唯一定义点是 config/registry.json；本测试钉住代码侧口径。
+func TestMailConfigDefaults(t *testing.T) {
+	cfg, err := LoadFrom(baseSource())
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if cfg.ResetMailEnabled {
+		t.Fatal("重置邮件投递缺省必须关闭")
+	}
+	if cfg.MailHost != "smtp.qq.com" || cfg.MailPort != 465 {
+		t.Fatalf("SMTP 缺省 = %s:%d, want smtp.qq.com:465", cfg.MailHost, cfg.MailPort)
+	}
+	if cfg.MailTLSMode != "auto" {
+		t.Fatalf("TLS 模式缺省 = %q, want auto", cfg.MailTLSMode)
+	}
+	if cfg.PublicBaseURL != DefaultPublicBaseURL {
+		t.Fatalf("PublicBaseURL = %q, want %q", cfg.PublicBaseURL, DefaultPublicBaseURL)
+	}
+}
+
+// 打开重置邮件但缺发件账号：启动即失败，不留下永远发不出信的进程。
+func TestResetMailRejectsIncompleteEnable(t *testing.T) {
+	src := resetMailSource()
+	src["YIBAN_MAIL_USER"] = ""
+	_, err := LoadFrom(src)
+	if err == nil {
+		t.Fatal("YIBAN_RESET_MAIL_ENABLE=true 但缺 USER/PASS 必须被拒绝")
+	}
+	if !strings.Contains(err.Error(), "YIBAN_RESET_MAIL_ENABLE") {
+		t.Fatalf("错误信息没有点名 YIBAN_RESET_MAIL_ENABLE: %v", err)
+	}
+	src["YIBAN_MAIL_USER"] = "sender@example.test"
+	delete(src, "YIBAN_MAIL_PASS")
+	if _, err := LoadFrom(src); err == nil {
+		t.Fatal("只有 USER 没有 PASS 必须被拒绝")
+	}
+	src["YIBAN_MAIL_PASS"] = "secret"
+	if _, err := LoadFrom(src); err != nil {
+		t.Fatalf("完整配置必须接受: %v", err)
+	}
+}
+
+// resetMailSource 是 Go 侧重置邮件全开的完整环境：新开关、凭据、公网基址。
+func resetMailSource() mapSource {
+	src := baseSource()
+	src["YIBAN_RESET_MAIL_ENABLE"] = "true"
+	src["YIBAN_MAIL_USER"] = "sender@example.test"
+	src["YIBAN_MAIL_PASS"] = "secret"
+	src["YIBAN_PUBLIC_BASE_URL"] = "https://app.example.test"
+	return src
+}
+
+// 打开重置邮件时，重置链接基址必须显式指向非回环地址。
+//
+// 四条判据对应四种部署动作：
+//  1. 启用但没设基址：缺省值把链接指向收件人自己的 127.0.0.1。
+//  2. 启用但显式设了回环地址：同样是死链。
+//  3. 启用且设了公网地址：可用。
+//  4. 没启用重置邮件：缺省基址无害，启动通过。
+func TestResetMailRequiresPublicBaseURL(t *testing.T) {
+	// 1. 未设基址：启动失败，错误点名字段与当前值。
+	src := resetMailSource()
+	delete(src, "YIBAN_PUBLIC_BASE_URL")
+	_, err := LoadFrom(src)
+	if err == nil {
+		t.Fatal("启用重置邮件但未设 YIBAN_PUBLIC_BASE_URL 必须启动失败")
+	}
+	if !strings.Contains(err.Error(), "YIBAN_PUBLIC_BASE_URL") {
+		t.Fatalf("错误信息没有点名 YIBAN_PUBLIC_BASE_URL: %v", err)
+	}
+	if !strings.Contains(err.Error(), DefaultPublicBaseURL) {
+		t.Fatalf("错误信息没有给出当前值 %q: %v", DefaultPublicBaseURL, err)
+	}
+
+	// 2. 显式设成回环（IPv4 字面量、localhost、IPv6 回环、未指定地址）：启动失败。
+	for _, base := range []string{
+		"http://127.0.0.1:47183",
+		"http://localhost:47183",
+		"http://LOCALHOST.:47183",
+		"http://127.0.0.2:47183",
+		"http://[::1]:47183",
+		"http://0.0.0.0:47183",
+	} {
+		src := resetMailSource()
+		src["YIBAN_PUBLIC_BASE_URL"] = base
+		if _, err := LoadFrom(src); err == nil {
+			t.Fatalf("启用重置邮件时回环基址 %q 必须被拒绝", base)
+		}
+	}
+
+	// 3. 公网地址：通过，且保留归一后的值。
+	cfg, err := LoadFrom(resetMailSource())
+	if err != nil {
+		t.Fatalf("启用重置邮件时公网基址必须接受: %v", err)
+	}
+	if cfg.PublicBaseURL != "https://app.example.test" {
+		t.Fatalf("PublicBaseURL = %q", cfg.PublicBaseURL)
+	}
+
+	// 4. 未启用重置邮件：缺省回环基址不拦启动。
+	if _, err := LoadFrom(baseSource()); err != nil {
+		t.Fatalf("未启用重置邮件时缺省基址必须接受: %v", err)
+	}
+}
+
+// 旧通知键 YIBAN_MAIL_ENABLE 不得管 Go 侧启动判定。
+//
+// 只用它开过通知邮件的老部署不带 YIBAN_PUBLIC_BASE_URL：
+// 若 Go 侧读它，升级后每次启动都失败，进程进崩溃循环。
+// 断言用户可见结果：老部署原样升级，进程正常启动，重置邮件保持关闭。
+func TestNotifyMailSwitchDoesNotGateGoStartup(t *testing.T) {
+	for _, on := range []string{"true", "1"} {
+		src := baseSource()
+		src["YIBAN_MAIL_ENABLE"] = on
+		src["YIBAN_MAIL_USER"] = "sender@example.test"
+		src["YIBAN_MAIL_PASS"] = "secret"
+		cfg, err := LoadFrom(src)
+		if err != nil {
+			t.Fatalf("YIBAN_MAIL_ENABLE=%s 的老部署必须正常启动: %v", on, err)
+		}
+		if cfg.ResetMailEnabled {
+			t.Fatalf("YIBAN_MAIL_ENABLE=%s 不得打开 Go 侧重置邮件开关", on)
+		}
+	}
+}
+
+// 私网基址不是死链：同一局域网的用户能打开，故不拦。
+func TestResetMailAcceptsPrivateBaseURL(t *testing.T) {
+	src := resetMailSource()
+	src["YIBAN_PUBLIC_BASE_URL"] = "http://192.168.1.10:47183"
+	cfg, err := LoadFrom(src)
+	if err != nil {
+		t.Fatalf("私网基址必须接受: %v", err)
+	}
+	if cfg.PublicBaseURL != "http://192.168.1.10:47183" {
+		t.Fatalf("PublicBaseURL = %q", cfg.PublicBaseURL)
+	}
+}
+
+// TLS 模式是闭集：拼写错误不得静默落成别的模式。
+// 闭集的唯一定义点是 core/mail；本测试从那里取词表，不认识第二份清单。
+func TestMailTLSModeIsClosedSet(t *testing.T) {
+	for _, mode := range coremail.TLSModes() {
+		src := baseSource()
+		src["YIBAN_MAIL_TLS_MODE"] = mode
+		cfg, err := LoadFrom(src)
+		if err != nil {
+			t.Fatalf("%s 必须被接受: %v", mode, err)
+		}
+		if cfg.MailTLSMode != mode {
+			t.Fatalf("TLS 模式 = %q, want %q", cfg.MailTLSMode, mode)
+		}
+	}
+	src := baseSource()
+	src["YIBAN_MAIL_TLS_MODE"] = "ssl"
+	if _, err := LoadFrom(src); err == nil {
+		t.Fatal("未知 TLS 模式必须被拒绝")
+	}
+}
+
+// 重置链接基址必须是绝对 http(s) URL；尾部斜杠归一。
+func TestPublicBaseURLValidation(t *testing.T) {
+	src := baseSource()
+	src["YIBAN_PUBLIC_BASE_URL"] = "https://app.example.test/"
+	cfg, err := LoadFrom(src)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if cfg.PublicBaseURL != "https://app.example.test" {
+		t.Fatalf("PublicBaseURL = %q, want 去掉尾斜杠", cfg.PublicBaseURL)
+	}
+	for _, bad := range []string{
+		"app.example.test", "ftp://app.example.test", "https://", "javascript:alert(1)",
+		"https://user:pass@app.example.test",
+	} {
+		src := baseSource()
+		src["YIBAN_PUBLIC_BASE_URL"] = bad
+		if _, err := LoadFrom(src); err == nil {
+			t.Fatalf("非法基址 %q 必须被拒绝", bad)
+		}
 	}
 }

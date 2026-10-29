@@ -40,6 +40,30 @@
     "tier": "master",
     "reload": "restart"
   },
+  "YIBAN_PUBLIC_BASE_URL": {
+    "type": "string",
+    "default": "http://127.0.0.1:47183",
+    "group": [
+      "部署"
+    ],
+    "doc": "对外可访问的基址（绝对 http(s) URL，无尾斜杠）。口令重置邮件按它拼 /reset-password?token=…；开启 YIBAN_RESET_MAIL_ENABLE 时未显式设置或指向回环即启动失败",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_RESET_MAIL_ENABLE": {
+    "type": "bool",
+    "default": false,
+    "group": [
+      "发布"
+    ],
+    "doc": "Go 服务端口令重置邮件投递开关。开启时须显式设非回环的 YIBAN_PUBLIC_BASE_URL 与发件凭据，缺失即启动失败。与旧通知开关 YIBAN_MAIL_ENABLE 独立：Go 侧不读那个键",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
   "YIBAN_DATABASE_URL": {
     "type": "string",
     "default": "",
@@ -1723,7 +1747,7 @@
     "group": [
       "通知"
     ],
-    "doc": "邮件通知开关",
+    "doc": "邮件通知开关（旧线共用）。Go 服务端不读本键：口令重置邮件由 YIBAN_RESET_MAIL_ENABLE 单独控制",
     "sensitive": false,
     "web_editable": false,
     "tier": "master",
@@ -1744,6 +1768,10 @@
   "YIBAN_MAIL_SMTP_PORT": {
     "type": "int",
     "default": 465,
+    "domain": [
+      1,
+      65535
+    ],
     "group": [
       "通知"
     ],
@@ -1785,6 +1813,35 @@
     ],
     "doc": "发件邮箱授权码",
     "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_MAIL_FROM": {
+    "type": "string",
+    "default": "",
+    "group": [
+      "通知"
+    ],
+    "doc": "发件地址（空=用 YIBAN_MAIL_USER）。地址属联系信息，日志只记打码形态",
+    "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_MAIL_TLS_MODE": {
+    "type": "enum",
+    "domain": [
+      "auto",
+      "implicit",
+      "starttls"
+    ],
+    "default": "auto",
+    "group": [
+      "通知"
+    ],
+    "doc": "SMTP TLS 模式：auto 按端口选（465 隐式 TLS，其余 STARTTLS）；implicit 与 starttls 强制对应档位。没有明文档，也不提供跳过证书校验的开关",
+    "sensitive": false,
     "web_editable": false,
     "tier": "master",
     "reload": "hot"

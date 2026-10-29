@@ -1,6 +1,7 @@
 package main
 
 import (
+	mailadapter "github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/mail"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/storage"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
@@ -19,6 +20,7 @@ import (
 	appuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/user"
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/assembly"
+	coremail "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mail"
 	corerate "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/rate"
 	eventshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/events"
 	locationhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/location"
@@ -81,4 +83,6 @@ var (
 	_ eventshttp.Broker           = (*appevents.Broker)(nil)
 	_ eventshttp.Diagnostics      = (*appdiagnostic.Service)(nil)
 	_ eventshttp.Authorizer       = (*appadmin.Service)(nil)
+	// 邮件投递：用例层端口由 adapters/mail 的 SMTP 实现。
+	_ coremail.Sender = (*mailadapter.SMTP)(nil)
 )
