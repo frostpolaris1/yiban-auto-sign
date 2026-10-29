@@ -631,31 +631,83 @@ func contractNotModifiedBlocks(t *testing.T, doc string) []contractBlock {
 }
 
 // contractBlockScalar 匹配块标量的起始键：值以 | 或 > 开头。
-var contractBlockScalar = regexp.MustCompile(`^\S+:\s*[|>][-+]?\s*$`)
+// 缩进指示符与削波指示符可任意顺序出现；行尾可带注释。
+var contractBlockScalar = regexp.MustCompile(
+	`^\S+:[ \t]*[|>](?:[0-9][-+]?|[-+][0-9]?)?(?:[ \t]+#.*)?[ \t]*$`)
+
+// contractScalarValue 取出「键: 值」中的行内值。
+var contractScalarValue = regexp.MustCompile(`^\S+:[ \t]+(.+)$`)
+
+// contractOpenQuote 判一行是否开启跨行引号标量，开启时返回引号字符。
+// 同一行内闭合则返回 0。
+func contractOpenQuote(trimmed string) byte {
+	m := contractScalarValue.FindStringSubmatch(trimmed)
+	if m == nil {
+		return 0
+	}
+	value := m[1]
+	if value[0] != '"' && value[0] != '\'' {
+		return 0
+	}
+	if contractQuoteCloses(value[0], value[1:]) {
+		return 0
+	}
+	return value[0]
+}
+
+// contractQuoteCloses 报告引号串是否在 text 内闭合。
+// 双引号用反斜杠转义；单引号用两个连续单引号转义。
+func contractQuoteCloses(quote byte, text string) bool {
+	for i := 0; i < len(text); i++ {
+		if quote == '"' && text[i] == '\\' {
+			i++
+			continue
+		}
+		if text[i] != quote {
+			continue
+		}
+		if quote == '\'' && i+1 < len(text) && text[i+1] == '\'' {
+			i++
+			continue
+		}
+		return true
+	}
+	return false
+}
 
 // notModifiedDeclaresETag 判 304 块是否在 headers 之下声明 ETag。
 //
 // 只认 responses.<状态>.headers.<直接子键> 这一路径。
-// 块标量（description 正文）里的同名文字不算。
+// 块标量正文与跨行引号标量正文里的同名文字不算。
 // 子键的缩进由块内第一行决定，故缩进步长不影响判定。
 func notModifiedDeclaresETag(block contractBlock) bool {
 	inHeaders := false
 	headersIndent, childIndent := -1, -1
 	scalarIndent := -1
+	var openQuote byte
 	for _, raw := range block.lines {
 		trimmed := strings.TrimSpace(raw)
 		if trimmed == "" {
 			continue
 		}
 		indent := contractIndent(raw)
+		if openQuote != 0 {
+			if contractQuoteCloses(openQuote, trimmed) {
+				openQuote = 0
+			}
+			continue // 引号标量正文
+		}
 		if scalarIndent >= 0 {
 			if indent > scalarIndent {
 				continue // 块标量正文
 			}
 			scalarIndent = -1
 		}
-		if m := contractBlockScalar.FindStringSubmatch(trimmed); m != nil {
+		if contractBlockScalar.MatchString(trimmed) {
 			scalarIndent = indent
+			continue
+		}
+		if openQuote = contractOpenQuote(trimmed); openQuote != 0 {
 			continue
 		}
 		if inHeaders {
@@ -761,6 +813,55 @@ func TestNotModifiedScannerShapes(t *testing.T) {
 	blocks = contractNotModifiedBlocks(t, withHeader)
 	if len(blocks) != 1 || !notModifiedDeclaresETag(blocks[0]) {
 		t.Fatal("headers 下的 ETag 未被识别")
+	}
+
+	// 标量保护必须覆盖全部合法起始写法；漏一种即把正文误认成声明。
+	scalars := `paths:
+  /g:
+    get:
+      operationId: G
+      x-roles: [public]
+      responses:
+        '304':
+          description: |2
+            headers:
+              ETag: fake
+  /h:
+    get:
+      operationId: H
+      x-roles: [public]
+      responses:
+        '304':
+          description: | # note
+            headers:
+              ETag: fake
+  /i:
+    get:
+      operationId: I
+      x-roles: [public]
+      responses:
+        '304':
+          description: "Not modified;
+            headers:
+              ETag: fake"
+  /j:
+    get:
+      operationId: J
+      x-roles: [public]
+      responses:
+        '304':
+          description: 'Not modified;
+            headers:
+              ETag: fake'
+`
+	blocks = contractNotModifiedBlocks(t, scalars)
+	if len(blocks) != 4 {
+		t.Fatalf("304 块 = %d, want 4", len(blocks))
+	}
+	for _, block := range blocks {
+		if notModifiedDeclaresETag(block) {
+			t.Errorf("标量正文里的 ETag 被当成头声明（行 %d）", block.line)
+		}
 	}
 
 	deeperValue := `paths:

@@ -15,6 +15,9 @@ package router
 // # 口径
 // 解析走 YAML 结构，不按行：流式写法、行尾注释与键序都不影响结果。
 // 参数可内联，也可 $ref 到 components.parameters。
+// 路径项取自 paths、webhooks 与 components.pathItems。
+// 路径项可 $ref 到 components.pathItems；组件路径项另作全量扫。
+// 操作覆盖全部八种方法，含 trace。
 // 扫空不得当绿；指向未知组件的 $ref 直接失败。
 
 import (
@@ -23,13 +26,16 @@ import (
 	"strings"
 	"testing"
 
-	"go.yaml.in/yaml/v3"
+	"github.com/goccy/go-yaml"
 )
 
 const contractSpecPath = "../../../../contracts/openapi.yaml"
 
-// contractParameterRefPrefix 是门唯一解析的 $ref 前缀。
+// contractParameterRefPrefix 是门唯一解析的参数 $ref 前缀。
 const contractParameterRefPrefix = "#/components/parameters/"
+
+// contractPathItemRefPrefix 是门唯一解析的路径项 $ref 前缀。
+const contractPathItemRefPrefix = "#/components/pathItems/"
 
 // singleValueRequestHeaders 是显式单值登记：参数名 → 理由。
 // 进入本表的头多行即畸形请求，保持生成绑定的 400。
@@ -51,7 +57,9 @@ type contractOperation struct {
 }
 
 // contractPathItem 是一个路径项。方法逐个列出，其余键忽略。
+// $ref 让一个路径项复用 components.pathItems 里的另一项。
 type contractPathItem struct {
+	Ref        string              `yaml:"$ref"`
 	Parameters []contractParameter `yaml:"parameters"`
 	Get        *contractOperation  `yaml:"get"`
 	Put        *contractOperation  `yaml:"put"`
@@ -60,11 +68,12 @@ type contractPathItem struct {
 	Patch      *contractOperation  `yaml:"patch"`
 	Head       *contractOperation  `yaml:"head"`
 	Options    *contractOperation  `yaml:"options"`
+	Trace      *contractOperation  `yaml:"trace"`
 }
 
 // operations 返回路径项下所有已声明的方法。
 func (p contractPathItem) operations() []*contractOperation {
-	all := []*contractOperation{p.Get, p.Put, p.Post, p.Delete, p.Patch, p.Head, p.Options}
+	all := []*contractOperation{p.Get, p.Put, p.Post, p.Delete, p.Patch, p.Head, p.Options, p.Trace}
 	out := make([]*contractOperation, 0, len(all))
 	for _, op := range all {
 		if op != nil {
@@ -75,10 +84,13 @@ func (p contractPathItem) operations() []*contractOperation {
 }
 
 // contractDocument 是门关心的契约子树。
+// webhooks 与 paths 同形：两者都挂路径项。
 type contractDocument struct {
 	Paths      map[string]contractPathItem `yaml:"paths"`
+	Webhooks   map[string]contractPathItem `yaml:"webhooks"`
 	Components struct {
 		Parameters map[string]contractParameter `yaml:"parameters"`
+		PathItems  map[string]contractPathItem  `yaml:"pathItems"`
 	} `yaml:"components"`
 }
 
@@ -115,7 +127,7 @@ func contractHeaderParams(t *testing.T, doc []byte) []string {
 	for _, param := range parsed.Components.Parameters {
 		add(param)
 	}
-	for _, item := range parsed.Paths {
+	addItem := func(item contractPathItem) {
 		for _, param := range item.Parameters {
 			add(param)
 		}
@@ -124,6 +136,26 @@ func contractHeaderParams(t *testing.T, doc []byte) []string {
 				add(param)
 			}
 		}
+	}
+	// 全量扫是检测面：路径项无论写在哪一处，头都会被取到。
+	scanItem := func(item contractPathItem) {
+		addItem(item)
+		// $ref 目标与本地声明同扫：3.1 允许 $ref 带同级键。
+		if item.Ref != "" {
+			_, target := resolvePathItem(t, parsed, item.Ref)
+			addItem(target)
+		}
+	}
+	for _, item := range parsed.Paths {
+		scanItem(item)
+	}
+	// webhooks 与 paths 同权：两者都能声明头参数。
+	for _, item := range parsed.Webhooks {
+		scanItem(item)
+	}
+	// 组件路径项全量登记：未被引用也算契约里声明过的头。
+	for _, item := range parsed.Components.PathItems {
+		scanItem(item)
 	}
 	sort.Strings(names)
 	return names
@@ -145,6 +177,25 @@ func resolveParameter(t *testing.T, doc contractDocument, ref string) contractPa
 		t.Fatalf("组件参数 %s 又指向 %s；门不支持二级 $ref", name, param.Ref)
 	}
 	return param
+}
+
+// resolvePathItem 解析路径项的 $ref，返回组件名与目标项。
+// 只接受 components.pathItems 前缀。
+// 未知指向直接失败：静默跳过会让门漏掉该路径项下的参数。
+func resolvePathItem(t *testing.T, doc contractDocument, ref string) (string, contractPathItem) {
+	t.Helper()
+	name := strings.TrimPrefix(ref, contractPathItemRefPrefix)
+	if name == ref {
+		t.Fatalf("不支持的 $ref：%s；门只解析 %s", ref, contractPathItemRefPrefix)
+	}
+	item, ok := doc.Components.PathItems[name]
+	if !ok {
+		t.Fatalf("$ref 指向不存在的组件路径项：%s", ref)
+	}
+	if item.Ref != "" {
+		t.Fatalf("组件路径项 %s 又指向 %s；门不支持二级 $ref", name, item.Ref)
+	}
+	return name, item
 }
 
 func contractHeaderListed(name string) bool {
@@ -203,34 +254,39 @@ func TestContractHeaderParamsRegistered(t *testing.T) {
 	}
 }
 
-// 三种合法书写与 $ref 都必须识别：流式、行尾注释、in 在 name 之前。
-// 判据是「契约里每个 in: header」，不是某一种书写方式。
+// 书写方式与所有承载位置都必须识别：流式、行尾注释、in 在 name 之前、
+// 参数 $ref、组件路径项、路径项 $ref、trace、webhooks。
+// 判据是「契约里每个 in: header」，不是某一种书写方式或某一个位置。
 func TestContractHeaderParamShapes(t *testing.T) {
-	docs := map[string]string{
-		"flow": `paths:
+	cases := []struct {
+		name string
+		doc  string
+		want []string
+	}{
+		{name: "flow", doc: `paths:
   /probe:
     get:
       operationId: Probe
       parameters:
         - { name: If-Match, in: header }
-`,
-		"trailing comment": `paths:
+`, want: []string{"If-Match"}},
+		{name: "trailing comment", doc: `paths:
   /probe:
     get:
       operationId: Probe
       parameters:
         - name: If-Match
           in: header  # 条件头
-`,
-		"in before name": `paths:
+`, want: []string{"If-Match"}},
+		{name: "in before name", doc: `paths:
   /probe:
     get:
       operationId: Probe
       parameters:
         - in: header
           name: If-Match
-`,
-		"ref": `paths:
+`, want: []string{"If-Match"}},
+		{name: "ref", doc: `paths:
   /probe:
     get:
       operationId: Probe
@@ -241,26 +297,68 @@ components:
     Conditional:
       name: If-Match
       in: header
-`,
-		"query is not a header": `paths:
+`, want: []string{"If-Match"}},
+		{name: "component path item", doc: `paths:
+  /probe:
+    get:
+      operationId: Probe
+components:
+  pathItems:
+    Conditional:
+      get:
+        operationId: Conditional
+        parameters:
+          - { name: If-Match, in: header }
+`, want: []string{"If-Match"}},
+		{name: "path item ref", doc: `paths:
+  /probe:
+    $ref: '#/components/pathItems/Conditional'
+    parameters:
+      - { name: X-Probe, in: header }
+components:
+  pathItems:
+    Conditional:
+      get:
+        operationId: Conditional
+        parameters:
+          - { name: If-Match, in: header }
+`, want: []string{"If-Match", "X-Probe"}},
+		{name: "trace", doc: `paths:
+  /probe:
+    trace:
+      operationId: Probe
+      parameters:
+        - { name: If-Match, in: header }
+`, want: []string{"If-Match"}},
+		{name: "webhook", doc: `paths:
+  /probe:
+    get:
+      operationId: Probe
+webhooks:
+  probeEvent:
+    post:
+      operationId: ProbeEvent
+      parameters:
+        - { name: If-Match, in: header }
+`, want: []string{"If-Match"}},
+		{name: "query is not a header", doc: `paths:
   /probe:
     get:
       operationId: Probe
       parameters:
         - { name: limit, in: query }
-`,
+`, want: nil},
 	}
-	for name, doc := range docs {
-		t.Run(name, func(t *testing.T) {
-			names := contractHeaderParams(t, []byte(doc))
-			if name == "query is not a header" {
-				if len(names) != 0 {
-					t.Fatalf("names = %v, want 空", names)
-				}
-				return
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			names := contractHeaderParams(t, []byte(c.doc))
+			if len(names) != len(c.want) {
+				t.Fatalf("names = %v, want %v", names, c.want)
 			}
-			if len(names) != 1 || names[0] != "If-Match" {
-				t.Fatalf("names = %v, want [If-Match]", names)
+			for i := range names {
+				if names[i] != c.want[i] {
+					t.Fatalf("names = %v, want %v", names, c.want)
+				}
 			}
 		})
 	}
