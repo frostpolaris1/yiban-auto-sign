@@ -217,11 +217,12 @@ func TestBackfillSameUserSameOffsetWritesOnce(t *testing.T) {
 
 func TestBackfillRejectsBadRows(t *testing.T) {
 	accounts := []map[string]any{
-		accountRow(1, "13800000001"), // slot 越界
+		accountRow(1, "13800000001"), // slot 越界（上界 1440）
 		accountRow(2, "13800000002"), // 非 5 倍数
 		accountRow(3, "13800000003"), // slot 非数字
 		accountRow(4, "13800000004"), // 无 legacy_ids 映射
 		accountRow(5, "13800000005"), // 落地账号已软删
+		accountRow(6, "13800000006"), // slot 越界（下界 -5）
 	}
 	prefs := []map[string]any{
 		prefRow("13800000001", JSONNumber("1440")),
@@ -232,6 +233,7 @@ func TestBackfillRejectsBadRows(t *testing.T) {
 		prefRow("", JSONNumber("30")),
 		prefRow("13899999999", JSONNumber("30")),
 		prefRow("13800000001", JSONNumber("20")), // 同号第二行：输入重复
+		prefRow("13800000006", JSONNumber("-5")), // 下界外：负值也越界
 	}
 	dir := writeBackfillExport(t, accounts, prefs)
 	report, w, err := runBackfill(t, dir, true, map[int64]OwnerRef{
@@ -240,6 +242,7 @@ func TestBackfillRejectsBadRows(t *testing.T) {
 		3: {UserID: "u-3", Status: ResolveOK},
 		4: {Status: ResolveUnmapped},
 		5: {Status: ResolveInactive},
+		6: {UserID: "u-6", Status: ResolveOK},
 	})
 	if err != nil {
 		t.Fatalf("bad rows: %v", err)
@@ -259,6 +262,7 @@ func TestBackfillRejectsBadRows(t *testing.T) {
 		SkipMissingPhone,
 		SkipNoAccount,
 		SkipDuplicateInput,
+		SkipSlotOutOfRange, // 下界 -5 与上界 1440 同判据
 	}
 	for i, reason := range want {
 		if report.Skips[i].Reason != reason {
@@ -270,6 +274,44 @@ func TestBackfillRejectsBadRows(t *testing.T) {
 	}
 	if report.Skips[6].Phone != "138****9999" {
 		t.Fatalf("孤儿行 phone = %q, want 掩码", report.Skips[6].Phone)
+	}
+	if report.Skips[8].Phone != "138****0006" || report.Skips[8].Detail != "-5" {
+		t.Fatalf("负值行 = %+v, want 掩码 138****0006 且 detail=-5（点名）", report.Skips[8])
+	}
+}
+
+// TestBackfillAcceptsBoundaryValues 钉住边界两端（2gk 审查 P2-2）：
+// 下界 0 与上界内最大合法值 1435 都必须写入，不当作坏行拒绝。
+func TestBackfillAcceptsBoundaryValues(t *testing.T) {
+	dir := writeBackfillExport(t,
+		[]map[string]any{accountRow(1, "13800000001"), accountRow(2, "13800000002")},
+		[]map[string]any{
+			prefRow("13800000001", JSONNumber("0")),
+			prefRow("13800000002", JSONNumber("1435")),
+		},
+	)
+	report, w, err := runBackfill(t, dir, true, map[int64]OwnerRef{
+		1: {UserID: "u-lo", Status: ResolveOK},
+		2: {UserID: "u-hi", Status: ResolveOK},
+	})
+	if err != nil {
+		t.Fatalf("boundary values: %v", err)
+	}
+	if len(report.Skips) != 0 {
+		t.Fatalf("边界值被拒：skips = %+v", report.Skips)
+	}
+	if len(w.got) != 2 {
+		t.Fatalf("写调用内容 = %+v, want 2 条", w.got)
+	}
+	offsets := map[string]int{}
+	for _, item := range w.got {
+		offsets[item.UserID] = item.OffsetMin
+	}
+	if offsets["u-lo"] != 0 || offsets["u-hi"] != 1435 {
+		t.Fatalf("边界写入 = %v, want u-lo=0 u-hi=1435", offsets)
+	}
+	if report.RowsWritten != 2 {
+		t.Fatalf("rows_written = %d, want 2", report.RowsWritten)
 	}
 }
 
