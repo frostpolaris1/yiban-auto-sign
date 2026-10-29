@@ -55,7 +55,7 @@ ui/src/
 ├── features/       按域组织：auth / dashboard / design / accounts / schools / schedule
 ├── components/
 │   ├── shell/      Sidebar / Topbar / Footer / AppShell / nav 配置
-│   └── ui/         Button / Input / Card / Table / Modal / Drawer / Tabs / Switch / Badge / Menu / Icon / Toaster
+│   └── ui/         Button / Input / Card / Table / Modal / Drawer / Tabs / Switch / Badge / Menu / Icon / BrandMark / Toaster
 ├── lib/            api 按域拆分 / query / theme / format / cursor / roles / cx
 └── styles/         tokens.css / adminator.css / app.css
 ```

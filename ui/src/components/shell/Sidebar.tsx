@@ -16,7 +16,8 @@ import { Link } from '@tanstack/react-router'
 import { cx } from '@/lib/cx'
 import type { SessionUser } from '@/lib/api/auth'
 import { displayNameFor, initialsFor, roleLabel } from '@/lib/identity'
-import { BrandMark, Icon } from '@/components/ui/Icon'
+import { BrandMark } from '@/components/ui/BrandMark'
+import { Icon } from '@/components/ui/Icon'
 import { isNavGroup, visibleNav, type NavGroup, type NavLeaf } from './nav'
 
 type SidebarProps = {
