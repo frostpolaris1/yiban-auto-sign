@@ -104,15 +104,18 @@ jobs:
       - name: Classify change surface
         id: scope
         run: |
-          base="${{ github.event.pull_request.base.sha }}"
-          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+          # 取 base 分支尖端（浅拉一层即可），不要按 SHA 拉——GitHub 不允许按
+          # 任意提交号 fetch，失败后会静默退 mixed（实测导致该门从未生效）。
+          if [ -n "${{ github.base_ref }}" ]; then
+            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}" >/dev/null 2>&1 || true
+            base="FETCH_HEAD"
+          else
             base="${{ github.event.before }}"
+            [ -n "$base" ] && git fetch --no-tags --depth=1 origin "$base" >/dev/null 2>&1 || true
           fi
-          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+          if [ -z "$base" ] || ! git rev-parse --verify "$base" >/dev/null 2>&1; then
             echo "value=mixed" >> "$GITHUB_OUTPUT"
           else
-            # 浅检出不带 base 的历史；只取该提交的树即可做 --name-only 比较。
-            git fetch --no-tags --depth=1 origin "$base" >/dev/null 2>&1 || true
             scope=$(bash scripts/ci-scope.sh --base "$base" 2>/dev/null || echo mixed)
             echo "value=${scope:-mixed}" >> "$GITHUB_OUTPUT"
           fi
@@ -183,15 +186,18 @@ jobs:
       - name: Classify change surface
         id: scope
         run: |
-          base="${{ github.event.pull_request.base.sha }}"
-          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+          # 取 base 分支尖端（浅拉一层即可），不要按 SHA 拉——GitHub 不允许按
+          # 任意提交号 fetch，失败后会静默退 mixed（实测导致该门从未生效）。
+          if [ -n "${{ github.base_ref }}" ]; then
+            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}" >/dev/null 2>&1 || true
+            base="FETCH_HEAD"
+          else
             base="${{ github.event.before }}"
+            [ -n "$base" ] && git fetch --no-tags --depth=1 origin "$base" >/dev/null 2>&1 || true
           fi
-          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+          if [ -z "$base" ] || ! git rev-parse --verify "$base" >/dev/null 2>&1; then
             echo "value=mixed" >> "$GITHUB_OUTPUT"
           else
-            # 浅检出不带 base 的历史；只取该提交的树即可做 --name-only 比较。
-            git fetch --no-tags --depth=1 origin "$base" >/dev/null 2>&1 || true
             scope=$(bash scripts/ci-scope.sh --base "$base" 2>/dev/null || echo mixed)
             echo "value=${scope:-mixed}" >> "$GITHUB_OUTPUT"
           fi
