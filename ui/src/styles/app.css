@@ -52,6 +52,35 @@
   outline: none;
 }
 
+/* ---------- 关闭按钮 ----------
+ * vendor 没有 `.mail-tool` 规则。旧图标 0×0，缺口看不出来。
+ * 补尺寸、悬停、键盘焦点三组。颜色只取令牌，不引入新色值。
+ */
+.mail-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--t-muted);
+  cursor: pointer;
+  transition: background 160ms, color 160ms;
+}
+
+.mail-tool:hover {
+  background: var(--bg-hover);
+  color: var(--t-base);
+}
+
+.mail-tool:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
 .app-modal .modal-body strong {
   color: var(--t-base);
 }

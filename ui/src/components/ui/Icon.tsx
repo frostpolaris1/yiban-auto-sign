@@ -6,7 +6,8 @@
  * `components` 通用件：全仓唯一图标来源。
  *
  * **口径**
- * 图标只从 `lucide-react` 取；图标不手抄路径，也不混用第二套图标库。
+ * 图标只从 `lucide-react` 取；TSX 里不手抄几何，也不混用第二套图标库。
+ * CSS 的 data URI 是另一来源；每一处都逐条登记，未登记即红。
  * 品牌标记是设计资产，单独登记在 `BrandMark.tsx`。
  * 图标名即 `ICON_COMPONENTS` 的键。新增图标只在此表加一项，并具名导入。
  * 描边固定 1.8：与 Adminator 口径一致。lucide 默认为 2，偏粗。
