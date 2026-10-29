@@ -3,10 +3,10 @@ package oapi
 // 契约对账门。
 //
 // # 功能
-// 直接读 contracts/openapi.yaml 与 contracts/README.md，钉住五条不变式：
+// 直接读 contracts/openapi.yaml 与 contracts/README.md，钉住六条不变式：
 // 角色表两份逐行相等；带 limit 的列表声明 400；带请求体的端点声明 413；
 // 可空字段一律 required（保证输出 null 键）；additionalProperties: false
-// 逐条登记豁免。本文件**不**启动 HTTP 服务、**不**连数据库。
+// 逐条登记豁免；304 响应声明 ETag。本文件**不**启动 HTTP 服务、**不**连数据库。
 //
 // # 归属
 // entry/http/oapi 是生成物所在包，契约文本的唯一消费者。
@@ -583,5 +583,143 @@ func TestAdditionalPropertiesScannerCoversFlowStyle(t *testing.T) {
 		if _, ok := want[name]; !ok {
 			t.Errorf("合法流式写法被误报：%s 行 %v", name, got[name])
 		}
+	}
+}
+
+// contractBlock 是一个状态码块的摘录：状态行行号与块内各行。
+type contractBlock struct {
+	line  int
+	lines []string
+}
+
+// contractNotModifiedBlocks 取出每个 304 状态行的响应块。
+// 块从状态行下一行起，到缩进不大于状态行的行止。
+func contractNotModifiedBlocks(t *testing.T, doc string) []contractBlock {
+	t.Helper()
+	var out []contractBlock
+	var cur *contractBlock
+	curIndent := -1
+	for i, raw := range strings.Split(doc, "\n") {
+		line := strings.TrimRight(raw, " \t\r")
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		indent := contractIndent(line)
+		if cur != nil && indent <= curIndent {
+			out = append(out, *cur)
+			cur = nil
+		}
+		if m := contractStatusLine.FindStringSubmatch(trimmed); m != nil {
+			if m[1] == "304" {
+				cur, curIndent = &contractBlock{line: i + 1}, indent
+			}
+			continue
+		}
+		if cur != nil {
+			cur.lines = append(cur.lines, line)
+		}
+	}
+	if cur != nil {
+		out = append(out, *cur)
+	}
+	if len(out) == 0 {
+		t.Fatal("openapi 里没有 304 响应；门没有扫到东西")
+	}
+	return out
+}
+
+// notModifiedDeclaresETag 判 304 块是否在 headers 之下声明 ETag。
+// 只认 responses.<状态>.headers.ETag 这一路径；说明文字里的 ETag 不算。
+func notModifiedDeclaresETag(lines []string) bool {
+	inHeaders, headersIndent := false, -1
+	for _, raw := range lines {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		indent := contractIndent(raw)
+		if inHeaders && indent <= headersIndent {
+			inHeaders = false
+		}
+		if trimmed == "headers:" {
+			inHeaders, headersIndent = true, indent
+			continue
+		}
+		if inHeaders && strings.HasPrefix(trimmed, "ETag:") {
+			return true
+		}
+	}
+	return false
+}
+
+// 304 是条件请求的答案，客户端靠 ETag 把 304 与已有字节对应。
+// 生成码不消费响应头声明，故只在契约文本上验。
+func TestNotModifiedResponsesDeclareETag(t *testing.T) {
+	spec := contractRead(t, contractSpecPath)
+	blocks := contractNotModifiedBlocks(t, spec)
+
+	declared := 0
+	for _, op := range contractOps(t, spec) {
+		if op.statuses["304"] {
+			declared++
+		}
+	}
+	if declared == 0 {
+		t.Fatal("openapi 的操作里没有 304；门没有扫到东西")
+	}
+	if len(blocks) != declared {
+		t.Fatalf("304 状态行 %d 处，行扫描得 %d 块；门与契约形状不符", declared, len(blocks))
+	}
+	for _, block := range blocks {
+		if !notModifiedDeclaresETag(block.lines) {
+			t.Errorf("304 响应未在 headers 下声明 ETag（openapi.yaml:%d）", block.line)
+		}
+	}
+}
+
+// 扫描只在 headers 之下认 ETag。说明文字里的 ETag 不算，流式 304 也不算。
+// 真实契约只有块式写法；本用例钉住另外两种形状，防止门被误绿。
+func TestNotModifiedScannerShapes(t *testing.T) {
+	doc := `paths:
+  /a:
+    get:
+      operationId: A
+      x-roles: [public]
+      responses:
+        '304':
+          description: Not modified (ETag matched); no body.
+  /b:
+    get:
+      operationId: B
+      x-roles: [public]
+      responses:
+        '304': { description: flow form }
+`
+	blocks := contractNotModifiedBlocks(t, doc)
+	if len(blocks) != 2 {
+		t.Fatalf("304 块 = %d, want 2", len(blocks))
+	}
+	for _, block := range blocks {
+		if notModifiedDeclaresETag(block.lines) {
+			t.Errorf("未声明的 304 被认成有 ETag（行 %d）", block.line)
+		}
+	}
+
+	withHeader := `paths:
+  /c:
+    get:
+      operationId: C
+      x-roles: [public]
+      responses:
+        '304':
+          description: no body
+          headers:
+            ETag:
+              schema: { type: string }
+`
+	blocks = contractNotModifiedBlocks(t, withHeader)
+	if len(blocks) != 1 || !notModifiedDeclaresETag(blocks[0].lines) {
+		t.Fatal("headers 下的 ETag 未被识别")
 	}
 }
