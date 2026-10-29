@@ -138,6 +138,7 @@ docs/dev/*
 !docs/dev/implementation-notes.md
 !docs/dev/troubleshooting.md
 !docs/dev/deploy-e2e.md
+!docs/dev/release-signing.md
 .superpowers/
 
 # ZCode 工具目录

@@ -195,13 +195,47 @@ check_rollback() {
     echo "  go test ./cmd/cli/ -run TestUpdateShRollsBackOnFailedMigration -count=1"
 }
 
-# 项 8 ed25519/SPA 发布件检查。考古（2026-10-27，ref ad5b3639）：未发现既有门
-#   （scripts/、server/scripts/、deploy/ 无 ed25519/SPA 发布件检查；SPA 仅作为
-#   协议注释里的 H5 页面名出现）。无门即不装门，登记人工步骤。
+# 项 8 ed25519/SPA 发布件检查。考古（2026-10-27，ref ad5b3639）：无既有门，
+#   曾登记 MANUAL。2026-10-29 起：发布物签名链落地（scripts/release/
+#   make-manifest.sh / sign.sh / verify.sh，docs/dev/release-signing.md），
+#   本项升级为可执行门——发布件目录（$ROOT/release/，env
+#   YIBAN_RELEASE_DIR 可覆盖）里三件齐全（manifest.json + manifest.json.sig
+#   + release-pubkey.pem）时跑 verify.sh 验签；三件不齐打 SKIP 并点名缺件
+#   （AGENTS §30：跳过显性，不当绿）。verify.sh rc=1（验签不过）→ FAIL；
+#   rc=2（openssl 缺等，验证没跑）→ SKIP 显性。sha256 与二进制的对账由
+#   update.sh --manifest/--signature/--pubkey 在升级时承担。
 check_signing() {
-    STATUS_signing=MANUAL; REASON_signing="no automated gate exists"
-    echo "signing: MANUAL — 发布件 ed25519/SPA 相关检查无既有自动化门（考古见 deploy/release.md）。"
-    echo "  人工步骤：核对发布件与构建物料清单、校验产物 sha256、确认无未登记的二进制面变更。"
+    STATUS_signing=FAIL; REASON_signing=""
+    local dir="${YIBAN_RELEASE_DIR:-$ROOT/release}"
+    local mf="$dir/manifest.json" sig="$dir/manifest.json.sig" pub="$dir/release-pubkey.pem"
+    local verifier="$ROOT/scripts/release/verify.sh"
+    if [ ! -f "$mf" ] || [ ! -f "$sig" ] || [ ! -f "$pub" ]; then
+        STATUS_signing=SKIP
+        REASON_signing="release artifacts incomplete in $dir (need manifest.json + manifest.json.sig + release-pubkey.pem)"
+        echo "signing: SKIP — 发布件三件不齐（$dir），显性跳过不记绿；签发见 docs/dev/release-signing.md"
+        return
+    fi
+    if [ ! -f "$verifier" ]; then
+        REASON_signing="verifier missing: $verifier"
+        return
+    fi
+    if ! command -v openssl >/dev/null 2>&1; then
+        STATUS_signing=SKIP
+        REASON_signing="openssl not in PATH; verification DID NOT run"
+        echo "signing: SKIP — openssl 不可用，验证没跑（不算绿）"
+        return
+    fi
+    local out rc
+    out="$(bash "$verifier" --pubkey "$pub" --manifest "$mf" --signature "$sig" 2>&1)"; rc=$?
+    if [ "$rc" -eq 0 ]; then
+        STATUS_signing=PASS; echo "signing: $out"
+    elif [ "$rc" -eq 2 ]; then
+        STATUS_signing=SKIP
+        REASON_signing="verifier exit 2 (environment): $out"
+        echo "signing: SKIP — verify.sh 退出 2（环境错误，验证没跑）"
+    else
+        REASON_signing="exit $rc: $out"
+    fi
 }
 
 # ---------- 汇总与入口 ----------
@@ -273,6 +307,38 @@ selftest() {
     RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only license 2>/dev/null \
         | grep -q '^license *SKIP' || { say "MISMATCH: SKIP not visible in summary"; fails=$((fails+1)); }
     rm -rf "$tmp"
+
+    # 不变式 1d：signing 项有牙（AGENTS §30）。
+    # 夹具里放真 verify.sh + openssl 现场生成的三件套：
+    #   a) 完整三件 → PASS；
+    #   b) 篡改清单一字节 → FAIL（门必须挡得住坏发布物）；
+    #   c) 缺件 → SKIP 显性（不是 FAIL 也不当绿）。
+    # openssl 不在的机器上本组断言整组显性跳过（门自身无法构造，如实说）。
+    if command -v openssl >/dev/null 2>&1; then
+        tmp="$(mktemp -d)"
+        mkdir -p "$tmp/scripts/release" "$tmp/release"
+        cp "$(dirname "$SELF")/release/verify.sh" "$tmp/scripts/release/verify.sh"
+        openssl genpkey -algorithm ED25519 -out "$tmp/_k.pem" 2>/dev/null
+        openssl pkey -in "$tmp/_k.pem" -pubout -out "$tmp/release/release-pubkey.pem" 2>/dev/null
+        printf '{"version":"9.9.9","files":[{"name":"yiban-server","sha256":"%s"}]}\n' \
+            "$(printf body | sha256sum | cut -d' ' -f1)" > "$tmp/release/manifest.json"
+        bash "$(dirname "$SELF")/release/sign.sh" --key "$tmp/_k.pem" \
+            --in "$tmp/release/manifest.json" --out "$tmp/release/manifest.json.sig" >/dev/null 2>&1
+        RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing >/dev/null 2>&1; rc=$?
+        expect "signing green on intact fixture" 0 "$rc"
+        sed 's/"version":"9.9.9"/"version":"9.9.8"/' "$tmp/release/manifest.json" \
+            > "$tmp/release/manifest.json.t" && mv "$tmp/release/manifest.json.t" "$tmp/release/manifest.json"
+        RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing >/dev/null 2>&1; rc=$?
+        expect "signing red after manifest tamper" 1 "$rc"
+        rm -f "$tmp/release/manifest.json.sig" "$tmp/release/release-pubkey.pem"
+        RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing 2>/dev/null \
+            | grep -q '^signing *SKIP' || { say "MISMATCH: missing artifacts not SKIP-visible"; fails=$((fails+1)); }
+        RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing >/dev/null 2>&1; rc=$?
+        expect "signing SKIP (missing artifacts) is not FAIL" 0 "$rc"
+        rm -rf "$tmp"
+    else
+        say "SKIP: signing selftest group (openssl not in PATH; group DID NOT run)"
+    fi
 
     if [ "$fails" -eq 0 ]; then say "all assertions passed"; return 0; fi
     say "$fails assertion(s) failed"; return 1

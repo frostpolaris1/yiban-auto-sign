@@ -242,6 +242,19 @@ for b in yiban-server yiban-cli; do
     [ -x "$BIN_OUT/$b" ] || e2e_die "$b 未产出或不可执行"
 done
 
+# ---- B4b 签名发布物（真二进制签发 → 验签） ---------------------------------
+e2e_step "B4b" "签名发布物"
+SIGN_DIR="$BIN_OUT/signing"
+mkdir -p "$SIGN_DIR"
+bash "$REPO/scripts/release/make-manifest.sh" "e2e-B4b"     "$BIN_OUT/yiban-server" "$BIN_OUT/yiban-cli" > "$SIGN_DIR/manifest.json"
+openssl genpkey -algorithm ED25519 -out "$SIGN_DIR/key.pem" >>"$E2E_STEP_LOG" 2>&1     || e2e_die "openssl 生成 Ed25519 私钥失败"
+openssl pkey -in "$SIGN_DIR/key.pem" -pubout -out "$SIGN_DIR/pub.pem" >>"$E2E_STEP_LOG" 2>&1     || e2e_die "openssl 导出公钥失败"
+bash "$REPO/scripts/release/sign.sh" --key "$SIGN_DIR/key.pem"     --in "$SIGN_DIR/manifest.json" --out "$SIGN_DIR/manifest.sig" >>"$E2E_STEP_LOG" 2>&1     || e2e_die "sign.sh 签名失败"
+if ! bash "$REPO/scripts/release/verify.sh" --pubkey "$SIGN_DIR/pub.pem"     --manifest "$SIGN_DIR/manifest.json" --signature "$SIGN_DIR/manifest.sig" >>"$E2E_STEP_LOG" 2>&1; then
+    e2e_die "正路径验签失败"
+fi
+e2e_ok "真二进制清单签发与验签通过"
+
 # ---- B5 一次性 OS 容器 -----------------------------------------------------
 e2e_step "B5" "一次性 OS 容器（真 systemd）"
 if ! docker run -d --name "$OS" --network "$NET" --hostname e2e-baremetal \

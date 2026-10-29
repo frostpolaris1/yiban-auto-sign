@@ -261,6 +261,25 @@ if ! grep -q "schema version $EXPECTED_SCHEMA" "$E2E_STEP_LOG"; then
 fi
 e2e_ok "schema version $EXPECTED_SCHEMA"
 
+# ---- C4b 签名发布物（签发 → 验签 → 篡改必红） ------------------------------
+e2e_step "C4b" "签名发布物"
+SIGN_DIR="$E2E_LOG_DIR/c4b.signing"
+mkdir -p "$SIGN_DIR"
+printf 'release-body-1
+' > "$SIGN_DIR/fixture.bin"
+bash "$REPO/scripts/release/make-manifest.sh" "e2e-C4b" "$SIGN_DIR/fixture.bin" > "$SIGN_DIR/manifest.json"
+openssl genpkey -algorithm ED25519 -out "$SIGN_DIR/key.pem" >>"$E2E_STEP_LOG" 2>&1     || e2e_die "openssl 生成 Ed25519 私钥失败"
+openssl pkey -in "$SIGN_DIR/key.pem" -pubout -out "$SIGN_DIR/pub.pem" >>"$E2E_STEP_LOG" 2>&1     || e2e_die "openssl 导出公钥失败"
+bash "$REPO/scripts/release/sign.sh" --key "$SIGN_DIR/key.pem"     --in "$SIGN_DIR/manifest.json" --out "$SIGN_DIR/manifest.sig" >>"$E2E_STEP_LOG" 2>&1     || e2e_die "sign.sh 签名失败"
+if ! bash "$REPO/scripts/release/verify.sh" --pubkey "$SIGN_DIR/pub.pem"     --manifest "$SIGN_DIR/manifest.json" --signature "$SIGN_DIR/manifest.sig" >>"$E2E_STEP_LOG" 2>&1; then
+    e2e_die "正路径验签失败"
+fi
+printf ' ' >> "$SIGN_DIR/manifest.json"
+if bash "$REPO/scripts/release/verify.sh" --pubkey "$SIGN_DIR/pub.pem"     --manifest "$SIGN_DIR/manifest.json" --signature "$SIGN_DIR/manifest.sig" >>"$E2E_STEP_LOG" 2>&1; then
+    e2e_die "篡改清单后验签竟然通过（门无牙）"
+fi
+e2e_ok "签发/验签通过；篡改清单被拒"
+
 # ---- C5 /healthz -----------------------------------------------------------
 e2e_step "C5" "宿主 /healthz"
 BODY="$E2E_STEP_LOG.body"
