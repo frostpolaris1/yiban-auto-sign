@@ -13,6 +13,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -375,6 +377,34 @@ func signedManifest(t *testing.T, dir string, files ...string) (manifest, sig, p
 	return manifest, sig, pub
 }
 
+// pinnedFingerprint 算公钥文件内容的 SHA-256（小写十六进制），
+// 即 update.sh 与 release-check.sh 比对的那枚信任锚指纹。
+func pinnedFingerprint(t *testing.T, pub string) string {
+	t.Helper()
+	body, err := os.ReadFile(pub)
+	if err != nil {
+		t.Fatalf("read pubkey %s: %v", pub, err)
+	}
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+// assertUntouchedAndNotStopped 钉住「校验失败不碰旧件」：
+// 安装位字节不变、没有 .bak、服务从未被 stop。
+func assertUntouchedAndNotStopped(t *testing.T, installed, oldBody, sysctlLog string) {
+	t.Helper()
+	if body := readAll(t, installed); body != oldBody {
+		t.Fatalf("installed binary must be untouched:\n%s", body)
+	}
+	if _, err := os.Stat(installed + ".bak"); err == nil {
+		t.Fatalf("no .bak may be created when verification fails")
+	}
+	if logBytes, err := os.ReadFile(sysctlLog); err == nil &&
+		strings.Contains(string(logBytes), "stop") {
+		t.Fatalf("service must not be stopped before verification passes:\n%s", logBytes)
+	}
+}
+
 // signingFixture 摆好干跑环境：假 systemctl 日志、已装旧 server 与假 cli。
 // 返回 env 与 systemctl 日志路径。
 func signingFixture(t *testing.T) (map[string]string, string) {
@@ -420,6 +450,8 @@ func TestUpdateShVerifiesSignedManifest(t *testing.T) {
 	}
 	newCLI = filepath.Join(binDir, "yiban-cli")
 	manifest, sig, pub := signedManifest(t, t.TempDir(), newServer, newCLI)
+	// 信任锚：钉住本次公钥的指纹（P0）。没有锚时 update.sh fail-closed。
+	env["YIBAN_RELEASE_PUBKEY_SHA256"] = pinnedFingerprint(t, pub)
 
 	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
 		"--server-bin", newServer, "--cli-bin", newCLI,
@@ -430,8 +462,8 @@ func TestUpdateShVerifiesSignedManifest(t *testing.T) {
 	if !strings.Contains(out, "signing verification ok") {
 		t.Fatalf("must report verification ok; out=%s", out)
 	}
-	if strings.Contains(out, "WARNING") {
-		t.Fatalf("signed path must not warn; out=%s", out)
+	if strings.Contains(out, "skipping release verification") {
+		t.Fatalf("signed path must not skip verification; out=%s", out)
 	}
 	log := readAll(t, sysctlLog)
 	if !strings.Contains(log, "stop") || !strings.Contains(log, "start") {
@@ -449,6 +481,7 @@ func TestUpdateShRejectsTamperedManifest(t *testing.T) {
 	binDir := t.TempDir()
 	newServer := fakeBin(t, binDir, "yiban-server", "echo NEW-SERVER\n")
 	manifest, sig, pub := signedManifest(t, t.TempDir(), newServer)
+	env["YIBAN_RELEASE_PUBKEY_SHA256"] = pinnedFingerprint(t, pub)
 
 	// 篡改清单一个字节：版本号改一位。签名覆盖清单字节，验签必须红。
 	tampered := filepath.Join(t.TempDir(), "tampered.json")
@@ -500,4 +533,175 @@ func TestUpdateShRequiresAllThreeSigningFlags(t *testing.T) {
 	if !strings.Contains(out, "must be given together") {
 		t.Fatalf("error must explain the rule; out=%s", out)
 	}
+}
+
+// ---- 信任锚（P0）：发布公钥的指纹必须先钉住 -------------------------------
+//
+// 被测性质：update.sh 不得接受「随便给的公钥」。攻击者自造密钥签恶意二进制
+// 时，指纹对不上必须被拒；管理员没写锚时也必须 fail-closed（exit 2），
+// 在任何文件替换与停服务之前。
+
+func TestUpdateShRejectsMissingTrustAnchor(t *testing.T) {
+	requireBash(t)
+	requireOpenssl(t)
+	env, sysctlLog := signingFixture(t)
+	root := env["YIBAN_INSTALL_ROOT"]
+	installed := filepath.Join(root, "usr/local/bin/yiban-server")
+	oldBody := readAll(t, installed)
+	binDir := t.TempDir()
+	newServer := fakeBin(t, binDir, "yiban-server", "echo NEW-SERVER\n")
+	manifest, sig, pub := signedManifest(t, t.TempDir(), newServer)
+	// 清掉外部环境可能带来的锚：本用例专测「两者都缺」。
+	env["YIBAN_RELEASE_PUBKEY_SHA256"] = ""
+
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer,
+		"--manifest", manifest, "--signature", sig, "--pubkey", pub)
+	if rc != 2 {
+		t.Fatalf("missing trust anchor must fail closed with rc=2: rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "trust-anchor") {
+		t.Fatalf("error must name the trust anchor step; out=%s", out)
+	}
+	assertUntouchedAndNotStopped(t, installed, oldBody, sysctlLog)
+}
+
+func TestUpdateShRejectsWrongTrustAnchor(t *testing.T) {
+	requireBash(t)
+	requireOpenssl(t)
+	env, sysctlLog := signingFixture(t)
+	root := env["YIBAN_INSTALL_ROOT"]
+	installed := filepath.Join(root, "usr/local/bin/yiban-server")
+	oldBody := readAll(t, installed)
+	binDir := t.TempDir()
+	newServer := fakeBin(t, binDir, "yiban-server", "echo MALICIOUS-SERVER\n")
+	manifest, sig, pub := signedManifest(t, t.TempDir(), newServer)
+	// 管理员钉住的是合法发布钥；这里给的是另一把钥的指纹。
+	_, _, otherPub := signedManifest(t, t.TempDir(), newServer)
+	env["YIBAN_RELEASE_PUBKEY_SHA256"] = pinnedFingerprint(t, otherPub)
+
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer,
+		"--manifest", manifest, "--signature", sig, "--pubkey", pub)
+	if rc != 2 {
+		t.Fatalf("wrong trust anchor must be rejected with rc=2: rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "trust-anchor") {
+		t.Fatalf("error must name the trust anchor step; out=%s", out)
+	}
+	if body := readAll(t, installed); strings.Contains(body, "MALICIOUS-SERVER") {
+		t.Fatalf("attacker binary must never reach the install path:\n%s", body)
+	}
+	assertUntouchedAndNotStopped(t, installed, oldBody, sysctlLog)
+}
+
+// TestUpdateShReadsPinnedFingerprintFile 钉住受管配置这条来源：
+// 管理员把指纹写进 <安装根>/release-pubkey.sha256，未设环境变量也必须通过。
+func TestUpdateShReadsPinnedFingerprintFile(t *testing.T) {
+	requireBash(t)
+	requireOpenssl(t)
+	env, _ := signingFixture(t)
+	root := env["YIBAN_INSTALL_ROOT"]
+	binDir := t.TempDir()
+	newServer := fakeBin(t, binDir, "yiban-server", "echo NEW-SERVER\n")
+	newCLI := fakeBin(t, binDir, "yiban-cli", "exit 0\n")
+	manifest, sig, pub := signedManifest(t, t.TempDir(), newServer, newCLI)
+	pin := filepath.Join(root, "release-pubkey.sha256")
+	if err := os.WriteFile(pin, []byte(pinnedFingerprint(t, pub)+"  release-pubkey.pem\n"), 0o644); err != nil {
+		t.Fatalf("write pin file: %v", err)
+	}
+
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer, "--cli-bin", newCLI,
+		"--manifest", manifest, "--signature", sig, "--pubkey", pub)
+	if rc != 0 {
+		t.Fatalf("pin file must authorize the update: rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "signing verification ok") {
+		t.Fatalf("must report verification ok; out=%s", out)
+	}
+}
+
+// TestUpdateShRejectsBinaryNotCoveredByManifest 钉 sha256 对账：
+// 签名有效、但二进制字节在签名后被换掉 ⇒ 必须拒绝且不碰旧件。
+func TestUpdateShRejectsBinaryNotCoveredByManifest(t *testing.T) {
+	requireBash(t)
+	requireOpenssl(t)
+	env, sysctlLog := signingFixture(t)
+	root := env["YIBAN_INSTALL_ROOT"]
+	installed := filepath.Join(root, "usr/local/bin/yiban-server")
+	oldBody := readAll(t, installed)
+	binDir := t.TempDir()
+	newServer := fakeBin(t, binDir, "yiban-server", "echo NEW-SERVER\n")
+	manifest, sig, pub := signedManifest(t, t.TempDir(), newServer)
+	env["YIBAN_RELEASE_PUBKEY_SHA256"] = pinnedFingerprint(t, pub)
+	if err := os.WriteFile(newServer, []byte("#!/bin/sh\necho SWAPPED-SERVER\n"), 0o755); err != nil {
+		t.Fatalf("swap binary: %v", err)
+	}
+
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer,
+		"--manifest", manifest, "--signature", sig, "--pubkey", pub)
+	if rc != 1 {
+		t.Fatalf("binary outside the signed manifest must be rejected: rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "sha256 mismatch") {
+		t.Fatalf("error must name the sha256 mismatch; out=%s", out)
+	}
+	assertUntouchedAndNotStopped(t, installed, oldBody, sysctlLog)
+}
+
+// TestUpdateShRejectsManifestWithoutServerEntry 钉「清单缺条目」：
+// 清单里没有 yiban-server 时不得默认放行。
+func TestUpdateShRejectsManifestWithoutServerEntry(t *testing.T) {
+	requireBash(t)
+	requireOpenssl(t)
+	env, sysctlLog := signingFixture(t)
+	root := env["YIBAN_INSTALL_ROOT"]
+	installed := filepath.Join(root, "usr/local/bin/yiban-server")
+	oldBody := readAll(t, installed)
+	binDir := t.TempDir()
+	newServer := fakeBin(t, binDir, "yiban-server", "echo NEW-SERVER\n")
+	newCLI := fakeBin(t, binDir, "yiban-cli", "exit 0\n")
+	// 清单只覆盖 cli：server 没有条目。
+	manifest, sig, pub := signedManifest(t, t.TempDir(), newCLI)
+	env["YIBAN_RELEASE_PUBKEY_SHA256"] = pinnedFingerprint(t, pub)
+
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer, "--cli-bin", newCLI,
+		"--manifest", manifest, "--signature", sig, "--pubkey", pub)
+	if rc != 1 {
+		t.Fatalf("manifest without yiban-server entry must be rejected: rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "manifest has no entry for yiban-server") {
+		t.Fatalf("error must name the missing entry; out=%s", out)
+	}
+	assertUntouchedAndNotStopped(t, installed, oldBody, sysctlLog)
+}
+
+// TestUpdateShRejectsUnexpectedVersion 钉防降级：--expect-version 与清单
+// 版本不一致时必须拒绝（已签名旧包的重放由此被挡）。
+func TestUpdateShRejectsUnexpectedVersion(t *testing.T) {
+	requireBash(t)
+	requireOpenssl(t)
+	env, sysctlLog := signingFixture(t)
+	root := env["YIBAN_INSTALL_ROOT"]
+	installed := filepath.Join(root, "usr/local/bin/yiban-server")
+	oldBody := readAll(t, installed)
+	binDir := t.TempDir()
+	newServer := fakeBin(t, binDir, "yiban-server", "echo NEW-SERVER\n")
+	manifest, sig, pub := signedManifest(t, t.TempDir(), newServer)
+	env["YIBAN_RELEASE_PUBKEY_SHA256"] = pinnedFingerprint(t, pub)
+
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer,
+		"--manifest", manifest, "--signature", sig, "--pubkey", pub,
+		"--expect-version", "9.9.8")
+	if rc != 1 {
+		t.Fatalf("version mismatch must be rejected: rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "expect-version") {
+		t.Fatalf("error must name --expect-version; out=%s", out)
+	}
+	assertUntouchedAndNotStopped(t, installed, oldBody, sysctlLog)
 }

@@ -120,12 +120,18 @@ go test ./cmd/cli/ -run TestUpdateShRollsBackOnFailedMigration -count=1
 落地（`scripts/release/make-manifest.sh` / `sign.sh` / `verify.sh`；
 `docs/dev/release-signing.md`），本项升级为可执行门：
 
+- 信任锚（P0）：公钥指纹只认钉住值——`YIBAN_RELEASE_PUBKEY_SHA256`（环境）或
+  发布件目录的 `release-pubkey.sha256`。缺锚 → SKIP（默认档）／FAIL
+  （`--require-signing`）；指纹不符 → FAIL。不得接受「随便给的公钥」。
 - 发布件目录（缺省 `$ROOT/release/`，`YIBAN_RELEASE_DIR` 覆盖）三件齐全
-  （`manifest.json`＋`manifest.json.sig`＋`release-pubkey.pem`）→ 跑 `verify.sh`：
-  验签通过 PASS；rc=1 FAIL。
+  （`manifest.json`＋`manifest.json.sig`＋`release-pubkey.pem`）且指纹匹配 →
+  跑 `verify.sh`：验签通过 PASS；rc=1 FAIL。
 - 三件不齐 → SKIP 并点名缺件；openssl 不可用 → SKIP 显性（验证没跑，不算绿）。
-- `--selftest` 含「篡改一字节必红」突变（openssl 在时执行，否则显性跳过）。
-- sha256 与本地二进制的对账由 `update.sh --manifest/--signature/--pubkey` 在升级时承担。
+- `--require-signing`（发布操作档）：上述 SKIP 全部升为 FAIL。发布操作必须用。
+- `--selftest` 含突变：「篡改一字节必红」「错指纹必红」「缺锚必红」
+  「私钥不得被 `--out` 覆盖」（openssl 在时执行，否则显性跳过）。
+- sha256 与本地二进制、版本与 `--expect-version` 的对账由
+  `update.sh --manifest/--signature/--pubkey` 在升级时承担。
 
 ## 已登记缺口（待立项，本清单不现场补造）
 
@@ -133,3 +139,5 @@ go test ./cmd/cli/ -run TestUpdateShRollsBackOnFailedMigration -count=1
 2. openapi `info.version` 与发布版本无同步（项 1 考古第 5 条）。
 3. 迁移无 down 迁移，schema 不随二进制回滚（项 7 边界，
    `deploy/linux/update.sh` 头注登记）。
+4. 已签名旧包可重放（降级）：不传 `--expect-version` 时无版本下限。
+   该参数已提供；发布操作必须传（`docs/dev/release-signing.md` §7）。

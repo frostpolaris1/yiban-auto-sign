@@ -5,8 +5,15 @@
 # 用法：
 #   bash scripts/release/verify.sh --pubkey PUB.pem --manifest manifest.json --signature manifest.sig
 #
-# 公钥与清单、签名都用显式路径传入，本脚本不读任何默认位置：
-# 公钥不入仓库，由验证方（操作员或 update.sh）持有。
+# 公钥与清单、签名都用显式路径传入，本脚本不读任何默认位置。
+# **公钥不入仓库**：仓库只收指纹示例（deploy/linux/release-pubkey.sha256.example）
+# 与文档。信任锚由调用方钉住：
+#   - update.sh：读 YIBAN_RELEASE_PUBKEY_SHA256 或 <安装根>/release-pubkey.sha256，
+#     先比对指纹再调本脚本；
+#   - scripts/release-check.sh：读同一个环境变量或
+#     <发布件目录>/release-pubkey.sha256。
+# 本脚本只做一件事：用给定的公钥验签；它不判断这把公钥是否可信任。
+# 单独运行本脚本不构成发布校验（见 docs/dev/release-signing.md §2）。
 #
 # 口径（AGENTS §30 跳过≠绿）：
 #   rc=0  签名验证通过（只证明清单字节出自私钥持有者；
@@ -18,7 +25,7 @@
 set -euo pipefail
 
 usage() {
-    sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+    awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
 }
 
 PUB=""

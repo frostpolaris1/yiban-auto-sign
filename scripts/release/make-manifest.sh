@@ -21,7 +21,7 @@
 set -euo pipefail
 
 usage() {
-    sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+    awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
 }
 
 [ $# -ge 2 ] || { echo "make-manifest: need <version> and at least one file" >&2; usage >&2; exit 2; }

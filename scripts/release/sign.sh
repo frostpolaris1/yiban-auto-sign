@@ -18,7 +18,7 @@
 set -euo pipefail
 
 usage() {
-    sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+    awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
 }
 
 KEY="${YIBAN_SIGNING_KEY:-}"
@@ -45,6 +45,12 @@ in_real="$(realpath -m -- "$IN" 2>/dev/null || printf '%s' "$IN")"
 out_real="$(realpath -m -- "$OUT" 2>/dev/null || printf '%s' "$OUT")"
 if [ "$in_real" = "$out_real" ]; then
     echo "sign: --in and --out must differ (would truncate the manifest)" >&2
+    exit 2
+fi
+# --out 指向私钥会覆盖私钥（2026-10-29 审查 P3）：直接拒绝。
+key_real="$(realpath -m -- "$KEY" 2>/dev/null || printf '%s' "$KEY")"
+if [ "$out_real" = "$key_real" ]; then
+    echo "sign: --out must not be the private key (would overwrite it)" >&2
     exit 2
 fi
 

@@ -9,6 +9,7 @@
 #   bash scripts/release-check.sh                # 跑全部八项
 #   bash scripts/release-check.sh --only version # 只跑一项
 #   bash scripts/release-check.sh --list         # 列出项名
+#   bash scripts/release-check.sh --require-signing  # 发布操作档：signing 的 SKIP 升为 FAIL
 #   bash scripts/release-check.sh --selftest     # 跑自带突变自测
 #
 # 状态口径（AGENTS §30：跳过 ≠ 绿）：
@@ -23,20 +24,27 @@
 # 可调环境变量：
 #   RELEASE_CHECK_ROOT  被检仓库根。默认脚本位置的上两级。
 #                       自测用它指向临时夹具，不碰真文件。
+#   YIBAN_RELEASE_DIR   发布件目录。默认 $ROOT/release。
+#   YIBAN_RELEASE_PUBKEY_SHA256
+#                       信任锚：发布公钥的 SHA-256 指纹（64 位十六进制）。
+#                       未设时读 $YIBAN_RELEASE_DIR/release-pubkey.sha256。
 #
-# 突变自测（--selftest）钉两条不变式：
+# 突变自测（--selftest）钉三类不变式：
 #   1. 某项被破坏时 --only 该项退出非零（临时坏夹具触发，不改真文件）；
-#   2. --only 不存在的项名报错退出非零。
+#   2. --only 不存在的项名报错退出非零；
+#   3. 帮助文本只取文件头注释块；sign.sh 不把私钥写成输出。
 # ============================================================
 set -u
 
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 ROOT="${RELEASE_CHECK_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+REQUIRE_SIGNING=0
 
 ITEMS="version license generate tests container backup rollback signing"
 
+# 帮助文本只取文件头注释块（到第一个非注释行为止）：行号会随改动漂移。
 usage() {
-    sed -n '2,30p' "$SELF" | sed 's/^# \{0,1\}//'
+    awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$SELF"
 }
 
 # ---------- 各项检查 ----------
@@ -200,23 +208,62 @@ check_rollback() {
 #   make-manifest.sh / sign.sh / verify.sh，docs/dev/release-signing.md），
 #   本项升级为可执行门——发布件目录（$ROOT/release/，env
 #   YIBAN_RELEASE_DIR 可覆盖）里三件齐全（manifest.json + manifest.json.sig
-#   + release-pubkey.pem）时跑 verify.sh 验签；三件不齐打 SKIP 并点名缺件
-#   （AGENTS §30：跳过显性，不当绿）。verify.sh rc=1（验签不过）→ FAIL；
-#   rc=2（openssl 缺等，验证没跑）→ SKIP 显性。sha256 与二进制的对账由
-#   update.sh --manifest/--signature/--pubkey 在升级时承担。
+#   + release-pubkey.pem）且信任锚匹配时跑 verify.sh 验签。
+#   信任锚（P0）：公钥指纹只认钉住值——YIBAN_RELEASE_PUBKEY_SHA256（环境）
+#   或 <发布件目录>/release-pubkey.sha256；缺锚 → SKIP（默认档）/ FAIL
+#   （--require-signing）；指纹不符 → FAIL。不得接受「随便给的公钥」。
+#   --require-signing：缺件与缺 openssl 从 SKIP 升为 FAIL；发布操作必须用该档。
+#   verify.sh rc=1（验签不过）→ FAIL；rc=2（openssl 缺等，验证没跑）→ SKIP 显性。
+#   sha256 与二进制的对账由 update.sh --manifest/--signature/--pubkey 在升级时承担。
 check_signing() {
     STATUS_signing=FAIL; REASON_signing=""
     local dir="${YIBAN_RELEASE_DIR:-$ROOT/release}"
     local mf="$dir/manifest.json" sig="$dir/manifest.json.sig" pub="$dir/release-pubkey.pem"
+    local pin_file="$dir/release-pubkey.sha256"
     local verifier="$ROOT/scripts/release/verify.sh"
     local missing=()
     [ -f "$mf" ] || missing+=(manifest.json)
     [ -f "$sig" ] || missing+=(manifest.json.sig)
     [ -f "$pub" ] || missing+=(release-pubkey.pem)
     if [ "${#missing[@]}" -gt 0 ]; then
+        if [ "$REQUIRE_SIGNING" = "1" ]; then
+            REASON_signing="required release artifacts missing in $dir: ${missing[*]}"
+            return
+        fi
         STATUS_signing=SKIP
         REASON_signing="release artifacts incomplete in $dir: missing ${missing[*]}"
-        echo "signing: SKIP — 缺件：${missing[*]}（$dir），显性跳过不记绿；签发见 docs/dev/release-signing.md"
+        echo "signing: SKIP — 缺件：${missing[*]}（$dir），显性跳过不记绿；签发见 docs/dev/release-signing.md（发布操作须加 --require-signing）"
+        return
+    fi
+    # 信任锚：先钉公钥指纹，再验签。
+    local pin="" pin_source=""
+    if [ -n "${YIBAN_RELEASE_PUBKEY_SHA256:-}" ]; then
+        pin="$YIBAN_RELEASE_PUBKEY_SHA256"; pin_source="env YIBAN_RELEASE_PUBKEY_SHA256"
+    elif [ -f "$pin_file" ]; then
+        pin="$(head -n1 "$pin_file" 2>/dev/null || true)"; pin_source="$pin_file"
+    fi
+    if [ -z "$pin" ]; then
+        if [ "$REQUIRE_SIGNING" = "1" ]; then
+            REASON_signing="no pinned public key fingerprint (env YIBAN_RELEASE_PUBKEY_SHA256 or $pin_file)"
+            return
+        fi
+        STATUS_signing=SKIP
+        REASON_signing="no pinned public key fingerprint; verification DID NOT run"
+        echo "signing: SKIP — 缺信任锚（$pin_file 或 YIBAN_RELEASE_PUBKEY_SHA256），验证没跑，不算绿"
+        return
+    fi
+    pin="$(printf '%s' "$pin" | tr -d '\r' | tr 'A-F' 'a-f' | awk '{print $1}')"
+    case "$pin" in
+        ''|*[!0-9a-f]*) REASON_signing="pinned fingerprint is not hex (source: $pin_source)"; return ;;
+    esac
+    if [ "${#pin}" -ne 64 ]; then
+        REASON_signing="pinned fingerprint is not 64 hex chars (source: $pin_source)"; return
+    fi
+    local got
+    got="$(sha256sum -- "$pub" 2>/dev/null)" || { REASON_signing="sha256sum failed on $pub"; return; }
+    got="${got%% *}"
+    if [ "$got" != "$pin" ]; then
+        REASON_signing="public key fingerprint $got does not match pinned $pin (source: $pin_source)"
         return
     fi
     if [ ! -f "$verifier" ]; then
@@ -224,9 +271,13 @@ check_signing() {
         return
     fi
     if ! command -v openssl >/dev/null 2>&1; then
+        if [ "$REQUIRE_SIGNING" = "1" ]; then
+            REASON_signing="openssl not in PATH; verification DID NOT run"
+            return
+        fi
         STATUS_signing=SKIP
         REASON_signing="openssl not in PATH; verification DID NOT run"
-        echo "signing: SKIP — openssl 不可用，验证没跑（不算绿）"
+        echo "signing: SKIP — openssl 不可用，验证没跑（不算绿；发布操作须加 --require-signing）"
         return
     fi
     local out rc
@@ -234,9 +285,13 @@ check_signing() {
     if [ "$rc" -eq 0 ]; then
         STATUS_signing=PASS; echo "signing: $out"
     elif [ "$rc" -eq 2 ]; then
+        if [ "$REQUIRE_SIGNING" = "1" ]; then
+            REASON_signing="verifier exit 2 (environment): $out"
+            return
+        fi
         STATUS_signing=SKIP
         REASON_signing="verifier exit 2 (environment): $out"
-        echo "signing: SKIP — verify.sh 退出 2（环境错误，验证没跑）"
+        echo "signing: SKIP — verify.sh 退出 2（环境错误，验证没跑；发布操作须加 --require-signing）"
     else
         REASON_signing="exit $rc: $out"
     fi
@@ -245,7 +300,7 @@ check_signing() {
 # ---------- 汇总与入口 ----------
 
 run_items() {
-    local only="$1" item failed=0
+    local only="$1" item failed=0 skipped=""
     for item in $ITEMS; do
         if [ -n "$only" ] && [ "$item" != "$only" ]; then continue; fi
         "check_$item"
@@ -256,7 +311,13 @@ run_items() {
         printf '%-9s %-8s %s\n' "$item" "$(eval "printf '%s' \"\$STATUS_$item\"")" \
             "$(eval "printf '%s' \"\$REASON_$item\"")"
         if [ "$(eval "printf '%s' \"\$STATUS_$item\"")" = "FAIL" ]; then failed=1; fi
+        if [ "$(eval "printf '%s' \"\$STATUS_$item\"")" = "SKIP" ]; then
+            skipped="$skipped $item"
+        fi
     done
+    if [ -n "$skipped" ]; then
+        echo "本次为跳过：$skipped（跳过不等于绿；发布操作必须用 --require-signing）"
+    fi
     return $failed
 }
 
@@ -312,11 +373,23 @@ selftest() {
         | grep -q '^license *SKIP' || { say "MISMATCH: SKIP not visible in summary"; fails=$((fails+1)); }
     rm -rf "$tmp"
 
+    # 不变式 1e：帮助文本只取文件头注释块，不得把实现行（set -euo pipefail）
+    # 打进帮助；三段脚本都要有「用法」段（2026-10-29 审查 P3）。
+    for s in make-manifest.sh sign.sh verify.sh; do
+        out="$(bash "$(dirname "$SELF")/release/$s" --help 2>&1 || true)"
+        printf '%s' "$out" | grep -q 'set -euo pipefail' \
+            && { say "MISMATCH: $s usage includes implementation line"; fails=$((fails+1)); }
+        printf '%s' "$out" | grep -q '用法' \
+            || { say "MISMATCH: $s usage missing header text"; fails=$((fails+1)); }
+    done
+
     # 不变式 1d：signing 项有牙（AGENTS §30）。
-    # 夹具里放真 verify.sh + openssl 现场生成的三件套：
-    #   a) 完整三件 → PASS；
-    #   b) 篡改清单一字节 → FAIL（门必须挡得住坏发布物）；
-    #   c) 缺件 → SKIP 显性（不是 FAIL 也不当绿）。
+    # 夹具里放真 verify.sh + openssl 现场生成的三件套与信任锚：
+    #   a) 缺锚 → SKIP 显性；--require-signing 下 FAIL；
+    #   b) 三件 + 正确指纹 → PASS；
+    #   c) 篡改清单一字节 → FAIL（门必须挡得住坏发布物）；
+    #   d) 错指纹 → FAIL（不得接受随便给的公钥）；
+    #   e) 缺件 → SKIP 显性；--require-signing 下 FAIL。
     # openssl 不在的机器上本组断言整组显性跳过（门自身无法构造，如实说）。
     if command -v openssl >/dev/null 2>&1; then
         tmp="$(mktemp -d)"
@@ -328,17 +401,47 @@ selftest() {
             "$(printf body | sha256sum | cut -d' ' -f1)" > "$tmp/release/manifest.json"
         bash "$(dirname "$SELF")/release/sign.sh" --key "$tmp/_k.pem" \
             --in "$tmp/release/manifest.json" --out "$tmp/release/manifest.json.sig" >/dev/null 2>&1
+        # a) 缺信任锚：默认 SKIP（可见），发布档红。
+        RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing >/dev/null 2>&1; rc=$?
+        expect "signing SKIP without trust anchor is not FAIL" 0 "$rc"
+        RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing 2>/dev/null \
+            | grep -q '^signing *SKIP' || { say "MISMATCH: anchor-missing SKIP not visible"; fails=$((fails+1)); }
+        RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing --require-signing >/dev/null 2>&1; rc=$?
+        expect "signing red without trust anchor under --require-signing" 1 "$rc"
+        # b) 钉住正确指纹 → PASS。
+        pin="$(sha256sum "$tmp/release/release-pubkey.pem" | cut -d' ' -f1)"
+        printf '%s  release-pubkey.pem\n' "$pin" > "$tmp/release/release-pubkey.sha256"
         RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing >/dev/null 2>&1; rc=$?
         expect "signing green on intact fixture" 0 "$rc"
+        # c) 篡改清单一字节 → 红。
         sed 's/"version":"9.9.9"/"version":"9.9.8"/' "$tmp/release/manifest.json" \
             > "$tmp/release/manifest.json.t" && mv "$tmp/release/manifest.json.t" "$tmp/release/manifest.json"
         RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing >/dev/null 2>&1; rc=$?
         expect "signing red after manifest tamper" 1 "$rc"
+        # d) 错指纹（另一把钥的 sha256）→ 红，且点名指纹不符。
+        openssl genpkey -algorithm ED25519 -out "$tmp/_k2.pem" 2>/dev/null
+        other="$(sha256sum "$tmp/_k2.pem" | cut -d' ' -f1)"
+        printf '%s  release-pubkey.pem\n' "$other" > "$tmp/release/release-pubkey.sha256"
+        RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing >/dev/null 2>&1; rc=$?
+        expect "signing red on wrong pinned fingerprint" 1 "$rc"
+        RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing 2>/dev/null \
+            | grep -q 'does not match pinned' \
+            || { say "MISMATCH: fingerprint mismatch not named in summary"; fails=$((fails+1)); }
+        # e) 缺件：默认 SKIP 显性；发布档红。
         rm -f "$tmp/release/manifest.json.sig" "$tmp/release/release-pubkey.pem"
         RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing 2>/dev/null \
             | grep -q '^signing *SKIP' || { say "MISMATCH: missing artifacts not SKIP-visible"; fails=$((fails+1)); }
         RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing >/dev/null 2>&1; rc=$?
         expect "signing SKIP (missing artifacts) is not FAIL" 0 "$rc"
+        RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only signing --require-signing >/dev/null 2>&1; rc=$?
+        expect "signing red on missing artifacts under --require-signing" 1 "$rc"
+        # f) sign.sh 不得把私钥写成输出（--out 指向 --key 会覆盖私钥）。
+        key_before="$(sha256sum "$tmp/_k.pem" | cut -d' ' -f1)"
+        bash "$(dirname "$SELF")/release/sign.sh" --key "$tmp/_k.pem" \
+            --in "$tmp/release/manifest.json" --out "$tmp/_k.pem" >/dev/null 2>&1; rc=$?
+        expect "sign.sh rejects --out equal to --key" 2 "$rc"
+        [ "$(sha256sum "$tmp/_k.pem" | cut -d' ' -f1)" = "$key_before" ] \
+            || { say "MISMATCH: private key was overwritten by sign.sh"; fails=$((fails+1)); }
         rm -rf "$tmp"
     else
         say "SKIP: signing selftest group (openssl not in PATH; group DID NOT run)"
@@ -361,6 +464,7 @@ main() {
                        echo "known items: $ITEMS" >&2; exit 2 ;;
                 esac ;;
             --list) echo "$ITEMS"; exit 0 ;;
+            --require-signing) REQUIRE_SIGNING=1; shift ;;
             --selftest) selftest; exit $? ;;
             -h|--help) usage; exit 0 ;;
             *) echo "release-check: unknown argument: $1" >&2; exit 2 ;;

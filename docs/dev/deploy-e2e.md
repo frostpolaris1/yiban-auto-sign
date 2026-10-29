@@ -43,7 +43,7 @@ DEPLOY_E2E_GOPROXY=https://goproxy.cn,direct bash scripts/e2e/deploy-container-e
 | C2 | `docker compose build` 退出 0 |
 | C3 | db 与 app 均 healthy |
 | C4 | 容器内 `yiban-cli migrate` 打印嵌入集最新版本 |
-| C4b | 签发→验签通过；篡改清单一字节后验签必须被拒（openssl 现场生成密钥，不入仓） |
+| C4b | 签发→验签通过；错公钥必须被拒；篡改清单一字节后验签必须被拒（openssl 现场生成密钥，不入仓） |
 | C5 | 宿主 `curl /healthz` 返回 200，body 为 `{"status":"ok"}` |
 | C6 | 干净库 `users=0`；goose 最高已应用版本等于迁移目录最大编号 |
 | C7 | `compose stop` 发 SIGTERM：退出码 0；耗时 < 30s；日志含 `worker: in-flight drained` |

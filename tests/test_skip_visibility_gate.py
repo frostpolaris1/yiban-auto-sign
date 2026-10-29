@@ -752,6 +752,10 @@ KNOWN_SKIP_SITES = json.loads(r"""
   [
    "skipTest",
    "git 不可用（check-ignore 失败）；忽略规则 DID NOT verify"
+  ],
+  [
+   "skipTest",
+   "需要 git 创建临时仓库；私钥门自证 DID NOT run"
   ]
  ]
 }

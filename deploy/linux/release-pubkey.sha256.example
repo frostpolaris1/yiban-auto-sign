@@ -1,0 +1,15 @@
+# 发布公钥指纹（信任锚）——示例，不是真实值。
+#
+# 真实指纹不入库。安装时由管理员写入受管位置（root 持有）：
+#   /release-pubkey.sha256                  # update.sh 读取
+#   <发布件目录>/release-pubkey.sha256      # release-check.sh 读取
+# 一次性调用可用环境变量覆盖：YIBAN_RELEASE_PUBKEY_SHA256=<64hex>
+#
+# 生成（发布者机器，私钥所在处）：
+#   openssl pkey -in yiban-release-key.pem -pubout -out release-pubkey.pem
+#   sha256sum release-pubkey.pem
+# 用带外渠道把 64 位十六进制交给运维。不要经发布件目录回传。
+#
+# 格式：一行；取第一个空白分隔字段；允许 sha256sum 的 "<hex>  <file>" 形状。
+# 下面一行是全零占位，任何真实公钥都对不上它。
+0000000000000000000000000000000000000000000000000000000000000000  release-pubkey.pem
