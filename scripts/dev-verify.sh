@@ -868,7 +868,8 @@ while [ $# -gt 0 ]; do
             BASESET=1
             ;;
         --scope)
-            CI_SCOPE=${2:?--scope 需要取值}
+            CI_SCOPE=${2:-}
+            [ -n "$CI_SCOPE" ] || CI_SCOPE=oldline
             case "$CI_SCOPE" in
                 oldline|newstack|mixed) ;;
                 *) die "--scope 只认 oldline|newstack|mixed，实得：$CI_SCOPE" ;;
