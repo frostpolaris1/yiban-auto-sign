@@ -113,7 +113,7 @@ func New(opts Options) (*gin.Engine, error) {
 	if srv.auth == nil {
 		// 显性可见：没有用例就没有可用登录。
 		// 健康检查与 me 仍可服务，其余认证端点回 501。
-		logger.Warn("auth endpoints are not wired: login, logout and password reset return 501")
+		logger.Warn("auth endpoints are not wired: login, logout, password reset and password change return 501")
 	}
 	srv.schools = opts.Schools
 	srv.admins = opts.Admins

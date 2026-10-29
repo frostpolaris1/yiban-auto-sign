@@ -1,16 +1,16 @@
 // Package auth 声明会话与密码重置的仓储端口，并实现认证用例。
 //
 // # 功能
-// 声明会话仓储与一次性重置令牌仓储；实现登录、登出、会话主体、
-// 忘记口令与重置口令。本包**不**写 SQL，**不**做 HTTP 编码。
+// 声明会话仓储、一次性重置令牌仓储与其余会话撤销端口；实现登录、登出、
+// 会话主体、忘记口令、重置口令与登录态改密。本包**不**写 SQL，**不**做 HTTP 编码。
 //
 // # 归属
 // app 层用例端口与用例。行类型留在 core/auth，
 // 这样 PostgreSQL 适配器无需导入本包（canonical.tsv 的 boundary.adapters）。
 //
 // # 复用
-// SessionRepo、PasswordResetRepo；Service、Deps、NewService、Me；
-// ErrInvalidCredentials、ErrInvalidResetToken、ResetTokenTTL；
+// SessionRepo、PasswordResetRepo、OtherSessionRevoker；Service、Deps、NewService、Me；
+// ErrInvalidCredentials、ErrInvalidResetToken、ErrPasswordUnchanged、ResetTokenTTL；
 // 类型别名 Session、NewSession、ResolvedSession、PasswordReset、NewPasswordReset。
 //
 // # 口径
@@ -63,4 +63,13 @@ type SessionRepo interface {
 type PasswordResetRepo interface {
 	Create(ctx context.Context, in NewPasswordReset) (PasswordReset, error)
 	Consume(ctx context.Context, tokenHash coreauth.TokenHash, now time.Time) (PasswordReset, error)
+}
+
+// OtherSessionRevoker 撤销本人其余会话的端口。
+//
+// RevokeOthers 保留 keep 指向的会话，撤销 userID 的其余有效会话。
+// 幂等：没有其余会话时是空操作。
+// 实现必须与口令写入、审计同事务运行。
+type OtherSessionRevoker interface {
+	RevokeOthers(ctx context.Context, userID string, keep coreauth.TokenHash, now time.Time) error
 }

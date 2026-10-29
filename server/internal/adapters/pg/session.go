@@ -139,6 +139,23 @@ func (r *SessionRepo) RevokeAllForUser(ctx context.Context, userID string, now t
 	return tag.RowsAffected(), nil
 }
 
+// RevokeOthers 撤销 userID 除 keep 之外的全部有效会话。
+//
+// keep 是当前请求携带的会话摘要，**必须保留**。
+// keep 为零值即错误：零摘要不对应任何会话，`<>` 会命中全部行。
+// 幂等：没有其余会话时是空操作。
+func (r *SessionRepo) RevokeOthers(ctx context.Context, userID string, keep coreauth.TokenHash, now time.Time) error {
+	if keep.IsZero() {
+		return validationError("keep token hash is required")
+	}
+	_, err := r.db.q(ctx).Exec(ctx, `
+		UPDATE sessions SET revoked_at = $3
+		 WHERE user_id = $1::uuid
+		   AND token_hash <> $2
+		   AND revoked_at IS NULL`, userID, keep.Bytes(), now)
+	return mapError(err)
+}
+
 // DeleteExpired 最多删除 limit 个在给定时刻之前过期的会话。
 // 清理分批执行，**不长时间持锁**。
 func (r *SessionRepo) DeleteExpired(ctx context.Context, before time.Time, limit int) (int64, error) {

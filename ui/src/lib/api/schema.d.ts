@@ -105,6 +105,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/auth/change-password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Change the password of the signed-in user.
+         * @description Verifies current_password, then replaces it with new_password.
+         *     Success sets must_change_password false and writes password_changed_at.
+         *     Success revokes every other session of the user and keeps the calling
+         *     session. Success writes one auth.password_change audit row.
+         *     A wrong current_password is 401 with the same code and message as a
+         *     failed login, so the two are indistinguishable.
+         *     A new_password equal to current_password is 409 conflict.
+         *     Both fields are non-empty. The minimum length matches
+         *     POST /api/auth/reset-password.
+         */
+        post: operations["AuthChangePassword"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/users": {
         parameters: {
             query?: never;
@@ -829,6 +857,10 @@ export interface components {
             token: string;
             new_password: string;
         };
+        ChangePasswordRequest: {
+            current_password: string;
+            new_password: string;
+        };
         UserCreate: {
             /**
              * Format: email
@@ -1218,7 +1250,7 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
-        /** @description No session, invalid session or invalid one-time token. */
+        /** @description No session, invalid session, invalid one-time token or wrong current password. */
         UnauthorizedError: {
             headers: {
                 [name: string]: unknown;
@@ -1424,6 +1456,40 @@ export interface operations {
             };
             400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AuthChangePassword: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChangePasswordRequest"];
+            };
+        };
+        responses: {
+            /** @description Password replaced. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
             default: components["responses"]["DefaultError"];
         };

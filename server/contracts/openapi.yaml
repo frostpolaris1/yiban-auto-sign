@@ -137,6 +137,38 @@ paths:
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         default: { $ref: '#/components/responses/DefaultError' }
+  /api/auth/change-password:
+    post:
+      tags: [auth]
+      operationId: AuthChangePassword
+      summary: Change the password of the signed-in user.
+      description: |
+        Verifies current_password, then replaces it with new_password.
+        Success sets must_change_password false and writes password_changed_at.
+        Success revokes every other session of the user and keeps the calling
+        session. Success writes one auth.password_change audit row.
+        A wrong current_password is 401 with the same code and message as a
+        failed login, so the two are indistinguishable.
+        A new_password equal to current_password is 409 conflict.
+        Both fields are non-empty. The minimum length matches
+        POST /api/auth/reset-password.
+      x-roles: [master, admin, user]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePasswordRequest'
+      responses:
+        '204': { description: Password replaced. }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '409': { $ref: '#/components/responses/ConflictError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        default: { $ref: '#/components/responses/DefaultError' }
   /api/users:
     post:
       tags: [users]
@@ -1194,7 +1226,7 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
     UnauthorizedError:
-      description: No session, invalid session or invalid one-time token.
+      description: No session, invalid session, invalid one-time token or wrong current password.
       content:
         application/json:
           schema:
@@ -1323,6 +1355,12 @@ components:
       required: [token, new_password]
       properties:
         token: { type: string, minLength: 1 }
+        new_password: { type: string, minLength: 1 }
+    ChangePasswordRequest:
+      type: object
+      required: [current_password, new_password]
+      properties:
+        current_password: { type: string, minLength: 1 }
         new_password: { type: string, minLength: 1 }
     UserCreate:
       type: object

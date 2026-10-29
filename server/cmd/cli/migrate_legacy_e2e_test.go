@@ -592,17 +592,19 @@ func TestMigrateLegacyLoginOldPasswordE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("audit repo: %v", err)
 	}
-	issuer, err := pg.NewSessionIssuer(pg.NewSessionRepo(db), audits, []byte(e2ePepper), coreclock.System{})
+	sessionRepo := pg.NewSessionRepo(db)
+	issuer, err := pg.NewSessionIssuer(sessionRepo, audits, []byte(e2ePepper), coreclock.System{})
 	if err != nil {
 		t.Fatalf("issuer: %v", err)
 	}
 	svc, err := appauth.NewService(appauth.Deps{
-		Users:    pg.NewUserRepo(db),
-		Sessions: issuer,
-		Resets:   pg.NewPasswordResetRepo(db),
-		Audits:   audits,
-		Tx:       db,
-		Clock:    coreclock.System{},
+		Users:         pg.NewUserRepo(db),
+		Sessions:      issuer,
+		OtherSessions: sessionRepo,
+		Resets:        pg.NewPasswordResetRepo(db),
+		Audits:        audits,
+		Tx:            db,
+		Clock:         coreclock.System{},
 	})
 	if err != nil {
 		t.Fatalf("auth service: %v", err)

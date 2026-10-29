@@ -3,7 +3,7 @@ package router
 // 认证端点的处理器。
 //
 // # 功能
-// 登录、登出、会话主体、忘记口令与重置口令的 HTTP 编码。
+// 登录、登出、会话主体、忘记口令、重置口令与登录态改密的 HTTP 编码。
 // 本文件**不**校验口令，**不**写 SQL；用例在 app/auth。
 //
 // # 归属
@@ -13,7 +13,8 @@ package router
 // # 口径
 // 登录与重置的请求体绑定失败回 400 validation_failed。
 // 登录失败回 401，文案与错误码由用例统一给出。
-// 登出与忘记口令回 204，响应体为空。
+// 登出、忘记口令、重置口令与改密回 204，响应体为空。
+// 改密**不**改写当前会话的 cookie：只撤销其余会话。
 
 import (
 	"context"
@@ -35,6 +36,7 @@ type AuthService interface {
 	Logout(ctx context.Context, sess coreauth.Session, token string) error
 	ForgotPassword(ctx context.Context, email string) error
 	ResetPassword(ctx context.Context, token, newPassword string) error
+	ChangePassword(ctx context.Context, sess coreauth.Session, keepToken, currentPassword, newPassword string) error
 }
 
 // AuthLogin 校验口令并写入会话 cookie。
@@ -127,6 +129,39 @@ func (s *server) AuthResetPassword(c *gin.Context) {
 		return
 	}
 	if err := s.auth.ResetPassword(c.Request.Context(), req.Token, req.NewPassword); err != nil {
+		respond.Error(c.Writer, c.Request, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// AuthChangePassword 校验旧口令并替换当前用户的口令。
+// 会话与 CSRF 已由中间件校验。
+// 成功回 204，**保留**当前会话的 cookie。
+func (s *server) AuthChangePassword(c *gin.Context, _ oapi.AuthChangePasswordParams) {
+	if s.auth == nil {
+		notImplemented(c)
+		return
+	}
+	var req oapi.AuthChangePasswordJSONRequestBody
+	if err := c.ShouldBindJSON(&req); err != nil {
+		bindError(c, err)
+		return
+	}
+	sess, ok := coreauth.FromContext(c.Request.Context())
+	if !ok {
+		// 中间件已拒绝无会话请求；走到这里是接线错误。
+		respond.Error(c.Writer, c.Request, errs.New(errs.CodeUnauthorized, "authentication required"))
+		return
+	}
+	token, err := c.Cookie(s.cookies.name)
+	if err != nil {
+		// 已有会话却读不到令牌，说明中间件与处理器口径不一致。
+		respond.Error(c.Writer, c.Request, errs.New(errs.CodeInternal, "session cookie is missing"))
+		return
+	}
+	if err := s.auth.ChangePassword(c.Request.Context(), sess, token,
+		req.CurrentPassword, req.NewPassword); err != nil {
 		respond.Error(c.Writer, c.Request, err)
 		return
 	}

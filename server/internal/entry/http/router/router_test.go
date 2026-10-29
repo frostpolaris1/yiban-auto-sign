@@ -423,6 +423,10 @@ func (stubAuth) ForgotPassword(context.Context, string) error { return nil }
 
 func (stubAuth) ResetPassword(context.Context, string, string) error { return nil }
 
+func (stubAuth) ChangePassword(context.Context, auth.Session, string, string, string) error {
+	return nil
+}
+
 func newAuthEngine(t *testing.T, issuer auth.SessionIssuer, svc router.AuthService) *gin.Engine {
 	t.Helper()
 	engine, err := router.New(router.Options{
