@@ -1,0 +1,28 @@
+#!/bin/bash
+# pre-commit hook：提交身份白名单（AGENTS §9，2026-10-29 用户裁决）。
+#
+# 只允许 `frostpolaris1 <96783160+frostpolaris1@users.noreply.github.com>`
+# 作为 author 或 committer。占位身份（gate@、zcode@、subagent@ 等）一律拒绝。
+# 真实外部贡献者（dependabot、stevenbakerb93）在本人分支上提交时自行放行——
+# 本 hook 只约束本仓主会话与子代理。
+#
+# 启用方式（本地执行一次，不修改仓库代码）：
+#   git config core.hooksPath scripts/git-hooks
+# 跳过本次校验：git commit --no-verify
+
+allowed_name="frostpolaris1"
+allowed_email="96783160+frostpolaris1@users.noreply.github.com"
+
+name=$(git config user.name)
+email=$(git config user.email)
+
+fail() {
+    echo "pre-commit: 提交身份不在白名单：$name <$email>" >&2
+    echo "pre-commit: 只允许 $allowed_name <$allowed_email>（AGENTS §9）" >&2
+    echo "pre-commit: 修法：git config user.name '$allowed_name' && git config user.email '$allowed_email'" >&2
+    exit 1
+}
+
+[ "$name" = "$allowed_name" ] || fail
+[ "$email" = "$allowed_email" ] || fail
+exit 0
