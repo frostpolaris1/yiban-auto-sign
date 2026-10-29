@@ -573,6 +573,10 @@ test('品牌标记的图形按内容钉住', () => {
     ['改 fill', source.replace('fill="currentColor"', 'fill="red"')],
     ['改 style 值', source.replace('var(--t-inverse)', 'var(--t-primary)')],
     ['删属性', source.replace(' xmlns="http://www.w3.org/2000/svg"', '')],
+    ['加 spread 属性', source.replace('<svg ', '<svg {...rest} ')],
+    ['加表达式子节点', source.replace('</svg>', '{PAYLOAD}</svg>')],
+    ['加 spread 子节点', source.replace('</svg>', '{...PAYLOAD}</svg>')],
+    ['加条件表达式子节点', source.replace('</svg>', '{count && label}</svg>')],
   ]
   // 注释与 docstring 不在钉住面内：哈希只序列化 JSX 子树。
   assert.deepEqual(
