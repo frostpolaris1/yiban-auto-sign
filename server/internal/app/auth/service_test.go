@@ -71,8 +71,9 @@ func (f *fakeUsers) MarkLogin(context.Context, string, time.Time) error         
 func (f *fakeUsers) SoftDelete(context.Context, string, string, time.Time) error         { return nil }
 
 type fakeSessions struct {
-	issued     []coreauth.User
-	revokedAll []string
+	issued        []coreauth.User
+	revokedAll    []string
+	revokedOthers []string
 }
 
 func (f *fakeSessions) Issue(_ context.Context, user coreauth.User) (coreauth.Issued, error) {
@@ -91,6 +92,11 @@ func (f *fakeSessions) Revoke(context.Context, string) error { return nil }
 
 func (f *fakeSessions) RevokeAllForUser(_ context.Context, userID string) error {
 	f.revokedAll = append(f.revokedAll, userID)
+	return nil
+}
+
+func (f *fakeSessions) RevokeOthers(_ context.Context, userID string, _ coreauth.TokenHash, _ time.Time) error {
+	f.revokedOthers = append(f.revokedOthers, userID)
 	return nil
 }
 
@@ -147,12 +153,13 @@ func newHarness(t *testing.T) *harness {
 		audits:   &fakeAudits{},
 	}
 	svc, err := appauth.NewService(appauth.Deps{
-		Users:    h.users,
-		Sessions: h.sessions,
-		Resets:   h.resets,
-		Audits:   h.audits,
-		Tx:       fakeTx{},
-		Clock:    testClock,
+		Users:         h.users,
+		Sessions:      h.sessions,
+		OtherSessions: h.sessions,
+		Resets:        h.resets,
+		Audits:        h.audits,
+		Tx:            fakeTx{},
+		Clock:         testClock,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

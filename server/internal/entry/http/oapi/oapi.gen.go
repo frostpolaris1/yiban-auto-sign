@@ -593,6 +593,12 @@ type CapacityReport struct {
 	WindowStart time.Time            `json:"window_start"`
 }
 
+// ChangePasswordRequest defines model for ChangePasswordRequest.
+type ChangePasswordRequest struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
 // DiagnosticsItem defines model for DiagnosticsItem.
 type DiagnosticsItem struct {
 	AccountId string `json:"account_id"`
@@ -1088,6 +1094,13 @@ type AdminEventsParams struct {
 	LastEventID *string `json:"Last-Event-ID,omitempty"`
 }
 
+// AuthChangePasswordParams defines parameters for AuthChangePassword.
+type AuthChangePasswordParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
 // AuthLogoutParams defines parameters for AuthLogout.
 type AuthLogoutParams struct {
 	// XCSRFToken Required only when the request carries a session. Used by logout,
@@ -1264,6 +1277,9 @@ type AccountPauseJSONRequestBody = AccountPauseRequest
 // AccountReviewJSONRequestBody defines body for AccountReview for application/json ContentType.
 type AccountReviewJSONRequestBody = AccountReviewRequest
 
+// AuthChangePasswordJSONRequestBody defines body for AuthChangePassword for application/json ContentType.
+type AuthChangePasswordJSONRequestBody = ChangePasswordRequest
+
 // AuthForgotPasswordJSONRequestBody defines body for AuthForgotPassword for application/json ContentType.
 type AuthForgotPasswordJSONRequestBody = ForgotPasswordRequest
 
@@ -1344,6 +1360,9 @@ type ServerInterface interface {
 	// AdminEvents Subscribe to the admin event stream (SSE).
 	// (GET /api/admin/events)
 	AdminEvents(c *gin.Context, params AdminEventsParams)
+	// AuthChangePassword Change the password of the signed-in user.
+	// (POST /api/auth/change-password)
+	AuthChangePassword(c *gin.Context, params AuthChangePasswordParams)
 	// AuthForgotPassword Start the password reset flow.
 	// (POST /api/auth/forgot-password)
 	AuthForgotPassword(c *gin.Context)
@@ -2040,6 +2059,49 @@ func (siw *ServerInterfaceWrapper) AdminEvents(c *gin.Context) {
 	}
 
 	siw.Handler.AdminEvents(c, params)
+}
+
+// AuthChangePassword operation middleware
+func (siw *ServerInterfaceWrapper) AuthChangePassword(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AuthChangePasswordParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AuthChangePassword(c, params)
 }
 
 // AuthForgotPassword operation middleware
@@ -3105,6 +3167,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/auth/me", wrapper.AuthMe)
 	router.POST(options.BaseURL+"/api/auth/forgot-password", wrapper.AuthForgotPassword)
 	router.POST(options.BaseURL+"/api/auth/reset-password", wrapper.AuthResetPassword)
+	router.POST(options.BaseURL+"/api/auth/change-password", wrapper.AuthChangePassword)
 	router.POST(options.BaseURL+"/api/users", wrapper.UserCreate)
 	router.GET(options.BaseURL+"/api/schools", wrapper.SchoolList)
 	router.POST(options.BaseURL+"/api/schools", wrapper.SchoolCreate)

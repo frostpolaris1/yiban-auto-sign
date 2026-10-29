@@ -15,7 +15,6 @@ package main
 // 每个测试独占一个 schema，互不依赖。
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -192,35 +191,10 @@ func (e *authEnv) createUserWithHash(email, hash string) coreuser.Record {
 	return rec
 }
 
-// do 发一次 JSON 请求并读完全部响应体。
+// do 用默认客户端发一次 JSON 请求并读完全部响应体。
 func (e *authEnv) do(method, path string, body any, headers map[string]string) (*http.Response, []byte) {
 	e.t.Helper()
-	var reader io.Reader
-	if body != nil {
-		raw, err := json.Marshal(body)
-		if err != nil {
-			e.t.Fatalf("encode body: %v", err)
-		}
-		reader = bytes.NewReader(raw)
-	}
-	req, err := http.NewRequestWithContext(e.ctx, method, e.baseURL+path, reader)
-	if err != nil {
-		e.t.Fatalf("new request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	for k, v := range headers {
-		req.Header.Set(k, v)
-	}
-	resp, err := e.client.Do(req)
-	if err != nil {
-		e.t.Fatalf("%s %s: %v", method, path, err)
-	}
-	defer resp.Body.Close()
-	payload, err := io.ReadAll(resp.Body)
-	if err != nil {
-		e.t.Fatalf("read body: %v", err)
-	}
-	return resp, payload
+	return e.doAs(e.client, method, path, body, headers)
 }
 
 type sessionUserBody struct {

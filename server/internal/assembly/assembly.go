@@ -331,18 +331,20 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			closeFn()
 			return nil, fmt.Errorf("assembly: audit repo: %w", err)
 		}
-		issuer, err = pg.NewSessionIssuer(pg.NewSessionRepo(db), audits, cfg.HashPepper, clk)
+		sessionRepo := pg.NewSessionRepo(db)
+		issuer, err = pg.NewSessionIssuer(sessionRepo, audits, cfg.HashPepper, clk)
 		if err != nil {
 			closeFn()
 			return nil, fmt.Errorf("assembly: session issuer: %w", err)
 		}
 		authSvc, err = appauth.NewService(appauth.Deps{
-			Users:    pg.NewUserRepo(db),
-			Sessions: issuer,
-			Resets:   pg.NewPasswordResetRepo(db),
-			Audits:   audits,
-			Tx:       db,
-			Clock:    clk,
+			Users:         pg.NewUserRepo(db),
+			Sessions:      issuer,
+			OtherSessions: sessionRepo,
+			Resets:        pg.NewPasswordResetRepo(db),
+			Audits:        audits,
+			Tx:            db,
+			Clock:         clk,
 		})
 		if err != nil {
 			closeFn()

@@ -38,10 +38,12 @@ var ErrInvalidResetToken = errs.New(errs.CodeUnauthorized, "invalid or expired r
 type Deps struct {
 	Users    appuser.Repo
 	Sessions coreauth.SessionIssuer
-	Resets   PasswordResetRepo
-	Audits   appaudit.Repo
-	Tx       app.TxManager
-	Clock    clock.Clock
+	// OtherSessions 撤销本人其余会话，供改密使用。
+	OtherSessions OtherSessionRevoker
+	Resets        PasswordResetRepo
+	Audits        appaudit.Repo
+	Tx            app.TxManager
+	Clock         clock.Clock
 }
 
 // Service 承载认证用例。
@@ -49,6 +51,7 @@ type Deps struct {
 type Service struct {
 	users    appuser.Repo
 	sessions coreauth.SessionIssuer
+	others   OtherSessionRevoker
 	resets   PasswordResetRepo
 	audits   appaudit.Repo
 	tx       app.TxManager
@@ -62,6 +65,8 @@ func NewService(d Deps) (*Service, error) {
 		return nil, errors.New("appauth: nil user repo")
 	case d.Sessions == nil:
 		return nil, errors.New("appauth: nil session issuer")
+	case d.OtherSessions == nil:
+		return nil, errors.New("appauth: nil other-session revoker")
 	case d.Resets == nil:
 		return nil, errors.New("appauth: nil password reset repo")
 	case d.Audits == nil:
@@ -74,6 +79,7 @@ func NewService(d Deps) (*Service, error) {
 	return &Service{
 		users:    d.Users,
 		sessions: d.Sessions,
+		others:   d.OtherSessions,
 		resets:   d.Resets,
 		audits:   d.Audits,
 		tx:       d.Tx,

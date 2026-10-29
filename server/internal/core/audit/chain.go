@@ -51,10 +51,12 @@ type Action string
 
 // P1 动作词表。P4 补任务类与凭据状态类动作。
 const (
-	ActionAuthLogin           Action = "auth.login"
-	ActionAuthLoginFailed     Action = "auth.login_failed"
-	ActionAuthLogout          Action = "auth.logout"
-	ActionAuthPasswordReset   Action = "auth.password_reset"
+	ActionAuthLogin         Action = "auth.login"
+	ActionAuthLoginFailed   Action = "auth.login_failed"
+	ActionAuthLogout        Action = "auth.logout"
+	ActionAuthPasswordReset Action = "auth.password_reset"
+	// 登录态自助改密：调用方已通过旧口令校验。
+	ActionAuthPasswordChange  Action = "auth.password_change"
 	ActionUserCreate          Action = "user.create"
 	ActionUserDisable         Action = "user.disable"
 	ActionUserEnable          Action = "user.enable"
