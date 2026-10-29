@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"regexp"
@@ -200,6 +201,34 @@ func TestForgotPasswordDeliveryFailureDoesNotChangeResult(t *testing.T) {
 	}
 	if strings.Contains(logs, m[1]) {
 		t.Fatal("日志里出现了重置令牌")
+	}
+}
+
+// 投递侧无法表达的地址必须留下显性原因记录。
+//
+// 收件人来自数据库；含控制字符或非 ASCII 的地址在投递侧被显性拒收。
+// 只有粗分类 config 不够：运维要能一眼区分「地址不可表达」与「凭据错」。
+func TestForgotPasswordUnsupportedAddressIsLogged(t *testing.T) {
+	fake := newFakeMail()
+	fake.err = &coremail.DeliveryError{
+		Kind: coremail.KindConfig, Retryable: false,
+		Err: fmt.Errorf("mail: address contains a control character: %w",
+			coremail.ErrUnsupportedAddress),
+	}
+	h := newMailHarness(t, fake)
+	h.seedKnown("known@example.com")
+
+	if err := h.svc.ForgotPassword(t.Context(), "known@example.com"); err != nil {
+		t.Fatalf("投递失败改变了用例结果: %v", err)
+	}
+	waitLog(t, h.logs, "password_reset.delivery_failed")
+	logs := h.logs.String()
+	for _, want := range []string{
+		"kind=config", "retryable=false", "reason=unsupported_address",
+	} {
+		if !strings.Contains(logs, want) {
+			t.Fatalf("失败日志缺少 %q:\n%s", want, logs)
+		}
 	}
 }
 

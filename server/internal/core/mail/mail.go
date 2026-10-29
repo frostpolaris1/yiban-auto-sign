@@ -10,7 +10,7 @@
 //
 // # 复用
 // Sender、Message、Kind 及其常量、DeliveryError、Classify、
-// TLSMode 常量与 TLSModes。
+// ErrUnsupportedAddress、TLSMode 常量与 TLSModes。
 //
 // # 口径
 // 失败一律是 *DeliveryError。Error() 只含分类与可重试标志，
@@ -89,6 +89,17 @@ const (
 func TLSModes() []string {
 	return []string{TLSModeAuto, TLSModeImplicit, TLSModeStartTLS}
 }
+
+// ErrUnsupportedAddress 表示收件地址能通过注册口径，但投递路径无法表达。
+//
+// 两个来源：
+//   - 含控制字符（< 0x20 或 0x7F）：net/mail 引用时会丢弃它们，
+//     投递地址会与注册地址不同。
+//   - 含非 ASCII 字符：net/smtp 不发 SMTPUTF8，出站必被服务端拒。
+//
+// 投递实现把它包进 DeliveryError（KindConfig、不可重试）。
+// 调用方用 errors.Is 判定，并据此在日志里记显性原因。
+var ErrUnsupportedAddress = errors.New("mail: recipient address is not supported by this delivery path")
 
 // DeliveryError 是 Sender.Send 的唯一失败类型。
 //

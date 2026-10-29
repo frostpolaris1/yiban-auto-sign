@@ -163,6 +163,37 @@ deployment cannot silently fall back to development defaults.
 | `YIBAN_INSECURE_COOKIES` | no | `true` for development and test | use the unprefixed cookie name; production refuses a true value |
 | `YIBAN_HASH_PEPPER` | **yes** | — | at least 16 characters; keys the HMAC digests of IP addresses and user agents, and derives the audit chain key. Rotating it breaks verification of the existing audit chain. |
 | `YIBAN_CREDENTIAL_KEY` | **yes** | — | base64 of exactly 32 bytes; encrypts stored credentials with AES-256-GCM. Rotating it goes through kid re-encryption (P4/P8), so old rows stay decryptable. |
+| `YIBAN_RESET_MAIL_ENABLE` | no | `false` | delivers password reset links over SMTP. A true value requires `YIBAN_PUBLIC_BASE_URL` and sender credentials; a missing or loopback base URL stops startup with the key name in the error. |
+| `YIBAN_PUBLIC_BASE_URL` | no | `http://127.0.0.1:47183` | base of the reset links, as an absolute http(s) URL without a trailing slash and without credentials. See the paragraph below. |
+| `YIBAN_MAIL_SMTP_HOST` | no | `smtp.qq.com` | SMTP server host. The certificate is verified against this name. |
+| `YIBAN_MAIL_SMTP_PORT` | no | `465` | SMTP port. Port 465 uses implicit TLS; other ports use STARTTLS. |
+| `YIBAN_MAIL_USER` | no | empty | AUTH PLAIN account. Required together with the password when reset mail is on. |
+| `YIBAN_MAIL_PASS` | no | empty | AUTH PLAIN password or app key. Required together with the user when reset mail is on. It never appears in logs or errors. |
+| `YIBAN_MAIL_FROM` | no | empty | envelope and header sender. Empty means `YIBAN_MAIL_USER`. |
+| `YIBAN_MAIL_TLS_MODE` | no | `auto` | `auto`, `implicit` or `starttls`. No switch disables certificate checks. |
 
 Production always uses `__Host-yiban_session` with `Secure`. A true
 `YIBAN_INSECURE_COOKIES` under `YIBAN_ENV=production` is a startup error.
+
+## Password reset mail
+
+The switch is `YIBAN_RESET_MAIL_ENABLE`. The Go server does not read
+`YIBAN_MAIL_ENABLE`: that key belongs to the old Python notification line.
+The two switches are independent, so an old deployment that only set
+`YIBAN_MAIL_ENABLE` keeps starting after an upgrade.
+
+A true `YIBAN_RESET_MAIL_ENABLE` requires three things at startup: a
+non-empty SMTP host (the default supplies one), a user with a password, and an
+explicit `YIBAN_PUBLIC_BASE_URL` that is
+not loopback or unspecified. A missing value means the default
+`http://127.0.0.1:47183`, which makes every link point back to the recipient's
+own machine. Startup therefore fails and names the key and the current value.
+Private addresses such as `http://192.168.1.10:47183` pass: they work for
+users on the same network.
+
+Recipient addresses: within ASCII, delivery accepts every address that
+registration accepts. The server sends no SMTPUTF8. A registered address with
+a non-ASCII character or with a control character below 0x20 or equal to 0x7F
+is refused locally with kind `config`, `retryable=false` and
+`reason=unsupported_address`. The request still answers 204; the refusal
+appears in the delivery log only.

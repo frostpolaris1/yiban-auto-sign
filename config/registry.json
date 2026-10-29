@@ -46,7 +46,19 @@
     "group": [
       "部署"
     ],
-    "doc": "对外可访问的基址（绝对 http(s) URL，无尾斜杠）。口令重置邮件按它拼 /reset-password?token=…；未显式设置或指向回环时，开启邮件投递即启动失败",
+    "doc": "对外可访问的基址（绝对 http(s) URL，无尾斜杠）。口令重置邮件按它拼 /reset-password?token=…；开启 YIBAN_RESET_MAIL_ENABLE 时未显式设置或指向回环即启动失败",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_RESET_MAIL_ENABLE": {
+    "type": "bool",
+    "default": false,
+    "group": [
+      "发布"
+    ],
+    "doc": "Go 服务端口令重置邮件投递开关。开启时须显式设非回环的 YIBAN_PUBLIC_BASE_URL 与发件凭据，缺失即启动失败。与旧通知开关 YIBAN_MAIL_ENABLE 独立：Go 侧不读那个键",
     "sensitive": false,
     "web_editable": false,
     "tier": "master",
@@ -1735,7 +1747,7 @@
     "group": [
       "通知"
     ],
-    "doc": "口令重置邮件投递开关；开启时须配基址与凭据",
+    "doc": "邮件通知开关（旧线共用）。Go 服务端不读本键：口令重置邮件由 YIBAN_RESET_MAIL_ENABLE 单独控制",
     "sensitive": false,
     "web_editable": false,
     "tier": "master",

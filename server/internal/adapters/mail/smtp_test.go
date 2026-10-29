@@ -304,6 +304,50 @@ func TestSendRejectsAddressThatBreaksEnvelopeFraming(t *testing.T) {
 	}
 }
 
+// TestSendRejectsAddressesTheDeliveryPathCannotExpress 钉住投递侧的显性拒收。
+//
+// 四个样本都通过注册口径（ValidEmail），本投递路径都无法表达：
+//  1. 含控制字符 0x01/0x7F：net/mail 引用时会把它丢掉
+//     （实测 a\x01b@example.com 变成 "ab"@example.com），
+//     投递地址与注册地址不同，收件人不是注册人。
+//  2. 含非 ASCII：本实现不发 SMTPUTF8，出站必被服务端拒。
+//
+// 断言用户可见结果：本地拒收（未连服务器）、分类 config、不可重试，
+// 且错误链可判 core/mail.ErrUnsupportedAddress（日志按它记原因）。
+func TestSendRejectsAddressesTheDeliveryPathCannotExpress(t *testing.T) {
+	sender, err := mailadapter.NewSMTP(mailadapter.Config{
+		Host: "127.0.0.1", Port: 465, Username: testUser, Password: testPass,
+		From: testUser, TLSMode: "auto",
+	})
+	if err != nil {
+		t.Fatalf("NewSMTP: %v", err)
+	}
+	cases := []struct{ name, to string }{
+		{"control char 0x01", "a\x01b@example.com"},
+		{"delete char 0x7f", "a\x7fb@example.com"},
+		{"non-ASCII local part", "é@example.com"},
+		{"non-ASCII domain", "a@例子.example"},
+	}
+	for _, tc := range cases {
+		if !coreuser.ValidEmail(tc.to) {
+			t.Fatalf("样本 %q 不在注册口径内，本测试失去判别力", tc.to)
+		}
+		err := sender.Send(context.Background(), coremail.Message{
+			To: tc.to, Subject: "s", Text: "body",
+		})
+		if err == nil {
+			t.Fatalf("%s: Send 接受了投递路径无法表达的地址 %q", tc.name, tc.to)
+		}
+		if kind, retryable := coremail.Classify(err); kind != coremail.KindConfig || retryable {
+			t.Fatalf("%s: 分类 = (%s, retryable=%t), want (config, false); err=%v",
+				tc.name, kind, retryable, err)
+		}
+		if !errors.Is(err, coremail.ErrUnsupportedAddress) {
+			t.Fatalf("%s: 错误链没有 core/mail.ErrUnsupportedAddress: %v", tc.name, err)
+		}
+	}
+}
+
 // TestEveryDeclaredTLSModeIsAccepted 是配置闭集与解析器的对照断言。
 //
 // 词表只在 core/mail 定义。往那里加词却忘了改解析器，

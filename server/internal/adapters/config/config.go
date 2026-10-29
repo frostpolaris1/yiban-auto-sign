@@ -16,8 +16,9 @@
 // 环境名是闭集，未知值即启动错误。
 // YIBAN_HASH_PEPPER 至少 16 字符；production 拒绝不安全 cookie。
 // YIBAN_CREDENTIAL_KEY 是 32 字节的 base64，形状错即启动错误。
-// 打开邮件投递时，YIBAN_PUBLIC_BASE_URL 必须是显式设置的公网地址：
-// 缺省值指向本机回环，收件人点开就是死链，故启动即失败。
+// 打开重置邮件投递（YIBAN_RESET_MAIL_ENABLE）时，YIBAN_PUBLIC_BASE_URL
+// 必须是显式设置的公网地址：缺省值指向本机回环，收件人点开就是死链，
+// 故启动即失败。YIBAN_MAIL_ENABLE 不参与本判定：它只服务旧通知线。
 package config
 
 import (
@@ -109,9 +110,10 @@ type Config struct {
 	// PhotoDir 是图片 blob 存储根目录。
 	PhotoDir string
 
-	// MailEnabled 是 SMTP 投递总开关。
+	// ResetMailEnabled 是 Go 侧重置邮件投递总开关（YIBAN_RESET_MAIL_ENABLE）。
 	// 关闭时令牌照常生成，但投递跳过，并留一条显性日志。
-	MailEnabled bool
+	// **不读** YIBAN_MAIL_ENABLE：那个键只服务旧通知线，两边独立启停。
+	ResetMailEnabled bool
 	// MailHost、MailPort 是 SMTP 服务器。
 	MailHost string
 	MailPort int
@@ -124,7 +126,7 @@ type Config struct {
 	// MailTLSMode 取 core/mail 的模式常量之一。
 	MailTLSMode string
 	// PublicBaseURL 是邮件里重置链接的基址（绝对 http(s) URL，无尾斜杠）。
-	// 打开邮件投递时它必须是显式设置的公网地址（见 publicBaseURLProblem）。
+	// 打开重置邮件投递时它必须是显式设置的公网地址（见 publicBaseURLProblem）。
 	PublicBaseURL string
 	// MailTLSConfig 仅测试注入：非 nil 时替代系统根证书校验 SMTP 服务器。
 	// 生产恒为 nil。它**不**来自环境变量：部署面不提供"关闭证书校验"的开关。
@@ -155,7 +157,7 @@ const DefaultPhotoDir = "data/photos"
 
 // DefaultPublicBaseURL 是 YIBAN_PUBLIC_BASE_URL 未设置时的缺省基址。
 // 取本机回环监听地址：开发态下邮件链接指向本进程。
-// **只服务开发态**：打开 YIBAN_MAIL_ENABLE 时该缺省值即启动错误
+// **只服务开发态**：打开 YIBAN_RESET_MAIL_ENABLE 时该缺省值即启动错误
 // （见 publicBaseURLProblem）。
 const DefaultPublicBaseURL = "http://127.0.0.1:47183"
 
@@ -277,14 +279,14 @@ var (
 	keyPhotoDir         = stringKey{"YIBAN_PHOTO_DIR", DefaultPhotoDir}
 	keyDatabaseURL      = stringKey{"YIBAN_DATABASE_URL", ""}
 
-	keyMailEnabled   = boolKey{"YIBAN_MAIL_ENABLE", false}
-	keyMailHost      = stringKey{"YIBAN_MAIL_SMTP_HOST", "smtp.qq.com"}
-	keyMailPort      = intKey{"YIBAN_MAIL_SMTP_PORT", 465, 1, 65535}
-	keyMailUser      = stringKey{"YIBAN_MAIL_USER", ""}
-	keyMailPass      = stringKey{"YIBAN_MAIL_PASS", ""}
-	keyMailFrom      = stringKey{"YIBAN_MAIL_FROM", ""}
-	keyMailTLSMode   = enumKey{"YIBAN_MAIL_TLS_MODE", "auto", mailTLSModes}
-	keyPublicBaseURL = stringKey{"YIBAN_PUBLIC_BASE_URL", DefaultPublicBaseURL}
+	keyResetMailEnabled = boolKey{"YIBAN_RESET_MAIL_ENABLE", false}
+	keyMailHost         = stringKey{"YIBAN_MAIL_SMTP_HOST", "smtp.qq.com"}
+	keyMailPort         = intKey{"YIBAN_MAIL_SMTP_PORT", 465, 1, 65535}
+	keyMailUser         = stringKey{"YIBAN_MAIL_USER", ""}
+	keyMailPass         = stringKey{"YIBAN_MAIL_PASS", ""}
+	keyMailFrom         = stringKey{"YIBAN_MAIL_FROM", ""}
+	keyMailTLSMode      = enumKey{"YIBAN_MAIL_TLS_MODE", "auto", mailTLSModes}
+	keyPublicBaseURL    = stringKey{"YIBAN_PUBLIC_BASE_URL", DefaultPublicBaseURL}
 )
 
 // configSpecs 汇总静态缺省/域的读取规格。
@@ -303,7 +305,7 @@ func configSpecs() []keySpec {
 		keyTimezone.spec(),
 		keyPhotoDir.spec(),
 		keyDatabaseURL.spec(),
-		keyMailEnabled.spec(),
+		keyResetMailEnabled.spec(),
 		keyMailHost.spec(),
 		keyMailPort.spec(),
 		keyMailUser.spec(),
@@ -407,8 +409,9 @@ func LoadFrom(src Source) (*Config, error) {
 		return nil, errors.New("config: YIBAN_PHOTO_DIR must not be empty")
 	}
 
-	// 邮件投递面：缺省关闭；打开后必须给全发件账号，否则启动即失败。
-	if cfg.MailEnabled, err = keyMailEnabled.read(src); err != nil {
+	// 重置邮件面：缺省关闭；打开后必须给全发件账号与公网基址，否则启动即失败。
+	// 只看 YIBAN_RESET_MAIL_ENABLE：YIBAN_MAIL_ENABLE 属旧通知线，Go 侧不读。
+	if cfg.ResetMailEnabled, err = keyResetMailEnabled.read(src); err != nil {
 		return nil, err
 	}
 	cfg.MailHost = strings.TrimSpace(keyMailHost.read(src))
@@ -422,12 +425,12 @@ func LoadFrom(src Source) (*Config, error) {
 	if cfg.MailTLSMode, err = keyMailTLSMode.read(src); err != nil {
 		return nil, err
 	}
-	if cfg.MailEnabled {
+	if cfg.ResetMailEnabled {
 		if cfg.MailHost == "" {
-			return nil, errors.New("config: YIBAN_MAIL_ENABLE requires YIBAN_MAIL_SMTP_HOST")
+			return nil, errors.New("config: YIBAN_RESET_MAIL_ENABLE requires YIBAN_MAIL_SMTP_HOST")
 		}
 		if cfg.MailUser == "" || strings.TrimSpace(cfg.MailPass) == "" {
-			return nil, errors.New("config: YIBAN_MAIL_ENABLE requires YIBAN_MAIL_USER and YIBAN_MAIL_PASS")
+			return nil, errors.New("config: YIBAN_RESET_MAIL_ENABLE requires YIBAN_MAIL_USER and YIBAN_MAIL_PASS")
 		}
 	}
 	// 「显式设置」按原始 env 是否含非空值判定，与 get 的空值口径一致。
@@ -438,10 +441,10 @@ func LoadFrom(src Source) (*Config, error) {
 		return nil, err
 	}
 	cfg.PublicBaseURL = base
-	if cfg.MailEnabled {
+	if cfg.ResetMailEnabled {
 		if problem := publicBaseURLProblem(base, baseSet); problem != "" {
 			return nil, fmt.Errorf(
-				"config: YIBAN_MAIL_ENABLE requires YIBAN_PUBLIC_BASE_URL to be an explicitly set public address (%s); current value %q",
+				"config: YIBAN_RESET_MAIL_ENABLE requires YIBAN_PUBLIC_BASE_URL to be an explicitly set public address (%s); current value %q",
 				problem, base)
 		}
 	}

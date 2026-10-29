@@ -77,7 +77,7 @@ func waitForLog(t *testing.T, logs *syncLog, substr string) {
 // mailEnvConfig 把装配配置指向假 SMTP 服务器。
 func mailEnvConfig(port int) func(*config.Config) {
 	return func(cfg *config.Config) {
-		cfg.MailEnabled = true
+		cfg.ResetMailEnabled = true
 		cfg.MailHost = "127.0.0.1"
 		cfg.MailPort = port
 		cfg.MailUser = e2eMailUser

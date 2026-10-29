@@ -340,9 +340,10 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			return nil, fmt.Errorf("assembly: session issuer: %w", err)
 		}
 		// 邮件端口：关闭时留显性启动警告；打开但配置不全由 config.Load 拒绝。
+		// 只看 YIBAN_RESET_MAIL_ENABLE：YIBAN_MAIL_ENABLE 属旧通知线，Go 侧不读。
 		// 日志只记 host/port/tls_mode：用户名与口令是敏感值，不得出现。
 		var mailer coremail.Sender
-		if cfg.MailEnabled {
+		if cfg.ResetMailEnabled {
 			sender, err := mailadapter.NewSMTP(mailadapter.Config{
 				Host:      cfg.MailHost,
 				Port:      cfg.MailPort,
@@ -362,7 +363,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 				"host", cfg.MailHost, "port", cfg.MailPort, "tls_mode", cfg.MailTLSMode)
 		} else {
 			logger.Warn("mail: SMTP delivery is disabled; password reset links are not delivered",
-				"reason", "YIBAN_MAIL_ENABLE is false")
+				"reason", "YIBAN_RESET_MAIL_ENABLE is false")
 		}
 		authSvc, err = appauth.NewService(appauth.Deps{
 			Users:         pg.NewUserRepo(db),

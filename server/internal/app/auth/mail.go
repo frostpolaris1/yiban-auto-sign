@@ -17,11 +17,13 @@
 // 投递在后台 goroutine 里进行：公开端点不得因 SMTP 慢而拖住响应，
 // 否则响应时延会重新暴露"邮箱是否存在"（已知邮箱要等 SMTP）。
 // 并发投递上限 maxConcurrentResetMails；满即丢弃并记一条显性日志，不排队。
-// 失败只记粗分类（core/mail.Kind）；**令牌、口令、完整邮箱不进日志**。
+// 失败只记粗分类（core/mail.Kind）；地址不可表达时另记 reason=unsupported_address。
+// **令牌、口令、完整邮箱不进日志**。
 package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"sync"
@@ -167,11 +169,18 @@ func (s *Service) deliverReset(to, token string) {
 		}()
 		if err := s.mail.Send(context.Background(), msg); err != nil {
 			kind, retryable := coremail.Classify(err)
-			s.log.Warn("password reset mail delivery failed",
+			attrs := []any{
 				"event", "password_reset.delivery_failed",
 				"kind", string(kind),
 				"retryable", retryable,
-				"email", mask.EmailLabel(to))
+			}
+			// 地址不可表达是配置类失败里最需要一眼区分的一种：
+			// 重试与改凭据都无用，只能改注册地址。
+			if errors.Is(err, coremail.ErrUnsupportedAddress) {
+				attrs = append(attrs, "reason", "unsupported_address")
+			}
+			attrs = append(attrs, "email", mask.EmailLabel(to))
+			s.log.Warn("password reset mail delivery failed", attrs...)
 			return
 		}
 		s.log.Info("password reset mail delivered",
