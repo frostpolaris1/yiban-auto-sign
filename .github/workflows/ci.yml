@@ -99,8 +99,26 @@ jobs:
       #   tests/test_dev_verify_entry.py 的冻结清单钉住。
       # 2026-10-11 起又多了一步：import-linter 结构门（scripts/check-import-linter.py）
       #   与它的元测试（P0 批四条，批 A0 补三条）。同上，命令原文只住 run_ci 一份。
+      # 改动面分类（AGENTS §37d）：旧 Python 栈已冻结；只在改到旧线路径时才跑旧线测试，
+      # Go/UI/文档改动不再为旧线套件付 6 分钟。分类口径唯一住 scripts/ci-scope.sh。
+      - name: Classify change surface
+        id: scope
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            base="${{ github.event.before }}"
+          fi
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            echo "value=mixed" >> "$GITHUB_OUTPUT"
+          else
+            # 浅检出不带 base 的历史；只取该提交的树即可做 --name-only 比较。
+            git fetch --no-tags --depth=1 origin "$base" >/dev/null 2>&1 || true
+            scope=$(bash scripts/ci-scope.sh --base "$base" 2>/dev/null || echo mixed)
+            echo "value=${scope:-mixed}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Gate subset (scripts/dev-verify.sh --ci)
-        run: bash scripts/dev-verify.sh --ci
+        run: bash scripts/dev-verify.sh --ci --scope "${{ steps.scope.outputs.value }}"
 
       # Vue 构建产物可复现门禁的元测试（工单 yiban-auto-sign-spn6）。
       # 为什么单列一步：CI 的 -k 词集住在 scripts/dev-verify.sh 的 run_ci，本单不改该文件
@@ -139,6 +157,7 @@ jobs:
   # ⚠️ 要真的拦得住，须把 `slow-lane` 加进分支保护的 required checks（所有者在仓库设置里
   # 勾选）——与 dependency-audit 同一约束，本文件无法替你做。
   slow-lane:
+    # 旧线专轨：改面无旧线路径时整条跳过（AGENTS §37d）。分类口径同 verify 的 ci-scope.sh。
     runs-on: ubuntu-latest
     # 10 → 15 分钟（R3-025）：本作业新增长尾轨约 +110s（本机实测 193.47s → 305s 合计），
     # CI 机器更慢；这只是上限，不增加正常路径的时长。
@@ -161,7 +180,24 @@ jobs:
           # 只钉 pytest：--slow 串行跑，不需要 xdist；ruff/mypy 属 verify 的静态步。
           pip install pytest==9.1.1
 
+      - name: Classify change surface
+        id: scope
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            base="${{ github.event.before }}"
+          fi
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            echo "value=mixed" >> "$GITHUB_OUTPUT"
+          else
+            # 浅检出不带 base 的历史；只取该提交的树即可做 --name-only 比较。
+            git fetch --no-tags --depth=1 origin "$base" >/dev/null 2>&1 || true
+            scope=$(bash scripts/ci-scope.sh --base "$base" 2>/dev/null || echo mixed)
+            echo "value=${scope:-mixed}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Slow lane (roster slow rows + FAST_KNOWN_SLOW tail, serial)
+        if: steps.scope.outputs.value != 'newstack'
         run: bash scripts/dev-verify.sh --slow
 
   # ---- 依赖漏洞审计门（M28 批次 · 补 Dockerfile 注释里承诺的 pip-audit） ----
