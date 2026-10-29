@@ -1246,6 +1246,46 @@ class VerifyAsyncSwitchOffTest(_A4Base):
 class VerifyAsyncSubmitTest(_A4Base):
     """开关开启：提交即返回，后台任务承担外呼。"""
 
+    def tearDown(self):
+        try:
+            self._drain_async_jobs()
+        finally:
+            super().tearDown()
+
+    def _drain_async_jobs(self, timeout=10.0):
+        """排空本类起的后台任务与席位（跨文件干扰的防线）。
+
+        `yiban.attempt.jobs` 是进程单例；落终态与释放席位不是同一步（看门狗超时
+        与异常路径先 `store.finish`、后释放席位），而 `_wait_job` 只等终态——
+        用例返回时线程可能仍持有席位。xdist 同一 worker 的下一个文件
+        `configure(seat=…)` 后，旧线程会占住新实例的席位
+        （见 `SeatHandleCapturedTest` 的 docstring）。这里在 patch 存活期内等到
+        无 active 任务，再把席位逐枚抢回并归还——席位全空才算排空。超时直接失败
+        并打印现场，不宽限成 pass。
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if db.count_active_verify_jobs() == 0:
+                break
+            time.sleep(0.05)
+        else:
+            active = [dict(r) for r in self._jobs()
+                      if r["status"] in ("pending", "running")]
+            self.fail("后台校验任务 %.1fs 内未落终态（%d 个）：%r"
+                      % (timeout, len(active), active))
+        seat = self.webapp._verify_sem
+        held = 0
+        try:
+            for _ in range(self.webapp.VERIFY_CONCURRENCY_MAX):
+                remaining = deadline - time.time()
+                if remaining <= 0 or not seat.acquire(timeout=remaining):
+                    self.fail("校验席位 %.1fs 内未全部归还（已抢到 %d/%d）"
+                              % (timeout, held, self.webapp.VERIFY_CONCURRENCY_MAX))
+                held += 1
+        finally:
+            for _ in range(held):
+                seat.release()
+
     def test_submit_returns_job_id_and_verifying(self):
         token = self._login()
         # patch 必须覆盖到后台任务跑完为止：提交是异步的，出 with 就还原了，
