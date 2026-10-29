@@ -786,3 +786,11 @@
 .app-capacity-meta {
   margin: 12px 0 0;
 }
+
+/* ---------- 设置页两卡对齐 ----------
+ * 账号信息卡与改密卡内容高度不同。默认 stretch 会把短卡拉齐到长卡，
+ * 卡片底部留出空白。只在本页的 grid 上改为顶部对齐。
+ */
+.app-settings-grid {
+  align-items: start;
+}

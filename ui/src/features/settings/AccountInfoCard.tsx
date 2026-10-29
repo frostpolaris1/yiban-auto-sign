@@ -13,8 +13,7 @@
 
 import { Card } from '@/components/ui/Card'
 import type { SessionUser } from '@/lib/api/auth'
-import { roleLabel } from '@/lib/identity'
-import { userStatusLabel } from './change-password'
+import { roleLabel, userStatusLabel } from '@/lib/identity'
 
 type AccountInfoCardProps = {
   me: SessionUser
@@ -29,7 +28,7 @@ export function AccountInfoCard({ me, className }: AccountInfoCardProps) {
       title="账号信息"
       action={<span className="app-caption">只读</span>}
     >
-      <p className="app-muted">邮箱与角色由当前会话给出。修改需联系管理员。</p>
+      <p className="app-muted">以下信息来自当前会话。邮箱与角色由管理员在创建时设定。</p>
       <dl className="app-detail-list">
         <dt>邮箱</dt>
         <dd>{me.email}</dd>

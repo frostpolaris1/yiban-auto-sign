@@ -8,12 +8,15 @@
  * **口径**
  * `GET /api/auth/me` 的 401 是未登录常态，故 `retry: false`。
  * 标记是进程内状态，不进 localStorage；刷新页面即复位。
- * 过期标记只由业务端点 401 触发，登录接口与 me 探针不触发。
+ * 过期标记由业务端点 401 触发，或由改密的 me 探针在 me 也 401 时触发。
+ * 登录接口与 me 探针自身的 401 不触发。
  */
 
 import { useSyncExternalStore } from 'react'
 import { useQuery, type UseQueryResult } from '@tanstack/react-query'
 import { fetchMe, type SessionUser } from './api/auth'
+import { setCsrfToken } from './api/client'
+import { queryClient } from './query'
 import { SHOWCASE } from './showcase-mode'
 
 export const ME_QUERY_KEY = ['me'] as const
@@ -81,4 +84,20 @@ function subscribe(listener: () => void): () => void {
 
 export function useSessionExpired(): boolean {
   return useSyncExternalStore(subscribe, isSessionExpired, isSessionExpired)
+}
+
+/** 登录页导航的最小形状。`lib` 不认识路由实例，由调用方给出。 */
+type NavigateToLogin = (options: { to: '/login'; replace: true }) => unknown
+
+/**
+ * 会话失效的统一处置。
+ * 标记过期、作废 CSRF、清全部缓存、落登录页。
+ * 会话没了，旧令牌与旧缓存都不该被下一次登录或守卫读到。
+ * 业务端点 401 的全局回调与改密探针的结论都走这里。
+ */
+export function expireSession(navigate: NavigateToLogin): void {
+  markSessionExpired()
+  setCsrfToken(null)
+  queryClient.clear()
+  void navigate({ to: '/login', replace: true })
 }

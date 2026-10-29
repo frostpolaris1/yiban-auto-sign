@@ -117,6 +117,11 @@ export type MockOptions = {
   resetNetworkError?: boolean
   /** 登录态改密的失败注入。缺省 204，且成功后清掉 must_change_password。 */
   changePasswordError?: { status: number; code: string; message: string }
+  /**
+   * 改密时会话已失效：改密与随后的 me 探针都按未登录回 401。
+   * 模拟中间件在业务处理前拒绝请求，而不是口令校验失败。
+   */
+  changePasswordSessionExpired?: boolean
   /** 登录态改密断网：fetch 直接拒绝。 */
   changePasswordNetworkError?: boolean
 }
@@ -231,8 +236,14 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       return route.fulfill({ status: 204 })
     }
 
-    // 登录态改密：成功 204 且清掉待改密标记；401 是旧口令错，409 是新旧相同。
+    // 登录态改密：成功 204 且清掉待改密标记。
+    // 401 有两种来源：旧口令错，或会话已在中间件失效。
+    // 409 是新旧相同。界面靠随后的 me 探针区分前两种。
     if (url.pathname === '/api/auth/change-password' && request.method() === 'POST') {
+      if (options.changePasswordSessionExpired) {
+        sessionRole = null
+        return fail(route, 401, 'unauthorized', 'authentication required')
+      }
       if (options.changePasswordNetworkError) return route.abort('failed')
       if (options.changePasswordError) {
         const { status, code, message } = options.changePasswordError

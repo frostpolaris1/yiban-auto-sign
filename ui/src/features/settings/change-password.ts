@@ -9,12 +9,13 @@
  * 请求体只含契约 `ChangePasswordRequest` 的两个字段；确认字段只在前端比对。
  * 三个字段都必填。口令可以有空格，故空判据是长度为零，不做 trim。
  * 新口令等于当前口令在页面内拦截，不发请求。
- * 401 与 409 由服务端下结论，界面用固定文案，不展示后端原文。
+ * 409 由服务端下结论，界面用固定文案，不展示后端原文。
  * 400 与其余信封错误照实展示 `code · message`。
- * 用户状态文案与学校状态的同一组词一致：`正常`、`停用`。
+ * 401 先由 `lib/api/auth` 探一次 me：me 200 是当前口令错，me 401 是会话失效。
+ * 用户状态文案在 `lib/identity`，与角色文案同处。
  */
 
-import type { ChangePasswordRequest, UserStatus } from '../../lib/api/auth'
+import type { ChangePasswordRequest } from '../../lib/api/auth'
 import { ApiError, describeApiError } from '../../lib/api/client'
 
 export type ChangePasswordDraft = {
@@ -69,7 +70,8 @@ export function buildChangePasswordBody(
 
 /**
  * 服务端错误的字段落点。
- * 401 挂当前密码，409 挂新密码；其余错误返回 null，由通栏提示承载。
+ * 401 挂当前密码（调用前已由 me 探针排除会话失效），409 挂新密码；
+ * 其余错误返回 null，由通栏提示承载。
  */
 export function changePasswordFieldError(
   error: unknown,
@@ -84,9 +86,4 @@ export function changePasswordFieldError(
 export function changePasswordErrorMessage(error: unknown): string {
   if (error instanceof ApiError) return describeApiError(error)
   return NETWORK_ERROR_MESSAGE
-}
-
-/** 用户状态文案。与学校状态共用同一组词，避免两处各写一套。 */
-export function userStatusLabel(status: UserStatus): string {
-  return status === 'active' ? '正常' : '停用'
 }

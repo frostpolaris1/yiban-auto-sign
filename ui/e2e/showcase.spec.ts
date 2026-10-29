@@ -15,7 +15,9 @@ import { visibleText } from './support/visible-text'
  * invariant 8：展示构建只读。账号、学校、时间片三页的写入口一律禁用，界面可见
  * `展示模式只读`。读操作照常：筛选、翻页、详情抽屉、管理员列表、计划预览。
  * 写入口漏一个，访客就会打到静态站的 SPA 回落并看到 JSON 解析错误。
- * 禁用按钮本身不派发 click；零请求断言是兜底，真正的判据是 disabled 与文案。
+ * 禁用按钮本身不派发 click；唯一提交按钮被禁用时，Chromium 也不派发回车隐式提交。
+ * 设置页另用 `requestSubmit()` 走同一条 submit 事件路径，直接验证 onSubmit 的只读守卫。
+ * 零请求断言是兜底，真正的判据是 disabled、文案与守卫。
  */
 
 /** 界面上的只读原因。断言用户可见文本，不导入实现常量。 */
@@ -200,5 +202,23 @@ test('invariant 8: the settings page shows the read-only reason and sends no pas
   await submit.click({ force: true })
   await expect(page.locator('.app-deny-note')).toHaveText(READ_ONLY_REASON)
 
+  expect(apiRequests, 'a read-only showcase sends no password change').toEqual([])
+})
+
+test('invariant 8: the settings form ignores Enter while read-only', async ({ page }) => {
+  const apiRequests = trackApiRequests(page)
+
+  await page.goto('/settings')
+  await page.getByLabel(/^当前密码/).fill('showcase-current')
+  await page.getByLabel(/^新密码/).fill('showcase-next')
+  await page.getByLabel(/^确认新密码/).fill('showcase-next')
+  await page.getByLabel(/^确认新密码/).press('Enter')
+  // Chromium 对「唯一提交按钮被禁用」的表单不派发隐式提交。
+  // 用同一 submit 事件路径补一次，直接验证 onSubmit 的只读守卫。
+  await page.locator('form').evaluate((form) => (form as HTMLFormElement).requestSubmit())
+
+  await expect(page).toHaveURL(/\/settings$/)
+  await expect(page.getByRole('button', { name: '修改密码' })).toBeDisabled()
+  await expect(page.locator('.app-deny-note')).toHaveText(READ_ONLY_REASON)
   expect(apiRequests, 'a read-only showcase sends no password change').toEqual([])
 })

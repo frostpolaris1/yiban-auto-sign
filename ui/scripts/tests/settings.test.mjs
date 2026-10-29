@@ -3,12 +3,14 @@ import test from 'node:test'
 
 import { isSessionExpiry } from '../../src/lib/api/auth.ts'
 import { ApiError } from '../../src/lib/api/client.ts'
+import { userStatusLabel } from '../../src/lib/identity.ts'
+import { statusLabel } from '../../src/features/accounts/display.ts'
+import { schoolStatusLabel } from '../../src/features/schools/display.ts'
 import {
   NETWORK_ERROR_MESSAGE,
   buildChangePasswordBody,
   changePasswordErrorMessage,
   changePasswordFieldError,
-  userStatusLabel,
   validateChangePassword,
 } from '../../src/features/settings/change-password.ts'
 
@@ -18,7 +20,8 @@ import {
  * 就地校验：三个字段必填；新口令不得等于当前口令；两次输入必须一致。
  * 请求体：只有契约的两个字段，确认字段不外泄。
  * 错误落点：401 挂当前密码，409 挂新密码，其余走通栏。
- * 401 分类：改密的 401 是旧口令错，不是会话过期。
+ * 401 分类：改密路径不直接触发会话过期处置；`lib/api/auth` 用 me 探针区分
+ * 「当前口令错」与「会话失效」，探针结论后才落相应的界面处置。
  */
 
 const CURRENT = 'not-a-real-password'
@@ -112,13 +115,19 @@ test('a transport failure becomes one fixed network message', () => {
   assert.equal(NETWORK_ERROR_MESSAGE, '网络异常，请稍后重试')
 })
 
-test('the user status uses the same two words as the school status', () => {
+test('the user status maps both contract values to one pair of words', () => {
+  // 钉映射：契约的每个取值都有文案，两个取值不共用一句话。
   assert.equal(userStatusLabel('active'), '正常')
   assert.equal(userStatusLabel('disabled'), '停用')
+  assert.notEqual(userStatusLabel('active'), userStatusLabel('disabled'))
+  // 用户、学校、账号三处状态表同源：改一处的词不会静默漂移。
+  assert.equal(schoolStatusLabel('active'), userStatusLabel('active'))
+  assert.equal(schoolStatusLabel('disabled'), userStatusLabel('disabled'))
+  assert.equal(statusLabel('active'), userStatusLabel('active'))
 })
 
-test('a change-password 401 is a credential error, not a session expiry', () => {
-  // 旧口令错不能把已登录用户弹回登录页。
+test('a change-password 401 is not classified as a session expiry by path alone', () => {
+  // 改密路径的 401 先由 me 探针下结论；全局处置不得抢跑。
   assert.equal(isSessionExpiry('/api/auth/change-password'), false)
   assert.equal(isSessionExpiry('/api/auth/login'), false)
   assert.equal(isSessionExpiry('/api/auth/me'), false)

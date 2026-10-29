@@ -7,15 +7,17 @@
  *
  * **口径**
  * 状态值只取自契约 `SchoolStatus`：`active | disabled`。
- * 标签是全仓唯一一份。时间格式化在 `lib/format`。
+ * 两个文案引用 `lib/identity` 的共用状态词，与用户状态同源。
+ * 时间格式化在 `lib/format`。
  */
 
 import type { Tone } from '@/components/ui/Badge'
 import type { SchoolStatus } from '@/lib/api/school'
+import { ACTIVE_STATUS_LABEL, DISABLED_STATUS_LABEL } from '@/lib/identity'
 
 const LABELS: Record<SchoolStatus, string> = {
-  active: '正常',
-  disabled: '停用',
+  active: ACTIVE_STATUS_LABEL,
+  disabled: DISABLED_STATUS_LABEL,
 }
 
 /** 下拉选项与标签同源，避免两处文案漂移。 */

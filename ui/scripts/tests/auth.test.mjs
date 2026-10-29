@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { isSessionExpiry } from '../../src/lib/api/auth.ts'
+import {
+  SessionExpiredError,
+  changePassword,
+  isSessionExpiry,
+} from '../../src/lib/api/auth.ts'
 import { ApiError } from '../../src/lib/api/client.ts'
 import { sanitizeRedirect } from '../../src/lib/redirect.ts'
 import { buildLoginBody, isLoginPath } from '../../src/features/auth/login.ts'
@@ -149,4 +153,104 @@ test('a public reset 401 is not a session expiry', () => {
   // 两页都是 public 端点：401 只表示令牌问题，不得标记会话过期。
   assert.equal(isSessionExpiry('/api/auth/forgot-password'), false)
   assert.equal(isSessionExpiry('/api/auth/reset-password'), false)
+})
+
+const CHANGE_BODY = {
+  current_password: 'not-a-real-password',
+  new_password: 'not-a-real-new-password',
+}
+
+function jsonResponse(body, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+function errorResponse(status, code, message) {
+  return jsonResponse({ error: { code, message } }, status)
+}
+
+/** 按调用顺序回放响应；返回实际请求过的路径。 */
+async function withFetch(responses, run) {
+  const calls = []
+  const original = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    calls.push(String(input))
+    return responses[calls.length - 1]
+  }
+  try {
+    await run()
+  } finally {
+    globalThis.fetch = original
+  }
+  return calls
+}
+
+test('a change-password 401 probes me: a live session means a wrong password', async () => {
+  const calls = await withFetch(
+    [
+      errorResponse(401, 'unauthorized', 'invalid email or password'),
+      jsonResponse({ csrf_token: 'probe-token' }),
+    ],
+    async () => {
+      await assert.rejects(
+        changePassword(CHANGE_BODY),
+        (error) => error instanceof ApiError && error.status === 401,
+        'a live session keeps the 401 as a password field error',
+      )
+    },
+  )
+
+  assert.deepEqual(calls, ['/api/auth/change-password', '/api/auth/me'])
+})
+
+test('a change-password 401 with a dead session raises the session-expired signal', async () => {
+  const calls = await withFetch(
+    [
+      errorResponse(401, 'unauthorized', 'authentication required'),
+      errorResponse(401, 'unauthorized', 'authentication required'),
+    ],
+    async () => {
+      await assert.rejects(
+        changePassword(CHANGE_BODY),
+        (error) => error instanceof SessionExpiredError,
+        'a dead session must not look like a wrong current password',
+      )
+    },
+  )
+
+  assert.deepEqual(calls, ['/api/auth/change-password', '/api/auth/me'])
+})
+
+test('a non-401 change-password failure does not probe the session', async () => {
+  const calls = await withFetch(
+    [errorResponse(409, 'conflict', 'new password must differ from the current password')],
+    async () => {
+      await assert.rejects(
+        changePassword(CHANGE_BODY),
+        (error) => error instanceof ApiError && error.status === 409,
+      )
+    },
+  )
+
+  assert.deepEqual(calls, ['/api/auth/change-password'])
+})
+
+test('a probe failure that is not a 401 is reported, not guessed', async () => {
+  const calls = await withFetch(
+    [
+      errorResponse(401, 'unauthorized', 'authentication required'),
+      errorResponse(500, 'internal_error', 'session lookup failed'),
+    ],
+    async () => {
+      await assert.rejects(
+        changePassword(CHANGE_BODY),
+        (error) => error instanceof ApiError && error.status === 500,
+        'an inconclusive probe must not claim the session is dead',
+      )
+    },
+  )
+
+  assert.deepEqual(calls, ['/api/auth/change-password', '/api/auth/me'])
 })

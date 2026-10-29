@@ -124,7 +124,7 @@ export function AppShell() {
           {me.must_change_password ? (
             <div className="app-alert-block">
               <Alert tone="warning" title="需要重置密码">
-                账号需要重置密码。请先修改密码，再继续使用。{' '}
+                账号需要重置密码。建议立即修改密码。{' '}
                 <Link className="app-inline-link" to="/settings">
                   去修改
                 </Link>

@@ -5,6 +5,7 @@ import {
   SESSION_PASSWORD,
   changePasswordCalls,
   mockAccountsApi,
+  type FakeApi,
 } from './support/fake-accounts-api'
 
 /**
@@ -13,6 +14,8 @@ import {
  * 模拟的真实用户动作：登录用户打开顶栏「账号设置」，看一眼自己的邮箱与角色，
  * 再填当前口令、新口令、确认新口令并提交。
  * 断言用户可见结果：toast 文案、提示条消失、字段清空、错误文案、请求体形状。
+ * 401 的两种来源要分开：me 探针仍 200 ⇒ 当前口令错，留本页；
+ * me 探针也 401 ⇒ 会话失效，落登录页并显示过期提示，不得提示口令错。
  *
  * 不钉组件名，不钉调用顺序。请求次数用假 API 的记录判。
  */
@@ -42,6 +45,14 @@ async function submitChange(
   await page.getByLabel(/^新密码/).fill(next)
   await page.getByLabel(/^确认新密码/).fill(confirmation)
   await page.getByRole('button', { name: '修改密码' }).click()
+}
+
+/** 改密请求之后发出的 me 探针。用于判 401 有没有被探针分诊。 */
+function meProbesAfterChange(api: FakeApi) {
+  const changeAt = api.calls.findIndex((call) => call.path === '/api/auth/change-password')
+  return api.calls
+    .slice(changeAt + 1)
+    .filter((call) => call.method === 'GET' && call.path === '/api/auth/me')
 }
 
 test('settings: the account card shows email, role and status only', async ({ page }) => {
@@ -97,13 +108,33 @@ test('settings: a wrong current password says so and keeps the session', async (
   await submitChange(page, WRONG_CURRENT, NEW_PASSWORD)
 
   await expect(page.getByText('当前密码不正确')).toBeVisible()
-  // 401 是旧口令错，不是会话过期：留在本页，不回登录页，不显示过期提示。
+  // 401 有两种来源。me 探针仍返回会话 ⇒ 是旧口令错：留在本页，不显示过期提示。
   await expect(page).toHaveURL(/\/settings$/)
   await expect(page.getByText('会话已过期，请重新登录')).toHaveCount(0)
   // 后端信封原文不得直接展示：界面用固定文案。
   await expect(page.getByText('invalid email or password')).toHaveCount(0)
   await expect(page.getByLabel(/^当前密码/)).toHaveValue(WRONG_CURRENT)
   expect(changePasswordCalls(api), 'the request was attempted once').toHaveLength(1)
+  expect(meProbesAfterChange(api), 'the 401 was disambiguated by one me probe').toHaveLength(1)
+})
+
+test('settings: a 401 from a dead session lands on login, not a password error', async ({
+  page,
+}) => {
+  const api = await mockAccountsApi(page, { role: 'master', changePasswordSessionExpired: true })
+  await openSettings(page)
+
+  await submitChange(page, SESSION_PASSWORD, NEW_PASSWORD)
+
+  // 会话没了：落登录页并说明过期，不能把用户引去猜当前口令。
+  await expect(page).toHaveURL(/\/login$/)
+  await expect(page.getByText('会话已过期，请重新登录')).toBeVisible()
+  await expect(page.getByText('当前密码不正确')).toHaveCount(0)
+  expect(changePasswordCalls(api), 'the change was attempted once').toHaveLength(1)
+  // 探针一次；清缓存后守卫与登录页还会各自再取会话，故只判「至少一次」。
+  expect(meProbesAfterChange(api).length, 'the page probed me after the 401').toBeGreaterThanOrEqual(
+    1,
+  )
 })
 
 test('settings: a reused password reports the server conflict in product words', async ({

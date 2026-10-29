@@ -7,21 +7,23 @@
  *
  * **口径**
  * 就地校验先跑：有本地错误即不发请求。
- * 401 落当前密码字段，409 落新密码字段，其余错误进通栏提示。
+ * 401 先经 me 探针定论：会话失效 ⇒ 统一过期处置；会话仍在 ⇒ 落当前密码字段。
+ * 409 落新密码字段，其余错误进通栏提示。
  * 成功后清空三个字段、刷新会话缓存（提示条随之消失）、发一条 toast。
- * 展示构建下提交按钮置灰，原因走 `READ_ONLY_REASON`。
+ * 展示构建下提交按钮置灰；onSubmit 另有只读守卫，回车或脚本提交都发不出请求。
  * 表单带 `noValidate`：错误文案只由本组件给出，不混浏览器气泡。
  */
 
 import { useEffect, useRef, useState } from 'react'
+import { useNavigate } from '@tanstack/react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Alert } from '@/components/ui/Alert'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { TextInput } from '@/components/ui/Input'
 import { notifySuccess } from '@/components/ui/toast'
-import { changePassword, type SessionUser } from '@/lib/api/auth'
-import { ME_QUERY_KEY } from '@/lib/session'
+import { SessionExpiredError, changePassword, type SessionUser } from '@/lib/api/auth'
+import { ME_QUERY_KEY, expireSession } from '@/lib/session'
 import { READ_ONLY_REASON, SHOWCASE } from '@/lib/showcase-mode'
 import {
   PASSWORD_CHANGED_TOAST,
@@ -51,6 +53,7 @@ type ChangePasswordCardProps = {
 
 export function ChangePasswordCard({ className }: ChangePasswordCardProps) {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const [current, setCurrent] = useState('')
   const [next, setNext] = useState('')
   const [confirm, setConfirm] = useState('')
@@ -77,6 +80,13 @@ export function ChangePasswordCard({ className }: ChangePasswordCardProps) {
       document.getElementById(CURRENT_ID)?.focus()
     },
     onError: (error) => {
+      // 会话失效不是口令错：统一过期处置，绝不给「当前密码不正确」。
+      if (error instanceof SessionExpiredError) {
+        setErrors({})
+        setGeneralError(null)
+        expireSession((options) => navigate(options))
+        return
+      }
       const fieldError = changePasswordFieldError(error)
       if (fieldError) {
         setErrors({ [fieldError.field]: fieldError.message })
@@ -116,6 +126,8 @@ export function ChangePasswordCard({ className }: ChangePasswordCardProps) {
         className="app-form-stack"
         onSubmit={(event) => {
           event.preventDefault()
+          // 只读守卫先于一切：禁用按钮挡不住回车与脚本提交。
+          if (readOnlyReason) return
           if (pending) return
           mutation.reset()
           setSubmitCount((count) => count + 1)

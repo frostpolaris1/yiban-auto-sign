@@ -23,7 +23,7 @@ React 19 + Vite 8 + TypeScript 7。视觉语言复用 Adminator 4.4.0。
 | `npm run gate:license` | 依赖许可证门。禁用许可证或清单漂移即红 |
 | `npm run test:unit` | fetch、查询默认值、游标、账号页、学校页、时间片页、账号设置页、看板与认证纯逻辑单测，加上图标来源门（`icon-source`：lucide 唯一、TS 字符串载荷无内联 svg、CSS data URI 登记、品牌标记 JSX 全量哈希、导入白名单），运行器为 `node:test` |
 | `npm run build:showcase` | 构建 `VITE_SHOWCASE=1` 的展示产物到 `dist-showcase/` |
-| `npm run test:e2e` | 全量 Playwright（252 条），串行。先跑 `npm run build` |
+| `npm run test:e2e` | 全量 Playwright（254 条），串行。先跑 `npm run build` |
 | `npm run test:e2e:fast` | 收口快路：行为 4 并发 + 视觉 1 并发。先跑 `npm run build` |
 | `npm run test:behavior` | 只跑行为用例，4 并发（`e2e/` 下除视觉外的全部 spec） |
 | `npm run test:shots` | 只跑视觉用例，1 并发 |
@@ -83,7 +83,7 @@ ui/src/
 - `styles/tokens.css` 是唯一颜色来源。36 个浅色 token 加 36 个深色 token。取值与 Adminator `_tokens.scss` 一致。
 - `styles/adminator.css` 是 `web/static/vendor/adminator/adminator.css` 的逐字节副本。源文件 68,956 B，sha256 `c94aa111a7a769f273e03e8a90bb266811965b305ce340a451e4e7268d52acbe`。
 - `styles/app.css` 只放项目覆盖层。颜色、圆角、阴影只允许引用 token。
-- 组件只用 Adminator 类名。`app-*` 类是登记过的扩展。扩展清单见 `app.css` 注释。
+- 组件只用 Adminator 类名。`app-*` 是项目扩展层：样式规则集中在 `styles/app.css`，少数类只作行为或测试钩子（如 `.app-account-row`），没有样式规则。
 
 `scripts/token-gate.mjs` 做三项检查：
 
@@ -126,9 +126,9 @@ node scripts/token-gate.mjs
 profile 菜单与会话过期提示各 2 张，toast 明暗各 1 张，共 78 张（每平台）。
 win32 套 78 个文件已入库；linux 套现有 74 个，`/settings` 4 张需在 Linux 上跑 `npm run test:shots:update` 补齐。
 
-行为用例 173 条：账号页 28 条、认证 36 条、看板 14 条、画廊 9 条、学校页 21 条、
-时间片页与时间偏好 21 条、账号设置页 13 条、展示模式 6 条、微交互 25 条。
-视觉文件另有无溢出 1 条。Playwright 总计 252 条。
+行为用例 175 条：账号页 28 条、认证 36 条、看板 14 条、画廊 9 条、学校页 21 条、
+时间片页与时间偏好 21 条、账号设置页 14 条、展示模式 7 条、微交互 25 条。
+视觉文件另有无溢出 1 条。Playwright 总计 254 条。
 
 展示模式用例由 `npm run build:showcase` 构建的 `dist-showcase` 提供。
 Playwright 的第二个 webServer 在 4174 端口预览它；`e2e/showcase.spec.ts` 用它钉零请求。
@@ -174,7 +174,9 @@ WSL 读 `-chromium-linux.png`，Windows 读 `-chromium-win32.png`。
   master/admin 读 `/api/schedule/windows` 与 `/api/capacity`。看板不画图表。
 - 不接 TanStack Table、Chart.js、react-day-picker、SSE。
 - 忘记密码与重置密码两页已接公开的令牌流。
-  登录态改密已接 `POST /api/auth/change-password`：401 是当前口令错，409 是新旧相同。
+  登录态改密已接 `POST /api/auth/change-password`：409 是新旧相同。
+  401 有两种来源：当前口令错、会话失效。界面收到 401 后探一次 `GET /api/auth/me`：
+  me 200 显示「当前密码不正确」；me 401 走会话过期处置并落登录页。
   成功撤销本人其余会话并清 `must_change_password`；本页不显示上次改密时间，
   因为 `GET /api/auth/me` 不返回该字段。
   服务端尚未接线令牌投递：它只创建令牌，不发邮件。界面文案按产品要求固定。

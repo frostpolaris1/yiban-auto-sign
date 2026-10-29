@@ -8,6 +8,7 @@
  * **口径**
  * 会话由壳保证：`useMe` 与壳读同一份 `['me']` 缓存，不额外请求。
  * 两卡并排，窄屏自动叠成一列（`.grid` 与 `.col-6` 的既有行为）。
+ * 两卡顶部对齐，高度各随内容（本页 grid 加 `align-items: start`）。
  * 所有角色都能进本页：改密端点对三种角色开放。
  */
 
@@ -35,7 +36,7 @@ export function SettingsView() {
         subtitle="查看当前账号信息，并修改登录密码。"
       />
 
-      <div className="grid">
+      <div className="grid app-settings-grid">
         <AccountInfoCard me={me} className="col-6" />
         <ChangePasswordCard className="col-6" />
       </div>
