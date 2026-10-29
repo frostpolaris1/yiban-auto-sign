@@ -9,7 +9,7 @@
 // core 层纯领域包。app/schedule 声明端口，adapters/pg 实现。
 //
 // # 复用
-// PlanRow、WindowRecord、State 转换。
+// PlanRow、WindowRecord、TimePref、State 转换、自选偏移的取值边界。
 //
 // # 口径
 // 一行计划 = 一个账号 × 一个学校任务 × 一个业务日。
@@ -18,6 +18,15 @@
 package schedule
 
 import "time"
+
+// 自选偏移的取值范围。用户自选与旧库补录共用此边界。
+// 建表 CHECK（migrations/postgres/00014）取同值；两侧不一致时数据库报错，不静默写入。
+const (
+	// MaxOffsetMin 是偏移上限（不含）：业务日最多 1440 分钟。
+	MaxOffsetMin = 1440
+	// GranularityMin 是偏移粒度，与计划片跨度一致。
+	GranularityMin = 5
+)
 
 // PlanRow 是一行排期任务：账号 A 在业务日 D 为学校任务 T 预留的尝试位。
 type PlanRow struct {

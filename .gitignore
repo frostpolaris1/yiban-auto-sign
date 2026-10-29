@@ -144,6 +144,7 @@ docs/dev/*
 *.pem
 # 前导斜杠只指仓库根的发布件目录；无斜杠会连 `scripts/release/` 一起吞掉。
 /release/
+!docs/dev/time-prefs-backfill.md
 .superpowers/
 
 # ZCode 工具目录
