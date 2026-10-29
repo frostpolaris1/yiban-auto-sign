@@ -29,6 +29,7 @@ import (
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/config"
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 )
 
 // countingHandler 记录全部日志消息，供重复装配断言使用。
@@ -311,8 +312,11 @@ func TestNewServerClosesPoolOnHTTPShutdown(t *testing.T) {
 		t.Fatalf("Shutdown: %v", err)
 	}
 	// Shutdown 用 goroutine 跑 onShutdown，给它一个调度窗口。
-	deadline := time.Now().Add(time.Second)
-	for !closed.Load() && time.Now().Before(deadline) {
+	// 时刻必须走 clock 包：canonical 的 clock.now 规则管到 _test.go，
+	// `server/scripts/verify.sh` 会以 -tests 跑该门。
+	clk := clock.System{}
+	deadline := clk.Now().Add(time.Second)
+	for !closed.Load() && clk.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	if !closed.Load() {
