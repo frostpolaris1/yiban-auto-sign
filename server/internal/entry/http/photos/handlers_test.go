@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -206,7 +207,7 @@ func TestPhotoGetNotModified(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			svc := &fakeService{getRec: sampleRecord(), getBody: io.NopCloser(bytes.NewReader(data))}
+			svc := &fakeService{getRec: recordFor(data), getBody: io.NopCloser(bytes.NewReader(data))}
 			engine, issued := newRouter(t, corescope.User("u1"), svc)
 			headers := map[string]string{}
 			if tc.inm != "" {
@@ -244,7 +245,7 @@ func TestPhotoGetNotModifiedSkipsBlobOpen(t *testing.T) {
 	head := sampleRecord()
 	etag := `"` + hex.EncodeToString(head.SHA256[:]) + `"`
 
-	svc := &fakeService{getRec: sampleRecord(), getBody: io.NopCloser(bytes.NewReader(data))}
+	svc := &fakeService{getRec: recordFor(data), getBody: io.NopCloser(bytes.NewReader(data))}
 	engine, issued := newRouter(t, corescope.User("u1"), svc)
 	rec := requestWithHeaders(t, engine, issued, http.MethodGet, "/api/me/photos/photo-1",
 		map[string]string{"If-None-Match": etag})
@@ -255,7 +256,7 @@ func TestPhotoGetNotModifiedSkipsBlobOpen(t *testing.T) {
 		t.Fatalf("304 打开了 blob 流 %d 次；条件命中不得 Open", svc.openCalls)
 	}
 
-	svc = &fakeService{getRec: sampleRecord(), getBody: io.NopCloser(bytes.NewReader(data))}
+	svc = &fakeService{getRec: recordFor(data), getBody: io.NopCloser(bytes.NewReader(data))}
 	engine, issued = newRouter(t, corescope.User("u1"), svc)
 	rec = request(t, engine, issued, http.MethodGet, "/api/me/photos/photo-1", nil, "")
 	if rec.Code != http.StatusOK {
@@ -286,7 +287,7 @@ func TestPhotoGetRepeatedIfNoneMatchLines(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			svc := &fakeService{getRec: sampleRecord(), getBody: io.NopCloser(bytes.NewReader(data))}
+			svc := &fakeService{getRec: recordFor(data), getBody: io.NopCloser(bytes.NewReader(data))}
 			engine, issued := newRouter(t, corescope.User("u1"), svc)
 			rec := requestWithHeaderLines(t, engine, issued, http.MethodGet, "/api/me/photos/photo-1",
 				"If-None-Match", tc.lines...)
@@ -333,6 +334,14 @@ func sampleRecord() corephoto.Record {
 		ID: "photo-1", OwnerUserID: "u1", SHA256: sha, Mime: "image/png",
 		Width: 12, Height: 8, Bytes: 4, CreatedAt: time.Date(2026, 10, 27, 8, 0, 0, 0, time.UTC),
 	}
+}
+
+// recordFor 返回字节数等于 data 的记录。
+// 流式用例的 Content-Length 必须等于实际写出的字节数。
+func recordFor(data []byte) corephoto.Record {
+	rec := sampleRecord()
+	rec.Bytes = int64(len(data))
+	return rec
 }
 
 // ---- 用例 ----
@@ -409,7 +418,7 @@ func TestPhotoUploadRejectsBadBody(t *testing.T) {
 func TestPhotoGetStreams(t *testing.T) {
 	data := []byte("png-bytes")
 	svc := &fakeService{
-		getRec:  sampleRecord(),
+		getRec:  recordFor(data),
 		getBody: io.NopCloser(bytes.NewReader(data)),
 	}
 	engine, issued := newRouter(t, corescope.User("u1"), svc)
@@ -419,6 +428,9 @@ func TestPhotoGetStreams(t *testing.T) {
 	}
 	if rec.Header().Get("Content-Type") != "image/png" {
 		t.Fatalf("content-type = %q", rec.Header().Get("Content-Type"))
+	}
+	if got := rec.Header().Get("Content-Length"); got != strconv.Itoa(len(data)) {
+		t.Fatalf("content-length = %q, want %d", got, len(data))
 	}
 	head := sampleRecord()
 	wantETag := `"` + hex.EncodeToString(head.SHA256[:]) + `"`
@@ -600,10 +612,8 @@ func (r *slowReader) Read(p []byte) (int, error) {
 // 期望状态 200 且读回全部字节。
 func TestPhotoGetSurvivesServerWriteTimeout(t *testing.T) {
 	data := bytes.Repeat([]byte("png"), 4<<10)
-	rec := sampleRecord()
-	rec.Bytes = int64(len(data))
 	svc := &fakeService{
-		getRec:  rec,
+		getRec:  recordFor(data),
 		getBody: io.NopCloser(&slowReader{data: data, chunk: 1 << 10, delay: 20 * time.Millisecond}),
 	}
 	engine, issued := newRouter(t, corescope.User("u1"), svc)

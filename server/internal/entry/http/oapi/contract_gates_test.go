@@ -586,10 +586,11 @@ func TestAdditionalPropertiesScannerCoversFlowStyle(t *testing.T) {
 	}
 }
 
-// contractBlock 是一个状态码块的摘录：状态行行号与块内各行。
+// contractBlock 是一个状态码块的摘录：状态行行号、缩进与块内各行。
 type contractBlock struct {
-	line  int
-	lines []string
+	line   int
+	indent int
+	lines  []string
 }
 
 // contractNotModifiedBlocks 取出每个 304 状态行的响应块。
@@ -612,7 +613,7 @@ func contractNotModifiedBlocks(t *testing.T, doc string) []contractBlock {
 		}
 		if m := contractStatusLine.FindStringSubmatch(trimmed); m != nil {
 			if m[1] == "304" {
-				cur, curIndent = &contractBlock{line: i + 1}, indent
+				cur, curIndent = &contractBlock{line: i + 1, indent: indent}, indent
 			}
 			continue
 		}
@@ -629,25 +630,47 @@ func contractNotModifiedBlocks(t *testing.T, doc string) []contractBlock {
 	return out
 }
 
+// contractBlockScalar 匹配块标量的起始键：值以 | 或 > 开头。
+var contractBlockScalar = regexp.MustCompile(`^\S+:\s*[|>][-+]?\s*$`)
+
 // notModifiedDeclaresETag 判 304 块是否在 headers 之下声明 ETag。
-// 只认 responses.<状态>.headers.ETag 这一路径；说明文字里的 ETag 不算。
-func notModifiedDeclaresETag(lines []string) bool {
-	inHeaders, headersIndent := false, -1
-	for _, raw := range lines {
+//
+// 只认 responses.<状态>.headers.<直接子键> 这一路径。
+// 块标量（description 正文）里的同名文字不算。
+// 子键的缩进由块内第一行决定，故缩进步长不影响判定。
+func notModifiedDeclaresETag(block contractBlock) bool {
+	inHeaders := false
+	headersIndent, childIndent := -1, -1
+	scalarIndent := -1
+	for _, raw := range block.lines {
 		trimmed := strings.TrimSpace(raw)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+		if trimmed == "" {
 			continue
 		}
 		indent := contractIndent(raw)
-		if inHeaders && indent <= headersIndent {
-			inHeaders = false
+		if scalarIndent >= 0 {
+			if indent > scalarIndent {
+				continue // 块标量正文
+			}
+			scalarIndent = -1
 		}
-		if trimmed == "headers:" {
-			inHeaders, headersIndent = true, indent
+		if m := contractBlockScalar.FindStringSubmatch(trimmed); m != nil {
+			scalarIndent = indent
 			continue
 		}
-		if inHeaders && strings.HasPrefix(trimmed, "ETag:") {
-			return true
+		if inHeaders {
+			if indent <= headersIndent {
+				inHeaders, childIndent = false, -1
+			} else if childIndent < 0 {
+				childIndent = indent
+			}
+			if inHeaders && indent == childIndent && strings.HasPrefix(trimmed, "ETag:") {
+				return true
+			}
+			continue
+		}
+		if trimmed == "headers:" && indent > block.indent {
+			inHeaders, headersIndent, childIndent = true, indent, -1
 		}
 	}
 	return false
@@ -672,14 +695,14 @@ func TestNotModifiedResponsesDeclareETag(t *testing.T) {
 		t.Fatalf("304 状态行 %d 处，行扫描得 %d 块；门与契约形状不符", declared, len(blocks))
 	}
 	for _, block := range blocks {
-		if !notModifiedDeclaresETag(block.lines) {
+		if !notModifiedDeclaresETag(block) {
 			t.Errorf("304 响应未在 headers 下声明 ETag（openapi.yaml:%d）", block.line)
 		}
 	}
 }
 
 // 扫描只在 headers 之下认 ETag。说明文字里的 ETag 不算，流式 304 也不算。
-// 真实契约只有块式写法；本用例钉住另外两种形状，防止门被误绿。
+// 真实契约只有块式写法；本用例钉住其余形状，防止门被误绿。
 func TestNotModifiedScannerShapes(t *testing.T) {
 	doc := `paths:
   /a:
@@ -695,21 +718,38 @@ func TestNotModifiedScannerShapes(t *testing.T) {
       x-roles: [public]
       responses:
         '304': { description: flow form }
+  /c:
+    get:
+      operationId: C
+      x-roles: [public]
+      responses:
+        '304':
+          description: |
+            ETag: fake
+  /d:
+    get:
+      operationId: D
+      x-roles: [public]
+      responses:
+        '304':
+          description: |
+            headers:
+              ETag: fake
 `
 	blocks := contractNotModifiedBlocks(t, doc)
-	if len(blocks) != 2 {
-		t.Fatalf("304 块 = %d, want 2", len(blocks))
+	if len(blocks) != 4 {
+		t.Fatalf("304 块 = %d, want 4", len(blocks))
 	}
 	for _, block := range blocks {
-		if notModifiedDeclaresETag(block.lines) {
+		if notModifiedDeclaresETag(block) {
 			t.Errorf("未声明的 304 被认成有 ETag（行 %d）", block.line)
 		}
 	}
 
 	withHeader := `paths:
-  /c:
+  /e:
     get:
-      operationId: C
+      operationId: E
       x-roles: [public]
       responses:
         '304':
@@ -719,7 +759,23 @@ func TestNotModifiedScannerShapes(t *testing.T) {
               schema: { type: string }
 `
 	blocks = contractNotModifiedBlocks(t, withHeader)
-	if len(blocks) != 1 || !notModifiedDeclaresETag(blocks[0].lines) {
+	if len(blocks) != 1 || !notModifiedDeclaresETag(blocks[0]) {
 		t.Fatal("headers 下的 ETag 未被识别")
+	}
+
+	deeperValue := `paths:
+  /f:
+    get:
+      operationId: F
+      x-roles: [public]
+      responses:
+        '304':
+          headers:
+            X-Probe:
+              ETag: fake
+`
+	blocks = contractNotModifiedBlocks(t, deeperValue)
+	if len(blocks) != 1 || notModifiedDeclaresETag(blocks[0]) {
+		t.Fatal("子键值里的 ETag 被当成头声明")
 	}
 }
