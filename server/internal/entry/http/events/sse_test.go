@@ -230,8 +230,15 @@ func TestSSEHeartbeatAndIdleEnd(t *testing.T) {
 	defer sc.close()
 	timer.waitArmed(t) // 推进时钟前必须等流循环注册首个定时器
 
-	clk.Advance(15 * time.Second)
-	timer.fireAt(clk.Now())
+	// 下界：未到 15s 不得有触发，定时器不得提前到期。
+	clk.Advance(14 * time.Second)
+	if timer.fireAt(clk.Now()) {
+		t.Fatal("14s 时定时器已到期：心跳周期短于 15s")
+	}
+	clk.Advance(1 * time.Second)
+	if !timer.fireAt(clk.Now()) {
+		t.Fatal("15s 时定时器未到期：心跳周期长于 15s")
+	}
 	f := sc.next(t)
 	if f.event != appevents.TypeHeartbeat {
 		t.Fatalf("15s 帧 = %q, want heartbeat", f.event)
@@ -239,8 +246,9 @@ func TestSSEHeartbeatAndIdleEnd(t *testing.T) {
 	if f.id != "" {
 		t.Fatalf("心跳帧不应带 id，got %q", f.id)
 	}
+	timer.waitRegistered(t, "心跳后重注册")
 	clk.Advance(45 * time.Second) // 距上一事件 60s
-	timer.fireAt(clk.Now())
+	_ = timer.fireAt(clk.Now())
 	f = sc.next(t)
 	if f.event != appevents.TypeEnd {
 		t.Fatalf("60s 帧 = %q, want end", f.event)
@@ -261,21 +269,24 @@ func TestSSEHeartbeatResetsOnlyItsOwnCadence(t *testing.T) {
 	timer.waitArmed(t) // 推进时钟前必须等流循环注册首个定时器
 
 	clk.Advance(15 * time.Second)
-	timer.fireAt(clk.Now())
+	_ = timer.fireAt(clk.Now())
 	if f := sc.next(t); f.event != appevents.TypeHeartbeat {
 		t.Fatalf("第一帧 = %q", f.event)
 	}
+	timer.waitRegistered(t, "心跳后重注册")
 	broker.Publish([]string{"s1"}, progressEvent("s1"))
 	if f := sc.next(t); f.event != appevents.TypeTaskProgress {
 		t.Fatalf("事件帧 = %q", f.event)
 	}
+	timer.waitRegistered(t, "事件后重注册")
 	// 事件把空闲计时重置：再过 45s 只该有 3 次心跳，无 end。
 	for i := 0; i < 3; i++ {
 		clk.Advance(15 * time.Second)
-		timer.fireAt(clk.Now())
+		_ = timer.fireAt(clk.Now())
 		if f := sc.next(t); f.event != appevents.TypeHeartbeat {
 			t.Fatalf("第 %d 次 15s 应为心跳，got %q", i+1, f.event)
 		}
+		timer.waitRegistered(t, "心跳后重注册")
 	}
 }
 
