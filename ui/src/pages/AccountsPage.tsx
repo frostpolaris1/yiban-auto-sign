@@ -10,7 +10,28 @@
  */
 
 import { AccountsView } from '@/features/accounts/AccountsView'
+import { AccountPhotos } from '@/features/photos/AccountPhotos'
+import { SHOWCASE, useMe } from '@/lib/session'
 
 export function AccountsPage() {
-  return <AccountsView />
+  const me = useMe()
+  const role = me.data?.role ?? null
+  // 契约：/api/accounts/{id}/photos 归 user 与 admin；master 不在契约内。
+  // 展示构建没有后端，保留照片区以便看样式。
+  const canViewPhotos = SHOWCASE || role === 'user' || role === 'admin'
+  return (
+    <AccountsView
+      photoSection={
+        canViewPhotos
+          ? (account) => (
+              <AccountPhotos
+                accountId={account.id}
+                schoolId={account.school_id}
+                ownerUserId={account.owner_user_id}
+              />
+            )
+          : undefined
+      }
+    />
+  )
 }

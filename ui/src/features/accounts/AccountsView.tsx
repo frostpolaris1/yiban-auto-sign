@@ -13,7 +13,7 @@
  * 角色来自 `GET /api/auth/me`。取不到时一切写操作置灰并给原因。
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Alert } from '@/components/ui/Alert'
 import { Button } from '@/components/ui/Button'
@@ -80,7 +80,12 @@ function focusAfterRowRemoval() {
   document.querySelector<HTMLElement>('[aria-label="手机号筛选"]')?.focus()
 }
 
-export function AccountsView() {
+type AccountsViewProps = {
+  /** 照片区由页面装配后传入；本功能不依赖照片功能。 */
+  photoSection?: (account: Account) => ReactNode
+}
+
+export function AccountsView({ photoSection }: AccountsViewProps = {}) {
   const queryClient = useQueryClient()
 
   const meQuery = useMe()
@@ -428,6 +433,7 @@ export function AccountsView() {
         schools={schools}
         returnFocusTo={returnFocusTo}
         onClose={() => setDetailAccount(null)}
+        photoSection={photoSection}
       />
 
       <AccountActionModal

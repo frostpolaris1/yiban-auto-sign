@@ -130,3 +130,45 @@ test('login stores the CSRF token returned in the body', async () => {
     client.setCsrfToken(null)
   }
 })
+
+test('apiUpload keeps multipart boundaries and sends the CSRF token', async () => {
+  const { apiUpload, setCsrfToken } = await import('../../src/lib/api/client.ts')
+  const capture = captureFetch()
+  try {
+    setCsrfToken('csrf-upload')
+    const form = new FormData()
+    form.append('image', new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' }), 'synthetic.png')
+    await apiUpload('/api/me/photos', form)
+  } finally {
+    capture.restore()
+    setCsrfToken(null)
+  }
+
+  const [call] = capture.calls
+  assert.equal(call.init.method, 'POST')
+  const headers = new Headers(call.init.headers)
+  assert.equal(
+    headers.get('Content-Type'),
+    null,
+    'a hand-written JSON type would drop the multipart boundary',
+  )
+  assert.equal(headers.get('X-CSRF-Token'), 'csrf-upload')
+  assert.ok(call.init.body instanceof FormData)
+  assert.ok(call.init.body.get('image') instanceof Blob)
+})
+
+test('uploadPhoto puts the file under the image field', async () => {
+  const { uploadPhoto } = await import('../../src/lib/api/photo.ts')
+  const capture = captureFetch()
+  try {
+    const file = new File([new Uint8Array([1, 2, 3])], 'synthetic.png', { type: 'image/png' })
+    await uploadPhoto(file)
+  } finally {
+    capture.restore()
+  }
+
+  const body = capture.calls[0].init.body
+  assert.ok(body instanceof FormData)
+  assert.equal([...body.keys()].join(','), 'image')
+  assert.ok(body.get('image') instanceof File)
+})
