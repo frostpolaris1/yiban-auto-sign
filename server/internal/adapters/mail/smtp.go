@@ -20,11 +20,14 @@
 // （DATA 可能已被接收，重试会造成双发）。
 // 凭据只出现在 AUTH 命令里，不进错误文本、不进日志。
 //
-// **投递可接受集与注册可接受集的精确关系**：ASCII 子集内，投递可接受集 ⊇
-// 注册可接受集；注册用 core/user.ValidEmail（宽松），投递用
-// net/mail.ParseAddress（严格）。严格侧通过即接受；严格侧拒绝时再看宽松侧。
-// 非 ASCII 与含控制字符的注册地址由投递侧显性拒收并记日志（SMTPUTF8 未实现）。
-// 收窄 ASCII 子集会让已注册的账号永远收不到重置信。
+// **投递可接受集与注册可接受集的关系**：ASCII 地址里，投递不覆盖注册
+// 接受的全部形态。保证可投递的形态：域名只含主机名字符（字母、数字、
+// 点、连字符）。这类地址先走 net/mail 严格解析（严格侧通过即接受），
+// 严格侧拒绝时按裸 addr-spec 接收（注册用 core/user.ValidEmail，较宽松）。
+// 域名含 `>`、`,`、`;` 等主机名字符以外的字符时，分隔符会逃出尖括号：
+// addrSpecSafe 拒收。该守卫是必需的注入守卫，不可删。
+// 非 ASCII 与含控制字符的注册地址由投递侧显性拒收（SMTPUTF8 未实现）。
+// 注册接受但投递拒收的地址记 reason=unsupported_address。
 // 改动此处必须同时看 parseAddress 的注释与 smtp_test 的口径用例。
 package mail
 
@@ -274,54 +277,78 @@ func (s *SMTP) encode(msg coremail.Message) (string, []byte, error) {
 //
 // 判据顺序：
 //  1. 换行一律拒绝：它们能把内容挤出 SMTP 命令与头部。
-//  2. 含控制字符（< 0x20 或 0x7F）或非 ASCII 字符一律拒绝（见
-//     unsupportedAddressReason）：前者的投递地址会与注册地址不同，
-//     后者要 SMTPUTF8。
-//  3. net/mail.ParseAddress 通过时，取其规范化 addr-spec。
-//  4. 否则 core/user.ValidEmail 通过时，按裸 addr-spec 接收。
-//  5. 两者都拒绝才报配置错误。
+//  2. 控制字符（< 0x20 或 0x7F）一律拒绝，扫整串输入（见 controlCharReason）。
+//  3. net/mail.ParseAddress 通过时，取其规范化 addr-spec；
+//     该 addr-spec 含非 ASCII 字符则拒绝（见 nonASCIIReason）。
+//     显示名不进入信封与头部，故显示名里的非 ASCII 不受此限。
+//  4. 否则 core/user.ValidEmail 通过时，按裸 addr-spec 接收；
+//     先扫原文的非 ASCII 字符，再查域名形状（见 addrSpecSafe）。
+//  5. 注册口径接受、以上两档都拒绝：记 core/mail.ErrUnsupportedAddress。
+//  6. 两者都拒绝才报普通配置错误。
 //
-// 第 4 条钉住「ASCII 子集内投递可接受集 ⊇ 注册可接受集」：
-// 注册口径只查 @ 形状，投递口径查 RFC 5322。
-// 只按严格侧拒收，会让已注册的 ASCII 地址永远收不到重置信。
-// 裸 addr-spec 的域名必须是主机名形状（见 addrSpecSafe）：
-// 分隔符不得逃出尖括号。
+// 第 4 条覆盖严格解析拒绝的 ASCII 地址：注册口径只查 @ 形状，
+// 投递口径查 RFC 5322。只按严格侧放行，会让已注册的地址收不到重置信。
+// 覆盖范围有边：域名只含主机名字符时才保证可投递。
+// 域名里的 `>`、`,`、`;` 等分隔符能逃出尖括号，addrSpecSafe 必须拒收；
+// 该守卫是注入面，不可删。
+// 第 5 条把「注册接受、投递不能表达」收成一个谓词：日志原因不按分支发散。
 func parseAddress(raw string) (string, error) {
 	if strings.ContainsAny(raw, "\r\n") {
 		return "", deliveryError(coremail.KindConfig, false,
 			errors.New("mail: address contains a line break"))
 	}
 	s := strings.TrimSpace(raw)
-	if err := unsupportedAddressReason(s); err != nil {
+	if err := controlCharReason(s); err != nil {
 		return "", deliveryError(coremail.KindConfig, false, err)
 	}
 	if addr, err := mail.ParseAddress(s); err == nil && addr.Address != "" {
+		if err := nonASCIIReason(addr.Address); err != nil {
+			return "", deliveryError(coremail.KindConfig, false, err)
+		}
 		return quoteAddress(addr.Address), nil
+	}
+	if err := nonASCIIReason(s); err != nil {
+		return "", deliveryError(coremail.KindConfig, false, err)
 	}
 	if coreuser.ValidEmail(s) && addrSpecSafe(s) {
 		return quoteAddress(s), nil
+	}
+	if coreuser.ValidEmail(s) {
+		return "", deliveryError(coremail.KindConfig, false,
+			fmt.Errorf("mail: address cannot be put in the SMTP envelope: %w",
+				coremail.ErrUnsupportedAddress))
 	}
 	return "", deliveryError(coremail.KindConfig, false,
 		errors.New("mail: address is not a valid mail address"))
 }
 
-// unsupportedAddressReason 报告投递路径无法表达的字符。
+// controlCharReason 报告控制字符（< 0x20 与 0x7F）。
 //
-// 唯一判定点：parseAddress 在两档解析之前调用它。
-// 返回 nil 表示地址字符集在投递路径内。
-//
-// 控制字符（< 0x20 与 0x7F）会被 net/mail 的引用丢弃：
-// 实测 a\x01b@example.com 变成 "ab"@example.com，投递地址≠注册地址。
-// 非 ASCII 要 SMTPUTF8，而 net/smtp 不发它，出站必被服务端拒。
-// 两类都以 core/mail.ErrUnsupportedAddress 结尾：日志按它记原因。
+// 扫整串输入而非解析结果：net/mail 引用时会丢弃控制字符
+// （实测 a\x01b@example.com 变成 "ab"@example.com），
+// 投递地址≠注册地址，收件人不是注册人。
+// 显示名里的控制字符一并拒绝：头部由本实现拼接，从严没有代价。
+// 调用方先去掉首尾空白：粘贴来的尾随制表符不该让启动失败。
 // 错误文本只带码点，不带地址本身。
-func unsupportedAddressReason(addr string) error {
-	for _, r := range addr {
-		switch {
-		case r < 0x20 || r == 0x7F:
+func controlCharReason(raw string) error {
+	for _, r := range raw {
+		if r < 0x20 || r == 0x7F {
 			return fmt.Errorf("mail: address contains control character U+%04X: %w",
 				r, coremail.ErrUnsupportedAddress)
-		case r >= 0x80:
+		}
+	}
+	return nil
+}
+
+// nonASCIIReason 报告地址里的非 ASCII 字符。
+//
+// 本实现不发 SMTPUTF8，出站必被服务端拒，故在本地先拒。
+// 只扫 addr-spec，**不**扫整串输入：显示名可以是非 ASCII，
+// 它既不进信封也不进本实现发出的头部。
+// 回退分支没有解析结果，调用方把原文传进来。
+func nonASCIIReason(addrSpec string) error {
+	for _, r := range addrSpec {
+		if r >= 0x80 {
 			return fmt.Errorf("mail: address contains non-ASCII character U+%04X (SMTPUTF8 not implemented): %w",
 				r, coremail.ErrUnsupportedAddress)
 		}
@@ -342,7 +369,7 @@ func quoteAddress(addrSpec string) string {
 // 局部部分由 quoteAddress 引用，分隔符不会逃出引号。
 // 域名不经引用，故只接受字母、数字、点与连字符：
 // 其余字符（如 <>(),;）会提前闭合尖括号，改变命令结构。
-// 非 ASCII 已由 unsupportedAddressReason 在解析前拒掉：这里不再放行。
+// 非 ASCII 已由 nonASCIIReason 在调用点拒掉：这里不再放行。
 func addrSpecSafe(addrSpec string) bool {
 	local, domain, ok := strings.Cut(addrSpec, "@")
 	if !ok || local == "" || domain == "" {

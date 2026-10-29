@@ -169,7 +169,7 @@ deployment cannot silently fall back to development defaults.
 | `YIBAN_MAIL_SMTP_PORT` | no | `465` | SMTP port. Port 465 uses implicit TLS; other ports use STARTTLS. |
 | `YIBAN_MAIL_USER` | no | empty | AUTH PLAIN account. Required together with the password when reset mail is on. |
 | `YIBAN_MAIL_PASS` | no | empty | AUTH PLAIN password or app key. Required together with the user when reset mail is on. It never appears in logs or errors. |
-| `YIBAN_MAIL_FROM` | no | empty | envelope and header sender. Empty means `YIBAN_MAIL_USER`. |
+| `YIBAN_MAIL_FROM` | no | empty | envelope and header sender. Empty means `YIBAN_MAIL_USER`. A form like `Name <user@example.com>` is accepted; only the address part is used. |
 | `YIBAN_MAIL_TLS_MODE` | no | `auto` | `auto`, `implicit` or `starttls`. No switch disables certificate checks. |
 
 Production always uses `__Host-yiban_session` with `Secure`. A true
@@ -191,9 +191,13 @@ own machine. Startup therefore fails and names the key and the current value.
 Private addresses such as `http://192.168.1.10:47183` pass: they work for
 users on the same network.
 
-Recipient addresses: within ASCII, delivery accepts every address that
-registration accepts. The server sends no SMTPUTF8. A registered address with
-a non-ASCII character or with a control character below 0x20 or equal to 0x7F
-is refused locally with kind `config`, `retryable=false` and
-`reason=unsupported_address`. The request still answers 204; the refusal
-appears in the delivery log only.
+Recipient addresses: registration is looser than delivery. Within ASCII,
+delivery guarantees acceptance when the domain contains hostname characters
+only (letters, digits, dot, hyphen). A separator such as `>`, `,` or `;` in
+the domain would leave the angle brackets, so `addrSpecSafe` refuses it. That
+guard prevents envelope injection and must stay. The server sends no SMTPUTF8.
+Delivery refuses such an address locally with kind `config`, `retryable=false`
+and `reason=unsupported_address`. The same reason covers a registered address
+with a non-ASCII character or with a control character below 0x20 or equal to
+0x7F. The request still answers 204; the refusal appears in the delivery log
+only.

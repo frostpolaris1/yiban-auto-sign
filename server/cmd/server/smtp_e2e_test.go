@@ -146,7 +146,39 @@ func TestSMTPForgotPasswordDeliversWorkingResetLink(t *testing.T) {
 	}
 }
 
-// 投递失败不得改变 204；失败必须可见。
+// 模拟真实部署：YIBAN_MAIL_FROM 写成「显示名 <地址>」。
+// 断言用户可见结果：服务启动成功，重置邮件照常送达，信封发件人是 addr-spec。
+func TestSMTPForgotPasswordDeliversWithDisplayNameSender(t *testing.T) {
+	srv, err := mailtest.Start(mailtest.StartTLS)
+	if err != nil {
+		t.Fatalf("start fake smtp: %v", err)
+	}
+	t.Cleanup(srv.Close)
+	srv.SetCredentials(e2eMailUser, e2eMailPass)
+
+	logs, logger := newCapturedLogger()
+	e := newAuthEnvWith(t, func(cfg *config.Config) {
+		mailEnvConfig(srv.Port())(cfg)
+		cfg.MailFrom = "易班 <no-reply@example.test>"
+		cfg.MailTLSConfig = srv.TLSConfig()
+	}, logger)
+	e.createUser("nina@example.com", "correct-horse")
+
+	resp, payload := e.do(http.MethodPost, "/api/auth/forgot-password",
+		map[string]string{"email": "nina@example.com"}, nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("forgot status = %d, want 204; body=%q", resp.StatusCode, payload)
+	}
+	if !srv.WaitMessages(1, 5*time.Second) {
+		t.Fatalf("SMTP 服务器没有收到邮件；日志：\n%s", logs.String())
+	}
+	if got := srv.Messages()[0].From; got != "no-reply@example.test" {
+		t.Fatalf("MAIL FROM = %q, want %q（信封只用 addr-spec）", got, "no-reply@example.test")
+	}
+}
+
+// TestSMTPForgotPasswordFailureKeeps204 钉住投递失败不改响应的语义：
+// 仍回 204，失败必须在日志里可见。
 func TestSMTPForgotPasswordFailureKeeps204(t *testing.T) {
 	// 先监听再关闭：连接被拒的端口，不依赖外部网络。
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

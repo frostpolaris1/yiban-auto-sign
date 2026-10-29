@@ -3,11 +3,13 @@ package mail_test
 // SMTP 适配器的行为测试。用 mailtest 的进程内服务器，不连真实 SMTP。
 //
 // # 功能
-// 钉住四条性质：
+// 钉住五条性质：
 //   1. STARTTLS 与隐式 TLS 两档都能投递，且信封、正文、认证用户正确；
 //   2. 失败按可重试/不可重试分类，日志面只暴露粗分类；
 //   3. 口令不出现在错误文本里；
-//   4. 配置错误在构造期失败，不把畸形地址带进 SMTP 会话。
+//   4. 配置错误在构造期失败，不把畸形地址带进 SMTP 会话；
+//   5. 地址可表达性的边界：注册接受且域名是主机名形状的地址可投递，
+//      其余注册接受的地址被显性拒收并带 core/mail.ErrUnsupportedAddress。
 // 本文件**不**测真实服务器的证书链、SPF/DKIM 或投递回执。
 //
 // # 口径
@@ -121,6 +123,43 @@ func TestSMTPImplicitTLSDelivers(t *testing.T) {
 	}
 }
 
+// TestSendAcceptsSenderWithDisplayName 钉住带显示名的发件人配置。
+//
+// 真实部署会写 YIBAN_MAIL_FROM=易班 <no-reply@example.test>。
+// 显示名是非 ASCII 文本，但不进入信封，也不进入本实现发出的头部：
+// 只有 addr-spec 生效。此前整串扫非 ASCII，这类配置让启动直接失败。
+// 断言用户可见结果：配置被接受、投递成功、信封发件人是 addr-spec。
+func TestSendAcceptsSenderWithDisplayName(t *testing.T) {
+	srv, err := mailtest.Start(mailtest.StartTLS)
+	if err != nil {
+		t.Fatalf("start fake smtp: %v", err)
+	}
+	t.Cleanup(srv.Close)
+	srv.SetCredentials(testUser, testPass)
+
+	cfg := configFor(t, srv, "starttls")
+	cfg.From = "易班 <no-reply@example.test>"
+	sender, err := mailadapter.NewSMTP(cfg)
+	if err != nil {
+		t.Fatalf("NewSMTP 拒绝了带显示名的发件人: %v", err)
+	}
+	if err := sender.Send(t.Context(), coremail.Message{
+		To: "user@example.test", Subject: "重置口令", Text: "body",
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if !srv.WaitMessages(1, 3*time.Second) {
+		t.Fatal("服务器没有收到邮件")
+	}
+	got := srv.Messages()[0]
+	if got.From != "no-reply@example.test" {
+		t.Fatalf("MAIL FROM = %q, want %q（信封只用 addr-spec）", got.From, "no-reply@example.test")
+	}
+	if !strings.Contains(got.Data, "From: <no-reply@example.test>") {
+		t.Fatalf("From 头不是 addr-spec 形态：\n%s", got.Data)
+	}
+}
+
 // TestSMTPAuthFailureIsNotRetryable 钉住认证失败的分类。
 func TestSMTPAuthFailureIsNotRetryable(t *testing.T) {
 	srv, err := mailtest.Start(mailtest.StartTLS)
@@ -228,13 +267,15 @@ func TestSMTPTimeoutIsRetryable(t *testing.T) {
 	}
 }
 
-// TestSendAcceptsEveryRegistrationAddress 钉住「投递可接受集 ⊇ 注册可接受集」。
+// TestSendAcceptsRegistrationAddressesThatFailStrictParsing 钉住宽松回退分支。
 //
 // 五个样本都通过 core/user.ValidEmail（注册口径），
 // 都被 net/mail.ParseAddress 拒绝（严格口径）。
+// 它们的域名只含主机名字符，故回退分支必须接收：
 // 只按严格口径判，这些用户能注册却永远收不到重置信。
+// 反例见 TestSendRejectsAddressThatBreaksEnvelopeFraming。
 // 断言用户可见结果：信真的到了服务器，信封里的地址被引用成安全形态。
-func TestSendAcceptsEveryRegistrationAddress(t *testing.T) {
+func TestSendAcceptsRegistrationAddressesThatFailStrictParsing(t *testing.T) {
 	srv, err := mailtest.Start(mailtest.StartTLS)
 	if err != nil {
 		t.Fatalf("start fake smtp: %v", err)
@@ -283,6 +324,8 @@ func TestSendAcceptsEveryRegistrationAddress(t *testing.T) {
 //
 // 域名里的 > 会提前闭合 RCPT TO 的尖括号，改变命令结构。
 // 注册口径不管这件事（ValidEmail 只查 @ 形状），投递口径必须管。
+// 这类地址属于「注册接受、投递不能表达」，错误链必须带
+// core/mail.ErrUnsupportedAddress：日志靠它记 reason=unsupported_address。
 func TestSendRejectsAddressThatBreaksEnvelopeFraming(t *testing.T) {
 	sender, err := mailadapter.NewSMTP(mailadapter.Config{
 		Host: "127.0.0.1", Port: 465, Username: testUser, Password: testPass,
@@ -301,6 +344,21 @@ func TestSendRejectsAddressThatBreaksEnvelopeFraming(t *testing.T) {
 	}
 	if kind, retryable := coremail.Classify(err); kind != coremail.KindConfig || retryable {
 		t.Fatalf("分类 = (%s, retryable=%t), want (config, false)", kind, retryable)
+	}
+	if !errors.Is(err, coremail.ErrUnsupportedAddress) {
+		t.Fatalf("注册接受但投递拒收的地址没有 ErrUnsupportedAddress，日志会缺 reason: %v", err)
+	}
+
+	// 反例：不在注册口径内的畸形地址不带该原因。
+	// 否则「注册接受但投递拒收」这一条日志原因失去判别力。
+	err = sender.Send(context.Background(), coremail.Message{
+		To: "not-an-address", Subject: "s", Text: "body",
+	})
+	if err == nil {
+		t.Fatal("Send 接受了畸形地址")
+	}
+	if errors.Is(err, coremail.ErrUnsupportedAddress) {
+		t.Fatalf("畸形地址不该带 ErrUnsupportedAddress: %v", err)
 	}
 }
 
