@@ -1,8 +1,8 @@
 // Package user 把用户用例映射到 HTTP。
 //
 // # 功能
-// 只实现 POST /api/users：解析会话与请求体，调用 app/user，写出契约响应。
-// 本包**不**写 SQL、**不**判角色白名单、**不**算口令哈希。
+// 实现 POST /api/users 与 GET /api/users：解析会话与请求，调用 app/user，
+// 写出契约响应。本包**不**写 SQL、**不**判角色白名单、**不**算口令哈希。
 //
 // # 归属
 // entry/http 入口层。作用域由 Authorizer（app/admin）解析，
@@ -13,6 +13,7 @@
 //
 // # 口径
 // 响应只给契约 User 的七个字段；口令与哈希**不出本层**。
+// 列表的 items 空页输出 []，不是 null。
 // 错误一律走 respond.Error，形状由信封包保证。
 
 package user
@@ -25,6 +26,7 @@ import (
 	"github.com/gin-gonic/gin"
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	appuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/user"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
@@ -37,6 +39,7 @@ import (
 // Service 是用户用例端口。
 type Service interface {
 	Create(ctx context.Context, scope corescope.Scope, in appuser.CreateInput, actor appaudit.Actor) (appuser.Record, error)
+	List(ctx context.Context, scope corescope.Scope, filter appuser.ListFilter, cursor string, limit int) (appuser.Page, error)
 }
 
 // Authorizer 把会话主体解析成作用域与审计主体。
@@ -77,6 +80,39 @@ func (h *Handler) Create(c *gin.Context, _ oapi.UserCreateParams) {
 	respond.JSON(c.Writer, http.StatusCreated, userResponse(record))
 }
 
+// List 实现 GET /api/users。
+func (h *Handler) List(c *gin.Context, params oapi.UserListParams) {
+	scope, _, ok := h.principal(c)
+	if !ok {
+		return
+	}
+	limit, err := app.PageLimit(params.Limit)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	filter := appuser.ListFilter{}
+	if params.Role != nil {
+		filter.Role = coreauth.Role(*params.Role)
+	}
+	if params.Status != nil {
+		filter.Status = coreauth.Status(*params.Status)
+	}
+	if params.Q != nil {
+		filter.Query = *params.Q
+	}
+	page, err := h.svc.List(c.Request.Context(), scope, filter, cursorOf(params.Cursor), limit)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	items := make([]oapi.User, 0, len(page.Items))
+	for _, record := range page.Items {
+		items = append(items, userResponse(record))
+	}
+	respond.JSON(c.Writer, http.StatusOK, oapi.UserPage{Items: items, NextCursor: page.NextCursor})
+}
+
 // principal 取会话并解析作用域。失败时已写响应。
 func (h *Handler) principal(c *gin.Context) (corescope.Scope, appaudit.Actor, bool) {
 	session, ok := coreauth.FromContext(c.Request.Context())
@@ -112,6 +148,14 @@ func decode(c *gin.Context, target any) bool {
 		return false
 	}
 	return true
+}
+
+// cursorOf 把可选游标取成字符串。缺省即首页。
+func cursorOf(cursor *string) string {
+	if cursor == nil {
+		return ""
+	}
+	return *cursor
 }
 
 func fail(c *gin.Context, err error) {

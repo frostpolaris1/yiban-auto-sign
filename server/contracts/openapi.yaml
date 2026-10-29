@@ -170,6 +170,46 @@ paths:
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/users:
+    get:
+      tags: [users]
+      operationId: UserList
+      summary: List users with cursor pagination.
+      description: |
+        Master only. Soft-deleted users never appear. role, status and q
+        narrow the result. q matches the start of the email address and
+        never matches a name. A query longer than 254 characters is 400:
+        no address can be that long, so no row can match.
+      x-roles: [master]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: role
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/UserRole'
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/UserStatus'
+        - name: q
+          in: query
+          required: false
+          description: |
+            Email prefix. Matching is case-insensitive because stored
+            addresses are lower case. Wildcards in the value are literal.
+          schema: { type: string }
+      responses:
+        '200':
+          description: User page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserPage'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        default: { $ref: '#/components/responses/DefaultError' }
     post:
       tags: [users]
       operationId: UserCreate
@@ -1837,6 +1877,17 @@ components:
         photo_id:
           type: [string, "null"]
           description: An existing photo visible to the caller; null clears the default.
+    UserPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/User'
+        next_cursor:
+          type: string
+          description: Cursor for the next page; empty on the last page.
     AccountPage:
       type: object
       required: [items, next_cursor]

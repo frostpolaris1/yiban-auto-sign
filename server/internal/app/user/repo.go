@@ -1,7 +1,7 @@
 // Package user 声明用户仓储端口，并实现建号用例。
 //
 // # 功能
-// 声明用户仓储接口；建号动作见 create.go。
+// 声明用户仓储接口；建号动作见 create.go；读面见 list.go。
 // 本包**不**实现 SQL、**不**做 HTTP 编码、**不**签发会话。
 //
 // # 归属
@@ -36,10 +36,12 @@ type New = coreuser.New
 // Create 执行活跃用户上限：**必须在事务内运行**，
 // 先取用户容量 advisory lock 再计数。
 // limit 是配置的有效用户上限。
+// List 只返回未删除的行，并按 (created_at DESC, id DESC) 分页。
 type Repo interface {
 	Create(ctx context.Context, in New, limit int) (Record, error)
 	GetByID(ctx context.Context, id string) (Record, error)
 	GetByEmail(ctx context.Context, email string) (Record, error)
+	List(ctx context.Context, role coreauth.Role, status coreauth.Status, query, cursor string, limit int) ([]Record, string, error)
 	UpdatePassword(ctx context.Context, id, passwordHash string, mustChange bool, at time.Time) error
 	// RehashPassword 只替换哈希，**不改 password_changed_at**。
 	// 登录时的透明升级走本方法：口令没有变，改密时刻不得前移。
