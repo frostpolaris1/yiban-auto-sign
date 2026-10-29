@@ -15,6 +15,7 @@
  */
 
 import type { Account, AccountPage, AccountStatus } from './api/account'
+import type { Photo, PhotoPage } from './api/photo'
 import type { School, SchoolAdmin, SchoolPage } from './api/school'
 import type { UserPage } from './api/user'
 import type {
@@ -105,6 +106,32 @@ export function showcaseAllSchools(): School[] {
 /** 学校列表页（单页）。 */
 export function showcaseSchools(): SchoolPage {
   return { items: SHOWCASE_SCHOOLS, next_cursor: '' }
+}
+
+/**
+ * 图片库（展示构建）。
+ *
+ * 展示机无后端，图位由照片区画合成占位，不请求字节。
+ * sha256 取单字符重复，ID 明示 demo 口径，不对应任何真实图片。
+ */
+export function showcasePhotos(): PhotoPage {
+  const photo = (id: string, sha: string, width: number, height: number): Photo => ({
+    id,
+    sha256: sha.repeat(64),
+    mime: 'image/png',
+    width,
+    height,
+    bytes: 1024,
+    created_at: '2026-10-20T09:00:00+08:00',
+  })
+  return {
+    items: [
+      photo('photo-demo-front', 'a', 640, 480),
+      photo('photo-demo-campus', 'b', 800, 600),
+      photo('photo-demo-gate', 'c', 480, 640),
+    ],
+    next_cursor: '',
+  }
 }
 
 /**

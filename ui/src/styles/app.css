@@ -541,6 +541,104 @@
   word-break: break-all;
 }
 
+/* 抽屉内的照片区。图位固定 4:3，便于一眼比对，不随原图比例跳动。 */
+.app-photo-section {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.app-photo-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.app-photo-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--t-base);
+}
+
+.app-photo-note {
+  margin: 6px 0 0;
+  font-size: 12px;
+}
+
+.app-photo-strip {
+  display: flex;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0 0 6px;
+  list-style: none;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+}
+
+.app-photo-thumb {
+  flex: 0 0 auto;
+  scroll-snap-align: start;
+}
+
+.app-photo-open {
+  display: block;
+  width: 96px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--bg-muted);
+  cursor: pointer;
+}
+
+.app-photo-tile {
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--bg-muted);
+}
+
+.app-photo-image,
+.app-photo-placeholder {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+}
+
+.app-photo-placeholder {
+  display: grid;
+  place-items: center;
+  color: var(--t-muted);
+  font-size: 12px;
+}
+
+.app-photo-preview {
+  display: block;
+  width: 100%;
+  max-height: 60vh;
+  object-fit: contain;
+  border-radius: 6px;
+  background: var(--bg-muted);
+}
+
+.app-photo-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.app-photo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px;
+}
+
 @keyframes app-drawer-in {
   from {
     transform: translateX(100%);

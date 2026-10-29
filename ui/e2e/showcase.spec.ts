@@ -21,6 +21,9 @@ import { visibleText } from './support/visible-text'
  *
  * invariant 9：用户管理页取合成夹具，列出三个角色的用户，零 `/api/` 请求。
  * 本页只读，没有写入口；筛选与翻页照常可用。
+ *
+ * invariant 10：账号抽屉的照片区在展示构建里显示合成占位，零 `/api/` 请求。
+ * 照片区在正式构建只对 user/admin 渲染；展示会话是 master，故靠展示分支放行。
  */
 
 /** 界面上的只读原因。断言用户可见文本，不导入实现常量。 */
@@ -246,4 +249,20 @@ test('invariant 9: the showcase users page renders fixtures with zero requests',
   await expect(page.getByRole('button', { name: '下一页' })).toBeDisabled()
 
   expect(apiRequests, 'the users fixture never touches the API').toEqual([])
+})
+
+test('invariant 10: the showcase drawer shows synthetic photos with zero requests', async ({
+  page,
+}) => {
+  const apiRequests = trackApiRequests(page)
+
+  await page.goto('/accounts')
+  await page.getByRole('button', { name: /查看 138/ }).first().click()
+  const drawer = page.getByRole('dialog', { name: '账号详情' })
+  const strip = drawer.getByRole('region', { name: '账号照片' })
+  await expect(strip).toBeVisible()
+  await expect(strip.getByRole('img')).toHaveCount(3)
+  await expect(drawer.getByRole('button', { name: '上传照片' })).toHaveCount(0)
+
+  expect(apiRequests, 'the photo fixture never touches the API').toEqual([])
 })

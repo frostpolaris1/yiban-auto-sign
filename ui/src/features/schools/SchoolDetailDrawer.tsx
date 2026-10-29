@@ -8,8 +8,10 @@
  * **口径**
  * 契约没有单校详情端点，`School` 全字段可读，故直接用行数据。
  * 列表刷新后同 ID 的抽屉数据由 `SchoolsView` 同步替换。
+ * 缺省图区自带取数：它是唯一需要单独请求的字段。
  */
 
+import type { ReactNode } from 'react'
 import type { School } from '@/lib/api/school'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
@@ -21,9 +23,16 @@ type SchoolDetailDrawerProps = {
   school: School | null
   returnFocusTo: HTMLElement | null
   onClose: () => void
+  /** 缺省图区由页面装配：跨功能复用件不能从本功能直接导入。 */
+  defaultPhotoPanel?: (school: School) => ReactNode
 }
 
-export function SchoolDetailDrawer({ school, returnFocusTo, onClose }: SchoolDetailDrawerProps) {
+export function SchoolDetailDrawer({
+  school,
+  returnFocusTo,
+  onClose,
+  defaultPhotoPanel,
+}: SchoolDetailDrawerProps) {
   return (
     <Drawer
       open={school !== null}
@@ -61,6 +70,8 @@ export function SchoolDetailDrawer({ school, returnFocusTo, onClose }: SchoolDet
           <dd className="data-cell-mono">{formatDateTime(school.updated_at)}</dd>
         </dl>
       ) : null}
+
+      {school && defaultPhotoPanel ? defaultPhotoPanel(school) : null}
     </Drawer>
   )
 }
