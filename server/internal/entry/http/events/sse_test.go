@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -23,52 +22,6 @@ import (
 	eventshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/events"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/router"
 )
-
-// fakeClock 是可手动推进的时钟。
-type fakeClock struct {
-	mu sync.Mutex
-	t  time.Time
-}
-
-func newFakeClock(t time.Time) *fakeClock { return &fakeClock{t: t} }
-
-func (c *fakeClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.t
-}
-
-func (c *fakeClock) Advance(d time.Duration) {
-	c.mu.Lock()
-	c.t = c.t.Add(d)
-	c.mu.Unlock()
-}
-
-// fakeTimer 记住处理器最近要的定时通道；Fire 模拟到期。
-// Fire 发的是假时钟的当前时刻：定时到点与处理器读到的 now 同源。
-type fakeTimer struct {
-	mu sync.Mutex
-	ch chan time.Time
-	c  *fakeClock
-}
-
-func newFakeTimer() *fakeTimer { return &fakeTimer{} }
-
-func (f *fakeTimer) After(time.Duration) <-chan time.Time {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.ch = make(chan time.Time, 1)
-	return f.ch
-}
-
-func (f *fakeTimer) fireAt(t time.Time) {
-	f.mu.Lock()
-	ch := f.ch
-	f.mu.Unlock()
-	if ch != nil {
-		ch <- t
-	}
-}
 
 // frame 是解析后的一条 SSE 帧。
 type frame struct {
@@ -177,7 +130,8 @@ func (sc *streamClient) close() {
 }
 
 // newSSEServer 构造装配 SSE 域的真 HTTP 服务器。
-func newSSEServer(t *testing.T, authz *fakeAuthorizer, diag *fakeDiag, broker *appevents.Broker, clk *fakeClock, timer *fakeTimer) (*httptest.Server, coreauth.Issued) {
+// 处理器时钟取自定时器：两者必须同源，否则截止时刻与水位不可比。
+func newSSEServer(t *testing.T, authz *fakeAuthorizer, diag *fakeDiag, broker *appevents.Broker, timer *fakeTimer) (*httptest.Server, coreauth.Issued) {
 	t.Helper()
 	issuer := &fakeIssuer{secret: []byte("0123456789abcdef0123456789abcdef")}
 	issued, err := issuer.Issue(context.Background(), coreauth.User{
@@ -189,7 +143,7 @@ func newSSEServer(t *testing.T, authz *fakeAuthorizer, diag *fakeDiag, broker *a
 	if authz == nil {
 		authz = &fakeAuthorizer{scope: corescope.Master()}
 	}
-	handler := eventshttp.NewHandler(broker, diag, authz, clk, timer)
+	handler := eventshttp.NewHandler(broker, diag, authz, timer.clock, timer)
 	engine, err := router.New(router.Options{
 		Sessions: issuer, InsecureCookies: true, Events: handler,
 	})
@@ -214,7 +168,7 @@ func progressEvent(school string) appevents.Event {
 func TestSSEFrameFormat(t *testing.T) {
 	broker := appevents.NewBroker()
 	diag := &fakeDiag{counts: map[string]int{}}
-	srv, issued := newSSEServer(t, nil, diag, broker, newFakeClock(diagNowTime), newFakeTimer())
+	srv, issued := newSSEServer(t, nil, diag, broker, newFakeTimer(newFakeClock(diagNowTime)))
 	sc := newStreamClient(t, srv.URL, issued, "")
 	defer sc.close()
 
@@ -245,7 +199,7 @@ func TestSSEFrameFormat(t *testing.T) {
 // 响应头：text/event-stream、no-store、X-Accel-Buffering: no。
 func TestSSEHeaders(t *testing.T) {
 	broker := appevents.NewBroker()
-	srv, issued := newSSEServer(t, nil, &fakeDiag{}, broker, newFakeClock(diagNowTime), newFakeTimer())
+	srv, issued := newSSEServer(t, nil, &fakeDiag{}, broker, newFakeTimer(newFakeClock(diagNowTime)))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/admin/events", nil)
@@ -269,11 +223,12 @@ func TestSSEHeaders(t *testing.T) {
 // 心跳与空闲：15s 心跳帧；60s 无事件 → end 帧并关闭。
 func TestSSEHeartbeatAndIdleEnd(t *testing.T) {
 	clk := newFakeClock(diagNowTime)
-	timer := newFakeTimer()
+	timer := newFakeTimer(clk)
 	broker := appevents.NewBroker()
-	srv, issued := newSSEServer(t, nil, &fakeDiag{}, broker, clk, timer)
+	srv, issued := newSSEServer(t, nil, &fakeDiag{}, broker, timer)
 	sc := newStreamClient(t, srv.URL, issued, "")
 	defer sc.close()
+	timer.waitArmed(t) // 推进时钟前必须等流循环注册首个定时器
 
 	clk.Advance(15 * time.Second)
 	timer.fireAt(clk.Now())
@@ -298,11 +253,12 @@ func TestSSEHeartbeatAndIdleEnd(t *testing.T) {
 // 心跳不算事件：中间的空闲判据不因心跳重置。
 func TestSSEHeartbeatResetsOnlyItsOwnCadence(t *testing.T) {
 	clk := newFakeClock(diagNowTime)
-	timer := newFakeTimer()
+	timer := newFakeTimer(clk)
 	broker := appevents.NewBroker()
-	srv, issued := newSSEServer(t, nil, &fakeDiag{}, broker, clk, timer)
+	srv, issued := newSSEServer(t, nil, &fakeDiag{}, broker, timer)
 	sc := newStreamClient(t, srv.URL, issued, "")
 	defer sc.close()
+	timer.waitArmed(t) // 推进时钟前必须等流循环注册首个定时器
 
 	clk.Advance(15 * time.Second)
 	timer.fireAt(clk.Now())
@@ -328,7 +284,7 @@ func TestSSEResumeWithLastEventID(t *testing.T) {
 	broker := appevents.NewBroker()
 	broker.Publish([]string{"s1"}, progressEvent("s1"))
 	broker.Publish([]string{"s1"}, progressEvent("s1"))
-	srv, issued := newSSEServer(t, nil, &fakeDiag{}, broker, newFakeClock(diagNowTime), newFakeTimer())
+	srv, issued := newSSEServer(t, nil, &fakeDiag{}, broker, newFakeTimer(newFakeClock(diagNowTime)))
 	sc := newStreamClient(t, srv.URL, issued, "1")
 	defer sc.close()
 
@@ -346,7 +302,7 @@ func TestSSEResyncThenSnapshot(t *testing.T) {
 		broker.Publish([]string{"s1"}, progressEvent("s1"))
 	}
 	diag := &fakeDiag{counts: map[string]int{string(status.TaskPending): 3, string(status.TaskSuccess): 7}}
-	srv, issued := newSSEServer(t, nil, diag, broker, newFakeClock(diagNowTime), newFakeTimer())
+	srv, issued := newSSEServer(t, nil, diag, broker, newFakeTimer(newFakeClock(diagNowTime)))
 	sc := newStreamClient(t, srv.URL, issued, "1")
 	defer sc.close()
 
@@ -384,7 +340,7 @@ func TestSSEResyncThenSnapshot(t *testing.T) {
 func TestSSEAdminScopeFilter(t *testing.T) {
 	broker := appevents.NewBroker()
 	adminScope := corescope.Admin([]string{"s1"})
-	srv, issued := newSSEServer(t, &fakeAuthorizer{scope: adminScope}, &fakeDiag{}, broker, newFakeClock(diagNowTime), newFakeTimer())
+	srv, issued := newSSEServer(t, &fakeAuthorizer{scope: adminScope}, &fakeDiag{}, broker, newFakeTimer(newFakeClock(diagNowTime)))
 	sc := newStreamClient(t, srv.URL, issued, "")
 	defer sc.close()
 
@@ -406,7 +362,7 @@ func TestSSEAdminScopeFilter(t *testing.T) {
 // user 无此端点：403。
 func TestSSERoleGate(t *testing.T) {
 	broker := appevents.NewBroker()
-	srv, issued := newSSEServer(t, &fakeAuthorizer{scope: corescope.User("u1")}, &fakeDiag{}, broker, newFakeClock(diagNowTime), newFakeTimer())
+	srv, issued := newSSEServer(t, &fakeAuthorizer{scope: corescope.User("u1")}, &fakeDiag{}, broker, newFakeTimer(newFakeClock(diagNowTime)))
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/admin/events", nil)
 	req.AddCookie(&http.Cookie{Name: coreauth.InsecureCookieName, Value: issued.Token})
 	resp, err := http.DefaultClient.Do(req)
@@ -423,7 +379,7 @@ func TestSSERoleGate(t *testing.T) {
 // 客户端取消：服务端断流。
 func TestSSEClientCancelCloses(t *testing.T) {
 	broker := appevents.NewBroker()
-	srv, issued := newSSEServer(t, nil, &fakeDiag{}, broker, newFakeClock(diagNowTime), newFakeTimer())
+	srv, issued := newSSEServer(t, nil, &fakeDiag{}, broker, newFakeTimer(newFakeClock(diagNowTime)))
 	ctx, cancel := context.WithCancel(context.Background())
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/admin/events", nil)
 	req.AddCookie(&http.Cookie{Name: coreauth.InsecureCookieName, Value: issued.Token})

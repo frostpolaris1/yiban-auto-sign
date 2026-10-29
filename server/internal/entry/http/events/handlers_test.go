@@ -102,7 +102,8 @@ func newEngine(t *testing.T, authz *fakeAuthorizer, diag *fakeDiag, broker *appe
 	if authz == nil {
 		authz = &fakeAuthorizer{scope: corescope.User("u1")}
 	}
-	handler := eventshttp.NewHandler(broker, diag, authz, newFakeClock(diagNowTime), newFakeTimer())
+	timer := newFakeTimer(newFakeClock(diagNowTime))
+	handler := eventshttp.NewHandler(broker, diag, authz, timer.clock, timer)
 	engine, err := router.New(router.Options{
 		Sessions: issuer, InsecureCookies: true, Events: handler,
 	})
