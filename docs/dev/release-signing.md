@@ -13,7 +13,7 @@
 | `scripts/release/verify.sh --pubkey PUB.pem --manifest manifest.json --signature manifest.sig` | 只验签，不判断公钥是否可信；rc=0 通过／rc=1 不通过／rc=2 验证没跑 |
 | `deploy/linux/update.sh --manifest/--signature/--pubkey [--expect-version V]` | 先比指纹，再验签，再对账 sha256；任何失败不碰旧件、不停服务 |
 | `<安装根>/release-pubkey.sha256` | 信任锚：管理员在安装时写入的发布公钥 SHA-256 |
-| `scripts/release-check.sh` 项 8（`signing`） | 三件齐全且指纹匹配时验签；缺件或验证没跑显性 SKIP（跳过≠绿） |
+| `scripts/release-check.sh` 项 8（`signing`） | 三件齐全且**外部锚**匹配时验签；缺件或验证没跑显性 SKIP（跳过≠绿） |
 
 ## 2. 密钥
 
@@ -41,6 +41,12 @@
 4. 升级时 `update.sh` 先算 `--pubkey` 的 sha256，再与钉住值比对。
    缺锚 exit 2；不符 exit 2。两者都发生在停服务之前。
 5. 没有锚就拒绝升级（fail-closed）。无锚时无法区分发布方密钥与攻击者密钥。
+6. **发布门只信外部锚**：`release-check.sh` 只认环境变量
+   `YIBAN_RELEASE_PUBKEY_SHA256`，或 `--pubkey-sha256-file` 指定的文件。
+   该文件必须在发布件目录之外。发布件目录内的 `release-pubkey.sha256`
+   一律不认：整包不可信时，随包的锚也不可信，等于没锚。
+   缺锚在 `--require-signing` 下是 FAIL，报
+   `anchored fingerprint must come from outside the release directory`。
 
 ## 4. 发布与升级流程
 
@@ -50,7 +56,10 @@
 4. 发布件目录（缺省 `release/`，`YIBAN_RELEASE_DIR` 可覆盖）放三件：
    `manifest.json`＋`manifest.json.sig`＋`release-pubkey.pem`。
 5. 发布门：`bash scripts/release-check.sh --only signing --require-signing`。
-   `--require-signing` 把缺件与缺 openssl 从 SKIP 升为 FAIL。发布操作必须用它。
+   锚用环境变量 `YIBAN_RELEASE_PUBKEY_SHA256` 给，或用
+   `--pubkey-sha256-file <发布件目录之外的路径>`。
+   `--require-signing` 把缺件、缺锚与缺 openssl 从 SKIP 升为 FAIL。
+   发布操作必须用它。
 6. 升级：
    `sudo bash deploy/linux/update.sh --server-bin NEW [--cli-bin NEW] --manifest manifest.json --signature manifest.sig --pubkey release-pubkey.pem --expect-version 0.7.0`
    未给三件 → 行为不变，打印显性 WARN（未签名升级，跳过≠绿）。

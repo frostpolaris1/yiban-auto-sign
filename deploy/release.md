@@ -120,9 +120,12 @@ go test ./cmd/cli/ -run TestUpdateShRollsBackOnFailedMigration -count=1
 落地（`scripts/release/make-manifest.sh` / `sign.sh` / `verify.sh`；
 `docs/dev/release-signing.md`），本项升级为可执行门：
 
-- 信任锚（P0）：公钥指纹只认钉住值——`YIBAN_RELEASE_PUBKEY_SHA256`（环境）或
-  发布件目录的 `release-pubkey.sha256`。缺锚 → SKIP（默认档）／FAIL
-  （`--require-signing`）；指纹不符 → FAIL。不得接受「随便给的公钥」。
+- 信任锚（P0，2026-10-29 裁决 4）：只认发布件目录**之外**的来源——
+  `YIBAN_RELEASE_PUBKEY_SHA256`（环境）或 `--pubkey-sha256-file <路径>`。
+  目录内的 `release-pubkey.sha256` 一律不认（整包不可信时锚也不可信）。
+  缺锚 → SKIP（默认档）／FAIL（`--require-signing`），报
+  `anchored fingerprint must come from outside the release directory`；
+  指纹不符 → FAIL。不得接受「随便给的公钥」。
 - 发布件目录（缺省 `$ROOT/release/`，`YIBAN_RELEASE_DIR` 覆盖）三件齐全
   （`manifest.json`＋`manifest.json.sig`＋`release-pubkey.pem`）且指纹匹配 →
   跑 `verify.sh`：验签通过 PASS；rc=1 FAIL。
