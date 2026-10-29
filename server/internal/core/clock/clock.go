@@ -29,7 +29,7 @@ type System struct{}
 // Now 返回当前时刻。
 func (System) Now() time.Time { return time.Now() }
 
-// Fixed 返回固定时刻。**测试只能用这个时钟**。
+// Fixed 返回固定时刻。业务逻辑测试注入本时钟；真实超时等待可用 System。
 type Fixed struct {
 	T time.Time
 }
