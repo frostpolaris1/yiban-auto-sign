@@ -315,3 +315,84 @@ func TestRegistryDomainMatchesCodeBounds(t *testing.T) {
 		t.Fatal("3601 越界必须拒绝")
 	}
 }
+
+// 邮件投递面的缺省值：关闭投递、465 隐式 TLS、本机基址。
+// 阈值与缺省的唯一定义点是 config/registry.json；本测试钉住代码侧口径。
+func TestMailConfigDefaults(t *testing.T) {
+	cfg, err := LoadFrom(baseSource())
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if cfg.MailEnabled {
+		t.Fatal("邮件投递缺省必须关闭")
+	}
+	if cfg.MailHost != "smtp.qq.com" || cfg.MailPort != 465 {
+		t.Fatalf("SMTP 缺省 = %s:%d, want smtp.qq.com:465", cfg.MailHost, cfg.MailPort)
+	}
+	if cfg.MailTLSMode != "auto" {
+		t.Fatalf("TLS 模式缺省 = %q, want auto", cfg.MailTLSMode)
+	}
+	if cfg.PublicBaseURL != DefaultPublicBaseURL {
+		t.Fatalf("PublicBaseURL = %q, want %q", cfg.PublicBaseURL, DefaultPublicBaseURL)
+	}
+}
+
+// 打开开关但缺发件账号：启动即失败，不留下永远发不出信的进程。
+func TestMailConfigRejectsIncompleteEnable(t *testing.T) {
+	src := baseSource()
+	src["YIBAN_MAIL_ENABLE"] = "true"
+	if _, err := LoadFrom(src); err == nil {
+		t.Fatal("MAIL_ENABLE=true 但缺 USER/PASS 必须被拒绝")
+	}
+	src["YIBAN_MAIL_USER"] = "sender@example.test"
+	if _, err := LoadFrom(src); err == nil {
+		t.Fatal("只有 USER 没有 PASS 必须被拒绝")
+	}
+	src["YIBAN_MAIL_PASS"] = "secret"
+	if _, err := LoadFrom(src); err != nil {
+		t.Fatalf("完整配置必须接受: %v", err)
+	}
+}
+
+// TLS 模式是闭集：拼写错误不得静默落成别的模式。
+func TestMailTLSModeIsClosedSet(t *testing.T) {
+	for _, mode := range []string{"auto", "implicit", "starttls"} {
+		src := baseSource()
+		src["YIBAN_MAIL_TLS_MODE"] = mode
+		cfg, err := LoadFrom(src)
+		if err != nil {
+			t.Fatalf("%s 必须被接受: %v", mode, err)
+		}
+		if cfg.MailTLSMode != mode {
+			t.Fatalf("TLS 模式 = %q, want %q", cfg.MailTLSMode, mode)
+		}
+	}
+	src := baseSource()
+	src["YIBAN_MAIL_TLS_MODE"] = "ssl"
+	if _, err := LoadFrom(src); err == nil {
+		t.Fatal("未知 TLS 模式必须被拒绝")
+	}
+}
+
+// 重置链接基址必须是绝对 http(s) URL；尾部斜杠归一。
+func TestPublicBaseURLValidation(t *testing.T) {
+	src := baseSource()
+	src["YIBAN_PUBLIC_BASE_URL"] = "https://app.example.test/"
+	cfg, err := LoadFrom(src)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if cfg.PublicBaseURL != "https://app.example.test" {
+		t.Fatalf("PublicBaseURL = %q, want 去掉尾斜杠", cfg.PublicBaseURL)
+	}
+	for _, bad := range []string{
+		"app.example.test", "ftp://app.example.test", "https://", "javascript:alert(1)",
+		"https://user:pass@app.example.test",
+	} {
+		src := baseSource()
+		src["YIBAN_PUBLIC_BASE_URL"] = bad
+		if _, err := LoadFrom(src); err == nil {
+			t.Fatalf("非法基址 %q 必须被拒绝", bad)
+		}
+	}
+}

@@ -40,6 +40,18 @@
     "tier": "master",
     "reload": "restart"
   },
+  "YIBAN_PUBLIC_BASE_URL": {
+    "type": "string",
+    "default": "http://127.0.0.1:47183",
+    "group": [
+      "部署"
+    ],
+    "doc": "对外可访问的基址（绝对 http(s) URL，无尾斜杠）。口令重置邮件按它拼 /reset-password?token=…；部署到域名后必须显式改",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
   "YIBAN_DATABASE_URL": {
     "type": "string",
     "default": "",
@@ -1744,6 +1756,10 @@
   "YIBAN_MAIL_SMTP_PORT": {
     "type": "int",
     "default": 465,
+    "domain": [
+      1,
+      65535
+    ],
     "group": [
       "通知"
     ],
@@ -1785,6 +1801,35 @@
     ],
     "doc": "发件邮箱授权码",
     "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_MAIL_FROM": {
+    "type": "string",
+    "default": "",
+    "group": [
+      "通知"
+    ],
+    "doc": "发件地址（空=用 YIBAN_MAIL_USER）。地址属联系信息，日志只记打码形态",
+    "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "hot"
+  },
+  "YIBAN_MAIL_TLS_MODE": {
+    "type": "enum",
+    "domain": [
+      "auto",
+      "implicit",
+      "starttls"
+    ],
+    "default": "auto",
+    "group": [
+      "通知"
+    ],
+    "doc": "SMTP TLS 模式：auto 按端口选（465 隐式 TLS，其余 STARTTLS）；implicit 与 starttls 强制对应档位。没有明文档，也不提供跳过证书校验的开关",
+    "sensitive": false,
     "web_editable": false,
     "tier": "master",
     "reload": "hot"

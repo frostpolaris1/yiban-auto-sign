@@ -233,7 +233,7 @@ func TestStructureRowsPinned(t *testing.T) {
 		fmt.Fprintf(h, "%s\t%s\t%t\t%s\n", r.scope, strings.Join(keys, ","), r.optional, r.note)
 	}
 	got := hex.EncodeToString(h.Sum(nil))
-	const want = "f9429d05fe77dbed62482524b3046c21b86537d5637452f1bcd90b8b6ef4c1e1"
+	const want = "8f9c036599e30c4c7a580ec26a0f6e943eaafc3143e5a711a9310d2eb4572cc6"
 	if got != want {
 		t.Fatalf("structure 内容变了（hash %s）；确认改动后更新 TestStructureRowsPinned 的哈希", got)
 	}

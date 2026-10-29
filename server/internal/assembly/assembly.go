@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/config"
+	mailadapter "github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/mail"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/session"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/storage"
@@ -60,6 +61,7 @@ import (
 	corecapacity "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/capacity"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	coremail "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mail"
 	coreplan "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/plan"
 	corerate "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/rate"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
@@ -337,6 +339,31 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			closeFn()
 			return nil, fmt.Errorf("assembly: session issuer: %w", err)
 		}
+		// 邮件端口：关闭时留显性启动警告；打开但配置不全由 config.Load 拒绝。
+		// 日志只记 host/port/tls_mode：用户名与口令是敏感值，不得出现。
+		var mailer coremail.Sender
+		if cfg.MailEnabled {
+			sender, err := mailadapter.NewSMTP(mailadapter.Config{
+				Host:      cfg.MailHost,
+				Port:      cfg.MailPort,
+				Username:  cfg.MailUser,
+				Password:  cfg.MailPass,
+				From:      cfg.MailFrom,
+				TLSMode:   cfg.MailTLSMode,
+				TLSConfig: cfg.MailTLSConfig,
+				Clock:     clk,
+			})
+			if err != nil {
+				closeFn()
+				return nil, fmt.Errorf("assembly: mail sender: %w", err)
+			}
+			mailer = sender
+			logger.Info("mail: SMTP delivery enabled",
+				"host", cfg.MailHost, "port", cfg.MailPort, "tls_mode", cfg.MailTLSMode)
+		} else {
+			logger.Warn("mail: SMTP delivery is disabled; password reset links are not delivered",
+				"reason", "YIBAN_MAIL_ENABLE is false")
+		}
 		authSvc, err = appauth.NewService(appauth.Deps{
 			Users:         pg.NewUserRepo(db),
 			Sessions:      issuer,
@@ -345,10 +372,21 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			Audits:        audits,
 			Tx:            db,
 			Clock:         clk,
+			Mail:          mailer,
+			MailBaseURL:   cfg.PublicBaseURL,
+			Logger:        logger,
 		})
 		if err != nil {
 			closeFn()
 			return nil, fmt.Errorf("assembly: auth service: %w", err)
+		}
+		// 关闭顺序：先等在途投递（有上界），再关池。
+		closeAuth := closeFn
+		closeFn = func() {
+			ctx, cancel := context.WithTimeout(context.Background(), shutdownBudget)
+			_ = authSvc.Close(ctx)
+			cancel()
+			closeAuth()
 		}
 
 		// 凭据钥独立于 pepper：轮换 pepper 只让摘要与审计链失效，

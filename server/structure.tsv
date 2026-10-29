@@ -10,7 +10,7 @@ root	server,ui,docs,work,deploy,docker,yiban,web,frontend,tests,scripts,config,d
 server/internal	core,app,adapters,entry,signing,assembly	layers
 server/cmd	server,cli,bench,probe-login	process entrypoints
 server/migrations	postgres	SQL migrations
-server/internal/core	auth,user,school,account,schedule,signing,photo,audit,notify,diagnostic,clock,status,errs,mask,retry,egress,plan,capacity,image,scope,window,rate,location	pure domain packages
+server/internal/core	auth,user,school,account,schedule,signing,photo,audit,notify,mail,diagnostic,clock,status,errs,mask,retry,egress,plan,capacity,image,scope,window,rate,location	pure domain packages
 server/internal/app	auth,user,school,account,admin,schedule,timepref,signing,photo,photos,location,audit,notify,diagnostic,egress,worker,events	use cases
 server/internal/adapters	pg,session,config,audit,mail,sse,image,storage,upstream,legacy	infrastructure packages
 server/internal/entry/http	router,respond,oapi,auth,user,school,account,admin,schedule,signing,photo,photos,location,audit,notify,diagnostic,events	http handlers

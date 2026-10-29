@@ -85,6 +85,12 @@ type authEnv struct {
 }
 
 func newAuthEnv(t *testing.T) *authEnv {
+	return newAuthEnvWith(t, nil, nil)
+}
+
+// newAuthEnvWith 在默认装配上应用配置改写与日志注入。
+// mutate 为 nil 时不改配置；logger 为 nil 时丢弃日志。
+func newAuthEnvWith(t *testing.T, mutate func(*config.Config), logger *slog.Logger) *authEnv {
 	t.Helper()
 	base := strings.TrimSpace(os.Getenv(authDSNEnv))
 	if base == "" {
@@ -110,7 +116,13 @@ func newAuthEnv(t *testing.T) *authEnv {
 		CredentialKey:   authTestCredentialKey,
 		PhotoDir:        t.TempDir(),
 	}
-	stack, err := assembly.Build(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if mutate != nil {
+		mutate(cfg)
+	}
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	stack, err := assembly.Build(cfg, logger)
 	if err != nil {
 		_, _ = admin.Exec(ctx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE")
 		admin.Close()

@@ -19,9 +19,11 @@
 package config
 
 import (
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -102,6 +104,26 @@ type Config struct {
 
 	// PhotoDir 是图片 blob 存储根目录。
 	PhotoDir string
+
+	// MailEnabled 是 SMTP 投递总开关。
+	// 关闭时令牌照常生成，但投递跳过，并留一条显性日志。
+	MailEnabled bool
+	// MailHost、MailPort 是 SMTP 服务器。
+	MailHost string
+	MailPort int
+	// MailUser、MailPass 是 AUTH PLAIN 凭据。两者同时为空表示不做认证。
+	// Pass 是敏感值：不得出现在日志、审计与错误文本里。
+	MailUser string
+	MailPass string
+	// MailFrom 是发件地址；空时用 MailUser。
+	MailFrom string
+	// MailTLSMode 取 auto、implicit 或 starttls。
+	MailTLSMode string
+	// PublicBaseURL 是邮件里重置链接的基址（绝对 http(s) URL，无尾斜杠）。
+	PublicBaseURL string
+	// MailTLSConfig 仅测试注入：非 nil 时替代系统根证书校验 SMTP 服务器。
+	// 生产恒为 nil。它**不**来自环境变量：部署面不提供"关闭证书校验"的开关。
+	MailTLSConfig *tls.Config
 }
 
 // knownEnvs 是闭集。
@@ -126,12 +148,22 @@ const DefaultHTTPAddr = "127.0.0.1:47183"
 // doctor 的文件系统面体检共用本常量。
 const DefaultPhotoDir = "data/photos"
 
+// DefaultPublicBaseURL 是 YIBAN_PUBLIC_BASE_URL 未设置时的缺省基址。
+// 取本机回环监听地址：开发态下邮件链接指向本进程。
+const DefaultPublicBaseURL = "http://127.0.0.1:47183"
+
+// mailTLSModes 是 YIBAN_MAIL_TLS_MODE 的闭集。
+// 与 adapters/mail 的模式常量同名；string 域住在这里，避免 config 导入适配器。
+var mailTLSModes = []string{"auto", "implicit", "starttls"}
+
 // keySpec 是名册对照测试看到的读取规格视图。
-// domain 为 nil 表示名册不登记域；fallback 的类型就是键的类型。
+// domain 为 nil 表示名册不登记数值域；enum 非空表示名册登记字符串闭集。
+// fallback 的类型就是键的类型。
 type keySpec struct {
 	key      string
 	fallback any
 	domain   []float64
+	enum     []string
 }
 
 // intKey 是整数配置键的读取规格。
@@ -200,6 +232,28 @@ func (k stringKey) spec() keySpec {
 	return keySpec{key: k.key, fallback: k.fallback}
 }
 
+// enumKey 是字符串闭集配置键的读取规格。
+// 域（allowed）是名册对照的字符串闭集；越界即读取错误，不静默落回缺省。
+type enumKey struct {
+	key      string
+	fallback string
+	allowed  []string
+}
+
+func (k enumKey) read(src Source) (string, error) {
+	value := strings.ToLower(strings.TrimSpace(get(src, k.key, k.fallback)))
+	for _, allowed := range k.allowed {
+		if value == allowed {
+			return value, nil
+		}
+	}
+	return "", fmt.Errorf("config: %s must be one of %s", k.key, strings.Join(k.allowed, ", "))
+}
+
+func (k enumKey) spec() keySpec {
+	return keySpec{key: k.key, fallback: k.fallback, enum: k.allowed}
+}
+
 // 读取规格表：缺省与域在代码里只出现一次。
 // LoadFrom 逐键取规格读取；registry_parity_test 用同一张表对 config/registry.json。
 // 浮点键的域取 core/rate 的常量，不在本包复写 0.2/4.0。
@@ -215,6 +269,15 @@ var (
 	keyTimezone         = stringKey{"YIBAN_TZ", DefaultTimezone}
 	keyPhotoDir         = stringKey{"YIBAN_PHOTO_DIR", DefaultPhotoDir}
 	keyDatabaseURL      = stringKey{"YIBAN_DATABASE_URL", ""}
+
+	keyMailEnabled   = boolKey{"YIBAN_MAIL_ENABLE", false}
+	keyMailHost      = stringKey{"YIBAN_MAIL_SMTP_HOST", "smtp.qq.com"}
+	keyMailPort      = intKey{"YIBAN_MAIL_SMTP_PORT", 465, 1, 65535}
+	keyMailUser      = stringKey{"YIBAN_MAIL_USER", ""}
+	keyMailPass      = stringKey{"YIBAN_MAIL_PASS", ""}
+	keyMailFrom      = stringKey{"YIBAN_MAIL_FROM", ""}
+	keyMailTLSMode   = enumKey{"YIBAN_MAIL_TLS_MODE", "auto", mailTLSModes}
+	keyPublicBaseURL = stringKey{"YIBAN_PUBLIC_BASE_URL", DefaultPublicBaseURL}
 )
 
 // configSpecs 汇总静态缺省/域的读取规格。
@@ -233,6 +296,14 @@ func configSpecs() []keySpec {
 		keyTimezone.spec(),
 		keyPhotoDir.spec(),
 		keyDatabaseURL.spec(),
+		keyMailEnabled.spec(),
+		keyMailHost.spec(),
+		keyMailPort.spec(),
+		keyMailUser.spec(),
+		keyMailPass.spec(),
+		keyMailFrom.spec(),
+		keyMailTLSMode.spec(),
+		keyPublicBaseURL.spec(),
 	}
 }
 
@@ -328,7 +399,53 @@ func LoadFrom(src Source) (*Config, error) {
 	if cfg.PhotoDir == "" {
 		return nil, errors.New("config: YIBAN_PHOTO_DIR must not be empty")
 	}
+
+	// 邮件投递面：缺省关闭；打开后必须给全发件账号，否则启动即失败。
+	if cfg.MailEnabled, err = keyMailEnabled.read(src); err != nil {
+		return nil, err
+	}
+	cfg.MailHost = strings.TrimSpace(keyMailHost.read(src))
+	if cfg.MailPort, err = keyMailPort.read(src); err != nil {
+		return nil, err
+	}
+	cfg.MailUser = strings.TrimSpace(keyMailUser.read(src))
+	// 口令不 Trim：首尾空格可能是授权码的一部分，静默删改会变成"认证失败"。
+	cfg.MailPass = keyMailPass.read(src)
+	cfg.MailFrom = strings.TrimSpace(keyMailFrom.read(src))
+	if cfg.MailTLSMode, err = keyMailTLSMode.read(src); err != nil {
+		return nil, err
+	}
+	if cfg.MailEnabled {
+		if cfg.MailHost == "" {
+			return nil, errors.New("config: YIBAN_MAIL_ENABLE requires YIBAN_MAIL_SMTP_HOST")
+		}
+		if cfg.MailUser == "" || strings.TrimSpace(cfg.MailPass) == "" {
+			return nil, errors.New("config: YIBAN_MAIL_ENABLE requires YIBAN_MAIL_USER and YIBAN_MAIL_PASS")
+		}
+	}
+	base, err := normalizeBaseURL(keyPublicBaseURL.read(src))
+	if err != nil {
+		return nil, err
+	}
+	cfg.PublicBaseURL = base
 	return cfg, nil
+}
+
+// normalizeBaseURL 校验并归一重置链接基址。
+// 只接受绝对 http(s) URL；尾斜杠去掉，链接拼接处不再判断。
+func normalizeBaseURL(raw string) (string, error) {
+	trimmed := strings.TrimRight(strings.TrimSpace(raw), "/")
+	u, err := url.Parse(trimmed)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", fmt.Errorf("config: YIBAN_PUBLIC_BASE_URL must be an absolute http(s) URL, got %q", raw)
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return "", errors.New("config: YIBAN_PUBLIC_BASE_URL must not carry a query or fragment")
+	}
+	if u.User != nil {
+		return "", errors.New("config: YIBAN_PUBLIC_BASE_URL must not carry credentials")
+	}
+	return trimmed, nil
 }
 
 // getInt 读取整数配置并在域名内校验。
