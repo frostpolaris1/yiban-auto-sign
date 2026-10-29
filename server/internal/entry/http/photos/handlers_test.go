@@ -40,6 +40,8 @@ type fakeService struct {
 	getRec  corephoto.Record
 	getBody io.ReadCloser
 	getErr  error
+	// openCalls 计 Open 次数：304 命中路径不得打开 blob 流。
+	openCalls int
 
 	deleteErr error
 
@@ -64,6 +66,7 @@ func (f *fakeService) Get(context.Context, corescope.Scope, string) (corephoto.R
 }
 
 func (f *fakeService) Open(context.Context, corescope.Scope, string) (corephoto.Record, io.ReadCloser, error) {
+	f.openCalls++
 	return f.getRec, f.getBody, f.getErr
 }
 
@@ -166,8 +169,24 @@ func requestWithHeaders(t *testing.T, engine http.Handler, issued coreauth.Issue
 	return rec
 }
 
+// requestWithHeaderLines 逐行追加同名请求头。
+// net/http 把每行存成独立条目，不按逗号拆分。
+func requestWithHeaderLines(t *testing.T, engine http.Handler, issued coreauth.Issued,
+	method, path, name string, values ...string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, nil)
+	req.AddCookie(&http.Cookie{Name: coreauth.InsecureCookieName, Value: issued.Token})
+	req.Header.Set("X-CSRF-Token", issued.CSRFToken)
+	for _, value := range values {
+		req.Header.Add(name, value)
+	}
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+	return rec
+}
+
 // 7x2-3：If-None-Match 命中回 304（无体、保留 ETag）；弱比较/列表/* 均认，
-// 不匹配与缺头回 200 带体。
+// 不匹配与缺头回 200 带体。304 不声明 Content-Type 与 Content-Length。
 func TestPhotoGetNotModified(t *testing.T) {
 	data := []byte("png-bytes")
 	head := sampleRecord()
@@ -180,6 +199,7 @@ func TestPhotoGetNotModified(t *testing.T) {
 		{"exact", etag, http.StatusNotModified},
 		{"weak", "W/" + etag, http.StatusNotModified},
 		{"list", `"other", ` + etag, http.StatusNotModified},
+		{"weak in list", `"other", W/` + etag, http.StatusNotModified},
 		{"star", "*", http.StatusNotModified},
 		{"mismatch", `"other"`, http.StatusOK},
 		{"absent", "", http.StatusOK},
@@ -205,6 +225,80 @@ func TestPhotoGetNotModified(t *testing.T) {
 				}
 				if ct := rec.Header().Get("Content-Type"); ct != "" {
 					t.Fatalf("304 不应声明 Content-Type：%q", ct)
+				}
+				if cl := rec.Header().Get("Content-Length"); cl != "" {
+					t.Fatalf("304 不应声明 Content-Length：%q", cl)
+				}
+				return
+			}
+			if !bytes.Equal(rec.Body.Bytes(), data) {
+				t.Fatalf("200 body = %q", rec.Body.Bytes())
+			}
+		})
+	}
+}
+
+// 条件命中只读记录，不打开 blob 流；未命中必须开流并回字节。
+func TestPhotoGetNotModifiedSkipsBlobOpen(t *testing.T) {
+	data := []byte("png-bytes")
+	head := sampleRecord()
+	etag := `"` + hex.EncodeToString(head.SHA256[:]) + `"`
+
+	svc := &fakeService{getRec: sampleRecord(), getBody: io.NopCloser(bytes.NewReader(data))}
+	engine, issued := newRouter(t, corescope.User("u1"), svc)
+	rec := requestWithHeaders(t, engine, issued, http.MethodGet, "/api/me/photos/photo-1",
+		map[string]string{"If-None-Match": etag})
+	if rec.Code != http.StatusNotModified {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if svc.openCalls != 0 {
+		t.Fatalf("304 打开了 blob 流 %d 次；条件命中不得 Open", svc.openCalls)
+	}
+
+	svc = &fakeService{getRec: sampleRecord(), getBody: io.NopCloser(bytes.NewReader(data))}
+	engine, issued = newRouter(t, corescope.User("u1"), svc)
+	rec = request(t, engine, issued, http.MethodGet, "/api/me/photos/photo-1", nil, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if svc.openCalls != 1 {
+		t.Fatalf("200 打开了 blob 流 %d 次，want 1", svc.openCalls)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), data) {
+		t.Fatalf("200 body = %q", rec.Body.Bytes())
+	}
+}
+
+// RFC 9110 §5.3：列表头多行等价于合并成一行逗号分隔值。
+// 生成绑定把多行头当非法；入口层必须先合并，否则客户端拿到 400。
+func TestPhotoGetRepeatedIfNoneMatchLines(t *testing.T) {
+	data := []byte("png-bytes")
+	head := sampleRecord()
+	etag := `"` + hex.EncodeToString(head.SHA256[:]) + `"`
+	cases := []struct {
+		name  string
+		lines []string
+		want  int
+	}{
+		{"second line exact", []string{`"other"`, etag}, http.StatusNotModified},
+		{"second line weak", []string{`"other"`, "W/" + etag}, http.StatusNotModified},
+		{"no match", []string{`"a"`, `"b"`}, http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &fakeService{getRec: sampleRecord(), getBody: io.NopCloser(bytes.NewReader(data))}
+			engine, issued := newRouter(t, corescope.User("u1"), svc)
+			rec := requestWithHeaderLines(t, engine, issued, http.MethodGet, "/api/me/photos/photo-1",
+				"If-None-Match", tc.lines...)
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.want, rec.Body.String())
+			}
+			if got := rec.Header().Get("ETag"); got != etag {
+				t.Fatalf("etag = %q, want %q", got, etag)
+			}
+			if tc.want == http.StatusNotModified {
+				if rec.Body.Len() != 0 {
+					t.Fatalf("304 不得带体：%q", rec.Body.Bytes())
 				}
 				return
 			}

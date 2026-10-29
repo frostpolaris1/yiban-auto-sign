@@ -18,6 +18,16 @@ authoritative and a gate keeps both tables equal.
 - Cross-scope object: **404**. Action forbidden: **403**.
 - No phone number, credential or upstream raw text in any response.
 
+## Conditional requests
+
+`GET /api/me/photos/{id}` sends `ETag` on both the `200` and the `304`
+answer. `If-None-Match` uses the weak comparison function: `W/"x"` matches
+`"x"`, comma lists and `*` are honoured. Repeated `If-None-Match` header
+lines are merged into one comma-separated value per RFC 9110 section 5.3
+before binding, so a well-formed list answers `304` or `200`, never `400`.
+A `304` carries `ETag` and carries no `Content-Type`, no `Content-Length`
+and no body. The `304` response declares the `ETag` header in the YAML.
+
 ## Roles
 
 | Role | Scope |

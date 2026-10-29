@@ -80,6 +80,29 @@ func newRequestID() string {
 	return hex.EncodeToString(b[:])
 }
 
+// listRequestHeaders 列出 RFC 9110 定义为列表值的请求头。
+// 生成绑定要求每个头恰好一行；多行被它判成 400。
+// RFC 9110 §5.3 允许接收方把同名字段行按逗号合并为一值，语义不变。
+// 新增列表头必须登记到本表；非列表头（X-CSRF-Token、Last-Event-ID）
+// 多行仍是畸形请求，保持生成绑定的 400。
+var listRequestHeaders = []string{"If-None-Match"}
+
+// mergeListHeaders 把多行列表头合并成一行。
+// 它必须排在生成处理器之前：绑定直接读 c.Request.Header。
+func mergeListHeaders() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		header := c.Request.Header
+		for _, name := range listRequestHeaders {
+			values := header.Values(name)
+			if len(values) < 2 {
+				continue
+			}
+			header.Set(name, strings.Join(values, ", "))
+		}
+		c.Next()
+	}
+}
+
 // bodyLimit 把请求体包成有界读取器。它排在 requestID 之后、其余中间件之前。
 // 超界读取在处理器绑定时暴露；bindError 把它转成 413。
 // 本中间件**不**自己读请求体：读走即无法再次绑定。
