@@ -209,10 +209,14 @@ check_signing() {
     local dir="${YIBAN_RELEASE_DIR:-$ROOT/release}"
     local mf="$dir/manifest.json" sig="$dir/manifest.json.sig" pub="$dir/release-pubkey.pem"
     local verifier="$ROOT/scripts/release/verify.sh"
-    if [ ! -f "$mf" ] || [ ! -f "$sig" ] || [ ! -f "$pub" ]; then
+    local missing=()
+    [ -f "$mf" ] || missing+=(manifest.json)
+    [ -f "$sig" ] || missing+=(manifest.json.sig)
+    [ -f "$pub" ] || missing+=(release-pubkey.pem)
+    if [ "${#missing[@]}" -gt 0 ]; then
         STATUS_signing=SKIP
-        REASON_signing="release artifacts incomplete in $dir (need manifest.json + manifest.json.sig + release-pubkey.pem)"
-        echo "signing: SKIP — 发布件三件不齐（$dir），显性跳过不记绿；签发见 docs/dev/release-signing.md"
+        REASON_signing="release artifacts incomplete in $dir: missing ${missing[*]}"
+        echo "signing: SKIP — 缺件：${missing[*]}（$dir），显性跳过不记绿；签发见 docs/dev/release-signing.md"
         return
     fi
     if [ ! -f "$verifier" ]; then

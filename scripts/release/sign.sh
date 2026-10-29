@@ -40,16 +40,27 @@ done
 [ -f "$IN" ] || { echo "sign: manifest not found: $IN" >&2; exit 2; }
 [ -r "$KEY" ] || { echo "sign: private key not readable: $KEY" >&2; exit 2; }
 
+# --in 与 --out 同文件会先截断再签名，等于毁掉输入；直接拒绝。
+in_real="$(realpath -m -- "$IN" 2>/dev/null || printf '%s' "$IN")"
+out_real="$(realpath -m -- "$OUT" 2>/dev/null || printf '%s' "$OUT")"
+if [ "$in_real" = "$out_real" ]; then
+    echo "sign: --in and --out must differ (would truncate the manifest)" >&2
+    exit 2
+fi
+
 command -v openssl >/dev/null 2>&1 || {
     echo "sign: openssl not found; signing DID NOT run" >&2
     exit 2
 }
 
 # -rawin：Ed25519 是纯签名算法，openssl 3 要求显式传原始消息。
-# openssl 自己的报错保持 stderr 直通；失败后清掉残留输出文件。
-if ! openssl pkeyutl -sign -inkey "$KEY" -rawin -in "$IN" -out "$OUT"; then
-    echo "sign: openssl signing FAILED; output file removed: $OUT" >&2
-    rm -f -- "$OUT"
+# openssl 自己的报错保持 stderr 直通。先写临时件、成功再原子替换：
+# 失败时既有输出（上一次的签名）原样保留，不得毁掉。
+TMP_OUT="$OUT.tmp.$$"
+if ! openssl pkeyutl -sign -inkey "$KEY" -rawin -in "$IN" -out "$TMP_OUT"; then
+    echo "sign: openssl signing FAILED; existing output left untouched: $OUT" >&2
+    rm -f -- "$TMP_OUT"
     exit 1
 fi
+mv -f -- "$TMP_OUT" "$OUT"
 echo "sign: signed $IN -> $OUT"

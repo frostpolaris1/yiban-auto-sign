@@ -19,6 +19,8 @@
 - 生成：`openssl genpkey -algorithm ED25519 -out yiban-release-key.pem`；
   公钥：`openssl pkey -in yiban-release-key.pem -pubout -out release-pubkey.pem`。
 - **红线**：私钥永不入库、不与部署机同机明文存放。仓库只收公钥（随发布件目录）。
+- **门**：`tests/test_private_key_gate.py` 内容扫描全部跟踪文件（`*.pem` 与
+  `release/` 已进 `.gitignore`；扫空不得当绿；改文件名不能绕过）。
 - 轮换：换钥 = 新公钥随发布件分发；`update.sh` 不内置公钥（显式 `--pubkey`），无兼容矩阵。
 
 ## 3. 发布与升级流程
@@ -42,6 +44,7 @@
 ## 5. 门与测试
 
 - Go 干跑测试：`go test ./cmd/cli -run TestUpdateSh`
+- 私钥入库门：`pytest tests/test_private_key_gate.py`（跟踪文件零私钥块；有牙自证）。
   （验签通过执行／篡改清单拒绝且不碰旧件／三件缺一报用法错）。
 - 发布门：`bash scripts/release-check.sh --only signing`；
   `--selftest` 含「篡改一字节必红」突变（openssl 在时执行，否则显性跳过）。

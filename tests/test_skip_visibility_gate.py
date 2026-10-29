@@ -743,6 +743,16 @@ KNOWN_SKIP_SITES = json.loads(r"""
    "skipIf",
    "需要 bash（Git Bash/WSL）"
   ]
+ ],
+ "tests/test_private_key_gate.py": [
+  [
+   "skipTest",
+   "git 不可用（worktree + WSL 常见）；私钥门 DID NOT run，不算绿"
+  ],
+  [
+   "skipTest",
+   "git 不可用（check-ignore 失败）；忽略规则 DID NOT verify"
+  ]
  ]
 }
 """)
