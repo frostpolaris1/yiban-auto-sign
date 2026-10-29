@@ -6,19 +6,25 @@
  * `scripts/tests`：纯 Node 单测，读 `src/` 下的 `.ts`、`.tsx` 与 `.css`。
  *
  * **口径**
- * 门判六件事：
+ * 门判八件事：
  * 一，`Icon.tsx` 必须有 `lucide-react` 的具名导入，type-only 导入不算值；
  * 二，`ICON_COMPONENTS` 的每个值都是该导入的组件，注册表不得为空；
  * 三，`IconName` 取 `keyof typeof ICON_COMPONENTS`，名字域只有一处来源；
- * 四，`src/` 的 TSX 里除品牌标记外没有手抄几何；
- * 五，`src/` 的 CSS 里每个 `data:image/svg` 都登记在册，登记项＝文件路径＋
+ * 四，`src/` 的 TSX 里除品牌标记外没有手抄几何：元素名单与 `d` 属性都查；
+ * 五，`src/` 的 TS 与 TSX 里字符串字面量和模板字符串不含 `<svg`、`<path`、
+ *    `data:image/svg+xml`。`dangerouslySetInnerHTML` 与 `style` 内联的载荷都是
+ *    字符串，逃不过本条。豁免面只有 CSS 登记表，TS 侧不留豁免；
+ * 六，`src/` 的 CSS 里每个 `data:image/svg` 都登记在册，登记项＝文件路径＋
  *    data URI 的 sha256＋理由；原生控件必须走 CSS background，这是唯一豁免；
- * 六，`src/` 内模块导入只来自登记表；`lucide-react` 只许出现在 `Icon.tsx`。
+ * 七，品牌标记整段 JSX 按序列化哈希钉住：文件内全部 JSX 元素名单与全部属性值
+ *    （含 `viewBox`、`fill` 等）序列化后哈希相等；加元素、改属性、动态化都红；
+ * 八，`src/` 内模块导入只来自登记表；`lucide-react` 只许出现在 `Icon.tsx`。
  *
  * 第四条把门的对象对齐实际改动面：只扫 `Icon.tsx` 会漏掉别处新增的图标文件。
- * 品牌标记只允许恰一条静态 `<path d="…">`；其它几何、动态 `d`、内容变化都红。
- * 第五条补上第二条来源：`adminator.css` 用内联 SVG 画 select 箭头。
- * 第六条拦第二套图标库：允许的裸模块逐条列出，不用通配。
+ * 第五条堵字符串侧门：AST 判据只看元素与属性，字符串载荷里的 svg 会静默通过，
+ * 故单独扫字符串。大写变体同判。
+ * 第六条补上第二条来源：`adminator.css` 用内联 SVG 画 select 箭头。
+ * 第八条拦第二套图标库：允许的裸模块逐条列出，不用通配。
  * 门对每种退化源码自测，证明它能变红。
  */
 
@@ -43,10 +49,11 @@ const REGISTRY = 'ICON_COMPONENTS'
 const GEOMETRY = new Set(['path', 'circle', 'rect', 'line', 'polyline', 'polygon', 'ellipse'])
 /**
  * 品牌标记：按文件登记，内容钉住。
- * 值是 Adminator 品牌标记那一条 `d` 的 sha256；形状来自设计资产，不是图标。
+ * 值是 BrandMark.tsx 全部 JSX 子树的序列化哈希：元素名单＋全部属性值
+ * （含 `viewBox`、`fill` 等）。形状来自设计资产，不是图标。
  */
 const BRAND_MARK = 'components/ui/BrandMark.tsx'
-const BRAND_MARK_SHA = 'c63e7ea9358620e386fe5bbda00cb3fb78d39a6504738d9847767076308eb196'
+const BRAND_MARK_SHA = 'b29f52c51eb7ed74819f2a7906349dafa0c8523bbbd4da92ca6e6587eeecdad1'
 
 /**
  * 图标库来源白名单：只列本仓实际使用的非图标依赖。
@@ -194,6 +201,9 @@ function parseSource(source) {
   }
 }
 
+/** sourceCache 供 sourceSlice 取原文；brandFindings 每次解析后设置。 */
+let sourceCache = { text: '' }
+
 /** pathData 返回源码里全部 `d` 属性的字符串值。 */
 export function pathData(source) {
   const ast = parseSource(source)
@@ -239,9 +249,63 @@ export function geometryFindings(source) {
   return [...new Set(findings)]
 }
 
+/** jsxDigest 把全部 JSX 子树序列化为规范文本。无 JSX 返回空串。 */
+function jsxDigest(ast) {
+  const parts = []
+  walk(ast.program, (node) => {
+    if (node.type === 'JSXElement' || node.type === 'JSXFragment') {
+      parts.push(`[${node.type}]`)
+    }
+    if (node.type === 'JSXOpeningElement' && node.name) {
+      parts.push(`<${jsxName(node.name)}>`)
+    }
+    if (node.type === 'JSXClosingElement' && node.name) {
+      parts.push(`</${jsxName(node.name)}>`)
+    }
+    if (node.type === 'JSXAttribute' && node.name) {
+      const value = node.value
+      let rendered = 'nil'
+      if (value === null) {
+        rendered = 'true'
+      } else if (value.type === 'StringLiteral') {
+        rendered = JSON.stringify(value.value)
+      } else if (value.type === 'JSXExpressionContainer') {
+        rendered = `expr:${sourceSlice(value)}`
+      }
+      parts.push(`@${jsxName(node.name)}=${rendered}`)
+    }
+    if (node.type === 'JSXText') {
+      parts.push(JSON.stringify(node.value))
+    }
+  })
+  return parts.join('|')
+}
+
+/** jsxName 返回 JSX 名字的文本形状。名字空间用点拼接。 */
+function jsxName(name) {
+  if (name.type === 'JSXIdentifier') {
+    return name.name
+  }
+  if (name.type === 'JSXNamespacedName') {
+    return `${name.namespace.name}:${name.name.name}`
+  }
+  if (name.type === 'JSXMemberExpression') {
+    return `${jsxName(name.object)}.${jsxName(name.property)}`
+  }
+  return '?'
+}
+
+/** sourceSlice 取节点原文。源文缺失时退回类型名。 */
+function sourceSlice(node) {
+  return node.start != null && node.end != null && typeof node.start === 'number'
+    ? sourceCache.text.slice(node.start, node.end)
+    : node.type
+}
+
 /**
  * brandFindings 返回品牌标记文件的内容偏差。空数组表示与登记一致。
- * 只允许恰一条静态 `<path d="…">`：其它几何、动态 `d`、多处 `d` 都红。
+ * 判据＝全部 JSX 元素名单与全部属性值序列化后的 sha256 与登记值相等。
+ * 加元素、删元素、改属性、改文本、动态化属性都红。
  * 纯函数：自测直接把退化源码喂进来。
  */
 export function brandFindings(source) {
@@ -249,44 +313,74 @@ export function brandFindings(source) {
   if (typeof ast === 'string') {
     return [ast]
   }
-  const shapes = []
-  const dAttrs = []
+  sourceCache = { text: source }
+  const digest = createHash('sha256').update(jsxDigest(ast)).digest('hex')
+  if (digest !== BRAND_MARK_SHA) {
+    if (!jsxHasGeometry(ast)) {
+      return ['品牌标记没有几何元素：疑似整个被换掉']
+    }
+    return [`品牌标记内容已变：sha256 ${digest}`]
+  }
+  return []
+}
+
+/** jsxHasGeometry 判断 JSX 里还有手抄几何元素。 */
+function jsxHasGeometry(ast) {
+  let found = false
   walk(ast.program, (node) => {
     if (
       node.type === 'JSXOpeningElement' &&
-      node.name.type === 'JSXIdentifier' &&
+      node.name?.type === 'JSXIdentifier' &&
       GEOMETRY.has(node.name.name)
     ) {
-      shapes.push(node)
+      found = true
     }
-    if (
-      node.type === 'JSXAttribute' &&
-      node.name.type === 'JSXIdentifier' &&
-      node.name.name === 'd'
-    ) {
-      dAttrs.push(node)
+  })
+  return found
+}
+
+/**
+ * findingsOf 返回 `Icon.tsx` 源码的违规说明。空数组表示通过。
+ * 纯函数：自测直接把退化源码喂进来。
+ */
+
+/**
+ * stringPayloadFindings 返回字符串里的内联 svg 形状。空数组表示通过。
+ * 扫描面＝全部字符串字面量与模板字符串的静态段；判据＝三个形状，大小写不敏感：
+ * `<svg`、`<path`、`data:image/svg+xml`。
+ * `dangerouslySetInnerHTML` 与 `style` 内联的载荷都是字符串，逃不过本条。
+ * 纯函数：自测直接把退化源码喂进来。
+ */
+export function stringPayloadFindings(source) {
+  const ast = parseSource(source)
+  if (typeof ast === 'string') {
+    return [ast]
+  }
+  const chunks = []
+  walk(ast.program, (node) => {
+    if (node.type === 'StringLiteral' && typeof node.value === 'string') {
+      chunks.push(node.value)
+    }
+    if (node.type === 'TemplateElement' && typeof node.value?.raw === 'string') {
+      chunks.push(node.value.raw)
+    }
+    if (node.type === 'JSXText' && typeof node.value === 'string') {
+      chunks.push(node.value)
     }
   })
 
-  if (shapes.length !== 1) {
-    return [`品牌标记必须只有一条几何，实有 ${shapes.length} 条`]
+  const shapes = ['<svg', '<path', 'data:image/svg+xml']
+  const findings = []
+  for (const chunk of chunks) {
+    const lowered = chunk.toLowerCase()
+    for (const shape of shapes) {
+      if (lowered.includes(shape)) {
+        findings.push(`字符串载荷含内联 svg（形状 ${shape}）`)
+        break
+      }
+    }
   }
-  const shape = shapes[0]
-  if (shape.name.name !== 'path') {
-    return [`品牌标记的唯一几何必须是 path，实为 <${shape.name.name}>`]
-  }
-  if (dAttrs.length !== 1) {
-    return [`品牌标记必须只有一个 d 属性，实有 ${dAttrs.length} 个`]
-  }
-  const value = dAttrs[0].value
-  if (value?.type !== 'StringLiteral') {
-    return ['品牌标记的 d 必须是静态字符串，不得用表达式']
-  }
-  const actual = createHash('sha256').update(value.value).digest('hex')
-  if (actual !== BRAND_MARK_SHA) {
-    return [`品牌标记的 path 内容已变：${actual}`]
-  }
-  return []
+  return [...new Set(findings)]
 }
 
 /**
@@ -324,7 +418,7 @@ export function findingsOf(source) {
     findings.push('IconName 必须取注册表的键（keyof typeof）')
   }
 
-  return [...findings, ...geometryFindings(source)]
+  return [...findings, ...geometryFindings(source), ...stringPayloadFindings(source)]
 }
 
 /**
@@ -458,13 +552,35 @@ test('品牌标记的图形按内容钉住', () => {
     ['改内容', source.replace('M14.747', 'M14.748')],
     ['加路径', source.replace('</svg>', '<path d="M0 0h1v1H0z" /></svg>')],
     ['加圆', source.replace('</svg>', '<circle cx="1" cy="1" r="1" /></svg>')],
-    ['改矩形', source.replace('<path', '<rect').replace('fill="currentColor"', 'fill="currentColor"')],
+    ['改矩形', source.replace('<path', '<rect')],
     ['动态 d', source.replace(/d="[^"]*"/, 'd={SHAPE}')],
     ['换掉 path 名', source.replace(/<path\b/, '<polygon')],
+    ['改 viewBox', source.replace('viewBox="0 0 36 36"', 'viewBox="0 0 48 48"')],
+    ['加 image 元素', source.replace('</svg>', '<image href="data:image/svg+xml,x" /></svg>')],
+    ['改 fill', source.replace('fill="currentColor"', 'fill="red"')],
+    ['改 style 值', source.replace('var(--t-inverse)', 'var(--t-primary)')],
+    ['删属性', source.replace(' xmlns="http://www.w3.org/2000/svg"', '')],
   ]
+  // 注释与 docstring 不在钉住面内：哈希只序列化 JSX 子树。
+  assert.deepEqual(
+    brandFindings(source.replace('Adminator 品牌标记', '换成别的字')),
+    [],
+    '注释改动不得误报',
+  )
   for (const [label, mutated] of mutations) {
     assert.ok(brandFindings(mutated).length > 0, `品牌标记突变未变红：${label}`)
   }
+  // 注释与 docstring 不在钉住面内：哈希只序列化 JSX 子树。
+  assert.deepEqual(
+    brandFindings(source.replace('Adminator 品牌标记', '换成别的字')),
+    [],
+    '注释改动不得误报',
+  )
+  // JSXText 空白参与序列化：改排版＝改文件＝红。登记值随排版同批更新。
+  assert.ok(
+    brandFindings(source.replace(/\s+/g, ' ')).length > 0,
+    '空白重排未变红',
+  )
 })
 
 test('src 里除登记的品牌标记外没有第二处手抄 svg', () => {
@@ -481,6 +597,9 @@ test('src 里除登记的品牌标记外没有第二处手抄 svg', () => {
     const source = readFileSync(join(srcRoot, name), 'utf8')
     scanned += 1
     for (const finding of geometryFindings(source)) {
+      findings.push(`src/${name}: ${finding}`)
+    }
+    for (const finding of stringPayloadFindings(source)) {
       findings.push(`src/${name}: ${finding}`)
     }
   }
@@ -549,6 +668,36 @@ test('门对每种退化形状都能变红', () => {
   ]
   for (const [label, source] of cases) {
     assert.ok(findingsOf(source).length > 0, `退化形状未变红：${label}`)
+  }
+})
+
+test('字符串载荷门对三种逃逸形状都能判红', () => {
+  const clean = "const note = '文本没有 svg 形状'"
+  assert.deepEqual(stringPayloadFindings(clean), [], '合规字符串不得误报')
+  assert.deepEqual(
+    stringPayloadFindings('const n = `模板 ${x} 也干净`'),
+    [],
+    '干净模板不得误报',
+  )
+  assert.deepEqual(
+    stringPayloadFindings("const upper = '&lt;svg&gt;'"),
+    [],
+    '实体转义不构成真形状，不得误报',
+  )
+
+  const cases = [
+    ['字面量藏 <svg', "const html = '<svg xmlns=%22x%22></svg>'"],
+    ['字面量藏 <path', "const html = '<path d=%22M0 0h1%22/>'"],
+    ['字面量藏 data URI', "const href = 'data:image/svg+xml;utf8,<x/>'"],
+    ['模板字符串藏 <svg', 'const html = `<svg>${body}</svg>`'],
+    ['模板字符串藏 data URI', 'const uri = `data:image/svg+xml;base64,${b}`'],
+    ['dangerouslySetInnerHTML', "const p = { __html: '<svg><path d=%22M0 0%22/></svg>' }"],
+    ['style.backgroundImage', "const s = { backgroundImage: 'url(&quot;data:image/svg+xml,%3Csvg/%3E&quot;)' }"],
+    ['JSX 属性字符串', '<a title="data:image/svg+xml,x" />'],
+    ['JSX 文本藏 data URI', 'const x = <div>data:image/svg+xml;base64,xx</div>'],
+  ]
+  for (const [label, source] of cases) {
+    assert.ok(stringPayloadFindings(source).length > 0, `字符串形状未变红：${label}`)
   }
 })
 
