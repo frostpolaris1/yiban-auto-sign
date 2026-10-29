@@ -8,7 +8,9 @@
  * **口径**
  * 形状取自 Adminator 品牌资产，不由图标库提供。
  * 图标只从 `Icon` 取，见 `Icon.tsx`。
- * 这条 path 由 `scripts/tests/icon-source.test.mjs` 按哈希钉住；改内容即红。
+ * 本文件的 JSX 子树（元素名单＋全部属性值）由
+ * `scripts/tests/icon-source.test.mjs` 序列化后按 sha256 钉住；
+ * 加元素、改属性、改排版即红，改注释不红。
  * 用反色令牌，明暗两套都可见。
  */
 
