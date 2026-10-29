@@ -10,7 +10,8 @@
  * 不承诺会话期限，也不描述登录后的具体行为。
  */
 
-import { BrandMark, Icon } from '@/components/ui/Icon'
+import { BrandMark } from '@/components/ui/BrandMark'
+import { Icon } from '@/components/ui/Icon'
 
 /**
  * 结构与类名照 Adminator `src/signin.html`。

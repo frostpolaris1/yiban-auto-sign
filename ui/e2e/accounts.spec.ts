@@ -11,7 +11,7 @@ import {
 } from './support/fake-accounts-api'
 
 /**
- * 账号页的 8 条不变式。
+ * 账号页的 9 条不变式。
  *
  * 1. 筛选变更进请求；清空即移除参数。
  * 2. 游标栈只回退已访问页；无回退位时上一页禁用。
@@ -21,6 +21,7 @@ import {
  * 6. 编辑（PATCH）只送填写字段；空表单不可提交。
  * 7. 位置策略：auto 不送坐标；fixed 过 WGS84 范围；master 无权置灰。
  * 8. 删除必经确认；确认前零请求；行消失后焦点落筛选框。
+ * 9. 关闭控件是 24×24 的可见目标，键盘焦点有 2px 实线环。
  *
  * 断言用户可见结果，不钉内部调用顺序。
  */
@@ -633,4 +634,44 @@ test('invariant 8: delete waits for confirmation and removes the row', async ({ 
   await expect
     .poll(() => activeLabel(page), 'the row is gone; focus lands on the filter')
     .toBe('手机号筛选')
+})
+
+test('invariant 9: the close control is a 24x24 target with a keyboard focus ring', async ({
+  page,
+}) => {
+  await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+
+  await page.getByRole('button', { name: '查看 139****9000' }).click()
+  const drawer = page.getByRole('dialog', { name: '账号详情' })
+  const drawerClose = drawer.getByRole('button', { name: '关闭详情' })
+  await expect(drawerClose).toBeVisible()
+  const drawerBox = await drawerClose.boundingBox()
+  expect(drawerBox?.width).toBe(24)
+  expect(drawerBox?.height).toBe(24)
+  await page.keyboard.press('Escape')
+  await expect(drawer).toBeHidden()
+
+  await page.getByRole('button', { name: '暂停 139****9000' }).click()
+  const modal = page.getByRole('dialog', { name: '暂停账号？' })
+  const modalClose = modal.getByRole('button', { name: '关闭弹窗' })
+  await expect(modalClose).toBeVisible()
+  const modalBox = await modalClose.boundingBox()
+  expect(modalBox?.width).toBe(24)
+  expect(modalBox?.height).toBe(24)
+
+  // 用键盘离开再回来，焦点可见性按键盘口径判定，不吃浏览器默认 outline。
+  await page.keyboard.press('Tab')
+  await page.keyboard.press('Shift+Tab')
+  const outline = await modalClose.evaluate((element) => {
+    const style = getComputedStyle(element)
+    return { style: style.outlineStyle, width: style.outlineWidth }
+  })
+  expect(outline).toEqual({ style: 'solid', width: '2px' })
+
+  // 悬停要有可见底：无 hover 反馈的裸图标不算可用目标。
+  await modalClose.hover()
+  await expect
+    .poll(() => modalClose.evaluate((element) => getComputedStyle(element).backgroundColor))
+    .not.toBe('rgba(0, 0, 0, 0)')
 })
