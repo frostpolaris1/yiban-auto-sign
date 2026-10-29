@@ -255,12 +255,25 @@ function jsxDigest(ast) {
   walk(ast.program, (node) => {
     if (node.type === 'JSXElement' || node.type === 'JSXFragment') {
       parts.push(`[${node.type}]`)
+      // 子节点里的动态表达式必须入哈希：否则 {PAYLOAD} 这类子节点对哈希不可见。
+      // 只跳过空表达式（JSX 注释）。
+      for (const child of node.children || []) {
+        if (child.type === 'JSXSpreadChild') {
+          parts.push(`spread-child:${sourceSlice(child.expression)}`)
+        } else if (child.type === 'JSXExpressionContainer' && child.expression &&
+                   child.expression.type !== 'JSXEmptyExpression') {
+          parts.push(`expr-child:${sourceSlice(child.expression)}`)
+        }
+      }
     }
     if (node.type === 'JSXOpeningElement' && node.name) {
       parts.push(`<${jsxName(node.name)}>`)
     }
     if (node.type === 'JSXClosingElement' && node.name) {
       parts.push(`</${jsxName(node.name)}>`)
+    }
+    if (node.type === 'JSXSpreadAttribute') {
+      parts.push(`@spread=${sourceSlice(node.argument)}`)
     }
     if (node.type === 'JSXAttribute' && node.name) {
       const value = node.value
@@ -591,19 +604,19 @@ test('src 里除登记的品牌标记外没有第二处手抄 svg', () => {
   const findings = []
   let scanned = 0
   for (const name of files) {
-    if (name === BRAND_MARK) {
-      continue
-    }
     const source = readFileSync(join(srcRoot, name), 'utf8')
     scanned += 1
-    for (const finding of geometryFindings(source)) {
-      findings.push(`src/${name}: ${finding}`)
+    // 品牌标记只豁免「几何」判据（它本来就有一条 path）；字符串载荷判据不豁免。
+    if (name !== BRAND_MARK) {
+      for (const finding of geometryFindings(source)) {
+        findings.push(`src/${name}: ${finding}`)
+      }
     }
     for (const finding of stringPayloadFindings(source)) {
       findings.push(`src/${name}: ${finding}`)
     }
   }
-  assert.equal(scanned, files.length - 1, '检查面必须等于扫描面')
+  assert.equal(scanned, files.length, '检查面必须等于扫描面（品牌标记也扫字符串载荷）')
   assert.ok(scanned > 0, '没有任何文件被检查：扫空不得当绿')
   assert.deepEqual(findings, [])
 })
