@@ -2,9 +2,10 @@
 
 React 19 + Vite 8 + TypeScript 7。视觉语言复用 Adminator 4.4.0。
 
-本批包含 P1F 骨架、登录接线、账号页、学校页、时间片页与看板数据接线。画廊只渲染界面。
+本批包含 P1F 骨架、登录接线、账号页、学校页、时间片页、账号设置页与看板数据接线。画廊只渲染界面。
 看板按角色取数：user 读签到状态与诊断，master/admin 读窗口与容量体检。
 仪表盘的时间偏好卡只对 user 渲染，并调用 `/api/me/time-pref`。
+账号设置页的改密卡接登录态 `POST /api/auth/change-password`，成功即清待改密标记。
 
 ## 命令
 
@@ -20,9 +21,9 @@ React 19 + Vite 8 + TypeScript 7。视觉语言复用 Adminator 4.4.0。
 | `npm run gate:structure` | 导入方向门 |
 | `npm run gate:docs` | 入库文档门。禁止指向未入库目录 |
 | `npm run gate:license` | 依赖许可证门。禁用许可证或清单漂移即红 |
-| `npm run test:unit` | fetch、查询默认值、游标、账号页、学校页、时间片页、看板与认证纯逻辑单测，加上图标来源门（`icon-source`：lucide 唯一、TS 字符串载荷无内联 svg、CSS data URI 登记、品牌标记 JSX 全量哈希、导入白名单），运行器为 `node:test` |
+| `npm run test:unit` | fetch、查询默认值、游标、账号页、学校页、时间片页、账号设置页、看板与认证纯逻辑单测，加上图标来源门（`icon-source`：lucide 唯一、TS 字符串载荷无内联 svg、CSS data URI 登记、品牌标记 JSX 全量哈希、导入白名单），运行器为 `node:test` |
 | `npm run build:showcase` | 构建 `VITE_SHOWCASE=1` 的展示产物到 `dist-showcase/` |
-| `npm run test:e2e` | 全量 Playwright（233 条），串行。先跑 `npm run build` |
+| `npm run test:e2e` | 全量 Playwright（252 条），串行。先跑 `npm run build` |
 | `npm run test:e2e:fast` | 收口快路：行为 4 并发 + 视觉 1 并发。先跑 `npm run build` |
 | `npm run test:behavior` | 只跑行为用例，4 并发（`e2e/` 下除视觉外的全部 spec） |
 | `npm run test:shots` | 只跑视觉用例，1 并发 |
@@ -52,7 +53,7 @@ React 19 + Vite 8 + TypeScript 7。视觉语言复用 Adminator 4.4.0。
 ui/src/
 ├── app/            启动、Provider、路由
 ├── pages/          路由页。一页一文件，文件名以 Page 结尾
-├── features/       按域组织：auth / dashboard / design / accounts / schools / schedule
+├── features/       按域组织：auth / dashboard / design / accounts / schools / schedule / settings
 ├── components/
 │   ├── shell/      Sidebar / Topbar / Footer / AppShell / nav 配置
 │   └── ui/         Button / Input / Card / Table / Modal / Drawer / Tabs / Switch / Badge / Menu / Icon / BrandMark / Toaster
@@ -118,15 +119,16 @@ node scripts/token-gate.mjs
 
 ## 视觉回归
 
-矩阵：6 条常驻路由与看板的两个视角（user/admin）× 2 套主题 × 2 个宽度 = 32 张截图。
+矩阵：7 条常驻路由与看板的两个视角（user/admin）× 2 套主题 × 2 个宽度 = 36 张截图。
 时间片页按固定业务日 `2026-10-28` 另拍 1440 与 390 两个宽度（缺省业务日会随日历漂移，不进常驻矩阵）。
 另有账号页 6 种开态 × 2 套主题 = 12 张，学校页 6 种开态 × 2 套主题 = 12 张，
 时间片页列表（1440/390）／预览／覆盖／无权限与仪表盘偏好卡共 6 种开态 × 2 套主题 = 12 张，
-profile 菜单与会话过期提示各 2 张，toast 明暗各 1 张，共 74 张（每平台；目录共 148 个文件）。
+profile 菜单与会话过期提示各 2 张，toast 明暗各 1 张，共 78 张（每平台）。
+win32 套 78 个文件已入库；linux 套现有 74 个，`/settings` 4 张需在 Linux 上跑 `npm run test:shots:update` 补齐。
 
-行为用例 158 条：账号页 27 条、认证 36 条、看板 14 条、画廊 9 条、学校页 21 条、
-时间片页与时间偏好 21 条、展示模式 5 条、微交互 25 条。
-视觉文件另有无溢出 1 条。Playwright 总计 233 条。
+行为用例 173 条：账号页 28 条、认证 36 条、看板 14 条、画廊 9 条、学校页 21 条、
+时间片页与时间偏好 21 条、账号设置页 13 条、展示模式 6 条、微交互 25 条。
+视觉文件另有无溢出 1 条。Playwright 总计 252 条。
 
 展示模式用例由 `npm run build:showcase` 构建的 `dist-showcase` 提供。
 Playwright 的第二个 webServer 在 4174 端口预览它；`e2e/showcase.spec.ts` 用它钉零请求。
@@ -171,7 +173,10 @@ WSL 读 `-chromium-linux.png`，Windows 读 `-chromium-win32.png`。
 - 看板已接线：user 读 `/api/me/sign-status`（30 秒轮询）与 `/api/me/diagnostics`，
   master/admin 读 `/api/schedule/windows` 与 `/api/capacity`。看板不画图表。
 - 不接 TanStack Table、Chart.js、react-day-picker、SSE。
-- 忘记密码与重置密码两页已接公开的令牌流；登录态改密不做：契约没有该端点。
+- 忘记密码与重置密码两页已接公开的令牌流。
+  登录态改密已接 `POST /api/auth/change-password`：401 是当前口令错，409 是新旧相同。
+  成功撤销本人其余会话并清 `must_change_password`；本页不显示上次改密时间，
+  因为 `GET /api/auth/me` 不返回该字段。
   服务端尚未接线令牌投递：它只创建令牌，不发邮件。界面文案按产品要求固定。
 - 不引 Tailwind、shadcn、Element Plus、Bootstrap、Recharts。图标统一取 `lucide-react`，
   由 `src/components/ui/Icon.tsx` 收口；`scripts/tests/icon-source.test.mjs` 钉住来源面。

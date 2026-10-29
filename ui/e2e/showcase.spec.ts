@@ -183,3 +183,22 @@ test('invariant 8: the schedule preview opens read-only and blocks both write bu
 
   expect(apiRequests, 'a read-only showcase sends no schedule write').toEqual([])
 })
+
+test('invariant 8: the settings page shows the read-only reason and sends no password change', async ({
+  page,
+}) => {
+  const apiRequests = trackApiRequests(page)
+
+  await page.goto('/settings')
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('账号设置')
+  // 读操作照常：合成会话的邮箱可见。
+  await expect(page.getByText('showcase@demo.local')).toBeVisible()
+
+  const submit = page.getByRole('button', { name: '修改密码' })
+  await expect(submit).toBeDisabled()
+  await expect(submit).toHaveAttribute('title', READ_ONLY_REASON)
+  await submit.click({ force: true })
+  await expect(page.locator('.app-deny-note')).toHaveText(READ_ONLY_REASON)
+
+  expect(apiRequests, 'a read-only showcase sends no password change').toEqual([])
+})

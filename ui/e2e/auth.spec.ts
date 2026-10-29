@@ -177,9 +177,14 @@ for (const required of [true, false]) {
     await mockAccountsApi(page, { role: 'master', mustChangePassword: required })
     await page.goto('/')
 
-    const banner = page.getByText('账号需要重置密码，请联系管理员')
+    const banner = page.getByText('账号需要重置密码')
     if (required) {
       await expect(banner).toBeVisible()
+      // 提示条必须可行动：出口指向可自助改密的设置页。
+      await expect(page.getByRole('link', { name: '去修改' })).toHaveAttribute(
+        'href',
+        '/settings',
+      )
     } else {
       await expect(banner).toHaveCount(0)
     }

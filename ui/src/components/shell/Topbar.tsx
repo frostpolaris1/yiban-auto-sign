@@ -141,13 +141,9 @@ export function Topbar({
             <div className="dd-profile-name">{roleLabel(me.role)}</div>
             <div className="dd-profile-email">{me.email}</div>
           </div>
-          <MenuItem onSelect={() => void navigate({ to: '/design' })}>
+          <MenuItem onSelect={() => void navigate({ to: '/settings' })}>
             <Icon name="settings" />
             账号设置
-          </MenuItem>
-          <MenuItem onSelect={() => void navigate({ to: '/design' })}>
-            <Icon name="userCog" />
-            个人信息
           </MenuItem>
           {!SHOWCASE && (
             <>
