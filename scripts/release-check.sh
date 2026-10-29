@@ -35,7 +35,8 @@
 # 突变自测（--selftest）钉三类不变式：
 #   1. 某项被破坏时 --only 该项退出非零（临时坏夹具触发，不改真文件）；
 #   2. --only 不存在的项名报错退出非零；
-#   3. 帮助文本只取文件头注释块；sign.sh 不把私钥写成输出。
+#   3. 帮助文本只取文件头注释块；sign.sh 不把私钥写成输出；
+#      realpath 缺失时锚外判定 FAIL（缺工具即拒绝）。
 # ============================================================
 set -u
 
@@ -220,6 +221,7 @@ check_rollback() {
 #   "anchored fingerprint must come from outside the release directory"；
 #   指纹不符 → FAIL。不得接受「随便给的公钥」。
 #   --require-signing：缺件与缺 openssl 从 SKIP 升为 FAIL；发布操作必须用该档。
+#   缺 realpath → FAIL（缺工具即拒绝，2026-10-29 复审 P3）。
 #   verify.sh rc=1（验签不过）→ FAIL；rc=2（openssl 缺等，验证没跑）→ SKIP 显性。
 #   sha256 与二进制的对账由 update.sh --manifest/--signature/--pubkey 在升级时承担。
 check_signing() {
@@ -246,9 +248,17 @@ check_signing() {
     if [ -n "${YIBAN_RELEASE_PUBKEY_SHA256:-}" ]; then
         pin="$YIBAN_RELEASE_PUBKEY_SHA256"; pin_source="env YIBAN_RELEASE_PUBKEY_SHA256"
     elif [ -n "$PUBKEY_SHA256_FILE" ]; then
+        # 缺 realpath 即拒绝（2026-10-29 复审 P3）：路径归一化做不了，
+        # 「锚在发布件目录之外」就证明不了。此处直接 FAIL，不走 SKIP。
+        if ! command -v realpath >/dev/null 2>&1; then
+            REASON_signing="realpath not found; cannot verify the anchored fingerprint is outside the release directory"
+            return
+        fi
         local dir_real pin_real
-        dir_real="$(realpath -m -- "$dir" 2>/dev/null || printf '%s' "$dir")"
-        pin_real="$(realpath -m -- "$PUBKEY_SHA256_FILE" 2>/dev/null || printf '%s' "$PUBKEY_SHA256_FILE")"
+        dir_real="$(realpath -m -- "$dir" 2>/dev/null)" || {
+            REASON_signing="realpath failed on release directory: $dir"; return; }
+        pin_real="$(realpath -m -- "$PUBKEY_SHA256_FILE" 2>/dev/null)" || {
+            REASON_signing="realpath failed on anchored fingerprint file: $PUBKEY_SHA256_FILE"; return; }
         case "$pin_real" in
             "$dir_real"|"$dir_real"/*)
                 anchor_problem="anchored fingerprint must come from outside the release directory ($PUBKEY_SHA256_FILE is inside $dir)" ;;
@@ -488,6 +498,25 @@ selftest() {
     else
         say "SKIP: signing selftest group (openssl not in PATH; group DID NOT run)"
     fi
+
+    # 不变式 1f：realpath 缺失 ⇒ 锚外判定做不了 ⇒ FAIL（缺工具即拒绝）。
+    # 沙箱 PATH 里只放脚本启动与判定所需的命令，不放 realpath。
+    tmp="$(mktemp -d)"
+    mkdir -p "$tmp/scripts/release" "$tmp/release" "$tmp/bin"
+    : > "$tmp/release/manifest.json"
+    : > "$tmp/release/manifest.json.sig"
+    : > "$tmp/release/release-pubkey.pem"
+    printf '%s  x\n' \
+        "0000000000000000000000000000000000000000000000000000000000000000" > "$tmp/anchor.sha256"
+    bash_abs="$(command -v bash)"
+    for c in dirname basename awk sed grep head tr cut sha256sum mktemp mkdir rm cp cat; do
+        src="$(command -v "$c" 2>/dev/null || true)"
+        if [ -n "$src" ]; then ln -s "$src" "$tmp/bin/$c"; fi
+    done
+    PATH="$tmp/bin" YIBAN_RELEASE_PUBKEY_SHA256= RELEASE_CHECK_ROOT="$tmp" \
+        "$bash_abs" "$SELF" --only signing --pubkey-sha256-file "$tmp/anchor.sha256" >/dev/null 2>&1; rc=$?
+    expect "signing FAIL when realpath is unavailable (fail-closed)" 1 "$rc"
+    rm -rf "$tmp"
 
     if [ "$fails" -eq 0 ]; then say "all assertions passed"; return 0; fi
     say "$fails assertion(s) failed"; return 1
