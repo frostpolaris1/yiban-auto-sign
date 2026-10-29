@@ -21,6 +21,8 @@ package router
 // 扫空不得当绿；指向未知组件的 $ref 直接失败。
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"sort"
 	"strings"
@@ -95,107 +97,130 @@ type contractDocument struct {
 }
 
 // contractHeaderParams 返回契约里所有 in: header 的参数名，去重且排序。
-func contractHeaderParams(t *testing.T, doc []byte) []string {
-	t.Helper()
+// 解析失败一律返回 error：静默跳过会让门漏掉头参数。
+func contractHeaderParams(doc []byte) ([]string, error) {
 	var parsed contractDocument
 	if err := yaml.Unmarshal(doc, &parsed); err != nil {
-		t.Fatalf("parse %s: %v", contractSpecPath, err)
+		return nil, fmt.Errorf("parse 契约 YAML: %w", err)
 	}
 	if len(parsed.Paths) == 0 {
-		t.Fatal("契约里没有 paths；门没有扫到东西")
+		return nil, errors.New("契约里没有 paths；门没有扫到东西")
 	}
 
 	seen := map[string]bool{}
 	var names []string
-	add := func(raw contractParameter) {
+	add := func(raw contractParameter) error {
 		param := raw
 		if param.Ref != "" {
-			param = resolveParameter(t, parsed, param.Ref)
+			resolved, err := resolveParameter(parsed, param.Ref)
+			if err != nil {
+				return err
+			}
+			param = resolved
 		}
 		if param.In != "header" {
-			return
+			return nil
 		}
 		if param.Name == "" {
-			t.Fatalf("%s 里的头参数没有 name", contractSpecPath)
+			return fmt.Errorf("%s 里的头参数没有 name", contractSpecPath)
 		}
 		if !seen[param.Name] {
 			seen[param.Name] = true
 			names = append(names, param.Name)
 		}
+		return nil
 	}
-	// 组件参数全量登记：未被引用也算契约里声明过的头。
-	for _, param := range parsed.Components.Parameters {
-		add(param)
-	}
-	addItem := func(item contractPathItem) {
+	addItem := func(item contractPathItem) error {
 		for _, param := range item.Parameters {
-			add(param)
+			if err := add(param); err != nil {
+				return err
+			}
 		}
 		for _, op := range item.operations() {
 			for _, param := range op.Parameters {
-				add(param)
+				if err := add(param); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	// 全量扫是检测面：路径项无论写在哪一处，头都会被取到。
+	scanItem := func(item contractPathItem) error {
+		if err := addItem(item); err != nil {
+			return err
+		}
+		// $ref 目标与本地声明同扫：3.1 允许 $ref 带同级键。
+		if item.Ref != "" {
+			_, target, err := resolvePathItem(parsed, item.Ref)
+			if err != nil {
+				return err
+			}
+			return addItem(target)
+		}
+		return nil
+	}
+	// 组件参数全量登记：未被引用也算契约里声明过的头。
+	for _, param := range parsed.Components.Parameters {
+		if err := add(param); err != nil {
+			return nil, err
+		}
+	}
+	// webhooks 与 paths 同权：两者都能声明头参数。
+	// 组件路径项全量登记：未被引用也算契约里声明过的头。
+	groups := []map[string]contractPathItem{
+		parsed.Paths,
+		parsed.Webhooks,
+		parsed.Components.PathItems,
+	}
+	for _, group := range groups {
+		for _, item := range group {
+			if err := scanItem(item); err != nil {
+				return nil, err
 			}
 		}
 	}
-	// 全量扫是检测面：路径项无论写在哪一处，头都会被取到。
-	scanItem := func(item contractPathItem) {
-		addItem(item)
-		// $ref 目标与本地声明同扫：3.1 允许 $ref 带同级键。
-		if item.Ref != "" {
-			_, target := resolvePathItem(t, parsed, item.Ref)
-			addItem(target)
-		}
-	}
-	for _, item := range parsed.Paths {
-		scanItem(item)
-	}
-	// webhooks 与 paths 同权：两者都能声明头参数。
-	for _, item := range parsed.Webhooks {
-		scanItem(item)
-	}
-	// 组件路径项全量登记：未被引用也算契约里声明过的头。
-	for _, item := range parsed.Components.PathItems {
-		scanItem(item)
-	}
 	sort.Strings(names)
-	return names
+	return names, nil
 }
 
-// resolveParameter 解析 $ref。只接受 components.parameters 前缀。
-// 未知指向直接失败：静默跳过会让门漏掉参数。
-func resolveParameter(t *testing.T, doc contractDocument, ref string) contractParameter {
-	t.Helper()
+// resolveParameter 解析参数 $ref。只接受 components.parameters 前缀。
+// 未知指向返回 error：静默跳过会让门漏掉参数。
+func resolveParameter(doc contractDocument, ref string) (contractParameter, error) {
 	name := strings.TrimPrefix(ref, contractParameterRefPrefix)
 	if name == ref {
-		t.Fatalf("不支持的 $ref：%s；门只解析 %s", ref, contractParameterRefPrefix)
+		return contractParameter{}, fmt.Errorf(
+			"不支持的 $ref：%s；门只解析 %s", ref, contractParameterRefPrefix)
 	}
 	param, ok := doc.Components.Parameters[name]
 	if !ok {
-		t.Fatalf("$ref 指向不存在的组件参数：%s", ref)
+		return contractParameter{}, fmt.Errorf("$ref 指向不存在的组件参数：%s", ref)
 	}
 	if param.Ref != "" {
-		t.Fatalf("组件参数 %s 又指向 %s；门不支持二级 $ref", name, param.Ref)
+		return contractParameter{}, fmt.Errorf(
+			"组件参数 %s 又指向 %s；门不支持二级 $ref", name, param.Ref)
 	}
-	return param
+	return param, nil
 }
 
 // resolvePathItem 解析路径项的 $ref，返回组件名与目标项。
 // 只接受 components.pathItems 前缀。
-// 未知指向直接失败：静默跳过会让门漏掉该路径项下的参数。
-func resolvePathItem(t *testing.T, doc contractDocument, ref string) (string, contractPathItem) {
-	t.Helper()
+// 未知指向返回 error：静默跳过会让门漏掉该路径项下的参数。
+func resolvePathItem(doc contractDocument, ref string) (string, contractPathItem, error) {
 	name := strings.TrimPrefix(ref, contractPathItemRefPrefix)
 	if name == ref {
-		t.Fatalf("不支持的 $ref：%s；门只解析 %s", ref, contractPathItemRefPrefix)
+		return "", contractPathItem{}, fmt.Errorf(
+			"不支持的 $ref：%s；门只解析 %s", ref, contractPathItemRefPrefix)
 	}
 	item, ok := doc.Components.PathItems[name]
 	if !ok {
-		t.Fatalf("$ref 指向不存在的组件路径项：%s", ref)
+		return "", contractPathItem{}, fmt.Errorf("$ref 指向不存在的组件路径项：%s", ref)
 	}
 	if item.Ref != "" {
-		t.Fatalf("组件路径项 %s 又指向 %s；门不支持二级 $ref", name, item.Ref)
+		return "", contractPathItem{}, fmt.Errorf(
+			"组件路径项 %s 又指向 %s；门不支持二级 $ref", name, item.Ref)
 	}
-	return name, item
+	return name, item, nil
 }
 
 func contractHeaderListed(name string) bool {
@@ -216,7 +241,10 @@ func TestContractHeaderParamsRegistered(t *testing.T) {
 	if len(strings.TrimSpace(string(raw))) == 0 {
 		t.Fatalf("%s is empty; the gate DID NOT RUN", contractSpecPath)
 	}
-	names := contractHeaderParams(t, raw)
+	names, err := contractHeaderParams(raw)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
 	if len(names) < 3 {
 		t.Fatalf("契约头参数 = %d, want at least 3; 门没有扫到东西", len(names))
 	}
@@ -351,7 +379,10 @@ webhooks:
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			names := contractHeaderParams(t, []byte(c.doc))
+			names, err := contractHeaderParams([]byte(c.doc))
+			if err != nil {
+				t.Fatalf("%v", err)
+			}
 			if len(names) != len(c.want) {
 				t.Fatalf("names = %v, want %v", names, c.want)
 			}
@@ -359,6 +390,77 @@ webhooks:
 				if names[i] != c.want[i] {
 					t.Fatalf("names = %v, want %v", names, c.want)
 				}
+			}
+		})
+	}
+}
+
+// $ref 解析必须 fail-closed：前缀不符、目标不存在、二级 $ref 都返回 error。
+// 静默跳过会让门漏掉该路径项/参数下的头。
+// 正例由上面两个用例覆盖：合法 $ref 必须解析成功。
+func TestContractHeaderRefFailClosed(t *testing.T) {
+	const paramRef = `paths:
+  /probe:
+    get:
+      operationId: Probe
+      parameters:
+        - $ref: '%s'
+`
+	const itemRef = `paths:
+  /probe:
+    $ref: '%s'
+`
+	cases := []struct{ name, doc, want string }{
+		{
+			name: "parameter prefix mismatch",
+			doc:  fmt.Sprintf(paramRef, "#/components/schemas/Conditional"),
+			want: "不支持的 $ref",
+		},
+		{
+			name: "parameter target missing",
+			doc:  fmt.Sprintf(paramRef, "#/components/parameters/Missing"),
+			want: "不存在的组件参数",
+		},
+		{
+			name: "parameter second level",
+			doc: fmt.Sprintf(paramRef, "#/components/parameters/Chained") + `components:
+  parameters:
+    Chained:
+      $ref: '#/components/parameters/Other'
+    Other:
+      name: limit
+      in: query
+`,
+			want: "二级 $ref",
+		},
+		{
+			name: "path item prefix mismatch",
+			doc:  fmt.Sprintf(itemRef, "#/components/schemas/Conditional"),
+			want: "不支持的 $ref",
+		},
+		{
+			name: "path item target missing",
+			doc:  fmt.Sprintf(itemRef, "#/components/pathItems/Missing"),
+			want: "不存在的组件路径项",
+		},
+		{
+			name: "path item second level",
+			doc: fmt.Sprintf(itemRef, "#/components/pathItems/Chained") + `components:
+  pathItems:
+    Chained:
+      $ref: '#/components/pathItems/Other'
+`,
+			want: "二级 $ref",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			names, err := contractHeaderParams([]byte(c.doc))
+			if err == nil {
+				t.Fatalf("没有报错；静默跳过会让门漏掉头参数（names=%v）", names)
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("err = %v, want contains %q", err, c.want)
 			}
 		})
 	}

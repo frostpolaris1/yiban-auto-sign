@@ -630,22 +630,50 @@ func contractNotModifiedBlocks(t *testing.T, doc string) []contractBlock {
 	return out
 }
 
-// contractBlockScalar 匹配块标量的起始键：值以 | 或 > 开头。
-// 缩进指示符与削波指示符可任意顺序出现；行尾可带注释。
-var contractBlockScalar = regexp.MustCompile(
-	`^\S+:[ \t]*[|>](?:[0-9][-+]?|[-+][0-9]?)?(?:[ \t]+#.*)?[ \t]*$`)
+// contractKeyValue 取出「键: 值」中的行内值。值可为空。
+var contractKeyValue = regexp.MustCompile(`^\S+:[ \t]*(.*)$`)
 
-// contractScalarValue 取出「键: 值」中的行内值。
-var contractScalarValue = regexp.MustCompile(`^\S+:[ \t]+(.+)$`)
+// contractBlockScalarHead 匹配块标量头：| 或 > 开头，缩进与削波指示符
+// 可任意顺序出现，行尾可带注释。
+var contractBlockScalarHead = regexp.MustCompile(
+	`^[|>](?:[0-9][-+]?|[-+][0-9]?)?(?:[ \t]+#.*)?[ \t]*$`)
+
+// contractNodeProperty 匹配值起始的一个节点属性：锚点 &name 或标签 !tag。
+var contractNodeProperty = regexp.MustCompile(`^[&!]\S*`)
+
+// contractStripNodeProperties 剥掉值前的锚点与标签，返回标量本体。
+// 两者可同时出现，顺序不限；YAML 的普通标量不能以 & 或 ! 开头。
+func contractStripNodeProperties(value string) string {
+	for {
+		value = strings.TrimLeft(value, " \t")
+		loc := contractNodeProperty.FindStringIndex(value)
+		if loc == nil || loc[0] != 0 {
+			return value
+		}
+		value = value[loc[1]:]
+	}
+}
+
+// contractBlockScalar 判一行是否开启块标量。
+func contractBlockScalar(trimmed string) bool {
+	m := contractKeyValue.FindStringSubmatch(trimmed)
+	if m == nil {
+		return false
+	}
+	return contractBlockScalarHead.MatchString(contractStripNodeProperties(m[1]))
+}
 
 // contractOpenQuote 判一行是否开启跨行引号标量，开启时返回引号字符。
 // 同一行内闭合则返回 0。
 func contractOpenQuote(trimmed string) byte {
-	m := contractScalarValue.FindStringSubmatch(trimmed)
+	m := contractKeyValue.FindStringSubmatch(trimmed)
 	if m == nil {
 		return 0
 	}
-	value := m[1]
+	value := contractStripNodeProperties(m[1])
+	if value == "" {
+		return 0
+	}
 	if value[0] != '"' && value[0] != '\'' {
 		return 0
 	}
@@ -703,7 +731,7 @@ func notModifiedDeclaresETag(block contractBlock) bool {
 			}
 			scalarIndent = -1
 		}
-		if contractBlockScalar.MatchString(trimmed) {
+		if contractBlockScalar(trimmed) {
 			scalarIndent = indent
 			continue
 		}
@@ -861,6 +889,74 @@ func TestNotModifiedScannerShapes(t *testing.T) {
 	for _, block := range blocks {
 		if notModifiedDeclaresETag(block) {
 			t.Errorf("标量正文里的 ETag 被当成头声明（行 %d）", block.line)
+		}
+	}
+
+	// 节点属性（锚点与标签）可写在标量之前，两者顺序任意。
+	// 漏剥即把标量正文里的 headers: 当成声明。
+	nodeProps := `paths:
+  /k:
+    get:
+      operationId: K
+      x-roles: [public]
+      responses:
+        '304':
+          description: &d |
+            headers:
+              ETag: fake
+  /l:
+    get:
+      operationId: L
+      x-roles: [public]
+      responses:
+        '304':
+          description: !!str |
+            headers:
+              ETag: fake
+  /m:
+    get:
+      operationId: M
+      x-roles: [public]
+      responses:
+        '304':
+          description: &d !probe |
+            headers:
+              ETag: fake
+  /n:
+    get:
+      operationId: N
+      x-roles: [public]
+      responses:
+        '304':
+          description: !probe &d |
+            headers:
+              ETag: fake
+  /o:
+    get:
+      operationId: O
+      x-roles: [public]
+      responses:
+        '304':
+          description: !!str "Not modified;
+            headers:
+              ETag: fake"
+  /p:
+    get:
+      operationId: P
+      x-roles: [public]
+      responses:
+        '304':
+          description: &d !probe 'Not modified;
+            headers:
+              ETag: fake'
+`
+	blocks = contractNotModifiedBlocks(t, nodeProps)
+	if len(blocks) != 6 {
+		t.Fatalf("304 块 = %d, want 6", len(blocks))
+	}
+	for _, block := range blocks {
+		if notModifiedDeclaresETag(block) {
+			t.Errorf("带节点属性的标量正文里的 ETag 被当成头声明（行 %d）", block.line)
 		}
 	}
 
