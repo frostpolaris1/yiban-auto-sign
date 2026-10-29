@@ -139,6 +139,10 @@ docs/dev/*
 !docs/dev/troubleshooting.md
 !docs/dev/deploy-e2e.md
 !docs/dev/release-signing.md
+# 发布签名：私钥与本地发布件目录永不入库（docs/dev/release-signing.md §2；
+# 入库门 tests/test_private_key_gate.py）
+*.pem
+release/
 .superpowers/
 
 # ZCode 工具目录
