@@ -37,6 +37,7 @@
 """
 import io
 import os
+import posixpath
 import re
 import shlex
 import signal
@@ -751,44 +752,59 @@ class ServerScriptExecBitTest(unittest.TestCase):
 
     `scripts/verify-stacks.sh` 的执行行是 `(cd server && ./scripts/verify.sh)`。
     文件在 index 里是 100644 时该行返回 126（Permission denied），整条 stacks
-    作业红：2026-10-29 develop 实测。`server/README.md` 把三个脚本都写成直接
-    执行命令（`./scripts/verify.sh`、`./scripts/generate.sh --check`、
-    `./scripts/license.sh --write`），故本条按形状钉住整个目录。
+    作业红：CI run 40745639135（develop `d3790676`）实测。`server/README.md`
+    把三个脚本都写成直接执行命令（`./scripts/verify.sh`、
+    `./scripts/generate.sh --check`、`./scripts/license.sh --write`），
+    故本条按形状钉住整个目录。
 
-    模式取自 `git ls-files -s` 的 index 位，不看工作区的 core.filemode——
-    Windows 检出恒报 644，看工作区会把本门变成平台相关的哑门。
+    模式取自 `git ls-files -s` 的 index 位，不看工作区：Windows 工作区没有
+    可执行位（`os.access(X_OK)` 恒真、`st_mode` 恒无 x），看工作区即哑门。
     """
 
-    def test_server_scripts_are_executable(self):
+    #: 入口脚本里「切目录后直接执行」的写法。按形状匹配，不写死 `server`：
+    #: 将来 `(cd ui && ./scripts/x.sh)` 同类写法也必须被看见（复审 P2）。
+    _DIRECT_CALL = re.compile(
+        r"cd ([A-Za-z0-9_./-]+) && \./([A-Za-z0-9_./-]+\.sh)")
+
+    def _modes(self, pathspec):
         out = subprocess.run(
-            ["git", "ls-files", "-s", "--", "server/scripts/"],
+            ["git", "ls-files", "-s", "--", pathspec],
             cwd=BASE, capture_output=True, text=True, check=True).stdout
         modes = {}
         for line in out.splitlines():
             meta, path = line.split("\t", 1)
             modes[path] = meta.split()[0]
+        return modes
+
+    def test_server_scripts_are_executable(self):
+        modes = {p: m for p, m in self._modes("server/scripts/").items()
+                 if p.endswith(".sh")}
         self.assertTrue(
-            modes, "git ls-files 在 server/scripts/ 下扫不到文件——扫空不得当绿")
+            modes, "git ls-files 在 server/scripts/ 下扫不到 .sh——扫空不得当绿")
         non_exec = sorted(p for p, m in modes.items() if m != "100755")
         self.assertEqual(
             non_exec, [],
             "以下脚本缺可执行位（index 模式应为 100755）：%s；"
             "修法：git update-index --chmod=+x <路径>" % non_exec)
 
-    def test_entry_script_target_is_executable(self):
-        """入口脚本里每条 `(cd server && ./scripts/X.sh)` 的目标必须可执行。"""
+    def test_entry_script_targets_are_executable(self):
+        """入口脚本里每条 `cd <目录> && ./<脚本>` 的目标必须可执行。"""
         body = _read(STACKS_ENTRY)
-        targets = re.findall(r"cd server && \./(scripts/[A-Za-z0-9_./-]+\.sh)", body)
+        # 注释行不许算数：把执行行整行注释掉时，这条断言必须消失并让位给
+        # StacksCiWiringTest 的红，而不是继续拿注释当证据（复审 P3）。
+        code = "\n".join(ln for ln in body.splitlines()
+                         if not ln.strip().startswith("#"))
+        targets = self._DIRECT_CALL.findall(code)
         self.assertTrue(
-            targets, "入口脚本里找不到直接调用的 server 脚本——本条会变废断言")
-        for rel in targets:
-            out = subprocess.run(
-                ["git", "ls-files", "-s", "--", "server/" + rel],
-                cwd=BASE, capture_output=True, text=True, check=True).stdout
-            self.assertTrue(out.strip(), "入口脚本调的 server/%s 不在库里" % rel)
+            targets, "入口脚本里找不到直接调用的脚本——本条会变废断言")
+        for directory, rel in targets:
+            path = posixpath.normpath(posixpath.join(directory, rel))
+            modes = self._modes(path)
+            self.assertTrue(modes, "入口脚本调的 %s 不在库里" % path)
             self.assertEqual(
-                out.split()[0], "100755",
-                "入口脚本直接调用 server/%s，但它没有可执行位（实测 rc=126）" % rel)
+                modes[path], "100755",
+                "入口脚本直接调用 %s，但它没有可执行位"
+                "（CI run 40745639135 实测 rc=126）" % path)
 
 
 if __name__ == "__main__":
