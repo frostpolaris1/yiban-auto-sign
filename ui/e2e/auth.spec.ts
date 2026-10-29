@@ -216,6 +216,15 @@ test('invariant 8: the guard shows a loading state and never flashes the login p
   expect(frames, 'the login page must not appear while the session is resolving').toBe(0)
 })
 
+test('invariant 9: the login form links to the forgot-password page', async ({ page }) => {
+  await page.goto('/login')
+  const link = page.getByRole('link', { name: '忘记密码？' })
+  await expect(link).toHaveAttribute('href', '/forgot-password')
+  await link.click()
+  await expect(page).toHaveURL(/\/forgot-password$/)
+  await expect(page.getByRole('heading', { name: '忘记密码' })).toBeVisible()
+})
+
 // ---------- 密码找回：忘记密码与重置密码 ----------
 //
 // 两页都是公开页：未登录可用，已登录送回 `/`。
