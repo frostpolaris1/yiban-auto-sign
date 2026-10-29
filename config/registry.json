@@ -2225,5 +2225,17 @@
     "web_editable": false,
     "tier": "master",
     "reload": "restart"
+  },
+ "YIBAN_SIGNING_KEY": {
+    "type": "string",
+    "default": "",
+    "group": [
+      "发布"
+    ],
+    "doc": "Ed25519 私钥路径（仅发布机 sign.sh 读取；也可用 --key 显式传）。属机密材料，不入仓库、不进服务进程；sensitive 只表示不进 web 配置面，本键本就 web_editable=false。",
+    "sensitive": true,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
   }
 }
