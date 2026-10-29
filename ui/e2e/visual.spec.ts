@@ -1,5 +1,5 @@
 import { test, expect, type Locator, type Page } from '@playwright/test'
-import { mockAccountsApi } from './support/fake-accounts-api'
+import { mockAccountsApi, RESET_TOKEN } from './support/fake-accounts-api'
 import { mockDashboardApi } from './support/fake-dashboard-api'
 import { SCHEDULE_DAY, mockScheduleApi } from './support/fake-schedule-api'
 import { mockSchoolsApi } from './support/fake-schools-api'
@@ -8,7 +8,8 @@ import { visibleText } from './support/visible-text'
 /**
  * Adminator 壳的视觉回归基线。
  *
- * 矩阵：4 条常驻路由 + 仪表盘两视角，× 2 套主题 × 2 个宽度 = 24 张截图。
+ * 矩阵：4 条常驻路由 + 密码找回两页 + 仪表盘两视角，
+ * × 2 套主题 × 2 个宽度 = 32 张截图。
  * 仪表盘按角色分视角：user 是签到状态／诊断，admin 是窗口／容量体检。
  * 时间片页按固定业务日另拍（缺省日期会随日历漂移，不能进常驻矩阵），
  * 补 1440 与 390 两个宽度。
@@ -23,6 +24,8 @@ const ROUTES = [
   { path: '/accounts', name: 'accounts' },
   { path: '/schools', name: 'schools' },
   { path: '/login', name: 'login' },
+  { path: '/forgot-password', name: 'forgot-password' },
+  { path: `/reset-password?token=${RESET_TOKEN}`, name: 'reset-password' },
 ] as const
 
 const DASHBOARD_VIEWS = [
@@ -41,13 +44,13 @@ test.beforeEach(async ({ page }) => {
   await mockAccountsApi(page, { role: 'master' })
 })
 
-/** 登录页是没有会话的页面。壳内路由需要会话，登录页需要没有会话。 */
+/** 登录与密码找回三页都没有会话。壳内路由需要会话，这几页需要没有会话。 */
 async function mockSessionFor(
   page: Page,
   path: string,
   role: 'master' | 'admin' | 'user' = 'master',
 ) {
-  if (path === '/login') {
+  if (path === '/login' || path.startsWith('/forgot-password') || path.startsWith('/reset-password')) {
     await mockAccountsApi(page, { role: null })
     return
   }
@@ -102,6 +105,11 @@ async function expectData(page: Page, path: string) {
     await expect(page.locator('.kpi-card')).toHaveCount(4)
   } else if (path === '/design') {
     await expect(page.getByRole('heading', { name: /组件画廊/ })).toBeVisible()
+  } else if (path === '/forgot-password') {
+    await expect(page.getByLabel('邮箱')).toBeVisible()
+  } else if (path.startsWith('/reset-password')) {
+    // 令牌合法：页面停在表单态，不是「链接不完整」态。
+    await expect(page.getByLabel('新密码')).toBeVisible()
   }
 }
 

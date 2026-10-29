@@ -25,6 +25,14 @@ export const SESSION_EMAIL = 'operator@example.com'
 export const SESSION_PASSWORD = 'not-a-real-password'
 export const SESSION_CSRF = 'csrf-test'
 
+/**
+ * 合成重置令牌。
+ *
+ * 形状与真实令牌一致：32 字节随机数经 base64url 无填充编码，共 43 个字符。
+ * 值取单字符重复，属登记表口径的合成值，不对应任何真实对象。
+ */
+export const RESET_TOKEN = 'A'.repeat(43)
+
 export const SCHOOLS = [
   {
     id: 'school-a',
@@ -99,6 +107,14 @@ export type MockOptions = {
   signError?: { status: number; code: string; message: string }
   verifyError?: { status: number; code: string; message: string }
   verifyResult?: AccountVerifyResult
+  /** 忘记密码的失败注入。缺省恒 204，与契约一致。 */
+  forgotError?: { status: number; code: string; message: string }
+  /** 忘记密码断网：fetch 直接拒绝。 */
+  forgotNetworkError?: boolean
+  /** 重置密码的失败注入。缺省恒 204。 */
+  resetError?: { status: number; code: string; message: string }
+  /** 重置密码断网：fetch 直接拒绝。 */
+  resetNetworkError?: boolean
 }
 
 export type FakeApi = {
@@ -185,6 +201,27 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
 
     if (url.pathname === '/api/auth/logout' && request.method() === 'POST') {
       sessionRole = null
+      return route.fulfill({ status: 204 })
+    }
+
+    // 忘记密码：契约恒 204，不区分邮箱是否存在。
+    // 回包不带任何账号线索，界面也无从泄露。
+    if (url.pathname === '/api/auth/forgot-password' && request.method() === 'POST') {
+      if (options.forgotNetworkError) return route.abort('failed')
+      if (options.forgotError) {
+        const { status, code, message } = options.forgotError
+        return fail(route, status, code, message)
+      }
+      return route.fulfill({ status: 204 })
+    }
+
+    // 重置密码：成功 204；失败由用例注入（401 表示令牌无效、已用或过期）。
+    if (url.pathname === '/api/auth/reset-password' && request.method() === 'POST') {
+      if (options.resetNetworkError) return route.abort('failed')
+      if (options.resetError) {
+        const { status, code, message } = options.resetError
+        return fail(route, status, code, message)
+      }
       return route.fulfill({ status: 204 })
     }
 
@@ -319,4 +356,16 @@ export function loginCalls(api: FakeApi): ApiCall[] {
 
 export function logoutCalls(api: FakeApi): ApiCall[] {
   return api.calls.filter((call) => call.method === 'POST' && call.path === '/api/auth/logout')
+}
+
+export function forgotPasswordCalls(api: FakeApi): ApiCall[] {
+  return api.calls.filter(
+    (call) => call.method === 'POST' && call.path === '/api/auth/forgot-password',
+  )
+}
+
+export function resetPasswordCalls(api: FakeApi): ApiCall[] {
+  return api.calls.filter(
+    (call) => call.method === 'POST' && call.path === '/api/auth/reset-password',
+  )
 }
