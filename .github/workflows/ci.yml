@@ -111,7 +111,10 @@ jobs:
           if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
             echo "value=mixed" >> "$GITHUB_OUTPUT"
           else
-            echo "value=$(bash scripts/ci-scope.sh --base "$base")" >> "$GITHUB_OUTPUT"
+            # 浅检出不带 base 的历史；只取该提交的树即可做 --name-only 比较。
+            git fetch --no-tags --depth=1 origin "$base" >/dev/null 2>&1 || true
+            scope=$(bash scripts/ci-scope.sh --base "$base" 2>/dev/null || echo mixed)
+            echo "value=${scope:-mixed}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Gate subset (scripts/dev-verify.sh --ci)
@@ -187,7 +190,10 @@ jobs:
           if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
             echo "value=mixed" >> "$GITHUB_OUTPUT"
           else
-            echo "value=$(bash scripts/ci-scope.sh --base "$base")" >> "$GITHUB_OUTPUT"
+            # 浅检出不带 base 的历史；只取该提交的树即可做 --name-only 比较。
+            git fetch --no-tags --depth=1 origin "$base" >/dev/null 2>&1 || true
+            scope=$(bash scripts/ci-scope.sh --base "$base" 2>/dev/null || echo mixed)
+            echo "value=${scope:-mixed}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Slow lane (roster slow rows + FAST_KNOWN_SLOW tail, serial)
