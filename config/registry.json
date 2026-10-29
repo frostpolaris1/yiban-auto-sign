@@ -2201,5 +2201,29 @@
     "web_editable": false,
     "tier": "master",
     "reload": "restart"
+  },
+  "YIBAN_RELEASE_PUBKEY_SHA256": {
+    "type": "string",
+    "default": "",
+    "group": [
+      "发布"
+    ],
+    "doc": "发布公钥指纹（信任锚，hex64）。update.sh 与 release-check.sh 只认本键或安装根下的 release-pubkey.sha256；缺锚/错指纹一律 fail-closed。属部署面注入，不进 web 配置。",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_RELEASE_DIR": {
+    "type": "path",
+    "default": "release",
+    "group": [
+      "发布"
+    ],
+    "doc": "发布件目录（release-check.sh 的 signing 门读取 manifest/签名/公钥）。仅检查脚本用，不进服务进程。",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
   }
 }
