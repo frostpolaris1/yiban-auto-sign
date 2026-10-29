@@ -278,6 +278,135 @@ func TestP4OverrideRearranges(t *testing.T) {
 	}
 }
 
+// 替换已有覆盖：pending 行整体落进新窗，已了结行不动。
+//
+// 用户动作：管理员发现上次覆盖也不对，再改一次当日窗口。
+// 断言的性质：任何 pending 行的落点都在新窗内；当日已有结论的行
+// 保持原落点与状态；覆盖只留最后一条。
+func TestP4OverrideReplacementReplansPending(t *testing.T) {
+	e := w2cNewEnv(t)
+	loc := p4Location(t)
+	day := clock.BusinessDay(clock.System{}.Now(), loc)
+	master := e.user("p4-override-replace@example.com", coreauth.RoleMaster)
+	issued := e.login(master)
+	school := e.school("p4-override-replace")
+	task := e.schoolTask(school.ID, "晨签")
+	accts := make([]string, 0, 3)
+	for _, phone := range []string{"13800009301", "13800009302", "13800009303"} {
+		id := e.account(school.ID, master.ID, phone)
+		e.activateAccount(id)
+		accts = append(accts, id)
+	}
+	start, end := windowAt(day, loc, [2]int{6, 30}, [2]int{7, 50})
+	e.windows[task] = contract.Window{Start: start, End: end, Source: contract.WindowPlatform}
+	e.plan(t, issued, day, school.ID, task)
+
+	firstStart, firstEnd := windowAt(day, loc, [2]int{9, 0}, [2]int{9, 30})
+	e.override(t, issued, day, school.ID, task, firstStart, firstEnd, "平台窗口错误")
+	firstVersion := e.scalarInt("SELECT version FROM window_cache WHERE school_task_id = $1::uuid AND day = $2::date", task, day)
+
+	// 一个当日已了结的行：认领后落终态，模拟"今天已经签过"。
+	doneRow := e.scalarString("SELECT id::text FROM sign_tasks WHERE account_id = $1::uuid AND school_task_id = $2::uuid AND day = $3::date", accts[0], task, day)
+	now := clock.System{}.Now()
+	if err := e.sched.ClaimPending(e.ctx, accts[0], task, day, now); err != nil {
+		t.Fatalf("claim concluded row: %v", err)
+	}
+	if err := e.sched.Finish(e.ctx, accts[0], task, day, corestatus.TaskSuccess, string(contract.OutcomeSuccess), now); err != nil {
+		t.Fatalf("finish concluded row: %v", err)
+	}
+	doneAt := e.scalarString("SELECT to_char(run_at, 'YYYY-MM-DD\"T\"HH24:MI:SS') FROM sign_tasks WHERE id = $1::uuid", doneRow)
+
+	// 第二次覆盖替换第一次：窗更窄。
+	secondStart, secondEnd := windowAt(day, loc, [2]int{10, 0}, [2]int{10, 20})
+	plan := e.override(t, issued, day, school.ID, task, secondStart, secondEnd, "平台窗口再次订正")
+	if plan.Source != "override" || !plan.WindowStart.Equal(secondStart) || !plan.WindowEnd.Equal(secondEnd) {
+		t.Fatalf("替换后计划 = source %s [%v,%v]", plan.Source, plan.WindowStart, plan.WindowEnd)
+	}
+	if n := e.scalarInt(`SELECT count(*) FROM sign_tasks
+		WHERE school_task_id = $1::uuid AND day = $2::date AND state = 'pending'`, task, day); n != 2 {
+		t.Fatalf("pending 行数 = %d, want 2", n)
+	}
+	if n := e.scalarInt(`SELECT count(*) FROM sign_tasks
+		WHERE school_task_id = $1::uuid AND day = $2::date AND state = 'pending'
+		  AND (run_at < $3 OR run_at >= $4)`, task, day, secondStart, secondEnd); n != 0 {
+		t.Fatalf("%d 行 pending 落点越出新窗 [%v,%v]", n, secondStart, secondEnd)
+	}
+	if got := e.scalarString("SELECT to_char(run_at, 'YYYY-MM-DD\"T\"HH24:MI:SS') FROM sign_tasks WHERE id = $1::uuid", doneRow); got != doneAt {
+		t.Fatalf("已了结行 run_at = %s, want %s（结论不可改写）", got, doneAt)
+	}
+	if got := e.scalarString("SELECT state::text FROM sign_tasks WHERE id = $1::uuid", doneRow); got != string(corestatus.TaskSuccess) {
+		t.Fatalf("已了结行状态 = %q, want success", got)
+	}
+	if n := e.scalarInt("SELECT count(*) FROM window_overrides WHERE school_task_id = $1::uuid AND day = $2::date", task, day); n != 1 {
+		t.Fatalf("覆盖行数 = %d, want 1（同键只留最后一条）", n)
+	}
+	if reason := e.scalarString("SELECT reason FROM window_overrides WHERE school_task_id = $1::uuid AND day = $2::date", task, day); reason != "平台窗口再次订正" {
+		t.Fatalf("覆盖理由 = %q, want 最后一条", reason)
+	}
+	if src := e.scalarString("SELECT source FROM window_cache WHERE school_task_id = $1::uuid AND day = $2::date", task, day); src != "override" {
+		t.Fatalf("window_cache 来源 = %q, want override", src)
+	}
+	if v := e.scalarInt("SELECT version FROM window_cache WHERE school_task_id = $1::uuid AND day = $2::date", task, day); v <= firstVersion {
+		t.Fatalf("换窗后版本 = %d, want > %d（版本推进是重排的判据）", v, firstVersion)
+	}
+}
+
+// 平台发现失败：计划照常落库，窗口来源如实标 fallback。
+//
+// 用户动作：管理员在平台不可用时建当日计划。
+// 断言的性质：计划不因发现失败而失败；落库来源与实际采用的窗口一致。
+func TestP4FallbackSourceRecorded(t *testing.T) {
+	e := w2cNewEnv(t)
+	loc := p4Location(t)
+	day := clock.BusinessDay(clock.System{}.Now(), loc)
+	master := e.user("p4-fallback-master@example.com", coreauth.RoleMaster)
+	issued := e.login(master)
+	school := e.school("p4-fallback")
+	task := e.schoolTask(school.ID, "晨签")
+	for _, phone := range []string{"13800009401", "13800009402"} {
+		id := e.account(school.ID, master.ID, phone)
+		e.activateAccount(id)
+	}
+	// 不预置窗口：发现替身回 not_found，走回退窗口。
+
+	plan := e.plan(t, issued, day, school.ID, task)
+	fbStart, fbEnd := windowAt(day, loc, [2]int{6, 30}, [2]int{7, 50})
+	if plan.Source != "fallback" {
+		t.Fatalf("计划来源 = %q, want fallback（发现失败必须如实标注）", plan.Source)
+	}
+	if !plan.WindowStart.Equal(fbStart) || !plan.WindowEnd.Equal(fbEnd) {
+		t.Fatalf("回退窗口 = [%v,%v], want [%v,%v]", plan.WindowStart, plan.WindowEnd, fbStart, fbEnd)
+	}
+	if src := e.scalarString("SELECT source FROM window_cache WHERE school_task_id = $1::uuid AND day = $2::date", task, day); src != "fallback" {
+		t.Fatalf("window_cache 来源 = %q, want fallback", src)
+	}
+	if n := e.scalarInt("SELECT count(*) FROM sign_tasks WHERE school_task_id = $1::uuid AND day = $2::date", task, day); n != 2 {
+		t.Fatalf("落库计划行数 = %d, want 2", n)
+	}
+	if n := e.scalarInt(`SELECT count(*) FROM sign_tasks
+		WHERE school_task_id = $1::uuid AND day = $2::date
+		  AND (run_at < $3 OR run_at >= $4)`, task, day, fbStart, fbEnd); n != 0 {
+		t.Fatalf("%d 行落点越出回退窗 [%v,%v]", n, fbStart, fbEnd)
+	}
+}
+
+// override 发一次人工覆盖请求并解出计划响应。
+func (e *w2cEnv) override(t *testing.T, issued *coreauth.Issued, day, schoolID, taskID string, start, end time.Time, reason string) oapi.SchedulePlan {
+	t.Helper()
+	body := map[string]any{
+		"day": day, "school_id": schoolID, "task_id": taskID,
+		"start": start.Format(time.RFC3339), "end": end.Format(time.RFC3339),
+		"reason": reason,
+	}
+	rec := e.do("POST", "/api/schedule/override", body, issued)
+	if rec.Code != 200 {
+		t.Fatalf("override status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var plan oapi.SchedulePlan
+	e.decode(rec, &plan)
+	return plan
+}
+
 // 自选时间片：写入、读取、冷却与角色边界。
 func TestP4TimePref(t *testing.T) {
 	e := w2cNewEnv(t)

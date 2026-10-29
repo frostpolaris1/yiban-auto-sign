@@ -62,6 +62,10 @@ type WindowSource string
 
 const (
 	WindowPlatform WindowSource = "platform"
+	// WindowCache 是历史缓存行的来源词。
+	// 运行中的服务不写它：新发现标 platform，回退标 fallback。
+	// 写入者只有迁移 00014 的 Down 段（把 override 行降级标为 cache）；
+	// 读面按行原样透传，故词表保留此值。
 	WindowCache    WindowSource = "cache"
 	WindowFallback WindowSource = "fallback"
 	// WindowOverride 是 master 或 admin 对某任务某日的人工覆盖。

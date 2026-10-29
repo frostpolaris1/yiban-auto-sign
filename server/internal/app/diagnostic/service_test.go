@@ -137,6 +137,10 @@ func TestMineListsOwnAccountsWithUserScope(t *testing.T) {
 	if item.AccountID != "a1" || *item.State != string(corestatus.TaskPending) || item.Suggestion != corediag.SuggestWait {
 		t.Fatalf("item = %+v", item)
 	}
+	// 等待原因原样下发（掩码后）：读面靠它分辨"在等什么"。
+	if item.Result != "wait_window_open" {
+		t.Fatalf("result = %q, want the wait reason verbatim", item.Result)
+	}
 	if item.NextRetryAt == nil || !item.NextRetryAt.After(diagNow()) {
 		t.Fatalf("next_retry_at = %v, want 未来时刻", item.NextRetryAt)
 	}
