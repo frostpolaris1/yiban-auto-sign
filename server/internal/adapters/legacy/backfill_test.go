@@ -413,3 +413,39 @@ func TestBackfillResolverErrorPropagates(t *testing.T) {
 		t.Fatalf("err = %v, want 解析失败上抛", err)
 	}
 }
+
+func TestBackfillFatalMessagesCarryNoCLIPrefix(t *testing.T) {
+	// 判据（按形状，不按实例）：legacy 层所有 fatalBackfill 消息都不得自带
+	// CLI 前缀——前缀只由 cmd/cli 的 printBackfillError 加一次。
+	// 逐调用点列举会在新增调用点时漏，故扫源码全文。
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	sites := 0
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		body, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		text := string(body)
+		for i := 0; i < len(text); i++ {
+			if !strings.HasPrefix(text[i:], "fatalBackfill(") {
+				continue
+			}
+			sites++
+			rest := text[i:]
+			line := rest[:strings.IndexByte(rest, 0x0a)]
+			if strings.Contains(line, "backfill-time-prefs:") {
+				t.Fatalf("%s: fatalBackfill 消息自带 CLI 前缀（会与打印器叠加成双前缀）：%s", name, line)
+			}
+		}
+	}
+	if sites == 0 {
+		t.Fatal("扫到 0 个 fatalBackfill 调用点——扫空不得当绿")
+	}
+}
