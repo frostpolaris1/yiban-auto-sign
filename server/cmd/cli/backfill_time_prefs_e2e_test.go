@@ -219,6 +219,9 @@ func TestBackfillTimePrefsE2E(t *testing.T) {
 	if len(dry.Conflicts) != 1 || dry.Conflicts[0].UserID != ownerD {
 		t.Fatalf("dry-run conflicts = %+v, want 1 条 owner D", dry.Conflicts)
 	}
+	if got := dry.Conflicts[0].Offsets; len(got) != 2 || got[0] != 15 || got[1] != 20 {
+		t.Fatalf("dry-run 冲突取值 = %v, want [15 20]", got)
+	}
 	if len(dry.Skips) != 5 {
 		t.Fatalf("dry-run skips = %+v, want 5 条", dry.Skips)
 	}
@@ -239,6 +242,19 @@ func TestBackfillTimePrefsE2E(t *testing.T) {
 	}
 	if !applied.Apply || applied.RowsWritten != 2 {
 		t.Fatalf("apply 报告 rows_written = %d, want 2", applied.RowsWritten)
+	}
+	// 冲突主线（2gk 审查 P2-3）：--apply 也不写冲突用户，
+	// 报告仍列出整用户进 conflicts，writes 不含 owner D。
+	if len(applied.Conflicts) != 1 || applied.Conflicts[0].UserID != ownerD {
+		t.Fatalf("apply conflicts = %+v, want 1 条 owner D", applied.Conflicts)
+	}
+	for _, item := range applied.Writes {
+		if item.UserID == ownerD {
+			t.Fatalf("apply writes 含冲突用户 owner D：%+v", applied.Writes)
+		}
+	}
+	if len(applied.Writes) != 2 {
+		t.Fatalf("apply writes = %+v, want 2 条", applied.Writes)
 	}
 	if n := backfillE2ECount(t, dsn); n != 2 {
 		t.Fatalf("apply 后 time_prefs = %d 行, want 2", n)
@@ -302,6 +318,46 @@ func backfillE2EOffsetRows(t *testing.T, dsn, userID string) int64 {
 	return n
 }
 
+// TestBackfillTimePrefsOverwritesExistingValueE2E 钉住覆盖语义（2gk 审查 P2-1）：
+// time_prefs 已有不同取值时，--apply 覆盖为新值，rows_written 计实际变更行数。
+// 模拟的真实用户动作：库里已存在该用户的旧自选（如试运行或手工补录过），
+// 运维重跑补录，期望新值落库。
+func TestBackfillTimePrefsOverwritesExistingValueE2E(t *testing.T) {
+	dsn, ownerA, ownerB, _ := backfillE2ESeed(t)
+	dir := backfillE2EExport(t, backfillE2EPrefs())
+	ctx := context.Background()
+	db, err := pg.Open(ctx, pg.Options{DSN: dsn, MaxConns: 1, StatementTimeout: 30 * time.Second})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	// 预插与补录值不同的旧值：owner A 存 45，补录夹具给 30；owner B 不插，作对照。
+	if _, err := db.Exec(ctx,
+		`INSERT INTO time_prefs (user_id, offset_min, updated_at) VALUES ($1::uuid, 45, now())`,
+		ownerA); err != nil {
+		t.Fatalf("seed time_prefs: %v", err)
+	}
+
+	code, out, errOut := backfillE2ERun(t, dsn, dir, true)
+	if code != 0 {
+		t.Fatalf("apply exit %d, stderr:\n%s", code, errOut)
+	}
+	var applied legacy.BackfillReport
+	if err := json.Unmarshal([]byte(out), &applied); err != nil {
+		t.Fatalf("apply 报告不是 JSON: %v\n%s", err, out)
+	}
+	// 覆盖 owner A 计 1 + 新插 owner B 计 1 = 2。
+	if applied.RowsWritten != 2 {
+		t.Fatalf("rows_written = %d, want 2（覆盖 1 + 插入 1）", applied.RowsWritten)
+	}
+	if got := backfillE2EOffset(t, dsn, ownerA); got != 30 {
+		t.Fatalf("owner A 的 offset = %d, want 30（覆盖生效）", got)
+	}
+	if got := backfillE2EOffset(t, dsn, ownerB); got != 60 {
+		t.Fatalf("owner B 的 offset = %d, want 60", got)
+	}
+}
+
 // TestBackfillTimePrefsRollsBackOnWriteFailureE2E 钉住「失败不半写」：
 // 同批里一条指向不存在的用户（外键失败），先写的行必须一起消失。
 func TestBackfillTimePrefsRollsBackOnWriteFailureE2E(t *testing.T) {
@@ -334,5 +390,19 @@ func TestBackfillTimePrefsRequiresDir(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "--dir") {
 		t.Fatalf("stderr 未点名 --dir：%s", errOut.String())
+	}
+}
+
+// TestBackfillTimePrefsSingleErrorPrefix 钉住 stderr 前缀单次：
+// 致命错误由 CLI 统一加前缀，库层文本不带前缀，叠加即缺陷（2gk 审查 P3）。
+// 用缺 --dir 的路径触发；该路径不连库。
+func TestBackfillTimePrefsSingleErrorPrefix(t *testing.T) {
+	var out, errOut strings.Builder
+	code := runBackfillTimePrefs([]string{"--dsn", "postgres://invalid"}, &out, &errOut)
+	if code != 2 {
+		t.Fatalf("缺 --dir code = %d, want 2", code)
+	}
+	if n := strings.Count(errOut.String(), "backfill-time-prefs:"); n != 1 {
+		t.Fatalf("stderr 前缀出现 %d 次, want 1：%s", n, errOut.String())
 	}
 }

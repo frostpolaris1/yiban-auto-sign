@@ -79,6 +79,9 @@ stdout 是一份 JSON 报告。stderr 只放错误。
 `conflicts` 的口径：同一用户映射到多个旧账号，且取值不一致。
 工具不合并、不猜测。整用户跳过。人按下表核对后手工决定。
 
+全部账号同一 owner 是 `migrate-legacy` 的常态：一个新用户名下导入多个旧账号。
+这些账号的旧自选不同时，整用户进 `conflicts` 是预期行为，不是工具故障。
+
 ## 6. 落库
 
 ```bash
@@ -87,7 +90,7 @@ yiban-cli backfill-time-prefs --dir /var/lib/yiban/export --apply
 
 写入在单个事务内。任一写失败整批回滚，不留半写。
 重复执行幂等：同值重跑零变更，`rows_written` 为 0。
-已存在不同取值时旧值优先，`rows_written` 计为 1。
+已存在不同取值时覆盖为新值，`rows_written` 计为 1。
 
 工具**不**跑迁移。库要先 `yiban-cli migrate`。
 工具也**不**改调度与签到语义：它只写 `time_prefs` 一张表。

@@ -158,9 +158,10 @@ type BackfillOptions struct {
 	Now time.Time
 }
 
-// fatalBackfill 构造带退出码的致命错误。前缀与子命令同名。
+// fatalBackfill 构造带退出码的致命错误。
+// Msg 不带子命令前缀：CLI 统一打印错误并加前缀，避免前缀叠加。
 func fatalBackfill(code int, format string, args ...any) *Error {
-	return &Error{Code: code, Msg: "backfill-time-prefs: " + fmt.Sprintf(format, args...)}
+	return &Error{Code: code, Msg: fmt.Sprintf(format, args...)}
 }
 
 // Backfill 读导出物、算计划，并在 Apply 为真时写入。

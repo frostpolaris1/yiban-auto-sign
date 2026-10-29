@@ -73,11 +73,13 @@ func runBackfillTimePrefs(args []string, stdout, stderr io.Writer) int {
 		Now:      coreclock.System{}.Now().UTC(),
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "backfill-time-prefs: %v\n", err)
 		var fatalErr *legacy.Error
 		if errors.As(err, &fatalErr) {
+			// 致命错误的文本自带退出码语义但无前缀：这里统一加一次前缀。
+			fmt.Fprintf(stderr, "backfill-time-prefs: %v\n", fatalErr.Msg)
 			return fatalErr.Code
 		}
+		fmt.Fprintf(stderr, "backfill-time-prefs: %v\n", err)
 		return 1
 	}
 	encoded, err := json.MarshalIndent(report, "", "  ")
