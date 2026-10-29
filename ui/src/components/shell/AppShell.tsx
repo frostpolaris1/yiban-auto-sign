@@ -9,11 +9,11 @@
  * 抽屉开合由 `body.has-drawer-open` 表达。vendor 的 CSS 认这个类。
  * 路由变化、Esc、点遮罩都关闭抽屉。
  * 会话解析中显示整页加载态；无会话落到 `/login` 并带上站内回跳地址。
- * `must_change_password` 为真时内容区顶部常驻提示条。
+ * `must_change_password` 为真时内容区顶部常驻提示条，并给出改密出口。
  */
 
 import { useEffect, useState } from 'react'
-import { Navigate, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
+import { Link, Navigate, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Alert } from '@/components/ui/Alert'
 import { SessionLoading } from '@/components/ui/SessionLoading'
@@ -124,7 +124,10 @@ export function AppShell() {
           {me.must_change_password ? (
             <div className="app-alert-block">
               <Alert tone="warning" title="需要重置密码">
-                账号需要重置密码，请联系管理员
+                账号需要重置密码。建议立即修改密码。{' '}
+                <Link className="app-inline-link" to="/settings">
+                  去修改
+                </Link>
               </Alert>
             </div>
           ) : null}

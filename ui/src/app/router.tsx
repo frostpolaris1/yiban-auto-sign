@@ -22,6 +22,7 @@ import { NotFoundPage } from '@/pages/NotFoundPage'
 import { ResetPasswordPage } from '@/pages/ResetPasswordPage'
 import { SchedulePage } from '@/pages/SchedulePage'
 import { SchoolsPage } from '@/pages/SchoolsPage'
+import { SettingsPage } from '@/pages/SettingsPage'
 import { parseDay } from '@/lib/format'
 import { sanitizeRedirect } from '@/lib/redirect'
 
@@ -56,6 +57,13 @@ const accountsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: '/accounts',
   component: AccountsPage,
+})
+
+/** 账号设置：账号信息与自助改密。三种角色都能进。 */
+const settingsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: '/settings',
+  component: SettingsPage,
 })
 
 const schoolsRoute = createRoute({
@@ -141,7 +149,14 @@ function ResetPasswordRouteComponent() {
 }
 
 const routeTree = rootRoute.addChildren([
-  shellRoute.addChildren([dashboardRoute, designRoute, accountsRoute, schoolsRoute, scheduleRoute]),
+  shellRoute.addChildren([
+    dashboardRoute,
+    designRoute,
+    accountsRoute,
+    settingsRoute,
+    schoolsRoute,
+    scheduleRoute,
+  ]),
   loginRoute,
   forgotPasswordRoute,
   resetPasswordRoute,

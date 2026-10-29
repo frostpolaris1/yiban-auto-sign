@@ -115,6 +115,15 @@ export type MockOptions = {
   resetError?: { status: number; code: string; message: string }
   /** 重置密码断网：fetch 直接拒绝。 */
   resetNetworkError?: boolean
+  /** 登录态改密的失败注入。缺省 204，且成功后清掉 must_change_password。 */
+  changePasswordError?: { status: number; code: string; message: string }
+  /**
+   * 改密时会话已失效：改密与随后的 me 探针都按未登录回 401。
+   * 模拟中间件在业务处理前拒绝请求，而不是口令校验失败。
+   */
+  changePasswordSessionExpired?: boolean
+  /** 登录态改密断网：fetch 直接拒绝。 */
+  changePasswordNetworkError?: boolean
 }
 
 export type FakeApi = {
@@ -131,6 +140,8 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
   const calls: ApiCall[] = []
   // 会话角色随 login/logout/过期变化，故初始值拷贝一份。
   let sessionRole: Role | null = options.role
+  // 改密成功会清掉待改密标记，故这一位也要可变。
+  let mustChangePassword = Boolean(options.mustChangePassword)
   // 每个测试一份副本：写操作会改状态，不能污染共享夹具。
   const allAccounts = (options.accounts ?? ACCOUNTS).map((item) => ({ ...item }))
   const pages = Object.fromEntries(
@@ -183,7 +194,7 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       email: options.email ?? SESSION_EMAIL,
       role,
       status: 'active' as const,
-      must_change_password: Boolean(options.mustChangePassword),
+      must_change_password: mustChangePassword,
       csrf_token: SESSION_CSRF,
     })
 
@@ -222,6 +233,23 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
         const { status, code, message } = options.resetError
         return fail(route, status, code, message)
       }
+      return route.fulfill({ status: 204 })
+    }
+
+    // 登录态改密：成功 204 且清掉待改密标记。
+    // 401 有两种来源：旧口令错，或会话已在中间件失效。
+    // 409 是新旧相同。界面靠随后的 me 探针区分前两种。
+    if (url.pathname === '/api/auth/change-password' && request.method() === 'POST') {
+      if (options.changePasswordSessionExpired) {
+        sessionRole = null
+        return fail(route, 401, 'unauthorized', 'authentication required')
+      }
+      if (options.changePasswordNetworkError) return route.abort('failed')
+      if (options.changePasswordError) {
+        const { status, code, message } = options.changePasswordError
+        return fail(route, status, code, message)
+      }
+      mustChangePassword = false
       return route.fulfill({ status: 204 })
     }
 
@@ -367,5 +395,11 @@ export function forgotPasswordCalls(api: FakeApi): ApiCall[] {
 export function resetPasswordCalls(api: FakeApi): ApiCall[] {
   return api.calls.filter(
     (call) => call.method === 'POST' && call.path === '/api/auth/reset-password',
+  )
+}
+
+export function changePasswordCalls(api: FakeApi): ApiCall[] {
+  return api.calls.filter(
+    (call) => call.method === 'POST' && call.path === '/api/auth/change-password',
   )
 }

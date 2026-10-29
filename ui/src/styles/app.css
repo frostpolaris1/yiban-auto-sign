@@ -173,6 +173,14 @@
   line-height: 1.45;
 }
 
+/* 提示条里的行内出口：颜色只取 token，下划线保证不靠颜色也能识别。 */
+.app-inline-link {
+  color: var(--primary);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .app-rule {
   height: 1px;
   margin: 16px 0;
@@ -777,4 +785,12 @@
  */
 .app-capacity-meta {
   margin: 12px 0 0;
+}
+
+/* ---------- 设置页两卡对齐 ----------
+ * 账号信息卡与改密卡内容高度不同。默认 stretch 会把短卡拉齐到长卡，
+ * 卡片底部留出空白。只在本页的 grid 上改为顶部对齐。
+ */
+.app-settings-grid {
+  align-items: start;
 }

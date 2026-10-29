@@ -8,8 +8,8 @@ import { visibleText } from './support/visible-text'
 /**
  * Adminator 壳的视觉回归基线。
  *
- * 矩阵：4 条常驻路由 + 密码找回两页 + 仪表盘两视角，
- * × 2 套主题 × 2 个宽度 = 32 张截图。
+ * 矩阵：7 条常驻路由 + 密码找回两页 + 仪表盘两视角，
+ * × 2 套主题 × 2 个宽度 = 36 张截图。
  * 仪表盘按角色分视角：user 是签到状态／诊断，admin 是窗口／容量体检。
  * 时间片页按固定业务日另拍（缺省日期会随日历漂移，不能进常驻矩阵），
  * 补 1440 与 390 两个宽度。
@@ -21,6 +21,7 @@ import { visibleText } from './support/visible-text'
 
 const ROUTES = [
   { path: '/design', name: 'design' },
+  { path: '/settings', name: 'settings' },
   { path: '/accounts', name: 'accounts' },
   { path: '/schools', name: 'schools' },
   { path: '/login', name: 'login' },
@@ -105,6 +106,11 @@ async function expectData(page: Page, path: string) {
     await expect(page.locator('.kpi-card')).toHaveCount(4)
   } else if (path === '/design') {
     await expect(page.getByRole('heading', { name: /组件画廊/ })).toBeVisible()
+  } else if (path === '/settings') {
+    // 会话到位：账号信息卡读到会话夹具，改密卡在表单态。
+    const card = page.locator('.card').filter({ hasText: '账号信息' })
+    await expect(card).toContainText('operator@example.com')
+    await expect(page.getByLabel(/^当前密码/)).toBeVisible()
   } else if (path === '/forgot-password') {
     await expect(page.getByLabel('邮箱')).toBeVisible()
   } else if (path.startsWith('/reset-password')) {

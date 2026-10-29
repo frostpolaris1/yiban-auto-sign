@@ -6,16 +6,18 @@
  * `features/accounts` 展示层：纯函数，无 React、无网络。
  *
  * **口径**
- * 状态值只取自契约 `AccountStatus`，标签是全仓唯一一份。
+ * 状态值只取自契约 `AccountStatus`；`active` 的词引用 `lib/identity` 的共用状态词。
+ * 其余状态文案只在 `features/accounts` 一张表里。
  * 时间格式化在 `lib/format`，与学校页共用一份。
  */
 
 import type { Tone } from '@/components/ui/Badge'
 import type { AccountStatus } from '@/lib/api/account'
+import { ACTIVE_STATUS_LABEL } from '@/lib/identity'
 
 const LABELS: Record<AccountStatus, string> = {
   pending: '待审核',
-  active: '正常',
+  active: ACTIVE_STATUS_LABEL,
   rejected: '已驳回',
   paused_admin: '管理员暂停',
   paused_user: '用户暂停',

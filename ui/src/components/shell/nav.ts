@@ -99,6 +99,13 @@ export const NAV: NavSection[] = [
     label: '系统',
     items: [
       {
+        key: 'settings',
+        text: '账号设置',
+        to: '/settings',
+        icon: 'settings',
+        crumbs: ['系统', '账号设置'],
+      },
+      {
         key: 'design',
         text: '设计系统',
         icon: 'design',
