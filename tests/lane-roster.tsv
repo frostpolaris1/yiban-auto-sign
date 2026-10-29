@@ -338,7 +338,7 @@ fast	tests/test_users_exit_surface.py
 fast	tests/test_users_exit_surface_frontend.py
 fast	tests/test_v3_same_day_requeue.py
 fast	tests/test_verify_job_watchdog_scope.py
-fast	tests/test_verify_jobs.py
+serial	tests/test_verify_jobs.py	# 异步校验任务用真实墙钟等终态，且该文件自己 docstring 记着「上一个文件的校验线程还在飞」的泄漏形状。2026-10-26 在快集里连续两次红：job 停在 running、席位 1/2 未归还。移串行轨独占核；全量仍跑它。根因另单。
 fast	tests/test_visual_seed_generation.py	# 子进程真跑 seed()：随机钥、状态覆盖、导入失败不静默
 fast	tests/test_vue_build_reproducible.py
 fast	tests/test_waf_failure_tier.py
