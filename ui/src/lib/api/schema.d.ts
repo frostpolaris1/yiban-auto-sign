@@ -140,7 +140,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * List users with cursor pagination.
+         * @description Master only. Soft-deleted users never appear. role, status and q
+         *     narrow the result. q matches the start of the email address and
+         *     never matches a name. A query longer than 254 characters is 400:
+         *     no address can be that long, so no row can match.
+         */
+        get: operations["UserList"];
         put?: never;
         /**
          * Create a master, admin or user account.
@@ -1180,6 +1187,11 @@ export interface components {
             /** @description An existing photo visible to the caller; null clears the default. */
             photo_id: string | null;
         };
+        UserPage: {
+            items: components["schemas"]["User"][];
+            /** @description Cursor for the next page; empty on the last page. */
+            next_cursor: string;
+        };
         AccountPage: {
             items: components["schemas"]["Account"][];
             /** @description Cursor for the next page; empty on the last page. */
@@ -1491,6 +1503,41 @@ export interface operations {
             403: components["responses"]["ForbiddenError"];
             409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    UserList: {
+        parameters: {
+            query?: {
+                /** @description Opaque page cursor taken from next_cursor. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size, 1 to 200. */
+                limit?: components["parameters"]["Limit"];
+                role?: components["schemas"]["UserRole"];
+                status?: components["schemas"]["UserStatus"];
+                /**
+                 * @description Email prefix. Matching is case-insensitive because stored
+                 *     addresses are lower case. Wildcards in the value are literal.
+                 */
+                q?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description User page. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserPage"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            403: components["responses"]["ForbiddenError"];
             default: components["responses"]["DefaultError"];
         };
     };

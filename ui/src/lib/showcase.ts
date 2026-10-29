@@ -8,13 +8,15 @@
  * **口径**
  * 形状与契约响应一致（手写合成对象，字段取 schema.d.ts 类型）。
  * 展示机无后端：各页查询以这些函数为 queryFn，页面完整可看、零网络请求。
- * 值全部为合成标识（school-a/b、合成学校甲/乙、登记手机号掩码）。
+ * 值全部为合成标识（school-a/b、合成学校甲/乙、登记手机号掩码、example.com 邮箱）。
  * 时间偏好卡对 user 才渲染，而展示会话固定 master ⇒ 不提供 TimePref 夹具。
  * 看板在展示机走 master 视角：窗口与容量各有夹具，两卡零请求。
+ * 用户管理页的邮箱前缀固定 `master-one`／`admin-one`／`member-one`，明示合成口径。
  */
 
 import type { Account, AccountPage, AccountStatus } from './api/account'
 import type { School, SchoolAdmin, SchoolPage } from './api/school'
+import type { UserPage } from './api/user'
 import type {
   CapacityReport,
   SchedulePlan,
@@ -103,6 +105,45 @@ export function showcaseAllSchools(): School[] {
 /** 学校列表页（单页）。 */
 export function showcaseSchools(): SchoolPage {
   return { items: SHOWCASE_SCHOOLS, next_cursor: '' }
+}
+
+/**
+ * 用户管理页（单页）。三条覆盖三个角色与两种状态，含空的上次登录。
+ * 邮箱是保留域 `example.com`；前缀明示合成口径。
+ */
+export function showcaseUsers(): UserPage {
+  return {
+    items: [
+      {
+        id: 'user-a',
+        email: 'master-one@example.com',
+        role: 'master',
+        status: 'active',
+        must_change_password: false,
+        created_at: '2026-10-01T09:00:00+08:00',
+        last_login_at: '2026-10-28T09:12:00+08:00',
+      },
+      {
+        id: 'user-b',
+        email: 'admin-one@example.com',
+        role: 'admin',
+        status: 'active',
+        must_change_password: true,
+        created_at: '2026-10-02T09:00:00+08:00',
+        last_login_at: null,
+      },
+      {
+        id: 'user-c',
+        email: 'member-one@example.com',
+        role: 'user',
+        status: 'disabled',
+        must_change_password: false,
+        created_at: '2026-10-03T09:00:00+08:00',
+        last_login_at: '2026-10-20T18:30:00+08:00',
+      },
+    ],
+    next_cursor: '',
+  }
 }
 
 /** 学校管理员全量（对应 listAllSchoolAdmins 的裸数组形状）。 */

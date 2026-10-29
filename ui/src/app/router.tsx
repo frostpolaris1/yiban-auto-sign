@@ -23,6 +23,7 @@ import { ResetPasswordPage } from '@/pages/ResetPasswordPage'
 import { SchedulePage } from '@/pages/SchedulePage'
 import { SchoolsPage } from '@/pages/SchoolsPage'
 import { SettingsPage } from '@/pages/SettingsPage'
+import { UsersPage } from '@/pages/UsersPage'
 import { parseDay } from '@/lib/format'
 import { sanitizeRedirect } from '@/lib/redirect'
 
@@ -70,6 +71,13 @@ const schoolsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: '/schools',
   component: SchoolsPage,
+})
+
+/** 用户管理：只归 master；非 master 直接访问落到无权限卡片。 */
+const usersRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: '/users',
+  component: UsersPage,
 })
 
 /**
@@ -155,6 +163,7 @@ const routeTree = rootRoute.addChildren([
     accountsRoute,
     settingsRoute,
     schoolsRoute,
+    usersRoute,
     scheduleRoute,
   ]),
   loginRoute,
