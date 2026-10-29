@@ -19,6 +19,9 @@ export const SCHOOL_VIEW_ROLES: readonly Role[] = ['master', 'admin']
 /** `/api/schedule/*` 与 `/api/capacity` 的 `x-roles`：时间片是管理页。 */
 export const SCHEDULE_VIEW_ROLES: readonly Role[] = ['master', 'admin']
 
+/** `GET /api/users` 的 `x-roles`：用户管理只归 master。 */
+export const USER_VIEW_ROLES: readonly Role[] = ['master']
+
 /** 角色为 null（会话未识别）时一律拒绝。 */
 export function roleAllowed(role: Role | null | undefined, allowed: readonly Role[]): boolean {
   return role ? allowed.includes(role) : false

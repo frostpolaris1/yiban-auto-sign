@@ -3,6 +3,7 @@ package pg
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -94,6 +95,99 @@ func (r *UserRepo) GetByEmail(ctx context.Context, email string) (coreuser.Recor
 		`SELECT `+userColumns+` FROM users WHERE email = $1 AND deleted_at IS NULL`,
 		coreuser.NormalizeEmail(email))
 	return recordOrNotFound(scanUser(row))
+}
+
+// List 按可选角色、状态与邮箱前缀列未删除用户，并用游标分页。
+// 过滤条件是**与**关系；空串表示不过滤。
+//
+// 前缀按已归一（小写去空白）的邮箱比较，LIKE 的通配符被转义：
+// 邮箱里的 %、_ 与 \ 是合法字符，不得当成通配或转义符。
+// 归一后为空但入参非空时恒假，**不得**退化成「不过滤」。
+func (r *UserRepo) List(ctx context.Context, role coreauth.Role, status coreauth.Status, query, cursor string, limit int) ([]coreuser.Record, string, error) {
+	if limit < 1 || limit > 200 {
+		return nil, "", validationError("limit must be between 1 and 200")
+	}
+	sqlText, args, err := userListQuery(role, status, query, cursor, limit)
+	if err != nil {
+		return nil, "", err
+	}
+
+	rows, err := r.db.q(ctx).Query(ctx, sqlText, args...)
+	if err != nil {
+		return nil, "", mapError(err)
+	}
+	defer rows.Close()
+
+	items := make([]coreuser.Record, 0, limit)
+	for rows.Next() {
+		record, err := scanUser(rows)
+		if err != nil {
+			return nil, "", mapError(err)
+		}
+		items = append(items, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", mapError(err)
+	}
+	more := len(items) > limit
+	if more {
+		items = items[:limit]
+	}
+	next := nextCursor(items, more, func(rec coreuser.Record) (time.Time, string) {
+		return rec.CreatedAt, rec.ID
+	})
+	return items, next, nil
+}
+
+// userListQuery 构造 List 的 SQL 与参数。**不执行**查询。
+//
+// 抽出本函数是为了让 SQL 形状可以被无数据库单测覆盖。
+// 三条承重性质由 user_query_test.go 逐字钉住：
+// 键集条件带 ::uuid、ORDER BY 带限定名与 tiebreaker、LIKE 元字符被转义。
+func userListQuery(role coreauth.Role, status coreauth.Status, query, cursor string, limit int) (string, []any, error) {
+	where := ` WHERE deleted_at IS NULL`
+	var args []any
+	if role != "" {
+		if !role.Valid() {
+			return "", nil, validationError("unknown role")
+		}
+		args = append(args, string(role))
+		where += fmt.Sprintf(" AND role = $%d::user_role", len(args))
+	}
+	if status != "" {
+		if !status.Valid() {
+			return "", nil, validationError("unknown user status")
+		}
+		args = append(args, string(status))
+		where += fmt.Sprintf(" AND status = $%d::user_status", len(args))
+	}
+	prefix := coreuser.NormalizeEmail(query)
+	switch {
+	case prefix != "":
+		args = append(args, escapeLikePrefix(prefix))
+		where += fmt.Sprintf(` AND email LIKE $%d || '%%' ESCAPE '\'`, len(args))
+	case query != "":
+		where += " AND FALSE"
+	}
+	sqlText, args, err := appendKeyset(`SELECT `+userColumns+` FROM users`+where,
+		args, cursor, "created_at", "id")
+	if err != nil {
+		return "", nil, err
+	}
+	// ORDER BY 的 id 必须写成限定名 users.id。
+	// 选择列里的 id::text 也以 id 为输出名；裸 id 在 ORDER BY 中解析成该输出列。
+	// 排序键因此是 text，与 idx_users_created_live 的 uuid 列不同型。
+	// 计划退化为 Incremental Sort：索引只给 created_at 序，组内再按 text 排序。
+	// 限定 users.id 后排序键与索引同列同型，无过滤分页走纯 Index Scan。
+	sqlText += ` ORDER BY created_at DESC, users.id DESC`
+	sqlText, args = appendLimit(sqlText, args, limit)
+	return sqlText, args, nil
+}
+
+// escapeLikePrefix 转义 LIKE 的三个元字符。
+// NewReplacer 单遍扫描，替换结果不会再被处理。
+func escapeLikePrefix(value string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(value)
 }
 
 // UpdatePassword 替换密码哈希与改密标记。

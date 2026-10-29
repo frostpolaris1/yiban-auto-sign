@@ -3,13 +3,14 @@ import { mockAccountsApi, RESET_TOKEN } from './support/fake-accounts-api'
 import { mockDashboardApi } from './support/fake-dashboard-api'
 import { SCHEDULE_DAY, mockScheduleApi } from './support/fake-schedule-api'
 import { mockSchoolsApi } from './support/fake-schools-api'
+import { mockUsersApi } from './support/fake-users-api'
 import { visibleText } from './support/visible-text'
 
 /**
  * Adminator 壳的视觉回归基线。
  *
- * 矩阵：7 条常驻路由 + 密码找回两页 + 仪表盘两视角，
- * × 2 套主题 × 2 个宽度 = 36 张截图。
+ * 矩阵：8 条常驻路由与看板的两个视角（user/admin），
+ * × 2 套主题 × 2 个宽度 = 40 张截图。
  * 仪表盘按角色分视角：user 是签到状态／诊断，admin 是窗口／容量体检。
  * 时间片页按固定业务日另拍（缺省日期会随日历漂移，不能进常驻矩阵），
  * 补 1440 与 390 两个宽度。
@@ -24,6 +25,7 @@ const ROUTES = [
   { path: '/settings', name: 'settings' },
   { path: '/accounts', name: 'accounts' },
   { path: '/schools', name: 'schools' },
+  { path: '/users', name: 'users' },
   { path: '/login', name: 'login' },
   { path: '/forgot-password', name: 'forgot-password' },
   { path: `/reset-password?token=${RESET_TOKEN}`, name: 'reset-password' },
@@ -68,6 +70,11 @@ async function mockSessionFor(
   // 学校页需要完整的学校端点集合：后注册的 route 先匹配，覆盖 beforeEach 的账号 mock。
   if (path === '/schools') {
     await mockSchoolsApi(page, { role })
+    return
+  }
+  // 用户管理页只归 master；独立的假 API 也覆盖 `/api/auth/me`。
+  if (path === '/users') {
+    await mockUsersApi(page, { role })
   }
 }
 
@@ -100,6 +107,10 @@ async function expectData(page: Page, path: string) {
     await expect(page.getByRole('table', { name: '账号列表' })).toContainText('138****8000')
   } else if (path === '/schools') {
     await expect(page.getByRole('table', { name: '学校列表' })).toContainText('合成学校甲')
+  } else if (path === '/users') {
+    await expect(page.getByRole('table', { name: '用户列表' })).toContainText(
+      'master-one@example.com',
+    )
   } else if (path.startsWith('/schedule')) {
     await expect(page.getByRole('table', { name: '时间片窗口' })).toContainText('合成学校甲')
   } else if (path === '/') {

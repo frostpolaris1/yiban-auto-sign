@@ -15,6 +15,15 @@ func openapiEmail(s string) openapi_types.Email { return openapi_types.Email(s) 
 // 它只服务「域处理器未装配」的端点；生产装配后不应出现。
 func notImplemented(c *gin.Context) { respond.NotImplemented(c.Writer, c.Request) }
 
+// UserList 委托用户处理器。未装配时仍是 501。
+func (s *server) UserList(c *gin.Context, params oapi.UserListParams) {
+	if s.users == nil {
+		notImplemented(c)
+		return
+	}
+	s.users.List(c, params)
+}
+
 // UserCreate 委托用户处理器。未装配时仍是 501。
 func (s *server) UserCreate(c *gin.Context, params oapi.UserCreateParams) {
 	if s.users == nil {

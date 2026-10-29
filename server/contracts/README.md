@@ -53,6 +53,7 @@ either side drifts.
 | POST | `/api/auth/forgot-password` | public | P1 |
 | POST | `/api/auth/reset-password` | public | P1 |
 | POST | `/api/auth/change-password` | master/admin/user | P1 |
+| GET | `/api/users` | master | P1 |
 | POST | `/api/users` | master | P1 |
 | GET | `/api/schools` | master/admin | P1 |
 | POST | `/api/schools` | master | P1 |

@@ -947,6 +947,14 @@ type UserCreate struct {
 	Role     UserRole            `json:"role"`
 }
 
+// UserPage defines model for UserPage.
+type UserPage struct {
+	Items []User `json:"items"`
+
+	// NextCursor Cursor for the next page; empty on the last page.
+	NextCursor string `json:"next_cursor"`
+}
+
 // UserRole defines model for UserRole.
 type UserRole string
 
@@ -1255,6 +1263,21 @@ type SchoolDefaultPhotoSetParams struct {
 	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
 }
 
+// UserListParams defines parameters for UserList.
+type UserListParams struct {
+	// Cursor Opaque page cursor taken from next_cursor.
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Limit Page size, 1 to 200.
+	Limit  *Limit      `form:"limit,omitempty" json:"limit,omitempty"`
+	Role   *UserRole   `form:"role,omitempty" json:"role,omitempty"`
+	Status *UserStatus `form:"status,omitempty" json:"status,omitempty"`
+
+	// Q Email prefix. Matching is case-insensitive because stored
+	// addresses are lower case. Wildcards in the value are literal.
+	Q *string `form:"q,omitempty" json:"q,omitempty"`
+}
+
 // UserCreateParams defines parameters for UserCreate.
 type UserCreateParams struct {
 	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
@@ -1444,6 +1467,9 @@ type ServerInterface interface {
 	// SchoolDefaultPhotoSet Set or clear the school default photo.
 	// (PUT /api/schools/{id}/default-photo)
 	SchoolDefaultPhotoSet(c *gin.Context, id SchoolID, params SchoolDefaultPhotoSetParams)
+	// UserList List users with cursor pagination.
+	// (GET /api/users)
+	UserList(c *gin.Context, params UserListParams)
 	// UserCreate Create a master, admin or user account.
 	// (POST /api/users)
 	UserCreate(c *gin.Context, params UserCreateParams)
@@ -3079,6 +3105,65 @@ func (siw *ServerInterfaceWrapper) SchoolDefaultPhotoSet(c *gin.Context) {
 	siw.Handler.SchoolDefaultPhotoSet(c, id, params)
 }
 
+// UserList operation middleware
+func (siw *ServerInterfaceWrapper) UserList(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params UserListParams
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "cursor", c.Request.URL.Query(), &params.Cursor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter cursor: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", c.Request.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter limit: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "role" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "role", c.Request.URL.Query(), &params.Role, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter role: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "status" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "status", c.Request.URL.Query(), &params.Status, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter status: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "q" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "q", c.Request.URL.Query(), &params.Q, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter q: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UserList(c, params)
+}
+
 // UserCreate operation middleware
 func (siw *ServerInterfaceWrapper) UserCreate(c *gin.Context) {
 
@@ -3168,6 +3253,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/auth/forgot-password", wrapper.AuthForgotPassword)
 	router.POST(options.BaseURL+"/api/auth/reset-password", wrapper.AuthResetPassword)
 	router.POST(options.BaseURL+"/api/auth/change-password", wrapper.AuthChangePassword)
+	router.GET(options.BaseURL+"/api/users", wrapper.UserList)
 	router.POST(options.BaseURL+"/api/users", wrapper.UserCreate)
 	router.GET(options.BaseURL+"/api/schools", wrapper.SchoolList)
 	router.POST(options.BaseURL+"/api/schools", wrapper.SchoolCreate)

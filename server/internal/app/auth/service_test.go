@@ -58,6 +58,10 @@ func (f *fakeUsers) GetByEmail(_ context.Context, email string) (appuser.Record,
 	return appuser.Record{}, errs.ErrNotFound
 }
 
+func (f *fakeUsers) List(context.Context, coreauth.Role, coreauth.Status, string, string, int) ([]appuser.Record, string, error) {
+	return nil, "", nil
+}
+
 func (f *fakeUsers) UpdatePassword(_ context.Context, id, hash string, _ bool, _ time.Time) error {
 	f.updated = append(f.updated, id+"="+hash)
 	return nil

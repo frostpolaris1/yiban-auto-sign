@@ -15,7 +15,12 @@
 
 import type { IconName } from '@/components/ui/Icon'
 import type { Role } from '@/lib/api/auth'
-import { SCHOOL_VIEW_ROLES, SCHEDULE_VIEW_ROLES, roleAllowed } from '../../lib/roles'
+import {
+  SCHOOL_VIEW_ROLES,
+  SCHEDULE_VIEW_ROLES,
+  USER_VIEW_ROLES,
+  roleAllowed,
+} from '../../lib/roles'
 
 /**
  * 导航唯一来源。取代 Adminator `Shell.js` 里的 `NAV`。
@@ -104,6 +109,14 @@ export const NAV: NavSection[] = [
         to: '/settings',
         icon: 'settings',
         crumbs: ['系统', '账号设置'],
+      },
+      {
+        key: 'users',
+        text: '用户管理',
+        to: '/users',
+        icon: 'userCog',
+        roles: USER_VIEW_ROLES,
+        crumbs: ['系统', '用户管理'],
       },
       {
         key: 'design',

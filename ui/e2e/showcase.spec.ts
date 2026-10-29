@@ -18,6 +18,9 @@ import { visibleText } from './support/visible-text'
  * 禁用按钮本身不派发 click；唯一提交按钮被禁用时，Chromium 也不派发回车隐式提交。
  * 设置页另用 `requestSubmit()` 走同一条 submit 事件路径，直接验证 onSubmit 的只读守卫。
  * 零请求断言是兜底，真正的判据是 disabled、文案与守卫。
+ *
+ * invariant 9：用户管理页取合成夹具，列出三个角色的用户，零 `/api/` 请求。
+ * 本页只读，没有写入口；筛选与翻页照常可用。
  */
 
 /** 界面上的只读原因。断言用户可见文本，不导入实现常量。 */
@@ -221,4 +224,26 @@ test('invariant 8: the settings form ignores Enter while read-only', async ({ pa
   await expect(page.getByRole('button', { name: '修改密码' })).toBeDisabled()
   await expect(page.locator('.app-deny-note')).toHaveText(READ_ONLY_REASON)
   expect(apiRequests, 'a read-only showcase sends no password change').toEqual([])
+})
+
+test('invariant 9: the showcase users page renders fixtures with zero requests', async ({
+  page,
+}) => {
+  const apiRequests = trackApiRequests(page)
+
+  await page.goto('/users')
+  const table = page.getByRole('table', { name: '用户列表' })
+  await expect(table).toBeVisible()
+  // 夹具覆盖三个角色与两种状态。
+  await expect(table).toContainText('master-one@example.com')
+  await expect(table).toContainText('超级管理员')
+  await expect(table).toContainText('member-one@example.com')
+  await expect(table).toContainText('停用')
+
+  // 读操作照常：筛选可用；单页夹具没有下一页。
+  await expect(page.getByLabel('角色筛选')).toBeEnabled()
+  await expect(page.getByLabel('邮箱前缀筛选')).toBeEnabled()
+  await expect(page.getByRole('button', { name: '下一页' })).toBeDisabled()
+
+  expect(apiRequests, 'the users fixture never touches the API').toEqual([])
 })

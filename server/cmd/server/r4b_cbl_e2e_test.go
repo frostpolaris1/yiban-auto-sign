@@ -247,7 +247,8 @@ func TestR4BCblOversizedBodiesAre413(t *testing.T) {
 }
 
 // limit 的下界是 1。0 不得静默取缺省，同一参数在所有列表上同口径。
-// schools 的同一判据由 TestW2CLimitBounds 钉住；本用例覆盖其余三个列表。
+// schools 的同一判据由 TestW2CLimitBounds 钉住。
+// 本用例覆盖其余四个列表：accounts、school-admins、photos、users。
 func TestR4BCblListLimitZeroIs400(t *testing.T) {
 	e := w2cNewEnv(t)
 	master := e.user("r4b-limit-master@example.com", coreauth.RoleMaster)
@@ -264,6 +265,7 @@ func TestR4BCblListLimitZeroIs400(t *testing.T) {
 		{"accounts", "/api/accounts?limit=0", masterIssued},
 		{"school-admins", "/api/schools/" + school.ID + "/admins?limit=0", masterIssued},
 		{"photos", "/api/me/photos?limit=0", ownerIssued},
+		{"users", "/api/users?limit=0", masterIssued},
 	}
 	for _, tc := range cases {
 		rec := e.do(http.MethodGet, tc.path, nil, tc.issued)
