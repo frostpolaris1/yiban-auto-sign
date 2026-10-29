@@ -22,7 +22,7 @@ React 19 + Vite 8 + TypeScript 7。视觉语言复用 Adminator 4.4.0。
 | `npm run gate:license` | 依赖许可证门。禁用许可证或清单漂移即红 |
 | `npm run test:unit` | fetch、查询默认值、游标、账号页、学校页、时间片页、看板与认证纯逻辑单测，运行器为 `node:test` |
 | `npm run build:showcase` | 构建 `VITE_SHOWCASE=1` 的展示产物到 `dist-showcase/` |
-| `npm run test:e2e` | 全量 Playwright（212 条），串行。先跑 `npm run build` |
+| `npm run test:e2e` | 全量 Playwright（233 条），串行。先跑 `npm run build` |
 | `npm run test:e2e:fast` | 收口快路：行为 4 并发 + 视觉 1 并发。先跑 `npm run build` |
 | `npm run test:behavior` | 只跑行为用例，4 并发（`e2e/` 下除视觉外的全部 spec） |
 | `npm run test:shots` | 只跑视觉用例，1 并发 |
@@ -118,15 +118,15 @@ node scripts/token-gate.mjs
 
 ## 视觉回归
 
-矩阵：4 条常驻路由与看板的两个视角（user/admin）× 2 套主题 × 2 个宽度 = 24 张截图。
+矩阵：6 条常驻路由与看板的两个视角（user/admin）× 2 套主题 × 2 个宽度 = 32 张截图。
 时间片页按固定业务日 `2026-10-28` 另拍 1440 与 390 两个宽度（缺省业务日会随日历漂移，不进常驻矩阵）。
 另有账号页 6 种开态 × 2 套主题 = 12 张，学校页 6 种开态 × 2 套主题 = 12 张，
 时间片页列表（1440/390）／预览／覆盖／无权限与仪表盘偏好卡共 6 种开态 × 2 套主题 = 12 张，
-profile 菜单与会话过期提示各 2 张，toast 明暗各 1 张，共 66 张（每平台；目录共 132 个文件）。
+profile 菜单与会话过期提示各 2 张，toast 明暗各 1 张，共 74 张（每平台；目录共 148 个文件）。
 
-行为用例 145 条：账号页 27 条、认证 23 条、看板 14 条、画廊 9 条、学校页 21 条、
+行为用例 158 条：账号页 27 条、认证 36 条、看板 14 条、画廊 9 条、学校页 21 条、
 时间片页与时间偏好 21 条、展示模式 5 条、微交互 25 条。
-视觉文件另有无溢出 1 条。Playwright 总计 212 条。
+视觉文件另有无溢出 1 条。Playwright 总计 233 条。
 
 展示模式用例由 `npm run build:showcase` 构建的 `dist-showcase` 提供。
 Playwright 的第二个 webServer 在 4174 端口预览它；`e2e/showcase.spec.ts` 用它钉零请求。
@@ -150,7 +150,7 @@ WSL 读 `-chromium-linux.png`，Windows 读 `-chromium-win32.png`。
 | Adminator 源（commit 4c76854） | 提取内容 | 我们的落点 |
 |---|---|---|
 | `src/index.html` | `shell` 占位、`hero`、`kpi-grid`、`monthly-footer`、`.table` + `tag` | `AppShell`、`PageHeader`、`KpiGrid`、`SignStatusCard`、`CapacityCard` |
-| `src/signin.html` | `auth-shell`、`auth-aside`、`auth-card`、`auth-form`、`field-row` | `LoginPage`、`AuthAside`、`LoginForm` |
+| `src/signin.html` | `auth-shell`、`auth-aside`、`auth-card`、`auth-form`、`field-row` | `LoginPage`、`AuthAside`、`LoginForm`、`PublicAuthPage`、`ForgotPasswordPage`、`ResetPasswordPage` |
 | `src/ui.html` | `alert`、`badge`、`tag`、`progress`、`spinner`、`tabs`、`modal-demo`、`popover-demo`、`avatar-group` | `FeedbackSection`、`IndicatorsSection`、`OverlaysSection`、`NavigationSection`、`Alert`、`Badge`、`Modal`、`Tabs`、`Hint` |
 | `src/forms.html` | `form-grid`、`field`、`input`、`select`、`textarea`、`check`、`switch`、`form-actions` | `FormsSection`、`Input`、`SwitchControl` |
 | `src/basic-table.html` | `.table`、`.cell-name`、`.cell-date`、`.tag` | `SignStatusCard` 的表格 |
@@ -171,5 +171,6 @@ WSL 读 `-chromium-linux.png`，Windows 读 `-chromium-win32.png`。
 - 看板已接线：user 读 `/api/me/sign-status`（30 秒轮询）与 `/api/me/diagnostics`，
   master/admin 读 `/api/schedule/windows` 与 `/api/capacity`。看板不画图表。
 - 不接 TanStack Table、Chart.js、react-day-picker、SSE。
-- 忘记/重置密码页与登录态改密不做。契约只有公开的令牌流；登录态改密没有端点。
+- 忘记密码与重置密码两页已接公开的令牌流；登录态改密不做：契约没有该端点。
+  服务端尚未接线令牌投递：它只创建令牌，不发邮件。界面文案按产品要求固定。
 - 不引 Tailwind、shadcn、Element Plus、Bootstrap、Lucide、Recharts。
