@@ -20,7 +20,7 @@ React 19 + Vite 8 + TypeScript 7。视觉语言复用 Adminator 4.4.0。
 | `npm run gate:structure` | 导入方向门 |
 | `npm run gate:docs` | 入库文档门。禁止指向未入库目录 |
 | `npm run gate:license` | 依赖许可证门。禁用许可证或清单漂移即红 |
-| `npm run test:unit` | fetch、查询默认值、游标、账号页、学校页、时间片页、看板与认证纯逻辑单测，运行器为 `node:test` |
+| `npm run test:unit` | fetch、查询默认值、游标、账号页、学校页、时间片页、看板与认证纯逻辑单测，加上图标来源门（`icon-source`：lucide 唯一、CSS data URI 登记、导入白名单），运行器为 `node:test` |
 | `npm run build:showcase` | 构建 `VITE_SHOWCASE=1` 的展示产物到 `dist-showcase/` |
 | `npm run test:e2e` | 全量 Playwright（233 条），串行。先跑 `npm run build` |
 | `npm run test:e2e:fast` | 收口快路：行为 4 并发 + 视觉 1 并发。先跑 `npm run build` |
@@ -173,4 +173,5 @@ WSL 读 `-chromium-linux.png`，Windows 读 `-chromium-win32.png`。
 - 不接 TanStack Table、Chart.js、react-day-picker、SSE。
 - 忘记密码与重置密码两页已接公开的令牌流；登录态改密不做：契约没有该端点。
   服务端尚未接线令牌投递：它只创建令牌，不发邮件。界面文案按产品要求固定。
-- 不引 Tailwind、shadcn、Element Plus、Bootstrap、Lucide、Recharts。
+- 不引 Tailwind、shadcn、Element Plus、Bootstrap、Recharts。图标统一取 `lucide-react`，
+  由 `src/components/ui/Icon.tsx` 收口；`scripts/tests/icon-source.test.mjs` 钉住来源面。
