@@ -17,5 +17,5 @@ server/internal/app	auth,user,school,account,admin,schedule,timepref,photos,loca
 server/internal/adapters	pg,session,config,mail,storage,legacy	infrastructure packages
 server/internal/entry/http	router,respond,oapi,user,school,account,admin,schedule,signing,photos,location,events,ratelimit	http handlers
 ui/src	app,pages,features,components,lib,styles	frontend layers
-ui/src/features	auth,dashboard,design,user,schools,accounts,schedule,run,settings	domain features
+ui/src/features	auth,dashboard,design,user,schools,accounts,schedule,run,settings,photos	domain features
 ui/src/components	shell,ui	shared components
