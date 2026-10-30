@@ -16,14 +16,14 @@ import (
 
 // OutcomeLogLevel 把一次签名结论映射成日志级别。
 //
-// Warn：transient、unknown、challenge、rejected、device_unbound、
+// Warn：transient、unknown、challenge、blocked、rejected、device_unbound、
 // credential_invalid、photo_rejected——这些需要人看或告警。
 // Info：success、already_done、no_target、invalid_target、
 // photo_missing、pending_upstream——正常结论。
 func OutcomeLogLevel(outcome contract.Outcome) slog.Level {
 	switch outcome {
 	case contract.OutcomeTransient, contract.OutcomeUnknown, contract.OutcomeChallenge,
-		contract.OutcomeRejected, contract.OutcomeDeviceUnbound,
+		contract.OutcomeBlocked, contract.OutcomeRejected, contract.OutcomeDeviceUnbound,
 		contract.OutcomeCredentialBad, contract.OutcomePhotoRejected:
 		return slog.LevelWarn
 	}

@@ -83,6 +83,8 @@ const (
 	ActionTaskReclaim                Action = "task.reclaim"
 	ActionTaskClaim                  Action = "task.claim"
 	ActionTaskSettle                 Action = "task.settle"
+	// 手动签到把当日 failed/skipped 行放回队列（C2）。detail 只记来源状态。
+	ActionTaskRearm Action = "task.rearm"
 	// P5-C：账号定位策略写入。detail 只记 mode 与 has_reason。
 	ActionLocationSet Action = "location.set"
 	// P5：图片入库。detail 只记四边裁切比例与输出摘要，
@@ -91,6 +93,16 @@ const (
 	// P5：学校默认图登记。detail 只记新照片 id 与旧照片 id（可空）。
 	ActionSchoolDefaultPhotoSet Action = "school.default_photo_set"
 )
+
+// Actor 是写审计行时的操作者。
+// 定义在 core 而非用例层：适配器写"状态变更＋审计"同事务时
+// 需要接收主体，而适配器不 import 用例层。
+// Label 必须是掩码值；掩码口径见 app/audit.NewActor。
+type Actor struct {
+	UserID string
+	Role   coreauth.Role
+	Label  string
+}
 
 // Entry 是一次追加的输入。
 // SchoolID、ActorUserID、ActorRole 为空时存储为 NULL。

@@ -113,7 +113,7 @@ func TestP4TwoSchoolsIndependent(t *testing.T) {
 	}
 }
 
-// 容量缺口如实上报；超容量的行仍在窗内。
+// 容量缺口：报告如实给出缺口数；建计划被拒（409 capacity_shortfall）且不落库。
 func TestP4CapacityShortfall(t *testing.T) {
 	e := w2cNewEnv(t)
 	loc := p4Location(t)
@@ -144,14 +144,28 @@ func TestP4CapacityShortfall(t *testing.T) {
 			report.Demand, report.Capacity, report.Shortfall)
 	}
 
-	plan := e.plan(t, issued, day, school.ID, task)
-	if plan.Demand != 81 || len(plan.Rows) != 81 {
-		t.Fatalf("计划 demand=%d rows=%d", plan.Demand, len(plan.Rows))
+	// 缺口计划被拒：409 capacity_shortfall，且一行都不落库（C2 验收②）。
+	body := map[string]string{"day": day, "school_id": school.ID, "task_id": task}
+	rec = e.do("POST", "/api/schedule/plan", body, issued)
+	if rec.Code != 409 {
+		t.Fatalf("缺口计划 status = %d, want 409: %s", rec.Code, rec.Body.String())
 	}
-	for _, r := range plan.Rows {
-		if r.RunAt.Before(plan.WindowStart) || !r.RunAt.Before(plan.WindowEnd) {
-			t.Fatalf("超容量行越窗: %v not in [%v,%v)", r.RunAt, plan.WindowStart, plan.WindowEnd)
-		}
+	if !strings.Contains(rec.Body.String(), "capacity_shortfall") {
+		t.Fatalf("body = %s, want capacity_shortfall", rec.Body.String())
+	}
+	if n := e.scalarInt(
+		"SELECT count(*) FROM sign_tasks WHERE school_task_id = $1::uuid AND day = $2::date",
+		task, day); n != 0 {
+		t.Fatalf("缺口计划落库 %d 行，want 0", n)
+	}
+	// 报告仍如实给出缺口：先看报告再调并发，不是盲建。
+	rec = e.do("GET", "/api/capacity?school_id="+school.ID+"&task_id="+task+"&day="+day, nil, issued)
+	if rec.Code != 200 {
+		t.Fatalf("capacity after reject status = %d", rec.Code)
+	}
+	e.decode(rec, &report)
+	if report.Capacity != 64 || report.Shortfall != 17 {
+		t.Fatalf("报告 = capacity %d shortfall %d, want 64/17", report.Capacity, report.Shortfall)
 	}
 }
 

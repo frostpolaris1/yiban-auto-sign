@@ -7,7 +7,10 @@ import (
 	"log/slog"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	appcore "github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
+	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corelocation "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/location"
@@ -19,7 +22,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
 
-// 三个手动签到的结论错误。
+// 四个手动签到的结论错误。
 // 用包级哨兵而不是每次新建：入口层按 errors.Is 判定，错误码稳定。
 var (
 	// ErrSignRunning 表示该账号当日任务正在执行。
@@ -28,6 +31,8 @@ var (
 	ErrAlreadySigned = coreerrs.New(coreerrs.CodeAlreadySigned, "already signed")
 	// ErrWindowClosed 表示窗口已关闭。
 	ErrWindowClosed = coreerrs.New(coreerrs.CodeWindowClosed, "window is closed")
+	// ErrTaskAmbiguous 表示当日任务不唯一：服务端不猜，由调用方选。
+	ErrTaskAmbiguous = coreerrs.New(coreerrs.CodeTaskAmbiguous, "multiple tasks apply to this account")
 )
 
 // 内部等待原因（写入 sign_tasks.result）。
@@ -40,7 +45,7 @@ const (
 	waitWindowMissing  = "wait_window_missing" // 当日窗口尚未发现（定时再看）
 	waitRate           = "wait_rate"           // 出口限速未放行
 	waitEgress         = "wait_egress"         // 出口不可用（无可用出口或分配失败）
-	waitBatchAborted   = "wait_batch_aborted"  // 同批前一条基础设施失败，本行退回队列
+	waitBatchAborted   = "wait_batch_aborted"  // 本行前置步骤遇基础设施失败，退回队列
 	unreadableCred     = "credential_invalid"
 	windowMissingRetry = 10 * time.Minute // 窗口未发现时的重试间隔
 	// reclaimBatch 是每 tick 回收过期租约的上限。
@@ -103,11 +108,16 @@ func (s *Service) CountRunning(ctx context.Context) (int64, error) {
 
 // Step 认领并执行至多 limit 个到期任务，返回处理数。
 //
+// 批内并行：认领上限就是并发口径。装配层把 YIBAN_WORKERS 同时用作
+// 认领上限与计划的并发通道数，执行再串行就等于实际吞吐只有容量的 1/W
+// （审计 P2-10：容量是按并行算的，执行却是串行）。
+// 每账号至多一行在批内，故并行不破坏"同账号串行"（由认领 SQL 保证）。
+//
 // 两类失败要分清：
 //   - 业务结论（成功/跳过/失败）由 settleOutcome 落状态，Step 返回 nil；
-//   - 基础设施失败（库、网络、取消）原样上抛，且**同批已认领未执行的行
-//     要退回队列**：否则它们停在 running 上，该账号当天再也领不到新任务
-//     （P4-E 审查 P2-2）。
+//   - 基础设施失败（库、网络、取消）上抛第一条；**该行若尚未提交签到
+//     就退回队列**，否则它停在 running 上，该账号当天再也领不到新任务
+//     （P4-E 审查 P2-2）。已提交的行不退回：可能已在平台侧生效。
 func (s *Service) Step(ctx context.Context, limit int) (int, error) {
 	if limit < 1 {
 		limit = 1
@@ -125,35 +135,50 @@ func (s *Service) Step(ctx context.Context, limit int) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	if len(tasks) == 0 {
+		return 0, nil
+	}
+	// 结果按任务下标写：每个协程只碰自己那一格，不需要额外加锁。
+	type outcome struct {
+		submitted bool
+		err       error
+	}
+	outcomes := make([]outcome, len(tasks))
+	var group errgroup.Group
+	for i := range tasks {
+		i := i
+		group.Go(func() error {
+			outcomes[i].submitted, outcomes[i].err = s.execute(ctx, tasks[i])
+			return nil
+		})
+	}
+	// Wait 恒为 nil：每个协程自己收住错误，按行结算。
+	_ = group.Wait()
+
 	processed := 0
-	for i, task := range tasks {
-		submitted, err := s.execute(ctx, task)
-		if err == nil {
+	var firstErr error
+	for i, res := range outcomes {
+		if res.err == nil {
 			processed++
 			continue
 		}
-		// 失败分两种，退回范围不同：
-		//   - 尚未提交签到（窗口/凭据/发现等前置步骤失败）：当前行也没产生
-		//     外部副作用，连它一起退回队列；
-		//   - 已提交签到后才失败（落库/收尾失败）：当前行可能已在平台侧生效，
-		//     退回会重复签到，故只退后面的行，当前行留在 running 由重启回收。
-		releaseFrom := i + 1
-		if !submitted {
-			releaseFrom = i
+		if firstErr == nil {
+			firstErr = res.err
 		}
-		// 退回用 WithoutCancel：即使 ctx 已取消，队列也必须被修好，
-		// 否则这些行停在 running 到重启（P4-E 复审 P3-1）。
-		releaseCtx := context.WithoutCancel(ctx)
-		for _, rest := range tasks[releaseFrom:] {
-			if releaseErr := s.requeueWait(releaseCtx, rest, rest.RunAt, waitBatchAborted); releaseErr != nil {
+		if !res.submitted {
+			// 退回用 WithoutCancel：即使 ctx 已取消，队列也必须被修好，
+			// 否则这一行停在 running 到重启（P4-E 复审 P3-1）。
+			releaseCtx := context.WithoutCancel(ctx)
+			if releaseErr := s.requeueWait(releaseCtx, tasks[i], tasks[i].RunAt, waitBatchAborted); releaseErr != nil {
 				// 退回失败优先上报：队列卡死比单次执行失败更严重。
+				// 其后的未提交行不再逐行退回：它们停在 running，
+				// 由租约到期后的回收器（ReclaimExpired）放回队列。
 				return processed, releaseErr
 			}
 		}
-		s.logSettlementError(err)
-		return processed, err
+		s.logSettlementError(res.err)
 	}
-	return processed, nil
+	return processed, firstErr
 }
 
 // logSettlementError 让栅栏拒绝在运行期可见。
@@ -325,7 +350,7 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 //   - 成功面：success、already_done → success；
 //   - 有结论但不该告警：no_target、invalid_target、photo_missing、
 //     challenge、device_unbound → skipped（当日不再动，且不算"失败"）；
-//   - 确定性失败：rejected、photo_rejected → failed；
+//   - 确定性失败：rejected、photo_rejected、blocked → failed；
 //   - 凭据错：credential_invalid → failed，并把账号移出排期；
 //   - 可重试面：transient、pending_upstream、unknown → 预算内退避。
 func (s *Service) settleOutcome(ctx context.Context, task corescheduleTask, win corewindow.Window, now time.Time, outcome contract.Outcome) error {
@@ -336,19 +361,20 @@ func (s *Service) settleOutcome(ctx context.Context, task corescheduleTask, win 
 		contract.OutcomePhotoMissing, contract.OutcomeChallenge,
 		contract.OutcomeDeviceUnbound:
 		return s.finish(ctx, task, corestatus.TaskSkipped, string(outcome))
-	case contract.OutcomeRejected, contract.OutcomePhotoRejected:
+	case contract.OutcomeRejected, contract.OutcomePhotoRejected,
+		contract.OutcomeBlocked:
 		return s.finish(ctx, task, corestatus.TaskFailed, string(outcome))
 	case contract.OutcomeCredentialBad:
 		return s.finishCredentialInvalid(ctx, task)
 	}
 	// 重试面：预算耗尽或窗口放不下即落 failed。
-	// NextDelay 的 last 固定为 0：退避从基础间隔起步，抖动交给后续批次
-	// （当前是确定性的 base 间隔，便于复算与测试）。
+	// 退避档位按"已发生的尝试序号"取：第 1 次失败取基础间隔，之后指数放大。
+	// 抖动与放大由 core/retry 统一计算，本处只判预算与窗口。
 	policy := coreretry.BudgetFor(string(outcome))
 	if task.Attempts+1 >= policy.MaxAttempts {
 		return s.finish(ctx, task, corestatus.TaskFailed, string(outcome))
 	}
-	delay, ok := coreretry.NextDelay(policy, 0, coreretry.Window{End: win.End}, now)
+	delay, ok := coreretry.NextDelay(policy, task.Attempts+1, coreretry.Window{End: win.End}, now)
 	if !ok {
 		return s.finish(ctx, task, corestatus.TaskFailed, string(outcome))
 	}
@@ -512,30 +538,31 @@ func (s *Service) logOutcome(ctx context.Context, task corescheduleTask, stage s
 	)
 }
 
-// Request 是手动签到入口：确保当日任务行存在并返回任务 ID。
+// Request 是手动签到入口：解析当日的目标任务，确保任务行存在并返回行 ID。
+//
+// 任务解析（C2）先看当日 sign_tasks：计划已经把"今天该签哪些任务"定下来了，
+// 手动签到必须签同一行，而不是另找"第一个启用任务"。
+// 当日无行时退回学校启用任务；两条以上候选一律 ErrTaskAmbiguous——
+// 服务端不猜，猜错就是签错任务。
 //
 // 结论语义（与入口层错误码一一对应）：
 //   - 关窗 → ErrWindowClosed；
-//   - 已成功/已跳过 → ErrAlreadySigned；
+//   - 已成功 → ErrAlreadySigned；
 //   - 正在执行 → ErrSignRunning；
-//   - 当日 failed → 重新放回队列（Rearm）并返回任务 ID，这是用户
-//     "再试一次"的正当动作（P4-E 审查 P2-4）；
-//   - 其余（新建或已 pending）→ 返回任务 ID（幂等）。
-func (s *Service) Request(ctx context.Context, accountID string) (string, error) {
+//   - 当日 failed 或 skipped → 放回队列（Rearm）并写审计，这是用户
+//     "再试一次"的正当动作（P4-E 审查 P2-4；C2 放开 skipped）；
+//   - 其余（新建或已 pending）→ 返回行 ID（幂等）。
+func (s *Service) Request(ctx context.Context, accountID string, actor appaudit.Actor) (string, error) {
 	if accountID == "" {
 		return "", coreerrs.New(coreerrs.CodeValidation, "account is required")
 	}
 	now := s.deps.Clock.Now()
 	day := now.In(s.deps.Location).Format("2006-01-02")
-	taskID, err := s.deps.Store.TodayTask(ctx, accountID)
+	schoolTaskID, err := s.resolveTask(ctx, accountID, day)
 	if err != nil {
-		if isNotFound(err) {
-			// 账号不可用或学校没有启用任务：是资源不存在，不是参数格式错。
-			return "", coreerrs.New(coreerrs.CodeNotFound, "no enabled task for this account")
-		}
 		return "", err
 	}
-	windowRecord, err := s.deps.Store.GetWindow(ctx, taskID, day)
+	windowRecord, err := s.deps.Store.GetWindow(ctx, schoolTaskID, day)
 	if err != nil {
 		if isNotFound(err) {
 			return "", coreerrs.New(coreerrs.CodeNotFound, "window is not discovered yet")
@@ -546,22 +573,56 @@ func (s *Service) Request(ctx context.Context, accountID string) (string, error)
 	if win.Closed(now) {
 		return "", ErrWindowClosed
 	}
-	row, _, err := s.deps.Store.EnsureTask(ctx, accountID, taskID, day, now)
+	row, _, err := s.deps.Store.EnsureTask(ctx, accountID, schoolTaskID, day, now)
 	if err != nil {
 		return "", err
 	}
 	switch corestatus.TaskState(row.State) {
 	case corestatus.TaskRunning:
 		return "", ErrSignRunning
-	case corestatus.TaskSuccess, corestatus.TaskSkipped:
+	case corestatus.TaskSuccess:
 		return "", ErrAlreadySigned
-	case corestatus.TaskFailed:
-		if err := s.deps.Store.Rearm(ctx, row.ID, now); err != nil {
+	case corestatus.TaskFailed, corestatus.TaskSkipped:
+		if err := s.deps.Store.Rearm(ctx, row.ID, now, actor); err != nil {
 			return "", err
 		}
 		return row.ID, nil
 	}
 	return row.ID, nil
+}
+
+// resolveTask 决定手动签到作用于哪个学校任务。
+//
+// 判据顺序：
+//  1. 当日 sign_tasks 恰好一行 → 就是它（计划是当日真相）；
+//  2. 当日多行 → ErrTaskAmbiguous；
+//  3. 当日无行 → 学校启用任务恰好一条 → 就是它；
+//  4. 学校启用任务多条 → ErrTaskAmbiguous；没有 → not_found。
+func (s *Service) resolveTask(ctx context.Context, accountID, day string) (string, error) {
+	dayTasks, err := s.deps.Store.DayTasks(ctx, accountID, day)
+	if err != nil {
+		return "", err
+	}
+	switch len(dayTasks) {
+	case 1:
+		return dayTasks[0], nil
+	case 0:
+	default:
+		return "", ErrTaskAmbiguous
+	}
+	enabled, err := s.deps.Store.AccountEnabledTasks(ctx, accountID)
+	if err != nil {
+		return "", err
+	}
+	switch len(enabled) {
+	case 1:
+		return enabled[0], nil
+	case 0:
+		// 账号不可用或学校没有启用任务：是资源不存在，不是参数格式错。
+		return "", coreerrs.New(coreerrs.CodeNotFound, "no enabled task for this account")
+	default:
+		return "", ErrTaskAmbiguous
+	}
 }
 
 // corescheduleTask 是 TaskRow 的别名：worker 只依赖这些字段。

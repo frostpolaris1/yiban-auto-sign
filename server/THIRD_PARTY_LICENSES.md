@@ -12,6 +12,7 @@
 | 模块/包 | 许可证 |
 |---|---|
 | github.com/apapsch/go-jsonmerge/v2 | MIT |
+| github.com/cenkalti/backoff/v5 | MIT |
 | github.com/gabriel-vasile/mimetype | MIT |
 | github.com/gin-contrib/sse | MIT |
 | github.com/gin-gonic/gin | MIT |
@@ -45,4 +46,4 @@
 | golang.org/x/time/rate | BSD-3-Clause |
 | google.golang.org/protobuf | BSD-3-Clause |
 
-共 33 个模块/包。
+共 34 个模块/包。

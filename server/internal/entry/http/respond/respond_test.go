@@ -66,25 +66,27 @@ func TestErrorValidation(t *testing.T) {
 // 422 是校验类语义（图片、定位），429 是限流与容量。
 func TestStatusForEveryCode(t *testing.T) {
 	want := map[errs.Code]int{
-		errs.CodeValidation:      http.StatusBadRequest,
-		errs.CodeUnauthorized:    http.StatusUnauthorized,
-		errs.CodeForbidden:       http.StatusForbidden,
-		errs.CodeNotFound:        http.StatusNotFound,
-		errs.CodeConflict:        http.StatusConflict,
-		errs.CodeAlreadySigned:   http.StatusConflict,
-		errs.CodeSignRunning:     http.StatusConflict,
-		errs.CodeWindowClosed:    http.StatusConflict,
-		errs.CodeRateLimited:     http.StatusTooManyRequests,
-		errs.CodeCapacity:        http.StatusTooManyRequests,
-		errs.CodePhotoMissing:    http.StatusUnprocessableEntity,
-		errs.CodePhotoInvalid:    http.StatusUnprocessableEntity,
-		errs.CodePhotoRejected:   http.StatusUnprocessableEntity,
-		errs.CodeLocationOutside: http.StatusUnprocessableEntity,
-		errs.CodeUpstream:        http.StatusBadGateway,
-		errs.CodeInternal:        http.StatusInternalServerError,
+		errs.CodeValidation:        http.StatusBadRequest,
+		errs.CodeUnauthorized:      http.StatusUnauthorized,
+		errs.CodeForbidden:         http.StatusForbidden,
+		errs.CodeNotFound:          http.StatusNotFound,
+		errs.CodeConflict:          http.StatusConflict,
+		errs.CodeAlreadySigned:     http.StatusConflict,
+		errs.CodeSignRunning:       http.StatusConflict,
+		errs.CodeWindowClosed:      http.StatusConflict,
+		errs.CodeCapacityShortfall: http.StatusConflict,
+		errs.CodeTaskAmbiguous:     http.StatusConflict,
+		errs.CodeRateLimited:       http.StatusTooManyRequests,
+		errs.CodeCapacity:          http.StatusTooManyRequests,
+		errs.CodePhotoMissing:      http.StatusUnprocessableEntity,
+		errs.CodePhotoInvalid:      http.StatusUnprocessableEntity,
+		errs.CodePhotoRejected:     http.StatusUnprocessableEntity,
+		errs.CodeLocationOutside:   http.StatusUnprocessableEntity,
+		errs.CodeUpstream:          http.StatusBadGateway,
+		errs.CodeInternal:          http.StatusInternalServerError,
 	}
-	if len(want) != 16 {
-		t.Fatalf("映射表录入 %d 个码，want 16", len(want))
+	if len(want) != 18 {
+		t.Fatalf("映射表录入 %d 个码，want 18", len(want))
 	}
 	for code, status := range want {
 		if got := statusFor(code); got != status {

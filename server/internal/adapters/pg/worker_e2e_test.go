@@ -1,11 +1,9 @@
 package pg_test
 
 import (
-	"errors"
 	"testing"
 	"time"
 
-	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
 )
@@ -122,32 +120,61 @@ func TestEnsureTaskIdempotent(t *testing.T) {
 	}
 }
 
-// TestTodayTaskPicksEnabled：账号学校的启用任务（停用的不选）。
-func TestTodayTaskPicksEnabled(t *testing.T) {
+// 手动签到的两个解析输入（C2）：
+// AccountEnabledTasks 只列启用任务；DayTasks 只列当日已有行的启用任务。
+func TestManualSignTaskResolution(t *testing.T) {
 	e := newEnv(t)
 	school := e.createSchool("wk-today")
-	if _, err := e.sched.CreateSchoolTask(e.ctx, school.ID, "A-停用"); err != nil {
+	disabled, err := e.sched.CreateSchoolTask(e.ctx, school.ID, "A-停用")
+	if err != nil {
 		t.Fatalf("task: %v", err)
-	}
-	if _, err := e.db.Exec(e.ctx, "UPDATE school_tasks SET enabled = false WHERE school_id = $1::uuid", school.ID); err != nil {
-		t.Fatalf("disable: %v", err)
 	}
 	enabled, err := e.sched.CreateSchoolTask(e.ctx, school.ID, "B-启用")
 	if err != nil {
 		t.Fatalf("task: %v", err)
 	}
-	acct := e.createAccount(school.ID, e.createUser("wk-today@example.com").ID, "13800020005")
-	e.activateAccount(acct.ID) // TodayTask 只认活跃账号
-	got, err := e.sched.TodayTask(e.ctx, acct.ID)
-	if err != nil || got != enabled {
-		t.Fatalf("TodayTask = (%s,%v), want %s", got, err, enabled)
+	if _, err := e.db.Exec(e.ctx, "UPDATE school_tasks SET enabled = false WHERE id = $1::uuid", disabled); err != nil {
+		t.Fatalf("disable: %v", err)
 	}
-	// 全部停用 → not_found。
+	acct := e.createAccount(school.ID, e.createUser("wk-today@example.com").ID, "13800020005")
+	e.activateAccount(acct.ID) // 解析只认活跃账号
+
+	got, err := e.sched.AccountEnabledTasks(e.ctx, acct.ID)
+	if err != nil || len(got) != 1 || got[0] != enabled {
+		t.Fatalf("AccountEnabledTasks = (%v,%v), want [%s]", got, err, enabled)
+	}
+
+	day := "2026-10-29"
+	at := time.Date(2026, 10, 29, 6, 40, 0, 0, time.UTC)
+	// 当日无行 → 空列表（由调用方退回启用任务清单）。
+	if got, err := e.sched.DayTasks(e.ctx, acct.ID, day); err != nil || len(got) != 0 {
+		t.Fatalf("无当日行应空列表, got (%v,%v)", got, err)
+	}
+
+	// 停用任务的行不进当日清单：它永远不会被认领。
+	// InsertPlan 只对启用任务插行，故直接写库造这一行。
+	if _, err := e.db.Exec(e.ctx, `
+		INSERT INTO sign_tasks (account_id, school_task_id, day, run_at)
+		VALUES ($1::uuid, $2::uuid, $3::date, $4::timestamptz)`,
+		acct.ID, disabled, day, at); err != nil {
+		t.Fatalf("insert disabled row: %v", err)
+	}
+	if _, err := e.sched.InsertPlan(e.ctx, []coreschedule.PlanRow{
+		{AccountID: acct.ID, SchoolTaskID: enabled, Day: day, RunAt: at},
+	}); err != nil {
+		t.Fatalf("insert plan: %v", err)
+	}
+	got, err = e.sched.DayTasks(e.ctx, acct.ID, day)
+	if err != nil || len(got) != 1 || got[0] != enabled {
+		t.Fatalf("DayTasks = (%v,%v), want [%s]（停用任务的行不计）", got, err, enabled)
+	}
+
+	// 全部停用 → 清单为空（调用方据此回 404）。
 	if _, err := e.db.Exec(e.ctx, "UPDATE school_tasks SET enabled = false WHERE school_id = $1::uuid", school.ID); err != nil {
 		t.Fatalf("disable all: %v", err)
 	}
-	if _, err := e.sched.TodayTask(e.ctx, acct.ID); !errors.Is(err, coreerrs.ErrNotFound) {
-		t.Fatalf("全停用应 not_found, got %v", err)
+	if got, err := e.sched.AccountEnabledTasks(e.ctx, acct.ID); err != nil || len(got) != 0 {
+		t.Fatalf("全停用应空列表, got (%v,%v)", got, err)
 	}
 }
 

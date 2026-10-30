@@ -302,7 +302,7 @@
     "group": [
       "执行体"
     ],
-    "doc": "并行执行体数上限（1=单执行体）",
+    "doc": "并行执行体数上限（1=单执行体）；Go 服务端同键用作认领批大小与计划容量通道数",
     "sensitive": false,
     "web_editable": true,
     "tier": "master",
@@ -470,7 +470,7 @@
     "group": [
       "执行体"
     ],
-    "doc": "每出口目标速率（次尝试/s；人工接管后 AIMD 不再改写）",
+    "doc": "每出口目标速率（次尝试/s；人工接管后 AIMD 不再改写）；Go 服务端同键既是计划容量上界也是执行面令牌桶速率",
     "sensitive": false,
     "web_editable": false,
     "tier": "master",

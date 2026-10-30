@@ -12,6 +12,7 @@ package worker_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
@@ -29,9 +30,14 @@ type recordedEvent struct {
 	payload  map[string]any
 }
 
-type recordingNotifier struct{ events []recordedEvent }
+type recordingNotifier struct {
+	mu     sync.Mutex
+	events []recordedEvent
+}
 
 func (n *recordingNotifier) TaskEvent(_ context.Context, schoolID, taskID, day, kind string, payload map[string]any) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 	n.events = append(n.events, recordedEvent{schoolID, taskID, day, kind, payload})
 }
 
@@ -154,7 +160,8 @@ func TestNotifierPanicDoesNotBreakSettlement(t *testing.T) {
 	}
 }
 
-// 基础设施失败整批退回时，成功行发 concluded、退回行发 progress。
+// 基础设施失败退回时，成功行发 concluded、退回行发 progress。
+// 批内并行，事件顺序不固定：只断言两种事件各一条（不测编舞）。
 func TestProgressPublishedForBatchRelease(t *testing.T) {
 	t1 := baseTask()
 	t2 := baseTask()
@@ -173,7 +180,11 @@ func TestProgressPublishedForBatchRelease(t *testing.T) {
 	if len(n.events) != 2 {
 		t.Fatalf("事件数 = %d, want 2", len(n.events))
 	}
-	if n.events[0].kind != appevents.TypeTaskConcluded || n.events[1].kind != appevents.TypeTaskProgress {
-		t.Fatalf("事件序 = %s,%s", n.events[0].kind, n.events[1].kind)
+	kinds := map[string]int{}
+	for _, e := range n.events {
+		kinds[e.kind]++
+	}
+	if kinds[appevents.TypeTaskConcluded] != 1 || kinds[appevents.TypeTaskProgress] != 1 {
+		t.Fatalf("事件计数 = %v, want concluded 与 progress 各一条", kinds)
 	}
 }

@@ -54,7 +54,8 @@ type Verifier interface {
 // ManualSigner 是手动签到的入队接缝（实现为 app/worker.Service）。
 type ManualSigner interface {
 	// Request 确保当日任务行存在并返回任务 ID。
-	Request(ctx context.Context, accountID string) (string, error)
+	// actor 是发起请求的会话主体：重开 failed/skipped 行要写审计。
+	Request(ctx context.Context, accountID string, actor appaudit.Actor) (string, error)
 }
 
 // AccountAccess 按作用域读账号：跨校、跨用户与已软删都返回 404。
@@ -93,11 +94,12 @@ func (h *Handler) WithAccess(a AccountAccess) *Handler {
 
 // Sign 实现 POST /api/accounts/:id/sign。
 //
-// 成功是 202（已入队，不是已完成）。三类冲突由 worker 的错误码经
-// respond 映射成 409：already_signed / sign_running / window_closed。
-// 三种角色都可发起，但账号必须在其可见面内：跨校或非本人一律 404。
+// 成功是 202（已入队，不是已完成）。冲突由 worker 的错误码经
+// respond 映射成 409：already_signed / sign_running / window_closed /
+// task_ambiguous。三种角色都可发起，但账号必须在其可见面内：
+// 跨校或非本人一律 404。
 func (h *Handler) Sign(c *gin.Context, id oapi.AccountID, _ oapi.AccountSignParams) {
-	scope, ok := h.principal(c)
+	scope, actor, ok := h.principal(c)
 	if !ok {
 		return
 	}
@@ -115,7 +117,7 @@ func (h *Handler) Sign(c *gin.Context, id oapi.AccountID, _ oapi.AccountSignPara
 		fail(c, err)
 		return
 	}
-	taskID, err := h.manual.Request(c.Request.Context(), string(id))
+	taskID, err := h.manual.Request(c.Request.Context(), string(id), actor)
 	if err != nil {
 		fail(c, err)
 		return
@@ -125,7 +127,7 @@ func (h *Handler) Sign(c *gin.Context, id oapi.AccountID, _ oapi.AccountSignPara
 
 // Verify 实现 POST /api/accounts/:id/verify。
 func (h *Handler) Verify(c *gin.Context, id oapi.AccountID, _ oapi.AccountVerifyParams) {
-	scope, ok := h.principal(c)
+	scope, _, ok := h.principal(c)
 	if !ok {
 		return
 	}
@@ -202,18 +204,19 @@ func messagePtr(s string) *string {
 	return &s
 }
 
-func (h *Handler) principal(c *gin.Context) (corescope.Scope, bool) {
+// principal 返回作用域与审计主体。审计主体供手动签到的重开审计使用。
+func (h *Handler) principal(c *gin.Context) (corescope.Scope, appaudit.Actor, bool) {
 	session, ok := coreauth.FromContext(c.Request.Context())
 	if !ok {
 		fail(c, errs.New(errs.CodeUnauthorized, "authentication required"))
-		return corescope.Scope{}, false
+		return corescope.Scope{}, appaudit.Actor{}, false
 	}
-	scope, _, err := h.authz.Authorize(c.Request.Context(), session.User)
+	scope, actor, err := h.authz.Authorize(c.Request.Context(), session.User)
 	if err != nil {
 		fail(c, err)
-		return corescope.Scope{}, false
+		return corescope.Scope{}, appaudit.Actor{}, false
 	}
-	return scope, true
+	return scope, actor, true
 }
 
 func fail(c *gin.Context, err error) {

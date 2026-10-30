@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"time"
 
+	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	coreegress "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/egress"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
@@ -48,8 +49,9 @@ type Store interface {
 	RequeueWait(ctx context.Context, taskID string, runAt time.Time, result string, claimSeq int) error
 	// RequeueRetry 是业务失败后的退避：计一次尝试数。
 	RequeueRetry(ctx context.Context, taskID string, runAt time.Time, result string, claimSeq int) error
-	// Rearm 把当日 failed 行放回队列（手动签到的重试入口）。
-	Rearm(ctx context.Context, taskID string, runAt time.Time) error
+	// Rearm 把当日 failed 或 skipped 行放回队列（手动签到的重试入口）。
+	// 同一事务里写 task.rearm 审计；actor 是发起手动签到的会话主体。
+	Rearm(ctx context.Context, taskID string, runAt time.Time, actor appaudit.Actor) error
 	// ResetRunning 回收无租约或租约已过期的 running 行（启动时调用）。
 	// 仓储带 advisory lock：多实例同时启动时只有一个执行。
 	ResetRunning(ctx context.Context) (int64, error)
@@ -59,8 +61,12 @@ type Store interface {
 	GetWindow(ctx context.Context, schoolTaskID, day string) (coreschedule.WindowRecord, error)
 	// EnsureTask 为手动签到建或取当日任务行；created 表示本次插入。
 	EnsureTask(ctx context.Context, accountID, schoolTaskID, day string, runAt time.Time) (coreschedule.TaskRow, bool, error)
-	// TodayTask 返回账号所属学校今天启用的第一个任务。
-	TodayTask(ctx context.Context, accountID string) (string, error)
+	// DayTasks 返回账号当日已有 sign_tasks 行的启用任务 ID。
+	// 只算启用任务：停用任务的行永远不会被认领。
+	DayTasks(ctx context.Context, accountID, day string) ([]string, error)
+	// EnabledTasks 返回账号所属学校的全部启用任务 ID。
+	// 账号不可用（停用、软删、不存在）返回 errs.ErrNotFound。
+	AccountEnabledTasks(ctx context.Context, accountID string) ([]string, error)
 }
 
 // Credentials 取一次调用内有效的账号凭据。

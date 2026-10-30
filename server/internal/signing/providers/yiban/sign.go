@@ -39,12 +39,13 @@ func (c *Client) SignPosition(ctx context.Context, accountID string, cred contra
 		if err != nil {
 			return err
 		}
+		// WAF 判定先于状态码：拦截页可能带 4xx，按状态归 transient 只会重发同一请求。
+		if wafBlocked(string(body)) {
+			return blockedOutcome(string(body))
+		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return outcome(contract.OutcomeTransient,
 				fmt.Sprintf("signPosition status %d", resp.StatusCode))
-		}
-		if protocol.LooksLikeChallenge(string(body)) {
-			return outcome(contract.OutcomeChallenge, "challenge page")
 		}
 		envelope, err := protocol.ParseAPIEnvelope(body)
 		if err != nil {
@@ -86,12 +87,12 @@ func (c *Client) DeviceState(ctx context.Context, accountID string, cred contrac
 		if err != nil {
 			return err
 		}
+		if wafBlocked(string(body)) {
+			return blockedOutcome(string(body))
+		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return outcome(contract.OutcomeTransient,
 				fmt.Sprintf("device status %d", resp.StatusCode))
-		}
-		if protocol.LooksLikeChallenge(string(body)) {
-			return outcome(contract.OutcomeChallenge, "challenge page")
 		}
 		envelope, err := protocol.ParseAPIEnvelope(body)
 		if err != nil {
@@ -128,12 +129,12 @@ func (c *Client) SubmitSignIn(ctx context.Context, accountID string, cred contra
 		if err != nil {
 			return err
 		}
+		if wafBlocked(string(data)) {
+			return blockedOutcome(string(data))
+		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return outcome(contract.OutcomeTransient,
 				fmt.Sprintf("signIn status %d", resp.StatusCode))
-		}
-		if protocol.LooksLikeChallenge(string(data)) {
-			return outcome(contract.OutcomeChallenge, "challenge page")
 		}
 		parsed, err := protocol.ParseAPIEnvelope(data)
 		if err != nil {

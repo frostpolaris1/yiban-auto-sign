@@ -282,11 +282,11 @@ func TestSignMissingImageIgnoredWhenNotRequired(t *testing.T) {
 	}
 }
 
-// 结果词表必须覆盖契约全部 13 项，且 Advice 与契约表一致。
+// 结果词表必须覆盖契约全部 14 项，且 Advice 与契约表一致。
 func TestOutcomeTablesFollowContract(t *testing.T) {
 	all := AllOutcomes()
-	if len(all) != 13 {
-		t.Fatalf("AllOutcomes 有 %d 项, want 13", len(all))
+	if len(all) != 14 {
+		t.Fatalf("AllOutcomes 有 %d 项, want 14", len(all))
 	}
 	seen := make(map[contract.Outcome]bool, len(all))
 	for _, o := range all {

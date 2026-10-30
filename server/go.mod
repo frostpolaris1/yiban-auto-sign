@@ -3,6 +3,7 @@ module github.com/frostpolaris1/yiban-auto-sign/server
 go 1.27.2
 
 require (
+	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/gin-gonic/gin v1.12.0
 	github.com/goccy/go-yaml v1.19.2
 	github.com/google/uuid v1.6.0

@@ -540,22 +540,21 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		// 排期仓储同时是 worker 的 Store：凭据错结算要写账号状态与引擎审计，
 		// 故注入审计仓储。缺它时结算报错（不静默跳过审计）。
 		scheduleRepo := pg.NewScheduleRepoWithAudit(db, audits).WithLease(cfg.TaskLease)
-		workerSvc, err = appworker.NewService(appworker.Deps{
-			Store:    scheduleRepo,
-			Creds:    workerCredentials{svc: accountSvc},
-			Signer:   provider,
-			Egress:   egressSvc,
-			Limiter:  corerate.NewLimiter(corerate.DefaultRate, 6),
-			Clock:    clk,
-			Location: loc,
+		workerSvc, err = appworker.NewService(buildWorkerDeps(cfg, workerDeps{
+			store:    scheduleRepo,
+			creds:    workerCredentials{svc: accountSvc},
+			signer:   provider,
+			egress:   egressSvc,
+			clock:    clk,
+			location: loc,
 			// P5-C 注入面：定位策略与选图。缺端口时对应面退回现行为。
-			Locations: locationSvc,
-			Photos:    photoSvc,
+			locations: locationSvc,
+			photos:    photoSvc,
 			// P6 注入面：任务事件发布。缺端口时不发事件。
-			Notifier: WorkerNotifier{Broker: broker, Clock: clk},
+			notifier: WorkerNotifier{Broker: broker, Clock: clk},
 			// 结论原因进日志（OCR M1）。
-			Logger: logger,
-		})
+			logger: logger,
+		}))
 		if err != nil {
 			closeFn()
 			return nil, fmt.Errorf("assembly: worker service: %w", err)
@@ -716,6 +715,51 @@ func buildRateLimit(cfg *config.Config) (*ratelimit.Guard, error) {
 		return nil, fmt.Errorf("assembly: account rate limit: %w", err)
 	}
 	return &ratelimit.Guard{IP: ip, Account: account, Trusted: trusted}, nil
+}
+
+// egressBurst 是每出口令牌桶的突发深度（账号尝试数）。
+// 它只吸收短时抖动，不改长期速率：长期速率由 YIBAN_EGRESS_RATE 决定。
+const egressBurst = 6
+
+// workerDeps 是执行循环除限速器之外的依赖。
+// 单列出来是为了让 buildWorkerDeps 可以脱离装配被测试：
+// 限速器的速率必须与计划容量公式同源，判据要咬住接线那一行。
+type workerDeps struct {
+	store     appworker.Store
+	creds     appworker.Credentials
+	signer    appworker.Signer
+	egress    appworker.Egress
+	clock     clock.Clock
+	location  *time.Location
+	locations appworker.LocationSource
+	photos    appworker.PhotoSource
+	notifier  appworker.Notifier
+	logger    *slog.Logger
+}
+
+// buildWorkerDeps 装配执行循环的依赖，限速器由 buildEgressGate 派生。
+//
+// 速率必须与计划容量公式取**同一字段**：两处不同源时，缺口门会用
+// 调大的 YIBAN_EGRESS_RATE 放行一份执行面跑不完的计划（OCR C2 P1）。
+func buildWorkerDeps(cfg *config.Config, d workerDeps) appworker.Deps {
+	return appworker.Deps{
+		Store:     d.store,
+		Creds:     d.creds,
+		Signer:    d.signer,
+		Egress:    d.egress,
+		Limiter:   buildEgressGate(cfg),
+		Clock:     d.clock,
+		Location:  d.location,
+		Locations: d.locations,
+		Photos:    d.photos,
+		Notifier:  d.notifier,
+		Logger:    d.logger,
+	}
+}
+
+// buildEgressGate 构造执行面的每出口限速器。
+func buildEgressGate(cfg *config.Config) *corerate.Limiter {
+	return corerate.NewLimiter(cfg.EgressRate, egressBurst)
 }
 
 // DeriveAuditKey 从服务器 pepper 派生审计链密钥。

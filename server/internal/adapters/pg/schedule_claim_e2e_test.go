@@ -7,6 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
+	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
+	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
+	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
 )
@@ -73,6 +77,7 @@ func TestClaimDueClaimsOnlyPendingRows(t *testing.T) {
 //
 // failed 行重新入队：state 回 pending、result 清空、claimed_at 清空、落点更新。
 // attempts **保留**：重排不退还当日已消耗的预算。
+// 同一事务里写 task.rearm 审计，主体取传入的会话主体。
 //
 // 删掉清空 result 的赋值时旧结论残留——本用例红。
 // 删掉清空 claimed_at 的赋值时旧认领时刻残留——本用例红。
@@ -99,7 +104,15 @@ func TestRearmClearsResultAndKeepsAttempts(t *testing.T) {
 	}
 
 	newAt := oldAt.Add(90 * time.Minute)
-	if err := e.sched.Rearm(e.ctx, rowID, newAt); err != nil {
+	// actor_user_id 是 uuid 列：主体必须取真用户 id。
+	// label 已是掩码形状（库有 ck_audit_actor_masked）。
+	actor := coreaudit.Actor{
+		UserID: e.createUser("rearm-actor@example.com").ID,
+		Role:   coreauth.RoleUser, Label: "r***@example.test",
+	}
+	// 重开要写审计，故用带审计仓储的实例（e.sched 无审计，专用于拒绝路径）。
+	repo := pg.NewScheduleRepoWithAudit(e.db, e.audits)
+	if err := repo.Rearm(e.ctx, rowID, newAt, actor); err != nil {
 		t.Fatalf("rearm: %v", err)
 	}
 
@@ -117,6 +130,90 @@ func TestRearmClearsResultAndKeepsAttempts(t *testing.T) {
 	}
 	if got := e.scalarInt("SELECT (run_at = $2::timestamptz)::int FROM sign_tasks WHERE id = $1::uuid", rowID, newAt); got != 1 {
 		t.Fatalf("run_at was not moved by rearm")
+	}
+	if got := e.scalarInt(
+		"SELECT count(*) FROM audit_logs WHERE action = 'task.rearm' AND target_id = $1", rowID); got != 1 {
+		t.Fatalf("task.rearm 审计 = %d, want 1", got)
+	}
+	if got := e.scalarString(
+		"SELECT actor_user_id::text FROM audit_logs WHERE action = 'task.rearm' AND target_id = $1", rowID); got != actor.UserID {
+		t.Fatalf("task.rearm 主体 = %q, want %q", got, actor.UserID)
+	}
+}
+
+// skipped 行可重开（C2 验收③）：skip 是"当日不再动"，不是"用户不能改主意"。
+// 重开同样写审计，来源状态进 detail。
+func TestRearmAcceptsSkippedRow(t *testing.T) {
+	e := newEnv(t)
+	_, taskID, accountID := e.seedTask(
+		"rearm-skip", "晨间签到", "rearm-skip@example.com", "13800044444")
+	day := "2026-10-29"
+	runAt := time.Date(2026, 10, 29, 6, 40, 0, 0, time.UTC)
+	if _, err := e.sched.InsertPlan(e.ctx, []coreschedule.PlanRow{
+		{AccountID: accountID, SchoolTaskID: taskID, Day: day, RunAt: runAt},
+	}); err != nil {
+		t.Fatalf("insert plan: %v", err)
+	}
+	if _, err := e.db.Exec(e.ctx, `
+		UPDATE sign_tasks SET state = $4, result = 'photo_missing'
+		 WHERE account_id = $1::uuid AND school_task_id = $2::uuid AND day = $3`,
+		accountID, taskID, day, string(corestatus.TaskSkipped)); err != nil {
+		t.Fatalf("seed the skipped row: %v", err)
+	}
+	rowID := e.taskRowID(accountID, taskID, day)
+
+	repo := pg.NewScheduleRepoWithAudit(e.db, e.audits)
+	actor := coreaudit.Actor{
+		UserID: e.createUser("rearm-skip-actor@example.com").ID,
+		Role:   coreauth.RoleUser, Label: "s***@example.test",
+	}
+	if err := repo.Rearm(e.ctx, rowID, runAt.Add(time.Minute), actor); err != nil {
+		t.Fatalf("rearm skipped: %v", err)
+	}
+	if got := e.taskState(rowID); got != string(corestatus.TaskPending) {
+		t.Fatalf("state after rearm is %q; want pending", got)
+	}
+	if got := e.scalarString(
+		"SELECT detail FROM audit_logs WHERE action = 'task.rearm' AND target_id = $1", rowID); got != `{"from":"skipped"}` {
+		t.Fatalf("task.rearm detail = %q, want 来源状态", got)
+	}
+}
+
+// 已成功的行不可重开：重开会把已完成的签到再排一次。
+func TestRearmRejectsConcludedRow(t *testing.T) {
+	e := newEnv(t)
+	_, taskID, accountID := e.seedTask(
+		"rearm-done", "晨间签到", "rearm-done@example.com", "13800040001")
+	day := "2026-10-29"
+	runAt := time.Date(2026, 10, 29, 6, 40, 0, 0, time.UTC)
+	if _, err := e.sched.InsertPlan(e.ctx, []coreschedule.PlanRow{
+		{AccountID: accountID, SchoolTaskID: taskID, Day: day, RunAt: runAt},
+	}); err != nil {
+		t.Fatalf("insert plan: %v", err)
+	}
+	if _, err := e.db.Exec(e.ctx, `
+		UPDATE sign_tasks SET state = $4, result = 'success'
+		 WHERE account_id = $1::uuid AND school_task_id = $2::uuid AND day = $3`,
+		accountID, taskID, day, string(corestatus.TaskSuccess)); err != nil {
+		t.Fatalf("seed the success row: %v", err)
+	}
+	rowID := e.taskRowID(accountID, taskID, day)
+
+	repo := pg.NewScheduleRepoWithAudit(e.db, e.audits)
+	actor := coreaudit.Actor{
+		UserID: e.createUser("rearm-done-actor@example.com").ID,
+		Role:   coreauth.RoleUser, Label: "d***@example.test",
+	}
+	err := repo.Rearm(e.ctx, rowID, runAt, actor)
+	if code := coreerrs.From(err).Code; code != coreerrs.CodeConflict {
+		t.Fatalf("rearm success row error = %v, want conflict", err)
+	}
+	if got := e.taskState(rowID); got != string(corestatus.TaskSuccess) {
+		t.Fatalf("state = %q; success must not move", got)
+	}
+	if got := e.scalarInt(
+		"SELECT count(*) FROM audit_logs WHERE action = 'task.rearm' AND target_id = $1", rowID); got != 0 {
+		t.Fatalf("失败的重开不得留审计, got %d", got)
 	}
 }
 

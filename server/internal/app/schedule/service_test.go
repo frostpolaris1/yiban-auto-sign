@@ -351,6 +351,38 @@ func TestWindowSourcePrecedence(t *testing.T) {
 	}
 }
 
+// 容量缺口拒建：409 capacity_shortfall，计划与窗口缓存都不落库（C2 验收②）。
+// 预览仍如实上报缺口：管理员先看预览，再决定加并发还是减账号。
+func TestBuildRejectsCapacityShortfall(t *testing.T) {
+	ids := make([]string, 100)
+	for i := range ids {
+		ids[i] = "acct-" + string(rune('a'+i%26)) + string(rune('0'+i/26))
+	}
+	ws := &fakeWindowStore{task: enabledTask()}
+	ps := &fakePlanStore{}
+	svc := newService(t, ws, ps, fakeAccounts{ids: ids},
+		&fakeDiscover{window: platformWindow(6, 30, 7, 50)})
+	in := baseInput()
+	in.Workers = 1
+	in.Avg = 60 * time.Second
+	in.Rate = 1.0
+
+	if _, err := svc.Build(context.Background(), in); err == nil {
+		t.Fatal("缺口计划应被拒")
+	} else if code := coreerrs.From(err).Code; code != coreerrs.CodeCapacityShortfall {
+		t.Fatalf("错误码 = %q, want capacity_shortfall", code)
+	} else if details := coreerrs.From(err).Details; details["demand"] != 100 ||
+		details["capacity"] == nil || details["shortfall"] == nil {
+		t.Fatalf("details = %v, want 需求/容量/缺口三个数", details)
+	}
+	if len(ps.inserted) != 0 {
+		t.Fatalf("缺口计划不得落库, inserted = %d 批", len(ps.inserted))
+	}
+	if ws.saves != 0 {
+		t.Fatalf("缺口不得写窗口缓存, saves = %d", ws.saves)
+	}
+}
+
 // 容量缺口如实上报；超容量的行仍在窗内（顺延不丢号）。
 func TestCapacityShortfallReported(t *testing.T) {
 	ids := make([]string, 100)

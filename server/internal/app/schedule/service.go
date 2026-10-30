@@ -23,6 +23,7 @@ package schedule
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -192,8 +193,9 @@ func (s *Service) storeFresh(ctx context.Context, res windowResolution) (int, er
 // Build 构建计划并落库：窗口变化时同事务内写窗口、重排 pending、补插。
 // 版本竞争（ErrWindowStale）时整体重试一次；仍失败即上抛。
 // 事务由本方法自开：入口层不得再包一层事务（提交时点会随之改变）。
-// 成功且窗口真实变化后发 window.changed；Shortfall>0 发 capacity.changed
-// （无历史值可比，取「有缺口即发」的保守口径，见 publishCapacity）。
+// 成功且窗口真实变化后发 window.changed。
+// 容量缺口拒建（C2）：回 409 capacity_shortfall，**一行都不落库**，
+// 并先发 capacity.changed 让订阅方看到缺口数（见 publishCapacity）。
 // 停用任务拒建计划（k0y-6）：回 conflict，且在发现平台窗口之前拒绝。
 func (s *Service) Build(ctx context.Context, in Input) (Preview, error) {
 	if err := validateInput(in); err != nil {
@@ -208,10 +210,11 @@ func (s *Service) Build(ctx context.Context, in Input) (Preview, error) {
 		p, changed, err = s.buildOnce(ctx, in)
 	}
 	if err != nil {
+		// 缺口路径带回已算好的 Preview；其余错误是零值，事件自然不发。
+		s.publishCapacity(ctx, in, p)
 		return Preview{}, err
 	}
 	s.publishWindow(ctx, in, p, changed)
-	s.publishCapacity(ctx, in, p)
 	return p, nil
 }
 
@@ -440,12 +443,17 @@ func scopeAllowsSchool(scope corescope.Scope, schoolID string) bool {
 	return false
 }
 
-// buildOnce 是一次完整尝试：预览 → 同事务写入。
+// buildOnce 是一次完整尝试：预览 → 容量门 → 同事务写入。
 // 返回值带 changed：窗口是否真实重写（发布判据用）。
+// 容量缺口在写库之前拒绝：Preview 原样带回，供调用方报缺口数。
 func (s *Service) buildOnce(ctx context.Context, in Input) (Preview, bool, error) {
 	p, res, err := s.previewWithWindow(ctx, in, policyLive)
 	if err != nil {
 		return Preview{}, false, err
+	}
+	if p.Shortfall > 0 {
+		// 超卖计划不落库：尾段账号必然落空，还让管理员以为已排好。
+		return p, false, shortfallError(p)
 	}
 	changed := res.changed()
 	rows := planRows(in, p.Rows)
@@ -467,6 +475,20 @@ func (s *Service) buildOnce(ctx context.Context, in Input) (Preview, bool, error
 		return Preview{}, false, err
 	}
 	return p, changed, nil
+}
+
+// shortfallError 把容量缺口翻成 409 capacity_shortfall。
+// details 带需求、容量与缺口三个数：调用方不必重算，
+// 也不必从 message 里抠数字。
+func shortfallError(p Preview) error {
+	err := coreerrs.New(coreerrs.CodeCapacityShortfall,
+		fmt.Sprintf("容量不足：需求 %d，容量 %d", p.Demand, p.Capacity))
+	err.Details = map[string]any{
+		"demand":    p.Demand,
+		"capacity":  p.Capacity,
+		"shortfall": p.Shortfall,
+	}
+	return err
 }
 
 // publishWindow 在窗口真实变化后发 window.changed。

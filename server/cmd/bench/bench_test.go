@@ -84,9 +84,18 @@ func TestSmokeSingleSchool(t *testing.T) {
 	if res.BuildSeconds <= 0 || res.BuildSeconds > buildCapSeconds(300).Seconds() {
 		t.Fatalf("build seconds = %v, want (0, %v]", res.BuildSeconds, buildCapSeconds(300))
 	}
-	if res.SSESubscribers <= 0 || res.SSESubSeconds <= 0 || res.SSEFanoutSeconds <= 0 {
-		t.Fatalf("sse metrics must be non-zero, got subs=%d sub=%v fanout=%v",
-			res.SSESubscribers, res.SSESubSeconds, res.SSEFanoutSeconds)
+	if res.SSESubscribers <= 0 || res.SSESubSeconds <= 0 {
+		t.Fatalf("sse metrics must be non-zero, got subs=%d sub=%v",
+			res.SSESubscribers, res.SSESubSeconds)
+	}
+	// fanout 是一次 1000 订阅者的内存发布，耗时小于本机时钟粒度，
+	// 故经常测出 0 秒（2026-10-31 本机实测：最小非零间隔 543µs，
+	// 连续两次 time.Now() 约 20 万对里有 199999 对相同；1000 通道扇出 20/20 次测出 0）。
+	// 零不是"没跑到"——runSSE 逐个等订阅者收到，超时直接报错。
+	// 判据保留上界：真的卡住会超过订阅超时（工单 5l1）。
+	if res.SSEFanoutSeconds >= sseTimeout.Seconds() {
+		t.Fatalf("sse fanout seconds = %v, must stay below the subscriber timeout %v",
+			res.SSEFanoutSeconds, sseTimeout)
 	}
 	assertMemoryCap(t, res)
 	assertFormat(t, res)

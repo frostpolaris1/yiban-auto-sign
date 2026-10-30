@@ -6,9 +6,11 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	coreegress "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/egress"
@@ -30,13 +32,21 @@ type fakeStore struct {
 	windowErrFor map[string]error
 	// finishErr 注入结算失败（验证"已提交行不退回"）。
 	finishErr error
-	todayTask string
+	// dayTasks / enabledTasks 是手动签到的两个解析输入。
+	dayTasks     []string
+	enabledTasks []string
+
+	// mu 保护下面全部字段：Step 批内并行，多个执行协程同时读写替身状态。
+	// 断言在 Step 返回后读取，那时已无并发写者。
+	mu sync.Mutex
 
 	// 观测面
 	claimed      []string
 	finished     map[string]corestatus.TaskState
 	results      map[string]string
 	requeued     map[string]time.Time // 最近一次重排落点（含等待型）
+	rearmed      map[string]string    // 重开行 → 来源状态
+	rearmActor   map[string]appaudit.Actor
 	resets       int64
 	reclaimCalls int
 }
@@ -49,10 +59,14 @@ func newStore(tasks ...coreschedule.TaskRow) *fakeStore {
 		finished:     map[string]corestatus.TaskState{},
 		results:      map[string]string{},
 		requeued:     map[string]time.Time{},
+		rearmed:      map[string]string{},
+		rearmActor:   map[string]appaudit.Actor{},
 	}
 }
 
 func (f *fakeStore) ClaimDue(_ context.Context, now time.Time, limit int) ([]coreschedule.TaskRow, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	// 同账号串行：已有 running 的账号本次不领。
 	runningAccount := map[string]bool{}
 	for _, t := range f.tasks {
@@ -82,6 +96,8 @@ func (f *fakeStore) ClaimDue(_ context.Context, now time.Time, limit int) ([]cor
 }
 
 func (f *fakeStore) Finish(_ context.Context, accountID, schoolTaskID, day string, state corestatus.TaskState, result string, claimSeq int, _ time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.finishErr != nil {
 		return f.finishErr
 	}
@@ -104,6 +120,8 @@ func (f *fakeStore) Finish(_ context.Context, accountID, schoolTaskID, day strin
 // FinishCredentialInvalid 按库语义落 failed(credential_invalid)。
 // 账号状态是存储层副作用，由 pg e2e 钉住，本 fake 不复制。
 func (f *fakeStore) FinishCredentialInvalid(_ context.Context, _ /*schoolID*/, accountID, schoolTaskID, day string, claimSeq int, _ time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.finishErr != nil {
 		return f.finishErr
 	}
@@ -125,6 +143,8 @@ func (f *fakeStore) FinishCredentialInvalid(_ context.Context, _ /*schoolID*/, a
 
 // requeue 是两种重排的公共实现；bumpAttempts 区分"等待"与"业务重试"。
 func (f *fakeStore) requeue(taskID string, runAt time.Time, result string, bumpAttempts bool, claimSeq int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for i := range f.tasks {
 		t := &f.tasks[i]
 		if t.ID == taskID && t.State == string(corestatus.TaskRunning) && t.ClaimSeq == claimSeq {
@@ -149,24 +169,37 @@ func (f *fakeStore) RequeueRetry(_ context.Context, taskID string, runAt time.Ti
 	return f.requeue(taskID, runAt, result, true, claimSeq)
 }
 
-func (f *fakeStore) Rearm(_ context.Context, taskID string, runAt time.Time) error {
+// Rearm 按库语义：failed 与 skipped 都可重开，尝试数**保留**（重开不退预算）。
+// 状态不符时回 conflict（库层是 CAS 未命中）。
+func (f *fakeStore) Rearm(_ context.Context, taskID string, runAt time.Time, actor appaudit.Actor) error {
 	for i := range f.tasks {
 		t := &f.tasks[i]
-		if t.ID == taskID && t.State == string(corestatus.TaskFailed) {
-			t.State = string(corestatus.TaskPending)
-			t.RunAt = runAt
-			return nil
+		if t.ID != taskID {
+			continue
 		}
+		state := corestatus.TaskState(t.State)
+		if state != corestatus.TaskFailed && state != corestatus.TaskSkipped {
+			break
+		}
+		f.rearmed[taskID] = t.State
+		f.rearmActor[taskID] = actor
+		t.State = string(corestatus.TaskPending)
+		t.RunAt = runAt
+		return nil
 	}
-	return coreerrs.ErrNotFound
+	return coreerrs.New(coreerrs.CodeConflict, "sign task already moved")
 }
 
 func (f *fakeStore) ReclaimExpired(context.Context, time.Time, int) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.reclaimCalls++
 	return 0, nil
 }
 
 func (f *fakeStore) ResetRunning(context.Context) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	var n int64
 	for i := range f.tasks {
 		if f.tasks[i].State == string(corestatus.TaskRunning) {
@@ -179,6 +212,8 @@ func (f *fakeStore) ResetRunning(context.Context) (int64, error) {
 }
 
 func (f *fakeStore) CountRunning(context.Context) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	var n int64
 	for i := range f.tasks {
 		if f.tasks[i].State == string(corestatus.TaskRunning) {
@@ -189,6 +224,8 @@ func (f *fakeStore) CountRunning(context.Context) (int64, error) {
 }
 
 func (f *fakeStore) GetWindow(_ context.Context, schoolTaskID, day string) (coreschedule.WindowRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if err := f.windowErrFor[schoolTaskID]; err != nil {
 		return coreschedule.WindowRecord{}, err
 	}
@@ -200,6 +237,8 @@ func (f *fakeStore) GetWindow(_ context.Context, schoolTaskID, day string) (core
 }
 
 func (f *fakeStore) EnsureTask(_ context.Context, accountID, schoolTaskID, day string, runAt time.Time) (coreschedule.TaskRow, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for _, t := range f.tasks {
 		if t.AccountID == accountID && t.SchoolTaskID == schoolTaskID && t.Day == day {
 			return t, false, nil
@@ -213,11 +252,18 @@ func (f *fakeStore) EnsureTask(_ context.Context, accountID, schoolTaskID, day s
 	return t, true, nil
 }
 
-func (f *fakeStore) TodayTask(context.Context, string) (string, error) {
-	if f.todayTask == "" {
-		return "", coreerrs.ErrNotFound
-	}
-	return f.todayTask, nil
+// DayTasks 与 AccountEnabledTasks 是手动签到的解析输入。
+// 零行返回空列表：清单类查询的空结果不是错误。
+func (f *fakeStore) DayTasks(context.Context, string, string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.dayTasks, nil
+}
+
+func (f *fakeStore) AccountEnabledTasks(context.Context, string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.enabledTasks, nil
 }
 
 type fakeCreds struct{ err error }
@@ -230,6 +276,7 @@ func (f fakeCreds) Credential(context.Context, string) (contract.Credential, err
 }
 
 type fakeSigner struct {
+	mu      sync.Mutex
 	targets []contract.Target
 	outcome contract.Outcome
 	err     error
@@ -238,9 +285,15 @@ type fakeSigner struct {
 	attemptIDs []string
 	// requests 记录每次提交的完整请求：P5-C 断言 Location 与 Image。
 	requests []contract.SignRequest
+	// entered / release 是并发判据的闸门：Sign 到达即通知并等待放行。
+	// **在取得 mu 之前等待**：持锁等待会让第二个协程进不来，测的是自己。
+	entered chan<- struct{}
+	release <-chan struct{}
 }
 
 func (f *fakeSigner) DiscoverTargets(context.Context, contract.DiscoverRequest) ([]contract.Target, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -248,6 +301,12 @@ func (f *fakeSigner) DiscoverTargets(context.Context, contract.DiscoverRequest) 
 }
 
 func (f *fakeSigner) Sign(_ context.Context, req contract.SignRequest) (contract.Result, error) {
+	if f.entered != nil {
+		f.entered <- struct{}{}
+		<-f.release
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.signs++
 	f.attemptIDs = append(f.attemptIDs, req.AttemptID)
 	f.requests = append(f.requests, req)
@@ -373,7 +432,7 @@ func TestStepSuccess(t *testing.T) {
 // 发现阶段返回业务结论（OutcomeError）时必须按结论分档，不得当 transient
 // 重试（P4-E 审查 P1-1）。逐词断言：already_done→success、no_target/
 // invalid_target/photo_missing/challenge/device_unbound→skipped、
-// credential_invalid→failed，且各只发生一次、不重排。
+// blocked/credential_invalid→failed，且各只发生一次、不重排。
 func TestDiscoverOutcomeErrorSettlesByVocabulary(t *testing.T) {
 	cases := []struct {
 		outcome contract.Outcome
@@ -384,6 +443,7 @@ func TestDiscoverOutcomeErrorSettlesByVocabulary(t *testing.T) {
 		{contract.OutcomeInvalidTarget, corestatus.TaskSkipped},
 		{contract.OutcomePhotoMissing, corestatus.TaskSkipped},
 		{contract.OutcomeChallenge, corestatus.TaskSkipped},
+		{contract.OutcomeBlocked, corestatus.TaskFailed},
 		{contract.OutcomeDeviceUnbound, corestatus.TaskSkipped},
 		{contract.OutcomeCredentialBad, corestatus.TaskFailed},
 	}
@@ -657,12 +717,13 @@ func TestCredentialBusinessErrorFails(t *testing.T) {
 	}
 }
 
-// 手动签到：关窗/已了结/执行中/正常入队/无任务/失败重排。
+// 手动签到：关窗/已了结/执行中/正常入队/无任务/重开。
 func TestRequestManualSign(t *testing.T) {
 	ctx := context.Background()
+	actor := appaudit.Actor{UserID: "u1", Label: "u***@example.test"}
 	base := func() *fakeStore {
 		st := newStore()
-		st.todayTask = "st-1"
+		st.enabledTasks = []string{"st-1"}
 		st.windows["st-1|2026-10-29"] = openWindow()
 		return st
 	}
@@ -672,44 +733,152 @@ func TestRequestManualSign(t *testing.T) {
 	closed.End = time.Date(2026, 10, 29, 6, 0, 0, 0, loc)
 	st.windows["st-1|2026-10-29"] = closed
 	svc := newService(t, st, defaultSigner(), fakeLimiter{allow: true})
-	if _, err := svc.Request(ctx, "acct-1"); !errors.Is(err, appworker.ErrWindowClosed) {
+	if _, err := svc.Request(ctx, "acct-1", actor); !errors.Is(err, appworker.ErrWindowClosed) {
 		t.Fatalf("关窗应 ErrWindowClosed, got %v", err)
 	}
 	// 正常入队。
 	st = base()
 	svc = newService(t, st, defaultSigner(), fakeLimiter{allow: true})
-	id, err := svc.Request(ctx, "acct-1")
+	id, err := svc.Request(ctx, "acct-1", actor)
 	if err != nil || id == "" {
 		t.Fatalf("Request = (%q,%v)", id, err)
 	}
 	// 已成功 → already_signed。
 	st.tasks[0].State = string(corestatus.TaskSuccess)
-	if _, err := svc.Request(ctx, "acct-1"); !errors.Is(err, appworker.ErrAlreadySigned) {
+	if _, err := svc.Request(ctx, "acct-1", actor); !errors.Is(err, appworker.ErrAlreadySigned) {
 		t.Fatalf("已成功应 ErrAlreadySigned, got %v", err)
 	}
 	// 执行中 → sign_running。
 	st.tasks[0].State = string(corestatus.TaskRunning)
-	if _, err := svc.Request(ctx, "acct-1"); !errors.Is(err, appworker.ErrSignRunning) {
+	if _, err := svc.Request(ctx, "acct-1", actor); !errors.Is(err, appworker.ErrSignRunning) {
 		t.Fatalf("执行中应 ErrSignRunning, got %v", err)
 	}
-	// 当日 failed → 重新放回队列（P4-E 审查 P2-4）。
+	// 当日 failed → 重新放回队列（P4-E 审查 P2-4），并记来源状态与主体。
 	st.tasks[0].State = string(corestatus.TaskFailed)
-	id, err = svc.Request(ctx, "acct-1")
+	st.tasks[0].Attempts = 3
+	id, err = svc.Request(ctx, "acct-1", actor)
 	if err != nil || id == "" {
 		t.Fatalf("failed 行应可重排: (%q,%v)", id, err)
 	}
 	if st.tasks[0].State != string(corestatus.TaskPending) {
 		t.Fatalf("重排后状态 = %s, want pending", st.tasks[0].State)
 	}
+	if st.tasks[0].Attempts != 3 {
+		t.Fatalf("重开后尝试数 = %d, want 3（重开不退预算）", st.tasks[0].Attempts)
+	}
+	if st.rearmed[st.tasks[0].ID] != string(corestatus.TaskFailed) {
+		t.Fatalf("重开审计来源 = %q, want failed", st.rearmed[st.tasks[0].ID])
+	}
+	if got := st.rearmActor[st.tasks[0].ID]; got != actor {
+		t.Fatalf("重开审计主体 = %+v, want %+v", got, actor)
+	}
 	// 无启用任务 → not_found。
 	st2 := newStore()
 	svc2 := newService(t, st2, defaultSigner(), fakeLimiter{allow: true})
-	if _, err := svc2.Request(ctx, "acct-1"); err == nil {
+	if _, err := svc2.Request(ctx, "acct-1", actor); err == nil {
 		t.Fatal("无任务应报错")
 	}
 }
 
-// 提交面 13 词逐词断言：改错任何一档都必须红（P4-E 复审 P2-1）。
+// skipped 行可重开（C2 验收③）：用户补了图片或风控解除后要能当天重试。
+func TestRequestRearmsSkippedRow(t *testing.T) {
+	ctx := context.Background()
+	actor := appaudit.Actor{UserID: "u1"}
+	st := newStore()
+	st.enabledTasks = []string{"st-1"}
+	st.windows["st-1|2026-10-29"] = openWindow()
+	svc := newService(t, st, defaultSigner(), fakeLimiter{allow: true})
+	if _, err := svc.Request(ctx, "acct-1", actor); err != nil {
+		t.Fatalf("首次入队: %v", err)
+	}
+	st.tasks[0].State = string(corestatus.TaskSkipped)
+	id, err := svc.Request(ctx, "acct-1", actor)
+	if err != nil || id == "" {
+		t.Fatalf("skipped 行应可重开: (%q,%v)", id, err)
+	}
+	if st.tasks[0].State != string(corestatus.TaskPending) {
+		t.Fatalf("重开后状态 = %s, want pending", st.tasks[0].State)
+	}
+	if st.rearmed[st.tasks[0].ID] != string(corestatus.TaskSkipped) {
+		t.Fatalf("重开审计来源 = %q, want skipped", st.rearmed[st.tasks[0].ID])
+	}
+}
+
+// 任务解析（C2）：当日行优先；候选不唯一一律 task_ambiguous。
+func TestRequestResolvesTaskFromTodayRows(t *testing.T) {
+	ctx := context.Background()
+	actor := appaudit.Actor{UserID: "u1"}
+	// 当日只有一个任务行，学校另有启用任务：必须签当日那一行，不另找。
+	st := newStore()
+	st.dayTasks = []string{"st-today"}
+	st.enabledTasks = []string{"st-other"}
+	st.windows["st-today|2026-10-29"] = openWindow()
+	svc := newService(t, st, defaultSigner(), fakeLimiter{allow: true})
+	if _, err := svc.Request(ctx, "acct-1", actor); err != nil {
+		t.Fatalf("当日行优先: %v", err)
+	}
+	if got := st.tasks[0].SchoolTaskID; got != "st-today" {
+		t.Fatalf("入队任务 = %q, want st-today", got)
+	}
+
+	// 当日两个任务行：服务端不猜。
+	st = newStore()
+	st.dayTasks = []string{"st-a", "st-b"}
+	st.enabledTasks = []string{"st-a", "st-b"}
+	st.windows["st-a|2026-10-29"] = openWindow()
+	svc = newService(t, st, defaultSigner(), fakeLimiter{allow: true})
+	if _, err := svc.Request(ctx, "acct-1", actor); !errors.Is(err, appworker.ErrTaskAmbiguous) {
+		t.Fatalf("当日多行应 ErrTaskAmbiguous, got %v", err)
+	}
+
+	// 当日无行、学校两条启用任务：同样不猜。
+	st = newStore()
+	st.enabledTasks = []string{"st-a", "st-b"}
+	st.windows["st-a|2026-10-29"] = openWindow()
+	svc = newService(t, st, defaultSigner(), fakeLimiter{allow: true})
+	if _, err := svc.Request(ctx, "acct-1", actor); !errors.Is(err, appworker.ErrTaskAmbiguous) {
+		t.Fatalf("多启用任务应 ErrTaskAmbiguous, got %v", err)
+	}
+}
+
+// 批内并行（C2 验收⑤）：一批两个任务必须同时在执行。
+//
+// 判据：两个 Sign 都要到达闸门才放行。串行执行时第一个 Sign 永远等不到
+// 第二个到达，超时即红——这正是"容量按并行算、执行按串行跑"的形状。
+func TestStepRunsBatchInParallel(t *testing.T) {
+	second := baseTask()
+	second.ID, second.AccountID = "t2", "acct-2"
+	st := newStore(baseTask(), second)
+	st.windows["st-1|2026-10-29"] = openWindow()
+
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	signer := defaultSigner()
+	signer.entered, signer.release = entered, release
+
+	svc := newService(t, st, signer, fakeLimiter{allow: true})
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.Step(context.Background(), 2)
+		done <- err
+	}()
+	for i := 1; i <= 2; i++ {
+		select {
+		case <-entered:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("第 %d 个任务未并发到达：Step 仍在串行执行", i)
+		}
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	if st.finished["t1"] != corestatus.TaskSuccess || st.finished["t2"] != corestatus.TaskSuccess {
+		t.Fatalf("finished = %v, want 两行都 success", st.finished)
+	}
+}
+
+// 提交面终态词逐词断言：改错任何一档都必须红（P4-E 复审 P2-1）。
 func TestSignOutcomeSettlesByVocabulary(t *testing.T) {
 	cases := []struct {
 		outcome contract.Outcome
@@ -721,6 +890,7 @@ func TestSignOutcomeSettlesByVocabulary(t *testing.T) {
 		{contract.OutcomeInvalidTarget, corestatus.TaskSkipped},
 		{contract.OutcomePhotoMissing, corestatus.TaskSkipped},
 		{contract.OutcomeChallenge, corestatus.TaskSkipped},
+		{contract.OutcomeBlocked, corestatus.TaskFailed},
 		{contract.OutcomeDeviceUnbound, corestatus.TaskSkipped},
 		{contract.OutcomeRejected, corestatus.TaskFailed},
 		{contract.OutcomePhotoRejected, corestatus.TaskFailed},
@@ -738,6 +908,29 @@ func TestSignOutcomeSettlesByVocabulary(t *testing.T) {
 		if st.finished["t1"] != c.want {
 			t.Fatalf("%s: 终态 = %v, want %v", c.outcome, st.finished["t1"], c.want)
 		}
+	}
+}
+
+// WAF 拦截不排重试：1 次尝试即 failed（C2 验收①）。
+// 判据落在两处：终态是 failed，且没有任何重排。
+func TestWAFBlockedFailsWithoutRetry(t *testing.T) {
+	st := newStore(baseTask())
+	st.windows["st-1|2026-10-29"] = openWindow()
+	signer := &fakeSigner{err: &contract.OutcomeError{
+		Outcome: contract.OutcomeBlocked, Message: "WAF blocked response",
+	}}
+	svc := newService(t, st, signer, fakeLimiter{allow: true})
+	if _, err := svc.Step(context.Background(), 10); err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	if st.finished["t1"] != corestatus.TaskFailed {
+		t.Fatalf("终态 = %v, want failed", st.finished["t1"])
+	}
+	if len(st.requeued) != 0 {
+		t.Fatalf("blocked 不得重排, got %v", st.requeued)
+	}
+	if st.tasks[0].Attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", st.tasks[0].Attempts)
 	}
 }
 

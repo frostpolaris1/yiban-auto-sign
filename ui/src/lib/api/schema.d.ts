@@ -421,8 +421,15 @@ export interface paths {
         /**
          * Queue a manual sign for today.
          * @description Ensures today's task row exists and returns 202 with its id.
+         *     The target task is resolved from today's task rows of enabled tasks:
+         *     exactly one such row selects it; no row today falls back to the
+         *     school's single enabled task. More than one candidate (two rows today,
+         *     or no row and two enabled tasks) returns 409 task_ambiguous. This
+         *     version has no task selector parameter: a school with two enabled
+         *     tasks can only sign manually after one of them is disabled.
          *     A closed window returns 409 window_closed. A run in progress returns
-         *     409 sign_running. A concluded day returns 409 already_signed.
+         *     409 sign_running. A concluded success returns 409 already_signed.
+         *     A failed or skipped row is re-armed and returns 202 again.
          *     Cross-scope accounts return 404 for every role.
          *     Rate limited per client IP and per account id; a 429 carries Retry-After.
          */
@@ -643,6 +650,11 @@ export interface paths {
          *     terminal rows are never moved. A disabled task returns 409 conflict
          *     and writes nothing. Only the current business day is accepted; any
          *     other day is 400 validation_failed.
+         *
+         *     Capacity shortfall returns 409 capacity_shortfall and writes nothing:
+         *     the demand exceeds what the window can carry at the configured
+         *     concurrency, average duration and egress rate. `details` carries
+         *     demand, capacity and shortfall. Preview still reports the numbers.
          */
         post: operations["SchedulePlan"];
         delete?: never;
@@ -840,10 +852,10 @@ export interface components {
             trace_id: string;
         };
         /**
-         * @description Stable codes frozen in P0. No other value is allowed.
+         * @description Stable codes frozen in P0. New values are additive only.
          * @enum {string}
          */
-        ErrorCode: "validation_failed" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "rate_limited" | "capacity_exceeded" | "window_closed" | "already_signed" | "sign_running" | "photo_missing" | "photo_invalid" | "photo_rejected" | "location_out_of_range" | "upstream_unavailable" | "internal_error";
+        ErrorCode: "validation_failed" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "rate_limited" | "capacity_exceeded" | "capacity_shortfall" | "window_closed" | "already_signed" | "sign_running" | "task_ambiguous" | "photo_missing" | "photo_invalid" | "photo_rejected" | "location_out_of_range" | "upstream_unavailable" | "internal_error";
         /** @enum {string} */
         UserRole: "master" | "admin" | "user";
         /** @enum {string} */
@@ -1010,9 +1022,10 @@ export interface components {
         AccountVerifyResult: {
             ok: boolean;
             /**
-             * @description success, credential_invalid, challenge, device_unbound, transient,
-             *     unknown or rejected. A platform conclusion sets ok false and
-             *     returns 200.
+             * @description success, credential_invalid, challenge, blocked, device_unbound,
+             *     transient, unknown or rejected. A platform conclusion sets ok false
+             *     and returns 200. blocked means a WAF interception page: like
+             *     challenge it is never retried, but it is reported as a failure.
              */
             code: string;
             /** @description Masked platform text; absent when empty. */
