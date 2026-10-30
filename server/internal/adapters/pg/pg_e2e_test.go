@@ -110,7 +110,7 @@ func TestCapacityAdmitsExactlyOneWinner(t *testing.T) {
 					SchoolID:    school.ID,
 					OwnerUserID: owner.ID,
 					Phone:       phone,
-				}, 10000)
+				}, 10000, 10000)
 				return err
 			})
 		}(pair.db, pair.repo, pair.phone)
@@ -153,10 +153,10 @@ func TestForeignKeyBlocksUserDelete(t *testing.T) {
 		t.Fatalf("want conflict from the foreign key, got %v", err)
 	}
 	// PostgreSQL 18 把 ON DELETE RESTRICT 报成 23001，
-	// 普通外键违反是 23503。两者都映射为冲突，
-	// 约束名则证明是哪道守卫触发。
-	if mapped.Details["constraint"] != "accounts_owner_user_id_fkey" {
-		t.Fatalf("blocked by %v; want accounts_owner_user_id_fkey", mapped.Details["constraint"])
+	// 普通外键违反是 23503。两者都映射为冲突。
+	// 约束名是内部 schema 面：details 不得泄漏。
+	if _, ok := mapped.Details["constraint"]; ok {
+		t.Fatalf("details leaked the constraint name: %v", mapped.Details)
 	}
 	if _, err := e.users.GetByID(e.ctx, owner.ID); err != nil {
 		t.Fatalf("user vanished after the blocked delete: %v", err)
@@ -181,7 +181,7 @@ func TestInsertForeignKeyViolationMapsToNotFound(t *testing.T) {
 			SchoolID:    missingID,
 			OwnerUserID: owner.ID,
 			Phone:       "13400134000",
-		}, 10000)
+		}, 10000, 10000)
 		return err
 	})
 	if got := codeOf(t, err); got != errs.CodeNotFound {
@@ -581,7 +581,7 @@ func TestSoftDeleteAndRestoreRespectCapacity(t *testing.T) {
 				SchoolID:    school.ID,
 				OwnerUserID: owner.ID,
 				Phone:       phone,
-			}, limit)
+			}, limit, 10000)
 			return err
 		})
 		return rec, err
@@ -607,7 +607,7 @@ func TestSoftDeleteAndRestoreRespectCapacity(t *testing.T) {
 		var rec coreaccount.Record
 		err := e.db.InTx(e.ctx, func(ctx context.Context) error {
 			var err error
-			rec, err = e.accts.Restore(ctx, corescope.Master(), id, 2)
+			rec, err = e.accts.Restore(ctx, corescope.Master(), id, 2, 10000)
 			return err
 		})
 		return rec, err

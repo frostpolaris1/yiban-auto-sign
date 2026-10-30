@@ -605,6 +605,7 @@ func TestSchoolDefaultPhotoSetUsesAuthorizedScope(t *testing.T) {
 
 // 上传完成后系统临时目录不得残留 multipart-*：
 // 原始字节未去 EXIF，泄漏等于把隐私面留在磁盘上。
+// 成功路径与「字段名不对」的早退路径都必须清理。
 func TestPhotoUploadCleansTempFiles(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("TMPDIR", dir)
@@ -612,19 +613,27 @@ func TestPhotoUploadCleansTempFiles(t *testing.T) {
 	t.Setenv("TEMP", dir)
 	svc := &fakeService{uploadRec: sampleRecord()}
 	engine, issued := newRouter(t, corescope.User("u1"), svc)
-	// 2 MiB 超过 1 MiB 内存阈值，part 必然落盘。
-	body, contentType := uploadBody(t, "image", bytes.Repeat([]byte{'x'}, 2<<20))
-	rec := request(t, engine, issued, http.MethodPost, "/api/me/photos", body, contentType)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("read tmpdir: %v", err)
-	}
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), "multipart-") {
-			t.Fatalf("临时文件残留: %s", entry.Name())
+	for _, tc := range []struct {
+		field string
+		want  int
+	}{
+		{"image", http.StatusCreated},
+		{"other", http.StatusBadRequest},
+	} {
+		// 2 MiB 超过 1 MiB 内存阈值，part 必然落盘。
+		body, contentType := uploadBody(t, tc.field, bytes.Repeat([]byte{'x'}, 2<<20))
+		rec := request(t, engine, issued, http.MethodPost, "/api/me/photos", body, contentType)
+		if rec.Code != tc.want {
+			t.Fatalf("field %q status = %d, want %d: %s", tc.field, rec.Code, tc.want, rec.Body.String())
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("read tmpdir: %v", err)
+		}
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), "multipart-") {
+				t.Fatalf("field %q 临时文件残留: %s", tc.field, entry.Name())
+			}
 		}
 	}
 }

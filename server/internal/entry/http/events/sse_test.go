@@ -133,6 +133,13 @@ func (sc *streamClient) close() {
 // 处理器时钟取自定时器：两者必须同源，否则截止时刻与水位不可比。
 func newSSEServer(t *testing.T, authz *fakeAuthorizer, diag *fakeDiag, broker *appevents.Broker, timer *fakeTimer) (*httptest.Server, coreauth.Issued) {
 	t.Helper()
+	srv, issued, _ := newSSEServerWithIssuer(t, authz, diag, broker, timer)
+	return srv, issued
+}
+
+// newSSEServerWithIssuer 额外返回 issuer，供撤权用例调用 Revoke。
+func newSSEServerWithIssuer(t *testing.T, authz *fakeAuthorizer, diag *fakeDiag, broker *appevents.Broker, timer *fakeTimer) (*httptest.Server, coreauth.Issued, *fakeIssuer) {
+	t.Helper()
 	issuer := &fakeIssuer{secret: []byte("0123456789abcdef0123456789abcdef")}
 	issued, err := issuer.Issue(context.Background(), coreauth.User{
 		ID: "u1", Email: "master@example.com", Role: coreauth.RoleMaster, Status: coreauth.StatusActive,
@@ -143,7 +150,8 @@ func newSSEServer(t *testing.T, authz *fakeAuthorizer, diag *fakeDiag, broker *a
 	if authz == nil {
 		authz = &fakeAuthorizer{scope: corescope.Master()}
 	}
-	handler := eventshttp.NewHandler(broker, diag, authz, timer.clock, timer)
+	handler := eventshttp.NewHandler(broker, diag, authz, timer.clock, timer).
+		WithSessionResolver(issuer, coreauth.InsecureCookieName)
 	engine, err := router.New(router.Options{
 		Sessions: issuer, InsecureCookies: true, Events: handler,
 	})
@@ -152,7 +160,7 @@ func newSSEServer(t *testing.T, authz *fakeAuthorizer, diag *fakeDiag, broker *a
 	}
 	srv := httptest.NewServer(engine)
 	t.Cleanup(srv.Close)
-	return srv, issued
+	return srv, issued, issuer
 }
 
 func progressEvent(school string) appevents.Event {
@@ -193,6 +201,56 @@ func TestSSEFrameFormat(t *testing.T) {
 	}
 	if _, ok := data["at"]; !ok {
 		t.Fatal("at 缺失")
+	}
+}
+
+// 撤权后一个心跳内断开：绑定校变化即发 end 并关闭。
+func TestSSERevocationClosesAtHeartbeat(t *testing.T) {
+	clk := newFakeClock(diagNowTime)
+	timer := newFakeTimer(clk)
+	authz := &fakeAuthorizer{scope: corescope.Admin([]string{"s1"})}
+	srv, issued := newSSEServer(t, authz, &fakeDiag{}, appevents.NewBroker(), timer)
+	sc := newStreamClient(t, srv.URL, issued, "")
+	defer sc.close()
+	timer.waitArmed(t)
+
+	// 撤权：绑定校集合变化。
+	authz.setScope(corescope.Admin([]string{"s2"}))
+	clk.Advance(15 * time.Second)
+	if !timer.fireAt(clk.Now()) {
+		t.Fatal("15s 时定时器未到期")
+	}
+	f := sc.next(t)
+	if f.event != appevents.TypeEnd {
+		t.Fatalf("撤权后首帧 = %q, want end", f.event)
+	}
+	if !sc.closed(t) {
+		t.Fatal("撤权后流未关闭")
+	}
+}
+
+// 会话撤销后一个心跳内断开：心跳必须重新 Resolve，不能只看连接时快照。
+func TestSSERevokedSessionClosesAtHeartbeat(t *testing.T) {
+	clk := newFakeClock(diagNowTime)
+	timer := newFakeTimer(clk)
+	srv, issued, issuer := newSSEServerWithIssuer(t, nil, &fakeDiag{}, appevents.NewBroker(), timer)
+	sc := newStreamClient(t, srv.URL, issued, "")
+	defer sc.close()
+	timer.waitArmed(t)
+
+	if err := issuer.Revoke(context.Background(), issued.Token); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	clk.Advance(15 * time.Second)
+	if !timer.fireAt(clk.Now()) {
+		t.Fatal("15s 时定时器未到期")
+	}
+	f := sc.next(t)
+	if f.event != appevents.TypeEnd {
+		t.Fatalf("撤权后首帧 = %q, want end", f.event)
+	}
+	if !sc.closed(t) {
+		t.Fatal("撤权后流未关闭")
 	}
 }
 

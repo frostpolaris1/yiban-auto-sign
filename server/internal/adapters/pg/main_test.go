@@ -184,7 +184,7 @@ func (e *testEnv) createAccount(schoolID, ownerID, phone string) coreaccount.Rec
 			SchoolID:    schoolID,
 			OwnerUserID: ownerID,
 			Phone:       phone,
-		}, 10000)
+		}, 10000, 10000)
 		return err
 	})
 	if err != nil {

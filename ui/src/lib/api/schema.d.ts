@@ -16,8 +16,11 @@ export interface paths {
         /**
          * Sign in with email and password.
          * @description Sets the HttpOnly session cookie on success.
-         *     Rate limited per client IP and per normalized email; a 429 carries
-         *     Retry-After in seconds.
+         *     Cross-site browser submissions are rejected. Sec-Fetch-Site must be
+         *     same-origin or none; cross-site and same-site are 403 forbidden.
+         *     When Sec-Fetch-Site is absent, a present Origin must match the
+         *     configured public origin or the request origin; a mismatch is 403. Rate limited per client IP and per normalized email; a 429
+         *     carries Retry-After in seconds.
          */
         post: operations["AuthLogin"];
         delete?: never;
@@ -297,7 +300,10 @@ export interface paths {
         /**
          * Register a platform account.
          * @description owner_user_id defaults to the caller. Only master and admin may set it
-         *     to another user. The account starts in status pending.
+         *     to another user. The account starts in status pending. The global
+         *     active-account limit and the per-owner quota both answer 429
+         *     capacity_exceeded; the limiter 429 carries Retry-After and the quota
+         *     429 does not. Changes are rate limited per caller.
          */
         post: operations["AccountCreate"];
         delete?: never;
@@ -331,6 +337,7 @@ export interface paths {
          * Update account fields.
          * @description Never changes status. Review and pause have dedicated endpoints. Changing
          *     school is forbidden in P1 (decision 12.3) and returns conflict.
+         *     Changes are rate limited per caller; a 429 carries Retry-After.
          */
         patch: operations["AccountUpdate"];
         trace?: never;
@@ -1393,6 +1400,7 @@ export interface operations {
             };
             400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
             413: components["responses"]["PayloadTooLargeError"];
             429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
@@ -1949,7 +1957,7 @@ export interface operations {
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
-            429: components["responses"]["DefaultError"];
+            429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -2044,6 +2052,7 @@ export interface operations {
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
         };
     };

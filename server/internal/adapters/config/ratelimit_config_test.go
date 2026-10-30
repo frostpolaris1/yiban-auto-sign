@@ -25,6 +25,9 @@ func TestRateLimitDefaults(t *testing.T) {
 	if cfg.KDFConcurrency != 4 {
 		t.Fatalf("KDF 并发缺省 = %d, want 4", cfg.KDFConcurrency)
 	}
+	if cfg.MaxAccountsPerOwner != 20 {
+		t.Fatalf("每属主账号上限缺省 = %d, want 20", cfg.MaxAccountsPerOwner)
+	}
 }
 
 func TestRateLimitBoundsRejected(t *testing.T) {
@@ -36,6 +39,8 @@ func TestRateLimitBoundsRejected(t *testing.T) {
 		{"YIBAN_RATE_ACCOUNT_BURST", "0"},
 		{"YIBAN_KDF_CONCURRENCY", "0"},
 		{"YIBAN_KDF_CONCURRENCY", "65"},
+		{"YIBAN_MAX_ACCOUNTS_PER_OWNER", "0"},
+		{"YIBAN_MAX_ACCOUNTS_PER_OWNER", "1001"},
 	}
 	for _, c := range cases {
 		src := baseSource()
@@ -55,6 +60,7 @@ func TestRateLimitValuesAccepted(t *testing.T) {
 	src["YIBAN_RATE_ACCOUNT_BURST"] = "6"
 	src["YIBAN_TRUSTED_PROXIES"] = " 10.0.0.0/8 , 127.0.0.1 "
 	src["YIBAN_KDF_CONCURRENCY"] = "2"
+	src["YIBAN_MAX_ACCOUNTS_PER_OWNER"] = "50"
 	cfg, err := LoadFrom(src)
 	if err != nil {
 		t.Fatalf("LoadFrom: %v", err)
@@ -72,5 +78,8 @@ func TestRateLimitValuesAccepted(t *testing.T) {
 	}
 	if cfg.KDFConcurrency != 2 {
 		t.Fatalf("KDF 并发 = %d, want 2", cfg.KDFConcurrency)
+	}
+	if cfg.MaxAccountsPerOwner != 50 {
+		t.Fatalf("每属主账号上限 = %d, want 50", cfg.MaxAccountsPerOwner)
 	}
 }

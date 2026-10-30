@@ -28,19 +28,16 @@ func mapError(err error) error {
 	if !errors.As(err, &pgErr) {
 		return err
 	}
-	details := map[string]any{}
-	if pgErr.ConstraintName != "" {
-		details["constraint"] = pgErr.ConstraintName
-	}
+	// 约束名是内部 schema 面：不进响应，避免向调用方泄漏表结构。
 	switch pgErr.Code {
 	case "23505": // unique_violation
-		return &errs.Error{Code: errs.CodeConflict, Message: "conflict", Details: details}
+		return &errs.Error{Code: errs.CodeConflict, Message: "conflict"}
 	case "23503", "23001": // foreign_key_violation, restrict_violation
-		return &errs.Error{Code: errs.CodeConflict, Message: "conflict", Details: details}
+		return &errs.Error{Code: errs.CodeConflict, Message: "conflict"}
 	case "23502", "23514", "22P02", "22001", "22003": // not_null, check, bad text, too long, out of range
-		return &errs.Error{Code: errs.CodeValidation, Message: "validation failed", Details: details}
+		return &errs.Error{Code: errs.CodeValidation, Message: "validation failed"}
 	case "55P03", "57014", "40001", "40P01": // lock timeout, cancel, serialization, deadlock
-		return &errs.Error{Code: errs.CodeUpstream, Message: "database is busy", Details: details}
+		return &errs.Error{Code: errs.CodeUpstream, Message: "database is busy"}
 	default:
 		return err
 	}
@@ -56,11 +53,7 @@ func mapError(err error) error {
 func mapInsertForeignKey(err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23503" {
-		details := map[string]any{}
-		if pgErr.ConstraintName != "" {
-			details["constraint"] = pgErr.ConstraintName
-		}
-		return &errs.Error{Code: errs.CodeNotFound, Message: "not found", Details: details}
+		return &errs.Error{Code: errs.CodeNotFound, Message: "not found"}
 	}
 	return mapError(err)
 }
@@ -95,4 +88,9 @@ func conflictError(message string) error {
 // 语义：已达上限，**本次写入未生效**。
 func capacityError() error {
 	return errs.New(errs.CodeCapacity, "capacity exceeded")
+}
+
+// ownerCapacityError 是每属主配额命中：与全局容量同一错误码，文案可区分。
+func ownerCapacityError() error {
+	return errs.New(errs.CodeCapacity, "owner account quota reached")
 }

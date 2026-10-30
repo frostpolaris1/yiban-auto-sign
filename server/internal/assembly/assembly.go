@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -306,6 +307,17 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		closeFn   = func() {}
 	)
 
+	// 可信代理表同时服务登录来源判定；与限流开关解耦。
+	trustedProxies, err := ratelimit.ParseTrustedProxies(cfg.TrustedProxies)
+	if err != nil {
+		return nil, fmt.Errorf("assembly: trusted proxies: %w", err)
+	}
+	// 限流面只依赖配置：提前构造，账号处理器与路由共用同一实例。
+	guard, err := buildRateLimit(cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	if strings.TrimSpace(cfg.DatabaseURL) == "" {
 		issuer = session.NewMemory(clk, cfg.HashPepper)
 		logger.Warn("auth endpoints are disabled: YIBAN_DATABASE_URL is empty")
@@ -428,13 +440,14 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			return nil, fmt.Errorf("assembly: admin service: %w", err)
 		}
 		accountSvc, err := appaccount.NewService(appaccount.Deps{
-			Accounts: pg.NewAccountRepo(db),
-			Schools:  schoolRepo,
-			Audit:    audits,
-			Tx:       db,
-			Clock:    clk,
-			Cipher:   cipher,
-			Limit:    accountCapacityLimit,
+			Accounts:   pg.NewAccountRepo(db),
+			Schools:    schoolRepo,
+			Audit:      audits,
+			Tx:         db,
+			Clock:      clk,
+			Cipher:     cipher,
+			Limit:      accountCapacityLimit,
+			OwnerLimit: cfg.MaxAccountsPerOwner,
 		})
 		if err != nil {
 			closeFn()
@@ -457,7 +470,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		}
 		schools = schoolhttp.NewHandler(schoolSvc, adminSvc)
 		admins = adminhttp.NewHandler(adminSvc, adminSvc)
-		accounts = accounthttp.NewHandler(accountSvc, adminSvc)
+		accounts = accounthttp.NewHandler(accountSvc, adminSvc, guard)
 		users = userhttp.NewHandler(userSvc, adminSvc)
 		// 一个 provider 同时服务"凭据校验"与"执行循环"：两者必须走同一
 		// 六请求链实现，避免校验用一套、签到用另一套的漂移。
@@ -632,14 +645,14 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			closeFn()
 			return nil, fmt.Errorf("assembly: diagnostic service: %w", err)
 		}
-		eventLib = eventshttp.NewHandler(broker, diagSvc, adminSvc, clk, nil)
+		cookieName := auth.CookieName
+		if cfg.InsecureCookies {
+			cookieName = auth.InsecureCookieName
+		}
+		eventLib = eventshttp.NewHandler(broker, diagSvc, adminSvc, clk, nil).
+			WithSessionResolver(issuer, cookieName)
 	}
 
-	guard, err := buildRateLimit(cfg)
-	if err != nil {
-		closeFn()
-		return nil, err
-	}
 	engine, err := router.New(router.Options{
 		Sessions:        issuer,
 		Auth:            authSvc,
@@ -656,6 +669,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		Locations:       locLib,
 		Events:          eventLib,
 		RateLimit:       guard,
+		LoginOrigin:     publicOrigin(cfg.PublicBaseURL),
+		TrustedProxies:  trustedProxies,
 	})
 	if err != nil {
 		closeFn()
@@ -665,6 +680,16 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 	var closeOnce sync.Once
 	closeAll := func() { closeOnce.Do(closeFn) }
 	return &Stack{Engine: engine, DB: db, Worker: workerSvc, Close: closeAll}, nil
+}
+
+// publicOrigin 把公开基址收敛成 scheme://host[:port]。
+// 解析失败返回空串：登录端点退回同源判定，不静默放行跨站。
+func publicOrigin(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 // buildRateLimit 构造入站限流面。

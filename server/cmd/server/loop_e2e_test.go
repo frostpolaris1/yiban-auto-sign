@@ -118,7 +118,7 @@ func TestLoopGracefulStopLeavesNoRunningRows(t *testing.T) {
 		var txErr error
 		acct, txErr = accts.Create(ctx, coreaccount.New{
 			SchoolID: school.ID, OwnerUserID: owner.ID, Phone: "13800070001",
-		}, 10000)
+		}, 10000, 10000)
 		return txErr
 	})
 	if err != nil {

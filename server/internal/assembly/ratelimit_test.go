@@ -51,3 +51,19 @@ func TestBuildRateLimitEnabled(t *testing.T) {
 		t.Fatalf("可信代理 = %d, want 2", len(guard.Trusted))
 	}
 }
+
+// publicOrigin 把公开基址收敛成 scheme://host[:port]；解析失败返回空串。
+func TestPublicOrigin(t *testing.T) {
+	cases := map[string]string{
+		"https://app.example.test/":       "https://app.example.test",
+		"http://127.0.0.1:47183":          "http://127.0.0.1:47183",
+		"https://app.example.test/path/x": "https://app.example.test",
+		"":                                "",
+		"not a url":                       "",
+	}
+	for raw, want := range cases {
+		if got := publicOrigin(raw); got != want {
+			t.Fatalf("publicOrigin(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}

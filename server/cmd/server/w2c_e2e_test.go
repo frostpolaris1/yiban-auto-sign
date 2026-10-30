@@ -207,13 +207,14 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		t.Fatalf("new admin service: %v", err)
 	}
 	accountSvc, err := appaccount.NewService(appaccount.Deps{
-		Accounts: e.accounts,
-		Schools:  e.schools,
-		Audit:    e.audits,
-		Tx:       db,
-		Clock:    clk,
-		Cipher:   cipher,
-		Limit:    10000,
+		Accounts:   e.accounts,
+		Schools:    e.schools,
+		Audit:      e.audits,
+		Tx:         db,
+		Clock:      clk,
+		Cipher:     cipher,
+		Limit:      10000,
+		OwnerLimit: 10000,
 	})
 	if err != nil {
 		t.Fatalf("new account service: %v", err)
@@ -316,7 +317,8 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		Schedule:        scheduleHandler,
 		Photos:          photoshttp.NewHandler(photoSvc, adminSvc),
 		Locations:       locationhttp.NewHandler(locationSvc, adminSvc),
-		Events:          eventshttp.NewHandler(e.broker, diagSvc, adminSvc, clk, nil),
+		Events: eventshttp.NewHandler(e.broker, diagSvc, adminSvc, clk, nil).
+			WithSessionResolver(e.sessions, coreauth.InsecureCookieName),
 	})
 	if err != nil {
 		t.Fatalf("router.New: %v", err)
@@ -452,7 +454,7 @@ func (e *w2cEnv) account(schoolID, ownerID, phone string) string {
 			SchoolID:    schoolID,
 			OwnerUserID: ownerID,
 			Phone:       phone,
-		}, 10000)
+		}, 10000, 10000)
 		return err
 	})
 	if err != nil {

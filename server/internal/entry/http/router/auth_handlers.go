@@ -20,6 +20,8 @@ import (
 	"context"
 	"encoding/hex"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -28,6 +30,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
+	ratelimit "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/ratelimit"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/respond"
 )
 
@@ -45,6 +48,12 @@ type AuthService interface {
 func (s *server) AuthLogin(c *gin.Context) {
 	if s.auth == nil {
 		notImplemented(c)
+		return
+	}
+	// 登录免 CSRF；跨站表单顶号必须在这里挡住。
+	// 浏览器给的 Origin 与 Sec-Fetch-Site 是唯一可信的跨站信号。
+	if !s.loginOriginAllowed(c) {
+		respond.Error(c.Writer, c.Request, errs.New(errs.CodeForbidden, "cross-site login is not allowed"))
 		return
 	}
 	var req oapi.AuthLoginJSONRequestBody
@@ -193,4 +202,75 @@ func sessionUserOf(sess coreauth.Session) oapi.SessionUser {
 		MustChangePassword: sess.User.MustChangePassword,
 		CsrfToken:          sess.CSRFToken,
 	}
+}
+
+// loginOriginAllowed 判定登录请求的页面来源。
+//
+// 规则：
+//   - Sec-Fetch-Site 是 cross-site/same-site：拒绝；
+//   - 是 same-origin/none：放行（浏览器自证；反向代理可改写 Host）；
+//   - 头缺失且无 Origin：放行（非浏览器客户端）；
+//   - 头缺失且有 Origin：必须等于允许基址或请求自身的 scheme://Host；
+//   - Origin 为字面量 null 或解析失败：拒绝。
+//
+// 允许基址来自 YIBAN_PUBLIC_BASE_URL；为空时只做同源判定。
+// scheme 在可信代理后取 X-Forwarded-Proto，TLS 在容器外终结时仍判对。
+func (s *server) loginOriginAllowed(c *gin.Context) bool {
+	switch c.GetHeader("Sec-Fetch-Site") {
+	case "cross-site", "same-site":
+		return false
+	case "same-origin", "none":
+		return true
+	}
+	origin := strings.TrimSpace(c.GetHeader("Origin"))
+	if origin == "" {
+		return true
+	}
+	if origin == "null" {
+		return false
+	}
+	if s.loginOrigin != "" && sameOrigin(origin, s.loginOrigin) {
+		return true
+	}
+	return sameOrigin(origin, s.requestScheme(c)+"://"+c.Request.Host)
+}
+
+// requestScheme 返回浏览器感知的请求 scheme。
+// 只有可信对端的 X-Forwarded-Proto 才采信；否则按连接是否 TLS。
+func (s *server) requestScheme(c *gin.Context) string {
+	if c.Request.TLS != nil {
+		return "https"
+	}
+	trusted := s.trustedProxies
+	if len(trusted) == 0 && s.rateLimit != nil {
+		trusted = s.rateLimit.Trusted
+	}
+	if ratelimit.IsTrustedPeer(c.Request.RemoteAddr, trusted) {
+		raw := c.GetHeader("X-Forwarded-Proto")
+		if i := strings.IndexByte(raw, ','); i >= 0 {
+			raw = raw[:i]
+		}
+		switch scheme := strings.ToLower(strings.TrimSpace(raw)); scheme {
+		case "http", "https":
+			return scheme
+		}
+	}
+	return "http"
+}
+
+// sameOrigin 比较两个 URL 的 scheme 与 host（host 含端口）。
+// 解析失败或任一侧无 host 都判不同源。
+func sameOrigin(a, b string) bool {
+	ua, err := url.Parse(a)
+	if err != nil {
+		return false
+	}
+	ub, err := url.Parse(b)
+	if err != nil {
+		return false
+	}
+	if ua.Host == "" || ub.Host == "" {
+		return false
+	}
+	return strings.EqualFold(ua.Scheme, ub.Scheme) && strings.EqualFold(ua.Host, ub.Host)
 }

@@ -2380,5 +2380,16 @@
     "web_editable": true,
     "tier": "master",
     "reload": "restart"
+  },
+  "YIBAN_MAX_ACCOUNTS_PER_OWNER": {
+    "type": "int",
+    "domain": [1, 1000],
+    "default": 20,
+    "group": ["账号"],
+    "doc": "每个属主的活跃账号上限。全局上限之外的第二道配额；软删后释放名额",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "restart"
   }
 }

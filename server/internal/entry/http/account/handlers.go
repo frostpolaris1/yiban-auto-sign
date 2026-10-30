@@ -19,7 +19,10 @@ package account
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -50,15 +53,26 @@ type Authorizer interface {
 	Authorize(ctx context.Context, user coreauth.User) (corescope.Scope, appaudit.Actor, error)
 }
 
-// Handler 处理 /api/accounts 下的全部端点。
-type Handler struct {
-	svc   Service
-	authz Authorizer
+// Throttle 是账号变更的每属主限流面（实现为 ratelimit.Guard）。
+// nil 表示不限流：只用于测试与降级进程。
+type Throttle interface {
+	AllowAccount(key string) (bool, time.Duration)
 }
 
-// NewHandler 构造账号处理器。
-func NewHandler(svc Service, authz Authorizer) *Handler {
-	return &Handler{svc: svc, authz: authz}
+// Handler 处理 /api/accounts 下的全部端点。
+type Handler struct {
+	svc     Service
+	authz   Authorizer
+	limiter Throttle
+}
+
+// NewHandler 构造账号处理器。limiter 可省略（测试与降级进程）。
+func NewHandler(svc Service, authz Authorizer, limiter ...Throttle) *Handler {
+	var l Throttle
+	if len(limiter) > 0 {
+		l = limiter[0]
+	}
+	return &Handler{svc: svc, authz: authz, limiter: l}
 }
 
 // List 实现 GET /api/accounts。
@@ -98,6 +112,9 @@ func (h *Handler) List(c *gin.Context, params oapi.AccountListParams) {
 func (h *Handler) Create(c *gin.Context, _ oapi.AccountCreateParams) {
 	scope, actor, ok := h.principal(c)
 	if !ok {
+		return
+	}
+	if h.accountRateLimited(c, actor.UserID) {
 		return
 	}
 	var body oapi.AccountCreate
@@ -140,6 +157,9 @@ func (h *Handler) Get(c *gin.Context, id oapi.AccountID) {
 func (h *Handler) Update(c *gin.Context, id oapi.AccountID, _ oapi.AccountUpdateParams) {
 	scope, actor, ok := h.principal(c)
 	if !ok {
+		return
+	}
+	if h.accountRateLimited(c, actor.UserID) {
 		return
 	}
 	var body oapi.AccountUpdate
@@ -280,6 +300,25 @@ func decode(c *gin.Context, target any) bool {
 		respond.BindError(c.Writer, c.Request, err)
 		return false
 	}
+	return true
+}
+
+// accountRateLimited 按属主限制建号与改号的频率。
+// 拒绝时写 Retry-After 与 429；用例不再被调用。
+func (h *Handler) accountRateLimited(c *gin.Context, userID string) bool {
+	if h.limiter == nil {
+		return false
+	}
+	ok, wait := h.limiter.AllowAccount("account-actions:" + userID)
+	if ok {
+		return false
+	}
+	seconds := int(math.Ceil(wait.Seconds()))
+	if seconds < 1 {
+		seconds = 1
+	}
+	c.Header("Retry-After", strconv.Itoa(seconds))
+	fail(c, errs.New(errs.CodeRateLimited, "too many account changes"))
 	return true
 }
 

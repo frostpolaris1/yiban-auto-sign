@@ -216,20 +216,24 @@ func (h *Handler) PhotoUpload(c *gin.Context, _ oapi.PhotoUploadParams) {
 		return
 	}
 	scope := ownerScope(session)
-	file, err := uploadFile(c)
-	if err != nil {
+	// 1 MiB 留在内存，其余落临时文件；请求体总上限由路由层控制。
+	if err := c.Request.ParseMultipartForm(1 << 20); err != nil {
 		// 超过路由上限时是 *http.MaxBytesError；BindError 把它转成 413。
 		respond.BindError(c.Writer, c.Request, err)
 		return
 	}
-	raw, err := io.ReadAll(io.LimitReader(file, corephoto.MaxBytes+1))
-	file.Close()
-	// ParseMultipartForm 把超过内存阈值的 part 写进系统临时目录，
-	// Go 只在解析失败时自清。字节已读进内存，这里必须显式删除：
+	// 解析成功即登记清理：字段名不对、读取失败、超限、用例失败都走同一条 defer。
 	// 原始字节未去 EXIF，长期落盘等于把隐私面留在磁盘上。
 	if c.Request.MultipartForm != nil {
-		_ = c.Request.MultipartForm.RemoveAll()
+		defer func() { _ = c.Request.MultipartForm.RemoveAll() }()
 	}
+	file, _, err := c.Request.FormFile("image")
+	if err != nil {
+		fail(c, errs.New(errs.CodeValidation, "image field is required"))
+		return
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, corephoto.MaxBytes+1))
+	file.Close()
 	if err != nil {
 		fail(c, errs.New(errs.CodeValidation, "cannot read the image part"))
 		return
@@ -355,20 +359,6 @@ func (h *Handler) PhotoRetentionSet(c *gin.Context, _ oapi.PhotoRetentionSetPara
 		return
 	}
 	respond.JSON(c.Writer, http.StatusOK, oapi.PhotoRetention{Days: oapi.PhotoRetentionDays(days)})
-}
-
-// uploadFile 取出 multipart 的 image 文件部分。
-// 解析失败原样返回：调用方经 respond.BindError 把超界转成 413。
-func uploadFile(c *gin.Context) (io.ReadCloser, error) {
-	// 1 MiB 留在内存，其余落临时文件；请求体总上限由路由层控制。
-	if err := c.Request.ParseMultipartForm(1 << 20); err != nil {
-		return nil, err
-	}
-	file, _, err := c.Request.FormFile("image")
-	if err != nil {
-		return nil, errs.New(errs.CodeValidation, "image field is required")
-	}
-	return file, nil
 }
 
 // extendReadDeadline 把本次连接的读截止时间推后。

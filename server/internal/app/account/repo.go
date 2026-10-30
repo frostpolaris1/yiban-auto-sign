@@ -48,7 +48,7 @@ type Credential = coreaccount.Credential
 
 // Repo 是账号仓储端口。
 //
-// Create 与 Restore 执行活跃账号上限。两者**必须在事务内运行**：
+// Create 与 Restore 执行全局与每属主活跃账号上限。两者**必须在事务内运行**：
 // 在同一事务里先取账号容量 advisory lock，再统计活跃行。
 // 条件语句命中零行时报 capacity_exceeded（errs.CodeCapacity）。
 //
@@ -67,7 +67,8 @@ type Credential = coreaccount.Credential
 // Review 只推进 pending 行：通过写 active，拒绝写 rejected 并记理由。
 // 非 pending 行报 conflict。
 type Repo interface {
-	Create(ctx context.Context, in New, limit int) (Record, error)
+	// Create 建号；limit 是全局活跃账号上限，ownerLimit 是每属主活跃账号上限。
+	Create(ctx context.Context, in New, limit, ownerLimit int) (Record, error)
 	Get(ctx context.Context, scope corescope.Scope, id string) (Record, error)
 	GetForUpdate(ctx context.Context, scope corescope.Scope, id string) (Record, error)
 	List(ctx context.Context, scope corescope.Scope, schoolID string, status Status, query, cursor string, limit int) ([]Record, string, error)
@@ -75,7 +76,7 @@ type Repo interface {
 	SetStatus(ctx context.Context, scope corescope.Scope, id string, from, to Status, at time.Time, reason string) (Record, error)
 	Review(ctx context.Context, scope corescope.Scope, id string, approve bool, reason, by string, at time.Time) (Record, error)
 	SoftDelete(ctx context.Context, scope corescope.Scope, id, by string, at time.Time) error
-	Restore(ctx context.Context, scope corescope.Scope, id string, limit int) (Record, error)
+	Restore(ctx context.Context, scope corescope.Scope, id string, limit, ownerLimit int) (Record, error)
 	Credential(ctx context.Context, scope corescope.Scope, accountID string) (Credential, error)
 	InsertCredential(ctx context.Context, in Credential) error
 	ReplaceCredential(ctx context.Context, in Credential, expectedVersion int32) error

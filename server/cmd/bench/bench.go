@@ -315,7 +315,7 @@ func seedAccounts(ctx context.Context, db *pg.DB, users *pg.UserRepo, accts *pg.
 					SchoolID:    schoolIDs[i%len(schoolIDs)],
 					OwnerUserID: u.ID,
 					Phone:       benchPhone(i),
-				}, limit); err != nil {
+				}, limit, limit); err != nil {
 					return fmt.Errorf("create account %d: %w", i, err)
 				}
 			}

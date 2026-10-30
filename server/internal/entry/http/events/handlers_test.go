@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -63,18 +64,29 @@ func (f *fakeDiag) Snapshot(_ context.Context, _ corescope.Scope) (corediag.View
 }
 
 type fakeAuthorizer struct {
+	mu    sync.RWMutex
 	scope corescope.Scope
 	err   error
 }
 
 func (f *fakeAuthorizer) Authorize(context.Context, coreauth.User) (corescope.Scope, appaudit.Actor, error) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
 	return f.scope, appaudit.Actor{}, f.err
 }
 
+// setScope 模拟撤权或绑定校变化；SSE 心跳点会重新解析。
+func (f *fakeAuthorizer) setScope(scope corescope.Scope) {
+	f.mu.Lock()
+	f.scope = scope
+	f.mu.Unlock()
+}
+
 type fakeIssuer struct {
-	secret []byte
-	token  string
-	sess   coreauth.Session
+	secret  []byte
+	token   string
+	sess    coreauth.Session
+	revoked map[string]bool
 }
 
 func (f *fakeIssuer) Issue(_ context.Context, user coreauth.User) (coreauth.Issued, error) {
@@ -85,13 +97,20 @@ func (f *fakeIssuer) Issue(_ context.Context, user coreauth.User) (coreauth.Issu
 }
 
 func (f *fakeIssuer) Resolve(_ context.Context, token string) (coreauth.Session, error) {
-	if token != f.token {
+	if token != f.token || f.revoked[token] {
 		return coreauth.Session{}, errs.New(errs.CodeUnauthorized, "unknown session")
 	}
 	return f.sess, nil
 }
 
-func (f *fakeIssuer) Revoke(context.Context, string) error           { return nil }
+func (f *fakeIssuer) Revoke(_ context.Context, token string) error {
+	if f.revoked == nil {
+		f.revoked = map[string]bool{}
+	}
+	f.revoked[token] = true
+	return nil
+}
+
 func (f *fakeIssuer) RevokeAllForUser(context.Context, string) error { return nil }
 
 // newEngine 构造只装配 events 域的路由，返回引擎与会话。

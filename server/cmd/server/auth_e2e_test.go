@@ -109,12 +109,13 @@ func newAuthEnvWith(t *testing.T, mutate func(*config.Config), logger *slog.Logg
 	}
 
 	cfg := &config.Config{
-		Env:             "test",
-		DatabaseURL:     withSearchPath(base, schema),
-		InsecureCookies: true,
-		HashPepper:      authTestPepper,
-		CredentialKey:   authTestCredentialKey,
-		PhotoDir:        t.TempDir(),
+		Env:                 "test",
+		DatabaseURL:         withSearchPath(base, schema),
+		InsecureCookies:     true,
+		MaxAccountsPerOwner: 20,
+		HashPepper:          authTestPepper,
+		CredentialKey:       authTestCredentialKey,
+		PhotoDir:            t.TempDir(),
 	}
 	if mutate != nil {
 		mutate(cfg)

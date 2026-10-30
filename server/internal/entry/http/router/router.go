@@ -77,24 +77,33 @@ type Options struct {
 	// RateLimit 限制入站速率。nil 表示不限流：只用于测试与降级进程。
 	// 生产装配必须给值，且必须带可信代理表。
 	RateLimit *ratelimit.Guard
+	// LoginOrigin 是登录端点接受的页面来源（scheme://host[:port]）。
+	// 空串表示只做同源判定；跨站 Origin 一律 403。
+	LoginOrigin string
+	// TrustedProxies 是可信反向代理网段。
+	// 只有它们的 X-Forwarded-Proto 才用于判定登录 scheme。
+	// 与限流开关解耦：关限流时登录来源仍能判对。
+	TrustedProxies []ratelimit.Prefix
 }
 
 // server 实现生成的契约接口。
 // 全部业务端点委托给域处理器。
 type server struct {
-	sessions  auth.SessionIssuer
-	auth      AuthService
-	cookies   sessionCookie
-	schools   *schoolhttp.Handler
-	admins    *adminhttp.Handler
-	accounts  *accounthttp.Handler
-	users     *userhttp.Handler
-	signing   *signinghttp.Handler
-	schedule  *schedulehttp.Handler
-	photos    *photoshttp.Handler
-	locations *locationhttp.Handler
-	events    *eventshttp.Handler
-	rateLimit *ratelimit.Guard
+	sessions       auth.SessionIssuer
+	auth           AuthService
+	cookies        sessionCookie
+	schools        *schoolhttp.Handler
+	admins         *adminhttp.Handler
+	accounts       *accounthttp.Handler
+	users          *userhttp.Handler
+	signing        *signinghttp.Handler
+	schedule       *schedulehttp.Handler
+	photos         *photoshttp.Handler
+	locations      *locationhttp.Handler
+	events         *eventshttp.Handler
+	rateLimit      *ratelimit.Guard
+	loginOrigin    string
+	trustedProxies []ratelimit.Prefix
 }
 
 // New 构造 HTTP 引擎。缺 SessionIssuer 时**失败关闭**。
@@ -130,6 +139,8 @@ func New(opts Options) (*gin.Engine, error) {
 	srv.locations = opts.Locations
 	srv.events = opts.Events
 	srv.rateLimit = opts.RateLimit
+	srv.loginOrigin = opts.LoginOrigin
+	srv.trustedProxies = opts.TrustedProxies
 
 	engine := gin.New()
 	engine.Use(
