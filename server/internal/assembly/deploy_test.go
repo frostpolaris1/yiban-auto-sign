@@ -5,7 +5,7 @@ package assembly
 // # 功能
 // 1. docker-compose 的 services.app.stop_grace_period 必须大于
 //    shutdownBudget：否则 docker stop 在优雅收尾完成前发 SIGKILL，
-//    残余 running 行只能靠下次启动的 Recover 回收。
+//    残余 running 行的租约到期后由回收器回收（启动 Recover 清无租约或已过期行）。
 // 2. install.sh 写的 systemd 单元 TimeoutStopSec 必须大于同一预算：
 //    两个入口同形状，缺一道门就有一半静默。
 // 3. 镜像必须预建 /data/photos 并归 nonroot(65532)：

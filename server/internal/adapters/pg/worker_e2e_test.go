@@ -57,7 +57,7 @@ func TestClaimDueSkipsSameAccountRunning(t *testing.T) {
 	// 落终态后同账号可领下一条。
 	for _, c := range claimed {
 		if c.AccountID == acct.ID {
-			if err := e.sched.Finish(e.ctx, c.AccountID, c.SchoolTaskID, c.Day, corestatus.TaskSuccess, "ok", at); err != nil {
+			if err := e.sched.Finish(e.ctx, c.AccountID, c.SchoolTaskID, c.Day, corestatus.TaskSuccess, "ok", c.ClaimSeq, at); err != nil {
 				t.Fatalf("finish: %v", err)
 			}
 		}

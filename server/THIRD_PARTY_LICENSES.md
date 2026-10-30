@@ -32,6 +32,7 @@
 | github.com/pressly/goose/v3 | MIT |
 | github.com/quic-go/qpack | MIT |
 | github.com/quic-go/quic-go | MIT |
+| github.com/robfig/cron/v3 | MIT |
 | github.com/sethvargo/go-retry | Apache-2.0 |
 | github.com/ugorji/go/codec | MIT |
 | go.mongodb.org/mongo-driver/v2 | Apache-2.0 |
@@ -44,4 +45,4 @@
 | golang.org/x/time/rate | BSD-3-Clause |
 | google.golang.org/protobuf | BSD-3-Clause |
 
-共 32 个模块/包。
+共 33 个模块/包。

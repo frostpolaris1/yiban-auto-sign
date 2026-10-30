@@ -2,8 +2,8 @@
 //
 // # 功能
 // Start 起一个 goroutine 周期调 Step；Stop 关闭领取并等当前在飞
-// Step 返回，然后清点残余 running 行。超时按 ctx 错误返回，
-// 残余交给下次启动的 Recover 回收。
+// Step 返回，然后清点残余 running 行。超时按 ctx 错误返回；
+// 有效租约的残余行由 tick 回收器在到期后回收，无租约或已过期行由下次启动的 Recover 清。
 // 本类型**不**记日志、**不**管 HTTP：那是 assembly 收尾编排的事。
 //
 // # 归属
@@ -115,7 +115,7 @@ func (l *Loop) run() {
 }
 
 // Stop 停止领取并等在飞返回，返回残余 running 数。
-// ctx 到期时立即返回 (0, ctx.Err())：残余由重启回收兜底。
+// ctx 到期时立即返回 (0, ctx.Err())：残余的租约到期后由回收器回收；重启的 Recover 清无租约或已过期行。
 // 未 Start 过的实例立即返回 (0, nil)。
 func (l *Loop) Stop(ctx context.Context) (int64, error) {
 	l.mu.Lock()

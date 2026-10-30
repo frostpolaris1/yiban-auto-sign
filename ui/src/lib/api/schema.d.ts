@@ -634,7 +634,8 @@ export interface paths {
          * @description Writes the resolved window, rearranges pending rows when the window
          *     changed, and inserts missing rows in one transaction. Running and
          *     terminal rows are never moved. A disabled task returns 409 conflict
-         *     and writes nothing.
+         *     and writes nothing. Only the current business day is accepted; any
+         *     other day is 400 validation_failed.
          */
         post: operations["SchedulePlan"];
         delete?: never;

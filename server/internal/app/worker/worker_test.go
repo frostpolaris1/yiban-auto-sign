@@ -1,8 +1,11 @@
 package worker_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,11 +33,12 @@ type fakeStore struct {
 	todayTask string
 
 	// 观测面
-	claimed  []string
-	finished map[string]corestatus.TaskState
-	results  map[string]string
-	requeued map[string]time.Time // 最近一次重排落点（含等待型）
-	resets   int64
+	claimed      []string
+	finished     map[string]corestatus.TaskState
+	results      map[string]string
+	requeued     map[string]time.Time // 最近一次重排落点（含等待型）
+	resets       int64
+	reclaimCalls int
 }
 
 func newStore(tasks ...coreschedule.TaskRow) *fakeStore {
@@ -69,6 +73,7 @@ func (f *fakeStore) ClaimDue(_ context.Context, now time.Time, limit int) ([]cor
 			continue
 		}
 		t.State = string(corestatus.TaskRunning)
+		t.ClaimSeq++
 		runningAccount[t.AccountID] = true
 		f.claimed = append(f.claimed, t.ID)
 		out = append(out, *t)
@@ -76,14 +81,14 @@ func (f *fakeStore) ClaimDue(_ context.Context, now time.Time, limit int) ([]cor
 	return out, nil
 }
 
-func (f *fakeStore) Finish(_ context.Context, accountID, schoolTaskID, day string, state corestatus.TaskState, result string, _ time.Time) error {
+func (f *fakeStore) Finish(_ context.Context, accountID, schoolTaskID, day string, state corestatus.TaskState, result string, claimSeq int, _ time.Time) error {
 	if f.finishErr != nil {
 		return f.finishErr
 	}
 	for i := range f.tasks {
 		t := &f.tasks[i]
 		if t.AccountID == accountID && t.SchoolTaskID == schoolTaskID && t.Day == day {
-			if t.State != string(corestatus.TaskRunning) {
+			if t.State != string(corestatus.TaskRunning) || t.ClaimSeq != claimSeq {
 				return coreerrs.ErrNotFound
 			}
 			t.State = string(state)
@@ -98,14 +103,14 @@ func (f *fakeStore) Finish(_ context.Context, accountID, schoolTaskID, day strin
 
 // FinishCredentialInvalid 按库语义落 failed(credential_invalid)。
 // 账号状态是存储层副作用，由 pg e2e 钉住，本 fake 不复制。
-func (f *fakeStore) FinishCredentialInvalid(_ context.Context, _ /*schoolID*/, accountID, schoolTaskID, day string, _ time.Time) error {
+func (f *fakeStore) FinishCredentialInvalid(_ context.Context, _ /*schoolID*/, accountID, schoolTaskID, day string, claimSeq int, _ time.Time) error {
 	if f.finishErr != nil {
 		return f.finishErr
 	}
 	for i := range f.tasks {
 		t := &f.tasks[i]
 		if t.AccountID == accountID && t.SchoolTaskID == schoolTaskID && t.Day == day {
-			if t.State != string(corestatus.TaskRunning) {
+			if t.State != string(corestatus.TaskRunning) || t.ClaimSeq != claimSeq {
 				return coreerrs.ErrNotFound
 			}
 			t.State = string(corestatus.TaskFailed)
@@ -119,10 +124,10 @@ func (f *fakeStore) FinishCredentialInvalid(_ context.Context, _ /*schoolID*/, a
 }
 
 // requeue 是两种重排的公共实现；bumpAttempts 区分"等待"与"业务重试"。
-func (f *fakeStore) requeue(taskID string, runAt time.Time, result string, bumpAttempts bool) error {
+func (f *fakeStore) requeue(taskID string, runAt time.Time, result string, bumpAttempts bool, claimSeq int) error {
 	for i := range f.tasks {
 		t := &f.tasks[i]
-		if t.ID == taskID && t.State == string(corestatus.TaskRunning) {
+		if t.ID == taskID && t.State == string(corestatus.TaskRunning) && t.ClaimSeq == claimSeq {
 			t.State = string(corestatus.TaskPending)
 			t.RunAt = runAt
 			if bumpAttempts {
@@ -136,12 +141,12 @@ func (f *fakeStore) requeue(taskID string, runAt time.Time, result string, bumpA
 	return coreerrs.ErrNotFound
 }
 
-func (f *fakeStore) RequeueWait(_ context.Context, taskID string, runAt time.Time, result string) error {
-	return f.requeue(taskID, runAt, result, false)
+func (f *fakeStore) RequeueWait(_ context.Context, taskID string, runAt time.Time, result string, claimSeq int) error {
+	return f.requeue(taskID, runAt, result, false, claimSeq)
 }
 
-func (f *fakeStore) RequeueRetry(_ context.Context, taskID string, runAt time.Time, result string) error {
-	return f.requeue(taskID, runAt, result, true)
+func (f *fakeStore) RequeueRetry(_ context.Context, taskID string, runAt time.Time, result string, claimSeq int) error {
+	return f.requeue(taskID, runAt, result, true, claimSeq)
 }
 
 func (f *fakeStore) Rearm(_ context.Context, taskID string, runAt time.Time) error {
@@ -154,6 +159,11 @@ func (f *fakeStore) Rearm(_ context.Context, taskID string, runAt time.Time) err
 		}
 	}
 	return coreerrs.ErrNotFound
+}
+
+func (f *fakeStore) ReclaimExpired(context.Context, time.Time, int) (int64, error) {
+	f.reclaimCalls++
+	return 0, nil
 }
 
 func (f *fakeStore) ResetRunning(context.Context) (int64, error) {
@@ -290,9 +300,15 @@ func openWindow() coreschedule.WindowRecord {
 
 func newService(t *testing.T, st *fakeStore, signer *fakeSigner, limiter fakeLimiter) *appworker.Service {
 	t.Helper()
+	return newServiceLogged(t, st, signer, limiter, nil)
+}
+
+func newServiceLogged(t *testing.T, st *fakeStore, signer *fakeSigner, limiter fakeLimiter, logger *slog.Logger) *appworker.Service {
+	t.Helper()
 	svc, err := appworker.NewService(appworker.Deps{
 		Store: st, Creds: fakeCreds{}, Signer: signer, Egress: fakeEgress{},
 		Limiter: limiter, Clock: coreclock.Fixed{T: testNow()}, Location: loc,
+		Logger: logger,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -304,6 +320,34 @@ func defaultSigner() *fakeSigner {
 	return &fakeSigner{
 		targets: []contract.Target{{ID: "pos-1", Title: "校门"}},
 		outcome: contract.OutcomeSuccess,
+	}
+}
+
+// 结算被栅栏拒绝时必须写错误日志：运行期可见，不只等停机。
+func TestStepLogsSettlementConflict(t *testing.T) {
+	st := newStore(baseTask())
+	st.windows["st-1|2026-10-29"] = openWindow()
+	st.finishErr = coreerrs.New(coreerrs.CodeConflict, "fenced")
+	var buf bytes.Buffer
+	svc := newServiceLogged(t, st, defaultSigner(), fakeLimiter{allow: true},
+		slog.New(slog.NewTextHandler(&buf, nil)))
+	if _, err := svc.Step(context.Background(), 1); err == nil {
+		t.Fatal("结算冲突必须上抛")
+	}
+	if !strings.Contains(buf.String(), "settlement rejected by the claim fence") {
+		t.Fatalf("日志缺栅栏拒绝行: %s", buf.String())
+	}
+}
+
+// Step 每 tick 先回收过期租约，再认领。
+func TestStepCallsReclaimOnce(t *testing.T) {
+	st := newStore()
+	svc := newService(t, st, defaultSigner(), fakeLimiter{allow: true})
+	if _, err := svc.Step(context.Background(), 1); err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	if st.reclaimCalls != 1 {
+		t.Fatalf("reclaim 调用 = %d, want 1（每 tick 一次）", st.reclaimCalls)
 	}
 }
 

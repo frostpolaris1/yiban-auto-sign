@@ -106,6 +106,8 @@ type Config struct {
 	EdgeBack         time.Duration
 	AllowTimePref    bool
 	TimePrefCooldown time.Duration
+	// TaskLease 是执行任务的租约时长。过期的 running 由回收器放回队列。
+	TaskLease time.Duration
 
 	// PhotoDir 是图片 blob 存储根目录。
 	PhotoDir string
@@ -284,6 +286,7 @@ var (
 	keyWindowEdgeFront  = intKey{"YIBAN_WINDOW_EDGE_FRONT_SEC", 60, 0, 300}
 	keyWindowEdgeBack   = intKey{"YIBAN_WINDOW_EDGE_BACK_SEC", 60, 0, 300}
 	keyTimePrefCooldown = intKey{"YIBAN_TIME_PREF_COOLDOWN_SEC", 30, 0, 3600}
+	keyTaskLeaseSec     = intKey{"YIBAN_TASK_LEASE_SEC", 120, 30, 3600}
 	keyEgressRate       = floatKey{"YIBAN_EGRESS_RATE", corerate.DefaultRate, corerate.RateMin, corerate.RateMax}
 	keyAllowTimePref    = boolKey{"YIBAN_ALLOW_TIME_PREF", false}
 	keyHTTPAddr         = stringKey{"YIBAN_HTTP_ADDR", DefaultHTTPAddr}
@@ -319,6 +322,7 @@ func configSpecs() []keySpec {
 		keyWindowEdgeFront.spec(),
 		keyWindowEdgeBack.spec(),
 		keyTimePrefCooldown.spec(),
+		keyTaskLeaseSec.spec(),
 		keyEgressRate.spec(),
 		keyAllowTimePref.spec(),
 		keyHTTPAddr.spec(),
@@ -430,6 +434,11 @@ func LoadFrom(src Source) (*Config, error) {
 		return nil, err
 	}
 	cfg.TimePrefCooldown = time.Duration(cooldown) * time.Second
+	lease, err := keyTaskLeaseSec.read(src)
+	if err != nil {
+		return nil, err
+	}
+	cfg.TaskLease = time.Duration(lease) * time.Second
 
 	if cfg.RateLimitEnabled, err = keyRateLimitEnabled.read(src); err != nil {
 		return nil, err

@@ -292,6 +292,23 @@ func TestPreviewTaskMismatch(t *testing.T) {
 	}
 }
 
+// 建计划只接受当日：非当前业务日回 400，且不调用用例。
+func TestPlanRejectsNonCurrentDay(t *testing.T) {
+	planner := &fakePlanner{
+		preview: samplePreview(),
+		task:    coreschedule.TaskInfo{ID: "t1", SchoolID: "s1"},
+	}
+	engine, issued := newRouter(t, corescope.Master(), planner, &fakeTimePrefs{})
+	rec := do(t, engine, issued, http.MethodPost, "/api/schedule/plan",
+		oapi.SchedulePlanRequest{Day: "2026-10-28", SchoolId: "s1", TaskId: "t1"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	if planner.builds != 0 {
+		t.Fatalf("builds = %d, want 0（非当日不得调用用例）", planner.builds)
+	}
+}
+
 // 建计划：请求体字段全部落到输入，返回落库版本。
 func TestPlanBuilds(t *testing.T) {
 	planner := &fakePlanner{

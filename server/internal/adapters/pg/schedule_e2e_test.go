@@ -75,7 +75,7 @@ func TestCASClaimSingleWinner(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			err := e.sched.ClaimPending(e.ctx, acctID, taskID, day, time.Now())
+			_, err := e.sched.ClaimPending(e.ctx, acctID, taskID, day, time.Now())
 			if err == nil {
 				wins <- struct{}{}
 			}
@@ -91,10 +91,10 @@ func TestCASClaimSingleWinner(t *testing.T) {
 		t.Fatalf("并发认领赢家 = %d, want 1（CAS 单赢家）", n)
 	}
 	// 落终态后，同日的第二认领也必须失败：一天一任务一行。
-	if err := e.sched.Finish(e.ctx, acctID, taskID, day, "success", "ok", time.Now()); err != nil {
+	if err := e.sched.Finish(e.ctx, acctID, taskID, day, "success", "ok", 1, time.Now()); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
-	if err := e.sched.ClaimPending(e.ctx, acctID, taskID, day, time.Now()); !errors.Is(err, pg.ErrScheduleConflict) {
+	if _, err := e.sched.ClaimPending(e.ctx, acctID, taskID, day, time.Now()); !errors.Is(err, pg.ErrScheduleConflict) {
 		t.Fatalf("终态行再认领应冲突, got %v", err)
 	}
 	if done, err := e.sched.CountDone(e.ctx, acctID, day); err != nil || done != 1 {
@@ -115,10 +115,11 @@ func TestPlanIdempotentReplay(t *testing.T) {
 	if err != nil || n != 1 {
 		t.Fatalf("first insert = (%d,%v), want (1,nil)", n, err)
 	}
-	if err := e.sched.ClaimPending(e.ctx, acctID, taskID, day, time.Now()); err != nil {
+	seq, err := e.sched.ClaimPending(e.ctx, acctID, taskID, day, time.Now())
+	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if err := e.sched.Finish(e.ctx, acctID, taskID, day, "success", "ok", time.Now()); err != nil {
+	if err := e.sched.Finish(e.ctx, acctID, taskID, day, "success", "ok", seq, time.Now()); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
 	// 重放同一批：0 行写入，终态保持。
@@ -186,18 +187,19 @@ func TestOnlyOneRunningPerAccount(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert plan: %v", err)
 	}
-	if err := e.sched.ClaimPending(e.ctx, acct.ID, taskA, day, time.Now()); err != nil {
+	seqA, err := e.sched.ClaimPending(e.ctx, acct.ID, taskA, day, time.Now())
+	if err != nil {
 		t.Fatalf("claim taskA: %v", err)
 	}
 	// taskB 同账号同时认领：撞 uq_sign_tasks_one_running，必须 conflict。
-	if err := e.sched.ClaimPending(e.ctx, acct.ID, taskB, day, time.Now()); !errors.Is(err, pg.ErrScheduleConflict) {
+	if _, err := e.sched.ClaimPending(e.ctx, acct.ID, taskB, day, time.Now()); !errors.Is(err, pg.ErrScheduleConflict) {
 		t.Fatalf("同账号第二条 running 应冲突, got %v", err)
 	}
 	// taskA 落终态后 taskB 可认领：门只锁"同时"，不锁"当日先后"。
-	if err := e.sched.Finish(e.ctx, acct.ID, taskA, day, corestatus.TaskSuccess, "ok", time.Now()); err != nil {
+	if err := e.sched.Finish(e.ctx, acct.ID, taskA, day, corestatus.TaskSuccess, "ok", seqA, time.Now()); err != nil {
 		t.Fatalf("finish taskA: %v", err)
 	}
-	if err := e.sched.ClaimPending(e.ctx, acct.ID, taskB, day, time.Now()); err != nil {
+	if _, err := e.sched.ClaimPending(e.ctx, acct.ID, taskB, day, time.Now()); err != nil {
 		t.Fatalf("taskB 在 taskA 终态后应可认领: %v", err)
 	}
 }
@@ -233,7 +235,7 @@ func TestRearrangeOnlyPending(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 	// B 认领后进入 running：重排不得动它。
-	if err := e.sched.ClaimPending(e.ctx, acctB.ID, taskID, day, time.Now()); err != nil {
+	if _, err := e.sched.ClaimPending(e.ctx, acctB.ID, taskID, day, time.Now()); err != nil {
 		t.Fatalf("claim B: %v", err)
 	}
 	rows := []coreschedule.PlanRow{

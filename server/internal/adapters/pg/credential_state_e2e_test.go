@@ -127,7 +127,7 @@ func db1WorkerWith(t *testing.T, store appworker.Store, signer db1Signer) *appwo
 // 未注入审计仓储的排期仓储不得静默写状态。
 func TestFinishCredentialInvalidRequiresAudit(t *testing.T) {
 	repo := pg.NewScheduleRepo(nil)
-	err := repo.FinishCredentialInvalid(context.Background(), "school", "account", "task", db1Day, db1At())
+	err := repo.FinishCredentialInvalid(context.Background(), "school", "account", "task", db1Day, 0, db1At())
 	if !errors.Is(err, pg.ErrScheduleAuditMissing) {
 		t.Fatalf("FinishCredentialInvalid without an audit repo = %v, want ErrScheduleAuditMissing", err)
 	}

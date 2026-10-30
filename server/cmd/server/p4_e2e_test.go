@@ -308,10 +308,11 @@ func TestP4OverrideReplacementReplansPending(t *testing.T) {
 	// 一个当日已了结的行：认领后落终态，模拟"今天已经签过"。
 	doneRow := e.scalarString("SELECT id::text FROM sign_tasks WHERE account_id = $1::uuid AND school_task_id = $2::uuid AND day = $3::date", accts[0], task, day)
 	now := clock.System{}.Now()
-	if err := e.sched.ClaimPending(e.ctx, accts[0], task, day, now); err != nil {
+	seq, err := e.sched.ClaimPending(e.ctx, accts[0], task, day, now)
+	if err != nil {
 		t.Fatalf("claim concluded row: %v", err)
 	}
-	if err := e.sched.Finish(e.ctx, accts[0], task, day, corestatus.TaskSuccess, string(contract.OutcomeSuccess), now); err != nil {
+	if err := e.sched.Finish(e.ctx, accts[0], task, day, corestatus.TaskSuccess, string(contract.OutcomeSuccess), seq, now); err != nil {
 		t.Fatalf("finish concluded row: %v", err)
 	}
 	doneAt := e.scalarString("SELECT to_char(run_at, 'YYYY-MM-DD\"T\"HH24:MI:SS') FROM sign_tasks WHERE id = $1::uuid", doneRow)

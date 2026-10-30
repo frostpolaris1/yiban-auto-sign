@@ -109,5 +109,7 @@ type TaskRow struct {
 	RunAt        time.Time
 	State        string
 	Attempts     int
-	OwnerUserID  string
+	// ClaimSeq 是本次认领的栅栏序号。结算与重排必须原样带回。
+	ClaimSeq    int
+	OwnerUserID string
 }

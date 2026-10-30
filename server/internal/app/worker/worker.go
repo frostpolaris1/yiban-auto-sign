@@ -43,6 +43,8 @@ const (
 	waitBatchAborted   = "wait_batch_aborted"  // 同批前一条基础设施失败，本行退回队列
 	unreadableCred     = "credential_invalid"
 	windowMissingRetry = 10 * time.Minute // 窗口未发现时的重试间隔
+	// reclaimBatch 是每 tick 回收过期租约的上限。
+	reclaimBatch = 100
 )
 
 // locationOutOfRange 是宿主自产的确定性结论词（与 window_closed 同形）：
@@ -86,7 +88,7 @@ func NewService(deps Deps) (*Service, error) {
 	return &Service{deps: deps, log: log}, nil
 }
 
-// Recover 回收孤儿 running 行；返回回收数。进程启动时调用一次。
+// Recover 回收无租约或租约已过期的 running 行；返回回收数。进程启动时调用一次。
 //
 // 单进程是明文不变量：启动瞬间仍为 running 的行必然来自上次崩溃，
 // 它们不会再有人收尾，必须放回队列。
@@ -111,6 +113,14 @@ func (s *Service) Step(ctx context.Context, limit int) (int, error) {
 		limit = 1
 	}
 	now := s.deps.Clock.Now()
+	// 先回收租约过期的行：崩溃或收尾失败留下的 running 不得跨 tick 卡住账号。
+	if reclaimed, err := s.deps.Store.ReclaimExpired(ctx, now, reclaimBatch); err != nil {
+		// 运行期必须可见：回收失败会让认领永久不可达，进程却看着健康。
+		s.log.Error("worker: reclaim expired leases failed", "error", err.Error())
+		return 0, err
+	} else if reclaimed > 0 {
+		s.log.Warn("worker: reclaimed expired task leases", "count", reclaimed)
+	}
 	tasks, err := s.deps.Store.ClaimDue(ctx, now, limit)
 	if err != nil {
 		return 0, err
@@ -140,9 +150,21 @@ func (s *Service) Step(ctx context.Context, limit int) (int, error) {
 				return processed, releaseErr
 			}
 		}
+		s.logSettlementError(err)
 		return processed, err
 	}
 	return processed, nil
+}
+
+// logSettlementError 让栅栏拒绝在运行期可见。
+// 冲突表示本次认领已被回收或接线丢失；只记这一类，避免每 tick 刷日志。
+func (s *Service) logSettlementError(err error) {
+	if err == nil {
+		return
+	}
+	if coreerrs.From(err).Code == coreerrs.CodeConflict {
+		s.log.Error("worker: settlement rejected by the claim fence", "error", err.Error())
+	}
 }
 
 // execute 执行一个已认领任务。返回 error 仅表示基础设施失败。
@@ -337,7 +359,7 @@ func (s *Service) settleOutcome(ctx context.Context, task corescheduleTask, win 
 // requeueWait 是等待型重排：成功后发 task.progress。
 // attempt 口径 = 落库后的 sign_tasks.attempts；等待不计尝试。
 func (s *Service) requeueWait(ctx context.Context, task corescheduleTask, runAt time.Time, result string) error {
-	if err := s.deps.Store.RequeueWait(ctx, task.ID, runAt, result); err != nil {
+	if err := s.deps.Store.RequeueWait(ctx, task.ID, runAt, result, task.ClaimSeq); err != nil {
 		return err
 	}
 	s.notifyProgress(ctx, task, task.Attempts)
@@ -347,7 +369,7 @@ func (s *Service) requeueWait(ctx context.Context, task corescheduleTask, runAt 
 // requeueRetry 是业务退避重排：成功后发 task.progress。
 // RequeueRetry 计一次尝试，故 attempt 为已消耗数加一。
 func (s *Service) requeueRetry(ctx context.Context, task corescheduleTask, runAt time.Time, result string) error {
-	if err := s.deps.Store.RequeueRetry(ctx, task.ID, runAt, result); err != nil {
+	if err := s.deps.Store.RequeueRetry(ctx, task.ID, runAt, result, task.ClaimSeq); err != nil {
 		return err
 	}
 	s.notifyProgress(ctx, task, task.Attempts+1)
@@ -368,7 +390,7 @@ func (s *Service) notifyProgress(ctx context.Context, task corescheduleTask, att
 // finish 落终态。终态只认 core/status 的三值。
 // 落库成功后发 task.concluded（payload：account_id、state、attempt）。
 func (s *Service) finish(ctx context.Context, task corescheduleTask, state corestatus.TaskState, result string) error {
-	if err := s.deps.Store.Finish(ctx, task.AccountID, task.SchoolTaskID, task.Day, state, result, s.deps.Clock.Now()); err != nil {
+	if err := s.deps.Store.Finish(ctx, task.AccountID, task.SchoolTaskID, task.Day, state, result, task.ClaimSeq, s.deps.Clock.Now()); err != nil {
 		return err
 	}
 	s.notifyConcluded(ctx, task, state)
@@ -381,7 +403,7 @@ func (s *Service) finish(ctx context.Context, task corescheduleTask, state cores
 // 为什么不能复用 finish：账号状态是排期输入。只落任务不落账号，
 // 次日仍会认领同一账号并再打一次失败登录（验收 3）。
 func (s *Service) finishCredentialInvalid(ctx context.Context, task corescheduleTask) error {
-	if err := s.deps.Store.FinishCredentialInvalid(ctx, task.SchoolID, task.AccountID, task.SchoolTaskID, task.Day, s.deps.Clock.Now()); err != nil {
+	if err := s.deps.Store.FinishCredentialInvalid(ctx, task.SchoolID, task.AccountID, task.SchoolTaskID, task.Day, task.ClaimSeq, s.deps.Clock.Now()); err != nil {
 		return err
 	}
 	s.notifyConcluded(ctx, task, corestatus.TaskFailed)
