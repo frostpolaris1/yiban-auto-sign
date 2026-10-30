@@ -1,8 +1,11 @@
 package worker_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -70,7 +73,7 @@ func (f *fakeStore) ClaimDue(_ context.Context, now time.Time, limit int) ([]cor
 			continue
 		}
 		t.State = string(corestatus.TaskRunning)
-		t.ClaimSeq = 7
+		t.ClaimSeq++
 		runningAccount[t.AccountID] = true
 		f.claimed = append(f.claimed, t.ID)
 		out = append(out, *t)
@@ -297,9 +300,15 @@ func openWindow() coreschedule.WindowRecord {
 
 func newService(t *testing.T, st *fakeStore, signer *fakeSigner, limiter fakeLimiter) *appworker.Service {
 	t.Helper()
+	return newServiceLogged(t, st, signer, limiter, nil)
+}
+
+func newServiceLogged(t *testing.T, st *fakeStore, signer *fakeSigner, limiter fakeLimiter, logger *slog.Logger) *appworker.Service {
+	t.Helper()
 	svc, err := appworker.NewService(appworker.Deps{
 		Store: st, Creds: fakeCreds{}, Signer: signer, Egress: fakeEgress{},
 		Limiter: limiter, Clock: coreclock.Fixed{T: testNow()}, Location: loc,
+		Logger: logger,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -311,6 +320,22 @@ func defaultSigner() *fakeSigner {
 	return &fakeSigner{
 		targets: []contract.Target{{ID: "pos-1", Title: "校门"}},
 		outcome: contract.OutcomeSuccess,
+	}
+}
+
+// 结算被栅栏拒绝时必须写错误日志：运行期可见，不只等停机。
+func TestStepLogsSettlementConflict(t *testing.T) {
+	st := newStore(baseTask())
+	st.windows["st-1|2026-10-29"] = openWindow()
+	st.finishErr = coreerrs.New(coreerrs.CodeConflict, "fenced")
+	var buf bytes.Buffer
+	svc := newServiceLogged(t, st, defaultSigner(), fakeLimiter{allow: true},
+		slog.New(slog.NewTextHandler(&buf, nil)))
+	if _, err := svc.Step(context.Background(), 1); err == nil {
+		t.Fatal("结算冲突必须上抛")
+	}
+	if !strings.Contains(buf.String(), "settlement rejected by the claim fence") {
+		t.Fatalf("日志缺栅栏拒绝行: %s", buf.String())
 	}
 }
 

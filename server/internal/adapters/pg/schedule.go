@@ -10,6 +10,7 @@ import (
 
 	coreaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/account"
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
+	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
@@ -17,7 +18,7 @@ import (
 
 // ErrScheduleConflict 是 CAS 认领竞争失败的错误：
 // 另一个 worker 已把该行推进到非 pending 态。
-var ErrScheduleConflict = errors.New("pg: sign task already claimed")
+var ErrScheduleConflict = coreerrs.New(coreerrs.CodeConflict, "pg: sign task already claimed")
 
 // ErrWindowStale 是窗口版本竞争失败的错误：库里已有更新的版本。
 // 哨兵在 core/schedule：用例层与适配器按同一对象判定。
@@ -165,6 +166,8 @@ func (r *ScheduleRepo) InsertPlan(ctx context.Context, rows []coreschedule.PlanR
 // uq_sign_tasks_one_running 在库层保证同账号同时至多一条 running；
 // 撞该索引（23505）与竞争失败同义：返回 ErrScheduleConflict。
 // 返回 0 行即 ErrScheduleConflict。
+// ClaimPending 把指定行推进到 running 并返回本次认领的 claim_seq。
+// 当前只有 e2e 使用；结算必须带返回的序号。
 func (r *ScheduleRepo) ClaimPending(ctx context.Context, accountID, schoolTaskID, day string, now time.Time) (int, error) {
 	var seq int
 	err := r.db.q(ctx).QueryRow(ctx,
@@ -619,8 +622,8 @@ func (r *ScheduleRepo) EnabledTasks(ctx context.Context) ([]coreschedule.TaskInf
 	return out, mapError(rows.Err())
 }
 
-// ResetRunning 回收孤儿 running 行（启动时调用）：
-// 单进程下启动瞬间的 running 必然来自上次崩溃。落点改为 now，立即可执行。
+// ResetRunning 回收无租约或租约已过期的 running 行（启动时调用）：
+// 租约为空的行来自上次崩溃；已过期的行不会再被原持有者结算。落点改为 now，立即可执行。
 // 回收前取 pg_try_advisory_xact_lock：多实例同时启动时只有一个执行。
 func (r *ScheduleRepo) ResetRunning(ctx context.Context) (int64, error) {
 	var n int64
