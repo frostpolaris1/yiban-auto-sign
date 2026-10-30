@@ -12,7 +12,17 @@ fi
 go vet ./...
 # -count=1：Go 的测试缓存会让 shell/fixture 改动看不见（派单 F18）。
 # 实测：改 deploy/linux/install.sh 后不带 -count=1 返回 cached 绿。
-go test -count=1 ./...
+#
+# 三个真库包下面还要带 -v 再跑一次（要数顶层 PASS）。有 DSN 时先把它们从这一轮
+# 剔掉：同一批用例跑两遍是纯等待（CI 实测约 60s）。没有 DSN 时不剔——它们在这一轮
+# 至少还编译一次，而下面的真库段只打 SKIP 行。
+if [ -n "${YIBAN_TEST_DATABASE_URL:-}" ]; then
+  # shellcheck disable=SC2046
+  go test -count=1 $(go list ./... | grep -Ev \
+    '^github.com/frostpolaris1/yiban-auto-sign/server/(internal/adapters/pg|cmd/server|cmd/cli)$')
+else
+  go test -count=1 ./...
+fi
 go run ./tools/gate -root . -rules canonical.tsv
 # 默认口径不含 _test.go。这里再跑一遍 -tests，
 # 使测试文件的 allow 登记被实际执行（AGENTS §29）。
