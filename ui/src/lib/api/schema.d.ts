@@ -1566,7 +1566,6 @@ export interface operations {
             400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
-            429: components["responses"]["DefaultError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -1603,6 +1602,7 @@ export interface operations {
             403: components["responses"]["ForbiddenError"];
             409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["DefaultError"];
             default: components["responses"]["DefaultError"];
         };
     };
