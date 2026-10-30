@@ -103,6 +103,12 @@ func TestResetRunningClearsLease(t *testing.T) {
 	if _, err := e.sched.ClaimDue(e.ctx, due.Add(time.Minute), 10); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
+	// 显式把租约置为过去：本用例断言的是「启动回收清过期租约」。
+	if _, err := e.db.Exec(e.ctx,
+		`UPDATE sign_tasks SET lease_expires_at = now() - interval '1 minute' WHERE id = $1::uuid`,
+		rowID); err != nil {
+		t.Fatalf("expire lease: %v", err)
+	}
 	n, err := e.sched.ResetRunning(e.ctx)
 	if err != nil {
 		t.Fatalf("reset: %v", err)

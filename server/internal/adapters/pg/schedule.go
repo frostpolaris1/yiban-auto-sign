@@ -165,28 +165,30 @@ func (r *ScheduleRepo) InsertPlan(ctx context.Context, rows []coreschedule.PlanR
 // uq_sign_tasks_one_running 在库层保证同账号同时至多一条 running；
 // 撞该索引（23505）与竞争失败同义：返回 ErrScheduleConflict。
 // 返回 0 行即 ErrScheduleConflict。
-func (r *ScheduleRepo) ClaimPending(ctx context.Context, accountID, schoolTaskID, day string, now time.Time) error {
-	ct, err := r.db.q(ctx).Exec(ctx,
-		`UPDATE sign_tasks t SET state = 'running', claimed_at = $4::timestamptz,
+func (r *ScheduleRepo) ClaimPending(ctx context.Context, accountID, schoolTaskID, day string, now time.Time) (int, error) {
+	var seq int
+	err := r.db.q(ctx).QueryRow(ctx,
+		`UPDATE sign_tasks t SET state = 'running', claimed_at = $4,
 		        lease_expires_at = $4::timestamptz + make_interval(secs => $5),
 		        claim_seq = t.claim_seq + 1
 		 WHERE t.account_id = $1::uuid AND t.school_task_id = $2::uuid AND t.day = $3 AND t.state = 'pending'
 		   AND EXISTS (SELECT 1 FROM accounts a
 		               WHERE a.id = t.account_id AND a.status = 'active' AND a.deleted_at IS NULL)
 		   AND EXISTS (SELECT 1 FROM school_tasks st
-		               WHERE st.id = t.school_task_id AND st.enabled)`,
-		accountID, schoolTaskID, day, now, r.lease.Seconds())
+		               WHERE st.id = t.school_task_id AND st.enabled)
+		 RETURNING t.claim_seq`,
+		accountID, schoolTaskID, day, now, r.lease.Seconds()).Scan(&seq)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return ErrScheduleConflict
+			return 0, ErrScheduleConflict
 		}
-		return mapError(err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, ErrScheduleConflict
+		}
+		return 0, mapError(err)
 	}
-	if ct.RowsAffected() == 0 {
-		return ErrScheduleConflict
-	}
-	return nil
+	return seq, nil
 }
 
 // Finish 把 running 行落终态并记结果摘要。

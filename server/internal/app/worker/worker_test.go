@@ -70,6 +70,7 @@ func (f *fakeStore) ClaimDue(_ context.Context, now time.Time, limit int) ([]cor
 			continue
 		}
 		t.State = string(corestatus.TaskRunning)
+		t.ClaimSeq = 7
 		runningAccount[t.AccountID] = true
 		f.claimed = append(f.claimed, t.ID)
 		out = append(out, *t)
@@ -77,14 +78,14 @@ func (f *fakeStore) ClaimDue(_ context.Context, now time.Time, limit int) ([]cor
 	return out, nil
 }
 
-func (f *fakeStore) Finish(_ context.Context, accountID, schoolTaskID, day string, state corestatus.TaskState, result string, _ int, _ time.Time) error {
+func (f *fakeStore) Finish(_ context.Context, accountID, schoolTaskID, day string, state corestatus.TaskState, result string, claimSeq int, _ time.Time) error {
 	if f.finishErr != nil {
 		return f.finishErr
 	}
 	for i := range f.tasks {
 		t := &f.tasks[i]
 		if t.AccountID == accountID && t.SchoolTaskID == schoolTaskID && t.Day == day {
-			if t.State != string(corestatus.TaskRunning) {
+			if t.State != string(corestatus.TaskRunning) || t.ClaimSeq != claimSeq {
 				return coreerrs.ErrNotFound
 			}
 			t.State = string(state)
@@ -99,14 +100,14 @@ func (f *fakeStore) Finish(_ context.Context, accountID, schoolTaskID, day strin
 
 // FinishCredentialInvalid 按库语义落 failed(credential_invalid)。
 // 账号状态是存储层副作用，由 pg e2e 钉住，本 fake 不复制。
-func (f *fakeStore) FinishCredentialInvalid(_ context.Context, _ /*schoolID*/, accountID, schoolTaskID, day string, _ int, _ time.Time) error {
+func (f *fakeStore) FinishCredentialInvalid(_ context.Context, _ /*schoolID*/, accountID, schoolTaskID, day string, claimSeq int, _ time.Time) error {
 	if f.finishErr != nil {
 		return f.finishErr
 	}
 	for i := range f.tasks {
 		t := &f.tasks[i]
 		if t.AccountID == accountID && t.SchoolTaskID == schoolTaskID && t.Day == day {
-			if t.State != string(corestatus.TaskRunning) {
+			if t.State != string(corestatus.TaskRunning) || t.ClaimSeq != claimSeq {
 				return coreerrs.ErrNotFound
 			}
 			t.State = string(corestatus.TaskFailed)
@@ -120,10 +121,10 @@ func (f *fakeStore) FinishCredentialInvalid(_ context.Context, _ /*schoolID*/, a
 }
 
 // requeue 是两种重排的公共实现；bumpAttempts 区分"等待"与"业务重试"。
-func (f *fakeStore) requeue(taskID string, runAt time.Time, result string, bumpAttempts bool) error {
+func (f *fakeStore) requeue(taskID string, runAt time.Time, result string, bumpAttempts bool, claimSeq int) error {
 	for i := range f.tasks {
 		t := &f.tasks[i]
-		if t.ID == taskID && t.State == string(corestatus.TaskRunning) {
+		if t.ID == taskID && t.State == string(corestatus.TaskRunning) && t.ClaimSeq == claimSeq {
 			t.State = string(corestatus.TaskPending)
 			t.RunAt = runAt
 			if bumpAttempts {
@@ -137,12 +138,12 @@ func (f *fakeStore) requeue(taskID string, runAt time.Time, result string, bumpA
 	return coreerrs.ErrNotFound
 }
 
-func (f *fakeStore) RequeueWait(_ context.Context, taskID string, runAt time.Time, result string, _ int) error {
-	return f.requeue(taskID, runAt, result, false)
+func (f *fakeStore) RequeueWait(_ context.Context, taskID string, runAt time.Time, result string, claimSeq int) error {
+	return f.requeue(taskID, runAt, result, false, claimSeq)
 }
 
-func (f *fakeStore) RequeueRetry(_ context.Context, taskID string, runAt time.Time, result string, _ int) error {
-	return f.requeue(taskID, runAt, result, true)
+func (f *fakeStore) RequeueRetry(_ context.Context, taskID string, runAt time.Time, result string, claimSeq int) error {
+	return f.requeue(taskID, runAt, result, true, claimSeq)
 }
 
 func (f *fakeStore) Rearm(_ context.Context, taskID string, runAt time.Time) error {

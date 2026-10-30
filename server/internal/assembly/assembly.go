@@ -164,7 +164,7 @@ const workerPollInterval = 2 * time.Second
 //
 // 顺序判据（派单 P7）：先停 worker 领取，再等在飞结算，
 // 最后打印在飞清零结果；HTTP 关闭与它并行，不互相等。
-// 预算耗尽而循环未停时，残余 running 行由下次启动的 Recover 回收。
+// 预算耗尽而循环未停时，残余 running 行的租约到期后由回收器回收；下次启动的 Recover 清无租约或已过期行。
 func stopStack(srv *http.Server, stack *Stack, loop loopHandle, logger *slog.Logger) error {
 	shutdown, cancel := context.WithTimeout(context.Background(), shutdownBudget)
 	defer cancel()
@@ -466,7 +466,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 
 		// 事件总线先于 worker 与计划装配：两者的发布端口引用同一实例。
 		broker := appevents.NewBroker()
-		// 执行循环：手动签到入队 + 进程启动时回收孤儿 running 行。
+		// 执行循环：手动签到入队 + 进程启动时回收无租约或租约过期的 running 行。
 		// 限速与出口参数暂用模块缺省；配置面（名册键）随 P4-F 收口统一接入。
 		egressSvc, err := appegress.NewService(appegress.Deps{
 			Store: pg.NewEgressRepo(db), Clock: clk,

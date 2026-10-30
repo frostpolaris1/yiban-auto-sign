@@ -88,7 +88,7 @@ func NewService(deps Deps) (*Service, error) {
 	return &Service{deps: deps, log: log}, nil
 }
 
-// Recover 回收孤儿 running 行；返回回收数。进程启动时调用一次。
+// Recover 回收无租约或租约已过期的 running 行；返回回收数。进程启动时调用一次。
 //
 // 单进程是明文不变量：启动瞬间仍为 running 的行必然来自上次崩溃，
 // 它们不会再有人收尾，必须放回队列。
@@ -150,9 +150,21 @@ func (s *Service) Step(ctx context.Context, limit int) (int, error) {
 				return processed, releaseErr
 			}
 		}
+		s.logSettlementError(err)
 		return processed, err
 	}
 	return processed, nil
+}
+
+// logSettlementError 让栅栏拒绝在运行期可见。
+// 冲突表示本次认领已被回收或接线丢失；只记这一类，避免每 tick 刷日志。
+func (s *Service) logSettlementError(err error) {
+	if err == nil {
+		return
+	}
+	if coreerrs.From(err).Code == coreerrs.CodeConflict {
+		s.log.Error("worker: settlement rejected by the claim fence", "error", err.Error())
+	}
 }
 
 // execute 执行一个已认领任务。返回 error 仅表示基础设施失败。

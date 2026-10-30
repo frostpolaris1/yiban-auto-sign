@@ -50,7 +50,7 @@ type Store interface {
 	RequeueRetry(ctx context.Context, taskID string, runAt time.Time, result string, claimSeq int) error
 	// Rearm 把当日 failed 行放回队列（手动签到的重试入口）。
 	Rearm(ctx context.Context, taskID string, runAt time.Time) error
-	// ResetRunning 回收孤儿 running 行（启动时调用）。
+	// ResetRunning 回收无租约或租约已过期的 running 行（启动时调用）。
 	// 仓储带 advisory lock：多实例同时启动时只有一个执行。
 	ResetRunning(ctx context.Context) (int64, error)
 	// CountRunning 数当前 running 行。优雅停机用它报在飞清零。
