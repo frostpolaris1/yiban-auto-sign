@@ -44,4 +44,4 @@
 | golang.org/x/time/rate | BSD-3-Clause |
 | google.golang.org/protobuf | BSD-3-Clause |
 
-共 32 个模块。
+共 32 个模块/包。

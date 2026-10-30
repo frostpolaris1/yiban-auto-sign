@@ -17,12 +17,7 @@
   },
   "YIBAN_ENV": {
     "type": "enum",
-    "domain": [
-      "development",
-      "test",
-      "staging",
-      "production"
-    ],
+    "domain": ["development", "test", "staging", "production"],
     "default": null,
     "group": [
       "部署"
@@ -921,10 +916,7 @@
   },
   "YIBAN_TIME_PREF_COOLDOWN_SEC": {
     "type": "seconds",
-    "domain": [
-      0,
-      3600
-    ],
+    "domain": [0, 3600],
     "default": 30,
     "group": [
       "节流"
@@ -2054,10 +2046,7 @@
   },
   "YIBAN_HEALTH_RETRIES": {
     "type": "int",
-    "domain": [
-      1,
-      100
-    ],
+    "domain": [1, 100],
     "default": 10,
     "group": [
       "部署"
@@ -2070,10 +2059,7 @@
   },
   "YIBAN_HEALTH_RETRY_INTERVAL": {
     "type": "seconds",
-    "domain": [
-      0,
-      60
-    ],
+    "domain": [0, 60],
     "default": 1,
     "group": [
       "部署"
@@ -2110,10 +2096,7 @@
   },
   "YIBAN_SSE_POLL_SEC": {
     "type": "seconds",
-    "domain": [
-      1,
-      60
-    ],
+    "domain": [1, 60],
     "default": 1,
     "group": [
       "实时进度流"
@@ -2126,10 +2109,7 @@
   },
   "YIBAN_SSE_HEARTBEAT_SEC": {
     "type": "seconds",
-    "domain": [
-      1,
-      50
-    ],
+    "domain": [1, 50],
     "default": 15,
     "group": [
       "实时进度流"
@@ -2142,10 +2122,7 @@
   },
   "YIBAN_SSE_GAP_MAX": {
     "type": "int",
-    "domain": [
-      0,
-      100000
-    ],
+    "domain": [0, 100000],
     "default": 500,
     "group": [
       "实时进度流"
@@ -2158,10 +2135,7 @@
   },
   "YIBAN_SSE_SESSION_MAX": {
     "type": "int",
-    "domain": [
-      1,
-      100
-    ],
+    "domain": [1, 100],
     "default": 3,
     "group": [
       "实时进度流"
@@ -2174,10 +2148,7 @@
   },
   "YIBAN_SSE_CONNECTIONS_MAX": {
     "type": "int",
-    "domain": [
-      1,
-      1000
-    ],
+    "domain": [1, 1000],
     "default": 10,
     "group": [
       "实时进度流"
@@ -2190,10 +2161,7 @@
   },
   "YIBAN_SSE_USER_CONNECTIONS_MAX": {
     "type": "int",
-    "domain": [
-      1,
-      1000
-    ],
+    "domain": [1, 1000],
     "default": 10,
     "group": [
       "实时进度流"
@@ -2206,10 +2174,7 @@
   },
   "YIBAN_SSE_IDLE_SEC": {
     "type": "seconds",
-    "domain": [
-      0,
-      86400
-    ],
+    "domain": [0, 86400],
     "default": 300,
     "group": [
       "实时进度流"
@@ -2222,10 +2187,7 @@
   },
   "YIBAN_SSE_SESSION_RECHECK_SEC": {
     "type": "seconds",
-    "domain": [
-      0,
-      3600
-    ],
+    "domain": [0, 3600],
     "default": 60,
     "group": [
       "实时进度流"
@@ -2238,10 +2200,7 @@
   },
   "YIBAN_SSE_CONNECTION_MAX_SEC": {
     "type": "seconds",
-    "domain": [
-      0,
-      86400
-    ],
+    "domain": [0, 86400],
     "default": 7200,
     "group": [
       "实时进度流"
@@ -2324,7 +2283,7 @@
     "tier": "master",
     "reload": "restart"
   },
-  "YIBAN_SIGNING_KEY": {
+ "YIBAN_SIGNING_KEY": {
     "type": "string",
     "default": "",
     "group": [
@@ -2339,9 +2298,7 @@
   "YIBAN_RATE_LIMIT_ENABLE": {
     "type": "bool",
     "default": true,
-    "group": [
-      "节流"
-    ],
+    "group": ["节流"],
     "doc": "入站限流总开关。关闭时登录、重置、改密、校验、签到不按 IP 与账号限速",
     "sensitive": false,
     "web_editable": true,
@@ -2350,14 +2307,9 @@
   },
   "YIBAN_RATE_IP_PER_MIN": {
     "type": "int",
-    "domain": [
-      1,
-      6000
-    ],
+    "domain": [1, 6000],
     "default": 60,
-    "group": [
-      "节流"
-    ],
+    "group": ["节流"],
     "doc": "每个客户端 IP 每分钟允许的受限请求数（登录、重置、改密、校验、签到）",
     "sensitive": false,
     "web_editable": true,
@@ -2366,14 +2318,9 @@
   },
   "YIBAN_RATE_IP_BURST": {
     "type": "int",
-    "domain": [
-      1,
-      6000
-    ],
+    "domain": [1, 6000],
     "default": 20,
-    "group": [
-      "节流"
-    ],
+    "group": ["节流"],
     "doc": "每个客户端 IP 的突发桶容量",
     "sensitive": false,
     "web_editable": true,
@@ -2382,14 +2329,9 @@
   },
   "YIBAN_RATE_ACCOUNT_PER_MIN": {
     "type": "int",
-    "domain": [
-      1,
-      600
-    ],
+    "domain": [1, 600],
     "default": 10,
-    "group": [
-      "节流"
-    ],
+    "group": ["节流"],
     "doc": "每个账号每分钟允许的受限请求数（登录按邮箱、重置按令牌、其余按会话或账号 id）",
     "sensitive": false,
     "web_editable": true,
@@ -2398,14 +2340,9 @@
   },
   "YIBAN_RATE_ACCOUNT_BURST": {
     "type": "int",
-    "domain": [
-      1,
-      600
-    ],
+    "domain": [1, 600],
     "default": 5,
-    "group": [
-      "节流"
-    ],
+    "group": ["节流"],
     "doc": "每个账号的突发桶容量",
     "sensitive": false,
     "web_editable": true,
@@ -2415,9 +2352,7 @@
   "YIBAN_TRUSTED_PROXIES": {
     "type": "string",
     "default": "",
-    "group": [
-      "安全"
-    ],
+    "group": ["安全"],
     "doc": "可信反向代理 CIDR 表（逗号分隔）。空表示不信任 X-Forwarded-For，只按直连对端限流；裸 IP 按单机网段处理",
     "sensitive": false,
     "web_editable": false,
@@ -2426,14 +2361,9 @@
   },
   "YIBAN_KDF_CONCURRENCY": {
     "type": "int",
-    "domain": [
-      1,
-      64
-    ],
+    "domain": [1, 64],
     "default": 4,
-    "group": [
-      "安全"
-    ],
+    "group": ["安全"],
     "doc": "口令哈希（Argon2id）的进程级并发上限。每次哈希约 19 MiB 内存，上限即内存上限",
     "sensitive": false,
     "web_editable": true,

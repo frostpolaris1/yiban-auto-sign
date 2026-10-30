@@ -133,6 +133,21 @@ func TestClientIPWalksTrustedChain(t *testing.T) {
 	}
 }
 
+// 单条头部里有多跳时必须取最右的不可信地址：
+// 最左值由客户端写入，代理只在右侧追加。
+func TestClientIPUsesRightmostUntrustedHop(t *testing.T) {
+	trusted := mustPrefixes(t, "10.0.0.0/8")
+	for _, forwarded := range [][]string{
+		{"203.0.113.7, 198.51.100.9"},
+		{"203.0.113.7", "198.51.100.9"},
+	} {
+		got := ClientIP("10.1.2.3:443", forwarded, trusted)
+		if got != "198.51.100.9" {
+			t.Fatalf("forwarded=%v client ip = %q, want 最右不可信跳 198.51.100.9", forwarded, got)
+		}
+	}
+}
+
 // 全部可信或头部畸形：回退直连对端，绝不返回空串。
 func TestClientIPFallsBackToPeer(t *testing.T) {
 	trusted := mustPrefixes(t, "10.0.0.0/8")

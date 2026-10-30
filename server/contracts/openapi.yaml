@@ -222,6 +222,7 @@ paths:
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
+        '429': { $ref: '#/components/responses/DefaultError' }
         default: { $ref: '#/components/responses/DefaultError' }
     post:
       tags: [users]
@@ -530,7 +531,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/ConflictError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
-        '429': { $ref: '#/components/responses/TooManyRequestsError' }
+        '429': { $ref: '#/components/responses/DefaultError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/accounts/{id}:
     get:
@@ -1058,7 +1059,7 @@ paths:
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
-        '429': { $ref: '#/components/responses/TooManyRequestsError' }
+        '429': { $ref: '#/components/responses/DefaultError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/capacity:
     get:
@@ -1337,7 +1338,11 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
     TooManyRequestsError:
-      description: Rate limit exceeded; Retry-After says when to retry.
+      description: Inbound rate limit exceeded; Retry-After says when to retry.
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying; always at least 1.
+          schema: { type: integer, minimum: 1 }
       content:
         application/json:
           schema:

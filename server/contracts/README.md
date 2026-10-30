@@ -17,9 +17,10 @@ authoritative and a gate keeps both tables equal.
 - Pagination: `?cursor=&limit=` (default 50, max 200).
 - Cross-scope object: **404**. Action forbidden: **403**.
 - Rate limits: the inbound limiter answers **429** with `Retry-After` in
-  seconds. Login, forgot/reset password, change password, verify and sign are
-  limited per client IP and per account key. Other 429 answers (time-preference
-  cooldown, capacity) may omit `Retry-After`.
+  seconds. Login, reset password, change password, verify and sign are limited
+  per client IP and per account key; forgot password is limited per client IP
+  only. Other 429 answers (time-preference cooldown, capacity) omit
+  `Retry-After`.
 - No phone number, credential or upstream raw text in any response.
 
 ## Conditional requests

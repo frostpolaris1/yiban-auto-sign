@@ -68,22 +68,25 @@ func ClientIP(remoteAddr string, forwarded []string, trusted []Prefix) string {
 	if !isTrusted(peer, trusted) {
 		return peer.String()
 	}
-	// 从右往左：右侧是离本机最近的一跳。
-	for i := len(forwarded) - 1; i >= 0; i-- {
-		for _, part := range strings.Split(forwarded[i], ",") {
-			part = strings.TrimSpace(part)
-			if part == "" {
-				continue
+	// 先按「头部顺序、再按逗号」展平成一条链，然后从右往左走。
+	// 右侧是离本机最近的一跳；最左值可由客户端伪造。
+	var hops []string
+	for _, value := range forwarded {
+		for _, part := range strings.Split(value, ",") {
+			if part = strings.TrimSpace(part); part != "" {
+				hops = append(hops, part)
 			}
-			addr, err := netip.ParseAddr(part)
-			if err != nil {
-				continue
-			}
-			if isTrusted(addr, trusted) {
-				continue
-			}
-			return addr.String()
 		}
+	}
+	for i := len(hops) - 1; i >= 0; i-- {
+		addr, err := netip.ParseAddr(hops[i])
+		if err != nil {
+			continue
+		}
+		if isTrusted(addr, trusted) {
+			continue
+		}
+		return addr.String()
 	}
 	return peer.String()
 }

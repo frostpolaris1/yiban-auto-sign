@@ -1291,9 +1291,11 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
-        /** @description Rate limit exceeded; Retry-After says when to retry. */
+        /** @description Inbound rate limit exceeded; Retry-After says when to retry. */
         TooManyRequestsError: {
             headers: {
+                /** @description Seconds to wait before retrying; always at least 1. */
+                "Retry-After"?: number;
                 [name: string]: unknown;
             };
             content: {
@@ -1564,6 +1566,7 @@ export interface operations {
             400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            429: components["responses"]["DefaultError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -1945,7 +1948,7 @@ export interface operations {
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
-            429: components["responses"]["TooManyRequestsError"];
+            429: components["responses"]["DefaultError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -2547,7 +2550,7 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             413: components["responses"]["PayloadTooLargeError"];
-            429: components["responses"]["TooManyRequestsError"];
+            429: components["responses"]["DefaultError"];
             default: components["responses"]["DefaultError"];
         };
     };

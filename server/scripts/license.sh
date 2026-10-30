@@ -207,7 +207,7 @@ EOF
   while IFS=$'\t' read -r mod lic; do
     printf '| %s | %s |\n' "$mod" "$lic"
   done <"$tmpdir/deps.tsv"
-  printf '\n共 %s 个模块。\n' "$count"
+  printf '\n共 %s 个模块/包。\n' "$count"
 }
 
 if [ "$mode" = "write" ]; then
