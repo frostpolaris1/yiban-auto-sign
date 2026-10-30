@@ -161,6 +161,11 @@ func (h *Handler) Plan(c *gin.Context, _ oapi.SchedulePlanParams) {
 	if !ok {
 		return
 	}
+	// 建计划只接受当前业务日：日切由服务端触发，客户端不得补建任意日期。
+	if today := coreclock.BusinessDay(h.cfg.Clock.Now(), h.cfg.Location); body.Day != today {
+		fail(c, errs.New(errs.CodeValidation, "plan day must be the current business day"))
+		return
+	}
 	in := h.input(body.Day, body.SchoolId, body.TaskId)
 	p, err := h.planner.Build(c.Request.Context(), in)
 	if err != nil {

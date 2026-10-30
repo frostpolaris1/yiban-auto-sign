@@ -30,11 +30,12 @@ type fakeStore struct {
 	todayTask string
 
 	// 观测面
-	claimed  []string
-	finished map[string]corestatus.TaskState
-	results  map[string]string
-	requeued map[string]time.Time // 最近一次重排落点（含等待型）
-	resets   int64
+	claimed      []string
+	finished     map[string]corestatus.TaskState
+	results      map[string]string
+	requeued     map[string]time.Time // 最近一次重排落点（含等待型）
+	resets       int64
+	reclaimCalls int
 }
 
 func newStore(tasks ...coreschedule.TaskRow) *fakeStore {
@@ -154,6 +155,11 @@ func (f *fakeStore) Rearm(_ context.Context, taskID string, runAt time.Time) err
 		}
 	}
 	return coreerrs.ErrNotFound
+}
+
+func (f *fakeStore) ReclaimExpired(context.Context, time.Time, int) (int64, error) {
+	f.reclaimCalls++
+	return 0, nil
 }
 
 func (f *fakeStore) ResetRunning(context.Context) (int64, error) {
@@ -304,6 +310,18 @@ func defaultSigner() *fakeSigner {
 	return &fakeSigner{
 		targets: []contract.Target{{ID: "pos-1", Title: "校门"}},
 		outcome: contract.OutcomeSuccess,
+	}
+}
+
+// Step 每 tick 先回收过期租约，再认领。
+func TestStepReclaimsExpiredLeasesFirst(t *testing.T) {
+	st := newStore()
+	svc := newService(t, st, defaultSigner(), fakeLimiter{allow: true})
+	if _, err := svc.Step(context.Background(), 1); err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	if st.reclaimCalls != 1 {
+		t.Fatalf("reclaim 调用 = %d, want 1（每 tick 一次）", st.reclaimCalls)
 	}
 }
 

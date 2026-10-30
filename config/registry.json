@@ -2369,5 +2369,16 @@
     "web_editable": true,
     "tier": "master",
     "reload": "restart"
+  },
+  "YIBAN_TASK_LEASE_SEC": {
+    "type": "int",
+    "domain": [30, 3600],
+    "default": 120,
+    "group": ["调度"],
+    "doc": "执行任务的租约秒数。超过它的 running 行由每 tick 的回收器放回 pending，账号不再被崩溃的行卡死",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "restart"
   }
 }

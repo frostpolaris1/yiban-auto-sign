@@ -43,6 +43,8 @@ const (
 	waitBatchAborted   = "wait_batch_aborted"  // 同批前一条基础设施失败，本行退回队列
 	unreadableCred     = "credential_invalid"
 	windowMissingRetry = 10 * time.Minute // 窗口未发现时的重试间隔
+	// reclaimBatch 是每 tick 回收过期租约的上限。
+	reclaimBatch = 100
 )
 
 // locationOutOfRange 是宿主自产的确定性结论词（与 window_closed 同形）：
@@ -111,6 +113,12 @@ func (s *Service) Step(ctx context.Context, limit int) (int, error) {
 		limit = 1
 	}
 	now := s.deps.Clock.Now()
+	// 先回收租约过期的行：崩溃或收尾失败留下的 running 不得跨 tick 卡住账号。
+	if reclaimed, err := s.deps.Store.ReclaimExpired(ctx, now, reclaimBatch); err != nil {
+		return 0, err
+	} else if reclaimed > 0 {
+		s.log.Warn("worker: reclaimed expired task leases", "count", reclaimed)
+	}
 	tasks, err := s.deps.Store.ClaimDue(ctx, now, limit)
 	if err != nil {
 		return 0, err

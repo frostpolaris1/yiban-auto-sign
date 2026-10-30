@@ -526,7 +526,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		}
 		// 排期仓储同时是 worker 的 Store：凭据错结算要写账号状态与引擎审计，
 		// 故注入审计仓储。缺它时结算报错（不静默跳过审计）。
-		scheduleRepo := pg.NewScheduleRepoWithAudit(db, audits)
+		scheduleRepo := pg.NewScheduleRepoWithAudit(db, audits).WithLease(cfg.TaskLease)
 		workerSvc, err = appworker.NewService(appworker.Deps{
 			Store:    scheduleRepo,
 			Creds:    workerCredentials{svc: accountSvc},
@@ -598,6 +598,30 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			SlotsPerSlice: slots, Front: true, UsePrefs: cfg.AllowTimePref,
 			EdgeFront: cfg.EdgeFront, EdgeBack: cfg.EdgeBack,
 		})
+		// 日切构建：启动补建 + 业务日 00:10 定时。参数与 HTTP 建计划同源。
+		daily, err := appschedule.NewDailyCron(&appschedule.DailyBuilder{
+			Service: scheduleSvc, Tasks: scheduleRepo, Clock: clk, Location: loc,
+			Params: appschedule.BuildParams{
+				Workers: cfg.Workers, Avg: cfg.AvgAttempt, Rate: cfg.EgressRate,
+				Util: corecapacity.UtilDefault, SlotsPerSlice: slots, Front: true,
+				UsePrefs: cfg.AllowTimePref, EdgeFront: cfg.EdgeFront, EdgeBack: cfg.EdgeBack,
+			},
+		}, logger)
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("assembly: daily build cron: %w", err)
+		}
+		if err := daily.Start(); err != nil {
+			closeFn()
+			return nil, fmt.Errorf("assembly: start daily build cron: %w", err)
+		}
+		prevClose := closeFn
+		closeFn = func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			_ = daily.Stop(ctx)
+			cancel()
+			prevClose()
+		}
 		diagSvc, err := appdiagnostic.NewService(appdiagnostic.Deps{
 			Accounts: accountSvc,
 			Store:    pg.NewDiagnosticRepo(db),
