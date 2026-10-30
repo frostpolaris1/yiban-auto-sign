@@ -27,9 +27,10 @@ lines are merged into one comma-separated value per RFC 9110 section 5.3
 before binding, so a well-formed list answers `304` or `200`, never `400`.
 A `304` carries `ETag` and carries no `Content-Type`, no `Content-Length`
 and no body. The `304` response declares the `ETag` header in the YAML.
-The `200` path reads the record twice: `Get` for the validator, then `Open`
-for the stream. Merge the two reads into one port call only if this path
-becomes a hotspot.
+The `200` path reads the record twice for an owner: `Get` for the validator,
+then `Open` for the stream. An admin whose owner read misses adds one more
+`Get` against the admin scope before `Open`. Merge the reads into one port
+call only if this path becomes a hotspot.
 
 ## Roles
 

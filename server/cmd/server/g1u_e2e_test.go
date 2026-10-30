@@ -162,7 +162,7 @@ func TestG1UAdminReadsBoundSchoolPhoto(t *testing.T) {
 	if rec := e.do("GET", path, nil, f.owner2); rec.Code != http.StatusNotFound {
 		t.Fatalf("他人 user status = %d", rec.Code)
 	}
-	// master 不在契约 x-roles [user, admin]：404。
+	// master 没有跨属主读取面：属主未命中即 404。
 	if rec := e.do("GET", path, nil, f.master); rec.Code != http.StatusNotFound {
 		t.Fatalf("master status = %d", rec.Code)
 	}

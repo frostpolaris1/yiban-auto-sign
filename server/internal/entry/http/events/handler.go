@@ -2,8 +2,9 @@
 //
 // # 功能
 // GET /api/admin/events（master/admin，SSE）、
-// GET /api/me/diagnostics 与 GET /api/accounts/{id}/diagnostics
-// （user/admin）、GET /api/me/sign-status（user）。
+// GET /api/me/diagnostics 与 GET /api/me/sign-status
+// （任意已认证主体，按会话 userID）、
+// GET /api/accounts/{id}/diagnostics（user/admin）。
 // 本包**不**写 SQL、**不**解析会话、**不**决定可见面。
 //
 // # 归属
