@@ -297,7 +297,7 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		SlotsPerSlice: 5, Front: true, UsePrefs: true,
 	})
 	userSvc, err := appuser.NewService(appuser.Deps{
-		Users: e.users, Audit: e.audits, Tx: db, Clock: clk, Limit: 10000,
+		Users: e.users, Audit: e.audits, Tx: db, Clock: clk, KDF: coreauth.PlainHasher{}, Limit: 10000,
 	})
 	if err != nil {
 		t.Fatalf("new user service: %v", err)

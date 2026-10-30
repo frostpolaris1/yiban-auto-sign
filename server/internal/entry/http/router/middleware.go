@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -168,6 +170,59 @@ func securityHeaders() gin.HandlerFunc {
 		}
 		c.Next()
 	}
+}
+
+// rateLimitedPaths 是按客户端 IP 限流的端点。
+// 模式取 Gin 注册形状（:id），不是契约的 {id}。
+var rateLimitedPaths = map[string]struct{}{
+	"/api/auth/login":           {},
+	"/api/auth/forgot-password": {},
+	"/api/auth/reset-password":  {},
+	"/api/auth/change-password": {},
+	"/api/accounts/:id/verify":  {},
+	"/api/accounts/:id/sign":    {},
+}
+
+// rateLimitInbound 在解析会话之前按客户端 IP 限流。
+// 未认证洪水不得先付一次会话查询或一次请求体绑定。
+func (s *server) rateLimitInbound() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if _, limited := rateLimitedPaths[c.FullPath()]; !limited {
+			c.Next()
+			return
+		}
+		if ok, wait := s.rateLimit.AllowIP(c.Request.RemoteAddr,
+			c.Request.Header.Values("X-Forwarded-For")); !ok {
+			tooManyRequests(c, wait)
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+// tooManyRequests 写 429 与 Retry-After。
+// Retry-After 取秒并向上取整：0 秒会被客户端读成"立即可重试"。
+func tooManyRequests(c *gin.Context, wait time.Duration) {
+	seconds := int(math.Ceil(wait.Seconds()))
+	if seconds < 1 {
+		seconds = 1
+	}
+	c.Header("Retry-After", strconv.Itoa(seconds))
+	respond.Error(c.Writer, c.Request, errs.New(errs.CodeRateLimited, "too many requests"))
+}
+
+// accountLimit 在付出 KDF 之前按账号键判限流。
+// 键由调用方给出：登录用归一邮箱，重置用令牌摘要，改密用会话 userID，
+// 校验与签到用账号 id。这里统一小写：UUID 大小写不敏感，
+// 不归一就能用大小写变体把同一个账号拆成多个桶。
+func (s *server) accountLimit(c *gin.Context, key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if ok, wait := s.rateLimit.AllowAccount(key); !ok {
+		tooManyRequests(c, wait)
+		return false
+	}
+	return true
 }
 
 // requireCSRF 拒绝「带会话但不带匹配 X-CSRF-Token 头」的改状态请求。

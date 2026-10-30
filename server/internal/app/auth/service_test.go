@@ -110,11 +110,20 @@ type fakeResets struct {
 	created []coreauth.NewPasswordReset
 	next    *coreauth.PasswordReset
 	consume int
+	peek    int
 }
 
 func (f *fakeResets) Create(_ context.Context, in coreauth.NewPasswordReset) (coreauth.PasswordReset, error) {
 	f.created = append(f.created, in)
 	return coreauth.PasswordReset{UserID: in.UserID, TokenHash: in.TokenHash}, nil
+}
+
+func (f *fakeResets) Peek(context.Context, coreauth.TokenHash, time.Time) (coreauth.PasswordReset, error) {
+	f.peek++
+	if f.next == nil {
+		return coreauth.PasswordReset{}, errs.ErrNotFound
+	}
+	return *f.next, nil
 }
 
 func (f *fakeResets) Consume(context.Context, coreauth.TokenHash, time.Time) (coreauth.PasswordReset, error) {
@@ -147,7 +156,25 @@ type harness struct {
 	sessions *fakeSessions
 	resets   *fakeResets
 	audits   *fakeAudits
+	kdf      *countingKDF
 	svc      *appauth.Service
+}
+
+// countingKDF 计数哈希与校验次数，行为与 PlainHasher 相同。
+// 用于钉住「垃圾重置令牌不付 Argon2」与「有效令牌只哈希一次」。
+type countingKDF struct {
+	hashes   int
+	verifies int
+}
+
+func (c *countingKDF) Hash(ctx context.Context, password string) (string, error) {
+	c.hashes++
+	return coreauth.PlainHasher{}.Hash(ctx, password)
+}
+
+func (c *countingKDF) Verify(ctx context.Context, password, encoded string) (coreauth.PasswordCheck, error) {
+	c.verifies++
+	return coreauth.PlainHasher{}.Verify(ctx, password, encoded)
 }
 
 func newHarness(t *testing.T) *harness {
@@ -157,6 +184,7 @@ func newHarness(t *testing.T) *harness {
 		sessions: &fakeSessions{},
 		resets:   &fakeResets{},
 		audits:   &fakeAudits{},
+		kdf:      &countingKDF{},
 	}
 	svc, err := appauth.NewService(appauth.Deps{
 		Users:         h.users,
@@ -166,6 +194,7 @@ func newHarness(t *testing.T) *harness {
 		Audits:        h.audits,
 		Tx:            fakeTx{},
 		Clock:         testClock,
+		KDF:           h.kdf,
 		// 本套不测日志；未配置投递的警告不污染测试输出。
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
@@ -371,6 +400,13 @@ func TestResetPasswordRejectsUnknownToken(t *testing.T) {
 	if len(h.users.updated) != 0 {
 		t.Fatal("an unknown token changed a password")
 	}
+	// 先验令牌再算哈希：垃圾令牌不得触发任何 Argon2 成本。
+	if h.kdf.hashes != 0 {
+		t.Fatalf("垃圾令牌触发了 %d 次哈希，want 0", h.kdf.hashes)
+	}
+	if h.resets.peek != 1 || h.resets.consume != 0 {
+		t.Fatalf("peek=%d consume=%d, want 1/0", h.resets.peek, h.resets.consume)
+	}
 }
 
 func TestResetPasswordRevokesAllSessions(t *testing.T) {
@@ -381,6 +417,9 @@ func TestResetPasswordRevokesAllSessions(t *testing.T) {
 	}
 	if err := h.svc.ResetPassword(t.Context(), "good-token", "new-password"); err != nil {
 		t.Fatalf("ResetPassword: %v", err)
+	}
+	if h.kdf.hashes != 1 {
+		t.Fatalf("有效令牌哈希次数 = %d, want 1", h.kdf.hashes)
 	}
 	if len(h.users.updated) != 1 || !strings.Contains(h.users.updated[0], "$argon2id$") {
 		t.Fatalf("password updates = %v, want one argon2id write", h.users.updated)

@@ -34,6 +34,7 @@ import (
 	locationhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/location"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
 	photoshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/photos"
+	ratelimit "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/ratelimit"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/respond"
 	schedulehttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/schedule"
 	schoolhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/school"
@@ -73,6 +74,9 @@ type Options struct {
 	Locations *locationhttp.Handler
 	// Events 提供管理员事件流与诊断轮询端点。为 nil 时这些端点回 501。
 	Events *eventshttp.Handler
+	// RateLimit 限制入站速率。nil 表示不限流：只用于测试与降级进程。
+	// 生产装配必须给值，且必须带可信代理表。
+	RateLimit *ratelimit.Guard
 }
 
 // server 实现生成的契约接口。
@@ -90,6 +94,7 @@ type server struct {
 	photos    *photoshttp.Handler
 	locations *locationhttp.Handler
 	events    *eventshttp.Handler
+	rateLimit *ratelimit.Guard
 }
 
 // New 构造 HTTP 引擎。缺 SessionIssuer 时**失败关闭**。
@@ -124,6 +129,7 @@ func New(opts Options) (*gin.Engine, error) {
 	srv.photos = opts.Photos
 	srv.locations = opts.Locations
 	srv.events = opts.Events
+	srv.rateLimit = opts.RateLimit
 
 	engine := gin.New()
 	engine.Use(
@@ -133,6 +139,8 @@ func New(opts Options) (*gin.Engine, error) {
 		accessLog(logger, clk),
 		recoverPanic(logger),
 		securityHeaders(),
+		// 限流在解析会话之前：未认证洪水不得先付一次会话查询。
+		srv.rateLimitInbound(),
 		srv.authenticate(),
 		srv.requireCSRF(),
 	)

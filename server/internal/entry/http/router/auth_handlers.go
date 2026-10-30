@@ -18,6 +18,7 @@ package router
 
 import (
 	"context"
+	"encoding/hex"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -25,6 +26,7 @@ import (
 	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/respond"
 )
@@ -48,6 +50,10 @@ func (s *server) AuthLogin(c *gin.Context) {
 	var req oapi.AuthLoginJSONRequestBody
 	if err := c.ShouldBindJSON(&req); err != nil {
 		bindError(c, err)
+		return
+	}
+	// 账号面在付出 KDF 之前判：归一邮箱与用例同口径，大小写变体共用一个桶。
+	if !s.accountLimit(c, coreuser.NormalizeEmail(string(req.Email))) {
 		return
 	}
 	issued, err := s.auth.Login(c.Request.Context(), string(req.Email), req.Password)
@@ -128,6 +134,10 @@ func (s *server) AuthResetPassword(c *gin.Context) {
 		bindError(c, err)
 		return
 	}
+	// 账号键取令牌摘要：原始令牌不进内存索引。
+	if !s.accountLimit(c, hex.EncodeToString(coreauth.HashToken(req.Token).Bytes())) {
+		return
+	}
 	if err := s.auth.ResetPassword(c.Request.Context(), req.Token, req.NewPassword); err != nil {
 		respond.Error(c.Writer, c.Request, err)
 		return
@@ -152,6 +162,10 @@ func (s *server) AuthChangePassword(c *gin.Context, _ oapi.AuthChangePasswordPar
 	if !ok {
 		// 中间件已拒绝无会话请求；走到这里是接线错误。
 		respond.Error(c.Writer, c.Request, errs.New(errs.CodeUnauthorized, "authentication required"))
+		return
+	}
+	// 账号面按会话 userID 判：改密要付两次 KDF，先挡在门外。
+	if !s.accountLimit(c, sess.User.ID) {
 		return
 	}
 	token, err := c.Cookie(s.cookies.name)

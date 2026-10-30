@@ -33,6 +33,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
 	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
+	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	coremask "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
 )
@@ -605,6 +606,7 @@ func TestMigrateLegacyLoginOldPasswordE2E(t *testing.T) {
 		Audits:        audits,
 		Tx:            db,
 		Clock:         coreclock.System{},
+		KDF:           coreauth.PlainHasher{},
 	})
 	if err != nil {
 		t.Fatalf("auth service: %v", err)

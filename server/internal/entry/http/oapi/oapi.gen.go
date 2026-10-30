@@ -1006,6 +1006,9 @@ type NotFoundError = Error
 // PayloadTooLargeError defines model for PayloadTooLargeError.
 type PayloadTooLargeError = Error
 
+// TooManyRequestsError defines model for TooManyRequestsError.
+type TooManyRequestsError = Error
+
 // UnauthorizedError defines model for UnauthorizedError.
 type UnauthorizedError = Error
 

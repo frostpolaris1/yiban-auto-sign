@@ -171,9 +171,22 @@ deployment cannot silently fall back to development defaults.
 | `YIBAN_MAIL_PASS` | no | empty | AUTH PLAIN password or app key. Required together with the user when reset mail is on. It never appears in logs or errors. |
 | `YIBAN_MAIL_FROM` | no | empty | envelope and header sender. Empty means `YIBAN_MAIL_USER`. A form like `Name <user@example.com>` is accepted; only the address part is used. |
 | `YIBAN_MAIL_TLS_MODE` | no | `auto` | `auto`, `implicit` or `starttls`. No switch disables certificate checks. |
+| `YIBAN_RATE_LIMIT_ENABLE` | no | `true` | inbound rate limiting for login, forgot/reset password, change password, verify and sign |
+| `YIBAN_RATE_IP_PER_MIN` | no | `60` | requests per minute per client IP on those routes |
+| `YIBAN_RATE_IP_BURST` | no | `20` | burst bucket per client IP |
+| `YIBAN_RATE_ACCOUNT_PER_MIN` | no | `10` | requests per minute per account key: normalized email, token digest, user id or account id |
+| `YIBAN_RATE_ACCOUNT_BURST` | no | `5` | burst bucket per account key |
+| `YIBAN_TRUSTED_PROXIES` | no | empty | comma-separated CIDRs of reverse proxies allowed to set `X-Forwarded-For`. Empty trusts no header; a bare IP is a single-host prefix. An invalid value stops startup. |
+| `YIBAN_KDF_CONCURRENCY` | no | `4` | process-wide cap on concurrent Argon2id hashes (1..64). Each hash costs about 19 MiB, so the cap bounds memory. |
 
 Production always uses `__Host-yiban_session` with `Secure`. A true
 `YIBAN_INSECURE_COOKIES` under `YIBAN_ENV=production` is a startup error.
+
+An inbound rate limit answers 429 with `Retry-After` in seconds. The per-IP
+check runs before session lookup; the per-account check runs before the
+password hash. Other 429 answers (time-preference cooldown, capacity) may omit
+`Retry-After`. The reset flow checks the one-time token before hashing the new
+password.
 
 ## Password reset mail
 

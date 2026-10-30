@@ -110,6 +110,18 @@ type Config struct {
 	// PhotoDir 是图片 blob 存储根目录。
 	PhotoDir string
 
+	// 入站限流面。默认开启；阈值与域见 config/registry.json。
+	RateLimitEnabled  bool
+	RateIPPerMin      int
+	RateIPBurst       int
+	RateAccountPerMin int
+	RateAccountBurst  int
+	// TrustedProxies 是可信代理 CIDR 表（逗号分隔）。
+	// 空表示不信任任何 X-Forwarded-For。
+	TrustedProxies string
+	// KDFConcurrency 是口令哈希的进程级并发上限。
+	KDFConcurrency int
+
 	// ResetMailEnabled 是 Go 侧重置邮件投递总开关（YIBAN_RESET_MAIL_ENABLE）。
 	// 关闭时令牌照常生成，但投递跳过，并留一条显性日志。
 	// **不读** YIBAN_MAIL_ENABLE：那个键只服务旧通知线，两边独立启停。
@@ -287,6 +299,14 @@ var (
 	keyMailFrom         = stringKey{"YIBAN_MAIL_FROM", ""}
 	keyMailTLSMode      = enumKey{"YIBAN_MAIL_TLS_MODE", "auto", mailTLSModes}
 	keyPublicBaseURL    = stringKey{"YIBAN_PUBLIC_BASE_URL", DefaultPublicBaseURL}
+
+	keyRateLimitEnabled  = boolKey{"YIBAN_RATE_LIMIT_ENABLE", true}
+	keyRateIPPerMin      = intKey{"YIBAN_RATE_IP_PER_MIN", 60, 1, 6000}
+	keyRateIPBurst       = intKey{"YIBAN_RATE_IP_BURST", 20, 1, 6000}
+	keyRateAccountPerMin = intKey{"YIBAN_RATE_ACCOUNT_PER_MIN", 10, 1, 600}
+	keyRateAccountBurst  = intKey{"YIBAN_RATE_ACCOUNT_BURST", 5, 1, 600}
+	keyTrustedProxies    = stringKey{"YIBAN_TRUSTED_PROXIES", ""}
+	keyKDFConcurrency    = intKey{"YIBAN_KDF_CONCURRENCY", 4, 1, 64}
 )
 
 // configSpecs 汇总静态缺省/域的读取规格。
@@ -313,6 +333,13 @@ func configSpecs() []keySpec {
 		keyMailFrom.spec(),
 		keyMailTLSMode.spec(),
 		keyPublicBaseURL.spec(),
+		keyRateLimitEnabled.spec(),
+		keyRateIPPerMin.spec(),
+		keyRateIPBurst.spec(),
+		keyRateAccountPerMin.spec(),
+		keyRateAccountBurst.spec(),
+		keyTrustedProxies.spec(),
+		keyKDFConcurrency.spec(),
 	}
 }
 
@@ -403,6 +430,26 @@ func LoadFrom(src Source) (*Config, error) {
 		return nil, err
 	}
 	cfg.TimePrefCooldown = time.Duration(cooldown) * time.Second
+
+	if cfg.RateLimitEnabled, err = keyRateLimitEnabled.read(src); err != nil {
+		return nil, err
+	}
+	if cfg.RateIPPerMin, err = keyRateIPPerMin.read(src); err != nil {
+		return nil, err
+	}
+	if cfg.RateIPBurst, err = keyRateIPBurst.read(src); err != nil {
+		return nil, err
+	}
+	if cfg.RateAccountPerMin, err = keyRateAccountPerMin.read(src); err != nil {
+		return nil, err
+	}
+	if cfg.RateAccountBurst, err = keyRateAccountBurst.read(src); err != nil {
+		return nil, err
+	}
+	cfg.TrustedProxies = strings.TrimSpace(keyTrustedProxies.read(src))
+	if cfg.KDFConcurrency, err = keyKDFConcurrency.read(src); err != nil {
+		return nil, err
+	}
 
 	cfg.PhotoDir = strings.TrimSpace(keyPhotoDir.read(src))
 	if cfg.PhotoDir == "" {

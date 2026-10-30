@@ -33,7 +33,7 @@ func (s *Service) ForgotPassword(ctx context.Context, email string) error {
 	if err != nil {
 		if isNotFound(err) {
 			// 未知邮箱走与已知邮箱同量的垫时。
-			if padErr := verifyDummyPassword("yiban-forgot-timing"); padErr != nil {
+			if padErr := s.verifyDummyPassword(ctx, "yiban-forgot-timing"); padErr != nil {
 				return padErr
 			}
 			return nil
@@ -46,7 +46,7 @@ func (s *Service) ForgotPassword(ctx context.Context, email string) error {
 			"event", "password_reset.throttled",
 			"email", mask.EmailLabel(email))
 		// 被限速的请求不得比正常请求便宜：同样付一次 KDF。
-		return verifyDummyPassword("yiban-forgot-timing")
+		return s.verifyDummyPassword(ctx, "yiban-forgot-timing")
 	}
 	token, err := coreauth.NewToken()
 	if err != nil {
@@ -62,7 +62,7 @@ func (s *Service) ForgotPassword(ctx context.Context, email string) error {
 	}
 	// 已知邮箱在令牌写入后付同一次垫时。
 	// 垫时**不新增数据库写**：未知路径不得因为「等量工作」变成写路径。
-	if padErr := verifyDummyPassword("yiban-forgot-timing"); padErr != nil {
+	if padErr := s.verifyDummyPassword(ctx, "yiban-forgot-timing"); padErr != nil {
 		return padErr
 	}
 	// 投递在后台进行；失败不改变响应（见 deliverReset）。

@@ -43,7 +43,10 @@ paths:
       tags: [auth]
       operationId: AuthLogin
       summary: Sign in with email and password.
-      description: Sets the HttpOnly session cookie on success.
+      description: |
+        Sets the HttpOnly session cookie on success.
+        Rate limited per client IP and per normalized email; a 429 carries
+        Retry-After in seconds.
       security: []
       x-roles: [public]
       requestBody:
@@ -62,6 +65,7 @@ paths:
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/auth/logout:
     post:
@@ -103,6 +107,7 @@ paths:
       description: |
         Always returns 204, whether or not the email exists, to avoid account
         enumeration. A one-time token row is written only for known accounts.
+        Rate limited per client IP; a 429 carries Retry-After in seconds.
       security: []
       x-roles: [public]
       requestBody:
@@ -115,6 +120,7 @@ paths:
         '204': { description: Request accepted. }
         '400': { $ref: '#/components/responses/ValidationError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/auth/reset-password:
     post:
@@ -123,7 +129,9 @@ paths:
       summary: Finish the password reset flow with a one-time token.
       description: |
         Consumes the token, replaces the password, revokes every session of the
-        user and marks must_change_password false.
+        user and marks must_change_password false. The token is checked before
+        the new password is hashed. Rate limited per client IP and per token
+        digest; a 429 carries Retry-After in seconds.
       security: []
       x-roles: [public]
       requestBody:
@@ -137,6 +145,7 @@ paths:
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/auth/change-password:
     post:
@@ -150,6 +159,7 @@ paths:
         session. Success writes one auth.password_change audit row.
         A wrong current_password is 401 with the same code and message as a
         failed login, so the two are indistinguishable.
+        Rate limited per client IP and per user; a 429 carries Retry-After.
         A new_password equal to current_password is 409 conflict.
         Both fields are non-empty. The minimum length matches
         POST /api/auth/reset-password.
@@ -169,6 +179,7 @@ paths:
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '409': { $ref: '#/components/responses/ConflictError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/users:
     get:
@@ -519,7 +530,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/ConflictError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
-        '429': { $ref: '#/components/responses/DefaultError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/accounts/{id}:
     get:
@@ -660,6 +671,7 @@ paths:
         reports the platform conclusion. The response never includes the
         credential. Platform conclusions return 200; a transport failure
         returns 502 upstream_unavailable.
+        Rate limited per client IP and per account id; a 429 carries Retry-After.
       x-roles: [master, admin]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -675,6 +687,7 @@ paths:
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         '502': { $ref: '#/components/responses/DefaultError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/accounts/{id}/sign:
     post:
@@ -686,6 +699,7 @@ paths:
         A closed window returns 409 window_closed. A run in progress returns
         409 sign_running. A concluded day returns 409 already_signed.
         Cross-scope accounts return 404 for every role.
+        Rate limited per client IP and per account id; a 429 carries Retry-After.
       x-roles: [master, admin, user]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -701,6 +715,7 @@ paths:
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/DefaultError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/accounts/{id}/location:
     put:
@@ -1043,7 +1058,7 @@ paths:
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
-        '429': { $ref: '#/components/responses/DefaultError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/capacity:
     get:
@@ -1317,6 +1332,12 @@ components:
             $ref: '#/components/schemas/Error'
     ForbiddenError:
       description: Role, scope or CSRF check does not allow the action.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    TooManyRequestsError:
+      description: Rate limit exceeded; Retry-After says when to retry.
       content:
         application/json:
           schema:

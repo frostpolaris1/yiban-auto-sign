@@ -120,6 +120,7 @@ func newMailHarness(t *testing.T, sender coremail.Sender) *mailHarness {
 		Audits:        h.audits,
 		Tx:            fakeTx{},
 		Clock:         testClock,
+		KDF:           coreauth.PlainHasher{},
 		Mail:          sender,
 		MailBaseURL:   resetBaseURL,
 		Logger:        slog.New(slog.NewTextHandler(logs, nil)),

@@ -138,7 +138,12 @@ missing=0
 while IFS= read -r dep; do
   [ -n "$dep" ] || continue
   [ "$dep" = "$OWN_MODULE" ] && continue
-  if ! cut -f1 "$tmpdir/deps.tsv" | grep -Fxq "$dep"; then
+  # go-licenses 的第一列是**包**路径，不是模块路径：
+  # 模块根没有 Go 文件时（如 golang.org/x/time），它报 golang.org/x/time/rate。
+  # 覆盖判据接受模块路径或其子包路径；只认整段前缀，避免 x/timefoo 误配。
+  if ! cut -f1 "$tmpdir/deps.tsv" | awk -v dep="$dep" '
+      $0 == dep || index($0, dep "/") == 1 { found = 1 }
+      END { exit found ? 0 : 1 }'; then
     echo "license: the scan missed direct dependency $dep; the gate DID NOT RUN" >&2
     missing=1
   fi
@@ -190,13 +195,13 @@ render() {
 > 本文件由 \`server/scripts/license.sh --write\` 生成，禁止手改。
 > 允许清单与禁用清单由该脚本执行，本文件只作留档。
 > 工具：${TOOL_MODULE} ${TOOL_VERSION}。
-> 口径：\`go-licenses report ./...\` 列出的第三方模块，只含参与构建的包。
+> 口径：\`go-licenses report ./...\` 列出的第三方包，只含参与构建的包；模块根无 Go 文件时记子包路径。
 > 本模块 ${OWN_MODULE} 自身不计入。
 
 允许的许可证：Apache-2.0、BSD-2-Clause、BSD-3-Clause、ISC、MIT、0BSD、CC0-1.0、BlueOak-1.0.0。
 其余许可证一律使门失败。GPL 系、AGPL 系、未知与无许可证同样失败。
 
-| 模块 | 许可证 |
+| 模块/包 | 许可证 |
 |---|---|
 EOF
   while IFS=$'\t' read -r mod lic; do

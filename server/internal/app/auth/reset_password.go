@@ -24,12 +24,19 @@ func (s *Service) ResetPassword(ctx context.Context, token, newPassword string) 
 	if newPassword == "" {
 		return errs.New(errs.CodeValidation, "new_password is required")
 	}
+	// 先验令牌：未知、已用或过期的令牌不付 Argon2 成本。
+	now := s.clock.Now().UTC()
+	if _, err := s.resets.Peek(ctx, coreauth.HashToken(token), now); err != nil {
+		if isNotFound(err) {
+			return ErrInvalidResetToken
+		}
+		return err
+	}
 	// 哈希在事务外算：argon2id 约几十毫秒，不该占住行锁与链锁。
-	newHash, err := coreauth.HashPassword(newPassword)
+	newHash, err := s.kdf.Hash(ctx, newPassword)
 	if err != nil {
 		return err
 	}
-	now := s.clock.Now().UTC()
 	return s.tx.InTx(ctx, func(ctx context.Context) error {
 		reset, err := s.resets.Consume(ctx, coreauth.HashToken(token), now)
 		if err != nil {
