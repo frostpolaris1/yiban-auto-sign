@@ -36,12 +36,15 @@ const credentialColumns = `c.account_id::text, c.school_id::text, c.alg, c.kid,
 // **必须在事务内运行**：advisory lock、条件插入与凭据/审计行
 // 同属一个工作单元。达到上限时条件 INSERT 返回零行，
 // 映射为 capacity_exceeded。
-func (r *AccountRepo) Create(ctx context.Context, in coreaccount.New, limit int) (coreaccount.Record, error) {
+func (r *AccountRepo) Create(ctx context.Context, in coreaccount.New, limit, ownerLimit int) (coreaccount.Record, error) {
 	if !r.db.hasTx(ctx) {
 		return coreaccount.Record{}, ErrNoTransaction
 	}
 	if limit <= 0 {
 		return coreaccount.Record{}, validationError("limit must be positive")
+	}
+	if ownerLimit <= 0 {
+		return coreaccount.Record{}, validationError("owner limit must be positive")
 	}
 	if strings.TrimSpace(in.SchoolID) == "" || strings.TrimSpace(in.OwnerUserID) == "" || strings.TrimSpace(in.Phone) == "" {
 		return coreaccount.Record{}, validationError("school, owner and phone are required")
@@ -60,15 +63,26 @@ func (r *AccountRepo) Create(ctx context.Context, in coreaccount.New, limit int)
 		return coreaccount.Record{}, mapError(err)
 	}
 	row := q.QueryRow(ctx, `
-		WITH live AS (SELECT count(*) AS n FROM accounts WHERE deleted_at IS NULL)
+		WITH live AS (SELECT count(*) AS n FROM accounts WHERE deleted_at IS NULL),
+		     mine AS (SELECT count(*) AS n FROM accounts
+		               WHERE deleted_at IS NULL AND owner_user_id = $3::uuid)
 		INSERT INTO accounts (id, school_id, owner_user_id, phone)
 		SELECT $1::uuid, $2::uuid, $3::uuid, $4
-		  FROM live
-		 WHERE live.n < $5
+		  FROM live, mine
+		 WHERE live.n < $5 AND mine.n < $6
 		RETURNING `+accountColumns,
-		id, in.SchoolID, in.OwnerUserID, in.Phone, limit)
+		id, in.SchoolID, in.OwnerUserID, in.Phone, limit, ownerLimit)
 	record, err := scanAccount(row)
 	if errors.Is(err, pgx.ErrNoRows) {
+		// 两个上限共用 capacity_exceeded；文案区分全局与每属主。
+		var mine, total int
+		if qerr := q.QueryRow(ctx,
+			`SELECT count(*) FILTER (WHERE owner_user_id = $1::uuid), count(*)
+			   FROM accounts WHERE deleted_at IS NULL`, in.OwnerUserID).Scan(&mine, &total); qerr == nil {
+			if mine >= ownerLimit {
+				return coreaccount.Record{}, ownerCapacityError()
+			}
+		}
 		return coreaccount.Record{}, capacityError()
 	}
 	// 院校或属主缺失属父行缺失，不是冲突（§2.4）。

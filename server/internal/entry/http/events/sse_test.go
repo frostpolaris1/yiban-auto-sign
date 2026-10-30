@@ -196,6 +196,31 @@ func TestSSEFrameFormat(t *testing.T) {
 	}
 }
 
+// 撤权后一个心跳内断开：绑定校变化即发 end 并关闭。
+func TestSSERevocationClosesAtHeartbeat(t *testing.T) {
+	clk := newFakeClock(diagNowTime)
+	timer := newFakeTimer(clk)
+	authz := &fakeAuthorizer{scope: corescope.Admin([]string{"s1"})}
+	srv, issued := newSSEServer(t, authz, &fakeDiag{}, appevents.NewBroker(), timer)
+	sc := newStreamClient(t, srv.URL, issued, "")
+	defer sc.close()
+	timer.waitArmed(t)
+
+	// 撤权：绑定校集合变化。
+	authz.setScope(corescope.Admin([]string{"s2"}))
+	clk.Advance(15 * time.Second)
+	if !timer.fireAt(clk.Now()) {
+		t.Fatal("15s 时定时器未到期")
+	}
+	f := sc.next(t)
+	if f.event != appevents.TypeEnd {
+		t.Fatalf("撤权后首帧 = %q, want end", f.event)
+	}
+	if !sc.closed(t) {
+		t.Fatal("撤权后流未关闭")
+	}
+}
+
 // 响应头：text/event-stream、no-store、X-Accel-Buffering: no。
 func TestSSEHeaders(t *testing.T) {
 	broker := appevents.NewBroker()

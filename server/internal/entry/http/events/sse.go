@@ -11,9 +11,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 
 	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
@@ -170,6 +173,12 @@ func (h *Handler) stream(c *gin.Context, scope corescope.Scope, sub appevents.Su
 				return
 			}
 			if !now.Before(heartbeatDue) {
+				// 心跳点重鉴权：撤权、停用或绑定校变化都立即断开，
+				// 不再向已失权的主体推送事件。
+				if !h.reauthorize(c, scope) {
+					out.write(0, appevents.TypeEnd, struct{}{})
+					return
+				}
 				if !out.write(0, appevents.TypeHeartbeat, struct{}{}) {
 					return
 				}
@@ -194,4 +203,38 @@ func atOf(evt appevents.Event) string {
 		return ""
 	}
 	return evt.At.Format(time.RFC3339)
+}
+
+// reauthorize 在心跳点重新解析会话与作用域。
+// 未登录、账号停用、角色或绑定校变化都返回 false。
+func (h *Handler) reauthorize(c *gin.Context, scope corescope.Scope) bool {
+	session, ok := coreauth.FromContext(c.Request.Context())
+	if !ok {
+		return false
+	}
+	next, _, err := h.authz.Authorize(c.Request.Context(), session.User)
+	if err != nil {
+		return false
+	}
+	return sameScope(scope, next)
+}
+
+// sameScope 比较两个作用域的可见面。
+// master 与 user 只看形状；admin 还要院校集合相等。
+func sameScope(a, b corescope.Scope) bool {
+	if a.Kind() != b.Kind() {
+		return false
+	}
+	as, bs := a.SchoolIDs(), b.SchoolIDs()
+	if len(as) != len(bs) {
+		return false
+	}
+	sort.Strings(as)
+	sort.Strings(bs)
+	for i := range as {
+		if as[i] != bs[i] {
+			return false
+		}
+	}
+	return true
 }

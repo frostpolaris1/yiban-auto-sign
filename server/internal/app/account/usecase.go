@@ -66,6 +66,8 @@ type Deps struct {
 	Cipher   *Cipher
 	// Limit 是活跃账号上限。
 	Limit int
+	// OwnerLimit 是每个属主的活跃账号上限。
+	OwnerLimit int
 }
 
 // Service 是账号用例服务。
@@ -136,6 +138,9 @@ func NewService(deps Deps) (*Service, error) {
 	}
 	if deps.Limit <= 0 {
 		return nil, errors.New("account: capacity limit must be positive")
+	}
+	if deps.OwnerLimit <= 0 {
+		return nil, errors.New("account: owner limit must be positive")
 	}
 	return &Service{deps: deps}, nil
 }
@@ -238,7 +243,7 @@ func (s *Service) Create(ctx context.Context, scope corescope.Scope, in CreateIn
 			SchoolID:    in.SchoolID,
 			OwnerUserID: owner,
 			Phone:       in.Phone,
-		}, s.deps.Limit)
+		}, s.deps.Limit, s.deps.OwnerLimit)
 		if err != nil {
 			return err
 		}

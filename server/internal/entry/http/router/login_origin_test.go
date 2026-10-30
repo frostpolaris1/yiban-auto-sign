@@ -1,0 +1,86 @@
+package router_test
+
+// 登录跨站判据：Origin 与 Sec-Fetch-Site 必须与部署同源。
+// 登录免 CSRF，跨站表单顶号只能在这里挡。
+
+import (
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
+
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/router"
+)
+
+func newOriginEngine(t *testing.T, allowed string) *gin.Engine {
+	t.Helper()
+	engine, err := router.New(router.Options{
+		Sessions:    newStubIssuer(),
+		Auth:        stubAuth{loginErr: errs.New(errs.CodeUnauthorized, "invalid email or password")},
+		Clock:       clock.Fixed{T: time.Date(2026, 10, 30, 8, 0, 0, 0, time.UTC)},
+		Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		LoginOrigin: allowed,
+	})
+	if err != nil {
+		t.Fatalf("router.New: %v", err)
+	}
+	return engine
+}
+
+func postLogin(t *testing.T, engine *gin.Engine, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login",
+		strings.NewReader(`{"email":"a@example.com","password":"x"}`))
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	return serve(engine, req)
+}
+
+func TestLoginOriginAllowed(t *testing.T) {
+	engine := newOriginEngine(t, "https://app.example.test")
+	cases := []struct {
+		name    string
+		headers map[string]string
+		want    int
+	}{
+		{"配置来源", map[string]string{"Origin": "https://app.example.test"}, http.StatusUnauthorized},
+		{"同源请求头", map[string]string{"Sec-Fetch-Site": "same-origin"}, http.StatusUnauthorized},
+		{"无浏览器头", nil, http.StatusUnauthorized},
+		{"跨站 Origin", map[string]string{"Origin": "https://evil.example"}, http.StatusForbidden},
+		{"空来源", map[string]string{"Origin": "null"}, http.StatusForbidden},
+		{"跨站 Fetch-Site", map[string]string{"Sec-Fetch-Site": "cross-site"}, http.StatusForbidden},
+		{"同站非同源", map[string]string{"Sec-Fetch-Site": "same-site"}, http.StatusForbidden},
+	}
+	for _, c := range cases {
+		if got := postLogin(t, engine, c.headers).Code; got != c.want {
+			t.Fatalf("%s status = %d, want %d", c.name, got, c.want)
+		}
+	}
+}
+
+// 未配置允许基址时退回同源判定：Origin 必须等于请求自身的 scheme://Host。
+func TestLoginOriginFallsBackToRequestOrigin(t *testing.T) {
+	engine := newOriginEngine(t, "")
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login",
+		strings.NewReader(`{"email":"a@example.com","password":"x"}`))
+	req.Host = "app.example.test"
+	req.Header.Set("Origin", "http://app.example.test")
+	if got := serve(engine, req).Code; got != http.StatusUnauthorized {
+		t.Fatalf("same-origin status = %d, want 401", got)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/auth/login",
+		strings.NewReader(`{"email":"a@example.com","password":"x"}`))
+	req.Host = "app.example.test"
+	req.Header.Set("Origin", "http://other.example.test")
+	if got := serve(engine, req).Code; got != http.StatusForbidden {
+		t.Fatalf("cross-origin status = %d, want 403", got)
+	}
+}

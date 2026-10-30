@@ -19,8 +19,8 @@ authoritative and a gate keeps both tables equal.
 - Rate limits: the inbound limiter answers **429** with `Retry-After` in
   seconds. Login, reset password, change password, verify and sign are limited
   per client IP and per account key; forgot password is limited per client IP
-  only. Other 429 answers (time-preference cooldown, capacity) omit
-  `Retry-After`.
+  only. Account create and update are limited per owner. Other 429 answers
+  (time-preference cooldown, capacity) omit `Retry-After`.
 - No phone number, credential or upstream raw text in any response.
 
 ## Conditional requests

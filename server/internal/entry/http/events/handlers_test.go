@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -63,12 +64,22 @@ func (f *fakeDiag) Snapshot(_ context.Context, _ corescope.Scope) (corediag.View
 }
 
 type fakeAuthorizer struct {
+	mu    sync.RWMutex
 	scope corescope.Scope
 	err   error
 }
 
 func (f *fakeAuthorizer) Authorize(context.Context, coreauth.User) (corescope.Scope, appaudit.Actor, error) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
 	return f.scope, appaudit.Actor{}, f.err
+}
+
+// setScope 模拟撤权或绑定校变化；SSE 心跳点会重新解析。
+func (f *fakeAuthorizer) setScope(scope corescope.Scope) {
+	f.mu.Lock()
+	f.scope = scope
+	f.mu.Unlock()
 }
 
 type fakeIssuer struct {

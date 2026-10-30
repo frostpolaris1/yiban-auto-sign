@@ -52,7 +52,7 @@ func newUsecaseEnv(t *testing.T) *usecaseEnv {
 	}
 	accounts, err := appaccount.NewService(appaccount.Deps{
 		Accounts: e.accts, Schools: e.schools, Audit: e.audits,
-		Tx: e.db, Clock: clk, Cipher: cipher, Limit: 10000,
+		Tx: e.db, Clock: clk, Cipher: cipher, Limit: 10000, OwnerLimit: 10000,
 	})
 	if err != nil {
 		t.Fatalf("account service: %v", err)

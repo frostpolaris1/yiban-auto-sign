@@ -16,8 +16,11 @@ export interface paths {
         /**
          * Sign in with email and password.
          * @description Sets the HttpOnly session cookie on success.
-         *     Rate limited per client IP and per normalized email; a 429 carries
-         *     Retry-After in seconds.
+         *     Cross-site browser submissions are rejected: a present Origin must
+         *     match the configured public origin or the request origin, and
+         *     Sec-Fetch-Site must be same-origin or none. A mismatch is 403
+         *     forbidden. Rate limited per client IP and per normalized email; a 429
+         *     carries Retry-After in seconds.
          */
         post: operations["AuthLogin"];
         delete?: never;
@@ -297,7 +300,9 @@ export interface paths {
         /**
          * Register a platform account.
          * @description owner_user_id defaults to the caller. Only master and admin may set it
-         *     to another user. The account starts in status pending.
+         *     to another user. The account starts in status pending. The global
+         *     active-account limit and the per-owner quota both answer 429
+         *     capacity_exceeded. Changes are rate limited per owner.
          */
         post: operations["AccountCreate"];
         delete?: never;
@@ -331,6 +336,7 @@ export interface paths {
          * Update account fields.
          * @description Never changes status. Review and pause have dedicated endpoints. Changing
          *     school is forbidden in P1 (decision 12.3) and returns conflict.
+         *     Changes are rate limited per owner; a 429 carries Retry-After.
          */
         patch: operations["AccountUpdate"];
         trace?: never;
@@ -1393,6 +1399,7 @@ export interface operations {
             };
             400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
             413: components["responses"]["PayloadTooLargeError"];
             429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
@@ -2044,6 +2051,7 @@ export interface operations {
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
         };
     };

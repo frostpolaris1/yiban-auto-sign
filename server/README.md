@@ -179,6 +179,7 @@ deployment cannot silently fall back to development defaults.
 | `YIBAN_TRUSTED_PROXIES` | no | empty | comma-separated CIDRs of reverse proxies allowed to set `X-Forwarded-For`. Empty trusts no header; a bare IP is a single-host prefix. An invalid value stops startup. |
 | `YIBAN_KDF_CONCURRENCY` | no | `4` | process-wide cap on concurrent Argon2id hashes (1..64). Each hash costs about 19 MiB, so the cap bounds memory. |
 | `YIBAN_TASK_LEASE_SEC` | no | `120` | lease in seconds for a claimed signing task (30..3600). A running row past its lease is returned to pending by the reclaim pass. |
+| `YIBAN_MAX_ACCOUNTS_PER_OWNER` | no | `20` | live accounts per owner (1..1000). A second quota beyond the global account limit; soft-deleted accounts free a slot. |
 
 Production always uses `__Host-yiban_session` with `Secure`. A true
 `YIBAN_INSECURE_COOKIES` under `YIBAN_ENV=production` is a startup error.

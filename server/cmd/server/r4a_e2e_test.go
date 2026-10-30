@@ -223,14 +223,15 @@ func TestAssemblyRunsRetentionLoop(t *testing.T) {
 		HTTPAddr:    "127.0.0.1:0",
 		DatabaseURL: w2cWithSchema(w2cRequireDSN(t), e.schema),
 		// 本用例不判业务日界；UTC 也是合法 IANA 区名。
-		Timezone:        "UTC",
-		HashPepper:      []byte("0123456789abcdef0123456789abcdef"),
-		CredentialKey:   []byte("0123456789abcdef0123456789abcdef"),
-		PhotoDir:        e.photoDir,
-		Workers:         1,
-		AvgAttempt:      60 * time.Second,
-		EgressRate:      1,
-		InsecureCookies: true,
+		Timezone:            "UTC",
+		HashPepper:          []byte("0123456789abcdef0123456789abcdef"),
+		CredentialKey:       []byte("0123456789abcdef0123456789abcdef"),
+		PhotoDir:            e.photoDir,
+		Workers:             1,
+		AvgAttempt:          60 * time.Second,
+		EgressRate:          1,
+		InsecureCookies:     true,
+		MaxAccountsPerOwner: 20,
 	}
 	var logs bytes.Buffer
 	stack, err := assembly.Build(cfg, slog.New(slog.NewTextHandler(&logs, nil)))

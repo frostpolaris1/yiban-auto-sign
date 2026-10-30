@@ -375,13 +375,14 @@ func TestCredentialUpdateRecoversWhenEngineCommitsAfterFirstRead(t *testing.T) {
 		t.Fatalf("new cipher: %v", err)
 	}
 	svc, err := appaccount.NewService(appaccount.Deps{
-		Accounts: db1StaleGetRepo{AccountRepo: u.accts, stale: stale},
-		Schools:  u.testEnv.schools,
-		Audit:    u.audits,
-		Tx:       u.db,
-		Clock:    coreclock.Fixed{T: time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)},
-		Cipher:   cipher,
-		Limit:    10000,
+		Accounts:   db1StaleGetRepo{AccountRepo: u.accts, stale: stale},
+		Schools:    u.testEnv.schools,
+		Audit:      u.audits,
+		Tx:         u.db,
+		Clock:      coreclock.Fixed{T: time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)},
+		Cipher:     cipher,
+		Limit:      10000,
+		OwnerLimit: 10000,
 	})
 	if err != nil {
 		t.Fatalf("new account service: %v", err)

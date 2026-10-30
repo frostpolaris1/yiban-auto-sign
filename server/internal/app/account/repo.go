@@ -67,7 +67,8 @@ type Credential = coreaccount.Credential
 // Review 只推进 pending 行：通过写 active，拒绝写 rejected 并记理由。
 // 非 pending 行报 conflict。
 type Repo interface {
-	Create(ctx context.Context, in New, limit int) (Record, error)
+	// Create 建号；limit 是全局活跃账号上限，ownerLimit 是每属主活跃账号上限。
+	Create(ctx context.Context, in New, limit, ownerLimit int) (Record, error)
 	Get(ctx context.Context, scope corescope.Scope, id string) (Record, error)
 	GetForUpdate(ctx context.Context, scope corescope.Scope, id string) (Record, error)
 	List(ctx context.Context, scope corescope.Scope, schoolID string, status Status, query, cursor string, limit int) ([]Record, string, error)

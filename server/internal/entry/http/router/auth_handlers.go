@@ -20,6 +20,8 @@ import (
 	"context"
 	"encoding/hex"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -45,6 +47,12 @@ type AuthService interface {
 func (s *server) AuthLogin(c *gin.Context) {
 	if s.auth == nil {
 		notImplemented(c)
+		return
+	}
+	// 登录免 CSRF；跨站表单顶号必须在这里挡住。
+	// 浏览器给的 Origin 与 Sec-Fetch-Site 是唯一可信的跨站信号。
+	if !loginOriginAllowed(c, s.loginOrigin) {
+		respond.Error(c.Writer, c.Request, errs.New(errs.CodeForbidden, "cross-site login is not allowed"))
 		return
 	}
 	var req oapi.AuthLoginJSONRequestBody
@@ -193,4 +201,53 @@ func sessionUserOf(sess coreauth.Session) oapi.SessionUser {
 		MustChangePassword: sess.User.MustChangePassword,
 		CsrfToken:          sess.CSRFToken,
 	}
+}
+
+// loginOriginAllowed 判定登录请求的页面来源。
+//
+// 规则：
+//   - Sec-Fetch-Site 出现且不是 same-origin/none：拒绝；
+//   - 无 Origin：放行（非浏览器客户端不带该头）；
+//   - Origin 等于允许基址或请求自身的 scheme://Host：放行；
+//   - 其余（含字面量 null、解析失败）：拒绝。
+//
+// 允许基址来自 YIBAN_PUBLIC_BASE_URL；为空时只做同源判定。
+func loginOriginAllowed(c *gin.Context, allowed string) bool {
+	switch c.GetHeader("Sec-Fetch-Site") {
+	case "", "same-origin", "none":
+	default:
+		return false
+	}
+	origin := strings.TrimSpace(c.GetHeader("Origin"))
+	if origin == "" {
+		return true
+	}
+	if origin == "null" {
+		return false
+	}
+	if allowed != "" && sameOrigin(origin, allowed) {
+		return true
+	}
+	scheme := "http"
+	if c.Request.TLS != nil {
+		scheme = "https"
+	}
+	return sameOrigin(origin, scheme+"://"+c.Request.Host)
+}
+
+// sameOrigin 比较两个 URL 的 scheme 与 host（host 含端口）。
+// 解析失败或任一侧无 host 都判不同源。
+func sameOrigin(a, b string) bool {
+	ua, err := url.Parse(a)
+	if err != nil {
+		return false
+	}
+	ub, err := url.Parse(b)
+	if err != nil {
+		return false
+	}
+	if ua.Host == "" || ub.Host == "" {
+		return false
+	}
+	return strings.EqualFold(ua.Scheme, ub.Scheme) && strings.EqualFold(ua.Host, ub.Host)
 }

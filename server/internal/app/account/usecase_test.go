@@ -30,12 +30,13 @@ func (f *fakeListRepo) List(_ context.Context, _ corescope.Scope, _ string, _ St
 func TestListRejectsZeroValueScope(t *testing.T) {
 	repo := &fakeListRepo{items: []Record{{ID: "acc-1"}}}
 	svc, err := NewService(Deps{
-		Accounts: repo,
-		Schools:  fakeSchoolReader{},
-		Audit:    fakeAuditRepo{},
-		Tx:       fakeTxManager{},
-		Clock:    clock.Fixed{T: time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)},
-		Limit:    10,
+		Accounts:   repo,
+		Schools:    fakeSchoolReader{},
+		Audit:      fakeAuditRepo{},
+		Tx:         fakeTxManager{},
+		Clock:      clock.Fixed{T: time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)},
+		Limit:      10,
+		OwnerLimit: 10,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

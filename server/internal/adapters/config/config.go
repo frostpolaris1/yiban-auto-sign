@@ -123,6 +123,8 @@ type Config struct {
 	TrustedProxies string
 	// KDFConcurrency 是口令哈希的进程级并发上限。
 	KDFConcurrency int
+	// MaxAccountsPerOwner 是每个属主的活跃账号上限。
+	MaxAccountsPerOwner int
 
 	// ResetMailEnabled 是 Go 侧重置邮件投递总开关（YIBAN_RESET_MAIL_ENABLE）。
 	// 关闭时令牌照常生成，但投递跳过，并留一条显性日志。
@@ -303,13 +305,14 @@ var (
 	keyMailTLSMode      = enumKey{"YIBAN_MAIL_TLS_MODE", "auto", mailTLSModes}
 	keyPublicBaseURL    = stringKey{"YIBAN_PUBLIC_BASE_URL", DefaultPublicBaseURL}
 
-	keyRateLimitEnabled  = boolKey{"YIBAN_RATE_LIMIT_ENABLE", true}
-	keyRateIPPerMin      = intKey{"YIBAN_RATE_IP_PER_MIN", 60, 1, 6000}
-	keyRateIPBurst       = intKey{"YIBAN_RATE_IP_BURST", 20, 1, 6000}
-	keyRateAccountPerMin = intKey{"YIBAN_RATE_ACCOUNT_PER_MIN", 10, 1, 600}
-	keyRateAccountBurst  = intKey{"YIBAN_RATE_ACCOUNT_BURST", 5, 1, 600}
-	keyTrustedProxies    = stringKey{"YIBAN_TRUSTED_PROXIES", ""}
-	keyKDFConcurrency    = intKey{"YIBAN_KDF_CONCURRENCY", 4, 1, 64}
+	keyRateLimitEnabled    = boolKey{"YIBAN_RATE_LIMIT_ENABLE", true}
+	keyRateIPPerMin        = intKey{"YIBAN_RATE_IP_PER_MIN", 60, 1, 6000}
+	keyRateIPBurst         = intKey{"YIBAN_RATE_IP_BURST", 20, 1, 6000}
+	keyRateAccountPerMin   = intKey{"YIBAN_RATE_ACCOUNT_PER_MIN", 10, 1, 600}
+	keyRateAccountBurst    = intKey{"YIBAN_RATE_ACCOUNT_BURST", 5, 1, 600}
+	keyTrustedProxies      = stringKey{"YIBAN_TRUSTED_PROXIES", ""}
+	keyKDFConcurrency      = intKey{"YIBAN_KDF_CONCURRENCY", 4, 1, 64}
+	keyMaxAccountsPerOwner = intKey{"YIBAN_MAX_ACCOUNTS_PER_OWNER", 20, 1, 1000}
 )
 
 // configSpecs 汇总静态缺省/域的读取规格。
@@ -344,6 +347,7 @@ func configSpecs() []keySpec {
 		keyRateAccountBurst.spec(),
 		keyTrustedProxies.spec(),
 		keyKDFConcurrency.spec(),
+		keyMaxAccountsPerOwner.spec(),
 	}
 }
 
@@ -457,6 +461,9 @@ func LoadFrom(src Source) (*Config, error) {
 	}
 	cfg.TrustedProxies = strings.TrimSpace(keyTrustedProxies.read(src))
 	if cfg.KDFConcurrency, err = keyKDFConcurrency.read(src); err != nil {
+		return nil, err
+	}
+	if cfg.MaxAccountsPerOwner, err = keyMaxAccountsPerOwner.read(src); err != nil {
 		return nil, err
 	}
 
