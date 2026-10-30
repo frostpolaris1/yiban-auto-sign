@@ -302,7 +302,8 @@ export interface paths {
          * @description owner_user_id defaults to the caller. Only master and admin may set it
          *     to another user. The account starts in status pending. The global
          *     active-account limit and the per-owner quota both answer 429
-         *     capacity_exceeded. Changes are rate limited per owner.
+         *     capacity_exceeded; the limiter 429 carries Retry-After and the quota
+         *     429 does not. Changes are rate limited per caller.
          */
         post: operations["AccountCreate"];
         delete?: never;
@@ -336,7 +337,7 @@ export interface paths {
          * Update account fields.
          * @description Never changes status. Review and pause have dedicated endpoints. Changing
          *     school is forbidden in P1 (decision 12.3) and returns conflict.
-         *     Changes are rate limited per owner; a 429 carries Retry-After.
+         *     Changes are rate limited per caller; a 429 carries Retry-After.
          */
         patch: operations["AccountUpdate"];
         trace?: never;
@@ -1956,7 +1957,7 @@ export interface operations {
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
-            429: components["responses"]["DefaultError"];
+            429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
         };
     };

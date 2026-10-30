@@ -607,7 +607,7 @@ func TestSoftDeleteAndRestoreRespectCapacity(t *testing.T) {
 		var rec coreaccount.Record
 		err := e.db.InTx(e.ctx, func(ctx context.Context) error {
 			var err error
-			rec, err = e.accts.Restore(ctx, corescope.Master(), id, 2)
+			rec, err = e.accts.Restore(ctx, corescope.Master(), id, 2, 10000)
 			return err
 		})
 		return rec, err

@@ -514,7 +514,8 @@ paths:
         owner_user_id defaults to the caller. Only master and admin may set it
         to another user. The account starts in status pending. The global
         active-account limit and the per-owner quota both answer 429
-        capacity_exceeded. Changes are rate limited per owner.
+        capacity_exceeded; the limiter 429 carries Retry-After and the quota
+        429 does not. Changes are rate limited per caller.
       x-roles: [master, admin, user]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -537,7 +538,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/ConflictError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
-        '429': { $ref: '#/components/responses/DefaultError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/accounts/{id}:
     get:
@@ -565,7 +566,7 @@ paths:
       description: |
         Never changes status. Review and pause have dedicated endpoints. Changing
         school is forbidden in P1 (decision 12.3) and returns conflict.
-        Changes are rate limited per owner; a 429 carries Retry-After.
+        Changes are rate limited per caller; a 429 carries Retry-After.
       x-roles: [master, admin, user]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'

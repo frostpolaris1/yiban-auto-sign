@@ -81,6 +81,10 @@ type Handler struct {
 	authz  Authorizer
 	clock  coreclock.Clock
 	timer  Timer
+	// sessions 与 cookieName 供 SSE 心跳重鉴权重新解析会话。
+	// 未接线时心跳一律断开（失败关闭）。
+	sessions   coreauth.SessionIssuer
+	cookieName string
 }
 
 // NewHandler 构造事件流处理器。timer 为 nil 时用真计时器。
@@ -92,6 +96,16 @@ func NewHandler(broker Broker, diag Diagnostics, authz Authorizer, clk coreclock
 		clock:  clk,
 		timer:  timer,
 	}
+}
+
+// WithSessionResolver 注入心跳重鉴权用的会话解析器与 cookie 名。
+// 不注入时 SSE 心跳会断开流：无法复核的主体不得继续接收事件。
+func (h *Handler) WithSessionResolver(sessions coreauth.SessionIssuer, cookieName string) *Handler {
+	if sessions != nil && cookieName != "" {
+		h.sessions = sessions
+		h.cookieName = cookieName
+	}
+	return h
 }
 
 // After 返回定时通道；未注入 Timer 时用真计时器。

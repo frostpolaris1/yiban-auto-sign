@@ -325,27 +325,33 @@ func (r *AccountRepo) SoftDelete(ctx context.Context, s corescope.Scope, id, by 
 // **必须在事务内运行**。软删行不计入上限，
 // 故恢复必须在锁下重新计数；
 // 提前计数会让两个并发恢复把总数推过上限。
-func (r *AccountRepo) Restore(ctx context.Context, s corescope.Scope, id string, limit int) (coreaccount.Record, error) {
+func (r *AccountRepo) Restore(ctx context.Context, s corescope.Scope, id string, limit, ownerLimit int) (coreaccount.Record, error) {
 	if !r.db.hasTx(ctx) {
 		return coreaccount.Record{}, ErrNoTransaction
 	}
 	if limit <= 0 {
 		return coreaccount.Record{}, validationError("limit must be positive")
 	}
+	if ownerLimit <= 0 {
+		return coreaccount.Record{}, validationError("owner limit must be positive")
+	}
 	if _, err := r.db.q(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock($1)", AccountCapacityLock); err != nil {
 		return coreaccount.Record{}, mapError(err)
 	}
-	scopeSQL, scopeArgs, err := scopePredicate(s, 3, "")
+	scopeSQL, scopeArgs, err := scopePredicate(s, 4, "")
 	if err != nil {
 		return coreaccount.Record{}, err
 	}
-	args := append([]any{id, limit}, scopeArgs...)
+	args := append([]any{id, limit, ownerLimit}, scopeArgs...)
 	row := r.db.q(ctx).QueryRow(ctx, `
 		UPDATE accounts
 		   SET deleted_at = NULL, deleted_by = NULL, updated_at = now()
 		 WHERE id = $1::uuid
 		   AND deleted_at IS NOT NULL
-		   AND (SELECT count(*) FROM accounts WHERE deleted_at IS NULL) < $2`+scopeSQL+`
+		   AND (SELECT count(*) FROM accounts WHERE deleted_at IS NULL) < $2
+		   AND (SELECT count(*) FROM accounts
+		         WHERE deleted_at IS NULL
+		           AND owner_user_id = (SELECT owner_user_id FROM accounts WHERE id = $1::uuid)) < $3`+scopeSQL+`
 		RETURNING `+accountColumns, args...)
 	record, err := scanAccount(row)
 	if err == nil {

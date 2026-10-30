@@ -640,7 +640,12 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			closeFn()
 			return nil, fmt.Errorf("assembly: diagnostic service: %w", err)
 		}
-		eventLib = eventshttp.NewHandler(broker, diagSvc, adminSvc, clk, nil)
+		cookieName := auth.CookieName
+		if cfg.InsecureCookies {
+			cookieName = auth.InsecureCookieName
+		}
+		eventLib = eventshttp.NewHandler(broker, diagSvc, adminSvc, clk, nil).
+			WithSessionResolver(issuer, cookieName)
 	}
 
 	engine, err := router.New(router.Options{

@@ -83,9 +83,10 @@ func (f *fakeAuthorizer) setScope(scope corescope.Scope) {
 }
 
 type fakeIssuer struct {
-	secret []byte
-	token  string
-	sess   coreauth.Session
+	secret  []byte
+	token   string
+	sess    coreauth.Session
+	revoked map[string]bool
 }
 
 func (f *fakeIssuer) Issue(_ context.Context, user coreauth.User) (coreauth.Issued, error) {
@@ -96,13 +97,20 @@ func (f *fakeIssuer) Issue(_ context.Context, user coreauth.User) (coreauth.Issu
 }
 
 func (f *fakeIssuer) Resolve(_ context.Context, token string) (coreauth.Session, error) {
-	if token != f.token {
+	if token != f.token || f.revoked[token] {
 		return coreauth.Session{}, errs.New(errs.CodeUnauthorized, "unknown session")
 	}
 	return f.sess, nil
 }
 
-func (f *fakeIssuer) Revoke(context.Context, string) error           { return nil }
+func (f *fakeIssuer) Revoke(_ context.Context, token string) error {
+	if f.revoked == nil {
+		f.revoked = map[string]bool{}
+	}
+	f.revoked[token] = true
+	return nil
+}
+
 func (f *fakeIssuer) RevokeAllForUser(context.Context, string) error { return nil }
 
 // newEngine 构造只装配 events 域的路由，返回引擎与会话。

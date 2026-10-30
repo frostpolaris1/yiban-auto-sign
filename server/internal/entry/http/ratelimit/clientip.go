@@ -100,3 +100,17 @@ func isTrusted(addr netip.Addr, trusted []Prefix) bool {
 	}
 	return false
 }
+
+// IsTrustedPeer 报告直连对端是否在可信表内。
+// 用途：只有可信代理的 X-Forwarded-* 头才可采信。
+func IsTrustedPeer(remoteAddr string, trusted []Prefix) bool {
+	host := remoteAddr
+	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		host = h
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	return isTrusted(addr, trusted)
+}

@@ -16,8 +16,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
-
 	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
@@ -206,10 +204,18 @@ func atOf(evt appevents.Event) string {
 }
 
 // reauthorize 在心跳点重新解析会话与作用域。
-// 未登录、账号停用、角色或绑定校变化都返回 false。
+// 会话被撤销、账号停用、角色或绑定校变化都返回 false。
+// **必须重新 Resolve**：连接建立时注入的会话是快照，状态不会自己更新。
 func (h *Handler) reauthorize(c *gin.Context, scope corescope.Scope) bool {
-	session, ok := coreauth.FromContext(c.Request.Context())
-	if !ok {
+	if h.sessions == nil || h.cookieName == "" {
+		return false
+	}
+	token, err := c.Cookie(h.cookieName)
+	if err != nil {
+		return false
+	}
+	session, err := h.sessions.Resolve(c.Request.Context(), token)
+	if err != nil {
 		return false
 	}
 	next, _, err := h.authz.Authorize(c.Request.Context(), session.User)
