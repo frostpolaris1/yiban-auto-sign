@@ -48,17 +48,26 @@ type fakeService struct {
 
 	retentionDays int
 	retentionErr  error
+
+	// scopes 记录每个调用收到的作用域，钉住 /api/me/* 的归属口径。
+	scopes []corescope.Scope
+
+	setDefaultOut   appphotos.SchoolDefaultPhoto
+	setDefaultErr   error
+	setDefaultScope corescope.Scope
 }
 
 func (f *fakeService) Upload(_ context.Context, scope corescope.Scope, _ appaudit.Actor, raw []byte) (corephoto.Record, error) {
+	f.scopes = append(f.scopes, scope)
 	if scope.Kind() != corescope.KindUser {
-		return corephoto.Record{}, errs.New(errs.CodeForbidden, "photo library is for user accounts")
+		return corephoto.Record{}, errs.New(errs.CodeForbidden, "photo library requires an owner scope")
 	}
 	f.lastRaw = append([]byte(nil), raw...)
 	return f.uploadRec, f.uploadErr
 }
 
-func (f *fakeService) List(context.Context, corescope.Scope, string, int) (appphotos.Page, error) {
+func (f *fakeService) List(_ context.Context, scope corescope.Scope, _ string, _ int) (appphotos.Page, error) {
+	f.scopes = append(f.scopes, scope)
 	return f.page, f.pageErr
 }
 
@@ -71,16 +80,18 @@ func (f *fakeService) Open(context.Context, corescope.Scope, string) (corephoto.
 	return f.getRec, f.getBody, f.getErr
 }
 
-func (f *fakeService) Delete(context.Context, corescope.Scope, string) (corephoto.Record, error) {
+func (f *fakeService) Delete(_ context.Context, scope corescope.Scope, _ string) (corephoto.Record, error) {
+	f.scopes = append(f.scopes, scope)
 	return corephoto.Record{}, f.deleteErr
 }
 
-func (f *fakeService) SetRetention(context.Context, corescope.Scope, int) (int, error) {
+func (f *fakeService) SetRetention(_ context.Context, scope corescope.Scope, _ int) (int, error) {
+	f.scopes = append(f.scopes, scope)
 	return f.retentionDays, f.retentionErr
 }
 
-// ListAccount、GetSchoolDefault、SetSchoolDefault 只满足端口：
-// 本文件的用例覆盖既有五端点；g1u 端点由真库 e2e 覆盖。
+// ListAccount、GetSchoolDefault 只满足端口：
+// 本文件的用例覆盖 /me 五端点与默认图写入；其余账号面由真库 e2e 覆盖。
 func (f *fakeService) ListAccount(context.Context, corescope.Scope, string, string, int) (appphotos.Page, error) {
 	return appphotos.Page{}, errs.ErrNotFound
 }
@@ -89,8 +100,9 @@ func (f *fakeService) GetSchoolDefault(context.Context, corescope.Scope, string)
 	return appphotos.SchoolDefaultPhoto{}, errs.ErrNotFound
 }
 
-func (f *fakeService) SetSchoolDefault(context.Context, corescope.Scope, string, *string, appaudit.Actor) (appphotos.SchoolDefaultPhoto, error) {
-	return appphotos.SchoolDefaultPhoto{}, errs.ErrNotFound
+func (f *fakeService) SetSchoolDefault(_ context.Context, scope corescope.Scope, _ string, _ *string, _ appaudit.Actor) (appphotos.SchoolDefaultPhoto, error) {
+	f.setDefaultScope = scope
+	return f.setDefaultOut, f.setDefaultErr
 }
 
 type fakeAuthorizer struct{ scope corescope.Scope }
@@ -124,11 +136,18 @@ func (f *fakeIssuer) RevokeAllForUser(context.Context, string) error { return ni
 
 // ---- 辅助 ----
 
-func newRouter(t *testing.T, scope corescope.Scope, svc *fakeService) (http.Handler, coreauth.Issued) {
+func newRouter(t *testing.T, scope corescope.Scope, svc photoshttp.Service) (http.Handler, coreauth.Issued) {
+	t.Helper()
+	return newRouterAs(t, scope, coreauth.RoleUser, svc)
+}
+
+// newRouterAs 按给定会话角色构造路由。
+// /api/me/* 的归属取会话 userID，角色只影响 admin 的跨属主读取面。
+func newRouterAs(t *testing.T, scope corescope.Scope, role coreauth.Role, svc photoshttp.Service) (http.Handler, coreauth.Issued) {
 	t.Helper()
 	issuer := &fakeIssuer{secret: []byte("0123456789abcdef0123456789abcdef")}
 	issued, err := issuer.Issue(context.Background(), coreauth.User{
-		ID: "u1", Email: "user@example.com", Role: coreauth.RoleUser, Status: coreauth.StatusActive,
+		ID: "u1", Email: "user@example.com", Role: role, Status: coreauth.StatusActive,
 	})
 	if err != nil {
 		t.Fatalf("issue session: %v", err)
@@ -471,14 +490,116 @@ func TestPhotoDeleteAndRetention(t *testing.T) {
 	}
 }
 
-// admin 上传被用例拒绝时映射 403。
-func TestPhotoUploadAdminForbidden(t *testing.T) {
-	svc := &fakeService{uploadRec: sampleRecord()}
-	engine, issued := newRouter(t, corescope.Admin([]string{"s1"}), svc)
-	body, contentType := uploadBody(t, "image", []byte("x"))
-	rec := request(t, engine, issued, http.MethodPost, "/api/me/photos", body, contentType)
-	if rec.Code != http.StatusForbidden {
+// /api/me/* 的归属只看会话 userID：master、admin、user 都只读写自己的库。
+func TestPhotoLibraryUsesOwnerScopeForEveryRole(t *testing.T) {
+	cases := []struct {
+		role  coreauth.Role
+		scope corescope.Scope
+	}{
+		{coreauth.RoleMaster, corescope.Master()},
+		{coreauth.RoleAdmin, corescope.Admin([]string{"s1"})},
+		{coreauth.RoleUser, corescope.User("u1")},
+	}
+	for _, c := range cases {
+		svc := &fakeService{uploadRec: sampleRecord(), retentionDays: 90}
+		engine, issued := newRouterAs(t, c.scope, c.role, svc)
+		body, contentType := uploadBody(t, "image", []byte("x"))
+		if rec := request(t, engine, issued, http.MethodPost, "/api/me/photos", body, contentType); rec.Code != http.StatusCreated {
+			t.Fatalf("%v upload status = %d: %s", c.role, rec.Code, rec.Body.String())
+		}
+		if rec := request(t, engine, issued, http.MethodGet, "/api/me/photos", nil, ""); rec.Code != http.StatusOK {
+			t.Fatalf("%v list status = %d: %s", c.role, rec.Code, rec.Body.String())
+		}
+		if rec := request(t, engine, issued, http.MethodDelete, "/api/me/photos/photo-1", nil, ""); rec.Code != http.StatusNoContent {
+			t.Fatalf("%v delete status = %d: %s", c.role, rec.Code, rec.Body.String())
+		}
+		rec := request(t, engine, issued, http.MethodPut, "/api/me/photo-retention",
+			strings.NewReader(`{"days":180}`), "application/json")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%v retention status = %d: %s", c.role, rec.Code, rec.Body.String())
+		}
+		if len(svc.scopes) != 4 {
+			t.Fatalf("%v service calls = %d, want 4", c.role, len(svc.scopes))
+		}
+		for _, scope := range svc.scopes {
+			if scope.Kind() != corescope.KindUser || scope.UserID() != "u1" {
+				t.Fatalf("%v scope = kind %v user %q, want owner u1", c.role, scope.Kind(), scope.UserID())
+			}
+		}
+	}
+}
+
+// kindService 按作用域种类返回不同结果，用于钉住 admin 的跨属主读取面。
+type kindService struct {
+	*fakeService
+	getErrByKind map[corescope.Kind]error
+	kinds        []corescope.Kind
+}
+
+func (s *kindService) Get(_ context.Context, scope corescope.Scope, _ string) (corephoto.Record, error) {
+	s.kinds = append(s.kinds, scope.Kind())
+	if err, ok := s.getErrByKind[scope.Kind()]; ok {
+		return corephoto.Record{}, err
+	}
+	return recordFor([]byte("png")), nil
+}
+
+func (s *kindService) Open(_ context.Context, scope corescope.Scope, _ string) (corephoto.Record, io.ReadCloser, error) {
+	s.kinds = append(s.kinds, scope.Kind())
+	return recordFor([]byte("png")), io.NopCloser(bytes.NewReader([]byte("png"))), nil
+}
+
+func assertKinds(t *testing.T, got []corescope.Kind, want ...corescope.Kind) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("scope kinds = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("scope kinds = %v, want %v", got, want)
+		}
+	}
+}
+
+// admin 的属主未命中时回落到绑定校范围；两步都按序发生。
+func TestPhotoGetAdminFallsBackToBoundSchools(t *testing.T) {
+	svc := &kindService{
+		fakeService:  &fakeService{},
+		getErrByKind: map[corescope.Kind]error{corescope.KindUser: errs.ErrNotFound},
+	}
+	engine, issued := newRouterAs(t, corescope.Admin([]string{"s1"}), coreauth.RoleAdmin, svc)
+	rec := request(t, engine, issued, http.MethodGet, "/api/me/photos/photo-1", nil, "")
+	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	assertKinds(t, svc.kinds, corescope.KindUser, corescope.KindAdmin, corescope.KindAdmin)
+}
+
+// master 没有跨属主读取面：属主未命中就是 404，不回落到 master 范围。
+func TestPhotoGetMasterStaysOwnerOnly(t *testing.T) {
+	svc := &kindService{
+		fakeService:  &fakeService{},
+		getErrByKind: map[corescope.Kind]error{corescope.KindUser: errs.ErrNotFound},
+	}
+	engine, issued := newRouterAs(t, corescope.Master(), coreauth.RoleMaster, svc)
+	rec := request(t, engine, issued, http.MethodGet, "/api/me/photos/photo-1", nil, "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	assertKinds(t, svc.kinds, corescope.KindUser)
+}
+
+// 学校缺省图写入走授权作用域（admin），不是 /me 的 owner 作用域。
+func TestSchoolDefaultPhotoSetUsesAuthorizedScope(t *testing.T) {
+	svc := &fakeService{setDefaultOut: appphotos.SchoolDefaultPhoto{PhotoID: "photo-1", ETag: "abc"}}
+	engine, issued := newRouterAs(t, corescope.Admin([]string{"s1"}), coreauth.RoleAdmin, svc)
+	body := strings.NewReader(`{"photo_id":"01900000-0000-7000-8000-000000000001"}`)
+	rec := request(t, engine, issued, http.MethodPut, "/api/schools/s1/default-photo", body, "application/json")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if svc.setDefaultScope.Kind() != corescope.KindAdmin {
+		t.Fatalf("scope = %v, want admin", svc.setDefaultScope.Kind())
 	}
 }
 

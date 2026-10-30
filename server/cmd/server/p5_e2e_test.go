@@ -133,19 +133,20 @@ func TestP5PhotoLibrary(t *testing.T) {
 		t.Fatalf("sha 不是 hex: %v", err)
 	}
 
-	// 作用域：他人 404；未绑定任何学校的 admin 读取 404、列表 403、上传 403。
-	// 绑定校的 admin 读取契约见 g1u_e2e_test.go。
+	// 作用域：/me/* 只操作会话本人的库。他人读取 404；未绑定学校的 admin
+	// 读他人照片 404，但列表与上传都落在自己的空库上，回 200/201。
+	// 绑定校的 admin 跨属主读取契约见 g1u_e2e_test.go。
 	if rec = e.do("GET", "/api/me/photos/"+photo.Id, nil, otherIssued); rec.Code != http.StatusNotFound {
 		t.Fatalf("他人读取 status = %d", rec.Code)
 	}
 	if rec = e.do("GET", "/api/me/photos/"+photo.Id, nil, adminIssued); rec.Code != http.StatusNotFound {
-		t.Fatalf("admin 读取 status = %d", rec.Code)
+		t.Fatalf("admin 读取他人照片 status = %d", rec.Code)
 	}
-	if rec = e.do("GET", "/api/me/photos", nil, adminIssued); rec.Code != http.StatusForbidden {
-		t.Fatalf("admin 列表 status = %d", rec.Code)
+	if rec = e.do("GET", "/api/me/photos", nil, adminIssued); rec.Code != http.StatusOK {
+		t.Fatalf("admin 自有列表 status = %d", rec.Code)
 	}
-	if rec = e.uploadPhoto(adminIssued, raw); rec.Code != http.StatusForbidden {
-		t.Fatalf("admin 上传 status = %d", rec.Code)
+	if rec = e.uploadPhoto(adminIssued, raw); rec.Code != http.StatusCreated {
+		t.Fatalf("admin 自有上传 status = %d", rec.Code)
 	}
 
 	// 保留期。

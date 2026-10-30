@@ -57,11 +57,11 @@ func schoolScopePredicate(s corescope.Scope, argIndex int, prefix string) (strin
 
 // photoScopePredicate 是 photos 表的可见面，供照片读取与默认图校验共用。
 //
-// user 按 owner_user_id；admin 按账号归属：照片属主在该 admin 的绑定
+// owner 按 owner_user_id；admin 按账号归属：照片属主在该 admin 的绑定
 // 院校里有未删除账号。照片没有 school_id 列，院校面只能经 accounts
 // 派生；这与 scopePredicate 的 user 面同源（所有权即可见面）。
-// master 不在本谓词内：照片端点契约 x-roles 是 [user, admin]；
-// 默认图写入单独放行 master（见 PhotoRepo.PhotoForDefault）。
+// master 没有本谓词：入口层把 master 收敛为 owner 作用域，只读自己的
+// 照片；学校默认图写入也收窄为 admin（见 PhotoRepo.PhotoForDefault）。
 // prefix 是表别名加点，或空串。
 func photoScopePredicate(s corescope.Scope, argIndex int, prefix string) (string, []any, error) {
 	if !s.Valid() {

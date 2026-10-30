@@ -78,6 +78,7 @@ paths:
         - $ref: '#/components/parameters/CSRFTokenOptional'
       responses:
         '204': { description: Session destroyed. }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/auth/me:
     get:
@@ -208,6 +209,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/UserPage'
         '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         default: { $ref: '#/components/responses/DefaultError' }
     post:
@@ -235,6 +237,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/User'
         '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '409': { $ref: '#/components/responses/ConflictError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
@@ -257,6 +260,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/SchoolPage'
         '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         default: { $ref: '#/components/responses/DefaultError' }
     post:
@@ -280,6 +284,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/School'
         '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '409': { $ref: '#/components/responses/ConflictError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
@@ -308,6 +313,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/School'
         '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
@@ -334,6 +340,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SchoolDefaultPhoto'
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         default: { $ref: '#/components/responses/DefaultError' }
     put:
@@ -342,12 +349,13 @@ paths:
       summary: Set or clear the school default photo.
       description: |
         photo_id must reference an existing, non-deleted photo visible to the
-        caller: master sees every photo; an admin sees photos whose owner has
-        a non-deleted account in a bound school. null clears the reference.
-        Repeating the same value answers 200. The write and a
-        school.default_photo_set audit row commit in one transaction; the
-        detail carries only the photo id and the previous value.
-      x-roles: [master, admin]
+        caller: an admin sees photos whose owner has a non-deleted account in
+        a bound school. null clears the reference. Only an admin writes here;
+        master keeps the read reference from GET. Repeating the same value
+        answers 200. The write and a school.default_photo_set audit row commit
+        in one transaction; the detail carries only the photo id and the
+        previous value.
+      x-roles: [admin]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
         - $ref: '#/components/parameters/SchoolID'
@@ -365,6 +373,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/SchoolDefaultPhoto'
         '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
@@ -387,6 +396,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/SchoolAdminPage'
         '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         default: { $ref: '#/components/responses/DefaultError' }
@@ -415,6 +425,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/SchoolAdmin'
         '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/ConflictError' }
@@ -432,6 +443,7 @@ paths:
         - $ref: '#/components/parameters/UserID'
       responses:
         '204': { description: Admin unbound. }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         default: { $ref: '#/components/responses/DefaultError' }
@@ -475,6 +487,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/AccountPage'
         '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         default: { $ref: '#/components/responses/DefaultError' }
     post:
@@ -501,6 +514,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Account'
         '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/ConflictError' }
@@ -523,6 +537,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Account'
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         default: { $ref: '#/components/responses/DefaultError' }
     patch:
@@ -550,6 +565,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/Account'
         '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/ConflictError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
@@ -565,6 +582,8 @@ paths:
         - $ref: '#/components/parameters/AccountID'
       responses:
         '204': { description: Account deleted. }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/accounts/{id}/review:
@@ -591,6 +610,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/Account'
         '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/ConflictError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
@@ -623,6 +644,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/Account'
         '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/ConflictError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
@@ -648,6 +671,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AccountVerifyResult'
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         '502': { $ref: '#/components/responses/DefaultError' }
         default: { $ref: '#/components/responses/DefaultError' }
@@ -672,6 +697,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AccountSignAccepted'
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/DefaultError' }
         default: { $ref: '#/components/responses/DefaultError' }
@@ -707,6 +734,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/AccountLocation'
         '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         default: { $ref: '#/components/responses/DefaultError' }
@@ -734,6 +763,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/PhotoPage'
         '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         default: { $ref: '#/components/responses/DefaultError' }
@@ -775,9 +805,10 @@ paths:
         One item per account owned by the caller, with today's task state,
         run time, attempts, result word, next retry time and a closed
         vocabulary suggestion (wait, retry_now, re_arm, contact_admin).
-        Admins see their own accounts, the same as users. No credential
+        Every authenticated principal reads the same way: the result covers
+        own accounts only, and the role does not widen the set. No credential
         detail and no raw platform text.
-      x-roles: [user, admin]
+      x-roles: [master, admin, user]
       responses:
         '200':
           description: Today's diagnostics per own account.
@@ -816,9 +847,9 @@ paths:
       summary: Polling status for the signed-in user's own accounts.
       description: |
         Lightweight per-account state for 30-60s polling. stale is true when
-        the row has not been updated for more than 90 seconds. Polling role
-        is user only.
-      x-roles: [user]
+        the row has not been updated for more than 90 seconds. Any
+        authenticated principal may poll; the result covers own accounts only.
+      x-roles: [master, admin, user]
       responses:
         '200':
           description: Sign status items.
@@ -863,6 +894,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ScheduleWindowList'
         '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/schedule/preview:
@@ -892,6 +924,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/SchedulePlan'
         '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         default: { $ref: '#/components/responses/DefaultError' }
@@ -922,6 +955,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/SchedulePlan'
         '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/ConflictError' }
@@ -954,6 +988,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/SchedulePlan'
         '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/ConflictError' }
@@ -969,7 +1004,7 @@ paths:
         It must be a multiple of five. allowed reports whether the deployment
         enables user time preferences; a stored value stays readable when the
         feature is disabled.
-      x-roles: [user]
+      x-roles: [master, admin, user]
       responses:
         '200':
           description: Time preference.
@@ -977,6 +1012,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TimePref'
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         default: { $ref: '#/components/responses/DefaultError' }
     put:
@@ -987,7 +1023,7 @@ paths:
         offset_min null clears the preference. A change within the cooldown
         window returns 429 rate_limited. The deployment gate
         YIBAN_ALLOW_TIME_PREF must be on, otherwise the call returns 403.
-      x-roles: [user]
+      x-roles: [master, admin, user]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
       requestBody:
@@ -1004,6 +1040,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/TimePref'
         '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         '429': { $ref: '#/components/responses/DefaultError' }
@@ -1045,6 +1082,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/CapacityReport'
         '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         default: { $ref: '#/components/responses/DefaultError' }
@@ -1053,7 +1091,7 @@ paths:
       tags: [photos]
       operationId: PhotoList
       summary: List the signed-in user's photos.
-      x-roles: [user]
+      x-roles: [master, admin, user]
       parameters:
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
@@ -1065,6 +1103,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/PhotoPage'
         '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         default: { $ref: '#/components/responses/DefaultError' }
     post:
@@ -1076,7 +1115,7 @@ paths:
         decodes, rotates, strips metadata, re-encodes and stores the bytes.
         The raw upload limit is 10 MiB. Uploading the same bytes again
         returns the same photo id and restores a deleted photo.
-      x-roles: [user]
+      x-roles: [master, admin, user]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
       requestBody:
@@ -1093,6 +1132,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Photo'
         '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         default: { $ref: '#/components/responses/DefaultError' }
@@ -1104,13 +1144,14 @@ paths:
       description: |
         Returns the stored bytes with their real media type and an ETag of
         the sha256. The scope check runs before any bytes are written.
-        A user reads own photos. An admin reads photos whose owner has a
-        non-deleted account in a bound school. Cross-scope reads answer 404.
+        The owner reads own photos under any role. An admin also reads photos
+        whose owner has a non-deleted account in a bound school. A master
+        reads own photos only. Cross-scope reads answer 404.
         When If-None-Match (weak comparison, comma lists and `*` honoured)
         matches the current ETag the answer is 304 without a body. Repeated
         If-None-Match header lines are merged per RFC 9110 section 5.3, so a
         well-formed list never answers 400.
-      x-roles: [user, admin]
+      x-roles: [master, admin, user]
       parameters:
         - $ref: '#/components/parameters/PhotoID'
         - name: If-None-Match
@@ -1132,6 +1173,7 @@ paths:
             ETag:
               description: Strong validator of the stored bytes (quoted sha256).
               schema: { type: string }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         default: { $ref: '#/components/responses/DefaultError' }
     delete:
@@ -1139,12 +1181,13 @@ paths:
       operationId: PhotoDelete
       summary: Soft-delete one photo.
       description: Idempotent; the blob is kept for dedupe and collected later.
-      x-roles: [user]
+      x-roles: [master, admin, user]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
         - $ref: '#/components/parameters/PhotoID'
       responses:
         '204': { description: Photo deleted. }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         default: { $ref: '#/components/responses/DefaultError' }
@@ -1155,7 +1198,7 @@ paths:
       summary: Set the photo retention period.
       description: |
         days is one of 30, 90, 180 or 365. Missing retention means 90 days.
-      x-roles: [user]
+      x-roles: [master, admin, user]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
       requestBody:
@@ -1172,6 +1215,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/PhotoRetention'
         '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         default: { $ref: '#/components/responses/DefaultError' }
@@ -1272,7 +1316,7 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
     ForbiddenError:
-      description: Role or scope does not allow the action.
+      description: Role, scope or CSRF check does not allow the action.
       content:
         application/json:
           schema:

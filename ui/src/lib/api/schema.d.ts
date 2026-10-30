@@ -220,11 +220,12 @@ export interface paths {
         /**
          * Set or clear the school default photo.
          * @description photo_id must reference an existing, non-deleted photo visible to the
-         *     caller: master sees every photo; an admin sees photos whose owner has
-         *     a non-deleted account in a bound school. null clears the reference.
-         *     Repeating the same value answers 200. The write and a
-         *     school.default_photo_set audit row commit in one transaction; the
-         *     detail carries only the photo id and the previous value.
+         *     caller: an admin sees photos whose owner has a non-deleted account in
+         *     a bound school. null clears the reference. Only an admin writes here;
+         *     master keeps the read reference from GET. Repeating the same value
+         *     answers 200. The write and a school.default_photo_set audit row commit
+         *     in one transaction; the detail carries only the photo id and the
+         *     previous value.
          */
         put: operations["SchoolDefaultPhotoSet"];
         post?: never;
@@ -506,7 +507,8 @@ export interface paths {
          * @description One item per account owned by the caller, with today's task state,
          *     run time, attempts, result word, next retry time and a closed
          *     vocabulary suggestion (wait, retry_now, re_arm, contact_admin).
-         *     Admins see their own accounts, the same as users. No credential
+         *     Every authenticated principal reads the same way: the result covers
+         *     own accounts only, and the role does not widen the set. No credential
          *     detail and no raw platform text.
          */
         get: operations["MeDiagnostics"];
@@ -550,8 +552,8 @@ export interface paths {
         /**
          * Polling status for the signed-in user's own accounts.
          * @description Lightweight per-account state for 30-60s polling. stale is true when
-         *     the row has not been updated for more than 90 seconds. Polling role
-         *     is user only.
+         *     the row has not been updated for more than 90 seconds. Any
+         *     authenticated principal may poll; the result covers own accounts only.
          */
         get: operations["MeSignStatus"];
         put?: never;
@@ -745,8 +747,9 @@ export interface paths {
          * Stream one photo.
          * @description Returns the stored bytes with their real media type and an ETag of
          *     the sha256. The scope check runs before any bytes are written.
-         *     A user reads own photos. An admin reads photos whose owner has a
-         *     non-deleted account in a bound school. Cross-scope reads answer 404.
+         *     The owner reads own photos under any role. An admin also reads photos
+         *     whose owner has a non-deleted account in a bound school. A master
+         *     reads own photos only. Cross-scope reads answer 404.
          *     When If-None-Match (weak comparison, comma lists and `*` honoured)
          *     matches the current ETag the answer is 304 without a body. Repeated
          *     If-None-Match header lines are merged per RFC 9110 section 5.3, so a
@@ -1271,7 +1274,7 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
-        /** @description Role or scope does not allow the action. */
+        /** @description Role, scope or CSRF check does not allow the action. */
         ForbiddenError: {
             headers: {
                 [name: string]: unknown;
@@ -1396,6 +1399,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            403: components["responses"]["ForbiddenError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -1537,6 +1541,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             default: components["responses"]["DefaultError"];
         };
@@ -1570,6 +1575,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
@@ -1600,6 +1606,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             default: components["responses"]["DefaultError"];
         };
@@ -1633,6 +1640,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
@@ -1670,6 +1678,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
             413: components["responses"]["PayloadTooLargeError"];
@@ -1696,6 +1705,7 @@ export interface operations {
                     "application/json": components["schemas"]["SchoolDefaultPhoto"];
                 };
             };
+            401: components["responses"]["UnauthorizedError"];
             404: components["responses"]["NotFoundError"];
             default: components["responses"]["DefaultError"];
         };
@@ -1731,6 +1741,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
             413: components["responses"]["PayloadTooLargeError"];
@@ -1763,6 +1774,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
             default: components["responses"]["DefaultError"];
@@ -1799,6 +1811,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
@@ -1831,6 +1844,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
             default: components["responses"]["DefaultError"];
@@ -1871,6 +1885,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             default: components["responses"]["DefaultError"];
         };
@@ -1904,6 +1919,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
@@ -1932,6 +1948,7 @@ export interface operations {
                     "application/json": components["schemas"]["Account"];
                 };
             };
+            401: components["responses"]["UnauthorizedError"];
             404: components["responses"]["NotFoundError"];
             default: components["responses"]["DefaultError"];
         };
@@ -1960,6 +1977,8 @@ export interface operations {
                 };
                 content?: never;
             };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
             default: components["responses"]["DefaultError"];
         };
@@ -1995,6 +2014,8 @@ export interface operations {
                 };
             };
             400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
@@ -2032,6 +2053,8 @@ export interface operations {
                 };
             };
             400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
@@ -2069,6 +2092,8 @@ export interface operations {
                 };
             };
             400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
@@ -2101,6 +2126,8 @@ export interface operations {
                     "application/json": components["schemas"]["AccountVerifyResult"];
                 };
             };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
             502: components["responses"]["DefaultError"];
             default: components["responses"]["DefaultError"];
@@ -2132,6 +2159,8 @@ export interface operations {
                     "application/json": components["schemas"]["AccountSignAccepted"];
                 };
             };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["DefaultError"];
             default: components["responses"]["DefaultError"];
@@ -2168,6 +2197,8 @@ export interface operations {
                 };
             };
             400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
             413: components["responses"]["PayloadTooLargeError"];
             default: components["responses"]["DefaultError"];
@@ -2199,6 +2230,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
             default: components["responses"]["DefaultError"];
@@ -2327,6 +2359,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             default: components["responses"]["DefaultError"];
         };
@@ -2356,6 +2389,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
             default: components["responses"]["DefaultError"];
@@ -2390,6 +2424,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
@@ -2426,6 +2461,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
@@ -2451,6 +2487,7 @@ export interface operations {
                     "application/json": components["schemas"]["TimePref"];
                 };
             };
+            401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             default: components["responses"]["DefaultError"];
         };
@@ -2484,6 +2521,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             413: components["responses"]["PayloadTooLargeError"];
             429: components["responses"]["DefaultError"];
@@ -2521,6 +2559,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
             default: components["responses"]["DefaultError"];
@@ -2550,6 +2589,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             default: components["responses"]["DefaultError"];
         };
@@ -2583,6 +2623,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             413: components["responses"]["PayloadTooLargeError"];
             default: components["responses"]["DefaultError"];
@@ -2621,6 +2662,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            401: components["responses"]["UnauthorizedError"];
             404: components["responses"]["NotFoundError"];
             default: components["responses"]["DefaultError"];
         };
@@ -2649,6 +2691,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
             default: components["responses"]["DefaultError"];
@@ -2683,6 +2726,7 @@ export interface operations {
                 };
             };
             400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             413: components["responses"]["PayloadTooLargeError"];
             default: components["responses"]["DefaultError"];

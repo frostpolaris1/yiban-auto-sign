@@ -441,12 +441,18 @@ func TestP4TimePref(t *testing.T) {
 		t.Fatalf("非法粒度 status = %d: %s", rec.Code, rec.Body.String())
 	}
 
-	// master 无权使用自选端点。
+	// master 同权：/api/me/* 的偏好行按会话 userID 归属，角色不参与判定。
+	// 新 master 没有存过偏好，读回 null。
 	master := e.user("p4-pref-master@example.com", coreauth.RoleMaster)
 	masterIssued := e.login(master)
 	rec = e.do("GET", "/api/me/time-pref", nil, masterIssued)
-	if rec.Code != 403 {
+	if rec.Code != 200 {
 		t.Fatalf("master status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var masterPref oapi.TimePref
+	e.decode(rec, &masterPref)
+	if masterPref.OffsetMin != nil {
+		t.Fatalf("master 偏好 = %v, want null（本人无存储值）", masterPref.OffsetMin)
 	}
 }
 

@@ -27,9 +27,10 @@ lines are merged into one comma-separated value per RFC 9110 section 5.3
 before binding, so a well-formed list answers `304` or `200`, never `400`.
 A `304` carries `ETag` and carries no `Content-Type`, no `Content-Length`
 and no body. The `304` response declares the `ETag` header in the YAML.
-The `200` path reads the record twice: `Get` for the validator, then `Open`
-for the stream. Merge the two reads into one port call only if this path
-becomes a hotspot.
+The `200` path reads the record twice for an owner: `Get` for the validator,
+then `Open` for the stream. An admin whose owner read misses adds one more
+`Get` against the admin scope before `Open`. Merge the reads into one port
+call only if this path becomes a hotspot.
 
 ## Roles
 
@@ -73,23 +74,23 @@ either side drifts.
 | GET | `/api/schedule/preview` | master/admin | P4 |
 | POST | `/api/schedule/plan` | master/admin | P4 |
 | POST | `/api/schedule/override` | master/admin | P4 |
-| GET | `/api/me/time-pref` | user | P4 |
-| PUT | `/api/me/time-pref` | user | P4 |
+| GET | `/api/me/time-pref` | master/admin/user | P4 |
+| PUT | `/api/me/time-pref` | master/admin/user | P4 |
 | GET | `/api/capacity` | master/admin | P4 |
 | POST | `/api/accounts/:id/sign` | master/admin/user | P4 |
-| GET | `/api/me/photos` | user | P5 |
-| POST | `/api/me/photos` | user | P5 |
-| DELETE | `/api/me/photos/:id` | user | P5 |
-| GET | `/api/me/photos/:id` | user/admin | P5 |
-| PUT | `/api/me/photo-retention` | user | P5 |
+| GET | `/api/me/photos` | master/admin/user | P5 |
+| POST | `/api/me/photos` | master/admin/user | P5 |
+| DELETE | `/api/me/photos/:id` | master/admin/user | P5 |
+| GET | `/api/me/photos/:id` | master/admin/user | P5 |
+| PUT | `/api/me/photo-retention` | master/admin/user | P5 |
 | PUT | `/api/accounts/:id/location` | user/admin | P5 |
 | GET | `/api/accounts/:id/photos` | user/admin | P5 |
 | GET | `/api/schools/:id/default-photo` | master/admin/user | P5 |
-| PUT | `/api/schools/:id/default-photo` | master/admin | P5 |
+| PUT | `/api/schools/:id/default-photo` | admin | P5 |
 | GET | `/api/admin/events` | master/admin | P6 |
-| GET | `/api/me/diagnostics` | user/admin | P6 |
+| GET | `/api/me/diagnostics` | master/admin/user | P6 |
 | GET | `/api/accounts/:id/diagnostics` | user/admin | P6 |
-| GET | `/api/me/sign-status` | user | P6 |
+| GET | `/api/me/sign-status` | master/admin/user | P6 |
 | GET | `/healthz` | public | P7 |
 
 ## Enforcement notes

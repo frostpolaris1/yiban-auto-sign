@@ -80,18 +80,22 @@ func (f *fakePlanner) ListWindows(_ context.Context, _ corescope.Scope, _ string
 }
 
 type fakeTimePrefs struct {
-	view       apptimepref.View
-	err        error
-	lastOffset *int
-	sets       int
+	view        apptimepref.View
+	err         error
+	lastOffset  *int
+	lastGetUser string
+	lastSetUser string
+	sets        int
 }
 
-func (f *fakeTimePrefs) Get(context.Context, string) (apptimepref.View, error) {
+func (f *fakeTimePrefs) Get(_ context.Context, userID string) (apptimepref.View, error) {
+	f.lastGetUser = userID
 	return f.view, f.err
 }
 
-func (f *fakeTimePrefs) Set(_ context.Context, _ string, offset *int) (apptimepref.View, error) {
+func (f *fakeTimePrefs) Set(_ context.Context, userID string, offset *int) (apptimepref.View, error) {
 	f.sets++
+	f.lastSetUser = userID
 	f.lastOffset = offset
 	return f.view, f.err
 }
@@ -381,7 +385,7 @@ func TestCapacityReport(t *testing.T) {
 	}
 }
 
-// 自选：user 可读写；master 403；写入偏移原样传递。
+// 自选：任意角色都可读写，偏好行恒按会话 userID 归属；写入偏移原样传递。
 func TestTimePrefRoutes(t *testing.T) {
 	prefs := &fakeTimePrefs{view: apptimepref.View{OffsetMin: intPtr(30), Allowed: true}}
 	engine, issued := newRouter(t, corescope.User("u1"), &fakePlanner{}, prefs)
@@ -421,10 +425,23 @@ func TestTimePrefRoutes(t *testing.T) {
 		t.Fatalf("null 清除未生效：sets=%d lastOffset=%v", prefs.sets, prefs.lastOffset)
 	}
 
+	if prefs.lastGetUser != "u1" || prefs.lastSetUser != "u1" {
+		t.Fatalf("偏好归属 = get:%q set:%q, want u1（会话 userID）", prefs.lastGetUser, prefs.lastSetUser)
+	}
+
+	// master 同样可读写，归属仍是自己的 userID（u1）。
+	prefs.lastGetUser, prefs.lastSetUser = "", ""
 	engine, issued = newRouter(t, corescope.Master(), &fakePlanner{}, prefs)
 	rec = do(t, engine, issued, http.MethodGet, "/api/me/time-pref", nil)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("master status = %d, want 403", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("master get status = %d, want 200", rec.Code)
+	}
+	rec = do(t, engine, issued, http.MethodPut, "/api/me/time-pref", map[string]any{"offset_min": 45})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("master put status = %d, want 200", rec.Code)
+	}
+	if prefs.lastGetUser != "u1" || prefs.lastSetUser != "u1" {
+		t.Fatalf("master 偏好归属 = get:%q set:%q, want u1", prefs.lastGetUser, prefs.lastSetUser)
 	}
 }
 

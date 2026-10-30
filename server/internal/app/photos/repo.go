@@ -12,8 +12,8 @@ import (
 
 // Store 读写图片记录。
 //
-// user 范围读自己的照片；admin 范围读绑定院校账号属主的照片。
-// master 不在照片端点契约内，Store 的照片读取仍返回 errs.ErrNotFound。
+// owner 范围读自己的照片；admin 范围读绑定院校账号属主的照片。
+// master 没有照片作用域：入口层把它收敛为 owner 范围，只读自己的行。
 //
 // 去重键是 (owner_user_id, sha256)：重复上传返回既有行。
 // 已软删的同键行在再次上传时恢复（DeletedAt 清空），避免用户
@@ -71,7 +71,8 @@ type SchoolPhotos interface {
 	// SchoolWritable 判定院校可写：master 不限，admin 限绑定校。
 	// 越权与不存在返回 errs.ErrNotFound。
 	SchoolWritable(ctx context.Context, scope corescope.Scope, schoolID string) error
-	// PhotoForDefault 读一张未软删照片；master 放行全量。
+	// PhotoForDefault 读一张未软删照片，供默认图写入校验。
+	// 只接受 admin 作用域：契约把 PUT default-photo 收窄为 [admin]。
 	// 跨用户、跨校与已软删返回 errs.ErrNotFound。
 	PhotoForDefault(ctx context.Context, scope corescope.Scope, id string) (corephoto.Record, error)
 	// SchoolDefault 读学校默认图；越权与不存在返回 errs.ErrNotFound。
