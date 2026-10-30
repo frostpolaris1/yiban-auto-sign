@@ -69,6 +69,9 @@ _FILE_CLAIM = re.compile(r"分属\s*(\d+)\s*个文件")
 #: shared-facts / path-env-reads 两个元测试步补 `FAST_DESELECT_ARGS`（那 4 条全仓扫描在 CI 上
 #: 实测占该两步 162s / 60s，剔掉后只剩十几秒；它们已由全量与 nightly 覆盖）。
 EXPECTED_CI_COMMANDS = (
+    # scope=shared（只动了共享配置名册）：点名跑读 registry.json 的旧线测试。
+    # 不再为「加一个 YIBAN_* 键」付整套旧线套件（2026-10-31）。
+    '"$py" -m pytest "${SHARED_CONFIG_TESTS[@]}" -q -n 4 --dist loadfile -p no:randomly',
     '"$py" -m ruff check yiban/ tests/ scripts/ web/ docker/ --quiet',
     # 工单 dq2n（2026-10-20）：mypy 用隔离缓存目录。mypy 在 (path,size,mtime) 相同时
     # 不校验内容哈希，会信任上一轮缓存里的错误；--ci 就地跑，最容易被脏 .mypy_cache
@@ -560,6 +563,54 @@ class DevVerifyFastModeTest(unittest.TestCase):
         rc, out = _run_entry(["--repo", BASE, "--ci", "--base", "HEAD"], timeout=30)
         self.assertNotEqual(rc, 0, "--ci 静默忽略了 --base")
         self.assertIn("--base", out, f"拒绝信息必须点名 --base：{out[-400:]}")
+
+
+class SharedConfigScopeTest(unittest.TestCase):
+    """scope=shared 的点名清单必须覆盖全部提到 config/registry.json 的旧线测试。
+
+    缺陷形状：`config/registry.json` 由两条线共享（旧线设置页与名册相关测试；
+    新栈 `update_env`、`doctor`、安装脚本）。Go 批次加 `YIBAN_*` 键必然改它，
+    而它曾算旧线代码 ⇒ 每个这种 PR 都被判 mixed、白付整套旧线 pytest
+    （2026-10-31 实测 verify 作业 6m28s / 8m31s）。现在单列 `shared` 一档，
+    只跑点名清单；全套旧线仍由 oldline/mixed 与 nightly 覆盖。
+
+    口径：按「文件里出现 registry.json」取保守超集（含只在注释里提到的），
+    两份只提不读的登记在 MENTION_ONLY。判定不做 I/O 语法推断——那会把
+    "换了读法"误判成"不再读"。门看的东西＝实际改的东西（AGENTS §29）：
+    清单漏一个读者，那个读法在 scope=shared 下就失去保护，且不重合是静的。
+    """
+
+    #: 只在注释/文档串里提到 registry.json、本身不读它的文件。
+    MENTION_ONLY = frozenset({
+        "tests/test_repo_structure_gate.py",  # 仓库结构清单里的一行注释
+        "tests/test_stream_api.py",           # 模块文档串里的路径示例
+        "tests/test_dev_verify_entry.py",     # 本文件：读的是别的测试的文本
+    })
+
+    def test_list_covers_every_registry_reader(self):
+        text = _read(ENTRY)
+        listed = set(_bash_array_items(text, "SHARED_CONFIG_TESTS"))
+        self.assertGreaterEqual(
+            len(listed), 1,
+            "抽不到 SHARED_CONFIG_TESTS——结构改了？本条会因此变废断言")
+        mentions = set()
+        tests_dir = os.path.join(BASE, "tests")
+        for name in sorted(os.listdir(tests_dir)):
+            if not name.endswith(".py"):
+                continue
+            if "registry.json" in _read(os.path.join(tests_dir, name)):
+                mentions.add("tests/" + name)
+        self.assertEqual(
+            listed, mentions - self.MENTION_ONLY,
+            "SHARED_CONFIG_TESTS 与「提到 registry.json 的测试」不重合："
+            "漏登记＝该读法在 scope=shared 下失去保护（不重合是静的，AGENTS §29）")
+
+    def test_shared_scope_is_handled_in_run_ci(self):
+        """`--scope shared` 必须真的被 run_ci 接住，不能只被参数解析收下。"""
+        body = _func_body(_read(ENTRY), "run_ci")
+        self.assertGreater(len(body), 100, "抽不出 run_ci 正文——结构改了？")
+        self.assertIn('elif [ "$CI_SCOPE" = "shared" ]', body,
+                      "scope=shared 落进了 else 分支：会跑整套旧线，优化失效")
 
 
 class DevVerifyTailLaneTest(unittest.TestCase):

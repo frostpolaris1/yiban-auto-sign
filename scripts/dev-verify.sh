@@ -406,6 +406,10 @@ run_ci() { # CI 关键子集：就地跑，不建副本；命令逐字冻结在 
     cd "$REPO"
     if [ "$CI_SCOPE" = "newstack" ]; then
         echo "DEV-VERIFY(ci) scope=newstack：跳过旧线静态检查与旧线测试（改面无旧线路径；AGENTS §37d）"
+    elif [ "$CI_SCOPE" = "shared" ]; then
+        # 只动了共享配置名册：跑读它的旧线测试，不跑整套旧线（2026-10-31）。
+        echo "DEV-VERIFY(ci) scope=shared：只跑读 config/registry.json 的旧线测试"
+        "$py" -m pytest "${SHARED_CONFIG_TESTS[@]}" -q -n 4 --dist loadfile -p no:randomly
     else
     echo "DEV-VERIFY(ci) lint"
     "$py" -m ruff check yiban/ tests/ scripts/ web/ docker/ --quiet
@@ -663,6 +667,22 @@ build_lane_ignore_args() { # 由名册派生 pytest 的 --ignore（名册是唯�
 #: 快集与 CI 各步共用的 --deselect 参数（由 FAST_KNOWN_SLOW 派生）。
 FAST_DESELECT_ARGS=()
 
+#: 读共享配置 config/registry.json 的旧线测试（scope=shared 时点名跑）。
+#: 清单的完整性由 tests/test_dev_verify_entry.py::SharedConfigScopeTest 钉住：
+#: tests/ 里凡是提到 registry.json 的文件都必须在这里，新增读者漏登记即红。
+SHARED_CONFIG_TESTS=(
+    tests/test_config_registry_gate.py
+    tests/test_backup_hardening.py
+    tests/test_config_loader.py
+    tests/test_egress_rate_domain_single_source.py
+    tests/test_health_report_schedule_e2e.py
+    tests/test_deploy_prod_artifacts.py
+    tests/test_runtime_data_layout.py
+    tests/test_root_artifacts.py
+    tests/test_sign_dist_default_parity.py
+    tests/test_state_rosters_mutual.py
+)
+
 build_fast_deselect_args() { # 由 FAST_KNOWN_SLOW 派生 --deselect；两处（快集与各门步骤）共用
     FAST_DESELECT_ARGS=()
     local n
@@ -871,8 +891,8 @@ while [ $# -gt 0 ]; do
             CI_SCOPE=${2:-}
             [ -n "$CI_SCOPE" ] || CI_SCOPE=oldline
             case "$CI_SCOPE" in
-                oldline|newstack|mixed) ;;
-                *) die "--scope 只认 oldline|newstack|mixed，实得：$CI_SCOPE" ;;
+                oldline|newstack|mixed|shared) ;;
+                *) die "--scope 只认 oldline|newstack|mixed|shared，实得：$CI_SCOPE" ;;
             esac
             ;;
         --repo) REPO=${2:?--repo 需要取值} ;;
