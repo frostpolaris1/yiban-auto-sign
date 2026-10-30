@@ -48,6 +48,8 @@ type Deps struct {
 	Audit appaudit.Repo
 	Tx    app.TxManager
 	Clock clock.Clock
+	// KDF 是口令哈希端口。生产必须传限并发实现（coreauth.Bounded）。
+	KDF   coreauth.Hasher
 	Limit int
 }
 
@@ -67,6 +69,8 @@ func NewService(deps Deps) (*Service, error) {
 		return nil, errors.New("user: nil transaction manager")
 	case deps.Clock == nil:
 		return nil, errors.New("user: nil clock")
+	case deps.KDF == nil:
+		return nil, errors.New("user: nil KDF")
 	case deps.Limit <= 0:
 		return nil, errors.New("user: limit must be positive")
 	}
@@ -96,7 +100,7 @@ func (s *Service) Create(ctx context.Context, scope corescope.Scope, in CreateIn
 		return Record{}, errs.New(errs.CodeValidation, "role must be master, admin or user")
 	}
 
-	hash, err := coreauth.HashPassword(in.Password)
+	hash, err := s.deps.KDF.Hash(ctx, in.Password)
 	if err != nil {
 		return Record{}, err
 	}

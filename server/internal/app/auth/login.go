@@ -47,6 +47,9 @@ type Deps struct {
 	Audits        appaudit.Repo
 	Tx            app.TxManager
 	Clock         clock.Clock
+	// KDF 是口令哈希端口。生产必须传限并发实现（coreauth.Bounded）；
+	// 测试可传 PlainHasher 或计数器替身。nil 即构造失败。
+	KDF coreauth.Hasher
 	// Mail 投递重置邮件。为 nil 表示 SMTP 未配置：
 	// 令牌照常生成，投递跳过，并留一条显性「未投递」日志。
 	Mail coremail.Sender
@@ -66,6 +69,7 @@ type Service struct {
 	audits   appaudit.Repo
 	tx       app.TxManager
 	clock    clock.Clock
+	kdf      coreauth.Hasher
 	mail     coremail.Sender
 	mailBase string
 	log      *slog.Logger
@@ -94,6 +98,8 @@ func NewService(d Deps) (*Service, error) {
 		return nil, errors.New("appauth: nil transaction manager")
 	case d.Clock == nil:
 		return nil, errors.New("appauth: nil clock")
+	case d.KDF == nil:
+		return nil, errors.New("appauth: nil KDF")
 	}
 	mailBase := strings.TrimRight(strings.TrimSpace(d.MailBaseURL), "/")
 	if d.Mail != nil && mailBase == "" {
@@ -111,6 +117,7 @@ func NewService(d Deps) (*Service, error) {
 		audits:    d.Audits,
 		tx:        d.Tx,
 		clock:     d.Clock,
+		kdf:       d.KDF,
 		mail:      d.Mail,
 		mailBase:  mailBase,
 		log:       log,
@@ -139,7 +146,7 @@ func (s *Service) Login(ctx context.Context, email, password string) (coreauth.I
 		if !isNotFound(err) {
 			return coreauth.Issued{}, err
 		}
-		if err := verifyDummyPassword(password); err != nil {
+		if err := s.verifyDummyPassword(ctx, password); err != nil {
 			return coreauth.Issued{}, err
 		}
 		if err := s.recordLoginFailure(ctx, "", coreauth.RoleUser, email, now); err != nil {
@@ -148,7 +155,7 @@ func (s *Service) Login(ctx context.Context, email, password string) (coreauth.I
 		return coreauth.Issued{}, ErrInvalidCredentials
 	}
 
-	check, err := coreauth.VerifyPassword(password, rec.PasswordHash)
+	check, err := s.kdf.Verify(ctx, password, rec.PasswordHash)
 	if err != nil {
 		// 坏哈希是数据事故，不是口令错误。不把它伪装成 401，
 		// 否则迁移出错会表现成「全员口令错」。
@@ -162,7 +169,7 @@ func (s *Service) Login(ctx context.Context, email, password string) (coreauth.I
 	}
 
 	if check.NeedsRehash {
-		upgraded, err := coreauth.HashPassword(password)
+		upgraded, err := s.kdf.Hash(ctx, password)
 		if err != nil {
 			return coreauth.Issued{}, err
 		}
@@ -201,18 +208,31 @@ func (s *Service) recordLoginFailure(ctx context.Context, userID string, role co
 }
 
 // dummyOnce 生成计时拉平用的哈希。每个进程只算一次。
-var dummyOnce = sync.OnceValues(func() (string, error) {
-	return coreauth.HashPassword("yiban-login-timing-placeholder")
-})
+// 一旦生成就缓存：首个请求的取消不得把错误缓存给全进程。
+var dummyOnce struct {
+	sync.Once
+	hash string
+	err  error
+}
+
+// dummyHash 返回计时拉平哈希。首次调用走本服务的 KDF 闸。
+func (s *Service) dummyHash(ctx context.Context) (string, error) {
+	dummyOnce.Do(func() {
+		dummyOnce.hash, dummyOnce.err = s.kdf.Hash(
+			context.WithoutCancel(ctx), "yiban-login-timing-placeholder")
+	})
+	return dummyOnce.hash, dummyOnce.err
+}
 
 // verifyDummyPassword 对不存在的用户执行一次等价校验。
 // 结果**必然**不匹配；唯一目的是消耗与真实校验同样的时间。
-func verifyDummyPassword(password string) error {
-	hash, err := dummyOnce()
+// 走同一 Hasher，故它也受进程级 KDF 并发上限约束。
+func (s *Service) verifyDummyPassword(ctx context.Context, password string) error {
+	hash, err := s.dummyHash(ctx)
 	if err != nil {
 		return err
 	}
-	_, err = coreauth.VerifyPassword(password, hash)
+	_, err = s.kdf.Verify(ctx, password, hash)
 	return err
 }
 

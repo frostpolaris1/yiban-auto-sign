@@ -16,6 +16,8 @@ export interface paths {
         /**
          * Sign in with email and password.
          * @description Sets the HttpOnly session cookie on success.
+         *     Rate limited per client IP and per normalized email; a 429 carries
+         *     Retry-After in seconds.
          */
         post: operations["AuthLogin"];
         delete?: never;
@@ -76,6 +78,7 @@ export interface paths {
          * Start the password reset flow.
          * @description Always returns 204, whether or not the email exists, to avoid account
          *     enumeration. A one-time token row is written only for known accounts.
+         *     Rate limited per client IP; a 429 carries Retry-After in seconds.
          */
         post: operations["AuthForgotPassword"];
         delete?: never;
@@ -96,7 +99,9 @@ export interface paths {
         /**
          * Finish the password reset flow with a one-time token.
          * @description Consumes the token, replaces the password, revokes every session of the
-         *     user and marks must_change_password false.
+         *     user and marks must_change_password false. The token is checked before
+         *     the new password is hashed. Rate limited per client IP and per token
+         *     digest; a 429 carries Retry-After in seconds.
          */
         post: operations["AuthResetPassword"];
         delete?: never;
@@ -122,6 +127,7 @@ export interface paths {
          *     session. Success writes one auth.password_change audit row.
          *     A wrong current_password is 401 with the same code and message as a
          *     failed login, so the two are indistinguishable.
+         *     Rate limited per client IP and per user; a 429 carries Retry-After.
          *     A new_password equal to current_password is 409 conflict.
          *     Both fields are non-empty. The minimum length matches
          *     POST /api/auth/reset-password.
@@ -387,6 +393,7 @@ export interface paths {
          *     reports the platform conclusion. The response never includes the
          *     credential. Platform conclusions return 200; a transport failure
          *     returns 502 upstream_unavailable.
+         *     Rate limited per client IP and per account id; a 429 carries Retry-After.
          */
         post: operations["AccountVerify"];
         delete?: never;
@@ -410,6 +417,7 @@ export interface paths {
          *     A closed window returns 409 window_closed. A run in progress returns
          *     409 sign_running. A concluded day returns 409 already_signed.
          *     Cross-scope accounts return 404 for every role.
+         *     Rate limited per client IP and per account id; a 429 carries Retry-After.
          */
         post: operations["AccountSign"];
         delete?: never;
@@ -1283,6 +1291,17 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
+        /** @description Inbound rate limit exceeded; Retry-After says when to retry. */
+        TooManyRequestsError: {
+            headers: {
+                /** @description Seconds to wait before retrying; always at least 1. */
+                "Retry-After"?: number;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
         /** @description Object missing or out of scope. */
         NotFoundError: {
             headers: {
@@ -1374,6 +1393,7 @@ export interface operations {
             400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
             413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -1447,6 +1467,7 @@ export interface operations {
             };
             400: components["responses"]["ValidationError"];
             413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -1473,6 +1494,7 @@ export interface operations {
             400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
             413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -1507,6 +1529,7 @@ export interface operations {
             403: components["responses"]["ForbiddenError"];
             409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -1579,6 +1602,7 @@ export interface operations {
             403: components["responses"]["ForbiddenError"];
             409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["DefaultError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -2129,6 +2153,7 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
+            429: components["responses"]["TooManyRequestsError"];
             502: components["responses"]["DefaultError"];
             default: components["responses"]["DefaultError"];
         };
@@ -2163,6 +2188,7 @@ export interface operations {
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["DefaultError"];
+            429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
         };
     };

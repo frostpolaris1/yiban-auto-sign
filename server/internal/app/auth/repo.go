@@ -62,6 +62,10 @@ type SessionRepo interface {
 // **第二次 Consume、过期令牌、未知令牌一律 not_found**。
 type PasswordResetRepo interface {
 	Create(ctx context.Context, in NewPasswordReset) (PasswordReset, error)
+	// Peek 读一个未使用、未过期的令牌行，不改变状态。
+	// 用途：在付出口令哈希之前先判令牌是否有效。
+	// 与 Consume 的单次使用判据同源：两次读之间被消费时，Consume 仍会失败。
+	Peek(ctx context.Context, tokenHash coreauth.TokenHash, now time.Time) (PasswordReset, error)
 	Consume(ctx context.Context, tokenHash coreauth.TokenHash, now time.Time) (PasswordReset, error)
 }
 

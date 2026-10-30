@@ -71,7 +71,7 @@ func newUsecaseEnv(t *testing.T) *usecaseEnv {
 		t.Fatalf("admin service: %v", err)
 	}
 	users, err := appuser.NewService(appuser.Deps{
-		Users: e.users, Audit: e.audits, Tx: e.db, Clock: clk, Limit: 10000,
+		Users: e.users, Audit: e.audits, Tx: e.db, Clock: clk, KDF: coreauth.PlainHasher{}, Limit: 10000,
 	})
 	if err != nil {
 		t.Fatalf("user service: %v", err)

@@ -98,6 +98,8 @@ func runUser(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		Audit: audits,
 		Tx:    db,
 		Clock: coreclock.System{},
+		// 一次性 CLI：没有并发面，不引入进程级闸。
+		KDF:   coreauth.PlainHasher{},
 		Limit: assembly.UserCapacityLimit,
 	})
 	if err != nil {

@@ -156,6 +156,9 @@ func (s *server) AccountSign(c *gin.Context, id oapi.AccountID, params oapi.Acco
 		notImplemented(c)
 		return
 	}
+	if !s.accountLimit(c, string(id)) {
+		return
+	}
 	s.signing.Sign(c, id, params)
 }
 
@@ -172,6 +175,9 @@ func (s *server) AccountLocationSet(c *gin.Context, id oapi.AccountID, params oa
 func (s *server) AccountVerify(c *gin.Context, id oapi.AccountID, params oapi.AccountVerifyParams) {
 	if s.signing == nil {
 		notImplemented(c)
+		return
+	}
+	if !s.accountLimit(c, string(id)) {
 		return
 	}
 	s.signing.Verify(c, id, params)

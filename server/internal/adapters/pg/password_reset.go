@@ -51,6 +51,21 @@ func (r *PasswordResetRepo) Create(ctx context.Context, in coreauth.NewPasswordR
 	return record, nil
 }
 
+// Peek 读一个未使用、未过期的令牌行，不改变状态。
+// 用例在付出口令哈希之前先用它判令牌；真正的单次使用判据仍是 Consume。
+func (r *PasswordResetRepo) Peek(ctx context.Context, tokenHash coreauth.TokenHash, now time.Time) (coreauth.PasswordReset, error) {
+	if tokenHash.IsZero() {
+		return coreauth.PasswordReset{}, coreerrNotFound()
+	}
+	row := r.db.q(ctx).QueryRow(ctx, `
+		SELECT `+resetColumns+` FROM password_resets
+		 WHERE token_hash = $1
+		   AND used_at IS NULL
+		   AND expires_at > $2`, tokenHash.Bytes(), now)
+	record, err := scanReset(row)
+	return recordOrNotFound(record, err)
+}
+
 // Consume 把令牌标记为已用并返回它。
 //
 // 这条 UPDATE 就是**单次使用判据**：只有未用且未过期的行会改变。

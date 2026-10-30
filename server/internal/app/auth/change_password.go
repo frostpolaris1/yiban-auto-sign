@@ -36,7 +36,7 @@ func (s *Service) ChangePassword(ctx context.Context, sess coreauth.Session, kee
 		return errs.New(errs.CodeInternal, "session token is required")
 	}
 	// 哈希在事务外算：argon2id 约几十毫秒，不该占住行锁与链锁。
-	newHash, err := coreauth.HashPassword(newPassword)
+	newHash, err := s.kdf.Hash(ctx, newPassword)
 	if err != nil {
 		return err
 	}
@@ -46,14 +46,14 @@ func (s *Service) ChangePassword(ctx context.Context, sess coreauth.Session, kee
 		if err != nil {
 			if isNotFound(err) {
 				// 用户消失走与坏口令同量的垫时，两条路径不可区分。
-				if padErr := verifyDummyPassword(currentPassword); padErr != nil {
+				if padErr := s.verifyDummyPassword(ctx, currentPassword); padErr != nil {
 					return padErr
 				}
 				return ErrInvalidCredentials
 			}
 			return err
 		}
-		check, err := coreauth.VerifyPassword(currentPassword, rec.PasswordHash)
+		check, err := s.kdf.Verify(ctx, currentPassword, rec.PasswordHash)
 		if err != nil {
 			// 坏哈希是数据事故，不是口令错误。
 			return fmt.Errorf("appauth: stored hash for %s is unreadable: %w", rec.ID, err)

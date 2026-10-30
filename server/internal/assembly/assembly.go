@@ -70,6 +70,7 @@ import (
 	eventshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/events"
 	locationhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/location"
 	photoshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/photos"
+	ratelimit "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/ratelimit"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/router"
 	schedulehttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/schedule"
 	schoolhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/school"
@@ -365,6 +366,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			logger.Warn("mail: SMTP delivery is disabled; password reset links are not delivered",
 				"reason", "YIBAN_RESET_MAIL_ENABLE is false")
 		}
+		// 一个 KDF 闸服务全部用例：并发上限按进程计，不是按服务计。
+		kdf := auth.NewBounded(cfg.KDFConcurrency)
 		authSvc, err = appauth.NewService(appauth.Deps{
 			Users:         pg.NewUserRepo(db),
 			Sessions:      issuer,
@@ -373,6 +376,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			Audits:        audits,
 			Tx:            db,
 			Clock:         clk,
+			KDF:           kdf,
 			Mail:          mailer,
 			MailBaseURL:   cfg.PublicBaseURL,
 			Logger:        logger,
@@ -444,6 +448,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			Audit: audits,
 			Tx:    db,
 			Clock: clk,
+			KDF:   kdf,
 			Limit: UserCapacityLimit,
 		})
 		if err != nil {
@@ -606,6 +611,11 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		eventLib = eventshttp.NewHandler(broker, diagSvc, adminSvc, clk, nil)
 	}
 
+	guard, err := buildRateLimit(cfg)
+	if err != nil {
+		closeFn()
+		return nil, err
+	}
 	engine, err := router.New(router.Options{
 		Sessions:        issuer,
 		Auth:            authSvc,
@@ -621,6 +631,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		Photos:          photoLib,
 		Locations:       locLib,
 		Events:          eventLib,
+		RateLimit:       guard,
 	})
 	if err != nil {
 		closeFn()
@@ -630,6 +641,32 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 	var closeOnce sync.Once
 	closeAll := func() { closeOnce.Do(closeFn) }
 	return &Stack{Engine: engine, DB: db, Worker: workerSvc, Close: closeAll}, nil
+}
+
+// buildRateLimit 构造入站限流面。
+// 关闭开关时返回 nil：路由层把 nil Guard 视为不限流。
+// 可信代理表非法即启动失败：静默忽略会让限流按代理 IP 计数。
+func buildRateLimit(cfg *config.Config) (*ratelimit.Guard, error) {
+	if !cfg.RateLimitEnabled {
+		return nil, nil
+	}
+	trusted, err := ratelimit.ParseTrustedProxies(cfg.TrustedProxies)
+	if err != nil {
+		return nil, fmt.Errorf("assembly: trusted proxies: %w", err)
+	}
+	ip, err := ratelimit.NewThrottle(ratelimit.Quota{
+		PerMinute: cfg.RateIPPerMin, Burst: cfg.RateIPBurst,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("assembly: ip rate limit: %w", err)
+	}
+	account, err := ratelimit.NewThrottle(ratelimit.Quota{
+		PerMinute: cfg.RateAccountPerMin, Burst: cfg.RateAccountBurst,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("assembly: account rate limit: %w", err)
+	}
+	return &ratelimit.Guard{IP: ip, Account: account, Trusted: trusted}, nil
 }
 
 // DeriveAuditKey 从服务器 pepper 派生审计链密钥。

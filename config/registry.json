@@ -2294,5 +2294,80 @@
     "web_editable": false,
     "tier": "master",
     "reload": "restart"
+  },
+  "YIBAN_RATE_LIMIT_ENABLE": {
+    "type": "bool",
+    "default": true,
+    "group": ["节流"],
+    "doc": "入站限流总开关。关闭时登录、重置、改密、校验、签到不按 IP 与账号限速",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_RATE_IP_PER_MIN": {
+    "type": "int",
+    "domain": [1, 6000],
+    "default": 60,
+    "group": ["节流"],
+    "doc": "每个客户端 IP 每分钟允许的受限请求数（登录、重置、改密、校验、签到）",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_RATE_IP_BURST": {
+    "type": "int",
+    "domain": [1, 6000],
+    "default": 20,
+    "group": ["节流"],
+    "doc": "每个客户端 IP 的突发桶容量",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_RATE_ACCOUNT_PER_MIN": {
+    "type": "int",
+    "domain": [1, 600],
+    "default": 10,
+    "group": ["节流"],
+    "doc": "每个账号每分钟允许的受限请求数（登录按邮箱、重置按令牌、其余按会话或账号 id）",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_RATE_ACCOUNT_BURST": {
+    "type": "int",
+    "domain": [1, 600],
+    "default": 5,
+    "group": ["节流"],
+    "doc": "每个账号的突发桶容量",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_TRUSTED_PROXIES": {
+    "type": "string",
+    "default": "",
+    "group": ["安全"],
+    "doc": "可信反向代理 CIDR 表（逗号分隔）。空表示不信任 X-Forwarded-For，只按直连对端限流；裸 IP 按单机网段处理",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
+  "YIBAN_KDF_CONCURRENCY": {
+    "type": "int",
+    "domain": [1, 64],
+    "default": 4,
+    "group": ["安全"],
+    "doc": "口令哈希（Argon2id）的进程级并发上限。每次哈希约 19 MiB 内存，上限即内存上限",
+    "sensitive": false,
+    "web_editable": true,
+    "tier": "master",
+    "reload": "restart"
   }
 }
