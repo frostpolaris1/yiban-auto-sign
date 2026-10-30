@@ -1,6 +1,7 @@
 import type { Page, Route } from '@playwright/test'
 import type { School, SchoolAdmin } from '../../src/lib/api/school'
 import { SESSION_CSRF, SESSION_EMAIL, type Role } from './fake-accounts-api'
+import { createPhotoFixture, handlePhotoRoute, type PhotoFixture } from './fake-photos'
 
 /**
  * 学校页的假 API。
@@ -69,10 +70,13 @@ export type MockSchoolsOptions = {
   adminNextCursors?: Record<string, Record<string, string>>
   listError?: { status: number; code: string; message: string }
   createError?: { status: number; code: string; message: string }
+  /** 照片夹具。缺省为一份含 school-alpha 缺省图的合成库。 */
+  photos?: PhotoFixture
 }
 
 export type FakeSchoolsApi = {
   calls: ApiCall[]
+  photos: PhotoFixture
 }
 
 function errorBody(code: string, message: string) {
@@ -87,6 +91,7 @@ export async function mockSchoolsApi(
 ): Promise<FakeSchoolsApi> {
   const calls: ApiCall[] = []
   const sessionRole = options.role
+  const photos = options.photos ?? createPhotoFixture()
   const schools = (options.schools ?? SCHOOLS).map((item) => ({ ...item }))
   const adminsBySchool: Record<string, SchoolAdmin[]> = {
     'school-alpha': ADMINS.map((item) => ({ ...item })),
@@ -144,6 +149,9 @@ export async function mockSchoolsApi(
       params: Object.fromEntries(url.searchParams.entries()),
       body,
     })
+
+    // 照片域先接管：学校缺省图的读写走这里，其余请求落到本文件的路由表。
+    if (await handlePhotoRoute(route, request, url, photos, () => sessionRole)) return
 
     if (url.pathname === '/api/auth/me') {
       if (!sessionRole) return fail(route, 401, 'unauthorized', '会话失效')
@@ -251,7 +259,7 @@ export async function mockSchoolsApi(
     return fail(route, 404, 'not_found', '未找到资源')
   })
 
-  return { calls }
+  return { calls, photos }
 }
 
 export function listSchoolCalls(api: FakeSchoolsApi): ApiCall[] {

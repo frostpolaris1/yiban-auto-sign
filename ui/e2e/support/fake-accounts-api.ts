@@ -1,5 +1,6 @@
 import type { Page, Route } from '@playwright/test'
 import type { Account, AccountVerifyResult } from '../../src/lib/api/account'
+import { createPhotoFixture, handlePhotoRoute, type PhotoFixture } from './fake-photos'
 
 /**
  * 账号页的假 API。
@@ -124,10 +125,13 @@ export type MockOptions = {
   changePasswordSessionExpired?: boolean
   /** 登录态改密断网：fetch 直接拒绝。 */
   changePasswordNetworkError?: boolean
+  /** 照片夹具。缺省为一份 user-1 拥有两张图的合成库。 */
+  photos?: PhotoFixture
 }
 
 export type FakeApi = {
   calls: ApiCall[]
+  photos: PhotoFixture
 }
 
 function errorBody(code: string, message: string) {
@@ -138,6 +142,7 @@ function errorBody(code: string, message: string) {
 
 export async function mockAccountsApi(page: Page, options: MockOptions): Promise<FakeApi> {
   const calls: ApiCall[] = []
+  const photos = options.photos ?? createPhotoFixture()
   // 会话角色随 login/logout/过期变化，故初始值拷贝一份。
   let sessionRole: Role | null = options.role
   // 改密成功会清掉待改密标记，故这一位也要可变。
@@ -188,6 +193,9 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       sessionRole = null
       return fail(route, 401, 'unauthorized', '会话已过期')
     }
+
+    // 照片域先接管：账号抽屉的图片区与图片字节都走这里。
+    if (await handlePhotoRoute(route, request, url, photos, () => sessionRole)) return
 
     const sessionUser = (role: Role) => ({
       id: 'user-1',
@@ -347,7 +355,7 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
     return fail(route, 405, 'internal_error', '不支持的方法')
   })
 
-  return { calls }
+  return { calls, photos }
 }
 
 export function listCalls(api: FakeApi): ApiCall[] {

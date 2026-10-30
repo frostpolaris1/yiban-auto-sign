@@ -17,7 +17,7 @@
     "test:unit": "node --import ./scripts/tests/resolve-ts.mjs --test scripts/tests/client.test.mjs scripts/tests/query.test.mjs scripts/tests/cursor.test.mjs scripts/tests/accounts.test.mjs scripts/tests/account-actions.test.mjs scripts/tests/schools.test.mjs scripts/tests/schedule.test.mjs scripts/tests/auth.test.mjs scripts/tests/settings.test.mjs scripts/tests/users.test.mjs scripts/tests/dashboard.test.mjs scripts/tests/test-plan.test.mjs scripts/tests/icon-source.test.mjs",
     "test:e2e": "playwright test",
     "test:e2e:fast": "npm run test:behavior && npm run test:shots",
-    "test:behavior": "playwright test e2e/accounts.spec.ts e2e/settings.spec.ts e2e/auth.spec.ts e2e/dashboard.spec.ts e2e/gallery.spec.ts e2e/schedule.spec.ts e2e/schools.spec.ts e2e/users.spec.ts e2e/microinteraction.spec.ts e2e/showcase.spec.ts --workers=4",
+    "test:behavior": "playwright test e2e/accounts.spec.ts e2e/settings.spec.ts e2e/auth.spec.ts e2e/dashboard.spec.ts e2e/gallery.spec.ts e2e/schedule.spec.ts e2e/schools.spec.ts e2e/users.spec.ts e2e/microinteraction.spec.ts e2e/photos.spec.ts e2e/showcase.spec.ts --workers=4",
     "test:shots": "playwright test e2e/visual.spec.ts --workers=1",
     "test:shots:update": "playwright test e2e/visual.spec.ts --workers=1 --update-snapshots",
     "test:visual": "playwright test",

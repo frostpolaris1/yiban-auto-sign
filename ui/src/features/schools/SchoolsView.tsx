@@ -14,7 +14,7 @@
  * 学校没有删除端点，页面不出删除入口。
  */
 
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
@@ -47,7 +47,12 @@ import { can, denyReason } from './permissions'
 
 type EditInput = { id: string; body: SchoolUpdate }
 
-export function SchoolsView() {
+type SchoolsViewProps = {
+  /** 缺省图区由页面装配后传入；本功能不依赖照片功能。 */
+  defaultPhotoPanel?: (school: School) => ReactNode
+}
+
+export function SchoolsView({ defaultPhotoPanel }: SchoolsViewProps = {}) {
   const queryClient = useQueryClient()
   const meQuery = useMe()
   const role: Role | null = meQuery.data?.role ?? null
@@ -241,6 +246,7 @@ export function SchoolsView() {
         school={detail}
         returnFocusTo={detailReturnFocus}
         onClose={() => setDetail(null)}
+        defaultPhotoPanel={defaultPhotoPanel}
       />
 
       <SchoolCreateModal

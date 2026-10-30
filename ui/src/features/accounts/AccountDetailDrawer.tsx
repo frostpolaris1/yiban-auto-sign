@@ -8,8 +8,11 @@
  * **口径**
  * 打开即取详情。列表里的摘要先渲染，详情到达后替换。
  * 学校名从同一份学校列表解析；取不到时退回学校 ID。
+ * 照片区由页面注入：契约只放行 user/admin 读图，上传与删除只归用户本人，
+ * 缺省图动作只归 admin（master 读不到图片字节）。
  */
 
+import type { ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Alert } from '@/components/ui/Alert'
 import { Badge } from '@/components/ui/Badge'
@@ -27,6 +30,8 @@ type AccountDetailDrawerProps = {
   schools: School[]
   returnFocusTo: HTMLElement | null
   onClose: () => void
+  /** 照片区由页面装配：跨功能复用件不能从本功能直接导入。 */
+  photoSection?: (account: Account) => ReactNode
 }
 
 export function AccountDetailDrawer({
@@ -34,6 +39,7 @@ export function AccountDetailDrawer({
   schools,
   returnFocusTo,
   onClose,
+  photoSection,
 }: AccountDetailDrawerProps) {
   const detail = useQuery({
     queryKey: ['account', account?.id ?? null],
@@ -98,6 +104,8 @@ export function AccountDetailDrawer({
           <dd>{formatDateTime(data.updated_at)}</dd>
         </dl>
       ) : null}
+
+      {data && photoSection ? photoSection(data) : null}
     </Drawer>
   )
 }

@@ -11,7 +11,21 @@
  */
 
 import { SchoolsView } from '@/features/schools/SchoolsView'
+import { SchoolDefaultPhotoPanel } from '@/features/photos/SchoolDefaultPhotoPanel'
+import { SHOWCASE, useMe } from '@/lib/session'
 
 export function SchoolsPage() {
-  return <SchoolsView />
+  const me = useMe()
+  const role = me.data?.role ?? null
+  // 缺省图的字节只归 user/admin 读；master 能改引用却看不到图，故本页只给 admin。
+  const canManageDefault = SHOWCASE || role === 'admin'
+  return (
+    <SchoolsView
+      defaultPhotoPanel={
+        canManageDefault
+          ? (school) => <SchoolDefaultPhotoPanel schoolId={school.id} />
+          : undefined
+      }
+    />
+  )
 }

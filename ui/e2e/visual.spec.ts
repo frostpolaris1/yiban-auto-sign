@@ -199,6 +199,17 @@ for (const theme of THEMES) {
     await expect(page).toHaveScreenshot(`accounts-drawer-${theme}-1440.png`)
   })
 
+  test(`visual accounts drawer with photos ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    // 照片区只对 user/admin 渲染（契约 x-roles），故叠一层 admin 会话。
+    await mockAccountsApi(page, { role: 'admin' })
+    await openWithTheme(page, '/accounts', theme)
+    await page.getByRole('button', { name: '查看 138****8000' }).click()
+    await expect(page.getByRole('dialog', { name: '账号详情' })).toBeVisible()
+    await expect(page.getByRole('region', { name: '账号照片' })).toBeVisible()
+    await expect(page).toHaveScreenshot(`accounts-drawer-photos-${theme}-1440.png`)
+  })
+
   test(`visual accounts modal ${theme}`, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })
     await openWithTheme(page, '/accounts', theme)
@@ -270,6 +281,16 @@ for (const theme of THEMES) {
     await page.getByRole('button', { name: '查看 合成学校甲' }).click()
     await expect(page.getByRole('dialog', { name: '学校详情' })).toBeVisible()
     await expect(page).toHaveScreenshot(`schools-drawer-${theme}-1440.png`)
+  })
+
+  test(`visual schools drawer with default photo ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    // 缺省图区只对 admin 渲染：master 能改引用却读不到字节。
+    await openWithTheme(page, '/schools', theme, 'admin')
+    await page.getByRole('button', { name: '查看 合成学校甲' }).click()
+    await expect(page.getByRole('dialog', { name: '学校详情' })).toBeVisible()
+    await expect(page.getByRole('region', { name: '学校缺省图' })).toBeVisible()
+    await expect(page).toHaveScreenshot(`schools-drawer-photos-${theme}-1440.png`)
   })
 
   test(`visual schools create modal ${theme}`, async ({ page }) => {
