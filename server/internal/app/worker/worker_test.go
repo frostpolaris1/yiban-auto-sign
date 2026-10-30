@@ -77,7 +77,7 @@ func (f *fakeStore) ClaimDue(_ context.Context, now time.Time, limit int) ([]cor
 	return out, nil
 }
 
-func (f *fakeStore) Finish(_ context.Context, accountID, schoolTaskID, day string, state corestatus.TaskState, result string, _ time.Time) error {
+func (f *fakeStore) Finish(_ context.Context, accountID, schoolTaskID, day string, state corestatus.TaskState, result string, _ int, _ time.Time) error {
 	if f.finishErr != nil {
 		return f.finishErr
 	}
@@ -99,7 +99,7 @@ func (f *fakeStore) Finish(_ context.Context, accountID, schoolTaskID, day strin
 
 // FinishCredentialInvalid 按库语义落 failed(credential_invalid)。
 // 账号状态是存储层副作用，由 pg e2e 钉住，本 fake 不复制。
-func (f *fakeStore) FinishCredentialInvalid(_ context.Context, _ /*schoolID*/, accountID, schoolTaskID, day string, _ time.Time) error {
+func (f *fakeStore) FinishCredentialInvalid(_ context.Context, _ /*schoolID*/, accountID, schoolTaskID, day string, _ int, _ time.Time) error {
 	if f.finishErr != nil {
 		return f.finishErr
 	}
@@ -137,11 +137,11 @@ func (f *fakeStore) requeue(taskID string, runAt time.Time, result string, bumpA
 	return coreerrs.ErrNotFound
 }
 
-func (f *fakeStore) RequeueWait(_ context.Context, taskID string, runAt time.Time, result string) error {
+func (f *fakeStore) RequeueWait(_ context.Context, taskID string, runAt time.Time, result string, _ int) error {
 	return f.requeue(taskID, runAt, result, false)
 }
 
-func (f *fakeStore) RequeueRetry(_ context.Context, taskID string, runAt time.Time, result string) error {
+func (f *fakeStore) RequeueRetry(_ context.Context, taskID string, runAt time.Time, result string, _ int) error {
 	return f.requeue(taskID, runAt, result, true)
 }
 
@@ -314,7 +314,7 @@ func defaultSigner() *fakeSigner {
 }
 
 // Step 每 tick 先回收过期租约，再认领。
-func TestStepReclaimsExpiredLeasesFirst(t *testing.T) {
+func TestStepCallsReclaimOnce(t *testing.T) {
 	st := newStore()
 	svc := newService(t, st, defaultSigner(), fakeLimiter{allow: true})
 	if _, err := svc.Step(context.Background(), 1); err != nil {

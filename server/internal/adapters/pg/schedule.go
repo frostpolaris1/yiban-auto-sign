@@ -167,13 +167,15 @@ func (r *ScheduleRepo) InsertPlan(ctx context.Context, rows []coreschedule.PlanR
 // 返回 0 行即 ErrScheduleConflict。
 func (r *ScheduleRepo) ClaimPending(ctx context.Context, accountID, schoolTaskID, day string, now time.Time) error {
 	ct, err := r.db.q(ctx).Exec(ctx,
-		`UPDATE sign_tasks t SET state = 'running', claimed_at = $4
+		`UPDATE sign_tasks t SET state = 'running', claimed_at = $4::timestamptz,
+		        lease_expires_at = $4::timestamptz + make_interval(secs => $5),
+		        claim_seq = t.claim_seq + 1
 		 WHERE t.account_id = $1::uuid AND t.school_task_id = $2::uuid AND t.day = $3 AND t.state = 'pending'
 		   AND EXISTS (SELECT 1 FROM accounts a
 		               WHERE a.id = t.account_id AND a.status = 'active' AND a.deleted_at IS NULL)
 		   AND EXISTS (SELECT 1 FROM school_tasks st
 		               WHERE st.id = t.school_task_id AND st.enabled)`,
-		accountID, schoolTaskID, day, now)
+		accountID, schoolTaskID, day, now, r.lease.Seconds())
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -192,14 +194,15 @@ func (r *ScheduleRepo) ClaimPending(ctx context.Context, accountID, schoolTaskID
 // 放过去会让行回到可认领态、破坏 CAS 语义（P4-B 复审 P2-1）。
 // 摘要经掩码后才允许入库（调用方负责；本层不二次校验形状）。
 // 词表形状由库层 ENUM 兜底；非法值报 validation。
-func (r *ScheduleRepo) Finish(ctx context.Context, accountID, schoolTaskID, day string, state corestatus.TaskState, result string, now time.Time) error {
+func (r *ScheduleRepo) Finish(ctx context.Context, accountID, schoolTaskID, day string, state corestatus.TaskState, result string, claimSeq int, now time.Time) error {
 	if !state.Terminal() {
 		return validationError("finish requires a terminal state: " + string(state))
 	}
 	ct, err := r.db.q(ctx).Exec(ctx,
 		`UPDATE sign_tasks SET state = $4, result = $5, attempts = attempts + 1, lease_expires_at = NULL
-		 WHERE account_id = $1::uuid AND school_task_id = $2::uuid AND day = $3 AND state = 'running'`,
-		accountID, schoolTaskID, day, string(state), result)
+		 WHERE account_id = $1::uuid AND school_task_id = $2::uuid AND day = $3
+		   AND state = 'running' AND claim_seq = $6`,
+		accountID, schoolTaskID, day, string(state), result, claimSeq)
 	if err != nil {
 		return mapError(err)
 	}
@@ -219,7 +222,7 @@ func (r *ScheduleRepo) Finish(ctx context.Context, accountID, schoolTaskID, day 
 //   - 审计必须同事务：审计失败则任务与账号一并回滚，结算重试时不漏状态。
 //
 // schoolID 取自任务行（worker 认领时带回），审计据此落院校面。
-func (r *ScheduleRepo) FinishCredentialInvalid(ctx context.Context, schoolID, accountID, schoolTaskID, day string, now time.Time) error {
+func (r *ScheduleRepo) FinishCredentialInvalid(ctx context.Context, schoolID, accountID, schoolTaskID, day string, claimSeq int, now time.Time) error {
 	if r.audits == nil {
 		return ErrScheduleAuditMissing
 	}
@@ -227,8 +230,9 @@ func (r *ScheduleRepo) FinishCredentialInvalid(ctx context.Context, schoolID, ac
 		q := r.db.q(ctx)
 		ct, err := q.Exec(ctx,
 			`UPDATE sign_tasks SET state = $4, result = $5, attempts = attempts + 1, lease_expires_at = NULL
-			 WHERE account_id = $1::uuid AND school_task_id = $2::uuid AND day = $3 AND state = 'running'`,
-			accountID, schoolTaskID, day, string(corestatus.TaskFailed), credentialInvalidResult)
+			 WHERE account_id = $1::uuid AND school_task_id = $2::uuid AND day = $3
+			   AND state = 'running' AND claim_seq = $6`,
+			accountID, schoolTaskID, day, string(corestatus.TaskFailed), credentialInvalidResult, claimSeq)
 		if err != nil {
 			return mapError(err)
 		}
@@ -410,6 +414,8 @@ func (r *ScheduleRepo) Task(ctx context.Context, taskID string) (coreschedule.Ta
 // 判据全在 SQL：pending、run_at 已到、账号活跃未删、任务启用、
 // 同账号当前无 running（I-7 的查询面，库层唯一索引仍是最终兜底）。
 // FOR UPDATE SKIP LOCKED 让多 worker 不互等。
+// 外层 state='pending' 是第二道闸：READ COMMITTED 下 CTE 快照与行锁之间
+// 存在窗口，并发语句可能在快照后改状态；该谓词把这类行排除。
 func (r *ScheduleRepo) ClaimDue(ctx context.Context, now time.Time, limit int) ([]coreschedule.TaskRow, error) {
 	if limit < 1 {
 		limit = 1
@@ -435,11 +441,12 @@ func (r *ScheduleRepo) ClaimDue(ctx context.Context, now time.Time, limit int) (
 		   SELECT id FROM sign_tasks WHERE id IN (SELECT id FROM picked) FOR UPDATE SKIP LOCKED
 		 )
 		 UPDATE sign_tasks t SET state = 'running', claimed_at = $1,
-		        lease_expires_at = $1 + make_interval(secs => $3)
+		        lease_expires_at = $1::timestamptz + make_interval(secs => $3),
+		        claim_seq = t.claim_seq + 1
 		 WHERE t.id IN (SELECT id FROM locked) AND t.state = 'pending'
 		 RETURNING t.id::text, t.account_id::text, t.school_task_id::text,
 		           (SELECT st.school_id::text FROM school_tasks st WHERE st.id = t.school_task_id),
-		           t.day::text, t.run_at, t.state::text, t.attempts,
+		           t.day::text, t.run_at, t.state::text, t.attempts, t.claim_seq,
 		           (SELECT a.owner_user_id::text FROM accounts a WHERE a.id = t.account_id)`,
 		now, limit, r.lease.Seconds())
 	if err != nil {
@@ -449,7 +456,7 @@ func (r *ScheduleRepo) ClaimDue(ctx context.Context, now time.Time, limit int) (
 	var out []coreschedule.TaskRow
 	for rows.Next() {
 		var t coreschedule.TaskRow
-		if err := rows.Scan(&t.ID, &t.AccountID, &t.SchoolTaskID, &t.SchoolID, &t.Day, &t.RunAt, &t.State, &t.Attempts, &t.OwnerUserID); err != nil {
+		if err := rows.Scan(&t.ID, &t.AccountID, &t.SchoolTaskID, &t.SchoolID, &t.Day, &t.RunAt, &t.State, &t.Attempts, &t.ClaimSeq, &t.OwnerUserID); err != nil {
 			return nil, mapError(err)
 		}
 		out = append(out, t)
@@ -464,12 +471,12 @@ func (r *ScheduleRepo) ClaimDue(ctx context.Context, now time.Time, limit int) (
 // 只真正打过一次平台就被判 failed（P4-E 审查 P2-1）。
 //
 // result 写的是内部等待原因（wait_*），不是 signing 结论词。
-func (r *ScheduleRepo) RequeueWait(ctx context.Context, taskID string, runAt time.Time, result string) error {
+func (r *ScheduleRepo) RequeueWait(ctx context.Context, taskID string, runAt time.Time, result string, claimSeq int) error {
 	ct, err := r.db.q(ctx).Exec(ctx,
 		`UPDATE sign_tasks SET state = 'pending', run_at = $2, result = $3,
 		        claimed_at = NULL, lease_expires_at = NULL
-		 WHERE id = $1::uuid AND state = 'running'`,
-		taskID, runAt, result)
+		 WHERE id = $1::uuid AND state = 'running' AND claim_seq = $4`,
+		taskID, runAt, result, claimSeq)
 	if err != nil {
 		return mapError(err)
 	}
@@ -481,12 +488,12 @@ func (r *ScheduleRepo) RequeueWait(ctx context.Context, taskID string, runAt tim
 
 // RequeueRetry 是业务失败后的退避：退回 pending、移到新落点、**计一次尝试**。
 // 预算比较在 app 层（core/retry），这里只负责如实记账。
-func (r *ScheduleRepo) RequeueRetry(ctx context.Context, taskID string, runAt time.Time, result string) error {
+func (r *ScheduleRepo) RequeueRetry(ctx context.Context, taskID string, runAt time.Time, result string, claimSeq int) error {
 	ct, err := r.db.q(ctx).Exec(ctx,
 		`UPDATE sign_tasks SET state = 'pending', run_at = $2, result = $3,
 		        attempts = attempts + 1, claimed_at = NULL, lease_expires_at = NULL
-		 WHERE id = $1::uuid AND state = 'running'`,
-		taskID, runAt, result)
+		 WHERE id = $1::uuid AND state = 'running' AND claim_seq = $4`,
+		taskID, runAt, result, claimSeq)
 	if err != nil {
 		return mapError(err)
 	}
@@ -628,7 +635,8 @@ func (r *ScheduleRepo) ResetRunning(ctx context.Context) (int64, error) {
 		ct, err := r.db.q(ctx).Exec(ctx,
 			`UPDATE sign_tasks SET state = 'pending', claimed_at = NULL,
 			        lease_expires_at = NULL, run_at = now()
-			 WHERE state = 'running'`)
+			 WHERE state = 'running'
+			   AND (lease_expires_at IS NULL OR lease_expires_at <= now())`)
 		if err != nil {
 			return mapError(err)
 		}

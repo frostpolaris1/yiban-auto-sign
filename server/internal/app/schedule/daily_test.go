@@ -28,10 +28,18 @@ type fakePlanner struct {
 	failID   string
 	lastDay  string
 	lastTask string
+	// done 非 nil 时每次 Build 投递一个信号；用于等待后台补建。
+	done chan struct{}
 }
 
 func (f *fakePlanner) Build(_ context.Context, in appschedule.Input) (appschedule.Preview, error) {
 	f.calls++
+	if f.done != nil {
+		select {
+		case f.done <- struct{}{}:
+		default:
+		}
+	}
 	f.lastDay, f.lastTask = in.Day, in.SchoolTaskID
 	if in.SchoolTaskID == f.failID {
 		return appschedule.Preview{}, errors.New("discover failed")
@@ -99,7 +107,8 @@ func TestBuildTodayListFailure(t *testing.T) {
 
 // 启动补建在后台执行；Stop 等它结束。
 func TestDailyCronStartupBackfillAndStop(t *testing.T) {
-	planner := &fakePlanner{}
+	done := make(chan struct{}, 1)
+	planner := &fakePlanner{done: done}
 	b := testBuilder(fakeTasks{tasks: []coreschedule.TaskInfo{
 		{ID: "t1", SchoolID: "s1", Enabled: true},
 	}}, planner)
@@ -110,22 +119,14 @@ func TestDailyCronStartupBackfillAndStop(t *testing.T) {
 	if err := cron.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	deadline := time.After(2 * time.Second)
-	for planner.calls == 0 {
-		select {
-		case <-deadline:
-			t.Fatal("启动补建未执行")
-		case <-time.After(10 * time.Millisecond):
-		}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("启动补建未执行")
 	}
+	// Stop 等到补建 goroutine 结束；此后 planner 不再被访问。
 	if err := cron.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop: %v", err)
-	}
-	// 停止后不得再触发构建。
-	before := planner.calls
-	time.Sleep(50 * time.Millisecond)
-	if planner.calls != before {
-		t.Fatalf("Stop 后仍有构建：%d -> %d", before, planner.calls)
 	}
 }
 

@@ -156,6 +156,12 @@ func (d *DailyCron) Start() error {
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
+		// 启动补建与 cron 任务同等待遇：panic 只记日志，不终止进程。
+		defer func() {
+			if v := recover(); v != nil {
+				d.log.Error("schedule: startup build panicked", "panic", fmt.Sprint(v))
+			}
+		}()
 		// 后台补建不随请求取消；用独立 ctx。
 		d.run(context.Background(), "startup")
 	}()

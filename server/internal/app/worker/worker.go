@@ -115,6 +115,8 @@ func (s *Service) Step(ctx context.Context, limit int) (int, error) {
 	now := s.deps.Clock.Now()
 	// 先回收租约过期的行：崩溃或收尾失败留下的 running 不得跨 tick 卡住账号。
 	if reclaimed, err := s.deps.Store.ReclaimExpired(ctx, now, reclaimBatch); err != nil {
+		// 运行期必须可见：回收失败会让认领永久不可达，进程却看着健康。
+		s.log.Error("worker: reclaim expired leases failed", "error", err.Error())
 		return 0, err
 	} else if reclaimed > 0 {
 		s.log.Warn("worker: reclaimed expired task leases", "count", reclaimed)
@@ -345,7 +347,7 @@ func (s *Service) settleOutcome(ctx context.Context, task corescheduleTask, win 
 // requeueWait 是等待型重排：成功后发 task.progress。
 // attempt 口径 = 落库后的 sign_tasks.attempts；等待不计尝试。
 func (s *Service) requeueWait(ctx context.Context, task corescheduleTask, runAt time.Time, result string) error {
-	if err := s.deps.Store.RequeueWait(ctx, task.ID, runAt, result); err != nil {
+	if err := s.deps.Store.RequeueWait(ctx, task.ID, runAt, result, task.ClaimSeq); err != nil {
 		return err
 	}
 	s.notifyProgress(ctx, task, task.Attempts)
@@ -355,7 +357,7 @@ func (s *Service) requeueWait(ctx context.Context, task corescheduleTask, runAt 
 // requeueRetry 是业务退避重排：成功后发 task.progress。
 // RequeueRetry 计一次尝试，故 attempt 为已消耗数加一。
 func (s *Service) requeueRetry(ctx context.Context, task corescheduleTask, runAt time.Time, result string) error {
-	if err := s.deps.Store.RequeueRetry(ctx, task.ID, runAt, result); err != nil {
+	if err := s.deps.Store.RequeueRetry(ctx, task.ID, runAt, result, task.ClaimSeq); err != nil {
 		return err
 	}
 	s.notifyProgress(ctx, task, task.Attempts+1)
@@ -376,7 +378,7 @@ func (s *Service) notifyProgress(ctx context.Context, task corescheduleTask, att
 // finish 落终态。终态只认 core/status 的三值。
 // 落库成功后发 task.concluded（payload：account_id、state、attempt）。
 func (s *Service) finish(ctx context.Context, task corescheduleTask, state corestatus.TaskState, result string) error {
-	if err := s.deps.Store.Finish(ctx, task.AccountID, task.SchoolTaskID, task.Day, state, result, s.deps.Clock.Now()); err != nil {
+	if err := s.deps.Store.Finish(ctx, task.AccountID, task.SchoolTaskID, task.Day, state, result, task.ClaimSeq, s.deps.Clock.Now()); err != nil {
 		return err
 	}
 	s.notifyConcluded(ctx, task, state)
@@ -389,7 +391,7 @@ func (s *Service) finish(ctx context.Context, task corescheduleTask, state cores
 // 为什么不能复用 finish：账号状态是排期输入。只落任务不落账号，
 // 次日仍会认领同一账号并再打一次失败登录（验收 3）。
 func (s *Service) finishCredentialInvalid(ctx context.Context, task corescheduleTask) error {
-	if err := s.deps.Store.FinishCredentialInvalid(ctx, task.SchoolID, task.AccountID, task.SchoolTaskID, task.Day, s.deps.Clock.Now()); err != nil {
+	if err := s.deps.Store.FinishCredentialInvalid(ctx, task.SchoolID, task.AccountID, task.SchoolTaskID, task.Day, task.ClaimSeq, s.deps.Clock.Now()); err != nil {
 		return err
 	}
 	s.notifyConcluded(ctx, task, corestatus.TaskFailed)

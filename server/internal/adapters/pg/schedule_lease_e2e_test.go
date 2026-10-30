@@ -4,6 +4,7 @@ package pg_test
 // 依赖真实 PostgreSQL；租约与回收判据都在库侧执行。
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -233,5 +234,89 @@ func TestReclaimUnblocksNextDay(t *testing.T) {
 	}
 	if len(claimed) != 1 {
 		t.Fatalf("claimed %d rows after reclaim, want 1", len(claimed))
+	}
+}
+
+// 装配的租约时长生效：WithLease(45s) 写 claimed_at + 45 秒。
+func TestClaimDueUsesConfiguredLease(t *testing.T) {
+	e := newEnv(t)
+	rowID, due := seedClaimable(t, e, "lease-config")
+	now := due.Add(time.Minute)
+	if _, err := e.sched.WithLease(45*time.Second).ClaimDue(e.ctx, now, 10); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if got := e.scalarInt(
+		"SELECT (lease_expires_at = claimed_at + interval '45 seconds')::int FROM sign_tasks WHERE id = $1::uuid",
+		rowID); got != 1 {
+		t.Fatal("WithLease(45s) 未生效")
+	}
+}
+
+// 未到期的租约不被启动回收清掉：滚动重启不得打断同伴在飞行。
+func TestResetRunningKeepsLiveLease(t *testing.T) {
+	e := newEnv(t)
+	rowID, due := seedClaimable(t, e, "lease-live-reset")
+	if _, err := e.sched.ClaimDue(e.ctx, due.Add(time.Minute), 10); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if _, err := e.db.Exec(e.ctx,
+		`UPDATE sign_tasks SET lease_expires_at = now() + interval '1 hour' WHERE id = $1::uuid`,
+		rowID); err != nil {
+		t.Fatalf("extend lease: %v", err)
+	}
+	if n, err := e.sched.ResetRunning(e.ctx); err != nil || n != 0 {
+		t.Fatalf("reset = (%d, %v), want (0, nil)", n, err)
+	}
+	if got := e.taskState(rowID); got != string(corestatus.TaskRunning) {
+		t.Fatalf("live lease row state = %q, want running", got)
+	}
+}
+
+// 过期持有者的结算必须 0 行；新持有者的租约不得被清。
+func TestStaleClaimCannotSettleNewLease(t *testing.T) {
+	e := newEnv(t)
+	rowID, due := seedClaimable(t, e, "lease-fence")
+	now := due.Add(time.Minute)
+	first, err := e.sched.ClaimDue(e.ctx, now, 10)
+	if err != nil || len(first) != 1 {
+		t.Fatalf("first claim = (%d, %v)", len(first), err)
+	}
+	if _, err := e.db.Exec(e.ctx,
+		`UPDATE sign_tasks SET lease_expires_at = $2 WHERE id = $1::uuid`,
+		rowID, now.Add(-time.Minute)); err != nil {
+		t.Fatalf("expire lease: %v", err)
+	}
+	reclaimer := pg.NewScheduleRepoWithAudit(e.db, e.audits)
+	if n, err := reclaimer.ReclaimExpired(e.ctx, now, 10); err != nil || n != 1 {
+		t.Fatalf("reclaim = (%d, %v), want (1, nil)", n, err)
+	}
+	second, err := e.sched.ClaimDue(e.ctx, now, 10)
+	if err != nil || len(second) != 1 {
+		t.Fatalf("second claim = (%d, %v)", len(second), err)
+	}
+	if second[0].ClaimSeq != first[0].ClaimSeq+1 {
+		t.Fatalf("claim_seq = %d -> %d, want +1", first[0].ClaimSeq, second[0].ClaimSeq)
+	}
+	accountID := e.scalarString("SELECT account_id::text FROM sign_tasks WHERE id = $1::uuid", rowID)
+	taskID := e.scalarString("SELECT school_task_id::text FROM sign_tasks WHERE id = $1::uuid", rowID)
+	day := e.scalarString("SELECT day::text FROM sign_tasks WHERE id = $1::uuid", rowID)
+	// 旧持有者用旧序号结算：必须冲突。
+	err = e.sched.Finish(e.ctx, accountID, taskID, day, corestatus.TaskSuccess, "stale_owner", first[0].ClaimSeq, now)
+	if !errors.Is(err, pg.ErrScheduleConflict) {
+		t.Fatalf("stale finish = %v, want ErrScheduleConflict", err)
+	}
+	if got := e.taskState(rowID); got != string(corestatus.TaskRunning) {
+		t.Fatalf("stale finish changed the state: %q", got)
+	}
+	if got := e.scalarInt(
+		"SELECT (lease_expires_at IS NOT NULL)::int FROM sign_tasks WHERE id = $1::uuid", rowID); got != 1 {
+		t.Fatal("stale finish cleared the new holder's lease")
+	}
+	// 新持有者用当前序号结算：成功。
+	if err := e.sched.Finish(e.ctx, accountID, taskID, day, corestatus.TaskSuccess, "new_owner", second[0].ClaimSeq, now); err != nil {
+		t.Fatalf("new finish: %v", err)
+	}
+	if got := e.taskState(rowID); got != string(corestatus.TaskSuccess) {
+		t.Fatalf("state = %q, want success", got)
 	}
 }

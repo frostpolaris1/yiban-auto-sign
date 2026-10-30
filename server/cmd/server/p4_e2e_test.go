@@ -311,7 +311,7 @@ func TestP4OverrideReplacementReplansPending(t *testing.T) {
 	if err := e.sched.ClaimPending(e.ctx, accts[0], task, day, now); err != nil {
 		t.Fatalf("claim concluded row: %v", err)
 	}
-	if err := e.sched.Finish(e.ctx, accts[0], task, day, corestatus.TaskSuccess, string(contract.OutcomeSuccess), now); err != nil {
+	if err := e.sched.Finish(e.ctx, accts[0], task, day, corestatus.TaskSuccess, string(contract.OutcomeSuccess), 1, now); err != nil {
 		t.Fatalf("finish concluded row: %v", err)
 	}
 	doneAt := e.scalarString("SELECT to_char(run_at, 'YYYY-MM-DD\"T\"HH24:MI:SS') FROM sign_tasks WHERE id = $1::uuid", doneRow)

@@ -152,7 +152,7 @@ func TestRequeueRetryCountsEveryAttempt(t *testing.T) {
 
 	// 第一次业务失败：attempts 0 → 1。
 	claim(base.Add(time.Minute))
-	if err := e.sched.RequeueRetry(e.ctx, rowID, base.Add(2*time.Minute), "rejected"); err != nil {
+	if err := e.sched.RequeueRetry(e.ctx, rowID, base.Add(2*time.Minute), "rejected", 1); err != nil {
 		t.Fatalf("requeue retry 1: %v", err)
 	}
 	if got := e.scalarInt("SELECT attempts FROM sign_tasks WHERE id = $1::uuid", rowID); got != 1 {
@@ -167,7 +167,7 @@ func TestRequeueRetryCountsEveryAttempt(t *testing.T) {
 
 	// 第二次业务失败：1 → 2。把 +1 写死成 =1 会在这一步红。
 	claim(base.Add(3 * time.Minute))
-	if err := e.sched.RequeueRetry(e.ctx, rowID, base.Add(4*time.Minute), "rejected"); err != nil {
+	if err := e.sched.RequeueRetry(e.ctx, rowID, base.Add(4*time.Minute), "rejected", 2); err != nil {
 		t.Fatalf("requeue retry 2: %v", err)
 	}
 	if got := e.scalarInt("SELECT attempts FROM sign_tasks WHERE id = $1::uuid", rowID); got != 2 {
@@ -178,7 +178,7 @@ func TestRequeueRetryCountsEveryAttempt(t *testing.T) {
 	// 适配器把等待原因当不透明串：原样落库，不改写、不解释。
 	// 词面约定（wait_ 前缀）由 app/worker 的词表门钉住。
 	claim(base.Add(5 * time.Minute))
-	if err := e.sched.RequeueWait(e.ctx, rowID, base.Add(6*time.Minute), "wait_window_open"); err != nil {
+	if err := e.sched.RequeueWait(e.ctx, rowID, base.Add(6*time.Minute), "wait_window_open", 3); err != nil {
 		t.Fatalf("requeue wait: %v", err)
 	}
 	if got := e.scalarInt("SELECT attempts FROM sign_tasks WHERE id = $1::uuid", rowID); got != 2 {
