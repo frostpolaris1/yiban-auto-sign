@@ -421,11 +421,15 @@ export interface paths {
         /**
          * Queue a manual sign for today.
          * @description Ensures today's task row exists and returns 202 with its id.
+         *     The target task is resolved from today's task rows: exactly one row
+         *     today selects it; no row today falls back to the school's single
+         *     enabled task. More than one candidate (two rows today, or no row and
+         *     two enabled tasks) returns 409 task_ambiguous. This version has no
+         *     task selector parameter, so a multi-task school cannot sign manually
+         *     until the plan leaves exactly one row for the account.
          *     A closed window returns 409 window_closed. A run in progress returns
          *     409 sign_running. A concluded success returns 409 already_signed.
          *     A failed or skipped row is re-armed and returns 202 again.
-         *     Two enabled tasks for the same account return 409 task_ambiguous:
-         *     the caller must pick, not the server.
          *     Cross-scope accounts return 404 for every role.
          *     Rate limited per client IP and per account id; a 429 carries Retry-After.
          */
@@ -1018,9 +1022,10 @@ export interface components {
         AccountVerifyResult: {
             ok: boolean;
             /**
-             * @description success, credential_invalid, challenge, device_unbound, transient,
-             *     unknown or rejected. A platform conclusion sets ok false and
-             *     returns 200.
+             * @description success, credential_invalid, challenge, blocked, device_unbound,
+             *     transient, unknown or rejected. A platform conclusion sets ok false
+             *     and returns 200. blocked means a WAF interception page: like
+             *     challenge it is never retried, but it is reported as a failure.
              */
             code: string;
             /** @description Masked platform text; absent when empty. */

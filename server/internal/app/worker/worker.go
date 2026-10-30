@@ -171,6 +171,8 @@ func (s *Service) Step(ctx context.Context, limit int) (int, error) {
 			releaseCtx := context.WithoutCancel(ctx)
 			if releaseErr := s.requeueWait(releaseCtx, tasks[i], tasks[i].RunAt, waitBatchAborted); releaseErr != nil {
 				// 退回失败优先上报：队列卡死比单次执行失败更严重。
+				// 其后的未提交行不再逐行退回：它们停在 running，
+				// 由租约到期后的回收器（ReclaimExpired）放回队列。
 				return processed, releaseErr
 			}
 		}

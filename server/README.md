@@ -180,6 +180,9 @@ deployment cannot silently fall back to development defaults.
 | `YIBAN_KDF_CONCURRENCY` | no | `4` | process-wide cap on concurrent Argon2id hashes (1..64). Each hash costs about 19 MiB, so the cap bounds memory. |
 | `YIBAN_TASK_LEASE_SEC` | no | `120` | lease in seconds for a claimed signing task (30..3600). A running row past its lease is returned to pending by the reclaim pass. |
 | `YIBAN_MAX_ACCOUNTS_PER_OWNER` | no | `20` | live accounts per owner (1..1000). A second quota beyond the global account limit; soft-deleted accounts free a slot. |
+| `YIBAN_WORKERS` | no | `1` | execution concurrency (1..64). The same number is the claim batch size, the capacity channel count and the in-batch parallelism. |
+| `YIBAN_AVG_ATTEMPT_SEC` | no | `3` | average duration of one account attempt in seconds (1..300); a capacity input. |
+| `YIBAN_EGRESS_RATE` | no | `1.0` | target attempts per second per egress (0.2..4.0). It caps the capacity formula and sets the execution rate gate: both read this one field. |
 
 Production always uses `__Host-yiban_session` with `Secure`. A true
 `YIBAN_INSECURE_COOKIES` under `YIBAN_ENV=production` is a startup error.
@@ -189,6 +192,14 @@ check runs before session lookup; the per-account check runs before the
 password hash. Other 429 answers (time-preference cooldown, capacity) may omit
 `Retry-After`. The reset flow checks the one-time token before hashing the new
 password.
+
+A plan build refuses a capacity shortfall with 409 `capacity_shortfall` and
+writes no rows. When the demand exceeds what the window can carry at the
+configured concurrency, average duration and egress rate, the day gets no plan
+at all instead of a plan whose tail cannot finish. `details` carries `demand`,
+`capacity` and `shortfall`. Preview and the capacity report still show the
+numbers, and the rejection publishes `capacity.changed`. A daily build that
+fails this way logs one error line, so watch that line or the event.
 
 ## Password reset mail
 

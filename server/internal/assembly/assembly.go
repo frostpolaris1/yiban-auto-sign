@@ -545,7 +545,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			Creds:    workerCredentials{svc: accountSvc},
 			Signer:   provider,
 			Egress:   egressSvc,
-			Limiter:  corerate.NewLimiter(corerate.DefaultRate, 6),
+			Limiter:  buildEgressGate(cfg),
 			Clock:    clk,
 			Location: loc,
 			// P5-C 注入面：定位策略与选图。缺端口时对应面退回现行为。
@@ -716,6 +716,18 @@ func buildRateLimit(cfg *config.Config) (*ratelimit.Guard, error) {
 		return nil, fmt.Errorf("assembly: account rate limit: %w", err)
 	}
 	return &ratelimit.Guard{IP: ip, Account: account, Trusted: trusted}, nil
+}
+
+// egressBurst 是每出口令牌桶的突发深度（账号尝试数）。
+// 它只吸收短时抖动，不改长期速率：长期速率由 YIBAN_EGRESS_RATE 决定。
+const egressBurst = 6
+
+// buildEgressGate 构造执行面的每出口限速器。
+//
+// 速率必须与计划容量公式取**同一字段**：两处不同源时，缺口门会用
+// 调大的 YIBAN_EGRESS_RATE 放行一份执行面跑不完的计划（OCR C2 P1）。
+func buildEgressGate(cfg *config.Config) *corerate.Limiter {
+	return corerate.NewLimiter(cfg.EgressRate, egressBurst)
 }
 
 // DeriveAuditKey 从服务器 pepper 派生审计链密钥。

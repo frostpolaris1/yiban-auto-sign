@@ -121,6 +121,7 @@
 //	credential_invalid  不可重试
 //	device_unbound      不可重试
 //	challenge           可重试，预算有界
+//	blocked             不可重试（风控拦截，重发只会加深标记）
 //	transient           可重试
 //	rejected            不可重试
 //	photo_missing       不可重试

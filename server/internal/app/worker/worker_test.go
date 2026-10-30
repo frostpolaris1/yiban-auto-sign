@@ -169,7 +169,7 @@ func (f *fakeStore) RequeueRetry(_ context.Context, taskID string, runAt time.Ti
 	return f.requeue(taskID, runAt, result, true, claimSeq)
 }
 
-// Rearm 按库语义：failed 与 skipped 都可重开，尝试数清零。
+// Rearm 按库语义：failed 与 skipped 都可重开，尝试数**保留**（重开不退预算）。
 // 状态不符时回 conflict（库层是 CAS 未命中）。
 func (f *fakeStore) Rearm(_ context.Context, taskID string, runAt time.Time, actor appaudit.Actor) error {
 	for i := range f.tasks {

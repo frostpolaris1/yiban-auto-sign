@@ -573,9 +573,10 @@ type AccountUpdate struct {
 
 // AccountVerifyResult defines model for AccountVerifyResult.
 type AccountVerifyResult struct {
-	// Code success, credential_invalid, challenge, device_unbound, transient,
-	// unknown or rejected. A platform conclusion sets ok false and
-	// returns 200.
+	// Code success, credential_invalid, challenge, blocked, device_unbound,
+	// transient, unknown or rejected. A platform conclusion sets ok false
+	// and returns 200. blocked means a WAF interception page: like
+	// challenge it is never retried, but it is reported as a failure.
 	Code string `json:"code"`
 
 	// Message Masked platform text; absent when empty.
