@@ -164,7 +164,7 @@ deployment cannot silently fall back to development defaults.
 | `YIBAN_HASH_PEPPER` | **yes** | — | at least 16 characters; keys the HMAC digests of IP addresses and user agents, and derives the audit chain key. Rotating it breaks verification of the existing audit chain. |
 | `YIBAN_CREDENTIAL_KEY` | **yes** | — | base64 of exactly 32 bytes; encrypts stored credentials with AES-256-GCM. Rotating it goes through kid re-encryption (P4/P8), so old rows stay decryptable. |
 | `YIBAN_RESET_MAIL_ENABLE` | no | `false` | delivers password reset links over SMTP. A true value requires `YIBAN_PUBLIC_BASE_URL` and sender credentials; a missing or loopback base URL stops startup with the key name in the error. |
-| `YIBAN_PUBLIC_BASE_URL` | no | `http://127.0.0.1:47183` | base of the reset links, as an absolute http(s) URL without a trailing slash and without credentials. See the paragraph below. |
+| `YIBAN_PUBLIC_BASE_URL` | no | `http://127.0.0.1:47183` | base of the reset links and an accepted login origin, as an absolute http(s) URL without a trailing slash and without credentials. Set it to the public https origin when TLS terminates in front of the app. See the paragraph below. |
 | `YIBAN_MAIL_SMTP_HOST` | no | `smtp.qq.com` | SMTP server host. The certificate is verified against this name. |
 | `YIBAN_MAIL_SMTP_PORT` | no | `465` | SMTP port. Port 465 uses implicit TLS; other ports use STARTTLS. |
 | `YIBAN_MAIL_USER` | no | empty | AUTH PLAIN account. Required together with the password when reset mail is on. |
@@ -176,7 +176,7 @@ deployment cannot silently fall back to development defaults.
 | `YIBAN_RATE_IP_BURST` | no | `20` | burst bucket per client IP |
 | `YIBAN_RATE_ACCOUNT_PER_MIN` | no | `10` | requests per minute per account key: normalized email, token digest, user id or account id |
 | `YIBAN_RATE_ACCOUNT_BURST` | no | `5` | burst bucket per account key |
-| `YIBAN_TRUSTED_PROXIES` | no | empty | comma-separated CIDRs of reverse proxies allowed to set `X-Forwarded-For`. Empty trusts no header; a bare IP is a single-host prefix. An invalid value stops startup. |
+| `YIBAN_TRUSTED_PROXIES` | no | empty | comma-separated CIDRs of reverse proxies allowed to set `X-Forwarded-For` and `X-Forwarded-Proto`. The proto decides the login origin scheme when TLS terminates outside the app. Empty trusts no header; a bare IP is a single-host prefix. An invalid value stops startup. |
 | `YIBAN_KDF_CONCURRENCY` | no | `4` | process-wide cap on concurrent Argon2id hashes (1..64). Each hash costs about 19 MiB, so the cap bounds memory. |
 | `YIBAN_TASK_LEASE_SEC` | no | `120` | lease in seconds for a claimed signing task (30..3600). A running row past its lease is returned to pending by the reclaim pass. |
 | `YIBAN_MAX_ACCOUNTS_PER_OWNER` | no | `20` | live accounts per owner (1..1000). A second quota beyond the global account limit; soft-deleted accounts free a slot. |

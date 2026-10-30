@@ -96,12 +96,13 @@ func TestLoginOriginUsesForwardedProtoFromTrustedProxy(t *testing.T) {
 		t.Fatalf("ParseTrustedProxies: %v", err)
 	}
 	engine, err := router.New(router.Options{
-		Sessions:    newStubIssuer(),
-		Auth:        stubAuth{loginErr: errs.New(errs.CodeUnauthorized, "invalid email or password")},
-		Clock:       clock.Fixed{T: time.Date(2026, 10, 30, 8, 0, 0, 0, time.UTC)},
-		Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
-		RateLimit:   &ratelimit.Guard{Trusted: trusted},
-		LoginOrigin: "",
+		Sessions:       newStubIssuer(),
+		Auth:           stubAuth{loginErr: errs.New(errs.CodeUnauthorized, "invalid email or password")},
+		Clock:          clock.Fixed{T: time.Date(2026, 10, 30, 8, 0, 0, 0, time.UTC)},
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		RateLimit:      &ratelimit.Guard{Trusted: trusted},
+		LoginOrigin:    "",
+		TrustedProxies: trusted,
 	})
 	if err != nil {
 		t.Fatalf("router.New: %v", err)
@@ -120,5 +121,26 @@ func TestLoginOriginUsesForwardedProtoFromTrustedProxy(t *testing.T) {
 	}
 	if got := post("203.0.113.9:1234"); got != http.StatusForbidden {
 		t.Fatalf("untrusted peer status = %d, want 403", got)
+	}
+
+	// 关闭限流不影响登录 scheme：可信表与限流器解耦。
+	off, err := router.New(router.Options{
+		Sessions:       newStubIssuer(),
+		Auth:           stubAuth{loginErr: errs.New(errs.CodeUnauthorized, "invalid email or password")},
+		Clock:          clock.Fixed{T: time.Date(2026, 10, 30, 8, 0, 0, 0, time.UTC)},
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		TrustedProxies: trusted,
+	})
+	if err != nil {
+		t.Fatalf("router.New: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login",
+		strings.NewReader(`{"email":"a@example.com","password":"x"}`))
+	req.Host = "app.example.test"
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("Origin", "https://app.example.test")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	if got := serve(off, req).Code; got != http.StatusUnauthorized {
+		t.Fatalf("limiter-off trusted proxy status = %d, want 401", got)
 	}
 }

@@ -16,10 +16,10 @@ export interface paths {
         /**
          * Sign in with email and password.
          * @description Sets the HttpOnly session cookie on success.
-         *     Cross-site browser submissions are rejected: a present Origin must
-         *     match the configured public origin or the request origin, and
-         *     Sec-Fetch-Site must be same-origin or none. A mismatch is 403
-         *     forbidden. Rate limited per client IP and per normalized email; a 429
+         *     Cross-site browser submissions are rejected. Sec-Fetch-Site must be
+         *     same-origin or none; cross-site and same-site are 403 forbidden.
+         *     When Sec-Fetch-Site is absent, a present Origin must match the
+         *     configured public origin or the request origin; a mismatch is 403. Rate limited per client IP and per normalized email; a 429
          *     carries Retry-After in seconds.
          */
         post: operations["AuthLogin"];

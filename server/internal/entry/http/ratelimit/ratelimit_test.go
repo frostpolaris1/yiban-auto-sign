@@ -178,3 +178,22 @@ func TestParseTrustedProxies(t *testing.T) {
 		t.Fatal("非法地址必须报错")
 	}
 }
+
+// 可信对端判定：只认直连对端，不看转发头。
+func TestIsTrustedPeer(t *testing.T) {
+	trusted := mustPrefixes(t, "10.0.0.0/8, 127.0.0.1")
+	cases := []struct {
+		remote string
+		want   bool
+	}{
+		{"10.1.2.3:443", true},
+		{"127.0.0.1:1234", true},
+		{"203.0.113.9:443", false},
+		{"not-an-address", false},
+	}
+	for _, c := range cases {
+		if got := IsTrustedPeer(c.remote, trusted); got != c.want {
+			t.Fatalf("IsTrustedPeer(%q) = %v, want %v", c.remote, got, c.want)
+		}
+	}
+}

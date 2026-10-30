@@ -307,6 +307,11 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		closeFn   = func() {}
 	)
 
+	// 可信代理表同时服务登录来源判定；与限流开关解耦。
+	trustedProxies, err := ratelimit.ParseTrustedProxies(cfg.TrustedProxies)
+	if err != nil {
+		return nil, fmt.Errorf("assembly: trusted proxies: %w", err)
+	}
 	// 限流面只依赖配置：提前构造，账号处理器与路由共用同一实例。
 	guard, err := buildRateLimit(cfg)
 	if err != nil {
@@ -665,6 +670,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		Events:          eventLib,
 		RateLimit:       guard,
 		LoginOrigin:     publicOrigin(cfg.PublicBaseURL),
+		TrustedProxies:  trustedProxies,
 	})
 	if err != nil {
 		closeFn()

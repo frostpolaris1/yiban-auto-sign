@@ -317,7 +317,8 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		Schedule:        scheduleHandler,
 		Photos:          photoshttp.NewHandler(photoSvc, adminSvc),
 		Locations:       locationhttp.NewHandler(locationSvc, adminSvc),
-		Events:          eventshttp.NewHandler(e.broker, diagSvc, adminSvc, clk, nil),
+		Events: eventshttp.NewHandler(e.broker, diagSvc, adminSvc, clk, nil).
+			WithSessionResolver(e.sessions, coreauth.InsecureCookieName),
 	})
 	if err != nil {
 		t.Fatalf("router.New: %v", err)

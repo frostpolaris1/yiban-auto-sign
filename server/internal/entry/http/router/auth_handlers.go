@@ -241,8 +241,11 @@ func (s *server) requestScheme(c *gin.Context) string {
 	if c.Request.TLS != nil {
 		return "https"
 	}
-	if s.rateLimit != nil &&
-		ratelimit.IsTrustedPeer(c.Request.RemoteAddr, s.rateLimit.Trusted) {
+	trusted := s.trustedProxies
+	if len(trusted) == 0 && s.rateLimit != nil {
+		trusted = s.rateLimit.Trusted
+	}
+	if ratelimit.IsTrustedPeer(c.Request.RemoteAddr, trusted) {
 		raw := c.GetHeader("X-Forwarded-Proto")
 		if i := strings.IndexByte(raw, ','); i >= 0 {
 			raw = raw[:i]
