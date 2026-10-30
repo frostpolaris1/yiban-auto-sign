@@ -329,6 +329,7 @@ fast	tests/test_switch_password_gate.py
 fast	tests/test_time_field_norm.py
 fast	tests/test_time_prefs.py
 fast	tests/test_token_bucket.py
+fast	tests/test_ui_e2e_ci_wiring.py	# 读文本接线门：ci.yml 的 ui-e2e 作业真调两分片、build 先行、显性 SKIP（本机 0.4s）
 fast	tests/test_unreached_summary_bucket.py
 fast	tests/test_url_userinfo_masking.py
 fast	tests/test_user_deregistration_db.py
