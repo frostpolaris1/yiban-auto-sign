@@ -706,12 +706,12 @@ paths:
       summary: Queue a manual sign for today.
       description: |
         Ensures today's task row exists and returns 202 with its id.
-        The target task is resolved from today's task rows: exactly one row
-        today selects it; no row today falls back to the school's single
-        enabled task. More than one candidate (two rows today, or no row and
-        two enabled tasks) returns 409 task_ambiguous. This version has no
-        task selector parameter, so a multi-task school cannot sign manually
-        until the plan leaves exactly one row for the account.
+        The target task is resolved from today's task rows of enabled tasks:
+        exactly one such row selects it; no row today falls back to the
+        school's single enabled task. More than one candidate (two rows today,
+        or no row and two enabled tasks) returns 409 task_ambiguous. This
+        version has no task selector parameter: a school with two enabled
+        tasks can only sign manually after one of them is disabled.
         A closed window returns 409 window_closed. A run in progress returns
         409 sign_running. A concluded success returns 409 already_signed.
         A failed or skipped row is re-armed and returns 202 again.

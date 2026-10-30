@@ -195,8 +195,10 @@ password.
 
 A plan build refuses a capacity shortfall with 409 `capacity_shortfall` and
 writes no rows. When the demand exceeds what the window can carry at the
-configured concurrency, average duration and egress rate, the day gets no plan
-at all instead of a plan whose tail cannot finish. `details` carries `demand`,
+configured concurrency, average duration and egress rate, the build refuses
+instead of writing a plan whose tail cannot finish; a first build of the day
+therefore leaves the day without a plan. Rows written by an earlier successful
+build are not deleted by a later refusal. `details` carries `demand`,
 `capacity` and `shortfall`. Preview and the capacity report still show the
 numbers, and the rejection publishes `capacity.changed`. A daily build that
 fails this way logs one error line, so watch that line or the event.

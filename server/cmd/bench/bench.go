@@ -29,6 +29,10 @@ import (
 // memoryLimitBytes 是内存峰值判据（P8 派单 §3）。
 const memoryLimitBytes = 1 << 30
 
+// sseTimeout 是单个订阅者等一条事件的墙钟上限。
+// 判据与测试共用这个常量：扇出卡住时两边拿的是同一个数。
+const sseTimeout = 10 * time.Second
+
 // Config 是一次压测的输入。
 type Config struct {
 	DSN        string
@@ -350,7 +354,7 @@ func runSSE(n int) (subSec, fanoutSec float64, subscribers int, err error) {
 	for i := range subs {
 		select {
 		case <-subs[i].C:
-		case <-time.After(10 * time.Second):
+		case <-time.After(sseTimeout):
 			return subSec, 0, n, fmt.Errorf("bench: sse subscriber %d timed out", i)
 		}
 	}
