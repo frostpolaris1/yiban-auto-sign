@@ -42,7 +42,10 @@ jobs:
   # 改名会让必需检查静默失效。若确要改名，先在 GitHub 设置里同步更新（批 1 约束 6）。
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 旧线混合面（mixed）实测：套件 ~6.5 分钟 + 门 ~2 分钟 + 装依赖 ~1.5 分钟，
+    # 原 10 分钟上限会在套件刚跑完时把作业判成 cancelled（PR #256 实测）。
+    # 上限不代表目标：快面（newstack/shared）仍在 1.5 分钟左右结束。
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
