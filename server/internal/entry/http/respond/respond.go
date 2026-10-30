@@ -117,7 +117,8 @@ func statusFor(code errs.Code) int {
 		return http.StatusForbidden
 	case errs.CodeNotFound:
 		return http.StatusNotFound
-	case errs.CodeConflict, errs.CodeAlreadySigned, errs.CodeSignRunning, errs.CodeWindowClosed:
+	case errs.CodeConflict, errs.CodeAlreadySigned, errs.CodeSignRunning, errs.CodeWindowClosed,
+		errs.CodeCapacityShortfall, errs.CodeTaskAmbiguous:
 		return http.StatusConflict
 	case errs.CodeRateLimited, errs.CodeCapacity:
 		return http.StatusTooManyRequests

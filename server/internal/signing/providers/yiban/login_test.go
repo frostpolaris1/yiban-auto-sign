@@ -259,7 +259,9 @@ func newUpstream(t *testing.T) *upstream {
 			status := up.signInStatus
 			up.mu.Unlock()
 			if status != 0 {
+				// 拦截页常带 4xx 且仍有响应体：判据要能同时看到两者。
 				w.WriteHeader(status)
+				w.Write(body)
 				return
 			}
 			w.Write(body)
@@ -659,14 +661,15 @@ func TestVerifyEntryStepPayloadRejected(t *testing.T) {
 
 // WAF 短响应关键词拦截不得判成凭据错（旧实现 usersure 步先判 WAF 再解析，
 // ref develop@1d1c5ccf is_waf_blocked；\uXXXX 转义需先解码）。
+// 结论是 blocked：风控拦截不可重试（C2）。
 func TestVerifyUsersureWAFKeywordBlock(t *testing.T) {
 	up := newUpstream(t)
 	up.usersureBody = []byte(`{"code":"x001","msg":"\u98ce\u9669\u8bbf\u95ee"}`)
 	client := New(Config{Endpoints: up.endpoints()})
 	_, err := client.Verify(context.Background(), "acct-1", testCredential())
 	var outcomeErr *contract.OutcomeError
-	if !errors.As(err, &outcomeErr) || outcomeErr.Outcome != contract.OutcomeTransient {
-		t.Fatalf("error = %v, want OutcomeTransient", err)
+	if !errors.As(err, &outcomeErr) || outcomeErr.Outcome != contract.OutcomeBlocked {
+		t.Fatalf("error = %v, want OutcomeBlocked", err)
 	}
 }
 

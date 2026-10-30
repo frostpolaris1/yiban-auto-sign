@@ -508,24 +508,51 @@ func (r *ScheduleRepo) RequeueRetry(ctx context.Context, taskID string, runAt ti
 	return nil
 }
 
-// Rearm 把 failed 行重新放回队列（手动签到的重试入口）。
+// Rearm 把当日 failed 或 skipped 行重新放回队列（手动签到的重试入口）。
 //
 // 为什么单独一条而不是复用 Requeue*：Requeue* 只接受 running 行，
-// 而手动签到遇到的是当日已落 failed 的终态行。重排不覆盖 result
-// 之外的历史，attempts 保留（预算仍是当日的真实消耗）。
-func (r *ScheduleRepo) Rearm(ctx context.Context, taskID string, runAt time.Time) error {
-	ct, err := r.db.q(ctx).Exec(ctx,
-		`UPDATE sign_tasks SET state = 'pending', run_at = $2, claimed_at = NULL,
-		        lease_expires_at = NULL, result = ''
-		 WHERE id = $1::uuid AND state = 'failed'`,
-		taskID, runAt)
-	if err != nil {
-		return mapError(err)
-	}
-	if ct.RowsAffected() == 0 {
-		return ErrScheduleConflict
-	}
-	return nil
+// 而手动签到遇到的是当日已落终态的行。重排不覆盖 result 之外的历史，
+// attempts 保留（预算仍是当日的真实消耗，重开不退预算）。
+// 状态谓词是 CAS：读到的状态到写入之间若被别人改走，回 conflict。
+// 重开与 task.rearm 审计同事务；没有审计仓储即回滚——重开是受审计的动作。
+func (r *ScheduleRepo) Rearm(ctx context.Context, taskID string, runAt time.Time, actor coreaudit.Actor) error {
+	return r.db.InTx(ctx, func(ctx context.Context) error {
+		var schoolID, fromState string
+		err := r.db.q(ctx).QueryRow(ctx, `
+			WITH prev AS (
+			  SELECT t.id, t.state::text AS state, st.school_id::text AS school_id
+			    FROM sign_tasks t
+			    JOIN school_tasks st ON st.id = t.school_task_id
+			   WHERE t.id = $1::uuid
+			)
+			UPDATE sign_tasks s
+			   SET state = 'pending', run_at = $2, claimed_at = NULL,
+			       lease_expires_at = NULL, result = ''
+			  FROM prev
+			 WHERE s.id = prev.id AND s.state IN ('failed', 'skipped')
+			RETURNING prev.school_id, prev.state`, taskID, runAt).Scan(&schoolID, &fromState)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrScheduleConflict
+			}
+			return mapError(err)
+		}
+		if r.audits == nil {
+			return ErrScheduleAuditMissing
+		}
+		_, err = r.audits.Append(ctx, coreaudit.Entry{
+			TS:          runAt.UTC(),
+			SchoolID:    schoolID,
+			ActorUserID: actor.UserID,
+			ActorRole:   actor.Role,
+			ActorLabel:  actor.Label,
+			Action:      coreaudit.ActionTaskRearm,
+			TargetType:  "task",
+			TargetID:    taskID,
+			Detail:      map[string]any{"from": fromState},
+		})
+		return err
+	})
 }
 
 // CountRunning 数当前 running 行。优雅停机与 doctor 复用；
@@ -678,21 +705,47 @@ func (r *ScheduleRepo) EnsureTask(ctx context.Context, accountID, schoolTaskID, 
 	return t, created, nil
 }
 
-// TodayTask 返回账号所属学校今天启用的第一个任务（按名称序）。
-// 账号必须活跃且未软删——暂停账号入队后 ClaimDue 永不认领，
-// 只会留下一条永远 pending 的行（P4-E 审查 P3-5）。
-// 无启用任务或账号不可用返回 errs.ErrNotFound。
-func (r *ScheduleRepo) TodayTask(ctx context.Context, accountID string) (string, error) {
-	var id string
-	err := r.db.q(ctx).QueryRow(ctx,
-		`SELECT st.id::text FROM accounts a
-		 JOIN school_tasks st ON st.school_id = a.school_id AND st.enabled
+// DayTasks 返回账号当日已有任务行的启用任务 ID（按名称序）。
+// 只算启用任务：停用任务的行永远不会被 ClaimDue 认领，
+// 拿它当手动签到的目标只会入队一条死行。
+// 零行是正常结论（当日还没建计划），返回空列表与 nil。
+func (r *ScheduleRepo) DayTasks(ctx context.Context, accountID, day string) ([]string, error) {
+	return r.taskIDs(ctx, `
+		SELECT st.id::text
+		  FROM sign_tasks s
+		  JOIN school_tasks st ON st.id = s.school_task_id AND st.enabled
+		  JOIN accounts a ON a.id = s.account_id
+		 WHERE s.account_id = $1::uuid AND s.day = $2::date
+		   AND a.status = 'active' AND a.deleted_at IS NULL
+		 ORDER BY st.name, st.id`, accountID, day)
+}
+
+// AccountEnabledTasks 返回账号所属学校的全部启用任务 ID（按名称序）。
+// 零行表示账号不可用（停用、软删、不存在）或学校没有启用任务；
+// 调用方对两者都给 404，故不再区分。
+func (r *ScheduleRepo) AccountEnabledTasks(ctx context.Context, accountID string) ([]string, error) {
+	return r.taskIDs(ctx, `
+		SELECT st.id::text FROM accounts a
+		  JOIN school_tasks st ON st.school_id = a.school_id AND st.enabled
 		 WHERE a.id = $1::uuid AND a.status = 'active' AND a.deleted_at IS NULL
-		 ORDER BY st.name, st.id
-		 LIMIT 1`,
-		accountID).Scan(&id)
+		 ORDER BY st.name, st.id`, accountID)
+}
+
+// taskIDs 执行一个返回任务 ID 列表的查询。
+// 零行不是错误：清单类查询的空结果由调用方按业务解释。
+func (r *ScheduleRepo) taskIDs(ctx context.Context, query string, args ...any) ([]string, error) {
+	rows, err := r.db.q(ctx).Query(ctx, query, args...)
 	if err != nil {
-		return "", mapError(err)
+		return nil, mapError(err)
 	}
-	return id, nil
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, mapError(err)
+		}
+		out = append(out, id)
+	}
+	return out, mapError(rows.Err())
 }

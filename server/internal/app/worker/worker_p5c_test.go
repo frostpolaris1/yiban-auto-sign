@@ -6,6 +6,7 @@ package worker_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
@@ -20,12 +21,15 @@ import (
 
 // fakeLocations 按账号返回定位策略；err 模拟基础设施失败。
 type fakeLocations struct {
+	mu        sync.Mutex
 	byAccount map[string]contract.Location
 	err       error
 	calls     int
 }
 
 func (f *fakeLocations) Resolve(_ context.Context, accountID string) (contract.Location, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls++
 	if f.err != nil {
 		return contract.Location{}, f.err
@@ -38,6 +42,7 @@ func (f *fakeLocations) Resolve(_ context.Context, accountID string) (contract.L
 
 // fakePhotos 按 attemptID 确定性返回图；picked=false 模拟空库。
 type fakePhotos struct {
+	mu     sync.Mutex
 	pick   func(attemptID string) (contract.ImageRef, bool)
 	err    error
 	calls  []string
@@ -45,6 +50,8 @@ type fakePhotos struct {
 }
 
 func (f *fakePhotos) PickForAttempt(_ context.Context, ownerUserID, attemptID string) (contract.ImageRef, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, attemptID)
 	f.owners = append(f.owners, ownerUserID)
 	if f.err != nil {

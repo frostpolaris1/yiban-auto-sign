@@ -707,7 +707,10 @@ paths:
       description: |
         Ensures today's task row exists and returns 202 with its id.
         A closed window returns 409 window_closed. A run in progress returns
-        409 sign_running. A concluded day returns 409 already_signed.
+        409 sign_running. A concluded success returns 409 already_signed.
+        A failed or skipped row is re-armed and returns 202 again.
+        Two enabled tasks for the same account return 409 task_ambiguous:
+        the caller must pick, not the server.
         Cross-scope accounts return 404 for every role.
         Rate limited per client IP and per account id; a 429 carries Retry-After.
       x-roles: [master, admin, user]
@@ -964,6 +967,11 @@ paths:
         terminal rows are never moved. A disabled task returns 409 conflict
         and writes nothing. Only the current business day is accepted; any
         other day is 400 validation_failed.
+
+        Capacity shortfall returns 409 capacity_shortfall and writes nothing:
+        the demand exceeds what the window can carry at the configured
+        concurrency, average duration and egress rate. `details` carries
+        demand, capacity and shortfall. Preview still reports the numbers.
       x-roles: [master, admin]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -1406,7 +1414,7 @@ components:
           description: Request trace id; mirrors the X-Request-Id header.
     ErrorCode:
       type: string
-      description: Stable codes frozen in P0. No other value is allowed.
+      description: Stable codes frozen in P0. New values are additive only.
       enum:
         - validation_failed
         - unauthorized
@@ -1415,9 +1423,11 @@ components:
         - conflict
         - rate_limited
         - capacity_exceeded
+        - capacity_shortfall
         - window_closed
         - already_signed
         - sign_running
+        - task_ambiguous
         - photo_missing
         - photo_invalid
         - photo_rejected

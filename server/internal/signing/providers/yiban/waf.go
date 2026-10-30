@@ -112,11 +112,14 @@ func decodeUnicodeEscapes(text string) string {
 }
 
 // blockedOutcome 把 WAF/挑战命中压成结论错误：
-// 挑战形态 → OutcomeChallenge（不可重试，对应旧实现 ydclearance 硬失败档）；
-// 仅关键词命中 → OutcomeTransient（可重试，对应旧实现风控档）。
+// 挑战形态 → OutcomeChallenge（JS 挑战页，只检测不求解）；
+// 仅关键词命中 → OutcomeBlocked（风控拦截，1 次即终态）。
+//
+// 两类都不可重试：重发同一请求只会加深风控标记，不是纠错。
+// 关键词档单列一个结论词，是为了让"被拦"与"平台业务拒绝"在库里分得开。
 func blockedOutcome(body string) error {
 	if challengeHitBody(body) {
 		return outcome(contract.OutcomeChallenge, "challenge page")
 	}
-	return outcome(contract.OutcomeTransient, "WAF blocked response")
+	return outcome(contract.OutcomeBlocked, "WAF blocked response")
 }

@@ -288,7 +288,7 @@ func (p *Provider) SignCalls() int {
 	return p.signHit
 }
 
-// AllOutcomes 按契约顺序列出全部 13 项中性结果。
+// AllOutcomes 按契约顺序列出全部 14 项中性结果。
 // **契约 v1 冻结**；新增结果时必须同步本清单。
 func AllOutcomes() []contract.Outcome {
 	return []contract.Outcome{
@@ -300,6 +300,7 @@ func AllOutcomes() []contract.Outcome {
 		contract.OutcomeCredentialBad,
 		contract.OutcomeDeviceUnbound,
 		contract.OutcomeChallenge,
+		contract.OutcomeBlocked,
 		contract.OutcomeTransient,
 		contract.OutcomeRejected,
 		contract.OutcomePhotoMissing,
@@ -344,7 +345,7 @@ func ResultFor(o contract.Outcome) contract.Result {
 	return result
 }
 
-// ResultSteps 为每个给定结果生成一步预设；无参数时覆盖全部 13 项。
+// ResultSteps 为每个给定结果生成一步预设；无参数时覆盖全部 14 项。
 func ResultSteps(outcomes ...contract.Outcome) []Step[contract.Result] {
 	if len(outcomes) == 0 {
 		outcomes = AllOutcomes()

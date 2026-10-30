@@ -302,7 +302,7 @@
     "group": [
       "执行体"
     ],
-    "doc": "并行执行体数上限（1=单执行体）",
+    "doc": "并行执行体数上限（1=单执行体）；Go 服务端同键用作认领批大小与计划容量通道数",
     "sensitive": false,
     "web_editable": true,
     "tier": "master",

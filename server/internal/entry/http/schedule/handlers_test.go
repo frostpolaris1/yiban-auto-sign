@@ -337,6 +337,37 @@ func TestPlanBuilds(t *testing.T) {
 	}
 }
 
+// 容量缺口：409 capacity_shortfall，details 带三个数（C2）。
+func TestPlanShortfallIsConflict(t *testing.T) {
+	shortfall := errs.New(errs.CodeCapacityShortfall, "容量不足：需求 100，容量 64")
+	shortfall.Details = map[string]any{"demand": 100, "capacity": 64, "shortfall": 36}
+	planner := &fakePlanner{
+		buildErr: shortfall,
+		task:     coreschedule.TaskInfo{ID: "t1", SchoolID: "s1"},
+	}
+	engine, issued := newRouter(t, corescope.Master(), planner, &fakeTimePrefs{})
+	rec := do(t, engine, issued, http.MethodPost, "/api/schedule/plan",
+		oapi.SchedulePlanRequest{Day: "2026-10-29", SchoolId: "s1", TaskId: "t1"})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Error struct {
+			Code    string         `json:"code"`
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Error.Code != "capacity_shortfall" {
+		t.Fatalf("code = %q, want capacity_shortfall", body.Error.Code)
+	}
+	if body.Error.Details["demand"] != float64(100) {
+		t.Fatalf("details = %v", body.Error.Details)
+	}
+}
+
 // 覆盖：理由、起止与操作者原样交给用例。
 func TestOverridePassesReasonAndActor(t *testing.T) {
 	planner := &fakePlanner{preview: samplePreview()}

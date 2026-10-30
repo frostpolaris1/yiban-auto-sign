@@ -33,11 +33,12 @@ func (f *fakeService) SigningCredential(context.Context, corescope.Scope, string
 
 type fakeAuthorizer struct {
 	scope corescope.Scope
+	actor appaudit.Actor
 	err   error
 }
 
 func (f *fakeAuthorizer) Authorize(context.Context, coreauth.User) (corescope.Scope, appaudit.Actor, error) {
-	return f.scope, appaudit.Actor{}, f.err
+	return f.scope, f.actor, f.err
 }
 
 type fakeVerifier struct {
@@ -292,10 +293,13 @@ type fakeManual struct {
 	taskID string
 	err    error
 	calls  int
+	// actor 记录入口层传下来的审计主体：重开审计靠它归属到人。
+	actor appaudit.Actor
 }
 
-func (f *fakeManual) Request(context.Context, string) (string, error) {
+func (f *fakeManual) Request(_ context.Context, _ string, actor appaudit.Actor) (string, error) {
 	f.calls++
+	f.actor = actor
 	return f.taskID, f.err
 }
 
@@ -366,10 +370,12 @@ func callSign(t *testing.T, engine http.Handler, issued coreauth.Issued) *httpte
 	return rec
 }
 
-// 手动签到成功：202 且回 task_id（入队而非完成）。
+// 手动签到成功：202 且回 task_id（入队而非完成）；
+// 会话主体原样传到用例层，重开审计才有归属。
 func TestSignAccepted(t *testing.T) {
 	manual := &fakeManual{taskID: "task-1"}
-	engine, issued := newSignRouter(t, &fakeAuthorizer{scope: corescope.Master()}, manual)
+	actor := appaudit.Actor{UserID: "u1", Label: "u***@example.test"}
+	engine, issued := newSignRouter(t, &fakeAuthorizer{scope: corescope.Master(), actor: actor}, manual)
 	rec := callSign(t, engine, issued)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202: %s", rec.Code, rec.Body.String())
@@ -381,9 +387,12 @@ func TestSignAccepted(t *testing.T) {
 	if body.TaskId != "task-1" || manual.calls != 1 {
 		t.Fatalf("body = %+v calls=%d", body, manual.calls)
 	}
+	if manual.actor != actor {
+		t.Fatalf("审计主体 = %+v, want %+v", manual.actor, actor)
+	}
 }
 
-// 三类冲突都映射 409 与稳定错误码。
+// 四类冲突都映射 409 与稳定错误码。
 func TestSignConflicts(t *testing.T) {
 	cases := []struct {
 		err  error
@@ -392,6 +401,7 @@ func TestSignConflicts(t *testing.T) {
 		{appworker.ErrAlreadySigned, "already_signed"},
 		{appworker.ErrSignRunning, "sign_running"},
 		{appworker.ErrWindowClosed, "window_closed"},
+		{appworker.ErrTaskAmbiguous, "task_ambiguous"},
 	}
 	for _, c := range cases {
 		engine, issued := newSignRouter(t, &fakeAuthorizer{scope: corescope.Master()}, &fakeManual{err: c.err})

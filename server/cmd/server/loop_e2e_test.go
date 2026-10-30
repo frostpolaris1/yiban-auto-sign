@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
+	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	appegress "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/egress"
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
 	coreaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/account"
@@ -165,7 +166,7 @@ func TestLoopGracefulStopLeavesNoRunningRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("worker service: %v", err)
 	}
-	if _, err := workerSvc.Request(ctx, acct.ID); err != nil {
+	if _, err := workerSvc.Request(ctx, acct.ID, appaudit.Actor{UserID: "loop-test"}); err != nil {
 		t.Fatalf("enqueue task: %v", err)
 	}
 

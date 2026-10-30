@@ -171,6 +171,7 @@ const (
 	OutcomeCredentialBad   Outcome = "credential_invalid"
 	OutcomeDeviceUnbound   Outcome = "device_unbound"
 	OutcomeChallenge       Outcome = "challenge"
+	OutcomeBlocked         Outcome = "blocked"
 	OutcomeTransient       Outcome = "transient"
 	OutcomeRejected        Outcome = "rejected"
 	OutcomePhotoMissing    Outcome = "photo_missing"
@@ -183,7 +184,7 @@ func (o Outcome) Valid() bool {
 	switch o {
 	case OutcomeSuccess, OutcomeAlreadyDone, OutcomePendingUpstream,
 		OutcomeNoTarget, OutcomeInvalidTarget, OutcomeCredentialBad,
-		OutcomeDeviceUnbound, OutcomeChallenge, OutcomeTransient,
+		OutcomeDeviceUnbound, OutcomeChallenge, OutcomeBlocked, OutcomeTransient,
 		OutcomeRejected, OutcomePhotoMissing, OutcomePhotoRejected,
 		OutcomeUnknown:
 		return true

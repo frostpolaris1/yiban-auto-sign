@@ -63,12 +63,12 @@ func (c *Client) UploadAttachment(ctx context.Context, accountID string,
 			if err != nil {
 				return err
 			}
+			if wafBlocked(string(body)) {
+				return blockedOutcome(string(body))
+			}
 			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 				return outcome(contract.OutcomeTransient,
 					fmt.Sprintf("uploadUri status %d", resp.StatusCode))
-			}
-			if protocol.LooksLikeChallenge(string(body)) {
-				return outcome(contract.OutcomeChallenge, "challenge page")
 			}
 			envelope, err := protocol.ParseAPIEnvelope(body)
 			if err != nil {

@@ -61,6 +61,10 @@ func (c *Client) loginLocked(ctx context.Context, entry *sessionEntry, cred cont
 	if err != nil {
 		return contract.Profile{}, err
 	}
+	// WAF 判定先于状态码：拦截页可能带 3xx/4xx，按状态归 transient 只会重发同一请求。
+	if wafBlocked(string(body)) {
+		return contract.Profile{}, blockedOutcome(string(body))
+	}
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		return contract.Profile{}, outcome(contract.OutcomeTransient,
 			"login page redirected while no session was cached")
@@ -68,9 +72,6 @@ func (c *Client) loginLocked(ctx context.Context, entry *sessionEntry, cred cont
 	if resp.StatusCode != http.StatusOK {
 		return contract.Profile{}, outcome(contract.OutcomeTransient,
 			fmt.Sprintf("login page status %d", resp.StatusCode))
-	}
-	if wafBlocked(string(body)) {
-		return contract.Profile{}, blockedOutcome(string(body))
 	}
 	page, err := protocol.ParseAuthorizePage(string(body))
 	if err != nil {
@@ -125,12 +126,12 @@ func (c *Client) loginLocked(ctx context.Context, entry *sessionEntry, cred cont
 	if err != nil {
 		return contract.Profile{}, err
 	}
+	if wafBlocked(string(body)) {
+		return contract.Profile{}, blockedOutcome(string(body))
+	}
 	if resp.StatusCode < 300 || resp.StatusCode >= 400 {
 		return contract.Profile{}, outcome(contract.OutcomeTransient,
 			fmt.Sprintf("iframe status %d", resp.StatusCode))
-	}
-	if wafBlocked(string(body)) {
-		return contract.Profile{}, blockedOutcome(string(body))
 	}
 	token, ok := protocol.ExtractVerifyRequest(resp.Header.Get("Location"))
 	if !ok {

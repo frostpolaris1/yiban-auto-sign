@@ -9,7 +9,7 @@ func TestOutcomeValid(t *testing.T) {
 	all := []Outcome{
 		OutcomeSuccess, OutcomeAlreadyDone, OutcomePendingUpstream,
 		OutcomeNoTarget, OutcomeInvalidTarget, OutcomeCredentialBad,
-		OutcomeDeviceUnbound, OutcomeChallenge, OutcomeTransient,
+		OutcomeDeviceUnbound, OutcomeChallenge, OutcomeBlocked, OutcomeTransient,
 		OutcomeRejected, OutcomePhotoMissing, OutcomePhotoRejected,
 		OutcomeUnknown,
 	}

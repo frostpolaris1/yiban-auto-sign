@@ -173,6 +173,7 @@ func (e DiagnosticsItemSuggestion) Valid() bool {
 const (
 	AlreadySigned       ErrorCode = "already_signed"
 	CapacityExceeded    ErrorCode = "capacity_exceeded"
+	CapacityShortfall   ErrorCode = "capacity_shortfall"
 	Conflict            ErrorCode = "conflict"
 	Forbidden           ErrorCode = "forbidden"
 	InternalError       ErrorCode = "internal_error"
@@ -183,6 +184,7 @@ const (
 	PhotoRejected       ErrorCode = "photo_rejected"
 	RateLimited         ErrorCode = "rate_limited"
 	SignRunning         ErrorCode = "sign_running"
+	TaskAmbiguous       ErrorCode = "task_ambiguous"
 	Unauthorized        ErrorCode = "unauthorized"
 	UpstreamUnavailable ErrorCode = "upstream_unavailable"
 	ValidationFailed    ErrorCode = "validation_failed"
@@ -195,6 +197,8 @@ func (e ErrorCode) Valid() bool {
 	case AlreadySigned:
 		return true
 	case CapacityExceeded:
+		return true
+	case CapacityShortfall:
 		return true
 	case Conflict:
 		return true
@@ -215,6 +219,8 @@ func (e ErrorCode) Valid() bool {
 	case RateLimited:
 		return true
 	case SignRunning:
+		return true
+	case TaskAmbiguous:
 		return true
 	case Unauthorized:
 		return true
@@ -630,7 +636,7 @@ type Error struct {
 
 // ErrorBody defines model for ErrorBody.
 type ErrorBody struct {
-	// Code Stable codes frozen in P0. No other value is allowed.
+	// Code Stable codes frozen in P0. New values are additive only.
 	Code ErrorCode `json:"code"`
 
 	// Details Machine-readable extras; an empty object when unused.
@@ -643,7 +649,7 @@ type ErrorBody struct {
 	TraceId string `json:"trace_id"`
 }
 
-// ErrorCode Stable codes frozen in P0. No other value is allowed.
+// ErrorCode Stable codes frozen in P0. New values are additive only.
 type ErrorCode string
 
 // ForgotPasswordRequest defines model for ForgotPasswordRequest.

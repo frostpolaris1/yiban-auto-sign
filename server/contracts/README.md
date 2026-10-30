@@ -120,6 +120,12 @@ a shape failure.
 ## Stable codes
 
 `validation_failed`, `unauthorized`, `forbidden`, `not_found`, `conflict`,
-`rate_limited`, `capacity_exceeded`, `window_closed`, `already_signed`,
-`sign_running`, `photo_missing`, `photo_invalid`, `photo_rejected`,
-`location_out_of_range`, `upstream_unavailable`, `internal_error`.
+`rate_limited`, `capacity_exceeded`, `capacity_shortfall`, `window_closed`,
+`already_signed`, `sign_running`, `task_ambiguous`, `photo_missing`,
+`photo_invalid`, `photo_rejected`, `location_out_of_range`,
+`upstream_unavailable`, `internal_error`.
+
+The list grows by addition only: values are never renamed or removed.
+`capacity_shortfall` is a plan-build refusal (409, details carry demand,
+capacity and shortfall); `task_ambiguous` means two enabled tasks apply to the
+same account and the server will not guess which one a manual sign means.

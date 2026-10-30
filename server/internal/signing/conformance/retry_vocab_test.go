@@ -21,6 +21,7 @@ func TestRetryBudgetCoversContractOutcomes(t *testing.T) {
 		contract.OutcomeCredentialBad,
 		contract.OutcomeDeviceUnbound,
 		contract.OutcomeChallenge,
+		contract.OutcomeBlocked,
 		contract.OutcomeTransient,
 		contract.OutcomeRejected,
 		contract.OutcomePhotoMissing,
