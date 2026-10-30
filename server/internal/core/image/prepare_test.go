@@ -2,6 +2,7 @@ package image
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
@@ -215,11 +216,11 @@ func wantValidation(t *testing.T, err error) {
 // 重编码路径若不稳，下游按 SHA256 去重会失效。
 func TestPrepareJPEGDeterministic(t *testing.T) {
 	src := jpegWithOrientation(t, whiteImage(60, 40), 1)
-	first, err := Prepare(src, Options{Rand: noCrop})
+	first, err := Prepare(context.Background(), src, Options{Rand: noCrop})
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
-	second, err := Prepare(src, Options{Rand: noCrop})
+	second, err := Prepare(context.Background(), src, Options{Rand: noCrop})
 	if err != nil {
 		t.Fatalf("Prepare second: %v", err)
 	}
@@ -242,7 +243,7 @@ func TestPrepareJPEGDeterministic(t *testing.T) {
 // 元数据含拍摄时间、设备与位置，带出去就是隐私泄漏。
 func TestPrepareStripsMetadata(t *testing.T) {
 	src := jpegWithOrientation(t, whiteImage(60, 40), 1)
-	out, err := Prepare(src, Options{Rand: noCrop})
+	out, err := Prepare(context.Background(), src, Options{Rand: noCrop})
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
@@ -259,7 +260,7 @@ func TestPrepareStripsMetadata(t *testing.T) {
 // 方向为 1 时最容易走「原样直通」捷径，故专门钉住。
 func TestPrepareStripsPNGMetadata(t *testing.T) {
 	src := pngWithOrientation(t, whiteImage(60, 40), 1)
-	out, err := Prepare(src, Options{Rand: noCrop})
+	out, err := Prepare(context.Background(), src, Options{Rand: noCrop})
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
@@ -295,7 +296,7 @@ func TestPrepareOrientation(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			out, err := Prepare(jpegWithOrientation(t, src, c.orientation), Options{Rand: noCrop})
+			out, err := Prepare(context.Background(), jpegWithOrientation(t, src, c.orientation), Options{Rand: noCrop})
 			if err != nil {
 				t.Fatalf("Prepare: %v", err)
 			}
@@ -315,7 +316,7 @@ func TestPrepareOrientation(t *testing.T) {
 
 // PNG 的 eXIf 块同样携带方向。
 func TestPreparePNGOrientation(t *testing.T) {
-	out, err := Prepare(pngWithOrientation(t, markedImage(16, 8), 6), Options{Rand: noCrop})
+	out, err := Prepare(context.Background(), pngWithOrientation(t, markedImage(16, 8), 6), Options{Rand: noCrop})
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
@@ -395,11 +396,11 @@ func TestPrepareToleratesMalformedExif(t *testing.T) {
 	src := markedImage(w, h)
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			jpegOut, err := Prepare(jpegWithAPP1(t, src, c.tiff), Options{Rand: noCrop})
+			jpegOut, err := Prepare(context.Background(), jpegWithAPP1(t, src, c.tiff), Options{Rand: noCrop})
 			if err != nil {
 				t.Fatalf("JPEG 路径: %v", err)
 			}
-			pngOut, err := Prepare(pngWithEXIF(t, src, c.tiff), Options{Rand: noCrop})
+			pngOut, err := Prepare(context.Background(), pngWithEXIF(t, src, c.tiff), Options{Rand: noCrop})
 			if err != nil {
 				t.Fatalf("PNG 路径: %v", err)
 			}
@@ -419,7 +420,7 @@ func TestPrepareToleratesMalformedExif(t *testing.T) {
 // TargetMime 为空时保持输入格式；指定时转换。
 func TestPrepareTargetMime(t *testing.T) {
 	pngSrc := pngBytes(t, whiteImage(20, 10))
-	keep, err := Prepare(pngSrc, Options{Rand: noCrop})
+	keep, err := Prepare(context.Background(), pngSrc, Options{Rand: noCrop})
 	if err != nil {
 		t.Fatalf("Prepare png: %v", err)
 	}
@@ -428,7 +429,7 @@ func TestPrepareTargetMime(t *testing.T) {
 	}
 	decoded(t, keep)
 
-	toJPEG, err := Prepare(pngSrc, Options{TargetMime: "image/jpeg"})
+	toJPEG, err := Prepare(context.Background(), pngSrc, Options{TargetMime: "image/jpeg"})
 	if err != nil {
 		t.Fatalf("Prepare png->jpeg: %v", err)
 	}
@@ -441,7 +442,7 @@ func TestPrepareTargetMime(t *testing.T) {
 	if err := jpeg.Encode(&buf, whiteImage(20, 10), nil); err != nil {
 		t.Fatalf("encode jpeg: %v", err)
 	}
-	toPNG, err := Prepare(buf.Bytes(), Options{TargetMime: "image/png"})
+	toPNG, err := Prepare(context.Background(), buf.Bytes(), Options{TargetMime: "image/png"})
 	if err != nil {
 		t.Fatalf("Prepare jpeg->png: %v", err)
 	}
@@ -475,7 +476,7 @@ func TestPrepareCropPerSide(t *testing.T) {
 				src.SetNRGBA(99, y, black) // 最右列
 			}
 			rnd := &scriptRand{vals: c.vals}
-			out, err := Prepare(pngBytes(t, src), Options{Rand: rnd})
+			out, err := Prepare(context.Background(), pngBytes(t, src), Options{Rand: rnd})
 			if err != nil {
 				t.Fatalf("Prepare: %v", err)
 			}
@@ -511,7 +512,7 @@ func TestPrepareCropRandomSmoke(t *testing.T) {
 	seen := make([][]int, 0, runs)
 	nonzero := [4]int{}
 	for i := 0; i < runs; i++ {
-		out, err := Prepare(pngBytes(t, whiteImage(200, 100)), Options{})
+		out, err := Prepare(context.Background(), pngBytes(t, whiteImage(200, 100)), Options{})
 		if err != nil {
 			t.Fatalf("run %d: %v", i, err)
 		}
@@ -540,7 +541,7 @@ func TestPrepareCropRandomSmoke(t *testing.T) {
 // 重编码只遍历像素，APP1 段不会进入输出。
 func TestPrepareCropStillStripsExif(t *testing.T) {
 	src := jpegWithOrientation(t, whiteImage(100, 80), 1)
-	out, err := Prepare(src, Options{Rand: &scriptRand{vals: []int{5, 5, 5, 5}}})
+	out, err := Prepare(context.Background(), src, Options{Rand: &scriptRand{vals: []int{5, 5, 5, 5}}})
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
@@ -560,7 +561,7 @@ func TestPrepareCropStillStripsExif(t *testing.T) {
 // 裁切后不得小于原图，也不得为空。本仓无最小尺寸约束，口径=不发明。
 func TestPrepareCropTinyImage(t *testing.T) {
 	for _, size := range []int{1, 5, 9, 10} {
-		out, err := Prepare(pngBytes(t, whiteImage(size, size)), Options{Rand: &scriptRand{vals: []int{10, 10, 10, 10}}})
+		out, err := Prepare(context.Background(), pngBytes(t, whiteImage(size, size)), Options{Rand: &scriptRand{vals: []int{10, 10, 10, 10}}})
 		if err != nil {
 			t.Fatalf("size %d: %v", size, err)
 		}
@@ -579,7 +580,7 @@ func TestPrepareCropTinyImage(t *testing.T) {
 // 不铺白时透明像素编码为黑色，平台按主体判定会直接拒绝。
 func TestPrepareFlattensTransparency(t *testing.T) {
 	transparent := image.NewNRGBA(image.Rect(0, 0, 20, 20)) // RGB=0, A=0
-	out, err := Prepare(pngBytes(t, transparent), Options{TargetMime: "image/jpeg"})
+	out, err := Prepare(context.Background(), pngBytes(t, transparent), Options{TargetMime: "image/jpeg"})
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
@@ -603,7 +604,7 @@ func TestPrepareRejectsInvalidOptions(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := Prepare(src, c.opt)
+			_, err := Prepare(context.Background(), src, c.opt)
 			wantValidation(t, err)
 		})
 	}
@@ -623,7 +624,7 @@ func TestPrepareRejectsInvalidInput(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := Prepare(c.data, Options{Rand: noCrop})
+			_, err := Prepare(context.Background(), c.data, Options{Rand: noCrop})
 			wantValidation(t, err)
 		})
 	}
@@ -641,11 +642,11 @@ func TestPrepareRejectsOversize(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := Prepare(src, c.opt)
+			_, err := Prepare(context.Background(), src, c.opt)
 			wantValidation(t, err)
 		})
 	}
-	if _, err := Prepare(src, Options{MaxPixels: 100 * 50, MaxSidePx: 100}); err != nil {
+	if _, err := Prepare(context.Background(), src, Options{MaxPixels: 100 * 50, MaxSidePx: 100}); err != nil {
 		t.Fatalf("恰好等于上限应放行: %v", err)
 	}
 }
@@ -680,7 +681,7 @@ func TestPrepareChecksSizeBeforeDecode(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := Prepare(src, c.opt)
+			_, err := Prepare(context.Background(), src, c.opt)
 			wantValidation(t, err)
 			if msg := errs.From(err).Message; !strings.Contains(msg, c.want) {
 				t.Fatalf("错误 = %q, want 含 %q（先解码后判上限会先报解码失败）", msg, c.want)
@@ -811,11 +812,11 @@ func TestPrepareNormalizesBitDepth(t *testing.T) {
 			src.SetNRGBA64(x, y, color.NRGBA64{R: 0x4000, G: 0x8000, B: 0xC000, A: 0xFFFF})
 		}
 	}
-	plain, err := Prepare(pngBytes(t, src), Options{Rand: noCrop})
+	plain, err := Prepare(context.Background(), pngBytes(t, src), Options{Rand: noCrop})
 	if err != nil {
 		t.Fatalf("plain: %v", err)
 	}
-	withEXIF, err := Prepare(pngWithOrientation(t, src, 6), Options{Rand: noCrop})
+	withEXIF, err := Prepare(context.Background(), pngWithOrientation(t, src, 6), Options{Rand: noCrop})
 	if err != nil {
 		t.Fatalf("with exif: %v", err)
 	}

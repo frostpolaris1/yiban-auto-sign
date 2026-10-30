@@ -95,7 +95,10 @@ func (f *fakeStore) ClaimDue(_ context.Context, now time.Time, limit int) ([]cor
 	return out, nil
 }
 
-func (f *fakeStore) Finish(_ context.Context, accountID, schoolTaskID, day string, state corestatus.TaskState, result string, claimSeq int, _ time.Time) error {
+func (f *fakeStore) Finish(ctx context.Context, accountID, schoolTaskID, day string, state corestatus.TaskState, result string, claimSeq int, _ time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.finishErr != nil {
@@ -119,7 +122,10 @@ func (f *fakeStore) Finish(_ context.Context, accountID, schoolTaskID, day strin
 
 // FinishCredentialInvalid 按库语义落 failed(credential_invalid)。
 // 账号状态是存储层副作用，由 pg e2e 钉住，本 fake 不复制。
-func (f *fakeStore) FinishCredentialInvalid(_ context.Context, _ /*schoolID*/, accountID, schoolTaskID, day string, claimSeq int, _ time.Time) error {
+func (f *fakeStore) FinishCredentialInvalid(ctx context.Context, _ /*schoolID*/, accountID, schoolTaskID, day string, claimSeq int, _ time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.finishErr != nil {
@@ -142,7 +148,10 @@ func (f *fakeStore) FinishCredentialInvalid(_ context.Context, _ /*schoolID*/, a
 }
 
 // requeue 是两种重排的公共实现；bumpAttempts 区分"等待"与"业务重试"。
-func (f *fakeStore) requeue(taskID string, runAt time.Time, result string, bumpAttempts bool, claimSeq int) error {
+func (f *fakeStore) requeue(ctx context.Context, taskID string, runAt time.Time, result string, bumpAttempts bool, claimSeq int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for i := range f.tasks {
@@ -161,12 +170,12 @@ func (f *fakeStore) requeue(taskID string, runAt time.Time, result string, bumpA
 	return coreerrs.ErrNotFound
 }
 
-func (f *fakeStore) RequeueWait(_ context.Context, taskID string, runAt time.Time, result string, claimSeq int) error {
-	return f.requeue(taskID, runAt, result, false, claimSeq)
+func (f *fakeStore) RequeueWait(ctx context.Context, taskID string, runAt time.Time, result string, claimSeq int) error {
+	return f.requeue(ctx, taskID, runAt, result, false, claimSeq)
 }
 
-func (f *fakeStore) RequeueRetry(_ context.Context, taskID string, runAt time.Time, result string, claimSeq int) error {
-	return f.requeue(taskID, runAt, result, true, claimSeq)
+func (f *fakeStore) RequeueRetry(ctx context.Context, taskID string, runAt time.Time, result string, claimSeq int) error {
+	return f.requeue(ctx, taskID, runAt, result, true, claimSeq)
 }
 
 // Rearm 按库语义：failed 与 skipped 都可重开，尝试数**保留**（重开不退预算）。
@@ -280,11 +289,16 @@ type fakeSigner struct {
 	targets []contract.Target
 	outcome contract.Outcome
 	err     error
-	signs   int
+	// discoverErr / submitErr 把两个面分开；任一为 nil 时回落到 err（存量用例口径）。
+	discoverErr error
+	submitErr   error
+	signs       int
 	// attemptIDs 记录每次提交的幂等键：重试必须每次不同。
 	attemptIDs []string
 	// requests 记录每次提交的完整请求：P5-C 断言 Location 与 Image。
 	requests []contract.SignRequest
+	// onSign 在 Sign 返回前调用一次：测试用它模拟停机取消。
+	onSign func()
 	// entered / release 是并发判据的闸门：Sign 到达即通知并等待放行。
 	// **在取得 mu 之前等待**：持锁等待会让第二个协程进不来，测的是自己。
 	entered chan<- struct{}
@@ -294,8 +308,8 @@ type fakeSigner struct {
 func (f *fakeSigner) DiscoverTargets(context.Context, contract.DiscoverRequest) ([]contract.Target, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.err != nil {
-		return nil, f.err
+	if err := firstErr(f.discoverErr, f.err); err != nil {
+		return nil, err
 	}
 	return f.targets, nil
 }
@@ -310,7 +324,21 @@ func (f *fakeSigner) Sign(_ context.Context, req contract.SignRequest) (contract
 	f.signs++
 	f.attemptIDs = append(f.attemptIDs, req.AttemptID)
 	f.requests = append(f.requests, req)
-	return contract.Result{Outcome: f.outcome}, f.err
+	hook := f.onSign
+	if hook != nil {
+		f.mu.Unlock()
+		hook()
+		f.mu.Lock()
+	}
+	return contract.Result{Outcome: f.outcome}, firstErr(f.submitErr, f.err)
+}
+
+// firstErr 取第一个非 nil 错误：面级错误优先，未设则回落到通用 err。
+func firstErr(primary, fallback error) error {
+	if primary != nil {
+		return primary
+	}
+	return fallback
 }
 
 type fakeEgress struct{ err error }
@@ -908,6 +936,61 @@ func TestSignOutcomeSettlesByVocabulary(t *testing.T) {
 		if st.finished["t1"] != c.want {
 			t.Fatalf("%s: 终态 = %v, want %v", c.outcome, st.finished["t1"], c.want)
 		}
+	}
+}
+
+// 停机取消后已提交的行仍要落库（D 批审查 P1-2）：
+// Sign 返回时取消 ctx，结算不得被取消打断——写不进去，行留在 running，
+// 租约到期后会被重新认领，平台侧就收到第二次签到。
+func TestStepSettlesSubmittedRowAfterCancel(t *testing.T) {
+	// 三条结算写入路径都要在取消之后仍然落库（审查 P3-2）：
+	// 终态两条各取一条代表，重排取 transient。
+	cases := []struct {
+		name      string
+		configure func(*fakeSigner)
+		want      corestatus.TaskState
+		attempts  int
+	}{
+		{"success 落终态", func(s *fakeSigner) { s.outcome = contract.OutcomeSuccess },
+			corestatus.TaskSuccess, 1},
+		{"transient 重排", func(s *fakeSigner) { s.outcome = contract.OutcomeTransient },
+			corestatus.TaskPending, 1},
+		{"credential_invalid 落 failed", func(s *fakeSigner) {
+			s.submitErr = &contract.OutcomeError{Outcome: contract.OutcomeCredentialBad, Message: "bad"}
+		}, corestatus.TaskFailed, 1},
+	}
+	for _, c := range cases {
+		st := newStore(baseTask())
+		st.windows["st-1|2026-10-29"] = openWindow()
+		signer := defaultSigner()
+		c.configure(signer)
+		svc := newService(t, st, signer, fakeLimiter{allow: true})
+		ctx, cancel := context.WithCancel(context.Background())
+		signer.onSign = cancel
+		if _, err := svc.Step(ctx, 10); err != nil {
+			t.Fatalf("%s: Step: %v（结算被取消打断）", c.name, err)
+		}
+		if got := st.tasks[0].State; got != string(c.want) {
+			t.Fatalf("%s: 状态 = %s, want %s（结算必须落库）", c.name, got, c.want)
+		}
+		if st.tasks[0].Attempts != c.attempts {
+			t.Fatalf("%s: attempts = %d, want %d", c.name, st.tasks[0].Attempts, c.attempts)
+		}
+		cancel()
+	}
+}
+
+// 等待型重排同样要在取消之后落库：窗口未发现 → 行退回队列，不许停在 running。
+func TestStepRequeuesWaitAfterCancel(t *testing.T) {
+	st := newStore(baseTask()) // 无窗口缓存：走 wait_window_missing
+	svc := newService(t, st, defaultSigner(), fakeLimiter{allow: true})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := svc.Step(ctx, 10); err != nil {
+		t.Fatalf("Step: %v（等待型退回被取消打断）", err)
+	}
+	if st.tasks[0].State != string(corestatus.TaskPending) {
+		t.Fatalf("状态 = %s, want pending（未提交的行必须退回队列）", st.tasks[0].State)
 	}
 }
 

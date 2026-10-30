@@ -35,6 +35,7 @@ import (
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/config"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/assembly"
 )
 
 // manifestMarker 是转储尾部的行数清单标记行前缀。
@@ -104,6 +105,8 @@ type backupDeps struct {
 	runner    cmdRunner
 	countRows func(ctx context.Context, dsn string) (map[string]int64, error)
 	migrate   func(ctx context.Context, dsn string) (int64, error)
+	// verifyAudit 在恢复件上跑审计链全链校验（D 批 P2-8）。
+	verifyAudit func(ctx context.Context, dsn string) (int, error)
 	// tty 报告 stdin 是否交互终端；confirm 在交互路径下征询确认。
 	tty     func() bool
 	confirm func() bool
@@ -112,14 +115,15 @@ type backupDeps struct {
 // newBackupDeps 装配生产依赖。
 func newBackupDeps(stdout, stderr io.Writer) *backupDeps {
 	return &backupDeps{
-		stdout:    stdout,
-		stderr:    stderr,
-		lookPath:  execLookPath,
-		runner:    execRunner{},
-		countRows: countRowsViaPG,
-		migrate:   pg.Migrate,
-		tty:       stdinIsTTY,
-		confirm:   askConfirm,
+		stdout:      stdout,
+		stderr:      stderr,
+		lookPath:    execLookPath,
+		runner:      execRunner{},
+		countRows:   countRowsViaPG,
+		migrate:     pg.Migrate,
+		verifyAudit: verifyAuditChain,
+		tty:         stdinIsTTY,
+		confirm:     askConfirm,
 	}
 }
 
@@ -659,8 +663,58 @@ func runRestore(deps *backupDeps, args []string) int {
 		return 1
 	}
 	fmt.Fprintln(deps.stdout, "对账一致。")
+
+	// 行数对账看不出审计行被截断或改写，故恢复后必须验链。
+	// 验不了（缺 pepper）按失败处理：恢复件的可信度不可声明。
+	audited, err := deps.verifyAudit(ctx, dsn)
+	if err != nil {
+		fmt.Fprintln(deps.stderr, "restore: 审计链校验失败：", err)
+		return 1
+	}
+	if audited == 0 {
+		// 空链没有可校验的行：说"跳过"，不说"通过"（§30 跳过 ≠ 绿）。
+		fmt.Fprintln(deps.stdout, "审计链：空（跳过校验）")
+	} else {
+		fmt.Fprintf(deps.stdout, "审计链：%d 行通过校验\n", audited)
+	}
 	fmt.Fprintln(deps.stdout, "提醒：blob 目录（YIBAN_PHOTO_DIR）不在本归档内；恢复到新主机时须另行迁移，否则图片行在、文件缺失。")
 	return 0
+}
+
+// verifyAuditChain 在恢复件上跑审计链全链校验。
+// 密钥取 YIBAN_HASH_PEPPER：链非空时缺它就无法复算，按失败处理。
+// 链为空（全新库的备份）时没有可校验的行：跳过，不算失败。
+func verifyAuditChain(ctx context.Context, dsn string) (int, error) {
+	db, err := pg.Open(ctx, pg.Options{DSN: dsn, MaxConns: 1, StatementTimeout: 60 * time.Second})
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+	rows, err := db.QueryInt64(ctx, "SELECT count(*) FROM audit_logs")
+	if err != nil {
+		return 0, err
+	}
+	if rows == 0 {
+		return 0, nil
+	}
+	raw, _ := config.Env{}.Lookup("YIBAN_HASH_PEPPER")
+	pepper := strings.TrimSpace(raw)
+	if pepper == "" {
+		return 0, errors.New("YIBAN_HASH_PEPPER 缺失，无法校验审计链")
+	}
+	key, err := assembly.DeriveAuditKey([]byte(pepper))
+	if err != nil {
+		return 0, err
+	}
+	audits, err := pg.NewAuditRepo(db, key)
+	if err != nil {
+		return 0, err
+	}
+	report, err := audits.Verify(ctx, 0, 0)
+	if err != nil {
+		return 0, err
+	}
+	return int(report.Count), nil
 }
 
 // countRowsViaPG 数 manifestTables 的行数（生产实现）。

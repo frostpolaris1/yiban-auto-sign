@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/assembly"
+	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	coreschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/school"
 	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
@@ -74,14 +76,31 @@ func TestBackupRestoreRoundTripReconciles(t *testing.T) {
 	}
 	defer db.Close()
 	users := pg.NewUserRepo(db)
+	const pepper = "e2e-pepper-0123456789abcdef"
+	key, err := assembly.DeriveAuditKey([]byte(pepper))
+	if err != nil {
+		t.Fatalf("derive audit key: %v", err)
+	}
+	audits, err := pg.NewAuditRepo(db, key)
+	if err != nil {
+		t.Fatalf("audit repo: %v", err)
+	}
+	// 种一行审计：恢复后验链才有的可验（空链走「跳过」分支）。
 	err = db.InTx(ctx, func(ctx context.Context) error {
-		_, txErr := users.Create(ctx, coreuser.New{
+		u, txErr := users.Create(ctx, coreuser.New{
 			Email: "bkp@example.com", PasswordHash: "argon2id$test", Role: coreauth.RoleUser,
 		}, 10000)
+		if txErr != nil {
+			return txErr
+		}
+		_, txErr = audits.Append(ctx, coreaudit.Entry{
+			TS: time.Date(2026, 10, 31, 0, 0, 0, 0, time.UTC), ActorLabel: "b***@example.test",
+			Action: coreaudit.ActionAuthLogin, TargetType: "user", TargetID: u.ID,
+		})
 		return txErr
 	})
 	if err != nil {
-		t.Fatalf("create user: %v", err)
+		t.Fatalf("create user + audit: %v", err)
 	}
 	if _, err := pg.NewSchoolRepo(db).Create(ctx, coreschool.New{Code: "bkpschool", Name: "Bkp School"}); err != nil {
 		t.Fatalf("create school: %v", err)
@@ -107,13 +126,17 @@ func TestBackupRestoreRoundTripReconciles(t *testing.T) {
 		t.Fatalf("drop schema: %v", err)
 	}
 
-	// 恢复。
+	// 恢复。恢复后要验审计链，故给同一个 pepper。
+	t.Setenv("YIBAN_HASH_PEPPER", pepper)
 	stdout, code = runCLI(t, []string{"restore", "--in", out, "--dsn", dsn, "--force", "--passphrase-file", passFile})
 	if code != 0 {
 		t.Fatalf("restore code = %d, stdout=%s", code, stdout)
 	}
 	if !strings.Contains(stdout, "对账一致") {
 		t.Fatalf("restore must reconcile: %s", stdout)
+	}
+	if !strings.Contains(stdout, "审计链：1 行通过校验") {
+		t.Fatalf("restore must verify the audit chain: %s", stdout)
 	}
 
 	// 恢复后的库可直接查询，行数与备份前一致。

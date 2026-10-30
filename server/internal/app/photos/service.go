@@ -52,6 +52,9 @@ type Options struct {
 	MaxSidePx  int
 	TargetMime string
 	Rand       image.Rand
+	// Decode 是进程级解码闸（image.NewGate）。生产必传：
+	// 单张 40 MP 的 RGBA 约 160 MB，并发上传会把内存打满。
+	Decode *image.Gate
 }
 
 // Page 是一页图片记录。
@@ -132,11 +135,12 @@ func (s *Service) Upload(ctx context.Context, scope corescope.Scope, actor appau
 	if len(raw) > corephoto.MaxBytes {
 		return corephoto.Record{}, errs.New(errs.CodeValidation, "image is too large")
 	}
-	out, err := image.Prepare(raw, image.Options{
+	out, err := image.Prepare(ctx, raw, image.Options{
 		MaxPixels:  s.deps.Options.MaxPixels,
 		MaxSidePx:  s.deps.Options.MaxSidePx,
 		TargetMime: s.deps.Options.TargetMime,
 		Rand:       s.deps.Options.Rand,
+		Decode:     s.deps.Options.Decode,
 	})
 	if err != nil {
 		return corephoto.Record{}, err

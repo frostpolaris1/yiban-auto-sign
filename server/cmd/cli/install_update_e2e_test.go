@@ -343,6 +343,105 @@ func requireOpenssl(t *testing.T) {
 	}
 }
 
+// 迁移前快照（D 批 P1-3）：有 DSN 时先 pg_dump 再 migrate；
+// 快照失败即中止，迁移一次都不跑。
+func TestUpdateShSnapshotsBeforeMigrate(t *testing.T) {
+	requireBash(t)
+	root := t.TempDir()
+	binDir := t.TempDir()
+	callLog := filepath.Join(t.TempDir(), "calls.log")
+	installed := filepath.Join(root, "usr/local/bin/yiban-server")
+	if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(installed, []byte("#!/bin/sh\necho OLD\n"), 0o755); err != nil {
+		t.Fatalf("seed installed: %v", err)
+	}
+	newBin := fakeBin(t, binDir, "yiban-server-new", "echo NEW\n")
+	cliBin := fakeBin(t, binDir, "yiban-cli", `
+case "$1" in
+  migrate) echo migrate >> "$CALL_LOG"; exit 0 ;;
+  healthcheck) exit 0 ;;
+esac
+exit 0
+`)
+	// 假 pg_dump：记录调用，并按 --file= 建出目标文件。
+	dumpBody := `
+echo "pg_dump $*" >> "$CALL_LOG"
+prev=""
+for a in "$@"; do
+  case "$a" in --file=*) prev="${a#--file=}" ;; esac
+done
+if [ -n "$prev" ]; then : > "$prev"; fi
+exit 0
+`
+	pgDump := fakeBin(t, binDir, "pg_dump", dumpBody)
+	env := map[string]string{
+		"YIBAN_INSTALL_ROOT": root,
+		"SYSTEMCTL": fakeBin(t, binDir, "systemctl",
+			"echo \"systemctl $*\" >> \""+callLog+"\"\nexit 0\n"),
+		"CALL_LOG":           callLog,
+		"YIBAN_DATABASE_URL": "postgres://snapshot-stub/db",
+		"PATH":               binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}
+
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newBin, "--cli-bin", cliBin)
+	if rc != 0 {
+		t.Fatalf("update: rc=%d out=%s", rc, out)
+	}
+	log := readAll(t, callLog)
+	dumpAt, migrateAt := strings.Index(log, "pg_dump"), strings.Index(log, "migrate")
+	if dumpAt < 0 || migrateAt < 0 || dumpAt > migrateAt {
+		t.Fatalf("快照必须先于迁移：dump=%d migrate=%d\n%s", dumpAt, migrateAt, log)
+	}
+	dumps, err := filepath.Glob(filepath.Join(root, "var/lib/yiban/pre-migrate/pre-migrate-*.dump"))
+	if err != nil || len(dumps) != 1 {
+		t.Fatalf("pre-migrate 快照缺失: %v %v", dumps, err)
+	}
+	// 快照含凭据密文：落盘期间就必须是 0600（umask 077），不是事后 chmod。
+	if info, err := os.Stat(dumps[0]); err != nil {
+		t.Fatalf("stat snapshot: %v", err)
+	} else if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("快照权限 = %o, want 600", perm)
+	}
+
+	// 快照失败：中止升级，迁移不跑，服务重启。
+	if err := os.WriteFile(pgDump, []byte("#!/bin/sh\necho dump-failed >> \"$CALL_LOG\"\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("break pg_dump: %v", err)
+	}
+	// 清空调用记录：只看第二轮，否则第一轮的 migrate 会被当成「失败后仍迁移」。
+	if err := os.WriteFile(callLog, nil, 0o644); err != nil {
+		t.Fatalf("reset call log: %v", err)
+	}
+	out, rc = runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newBin, "--cli-bin", cliBin)
+	if rc == 0 {
+		t.Fatalf("快照失败却升级成功：%s", out)
+	}
+	log = readAll(t, callLog)
+	if strings.Contains(log, "migrate") {
+		t.Fatalf("快照失败后不得跑迁移：\n%s", log)
+	}
+	if !strings.Contains(log, "systemctl start") {
+		t.Fatalf("快照失败必须把服务拉回来：\n%s", log)
+	}
+}
+
+// fakePgDump 装一个成功的 pg_dump 桩：不连数据库，按 --file= 建出目标文件。
+// update.sh 在有 DSN 时要求快照（D 批 P1-3）；不需要断言快照的用例用它让流程走通。
+func fakePgDump(t *testing.T, dir string) string {
+	t.Helper()
+	return fakeBin(t, dir, "pg_dump", `
+prev=""
+for a in "$@"; do
+  case "$a" in --file=*) prev="${a#--file=}" ;; esac
+done
+if [ -n "$prev" ]; then : > "$prev"; fi
+exit 0
+`)
+}
+
 // releaseScriptsPath 返回 scripts/release 下脚本的绝对路径。
 func releaseScriptsPath(t *testing.T, name string) string {
 	t.Helper()
