@@ -28,13 +28,13 @@ func TestOwnerAccountQuota(t *testing.T) {
 		})
 	}
 
-	if err := create(owner, "13800055551", 2); err != nil {
+	if err := create(owner, "13800000020", 2); err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	if err := create(owner, "13800055552", 2); err != nil {
+	if err := create(owner, "13800000021", 2); err != nil {
 		t.Fatalf("second: %v", err)
 	}
-	err := create(owner, "13800055553", 2)
+	err := create(owner, "13800000022", 2)
 	if err == nil {
 		t.Fatal("third create succeeded; want capacity_exceeded")
 	}
@@ -46,34 +46,34 @@ func TestOwnerAccountQuota(t *testing.T) {
 	}
 
 	// 另一个属主的配额独立。
-	if err := create(other, "13800055554", 2); err != nil {
+	if err := create(other, "13800000023", 2); err != nil {
 		t.Fatalf("other owner: %v", err)
 	}
 
 	// 软删释放名额。
 	if _, err := e.db.Exec(e.ctx,
-		`UPDATE accounts SET deleted_at = now() WHERE phone = '13800055551'`); err != nil {
+		`UPDATE accounts SET deleted_at = now() WHERE phone = '13800000020'`); err != nil {
 		t.Fatalf("soft delete: %v", err)
 	}
-	if err := create(owner, "13800055555", 2); err != nil {
+	if err := create(owner, "13800000030", 2); err != nil {
 		t.Fatalf("after soft delete: %v", err)
 	}
 
 	// 恢复同样受每属主配额约束：先软删一行，再把名额占满，恢复必须被拒。
 	if _, err := e.db.Exec(e.ctx,
-		`UPDATE accounts SET deleted_at = now() WHERE phone = '13800055555'`); err != nil {
+		`UPDATE accounts SET deleted_at = now() WHERE phone = '13800000030'`); err != nil {
 		t.Fatalf("soft delete 2: %v", err)
 	}
 	restoreID := e.scalarString(
-		"SELECT id::text FROM accounts WHERE phone = '13800055555'")
+		"SELECT id::text FROM accounts WHERE phone = '13800000030'")
 	restore := func(ownerLimit int) error {
 		return e.db.InTx(context.Background(), func(ctx context.Context) error {
 			_, err := e.accts.Restore(ctx, corescope.Master(), restoreID, 100, ownerLimit)
 			return err
 		})
 	}
-	// 当前活跃：13800055552 与 13800055555（刚软删）；先补满两条。
-	if err := create(owner, "13800055556", 2); err != nil {
+	// 当前活跃：13800000021 与 13800000030（刚软删）；先补满两条。
+	if err := create(owner, "13800000031", 2); err != nil {
 		t.Fatalf("refill: %v", err)
 	}
 	if err := restore(2); err == nil {
@@ -81,7 +81,7 @@ func TestOwnerAccountQuota(t *testing.T) {
 	}
 	// 释放一行后恢复成功。
 	if _, err := e.db.Exec(e.ctx,
-		`UPDATE accounts SET deleted_at = now() WHERE phone = '13800055556'`); err != nil {
+		`UPDATE accounts SET deleted_at = now() WHERE phone = '13800000031'`); err != nil {
 		t.Fatalf("free a slot: %v", err)
 	}
 	if err := restore(2); err != nil {
