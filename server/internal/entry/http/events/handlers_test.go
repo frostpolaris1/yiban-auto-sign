@@ -1,7 +1,8 @@
 package events_test
 
 // 诊断与轮询端点的入口层判据（P6）：
-//   - x-roles 运行时门：diagnostics [user, admin]，sign-status [user]；
+//   - /api/me/* 对任意已认证主体开放，恒按会话 userID 取数；
+//   - /api/accounts/{id}/diagnostics 的 x-roles 是 [user, admin]；
 //   - 响应形状与用例值一一对应；
 //   - 未装配会话 401 由路由中间件承担，本文件注入固定会话。
 
@@ -32,12 +33,15 @@ type fakeDiag struct {
 	counts map[string]int
 	err    error
 
-	calls  []string
-	scopes []corescope.Scope
+	calls       []string
+	scopes      []corescope.Scope
+	mineUsers   []string
+	statusUsers []string
 }
 
-func (f *fakeDiag) Mine(_ context.Context, _ string) (appdiagnostic.Report, error) {
+func (f *fakeDiag) Mine(_ context.Context, userID string) (appdiagnostic.Report, error) {
 	f.calls = append(f.calls, "mine")
+	f.mineUsers = append(f.mineUsers, userID)
 	return f.mine, f.err
 }
 
@@ -47,8 +51,9 @@ func (f *fakeDiag) Account(_ context.Context, scope corescope.Scope, _ string) (
 	return f.detail, f.err
 }
 
-func (f *fakeDiag) SignStatus(_ context.Context, _ string) (appdiagnostic.StatusReport, error) {
+func (f *fakeDiag) SignStatus(_ context.Context, userID string) (appdiagnostic.StatusReport, error) {
 	f.calls = append(f.calls, "sign-status")
+	f.statusUsers = append(f.statusUsers, userID)
 	return f.status, f.err
 }
 
@@ -239,8 +244,8 @@ func TestAccountDiagnosticsOK(t *testing.T) {
 	}
 }
 
-// x-roles 运行时门：master 被拒于三个 REST 端点；admin 可诊断、
-// 不可轮询；user 全部可访问。
+// /api/me/* 对任意已认证主体开放：三种角色都 200，且恒按会话 userID 取数。
+// /accounts/{id}/diagnostics 仍是 [user, admin]：master 403。
 func TestDiagnosticsRoleGates(t *testing.T) {
 	diag := &fakeDiag{
 		mine:   sampleReport(),
@@ -250,23 +255,30 @@ func TestDiagnosticsRoleGates(t *testing.T) {
 		},
 	}
 	cases := []struct {
-		scope                        corescope.Scope
-		wantDiag, wantDetail, wantSS int
+		scope      corescope.Scope
+		wantDetail int
 	}{
-		{corescope.Master(), 403, 403, 403},
-		{corescope.Admin([]string{"s1"}), 200, 200, 403},
-		{corescope.User("u1"), 200, 200, 200},
+		{corescope.Master(), 403},
+		{corescope.Admin([]string{"s1"}), 200},
+		{corescope.User("u1"), 200},
 	}
 	for _, c := range cases {
+		diag.mineUsers, diag.statusUsers = nil, nil
 		engine, issued := newEngine(t, &fakeAuthorizer{scope: c.scope}, diag, appevents.NewBroker())
-		if got := doGet(engine, issued, "/api/me/diagnostics", nil).Code; got != c.wantDiag {
-			t.Fatalf("diag scope=%v status=%d, want %d", c.scope.Kind(), got, c.wantDiag)
+		if got := doGet(engine, issued, "/api/me/diagnostics", nil).Code; got != 200 {
+			t.Fatalf("diag scope=%v status=%d, want 200", c.scope.Kind(), got)
+		}
+		if got := doGet(engine, issued, "/api/me/sign-status", nil).Code; got != 200 {
+			t.Fatalf("sign-status scope=%v status=%d, want 200", c.scope.Kind(), got)
 		}
 		if got := doGet(engine, issued, "/api/accounts/a1/diagnostics", nil).Code; got != c.wantDetail {
 			t.Fatalf("detail scope=%v status=%d, want %d", c.scope.Kind(), got, c.wantDetail)
 		}
-		if got := doGet(engine, issued, "/api/me/sign-status", nil).Code; got != c.wantSS {
-			t.Fatalf("sign-status scope=%v status=%d, want %d", c.scope.Kind(), got, c.wantSS)
+		if len(diag.mineUsers) != 1 || diag.mineUsers[0] != "u1" {
+			t.Fatalf("diag scope=%v mine userIDs=%v, want [u1]", c.scope.Kind(), diag.mineUsers)
+		}
+		if len(diag.statusUsers) != 1 || diag.statusUsers[0] != "u1" {
+			t.Fatalf("sign-status scope=%v userIDs=%v, want [u1]", c.scope.Kind(), diag.statusUsers)
 		}
 	}
 }

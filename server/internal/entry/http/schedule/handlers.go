@@ -13,7 +13,8 @@
 // Handler、NewHandler、Config、Planner、TimePrefs、Authorizer。
 //
 // # 口径
-// 计划管理面只给 master 与 admin；自选只给 user。
+// 计划管理面只给 master 与 admin；自选对任意已认证主体开放，
+// 偏好行按会话 userID 归属，角色不参与判定。
 // 跨校任务一律 404；响应不含凭据与手机号。
 // 停用任务可预览，建计划与写覆盖回 409（k0y-6）。
 // 窗口列表与容量默认只读缓存，refresh=true 才重新发现（k0y-4）。
@@ -225,7 +226,7 @@ func (h *Handler) CapacityReport(c *gin.Context, params oapi.CapacityGetParams) 
 
 // TimePrefGet 实现 GET /api/me/time-pref。
 func (h *Handler) TimePrefGet(c *gin.Context) {
-	user, ok := h.userOnly(c)
+	user, ok := h.sessionUser(c)
 	if !ok {
 		return
 	}
@@ -261,7 +262,7 @@ func (h *Handler) TimePrefSet(c *gin.Context, _ oapi.TimePrefSetParams) {
 		fail(c, errs.New(errs.CodeValidation, "invalid request body"))
 		return
 	}
-	user, ok := h.userOnly(c)
+	user, ok := h.sessionUser(c)
 	if !ok {
 		return
 	}
@@ -358,14 +359,11 @@ func (h *Handler) principalUser(c *gin.Context) (corescope.Scope, coreauth.User,
 	return scope, session.User, true
 }
 
-// userOnly 限定自选端点只给 user 角色。
-func (h *Handler) userOnly(c *gin.Context) (coreauth.User, bool) {
-	scope, user, ok := h.principalUser(c)
+// sessionUser 取会话主体。/api/me/time-pref 对任意已认证主体开放：
+// 偏好行按会话 userID 归属，角色不参与判定。
+func (h *Handler) sessionUser(c *gin.Context) (coreauth.User, bool) {
+	_, user, ok := h.principalUser(c)
 	if !ok {
-		return coreauth.User{}, false
-	}
-	if scope.Kind() != corescope.KindUser {
-		fail(c, errs.New(errs.CodeForbidden, "time preference is for user accounts"))
 		return coreauth.User{}, false
 	}
 	return user, true

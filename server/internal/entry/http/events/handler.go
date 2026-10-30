@@ -14,8 +14,9 @@
 // Handler、NewHandler；端口 Broker、Diagnostics、Authorizer、Timer。
 //
 // # 口径
-// x-roles 是运行时门：events 限 master/admin；diagnostics 限
-// user/admin；sign-status 限 user。设计取舍（snapshot 生成方）：
+// x-roles 是运行时门：events 限 master/admin；/accounts/{id}/diagnostics
+// 限 user/admin。/api/me/* 对任意已认证主体开放：诊断与轮询恒按会话
+// userID 收敛到本人，角色不参与判定。设计取舍（snapshot 生成方）：
 // snapshot 由本包在 resync 后经 Diagnostics.Snapshot 现算并直写流，
 // 不经总线、不占环形缓冲——总线无库访问，发布方无需感知订阅。
 // 新连接（无 Last-Event-ID）不发 snapshot：当前状态由 REST 端点提供。
@@ -130,19 +131,14 @@ func requireKind(scope corescope.Scope, kinds ...corescope.Kind) error {
 	return errs.New(errs.CodeForbidden, "role cannot access this endpoint")
 }
 
-// MeDiagnostics 实现 GET /api/me/diagnostics（user/admin）。
-// 恒按本人账号：作用域在这里收敛为当前用户，admin 也只见自己的。
+// MeDiagnostics 实现 GET /api/me/diagnostics（任意已认证主体）。
+// 恒按本人账号：用例只收会话 userID，角色不参与判定。
 func (h *Handler) MeDiagnostics(c *gin.Context) {
 	session, ok := h.principal(c)
 	if !ok {
 		return
 	}
-	scope, ok := h.authorize(c, session)
-	if !ok {
-		return
-	}
-	if err := requireKind(scope, corescope.KindUser, corescope.KindAdmin); err != nil {
-		fail(c, err)
+	if _, ok := h.authorize(c, session); !ok {
 		return
 	}
 	report, err := h.diag.Mine(c.Request.Context(), session.User.ID)
@@ -176,18 +172,14 @@ func (h *Handler) AccountDiagnostics(c *gin.Context, id oapi.AccountID) {
 	respond.JSON(c.Writer, http.StatusOK, accountDiagnosticsResponse(detail))
 }
 
-// MeSignStatus 实现 GET /api/me/sign-status（user）。
+// MeSignStatus 实现 GET /api/me/sign-status（任意已认证主体）。
+// 恒按本人账号：用例只收会话 userID，角色不参与判定。
 func (h *Handler) MeSignStatus(c *gin.Context) {
 	session, ok := h.principal(c)
 	if !ok {
 		return
 	}
-	scope, ok := h.authorize(c, session)
-	if !ok {
-		return
-	}
-	if err := requireKind(scope, corescope.KindUser); err != nil {
-		fail(c, err)
+	if _, ok := h.authorize(c, session); !ok {
 		return
 	}
 	status, err := h.diag.SignStatus(c.Request.Context(), session.User.ID)

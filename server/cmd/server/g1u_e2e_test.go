@@ -360,8 +360,8 @@ func TestG1USchoolDefaultPhoto(t *testing.T) {
 	if code, _ := g1uPutDefault(t, e, f.schoolA, f.adminA, map[string]any{"photo_id": "not-a-uuid"}); code != http.StatusBadRequest {
 		t.Fatalf("非法形状 PUT status = %d", code)
 	}
-	// master 设 p3：200（master 不限照片）。
-	if code, body := g1uPutDefault(t, e, f.schoolA, f.master, map[string]any{"photo_id": p3.ID}); code != http.StatusOK {
+	// master 写：403（契约把 PUT default-photo 收窄为 admin）。
+	if code, body := g1uPutDefault(t, e, f.schoolA, f.master, map[string]any{"photo_id": p3.ID}); code != http.StatusForbidden {
 		t.Fatalf("master PUT status = %d: %s", code, body)
 	}
 	// user 写：403。
@@ -372,8 +372,8 @@ func TestG1USchoolDefaultPhoto(t *testing.T) {
 	if code, _ := g1uPutDefault(t, e, f.schoolA, f.adminB, map[string]any{"photo_id": p1.ID}); code != http.StatusNotFound {
 		t.Fatalf("跨校 admin PUT status = %d", code)
 	}
-	// master 写不存在学校：404。
-	if code, _ := g1uPutDefault(t, e, "01900000-0000-7000-8000-0000000000fc", f.master, map[string]any{"photo_id": p1.ID}); code != http.StatusNotFound {
+	// master 写不存在学校：403（角色门先于院校判定）。
+	if code, _ := g1uPutDefault(t, e, "01900000-0000-7000-8000-0000000000fc", f.master, map[string]any{"photo_id": p1.ID}); code != http.StatusForbidden {
 		t.Fatalf("不存在学校 PUT status = %d", code)
 	}
 	// 匿名：401。
@@ -397,7 +397,7 @@ func TestG1USchoolDefaultPhoto(t *testing.T) {
 	}
 
 	// 审计：最近一行是清除。detail 只有 photo_id 与 previous_photo_id，无 PII。
-	// 成功写入 5 次（p1、重复 p1、p2、master 设 p3、清除），每次一行。
+	// 成功写入 4 次（p1、重复 p1、p2、清除），每次一行。
 	detail := e.scalarString(
 		`SELECT detail FROM audit_logs WHERE action = $1 ORDER BY id DESC LIMIT 1`,
 		"school.default_photo_set")
@@ -411,8 +411,8 @@ func TestG1USchoolDefaultPhoto(t *testing.T) {
 	if d["photo_id"] != nil {
 		t.Fatalf("清除后 detail.photo_id = %v, want null", d["photo_id"])
 	}
-	if d["previous_photo_id"] != p3.ID {
-		t.Fatalf("清除后 detail.previous_photo_id = %v, want %s", d["previous_photo_id"], p3.ID)
+	if d["previous_photo_id"] != p2.ID {
+		t.Fatalf("清除后 detail.previous_photo_id = %v, want %s", d["previous_photo_id"], p2.ID)
 	}
 	for _, pii := range []string{"g1u-owner", "@example.com", "13800020001", "13800020002", "13800020003"} {
 		if strings.Contains(detail, pii) {
@@ -420,8 +420,8 @@ func TestG1USchoolDefaultPhoto(t *testing.T) {
 		}
 	}
 	n := e.scalarInt(`SELECT count(*) FROM audit_logs WHERE action = 'school.default_photo_set'`)
-	if n != 5 {
-		t.Fatalf("审计行 = %d, want 5（每次成功写入一行）", n)
+	if n != 4 {
+		t.Fatalf("审计行 = %d, want 4（每次成功写入一行）", n)
 	}
 
 	// 引用照片软删后 GET 按未设置回：不返回 API 已判定不存在的 id。
@@ -492,11 +492,15 @@ func TestG1UPhotoEndpointsUnchanged(t *testing.T) {
 	if rec := e.do("GET", "/api/me/photos/"+photo.ID, nil, f.owner1); rec.Code != http.StatusNotFound {
 		t.Fatalf("删除后读取 status = %d", rec.Code)
 	}
-	// 未绑定任何学校的 admin：列表 403、读取 404（与旧行为一致）。
+	// 未绑定任何学校的 admin：/me 列表按 owner 作用域回 200（空库）。
+	// 读取他人照片仍 404：admin 的跨属主面需要绑定校。
 	unbound := e.user("g1u-admin-unbound@example.com", coreauth.RoleAdmin)
 	unboundIssued := e.login(unbound)
-	if rec := e.do("GET", "/api/me/photos", nil, unboundIssued); rec.Code != http.StatusForbidden {
+	if rec := e.do("GET", "/api/me/photos", nil, unboundIssued); rec.Code != http.StatusOK {
 		t.Fatalf("未绑定 admin 列表 status = %d", rec.Code)
+	}
+	if page, _ := g1uPage(t, e, "/api/me/photos", unboundIssued); len(page.Items) != 0 {
+		t.Fatalf("未绑定 admin 自有库 = %+v, want empty", page.Items)
 	}
 	if rec := e.do("GET", "/api/me/photos/"+photo.ID, nil, unboundIssued); rec.Code != http.StatusNotFound {
 		t.Fatalf("未绑定 admin 读取 status = %d", rec.Code)

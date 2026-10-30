@@ -3,8 +3,9 @@ package oapi
 // 契约对账门。
 //
 // # 功能
-// 直接读 contracts/openapi.yaml 与 contracts/README.md，钉住六条不变式：
-// 角色表两份逐行相等；带 limit 的列表声明 400；带请求体的端点声明 413；
+// 直接读 contracts/openapi.yaml 与 contracts/README.md，钉住八条不变式：
+// 角色表两份逐行相等；需认证必声明 401；CSRF 写必声明 403；
+// 带 limit 的列表声明 400；带请求体的端点声明 413；
 // 可空字段一律 required（保证输出 null 键）；additionalProperties: false
 // 逐条登记豁免；304 响应声明 ETag。本文件**不**启动 HTTP 服务、**不**连数据库。
 //
@@ -53,6 +54,7 @@ type contractOp struct {
 	roles    []string
 	hasBody  bool
 	hasLimit bool
+	hasCSRF  bool
 	statuses map[string]bool
 	line     int
 }
@@ -127,6 +129,9 @@ func contractOps(t *testing.T, doc string) map[string]*contractOp {
 		}
 		if strings.Contains(trimmed, "#/components/parameters/Limit'") {
 			cur.hasLimit = true
+		}
+		if strings.Contains(trimmed, "#/components/parameters/CSRFToken") {
+			cur.hasCSRF = true
 		}
 		if inResponses {
 			if m := contractStatusLine.FindStringSubmatch(trimmed); m != nil {
@@ -226,6 +231,49 @@ func TestContractRoleTablesAgree(t *testing.T) {
 		if _, ok := want[key]; !ok {
 			t.Errorf("README 多行：%s（README.md:%d）", key, op.line)
 		}
+	}
+}
+
+// 需认证的操作必须声明 401：没有会话时认证中间件先拒。
+// 公开操作不适用：它们的 401 只来自凭据错误，且已按需声明。
+func TestAuthenticatedEndpointsDeclare401(t *testing.T) {
+	spec := contractRead(t, contractSpecPath)
+	ops := contractOps(t, spec)
+	seen := 0
+	for key, op := range ops {
+		if len(op.roles) == 0 {
+			t.Errorf("%s 缺 x-roles（openapi.yaml:%d）", key, op.line)
+			continue
+		}
+		if roleSet(op.roles) == "public" {
+			continue
+		}
+		seen++
+		if !op.statuses["401"] {
+			t.Errorf("%s 需认证但未声明 401（openapi.yaml:%d）", key, op.line)
+		}
+	}
+	if seen < 30 {
+		t.Fatalf("需认证操作 = %d, want at least 30", seen)
+	}
+}
+
+// 受 CSRF 保护的写操作必须声明 403：缺令牌与错令牌都在中间件回 403。
+func TestCSRFWritesDeclare403(t *testing.T) {
+	spec := contractRead(t, contractSpecPath)
+	ops := contractOps(t, spec)
+	seen := 0
+	for key, op := range ops {
+		if !op.hasCSRF {
+			continue
+		}
+		seen++
+		if !op.statuses["403"] {
+			t.Errorf("%s 受 CSRF 保护但未声明 403（openapi.yaml:%d）", key, op.line)
+		}
+	}
+	if seen < 20 {
+		t.Fatalf("受 CSRF 保护的操作 = %d, want at least 20", seen)
 	}
 }
 

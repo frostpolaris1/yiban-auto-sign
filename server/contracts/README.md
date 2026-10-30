@@ -73,23 +73,23 @@ either side drifts.
 | GET | `/api/schedule/preview` | master/admin | P4 |
 | POST | `/api/schedule/plan` | master/admin | P4 |
 | POST | `/api/schedule/override` | master/admin | P4 |
-| GET | `/api/me/time-pref` | user | P4 |
-| PUT | `/api/me/time-pref` | user | P4 |
+| GET | `/api/me/time-pref` | master/admin/user | P4 |
+| PUT | `/api/me/time-pref` | master/admin/user | P4 |
 | GET | `/api/capacity` | master/admin | P4 |
 | POST | `/api/accounts/:id/sign` | master/admin/user | P4 |
-| GET | `/api/me/photos` | user | P5 |
-| POST | `/api/me/photos` | user | P5 |
-| DELETE | `/api/me/photos/:id` | user | P5 |
-| GET | `/api/me/photos/:id` | user/admin | P5 |
-| PUT | `/api/me/photo-retention` | user | P5 |
+| GET | `/api/me/photos` | master/admin/user | P5 |
+| POST | `/api/me/photos` | master/admin/user | P5 |
+| DELETE | `/api/me/photos/:id` | master/admin/user | P5 |
+| GET | `/api/me/photos/:id` | master/admin/user | P5 |
+| PUT | `/api/me/photo-retention` | master/admin/user | P5 |
 | PUT | `/api/accounts/:id/location` | user/admin | P5 |
 | GET | `/api/accounts/:id/photos` | user/admin | P5 |
 | GET | `/api/schools/:id/default-photo` | master/admin/user | P5 |
-| PUT | `/api/schools/:id/default-photo` | master/admin | P5 |
+| PUT | `/api/schools/:id/default-photo` | admin | P5 |
 | GET | `/api/admin/events` | master/admin | P6 |
-| GET | `/api/me/diagnostics` | user/admin | P6 |
+| GET | `/api/me/diagnostics` | master/admin/user | P6 |
 | GET | `/api/accounts/:id/diagnostics` | user/admin | P6 |
-| GET | `/api/me/sign-status` | user | P6 |
+| GET | `/api/me/sign-status` | master/admin/user | P6 |
 | GET | `/healthz` | public | P7 |
 
 ## Enforcement notes

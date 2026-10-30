@@ -15,8 +15,10 @@
 // Service、Deps、Page；端口 Store、Blobs；Options。
 //
 // # 口径
-// 上传只允许 user 角色，所有者取 scope.UserID()。
+// 上传只接受 owner 作用域，所有者取 scope.UserID()：
+// /api/me/* 的处理器把任意角色收敛为 Scope.User，角色不参与归属判定。
 // admin 读取照片要求照片属主在绑定院校有未删除账号；越权与不存在统一 404。
+// 学校默认图只允许 admin 写入；master 只读引用。
 // 去重键是 (owner_user_id, sha256)：同一用户重复上传返回同一行。
 // 学校默认图只登记照片引用；本包不提交图片字节给平台（P5-D）。
 package photos
@@ -196,7 +198,7 @@ func (s *Service) Upload(ctx context.Context, scope corescope.Scope, actor appau
 }
 
 // List 按作用域列一页图片。limit 为 0 时取默认页大小。
-// 契约把 /api/me/photos 定为 user 端点，admin 在这里就被拒绝。
+// 只接受 owner 作用域：/api/me/photos 经处理器收敛到会话本人。
 func (s *Service) List(ctx context.Context, scope corescope.Scope, cursor string, limit int) (Page, error) {
 	if err := requireUser(scope); err != nil {
 		return Page{}, err
@@ -213,7 +215,8 @@ func (s *Service) List(ctx context.Context, scope corescope.Scope, cursor string
 }
 
 // Get 在作用域内读一张图片。跨用户、跨校与已软删返回 404。
-// admin 面由属主的绑定院校账号派生；master 不在契约内，仍 404。
+// owner 作用域读本人；admin 作用域由属主的绑定院校账号派生。
+// master 没有照片作用域：它经 owner 作用域只读自己的照片。
 func (s *Service) Get(ctx context.Context, scope corescope.Scope, id string) (corephoto.Record, error) {
 	if err := appcore.RequireScope(scope); err != nil {
 		return corephoto.Record{}, err
@@ -340,7 +343,7 @@ func (s *Service) Open(ctx context.Context, scope corescope.Scope, id string) (c
 }
 
 // Delete 软删一张图片。重复删除返回同一行，不报错。
-// 契约把 /api/me/photos/{id} 的删除定为 user 端点。
+// 只接受 owner 作用域：/api/me/photos/{id} 只能删本人的行。
 func (s *Service) Delete(ctx context.Context, scope corescope.Scope, id string) (corephoto.Record, error) {
 	if err := requireUser(scope); err != nil {
 		return corephoto.Record{}, err
@@ -477,13 +480,15 @@ func (s *Service) Sweep(ctx context.Context, batch int) (PurgeResult, error) {
 	return result, err
 }
 
-// requireUser 限定图片库端点只给 user 角色。
+// requireUser 限定图片库端点只接受 owner 作用域。
+// 角色判定在入口层完成：/api/me/* 一律用会话 userID 构造 Scope.User，
+// 因此 master 与 admin 也走这里，只操作自己的行。
 func requireUser(scope corescope.Scope) error {
 	if err := appcore.RequireScope(scope); err != nil {
 		return err
 	}
 	if scope.Kind() != corescope.KindUser {
-		return errs.New(errs.CodeForbidden, "photo library is for user accounts")
+		return errs.New(errs.CodeForbidden, "photo library requires an owner scope")
 	}
 	return nil
 }
@@ -501,15 +506,14 @@ func requireAccountReader(scope corescope.Scope) error {
 	return errs.New(errs.CodeForbidden, "role cannot list account photos")
 }
 
-// requireSchoolWriter 限定默认图写入只给 master 与 admin。
-// 契约 x-roles 是 [master, admin]：user 不得写学校默认图。
+// requireSchoolWriter 限定默认图写入只给 admin。
+// 契约 x-roles 是 [admin]：user 与 master 不得写学校默认图。
 func requireSchoolWriter(scope corescope.Scope) error {
 	if err := appcore.RequireScope(scope); err != nil {
 		return err
 	}
-	switch scope.Kind() {
-	case corescope.KindMaster, corescope.KindAdmin:
-		return nil
+	if scope.Kind() != corescope.KindAdmin {
+		return errs.New(errs.CodeForbidden, "role cannot set the school default photo")
 	}
-	return errs.New(errs.CodeForbidden, "role cannot set the school default photo")
+	return nil
 }

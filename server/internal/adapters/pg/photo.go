@@ -15,10 +15,10 @@ import (
 
 // PhotoRepo 是图片记录与保留期的仓储。
 //
-// 作用域口径：user 可见自己的照片；admin 可见绑定院校里账号属主的
-// 照片（照片没有 school_id，院校面经 accounts 派生）；master 不在
-// 照片端点契约内，照片读取仍返回 not_found。学校默认图是本表
-// 的第二个读者：引用登记在 schools.default_photo_id。
+// 作用域口径：owner 可见自己的照片；admin 可见绑定院校里账号属主的
+// 照片（照片没有 school_id，院校面经 accounts 派生）；master 没有
+// 照片作用域，入口层把它收敛为 owner 范围，只读自己的行。
+// 学校默认图是本表的第二个读者：引用登记在 schools.default_photo_id。
 type PhotoRepo struct {
 	db *DB
 }
@@ -42,7 +42,7 @@ func (r *PhotoRepo) Create(ctx context.Context, rec corephoto.Record) (corephoto
 }
 
 // Get 按作用域读一张图片；跨用户、跨校、已软删与不存在都返回 not_found。
-// master 不在照片端点 x-roles 内，仍返回 not_found。
+// master 没有照片作用域：入口层用 owner 范围读它自己的照片。
 func (r *PhotoRepo) Get(ctx context.Context, scope corescope.Scope, id string) (corephoto.Record, error) {
 	if scope.Kind() == corescope.KindMaster {
 		return corephoto.Record{}, errs.ErrNotFound
@@ -61,25 +61,17 @@ func (r *PhotoRepo) Get(ctx context.Context, scope corescope.Scope, id string) (
 }
 
 // PhotoForDefault 读一张未软删照片，供学校默认图写入校验。
-// master 放行全量：契约 PUT default-photo 的 x-roles 含 master。
-// user 与 admin 走同一照片可见面。院校范围由 SetSchoolDefault 判定。
+// 只接受 admin 作用域：契约把 PUT default-photo 收窄为 [admin]。
+// 院校范围由 SetSchoolDefault 判定。
 func (r *PhotoRepo) PhotoForDefault(ctx context.Context, scope corescope.Scope, id string) (corephoto.Record, error) {
-	if !scope.Valid() {
-		return corephoto.Record{}, errs.New(errs.CodeInternal, "invalid scope")
-	}
-	clause := ""
-	args := []any{id}
-	if scope.Kind() != corescope.KindMaster {
-		scopeClause, scopeArgs, err := photoScopePredicate(scope, 2, "photos.")
-		if err != nil {
-			return corephoto.Record{}, err
-		}
-		clause = scopeClause
-		args = append(args, scopeArgs...)
+	clause, scopeArgs, err := photoScopePredicate(scope, 2, "photos.")
+	if err != nil {
+		return corephoto.Record{}, err
 	}
 	row := r.db.q(ctx).QueryRow(ctx,
 		`SELECT `+photoColumns+` FROM photos
-		 WHERE id = $1::uuid AND deleted_at IS NULL`+clause, args...)
+		 WHERE id = $1::uuid AND deleted_at IS NULL`+clause,
+		append([]any{id}, scopeArgs...)...)
 	return scanPhoto(row)
 }
 
@@ -113,9 +105,10 @@ func (r *PhotoRepo) SchoolDefault(ctx context.Context, scope corescope.Scope, sc
 	return *id, hex.EncodeToString(sha), nil
 }
 
-// SchoolWritable 判定院校可写：master 不限，admin 限绑定校。
-// 越权与不存在都返回 not_found。写入路径在照片校验之前调用它，
-// 使「院校不可见」先于「照片不可见」判定，不借 400 泄漏照片存在性。
+// SchoolWritable 判定院校可写：admin 限绑定校。
+// 写入入口在 app 层已收窄为 admin；越权与不存在都返回 not_found。
+// 写入路径在照片校验之前调用它，使「院校不可见」先于「照片不可见」
+// 判定，不借 400 泄漏照片存在性。
 func (r *PhotoRepo) SchoolWritable(ctx context.Context, scope corescope.Scope, schoolID string) error {
 	clause, scopeArgs, err := schoolScopePredicate(scope, 2, "")
 	if err != nil {
@@ -130,8 +123,7 @@ func (r *PhotoRepo) SchoolWritable(ctx context.Context, scope corescope.Scope, s
 
 // SetSchoolDefault 覆盖写学校默认图并返回旧引用（nil 表示原先未设置）。
 // **必须在事务内运行**：读旧值并持行锁，写与审计同事务。
-// 院校范围与 schoolScopePredicate 同源：master 不限，admin 限绑定校；
-// user 不可写（契约 x-roles 是 [master, admin]）。
+// 院校范围与 schoolScopePredicate 同源；契约只允许 admin 写入。
 func (r *PhotoRepo) SetSchoolDefault(ctx context.Context, scope corescope.Scope, schoolID string, photoID *string) (*string, error) {
 	if !r.db.hasTx(ctx) {
 		return nil, ErrNoTransaction

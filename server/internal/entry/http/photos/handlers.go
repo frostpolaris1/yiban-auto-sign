@@ -16,6 +16,10 @@
 //
 // # 口径
 // 上传原始字节上限 10 MiB；路由层的请求体上限是 11 MiB。
+// /api/me/* 的归属由会话 userID 决定，角色不参与判定：
+// 任何已认证主体都只读写自己的图片库。
+// 单图读取另放行 admin 跨属主：属主须在本校有未删除账号。
+// master 只读自己的照片，不读他人照片。
 // 响应不含手机号与凭据；图片字节只经 GET 单图端点返回。
 // 越权与不存在统一 404；动作无角色回 403。
 package photos
@@ -102,11 +106,13 @@ func (h *Handler) WithLogger(logger *slog.Logger) *Handler {
 }
 
 // PhotoList 实现 GET /api/me/photos。
+// 任何角色都只列自己的库：作用域由会话 userID 构造。
 func (h *Handler) PhotoList(c *gin.Context, params oapi.PhotoListParams) {
-	scope, _, ok := h.principal(c)
+	session, _, _, ok := h.principal(c)
 	if !ok {
 		return
 	}
+	scope := ownerScope(session)
 	// limit 与其余列表同口径：缺省取 50，越界回 400。
 	limit, err := app.PageLimit(params.Limit)
 	if err != nil {
@@ -128,7 +134,7 @@ func (h *Handler) PhotoList(c *gin.Context, params oapi.PhotoListParams) {
 // AccountPhotoList 实现 GET /api/accounts/{id}/photos。
 // 可见面由用例判定：跨用户、跨校与已软删账号一律 404。
 func (h *Handler) AccountPhotoList(c *gin.Context, id oapi.AccountID, params oapi.AccountPhotoListParams) {
-	scope, _, ok := h.principal(c)
+	_, scope, _, ok := h.principal(c)
 	if !ok {
 		return
 	}
@@ -151,7 +157,7 @@ func (h *Handler) AccountPhotoList(c *gin.Context, id oapi.AccountID, params oap
 
 // SchoolDefaultPhotoGet 实现 GET /api/schools/{id}/default-photo。
 func (h *Handler) SchoolDefaultPhotoGet(c *gin.Context, id oapi.SchoolID) {
-	scope, _, ok := h.principal(c)
+	_, scope, _, ok := h.principal(c)
 	if !ok {
 		return
 	}
@@ -166,7 +172,7 @@ func (h *Handler) SchoolDefaultPhotoGet(c *gin.Context, id oapi.SchoolID) {
 // SchoolDefaultPhotoSet 实现 PUT /api/schools/{id}/default-photo。
 // photo_id 键必须出现；显式 null 才是「清除默认图」（契约 required）。
 func (h *Handler) SchoolDefaultPhotoSet(c *gin.Context, id oapi.SchoolID, _ oapi.SchoolDefaultPhotoSetParams) {
-	scope, actor, ok := h.principal(c)
+	_, scope, actor, ok := h.principal(c)
 	if !ok {
 		return
 	}
@@ -205,10 +211,11 @@ func (h *Handler) SchoolDefaultPhotoSet(c *gin.Context, id oapi.SchoolID, _ oapi
 func (h *Handler) PhotoUpload(c *gin.Context, _ oapi.PhotoUploadParams) {
 	h.extendReadDeadline(c, photoUploadReadBudget)
 	h.extendWriteDeadline(c, photoUploadWriteBudget)
-	scope, actor, ok := h.principal(c)
+	session, _, actor, ok := h.principal(c)
 	if !ok {
 		return
 	}
+	scope := ownerScope(session)
 	file, err := uploadFile(c)
 	if err != nil {
 		// 超过路由上限时是 *http.MaxBytesError；BindError 把它转成 413。
@@ -243,16 +250,28 @@ func (h *Handler) PhotoUpload(c *gin.Context, _ oapi.PhotoUploadParams) {
 //
 // 条件请求先读记录：命中 304 时不开 blob 流。
 // 未命中才 Open；记录不可变，故 ETag 取自同一条记录。
+// 属主按会话 userID 判定，任何角色都可读自己的照片。
+// admin 另可按绑定校读他人照片：先按属主读，未命中再按 admin 范围读。
 func (h *Handler) PhotoGet(c *gin.Context, id oapi.PhotoID, params oapi.PhotoGetParams) {
-	scope, _, ok := h.principal(c)
+	session, authzScope, _, ok := h.principal(c)
 	if !ok {
 		return
 	}
 	ctx := c.Request.Context()
+	scope := ownerScope(session)
 	rec, err := h.svc.Get(ctx, scope, string(id))
 	if err != nil {
-		fail(c, err)
-		return
+		// 只有 admin 有跨属主读取面；属主未命中即最终结果。
+		if errs.From(err).Code != errs.CodeNotFound || session.User.Role != coreauth.RoleAdmin {
+			fail(c, err)
+			return
+		}
+		rec, err = h.svc.Get(ctx, authzScope, string(id))
+		if err != nil {
+			fail(c, err)
+			return
+		}
+		scope = authzScope
 	}
 	etag := `"` + hex.EncodeToString(rec.SHA256[:]) + `"`
 	// 条件请求：If-None-Match 命中则 304（无响应体）。
@@ -305,12 +324,13 @@ func ifNoneMatchHit(header, etag string) bool {
 }
 
 // PhotoDelete 实现 DELETE /api/me/photos/{id}。
+// 任何角色都只删自己的照片：作用域由会话 userID 构造。
 func (h *Handler) PhotoDelete(c *gin.Context, id oapi.PhotoID, _ oapi.PhotoDeleteParams) {
-	scope, _, ok := h.principal(c)
+	session, _, _, ok := h.principal(c)
 	if !ok {
 		return
 	}
-	if _, err := h.svc.Delete(c.Request.Context(), scope, string(id)); err != nil {
+	if _, err := h.svc.Delete(c.Request.Context(), ownerScope(session), string(id)); err != nil {
 		fail(c, err)
 		return
 	}
@@ -318,17 +338,18 @@ func (h *Handler) PhotoDelete(c *gin.Context, id oapi.PhotoID, _ oapi.PhotoDelet
 }
 
 // PhotoRetentionSet 实现 PUT /api/me/photo-retention。
+// 任何角色都只设自己的保留期。
 func (h *Handler) PhotoRetentionSet(c *gin.Context, _ oapi.PhotoRetentionSetParams) {
 	var body oapi.PhotoRetentionUpdate
 	if err := c.ShouldBindJSON(&body); err != nil {
 		respond.BindError(c.Writer, c.Request, err)
 		return
 	}
-	scope, _, ok := h.principal(c)
+	session, _, _, ok := h.principal(c)
 	if !ok {
 		return
 	}
-	days, err := h.svc.SetRetention(c.Request.Context(), scope, int(body.Days))
+	days, err := h.svc.SetRetention(c.Request.Context(), ownerScope(session), int(body.Days))
 	if err != nil {
 		fail(c, err)
 		return
@@ -371,18 +392,24 @@ func (h *Handler) extendWriteDeadline(c *gin.Context, budget time.Duration) {
 }
 
 // principal 解析作用域与审计主体；未登录 401，解析失败按错误码回。
-func (h *Handler) principal(c *gin.Context) (corescope.Scope, appaudit.Actor, bool) {
+func (h *Handler) principal(c *gin.Context) (coreauth.Session, corescope.Scope, appaudit.Actor, bool) {
 	session, ok := coreauth.FromContext(c.Request.Context())
 	if !ok {
 		fail(c, errs.New(errs.CodeUnauthorized, "authentication required"))
-		return corescope.Scope{}, appaudit.Actor{}, false
+		return coreauth.Session{}, corescope.Scope{}, appaudit.Actor{}, false
 	}
 	scope, actor, err := h.authz.Authorize(c.Request.Context(), session.User)
 	if err != nil {
 		fail(c, err)
-		return corescope.Scope{}, appaudit.Actor{}, false
+		return coreauth.Session{}, corescope.Scope{}, appaudit.Actor{}, false
 	}
-	return scope, actor, true
+	return session, scope, actor, true
+}
+
+// ownerScope 把会话收敛为本人作用域。
+// /api/me/* 的归属只看会话 userID；角色不参与判定。
+func ownerScope(session coreauth.Session) corescope.Scope {
+	return corescope.User(session.User.ID)
 }
 
 // photoView 把领域记录转成传输形状。

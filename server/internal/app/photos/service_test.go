@@ -509,15 +509,21 @@ func TestUploadRejectsInvalid(t *testing.T) {
 	}
 }
 
-// 上传只给 user 角色；admin 与无效作用域都拒绝。
+// 上传只接受 owner 作用域；admin/master 作用域与无效作用域都拒绝。
+// 角色在入口层收敛：/api/me/* 用会话 userID 构造 Scope.User。
 func TestUploadRoleGate(t *testing.T) {
 	store, blobs := newFakeStore(), newFakeBlobs()
 	svc, _ := newService(t, store, blobs)
 	raw := pngBytes(t, 4, 4)
-	if _, err := svc.Upload(context.Background(), corescope.Admin([]string{"s1"}), actorOf("u1"), raw); err == nil {
-		t.Fatal("admin 上传应被拒绝")
-	} else if code := errs.From(err).Code; code != errs.CodeForbidden {
-		t.Fatalf("错误码 = %q, want forbidden", code)
+	for name, scope := range map[string]corescope.Scope{
+		"admin":  corescope.Admin([]string{"s1"}),
+		"master": corescope.Master(),
+	} {
+		if _, err := svc.Upload(context.Background(), scope, actorOf("u1"), raw); err == nil {
+			t.Fatalf("%s 上传应被拒绝", name)
+		} else if code := errs.From(err).Code; code != errs.CodeForbidden {
+			t.Fatalf("%s 错误码 = %q, want forbidden", name, code)
+		}
 	}
 	if _, err := svc.Upload(context.Background(), corescope.Scope{}, actorOf("u1"), raw); err == nil {
 		t.Fatal("无效作用域应被拒绝")
@@ -930,5 +936,27 @@ func TestAdminCannotTouchPhotos(t *testing.T) {
 		} else if code := errs.From(err).Code; code != errs.CodeForbidden {
 			t.Fatalf("%s List 错误码 = %q, want forbidden", name, code)
 		}
+	}
+}
+
+// 学校默认图写入只给 admin：master 与 user 在进存储前被拒。
+// 契约把 PUT default-photo 收窄为 [admin]；master 只保留 GET 引用。
+func TestSetSchoolDefaultRoleGate(t *testing.T) {
+	store, blobs := newFakeStore(), newFakeBlobs()
+	svc, _ := newService(t, store, blobs)
+	schoolID := "01900000-0000-7000-8000-000000000001"
+	for name, scope := range map[string]corescope.Scope{
+		"master": corescope.Master(),
+		"user":   corescope.User("u1"),
+	} {
+		_, err := svc.SetSchoolDefault(context.Background(), scope, schoolID, nil, actorOf("u1"))
+		if code := errs.From(err).Code; code != errs.CodeForbidden {
+			t.Fatalf("%s = %q, want forbidden", name, code)
+		}
+	}
+	// admin 过角色门；stub 不认任何院校，故在存储面回 not_found。
+	_, err := svc.SetSchoolDefault(context.Background(), corescope.Admin([]string{"s1"}), schoolID, nil, actorOf("u1"))
+	if code := errs.From(err).Code; code != errs.CodeNotFound {
+		t.Fatalf("admin = %q, want not_found from the stub", code)
 	}
 }
