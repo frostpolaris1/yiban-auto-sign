@@ -101,6 +101,22 @@ func TestWorkerDepsPassesEveryFieldThrough(t *testing.T) {
 	if got.Limiter == nil {
 		t.Error("Limiter 未派生")
 	}
+	// 覆盖率判据：want 必须为 workerDeps 的每个字段设哨兵，
+	// 且每个哨兵必须原样出现在 Deps 里。新增字段漏进本判据即红——
+	// 上面 10 条是手写枚举，只覆盖写明的那几个字段（OCR C2 四轮 P3）。
+	// 用 IsZero 而不是 Interface()：workerDeps 字段未导出，取接口值会 panic。
+	gotV, wantV := reflect.ValueOf(got), reflect.ValueOf(want)
+	wt := reflect.TypeOf(want)
+	for i := 0; i < wt.NumField(); i++ {
+		name := wt.Field(i).Name
+		if wantV.Field(i).IsZero() {
+			t.Fatalf("want.%s 未设哨兵：workerDeps 新增字段必须纳入本判据", name)
+		}
+		gf := gotV.FieldByName(strings.ToUpper(name[:1]) + name[1:])
+		if !gf.IsValid() || gf.IsZero() {
+			t.Errorf("%s 未原样搬运", name)
+		}
+	}
 }
 
 // ---- 哨兵：只用于指针同一性比较，方法一律 panic ----
