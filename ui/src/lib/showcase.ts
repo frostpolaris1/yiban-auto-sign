@@ -16,6 +16,7 @@
 
 import type { Account, AccountPage, AccountStatus } from './api/account'
 import type { School, SchoolAdmin, SchoolPage } from './api/school'
+import type { AdminTaskRow, TaskPage } from './api/task'
 import type { UserPage } from './api/user'
 import type {
   CapacityReport,
@@ -274,4 +275,86 @@ export function showcaseCapacity(query: {
     window_end: row.end,
     ...numbers,
   }
+}
+
+/**
+ * 运行页（单页）。五条覆盖五个任务状态与两所学校，含未认领行。
+ * 手机号只有掩码形态；学校与任务是合成词；时刻是合成业务日。
+ */
+export function showcaseRunPage(): TaskPage {
+  const base = '2026-10-31'
+  const at = (hour: number, minute: number) => `${base}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00+08:00`
+  const rows: AdminTaskRow[] = [
+    {
+      id: 'task-0',
+      account_id: 'account-1',
+      account_phone_masked: '138****8001',
+      school_id: 'school-a',
+      school_name: '合成学校甲',
+      task_name: '早签到',
+      state: 'running',
+      attempts: 1,
+      result: '',
+      run_at: at(8, 10),
+      claimed_at: at(8, 10),
+      updated_at: at(8, 12),
+    },
+    {
+      id: 'task-1',
+      account_id: 'account-2',
+      account_phone_masked: '138****8002',
+      school_id: 'school-a',
+      school_name: '合成学校甲',
+      task_name: '早签到',
+      state: 'success',
+      attempts: 1,
+      result: 'ok',
+      run_at: at(8, 20),
+      claimed_at: at(8, 20),
+      updated_at: at(8, 22),
+    },
+    {
+      id: 'task-2',
+      account_id: 'account-3',
+      account_phone_masked: '138****8003',
+      school_id: 'school-a',
+      school_name: '合成学校甲',
+      task_name: '早签到',
+      state: 'failed',
+      attempts: 3,
+      result: 'credential_invalid',
+      run_at: at(8, 30),
+      claimed_at: at(8, 30),
+      updated_at: at(8, 36),
+    },
+    {
+      id: 'task-3',
+      account_id: 'account-4',
+      account_phone_masked: '138****8004',
+      school_id: 'school-b',
+      school_name: '合成学校乙',
+      task_name: '晚自习签到',
+      state: 'pending',
+      attempts: 0,
+      result: '',
+      run_at: at(9, 0),
+      claimed_at: null,
+      updated_at: at(8, 40),
+    },
+    {
+      id: 'task-4',
+      account_id: 'account-5',
+      account_phone_masked: '138****8005',
+      school_id: 'school-b',
+      school_name: '合成学校乙',
+      task_name: '晚自习签到',
+      state: 'skipped',
+      attempts: 1,
+      result: 'window_missed',
+      run_at: at(9, 10),
+      claimed_at: at(9, 10),
+      updated_at: at(9, 11),
+    },
+  ]
+  return { items: rows, next_cursor: '' }
 }

@@ -692,6 +692,61 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Search sign tasks for one business day.
+         * @description master sees every school; admin sees bound schools only. An admin
+         *     with no binding sees an empty page, never another scope's rows.
+         *     day defaults to the current business day in the server timezone.
+         *     state filters by the persisted task state; school_id narrows to one
+         *     school (an out-of-scope school id yields an empty page and does not
+         *     leak existence); q matches the start of the account phone number or
+         *     a substring of the school name, with the LIKE wildcards % and _
+         *     taken literally. Rows are ordered by run_at descending with the row
+         *     id as tiebreaker; cursor is an opaque keyset token over that order.
+         *     account_phone_masked keeps the first 3 and last 4 digits; the full
+         *     number never leaves the server.
+         */
+        get: operations["AdminTaskList"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/tasks/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download the task search as CSV.
+         * @description The same scope and filters as GET /api/admin/tasks without cursor
+         *     and limit. The response is text/csv with one header row whose
+         *     columns match the task list fields, quoted per RFC 4180.
+         *     Content-Disposition is an attachment. The export is capped at
+         *     10000 rows in key order; when the cap cuts rows the response
+         *     carries X-Export-Truncated: true.
+         */
+        get: operations["AdminTaskExport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/me/diagnostics": {
         parameters: {
             query?: never;
@@ -728,7 +783,8 @@ export interface paths {
          * Detailed diagnostics for one account.
          * @description Single-account version of /api/me/diagnostics plus the planned
          *     window and the bound egress label when present. Cross-user and
-         *     cross-school reads return 404.
+         *     cross-school reads return 404. master reads any account; the run
+         *     page opens this drawer from every task row (UX-3).
          */
         get: operations["AccountDiagnostics"];
         put?: never;
@@ -1465,6 +1521,33 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
             items: components["schemas"]["DiagnosticsItem"][];
+        };
+        TaskPage: {
+            items: components["schemas"]["AdminTaskRow"][];
+            /** @description Empty string on the last page. */
+            next_cursor: string;
+        };
+        AdminTaskRow: {
+            id: string;
+            account_id: string;
+            /** @description First 3 and last 4 digits of the account phone; the full number never leaves the server. */
+            account_phone_masked: string;
+            school_id: string;
+            school_name: string;
+            task_name: string;
+            /** @description pending, running, success, failed or skipped. */
+            state: string;
+            attempts: number;
+            result: string;
+            /** Format: date-time */
+            run_at: string;
+            /**
+             * Format: date-time
+             * @description Null while the row has never been claimed.
+             */
+            claimed_at: string | null;
+            /** Format: date-time */
+            updated_at: string;
         };
         DiagnosticsItem: {
             account_id: string;
@@ -2787,6 +2870,82 @@ export interface operations {
                     "text/event-stream": string;
                 };
             };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AdminTaskList: {
+        parameters: {
+            query?: {
+                /** @description Opaque page cursor taken from next_cursor. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size, 1 to 200. */
+                limit?: components["parameters"]["Limit"];
+                /** @description Business day YYYY-MM-DD. Defaults to today. */
+                day?: string;
+                /** @description Filter by persisted task state. */
+                state?: "pending" | "running" | "success" | "failed" | "skipped";
+                /** @description Narrow to one school. */
+                school_id?: string;
+                /**
+                 * @description Phone number prefix or school name substring. Matching is exact
+                 *     on digits; the LIKE wildcards % and _ in the value are literal.
+                 */
+                q?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Task page. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskPage"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AdminTaskExport: {
+        parameters: {
+            query?: {
+                /** @description Business day YYYY-MM-DD. Defaults to today. */
+                day?: string;
+                /** @description Filter by persisted task state. */
+                state?: "pending" | "running" | "success" | "failed" | "skipped";
+                /** @description Narrow to one school. */
+                school_id?: string;
+                /**
+                 * @description Phone number prefix or school name substring. Matching is exact
+                 *     on digits; the LIKE wildcards % and _ in the value are literal.
+                 */
+                q?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description CSV download. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": string;
+                };
+            };
+            400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             default: components["responses"]["DefaultError"];

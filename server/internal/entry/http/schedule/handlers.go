@@ -1,13 +1,14 @@
-// Package schedule 把计划、容量与自选时间片用例映射到 HTTP。
+// Package schedule 把计划、容量、自选时间片与任务检索用例映射到 HTTP。
 //
 // # 功能
-// 七个端点：窗口列表、计划预览、计划落库、窗口覆盖、容量报告、
-// 自选时间片读取与写入。
+// 计划面七个端点：窗口列表、计划预览、计划落库、窗口覆盖、容量报告、
+// 自选时间片读取与写入。任务检索面两个端点（UX-3）：任务列表与
+// CSV 导出，见 tasks.go 的 TasksHandler。
 // 本包**不**查库、**不**算几何、**不**决定窗口来源。
 //
 // # 归属
 // entry/http 入口层。作用域由 Authorizer（app/admin）解析；
-// 计划与自选分别由 app/schedule、app/timepref 提供。
+// 计划、自选与任务检索分别由 app/schedule、app/timepref 提供。
 //
 // # 复用
 // Handler、NewHandler、Config、Planner、TimePrefs、Authorizer。
@@ -334,7 +335,13 @@ func (h *Handler) principal(c *gin.Context) (corescope.Scope, bool) {
 // adminPrincipal 解析作用域与会话主体，并限定 master/admin。
 // 角色判据只此一处：预览/计划/容量/覆盖共用。
 func (h *Handler) adminPrincipal(c *gin.Context) (corescope.Scope, coreauth.User, bool) {
-	scope, user, ok := h.principalUser(c)
+	return resolveAdminPrincipal(h.authz, c)
+}
+
+// resolveAdminPrincipal 是包级判据：计划管理面与任务检索面共用。
+// 角色判据只此一处：本包任何 Handler 不得另写一份。
+func resolveAdminPrincipal(authz Authorizer, c *gin.Context) (corescope.Scope, coreauth.User, bool) {
+	scope, user, ok := resolvePrincipalUser(authz, c)
 	if !ok {
 		return corescope.Scope{}, coreauth.User{}, false
 	}
@@ -351,12 +358,17 @@ func (h *Handler) adminPrincipal(c *gin.Context) (corescope.Scope, coreauth.User
 
 // principalUser 解析作用域与会话主体。
 func (h *Handler) principalUser(c *gin.Context) (corescope.Scope, coreauth.User, bool) {
+	return resolvePrincipalUser(h.authz, c)
+}
+
+// resolvePrincipalUser 是包级判据：解析会话并把主体映射成作用域。
+func resolvePrincipalUser(authz Authorizer, c *gin.Context) (corescope.Scope, coreauth.User, bool) {
 	session, ok := coreauth.FromContext(c.Request.Context())
 	if !ok {
 		fail(c, errs.New(errs.CodeUnauthorized, "authentication required"))
 		return corescope.Scope{}, coreauth.User{}, false
 	}
-	scope, _, err := h.authz.Authorize(c.Request.Context(), session.User)
+	scope, _, err := authz.Authorize(c.Request.Context(), session.User)
 	if err != nil {
 		fail(c, err)
 		return corescope.Scope{}, coreauth.User{}, false

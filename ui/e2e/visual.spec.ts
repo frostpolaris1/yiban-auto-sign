@@ -2,6 +2,7 @@ import { test, expect, type Locator, type Page } from '@playwright/test'
 import { mockAccountsApi, RESET_TOKEN } from './support/fake-accounts-api'
 import { mockDashboardApi } from './support/fake-dashboard-api'
 import { SCHEDULE_DAY, mockScheduleApi } from './support/fake-schedule-api'
+import { mockRunApi, installFakeEventSource } from './support/fake-run-api'
 import { mockSchoolsApi } from './support/fake-schools-api'
 import { mockUsersApi } from './support/fake-users-api'
 import { visibleText } from './support/visible-text'
@@ -21,6 +22,7 @@ import { visibleText } from './support/visible-text'
  */
 
 const ROUTES = [
+  { path: '/run?day=2030-01-01', name: 'run' },
   { path: '/design', name: 'design' },
   { path: '/settings', name: 'settings' },
   { path: '/accounts', name: 'accounts' },
@@ -76,6 +78,12 @@ async function mockSessionFor(
   if (path === '/users') {
     await mockUsersApi(page, { role })
   }
+  // 运行页需要任务与诊断端点；SSE 用假体钉住「实时」态，
+  // 不注入时 EventSource 打到 JSON 路由会随机出断线横幅。
+  if (path.startsWith('/run')) {
+    await installFakeEventSource(page)
+    await mockRunApi(page, { role })
+  }
 }
 
 async function openWithTheme(
@@ -113,6 +121,8 @@ async function expectData(page: Page, path: string) {
     )
   } else if (path.startsWith('/schedule')) {
     await expect(page.getByRole('table', { name: '时间片窗口' })).toContainText('合成学校甲')
+  } else if (path.startsWith('/run')) {
+    await expect(page.getByRole('region', { name: '泳道 合成学校甲' })).toBeVisible()
   } else if (path === '/') {
     await expect(page.locator('.kpi-card')).toHaveCount(4)
   } else if (path === '/design') {

@@ -44,6 +44,29 @@ export function userStatusLabel(status: UserStatus): string {
   return USER_STATUS_LABELS[status]
 }
 
+/**
+ * 任务状态取值域与共用文案：运行页引用这一份。
+ * 取值域是契约 `AdminTaskRow.state` 的五个词；与看板同组词，
+ * 单元测试钉住两表相等，两处不得各写一份。
+ */
+export const TASK_STATES = ['pending', 'running', 'success', 'failed', 'skipped'] as const
+export type TaskState = (typeof TASK_STATES)[number]
+
+export const TASK_STATE_LABELS: Record<TaskState, string> = {
+  pending: '待签',
+  running: '进行中',
+  success: '已签',
+  failed: '失败',
+  skipped: '跳过',
+}
+
+/** 任务状态文案。未知值原样返回：词表只覆盖契约的五个词。 */
+export function taskStatusLabel(state: string): string {
+  return TASK_STATES.find((value) => value === state)
+  ? TASK_STATE_LABELS[state as TaskState]
+  : state
+}
+
 /** 邮箱 local part。`operator@example.com` → `operator`。 */
 export function displayNameFor(email: string): string {
   const local = email.split('@')[0]

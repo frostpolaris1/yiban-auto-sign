@@ -16,6 +16,7 @@
  */
 
 import {
+  Activity,
   ArrowRight,
   Bell,
   Calendar,
@@ -61,6 +62,7 @@ import type { CSSProperties, ReactNode } from 'react'
  * 键名同时是 `IconName` 的取值域。
  */
 const ICON_COMPONENTS = {
+  activity: Activity,
   dashboard: LayoutDashboard,
   accounts: Users,
   school: School,

@@ -264,7 +264,7 @@ func TestAccountDiagnosticsOK(t *testing.T) {
 }
 
 // /api/me/* 对任意已认证主体开放：三种角色都 200，且恒按会话 userID 取数。
-// /accounts/{id}/diagnostics 仍是 [user, admin]：master 403。
+// /accounts/{id}/diagnostics 是 [user, admin, master]（UX-3 起 master 200）。
 func TestDiagnosticsRoleGates(t *testing.T) {
 	diag := &fakeDiag{
 		mine:   sampleReport(),
@@ -277,7 +277,7 @@ func TestDiagnosticsRoleGates(t *testing.T) {
 		scope      corescope.Scope
 		wantDetail int
 	}{
-		{corescope.Master(), 403},
+		{corescope.Master(), 200},
 		{corescope.Admin([]string{"s1"}), 200},
 		{corescope.User("u1"), 200},
 	}
