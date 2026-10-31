@@ -381,6 +381,8 @@ func TestCredentialUpdateRecoversWhenEngineCommitsAfterFirstRead(t *testing.T) {
 		Tx:         u.db,
 		Clock:      coreclock.Fixed{T: time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)},
 		Cipher:     cipher,
+		Owner:      u.testEnv.users,
+		Device:     stubDeviceReader{},
 		Limit:      10000,
 		OwnerLimit: 10000,
 	})

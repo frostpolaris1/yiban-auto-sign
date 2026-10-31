@@ -73,7 +73,8 @@ func NewService(deps Deps) (*Service, error) {
 }
 
 // List 按作用域列院校。
-// master 见全量；admin 只见绑定校；user 无权（403）。
+// master 见全量；admin 只见绑定校；user 只见 active 行（8v8①：
+// 建号表单第 1 页需要学校下拉）。
 func (s *Service) List(ctx context.Context, scope corescope.Scope, cursor string, limit int) (Page, error) {
 	if err := app.RequireScope(scope); err != nil {
 		return Page{}, err
@@ -178,10 +179,11 @@ func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, 
 	return record, nil
 }
 
-// requireSchoolReader 拒绝 user 作用域。
+// requireSchoolReader 放行三类读者，拒绝其余作用域。
+// UX-2 起 user 也可列学校，只见 active 行（8v8①）。
 func requireSchoolReader(scope corescope.Scope) error {
 	switch scope.Kind() {
-	case corescope.KindMaster, corescope.KindAdmin:
+	case corescope.KindMaster, corescope.KindAdmin, corescope.KindUser:
 		return nil
 	default:
 		return errs.New(errs.CodeForbidden, "role cannot list schools")

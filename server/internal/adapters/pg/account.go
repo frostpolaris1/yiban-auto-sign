@@ -117,10 +117,11 @@ func (r *AccountRepo) GetForUpdate(ctx context.Context, s corescope.Scope, id st
 // List 按作用域与可选过滤条件列账号，游标分页。
 //
 // 作用域与过滤条件是**与**关系：admin 指定未绑定院校时结果为空。
+// includeDeleted 置真时软删行也入选；缺省假，已删行不可发现（8v8⑥）。
 // search 只抽取数字，再按长度定过滤式：
 // 1..3 位前缀、4 位后缀、11 位全号精确，其余长度**恒假**。
 // 故中四位可被全号枚举恢复（10^4 次），依赖登录限速（P7 前置）。
-func (r *AccountRepo) List(ctx context.Context, s corescope.Scope, schoolID string, status coreaccount.Status, search, cursor string, limit int) ([]coreaccount.Record, string, error) {
+func (r *AccountRepo) List(ctx context.Context, s corescope.Scope, schoolID string, status coreaccount.Status, search, cursor string, limit int, includeDeleted bool) ([]coreaccount.Record, string, error) {
 	if limit < 1 || limit > 200 {
 		return nil, "", validationError("limit must be between 1 and 200")
 	}
@@ -128,7 +129,11 @@ func (r *AccountRepo) List(ctx context.Context, s corescope.Scope, schoolID stri
 	if err != nil {
 		return nil, "", err
 	}
-	where := ` WHERE deleted_at IS NULL` + scopeSQL
+	where := ` WHERE deleted_at IS NULL`
+	if includeDeleted {
+		where = ` WHERE true`
+	}
+	where += scopeSQL
 	if schoolID != "" {
 		args = append(args, schoolID)
 		where += fmt.Sprintf(" AND school_id = $%d::uuid", len(args))

@@ -50,6 +50,7 @@ type AccountsTableProps = {
   onEdit: (account: Account, opener: HTMLElement | null) => void
   onLocation: (account: Account, opener: HTMLElement | null) => void
   onDelete: (account: Account, opener: HTMLElement | null) => void
+  onRestore: (account: Account, opener: HTMLElement | null) => void
 }
 
 export function AccountsTable({
@@ -68,6 +69,7 @@ export function AccountsTable({
   onEdit,
   onLocation,
   onDelete,
+  onRestore,
 }: AccountsTableProps) {
   // 列表过渡：180ms 与 vendor 过渡同量级；尊重系统「减少动态效果」偏好。
   const [tbodyRef] = useAutoAnimate<HTMLTableSectionElement>({
@@ -119,6 +121,38 @@ export function AccountsTable({
             ) : null}
 
             {rows.map((account) => {
+              // 软删行只展示徽标与恢复菜单：其余动作对已删行都是 404。
+              if (account.deleted_at != null) {
+                // 已删行不绑点击也不给「查看」：详情与设备刷新对已删行必 404，
+                // 唯一出口是行菜单的恢复（审查 M2）。
+                return (
+                  <tr key={account.id} className="app-account-row">
+                    <td>
+                      <span className="data-cell-mono">{account.phone_masked}</span>
+                    </td>
+                    <td className="data-cell-mono">{account.school_id}</td>
+                    <td>
+                      <Badge tone="danger" dot>
+                        已删除
+                      </Badge>
+                    </td>
+                    <td className="data-cell-mono">{account.owner_user_id}</td>
+                    <td className="data-cell-mono">{formatDateTime(account.updated_at)}</td>
+                    <td>
+                      <div className="data-cell-actions app-account-actions">
+                        <AccountRowMenu
+                          account={account}
+                          role={role}
+                          onEdit={onEdit}
+                          onLocation={onLocation}
+                          onDelete={onDelete}
+                          onRestore={onRestore}
+                        />
+                      </div>
+                    </td>
+                  </tr>
+                )
+              }
               const pauseKind: AccountActionKind = pauseDirection(account.status)
               const pauseLabel = pauseKind === 'pause' ? '暂停' : '恢复'
               const pauseReason = pauseDenyReason(role, account.status)
@@ -232,6 +266,7 @@ export function AccountsTable({
                         onEdit={onEdit}
                         onLocation={onLocation}
                         onDelete={onDelete}
+                        onRestore={onRestore}
                       />
                       {notes.size > 0 ? (
                         <span className="app-deny-note">{[...notes].join('；')}</span>

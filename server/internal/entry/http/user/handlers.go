@@ -48,7 +48,7 @@ type Service interface {
 	PasswordReset(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) (string, error)
 	Delete(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) error
 	Restore(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) (appuser.Record, error)
-	Lookup(ctx context.Context, scope corescope.Scope, query string, limit int) ([]appuser.LookupRef, error)
+	Lookup(ctx context.Context, scope corescope.Scope, query string, limit int, exact bool) ([]appuser.LookupRef, error)
 }
 
 // Authorizer 把会话主体解析成作用域与审计主体。
@@ -204,7 +204,8 @@ func (h *Handler) Lookup(c *gin.Context, params oapi.UserLookupParams) {
 	if params.Limit != nil {
 		limit = *params.Limit
 	}
-	refs, err := h.svc.Lookup(c.Request.Context(), scope, params.Q, limit)
+	exact := params.Exact != nil && *params.Exact
+	refs, err := h.svc.Lookup(c.Request.Context(), scope, params.Q, limit, exact)
 	if err != nil {
 		fail(c, err)
 		return

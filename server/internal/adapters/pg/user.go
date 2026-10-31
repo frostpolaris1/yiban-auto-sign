@@ -395,15 +395,32 @@ func (r *UserRepo) CountLiveAccountsByOwner(ctx context.Context, userID string) 
 }
 
 // Lookup 按已归一邮箱前缀取未删用户，按 email 升序取前 limit 条。
+// exact 置真时 query 是完整邮箱：email 全等，至多一条；
+// 活跃邮箱由 uq_users_email_live 兜底唯一（F1）。
 // 归一后为空但入参非空时恒假（同 List 口径），直接给空页。
 // q 在用例层已判必填；这里只管转义与排序。
-func (r *UserRepo) Lookup(ctx context.Context, query string, limit int) ([]coreuser.Record, error) {
+func (r *UserRepo) Lookup(ctx context.Context, query string, limit int, exact bool) ([]coreuser.Record, error) {
 	if limit < 1 || limit > 200 {
 		return nil, validationError("limit must be between 1 and 200")
 	}
-	prefix := coreuser.NormalizeEmail(query)
-	if prefix == "" {
+	normalized := coreuser.NormalizeEmail(query)
+	if normalized == "" {
 		return []coreuser.Record{}, nil
+	}
+	if exact {
+		row := r.db.q(ctx).QueryRow(ctx, `
+			SELECT `+userColumns+` FROM users
+			 WHERE deleted_at IS NULL
+			   AND email = $1
+			 LIMIT 1`, normalized)
+		record, err := scanUser(row)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return []coreuser.Record{}, nil
+		}
+		if err != nil {
+			return nil, mapError(err)
+		}
+		return []coreuser.Record{record}, nil
 	}
 	rows, err := r.db.q(ctx).Query(ctx, `
 		SELECT `+userColumns+` FROM users
@@ -411,7 +428,7 @@ func (r *UserRepo) Lookup(ctx context.Context, query string, limit int) ([]coreu
 		   AND email LIKE $1 || '%' ESCAPE '\'
 		 ORDER BY email ASC
 		 LIMIT $2`,
-		escapeLikePrefix(prefix), limit)
+		escapeLikePrefix(normalized), limit)
 	if err != nil {
 		return nil, mapError(err)
 	}

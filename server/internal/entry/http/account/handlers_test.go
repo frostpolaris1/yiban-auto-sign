@@ -51,6 +51,14 @@ func (f *fakeService) Pause(context.Context, corescope.Scope, string, bool, appa
 	return appaccount.Record{}, nil
 }
 
+func (f *fakeService) Restore(context.Context, corescope.Scope, string, appaudit.Actor) (appaccount.Record, error) {
+	return appaccount.Record{}, nil
+}
+
+func (f *fakeService) DeviceRefresh(context.Context, corescope.Scope, string, appaudit.Actor) (appaccount.DeviceRefreshResult, error) {
+	return appaccount.DeviceRefreshResult{}, nil
+}
+
 func (f *fakeService) Delete(context.Context, corescope.Scope, string, appaudit.Actor) error {
 	return nil
 }

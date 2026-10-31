@@ -23,6 +23,7 @@ type AccountRowMenuProps = {
   onEdit: (account: Account, opener: HTMLElement | null) => void
   onLocation: (account: Account, opener: HTMLElement | null) => void
   onDelete: (account: Account, opener: HTMLElement | null) => void
+  onRestore: (account: Account, opener: HTMLElement | null) => void
 }
 
 type RowMenuEntry = {
@@ -39,29 +40,41 @@ export function AccountRowMenu({
   onEdit,
   onLocation,
   onDelete,
+  onRestore,
 }: AccountRowMenuProps) {
   const triggerRef = useRef<HTMLButtonElement | null>(null)
-  const entries: RowMenuEntry[] = [
-    {
-      item: 'edit',
-      label: '编辑',
-      icon: 'edit',
-      onRun: () => onEdit(account, triggerRef.current),
-    },
-    {
-      item: 'location',
-      label: '位置',
-      icon: 'mapPin',
-      onRun: () => onLocation(account, triggerRef.current),
-    },
-    {
-      item: 'delete',
-      label: '删除',
-      icon: 'trash',
-      danger: true,
-      onRun: () => onDelete(account, triggerRef.current),
-    },
-  ]
+  // 软删行只剩恢复一条路：编辑、位置与删除对已删行都是 404，不放进菜单。
+  const entries: RowMenuEntry[] =
+    account.deleted_at != null
+      ? [
+          {
+            item: 'restore',
+            label: '恢复',
+            icon: 'rotateCcw',
+            onRun: () => onRestore(account, triggerRef.current),
+          },
+        ]
+      : [
+          {
+            item: 'edit',
+            label: '编辑',
+            icon: 'edit',
+            onRun: () => onEdit(account, triggerRef.current),
+          },
+          {
+            item: 'location',
+            label: '位置',
+            icon: 'mapPin',
+            onRun: () => onLocation(account, triggerRef.current),
+          },
+          {
+            item: 'delete',
+            label: '删除',
+            icon: 'trash',
+            danger: true,
+            onRun: () => onDelete(account, triggerRef.current),
+          },
+        ]
 
   return (
     <Menu

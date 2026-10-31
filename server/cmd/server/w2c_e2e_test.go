@@ -213,6 +213,8 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		Tx:         db,
 		Clock:      clk,
 		Cipher:     cipher,
+		Owner:      e.users,
+		Device:     w2cDeviceStub{},
 		Limit:      10000,
 		OwnerLimit: 10000,
 	})
@@ -359,6 +361,13 @@ type e2eCreds struct{}
 
 func (e2eCreds) Credential(context.Context, string) (contract.Credential, error) {
 	return contract.Credential{}, nil
+}
+
+// w2cDeviceStub 满足账号用例的设备端口：本文件的用例不调设备刷新。
+type w2cDeviceStub struct{}
+
+func (w2cDeviceStub) DeviceState(context.Context, string, appaccount.SigningCredential) (appaccount.DeviceState, error) {
+	return appaccount.DeviceState{}, errs.New(errs.CodeUpstream, "not used in w2c e2e")
 }
 
 // e2eProvider 是本地假提供方：只为满足校验与执行接缝。
@@ -1099,7 +1108,9 @@ func TestW2CForbiddenActionsAre403(t *testing.T) {
 
 	w2cWantStatus(t, e.do(http.MethodPost, "/api/schools",
 		map[string]any{"code": "nope", "name": "Nope"}, aliceSess), http.StatusForbidden)
-	w2cWantStatus(t, e.do(http.MethodGet, "/api/schools", nil, aliceSess), http.StatusForbidden)
+	// UX-2 起契约对 user 放宽学校列表（8v8①）：只读 active 行。
+	// 「user 只见 active」的负向钉在 TestUX2SchoolsForUser。
+	w2cWantStatus(t, e.do(http.MethodGet, "/api/schools", nil, aliceSess), http.StatusOK)
 	w2cWantStatus(t, e.do(http.MethodPost, "/api/accounts/"+account+"/review",
 		map[string]any{"decision": "approve"}, aliceSess), http.StatusForbidden)
 }

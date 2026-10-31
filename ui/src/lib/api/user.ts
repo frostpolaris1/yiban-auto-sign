@@ -86,9 +86,23 @@ export function restoreUser(id: string): Promise<User> {
   return apiRequest<User>(`${USER_PATHS.list}/${id}/restore`, { method: 'POST' })
 }
 
-/** 归属选择器的受限查询。q 必填；只回掩码邮箱。 */
-export function lookupUsers(q: string, limit?: number): Promise<UserLookupPage> {
+export type LookupUsersOptions = {
+  limit?: number
+  /** true＝q 按完整邮箱全等匹配（至多一条）；缺省前缀查询。 */
+  exact?: boolean
+}
+
+/**
+ * 归属选择器的受限查询。q 必填；只回掩码邮箱。
+ * 按 id 绑定属主的调用必须带 `exact: true`：
+ * 掩码行彼此不可分辨，前缀语义＋取首条会绑错属主（审查 F1）。
+ */
+export function lookupUsers(
+  q: string,
+  options: LookupUsersOptions = {},
+): Promise<UserLookupPage> {
   const params = new URLSearchParams({ q })
-  if (limit) params.set('limit', String(limit))
+  if (options.limit) params.set('limit', String(options.limit))
+  if (options.exact) params.set('exact', 'true')
   return apiRequest<UserLookupPage>(`${USER_PATHS.lookup}?${params.toString()}`)
 }

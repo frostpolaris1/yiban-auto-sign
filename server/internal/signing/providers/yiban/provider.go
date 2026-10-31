@@ -27,6 +27,14 @@ func NewProvider(client *Client) *Provider {
 
 func (p *Provider) ID() string { return "yiban" }
 
+// DeviceStateOf 读回平台为该账号登记的设备字段（8v8②）。
+// 这是宿主组合根注入用例设备端口的薄出口：登录、信封与 WAF 判定
+// 全部复用 Client.DeviceState，本方法不缓存、不落库、不写审计。
+// 它在 contract.Provider v1 之外：接口保持只含签到链四方法。
+func (p *Provider) DeviceStateOf(ctx context.Context, accountID string, cred contract.Credential) (protocol.DeviceState, error) {
+	return p.client.DeviceState(ctx, accountID, cred)
+}
+
 // Capabilities 声明本实现的能力。
 // 图片上传属 P5，故 ImageRequired 为假；验证码只检测不求解。
 func (p *Provider) Capabilities() contract.Capabilities {

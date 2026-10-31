@@ -20,19 +20,30 @@ import type { AccountStatus } from '../../lib/api/account'
 import type { Role } from '../../lib/api/auth'
 import { READ_ONLY_REASON, SHOWCASE } from '../../lib/showcase-mode'
 
-export type AccountAction = 'sign' | 'verify' | 'review' | 'schoolFilter'
+export type AccountAction = 'sign' | 'verify' | 'review' | 'schoolFilter' | 'create' | 'restore' | 'deviceRefresh'
 
 /** 行内写操作的两种暂停方向：暂停与恢复共用一个端点。 */
 export type AccountActionKind = 'pause' | 'resume' | 'sign' | 'verify' | 'review'
 
 /** 写动作清单。展示构建下这些一律禁用；读动作不在其中。 */
-const WRITE_ACTIONS: readonly AccountAction[] = ['sign', 'verify', 'review']
+const WRITE_ACTIONS: readonly AccountAction[] = [
+  'sign',
+  'verify',
+  'review',
+  'create',
+  'restore',
+  'deviceRefresh',
+]
 
 const ALLOWED: Record<AccountAction, readonly Role[]> = {
   sign: ['master', 'admin', 'user'],
   verify: ['master', 'admin'],
   review: ['master', 'admin'],
   schoolFilter: ['master', 'admin'],
+  // UX-2：三角色都可建号与刷新设备；恢复只归 master/admin（8v8）。
+  create: ['master', 'admin', 'user'],
+  deviceRefresh: ['master', 'admin', 'user'],
+  restore: ['master', 'admin'],
 }
 
 export function can(role: Role | null | undefined, action: AccountAction): boolean {
@@ -84,13 +95,14 @@ export function pauseDenyReason(
   return '仅正常状态可暂停'
 }
 
-export type RowMenuItem = 'edit' | 'location' | 'delete'
+export type RowMenuItem = 'edit' | 'location' | 'delete' | 'restore'
 
-/** 行菜单各项的端点角色：PATCH 与 DELETE 对全体开放，location 只归 user/admin。 */
+/** 行菜单各项的端点角色：PATCH 与 DELETE 对全体开放，location 只归 user/admin，恢复归 master/admin。 */
 const MENU_ALLOWED: Record<RowMenuItem, readonly Role[]> = {
   edit: ['master', 'admin', 'user'],
   location: ['user', 'admin'],
   delete: ['master', 'admin', 'user'],
+  restore: ['master', 'admin'],
 }
 
 export function canUseMenu(role: Role | null | undefined, item: RowMenuItem): boolean {
@@ -105,5 +117,6 @@ export function menuDenyReason(
   if (SHOWCASE) return READ_ONLY_REASON
   if (canUseMenu(role, item)) return null
   if (!role) return '会话角色未识别'
+  if (item === 'restore') return '需要管理员权限'
   return '仅 user/admin 可设置'
 }

@@ -1,6 +1,7 @@
 /**
  * **功能**
- * 账号页装配：角色、学校、筛选、游标、列表、抽屉与写操作模态。
+ * 账号页装配：角色、学校、筛选（含已删除）、游标、列表、
+ * 创建、恢复、抽屉与写操作模态。
  *
  * **归属**
  * `features/accounts` 域容器：页面只引用它。
@@ -15,6 +16,7 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Alert } from '@/components/ui/Alert'
+import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { notifySuccess } from '@/components/ui/toast'
@@ -22,6 +24,7 @@ import {
   deleteAccount,
   listAccounts,
   pauseAccount,
+  restoreAccount,
   reviewAccount,
   setAccountLocation,
   signAccount,
@@ -40,6 +43,7 @@ import { listAllSchools } from '@/lib/api/school'
 import { SHOWCASE, useMe } from '@/lib/session'
 import { showcaseAccounts, showcaseAllSchools } from '@/lib/showcase'
 import { AccountActionModal, type AccountActionState, type ReviewInput } from './AccountActionModal'
+import { AccountCreateModal } from './AccountCreateModal'
 import { AccountDeleteModal } from './AccountDeleteModal'
 import { AccountDetailDrawer } from './AccountDetailDrawer'
 import { AccountEditModal } from './AccountEditModal'
@@ -48,7 +52,7 @@ import { AccountLocationModal } from './AccountLocationModal'
 import { AccountsTable } from './AccountsTable'
 import { currentCursor, emptyCursorStack, goNext, goPrevious, hasPreviousPage } from '@/lib/cursor'
 import { buildAccountUpdate, buildLocationUpdate, type AccountUpdateDraft, type LocationDraft } from './drafts'
-import { can, type AccountActionKind } from './permissions'
+import { can, denyReason, type AccountActionKind } from './permissions'
 
 type MutationInput = {
   account: Account
@@ -110,6 +114,7 @@ export function AccountsView() {
       filters.status ?? null,
       filters.schoolId ?? null,
       filters.q ?? null,
+      filters.includeDeleted ?? false,
       cursor ?? null,
     ],
     // 列表随时可变。缓存键回到旧筛选时必须重新取数，不能给旧页。
@@ -120,6 +125,7 @@ export function AccountsView() {
         status: filters.status,
         school_id: filters.schoolId,
         q: filters.q,
+        include_deleted: filters.includeDeleted || undefined,
         cursor,
       })
     },
@@ -141,6 +147,10 @@ export function AccountsView() {
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null)
   const [deleteReturnFocus, setDeleteReturnFocus] = useState<HTMLElement | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [createReturnFocus, setCreateReturnFocus] = useState<HTMLElement | null>(null)
+  const [restoreError, setRestoreError] = useState<string | null>(null)
+  const createReason = denyReason(role, 'create')
 
   const mutation = useMutation({
     mutationFn: async (input: MutationInput) => {
@@ -220,7 +230,7 @@ export function AccountsView() {
   const shapeMutation = useMutation({
     mutationFn: async (input: {
       account: Account
-      op: 'update' | 'location' | 'delete'
+      op: 'update' | 'location' | 'delete' | 'restore'
       body?: AccountUpdate | AccountLocationUpdate
     }) => {
       switch (input.op) {
@@ -230,6 +240,8 @@ export function AccountsView() {
           return setAccountLocation(input.account.id, input.body as AccountLocationUpdate)
         case 'delete':
           return deleteAccount(input.account.id)
+        case 'restore':
+          return restoreAccount(input.account.id)
       }
     },
     onSuccess: (result, input) => {
@@ -247,6 +259,9 @@ export function AccountsView() {
         setEditTarget(null)
         notifySuccess(`已保存 ${input.account.phone_masked}`)
       }
+      if (input.op === 'restore') {
+        notifySuccess(`已恢复 ${input.account.phone_masked}`)
+      }
       if (input.op === 'location') {
         // 契约无读端点：成功响应进会话内缓存，供下次预填（专档 §七.4 口径）。
         // 该 key 无订阅者，默认 gcTime 5 分钟即回收——此处声明永不过期，
@@ -262,6 +277,7 @@ export function AccountsView() {
       if (input.op === 'update') setEditError(text)
       if (input.op === 'location') setLocationErrorText(text)
       if (input.op === 'delete') setDeleteError(text)
+      if (input.op === 'restore') setRestoreError(text)
     },
   })
 
@@ -283,6 +299,20 @@ export function AccountsView() {
     setDeleteError(null)
   }
 
+  const openRestore = (account: Account) => {
+    setRestoreError(null)
+    shapeMutation.mutate({ account, op: 'restore' })
+  }
+
+  const openCreate = (opener: HTMLElement | null) => {
+    setCreateReturnFocus(opener)
+    setCreateOpen(true)
+  }
+
+  const closeCreate = () => {
+    setCreateOpen(false)
+  }
+
   const rows = accountsQuery.data?.items ?? []
   const error = accountsQuery.isError ? describeApiError(accountsQuery.error) : null
 
@@ -296,6 +326,22 @@ export function AccountsView() {
           </>
         }
         subtitle="按学校、状态与手机号筛选。点击任意行查看只读详情。"
+        actions={
+          <>
+            {createReason ? <span className="app-deny-note">{createReason}</span> : null}
+            <Button
+              variant="primary"
+              aria-label="新建账号"
+              disabled={createReason !== null}
+              title={createReason ?? undefined}
+              onClick={(event: React.MouseEvent<HTMLButtonElement>) =>
+                openCreate(event.currentTarget)
+              }
+            >
+              新建账号
+            </Button>
+          </>
+        }
       />
 
       <Card
@@ -307,6 +353,14 @@ export function AccountsView() {
           <div className="app-alert-block">
             <Alert tone="warning" title="学校列表加载失败">
               {describeApiError(schoolsQuery.error)}
+            </Alert>
+          </div>
+        ) : null}
+
+        {restoreError ? (
+          <div className="app-alert-block">
+            <Alert tone="danger" title="恢复失败">
+              {restoreError} 行保持已删状态，可重试。
             </Alert>
           </div>
         ) : null}
@@ -325,6 +379,10 @@ export function AccountsView() {
             setStack(emptyCursorStack())
           }}
           onQInputChange={setQInput}
+          onDeletedChange={(deleted: boolean) => {
+            setFilters((previous) => ({ ...previous, includeDeleted: deleted || undefined }))
+            setStack(emptyCursorStack())
+          }}
         />
 
         <AccountsTable
@@ -349,8 +407,21 @@ export function AccountsView() {
           onEdit={openEdit}
           onLocation={openLocation}
           onDelete={openDelete}
+          onRestore={openRestore}
         />
       </Card>
+
+      <AccountCreateModal
+        open={createOpen}
+        role={role}
+        returnFocusTo={createReturnFocus}
+        onClose={closeCreate}
+        onCreated={(account: Account) => {
+          setCreateOpen(false)
+          void queryClient.invalidateQueries({ queryKey: ['accounts'] })
+          notifySuccess(`已创建 ${account.phone_masked}`)
+        }}
+      />
 
       <AccountDetailDrawer
         account={detailAccount}

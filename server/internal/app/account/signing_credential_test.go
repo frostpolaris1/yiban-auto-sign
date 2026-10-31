@@ -12,6 +12,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
+	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 )
 
 type fakeAccountRepo struct {
@@ -40,6 +41,25 @@ type fakeAuditRepo struct{ appaudit.Repo }
 
 type fakeTxManager struct{ app.TxManager }
 
+// fakeOwnerReader 是属主活跃校验的替身：始终命中一个用户行。
+type fakeOwnerReader struct{ OwnerReader }
+
+func (fakeOwnerReader) GetByID(context.Context, string) (coreuser.Record, error) {
+	return coreuser.Record{ID: "owner-1"}, nil
+}
+
+// fakeDeviceReader 是设备读回的替身：默认成功且回空字段。
+type fakeDeviceReader struct {
+	state DeviceState
+	err   error
+	calls int
+}
+
+func (f *fakeDeviceReader) DeviceState(context.Context, string, SigningCredential) (DeviceState, error) {
+	f.calls++
+	return f.state, f.err
+}
+
 func newCredentialService(t *testing.T, repo *fakeAccountRepo, cipher *Cipher) *Service {
 	t.Helper()
 	svc, err := NewService(Deps{
@@ -49,6 +69,8 @@ func newCredentialService(t *testing.T, repo *fakeAccountRepo, cipher *Cipher) *
 		Tx:         fakeTxManager{},
 		Clock:      clock.Fixed{T: time.Date(2026, 10, 26, 6, 0, 0, 0, time.UTC)},
 		Cipher:     cipher,
+		Owner:      fakeOwnerReader{},
+		Device:     &fakeDeviceReader{},
 		Limit:      10,
 		OwnerLimit: 10,
 	})

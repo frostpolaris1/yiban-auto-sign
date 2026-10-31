@@ -58,6 +58,7 @@ function account(
     reviewed_by: status === 'pending' ? null : 'user-9',
     created_at: '2026-10-01T09:00:00+08:00',
     updated_at: '2026-10-20T16:41:00+08:00',
+    deleted_at: null,
   }
 }
 

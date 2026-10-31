@@ -66,7 +66,8 @@ either side drifts.
 | DELETE | `/api/users/:id` | master | UX-1 |
 | POST | `/api/users/:id/restore` | master | UX-1 |
 | GET | `/api/users/lookup` | master/admin | UX-1 |
-| GET | `/api/schools` | master/admin | P1 |
+|  |  |  | `exact=true` 时 q 按完整邮箱全等匹配（至多一条）；缺省前缀查询。按 id 绑定属主的调用必须带 exact（F1）。 |
+| GET | `/api/schools` | master/admin/user | P1 |
 | POST | `/api/schools` | master | P1 |
 | PATCH | `/api/schools/:id` | master | P1 |
 | GET | `/api/schools/:id/admins` | master | P1 |
@@ -79,6 +80,8 @@ either side drifts.
 | POST | `/api/accounts/:id/review` | master/admin | P1 |
 | POST | `/api/accounts/:id/pause` | master/admin/user | P1 |
 | DELETE | `/api/accounts/:id` | master/admin/user | P1 |
+| POST | `/api/accounts/:id/device-refresh` | master/admin/user | P4 |
+| POST | `/api/accounts/:id/restore` | master/admin | P4 |
 | POST | `/api/accounts/:id/verify` | master/admin | P3 |
 | GET | `/api/schedule/windows` | master/admin | P4 |
 | GET | `/api/schedule/preview` | master/admin | P4 |

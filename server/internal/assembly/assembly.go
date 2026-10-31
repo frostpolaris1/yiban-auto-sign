@@ -441,6 +441,14 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			closeFn()
 			return nil, fmt.Errorf("assembly: admin service: %w", err)
 		}
+		// 用户仓储先于账号服务构造：账号用例的属主活跃校验复用同一实例
+		//（仓储无状态）。Sessions 是会话撤销原语：重置口令与软删后立即
+		// 失效全部会话。OwnerAccounts 用同一份用户仓储：名下账号计数是
+		// 它的一条只读 SQL。
+		userRepo := pg.NewUserRepo(db)
+		// 一个 provider 同时服务"凭据校验"、"设备刷新"与"执行循环"：
+		// 三者必须走同一六请求链实现，避免校验用一套、签到用另一套的漂移。
+		provider := yiban.NewProvider(yiban.New(yiban.Config{Clock: clk}))
 		accountSvc, err := appaccount.NewService(appaccount.Deps{
 			Accounts:   pg.NewAccountRepo(db),
 			Schools:    schoolRepo,
@@ -448,6 +456,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			Tx:         db,
 			Clock:      clk,
 			Cipher:     cipher,
+			Owner:      userRepo,
+			Device:     accountDeviceReader{provider: provider},
 			Limit:      accountCapacityLimit,
 			OwnerLimit: cfg.MaxAccountsPerOwner,
 		})
@@ -455,11 +465,6 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			closeFn()
 			return nil, fmt.Errorf("assembly: account service: %w", err)
 		}
-		// 用户用例复用同一数据库下的用户仓储实例（仓储无状态）：建号走 Create，
-		// 它的容量守卫与账号上限同形（裁决 12.11）。
-		// Sessions 是会话撤销原语：重置口令与软删后立即失效全部会话。
-		// OwnerAccounts 用同一份用户仓储：名下账号计数是它的一条只读 SQL。
-		userRepo := pg.NewUserRepo(db)
 		userSvc, err := appuser.NewService(appuser.Deps{
 			Users:         userRepo,
 			Audit:         audits,
@@ -478,9 +483,6 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		admins = adminhttp.NewHandler(adminSvc, adminSvc)
 		accounts = accounthttp.NewHandler(accountSvc, adminSvc, guard)
 		users = userhttp.NewHandler(userSvc, adminSvc)
-		// 一个 provider 同时服务"凭据校验"与"执行循环"：两者必须走同一
-		// 六请求链实现，避免校验用一套、签到用另一套的漂移。
-		provider := yiban.NewProvider(yiban.New(yiban.Config{Clock: clk}))
 		signing = signinghttp.NewHandler(accountSvc, adminSvc, provider)
 
 		// 事件总线先于 worker 与计划装配：两者的发布端口引用同一实例。
@@ -825,6 +827,36 @@ func (w workerCredentials) Credential(ctx context.Context, accountID string) (co
 		Password:   c.Password,
 		DeviceCode: c.DeviceCode,
 		PhoneModel: c.PhoneModel,
+	}, nil
+}
+
+// accountDeviceReader 把 provider 的设备读回适配成账号用例的设备端口。
+//
+// 适配只在此一处（同 workerCredentials 口径）：app/account 不依赖
+// signing 类型；adapters 不得 import providers，故实现在组合根。
+// provider 指针在装配时注入；六个请求链的会话缓存由 provider 自持。
+type accountDeviceReader struct {
+	provider *yiban.Provider
+}
+
+var _ appaccount.DeviceReader = accountDeviceReader{}
+
+// DeviceState 读一次平台登记的设备字段。
+// 明文凭据只进 provider；返回值不含凭据，错误原样上抛由用例分类。
+func (r accountDeviceReader) DeviceState(ctx context.Context, accountID string, cred appaccount.SigningCredential) (appaccount.DeviceState, error) {
+	state, err := r.provider.DeviceStateOf(ctx, accountID, contract.Credential{
+		Phone:      cred.Phone,
+		Password:   cred.Password,
+		DeviceCode: cred.DeviceCode,
+		PhoneModel: cred.PhoneModel,
+	})
+	if err != nil {
+		return appaccount.DeviceState{}, err
+	}
+	return appaccount.DeviceState{
+		Authorized: state.Authorized,
+		Code:       state.Code,
+		PhoneModel: state.PhoneModel,
 	}, nil
 }
 

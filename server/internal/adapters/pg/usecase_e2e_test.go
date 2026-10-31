@@ -30,6 +30,13 @@ import (
 )
 
 // usecaseEnv 把 app 用例接到同一个 per-test schema。
+// stubDeviceReader 满足账号用例的设备端口：本文件的用例不调设备刷新。
+type stubDeviceReader struct{}
+
+func (stubDeviceReader) DeviceState(context.Context, string, appaccount.SigningCredential) (appaccount.DeviceState, error) {
+	return appaccount.DeviceState{}, errors.New("not used in pg e2e")
+}
+
 type usecaseEnv struct {
 	*testEnv
 	accounts *appaccount.Service
@@ -53,7 +60,9 @@ func newUsecaseEnv(t *testing.T) *usecaseEnv {
 	}
 	accounts, err := appaccount.NewService(appaccount.Deps{
 		Accounts: e.accts, Schools: e.schools, Audit: e.audits,
-		Tx: e.db, Clock: clk, Cipher: cipher, Limit: 10000, OwnerLimit: 10000,
+		Tx: e.db, Clock: clk, Cipher: cipher,
+		Owner: e.users, Device: stubDeviceReader{},
+		Limit: 10000, OwnerLimit: 10000,
 	})
 	if err != nil {
 		t.Fatalf("account service: %v", err)
