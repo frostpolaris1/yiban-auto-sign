@@ -42,6 +42,8 @@
 #         2 用法错误（含三件只给一件、信任锚缺失或指纹不符）或回滚后仍不健康。
 # 已知残余风险：迁移一旦应用不会随二进制回滚（没有 down 迁移）；
 # 旧二进制须能向前兼容新 schema。迁移都按向后兼容发布。
+# 回滚点：迁移前写一份 pg_dump（/var/lib/yiban/pre-migrate/，0600）。
+# 快照失败即中止升级；DSN 为空时显性 WARN 并跳过（读不到 DSN 的部署起不了服务）。
 # ============================================================
 set -euo pipefail
 
@@ -337,6 +339,37 @@ if [ ! -x "$MIGRATE_BIN" ]; then
     "$SYSTEMCTL" start "$UNIT"
     exit 1
 fi
+
+# 迁移前快照（D 批 P1-3）：迁移不可逆，快照是唯一的回滚点。
+# 缺 pg_dump 或快照失败一律中止；DSN 为空时打显性 WARN 跳过。
+# DSN 来自 /etc/yiban/.env（install.sh 写入）；读不到 DSN 的部署本来起不了服务。
+#
+# 快照含凭据密文与审计行：目录 0700、文件 0600，且**落盘期间**就受限——
+# 转储由 pg_dump 自己创建，权限取进程 umask，故必须先在子 shell 里 umask 077。
+if [ -z "${YIBAN_DATABASE_URL:-}" ]; then
+    echo "update: WARN: YIBAN_DATABASE_URL is empty; pre-migrate snapshot SKIPPED" >&2
+else
+    if ! command -v pg_dump >/dev/null 2>&1; then
+        echo "update: pg_dump not found; refusing to migrate without a snapshot" >&2
+        "$SYSTEMCTL" start "$UNIT"
+        exit 1
+    fi
+    PRE_MIGRATE_DIR="$(dest /var/lib/yiban/pre-migrate)"
+    if ! mkdir -p "$PRE_MIGRATE_DIR" || ! chmod 700 "$PRE_MIGRATE_DIR"; then
+        echo "update: cannot prepare $PRE_MIGRATE_DIR; keeping the old binary and starting the service back" >&2
+        "$SYSTEMCTL" start "$UNIT"
+        exit 1
+    fi
+    PRE_MIGRATE_DUMP="$PRE_MIGRATE_DIR/pre-migrate-$(date +%Y%m%d-%H%M%S).dump"
+    if ! (umask 077 && pg_dump --format=custom --no-owner --file="$PRE_MIGRATE_DUMP" "$YIBAN_DATABASE_URL"); then
+        echo "update: pre-migrate snapshot FAILED; keeping the old binary and starting the service back" >&2
+        rm -f "$PRE_MIGRATE_DUMP"
+        "$SYSTEMCTL" start "$UNIT"
+        exit 1
+    fi
+    echo "update: pre-migrate snapshot: $PRE_MIGRATE_DUMP"
+fi
+
 if ! "$MIGRATE_BIN" migrate; then
     echo "update: migrate FAILED; keeping the old binary and starting the service back" >&2
     "$SYSTEMCTL" start "$UNIT"

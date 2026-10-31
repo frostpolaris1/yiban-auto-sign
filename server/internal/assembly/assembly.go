@@ -52,6 +52,7 @@ import (
 	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
 	applocation "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/location"
 	appphotos "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/photos"
+	appretention "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/retention"
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
 	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
 	apptimepref "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/timepref"
@@ -62,6 +63,7 @@ import (
 	corecapacity "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/capacity"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	coreimage "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/image"
 	coremail "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mail"
 	coreplan "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/plan"
 	corerate "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/rate"
@@ -503,9 +505,13 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		photoRepo := pg.NewPhotoRepo(db)
 		photoSvc, err := appphotos.NewService(appphotos.Deps{
 			Store: photoRepo, Blobs: blobs, Clock: clk,
-			Audit:        audits,
-			Tx:           db,
-			Options:      appphotos.Options{MaxPixels: photoMaxPixels, MaxSidePx: photoMaxSidePx},
+			Audit: audits,
+			Tx:    db,
+			Options: appphotos.Options{
+				MaxPixels: photoMaxPixels, MaxSidePx: photoMaxSidePx,
+				// 解码闸按进程计：图片入口只有这一个服务。
+				Decode: coreimage.NewGate(coreimage.DecodeConcurrency),
+			},
 			Accounts:     accountSvc,
 			SchoolPhotos: photoRepo,
 		})
@@ -525,6 +531,24 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		closeFn = func() {
 			stopRetention()
 			closeDB()
+		}
+		// 过期数据清理（D 批 P2-15）：会话、重置令牌、90 天前的任务行。
+		// 与图片保留期分开：一个是用户策略，一个是表大小。
+		retentionSvc, err := appretention.NewService(appretention.Deps{
+			Store:    pg.NewMaintenanceRepo(db),
+			Clock:    clk,
+			Location: loc,
+			Logger:   logger,
+		})
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("assembly: retention service: %w", err)
+		}
+		stopDataRetention := appretention.Start(context.Background(), retentionSvc, logger)
+		beforeRetention := closeFn
+		closeFn = func() {
+			stopDataRetention()
+			beforeRetention()
 		}
 		locationSvc, err := applocation.NewService(applocation.Deps{
 			Store:    pg.NewLocationRepo(db),

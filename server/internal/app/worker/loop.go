@@ -10,9 +10,10 @@
 // app 层用例的宿主件。Service 认领与结算；Loop 只管节奏与停机。
 //
 // # 口径
-// 在飞 = 一次进行中的 Step。停机不取消在飞的 ctx：
-// 优雅收尾是等它结算，不是打断它；打断会在平台侧留下未结算的
-// 已提交签到。超时上限由调用方的 ctx 决定（assembly 用 10s）。
+// 在飞 = 一次进行中的 Step。停机先**不**打断在飞：优雅收尾是等它结算，
+// 打断会在平台侧留下未结算的已提交签到。超时上限由调用方的 ctx 决定
+// （assembly 用 10s）。预算耗尽后 Stop 取消在飞的 ctx，并给 drainSettle
+// 收尾——调用方随即关连接池，不先收尾的话结算写不进去（D 批 P2-16）。
 package worker
 
 import (
@@ -47,6 +48,10 @@ type Loop struct {
 	started bool
 	stopped bool
 	lastErr error
+	// cancelInFlight 取消当前 Step 的 ctx；无在飞时为 nil。
+	// 只在停机预算耗尽后调用：调用方随即关连接池，结算写不进去
+	// 会让已提交的签到留在 running（D 批 P2-16）。
+	cancelInFlight context.CancelFunc
 }
 
 // errLoopAlreadyStarted 是 Start 的重入错误。
@@ -103,9 +108,19 @@ func (l *Loop) run() {
 			return
 		case <-timer.C:
 		}
-		// Step 用背景 ctx：停机**不**取消在飞（见包注释口径）。
+		// Step 用可取消的 ctx：停机**不主动**取消在飞（见包注释口径），
+		// 只有停机预算耗尽时 Stop 才取消它，给结算留一次收尾机会。
 		// 基础设施错误记下不退出：队列抖动不该杀掉执行循环。
-		if _, err := l.svc.Step(context.Background(), l.limit); err != nil {
+		stepCtx, cancel := context.WithCancel(context.Background())
+		l.mu.Lock()
+		l.cancelInFlight = cancel
+		l.mu.Unlock()
+		_, err := l.svc.Step(stepCtx, l.limit)
+		l.mu.Lock()
+		l.cancelInFlight = nil
+		l.mu.Unlock()
+		cancel()
+		if err != nil {
 			l.mu.Lock()
 			l.lastErr = err
 			l.mu.Unlock()
@@ -115,7 +130,9 @@ func (l *Loop) run() {
 }
 
 // Stop 停止领取并等在飞返回，返回残余 running 数。
-// ctx 到期时立即返回 (0, ctx.Err())：残余的租约到期后由回收器回收；重启的 Recover 清无租约或已过期行。
+// ctx 到期时先取消在飞 Step，再给它 drainSettle 收尾：
+// 调用方（assembly）随后关连接池，直接返回会让结算写不进去。
+// 收尾仍超时则返回 (0, ctx.Err())，残余行的租约到期后由回收器回收。
 // 未 Start 过的实例立即返回 (0, nil)。
 func (l *Loop) Stop(ctx context.Context) (int64, error) {
 	l.mu.Lock()
@@ -131,13 +148,38 @@ func (l *Loop) Stop(ctx context.Context) (int64, error) {
 	select {
 	case <-l.done:
 	case <-ctx.Done():
-		return 0, ctx.Err()
+		if !l.stopInFlight(ctx) {
+			return 0, ctx.Err()
+		}
 	}
 	n, err := l.counter.CountRunning(context.WithoutCancel(ctx))
 	if err != nil {
 		return 0, err
 	}
 	return n, nil
+}
+
+// drainSettle 是取消在飞后等它收尾的上限。
+// 必须大于 settlementTimeout：结算的写入上限若比等待窗口还长，
+// 上限就兑不了——Stop 一返回，调用方随即关连接池（审查 P3-1）。
+const drainSettle = settlementTimeout + 200*time.Millisecond
+
+// stopInFlight 取消在飞 Step 并等它返回；返回 true 表示已停下。
+func (l *Loop) stopInFlight(ctx context.Context) bool {
+	l.mu.Lock()
+	cancel := l.cancelInFlight
+	l.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	settle, done := context.WithTimeout(context.WithoutCancel(ctx), drainSettle)
+	defer done()
+	select {
+	case <-l.done:
+		return true
+	case <-settle.Done():
+		return false
+	}
 }
 
 // Err 返回最近一次 Step 的基础设施错误。无错误时为 nil。

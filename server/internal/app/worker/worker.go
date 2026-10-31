@@ -385,6 +385,8 @@ func (s *Service) settleOutcome(ctx context.Context, task corescheduleTask, win 
 // requeueWait 是等待型重排：成功后发 task.progress。
 // attempt 口径 = 落库后的 sign_tasks.attempts；等待不计尝试。
 func (s *Service) requeueWait(ctx context.Context, task corescheduleTask, runAt time.Time, result string) error {
+	ctx, cancel := settlementContext(ctx)
+	defer cancel()
 	if err := s.deps.Store.RequeueWait(ctx, task.ID, runAt, result, task.ClaimSeq); err != nil {
 		return err
 	}
@@ -395,6 +397,8 @@ func (s *Service) requeueWait(ctx context.Context, task corescheduleTask, runAt 
 // requeueRetry 是业务退避重排：成功后发 task.progress。
 // RequeueRetry 计一次尝试，故 attempt 为已消耗数加一。
 func (s *Service) requeueRetry(ctx context.Context, task corescheduleTask, runAt time.Time, result string) error {
+	ctx, cancel := settlementContext(ctx)
+	defer cancel()
 	if err := s.deps.Store.RequeueRetry(ctx, task.ID, runAt, result, task.ClaimSeq); err != nil {
 		return err
 	}
@@ -413,9 +417,28 @@ func (s *Service) notifyProgress(ctx context.Context, task corescheduleTask, att
 		appevents.TypeTaskProgress, map[string]any{"account_id": task.AccountID, "attempt": attempt})
 }
 
+// settlementTimeout 是一次结算写入的上限。所有结算都套用它；
+// 它只在停机取消之后才变成实际约束——正常路径的 ctx 还活着，仍受调用方约束。
+//
+// 必须小于 loop 的 drainSettle：停机时 Loop 只等这么久就返回，
+// 调用方随即关连接池。上限大于等待窗口，声明就等于空话（审查 P3-1）。
+const settlementTimeout = 800 * time.Millisecond
+
+// settlementContext 让终态与重排写入不受停机取消影响。
+//
+// 停机预算耗尽时 Loop 会取消在飞 Step 的 ctx；已提交的签到只剩这一次
+// 落库机会——写不进去，行留在 running，租约到期后会被重新认领，
+// 平台侧就收到第二次签到（D 批审查 P1-2）。未提交行的退回本来就用
+// WithoutCancel，这里让结算走同一条纪律。
+func settlementContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), settlementTimeout)
+}
+
 // finish 落终态。终态只认 core/status 的三值。
 // 落库成功后发 task.concluded（payload：account_id、state、attempt）。
 func (s *Service) finish(ctx context.Context, task corescheduleTask, state corestatus.TaskState, result string) error {
+	ctx, cancel := settlementContext(ctx)
+	defer cancel()
 	if err := s.deps.Store.Finish(ctx, task.AccountID, task.SchoolTaskID, task.Day, state, result, task.ClaimSeq, s.deps.Clock.Now()); err != nil {
 		return err
 	}
@@ -429,6 +452,8 @@ func (s *Service) finish(ctx context.Context, task corescheduleTask, state cores
 // 为什么不能复用 finish：账号状态是排期输入。只落任务不落账号，
 // 次日仍会认领同一账号并再打一次失败登录（验收 3）。
 func (s *Service) finishCredentialInvalid(ctx context.Context, task corescheduleTask) error {
+	ctx, cancel := settlementContext(ctx)
+	defer cancel()
 	if err := s.deps.Store.FinishCredentialInvalid(ctx, task.SchoolID, task.AccountID, task.SchoolTaskID, task.Day, task.ClaimSeq, s.deps.Clock.Now()); err != nil {
 		return err
 	}

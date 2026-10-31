@@ -16,6 +16,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 )
 
 // fakeStepper 是可阻塞的 Stepper 替身。
@@ -95,7 +97,40 @@ func TestLoopStopWaitsForInFlight(t *testing.T) {
 	}
 }
 
-func TestLoopStopTimeoutReturnsCtxErr(t *testing.T) {
+func TestLoopStopCancelsInFlightOnTimeout(t *testing.T) {
+	// 预算到点：Stop 取消在飞并等它收尾，然后正常返回。
+	// 调用方（assembly）随后关连接池——不先收尾，结算写不进去。
+	st := &ctxStepper{begun: make(chan struct{}), ended: make(chan struct{})}
+	loop := NewLoop(st, &fakeCounter{n: 1}, 10*time.Millisecond, 1)
+	loop.Start()
+
+	select {
+	case <-st.begun:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Step 未被启动")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	remain, err := loop.Stop(ctx)
+	if err != nil {
+		t.Fatalf("Stop: %v（在飞收尾后应正常返回）", err)
+	}
+	if remain != 1 {
+		t.Fatalf("remain = %d, want 1", remain)
+	}
+	if !st.wasCancelled() {
+		t.Fatal("在飞 Step 的 ctx 未被取消：关池后结算会写不进去")
+	}
+	select {
+	case <-st.ended:
+	default:
+		t.Fatal("Stop 在在飞收尾前返回")
+	}
+}
+
+// TestLoopStopGivesUpWhenStepIgnoresCancel：在飞不理会取消时，Stop 等
+// drainSettle 后按 ctx 错误返回，残余行交给租约回收。
+func TestLoopStopGivesUpWhenStepIgnoresCancel(t *testing.T) {
 	begun := make(chan struct{})
 	release := make(chan struct{})
 	defer close(release) // 测试结束后放行，避免 goroutine 泄漏
@@ -103,16 +138,14 @@ func TestLoopStopTimeoutReturnsCtxErr(t *testing.T) {
 	loop := NewLoop(svc, &fakeCounter{}, 10*time.Millisecond, 1)
 	loop.Start()
 
-	// 等在飞真正开始再停：否则 Stop 可能在首轮认领前关闭，
-	// 循环无在飞可等，立即返回是合法行为。
 	select {
 	case <-begun:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Step 未被启动")
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
+	start := coreclock.System{}.Now()
 	remain, err := loop.Stop(ctx)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Stop err = %v, want DeadlineExceeded", err)
@@ -120,6 +153,42 @@ func TestLoopStopTimeoutReturnsCtxErr(t *testing.T) {
 	if remain != 0 {
 		t.Fatalf("remain = %d, want 0 on timeout", remain)
 	}
+	if waited := time.Since(start); waited < drainSettle {
+		t.Fatalf("Stop 只等了 %v：应给在飞 drainSettle 收尾机会", waited)
+	}
+}
+
+// ctxStepper 的 Step 只在 ctx 取消后返回，用来判「预算到点后取消在飞」。
+type ctxStepper struct {
+	begun chan struct{}
+	ended chan struct{}
+	once  sync.Once
+
+	mu        sync.Mutex
+	started   bool
+	cancelled bool
+}
+
+func (s *ctxStepper) Step(ctx context.Context, _ int) (int, error) {
+	s.mu.Lock()
+	first := !s.started
+	s.started = true
+	s.mu.Unlock()
+	if first {
+		close(s.begun)
+	}
+	<-ctx.Done()
+	s.mu.Lock()
+	s.cancelled = true
+	s.mu.Unlock()
+	s.once.Do(func() { close(s.ended) })
+	return 0, ctx.Err()
+}
+
+func (s *ctxStepper) wasCancelled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cancelled
 }
 
 func TestLoopStopWithoutStartIsImmediate(t *testing.T) {

@@ -152,14 +152,15 @@ func newTestDeps(t *testing.T) (*backupDeps, *fakeRunner, *bytes.Buffer, *bytes.
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
 	return &backupDeps{
-		stdout:    stdout,
-		stderr:    stderr,
-		lookPath:  okLookPath,
-		runner:    runner,
-		countRows: func(context.Context, string) (map[string]int64, error) { return nil, nil },
-		migrate:   func(context.Context, string) (int64, error) { return 16, nil },
-		tty:       func() bool { return false },
-		confirm:   func() bool { return false },
+		stdout:      stdout,
+		stderr:      stderr,
+		lookPath:    okLookPath,
+		runner:      runner,
+		countRows:   func(context.Context, string) (map[string]int64, error) { return nil, nil },
+		migrate:     func(context.Context, string) (int64, error) { return 16, nil },
+		verifyAudit: func(context.Context, string) (int, error) { return 1, nil },
+		tty:         func() bool { return false },
+		confirm:     func() bool { return false },
 	}, runner, stdout, stderr
 }
 
@@ -463,6 +464,53 @@ func TestRestoreSuccessReconciles(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "一致") {
 		t.Fatalf("stdout must report reconciliation: %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "通过校验") {
+		t.Fatalf("stdout must report the audit chain check: %q", stdout.String())
+	}
+}
+
+// 空链：说「跳过」而不是「通过」（§30）。
+func TestRestoreReportsEmptyAuditChain(t *testing.T) {
+	deps, runner, stdout, _ := newTestDeps(t)
+	out := filepath.Join(t.TempDir(), "b.gpg")
+	runner.script = []fakeRunResult{
+		{writeOut: "-- dump\n" + manifestMarker + ` {"users":3}` + "\n"},
+		{},
+	}
+	deps.countRows = func(context.Context, string) (map[string]int64, error) {
+		return map[string]int64{"users": 3}, nil
+	}
+	deps.verifyAudit = func(context.Context, string) (int, error) { return 0, nil }
+	code := runRestore(deps, []string{"--in", out, "--dsn", testDSN, "--force", "--passphrase-file", passFileOf(t)})
+	if code != 0 {
+		t.Fatalf("code = %d: %s", code, stderrOf(deps))
+	}
+	if !strings.Contains(stdout.String(), "空（跳过校验）") {
+		t.Fatalf("空链必须说跳过：%q", stdout.String())
+	}
+}
+
+// 审计链校验失败：恢复按失败处理（行数对账看不出篡改）。
+func TestRestoreFailsOnBrokenAuditChain(t *testing.T) {
+	deps, runner, _, _ := newTestDeps(t)
+	out := filepath.Join(t.TempDir(), "b.gpg")
+	runner.script = []fakeRunResult{
+		{writeOut: "-- dump\n" + manifestMarker + ` {"users":3}` + "\n"},
+		{},
+	}
+	deps.countRows = func(context.Context, string) (map[string]int64, error) {
+		return map[string]int64{"users": 3}, nil
+	}
+	deps.verifyAudit = func(context.Context, string) (int, error) {
+		return 0, errors.New("audit: chain is broken")
+	}
+	code := runRestore(deps, []string{"--in", out, "--dsn", testDSN, "--force", "--passphrase-file", passFileOf(t)})
+	if code == 0 {
+		t.Fatal("审计链坏了却恢复成功")
+	}
+	if !strings.Contains(stderrOf(deps), "审计链校验失败") {
+		t.Fatalf("stderr 必须点名验链失败：%q", stderrOf(deps))
 	}
 }
 

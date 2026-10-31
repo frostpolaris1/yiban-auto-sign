@@ -243,3 +243,11 @@ skills-lock.json
 
 # DSH 文件工具的更新锁（工具产物，非代码）
 .dsh-ops-update-*.lock
+
+# OCR 审查的镜像副本（AGENTS §9：审查代理把排除面复制到非排除路径，
+# 同时改名以取到 delegate rule）。它是一次性产物，绝不入库。
+_ocr_review_mirror/
+_ocr_review_*
+
+# 本机构建的 Windows 二进制（`go build ./cmd/cli` 会就地落盘 cli.exe）
+*.exe

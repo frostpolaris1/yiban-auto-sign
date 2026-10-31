@@ -2,6 +2,7 @@ package image
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"image"
 	"image/draw"
@@ -71,6 +72,10 @@ type Options struct {
 	// TargetMime 是输出格式。空串表示保持输入格式。
 	// 只接受 "image/jpeg" 与 "image/png"。
 	TargetMime string
+
+	// Decode 是同时解码的上限。nil 表示不限制（测试与一次性工具用）。
+	// 生产必须传：单张 40 MP 的 RGBA 约 160 MB。
+	Decode *Gate
 }
 
 // Output 是预处理结果。
@@ -103,7 +108,11 @@ type Output struct {
 //
 // # 失败口径
 // 无效图片、超出上限都返回 errs.CodeValidation。本函数不 panic。
-func Prepare(input []byte, opt Options) (Output, error) {
+func Prepare(ctx context.Context, input []byte, opt Options) (Output, error) {
+	if err := opt.Decode.acquire(ctx); err != nil {
+		return Output{}, errs.New(errs.CodeInternal, "image decode canceled")
+	}
+	defer opt.Decode.release()
 	if opt.TargetMime != "" && opt.TargetMime != mimeJPEG && opt.TargetMime != mimePNG {
 		return Output{}, errs.New(errs.CodeValidation, "target mime must be image/jpeg or image/png")
 	}

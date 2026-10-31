@@ -70,6 +70,9 @@ case "$1" in
 esac
 exit 0
 `)
+	// 有 DSN 时 update.sh 要求迁移前快照：装个成功的 pg_dump 桩，
+	// 本用例关心的是 .env 原文（含 & 与 #）能原样交给 cli。
+	fakePgDump(t, binDir)
 	env := map[string]string{
 		"YIBAN_INSTALL_ROOT":          root,
 		"SYSTEMCTL":                   sysctl,
