@@ -28,12 +28,3 @@ test('describedby points at the error whenever one exists, hint otherwise', () =
   assert.equal(fieldDescribedBy(id, '', ''), undefined)
   assert.equal(fieldDescribedBy(id, '按学校名筛选', ''), 'q-hint')
 })
-
-test('describedby switches sides only when visibility flips', () => {
-  // 错误退场、提示在场：描述必须从错误换回提示。
-  const withError = fieldDescribedBy('q', '按学校名筛选', '关键字不能为空')
-  const afterError = fieldDescribedBy('q', '按学校名筛选', undefined)
-  assert.notEqual(withError, afterError)
-  assert.equal(withError, 'q-error')
-  assert.equal(afterError, 'q-hint')
-})

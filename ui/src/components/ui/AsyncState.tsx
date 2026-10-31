@@ -29,6 +29,7 @@ type AsyncStateProps = {
   retryLabel?: string
   loadingLabel?: string
   emptyLabel?: string
+  /** 非数据态的外层类。数据态不加包裹层，故该值不生效。 */
   className?: string
   /** 数据态内容。其余四态下不渲染。 */
   children: ReactNode
@@ -53,9 +54,11 @@ export function AsyncState({
     return <>{children}</>
   }
   if (status === 'error') {
+    // 空串与 null 同判为缺省：错误态不能渲染成没有文字的 alert。
+    const shownError = error ? error : DEFAULT_ERROR
     return (
       <div className={cx('app-async-error', className)}>
-        <Alert tone="danger">{error}</Alert>
+        <Alert tone="danger">{shownError}</Alert>
         {onRetry ? (
           <Button variant="outline-danger" size="sm" onClick={onRetry}>
             {retryLabel}

@@ -36,13 +36,13 @@ export function BusyButton({
 }: BusyButtonProps) {
   return (
     <Button
+      {...rest}
       type={type}
       variant={variant}
       size={size}
       className={className}
       disabled={disabled || busy}
       aria-busy={busy ? true : undefined}
-      {...rest}
     >
       {busy ? (
         <>
