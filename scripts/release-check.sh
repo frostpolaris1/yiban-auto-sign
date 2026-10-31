@@ -190,7 +190,8 @@ check_backup() {
 #   TestUpdateShRollsBackOnFailedMigration。2026-10-31（E-2）起演练正本＝
 #   scripts/e2e/update-rollback-e2e.sh（U3 迁移失败／U4 健康失败／U5 正常升级，
 #   一次性 systemd 容器真跑 update.sh；容器外跑 run 被守卫拒绝，exit 2 零写入）。
-#   旧线 deploy_gate.sh --phase B 随旧栈退役，不再指向。
+#   旧线 deploy_gate.sh --phase B：本项不再指向；脚本与旧线 CI 仍在
+#   （phase B 未删）。
 check_rollback() {
     STATUS_rollback=FAIL; REASON_rollback=""
     local upd="$ROOT/deploy/linux/update.sh"

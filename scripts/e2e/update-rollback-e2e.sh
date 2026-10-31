@@ -19,11 +19,12 @@
 #
 # 安全守卫（硬要求，上一版事故的对症门）：
 #   演练步骤（run 子命令）只准在演练容器内执行。守卫要求
-#   /etc/yiban-e2e-container 标记文件与主机名前缀同时成立；
-#   容器创建时由驱动写入标记。容器外跑 run 一律 exit 2 且零写入
+#   /etc/yiban-e2e-container 标记文件存在且容器主机名与标记内容同值；
+#   标记内容由驱动在创建容器时写入（＝主机名配置值），判据与配置同源。
+#   容器外跑 run 一律 exit 2 且零写入
 #   （守卫在 e2e_init 建目录之前执行）。update.sh 只在容器内被调用，
 #   驱动模式永不执行它。驱动 H1 步每次现演这条负向用例：
-#   在宿主上跑 run → 必须退 2、安装位逐字节不变。
+#   在宿主上跑 run → 必须退 2、安装位元数据快照一致（名称/类型/大小/mtime）。
 #
 # 模式：
 #   update-rollback-e2e.sh host --log-dir DIR [--keep]   宿主驱动（缺省子命令）
@@ -39,7 +40,6 @@
 # 步骤（容器内 run）：
 #   R1 基线安装（install.sh + v1）与守卫自证
 #   R2 U3 迁移失败回滚     R3 U4 健康失败回滚     R4 U5 正常升级
-#   R5 汇总
 #
 # 失败口径：退出码 1，打印 failed step: <ID> <标题>；每步日志在 --log-dir。
 # 退出码 2 = 用法、环境错误，或守卫拒绝。
@@ -75,14 +75,21 @@ die_usage() {
 }
 
 # ---- 容器守卫（run 模式专用，先于一切写入） --------------------------------
-# 判据两件同时成立：标记文件 + 主机名前缀。任一不成立 → exit 2。
+# 判据两件同时成立：标记文件存在 + 容器主机名与标记内容同值。
+# 标记内容由驱动在创建容器时写入（＝ROLLBACK_E2E_HOSTNAME 配置值），
+# 判据与配置同源；容器内无需重复解析配置。任一不成立 → exit 2。
 # 本函数不得创建任何文件或目录：容器外零写入靠它排在 e2e_init 之前。
 e2e_guard_container() {
-    local reason=""
+    local reason="" expected=""
     if [ ! -f /etc/yiban-e2e-container ]; then
         reason="marker file /etc/yiban-e2e-container is missing"
-    elif ! hostname | grep -q '^e2e-rollback'; then
-        reason="hostname $(hostname) does not start with e2e-rollback"
+    else
+        expected="$(head -n1 /etc/yiban-e2e-container 2>/dev/null | tr -d '[:space:]')"
+        if [ -z "$expected" ]; then
+            reason="marker file is empty or unreadable"
+        elif [ "$(hostname)" != "$expected" ]; then
+            reason="hostname $(hostname) does not match the marker hostname ($expected)"
+        fi
     fi
     if [ -n "$reason" ]; then
         echo "update-rollback-e2e: REFUSING to run the drill outside the e2e container: $reason" >&2
@@ -207,7 +214,8 @@ host_mode() {
     fi
     STARTED=1
     # 负向用例：宿主上直接跑演练步骤必须被守卫拒绝（exit 2、零写入、
-    # 安装位逐字节不变）。上次事故（YIBAN_INSTALL_ROOT 为空写穿真实
+    # 安装位元数据快照一致：名称/类型/大小/mtime）。
+    # 上次事故（YIBAN_INSTALL_ROOT 为空写穿真实
     # /etc/yiban、/usr/local/bin、pg_wrapper）由此门钉死。
     local snap_before guard_rc probe_dir
     snap_before="$(host_install_snapshot)"
@@ -221,7 +229,7 @@ host_mode() {
     [ ! -e "$probe_dir" ] || e2e_die "守卫自检：被拒的 run 在宿主创建了 $probe_dir（零写入被破坏）"
     [ "$(host_install_snapshot)" = "$snap_before" ] \
         || e2e_die "守卫自检：宿主安装位快照在被拒 run 前后不一致"
-    e2e_ok "docker 可达；宿主跑 run 被拒（rc=2），安装位快照一致"
+    e2e_ok "docker 可达；宿主跑 run 被拒（rc=2），安装位元数据快照一致"
 
     # ---- H2 OS 镜像 ---------------------------------------------------------
     e2e_step "H2" "OS 镜像（systemd + openssl）"
@@ -297,6 +305,9 @@ EOF
     # v2 = 仓库源码 + 00021（CREATE TABLE，U3 的迁移靶子）。
     # v3 = 仓库源码 + main() 起手 panic（U4 的健康靶子）。
     # v4 = 仓库源码 + 00021 + 00022（U5 的正常升级件）。
+    # 同一 --log-dir 复跑时旧树必须先清：cp -a 对已存在目标会把源嵌进
+    # <目标>/server/，挂载的仍是旧源码。
+    rm -rf "$LOG_DIR/srv-v2" "$LOG_DIR/srv-v3" "$LOG_DIR/srv-v4"
     cp -a "$REPO/server" "$LOG_DIR/srv-v2"
     cat > "$LOG_DIR/srv-v2/migrations/postgres/00021_e2e_rollback_probe.sql" <<'EOF'
 -- +goose Up
@@ -326,6 +337,18 @@ SELECT 1;
 -- +goose Down
 SELECT 1;
 EOF
+    # 嵌套自检：拷贝后的 scratch 树顶层必须是源码根。
+    # 挂载点对着顶层；嵌套一层时构建的「新版」就是旧源码（判据静默失效）。
+    for d in srv-v2 srv-v3 srv-v4; do
+        [ -f "$LOG_DIR/$d/go.mod" ] \
+            || e2e_die "$d 顶层缺 go.mod（源码被嵌套拷贝，挂载的不是顶层源码）"
+        [ ! -d "$LOG_DIR/$d/server" ] \
+            || e2e_die "$d 内出现嵌套 server/ 目录（cp 目标已存在）"
+    done
+    [ -f "$LOG_DIR/srv-v2/migrations/postgres/00021_e2e_rollback_probe.sql" ] \
+        || e2e_die "srv-v2 顶层缺 00021 演练迁移"
+    [ -f "$LOG_DIR/srv-v4/migrations/postgres/00022_e2e_version_bump.sql" ] \
+        || e2e_die "srv-v4 顶层缺 00022 演练迁移"
     cat > "$LOG_DIR/build-all.sh" <<'EOF'
 #!/bin/sh
 # 四组二进制一次编译：共享 GOCACHE/GOPATH（挂载卷，跨次运行复用）。
@@ -376,7 +399,9 @@ EOF
         e2e_die "启动 OS 容器失败"
     fi
     # 标记先行：任何后续 exec 之前，守卫判据已成立。
-    docker exec "$OS" touch /etc/yiban-e2e-container >>"$E2E_STEP_LOG" 2>&1 \
+    # 标记文件内容＝演练主机名（ROLLBACK_E2E_HOSTNAME 配置值）：守卫判据与配置同源。
+    printf '%s\n' "$OS_HOSTNAME" > "$LOG_DIR/container-marker"
+    docker cp "$LOG_DIR/container-marker" "$OS:/etc/yiban-e2e-container" >>"$E2E_STEP_LOG" 2>&1 \
         || e2e_die "写容器标记失败"
     docker exec "$OS" test -f /etc/yiban-e2e-container >>"$E2E_STEP_LOG" 2>&1 \
         || e2e_die "容器标记不存在"
@@ -427,7 +452,9 @@ EOF
         e2e_die "从 $PG_IMAGE 提取 pg 客户端失败（tar 中转见 $PGTOOLS_TAR）"
     fi
     PGTOOLS_COUNT="$(tar -tf "$PGTOOLS_TAR" | wc -l | tr -d '[:space:]')"
-    [ "$PGTOOLS_COUNT" -eq 20 ] || e2e_die "pg 客户端 tar 应含 20 项，实得 $PGTOOLS_COUNT"
+    PGTOOLS_EXPECTED=$((2 + $(printf '%s' "$PG_LIBS" | wc -w)))
+    [ "$PGTOOLS_COUNT" -eq "$PGTOOLS_EXPECTED" ] \
+        || e2e_die "pg 客户端 tar 应含 $PGTOOLS_EXPECTED 项（2 个客户端 + $((PGTOOLS_EXPECTED - 2)) 个库），实得 $PGTOOLS_COUNT"
     docker cp "$PGTOOLS_TAR" "$OS:/opt/pg18/tools.tar" >>"$E2E_STEP_LOG" 2>&1 || e2e_die "复制 pg 客户端 tar 失败"
     docker exec "$OS" tar -xf /opt/pg18/tools.tar -C /opt/pg18 >>"$E2E_STEP_LOG" 2>&1 \
         || e2e_die "容器内解包 pg 客户端失败"
@@ -466,6 +493,8 @@ EOF
         >"$E2E_STEP_LOG" 2>&1 || DRILL_RC=$?
     if [ "$DRILL_RC" -ne 0 ]; then
         e2e_fail "容器内演练 rc=$DRILL_RC；明细见 container-run/run.log"
+        # 失败也要落 result=FAIL：文档口径是 run.log 末尾必有 PASS/FAIL 结论。
+        e2e_summary || true
         exit "$DRILL_RC"
     fi
     e2e_ok "容器内演练 rc=0"
@@ -531,7 +560,19 @@ run_mode() {
     psql_app() { psql "$APP_DSN" -v ON_ERROR_STOP=1 -tAc "$1"; }
     goose_version() { psql_app "select coalesce(max(version_id), 0) from goose_db_version where is_applied" | tr -d '[:space:]'; }
     unit_active() { systemctl is-active "$UNIT" 2>/dev/null || true; }
-    health_ok() { "$CLI_DEST" healthcheck --addr "$HEALTH_ADDR" --timeout 2s >/dev/null 2>&1; }
+    # 单次探活有假红窗口：Type=simple 的 start 在 bind 前返回。
+    # 有界重试 10 次 × 1s，重试耗尽才红（与 update.sh 自身探活同级）。
+    health_ok() {
+        local i=1
+        while [ "$i" -le 10 ]; do
+            if "$CLI_DEST" healthcheck --addr "$HEALTH_ADDR" --timeout 2s >/dev/null 2>&1; then
+                return 0
+            fi
+            sleep 1
+            i=$((i + 1))
+        done
+        return 1
+    }
     # assert_eq <说明> <got> <want>：不等即点名失败步骤并退出。
     assert_eq() {
         if [ "$2" != "$3" ]; then
@@ -591,6 +632,8 @@ run_mode() {
         --allow-unsigned >"$E2E_LOG_DIR/U3-update.log" 2>&1 || U3_RC=$?
     grep -q 'migrate FAILED' "$E2E_LOG_DIR/U3-update.log" \
         || e2e_die "U3：update.sh 未在迁移处失败（日志无 migrate FAILED）；见 U3-update.log"
+    grep -q 'permission denied for schema public' "$E2E_LOG_DIR/U3-update.log" \
+        || e2e_die "U3：迁移失败原因不是 schema 权限（缺 permission denied for schema public）；见 U3-update.log"
     assert_eq "U3 update.sh 退出码" "$U3_RC" "1"
     assert_eq "U3 安装位仍是旧二进制" "$(sha "$SERVER_DEST")" "$SHA_V1"
     [ ! -e "$SERVER_DEST.bak" ] || e2e_die "U3：迁移失败不应产生 .bak"

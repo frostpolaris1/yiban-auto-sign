@@ -25,7 +25,7 @@ bash scripts/e2e/update-rollback-e2e.sh host --log-dir <日志目录>
 ```
 
 三条都在仓库根目录执行。三条都在 WSL 或 Linux 上跑。
-三条都只写 `work/` 与 docker 资源，不碰生产路径。
+三条都写 `--log-dir` 指定目录与 docker 资源，不碰生产路径。
 
 常用选项：
 
@@ -177,13 +177,14 @@ ROLLBACK_E2E_GOPROXY=https://goproxy.cn,direct \
 安全守卫（对症上一次「宿主误跑 update.sh 写穿真实安装位」的事故）：
 
 - 演练步骤只认 `run` 子命令；`run` 必须在演练容器内执行。
-- 判据＝标记文件 `/etc/yiban-e2e-container` ＋ 主机名前缀 `e2e-rollback`，
-  两件同时成立。容器创建时由驱动写标记。
+- 判据＝标记文件 `/etc/yiban-e2e-container`（内容由驱动创建容器时写入，
+  为演练主机名配置值）＋ 容器主机名与标记同值。两件同时成立。
 - 容器外跑 `run`：退出码 2，**零写入**（守卫先于日志目录创建）。
 - 驱动永不执行 `update.sh`；它只做 docker 编排。
 - 驱动 H1 步每次现演负向用例：在宿主跑 `run` → 必须退 2、
-  安装位快照（`/usr/local/bin/yiban-*`、`/etc/yiban`、`/var/lib/yiban`、
-  `/usr/lib/postgresql-common/pg_wrapper`）逐字节不变。
+  安装位元数据快照一致（`/usr/local/bin/yiban-*`、`/etc/yiban`、
+  `/var/lib/yiban`、`/usr/lib/postgresql-common/pg_wrapper` 的
+  名称/类型/大小/mtime）。
 - 无参数调用：打印用法，退出码 2，零写入。
 
 ### 8.2 阶段与判据
@@ -192,19 +193,19 @@ ROLLBACK_E2E_GOPROXY=https://goproxy.cn,direct \
 
 | 步骤 | 断言 |
 |------|------|
-| H1 | docker 可用；宿主跑 `run` 被守卫拒绝（rc=2、零写入、安装位快照一致） |
+| H1 | docker 可用；宿主跑 `run` 被守卫拒绝（rc=2、零写入、安装位元数据快照一致） |
 | H2 | OS 镜像含真 systemd 与 openssl（缺则按裸机同款 Dockerfile 构建） |
 | H3 | PostgreSQL 18 就绪；应用角色 `yiban`（非超级用户、非库属主）有 public CREATE |
 | H4 | 四组二进制（v1..v4）真编译产出，server sha256 两两不同 |
 | H5 | 演练容器 systemd 就绪；标记已写；`pg_dump`/`psql`（PG18 客户端）容器内可用 |
-| H6 | 容器内演练（R1..R5）退出码 0 |
+| H6 | 容器内演练（R1..R4）退出码 0 |
 
 容器内演练步骤（前缀 R）：
 
 | 步骤 | 断言 |
 |------|------|
 | R1 | `install.sh` 装 v1 退出 0；unit active；独立 healthcheck 通过；schema 版本＝迁移目录最大编号 |
-| R2（U3） | 对应用角色 `REVOKE CREATE ON SCHEMA public` 后跑 `update.sh`（新版含真迁移 00021）：退出码 1；安装位仍是 v1；无 `.bak`/`.new` 残留；unit active；healthz OK；schema 版本不前进 |
+| R2（U3） | 对应用角色 `REVOKE CREATE ON SCHEMA public` 后跑 `update.sh`（新版含真迁移 00021）：退出码 1；日志含 `permission denied for schema public`（失败原因钉在 schema 权限）；安装位仍是 v1；无 `.bak`/`.new` 残留；unit active；healthz OK；schema 版本不前进 |
 | R3（U4） | 权限归还后跑 `update.sh`（新版 `main()` 起手 panic，迁移集与 v1 相同）：退出码 1；安装位换回 v1；`.bak` 无残留；unit active；healthz OK |
 | R4（U5） | 正常升级（新版含迁移 00021＋00022）：退出码 0；安装位＝v4；`.bak` 存在且＝v1（升级前旧件）；unit active；healthz OK；schema 版本＋2；`e2e_rollback_probe` 表存在 |
 
@@ -218,7 +219,8 @@ U3 的注入手法：迁移 SQL 嵌在二进制里改不了，演练在编译期
 应用角色不是超级用户也不是库属主，REVOKE 才咬得住。
 
 E-3 之后演练的三次 `update.sh` 全部显式带 `--allow-unsigned`
-（默认拒未签名的正路径由 `deploy-baremetal-e2e.sh` B4b 覆盖）。
+（默认拒未签名的守卫是 `server/cmd/cli/install_update_e2e_test.go`
+的 `TestUpdateShDeniesUnsignedByDefault`）。
 
 ### 8.3 耗时与前置
 
