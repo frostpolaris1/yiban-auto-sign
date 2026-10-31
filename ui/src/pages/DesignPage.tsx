@@ -18,6 +18,7 @@ import { FormsSection } from '@/features/design/FormsSection'
 import { IndicatorsSection } from '@/features/design/IndicatorsSection'
 import { NavigationSection } from '@/features/design/NavigationSection'
 import { OverlaysSection } from '@/features/design/OverlaysSection'
+import { SharedSection } from '@/features/design/SharedSection'
 import { TableSection } from '@/features/design/TableSection'
 import { TokensSection } from '@/features/design/TokensSection'
 
@@ -40,6 +41,7 @@ export function DesignPage() {
         <ButtonsSection />
         <FormsSection />
         <FeedbackSection />
+        <SharedSection />
         <IndicatorsSection />
         <OverlaysSection />
         <TableSection />

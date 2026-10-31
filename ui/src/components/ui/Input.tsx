@@ -13,6 +13,7 @@
 
 import type { ComponentPropsWithoutRef, ReactNode } from 'react'
 import { cx } from '@/lib/cx'
+import { fieldDescribedBy, fieldErrorId, fieldHintId } from '@/lib/field-aria'
 import { Icon, type IconName } from '@/components/ui/Icon'
 
 type FieldShellProps = {
@@ -37,12 +38,12 @@ function FieldShell({ id, label, hint, error, required, children }: FieldShellPr
       </label>
       {children}
       {hint && !error ? (
-        <div className="field-help" id={`${id}-hint`}>
+        <div className="field-help" id={fieldHintId(id)}>
           {hint}
         </div>
       ) : null}
       {error ? (
-        <div className="field-error" id={`${id}-error`} role="alert">
+        <div className="field-error" id={fieldErrorId(id)} role="alert">
           <Icon name="alertCircle" size={11} />
           {error}
         </div>
@@ -75,7 +76,7 @@ export function TextInput({
   className,
   ...rest
 }: TextInputProps) {
-  const describedBy = error ? `${id}-error` : hint ? `${id}-hint` : undefined
+  const describedBy = fieldDescribedBy(id, hint, error)
   const control = (
     <input
       id={id}
@@ -114,7 +115,7 @@ export type SelectInputProps = CommonFieldProps &
   }
 
 export function SelectInput({ id, label, hint, error, required, options, className, ...rest }: SelectInputProps) {
-  const describedBy = error ? `${id}-error` : hint ? `${id}-hint` : undefined
+  const describedBy = fieldDescribedBy(id, hint, error)
   return (
     <FieldShell id={id} label={label} hint={hint} error={error} required={required}>
       <select
@@ -138,7 +139,7 @@ export function SelectInput({ id, label, hint, error, required, options, classNa
 export type TextAreaInputProps = CommonFieldProps & Omit<ComponentPropsWithoutRef<'textarea'>, 'id'>
 
 export function TextAreaInput({ id, label, hint, error, required, className, ...rest }: TextAreaInputProps) {
-  const describedBy = error ? `${id}-error` : hint ? `${id}-hint` : undefined
+  const describedBy = fieldDescribedBy(id, hint, error)
   return (
     <FieldShell id={id} label={label} hint={hint} error={error} required={required}>
       <textarea

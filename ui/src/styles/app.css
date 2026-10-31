@@ -794,3 +794,25 @@
 .app-settings-grid {
   align-items: start;
 }
+
+/* ---------- UX-0 共用件 ----------
+ * AsyncState 的行内等待与空态：一行静默文案，等待态前缀加载环。
+ * 错误态复用 .alert danger，不在此重复配色。
+ * 颜色只取令牌，明暗两套同源。
+ */
+.app-async-state {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  color: var(--t-muted);
+  font-size: 13px;
+}
+
+.app-async-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 6px 0;
+}
