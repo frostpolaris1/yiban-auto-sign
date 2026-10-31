@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/cookiejar"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +33,7 @@ import (
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
 	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 )
 
@@ -150,10 +152,10 @@ func u1SeedDeletedUser(t *testing.T, e *authEnv, email, bossID string) coreuser.
 	if err != nil {
 		t.Fatalf("seed user %s: %v", email, err)
 	}
-	if err := e.users.SoftDelete(e.ctx, rec.ID, bossID, time.Now().UTC()); err != nil {
+	if err := e.users.SoftDelete(e.ctx, rec.ID, bossID, clock.System{}.Now().UTC()); err != nil {
 		t.Fatalf("soft delete %s: %v", email, err)
 	}
-	rec.DeletedAt = ptrTime(time.Now().UTC())
+	rec.DeletedAt = ptrTime(clock.System{}.Now().UTC())
 	return rec
 }
 
@@ -555,6 +557,8 @@ func TestUX1G7Lookup(t *testing.T) {
 		for key := range item {
 			keys = append(keys, key)
 		}
+		// map 迭代序随机，先排序再比；判据是键集，不是 JSON 字段顺序。
+		sort.Strings(keys)
 		if strings.Join(keys, ",") != "email_masked,id,status" {
 			t.Fatalf("lookup item keys = %v, want exactly id, email_masked, status", keys)
 		}
@@ -581,7 +585,7 @@ func TestUX1G7Lookup(t *testing.T) {
 		}
 	}
 	// 软删行不可被 lookup 读到。
-	if err := e.users.SoftDelete(e.ctx, target.ID, boss.ID, time.Now().UTC()); err != nil {
+	if err := e.users.SoftDelete(e.ctx, target.ID, boss.ID, clock.System{}.Now().UTC()); err != nil {
 		t.Fatalf("soft delete needle: %v", err)
 	}
 	goneResp, gonePayload := u1Do(e, adminClient, http.MethodGet, "/api/users/lookup?q=g7-needle", nil, admin.CSRFToken)
@@ -646,7 +650,7 @@ func TestUX1G11SoftDeletedIsUnreachable(t *testing.T) {
 	w2dSeedUser(t, e, "g11-boss@example.com", "boss-pass", coreauth.RoleMaster)
 	boss := e.w2dLoginAs("g11-boss@example.com", "boss-pass")
 	victim := w2dSeedUser(t, e, "g11-victim@example.com", "victim-pass", coreauth.RoleUser)
-	if err := e.users.SoftDelete(e.ctx, victim.ID, boss.ID, time.Now().UTC()); err != nil {
+	if err := e.users.SoftDelete(e.ctx, victim.ID, boss.ID, clock.System{}.Now().UTC()); err != nil {
 		t.Fatalf("soft delete: %v", err)
 	}
 

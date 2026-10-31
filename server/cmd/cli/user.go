@@ -27,6 +27,23 @@ import (
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
+// cliSessions 是一次性 CLI 的会话端口占位。
+// create-master 不签发也不撤销会话；NewService 要求端口非空，故显式拒绝签发/解析。
+// 撤销返回 nil 是安全方向：本命令没有可撤销的会话。
+type cliSessions struct{}
+
+func (cliSessions) Issue(context.Context, coreauth.User) (coreauth.Issued, error) {
+	return coreauth.Issued{}, errors.New("user create-master: session issue is not available")
+}
+
+func (cliSessions) Resolve(context.Context, string) (coreauth.Session, error) {
+	return coreauth.Session{}, errors.New("user create-master: session resolve is not available")
+}
+
+func (cliSessions) Revoke(context.Context, string) error { return nil }
+
+func (cliSessions) RevokeAllForUser(context.Context, string) error { return nil }
+
 // runUser 处理 user 子命令。当前只有 create-master。
 // stdin 只服务 --password-stdin：口令走管道，不进进程 argv。
 func runUser(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -93,14 +110,17 @@ func runUser(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "user create-master: %v\n", err)
 		return 1
 	}
+	userRepo := pg.NewUserRepo(db)
 	svc, err := user.NewService(user.Deps{
-		Users: pg.NewUserRepo(db),
+		Users: userRepo,
 		Audit: audits,
 		Tx:    db,
 		Clock: coreclock.System{},
 		// 一次性 CLI：没有并发面，不引入进程级闸。
-		KDF:   coreauth.PlainHasher{},
-		Limit: assembly.UserCapacityLimit,
+		KDF:           coreauth.PlainHasher{},
+		Limit:         assembly.UserCapacityLimit,
+		Sessions:      cliSessions{},
+		OwnerAccounts: userRepo,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "user create-master: %v\n", err)
