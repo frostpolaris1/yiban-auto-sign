@@ -900,6 +900,39 @@ func TestUX2LookupExactBeatsPrefix(t *testing.T) {
 	if len(exactPage.Items) != 1 || exactPage.Items[0].ID != two.ID {
 		t.Fatalf("exact lookup rows = %+v, want exactly %s", exactPage.Items, two.ID)
 	}
+
+	// 前缀语义下有两条，exact 同输入必须零条：exact 不是前缀（F4，
+	// 这条在 F1 之前的码上红——exact 被忽略落回前缀）。
+	var nonePage struct {
+		Items []u2LookupRef `json:"items"`
+	}
+	noneResp, nonePayload := u2Do(e, e.client, http.MethodGet,
+		"/api/users/lookup?q=a.&exact=true", nil, "")
+	if noneResp.StatusCode != http.StatusOK {
+		t.Fatalf("exact prefix-shape lookup = %d; body=%q", noneResp.StatusCode, nonePayload)
+	}
+	if err := json.Unmarshal(nonePayload, &nonePage); err != nil {
+		t.Fatalf("decode exact prefix-shape lookup: %v", err)
+	}
+	if len(nonePage.Items) != 0 {
+		t.Fatalf("exact lookup with a prefix query returned %d rows, want 0", len(nonePage.Items))
+	}
+
+	// 大写入参经归一后全等命中：钉 NormalizeEmail 口径（F4）。
+	var upperPage struct {
+		Items []u2LookupRef `json:"items"`
+	}
+	upperResp, upperPayload := u2Do(e, e.client, http.MethodGet,
+		"/api/users/lookup?q=A.TWO%40EXAMPLE.COM&exact=true", nil, "")
+	if upperResp.StatusCode != http.StatusOK {
+		t.Fatalf("uppercase exact lookup = %d; body=%q", upperResp.StatusCode, upperPayload)
+	}
+	if err := json.Unmarshal(upperPayload, &upperPage); err != nil {
+		t.Fatalf("decode uppercase exact lookup: %v", err)
+	}
+	if len(upperPage.Items) != 1 || upperPage.Items[0].ID != two.ID {
+		t.Fatalf("uppercase exact rows = %+v, want exactly %s", upperPage.Items, two.ID)
+	}
 }
 
 // --- 安全不变量：include_deleted 的可见面（M6） ----------------------------

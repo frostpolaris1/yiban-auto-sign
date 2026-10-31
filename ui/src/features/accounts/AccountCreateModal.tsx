@@ -50,9 +50,14 @@ type AccountCreateModalProps = {
 const UNREGISTERED_TEXT = '该邮箱未注册，请先在用户管理建号'
 const INCOMPLETE_EMAIL_TEXT = '请继续输入完整邮箱'
 
-/** 完整邮箱形状：本地部、@、域名各一段且域名带点。掩码无法区分同形地址。 */
+/**
+ * 完整邮箱形状：恰好一个 @、两侧非空、无空白。
+ * 与服务端 ValidEmail 同形（core/user，裁决 P3-5）：RFC 5321 允许无点域名，
+ * UI 不得强加「域名含点」——ops@intranet 是合法登录名（审查 F3）。
+ * 掩码无法区分同形地址，故 exact 全等匹配才是绑定依据。
+ */
 function isCompleteEmail(value: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
+  return /^[^\s@]+@[^\s@]+$/.test(value)
 }
 
 export function AccountCreateModal({

@@ -883,9 +883,11 @@ test('ux2 master: same-mask users bind by exact email, an unfinished input canno
   expect(createCalls(api), 'an unfinished email must not create').toHaveLength(0)
   expect(api.calls.filter((call) => call.path === '/api/users/lookup')).toHaveLength(0)
 
-  // 完整邮箱只绑那一条：a.one 提交带 a-one 的 id。
+  // 完整邮箱只绑那一条：a.one 提交带 a-one 的 id；检索带 exact=true（F4）。
   await dialog.getByLabel('绑定用户（选填）').fill('a.one@example.com')
   await expect(dialog.getByText('a***@example.com')).toBeVisible()
+  const lastLookup = api.calls.filter((call) => call.path === '/api/users/lookup').at(-1)
+  expect(lastLookup?.params.exact, 'the owner picker must query exact').toBe('true')
   await dialog.getByRole('button', { name: '提交' }).click()
   await expect.poll(() => createCalls(api).length).toBe(1)
   expect(createCalls(api)[0].body).toMatchObject({ owner_user_id: 'user-a-one' })
@@ -902,6 +904,28 @@ test('ux2 master: same-mask users bind by exact email, an unfinished input canno
   await dialog2.getByRole('button', { name: '提交' }).click()
   await expect.poll(() => createCalls(api).length).toBe(2)
   expect(createCalls(api)[1].body).toMatchObject({ owner_user_id: 'user-a-two' })
+})
+
+test('ux2 master: a dotless-domain email passes the completeness gate and binds exactly', async ({
+  page,
+}) => {
+  const api = await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+
+  // ops@intranet 服务端可建号可登录（ValidEmail，裁决 P3-5）：
+  // UI 的完整邮箱判定不得比服务端严（F3）。
+  await page.getByRole('button', { name: '新建账号' }).click()
+  const dialog = page.getByRole('dialog')
+  await dialog.getByLabel('学校').selectOption({ label: '合成学校甲' })
+  await dialog.getByLabel('手机号').fill('13800000000')
+  await dialog.getByLabel('易班口令').fill('single-pass-1')
+  await dialog.getByLabel('绑定用户（选填）').fill('ops@intranet')
+  await expect(dialog.getByText('请继续输入完整邮箱')).toHaveCount(0)
+  await expect(dialog.getByText('o***@intranet')).toBeVisible()
+  await expect(dialog.getByRole('button', { name: '提交' })).toBeEnabled()
+  await dialog.getByRole('button', { name: '提交' }).click()
+  await expect.poll(() => createCalls(api).length).toBe(1)
+  expect(createCalls(api)[0].body).toMatchObject({ owner_user_id: 'user-intranet' })
 })
 
 test('ux2 user: the device block does not carry data across accounts', async ({ page }) => {
