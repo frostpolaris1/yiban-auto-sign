@@ -42,8 +42,10 @@ type New = coreuser.New
 // List 只返回未删除的行，并按 (created_at DESC, id DESC) 分页；
 // includeDeleted 置真时软删行也入选。
 // Restore 只恢复软删行，并在锁下重数活跃上限：**必须在事务内运行**。
-// CountLiveMasters 在锁下统计未删 master：**必须在事务内运行**，
-// 与 Create、Restore 同锁族，串行化并发的建号、降级与恢复。
+// CountLiveMasters 在锁下统计 active 未删 master（status='active'）：
+// **必须在事务内运行**，与 Create、Restore、Delete 同锁族，
+// 串行化并发的建号、降级、删除与恢复。停用 master 不能登录，
+// 不构成恢复路径，不计入（独立审查 P1-2）。
 // Lookup 按已归一邮箱前缀取未删行，按 email 升序取前 limit 条。
 type Repo interface {
 	Create(ctx context.Context, in New, limit int) (Record, error)

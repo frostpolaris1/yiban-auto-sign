@@ -34,14 +34,15 @@ func (s *Service) Restore(ctx context.Context, scope corescope.Scope, id string,
 	if scope.Kind() != corescope.KindMaster {
 		return Record{}, errs.New(errs.CodeForbidden, "master role is required")
 	}
-	if err := ensureUserID(id); err != nil {
+	normalized, err := ensureUserID(id)
+	if err != nil {
 		return Record{}, err
 	}
 	var record Record
-	err := s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
+	err = s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
 		now := s.deps.Clock.Now().UTC()
 		var err error
-		record, err = s.deps.Users.Restore(ctx, id, s.deps.Limit)
+		record, err = s.deps.Users.Restore(ctx, normalized, s.deps.Limit)
 		if err != nil {
 			return err
 		}

@@ -354,11 +354,14 @@ func (r *UserRepo) Restore(ctx context.Context, id string, limit int) (coreuser.
 	return coreuser.Record{}, capacityError()
 }
 
-// CountLiveMasters 统计未删 master（排除 excludeID）。
+// CountLiveMasters 统计 active 未删 master（排除 excludeID）。
+// 停用 master 不能登录（app/auth/login.go 要求 active），
+// 不构成恢复路径，故**不计入**（独立审查 P1-2）：
+// 若计入，A 停用 B 后 A 自降即可达零 active master 锁死。
 //
 // **必须在事务内运行**。先取 UserCapacityLock 再计数：
-// 与 Create、Restore 同锁族，串行化并发的建号、降级与恢复，
-// 防「两个 master 同时互降」把系统推向零 master。
+// 与 Create、Restore、Delete 同锁族，串行化并发的建号、降级、
+// 删除与恢复，防并发动作把系统推向零 active master。
 func (r *UserRepo) CountLiveMasters(ctx context.Context, excludeID string) (int, error) {
 	if !r.db.hasTx(ctx) {
 		return 0, ErrNoTransaction
@@ -369,7 +372,7 @@ func (r *UserRepo) CountLiveMasters(ctx context.Context, excludeID string) (int,
 	var n int
 	err := r.db.q(ctx).QueryRow(ctx, `
 		SELECT count(*) FROM users
-		 WHERE role = 'master' AND deleted_at IS NULL AND id <> $1::uuid`,
+		 WHERE role = 'master' AND status = 'active' AND deleted_at IS NULL AND id <> $1::uuid`,
 		excludeID).Scan(&n)
 	if err != nil {
 		return 0, mapError(err)

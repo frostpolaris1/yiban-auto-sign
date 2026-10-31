@@ -361,3 +361,62 @@ test('UX-1: delete then restore a user through the deleted toggle', async ({ pag
   await expect(page.getByRole('button', { name: '删除用户' })).toBeVisible()
   await expect.poll(() => listUserCalls(api).length).toBeGreaterThan(2)
 })
+
+// --- 独立审查修复的回归钉子（P2-4 / P2-5 / P3） ----------------------------
+
+test('UX-1: a blocked restore explains itself next to the restore button', async ({ page }) => {
+  const api = await mockUsersApi(page, {
+    role: 'master',
+    restoreError: { status: 409, code: 'conflict', message: 'conflict' },
+  })
+  await page.goto('/users')
+  await page.getByLabel('含已删除').check()
+  await expect(page.getByText(DELETED_USER.email)).toBeVisible()
+  await openManage(page, DELETED_USER.email)
+  await page.getByRole('button', { name: '恢复用户' }).click()
+
+  // 409 贴着恢复按钮出现，抽屉不关：操作者可以改完再试。
+  await expect(page.getByText('该邮箱已被其他用户使用，无法恢复')).toBeVisible()
+  await expect(page.getByRole('dialog').getByText('管理用户', { exact: true })).toBeVisible()
+  expect(callsTo(api, 'POST', `/api/users/${DELETED_USER.id}/restore`)).toHaveLength(1)
+})
+
+test('UX-1: going back resyncs the search input instead of re-committing it', async ({ page }) => {
+  const api = await mockUsersApi(page, { role: 'master' })
+  await openUsers(page)
+  const search = page.getByLabel('邮箱前缀筛选')
+  await search.fill('member')
+  await expect.poll(() => lastUserListCall(api)?.params.q).toBe('member')
+
+  await page.goBack()
+  await expect(page).toHaveURL(/\/users$/)
+  expect(page.url(), 'back drops the q param').not.toContain('q=')
+  // 输入框必须跟着 URL 清空；防抖窗过后不得把旧值写回。
+  await expect(search).toHaveValue('')
+  await page.waitForTimeout(450)
+  const withQ = listUserCalls(api).filter((call) => call.params.q !== undefined)
+  expect(withQ, 'back must not re-commit the stale input').toHaveLength(1)
+  expect(lastUserListCall(api)?.params.q).toBeUndefined()
+})
+
+test('UX-1: pressing Enter with the same value returns to the first page', async ({ page }) => {
+  const api = await mockUsersApi(page, {
+    role: 'master',
+    userPages: { '': [USERS[0]], c2: [USERS[1]] },
+    userNextCursors: { '': 'c2', c2: '' },
+  })
+  await page.goto('/users')
+  const search = page.getByLabel('邮箱前缀筛选')
+  await search.fill('admin')
+  await expect.poll(() => lastUserListCall(api)?.params.q).toBe('admin')
+  await page.getByRole('button', { name: '下一页' }).click()
+  await expect.poll(() => lastUserListCall(api)?.params.cursor).toBe('c2')
+
+  // 同值回车是显式动作：清游标回第一页。
+  await search.click()
+  await search.press('Enter')
+  await expect.poll(() => lastUserListCall(api)?.params.cursor).toBeUndefined()
+  expect(page.url(), 'the cursor leaves the URL').not.toContain('cursor=')
+  await expect(page.getByRole('button', { name: '上一页' })).toBeDisabled()
+  await expect(page.getByText('master-one@example.com')).toBeVisible()
+})

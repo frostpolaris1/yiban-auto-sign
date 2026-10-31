@@ -197,19 +197,27 @@ export function UserDetailDrawer({ user, returnFocusTo, onClose, onSync, onGone 
               </dl>
 
               {user.deleted_at ? (
-                <div className="app-detail-actions">
-                  <BusyButton
-                    variant="primary"
-                    busy={restoreMut.isPending}
-                    busyLabel="恢复中…"
-                    onClick={() => {
-                      setRestoreError(null)
-                      restoreMut.mutate(user)
-                    }}
-                  >
-                    恢复用户
-                  </BusyButton>
-                </div>
+                <>
+                  <div className="app-detail-actions">
+                    <BusyButton
+                      variant="primary"
+                      busy={restoreMut.isPending}
+                      busyLabel="恢复中…"
+                      onClick={() => {
+                        setRestoreError(null)
+                        restoreMut.mutate(user)
+                      }}
+                    >
+                      恢复用户
+                    </BusyButton>
+                  </div>
+                  {/* 恢复失败必须贴着恢复按钮：已删行不渲染下方分支（独立审查 P2-4）。 */}
+                  {restoreError ? (
+                    <div role="alert">
+                      <Alert tone="danger">{restoreError}</Alert>
+                    </div>
+                  ) : null}
+                </>
               ) : (
                 <>
                   <div className="app-detail-field">
@@ -284,11 +292,6 @@ export function UserDetailDrawer({ user, returnFocusTo, onClose, onSync, onGone 
                   {resetError ? (
                     <div role="alert">
                       <Alert tone="danger">{resetError}</Alert>
-                    </div>
-                  ) : null}
-                  {restoreError ? (
-                    <div role="alert">
-                      <Alert tone="danger">{restoreError}</Alert>
                     </div>
                   ) : null}
                 </>

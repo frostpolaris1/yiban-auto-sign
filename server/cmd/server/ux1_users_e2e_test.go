@@ -684,6 +684,76 @@ func TestUX1G11SoftDeletedIsUnreachable(t *testing.T) {
 	}
 }
 
+// --- 不变量：已停用 master 不构成恢复路径（P1-2） --------------------------
+
+// 模拟两名 active master 中 A 停用 B，再试图离开岗位。
+// 断言用户可见结果：停用 B 后 B 不能登录（不是恢复路径）；
+// A 自降与自停都 409，否则系统只剩一名永远无法登录的 master。
+func TestUX1G13DisabledMasterIsNoPath(t *testing.T) {
+	e := newAuthEnv(t)
+	w2dSeedUser(t, e, "g13-a@example.com", "a-pass", coreauth.RoleMaster)
+	w2dSeedUser(t, e, "g13-b@example.com", "b-pass", coreauth.RoleMaster)
+	a := e.w2dLoginAs("g13-a@example.com", "a-pass")
+	bClient := u1FreshClient(t)
+	b := u1LoginOn(e, bClient, "g13-b@example.com", "b-pass")
+
+	// A 停用 B：A 仍是唯一 active master，允许。
+	if resp, payload := u1Do(e, e.client, http.MethodPatch, "/api/users/"+b.ID,
+		map[string]any{"status": "disabled"}, a.CSRFToken); resp.StatusCode != http.StatusOK {
+		t.Fatalf("disable B = %d, want 200; body=%q", resp.StatusCode, payload)
+	}
+	// B 被停用后不能登录：登录要求 active（app/auth/login.go）。
+	bAgain, _ := u1Do(e, bClient, http.MethodPost, "/api/auth/login",
+		map[string]string{"email": "g13-b@example.com", "password": "b-pass"}, "")
+	if bAgain.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("disabled master login = %d, want 401", bAgain.StatusCode)
+	}
+	// A 自降与自停都 409。
+	for _, body := range []map[string]any{
+		{"role": "user"},
+		{"role": "admin"},
+		{"status": "disabled"},
+	} {
+		resp, payload := u1Do(e, e.client, http.MethodPatch, "/api/users/"+a.ID, body, a.CSRFToken)
+		if resp.StatusCode != http.StatusConflict {
+			t.Fatalf("patch %v on the last active master = %d, want 409; body=%q",
+				body, resp.StatusCode, payload)
+		}
+	}
+}
+
+// --- 不变量：非规范 UUID 不能绕过 self 判据（P1-1） ------------------------
+
+// 模拟唯一 master 用大写形式的自己的 id 发起删除与重置。
+// 断言用户可见结果：两次都 403、审计零行、行完好。
+// 大写、花括号、URN、32 位无连字符都会被 Postgres 的 ::uuid 定型命中同一行，
+// self 判据必须先归一化再比较。
+func TestUX1G14SelfBypassViaNonCanonicalUUID(t *testing.T) {
+	e := newAuthEnv(t)
+	w2dSeedUser(t, e, "g14-boss@example.com", "boss-pass", coreauth.RoleMaster)
+	boss := e.w2dLoginAs("g14-boss@example.com", "boss-pass")
+	upper := strings.ToUpper(boss.ID)
+
+	delResp, delPayload := u1Do(e, e.client, http.MethodDelete, "/api/users/"+upper, nil, boss.CSRFToken)
+	if delResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("self delete via uppercase id = %d, want 403; body=%q", delResp.StatusCode, delPayload)
+	}
+	if code, _ := errorCode(t, delPayload); code != "forbidden" {
+		t.Fatalf("self delete code = %q, want forbidden", code)
+	}
+	resetResp, resetPayload := u1Do(e, e.client, http.MethodPost,
+		"/api/users/"+upper+"/password-reset", nil, boss.CSRFToken)
+	if resetResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("self reset via uppercase id = %d, want 403; body=%q", resetResp.StatusCode, resetPayload)
+	}
+	if got := e.scalarInt("SELECT count(*) FROM audit_logs WHERE target_id = $1", boss.ID); got != 0 {
+		t.Fatalf("bypassed self actions wrote %d audit rows, want 0", got)
+	}
+	if got := e.scalarInt("SELECT count(*) FROM users WHERE id = $1 AND deleted_at IS NULL", boss.ID); got != 1 {
+		t.Fatal("the bypassed self delete still removed the user")
+	}
+}
+
 // --- 不变量：停用与软删立即杀会话 ------------------------------------------
 
 // 模拟目标用户在线时被停用、再被软删。

@@ -42,10 +42,11 @@ func (s *Service) PasswordReset(ctx context.Context, scope corescope.Scope, id s
 	if scope.Kind() != corescope.KindMaster {
 		return "", errs.New(errs.CodeForbidden, "master role is required")
 	}
-	if err := ensureUserID(id); err != nil {
+	normalized, err := ensureUserID(id)
+	if err != nil {
 		return "", err
 	}
-	if id == actor.UserID {
+	if normalized == actor.UserID {
 		return "", errs.New(errs.CodeForbidden, "resetting your own password is not allowed here")
 	}
 	temp, err := coreauth.NewToken()
@@ -59,8 +60,8 @@ func (s *Service) PasswordReset(ctx context.Context, scope corescope.Scope, id s
 	}
 	now := s.deps.Clock.Now().UTC()
 	err = s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
-		// 目标消失或已软删即 404：GetByID 只回未删行。
-		target, err := s.deps.Users.GetByID(ctx, id)
+		// 目标消失或已软删即 404：GetByID 只回未删行。用归一化 id。
+		target, err := s.deps.Users.GetByID(ctx, normalized)
 		if err != nil {
 			return err
 		}

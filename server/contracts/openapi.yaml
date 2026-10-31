@@ -313,12 +313,13 @@ paths:
       summary: Change a user's role or status.
       description: |
         Master only. A soft-deleted user is 404. Lowering the role of, or
-        disabling, the last live master is 409: at any moment there must
-        be at least one master row that is not soft-deleted. A disabled
-        master still counts, so it can be re-enabled. A role change
-        writes one user.role_change audit row and a status change writes
-        user.disable or user.enable; both take effect from the next
-        request because sessions resolve the user row every time.
+        disabling, the last active master is 409: at any moment there must
+        be at least one active master row that is not soft-deleted. A
+        disabled master cannot sign in, so it is not a recovery path and
+        does not count. A role change writes one user.role_change audit
+        row and a status change writes user.disable or user.enable; both
+        take effect from the next request because sessions resolve the
+        user row every time.
       x-roles: [master]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -353,7 +354,9 @@ paths:
       description: |
         Master only. A user cannot delete their own account (403).
         A user who still owns live accounts is 409: transfer or delete
-        the accounts first. Success soft-deletes the row, revokes every
+        the accounts first. Deleting the last active master is also 409:
+        the active-master invariant covers deletion. Success soft-deletes
+        the row, revokes every
         session of that user and writes one user.delete audit row. The
         row keeps its email; a later restore can conflict with a live
         user that has taken the address.

@@ -14,8 +14,10 @@
 // 目标不存在或已软删一律 404；id 不是 UUID 也报 404：
 // PATCH /api/users/lookup 沿 {id} 路由进来时按「目标不存在」回，
 // 不按形状回 400（lookup 静态段遮蔽判据，e2e 钉一次）。
-// 最后 master 判据只数未删 master，**不看 status**：
-// 唯一的 master 哪怕已停用也不许降级或停用，保证可恢复路径存在。
+// 最后 master 判据只数 active 未删 master（role='master' AND status='active'
+// AND deleted_at IS NULL）。停用 master 不能登录（app/auth/login.go 要求
+// active），不构成恢复路径；若计入停用行，A 停用 B 后 A 自降即可达
+// 零 active master 锁死（独立审查 P1-2）。
 // 计数在事务内 UserCapacityLock 下进行（端口注释），与建号、恢复串行化。
 // 两条审计相邻追加，中间不做任何工作（与 account.Update 同形状）。
 
@@ -41,13 +43,18 @@ type UpdateInput struct {
 	Status *coreauth.Status
 }
 
-// ensureUserID 拒绝非 UUID 的目标 id，统一报 not_found。
-// 软删与不存在同判：对调用方不泄露行是否存在。
-func ensureUserID(id string) error {
-	if _, err := uuid.Parse(id); err != nil {
-		return errs.New(errs.CodeNotFound, "user not found")
+// ensureUserID 归一化目标 id 并拒绝非 UUID 字面量。
+// google/uuid 的 Parse 接受大写、花括号、urn:uuid: 前缀与 32 位无连字符形，
+// 它们都能通过 Postgres 的 ::uuid 定型命中同一行；
+// self 判据若用原始串比较，非规范形即可绕过（独立审查 P1-1）。
+// 因此**返回小写规范形**：self 比较与全部仓储调用只用返回值。
+// 非 UUID 字面量（lookup 静态段遮蔽）与不存在同判 404。
+func ensureUserID(id string) (string, error) {
+	parsed, err := uuid.Parse(id)
+	if err != nil {
+		return "", errs.New(errs.CodeNotFound, "user not found")
 	}
-	return nil
+	return parsed.String(), nil
 }
 
 // Update 改一个用户的角色或状态。**只有 master 可以调用**。
@@ -58,7 +65,8 @@ func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, 
 	if scope.Kind() != corescope.KindMaster {
 		return Record{}, errs.New(errs.CodeForbidden, "master role is required")
 	}
-	if err := ensureUserID(id); err != nil {
+	normalized, err := ensureUserID(id)
+	if err != nil {
 		return Record{}, err
 	}
 	if in.Role == nil && in.Status == nil {
@@ -72,9 +80,9 @@ func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, 
 	}
 
 	var record Record
-	err := s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
+	err = s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
 		now := s.deps.Clock.Now().UTC()
-		target, err := s.deps.Users.GetByID(ctx, id)
+		target, err := s.deps.Users.GetByID(ctx, normalized)
 		if err != nil {
 			return err
 		}
@@ -86,7 +94,7 @@ func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, 
 				return err
 			}
 			if live == 0 {
-				return errs.New(errs.CodeConflict, "the last master cannot be demoted or disabled")
+				return errs.New(errs.CodeConflict, "the last active master cannot be demoted or disabled")
 			}
 		}
 		roleChanged := in.Role != nil && *in.Role != target.Role
@@ -102,7 +110,8 @@ func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, 
 			}
 		}
 		// 重读一次让响应带真实状态；重读之后只剩相邻的两条审计追加。
-		record, err = s.deps.Users.GetByID(ctx, id)
+		// 仓储调用一律用归一化 id（P1-1 补漏：此处原用 raw id）。
+		record, err = s.deps.Users.GetByID(ctx, normalized)
 		if err != nil {
 			return err
 		}

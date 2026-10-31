@@ -9,6 +9,7 @@
  * 角色来自 `GET /api/auth/me`。无 view 权限时不发用户列表请求，
  * 只渲染无权限卡片；导航项由 `nav.ts` 的角色元数据隐藏。
  * URL 是筛选与游标的唯一事实源：`?role&status&q&deleted&cursor`。
+ * 筛选与游标的写回一律 push：后退＝撤销最近一次筛选或翻页。
  * 解析与序列化在 `urlState.ts`；路由的写回由 `UsersPage` 注入。
  * 搜索输入防抖 250ms；回车立即生效，不等防抖。
  * 任一筛选变化回到第一页：游标从 URL 移除。
@@ -55,6 +56,12 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
   const allowed = roleAllowed(role, USER_VIEW_ROLES)
 
   const [qInput, setQInput] = useState(urlState.q ?? '')
+  // URL 是输入框的回灌源（独立审查 P2-5）：后退清掉 ?q 时输入框必须同步清空，
+  // 否则 250ms 后防抖会把旧值写回 URL，后退等于失效。
+  const urlQuery = urlState.q
+  useEffect(() => {
+    setQInput(urlQuery ?? '')
+  }, [urlQuery])
   // 游标栈只在会话内记「上一页」；URL 是当前页的游标事实源。
   const [stack, setStack] = useState<CursorStack>(() =>
     urlState.cursor ? { cursors: [undefined, urlState.cursor], index: 1 } : emptyCursorStack(),
@@ -69,18 +76,17 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
 
   const cursor = currentCursor(stack)
 
-  /** 提交当前输入框的值。值与已生效值相同也回第一页，末尾位置不保留。 */
+  /** 回车是显式动作：同值也回第一页，末尾位置不保留（独立审查 P3）。 */
   const commitQuery = () => {
     const next = qInput.trim() || undefined
-    if (next === (urlState.q ?? undefined)) return
-    onSearchChange(withFilter(urlState, { q: next }), { replace: true })
+    onSearchChange(withFilter(urlState, { q: next }))
   }
 
   useEffect(() => {
     const next = qInput.trim() || undefined
     if (next === (urlState.q ?? undefined)) return
     const timer = window.setTimeout(() => {
-      onSearchChange(withFilter(urlState, { q: next }), { replace: true })
+      onSearchChange(withFilter(urlState, { q: next }))
     }, SEARCH_DEBOUNCE_MS)
     return () => window.clearTimeout(timer)
   }, [qInput, urlState, onSearchChange])
@@ -166,9 +172,10 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
           <UserFilters
             values={urlState}
             qInput={qInput}
-            onRoleChange={(next) => onSearchChange(withFilter(urlState, { role: next }), { replace: true })}
-            onStatusChange={(next) => onSearchChange(withFilter(urlState, { status: next }), { replace: true })}
-            onDeletedChange={(next) => onSearchChange(withFilter(urlState, { deleted: next }), { replace: true })}
+            // 筛选写 URL 一律 push：后退＝撤销最近一次筛选。
+            onRoleChange={(next) => onSearchChange(withFilter(urlState, { role: next }))}
+            onStatusChange={(next) => onSearchChange(withFilter(urlState, { status: next }))}
+            onDeletedChange={(next) => onSearchChange(withFilter(urlState, { deleted: next }))}
             onQInputChange={setQInput}
             onQCommit={commitQuery}
           />
