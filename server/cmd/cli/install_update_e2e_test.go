@@ -6,6 +6,7 @@ package main
 // 假根目录（YIBAN_INSTALL_ROOT）+ 假 systemctl（SYSTEMCTL）+
 // 假二进制：断言文件树落位、systemd 调用序列、健康检查重试、
 // 以及 update 的迁移失败回滚分支。
+// 无签名调用点显式带 --allow-unsigned：默认强制验签（E-3）的逃生口。
 // 本文件**不**装真服务、**不**碰真 /etc、**不**要求 root。
 //
 // # 口径
@@ -289,7 +290,7 @@ exit 0
 	}
 
 	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
-		"--server-bin", newBin, "--cli-bin", cliBin)
+		"--server-bin", newBin, "--cli-bin", cliBin, "--allow-unsigned")
 	if rc == 0 {
 		t.Fatalf("failed migration must fail the update; out=%s", out)
 	}
@@ -314,7 +315,7 @@ exit 0
 		t.Fatalf("disarm migrate fail: %v", err)
 	}
 	out, rc = runScript(t, scriptPath(t, "update.sh"), env,
-		"--server-bin", newBin, "--cli-bin", cliBin)
+		"--server-bin", newBin, "--cli-bin", cliBin, "--allow-unsigned")
 	if rc != 0 {
 		t.Fatalf("successful update: rc=%d out=%s", rc, out)
 	}
@@ -386,7 +387,7 @@ exit 0
 	}
 
 	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
-		"--server-bin", newBin, "--cli-bin", cliBin)
+		"--server-bin", newBin, "--cli-bin", cliBin, "--allow-unsigned")
 	if rc != 0 {
 		t.Fatalf("update: rc=%d out=%s", rc, out)
 	}
@@ -415,7 +416,7 @@ exit 0
 		t.Fatalf("reset call log: %v", err)
 	}
 	out, rc = runScript(t, scriptPath(t, "update.sh"), env,
-		"--server-bin", newBin, "--cli-bin", cliBin)
+		"--server-bin", newBin, "--cli-bin", cliBin, "--allow-unsigned")
 	if rc == 0 {
 		t.Fatalf("快照失败却升级成功：%s", out)
 	}
@@ -641,6 +642,101 @@ func TestUpdateShRequiresAllThreeSigningFlags(t *testing.T) {
 	}
 	if !strings.Contains(out, "must be given together") {
 		t.Fatalf("error must explain the rule; out=%s", out)
+	}
+}
+
+// ---- 默认强制（E-3）：未签名升级必须显式给 --allow-unsigned ----------------
+//
+// 被测性质：无三件且无逃生口 → 默认拒绝（rc=2），拒绝发生在任何服务操作
+// 之前（假 systemctl 从未被调用，日志文件不存在）；显式 --allow-unsigned →
+// 有痕放行（WARN 行留在 stderr）；逃生口与三件互斥，同给即 rc=2。
+
+// TestUpdateShDeniesUnsignedByDefault 钉默认拒绝：stderr 点名三件与逃生口、
+// systemctl 未被调用（校验先于停服务）、安装位字节不变。
+func TestUpdateShDeniesUnsignedByDefault(t *testing.T) {
+	requireBash(t)
+	env, sysctlLog := signingFixture(t)
+	root := env["YIBAN_INSTALL_ROOT"]
+	installed := filepath.Join(root, "usr/local/bin/yiban-server")
+	oldBody := readAll(t, installed)
+	binDir := t.TempDir()
+	newServer := fakeBin(t, binDir, "yiban-server", "echo NEW-SERVER\n")
+	newCLI := fakeBin(t, binDir, "yiban-cli", "exit 0\n")
+
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer, "--cli-bin", newCLI)
+	if rc != 2 {
+		t.Fatalf("unsigned update without the escape hatch must be denied with rc=2: rc=%d out=%s", rc, out)
+	}
+	for _, want := range []string{"--manifest", "--signature", "--pubkey", "--allow-unsigned"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("denial must name %s; out=%s", want, out)
+		}
+	}
+	// 拒绝发生在停服务之前：假 systemctl 一次都不该被调用（日志不存在）。
+	if _, err := os.Stat(sysctlLog); err == nil {
+		t.Fatalf("denial must happen before any systemctl call; log:\n%s", readAll(t, sysctlLog))
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat systemctl log: %v", err)
+	}
+	if body := readAll(t, installed); body != oldBody {
+		t.Fatalf("installed binary must be untouched:\n%s", body)
+	}
+}
+
+// TestUpdateShAllowUnsignedEscapes 钉逃生口：显式 --allow-unsigned 走成功
+// 路径，WARN 行留在输出里（跳过 ≠ 绿，放行必须有痕）。
+func TestUpdateShAllowUnsignedEscapes(t *testing.T) {
+	requireBash(t)
+	env, sysctlLog := signingFixture(t)
+	root := env["YIBAN_INSTALL_ROOT"]
+	installed := filepath.Join(root, "usr/local/bin/yiban-server")
+	binDir := t.TempDir()
+	newServer := fakeBin(t, binDir, "yiban-server", "echo NEW-SERVER\n")
+	newCLI := fakeBin(t, binDir, "yiban-cli", `
+case "$1" in
+  migrate) exit 0 ;;
+  healthcheck) exit 0 ;;
+esac
+exit 0
+`)
+
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer, "--cli-bin", newCLI, "--allow-unsigned")
+	if rc != 0 {
+		t.Fatalf("explicit --allow-unsigned must take the success path: rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "skipping release verification") {
+		t.Fatalf("escape hatch must leave the WARN line on stderr; out=%s", out)
+	}
+	if body := readAll(t, installed); !strings.Contains(body, "NEW-SERVER") {
+		t.Fatalf("installed binary must be the new one:\n%s", body)
+	}
+	if log := readAll(t, sysctlLog); !strings.Contains(log, "stop") || !strings.Contains(log, "start") {
+		t.Fatalf("allowed unsigned update must stop then start the service:\n%s", log)
+	}
+}
+
+// TestUpdateShRejectsAllowUnsignedWithSigningFlags 钉互斥：三件与逃生口
+// 同给是矛盾用法 → rc=2。三件给假路径：互斥是参数形状层面的检查，先于
+// 任何文件访问，用例因此不依赖 openssl。
+func TestUpdateShRejectsAllowUnsignedWithSigningFlags(t *testing.T) {
+	requireBash(t)
+	env, _ := signingFixture(t)
+	binDir := t.TempDir()
+	newServer := fakeBin(t, binDir, "yiban-server", "echo NEW-SERVER\n")
+
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer,
+		"--manifest", "/no/such/manifest.json",
+		"--signature", "/no/such/manifest.sig",
+		"--pubkey", "/no/such/release-pubkey.pem",
+		"--allow-unsigned")
+	if rc != 2 {
+		t.Fatalf("--allow-unsigned together with the three signing flags is a usage error: rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "conflicts") {
+		t.Fatalf("error must name the conflict; out=%s", out)
 	}
 }
 

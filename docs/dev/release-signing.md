@@ -11,7 +11,7 @@
 | `scripts/release/make-manifest.sh <version> <file>...` | 生成单行 `manifest.json`：`{"version":...,"files":[{"name":...,"sha256":...}]}`；键序固定、结尾换行（可复现字节） |
 | `scripts/release/sign.sh --key PRIVATE.pem --in manifest.json --out manifest.json.sig` | openssl 3 Ed25519 纯签名（`-rawin`），签名字节＝清单文件字节 |
 | `scripts/release/verify.sh --pubkey PUB.pem --manifest manifest.json --signature manifest.sig` | 只验签，不判断公钥是否可信；rc=0 通过／rc=1 不通过／rc=2 验证没跑 |
-| `deploy/linux/update.sh --manifest/--signature/--pubkey [--expect-version V]` | 先比指纹，再验签，再对账 sha256；任何失败不碰旧件、不停服务 |
+| `deploy/linux/update.sh --manifest/--signature/--pubkey [--expect-version V]` | 先比指纹，再验签，再对账 sha256；任何失败不碰旧件、不停服务。未给三件默认拒绝（exit 2）；`--allow-unsigned` 是显式逃生口，与三件互斥 |
 | `<安装根>/release-pubkey.sha256` | 信任锚：管理员在安装时写入的发布公钥 SHA-256 |
 | `scripts/release-check.sh` 项 8（`signing`） | 三件齐全且**外部锚**匹配时验签；缺件或验证没跑显性 SKIP（跳过≠绿） |
 
@@ -63,7 +63,9 @@
    发布操作必须用它。
 6. 升级：
    `sudo bash deploy/linux/update.sh --server-bin NEW [--cli-bin NEW] --manifest manifest.json --signature manifest.sig --pubkey release-pubkey.pem --expect-version 0.7.0`
-   未给三件 → 行为不变，打印显性 WARN（未签名升级，跳过≠绿）。
+   未给三件 → 默认拒绝（exit 2，发生在停服务之前）。
+   钥匙仪式未完成的部署显式给 `--allow-unsigned` 放行（显性 WARN，跳过≠绿）；
+   逃生口与三件互斥，同给即 exit 2。
 
 ## 5. 校验语义
 
@@ -82,7 +84,8 @@
 
 - Go 干跑：`go test ./cmd/cli -run "TestUpdateSh|TestInstallSh" -count=1`。
   覆盖：验签通过、篡改清单拒绝、缺锚拒绝、错指纹拒绝、清单缺条目拒绝、
-  二进制与清单不符拒绝、版本不符拒绝。
+  二进制与清单不符拒绝、版本不符拒绝、未给三件默认拒绝（rc=2、未停服务、
+  旧件未动）、`--allow-unsigned` 有痕放行、逃生口与三件同给拒绝。
 - 私钥入库门：`py -3 -m pytest tests/test_private_key_gate.py -q`
   （WSL 用 `/root/.venv-yiban-wsl/bin/python -m pytest`）。
 - 发布门：`bash scripts/release-check.sh --selftest`（含「篡改必红」「错指纹必红」
@@ -94,6 +97,9 @@
 
 - 首次安装（`install.sh`）从 git 检出安装，信任由 git 承担；签名覆盖的是
   **升级路径**的发布物。
+- 未签名升级必须显式给 `--allow-unsigned`（默认强制验签）。
+  逃生口只影响验签分支；停服务、迁移、健康检查与回滚不受影响。
+  WARN 行留在 stderr 供审计。
 - 清单覆盖二进制；schema 与配置随二进制发布，不单列。
 - **已签名旧包可重放（降级）**：不传 `--expect-version` 时，持有旧发布件的人
   可把版本退回去。传 `--expect-version` 可挡。发布操作必须传该参数。

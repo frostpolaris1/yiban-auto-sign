@@ -6,6 +6,7 @@ package main
 // 分支一：新二进制不健康、旧件健康 → 回滚成功，退出 1。
 // 分支二：回滚后仍不健康 → 退出 2。
 // 两个分支与「迁移失败」分支的差别：迁移已应用、二进制已换。
+// 无签名调用点显式带 --allow-unsigned：默认强制验签（E-3）的逃生口。
 //
 // # 口径
 // 假 systemctl 模拟 systemd 语义：单元 active 时 start 是 no-op，
@@ -92,7 +93,7 @@ exit 0
 
 	// 分支一：新件不健康、旧件健康 → 回滚成功，退出 1。
 	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
-		"--server-bin", newBin, "--cli-bin", cliBin)
+		"--server-bin", newBin, "--cli-bin", cliBin, "--allow-unsigned")
 	if rc != 1 {
 		t.Fatalf("rollback-succeeded update rc=%d, want 1; out=%s", rc, out)
 	}
@@ -114,7 +115,7 @@ exit 0
 		t.Fatalf("arm health fail: %v", err)
 	}
 	out, rc = runScript(t, scriptPath(t, "update.sh"), env,
-		"--server-bin", newBin, "--cli-bin", cliBin)
+		"--server-bin", newBin, "--cli-bin", cliBin, "--allow-unsigned")
 	if rc != 2 {
 		t.Fatalf("rollback-failed update rc=%d, want 2; out=%s", rc, out)
 	}
