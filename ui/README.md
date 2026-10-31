@@ -24,7 +24,7 @@ React 19 + Vite 8 + TypeScript 7。视觉语言复用 Adminator 4.4.0。
 | `npm run gate:license` | 依赖许可证门。禁用许可证或清单漂移即红 |
 | `npm run test:unit` | fetch、查询默认值、游标、账号页、学校页、时间片页、账号设置页、用户管理页、看板与认证纯逻辑单测，加上图标来源门（`icon-source`：lucide 唯一、TS 字符串载荷无内联 svg、CSS data URI 登记、品牌标记 JSX 全量哈希、导入白名单），运行器为 `node:test` |
 | `npm run build:showcase` | 构建 `VITE_SHOWCASE=1` 的展示产物到 `dist-showcase/` |
-| `npm run test:e2e` | 全量 Playwright（269 条），串行。先跑 `npm run build` |
+| `npm run test:e2e` | 全量 Playwright（270 条），串行。先跑 `npm run build` |
 | `npm run test:e2e:fast` | 收口快路：行为 4 并发 + 视觉 1 并发。先跑 `npm run build` |
 | `npm run test:behavior` | 只跑行为用例，4 并发（`e2e/` 下除视觉外的全部 spec） |
 | `npm run test:shots` | 只跑视觉用例，1 并发 |
@@ -47,6 +47,11 @@ React 19 + Vite 8 + TypeScript 7。视觉语言复用 Adminator 4.4.0。
   同名行按钮不会在过渡窗口里重复。视觉用例显式改回 `no-preference`，基线口径不变。
 - `test:behavior` 的覆盖由 `scripts/tests/test-plan.test.mjs` 守卫：
   递归发现 `e2e/` 下全部 spec，新增行为 spec 忘了登记即红；扫空也红。
+- CI 由 GitHub Actions 的 `ui-e2e` 作业跑同一套件（`.github/workflows/ci.yml`）：
+  `behavior`／`shots` 两分片并行，先 `npm run build` 再装浏览器。触发面＝`ui/`
+  或 `server/contracts/` 有改动，取不到 base 默认跑。非 ui 改动时作业照常调度、
+  早退并打印显性 `ui-e2e SKIP (scope=…)` 行（stdout 与 step summary 各一行），
+  跳过不是静默的。接线由 `tests/test_ui_e2e_ci_wiring.py` 钉住。
 
 ## 目录
 
@@ -128,9 +133,9 @@ profile 菜单与会话过期提示各 2 张，toast 明暗各 1 张，共 82 �
 win32 与 linux 两套各 82 个文件均已入库（2026-10-29 实测 `ls e2e/visual.spec.ts-snapshots | grep -c win32|linux`）。
 两平台文件数合计 164。
 
-行为用例 186 条：账号页 28 条、认证 36 条、看板 14 条、画廊 9 条、学校页 21 条、
+行为用例 187 条：账号页 28 条、认证 37 条、看板 14 条、画廊 9 条、学校页 21 条、
 时间片页与时间偏好 21 条、账号设置页 14 条、用户管理页 10 条、展示模式 8 条、微交互 25 条。
-视觉文件另有无溢出 1 条。Playwright 总计 269 条（2026-10-29 实测 `npx playwright test --list`）。
+视觉文件另有无溢出 1 条。Playwright 总计 270 条（2026-10-31 实测 `npx playwright test --list`）。
 
 **基线收口（2026-10-29）**：两平台各 82 张全部重拍并入库；此前登记的 linux 缺 8 张、
 linux 过期 16 张、win32 既有偏差 5 条（forgot ×4／reset ×1，2–9 像素）均已消除。

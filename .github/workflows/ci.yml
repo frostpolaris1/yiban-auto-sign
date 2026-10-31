@@ -361,3 +361,116 @@ jobs:
         env:
           YIBAN_TEST_DATABASE_URL: postgres://yiban:yiban@127.0.0.1:5432/yiban?sslmode=disable
         run: bash scripts/verify-stacks.sh
+
+  # ---- 新线 UI 的 Playwright e2e（工单 9f6 / E-1，2026-10-31）----
+  # 为什么独立作业（不进 stacks）：stacks 的 15 分钟上限已装满 Go 门与 UI verify；
+  # e2e 还要 build ＋ 浏览器安装 ＋ 两条分片，塞进去只会互相顶爆超时。独立作业与
+  # stacks 并行，总墙钟不变。
+  # 为什么改动面用**步骤级**判定而不是作业级 `if`：作业级 `if` 为假时作业不被调度，
+  # 分支保护里呈现 Expected / waiting 状态，required check 的语义有歧义。步骤级判定
+  # 让作业照常调度：非 ui 改动时早退，并在 stdout 与 $GITHUB_STEP_SUMMARY 打印显性
+  # `ui-e2e SKIP` 行（AGENTS §30：跳过 ≠ 绿，跳过必须显性可见）。
+  # base 取法与 verify / slow-lane 的 Classify change surface 步骤逐字一致（浅拉一层
+  # 取尖端，不按 SHA 拉）。过滤口径 `^(ui/|server/contracts/)`：ui/e2e 的全部 API 由
+  # page.route 假端点提供，不需要 Go 后端，server/ 其余改动不触发；但 openapi 契约
+  # 改字段会改前端类型与页面，故 server/contracts/ 算触发面。
+  # 取不到 base 或 diff 失败 → 默认跑（fail-closed：宁可白跑，不静默漏跑）。
+  # 接线由 tests/test_ui_e2e_ci_wiring.py 钉住（真调用判据：注释与 echo 不算）。
+  # 视觉基线 win32 与 linux 两套都在库（ui/README.md），runner 读 -chromium-linux.png。
+  ui-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [behavior, shots]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Classify change surface
+        id: scope
+        run: |
+          # base：PR 事件取 base 分支尖端（浅拉一层），push 事件取 event.before。
+          # 与 verify / slow-lane 的 Classify 步骤同一写法；取不到 base 或 diff 失败即默认跑（fail-closed）。
+          if [ -n "${{ github.base_ref }}" ]; then
+            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}" >/dev/null 2>&1 || true
+            base="FETCH_HEAD"
+          else
+            base="${{ github.event.before }}"
+            [ -n "$base" ] && git fetch --no-tags --depth=1 origin "$base" >/dev/null 2>&1 || true
+          fi
+          # 取不到 base → 默认跑（fail-closed）。
+          if [ -z "$base" ] || ! git rev-parse --verify "$base" >/dev/null 2>&1; then
+            echo "value=run" >> "$GITHUB_OUTPUT"
+            echo "reason=no-base" >> "$GITHUB_OUTPUT"
+          # diff 本身失败 → 默认跑（fail-closed）。
+          elif ! changed=$(git diff --name-only "$base" HEAD 2>/dev/null); then
+            echo "value=run" >> "$GITHUB_OUTPUT"
+            echo "reason=diff-failed" >> "$GITHUB_OUTPUT"
+          elif printf '%s\n' "$changed" | grep -E '^(ui/|server/contracts/)' >/dev/null 2>&1; then
+            echo "value=run" >> "$GITHUB_OUTPUT"
+            echo "reason=ui-or-contracts-changed" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=skip" >> "$GITHUB_OUTPUT"
+            echo "reason=no-ui-changes" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 非 ui 改动：作业照常调度、显性早退。同一行进 stdout 与 step summary。
+      - name: Skip (out of change surface)
+        if: steps.scope.outputs.value == 'skip'
+        run: |
+          line="ui-e2e SKIP (scope=${{ steps.scope.outputs.reason }}: no ui/ or server/contracts/ file changed vs base)"
+          echo "$line"
+          echo "$line" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up Node
+        if: steps.scope.outputs.value != 'skip'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install UI dependencies (locked)
+        if: steps.scope.outputs.value != 'skip'
+        working-directory: ui
+        run: npm ci
+
+      # 4173 webServer 只伺服 dist、不自动构建（ui/playwright.config.ts）⇒ build 必须先于测试。
+      - name: Build UI
+        if: steps.scope.outputs.value != 'skip'
+        working-directory: ui
+        run: npm run build
+
+      # 浏览器二进制缓存：key 绑 ui/package-lock.json（Playwright 版本随 lock 走）。
+      - name: Cache Playwright browsers
+        if: steps.scope.outputs.value != 'skip'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('ui/package-lock.json') }}
+
+      - name: Install Playwright browser (chromium)
+        if: steps.scope.outputs.value != 'skip'
+        working-directory: ui
+        run: npx playwright install --with-deps chromium
+
+      - name: E2E behavior shard
+        if: steps.scope.outputs.value != 'skip' && matrix.shard == 'behavior'
+        working-directory: ui
+        run: npm run test:behavior
+
+      - name: E2E shots shard
+        if: steps.scope.outputs.value != 'skip' && matrix.shard == 'shots'
+        working-directory: ui
+        run: npm run test:shots
+
+      # trace = retain-on-failure（ui/playwright.config.ts）：只有失败才有东西可传。
+      - name: Upload traces on failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ui-e2e-results-${{ matrix.shard }}
+          path: ui/test-results/
+          if-no-files-found: ignore
