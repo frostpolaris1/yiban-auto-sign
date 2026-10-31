@@ -937,7 +937,11 @@ type TimePrefUpdate struct {
 
 // User defines model for User.
 type User struct {
-	CreatedAt          time.Time           `json:"created_at"`
+	CreatedAt time.Time `json:"created_at"`
+
+	// DeletedAt Soft-delete timestamp; null for live users. Only rows fetched
+	// with include_deleted=true can carry a non-null value.
+	DeletedAt          *time.Time          `json:"deleted_at"`
 	Email              openapi_types.Email `json:"email"`
 	Id                 string              `json:"id"`
 	LastLoginAt        *time.Time          `json:"last_login_at"`
@@ -954,6 +958,20 @@ type UserCreate struct {
 	Role     UserRole            `json:"role"`
 }
 
+// UserLookupPage defines model for UserLookupPage.
+type UserLookupPage struct {
+	Items []UserLookupRef `json:"items"`
+}
+
+// UserLookupRef A restricted user reference for owner pickers. The masked email
+// keeps the first character and the domain; the full address,
+// role and timestamps are never sent.
+type UserLookupRef struct {
+	EmailMasked string     `json:"email_masked"`
+	Id          string     `json:"id"`
+	Status      UserStatus `json:"status"`
+}
+
 // UserPage defines model for UserPage.
 type UserPage struct {
 	Items []User `json:"items"`
@@ -967,6 +985,19 @@ type UserRole string
 
 // UserStatus defines model for UserStatus.
 type UserStatus string
+
+// UserTempPassword defines model for UserTempPassword.
+type UserTempPassword struct {
+	// TempPassword The one-time temporary password. It appears only in this
+	// response: never in logs, audit rows or any later response.
+	TempPassword string `json:"temp_password"`
+}
+
+// UserUpdate defines model for UserUpdate.
+type UserUpdate struct {
+	Role   *UserRole   `json:"role,omitempty"`
+	Status *UserStatus `json:"status,omitempty"`
+}
 
 // AccountID defines model for AccountID.
 type AccountID = string
@@ -1286,10 +1317,52 @@ type UserListParams struct {
 	// Q Email prefix. Matching is case-insensitive because stored
 	// addresses are lower case. Wildcards in the value are literal.
 	Q *string `form:"q,omitempty" json:"q,omitempty"`
+
+	// IncludeDeleted Include soft-deleted users. Defaults to false, so the default
+	// behavior is unchanged: soft-deleted users never appear.
+	// Deleted rows carry deleted_at and keep their status value.
+	IncludeDeleted *bool `form:"include_deleted,omitempty" json:"include_deleted,omitempty"`
 }
 
 // UserCreateParams defines parameters for UserCreate.
 type UserCreateParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
+// UserLookupParams defines parameters for UserLookup.
+type UserLookupParams struct {
+	// Q Email prefix; wildcards in the value are literal.
+	Q string `form:"q" json:"q"`
+
+	// Limit Page size. Defaults to 20.
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// UserDeleteParams defines parameters for UserDelete.
+type UserDeleteParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
+// UserUpdateParams defines parameters for UserUpdate.
+type UserUpdateParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
+// UserPasswordResetParams defines parameters for UserPasswordReset.
+type UserPasswordResetParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
+// UserRestoreParams defines parameters for UserRestore.
+type UserRestoreParams struct {
 	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
 	// state-changing request that carries a session.
 	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
@@ -1351,6 +1424,9 @@ type SchoolDefaultPhotoSetJSONRequestBody = SchoolDefaultPhotoUpdate
 
 // UserCreateJSONRequestBody defines body for UserCreate for application/json ContentType.
 type UserCreateJSONRequestBody = UserCreate
+
+// UserUpdateJSONRequestBody defines body for UserUpdate for application/json ContentType.
+type UserUpdateJSONRequestBody = UserUpdate
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -1483,6 +1559,21 @@ type ServerInterface interface {
 	// UserCreate Create a master, admin or user account.
 	// (POST /api/users)
 	UserCreate(c *gin.Context, params UserCreateParams)
+	// UserLookup Restricted user search for owner pickers.
+	// (GET /api/users/lookup)
+	UserLookup(c *gin.Context, params UserLookupParams)
+	// UserDelete Soft-delete a user.
+	// (DELETE /api/users/{id})
+	UserDelete(c *gin.Context, id string, params UserDeleteParams)
+	// UserUpdate Change a user's role or status.
+	// (PATCH /api/users/{id})
+	UserUpdate(c *gin.Context, id string, params UserUpdateParams)
+	// UserPasswordReset Reset a user's password to a one-time temporary password.
+	// (POST /api/users/{id}/password-reset)
+	UserPasswordReset(c *gin.Context, id string, params UserPasswordResetParams)
+	// UserRestore Restore a soft-deleted user.
+	// (POST /api/users/{id}/restore)
+	UserRestore(c *gin.Context, id string, params UserRestoreParams)
 	// HealthCheck Liveness probe.
 	// (GET /healthz)
 	HealthCheck(c *gin.Context)
@@ -3164,6 +3255,14 @@ func (siw *ServerInterfaceWrapper) UserList(c *gin.Context) {
 		return
 	}
 
+	// ------------- Optional query parameter "include_deleted" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "include_deleted", c.Request.URL.Query(), &params.IncludeDeleted, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter include_deleted: %w", err), http.StatusBadRequest)
+		return
+	}
+
 	for _, middleware := range siw.HandlerMiddlewares {
 		middleware(c)
 		if c.IsAborted() {
@@ -3217,6 +3316,249 @@ func (siw *ServerInterfaceWrapper) UserCreate(c *gin.Context) {
 	siw.Handler.UserCreate(c, params)
 }
 
+// UserLookup operation middleware
+func (siw *ServerInterfaceWrapper) UserLookup(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params UserLookupParams
+
+	// ------------- Required query parameter "q" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "q", c.Request.URL.Query(), &params.Q, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter q: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", c.Request.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter limit: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UserLookup(c, params)
+}
+
+// UserDelete operation middleware
+func (siw *ServerInterfaceWrapper) UserDelete(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", c.Param("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params UserDeleteParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UserDelete(c, id, params)
+}
+
+// UserUpdate operation middleware
+func (siw *ServerInterfaceWrapper) UserUpdate(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", c.Param("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params UserUpdateParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UserUpdate(c, id, params)
+}
+
+// UserPasswordReset operation middleware
+func (siw *ServerInterfaceWrapper) UserPasswordReset(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", c.Param("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params UserPasswordResetParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UserPasswordReset(c, id, params)
+}
+
+// UserRestore operation middleware
+func (siw *ServerInterfaceWrapper) UserRestore(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", c.Param("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params UserRestoreParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UserRestore(c, id, params)
+}
+
 // HealthCheck operation middleware
 func (siw *ServerInterfaceWrapper) HealthCheck(c *gin.Context) {
 
@@ -3265,6 +3607,11 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/auth/change-password", wrapper.AuthChangePassword)
 	router.GET(options.BaseURL+"/api/users", wrapper.UserList)
 	router.POST(options.BaseURL+"/api/users", wrapper.UserCreate)
+	router.GET(options.BaseURL+"/api/users/lookup", wrapper.UserLookup)
+	router.DELETE(options.BaseURL+"/api/users/:id", wrapper.UserDelete)
+	router.PATCH(options.BaseURL+"/api/users/:id", wrapper.UserUpdate)
+	router.POST(options.BaseURL+"/api/users/:id/password-reset", wrapper.UserPasswordReset)
+	router.POST(options.BaseURL+"/api/users/:id/restore", wrapper.UserRestore)
 	router.GET(options.BaseURL+"/api/schools", wrapper.SchoolList)
 	router.POST(options.BaseURL+"/api/schools", wrapper.SchoolCreate)
 	router.PATCH(options.BaseURL+"/api/schools/:id", wrapper.SchoolUpdate)

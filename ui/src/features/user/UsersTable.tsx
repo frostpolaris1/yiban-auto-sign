@@ -1,6 +1,6 @@
 /**
  * **功能**
- * 用户表格：只读列表与游标翻页。
+ * 用户表格：列表、已删徽标、行操作与游标翻页。
  *
  * **归属**
  * `features/user` 展示层：数据与回调由 `UsersView` 给。
@@ -8,42 +8,38 @@
  * **口径**
  * 服务端游标分页，没有总数。页脚只报当前位置与本页条数。
  * 行高固定 48px；表格最小宽度由内容决定，窄屏在 `.table-scroll` 内滚动。
- * 本页只读：不出操作列，也不加行过渡（行只随整页替换，不做增删重排）。
+ * 加载、错误与空态由 `AsyncState` 在容器层处理；本组件只渲染数据态。
+ * 已删行（`deleted_at` 非空）在状态格叠加「已删除」徽标。
+ * 行操作「管理」开右侧抽屉；写动作的在途态都在抽屉与弹窗内。
  * 上次登录为空时显示破折号，由 `lib/format` 统一给出。
  */
 
 import type { User } from '@/lib/api/user'
 import { Badge } from '@/components/ui/Badge'
-import { Button } from '@/components/ui/Button'
+import { BusyButton } from '@/components/ui/BusyButton'
 import { Icon } from '@/components/ui/Icon'
 import { formatDateTime } from '@/lib/format'
 import { roleLabel } from '@/lib/identity'
-import { userStatusLabel, userStatusTone } from './display'
+import { USER_DELETED_LABEL, userStatusLabel, userStatusTone } from './display'
 
 type UsersTableProps = {
   rows: User[]
-  loading: boolean
-  error: string | null
   pageIndex: number
   hasPrevious: boolean
   hasNext: boolean
   onPrevious: () => void
   onNext: () => void
-  onRetry: () => void
+  onManage: (user: User, opener: HTMLElement | null) => void
 }
-
-const COLUMNS = 6
 
 export function UsersTable({
   rows,
-  loading,
-  error,
   pageIndex,
   hasPrevious,
   hasNext,
   onPrevious,
   onNext,
-  onRetry,
+  onManage,
 }: UsersTableProps) {
   return (
     <>
@@ -58,37 +54,10 @@ export function UsersTable({
               <th scope="col">需要改密</th>
               <th scope="col">创建时间</th>
               <th scope="col">上次登录</th>
+              <th scope="col">操作</th>
             </tr>
           </thead>
           <tbody>
-            {error ? (
-              <tr>
-                <td colSpan={COLUMNS}>
-                  <span className="app-muted">{error}</span>{' '}
-                  <Button variant="ghost" size="sm" onClick={onRetry}>
-                    重试
-                  </Button>
-                </td>
-              </tr>
-            ) : null}
-
-            {!error && loading && rows.length === 0 ? (
-              <tr>
-                <td colSpan={COLUMNS} className="app-muted">
-                  加载中…
-                </td>
-              </tr>
-            ) : null}
-
-            {!error && !loading && rows.length === 0 ? (
-              <tr>
-                <td colSpan={COLUMNS}>
-                  <div>没有匹配的用户</div>
-                  <div className="app-muted">调整筛选条件后重试。</div>
-                </td>
-              </tr>
-            ) : null}
-
             {rows.map((user) => (
               <tr key={user.id}>
                 <td className="data-cell-mono">{user.email}</td>
@@ -96,7 +65,8 @@ export function UsersTable({
                 <td>
                   <Badge tone={userStatusTone(user.status)} dot>
                     {userStatusLabel(user.status)}
-                  </Badge>
+                  </Badge>{' '}
+                  {user.deleted_at ? <Badge tone="danger">{USER_DELETED_LABEL}</Badge> : null}
                 </td>
                 <td>
                   {user.must_change_password ? (
@@ -107,6 +77,16 @@ export function UsersTable({
                 </td>
                 <td className="data-cell-mono">{formatDateTime(user.created_at)}</td>
                 <td className="data-cell-mono">{formatDateTime(user.last_login_at)}</td>
+                <td>
+                  <BusyButton
+                    size="sm"
+                    variant="ghost"
+                    aria-label={`管理 ${user.email}`}
+                    onClick={(event) => onManage(user, event.currentTarget)}
+                  >
+                    管理
+                  </BusyButton>
+                </td>
               </tr>
             ))}
           </tbody>

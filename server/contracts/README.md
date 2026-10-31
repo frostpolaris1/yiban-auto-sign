@@ -61,6 +61,11 @@ either side drifts.
 | POST | `/api/auth/change-password` | master/admin/user | P1 |
 | GET | `/api/users` | master | P1 |
 | POST | `/api/users` | master | P1 |
+| PATCH | `/api/users/:id` | master | UX-1 |
+| POST | `/api/users/:id/password-reset` | master | UX-1 |
+| DELETE | `/api/users/:id` | master | UX-1 |
+| POST | `/api/users/:id/restore` | master | UX-1 |
+| GET | `/api/users/lookup` | master/admin | UX-1 |
 | GET | `/api/schools` | master/admin | P1 |
 | POST | `/api/schools` | master | P1 |
 | PATCH | `/api/schools/:id` | master | P1 |
@@ -105,7 +110,9 @@ ignores unknown fields, so a client typo does not fail the request. Every
 schema that declares the keyword is registered in
 `internal/entry/http/oapi/contract_gates_test.go`
 (`additionalPropertiesExemptions`). A new declaration without a registry
-entry fails that test.
+entry fails that test. `UserUpdate` is the request-side shape: a stray
+`rolee` key is ignored by the decoder and the visible outcome is a 400 for
+the empty body, not a silent no-op.
 
 Nullable response fields are always `required`. The generated Go type
 therefore has no `omitempty`: the key is present and carries `null` when no

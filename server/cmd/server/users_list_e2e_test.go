@@ -387,7 +387,8 @@ func TestUsersListCarriesNoCredentialFields(t *testing.T) {
 	}{Items: &rows}); err != nil {
 		t.Fatalf("decode raw items: %v; body=%q", err, payload)
 	}
-	want := []string{"created_at", "email", "id", "last_login_at", "must_change_password", "role", "status"}
+	// UX-1 起契约 User 增加 deleted_at（可空）；键集逐字钉住。
+	want := []string{"created_at", "deleted_at", "email", "id", "last_login_at", "must_change_password", "role", "status"}
 	for _, row := range rows {
 		keys := make([]string, 0, len(row))
 		for key := range row {

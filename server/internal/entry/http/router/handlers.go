@@ -33,6 +33,51 @@ func (s *server) UserCreate(c *gin.Context, params oapi.UserCreateParams) {
 	s.users.Create(c, params)
 }
 
+// UserUpdate 委托用户处理器。未装配时仍是 501。
+func (s *server) UserUpdate(c *gin.Context, id string, params oapi.UserUpdateParams) {
+	if s.users == nil {
+		notImplemented(c)
+		return
+	}
+	s.users.Update(c, id, params)
+}
+
+// UserDelete 委托用户处理器。未装配时仍是 501。
+func (s *server) UserDelete(c *gin.Context, id string, params oapi.UserDeleteParams) {
+	if s.users == nil {
+		notImplemented(c)
+		return
+	}
+	s.users.Delete(c, id, params)
+}
+
+// UserPasswordReset 委托用户处理器。未装配时仍是 501。
+func (s *server) UserPasswordReset(c *gin.Context, id string, params oapi.UserPasswordResetParams) {
+	if s.users == nil {
+		notImplemented(c)
+		return
+	}
+	s.users.PasswordReset(c, id, params)
+}
+
+// UserRestore 委托用户处理器。未装配时仍是 501。
+func (s *server) UserRestore(c *gin.Context, id string, params oapi.UserRestoreParams) {
+	if s.users == nil {
+		notImplemented(c)
+		return
+	}
+	s.users.Restore(c, id, params)
+}
+
+// UserLookup 委托用户处理器。未装配时仍是 501。
+func (s *server) UserLookup(c *gin.Context, params oapi.UserLookupParams) {
+	if s.users == nil {
+		notImplemented(c)
+		return
+	}
+	s.users.Lookup(c, params)
+}
+
 // SchoolList 委托院校处理器。未装配时仍是 501。
 func (s *server) SchoolList(c *gin.Context, params oapi.SchoolListParams) {
 	if s.schools == nil {

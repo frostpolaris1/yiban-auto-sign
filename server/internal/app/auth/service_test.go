@@ -58,7 +58,7 @@ func (f *fakeUsers) GetByEmail(_ context.Context, email string) (appuser.Record,
 	return appuser.Record{}, errs.ErrNotFound
 }
 
-func (f *fakeUsers) List(context.Context, coreauth.Role, coreauth.Status, string, string, int) ([]appuser.Record, string, error) {
+func (f *fakeUsers) List(context.Context, coreauth.Role, coreauth.Status, string, string, int, bool) ([]appuser.Record, string, error) {
 	return nil, "", nil
 }
 
@@ -70,6 +70,20 @@ func (f *fakeUsers) UpdatePassword(_ context.Context, id, hash string, _ bool, _
 func (f *fakeUsers) RehashPassword(_ context.Context, id, hash string) error {
 	f.rehash = append(f.rehash, id+"="+hash)
 	return nil
+}
+
+func (f *fakeUsers) UpdateRole(context.Context, string, coreauth.Role, time.Time) error {
+	return nil
+}
+
+func (f *fakeUsers) Restore(context.Context, string, int) (appuser.Record, error) {
+	return appuser.Record{}, errs.ErrNotFound
+}
+
+func (f *fakeUsers) CountLiveMasters(context.Context, string) (int, error) { return 0, nil }
+
+func (f *fakeUsers) Lookup(context.Context, string, int) ([]appuser.Record, error) {
+	return nil, nil
 }
 
 func (f *fakeUsers) SetStatus(context.Context, string, coreauth.Status, time.Time) error { return nil }

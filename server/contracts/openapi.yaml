@@ -191,10 +191,12 @@ paths:
       operationId: UserList
       summary: List users with cursor pagination.
       description: |
-        Master only. Soft-deleted users never appear. role, status and q
-        narrow the result. q matches the start of the email address and
-        never matches a name. A query longer than 254 characters is 400:
-        no address can be that long, so no row can match.
+        Master only. By default soft-deleted users never appear; pass
+        include_deleted to include them, each carrying a non-null
+        deleted_at. role, status and q narrow the result. q matches the
+        start of the email address and never matches a name. A query
+        longer than 254 characters is 400: no address can be that long,
+        so no row can match.
       x-roles: [master]
       parameters:
         - $ref: '#/components/parameters/Cursor'
@@ -216,6 +218,14 @@ paths:
             Email prefix. Matching is case-insensitive because stored
             addresses are lower case. Wildcards in the value are literal.
           schema: { type: string }
+        - name: include_deleted
+          in: query
+          required: false
+          description: |
+            Include soft-deleted users. Defaults to false, so the default
+            behavior is unchanged: soft-deleted users never appear.
+            Deleted rows carry deleted_at and keep their status value.
+          schema: { type: boolean }
       responses:
         '200':
           description: User page.
@@ -257,6 +267,171 @@ paths:
         '409': { $ref: '#/components/responses/ConflictError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         '429': { $ref: '#/components/responses/DefaultError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/users/lookup:
+    get:
+      tags: [users]
+      operationId: UserLookup
+      summary: Restricted user search for owner pickers.
+      description: |
+        Master and admin only. Matches the start of the email address;
+        matching is case-insensitive because stored addresses are lower
+        case. Soft-deleted users never match. Each item carries only the
+        id, the masked email and the status: the full address, the role
+        and the timestamps never leave the server. No cursor: a picker
+        takes the first limit rows in email order.
+        This is a static path segment next to /api/users/{id}; the other
+        methods on /api/users/lookup are matched by the {id} route and
+        answer 404 for the literal id "lookup".
+      x-roles: [master, admin]
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: Email prefix; wildcards in the value are literal.
+          schema: { type: string, minLength: 1, maxLength: 254 }
+        - name: limit
+          in: query
+          required: false
+          description: Page size. Defaults to 20.
+          schema: { type: integer, minimum: 1, maximum: 200, default: 20 }
+      responses:
+        '200':
+          description: Lookup page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserLookupPage'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/users/{id}:
+    patch:
+      tags: [users]
+      operationId: UserUpdate
+      summary: Change a user's role or status.
+      description: |
+        Master only. A soft-deleted user is 404. Lowering the role of, or
+        disabling, the last live master is 409: at any moment there must
+        be at least one master row that is not soft-deleted. A disabled
+        master still counts, so it can be re-enabled. A role change
+        writes one user.role_change audit row and a status change writes
+        user.disable or user.enable; both take effect from the next
+        request because sessions resolve the user row every time.
+      x-roles: [master]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserUpdate'
+      responses:
+        '200':
+          description: User updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        '409': { $ref: '#/components/responses/ConflictError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+    delete:
+      tags: [users]
+      operationId: UserDelete
+      summary: Soft-delete a user.
+      description: |
+        Master only. A user cannot delete their own account (403).
+        A user who still owns live accounts is 409: transfer or delete
+        the accounts first. Success soft-deletes the row, revokes every
+        session of that user and writes one user.delete audit row. The
+        row keeps its email; a later restore can conflict with a live
+        user that has taken the address.
+      x-roles: [master]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '204': { description: User soft-deleted. }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        '409': { $ref: '#/components/responses/ConflictError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/users/{id}/password-reset:
+    post:
+      tags: [users]
+      operationId: UserPasswordReset
+      summary: Reset a user's password to a one-time temporary password.
+      description: |
+        Master only. A master cannot reset their own password (403) so a
+        lost display of the one-time secret cannot lock the operator out.
+        Success replaces the password hash, sets must_change_password,
+        revokes every session of that user and writes one
+        user.password_reset audit row without the secret. temp_password
+        appears exactly once, in this response; it is never stored or
+        returned again.
+      x-roles: [master]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Temporary password. Shown once.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserTempPassword'
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/users/{id}/restore:
+    post:
+      tags: [users]
+      operationId: UserRestore
+      summary: Restore a soft-deleted user.
+      description: |
+        Master only. Restoring a live or unknown user is 404. The restored
+        row keeps its role, status and email; if a live user has taken the
+        address the partial unique index rejects it with 409. Restoring
+        above the live-user capacity is 429. Sessions were revoked when
+        the user was deleted, so the user must sign in again.
+      x-roles: [master]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: User restored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        '409': { $ref: '#/components/responses/ConflictError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/schools:
     get:
@@ -1460,7 +1635,7 @@ components:
           description: Token the client sends back in X-CSRF-Token.
     User:
       type: object
-      required: [id, email, role, status, must_change_password, created_at, last_login_at]
+      required: [id, email, role, status, must_change_password, created_at, last_login_at, deleted_at]
       properties:
         id: { type: string }
         email: { type: string, format: email }
@@ -1473,6 +1648,12 @@ components:
         last_login_at:
           type: [string, "null"]
           format: date-time
+        deleted_at:
+          type: [string, "null"]
+          format: date-time
+          description: |
+            Soft-delete timestamp; null for live users. Only rows fetched
+            with include_deleted=true can carry a non-null value.
     LoginRequest:
       type: object
       required: [email, password]
@@ -1511,6 +1692,25 @@ components:
         password: { type: string, minLength: 1 }
         role:
           $ref: '#/components/schemas/UserRole'
+    UserUpdate:
+      type: object
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        role:
+          $ref: '#/components/schemas/UserRole'
+        status:
+          $ref: '#/components/schemas/UserStatus'
+    UserTempPassword:
+      type: object
+      required: [temp_password]
+      properties:
+        temp_password:
+          type: string
+          minLength: 1
+          description: |
+            The one-time temporary password. It appears only in this
+            response: never in logs, audit rows or any later response.
     SchoolStatus:
       type: string
       enum: [active, disabled]
@@ -1983,6 +2183,26 @@ components:
         next_cursor:
           type: string
           description: Cursor for the next page; empty on the last page.
+    UserLookupPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserLookupRef'
+    UserLookupRef:
+      type: object
+      required: [id, email_masked, status]
+      description: |
+        A restricted user reference for owner pickers. The masked email
+        keeps the first character and the domain; the full address,
+        role and timestamps are never sent.
+      properties:
+        id: { type: string }
+        email_masked: { type: string }
+        status:
+          $ref: '#/components/schemas/UserStatus'
     AccountPage:
       type: object
       required: [items, next_cursor]

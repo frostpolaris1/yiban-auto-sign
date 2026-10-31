@@ -28,7 +28,8 @@ type AsyncStateProps = {
   onRetry?: () => void
   retryLabel?: string
   loadingLabel?: string
-  emptyLabel?: string
+  /** 空态正文。接受节点：空态常常需要一句主文案加一句出路提示。 */
+  emptyLabel?: ReactNode
   /** 非数据态的外层类。数据态不加包裹层，故该值不生效。 */
   className?: string
   /** 数据态内容。其余四态下不渲染。 */

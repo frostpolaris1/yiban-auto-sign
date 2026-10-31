@@ -56,11 +56,16 @@ const (
 	ActionAuthLogout        Action = "auth.logout"
 	ActionAuthPasswordReset Action = "auth.password_reset"
 	// 登录态自助改密：调用方已通过旧口令校验。
-	ActionAuthPasswordChange  Action = "auth.password_change"
-	ActionUserCreate          Action = "user.create"
-	ActionUserDisable         Action = "user.disable"
-	ActionUserEnable          Action = "user.enable"
-	ActionUserDelete          Action = "user.delete"
+	ActionAuthPasswordChange Action = "auth.password_change"
+	ActionUserCreate         Action = "user.create"
+	ActionUserDisable        Action = "user.disable"
+	ActionUserEnable         Action = "user.enable"
+	ActionUserDelete         Action = "user.delete"
+	// UX-1 用户管理动作。role_change 记角色迁移；
+	// password_reset 记重置但**绝无口令值**；restore 记软删恢复。
+	ActionUserRoleChange      Action = "user.role_change"
+	ActionUserPasswordReset   Action = "user.password_reset"
+	ActionUserRestore         Action = "user.restore"
 	ActionSchoolCreate        Action = "school.create"
 	ActionSchoolUpdate        Action = "school.update"
 	ActionSchoolDisable       Action = "school.disable"

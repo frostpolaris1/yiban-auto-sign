@@ -457,14 +457,18 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		}
 		// 用户用例复用同一数据库下的用户仓储实例（仓储无状态）：建号走 Create，
 		// 它的容量守卫与账号上限同形（裁决 12.11）。
+		// Sessions 是会话撤销原语：重置口令与软删后立即失效全部会话。
+		// OwnerAccounts 用同一份用户仓储：名下账号计数是它的一条只读 SQL。
 		userRepo := pg.NewUserRepo(db)
 		userSvc, err := appuser.NewService(appuser.Deps{
-			Users: userRepo,
-			Audit: audits,
-			Tx:    db,
-			Clock: clk,
-			KDF:   kdf,
-			Limit: UserCapacityLimit,
+			Users:         userRepo,
+			Audit:         audits,
+			Tx:            db,
+			Clock:         clk,
+			KDF:           kdf,
+			Limit:         UserCapacityLimit,
+			Sessions:      issuer,
+			OwnerAccounts: userRepo,
 		})
 		if err != nil {
 			closeFn()

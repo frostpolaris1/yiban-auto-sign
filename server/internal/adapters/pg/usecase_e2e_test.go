@@ -10,6 +10,7 @@ package pg_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -72,6 +73,7 @@ func newUsecaseEnv(t *testing.T) *usecaseEnv {
 	}
 	users, err := appuser.NewService(appuser.Deps{
 		Users: e.users, Audit: e.audits, Tx: e.db, Clock: clk, KDF: coreauth.PlainHasher{}, Limit: 10000,
+		Sessions: stubIssuer{}, OwnerAccounts: e.users,
 	})
 	if err != nil {
 		t.Fatalf("user service: %v", err)
@@ -502,3 +504,18 @@ func (e *usecaseEnv) accountStatus(id string) coreaccount.Status {
 	e.t.Helper()
 	return coreaccount.Status(e.scalarString("SELECT status::text FROM accounts WHERE id = $1::uuid", id))
 }
+
+// stubIssuer 满足 appuser.Deps 的会话端口。本文件的用例只建号，不撤销会话。
+type stubIssuer struct{}
+
+func (stubIssuer) Issue(context.Context, coreauth.User) (coreauth.Issued, error) {
+	return coreauth.Issued{}, errors.New("not used")
+}
+
+func (stubIssuer) Resolve(context.Context, string) (coreauth.Session, error) {
+	return coreauth.Session{}, coreauth.ErrNoSession
+}
+
+func (stubIssuer) Revoke(context.Context, string) error { return nil }
+
+func (stubIssuer) RevokeAllForUser(context.Context, string) error { return nil }

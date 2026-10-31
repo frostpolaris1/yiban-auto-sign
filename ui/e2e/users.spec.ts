@@ -1,6 +1,9 @@
 import { test, expect, type Page } from '@playwright/test'
 import {
+  DELETED_USER,
+  FAKE_TEMP_PASSWORD,
   USERS,
+  callsTo,
   lastUserListCall,
   listUserCalls,
   mockUsersApi,
@@ -196,4 +199,165 @@ test('invariant 5: a failed list shows the envelope and can retry', async ({ pag
   const before = listUserCalls(api).length
   await page.getByRole('button', { name: '重试' }).click()
   await expect.poll(() => listUserCalls(api).length).toBeGreaterThan(before)
+})
+
+// --- UX-1：建号、URL 状态、抽屉动作 ----------------------------------------
+
+async function openManage(page: Page, email: string) {
+  await page.getByRole('row').filter({ hasText: email }).getByRole('button', { name: `管理 ${email}` }).click()
+  await expect(page.getByRole('dialog').getByText('管理用户', { exact: true })).toBeVisible()
+}
+
+test('UX-1: creating a user posts the form, closes the modal and refreshes the list', async ({ page }) => {
+  const api = await mockUsersApi(page, { role: 'master' })
+  await openUsers(page)
+
+  await page.getByRole('button', { name: '新建用户' }).click()
+  await expect(page.getByRole('dialog').getByText('新建用户', { exact: true })).toBeVisible()
+  await page.getByRole('dialog').getByLabel('邮箱').fill('new-one@example.com')
+  await page.getByRole('dialog').getByLabel('初始口令').fill('first-pass')
+  await page.getByRole('dialog').getByLabel('角色').selectOption('admin')
+  const listsBefore = listUserCalls(api).length
+  await page.getByRole('button', { name: '创建' }).click()
+
+  await expect.poll(() => callsTo(api, 'POST', '/api/users')).toHaveLength(1)
+  const sent = callsTo(api, 'POST', '/api/users')[0]
+  expect(sent.body).toEqual({ email: 'new-one@example.com', password: 'first-pass', role: 'admin' })
+  // 弹窗关闭，列表失效重取。
+  await expect(page.getByRole('dialog').getByText('新建用户', { exact: true })).toHaveCount(0)
+  await expect.poll(() => listUserCalls(api).length).toBeGreaterThan(listsBefore)
+})
+
+test('UX-1: a duplicate email keeps the modal open with the input intact', async ({ page }) => {
+  const api = await mockUsersApi(page, {
+    role: 'master',
+    createError: { status: 409, code: 'conflict', message: 'conflict' },
+  })
+  await openUsers(page)
+  await page.getByRole('button', { name: '新建用户' }).click()
+  await page.getByRole('dialog').getByLabel('邮箱').fill('master-one@example.com')
+  await page.getByLabel('初始口令').fill('first-pass')
+  await page.getByRole('button', { name: '创建' }).click()
+
+  await expect(page.getByText('该邮箱已被使用')).toBeVisible()
+  await expect(page.getByRole('dialog').getByText('新建用户', { exact: true })).toBeVisible()
+  expect(await page.getByRole('dialog').getByLabel('邮箱').inputValue()).toBe('master-one@example.com')
+  expect(callsTo(api, 'POST', '/api/users')).toHaveLength(1)
+})
+
+test('UX-1: filters, the deleted toggle and the cursor survive a reload', async ({ page }) => {
+  const api = await mockUsersApi(page, {
+    role: 'master',
+    userPages: { '': [USERS[0]], c2: [USERS[1]] },
+    userNextCursors: { '': 'c2', c2: '' },
+  })
+  await page.goto('/users')
+  await expect(page.getByRole('table', { name: '用户列表' })).toBeVisible()
+
+  await page.getByLabel('角色筛选').selectOption('admin')
+  await page.getByLabel('状态筛选').selectOption('active')
+  await page.getByLabel('邮箱前缀筛选').fill('admin')
+  // 等防抖落地再翻页：真实用户先看到结果再点下一页。
+  await expect.poll(() => lastUserListCall(api)?.params.q).toBe('admin')
+  await page.getByRole('button', { name: '下一页' }).click()
+  await expect.poll(() => lastUserListCall(api)?.params.cursor).toBe('c2')
+
+  // URL 参数原样：role/status/q/cursor 都在。
+  await expect(page).toHaveURL(/role=admin/)
+  await expect(page).toHaveURL(/status=active/)
+  await expect(page).toHaveURL(/q=admin/)
+  await expect(page).toHaveURL(/cursor=c2/)
+
+  const requestUrl = page.url()
+  await page.reload()
+  await expect(page).toHaveURL(requestUrl)
+  // 刷新后的列表请求带同一组参数（deleted 未开，不含键）。
+  await expect
+    .poll(() => lastUserListCall(api)?.search)
+    .toBe('?role=admin&status=active&q=admin&cursor=c2')
+})
+
+test('UX-1: the deleted toggle rides the list request', async ({ page }) => {
+  const api = await mockUsersApi(page, { role: 'master' })
+  await openUsers(page)
+  expect(lastUserListCall(api)?.params.include_deleted).toBeUndefined()
+
+  await page.getByLabel('含已删除').check()
+  await expect.poll(() => lastUserListCall(api)?.params.include_deleted).toBe('true')
+  await expect(page.getByText(DELETED_USER.email)).toBeVisible()
+  await expect(page.getByText('已删除', { exact: true })).toBeVisible()
+
+  await page.getByLabel('含已删除').uncheck()
+  await expect.poll(() => lastUserListCall(api)?.params.include_deleted).toBeUndefined()
+  await expect(page.getByText(DELETED_USER.email)).toHaveCount(0)
+})
+
+test('UX-1: the drawer role change sends a PATCH and keeps the drawer open', async ({ page }) => {
+  const api = await mockUsersApi(page, { role: 'master' })
+  await openUsers(page)
+  await openManage(page, 'admin-one@example.com')
+
+  await page.getByLabel('角色变更').selectOption('master')
+  await page.getByRole('button', { name: '保存' }).click()
+
+  await expect.poll(() => callsTo(api, 'PATCH', '/api/users/user-beta')).toHaveLength(1)
+  expect(callsTo(api, 'PATCH', '/api/users/user-beta')[0].body).toEqual({ role: 'master' })
+  // 抽屉仍开着；摘要里的角色已同步。
+  await expect(page.getByRole('dialog').getByText('管理用户', { exact: true })).toBeVisible()
+})
+
+test('UX-1: demoting the last master explains the refusal in the drawer', async ({ page }) => {
+  const api = await mockUsersApi(page, {
+    role: 'master',
+    updateError: { status: 409, code: 'conflict', message: 'conflict' },
+  })
+  await openUsers(page)
+  await openManage(page, 'master-one@example.com')
+
+  await page.getByLabel('角色变更').selectOption('user')
+  await page.getByRole('button', { name: '保存' }).click()
+  await expect(page.getByText('这是最后一位管理员，不能降级或停用')).toBeVisible()
+  expect(callsTo(api, 'PATCH', '/api/users/user-alpha')).toHaveLength(1)
+})
+
+test('UX-1: the temp password is shown once and discarded on close', async ({ page }) => {
+  const api = await mockUsersApi(page, { role: 'master' })
+  await openUsers(page)
+  await openManage(page, 'member-one@example.com')
+
+  await page.getByRole('button', { name: '重置口令' }).click()
+  await expect(page.getByText('成功后该用户全部会话失效', { exact: false })).toBeVisible()
+  await page.getByRole('button', { name: '生成临时口令' }).click()
+
+  await expect.poll(() => callsTo(api, 'POST', '/api/users/user-gamma/password-reset')).toHaveLength(1)
+  // 一次性视图：口令只出现一次。
+  await expect(page.getByText(FAKE_TEMP_PASSWORD)).toHaveCount(1)
+  await expect(page.getByText('关闭后不可再查看', { exact: false })).toBeVisible()
+
+  await page.getByRole('button', { name: '我已保存，返回' }).click()
+  await expect(page.getByText(FAKE_TEMP_PASSWORD)).toHaveCount(0)
+})
+
+test('UX-1: delete then restore a user through the deleted toggle', async ({ page }) => {
+  const api = await mockUsersApi(page, { role: 'master' })
+  await openUsers(page)
+  await openManage(page, 'member-one@example.com')
+
+  await page.getByRole('button', { name: '删除用户' }).click()
+  await page.getByRole('button', { name: '删除', exact: true }).click()
+  await expect.poll(() => callsTo(api, 'DELETE', '/api/users/user-gamma')).toHaveLength(1)
+  // 行已离开默认列表：抽屉收起。
+  await expect(page.getByRole('dialog').getByText('管理用户', { exact: true })).toHaveCount(0)
+  await expect(page.getByText('member-one@example.com')).toHaveCount(0)
+
+  // 打开含已删除：徽标与恢复入口可达。
+  await page.getByLabel('含已删除').check()
+  await expect(page.getByText('member-one@example.com')).toBeVisible()
+  await openManage(page, 'member-one@example.com')
+  await page.getByRole('button', { name: '恢复用户' }).click()
+
+  await expect.poll(() => callsTo(api, 'POST', '/api/users/user-gamma/restore')).toHaveLength(1)
+  // 恢复后抽屉回到常规动作面；列表失效重取。
+  await expect(page.getByRole('button', { name: '删除用户' })).toBeVisible()
+  await expect.poll(() => listUserCalls(api).length).toBeGreaterThan(2)
 })
