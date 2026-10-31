@@ -441,14 +441,15 @@ paths:
       tags: [schools]
       operationId: SchoolList
       summary: List schools with cursor pagination.
-      x-roles: [master, admin]
+      x-roles: [master, admin, user]
       parameters:
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
       responses:
         '200':
           description: |
-            School page. master sees every school; admin sees only bound schools.
+            School page. master sees every school; admin sees only bound
+            schools; user sees only active schools.
           content:
             application/json:
               schema:
@@ -673,6 +674,13 @@ paths:
             Login and password-reset rate limiting is a deployment precondition
             before public exposure (P7).
           schema: { type: string }
+        - name: include_deleted
+          in: query
+          required: false
+          description: |
+            When true, soft-deleted accounts are also returned. Defaults to
+            false: soft-deleted rows never appear without the flag.
+          schema: { type: boolean }
       responses:
         '200':
           description: Account page.
@@ -690,10 +698,12 @@ paths:
       summary: Register a platform account.
       description: |
         owner_user_id defaults to the caller. Only master and admin may set it
-        to another user. The account starts in status pending. The global
-        active-account limit and the per-owner quota both answer 429
-        capacity_exceeded; the limiter 429 carries Retry-After and the quota
-        429 does not. Changes are rate limited per caller.
+        to another user, and the referenced user must exist and not be
+        soft-deleted: an unknown or deleted owner answers 404. The account
+        starts in status pending. The global active-account limit and the
+        per-owner quota both answer 429 capacity_exceeded; the limiter 429
+        carries Retry-After and the quota 429 does not. Changes are rate
+        limited per caller.
       x-roles: [master, admin, user]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -848,6 +858,65 @@ paths:
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/ConflictError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/accounts/{id}/device-refresh:
+    post:
+      tags: [accounts]
+      operationId: AccountDeviceRefresh
+      summary: Re-read the device fields registered on the platform.
+      description: |
+        Takes no body. The server reads the stored credentials, asks the
+        platform for its registered device state and, on success, writes the
+        non-empty fields back into the credential ciphertext inside one
+        transaction; platform-side empty fields never overwrite hand-filled
+        values. A platform failure answers 502 and writes nothing: the
+        credential version and the audit trail are unchanged. The full device
+        code never leaves the server; the response carries only the masked
+        form, the phone model and the authorized flag.
+      x-roles: [master, admin, user]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - $ref: '#/components/parameters/AccountID'
+      responses:
+        '200':
+          description: The refreshed device view.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountDevice'
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        '502': { $ref: '#/components/responses/DefaultError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/accounts/{id}/restore:
+    post:
+      tags: [accounts]
+      operationId: AccountRestore
+      summary: Restore a soft-deleted account.
+      description: |
+        Only master and admin may restore. The account keeps its pre-delete
+        status. A missing or out-of-scope account answers 404; a live (not
+        deleted) account answers 409 conflict; the global or the per-owner
+        active-account quota answers 429 capacity_exceeded.
+      x-roles: [master, admin]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - $ref: '#/components/parameters/AccountID'
+      responses:
+        '200':
+          description: The restored account.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        '409': { $ref: '#/components/responses/ConflictError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/accounts/{id}/verify:
     post:
@@ -1814,6 +1883,7 @@ components:
         - reviewed_by
         - created_at
         - updated_at
+        - deleted_at
       properties:
         id: { type: string }
         school_id: { type: string }
@@ -1831,6 +1901,13 @@ components:
           type: [string, "null"]
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+        deleted_at:
+          type: [string, "null"]
+          format: date-time
+          description: |
+            Soft-delete timestamp. Null for live rows; non-null only when the
+            list was fetched with include_deleted=true. The restore entry
+            needs this to mark deleted rows.
     AccountCreate:
       type: object
       required: [school_id, phone, password]
@@ -1838,7 +1915,10 @@ components:
         school_id: { type: string }
         owner_user_id:
           type: string
-          description: Defaults to the caller.
+          description: |
+            Defaults to the caller. Only master and admin may set another
+            user, and that user must exist and not be soft-deleted;
+            otherwise the whole request answers 404.
         phone:
           type: string
           pattern: '^1[0-9]{10}$'
@@ -2206,6 +2286,19 @@ components:
         email_masked: { type: string }
         status:
           $ref: '#/components/schemas/UserStatus'
+    AccountDevice:
+      type: object
+      required: [device_code_masked, phone_model, authorized]
+      description: |
+        The device view after a platform re-read. device_code_masked keeps
+        the first two and the last two characters; the full code never
+        leaves the server. phone_model and device_code_masked carry the
+        effective stored values: platform-side empty fields leave the
+        hand-filled values in place.
+      properties:
+        device_code_masked: { type: string }
+        phone_model: { type: string }
+        authorized: { type: boolean }
     AccountPage:
       type: object
       required: [items, next_cursor]

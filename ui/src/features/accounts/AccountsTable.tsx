@@ -50,6 +50,7 @@ type AccountsTableProps = {
   onEdit: (account: Account, opener: HTMLElement | null) => void
   onLocation: (account: Account, opener: HTMLElement | null) => void
   onDelete: (account: Account, opener: HTMLElement | null) => void
+  onRestore: (account: Account, opener: HTMLElement | null) => void
 }
 
 export function AccountsTable({
@@ -68,6 +69,7 @@ export function AccountsTable({
   onEdit,
   onLocation,
   onDelete,
+  onRestore,
 }: AccountsTableProps) {
   // 列表过渡：180ms 与 vendor 过渡同量级；尊重系统「减少动态效果」偏好。
   const [tbodyRef] = useAutoAnimate<HTMLTableSectionElement>({
@@ -119,6 +121,58 @@ export function AccountsTable({
             ) : null}
 
             {rows.map((account) => {
+              // 软删行只展示徽标与恢复菜单：其余动作对已删行都是 404。
+              if (account.deleted_at != null) {
+                return (
+                  <tr
+                    key={account.id}
+                    className="app-account-row"
+                    tabIndex={0}
+                    onClick={(event) => onOpenDetail(account, event.currentTarget)}
+                    onKeyDown={(event) => {
+                      if (event.target !== event.currentTarget) return
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        onOpenDetail(account, event.currentTarget)
+                      }
+                    }}
+                  >
+                    <td>
+                      <button
+                        type="button"
+                        className="app-cell-link data-cell-mono"
+                        aria-label={`查看 ${account.phone_masked}`}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          onOpenDetail(account, event.currentTarget)
+                        }}
+                      >
+                        {account.phone_masked}
+                      </button>
+                    </td>
+                    <td className="data-cell-mono">{account.school_id}</td>
+                    <td>
+                      <Badge tone="danger" dot>
+                        已删除
+                      </Badge>
+                    </td>
+                    <td className="data-cell-mono">{account.owner_user_id}</td>
+                    <td className="data-cell-mono">{formatDateTime(account.updated_at)}</td>
+                    <td>
+                      <div className="data-cell-actions app-account-actions">
+                        <AccountRowMenu
+                          account={account}
+                          role={role}
+                          onEdit={onEdit}
+                          onLocation={onLocation}
+                          onDelete={onDelete}
+                          onRestore={onRestore}
+                        />
+                      </div>
+                    </td>
+                  </tr>
+                )
+              }
               const pauseKind: AccountActionKind = pauseDirection(account.status)
               const pauseLabel = pauseKind === 'pause' ? '暂停' : '恢复'
               const pauseReason = pauseDenyReason(role, account.status)
@@ -232,6 +286,7 @@ export function AccountsTable({
                         onEdit={onEdit}
                         onLocation={onLocation}
                         onDelete={onDelete}
+                        onRestore={onRestore}
                       />
                       {notes.size > 0 ? (
                         <span className="app-deny-note">{[...notes].join('；')}</span>

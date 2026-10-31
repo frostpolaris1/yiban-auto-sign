@@ -26,6 +26,8 @@ export type AccountVerifyResult = Schemas['AccountVerifyResult']
 export type AccountUpdate = Schemas['AccountUpdate']
 export type AccountLocation = Schemas['AccountLocation']
 export type AccountLocationUpdate = Schemas['AccountLocationUpdate']
+export type AccountDevice = Schemas['AccountDevice']
+export type AccountCreateBody = Schemas['AccountCreate']
 
 /** 查询串视图。字段直接取契约生成的 `AccountList` 参数，不另写一份。 */
 export type AccountQuery = NonNullable<operations['AccountList']['parameters']['query']>
@@ -39,6 +41,8 @@ export const ACCOUNT_PATHS = {
   verify: (id: string) => `/api/accounts/${encodeURIComponent(id)}/verify`,
   sign: (id: string) => `/api/accounts/${encodeURIComponent(id)}/sign`,
   location: (id: string) => `/api/accounts/${encodeURIComponent(id)}/location`,
+  deviceRefresh: (id: string) => `/api/accounts/${encodeURIComponent(id)}/device-refresh`,
+  restore: (id: string) => `/api/accounts/${encodeURIComponent(id)}/restore`,
 } as const
 
 /**
@@ -50,6 +54,7 @@ export function buildAccountSearch(query: AccountQuery = {}): string {
   if (query.school_id) params.set('school_id', query.school_id)
   if (query.status) params.set('status', query.status)
   if (query.q) params.set('q', query.q)
+  if (query.include_deleted) params.set('include_deleted', 'true')
   if (query.cursor) params.set('cursor', query.cursor)
   if (query.limit) params.set('limit', String(query.limit))
   const search = params.toString()
@@ -109,4 +114,25 @@ export function setAccountLocation(
 /** 204 软删除。成功后无响应体。 */
 export function deleteAccount(id: string): Promise<void> {
   return apiRequest<void>(ACCOUNT_PATHS.detail(id), { method: 'DELETE' })
+}
+
+/** 建号。`owner_user_id` 只给 master/admin；指定属主必须是活跃用户。 */
+export function createAccount(body: AccountCreateBody): Promise<Account> {
+  return apiRequest<Account>(ACCOUNT_PATHS.create, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+/** 恢复软删账号。只归 master/admin；行保持删除前状态。 */
+export function restoreAccount(id: string): Promise<Account> {
+  return apiRequest<Account>(ACCOUNT_PATHS.restore(id), { method: 'POST' })
+}
+
+/**
+ * 设备刷新：无请求体。响应只给掩码、机型与授权标志；
+ * 明文设备码从不出服务端。502 表示平台失败，零写库。
+ */
+export function refreshDevice(id: string): Promise<AccountDevice> {
+  return apiRequest<AccountDevice>(ACCOUNT_PATHS.deviceRefresh(id), { method: 'POST' })
 }

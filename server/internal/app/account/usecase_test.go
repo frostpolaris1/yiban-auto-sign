@@ -20,7 +20,7 @@ type fakeListRepo struct {
 	items []Record
 }
 
-func (f *fakeListRepo) List(_ context.Context, _ corescope.Scope, _ string, _ Status, _, _ string, _ int) ([]Record, string, error) {
+func (f *fakeListRepo) List(_ context.Context, _ corescope.Scope, _ string, _ Status, _, _ string, _ int, _ bool) ([]Record, string, error) {
 	f.lists++
 	return f.items, "", nil
 }
@@ -35,6 +35,8 @@ func TestListRejectsZeroValueScope(t *testing.T) {
 		Audit:      fakeAuditRepo{},
 		Tx:         fakeTxManager{},
 		Clock:      clock.Fixed{T: time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)},
+		Owner:      fakeOwnerReader{},
+		Device:     &fakeDeviceReader{},
 		Limit:      10,
 		OwnerLimit: 10,
 	})

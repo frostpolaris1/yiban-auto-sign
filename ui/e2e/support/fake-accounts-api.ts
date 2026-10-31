@@ -60,6 +60,7 @@ function account(overrides: Partial<Account> & Pick<Account, 'id'>): Account {
     owner_user_id: 'user-1',
     phone_masked: '138****8000',
     status: 'pending',
+    deleted_at: null,
     reject_reason: '',
     reviewed_at: null,
     reviewed_by: null,
@@ -86,6 +87,29 @@ export const ACCOUNTS: Account[] = [
     reject_reason: '',
   }),
 ]
+
+/** 软删行夹具：只在 include_deleted=true 时出现。手机号取登记号 13100000000。 */
+export const DELETED_ACCOUNTS: Account[] = [
+  account({
+    id: 'acc-del',
+    phone_masked: '131****0000',
+    status: 'pending',
+    deleted_at: '2026-10-25T00:00:00Z',
+  }),
+]
+
+/** 归属选择器的合成用户。邮箱是保留域 example.com。 */
+export const LOOKUP_USERS = [
+  { id: 'user-target', email: 'member.target@example.com', status: 'active' },
+  { id: 'user-disabled', email: 'disabled.one@example.com', status: 'disabled' },
+] as const
+
+/** 设备刷新的合成回读。掩码由登记形状的设备码派生（明文不出现）。 */
+export const DEVICE_READ = {
+  device_code_masked: 'DE****12',
+  phone_model: 'Mi 9 合成机型',
+  authorized: true,
+} as const
 
 export type MockOptions = {
   role: Role | null
@@ -124,6 +148,14 @@ export type MockOptions = {
   changePasswordSessionExpired?: boolean
   /** 登录态改密断网：fetch 直接拒绝。 */
   changePasswordNetworkError?: boolean
+  /** 建号的失败注入。缺省 201 并把行并进列表。 */
+  createError?: { status: number; code: string; message: string }
+  /** 设备刷新的失败注入。缺省回 DEVICE_READ。 */
+  deviceRefreshError?: { status: number; code: string; message: string }
+  /** 恢复的失败注入。缺省清掉软删标记。 */
+  restoreError?: { status: number; code: string; message: string }
+  /** 归属选择器 lookup 的失败注入。 */
+  lookupError?: { status: number; code: string; message: string }
 }
 
 export type FakeApi = {
@@ -150,7 +182,9 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       items.map((item) => ({ ...item })),
     ]),
   )
-  const knownAccounts = [...allAccounts, ...Object.values(pages).flat()]
+  // 软删行每份测试一个副本：恢复会改行内标记，不能污染共享夹具。
+  const deletedAccounts = DELETED_ACCOUNTS.map((item) => ({ ...item }))
+  const knownAccounts = [...allAccounts, ...Object.values(pages).flat(), ...deletedAccounts]
 
   const json = (route: Route, body: unknown, status = 200) =>
     route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
@@ -262,21 +296,60 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
     }
 
     if (url.pathname === '/api/schools' && request.method() === 'GET') {
-      if (sessionRole !== 'master' && sessionRole !== 'admin') {
-        return fail(route, 403, 'forbidden', '无权访问')
-      }
+      // UX-2 起契约对 user 放宽：三角色都可列学校（user 只见 active 行）。
       return json(route, { items: SCHOOLS, next_cursor: '' })
+    }
+
+    // 归属选择器的受限查询：master/admin 专用，只回 id、掩码邮箱、状态。
+    if (url.pathname === '/api/users/lookup' && request.method() === 'GET') {
+      if (sessionRole !== 'master' && sessionRole !== 'admin') {
+        return fail(route, 403, 'forbidden', '仅 master/admin 可检索用户')
+      }
+      if (options.lookupError) {
+        const { status, code, message } = options.lookupError
+        return fail(route, status, code, message)
+      }
+      const q = (url.searchParams.get('q') ?? '').toLowerCase()
+      const items = LOOKUP_USERS.filter((item) => item.email.startsWith(q)).map((item) => ({
+        id: item.id,
+        email_masked: `${item.email.slice(0, 1)}***${item.email.slice(item.email.indexOf('@'))}`,
+        status: item.status,
+      }))
+      return json(route, { items })
+    }
+
+    // 建号：成功 201，行并进列表供后续断言。
+    if (url.pathname === '/api/accounts' && request.method() === 'POST') {
+      if (options.createError) {
+        const { status, code, message } = options.createError
+        return fail(route, status, code, message)
+      }
+      const input = (body ?? {}) as { school_id?: string; phone?: string; owner_user_id?: string }
+      const created = account({
+        id: 'acc-new',
+        school_id: input.school_id ?? 'school-a',
+        owner_user_id: input.owner_user_id ?? 'user-1',
+        phone_masked: input.phone
+          ? `${input.phone.slice(0, 3)}****${input.phone.slice(-4)}`
+          : '138****8000',
+      })
+      allAccounts.push(created)
+      knownAccounts.push(created)
+      return json(route, created, 201)
     }
 
     if (url.pathname === '/api/accounts' && request.method() === 'GET') {
       const cursor = url.searchParams.get('cursor') ?? ''
-      const items = pages[cursor] ?? allAccounts
+      const includeDeleted = url.searchParams.get('include_deleted') === 'true'
+      const base = pages[cursor] ?? allAccounts
+      // 软删行只在 include_deleted=true 时入选，形状与服务端一致。
+      const items = includeDeleted ? [...base, ...deletedAccounts] : base
       const next = options.nextCursors?.[cursor] ?? ''
       return json(route, { items, next_cursor: next })
     }
 
     const match = url.pathname.match(
-      /^\/api\/accounts\/([^/]+)(?:\/(pause|sign|verify|review|location))?$/,
+      /^\/api\/accounts\/([^/]+)(?:\/(pause|sign|verify|review|location|device-refresh|restore))?$/,
     )
     if (!match) return fail(route, 404, 'not_found', '未找到资源')
     const [, id, action] = match
@@ -344,6 +417,30 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       return json(route, { ...found, status: decision === 'reject' ? 'rejected' : 'active' })
     }
 
+    // 设备刷新：无请求体。回读值缺省即 DEVICE_READ；错误由用例注入。
+    if (action === 'device-refresh' && request.method() === 'POST') {
+      if (options.deviceRefreshError) {
+        const { status, code, message } = options.deviceRefreshError
+        return fail(route, status, code, message)
+      }
+      return json(route, DEVICE_READ)
+    }
+
+    // 恢复：只认软删行；未删行与服务端同判 409。
+    if (action === 'restore' && request.method() === 'POST') {
+      if (options.restoreError) {
+        const { status, code, message } = options.restoreError
+        return fail(route, status, code, message)
+      }
+      if (!found.deleted_at) {
+        return fail(route, 409, 'conflict', '账号未删除')
+      }
+      found.deleted_at = null
+      const live = allAccounts.find((item) => item.id === found.id)
+      if (!live) allAccounts.push(found)
+      return json(route, found)
+    }
+
     return fail(route, 405, 'internal_error', '不支持的方法')
   })
 
@@ -396,6 +493,26 @@ export function resetPasswordCalls(api: FakeApi): ApiCall[] {
   return api.calls.filter(
     (call) => call.method === 'POST' && call.path === '/api/auth/reset-password',
   )
+}
+
+export function createCalls(api: FakeApi): ApiCall[] {
+  return api.calls.filter((call) => call.method === 'POST' && call.path === '/api/accounts')
+}
+
+export function deviceRefreshCalls(api: FakeApi, id: string): ApiCall[] {
+  return api.calls.filter(
+    (call) => call.method === 'POST' && call.path === `/api/accounts/${id}/device-refresh`,
+  )
+}
+
+export function restoreCalls(api: FakeApi, id: string): ApiCall[] {
+  return api.calls.filter(
+    (call) => call.method === 'POST' && call.path === `/api/accounts/${id}/restore`,
+  )
+}
+
+export function lookupCalls(api: FakeApi): ApiCall[] {
+  return api.calls.filter((call) => call.method === 'GET' && call.path === '/api/users/lookup')
 }
 
 export function changePasswordCalls(api: FakeApi): ApiCall[] {

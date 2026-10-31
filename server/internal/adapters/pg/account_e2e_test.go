@@ -63,7 +63,7 @@ func TestAccountListOrdersAndPaginates(t *testing.T) {
 	var got []coreaccount.Record
 	cursor := ""
 	for page := 1; ; page++ {
-		items, next, err := e.accts.List(e.ctx, corescope.Master(), "", "", "", cursor, 2)
+		items, next, err := e.accts.List(e.ctx, corescope.Master(), "", "", "", cursor, 2, false)
 		if err != nil {
 			t.Fatalf("list page %d: %v", page, err)
 		}

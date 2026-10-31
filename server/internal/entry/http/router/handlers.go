@@ -177,6 +177,24 @@ func (s *server) AccountDelete(c *gin.Context, id oapi.AccountID, params oapi.Ac
 	s.accounts.Delete(c, id, params)
 }
 
+// AccountRestore 委托账号处理器。未装配时仍是 501。
+func (s *server) AccountRestore(c *gin.Context, id oapi.AccountID, params oapi.AccountRestoreParams) {
+	if s.accounts == nil {
+		notImplemented(c)
+		return
+	}
+	s.accounts.Restore(c, id, params)
+}
+
+// AccountDeviceRefresh 委托账号处理器。未装配时仍是 501。
+func (s *server) AccountDeviceRefresh(c *gin.Context, id oapi.AccountID, params oapi.AccountDeviceRefreshParams) {
+	if s.accounts == nil {
+		notImplemented(c)
+		return
+	}
+	s.accounts.DeviceRefresh(c, id, params)
+}
+
 // AccountReview 委托账号处理器。未装配时仍是 501。
 func (s *server) AccountReview(c *gin.Context, id oapi.AccountID, params oapi.AccountReviewParams) {
 	if s.accounts == nil {

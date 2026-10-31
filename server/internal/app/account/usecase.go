@@ -1,7 +1,7 @@
 // Package account 实现账号用例。
 //
 // # 功能
-// 建、查、改、审核、暂停、软删、列表。
+// 建、查、改、审核、暂停、软删、恢复、设备刷新、列表。
 // 本包**不**实现 SQL、**不**做 HTTP 编码、**不**签发会话。
 //
 // # 归属
@@ -35,6 +35,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
 	coreschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/school"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
+	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 )
 
 // phonePattern 与 ck_accounts_phone_shape 同形。
@@ -57,6 +58,16 @@ type SchoolReader interface {
 
 // Deps 是账号用例的依赖。
 // Cipher 可为 nil；此时任何写入口令/设备码的请求都失败（fail-closed）。
+// OwnerReader 按 id 读属主用户行，供建号的活跃校验（8v8⑦）。
+// 实现是 pg.UserRepo；GetByID 只回未删行，
+// 软删与不存在的 owner 在这里同样落到 not_found。
+// 返回类型留在 core/user：适配器无须导入本包（boundary.adapters）。
+type OwnerReader interface {
+	GetByID(ctx context.Context, id string) (coreuser.Record, error)
+}
+
+// Deps 是账号用例的依赖。
+// Cipher 可为 nil；此时任何写入口令/设备码的请求都失败（fail-closed）。
 type Deps struct {
 	Accounts Repo
 	Schools  SchoolReader
@@ -64,6 +75,10 @@ type Deps struct {
 	Tx       app.TxManager
 	Clock    clock.Clock
 	Cipher   *Cipher
+	// Owner 校验 master/admin 指定的属主是活跃用户（8v8⑦）。
+	Owner OwnerReader
+	// Device 从平台读回设备登记状态；实现见 assembly（8v8⑧）。
+	Device DeviceReader
 	// Limit 是活跃账号上限。
 	Limit int
 	// OwnerLimit 是每个属主的活跃账号上限。
@@ -83,10 +98,12 @@ type Page struct {
 
 // ListFilter 是列表的可选过滤条件。
 // 空串表示不过滤；它们与作用域是**与**关系。
+// IncludeDeleted 置真时软删行也入选；缺省假，行为不变。
 type ListFilter struct {
-	SchoolID string
-	Status   Status
-	Query    string
+	SchoolID       string
+	Status         Status
+	Query          string
+	IncludeDeleted bool
 }
 
 // CreateInput 是建账号的输入。口令必填。
@@ -142,6 +159,12 @@ func NewService(deps Deps) (*Service, error) {
 	if deps.OwnerLimit <= 0 {
 		return nil, errors.New("account: owner limit must be positive")
 	}
+	if deps.Owner == nil {
+		return nil, errors.New("account: nil owner reader")
+	}
+	if deps.Device == nil {
+		return nil, errors.New("account: nil device reader")
+	}
 	return &Service{deps: deps}, nil
 }
 
@@ -161,7 +184,7 @@ func (s *Service) List(ctx context.Context, scope corescope.Scope, filter ListFi
 	if err != nil {
 		return Page{}, err
 	}
-	items, next, err := s.deps.Accounts.List(ctx, scope, filter.SchoolID, filter.Status, filter.Query, cursor, limit)
+	items, next, err := s.deps.Accounts.List(ctx, scope, filter.SchoolID, filter.Status, filter.Query, cursor, limit, filter.IncludeDeleted)
 	if err != nil {
 		return Page{}, err
 	}
@@ -213,7 +236,7 @@ func (s *Service) Create(ctx context.Context, scope corescope.Scope, in CreateIn
 	if err := app.RequireScope(scope); err != nil {
 		return Record{}, err
 	}
-	owner, err := resolveOwner(scope, actor, in.OwnerUserID)
+	owner, err := s.resolveOwner(ctx, scope, actor, in.OwnerUserID)
 	if err != nil {
 		return Record{}, err
 	}
@@ -606,8 +629,10 @@ func (s *Service) requireSchool(ctx context.Context, scope corescope.Scope, scho
 }
 
 // resolveOwner 决定账号属主。
-// 只有 master 与 admin 可以把账号挂在别人名下。
-func resolveOwner(scope corescope.Scope, actor appaudit.Actor, requested string) (string, error) {
+// 只有 master 与 admin 可以把账号挂在别人名下；
+// 指定的属主必须是活跃（未删）用户：软删行仍在、外键放行，
+// 这个口子只能由应用层堵上（8v8⑦，堵 FK 放行）。
+func (s *Service) resolveOwner(ctx context.Context, scope corescope.Scope, actor appaudit.Actor, requested string) (string, error) {
 	if scope.Kind() == corescope.KindUser {
 		if requested != "" && requested != actor.UserID {
 			return "", errs.New(errs.CodeForbidden, "user cannot set another owner")
@@ -616,6 +641,9 @@ func resolveOwner(scope corescope.Scope, actor appaudit.Actor, requested string)
 	}
 	if requested == "" {
 		return actor.UserID, nil
+	}
+	if _, err := s.deps.Owner.GetByID(ctx, requested); err != nil {
+		return "", errs.New(errs.CodeNotFound, "owner user does not exist or is deleted")
 	}
 	return requested, nil
 }

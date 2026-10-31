@@ -79,8 +79,11 @@ const (
 	ActionAccountResume       Action = "account.resume"
 	ActionAccountDelete       Action = "account.delete"
 	ActionAccountRestore      Action = "account.restore"
-	ActionCredentialUpdate    Action = "credential.update"
-	ActionCredentialRekey     Action = "credential.rekey"
+	// UX-2 设备刷新：只在平台读回成功且本事务提交时出现。
+	// detail 只记 field=device_code，**绝无设备码全文或机型明文**。
+	ActionAccountDeviceRefresh Action = "account.device_refresh"
+	ActionCredentialUpdate     Action = "credential.update"
+	ActionCredentialRekey      Action = "credential.rekey"
 	// P4 引擎：明确登录失败把账号移出排期（active → credential_error）。
 	ActionAccountCredentialError Action = "account.credential_error"
 	// 凭据更新把 credential_error 账号放回排期（credential_error → active）。

@@ -63,6 +63,7 @@ type Credential = coreaccount.Credential
 //
 // List 按作用域、可选院校、状态与搜索串过滤，并用游标分页。
 // 过滤条件与作用域是**与**关系：未绑定院校的过滤结果为空，不是全量。
+// includeDeleted 置真时软删行也入选；缺省假，行为不变（8v8⑥）。
 //
 // Review 只推进 pending 行：通过写 active，拒绝写 rejected 并记理由。
 // 非 pending 行报 conflict。
@@ -71,7 +72,7 @@ type Repo interface {
 	Create(ctx context.Context, in New, limit, ownerLimit int) (Record, error)
 	Get(ctx context.Context, scope corescope.Scope, id string) (Record, error)
 	GetForUpdate(ctx context.Context, scope corescope.Scope, id string) (Record, error)
-	List(ctx context.Context, scope corescope.Scope, schoolID string, status Status, query, cursor string, limit int) ([]Record, string, error)
+	List(ctx context.Context, scope corescope.Scope, schoolID string, status Status, query, cursor string, limit int, includeDeleted bool) ([]Record, string, error)
 	UpdatePhone(ctx context.Context, scope corescope.Scope, id, phone string, at time.Time) (Record, error)
 	SetStatus(ctx context.Context, scope corescope.Scope, id string, from, to Status, at time.Time, reason string) (Record, error)
 	Review(ctx context.Context, scope corescope.Scope, id string, approve bool, reason, by string, at time.Time) (Record, error)

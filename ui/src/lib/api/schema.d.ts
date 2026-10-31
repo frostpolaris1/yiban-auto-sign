@@ -418,10 +418,12 @@ export interface paths {
         /**
          * Register a platform account.
          * @description owner_user_id defaults to the caller. Only master and admin may set it
-         *     to another user. The account starts in status pending. The global
-         *     active-account limit and the per-owner quota both answer 429
-         *     capacity_exceeded; the limiter 429 carries Retry-After and the quota
-         *     429 does not. Changes are rate limited per caller.
+         *     to another user, and the referenced user must exist and not be
+         *     soft-deleted: an unknown or deleted owner answers 404. The account
+         *     starts in status pending. The global active-account limit and the
+         *     per-owner quota both answer 429 capacity_exceeded; the limiter 429
+         *     carries Retry-After and the quota 429 does not. Changes are rate
+         *     limited per caller.
          */
         post: operations["AccountCreate"];
         delete?: never;
@@ -497,6 +499,56 @@ export interface paths {
          *     Any other shape returns conflict.
          */
         post: operations["AccountPause"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounts/{id}/device-refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Re-read the device fields registered on the platform.
+         * @description Takes no body. The server reads the stored credentials, asks the
+         *     platform for its registered device state and, on success, writes the
+         *     non-empty fields back into the credential ciphertext inside one
+         *     transaction; platform-side empty fields never overwrite hand-filled
+         *     values. A platform failure answers 502 and writes nothing: the
+         *     credential version and the audit trail are unchanged. The full device
+         *     code never leaves the server; the response carries only the masked
+         *     form, the phone model and the authorized flag.
+         */
+        post: operations["AccountDeviceRefresh"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounts/{id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restore a soft-deleted account.
+         * @description Only master and admin may restore. The account keeps its pre-delete
+         *     status. A missing or out-of-scope account answers 404; a live (not
+         *     deleted) account answers 409 conflict; the global or the per-owner
+         *     active-account quota answers 429 capacity_exceeded.
+         */
+        post: operations["AccountRestore"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1115,10 +1167,21 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             updated_at: string;
+            /**
+             * Format: date-time
+             * @description Soft-delete timestamp. Null for live rows; non-null only when the
+             *     list was fetched with include_deleted=true. The restore entry
+             *     needs this to mark deleted rows.
+             */
+            deleted_at: string | null;
         };
         AccountCreate: {
             school_id: string;
-            /** @description Defaults to the caller. */
+            /**
+             * @description Defaults to the caller. Only master and admin may set another
+             *     user, and that user must exist and not be soft-deleted;
+             *     otherwise the whole request answers 404.
+             */
             owner_user_id?: string;
             phone: string;
             password: string;
@@ -1371,6 +1434,18 @@ export interface components {
             id: string;
             email_masked: string;
             status: components["schemas"]["UserStatus"];
+        };
+        /**
+         * @description The device view after a platform re-read. device_code_masked keeps
+         *     the first two and the last two characters; the full code never
+         *     leaves the server. phone_model and device_code_masked carry the
+         *     effective stored values: platform-side empty fields leave the
+         *     hand-filled values in place.
+         */
+        AccountDevice: {
+            device_code_masked: string;
+            phone_model: string;
+            authorized: boolean;
         };
         AccountPage: {
             items: components["schemas"]["Account"][];
@@ -1961,7 +2036,10 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description School page. master sees every school; admin sees only bound schools. */
+            /**
+             * @description School page. master sees every school; admin sees only bound
+             *     schools; user sees only active schools.
+             */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2233,6 +2311,11 @@ export interface operations {
                  *     before public exposure (P7).
                  */
                 q?: string;
+                /**
+                 * @description When true, soft-deleted accounts are also returned. Defaults to
+                 *     false: soft-deleted rows never appear without the flag.
+                 */
+                include_deleted?: boolean;
             };
             header?: never;
             path?: never;
@@ -2463,6 +2546,75 @@ export interface operations {
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AccountDeviceRefresh: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["AccountID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The refreshed device view. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountDevice"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            502: components["responses"]["DefaultError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AccountRestore: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["AccountID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The restored account. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Account"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            409: components["responses"]["ConflictError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
         };
     };

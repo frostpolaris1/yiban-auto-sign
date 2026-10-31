@@ -1,7 +1,7 @@
 // Package account 把账号用例映射到 HTTP。
 //
 // # 功能
-// 列表、创建、读取、修改、审核、暂停、软删七个端点。
+// 列表、创建、读取、修改、审核、暂停、软删、恢复、设备刷新九个端点。
 // 本包**不**写 SQL、**不**判状态迁移、**不**加密凭据。
 //
 // # 归属
@@ -46,6 +46,8 @@ type Service interface {
 	Review(ctx context.Context, scope corescope.Scope, id string, approve bool, reason string, actor appaudit.Actor) (appaccount.Record, error)
 	Pause(ctx context.Context, scope corescope.Scope, id string, paused bool, actor appaudit.Actor) (appaccount.Record, error)
 	Delete(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) error
+	Restore(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) (appaccount.Record, error)
+	DeviceRefresh(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) (appaccount.DeviceRefreshResult, error)
 }
 
 // Authorizer 把会话主体解析成作用域与审计主体。
@@ -95,6 +97,9 @@ func (h *Handler) List(c *gin.Context, params oapi.AccountListParams) {
 	}
 	if params.Q != nil {
 		filter.Query = *params.Q
+	}
+	if params.IncludeDeleted != nil {
+		filter.IncludeDeleted = *params.IncludeDeleted
 	}
 	page, err := h.svc.List(c.Request.Context(), scope, filter, cursorOf(params.Cursor), limit)
 	if err != nil {
@@ -193,6 +198,42 @@ func (h *Handler) Delete(c *gin.Context, id oapi.AccountID, _ oapi.AccountDelete
 	c.Status(http.StatusNoContent)
 }
 
+// Restore 实现 POST /api/accounts/{id}/restore。
+// 角色门槛（master/admin）与容量判定都在用例与适配器，本层不重判。
+func (h *Handler) Restore(c *gin.Context, id oapi.AccountID, _ oapi.AccountRestoreParams) {
+	scope, actor, ok := h.principal(c)
+	if !ok {
+		return
+	}
+	record, err := h.svc.Restore(c.Request.Context(), scope, id, actor)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	respond.JSON(c.Writer, http.StatusOK, accountResponse(record))
+}
+
+// DeviceRefresh 实现 POST /api/accounts/{id}/device-refresh。
+// 请求无体：读存量凭据，平台回读由用例编排。
+// 用例返回的 DeviceCode 是明文；在这里掩码后进响应，
+// **本函数与响应之间不再有明文出口**（掩码即豁免边界）。
+func (h *Handler) DeviceRefresh(c *gin.Context, id oapi.AccountID, _ oapi.AccountDeviceRefreshParams) {
+	scope, actor, ok := h.principal(c)
+	if !ok {
+		return
+	}
+	result, err := h.svc.DeviceRefresh(c.Request.Context(), scope, id, actor)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	respond.JSON(c.Writer, http.StatusOK, oapi.AccountDevice{
+		DeviceCodeMasked: mask.MaskDevice(result.DeviceCode),
+		PhoneModel:       result.PhoneModel,
+		Authorized:       result.Authorized,
+	})
+}
+
 // Review 实现 POST /api/accounts/{id}/review。
 func (h *Handler) Review(c *gin.Context, id oapi.AccountID, _ oapi.AccountReviewParams) {
 	scope, actor, ok := h.principal(c)
@@ -273,6 +314,7 @@ func accountResponse(record appaccount.Record) oapi.Account {
 		ReviewedAt:   record.ReviewedAt,
 		CreatedAt:    record.CreatedAt,
 		UpdatedAt:    record.UpdatedAt,
+		DeletedAt:    record.DeletedAt,
 	}
 	if record.ReviewedBy != "" {
 		reviewedBy := record.ReviewedBy

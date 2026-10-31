@@ -10,12 +10,14 @@
  * 学校名从同一份学校列表解析；取不到时退回学校 ID。
  */
 
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { Alert } from '@/components/ui/Alert'
 import { Badge } from '@/components/ui/Badge'
+import { BusyButton } from '@/components/ui/BusyButton'
 import { Button } from '@/components/ui/Button'
 import { Drawer } from '@/components/ui/Drawer'
-import { getAccount, type Account } from '@/lib/api/account'
+import { getAccount, refreshDevice, type Account } from '@/lib/api/account'
+import { AccountDeviceView } from './AccountDeviceView'
 import { describeApiError } from '@/lib/api/client'
 import type { School } from '@/lib/api/school'
 import { formatDateTime } from '@/lib/format'
@@ -46,6 +48,12 @@ export function AccountDetailDrawer({
   const schoolName = data
     ? (schools.find((school) => school.id === data.school_id)?.name ?? data.school_id)
     : ''
+
+  // 设备信息块：读回动作驱动。明文设备码从不出服务端，这里只有掩码。
+  const device = useMutation({
+    mutationFn: () => refreshDevice(data!.id),
+  })
+  const deviceError = device.isError ? describeApiError(device.error) : null
 
   return (
     <Drawer
@@ -97,6 +105,32 @@ export function AccountDetailDrawer({
           <dt>更新时间</dt>
           <dd>{formatDateTime(data.updated_at)}</dd>
         </dl>
+      ) : null}
+
+      {data ? (
+        <section className="app-detail-block" aria-label="设备信息">
+          {device.isPending ? <p className="app-muted">读取中…</p> : null}
+          {deviceError ? (
+            <Alert tone="warning" title="设备信息读取失败">
+              {deviceError} 可稍后重试，已有数据不变。
+            </Alert>
+          ) : null}
+          {device.data ? <AccountDeviceView device={device.data} /> : null}
+          {!device.isPending && !deviceError && !device.data ? (
+            <p className="app-muted">尚未读取设备信息。可从易班平台读回登记字段。</p>
+          ) : null}
+          <BusyButton
+            variant="ghost"
+            size="sm"
+            busy={device.isPending}
+            busyLabel="读取中…"
+            disabled={SHOWCASE}
+            aria-label="刷新设备"
+            onClick={() => device.mutate()}
+          >
+            刷新设备
+          </BusyButton>
+        </section>
       ) : null}
     </Drawer>
   )

@@ -21,6 +21,7 @@ export type AccountFilterValues = {
   status?: AccountStatus
   schoolId?: string
   q?: string
+  includeDeleted?: boolean
 }
 
 type AccountFiltersProps = {
@@ -31,6 +32,7 @@ type AccountFiltersProps = {
   onStatusChange: (status?: AccountStatus) => void
   onSchoolChange: (schoolId?: string) => void
   onQInputChange: (value: string) => void
+  onDeletedChange: (deleted: boolean) => void
 }
 
 export function AccountFilters({
@@ -41,6 +43,7 @@ export function AccountFilters({
   onStatusChange,
   onSchoolChange,
   onQInputChange,
+  onDeletedChange,
 }: AccountFiltersProps) {
   const schoolReason = denyReason(role, 'schoolFilter')
 
@@ -101,6 +104,21 @@ export function AccountFilters({
         </select>
         {schoolReason ? <span className="app-deny-note">{schoolReason}</span> : null}
       </div>
+
+      {/* 含已删除开关只对 master/admin 显示：与其列表可见面与恢复入口一致。 */}
+      {can(role, 'restore') ? (
+        <div className="app-filter">
+          <label className="app-filter-check">
+            <input
+              type="checkbox"
+              aria-label="含已删除"
+              checked={values.includeDeleted ?? false}
+              onChange={(event) => onDeletedChange(event.target.checked)}
+            />
+            含已删除
+          </label>
+        </div>
+      ) : null}
     </div>
   )
 }

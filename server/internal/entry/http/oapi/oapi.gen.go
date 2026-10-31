@@ -429,9 +429,14 @@ func (e UserStatus) Valid() bool {
 
 // Account defines model for Account.
 type Account struct {
-	CreatedAt   time.Time `json:"created_at"`
-	Id          string    `json:"id"`
-	OwnerUserId string    `json:"owner_user_id"`
+	CreatedAt time.Time `json:"created_at"`
+
+	// DeletedAt Soft-delete timestamp. Null for live rows; non-null only when the
+	// list was fetched with include_deleted=true. The restore entry
+	// needs this to mark deleted rows.
+	DeletedAt   *time.Time `json:"deleted_at"`
+	Id          string     `json:"id"`
+	OwnerUserId string     `json:"owner_user_id"`
 
 	// PhoneMasked Masked phone. The raw phone never leaves the server.
 	PhoneMasked  string     `json:"phone_masked"`
@@ -451,12 +456,25 @@ type Account struct {
 type AccountCreate struct {
 	DeviceCode *string `json:"device_code,omitempty"`
 
-	// OwnerUserId Defaults to the caller.
+	// OwnerUserId Defaults to the caller. Only master and admin may set another
+	// user, and that user must exist and not be soft-deleted;
+	// otherwise the whole request answers 404.
 	OwnerUserId *string `json:"owner_user_id,omitempty"`
 	Password    string  `json:"password"`
 	Phone       string  `json:"phone"`
 	PhoneModel  *string `json:"phone_model,omitempty"`
 	SchoolId    string  `json:"school_id"`
+}
+
+// AccountDevice The device view after a platform re-read. device_code_masked keeps
+// the first two and the last two characters; the full code never
+// leaves the server. phone_model and device_code_masked carry the
+// effective stored values: platform-side empty fields leave the
+// hand-filled values in place.
+type AccountDevice struct {
+	Authorized       bool   `json:"authorized"`
+	DeviceCodeMasked string `json:"device_code_masked"`
+	PhoneModel       string `json:"phone_model"`
 }
 
 // AccountDiagnostics defines model for AccountDiagnostics.
@@ -1070,6 +1088,10 @@ type AccountListParams struct {
 	// Login and password-reset rate limiting is a deployment precondition
 	// before public exposure (P7).
 	Q *string `form:"q,omitempty" json:"q,omitempty"`
+
+	// IncludeDeleted When true, soft-deleted accounts are also returned. Defaults to
+	// false: soft-deleted rows never appear without the flag.
+	IncludeDeleted *bool `form:"include_deleted,omitempty" json:"include_deleted,omitempty"`
 }
 
 // AccountCreateParams defines parameters for AccountCreate.
@@ -1088,6 +1110,13 @@ type AccountDeleteParams struct {
 
 // AccountUpdateParams defines parameters for AccountUpdate.
 type AccountUpdateParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
+// AccountDeviceRefreshParams defines parameters for AccountDeviceRefresh.
+type AccountDeviceRefreshParams struct {
 	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
 	// state-changing request that carries a session.
 	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
@@ -1114,6 +1143,13 @@ type AccountPhotoListParams struct {
 
 	// Limit Page size, 1 to 200.
 	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// AccountRestoreParams defines parameters for AccountRestore.
+type AccountRestoreParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
 }
 
 // AccountReviewParams defines parameters for AccountReview.
@@ -1445,6 +1481,9 @@ type ServerInterface interface {
 	// AccountUpdate Update account fields.
 	// (PATCH /api/accounts/{id})
 	AccountUpdate(c *gin.Context, id AccountID, params AccountUpdateParams)
+	// AccountDeviceRefresh Re-read the device fields registered on the platform.
+	// (POST /api/accounts/{id}/device-refresh)
+	AccountDeviceRefresh(c *gin.Context, id AccountID, params AccountDeviceRefreshParams)
 	// AccountDiagnostics Detailed diagnostics for one account.
 	// (GET /api/accounts/{id}/diagnostics)
 	AccountDiagnostics(c *gin.Context, id AccountID)
@@ -1457,6 +1496,9 @@ type ServerInterface interface {
 	// AccountPhotoList List the photos of one account's owner.
 	// (GET /api/accounts/{id}/photos)
 	AccountPhotoList(c *gin.Context, id AccountID, params AccountPhotoListParams)
+	// AccountRestore Restore a soft-deleted account.
+	// (POST /api/accounts/{id}/restore)
+	AccountRestore(c *gin.Context, id AccountID, params AccountRestoreParams)
 	// AccountReview Approve or reject a pending account.
 	// (POST /api/accounts/{id}/review)
 	AccountReview(c *gin.Context, id AccountID, params AccountReviewParams)
@@ -1634,6 +1676,14 @@ func (siw *ServerInterfaceWrapper) AccountList(c *gin.Context) {
 	err = runtime.BindQueryParameterWithOptions("form", true, false, "q", c.Request.URL.Query(), &params.Q, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
 	if err != nil {
 		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter q: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "include_deleted" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "include_deleted", c.Request.URL.Query(), &params.IncludeDeleted, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter include_deleted: %w", err), http.StatusBadRequest)
 		return
 	}
 
@@ -1819,6 +1869,58 @@ func (siw *ServerInterfaceWrapper) AccountUpdate(c *gin.Context) {
 	siw.Handler.AccountUpdate(c, id, params)
 }
 
+// AccountDeviceRefresh operation middleware
+func (siw *ServerInterfaceWrapper) AccountDeviceRefresh(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id AccountID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", c.Param("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AccountDeviceRefreshParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AccountDeviceRefresh(c, id, params)
+}
+
 // AccountDiagnostics operation middleware
 func (siw *ServerInterfaceWrapper) AccountDiagnostics(c *gin.Context) {
 
@@ -1990,6 +2092,58 @@ func (siw *ServerInterfaceWrapper) AccountPhotoList(c *gin.Context) {
 	}
 
 	siw.Handler.AccountPhotoList(c, id, params)
+}
+
+// AccountRestore operation middleware
+func (siw *ServerInterfaceWrapper) AccountRestore(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id AccountID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", c.Param("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AccountRestoreParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AccountRestore(c, id, params)
 }
 
 // AccountReview operation middleware
@@ -3627,6 +3781,8 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.PATCH(options.BaseURL+"/api/accounts/:id", wrapper.AccountUpdate)
 	router.POST(options.BaseURL+"/api/accounts/:id/review", wrapper.AccountReview)
 	router.POST(options.BaseURL+"/api/accounts/:id/pause", wrapper.AccountPause)
+	router.POST(options.BaseURL+"/api/accounts/:id/device-refresh", wrapper.AccountDeviceRefresh)
+	router.POST(options.BaseURL+"/api/accounts/:id/restore", wrapper.AccountRestore)
 	router.POST(options.BaseURL+"/api/accounts/:id/verify", wrapper.AccountVerify)
 	router.POST(options.BaseURL+"/api/accounts/:id/sign", wrapper.AccountSign)
 	router.PUT(options.BaseURL+"/api/accounts/:id/location", wrapper.AccountLocationSet)

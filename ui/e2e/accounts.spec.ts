@@ -1,13 +1,17 @@
 import { test, expect, type Page } from '@playwright/test'
 import {
   ACCOUNTS,
+  DEVICE_READ,
   deleteCalls,
+  deviceRefreshCalls,
+  createCalls,
   lastListCall,
   listCalls,
   locationCalls,
   mockAccountsApi,
   patchCalls,
   postCalls,
+  restoreCalls,
 } from './support/fake-accounts-api'
 
 /**
@@ -674,4 +678,162 @@ test('invariant 9: the close control is a 24x24 target with a keyboard focus rin
   await expect
     .poll(() => modalClose.evaluate((element) => getComputedStyle(element).backgroundColor))
     .not.toBe('rgba(0, 0, 0, 0)')
+})
+
+// ---------------------------------------------------------------------------
+// UX-2（8v8）：账号提交双形状。两页向导、单页绑定用户、设备码只读、恢复。
+//
+// 断言用户可见结果与请求参数，不钉内部调用顺序。
+// 设备码在界面上是文本不是输入框：全文只在服务端，响应只给掩码。
+// ---------------------------------------------------------------------------
+
+const CREATE_FORM_LABELS = ['学校', '手机号', '易班口令'] as const
+
+/** user 两页向导：填第 1 页并提交，进入第 2 页。表单字段一律在 dialog 内取。 */
+async function submitWizardPageOne(page: Page, phone = '13800000000') {
+  const dialog = page.getByRole('dialog')
+  await dialog.getByLabel('学校').selectOption({ label: '合成学校甲' })
+  await dialog.getByLabel('手机号').fill(phone)
+  await dialog.getByLabel('易班口令').fill('wizard-pass-1')
+  await dialog.getByRole('button', { name: '提交' }).click()
+  // 第 2 页的可达标志是「跳过」：成功与失败两条路径都在这一页。
+  await expect(dialog.getByRole('button', { name: '跳过' })).toBeVisible()
+}
+
+test('ux2 user: the wizard has two pages, zero email fields and a readonly device code', async ({
+  page,
+}) => {
+  const api = await mockAccountsApi(page, { role: 'user' })
+  await openAccounts(page)
+
+  await page.getByRole('button', { name: '新建账号' }).click()
+  await expect(page.getByRole('heading', { name: '新建账号' })).toBeVisible()
+
+  // 第 1 页只有学校、手机号、口令；零邮箱字段、零绑定用户文案（8v8⑤）。
+  const dialog = page.getByRole('dialog')
+  for (const label of CREATE_FORM_LABELS) {
+    await expect(dialog.locator('label').filter({ hasText: label })).toBeVisible()
+  }
+  await expect(page.getByLabel(/邮箱/)).toHaveCount(0)
+  await expect(page.getByText('绑定用户')).toHaveCount(0)
+
+  await submitWizardPageOne(page)
+
+  // 建号请求只带三键，不带 owner_user_id：留空即自有。
+  await expect.poll(() => createCalls(api).length).toBe(1)
+  const create = createCalls(api)[0]
+  expect(create.body).toMatchObject({ phone: '13800000000' })
+  expect(create.body).not.toHaveProperty('owner_user_id')
+
+  // 第 2 页：设备码是只读文本（非输入框）且带来源说明。
+  const dialog2 = page.getByRole('dialog')
+  await expect(dialog2.getByText(DEVICE_READ.device_code_masked)).toBeVisible({
+    timeout: 10_000,
+  })
+  await expect(dialog2.getByText('来自易班平台登记，不可修改')).toBeVisible()
+  await expect(page.locator('#account-create-device input, #account-create-device textarea')).toHaveCount(0)
+  await expect(deviceRefreshCalls(api, 'acc-new')).toHaveLength(1)
+})
+
+test('ux2 user: a failed device read stays non-blocking and offers the later entry', async ({
+  page,
+}) => {
+  await mockAccountsApi(page, {
+    role: 'user',
+    deviceRefreshError: { status: 502, code: 'upstream_unavailable', message: '平台不可用' },
+  })
+  await openAccounts(page)
+
+  await page.getByRole('button', { name: '新建账号' }).click()
+  await submitWizardPageOne(page)
+
+  await expect(page.getByRole('dialog').getByText('设备信息读取失败')).toBeVisible()
+  await expect(page.getByRole('dialog').getByText('可稍后在账号详情中补录')).toBeVisible()
+  // 跳过仍可达：完成不被阻断。
+  await page.getByRole('dialog').getByRole('button', { name: '跳过' }).click()
+  await expect(page.getByText('已创建 138****0000')).toBeVisible()
+})
+
+test('ux2 user: skip lands on the drawer device block with a reachable refresh', async ({
+  page,
+}) => {
+  const api = await mockAccountsApi(page, { role: 'user' })
+  await openAccounts(page)
+
+  await page.getByRole('button', { name: '新建账号' }).click()
+  await submitWizardPageOne(page)
+  await page.getByRole('dialog').getByRole('button', { name: '跳过' }).click()
+  await expect(page.getByText('已创建 138****0000')).toBeVisible()
+
+  // 补录入口：详情抽屉的设备块与「刷新设备」可达（8v8③）。
+  await page.getByRole('button', { name: '查看 138****0000' }).click()
+  await expect(page.getByRole('dialog', { name: '账号详情' }).getByText('设备信息')).toBeVisible()
+  await page.getByRole('dialog', { name: '账号详情' }).getByRole('button', { name: '刷新设备' }).click()
+  await expect(
+    page.getByRole('dialog', { name: '账号详情' }).getByText(DEVICE_READ.device_code_masked),
+  ).toBeVisible()
+  await expect(deviceRefreshCalls(api, 'acc-new')).toHaveLength(2)
+})
+
+test('ux2 master: the single form resolves owner by email lookup and leaves it blank for self', async ({
+  page,
+}) => {
+  const api = await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+
+  // 命中：显示掩码邮箱，提交携带 owner_user_id。
+  await page.getByRole('button', { name: '新建账号' }).click()
+  let dialog = page.getByRole('dialog')
+  await dialog.getByLabel('学校').selectOption({ label: '合成学校甲' })
+  await dialog.getByLabel('手机号').fill('13800000000')
+  await dialog.getByLabel('易班口令').fill('single-pass-1')
+  await dialog.getByLabel('绑定用户（选填）').fill('member.target')
+  await expect(dialog.getByText('m***@example.com')).toBeVisible()
+  await dialog.getByRole('button', { name: '提交' }).click()
+  await expect.poll(() => createCalls(api).length).toBe(1)
+  expect(createCalls(api)[0].body).toMatchObject({ owner_user_id: 'user-target' })
+  await expect(page.getByText('已创建 138****0000')).toBeVisible()
+
+  // 重开表单。未注册：内联提示，不静默建号。
+  await page.getByRole('button', { name: '新建账号' }).click()
+  dialog = page.getByRole('dialog')
+  await dialog.getByLabel('学校').selectOption({ label: '合成学校甲' })
+  await dialog.getByLabel('手机号').fill('13800000000')
+  await dialog.getByLabel('易班口令').fill('single-pass-1')
+  await dialog.getByLabel('绑定用户（选填）').fill('ghost@')
+  await expect(dialog.getByText('该邮箱未注册，请先在用户管理建号')).toBeVisible()
+
+  // 留空：默认自有，请求不带 owner_user_id。
+  await dialog.getByLabel('绑定用户（选填）').fill('')
+  await expect(dialog.getByText('默认归属自己')).toBeVisible()
+  await dialog.getByRole('button', { name: '提交' }).click()
+  await expect.poll(() => createCalls(api).length).toBe(2)
+  expect(createCalls(api)[1].body).not.toHaveProperty('owner_user_id')
+})
+
+test('ux2 master: the deleted filter reveals restore and the row returns to normal', async ({
+  page,
+}) => {
+  const api = await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+
+  await page.getByRole('checkbox', { name: '含已删除' }).check()
+  await expect.poll(() => lastListCall(api)?.params.include_deleted ?? 'absent').toBe('true')
+
+  const deletedRow = rowFor(page, '131****0000')
+  await expect(deletedRow.getByText('已删除')).toBeVisible()
+
+  await deletedRow.getByRole('button', { name: '更多操作 131****0000' }).click()
+  // 菜单渲染在行外的门户里：从页面根取菜单项。
+  await page.getByRole('menuitem', { name: '恢复' }).click()
+  await expect(restoreCalls(api, 'acc-del')).toHaveLength(1)
+  await expect.poll(() => lastListCall(api)?.params.include_deleted ?? 'absent').toBe('true')
+  // 恢复后行回原状态：软删徽标消失。
+  await expect(rowFor(page, '131****0000').getByText('已删除')).toHaveCount(0)
+})
+
+test('ux2 user: no deleted filter and no restore entry', async ({ page }) => {
+  await mockAccountsApi(page, { role: 'user' })
+  await openAccounts(page)
+  await expect(page.getByRole('checkbox', { name: '含已删除' })).toHaveCount(0)
 })

@@ -85,18 +85,28 @@ func (r *SchoolRepo) Update(ctx context.Context, id string, in coreschool.Update
 }
 
 // List 按作用域列院校，游标分页。
-// master 走无谓词语句；admin 走 id = ANY(...) 语句。
+// master 走无谓词语句；admin 走 id = ANY(...) 语句；
+// user 只见 active 行（8v8①：建号表单的学校下拉数据源）。
+// user 分支是本方法私有的：schoolScopePredicate 是 schedule 与
+// photo 共用的谓词，本批不扩它的可见面。
 // 排序键是 (created_at DESC, id DESC)。
 func (r *SchoolRepo) List(ctx context.Context, s corescope.Scope, cursor string, limit int) ([]coreschool.Record, string, error) {
 	if limit < 1 || limit > 200 {
 		return nil, "", validationError("limit must be between 1 and 200")
 	}
-	clause, args, err := schoolScopePredicate(s, 1, "")
-	if err != nil {
-		return nil, "", err
+	var query string
+	var args []any
+	if s.Kind() == corescope.KindUser {
+		query = `SELECT ` + schoolColumns + ` FROM schools WHERE status = 'active'`
+	} else {
+		clause, scopeArgs, err := schoolScopePredicate(s, 1, "")
+		if err != nil {
+			return nil, "", err
+		}
+		args = scopeArgs
+		query = `SELECT ` + schoolColumns + ` FROM schools WHERE true` + clause
 	}
-	query := `SELECT ` + schoolColumns + ` FROM schools WHERE true` + clause
-	query, args, err = appendKeyset(query, args, cursor, "created_at", "id")
+	query, args, err := appendKeyset(query, args, cursor, "created_at", "id")
 	if err != nil {
 		return nil, "", err
 	}
