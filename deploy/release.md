@@ -135,6 +135,8 @@ go test ./cmd/cli/ -run TestUpdateShRollsBackOnFailedMigration -count=1
   「私钥不得被 `--out` 覆盖」（openssl 在时执行，否则显性跳过）。
 - sha256 与本地二进制、版本与 `--expect-version` 的对账由
   `update.sh --manifest/--signature/--pubkey` 在升级时承担。
+  未给三件时 `update.sh` 默认拒绝升级（exit 2，停服务之前）；
+  显式 `--allow-unsigned` 才跳过验签，逃生口与三件互斥。
 
 ## 已登记缺口（待立项，本清单不现场补造）
 

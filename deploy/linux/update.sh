@@ -7,18 +7,18 @@
 # 健康检查失败回滚旧二进制并报错。回滚后仍不健康退出 2。
 #
 # 用法：
-#   sudo bash deploy/linux/update.sh --server-bin NEW [--cli-bin NEW]
+#   sudo bash deploy/linux/update.sh --server-bin NEW [--cli-bin NEW] \
+#       --manifest M --signature S --pubkey K [--expect-version V]
 #   （--cli-bin 与服务二进制同版本发布；只给 --server-bin 时
 #     迁移用已安装的 yiban-cli。）
 #
-# 签名发布物（可选，docs/dev/release-signing.md）：
-#   sudo bash deploy/linux/update.sh --server-bin NEW \
-#       --manifest manifest.json --signature manifest.sig --pubkey release-pubkey.pem \
-#       [--expect-version 0.7.0]
-#   三件必须同时给或同时不给。给了 → 在任何文件替换之前先钉公钥指纹、
+# 签名发布物（默认强制，docs/dev/release-signing.md）：
+#   三件必须同时给。给了 → 在任何文件替换之前先钉公钥指纹、
 #   再跑 scripts/release/verify.sh 验签，并把清单里的 sha256 逐一与本地新件
 #   对账（server 必须，cli 给了也算）；任一失败即非 0 退出，不碰旧件。
-#   没给 → 行为不变，但打印一行显性 WARN（跳过 ≠ 绿）。
+#   未给三件 → 默认拒绝（exit 2，发生在停服务之前）。
+#   逃生口：显式给 --allow-unsigned 才放行未签名升级，放行时打印一行
+#   显性 WARN（跳过 ≠ 绿）。--allow-unsigned 与三件互斥，同给即 exit 2。
 #
 # 信任锚（P0）：签名只证明清单出自某把私钥，不证明那把钥是发布方的。
 # update.sh 先钉公钥指纹，再验签：
@@ -39,7 +39,8 @@
 # 干跑钩子：YIBAN_INSTALL_ROOT=前缀 SYSTEMCTL=命令覆盖（与 install.sh 同义）。
 #
 # 退出码：0 成功；1 迁移失败或回滚成功（旧件在跑）或签名/对账/版本校验不通过；
-#         2 用法错误（含三件只给一件、信任锚缺失或指纹不符）或回滚后仍不健康。
+#         2 用法错误（含三件只给一件、未给三件且无 --allow-unsigned、
+#           --allow-unsigned 与三件同给、信任锚缺失或指纹不符）或回滚后仍不健康。
 # 已知残余风险：迁移一旦应用不会随二进制回滚（没有 down 迁移）；
 # 旧二进制须能向前兼容新 schema。迁移都按向后兼容发布。
 # 回滚点：迁移前写一份 pg_dump（/var/lib/yiban/pre-migrate/，0600）。
@@ -62,6 +63,7 @@ MANIFEST=""
 SIGNATURE=""
 PUBKEY=""
 EXPECT_VERSION=""
+ALLOW_UNSIGNED=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --server-bin) SERVER_BIN="${2:?}"; shift 2 ;;
@@ -71,6 +73,7 @@ while [ $# -gt 0 ]; do
         --signature) SIGNATURE="${2:?}"; shift 2 ;;
         --pubkey) PUBKEY="${2:?}"; shift 2 ;;
         --expect-version) EXPECT_VERSION="${2:?}"; shift 2 ;;
+        --allow-unsigned) ALLOW_UNSIGNED=1; shift ;;
         *) echo "update: unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -81,6 +84,19 @@ if [ -n "$MANIFEST" ] || [ -n "$SIGNATURE" ] || [ -n "$PUBKEY" ]; then
         echo "update: --manifest/--signature/--pubkey must be given together (got manifest=${MANIFEST:+yes} signature=${SIGNATURE:+yes} pubkey=${PUBKEY:+yes})" >&2
         exit 2
     fi
+fi
+# --allow-unsigned 与三件互斥（E-3）：同给是矛盾用法——要么走验签，
+# 要么显式跳过，操作员必须二选一。
+if [ -n "$ALLOW_UNSIGNED" ] && { [ -n "$MANIFEST" ] || [ -n "$SIGNATURE" ] || [ -n "$PUBKEY" ]; }; then
+    echo "update: --allow-unsigned conflicts with --manifest/--signature/--pubkey; give the three signing inputs or --allow-unsigned, not both" >&2
+    exit 2
+fi
+# 默认强制（E-3）：未给全三件且未显式给 --allow-unsigned → 拒绝升级。
+# 用法错误（exit 2），发生在任何锁、暂存、文件替换与停服务之前。
+# 逃生口必须显式：静默跳过验签等于没验签（跳过 ≠ 绿）。
+if [ -z "$ALLOW_UNSIGNED" ] && { [ -z "$MANIFEST" ] || [ -z "$SIGNATURE" ] || [ -z "$PUBKEY" ]; }; then
+    echo "update: refusing unsigned update: give --manifest/--signature/--pubkey (all three) to verify the release, or --allow-unsigned to skip verification explicitly" >&2
+    exit 2
 fi
 # 版本期望只有在验签路径里才有意义；单独给是用法错误。
 if [ -n "$EXPECT_VERSION" ] && [ -z "$MANIFEST" ]; then
@@ -277,6 +293,8 @@ if [ -n "$MANIFEST" ]; then
     fi
     echo "update: signing verification ok"
 else
+    # 到这里必然带着显式逃生口：无逃生口的未签名升级已在用法检查处拒绝。
+    # 放行必须有痕：WARN 行留在 stderr（跳过 ≠ 绿）。
     echo "update: WARNING: no --manifest/--signature/--pubkey given; skipping release verification (unsigned update)" >&2
 fi
 

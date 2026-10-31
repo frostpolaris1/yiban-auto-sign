@@ -7,6 +7,7 @@ package main
 // 再跑 update.sh 升级。迁移进程必须收到完整 DSN。
 // 特殊字符：`&` 与 `#` —— 用 shell source 载入时，
 // `&` 把赋值切成后台子 shell，变量不外泄，迁移拿到空 DSN。
+// 无签名调用点显式带 --allow-unsigned：默认强制验签（E-3）的逃生口。
 //
 // # 口径
 // 断言假 yiban-cli 的 migrate 收到的 YIBAN_DATABASE_URL 与 .env 原文一致。
@@ -84,7 +85,8 @@ exit 0
 	}
 	newBin := fakeBin(t, binDir, "yiban-server-new", "echo NEW-SERVER\n")
 
-	out, rc := runScript(t, scriptPath(t, "update.sh"), env, "--server-bin", newBin, "--cli-bin", cliBin)
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newBin, "--cli-bin", cliBin, "--allow-unsigned")
 	if rc != 0 {
 		t.Fatalf("update rc=%d, want 0; out=%s", rc, out)
 	}
