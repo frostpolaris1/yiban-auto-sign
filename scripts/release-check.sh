@@ -187,24 +187,31 @@ check_backup() {
 #   .bak 旧二进制再起（exit 1）、回滚后仍不健康 exit 2。已知边界：schema 不随
 #   二进制回滚（无 down 迁移），update.sh 头注登记。
 #   既有守卫：server/cmd/cli/install_update_e2e_test.go 的
-#   TestUpdateShRollsBackOnFailedMigration；scripts/deploy_gate.sh --phase B
-#   （升到本树顶端再回滚到 v0.6.2，不降 schema）。
+#   TestUpdateShRollsBackOnFailedMigration。2026-10-31（E-2）起演练正本＝
+#   scripts/e2e/update-rollback-e2e.sh（U3 迁移失败／U4 健康失败／U5 正常升级，
+#   一次性 systemd 容器真跑 update.sh；容器外跑 run 被守卫拒绝，exit 2 零写入）。
+#   旧线 deploy_gate.sh --phase B：本项不再指向；脚本与旧线 CI 仍在
+#   （phase B 未删）。
 check_rollback() {
     STATUS_rollback=FAIL; REASON_rollback=""
     local upd="$ROOT/deploy/linux/update.sh"
+    local drill="$ROOT/scripts/e2e/update-rollback-e2e.sh"
     [ -f "$upd" ] || { REASON_rollback="missing $upd"; return; }
     if ! grep -q 'BAK' "$upd" || ! grep -q 'rolling back' "$upd"; then
         REASON_rollback="update.sh has no .bak rollback path"; return
+    fi
+    [ -f "$drill" ] || { REASON_rollback="missing $drill"; return; }
+    if ! grep -q 'REFUSING to run the drill outside the e2e container' "$drill"; then
+        REASON_rollback="drill script has no container guard"; return
     fi
     if ! grep -q 'TestUpdateShRollsBackOnFailedMigration' \
         "$ROOT/server/cmd/cli/install_update_e2e_test.go"; then
         REASON_rollback="rollback e2e guard missing in install_update_e2e_test.go"; return
     fi
-    [ -f "$ROOT/scripts/deploy_gate.sh" ] || { REASON_rollback="missing scripts/deploy_gate.sh"; return; }
     STATUS_rollback=POINTER; REASON_rollback="not executed here"
     echo "rollback: POINTER — mechanism exists (update.sh .bak swap-back; no down migrations)."
     echo "  release operator runs:"
-    echo "  bash scripts/deploy_gate.sh --phase B      # 升级→回滚 v0.6.2→数据完整性"
+    echo "  bash scripts/e2e/update-rollback-e2e.sh host --log-dir <日志目录>   # U3/U4/U5 真跑（docker --privileged；守卫只许容器内跑 run）"
     echo "  go test ./cmd/cli/ -run TestUpdateShRollsBackOnFailedMigration -count=1"
 }
 

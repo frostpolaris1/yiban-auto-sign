@@ -107,12 +107,17 @@ backup/restore 子命令。
 既有守卫与本项指向：
 
 ```bash
-bash scripts/deploy_gate.sh --phase B   # 升到本树顶端→回滚到 v0.6.2→数据完整性
+bash scripts/e2e/update-rollback-e2e.sh host --log-dir <日志目录>   # U3 迁移失败回滚／U4 健康失败回滚／U5 正常升级，一次性 systemd 容器真跑（需 docker --privileged；用法与安全守卫见 docs/dev/deploy-e2e.md §8）
 go test ./cmd/cli/ -run TestUpdateShRollsBackOnFailedMigration -count=1
 ```
 
-红：演练退出码非 0。脚本侧红：`update.sh` 无 `.bak` 回滚路径，或守卫
-用例名消失。
+期望：演练脚本退出码 0，`run.log` 末尾 `result=PASS`，R2/R3/R4（U3/U4/U5）
+全 PASS。同一脚本连跑两遍 rc 均 0。红：任一退出码非 0 或摘要含 FAIL。
+安全边界：演练步骤只在一次性容器内执行；容器外跑 `run` 子命令被守卫
+拒绝（退出码 2、零写入），该拒绝本身是演练脚本 H1 步的常演断言。
+旧线 `deploy_gate.sh --phase B`（回滚 v0.6.2）：本项不再指向；
+脚本与旧线 CI 仍在（phase B 未删）。
+脚本侧红：`update.sh` 无 `.bak` 回滚路径，或演练脚本/守卫用例名消失。
 
 ## 项 8　ed25519/SPA 发布件检查（item 名 `signing`，可执行门；2026-10-29 起）
 
