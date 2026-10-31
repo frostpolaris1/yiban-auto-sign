@@ -848,4 +848,114 @@ func TestUX2SchoolsForUser(t *testing.T) {
 	}
 }
 
+// --- 安全不变量：include_deleted 的可见面（M6） ----------------------------
+
+// 建号→软删→默认列表不含→include_deleted=true 含且 deleted_at 非空；
+// user 打开同开关只见自己名下（含自己的已删行），他人的行不可见。
+func TestUX2IncludeDeletedList(t *testing.T) {
+	e := newAuthEnv(t)
+	schoolID := u2SeedSchool(t, e, "u2-inc")
+
+	u2SeedUser(t, e, "u2-inc-master@example.com", "master-pass", coreauth.RoleMaster)
+	masterSession := u2LoginOn(e, e.client, "u2-inc-master@example.com", "master-pass")
+	member := u2SeedUser(t, e, "u2-inc-member@example.com", "member-pass", coreauth.RoleUser)
+
+	// 两条账号：member 一条（将软删）、master 自有一条（保持活跃）。
+	resp, payload := u2CreateAccount(e, e.client, masterSession.CSRFToken, u2CreateBody{
+		SchoolID: schoolID, Phone: u2PhoneD, Password: "master-pass-2", OwnerUserID: member.ID,
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create member account = %d, want 201; body=%q", resp.StatusCode, payload)
+	}
+	var memberAccount u2Account
+	if err := json.Unmarshal(payload, &memberAccount); err != nil {
+		t.Fatalf("decode member create: %v", err)
+	}
+	resp, payload = u2CreateAccount(e, e.client, masterSession.CSRFToken, u2CreateBody{
+		SchoolID: schoolID, Phone: u2PhoneE, Password: "master-pass-2",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create master account = %d, want 201; body=%q", resp.StatusCode, payload)
+	}
+
+	delResp, delPayload := u2Do(e, e.client, http.MethodDelete,
+		"/api/accounts/"+memberAccount.ID, nil, masterSession.CSRFToken)
+	if delResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete = %d, want 204; body=%q", delResp.StatusCode, delPayload)
+	}
+
+	// 默认列表：软删行不可见（扫全页）。
+	var defaultPage struct {
+		Items []u2Account `json:"items"`
+	}
+	defResp, defPayload := u2Do(e, e.client, http.MethodGet, "/api/accounts?limit=200", nil, "")
+	if defResp.StatusCode != http.StatusOK {
+		t.Fatalf("default list = %d; body=%q", defResp.StatusCode, defPayload)
+	}
+	if err := json.Unmarshal(defPayload, &defaultPage); err != nil {
+		t.Fatalf("decode default list: %v", err)
+	}
+	for _, item := range defaultPage.Items {
+		if item.ID == memberAccount.ID {
+			t.Fatal("the deleted account appears in the default list")
+		}
+	}
+
+	// include_deleted=true：行回来且 deleted_at 非空。
+	var fullPage struct {
+		Items []struct {
+			ID        string     `json:"id"`
+			DeletedAt *time.Time `json:"deleted_at"`
+		} `json:"items"`
+	}
+	incResp, incPayload := u2Do(e, e.client, http.MethodGet,
+		"/api/accounts?limit=200&include_deleted=true", nil, "")
+	if incResp.StatusCode != http.StatusOK {
+		t.Fatalf("include_deleted list = %d; body=%q", incResp.StatusCode, incPayload)
+	}
+	if err := json.Unmarshal(incPayload, &fullPage); err != nil {
+		t.Fatalf("decode include_deleted list: %v", err)
+	}
+	var found *time.Time
+	for i := range fullPage.Items {
+		if fullPage.Items[i].ID == memberAccount.ID {
+			found = fullPage.Items[i].DeletedAt
+		}
+	}
+	if found == nil {
+		t.Fatal("include_deleted=true did not return the deleted row with a timestamp")
+	}
+
+	// user 视角：同开关只见自己名下；member 看得到自己的已删行，看不到 master 的行。
+	memberClient := u2FreshClient(t)
+	memberSession := u2LoginOn(e, memberClient, "u2-inc-member@example.com", "member-pass")
+	userResp, userPayload := u2Do(e, memberClient, http.MethodGet,
+		"/api/accounts?limit=200&include_deleted=true", nil, memberSession.CSRFToken)
+	if userResp.StatusCode != http.StatusOK {
+		t.Fatalf("user include_deleted list = %d; body=%q", userResp.StatusCode, userPayload)
+	}
+	var userPage struct {
+		Items []struct {
+			ID          string  `json:"id"`
+			OwnerUserID string  `json:"owner_user_id"`
+			DeletedAt   *string `json:"deleted_at"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(userPayload, &userPage); err != nil {
+		t.Fatalf("decode user list: %v", err)
+	}
+	sawOwnDeleted := false
+	for _, item := range userPage.Items {
+		if item.OwnerUserID != member.ID {
+			t.Fatalf("the user list leaked account %s owned by %s", item.ID, item.OwnerUserID)
+		}
+		if item.ID == memberAccount.ID && item.DeletedAt != nil {
+			sawOwnDeleted = true
+		}
+	}
+	if !sawOwnDeleted {
+		t.Fatal("the user's own deleted row is missing from include_deleted=true")
+	}
+}
+
 func ptrSchoolStatus(s coreschool.Status) *coreschool.Status { return &s }

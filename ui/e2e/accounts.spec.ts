@@ -54,6 +54,11 @@ function rowFor(page: Page, phone: string) {
     .filter({ has: page.getByRole('button', { name: `查看 ${phone}` }) })
 }
 
+/** 已删行的定位：行内没有「查看」按钮，按手机号文本找。 */
+function deletedRowFor(page: Page, phone: string) {
+  return page.getByRole('row').filter({ hasText: phone })
+}
+
 test('invariant 1: each filter rides the request and clearing removes it', async ({ page }) => {
   const api = await mockAccountsApi(page, { role: 'master' })
   await openAccounts(page)
@@ -811,6 +816,108 @@ test('ux2 master: the single form resolves owner by email lookup and leaves it b
   expect(createCalls(api)[1].body).not.toHaveProperty('owner_user_id')
 })
 
+test('ux2 master: an unresolved owner email blocks the submit', async ({ page }) => {
+  const api = await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+
+  await page.getByRole('button', { name: '新建账号' }).click()
+  const dialog = page.getByRole('dialog')
+  await dialog.getByLabel('学校').selectOption({ label: '合成学校甲' })
+  await dialog.getByLabel('手机号').fill('13800000000')
+  await dialog.getByLabel('易班口令').fill('single-pass-1')
+
+  // 未注册：提交禁用，零建号请求（H1：静默记到操作者名下是缺陷）。
+  await dialog.getByLabel('绑定用户（选填）').fill('ghost@')
+  await expect(dialog.getByText('该邮箱未注册，请先在用户管理建号')).toBeVisible()
+  await expect(dialog.getByRole('button', { name: '提交' })).toBeDisabled()
+  await dialog.getByRole('button', { name: '提交' }).click({ force: true })
+  expect(createCalls(api), 'an unresolved owner must not create').toHaveLength(0)
+
+  // 留空：默认自有，提交恢复可用。
+  await dialog.getByLabel('绑定用户（选填）').fill('')
+  await expect(dialog.getByText('默认归属自己')).toBeVisible()
+  await expect(dialog.getByRole('button', { name: '提交' })).toBeEnabled()
+})
+
+test('ux2 master: a failed owner lookup blocks the submit with its own message', async ({
+  page,
+}) => {
+  const api = await mockAccountsApi(page, {
+    role: 'master',
+    lookupError: { status: 502, code: 'upstream_unavailable', message: '检索服务不可用' },
+  })
+  await openAccounts(page)
+
+  await page.getByRole('button', { name: '新建账号' }).click()
+  const dialog = page.getByRole('dialog')
+  await dialog.getByLabel('学校').selectOption({ label: '合成学校甲' })
+  await dialog.getByLabel('手机号').fill('13800000000')
+  await dialog.getByLabel('易班口令').fill('single-pass-1')
+
+  // 检索失败：单独提示，不冒充「未注册」也不静默落成自有（审查 H1）。
+  await dialog.getByLabel('绑定用户（选填）').fill('member.target')
+  await expect(dialog.getByText('用户检索失败，请稍后重试')).toBeVisible({ timeout: 10_000 })
+  await expect(dialog.getByRole('button', { name: '提交' })).toBeDisabled()
+  await dialog.getByRole('button', { name: '提交' }).click({ force: true })
+  expect(createCalls(api), 'a failed lookup must not create').toHaveLength(0)
+})
+
+test('ux2 user: the device block does not carry data across accounts', async ({ page }) => {
+  const api = await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+
+  // 刷新 A：设备块出现掩码。
+  await page.getByRole('button', { name: '查看 138****8000' }).click()
+  const drawerA = page.getByRole('dialog', { name: '账号详情' })
+  await drawerA.getByRole('button', { name: '刷新设备' }).click()
+  await expect(drawerA.getByText(DEVICE_READ.device_code_masked)).toBeVisible()
+  await page
+    .getByRole('dialog', { name: '账号详情' })
+    .getByRole('button', { name: '关闭详情' })
+    .click()
+
+  // 打开 B：不得显示 A 的读回值（H2：跨账号串数据）。
+  await page.getByRole('button', { name: '查看 139****9000' }).click()
+  const drawerB = page.getByRole('dialog', { name: '账号详情' })
+  await expect(drawerB.getByText('尚未读取设备信息')).toBeVisible()
+  await expect(drawerB.getByText(DEVICE_READ.device_code_masked)).toHaveCount(0)
+  await expect(deviceRefreshCalls(api, 'acc-2')).toHaveLength(0)
+})
+
+test('ux2 master: a failed restore tells the user', async ({ page }) => {
+  const api = await mockAccountsApi(page, {
+    role: 'master',
+    restoreError: { status: 429, code: 'capacity_exceeded', message: '容量已满' },
+  })
+  await openAccounts(page)
+
+  await page.getByRole('checkbox', { name: '含已删除' }).check()
+  const deletedRow = deletedRowFor(page, '131****0000')
+  await expect(deletedRow.getByText('已删除')).toBeVisible()
+
+  await deletedRow.getByRole('button', { name: '更多操作 131****0000' }).click()
+  await page.getByRole('menuitem', { name: '恢复' }).click()
+  await expect(restoreCalls(api, 'acc-del')).toHaveLength(1)
+  // 失败必须可见：容量满不是静默（M1）。
+  await expect(page.getByText('恢复失败')).toBeVisible()
+  await expect(page.getByText('容量已满')).toBeVisible()
+})
+
+test('ux2 master: a deleted row opens no drawer and exposes no detail read', async ({ page }) => {
+  const api = await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+
+  await page.getByRole('checkbox', { name: '含已删除' }).check()
+  const deletedRow = deletedRowFor(page, '131****0000')
+  await expect(deletedRow.getByText('已删除')).toBeVisible()
+
+  // 已删行没有「查看」入口；点行也不开抽屉（M2：详情对已删行必 404）。
+  await expect(deletedRow.getByRole('button', { name: '查看 131****0000' })).toHaveCount(0)
+  await deletedRow.getByText('131****0000').click()
+  await expect(page.getByRole('dialog', { name: '账号详情' })).toHaveCount(0)
+  expect(api.calls.filter((call) => call.path === '/api/accounts/acc-del')).toHaveLength(0)
+})
+
 test('ux2 master: the deleted filter reveals restore and the row returns to normal', async ({
   page,
 }) => {
@@ -820,7 +927,7 @@ test('ux2 master: the deleted filter reveals restore and the row returns to norm
   await page.getByRole('checkbox', { name: '含已删除' }).check()
   await expect.poll(() => lastListCall(api)?.params.include_deleted ?? 'absent').toBe('true')
 
-  const deletedRow = rowFor(page, '131****0000')
+  const deletedRow = deletedRowFor(page, '131****0000')
   await expect(deletedRow.getByText('已删除')).toBeVisible()
 
   await deletedRow.getByRole('button', { name: '更多操作 131****0000' }).click()
@@ -829,7 +936,7 @@ test('ux2 master: the deleted filter reveals restore and the row returns to norm
   await expect(restoreCalls(api, 'acc-del')).toHaveLength(1)
   await expect.poll(() => lastListCall(api)?.params.include_deleted ?? 'absent').toBe('true')
   // 恢复后行回原状态：软删徽标消失。
-  await expect(rowFor(page, '131****0000').getByText('已删除')).toHaveCount(0)
+  await expect(deletedRowFor(page, '131****0000').getByText('已删除')).toHaveCount(0)
 })
 
 test('ux2 user: no deleted filter and no restore entry', async ({ page }) => {

@@ -10,6 +10,7 @@
  * 学校名从同一份学校列表解析；取不到时退回学校 ID。
  */
 
+import { useEffect } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Alert } from '@/components/ui/Alert'
 import { Badge } from '@/components/ui/Badge'
@@ -50,9 +51,16 @@ export function AccountDetailDrawer({
     : ''
 
   // 设备信息块：读回动作驱动。明文设备码从不出服务端，这里只有掩码。
+  // 抽屉常驻不重挂：换账号必须清掉上一个账号的读回值与错误，
+  // 否则 B 会显示 A 的掩码/机型/授权（审查 H2）。
   const device = useMutation({
     mutationFn: () => refreshDevice(data!.id),
   })
+  useEffect(() => {
+    device.reset()
+    // 只随目标账号变化；reset 是稳定回调，不进依赖。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [account?.id])
   const deviceError = device.isError ? describeApiError(device.error) : null
 
   return (

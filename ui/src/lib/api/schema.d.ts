@@ -523,7 +523,9 @@ export interface paths {
          *     values. A platform failure answers 502 and writes nothing: the
          *     credential version and the audit trail are unchanged. The full device
          *     code never leaves the server; the response carries only the masked
-         *     form, the phone model and the authorized flag.
+         *     form, the phone model and the authorized flag. Like every write here,
+         *     403 comes from the CSRF middleware when the token is missing or
+         *     wrong, not from a role check.
          */
         post: operations["AccountDeviceRefresh"];
         delete?: never;

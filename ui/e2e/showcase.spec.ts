@@ -82,6 +82,11 @@ test('invariant 8: every account write entry is disabled with the read-only reas
   await page.goto('/accounts')
   await expect(page.getByRole('table', { name: '账号列表' })).toBeVisible()
 
+  // 页头「新建账号」也是写入口：禁用并给只读原因（M3）。
+  const create = page.getByRole('button', { name: '新建账号' })
+  await expect(create).toBeDisabled()
+  await expect(create).toHaveAttribute('title', READ_ONLY_REASON)
+
   const pendingRow = page.locator('.app-account-row').filter({ hasText: '138****8000' }).first()
   for (const name of ['签到 138****8000', '验证 138****8000', '评审 138****8000']) {
     const button = pendingRow.getByRole('button', { name })

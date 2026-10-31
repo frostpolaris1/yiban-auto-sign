@@ -56,8 +56,6 @@ type SchoolReader interface {
 	Get(ctx context.Context, id string) (coreschool.Record, error)
 }
 
-// Deps 是账号用例的依赖。
-// Cipher 可为 nil；此时任何写入口令/设备码的请求都失败（fail-closed）。
 // OwnerReader 按 id 读属主用户行，供建号的活跃校验（8v8⑦）。
 // 实现是 pg.UserRepo；GetByID 只回未删行，
 // 软删与不存在的 owner 在这里同样落到 not_found。
@@ -643,7 +641,12 @@ func (s *Service) resolveOwner(ctx context.Context, scope corescope.Scope, actor
 		return actor.UserID, nil
 	}
 	if _, err := s.deps.Owner.GetByID(ctx, requested); err != nil {
-		return "", errs.New(errs.CodeNotFound, "owner user does not exist or is deleted")
+		// 只有「查无此人/已删」映射 404；读库失败等其余错误原样上抛，
+		// 不许把基础设施故障伪装成资源缺失。
+		if errs.From(err).Code == errs.CodeNotFound {
+			return "", errs.New(errs.CodeNotFound, "owner user does not exist or is deleted")
+		}
+		return "", err
 	}
 	return requested, nil
 }

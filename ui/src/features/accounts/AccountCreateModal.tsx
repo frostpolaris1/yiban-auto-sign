@@ -430,9 +430,17 @@ function ManagerForm({
   const emailSettled = lookup.isSuccess && ownerEmail.trim() === debouncedEmail
   const matched = emailSettled ? (lookup.data?.items[0] ?? null) : null
 
+  // 绑定用户填了却未命中（未注册、检索失败、防抖未停）时不许提交：
+  // 否则三种情况都会静默落成「留空＝自有」，账号记到操作者名下（审查 H1）。
+  const ownerUnresolved = ownerEmail.trim() !== '' && matched === null
+
   const submit = () => {
     if (!schoolId || !phone.trim() || !password) {
       setError('学校、手机号与易班口令都是必填')
+      return
+    }
+    if (ownerUnresolved) {
+      setError('绑定用户未确认：命中已注册邮箱，或清空该字段')
       return
     }
     setError(null)
@@ -443,7 +451,7 @@ function ManagerForm({
     }
     if (deviceCode.trim() !== '') body.device_code = deviceCode.trim()
     if (phoneModel.trim() !== '') body.phone_model = phoneModel.trim()
-    // 只在命中时带 id：留空＝自有，未注册交给服务端 404（lookup 只是预检）。
+    // 走到这里 ownerEmail 必为空或已命中：留空＝自有，命中＝带 id。
     if (matched) body.owner_user_id = matched.id
     create.mutate(body)
   }
@@ -465,6 +473,7 @@ function ManagerForm({
             variant="primary"
             busy={create.isPending}
             busyLabel="提交中…"
+            disabled={ownerUnresolved}
             onClick={submit}
           >
             提交
@@ -533,6 +542,9 @@ function ManagerForm({
             </Badge>{' '}
             {matched.email_masked}
           </span>
+        ) : lookup.isError ? (
+          // 检索失败不是「未注册」：单独提示，可改后重试（审查 H1）。
+          <span className="app-deny-note">用户检索失败，请稍后重试</span>
         ) : lookup.isFetching || !emailSettled ? (
           <span className="app-muted">查询中…</span>
         ) : (

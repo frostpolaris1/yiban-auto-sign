@@ -123,32 +123,12 @@ export function AccountsTable({
             {rows.map((account) => {
               // 软删行只展示徽标与恢复菜单：其余动作对已删行都是 404。
               if (account.deleted_at != null) {
+                // 已删行不绑点击也不给「查看」：详情与设备刷新对已删行必 404，
+                // 唯一出口是行菜单的恢复（审查 M2）。
                 return (
-                  <tr
-                    key={account.id}
-                    className="app-account-row"
-                    tabIndex={0}
-                    onClick={(event) => onOpenDetail(account, event.currentTarget)}
-                    onKeyDown={(event) => {
-                      if (event.target !== event.currentTarget) return
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault()
-                        onOpenDetail(account, event.currentTarget)
-                      }
-                    }}
-                  >
+                  <tr key={account.id} className="app-account-row">
                     <td>
-                      <button
-                        type="button"
-                        className="app-cell-link data-cell-mono"
-                        aria-label={`查看 ${account.phone_masked}`}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          onOpenDetail(account, event.currentTarget)
-                        }}
-                      >
-                        {account.phone_masked}
-                      </button>
+                      <span className="data-cell-mono">{account.phone_masked}</span>
                     </td>
                     <td className="data-cell-mono">{account.school_id}</td>
                     <td>

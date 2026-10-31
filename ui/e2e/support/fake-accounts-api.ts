@@ -356,7 +356,11 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
     const found = knownAccounts.find((item) => item.id === id)
     if (!found) return fail(route, 404, 'not_found', '账号不存在')
 
-    if (!action && request.method() === 'GET') return json(route, found)
+    if (!action && request.method() === 'GET') {
+      // 详情与列表同口径：已删行不可发现，读取即 404。
+      if (found.deleted_at) return fail(route, 404, 'not_found', '账号不存在')
+      return json(route, found)
+    }
 
     if (!action && request.method() === 'PATCH') {
       const updates = (body ?? {}) as Record<string, unknown>

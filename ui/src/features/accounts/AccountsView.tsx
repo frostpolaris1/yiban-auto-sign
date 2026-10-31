@@ -149,6 +149,8 @@ export function AccountsView() {
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [createReturnFocus, setCreateReturnFocus] = useState<HTMLElement | null>(null)
+  const [restoreError, setRestoreError] = useState<string | null>(null)
+  const createReason = denyReason(role, 'create')
 
   const mutation = useMutation({
     mutationFn: async (input: MutationInput) => {
@@ -275,6 +277,7 @@ export function AccountsView() {
       if (input.op === 'update') setEditError(text)
       if (input.op === 'location') setLocationErrorText(text)
       if (input.op === 'delete') setDeleteError(text)
+      if (input.op === 'restore') setRestoreError(text)
     },
   })
 
@@ -297,6 +300,7 @@ export function AccountsView() {
   }
 
   const openRestore = (account: Account) => {
+    setRestoreError(null)
     shapeMutation.mutate({ account, op: 'restore' })
   }
 
@@ -323,15 +327,20 @@ export function AccountsView() {
         }
         subtitle="按学校、状态与手机号筛选。点击任意行查看只读详情。"
         actions={
-          <Button
-            variant="primary"
-            aria-label="新建账号"
-            disabled={!can(role, 'create')}
-            title={can(role, 'create') ? undefined : (denyReason(role, 'create') ?? undefined)}
-            onClick={(event: React.MouseEvent<HTMLButtonElement>) => openCreate(event.currentTarget)}
-          >
-            新建账号
-          </Button>
+          <>
+            {createReason ? <span className="app-deny-note">{createReason}</span> : null}
+            <Button
+              variant="primary"
+              aria-label="新建账号"
+              disabled={createReason !== null}
+              title={createReason ?? undefined}
+              onClick={(event: React.MouseEvent<HTMLButtonElement>) =>
+                openCreate(event.currentTarget)
+              }
+            >
+              新建账号
+            </Button>
+          </>
         }
       />
 
@@ -344,6 +353,14 @@ export function AccountsView() {
           <div className="app-alert-block">
             <Alert tone="warning" title="学校列表加载失败">
               {describeApiError(schoolsQuery.error)}
+            </Alert>
+          </div>
+        ) : null}
+
+        {restoreError ? (
+          <div className="app-alert-block">
+            <Alert tone="danger" title="恢复失败">
+              {restoreError} 行保持已删状态，可重试。
             </Alert>
           </div>
         ) : null}
