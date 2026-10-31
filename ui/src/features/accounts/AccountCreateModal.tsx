@@ -48,6 +48,12 @@ type AccountCreateModalProps = {
 }
 
 const UNREGISTERED_TEXT = '该邮箱未注册，请先在用户管理建号'
+const INCOMPLETE_EMAIL_TEXT = '请继续输入完整邮箱'
+
+/** 完整邮箱形状：本地部、@、域名各一段且域名带点。掩码无法区分同形地址。 */
+function isCompleteEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
+}
 
 export function AccountCreateModal({
   open,
@@ -412,20 +418,26 @@ function ManagerForm({
     }
   }, [open])
 
-  // 300ms 防抖：输入停稳才查 lookup，选择器场景的预检。
+  // 300ms 防抖：只在完整邮箱上查。exact=true 全等匹配（F1）：
+  // 前缀＋掩码会把 a.one 与 a.two 绑成同一个人。
   useEffect(() => {
     const trimmed = ownerEmail.trim()
     if (trimmed === debouncedEmail) return
+    if (trimmed !== '' && !isCompleteEmail(trimmed)) {
+      // 未完成不发请求：旧命中必须失效，matched 随键失效。
+      setDebouncedEmail('')
+      return
+    }
     const timer = setTimeout(() => setDebouncedEmail(trimmed), 300)
     return () => clearTimeout(timer)
   }, [ownerEmail, debouncedEmail])
 
   const lookup = useQuery({
     queryKey: ['owner-lookup', debouncedEmail],
-    queryFn: () => lookupUsers(debouncedEmail),
+    queryFn: () => lookupUsers(debouncedEmail, { exact: true }),
     enabled: open && debouncedEmail.length > 0,
   })
-  // 命中只在「输入与已查前缀一致且查询已成功」时生效：
+  // 命中只在「输入与已查邮箱一致且查询已成功」时生效：
   // 防抖未完成时不得把「未查」当「未注册」，也不得用上一次的命中。
   const emailSettled = lookup.isSuccess && ownerEmail.trim() === debouncedEmail
   const matched = emailSettled ? (lookup.data?.items[0] ?? null) : null
@@ -535,6 +547,9 @@ function ManagerForm({
       <div className="app-filter" aria-live="polite">
         {ownerEmail.trim() === '' ? (
           <span className="app-muted">默认归属自己</span>
+        ) : !isCompleteEmail(ownerEmail.trim()) ? (
+          // 不完整就不查：掩码无法区分同前缀地址，先补全（审查 F1）。
+          <span className="app-deny-note">{INCOMPLETE_EMAIL_TEXT}</span>
         ) : matched ? (
           <span className="app-owner-match">
             <Badge tone={matched.status === 'active' ? 'success' : 'warning'} dot>

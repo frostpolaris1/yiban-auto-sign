@@ -128,7 +128,7 @@ func (f *fakeUserRepo) CountLiveMasters(_ context.Context, excludeID string) (in
 	return n, nil
 }
 
-func (f *fakeUserRepo) Lookup(context.Context, string, int) ([]Record, error) {
+func (f *fakeUserRepo) Lookup(context.Context, string, int, bool) ([]Record, error) {
 	return nil, nil
 }
 

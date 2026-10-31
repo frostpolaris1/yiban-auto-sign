@@ -102,7 +102,10 @@ export const DELETED_ACCOUNTS: Account[] = [
 export const LOOKUP_USERS = [
   { id: 'user-target', email: 'member.target@example.com', status: 'active' },
   { id: 'user-disabled', email: 'disabled.one@example.com', status: 'disabled' },
-] as const
+  // 同首字符同域对：掩码都是 a***@example.com（审查 F1 的绑定歧义）。
+  { id: 'user-a-one', email: 'a.one@example.com', status: 'active' },
+  { id: 'user-a-two', email: 'a.two@example.com', status: 'active' },
+]
 
 /** 设备刷新的合成回读。掩码由登记形状的设备码派生（明文不出现）。 */
 export const DEVICE_READ = {
@@ -310,9 +313,14 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
         return fail(route, status, code, message)
       }
       const q = (url.searchParams.get('q') ?? '').toLowerCase()
-      const items = LOOKUP_USERS.filter((item) => item.email.startsWith(q)).map((item) => ({
+      const exact = url.searchParams.get('exact') === 'true'
+      // 真库按 email 升序（索引序）；假端点同口径，取第一条才有等价性。
+      const hits = LOOKUP_USERS.filter((item) =>
+        exact ? item.email === q : item.email.startsWith(q),
+      ).sort((a, b) => a.email.localeCompare(b.email))
+      const items = hits.map((item) => ({
         id: item.id,
-        email_masked: `${item.email.slice(0, 1)}***${item.email.slice(item.email.indexOf('@'))}`,
+        email_masked: `${item.email.slice(0, 1)}***${item.email.indexOf('@') > 0 ? item.email.slice(item.email.indexOf('@')) : ''}`,
         status: item.status,
       }))
       return json(route, { items })

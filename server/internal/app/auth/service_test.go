@@ -82,7 +82,7 @@ func (f *fakeUsers) Restore(context.Context, string, int) (appuser.Record, error
 
 func (f *fakeUsers) CountLiveMasters(context.Context, string) (int, error) { return 0, nil }
 
-func (f *fakeUsers) Lookup(context.Context, string, int) ([]appuser.Record, error) {
+func (f *fakeUsers) Lookup(context.Context, string, int, bool) ([]appuser.Record, error) {
 	return nil, nil
 }
 

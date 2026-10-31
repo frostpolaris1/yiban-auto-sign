@@ -47,6 +47,8 @@ type New = coreuser.New
 // 串行化并发的建号、降级、删除与恢复。停用 master 不能登录，
 // 不构成恢复路径，不计入（独立审查 P1-2）。
 // Lookup 按已归一邮箱前缀取未删行，按 email 升序取前 limit 条。
+// exact 置真时 query 是完整邮箱：只回全等的那一条（F1，
+// 归属选择器按 id 绑定必须用它——掩码行彼此不可分辨）。
 type Repo interface {
 	Create(ctx context.Context, in New, limit int) (Record, error)
 	GetByID(ctx context.Context, id string) (Record, error)
@@ -62,7 +64,7 @@ type Repo interface {
 	SoftDelete(ctx context.Context, id, by string, at time.Time) error
 	Restore(ctx context.Context, id string, limit int) (Record, error)
 	CountLiveMasters(ctx context.Context, excludeID string) (int, error)
-	Lookup(ctx context.Context, query string, limit int) ([]Record, error)
+	Lookup(ctx context.Context, query string, limit int, exact bool) ([]Record, error)
 }
 
 // OwnerAccountCounter 是名下活跃账号计数端口。

@@ -41,7 +41,9 @@ type LookupRef struct {
 }
 
 // Lookup 查一页归属候选。**只有 master 与 admin 可以调用**。
-func (s *Service) Lookup(ctx context.Context, scope corescope.Scope, query string, limit int) ([]LookupRef, error) {
+// exact 置真时 query 按完整邮箱全等匹配，至多一条；
+// 缺省保持前缀语义，既有读者不受影响（F1）。
+func (s *Service) Lookup(ctx context.Context, scope corescope.Scope, query string, limit int, exact bool) ([]LookupRef, error) {
 	if err := app.RequireScope(scope); err != nil {
 		return nil, err
 	}
@@ -62,7 +64,7 @@ func (s *Service) Lookup(ctx context.Context, scope corescope.Scope, query strin
 	if err != nil {
 		return nil, err
 	}
-	records, err := s.deps.Users.Lookup(ctx, query, limit)
+	records, err := s.deps.Users.Lookup(ctx, query, limit, exact)
 	if err != nil {
 		return nil, err
 	}

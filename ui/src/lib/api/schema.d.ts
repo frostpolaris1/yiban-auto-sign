@@ -187,7 +187,10 @@ export interface paths {
          *     case. Soft-deleted users never match. Each item carries only the
          *     id, the masked email and the status: the full address, the role
          *     and the timestamps never leave the server. No cursor: a picker
-         *     takes the first limit rows in email order.
+         *     takes the first limit rows in email order. With exact=true the
+         *     query is the whole address, not a prefix: an owner picker that
+         *     binds by id must use it, because masked rows are visually
+         *     indistinguishable and a prefix can rank the wrong user first.
          *     This is a static path segment next to /api/users/{id}; the other
          *     methods on /api/users/lookup are matched by the {id} route and
          *     answer 404 for the literal id "lookup".
@@ -1866,6 +1869,11 @@ export interface operations {
                 q: string;
                 /** @description Page size. Defaults to 20. */
                 limit?: number;
+                /**
+                 * @description When true, q is matched as the whole (normalized) email and the
+                 *     result is at most one row. Defaults to false: the prefix search.
+                 */
+                exact?: boolean;
             };
             header?: never;
             path?: never;

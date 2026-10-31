@@ -848,6 +848,60 @@ func TestUX2SchoolsForUser(t *testing.T) {
 	}
 }
 
+// u2LookupRef 是 lookup 行的契约形状。
+type u2LookupRef struct {
+	ID          string `json:"id"`
+	EmailMasked string `json:"email_masked"`
+	Status      string `json:"status"`
+}
+
+// --- 安全不变量：exact lookup 不被前缀歧义绑架（F1） -----------------------
+
+// 同首字符同域的两名用户：前缀 q=a. 回两条（email 升序），
+// exact=true 只回全等邮箱的那一条。掩码把两者渲染成同一个字符串，
+// 前缀语义＋取第一条会把账号绑到错误属主（审查 F1 实证）。
+func TestUX2LookupExactBeatsPrefix(t *testing.T) {
+	e := newAuthEnv(t)
+	u2SeedUser(t, e, "u2-lk-master@example.com", "master-pass", coreauth.RoleMaster)
+	one := u2SeedUser(t, e, "a.one@example.com", "one-pass", coreauth.RoleUser)
+	two := u2SeedUser(t, e, "a.two@example.com", "two-pass", coreauth.RoleUser)
+	u2LoginOn(e, e.client, "u2-lk-master@example.com", "master-pass")
+
+	var prefixPage struct {
+		Items []u2LookupRef `json:"items"`
+	}
+	prefixResp, prefixPayload := u2Do(e, e.client, http.MethodGet,
+		"/api/users/lookup?q=a.&limit=200", nil, "")
+	if prefixResp.StatusCode != http.StatusOK {
+		t.Fatalf("prefix lookup = %d; body=%q", prefixResp.StatusCode, prefixPayload)
+	}
+	if err := json.Unmarshal(prefixPayload, &prefixPage); err != nil {
+		t.Fatalf("decode prefix lookup: %v", err)
+	}
+	if len(prefixPage.Items) != 2 {
+		t.Fatalf("prefix lookup rows = %d, want 2; body=%q", len(prefixPage.Items), prefixPayload)
+	}
+	if prefixPage.Items[0].ID != one.ID || prefixPage.Items[1].ID != two.ID {
+		t.Fatalf("prefix order = [%s %s], want email asc [%s %s]",
+			prefixPage.Items[0].ID, prefixPage.Items[1].ID, one.ID, two.ID)
+	}
+
+	var exactPage struct {
+		Items []u2LookupRef `json:"items"`
+	}
+	exactResp, exactPayload := u2Do(e, e.client, http.MethodGet,
+		"/api/users/lookup?q=a.two%40example.com&exact=true", nil, "")
+	if exactResp.StatusCode != http.StatusOK {
+		t.Fatalf("exact lookup = %d; body=%q", exactResp.StatusCode, exactPayload)
+	}
+	if err := json.Unmarshal(exactPayload, &exactPage); err != nil {
+		t.Fatalf("decode exact lookup: %v", err)
+	}
+	if len(exactPage.Items) != 1 || exactPage.Items[0].ID != two.ID {
+		t.Fatalf("exact lookup rows = %+v, want exactly %s", exactPage.Items, two.ID)
+	}
+}
+
 // --- 安全不变量：include_deleted 的可见面（M6） ----------------------------
 
 // 建号→软删→默认列表不含→include_deleted=true 含且 deleted_at 非空；

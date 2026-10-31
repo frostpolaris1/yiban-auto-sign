@@ -279,7 +279,10 @@ paths:
         case. Soft-deleted users never match. Each item carries only the
         id, the masked email and the status: the full address, the role
         and the timestamps never leave the server. No cursor: a picker
-        takes the first limit rows in email order.
+        takes the first limit rows in email order. With exact=true the
+        query is the whole address, not a prefix: an owner picker that
+        binds by id must use it, because masked rows are visually
+        indistinguishable and a prefix can rank the wrong user first.
         This is a static path segment next to /api/users/{id}; the other
         methods on /api/users/lookup are matched by the {id} route and
         answer 404 for the literal id "lookup".
@@ -295,6 +298,13 @@ paths:
           required: false
           description: Page size. Defaults to 20.
           schema: { type: integer, minimum: 1, maximum: 200, default: 20 }
+        - name: exact
+          in: query
+          required: false
+          description: |
+            When true, q is matched as the whole (normalized) email and the
+            result is at most one row. Defaults to false: the prefix search.
+          schema: { type: boolean }
       responses:
         '200':
           description: Lookup page.

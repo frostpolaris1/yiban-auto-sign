@@ -1374,6 +1374,10 @@ type UserLookupParams struct {
 
 	// Limit Page size. Defaults to 20.
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Exact When true, q is matched as the whole (normalized) email and the
+	// result is at most one row. Defaults to false: the prefix search.
+	Exact *bool `form:"exact,omitempty" json:"exact,omitempty"`
 }
 
 // UserDeleteParams defines parameters for UserDelete.
@@ -3492,6 +3496,14 @@ func (siw *ServerInterfaceWrapper) UserLookup(c *gin.Context) {
 	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", c.Request.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
 	if err != nil {
 		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter limit: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "exact" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "exact", c.Request.URL.Query(), &params.Exact, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter exact: %w", err), http.StatusBadRequest)
 		return
 	}
 

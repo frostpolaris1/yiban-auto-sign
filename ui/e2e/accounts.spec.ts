@@ -792,7 +792,7 @@ test('ux2 master: the single form resolves owner by email lookup and leaves it b
   await dialog.getByLabel('学校').selectOption({ label: '合成学校甲' })
   await dialog.getByLabel('手机号').fill('13800000000')
   await dialog.getByLabel('易班口令').fill('single-pass-1')
-  await dialog.getByLabel('绑定用户（选填）').fill('member.target')
+  await dialog.getByLabel('绑定用户（选填）').fill('member.target@example.com')
   await expect(dialog.getByText('m***@example.com')).toBeVisible()
   await dialog.getByRole('button', { name: '提交' }).click()
   await expect.poll(() => createCalls(api).length).toBe(1)
@@ -805,7 +805,7 @@ test('ux2 master: the single form resolves owner by email lookup and leaves it b
   await dialog.getByLabel('学校').selectOption({ label: '合成学校甲' })
   await dialog.getByLabel('手机号').fill('13800000000')
   await dialog.getByLabel('易班口令').fill('single-pass-1')
-  await dialog.getByLabel('绑定用户（选填）').fill('ghost@')
+  await dialog.getByLabel('绑定用户（选填）').fill('ghost@unknown.example.com')
   await expect(dialog.getByText('该邮箱未注册，请先在用户管理建号')).toBeVisible()
 
   // 留空：默认自有，请求不带 owner_user_id。
@@ -827,7 +827,7 @@ test('ux2 master: an unresolved owner email blocks the submit', async ({ page })
   await dialog.getByLabel('易班口令').fill('single-pass-1')
 
   // 未注册：提交禁用，零建号请求（H1：静默记到操作者名下是缺陷）。
-  await dialog.getByLabel('绑定用户（选填）').fill('ghost@')
+  await dialog.getByLabel('绑定用户（选填）').fill('ghost@unknown.example.com')
   await expect(dialog.getByText('该邮箱未注册，请先在用户管理建号')).toBeVisible()
   await expect(dialog.getByRole('button', { name: '提交' })).toBeDisabled()
   await dialog.getByRole('button', { name: '提交' }).click({ force: true })
@@ -855,11 +855,53 @@ test('ux2 master: a failed owner lookup blocks the submit with its own message',
   await dialog.getByLabel('易班口令').fill('single-pass-1')
 
   // 检索失败：单独提示，不冒充「未注册」也不静默落成自有（审查 H1）。
-  await dialog.getByLabel('绑定用户（选填）').fill('member.target')
+  await dialog.getByLabel('绑定用户（选填）').fill('member.target@example.com')
   await expect(dialog.getByText('用户检索失败，请稍后重试')).toBeVisible({ timeout: 10_000 })
   await expect(dialog.getByRole('button', { name: '提交' })).toBeDisabled()
   await dialog.getByRole('button', { name: '提交' }).click({ force: true })
   expect(createCalls(api), 'a failed lookup must not create').toHaveLength(0)
+})
+
+test('ux2 master: same-mask users bind by exact email, an unfinished input cannot submit', async ({
+  page,
+}) => {
+  const api = await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+
+  await page.getByRole('button', { name: '新建账号' }).click()
+  const dialog = page.getByRole('dialog')
+  await dialog.getByLabel('学校').selectOption({ label: '合成学校甲' })
+  await dialog.getByLabel('手机号').fill('13800000000')
+  await dialog.getByLabel('易班口令').fill('single-pass-1')
+
+  // 前缀歧义对：a.one 与 a.two 的掩码同为 a***@example.com。
+  // 输入未完成：提示继续输入，提交禁用，不发检索（F1）。
+  await dialog.getByLabel('绑定用户（选填）').fill('a.')
+  await expect(dialog.getByText('请继续输入完整邮箱')).toBeVisible()
+  await expect(dialog.getByRole('button', { name: '提交' })).toBeDisabled()
+  await dialog.getByRole('button', { name: '提交' }).click({ force: true })
+  expect(createCalls(api), 'an unfinished email must not create').toHaveLength(0)
+  expect(api.calls.filter((call) => call.path === '/api/users/lookup')).toHaveLength(0)
+
+  // 完整邮箱只绑那一条：a.one 提交带 a-one 的 id。
+  await dialog.getByLabel('绑定用户（选填）').fill('a.one@example.com')
+  await expect(dialog.getByText('a***@example.com')).toBeVisible()
+  await dialog.getByRole('button', { name: '提交' }).click()
+  await expect.poll(() => createCalls(api).length).toBe(1)
+  expect(createCalls(api)[0].body).toMatchObject({ owner_user_id: 'user-a-one' })
+  await expect(page.getByText('已创建 138****0000')).toBeVisible()
+
+  // 换成 a.two：同一掩码，绑的必须是 a-two 的 id。
+  await page.getByRole('button', { name: '新建账号' }).click()
+  const dialog2 = page.getByRole('dialog')
+  await dialog2.getByLabel('学校').selectOption({ label: '合成学校甲' })
+  await dialog2.getByLabel('手机号').fill('13800000001')
+  await dialog2.getByLabel('易班口令').fill('single-pass-1')
+  await dialog2.getByLabel('绑定用户（选填）').fill('a.two@example.com')
+  await expect(dialog2.getByText('a***@example.com')).toBeVisible()
+  await dialog2.getByRole('button', { name: '提交' }).click()
+  await expect.poll(() => createCalls(api).length).toBe(2)
+  expect(createCalls(api)[1].body).toMatchObject({ owner_user_id: 'user-a-two' })
 })
 
 test('ux2 user: the device block does not carry data across accounts', async ({ page }) => {

@@ -66,6 +66,7 @@ either side drifts.
 | DELETE | `/api/users/:id` | master | UX-1 |
 | POST | `/api/users/:id/restore` | master | UX-1 |
 | GET | `/api/users/lookup` | master/admin | UX-1 |
+|  |  |  | `exact=true` 时 q 按完整邮箱全等匹配（至多一条）；缺省前缀查询。按 id 绑定属主的调用必须带 exact（F1）。 |
 | GET | `/api/schools` | master/admin/user | P1 |
 | POST | `/api/schools` | master | P1 |
 | PATCH | `/api/schools/:id` | master | P1 |
