@@ -28,6 +28,9 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ALLOWED_TOP = {
     # 通用文件
     "LICENSE", "README.md", "CHANGELOG.md", "USER_AGREEMENT.md", "PRIVACY_POLICY.md",
+    # 2026-10-31 入库：贡献指南（外部贡献者的方向、任务、边界与流程）。
+    # 本项消失即红，故它同时是「贡献指南必须入库」的守卫。
+    "CONTRIBUTING.md",
     ".gitignore", ".gitattributes", ".editorconfig", ".dockerignore", ".importlinter",
     ".env.example", ".env.docker.example",   # 配置模板：只放占位值，真值不入库
     "pyproject.toml", "requirements.txt", "requirements.lock",
