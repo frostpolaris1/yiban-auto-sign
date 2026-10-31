@@ -122,6 +122,7 @@ export function showcaseUsers(): UserPage {
         must_change_password: false,
         created_at: '2026-10-01T09:00:00+08:00',
         last_login_at: '2026-10-28T09:12:00+08:00',
+        deleted_at: null,
       },
       {
         id: 'user-b',
@@ -131,6 +132,7 @@ export function showcaseUsers(): UserPage {
         must_change_password: true,
         created_at: '2026-10-02T09:00:00+08:00',
         last_login_at: null,
+        deleted_at: null,
       },
       {
         id: 'user-c',
@@ -140,6 +142,7 @@ export function showcaseUsers(): UserPage {
         must_change_password: false,
         created_at: '2026-10-03T09:00:00+08:00',
         last_login_at: '2026-10-20T18:30:00+08:00',
+        deleted_at: null,
       },
     ],
     next_cursor: '',

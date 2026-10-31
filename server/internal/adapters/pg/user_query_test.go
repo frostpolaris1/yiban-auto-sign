@@ -27,7 +27,7 @@ import (
 // 二是限定名避免裸 id 被解析成输出列 id::text（那会退化为 Incremental Sort）。
 // 一次 Contains 同时守住两者：任何一处被改都会失配。
 func TestUserListQueryOrdersByQualifiedID(t *testing.T) {
-	sqlText, _, err := userListQuery("", "", "", "", 10)
+	sqlText, _, err := userListQuery("", "", "", "", 10, false)
 	if err != nil {
 		t.Fatalf("userListQuery: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestUserListQueryKeysetShape(t *testing.T) {
 	const id = "0192f000-0000-7000-8000-000000000001"
 	at := time.Date(2026, 10, 28, 8, 0, 0, 0, time.UTC)
 
-	sqlText, args, err := userListQuery("", "", "", encodeCursor(at, id), 10)
+	sqlText, args, err := userListQuery("", "", "", encodeCursor(at, id), 10, false)
 	if err != nil {
 		t.Fatalf("userListQuery with cursor: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestUserListQueryEscapesLikeMetacharacters(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			sqlText, args, err := userListQuery("", "", tc.query, "", 10)
+			sqlText, args, err := userListQuery("", "", tc.query, "", 10, false)
 			if err != nil {
 				t.Fatalf("userListQuery(q=%q): %v", tc.query, err)
 			}

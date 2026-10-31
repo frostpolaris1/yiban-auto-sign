@@ -11,6 +11,10 @@ import { SESSION_CSRF, SESSION_EMAIL, type Role } from './fake-accounts-api'
  *
  * `GET /api/users` 只归 master：其余角色返回 403 信封。
  * 页对象形状与契约一致：`{ items, next_cursor }`，末页 `next_cursor` 是空串。
+ * UX-1 的写端点在本假 API 内改内存副本：PATCH 改角色/状态、
+ * password-reset 发一次性合成口令、DELETE 打软删标记、restore 清掉，
+ * lookup 只回 id、掩码邮箱、状态。`deleted_at` 非空的行只在
+ * `include_deleted=true` 时出现。
  */
 
 export type ApiCall = {
@@ -21,7 +25,7 @@ export type ApiCall = {
   body: unknown
 }
 
-/** 合成用户。三条恰好覆盖三个角色与两种状态，含空的上次登录。 */
+/** 合成用户。四条覆盖三个角色、两种状态与一种已删形状。 */
 export const USERS: User[] = [
   {
     id: 'user-alpha',
@@ -31,6 +35,7 @@ export const USERS: User[] = [
     must_change_password: false,
     created_at: '2026-01-05T00:00:00Z',
     last_login_at: '2026-10-28T01:00:00Z',
+    deleted_at: null,
   },
   {
     id: 'user-beta',
@@ -40,6 +45,7 @@ export const USERS: User[] = [
     must_change_password: true,
     created_at: '2026-02-05T00:00:00Z',
     last_login_at: null,
+    deleted_at: null,
   },
   {
     id: 'user-gamma',
@@ -49,8 +55,24 @@ export const USERS: User[] = [
     must_change_password: false,
     created_at: '2026-03-05T00:00:00Z',
     last_login_at: '2026-09-01T02:30:00Z',
+    deleted_at: null,
   },
 ]
+
+/** 软删行夹具：只在 include_deleted=true 时出现。 */
+export const DELETED_USER: User = {
+  id: 'user-delta',
+  email: 'gone-one@example.com',
+  role: 'user',
+  status: 'disabled',
+  must_change_password: false,
+  created_at: '2026-04-05T00:00:00Z',
+  last_login_at: null,
+  deleted_at: '2026-10-20T00:00:00Z',
+}
+
+/** password-reset 的一次性合成口令。 */
+export const FAKE_TEMP_PASSWORD = 'temp-pass-once-0123456789abcdefgh'
 
 export type MockUsersOptions = {
   role: Role | null
@@ -60,6 +82,12 @@ export type MockUsersOptions = {
   userPages?: Record<string, User[]>
   userNextCursors?: Record<string, string>
   listError?: { status: number; code: string; message: string }
+  createError?: { status: number; code: string; message: string }
+  updateError?: { status: number; code: string; message: string }
+  resetError?: { status: number; code: string; message: string }
+  deleteError?: { status: number; code: string; message: string }
+  restoreError?: { status: number; code: string; message: string }
+  lookupError?: { status: number; code: string; message: string }
 }
 
 export type FakeUsersApi = {
@@ -72,19 +100,20 @@ function errorBody(code: string, message: string) {
   })
 }
 
+function maskEmail(email: string): string {
+  const at = email.indexOf('@')
+  if (at <= 0) return email
+  return `${email.slice(0, 1)}***${email.slice(at)}`
+}
+
 export async function mockUsersApi(
   page: Page,
   options: MockUsersOptions,
 ): Promise<FakeUsersApi> {
   const calls: ApiCall[] = []
   const sessionRole = options.role
-  const users = (options.users ?? USERS).map((item) => ({ ...item }))
-  const userPages = Object.fromEntries(
-    Object.entries(options.userPages ?? {}).map(([cursor, items]) => [
-      cursor,
-      items.map((item) => ({ ...item })),
-    ]),
-  )
+  // deleted 行默认不在列表；include_deleted 时并入。
+  const users = (options.users ?? [...USERS, DELETED_USER]).map((item) => ({ ...item }))
 
   const json = (route: Route, body: unknown, status = 200) =>
     route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
@@ -124,6 +153,30 @@ export async function mockUsersApi(
       })
     }
 
+    if (url.pathname === '/api/users/lookup' && request.method() === 'GET') {
+      if (sessionRole !== 'master' && sessionRole !== 'admin') {
+        return fail(route, 403, 'forbidden', '仅 master/admin 可检索用户')
+      }
+      if (options.lookupError) {
+        return fail(
+          route,
+          options.lookupError.status,
+          options.lookupError.code,
+          options.lookupError.message,
+        )
+      }
+      const q = (url.searchParams.get('q') ?? '').toLowerCase()
+      const items = users
+        .filter((item) => item.deleted_at === null && item.email.startsWith(q))
+        .slice(0, Number(url.searchParams.get('limit') ?? 20))
+        .map((item) => ({
+          id: item.id,
+          email_masked: maskEmail(item.email),
+          status: item.status,
+        }))
+      return json(route, { items })
+    }
+
     if (url.pathname === '/api/users' && request.method() === 'GET') {
       if (sessionRole !== 'master') {
         return fail(route, 403, 'forbidden', '仅 master 可查看用户列表')
@@ -136,10 +189,106 @@ export async function mockUsersApi(
           options.listError.message,
         )
       }
+      const includeDeleted = url.searchParams.get('include_deleted') === 'true'
+      const visible = users.filter((item) => includeDeleted || item.deleted_at === null)
       const cursor = url.searchParams.get('cursor') ?? ''
-      const items = options.userPages ? (userPages[cursor] ?? []) : users
+      const source = options.userPages
+        ? (options.userPages[cursor] ?? [])
+        : visible
       const next = options.userNextCursors?.[cursor] ?? ''
-      return json(route, { items, next_cursor: next })
+      return json(route, { items: source, next_cursor: next })
+    }
+
+    if (url.pathname === '/api/users' && request.method() === 'POST') {
+      if (options.createError) {
+        return fail(
+          route,
+          options.createError.status,
+          options.createError.code,
+          options.createError.message,
+        )
+      }
+      const input = body as { email: string; role: User['role'] }
+      const created: User = {
+        id: 'user-new',
+        email: input.email,
+        role: input.role,
+        status: 'active',
+        must_change_password: false,
+        created_at: '2026-10-31T00:00:00Z',
+        last_login_at: null,
+        deleted_at: null,
+      }
+      users.push(created)
+      return json(route, created, 201)
+    }
+
+    const userMatch = /^\/api\/users\/([^/]+)(\/(password-reset|restore))?$/.exec(url.pathname)
+    if (userMatch) {
+      const id = userMatch[1]
+      const action = userMatch[3] ?? ''
+      const target = users.find((item) => item.id === id)
+      if (!target) {
+        return fail(route, 404, 'not_found', '用户不存在')
+      }
+      if (request.method() === 'POST' && action === 'restore') {
+        if (options.restoreError) {
+          return fail(
+            route,
+            options.restoreError.status,
+            options.restoreError.code,
+            options.restoreError.message,
+          )
+        }
+        // 恢复只对已删行有效：服务端对未删行同判 404。
+        if (target.deleted_at === null) {
+          return fail(route, 404, 'not_found', '用户未删除')
+        }
+        target.deleted_at = null
+        return json(route, target)
+      }
+      // PATCH / reset / delete 都不读软删行。
+      if (target.deleted_at !== null) {
+        return fail(route, 404, 'not_found', '用户已删除')
+      }
+      if (request.method() === 'PATCH') {
+        if (options.updateError) {
+          return fail(
+            route,
+            options.updateError.status,
+            options.updateError.code,
+            options.updateError.message,
+          )
+        }
+        const patch = body as { role?: User['role']; status?: User['status'] }
+        if (patch.role) target.role = patch.role
+        if (patch.status) target.status = patch.status
+        return json(route, target)
+      }
+      if (request.method() === 'POST' && action === 'password-reset') {
+        if (options.resetError) {
+          return fail(
+            route,
+            options.resetError.status,
+            options.resetError.code,
+            options.resetError.message,
+          )
+        }
+        target.must_change_password = true
+        return json(route, { temp_password: FAKE_TEMP_PASSWORD })
+      }
+      if (request.method() === 'DELETE') {
+        if (options.deleteError) {
+          return fail(
+            route,
+            options.deleteError.status,
+            options.deleteError.code,
+            options.deleteError.message,
+          )
+        }
+        target.deleted_at = '2026-10-31T00:00:00Z'
+        return route.fulfill({ status: 204 })
+      }
     }
 
     return fail(route, 404, 'not_found', '未找到资源')
@@ -154,4 +303,8 @@ export function listUserCalls(api: FakeUsersApi): ApiCall[] {
 
 export function lastUserListCall(api: FakeUsersApi): ApiCall | undefined {
   return listUserCalls(api).at(-1)
+}
+
+export function callsTo(api: FakeUsersApi, method: string, path: string): ApiCall[] {
+  return api.calls.filter((call) => call.method === method && call.path === path)
 }

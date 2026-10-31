@@ -24,6 +24,7 @@ import { SchedulePage } from '@/pages/SchedulePage'
 import { SchoolsPage } from '@/pages/SchoolsPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { UsersPage } from '@/pages/UsersPage'
+import { parseUserSearchRecord, userSearchRecord } from '@/features/user/urlState'
 import { parseDay } from '@/lib/format'
 import { sanitizeRedirect } from '@/lib/redirect'
 
@@ -73,12 +74,29 @@ const schoolsRoute = createRoute({
   component: SchoolsPage,
 })
 
-/** 用户管理：只归 master；非 master 直接访问落到无权限卡片。 */
+/** 用户管理：只归 master；非 master 直接访问落到无权限卡片。
+ * 筛选、含已删除与游标是 URL 状态：校验即净化，非法值在解析时丢弃。
+ */
 const usersRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: '/users',
-  component: UsersPage,
+  validateSearch: (search: Record<string, unknown>) => parseUserSearchRecord(search),
+  component: UsersRouteComponent,
 })
+
+/** 把类型化的 search 传给页面，并让页面通过回调写回查询串。 */
+function UsersRouteComponent() {
+  const search = usersRoute.useSearch()
+  const navigate = useNavigate()
+  return (
+    <UsersPage
+      search={search}
+      onSearchChange={(next, opts) => {
+        void navigate({ to: '/users', search: userSearchRecord(next), replace: opts?.replace })
+      }}
+    />
+  )
+}
 
 /**
  * 时间片路由的自定义 search：`?day=YYYY-MM-DD`。

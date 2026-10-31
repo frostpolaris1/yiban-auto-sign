@@ -294,6 +294,17 @@
   font-size: 11.5px;
 }
 
+/* 「含已删除」开关：勾选框与文字同行，底边与其他筛选控件对齐。 */
+.app-filter-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 7px;
+  color: var(--t-base);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .app-filter-q {
   flex: 1;
   min-width: 240px;
@@ -538,6 +549,40 @@
 .app-detail-list dd {
   margin: 0;
   color: var(--t-base);
+  word-break: break-all;
+}
+
+/* ---------- 用户管理抽屉的动作区 ----------
+ * 摘要下方的按钮行与字段行。颜色全部取令牌，与账号详情抽屉同族。
+ */
+.app-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.app-detail-field {
+  margin-top: 16px;
+}
+
+.app-detail-field > label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--t-muted);
+  font-size: 11.5px;
+}
+
+/* 一次性临时口令：等宽、可整段选中复制，四周留白避免贴边。 */
+.app-temp-password {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--bg-card);
+  font-size: 13px;
+  user-select: all;
   word-break: break-all;
 }
 

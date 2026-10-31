@@ -51,6 +51,11 @@ type Deps struct {
 	// KDF 是口令哈希端口。生产必须传限并发实现（coreauth.Bounded）。
 	KDF   coreauth.Hasher
 	Limit int
+	// Sessions 是会话撤销原语：重置口令与软删后立即失效全部会话。
+	// 只消费，不签发。
+	Sessions coreauth.SessionIssuer
+	// OwnerAccounts 是名下活跃账号计数端口，由 assembly 注入。
+	OwnerAccounts OwnerAccountCounter
 }
 
 // Service 承载用户管理用例。
@@ -73,6 +78,10 @@ func NewService(deps Deps) (*Service, error) {
 		return nil, errors.New("user: nil KDF")
 	case deps.Limit <= 0:
 		return nil, errors.New("user: limit must be positive")
+	case deps.Sessions == nil:
+		return nil, errors.New("user: nil session issuer")
+	case deps.OwnerAccounts == nil:
+		return nil, errors.New("user: nil owner account counter")
 	}
 	return &Service{deps: deps}, nil
 }

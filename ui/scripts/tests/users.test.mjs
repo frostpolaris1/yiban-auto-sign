@@ -51,3 +51,58 @@ test('the user feature never restates the status words', () => {
     )
   }
 })
+
+// --- UX-1：URL 状态的解析、序列化与「筛选即回第一页」 -----------------------
+
+import {
+  parseUserSearchRecord,
+  userSearchRecord,
+  withFilter,
+} from '../../src/features/user/urlState.ts'
+
+test('the URL state parser keeps only known, valid values', () => {
+  const state = parseUserSearchRecord({
+    role: 'admin',
+    status: 'disabled',
+    q: 'mem',
+    deleted: '1',
+    cursor: 'c2',
+  })
+  assert.deepEqual(state, { role: 'admin', status: 'disabled', q: 'mem', deleted: true, cursor: 'c2' })
+})
+
+test('the URL state parser drops invalid values instead of passing them on', () => {
+  const state = parseUserSearchRecord({
+    role: 'root',
+    status: 'deleted',
+    q: '',
+    deleted: 'no',
+    cursor: '',
+    junk: 'x',
+  })
+  assert.deepEqual(state, {})
+})
+
+test('the URL search record omits empty values so equal states share one URL', () => {
+  assert.deepEqual(userSearchRecord({}), {})
+  assert.deepEqual(
+    userSearchRecord({ role: 'user', deleted: true, cursor: 'c9' }),
+    { role: 'user', deleted: '1', cursor: 'c9' },
+  )
+})
+
+test('parse and write round-trip without losing a value', () => {
+  const state = { role: 'master', status: 'active', q: 'a', deleted: true, cursor: 'c1' }
+  assert.deepEqual(parseUserSearchRecord(userSearchRecord(state)), state)
+})
+
+test('changing a filter always drops the cursor', () => {
+  const next = withFilter({ role: 'user', q: 'a', cursor: 'c2' }, { status: 'active' })
+  assert.equal(next.cursor, undefined)
+  assert.equal(next.role, 'user')
+  assert.equal(next.status, 'active')
+  // 空 q 不产生键：同状态同 URL。
+  const cleared = withFilter({ role: 'user', q: 'a' }, { q: undefined })
+  assert.equal(cleared.q, undefined)
+  assert.deepEqual(userSearchRecord(cleared), { role: 'user' })
+})

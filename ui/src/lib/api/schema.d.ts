@@ -151,10 +151,12 @@ export interface paths {
         };
         /**
          * List users with cursor pagination.
-         * @description Master only. Soft-deleted users never appear. role, status and q
-         *     narrow the result. q matches the start of the email address and
-         *     never matches a name. A query longer than 254 characters is 400:
-         *     no address can be that long, so no row can match.
+         * @description Master only. By default soft-deleted users never appear; pass
+         *     include_deleted to include them, each carrying a non-null
+         *     deleted_at. role, status and q narrow the result. q matches the
+         *     start of the email address and never matches a name. A query
+         *     longer than 254 characters is 400: no address can be that long,
+         *     so no row can match.
          */
         get: operations["UserList"];
         put?: never;
@@ -165,6 +167,122 @@ export interface paths {
          *     live users is a 409; a soft-deleted user's email may be reused.
          */
         post: operations["UserCreate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/users/lookup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Restricted user search for owner pickers.
+         * @description Master and admin only. Matches the start of the email address;
+         *     matching is case-insensitive because stored addresses are lower
+         *     case. Soft-deleted users never match. Each item carries only the
+         *     id, the masked email and the status: the full address, the role
+         *     and the timestamps never leave the server. No cursor: a picker
+         *     takes the first limit rows in email order.
+         *     This is a static path segment next to /api/users/{id}; the other
+         *     methods on /api/users/lookup are matched by the {id} route and
+         *     answer 404 for the literal id "lookup".
+         */
+        get: operations["UserLookup"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/users/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Soft-delete a user.
+         * @description Master only. A user cannot delete their own account (403).
+         *     A user who still owns live accounts is 409: transfer or delete
+         *     the accounts first. Deleting the last active master is also 409:
+         *     the active-master invariant covers deletion. Success soft-deletes
+         *     the row, revokes every
+         *     session of that user and writes one user.delete audit row. The
+         *     row keeps its email; a later restore can conflict with a live
+         *     user that has taken the address.
+         */
+        delete: operations["UserDelete"];
+        options?: never;
+        head?: never;
+        /**
+         * Change a user's role or status.
+         * @description Master only. A soft-deleted user is 404. Lowering the role of, or
+         *     disabling, the last active master is 409: at any moment there must
+         *     be at least one active master row that is not soft-deleted. A
+         *     disabled master cannot sign in, so it is not a recovery path and
+         *     does not count. A role change writes one user.role_change audit
+         *     row and a status change writes user.disable or user.enable; both
+         *     take effect from the next request because sessions resolve the
+         *     user row every time.
+         */
+        patch: operations["UserUpdate"];
+        trace?: never;
+    };
+    "/api/users/{id}/password-reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reset a user's password to a one-time temporary password.
+         * @description Master only. A master cannot reset their own password (403) so a
+         *     lost display of the one-time secret cannot lock the operator out.
+         *     Success replaces the password hash, sets must_change_password,
+         *     revokes every session of that user and writes one
+         *     user.password_reset audit row without the secret. temp_password
+         *     appears exactly once, in this response; it is never stored or
+         *     returned again.
+         */
+        post: operations["UserPasswordReset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/users/{id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restore a soft-deleted user.
+         * @description Master only. Restoring a live or unknown user is 404. The restored
+         *     row keeps its role, status and email; if a live user has taken the
+         *     address the partial unique index rejects it with 409. Restoring
+         *     above the live-user capacity is 429. Sessions were revoked when
+         *     the user was deleted, so the user must sign in again.
+         */
+        post: operations["UserRestore"];
         delete?: never;
         options?: never;
         head?: never;
@@ -881,6 +999,12 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             last_login_at: string | null;
+            /**
+             * Format: date-time
+             * @description Soft-delete timestamp; null for live users. Only rows fetched
+             *     with include_deleted=true can carry a non-null value.
+             */
+            deleted_at: string | null;
         };
         LoginRequest: {
             /** Format: email */
@@ -907,6 +1031,17 @@ export interface components {
             email: string;
             password: string;
             role: components["schemas"]["UserRole"];
+        };
+        UserUpdate: {
+            role?: components["schemas"]["UserRole"];
+            status?: components["schemas"]["UserStatus"];
+        };
+        UserTempPassword: {
+            /**
+             * @description The one-time temporary password. It appears only in this
+             *     response: never in logs, audit rows or any later response.
+             */
+            temp_password: string;
         };
         /** @enum {string} */
         SchoolStatus: "active" | "disabled";
@@ -1223,6 +1358,19 @@ export interface components {
             items: components["schemas"]["User"][];
             /** @description Cursor for the next page; empty on the last page. */
             next_cursor: string;
+        };
+        UserLookupPage: {
+            items: components["schemas"]["UserLookupRef"][];
+        };
+        /**
+         * @description A restricted user reference for owner pickers. The masked email
+         *     keeps the first character and the domain; the full address,
+         *     role and timestamps are never sent.
+         */
+        UserLookupRef: {
+            id: string;
+            email_masked: string;
+            status: components["schemas"]["UserStatus"];
         };
         AccountPage: {
             items: components["schemas"]["Account"][];
@@ -1569,6 +1717,12 @@ export interface operations {
                  *     addresses are lower case. Wildcards in the value are literal.
                  */
                 q?: string;
+                /**
+                 * @description Include soft-deleted users. Defaults to false, so the default
+                 *     behavior is unchanged: soft-deleted users never appear.
+                 *     Deleted rows carry deleted_at and keep their status value.
+                 */
+                include_deleted?: boolean;
             };
             header?: never;
             path?: never;
@@ -1625,6 +1779,171 @@ export interface operations {
             409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
             429: components["responses"]["DefaultError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    UserLookup: {
+        parameters: {
+            query: {
+                /** @description Email prefix; wildcards in the value are literal. */
+                q: string;
+                /** @description Page size. Defaults to 20. */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Lookup page. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserLookupPage"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    UserDelete: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description User soft-deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            409: components["responses"]["ConflictError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    UserUpdate: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserUpdate"];
+            };
+        };
+        responses: {
+            /** @description User updated. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["User"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            409: components["responses"]["ConflictError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    UserPasswordReset: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Temporary password. Shown once. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserTempPassword"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    UserRestore: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description User restored. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["User"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            409: components["responses"]["ConflictError"];
+            429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
         };
     };

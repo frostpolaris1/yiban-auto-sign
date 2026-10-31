@@ -21,6 +21,9 @@ export const USER_ROLE_OPTIONS: Array<{ value: UserRole; label: string }> = (
   ['master', 'admin', 'user'] as const
 ).map((value) => ({ value, label: roleLabel(value) }))
 
+/** 已删行的徽标文案：与状态徽标并列展示。 */
+export const USER_DELETED_LABEL = '已删除'
+
 /** 状态文案引用 `lib/identity` 的共用词，不在这里再写一遍。 */
 const STATUS_LABELS: Record<UserStatus, string> = {
   active: ACTIVE_STATUS_LABEL,

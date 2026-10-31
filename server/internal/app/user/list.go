@@ -39,6 +39,8 @@ type ListFilter struct {
 	Role   coreauth.Role
 	Status coreauth.Status
 	Query  string
+	// IncludeDeleted 置真时软删行也入选。缺省 false，行为不变。
+	IncludeDeleted bool
 }
 
 // Page 是一页用户。
@@ -51,6 +53,7 @@ type Page struct {
 //
 // 非法角色或状态是 validation_failed，不静默夹到默认值。
 // 游标由仓储解析；格式错误同样报 validation_failed。
+// 默认滤掉软删行；IncludeDeleted 置真时软删行也回。
 func (s *Service) List(ctx context.Context, scope corescope.Scope, filter ListFilter, cursor string, limit int) (Page, error) {
 	if err := app.RequireScope(scope); err != nil {
 		return Page{}, err
@@ -71,7 +74,7 @@ func (s *Service) List(ctx context.Context, scope corescope.Scope, filter ListFi
 	if err != nil {
 		return Page{}, err
 	}
-	items, next, err := s.deps.Users.List(ctx, filter.Role, filter.Status, filter.Query, cursor, limit)
+	items, next, err := s.deps.Users.List(ctx, filter.Role, filter.Status, filter.Query, cursor, limit, filter.IncludeDeleted)
 	if err != nil {
 		return Page{}, err
 	}

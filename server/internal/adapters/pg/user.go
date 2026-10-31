@@ -97,17 +97,18 @@ func (r *UserRepo) GetByEmail(ctx context.Context, email string) (coreuser.Recor
 	return recordOrNotFound(scanUser(row))
 }
 
-// List 按可选角色、状态与邮箱前缀列未删除用户，并用游标分页。
+// List 按可选角色、状态与邮箱前缀列用户，并用游标分页。
 // 过滤条件是**与**关系；空串表示不过滤。
+// includeDeleted 缺省滤掉软删行；置真时软删行也入选。
 //
 // 前缀按已归一（小写去空白）的邮箱比较，LIKE 的通配符被转义：
 // 邮箱里的 %、_ 与 \ 是合法字符，不得当成通配或转义符。
 // 归一后为空但入参非空时恒假，**不得**退化成「不过滤」。
-func (r *UserRepo) List(ctx context.Context, role coreauth.Role, status coreauth.Status, query, cursor string, limit int) ([]coreuser.Record, string, error) {
+func (r *UserRepo) List(ctx context.Context, role coreauth.Role, status coreauth.Status, query, cursor string, limit int, includeDeleted bool) ([]coreuser.Record, string, error) {
 	if limit < 1 || limit > 200 {
 		return nil, "", validationError("limit must be between 1 and 200")
 	}
-	sqlText, args, err := userListQuery(role, status, query, cursor, limit)
+	sqlText, args, err := userListQuery(role, status, query, cursor, limit, includeDeleted)
 	if err != nil {
 		return nil, "", err
 	}
@@ -144,8 +145,11 @@ func (r *UserRepo) List(ctx context.Context, role coreauth.Role, status coreauth
 // 抽出本函数是为了让 SQL 形状可以被无数据库单测覆盖。
 // 三条承重性质由 user_query_test.go 逐字钉住：
 // 键集条件带 ::uuid、ORDER BY 带限定名与 tiebreaker、LIKE 元字符被转义。
-func userListQuery(role coreauth.Role, status coreauth.Status, query, cursor string, limit int) (string, []any, error) {
+func userListQuery(role coreauth.Role, status coreauth.Status, query, cursor string, limit int, includeDeleted bool) (string, []any, error) {
 	where := ` WHERE deleted_at IS NULL`
+	if includeDeleted {
+		where = ` WHERE TRUE`
+	}
 	var args []any
 	if role != "" {
 		if !role.Valid() {
@@ -280,6 +284,150 @@ func (r *UserRepo) SoftDelete(ctx context.Context, id, by string, at time.Time) 
 		return coreerrNotFound()
 	}
 	return nil
+}
+
+// UpdateRole 替换用户角色。
+// 最后 master 判据归用例层；本方法只改行。
+func (r *UserRepo) UpdateRole(ctx context.Context, id string, role coreauth.Role, at time.Time) error {
+	if !role.Valid() {
+		return validationError("unknown role")
+	}
+	tag, err := r.db.q(ctx).Exec(ctx, `
+		UPDATE users SET role = $2::user_role, updated_at = $3
+		 WHERE id = $1::uuid AND deleted_at IS NULL`,
+		id, string(role), at)
+	if err != nil {
+		return mapError(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return coreerrNotFound()
+	}
+	return nil
+}
+
+// Restore 在有空余容量时清除软删标记。
+//
+// **必须在事务内运行**。软删行不计入上限，
+// 故恢复必须在锁下重新计数；
+// 提前计数会让并发建号与并发恢复一起把总数推过上限。
+// 邮箱被活跃用户占用时，部分唯一索引 uq_users_email_live
+// 拒绝本语句，由 mapError 报 conflict。
+func (r *UserRepo) Restore(ctx context.Context, id string, limit int) (coreuser.Record, error) {
+	if !r.db.hasTx(ctx) {
+		return coreuser.Record{}, ErrNoTransaction
+	}
+	if limit <= 0 {
+		return coreuser.Record{}, validationError("limit must be positive")
+	}
+	if _, err := r.db.q(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock($1)", UserCapacityLock); err != nil {
+		return coreuser.Record{}, mapError(err)
+	}
+	row := r.db.q(ctx).QueryRow(ctx, `
+		UPDATE users
+		   SET deleted_at = NULL, deleted_by = NULL, updated_at = now()
+		 WHERE id = $1::uuid
+		   AND deleted_at IS NOT NULL
+		   AND (SELECT count(*) FROM users WHERE deleted_at IS NULL) < $2
+		RETURNING `+userColumns,
+		id, limit)
+	record, err := scanUser(row)
+	if err == nil {
+		return record, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return coreuser.Record{}, mapError(err)
+	}
+	// 零行分类：行不存在或未删都报 not_found；已删但容量满报 capacity。
+	var deletedAt pgtype.Timestamptz
+	err = r.db.q(ctx).QueryRow(ctx,
+		`SELECT deleted_at FROM users WHERE id = $1::uuid`, id).Scan(&deletedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return coreuser.Record{}, coreerrNotFound()
+	}
+	if err != nil {
+		return coreuser.Record{}, mapError(err)
+	}
+	if !deletedAt.Valid {
+		// 未删行不走恢复：与「不存在」同判 404。
+		return coreuser.Record{}, coreerrNotFound()
+	}
+	return coreuser.Record{}, capacityError()
+}
+
+// CountLiveMasters 统计 active 未删 master（排除 excludeID）。
+// 停用 master 不能登录（app/auth/login.go 要求 active），
+// 不构成恢复路径，故**不计入**（独立审查 P1-2）：
+// 若计入，A 停用 B 后 A 自降即可达零 active master 锁死。
+//
+// **必须在事务内运行**。先取 UserCapacityLock 再计数：
+// 与 Create、Restore、Delete 同锁族，串行化并发的建号、降级、
+// 删除与恢复，防并发动作把系统推向零 active master。
+func (r *UserRepo) CountLiveMasters(ctx context.Context, excludeID string) (int, error) {
+	if !r.db.hasTx(ctx) {
+		return 0, ErrNoTransaction
+	}
+	if _, err := r.db.q(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock($1)", UserCapacityLock); err != nil {
+		return 0, mapError(err)
+	}
+	var n int
+	err := r.db.q(ctx).QueryRow(ctx, `
+		SELECT count(*) FROM users
+		 WHERE role = 'master' AND status = 'active' AND deleted_at IS NULL AND id <> $1::uuid`,
+		excludeID).Scan(&n)
+	if err != nil {
+		return 0, mapError(err)
+	}
+	return n, nil
+}
+
+// CountLiveAccountsByOwner 统计某用户名下的活跃账号。
+// 软删用户拦截判据的计数面；无锁需求，调用方决定事务。
+func (r *UserRepo) CountLiveAccountsByOwner(ctx context.Context, userID string) (int, error) {
+	var n int
+	err := r.db.q(ctx).QueryRow(ctx, `
+		SELECT count(*) FROM accounts
+		 WHERE owner_user_id = $1::uuid AND deleted_at IS NULL`,
+		userID).Scan(&n)
+	if err != nil {
+		return 0, mapError(err)
+	}
+	return n, nil
+}
+
+// Lookup 按已归一邮箱前缀取未删用户，按 email 升序取前 limit 条。
+// 归一后为空但入参非空时恒假（同 List 口径），直接给空页。
+// q 在用例层已判必填；这里只管转义与排序。
+func (r *UserRepo) Lookup(ctx context.Context, query string, limit int) ([]coreuser.Record, error) {
+	if limit < 1 || limit > 200 {
+		return nil, validationError("limit must be between 1 and 200")
+	}
+	prefix := coreuser.NormalizeEmail(query)
+	if prefix == "" {
+		return []coreuser.Record{}, nil
+	}
+	rows, err := r.db.q(ctx).Query(ctx, `
+		SELECT `+userColumns+` FROM users
+		 WHERE deleted_at IS NULL
+		   AND email LIKE $1 || '%' ESCAPE '\'
+		 ORDER BY email ASC
+		 LIMIT $2`,
+		escapeLikePrefix(prefix), limit)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	items := make([]coreuser.Record, 0, limit)
+	for rows.Next() {
+		record, err := scanUser(rows)
+		if err != nil {
+			return nil, mapError(err)
+		}
+		items = append(items, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapError(err)
+	}
+	return items, nil
 }
 
 func scanUser(row pgx.Row) (coreuser.Record, error) {
