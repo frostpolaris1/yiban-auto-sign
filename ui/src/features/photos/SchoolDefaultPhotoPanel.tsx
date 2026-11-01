@@ -7,11 +7,13 @@
  *
  * **口径**
  * 设置入口在账号照片区（选中某张图）；本区只负责展示与清除。
- * 本区只由 admin 装配：master 能改引用却读不到字节，界面不给入口。
+ * 本区只由 admin 装配：缺省图写入归 admin；master 可读引用但无字节面，界面不给入口。
  * 引用为空、或引用的图片已被删除时，接口 `photo_id` 为 null，本区显示「未设置」。
+ * 属主账号停用后字节读不到，图片以 onError 退化为一句说明，不留破图。
  * 展示构建不加载真实图片，也不发请求。
  */
 
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Alert } from '@/components/ui/Alert'
 import { Button } from '@/components/ui/Button'
@@ -33,6 +35,7 @@ const EMPTY_DEFAULT: SchoolDefaultPhoto = { photo_id: null, etag: '' }
 
 export function SchoolDefaultPhotoPanel({ schoolId }: SchoolDefaultPhotoPanelProps) {
   const queryClient = useQueryClient()
+  const [brokenId, setBrokenId] = useState<string | null>(null)
 
   const query = useQuery({
     queryKey: ['school-default-photo', schoolId],
@@ -50,6 +53,11 @@ export function SchoolDefaultPhotoPanel({ schoolId }: SchoolDefaultPhotoPanelPro
 
   const photoId = query.data?.photo_id ?? null
 
+  // 引用变了就重新给字节一次机会；失败只在当前 id 上记住。
+  useEffect(() => {
+    setBrokenId(null)
+  }, [photoId])
+
   return (
     <section className="app-photo-section" aria-label="学校缺省图">
       <h3 className="app-photo-title">学校缺省图</h3>
@@ -64,12 +72,17 @@ export function SchoolDefaultPhotoPanel({ schoolId }: SchoolDefaultPhotoPanelPro
 
       {!query.isError && !query.isLoading && photoId ? (
         <div className="app-photo-tile">
-          <img
-            className="app-photo-image"
-            src={photoBytesPath(photoId)}
-            alt="学校缺省图"
-            loading="lazy"
-          />
+          {brokenId === photoId ? (
+            <p className="app-muted">缺省图暂不可读：属主账号可能已停用。</p>
+          ) : (
+            <img
+              className="app-photo-image"
+              src={photoBytesPath(photoId)}
+              alt="学校缺省图"
+              loading="lazy"
+              onError={() => setBrokenId(photoId)}
+            />
+          )}
           {!SHOWCASE ? (
             <div className="app-photo-actions">
               <Button

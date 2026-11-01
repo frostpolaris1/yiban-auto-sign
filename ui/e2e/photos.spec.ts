@@ -4,7 +4,7 @@ import { createPhotoFixture, PHOTO_ALPHA, PHOTO_BETA, PHOTO_BYTES } from './supp
 import { mockSchoolsApi } from './support/fake-schools-api'
 
 /**
- * 照片域的九条不变式。
+ * 照片域的不变式（编号见各用例标题）。
  *
  * 1. 管理员在账号抽屉看到归属用户的图片横条，字节只经单图端点取。
  * 2. 普通用户在本人账号上可上传；上传成功后库就地刷新。
@@ -13,11 +13,13 @@ import { mockSchoolsApi } from './support/fake-schools-api'
  * 5. 他人账号只读：无上传、无删除，但管理员可设学校缺省图。
  * 6. 设为缺省图只送 photo_id；成功后给出可见回执。
  * 7. 学校抽屉显示缺省图并可清除；清除送显式 null。
- * 8. master 不在图片契约内：账号抽屉无照片区，学校抽屉无缺省图区。
+ * 8. master 没有账号照片面：账号照片端点不含 master，学校抽屉也不给缺省图区。
  * 9. 设为缺省图失败时给危险提示，不挂成功样式。
+ * 10. 所有者是 admin 时同样可上传（角色不改变所有者身份）。
+ * 11. 缺省图字节读不到时退化为一句说明，不留破图。
  *
- * 角色口径来自契约 x-roles：图片库与字节归 user/admin，上传与删除只归 user，
- * 缺省图写入归 master/admin（界面只给 admin，因为 master 读不到字节）。
+ * 角色口径来自契约 x-roles：账号照片列表归 user/admin；/api/me/photos 归三种
+ * 角色且只操作自己的库；缺省图写入归 admin（界面只给 admin：master 没有字节面）。
  */
 
 async function openAccounts(page: Page) {
@@ -136,22 +138,16 @@ test("invariant 5: another owner's library is read-only for an admin", async ({ 
   await openAccounts(page)
   const drawer = await openAccountDrawer(page, '139****9000')
 
-  await expect(drawer.getByRole('img', { name: '照片 photo-gamma' })).toBeVisible()
+  const other = drawer.getByRole('img', { name: '照片 photo-gamma' })
+  await expect(other).toBeVisible()
+  // 可见不等于加载成功：admin 的跨属主读在这里必须真取到字节。
+  expect(await other.evaluate((el) => (el as HTMLImageElement).naturalWidth)).toBeGreaterThan(0)
   await expect(drawer.getByRole('button', { name: '上传照片' })).toHaveCount(0)
 
   await drawer.getByRole('button', { name: '查看照片 photo-gamma' }).click()
   const preview = page.getByRole('dialog', { name: '照片预览' })
   await expect(preview.getByRole('button', { name: '设为缺省图 photo-gamma' })).toBeVisible()
   await expect(preview.getByRole('button', { name: '删除图片 photo-gamma' })).toHaveCount(0)
-
-  // 管理员即使是账号所有者也不能上传：上传只归 user 角色。
-  await page.keyboard.press('Escape')
-  await expect(preview).toBeHidden()
-  await page.keyboard.press('Escape')
-  await expect(drawer).toBeHidden()
-  await page.getByRole('button', { name: '查看 138****8000' }).click()
-  const ownDrawer = page.getByRole('dialog', { name: '账号详情' })
-  await expect(ownDrawer.getByRole('button', { name: '上传照片' })).toHaveCount(0)
 })
 
 test('invariant 6: setting the school default sends only the photo id', async ({ page }) => {
@@ -189,7 +185,7 @@ test('invariant 7: the school drawer shows the default photo and clears it', asy
   expect((put!.body as { photo_id: string | null }).photo_id).toBeNull()
 })
 
-test('invariant 8: master is outside the photo contract and sees no photo surfaces', async ({
+test('invariant 8: master has no account-photo surface', async ({
   page,
 }) => {
   await mockAccountsApi(page, { role: 'master' })
@@ -251,13 +247,85 @@ test('fixture contract: a user cannot read or delete another owner photo', async
   expect(deleteStatus, 'cross-owner delete answers 404').toBe(404)
 })
 
-test('fixture contract: only a user role may delete a photo', async ({ page }) => {
+test('fixture contract: an admin who does not own the photo gets 404', async ({ page }) => {
   await mockAccountsApi(page, { role: 'admin' })
   await openAccounts(page)
 
+  // 会话用户是 user-1；photo-gamma 归 user-2。契约里删除只按属主过滤。
   const status = await page.evaluate(async () => {
-    const response = await fetch('/api/me/photos/photo-alpha', { method: 'DELETE' })
+    const response = await fetch('/api/me/photos/photo-gamma', { method: 'DELETE' })
     return response.status
   })
-  expect(status, 'a delete by a non-user role answers 403').toBe(403)
+  expect(status, 'a delete by a non-owner answers 404').toBe(404)
+})
+
+test('invariant 10: an admin who owns the account may upload', async ({ page }) => {
+  const api = await mockAccountsApi(page, { role: 'admin' })
+  await openAccounts(page)
+  const drawer = await openAccountDrawer(page, '138****8000')
+
+  // 会话用户是 user-1，acc-1 也归 user-1：此时 admin 就是所有者本人。
+  await expect(drawer.getByRole('button', { name: '上传照片' })).toBeVisible()
+  await uploadFile(drawer)
+  await expect(drawer.getByRole('img')).toHaveCount(3)
+  expect(
+    photoCalls(api, 'POST').some((call) => call.path === '/api/me/photos'),
+    'the owner role does not gate the upload',
+  ).toBe(true)
+
+  await drawer.getByRole('button', { name: `查看照片 ${PHOTO_BETA.id}` }).click()
+  const preview = page.getByRole('dialog', { name: '照片预览' })
+  await preview.getByRole('button', { name: `删除图片 ${PHOTO_BETA.id}` }).click()
+  await page
+    .getByRole('dialog', { name: '删除图片' })
+    .getByRole('button', { name: '删除图片' })
+    .click()
+  await expect(drawer.getByRole('img', { name: `照片 ${PHOTO_BETA.id}` })).toHaveCount(0)
+  expect(
+    photoCalls(api, 'DELETE').some((call) => call.path === `/api/me/photos/${PHOTO_BETA.id}`),
+    'the owner role does not gate the delete either',
+  ).toBe(true)
+})
+
+test('invariant 11: an unreadable default photo degrades to a note', async ({ page }) => {
+  await mockAccountsApi(page, { role: 'admin' })
+  // 模拟属主账号已停用：引用还在，字节端点回 404。
+  await page.route('**/api/me/photos/photo-alpha', (route) =>
+    route.fulfill({ status: 404, contentType: 'application/json', body: '{}' }),
+  )
+  await openSchoolDrawer(page, '合成学校甲')
+
+  const drawer = page.getByRole('dialog', { name: '学校详情' })
+  await expect(drawer.getByText('缺省图暂不可读：属主账号可能已停用。')).toBeVisible()
+  await expect(drawer.getByRole('img', { name: '学校缺省图' })).toHaveCount(0)
+})
+
+test('fixture contract: a signed-out read answers 401', async ({ page }) => {
+  await mockAccountsApi(page, { role: null })
+  await page.goto('/login')
+
+  const listStatus = await page.evaluate(async () => (await fetch('/api/me/photos')).status)
+  expect(listStatus, 'a signed-out library read answers 401').toBe(401)
+
+  const putStatus = await page.evaluate(async () => {
+    const response = await fetch('/api/schools/school-alpha/default-photo', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ photo_id: null }),
+    })
+    return response.status
+  })
+  expect(putStatus, 'a signed-out default-photo write answers 401').toBe(401)
+})
+
+test('fixture contract: deleting the same photo twice answers 204 both times', async ({ page }) => {
+  await mockAccountsApi(page, { role: 'user' })
+  await page.goto('/accounts')
+
+  const statuses = await page.evaluate(async () => {
+    const first = await fetch('/api/me/photos/photo-alpha', { method: 'DELETE' })
+    const second = await fetch('/api/me/photos/photo-alpha', { method: 'DELETE' })
+    return [first.status, second.status]
+  })
+  expect(statuses, 'delete is idempotent').toEqual([204, 204])
 })

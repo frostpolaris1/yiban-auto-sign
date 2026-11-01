@@ -17,7 +17,7 @@ import { SHOWCASE, useMe } from '@/lib/session'
 export function SchoolsPage() {
   const me = useMe()
   const role = me.data?.role ?? null
-  // 缺省图的字节只归 user/admin 读；master 能改引用却看不到图，故本页只给 admin。
+  // 缺省图写入只归 admin；master 可读引用但无字节面，故本页只给 admin。
   const canManageDefault = SHOWCASE || role === 'admin'
   return (
     <SchoolsView

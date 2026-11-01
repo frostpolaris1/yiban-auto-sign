@@ -16,7 +16,7 @@ import { SHOWCASE, useMe } from '@/lib/session'
 export function AccountsPage() {
   const me = useMe()
   const role = me.data?.role ?? null
-  // 契约：/api/accounts/{id}/photos 归 user 与 admin；master 不在契约内。
+  // 契约：/api/accounts/{id}/photos 归 user 与 admin；该端点不含 master。
   // 展示构建没有后端，保留照片区以便看样式。
   const canViewPhotos = SHOWCASE || role === 'user' || role === 'admin'
   return (

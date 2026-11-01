@@ -11,7 +11,10 @@ import type { Role } from './fake-accounts-api'
  * `e2e/support`：账号页与学校页的假 API 都转发到这里。
  *
  * **口径**
- * 角色按契约 `x-roles` 判：图片库与字节只归 user/admin，上传与删除只归 user。
+ * 角色按契约 `x-roles` 判：/api/me/photos 归三种角色且只动自己的库；
+ * 账号照片列表归 user/admin；缺省图写入归 admin。
+ * 未登录一律 401。假体不建模学校绑定：admin 的跨属主读与缺省图作用域
+ * 按“已登录即放行”简化，删除仍只按属主过滤。
  * 跨归属读取与删除回 404，与契约同语义。
  * 调用记录由调用方（父假 API）统一收集，本模块只回响应。
  * 图片字节恒为同一张合成 PNG：1×1 单色，不含任何真实内容。
@@ -66,6 +69,8 @@ export type PhotoFixture = {
   byOwner: Record<string, Photo[]>
   /** 学校 ID → 缺省图引用。 */
   schoolDefaults: Record<string, { photo_id: string | null }>
+  /** 已软删的图片 ID：重复删除仍回 204（契约幂等）。 */
+  deletedPhotos: Record<string, true>
   /** 上传失败注入。缺省 201。 */
   uploadError?: { status: number; code: string; message: string }
   /** 设为缺省图的失败注入。 */
@@ -104,6 +109,7 @@ export function createPhotoFixture(overrides: Partial<PhotoFixture> = {}): Photo
       'school-alpha': { photo_id: 'photo-alpha' },
       'school-beta': { photo_id: null },
     },
+    deletedPhotos: {},
     ...overrides,
   }
 }
@@ -163,6 +169,10 @@ export async function handlePhotoRoute(
 
   const accountMatch = /^\/api\/accounts\/([^/]+)\/photos$/.exec(path)
   if (accountMatch && method === 'GET') {
+    if (current === null) {
+      await fail(401, 'unauthorized', '需要登录')
+      return true
+    }
     if (current !== 'user' && current !== 'admin') {
       await fail(403, 'forbidden', '当前角色不能读取图片库')
       return true
@@ -190,6 +200,10 @@ export async function handlePhotoRoute(
       return true
     }
     if (method === 'GET') {
+      if (current === null) {
+        await fail(401, 'unauthorized', '需要登录')
+        return true
+      }
       const photo = currentDefault.photo_id
         ? findPhoto(fixture, currentDefault.photo_id)
         : undefined
@@ -200,7 +214,11 @@ export async function handlePhotoRoute(
       return true
     }
     if (method === 'PUT') {
-      if (current !== 'master' && current !== 'admin') {
+      if (current === null) {
+        await fail(401, 'unauthorized', '需要登录')
+        return true
+      }
+      if (current !== 'admin') {
         await fail(403, 'forbidden', '只有管理员可以设置缺省图')
         return true
       }
@@ -223,16 +241,16 @@ export async function handlePhotoRoute(
 
   if (path === '/api/me/photos') {
     if (method === 'GET') {
-      if (current !== 'user') {
-        await fail(403, 'forbidden', '图片库只归普通用户')
+      if (current === null) {
+        await fail(401, 'unauthorized', '需要登录')
         return true
       }
       await json({ items: fixture.byOwner[fixture.owner] ?? [], next_cursor: '' })
       return true
     }
     if (method === 'POST') {
-      if (current !== 'user') {
-        await fail(403, 'forbidden', '图片库只归普通用户')
+      if (current === null) {
+        await fail(401, 'unauthorized', '需要登录')
         return true
       }
       if (fixture.uploadError) {
@@ -259,17 +277,23 @@ export async function handlePhotoRoute(
 
   const photoMatch = /^\/api\/me\/photos\/([^/]+)$/.exec(path)
   if (photoMatch) {
-    if (current !== 'user' && current !== 'admin') {
-      await fail(403, 'forbidden', '当前角色不能读取图片')
+    if (current === null) {
+      await fail(401, 'unauthorized', '需要登录')
       return true
     }
     const id = decodeURIComponent(photoMatch[1])
-    const photo = findPhoto(fixture, id)
+    // 契约：删除幂等。重复删除同一张仍回 204（软删不复活）。
+    if (method === 'DELETE' && fixture.deletedPhotos[id]) {
+      await route.fulfill({ status: 204 })
+      return true
+    }
+    const photo = fixture.deletedPhotos[id] ? undefined : findPhoto(fixture, id)
     if (!photo) {
       await fail(404, 'not_found', '图片不存在')
       return true
     }
-    if (current === 'user' && ownerOf(fixture, id) !== fixture.owner) {
+    // 读：本人可读；admin 另可跨属主读（假体不建模绑定校，视为全部可见）。
+    if (method === 'GET' && current !== 'admin' && ownerOf(fixture, id) !== fixture.owner) {
       await fail(404, 'not_found', '图片不存在')
       return true
     }
@@ -288,11 +312,7 @@ export async function handlePhotoRoute(
       return true
     }
     if (method === 'DELETE') {
-      // 两段判，与后端一致：动作无角色 403；跨属主按 owner_user_id 过滤后无行 404。
-      if (current !== 'user') {
-        await fail(403, 'forbidden', '图片库只归普通用户')
-        return true
-      }
+      // 任何角色都只删自己的照片；非属主按 owner_user_id 过滤后无行 404。
       if (ownerOf(fixture, id) !== fixture.owner) {
         await fail(404, 'not_found', '图片不存在')
         return true
@@ -300,6 +320,7 @@ export async function handlePhotoRoute(
       for (const [owner, photos] of Object.entries(fixture.byOwner)) {
         fixture.byOwner[owner] = photos.filter((item) => item.id !== id)
       }
+      fixture.deletedPhotos[id] = true
       await route.fulfill({ status: 204 })
       return true
     }

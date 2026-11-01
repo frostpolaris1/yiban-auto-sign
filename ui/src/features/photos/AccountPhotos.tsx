@@ -7,11 +7,11 @@
  *
  * **口径**
  * 图片归属账号的**所有者**，不是当前操作者。
- * 契约：图片库与字节归 user/admin；上传与删除只归 user 且只归所有者本人。
- * 管理员看他人账号时该区只读；master 不在图片契约内，本区不渲染。
+ * 账号照片列表归 user/admin；上传与删除走 /api/me/photos，只归所有者本人（任何角色）。
+ * 管理员看他人账号时该区只读；账号照片端点不含 master，本区对 master 不渲染。
  * 横条只放缩略图；设为缺省图与删除都在大图预览里做，避免误触。
  * 字节只经单图端点取给 `<img src>`，本组件不读文件内容、不生成对象 URL。
- * 本大图与学校缺省图用不同缓存键；设为缺省图后两者一起失效。
+ * 本大图与学校缺省图用不同缓存键；设为缺省图后只失效学校缺省图缓存。
  * 展示构建不加载真实图片：缩略位显示合成占位，上传与缺省图动作置灰。
  */
 
@@ -66,10 +66,10 @@ export function AccountPhotos({ accountId, schoolId, ownerUserId }: AccountPhoto
   })
 
   const role = me.data?.role ?? null
-  // 契约：图片库与字节归 user/admin；上传与删除只归 user；缺省图设置归 admin。
+  // 端点角色：账号照片列表归 user/admin；上传与删除只归所有者本人；缺省图设置归 admin。
   const isOwner = Boolean(me.data && me.data.id === ownerUserId)
-  const canUpload = role === 'user' && isOwner && !SHOWCASE
-  const canDelete = role === 'user' && isOwner && !SHOWCASE
+  const canUpload = isOwner && !SHOWCASE
+  const canDelete = isOwner && !SHOWCASE
   const defaultAllowed = role === 'admin' && !SHOWCASE
 
   const upload = useMutation({
@@ -119,7 +119,9 @@ export function AccountPhotos({ accountId, schoolId, ownerUserId }: AccountPhoto
               className="app-visually-hidden"
               type="file"
               accept="image/png,image/jpeg"
-              aria-label="选择照片文件"
+              tabIndex={-1}
+              aria-hidden="true"
+              disabled={upload.isPending}
               onChange={(event) => {
                 const file = event.target.files?.[0]
                 if (file) upload.mutate(file)
