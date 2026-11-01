@@ -149,7 +149,7 @@ func quotePy(s string) string {
 			sb.WriteString(`\f`)
 		default:
 			if r < 0x20 {
-				sb.WriteString(fmt.Sprintf(`\u%04x`, r))
+				fmt.Fprintf(&sb, `\u%04x`, r)
 				continue
 			}
 			if r > 0xffff {
@@ -159,7 +159,7 @@ func quotePy(s string) string {
 				continue
 			}
 			if utf16.IsSurrogate(rune(r)) {
-				sb.WriteString(fmt.Sprintf(`\u%04x`, r))
+				fmt.Fprintf(&sb, `\u%04x`, r)
 				continue
 			}
 			sb.WriteRune(r)

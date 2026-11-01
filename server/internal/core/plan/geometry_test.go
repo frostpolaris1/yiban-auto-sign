@@ -105,8 +105,9 @@ func TestPhaseOf(t *testing.T) {
 	}
 	for i := 0; i < 26; i++ {
 		key := string(rune('a' + i))
-		if PhaseOf(key, slots) != PhaseOf(key, slots) {
-			t.Fatalf("PhaseOf(%q) 不可重放", key)
+		first, second := PhaseOf(key, slots), PhaseOf(key, slots)
+		if first != second {
+			t.Fatalf("PhaseOf(%q) 不可重放：%d != %d", key, first, second)
 		}
 	}
 }

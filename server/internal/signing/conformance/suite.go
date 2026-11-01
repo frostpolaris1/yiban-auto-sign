@@ -202,7 +202,7 @@ func checkConstructible(newProvider NewProvider) error {
 	}
 	value := reflect.ValueOf(p)
 	switch value.Kind() {
-	case reflect.Ptr, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan:
+	case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan:
 		if value.IsNil() {
 			return failf(CheckConstructible, "构造器返回类型化 nil（%T）", p)
 		}

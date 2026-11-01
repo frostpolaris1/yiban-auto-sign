@@ -26,16 +26,16 @@ func TestHealthzOnRealPort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	go func() { _ = srv.Serve(ln) }()
-	defer srv.Close()
+	defer func() { _ = srv.Close() }()
 
 	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Get("http://" + ln.Addr().String() + "/healthz")
 	if err != nil {
 		t.Fatalf("get healthz: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)

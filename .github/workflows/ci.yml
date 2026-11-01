@@ -248,8 +248,8 @@ jobs:
       - name: Audit ready
         run: 'echo "Dependency audit clean: requirements.lock has no known vulnerabilities."'
 
-  # ---- 工具链快门（CLEAN-7a）：actionlint / shellcheck / govulncheck / npm audit ----
-  # 四道检查都看静态事实，不跑产品测试；与 verify/stacks 并行，不占关键路径。
+  # ---- 工具链快门（CLEAN-7a/7b）：actionlint / shellcheck / golangci / govulncheck / npm audit ----
+  # 五道检查都看静态事实，不跑产品测试；与 verify/stacks 并行，不占关键路径。
   # 脚本是唯一入口（本地同一条命令）；本 job 只负责装钉版工具。
   # 分支保护要把 tooling-gate 勾成 required check（仓库设置，代码改不了）。
   # 工具版本钉住：门禁工具漂移会让"昨天绿今天红"分不清是漏洞库更新还是工具行为变化。
@@ -277,6 +277,7 @@ jobs:
       - name: Install pinned tooling
         run: |
           go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
           go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 

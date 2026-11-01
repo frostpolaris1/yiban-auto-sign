@@ -31,7 +31,7 @@ func EncryptPassword(password, publicKeyPEM string) (string, error) {
 	if !ok {
 		return "", errors.New("public key is not RSA")
 	}
-	ciphertext, err := rsa.EncryptPKCS1v15(rand.Reader, key, []byte(password))
+	ciphertext, err := rsa.EncryptPKCS1v15(rand.Reader, key, []byte(password)) //nolint:staticcheck // 平台协议固定 PKCS#1 v1.5；换 OAEP 会改变线路格式
 	if err != nil {
 		return "", err
 	}

@@ -326,7 +326,7 @@ func writePassfile(p dsnParts) (string, func(), error) {
 	path := f.Name()
 	cleanup := func() { _ = os.Remove(path) }
 	if err := f.Chmod(0o600); err != nil {
-		f.Close()
+		_ = f.Close()
 		cleanup()
 		return "", noop, err
 	}
@@ -334,7 +334,7 @@ func writePassfile(p dsnParts) (string, func(), error) {
 		passfileField(p.dbname) + ":" + passfileField(p.user) + ":" +
 		passfileField(p.password) + "\n"
 	if _, err := f.WriteString(line); err != nil {
-		f.Close()
+		_ = f.Close()
 		cleanup()
 		return "", noop, err
 	}
@@ -427,22 +427,22 @@ func runBackup(deps *backupDeps, args []string) int {
 	}
 	dsn := resolveDSN(*dsnFlag)
 	if dsn == "" || *out == "" {
-		fmt.Fprintln(deps.stderr, "backup: --out 与 --dsn（或 YIBAN_DATABASE_URL）均为必填")
+		_, _ = fmt.Fprintln(deps.stderr, "backup: --out 与 --dsn（或 YIBAN_DATABASE_URL）均为必填")
 		return 2
 	}
 	pgDump, err := deps.lookPath("pg_dump")
 	if err != nil {
-		fmt.Fprintln(deps.stderr, "backup: pg_dump 不可用（postgresql-client 未安装？）：", err)
+		_, _ = fmt.Fprintln(deps.stderr, "backup: pg_dump 不可用（postgresql-client 未安装？）：", err)
 		return 1
 	}
 	gpg, err := deps.lookPath("gpg")
 	if err != nil {
-		fmt.Fprintln(deps.stderr, "backup: gpg 不可用（gpg 未安装？）：明文归档不产出", err)
+		_, _ = fmt.Fprintln(deps.stderr, "backup: gpg 不可用（gpg 未安装？）：明文归档不产出", err)
 		return 1
 	}
 	pass, err := readPassphrase(*passFile)
 	if err != nil {
-		fmt.Fprintln(deps.stderr, "backup:", err)
+		_, _ = fmt.Fprintln(deps.stderr, "backup:", err)
 		return 1
 	}
 
@@ -450,7 +450,7 @@ func runBackup(deps *backupDeps, args []string) int {
 	defer cancel()
 	counts, err := deps.countRows(ctx, dsn)
 	if err != nil {
-		fmt.Fprintln(deps.stderr, "backup: 统计行数失败：", err)
+		_, _ = fmt.Fprintln(deps.stderr, "backup: 统计行数失败：", err)
 		return 1
 	}
 
@@ -458,12 +458,12 @@ func runBackup(deps *backupDeps, args []string) int {
 	// argv 只放 -h/-p/-U/-d，避免 /proc/<pid>/cmdline 泄漏。
 	parts, err := parseDSN(dsn)
 	if err != nil {
-		fmt.Fprintln(deps.stderr, "backup:", err)
+		_, _ = fmt.Fprintln(deps.stderr, "backup:", err)
 		return 1
 	}
 	passfile, cleanup, err := writePassfile(parts)
 	if err != nil {
-		fmt.Fprintln(deps.stderr, "backup: 写临时口令文件失败：", err)
+		_, _ = fmt.Fprintln(deps.stderr, "backup: 写临时口令文件失败：", err)
 		return 1
 	}
 	defer cleanup()
@@ -474,12 +474,12 @@ func runBackup(deps *backupDeps, args []string) int {
 
 	dump, err := os.CreateTemp("", "yiban-dump-*.sql")
 	if err != nil {
-		fmt.Fprintln(deps.stderr, "backup: 建临时转储失败：", err)
+		_, _ = fmt.Fprintln(deps.stderr, "backup: 建临时转储失败：", err)
 		return 1
 	}
 	dumpPath := dump.Name()
-	defer os.Remove(dumpPath)
-	dump.Close()
+	defer func() { _ = os.Remove(dumpPath) }()
+	_ = dump.Close()
 
 	dumpArgs := append([]string{"--no-owner", "--no-privileges", "--file=" + dumpPath},
 		libpqArgs(parts)...)
@@ -487,30 +487,30 @@ func runBackup(deps *backupDeps, args []string) int {
 		dumpArgs = append([]string{"-n", schema}, dumpArgs...)
 	}
 	if _, err := deps.runner.Run(ctx, pgDump, dumpArgs, nil, connEnv); err != nil {
-		fmt.Fprintln(deps.stderr, "backup: pg_dump 失败：", err)
+		_, _ = fmt.Fprintln(deps.stderr, "backup: pg_dump 失败：", err)
 		return 1
 	}
 	if err := appendManifest(dumpPath, counts); err != nil {
-		fmt.Fprintln(deps.stderr, "backup: 写行数清单失败：", err)
+		_, _ = fmt.Fprintln(deps.stderr, "backup: 写行数清单失败：", err)
 		return 1
 	}
 	if _, err := deps.runner.Run(ctx, gpg,
 		append(append([]string{}, gpgCommonArgs...),
 			"--symmetric", "--cipher-algo", "AES256", "--output="+*out, dumpPath), pass, nil); err != nil {
-		fmt.Fprintln(deps.stderr, "backup: gpg 加密失败：", err)
+		_, _ = fmt.Fprintln(deps.stderr, "backup: gpg 加密失败：", err)
 		return 1
 	}
 
 	size, err := os.Stat(*out)
-	fmt.Fprintf(deps.stdout, "backup: %s 已生成", *out)
+	_, _ = fmt.Fprintf(deps.stdout, "backup: %s 已生成", *out)
 	if err == nil {
-		fmt.Fprintf(deps.stdout, "（%d 字节）", size.Size())
+		_, _ = fmt.Fprintf(deps.stdout, "（%d 字节）", size.Size())
 	}
-	fmt.Fprintf(deps.stdout, "\n行数：")
+	_, _ = fmt.Fprintf(deps.stdout, "\n行数：")
 	for _, t := range manifestTables {
-		fmt.Fprintf(deps.stdout, " %s=%d", t, counts[t])
+		_, _ = fmt.Fprintf(deps.stdout, " %s=%d", t, counts[t])
 	}
-	fmt.Fprintf(deps.stdout, "\n注意：photo 的 blob 目录（YIBAN_PHOTO_DIR）不在本归档内，需另行备份。\n")
+	_, _ = fmt.Fprintf(deps.stdout, "\n注意：photo 的 blob 目录（YIBAN_PHOTO_DIR）不在本归档内，需另行备份。\n")
 	return 0
 }
 
@@ -524,7 +524,7 @@ func appendManifest(dumpPath string, counts map[string]int64) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	_, err = fmt.Fprintf(f, "\n%s %s\n", manifestMarker, body)
 	return err
 }
@@ -560,32 +560,32 @@ func runRestore(deps *backupDeps, args []string) int {
 	}
 	dsn := resolveDSN(*dsnFlag)
 	if *in == "" || dsn == "" {
-		fmt.Fprintln(deps.stderr, "restore: --in 与 --dsn 均为必填")
+		_, _ = fmt.Fprintln(deps.stderr, "restore: --in 与 --dsn 均为必填")
 		return 2
 	}
 	if !*force {
 		if !deps.tty() {
-			fmt.Fprintln(deps.stderr, "restore: 拒绝在非交互环境执行；确认覆盖请加 --force")
+			_, _ = fmt.Fprintln(deps.stderr, "restore: 拒绝在非交互环境执行；确认覆盖请加 --force")
 			return 1
 		}
 		if !deps.confirm() {
-			fmt.Fprintln(deps.stderr, "restore: 未确认，退出")
+			_, _ = fmt.Fprintln(deps.stderr, "restore: 未确认，退出")
 			return 1
 		}
 	}
 	gpg, err := deps.lookPath("gpg")
 	if err != nil {
-		fmt.Fprintln(deps.stderr, "restore: gpg 不可用：", err)
+		_, _ = fmt.Fprintln(deps.stderr, "restore: gpg 不可用：", err)
 		return 1
 	}
 	psql, err := deps.lookPath("psql")
 	if err != nil {
-		fmt.Fprintln(deps.stderr, "restore: psql 不可用（postgresql-client 未安装？）：", err)
+		_, _ = fmt.Fprintln(deps.stderr, "restore: psql 不可用（postgresql-client 未安装？）：", err)
 		return 1
 	}
 	pass, err := readPassphrase(*passFile)
 	if err != nil {
-		fmt.Fprintln(deps.stderr, "restore:", err)
+		_, _ = fmt.Fprintln(deps.stderr, "restore:", err)
 		return 1
 	}
 
@@ -594,12 +594,12 @@ func runRestore(deps *backupDeps, args []string) int {
 
 	parts, err := parseDSN(dsn)
 	if err != nil {
-		fmt.Fprintln(deps.stderr, "restore:", err)
+		_, _ = fmt.Fprintln(deps.stderr, "restore:", err)
 		return 1
 	}
 	passfile, cleanup, err := writePassfile(parts)
 	if err != nil {
-		fmt.Fprintln(deps.stderr, "restore: 写临时口令文件失败：", err)
+		_, _ = fmt.Fprintln(deps.stderr, "restore: 写临时口令文件失败：", err)
 		return 1
 	}
 	defer cleanup()
@@ -610,74 +610,74 @@ func runRestore(deps *backupDeps, args []string) int {
 
 	dump, err := os.CreateTemp("", "yiban-restore-*.sql")
 	if err != nil {
-		fmt.Fprintln(deps.stderr, "restore: 建临时转储失败：", err)
+		_, _ = fmt.Fprintln(deps.stderr, "restore: 建临时转储失败：", err)
 		return 1
 	}
 	dumpPath := dump.Name()
-	dump.Close()
-	defer os.Remove(dumpPath)
+	_ = dump.Close()
+	defer func() { _ = os.Remove(dumpPath) }()
 
 	if _, err := deps.runner.Run(ctx, gpg,
 		append(append([]string{}, gpgCommonArgs...),
 			"--decrypt", "--output="+dumpPath, *in), pass, nil); err != nil {
-		fmt.Fprintln(deps.stderr, "restore: gpg 解密失败（口令不对或归档损坏）：", err)
+		_, _ = fmt.Fprintln(deps.stderr, "restore: gpg 解密失败（口令不对或归档损坏）：", err)
 		return 1
 	}
 	baseline, err := parseManifest(dumpPath)
 	if err != nil {
-		fmt.Fprintln(deps.stderr, "restore:", err)
+		_, _ = fmt.Fprintln(deps.stderr, "restore:", err)
 		return 1
 	}
 
 	psqlArgs := append([]string{"--set", "ON_ERROR_STOP=1", "--file=" + dumpPath},
 		libpqArgs(parts)...)
 	if _, err := deps.runner.Run(ctx, psql, psqlArgs, nil, connEnv); err != nil {
-		fmt.Fprintln(deps.stderr, "restore: psql 导入失败（目标须为空；schema 限量的转储会自建 schema，勿预建）：", err)
+		_, _ = fmt.Fprintln(deps.stderr, "restore: psql 导入失败（目标须为空；schema 限量的转储会自建 schema，勿预建）：", err)
 		return 1
 	}
 	version, err := deps.migrate(ctx, dsn)
 	if err != nil {
-		fmt.Fprintln(deps.stderr, "restore: 恢复后迁移失败：", err)
+		_, _ = fmt.Fprintln(deps.stderr, "restore: 恢复后迁移失败：", err)
 		return 1
 	}
-	fmt.Fprintf(deps.stdout, "restore: 导入完成，schema 版本 %d\n", version)
+	_, _ = fmt.Fprintf(deps.stdout, "restore: 导入完成，schema 版本 %d\n", version)
 
 	restored, err := deps.countRows(ctx, dsn)
 	if err != nil {
-		fmt.Fprintln(deps.stderr, "restore: 统计恢复后行数失败：", err)
+		_, _ = fmt.Fprintln(deps.stderr, "restore: 统计恢复后行数失败：", err)
 		return 1
 	}
 
 	match := true
-	fmt.Fprintln(deps.stdout, "行数对账（备份时 / 恢复后）：")
+	_, _ = fmt.Fprintln(deps.stdout, "行数对账（备份时 / 恢复后）：")
 	for _, t := range manifestTables {
 		state := "一致"
 		if baseline[t] != restored[t] {
 			state = "不一致"
 			match = false
 		}
-		fmt.Fprintf(deps.stdout, "  %-12s %d / %d  %s\n", t, baseline[t], restored[t], state)
+		_, _ = fmt.Fprintf(deps.stdout, "  %-12s %d / %d  %s\n", t, baseline[t], restored[t], state)
 	}
 	if !match {
-		fmt.Fprintln(deps.stdout, "对账不一致：恢复件与备份基线有出入，按失败处理。")
+		_, _ = fmt.Fprintln(deps.stdout, "对账不一致：恢复件与备份基线有出入，按失败处理。")
 		return 1
 	}
-	fmt.Fprintln(deps.stdout, "对账一致。")
+	_, _ = fmt.Fprintln(deps.stdout, "对账一致。")
 
 	// 行数对账看不出审计行被截断或改写，故恢复后必须验链。
 	// 验不了（缺 pepper）按失败处理：恢复件的可信度不可声明。
 	audited, err := deps.verifyAudit(ctx, dsn)
 	if err != nil {
-		fmt.Fprintln(deps.stderr, "restore: 审计链校验失败：", err)
+		_, _ = fmt.Fprintln(deps.stderr, "restore: 审计链校验失败：", err)
 		return 1
 	}
 	if audited == 0 {
 		// 空链没有可校验的行：说"跳过"，不说"通过"（§30 跳过 ≠ 绿）。
-		fmt.Fprintln(deps.stdout, "审计链：空（跳过校验）")
+		_, _ = fmt.Fprintln(deps.stdout, "审计链：空（跳过校验）")
 	} else {
-		fmt.Fprintf(deps.stdout, "审计链：%d 行通过校验\n", audited)
+		_, _ = fmt.Fprintf(deps.stdout, "审计链：%d 行通过校验\n", audited)
 	}
-	fmt.Fprintln(deps.stdout, "提醒：blob 目录（YIBAN_PHOTO_DIR）不在本归档内；恢复到新主机时须另行迁移，否则图片行在、文件缺失。")
+	_, _ = fmt.Fprintln(deps.stdout, "提醒：blob 目录（YIBAN_PHOTO_DIR）不在本归档内；恢复到新主机时须另行迁移，否则图片行在、文件缺失。")
 	return 0
 }
 

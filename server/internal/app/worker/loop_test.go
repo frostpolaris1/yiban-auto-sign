@@ -62,7 +62,7 @@ func TestLoopStopWaitsForInFlight(t *testing.T) {
 	release := make(chan struct{})
 	svc := &fakeStepper{begun: begun, release: release}
 	loop := newLoopForTest(svc, &fakeCounter{}, 10*time.Millisecond, 1)
-	loop.Start()
+	_ = loop.Start()
 
 	select {
 	case <-begun:
@@ -108,7 +108,7 @@ func TestLoopStopCancelsInFlightOnTimeout(t *testing.T) {
 	// 调用方（assembly）随后关连接池——不先收尾，结算写不进去。
 	st := &ctxStepper{begun: make(chan struct{}), ended: make(chan struct{})}
 	loop := newLoopForTest(st, &fakeCounter{n: 1}, 10*time.Millisecond, 1)
-	loop.Start()
+	_ = loop.Start()
 
 	select {
 	case <-st.begun:
@@ -142,7 +142,7 @@ func TestLoopStopGivesUpWhenStepIgnoresCancel(t *testing.T) {
 	defer close(release) // 测试结束后放行，避免 goroutine 泄漏
 	svc := &fakeStepper{begun: begun, release: release}
 	loop := newLoopForTest(svc, &fakeCounter{}, 10*time.Millisecond, 1)
-	loop.Start()
+	_ = loop.Start()
 
 	select {
 	case <-begun:
@@ -215,7 +215,7 @@ func TestLoopStopsClaimingAfterStop(t *testing.T) {
 	close(release)
 	svc := &fakeStepper{release: release}
 	loop := newLoopForTest(svc, &fakeCounter{}, 5*time.Millisecond, 1)
-	loop.Start()
+	_ = loop.Start()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

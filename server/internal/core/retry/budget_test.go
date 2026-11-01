@@ -161,7 +161,7 @@ func TestNextDelayTailShare(t *testing.T) {
 		}
 	}
 	// 剩余 1 小时：cap = min(600, 1080) = 600s（硬上限生效）。
-	// 档位再大，曲线也被 CapSec 截住；抖动上界仍会撞到 cap。
+	// 档位再大，曲线也被 MaxBackoff 截住；抖动上界仍会撞到 cap。
 	w2 := Window{End: time.Unix(4600, 0)}
 	max := time.Duration(0)
 	for i := 0; i < 64; i++ {

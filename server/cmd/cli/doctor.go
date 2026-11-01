@@ -931,7 +931,7 @@ func newProbe(dsn, photoDir, registry, binPath, serviceUser string) *probe {
 			if err != nil {
 				return 0, err
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			_, _ = io.Copy(io.Discard, resp.Body)
 			return resp.StatusCode, nil
 		},
@@ -964,7 +964,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	}
 	p := newProbe(*dsn, *photoDir, *registry, *binPath, *serviceUser)
 	rep := runChecks(context.Background(), p)
-	fmt.Fprint(stdout, rep.text())
+	_, _ = fmt.Fprint(stdout, rep.text())
 	if rep.failed > 0 {
 		return 1
 	}
@@ -973,7 +973,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 
 // doctorUsage 打印分节帮助：--help 判据要求检查清单按面分组。
 func doctorUsage(fs *flag.FlagSet, w io.Writer) {
-	fmt.Fprintf(w, `用法: yiban-cli doctor [选项]
+	_, _ = fmt.Fprintf(w, `用法: yiban-cli doctor [选项]
 
 故障模式体检。每条 FAIL 输出一条修复命令；SKIP 写明原因。
 退出码：有 FAIL 即 1。
@@ -982,31 +982,31 @@ func doctorUsage(fs *flag.FlagSet, w io.Writer) {
 `)
 	fs.SetOutput(w)
 	fs.PrintDefaults()
-	fmt.Fprintf(w, `
+	_, _ = fmt.Fprintf(w, `
 检查清单（%d 项，按面分组）:
   环境面: `, len(checks))
 	for _, c := range checks {
 		if strings.HasPrefix(c.name, "env.") {
-			fmt.Fprintf(w, "%s ", c.name)
+			_, _ = fmt.Fprintf(w, "%s ", c.name)
 		}
 	}
-	fmt.Fprintf(w, "\n  数据库面: ")
+	_, _ = fmt.Fprintf(w, "\n  数据库面: ")
 	for _, c := range checks {
 		if strings.HasPrefix(c.name, "db.") {
-			fmt.Fprintf(w, "%s ", c.name)
+			_, _ = fmt.Fprintf(w, "%s ", c.name)
 		}
 	}
-	fmt.Fprintf(w, "\n  文件系统面: ")
+	_, _ = fmt.Fprintf(w, "\n  文件系统面: ")
 	for _, c := range checks {
 		if strings.HasPrefix(c.name, "fs.") {
-			fmt.Fprintf(w, "%s ", c.name)
+			_, _ = fmt.Fprintf(w, "%s ", c.name)
 		}
 	}
-	fmt.Fprintf(w, "\n  网络与运行件面: ")
+	_, _ = fmt.Fprintf(w, "\n  网络与运行件面: ")
 	for _, c := range checks {
 		if strings.HasPrefix(c.name, "net.") || strings.HasPrefix(c.name, "bin.") {
-			fmt.Fprintf(w, "%s ", c.name)
+			_, _ = fmt.Fprintf(w, "%s ", c.name)
 		}
 	}
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 }

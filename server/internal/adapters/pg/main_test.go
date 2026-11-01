@@ -199,7 +199,7 @@ func (e *testEnv) activateAccount(accountID string) {
 	e.t.Helper()
 	// reviewed_by 是 uuid 列：现建一个 master 用户当审核人（per-test schema 无内置管理员）。
 	admin := e.createUser("reviewer-" + randomHex(4) + "@example.com")
-	e.db.Exec(e.ctx, "UPDATE users SET role = 'master' WHERE id = $1", admin.ID)
+	_, _ = e.db.Exec(e.ctx, "UPDATE users SET role = 'master' WHERE id = $1", admin.ID)
 	adminID := admin.ID
 	if _, err := e.accts.Review(e.ctx, corescope.Master(), accountID, true, "", adminID, time.Now()); err != nil {
 		e.t.Fatalf("activate account %s: %v", accountID, err)
@@ -316,7 +316,7 @@ func TestMain(m *testing.M) {
 				"in this package DID NOT RUN. An unset database is never a green result.\n\n", dsnEnv)
 			os.Exit(1)
 		}
-		fmt.Fprintf(os.Stdout, "\n"+
+		_, _ = fmt.Fprintf(os.Stdout, "\n"+
 			"**********************************************************************\n"+
 			"* SKIP: %s is not set.\n"+
 			"* The PostgreSQL e2e tests in this package DID NOT RUN.\n"+

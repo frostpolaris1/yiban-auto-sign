@@ -176,7 +176,7 @@ func (s *SMTP) Send(ctx context.Context, msg coremail.Message) error {
 	if err != nil {
 		return wrapPhase(phaseConnect, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_ = conn.SetDeadline(deadline)
 
 	if s.implicit {
@@ -191,7 +191,7 @@ func (s *SMTP) Send(ctx context.Context, msg coremail.Message) error {
 	if err != nil {
 		return wrapPhase(phaseConnect, err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	if !s.implicit {
 		// 先显式问候：EHLO 失败按连接类分类，而不是误报"服务器不支持 STARTTLS"。

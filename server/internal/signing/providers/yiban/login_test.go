@@ -171,10 +171,10 @@ func newUpstream(t *testing.T) *upstream {
 			challenge := up.challenge
 			up.mu.Unlock()
 			if challenge {
-				w.Write([]byte("<html><body>ydclearance=abc</body></html>"))
+				_, _ = w.Write([]byte("<html><body>ydclearance=abc</body></html>"))
 				return
 			}
-			w.Write([]byte("<html><script>var page_use = '" + testPageUse +
+			_, _ = w.Write([]byte("<html><script>var page_use = '" + testPageUse +
 				"';</script><input type=\"test\" id=\"key\" value=\"" + up.public + "\"></html>"))
 		case "/code/usersure":
 			raw, _ := io.ReadAll(r.Body)
@@ -200,7 +200,7 @@ func newUpstream(t *testing.T) *upstream {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			plain, err := rsa.DecryptPKCS1v15(rand.Reader, up.key, ciphertext)
+			plain, err := rsa.DecryptPKCS1v15(rand.Reader, up.key, ciphertext) //nolint:staticcheck // 测试复核平台密文，必须用同一 PKCS#1 v1.5
 			if err != nil {
 				w.WriteHeader(http.StatusBadRequest)
 				return
@@ -209,14 +209,14 @@ func newUpstream(t *testing.T) *upstream {
 			up.decrypted = string(plain)
 			up.mu.Unlock()
 			if custom != nil {
-				w.Write(custom)
+				_, _ = w.Write(custom)
 				return
 			}
 			if code != "" {
-				fmt.Fprintf(w, `{"code":%q,"msg":"denied"}`, code)
+				_, _ = fmt.Fprintf(w, `{"code":%q,"msg":"denied"}`, code)
 				return
 			}
-			w.Write([]byte(`{"code":"s200","reUrl":"https://f.yiban.cn/iapp7463"}`))
+			_, _ = w.Write([]byte(`{"code":"s200","reUrl":"https://f.yiban.cn/iapp7463"}`))
 		case "/iframe/index":
 			up.mu.Lock()
 			missing := up.missingToken
@@ -235,12 +235,12 @@ func newUpstream(t *testing.T) *upstream {
 			up.mu.Lock()
 			body := up.signPositionBody
 			up.mu.Unlock()
-			w.Write(body)
+			_, _ = w.Write(body)
 		case "/device/student/index/getState":
 			up.mu.Lock()
 			body := up.deviceBody
 			up.mu.Unlock()
-			w.Write(body)
+			_, _ = w.Write(body)
 		case "/nightAttendance/student/index/signIn":
 			raw, _ := io.ReadAll(r.Body)
 			r.Body = io.NopCloser(bytes.NewReader(raw))
@@ -261,10 +261,10 @@ func newUpstream(t *testing.T) *upstream {
 			if status != 0 {
 				// 拦截页常带 4xx 且仍有响应体：判据要能同时看到两者。
 				w.WriteHeader(status)
-				w.Write(body)
+				_, _ = w.Write(body)
 				return
 			}
-			w.Write(body)
+			_, _ = w.Write(body)
 		case "/nightAttendance/student/index/uploadUri":
 			// P5-D：逆向夹具（未经实拍）。回执键名取自逆向常量池。
 			raw, _ := io.ReadAll(r.Body)
@@ -283,7 +283,7 @@ func newUpstream(t *testing.T) *upstream {
 					"yiban_camera_1790000000.jpg" + `","signedUrl":"` +
 					up.server.URL + "/upload/yiban_camera_1790000000.jpg" + `"}}`)
 			}
-			w.Write(body)
+			_, _ = w.Write(body)
 		default:
 			if strings.HasPrefix(r.URL.Path, "/upload/") {
 				// P5-D：签名地址的下行（PUT 图片字节）。
@@ -338,10 +338,10 @@ func (u *upstream) handleAuth(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html")
 	if body != nil {
-		w.Write(body)
+		_, _ = w.Write(body)
 		return
 	}
-	w.Write(u.authFixture)
+	_, _ = w.Write(u.authFixture)
 }
 
 // startSeparateAuth 让认证跳落到另一台主机，用于验证 CSRF 跨主机。
@@ -440,11 +440,6 @@ func (u *upstream) count(path string) int {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return u.counts[path]
-}
-
-func readAuthFixture(t *testing.T) []byte {
-	t.Helper()
-	return readProtocolFixture(t, "auth_response.json")
 }
 
 // readProtocolFixture 只允许读 captured 夹具。

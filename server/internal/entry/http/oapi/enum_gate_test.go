@@ -71,7 +71,7 @@ var contractEnumExempt = []contractExempt{
 // 词表可以分多文件；只看单文件会漏掉新增常量（D4）。
 func walkConsts(t *testing.T, dir string, visit func(*ast.ValueSpec)) {
 	t.Helper()
-	pkgs, err := parser.ParseDir(token.NewFileSet(), dir, func(fi fs.FileInfo) bool {
+	pkgs, err := parser.ParseDir(token.NewFileSet(), dir, func(fi fs.FileInfo) bool { //nolint:staticcheck // 测试只遍历单目录；ParseDir 的 build-tags 限制不影响用例
 		name := fi.Name()
 		return strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go")
 	}, 0)

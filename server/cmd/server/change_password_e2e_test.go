@@ -57,7 +57,7 @@ func (e *authEnv) doAs(client *http.Client, method, path string, body any, heade
 	if err != nil {
 		e.t.Fatalf("%s %s: %v", method, path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	payload, err := io.ReadAll(resp.Body)
 	if err != nil {
 		e.t.Fatalf("read body: %v", err)

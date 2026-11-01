@@ -43,7 +43,7 @@ func runBackfillTimePrefs(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if *dir == "" {
-		fmt.Fprintln(stderr, "backfill-time-prefs: --dir 必填")
+		_, _ = fmt.Fprintln(stderr, "backfill-time-prefs: --dir 必填")
 		return 2
 	}
 	dsn := strings.TrimSpace(*dsnFlag)
@@ -52,7 +52,7 @@ func runBackfillTimePrefs(args []string, stdout, stderr io.Writer) int {
 		dsn = strings.TrimSpace(v)
 	}
 	if dsn == "" {
-		fmt.Fprintln(stderr, "backfill-time-prefs: YIBAN_DATABASE_URL 未设置（或用 --dsn 传入）")
+		_, _ = fmt.Fprintln(stderr, "backfill-time-prefs: YIBAN_DATABASE_URL 未设置（或用 --dsn 传入）")
 		return 2
 	}
 
@@ -60,7 +60,7 @@ func runBackfillTimePrefs(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 	db, err := pg.Open(ctx, pg.Options{DSN: dsn, MaxConns: 2, StatementTimeout: 60 * time.Second})
 	if err != nil {
-		fmt.Fprintf(stderr, "backfill-time-prefs: open database: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "backfill-time-prefs: open database: %v\n", err)
 		return 1
 	}
 	defer db.Close()
@@ -77,10 +77,10 @@ func runBackfillTimePrefs(args []string, stdout, stderr io.Writer) int {
 	}
 	encoded, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
-		fmt.Fprintf(stderr, "backfill-time-prefs: encode report: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "backfill-time-prefs: encode report: %v\n", err)
 		return 1
 	}
-	fmt.Fprintln(stdout, string(encoded))
+	_, _ = fmt.Fprintln(stdout, string(encoded))
 	return 0
 }
 
@@ -93,9 +93,9 @@ func runBackfillTimePrefs(args []string, stdout, stderr io.Writer) int {
 func printBackfillError(w io.Writer, err error) int {
 	var fatalErr *legacy.Error
 	if errors.As(err, &fatalErr) {
-		fmt.Fprintf(w, "backfill-time-prefs: %v\n", fatalErr.Msg)
+		_, _ = fmt.Fprintf(w, "backfill-time-prefs: %v\n", fatalErr.Msg)
 		return fatalErr.Code
 	}
-	fmt.Fprintf(w, "backfill-time-prefs: %v\n", err)
+	_, _ = fmt.Fprintf(w, "backfill-time-prefs: %v\n", err)
 	return 1
 }

@@ -63,7 +63,7 @@ func p6OpenStream(t *testing.T, e *w2cEnv, issued *coreauth.Issued, lastEventID 
 		t.Fatalf("open stream: %v", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		cancel()
 		t.Fatalf("stream status = %d", resp.StatusCode)
 	}
@@ -91,7 +91,7 @@ func p6OpenStream(t *testing.T, e *w2cEnv, issued *coreauth.Issued, lastEventID 
 	}()
 	t.Cleanup(func() {
 		cancel()
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	})
 	return st
 }
@@ -391,7 +391,7 @@ func TestP6SSESurvivesServerWriteTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open stream: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("stream status = %d", resp.StatusCode)
 	}

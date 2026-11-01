@@ -42,7 +42,7 @@ func TestEngineStateRecordsTimes(t *testing.T) {
 	claim := at.Add(2 * time.Second)
 	state.RecordTick(tick)
 	state.RecordClaim(claim)
-	started, lastTick, lastClaim = state.EngineTimes()
+	_, lastTick, lastClaim = state.EngineTimes()
 	if lastTick == nil || !lastTick.Equal(tick) {
 		t.Fatalf("LastTickAt = %v, want %v", lastTick, tick)
 	}

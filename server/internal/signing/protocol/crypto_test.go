@@ -35,7 +35,7 @@ func TestEncryptPasswordRoundTrip(t *testing.T) {
 	if len(ciphertext) != 128 {
 		t.Fatalf("ciphertext = %d bytes, want 128", len(ciphertext))
 	}
-	plain, err := rsa.DecryptPKCS1v15(rand.Reader, key, ciphertext)
+	plain, err := rsa.DecryptPKCS1v15(rand.Reader, key, ciphertext) //nolint:staticcheck // 平台协议固定 PKCS#1 v1.5；换 OAEP 会改变线路格式
 	if err != nil {
 		t.Fatalf("DecryptPKCS1v15: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestEncryptPasswordPKCS1Key(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeString: %v", err)
 	}
-	plain, err := rsa.DecryptPKCS1v15(rand.Reader, key, ciphertext)
+	plain, err := rsa.DecryptPKCS1v15(rand.Reader, key, ciphertext) //nolint:staticcheck // 测试复核平台密文，必须用同一 PKCS#1 v1.5
 	if err != nil {
 		t.Fatalf("DecryptPKCS1v15: %v", err)
 	}

@@ -243,7 +243,7 @@ func (s *Server) serve() {
 }
 
 func (s *Server) handle(conn net.Conn) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	br := bufio.NewReader(conn)
 
 	s.mu.Lock()

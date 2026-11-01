@@ -56,7 +56,7 @@ func newStreamClient(t *testing.T, base string, issued coreauth.Issued, lastEven
 		t.Fatalf("do: %v", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		cancel()
 		t.Fatalf("stream status = %d", resp.StatusCode)
 	}
@@ -126,7 +126,7 @@ func (sc *streamClient) closed(t *testing.T) bool {
 
 func (sc *streamClient) close() {
 	sc.cancel()
-	sc.resp.Body.Close()
+	_ = sc.resp.Body.Close()
 }
 
 // newSSEServer 构造装配 SSE 域的真 HTTP 服务器。
@@ -266,7 +266,7 @@ func TestSSEHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("do: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
 		t.Fatalf("content-type = %q", ct)
 	}
@@ -438,7 +438,7 @@ func TestSSERoleGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("do: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	// 无会话是 401；带 user 会话是 403。这里带会话。
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("user 订阅状态 = %d, want 403", resp.StatusCode)
@@ -456,7 +456,7 @@ func TestSSEClientCancelCloses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("do: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	done := make(chan struct{})
 	go func() {
 		buf := make([]byte, 1)

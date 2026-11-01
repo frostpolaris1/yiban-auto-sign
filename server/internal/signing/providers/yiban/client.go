@@ -207,7 +207,7 @@ func (c *Client) do(client *http.Client, req *http.Request) (*http.Response, []b
 	if err != nil {
 		return nil, nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
 	if err != nil {
 		return nil, nil, err

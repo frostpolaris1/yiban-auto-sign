@@ -122,7 +122,7 @@ func TestUsersListMasterOnly(t *testing.T) {
 		t.Fatalf("GET /api/users without a session: %v", err)
 	}
 	payload, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if err != nil {
 		t.Fatalf("read body: %v", err)
 	}
