@@ -74,7 +74,7 @@ export const ENGINE_SNAPSHOT: EngineSnapshot = {
 
 /**
  * 视觉基线的页钟时刻：固定值，不随真实墙钟。
- * `/engine` 的视觉用例在 goto 前 `page.clock.install({ time: VISUAL_NOW })`，
+ * `/engine` 的视觉用例在 goto 前 `page.clock.setFixedTime(new Date(VISUAL_NOW))`，
  * 页内 `Date.now()` 与本夹具同源——租约剩余恒为「1 时 30 分」，
  * 相对时刻恒落在 formatClock 分支，基线跨日、跨分钟都不漂。
  */
