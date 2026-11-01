@@ -2,11 +2,11 @@
 
 React 19 + Vite 8 + TypeScript 7。视觉语言复用 Adminator 4.4.0。
 
-本批包含 P1F 骨架、登录接线、账号页、学校页、时间片页、账号设置页、用户管理页与看板数据接线。画廊只渲染界面。
+页面：登录、忘记密码、重置密码、看板、账号、学校、时间片、账号设置、用户管理、运行、执行监控与设计演示。
 看板按角色取数：user 读签到状态与诊断，master/admin 读窗口与容量体检。
 仪表盘的时间偏好卡只对 user 渲染，并调用 `/api/me/time-pref`。
 账号设置页的改密卡接登录态 `POST /api/auth/change-password`，成功即清待改密标记。
-用户管理页只归 master：`/users` 走 `GET /api/users` 的服务端游标分页，本页只读。
+用户管理页只归 master：`/users` 走 `GET /api/users` 的服务端游标分页；建号走 `POST /api/users`（`UserCreateModal`）。
 
 ## 命令
 
@@ -15,7 +15,7 @@ React 19 + Vite 8 + TypeScript 7。视觉语言复用 Adminator 4.4.0。
 | `npm install` | 安装依赖。需要 Node >= 22。同时安装 API 生成工具链 |
 | `npm run dev` | 本地开发，端口 5173 |
 | `npm run build` | 类型检查 + 生产构建到 `dist/` |
-| `npm run lint` | TypeScript 类型检查。本批不引 ESLint |
+| `npm run lint` | TypeScript 类型检查（当前无 ESLint 配置） |
 | `npm run generate:api` | 由契约重写 `src/lib/api/schema.d.ts` |
 | `npm run check:api` | 契约漂移门。生成物与契约不一致即红 |
 | `npm run gate:tokens` | 设计令牌门 |
@@ -59,7 +59,7 @@ React 19 + Vite 8 + TypeScript 7。视觉语言复用 Adminator 4.4.0。
 ui/src/
 ├── app/            启动、Provider、路由
 ├── pages/          路由页。一页一文件，文件名以 Page 结尾
-├── features/       按域组织：auth / dashboard / design / accounts / schools / user / schedule / settings
+├── features/       按域组织：auth / dashboard / design / accounts / schools / user / schedule / run / settings
 ├── components/
 │   ├── shell/      Sidebar / Topbar / Footer / AppShell / nav 配置
 │   └── ui/         Button / Input / Card / Table / Modal / Drawer / Tabs / Switch / Badge / Menu / Icon / BrandMark / Toaster
@@ -168,8 +168,8 @@ WSL 读 `-chromium-linux.png`，Windows 读 `-chromium-win32.png`。
 | `src/forms.html` | `form-grid`、`field`、`input`、`select`、`textarea`、`check`、`switch`、`form-actions` | `FormsSection`、`Input`、`SwitchControl` |
 | `src/basic-table.html` | `.table`、`.cell-name`、`.cell-date`、`.tag` | `SignStatusCard` 的表格 |
 | `src/datatable.html` | `data-toolbar`、`data-table`、`data-cell-user`、`data-cell-mono`、`data-cell-actions`、`pager` | `TableSection`、`DataTable` |
-| `src/charts.html` | `chart-canvas-wrap`、`chart-meta-row`、`btn-group` | 本批未移植。类名已记录 |
-| `src/calendar.html` | `cal-shell`、`cal-rail`、`mini-cal-grid`、`upc-list` | 本批未移植。类名已记录 |
+| `src/charts.html` | `chart-canvas-wrap`、`chart-meta-row`、`btn-group` | 未移植。类名已记录 |
+| `src/calendar.html` | `cal-shell`、`cal-rail`、`mini-cal-grid`、`upc-list` | 未移植。类名已记录 |
 | `src/assets/scripts/2026/Shell.js` | `NAV`、侧栏、顶栏、页脚 DOM、抽屉钩子 | `shell/nav.ts`、`Sidebar`、`Topbar`、`Footer`、`AppShell` |
 | `src/assets/scripts/2026/init.js` | 主题切换、移动抽屉、下拉关闭 | `lib/theme.tsx`、`Topbar`、`AppShell` |
 | `_tokens.scss` | 36 × 2 令牌 | `styles/tokens.css` |
@@ -179,19 +179,19 @@ WSL 读 `-chromium-linux.png`，Windows 读 `-chromium-win32.png`。
 | `_ui.scss` | alert、badge、progress、spinner、tabs、modal、popover、avatar、`demo-row`、`section-h` | `Alert`、`Badge`、`Tabs`、`Modal`、`Hint`、各画廊卡片 |
 | `_data.scss` | data table、cell、pager | `DataTable`、`TableSection` |
 
-## 本批不做
+## 边界与现状
 
-- 用户管理页已接线：`GET /api/users` 只归 master，服务端游标分页，
-  筛选走 `role`／`status`／`q`。建号表单（`POST /api/users`）不在本批。
-- 看板已接线：user 读 `/api/me/sign-status`（30 秒轮询）与 `/api/me/diagnostics`，
+- 用户管理页归 master：`GET /api/users` 服务端游标分页，筛选走 `role`／`status`／`q`；
+  建号走 `POST /api/users`（`UserCreateModal`）。
+- 看板：user 读 `/api/me/sign-status`（30 秒轮询）与 `/api/me/diagnostics`，
   master/admin 读 `/api/schedule/windows` 与 `/api/capacity`。看板不画图表。
-- 不接 TanStack Table、Chart.js、react-day-picker、SSE。
-- 忘记密码与重置密码两页已接公开的令牌流。
+- 不接 TanStack Table、Chart.js、react-day-picker；实时流用原生 `EventSource`（运行页）。
+- 忘记密码与重置密码两页已接公开的令牌流。服务端按 `YIBAN_RESET_MAIL_ENABLE`
+  投递重置邮件；关闭时只生成令牌并留显性日志。
   登录态改密已接 `POST /api/auth/change-password`：409 是新旧相同。
   401 有两种来源：当前口令错、会话失效。界面收到 401 后探一次 `GET /api/auth/me`：
   me 200 显示「当前密码不正确」；me 401 走会话过期处置并落登录页。
   成功撤销本人其余会话并清 `must_change_password`；本页不显示上次改密时间，
   因为 `GET /api/auth/me` 不返回该字段。
-  服务端尚未接线令牌投递：它只创建令牌，不发邮件。界面文案按产品要求固定。
 - 不引 Tailwind、shadcn、Element Plus、Bootstrap、Recharts。图标统一取 `lucide-react`，
   由 `src/components/ui/Icon.tsx` 收口；`scripts/tests/icon-source.test.mjs` 钉住来源面。

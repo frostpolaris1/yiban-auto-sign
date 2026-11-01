@@ -1,9 +1,14 @@
 # server
 
-P0 skeleton for the Go service. This directory is independent of the Python
-implementation; no Python file imports it and no Python behavior changes.
+Go service for the new stack (`server/` + `ui/`). The Python line
+(`yiban/`, `web/`) is frozen: this directory does not import it and does not
+change its behavior.
 
 ## Layout
+
+Full tree and naming rules: [`../STRUCTURE.md`](../STRUCTURE.md). The entries
+below are the single-source owners plus the build and gate files; this list is
+not the whole tree.
 
 ```text
 server/
@@ -18,23 +23,24 @@ server/
 ├── internal/core/retry        the only retry policy
 ├── internal/core/egress       the only egress identity
 ├── internal/core/plan         the only slot geometry
-├── internal/core/capacity     the only capacity formula (P4)
-├── internal/core/window       the only window predicates and edge shrinking (P4)
-├── internal/core/rate         the only per-egress GCRA limiter (P4)
+├── internal/core/capacity     the only capacity formula
+├── internal/core/window       the only window predicates and edge shrinking
+├── internal/core/rate         the only per-egress GCRA limiter
 ├── internal/core/account      account status, record and credential types
 ├── internal/core/audit        audit chain encoding and verification
 ├── internal/core/scope        master / admin / user authorization scope
 ├── internal/core/school       school and binding types
 ├── internal/core/user         user record types
-├── internal/app               use-case ports (repository interfaces, TxManager)
+├── internal/app/<domain>      use cases and repository ports
 ├── internal/adapters/pg       PostgreSQL repositories, pool, transactions, migrations
-├── internal/core/image        the only image preprocessing (P5 wiring pending)
+├── internal/core/image        the only image preprocessing
 ├── internal/adapters/config   the only environment reader
 ├── internal/adapters/session  in-memory SessionIssuer (development only)
+├── internal/assembly          the only wiring point; imported by cmd only
 ├── migrations/postgres        goose migrations, embedded in the binary
 ├── internal/signing/contract  provider v1
 ├── internal/entry/http/oapi     generated contract types and Gin handlers
-├── internal/entry/http/router   Gin assembly, middleware, auth skeleton
+├── internal/entry/http/router   Gin assembly, middleware, auth and cookies
 ├── internal/entry/http/respond  the only error envelope
 ├── tools/gate                 single-source scanner
 ├── tools/structure            repository layout and naming gate
@@ -124,24 +130,19 @@ The query covers all BMP Cf ranges. Astral Cf code points (U+110BD, U+E0001,
 U+E0020–U+E007F) are not covered. The application check uses the full Unicode
 category and remains the authoritative gate.
 
-## P0 scope
+## Status
 
-Implemented in P0: clock, status, errors, mask, config, retry, egress, plan,
-provider contract, error envelope, and the gate with mutation tests.
+The service implements the contract end to end: auth and password reset,
+users, schools and administrator bindings, accounts and credentials, photos,
+location policies, scheduling and the daily plan build, the signing worker
+with leases and retries, audit, events and diagnostics, retention, and the
+admin engine snapshot. The production assembly wires every contract endpoint;
+a handler that is not wired answers 501.
 
-P1 so far: the OpenAPI 3.1 contract, generated transport types, the Gin
-assembly with request id, panic recovery, access log and auth middleware, an
-in-memory `SessionIssuer`, the PostgreSQL layer (eleven goose migrations, a
-pgxpool with `statement_timeout`, a READ COMMITTED transaction manager, and
-repositories for users, sessions, schools, administrator bindings, accounts,
-credentials, audit and password resets), and the live use cases behind every
-business endpoint: auth and password reset, users, schools, administrators and
-accounts. A domain handler that is not wired answers 501; production wires all
-four.
+The Python line is frozen. Its behavior is reference material only.
 
-Not implemented yet: scheduling, image pipeline, upstream client, frontend.
-Those land in later P1 tasks and P2+. `scripts/generate.sh --check` fails when
-`contracts/openapi.yaml` and the generated code drift apart.
+`scripts/generate.sh --check` fails when `contracts/openapi.yaml` and the
+generated code drift apart.
 
 Database tests need a real PostgreSQL 18. Set `YIBAN_TEST_DATABASE_URL`; when
 it is unset they skip and print a warning. CI starts a `postgres:18` service
