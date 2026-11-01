@@ -55,6 +55,9 @@ import { withRunFilter, type RunURLState } from './urlState'
 /** 输入防抖窗口。与用户页同窗。 */
 const SEARCH_DEBOUNCE_MS = 250
 
+// 空列表用同一个常量：`?? []` 每次渲染都造新数组，会让下游 useMemo 失效。
+const EMPTY_ROWS: AdminTaskRow[] = []
+
 const DENY_REASON = '你的角色无权查看运行页'
 
 export type RunViewProps = {
@@ -164,7 +167,7 @@ export function RunView({ urlState, onSearchChange }: RunViewProps) {
     return () => window.clearInterval(timer)
   }, [allowed, live.status, queryClient])
 
-  const rows = tasksQuery.data?.items ?? []
+  const rows = tasksQuery.data?.items ?? EMPTY_ROWS
   const lanes = useMemo(() => lanesBySchool(rows), [rows])
   const summary = summaryQuery.data
     ? runCounts(summaryQuery.data.items, summaryQuery.data.next_cursor !== '')

@@ -47,6 +47,9 @@ export function ScheduleOverrideModal({
   useEffect(() => {
     if (!open) return
     setDraft(plan ? overrideDraftFromPlan(plan) : EMPTY_OVERRIDE_DRAFT)
+    // 只在打开或窗口边界变化时重填。plan 对象在每次查询重取时换引用，
+    // 直接依赖 plan 会覆盖用户正在编辑的草稿。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, plan?.window_start, plan?.window_end])
 
   const startIssue = draft.start === '' ? '开始时间必填' : undefined
