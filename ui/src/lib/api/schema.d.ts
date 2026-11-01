@@ -58,7 +58,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Return the signed-in user and the CSRF token. */
+        /**
+         * Return the signed-in user and the CSRF token.
+         * @description Returns the signed-in user and the CSRF token that writes must send.
+         *     A request without a session answers 401.
+         */
         get: operations["AuthMe"];
         put?: never;
         post?: never;
@@ -299,10 +303,18 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List schools with cursor pagination. */
+        /**
+         * List schools with cursor pagination.
+         * @description master sees every school; admin sees bound schools; user sees active
+         *     schools only. The page follows cursor pagination.
+         */
         get: operations["SchoolList"];
         put?: never;
-        /** Create a school. */
+        /**
+         * Create a school.
+         * @description master only. A duplicate school code answers 409 with a conflict
+         *     envelope.
+         */
         post: operations["SchoolCreate"];
         delete?: never;
         options?: never;
@@ -372,7 +384,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List admins bound to the school. */
+        /**
+         * List admins bound to the school.
+         * @description master only. Lists the admin bindings of one school; an unknown school
+         *     answers 404.
+         */
         get: operations["SchoolAdminList"];
         put?: never;
         /**
@@ -397,7 +413,11 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** Unbind an admin from the school. */
+        /**
+         * Unbind an admin from the school.
+         * @description master only. Unbinds the admin from the school and keeps the user
+         *     account. A missing binding answers 404.
+         */
         delete: operations["SchoolAdminRemove"];
         options?: never;
         head?: never;
@@ -1019,7 +1039,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List the signed-in user's photos. */
+        /**
+         * List the signed-in user's photos.
+         * @description Cursor-paginated metadata for the photos the caller can read. Image
+         *     bytes come from GET /api/me/photos/{id}.
+         */
         get: operations["PhotoList"];
         put?: never;
         /**
@@ -1095,7 +1119,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Liveness probe. */
+        /**
+         * Liveness probe.
+         * @description Answers 200 while the process serves requests. It needs no session and
+         *     no CSRF token, and it does not touch the database.
+         */
         get: operations["HealthCheck"];
         put?: never;
         post?: never;

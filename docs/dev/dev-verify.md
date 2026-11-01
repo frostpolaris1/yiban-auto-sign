@@ -210,15 +210,17 @@ python -m pytest tests/test_import_linter_gate.py -q -p no:randomly
 slow 行 + `FAST_KNOWN_SLOW` 长尾 4 条），与 verify 并行、每次 push 都跑——
 **slow 行与长尾不再只靠本地全量覆盖**。
 
-**现量口径（2026-11-01 本树，CLEAN-7a 增工具链接线守卫后）**：全量 359 个文件 ＝ 快集 343 ＋ 慢集 14 ＋ 串行轨 2
+**现量口径（2026-11-01 本树，增契约门接线守卫后）**：全量 360 个文件 ＝ 快集 344 ＋ 慢集 14 ＋ 串行轨 2
 （串行轨含 `tests/test_verify_jobs.py`：该文件用真实墙钟等异步任务终态。2026-10-26 在快集里
 连续两次红后移入，理由见名册该行）
 （文件数口径：`tests/lane-roster.tsv` 的非注释行按车道计数；测量命令
 `awk -F'\t' '!/^#/ && ($1=="fast" || $1=="slow" || $1=="serial") {print $1}' tests/lane-roster.tsv | sort | uniq -c`）。
-用例数口径 5316 ＝ 快集 5075 ＋ 慢集 173 ＋ 串行轨 68
+用例数口径 5347 ＝ 快集 5106 ＋ 慢集 173 ＋ 串行轨 68
 （口径：`pytest tests/ --collect-only -q` 的 `tests/…::…` 行按文件归道计数；测量命令
-`/root/.venv-yiban-wsl/bin/python -m pytest tests/ --collect-only -q -p no:randomly --no-header | grep -c '^tests/.*::'`
-输出 `5316`；分道数由 `tests/test_gate_lane_roster.py::DocNumbersMatchRealityTest` 复算，
+`python -m pytest tests/ --collect-only -q -p no:randomly --no-header | grep -c '^tests/.*::'`
+输出 `5347`（Python 3.12 venv，POSIX 侧复测；Windows 侧收集会少 1 条，因为
+`tests/test_install_log_dir_e2e.py` 用 `os.geteuid`，只在 POSIX 可收集）；
+分道数由 `tests/test_gate_lane_roster.py::DocNumbersMatchRealityTest` 复算，
 
 
 不符时点名文档值与实测值）。
@@ -376,5 +378,18 @@ bash scripts/tooling-gate.sh
 
 它跑 actionlint（工作流）、shellcheck（新栈部署/e2e 脚本，warning 及以上）、
 golangci-lint（标准五件套）、govulncheck（Go 依赖与调用面可达的漏洞）、
-npm audit（ui，high 及以上）。
+npm audit（ui 与 server/contracts/tools，high 及以上）。
 缺任一工具以退出码 2 结束；跳过不算绿。
+
+契约门是第三条入口（CI 的 `contract-gate` 作业，只在 `server/contracts/` 改动时真跑）：
+
+```bash
+(cd server/contracts/tools && npm ci --ignore-scripts)
+go install github.com/oasdiff/oasdiff@v1.35.0
+bash scripts/contract-gate.sh --base origin/develop
+```
+
+它跑 spectral lint（`spectral:oas` 规则集，warning 及以上即失败）与 oasdiff
+breaking（底本 → 工作树，ERR 级）。spectral 钉在
+`server/contracts/tools/package-lock.json`（6.17.0）；oasdiff 钉 v1.35.0。
+不给 `--base` 时 oasdiff 显性打印 SKIP；给了却取不到底本 spec 以退出码 2 结束。

@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # ============================================================
-# scripts/tooling-gate.sh — 每 PR 的工具链快门（CLEAN-7a）。
+# scripts/tooling-gate.sh — 每 PR 的工具链快门。
 #
 # 五道检查，全部只看静态事实：
 #   1. actionlint：GitHub Actions 工作流的语法/表达式/内置 shellcheck。
 #   2. shellcheck：新栈部署与 e2e 脚本（旧线脚本冻结，不在扫描面）。
 #   3. golangci-lint：标准五件套（errcheck/govet/ineffassign/staticcheck/unused）。
 #   4. govulncheck：Go 依赖与调用面可达的已知漏洞。
-#   5. npm audit：ui 锁文件的高危/严重漏洞（moderate 不拦）。
+#   5. npm audit：ui 与契约工具（server/contracts/tools）锁文件的高危/严重漏洞
+#      （moderate 不拦）。
 #
 # 口径：
 #   - 缺工具 = 环境错误，exit 2（跳过 ≠ 绿）。
@@ -31,6 +32,7 @@ SHELL_FILES=(
     scripts/e2e/lib/deploy-e2e.sh
     scripts/verify-stacks.sh
     scripts/tooling-gate.sh
+    scripts/contract-gate.sh
     server/scripts/generate.sh
     server/scripts/license.sh
     server/scripts/verify.sh
@@ -72,5 +74,7 @@ echo "== govulncheck =="
 
 echo "== npm audit（high 及以上）=="
 (cd ui && npm audit --audit-level=high)
+# 契约工具的锁单独审计：它不在 ui 依赖图里（server/contracts/tools）。
+(cd server/contracts/tools && npm audit --audit-level=high)
 
 echo "tooling-gate: ok"

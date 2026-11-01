@@ -1,0 +1,12 @@
+{
+  "name": "yiban-contract-tools",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Pinned OpenAPI contract linter (spectral). CI-only; not part of any runtime artifact.",
+  "engines": {
+    "node": "^22.18.0 || >=24.11.0"
+  },
+  "devDependencies": {
+    "@stoplight/spectral-cli": "6.17.0"
+  }
+}

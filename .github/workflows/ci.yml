@@ -137,16 +137,10 @@ jobs:
         run: python -m pytest tests/test_vue_build_reproducible.py -q -p no:randomly
 
       - name: Gate ready
-        # 这行只是收尾回执，但它枚举了子集内容 —— 子集变了这里也要变，否则"同一个事实
-        # 两个定义点"就从这里开始漂。2026-10-06（工单 2ula）加入 config-registry。
-        # 2026-10-11 加入 mypy（静态类型门禁与它的元测试进 run_ci 子集）。
-        # 2026-10-11 加入 import-linter（结构门禁与它的元测试进 run_ci 子集）。
-        # 2026-10-13（工单 j06f）加入依赖一致性门的**元测试**（门本体不在 CI 跑：
-        #   verify job 的解释器刚按 requirements.lock 装过，跑门本体是同义反复；
-        #   元测试才造得出"venv 落后 lock"的形态）。
-        # 2026-11-01（CLEAN-1）加入 public-exposure：红线门与接线守卫进 run_ci 常跑区
-        #   （scope 分支之外；此前 newstack PR 整段跳过它）。
-        run: 'echo "Fast gate active: lint + mypy + roster fast lane + serial drill lane + e2e smoke + shared-facts roster + public exposure + path-env bare reads + config registry + import-linter contracts + deps lock meta-tests."'
+        # 这行只是收尾回执。**不再枚举子集内容**：枚举就是第二个定义点，两次实测都漏了
+        # （tooling wiring、contract wiring）。子集的唯一事实源是本作业的步骤列表
+        # （run_ci 与 test_dev_verify_entry.py 的 EXPECTED_CI_COMMANDS）。
+        run: 'echo "Fast gate active: the step list in this job is the single source; this receipt does not enumerate it."'
 
   # ---- 慢集专轨（vckk 阶段 2-a · 2026-10-17）：名册 slow 行 ＋ FAST_KNOWN_SLOW 长尾轨 ----
   # 为什么独立 job：slow 行的贵是**真实的等外面**（真子进程 / 真定时等待），并进 verify
@@ -283,6 +277,103 @@ jobs:
 
       - name: Tooling gate
         run: bash scripts/tooling-gate.sh
+
+  # ---- 契约门：spectral lint ＋ oasdiff breaking ----
+  # 只在 server/contracts/ 改动时真跑；其余 PR 显性早退（跳过必须可见）。
+  # 与 ui-e2e 同一套步骤级判定：作业级 if 为假时作业不被调度，required check 的
+  # 语义有歧义。底本口径：PR 取目标分支尖端、push 取 event.before（浅拉一层）。
+  # 比较对是「底本 → 本分支」；若目标分支先行改了契约，本分支要先合并/变基再比。
+  # 工具钉版：spectral 6.17.0（server/contracts/tools/package-lock.json）；
+  # oasdiff v1.35.0（下面 go install）。npm 安装用 --ignore-scripts 阻断 postinstall 联网。
+  # 取不到 base 分两种：PR 事件（底本是必需输入）让入口脚本 exit 2；push 事件置空，
+  # spectral 照跑、oasdiff 显性 SKIP。push 的 SKIP 进 stdout 与 step summary；
+  # PR 的 fail-closed 走 stderr 退出。
+  # 接线由 tests/test_contract_gate_wiring.py 钉住（真调用判据：注释与 echo 不算）。
+  contract-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Classify change surface
+        id: scope
+        run: |
+          # base：PR 事件取 base 分支尖端（浅拉一层），push 事件取 event.before。
+          # 与 verify / slow-lane / ui-e2e 的 Classify 步骤同一写法。
+          if [ -n "${{ github.base_ref }}" ]; then
+            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}" >/dev/null 2>&1 || true
+            base="FETCH_HEAD"
+          else
+            base="${{ github.event.before }}"
+            if [ -n "$base" ]; then git fetch --no-tags --depth=1 origin "$base" >/dev/null 2>&1 || true; fi
+          fi
+          # base 不可解析时分两种：
+          #   PR 事件（base_ref 非空）→ 底本是必需输入，保留原值交给入口脚本 exit 2（fail-closed）。
+          #   push 事件（如新分支）→ 没有可比底本，置空并显性 SKIP oasdiff（不伪造底本）。
+          base_ok=0
+          if git rev-parse --verify "$base" >/dev/null 2>&1; then
+            base_ok=1
+          elif [ -n "${{ github.base_ref }}" ]; then
+            base="origin/${{ github.base_ref }}"
+          else
+            base=""
+          fi
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          # 取不到 base、base 不可解析或 diff 失败 → 默认跑（fail-closed：宁可白跑，不静默漏跑）。
+          if [ -z "$base" ]; then
+            echo "value=run" >> "$GITHUB_OUTPUT"
+            echo "reason=no-base" >> "$GITHUB_OUTPUT"
+          elif [ "$base_ok" = "0" ]; then
+            echo "value=run" >> "$GITHUB_OUTPUT"
+            echo "reason=base-unresolved" >> "$GITHUB_OUTPUT"
+          elif ! changed=$(git diff --name-only "$base" HEAD 2>/dev/null); then
+            echo "value=run" >> "$GITHUB_OUTPUT"
+            echo "reason=diff-failed" >> "$GITHUB_OUTPUT"
+          elif printf '%s\n' "$changed" | grep -E '^server/contracts/' >/dev/null 2>&1; then
+            echo "value=run" >> "$GITHUB_OUTPUT"
+            echo "reason=contracts-changed" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=skip" >> "$GITHUB_OUTPUT"
+            echo "reason=no-contract-changes" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 非契约改动：作业照常调度、显性早退。同一行进 stdout 与 step summary。
+      - name: Skip (out of change surface)
+        if: steps.scope.outputs.value == 'skip'
+        run: |
+          line="contract-gate SKIP (scope=${{ steps.scope.outputs.reason }}: no server/contracts/ file changed vs base)"
+          echo "$line"
+          echo "$line" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up Node
+        if: steps.scope.outputs.value != 'skip'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: server/contracts/tools/package-lock.json
+
+      - name: Set up Go (oasdiff)
+        if: steps.scope.outputs.value != 'skip'
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.27.x'
+          cache-dependency-path: server/go.sum
+
+      - name: Install pinned spectral
+        if: steps.scope.outputs.value != 'skip'
+        run: npm ci --prefix server/contracts/tools --ignore-scripts --no-audit --no-fund
+
+      - name: Install pinned oasdiff
+        if: steps.scope.outputs.value != 'skip'
+        run: |
+          go install github.com/oasdiff/oasdiff@v1.35.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Contract gate
+        if: steps.scope.outputs.value != 'skip'
+        run: bash scripts/contract-gate.sh --base "${{ steps.scope.outputs.base }}"
 
   # ---- 前端单测（Vue + Vitest）＋ 真浏览器 e2e（Playwright）----
   # 为什么必须有单测：122 项 Vitest 此前完全不在门禁内，而"纯函数全绿、组件接线坏掉"的缺陷

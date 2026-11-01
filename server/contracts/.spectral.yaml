@@ -1,0 +1,11 @@
+# server/contracts/.spectral.yaml — OpenAPI 契约 lint 规则集。
+#
+# 只继承 spectral:oas 的标准规则集，不逐条降级、不关闭规则。
+# 当前 spec 在该规则集下 0 发现（历史 8 条已修：info.contact 与 7 个
+# operation description），所以门可以用 `--fail-severity warn` 跑，不需要
+# 基线豁免文件——豁免文件会让后续同形问题静默通过。
+#
+# 工具版本钉在 server/contracts/tools/package-lock.json（spectral 6.17.0）。
+# 要放宽某条规则：先改 spec，改不动再在这里写明理由和影响面；不得只写 disable。
+extends:
+  - spectral:oas

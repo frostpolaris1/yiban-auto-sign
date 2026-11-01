@@ -133,7 +133,19 @@ npx playwright test e2e/<spec>.spec.ts
 bash scripts/tooling-gate.sh
 ```
 
-它要 `actionlint`、`shellcheck`、`golangci-lint`、`govulncheck` 与 `npm` 在 PATH；缺工具会以 exit 2 拒绝（跳过不等于通过）。npm 镜像不实现 audit 时，加 `npm_config_registry=https://registry.npmjs.org` 再跑。
+它要 `actionlint`、`shellcheck`、`golangci-lint`、`govulncheck` 与 `npm` 在 PATH；缺工具会以 exit 2 拒绝（跳过不等于通过）。npm 镜像不实现 audit 时，加 `npm_config_registry=https://registry.npmjs.org` 再跑。审计覆盖 `ui` 与 `server/contracts/tools` 两个锁。
+
+契约门（与 CI 的 `contract-gate` 作业同源，只审 `server/contracts/`）：
+
+```bash
+(cd server/contracts/tools && npm ci --ignore-scripts)
+go install github.com/oasdiff/oasdiff@v1.35.0
+bash scripts/contract-gate.sh --base origin/develop
+```
+
+spectral 6.17.0 由 `server/contracts/tools/package-lock.json` 钉住，规则集是
+`server/contracts/.spectral.yaml`（继承 `spectral:oas`，不关闭规则）；oasdiff 钉 v1.35.0，
+只拦 ERR 级破坏性变更。不给 `--base` 时 oasdiff 显性 SKIP。
 
 说明：
 

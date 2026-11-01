@@ -95,6 +95,8 @@ EXPECTED_CI_COMMANDS = (
     '"$py" -m pytest tests/test_public_exposure_gate.py'
     ' tests/test_public_exposure_gate_wiring.py -q -p no:randomly',
     '"$py" -m pytest tests/test_tooling_gate_wiring.py -q -p no:randomly',
+    # 契约门接线守卫常跑（作业存在、钉版、显性早退）。
+    '"$py" -m pytest tests/test_contract_gate_wiring.py -q -p no:randomly',
     '"$py" scripts/check-path-env-reads.py',
     '"$py" -m pytest tests/test_path_env_read_gate.py -q -p no:randomly'
     ' ${FAST_DESELECT_ARGS[@]+"${FAST_DESELECT_ARGS[@]}"}',
@@ -800,6 +802,30 @@ class StacksCiWiringTest(unittest.TestCase):
             self.assertEqual(
                 lines.count(cmd), 1,
                 "入口脚本没有未注释地真跑 %s 门禁：%r" % (label, cmd))
+
+
+class GateReceiptTest(unittest.TestCase):
+    """收尾回执不得枚举子集。
+
+    为什么：回执枚举子集＝同一事实的第二个定义点。实测漂过两次（tooling
+    wiring 与 contract wiring 都没加进回执）。唯一事实源是作业的步骤列表
+    与 `EXPECTED_CI_COMMANDS`。
+    """
+
+    def test_gate_ready_receipt_does_not_enumerate(self):
+        body = _ci_job_body(_read(CI_YML), "verify")
+        self.assertTrue(body, "ci.yml 抽不出 verify 作业——结构改了？")
+        lines = [ln.strip() for ln in body.splitlines()
+                 if "Fast gate active" in ln and not ln.strip().startswith("#")]
+        self.assertEqual(len(lines), 1,
+                         "应恰有一条 Fast gate active 回执：%r" % lines)
+        line = lines[0]
+        self.assertIn("does not enumerate", line,
+                      "回执必须写明它不枚举子集：枚举会漂（已各漏一次）")
+        for marker in ("config registry", "public exposure", "import-linter",
+                       "shared-facts", "path-env", "lint", "mypy"):
+            self.assertNotIn(marker, line,
+                             "回执重新枚举了子集（%r）：单一事实源是步骤列表" % marker)
 
 
 class ServerScriptExecBitTest(unittest.TestCase):

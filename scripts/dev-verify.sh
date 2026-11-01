@@ -470,6 +470,9 @@ run_ci() { # CI 关键子集：就地跑，不建副本；命令逐字冻结在 
     # 工具链快门的接线守卫（CLEAN-7a）：作业存在、无条件、真调入口脚本。
     echo "DEV-VERIFY(ci) tooling gate wiring"
     "$py" -m pytest tests/test_tooling_gate_wiring.py -q -p no:randomly
+    # 契约门的接线守卫（CLEAN-7c）：spectral/oasdiff 钉版、显性早退、入口脚本真跑。
+    echo "DEV-VERIFY(ci) contract gate wiring"
+    "$py" -m pytest tests/test_contract_gate_wiring.py -q -p no:randomly
     echo "DEV-VERIFY(ci) path env bare-read gate"
     "$py" scripts/check-path-env-reads.py
     "$py" -m pytest tests/test_path_env_read_gate.py -q -p no:randomly \
