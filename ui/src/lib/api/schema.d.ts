@@ -733,10 +733,14 @@ export interface paths {
          * Download the task search as CSV.
          * @description The same scope and filters as GET /api/admin/tasks without cursor
          *     and limit. The response is text/csv with one header row whose
-         *     columns match the task list fields, quoted per RFC 4180.
-         *     Content-Disposition is an attachment. The export is capped at
-         *     10000 rows in key order; when the cap cuts rows the response
-         *     carries X-Export-Truncated: true.
+         *     columns match the task list fields, quoted per RFC 4180. The
+         *     school name, task name and result cells are formula-escaped: a
+         *     leading = + - @ TAB or CR gets a single-quote prefix so
+         *     spreadsheet applications do not evaluate the cell (CWE-1236).
+         *     Content-Disposition names the file after the effective business
+         *     day, so a request without day reads tasks-<today>.csv. The export
+         *     is capped at 10000 rows in key order; when the cap cuts rows the
+         *     response carries X-Export-Truncated: true.
          */
         get: operations["AdminTaskExport"];
         put?: never;
@@ -2889,8 +2893,11 @@ export interface operations {
                 /** @description Narrow to one school. */
                 school_id?: string;
                 /**
-                 * @description Phone number prefix or school name substring. Matching is exact
-                 *     on digits; the LIKE wildcards % and _ in the value are literal.
+                 * @description Substring of the school or task name, with the LIKE wildcards %
+                 *     and _ taken literal. A full 11-digit phone number (leading 1,
+                 *     second digit 3-9) matches the account phone exactly instead.
+                 *     Shorter prefixes never match: a partial number must not rebuild
+                 *     a masked phone row by row.
                  */
                 q?: string;
             };
@@ -2925,8 +2932,11 @@ export interface operations {
                 /** @description Narrow to one school. */
                 school_id?: string;
                 /**
-                 * @description Phone number prefix or school name substring. Matching is exact
-                 *     on digits; the LIKE wildcards % and _ in the value are literal.
+                 * @description Substring of the school or task name, with the LIKE wildcards %
+                 *     and _ taken literal. A full 11-digit phone number (leading 1,
+                 *     second digit 3-9) matches the account phone exactly instead.
+                 *     Shorter prefixes never match: a partial number must not rebuild
+                 *     a masked phone row by row.
                  */
                 q?: string;
             };

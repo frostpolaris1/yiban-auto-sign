@@ -29,9 +29,14 @@ type TaskQueryFilter struct {
 	Day      string
 	State    string
 	SchoolID string
-	Query    string
-	Cursor   string
-	Limit    int
+	// Query 按学校名与任务名子串匹配。
+	Query string
+	// Phone 是 11 位全号，由用例层判定形状后才填；
+	// 空表示不按手机号筛。前缀匹配被刻意排除：
+	// 任意长度前缀可在几十次请求内逐位还原被掩码的号码。
+	Phone  string
+	Cursor string
+	Limit  int
 }
 
 // TaskQueryRow 是一行任务检索结果。

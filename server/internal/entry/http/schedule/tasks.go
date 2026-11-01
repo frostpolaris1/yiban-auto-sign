@@ -15,6 +15,8 @@ package schedule
 // 两个端点只给 master 与 admin；跨校行不出现，越权 school_id 是空页。
 // 列表回 oapi.TaskPage；导出回 text/csv 附件，列与列表同口径，
 // 超过 ExportCap 截断并以 X-Export-Truncated: true 显式标记。
+// CSV 的学校名、任务名与 result 列做公式注入转义（首字符 = + - @ TAB CR
+// 加 ' 前缀，CWE-1236）；文件名取用例回传的有效业务日。
 // 手机号只用用例给的掩码值；本文件拿不到明文，也不写日志。
 
 import (
@@ -41,7 +43,7 @@ import (
 // TasksQuerier 是任务检索用例端口（实现为 *appschedule.TaskQuery）。
 type TasksQuerier interface {
 	List(ctx context.Context, scope corescope.Scope, in coreschedule.TaskQueryFilter) (appschedule.TaskPage, error)
-	ExportAll(ctx context.Context, scope corescope.Scope, in coreschedule.TaskQueryFilter) ([]appschedule.TaskView, bool, error)
+	ExportAll(ctx context.Context, scope corescope.Scope, in coreschedule.TaskQueryFilter) (appschedule.ExportResult, error)
 }
 
 // TasksHandler 处理 /api/admin/tasks 与 /api/admin/tasks/export。
@@ -100,22 +102,23 @@ func (h *TasksHandler) Export(c *gin.Context, params oapi.AdminTaskExportParams)
 		return
 	}
 	filter := tasksFilter(params.Day, stateWord(params.State), params.SchoolId, params.Q)
-	rows, truncated, err := h.tasks.ExportAll(c.Request.Context(), scope, filter)
+	result, err := h.tasks.ExportAll(c.Request.Context(), scope, filter)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	body, err := tasksCSV(rows)
+	body, err := tasksCSV(result.Rows)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	if truncated {
+	if result.Truncated {
 		c.Writer.Header().Set("X-Export-Truncated", "true")
 	}
+	// 文件名用用例回传的有效日：day 缺省时是它补的业务日今天。
 	c.Writer.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	c.Writer.Header().Set("Content-Disposition",
-		fmt.Sprintf("attachment; filename=\"tasks-%s.csv\"", filter.Day))
+		fmt.Sprintf("attachment; filename=\"tasks-%s.csv\"", result.Day))
 	c.Writer.WriteHeader(http.StatusOK)
 	_, _ = c.Writer.Write(body)
 }
@@ -157,6 +160,24 @@ func taskRow(r appschedule.TaskView) oapi.AdminTaskRow {
 	}
 }
 
+// csvFormulaPrefix 是公式注入的转义前缀（CWE-1236）。
+// 以 = + - @ TAB CR 开头的单元格加它，表格软件不再当公式求值。
+const csvFormulaPrefix = "'"
+
+// csvSafeCell 对可能携带外部文本的列做公式注入转义：学校名、任务名
+// 与 result 都来自录入或平台文本，判据按首字符，其余原样。
+// 结构化列（id、状态枚举、掩码号、时间）不经本函数：它们的形状封闭。
+func csvSafeCell(value string) string {
+	if value == "" {
+		return value
+	}
+	switch value[0] {
+	case '=', '+', '-', '@', '	', '':
+		return csvFormulaPrefix + value
+	}
+	return value
+}
+
 // csvHeader 是导出的列序，与 AdminTaskRow 字段一一对应。
 var csvHeader = []string{"id", "account_id", "account_phone_masked", "school_id",
 	"school_name", "task_name", "state", "attempts", "result", "run_at",
@@ -176,8 +197,8 @@ func tasksCSV(rows []appschedule.TaskView) ([]byte, error) {
 		}
 		if err := w.Write([]string{
 			r.ID, r.AccountID, r.PhoneMasked,
-			r.SchoolID, r.SchoolName, r.TaskName,
-			r.State, strconv.Itoa(r.Attempts), r.Result,
+			r.SchoolID, csvSafeCell(r.SchoolName), csvSafeCell(r.TaskName),
+			r.State, strconv.Itoa(r.Attempts), csvSafeCell(r.Result),
 			r.RunAt.Format(time.RFC3339), claimed, r.UpdatedAt.Format(time.RFC3339),
 		}); err != nil {
 			return nil, err

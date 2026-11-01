@@ -19,7 +19,8 @@ import {
  *    掩码号、状态共用词与诊断按钮。
  * 3. 空态与错误态语义分离：失败渲染 role=alert 的错误条，
  *    空渲染「没有匹配的任务」；失败不得显示「暂无」。
- * 4. URL 状态：?day&state&q 刷新后保留；筛选写回查询串。
+ * 4. URL 状态：?day&state&school&q 刷新后保留；筛选写回查询串；
+ *    学校是下拉（/api/schools 供选项），URL 存 id。
  * 5. SSE：业务事件触发刷新；断线出「已停止实时」横幅并可重连；
  *    断线期间 10 秒轮询降级。
  * 6. 诊断：点击与键盘（Enter）都能打开抽屉；抽屉调单账号诊断端点。
@@ -134,7 +135,14 @@ test('invariant 4: filters survive a reload and are written back to the URL', as
   expect(latest.params.state).toBe('failed')
   expect(latest.params.q).toBe('甲校')
 
-  // 界面改筛选写回 URL：URL 带 q 时历史检索已展开，
+  // 界面改筛选写回 URL：URL 带 q 时历史检索已展开。
+  // 学校是下拉（选项来自 /api/schools）：选乙校后 school=<id> 进 URL 与请求。
+  await page.getByLabel('学校', { exact: true }).selectOption({ label: '合成学校乙' })
+  await expect(page).toHaveURL(/school=school-beta/)
+  await expect
+    .poll(() => listTaskCalls(api).filter((call) => call.params.school_id === 'school-beta').length)
+    .toBeGreaterThan(0)
+
   // 状态选「全部状态」后 state 从查询串消失。
   await page.getByLabel('状态筛选').selectOption('')
   await expect(page).not.toHaveURL(/state=failed/)

@@ -7,7 +7,8 @@ package pg
 // 院校面经 JOIN school_tasks 取得。master 无谓词；admin 用
 // scopePredicate 的 admin 分支（空绑定＝空页，绝不退化成全量）；
 // user 范围在用例层已拒绝，这里再守一道。
-// q 按手机号前缀或学校名子串匹配；LIKE 的三个元字符转义（同 users 列表）。
+// q 按学校名与任务名子串匹配；LIKE 的三个元字符转义（同 users 列表）。
+// 手机号只在用例层判明 11 位全号后经 Phone 精确等值，不做前缀。
 // 游标是 (run_at, id) 的键集串，与 appendKeyset 一一对应；
 // 排序固定 run_at DESC、id DESC，多取一行判末页。
 
@@ -64,12 +65,25 @@ func (r *ScheduleRepo) ListTasks(ctx context.Context, scope corescope.Scope,
 		args = append(args, f.SchoolID)
 		where += fmt.Sprintf(" AND st.school_id = $%d::uuid", len(args))
 	}
-	if f.Query != "" {
-		args = append(args, escapeLikePrefix(f.Query))
-		// 手机号是前缀匹配；学校名是子串匹配。元字符已转义，按字面处理。
-		where += fmt.Sprintf(
-			` AND (a.phone LIKE $%d || '%%' ESCAPE '\'`+
-				` OR sc.name LIKE '%%' || $%d || '%%' ESCAPE '\')`, len(args), len(args))
+	if f.Query != "" || f.Phone != "" {
+		// q 是「名称子串 **或** 11 位全号精确」的或关系；
+		// 全号只在用例层判形后出现在 Phone，前缀到不了这里。
+		where += " AND ("
+		if f.Query != "" {
+			args = append(args, escapeLikePrefix(f.Query))
+			// 名称子串匹配；元字符已转义，按字面处理。
+			where += fmt.Sprintf(
+				`(sc.name LIKE '%%' || $%d || '%%' ESCAPE '\'`+
+					` OR st.name LIKE '%%' || $%d || '%%' ESCAPE '\')`, len(args), len(args))
+		}
+		if f.Phone != "" {
+			if f.Query != "" {
+				where += " OR "
+			}
+			args = append(args, f.Phone)
+			where += fmt.Sprintf("a.phone = $%d", len(args))
+		}
+		where += ")"
 	}
 
 	sqlText, args, err := appendKeyset("SELECT "+taskQueryColumns+where,

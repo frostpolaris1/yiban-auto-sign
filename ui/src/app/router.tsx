@@ -76,9 +76,6 @@ const schoolsRoute = createRoute({
   component: SchoolsPage,
 })
 
-/** 用户管理：只归 master；非 master 直接访问落到无权限卡片。
- * 筛选、含已删除与游标是 URL 状态：校验即净化，非法值在解析时丢弃。
- */
 /** 运行页：master/admin。筛选与业务日是 URL 状态：校验即净化。 */
 const runRoute = createRoute({
   getParentRoute: () => shellRoute,
@@ -101,6 +98,9 @@ function RunRouteComponent() {
   )
 }
 
+/** 用户管理：只归 master；非 master 直接访问落到无权限卡片。
+ * 筛选、含已删除与游标是 URL 状态：校验即净化，非法值在解析时丢弃。
+ */
 const usersRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: '/users',

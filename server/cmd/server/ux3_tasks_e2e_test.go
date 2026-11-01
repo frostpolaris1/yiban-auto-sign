@@ -4,7 +4,8 @@ package main
 //
 // # 功能
 // 覆盖 swh 验收的后端面：master/admin 作用域、day/state/school_id/q
-// 过滤、游标翻页、手机号只出掩码、CSV 表头与行、导出 10000 行截断、
+// 过滤（q 只认学校/任务名子串与 11 位全号精确）、游标翻页、手机号只出
+// 掩码、CSV 表头与行、公式注入转义、导出 10000 行截断、
 // 诊断端点对 master 开放（本批契约修订）。
 // 走真实栈：真库、真登录、真 cookie、真 HTTP。
 // 本文件**不**测前端，**不**复制仓储层用例。
@@ -426,8 +427,10 @@ func TestU3StateAndSchoolFilters(t *testing.T) {
 	}
 }
 
-// q 按手机号前缀或学校名子串匹配；LIKE 元字符按字面处理。
-func TestU3QueryMatchesPhonePrefixAndSchoolName(t *testing.T) {
+// q 按学校名/任务名子串匹配；手机号只认 11 位全号精确等值。
+// 前缀不命中：任意前缀可在几十次请求内逐位还原被掩码的号码。
+// LIKE 元字符按字面处理。
+func TestU3QueryMatchesPhoneExactAndNames(t *testing.T) {
 	e := newAuthEnvWith(t, func(cfg *config.Config) { cfg.Timezone = "UTC" }, nil)
 	owner := w2dSeedUser(t, e, "u3-owner@example.com", "owner-pass", coreauth.RoleUser)
 	_, client := u3LoginSeed(t, e, "u3-master@example.com", "master-pass", coreauth.RoleMaster)
@@ -436,29 +439,38 @@ func TestU3QueryMatchesPhonePrefixAndSchoolName(t *testing.T) {
 	schoolA := u3SeedSchool(t, e, "U3 检索甲校")
 	schoolB := u3SeedSchool(t, e, "U3 检索乙校 100%")
 	taskA := u3SeedTask(t, e, schoolA.ID, "早签到")
-	taskB := u3SeedTask(t, e, schoolB.ID, "早签到")
+	taskB := u3SeedTask(t, e, schoolB.ID, "晚点名")
 	accA := u3SeedAccount(t, e, owner.ID, schoolA.ID, "13800138010")
 	accB := u3SeedAccount(t, e, owner.ID, schoolB.ID, "13800138020")
 	runA := u3At(day, 8)
 	idA := u3SeedSignTask(t, e, taskA, accA, day, runA, status.TaskPending, 0, "", nil)
 	idB := u3SeedSignTask(t, e, taskB, accB, day, runA, status.TaskPending, 0, "", nil)
 
-	// 手机号前缀命中甲校账号。
+	// 11 位全号精确命中甲校账号。
 	resp, page := u3List(e, client, url.Values{"day": {day}, "q": {"13800138010"}})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("phone query status = %d, want 200", resp.StatusCode)
 	}
 	if got := u3IDs(page.Items); len(got) != 1 || got[0] != idA {
-		t.Fatalf("phone prefix rows = %v, want [%s]", got, idA)
+		t.Fatalf("exact phone rows = %v, want [%s]", got, idA)
 	}
 
-	// 手机号短前缀只命中乙校：1380013802 是 13800138020 的前缀，不是甲校的。
-	resp, page = u3List(e, client, url.Values{"day": {day}, "q": {"1380013802"}})
+	// 10 位前缀不命中任何手机号：掩码不被前缀逐位还原。
+	resp, page = u3List(e, client, url.Values{"day": {day}, "q": {"1380013801"}})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("short phone prefix status = %d, want 200", resp.StatusCode)
 	}
+	if len(page.Items) != 0 {
+		t.Fatalf("short phone prefix rows = %v, want none", u3IDs(page.Items))
+	}
+
+	// 任务名子串命中乙校。
+	resp, page = u3List(e, client, url.Values{"day": {day}, "q": {"晚点名"}})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("task name query status = %d, want 200", resp.StatusCode)
+	}
 	if got := u3IDs(page.Items); len(got) != 1 || got[0] != idB {
-		t.Fatalf("short phone prefix rows = %v, want [%s]", got, idB)
+		t.Fatalf("task name rows = %v, want [%s]", got, idB)
 	}
 
 	// 学校名子串命中两校。
@@ -551,7 +563,7 @@ func TestU3PhoneNeverLeaks(t *testing.T) {
 	day := u3Day
 	school := u3SeedSchool(t, e, "U3 掩码校")
 	task := u3SeedTask(t, e, school.ID, "早签到")
-	acc := u3SeedAccount(t, e, owner.ID, school.ID, "13800138030")
+	acc := u3SeedAccount(t, e, owner.ID, school.ID, "13800138017")
 	runA := u3At(day, 8)
 	u3SeedSignTask(t, e, task, acc, day, runA, status.TaskFailed, 1, "credential_invalid", &runA)
 
@@ -559,10 +571,10 @@ func TestU3PhoneNeverLeaks(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("list status = %d", resp.StatusCode)
 	}
-	if strings.Contains(string(payload), "13800138030") {
+	if strings.Contains(string(payload), "13800138017") {
 		t.Fatal("the full phone number leaked into the task list response")
 	}
-	if !strings.Contains(string(payload), "138****8030") {
+	if !strings.Contains(string(payload), "138****8017") {
 		t.Fatalf("masked phone missing from response: %s", payload)
 	}
 }
@@ -582,7 +594,9 @@ func TestU3ExportCSVHeadersRowsAndScope(t *testing.T) {
 	accA := u3SeedAccount(t, e, owner.ID, schoolA.ID, "13800138031")
 	accB := u3SeedAccount(t, e, owner.ID, schoolB.ID, "13800138000")
 	runA := u3At(day, 8)
-	idA := u3SeedSignTask(t, e, taskA, accA, day, runA, status.TaskFailed, 2, `带,逗号与"引号"`, &runA)
+	// result 以 = 开头：断言 CSV 做公式注入转义；同行带逗号与引号断言 RFC 4180 引包。
+	idA := u3SeedSignTask(t, e, taskA, accA, day, runA, status.TaskFailed, 2,
+		"=HYPERLINK(\"https://example.com\",\"甲\"),带\"引号\"", &runA)
 	u3SeedSignTask(t, e, taskB, accB, day, runA, status.TaskSuccess, 1, "ok", &runA)
 
 	resp, body := u3Get(e, masterClient, "/api/admin/tasks/export?"+url.Values{"day": {day}}.Encode())
@@ -622,8 +636,10 @@ func TestU3ExportCSVHeadersRowsAndScope(t *testing.T) {
 	if rowA == nil {
 		t.Fatalf("row %s missing from csv", idA)
 	}
+	// 以 = 开头的 result 必须带 ' 前缀，表格软件不再当公式求值（CWE-1236）。
 	if rowA[2] != "138****8031" || rowA[4] != schoolA.Name || rowA[5] != "早签到" ||
-		rowA[6] != string(status.TaskFailed) || rowA[7] != "2" || rowA[8] != `带,逗号与"引号"` {
+		rowA[6] != string(status.TaskFailed) || rowA[7] != "2" ||
+		rowA[8] != "'=HYPERLINK(\"https://example.com\",\"甲\"),带\"引号\"" {
 		t.Fatalf("row A = %v", rowA)
 	}
 
@@ -723,10 +739,15 @@ func TestU3ValidationErrors(t *testing.T) {
 			}
 		})
 	}
-	// 缺 day 的导出走缺省业务日：不报错。
+	// 缺 day 的导出走缺省业务日：不报错，且文件名带有效日。
 	resp, _ := u3Get(e, client, "/api/admin/tasks/export")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("export default day status = %d, want 200", resp.StatusCode)
+	}
+	disposition := resp.Header.Get("Content-Disposition")
+	today := u3TodayFromServer(t, e, client)
+	if !strings.Contains(disposition, "tasks-"+today+".csv") {
+		t.Fatalf("default-day disposition = %q, want tasks-%s.csv", disposition, today)
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 }

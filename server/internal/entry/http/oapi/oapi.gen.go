@@ -1280,8 +1280,11 @@ type AdminTaskListParams struct {
 	// SchoolId Narrow to one school.
 	SchoolId *openapi_types.UUID `form:"school_id,omitempty" json:"school_id,omitempty"`
 
-	// Q Phone number prefix or school name substring. Matching is exact
-	// on digits; the LIKE wildcards % and _ in the value are literal.
+	// Q Substring of the school or task name, with the LIKE wildcards %
+	// and _ taken literal. A full 11-digit phone number (leading 1,
+	// second digit 3-9) matches the account phone exactly instead.
+	// Shorter prefixes never match: a partial number must not rebuild
+	// a masked phone row by row.
 	Q *string `form:"q,omitempty" json:"q,omitempty"`
 }
 
@@ -1299,8 +1302,11 @@ type AdminTaskExportParams struct {
 	// SchoolId Narrow to one school.
 	SchoolId *openapi_types.UUID `form:"school_id,omitempty" json:"school_id,omitempty"`
 
-	// Q Phone number prefix or school name substring. Matching is exact
-	// on digits; the LIKE wildcards % and _ in the value are literal.
+	// Q Substring of the school or task name, with the LIKE wildcards %
+	// and _ taken literal. A full 11-digit phone number (leading 1,
+	// second digit 3-9) matches the account phone exactly instead.
+	// Shorter prefixes never match: a partial number must not rebuild
+	// a masked phone row by row.
 	Q *string `form:"q,omitempty" json:"q,omitempty"`
 }
 

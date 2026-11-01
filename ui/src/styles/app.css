@@ -967,7 +967,11 @@
   padding-top: 8px;
 }
 
-.run-export-error {
+.run-export-error,
+.run-summary-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   margin: 0 0 8px;
   color: var(--t-danger);
   font-size: 13px;

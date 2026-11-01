@@ -1,6 +1,6 @@
 /**
  * **功能**
- * 运行页筛选条：业务日、任务状态、学校、检索词与导出按钮。
+ * 运行页筛选条：业务日、任务状态、学校下拉、检索词与导出按钮。
  *
  * **归属**
  * `features/run` 展示组件：只呈现控件，不取数。
@@ -8,12 +8,15 @@
  * **口径**
  * 标签用 UX-0 的 FilterField：label htmlFor 与 aria-describedby 由它合并。
  * 日输入是原生 date；空值表示「业务日今天」，键不进 URL。
- * 学校与检索词是自由文本；检索词回车立即生效。
+ * 学校是下拉：选项来自 `GET /api/schools`（master 全量、admin 绑定范围），
+ * URL 存学校 id——自由文本 UUID 会在服务端回 400，也把内部 id 暴露成输入面。
+ * 检索词按学校/任务名子串或 11 位完整手机号匹配；回车立即生效。
  * 筛选写回一律由调用方（RunView → 路由）完成，本组件不发请求。
  */
 
 import { FilterField } from '@/components/ui/FilterField'
 import { BusyButton } from '@/components/ui/BusyButton'
+import type { School } from '@/lib/api/school'
 import { TASK_STATES, TASK_STATE_LABELS } from '@/lib/identity'
 import type { RunStateFilter, RunURLState } from './urlState'
 
@@ -21,6 +24,8 @@ export type RunFiltersProps = {
   values: RunURLState
   qInput: string
   exportBusy: boolean
+  schools: School[]
+  schoolsLoading: boolean
   onDayChange: (day: string | undefined) => void
   onStateChange: (state: RunStateFilter | undefined) => void
   onSchoolChange: (school: string | undefined) => void
@@ -33,6 +38,8 @@ export function RunFilters({
   values,
   qInput,
   exportBusy,
+  schools,
+  schoolsLoading,
   onDayChange,
   onStateChange,
   onSchoolChange,
@@ -69,21 +76,34 @@ export function RunFilters({
         </select>
       </FilterField>
 
-      <FilterField id="run-filter-school" label="学校">
-        <input
-          className="input"
-          type="search"
-          placeholder="学校 ID"
+      <FilterField
+        id="run-filter-school"
+        label="学校"
+        hint={schoolsLoading ? '学校列表读取中…' : undefined}
+      >
+        <select
+          className="select"
           value={values.school ?? ''}
           onChange={(event) => onSchoolChange(event.target.value === '' ? undefined : event.target.value)}
-        />
+        >
+          <option value="">全部学校</option>
+          {schools.map((school) => (
+            <option key={school.id} value={school.id}>
+              {school.name}
+            </option>
+          ))}
+        </select>
       </FilterField>
 
-      <FilterField id="run-filter-q" label="检索">
+      <FilterField
+        id="run-filter-q"
+        label="检索"
+        hint="学校或任务名的一段，或 11 位完整手机号"
+      >
         <input
           className="input"
           type="search"
-          placeholder="手机号前缀或学校名，回车立即查询"
+          placeholder="学校/任务名，或 11 位完整手机号"
           value={qInput}
           onChange={(event) => onQInputChange(event.target.value)}
           onKeyDown={(event) => {

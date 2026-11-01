@@ -135,7 +135,7 @@ func TestTaskQueryMasksAtTheBoundary(t *testing.T) {
 	}
 }
 
-// 导出：上限覆盖页大小；next 非空即截断。
+// 导出：上限覆盖页大小；next 非空即截断；有效日回传给调用方。
 func TestTaskQueryExportCap(t *testing.T) {
 	rows := make([]coreschedule.TaskQueryRow, 0, ExportCap)
 	for i := 0; i < ExportCap; i++ {
@@ -144,25 +144,60 @@ func TestTaskQueryExportCap(t *testing.T) {
 	src := &fakeTaskSource{rows: rows, next: "more"}
 	q := newTaskQueryForTest(src)
 
-	got, truncated, err := q.ExportAll(context.Background(), corescope.Master(),
-		coreschedule.TaskQueryFilter{Day: "2026-10-31"})
+	got, err := q.ExportAll(context.Background(), corescope.Master(),
+		coreschedule.TaskQueryFilter{})
 	if err != nil {
 		t.Fatalf("export: %v", err)
 	}
-	if len(got) != ExportCap || !truncated {
-		t.Fatalf("rows=%d truncated=%v, want %d true", len(got), truncated, ExportCap)
+	if len(got.Rows) != ExportCap || !got.Truncated {
+		t.Fatalf("rows=%d truncated=%v, want %d true", len(got.Rows), got.Truncated, ExportCap)
 	}
 	if src.got.Limit != ExportCap {
 		t.Fatalf("source limit = %d, want the export cap", src.got.Limit)
 	}
+	if got.Day != "2026-10-31" {
+		t.Fatalf("export day = %q, want the default business day", got.Day)
+	}
 
 	src.next = ""
-	_, truncated, err = q.ExportAll(context.Background(), corescope.Master(),
-		coreschedule.TaskQueryFilter{Day: "2026-10-31"})
+	got, err = q.ExportAll(context.Background(), corescope.Master(),
+		coreschedule.TaskQueryFilter{})
 	if err != nil {
 		t.Fatalf("export 2: %v", err)
 	}
-	if truncated {
+	if got.Truncated {
 		t.Fatal("an exhausted cursor must not read as truncated")
+	}
+}
+
+// q 的检索面：11 位全号才进 Phone 精确匹配；前缀与非号码只走名称子串。
+func TestTaskQueryClassifiesQuery(t *testing.T) {
+	src := &fakeTaskSource{}
+	q := newTaskQueryForTest(src)
+
+	cases := []struct {
+		name      string
+		query     string
+		wantPhone string
+	}{
+		{"full phone", "13800138001", "13800138001"},
+		{"short prefix", "1380013801", ""},
+		{"wrong leading digit", "23800138001", ""},
+		{"name text", "甲校", ""},
+		{"eleven digits not a phone", "138001380011", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := q.List(context.Background(), corescope.Master(),
+				coreschedule.TaskQueryFilter{Day: "2026-10-31", Query: c.query, Limit: 10}); err != nil {
+				t.Fatalf("list: %v", err)
+			}
+			if src.got.Phone != c.wantPhone {
+				t.Fatalf("phone = %q, want %q", src.got.Phone, c.wantPhone)
+			}
+			if src.got.Query != c.query {
+				t.Fatalf("query passthrough = %q, want %q", src.got.Query, c.query)
+			}
+		})
 	}
 }

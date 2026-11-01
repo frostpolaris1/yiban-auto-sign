@@ -9,7 +9,9 @@
  * 角色来自 `GET /api/auth/me`。无 view 权限时不发任务请求，
  * 只渲染无权限卡片；导航项由 `nav.ts` 的角色元数据隐藏。
  * URL 是筛选与游标的唯一事实源：`?day&state&school&q&cursor`。
- * 摘要恒查今天（limit 200，next_cursor 非空即部分统计）；
+ * 摘要恒查今天（limit 200，next_cursor 非空即部分统计），读取失败给
+ * 非阻塞提示与重试，不拖垮泳道与历史检索；
+ * 学校筛选取 GET /api/schools 全量下拉，URL 存 id；
  * 泳道与历史表共用同一查询（当前筛选＋游标），不重复取数。
  * 搜索输入防抖 250ms；回车立即生效。任一筛选变化回到第一页。
  * 游标栈只在会话内记忆「上一页」；刷新后从 URL 游标重建，只能前进。
@@ -28,11 +30,12 @@ import { Card } from '@/components/ui/Card'
 import { DeniedCard } from '@/components/ui/DeniedCard'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { describeApiError } from '@/lib/api/client'
+import { listAllSchools } from '@/lib/api/school'
 import { exportTasksCsv, listTasks, type AdminTaskRow } from '@/lib/api/task'
 import { dayOf, formatClock } from '@/lib/format'
 import { RUN_VIEW_ROLES, roleAllowed } from '@/lib/roles'
 import { SHOWCASE, useMe } from '@/lib/session'
-import { showcaseRunPage } from '@/lib/showcase'
+import { showcaseAllSchools, showcaseRunPage } from '@/lib/showcase'
 import {
   currentCursor,
   emptyCursorStack,
@@ -140,6 +143,17 @@ export function RunView({ urlState, onSearchChange }: RunViewProps) {
     enabled: allowed,
   })
 
+  // 学校下拉的选项源：服务端按角色收敛（master 全量、admin 绑定范围）。
+  const schoolsQuery = useQuery({
+    queryKey: ['run-page', 'schools'],
+    staleTime: 5 * 60_000,
+    queryFn: () => {
+      if (SHOWCASE) return Promise.resolve(showcaseAllSchools())
+      return listAllSchools()
+    },
+    enabled: allowed,
+  })
+
   // 断线降级：列表与摘要每 10 秒轮询一次。连接正常时刷新只由 SSE 驱动。
   useEffect(() => {
     if (!allowed || live.status !== 'disconnected') return
@@ -228,6 +242,14 @@ export function RunView({ urlState, onSearchChange }: RunViewProps) {
         <DeniedCard eyebrow="Run" reason={DENY_REASON} />
       ) : (
         <>
+          {summaryQuery.isError ? (
+            <p className="run-summary-error" role="status">
+              摘要读取失败，计数可能缺失。
+              <Button variant="outline-primary" size="sm" onClick={() => void summaryQuery.refetch()}>
+                重试
+              </Button>
+            </p>
+          ) : null}
           <RunSummary counts={summary} />
 
           <Card
@@ -278,6 +300,8 @@ export function RunView({ urlState, onSearchChange }: RunViewProps) {
                   values={urlState}
                   qInput={qInput}
                   exportBusy={exportBusy}
+                  schools={schoolsQuery.data ?? []}
+                  schoolsLoading={schoolsQuery.isPending}
                   onDayChange={(value) => onSearchChange(withRunFilter(urlState, { day: value }))}
                   onStateChange={(value) => onSearchChange(withRunFilter(urlState, { state: value }))}
                   onSchoolChange={(value) => onSearchChange(withRunFilter(urlState, { school: value }))}

@@ -17,7 +17,9 @@ package schedule
 // YYYY-MM-DD，否则 400。state 必须在 core/status 的五个词内，否则 400。
 // 列表的页大小缺省 50 由入口层经 app.PageLimit 定型；本用例判
 // 1..200，越界 400。导出没有页大小入参，批量恒为 ExportCap。
-// q 按手机号前缀或学校名子串匹配，LIKE 元字符由适配层转义。
+// q 按学校名或任务名子串匹配，LIKE 元字符由适配层转义；
+// 手机号只收 11 位全号做精确匹配，前缀不命中——
+// 前缀检索可在几十次请求内逐位还原被掩码的号码（审查 P2-5）。
 // 排序固定 run_at 倒序、行 id 兜底；游标是不透明键集串。
 // **手机号只出掩码**：行内明文在映射成 TaskView 时经 core/mask.MaskPhone，
 // result 经 core/mask.MaskText；明文不出本包。
@@ -46,18 +48,18 @@ const ExportCap = coreschedule.TaskExportCap
 
 // TaskView 是给入口层的行：手机号已掩码，result 已过自由文本掩码。
 type TaskView struct {
-	ID         string
-	AccountID  string
+	ID          string
+	AccountID   string
 	PhoneMasked string
-	SchoolID   string
-	SchoolName string
-	TaskName   string
-	State      string
-	Attempts   int
-	Result     string
-	RunAt      time.Time
-	ClaimedAt  *time.Time
-	UpdatedAt  time.Time
+	SchoolID    string
+	SchoolName  string
+	TaskName    string
+	State       string
+	Attempts    int
+	Result      string
+	RunAt       time.Time
+	ClaimedAt   *time.Time
+	UpdatedAt   time.Time
 }
 
 // TaskPage 是一页任务视图。NextCursor 空串表示末页；
@@ -102,20 +104,29 @@ func (q *TaskQuery) List(ctx context.Context, scope corescope.Scope, in coresche
 	return TaskPage{Items: maskRows(rows), NextCursor: next}, nil
 }
 
+// ExportResult 是一次导出的产物与有效口径。
+type ExportResult struct {
+	Rows      []TaskView
+	Truncated bool
+	// Day 是本批导出实际用的业务日：调用方未给 day 时是用例补的今天。
+	// 文件名与响应说明都取它，入口层不另算一遍业务日。
+	Day string
+}
+
 // ExportAll 以 ExportCap 取一批行。truncated 报告是否还有更多行被截掉。
 // 导出没有 limit 入参：入口层不传页大小，这里直接套上限。
-func (q *TaskQuery) ExportAll(ctx context.Context, scope corescope.Scope, in coreschedule.TaskQueryFilter) ([]TaskView, bool, error) {
+func (q *TaskQuery) ExportAll(ctx context.Context, scope corescope.Scope, in coreschedule.TaskQueryFilter) (ExportResult, error) {
 	filter, err := q.prepare(scope, in)
 	if err != nil {
-		return nil, false, err
+		return ExportResult{}, err
 	}
 	// 适配层按 limit+1 取行：next 非空即还有第 10001 行，就是截断。
 	filter.Limit = ExportCap
 	rows, next, err := q.tasks.ListTasks(ctx, scope, *filter)
 	if err != nil {
-		return nil, false, err
+		return ExportResult{}, err
 	}
-	return maskRows(rows), next != "", nil
+	return ExportResult{Rows: maskRows(rows), Truncated: next != "", Day: filter.Day}, nil
 }
 
 // prepare 校验作用域、业务日与状态词。页大小由两个用例各自判：
@@ -135,7 +146,26 @@ func (q *TaskQuery) prepare(scope corescope.Scope, in coreschedule.TaskQueryFilt
 	if filter.State != "" && !status.TaskState(filter.State).Valid() {
 		return nil, coreerrs.New(coreerrs.CodeValidation, "unknown task state")
 	}
+	// q 的检索面：名称子串恒开；手机号只认 11 位全号（UX-3 审查 P2-5）。
+	if isFullPhoneNumber(filter.Query) {
+		filter.Phone = filter.Query
+	}
 	return &filter, nil
+}
+
+// isFullPhoneNumber 判 value 是否为 11 位全号。
+// 检测口径与 core/mask 一致：1[3-9] 开头。这里再判一份是因为
+// 掩码包没有导出单号形状判定；判据的注释互相指认。
+func isFullPhoneNumber(value string) bool {
+	if len(value) != 11 || value[0] != '1' || value[1] < '3' || value[1] > '9' {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // today 返回注入时区的业务日。
