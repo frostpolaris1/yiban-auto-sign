@@ -38,9 +38,10 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
       # 受限网络覆盖点：不设即用官方源。
+      # 这两个是构建参数，不是运行配置：不进 config/registry.json。
       args:
-        GOPROXY: ${YIBAN_BUILD_GOPROXY:-}
-        NPM_CONFIG_REGISTRY: ${YIBAN_BUILD_NPM_REGISTRY:-}
+        GOPROXY: ${BUILD_GOPROXY:-}
+        NPM_CONFIG_REGISTRY: ${BUILD_NPM_REGISTRY:-}
     image: yiban-server:local
     environment:
       YIBAN_ENV: production
