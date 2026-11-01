@@ -45,6 +45,13 @@ server/
 
 Layer and domain names are fixed by the repository map in `../STRUCTURE.md`.
 
+## Deploy
+
+The service is one Go binary. It serves `/api/*` and, when `YIBAN_UI_DIR`
+points at a built frontend directory, the pages and SPA deep links as well.
+Full install and upgrade steps: [`../deploy/README.md`](../deploy/README.md).
+Deployment assertions: [`../docs/dev/deploy-e2e.md`](../docs/dev/deploy-e2e.md).
+
 ## Commands
 
 ```bash

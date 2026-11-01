@@ -165,7 +165,8 @@ func securityHeaders() gin.HandlerFunc {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("X-Frame-Options", "DENY")
-		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
+		// /api 与 /api/* 同一口径：未知 API 的 404 也不得被缓存。
+		if c.Request.URL.Path == "/api" || strings.HasPrefix(c.Request.URL.Path, "/api/") {
 			h.Set("Cache-Control", "no-store")
 		}
 		c.Next()

@@ -36,21 +36,26 @@ bash scripts/e2e/deploy-container-e2e.sh --keep
 bash scripts/e2e/deploy-baremetal-e2e.sh --log-dir /root/dvlogs/6jk-baremetal
 # 受限网络：Go 模块走镜像代理
 DEPLOY_E2E_GOPROXY=https://goproxy.cn,direct bash scripts/e2e/deploy-container-e2e.sh
+# 受限网络：npm 走镜像源
+DEPLOY_E2E_NPM_REGISTRY=https://registry.npmmirror.com bash scripts/e2e/deploy-container-e2e.sh
 ```
 
 ## 2. 容器路径断言
 
 脚本 `scripts/e2e/deploy-container-e2e.sh` 按 `deploy/docker/docker-compose.yml` 起栈。
 独立 compose 项目、独立卷、独立网络、独立回环端口。
+镜像同时构建前端（Dockerfile 的 `ui` 段），页面由 Go 进程托管。
 
 | 步骤 | 断言 |
 |------|------|
 | C1 | docker 可用；本项目无旧容器/卷/网络；端口空闲 |
-| C2 | `docker compose build` 退出 0 |
+| C2 | `docker compose build` 退出 0（含前端 `npm ci && npm run build`） |
 | C3 | db 与 app 均 healthy |
 | C4 | 容器内 `yiban-cli migrate` 打印嵌入集最新版本 |
 | C4b | 签发→验签通过；错公钥必须被拒；篡改清单一字节后验签必须被拒（openssl 现场生成密钥，不入仓） |
 | C5 | 宿主 `curl /healthz` 返回 200，body 为 `{"status":"ok"}` |
+| C5b | 宿主 `curl /` 与深链 `/accounts` 都返回 200 且含 `<div id="root">`；未知 `/api/*` 仍是 JSON 404（`code=not_found`）且不含页面；`/assets/*.js` 带 `immutable` 长缓存 |
+| C5c | 带 `Origin: https://<host>` 与 `X-Forwarded-Proto: https` 的登录请求回 401（无效凭据），不得回 403；403 表示 compose 默认可信代理未覆盖网桥网关 |
 | C6 | 干净库 `users=0`；goose 最高已应用版本等于迁移目录最大编号 |
 | C7 | `compose stop` 发 SIGTERM：退出码 0；耗时 < 30s；日志含 `worker: in-flight drained` |
 | C8 | `compose down -v` 后容器/卷/网络均为 0 |
@@ -72,14 +77,17 @@ C7 的日志断言有独立守卫：`TestRunClosesPoolAfterWorkerDrain`
 | 步骤 | 断言 |
 |------|------|
 | B1 | docker 可用；本前缀资源未占用 |
-| B2 | 一次性 OS 镜像含真 systemd（PID1）与 openssl |
+| B2 | 一次性 OS 镜像含真 systemd（PID1）、openssl 与 curl；旧缓存缺工具即重建 |
 | B3 | 全新 PostgreSQL 18；public 表数为 0 |
 | B4 | 用 `golang:1.27-alpine` 真编译 server 与 cli |
+| B4c | 用 `node:22-alpine` 真跑 `npm ci && npm run build`；产物含 `index.html` 与 `assets/*.js`（可复用外部产物排障） |
 | B4b | 对真编译产物签发清单→验签通过 |
 | B5 | OS 容器 systemd 就绪；`/etc/yiban`、`yiban` 用户、二进制均不存在 |
-| B6 | `install.sh` 退出 0，输出 `install complete: healthz ok` |
+| B6 | `install.sh --ui-dir` 退出 0，输出 `install complete: healthz ok` |
 | B7 | 单元 active + enabled；独立 `yiban-cli healthcheck` 通过 |
-| B8 | `.env` 600 root:root；二进制 755；photos 属 yiban；名册逐字节一致；密钥形状正确 |
+| B7b | 容器内 `curl /` 与深链 `/accounts` 返回 200 且含 `<div id="root">`；未知 `/api/*` 是 JSON 404；`/assets/*.js` 带 `immutable` 长缓存 |
+| B7c | 带 `Origin: https://<loopback>` 与 `X-Forwarded-Proto: https` 的登录请求回 401，不得回 403（`.env` 的信任链生效） |
+| B8 | `.env` 600 root:root 且含 `YIBAN_UI_DIR=/var/lib/yiban/ui` 与 `YIBAN_TRUSTED_PROXIES=127.0.0.1`；二进制 755；photos 与 ui 属 yiban；名册逐字节一致；密钥形状正确 |
 | B9 | 已装 `yiban-cli migrate` 打印最新版本；`users=0` |
 | B10 | `systemctl stop` 后 `ExecMainStatus=0`、`Result=success`；healthcheck 已失败 |
 | B11 | 容器/网络/卷清零 |
@@ -107,10 +115,10 @@ C7 的日志断言有独立守卫：`TestRunClosesPoolAfterWorkerDrain`
 ## 5.1 验收①的口径登记
 
 验收①要求「按 README 一次装成」。
-本仓 README 主体现描述旧 Python 栈。
-本期在 README 顶部**新增一行指针**，指向本文件。
-新栈 README 整体刷新已立 `t32`（接手已关闭的 `n4a-readme`），不在本期。
-本期不改旧栈章节。
+根 README 的主体描述旧 Python 栈。
+新栈的从零安装指南是 `deploy/README.md`；根 README 顶部指向它。
+本期已补该指南与页面断言（CLEAN-0）。
+根 README 整体刷新仍归 `t32`。
 
 ## 6. 等价性与已知边界（AGENTS §32）
 
@@ -120,6 +128,7 @@ C7 的日志断言有独立守卫：`TestRunClosesPoolAfterWorkerDrain`
 - 真 `useradd`、`chown`、`install` 与 POSIX 权限位。
 - 真 PostgreSQL 18，经容器网络连接。
 - 真二进制，由生产同款工具链编译。
+- 真前端产物，由 `node:22-alpine` 跑 `npm ci && npm run build` 得到。
 
 不等价的一维：没有真实内核启动与硬件。
 `network-online.target` 由 systemd 直接满足。
@@ -139,6 +148,8 @@ docker pull docker.m.daocloud.io/library/postgres:18 \
   && docker tag docker.m.daocloud.io/library/postgres:18 postgres:18
 docker pull docker.m.daocloud.io/library/golang:1.27-alpine \
   && docker tag docker.m.daocloud.io/library/golang:1.27-alpine golang:1.27-alpine
+docker pull docker.m.daocloud.io/library/node:22-alpine \
+  && docker tag docker.m.daocloud.io/library/node:22-alpine node:22-alpine
 docker pull gcr.m.daocloud.io/distroless/static-debian12:nonroot \
   && docker tag gcr.m.daocloud.io/distroless/static-debian12:nonroot \
        gcr.io/distroless/static-debian12:nonroot

@@ -4,23 +4,26 @@
 #
 # 模拟的真实用户动作（AGENTS §8g）：
 #   一台干净的 Ubuntu 24.04 主机按 deploy/linux/install.sh 的用法，
-#   落位二进制、生成 /etc/yiban/.env、装 systemd 单元、enable --now，
-#   然后访问 /healthz、再停机。
+#   落位二进制与前端产物、生成 /etc/yiban/.env、装 systemd 单元、
+#   enable --now，然后访问首页与 /healthz、再停机。
 #
 # 为什么容器内仍是「真装」（AGENTS §32）：
 #   被测性质逐条列出：install.sh 的落位/属主/权限、systemd 单元启动、
-#   服务连通真 PostgreSQL 18、/healthz 应答、SIGTERM 后退出码 0。
+#   服务连通真 PostgreSQL 18、/healthz 应答、页面与深链可达、SIGTERM 后退出码 0。
 #   本脚本用一次性 Ubuntu 24.04 容器 + 真 systemd（PID1）+ 真
 #   useradd/chown/systemctl + 真 PostgreSQL 18 覆盖上述全部性质。
+#   前端产物由 node 容器真跑 npm ci + npm run build，不在宿主装依赖。
 #   不等价的一维：容器没有真实内核启动与硬件；network-online.target
 #   由 systemd 直接满足。该维不影响被测性质，摘要里显式打印。
 #   不使用假 systemctl、不使用 YIBAN_INSTALL_ROOT 干跑前缀。
 #
 # 步骤：
-#   B1 前置与干净环境      B2 OS 镜像（systemd + openssl）
+#   B1 前置与干净环境      B2 OS 镜像（systemd + openssl + curl）
 #   B3 干净 PostgreSQL 18   B4 构建二进制（golang 容器，真编译）
-#   B5 一次性 OS 容器       B6 install.sh 真装
-#   B7 服务状态             B8 落位与权限
+#   B4c 构建前端产物（node 容器，真 npm run build）
+#   B5 一次性 OS 容器       B6 install.sh 真装（含 --ui-dir）
+#   B7 服务状态             B7b 页面与深链
+#   B7c 反代信任链          B8 落位与权限
 #   B9 迁移版本与干净库     B10 SIGTERM 优雅停机
 #   B11 资源清理
 # 失败口径：退出码 1，并打印 failed step: <ID> <标题>；每步日志在 --log-dir。
@@ -36,9 +39,12 @@
 #   DEPLOY_E2E_OS_BASE      构建 OS 镜像的基底（默认 ubuntu:24.04）
 #   DEPLOY_E2E_PG_IMAGE     PostgreSQL 镜像（默认 postgres:18）
 #   DEPLOY_E2E_GO_IMAGE     编译用镜像（默认 golang:1.27-alpine）
+#   DEPLOY_E2E_NODE_IMAGE   前端构建镜像（默认 node:22-alpine）
 #   DEPLOY_E2E_GOPROXY      Go 模块代理（受限网络用，如 https://goproxy.cn,direct）
+#   DEPLOY_E2E_NPM_REGISTRY npm 源（受限网络用，如 https://registry.npmmirror.com）
 #   DEPLOY_E2E_SERVER_BIN   复用已构建的服务二进制（排障用，跳过 B4 编译）
 #   DEPLOY_E2E_CLI_BIN      同上，CLI 二进制
+#   DEPLOY_E2E_UI_DIST      复用已构建的前端产物（排障用，跳过 B4c）
 #
 # 发布门状态：发布前手跑项（MANUAL）。本脚本需要 docker 的 --privileged
 #   与 host cgroup，尚未在 GitHub 托管 runner 上实测；故不进自动轨。
@@ -59,9 +65,12 @@ OS_IMAGE="${DEPLOY_E2E_OS_IMAGE:-yiban-e2e-os:ubuntu24.04}"
 OS_BASE="${DEPLOY_E2E_OS_BASE:-ubuntu:24.04}"
 PG_IMAGE="${DEPLOY_E2E_PG_IMAGE:-postgres:18}"
 GO_IMAGE="${DEPLOY_E2E_GO_IMAGE:-golang:1.27-alpine}"
+NODE_IMAGE="${DEPLOY_E2E_NODE_IMAGE:-node:22-alpine}"
 GOPROXY_ARG="${DEPLOY_E2E_GOPROXY:-}"
+NPM_REGISTRY_ARG="${DEPLOY_E2E_NPM_REGISTRY:-}"
 SERVER_BIN_SRC="${DEPLOY_E2E_SERVER_BIN:-}"
 CLI_BIN_SRC="${DEPLOY_E2E_CLI_BIN:-}"
+UI_DIST_SRC="${DEPLOY_E2E_UI_DIST:-}"
 LOG_DIR="${DEPLOY_E2E_LOG_DIR:-$REPO/work/deploy-e2e-baremetal}"
 KEEP=0
 
@@ -70,6 +79,7 @@ PG="${PREFIX}-pg"
 OS="${PREFIX}-os"
 VOL="${PREFIX}-pgdata"
 BIN_OUT=""
+UI_OUT=""
 HEALTH_ADDR="127.0.0.1:47183"
 PG_PASSWORD=""
 DSN=""
@@ -80,7 +90,7 @@ while [ $# -gt 0 ]; do
         --keep) KEEP=1; shift ;;
         --log-dir) LOG_DIR="${2:?--log-dir 需要目录}"; shift 2 ;;
         --log-dir=*) LOG_DIR="${1#*=}"; shift ;;
-        -h|--help) sed -n '2,56p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,55p' "$0"; exit 0 ;;
         *) echo "未知参数：$1" >&2; exit 2 ;;
     esac
 done
@@ -162,16 +172,23 @@ docker version --format '{{.Server.Version}}' >>"$E2E_STEP_LOG" 2>&1 || true
 git -C "$REPO" rev-parse HEAD >>"$E2E_STEP_LOG" 2>&1 || true
 e2e_ok "前缀 $PREFIX，资源名未占用"
 
-# ---- B2 OS 镜像（systemd + openssl） --------------------------------------
-e2e_step "B2" "OS 镜像（systemd + openssl）"
-if docker image inspect "$OS_IMAGE" >/dev/null 2>&1; then
+# ---- B2 OS 镜像（systemd + openssl + curl） -------------------------------
+e2e_step "B2" "OS 镜像（systemd + openssl + curl）"
+# 复用镜像也要验收工具齐备：旧缓存可能没有 curl（CLEAN-0 起页面断言要用）。
+os_image_ready() {
+    docker image inspect "$OS_IMAGE" >/dev/null 2>&1 \
+        && docker run --rm "$OS_IMAGE" sh -c \
+            'test -x /sbin/init && test -x /usr/bin/openssl && test -x /usr/bin/curl' \
+            >/dev/null 2>&1
+}
+if os_image_ready; then
     e2e_ok "复用镜像 $OS_IMAGE"
 else
     cat > "$LOG_DIR/Dockerfile.os" <<EOF
 FROM $OS_BASE
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \\
- && apt-get install -y --no-install-recommends systemd systemd-sysv openssl ca-certificates \\
+ && apt-get install -y --no-install-recommends systemd systemd-sysv openssl ca-certificates curl \\
  && rm -rf /var/lib/apt/lists/*
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]
@@ -182,8 +199,8 @@ EOF
     fi
     e2e_ok "构建 $OS_IMAGE（基 $OS_BASE）"
 fi
-if ! os_image_ok="$(docker run --rm "$OS_IMAGE" sh -c 'test -x /sbin/init && test -x /usr/bin/openssl' 2>>"$E2E_STEP_LOG")"; then
-    e2e_die "OS 镜像缺 /sbin/init 或 openssl"
+if ! os_image_ok="$(docker run --rm "$OS_IMAGE" sh -c 'test -x /sbin/init && test -x /usr/bin/openssl && test -x /usr/bin/curl' 2>>"$E2E_STEP_LOG")"; then
+    e2e_die "OS 镜像缺 /sbin/init、openssl 或 curl"
 fi
 
 # ---- B3 干净 PostgreSQL 18 -------------------------------------------------
@@ -242,6 +259,45 @@ for b in yiban-server yiban-cli; do
     [ -x "$BIN_OUT/$b" ] || e2e_die "$b 未产出或不可执行"
 done
 
+# ---- B4c 构建前端产物（真 npm run build） ---------------------------------
+e2e_step "B4c" "构建前端产物"
+if [ -n "$UI_DIST_SRC" ]; then
+    [ -f "$UI_DIST_SRC/index.html" ] \
+        || e2e_die "DEPLOY_E2E_UI_DIST 里没有 index.html: $UI_DIST_SRC"
+    UI_OUT="$(mktemp -d "$LOG_DIR/ui-dist.XXXXXX")" || e2e_die "创建 UI 输出目录失败"
+    cp -R "$UI_DIST_SRC/." "$UI_OUT/"
+    e2e_ok "复用外部前端产物（排障模式）"
+else
+    UI_OUT="$(mktemp -d "$LOG_DIR/ui-dist.XXXXXX")" || e2e_die "创建 UI 输出目录失败"
+    NPM_ENV=()
+    if [ -n "$NPM_REGISTRY_ARG" ]; then
+        NPM_ENV=(-e "NPM_CONFIG_REGISTRY=$NPM_REGISTRY_ARG")
+    fi
+    # 源码经 stdin 送进容器：不把宿主 ui/node_modules 绑进去。
+    # npm ci 会先删 node_modules；绑定宿主目录等于删宿主的依赖。
+    if ! tar -C "$REPO/ui" \
+        --exclude=./node_modules \
+        --exclude=./dist \
+        --exclude=./dist-showcase \
+        --exclude=./test-results \
+        --exclude=./playwright-report \
+        --exclude=./scripts/api-codegen/node_modules \
+        -cf - . \
+        | docker run --rm -i -v "$UI_OUT:/out" -w /src \
+            "${NPM_ENV[@]}" \
+            "$NODE_IMAGE" sh -c \
+            'tar -xf - && npm ci --no-audit --no-fund && npm run build && cp -a dist/. /out/' \
+            >>"$E2E_STEP_LOG" 2>&1; then
+        e2e_die "前端构建失败（受限网络请设 DEPLOY_E2E_NPM_REGISTRY）"
+    fi
+    e2e_ok "用 $NODE_IMAGE 构建前端产物"
+fi
+[ -f "$UI_OUT/index.html" ] || e2e_die "前端产物缺 index.html"
+for f in "$UI_OUT"/assets/*.js; do
+    [ -f "$f" ] || e2e_die "前端产物缺 assets/*.js"
+    break
+done
+
 # ---- B4b 签名发布物（真二进制签发 → 验签） ---------------------------------
 e2e_step "B4b" "签名发布物"
 SIGN_DIR="$BIN_OUT/signing"
@@ -288,12 +344,15 @@ docker cp "$BIN_OUT/yiban-server" "$OS:/opt/e2e-dist/yiban-server" >>"$E2E_STEP_
     || e2e_die "复制 server 二进制失败"
 docker cp "$BIN_OUT/yiban-cli" "$OS:/opt/e2e-dist/yiban-cli" >>"$E2E_STEP_LOG" 2>&1 \
     || e2e_die "复制 cli 二进制失败"
+docker cp "$UI_OUT" "$OS:/opt/e2e-dist/ui" >>"$E2E_STEP_LOG" 2>&1 \
+    || e2e_die "复制前端产物失败"
 # YIBAN_HEALTH_RETRIES 放大到 60：容器内首次启动要连库并跑迁移。
 # 它只放大等待，不放松判据（仍然必须拿到 200）。
 if ! docker exec -e YIBAN_HEALTH_RETRIES=60 -e YIBAN_HEALTH_RETRY_INTERVAL=1 \
     "$OS" bash /opt/e2e-src/deploy/linux/install.sh \
     --server-bin /opt/e2e-dist/yiban-server \
     --cli-bin /opt/e2e-dist/yiban-cli \
+    --ui-dir /opt/e2e-dist/ui \
     --database-url "$DSN" >>"$E2E_STEP_LOG" 2>&1; then
     os_exec journalctl -u yiban.service --no-pager >>"$E2E_STEP_LOG" 2>&1 || true
     e2e_die "install.sh 退出码非 0"
@@ -324,6 +383,50 @@ if ! os_exec /usr/local/bin/yiban-cli healthcheck --addr "$HEALTH_ADDR" --timeou
 fi
 e2e_ok "active + enabled；独立 healthcheck 通过"
 
+# ---- B7b 页面与前端深链（CLEAN-0） ----------------------------------------
+e2e_step "B7b" "页面与前端深链"
+os_exec curl -fsS --max-time 5 "http://$HEALTH_ADDR/" -o /tmp/e2e-ui.html \
+    >>"$E2E_STEP_LOG" 2>&1 || e2e_die "GET / 失败"
+os_exec grep -q '<div id="root">' /tmp/e2e-ui.html >>"$E2E_STEP_LOG" 2>&1 \
+    || e2e_die "GET / 不是前端首页"
+os_exec curl -fsS --max-time 5 "http://$HEALTH_ADDR/accounts" -o /tmp/e2e-deep.html \
+    >>"$E2E_STEP_LOG" 2>&1 || e2e_die "GET /accounts（前端深链）失败"
+os_exec grep -q '<div id="root">' /tmp/e2e-deep.html >>"$E2E_STEP_LOG" 2>&1 \
+    || e2e_die "GET /accounts 未回 index.html"
+CODE="$(os_exec curl -sS --max-time 5 -o /tmp/e2e-api404.json -w '%{http_code}' \
+    "http://$HEALTH_ADDR/api/definitely-not-a-route" 2>>"$E2E_STEP_LOG" || true)"
+[ "$CODE" = "404" ] || e2e_die "未知 API HTTP $CODE（期望 404）"
+os_exec grep -q '"code":"not_found"' /tmp/e2e-api404.json >>"$E2E_STEP_LOG" 2>&1 \
+    || e2e_die "未知 API 未回 JSON 信封"
+ASSET="$(os_exec sh -c 'grep -oE "/assets/[^\"]+\.js" /tmp/e2e-ui.html | head -n1' \
+    2>>"$E2E_STEP_LOG" || true)"
+[ -n "$ASSET" ] || e2e_die "index.html 里找不到 /assets/*.js"
+os_exec curl -fsS --max-time 5 -o /dev/null -D /tmp/e2e-asset.headers \
+    "http://$HEALTH_ADDR$ASSET" >>"$E2E_STEP_LOG" 2>&1 || e2e_die "GET $ASSET 失败"
+os_exec grep -qi '^cache-control: public, max-age=31536000, immutable' \
+    /tmp/e2e-asset.headers >>"$E2E_STEP_LOG" 2>&1 \
+    || e2e_die "$ASSET 缺 immutable 长缓存"
+e2e_ok "首页 200；/accounts 回首页；未知 API 为 JSON 404；资产长缓存"
+
+# ---- B7c 反代信任链 --------------------------------------------------------
+# install.sh 生成的 .env 必须让宿主反代的 X-Forwarded-Proto 生效。
+# 判据：登录回 401（无效凭据），不得回 403（信任链断）。
+e2e_step "B7c" "反代信任链"
+LOGIN_CODE="$(os_exec curl -sS --max-time 5 -o /tmp/e2e-login.json -w '%{http_code}' \
+    -X POST "http://$HEALTH_ADDR/api/auth/login" \
+    -H 'Content-Type: application/json' \
+    -H "Origin: https://$HEALTH_ADDR" \
+    -H 'X-Forwarded-Proto: https' \
+    -d '{"email":"nobody@example.com","password":"wrong-password"}' \
+    2>>"$E2E_STEP_LOG" || true)"
+if [ "$LOGIN_CODE" = "403" ]; then
+    e2e_die "登录回 403：.env 的 YIBAN_TRUSTED_PROXIES 未覆盖宿主回环"
+fi
+if [ "$LOGIN_CODE" != "401" ]; then
+    e2e_die "登录 HTTP $LOGIN_CODE（期望 401 无效凭据；403 表示信任链断了）"
+fi
+e2e_ok "X-Forwarded-Proto=https 被采信，登录回 401 而非 403"
+
 # ---- B8 落位与权限 ---------------------------------------------------------
 e2e_step "B8" "落位与权限"
 ENV_META="$(os_exec stat -c '%a:%U:%G' /etc/yiban/.env 2>>"$E2E_STEP_LOG" || true)"
@@ -343,11 +446,19 @@ KEY_BYTES="$(os_exec sh -c "grep -E '^YIBAN_CREDENTIAL_KEY=' /etc/yiban/.env | c
 [ "$KEY_BYTES" = "32" ] || e2e_die "YIBAN_CREDENTIAL_KEY 解码后 $KEY_BYTES 字节（期望 32）"
 os_exec grep -Fxq "YIBAN_DATABASE_URL=$DSN" /etc/yiban/.env >>"$E2E_STEP_LOG" 2>&1 \
     || e2e_die ".env 的 YIBAN_DATABASE_URL 与传入值不一致"
+os_exec grep -Fxq 'YIBAN_UI_DIR=/var/lib/yiban/ui' /etc/yiban/.env >>"$E2E_STEP_LOG" 2>&1 \
+    || e2e_die ".env 缺 YIBAN_UI_DIR=/var/lib/yiban/ui"
+os_exec grep -Fxq 'YIBAN_TRUSTED_PROXIES=127.0.0.1' /etc/yiban/.env >>"$E2E_STEP_LOG" 2>&1 \
+    || e2e_die ".env 缺 YIBAN_TRUSTED_PROXIES=127.0.0.1（宿主反代在回环）"
+os_exec test -f /var/lib/yiban/ui/index.html >>"$E2E_STEP_LOG" 2>&1 \
+    || e2e_die "前端产物未落到 /var/lib/yiban/ui"
+UI_META="$(os_exec stat -c '%U:%G' /var/lib/yiban/ui 2>>"$E2E_STEP_LOG" || true)"
+[ "$UI_META" = "yiban:yiban" ] || e2e_die "ui 目录属主=$UI_META（期望 yiban:yiban）"
 HOST_REG_SUM="$(e2e_sha256 "$REPO/config/registry.json" || true)"
 GUEST_REG_SUM="$(os_exec sha256sum /etc/yiban/registry.json 2>>"$E2E_STEP_LOG" | cut -d' ' -f1 || true)"
 [ -n "$HOST_REG_SUM" ] && [ "$HOST_REG_SUM" = "$GUEST_REG_SUM" ] \
     || e2e_die "安装的 registry.json 与 config/registry.json 不一致"
-e2e_ok ".env 600 root:root；二进制 755；photos 属 yiban；名册逐字节一致"
+e2e_ok ".env 600 root:root；二进制 755；photos 与 ui 属 yiban；名册逐字节一致"
 
 # ---- B9 迁移版本与干净库 ---------------------------------------------------
 e2e_step "B9" "迁移版本与干净库"

@@ -268,6 +268,22 @@ func TestUpdateShRollsBackOnFailedMigration(t *testing.T) {
 	if err := os.WriteFile(installed, []byte("#!/bin/sh\n"+oldBody), 0o755); err != nil {
 		t.Fatalf("seed installed: %v", err)
 	}
+	// 已装页面与 .env：失败路径必须保持旧页面。
+	oldUIDir := filepath.Join(root, "var/lib/yiban/ui")
+	if err := os.MkdirAll(oldUIDir, 0o755); err != nil {
+		t.Fatalf("mkdir old ui: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(oldUIDir, "index.html"), []byte("old-ui"), 0o644); err != nil {
+		t.Fatalf("write old ui: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "etc/yiban"), 0o755); err != nil {
+		t.Fatalf("mkdir etc: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "etc/yiban/.env"),
+		[]byte("YIBAN_UI_DIR=/var/lib/yiban/ui\n"), 0o600); err != nil {
+		t.Fatalf("write env: %v", err)
+	}
+	newUI := writeUIDistDir(t, "new-ui")
 	newBin := fakeBin(t, binDir, "yiban-server-new", newBody)
 	// 假 cli：migrate 在打标文件存在时失败；healthcheck 成功。
 	migrateFail := filepath.Join(t.TempDir(), "migrate-fail")
@@ -290,7 +306,8 @@ exit 0
 	}
 
 	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
-		"--server-bin", newBin, "--cli-bin", cliBin, "--allow-unsigned")
+		"--server-bin", newBin, "--cli-bin", cliBin,
+		"--ui-dir", newUI, "--allow-unsigned")
 	if rc == 0 {
 		t.Fatalf("failed migration must fail the update; out=%s", out)
 	}
@@ -309,13 +326,21 @@ exit 0
 	if !strings.Contains(log, "stop") || !strings.Contains(log, "start") {
 		t.Fatalf("rollback must stop then start the service:\n%s", log)
 	}
+	// 迁移失败时页面不得先动：旧页面原样，暂存目录被清掉。
+	if body := readAll(t, filepath.Join(oldUIDir, "index.html")); !strings.Contains(body, "old-ui") {
+		t.Fatalf("failed migration must keep the old ui:\n%s", body)
+	}
+	if _, err := os.Stat(oldUIDir + ".new"); err == nil {
+		t.Fatalf("failed migration must not leave %s.new", oldUIDir)
+	}
 
 	// 成功分支：撤掉失败标记 → 迁移通过 → 新二进制就位，旧件留 .bak。
 	if err := os.Remove(migrateFail); err != nil {
 		t.Fatalf("disarm migrate fail: %v", err)
 	}
 	out, rc = runScript(t, scriptPath(t, "update.sh"), env,
-		"--server-bin", newBin, "--cli-bin", cliBin, "--allow-unsigned")
+		"--server-bin", newBin, "--cli-bin", cliBin,
+		"--ui-dir", newUI, "--allow-unsigned")
 	if rc != 0 {
 		t.Fatalf("successful update: rc=%d out=%s", rc, out)
 	}
@@ -325,6 +350,13 @@ exit 0
 	bak := installed + ".bak"
 	if body := readAll(t, bak); !strings.Contains(body, oldBody) {
 		t.Fatalf("old binary must be kept at %s:\n%s", bak, body)
+	}
+	// 成功时新页面生效，旧页面留 ui.bak。
+	if body := readAll(t, filepath.Join(oldUIDir, "index.html")); !strings.Contains(body, "new-ui") {
+		t.Fatalf("successful update must activate the new ui:\n%s", body)
+	}
+	if body := readAll(t, filepath.Join(oldUIDir+".bak", "index.html")); !strings.Contains(body, "old-ui") {
+		t.Fatalf("previous ui must be kept at ui.bak:\n%s", body)
 	}
 }
 
@@ -988,4 +1020,253 @@ func TestUpdateShRejectsWritableAnchorFile(t *testing.T) {
 		t.Fatalf("error must name the anchor permission problem; out=%s", out)
 	}
 	assertUntouchedAndNotStopped(t, installed, oldBody, sysctlLog)
+}
+
+// ---- CLEAN-0：前端产物落位 ------------------------------------------------
+//
+// 被测性质：install.sh 把 --ui-dir 落到 /var/lib/yiban/ui 并写 .env 的
+// YIBAN_UI_DIR；缺 index.html 时在动任何文件之前退出 2。
+// update.sh 用 --ui-dir 换目录、留 .bak，并保持 .env 单行。
+
+// writeUIDistDir 造一个最小前端产物目录，marker 写在 index.html 里。
+func writeUIDistDir(t *testing.T, marker string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"),
+		[]byte("<div id=\"root\">"+marker+"</div>"), 0o644); err != nil {
+		t.Fatalf("write ui index: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "assets"), 0o755); err != nil {
+		t.Fatalf("mkdir ui assets: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "assets", "app-1.js"),
+		[]byte("// "+marker), 0o644); err != nil {
+		t.Fatalf("write ui asset: %v", err)
+	}
+	return dir
+}
+
+func TestInstallShInstallsUIDir(t *testing.T) {
+	requireBash(t)
+	root := t.TempDir()
+	binDir := t.TempDir()
+	serverBin := fakeBin(t, binDir, "yiban-server", "exit 0\n")
+	cliBin := fakeBin(t, binDir, "yiban-cli", "exit 0\n")
+	ui := writeUIDistDir(t, "ui-one")
+
+	env := map[string]string{
+		"YIBAN_INSTALL_ROOT":          root,
+		"SYSTEMCTL":                   fakeBin(t, binDir, "systemctl", "exit 0\n"),
+		"YIBAN_DATABASE_URL":          "postgres://yiban:pw@127.0.0.1:5432/yiban?sslmode=disable",
+		"YIBAN_HEALTH_RETRIES":        "1",
+		"YIBAN_HEALTH_RETRY_INTERVAL": "0",
+	}
+	out, rc := runScript(t, scriptPath(t, "install.sh"), env,
+		"--server-bin", serverBin, "--cli-bin", cliBin, "--ui-dir", ui)
+	if rc != 0 {
+		t.Fatalf("install with --ui-dir: rc=%d out=%s", rc, out)
+	}
+	indexPath := filepath.Join(root, "var/lib/yiban/ui/index.html")
+	if body := readAll(t, indexPath); !strings.Contains(body, "ui-one") {
+		t.Fatalf("installed ui index wrong:\n%s", body)
+	}
+	if _, err := os.Stat(filepath.Join(root, "var/lib/yiban/ui/assets/app-1.js")); err != nil {
+		t.Fatalf("installed ui asset missing: %v", err)
+	}
+	envBody := readAll(t, filepath.Join(root, "etc/yiban/.env"))
+	if !strings.Contains(envBody, "YIBAN_UI_DIR=/var/lib/yiban/ui") {
+		t.Fatalf(".env missing YIBAN_UI_DIR:\n%s", envBody)
+	}
+}
+
+func TestInstallShRejectsUIDirWithoutIndex(t *testing.T) {
+	requireBash(t)
+	root := t.TempDir()
+	binDir := t.TempDir()
+	serverBin := fakeBin(t, binDir, "yiban-server", "exit 0\n")
+	cliBin := fakeBin(t, binDir, "yiban-cli", "exit 0\n")
+	ui := t.TempDir() // 空目录：没有 index.html
+
+	env := map[string]string{
+		"YIBAN_INSTALL_ROOT": root,
+		"SYSTEMCTL":          fakeBin(t, binDir, "systemctl", "exit 0\n"),
+		"YIBAN_DATABASE_URL": "postgres://yiban:pw@127.0.0.1:5432/yiban?sslmode=disable",
+	}
+	out, rc := runScript(t, scriptPath(t, "install.sh"), env,
+		"--server-bin", serverBin, "--cli-bin", cliBin, "--ui-dir", ui)
+	if rc != 2 {
+		t.Fatalf("missing index.html must be a usage error (rc=2): rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "index.html") {
+		t.Fatalf("error must name index.html; out=%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(root, "var/lib/yiban/ui")); err == nil {
+		t.Fatal("rejected --ui-dir must not create the ui directory")
+	}
+}
+
+func TestUpdateShReplacesUIDir(t *testing.T) {
+	requireBash(t)
+	root := t.TempDir()
+	binDir := t.TempDir()
+	sysctlLog := filepath.Join(t.TempDir(), "systemctl.log")
+
+	installedServer := filepath.Join(root, "usr/local/bin/yiban-server")
+	installedCLI := filepath.Join(root, "usr/local/bin/yiban-cli")
+	if err := os.MkdirAll(filepath.Dir(installedServer), 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	if err := os.WriteFile(installedServer, []byte("#!/bin/sh\necho OLD\n"), 0o755); err != nil {
+		t.Fatalf("seed server: %v", err)
+	}
+	if err := os.WriteFile(installedCLI, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("seed cli: %v", err)
+	}
+	// 旧 UI 与已存在的 .env。
+	oldUI := filepath.Join(root, "var/lib/yiban/ui")
+	if err := os.MkdirAll(oldUI, 0o755); err != nil {
+		t.Fatalf("mkdir old ui: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(oldUI, "index.html"), []byte("old-ui"), 0o644); err != nil {
+		t.Fatalf("write old ui: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "etc/yiban"), 0o755); err != nil {
+		t.Fatalf("mkdir etc: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "etc/yiban/.env"),
+		[]byte("YIBAN_UI_DIR=/var/lib/yiban/ui\nYIBAN_HTTP_ADDR=127.0.0.1:47183\n"), 0o600); err != nil {
+		t.Fatalf("write env: %v", err)
+	}
+
+	newServer := fakeBin(t, binDir, "yiban-server-new", "echo NEW\n")
+	newCLI := fakeBin(t, binDir, "yiban-cli-new", "exit 0\n")
+	newUI := writeUIDistDir(t, "ui-two")
+
+	env := map[string]string{
+		"YIBAN_INSTALL_ROOT":          root,
+		"SYSTEMCTL":                   fakeBin(t, binDir, "systemctl", "echo \"systemctl $*\" >> \""+sysctlLog+"\"\nexit 0\n"),
+		"YIBAN_HEALTH_RETRIES":        "1",
+		"YIBAN_HEALTH_RETRY_INTERVAL": "0",
+		"PATH":                        binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer, "--cli-bin", newCLI, "--ui-dir", newUI, "--allow-unsigned")
+	if rc != 0 {
+		t.Fatalf("update with --ui-dir: rc=%d out=%s", rc, out)
+	}
+	if body := readAll(t, filepath.Join(root, "var/lib/yiban/ui/index.html")); !strings.Contains(body, "ui-two") {
+		t.Fatalf("active ui must be the new one:\n%s", body)
+	}
+	if body := readAll(t, filepath.Join(root, "var/lib/yiban/ui.bak/index.html")); !strings.Contains(body, "old-ui") {
+		t.Fatalf("previous ui must be kept at ui.bak:\n%s", body)
+	}
+	envBody := readAll(t, filepath.Join(root, "etc/yiban/.env"))
+	if got := strings.Count(envBody, "YIBAN_UI_DIR="); got != 1 {
+		t.Fatalf("YIBAN_UI_DIR must appear exactly once, got %d:\n%s", got, envBody)
+	}
+	if !strings.Contains(envBody, "YIBAN_UI_DIR=/var/lib/yiban/ui") {
+		t.Fatalf(".env lost YIBAN_UI_DIR:\n%s", envBody)
+	}
+}
+
+func TestUpdateShRejectsUIDirWithoutIndex(t *testing.T) {
+	requireBash(t)
+	root := t.TempDir()
+	binDir := t.TempDir()
+	newServer := fakeBin(t, binDir, "yiban-server-new", "exit 0\n")
+	env := map[string]string{
+		"YIBAN_INSTALL_ROOT": root,
+		"SYSTEMCTL":          fakeBin(t, binDir, "systemctl", "exit 0\n"),
+	}
+	// 空目录没有 index.html；用法检查先于「已安装」检查，因此不必预置二进制。
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer, "--ui-dir", t.TempDir(), "--allow-unsigned")
+	if rc != 2 {
+		t.Fatalf("missing index.html must be a usage error (rc=2): rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "index.html") {
+		t.Fatalf("error must name index.html; out=%s", out)
+	}
+}
+
+// 首次给「只装 API」的机器加页面时，激活前的失败不得留下悬空 YIBAN_UI_DIR。
+// 旧二进制读不到目录会拒绝启动：那等于服务停摆，不是「旧件继续跑」。
+func TestUpdateShFirstUIWritesEnvOnlyAfterActivation(t *testing.T) {
+	requireBash(t)
+	root := t.TempDir()
+	binDir := t.TempDir()
+	sysctlLog := filepath.Join(t.TempDir(), "systemctl.log")
+	installed := filepath.Join(root, "usr/local/bin/yiban-server")
+	if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	if err := os.WriteFile(installed, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("seed server: %v", err)
+	}
+	// 只装 API：没有 ui 目录，.env 也没有 YIBAN_UI_DIR。
+	if err := os.MkdirAll(filepath.Join(root, "etc/yiban"), 0o755); err != nil {
+		t.Fatalf("mkdir etc: %v", err)
+	}
+	envPath := filepath.Join(root, "etc/yiban/.env")
+	if err := os.WriteFile(envPath, []byte("YIBAN_HTTP_ADDR=127.0.0.1:47183\n"), 0o600); err != nil {
+		t.Fatalf("write env: %v", err)
+	}
+
+	newServer := fakeBin(t, binDir, "yiban-server-new", "exit 0\n")
+	// migrate 在打标文件存在时失败；health 成功。
+	migrateFail := filepath.Join(t.TempDir(), "migrate-fail")
+	if err := os.WriteFile(migrateFail, []byte("x"), 0o644); err != nil {
+		t.Fatalf("arm migrate fail: %v", err)
+	}
+	cliBin := fakeBin(t, binDir, "yiban-cli", `
+case "$1" in
+  migrate) [ -f "$FAKE_MIGRATE_FAIL" ] && exit 1; exit 0 ;;
+  healthcheck) exit 0 ;;
+esac
+exit 0
+`)
+	ui := writeUIDistDir(t, "first-ui")
+	env := map[string]string{
+		"YIBAN_INSTALL_ROOT": root,
+		"FAKE_MIGRATE_FAIL":  migrateFail,
+		"SYSTEMCTL": fakeBin(t, binDir, "systemctl",
+			"echo \"systemctl $*\" >> \""+sysctlLog+"\"\nexit 0\n"),
+		"PATH": binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}
+
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer, "--cli-bin", cliBin,
+		"--ui-dir", ui, "--allow-unsigned")
+	if rc == 0 {
+		t.Fatalf("failed migration must fail the update; out=%s", out)
+	}
+	if body := readAll(t, envPath); strings.Contains(body, "YIBAN_UI_DIR=") {
+		t.Fatalf("failed activation must not write YIBAN_UI_DIR:\n%s", body)
+	}
+	if _, err := os.Stat(filepath.Join(root, "var/lib/yiban/ui")); err == nil {
+		t.Fatal("failed activation must not leave an active ui directory")
+	}
+	if _, err := os.Stat(filepath.Join(root, "var/lib/yiban/ui.new")); err == nil {
+		t.Fatal("failed activation must not leave ui.new")
+	}
+	if log := readAll(t, sysctlLog); !strings.Contains(log, "start yiban.service") {
+		t.Fatalf("failed migration must start the service back:\n%s", log)
+	}
+
+	// 成功分支：撤掉失败标记 → 页面与指针一起就位。
+	if err := os.Remove(migrateFail); err != nil {
+		t.Fatalf("disarm migrate fail: %v", err)
+	}
+	out, rc = runScript(t, scriptPath(t, "update.sh"), env,
+		"--server-bin", newServer, "--cli-bin", cliBin,
+		"--ui-dir", ui, "--allow-unsigned")
+	if rc != 0 {
+		t.Fatalf("first-ui update: rc=%d out=%s", rc, out)
+	}
+	if body := readAll(t, envPath); !strings.Contains(body, "YIBAN_UI_DIR=/var/lib/yiban/ui") {
+		t.Fatalf("successful activation must write YIBAN_UI_DIR:\n%s", body)
+	}
+	if body := readAll(t, filepath.Join(root, "var/lib/yiban/ui/index.html")); !strings.Contains(body, "first-ui") {
+		t.Fatalf("successful activation must install the page:\n%s", body)
+	}
 }
