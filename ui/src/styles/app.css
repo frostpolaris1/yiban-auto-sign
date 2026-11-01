@@ -1013,3 +1013,68 @@
     max-width: none;
   }
 }
+
+/* ---------- UX-5 执行监控 ----------
+ * 四指标、在飞、待重试与最近事件。颜色只取令牌；
+ * 指标沿用运行页的 .run-summary，四格由本页的列数收窄。
+ */
+.engine-summary {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.engine-count {
+  font-variant-numeric: tabular-nums;
+}
+
+.engine-process {
+  margin: 10px 0 0;
+}
+
+.engine-table time,
+.engine-lease {
+  font-variant-numeric: tabular-nums;
+}
+
+.engine-lease {
+  color: var(--t-muted);
+}
+
+.engine-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.engine-events {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 13px;
+}
+
+.engine-events li {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px dashed var(--t-border);
+}
+
+.engine-events time {
+  font-variant-numeric: tabular-nums;
+  color: var(--t-muted);
+}
+
+@media (max-width: 720px) {
+  .engine-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.engine-truncated {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--t-warning);
+}

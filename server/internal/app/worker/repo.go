@@ -9,7 +9,8 @@
 // app 层用例。端口见本文件，存储实现见 adapters/pg，执行实现见 signing。
 //
 // # 复用
-// Service、Deps、Request；端口 Store、Credentials、Signer、Egress、Limiter。
+// Service、Deps、Request；端口 Store、Credentials、Signer、Egress、Limiter；
+// EngineState（执行监控的进程时刻，Loop 写、入口层读）。
 //
 // # 口径
 // 每账号串行：认领 SQL 排除已有 running 的账号，库层唯一索引是最终兜底。

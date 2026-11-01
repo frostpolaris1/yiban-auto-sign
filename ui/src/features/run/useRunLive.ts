@@ -1,14 +1,16 @@
 /**
  * **功能**
- * 运行页的实时刷新钩子：SSE 到达即失效查询，断线出横幅并可重连。
+ * 运行域的实时刷新钩子：SSE 到达即失效查询，断线出横幅并可重连。
  *
  * **归属**
  * `features/run` 域钩子：不渲染，只管连接与查询失效。
+ * 运行页与执行监控页（UX-5）共用同一条连接纪律。
  *
  * **口径**
  * 复用 `GET /api/admin/events`，不新增事件类型。
  * `task.progress`、`task.concluded`、`window.changed` 触发刷新；
- * 其余事件（心跳、resync、end、snapshot）不触发。
+ * `capacity.changed`、`egress.health` 只进事件展示（onEvent），不触发刷新；
+ * 其余事件（心跳、resync、end、snapshot）两者都不参与。
  * EventSource 可注入（参数 `createSource`），Playwright 以替换
  * `window.EventSource` 注入假体，组件代码不感知。
  * 重连是换代：代数进 effect 依赖，重连即拆旧连接、建新连接。
@@ -24,6 +26,9 @@ import { formatClock } from '@/lib/format'
 /** 触发刷新的事件名集合。与契约 `/api/admin/events` 的词表一致。 */
 const REFRESH_EVENTS = ['task.progress', 'task.concluded', 'window.changed'] as const
 
+/** 只进事件展示、不触发刷新的业务事件名。 */
+const OBSERVE_EVENTS = ['capacity.changed', 'egress.health'] as const
+
 /** 断线降级轮询的间隔。 */
 export const RUN_POLL_INTERVAL_MS = 10000
 
@@ -34,6 +39,13 @@ export type RunLive = {
   /** 断线时刻的 HH:mm 文本；连接正常时为 null。 */
   since: string | null
   reconnect: () => void
+}
+
+export type RunLiveOptions = {
+  /** 每个业务事件（含不触发刷新的五类）到达时回调；用于事件列表。 */
+  onEvent?: (type: string) => void
+  /** 事件到达时失效的查询键前缀。运行页缺省 ['run-page']，监控页给 ['engine-page']。 */
+  invalidateKey?: readonly unknown[]
 }
 
 type EventSourceLike = {
@@ -59,6 +71,7 @@ export function useRunLive(
   queryClient: QueryClient,
   enabled: boolean,
   createSource: EventSourceFactory = defaultSourceFactory,
+  options: RunLiveOptions = {},
 ): RunLive {
   const [status, setStatus] = useState<RunLiveStatus>('live')
   const [since, setSince] = useState<string | null>(null)
@@ -66,6 +79,11 @@ export function useRunLive(
   const [generation, setGeneration] = useState(0)
   const generationRef = useRef(generation)
   generationRef.current = generation
+  const onEventRef = useRef(options.onEvent)
+  onEventRef.current = options.onEvent
+  // 失效键经 ref 读取：调用方常以字面量传入，进依赖会让连接每渲染重建。
+  const invalidateKeyRef = useRef(options.invalidateKey)
+  invalidateKeyRef.current = options.invalidateKey
 
   const reconnect = useCallback(() => {
     setGeneration((value) => value + 1)
@@ -97,7 +115,14 @@ export function useRunLive(
     for (const name of REFRESH_EVENTS) {
       source.addEventListener(name, () => {
         if (generationRef.current !== thisGeneration) return
-        void queryClient.invalidateQueries({ queryKey: ['run-page'] })
+        onEventRef.current?.(name)
+        void queryClient.invalidateQueries({ queryKey: [...(invalidateKeyRef.current ?? ['run-page'])] })
+      })
+    }
+    for (const name of OBSERVE_EVENTS) {
+      source.addEventListener(name, () => {
+        if (generationRef.current !== thisGeneration) return
+        onEventRef.current?.(name)
       })
     }
     return () => {

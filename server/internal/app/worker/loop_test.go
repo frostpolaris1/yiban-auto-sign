@@ -51,11 +51,17 @@ type fakeCounter struct{ n int64 }
 
 func (f *fakeCounter) CountRunning(context.Context) (int64, error) { return f.n, nil }
 
+// newLoopForTest 是停机测试的构造助手：不记录 EngineState，
+// 时刻取系统墙钟的当时值（本组测试不判时刻，只判停机顺序）。
+func newLoopForTest(svc Stepper, counter RunningCounter, interval time.Duration, limit int) *Loop {
+	return NewLoop(svc, counter, coreclock.System{}, nil, interval, limit)
+}
+
 func TestLoopStopWaitsForInFlight(t *testing.T) {
 	begun := make(chan struct{})
 	release := make(chan struct{})
 	svc := &fakeStepper{begun: begun, release: release}
-	loop := NewLoop(svc, &fakeCounter{}, 10*time.Millisecond, 1)
+	loop := newLoopForTest(svc, &fakeCounter{}, 10*time.Millisecond, 1)
 	loop.Start()
 
 	select {
@@ -101,7 +107,7 @@ func TestLoopStopCancelsInFlightOnTimeout(t *testing.T) {
 	// 预算到点：Stop 取消在飞并等它收尾，然后正常返回。
 	// 调用方（assembly）随后关连接池——不先收尾，结算写不进去。
 	st := &ctxStepper{begun: make(chan struct{}), ended: make(chan struct{})}
-	loop := NewLoop(st, &fakeCounter{n: 1}, 10*time.Millisecond, 1)
+	loop := newLoopForTest(st, &fakeCounter{n: 1}, 10*time.Millisecond, 1)
 	loop.Start()
 
 	select {
@@ -135,7 +141,7 @@ func TestLoopStopGivesUpWhenStepIgnoresCancel(t *testing.T) {
 	release := make(chan struct{})
 	defer close(release) // 测试结束后放行，避免 goroutine 泄漏
 	svc := &fakeStepper{begun: begun, release: release}
-	loop := NewLoop(svc, &fakeCounter{}, 10*time.Millisecond, 1)
+	loop := newLoopForTest(svc, &fakeCounter{}, 10*time.Millisecond, 1)
 	loop.Start()
 
 	select {
@@ -192,7 +198,7 @@ func (s *ctxStepper) wasCancelled() bool {
 }
 
 func TestLoopStopWithoutStartIsImmediate(t *testing.T) {
-	loop := NewLoop(&fakeStepper{release: make(chan struct{})}, &fakeCounter{}, time.Second, 1)
+	loop := newLoopForTest(&fakeStepper{release: make(chan struct{})}, &fakeCounter{}, time.Second, 1)
 	remain, err := loop.Stop(context.Background())
 	if err != nil {
 		t.Fatalf("Stop: %v", err)
@@ -208,7 +214,7 @@ func TestLoopStopsClaimingAfterStop(t *testing.T) {
 	release := make(chan struct{})
 	close(release)
 	svc := &fakeStepper{release: release}
-	loop := NewLoop(svc, &fakeCounter{}, 5*time.Millisecond, 1)
+	loop := newLoopForTest(svc, &fakeCounter{}, 5*time.Millisecond, 1)
 	loop.Start()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -227,7 +233,7 @@ func TestLoopStopsClaimingAfterStop(t *testing.T) {
 // Stop 会关闭 done 通道；未启动过的实例 Start 后 run() 的
 // defer close(done) 会二次关闭，直接 panic。
 func TestLoopStartAfterStopFails(t *testing.T) {
-	loop := NewLoop(&fakeStepper{release: make(chan struct{})}, &fakeCounter{}, time.Second, 1)
+	loop := newLoopForTest(&fakeStepper{release: make(chan struct{})}, &fakeCounter{}, time.Second, 1)
 	if _, err := loop.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
@@ -240,7 +246,7 @@ func TestLoopStartAfterStopFails(t *testing.T) {
 func TestLoopRestartAfterStopFails(t *testing.T) {
 	release := make(chan struct{})
 	close(release)
-	loop := NewLoop(&fakeStepper{release: release}, &fakeCounter{}, 5*time.Millisecond, 1)
+	loop := newLoopForTest(&fakeStepper{release: release}, &fakeCounter{}, 5*time.Millisecond, 1)
 	if err := loop.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}

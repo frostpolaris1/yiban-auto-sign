@@ -103,6 +103,7 @@ either side drifts.
 | GET | `/api/admin/events` | master/admin | P6 |
 | GET | `/api/admin/tasks` | master/admin | UX-3 swh |
 | GET | `/api/admin/tasks/export` | master/admin | UX-3 swh |
+| GET | `/api/admin/engine` | master/admin | UX-5 aqn |
 | GET | `/api/me/diagnostics` | master/admin/user | P6 |
 | GET | `/api/accounts/:id/diagnostics` | user/admin/master | UX-3 (was user/admin) |
 | GET | `/api/me/sign-status` | master/admin/user | P6 |

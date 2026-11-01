@@ -211,7 +211,10 @@ type Stack struct {
 	DB     *pg.DB
 	// Worker 是执行循环用例。无数据库时为 nil。
 	Worker *appworker.Service
-	Close  func()
+	// EngineState 是执行循环的进程内时刻记录，与 HTTP 的执行监控端点
+	// 共享同一实例。无数据库时为 nil。
+	EngineState *appworker.EngineState
+	Close       func()
 }
 
 // buildStack 是 Build 的调用接缝。
@@ -229,7 +232,8 @@ type loopHandle interface {
 // newLoop 是执行循环的构造接缝。删除 Run 的启动块时测试必红：
 // 假循环收不到 Start/Stop。
 var newLoop = func(stack *Stack, interval time.Duration, limit int) loopHandle {
-	return appworker.NewLoop(stack.Worker, stack.Worker, interval, limit)
+	return appworker.NewLoop(stack.Worker, stack.Worker, clock.System{},
+		stack.EngineState, interval, limit)
 }
 
 // NewServer 装配进程但不启动它。
@@ -302,12 +306,17 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		signing   *signinghttp.Handler
 		planning  *schedulehttp.Handler
 		taskLib   *schedulehttp.TasksHandler
+		engineLib *schedulehttp.EngineHandler
 		photoLib  *photoshttp.Handler
 		locLib    *locationhttp.Handler
 		eventLib  *eventshttp.Handler
 		db        *pg.DB
 		workerSvc *appworker.Service
-		closeFn   = func() {}
+		// engineState 是执行循环的进程内时刻记录，DB 分支构造：
+		// 循环（Run）写入，执行监控端点读取，两者共享同一实例。
+		// 无数据库时保持 nil：没有循环就没有进程时刻。
+		engineState *appworker.EngineState
+		closeFn     = func() {}
 	)
 
 	// 可信代理表同时服务登录来源判定；与限流开关解耦。
@@ -645,6 +654,10 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		taskLib = schedulehttp.NewTasksHandler(
 			appschedule.NewTaskQuery(scheduleRepo, clk, loc), adminSvc,
 			schedulehttp.Config{Location: loc, Clock: clk})
+		// 执行监控：快照用例与循环进程时刻同一实例（UX-5）。
+		engineState = appworker.NewEngineState()
+		engineLib = schedulehttp.NewEngineHandler(
+			appschedule.NewEngineQuery(scheduleRepo, clk, loc), engineState, adminSvc)
 		// 日切构建：启动补建 + 业务日 00:10 定时。参数与 HTTP 建计划同源。
 		daily, err := appschedule.NewDailyCron(&appschedule.DailyBuilder{
 			Service: scheduleSvc, Tasks: scheduleRepo, Clock: clk, Location: loc,
@@ -700,6 +713,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		Signing:         signing,
 		Schedule:        planning,
 		Tasks:           taskLib,
+		Engine:          engineLib,
 		Photos:          photoLib,
 		Locations:       locLib,
 		Events:          eventLib,
@@ -714,7 +728,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 	// Close 幂等：srv.Shutdown 触发一次，Run 的收尾再显式调一次。
 	var closeOnce sync.Once
 	closeAll := func() { closeOnce.Do(closeFn) }
-	return &Stack{Engine: engine, DB: db, Worker: workerSvc, Close: closeAll}, nil
+	return &Stack{Engine: engine, DB: db, Worker: workerSvc, EngineState: engineState, Close: closeAll}, nil
 }
 
 // publicOrigin 把公开基址收敛成 scheme://host[:port]。

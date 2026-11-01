@@ -1198,6 +1198,40 @@ paths:
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         default: { $ref: '#/components/responses/DefaultError' }
+  /api/admin/engine:
+    get:
+      tags: [schedule]
+      operationId: AdminEngine
+      summary: One-process execution monitor snapshot.
+      description: |
+        A point-in-time view of the execution worker for admins. master sees
+        every school; admin sees bound schools only — the per-school rows
+        (inflight, retrying) and the due/today counters are narrowed by the
+        same binding rule, while the in-process timestamps are global (they
+        describe the process, not a school). An admin with no binding sees an
+        empty snapshot, never another scope's rows.
+        inflight rows are running tasks with a claim time and a lease
+        deadline; lease_expires_at is an absolute time and the client renders
+        the remaining lease itself. retrying rows are pending tasks with at
+        least one business attempt (waiting requeues never count an attempt),
+        ordered by the next run time ascending and capped at the 200 soonest
+        rows; retrying_truncated reports that the cap cut rows, so the list
+        is never read as complete. account_phone_masked keeps the first 3
+        and last 4 digits; the full number never leaves the server.
+        last_claim_at, last_tick_at and worker_started_at are
+        in-process times: they are null before the loop starts and reset on
+        restart, so they are never read back from the database.
+      x-roles: [master, admin]
+      responses:
+        '200':
+          description: Execution monitor snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EngineSnapshot'
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        default: { $ref: '#/components/responses/DefaultError' }
   /api/me/diagnostics:
     get:
       tags: [events]
@@ -2484,6 +2518,94 @@ components:
           format: date-time
           description: Null while the row has never been claimed.
         updated_at: { type: string, format: date-time }
+    EngineSnapshot:
+      type: object
+      required: [inflight, due_now, today_success, today_failed, retrying, retrying_truncated, last_claim_at, last_tick_at, worker_started_at]
+      properties:
+        inflight:
+          type: array
+          description: Running tasks with a claim time and a lease deadline, oldest claim first.
+          items:
+            $ref: '#/components/schemas/EngineInflightRow'
+        due_now:
+          type: integer
+          description: Pending tasks whose run time has passed, in the caller's school scope.
+        today_success:
+          type: integer
+          description: Tasks that reached success on the current business day, in the caller's school scope.
+        today_failed:
+          type: integer
+          description: Tasks that reached failed on the current business day, in the caller's school scope.
+        retrying:
+          type: array
+          description: |
+            Pending tasks with at least one business attempt, ordered by the
+            next run time ascending, capped at the 200 soonest rows. Waiting
+            requeues never count an attempt.
+          items:
+            $ref: '#/components/schemas/EngineRetryRow'
+        retrying_truncated:
+          type: boolean
+          description: True when more retry rows exist beyond the 200-row cap; the client must not read the list as complete.
+        last_claim_at:
+          type: [string, "null"]
+          format: date-time
+          description: |
+            In-process time of the last claim that processed at least one
+            task; null before the loop claims anything. Never read from the
+            database, so it resets on restart.
+        last_tick_at:
+          type: [string, "null"]
+          format: date-time
+          description: In-process time of the last completed loop pass; null before the first pass.
+        worker_started_at:
+          type: [string, "null"]
+          format: date-time
+          description: In-process time when the loop started; null while the loop has not started.
+    EngineInflightRow:
+      type: object
+      required: [account_id, account_phone_masked, school_id, school_name, claimed_at, lease_expires_at]
+      properties:
+        account_id: { type: string }
+        account_phone_masked:
+          type: string
+          description: First 3 and last 4 digits of the account phone; the full number never leaves the server.
+        school_id: { type: string }
+        school_name: { type: string }
+        claimed_at:
+          type: string
+          format: date-time
+          description: When this task was claimed by the worker.
+        lease_expires_at:
+          type: string
+          format: date-time
+          description: Absolute lease deadline (claim time plus the lease span); the client renders the remaining lease.
+    EngineRetryRow:
+      type: object
+      required: [task_id, account_id, account_phone_masked, school_id, school_name, task_name, attempts, run_at, result]
+      properties:
+        task_id:
+          type: string
+          description: The sign task row id; the business identity of a retry row, since one account can have several pending retries for one day.
+        account_id: { type: string }
+        account_phone_masked:
+          type: string
+          description: First 3 and last 4 digits of the account phone; the full number never leaves the server.
+        school_id: { type: string }
+        school_name: { type: string }
+        task_name:
+          type: string
+          description: The school task name, shown so a multi-retry account is readable.
+        attempts:
+          type: integer
+          description: Business attempts already consumed; waiting requeues do not count.
+        run_at:
+          type: string
+          format: date-time
+          description: When the next attempt is scheduled.
+        result:
+          type: string
+          description: The persisted outcome word of the last attempt, free-text masked.
     DiagnosticsItem:
       type: object
       required: [account_id, state, run_at, attempts, result, next_retry_at, suggestion]
