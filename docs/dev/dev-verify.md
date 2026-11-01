@@ -210,15 +210,15 @@ python -m pytest tests/test_import_linter_gate.py -q -p no:randomly
 slow 行 + `FAST_KNOWN_SLOW` 长尾 4 条），与 verify 并行、每次 push 都跑——
 **slow 行与长尾不再只靠本地全量覆盖**。
 
-**现量口径（2026-11-01 本树，CLEAN-1 增红线门接线守卫后）**：全量 358 个文件 ＝ 快集 342 ＋ 慢集 14 ＋ 串行轨 2
+**现量口径（2026-11-01 本树，CLEAN-7a 增工具链接线守卫后）**：全量 359 个文件 ＝ 快集 343 ＋ 慢集 14 ＋ 串行轨 2
 （串行轨含 `tests/test_verify_jobs.py`：该文件用真实墙钟等异步任务终态。2026-10-26 在快集里
 连续两次红后移入，理由见名册该行）
 （文件数口径：`tests/lane-roster.tsv` 的非注释行按车道计数；测量命令
 `awk -F'\t' '!/^#/ && ($1=="fast" || $1=="slow" || $1=="serial") {print $1}' tests/lane-roster.tsv | sort | uniq -c`）。
-用例数口径 5307 ＝ 快集 5066 ＋ 慢集 173 ＋ 串行轨 68
+用例数口径 5314 ＝ 快集 5073 ＋ 慢集 173 ＋ 串行轨 68
 （口径：`pytest tests/ --collect-only -q` 的 `tests/…::…` 行按文件归道计数；测量命令
 `/root/.venv-yiban-wsl/bin/python -m pytest tests/ --collect-only -q -p no:randomly --no-header | grep -c '^tests/.*::'`
-输出 `5307`；分道数由 `tests/test_gate_lane_roster.py::DocNumbersMatchRealityTest` 复算，
+输出 `5314`；分道数由 `tests/test_gate_lane_roster.py::DocNumbersMatchRealityTest` 复算，
 
 
 不符时点名文档值与实测值）。
@@ -363,6 +363,17 @@ bash scripts/verify-stacks.sh
 ```
 
 它依次跑 `server/scripts/verify.sh` 与 `ui` 的 `npm run verify`。
+后端用 Go 1.27.2+；`server/go.mod` 的 `toolchain` 行指向 1.27.3，默认 `GOTOOLCHAIN=auto` 取补丁版。许可证门固定 1.27.2，工具链快门固定 1.27.3。
 缺少 `go` 或 `npm` 时以退出码 2 结束，并把缺失项打到 stderr；跳过不算绿。
 
 CI 的 `stacks` 作业与本地入口同源。视觉回归目前只在 win32 生成基线，未进 CI。
+
+工具链快门是另一条入口（CI 的 `tooling-gate` 作业）：
+
+```bash
+bash scripts/tooling-gate.sh
+```
+
+它跑 actionlint（工作流）、shellcheck（新栈部署/e2e 脚本，warning 及以上）、
+govulncheck（Go 依赖与调用面可达的漏洞）、npm audit（ui，high 及以上）。
+缺任一工具以退出码 2 结束；跳过不算绿。
