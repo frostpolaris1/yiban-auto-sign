@@ -21,6 +21,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 )
 
 // Stepper 是执行循环的认领结算面（*Service 实现）。
@@ -39,6 +41,10 @@ type Loop struct {
 	counter  RunningCounter
 	interval time.Duration
 	limit    int
+	// clk 供给写入 EngineState 的时刻。全仓只有 core/clock 读墙钟。
+	clk coreclock.Clock
+	// state 是执行监控的进程内时刻记录。可为 nil：不记录，循环行为不变。
+	state *EngineState
 
 	stop chan struct{}
 	done chan struct{}
@@ -62,16 +68,23 @@ var errLoopAlreadyStarted = errors.New("worker: loop already started")
 var errLoopStopped = errors.New("worker: loop already stopped")
 
 // NewLoop 构造循环。interval 是空转轮询间隔；limit 是每次认领上限。
-func NewLoop(svc Stepper, counter RunningCounter, interval time.Duration, limit int) *Loop {
+// clk 是写入 EngineState 的时刻来源；state 可为 nil（不记录）。
+func NewLoop(svc Stepper, counter RunningCounter, clk coreclock.Clock, state *EngineState,
+	interval time.Duration, limit int) *Loop {
 	if interval <= 0 {
 		interval = time.Second
 	}
 	if limit < 1 {
 		limit = 1
 	}
+	if clk == nil {
+		clk = coreclock.System{}
+	}
 	return &Loop{
 		svc:      svc,
 		counter:  counter,
+		clk:      clk,
+		state:    state,
 		interval: interval,
 		limit:    limit,
 		stop:     make(chan struct{}),
@@ -93,6 +106,9 @@ func (l *Loop) Start() error {
 		return errLoopAlreadyStarted
 	}
 	l.started = true
+	if l.state != nil {
+		l.state.RecordStarted(l.clk.Now())
+	}
 	go l.run()
 	return nil
 }
@@ -115,11 +131,20 @@ func (l *Loop) run() {
 		l.mu.Lock()
 		l.cancelInFlight = cancel
 		l.mu.Unlock()
-		_, err := l.svc.Step(stepCtx, l.limit)
+		count, err := l.svc.Step(stepCtx, l.limit)
 		l.mu.Lock()
 		l.cancelInFlight = nil
 		l.mu.Unlock()
 		cancel()
+		// 执行监控的进程时刻：每轮 Step 后记 tick；该轮处理数大于 0 记 claim。
+		// 记录失败不存在——EngineState 只动内存。state 为 nil 时不记录。
+		if l.state != nil {
+			now := l.clk.Now()
+			l.state.RecordTick(now)
+			if count > 0 {
+				l.state.RecordClaim(now)
+			}
+		}
 		if err != nil {
 			l.mu.Lock()
 			l.lastErr = err

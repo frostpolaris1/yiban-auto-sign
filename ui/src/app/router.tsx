@@ -16,6 +16,7 @@ import { AppShell } from '@/components/shell/AppShell'
 import { AccountsPage } from '@/pages/AccountsPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { DesignPage } from '@/pages/DesignPage'
+import { EnginePage } from '@/pages/EnginePage'
 import { ForgotPasswordPage } from '@/pages/ForgotPasswordPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { NotFoundPage } from '@/pages/NotFoundPage'
@@ -82,6 +83,13 @@ const runRoute = createRoute({
   path: '/run',
   validateSearch: (search: Record<string, unknown>) => parseRunSearchRecord(search),
   component: RunRouteComponent,
+})
+
+/** 执行监控：master/admin。快照无筛选与分页，无查询串。 */
+const engineRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: '/engine',
+  component: EnginePage,
 })
 
 /** 把类型化的 search 传给页面，并让页面通过回调写回查询串。 */
@@ -207,6 +215,7 @@ const routeTree = rootRoute.addChildren([
     schoolsRoute,
     usersRoute,
     runRoute,
+    engineRoute,
     scheduleRoute,
   ]),
   loginRoute,

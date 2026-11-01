@@ -309,6 +309,15 @@ func (s *server) AdminTaskExport(c *gin.Context, params oapi.AdminTaskExportPara
 	s.tasks.Export(c, params)
 }
 
+// AdminEngine 委托执行监控处理器。未装配时仍是 501。
+func (s *server) AdminEngine(c *gin.Context) {
+	if s.engine == nil {
+		notImplemented(c)
+		return
+	}
+	s.engine.Snapshot(c)
+}
+
 // TimePrefGet 委托自选时间片处理器。未装配时仍是 501。
 func (s *server) TimePrefGet(c *gin.Context) {
 	if s.schedule == nil {

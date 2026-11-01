@@ -1,9 +1,10 @@
-// Package schedule 把计划、容量、自选时间片与任务检索用例映射到 HTTP。
+// Package schedule 把计划、容量、自选时间片、任务检索与执行监控用例映射到 HTTP。
 //
 // # 功能
 // 计划面七个端点：窗口列表、计划预览、计划落库、窗口覆盖、容量报告、
 // 自选时间片读取与写入。任务检索面两个端点（UX-3）：任务列表与
-// CSV 导出，见 tasks.go 的 TasksHandler。
+// CSV 导出，见 tasks.go 的 TasksHandler。执行监控一个端点（UX-5）：
+// 单进程快照，见 engine.go 的 EngineHandler。
 // 本包**不**查库、**不**算几何、**不**决定窗口来源。
 //
 // # 归属

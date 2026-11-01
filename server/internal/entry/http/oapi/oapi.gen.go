@@ -724,6 +724,71 @@ type DiagnosticsReport struct {
 	UpdatedAt time.Time         `json:"updated_at"`
 }
 
+// EngineInflightRow defines model for EngineInflightRow.
+type EngineInflightRow struct {
+	AccountId string `json:"account_id"`
+
+	// AccountPhoneMasked First 3 and last 4 digits of the account phone; the full number never leaves the server.
+	AccountPhoneMasked string `json:"account_phone_masked"`
+
+	// ClaimedAt When this task was claimed by the worker.
+	ClaimedAt time.Time `json:"claimed_at"`
+
+	// LeaseExpiresAt Absolute lease deadline (claim time plus the lease span); the client renders the remaining lease.
+	LeaseExpiresAt time.Time `json:"lease_expires_at"`
+	SchoolId       string    `json:"school_id"`
+	SchoolName     string    `json:"school_name"`
+}
+
+// EngineRetryRow defines model for EngineRetryRow.
+type EngineRetryRow struct {
+	AccountId string `json:"account_id"`
+
+	// AccountPhoneMasked First 3 and last 4 digits of the account phone; the full number never leaves the server.
+	AccountPhoneMasked string `json:"account_phone_masked"`
+
+	// Attempts Business attempts already consumed; waiting requeues do not count.
+	Attempts int `json:"attempts"`
+
+	// Result The persisted outcome word of the last attempt, free-text masked.
+	Result string `json:"result"`
+
+	// RunAt When the next attempt is scheduled.
+	RunAt      time.Time `json:"run_at"`
+	SchoolId   string    `json:"school_id"`
+	SchoolName string    `json:"school_name"`
+}
+
+// EngineSnapshot defines model for EngineSnapshot.
+type EngineSnapshot struct {
+	// DueNow Pending tasks whose run time has passed, in the caller's school scope.
+	DueNow int `json:"due_now"`
+
+	// Inflight Running tasks with a claim time and a lease deadline, oldest claim first.
+	Inflight []EngineInflightRow `json:"inflight"`
+
+	// LastClaimAt In-process time of the last claim that processed at least one
+	// task; null before the loop claims anything. Never read from the
+	// database, so it resets on restart.
+	LastClaimAt *time.Time `json:"last_claim_at"`
+
+	// LastTickAt In-process time of the last completed loop pass; null before the first pass.
+	LastTickAt *time.Time `json:"last_tick_at"`
+
+	// Retrying Pending tasks with at least one business attempt, ordered by the
+	// next run time ascending. Waiting requeues never count an attempt.
+	Retrying []EngineRetryRow `json:"retrying"`
+
+	// TodayFailed Tasks that reached failed on the current business day, in the caller's school scope.
+	TodayFailed int `json:"today_failed"`
+
+	// TodaySuccess Tasks that reached success on the current business day, in the caller's school scope.
+	TodaySuccess int `json:"today_success"`
+
+	// WorkerStartedAt In-process time when the loop started; null while the loop has not started.
+	WorkerStartedAt *time.Time `json:"worker_started_at"`
+}
+
 // Error defines model for Error.
 type Error struct {
 	Error ErrorBody `json:"error"`
@@ -1646,6 +1711,9 @@ type ServerInterface interface {
 	// AccountVerify Verify the stored credentials against the platform.
 	// (POST /api/accounts/{id}/verify)
 	AccountVerify(c *gin.Context, id AccountID, params AccountVerifyParams)
+	// AdminEngine One-process execution monitor snapshot.
+	// (GET /api/admin/engine)
+	AdminEngine(c *gin.Context)
 	// AdminEvents Subscribe to the admin event stream (SSE).
 	// (GET /api/admin/events)
 	AdminEvents(c *gin.Context, params AdminEventsParams)
@@ -2444,6 +2512,19 @@ func (siw *ServerInterfaceWrapper) AccountVerify(c *gin.Context) {
 	}
 
 	siw.Handler.AccountVerify(c, id, params)
+}
+
+// AdminEngine operation middleware
+func (siw *ServerInterfaceWrapper) AdminEngine(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AdminEngine(c)
 }
 
 // AdminEvents operation middleware
@@ -4060,6 +4141,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/admin/events", wrapper.AdminEvents)
 	router.GET(options.BaseURL+"/api/admin/tasks", wrapper.AdminTaskList)
 	router.GET(options.BaseURL+"/api/admin/tasks/export", wrapper.AdminTaskExport)
+	router.GET(options.BaseURL+"/api/admin/engine", wrapper.AdminEngine)
 	router.GET(options.BaseURL+"/api/me/diagnostics", wrapper.MeDiagnostics)
 	router.GET(options.BaseURL+"/api/accounts/:id/diagnostics", wrapper.AccountDiagnostics)
 	router.GET(options.BaseURL+"/api/me/sign-status", wrapper.MeSignStatus)

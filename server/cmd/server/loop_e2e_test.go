@@ -170,7 +170,7 @@ func TestLoopGracefulStopLeavesNoRunningRows(t *testing.T) {
 		t.Fatalf("enqueue task: %v", err)
 	}
 
-	loop := appworker.NewLoop(workerSvc, workerSvc, 20*time.Millisecond, 1)
+	loop := appworker.NewLoop(workerSvc, workerSvc, clock.System{}, nil, 20*time.Millisecond, 1)
 	if err := loop.Start(); err != nil {
 		t.Fatalf("start loop: %v", err)
 	}

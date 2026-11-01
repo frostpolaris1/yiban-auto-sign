@@ -17,6 +17,7 @@
 
 import {
   Activity,
+  Gauge,
   ArrowRight,
   Bell,
   Calendar,
@@ -63,6 +64,7 @@ import type { CSSProperties, ReactNode } from 'react'
  */
 const ICON_COMPONENTS = {
   activity: Activity,
+  gauge: Gauge,
   dashboard: LayoutDashboard,
   accounts: Users,
   school: School,

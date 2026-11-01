@@ -16,6 +16,7 @@
 
 import type { Account, AccountPage, AccountStatus } from './api/account'
 import type { School, SchoolAdmin, SchoolPage } from './api/school'
+import type { EngineSnapshot } from './api/engine'
 import type { AdminTaskRow, TaskPage } from './api/task'
 import type { UserPage } from './api/user'
 import type {
@@ -357,4 +358,61 @@ export function showcaseRunPage(): TaskPage {
     },
   ]
   return { items: rows, next_cursor: '' }
+}
+
+/**
+ * 执行监控的合成快照（UX-5）。
+ *
+ * 时刻相对展示机的当下取值：租约剩余与「最近一轮」才有活页面的样子。
+ * 值仍是合成标识：掩码号取 138 保留段，学校名明示合成口径。
+ */
+export function showcaseEngineSnapshot(): EngineSnapshot {
+  const at = (offsetMs: number): string => new Date(Date.now() + offsetMs).toISOString()
+  const minute = 60_000
+  return {
+    inflight: [
+      {
+        account_id: 'account-1',
+        account_phone_masked: '138****8001',
+        school_id: 'school-a',
+        school_name: '合成学校甲',
+        claimed_at: at(-40_000),
+        lease_expires_at: at(80_000),
+      },
+      {
+        account_id: 'account-4',
+        account_phone_masked: '138****8004',
+        school_id: 'school-b',
+        school_name: '合成学校乙',
+        claimed_at: at(-15_000),
+        lease_expires_at: at(105_000),
+      },
+    ],
+    due_now: 3,
+    today_success: 12,
+    today_failed: 1,
+    retrying: [
+      {
+        account_id: 'account-3',
+        account_phone_masked: '138****8003',
+        school_id: 'school-a',
+        school_name: '合成学校甲',
+        attempts: 2,
+        run_at: at(5 * minute),
+        result: 'transient',
+      },
+      {
+        account_id: 'account-5',
+        account_phone_masked: '138****8005',
+        school_id: 'school-b',
+        school_name: '合成学校乙',
+        attempts: 1,
+        run_at: at(20 * minute),
+        result: 'rejected',
+      },
+    ],
+    last_claim_at: at(-40_000),
+    last_tick_at: at(-2_000),
+    worker_started_at: at(-6 * 60 * minute),
+  }
 }

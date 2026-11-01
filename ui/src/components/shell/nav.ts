@@ -16,6 +16,7 @@
 import type { IconName } from '@/components/ui/Icon'
 import type { Role } from '@/lib/api/auth'
 import {
+  ENGINE_VIEW_ROLES,
   RUN_VIEW_ROLES,
   SCHOOL_VIEW_ROLES,
   SCHEDULE_VIEW_ROLES,
@@ -106,6 +107,14 @@ export const NAV: NavSection[] = [
         icon: 'activity',
         roles: RUN_VIEW_ROLES,
         crumbs: ['工作区', '运行'],
+      },
+      {
+        key: 'engine',
+        text: '执行监控',
+        to: '/engine',
+        icon: 'gauge',
+        roles: ENGINE_VIEW_ROLES,
+        crumbs: ['工作区', '执行监控'],
       },
     ],
   },

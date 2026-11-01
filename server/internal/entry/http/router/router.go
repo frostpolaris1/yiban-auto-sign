@@ -71,6 +71,8 @@ type Options struct {
 	// Tasks 提供运行页任务检索与 CSV 导出端点。
 	// 为 nil 时这些端点回 501。
 	Tasks *schedulehttp.TasksHandler
+	// Engine 提供执行监控快照端点。为 nil 时该端点回 501。
+	Engine *schedulehttp.EngineHandler
 	// Photos 提供图片库端点。为 nil 时这些端点回 501。
 	Photos *photoshttp.Handler
 	// Locations 提供账号定位策略端点。为 nil 时这些端点回 501。
@@ -102,6 +104,7 @@ type server struct {
 	signing        *signinghttp.Handler
 	schedule       *schedulehttp.Handler
 	tasks          *schedulehttp.TasksHandler
+	engine         *schedulehttp.EngineHandler
 	photos         *photoshttp.Handler
 	locations      *locationhttp.Handler
 	events         *eventshttp.Handler
@@ -140,6 +143,7 @@ func New(opts Options) (*gin.Engine, error) {
 	srv.signing = opts.Signing
 	srv.schedule = opts.Schedule
 	srv.tasks = opts.Tasks
+	srv.engine = opts.Engine
 	srv.photos = opts.Photos
 	srv.locations = opts.Locations
 	srv.events = opts.Events

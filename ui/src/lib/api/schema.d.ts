@@ -752,6 +752,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/engine": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One-process execution monitor snapshot.
+         * @description A point-in-time view of the execution worker for admins. master sees
+         *     every school; admin sees bound schools only — the per-school rows
+         *     (inflight, retrying) and the due/today counters are narrowed by the
+         *     same binding rule, while the in-process timestamps are global (they
+         *     describe the process, not a school). An admin with no binding sees an
+         *     empty snapshot, never another scope's rows.
+         *     inflight rows are running tasks with a claim time and a lease
+         *     deadline; lease_expires_at is an absolute time and the client renders
+         *     the remaining lease itself. retrying rows are pending tasks with at
+         *     least one business attempt (waiting requeues never count an attempt),
+         *     ordered by the next run time ascending. account_phone_masked keeps
+         *     the first 3 and last 4 digits; the full number never leaves the
+         *     server. last_claim_at, last_tick_at and worker_started_at are
+         *     in-process times: they are null before the loop starts and reset on
+         *     restart, so they are never read back from the database.
+         */
+        get: operations["AdminEngine"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/me/diagnostics": {
         parameters: {
             query?: never;
@@ -1553,6 +1587,71 @@ export interface components {
             claimed_at: string | null;
             /** Format: date-time */
             updated_at: string;
+        };
+        EngineSnapshot: {
+            /** @description Running tasks with a claim time and a lease deadline, oldest claim first. */
+            inflight: components["schemas"]["EngineInflightRow"][];
+            /** @description Pending tasks whose run time has passed, in the caller's school scope. */
+            due_now: number;
+            /** @description Tasks that reached success on the current business day, in the caller's school scope. */
+            today_success: number;
+            /** @description Tasks that reached failed on the current business day, in the caller's school scope. */
+            today_failed: number;
+            /**
+             * @description Pending tasks with at least one business attempt, ordered by the
+             *     next run time ascending. Waiting requeues never count an attempt.
+             */
+            retrying: components["schemas"]["EngineRetryRow"][];
+            /**
+             * Format: date-time
+             * @description In-process time of the last claim that processed at least one
+             *     task; null before the loop claims anything. Never read from the
+             *     database, so it resets on restart.
+             */
+            last_claim_at: string | null;
+            /**
+             * Format: date-time
+             * @description In-process time of the last completed loop pass; null before the first pass.
+             */
+            last_tick_at: string | null;
+            /**
+             * Format: date-time
+             * @description In-process time when the loop started; null while the loop has not started.
+             */
+            worker_started_at: string | null;
+        };
+        EngineInflightRow: {
+            account_id: string;
+            /** @description First 3 and last 4 digits of the account phone; the full number never leaves the server. */
+            account_phone_masked: string;
+            school_id: string;
+            school_name: string;
+            /**
+             * Format: date-time
+             * @description When this task was claimed by the worker.
+             */
+            claimed_at: string;
+            /**
+             * Format: date-time
+             * @description Absolute lease deadline (claim time plus the lease span); the client renders the remaining lease.
+             */
+            lease_expires_at: string;
+        };
+        EngineRetryRow: {
+            account_id: string;
+            /** @description First 3 and last 4 digits of the account phone; the full number never leaves the server. */
+            account_phone_masked: string;
+            school_id: string;
+            school_name: string;
+            /** @description Business attempts already consumed; waiting requeues do not count. */
+            attempts: number;
+            /**
+             * Format: date-time
+             * @description When the next attempt is scheduled.
+             */
+            run_at: string;
+            /** @description The persisted outcome word of the last attempt, free-text masked. */
+            result: string;
         };
         DiagnosticsItem: {
             account_id: string;
@@ -2957,6 +3056,29 @@ export interface operations {
                 };
             };
             400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AdminEngine: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Execution monitor snapshot. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EngineSnapshot"];
+                };
+            };
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             default: components["responses"]["DefaultError"];
