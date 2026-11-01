@@ -301,6 +301,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		users     *userhttp.Handler
 		signing   *signinghttp.Handler
 		planning  *schedulehttp.Handler
+		taskLib   *schedulehttp.TasksHandler
 		photoLib  *photoshttp.Handler
 		locLib    *locationhttp.Handler
 		eventLib  *eventshttp.Handler
@@ -640,6 +641,10 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			SlotsPerSlice: slots, Front: true, UsePrefs: cfg.AllowTimePref,
 			EdgeFront: cfg.EdgeFront, EdgeBack: cfg.EdgeBack,
 		})
+		// 运行页任务检索：只读，与计划用例共用排期仓储。
+		taskLib = schedulehttp.NewTasksHandler(
+			appschedule.NewTaskQuery(scheduleRepo, clk, loc), adminSvc,
+			schedulehttp.Config{Location: loc, Clock: clk})
 		// 日切构建：启动补建 + 业务日 00:10 定时。参数与 HTTP 建计划同源。
 		daily, err := appschedule.NewDailyCron(&appschedule.DailyBuilder{
 			Service: scheduleSvc, Tasks: scheduleRepo, Clock: clk, Location: loc,
@@ -694,6 +699,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		Users:           users,
 		Signing:         signing,
 		Schedule:        planning,
+		Tasks:           taskLib,
 		Photos:          photoLib,
 		Locations:       locLib,
 		Events:          eventLib,

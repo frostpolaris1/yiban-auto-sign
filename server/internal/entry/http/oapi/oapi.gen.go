@@ -427,6 +427,60 @@ func (e UserStatus) Valid() bool {
 	}
 }
 
+// Defines values for AdminTaskListParamsState.
+const (
+	AdminTaskListParamsStateFailed  AdminTaskListParamsState = "failed"
+	AdminTaskListParamsStatePending AdminTaskListParamsState = "pending"
+	AdminTaskListParamsStateRunning AdminTaskListParamsState = "running"
+	AdminTaskListParamsStateSkipped AdminTaskListParamsState = "skipped"
+	AdminTaskListParamsStateSuccess AdminTaskListParamsState = "success"
+)
+
+// Valid indicates whether the value is a known member of the AdminTaskListParamsState enum.
+func (e AdminTaskListParamsState) Valid() bool {
+	switch e {
+	case AdminTaskListParamsStateFailed:
+		return true
+	case AdminTaskListParamsStatePending:
+		return true
+	case AdminTaskListParamsStateRunning:
+		return true
+	case AdminTaskListParamsStateSkipped:
+		return true
+	case AdminTaskListParamsStateSuccess:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AdminTaskExportParamsState.
+const (
+	AdminTaskExportParamsStateFailed  AdminTaskExportParamsState = "failed"
+	AdminTaskExportParamsStatePending AdminTaskExportParamsState = "pending"
+	AdminTaskExportParamsStateRunning AdminTaskExportParamsState = "running"
+	AdminTaskExportParamsStateSkipped AdminTaskExportParamsState = "skipped"
+	AdminTaskExportParamsStateSuccess AdminTaskExportParamsState = "success"
+)
+
+// Valid indicates whether the value is a known member of the AdminTaskExportParamsState enum.
+func (e AdminTaskExportParamsState) Valid() bool {
+	switch e {
+	case AdminTaskExportParamsStateFailed:
+		return true
+	case AdminTaskExportParamsStatePending:
+		return true
+	case AdminTaskExportParamsStateRunning:
+		return true
+	case AdminTaskExportParamsStateSkipped:
+		return true
+	case AdminTaskExportParamsStateSuccess:
+		return true
+	default:
+		return false
+	}
+}
+
 // Account defines model for Account.
 type Account struct {
 	CreatedAt time.Time `json:"created_at"`
@@ -600,6 +654,28 @@ type AccountVerifyResult struct {
 	// Message Masked platform text; absent when empty.
 	Message *string `json:"message,omitempty"`
 	Ok      bool    `json:"ok"`
+}
+
+// AdminTaskRow defines model for AdminTaskRow.
+type AdminTaskRow struct {
+	AccountId string `json:"account_id"`
+
+	// AccountPhoneMasked First 3 and last 4 digits of the account phone; the full number never leaves the server.
+	AccountPhoneMasked string `json:"account_phone_masked"`
+	Attempts           int    `json:"attempts"`
+
+	// ClaimedAt Null while the row has never been claimed.
+	ClaimedAt  *time.Time `json:"claimed_at"`
+	Id         string     `json:"id"`
+	Result     string     `json:"result"`
+	RunAt      time.Time  `json:"run_at"`
+	SchoolId   string     `json:"school_id"`
+	SchoolName string     `json:"school_name"`
+
+	// State pending, running, success, failed or skipped.
+	State     string    `json:"state"`
+	TaskName  string    `json:"task_name"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // CapacityReport defines model for CapacityReport.
@@ -938,6 +1014,14 @@ type SignStatusReport struct {
 	UpdatedAt time.Time        `json:"updated_at"`
 }
 
+// TaskPage defines model for TaskPage.
+type TaskPage struct {
+	Items []AdminTaskRow `json:"items"`
+
+	// NextCursor Empty string on the last page.
+	NextCursor string `json:"next_cursor"`
+}
+
 // TimePref defines model for TimePref.
 type TimePref struct {
 	// Allowed False when the deployment disables user time preferences.
@@ -1178,6 +1262,56 @@ type AdminEventsParams struct {
 	// LastEventID Last event id seen by the client, for resumption.
 	LastEventID *string `json:"Last-Event-ID,omitempty"`
 }
+
+// AdminTaskListParams defines parameters for AdminTaskList.
+type AdminTaskListParams struct {
+	// Cursor Opaque page cursor taken from next_cursor.
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Limit Page size, 1 to 200.
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Day Business day YYYY-MM-DD. Defaults to today.
+	Day *openapi_types.Date `form:"day,omitempty" json:"day,omitempty"`
+
+	// State Filter by persisted task state.
+	State *AdminTaskListParamsState `form:"state,omitempty" json:"state,omitempty"`
+
+	// SchoolId Narrow to one school.
+	SchoolId *openapi_types.UUID `form:"school_id,omitempty" json:"school_id,omitempty"`
+
+	// Q Substring of the school or task name, with the LIKE wildcards %
+	// and _ taken literal. A full 11-digit phone number (leading 1,
+	// second digit 3-9) matches the account phone exactly instead.
+	// Shorter prefixes never match: a partial number must not rebuild
+	// a masked phone row by row.
+	Q *string `form:"q,omitempty" json:"q,omitempty"`
+}
+
+// AdminTaskListParamsState defines parameters for AdminTaskList.
+type AdminTaskListParamsState string
+
+// AdminTaskExportParams defines parameters for AdminTaskExport.
+type AdminTaskExportParams struct {
+	// Day Business day YYYY-MM-DD. Defaults to today.
+	Day *openapi_types.Date `form:"day,omitempty" json:"day,omitempty"`
+
+	// State Filter by persisted task state.
+	State *AdminTaskExportParamsState `form:"state,omitempty" json:"state,omitempty"`
+
+	// SchoolId Narrow to one school.
+	SchoolId *openapi_types.UUID `form:"school_id,omitempty" json:"school_id,omitempty"`
+
+	// Q Substring of the school or task name, with the LIKE wildcards %
+	// and _ taken literal. A full 11-digit phone number (leading 1,
+	// second digit 3-9) matches the account phone exactly instead.
+	// Shorter prefixes never match: a partial number must not rebuild
+	// a masked phone row by row.
+	Q *string `form:"q,omitempty" json:"q,omitempty"`
+}
+
+// AdminTaskExportParamsState defines parameters for AdminTaskExport.
+type AdminTaskExportParamsState string
 
 // AuthChangePasswordParams defines parameters for AuthChangePassword.
 type AuthChangePasswordParams struct {
@@ -1515,6 +1649,12 @@ type ServerInterface interface {
 	// AdminEvents Subscribe to the admin event stream (SSE).
 	// (GET /api/admin/events)
 	AdminEvents(c *gin.Context, params AdminEventsParams)
+	// AdminTaskList Search sign tasks for one business day.
+	// (GET /api/admin/tasks)
+	AdminTaskList(c *gin.Context, params AdminTaskListParams)
+	// AdminTaskExport Download the task search as CSV.
+	// (GET /api/admin/tasks/export)
+	AdminTaskExport(c *gin.Context, params AdminTaskExportParams)
 	// AuthChangePassword Change the password of the signed-in user.
 	// (POST /api/auth/change-password)
 	AuthChangePassword(c *gin.Context, params AuthChangePasswordParams)
@@ -2344,6 +2484,124 @@ func (siw *ServerInterfaceWrapper) AdminEvents(c *gin.Context) {
 	}
 
 	siw.Handler.AdminEvents(c, params)
+}
+
+// AdminTaskList operation middleware
+func (siw *ServerInterfaceWrapper) AdminTaskList(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AdminTaskListParams
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "cursor", c.Request.URL.Query(), &params.Cursor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter cursor: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", c.Request.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter limit: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "day" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "day", c.Request.URL.Query(), &params.Day, runtime.BindQueryParameterOptions{Type: "string", Format: "date"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter day: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "state" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "state", c.Request.URL.Query(), &params.State, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter state: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "school_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "school_id", c.Request.URL.Query(), &params.SchoolId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter school_id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "q" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "q", c.Request.URL.Query(), &params.Q, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter q: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AdminTaskList(c, params)
+}
+
+// AdminTaskExport operation middleware
+func (siw *ServerInterfaceWrapper) AdminTaskExport(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AdminTaskExportParams
+
+	// ------------- Optional query parameter "day" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "day", c.Request.URL.Query(), &params.Day, runtime.BindQueryParameterOptions{Type: "string", Format: "date"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter day: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "state" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "state", c.Request.URL.Query(), &params.State, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter state: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "school_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "school_id", c.Request.URL.Query(), &params.SchoolId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter school_id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "q" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "q", c.Request.URL.Query(), &params.Q, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter q: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AdminTaskExport(c, params)
 }
 
 // AuthChangePassword operation middleware
@@ -3800,6 +4058,8 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.PUT(options.BaseURL+"/api/accounts/:id/location", wrapper.AccountLocationSet)
 	router.GET(options.BaseURL+"/api/accounts/:id/photos", wrapper.AccountPhotoList)
 	router.GET(options.BaseURL+"/api/admin/events", wrapper.AdminEvents)
+	router.GET(options.BaseURL+"/api/admin/tasks", wrapper.AdminTaskList)
+	router.GET(options.BaseURL+"/api/admin/tasks/export", wrapper.AdminTaskExport)
 	router.GET(options.BaseURL+"/api/me/diagnostics", wrapper.MeDiagnostics)
 	router.GET(options.BaseURL+"/api/accounts/:id/diagnostics", wrapper.AccountDiagnostics)
 	router.GET(options.BaseURL+"/api/me/sign-status", wrapper.MeSignStatus)

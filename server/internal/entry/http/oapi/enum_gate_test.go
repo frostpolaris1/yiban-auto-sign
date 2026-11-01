@@ -34,6 +34,8 @@ type contractEnum struct {
 // min 取自 771f5c0c 的 oapi.gen.go 与码侧源文件实数。
 var contractEnums = []contractEnum{
 	{".", "AccountDiagnosticsWindowSource", "../../../signing/contract", "WindowSource", "Window", 4},
+	{".", "AdminTaskExportParamsState", "../../../core/status", "TaskState", "Task", 5},
+	{".", "AdminTaskListParamsState", "../../../core/status", "TaskState", "Task", 5},
 	{".", "AccountLocationMode", "../../../signing/contract", "LocationMode", "Location", 2},
 	{".", "AccountStatus", "../../../core/account", "Status", "Status", 6},
 	{".", "ErrorCode", "../../../core/errs", "Code", "Code", 16},

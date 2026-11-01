@@ -1087,6 +1087,117 @@ paths:
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         default: { $ref: '#/components/responses/DefaultError' }
+  /api/admin/tasks:
+    get:
+      tags: [schedule]
+      operationId: AdminTaskList
+      summary: Search sign tasks for one business day.
+      description: |
+        master sees every school; admin sees bound schools only. An admin
+        with no binding sees an empty page, never another scope's rows.
+        day defaults to the current business day in the server timezone.
+        state filters by the persisted task state; school_id narrows to one
+        school (an out-of-scope school id yields an empty page and does not
+        leak existence); q matches a substring of the school or task name,
+        or a full 11-digit phone number exactly, with the LIKE wildcards %
+        and _ taken literal; shorter phone prefixes never match. Rows are
+        ordered by run_at descending with the row id as tiebreaker; cursor
+        is an opaque keyset token over that order.
+        account_phone_masked keeps the first 3 and last 4 digits; the full
+        number never leaves the server.
+      x-roles: [master, admin]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: day
+          in: query
+          required: false
+          description: Business day YYYY-MM-DD. Defaults to today.
+          schema: { type: string, format: date }
+        - name: state
+          in: query
+          required: false
+          description: Filter by persisted task state.
+          schema: { type: string, enum: [pending, running, success, failed, skipped] }
+        - name: school_id
+          in: query
+          required: false
+          description: Narrow to one school.
+          schema: { type: string, format: uuid }
+        - name: q
+          in: query
+          required: false
+          description: |
+            Substring of the school or task name, with the LIKE wildcards %
+            and _ taken literal. A full 11-digit phone number (leading 1,
+            second digit 3-9) matches the account phone exactly instead.
+            Shorter prefixes never match: a partial number must not rebuild
+            a masked phone row by row.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Task page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskPage'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/admin/tasks/export:
+    get:
+      tags: [schedule]
+      operationId: AdminTaskExport
+      summary: Download the task search as CSV.
+      description: |
+        The same scope and filters as GET /api/admin/tasks without cursor
+        and limit. The response is text/csv with one header row whose
+        columns match the task list fields, quoted per RFC 4180. The
+        school name, task name and result cells are formula-escaped: a
+        leading = + - @ TAB or CR gets a single-quote prefix so
+        spreadsheet applications do not evaluate the cell (CWE-1236).
+        Content-Disposition names the file after the effective business
+        day, so a request without day reads tasks-<today>.csv. The export
+        is capped at 10000 rows in key order; when the cap cuts rows the
+        response carries X-Export-Truncated: true.
+      x-roles: [master, admin]
+      parameters:
+        - name: day
+          in: query
+          required: false
+          description: Business day YYYY-MM-DD. Defaults to today.
+          schema: { type: string, format: date }
+        - name: state
+          in: query
+          required: false
+          description: Filter by persisted task state.
+          schema: { type: string, enum: [pending, running, success, failed, skipped] }
+        - name: school_id
+          in: query
+          required: false
+          description: Narrow to one school.
+          schema: { type: string, format: uuid }
+        - name: q
+          in: query
+          required: false
+          description: |
+            Substring of the school or task name, with the LIKE wildcards %
+            and _ taken literal. A full 11-digit phone number (leading 1,
+            second digit 3-9) matches the account phone exactly instead.
+            Shorter prefixes never match: a partial number must not rebuild
+            a masked phone row by row.
+          schema: { type: string }
+      responses:
+        '200':
+          description: CSV download.
+          content:
+            text/csv:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        default: { $ref: '#/components/responses/DefaultError' }
   /api/me/diagnostics:
     get:
       tags: [events]
@@ -1117,8 +1228,9 @@ paths:
       description: |
         Single-account version of /api/me/diagnostics plus the planned
         window and the bound egress label when present. Cross-user and
-        cross-school reads return 404.
-      x-roles: [user, admin]
+        cross-school reads return 404. master reads any account; the run
+        page opens this drawer from every task row (UX-3).
+      x-roles: [user, admin, master]
       parameters:
         - $ref: '#/components/parameters/AccountID'
       responses:
@@ -2338,6 +2450,40 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/DiagnosticsItem'
+    TaskPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminTaskRow'
+        next_cursor:
+          type: string
+          description: Empty string on the last page.
+    AdminTaskRow:
+      type: object
+      required: [id, account_id, account_phone_masked, school_id, school_name, task_name, state, attempts, result, run_at, claimed_at, updated_at]
+      properties:
+        id: { type: string }
+        account_id: { type: string }
+        account_phone_masked:
+          type: string
+          description: First 3 and last 4 digits of the account phone; the full number never leaves the server.
+        school_id: { type: string }
+        school_name: { type: string }
+        task_name: { type: string }
+        state:
+          type: string
+          description: pending, running, success, failed or skipped.
+        attempts: { type: integer }
+        result: { type: string }
+        run_at: { type: string, format: date-time }
+        claimed_at:
+          type: [string, "null"]
+          format: date-time
+          description: Null while the row has never been claimed.
+        updated_at: { type: string, format: date-time }
     DiagnosticsItem:
       type: object
       required: [account_id, state, run_at, attempts, result, next_retry_at, suggestion]

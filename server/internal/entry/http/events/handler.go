@@ -4,7 +4,7 @@
 // GET /api/admin/events（master/admin，SSE）、
 // GET /api/me/diagnostics 与 GET /api/me/sign-status
 // （任意已认证主体，按会话 userID）、
-// GET /api/accounts/{id}/diagnostics（user/admin）。
+// GET /api/accounts/{id}/diagnostics（user/admin/master，UX-3 起 master 开放）。
 // 本包**不**写 SQL、**不**解析会话、**不**决定可见面。
 //
 // # 归属
@@ -16,7 +16,8 @@
 //
 // # 口径
 // x-roles 是运行时门：events 限 master/admin；/accounts/{id}/diagnostics
-// 限 user/admin。/api/me/* 对任意已认证主体开放：诊断与轮询恒按会话
+// 限 user/admin/master（master 是运行页行诊断的合法读者，UX-3）。
+// /api/me/* 对任意已认证主体开放：诊断与轮询恒按会话
 // userID 收敛到本人，角色不参与判定。设计取舍（snapshot 生成方）：
 // snapshot 由本包在 resync 后经 Diagnostics.Snapshot 现算并直写流，
 // 不经总线、不占环形缓冲——总线无库访问，发布方无需感知订阅。
@@ -164,8 +165,8 @@ func (h *Handler) MeDiagnostics(c *gin.Context) {
 	respond.JSON(c.Writer, http.StatusOK, diagnosticsResponse(report))
 }
 
-// AccountDiagnostics 实现 GET /api/accounts/{id}/diagnostics（user/admin）。
-// 跨用户与跨校 404 由用例的可见面判据给出。
+// AccountDiagnostics 实现 GET /api/accounts/{id}/diagnostics
+// （user/admin/master）。跨用户与跨校 404 由用例的可见面判据给出。
 func (h *Handler) AccountDiagnostics(c *gin.Context, id oapi.AccountID) {
 	session, ok := h.principal(c)
 	if !ok {
@@ -175,7 +176,7 @@ func (h *Handler) AccountDiagnostics(c *gin.Context, id oapi.AccountID) {
 	if !ok {
 		return
 	}
-	if err := requireKind(scope, corescope.KindUser, corescope.KindAdmin); err != nil {
+	if err := requireKind(scope, corescope.KindUser, corescope.KindAdmin, corescope.KindMaster); err != nil {
 		fail(c, err)
 		return
 	}

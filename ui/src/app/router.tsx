@@ -20,10 +20,12 @@ import { ForgotPasswordPage } from '@/pages/ForgotPasswordPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { NotFoundPage } from '@/pages/NotFoundPage'
 import { ResetPasswordPage } from '@/pages/ResetPasswordPage'
+import { RunPage } from '@/pages/RunPage'
 import { SchedulePage } from '@/pages/SchedulePage'
 import { SchoolsPage } from '@/pages/SchoolsPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { UsersPage } from '@/pages/UsersPage'
+import { parseRunSearchRecord, runSearchRecord } from '@/features/run/urlState'
 import { parseUserSearchRecord, userSearchRecord } from '@/features/user/urlState'
 import { parseDay } from '@/lib/format'
 import { sanitizeRedirect } from '@/lib/redirect'
@@ -73,6 +75,28 @@ const schoolsRoute = createRoute({
   path: '/schools',
   component: SchoolsPage,
 })
+
+/** 运行页：master/admin。筛选与业务日是 URL 状态：校验即净化。 */
+const runRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: '/run',
+  validateSearch: (search: Record<string, unknown>) => parseRunSearchRecord(search),
+  component: RunRouteComponent,
+})
+
+/** 把类型化的 search 传给页面，并让页面通过回调写回查询串。 */
+function RunRouteComponent() {
+  const search = runRoute.useSearch()
+  const navigate = useNavigate()
+  return (
+    <RunPage
+      search={search}
+      onSearchChange={(next, opts) => {
+        void navigate({ to: '/run', search: runSearchRecord(next), replace: opts?.replace })
+      }}
+    />
+  )
+}
 
 /** 用户管理：只归 master；非 master 直接访问落到无权限卡片。
  * 筛选、含已删除与游标是 URL 状态：校验即净化，非法值在解析时丢弃。
@@ -182,6 +206,7 @@ const routeTree = rootRoute.addChildren([
     settingsRoute,
     schoolsRoute,
     usersRoute,
+    runRoute,
     scheduleRoute,
   ]),
   loginRoute,

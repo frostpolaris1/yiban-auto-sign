@@ -2,6 +2,7 @@ import { test, expect, type Locator, type Page } from '@playwright/test'
 import { mockAccountsApi, RESET_TOKEN } from './support/fake-accounts-api'
 import { mockDashboardApi } from './support/fake-dashboard-api'
 import { SCHEDULE_DAY, mockScheduleApi } from './support/fake-schedule-api'
+import { mockRunApi, installFakeEventSource } from './support/fake-run-api'
 import { mockSchoolsApi } from './support/fake-schools-api'
 import { mockUsersApi } from './support/fake-users-api'
 import { visibleText } from './support/visible-text'
@@ -9,8 +10,9 @@ import { visibleText } from './support/visible-text'
 /**
  * Adminator 壳的视觉回归基线。
  *
- * 矩阵：8 条常驻路由与看板的两个视角（user/admin），
- * × 2 套主题 × 2 个宽度 = 40 张截图。
+ * 矩阵：9 条常驻路由（UX-3 起 /run 固定业务日入矩阵）与看板的两个视角
+ * （user/admin），× 2 套主题 × 2 个宽度 = 44 张；另有抽屉／模态／菜单、
+ * 无权限页与溢出判据，文件合计 87 条用例（2026-10-31 win32 实数）。
  * 仪表盘按角色分视角：user 是签到状态／诊断，admin 是窗口／容量体检。
  * 时间片页按固定业务日另拍（缺省日期会随日历漂移，不能进常驻矩阵），
  * 补 1440 与 390 两个宽度。
@@ -21,6 +23,7 @@ import { visibleText } from './support/visible-text'
  */
 
 const ROUTES = [
+  { path: '/run?day=2030-01-01', name: 'run' },
   { path: '/design', name: 'design' },
   { path: '/settings', name: 'settings' },
   { path: '/accounts', name: 'accounts' },
@@ -76,6 +79,12 @@ async function mockSessionFor(
   if (path === '/users') {
     await mockUsersApi(page, { role })
   }
+  // 运行页需要任务与诊断端点；SSE 用假体钉住「实时」态，
+  // 不注入时 EventSource 打到 JSON 路由会随机出断线横幅。
+  if (path.startsWith('/run')) {
+    await installFakeEventSource(page)
+    await mockRunApi(page, { role })
+  }
 }
 
 async function openWithTheme(
@@ -113,6 +122,8 @@ async function expectData(page: Page, path: string) {
     )
   } else if (path.startsWith('/schedule')) {
     await expect(page.getByRole('table', { name: '时间片窗口' })).toContainText('合成学校甲')
+  } else if (path.startsWith('/run')) {
+    await expect(page.getByRole('region', { name: '泳道 合成学校甲' })).toBeVisible()
   } else if (path === '/') {
     await expect(page.locator('.kpi-card')).toHaveCount(4)
   } else if (path === '/design') {

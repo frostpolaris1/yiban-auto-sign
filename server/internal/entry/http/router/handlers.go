@@ -291,6 +291,24 @@ func (s *server) CapacityGet(c *gin.Context, params oapi.CapacityGetParams) {
 	s.schedule.CapacityReport(c, params)
 }
 
+// AdminTaskList 委托任务检索处理器。未装配时仍是 501。
+func (s *server) AdminTaskList(c *gin.Context, params oapi.AdminTaskListParams) {
+	if s.tasks == nil {
+		notImplemented(c)
+		return
+	}
+	s.tasks.List(c, params)
+}
+
+// AdminTaskExport 委托任务导出处理器。未装配时仍是 501。
+func (s *server) AdminTaskExport(c *gin.Context, params oapi.AdminTaskExportParams) {
+	if s.tasks == nil {
+		notImplemented(c)
+		return
+	}
+	s.tasks.Export(c, params)
+}
+
 // TimePrefGet 委托自选时间片处理器。未装配时仍是 501。
 func (s *server) TimePrefGet(c *gin.Context) {
 	if s.schedule == nil {
