@@ -7,7 +7,7 @@
 // 两条入口共享同一份装配代码，不复制。
 // 本包**不**解析命令行参数、**不**打印用法、**不**退出进程。
 //
-// # 归属取舍（派单 P7 要求写明）
+// # 归属取舍
 // 候选一：internal/app/bootstrap——被否：canonical.tsv 的 boundary.app
 // 禁止 app 层导入 adapters 与 entry，而组合根必须同时导入两者；
 // 为它开洞等于削弱既有门。候选二：直接导出 cmd/server 的 Run——
@@ -83,11 +83,11 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/providers/yiban"
 )
 
-// accountCapacityLimit 是 P1 的活跃账号上限（裁决 12.11）。
+// accountCapacityLimit 是 P1 的活跃账号上限。
 // P1 不提供配置项；改上限只改本常量。
 const accountCapacityLimit = 10000
 
-// UserCapacityLimit 是 P1 的活跃用户上限（裁决 12.11）；
+// UserCapacityLimit 是 P1 的活跃用户上限；
 // CLI 的 create-master 与装配共用同一口径。
 // 与账号上限同值，两道约束各自在插入事务内判定。
 const UserCapacityLimit = 10000
@@ -164,7 +164,7 @@ const workerPollInterval = 2 * time.Second
 
 // stopStack 并行收尾执行循环与 HTTP，总预算 shutdownBudget。
 //
-// 顺序判据（派单 P7）：先停 worker 领取，再等在飞结算，
+// 顺序判据：先停 worker 领取，再等在飞结算，
 // 最后打印在飞清零结果；HTTP 关闭与它并行，不互相等。
 // 预算耗尽而循环未停时，残余 running 行的租约到期后由回收器回收；下次启动的 Recover 清无租约或已过期行。
 func stopStack(srv *http.Server, stack *Stack, loop loopHandle, logger *slog.Logger) error {
@@ -221,7 +221,7 @@ type Stack struct {
 var buildStack = Build
 
 // loopHandle 是执行循环的启停面。Run 只依赖这三个方法；
-// 测试注入假循环，断言启动块被真的执行（派单 P2-2）。
+// 测试注入假循环，断言启动块被真的执行。
 type loopHandle interface {
 	Start() error
 	Stop(ctx context.Context) (int64, error)
@@ -418,7 +418,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		}
 
 		// 凭据钥独立于 pepper：轮换 pepper 只让摘要与审计链失效，
-		// 不能连带让凭据永久不可解密（裁决：W2C-R2-04）。
+		// 不能连带让凭据永久不可解密。
 		cipher, err := appaccount.NewCipher(cfg.CredentialKey)
 		if err != nil {
 			closeFn()
@@ -547,7 +547,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			stopRetention()
 			closeDB()
 		}
-		// 过期数据清理（D 批 P2-15）：会话、重置令牌、90 天前的任务行。
+		// 过期数据清理：会话、重置令牌、90 天前的任务行。
 		// 与图片保留期分开：一个是用户策略，一个是表大小。
 		retentionSvc, err := appretention.NewService(appretention.Deps{
 			Store:    pg.NewMaintenanceRepo(db),
@@ -923,7 +923,7 @@ func (d scheduleDiscoverer) DiscoverWindow(ctx context.Context, schoolTaskID str
 	})
 }
 
-// WorkerNotifier 把执行循环的任务事件转成总线事件（P6）。
+// WorkerNotifier 把执行循环的任务事件转成总线事件。
 // Publish 永不阻塞；失败只丢事件。At 取进程时钟。
 // 字段导出：e2e 直接构造同形适配器（w2c 套件）。
 type WorkerNotifier struct {
@@ -939,7 +939,7 @@ func (n WorkerNotifier) TaskEvent(_ context.Context, schoolID, taskID, day, kind
 	})
 }
 
-// ScheduleNotifier 把计划事件转成总线事件（P6）。
+// ScheduleNotifier 把计划事件转成总线事件。
 type ScheduleNotifier struct {
 	Broker *appevents.Broker
 	Clock  clock.Clock

@@ -4,7 +4,7 @@
  *
  * `work/` 存本地计划、交接与审查产物。它不入库。
  * 入库文件一旦指向 `work/`，克隆后就指向不存在的路径。
- * 承重结论必须写在入库文件本身（AGENTS 第 24 条）。
+ * 承重结论必须写在入库文件本身。
  *
  * 扫描集：ui/ 下按扩展名筛选的文本文件。
  * 排除 node_modules、dist、test-results、playwright-report 与 lock 文件。

@@ -53,7 +53,7 @@ func TestBucketRetryAfter(t *testing.T) {
 	t0 := time.Unix(1000, 0)
 	b.Admit(t0)
 	d := b.RetryAfter(t0.Add(100 * time.Millisecond))
-	// 等待量向上取整到整毫秒：按返回值等待后必放行（审查 P2-1 的钉子）。
+	// 等待量向上取整到整毫秒：按返回值等待后必放行。
 	t1 := t0.Add(100 * time.Millisecond).Add(d)
 	if d < 400*time.Millisecond || d > 401*time.Millisecond {
 		t.Fatalf("RetryAfter = %v, want ≈400ms", d)

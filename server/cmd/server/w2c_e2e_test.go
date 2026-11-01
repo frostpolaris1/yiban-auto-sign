@@ -114,7 +114,7 @@ type w2cEnv struct {
 }
 
 // w2cRequireDSN 缺库时打可见横幅再跳过。
-// t.Skip 的日志在不加 -v 时会被吞掉（AGENTS §30）。
+// t.Skip 的日志在不加 -v 时会被吞掉。
 func w2cRequireDSN(t *testing.T) string {
 	t.Helper()
 	dsn := strings.TrimSpace(os.Getenv(w2cDSNEnv))
@@ -375,7 +375,7 @@ func (w2cDeviceStub) DeviceState(context.Context, string, appaccount.SigningCred
 
 // e2eProvider 是本地假提供方：只为满足校验与执行接缝。
 // 窗口发现由 e2eDiscoverer 直接提供；targets 按账号返回点位，
-// signs 记录收到的签到请求供 P5-C 断言注入面。
+// signs 记录收到的签到请求供图片注入用例断言。
 type e2eProvider struct {
 	windows map[string]contract.Window
 	targets map[string][]contract.Target
@@ -1135,7 +1135,7 @@ func TestW2CInvalidTransitionIsConflict(t *testing.T) {
 	}
 }
 
-// --- P1-1 跨校写动作 --------------------------------------------------------
+// --- 跨校写动作 --------------------------------------------------------
 
 // accountSnapshot 返回一行账号的可比较快照。
 // 越权写必须让整行不变，故快照覆盖会被这四类动作改动的列。
@@ -1199,7 +1199,7 @@ func TestW2CP11CrossSchoolWritesAre404(t *testing.T) {
 	}
 }
 
-// --- P1-2 审计与业务同事务 --------------------------------------------------
+// --- 审计与业务同事务 --------------------------------------------------
 
 // 审计表改名让每次 Append 失败。
 // 断言：master 建校 5xx 且该校一行都没有；admin 审核 5xx 且状态仍是 pending。
@@ -1258,10 +1258,10 @@ func TestW2CP12AuditFailureRollsBackBusinessWrite(t *testing.T) {
 		map[string]any{"decision": "approve"}, adminSess), http.StatusOK)
 }
 
-// --- P2-1 q 过滤口径 -------------------------------------------------------
+// --- q 过滤口径 -------------------------------------------------------
 
 // q 只命中前 3 位前缀、后 4 位后缀或 11 位全号。
-// 中四位可被全号枚举恢复（10^4 次），依赖登录限速（P7 前置）；
+// 中四位可被全号枚举恢复（10^4 次），依赖登录限速；
 // 本用例钉住的是「5..10 位片段永不命中」这一更强的性质。
 func TestW2CP21PhoneQueryHasNoMaskOracle(t *testing.T) {
 	e := w2cNewEnv(t)
@@ -1301,7 +1301,7 @@ func TestW2CP21PhoneQueryHasNoMaskOracle(t *testing.T) {
 	}
 }
 
-// --- P2-2 拒绝理由出口掩码 --------------------------------------------------
+// --- 拒绝理由出口掩码 --------------------------------------------------
 
 // 拒绝理由含手机号时，审核响应、读取响应、列表响应都只出现掩码；
 // 审计 detail 保持原有掩码口径。
@@ -1347,7 +1347,7 @@ func TestW2CP22RejectReasonIsMaskedOnEveryResponse(t *testing.T) {
 	}
 }
 
-// --- P2-3 413 覆盖域处理器 --------------------------------------------------
+// --- 413 覆盖域处理器 --------------------------------------------------
 
 // 域端点与认证端点同口径：请求体超过 1 MiB 回 413，不是 400。
 func TestW2CP23OversizedDomainBodiesAre413(t *testing.T) {
@@ -1382,7 +1382,7 @@ func TestW2CP23OversizedDomainBodiesAre413(t *testing.T) {
 	}
 }
 
-// --- P3-2 真实装配接线 ------------------------------------------------------
+// --- 真实装配接线 ------------------------------------------------------
 
 // 真实进程的装配（buildStack）必须注入三组业务处理器。
 // 未注入时端点在认证之后回 501；本用例走真实登录，故 501 会被看见。

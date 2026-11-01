@@ -1,8 +1,8 @@
 package diagnostic_test
 
-// 诊断与轮询用例单测（P6）。
+// 诊断与轮询用例单测。
 //
-// 判据来自派单稿：数据源是只读查询；跨用户/跨校 404（由
+// 判据：数据源是只读查询；跨用户/跨校 404（由
 // AccountSource 的可见面判据保证，本层透传）；suggestion 词表闭集
 // wait|retry_now|re_arm|contact_admin（表驱动校验）；
 // stale = now-updated_at > 90s（假时钟翻转）。

@@ -323,7 +323,7 @@ func assertSignChainShapes(t *testing.T, up *upstream, hops []recordedHop) {
 }
 
 // TestRecordedChainRegistry 钉住未实拍档位的登记。
-// 没有响应体的档位必须在 unrecorded 段显式标未知（AGENTS §30：不许静默）。
+// 没有响应体的档位必须在 unrecorded 段显式标未知。
 func TestRecordedChainRegistry(t *testing.T) {
 	set := loadRecordings(t)
 	for _, key := range unrecordedKeys {

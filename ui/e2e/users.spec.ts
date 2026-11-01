@@ -362,7 +362,7 @@ test('UX-1: delete then restore a user through the deleted toggle', async ({ pag
   await expect.poll(() => listUserCalls(api).length).toBeGreaterThan(2)
 })
 
-// --- 独立审查修复的回归钉子（P2-4 / P2-5 / P3） ----------------------------
+// --- 回归钉子 --------------------------------------------------------------
 
 test('UX-1: a blocked restore explains itself next to the restore button', async ({ page }) => {
   const api = await mockUsersApi(page, {

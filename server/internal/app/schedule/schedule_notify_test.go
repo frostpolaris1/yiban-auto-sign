@@ -1,8 +1,8 @@
 package schedule_test
 
-// Notifier 发布点单测（P6）。
+// Notifier 发布点单测。
 //
-// 判据来自派单稿：Build/Override 成功且窗口真实变化后发
+// 判据：Build/Override 成功且窗口真实变化后发
 // window.changed；Build 的 Shortfall > 0 时发 capacity.changed
 // （无历史值可比，取「有缺口即发」的保守口径，重复数值可能重复
 // 发布——偏差已申报）。Preview 不发布。端口为 nil 时零开销，

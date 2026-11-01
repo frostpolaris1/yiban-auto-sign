@@ -1,6 +1,6 @@
 package main
 
-// backup/restore 的真库 e2e（派单 P7 判据③）。
+// backup/restore 的真库 e2e。
 //
 // # 功能
 // 真库、真 pg_dump/psql/gpg：备份 → 清库 → 恢复 → 行数对账一致，

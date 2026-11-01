@@ -1,6 +1,6 @@
 package main
 
-// 容器照片目录可写性的 e2e（派单 F4）。
+// 容器照片目录可写性的 e2e。
 //
 // # 功能
 // 模拟真实部署动作：构建镜像 → 用命名卷挂 /data/photos →
@@ -12,7 +12,7 @@ package main
 // # 口径
 // 构建镜像耗时且需要 daemon，默认跳过；置 YIBAN_DOCKER_E2E=1 才跑。
 // server/scripts/verify.sh 的容器段默认带该开关跑（docker 可用时）。
-// 跳过行显性打印（AGENTS §30）。卷先删后建，用毕删除。
+// 跳过行显性打印。卷先删后建，用毕删除。
 
 import (
 	"bytes"

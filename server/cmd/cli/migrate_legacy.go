@@ -1,4 +1,4 @@
-// migrate-legacy 子命令：旧栈导出物 → 新栈一次性导入（P8-B）。
+// migrate-legacy 子命令：旧栈导出物 → 新栈一次性导入。
 //
 // 契约与裁决见 internal/adapters/legacy 包注释。部署顺序＝
 // 装新栈 → 建校 → user create-master → migrate-legacy。

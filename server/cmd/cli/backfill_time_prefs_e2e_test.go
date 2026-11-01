@@ -1,8 +1,8 @@
 package main
 
-// backfill-time-prefs 的真库 e2e（2gk 判据，派单 2026-10-29）。
+// backfill-time-prefs 的真库 e2e。
 //
-// 模拟的真实用户动作：运维在完成 `migrate-legacy` 之后，对同一份 P8-A
+// 模拟的真实用户动作：运维在完成 `migrate-legacy` 之后，对同一份导出物
 // 导出目录跑一次 `yiban-cli backfill-time-prefs --dir 导出目录`，核对报告，
 // 再加 `--apply` 落库。
 //
@@ -17,7 +17,7 @@ package main
 // 夹具全合成值：手机号取 tests/synthetic-fixtures.json 登记值
 // （13800000001–13800000007、13899999999）。旧库行只含补录读的列。
 //
-// 缺 YIBAN_TEST_DATABASE_URL 时 userTestSchema 显性 SKIP：跳过不是绿（AGENTS §30）。
+// 缺 YIBAN_TEST_DATABASE_URL 时 userTestSchema 显性 SKIP：跳过不是绿。
 
 import (
 	"context"
@@ -244,7 +244,7 @@ func TestBackfillTimePrefsE2E(t *testing.T) {
 	if !applied.Apply || applied.RowsWritten != 2 {
 		t.Fatalf("apply 报告 rows_written = %d, want 2", applied.RowsWritten)
 	}
-	// 冲突主线（2gk 审查 P2-3）：--apply 也不写冲突用户，
+	// 冲突主线：--apply 也不写冲突用户，
 	// 报告仍列出整用户进 conflicts，writes 不含 owner D。
 	if len(applied.Conflicts) != 1 || applied.Conflicts[0].UserID != ownerD {
 		t.Fatalf("apply conflicts = %+v, want 1 条 owner D", applied.Conflicts)
@@ -319,7 +319,7 @@ func backfillE2EOffsetRows(t *testing.T, dsn, userID string) int64 {
 	return n
 }
 
-// TestBackfillTimePrefsOverwritesExistingValueE2E 钉住覆盖语义（2gk 审查 P2-1）：
+// TestBackfillTimePrefsOverwritesExistingValueE2E 钉住覆盖语义：
 // time_prefs 已有不同取值时，--apply 覆盖为新值，rows_written 计实际变更行数。
 // 模拟的真实用户动作：库里已存在该用户的旧自选（如试运行或手工补录过），
 // 运维重跑补录，期望新值落库。
@@ -395,11 +395,11 @@ func TestBackfillTimePrefsRequiresDir(t *testing.T) {
 }
 
 // TestBackfillTimePrefsSingleErrorPrefix 钉住 stderr 前缀单次：
-// 致命错误由 CLI 统一加前缀，库层文本不带前缀，叠加即缺陷（2gk 审查 P3）。
+// 致命错误由 CLI 统一加前缀，库层文本不带前缀，叠加即缺陷。
 // 用缺 --dir 的路径触发；该路径不连库。
 func TestPrintBackfillErrorSinglePrefix(t *testing.T) {
 	// 判据：前缀只在 printBackfillError 加一次。Msg 自带前缀＝缺陷复现，
-	// 计数必须变 2（见 2gk 审查 M5：旧用例走 --dir 缺失分支，恒真无牙）。
+	// 计数必须变 2（旧用例走 --dir 缺失分支，恒真无牙）。
 	cases := []struct {
 		name string
 		err  error

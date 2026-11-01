@@ -9,7 +9,7 @@ package main
 // **不**依赖 pg_dump/gpg。
 //
 // # 口径
-// 判据来自派单 P7：pg_dump 不可用时报错不装绿；gpg 缺失时报错；
+// 判据：pg_dump 不可用时报错不装绿；gpg 缺失时报错；
 // restore 需 --force 或交互确认；恢复后打印行数对账表。
 
 import (
@@ -232,7 +232,7 @@ func TestBackupRejectsMissingPassphrase(t *testing.T) {
 	}
 }
 
-// TestBackupRejectsLoosePassphraseFile 钉住口令文件必须 0600（派单 F10）。
+// TestBackupRejectsLoosePassphraseFile 钉住口令文件必须 0600。
 // Windows 的 FileMode 权限位是合成的（恒 0666），POSIX 判据无判别力：
 // 本用例在 Windows 显性跳过，门禁在 Linux/WSL 上执行。
 func TestBackupRejectsLoosePassphraseFile(t *testing.T) {
@@ -257,7 +257,7 @@ func TestBackupRejectsLoosePassphraseFile(t *testing.T) {
 	}
 }
 
-// TestBackupKeepsDSNOutOfArgv 钉住口令不进 argv（派单 F9）。
+// TestBackupKeepsDSNOutOfArgv 钉住口令不进 argv。
 // 判据：pg_dump 的 argv 不含口令、不含 --dbname=<DSN>；
 // 环境带 PGPASSFILE，文件在子进程运行期存在、0600、内容正确；
 // 备份结束后临时口令文件已删除。
@@ -470,7 +470,7 @@ func TestRestoreSuccessReconciles(t *testing.T) {
 	}
 }
 
-// 空链：说「跳过」而不是「通过」（§30）。
+// 空链：说「跳过」而不是「通过」。
 func TestRestoreReportsEmptyAuditChain(t *testing.T) {
 	deps, runner, stdout, _ := newTestDeps(t)
 	out := filepath.Join(t.TempDir(), "b.gpg")
@@ -514,7 +514,7 @@ func TestRestoreFailsOnBrokenAuditChain(t *testing.T) {
 	}
 }
 
-// TestManifestTablesCoverEveryBusinessTable 钉住对账表的完整性（派单 F17）。
+// TestManifestTablesCoverEveryBusinessTable 钉住对账表的完整性。
 // 判据源是 doctor 的 expectedTables（迁移 00001–00016 的表全集）：
 // 对账表必须覆盖它，且不得有重复。
 func TestManifestTablesCoverEveryBusinessTable(t *testing.T) {
@@ -541,7 +541,7 @@ func TestManifestTablesCoverEveryBusinessTable(t *testing.T) {
 	}
 }
 
-// TestParseKeywordDSNBackslashEscapes 钉住 libpq 引号内转义（派单 P2-5）。
+// TestParseKeywordDSNBackslashEscapes 钉住 libpq 引号内转义。
 // 引号内反斜杠转义下一字符；两个相邻单引号也是一个字面单引号。
 // 不认转义会把后续字段吞进口令，或把残值当口令（凭据错）。
 func TestParseKeywordDSNBackslashEscapes(t *testing.T) {
@@ -573,7 +573,7 @@ func TestParseKeywordDSNBackslashEscapes(t *testing.T) {
 	}
 }
 
-// TestManifestExemptionsAreWhitelisted 钉住豁免面（派单 P2-6）。
+// TestManifestExemptionsAreWhitelisted 钉住豁免面。
 // 只准迁移工具簿记表：新业务表写条理由就双绿是缺陷形状。
 func TestManifestExemptionsAreWhitelisted(t *testing.T) {
 	for table, reason := range manifestExemptTables {

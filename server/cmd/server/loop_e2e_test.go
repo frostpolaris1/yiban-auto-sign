@@ -1,6 +1,6 @@
 package main
 
-// Loop 优雅停机的真库 e2e（派单 P7 判据）。
+// Loop 优雅停机的真库 e2e。
 //
 // # 功能
 // 真库、真仓储、真执行循环：起 Loop → 在飞任务停在 Sign → Stop →

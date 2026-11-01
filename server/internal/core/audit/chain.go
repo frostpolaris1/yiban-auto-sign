@@ -257,7 +257,7 @@ func ZeroHash() []byte { return make([]byte, sha256.Size) }
 // 每个键有自己的形状。trace_id、kid、field、from、to 按固定字符类匹配，
 // 故随机 32 位十六进制 trace id 通过，手机号不通过。
 // 只有 reason 承载自由文本：它必须通过 mask 的检测口径
-// （TextHasPhone/TextHasEmail；时间戳形态放行，见 R3-02；
+// （TextHasPhone/TextHasEmail；时间戳形态放行；
 // 22 位以上的连续数字段按滑动窗口抓内嵌号码；12 至 21 位不判，已登记），
 // 不得含手机号或邮箱，且不超过 MaxReasonChars 个字符。
 // 落在 [10000000000, 14999999999] 的数字按手机号形状拒绝；
@@ -381,7 +381,7 @@ func validateDetailString(key, text string) error {
 	}
 	// PII 判定单一来源是 core/mask 的检测入口：
 	// TextHasPhone（对齐窗口，1[3-9]）与 TextHasEmail。
-	// 检测口径宁缺勿冤：时间戳形态不判为手机号（W2C-R2-02）。本文件不另设正则，避免两套口径漂移。
+	// 检测口径宁缺勿冤：时间戳形态不判为手机号。本文件不另设正则，避免两套口径漂移。
 	if mask.TextHasPhone(text) || mask.TextHasEmail(text) {
 		return fmt.Errorf("%w: %q", ErrDetailPII, key)
 	}

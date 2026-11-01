@@ -1,8 +1,8 @@
 package legacy
 
-// 对账哈希与序列化的判据（P8-B 派单 2026-10-27）。
+// 对账哈希与序列化的判据。
 //
-// 黄金值由 P8-A 导出器的同一份 Python 实现现算得出
+// 黄金值由导出器的同一份 Python 实现现算得出
 //（scripts/db_export.py 的 _recon_hash / _dump_line，2026-10-27）。
 // 两侧实现不共享代码；黄金值不齐即本门红。
 // 掩码规则与 core/mask.MaskPhone 同一实现（canonical.tsv mask.phone 门）。

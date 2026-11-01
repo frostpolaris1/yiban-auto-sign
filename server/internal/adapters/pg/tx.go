@@ -19,7 +19,7 @@ type txKey struct{}
 // READ COMMITTED 是必需项，不是装饰：
 // 容量语句在 advisory lock 授予之后才统计活跃行。
 // 在 REPEATABLE READ 下快照取于第一条语句，
-// 等过锁的事务会统计到旧行，从而突破上限（schema §6.5）。
+// 等过锁的事务会统计到旧行，从而突破上限。
 //
 // 嵌套 InTx 复用外层事务。
 // 只有最外层函数体返回 nil 时才提交。

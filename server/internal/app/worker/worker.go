@@ -116,8 +116,8 @@ func (s *Service) CountRunning(ctx context.Context) (int64, error) {
 // 两类失败要分清：
 //   - 业务结论（成功/跳过/失败）由 settleOutcome 落状态，Step 返回 nil；
 //   - 基础设施失败（库、网络、取消）上抛第一条；**该行若尚未提交签到
-//     就退回队列**，否则它停在 running 上，该账号当天再也领不到新任务
-//     （P4-E 审查 P2-2）。已提交的行不退回：可能已在平台侧生效。
+//     就退回队列**，否则它停在 running 上，该账号当天再也领不到新任务。
+//     已提交的行不退回：可能已在平台侧生效。
 func (s *Service) Step(ctx context.Context, limit int) (int, error) {
 	if limit < 1 {
 		limit = 1
@@ -167,7 +167,7 @@ func (s *Service) Step(ctx context.Context, limit int) (int, error) {
 		}
 		if !res.submitted {
 			// 退回用 WithoutCancel：即使 ctx 已取消，队列也必须被修好，
-			// 否则这一行停在 running 到重启（P4-E 复审 P3-1）。
+			// 否则这一行停在 running 到重启。
 			releaseCtx := context.WithoutCancel(ctx)
 			if releaseErr := s.requeueWait(releaseCtx, tasks[i], tasks[i].RunAt, waitBatchAborted); releaseErr != nil {
 				// 退回失败优先上报：队列卡死比单次执行失败更严重。
@@ -235,7 +235,7 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 
 	cred, err := s.deps.Creds.Credential(ctx, task.AccountID)
 	if err != nil {
-		// 分类处理，别把一次库抖动写成当日业务失败（P4-E 审查 P2-3）：
+		// 分类处理，别把一次库抖动写成当日业务失败：
 		//   - 取消/超时：上抛，由上层决定整批重来；
 		//   - 账号不可用（not_found/validation/forbidden/unauthorized）：
 		//     当日确定性失败，落 failed；
@@ -255,7 +255,7 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 
 	// 发现阶段可能直接给出业务结论（OutcomeError），例如 no_target、
 	// credential_invalid、challenge。契约要求宿主用 errors.As 取回；
-	// 把它当 transient 重试会让 challenge 被多打三次真实请求（P4-E 审查 P1-1）。
+	// 把它当 transient 重试会让 challenge 被多打三次真实请求。
 	targets, err := s.deps.Signer.DiscoverTargets(ctx, contract.DiscoverRequest{
 		Account: ref, Credential: cred,
 	})
@@ -325,7 +325,7 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 			Start: windowRecord.Start, End: windowRecord.End,
 			// 来源如实传递：fallback 窗口不得伪装成 platform。
 			// 空来源只可能来自脏数据；兜底为 fallback 而不是 platform，
-			// 让证据面显示"这不是实拍窗口"（P4-E 复审 P3-5）。
+			// 让证据面显示"这不是实拍窗口"。
 			Source: windowSource(windowRecord.Source),
 		},
 		Target:   target,
@@ -421,14 +421,14 @@ func (s *Service) notifyProgress(ctx context.Context, task corescheduleTask, att
 // 它只在停机取消之后才变成实际约束——正常路径的 ctx 还活着，仍受调用方约束。
 //
 // 必须小于 loop 的 drainSettle：停机时 Loop 只等这么久就返回，
-// 调用方随即关连接池。上限大于等待窗口，声明就等于空话（审查 P3-1）。
+// 调用方随即关连接池。上限大于等待窗口，声明就等于空话。
 const settlementTimeout = 800 * time.Millisecond
 
 // settlementContext 让终态与重排写入不受停机取消影响。
 //
 // 停机预算耗尽时 Loop 会取消在飞 Step 的 ctx；已提交的签到只剩这一次
 // 落库机会——写不进去，行留在 running，租约到期后会被重新认领，
-// 平台侧就收到第二次签到（D 批审查 P1-2）。未提交行的退回本来就用
+// 平台侧就收到第二次签到。未提交行的退回本来就用
 // WithoutCancel，这里让结算走同一条纪律。
 func settlementContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), settlementTimeout)
@@ -508,8 +508,7 @@ func pickTarget(targets []contract.Target, attempts int, loc contract.Location) 
 // attemptID 生成"按尝试唯一"的幂等键。
 //
 // 为什么不能只用 task.ID：provider 按 (账号, AttemptID) 缓存结果（含
-// transient）。若每次重试都送同一个 ID，"重试"只会读回首次结果、不发请求
-// （P4-E 审查 P1-2）。带上 attempts 后，每次真实尝试都有新键；
+// transient）。若每次重试都送同一个 ID，"重试"只会读回首次结果、不发请求。带上 attempts 后，每次真实尝试都有新键；
 // 同一尝试被重复调用时仍折叠（这正是幂等缓存要防的双发）。
 func attemptID(task corescheduleTask) string {
 	return fmt.Sprintf("%s#%d", task.ID, task.Attempts)
@@ -575,7 +574,7 @@ func (s *Service) logOutcome(ctx context.Context, task corescheduleTask, stage s
 //   - 已成功 → ErrAlreadySigned；
 //   - 正在执行 → ErrSignRunning；
 //   - 当日 failed 或 skipped → 放回队列（Rearm）并写审计，这是用户
-//     "再试一次"的正当动作（P4-E 审查 P2-4；C2 放开 skipped）；
+//     "再试一次"的正当动作；
 //   - 其余（新建或已 pending）→ 返回行 ID（幂等）。
 func (s *Service) Request(ctx context.Context, accountID string, actor appaudit.Actor) (string, error) {
 	if accountID == "" {

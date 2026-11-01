@@ -17,7 +17,7 @@
 // 最后 master 判据只数 active 未删 master（role='master' AND status='active'
 // AND deleted_at IS NULL）。停用 master 不能登录（app/auth/login.go 要求
 // active），不构成恢复路径；若计入停用行，A 停用 B 后 A 自降即可达
-// 零 active master 锁死（独立审查 P1-2）。
+// 零 active master 锁死。
 // 计数在事务内 UserCapacityLock 下进行（端口注释），与建号、恢复串行化。
 // 两条审计相邻追加，中间不做任何工作（与 account.Update 同形状）。
 
@@ -46,7 +46,7 @@ type UpdateInput struct {
 // ensureUserID 归一化目标 id 并拒绝非 UUID 字面量。
 // google/uuid 的 Parse 接受大写、花括号、urn:uuid: 前缀与 32 位无连字符形，
 // 它们都能通过 Postgres 的 ::uuid 定型命中同一行；
-// self 判据若用原始串比较，非规范形即可绕过（独立审查 P1-1）。
+// self 判据若用原始串比较，非规范形即可绕过。
 // 因此**返回小写规范形**：self 比较与全部仓储调用只用返回值。
 // 非 UUID 字面量（lookup 静态段遮蔽）与不存在同判 404。
 func ensureUserID(id string) (string, error) {

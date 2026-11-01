@@ -3,7 +3,7 @@
 // # 功能
 // 每条检查 = 检测 + 修复命令。全部外供依赖收敛在 probe：
 // 环境来源、数据库探针、磁盘水位、时钟、端口探针都可注入，
-// 测试据此注入故障环境（派单 P7 判据）。
+// 测试据此注入故障环境。
 // 本命令**不**修任何东西、**不**改库、**不**写文件（photo 目录的
 // 可写探针用临时文件，用毕即删）。
 //
@@ -60,7 +60,7 @@ type report struct {
 	failed int
 }
 
-// text 渲染人读报告。FAIL 行必须带「修复:」命令（派单判据）。
+// text 渲染人读报告。FAIL 行必须带「修复:」命令。
 func (r report) text() string {
 	var b strings.Builder
 	for _, row := range r.rows {
@@ -141,7 +141,7 @@ var unitFileExists = func(path string) bool {
 // currentUserLookup 是当前用户读取的接缝；测试替换它避免依赖真实账户。
 var currentUserLookup = currentUserName
 
-// resolveServiceUser 是缺省服务用户的纯判据（派单 P1-1）。
+// resolveServiceUser 是缺省服务用户的纯判据。
 // 有 systemd 单元按 yiban；无单元按当前用户；拿不到当前用户回退 yiban。
 func resolveServiceUser(exists func(string) bool, current func() (string, bool)) string {
 	if exists(systemdUnitPath) {
@@ -266,7 +266,7 @@ type check struct {
 	run   func(ctx context.Context, p *probe) checkRow
 }
 
-// checks 是故障模式清单（派单 P7 首批 ≥20 条）。
+// checks 是故障模式清单。
 // 新增检查在此登记；每条必须能在 doctor_test.go 里注入故障。
 var checks = []check{
 	{"env.config", "环境变量通过配置校验", checkEnvConfig},
@@ -467,7 +467,7 @@ func openDBHandle(ctx context.Context, p *probe) (dbHandle, checkRow) {
 	return h, checkRow{}
 }
 
-// redactDSN 抹掉 DSN 里的口令段再打印（派单 F6、P1-2）。
+// redactDSN 抹掉 DSN 里的口令段再打印。
 // 三种载体都要覆盖：URI、keyword/value、无 scheme 的 user:pass@host。
 // keyword 形按 libpq 词法切分：= 两侧可带空格，值可用单引号包住空白。
 // URI 的查询串另抹 password 参数（?password=... 同样不能打印）。

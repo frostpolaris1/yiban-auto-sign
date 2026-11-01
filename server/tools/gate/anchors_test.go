@@ -10,7 +10,7 @@ import (
 )
 
 // ValidateRuleAnchors：owner 或 pattern 改名后，规则不再检查任何东西。
-// 门必须把这种空转变为 rc=2（AGENTS §29）。
+// 门必须把这种空转变为 rc=2。
 func TestValidateRuleAnchorsAccepts(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "internal/core/clock/clock.go", `package clock
@@ -116,7 +116,7 @@ func TestCanonicalRuleIDsPinned(t *testing.T) {
 }
 
 // 规则整行快照：kind/owner/pattern/allow 的改动同样必须是一次显式决定。
-// 只钉 ID 会让「call 改 forbid」「pattern 改错」静默通过（r4c 复审 P2-1/P2-2）。
+// 只钉 ID 会让「call 改 forbid」「pattern 改错」静默通过。
 // 哈希变了就确认改动，然后更新本常量。
 func TestCanonicalRuleRowsPinned(t *testing.T) {
 	rules, err := LoadRules(filepath.Join("..", "..", "canonical.tsv"))

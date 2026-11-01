@@ -1,6 +1,6 @@
 package assembly
 
-// 部署件的静态门禁（派单 F4、F5、P2-3、P2-4）。
+// 部署件的静态门禁。
 //
 // # 功能
 // 1. docker-compose 的 services.app.stop_grace_period 必须大于
@@ -128,7 +128,7 @@ func TestComposeStopGraceExceedsShutdownBudget(t *testing.T) {
 	}
 }
 
-// TestInstallUnitStopTimeoutExceedsShutdownBudget 钉住 systemd 单元的停机预算（派单 P2-4）。
+// TestInstallUnitStopTimeoutExceedsShutdownBudget 钉住 systemd 单元的停机预算。
 // TimeoutStopSec 小于 shutdownBudget 时，systemd 在优雅收尾完成前发 SIGKILL。
 func TestInstallUnitStopTimeoutExceedsShutdownBudget(t *testing.T) {
 	body := deployFile(t, "linux/install.sh")

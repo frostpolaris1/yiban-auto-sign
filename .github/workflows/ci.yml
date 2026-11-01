@@ -7,18 +7,18 @@ name: CI
 # `if: github.event_name != 'schedule'` 的事件守卫，语义更脆；两文件让每个 workflow 的
 # 触发条件各自诚实，且 nightly 可用独立的 timeout/并行度。（取舍全文见
 # .superpowers/sdd/m3-batch1-plan-20260925/task-1-report.md）
-# ⚠️ 排程定义点（M24 已修，2026-10-05）：GitHub 的 `schedule` **只在默认分支上生效**
+# ⚠️ 排程定义点：GitHub 的 `schedule` **只在默认分支上生效**
 # （本仓库默认分支 = main）——所以 `nightly.yml` 与 `e2e-nightly.yml` 的**唯一定义点在
 # 默认分支 main**，**develop 分支不持有这两个文件**（此前在 develop = 同一事实两个定义
 # 点，必然漂移）。两文件的 `actions/checkout` 显式 `ref: develop`：被测对象是活跃线
-# develop——main 是"对外默认可见的已验证分支"、天然落后（见 docs/dev/release-gate.md
-# §1）；e2e-nightly 还依赖当前只在 develop 上的 `frontend/`。
+# develop——main 是"对外默认可见的已验证分支"、天然落后（见 docs/dev/release-gate.md）；
+# e2e-nightly 还依赖当前只在 develop 上的 `frontend/`。
 # 两条不许破：① 不许把这两个文件加回 develop；② 不许把 checkout 的 `ref` 改成 main
 # （nightly 变成跑旧线、e2e 直接失败）。回潮守卫见
 # tests/test_ci_dependency_audit_gate.py::ScheduledWorkflowDefinitionPointTest。
 # 触发：向 develop / server-web / main 提 PR 或 push；feature 分支只跑 push；
 # 另有 workflow_dispatch 手动触发（改 workflow 自身时先手动跑一遍验证）
-# （分支模型见 PROMPT.md §6.11：功能在 feature/*，汇入 develop，发布走 release/* 或部署分支）
+# （分支模型：功能在 feature/*，汇入 develop，发布走 release/* 或部署分支）
 on:
   workflow_dispatch:
   pull_request:
@@ -75,7 +75,7 @@ jobs:
           # grimp 3.17 = import-linter 的图引擎。import-linter 2.15 对 grimp 只给下限
           #   （Requires-Dist: grimp>=3.17，无上界），不钉版即每次拉当时最新。而门自己
           #   重实现了 grimp 的 `X.*` 通配语义（见 check-import-linter.py 的空转守卫），
-          #   故 grimp 也必须钉住。升版须同批改测试的 PINNED_GRIMP（审查 M2）。
+          #   故 grimp 也必须钉住。升版须同批改测试的 PINNED_GRIMP。
           pip install ruff==0.16.6 pytest==9.1.1 pytest-xdist==3.8.0 mypy==1.19.0 import-linter==2.15 grimp==3.17
 
       # 提交/PR 标题规范校验（Conventional Commits）
@@ -97,12 +97,12 @@ jobs:
       #   免得同一个事实出现第二个定义点（漂移由 tests/test_dev_verify_entry.py 冻结）。
       # 任一环节非 0 即本步非 0——与改前"步级失败即停"等价。
       # 2026-10-06 起多了一步：B1 的在册部署键裸读门（scripts/check-path-env-reads.py）
-      #   与它的元测试。加步是工单要求的（"门禁要真进 CI，不许只当仓里的摆设"），
+      #   与它的元测试。加步的要求是「门禁要真进 CI，不许只当仓里的摆设」，
       #   除这两步之外 CI 结果与改前等价；命令原文仍只住 run_ci 一份，漂移由
       #   tests/test_dev_verify_entry.py 的冻结清单钉住。
       # 2026-10-11 起又多了一步：import-linter 结构门（scripts/check-import-linter.py）
       #   与它的元测试（P0 批四条，批 A0 补三条）。同上，命令原文只住 run_ci 一份。
-      # 改动面分类（AGENTS §37d）：旧 Python 栈已冻结；只在改到旧线路径时才跑旧线测试，
+      # 改动面分类：旧 Python 栈已冻结；只在改到旧线路径时才跑旧线测试，
       # Go/UI/文档改动不再为旧线套件付 6 分钟。分类口径唯一住 scripts/ci-scope.sh。
       - name: Classify change surface
         id: scope
@@ -126,7 +126,7 @@ jobs:
       - name: Gate subset (scripts/dev-verify.sh --ci)
         run: bash scripts/dev-verify.sh --ci --scope "${{ steps.scope.outputs.value }}"
 
-      # Vue 构建产物可复现门禁的元测试（工单 yiban-auto-sign-spn6）。
+      # Vue 构建产物可复现门禁的元测试。
       # 为什么单列一步：CI 的 -k 词集住在 scripts/dev-verify.sh 的 run_ci，本单不改该文件
       #   （feature/dev-verify-fastmode 分支在飞改 run_ci，跨分支必冲突），故按文件路径直接选测。
       # 为什么在 verify（不是 frontend）job：本元测试只跑 --lf-only 与 --compare 两个模式，
@@ -142,12 +142,12 @@ jobs:
         # （run_ci 与 test_dev_verify_entry.py 的 EXPECTED_CI_COMMANDS）。
         run: 'echo "Fast gate active: the step list in this job is the single source; this receipt does not enumerate it."'
 
-  # ---- 慢集专轨（vckk 阶段 2-a · 2026-10-17）：名册 slow 行 ＋ FAST_KNOWN_SLOW 长尾轨 ----
+  # ---- 慢集专轨：名册 slow 行 ＋ FAST_KNOWN_SLOW 长尾轨 ----
   # 为什么独立 job：slow 行的贵是**真实的等外面**（真子进程 / 真定时等待），并进 verify
-  # 会把它拱向 10 分钟上限（工单 i9gl；CI 实测比本机慢约一倍）。独立成轨与 verify 并行，
+  # 会把它拱向 10 分钟上限（CI 实测比本机慢约一倍）。独立成轨与 verify 并行，
   # 总墙钟不变。
-  # 覆盖面对账（AGENTS §十三 第 29 条）：verify 跑 fast + serial 行，本作业跑 slow 行
-  # ＋ `FAST_KNOWN_SLOW` 的 4 条长尾（R3-025，2026-10-24）⇒ 三条道在每次 push 上各跑
+  # 覆盖面对账：verify 跑 fast + serial 行，本作业跑 slow 行
+  # ＋ `FAST_KNOWN_SLOW` 的 4 条长尾（2026-10-24 实测）⇒ 三条道在每次 push 上各跑
   # 各的，**合起来覆盖名册全部文件与全部被快集 --deselect 的 nodeid**——"改动落在某条道
   # 之外"在结构上不再可能（名册漏归类由 tests/test_gate_lane_roster.py 红，长尾轨的
   # 执行点在场性由 tests/test_dev_verify_entry.py::DevVerifyTailLaneTest 红，两者都在快集里）。
@@ -159,9 +159,9 @@ jobs:
   # ⚠️ 要真的拦得住，须把 `slow-lane` 加进分支保护的 required checks（所有者在仓库设置里
   # 勾选）——与 dependency-audit 同一约束，本文件无法替你做。
   slow-lane:
-    # 旧线专轨：改面无旧线路径时整条跳过（AGENTS §37d）。分类口径同 verify 的 ci-scope.sh。
+    # 旧线专轨：改面无旧线路径时整条跳过。分类口径同 verify 的 ci-scope.sh。
     runs-on: ubuntu-latest
-    # 10 → 15 分钟（R3-025）：本作业新增长尾轨约 +110s（本机实测 193.47s → 305s 合计），
+    # 10 → 15 分钟：本作业新增长尾轨约 +110s（本机实测 193.47s → 305s 合计），
     # CI 机器更慢；这只是上限，不增加正常路径的时长。
     timeout-minutes: 15
     steps:
@@ -206,7 +206,7 @@ jobs:
         run: bash scripts/dev-verify.sh --slow
 
   # ---- 依赖漏洞审计门（M28 批次 · 补 Dockerfile 注释里承诺的 pip-audit） ----
-  # 为什么要它：`requirements.lock` 是**手工维护的精确锁定**。2026-10-24（R3-007）起
+  # 为什么要它：`requirements.lock` 是**手工维护的精确锁定**。2026-10-24 起
   # 每个 pin 带 `--hash=sha256`，安装侧用 `--require-hashes`——供应链换包在安装阶段
   # 就会 fail-closed；pip-audit 仍是漏洞审计入口。0.5.1 评审批已把 urllib3 抬到 2.8.0、
   # Werkzeug 抬到 3.1.9 关掉 4 个 CVE（该改动在本分支的基线提交里，不在本文件所在提交的 diff 中）。
@@ -242,7 +242,7 @@ jobs:
       - name: Audit ready
         run: 'echo "Dependency audit clean: requirements.lock has no known vulnerabilities."'
 
-  # ---- 工具链快门（CLEAN-7a/7b）：actionlint / shellcheck / golangci / govulncheck / npm audit ----
+  # ---- 工具链快门：actionlint / shellcheck / golangci / govulncheck / npm audit ----
   # 五道检查都看静态事实，不跑产品测试；与 verify/stacks 并行，不占关键路径。
   # 脚本是唯一入口（本地同一条命令）；本 job 只负责装钉版工具。
   # 分支保护要把 tooling-gate 勾成 required check（仓库设置，代码改不了）。
@@ -377,9 +377,9 @@ jobs:
 
   # ---- 前端单测（Vue + Vitest）＋ 真浏览器 e2e（Playwright）----
   # 为什么必须有单测：122 项 Vitest 此前完全不在门禁内，而"纯函数全绿、组件接线坏掉"的缺陷
-  # 恰好落在无门禁区——2026-10-03 独立审查实测到一个 blocking 回归（日志页日期栏整体失效）
+  # 恰好落在无门禁区——2026-10-03 实测到一个 blocking 回归（日志页日期栏整体失效）
   # 正是这样漏掉的。前端测试与后端测试同门槛。
-  # 为什么 e2e 也放这里（R3-008，2026-10-24）：这批 Playwright 用例此前只挂在
+  # 为什么 e2e 也放这里（2026-10-24）：这批 Playwright 用例此前只挂在
   # `e2e-nightly.yml`——它的排程定义点在默认分支 main，而 server-web 分支不持有该文件；
   # 故部署分支上一条都不跑。本 job 已有 node 与 node_modules，补 Python 运行依赖与浏览器
   # 二进制即可拉起 `e2e/server.py`（临时 Flask 实例 + 临时 SQLite，不碰真实数据、不联外网）。
@@ -387,7 +387,7 @@ jobs:
   # 为什么不在 verify job：verify 的目标是 ≤3min 快速轨；本 job 与它并行，加时不占快轨。
   frontend:
     runs-on: ubuntu-latest
-    # 10 → 15 分钟（R3-008）：本 job 新增 e2e（浏览器安装 ＋ 2m19s 用例，本机实测）。
+    # 10 → 15 分钟：本 job 新增 e2e（浏览器安装 ＋ 2m19s 用例，本机实测）。
     # 这只是上限，不增加正常路径时长；与 verify / slow-lane 并行，不占快轨关键路径。
     timeout-minutes: 15
     defaults:
@@ -406,7 +406,7 @@ jobs:
         run: npm ci
       - name: Unit tests (Vitest)
         run: npm run test
-      # 构建产物可复现门禁（工单 yiban-auto-sign-spn6）：产物必须与已提交产物逐字节相同。
+      # 构建产物可复现门禁：产物必须与已提交产物逐字节相同。
       # 为什么在本 job：这里已有 node 与 node_modules（上面 npm ci），一次重建约 2 秒。
       # 判据与理由写在 scripts/check-vue-build-reproducible.sh；承重段的突变证明写在
       # scripts/e2e/vue-build-reproducible-e2e.sh（WSL 内手跑）；本文件不复制判据文本。
@@ -426,7 +426,7 @@ jobs:
         run: npx playwright install --with-deps chromium
       # YB_E2E_PYTHON 必须显式给：playwright.config 的探测只覆盖本机 venv 布局，
       # 在 runner 上会退化成 "python" 之外的探测结果。
-      # 覆盖说明（R3-008 P3-1，登记不改）：`paging.spec.ts` 的 2 条 5k 用例要
+      # 覆盖说明（登记不改）：`paging.spec.ts` 的 2 条 5k 用例要
       # `YB_E2E_BULK_ACCOUNTS>=1000` 才执行，默认在 PR 里 skip；它们仍会在夹具满足时执行，
       # 但不在本 job 的默认覆盖内。
       - name: End-to-end tests (Playwright, real browser + temp Flask)
@@ -491,14 +491,14 @@ jobs:
           YIBAN_TEST_DATABASE_URL: postgres://yiban:yiban@127.0.0.1:5432/yiban?sslmode=disable
         run: bash scripts/verify-stacks.sh
 
-  # ---- 新线 UI 的 Playwright e2e（工单 9f6 / E-1，2026-10-31）----
+  # ---- 新线 UI 的 Playwright e2e ----
   # 为什么独立作业（不进 stacks）：stacks 的 15 分钟上限已装满 Go 门与 UI verify；
   # e2e 还要 build ＋ 浏览器安装 ＋ 两条分片，塞进去只会互相顶爆超时。独立作业与
   # stacks 并行，总墙钟不变。
   # 为什么改动面用**步骤级**判定而不是作业级 `if`：作业级 `if` 为假时作业不被调度，
   # 分支保护里呈现 Expected / waiting 状态，required check 的语义有歧义。步骤级判定
   # 让作业照常调度：非 ui 改动时早退，并在 stdout 与 $GITHUB_STEP_SUMMARY 打印显性
-  # `ui-e2e SKIP` 行（AGENTS §30：跳过 ≠ 绿，跳过必须显性可见）。
+  # `ui-e2e SKIP` 行（跳过必须显性可见）。
   # base 取法与 verify / slow-lane 的 Classify change surface 步骤逐字一致（浅拉一层
   # 取尖端，不按 SHA 拉）。过滤口径 `^(ui/|server/contracts/)`：ui/e2e 的全部 API 由
   # page.route 假端点提供，不需要 Go 后端，server/ 其余改动不触发；但 openapi 契约

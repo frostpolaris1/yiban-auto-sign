@@ -1,10 +1,10 @@
 package oapi_test
 
-// 本文件钉住契约枚举与码侧词表的同集门（工单 zqv）。
+// 本文件钉住契约枚举与码侧词表的同集门。
 // 词表在三处定义：迁移、core 或 signing/contract 常量、契约生成物。
 // 有可扫描显式类型词表的契约枚举登记在 contractEnums，并断言同集。
 // 其余契约枚举登记在 contractEnumExempt，逐条写明理由（D8）。
-// 常量从源文件读：oapi.gen.go 是生成物，也不手抄（审查 D1）。
+// 常量从源文件读：oapi.gen.go 是生成物，也不手抄。
 // 库侧与 core 的对照门在 internal/adapters/pg/enum_gate_e2e_test.go。
 // adapters 不得导入 entry（canonical.tsv boundary.adapters），故三方对照拆成两段。
 // 本文件不碰数据库，默认测试即执行，无 DSN 也跑。
@@ -105,7 +105,7 @@ func walkConsts(t *testing.T, dir string, visit func(*ast.ValueSpec)) {
 }
 
 // sourceEnumValues 读出 dir 内显式声明为 typeID 的字符串常量，按声明序。
-// 常量从源文件读，故新增常量无需改测试（审查 D1）。
+// 常量从源文件读，故新增常量无需改测试。
 // 同形副本在 internal/adapters/pg/enum_gate_e2e_test.go。改一处必须同改另一处。
 func sourceEnumValues(t *testing.T, dir, typeID, prefix string, min int) []string {
 	t.Helper()
@@ -177,7 +177,7 @@ func convertsTo(value *ast.ValueSpec, typeID string) bool {
 
 // contractConstTypes 返回 dir 内带字符串取值的显式类型名，按字母序。
 // 无显式类型的转换式常量按函数名记类型（R3）。
-// 空扫不得当绿（审查 D6）。
+// 空扫不得当绿。
 func contractConstTypes(t *testing.T, dir string) []string {
 	t.Helper()
 	seen := map[string]bool{}
@@ -245,7 +245,7 @@ func sortedJoin(values []string) string {
 }
 
 // TestContractEnumsMatchCore：契约枚举取值等于码侧常量集合。
-// 突变任一侧取值、或新增常量，即红（审查 D1）。
+// 突变任一侧取值、或新增常量，即红。
 func TestContractEnumsMatchCore(t *testing.T) {
 	for _, row := range contractEnums {
 		t.Run(row.apiType, func(t *testing.T) {
@@ -259,7 +259,7 @@ func TestContractEnumsMatchCore(t *testing.T) {
 }
 
 // TestContractEnumCoverage：契约枚举全集 = 对照表 + 豁免表。
-// 新增契约枚举未登记即红（审查 D6）。
+// 新增契约枚举未登记即红。
 func TestContractEnumCoverage(t *testing.T) {
 	want := make([]string, 0, len(contractEnums)+len(contractEnumExempt))
 	for _, row := range contractEnums {

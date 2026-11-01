@@ -102,10 +102,10 @@ export const DELETED_ACCOUNTS: Account[] = [
 export const LOOKUP_USERS = [
   { id: 'user-target', email: 'member.target@example.com', status: 'active' },
   { id: 'user-disabled', email: 'disabled.one@example.com', status: 'disabled' },
-  // 同首字符同域对：掩码都是 a***@example.com（审查 F1 的绑定歧义）。
+  // 同首字符同域对：掩码都是 a***@example.com。
   { id: 'user-a-one', email: 'a.one@example.com', status: 'active' },
   { id: 'user-a-two', email: 'a.two@example.com', status: 'active' },
-  // 无点域名：服务端 ValidEmail 允许（裁决 P3-5），UI 不得拦（F3）。
+  // 无点域名：服务端 ValidEmail 允许，UI 不得拦（F3）。
   { id: 'user-intranet', email: 'ops@intranet', status: 'active' },
 ]
 

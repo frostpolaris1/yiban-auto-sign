@@ -168,7 +168,7 @@ func TestChangePasswordRejectsWrongCurrentPassword(t *testing.T) {
 }
 
 // 旧口令错且新旧口令相同：必须先判 401，不得因为「新旧相同」回 409。
-// 判据来自契约：409 只在旧口令校验通过后出现（审查 P3-1）。
+// 判据来自契约：409 只在旧口令校验通过后出现。
 func TestChangePasswordWrongCurrentBeatsReusedPassword(t *testing.T) {
 	e := newAuthEnv(t)
 	user := e.createUser("mia@example.com", "old-pass-123")

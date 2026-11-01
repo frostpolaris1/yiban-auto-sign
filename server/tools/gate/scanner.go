@@ -278,7 +278,7 @@ func selectorName(e ast.Expr) (string, bool) {
 //
 // import 与 forbid 的 owner 都是**检查范围**：import 查范围内的导入，
 // forbid 查范围内的调用。owner 改名或删除后，规则命中零个文件，永不触发；
-// 门会打印 ok，静默失守（AGENTS §29）。本检查把这种配置变成 rc=2。
+// 门会打印 ok，静默失守。本检查把这种配置变成 rc=2。
 // 判据是「owner 路径是否存在」，故固定按含 _test.go 的口径统计，
 // 与本轮 Scan 的 includeTests 无关。测试文件作为 owner 时，
 // 默认扫描看不到它，只有 verify.sh 的 -tests 那一遍会真正检查。
@@ -316,7 +316,7 @@ func ValidateCheckedScopes(root string, rules []Rule) error {
 //
 // 这几类规则（call/func/type/string）的 owner 是**唯一属主**：owner 下的文件放行，
 // 其余文件被检查。owner 目录改名或 pattern 符号改名后，规则仍会「通过」，
-// 但它实际什么都没检查（AGENTS §29：静默的不重合比红更危险）。
+// 但它实际什么都没检查。
 // 本检查把两种空转变成 rc=2：
 //   - owner 在 root 下匹配零个文件；
 //   - pattern 在整棵树里一次都没出现（call 看选择子调用，func/type 看声明名，

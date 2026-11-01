@@ -14,8 +14,8 @@ import (
 	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
 )
 
-// 本文件是排期四表的 e2e 判据（P4-B）。
-// 需要真实 PostgreSQL：CAS 单赢家、唯一约束与 ENUM 都没有诚实替身（AGENTS §32）。
+// 本文件是排期四表的 e2e 判据。
+// 需要真实 PostgreSQL：CAS 单赢家、唯一约束与 ENUM 都没有诚实替身。
 // 无 DSN 时整套跳过，跳过显性可见（main_test.go 的 requireDSN）。
 
 // seedTask 建学校＋任务＋账号，返回 (schoolID, taskID, accountID)。
@@ -54,7 +54,7 @@ func TestSchoolTaskIdempotent(t *testing.T) {
 	}
 }
 
-// TestCASClaimSingleWinner：并发认领同一行，赢家恰一个（P4 验收 3）。
+// TestCASClaimSingleWinner：并发认领同一行，赢家恰一个。
 // 判据是「任何时刻该行只能被一个 worker 持有」，不是调用顺序。
 func TestCASClaimSingleWinner(t *testing.T) {
 	e := newEnv(t)
@@ -103,7 +103,7 @@ func TestCASClaimSingleWinner(t *testing.T) {
 }
 
 // TestPlanIdempotentReplay：计划重放不覆盖——同输入二次落库写 0 行，
-// 既有结论（终态）不被冲掉（AGENTS §14：不许静默改写当日结论）。
+// 既有结论（终态）不被冲掉。
 func TestPlanIdempotentReplay(t *testing.T) {
 	e := newEnv(t)
 	_, taskID, acctID := e.seedTask("sched-replay", "晨间签到", "replay-owner@example.com", "13800002222")
@@ -133,7 +133,7 @@ func TestPlanIdempotentReplay(t *testing.T) {
 }
 
 // TestWindowVersionReplan：窗口版本重排——乐观锁只允许最新版本覆盖，
-// 过期版本写不进（P4 计划：版本重排输入）。
+// 过期版本写不进。
 func TestWindowVersionReplan(t *testing.T) {
 	e := newEnv(t)
 	_, taskID, _ := e.seedTask("sched-win", "晨间签到", "win-owner@example.com", "13800003333")
@@ -162,8 +162,7 @@ func TestWindowVersionReplan(t *testing.T) {
 	}
 }
 
-// TestOnlyOneRunningPerAccount：库级门 I-7——同账号同时至多一条 running
-// （P4 验收 3「同账号不双登录」，P4-B 复审 P1-1）。
+// TestOnlyOneRunningPerAccount：库级门 I-7——同账号同时至多一条 running。
 // 进程内串行挡不住崩溃重启；门必须在库层。两条任务各自 pending，
 // 认领第一条成功后，第二条必须被部分唯一索引拒绝。
 func TestOnlyOneRunningPerAccount(t *testing.T) {
@@ -204,9 +203,8 @@ func TestOnlyOneRunningPerAccount(t *testing.T) {
 	}
 }
 
-// TestSignTaskStateEnumMatchesStatus：库层 ENUM 与 core/status 五常量同形
-// （P4-B 复审 P2-4 的门）。漂移即红：词表在多处定义，必须钉住。
-// 常量从源文件读，故新增状态无需改本测试（审查 D1）。
+// TestSignTaskStateEnumMatchesStatus：库层 ENUM 与 core/status 五常量同形。漂移即红：词表在多处定义，必须钉住。
+// 常量从源文件读，故新增状态无需改本测试。
 func TestSignTaskStateEnumMatchesStatus(t *testing.T) {
 	e := newEnv(t)
 	// 按声明序比较：库侧 enumsortorder 与 core 常量顺序必须一致。

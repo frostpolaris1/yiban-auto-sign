@@ -1,6 +1,6 @@
 package main
 
-// update.sh 载入 /etc/yiban/.env 的 e2e（派单 F3）。
+// update.sh 载入 /etc/yiban/.env 的 e2e。
 //
 // # 功能
 // 模拟真实运维动作：管理员把含特殊字符的 DSN 写进 .env，
@@ -96,7 +96,7 @@ exit 0
 	if got := readAll(t, pepperOut); got != "0123456789abcdef" {
 		t.Fatalf("成对单引号必须去掉：pepper = %q", got)
 	}
-	// 名册随升级一起落位：与仓库内那份逐字节一致（派单 F8 同族）。
+	// 名册随升级一起落位：与仓库内那份逐字节一致。
 	wantReg, err := os.ReadFile(filepath.Join("..", "..", "..", "config", "registry.json"))
 	if err != nil {
 		t.Fatalf("read repo registry: %v", err)

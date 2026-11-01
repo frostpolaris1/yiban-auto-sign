@@ -52,7 +52,7 @@ var authTestPepper = []byte("0123456789abcdef0123456789abcdef")
 // 它与 pepper 不同源：轮换 pepper 不得导致凭据不可解密。
 var authTestCredentialKey = []byte("fedcba9876543210fedcba9876543210")
 
-// TestMain 让缺库显性可见（AGENTS §30）。
+// TestMain 让缺库显性可见。
 func TestMain(m *testing.M) {
 	if strings.TrimSpace(os.Getenv(authDSNEnv)) == "" {
 		if strings.TrimSpace(os.Getenv("CI")) != "" {

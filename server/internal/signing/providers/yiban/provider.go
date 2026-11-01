@@ -270,7 +270,7 @@ func (p *Provider) signResult(envelope protocol.Envelope, warning string) contra
 }
 
 // receiptOf 只认两种成功回执：布尔 true 与带正整数 Id 的对象。
-// 数值 Id 必须 > 0：0、负数、浮点都算无回执（参考实现的 R3-002 判据）。
+// 数值 Id 必须 > 0：0、负数、浮点都算无回执。
 func receiptOf(data any) (string, bool) {
 	switch value := data.(type) {
 	case bool:
@@ -296,7 +296,7 @@ func receiptOf(data any) (string, bool) {
 //
 // 可签集合只有 0（可签到）与 1（未签到）：两者尚无结论，继续取点位并提交。
 // 已登记结论态：2 无需签到、3 已签到、4 已更改、5 补签中。
-// 其余值（含缺失）一律 unknown：未知态绝不当作可签（工单 mks）。
+// 其余值（含缺失）一律 unknown：未知态绝不当作可签。
 // 平台枚举来源为 APK 逆向的 stateEnum（0 可签到/1 未签到/2 无需签到/
 // 3 已签到/4 已更改/5 补签中）。
 // 实拍口径：2026-10-28 实拍确认 0 与 3（bd yiban-auto-sign-4sk）；

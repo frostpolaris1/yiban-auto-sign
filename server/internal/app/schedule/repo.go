@@ -20,7 +20,7 @@ var ErrWindowStale = coreschedule.ErrWindowStale
 //
 // GetWindow 在无缓存时必须返回 errs.ErrNotFound；
 // 其他错误（连接失败等）**原样上抛**，不得当成"无缓存"——
-// 否则瞬时读错会让用例走 upsert 覆盖并发写入的窗口（P4-C 复审 P2-5）。
+// 否则瞬时读错会让用例走 upsert 覆盖并发写入的窗口。
 type WindowStore interface {
 	GetWindow(ctx context.Context, schoolTaskID, day string) (coreschedule.WindowRecord, error)
 	// PutWindow 写窗口。expectedVersion > 0 时做乐观锁；
@@ -70,7 +70,7 @@ type Discoverer interface {
 
 // Deps 是计划用例的依赖。
 // Tx 让"写窗口＋重排＋补插"三步同事务：任一步失败整体回滚，
-// 不留下"版本已推进但计划未重排"的半成品（P4-C 复审 P2-4）。
+// 不留下"版本已推进但计划未重排"的半成品。
 // Prefs 可为 nil：未装配时计划忽略用户自选，行为等于纯自动铺点。
 type Deps struct {
 	Windows  WindowStore
@@ -79,7 +79,7 @@ type Deps struct {
 	Discover Discoverer
 	Prefs    TimePrefs
 	Tx       appcore.TxManager
-	// Notifier 可为 nil：缺端口就不发事件（P6）。
+	// Notifier 可为 nil：缺端口就不发事件。
 	Notifier Notifier
 	// Logger 可为 nil：用 slog.Default。窗口发现失败的原因进日志。
 	Logger *slog.Logger

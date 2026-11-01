@@ -6,7 +6,7 @@ import (
 	corelocation "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/location"
 )
 
-// LocationRepo 是账号定位策略的仓储（P5-C）。
+// LocationRepo 是账号定位策略的仓储。
 // 一行一账号；auto 行的 lng/lat 为 NULL。
 type LocationRepo struct {
 	db *DB

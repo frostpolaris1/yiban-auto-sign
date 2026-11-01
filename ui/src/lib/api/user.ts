@@ -95,7 +95,7 @@ export type LookupUsersOptions = {
 /**
  * 归属选择器的受限查询。q 必填；只回掩码邮箱。
  * 按 id 绑定属主的调用必须带 `exact: true`：
- * 掩码行彼此不可分辨，前缀语义＋取首条会绑错属主（审查 F1）。
+ * 掩码行彼此不可分辨，前缀语义＋取首条会绑错属主。
  */
 export function lookupUsers(
   q: string,

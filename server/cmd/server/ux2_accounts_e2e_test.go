@@ -859,7 +859,7 @@ type u2LookupRef struct {
 
 // 同首字符同域的两名用户：前缀 q=a. 回两条（email 升序），
 // exact=true 只回全等邮箱的那一条。掩码把两者渲染成同一个字符串，
-// 前缀语义＋取第一条会把账号绑到错误属主（审查 F1 实证）。
+// 前缀语义＋取第一条会把账号绑到错误属主。
 func TestUX2LookupExactBeatsPrefix(t *testing.T) {
 	e := newAuthEnv(t)
 	u2SeedUser(t, e, "u2-lk-master@example.com", "master-pass", coreauth.RoleMaster)

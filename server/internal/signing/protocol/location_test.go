@@ -13,7 +13,7 @@ func TestExtractVerifyRequestFixture(t *testing.T) {
 	if len(token) != 512 {
 		t.Fatalf("token length = %d, want 512", len(token))
 	}
-	// 只判形状：实拍值已按 AGENTS §十六 换成等长合成串，
+	// 只判形状：实拍值已换成等长合成串，
 	// 钉住实拍前缀等于把令牌片段写回仓库。
 	if strings.Trim(token, "0123456789abcdef") != "" {
 		t.Fatalf("token 不是小写十六进制：%q", token[:16])

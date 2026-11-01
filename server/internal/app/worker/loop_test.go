@@ -3,7 +3,7 @@ package worker
 // Loop 的单元测试：停机三步的语义。
 //
 // # 功能
-// 钉住停机判据（派单 P7）：Stop 先停领取、等在飞结算、
+// 钉住停机判据：Stop 先停领取、等在飞结算、
 // 返回残余 running 数；超时按 ctx 错误返回。
 // 全部依赖注入替身，本文件**不**连数据库。
 //
@@ -229,7 +229,7 @@ func TestLoopStopsClaimingAfterStop(t *testing.T) {
 	}
 }
 
-// TestLoopStartAfterStopFails 钉住 Stop 之后不能再 Start（派单 F13）。
+// TestLoopStartAfterStopFails 钉住 Stop 之后不能再 Start。
 // Stop 会关闭 done 通道；未启动过的实例 Start 后 run() 的
 // defer close(done) 会二次关闭，直接 panic。
 func TestLoopStartAfterStopFails(t *testing.T) {

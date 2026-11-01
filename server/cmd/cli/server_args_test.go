@@ -1,6 +1,6 @@
 package main
 
-// server 子命令的参数门（派单 P3）。
+// server 子命令的参数门。
 //
 // # 功能
 // `yiban-cli server` 没有选项：多余参数必须报错退出 2，

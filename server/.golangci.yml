@@ -1,4 +1,4 @@
-# server/.golangci.yml — Go 静态检查配置（CLEAN-7b）。
+# server/.golangci.yml — Go 静态检查配置。
 #
 # 形状：只用标准五件套（errcheck / govet / ineffassign / staticcheck / unused），
 # 不引入风格类 linter。理由：本仓的单一事实源由 tools/gate + canonical.tsv 管，

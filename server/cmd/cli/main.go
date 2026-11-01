@@ -5,7 +5,7 @@
 // migrate（应用迁移并打印版本）、doctor（故障体检）、
 // healthcheck（对 /healthz 做一次探活，容器 healthcheck 用）、
 // backup/restore（pg_dump + GPG + 行数对账）。
-// 本命令**不**进 OpenAPI（派单 P7：CLI 不在 openapi 契约面）。
+// 本命令**不**进 OpenAPI。
 //
 // # 归属
 // entry 层可执行件。装配与关闭在 internal/assembly；

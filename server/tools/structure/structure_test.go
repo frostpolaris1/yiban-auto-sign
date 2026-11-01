@@ -185,7 +185,7 @@ func TestCheckFrontendEmptyScanFails(t *testing.T) {
 
 // 受管 scope 清单是钉子：删 scope 或改 scope 名必须同步改这里。
 // 删一条 scope 等于把该目录从结构门里摘掉（其下新目录全放行），
-// 必须是一次显式决定，而不是一次静默的绿（AGENTS §29）。
+// 必须是一次显式决定，而不是一次静默的绿。
 func TestStructureScopesPinned(t *testing.T) {
 	want := []string{
 		"root",
@@ -217,7 +217,7 @@ func TestStructureScopesPinned(t *testing.T) {
 }
 
 // 结构表整行快照：scope、allowlist 与 optional 的改动都要显式决定。
-// 只钉 scope 序列会让 allowlist 的删项静默通过（r4c 复审 P2）。
+// 只钉 scope 序列会让 allowlist 的删项静默通过。
 func TestStructureRowsPinned(t *testing.T) {
 	rules, err := loadRules(filepath.Join("..", "..", "structure.tsv"))
 	if err != nil {

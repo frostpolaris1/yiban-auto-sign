@@ -1,6 +1,6 @@
 package main
 
-// P6 e2e：管理员 SSE、诊断与用户轮询的完整链路（真库）。
+// 管理员 SSE、诊断与用户轮询的完整链路（真库）。
 //
 // # 功能
 // 手动签到 → Step 结算 → SSE 流读到 task.concluded；
@@ -125,7 +125,7 @@ func p6Setup(t *testing.T) (*w2cEnv, *coreauth.Issued, string) {
 	acct := e.account(school.ID, owner.ID, "13800060001")
 	e.activateAccount(acct)
 	// 预置平台目标：缺省时 DiscoverTargets 报 upstream，任务走退避，
-	// 永远到不了结算（P5-C 同款设置，不要求图片）。
+	// 永远到不了结算（本用例不要求图片）。
 	e.provider.targets[acct] = []contract.Target{{ID: "pos-1", Title: "东门"}}
 	now := clock.System{}.Now()
 	day := clock.BusinessDay(now, p4Location(t))
@@ -364,7 +364,7 @@ func TestP6PrivacyScan(t *testing.T) {
 	}
 }
 
-// P6 审查 P1 回归：全局 http.Server 的 WriteTimeout 不得掐断 SSE 长流。
+// 回归：全局 http.Server 的 WriteTimeout 不得掐断 SSE 长流。
 // 处理器必须用 NewResponseController 清掉本次响应的写超时；
 // 否则 50ms（测试值）后任何写入失败、流断，15s 心跳根本活不到第二跳。
 func TestP6SSESurvivesServerWriteTimeout(t *testing.T) {

@@ -1,6 +1,6 @@
 package events_test
 
-// SSE 端点判据（P6）：帧格式（id/event/data）、15s 心跳（假时钟）、
+// SSE 端点判据：帧格式（id/event/data）、15s 心跳（假时钟）、
 // 60s 空闲 end 并关闭、Last-Event-ID 续传、缺口 resync+snapshot、
 // admin 只收绑定校、user 403、请求取消即断流、no-store 响应头。
 // 流式读取用真 HTTP 服务器：httptest.ResponseRecorder 不支持流。

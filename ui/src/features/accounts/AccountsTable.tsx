@@ -124,7 +124,7 @@ export function AccountsTable({
               // 软删行只展示徽标与恢复菜单：其余动作对已删行都是 404。
               if (account.deleted_at != null) {
                 // 已删行不绑点击也不给「查看」：详情与设备刷新对已删行必 404，
-                // 唯一出口是行菜单的恢复（审查 M2）。
+                // 唯一出口是行菜单的恢复。
                 return (
                   <tr key={account.id} className="app-account-row">
                     <td>

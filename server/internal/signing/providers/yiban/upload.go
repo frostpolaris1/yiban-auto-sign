@@ -5,7 +5,7 @@
 // 本文件的请求顺序与字段名来自对参考程序（2117516450/yiban_signin v20260925，
 // Unlicense/公有领域）发布二进制的逆向还原（UPX 脱壳 + Nuitka 常量池），
 // **未经真实抓包验证**。逐条未知点以 UNVERIFIED(recon) 标注；拿到带图需求
-// 账号后用探针实拍替换标注（工单 9ap）。
+// 账号后用探针实拍替换标注。
 //
 // 已由我方实拍交叉印证的部分：signIn 的 SignInfo 键序
 // {Reason, AttachmentFileName, LngLat, Address} 与 7 跳实拍一致；

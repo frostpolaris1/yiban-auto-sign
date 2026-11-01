@@ -22,7 +22,7 @@ import (
 
 // dsnEnv 是测试库的环境变量名。
 // 测试需要真实 PostgreSQL 18：触发器、部分索引、advisory lock 与 uuidv7()
-// 都没有**诚实的进程内替身**（AGENTS §32）。
+// 都没有**诚实的进程内替身**。
 const dsnEnv = "YIBAN_TEST_DATABASE_URL"
 
 // auditKey 是固定 32 字节密钥。真实密钥来自配置。
@@ -143,7 +143,7 @@ func randomHex(n int) string {
 }
 
 // tokenHash 构造仓储接受的定型摘要。
-// 原始令牌无法传给 token_hash 参数（D-7）。
+// 原始令牌无法传给 token_hash 参数。
 func tokenHash(token string) coreauth.TokenHash {
 	return coreauth.HashToken(token)
 }
@@ -285,7 +285,7 @@ func wantError(t *testing.T, err error, what string) {
 
 // codeOf 返回错误对应的稳定码。
 // err 为 nil 时以 Fatal 终止：errs.From(nil) 返回 nil，
-// 取 .Code 会 SIGSEGV，整包余下用例随之不再运行（AGENTS §30）。
+// 取 .Code 会 SIGSEGV，整包余下用例随之不再运行。
 //
 // **断言写错的用例必须红，不能把整包打成 panic。**
 func codeOf(t *testing.T, err error) errs.Code {
@@ -305,7 +305,7 @@ func mustNotError(t *testing.T, err error, what string) {
 
 // TestMain 让缺失数据库显性可见。
 // 未加 -v 时 go test 会吞掉 t.Skip 日志，
-// 故因环境跳过的数据库运行**绝不可静默显得绿**（AGENTS §30）。
+// 故因环境跳过的数据库运行**绝不可静默显得绿**。
 //
 // CI 中缺少 DSN 即失败：否则流水线会报告一次零 e2e 执行的绿。
 // 本地把横幅打到 stdout，操作者仍能看到，然后跳过。

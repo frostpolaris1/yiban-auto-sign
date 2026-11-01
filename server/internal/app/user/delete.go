@@ -15,7 +15,7 @@
 // 这条是唯一入口判据。
 // 目标是最后一名 active 未删 master 409（P2-3）：计数端口先取
 // UserCapacityLock 再数，与 Update 的「锁→数→改」串行化；
-// 判据只计 active（P1-2），停用 master 不能登录、不构成恢复路径。
+// 判据只计 active，停用 master 不能登录、不构成恢复路径。
 // 事务内＝GetByID + 计数 + SoftDelete + RevokeAllForUser + 审计。
 // 解析层 JOIN 已判 deleted_at；显式撤销让 sessions.revoked_at 有据可查。
 
@@ -54,10 +54,10 @@ func (s *Service) Delete(ctx context.Context, scope corescope.Scope, id string, 
 		if err != nil {
 			return err
 		}
-		// 删除也参与 master 计数（独立审查 P2-3）：
+		// 删除也参与 master 计数：
 		// 计数端口先取 UserCapacityLock 再数（适配器保证），
 		// 与 Update 的「锁→数→改」串行化，堵「A 降 B 同时 B 删 A」的并发缝。
-		// 判据只计 active 未删 master（P1-2）：删掉最后一名 active master 即 409。
+		// 判据只计 active 未删 master：删掉最后一名 active master 即 409。
 		if target.Role == coreauth.RoleMaster {
 			live, err := s.deps.Users.CountLiveMasters(ctx, target.ID)
 			if err != nil {

@@ -111,5 +111,5 @@ func Resolve(target contract.Target, loc contract.Location) bool {
 }
 
 // distanceWithin 报告距离是否仍在半径内：恰好等于半径按在内。
-// 抽成小函数是为了让边界方向有直接的单元判据（P5-C 审查 P2-3）。
+// 抽成小函数是为了让边界方向有直接的单元判据。
 func distanceWithin(radius, d float64) bool { return d <= radius }

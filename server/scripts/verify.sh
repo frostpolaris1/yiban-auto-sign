@@ -10,7 +10,7 @@ if [ -n "$unformatted" ]; then
 fi
 
 go vet ./...
-# -count=1：Go 的测试缓存会让 shell/fixture 改动看不见（派单 F18）。
+# -count=1：Go 的测试缓存会让 shell/fixture 改动看不见。
 # 实测：改 deploy/linux/install.sh 后不带 -count=1 返回 cached 绿。
 #
 # 三个真库包下面还要带 -v 再跑一次（要数顶层 PASS）。有 DSN 时先把它们从这一轮
@@ -25,13 +25,13 @@ else
 fi
 go run ./tools/gate -root . -rules canonical.tsv
 # 默认口径不含 _test.go。这里再跑一遍 -tests，
-# 使测试文件的 allow 登记被实际执行（AGENTS §29）。
+# 使测试文件的 allow 登记被实际执行。
 go run ./tools/gate -root . -rules canonical.tsv -tests
 
-# PostgreSQL e2e visibility (AGENTS §30). Without a DSN the suite skips, and a
+# PostgreSQL e2e visibility. Without a DSN the suite skips, and a
 # skipped suite is not a pass: say so on stdout. With a DSN the suite must
 # actually run, and the top-level pass count must reach the P1 minimum.
-# 阈值口径（派单 F12）：pg 与 auth 的数来自 2026-10-27 的 yiban_test_r4 实测。
+# 阈值口径：pg 与 auth 的数来自 2026-10-27 的 yiban_test_r4 实测。
 # 该次实测 pg 60 个顶层 PASS，auth 57 个。
 # cmd/cli 45 个顶层 PASS 来自 2026-10-27 的 yiban_test_r4c 实测。
 # 阈值取实测下方留余量（pg ≥50、auth ≥45、cmd/cli ≥20）：
@@ -91,7 +91,7 @@ else
   echo "cli e2e: $cli_pass top-level tests passed."
 fi
 
-# 符合性套件以 -v 跑一遍：未声明能力的判据会打印跳过行（AGENTS §30）。
+# 符合性套件以 -v 跑一遍：未声明能力的判据会打印跳过行。
 go test -v -count=1 ./internal/signing/conformance/
 
 # 真实 Provider 的适用判据也带 -v：能力跳过行必须在常规门禁可见。
@@ -109,9 +109,9 @@ go run ./tools/structure -root .. -rules structure.tsv
 # a missing scanner or an incomplete scan exits 2, never green.
 bash ./scripts/license.sh
 
-# 容器照片目录 e2e（派单 F4、P1-1）：命名卷由 root 拥有时 distroless
+# 容器照片目录 e2e：命名卷由 root 拥有时 distroless
 # nonroot 不可写。构建镜像耗时，故放在全量末尾并给 5 分钟上限。
-# docker 缺失或 daemon 不可用必须显性 SKIP：跳过不是绿（AGENTS §30）。
+# docker 缺失或 daemon 不可用必须显性 SKIP：跳过不是绿。
 run_container_e2e() {
   if command -v timeout >/dev/null 2>&1; then
     YIBAN_DOCKER_E2E=1 timeout 300 go test -count=1 -v \

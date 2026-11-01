@@ -8,7 +8,7 @@ package main
 // 本文件**不**连真实数据库、**不**占真实端口、**不**依赖平台特性。
 //
 // # 口径
-// 判据来自派单 P7：「注入故障环境 → doctor 报该条 → 输出含修复命令」。
+// 判据：「注入故障环境 → doctor 报该条 → 输出含修复命令」。
 // Windows 上无法构造的故障（如去掉 POSIX 执行位）显式 t.Skip 并打印原因。
 
 import (
@@ -186,8 +186,7 @@ func TestDoctorHealthyProbePasses(t *testing.T) {
 	}
 }
 
-// checks 与故障注入用例表必须一一对应：新增检查不带用例不得通过
-// （P7 审查 P3-7）。
+// checks 与故障注入用例表必须一一对应：新增检查不带用例不得通过。
 func TestDoctorFaultCasesCoverEveryCheck(t *testing.T) {
 	byName := map[string]bool{}
 	for _, c := range faultCases(t) {
@@ -344,7 +343,7 @@ func TestDoctorDBPreconditionSkipsDownstream(t *testing.T) {
 }
 
 func TestDoctorFixTextCarriesRunnableCommand(t *testing.T) {
-	// 派单判据「输出含修复命令」：抽查 pepper 的修复是一条可执行命令。
+	// 判据「输出含修复命令」：抽查 pepper 的修复是一条可执行命令。
 	p, _ := healthyProbe(t)
 	p.src = fakeSource{"YIBAN_ENV": "production", "YIBAN_HASH_PEPPER": "short", "YIBAN_CREDENTIAL_KEY": testKeyB64}
 	rep := runChecks(context.Background(), p)
@@ -371,7 +370,7 @@ func secretFragments(secret string) []string {
 	return out
 }
 
-// TestRedactDSNRewritesEveryShape 钉住 DSN 打印时口令不泄漏（派单 F6、P1-2）。
+// TestRedactDSNRewritesEveryShape 钉住 DSN 打印时口令不泄漏。
 // 六种形状：URI、URI 查询串、无 scheme 的 user:pass@host、keyword 无空格、
 // = 两侧带空格、单引号含空白。输出不得含口令的任何片段。
 func TestRedactDSNRewritesEveryShape(t *testing.T) {
@@ -429,7 +428,7 @@ func TestRedactDSNFailsClosedOnMalformedKeyword(t *testing.T) {
 	}
 }
 
-// TestDoctorOwnerChecksUseServiceUser 钉住属主与可写性按服务用户判（派单 F7）。
+// TestDoctorOwnerChecksUseServiceUser 钉住属主与可写性按服务用户判。
 // root 跑 doctor、属主是 yiban 是生产常态：不能因为 root 自己可写就报问题，
 // 也不能把自己的可写性当成服务用户的可写性。
 func TestDoctorOwnerChecksUseServiceUser(t *testing.T) {
@@ -481,7 +480,7 @@ func TestDoctorOwnerChecksUseServiceUser(t *testing.T) {
 	})
 }
 
-// TestDefaultRegistryResolvesInstalledPath 钉住名册缺省查找顺序（派单 F8）。
+// TestDefaultRegistryResolvesInstalledPath 钉住名册缺省查找顺序。
 // 生产不在仓库根跑 doctor：先找安装位 /etc/yiban/registry.json。
 func TestDefaultRegistryResolvesInstalledPath(t *testing.T) {
 	// 查找顺序本身也是判据：安装位必须排第一，仓库相对路径兜底。
@@ -511,7 +510,7 @@ func TestDefaultRegistryResolvesInstalledPath(t *testing.T) {
 	}
 }
 
-// TestServiceUserDefaultFollowsSystemdUnit 钉住服务用户缺省判据（派单 P1-1）。
+// TestServiceUserDefaultFollowsSystemdUnit 钉住服务用户缺省判据。
 // 有 systemd 单元 ⇒ 服务以 User=yiban 运行；无单元 ⇒ 本进程就是服务身份
 // （容器与前台运行都走这条），属主判据必须按当前用户判。
 func TestServiceUserDefaultFollowsSystemdUnit(t *testing.T) {
@@ -576,7 +575,7 @@ func TestRunDoctorResolvesServiceUserDefault(t *testing.T) {
 	})
 }
 
-// TestDoctorContainerPhotoFixUsesHostCommand 钉住容器内的修复提示（派单 P1-1）。
+// TestDoctorContainerPhotoFixUsesHostCommand 钉住容器内的修复提示。
 // distroless 没有 shell 与 chown：容器内打印 `chown yiban` 等于给一条
 // 不可执行的命令。修复必须在宿主机执行，或指向镜像预建的属主。
 func TestDoctorContainerPhotoFixUsesHostCommand(t *testing.T) {

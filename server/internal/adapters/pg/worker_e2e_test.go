@@ -8,7 +8,7 @@ import (
 	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
 )
 
-// 本文件是 worker 队列语义的 e2e 判据（P4-E）。
+// 本文件是 worker 队列语义的 e2e 判据。
 // 需要真实 PostgreSQL：批量 CAS 认领、SKIP LOCKED 与启动回收没有诚实替身。
 
 // TestClaimDueSkipsSameAccountRunning：同账号同时只领一条；
@@ -208,8 +208,8 @@ func TestClaimDueSkipsPausedAndDisabled(t *testing.T) {
 }
 
 // TestClaimDueSkipsAccountWithRunning：同账号已有 running 时，
-// **另一条 pending** 也不得被认领——这是跨批次串行的真正判据
-// （P4-E 审查 P2-5：删掉 NOT EXISTS 谓词后原有用例仍绿）。
+// **另一条 pending** 也不得被认领——这是跨批次串行的真正判据；
+// 删掉 NOT EXISTS 谓词后原有用例仍绿。
 func TestClaimDueSkipsAccountWithRunning(t *testing.T) {
 	e := newEnv(t)
 	school := e.createSchool("wk-running")

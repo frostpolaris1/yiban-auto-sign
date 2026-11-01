@@ -37,7 +37,7 @@ func (failingOwnerReader) GetByID(context.Context, string) (coreuser.Record, err
 }
 
 // Create 指定属主时，OwnerReader 的非 not_found 错误必须原样上抛；
-// 改写成 404 会把读库故障伪装成「用户不存在」，误导操作者（审查 M4）。
+// 改写成 404 会把读库故障伪装成「用户不存在」，误导操作者。
 func TestCreateOwnerReaderFailurePassesThrough(t *testing.T) {
 	repo := &fakeListRepo{items: []Record{{ID: "acc-1"}}}
 	svc, err := NewService(Deps{

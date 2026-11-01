@@ -1,4 +1,4 @@
-// Package retention 清理过期数据（D 批 P2-15）。
+// Package retention 清理过期数据。
 //
 // # 功能
 // 按保留期删三张表：过期会话、过期重置令牌、旧签到任务行。

@@ -297,7 +297,7 @@ func (e *errStore) AssignOrGet(context.Context, string, string) (string, error) 
 	return "", e.err
 }
 
-// 停用绑定的 Identity 必须仍可取：粘性不因运维停用而失效（复审 P2-1）。
+// 停用绑定的 Identity 必须仍可取：粘性不因运维停用而失效。
 func TestBoundDisabledEgressKeepsIdentity(t *testing.T) {
 	st := newFakeStore("e1", "e2")
 	svc := newService(t, st)
@@ -335,7 +335,7 @@ func TestBoundDisabledEgressKeepsIdentity(t *testing.T) {
 	}
 }
 
-// GetAssignment 真错误不得落穿成"新分配"（复审 P3-4）：
+// GetAssignment 真错误不得落穿成"新分配"：
 // ListEnabled 正常、GetAssignment 报普通错误 → 必须上抛。
 func TestAssignmentReadErrorDoesNotFallThrough(t *testing.T) {
 	st := &assignErrStore{enabled: []appegress.Egress{{ID: "e1", Identity: "https://e1"}}}

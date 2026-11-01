@@ -101,7 +101,7 @@ func Checks() []Check {
 // Run 逐条执行判据。
 // 失败文本统一为 `conformance: <名称>: <原因>`。
 // errNotApplicable 标记「提供方未声明能力，判据不适用」。
-// 它不是失败：Run 会把它打印成显性跳过（AGENTS §30，跳过不算通过）。
+// 它不是失败：Run 会把它打印成显性跳过。
 var errNotApplicable = errors.New("not applicable")
 
 // Run 顺序执行判据。判据在各自的 t.Run 内执行：
@@ -154,14 +154,14 @@ var criterionTimeout = 15 * time.Second
 func stopAfter(err error) bool { return errors.Is(err, errCriterionTimeout) }
 
 // errCriterionTimeout 标记判据整体超时。
-// Run 见到它即停跑剩余判据：阻塞的提供方不应让整轮每条各付一次上限（R3-04）。
+// Run 见到它即停跑剩余判据：阻塞的提供方不应让整轮每条各付一次上限。
 var errCriterionTimeout = errors.New("criterion timeout")
 
 // runCheck 执行一条判据，并把 panic 转成同格式失败。
 // 提供方 panic 不得拖垮整轮判据。
 //
 // 每条判据都有 criterionTimeout 上限：任意调用都阻塞的提供方
-// 得到可读失败，而不是挂起整轮（R3-04）。超时后遗留的 goroutine
+// 得到可读失败，而不是挂起整轮。超时后遗留的 goroutine
 // 无法回收，测试进程退出时一并结束。
 func runCheck(check Check, newProvider NewProvider) (err error) {
 	type outcome struct{ err error }
@@ -328,7 +328,7 @@ func outcomeConclusion(err error) (contract.Outcome, bool) {
 }
 
 // conclusionNotApplicable 标记「提供方给出结论，没有值可检查」。
-// 它不是失败：Run 会打印成显性跳过（AGENTS §30）。
+// 它不是失败：Run 会打印成显性跳过。
 func conclusionNotApplicable(outcome contract.Outcome) error {
 	return fmt.Errorf("%w: 提供方报告结论 %s，无值可检查", errNotApplicable, outcome)
 }
@@ -534,7 +534,7 @@ func checkSignCancel(newProvider NewProvider) error {
 }
 
 // checkSignIdempotent 要求同一 AttemptID 重复签到得到**完全相同**的结果。
-// 依据：契约 §3 身份与幂等；只比 Outcome 会放过证据与重试建议的漂移。
+// 依据： 身份与幂等；只比 Outcome 会放过证据与重试建议的漂移。
 func checkSignIdempotent(newProvider NewProvider) error {
 	p := newProvider()
 	request := signRequest("attempt-idempotent")
@@ -617,7 +617,7 @@ func checkSignConcurrent(newProvider NewProvider) error {
 }
 
 // checkPhotoMissing 要求声明图片能力的提供方对无图请求返回 photo_missing。
-// 依据：契约 §4.5「无图但需要图 → photo_missing，不登录」。
+// 依据：「无图但需要图 → photo_missing，不登录」。
 // 未声明 ImageRequired 时返回 errNotApplicable：Run 把它打印成显性跳过。
 func checkPhotoMissing(newProvider NewProvider) error {
 	p := newProvider()
@@ -637,11 +637,11 @@ func checkPhotoMissing(newProvider NewProvider) error {
 }
 
 // checkSignTimeout 要求期限结束与在途取消都返回上下文错误，且不返回伪结果。
-// 依据：契约 §7.2 把「超时」列为 conformance 必测项。
+// 依据： 把「超时」列为 conformance 必测项。
 func checkSignTimeout(newProvider NewProvider) error {
 	// 场景一：调用入口的期限已过。
 	// 调用放进协程并套完成上限：阻塞的提供方转成可读失败，
-	// 而不是挂起整轮判据（W2C-R2-01）。
+	// 而不是挂起整轮判据。
 	expired, cancelExpired := context.WithTimeout(context.Background(), 0)
 	defer cancelExpired()
 	type callResult struct {

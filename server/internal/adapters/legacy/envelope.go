@@ -1,6 +1,6 @@
 package legacy
 
-// 旧凭据信封的解密（P8-B）。信封形状与 yiban/adapters/config/account_crypto.py
+// 旧凭据信封的解密。信封形状与 yiban/adapters/config/account_crypto.py
 // 一致：v/kid/nonce/ct/tag 全十六进制（v1 无 kid，永久可读），
 // AES-256-GCM，AAD＝手机号 UTF-8 字节，ct 与 tag 分离存放。
 //

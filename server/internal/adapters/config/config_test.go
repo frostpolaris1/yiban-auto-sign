@@ -173,7 +173,7 @@ func TestLoadFromRequiresHashPepper(t *testing.T) {
 // TestLoadFromCredentialKeyIsBase64Of32Bytes 钉住凭据钥的形状。
 //
 // 凭据钥独立于 pepper：轮换 pepper 只让摘要与审计链失效，
-// 不能让凭据永久不可解密（W2C-R2-04）。
+// 不能让凭据永久不可解密。
 // 形状错即启动错误：短钥进 AES-256-GCM 会直接报错，
 // 长度对但内容错的钥会静默加密出无法解密的行。
 func TestLoadFromCredentialKeyIsBase64Of32Bytes(t *testing.T) {
@@ -273,7 +273,7 @@ func TestScheduleConfigDefaultsAndBounds(t *testing.T) {
 	}
 }
 
-// TestRegistryDomainMatchesCodeBounds 钉住名册域与代码边界同源（派单 F16）。
+// TestRegistryDomainMatchesCodeBounds 钉住名册域与代码边界同源。
 // 名册是配置的唯一定义点：域与 getInt 的上下界漂移时，
 // doctor 的 env.unknown_keys/域校验与启动校验会给出两套答案。
 func TestRegistryDomainMatchesCodeBounds(t *testing.T) {

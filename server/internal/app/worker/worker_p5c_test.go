@@ -311,7 +311,7 @@ func TestFenceBoundaryStaysInside(t *testing.T) {
 }
 
 // 选图端口未装配且目标要求图片：与库空同判（fail-closed）。
-// 「nil 保持现行为」会把带图目标提交成无图请求（P5-C 审查偏差 5）。
+// 「nil 保持现行为」会把带图目标提交成无图请求。
 func TestNilPhotoSourceFailsClosed(t *testing.T) {
 	st := newStore(taskWithOwner())
 	st.windows["st-1|2026-10-29"] = openWindow()

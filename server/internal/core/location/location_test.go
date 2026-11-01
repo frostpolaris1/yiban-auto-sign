@@ -169,7 +169,7 @@ func TestResolveAutoAlwaysInside(t *testing.T) {
 }
 
 // 非轴对齐多边形：顶点按在内，斜边内外各有判据。
-// 删掉 onSegment 前置时本测试必红（P5-C 审查 P3-1）。
+// 删掉 onSegment 前置时本测试必红。
 func TestPointInPolygonNonAxisAligned(t *testing.T) {
 	poly := []contract.Point{
 		{Lng: 0, Lat: 0}, {Lng: 4, Lat: 0}, {Lng: 2, Lat: 2},
@@ -192,7 +192,7 @@ func TestPointInPolygonNonAxisAligned(t *testing.T) {
 }
 
 // 不对称多边形：经纬度互换（射线换轴）必须改变判定结果，
-// 否则换轴突变静默存活（P5-C 审查 P3-2）。
+// 否则换轴突变静默存活。
 func TestPointInPolygonAsymmetric(t *testing.T) {
 	poly := []contract.Point{
 		{Lng: 100, Lat: 20}, {Lng: 110, Lat: 21}, {Lng: 109, Lat: 29}, {Lng: 101, Lat: 30},

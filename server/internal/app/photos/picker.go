@@ -1,6 +1,6 @@
 package photos
 
-// P5-C 选图：为一次签到尝试从属主图片库确定性取图。
+// 选图：为一次签到尝试从属主图片库确定性取图。
 //
 // 判据：未删图片按 (created_at, id) 升序排定一个稳定序列，
 // 索引取 sha256(AttemptID) 前 8 字节对库大小的模。
@@ -37,7 +37,7 @@ func (s *Service) PickForAttempt(ctx context.Context, ownerUserID, attemptID str
 		return contract.ImageRef{}, false, nil
 	}
 	// 取前 8 字节拼 uint64 再取模：首字节只有 256 个值，
-	// 图片库超过 256 张时高位索引永不命中，轮换退化（P5-C 审查 P3-3）。
+	// 图片库超过 256 张时高位索引永不命中，轮换退化。
 	sum := sha256.Sum256([]byte(attemptID))
 	idx := int(binary.BigEndian.Uint64(sum[:8]) % uint64(total))
 	rec, err := s.deps.Store.LibraryAt(ctx, ownerUserID, idx)

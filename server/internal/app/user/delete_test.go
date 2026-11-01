@@ -1,6 +1,6 @@
 package user
 
-// Delete 的最后 active master 判据单测（独立审查 P2-3）。
+// Delete 的最后 active master 判据单测。
 //
 // # 功能
 // 钉住两件事：Delete 在目标为 master 时必须参与 master 计数；
@@ -13,8 +13,8 @@ package user
 // 本文件无法验证锁本身，只验证用例调用了计数并服从其结果。
 //
 // # 口径
-// 计数谓词是 role='master' AND status='active' AND deleted_at IS NULL
-// （独立审查 P1-2 修订：停用 master 不能登录，不构成恢复路径）。
+// 计数谓词是 role='master' AND status='active' AND deleted_at IS NULL：
+// 停用或已删的 master 不能登录，不构成恢复路径。
 
 import (
 	"context"
