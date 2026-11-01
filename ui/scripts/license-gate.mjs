@@ -45,7 +45,15 @@ const ALLOWED = [
   'BlueOak-1.0.0',
   'MPL-2.0',
   'Unlicense',
+  // 构建期宽松/署名许可（CLEAN-4 接入 ESLint 时引入）：
+  //   Python-2.0：argparse（js-yaml 的 CLI 解析器，经 @eslint/eslintrc 引入），宽松非 copyleft。
+  //   CC-BY-4.0：caniuse-lite（浏览器数据），署名型；只允许构建期，由 BUILD_ONLY 钉住。
+  'Python-2.0',
+  'CC-BY-4.0',
 ]
+
+/** 只在构建期允许的许可证：署名载体随源码与清单分发，不进运行时产物。 */
+const BUILD_ONLY = new Set(['CC-BY-4.0'])
 
 /** 允许清单之外的例外项。运行时要提示。 */
 const EXCEPTIONS = new Set(['MPL-2.0', 'Unlicense'])
@@ -79,7 +87,7 @@ function licenseOf(pkg) {
 }
 
 /** problemsFor 返回该许可证的违规说明。空数组表示通过。 */
-function problemsFor(license) {
+function problemsFor(license, scope) {
   if (license === '' || license === 'UNKNOWN' || license === 'NOASSERTION') {
     return [`no detected license (${license})`]
   }
@@ -92,6 +100,11 @@ function problemsFor(license) {
     }
     if (!ALLOWED.includes(name)) {
       problems.push(`license '${name}' is not allowed`)
+      continue
+    }
+    // 署名型许可只在构建期放行：运行时分发需要另备署名材料。
+    if (BUILD_ONLY.has(name) && scope === '运行时') {
+      problems.push(`license '${name}' is only allowed for build-time dependencies`)
     }
   }
   return problems
@@ -201,9 +214,11 @@ function render(packages) {
   lines.push('> 许可证取自锁文件的 license 字段。')
   lines.push('> Adminator 的通知单列在 `THIRD_PARTY_NOTICES.md`。')
   lines.push('')
-  lines.push(
-    '允许的许可证：Apache-2.0、BSD-2-Clause、BSD-3-Clause、ISC、MIT、0BSD、CC0-1.0、BlueOak-1.0.0、MPL-2.0、Unlicense。',
-  )
+  // 允许清单只在这里定义一次；清单文本由它派生，避免两处漂移。
+  lines.push('允许的许可证：' + ALLOWED.join('、') + '。')
+  if (BUILD_ONLY.size > 0) {
+    lines.push('构建期限定：' + [...BUILD_ONLY].join('、') + ' 只允许构建期依赖；运行时会红。')
+  }
   for (const line of exceptionLines(packages)) {
     lines.push(line)
   }
@@ -227,24 +242,28 @@ function normalize(text) {
 
 function selfTest() {
   const cases = [
-    [{ license: 'MIT' }, true],
-    [{ license: 'Apache-2.0' }, true],
-    [{ license: { type: 'BSD-3-Clause' } }, true],
-    [{ licenses: [{ type: 'MIT' }, { type: 'Apache-2.0' }] }, true],
-    [{ license: 'GPL-3.0-only' }, false],
-    [{ license: 'AGPL-3.0-or-later' }, false],
-    [{}, false],
-    [{ license: 'UNKNOWN' }, false],
+    [{ license: 'MIT' }, '运行时', true],
+    [{ license: 'Apache-2.0' }, '运行时', true],
+    [{ license: { type: 'BSD-3-Clause' } }, '开发', true],
+    [{ licenses: [{ type: 'MIT' }, { type: 'Apache-2.0' }] }, '运行时', true],
+    [{ license: 'GPL-3.0-only' }, '运行时', false],
+    [{ license: 'AGPL-3.0-or-later' }, '运行时', false],
+    [{}, '运行时', false],
+    [{ license: 'UNKNOWN' }, '运行时', false],
+    // 署名型许可：构建期放行，运行时拒绝。
+    [{ license: 'CC-BY-4.0' }, '开发', true],
+    [{ license: 'CC-BY-4.0' }, '运行时', false],
+    [{ license: 'Python-2.0' }, '运行时', true],
   ]
   let failed = 0
   const fail = (message) => {
     console.error(`license-gate self-test: ${message}`)
     failed += 1
   }
-  for (const [pkg, want] of cases) {
-    const got = problemsFor(licenseOf(pkg)).length === 0
+  for (const [pkg, scope, want] of cases) {
+    const got = problemsFor(licenseOf(pkg), scope).length === 0
     if (got !== want) {
-      fail(`${JSON.stringify(pkg)} -> ${got}, want ${want}`)
+      fail(`${JSON.stringify(pkg)} @${scope} -> ${got}, want ${want}`)
     }
   }
   const sample = [
@@ -317,7 +336,7 @@ function selfTest() {
   const missingLicense = packagesFromLock({
     packages: { 'node_modules/gamma': { version: '1.0.0' } },
   })
-  if (problemsFor(missingLicense[0].license).length === 0) {
+  if (problemsFor(missingLicense[0].license, missingLicense[0].scope).length === 0) {
     fail('a lock entry without a license must fail')
   }
   if (failed !== 0) {
@@ -351,7 +370,7 @@ function main() {
 
   let violations = 0
   for (const pkg of packages) {
-    const problems = problemsFor(pkg.license)
+    const problems = problemsFor(pkg.license, pkg.scope)
     for (const problem of problems) {
       console.error(`license-gate: ${pkg.name}@${pkg.version} ${problem}`)
       violations += 1

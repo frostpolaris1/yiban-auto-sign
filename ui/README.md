@@ -12,10 +12,10 @@ React 19 + Vite 8 + TypeScript 7。视觉语言复用 Adminator 4.4.0。
 
 | 命令 | 作用 |
 |---|---|
-| `npm install` | 安装依赖。需要 Node >= 22。同时安装 API 生成工具链 |
+| `npm install` | 安装依赖。需要 Node `^22.18` 或 `>=24.11`（Babel 8 的下限）。同时安装 API 生成工具链 |
 | `npm run dev` | 本地开发，端口 5173 |
 | `npm run build` | 类型检查 + 生产构建到 `dist/` |
-| `npm run lint` | TypeScript 类型检查（当前无 ESLint 配置） |
+| `npm run lint` | TypeScript 类型检查＋ESLint（react-hooks＋4 条 a11y schema 规则） |
 | `npm run generate:api` | 由契约重写 `src/lib/api/schema.d.ts` |
 | `npm run check:api` | 契约漂移门。生成物与契约不一致即红 |
 | `npm run gate:tokens` | 设计令牌门 |

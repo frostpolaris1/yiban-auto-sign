@@ -130,7 +130,7 @@ npx playwright test e2e/<spec>.spec.ts
 说明：
 
 - 后端测试需要 PostgreSQL；连接串写在 `server/scripts/verify.sh` 的用法说明里。
-- 前端需要 Node >= 22。
+- 前端需要 Node `^22.18` 或 `>=24.11`（Babel 8 的下限）。
 - 迭代只跑受影响的包或 spec。收口再跑全量。
 - 不要用固定 sleep 等异步结果；用状态或条件等待。
 
