@@ -1,12 +1,12 @@
 package main
 
-// bench 冒烟判据（P8-C，判据先行）。
+// bench 冒烟判据（判据先行）。
 //
 // 测的是真库上的四项指标：造数、ClaimDue 吞吐、计划构建耗时、
 // SSE 订阅扇出，外加内存峰值。计时断言只做宽松上限，
 // 防机器差异假红；绝对判据（10k 构建≤60s、认领≥100 行/秒）
 // 由 bench 二进制的 10k 实测数字对照，不在单测里钉死。
-// 缺库必须显性 SKIP，不得静默显得绿（AGENTS §30）。
+// 缺库必须显性 SKIP，不得静默显得绿。
 
 import (
 	"context"
@@ -48,7 +48,7 @@ func TestMain(m *testing.M) {
 }
 
 // buildCapSeconds 返回计划构建的宽松上限。
-// 口径：判据 10k 账号全窗构建 ≤60s（P8 判据），按账号数线性缩放
+// 口径：判据 10k 账号全窗构建 ≤60s，按账号数线性缩放
 // 再乘 10 倍松弛。小样本跑到上限即视为构建路径坏死。
 func buildCapSeconds(accounts int) time.Duration {
 	cap := 60 * float64(accounts) / 10000 * 10
@@ -92,7 +92,7 @@ func TestSmokeSingleSchool(t *testing.T) {
 	// 故经常测出 0 秒（2026-10-31 本机实测：最小非零间隔 543µs，
 	// 连续两次 time.Now() 约 20 万对里有 199999 对相同；1000 通道扇出 20/20 次测出 0）。
 	// 零不是"没跑到"——runSSE 逐个等订阅者收到，超时直接报错。
-	// 判据保留上界：真的卡住会超过订阅超时（工单 5l1）。
+	// 判据保留上界：真的卡住会超过订阅超时。
 	if res.SSEFanoutSeconds >= sseTimeout.Seconds() {
 		t.Fatalf("sse fanout seconds = %v, must stay below the subscriber timeout %v",
 			res.SSEFanoutSeconds, sseTimeout)

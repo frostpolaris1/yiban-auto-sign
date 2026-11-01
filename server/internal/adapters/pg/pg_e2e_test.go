@@ -50,7 +50,7 @@ func TestMigrationUpIsIdempotent(t *testing.T) {
 		t.Fatalf("database version %d does not match embedded version %d", v1, embedded)
 	}
 
-	// P1 的七张表加 password_resets 必须都存在于此 schema。
+	// 七张基础表加 password_resets 必须都存在于此 schema。
 	for _, table := range []string{
 		"users", "sessions", "schools", "admin_schools", "accounts",
 		"credentials", "audit_logs", "password_resets",
@@ -83,7 +83,7 @@ func TestCapacityAdmitsExactlyOneWinner(t *testing.T) {
 	}
 
 	// 两个独立连接池给出两条独立后端连接。
-	// 共用同一池的两个 goroutine 无法证明并发（AGENTS §32）。
+	// 共用同一池的两个 goroutine 无法证明并发。
 	dbA, err := pg.Open(e.ctx, pg.Options{DSN: e.dsn, MaxConns: 1, StatementTimeout: 30 * time.Second})
 	mustNotError(t, err, "open independent pool A")
 	defer dbA.Close()
@@ -166,8 +166,7 @@ func TestForeignKeyBlocksUserDelete(t *testing.T) {
 	}
 }
 
-// TestInsertForeignKeyViolationMapsToNotFound 钉住 schema §2.4：
-// 插入时引用不存在的父行是 not_found（HTTP 404），
+// TestInsertForeignKeyViolationMapsToNotFound 钉住：插入时引用不存在的父行是 not_found（HTTP 404），
 // 被拒的删除仍是冲突（HTTP 409）。
 func TestInsertForeignKeyViolationMapsToNotFound(t *testing.T) {
 	e := newEnv(t)
@@ -250,7 +249,7 @@ func TestAuditRowsAreAppendOnly(t *testing.T) {
 
 // TestAuditPurgeSwitchIsGone 钉住 yiban.audit_purge 逃逸开关已移除。
 // 运行期角色可以 SET 任意自定义参数；触发器必须忽略它，
-// 故 DELETE 与 TRUNCATE 始终不可行（schema §3.7、D-6）。
+// 故 DELETE 与 TRUNCATE 始终不可行。
 func TestAuditPurgeSwitchIsGone(t *testing.T) {
 	e := newEnv(t)
 	e.auditEntry(coreaudit.ActionUserCreate, map[string]any{"field": "role"})
@@ -453,8 +452,7 @@ func newExpiredSession(userID, token string, now time.Time) coreauthNewSession {
 	}
 }
 
-// TestResolveSlidesIdleExpiry 钉住 §3.2：
-// 成功解析把空闲截止按距上次请求的时间前移，
+// TestResolveSlidesIdleExpiry 钉住：成功解析把空闲截止按距上次请求的时间前移，
 // 返回行自洽（idle <= absolute，last_seen 即本次请求时刻）。
 func TestResolveSlidesIdleExpiry(t *testing.T) {
 	e := newEnv(t)
@@ -677,8 +675,7 @@ func TestCredentialSchoolMustMatchAccount(t *testing.T) {
 	}
 }
 
-// TestReplaceCredentialIncrementsVersion 钉住 §7.3：
-// 语句自增存储版本，两个读到同一版本的写者不可能同时成功。
+// TestReplaceCredentialIncrementsVersion 钉住：语句自增存储版本，两个读到同一版本的写者不可能同时成功。
 func TestReplaceCredentialIncrementsVersion(t *testing.T) {
 	e := newEnv(t)
 	owner := e.createUser("cred-race@example.com")
@@ -714,7 +711,7 @@ func TestReplaceCredentialIncrementsVersion(t *testing.T) {
 	}
 
 	// 两个独立连接池给出两条独立后端连接；
-	// 同一池上的两个 goroutine 无法证明并发（AGENTS §32）。
+	// 同一池上的两个 goroutine 无法证明并发。
 	dbA, err := pg.Open(e.ctx, pg.Options{DSN: e.dsn, MaxConns: 1, StatementTimeout: 30 * time.Second})
 	mustNotError(t, err, "open independent pool A")
 	defer dbA.Close()

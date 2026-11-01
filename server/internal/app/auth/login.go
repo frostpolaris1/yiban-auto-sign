@@ -26,7 +26,7 @@ import (
 )
 
 // ResetTokenTTL 是一次性重置令牌的有效期。
-// P1 取 1 小时：足够用户查收邮件，又限制泄露窗口。
+// 重置令牌取 1 小时：足够用户查收邮件，又限制泄露窗口。
 const ResetTokenTTL = time.Hour
 
 // ErrInvalidCredentials 是登录失败的唯一错误。

@@ -1,6 +1,6 @@
 package main
 
-// P5-B e2e：图片库五个端点。
+// 图片库五个端点 e2e。
 //
 // # 功能
 // 用真实 PostgreSQL 与临时 blob 目录走完整链路：

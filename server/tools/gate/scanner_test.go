@@ -115,7 +115,7 @@ func f(s string) string { return strings.ToLower(s) }
 }
 
 // 检查范围规则必须命中至少一个文件。
-// owner 改名或删除时，规则会永不触发；门不得静默报绿（AGENTS §29）。
+// owner 改名或删除时，规则会永不触发；门不得静默报绿。
 func TestValidateCheckedScopesRejectsMissingForbidOwner(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "internal/app/foo.go", "package app\n")
@@ -405,7 +405,7 @@ func TestLoadRulesAllowsImportOwnerWildcard(t *testing.T) {
 }
 
 // forbid 的 owner 为空等于检查零个文件：加载时必须拒绝。
-// 接受它就是一条永不触发的规则，门会静默报绿（AGENTS §29）。
+// 接受它就是一条永不触发的规则，门会静默报绿。
 func TestLoadRulesRejectsEmptyForbidOwner(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rules.tsv")
 	line := "email.normalize.lower\tforbid\t\tstrings.ToLower\t\tmsg\n"

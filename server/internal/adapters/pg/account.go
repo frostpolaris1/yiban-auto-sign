@@ -85,7 +85,7 @@ func (r *AccountRepo) Create(ctx context.Context, in coreaccount.New, limit, own
 		}
 		return coreaccount.Record{}, capacityError()
 	}
-	// 院校或属主缺失属父行缺失，不是冲突（§2.4）。
+	// 院校或属主缺失属父行缺失，不是冲突。
 	return record, mapInsertForeignKey(err)
 }
 
@@ -120,7 +120,7 @@ func (r *AccountRepo) GetForUpdate(ctx context.Context, s corescope.Scope, id st
 // includeDeleted 置真时软删行也入选；缺省假，已删行不可发现（8v8⑥）。
 // search 只抽取数字，再按长度定过滤式：
 // 1..3 位前缀、4 位后缀、11 位全号精确，其余长度**恒假**。
-// 故中四位可被全号枚举恢复（10^4 次），依赖登录限速（P7 前置）。
+// 故中四位可被全号枚举恢复（10^4 次），依赖登录限速。
 func (r *AccountRepo) List(ctx context.Context, s corescope.Scope, schoolID string, status coreaccount.Status, search, cursor string, limit int, includeDeleted bool) ([]coreaccount.Record, string, error) {
 	if limit < 1 || limit > 200 {
 		return nil, "", validationError("limit must be between 1 and 200")
@@ -398,7 +398,7 @@ func (r *AccountRepo) InsertCredential(ctx context.Context, in coreaccount.Crede
 		in.AccountID, in.SchoolID, in.Alg, in.KID, in.AADVersion,
 		in.Nonce, in.Ciphertext, in.Version)
 	// 账号缺失，或院校与账号院校不一致，
-	// 都会破坏复合外键；父行找不到（§2.4）。
+	// 都会破坏复合外键；父行找不到。
 	return mapInsertForeignKey(err)
 }
 
@@ -406,7 +406,7 @@ func (r *AccountRepo) InsertCredential(ctx context.Context, in coreaccount.Crede
 //
 // 版本号由语句自增，**绝不由调用方提供**：
 // 若采信入参版本，两个并发写会同时成功，
-// 后者静默覆盖前者（§7.3）。
+// 后者静默覆盖前者。
 // expectedVersion 过期时什么都不改，报冲突。
 func (r *AccountRepo) ReplaceCredential(ctx context.Context, in coreaccount.Credential, expectedVersion int32) error {
 	if expectedVersion < 1 {

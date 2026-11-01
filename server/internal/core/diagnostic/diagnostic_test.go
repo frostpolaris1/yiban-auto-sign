@@ -1,6 +1,6 @@
 package diagnostic
 
-// SuggestionFor 的表驱动判据（P6）。
+// SuggestionFor 的表驱动判据。
 // 词表封闭：wait|retry_now|re_arm|contact_admin；
 // 未知状态必须仍落在词表内，不得外溢。
 

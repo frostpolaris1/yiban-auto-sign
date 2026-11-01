@@ -78,7 +78,7 @@ func (b *Bucket) Admit(now time.Time) bool {
 
 // RetryAfter 返回距下一次可放行的等待秒；已可放行返回 0。
 // 等待量**向上取整到整毫秒**：tat 以毫秒精度推进，若按纳秒截断，
-// 调用方 sleep 返回值后仍差 1ns 被拒——违反"等待后必放行"（审查 P2-1）。
+// 调用方 sleep 返回值后仍差 1ns 被拒——违反"等待后必放行"。
 func (b *Bucket) RetryAfter(now time.Time) time.Duration {
 	b.mu.Lock()
 	defer b.mu.Unlock()

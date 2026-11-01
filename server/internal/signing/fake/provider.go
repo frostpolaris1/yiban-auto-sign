@@ -187,7 +187,7 @@ func (p *Provider) Verify(ctx context.Context, _ contract.VerifyRequest) (contra
 
 // Sign 返回下一次签到结果。
 // 同一 AttemptID 串行执行；首次成功后缓存，重复调用不再取脚本。
-// 声明 ImageRequired 且请求无图时返回 photo_missing（契约 §4.5）。
+// 声明 ImageRequired 且请求无图时返回 photo_missing。
 func (p *Provider) Sign(ctx context.Context, req contract.SignRequest) (contract.Result, error) {
 	p.count(&p.signHit)
 	release := p.lockAttempt(req.AttemptID)

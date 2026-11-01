@@ -7,7 +7,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
 
-// 词表一致性（P4-A 复审 P2-1 的门）：retry.BudgetFor 的分级必须覆盖
+// 词表一致性：retry.BudgetFor 的分级必须覆盖
 // contract 的全部 Outcome 常量。判据吃 **contract 真源**（遍历常量本身，
 // 不是字面量副本）：契约改一个词名，本用例立刻红——词表漂移无处遁形。
 // core/retry 不 import signing（单向依赖），故对照表放在合约层这一侧。

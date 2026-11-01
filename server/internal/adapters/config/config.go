@@ -81,7 +81,7 @@ func PrefixedKeys(src EnumeratedSource, prefix string) []string {
 //   - YIBAN_HASH_PEPPER 派生 IP 与 User-Agent 摘要，并派生审计链钥。
 //     轮换即审计链断：旧行无法再校验，需要一次迁移口径。
 //   - YIBAN_CREDENTIAL_KEY 直接用于凭据的 AES-256-GCM。
-//     轮换即走 kid 重加密（P4/P8），旧行仍可解密。
+//     轮换即走 kid 重加密，旧行仍可解密。
 //     凭据钥**不**从 pepper 派生：否则轮换 pepper 就是数据丢失。
 type Config struct {
 	Env             string

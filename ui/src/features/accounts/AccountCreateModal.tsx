@@ -53,7 +53,7 @@ const INCOMPLETE_EMAIL_TEXT = '请继续输入完整邮箱'
 /**
  * 完整邮箱形状：恰好一个 @、两侧非空、无空白。
  * 与服务端 ValidEmail 同形（core/user，裁决 P3-5）：RFC 5321 允许无点域名，
- * UI 不得强加「域名含点」——ops@intranet 是合法登录名（审查 F3）。
+ * UI 不得强加「域名含点」——ops@intranet 是合法登录名。
  * 掩码无法区分同形地址，故 exact 全等匹配才是绑定依据。
  */
 function isCompleteEmail(value: string): boolean {
@@ -448,7 +448,7 @@ function ManagerForm({
   const matched = emailSettled ? (lookup.data?.items[0] ?? null) : null
 
   // 绑定用户填了却未命中（未注册、检索失败、防抖未停）时不许提交：
-  // 否则三种情况都会静默落成「留空＝自有」，账号记到操作者名下（审查 H1）。
+  // 否则三种情况都会静默落成「留空＝自有」，账号记到操作者名下。
   const ownerUnresolved = ownerEmail.trim() !== '' && matched === null
 
   const submit = () => {
@@ -553,7 +553,7 @@ function ManagerForm({
         {ownerEmail.trim() === '' ? (
           <span className="app-muted">默认归属自己</span>
         ) : !isCompleteEmail(ownerEmail.trim()) ? (
-          // 不完整就不查：掩码无法区分同前缀地址，先补全（审查 F1）。
+          // 不完整就不查：掩码无法区分同前缀地址，先补全。
           <span className="app-deny-note">{INCOMPLETE_EMAIL_TEXT}</span>
         ) : matched ? (
           <span className="app-owner-match">
@@ -563,7 +563,7 @@ function ManagerForm({
             {matched.email_masked}
           </span>
         ) : lookup.isError ? (
-          // 检索失败不是「未注册」：单独提示，可改后重试（审查 H1）。
+          // 检索失败不是「未注册」：单独提示，可改后重试。
           <span className="app-deny-note">用户检索失败，请稍后重试</span>
         ) : lookup.isFetching || !emailSettled ? (
           <span className="app-muted">查询中…</span>

@@ -1,6 +1,6 @@
 package yiban
 
-// State 未知值 fail-closed（工单 mks）。
+// State 未知值 fail-closed。
 //
 // 判据：平台返回未登记的 State 时，提供方不得把它当作可签。
 // 三条入口（窗口、候选点、签到）一律给 unknown，签到接口零请求。

@@ -1,4 +1,4 @@
-// Package events 实现进程内事件总线（P6）。
+// Package events 实现进程内事件总线。
 //
 // # 功能
 // Broker 维护一条全局环形缓冲与一组订阅；Publish 发事件、
@@ -209,8 +209,8 @@ func (b *Broker) replay(sub *subscriber, lastEventID uint64) {
 	head := b.seq
 	if lastEventID <= head && lastEventID+1 >= head-uint64(b.n)+1 {
 		// 缺口完整落在环内。先数条数：可回放量超过订阅者缓冲时
-		// **不做部分回放**——静默丢中间事件比 resync 重连更糟
-		//（P6 审查 P2）；resync 后订阅方用 snapshot 兜底。
+		// **不做部分回放**——静默丢中间事件比 resync 重连更糟；
+		// resync 后订阅方用 snapshot 兜底。
 		matching := 0
 		for k := 0; k < b.n; k++ {
 			evt := b.buf[(b.start+k)%RingCapacity]

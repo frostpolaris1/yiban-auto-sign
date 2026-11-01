@@ -1,6 +1,6 @@
 package events
 
-// Broker 单测。判据来自派单稿：
+// Broker 单测。判据：
 //   - scope 过滤：master 全量，admin 只收绑定校；
 //   - 回放：lastEventID 之后的事件按序补发，且按 scope 过滤；
 //   - 缺口：落后超过环形缓冲 → resync；
@@ -205,7 +205,7 @@ func TestSlowSubscriberDropsPerSubscriber(t *testing.T) {
 	var received atomic.Int64
 	// progress 只在读侧真的收到事件时唤醒等待方：排干不以固定采样窗口判定。
 	// 负载下读侧可能几十毫秒拿不到 CPU；固定窗口会把"还没排干"误判成
-	// "已排干"，进而假红（r4 门审计 P2）。
+	// "已排干"，进而假红。
 	progress := make(chan struct{}, 1)
 	go func() {
 		for range fast.C {
@@ -247,7 +247,7 @@ func TestSlowSubscriberDropsPerSubscriber(t *testing.T) {
 
 // 回放超出订阅缓冲深度时溢出部分计入 dropped，不阻塞 Subscribe。
 // 回放量超过订阅者缓冲：不做部分回放，改发 resync 让订阅方
-// 用 snapshot 兜底——静默丢中间事件会让续传判据落空（P6 审查 P2）。
+// 用 snapshot 兜底——静默丢中间事件会让续传判据落空。
 func TestReplayOverflowFallsBackToResync(t *testing.T) {
 	b := NewBroker()
 	const total = subBuffer + 15 // lastEventID=5 之后可回放 subBuffer+10 条

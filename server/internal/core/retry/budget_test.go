@@ -7,7 +7,7 @@ import (
 
 var farFuture = time.Unix(1<<62, 0) // 实际无穷大的窗口终点
 
-// 分级预算按 contract 的 Outcome 词表取值（AGENTS §26：状态语义自持，
+// 分级预算按 contract 的 Outcome 词表取值（状态语义自持，
 // 词表以 internal/signing/contract 为准，本包不另造一套）。
 func TestBudgetFor(t *testing.T) {
 	cases := []struct {
@@ -62,8 +62,7 @@ func TestBudgetForUnknownWord(t *testing.T) {
 	}
 }
 
-// 词表全量对照已移到 internal/signing/conformance/retry_vocab_test.go
-// （P4-A 复审 P2-1）：那里 import contract 真源遍历常量，契约改名立刻红。
+// 词表全量对照已移到 internal/signing/conformance/retry_vocab_test.go：那里 import contract 真源遍历常量，契约改名立刻红。
 // 本包不 import signing（单向依赖），只钉词档行为与未知词保守档。
 
 // 落点判据：第 attempt 档的名义间隔按 Multiplier 放大，每档带抖动。
@@ -143,7 +142,7 @@ func TestNextDelayCapBoundary(t *testing.T) {
 		}
 	}
 	// cap 比 base 少 1ns：必须放弃。这是 cap<base 判据的 1ns 边界带，
-	// 突变（cap < base-1）在此存活过——审查 P1-2 的钉子。
+	// 突变（cap < base-1）在此存活过—— 的钉子。
 	w2 := Window{End: time.Unix(1000, 0).Add(199*time.Second + 999*time.Millisecond + 999*time.Microsecond + 999*time.Nanosecond)}
 	if _, ok := NextDelay(p, 1, w2, time.Unix(1000, 0)); ok {
 		t.Fatal("cap 比 base 少 1ns 应放弃")

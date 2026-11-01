@@ -1,6 +1,6 @@
 package main
 
-// 对账表与真库 schema 的完整性 e2e（派单 F17）。
+// 对账表与真库 schema 的完整性 e2e。
 //
 // # 功能
 // 在独立 schema 里跑完全部迁移，再从 information_schema 取表清单，

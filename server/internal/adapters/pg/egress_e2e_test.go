@@ -10,7 +10,7 @@ import (
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 )
 
-// 本文件是出口粘性绑定的 e2e 判据（P4-D）。
+// 本文件是出口粘性绑定的 e2e 判据。
 // 需要真实 PostgreSQL：主键收敛与 CTE 单语句没有诚实替身。
 
 // seedEgress 建一个出口并返回 ID。
@@ -79,8 +79,7 @@ func TestEgressAssignSticky(t *testing.T) {
 
 // 并发首配：单条 upsert 由主键收敛，全部调用读同一绑定。
 // 判别力来自**轮次**：连接池 MaxConns=4 封住真并发，
-// 单账号 8 goroutine 对 DO NOTHING+SELECT 变异只有 ~70% 检出率
-// （2026-10-26 审查实测 14/20 复现）。故 20 账号 × 32 goroutine。
+// 单账号 8 goroutine 对 DO NOTHING+SELECT 变异只有 ~70% 检出率（实测 14/20 复现），故 20 账号 × 32 goroutine。
 func TestEgressAssignConcurrentSingle(t *testing.T) {
 	e := newEnv(t)
 	repo := pg.NewEgressRepo(e.db)
@@ -135,7 +134,7 @@ func TestEgressAssignmentNotFound(t *testing.T) {
 	}
 }
 
-// 坏账号外键：插入点映射 not_found（schema §2.4）。
+// 坏账号外键：插入点映射 not_found。
 func TestEgressAssignBadAccount(t *testing.T) {
 	e := newEnv(t)
 	repo := pg.NewEgressRepo(e.db)
@@ -147,7 +146,7 @@ func TestEgressAssignBadAccount(t *testing.T) {
 	}
 }
 
-// Get 必须能取到停用出口：粘性绑定不因运维停用而失真（复审 P2-1）。
+// Get 必须能取到停用出口：粘性绑定不因运维停用而失真。
 func TestEgressGetDisabled(t *testing.T) {
 	e := newEnv(t)
 	repo := pg.NewEgressRepo(e.db)

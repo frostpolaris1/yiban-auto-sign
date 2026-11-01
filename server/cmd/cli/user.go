@@ -1,7 +1,7 @@
 package main
 
 // user 子命令：`user create-master` 是干净部署建第一个 master 的
-// 唯一自助入口（P7 审查 P2-1：没有它，部署完成也无人能登录）。
+// 唯一自助入口。
 // 之后的所有建号都走已认证的 POST /api/users。
 
 import (

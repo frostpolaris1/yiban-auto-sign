@@ -49,7 +49,7 @@ const InsecureCookieName = "yiban_session_dev"
 // 新登录淘汰最旧会话，**不无界增长**（决策 12.9）。
 const MaxSessionsPerUser = 20
 
-// 会话窗口取自裁决 12.9。全仓只此一份。
+// 会话窗口取自。全仓只此一份。
 const (
 	// SessionIdleWindow 是空闲滑动窗口：连续 30 分钟无请求即失效。
 	SessionIdleWindow = 30 * time.Minute

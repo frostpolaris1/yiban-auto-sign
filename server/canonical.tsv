@@ -45,7 +45,7 @@ boundary.entry	import	internal/entry/	internal/adapters,internal/assembly		entry
 boundary.signing	import	internal/signing/providers/	internal/app,internal/adapters,internal/assembly		providers must not import the host
 # 组合根只能被 cmd 消费：internal 下任何包导入 assembly 即红。
 # 防静默失守是双门分工：canonical 保证被查范围内有文件，
-# 目标目录改名/搬走由 structure.tsv 门拦（P7 审查 P3-6）。
+# 目标目录改名/搬走由 structure.tsv 门拦。
 boundary.assembly	import	internal/	internal/assembly		assembly is the composition root; only cmd may import it
 # owner and allow are directory prefixes. An owner that ends in .go pins one
 # file instead of a directory: cookie.set is the only such rule, and it pins the
@@ -63,7 +63,7 @@ token.new.func	func	internal/core/auth/	NewToken		NewToken 只在 core/auth 内�
 # 新增导入测试文件或目录必须登记在此行 allow。
 fake.import	import	*	internal/signing/fake	internal/signing/conformance/	internal/signing/fake 只允许测试代码与 conformance 套件导入
 # 邮箱归一只有一个实现：core/user.NormalizeEmail。
-# 门拦自写 lowercase；回退到 ToLower 即红（W2D 二轮复审 N3）。
+# 门拦自写 lowercase；回退到 ToLower 即红。
 # 只 trim 不 lower 的写法不拦：应用层已先归一，库内 ck_users_email_lower 兜底大小写。
 email.normalize.lower	forbid	internal/adapters/pg/user.go	strings.ToLower		邮箱归一只能调用 core/user.NormalizeEmail
 window.validate	func	internal/core/window/	Validate		use window.Validate

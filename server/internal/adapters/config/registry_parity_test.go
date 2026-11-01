@@ -290,7 +290,7 @@ func TestEveryConfigReadHasRegistryComparison(t *testing.T) {
 
 // legacyNonGoKeys 是名册登记、但 Go 服务端有意不读的旧键。
 //
-// 本表是显式豁免（AGENTS §28）：键从名册消失会让仍读它的旧线判红；
+// 本表是显式豁免：键从名册消失会让仍读它的旧线判红；
 // Go 若开始读它，本测试也会红，迫使交接时处理新旧键优先级。
 //   - YIBAN_WINDOW_EDGE_SEC：Python 旧线按前后对称裁剪消费，
 //     Go 线只用 FRONT/BACK 两个新键。

@@ -20,7 +20,7 @@ import "context"
 //
 // 事务经 context 传递。嵌套调用复用外层事务，**不另开第二个**。
 // 实现使用 READ COMMITTED：容量计数必须在取到 advisory lock 后
-// 读新快照（schema §6.5）。
+// 读新快照。
 type TxManager interface {
 	InTx(ctx context.Context, fn func(ctx context.Context) error) error
 }

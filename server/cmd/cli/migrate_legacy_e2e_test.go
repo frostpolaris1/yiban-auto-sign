@@ -1,6 +1,6 @@
 package main
 
-// migrate-legacy 的真库 e2e（P8-B 判据，派单 2026-10-27）。
+// migrate-legacy 的真库 e2e。
 //
 // 模拟的真实用户动作：运维在迁移窗口对旧栈导出物目录跑一次
 // `yiban-cli migrate-legacy --dir 导出目录 --school-id … --owner-user-id …`。
@@ -11,7 +11,7 @@ package main
 // （13800000001–13800000004、13899999999）；信封十六进制为随机测试段；
 // 旧口令哈希为 werkzeug scrypt 形状（口令 pw-fixture-0000，合成盐）。
 //
-// 缺 YIBAN_TEST_DATABASE_URL 时显性 SKIP：跳过不是绿（AGENTS §30）。
+// 缺 YIBAN_TEST_DATABASE_URL 时显性 SKIP：跳过不是绿。
 
 import (
 	"bytes"
@@ -93,7 +93,7 @@ func e2eSealOld(t *testing.T, key []byte, phone, plaintext string) map[string]an
 }
 
 // e2eWriteExport 造一份合成导出物目录，返回 (目录, 各表行)。
-// 行键序与 P8-A 导出器一致（jsonl 每行键排序）。
+// 行键序与导出器一致（jsonl 每行键排序）。
 func e2eWriteExport(t *testing.T, root string) (string, map[string][]map[string]any) {
 	t.Helper()
 	dir := filepath.Join(root, "export")
@@ -160,7 +160,7 @@ func e2eWriteExport(t *testing.T, root string) (string, map[string][]map[string]
 			t.Fatalf("write %s: %v", name, err)
 		}
 	}
-	// 对账表：与 P8-A 同一口径（users/accounts/audit 按行 id，time_prefs 按掩码手机号）。
+	// 对账表：与导出器同一口径（users/accounts/audit 按行 id，time_prefs 按掩码手机号）。
 	var recon strings.Builder
 	for _, table := range []string{"users", "accounts", "time_prefs", "audit"} {
 		keyField := "id"
@@ -268,7 +268,7 @@ func e2eAssertLegacyInvariant(t *testing.T, dsn string) {
 
 // TestNewCipherAcceptsEmptyDeviceCode 钉住 cipher 解码侧的裁决前提：
 // CredentialPayload 三键全部出现、device_code 为空串仍可解回。
-// 该前提不成立时导入器的凭据重加密方案整体失效（派单裁决 7）。
+// 该前提不成立时导入器的凭据重加密方案整体失效。
 // 放在 cmd/cli：boundary 门禁止 adapters 导入 app。
 func TestNewCipherAcceptsEmptyDeviceCode(t *testing.T) {
 	newKey := bytes.Repeat([]byte{0x42}, 32)
@@ -342,7 +342,7 @@ func TestMigrateLegacyImportReconcileE2E(t *testing.T) {
 		t.Fatalf("admin_schools rows = %d, want 0", n)
 	}
 
-	// 凭据重封装可用新钥解回，device_code 为空串（裁决 7 的解码前提）。
+	// 凭据重封装可用新钥解回，device_code 为空串（解码前提）。
 	ctx := context.Background()
 	db, err := pg.Open(ctx, pg.Options{DSN: dsn, MaxConns: 1, StatementTimeout: 30 * time.Second})
 	if err != nil {
@@ -514,7 +514,7 @@ func TestMigrateLegacyDecryptWithNewKeyFailsLoudE2E(t *testing.T) {
 	if !strings.Contains(output, "decrypt") {
 		t.Fatalf("output must name decrypt failures, got:\n%s", output)
 	}
-	// 账号照建（裁决 5），凭据行缺省。
+	// 账号照建，凭据行缺省。
 	if n := e2eCount(t, dsn, "SELECT count(*) FROM accounts"); n != 4 {
 		t.Fatalf("accounts = %d, want 4 (created despite decrypt failure)", n)
 	}
@@ -635,7 +635,7 @@ func TestMigrateLegacyLoginOldPasswordE2E(t *testing.T) {
 	}
 }
 
-// TestMigrateLegacyTamperedReconZeroWritesE2E 守卫（审查 H1-a）：
+// TestMigrateLegacyTamperedReconZeroWritesE2E 守卫：
 // strict 档导入中途致命错误（对账表被篡改）→ 退出码 2 且全部相关表 0 行。
 // 契约是「exit 2 零写入」；比对必须发生在提交前，行已提交即契约假。
 func TestMigrateLegacyTamperedReconZeroWritesE2E(t *testing.T) {
@@ -694,7 +694,7 @@ func TestMigrateLegacyTamperedReconZeroWritesE2E(t *testing.T) {
 	}
 }
 
-// TestMigrateLegacyRowErrorAtomicNoPhoneLeakE2E 守卫（审查 H1-b＋M1）：
+// TestMigrateLegacyRowErrorAtomicNoPhoneLeakE2E 守卫：
 // 行级失败不污染其余行、失败行零残留、落地行必有 legacy_ids 映射、
 // 行级错误输出零明文手机号（撞唯一约束行故意夹带）。
 func TestMigrateLegacyRowErrorAtomicNoPhoneLeakE2E(t *testing.T) {

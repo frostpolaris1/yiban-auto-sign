@@ -45,7 +45,7 @@ type New = coreuser.New
 // CountLiveMasters 在锁下统计 active 未删 master（status='active'）：
 // **必须在事务内运行**，与 Create、Restore、Delete 同锁族，
 // 串行化并发的建号、降级、删除与恢复。停用 master 不能登录，
-// 不构成恢复路径，不计入（独立审查 P1-2）。
+// 不构成恢复路径，不计入。
 // Lookup 按已归一邮箱前缀取未删行，按 email 升序取前 limit 条。
 // exact 置真时 query 是完整邮箱：只回全等的那一条（F1，
 // 归属选择器按 id 绑定必须用它——掩码行彼此不可分辨）。

@@ -211,7 +211,7 @@ export function UserDetailDrawer({ user, returnFocusTo, onClose, onSync, onGone 
                       恢复用户
                     </BusyButton>
                   </div>
-                  {/* 恢复失败必须贴着恢复按钮：已删行不渲染下方分支（独立审查 P2-4）。 */}
+                  {/* 恢复失败必须贴着恢复按钮：已删行不渲染下方分支。 */}
                   {restoreError ? (
                     <div role="alert">
                       <Alert tone="danger">{restoreError}</Alert>

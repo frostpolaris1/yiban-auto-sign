@@ -854,7 +854,7 @@ test('ux2 master: a failed owner lookup blocks the submit with its own message',
   await dialog.getByLabel('手机号').fill('13800000000')
   await dialog.getByLabel('易班口令').fill('single-pass-1')
 
-  // 检索失败：单独提示，不冒充「未注册」也不静默落成自有（审查 H1）。
+  // 检索失败：单独提示，不冒充「未注册」也不静默落成自有。
   await dialog.getByLabel('绑定用户（选填）').fill('member.target@example.com')
   await expect(dialog.getByText('用户检索失败，请稍后重试')).toBeVisible({ timeout: 10_000 })
   await expect(dialog.getByRole('button', { name: '提交' })).toBeDisabled()
@@ -912,7 +912,7 @@ test('ux2 master: a dotless-domain email passes the completeness gate and binds 
   const api = await mockAccountsApi(page, { role: 'master' })
   await openAccounts(page)
 
-  // ops@intranet 服务端可建号可登录（ValidEmail，裁决 P3-5）：
+  // ops@intranet 服务端可建号可登录：
   // UI 的完整邮箱判定不得比服务端严（F3）。
   await page.getByRole('button', { name: '新建账号' }).click()
   const dialog = page.getByRole('dialog')

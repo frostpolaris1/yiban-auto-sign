@@ -56,26 +56,26 @@ var (
 	_ appworker.Signer            = (*yiban.Provider)(nil)
 	_ appworker.Egress            = (*appegress.Service)(nil)
 	_ appworker.RateGate          = (*corerate.Limiter)(nil)
-	// P4-F：自选仓储同时满足计划层与自选用例两个端口。
+	// 自选仓储同时满足计划层与自选用例两个端口。
 	_ appschedule.TimePrefs = (*pg.TimePrefRepo)(nil)
 	_ apptimepref.Store     = (*pg.TimePrefRepo)(nil)
-	// P4-F：HTTP 处理器的两个用例端口。
+	// HTTP 处理器的两个用例端口。
 	_ schedulehttp.Planner   = (*appschedule.Service)(nil)
 	_ schedulehttp.TimePrefs = (*apptimepref.Service)(nil)
 	// 手动签到的可见面判据与入队接缝。
 	_ signinghttp.AccountAccess = (*appaccount.Service)(nil)
 	_ signinghttp.ManualSigner  = (*appworker.Service)(nil)
-	// P5-B：图片仓储与 blob 存储。
+	// 图片仓储与 blob 存储。
 	_ appphotos.Store    = (*pg.PhotoRepo)(nil)
 	_ appphotos.Blobs    = (*storage.FS)(nil)
 	_ photoshttp.Service = (*appphotos.Service)(nil)
-	// P5-C：定位策略与 worker 的两个注入端口。
+	// 定位策略与 worker 的两个注入端口。
 	_ applocation.Store        = (*pg.LocationRepo)(nil)
 	_ applocation.Accounts     = (*appaccount.Service)(nil)
 	_ locationhttp.Service     = (*applocation.Service)(nil)
 	_ appworker.LocationSource = (*applocation.Service)(nil)
 	_ appworker.PhotoSource    = (*appphotos.Service)(nil)
-	// P6：事件总线、发布端口与诊断读模型。
+	// 事件总线、发布端口与诊断读模型。
 	_ appworker.Notifier          = assembly.WorkerNotifier{}
 	_ appschedule.Notifier        = assembly.ScheduleNotifier{}
 	_ appdiagnostic.Store         = (*pg.DiagnosticRepo)(nil)

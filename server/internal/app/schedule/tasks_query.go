@@ -19,7 +19,7 @@ package schedule
 // 1..200，越界 400。导出没有页大小入参，批量恒为 ExportCap。
 // q 按学校名或任务名子串匹配，LIKE 元字符由适配层转义；
 // 手机号只收 11 位全号做精确匹配，前缀不命中——
-// 前缀检索可在几十次请求内逐位还原被掩码的号码（审查 P2-5）。
+// 前缀检索可在几十次请求内逐位还原被掩码的号码。
 // 排序固定 run_at 倒序、行 id 兜底；游标是不透明键集串。
 // **手机号只出掩码**：行内明文在映射成 TaskView 时经 core/mask.MaskPhone，
 // result 经 core/mask.MaskText；明文不出本包。
@@ -146,7 +146,7 @@ func (q *TaskQuery) prepare(scope corescope.Scope, in coreschedule.TaskQueryFilt
 	if filter.State != "" && !status.TaskState(filter.State).Valid() {
 		return nil, coreerrs.New(coreerrs.CodeValidation, "unknown task state")
 	}
-	// q 的检索面：名称子串恒开；手机号只认 11 位全号（UX-3 审查 P2-5）。
+	// q 的检索面：名称子串恒开；手机号只认 11 位全号。
 	if isFullPhoneNumber(filter.Query) {
 		filter.Phone = filter.Query
 	}

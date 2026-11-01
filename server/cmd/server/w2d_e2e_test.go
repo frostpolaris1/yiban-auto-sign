@@ -40,7 +40,7 @@ type w2dUserBody struct {
 }
 
 // w2dSeedUser 直接写库造一个可登录用户。
-// 引导 master 与造 admin 都用它：P1 没有注册端点，首个 master 只能这样落地。
+// 引导 master 与造 admin 都用它：没有注册端点，首个 master 只能这样落地。
 func w2dSeedUser(t *testing.T, e *authEnv, email, password string, role coreauth.Role) coreuser.Record {
 	t.Helper()
 	hash, err := coreauth.HashPassword(password)
@@ -328,7 +328,7 @@ func TestW2DE44CreatedUserCanLogIn(t *testing.T) {
 	}
 }
 
-// P2 回归：本地部含非 ASCII 字符时，建号与登录都必须成功。
+// 回归：本地部含非 ASCII 字符时，建号与登录都必须成功。
 // 旧实现按字节切首字符，掩码邮箱产出非法 UTF-8，登录写审计即 500。
 func TestW2DE45NonASCIIEmailSurvivesLogin(t *testing.T) {
 	e := newAuthEnv(t)

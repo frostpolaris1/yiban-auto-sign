@@ -76,7 +76,7 @@ func TestMaskTextIdempotent(t *testing.T) {
 	}
 }
 
-// TestMaskTextCoversSeparatedPhones 钉住 W2C-R2-05。
+// TestMaskTextCoversSeparatedPhones 钉住带国家码前缀的号码。
 //
 // 用户会把号码写成连字符、空格或 tel: 前缀形式。
 // 只匹配 11 个连续数字会让这些形式原样进响应；
@@ -103,7 +103,7 @@ func TestMaskTextCoversSeparatedPhones(t *testing.T) {
 	}
 }
 
-// W2C-R3-01：游程正则会把「手机号 + 空格 + 数字」并成一组。
+// 游程正则会把「手机号 + 空格 + 数字」并成一组。
 // 四种基线树回 400 的输入，现在必须掩掉号码、保留邻接数字。
 func TestMaskTextHandlesPhoneAdjacentToDigits(t *testing.T) {
 	cases := []struct{ in, want string }{
@@ -120,7 +120,7 @@ func TestMaskTextHandlesPhoneAdjacentToDigits(t *testing.T) {
 	}
 }
 
-// W2C-R4-01：分隔号码与相邻数字并存时，跨段的手机号窗口必须被掩，
+// 分隔号码与相邻数字并存时，跨段的手机号窗口必须被掩，
 // 原文不得进响应与审计。三审实测的三种 400→漏掩输入全部钉住。
 func TestMaskTextHandlesSeparatedPhoneAdjacentToDigits(t *testing.T) {
 	cases := []struct{ in, want string }{

@@ -1,7 +1,7 @@
-// backfill-time-prefs 子命令：旧库自选时间片 → 新库按用户的偏移（2gk）。
+// backfill-time-prefs 子命令：旧库自选时间片 → 新库按用户的偏移。
 //
 // # 功能
-// 读 P8-A 导出物目录（accounts.jsonl + time_prefs.jsonl），沿 legacy_ids
+// 读导出物目录（accounts.jsonl + time_prefs.jsonl），沿 legacy_ids
 // 找到新账号的归属用户，把旧 slot_min 写成新 time_prefs.offset_min。
 // 默认 dry-run：报告将写/将跳过的清单与原因，不发写调用。
 // `--apply` 在单事务内幂等 UPSERT；同值重跑零变更。
@@ -88,7 +88,7 @@ func runBackfillTimePrefs(args []string, stdout, stderr io.Writer) int {
 //
 // # 口径
 // `legacy.Error` 的 Msg 不带前缀（前缀只在本函数加一次）；退出码取 Code。
-// 其他错误按 1 返回。双重前缀是 2gk 审查抓到的缺陷形状，
+// 其他错误按 1 返回。双重前缀是已修过的缺陷形状，
 // 判据见 TestPrintBackfillErrorSinglePrefix。
 func printBackfillError(w io.Writer, err error) int {
 	var fatalErr *legacy.Error

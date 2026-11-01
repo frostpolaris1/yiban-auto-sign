@@ -14,7 +14,7 @@ import (
 //
 // 夹具与请求形状来源：对参考程序二进制的逆向还原（**未经实拍**）。
 // 本文件的断言钉的是「我方实现按逆向形状发出请求」，不构成平台证据；
-// 实拍替换点在 upload.go 内以 UNVERIFIED(recon) 标注（工单 9ap）。
+// 实拍替换点在 upload.go 内以 UNVERIFIED(recon) 标注。
 
 func uploadSignRequest(attempt string) (contract.SignRequest, contract.ImageRef) {
 	req := providerSignRequest(attempt)

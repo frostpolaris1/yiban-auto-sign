@@ -1,8 +1,8 @@
 package legacy
 
-// time_prefs 补录的单元判据（2gk）。
+// time_prefs 补录的单元判据。
 //
-// 模拟的真实用户动作：运维给 `backfill-time-prefs` 一份 P8-A 导出目录。
+// 模拟的真实用户动作：运维给 `backfill-time-prefs` 一份导出目录。
 // 断言的不变式：
 //   - dry-run 一次写调用都不发（不写库）；
 //   - 一致映射写一条；同一用户多账号取值不一致时整用户跳过并列名；
@@ -280,7 +280,7 @@ func TestBackfillRejectsBadRows(t *testing.T) {
 	}
 }
 
-// TestBackfillAcceptsBoundaryValues 钉住边界两端（2gk 审查 P2-2）：
+// TestBackfillAcceptsBoundaryValues 钉住边界两端：
 // 下界 0 与上界内最大合法值 1435 都必须写入，不当作坏行拒绝。
 func TestBackfillAcceptsBoundaryValues(t *testing.T) {
 	dir := writeBackfillExport(t,

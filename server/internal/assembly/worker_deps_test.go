@@ -1,6 +1,6 @@
 package assembly
 
-// workerDeps 与 appworker.Deps 的两道镜像判据（§28，OCR C2 三轮 P3）。
+// workerDeps 与 appworker.Deps 的两道镜像判据。
 //
 // 1. 字段镜像：Depst 新增字段时，workerDeps 必须有同名同类型的字段。
 // 2. 搬运镜像：buildWorkerDeps 必须把每个字段原样带进 Deps。

@@ -1,6 +1,6 @@
 package pg_test
 
-// DiagnosticRepo 的真库判据（P6）。
+// DiagnosticRepo 的真库判据。
 //
 // # 功能
 // 只读四查询按真实数据形状回答：当日任务行、窗口缓存、

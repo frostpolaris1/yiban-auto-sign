@@ -17,10 +17,10 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
 )
 
-// TestEncodeDetailRejectsPersonalData 钉住 schema §8.5 的 detail 规则。
+// TestEncodeDetailRejectsPersonalData 钉住 schema 的 detail 规则。
 //
 // 每一行都是一种**绝不可进审计表**的形状。
-// 清单覆盖 W2A 复审报告的缺陷：词后跟手机号、数字型手机号、
+// 清单覆盖已发现的缺陷：词后跟手机号、数字型手机号、
 // rows 内手机号、嵌套 map。
 func TestEncodeDetailRejectsPersonalData(t *testing.T) {
 	reason201 := strings.Repeat("x", 201)

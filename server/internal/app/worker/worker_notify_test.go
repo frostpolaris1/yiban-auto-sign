@@ -1,8 +1,8 @@
 package worker_test
 
-// Notifier 发布点单测（P6）。
+// Notifier 发布点单测。
 //
-// 判据来自派单稿：finish 成功路径后发 task.concluded
+// 判据：finish 成功路径后发 task.concluded
 // （payload：account_id、state、attempt）；RequeueWait/RequeueRetry
 // 后发 task.progress；发布不得阻塞或改变结算语义——发布方 panic
 // 时结算照常落库，事件丢弃。

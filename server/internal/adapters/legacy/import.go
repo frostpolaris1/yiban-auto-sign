@@ -31,7 +31,7 @@ import (
 )
 
 // CredentialPayload 是重封装前的明文负载。三键全部出现；
-// device_code 由导入侧置空串（裁决 7；解码侧允许空串已核）。
+// device_code 由导入侧置空串（解码侧允许空串已核）。
 type CredentialPayload struct {
 	DeviceCode string
 	Password   string
@@ -68,7 +68,7 @@ func fatal(code int, format string, args ...any) *Error {
 
 // Options 是一次导入的全部输入。
 type Options struct {
-	// Dir 是 P8-A 导出物目录（五个 .jsonl + reconciliation.jsonl）。
+	// Dir 是导出物目录（五个 .jsonl + reconciliation.jsonl）。
 	Dir string
 	// OutDir 是报告输出目录（reconciliation.jsonl + summary.json）。
 	OutDir string
@@ -102,7 +102,7 @@ func Run(ctx context.Context, opts Options) (summary map[string]any, exitCode in
 		return nil, 2, err
 	}
 
-	// 前置校验：学校与归属用户必须已存在（裁决 1、4）。不造学校、不猜归属。
+	// 前置校验：学校与归属用户必须已存在。不造学校、不猜归属。
 	n, err := opts.DB.QueryInt64(ctx,
 		`SELECT count(*) FROM schools WHERE id = $1::uuid`, opts.SchoolID)
 	if err != nil {
@@ -120,7 +120,7 @@ func Run(ctx context.Context, opts Options) (summary map[string]any, exitCode in
 		return nil, 2, fatal(2, "owner user %s does not exist in the new database; create it first", opts.OwnerUserID)
 	}
 
-	// 孤儿口径（裁决 2）：time_prefs.phone 无对应账号。strict 即失败；默认跳过＋计数。
+	// 孤儿口径：time_prefs.phone 无对应账号。strict 即失败；默认跳过＋计数。
 	accountPhones := map[string]bool{}
 	for _, row := range rows["accounts"] {
 		accountPhones[valueString(row["phone"])] = true
@@ -154,7 +154,7 @@ func Run(ctx context.Context, opts Options) (summary map[string]any, exitCode in
 		for _, row := range rows["accounts"] {
 			state.importAccount(ctx, opts, row)
 		}
-		// time_prefs / audit 不入库（裁决见包注释），但行进对账表：
+		// time_prefs / audit 不入库，但行进对账表：
 		// 与导出物对账表逐行比对才能钉住导出物完整性。
 		for _, row := range rows["time_prefs"] {
 			state.appendRecon("time_prefs", row, coremask.MaskPhone(valueString(row["phone"])))
@@ -327,7 +327,7 @@ func (s *importState) importUser(ctx context.Context, opts Options, row map[stri
 	s.appendRecon("users", row, fmt.Sprint(oldID))
 }
 
-// mapLegacyRole 是角色映射表（裁决 3）：admin→master、user→user。
+// mapLegacyRole 是角色映射表：admin→master、user→user。
 // 旧库无 school 级 admin，不产生 admin_schools 行。
 func mapLegacyRole(old string) (string, bool) {
 	switch old {
@@ -343,7 +343,7 @@ func mapLegacyRole(old string) (string, bool) {
 // importAccount 重建一行旧 accounts 与其凭据。幂等判据＝legacy_ids。
 // 写段（主行＋凭据＋映射）在保存点内同存亡：任一失败整行回滚，
 // 落地行必有 legacy_ids 映射，不留无凭据的半行（凭据缺行/解密失败除外，
-// 见 importCredential——那是裁决 5 的「账号照建」语义）。
+// 见 importCredential——那是 的「账号照建」语义）。
 func (s *importState) importAccount(ctx context.Context, opts Options, row map[string]any) {
 	s.bumpRead("accounts")
 	oldID, ok := valueInt(row["id"])
@@ -351,7 +351,7 @@ func (s *importState) importAccount(ctx context.Context, opts Options, row map[s
 		s.addRowError("accounts", "id", fmt.Errorf("missing or non-numeric id"))
 		return
 	}
-	// 旧 owner 是自由文本（多数为 'admin'），不做可信映射，只计数（裁决 4）。
+	// 旧 owner 是自由文本（多数为 'admin'），不做可信映射，只计数。
 	s.bump("owner_values", orEmpty(valueString(row["owner"])))
 
 	newID, hit, err := legacyIDHit(ctx, opts.DB, "accounts", oldID)
@@ -455,7 +455,7 @@ func mapLegacyStatus(row map[string]any) (string, bool) {
 // 全出现，device_code 置空串）→ 新信封（AAD=school_id|account_id）。
 // 明文只在内存。
 //
-// 返回 nil：凭据缺行（口令空）与解密失败（裁决 5）——账号照建、
+// 返回 nil：凭据缺行（口令空）与解密失败——账号照建、
 // 凭据行缺省、显性计数，不撤行。
 // 返回非 nil：信封形状违约（裸串、意外类型）与封装/插入失败——
 // 调用方整行回滚，不留无凭据的半行。
@@ -497,7 +497,7 @@ func (s *importState) importCredential(ctx context.Context, opts Options, row ma
 	default:
 		return fmt.Errorf("account %s: password field has unexpected type %T", masked, row["password"])
 	}
-	// 旧 phone_code（验证码信封）在新负载无对应键，弃置并显性计数（裁决 7）。
+	// 旧 phone_code（验证码信封）在新负载无对应键，弃置并显性计数。
 	if _, isEnvelope := row["phone_code"].(map[string]any); isEnvelope {
 		s.bump("credentials", "phone_code_dropped")
 	}

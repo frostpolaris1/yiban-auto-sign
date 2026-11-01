@@ -1,4 +1,4 @@
-// Package events 把事件流与诊断用例映射到 HTTP（P6）。
+// Package events 把事件流与诊断用例映射到 HTTP。
 //
 // # 功能
 // GET /api/admin/events（master/admin，SSE）、

@@ -150,7 +150,7 @@ type auditedWrite struct {
 // 判据三：该路径写入的目标行一条都不落地。
 //
 // 判据二不能省：仓储的 hasTx 前置判据也报 internal_error。
-// 只断错误码时，删掉事务包装仍会绿（独立审查 D1）。
+// 只断错误码时，删掉事务包装仍会绿。
 func TestAuditWriteFailureRollsBackTargetRows(t *testing.T) {
 	u := newUsecaseEnv(t)
 	for _, tc := range auditedWrites() {

@@ -1,6 +1,6 @@
 package events_test
 
-// 诊断与轮询端点的入口层判据（P6）：
+// 诊断与轮询端点的入口层判据：
 //   - /api/me/* 对任意已认证主体开放，恒按会话 userID 取数；
 //   - /api/accounts/{id}/diagnostics 的 x-roles 是 [user, admin]；
 //   - 响应形状与用例值一一对应；

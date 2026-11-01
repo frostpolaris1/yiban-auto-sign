@@ -39,7 +39,7 @@ import { UsersTable } from './UsersTable'
 import { withFilter, type UserURLState } from './urlState'
 import { AsyncState } from '@/components/ui/AsyncState'
 
-/** 输入防抖窗口。上限由派单钉在 300ms。 */
+/** 输入防抖窗口；上限 300ms。 */
 const SEARCH_DEBOUNCE_MS = 250
 
 const DENY_REASON = '你的角色无权查看用户管理'
@@ -56,7 +56,7 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
   const allowed = roleAllowed(role, USER_VIEW_ROLES)
 
   const [qInput, setQInput] = useState(urlState.q ?? '')
-  // URL 是输入框的回灌源（独立审查 P2-5）：后退清掉 ?q 时输入框必须同步清空，
+  // URL 是输入框的回灌源：后退清掉 ?q 时输入框必须同步清空，
   // 否则 250ms 后防抖会把旧值写回 URL，后退等于失效。
   const urlQuery = urlState.q
   useEffect(() => {
@@ -76,7 +76,7 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
 
   const cursor = currentCursor(stack)
 
-  /** 回车是显式动作：同值也回第一页，末尾位置不保留（独立审查 P3）。 */
+  /** 回车是显式动作：同值也回第一页，末尾位置不保留。 */
   const commitQuery = () => {
     const next = qInput.trim() || undefined
     onSearchChange(withFilter(urlState, { q: next }))

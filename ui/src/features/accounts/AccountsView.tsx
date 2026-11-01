@@ -263,7 +263,7 @@ export function AccountsView() {
         notifySuccess(`已恢复 ${input.account.phone_masked}`)
       }
       if (input.op === 'location') {
-        // 契约无读端点：成功响应进会话内缓存，供下次预填（专档 §七.4 口径）。
+        // 契约无读端点：成功响应进会话内缓存，供下次预填。
         // 该 key 无订阅者，默认 gcTime 5 分钟即回收——此处声明永不过期，
         // 文案「本会话内可预填」的承诺才成立。
         queryClient.setQueryDefaults(['account-location'], { gcTime: Infinity })

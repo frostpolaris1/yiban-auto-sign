@@ -86,7 +86,7 @@ type Deps struct {
 
 // Service 是图片库用例服务。
 //
-// mu 把「上传落盘」与「回收扫描」互斥。单进程是设计不变量（AGENTS §26），
+// mu 把「上传落盘」与「回收扫描」互斥。单进程是设计不变量，
 // 因此一把进程内读写锁就能结构性排除这个交错：
 // 回收按 List 快照的 mtime 判安全期，而上传的去重 Touch 可能发生在快照之后；
 // 没有互斥时，回收会用过期快照删掉「刚刷新、行刚提交」的文件。
@@ -436,7 +436,7 @@ func (s *Service) Purge(ctx context.Context, limit int) (int64, error) {
 // 引用集合含软删行，故可恢复的行不会指向空文件。
 // 全程持写锁：与 Upload 的 Put→Touch→Create 互斥。
 // 没有这把锁，List 快照之后发生的去重 Touch 不会被本轮看到，
-// 回收会按过期 mtime 删掉「刚提交行」的文件（复审 P1）。
+// 回收会按过期 mtime 删掉「刚提交行」的文件。
 func (s *Service) CollectBlobs(ctx context.Context) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -1,6 +1,6 @@
 package main
 
-// user create-master 的真库 e2e（P7 审查 P2-1；修复 P1-3）。
+// user create-master 的真库 e2e。
 //
 // # 功能
 // 干净库上建第一个 master：退出码、库内角色、口令可校验、
@@ -114,7 +114,7 @@ func TestUserCreateMasterE2E(t *testing.T) {
 	}
 }
 
-// TestCreateMasterKeepsSecretOutOfArgv 钉住口令/DSN/pepper 不进 argv（派单 P1-3）。
+// TestCreateMasterKeepsSecretOutOfArgv 钉住口令/DSN/pepper 不进 argv。
 // 真实用户动作：运维按 install.sh 的提示先载入 .env，再把口令管道喂给
 // `user create-master --password-stdin`。断言 argv 不含任何机密，
 // 且 stdin 路径在真库上能建号、口令可校验。
@@ -158,7 +158,7 @@ func TestCreateMasterKeepsSecretOutOfArgv(t *testing.T) {
 	}
 }
 
-// TestPasswordFileRequiresOwnerOnlyMode 钉住 --password-file 的 0600 判据（派单 P1-3）。
+// TestPasswordFileRequiresOwnerOnlyMode 钉住 --password-file 的 0600 判据。
 // 同机其他用户能读到的口令不得使用。Windows 无 POSIX 模式位，本测显性跳过。
 func TestPasswordFileRequiresOwnerOnlyMode(t *testing.T) {
 	if runtime.GOOS == "windows" {

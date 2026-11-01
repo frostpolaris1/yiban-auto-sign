@@ -12,7 +12,7 @@
 // Service、Deps、CreateInput；Record 与 New 来自 repo.go。
 //
 // # 口径
-// 只有 master 可以建号（裁决 12.4）。其余角色一律 403。
+// 只有 master 可以建号。其余角色一律 403。
 // 邮箱先归一再校验，口径取自 core/user。
 // 口令在开事务**之前**算哈希：argon2id 校验耗时见 password.go 参数（m=19456KiB, t=2），不进事务、不持锁。
 // 写行与 user.create 审计同事务。
@@ -42,7 +42,7 @@ type CreateInput struct {
 }
 
 // Deps 是用户用例的依赖。全部必填，缺一即构造失败。
-// Limit 是活跃用户上限（裁决 12.11）。
+// Limit 是活跃用户上限。
 type Deps struct {
 	Users Repo
 	Audit appaudit.Repo

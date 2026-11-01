@@ -17,7 +17,7 @@ import (
 )
 
 // ErrDatabaseAhead 表示数据库 schema 版本高于本二进制携带的版本。
-// 降级进程**必须停下**：它不认识更新的列与约束（schema §9.3）。
+// 降级进程**必须停下**：它不认识更新的列与约束。
 var ErrDatabaseAhead = errors.New("pg: database schema is newer than this binary")
 
 // Migrate 应用全部待执行迁移，并返回迁移后的 schema 版本。

@@ -217,7 +217,7 @@ func newServiceWithPrefs(t *testing.T, w *fakeWindowStore, p *fakePlanStore, a f
 	return svc
 }
 
-// 预览就是计划：行、直方图、落库行三者逐值相等（复审 P2-2 的钉子）。
+// 预览就是计划：行、直方图、落库行三者逐值相等。
 func TestPreviewEqualsBuild(t *testing.T) {
 	w := &fakeWindowStore{task: enabledTask()}
 	p := &fakePlanStore{}
@@ -412,7 +412,7 @@ func TestCapacityShortfallReported(t *testing.T) {
 	}
 }
 
-// 窗口**仅起点**变化也必须重排（复审 P2-6：Start 比较的钉子）。
+// 窗口**仅起点**变化也必须重排。
 func TestWindowStartOnlyChangeRearranges(t *testing.T) {
 	w := &fakeWindowStore{task: enabledTask(), ok: true, record: coreschedule.WindowRecord{
 		Start:  time.Date(2026, 10, 29, 6, 30, 0, 0, shanghai),
@@ -471,7 +471,7 @@ func TestBuildUnchangedSkipsRearrange(t *testing.T) {
 	}
 }
 
-// 亚毫秒窗口：夹取不得产出早于窗口起点的落点（复审 P2-1）。
+// 亚毫秒窗口：夹取不得产出早于窗口起点的落点。
 func TestSubMillisecondWindowClamped(t *testing.T) {
 	d := &fakeDiscover{window: contract.Window{
 		Start:  time.Date(2026, 10, 29, 6, 30, 0, 0, shanghai),
@@ -492,7 +492,7 @@ func TestSubMillisecondWindowClamped(t *testing.T) {
 	}
 }
 
-// 缓存读真错误必须上抛，不得降级为"无缓存"（复审 P2-5）。
+// 缓存读真错误必须上抛，不得降级为"无缓存"。
 func TestCacheReadErrorPropagates(t *testing.T) {
 	w := &fakeWindowStore{readErr: errors.New("connection refused")}
 	svc := newService(t, w, &fakePlanStore{}, fakeAccounts{ids: []string{"a1"}},
@@ -502,7 +502,7 @@ func TestCacheReadErrorPropagates(t *testing.T) {
 	}
 }
 
-// 版本竞争：整体重试一次，最终成功且重排一次（复审 P2-4/P3-4）。
+// 版本竞争：整体重试一次，最终成功且重排一次。
 func TestStaleRetriesOnce(t *testing.T) {
 	w := &fakeWindowStore{task: enabledTask(), ok: true, staleOnce: true, record: coreschedule.WindowRecord{
 		Start:  time.Date(2026, 10, 29, 6, 30, 0, 0, shanghai),
@@ -717,7 +717,7 @@ func TestTimePrefPlacedFirst(t *testing.T) {
 //
 // 偏好放在中部（8 号片）且片容量为 2：前两行占满 8 号片，
 // 第三行必须落 7 号片。放在 0 号片时，顺延目标与 front 自动填充
-// 的落点重合，「满时不顺延」的突变仍然全绿（P4-F 审查 P2-1）。
+// 的落点重合，「满时不顺延」的突变仍然全绿。
 func TestTimePrefSpillsToNearestFree(t *testing.T) {
 	ids := []string{"a1", "a2", "a3"}
 	owners := map[string]string{"a1": "u1", "a2": "u1", "a3": "u1"}

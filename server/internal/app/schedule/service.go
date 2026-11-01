@@ -395,8 +395,7 @@ func (s *Service) Override(ctx context.Context, scope corescope.Scope, in Input,
 	if err != nil {
 		return Preview{}, err
 	}
-	// 覆盖同样可能改变容量（窗口变短/账号变多）：与 Build 同一口径
-	//（P6 审查 P3-1）。
+	// 覆盖同样可能改变容量（窗口变短/账号变多）：与 Build 同一口径。
 	s.publishWindow(ctx, in, p, changed)
 	s.publishCapacity(ctx, in, p)
 	return p, nil
@@ -596,7 +595,7 @@ func (s *Service) previewWithWindow(ctx context.Context, in Input, policy window
 
 // resolveWindow 按覆盖 > 平台 > 缓存 > 回退解析当日窗口。
 // 平台发现失败不算错误（来源如实标注）；缓存读取失败**只有**
-// errs.ErrNotFound 才算无缓存，其他错误上抛（P4-C 复审 P2-5）。
+// errs.ErrNotFound 才算无缓存，其他错误上抛。
 // 人工覆盖存在且合法时优先：覆盖是运维对当日窗口的明确决定。
 // 何时问平台：policyLive 且无合法覆盖；policyCached 且无缓存或 Refresh。
 // policyCached 的刷新先于覆盖判定：两个只读端点对 refresh=true

@@ -26,7 +26,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
 
-// memoryLimitBytes 是内存峰值判据（P8 派单 §3）。
+// memoryLimitBytes 是内存峰值判据。
 const memoryLimitBytes = 1 << 30
 
 // sseTimeout 是单个订阅者等一条事件的墙钟上限。

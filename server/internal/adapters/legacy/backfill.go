@@ -1,9 +1,9 @@
 package legacy
 
-// time_prefs 补录：旧库按手机号的自选 → 新库按 user_id 的自选（2gk）。
+// time_prefs 补录：旧库按手机号的自选 → 新库按 user_id 的自选。
 //
 // # 功能
-// 读 P8-A 导出物里的 accounts.jsonl 与 time_prefs.jsonl，
+// 读导出物里的 accounts.jsonl 与 time_prefs.jsonl，
 // 沿 legacy_ids('accounts', 旧账号 id) 找到新账号行，
 // 再取该行的 owner_user_id 作为写入目标。
 // 默认 dry-run：只输出计划，不发写调用；--apply 才在单事务内 UPSERT。
@@ -146,7 +146,7 @@ type PrefWriter interface {
 
 // BackfillOptions 是一次补录的全部输入。
 type BackfillOptions struct {
-	// Dir 是 P8-A 导出物目录（须含 accounts.jsonl 与 time_prefs.jsonl）。
+	// Dir 是导出物目录（须含 accounts.jsonl 与 time_prefs.jsonl）。
 	Dir string
 	// Apply 为真才写库；假时只出计划。
 	Apply bool

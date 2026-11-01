@@ -1,6 +1,6 @@
 package main
 
-// usage 清单的完整性（派单 F14）。
+// usage 清单的完整性。
 //
 // # 功能
 // help 输出必须登记 main 的每个子命令。user 子命令缺失时，

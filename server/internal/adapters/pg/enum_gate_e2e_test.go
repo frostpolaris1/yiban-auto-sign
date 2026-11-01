@@ -1,9 +1,9 @@
 package pg_test
 
-// 本文件钉住平台 ENUM 的库-码对照门（工单 zqv）。
+// 本文件钉住平台 ENUM 的库-码对照门。
 // 词表在三处定义：迁移、core 常量、契约生成物。
 // 任一侧改名或新增值即红。
-// 需要真实 PostgreSQL：pg_enum 是库侧词表的唯一权威（AGENTS §32）。
+// 需要真实 PostgreSQL：pg_enum 是库侧词表的唯一权威。
 // 契约侧的同集门在 internal/entry/http/oapi/enum_gate_test.go。
 // adapters 不得导入 entry（canonical.tsv boundary.adapters），故三方对照拆成两段。
 // 两段传递即三方同集。
@@ -111,7 +111,7 @@ func walkConsts(t *testing.T, dir string, visit func(*ast.ValueSpec)) {
 }
 
 // sourceEnumValues 读出 dir 内显式声明为 typeID 的字符串常量，按声明序。
-// 常量从源文件读，故新增常量无需改测试（审查 D1）。
+// 常量从源文件读，故新增常量无需改测试。
 // 同形副本在 internal/entry/http/oapi/enum_gate_test.go。改一处必须同改另一处。
 func sourceEnumValues(t *testing.T, dir, typeID, prefix string, min int) []string {
 	t.Helper()
@@ -190,7 +190,7 @@ func sortedJoin(values []string) string {
 }
 
 // TestPlatformEnumLabelsMatchCore：每张 ENUM 的库侧标签等于 core 常量集合。
-// 突变任一侧取值、或新增常量，即红（审查 D1）。
+// 突变任一侧取值、或新增常量，即红。
 func TestPlatformEnumLabelsMatchCore(t *testing.T) {
 	e := newEnv(t)
 	for _, row := range platformEnums {
@@ -204,7 +204,7 @@ func TestPlatformEnumLabelsMatchCore(t *testing.T) {
 }
 
 // TestSchemaEnumCoverage：schema 内 ENUM 类型集合等于 platformEnums 的表名集合。
-// 删掉表里任一行、或迁移新增 ENUM，都必须红（审查 D2）。
+// 删掉表里任一行、或迁移新增 ENUM，都必须红。
 func TestSchemaEnumCoverage(t *testing.T) {
 	e := newEnv(t)
 	want := make([]string, 0, len(platformEnums))

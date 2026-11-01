@@ -23,7 +23,7 @@ type SignInBody struct {
 //
 // 字段顺序固定：oauth_uname、oauth_upwd、client_id、redirect_uri、display；
 // scope 仅在非 nil 时追加。编码为 form-urlencoded（空格→+）。
-// display 为空时取 "authorize"：与 SPEC §2.6 的默认值一致。
+// display 为空时取 "authorize"：与 SPEC 的默认值一致。
 func BuildUsersureForm(phone, encryptedPassword, clientID, redirectURI, display string, scope *string) string {
 	if display == "" {
 		display = "authorize"

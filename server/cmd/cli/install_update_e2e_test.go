@@ -1,6 +1,6 @@
 package main
 
-// install.sh / update.sh 的干跑 e2e（派单 P7 判据）。
+// install.sh / update.sh 的干跑 e2e。
 //
 // # 功能
 // 假根目录（YIBAN_INSTALL_ROOT）+ 假 systemctl（SYSTEMCTL）+
@@ -161,17 +161,16 @@ exit 0
 	if rc != 0 {
 		t.Fatalf("install with healthy probe: rc=%d out=%s", rc, out)
 	}
-	// 部署的最后一步必须被点名：干净库还没有可登录账号
-	//（P7 审查 P2-1）。
+	// 部署的最后一步必须被点名：干净库还没有可登录账号。
 	if !strings.Contains(out, "user create-master") {
 		t.Fatalf("install must print the create-master next step; out=%s", out)
 	}
 	// 提示必须给出环境载入方式：.env 是 0600 root-only，
-	// 新开的 shell 里 YIBAN_* 未设置，直接跑 create-master 会报缺 DSN（派单 F15）。
+	// 新开的 shell 里 YIBAN_* 未设置，直接跑 create-master 会报缺 DSN。
 	if !strings.Contains(out, "set -a; . /etc/yiban/.env; set +a") {
 		t.Fatalf("install must print how to load /etc/yiban/.env before create-master; out=%s", out)
 	}
-	// 口令只走管道：推荐用法不得把口令、DSN、pepper 写进 argv（派单 P1-3）。
+	// 口令只走管道：推荐用法不得把口令、DSN、pepper 写进 argv。
 	if !strings.Contains(out, "--password-stdin") {
 		t.Fatalf("install must recommend --password-stdin; out=%s", out)
 	}
@@ -186,7 +185,7 @@ exit 0
 	}
 }
 
-// TestInstallShSecuresExistingEnv 钉住已有 .env 的权限（派单 F11）。
+// TestInstallShSecuresExistingEnv 钉住已有 .env 的权限。
 // 预置 0644 的 .env：安装后必须是 0600，否则同机其他用户可读密钥。
 func TestInstallShSecuresExistingEnv(t *testing.T) {
 	requireBash(t)
@@ -376,7 +375,7 @@ func requireOpenssl(t *testing.T) {
 	}
 }
 
-// 迁移前快照（D 批 P1-3）：有 DSN 时先 pg_dump 再 migrate；
+// 迁移前快照：有 DSN 时先 pg_dump 再 migrate；
 // 快照失败即中止，迁移一次都不跑。
 func TestUpdateShSnapshotsBeforeMigrate(t *testing.T) {
 	requireBash(t)
@@ -462,7 +461,7 @@ exit 0
 }
 
 // fakePgDump 装一个成功的 pg_dump 桩：不连数据库，按 --file= 建出目标文件。
-// update.sh 在有 DSN 时要求快照（D 批 P1-3）；不需要断言快照的用例用它让流程走通。
+// update.sh 在有 DSN 时要求快照；不需要断言快照的用例用它让流程走通。
 func fakePgDump(t *testing.T, dir string) string {
 	t.Helper()
 	return fakeBin(t, dir, "pg_dump", `
@@ -592,7 +591,7 @@ func TestUpdateShVerifiesSignedManifest(t *testing.T) {
 	}
 	newCLI = filepath.Join(binDir, "yiban-cli")
 	manifest, sig, pub := signedManifest(t, t.TempDir(), newServer, newCLI)
-	// 信任锚：钉住本次公钥的指纹（P0）。没有锚时 update.sh fail-closed。
+	// 信任锚：钉住本次公钥的指纹。没有锚时 update.sh fail-closed。
 	env["YIBAN_RELEASE_PUBKEY_SHA256"] = pinnedFingerprint(t, pub)
 
 	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
@@ -772,7 +771,7 @@ func TestUpdateShRejectsAllowUnsignedWithSigningFlags(t *testing.T) {
 	}
 }
 
-// ---- 信任锚（P0）：发布公钥的指纹必须先钉住 -------------------------------
+// ---- 信任锚：发布公钥的指纹必须先钉住 -------------------------------
 //
 // 被测性质：update.sh 不得接受「随便给的公钥」。攻击者自造密钥签恶意二进制
 // 时，指纹对不上必须被拒；管理员没写锚时也必须 fail-closed（exit 2），
@@ -943,7 +942,7 @@ func TestUpdateShRejectsUnexpectedVersion(t *testing.T) {
 	assertUntouchedAndNotStopped(t, installed, oldBody, sysctlLog)
 }
 
-// TestUpdateShUsesPrivateSnapshotOfInputs 钉 P2（2026-10-29 复审）：
+// TestUpdateShUsesPrivateSnapshotOfInputs 钉住快照私用：
 // 哈希、验签与安装只读暂存副本；校验开始后改写原路径不得影响结果。
 //
 // 构造：PATH 前置一个 sha256sum 包装器。第一次调用（指纹比对）时改写
@@ -989,7 +988,7 @@ func TestUpdateShUsesPrivateSnapshotOfInputs(t *testing.T) {
 	}
 }
 
-// TestUpdateShRejectsWritableAnchorFile 钉 P3（2026-10-29 复审）：
+// TestUpdateShRejectsWritableAnchorFile 钉住锚文件可写性：
 // 锚文件组/其他可写 ⇒ exit 2。可写锚等于任何人都能换锚。
 // 属主校验只在真机（无 YIBAN_INSTALL_ROOT 前缀）执行；干跑下只验权限位。
 func TestUpdateShRejectsWritableAnchorFile(t *testing.T) {
@@ -1022,7 +1021,7 @@ func TestUpdateShRejectsWritableAnchorFile(t *testing.T) {
 	assertUntouchedAndNotStopped(t, installed, oldBody, sysctlLog)
 }
 
-// ---- CLEAN-0：前端产物落位 ------------------------------------------------
+// ---- 前端产物落位 ------------------------------------------------
 //
 // 被测性质：install.sh 把 --ui-dir 落到 /var/lib/yiban/ui 并写 .env 的
 // YIBAN_UI_DIR；缺 index.html 时在动任何文件之前退出 2。

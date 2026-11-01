@@ -8,7 +8,7 @@ package pg_test
 // 00014 额外断言：window_cache 有 override 行时 Down 成功，该行降级为 cache。
 //
 // # 口径
-// DDL 与约束的求值只在真 PostgreSQL 上成立；进程内替身不是证据（AGENTS §32）。
+// DDL 与约束的求值只在真 PostgreSQL 上成立；进程内替身不是证据。
 // goose 的 BaseFS 与 dialect 是进程级状态，故本文件不并行。
 //
 // # 归属
@@ -355,7 +355,7 @@ func TestMigrationDownCoverage(t *testing.T) {
 // annotationName 按 goose 的规则取出注解名（Up、Down 等）。
 // goose 把以 "--" 开头且含 "+goose" 的注释行都当注解，
 // 名字比较用 strings.EqualFold（internal/sqlparser/parser.go）。
-// 门识别的形状必须等于执行面（AGENTS §29）。
+// 门识别的形状必须等于执行面。
 func annotationName(line string) string {
 	// goose 拒绝带前导空白的注解行；那种行不是可执行的注解。
 	if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {

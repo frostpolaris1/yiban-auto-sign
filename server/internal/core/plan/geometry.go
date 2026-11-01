@@ -69,7 +69,7 @@ func PhaseOf(key string, slots int) int {
 }
 
 // Spread 是 front 模式的特例：片数取行数，顺序填充。
-// 实现委托 SpreadWithin，公式只此一份（P4-C 复审 P3-5）。
+// 实现委托 SpreadWithin，公式只此一份。
 func Spread(n, slots int) []time.Duration {
 	return SpreadWithin(n, slots, max(n, 1), true)
 }

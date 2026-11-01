@@ -282,7 +282,7 @@ func TestR4BCblListLimitZeroIs400(t *testing.T) {
 	w2cWantStatus(t, rec, http.StatusOK)
 }
 
-// 换校在 P1 不支持。声明了 409，就必须真的可达：
+// 换校当前不支持。声明了 409，就必须真的可达：
 // 客户端带不同的 school_id 时不得静默忽略。
 func TestR4BCblSchoolChangeIs409(t *testing.T) {
 	e := w2cNewEnv(t)

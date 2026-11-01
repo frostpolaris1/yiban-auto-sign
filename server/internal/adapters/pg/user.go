@@ -30,7 +30,7 @@ const userColumns = `id::text, email, password_hash, role::text, status::text,
 //
 // **必须在事务内运行**。它按序取 UserCapacityLock、统计活跃行、插入，
 // 三者同属一个事务且处于 READ COMMITTED。
-// 绕过本函数直接 INSERT 不受该锁保护（schema §6.6）。
+// 绕过本函数直接 INSERT 不受该锁保护。
 func (r *UserRepo) Create(ctx context.Context, in coreuser.New, limit int) (coreuser.Record, error) {
 	if !r.db.hasTx(ctx) {
 		return coreuser.Record{}, ErrNoTransaction
@@ -356,7 +356,7 @@ func (r *UserRepo) Restore(ctx context.Context, id string, limit int) (coreuser.
 
 // CountLiveMasters 统计 active 未删 master（排除 excludeID）。
 // 停用 master 不能登录（app/auth/login.go 要求 active），
-// 不构成恢复路径，故**不计入**（独立审查 P1-2）：
+// 不构成恢复路径，故**不计入**：
 // 若计入，A 停用 B 后 A 自降即可达零 active master 锁死。
 //
 // **必须在事务内运行**。先取 UserCapacityLock 再计数：

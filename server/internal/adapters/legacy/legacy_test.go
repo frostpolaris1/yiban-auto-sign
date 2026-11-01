@@ -1,6 +1,6 @@
 package legacy
 
-// 旧信封解密与凭据重封装的判据（P8-B 派单 2026-10-27）。
+// 旧信封解密与凭据重封装的判据。
 //
 // 旧信封形状：v/kid/nonce/ct/tag 全十六进制，AES-256-GCM，
 // AAD＝手机号（UTF-8），ct 与 tag 分离（yiban/adapters/config/account_crypto.py）。

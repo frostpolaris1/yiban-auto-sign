@@ -162,7 +162,7 @@ func (r *ScheduleRepo) InsertPlan(ctx context.Context, rows []coreschedule.PlanR
 // ClaimPending 是 CAS 认领：把一行从 pending 推到 running。
 // 判据全部在 WHERE 里（单语句 CAS，无 SELECT-UPDATE 窗口）：
 // state = 'pending' 是唯一放行条件；
-// 账号必须活跃且未软删、学校任务仍启用——已停的面不领活（P4-B 复审 P2-2）。
+// 账号必须活跃且未软删、学校任务仍启用——已停的面不领活。
 // uq_sign_tasks_one_running 在库层保证同账号同时至多一条 running；
 // 撞该索引（23505）与竞争失败同义：返回 ErrScheduleConflict。
 // 返回 0 行即 ErrScheduleConflict。
@@ -196,7 +196,7 @@ func (r *ScheduleRepo) ClaimPending(ctx context.Context, accountID, schoolTaskID
 
 // Finish 把 running 行落终态并记结果摘要。
 // 只接受终态（success/failed/skipped）：非终态是调用方编舞错误，
-// 放过去会让行回到可认领态、破坏 CAS 语义（P4-B 复审 P2-1）。
+// 放过去会让行回到可认领态、破坏 CAS 语义。
 // 摘要经掩码后才允许入库（调用方负责；本层不二次校验形状）。
 // 词表形状由库层 ENUM 兜底；非法值报 validation。
 func (r *ScheduleRepo) Finish(ctx context.Context, accountID, schoolTaskID, day string, state corestatus.TaskState, result string, claimSeq int, now time.Time) error {
@@ -473,7 +473,7 @@ func (r *ScheduleRepo) ClaimDue(ctx context.Context, now time.Time, limit int) (
 //
 // 适用场景：窗口未开、出口限速、出口暂不可用、批处理中途中止。
 // 这些等待不是"试过了没成"，若计进业务预算，一个账号可能一整天
-// 只真正打过一次平台就被判 failed（P4-E 审查 P2-1）。
+// 只真正打过一次平台就被判 failed。
 //
 // result 写的是内部等待原因（wait_*），不是 signing 结论词。
 func (r *ScheduleRepo) RequeueWait(ctx context.Context, taskID string, runAt time.Time, result string, claimSeq int) error {

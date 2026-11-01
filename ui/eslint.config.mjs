@@ -1,4 +1,4 @@
-// ui/eslint.config.mjs — CLEAN-4 的静态检查配置。
+// ui/eslint.config.mjs — 静态检查配置。
 //
 // 形状：ESLint 9 维护线 + Babel 解析器。
 // 为什么是 9：jsx-a11y 6.10 的 peer 只到 ESLint 9；10 等插件跟上再升。
@@ -8,7 +8,7 @@
 //
 // 范围：只开 react-hooks 与 4 条 schema 类 a11y 规则。
 // 为什么不一次全开：jsx-a11y 的交互类规则会在既有自定义控件上成片报红，
-// 那属于 UX 改造批次，不混进本批（AGENTS §37a）。
+// 那属于 UX 改造批次，不混进本批。
 //
 // 口径：
 //   - rules-of-hooks / exhaustive-deps 为 error：hook 规则错了运行期必炸。

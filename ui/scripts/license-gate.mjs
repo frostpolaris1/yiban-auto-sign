@@ -45,7 +45,7 @@ const ALLOWED = [
   'BlueOak-1.0.0',
   'MPL-2.0',
   'Unlicense',
-  // 构建期宽松/署名许可（CLEAN-4 接入 ESLint 时引入）：
+  // 构建期宽松/署名许可（接入 ESLint 时引入）：
   //   Python-2.0：argparse（js-yaml 的 CLI 解析器，经 @eslint/eslintrc 引入），宽松非 copyleft。
   //   CC-BY-4.0：caniuse-lite（浏览器数据），署名型；只允许构建期，由 BUILD_ONLY 钉住。
   'Python-2.0',

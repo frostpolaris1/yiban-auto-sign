@@ -38,7 +38,7 @@ import (
 // 连接池默认值。
 // statement_timeout 是 advisory lock 等待的兜底上界：
 // PostgreSQL 未承诺 lock_timeout 覆盖 advisory lock，
-// 故卡住的锁必须由上层取消（schema §6.2）。
+// 故卡住的锁必须由上层取消。
 const (
 	DefaultMaxConns         = int32(8)
 	DefaultStatementTimeout = 5 * time.Second
@@ -167,7 +167,7 @@ func (d *DB) hasTx(ctx context.Context) bool {
 // 没有事务时报 ErrNoTransaction，**绝不回退到连接池**。
 // q 会回落到连接池，故「先判 hasTx、再调 q」的写法
 // 只在两次判断都看同一 ctx 时成立。
-// 审计链必须经本函数取连接：回滚要能带走审计行（W2C-R2-01）。
+// 审计链必须经本函数取连接：回滚要能带走审计行。
 // 容量写入仍走 q 加前置 hasTx，行为等价；统一到本函数属后续批。
 func (d *DB) txQueryer(ctx context.Context) (queryer, error) {
 	if tx, ok := ctx.Value(txKey{}).(pgx.Tx); ok {

@@ -1,4 +1,4 @@
-// Package diagnostic 实现账号诊断与轮询读模型（P6）。
+// Package diagnostic 实现账号诊断与轮询读模型。
 //
 // # 功能
 // /api/me/diagnostics、/api/accounts/{id}/diagnostics、

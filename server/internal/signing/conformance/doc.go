@@ -65,7 +65,7 @@
 //
 // verify.result：用测试凭据调用 Verify 返回 nil 错误。
 // 提供方返回合法的非 success 结论错误时显性跳过：没有档案可查。
-// 依据：契约 §7.3 要求 conformance 不连真实平台；
+// 依据： 要求 conformance 不连真实平台；
 // 判据对象是参考实现，正常路径不得失败。
 //
 // sign.result：每次 Sign 返回 nil 错误与词表内结果。
@@ -73,7 +73,7 @@
 //
 // sign.photo_missing：声明 ImageRequired 时，无图请求返回 photo_missing。
 // 未声明 ImageRequired 时跳过，并在标准输出登记：**跳过不是通过**。
-// 依据：契约 §4.5「无图但需要图 → photo_missing，不登录」。
+// 依据：「无图但需要图 → photo_missing，不登录」。
 //
 // pii.absent：身份与签到结果不含凭据原值，也不含明文手机号或邮箱。
 // 判定复用 core/mask 的检测口径（TextHasPhone/TextHasEmail）：
@@ -97,11 +97,11 @@
 // sign.timeout：期限已过时返回上下文错误，且不返回伪结果。
 // 调用中被取消时，提供方在 20ms 窗口后才返回的，错误必须是上下文错误。
 // 两个场景的单次调用都以 5 秒为完成上限；此外每条判据都有 15 秒的
-// 整体上限：任意调用都阻塞的提供方同样判红，套件不挂起（W2C-R2-01、R3-04）。
-// 依据：契约 §7.2 把「超时」列为 conformance 必测项。
+// 整体上限：任意调用都阻塞的提供方同样判红，套件不挂起。
+// 依据： 把「超时」列为 conformance 必测项。
 //
 // sign.idempotent：同一 AttemptID 两次得到完全相同的 Result。
-// 依据：契约 §3 身份与幂等；只比 Outcome 会放过证据与重试建议的漂移。
+// 依据： 身份与幂等；只比 Outcome 会放过证据与重试建议的漂移。
 //
 // sign.concurrent：8 个并发 Sign 在 10 秒内返回，结果均在词表内。
 // 提供方必须实现 Expecter，再逐条比对每个请求的期望结果。

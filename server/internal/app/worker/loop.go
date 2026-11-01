@@ -95,7 +95,7 @@ func NewLoop(svc Stepper, counter RunningCounter, clk coreclock.Clock, state *En
 // Start 起循环。每个实例只允许 Start 一次。
 // 重复 Start 与 Stop 后再 Start 都返回错误：
 // run() 的 defer close(done) 与 Stop 的 close 是同一通道，
-// 重入会双关 panic（P7 审查 P3-1）。
+// 重入会双关 panic。
 func (l *Loop) Start() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -186,7 +186,7 @@ func (l *Loop) Stop(ctx context.Context) (int64, error) {
 
 // drainSettle 是取消在飞后等它收尾的上限。
 // 必须大于 settlementTimeout：结算的写入上限若比等待窗口还长，
-// 上限就兑不了——Stop 一返回，调用方随即关连接池（审查 P3-1）。
+// 上限就兑不了——Stop 一返回，调用方随即关连接池。
 const drainSettle = settlementTimeout + 200*time.Millisecond
 
 // stopInFlight 取消在飞 Step 并等它返回；返回 true 表示已停下。

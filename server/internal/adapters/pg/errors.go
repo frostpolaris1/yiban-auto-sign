@@ -46,8 +46,7 @@ func mapError(err error) error {
 // mapInsertForeignKey 在插入点映射外键失败。
 //
 // mapError 保留 SQLSTATE 层面的视图：23503 是冲突。
-// 但在插入处，23503 表示被引用的父行不存在，
-// schema §2.4 要求报 not_found（HTTP 404）。
+// 但在插入处，23503 表示被引用的父行不存在；schema 要求报 not_found（HTTP 404）。
 // 被拒的删除属 RESTRICT，PostgreSQL 在删除点报 23001，仍算冲突（409）。
 // **本函数只用于插入子行的语句**。
 func mapInsertForeignKey(err error) error {

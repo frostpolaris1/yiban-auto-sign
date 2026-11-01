@@ -1,6 +1,6 @@
 package assembly
 
-// Run 的「一次装配」不变量 e2e（派单 P7 F1）。
+// Run 的「一次装配」不变量 e2e。
 //
 // # 功能
 // 按生产入口启动进程，短延时后取消 ctx 模拟 SIGTERM。
@@ -111,7 +111,7 @@ func TestRunAssemblesOnce(t *testing.T) {
 	}
 }
 
-// TestBuildWithoutDatabaseServesHealthz 是装配冒烟（派单 F19）。
+// TestBuildWithoutDatabaseServesHealthz 是装配冒烟。
 // 无数据库是受支持的启动形态：Engine 必须可用、Worker 必须为 nil、
 // Close 可重复调用不 panic，且 /healthz 应答 200。
 func TestBuildWithoutDatabaseServesHealthz(t *testing.T) {
@@ -182,7 +182,7 @@ func (f *fakeLoop) Stop(context.Context) (int64, error) {
 
 func (f *fakeLoop) Err() error { return nil }
 
-// TestRunStartsAndStopsWorkerLoop 钉住 Run 的启动块（派单 P2-2）。
+// TestRunStartsAndStopsWorkerLoop 钉住 Run 的启动块。
 // 删掉 `if stack.Worker != nil` 整块时，假循环收不到 Start/Stop，本测红。
 // 装配用假 Stack：Worker 非 nil 但方法不会被调用（假循环不碰它）。
 func TestRunStartsAndStopsWorkerLoop(t *testing.T) {
@@ -228,7 +228,7 @@ func TestRunStartsAndStopsWorkerLoop(t *testing.T) {
 	}
 }
 
-// TestRunClosesPoolAfterWorkerDrain 钉住 Run 的停机顺序（工单 6jk）。
+// TestRunClosesPoolAfterWorkerDrain 钉住 Run 的停机顺序。
 //
 // 不变式：连接池不得在 worker 在飞结算完成前关闭。
 // 旧形状 srv.RegisterOnShutdown(stack.Close) 让 srv.Shutdown 与 loop.Stop

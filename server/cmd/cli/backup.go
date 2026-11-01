@@ -105,7 +105,7 @@ type backupDeps struct {
 	runner    cmdRunner
 	countRows func(ctx context.Context, dsn string) (map[string]int64, error)
 	migrate   func(ctx context.Context, dsn string) (int64, error)
-	// verifyAudit 在恢复件上跑审计链全链校验（D 批 P2-8）。
+	// verifyAudit 在恢复件上跑审计链全链校验。
 	verifyAudit func(ctx context.Context, dsn string) (int, error)
 	// tty 报告 stdin 是否交互终端；confirm 在交互路径下征询确认。
 	tty     func() bool
@@ -672,7 +672,7 @@ func runRestore(deps *backupDeps, args []string) int {
 		return 1
 	}
 	if audited == 0 {
-		// 空链没有可校验的行：说"跳过"，不说"通过"（§30 跳过 ≠ 绿）。
+		// 空链没有可校验的行：说"跳过"，不说"通过"。
 		_, _ = fmt.Fprintln(deps.stdout, "审计链：空（跳过校验）")
 	} else {
 		_, _ = fmt.Fprintf(deps.stdout, "审计链：%d 行通过校验\n", audited)

@@ -458,7 +458,7 @@ func TestStepSuccess(t *testing.T) {
 }
 
 // 发现阶段返回业务结论（OutcomeError）时必须按结论分档，不得当 transient
-// 重试（P4-E 审查 P1-1）。逐词断言：already_done→success、no_target/
+// 重试。逐词断言：already_done→success、no_target/
 // invalid_target/photo_missing/challenge/device_unbound→skipped、
 // blocked/credential_invalid→failed，且各只发生一次、不重排。
 func TestDiscoverOutcomeErrorSettlesByVocabulary(t *testing.T) {
@@ -496,7 +496,7 @@ func TestDiscoverOutcomeErrorSettlesByVocabulary(t *testing.T) {
 }
 
 // 瞬时失败重试时，每次提交的 AttemptID 必须不同，否则 provider 幂等缓存
-// 会把"重试"折叠成首次结果（P4-E 审查 P1-2）。
+// 会把"重试"折叠成首次结果。
 func TestRetryUsesFreshAttemptID(t *testing.T) {
 	st := newStore(baseTask())
 	st.windows["st-1|2026-10-29"] = openWindow()
@@ -678,7 +678,7 @@ func TestRecoverResetsRunning(t *testing.T) {
 	}
 }
 
-// 基础设施失败：错误上抛，同批未执行的行退回队列（P4-E 审查 P2-2）。
+// 基础设施失败：错误上抛，同批未执行的行退回队列。
 func TestInfraErrorReleasesRemainingClaims(t *testing.T) {
 	t1 := baseTask()
 	t2 := baseTask()
@@ -708,7 +708,7 @@ func TestInfraErrorReleasesRemainingClaims(t *testing.T) {
 	}
 }
 
-// 凭据基础设施错误（DB/KEK）上抛，不写成业务失败（P4-E 审查 P2-3）。
+// 凭据基础设施错误（DB/KEK）上抛，不写成业务失败。
 func TestCredentialInfraErrorPropagates(t *testing.T) {
 	st := newStore(baseTask())
 	st.windows["st-1|2026-10-29"] = openWindow()
@@ -781,7 +781,7 @@ func TestRequestManualSign(t *testing.T) {
 	if _, err := svc.Request(ctx, "acct-1", actor); !errors.Is(err, appworker.ErrSignRunning) {
 		t.Fatalf("执行中应 ErrSignRunning, got %v", err)
 	}
-	// 当日 failed → 重新放回队列（P4-E 审查 P2-4），并记来源状态与主体。
+	// 当日 failed → 重新放回队列，并记来源状态与主体。
 	st.tasks[0].State = string(corestatus.TaskFailed)
 	st.tasks[0].Attempts = 3
 	id, err = svc.Request(ctx, "acct-1", actor)
@@ -906,7 +906,7 @@ func TestStepRunsBatchInParallel(t *testing.T) {
 	}
 }
 
-// 提交面终态词逐词断言：改错任何一档都必须红（P4-E 复审 P2-1）。
+// 提交面终态词逐词断言：改错任何一档都必须红。
 func TestSignOutcomeSettlesByVocabulary(t *testing.T) {
 	cases := []struct {
 		outcome contract.Outcome
@@ -939,11 +939,11 @@ func TestSignOutcomeSettlesByVocabulary(t *testing.T) {
 	}
 }
 
-// 停机取消后已提交的行仍要落库（D 批审查 P1-2）：
+// 停机取消后已提交的行仍要落库：
 // Sign 返回时取消 ctx，结算不得被取消打断——写不进去，行留在 running，
 // 租约到期后会被重新认领，平台侧就收到第二次签到。
 func TestStepSettlesSubmittedRowAfterCancel(t *testing.T) {
-	// 三条结算写入路径都要在取消之后仍然落库（审查 P3-2）：
+	// 三条结算写入路径都要在取消之后仍然落库：
 	// 终态两条各取一条代表，重排取 transient。
 	cases := []struct {
 		name      string
@@ -1018,7 +1018,7 @@ func TestWAFBlockedFailsWithoutRetry(t *testing.T) {
 }
 
 // 已提交签到后结算失败：当前行必须留在 running（不得退回，防重复签到），
-// 只有后续行退回（P4-E 复审 P2-2 的反向判据）。
+// 只有后续行退回。
 func TestSettleFailureKeepsSubmittedRowRunning(t *testing.T) {
 	st := newStore(baseTask())
 	st.windows["st-1|2026-10-29"] = openWindow()
