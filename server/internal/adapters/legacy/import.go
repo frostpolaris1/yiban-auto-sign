@@ -241,7 +241,7 @@ func (s *importState) bumpRead(table string) {
 func (s *importState) addRowError(group, what string, err error) {
 	s.rowErrors++
 	s.bump("row_errors", group)
-	fmt.Fprintf(s.err, "migrate-legacy: row error in %s (%s): %v\n", group, what, err)
+	_, _ = fmt.Fprintf(s.err, "migrate-legacy: row error in %s (%s): %v\n", group, what, err)
 }
 
 func (s *importState) appendRecon(table string, row map[string]any, key string) {

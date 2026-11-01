@@ -22,7 +22,7 @@ func readPassword(prompt string) (string, error) {
 	if err := unix.IoctlSetTermios(fd, unix.TCSETS, &noEcho); err != nil {
 		return "", err
 	}
-	defer unix.IoctlSetTermios(fd, unix.TCSETS, old)
+	defer func() { _ = unix.IoctlSetTermios(fd, unix.TCSETS, old) }()
 	fmt.Print(prompt)
 	line := readLine("")
 	fmt.Println()

@@ -333,7 +333,7 @@ func validateDetailValue(key string, value any) error {
 		return validateDetailNumberWithLimits(key, typed)
 	}
 	// nil 指针编码为 null，不携带数据。
-	if rv := reflect.ValueOf(value); rv.Kind() == reflect.Ptr && rv.IsNil() {
+	if rv := reflect.ValueOf(value); rv.Kind() == reflect.Pointer && rv.IsNil() {
 		return nil
 	}
 	return fmt.Errorf("%w: %q has type %T", ErrDetailType, key, value)

@@ -133,7 +133,7 @@ npx playwright test e2e/<spec>.spec.ts
 bash scripts/tooling-gate.sh
 ```
 
-它要 `actionlint`、`shellcheck`、`govulncheck` 与 `npm` 在 PATH；缺工具会以 exit 2 拒绝（跳过不等于通过）。npm 镜像不实现 audit 时，加 `npm_config_registry=https://registry.npmjs.org` 再跑。
+它要 `actionlint`、`shellcheck`、`golangci-lint`、`govulncheck` 与 `npm` 在 PATH；缺工具会以 exit 2 拒绝（跳过不等于通过）。npm 镜像不实现 audit 时，加 `npm_config_registry=https://registry.npmjs.org` 再跑。
 
 说明：
 

@@ -233,7 +233,7 @@ func (h *Handler) PhotoUpload(c *gin.Context, _ oapi.PhotoUploadParams) {
 		return
 	}
 	raw, err := io.ReadAll(io.LimitReader(file, corephoto.MaxBytes+1))
-	file.Close()
+	_ = file.Close()
 	if err != nil {
 		fail(c, errs.New(errs.CodeValidation, "cannot read the image part"))
 		return
@@ -296,7 +296,7 @@ func (h *Handler) PhotoGet(c *gin.Context, id oapi.PhotoID, params oapi.PhotoGet
 		fail(c, err)
 		return
 	}
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 	// 响应头在写第一个字节前固定：作用域判据已通过。
 	writePhotoValidator(c, etag)
 	c.Header("Content-Type", rec.Mime)

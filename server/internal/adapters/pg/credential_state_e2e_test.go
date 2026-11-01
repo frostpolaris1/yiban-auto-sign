@@ -444,8 +444,8 @@ func TestCredentialUpdateWaitsForEngineCommit(t *testing.T) {
 	select {
 	case err := <-updateDone:
 		close(release)
-		<-engineDone
-		t.Fatalf("credential update returned before the engine committed (err=%v); the account row lock is not held", err)
+		engErr := <-engineDone
+		t.Fatalf("credential update returned before the engine committed (err=%v, engine=%v); the account row lock is not held", err, engErr)
 	case <-time.After(300 * time.Millisecond):
 	}
 	close(release)

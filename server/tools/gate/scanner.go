@@ -37,7 +37,7 @@ func LoadRules(path string) ([]Rule, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var rules []Rule
 	seen := make(map[string]bool)

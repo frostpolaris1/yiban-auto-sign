@@ -29,16 +29,16 @@ func runMigrate(args []string, stdout, stderr io.Writer) int {
 		url = strings.TrimSpace(v)
 	}
 	if url == "" {
-		fmt.Fprintln(stderr, "migrate: YIBAN_DATABASE_URL 未设置（或用 --dsn 传入）")
+		_, _ = fmt.Fprintln(stderr, "migrate: YIBAN_DATABASE_URL 未设置（或用 --dsn 传入）")
 		return 2
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	version, err := pg.Migrate(ctx, url)
 	if err != nil {
-		fmt.Fprintf(stderr, "migrate: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "migrate: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "schema version %d\n", version)
+	_, _ = fmt.Fprintf(stdout, "schema version %d\n", version)
 	return 0
 }

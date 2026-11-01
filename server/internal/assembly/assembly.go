@@ -146,8 +146,7 @@ func Run(ctx context.Context, logger *slog.Logger) error {
 		return stopStack(srv, stack, loop, logger)
 	case err := <-errc:
 		if errors.Is(err, http.ErrServerClosed) {
-			stopStack(srv, stack, loop, logger)
-			return nil
+			return stopStack(srv, stack, loop, logger)
 		}
 		if loop != nil {
 			bounded, cancel := context.WithTimeout(context.Background(), shutdownBudget)

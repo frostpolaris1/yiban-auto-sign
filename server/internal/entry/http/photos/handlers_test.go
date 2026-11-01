@@ -673,9 +673,9 @@ func TestPhotoUploadSurvivesServerReadTimeout(t *testing.T) {
 	raw := bytes.Repeat([]byte{'x'}, 4<<10)
 	full, contentType := uploadBody(t, "image", raw)
 	pr, pw := io.Pipe()
-	defer pr.Close()
+	defer func() { _ = pr.Close() }()
 	go func() {
-		defer pw.Close()
+		defer func() { _ = pw.Close() }()
 		data := full.Bytes()
 		chunk := (len(data) + 4) / 5
 		for start := 0; start < len(data); start += chunk {
@@ -701,7 +701,7 @@ func TestPhotoUploadSurvivesServerReadTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("慢上传被切断: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d: %s", resp.StatusCode, body)
@@ -759,7 +759,7 @@ func TestPhotoGetSurvivesServerWriteTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("慢下载被切断: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}

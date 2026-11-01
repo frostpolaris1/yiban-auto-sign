@@ -37,11 +37,11 @@ func TestMain(m *testing.M) {
 	if strings.TrimSpace(dsn) == "" {
 		ci, _ := config.Env{}.Lookup("CI")
 		if strings.TrimSpace(ci) != "" {
-			os.Stderr.WriteString("FAIL: " + dsnEnv +
+			_, _ = os.Stderr.WriteString("FAIL: " + dsnEnv +
 				" is not set in CI. bench e2e DID NOT RUN.\n")
 			os.Exit(1)
 		}
-		os.Stdout.WriteString("\nSKIP: " + dsnEnv + " is not set. " +
+		_, _ = os.Stdout.WriteString("\nSKIP: " + dsnEnv + " is not set. " +
 			"bench e2e did NOT run. An unset database is never a green result.\n\n")
 	}
 	os.Exit(m.Run())

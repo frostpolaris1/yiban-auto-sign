@@ -33,7 +33,7 @@ func TestFSPutOpenRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 	got, err := io.ReadAll(body)
 	if err != nil || !bytes.Equal(got, data) {
 		t.Fatalf("read = %q, %v", got, err)
@@ -105,7 +105,7 @@ func TestFSConcurrentPutSameDigest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 	got, err := io.ReadAll(body)
 	if err != nil || !bytes.Equal(got, data) {
 		t.Fatalf("read = %q, %v", got, err)

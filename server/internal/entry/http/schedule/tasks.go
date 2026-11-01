@@ -128,7 +128,7 @@ func (h *TasksHandler) Export(c *gin.Context, params oapi.AdminTaskExportParams)
 func tasksFilter(day *openapi_types.Date, state string, schoolID *openapi_types.UUID, q *string) coreschedule.TaskQueryFilter {
 	filter := coreschedule.TaskQueryFilter{}
 	if day != nil {
-		filter.Day = day.Time.Format("2006-01-02")
+		filter.Day = day.Format("2006-01-02")
 	}
 	filter.State = state
 	if schoolID != nil {
@@ -172,7 +172,7 @@ func csvSafeCell(value string) string {
 		return value
 	}
 	switch value[0] {
-	case '=', '+', '-', '@', '	', '':
+	case '=', '+', '-', '@', '\t', '\r':
 		return csvFormulaPrefix + value
 	}
 	return value

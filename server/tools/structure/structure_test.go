@@ -234,7 +234,7 @@ func TestStructureRowsPinned(t *testing.T) {
 			keys = append(keys, "?"+k)
 		}
 		sort.Strings(keys)
-		fmt.Fprintf(h, "%s\t%s\t%t\t%s\n", r.scope, strings.Join(keys, ","), r.optional, r.note)
+		_, _ = fmt.Fprintf(h, "%s\t%s\t%t\t%s\n", r.scope, strings.Join(keys, ","), r.optional, r.note)
 	}
 	got := hex.EncodeToString(h.Sum(nil))
 	const want = "9d29fbc83973be5c447854a17d8b10b6c4d4af9ed6123ed7e51a9fd176af453e"

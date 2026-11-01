@@ -148,7 +148,7 @@ func TestBuildWithoutDatabaseServesHealthz(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /healthz: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("/healthz = %d, want 200", resp.StatusCode)
 	}

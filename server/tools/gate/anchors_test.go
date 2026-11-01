@@ -125,7 +125,7 @@ func TestCanonicalRuleRowsPinned(t *testing.T) {
 	}
 	h := sha256.New()
 	for _, r := range rules {
-		fmt.Fprintf(h, "%s\t%s\t%s\t%s\t%s\t%s\n", r.ID, r.Kind, r.Owner, r.Pattern, r.Allow, r.Message)
+		_, _ = fmt.Fprintf(h, "%s\t%s\t%s\t%s\t%s\t%s\n", r.ID, r.Kind, r.Owner, r.Pattern, r.Allow, r.Message)
 	}
 	got := hex.EncodeToString(h.Sum(nil))
 	// rb3：boundary.adapters 的 allow 增列

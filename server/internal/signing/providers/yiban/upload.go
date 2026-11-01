@@ -155,7 +155,7 @@ func (c *Client) putAttachment(ctx context.Context, signedURL string, img contra
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	// 丢弃回读体但限长，防止异常上游灌爆内存。
 	if _, err := io.Copy(io.Discard, io.LimitReader(resp.Body, maxBodyBytes)); err != nil {
 		return err

@@ -278,6 +278,9 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		Discover: e.discover, Prefs: e.prefs, Tx: db,
 		Notifier: assembly.ScheduleNotifier{Broker: e.broker, Clock: clk},
 	})
+	if err != nil {
+		t.Fatalf("new schedule service: %v", err)
+	}
 	diagSvc, err := appdiagnostic.NewService(appdiagnostic.Deps{
 		Accounts: accountSvc,
 		Store:    pg.NewDiagnosticRepo(db),
@@ -285,7 +288,7 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		Location: loc,
 	})
 	if err != nil {
-		t.Fatalf("new schedule service: %v", err)
+		t.Fatalf("new diagnostic service: %v", err)
 	}
 	prefSvc, err := apptimepref.NewService(apptimepref.Deps{
 		Store: e.prefs, Clock: clk, Allow: true, Cooldown: 30 * time.Second,

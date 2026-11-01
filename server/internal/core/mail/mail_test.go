@@ -36,12 +36,3 @@ func TestClassifyUnknownIsNotRetryable(t *testing.T) {
 		t.Fatalf("Classify(nil) = %q, want empty", kind)
 	}
 }
-
-func contains(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
-}

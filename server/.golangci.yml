@@ -1,0 +1,23 @@
+# server/.golangci.yml — Go 静态检查配置（CLEAN-7b）。
+#
+# 形状：只用标准五件套（errcheck / govet / ineffassign / staticcheck / unused），
+# 不引入风格类 linter。理由：本仓的单一事实源由 tools/gate + canonical.tsv 管，
+# 风格类规则会和既有注释口径打架。
+#
+# 口径：
+#   - 同类问题不设上限：默认 max-same-issues=3 会把同一形状的后续实例藏起来，
+#     修完前三个再冒出下一批。这里全部报出。
+#   - 例外用行内 `//nolint:<linter> // 理由`：理由必须写，集中登记在代码处。
+#   - 新增 linter 或放宽规则要单独一批，并说明为什么现有守卫不够。
+
+version: "2"
+
+run:
+  timeout: 8m
+
+linters:
+  default: standard
+
+issues:
+  max-same-issues: 0
+  max-issues-per-linter: 0

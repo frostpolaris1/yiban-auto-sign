@@ -63,7 +63,7 @@ func main() {
 
 // usage 打印子命令清单。新增子命令在此登记。
 func usage(w io.Writer) {
-	fmt.Fprint(w, `用法: yiban-cli <子命令> [选项]
+	_, _ = fmt.Fprint(w, `用法: yiban-cli <子命令> [选项]
 
 子命令:
   server       启动 HTTP API（与 cmd/server 同一装配与优雅关闭）

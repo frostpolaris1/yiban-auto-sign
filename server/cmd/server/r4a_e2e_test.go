@@ -189,10 +189,7 @@ func TestR4ARetentionLoopRunsAndStops(t *testing.T) {
 	go func() { defer close(done); loop.Run(ctx) }()
 
 	deadline := testNow().Add(2 * time.Second)
-	for {
-		if e.scalarInt("SELECT count(*) FROM photos WHERE id = $1::uuid", rec.ID) == 0 {
-			break
-		}
+	for e.scalarInt("SELECT count(*) FROM photos WHERE id = $1::uuid", rec.ID) != 0 {
 		if testNow().After(deadline) {
 			cancel()
 			t.Fatal("循环两跳内没有删到期行")
@@ -240,10 +237,7 @@ func TestAssemblyRunsRetentionLoop(t *testing.T) {
 	}
 	closed := make(chan struct{})
 	deadline := testNow().Add(2 * time.Second)
-	for {
-		if e.scalarInt("SELECT count(*) FROM photos WHERE id = $1::uuid", rec.ID) == 0 {
-			break
-		}
+	for e.scalarInt("SELECT count(*) FROM photos WHERE id = $1::uuid", rec.ID) != 0 {
 		if testNow().After(deadline) {
 			stack.Close()
 			t.Fatalf("装配后首轮清理没有执行：RetentionLoop 未接线；logs=%s", logs.String())

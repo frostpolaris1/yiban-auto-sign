@@ -66,7 +66,7 @@ func (s *Service) readBlob(ctx context.Context, rec corephoto.Record) ([]byte, e
 	if err != nil {
 		return nil, err
 	}
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 	// 上限取上传口径：库里只可能存过 MaxBytes 以内的预处理结果。
 	data, err := io.ReadAll(io.LimitReader(body, corephoto.MaxBytes+1))
 	if err != nil {

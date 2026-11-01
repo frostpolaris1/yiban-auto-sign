@@ -28,13 +28,13 @@ func runHealthcheck(args []string, stderr io.Writer) int {
 	client := &http.Client{Timeout: *timeout}
 	resp, err := client.Get("http://" + *addr + "/healthz")
 	if err != nil {
-		fmt.Fprintf(stderr, "healthcheck: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "healthcheck: %v\n", err)
 		return 1
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(stderr, "healthcheck: status = %d, want 200\n", resp.StatusCode)
+		_, _ = fmt.Fprintf(stderr, "healthcheck: status = %d, want 200\n", resp.StatusCode)
 		return 1
 	}
 	return 0

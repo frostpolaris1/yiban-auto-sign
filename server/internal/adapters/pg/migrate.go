@@ -33,7 +33,7 @@ func Migrate(ctx context.Context, dsn string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	current, err := dbVersion(ctx, db)
 	if err != nil {

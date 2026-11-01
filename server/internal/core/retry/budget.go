@@ -19,8 +19,8 @@ import (
 // 落点公式与预算判据必须用同一个数，否则两处静默漂移。
 const TailRatio = 0.3
 
-// CapSec 是退避落点的硬上限（秒）：安全类参数，恒为常量。
-const CapSec = 600 * time.Second
+// MaxBackoff 是退避落点的硬上限（秒）：安全类参数，恒为常量。
+const MaxBackoff = 600 * time.Second
 
 // 退避曲线参数：指数倍数与抖动幅度。
 //
@@ -66,7 +66,7 @@ type Window struct {
 //
 // 曲线由 cenkalti/backoff 计算：第 attempt 档的名义间隔 = base×Multiplier^(attempt-1)，
 // 再乘 [1-RandomizationFactor, 1+RandomizationFactor] 的随机倍率。
-// 本包只在曲线上加一条窗口约束：cap = min(CapSec, 剩余×TailRatio)，
+// 本包只在曲线上加一条窗口约束：cap = min(MaxBackoff, 剩余×TailRatio)，
 // delay = min(曲线值, cap)。**只有曲线外置，窗口判据仍在本包**——
 // 退避不得越过窗口终点是调度判据，不是通用重试细节。
 // cap < base 时放弃：窗口尾段放不下一个合法间隔，宁可当日放弃，
@@ -81,7 +81,7 @@ func NextDelay(p Policy, attempt int, w Window, now time.Time) (time.Duration, b
 	if base <= 0 {
 		base = DefaultAfter
 	}
-	cap := CapSec
+	cap := MaxBackoff
 	if tail := time.Duration(float64(remaining) * TailRatio); tail < cap {
 		cap = tail
 	}
@@ -107,7 +107,7 @@ func jittered(p Policy, attempt int, base time.Duration) time.Duration {
 		InitialInterval:     base,
 		RandomizationFactor: RandomizationFactor,
 		Multiplier:          Multiplier,
-		MaxInterval:         CapSec,
+		MaxInterval:         MaxBackoff,
 	}
 	var delay time.Duration
 	for i := 0; i < attempt; i++ {

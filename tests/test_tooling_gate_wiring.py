@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
-"""工具链快门的 CI 接线守卫（CLEAN-7a）。
+"""工具链快门的 CI 接线守卫（CLEAN-7a/7b）。
 
 # 功能
 
-钉住四件事：
+钉住五件事：
 
 1. `ci.yml` 里存在 `tooling-gate` 作业，且没有作业级 `if`（每次 PR 都跑）。
 2. 作业真的执行 `bash scripts/tooling-gate.sh`（不是只写在注释里）。
-3. 两个外部工具按精确版本安装（actionlint / govulncheck）。
-4. 入口脚本在库内存在。
+3. 三个外部工具按精确版本安装（actionlint / golangci-lint / govulncheck）。
+4. 入口脚本在库内存在，且**非注释行**真的跑 golangci-lint。
+5. `server/.golangci.yml` 的核心承诺：version 2、standard 五件套、同类问题不设上限。
 
 # 归属
 
@@ -82,6 +83,27 @@ class ToolingGateWiringTest(unittest.TestCase):
                          "actionlint 必须按精确版本安装")
         self.assertRegex(self.block, r"govulncheck@v\d+\.\d+\.\d+",
                          "govulncheck 必须按精确版本安装")
+        self.assertRegex(self.block, r"golangci-lint@v\d+\.\d+\.\d+",
+                         "golangci-lint 必须按精确版本安装")
+
+    def test_entry_script_runs_golangci(self):
+        script = _read(ENTRY)
+        # 匹配非注释的调用行；注释掉的同名字样不算。
+        self.assertRegex(
+            script, r"(?m)^\s*\(cd server && golangci-lint run\b",
+            "入口脚本必须真跑 golangci-lint（非注释行）")
+
+    def test_golangci_config_pins_standard_set(self):
+        path = os.path.join(BASE, "server", ".golangci.yml")
+        self.assertTrue(os.path.isfile(path), "server/.golangci.yml 不存在")
+        body = _read(path)
+        self.assertIn('version: "2"', body, "配置必须用 v2 格式")
+        self.assertRegex(body, r"(?m)^\s*default:\s*standard\s*$",
+                         "必须启用 standard 五件套")
+        self.assertRegex(body, r"(?m)^\s*max-same-issues:\s*0\s*$",
+                         "同类问题必须全量报出（默认上限会藏后续实例）")
+        self.assertRegex(body, r"(?m)^\s*max-issues-per-linter:\s*0\s*$",
+                         "单个 linter 的报数不得设上限")
 
     def test_entry_script_is_tracked(self):
         self.assertTrue(os.path.isfile(ENTRY),

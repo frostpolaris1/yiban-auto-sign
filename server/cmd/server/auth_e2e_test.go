@@ -60,7 +60,7 @@ func TestMain(m *testing.M) {
 				"DID NOT RUN. An unset database is never a green result.\n\n", authDSNEnv)
 			os.Exit(1)
 		}
-		fmt.Fprintf(os.Stdout, "\n"+
+		_, _ = fmt.Fprintf(os.Stdout, "\n"+
 			"**********************************************************************\n"+
 			"* SKIP: %s is not set.\n"+
 			"* The auth e2e tests in cmd/server DID NOT RUN.\n"+

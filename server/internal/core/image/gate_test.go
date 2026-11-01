@@ -71,8 +71,8 @@ func TestPrepareWaitsForGateSlot(t *testing.T) {
 		done <- err
 	}()
 	select {
-	case <-done:
-		t.Fatal("闸门槽位被占满时 Prepare 不得返回")
+	case err := <-done:
+		t.Fatalf("闸门槽位被占满时 Prepare 不得返回（err=%v）", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 

@@ -462,7 +462,7 @@ func newMigrationDownEnv(t *testing.T) *migrationDownEnv {
 
 	db := openGooseDB(t, withSchema(base, schema))
 	t.Cleanup(func() {
-		db.Close()
+		_ = db.Close()
 		dropSchema(t, admin, schema)
 		admin.Close()
 	})

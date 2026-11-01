@@ -62,7 +62,7 @@ func runMigrateLegacy(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if *dir == "" || *out == "" || *schoolID == "" || *ownerID == "" {
-		fmt.Fprintln(stderr, "migrate-legacy: --dir --out --school-id --owner-user-id 全部必填")
+		_, _ = fmt.Fprintln(stderr, "migrate-legacy: --dir --out --school-id --owner-user-id 全部必填")
 		return 2
 	}
 	dsn := strings.TrimSpace(*dsnFlag)
@@ -71,40 +71,40 @@ func runMigrateLegacy(args []string, stdout, stderr io.Writer) int {
 		dsn = strings.TrimSpace(v)
 	}
 	if dsn == "" {
-		fmt.Fprintln(stderr, "migrate-legacy: YIBAN_DATABASE_URL 未设置（或用 --dsn 传入）")
+		_, _ = fmt.Fprintln(stderr, "migrate-legacy: YIBAN_DATABASE_URL 未设置（或用 --dsn 传入）")
 		return 2
 	}
 	newKey, err := loadNewCredentialKey()
 	if err != nil {
-		fmt.Fprintf(stderr, "migrate-legacy: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "migrate-legacy: %v\n", err)
 		return 2
 	}
 	envKey, _ := config.Env{}.Lookup("YIBAN_LEGACY_ACCOUNTS_KEY")
 	legacyKeyHex := strings.TrimSpace(envKey)
 	if legacyKeyHex == "" {
-		fmt.Fprintln(stderr, "migrate-legacy: 旧钥缺失：设置环境变量 YIBAN_LEGACY_ACCOUNTS_KEY（64 位 hex）")
+		_, _ = fmt.Fprintln(stderr, "migrate-legacy: 旧钥缺失：设置环境变量 YIBAN_LEGACY_ACCOUNTS_KEY（64 位 hex）")
 		return 2
 	}
 	legacyKey, err := hex.DecodeString(legacyKeyHex)
 	if err != nil || len(legacyKey) != 32 {
-		fmt.Fprintf(stderr, "migrate-legacy: 旧钥必须是 64 位 hex（32 字节），解码得 %d 字节\n", len(legacyKey))
+		_, _ = fmt.Fprintf(stderr, "migrate-legacy: 旧钥必须是 64 位 hex（32 字节），解码得 %d 字节\n", len(legacyKey))
 		return 2
 	}
 	cipher, err := appaccount.NewCipher(newKey)
 	if err != nil {
-		fmt.Fprintf(stderr, "migrate-legacy: 新栈凭据钥: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "migrate-legacy: 新栈凭据钥: %v\n", err)
 		return 2
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	if _, err := pg.Migrate(ctx, dsn); err != nil {
-		fmt.Fprintf(stderr, "migrate-legacy: apply migrations: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "migrate-legacy: apply migrations: %v\n", err)
 		return 1
 	}
 	db, err := pg.Open(ctx, pg.Options{DSN: dsn, MaxConns: 4, StatementTimeout: 60 * time.Second})
 	if err != nil {
-		fmt.Fprintf(stderr, "migrate-legacy: open database: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "migrate-legacy: open database: %v\n", err)
 		return 1
 	}
 	defer db.Close()
@@ -122,7 +122,7 @@ func runMigrateLegacy(args []string, stdout, stderr io.Writer) int {
 		Err:         stderr,
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "%v\n", err)
+		_, _ = fmt.Fprintf(stderr, "%v\n", err)
 		code := 2
 		var fatalErr *legacy.Error
 		if errors.As(err, &fatalErr) {
@@ -132,11 +132,11 @@ func runMigrateLegacy(args []string, stdout, stderr io.Writer) int {
 	}
 	encoded, encErr := json.MarshalIndent(summary, "", "  ")
 	if encErr != nil {
-		fmt.Fprintf(stderr, "migrate-legacy: encode summary: %v\n", encErr)
+		_, _ = fmt.Fprintf(stderr, "migrate-legacy: encode summary: %v\n", encErr)
 		return 1
 	}
-	fmt.Fprintln(stdout, string(encoded))
-	fmt.Fprintf(stdout, "migrate-legacy: 完成，报告在 %s/（reconciliation.jsonl + summary.json）\n", *out)
+	_, _ = fmt.Fprintln(stdout, string(encoded))
+	_, _ = fmt.Fprintf(stdout, "migrate-legacy: 完成，报告在 %s/（reconciliation.jsonl + summary.json）\n", *out)
 	return code
 }
 

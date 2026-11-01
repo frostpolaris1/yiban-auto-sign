@@ -119,7 +119,7 @@ func TestStatusForEveryCode(t *testing.T) {
 func declaredErrCodes(t *testing.T) map[errs.Code]string {
 	t.Helper()
 	dir := filepath.Join("..", "..", "..", "core", "errs")
-	pkgs, err := parser.ParseDir(token.NewFileSet(), dir, func(info os.FileInfo) bool {
+	pkgs, err := parser.ParseDir(token.NewFileSet(), dir, func(info os.FileInfo) bool { //nolint:staticcheck // 测试只遍历单目录；ParseDir 的 build-tags 限制不影响用例
 		return !strings.HasSuffix(info.Name(), "_test.go")
 	}, 0)
 	if err != nil {

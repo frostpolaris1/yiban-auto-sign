@@ -894,7 +894,7 @@ func TestOpenStreamsBlob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 	if got.ID != rec.ID {
 		t.Fatalf("record = %+v", got)
 	}

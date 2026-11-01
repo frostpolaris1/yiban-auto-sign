@@ -377,7 +377,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	summary := "fail"
+	var summary string
 	_, verr := provider.Verify(ctx, contract.VerifyRequest{
 		Account:    contract.AccountRef{ID: "probe", Platform: "yiban"},
 		Credential: contract.Credential{Phone: phone, Password: password},

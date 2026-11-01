@@ -509,7 +509,6 @@ func TestPrepareCropPerSide(t *testing.T) {
 // 多次调用每边落点都在 [0,10]，且每边都不恒为 0。
 func TestPrepareCropRandomSmoke(t *testing.T) {
 	const runs = 48
-	seen := make([][]int, 0, runs)
 	nonzero := [4]int{}
 	for i := 0; i < runs; i++ {
 		out, err := Prepare(context.Background(), pngBytes(t, whiteImage(200, 100)), Options{})
@@ -527,7 +526,6 @@ func TestPrepareCropRandomSmoke(t *testing.T) {
 				nonzero[j]++
 			}
 		}
-		seen = append(seen, []int{c.Left, c.Right, c.Top, c.Bottom})
 	}
 	sides := []string{"left", "right", "top", "bottom"}
 	for j, name := range sides {
