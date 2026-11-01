@@ -20,8 +20,10 @@
 #
 # 选项：
 #   --ci             跑 CI 的关键集（ruff + mypy + 快集 -n 4 + 名册的串行专轨 + e2e smoke
-#                    + shared-facts + path-env-reads + config-registry + import-linter 四道
-#                    门禁，各带自己的元测试），就地跑：不建副本、不归一化、不落日志。
+#                    + shared-facts + public-exposure + path-env-reads + config-registry
+#                    + import-linter 五道门禁，各带自己的元测试），就地跑：不建副本、
+#                    不归一化、不落日志。五道门禁都在 scope 分支之外：newstack/shared
+#                    两种 scope 也必须跑（红线门不得随改面消失）。
 #                    **快集 = 车道名册 tests/lane-roster.tsv 的 fast 行**（2026-10-17 起；
 #                    此前是 `-k` 关键词子集，改动落在命中面外会静默漏测）。
 #   --fast           **提交前自查·安全档**：跑**快集**——与 CI 的 verify 同一集合
@@ -459,6 +461,12 @@ run_ci() { # CI 关键子集：就地跑，不建副本；命令逐字冻结在 
     # 剔掉后只剩十几秒。它们已由全量与 nightly 覆盖。
     "$py" -m pytest tests/test_shared_facts_gate.py -q -p no:randomly \
         ${FAST_DESELECT_ARGS[@]+"${FAST_DESELECT_ARGS[@]}"}
+    # 公开数据红线门（AGENTS §46–49）：全仓扫描，与 scope 无关。
+    # 放在 scope 分支之外：newstack 面同样会改测试夹具与文档，不能跳过。
+    # 元测试与门同一步（见 tests/test_public_exposure_gate_wiring.py）。
+    echo "DEV-VERIFY(ci) public exposure gate"
+    "$py" -m pytest tests/test_public_exposure_gate.py \
+        tests/test_public_exposure_gate_wiring.py -q -p no:randomly
     echo "DEV-VERIFY(ci) path env bare-read gate"
     "$py" scripts/check-path-env-reads.py
     "$py" -m pytest tests/test_path_env_read_gate.py -q -p no:randomly \

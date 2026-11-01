@@ -144,7 +144,9 @@ jobs:
         # 2026-10-13（工单 j06f）加入依赖一致性门的**元测试**（门本体不在 CI 跑：
         #   verify job 的解释器刚按 requirements.lock 装过，跑门本体是同义反复；
         #   元测试才造得出"venv 落后 lock"的形态）。
-        run: 'echo "Fast gate active: lint + mypy + roster fast lane + serial drill lane + e2e smoke + shared-facts roster + path-env bare reads + config registry + import-linter contracts + deps lock meta-tests."'
+        # 2026-11-01（CLEAN-1）加入 public-exposure：红线门与接线守卫进 run_ci 常跑区
+        #   （scope 分支之外；此前 newstack PR 整段跳过它）。
+        run: 'echo "Fast gate active: lint + mypy + roster fast lane + serial drill lane + e2e smoke + shared-facts roster + public exposure + path-env bare reads + config registry + import-linter contracts + deps lock meta-tests."'
 
   # ---- 慢集专轨（vckk 阶段 2-a · 2026-10-17）：名册 slow 行 ＋ FAST_KNOWN_SLOW 长尾轨 ----
   # 为什么独立 job：slow 行的贵是**真实的等外面**（真子进程 / 真定时等待），并进 verify

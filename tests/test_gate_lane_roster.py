@@ -393,6 +393,7 @@ class MetaGatesStayFastTest(unittest.TestCase):
         "tests/test_config_registry_gate.py",
         "tests/test_doc_reference_gate.py",
         "tests/test_public_exposure_gate.py",
+        "tests/test_public_exposure_gate_wiring.py",
         "tests/test_module_date_constant_gate.py",
         "tests/test_skip_visibility_gate.py",
         "tests/test_gate_lane_roster.py",
