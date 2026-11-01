@@ -3,7 +3,7 @@ import { mockAccountsApi, RESET_TOKEN } from './support/fake-accounts-api'
 import { mockDashboardApi } from './support/fake-dashboard-api'
 import { SCHEDULE_DAY, mockScheduleApi } from './support/fake-schedule-api'
 import { mockRunApi, installFakeEventSource } from './support/fake-run-api'
-import { mockEngineApi, ENGINE_VISUAL_SNAPSHOT } from './support/fake-engine-api'
+import { mockEngineApi, ENGINE_VISUAL_SNAPSHOT, VISUAL_NOW } from './support/fake-engine-api'
 import { mockSchoolsApi } from './support/fake-schools-api'
 import { mockUsersApi } from './support/fake-users-api'
 import { visibleText } from './support/visible-text'
@@ -12,7 +12,7 @@ import { visibleText } from './support/visible-text'
  * Adminator 壳的视觉回归基线。
  *
  * 矩阵：10 条常驻路由（UX-3 起 /run 固定业务日入矩阵；UX-5 起 /engine
- * 入矩阵，时刻夹具落在分钟粒度稳定窗）与看板的两个视角（user/admin），
+ * 入矩阵，页内 Date 冻结在 VISUAL_NOW，快照时刻全部派生自它）与看板的两个视角（user/admin），
  * × 2 套主题 × 2 个宽度 = 48 张；另有抽屉／模态／菜单、
  * 无权限页与溢出判据，文件合计 91 条用例（2026-11-01 win32 实数）。
  * 仪表盘按角色分视角：user 是签到状态／诊断，admin 是窗口／容量体检。
@@ -88,9 +88,12 @@ async function mockSessionFor(
     await installFakeEventSource(page)
     await mockRunApi(page, { role })
   }
-  // 执行监控页同样钉「实时」态；快照取分钟粒度稳定夹具，
-  // 租约剩余与相对时刻在截图窗口内不得逐秒变化。
+  // 执行监控页同样钉「实时」态；页内 Date 冻结在 VISUAL_NOW：
+  // setFixedTime 不碰定时器（React 调度照常），useNow 的 setInterval
+  // 每秒读到的都是同一时刻，租约剩余恒为「1 时 30 分」、
+  // 相对时刻恒落 formatClock 分支，跨分钟、跨日都不漂。
   if (path.startsWith('/engine')) {
+    await page.clock.setFixedTime(new Date(VISUAL_NOW))
     await installFakeEventSource(page)
     await mockEngineApi(page, { role, snapshot: ENGINE_VISUAL_SNAPSHOT })
   }

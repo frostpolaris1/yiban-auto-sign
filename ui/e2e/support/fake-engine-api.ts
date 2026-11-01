@@ -73,9 +73,21 @@ export const ENGINE_SNAPSHOT: EngineSnapshot = {
 }
 
 /**
- * 视觉基线的合成快照：全部时刻落在分钟粒度的稳定窗里。
- * 租约剩 90 分钟（≥1 时文案无秒位）；tick/claim 在 2 小时前
- * （相对文案退化为 HH:mm）；事件列表空。整页逐分钟才可能变。
+ * 视觉基线的页钟时刻：固定值，不随真实墙钟。
+ * `/engine` 的视觉用例在 goto 前 `page.clock.install({ time: VISUAL_NOW })`，
+ * 页内 `Date.now()` 与本夹具同源——租约剩余恒为「1 时 30 分」，
+ * 相对时刻恒落在 formatClock 分支，基线跨日、跨分钟都不漂。
+ */
+export const VISUAL_NOW = Date.parse('2030-01-01T09:00:00+08:00')
+
+/** 以 VISUAL_NOW 为基准的固定 ISO 时刻。 */
+function visualAt(offsetMs: number): string {
+  return new Date(VISUAL_NOW + offsetMs).toISOString()
+}
+
+/**
+ * 视觉基线的合成快照：全部时刻派生自 VISUAL_NOW，零 Date.now()。
+ * 值仍是合成标识：掩码号取 138 保留段，学校名明示合成口径。
  */
 export const ENGINE_VISUAL_SNAPSHOT: EngineSnapshot = {
   ...ENGINE_SNAPSHOT,
@@ -85,16 +97,16 @@ export const ENGINE_VISUAL_SNAPSHOT: EngineSnapshot = {
       account_phone_masked: '138****8001',
       school_id: 'school-a',
       school_name: '合成学校甲',
-      claimed_at: at(-30 * MINUTE),
-      lease_expires_at: at(90 * MINUTE),
+      claimed_at: visualAt(-30 * MINUTE),
+      lease_expires_at: visualAt(90 * MINUTE),
     },
     {
       account_id: 'account-4',
       account_phone_masked: '138****8004',
       school_id: 'school-b',
       school_name: '合成学校乙',
-      claimed_at: at(-25 * MINUTE),
-      lease_expires_at: at(95 * MINUTE),
+      claimed_at: visualAt(-25 * MINUTE),
+      lease_expires_at: visualAt(95 * MINUTE),
     },
   ],
   retrying: [
@@ -106,13 +118,13 @@ export const ENGINE_VISUAL_SNAPSHOT: EngineSnapshot = {
       school_name: '合成学校甲',
       task_name: '早签到',
       attempts: 2,
-      run_at: at(60 * MINUTE),
+      run_at: visualAt(60 * MINUTE),
       result: 'transient',
     },
   ],
-  last_claim_at: at(-2 * 60 * MINUTE),
-  last_tick_at: at(-2 * 60 * MINUTE),
-  worker_started_at: at(-6 * 60 * MINUTE),
+  last_claim_at: visualAt(-2 * 60 * MINUTE),
+  last_tick_at: visualAt(-2 * 60 * MINUTE),
+  worker_started_at: visualAt(-6 * 60 * MINUTE),
 }
 
 export type FakeEngineApi = {

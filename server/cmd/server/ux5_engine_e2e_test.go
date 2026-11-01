@@ -343,6 +343,11 @@ func TestU5EngineRetryingTruncated(t *testing.T) {
 			t.Fatal("capped rows must stay ordered by run_at ascending")
 		}
 	}
+	// 保留的必须是最先到期的 200 条：被截掉的只能是落点最晚的那行。
+	dropped := rows[total-1].RunAt
+	if !snap.Retrying[len(snap.Retrying)-1].RunAt.Before(dropped) {
+		t.Fatalf("the kept rows must stop before %v; the cap must cut the latest run_at first", dropped)
+	}
 }
 
 // admin 只见绑定校：在飞、due、当日失败与待重试都收窄；master 全量。
