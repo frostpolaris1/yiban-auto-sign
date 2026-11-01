@@ -305,7 +305,7 @@ func TestU5EngineRetryingTruncated(t *testing.T) {
 	now := u5NowFromServer(t, e, client)
 	school := u3SeedSchool(t, e, "U5 截断学校")
 	task := u3SeedTask(t, e, school.ID, "早签到")
-	acc := u3SeedAccount(t, e, owner.ID, school.ID, "13800138041")
+	acc := u3SeedAccount(t, e, owner.ID, school.ID, "13800000041")
 
 	// 同账号同任务、跨 201 个业务日各一条：超出 EngineRetryLimit 一行。
 	const total = 201
@@ -364,13 +364,13 @@ func TestU5EngineAdminScope(t *testing.T) {
 	taskA := u3SeedTask(t, e, schoolA.ID, "早签到")
 	taskB := u3SeedTask(t, e, schoolB.ID, "晚签到")
 
-	accA := u3SeedAccount(t, e, owner.ID, schoolA.ID, "13800138031")
+	accA := u3SeedAccount(t, e, owner.ID, schoolA.ID, "13800000031")
 	u5SeedRunning(t, e, taskA, accA, day, now)
-	accB := u3SeedAccount(t, e, owner.ID, schoolB.ID, "13800138032")
+	accB := u3SeedAccount(t, e, owner.ID, schoolB.ID, "13800000032")
 	u5SeedRunning(t, e, taskB, accB, day, now)
-	accB2 := u3SeedAccount(t, e, owner.ID, schoolB.ID, "13800138033")
+	accB2 := u3SeedAccount(t, e, owner.ID, schoolB.ID, "13800000030")
 	u3SeedSignTask(t, e, taskB, accB2, day, now.Add(-time.Hour), status.TaskPending, 2, "transient", nil)
-	accB3 := u3SeedAccount(t, e, owner.ID, schoolB.ID, "13800138034")
+	accB3 := u3SeedAccount(t, e, owner.ID, schoolB.ID, "13800000040")
 	u3SeedSignTask(t, e, taskB, accB3, day, now, status.TaskFailed, 1, "blocked", nil)
 	u3Grant(t, e, adminUser.ID, schoolA.ID)
 
