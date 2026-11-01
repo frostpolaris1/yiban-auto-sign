@@ -184,7 +184,9 @@ func TestTaskQueryClassifiesQuery(t *testing.T) {
 		{"short prefix", "1380013801", ""},
 		{"wrong leading digit", "23800138001", ""},
 		{"name text", "甲校", ""},
-		{"eleven digits not a phone", "138001380011", ""},
+		{"twelve digits not a phone", "138001380011", ""},
+		{"second digit below 3", "12800138017", ""},
+		{"second digit is 0", "10800138017", ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

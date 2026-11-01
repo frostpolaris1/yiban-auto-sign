@@ -237,6 +237,13 @@ export function listTaskCalls(api: FakeRunApi): ApiCall[] {
   )
 }
 
+/** `/api/schools` 的调用记录：断言 SSE/轮询不连带重取学校下拉。 */
+export function schoolsCalls(api: FakeRunApi): ApiCall[] {
+  return api.calls.filter(
+    (call) => call.path === '/api/schools' && call.method === 'GET',
+  )
+}
+
 /**
  * 注入可编程的假 EventSource。
  * 用例经 `window.__runES` 拿到实例：`open()` 触发建立、

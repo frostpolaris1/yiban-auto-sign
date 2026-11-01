@@ -8,6 +8,7 @@ import {
   listTaskCalls,
   mockRunApi,
   RUN_TASKS,
+  schoolsCalls,
 } from './support/fake-run-api'
 
 /**
@@ -157,11 +158,14 @@ test('invariant 5: a task event refreshes and a broken stream shows the banner',
   await fakeSourceOpen(page)
   expect(await fakeSourceCount(page)).toBe(1)
   const before = listTaskCalls(api).length
+  const schoolsBefore = schoolsCalls(api).length
 
   await fakeSourceEmit(page, 'task.concluded')
   await expect
     .poll(() => listTaskCalls(api).length, { timeout: 5000 })
     .toBeGreaterThan(before)
+  // SSE 事件只刷新任务面；学校下拉的选项源不得被连带重取。
+  expect(schoolsCalls(api).length).toBe(schoolsBefore)
 
   await fakeSourceFail(page)
   const banner = page.locator('.run-live-banner')
@@ -186,11 +190,13 @@ test('invariant 5: a disconnected page polls every 10 seconds', async ({ page })
 
   // 降级证据：前 5 秒没有新请求（不是立即刷屏），10 秒档内出现轮询取数。
   const baseline = listTaskCalls(api).length
+  const schoolsBefore = schoolsCalls(api).length
   await page.waitForTimeout(5_000)
   expect(listTaskCalls(api).length).toBe(baseline)
   await expect
     .poll(() => listTaskCalls(api).length, { timeout: 15_000, intervals: [1_000, 5_000, 10_000] })
     .toBeGreaterThan(baseline)
+  expect(schoolsCalls(api).length).toBe(schoolsBefore)
 })
 
 test('invariant 6: a row opens diagnostics by click and by keyboard', async ({ page }) => {

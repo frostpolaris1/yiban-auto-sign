@@ -706,10 +706,11 @@ export interface paths {
          *     day defaults to the current business day in the server timezone.
          *     state filters by the persisted task state; school_id narrows to one
          *     school (an out-of-scope school id yields an empty page and does not
-         *     leak existence); q matches the start of the account phone number or
-         *     a substring of the school name, with the LIKE wildcards % and _
-         *     taken literally. Rows are ordered by run_at descending with the row
-         *     id as tiebreaker; cursor is an opaque keyset token over that order.
+         *     leak existence); q matches a substring of the school or task name,
+         *     or a full 11-digit phone number exactly, with the LIKE wildcards %
+         *     and _ taken literal; shorter phone prefixes never match. Rows are
+         *     ordered by run_at descending with the row id as tiebreaker; cursor
+         *     is an opaque keyset token over that order.
          *     account_phone_masked keeps the first 3 and last 4 digits; the full
          *     number never leaves the server.
          */

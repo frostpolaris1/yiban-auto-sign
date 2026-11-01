@@ -144,8 +144,9 @@ export function RunView({ urlState, onSearchChange }: RunViewProps) {
   })
 
   // 学校下拉的选项源：服务端按角色收敛（master 全量、admin 绑定范围）。
+  // 键独立于 run-page：SSE/轮询按前缀失效 ['run-page'] 时不得连带重取学校。
   const schoolsQuery = useQuery({
-    queryKey: ['run-page', 'schools'],
+    queryKey: ['schools', 'filter'],
     staleTime: 5 * 60_000,
     queryFn: () => {
       if (SHOWCASE) return Promise.resolve(showcaseAllSchools())
@@ -242,6 +243,14 @@ export function RunView({ urlState, onSearchChange }: RunViewProps) {
         <DeniedCard eyebrow="Run" reason={DENY_REASON} />
       ) : (
         <>
+          {schoolsQuery.isError ? (
+            <p className="run-summary-error" role="status">
+              学校列表读取失败，下拉可能不全。
+              <Button variant="outline-primary" size="sm" onClick={() => void schoolsQuery.refetch()}>
+                重试
+              </Button>
+            </p>
+          ) : null}
           {summaryQuery.isError ? (
             <p className="run-summary-error" role="status">
               摘要读取失败，计数可能缺失。
@@ -410,7 +419,8 @@ export function RunView({ urlState, onSearchChange }: RunViewProps) {
               </>
             ) : (
               <p className="app-muted">
-                展开后可按业务日、状态、学校与手机号前缀检索，并导出 CSV。
+                展开后可按业务日、状态、学校筛选，或按学校/任务名子串、
+                11 位完整手机号检索，并导出 CSV。
               </p>
             )}
           </Card>
