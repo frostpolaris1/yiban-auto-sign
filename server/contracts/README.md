@@ -37,6 +37,14 @@ then `Open` for the stream. An admin whose owner read misses adds one more
 `Get` against the admin scope before `Open`. Merge the reads into one port
 call only if this path becomes a hotspot.
 
+## Gates
+
+`scripts/contract-gate.sh` runs two checks on this YAML. spectral lints it
+against the `spectral:oas` ruleset at warning severity. oasdiff compares it
+against a base git ref and fails on ERR-level breaking changes; without a base
+ref it prints a visible skip. CI runs the gate only when a change touches
+`server/contracts/`. spectral is pinned in `server/contracts/tools`.
+
 ## Roles
 
 | Role | Scope |

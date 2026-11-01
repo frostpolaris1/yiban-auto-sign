@@ -23,6 +23,9 @@ info:
 
     Phase P1 ships the frozen shape and live use cases. Auth, password reset,
     users, schools, admins and accounts answer from their use cases.
+  contact:
+    name: yiban-auto-sign maintainers
+    url: https://github.com/frostpolaris1/yiban-auto-sign
 servers:
   - url: /
 tags:
@@ -93,6 +96,9 @@ paths:
       tags: [auth]
       operationId: AuthMe
       summary: Return the signed-in user and the CSRF token.
+      description: |
+        Returns the signed-in user and the CSRF token that writes must send.
+        A request without a session answers 401.
       x-roles: [master, admin, user]
       responses:
         '200':
@@ -451,6 +457,9 @@ paths:
       tags: [schools]
       operationId: SchoolList
       summary: List schools with cursor pagination.
+      description: |
+        master sees every school; admin sees bound schools; user sees active
+        schools only. The page follows cursor pagination.
       x-roles: [master, admin, user]
       parameters:
         - $ref: '#/components/parameters/Cursor'
@@ -472,6 +481,9 @@ paths:
       tags: [schools]
       operationId: SchoolCreate
       summary: Create a school.
+      description: |
+        master only. A duplicate school code answers 409 with a conflict
+        envelope.
       x-roles: [master]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -588,6 +600,9 @@ paths:
       tags: [admins]
       operationId: SchoolAdminList
       summary: List admins bound to the school.
+      description: |
+        master only. Lists the admin bindings of one school; an unknown school
+        answers 404.
       x-roles: [master]
       parameters:
         - $ref: '#/components/parameters/SchoolID'
@@ -641,6 +656,9 @@ paths:
       tags: [admins]
       operationId: SchoolAdminRemove
       summary: Unbind an admin from the school.
+      description: |
+        master only. Unbinds the admin from the school and keeps the user
+        account. A missing binding answers 404.
       x-roles: [master]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -1534,6 +1552,9 @@ paths:
       tags: [photos]
       operationId: PhotoList
       summary: List the signed-in user's photos.
+      description: |
+        Cursor-paginated metadata for the photos the caller can read. Image
+        bytes come from GET /api/me/photos/{id}.
       x-roles: [master, admin, user]
       parameters:
         - $ref: '#/components/parameters/Cursor'
@@ -1667,6 +1688,9 @@ paths:
       tags: [health]
       operationId: HealthCheck
       summary: Liveness probe.
+      description: |
+        Answers 200 while the process serves requests. It needs no session and
+        no CSRF token, and it does not touch the database.
       security: []
       x-roles: [public]
       responses:

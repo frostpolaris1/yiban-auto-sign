@@ -93,6 +93,7 @@ fast	tests/test_config_registry_gate.py
 fast	tests/test_public_exposure_gate.py
 fast	tests/test_public_exposure_gate_wiring.py	# 接线守卫：红线门在 scope 分支之外常跑（CLEAN-1）
 fast	tests/test_tooling_gate_wiring.py	# 工具链快门接线守卫（CLEAN-7a）
+fast	tests/test_contract_gate_wiring.py	# 契约门接线守卫：钉版、显性早退、入口脚本真跑
 fast	tests/test_constraint_registry_gate.py	# 读 docs/dev/constraints.tsv 并真跑四个检查器
 fast	tests/test_conftest_mail_guard.py
 fast	tests/test_conftest_umask_guard.py
