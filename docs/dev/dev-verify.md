@@ -187,6 +187,8 @@ python -m pytest tests/test_web_rate_limit_concurrency_e2e.py -q -p no:randomly
 python -m pytest tests/test_login_e2e_mock.py -q -p no:randomly
 bash scripts/check-shared-facts.sh
 python -m pytest tests/test_shared_facts_gate.py -q -p no:randomly
+# 公开数据红线门（CLEAN-1）：全仓扫描；在 scope 分支之外，newstack 也跑
+python -m pytest tests/test_public_exposure_gate.py tests/test_public_exposure_gate_wiring.py -q -p no:randomly
 python scripts/check-path-env-reads.py
 python -m pytest tests/test_path_env_read_gate.py -q -p no:randomly
 python scripts/check-config-registry.py
@@ -208,15 +210,15 @@ python -m pytest tests/test_import_linter_gate.py -q -p no:randomly
 slow 行 + `FAST_KNOWN_SLOW` 长尾 4 条），与 verify 并行、每次 push 都跑——
 **slow 行与长尾不再只靠本地全量覆盖**。
 
-**现量口径（2026-10-31 本树，E-1 增 ui-e2e 接线门后）**：全量 357 个文件 ＝ 快集 341 ＋ 慢集 14 ＋ 串行轨 2
+**现量口径（2026-11-01 本树，CLEAN-1 增红线门接线守卫后）**：全量 358 个文件 ＝ 快集 342 ＋ 慢集 14 ＋ 串行轨 2
 （串行轨含 `tests/test_verify_jobs.py`：该文件用真实墙钟等异步任务终态。2026-10-26 在快集里
 连续两次红后移入，理由见名册该行）
 （文件数口径：`tests/lane-roster.tsv` 的非注释行按车道计数；测量命令
 `awk -F'\t' '!/^#/ && ($1=="fast" || $1=="slow" || $1=="serial") {print $1}' tests/lane-roster.tsv | sort | uniq -c`）。
-用例数口径 5298 ＝ 快集 5057 ＋ 慢集 173 ＋ 串行轨 68
+用例数口径 5307 ＝ 快集 5066 ＋ 慢集 173 ＋ 串行轨 68
 （口径：`pytest tests/ --collect-only -q` 的 `tests/…::…` 行按文件归道计数；测量命令
 `/root/.venv-yiban-wsl/bin/python -m pytest tests/ --collect-only -q -p no:randomly --no-header | grep -c '^tests/.*::'`
-输出 `5298`；分道数由 `tests/test_gate_lane_roster.py::DocNumbersMatchRealityTest` 复算，
+输出 `5307`；分道数由 `tests/test_gate_lane_roster.py::DocNumbersMatchRealityTest` 复算，
 
 
 不符时点名文档值与实测值）。
@@ -229,7 +231,9 @@ verify 里（占）。⇒ 重且必须独占核的用例，优先放 `slow`，�
 把重活从 `fast` 挪到 `slow` 的判据始终是那条：**墙钟真按"等外面"计费**（真实进程树／
 真实定时等待／全仓扫描）；纯计算重（bcrypt 重算等）**不挪**——那会破坏快集的覆盖口径。
 
-四道门禁各带自己的元测试同批跑：`check-shared-facts.sh` 数名册里 awk 引擎的键，
+五道门禁各带自己的元测试同批跑：`check-shared-facts.sh` 数名册里 awk 引擎的键，
+公开数据红线门（`tests/test_public_exposure_gate.py`）扫全仓的手机号/坐标/令牌形状
+（AGENTS §46–49；扫描面下限 500 文件，扫空判红；突变用例覆盖每种判据），
 `check-path-env-reads.py` 数名册里 `ast:` 路由的键（同一枚键只许一个引擎计数），
 `check-config-registry.py` 判配置名册三条（`config/registry.json` 自校验、已登记键的
 缺省值字面量在代码内清零、未登记键不得出现在生产代码），`check-import-linter.py` 跑
