@@ -72,6 +72,22 @@ export function describeApiError(error: unknown): string {
   return String(error)
 }
 
+/** 把失败响应翻成 `ApiError`：先读信封，再交 401 回调。 */
+async function raiseApiError(response: Response, path: string): Promise<never> {
+  let payload: ApiErrorPayload = {
+    code: 'internal_error',
+    message: `请求失败（HTTP ${response.status}）`,
+  }
+  try {
+    const body = (await response.json()) as { error?: ApiErrorPayload }
+    if (body.error) payload = body.error
+  } catch {
+    /* 响应体不是 JSON 时保留兜底错误，状态码仍要传给调用方。 */
+  }
+  if (response.status === 401) unauthorizedHandler?.(path)
+  throw new ApiError(response.status, payload)
+}
+
 export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const method = (init?.method ?? 'GET').toUpperCase()
   const response = await fetch(path, {
@@ -85,24 +101,32 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
     },
   })
 
-  if (!response.ok) {
-    let payload: ApiErrorPayload = {
-      code: 'internal_error',
-      message: `请求失败（HTTP ${response.status}）`,
-    }
-    try {
-      const body = (await response.json()) as { error?: ApiErrorPayload }
-      if (body.error) payload = body.error
-    } catch {
-      /* 响应体不是 JSON 时保留兜底错误，状态码仍要传给调用方。 */
-    }
-    if (response.status === 401) unauthorizedHandler?.(path)
-    throw new ApiError(response.status, payload)
-  }
+  if (!response.ok) return raiseApiError(response, path)
 
   // 204 无响应体。此时解析 JSON 会抛错，故直接返回。
   if (response.status === 204) {
     return undefined as T
   }
+  return (await response.json()) as T
+}
+
+/**
+ * 上传请求：请求体是 `FormData`。
+ *
+ * 此路径**不**设 `Content-Type`。浏览器要自己写 multipart 边界；
+ * 手写 JSON 类型会让服务端解析失败。其余口径与 `apiRequest` 相同。
+ */
+export async function apiUpload<T>(path: string, form: FormData): Promise<T> {
+  const response = await fetch(path, {
+    method: 'POST',
+    credentials: 'include',
+    body: form,
+    headers: {
+      Accept: 'application/json',
+      ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
+    },
+  })
+
+  if (!response.ok) return raiseApiError(response, path)
   return (await response.json()) as T
 }

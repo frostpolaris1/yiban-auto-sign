@@ -14,7 +14,7 @@ import { visibleText } from './support/visible-text'
  * 矩阵：10 条常驻路由（UX-3 起 /run 固定业务日入矩阵；UX-5 起 /engine
  * 入矩阵，页内 Date 冻结在 VISUAL_NOW，快照时刻全部派生自它）与看板的两个视角（user/admin），
  * × 2 套主题 × 2 个宽度 = 48 张；另有抽屉／模态／菜单、
- * 无权限页与溢出判据，文件合计 91 条用例（2026-11-01 win32 实数）。
+ * 无权限页与溢出判据，文件合计 95 条用例（2026-11-01 win32 实数）。
  * 仪表盘按角色分视角：user 是签到状态／诊断，admin 是窗口／容量体检。
  * 时间片页按固定业务日另拍（缺省日期会随日历漂移，不能进常驻矩阵），
  * 补 1440 与 390 两个宽度。
@@ -226,6 +226,17 @@ for (const theme of THEMES) {
     await expect(page).toHaveScreenshot(`accounts-drawer-${theme}-1440.png`)
   })
 
+  test(`visual accounts drawer with photos ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    // 照片区只对 user/admin 渲染（契约 x-roles），故叠一层 admin 会话。
+    await mockAccountsApi(page, { role: 'admin' })
+    await openWithTheme(page, '/accounts', theme)
+    await page.getByRole('button', { name: '查看 138****8000' }).click()
+    await expect(page.getByRole('dialog', { name: '账号详情' })).toBeVisible()
+    await expect(page.getByRole('region', { name: '账号照片' })).toBeVisible()
+    await expect(page).toHaveScreenshot(`accounts-drawer-photos-${theme}-1440.png`)
+  })
+
   test(`visual accounts modal ${theme}`, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })
     await openWithTheme(page, '/accounts', theme)
@@ -297,6 +308,16 @@ for (const theme of THEMES) {
     await page.getByRole('button', { name: '查看 合成学校甲' }).click()
     await expect(page.getByRole('dialog', { name: '学校详情' })).toBeVisible()
     await expect(page).toHaveScreenshot(`schools-drawer-${theme}-1440.png`)
+  })
+
+  test(`visual schools drawer with default photo ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    // 缺省图区只对 admin 渲染：master 能改引用却读不到字节。
+    await openWithTheme(page, '/schools', theme, 'admin')
+    await page.getByRole('button', { name: '查看 合成学校甲' }).click()
+    await expect(page.getByRole('dialog', { name: '学校详情' })).toBeVisible()
+    await expect(page.getByRole('region', { name: '学校缺省图' })).toBeVisible()
+    await expect(page).toHaveScreenshot(`schools-drawer-photos-${theme}-1440.png`)
   })
 
   test(`visual schools create modal ${theme}`, async ({ page }) => {
