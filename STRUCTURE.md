@@ -73,6 +73,8 @@ server/
 ### 3.3 后端命名
 
 1. 包目录：**单数、小写、无缩写**。`account`，不写 `acc`。
+   已登记例外：`photo` 域的 core 包是 `core/photo`（单数），app 与 entry 包是
+   `app/photos`、`entry/http/photos`（复数）。新建目录跟同层现状，不再造第三种写法。
 2. 表名：**复数、下划线**。`accounts`、`password_resets`。
 3. 路由：`/api/<复数资源>`。`/api/accounts`。
 4. operationId：`<Domain><Verb>`。`AccountList`、`AccountCreate`。
@@ -89,7 +91,7 @@ ui/src/
 ├── components/
 │   ├── shell/      Sidebar / Topbar / Footer / AppShell
 │   └── ui/         无域原语：Button / Input / Card / Table / Modal / Tabs / Switch
-├── lib/            api / query / theme / format / cx
+├── lib/            api / query / theme / format / cx / cursor / identity / roles / session / redirect / field-aria / showcase / showcase-mode
 └── styles/         tokens.css / adminator.css / app.css
 ```
 
@@ -106,6 +108,23 @@ ui/src/
 3. 用具名导出，不用 `export default`。
 4. 路径别名 `@/` 指向 `ui/src`。
 5. `lib/api` 按域拆文件：`auth.ts`、`school.ts`、`account.ts`。
+6. `features/` 目录按域的性质选形：
+   - **资源列表域**用复数：`accounts`、`schools`。
+   - **能力/页面域**用单数：`auth`、`dashboard`、`design`、`run`、`schedule`、`settings`、`user`。`user` 是历史命名，保持单数。
+   新域先看它是不是资源列表，再选形；同一层内不要同时存在两种写法（`features/` 复数、`lib/api` 单数是分层约定）。
+
+### 4.2 运行页的词对应
+
+用户看到的「运行」与「执行监控」在后端分几处，读码时按这张表换词：
+
+| UI | 后端 |
+|---|---|
+| 运行页 `features/run`（任务检索） | `app/schedule`（`NewTaskQuery`）＋`lib/api/task.ts` |
+| 执行监控 `/engine`（快照） | `app/schedule`（`NewEngineQuery`：在飞、待重试与计数）＋`app/worker`（`EngineState`：启动 / 最近 tick / 最近认领）＋`lib/api/engine.ts` |
+| 计划 / 时间片 | `app/schedule` ＋ `core/plan`（落点几何） |
+| 容量 | `core/capacity` ＋ `core/window` |
+
+`run` 是页面视角，`worker` 是进程视角；两者都不是对方的别名。
 
 ## 5. 「我要加一个功能」怎么放
 

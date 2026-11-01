@@ -2,22 +2,29 @@
 
 本目录是**可入库**的开发文档：模块地图、依赖方向、接口契约、分支与发布纪律。
 
-| 文件 | 内容 |
-|------|------|
-| `README.md`（本文件） | 模块树、依赖方向、多执行体现状与出口配置 |
-| `api-executors.md` | 执行体与出口接口契约（前端用） |
-| `cli.md` | CLI 契约（面向 agent/自动化） |
-| `constraints.tsv` | **在册约束**（id / 载体 / 门或豁免理由 / 工单）；`tests/test_constraint_registry_gate.py` 逐条真跑 |
-| `acceptance-criteria.md` | D1 验收（改坏守卫必须报警）、负数条款、对外交付逐条核对清单 |
-| `umask-decision.md` | 生产入口 `umask 077` 不还原的评估结论与影响面 |
-| `dev-verify.md` | **统一跑测入口** `scripts/dev-verify.sh` 的配方（本地 WSL 全量 + CI 子集同源） |
-| `deploy-e2e.md` | **部署 e2e**：容器与裸机两条干净环境走通命令、断言、CI 与手跑登记 |
-| `release-signing.md` | **发布物签名**：Ed25519 清单/签名/验签、信任锚（公钥指纹）、密钥红线、发布与升级流程、门与测试 |
-| `release-gate.md` | **推送 `main` 的四条门槛**（安全/压力/稳定/脱敏与演练） |
-| `backup-restore.md` | **备份与恢复**：宿主（systemd/cron）与 Docker 两条路线、取证命令、威胁边界 |
-| `implementation-notes.md` | **原理与实现**：模块树、签到流程、定位算法、重试机制、WAF 检测、工作流续期 |
-| `troubleshooting.md` | **故障排查与常见问题**（Q1–Q10） |
-| `time-prefs-backfill.md` | **旧自选时间片补录**：导出、dry-run、`--apply`、报告字段与核对 SQL |
+> **栈标记**：除表里标「新」与「共用」的文档外，本目录正文描述**旧栈**（Python），2026-10-29 起冻结。
+> 新栈（`server/` + `ui/`）的地图与命名以 [`../../STRUCTURE.md`](../../STRUCTURE.md) 为准。
+
+| 文件 | 内容 | 栈 |
+|------|------|-----|
+| `README.md`（本文件） | 旧栈模块树、依赖方向、执行体现状与出口配置（索引含新栈指针） | 旧 |
+| `api-contract.md` | 旧栈 Web API 契约（**已冻结**，新栈看 `server/contracts/openapi.yaml`） | 旧 |
+| `api-executors.md` | 执行体与出口接口契约（旧栈，**已冻结**） | 旧 |
+| `architecture-target.md` | 旧栈目标架构：分层与依赖方向 | 旧 |
+| `cli.md` | CLI 契约（面向 agent/自动化） | 旧 |
+| `constraints.tsv` | **在册约束**（id / 载体 / 门或豁免理由 / 工单）；`tests/test_constraint_registry_gate.py` 逐条真跑 | 旧 |
+| `acceptance-criteria.md` | D1 验收（改坏守卫必须报警）、负数条款、对外交付逐条核对清单 | 旧 |
+| `umask-decision.md` | 生产入口 `umask 077` 不还原的评估结论与影响面 | 旧 |
+| `dev-verify.md` | **统一跑测入口** `scripts/dev-verify.sh` 的配方（本地 WSL 全量 + CI 子集同源） | 共用 |
+| `deploy-e2e.md` | **部署 e2e**：容器与裸机两条干净环境走通命令、断言、CI 与手跑登记 | 新 |
+| `release-signing.md` | **发布物签名**：Ed25519 清单/签名/验签、信任锚（公钥指纹）、密钥红线、发布与升级流程、门与测试 | 新 |
+| `release-gate.md` | **推送 `main` 的四条门槛**（安全/压力/稳定/脱敏与演练） | 旧 |
+| `backup-restore.md` | **备份与恢复**：宿主（systemd/cron）与 Docker 两条路线、取证命令、威胁边界 | 旧 |
+| `implementation-notes.md` | **原理与实现**：模块树、签到流程、定位算法、重试机制、WAF 检测、工作流续期 | 旧 |
+| `scheduler-v3.md` | 旧栈调度 v3 运维手册 | 旧 |
+| `troubleshooting.md` | **故障排查与常见问题**（Q1–Q10） | 旧 |
+| `time-prefs-backfill.md` | **旧自选时间片补录**：导出、dry-run、`--apply`、报告字段与核对 SQL | 新 |
+
 与设计/调研类文稿分开——这里的每条内容都按脱敏红线自查过：
 不含真实域名/IP/邮箱/手机号/密钥与站点注册信息，示例一律用占位值。
 
@@ -26,6 +33,9 @@
 保留的内容必须收进主仓 `docs/`，并在 `scripts/check-doc-numbering.py` 的编号巡检下唯一。
 
 ## 目录树与职责（一句话版）
+
+> 下图为**旧栈**（Python）目录，2026-10-29 起冻结。
+> 新栈地图（`server/` + `ui/`）见根目录 [`../../STRUCTURE.md`](../../STRUCTURE.md)；本图不要当作新栈导航。
 
 ```
 yiban/                        签到引擎与共享基础（可被 web / scripts / docker 复用）
