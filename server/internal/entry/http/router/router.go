@@ -27,7 +27,6 @@ import (
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
-	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	accounthttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/account"
 	adminhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/admin"
 	eventshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/events"
@@ -89,6 +88,10 @@ type Options struct {
 	// 只有它们的 X-Forwarded-Proto 才用于判定登录 scheme。
 	// 与限流开关解耦：关限流时登录来源仍能判对。
 	TrustedProxies []ratelimit.Prefix
+	// UIDir 是前端构建产物目录（含 index.html）。
+	// 空表示只提供 API；非空时未命中的路径交给页面路由。
+	// 目录无效或缺 index.html 时 New 失败：启动期暴露，不带病上线。
+	UIDir string
 }
 
 // server 实现生成的契约接口。
@@ -169,9 +172,15 @@ func New(opts Options) (*gin.Engine, error) {
 			bindError(c, err)
 		},
 	})
-	engine.NoRoute(func(c *gin.Context) {
-		respond.Error(c.Writer, c.Request, errs.New(errs.CodeNotFound, "route not found"))
-	})
+	if opts.UIDir != "" {
+		ui, err := newUIHandler(opts.UIDir)
+		if err != nil {
+			return nil, err
+		}
+		engine.NoRoute(ui.serve)
+	} else {
+		engine.NoRoute(routeNotFound)
+	}
 	return engine, nil
 }
 

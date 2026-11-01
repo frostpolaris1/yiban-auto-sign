@@ -720,6 +720,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		RateLimit:       guard,
 		LoginOrigin:     publicOrigin(cfg.PublicBaseURL),
 		TrustedProxies:  trustedProxies,
+		UIDir:           cfg.UIDir,
 	})
 	if err != nil {
 		closeFn()

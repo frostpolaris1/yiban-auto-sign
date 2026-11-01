@@ -66,6 +66,22 @@ func TestUpdateShRollsBackOnFailedHealth(t *testing.T) {
 	if err := os.WriteFile(running, []byte("#!/bin/sh\n"+oldBody), 0o644); err != nil {
 		t.Fatalf("seed running: %v", err)
 	}
+	// 已装页面与 .env：健康回滚必须连页面一起换回。
+	oldUIDir := filepath.Join(root, "var/lib/yiban/ui")
+	if err := os.MkdirAll(oldUIDir, 0o755); err != nil {
+		t.Fatalf("mkdir old ui: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(oldUIDir, "index.html"), []byte("old-ui"), 0o644); err != nil {
+		t.Fatalf("write old ui: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "etc/yiban"), 0o755); err != nil {
+		t.Fatalf("mkdir etc: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "etc/yiban/.env"),
+		[]byte("YIBAN_UI_DIR=/var/lib/yiban/ui\n"), 0o600); err != nil {
+		t.Fatalf("write env: %v", err)
+	}
+	newUI := writeUIDistDir(t, "new-ui")
 	newBin := fakeBin(t, binDir, "yiban-server-new", newBody)
 	alwaysFail := filepath.Join(t.TempDir(), "health-fail")
 	// 健康检查只看守护进程实际在跑的那份文件。
@@ -93,7 +109,8 @@ exit 0
 
 	// 分支一：新件不健康、旧件健康 → 回滚成功，退出 1。
 	out, rc := runScript(t, scriptPath(t, "update.sh"), env,
-		"--server-bin", newBin, "--cli-bin", cliBin, "--allow-unsigned")
+		"--server-bin", newBin, "--cli-bin", cliBin,
+		"--ui-dir", newUI, "--allow-unsigned")
 	if rc != 1 {
 		t.Fatalf("rollback-succeeded update rc=%d, want 1; out=%s", rc, out)
 	}
@@ -109,13 +126,21 @@ exit 0
 		t.Fatalf("回滚后守护进程仍在跑新件（未重启）:\n%s", body)
 	}
 	assertStopBeforeLastStart(t, readAll(t, sysctlLog))
+	// 页面也必须回滚：旧二进制配新页面是新旧混装。
+	if body := readAll(t, filepath.Join(oldUIDir, "index.html")); !strings.Contains(body, "old-ui") {
+		t.Fatalf("回滚后页面应为旧件:\n%s", body)
+	}
+	if _, err := os.Stat(oldUIDir + ".bak"); err == nil {
+		t.Fatalf("回滚后不应残留 %s.bak", oldUIDir)
+	}
 
 	// 分支二：强制健康恒失败 → 回滚后仍不健康，退出 2。
 	if err := os.WriteFile(alwaysFail, []byte("x"), 0o644); err != nil {
 		t.Fatalf("arm health fail: %v", err)
 	}
 	out, rc = runScript(t, scriptPath(t, "update.sh"), env,
-		"--server-bin", newBin, "--cli-bin", cliBin, "--allow-unsigned")
+		"--server-bin", newBin, "--cli-bin", cliBin,
+		"--ui-dir", newUI, "--allow-unsigned")
 	if rc != 2 {
 		t.Fatalf("rollback-failed update rc=%d, want 2; out=%s", rc, out)
 	}

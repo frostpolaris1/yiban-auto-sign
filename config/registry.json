@@ -1924,6 +1924,18 @@
     "tier": "master",
     "reload": "restart"
   },
+  "YIBAN_UI_DIR": {
+    "type": "string",
+    "default": "",
+    "group": [
+      "部署"
+    ],
+    "doc": "前端构建产物目录（含 index.html）。空表示只提供 API；相对路径按进程工作目录解析",
+    "sensitive": false,
+    "web_editable": false,
+    "tier": "master",
+    "reload": "restart"
+  },
   "YIBAN_RETENTION_DAYS": {
     "type": "int",
     "default": 365,

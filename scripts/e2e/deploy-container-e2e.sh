@@ -4,13 +4,17 @@
 #
 # 模拟的真实用户动作（AGENTS §8g）：
 #   一台新主机按 deploy/docker/docker-compose.yml 头部的命令，
-#   从零 build 镜像、起 db+app、访问 /healthz、再停机。
+#   从零 build 镜像、起 db+app、访问首页与 /healthz、再停机。
 # 断言用户可见结果：
 #   C1 前置成立，且本项目无旧容器/卷/网络、端口空闲（干净环境）
-#   C2 docker compose build 退出 0（Dockerfile 真构建）
+#   C2 docker compose build 退出 0（Dockerfile 真构建，含前端构建段）
 #   C3 db 与 app 均 healthy
 #   C4 迁移到嵌入集的最新版本（版本号从 server/migrations 现取）
 #   C5 宿主 curl /healthz 返回 200 且 body 为 {"status":"ok"}
+#   C5b 宿主 curl / 与前端深链 /accounts 返回首页；未知 /api 仍是 JSON 404；
+#       哈希资产带 immutable 长缓存
+#   C5c 带 X-Forwarded-Proto=https 的登录请求回 401 而非 403
+#       （compose 默认的可信代理覆盖网桥网关）
 #   C6 干净库无旧数据（users=0）
 #   C7 compose stop 发 SIGTERM：退出码 0、耗时 < stop_grace_period、
 #      日志含 worker: in-flight drained
@@ -29,6 +33,8 @@
 #   DEPLOY_E2E_WAIT_SEC    app 健康等待上限秒数（默认 300）
 #   DEPLOY_E2E_GOPROXY     可选，作为 GOPROXY 构建参数传给 Dockerfile
 #                         （受限网络用，如 https://goproxy.cn,direct）
+#   DEPLOY_E2E_NPM_REGISTRY 可选，作为 NPM_CONFIG_REGISTRY 构建参数
+#                         （受限网络用，如 https://registry.npmmirror.com）
 #   DEPLOY_E2E_IMAGE       镜像 tag（默认 <project>-server:e2e，不覆盖共享的
 #                         yiban-server:local）
 #   DEPLOY_E2E_SKIP_BUILD=1 复用已有镜像，只用于排障复跑；不作发布判据
@@ -51,6 +57,7 @@ PROJECT="${DEPLOY_E2E_PROJECT:-yiban-e2e-container}"
 HTTP_PORT="${DEPLOY_E2E_HTTP_PORT:-18081}"
 WAIT_SEC="${DEPLOY_E2E_WAIT_SEC:-300}"
 GOPROXY_ARG="${DEPLOY_E2E_GOPROXY:-}"
+NPM_REGISTRY_ARG="${DEPLOY_E2E_NPM_REGISTRY:-}"
 IMAGE="${DEPLOY_E2E_IMAGE:-${PROJECT}-server:e2e}"
 LOG_DIR="${DEPLOY_E2E_LOG_DIR:-$REPO/work/deploy-e2e-container}"
 KEEP=0
@@ -65,7 +72,7 @@ while [ $# -gt 0 ]; do
         --timeout=*) WAIT_SEC="${1#*=}"; shift ;;
         --log-dir) LOG_DIR="${2:?--log-dir 需要目录}"; shift 2 ;;
         --log-dir=*) LOG_DIR="${1#*=}"; shift ;;
-        -h|--help) sed -n '2,52p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,48p' "$0"; exit 0 ;;
         *) echo "未知参数：$1" >&2; exit 2 ;;
     esac
 done
@@ -103,6 +110,7 @@ write_override() {
         printf '    build:\n'
         printf '      args:\n'
         printf '        GOPROXY: "%s"\n' "$GOPROXY_ARG"
+        printf '        NPM_CONFIG_REGISTRY: "%s"\n' "$NPM_REGISTRY_ARG"
         printf '    ports: !override\n'
         printf '      - "127.0.0.1:%s:8080"\n' "$HTTP_PORT"
     } > "$OVERRIDE"
@@ -306,6 +314,77 @@ if ! grep -q '"status":"ok"' "$BODY"; then
     e2e_die "/healthz 响应体不是 status=ok：$(tr -d '\n' < "$BODY")"
 fi
 e2e_ok "HTTP 200，body=$(tr -d '\n' < "$BODY")"
+
+# ---- C5b 前端页面（CLEAN-0） ----------------------------------------------
+# 断言用户可见结果：首页能打开、深链回首页、缺失 API 仍是 JSON 404、
+# 哈希资产长缓存。四条都不依赖数据库与账号。
+e2e_step "C5b" "首页与前端深链"
+UI_HTML="$E2E_STEP_LOG.ui.html"
+CODE="$(curl -sS -o "$UI_HTML" -w '%{http_code}' --max-time 5 \
+    "http://127.0.0.1:$HTTP_PORT/" 2>>"$E2E_STEP_LOG" || true)"
+if [ "$CODE" != "200" ]; then
+    e2e_die "GET / HTTP $CODE（期望 200）"
+fi
+if ! grep -q '<div id="root">' "$UI_HTML"; then
+    e2e_die "GET / 不是前端首页：$(head -c 200 "$UI_HTML")"
+fi
+
+CODE="$(curl -sS -o "$UI_HTML" -w '%{http_code}' --max-time 5 \
+    "http://127.0.0.1:$HTTP_PORT/accounts" 2>>"$E2E_STEP_LOG" || true)"
+if [ "$CODE" != "200" ]; then
+    e2e_die "GET /accounts（前端深链）HTTP $CODE（期望 200）"
+fi
+if ! grep -q '<div id="root">' "$UI_HTML"; then
+    e2e_die "GET /accounts 未回 index.html：$(head -c 200 "$UI_HTML")"
+fi
+
+API_404="$E2E_STEP_LOG.api404.json"
+CODE="$(curl -sS -o "$API_404" -w '%{http_code}' --max-time 5 \
+    "http://127.0.0.1:$HTTP_PORT/api/definitely-not-a-route" 2>>"$E2E_STEP_LOG" || true)"
+if [ "$CODE" != "404" ]; then
+    e2e_die "GET /api/definitely-not-a-route HTTP $CODE（期望 404）"
+fi
+if ! grep -q '"code":"not_found"' "$API_404"; then
+    e2e_die "未知 API 未回 JSON 信封：$(head -c 200 "$API_404")"
+fi
+if grep -q '<div id="root">' "$API_404"; then
+    e2e_die "未知 API 落到了页面路由（前端吞掉了 API 404）"
+fi
+
+ASSET="$(grep -o '/assets/[^"]*\.js' "$UI_HTML" | head -n1 || true)"
+if [ -z "$ASSET" ]; then
+    e2e_die "index.html 里找不到 /assets/*.js"
+fi
+ASSET_HEADERS="$E2E_STEP_LOG.asset.headers"
+CODE="$(curl -sS -o /dev/null -D "$ASSET_HEADERS" -w '%{http_code}' --max-time 5 \
+    "http://127.0.0.1:$HTTP_PORT$ASSET" 2>>"$E2E_STEP_LOG" || true)"
+if [ "$CODE" != "200" ]; then
+    e2e_die "GET $ASSET HTTP $CODE（期望 200）"
+fi
+if ! grep -qi '^cache-control: public, max-age=31536000, immutable' "$ASSET_HEADERS"; then
+    e2e_die "$ASSET 缺 immutable 长缓存：$(grep -i '^cache-control:' "$ASSET_HEADERS" || echo none)"
+fi
+e2e_ok "首页 200；/accounts 回首页；未知 API 为 JSON 404；资产长缓存"
+
+# ---- C5c 外部 TLS 终结的信任链 ---------------------------------------------
+# 模拟真实用户动作：宿主反代终结 TLS，带 X-Forwarded-Proto=https 转给容器。
+# 判据：登录来源判定必须看到 https（回 401），不得回 403。
+# 403 表示 compose 默认 YIBAN_TRUSTED_PROXIES 没覆盖网桥网关。
+e2e_step "C5c" "TLS 反代信任链"
+LOGIN_CODE="$(curl -sS -o "$E2E_STEP_LOG.login.json" -w '%{http_code}' --max-time 5 \
+    -X POST "http://127.0.0.1:$HTTP_PORT/api/auth/login" \
+    -H 'Content-Type: application/json' \
+    -H "Origin: https://127.0.0.1:$HTTP_PORT" \
+    -H 'X-Forwarded-Proto: https' \
+    -d '{"email":"nobody@example.com","password":"wrong-password"}' \
+    2>>"$E2E_STEP_LOG" || true)"
+if [ "$LOGIN_CODE" = "403" ]; then
+    e2e_die "登录回 403：compose 默认 YIBAN_TRUSTED_PROXIES 未覆盖网桥网关"
+fi
+if [ "$LOGIN_CODE" != "401" ]; then
+    e2e_die "登录 HTTP $LOGIN_CODE（期望 401 无效凭据；403 表示信任链断了）"
+fi
+e2e_ok "X-Forwarded-Proto=https 被采信，登录回 401 而非 403"
 
 # ---- C6 干净库（无旧数据） -------------------------------------------------
 e2e_step "C6" "干净库无旧数据"

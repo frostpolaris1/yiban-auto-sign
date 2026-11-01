@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # ============================================================
-# deploy/linux/update.sh — Go 服务端升级器。
+# deploy/linux/update.sh — Go 服务端＋前端产物的升级器。
 #
 # 顺序（派单 P7）：放置新二进制 → 停服务 → 跑迁移 → 换二进制 →
 # 起服务 → /healthz；迁移失败回滚为「旧件继续运行」；
 # 健康检查失败回滚旧二进制并报错。回滚后仍不健康退出 2。
+# 前端产物（--ui-dir）在停服务前暂存，二进制就位后换名：
+# 新 UI 不先于新 API 生效；激活失败换回旧二进制并起服务。
 #
 # 用法：
 #   sudo bash deploy/linux/update.sh --server-bin NEW [--cli-bin NEW] \
+#       [--ui-dir NEW_DIST] \
 #       --manifest M --signature S --pubkey K [--expect-version V]
 #   （--cli-bin 与服务二进制同版本发布；只给 --server-bin 时
-#     迁移用已安装的 yiban-cli。）
+#     迁移用已安装的 yiban-cli。--ui-dir 给新的前端构建产物；
+#     旧目录留 .bak 供人工回退。）
 #
 # 签名发布物（默认强制，docs/dev/release-signing.md）：
 #   三件必须同时给。给了 → 在任何文件替换之前先钉公钥指纹、
@@ -38,7 +42,8 @@
 #
 # 干跑钩子：YIBAN_INSTALL_ROOT=前缀 SYSTEMCTL=命令覆盖（与 install.sh 同义）。
 #
-# 退出码：0 成功；1 迁移失败或回滚成功（旧件在跑）或签名/对账/版本校验不通过；
+# 退出码：0 成功；1 迁移失败或回滚成功（旧件在跑）或签名/对账/版本校验不通过
+#           或前端产物落位失败（旧 UI 与服务原样）；
 #         2 用法错误（含三件只给一件、未给三件且无 --allow-unsigned、
 #           --allow-unsigned 与三件同给、信任锚缺失或指纹不符）或回滚后仍不健康。
 # 已知残余风险：迁移一旦应用不会随二进制回滚（没有 down 迁移）；
@@ -58,6 +63,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 SERVER_BIN=""
 CLI_BIN=""
+UI_DIR=""
 REGISTRY=""
 MANIFEST=""
 SIGNATURE=""
@@ -68,6 +74,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --server-bin) SERVER_BIN="${2:?}"; shift 2 ;;
         --cli-bin) CLI_BIN="${2:?}"; shift 2 ;;
+        --ui-dir) UI_DIR="${2:?}"; shift 2 ;;
         --registry) REGISTRY="${2:?}"; shift 2 ;;
         --manifest) MANIFEST="${2:?}"; shift 2 ;;
         --signature) SIGNATURE="${2:?}"; shift 2 ;;
@@ -111,14 +118,56 @@ if [ -n "$CLI_BIN" ] && [ ! -x "$CLI_BIN" ]; then
     echo "update: new cli binary missing: $CLI_BIN" >&2
     exit 2
 fi
+if [ -n "$UI_DIR" ]; then
+    [ -d "$UI_DIR" ] || { echo "update: --ui-dir is not a directory: $UI_DIR" >&2; exit 2; }
+    [ -f "$UI_DIR/index.html" ] \
+        || { echo "update: --ui-dir has no index.html: $UI_DIR" >&2; exit 2; }
+fi
 REGISTRY="${REGISTRY:-$REPO_ROOT/config/registry.json}"
 [ -f "$REGISTRY" ] || { echo "update: config registry missing: $REGISTRY" >&2; exit 2; }
+
+SERVICE_USER="yiban"
+SERVICE_HOME="/var/lib/yiban"
 
 dest() { printf '%s%s' "$ROOT" "$1"; }
 SERVER_DEST="$(dest /usr/local/bin/yiban-server)"
 CLI_DEST="$(dest /usr/local/bin/yiban-cli)"
 SERVER_NEW="$SERVER_DEST.new"
 BAK="$SERVER_DEST.bak"
+UI_DEST="$(dest "$SERVICE_HOME/ui")"
+UI_NEW="$UI_DEST.new"
+UI_BAK="$UI_DEST.bak"
+ENV_FILE="$(dest /etc/yiban/.env)"
+
+# write_ui_env 幂等写 YIBAN_UI_DIR：删旧行再追加，不重排其余行。
+# .env 只在 UI 目录就位之后才写：早退路径不得留下悬空指针。
+# umask 077 让临时文件从创建那一刻就是 0600：密钥没有可读窗口。
+write_ui_env() {
+    local tmp="$ENV_FILE.tmp.$$"
+    (
+        umask 077
+        sed '/^YIBAN_UI_DIR=/d' "$ENV_FILE" > "$tmp" &&
+            printf 'YIBAN_UI_DIR=%s\n' "$SERVICE_HOME/ui" >> "$tmp"
+    ) || { rm -f -- "$tmp"; return 1; }
+    chmod 600 "$tmp" || { rm -f -- "$tmp"; return 1; }
+    if [ -z "$ROOT" ]; then
+        chown root:root "$tmp" || { rm -f -- "$tmp"; return 1; }
+    fi
+    mv "$tmp" "$ENV_FILE"
+}
+
+# drop_ui_env 删除 YIBAN_UI_DIR 行；用于首次装页面失败后的回退。
+drop_ui_env() {
+    [ -r "$ENV_FILE" ] || return 0
+    local tmp="$ENV_FILE.tmp.$$"
+    ( umask 077; sed '/^YIBAN_UI_DIR=/d' "$ENV_FILE" > "$tmp" ) \
+        || { rm -f -- "$tmp"; return 1; }
+    chmod 600 "$tmp" || { rm -f -- "$tmp"; return 1; }
+    if [ -z "$ROOT" ]; then
+        chown root:root "$tmp" || { rm -f -- "$tmp"; return 1; }
+    fi
+    mv "$tmp" "$ENV_FILE"
+}
 
 [ -x "$SERVER_DEST" ] || { echo "update: no installed server at $SERVER_DEST; run install.sh first" >&2; exit 2; }
 
@@ -143,11 +192,16 @@ chmod 0700 "$STAGE" || {
     echo "update: cannot secure staging directory: $STAGE" >&2
     exit 2
 }
-# 失败路径不留暂存件：快照目录、$SERVER_NEW 与 $CLI_DEST.new 一并删除。
+# 失败路径不留暂存件：快照目录、$SERVER_NEW、$CLI_DEST.new 与 $UI_NEW 一并删除。
 cleanup() {
     rm -rf -- "$STAGE" 2>/dev/null || true
     rm -f -- "$SERVER_NEW" 2>/dev/null || true
     rm -f -- "$CLI_DEST.new" 2>/dev/null || true
+    rm -rf -- "$UI_NEW" 2>/dev/null || true
+    # 换名两步之间被打断：把 ui.bak 换回，别留「无页面目录＋指针」。
+    if [ -n "${UI_BAK:-}" ] && [ -e "$UI_BAK" ] && [ ! -e "$UI_DEST" ]; then
+        mv -T "$UI_BAK" "$UI_DEST" 2>/dev/null || true
+    fi
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -315,6 +369,27 @@ if [ -z "$ROOT" ]; then
     chown root:root "$(dest /etc/yiban/registry.json)"
 fi
 
+# 前端产物暂存（CLEAN-0）：停服务之前复制。
+# 换名与 .env 都留到二进制就位之后：新 UI 与指针不得先于新二进制生效。
+# 暂存失败时服务仍在跑旧件，旧 UI 原样。
+if [ -n "$UI_DIR" ]; then
+    [ -r "$ENV_FILE" ] || { echo "update: cannot read $ENV_FILE; ui unchanged" >&2; exit 1; }
+    rm -rf -- "$UI_NEW"
+    if ! install -d -m 0755 "$UI_NEW" || ! cp -R "$UI_DIR/." "$UI_NEW/"; then
+        echo "update: cannot stage new ui at $UI_NEW; installed files unchanged" >&2
+        exit 1
+    fi
+    chmod -R a+rX "$UI_NEW"
+    if [ -z "$ROOT" ]; then
+        chown -R "$SERVICE_USER:$SERVICE_USER" "$UI_NEW"
+    fi
+else
+    # 已装过页面却漏了参数：页面停在旧版本，必须显性可见（跳过 ≠ 绿）。
+    if [ -r "$ENV_FILE" ] && grep -q '^YIBAN_UI_DIR=' "$ENV_FILE"; then
+        echo "update: WARNING: no --ui-dir given; the installed page stays unchanged" >&2
+    fi
+fi
+
 # 载入 /etc/yiban/.env 的 KEY=VALUE（systemd 同源），DSN 由此而来。
 # **不** source：DSN 含 `&` 或 `#` 时 shell 会切开赋值，变量落进子 shell
 # 不外泄，迁移收到空 DSN。本函数只做四件事：跳过空行与 `#` 注释、
@@ -345,7 +420,6 @@ load_env_file() {
     done < "$file"
 }
 
-ENV_FILE="$(dest /etc/yiban/.env)"
 load_env_file "$ENV_FILE"
 
 echo "update: stopping $UNIT"
@@ -401,6 +475,59 @@ if [ -n "$STAGED_CLI" ]; then
     mv "$CLI_DEST.new" "$CLI_DEST"
 fi
 
+# 前端产物换名：新二进制已就位，起服务之前激活。
+# 失败则换回旧二进制并起服务：旧件继续跑，不留「新 UI＋旧 API」。
+if [ -n "$UI_DIR" ]; then
+    # 删除/换名前钉路径形状：不按变量盲删。
+    case "$UI_DEST" in
+        */var/lib/yiban/ui) ;;
+        *) echo "update: refusing to replace unexpected ui path: $UI_DEST" >&2; exit 2 ;;
+    esac
+    rm -rf -- "$UI_BAK" || {
+        echo "update: cannot clear the previous ui: $UI_BAK" >&2
+        mv -T "$BAK" "$SERVER_DEST"
+        "$SYSTEMCTL" start "$UNIT"
+        exit 1
+    }
+    if [ -e "$UI_DEST" ]; then
+        if ! mv -T "$UI_DEST" "$UI_BAK"; then
+            echo "update: cannot move the current ui aside: $UI_DEST" >&2
+            mv -T "$BAK" "$SERVER_DEST"
+            "$SYSTEMCTL" start "$UNIT"
+            exit 1
+        fi
+    fi
+    # -T 把目标当普通路径：目标仍在时直接失败，不会把新目录嵌进旧目录。
+    if ! mv -T "$UI_NEW" "$UI_DEST" || [ ! -f "$UI_DEST/index.html" ]; then
+        rm -rf -- "$UI_DEST"
+        if [ -e "$UI_BAK" ]; then
+            mv -T "$UI_BAK" "$UI_DEST"
+            echo "update: cannot activate the new ui; restored the previous directory" >&2
+        else
+            # 首次装 UI 就失败：没有页面可留，撤掉可能的悬空指针。
+            if ! drop_ui_env; then
+                echo "update: cannot clear YIBAN_UI_DIR; manual fix needed" >&2
+            fi
+            echo "update: cannot activate the new ui; no previous directory to restore" >&2
+        fi
+        mv -T "$BAK" "$SERVER_DEST"
+        "$SYSTEMCTL" start "$UNIT"
+        exit 1
+    fi
+    # 目录就位后才写指针：早退路径不会留下悬空 YIBAN_UI_DIR。
+    if ! write_ui_env; then
+        rm -rf -- "$UI_DEST"
+        if [ -e "$UI_BAK" ]; then
+            mv -T "$UI_BAK" "$UI_DEST"
+        fi
+        mv -T "$BAK" "$SERVER_DEST"
+        "$SYSTEMCTL" start "$UNIT"
+        echo "update: cannot write $ENV_FILE; restored the previous state" >&2
+        exit 1
+    fi
+    echo "update: ui updated at $SERVICE_HOME/ui (previous kept at $UI_BAK)"
+fi
+
 echo "update: starting $UNIT"
 "$SYSTEMCTL" start "$UNIT"
 
@@ -430,7 +557,22 @@ echo "update: healthz failed after swap; rolling back to $BAK" >&2
 # 必须先 stop：旧进程仍持有新二进制，对 active 单元 start 是 no-op，
 # 只换文件不重启则回滚后的「旧件在跑」是假的。
 "$SYSTEMCTL" stop "$UNIT"
-mv "$BAK" "$SERVER_DEST"
+mv -T "$BAK" "$SERVER_DEST"
+# UI 也必须一起回滚：否则旧二进制配新页面（P1）。
+if [ -n "$UI_DIR" ]; then
+    case "$UI_DEST" in
+        */var/lib/yiban/ui) rm -rf -- "$UI_DEST" ;;
+        *) echo "update: refusing to remove unexpected ui path: $UI_DEST" >&2; exit 2 ;;
+    esac
+    if [ -e "$UI_BAK" ]; then
+        mv -T "$UI_BAK" "$UI_DEST"
+    else
+        # 首次装页面就回滚：撤掉指针，旧二进制恢复「无页面」形态。
+        if ! drop_ui_env; then
+            echo "update: cannot clear YIBAN_UI_DIR; manual fix needed" >&2
+        fi
+    fi
+fi
 "$SYSTEMCTL" start "$UNIT"
 if probe; then
     echo "update: rolled back; old binary is serving again" >&2

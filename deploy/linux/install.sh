@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-# deploy/linux/install.sh — Go 服务端裸机安装器（systemd 宿主）。
+# deploy/linux/install.sh — Go 服务端＋React 前端的裸机安装器（systemd 宿主）。
 #
 # 前提：PostgreSQL 18 已就绪且可连（建库不在本脚本职责内；
 # 容器形态走 deploy/docker，不用本脚本）。
@@ -8,8 +8,11 @@
 # 用法：
 #   sudo bash deploy/linux/install.sh \
 #     --server-bin ./dist/yiban-server --cli-bin ./dist/yiban-cli \
+#     --ui-dir ./ui/dist \
 #     [--database-url postgres://...]
 #   DSN 缺省读环境变量 YIBAN_DATABASE_URL。
+#   --ui-dir 给前端构建产物目录（ui 目录执行 npm run build 得到 dist）。
+#   不给时只装 API：首页不可用，安装器会显式提示。
 #
 # 干跑钩子（e2e 用，两个都给才是完整干跑）：
 #   YIBAN_INSTALL_ROOT=/tmp/prefix   所有文件路径加该前缀；
@@ -18,9 +21,10 @@
 #
 # 步骤：依赖检查 → 服务用户 → 二进制落位 → /etc/yiban/.env
 #       （缺则生成随机 pepper/credential key 并打印一次）
+#       → 前端产物落位（给了 --ui-dir 时）
 #       → systemd 单元 → enable --now → /healthz 重试探测。
 #
-# 退出码：0 成功；1 健康检查超时（文件已落位，可查日志定位）；
+# 退出码：0 成功；1 健康检查超时或前端产物落位失败（可查日志定位）；
 #         2 用法错误或依赖缺失。
 # ============================================================
 set -euo pipefail
@@ -39,12 +43,14 @@ SERVER_BIN=""
 CLI_BIN=""
 DSN_FLAG=""
 REGISTRY=""
+UI_DIR=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --server-bin) SERVER_BIN="${2:?}"; shift 2 ;;
         --cli-bin) CLI_BIN="${2:?}"; shift 2 ;;
         --database-url) DSN_FLAG="${2:?}"; shift 2 ;;
         --registry) REGISTRY="${2:?}"; shift 2 ;;
+        --ui-dir) UI_DIR="${2:?}"; shift 2 ;;
         *) echo "install: unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -58,6 +64,11 @@ REGISTRY="${REGISTRY:-$REPO_ROOT/config/registry.json}"
 DATABASE_URL="${DSN_FLAG:-${YIBAN_DATABASE_URL:-}}"
 [ -n "$DATABASE_URL" ] || { echo "install: --database-url or YIBAN_DATABASE_URL is required" >&2; exit 2; }
 command -v openssl >/dev/null 2>&1 || { echo "install: openssl is required" >&2; exit 2; }
+if [ -n "$UI_DIR" ]; then
+    [ -d "$UI_DIR" ] || { echo "install: --ui-dir is not a directory: $UI_DIR" >&2; exit 2; }
+    [ -f "$UI_DIR/index.html" ] \
+        || { echo "install: --ui-dir has no index.html: $UI_DIR" >&2; exit 2; }
+fi
 
 # dest 把系统绝对路径映射到干跑前缀下。
 dest() { printf '%s%s' "$ROOT" "$1"; }
@@ -92,6 +103,7 @@ YIBAN_DATABASE_URL=$DATABASE_URL
 YIBAN_HTTP_ADDR=127.0.0.1:47183
 YIBAN_TZ=Asia/Shanghai
 YIBAN_PHOTO_DIR=$SERVICE_HOME/photos
+YIBAN_TRUSTED_PROXIES=127.0.0.1
 YIBAN_HASH_PEPPER=$(openssl rand -hex 32)
 YIBAN_CREDENTIAL_KEY=$(openssl rand -base64 32)
 EOF
@@ -113,6 +125,37 @@ fi
 install -m 0644 "$REGISTRY" "$(dest /etc/yiban/registry.json)"
 if [ -z "$ROOT" ]; then
     chown root:root "$(dest /etc/yiban/registry.json)"
+fi
+
+# 3b) 前端产物落位（给了 --ui-dir 时）。
+# 目标是运行期真实路径；干跑只把文件放到前缀下，.env 写的仍是真实路径，
+# 与 systemd 单元同一口径。旧哈希资产不删：它们不再被 index.html 引用，留着无害。
+UI_TARGET="$(dest "$SERVICE_HOME/ui")"
+if [ -n "$UI_DIR" ]; then
+    install -d -m 0755 "$UI_TARGET"
+    cp -R "$UI_DIR/." "$UI_TARGET/"
+    chmod -R a+rX "$UI_TARGET"
+    if [ -z "$ROOT" ]; then
+        chown -R "$SERVICE_USER:$SERVICE_USER" "$UI_TARGET"
+    fi
+    # 幂等写键：删旧行再追加，不重排 .env 的其余行。
+    # .env 刚创建或已收紧权限，读不到即中止：不能把它截断成只剩一行。
+    # umask 077 让临时文件从创建那一刻就是 0600：密钥没有可读窗口。
+    [ -r "$ENV_FILE" ] || { echo "install: cannot read $ENV_FILE" >&2; exit 1; }
+    TMP_ENV="$ENV_FILE.tmp.$$"
+    (
+        umask 077
+        sed '/^YIBAN_UI_DIR=/d' "$ENV_FILE" > "$TMP_ENV"
+        printf 'YIBAN_UI_DIR=%s\n' "$SERVICE_HOME/ui" >> "$TMP_ENV"
+    )
+    chmod 600 "$TMP_ENV"
+    if [ -z "$ROOT" ]; then
+        chown root:root "$TMP_ENV"
+    fi
+    mv "$TMP_ENV" "$ENV_FILE"
+    echo "install: ui installed at $SERVICE_HOME/ui"
+else
+    echo "install: --ui-dir not given: API only (no page at /)"
 fi
 
 # 生成的密钥只在这里打印一次；丢了就只能重新生成并承担轮换口径。

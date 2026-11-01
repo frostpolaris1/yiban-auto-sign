@@ -60,3 +60,15 @@ docker-compose.yml
 .dockerignore
 # 内部 AI 工作记忆（与 .gitignore 同口径，缩构建上下文）
 .workbuddy/
+
+# 新栈前端：镜像内重新 npm ci 与构建。
+# 本机 node_modules 与产物既占上下文，也会覆盖容器内的平台相关依赖。
+ui/node_modules
+ui/dist
+ui/dist-showcase
+ui/test-results
+ui/playwright-report
+ui/scripts/api-codegen/node_modules
+
+# 过程稿（work/ 不入库）：计划、交接、审查产物与日志
+work

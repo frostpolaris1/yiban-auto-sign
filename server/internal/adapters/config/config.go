@@ -111,6 +111,9 @@ type Config struct {
 
 	// PhotoDir 是图片 blob 存储根目录。
 	PhotoDir string
+	// UIDir 是前端构建产物目录（含 index.html）。
+	// 空表示只提供 API；非空时服务端同时托管页面与深链。
+	UIDir string
 
 	// 入站限流面。默认开启；阈值与域见 config/registry.json。
 	RateLimitEnabled  bool
@@ -294,6 +297,7 @@ var (
 	keyHTTPAddr         = stringKey{"YIBAN_HTTP_ADDR", DefaultHTTPAddr}
 	keyTimezone         = stringKey{"YIBAN_TZ", DefaultTimezone}
 	keyPhotoDir         = stringKey{"YIBAN_PHOTO_DIR", DefaultPhotoDir}
+	keyUIDir            = stringKey{"YIBAN_UI_DIR", ""}
 	keyDatabaseURL      = stringKey{"YIBAN_DATABASE_URL", ""}
 
 	keyResetMailEnabled = boolKey{"YIBAN_RESET_MAIL_ENABLE", false}
@@ -331,6 +335,7 @@ func configSpecs() []keySpec {
 		keyHTTPAddr.spec(),
 		keyTimezone.spec(),
 		keyPhotoDir.spec(),
+		keyUIDir.spec(),
 		keyDatabaseURL.spec(),
 		keyResetMailEnabled.spec(),
 		keyMailHost.spec(),
@@ -471,6 +476,8 @@ func LoadFrom(src Source) (*Config, error) {
 	if cfg.PhotoDir == "" {
 		return nil, errors.New("config: YIBAN_PHOTO_DIR must not be empty")
 	}
+	// 空表示只提供 API；非空目录的存在性由 router.New 在启动期校验。
+	cfg.UIDir = strings.TrimSpace(keyUIDir.read(src))
 
 	// 重置邮件面：缺省关闭；打开后必须给全发件账号与公网基址，否则启动即失败。
 	// 只看 YIBAN_RESET_MAIL_ENABLE：YIBAN_MAIL_ENABLE 属旧通知线，Go 侧不读。
