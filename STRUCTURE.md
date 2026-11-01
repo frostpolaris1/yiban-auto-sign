@@ -54,9 +54,11 @@ server/
 
 ### 3.1 域名单
 
-十个域，Go 与 UI 同名同词：
+九个已建包的域（Go 与 UI 用同一套域词；目录名按各层复数约定）：
 
-`auth`、`user`、`school`、`account`、`schedule`、`signing`、`photo`、`audit`、`notify`、`diagnostic`
+`auth`、`user`、`school`、`account`、`schedule`、`signing`、`photo`、`audit`、`diagnostic`
+
+`notify` 尚未建包（通知计划见工单 `0v8`）；在它落地前不要建同名目录，结构门会红。
 
 ### 3.2 每个域落在哪
 
@@ -64,7 +66,7 @@ server/
 |---|---|---|
 | 纯领域 | `internal/core/<域>/` | 值对象、规则、状态机。不碰数据库与 HTTP |
 | 用例 | `internal/app/<域>/` | 一个用户动作一个函数。开事务、调仓储、写审计 |
-| 适配器 | `internal/adapters/<设施>/` | 按**设施**分，不按域分：`pg`、`session`、`config`、`audit`、`mail`、`sse`、`image`、`upstream` |
+| 适配器 | `internal/adapters/<设施>/` | 按**设施**分，不按域分：`pg`、`session`、`config`、`mail`、`storage`、`legacy` |
 | HTTP | `internal/entry/http/<域>/` | 解析请求、调用用例、写响应 |
 | 生成 | `internal/entry/http/oapi/` | OpenAPI 生成物，不手改 |
 
@@ -83,7 +85,7 @@ server/
 ui/src/
 ├── app/            启动、路由、Provider、守卫
 ├── pages/          路由页，一页一文件，文件名以 Page 结尾
-├── features/       按域组织：auth / dashboard / school / account / ...
+├── features/       按域组织：auth / dashboard / design / user / schools / accounts / schedule / run / settings
 ├── components/
 │   ├── shell/      Sidebar / Topbar / Footer / AppShell
 │   └── ui/         无域原语：Button / Input / Card / Table / Modal / Tabs / Switch
@@ -118,9 +120,9 @@ ui/src/
 | 存储 | `server/internal/adapters/pg/account.go` |
 | HTTP | `server/internal/entry/http/account/pause.go` |
 | 迁移 | `server/migrations/postgres/000NN_account_pause.sql` |
-| 前端页 | 不改页面时只加 `ui/src/features/account/` 的按钮与 hook |
+| 前端页 | 不改页面时只加 `ui/src/features/accounts/` 的按钮与 hook |
 | 契约测试 | `server/internal/entry/http/account/pause_test.go` |
-| 前端测试 | `ui/src/features/account/*.test.tsx` |
+| 前端测试 | `ui/src/features/accounts/*.test.tsx` |
 
 ## 6. 门
 
@@ -129,7 +131,9 @@ ui/src/
 1. 顶层目录必须在名册内。
 2. `server/internal/*` 与 `ui/src/*` 的子目录必须在名册内。
 3. 新增域必须登记，否则门红。
-4. 名册为空、作用域不存在、扫描集为空时门报错，不当绿。未到阶段的作用域用 `?` 标记。
+4. **反向也查**：名册里登记的 token 必须真有对应目录，否则门红（死 token 会放行已删目录的重建）。
+5. 名册为空、作用域不存在、扫描集为空时门报错，不当绿。未到阶段的作用域用 `?` 标记；
+   运行期/本地目录（`work`、`data`、`out`）用 `?token` 标记为允许缺席。
 
 前端导入方向由 `ui/scripts/structure-gate.mjs` 解析模块路径后判定。
 该门只扫 `ui/`。`docs/`、`server/`、`tests/` 不在它扫描面内，`server/` 的 `work/` 引用无自动门，靠审查。

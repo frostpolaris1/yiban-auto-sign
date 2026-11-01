@@ -225,16 +225,99 @@ func TestStructureRowsPinned(t *testing.T) {
 	}
 	h := sha256.New()
 	for _, r := range rules {
-		keys := make([]string, 0, len(r.allow))
+		keys := make([]string, 0, len(r.allow)+len(r.optionalAllow))
 		for k := range r.allow {
 			keys = append(keys, k)
+		}
+		// 可选 token 带 ? 前缀进快照：去掉 ? 是显式决定，不能静默。
+		for k := range r.optionalAllow {
+			keys = append(keys, "?"+k)
 		}
 		sort.Strings(keys)
 		fmt.Fprintf(h, "%s\t%s\t%t\t%s\n", r.scope, strings.Join(keys, ","), r.optional, r.note)
 	}
 	got := hex.EncodeToString(h.Sum(nil))
-	const want = "28941e99e32e92081a2e97f2c3fbc9ccc4d7d02607acdee098075fc8dd044fc2"
+	const want = "9d29fbc83973be5c447854a17d8b10b6c4d4af9ed6123ed7e51a9fd176af453e"
 	if got != want {
 		t.Fatalf("structure 内容变了（hash %s）；确认改动后更新 TestStructureRowsPinned 的哈希", got)
+	}
+}
+
+func TestLoadRulesParsesOptionalToken(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "structure.tsv")
+	writeFile(t, path, "root\tserver,?data\tnote\n")
+	rules, err := loadRules(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("rules = %#v", rules)
+	}
+	if !rules[0].allow["server"] {
+		t.Fatal("server must be required")
+	}
+	if rules[0].allow["data"] {
+		t.Fatal("data must not be required")
+	}
+	if !rules[0].optionalAllow["data"] {
+		t.Fatal("data must be optional")
+	}
+}
+
+func TestLoadRulesRejectsTokenBothRequiredAndOptional(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "structure.tsv")
+	writeFile(t, path, "root\tserver,?server\tnote\n")
+	if _, err := loadRules(path); err == nil {
+		t.Fatal("a token listed as both required and optional must fail")
+	}
+}
+
+// 反向检查：登记了却没有目录 ⇒ 红。死 token 会放行已删目录的重建。
+func TestCheckAllowlistFlagsMissingRegisteredToken(t *testing.T) {
+	root := t.TempDir()
+	mkdirs(t, root, "server/core")
+	rules := []rule{{scope: "server", allow: map[string]bool{"core": true, "gone": true}}}
+	problems, _, err := checkAllowlist(root, rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(problems) != 1 || !strings.Contains(problems[0], `"gone"`) ||
+		!strings.Contains(problems[0], "does not exist") {
+		t.Fatalf("problems = %#v", problems)
+	}
+}
+
+// ? 前缀的 token 允许缺席；存在时也不报未登记。
+func TestCheckAllowlistAcceptsOptionalMissingToken(t *testing.T) {
+	root := t.TempDir()
+	mkdirs(t, root, "server/core")
+	rules := []rule{{
+		scope:         "server",
+		allow:         map[string]bool{"core": true},
+		optionalAllow: map[string]bool{"data": true},
+	}}
+	problems, _, err := checkAllowlist(root, rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(problems) != 0 {
+		t.Fatalf("problems = %#v", problems)
+	}
+}
+
+func TestCheckAllowlistAcceptsOptionalTokenWhenPresent(t *testing.T) {
+	root := t.TempDir()
+	mkdirs(t, root, "server/core", "server/data")
+	rules := []rule{{
+		scope:         "server",
+		allow:         map[string]bool{"core": true},
+		optionalAllow: map[string]bool{"data": true},
+	}}
+	problems, _, err := checkAllowlist(root, rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(problems) != 0 {
+		t.Fatalf("problems = %#v", problems)
 	}
 }

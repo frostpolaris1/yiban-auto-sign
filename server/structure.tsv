@@ -3,17 +3,19 @@
 # Columns: scope <TAB> comma-separated allowed child directories <TAB> note
 # A scope is a directory path relative to the repository root.
 # Every immediate child directory of a scope must be listed here.
+# A ? prefix on a token means the directory may be absent in this phase
+# (runtime/local directories such as work/data/out).
 # An empty file, an empty allowlist or an unknown scope is an error.
 # Files are not checked by the allowlist; naming rules apply separately.
 
-root	server,ui,docs,work,deploy,docker,yiban,web,frontend,tests,scripts,config,data,out,.github	top level
+root	server,ui,docs,deploy,docker,yiban,web,frontend,tests,scripts,config,.github,?work,?data,?out	top level
 server/internal	core,app,adapters,entry,signing,assembly	layers
 server/cmd	server,cli,bench,probe-login	process entrypoints
 server/migrations	postgres	SQL migrations
-server/internal/core	auth,user,school,account,schedule,signing,photo,audit,notify,mail,diagnostic,clock,status,errs,mask,retry,egress,plan,capacity,image,scope,window,rate,location	pure domain packages
-server/internal/app	auth,user,school,account,admin,schedule,timepref,signing,photo,photos,location,audit,notify,diagnostic,egress,worker,events,retention	use cases
-server/internal/adapters	pg,session,config,audit,mail,sse,image,storage,upstream,legacy	infrastructure packages
-server/internal/entry/http	router,respond,oapi,auth,user,school,account,admin,schedule,signing,photo,photos,location,audit,notify,diagnostic,events,ratelimit	http handlers
+server/internal/core	auth,user,school,account,schedule,photo,audit,mail,diagnostic,clock,status,errs,mask,retry,egress,plan,capacity,image,scope,window,rate,location	pure domain packages
+server/internal/app	auth,user,school,account,admin,schedule,timepref,photos,location,audit,diagnostic,egress,worker,events,retention	use cases
+server/internal/adapters	pg,session,config,mail,storage,legacy	infrastructure packages
+server/internal/entry/http	router,respond,oapi,user,school,account,admin,schedule,signing,photos,location,events,ratelimit	http handlers
 ui/src	app,pages,features,components,lib,styles	frontend layers
-ui/src/features	auth,dashboard,design,user,school,schools,account,accounts,schedule,run,signing,photo,audit,notify,diagnostic,settings	domain features
+ui/src/features	auth,dashboard,design,user,schools,accounts,schedule,run,settings	domain features
 ui/src/components	shell,ui	shared components

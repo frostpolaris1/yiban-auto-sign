@@ -1,7 +1,10 @@
 // Command structure 执行仓库布局检查。
 //
 // # 功能
-// 读 structure.tsv，核对每个受管域的直属子目录都已登记。
+// 读 structure.tsv，核对两个方向：
+//   - 磁盘 → 注册表：每个受管域的直属子目录都已登记；
+//   - 注册表 → 磁盘：登记的每个 token 都真实存在（? 前缀的 token 允许缺席）。
+//
 // 缺域除非以 ? 标记为可选，否则报错。它还执行前端命名规则。
 // 导入方向由 ui/scripts/structure-gate.mjs 检查（该脚本解析模块路径）。
 // 本命令**不**改文件、**不**移动目录、**不**启动服务。
@@ -30,10 +33,11 @@ import (
 
 // rule 是一个受管目录及其已登记子目录。
 type rule struct {
-	scope    string
-	optional bool
-	allow    map[string]bool
-	note     string
+	scope         string
+	optional      bool
+	allow         map[string]bool
+	optionalAllow map[string]bool
+	note          string
 }
 
 var (
@@ -105,21 +109,35 @@ func loadRules(path string) ([]rule, error) {
 			return nil, fmt.Errorf("%s:%d: unknown scope %q", path, line, scope)
 		}
 		allow := map[string]bool{}
+		optionalAllow := map[string]bool{}
 		for _, name := range strings.Split(parts[1], ",") {
 			name = strings.TrimSpace(name)
 			if name == "" {
 				continue
 			}
+			if strings.HasPrefix(name, "?") {
+				name = strings.TrimPrefix(name, "?")
+				if name == "" {
+					return nil, fmt.Errorf("%s:%d: empty optional token", path, line)
+				}
+				optionalAllow[name] = true
+				continue
+			}
 			allow[name] = true
 		}
-		if len(allow) == 0 {
+		for name := range allow {
+			if optionalAllow[name] {
+				return nil, fmt.Errorf("%s:%d: token %q is both required and optional", path, line, name)
+			}
+		}
+		if len(allow)+len(optionalAllow) == 0 {
 			return nil, fmt.Errorf("%s:%d: empty allowlist", path, line)
 		}
 		note := ""
 		if len(parts) >= 3 {
 			note = strings.TrimSpace(parts[2])
 		}
-		rules = append(rules, rule{scope: scope, optional: optional, allow: allow, note: note})
+		rules = append(rules, rule{scope: scope, optional: optional, allow: allow, optionalAllow: optionalAllow, note: note})
 	}
 	if err := sc.Err(); err != nil {
 		return nil, err
@@ -152,8 +170,11 @@ func knownScope(scope string) bool {
 	return false
 }
 
-// checkAllowlist 报告缺失的必需域与未登记的子目录，
-// 并统计磁盘上真实存在的域数。
+// checkAllowlist 报告两个方向的问题：
+//   - 缺失的必需域与未登记的子目录；
+//   - 登记了却不存在的 token（? 前缀的 token 允许缺席）。
+//
+// 它还统计磁盘上真实存在的域数。
 func checkAllowlist(root string, rules []rule) ([]string, int, error) {
 	var problems []string
 	seen := 0
@@ -179,6 +200,20 @@ func checkAllowlist(root string, rules []rule) ([]string, int, error) {
 		if r.scope != "root" {
 			seen++
 		}
+		// 反向检查：登记了却没有目录，说明注册表带着死 token。
+		// 死 token 会静默放行已删目录的重建，故与「未登记目录」同权判红。
+		// 确实可能缺席的运行期目录用 ? 前缀显式豁免（root 的 work/data/out）。
+		present := make(map[string]bool, len(entries))
+		for _, e := range entries {
+			if e.IsDir() {
+				present[e.Name()] = true
+			}
+		}
+		for name := range r.allow {
+			if !present[name] {
+				problems = append(problems, fmt.Sprintf("%s: registered directory %q does not exist (remove it or mark it optional with ?)", r.scope, name))
+			}
+		}
 		for _, e := range entries {
 			if !e.IsDir() {
 				continue
@@ -190,7 +225,7 @@ func checkAllowlist(root string, rules []rule) ([]string, int, error) {
 			if r.scope == "root" && strings.HasPrefix(name, ".") {
 				continue
 			}
-			if !r.allow[name] {
+			if !r.allow[name] && !r.optionalAllow[name] {
 				problems = append(problems, fmt.Sprintf("%s: unregistered directory %q (register it in structure.tsv)", r.scope, name))
 			}
 		}
