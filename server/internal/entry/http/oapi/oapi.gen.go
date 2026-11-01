@@ -757,6 +757,12 @@ type EngineRetryRow struct {
 	RunAt      time.Time `json:"run_at"`
 	SchoolId   string    `json:"school_id"`
 	SchoolName string    `json:"school_name"`
+
+	// TaskId The sign task row id; the business identity of a retry row, since one account can have several pending retries for one day.
+	TaskId string `json:"task_id"`
+
+	// TaskName The school task name, shown so a multi-retry account is readable.
+	TaskName string `json:"task_name"`
 }
 
 // EngineSnapshot defines model for EngineSnapshot.
@@ -776,8 +782,12 @@ type EngineSnapshot struct {
 	LastTickAt *time.Time `json:"last_tick_at"`
 
 	// Retrying Pending tasks with at least one business attempt, ordered by the
-	// next run time ascending. Waiting requeues never count an attempt.
+	// next run time ascending, capped at the 200 soonest rows. Waiting
+	// requeues never count an attempt.
 	Retrying []EngineRetryRow `json:"retrying"`
+
+	// RetryingTruncated True when more retry rows exist beyond the 200-row cap; the client must not read the list as complete.
+	RetryingTruncated bool `json:"retrying_truncated"`
 
 	// TodayFailed Tasks that reached failed on the current business day, in the caller's school scope.
 	TodayFailed int `json:"today_failed"`

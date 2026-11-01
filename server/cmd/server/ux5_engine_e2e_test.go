@@ -22,6 +22,7 @@ package main
 // /api/me/diagnostics 的 updated_at 取（canonical 的 clock.now 判据）。
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -29,7 +30,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
+	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
+	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
+	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
 )
 
@@ -45,10 +50,12 @@ type u5Inflight struct {
 
 // u5Retry 是契约 EngineRetryRow 的形状。
 type u5Retry struct {
+	TaskID             string    `json:"task_id"`
 	AccountID          string    `json:"account_id"`
 	AccountPhoneMasked string    `json:"account_phone_masked"`
 	SchoolID           string    `json:"school_id"`
 	SchoolName         string    `json:"school_name"`
+	TaskName           string    `json:"task_name"`
 	Attempts           int       `json:"attempts"`
 	RunAt              time.Time `json:"run_at"`
 	Result             string    `json:"result"`
@@ -56,14 +63,15 @@ type u5Retry struct {
 
 // u5Engine 是契约 EngineSnapshot 的形状。
 type u5Engine struct {
-	Inflight        []u5Inflight `json:"inflight"`
-	DueNow          int          `json:"due_now"`
-	TodaySuccess    int          `json:"today_success"`
-	TodayFailed     int          `json:"today_failed"`
-	Retrying        []u5Retry    `json:"retrying"`
-	LastClaimAt     *time.Time   `json:"last_claim_at"`
-	LastTickAt      *time.Time   `json:"last_tick_at"`
-	WorkerStartedAt *time.Time   `json:"worker_started_at"`
+	Inflight          []u5Inflight `json:"inflight"`
+	DueNow            int          `json:"due_now"`
+	TodaySuccess      int          `json:"today_success"`
+	TodayFailed       int          `json:"today_failed"`
+	Retrying          []u5Retry    `json:"retrying"`
+	RetryingTruncated bool         `json:"retrying_truncated"`
+	LastClaimAt       *time.Time   `json:"last_claim_at"`
+	LastTickAt        *time.Time   `json:"last_tick_at"`
+	WorkerStartedAt   *time.Time   `json:"worker_started_at"`
 }
 
 // u5NowFromServer 向服务端要当前时刻（/api/me/diagnostics 的 updated_at）。
@@ -232,8 +240,9 @@ func TestU5EngineTodayCounts(t *testing.T) {
 	}
 }
 
-// 待重试：pending 且 attempts>0 才出现；attempts、下次 run_at、result 齐；
-// 按 run_at 升序；attempts=0 与终态行不出现。
+// 待重试：pending 且 attempts>0 才出现；attempts、下次 run_at、result、
+// 任务名齐；按 run_at 升序；attempts=0 与终态行不出现；
+// 同账号两条待重试（同日两个学校任务）都出现且 task_id 互不相同。
 func TestU5EngineRetryingRows(t *testing.T) {
 	e := u3NewEnv(t)
 	_, client := u3LoginSeed(t, e, "u5-master@example.com", "master-pass", coreauth.RoleMaster)
@@ -243,17 +252,17 @@ func TestU5EngineRetryingRows(t *testing.T) {
 	day := now.UTC().Format("2006-01-02")
 	school := u3SeedSchool(t, e, "U5 重试学校")
 	task := u3SeedTask(t, e, school.ID, "早签到")
+	taskLate := u3SeedTask(t, e, school.ID, "晚自习签到")
 
 	soon := now.Add(30 * time.Minute)
 	late := now.Add(2 * time.Hour)
 	acc1 := u3SeedAccount(t, e, owner.ID, school.ID, "13800138021")
-	u3SeedSignTask(t, e, task, acc1, day, late, status.TaskPending, 2, "transient", nil)
+	earlyID := u3SeedSignTask(t, e, task, acc1, day, soon, status.TaskPending, 1, "rejected", nil)
+	lateID := u3SeedSignTask(t, e, taskLate, acc1, day, late, status.TaskPending, 2, "transient", nil)
 	acc2 := u3SeedAccount(t, e, owner.ID, school.ID, "13800138022")
-	u3SeedSignTask(t, e, task, acc2, day, soon, status.TaskPending, 1, "rejected", nil)
+	u3SeedSignTask(t, e, task, acc2, day, soon, status.TaskPending, 0, "", nil)
 	acc3 := u3SeedAccount(t, e, owner.ID, school.ID, "13800138023")
-	u3SeedSignTask(t, e, task, acc3, day, soon, status.TaskPending, 0, "", nil)
-	acc4 := u3SeedAccount(t, e, owner.ID, school.ID, "13800138024")
-	u3SeedSignTask(t, e, task, acc4, day, soon, status.TaskFailed, 3, "blocked", nil)
+	u3SeedSignTask(t, e, task, acc3, day, soon, status.TaskFailed, 3, "blocked", nil)
 
 	resp, snap, body := u5EngineGet(e, client)
 	if resp.StatusCode != http.StatusOK {
@@ -266,15 +275,73 @@ func TestU5EngineRetryingRows(t *testing.T) {
 		t.Fatal("retrying rows must be ordered by run_at ascending")
 	}
 	first := snap.Retrying[0]
-	if first.AccountPhoneMasked != "138****8022" || first.Attempts != 1 || first.Result != "rejected" {
-		t.Fatalf("first retry = %+v, want 138****8022 attempts 1 rejected", first)
+	if first.AccountPhoneMasked != "138****8021" || first.Attempts != 1 || first.Result != "rejected" {
+		t.Fatalf("first retry = %+v, want 138****8021 attempts 1 rejected", first)
+	}
+	if first.TaskID != earlyID || first.TaskName != "早签到" {
+		t.Fatalf("first retry identity = %s/%s, want %s/早签到", first.TaskID, first.TaskName, earlyID)
 	}
 	second := snap.Retrying[1]
-	if second.Attempts != 2 || !second.RunAt.Equal(late) {
-		t.Fatalf("second retry = %+v, want attempts 2 at %v", second, late)
+	if second.TaskID != lateID || second.TaskName != "晚自习签到" || second.Attempts != 2 || !second.RunAt.Equal(late) {
+		t.Fatalf("second retry = %+v, want task %s 晚自习签到 attempts 2 at %v", second, lateID, late)
 	}
-	if strings.Contains(string(body), "13800138021") || strings.Contains(string(body), "13800138022") {
+	if first.TaskID == second.TaskID {
+		t.Fatal("two retries of one account must carry distinct task ids")
+	}
+	if snap.RetryingTruncated {
+		t.Fatal("two retry rows must not read as truncated")
+	}
+	if strings.Contains(string(body), "13800138021") {
 		t.Fatal("the full phone number must never leave the server")
+	}
+}
+
+// 待重试超过 200 条：只回最先到期的 200 条，retrying_truncated 如实为真。
+func TestU5EngineRetryingTruncated(t *testing.T) {
+	e := u3NewEnv(t)
+	_, client := u3LoginSeed(t, e, "u5-master@example.com", "master-pass", coreauth.RoleMaster)
+	owner := w2dSeedUser(t, e, "u5-owner@example.com", "owner-pass", coreauth.RoleUser)
+
+	now := u5NowFromServer(t, e, client)
+	school := u3SeedSchool(t, e, "U5 截断学校")
+	task := u3SeedTask(t, e, school.ID, "早签到")
+	acc := u3SeedAccount(t, e, owner.ID, school.ID, "13800138041")
+
+	// 同账号同任务、跨 201 个业务日各一条：超出 EngineRetryLimit 一行。
+	const total = 201
+	rows := make([]coreschedule.PlanRow, 0, total)
+	for i := 0; i < total; i++ {
+		rows = append(rows, coreschedule.PlanRow{
+			AccountID: acc, SchoolTaskID: task,
+			Day:   now.UTC().AddDate(0, 0, -total+i).Format("2006-01-02"),
+			RunAt: now.Add(time.Duration(i-total) * time.Minute),
+		})
+	}
+	repo := pg.NewScheduleRepo(e.db)
+	if _, err := repo.InsertPlan(e.ctx, rows); err != nil {
+		t.Fatalf("insert plan: %v", err)
+	}
+	if _, err := e.db.Exec(e.ctx,
+		`UPDATE sign_tasks SET state = 'pending', attempts = 2, result = 'transient'
+		  WHERE account_id = $1::uuid AND school_task_id = $2::uuid`,
+		acc, task); err != nil {
+		t.Fatalf("seed retry states: %v", err)
+	}
+
+	resp, snap, _ := u5EngineGet(e, client)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if len(snap.Retrying) != 200 {
+		t.Fatalf("retrying = %d rows, want the 200-row cap", len(snap.Retrying))
+	}
+	if !snap.RetryingTruncated {
+		t.Fatal("retrying_truncated must be true when the cap cuts rows")
+	}
+	for i := 1; i < len(snap.Retrying); i++ {
+		if snap.Retrying[i].RunAt.Before(snap.Retrying[i-1].RunAt) {
+			t.Fatal("capped rows must stay ordered by run_at ascending")
+		}
 	}
 }
 
@@ -339,5 +406,45 @@ func TestU5EngineIgnoresQuery(t *testing.T) {
 	resp, _ := u3Get(e, client, "/api/admin/engine?"+url.Values{"limit": {"5"}}.Encode())
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (unknown query keys are not an error)", resp.StatusCode)
+	}
+}
+
+// 循环与端点必须共享同一 EngineState（装配级接线判据）。
+// 若装配给了两个实例，端点永远报「未启动」，常规快照用例照样全绿：
+// 本用例起真循环、跑出 tick，再用 HTTP 读回非空时刻。
+func TestU5EngineSharesLoopState(t *testing.T) {
+	e := u3NewEnv(t)
+	_, client := u3LoginSeed(t, e, "u5-master@example.com", "master-pass", coreauth.RoleMaster)
+	if e.stack.Worker == nil || e.stack.EngineState == nil {
+		t.Fatal("the assembled stack must carry a worker and its engine state")
+	}
+
+	loop := appworker.NewLoop(e.stack.Worker, e.stack.Worker, coreclock.System{},
+		e.stack.EngineState, 5*time.Millisecond, 1)
+	if err := loop.Start(); err != nil {
+		t.Fatalf("start loop: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = loop.Stop(ctx)
+	})
+
+	// 轮询端点直到最近一轮非空：循环与端点共享实例时这必然发生。
+	timeout := time.After(10 * time.Second)
+	for {
+		select {
+		case <-timeout:
+			t.Fatal("the endpoint never saw a loop tick; the handler and the loop hold different states")
+		default:
+		}
+		resp, snap, _ := u5EngineGet(e, client)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		if snap.WorkerStartedAt != nil && snap.LastTickAt != nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

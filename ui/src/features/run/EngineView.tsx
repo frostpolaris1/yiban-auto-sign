@@ -11,6 +11,8 @@
  * 只渲染无权限卡片；导航项由 `nav.ts` 的角色元数据隐藏。
  * 快照是单进程读数：无分页、无筛选，错误给 alert 与重试，
  * 空列表给各自的空态文案，失败不得渲染成「暂无」。
+ * 待重试行以 sign_tasks 行 ID 为行身份（同账号同日可有多条），
+ * 超过 200 条服务端截断并以 retrying_truncated 显式提示。
  * 租约剩余按客户端时钟每秒递减：服务端只给绝对到期时间。
  * 最近事件是本页开机以来经 SSE 收到的业务事件，容量 20 条，
  * 新事件在后；断线出横幅并可重连，断线期间快照每 10 秒轮询。
@@ -215,30 +217,39 @@ function EngineBody({ snapshot, now, live, events }: EngineBodyProps) {
             <span className="app-muted">失败且当日仍有预算的任务会出现在这里。</span>
           </p>
         ) : (
-          <table className="table run-table engine-table">
-            <thead>
-              <tr>
-                <th scope="col">账号</th>
-                <th scope="col">学校</th>
-                <th scope="col">已试</th>
-                <th scope="col">下次执行</th>
-                <th scope="col">结果</th>
-              </tr>
-            </thead>
-            <tbody>
-              {snapshot.retrying.map((row) => (
-                <tr key={row.account_id}>
-                  <td>{row.account_phone_masked}</td>
-                  <td>{row.school_name}</td>
-                  <td>{row.attempts} 次</td>
-                  <td>
-                    <time dateTime={row.run_at}>{formatDateTime(row.run_at)}</time>
-                  </td>
-                  <td className="run-table-result">{row.result || '—'}</td>
+          <>
+            {snapshot.retrying_truncated ? (
+              <p className="engine-truncated" role="status">
+                待重试超过 200 条，仅显示最先到期的 200 条。
+              </p>
+            ) : null}
+            <table className="table run-table engine-table">
+              <thead>
+                <tr>
+                  <th scope="col">账号</th>
+                  <th scope="col">学校</th>
+                  <th scope="col">任务</th>
+                  <th scope="col">已试</th>
+                  <th scope="col">下次执行</th>
+                  <th scope="col">结果</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {snapshot.retrying.map((row) => (
+                  <tr key={row.task_id}>
+                    <td>{row.account_phone_masked}</td>
+                    <td>{row.school_name}</td>
+                    <td>{row.task_name}</td>
+                    <td>{row.attempts} 次</td>
+                    <td>
+                      <time dateTime={row.run_at}>{formatDateTime(row.run_at)}</time>
+                    </td>
+                    <td className="run-table-result">{row.result || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
         )}
       </Card>
 

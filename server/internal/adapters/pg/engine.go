@@ -12,11 +12,13 @@ package pg
 //   - 到期：pending 且 run_at <= now（如实反映「到点未执行」，
 //     不再判账号可用性——那是认领判据，不是监控口径）；
 //   - 当日终态：success 与 failed 各一计数（FILTER 一次扫完）；
-//   - 待重试：pending 且 attempts>0，按 run_at 升序。
+//   - 待重试：pending 且 attempts>0，按 run_at 升序，
+//     行数截断于 EngineRetryLimit（多取一行探测截断）。
 // 列表顺序固定（在飞按认领时刻、待重试按落点），行 id 兜底，可重放。
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
@@ -71,13 +73,22 @@ func (r *ScheduleRepo) EngineSnapshot(ctx context.Context, scope corescope.Scope
 		return coreschedule.EngineData{}, mapError(err)
 	}
 
-	retrying := `SELECT s.account_id::text, a.phone, st.school_id::text, sc.name,
-		s.attempts, s.run_at, s.result` + engineFrom + `
+	// LIMIT 的参数位跟在作用域参数之后：master 无谓词时占 $1，
+	// admin 的作用域占 $1 时占 $2（与 ListTasks 的参数位推法同源）。
+	limitParam := len(scopeArgs) + 1
+	retrying := `SELECT s.id::text, s.account_id::text, a.phone, st.school_id::text, sc.name,
+		st.name, s.attempts, s.run_at, s.result` + engineFrom + `
 		AND s.state = 'pending' AND s.attempts > 0` + scopeClause + `
-		ORDER BY s.run_at, s.id`
-	if data.Retrying, err = r.engineRetrying(ctx, retrying, scopeArgs); err != nil {
+		ORDER BY s.run_at, s.id
+		LIMIT $` + strconv.Itoa(limitParam)
+	retryArgs := append(append([]any{}, scopeArgs...), coreschedule.EngineRetryLimit+1)
+	retryingRows, truncated, err := r.engineRetrying(ctx, retrying, retryArgs)
+	if err != nil {
 		return coreschedule.EngineData{}, err
 	}
+	data.Retrying = retryingRows
+	// 多取的一行只用于报截断：截断事实随响应显式上报，不静默。
+	data.RetryingTruncated = truncated
 	return data, nil
 }
 
@@ -101,22 +112,28 @@ func (r *ScheduleRepo) engineInflight(ctx context.Context, query string, scopeAr
 	return out, mapError(rows.Err())
 }
 
-// engineRetrying 扫待重试行。$1 是作用域参数。
-func (r *ScheduleRepo) engineRetrying(ctx context.Context, query string, scopeArgs []any) ([]coreschedule.EngineRetryRow, error) {
-	args := append([]any{}, scopeArgs...)
+// engineRetrying 扫待重试行。$1 是作用域参数，$2 是上限+1：
+// 返回行数超过上限即截断到上限，第二返回值报告截断事实。
+func (r *ScheduleRepo) engineRetrying(ctx context.Context, query string, args []any) ([]coreschedule.EngineRetryRow, bool, error) {
 	rows, err := r.db.q(ctx).Query(ctx, query, args...)
 	if err != nil {
-		return nil, mapError(err)
+		return nil, false, mapError(err)
 	}
 	defer rows.Close()
 	var out []coreschedule.EngineRetryRow
 	for rows.Next() {
 		var row coreschedule.EngineRetryRow
-		if err := rows.Scan(&row.AccountID, &row.Phone, &row.SchoolID, &row.SchoolName,
-			&row.Attempts, &row.RunAt, &row.Result); err != nil {
-			return nil, mapError(err)
+		if err := rows.Scan(&row.TaskID, &row.AccountID, &row.Phone, &row.SchoolID, &row.SchoolName,
+			&row.TaskName, &row.Attempts, &row.RunAt, &row.Result); err != nil {
+			return nil, false, mapError(err)
 		}
 		out = append(out, row)
 	}
-	return out, mapError(rows.Err())
+	if err := rows.Err(); err != nil {
+		return nil, false, mapError(err)
+	}
+	if len(out) > coreschedule.EngineRetryLimit {
+		return out[:coreschedule.EngineRetryLimit], true, nil
+	}
+	return out, false, nil
 }

@@ -29,6 +29,7 @@ test('lease remaining never leaks a negative value', () => {
 
 test('engine sources never call it a queue', () => {
   const sources = [
+    '../../src/components/shell/nav.ts',
     '../../src/features/run/EngineView.tsx',
     '../../src/features/run/engineDisplay.ts',
     '../../src/pages/EnginePage.tsx',

@@ -19,7 +19,7 @@ function at(offsetMs: number): string {
 
 const MINUTE = 60_000
 
-/** 登记过的合成快照：两个在飞、一个待重试、计数非零。 */
+/** 登记过的合成快照：两个在飞、两个待重试（同账号两条）、计数非零。 */
 export const ENGINE_SNAPSHOT: EngineSnapshot = {
   inflight: [
     {
@@ -44,26 +44,74 @@ export const ENGINE_SNAPSHOT: EngineSnapshot = {
   today_failed: 1,
   retrying: [
     {
+      task_id: 'task-r1',
       account_id: 'account-3',
       account_phone_masked: '138****8003',
       school_id: 'school-a',
       school_name: '合成学校甲',
+      task_name: '早签到',
       attempts: 2,
       run_at: at(5 * MINUTE),
       result: 'transient',
     },
     {
-      account_id: 'account-5',
-      account_phone_masked: '138****8005',
-      school_id: 'school-b',
-      school_name: '合成学校乙',
+      task_id: 'task-r2',
+      account_id: 'account-3',
+      account_phone_masked: '138****8003',
+      school_id: 'school-a',
+      school_name: '合成学校甲',
+      task_name: '晚自习签到',
       attempts: 1,
       run_at: at(20 * MINUTE),
       result: 'rejected',
     },
   ],
+  retrying_truncated: false,
   last_claim_at: at(-40_000),
   last_tick_at: at(-2_000),
+  worker_started_at: at(-6 * 60 * MINUTE),
+}
+
+/**
+ * 视觉基线的合成快照：全部时刻落在分钟粒度的稳定窗里。
+ * 租约剩 90 分钟（≥1 时文案无秒位）；tick/claim 在 2 小时前
+ * （相对文案退化为 HH:mm）；事件列表空。整页逐分钟才可能变。
+ */
+export const ENGINE_VISUAL_SNAPSHOT: EngineSnapshot = {
+  ...ENGINE_SNAPSHOT,
+  inflight: [
+    {
+      account_id: 'account-1',
+      account_phone_masked: '138****8001',
+      school_id: 'school-a',
+      school_name: '合成学校甲',
+      claimed_at: at(-30 * MINUTE),
+      lease_expires_at: at(90 * MINUTE),
+    },
+    {
+      account_id: 'account-4',
+      account_phone_masked: '138****8004',
+      school_id: 'school-b',
+      school_name: '合成学校乙',
+      claimed_at: at(-25 * MINUTE),
+      lease_expires_at: at(95 * MINUTE),
+    },
+  ],
+  retrying: [
+    {
+      task_id: 'task-r1',
+      account_id: 'account-3',
+      account_phone_masked: '138****8003',
+      school_id: 'school-a',
+      school_name: '合成学校甲',
+      task_name: '早签到',
+      attempts: 2,
+      run_at: at(60 * MINUTE),
+      result: 'transient',
+    },
+  ],
+  last_claim_at: at(-2 * 60 * MINUTE),
+  last_tick_at: at(-2 * 60 * MINUTE),
   worker_started_at: at(-6 * 60 * MINUTE),
 }
 

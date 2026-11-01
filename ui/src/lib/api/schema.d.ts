@@ -771,9 +771,11 @@ export interface paths {
          *     deadline; lease_expires_at is an absolute time and the client renders
          *     the remaining lease itself. retrying rows are pending tasks with at
          *     least one business attempt (waiting requeues never count an attempt),
-         *     ordered by the next run time ascending. account_phone_masked keeps
-         *     the first 3 and last 4 digits; the full number never leaves the
-         *     server. last_claim_at, last_tick_at and worker_started_at are
+         *     ordered by the next run time ascending and capped at the 200 soonest
+         *     rows; retrying_truncated reports that the cap cut rows, so the list
+         *     is never read as complete. account_phone_masked keeps the first 3
+         *     and last 4 digits; the full number never leaves the server.
+         *     last_claim_at, last_tick_at and worker_started_at are
          *     in-process times: they are null before the loop starts and reset on
          *     restart, so they are never read back from the database.
          */
@@ -1599,9 +1601,12 @@ export interface components {
             today_failed: number;
             /**
              * @description Pending tasks with at least one business attempt, ordered by the
-             *     next run time ascending. Waiting requeues never count an attempt.
+             *     next run time ascending, capped at the 200 soonest rows. Waiting
+             *     requeues never count an attempt.
              */
             retrying: components["schemas"]["EngineRetryRow"][];
+            /** @description True when more retry rows exist beyond the 200-row cap; the client must not read the list as complete. */
+            retrying_truncated: boolean;
             /**
              * Format: date-time
              * @description In-process time of the last claim that processed at least one
@@ -1638,11 +1643,15 @@ export interface components {
             lease_expires_at: string;
         };
         EngineRetryRow: {
+            /** @description The sign task row id; the business identity of a retry row, since one account can have several pending retries for one day. */
+            task_id: string;
             account_id: string;
             /** @description First 3 and last 4 digits of the account phone; the full number never leaves the server. */
             account_phone_masked: string;
             school_id: string;
             school_name: string;
+            /** @description The school task name, shown so a multi-retry account is readable. */
+            task_name: string;
             /** @description Business attempts already consumed; waiting requeues do not count. */
             attempts: number;
             /**

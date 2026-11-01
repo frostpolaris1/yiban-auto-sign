@@ -46,11 +46,14 @@ type EngineInflight struct {
 }
 
 // EngineRetry 是给入口层的待重试行：手机号已掩码，result 已过自由文本掩码。
+// TaskID 是 sign_tasks 行 ID：同账号同日可有多条待重试，行身份只认它。
 type EngineRetry struct {
+	TaskID      string
 	AccountID   string
 	PhoneMasked string
 	SchoolID    string
 	SchoolName  string
+	TaskName    string
 	Attempts    int
 	RunAt       time.Time
 	Result      string
@@ -63,6 +66,8 @@ type EngineSnapshot struct {
 	TodaySuccess int64
 	TodayFailed  int64
 	Retrying     []EngineRetry
+	// RetryingTruncated 报告待重试列表被 EngineRetryLimit 截断。
+	RetryingTruncated bool
 }
 
 // EngineQuery 是执行监控快照用例。
@@ -115,20 +120,23 @@ func engineView(data coreschedule.EngineData) EngineSnapshot {
 	retrying := make([]EngineRetry, len(data.Retrying))
 	for i, r := range data.Retrying {
 		retrying[i] = EngineRetry{
+			TaskID:      r.TaskID,
 			AccountID:   r.AccountID,
 			PhoneMasked: coremask.MaskPhone(r.Phone),
 			SchoolID:    r.SchoolID,
 			SchoolName:  r.SchoolName,
+			TaskName:    r.TaskName,
 			Attempts:    r.Attempts,
 			RunAt:       r.RunAt,
 			Result:      coremask.MaskText(r.Result),
 		}
 	}
 	return EngineSnapshot{
-		Inflight:     inflight,
-		DueNow:       data.DueNow,
-		TodaySuccess: data.TodaySuccess,
-		TodayFailed:  data.TodayFailed,
-		Retrying:     retrying,
+		Inflight:          inflight,
+		DueNow:            data.DueNow,
+		TodaySuccess:      data.TodaySuccess,
+		TodayFailed:       data.TodayFailed,
+		Retrying:          retrying,
+		RetryingTruncated: data.RetryingTruncated,
 	}
 }

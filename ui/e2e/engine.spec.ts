@@ -20,7 +20,8 @@ import {
  * 2. 四指标：待执行、在飞、今日成功、今日失败同屏可读；
  *    在飞 0 与非 0 两种状态都可读；账号只出掩码。
  * 3. 租约剩余随时间变化（客户端每秒递减）；在飞行含认领时刻与学校。
- * 4. 待重试：已试次数、下次执行时刻、结果词齐全。
+ * 4. 待重试：已试次数、下次执行时刻、结果词齐全；同账号两条并存
+ *    （行身份是任务行）；超过 200 条显式提示截断。
  * 5. 最近事件：SSE 业务事件实时进列表，最新在前；断线出
  *    「已停止实时」横幅并可重连；断线期间 10 秒轮询降级。
  * 6. 错误态与空态语义分离：失败渲染 role=alert 的错误条，
@@ -117,10 +118,25 @@ test('invariant 4: the retry list shows attempts, next run and result', async ({
 
   const retryCard = page.locator('section.card', { has: page.getByRole('heading', { name: '待重试' }) })
   await expect(retryCard).toContainText('138****8003')
+  await expect(retryCard).toContainText('早签到')
   await expect(retryCard).toContainText('2 次')
   await expect(retryCard).toContainText('transient')
-  await expect(retryCard).toContainText('138****8005')
+  await expect(retryCard).toContainText('晚自习签到')
   await expect(retryCard).toContainText('rejected')
+  // 同账号两条待重试都在：行身份是任务行，不是账号（表头加两数据行）。
+  await expect(retryCard.getByRole('row')).toHaveCount(3)
+})
+
+test('invariant 4: a truncated retry list says so', async ({ page }) => {
+  await installFakeEventSource(page)
+  await mockEngineApi(page, {
+    role: 'master',
+    snapshot: { ...ENGINE_SNAPSHOT, retrying_truncated: true },
+  })
+  await page.goto('/engine')
+  await openEngine(page)
+
+  await expect(page.getByText('待重试超过 200 条，仅显示最先到期的 200 条。')).toBeVisible()
 })
 
 test('invariant 5: SSE business events land in the recent-events list', async ({ page }) => {

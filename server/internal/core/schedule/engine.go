@@ -24,6 +24,11 @@ package schedule
 
 import "time"
 
+// EngineRetryLimit 是待重试行数上限（契约「capped at the 200 soonest rows」）。
+// 平台故障后待重试可达「账号数×任务数」量级；快照是无分页的单读，
+// 列表截断，截断事实经 RetryingTruncated 显式上报，绝不静默。
+const EngineRetryLimit = 200
+
 // EngineInflightRow 是一行在飞任务。Phone 是明文：出用例前必须掩码。
 type EngineInflightRow struct {
 	AccountID      string
@@ -35,11 +40,15 @@ type EngineInflightRow struct {
 }
 
 // EngineRetryRow 是一行待重试任务。Phone 是明文：出用例前必须掩码。
+// TaskID 是 sign_tasks 行 ID：同账号同日可有多条待重试（唯一键是
+// 账号×学校任务×业务日），账号 ID 不足以做行身份。
 type EngineRetryRow struct {
+	TaskID     string
 	AccountID  string
 	Phone      string
 	SchoolID   string
 	SchoolName string
+	TaskName   string
 	Attempts   int
 	RunAt      time.Time
 	Result     string
@@ -54,4 +63,6 @@ type EngineData struct {
 	TodaySuccess int64
 	TodayFailed  int64
 	Retrying     []EngineRetryRow
+	// RetryingTruncated 报告待重试列表被 EngineRetryLimit 截断。
+	RetryingTruncated bool
 }

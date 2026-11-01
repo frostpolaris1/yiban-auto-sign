@@ -81,23 +81,26 @@ func (h *EngineHandler) Snapshot(c *gin.Context) {
 	retrying := make([]oapi.EngineRetryRow, len(snap.Retrying))
 	for i, r := range snap.Retrying {
 		retrying[i] = oapi.EngineRetryRow{
+			TaskId:             r.TaskID,
 			AccountId:          r.AccountID,
 			AccountPhoneMasked: r.PhoneMasked,
 			SchoolId:           r.SchoolID,
 			SchoolName:         r.SchoolName,
+			TaskName:           r.TaskName,
 			Attempts:           r.Attempts,
 			RunAt:              r.RunAt,
 			Result:             r.Result,
 		}
 	}
 	respond.JSON(c.Writer, http.StatusOK, oapi.EngineSnapshot{
-		Inflight:        items,
-		DueNow:          int(snap.DueNow),
-		TodaySuccess:    int(snap.TodaySuccess),
-		TodayFailed:     int(snap.TodayFailed),
-		Retrying:        retrying,
-		LastClaimAt:     lastClaim,
-		LastTickAt:      lastTick,
-		WorkerStartedAt: started,
+		Inflight:          items,
+		DueNow:            int(snap.DueNow),
+		TodaySuccess:      int(snap.TodaySuccess),
+		TodayFailed:       int(snap.TodayFailed),
+		Retrying:          retrying,
+		RetryingTruncated: snap.RetryingTruncated,
+		LastClaimAt:       lastClaim,
+		LastTickAt:        lastTick,
+		WorkerStartedAt:   started,
 	})
 }
