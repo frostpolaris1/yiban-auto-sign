@@ -116,9 +116,9 @@ e2e_die() {
 
 # e2e_summary：打印 PASS/FAIL 表与 result 行。不改退出码。
 e2e_summary() {
-    local row state note id title
+    local row state note id
     e2e_say ""
-    e2e_say "==== 结果汇总 ===="
+    e2e_say "==== 结果汇总（$E2E_NAME）===="
     for row in "${E2E_RESULTS[@]:-}"; do
         [ -n "$row" ] || continue
         id="${row%%|*}"
@@ -198,7 +198,7 @@ e2e_sha256() {
 # e2e_expected_schema_version <仓库根>：取 server/migrations/postgres 的最大编号。
 # 不从散文抄版本号：新增迁移时断言自动跟上。
 e2e_expected_schema_version() {
-    local repo="$1" dir="$1/server/migrations/postgres" f base num max=0
+    local dir="$1/server/migrations/postgres" f base num max=0
     for f in "$dir"/*.sql; do
         [ -f "$f" ] || continue
         base="$(basename "$f")"

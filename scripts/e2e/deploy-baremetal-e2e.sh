@@ -199,7 +199,7 @@ EOF
     fi
     e2e_ok "构建 $OS_IMAGE（基 $OS_BASE）"
 fi
-if ! os_image_ok="$(docker run --rm "$OS_IMAGE" sh -c 'test -x /sbin/init && test -x /usr/bin/openssl && test -x /usr/bin/curl' 2>>"$E2E_STEP_LOG")"; then
+if ! docker run --rm "$OS_IMAGE" sh -c 'test -x /sbin/init && test -x /usr/bin/openssl && test -x /usr/bin/curl' >>"$E2E_STEP_LOG" 2>&1; then
     e2e_die "OS 镜像缺 /sbin/init、openssl 或 curl"
 fi
 

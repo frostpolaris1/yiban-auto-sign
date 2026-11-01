@@ -23,6 +23,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# go-licenses v1.6.0（当前最新）读不了 Go 1.27.3 的 module 信息：
+# 它把 stdlib 包当成「没有 module info」直接报错。许可证扫描因此固定在
+# 1.27.2 的工具链上跑；go.mod 的 toolchain 行仍指向 1.27.3（构建与漏洞扫描用）。
+# 上游修复后删掉这行。
+export GOTOOLCHAIN=go1.27.2
+
 MANIFEST="THIRD_PARTY_LICENSES.md"
 OWN_MODULE="github.com/frostpolaris1/yiban-auto-sign/server"
 TOOL_VERSION="v1.6.0"
@@ -68,7 +74,8 @@ resolve_tool() {
   fi
 
   local cache="${XDG_CACHE_HOME:-$HOME/.cache}/yiban/go-licenses/$TOOL_VERSION"
-  local bin="$cache/go-licenses$(go env GOEXE)"
+  local bin
+  bin="$cache/go-licenses$(go env GOEXE)"
   if [ -x "$bin" ]; then
     printf '%s\n' "$bin"
     return 0

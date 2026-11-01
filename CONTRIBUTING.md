@@ -127,10 +127,19 @@ npm run verify
 npx playwright test e2e/<spec>.spec.ts
 ```
 
+工具链快门（与 CI 的 `tooling-gate` 作业同源）：
+
+```bash
+bash scripts/tooling-gate.sh
+```
+
+它要 `actionlint`、`shellcheck`、`govulncheck` 与 `npm` 在 PATH；缺工具会以 exit 2 拒绝（跳过不等于通过）。npm 镜像不实现 audit 时，加 `npm_config_registry=https://registry.npmjs.org` 再跑。
+
 说明：
 
 - 后端测试需要 PostgreSQL；连接串写在 `server/scripts/verify.sh` 的用法说明里。
 - 前端需要 Node `^22.18` 或 `>=24.11`（Babel 8 的下限）。
+- 后端用 Go 1.27.2+；`server/go.mod` 的 `toolchain` 行指向 1.27.3，默认的 `GOTOOLCHAIN=auto` 会自动取补丁版。许可证门固定在 1.27.2（上游 go-licenses 读不了 1.27.3 的 module 信息）；工具链快门固定用 1.27.3 分析 stdlib。
 - 迭代只跑受影响的包或 spec。收口再跑全量。
 - 不要用固定 sleep 等异步结果；用状态或条件等待。
 

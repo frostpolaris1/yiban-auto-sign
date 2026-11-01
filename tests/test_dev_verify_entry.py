@@ -94,6 +94,7 @@ EXPECTED_CI_COMMANDS = (
     # CLEAN-1：公开数据红线门（AGENTS §46–49）在 scope 分支之外常跑。
     '"$py" -m pytest tests/test_public_exposure_gate.py'
     ' tests/test_public_exposure_gate_wiring.py -q -p no:randomly',
+    '"$py" -m pytest tests/test_tooling_gate_wiring.py -q -p no:randomly',
     '"$py" scripts/check-path-env-reads.py',
     '"$py" -m pytest tests/test_path_env_read_gate.py -q -p no:randomly'
     ' ${FAST_DESELECT_ARGS[@]+"${FAST_DESELECT_ARGS[@]}"}',

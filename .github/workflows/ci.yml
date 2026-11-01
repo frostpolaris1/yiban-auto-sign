@@ -114,7 +114,7 @@ jobs:
             base="FETCH_HEAD"
           else
             base="${{ github.event.before }}"
-            [ -n "$base" ] && git fetch --no-tags --depth=1 origin "$base" >/dev/null 2>&1 || true
+            if [ -n "$base" ]; then git fetch --no-tags --depth=1 origin "$base" >/dev/null 2>&1 || true; fi
           fi
           if [ -z "$base" ] || ! git rev-parse --verify "$base" >/dev/null 2>&1; then
             echo "value=mixed" >> "$GITHUB_OUTPUT"
@@ -198,7 +198,7 @@ jobs:
             base="FETCH_HEAD"
           else
             base="${{ github.event.before }}"
-            [ -n "$base" ] && git fetch --no-tags --depth=1 origin "$base" >/dev/null 2>&1 || true
+            if [ -n "$base" ]; then git fetch --no-tags --depth=1 origin "$base" >/dev/null 2>&1 || true; fi
           fi
           if [ -z "$base" ] || ! git rev-parse --verify "$base" >/dev/null 2>&1; then
             echo "value=mixed" >> "$GITHUB_OUTPUT"
@@ -247,6 +247,41 @@ jobs:
 
       - name: Audit ready
         run: 'echo "Dependency audit clean: requirements.lock has no known vulnerabilities."'
+
+  # ---- 工具链快门（CLEAN-7a）：actionlint / shellcheck / govulncheck / npm audit ----
+  # 四道检查都看静态事实，不跑产品测试；与 verify/stacks 并行，不占关键路径。
+  # 脚本是唯一入口（本地同一条命令）；本 job 只负责装钉版工具。
+  # 分支保护要把 tooling-gate 勾成 required check（仓库设置，代码改不了）。
+  # 工具版本钉住：门禁工具漂移会让"昨天绿今天红"分不清是漏洞库更新还是工具行为变化。
+  # govulncheck 用 1.27.x（与 go.mod 的 toolchain 行同值）：stdlib 漏洞修在补丁版。
+  tooling-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.27.x'
+          cache-dependency-path: server/go.sum
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install pinned tooling
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Tooling gate
+        run: bash scripts/tooling-gate.sh
 
   # ---- 前端单测（Vue + Vitest）＋ 真浏览器 e2e（Playwright）----
   # 为什么必须有单测：122 项 Vitest 此前完全不在门禁内，而"纯函数全绿、组件接线坏掉"的缺陷
@@ -400,7 +435,7 @@ jobs:
             base="FETCH_HEAD"
           else
             base="${{ github.event.before }}"
-            [ -n "$base" ] && git fetch --no-tags --depth=1 origin "$base" >/dev/null 2>&1 || true
+            if [ -n "$base" ]; then git fetch --no-tags --depth=1 origin "$base" >/dev/null 2>&1 || true; fi
           fi
           # 取不到 base → 默认跑（fail-closed）。
           if [ -z "$base" ] || ! git rev-parse --verify "$base" >/dev/null 2>&1; then
