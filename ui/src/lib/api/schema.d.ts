@@ -483,7 +483,8 @@ export interface paths {
          *     returns a non-pending account to pending: a review decision binds to
          *     the old phone. Both clear reject_reason and the review stamp. A
          *     password or device edit recovers a credential_error account to active;
-         *     other edits keep the status. Review and pause have dedicated endpoints.
+         *     a phone change wins over that recovery. Other edits keep the status.
+         *     Review and pause have dedicated endpoints.
          *     Changing school is forbidden in P1 (decision 12.3) and returns
          *     conflict. Changes are rate limited per caller; a 429 carries
          *     Retry-After.
@@ -1289,7 +1290,8 @@ export interface components {
          *     rejected account returns it to pending. Pause moves active to
          *     paused_admin or paused_user. credential_error is written by the
          *     engine in P4 only; a password or device update returns it to active,
-         *     while a phone change returns it to pending.
+         *     while a phone change returns it to pending. A phone change wins over
+         *     that recovery.
          * @enum {string}
          */
         AccountStatus: "pending" | "active" | "rejected" | "paused_admin" | "paused_user" | "credential_error";

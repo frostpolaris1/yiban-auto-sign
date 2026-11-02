@@ -625,6 +625,27 @@ test('invariant 6: a password edit keeps the active status', async ({ page }) =>
   await expect(page.locator('[data-sonner-toast]').filter({ hasText: '已保存' })).toBeVisible()
 })
 
+test('invariant 6: a pending account keeps its queued status on a rebind', async ({ page }) => {
+  const api = await mockAccountsApi(page, {
+    role: 'user',
+    accounts: accountsWith('acc-1', { status: 'pending', reject_reason: '' }),
+  })
+  await openAccounts(page)
+
+  const menu = await openRowMenu(page, '138****8000')
+  await menu.getByRole('menuitem', { name: /^编辑$/ }).click()
+  const dialog = page.getByRole('dialog', { name: '编辑账号？' })
+  await dialog.getByLabel('手机号').fill('13800138001')
+  await dialog.getByRole('button', { name: '保存修改' }).click()
+  await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(1)
+
+  // 已在待审核：改绑不产生第二次重提，toast 用响应里的新号并说「已保存」。
+  await expect(rowFor(page, '138****8001').getByText('待审核')).toBeVisible()
+  await expect(
+    page.locator('[data-sonner-toast]').filter({ hasText: '已保存 138****8001' }),
+  ).toBeVisible()
+})
+
 for (const theme of ['light', 'dark'] as const) {
   test(`invariant 7: location is denied to master with a readable reason in ${theme}`, async ({
     page,

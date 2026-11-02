@@ -510,7 +510,8 @@ type Account struct {
 	// rejected account returns it to pending. Pause moves active to
 	// paused_admin or paused_user. credential_error is written by the
 	// engine in P4 only; a password or device update returns it to active,
-	// while a phone change returns it to pending.
+	// while a phone change returns it to pending. A phone change wins over
+	// that recovery.
 	Status    AccountStatus `json:"status"`
 	UpdatedAt time.Time     `json:"updated_at"`
 }
@@ -639,7 +640,8 @@ type AccountSignAccepted struct {
 // rejected account returns it to pending. Pause moves active to
 // paused_admin or paused_user. credential_error is written by the
 // engine in P4 only; a password or device update returns it to active,
-// while a phone change returns it to pending.
+// while a phone change returns it to pending. A phone change wins over
+// that recovery.
 type AccountStatus string
 
 // AccountUpdate defines model for AccountUpdate.

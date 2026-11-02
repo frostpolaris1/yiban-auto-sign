@@ -268,7 +268,7 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
         if (updated.status === 'pending' && input.account.status !== 'pending') {
           notifySuccess(`已重新提交 ${updated.phone_masked}，等待管理员审核`)
         } else {
-          notifySuccess(`已保存 ${input.account.phone_masked}`)
+          notifySuccess(`已保存 ${updated.phone_masked}`)
         }
       }
       if (input.op === 'restore') {
