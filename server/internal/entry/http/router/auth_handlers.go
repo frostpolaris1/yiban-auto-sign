@@ -25,9 +25,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
 	ratelimit "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/ratelimit"
@@ -42,6 +44,12 @@ type AuthService interface {
 	ForgotPassword(ctx context.Context, email string) error
 	ResetPassword(ctx context.Context, token, newPassword string) error
 	ChangePassword(ctx context.Context, sess coreauth.Session, keepToken, currentPassword, newPassword string) error
+	// Registration 读公开注册状态。
+	Registration(ctx context.Context) (appauth.RegistrationStatus, error)
+	// Register 建普通用户并签发会话。
+	Register(ctx context.Context, in appauth.RegisterInput) (coreauth.Issued, error)
+	// SetRegistration 开关公开注册；master 判定在用例层。
+	SetRegistration(ctx context.Context, scope corescope.Scope, actor appaudit.Actor, enabled bool) (appauth.RegistrationStatus, error)
 }
 
 // AuthLogin 校验口令并写入会话 cookie。
@@ -189,6 +197,96 @@ func (s *server) AuthChangePassword(c *gin.Context, _ oapi.AuthChangePasswordPar
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// AuthRegistration 返回公开注册状态。
+// 公开端点：无会话也放行；读失败回 500，不伪装成「关闭」。
+func (s *server) AuthRegistration(c *gin.Context) {
+	if s.auth == nil {
+		notImplemented(c)
+		return
+	}
+	status, err := s.auth.Registration(c.Request.Context())
+	if err != nil {
+		respond.Error(c.Writer, c.Request, err)
+		return
+	}
+	respond.JSON(c.Writer, http.StatusOK, registrationStatusOf(status))
+}
+
+// AuthRegister 创建普通用户并签发会话。
+// 与登录同口径拒绝跨站浏览器提交：注册会建立会话。
+func (s *server) AuthRegister(c *gin.Context) {
+	if s.auth == nil {
+		notImplemented(c)
+		return
+	}
+	if !s.loginOriginAllowed(c) {
+		respond.Error(c.Writer, c.Request, errs.New(errs.CodeForbidden, "cross-site registration is not allowed"))
+		return
+	}
+	var req oapi.AuthRegisterJSONRequestBody
+	if err := c.ShouldBindJSON(&req); err != nil {
+		bindError(c, err)
+		return
+	}
+	// 账号面按归一邮箱判：重复提交与变体邮箱共用一个桶。
+	if !s.accountLimit(c, coreuser.NormalizeEmail(string(req.Email))) {
+		return
+	}
+	issued, err := s.auth.Register(c.Request.Context(), appauth.RegisterInput{
+		Email:          string(req.Email),
+		Password:       req.Password,
+		AgreeTerms:     req.AgreeTerms,
+		AgreePrivacy:   req.AgreePrivacy,
+		TermsVersion:   req.TermsVersion,
+		PrivacyVersion: req.PrivacyVersion,
+	})
+	if err != nil {
+		respond.Error(c.Writer, c.Request, err)
+		return
+	}
+	s.cookies.set(c.Writer, issued.Token)
+	respond.JSON(c.Writer, http.StatusCreated, sessionUserOf(issued.Session))
+}
+
+// AuthRegistrationSet 打开或关闭公开注册。
+// 会话与 CSRF 已由中间件校验；master 判定在用例层。
+func (s *server) AuthRegistrationSet(c *gin.Context, _ oapi.AuthRegistrationSetParams) {
+	if s.auth == nil || s.authorizer == nil {
+		notImplemented(c)
+		return
+	}
+	sess, ok := coreauth.FromContext(c.Request.Context())
+	if !ok {
+		respond.Error(c.Writer, c.Request, errs.New(errs.CodeUnauthorized, "authentication required"))
+		return
+	}
+	scope, actor, err := s.authorizer.Authorize(c.Request.Context(), sess.User)
+	if err != nil {
+		respond.Error(c.Writer, c.Request, err)
+		return
+	}
+	var req oapi.AuthRegistrationSetJSONRequestBody
+	if err := c.ShouldBindJSON(&req); err != nil {
+		bindError(c, err)
+		return
+	}
+	status, err := s.auth.SetRegistration(c.Request.Context(), scope, actor, req.Enabled)
+	if err != nil {
+		respond.Error(c.Writer, c.Request, err)
+		return
+	}
+	respond.JSON(c.Writer, http.StatusOK, registrationStatusOf(status))
+}
+
+// registrationStatusOf 把用例结果转成契约类型。
+func registrationStatusOf(status appauth.RegistrationStatus) oapi.RegistrationStatus {
+	return oapi.RegistrationStatus{
+		Enabled:        status.Enabled,
+		TermsVersion:   status.TermsVersion,
+		PrivacyVersion: status.PrivacyVersion,
+	}
 }
 
 // sessionUserOf 把会话主体转成契约类型。

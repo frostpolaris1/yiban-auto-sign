@@ -57,10 +57,12 @@ const (
 	ActionAuthPasswordReset Action = "auth.password_reset"
 	// 登录态自助改密：调用方已通过旧口令校验。
 	ActionAuthPasswordChange Action = "auth.password_change"
-	ActionUserCreate         Action = "user.create"
-	ActionUserDisable        Action = "user.disable"
-	ActionUserEnable         Action = "user.enable"
-	ActionUserDelete         Action = "user.delete"
+	// 公开注册：建号、会话与审计同事务。detail 只记协议版本，不含邮箱。
+	ActionAuthRegister Action = "auth.register"
+	ActionUserCreate   Action = "user.create"
+	ActionUserDisable  Action = "user.disable"
+	ActionUserEnable   Action = "user.enable"
+	ActionUserDelete   Action = "user.delete"
 	// UX-1 用户管理动作。role_change 记角色迁移；
 	// password_reset 记重置但**绝无口令值**；restore 记软删恢复。
 	ActionUserRoleChange    Action = "user.role_change"
@@ -71,8 +73,11 @@ const (
 	ActionSchoolDisable     Action = "school.disable"
 	ActionAdminGrant        Action = "admin.grant"
 	ActionAdminRevoke       Action = "admin.revoke"
-	ActionAccountCreate     Action = "account.create"
-	ActionAccountUpdate     Action = "account.update"
+	// 全局设置写入：目前只有公开注册开关。
+	// detail 只记字段与目标状态（enabled/disabled）。
+	ActionSettingsRegistration Action = "settings.registration"
+	ActionAccountCreate        Action = "account.create"
+	ActionAccountUpdate        Action = "account.update"
 	// 被拒账号编辑或改绑手机号把账号送回 pending：重提进待审队列。
 	// detail 只记状态迁移，不含手机号。
 	ActionAccountResubmit     Action = "account.resubmit"
@@ -237,6 +242,9 @@ var detailKeys = map[string]bool{
 	// UUID 形状无自由文本容量，不构成隐私面。
 	"photo_id":          true,
 	"previous_photo_id": true,
+	// 注册时同意的协议版本：1..1000 的整数，无自由文本容量。
+	"terms_version":   true,
+	"privacy_version": true,
 }
 
 // cropPercentKeys 是裁切比例 detail 键集。取值限 0..10 闭区间。
@@ -245,6 +253,13 @@ var cropPercentKeys = map[string]bool{
 	"crop_r": true,
 	"crop_t": true,
 	"crop_b": true,
+}
+
+// versionKeys 是协议版本 detail 键集。取值限 1..1000：版本号是正整数，
+// 上界挡住把任意大整数塞进链里的写法。
+var versionKeys = map[string]bool{
+	"terms_version":   true,
+	"privacy_version": true,
 }
 
 // ZeroHash 是新链首行的 prev_hash：32 字节全零。
@@ -405,6 +420,9 @@ func validateDetailNumber(value float64) error {
 func validateDetailNumberWithLimits(key string, value float64) error {
 	if cropPercentKeys[key] && (value < 0 || value > 10) {
 		return fmt.Errorf("%w: %q must be within 0..10", ErrDetailShape, key)
+	}
+	if versionKeys[key] && (value < 1 || value > 1000) {
+		return fmt.Errorf("%w: %q must be within 1..1000", ErrDetailShape, key)
 	}
 	return validateDetailNumber(value)
 }

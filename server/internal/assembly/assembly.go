@@ -311,6 +311,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		eventLib  *eventshttp.Handler
 		db        *pg.DB
 		workerSvc *appworker.Service
+		// authz 只给 master 专属的注册开关用。无数据库时为 nil，端点回 501。
+		authz router.Authorizer
 		// engineState 是执行循环的进程内时刻记录，DB 分支构造：
 		// 循环（Run）写入，执行监控端点读取，两者共享同一实例。
 		// 无数据库时保持 nil：没有循环就没有进程时刻。
@@ -396,9 +398,11 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			Sessions:      issuer,
 			OtherSessions: sessionRepo,
 			Resets:        pg.NewPasswordResetRepo(db),
+			Registrations: pg.NewSettingsRepo(db),
 			Audits:        audits,
 			Tx:            db,
 			Clock:         clk,
+			UserLimit:     UserCapacityLimit,
 			KDF:           kdf,
 			Mail:          mailer,
 			MailBaseURL:   cfg.PublicBaseURL,
@@ -450,6 +454,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			closeFn()
 			return nil, fmt.Errorf("assembly: admin service: %w", err)
 		}
+		authz = adminSvc
 		// 用户仓储先于账号服务构造：账号用例的属主活跃校验复用同一实例
 		//（仓储无状态）。Sessions 是会话撤销原语：重置口令与软删后立即
 		// 失效全部会话。OwnerAccounts 用同一份用户仓储：名下账号计数是
@@ -702,6 +707,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 	engine, err := router.New(router.Options{
 		Sessions:        issuer,
 		Auth:            authSvc,
+		Authorizer:      authz,
 		Clock:           clk,
 		Logger:          logger,
 		InsecureCookies: cfg.InsecureCookies,

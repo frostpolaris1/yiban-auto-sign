@@ -44,9 +44,13 @@ type Deps struct {
 	// OtherSessions 撤销本人其余会话，供改密使用。
 	OtherSessions OtherSessionRevoker
 	Resets        PasswordResetRepo
+	// Registrations 是全局注册开关。公开注册读它，缺依赖即构造失败。
+	Registrations RegistrationStore
 	Audits        appaudit.Repo
 	Tx            app.TxManager
 	Clock         clock.Clock
+	// UserLimit 是活跃用户上限。注册建号在锁下执行。
+	UserLimit int
 	// KDF 是口令哈希端口。生产必须传限并发实现（coreauth.Bounded）；
 	// 测试可传 PlainHasher 或计数器替身。nil 即构造失败。
 	KDF coreauth.Hasher
@@ -62,17 +66,19 @@ type Deps struct {
 // Service 承载认证用例。
 // 零值不可用；请用 NewService 构造。
 type Service struct {
-	users    appuser.Repo
-	sessions coreauth.SessionIssuer
-	others   OtherSessionRevoker
-	resets   PasswordResetRepo
-	audits   appaudit.Repo
-	tx       app.TxManager
-	clock    clock.Clock
-	kdf      coreauth.Hasher
-	mail     coremail.Sender
-	mailBase string
-	log      *slog.Logger
+	users         appuser.Repo
+	sessions      coreauth.SessionIssuer
+	others        OtherSessionRevoker
+	resets        PasswordResetRepo
+	registrations RegistrationStore
+	audits        appaudit.Repo
+	tx            app.TxManager
+	clock         clock.Clock
+	userLimit     int
+	kdf           coreauth.Hasher
+	mail          coremail.Sender
+	mailBase      string
+	log           *slog.Logger
 	// mailSlots 限并发投递数。满即丢投递并记日志，**不阻塞用例**：
 	// 公开端点不得因 SMTP 慢而拖住响应。
 	mailSlots chan struct{}
@@ -92,6 +98,8 @@ func NewService(d Deps) (*Service, error) {
 		return nil, errors.New("appauth: nil other-session revoker")
 	case d.Resets == nil:
 		return nil, errors.New("appauth: nil password reset repo")
+	case d.Registrations == nil:
+		return nil, errors.New("appauth: nil registration store")
 	case d.Audits == nil:
 		return nil, errors.New("appauth: nil audit repo")
 	case d.Tx == nil:
@@ -100,6 +108,8 @@ func NewService(d Deps) (*Service, error) {
 		return nil, errors.New("appauth: nil clock")
 	case d.KDF == nil:
 		return nil, errors.New("appauth: nil KDF")
+	case d.UserLimit <= 0:
+		return nil, errors.New("appauth: user limit must be positive")
 	}
 	mailBase := strings.TrimRight(strings.TrimSpace(d.MailBaseURL), "/")
 	if d.Mail != nil && mailBase == "" {
@@ -110,18 +120,20 @@ func NewService(d Deps) (*Service, error) {
 		log = slog.Default()
 	}
 	return &Service{
-		users:     d.Users,
-		sessions:  d.Sessions,
-		others:    d.OtherSessions,
-		resets:    d.Resets,
-		audits:    d.Audits,
-		tx:        d.Tx,
-		clock:     d.Clock,
-		kdf:       d.KDF,
-		mail:      d.Mail,
-		mailBase:  mailBase,
-		log:       log,
-		mailSlots: make(chan struct{}, maxConcurrentResetMails),
+		users:         d.Users,
+		sessions:      d.Sessions,
+		others:        d.OtherSessions,
+		resets:        d.Resets,
+		registrations: d.Registrations,
+		audits:        d.Audits,
+		tx:            d.Tx,
+		clock:         d.Clock,
+		userLimit:     d.UserLimit,
+		kdf:           d.KDF,
+		mail:          d.Mail,
+		mailBase:      mailBase,
+		log:           log,
+		mailSlots:     make(chan struct{}, maxConcurrentResetMails),
 	}, nil
 }
 

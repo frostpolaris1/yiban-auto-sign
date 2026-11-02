@@ -191,6 +191,89 @@ paths:
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
+  /api/auth/registration:
+    get:
+      tags: [auth]
+      operationId: AuthRegistration
+      summary: Report whether public registration is open.
+      description: |
+        Public. enabled is false by default. terms_version and
+        privacy_version identify the agreement text the client must show;
+        a register request must echo the same values.
+      security: []
+      x-roles: [public]
+      responses:
+        '200':
+          description: Registration status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegistrationStatus'
+        default: { $ref: '#/components/responses/DefaultError' }
+    put:
+      tags: [auth]
+      operationId: AuthRegistrationSet
+      summary: Open or close public registration.
+      description: |
+        Master only. Writes one settings.registration audit row.
+        The response is the new status, with the current agreement versions.
+      x-roles: [master]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegistrationSetRequest'
+      responses:
+        '200':
+          description: Registration status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegistrationStatus'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/auth/register:
+    post:
+      tags: [auth]
+      operationId: AuthRegister
+      summary: Create a user account and sign in.
+      description: |
+        Public. Answers 403 while registration is closed. Both agreement
+        booleans must be true and the versions must equal the current ones;
+        a stale version is 409 conflict. The password needs at least 10
+        characters and two of uppercase, lowercase, digits and symbols.
+        A duplicate live email is 409 conflict. The new user has role user,
+        status active and must_change_password false. Success sets the
+        session cookie. Cross-site browser submissions are rejected like
+        login. Rate limited per client IP and per normalized email; a 429
+        carries Retry-After in seconds.
+      security: []
+      x-roles: [public]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Account created and session established.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionUser'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '409': { $ref: '#/components/responses/ConflictError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
+        default: { $ref: '#/components/responses/DefaultError' }
   /api/users:
     get:
       tags: [users]
@@ -248,9 +331,11 @@ paths:
       operationId: UserCreate
       summary: Create a master, admin or user account.
       description: |
-        Master only (decision 12.4). There is no public registration endpoint.
-        The password is stored as an argon2id hash. A duplicate email among
-        live users is a 409; a soft-deleted user's email may be reused.
+        Master only (decision 12.4). Public registration creates role user
+        accounts through POST /api/auth/register; this endpoint remains the
+        only way to create a master or admin. The password is stored as an
+        argon2id hash. A duplicate email among live users is a 409; a
+        soft-deleted user's email may be reused.
       x-roles: [master]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -1941,6 +2026,54 @@ components:
       properties:
         current_password: { type: string, minLength: 1 }
         new_password: { type: string, minLength: 1 }
+    RegistrationStatus:
+      type: object
+      required: [enabled, terms_version, privacy_version]
+      properties:
+        enabled:
+          type: boolean
+          description: False by default. Only a master may change it.
+        terms_version: { type: integer, minimum: 1 }
+        privacy_version: { type: integer, minimum: 1 }
+    RegistrationSetRequest:
+      type: object
+      required: [enabled]
+      properties:
+        enabled: { type: boolean }
+    RegisterRequest:
+      type: object
+      required:
+        [
+          email,
+          password,
+          agree_terms,
+          agree_privacy,
+          terms_version,
+          privacy_version,
+        ]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        password:
+          type: string
+          minLength: 10
+          maxLength: 1024
+          description: |
+            At least 10 characters and two of uppercase, lowercase, digits and
+            symbols. The server enforces the classes; minLength mirrors the
+            character floor.
+        agree_terms: { type: boolean }
+        agree_privacy: { type: boolean }
+        terms_version:
+          type: integer
+          minimum: 1
+          description: Must equal RegistrationStatus.terms_version; a stale value is 409.
+        privacy_version:
+          type: integer
+          minimum: 1
+          description: Must equal RegistrationStatus.privacy_version; a stale value is 409.
     UserCreate:
       type: object
       required: [email, password, role]

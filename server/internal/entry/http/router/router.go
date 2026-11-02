@@ -19,14 +19,17 @@
 package router
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 
+	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
+	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	accounthttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/account"
 	adminhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/admin"
 	eventshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/events"
@@ -50,8 +53,11 @@ type Options struct {
 	Sessions auth.SessionIssuer
 	// Auth 是认证用例。为 nil 时登录、登出与口令重置回 501。
 	// 生产必须有值；cmd/server 在配置了数据库时注入。
-	Auth  AuthService
-	Clock clock.Clock
+	Auth AuthService
+	// Authorizer 把会话用户解析为作用域与审计主体。
+	// 目前只服务 master 专属的注册开关；为 nil 时该端点回 501。
+	Authorizer Authorizer
+	Clock      clock.Clock
 	// InsecureCookies 选择无前缀的 cookie 名。
 	// 浏览器拒绝不带 Secure 的 __Host- cookie，故仅限本地 HTTP。
 	InsecureCookies bool
@@ -94,11 +100,18 @@ type Options struct {
 	UIDir string
 }
 
+// Authorizer 把会话用户解析为作用域与审计主体。
+// 实现是 app/admin.Service；入口层只依赖这个窄接口。
+type Authorizer interface {
+	Authorize(ctx context.Context, user auth.User) (corescope.Scope, appaudit.Actor, error)
+}
+
 // server 实现生成的契约接口。
 // 全部业务端点委托给域处理器。
 type server struct {
 	sessions       auth.SessionIssuer
 	auth           AuthService
+	authorizer     Authorizer
 	cookies        sessionCookie
 	schools        *schoolhttp.Handler
 	admins         *adminhttp.Handler
@@ -130,9 +143,10 @@ func New(opts Options) (*gin.Engine, error) {
 		logger = slog.Default()
 	}
 	srv := &server{
-		sessions: opts.Sessions,
-		auth:     opts.Auth,
-		cookies:  newSessionCookie(opts.InsecureCookies),
+		sessions:   opts.Sessions,
+		auth:       opts.Auth,
+		authorizer: opts.Authorizer,
+		cookies:    newSessionCookie(opts.InsecureCookies),
 	}
 	if srv.auth == nil {
 		// 显性可见：没有用例就没有可用登录。

@@ -603,9 +603,11 @@ func TestMigrateLegacyLoginOldPasswordE2E(t *testing.T) {
 		Sessions:      issuer,
 		OtherSessions: sessionRepo,
 		Resets:        pg.NewPasswordResetRepo(db),
+		Registrations: pg.NewSettingsRepo(db),
 		Audits:        audits,
 		Tx:            db,
 		Clock:         coreclock.System{},
+		UserLimit:     10000,
 		KDF:           coreauth.PlainHasher{},
 	})
 	if err != nil {

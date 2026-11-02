@@ -13,6 +13,7 @@ package auth_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -34,14 +35,34 @@ type fakeUsers struct {
 	byID    map[string]appuser.Record
 	updated []string
 	rehash  []string
+	nextID  int
+	// createErr 非空时 Create 直接返回它，用来模拟容量或存储故障。
+	createErr error
 }
 
 func newFakeUsers() *fakeUsers {
 	return &fakeUsers{byEmail: map[string]appuser.Record{}, byID: map[string]appuser.Record{}}
 }
 
-func (f *fakeUsers) Create(context.Context, appuser.New, int) (appuser.Record, error) {
-	return appuser.Record{}, errs.ErrNotFound
+func (f *fakeUsers) Create(_ context.Context, in appuser.New, _ int) (appuser.Record, error) {
+	if f.createErr != nil {
+		return appuser.Record{}, f.createErr
+	}
+	email := strings.ToLower(in.Email)
+	if _, ok := f.byEmail[email]; ok {
+		return appuser.Record{}, errs.New(errs.CodeConflict, "duplicate email")
+	}
+	f.nextID++
+	record := appuser.Record{
+		ID:                 fmt.Sprintf("user-%d", f.nextID),
+		Email:              email,
+		Role:               in.Role,
+		Status:             coreauth.StatusActive,
+		MustChangePassword: in.MustChangePassword,
+	}
+	f.byEmail[email] = record
+	f.byID[record.ID] = record
+	return record, nil
 }
 
 func (f *fakeUsers) GetByID(_ context.Context, id string) (appuser.Record, error) {
@@ -148,6 +169,23 @@ func (f *fakeResets) Consume(context.Context, coreauth.TokenHash, time.Time) (co
 	return *f.next, nil
 }
 
+// fakeRegistrations 是注册开关替身。零值即关闭。
+type fakeRegistrations struct {
+	enabled bool
+	err     error
+	set     []bool
+}
+
+func (f *fakeRegistrations) RegistrationEnabled(context.Context) (bool, error) {
+	return f.enabled, f.err
+}
+
+func (f *fakeRegistrations) SetRegistrationEnabled(_ context.Context, enabled bool, _ string) error {
+	f.set = append(f.set, enabled)
+	f.enabled = enabled
+	return f.err
+}
+
 type fakeAudits struct {
 	actions []coreaudit.Action
 }
@@ -166,12 +204,13 @@ type fakeTx struct{}
 func (fakeTx) InTx(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) }
 
 type harness struct {
-	users    *fakeUsers
-	sessions *fakeSessions
-	resets   *fakeResets
-	audits   *fakeAudits
-	kdf      *countingKDF
-	svc      *appauth.Service
+	users         *fakeUsers
+	sessions      *fakeSessions
+	resets        *fakeResets
+	registrations *fakeRegistrations
+	audits        *fakeAudits
+	kdf           *countingKDF
+	svc           *appauth.Service
 }
 
 // countingKDF 计数哈希与校验次数，行为与 PlainHasher 相同。
@@ -194,20 +233,23 @@ func (c *countingKDF) Verify(ctx context.Context, password, encoded string) (cor
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	h := &harness{
-		users:    newFakeUsers(),
-		sessions: &fakeSessions{},
-		resets:   &fakeResets{},
-		audits:   &fakeAudits{},
-		kdf:      &countingKDF{},
+		users:         newFakeUsers(),
+		sessions:      &fakeSessions{},
+		resets:        &fakeResets{},
+		registrations: &fakeRegistrations{},
+		audits:        &fakeAudits{},
+		kdf:           &countingKDF{},
 	}
 	svc, err := appauth.NewService(appauth.Deps{
 		Users:         h.users,
 		Sessions:      h.sessions,
 		OtherSessions: h.sessions,
 		Resets:        h.resets,
+		Registrations: h.registrations,
 		Audits:        h.audits,
 		Tx:            fakeTx{},
 		Clock:         testClock,
+		UserLimit:     10000,
 		KDF:           h.kdf,
 		// 本套不测日志；未配置投递的警告不污染测试输出。
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),

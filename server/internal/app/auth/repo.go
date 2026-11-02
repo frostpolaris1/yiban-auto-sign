@@ -1,15 +1,17 @@
 // Package auth 声明会话与密码重置的仓储端口，并实现认证用例。
 //
 // # 功能
-// 声明会话仓储、一次性重置令牌仓储与其余会话撤销端口；实现登录、登出、
-// 会话主体、忘记口令、重置口令与登录态改密。本包**不**写 SQL，**不**做 HTTP 编码。
+// 声明会话仓储、一次性重置令牌仓储、全局设置与其余会话撤销端口；实现登录、
+// 登出、会话主体、忘记口令、重置口令、登录态改密与公开注册。
+// 本包**不**写 SQL，**不**做 HTTP 编码。
 //
 // # 归属
 // app 层用例端口与用例。行类型留在 core/auth，
 // 这样 PostgreSQL 适配器无需导入本包（canonical.tsv 的 boundary.adapters）。
 //
 // # 复用
-// SessionRepo、PasswordResetRepo、OtherSessionRevoker；Service、Deps、NewService、Me；
+// SessionRepo、PasswordResetRepo、OtherSessionRevoker、RegistrationStore；
+// Service、Deps、NewService、Me、RegistrationStatus、RegisterInput；
 // ErrInvalidCredentials、ErrInvalidResetToken、ErrPasswordUnchanged、ResetTokenTTL；
 // 类型别名 Session、NewSession、ResolvedSession、PasswordReset、NewPasswordReset。
 //
@@ -76,4 +78,14 @@ type PasswordResetRepo interface {
 // 实现必须与口令写入、审计同事务运行。
 type OtherSessionRevoker interface {
 	RevokeOthers(ctx context.Context, userID string, keep coreauth.TokenHash, now time.Time) error
+}
+
+// RegistrationStore 是全局注册开关的端口。
+//
+// RegistrationEnabled 读开关；键缺失或值不是 true 都按关闭处理。
+// 关闭是安全默认：读不到可识别值时不开放注册。
+// SetRegistrationEnabled 写入开关并记录操作者；实现必须与审计同事务运行。
+type RegistrationStore interface {
+	RegistrationEnabled(ctx context.Context) (bool, error)
+	SetRegistrationEnabled(ctx context.Context, enabled bool, by string) error
 }
