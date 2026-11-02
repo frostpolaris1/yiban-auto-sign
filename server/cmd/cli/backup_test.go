@@ -501,6 +501,28 @@ func TestRestoreSkipsTablesMissingFromOldBaseline(t *testing.T) {
 	}
 }
 
+// 零交集不是「一致」：对账整段没执行，必须按失败处理。
+func TestRestoreFailsWhenBaselineSharesNoTable(t *testing.T) {
+	for _, manifest := range []string{`{}`, `{"gone":4}`} {
+		deps, runner, stdout, _ := newTestDeps(t)
+		out := filepath.Join(t.TempDir(), "b.gpg")
+		runner.script = []fakeRunResult{
+			{writeOut: "-- dump\n" + manifestMarker + " " + manifest + "\n"},
+			{},
+		}
+		deps.countRows = func(context.Context, string) (map[string]int64, error) {
+			return map[string]int64{"users": 3}, nil
+		}
+		code := runRestore(deps, []string{"--in", out, "--dsn", testDSN, "--force", "--passphrase-file", passFileOf(t)})
+		if code != 1 {
+			t.Fatalf("manifest %s: code = %d, want 1", manifest, code)
+		}
+		if !strings.Contains(stdout.String(), "零交集") {
+			t.Fatalf("manifest %s: stdout must name the zero-overlap failure: %q", manifest, stdout.String())
+		}
+	}
+}
+
 // 空链：说「跳过」而不是「通过」。
 func TestRestoreReportsEmptyAuditChain(t *testing.T) {
 	deps, runner, stdout, _ := newTestDeps(t)

@@ -651,6 +651,7 @@ func runRestore(deps *backupDeps, args []string) int {
 	}
 
 	match := true
+	compared, skipped := 0, 0
 	_, _ = fmt.Fprintln(deps.stdout, "行数对账（备份时 / 恢复后）：")
 	current := make(map[string]bool, len(manifestTables))
 	for _, t := range manifestTables {
@@ -661,6 +662,7 @@ func runRestore(deps *backupDeps, args []string) int {
 			// 基线缺键不能按丢数据处理。跳过必须可见，故打印一行。
 			_, _ = fmt.Fprintf(deps.stdout, "  %-12s — / %d  %s\n",
 				t, restored[t], "基线无此项，未对账")
+			skipped++
 			continue
 		}
 		state := "一致"
@@ -668,6 +670,7 @@ func runRestore(deps *backupDeps, args []string) int {
 			state = "不一致"
 			match = false
 		}
+		compared++
 		_, _ = fmt.Fprintf(deps.stdout, "  %-12s %d / %d  %s\n", t, want, restored[t], state)
 	}
 	// 基线里有、本版本清单没有的表同样要显性说明，不静默跳过。
@@ -680,12 +683,18 @@ func runRestore(deps *backupDeps, args []string) int {
 	sort.Strings(extra)
 	for _, t := range extra {
 		_, _ = fmt.Fprintf(deps.stdout, "  %-12s %d / —  %s\n", t, baseline[t], "当前清单无此项，未对账")
+		skipped++
+	}
+	// 零项比较不是「一致」：清单为空或零交集时，对账整段没执行。
+	if compared == 0 {
+		_, _ = fmt.Fprintln(deps.stdout, "对账未执行：基线与当前清单零交集，按失败处理。")
+		return 1
 	}
 	if !match {
 		_, _ = fmt.Fprintln(deps.stdout, "对账不一致：恢复件与备份基线有出入，按失败处理。")
 		return 1
 	}
-	_, _ = fmt.Fprintln(deps.stdout, "对账一致。")
+	_, _ = fmt.Fprintf(deps.stdout, "共有键对账一致（%d 项未对账）。\n", skipped)
 
 	// 行数对账看不出审计行被截断或改写，故恢复后必须验链。
 	// 验不了（缺 pepper）按失败处理：恢复件的可信度不可声明。
