@@ -65,11 +65,11 @@ func TestRegisterCreatesUserAndSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	if issued.Token == "" || issued.Session.CSRFToken == "" {
+	if issued.Token == "" || issued.CSRFToken == "" {
 		t.Fatalf("issued session is incomplete: %+v", issued)
 	}
-	if issued.Session.User.Email != "new-user@example.com" {
-		t.Fatalf("session email = %q", issued.Session.User.Email)
+	if issued.User.Email != "new-user@example.com" {
+		t.Fatalf("session email = %q", issued.User.Email)
 	}
 	record, ok := h.users.byEmail["new-user@example.com"]
 	if !ok {
