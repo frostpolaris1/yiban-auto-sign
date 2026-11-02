@@ -1139,7 +1139,9 @@ export interface paths {
          *     number of users with an active account in that school who picked the
          *     offset; pending, rejected and paused accounts do not count. cap is
          *     the per-slice capacity the plan uses. Slots cover the effective
-         *     window in whole five-minute slices and stop at two hours.
+         *     window in whole five-minute slices and stop at two hours. A window
+         *     shorter than five minutes still returns one slot, matching the
+         *     plan's clamp.
          */
         get: operations["TimePrefStats"];
         put?: never;
