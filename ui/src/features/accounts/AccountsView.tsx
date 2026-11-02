@@ -76,8 +76,8 @@ function successText(kind: AccountActionKind, account: Account): string {
   }
 }
 
-/** 删除成功后行必消失：焦点直接落筛选输入，不让焦点掉到 body。 */
-function focusAfterRowRemoval() {
+/** 删除行与清除筛选都会拆掉焦点所在节点：焦点直接落筛选输入，不掉到 body。 */
+function focusFilterInput() {
   document.querySelector<HTMLElement>('[aria-label="账号筛选"]')?.focus()
 }
 
@@ -112,6 +112,8 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
     setFilters({})
     setQInput('')
     setStack(emptyCursorStack())
+    // 触发按钮会随空态一起消失：焦点先交给常驻的筛选输入。
+    focusFilterInput()
   }
 
   useEffect(() => {
@@ -267,7 +269,7 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
         // 行将随刷新消失：先清还原点，让模态卸载的 onCloseAutoFocus
         // 不把焦点抢回已注定删除的触发器，再直接落筛选输入。
         setDeleteReturnFocus(null)
-        focusAfterRowRemoval()
+        focusFilterInput()
         setDeleteTarget(null)
         notifySuccess(`已删除 ${input.account.phone_masked}`)
       }
