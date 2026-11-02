@@ -104,6 +104,16 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
   const [stack, setStack] = useState(emptyCursorStack)
   const cursor = currentCursor(stack)
 
+  // 任一筛选生效即给空态一条「清除筛选」出路；全空时不给空按钮。
+  const hasActiveFilters = Boolean(
+    filters.status || filters.schoolId || filters.q || filters.includeDeleted,
+  )
+  const clearFilters = () => {
+    setFilters({})
+    setQInput('')
+    setStack(emptyCursorStack())
+  }
+
   useEffect(() => {
     const next = qInput.trim() || undefined
     if (next === filters.q) return
@@ -406,6 +416,9 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
           error={error}
           role={role}
           highlightIds={highlightIds}
+          hasActiveFilters={hasActiveFilters}
+          onClearFilters={clearFilters}
+          includeDeleted={filters.includeDeleted ?? false}
           pageIndex={stack.index}
           hasPrevious={hasPreviousPage(stack)}
           hasNext={Boolean(accountsQuery.data?.next_cursor) && !accountsQuery.isFetching}
