@@ -354,6 +354,10 @@ test('invariant 5: clearing filters keeps the current view', async ({ page }) =>
     'the deleted view survives clearing',
   ).toBe('true')
   await expect(page.getByText('没有已删除的用户')).toBeVisible()
+  // 触发按钮随空态消失：焦点必须落到常驻的搜索输入，不掉 body。
+  await expect
+    .poll(() => page.evaluate(() => document.activeElement?.id ?? ''))
+    .toBe('user-filter-q')
 })
 
 test('invariant 5: the deleted view empty state offers the way back', async ({ page }) => {

@@ -157,14 +157,16 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
       <div>没有匹配的用户</div>
       <div className="app-muted">调整筛选条件后重试。</div>
       {/* 清除只撤收窄条件：分组与已删除是视图，不是筛选残留，原样保留。 */}
+      {/* 触发按钮会随空态一起消失：焦点先交给常驻的搜索输入。 */}
       <Button
         variant="ghost"
         size="sm"
-        onClick={() =>
+        onClick={() => {
           onSearchChange(
             withFilter(urlState, { role: undefined, status: undefined, q: undefined }),
           )
-        }
+          document.getElementById('user-filter-q')?.focus()
+        }}
       >
         清除筛选
       </Button>

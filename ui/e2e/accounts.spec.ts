@@ -491,6 +491,62 @@ test('an empty result says so instead of showing a blank table', async ({ page }
   await mockAccountsApi(page, { role: 'master', accounts: [] })
   await page.goto('/accounts')
   await expect(page.getByText('没有匹配的账号')).toBeVisible()
+  // 无筛选的空态保持纯文案：没有可清的东西就不给「清除筛选」。
+  await expect(page.getByRole('button', { name: '清除筛选' })).toHaveCount(0)
+})
+
+test('an empty filtered result offers the clear-filters exit', async ({ page }) => {
+  const api = await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+
+  // 四路筛选叠加到零命中：学校、状态、含已删除、无命中关键词。
+  await page.getByLabel('学校筛选').selectOption('school-b')
+  await page.getByLabel('状态筛选').selectOption('active')
+  await page.getByRole('checkbox', { name: '含已删除' }).check()
+  await page.getByLabel('账号筛选').fill('zzz-no-hit')
+  await expect.poll(() => lastListCall(api)?.params.q).toBe('zzz-no-hit')
+  await expect(page.getByText('没有匹配的账号')).toBeVisible()
+  await expect(page.getByRole('button', { name: '清除筛选' })).toBeVisible()
+
+  await page.getByRole('button', { name: '清除筛选' }).click()
+  // 触发按钮随空态消失：焦点必须落到常驻的筛选输入，不掉 body。
+  await expect.poll(() => activeLabel(page), 'focus lands on the filter input').toBe('账号筛选')
+  await expect(page.getByRole('button', { name: '清除筛选' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '查看 138****8000' })).toBeVisible()
+  await expect(page.getByLabel('账号筛选')).toHaveValue('')
+  await expect(page.getByLabel('状态筛选')).toHaveValue('')
+  await expect(page.getByLabel('学校筛选')).toHaveValue('')
+  await expect(page.getByRole('checkbox', { name: '含已删除' })).not.toBeChecked()
+  // 清除后回到无条件列表：请求里不再带任何筛选参数。
+  await expect.poll(() => lastListCall(api)?.params.q ?? 'absent').toBe('absent')
+  await expect.poll(() => lastListCall(api)?.params.status ?? 'absent').toBe('absent')
+  await expect.poll(() => lastListCall(api)?.params.school_id ?? 'absent').toBe('absent')
+  await expect.poll(() => lastListCall(api)?.params.include_deleted ?? 'absent').toBe('absent')
+})
+
+test('clearing filters from an empty second page returns to the first', async ({ page }) => {
+  const api = await mockAccountsApi(page, {
+    role: 'master',
+    pages: { '': [ACCOUNTS[0]], c2: [] },
+    nextCursors: { '': 'c2' },
+  })
+  await openAccounts(page)
+
+  await page.getByLabel('状态筛选').selectOption('active')
+  await expect.poll(() => lastListCall(api)?.params.status).toBe('active')
+
+  await page.getByRole('button', { name: '下一页' }).click()
+  await expect.poll(() => lastListCall(api)?.params.cursor).toBe('c2')
+  await expect(page.getByText('没有匹配的账号')).toBeVisible()
+  await expect(page.getByRole('button', { name: '清除筛选' })).toBeVisible()
+
+  await page.getByRole('button', { name: '清除筛选' }).click()
+  // 清除重置游标栈：请求不带 cursor，页脚回第 1 页。
+  await expect.poll(() => lastListCall(api)?.params.cursor ?? 'absent').toBe('absent')
+  await expect.poll(() => lastListCall(api)?.params.status ?? 'absent').toBe('absent')
+  await expect(page.getByRole('button', { name: '查看 138****8000' })).toBeVisible()
+  await expect(page.locator('.data-foot-info')).toContainText('第 1 页')
+  await expect.poll(() => activeLabel(page), 'focus lands on the filter input').toBe('账号筛选')
 })
 
 test('the sidebar reaches the accounts page', async ({ page }) => {
@@ -1327,4 +1383,28 @@ test('ux2 user: no deleted filter and no restore entry', async ({ page }) => {
   await mockAccountsApi(page, { role: 'user' })
   await openAccounts(page)
   await expect(page.getByRole('checkbox', { name: '含已删除' })).toHaveCount(0)
+})
+
+test('the deleted-at column only renders while the deleted filter is on', async ({ page }) => {
+  await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+
+  // 默认视图没有删除时间列：活行保持 7 列不变宽。
+  await expect(page.getByRole('columnheader', { name: '删除时间' })).toHaveCount(0)
+
+  await page.getByRole('checkbox', { name: '含已删除' }).check()
+  const deletedRow = deletedRowFor(page, '131****0000')
+  await expect(deletedRow.getByText('已删除')).toBeVisible()
+
+  await expect(page.getByRole('columnheader', { name: '删除时间' })).toBeVisible()
+  // 已删行给真实删除时间（软删时刻按上海墙钟渲染），不留空占位。
+  await expect(deletedRow.getByText('2026/10/25 08:00')).toBeVisible()
+  await expect(deletedRow.getByText('—')).toHaveCount(0)
+  // 活行该列只有占位符：恰好一个「—」。
+  await expect(rowFor(page, '138****8000').getByText('—')).toHaveCount(1)
+
+  await page.getByRole('checkbox', { name: '含已删除' }).uncheck()
+  await expect(page.getByRole('columnheader', { name: '删除时间' })).toHaveCount(0)
+  await expect(deletedRowFor(page, '131****0000')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '查看 138****8000' })).toBeVisible()
 })

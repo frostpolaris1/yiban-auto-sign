@@ -7,6 +7,9 @@
  *
  * **口径**
  * 服务端游标分页，没有总数。页脚只报当前位置与本页条数。
+ * 删除时间列只随「含已删除」渲染：已删行给软删时刻，活行该列是「—」；
+ * 未勾选时整列不出现，活行保持 7 列不变宽。
+ * 有筛选的空态给「清除筛选」出路；无筛选的空态保持纯文案。
  * 行高固定 48px；表格最小宽度由内容决定，窄屏在 `.table-scroll` 内滚动。
  * 无权限与不可评审一律置灰，并给一句可见原因。
  * 置灰判据只取原因：原因非空即可用性为假，二者不会分叉。
@@ -41,6 +44,11 @@ type AccountsTableProps = {
   role: Role | null
   /** 精确命中的行 id：完整手机号/邮箱或完整备注名。 */
   highlightIds: ReadonlySet<string>
+  /** 任一筛选生效时为真：空态才给「清除筛选」出路。 */
+  hasActiveFilters: boolean
+  onClearFilters: () => void
+  /** 勾选「含已删除」时才渲染删除时间列：活行保持 7 列不变宽。 */
+  includeDeleted: boolean
   pageIndex: number
   hasPrevious: boolean
   hasNext: boolean
@@ -61,6 +69,9 @@ export function AccountsTable({
   error,
   role,
   highlightIds,
+  hasActiveFilters,
+  onClearFilters,
+  includeDeleted,
   pageIndex,
   hasPrevious,
   hasNext,
@@ -79,6 +90,8 @@ export function AccountsTable({
     duration: 180,
     disrespectUserMotionPreference: false,
   })
+  // 删除时间列只随「含已删除」出现：占位列会把行菜单挤出窄视口。
+  const colSpan = includeDeleted ? 8 : 7
   return (
     <>
       <div className="table-scroll">
@@ -92,13 +105,14 @@ export function AccountsTable({
               <th scope="col">状态</th>
               <th scope="col">归属邮箱</th>
               <th scope="col">更新时间</th>
+              {includeDeleted ? <th scope="col">删除时间</th> : null}
               <th scope="col">操作</th>
             </tr>
           </thead>
           <tbody ref={tbodyRef}>
             {error ? (
               <tr>
-                <td colSpan={7}>
+                <td colSpan={colSpan}>
                   <span className="app-muted">{error}</span>{' '}
                   <Button variant="ghost" size="sm" onClick={onRetry}>
                     重试
@@ -109,7 +123,7 @@ export function AccountsTable({
 
             {!error && loading && rows.length === 0 ? (
               <tr>
-                <td colSpan={7} className="app-muted">
+                <td colSpan={colSpan} className="app-muted">
                   加载中…
                 </td>
               </tr>
@@ -117,9 +131,14 @@ export function AccountsTable({
 
             {!error && !loading && rows.length === 0 ? (
               <tr>
-                <td colSpan={7}>
+                <td colSpan={colSpan}>
                   <div>没有匹配的账号</div>
                   <div className="app-muted">调整筛选条件后重试。</div>
+                  {hasActiveFilters ? (
+                    <Button variant="ghost" size="sm" onClick={onClearFilters}>
+                      清除筛选
+                    </Button>
+                  ) : null}
                 </td>
               </tr>
             ) : null}
@@ -153,6 +172,9 @@ export function AccountsTable({
                     </td>
                     <td className="data-cell-mono">{account.owner_email_masked}</td>
                     <td className="data-cell-mono">{formatDateTime(account.updated_at)}</td>
+                    {includeDeleted ? (
+                      <td className="data-cell-mono">{formatDateTime(account.deleted_at)}</td>
+                    ) : null}
                     <td>
                       <div className="data-cell-actions app-account-actions">
                         <AccountRowMenu
@@ -233,6 +255,7 @@ export function AccountsTable({
                   </td>
                   <td className="data-cell-mono">{account.owner_email_masked}</td>
                   <td className="data-cell-mono">{formatDateTime(account.updated_at)}</td>
+                  {includeDeleted ? <td className="data-cell-mono">—</td> : null}
                   <td>
                     <div className="data-cell-actions app-account-actions">
                       <Button
