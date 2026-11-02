@@ -19,9 +19,11 @@ import {
  * 3. 游标翻页：两页数据不重不漏；末页「下一页」禁用；回退不发游标。
  * 4. 过滤：角色、状态、邮箱前缀各带进请求；连续输入只发一次请求（防抖）；
  *    回车立即使当前输入生效；改筛选或切分组都回到第一页。
- * 5. 空态与错误态：空结果有文案；失败显示错误信封并可重试。
+ * 5. 空态与错误态：空结果有文案；收窄空态给「清除筛选」的出路且只撤
+ *    收窄条件（分组与已删除视图保留）；已删除空组有「返回全部用户」
+ *    的出路；失败显示错误信封并可重试。
  * 6. 分组与计数：四个标签各带全局计数；切组带 group 进请求并同步 URL；
- *    空分组有跨组出路；分组与含已删除互斥。
+ *    空分组有跨组出路；分组与含已删除互斥；手写 URL 组合归一到合法状态。
  *
  * 断言用户可见结果与请求参数，不钉内部调用顺序。
  * 390 宽无溢出由 `visual.spec.ts` 的溢出判据覆盖（`/users` 在常驻矩阵内）。
@@ -191,11 +193,20 @@ test('invariant 4: changing a filter returns to the first page', async ({ page }
   expect(lastUserListCall(api)?.params.cursor, 'a filter change drops the cursor').toBeUndefined()
   await expect(page.getByRole('button', { name: '上一页' })).toBeDisabled()
 
-  // 切分组同样是视图变更：同样丢游标回第一页。
+  // 清掉状态筛选再切分组：分组视图吃同一套过滤，pending 视图下
+  // userPages 两页都被滤空——页面落到空组文案，且没有下一页游标。
+  await page.getByLabel('状态筛选').selectOption('')
+  await expect.poll(() => lastUserListCall(api)?.params.status).toBeUndefined()
   await page.getByRole('group', { name: '用户分组' }).getByRole('button', { name: '待处理' }).click()
   await expect.poll(() => lastUserListCall(api)?.params.group).toBe('pending')
   expect(lastUserListCall(api)?.params.cursor, 'a group change drops the cursor too').toBeUndefined()
-  await expect(page.getByRole('button', { name: '上一页' })).toBeDisabled()
+  await expect(page.getByText('暂无待处理用户')).toBeVisible()
+  // 过滤后为空的页不发下一页游标；空态连翻页器都没有。
+  await expect(page.getByRole('button', { name: '上一页' })).toHaveCount(0)
+  await expect(
+    page.getByRole('button', { name: '下一页' }),
+    'a filtered-away page offers no pager at all',
+  ).toHaveCount(0)
 })
 
 test('invariant 5: an empty result says so', async ({ page }) => {
@@ -250,6 +261,8 @@ test('invariant 6: group tabs show global counts and each group filters its rows
   await expect(page).toHaveURL(/group=pending/)
   await expect(page.getByText('member-two@example.com')).toBeVisible()
   await expect(page.getByText('master-one@example.com')).toHaveCount(0)
+  // 分组页没有下一页：pending 组只有一行，游标到头。
+  await expect(page.getByRole('button', { name: '下一页' })).toBeDisabled()
 
   await tabs.getByRole('button', { name: '正式' }).click()
   await expect.poll(() => lastUserListCall(api)?.params.group).toBe('normal')
@@ -299,6 +312,65 @@ test('invariant 6: a group and the deleted view are mutually exclusive', async (
   expect(lastUserListCall(api)?.params.group, 'the deleted view drops the group').toBeUndefined()
   await expect(page).toHaveURL(/deleted=true/)
   expect(page.url(), 'the group leaves the URL').not.toContain('group=')
+})
+
+test('invariant 6: handwritten group URLs are normalized into a legal state', async ({ page }) => {
+  const api = await mockUsersApi(page, { role: 'master' })
+
+  // 未知分组不得打 400：归一后按无分组的「全部」视图请求。
+  await page.goto('/users?group=bogus')
+  await expect(page.getByRole('table', { name: '用户列表' })).toBeVisible()
+  await expect.poll(() => lastUserListCall(api)?.params.group).toBeUndefined()
+  await expect(page.getByText('master-one@example.com')).toBeVisible()
+
+  // group 与 deleted 同给：分组赢，请求不带 include_deleted。
+  await page.goto('/users?group=pending&deleted=true')
+  await expect.poll(() => lastUserListCall(api)?.params.group).toBe('pending')
+  expect(
+    lastUserListCall(api)?.params.include_deleted,
+    'the group wins the handwritten combination',
+  ).toBeUndefined()
+  await expect(page).toHaveURL(/group=pending/)
+})
+
+test('invariant 5: clearing filters keeps the current view', async ({ page }) => {
+  const api = await mockUsersApi(page, { role: 'master', users: [] })
+  await page.goto('/users')
+  await expect(page.getByText('暂无用户')).toBeVisible()
+
+  // 已删除视图 + 无命中前缀：收窄空态给「清除筛选」。
+  await page.getByLabel('含已删除').check()
+  await expect.poll(() => lastUserListCall(api)?.params.include_deleted).toBe('true')
+  const search = page.getByLabel('邮箱前缀筛选')
+  await search.fill('ghost@example.com')
+  await expect.poll(() => lastUserListCall(api)?.params.q).toBe('ghost@example.com')
+  await expect(page.getByText('没有匹配的用户')).toBeVisible()
+
+  await page.getByRole('button', { name: '清除筛选' }).click()
+  // 清除只撤收窄条件：已删除视图保留，q 离场。
+  await expect.poll(() => lastUserListCall(api)?.params.q).toBeUndefined()
+  expect(
+    lastUserListCall(api)?.params.include_deleted,
+    'the deleted view survives clearing',
+  ).toBe('true')
+  await expect(page.getByText('没有已删除的用户')).toBeVisible()
+})
+
+test('invariant 5: the deleted view empty state offers the way back', async ({ page }) => {
+  const api = await mockUsersApi(page, { role: 'master', users: [] })
+  await page.goto('/users')
+  await expect(page.getByText('暂无用户')).toBeVisible()
+
+  // 含已删除回的是全量行，空态只在空库出现：
+  // 夹具取空库（同样不含 DELETED_USER），视图直说没有已删除的用户。
+  await page.getByLabel('含已删除').check()
+  await expect.poll(() => lastUserListCall(api)?.params.include_deleted).toBe('true')
+  await expect(page.getByText('没有已删除的用户')).toBeVisible()
+
+  await page.getByRole('button', { name: '返回全部用户' }).click()
+  await expect.poll(() => lastUserListCall(api)?.params.include_deleted).toBeUndefined()
+  expect(page.url(), 'back to the all view').not.toContain('deleted=')
+  await expect(page.getByText('暂无用户')).toBeVisible()
 })
 
 // --- UX-1：建号、URL 状态、抽屉动作 ----------------------------------------

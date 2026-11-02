@@ -120,6 +120,16 @@ test('the URL state parser keeps a known group and lets it win over deleted', ()
   assert.deepEqual(parseUserSearchRecord({ group: 'bogus' }), {})
 })
 
+test('the URL state parser re-parses a validated state unchanged', () => {
+  // router.tsx 在传页面前再归一一次：校验结果里的 deleted 是布尔，
+  // loose search 还可能回灌数字。归一必须幂等，否则视图静默丢失。
+  assert.deepEqual(parseUserSearchRecord({ deleted: true }), { deleted: true })
+  assert.deepEqual(parseUserSearchRecord({ deleted: 1 }), { deleted: true })
+  assert.deepEqual(parseUserSearchRecord({ group: 'pending', deleted: true }), {
+    group: 'pending',
+  })
+})
+
 test('the URL search record never writes group and deleted together', () => {
   assert.deepEqual(userSearchRecord({ group: 'normal', cursor: 'c1' }), {
     group: 'normal',

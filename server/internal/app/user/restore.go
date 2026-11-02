@@ -61,5 +61,15 @@ func (s *Service) Restore(ctx context.Context, scope corescope.Scope, id string,
 	if err != nil {
 		return Record{}, err
 	}
+	// 响应带真实名下账号计数：行扫描（scanUser）不含聚合列，
+	// 与列表行的计数字段保持同一形状。计数在事务外补：
+	// 纯展示面，不参与判据。
+	counts, err := s.deps.Users.OwnerCounts(ctx, record.ID)
+	if err != nil {
+		return Record{}, err
+	}
+	record.AccountCount = counts.Account
+	record.PendingCount = counts.Pending
+	record.ReviewCount = counts.Review
 	return record, nil
 }

@@ -107,6 +107,11 @@ func (f *fakeUsers) CountLiveMasters(context.Context, string) (int, error) { ret
 // Counts 只为满足 appuser.Repo 接口：分组计数归列表流，认证流不读它。
 func (f *fakeUsers) Counts(context.Context) (coreuser.Counts, error) { return coreuser.Counts{}, nil }
 
+// OwnerCounts 只为满足 appuser.Repo 接口：变更响应的计数补齐归用户用例。
+func (f *fakeUsers) OwnerCounts(context.Context, string) (coreuser.OwnerCounts, error) {
+	return coreuser.OwnerCounts{}, nil
+}
+
 func (f *fakeUsers) Lookup(context.Context, string, int, bool) ([]appuser.Record, error) {
 	return nil, nil
 }

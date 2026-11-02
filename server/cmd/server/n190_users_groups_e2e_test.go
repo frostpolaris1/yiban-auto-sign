@@ -3,12 +3,14 @@ package main
 // 用户分组与计数 e2e：GET /api/users 的 group 与 counts。
 //
 // # 功能
-// 钉住四条用户可见的性质：
+// 钉住五条用户可见的性质：
 //   1. 每行带名下未软删账号的 account/pending/review 计数。
 //   2. group 按账号派生：pending 看 review、normal 看无 review 且有账号、
 //      vacant 看没有账号；软删账号不计入。
 //   3. counts 是全部用户的全局计数，不随 q/分页收窄；deleted 只数软删用户。
 //   4. group 与 include_deleted 互斥，组合请求 400。
+//   5. 变更接口（PATCH、restore）的响应同样带名下账号计数：
+//      行扫描不含聚合列，用例层写成功后补齐。
 //
 // # 归属
 // cmd/server 可同时引用 adapters 与 entry；本文件用真实 PostgreSQL。
@@ -174,5 +176,64 @@ func TestN190UserGroupCountsAndFilters(t *testing.T) {
 		if code, _ := errorCode(t, payload); code != "validation_failed" {
 			t.Fatalf("GET %s code = %q, want validation_failed", path, code)
 		}
+	}
+}
+
+// TestN190MutatingEndpointsCarryCounts：变更接口的响应也带名下账号计数。
+// PATCH 与 Restore 的行扫描不含聚合列，用例层在写成功后补齐；
+// 断言响应计数与列表行同形状且非零。
+func TestN190MutatingEndpointsCarryCounts(t *testing.T) {
+	e := newAuthEnv(t)
+	boss := w2dSeedUser(t, e, "n190-mut-boss@example.com", "boss-pass", coreauth.RoleMaster)
+	session := e.w2dLoginAs("n190-mut-boss@example.com", "boss-pass")
+
+	schoolID, err := e.db.QueryString(e.ctx,
+		`INSERT INTO schools (code, name) VALUES ('n190-mut', 'N190 Mut') RETURNING id::text`)
+	if err != nil {
+		t.Fatalf("seed school: %v", err)
+	}
+	seedAccount := func(owner, phone string, status coreaccount.Status) {
+		t.Helper()
+		if _, err := e.db.Exec(e.ctx, `
+			INSERT INTO accounts (school_id, owner_user_id, phone, status, reject_reason)
+			VALUES ($1::uuid, $2::uuid, $3, $4::account_status, '')`,
+			schoolID, owner, phone, string(status)); err != nil {
+			t.Fatalf("seed account %s: %v", phone, err)
+		}
+	}
+
+	// PATCH：有账号的用户改状态，响应计数非零且与列表行同一口径。
+	target := w2dSeedUser(t, e, "n190-mut-target@example.com", "user-pass", coreauth.RoleUser)
+	seedAccount(target.ID, "13800000070", coreaccount.StatusActive)
+	seedAccount(target.ID, "13800000071", coreaccount.StatusPending)
+
+	resp, payload := e.do(http.MethodPatch, "/api/users/"+target.ID,
+		map[string]any{"status": "disabled"}, map[string]string{"X-CSRF-Token": session.CSRFToken})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH = %d; body=%q", resp.StatusCode, payload)
+	}
+	var patched n190User
+	if err := json.Unmarshal(payload, &patched); err != nil {
+		t.Fatalf("decode patch: %v; body=%q", err, payload)
+	}
+	if patched.AccountCount != 2 || patched.PendingCount != 1 || patched.ReviewCount != 1 {
+		t.Fatalf("patched counts = %+v, want 2/1/1", patched)
+	}
+
+	// Restore：软删用户名下有账号，恢复响应计数非零。
+	deleted := u1SeedDeletedUser(t, e, "n190-mut-deleted@example.com", boss.ID)
+	seedAccount(deleted.ID, "13800000072", coreaccount.StatusActive)
+
+	resp, payload = e.do(http.MethodPost, "/api/users/"+deleted.ID+"/restore", nil,
+		map[string]string{"X-CSRF-Token": session.CSRFToken})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("restore = %d; body=%q", resp.StatusCode, payload)
+	}
+	var back n190User
+	if err := json.Unmarshal(payload, &back); err != nil {
+		t.Fatalf("decode restore: %v; body=%q", err, payload)
+	}
+	if back.AccountCount != 1 || back.PendingCount != 0 || back.ReviewCount != 0 {
+		t.Fatalf("restored counts = %+v, want 1/0/0", back)
 	}
 }

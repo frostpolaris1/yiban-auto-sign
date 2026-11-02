@@ -156,7 +156,16 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
     <>
       <div>没有匹配的用户</div>
       <div className="app-muted">调整筛选条件后重试。</div>
-      <Button variant="ghost" size="sm" onClick={() => onSearchChange({})}>
+      {/* 清除只撤收窄条件：分组与已删除是视图，不是筛选残留，原样保留。 */}
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() =>
+          onSearchChange(
+            withFilter(urlState, { role: undefined, status: undefined, q: undefined }),
+          )
+        }
+      >
         清除筛选
       </Button>
     </>

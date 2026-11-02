@@ -450,6 +450,26 @@ func (r *UserRepo) CountLiveAccountsByOwner(ctx context.Context, userID string) 
 	return n, nil
 }
 
+// OwnerCounts 按行聚合某用户名下未软删账号的三计数。
+// 口径与 accountCountsCTE 一致：account 全部、pending 只 pending、
+// review 含 pending 与 rejected。无账号或行不存在都返回零值，
+// 不报 not_found：调用方刚写成功过目标行。
+// 无锁需求；计数是展示面，调用方决定事务。
+func (r *UserRepo) OwnerCounts(ctx context.Context, id string) (coreuser.OwnerCounts, error) {
+	var counts coreuser.OwnerCounts
+	err := r.db.q(ctx).QueryRow(ctx, `
+		SELECT count(*)::int,
+		       count(*) FILTER (WHERE status = 'pending')::int,
+		       count(*) FILTER (WHERE status IN ('pending', 'rejected'))::int
+		  FROM accounts
+		 WHERE owner_user_id = $1::uuid AND deleted_at IS NULL`,
+		id).Scan(&counts.Account, &counts.Pending, &counts.Review)
+	if err != nil {
+		return coreuser.OwnerCounts{}, mapError(err)
+	}
+	return counts, nil
+}
+
 // Lookup 按已归一邮箱前缀取未删用户，按 email 升序取前 limit 条。
 // exact 置真时 query 是完整邮箱：email 全等，至多一条；
 // 活跃邮箱由 uq_users_email_live 兜底唯一（F1）。

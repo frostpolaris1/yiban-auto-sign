@@ -248,10 +248,19 @@ export async function mockUsersApi(
         return includeDeleted || item.deleted_at === null
       })
       const cursor = url.searchParams.get('cursor') ?? ''
+      // userPages 是按游标预排的页；它们也要吃同一套 group/include_deleted
+      // 过滤，否则分组请求会读到视图外的行。过滤后为空的页不发下一页
+      // 游标：翻页语义不得越过当前视图。
       const source = options.userPages
-        ? (options.userPages[cursor] ?? [])
+        ? (options.userPages[cursor] ?? []).filter((item) => {
+            if (group !== '') {
+              return item.deleted_at === null && groupOf(item) === group
+            }
+            return includeDeleted || item.deleted_at === null
+          })
         : visible
-      const next = options.userNextCursors?.[cursor] ?? ''
+      let next = options.userNextCursors?.[cursor] ?? ''
+      if (options.userPages && source.length === 0) next = ''
       return json(route, {
         items: source,
         next_cursor: next,

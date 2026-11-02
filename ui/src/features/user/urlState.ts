@@ -41,7 +41,10 @@ export function parseUserSearchRecord(search: Record<string, unknown>): UserURLS
   const group = search.group
   if (group === 'pending' || group === 'normal' || group === 'vacant') state.group = group
   // 手写 URL 同时带 group 与 deleted 时分组优先：软删行不参与分组。
-  if (!state.group && (search.deleted === '1' || search.deleted === 'true')) {
+  // deleted 兼容四种写法：字符串来自手写 URL，布尔与数字来自
+  // 路由回灌的校验结果——归一必须幂等（router.tsx 传页面前再归一一次）。
+  const deleted = search.deleted
+  if (!state.group && (deleted === '1' || deleted === 'true' || deleted === true || deleted === 1)) {
     state.deleted = true
   }
   const cursor = search.cursor

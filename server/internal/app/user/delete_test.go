@@ -76,6 +76,11 @@ func (f *fakeUserRepo) Counts(context.Context) (coreuser.Counts, error) {
 	return coreuser.Counts{}, nil
 }
 
+// OwnerCounts 只为满足 Repo 接口：变更响应的计数补齐归 Update/Restore 流。
+func (f *fakeUserRepo) OwnerCounts(context.Context, string) (coreuser.OwnerCounts, error) {
+	return coreuser.OwnerCounts{}, nil
+}
+
 func (f *fakeUserRepo) UpdatePassword(context.Context, string, string, bool, time.Time) error {
 	return errors.New("not used")
 }
