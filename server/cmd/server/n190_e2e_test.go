@@ -270,9 +270,10 @@ func TestN190SearchNameEmailAndPhone(t *testing.T) {
 		}
 	}
 
-	// 部分手机号：前缀、后缀仍按原口径。
-	if page, _ := n190List(t, e, "138", issued); !n190IDs(page)[east] {
-		t.Fatalf("q=138 ids = %v, want the 138 account", n190IDs(page))
+	// 部分手机号：前缀、后缀仍按原口径（两个 138 开头的号都入选）。
+	if page, _ := n190List(t, e, "138", issued); len(page.Items) != 2 ||
+		!n190IDs(page)[east] || !n190IDs(page)[phoneMatch] {
+		t.Fatalf("q=138 ids = %v, want both 138-prefixed accounts", n190IDs(page))
 	}
 	if page, _ := n190List(t, e, "0041", issued); !n190IDs(page)[west] {
 		t.Fatalf("q=0041 ids = %v, want the suffix match", n190IDs(page))

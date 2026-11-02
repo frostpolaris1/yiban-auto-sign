@@ -1366,9 +1366,10 @@ type AccountListParams struct {
 	Status   *AccountStatus `form:"status,omitempty" json:"status,omitempty"`
 
 	// Q A complete phone (11 digits, optionally prefixed by 86/+86) matches
-	// the phone exactly, or an identical effective remark name. A phone
-	// query consists only of digits and the separators + - . ( ) and
-	// whitespace; letters or @ make it a non-phone query.
+	// the phone exactly, or an effective remark name equal to the
+	// normalized 11 digits. A phone query consists only of digits and the
+	// separators + - . ( ) and whitespace; letters or @ make it a
+	// non-phone query.
 	// A complete email (exactly one @, non-empty sides, no whitespace)
 	// matches the owner email exactly, case-insensitively, or an
 	// identical effective remark name; the raw email is reachable only

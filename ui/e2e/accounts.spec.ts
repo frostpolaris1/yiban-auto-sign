@@ -735,6 +735,7 @@ test('invariant 11: a complete phone or email highlights the matching rows', asy
   expect(await highlightCell.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(
     normalBackground,
   )
+  expect(await highlightCell.evaluate((el) => getComputedStyle(el).boxShadow)).toContain('inset')
 
   // 完整邮箱：同一属主的两个账号都命中、都高亮。
   await q.fill('operator@example.com')
@@ -757,6 +758,29 @@ test('invariant 11: a complete phone or email highlights the matching rows', asy
   await q.fill('138')
   await expect(page.getByRole('button', { name: '查看 138****8000' })).toBeVisible()
   await expect(page.getByText('精确匹配')).toHaveCount(0)
+})
+
+test('invariant 11: a numeric remark name matches a normalized phone query', async ({ page }) => {
+  const numericName = {
+    ...ACCOUNTS[2],
+    id: 'acc-name-phone',
+    name: '13800138000',
+    display_name: '13800138000',
+    phone_masked: '136****0004',
+  }
+  await mockAccountsApi(page, {
+    role: 'master',
+    accounts: [...ACCOUNTS, numericName],
+    rawPhones: { 'acc-name-phone': '13600136004' },
+  })
+  await openAccounts(page)
+  const q = page.getByLabel('账号筛选')
+
+  // 完整手机号与同值的数字备注名都命中；带国家码与分隔符也要归一后比较。
+  await q.fill('+86 138 0013 8000')
+  await expect(page.getByRole('button', { name: '查看 138****8000' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '查看 136****0004' })).toBeVisible()
+  await expect(rowFor(page, '136****0004')).toHaveAttribute('data-exact-match', 'true')
 })
 
 test('invariant 11: the default remark is displayed and searchable', async ({ page }) => {

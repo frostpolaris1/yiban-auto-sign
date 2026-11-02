@@ -256,10 +256,11 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
     const normalized =
       digits.length === 13 && digits.startsWith('86') ? digits.slice(2) : digits
     if (phoneShaped && normalized.length === 11) {
-      // 完整手机号或同值的数字备注名。
+      // 完整手机号，或备注名等于**归一后**的 11 位号码（与服务端同口径）。
       return items.filter(
         (item) =>
-          rawPhones.get(item.id) === normalized || item.display_name.toLowerCase() === lower,
+          rawPhones.get(item.id) === normalized ||
+          item.display_name.toLowerCase() === normalized,
       )
     }
     if (isCompleteEmail(term)) {
