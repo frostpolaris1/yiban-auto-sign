@@ -12,8 +12,9 @@ import {
   signCounts,
   signKpiCards,
   stateLabel,
+  todayKpiCards,
+  todayStats,
   windowCounts,
-  windowKpiCards,
 } from '../../src/features/dashboard/display.ts'
 import { SOURCE_LABELS, sourceTone } from '../../src/features/schedule/display.ts'
 
@@ -21,6 +22,8 @@ import { SOURCE_LABELS, sourceTone } from '../../src/features/schedule/display.t
  * 看板纯逻辑的不变式。
  *
  * KPI 由条目派生，不另造统计端点；state=null 计入「无任务」，不进其余三项。
+ * 今日终态口径：取报告末两天；成功率＝成功÷（成功+失败），跳过不计入；
+ * 分母 0 为 null；pill 分「有对比/无对比」两态；报告未到不编数字。
  * 状态标签取契约词汇，未知值原样显示：契约漂移必须可见。
  * 建议标签四值穷尽，键集与契约枚举相同。
  * 容量选项只取「启用且有窗口」的行；label 是 `学校名 · 任务名`。
@@ -114,11 +117,120 @@ test('window counts split reported, disabled and usable rows', () => {
     window({ school_id: 'school-beta', task_id: 'task-legacy', start: null, end: null, source: null }),
   ]
   assert.deepEqual(windowCounts(rows), { total: 4, reported: 3, disabled: 1, usable: 2 })
+})
 
-  const cards = windowKpiCards({ total: 4, reported: 3, disabled: 1, usable: 2 })
+// ---------- master/admin 的今日终态口径 ----------
+
+function statsWithDays(lastTwoDays) {
+  return {
+    days: [
+      { day: '2026-10-01', pending: 0, running: 0, success: 3, failed: 1, skipped: 0 },
+      ...lastTwoDays,
+    ],
+    total: 4,
+    by_status: { pending: 1, running: 0, success: 3, failed: 1, skipped: 1 },
+    days_missing: [],
+  }
+}
+
+test('today stats read the last two entries and exclude skipped from the rate', () => {
+  const stats = todayStats(
+    statsWithDays([
+      { day: '2026-10-27', pending: 0, running: 0, success: 4, failed: 4, skipped: 2 },
+      { day: '2026-10-28', pending: 3, running: 1, success: 5, failed: 2, skipped: 9 },
+    ]),
+  )
+  assert.equal(stats.success, 5)
+  assert.equal(stats.failed, 2)
+  assert.equal(stats.active, 4, 'running and pending both count as in flight')
+  assert.equal(stats.rate, 71.4, '5 ÷ 7 to one decimal; nine skips stay out of the math')
+  assert.deepEqual(stats.pill, { text: '较昨日 +21.4pp', cls: 'up' })
+})
+
+test('the rate pill covers flat, down and no-comparison states', () => {
+  const flat = todayStats(
+    statsWithDays([
+      { day: '2026-10-27', pending: 0, running: 0, success: 3, failed: 0, skipped: 0 },
+      { day: '2026-10-28', pending: 0, running: 0, success: 3, failed: 0, skipped: 4 },
+    ]),
+  )
+  assert.deepEqual(flat.pill, { text: '较昨日 0pp', cls: 'flat' })
+
+  const down = todayStats(
+    statsWithDays([
+      { day: '2026-10-27', pending: 0, running: 0, success: 4, failed: 1, skipped: 0 },
+      { day: '2026-10-28', pending: 0, running: 0, success: 2, failed: 3, skipped: 0 },
+    ]),
+  )
+  assert.deepEqual(down.pill, { text: '较昨日 -40pp', cls: 'down' })
+
+  const noComparison = todayStats(
+    statsWithDays([
+      { day: '2026-10-27', pending: 1, running: 0, success: 0, failed: 0, skipped: 5 },
+      { day: '2026-10-28', pending: 0, running: 0, success: 3, failed: 3, skipped: 0 },
+    ]),
+  )
+  assert.equal(noComparison.rate, 50)
+  assert.deepEqual(noComparison.pill, { text: '无昨日对比', cls: 'flat' })
+})
+
+test('a zero denominator and a missing report show dashes, not invented numbers', () => {
+  const zero = todayStats(
+    statsWithDays([
+      { day: '2026-10-27', pending: 0, running: 0, success: 1, failed: 0, skipped: 0 },
+      { day: '2026-10-28', pending: 2, running: 0, success: 0, failed: 0, skipped: 0 },
+    ]),
+  )
+  assert.equal(zero.rate, null)
+  assert.equal(zero.pill, null, 'no rate means no comparison either')
+  assert.equal(zero.success, 0)
+  assert.equal(zero.active, 2)
+
+  // 日期缺失按 0 桶处理，不编造。
+  const short = todayStats({
+    days: [{ day: '2026-10-28', pending: 0, running: 0, success: 2, failed: 1, skipped: 0 }],
+    total: 1,
+    by_status: { pending: 0, running: 0, success: 2, failed: 1, skipped: 0 },
+    days_missing: [],
+  })
+  assert.deepEqual(
+    { rate: short.rate, pill: short.pill, active: short.active },
+    { rate: 66.7, pill: { text: '无昨日对比', cls: 'flat' }, active: 0 },
+  )
+
+  assert.equal(todayStats(null), null)
+  assert.equal(todayStats(undefined), null)
+})
+
+test('the manager KPI cards carry today numbers and an em dash without data', () => {
+  const stats = todayStats(
+    statsWithDays([
+      { day: '2026-10-27', pending: 0, running: 0, success: 4, failed: 4, skipped: 0 },
+      { day: '2026-10-28', pending: 1, running: 1, success: 5, failed: 2, skipped: 0 },
+    ]),
+  )
+  const cards = todayKpiCards(stats)
+  assert.equal(cards.length, 4)
+  assert.deepEqual(
+    cards.map((card) => card.label),
+    ['今日成功', '今日失败', '今日成功率', '进行中/待签'],
+  )
   assert.deepEqual(
     cards.map((card) => card.value),
-    [4, 3, 1, 2],
+    [5, 2, 71.4, 2],
+  )
+  assert.equal(cards[2].pill, stats.pill)
+  assert.equal(cards[0].pill, undefined, 'only the rate card carries a pill')
+
+  const blank = todayKpiCards(null)
+  assert.deepEqual(
+    blank.map((card) => card.value),
+    [null, null, null, null],
+    'no data means no invented numbers',
+  )
+  assert.deepEqual(
+    blank.map((card) => card.pill ?? null),
+    [null, null, null, null],
   )
 })
 

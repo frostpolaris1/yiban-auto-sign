@@ -8,9 +8,11 @@
  * **口径**
  * 看板三档角色都可见；取数面与卡片由 `DashboardView` 按角色决定。
  * 时间偏好卡只对 user 渲染：端点 `x-roles` 只有 user，master/admin 不挂载即不请求。
+ * 页头只有「新建账号」一个动作，点击跳账号页；无行为的导出按钮不留。
  * 副标题如实描述数据来源，不写占位或演示字样。
  */
 
+import { useNavigate } from '@tanstack/react-router'
 import { Icon } from '@/components/ui/Icon'
 import { Button } from '@/components/ui/Button'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -20,6 +22,7 @@ import { useMe } from '@/lib/session'
 
 export function DashboardPage() {
   const meQuery = useMe()
+  const navigate = useNavigate()
   const role = meQuery.data?.role ?? null
   const isUser = role === 'user'
 
@@ -38,16 +41,10 @@ export function DashboardPage() {
             : '今日任务窗口与容量体检；容量按所选任务计算。'
         }
         actions={
-          <>
-            <Button variant="ghost">
-              <Icon name="download" />
-              导出
-            </Button>
-            <Button variant="primary">
-              <Icon name="plus" />
-              新建账号
-            </Button>
-          </>
+          <Button variant="primary" onClick={() => void navigate({ to: '/accounts' })}>
+            <Icon name="plus" />
+            新建账号
+          </Button>
         }
       />
 

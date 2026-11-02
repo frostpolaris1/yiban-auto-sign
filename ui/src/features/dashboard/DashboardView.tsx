@@ -7,10 +7,11 @@
  *
  * **口径**
  * 角色取数隔离是本容器的第一不变式：
- * user 只读 sign-status 与 diagnostics；master/admin 只读 windows 与 capacity。
+ * user 只读 sign-status 与 diagnostics；master/admin 只读 windows、capacity 与 sign-stats。
  * 未命中的查询一律 `enabled: false`，挂载即零请求。
  * sign-status 每 30 秒轮询；页面隐藏时不轮询（`refetchIntervalInBackground: false`）。
  * windows 与时间片页共用缓存键 `['schedule-windows', day]`。
+ * master/admin 的 KPI 取 `sign-stats` 报告末两天的今日终态，与图表共用一次读取。
  * 容量默认选第一个可用任务；没有可用任务就不发容量请求。
  * 各卡错误态独立，重试只重取该卡的数据。
  * 展示模式用合成夹具，零网络请求。
@@ -35,8 +36,9 @@ import {
   capacityOptions,
   signCounts,
   signKpiCards,
+  todayKpiCards,
+  todayStats,
   windowCounts,
-  windowKpiCards,
 } from './display'
 
 const SIGN_STATUS_KEY = ['me-sign-status'] as const
@@ -139,6 +141,8 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
 
   const signStatusItems = signStatusQuery.data?.items ?? []
   const diagnosticsItems = diagnosticsQuery.data?.items ?? []
+  // master/admin 的四张 KPI 与图表共用这份 30 天报告；只读末两天作今日终态。
+  const stats = todayStats(signStatsQuery.data)
 
   if (isUser) {
     return (
@@ -178,17 +182,14 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
 
   return (
     <>
-      <KpiGrid
-        cards={windowKpiCards(
-          windowsQuery.data ? windowCounts(windowsQuery.data.items) : null,
-        )}
-      />
+      <KpiGrid cards={todayKpiCards(stats)} />
       <div className="grid">
         <CapacityCard
           options={options}
           selectedValue={selected?.value ?? ''}
           onSelect={setPicked}
           report={capacityQuery.data}
+          counts={windowsQuery.data ? windowCounts(windowsQuery.data.items) : null}
           windowsLoading={windowsQuery.isPending}
           windowsError={windowsQuery.isError ? describeApiError(windowsQuery.error) : null}
           capacityLoading={capacityQuery.isPending}

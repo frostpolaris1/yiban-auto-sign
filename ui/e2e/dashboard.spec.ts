@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 import { visibleText } from './support/visible-text'
+import type { SignStatsDay } from '../src/lib/api/stats'
 import {
   DEFAULT_PREF_STATS,
   DEFAULT_SIGN_STATS,
@@ -15,7 +16,7 @@ import {
 } from './support/fake-dashboard-api'
 
 /**
- * 看板的八条不变式。
+ * 看板的九条不变式。
  *
  * 1. 角色取数隔离：user 零窗口与容量请求；master/admin 零签到状态与诊断请求。
  * 2. KPI 由条目派生，四项计数与列表行数一致；空账号全零。
@@ -24,16 +25,20 @@ import {
  * 5. 容量体检：默认选第一可用任务并即发请求；切换选择器触发新请求；
  *    shortfall>0 用 danger 徽章。
  * 6. 空态与错误态：无账号两卡空态；空窗口说「今日无可用窗口」；
- *    单卡失败只挂该卡，另一卡照常。
+ *    单卡失败只挂该卡，另一卡照常；窗口计数以注脚形式留在容量卡。
  * 7. 展示模式零请求：`e2e/showcase.spec.ts`。
  * 8. 聚合图：master/admin 三张图与两个聚合请求；user 零图零请求；
  *    空数据说原因不画轴；单图失败只挂本图并单独重试；自选图跟随任务选择。
+ * 9. 今日终态 KPI：master/admin 四卡取报告最后两天；成功率＝成功÷（成功+失败），
+ *    跳过不计入；分母 0 显「—」；环比 pill 分「有对比/无对比」两态；
+ *    KPI 与图表共用同一次 sign-stats 读取，不新增请求。
  *
  * 断言用户可见结果与请求参数，不钉组件内部结构。
  */
 
 function kpiCard(page: Page, label: string) {
-  return page.locator('.kpi-card').filter({ hasText: label })
+  // 精确匹配标签：`今日成功` 是 `今日成功率` 的子串，按整卡文本过滤会双命中。
+  return page.locator('.kpi-card').filter({ has: page.getByText(label, { exact: true }) })
 }
 
 function signTable(page: Page) {
@@ -60,6 +65,30 @@ async function expectKpi(page: Page, label: string, value: string) {
 
 function capacityParams(api: DashboardApiCall | undefined, name: string): string | undefined {
   return api?.params[name]
+}
+
+/** 报告末两天换成给定桶值（缺省 0）：KPI 只读最后两项，前面照抄缺省夹具。 */
+function statsWithTail(
+  yesterday: Partial<SignStatsDay>,
+  today: Partial<SignStatsDay>,
+): typeof DEFAULT_SIGN_STATS {
+  const day = (over: Partial<SignStatsDay>): SignStatsDay => ({
+    day: '2026-10-01',
+    pending: 0,
+    running: 0,
+    success: 0,
+    failed: 0,
+    skipped: 0,
+    ...over,
+  })
+  return {
+    ...DEFAULT_SIGN_STATS,
+    days: [
+      ...DEFAULT_SIGN_STATS.days.slice(0, 28),
+      { ...day(yesterday), day: '2026-10-27' },
+      { ...day(today), day: '2026-10-28' },
+    ],
+  }
 }
 
 test('invariant 1: the user dashboard sends no window or capacity request', async ({ page }) => {
@@ -219,7 +248,7 @@ test('invariant 6: an empty window list says so and sends no capacity request', 
   await openDashboard(page)
 
   await expect(page.getByText('今日无可用窗口')).toBeVisible()
-  await expectKpi(page, '任务总数', '0项')
+  await expect(capacityCard(page)).toContainText('今日窗口 0 项 · 已报 0 · 停用 0 · 可用 0')
   expect(capacityCalls(api), 'no task means no capacity request').toHaveLength(0)
   expect(prefStatsCalls(api), 'no task means no crowding request').toHaveLength(0)
   await expect(chartCard(page, '签到时段拥挤度')).toContainText(
@@ -294,9 +323,9 @@ test('invariant 6: a failing capacity read leaves the KPI usable and recovers on
   const card = capacityCard(page)
   await expect(card).toContainText('容量暂不可用')
   await expect(card.getByRole('button', { name: '重试' })).toBeVisible()
-  await expectKpi(page, '任务总数', '4项')
-  await expectKpi(page, '窗口已报', '3项')
-  await expectKpi(page, '停用任务', '1项')
+  // 窗口计数已并入注脚：容量失败不连坐，注脚照常可读。
+  await expect(card).toContainText('今日窗口 4 项 · 已报 3 · 停用 1 · 可用 2')
+  await expectKpi(page, '今日成功', '3个')
 
   await card.getByRole('button', { name: '重试' }).click()
   await expect(card.locator('.app-metric')).toHaveCount(3)
@@ -305,7 +334,7 @@ test('invariant 6: a failing capacity read leaves the KPI usable and recovers on
     .toBe('容量40')
 })
 
-test('invariant 6: a failing window read marks the capacity card and leaves KPI dashes', async ({
+test('invariant 6: a failing window read marks the capacity card and leaves the KPI unaffected', async ({
   page,
 }) => {
   const api = await mockDashboardApi(page, {
@@ -317,7 +346,9 @@ test('invariant 6: a failing window read marks the capacity card and leaves KPI 
   const card = capacityCard(page)
   await expect(card).toContainText('窗口暂不可用')
   await expect(card.getByRole('button', { name: '重试' })).toBeVisible()
-  await expectKpi(page, '任务总数', '—')
+  // 窗口读不到就没有注脚；KPI 走统计报告，不随窗口失败变虚线。
+  await expect(card).not.toContainText('今日窗口')
+  await expectKpi(page, '今日成功', '3个')
   expect(capacityCalls(api), 'no options means no capacity request').toHaveLength(0)
 })
 
@@ -393,11 +424,16 @@ test('invariant 8: a stats failure stays on its own cards and retries alone', as
   const trend = chartCard(page, '30 天签到趋势')
   await expect(trend).toContainText('统计暂不可用')
   await expect(capacityCard(page)).toBeVisible()
+  // KPI 与图表共用同一份报告：读不到就一起变虚线，不编数字。
+  await expectKpi(page, '今日成功', '—')
+  await expectKpi(page, '今日成功率', '—')
   const before = signStatsCalls(api).length
 
   await trend.getByRole('button', { name: '重试' }).click()
   await expect.poll(() => signStatsCalls(api).length).toBe(before + 1)
   await expect(page.locator('.app-chart-canvas')).toHaveCount(3)
+  // 重试成功后 KPI 与图表一起回升。
+  await expectKpi(page, '今日成功', '3个')
 })
 
 test('invariant 8: the crowding chart follows the selected task', async ({ page }) => {
@@ -424,4 +460,90 @@ test('invariant 8: switching the theme rebuilds the charts', async ({ page }) =>
   await expect
     .poll(async () => (await canvas.screenshot()).equals(before))
     .toBe(false)
+})
+
+test('invariant 9: the manager KPI reads today from the same stats report', async ({ page }) => {
+  const api = await mockDashboardApi(page, {
+    role: 'admin',
+    // 昨日 4/4（成功率 50）；今日 5/2/待3/跑1/跳9（成功率 5÷7≈71.4）。
+    signStats: statsWithTail(
+      { success: 4, failed: 4, skipped: 2 },
+      { pending: 3, running: 1, success: 5, failed: 2, skipped: 9 },
+    ),
+  })
+  await openDashboard(page)
+
+  await expectKpi(page, '今日成功', '5个')
+  await expectKpi(page, '今日失败', '2个')
+  await expectKpi(page, '今日成功率', '71.4%')
+  await expectKpi(page, '进行中/待签', '4个')
+
+  // 昨日 50 → 今日 71.4：差 21.4 个百分点，向上 pill。
+  const pill = kpiCard(page, '今日成功率').locator('.kpi-pill')
+  await expect(pill).toContainText('较昨日 +21.4pp')
+  await expect(pill).toHaveClass(/up/)
+
+  // KPI 复用图表那份报告：一次读取，不新增请求。
+  expect(signStatsCalls(api), 'KPI and charts share one read').toHaveLength(1)
+})
+
+test('invariant 9: skipped states never enter the rate denominator', async ({ page }) => {
+  await mockDashboardApi(page, {
+    role: 'admin',
+    // 今日 3/3/跳9：跳过不计入 → 3÷6=50%；昨日只有跳过 → 无终态，无对比。
+    signStats: statsWithTail(
+      { skipped: 5 },
+      { success: 3, failed: 3, skipped: 9 },
+    ),
+  })
+  await openDashboard(page)
+
+  await expectKpi(page, '今日成功率', '50%')
+  const pill = kpiCard(page, '今日成功率').locator('.kpi-pill')
+  await expect(pill).toContainText('无昨日对比')
+  await expect(pill).toHaveClass(/flat/)
+})
+
+test('invariant 9: a zero denominator shows an em dash without a pill', async ({ page }) => {
+  await mockDashboardApi(page, {
+    role: 'admin',
+    // 今日只有待签：成功+失败为 0 → 「—」；昨日有终态也不出对比。
+    signStats: statsWithTail({ success: 1 }, { pending: 2 }),
+  })
+  await openDashboard(page)
+
+  await expectKpi(page, '今日成功', '0个')
+  await expectKpi(page, '今日失败', '0个')
+  await expectKpi(page, '今日成功率', '—')
+  await expect(kpiCard(page, '今日成功率').locator('.kpi-pill')).toHaveCount(0)
+})
+
+test('invariant 9: the rate pill turns down when today trails yesterday', async ({ page }) => {
+  await mockDashboardApi(page, {
+    role: 'admin',
+    // 昨日 4/1（80%）；今日 2/3（40%）：差 -40 个百分点，向下 pill。
+    signStats: statsWithTail(
+      { success: 4, failed: 1 },
+      { success: 2, failed: 3 },
+    ),
+  })
+  await openDashboard(page)
+
+  await expectKpi(page, '今日成功率', '40%')
+  const pill = kpiCard(page, '今日成功率').locator('.kpi-pill')
+  await expect(pill).toContainText('较昨日 -40pp')
+  await expect(pill).toHaveClass(/down/)
+})
+
+test('invariant 9: the header creates an account and exports nothing', async ({ page }) => {
+  await mockDashboardApi(page, { role: 'master' })
+  await openDashboard(page)
+
+  // master 与 admin 同口径：KPI 来自缺省报告的末两天。
+  await expectKpi(page, '今日成功', '3个')
+  await expectKpi(page, '今日成功率', '100%')
+  await expect(page.getByRole('button', { name: '导出' })).toHaveCount(0)
+
+  await page.getByRole('button', { name: '新建账号' }).click()
+  await expect(page).toHaveURL(/\/accounts$/)
 })

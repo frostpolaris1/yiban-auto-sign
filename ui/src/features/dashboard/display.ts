@@ -1,12 +1,15 @@
 /**
  * **功能**
- * 看板的文案与派生计数：状态标签、建议标签、KPI 计数、容量选项。
+ * 看板的文案与派生计数：状态标签、建议标签、KPI 计数、今日终态口径、容量选项。
  *
  * **归属**
  * `features/dashboard` 展示层：纯函数，无 React、无网络。
  *
  * **口径**
  * 计数只由契约响应派生，不另造统计端点。
+ * user 的四卡来自 `me/sign-status` 条目；master/admin 的四卡来自
+ * `sign-stats` 报告最后两天（今日终态），窗口计数只作容量卡注脚。
+ * 成功率＝成功÷（成功+失败），跳过不计入；口径对齐旧线 `rateOf`。
  * `state` 是契约文档词汇而非枚举：未知值原样显示，契约漂移必须可见。
  * `null` 状态计入「无任务」，不进已签、进行中/待签、异常三项。
  * `suggestion` 是契约枚举：中文标签四值穷尽，`Record` 在类型层保证。
@@ -20,6 +23,7 @@ import type { IconName } from '@/components/ui/Icon'
 import type { SignStatusItem } from '@/lib/api/me'
 import type { DiagnosticsSuggestion } from '@/lib/api/me'
 import type { ScheduleWindow, ScheduleWindowSource } from '@/lib/api/schedule'
+import type { SignStatsReport } from '@/lib/api/stats'
 
 /** 契约文档给出的五个状态词。运行时副本，类型注解保证不漂移。 */
 export const SIGN_STATES = ['pending', 'running', 'success', 'failed', 'skipped'] as const
@@ -175,6 +179,8 @@ export type KpiCard = {
   value: number | null
   unit: string
   note: string
+  /** 成功率卡的环比 pill；其余卡不设。 */
+  pill?: RatePill | null
 }
 
 /** `counts` 为 null 时值是 `—`：没有数据就不编数字。 */
@@ -215,39 +221,96 @@ export function signKpiCards(counts: SignCounts | null): KpiCard[] {
   ]
 }
 
-export function windowKpiCards(counts: WindowCounts | null): KpiCard[] {
+/** 环比 pill：`cls` 对应 `.kpi-pill` 的三档配色。 */
+export type RatePill = { text: string; cls: 'up' | 'down' | 'flat' }
+
+export type TodayStats = {
+  success: number
+  failed: number
+  /** 进行中 + 待签（running + pending），仍是当日账号口径。 */
+  active: number
+  /** 成功率＝成功÷（成功+失败），百分数保留一位小数；分母 0 为 null。 */
+  rate: number | null
+  pill: RatePill | null
+}
+
+type StatsDayBuckets = Pick<SignStatsReport['days'][number], 'pending' | 'running' | 'success' | 'failed' | 'skipped'>
+
+/** 成功率＝成功÷（成功+失败）；跳过是「未定论」，不进分母。 */
+function dayRate(day: StatsDayBuckets | undefined): number | null {
+  const success = day?.success ?? 0
+  const failed = day?.failed ?? 0
+  const settled = success + failed
+  return settled > 0 ? Math.round((success / settled) * 1000) / 10 : null
+}
+
+/**
+ * 今日终态口径：取报告 `days` 的最后两项（最后一天是今天）。
+ * 日期缺失按 0 桶处理，不编造；报告未到返回 null，四卡显「—」。
+ * pill 只在今日成功率可算时出现：昨日无终态（成功+失败为 0）给「无昨日对比」。
+ */
+export function todayStats(report: SignStatsReport | null | undefined): TodayStats | null {
+  if (report === null || report === undefined) return null
+  const today = report.days.at(-1)
+  const yesterday = report.days.at(-2)
+  const rate = dayRate(today)
+  let pill: RatePill | null = null
+  if (rate !== null) {
+    const previous = dayRate(yesterday)
+    if (previous === null) {
+      pill = { text: '无昨日对比', cls: 'flat' }
+    } else {
+      const diff = Math.round((rate - previous) * 10) / 10
+      pill = {
+        text: `较昨日 ${diff > 0 ? '+' : ''}${diff}pp`,
+        cls: diff > 0 ? 'up' : diff < 0 ? 'down' : 'flat',
+      }
+    }
+  }
+  return {
+    success: today?.success ?? 0,
+    failed: today?.failed ?? 0,
+    active: (today?.running ?? 0) + (today?.pending ?? 0),
+    rate,
+    pill,
+  }
+}
+
+/** master/admin 四卡：今日成功、今日失败、今日成功率、进行中+待签。 */
+export function todayKpiCards(stats: TodayStats | null): KpiCard[] {
   return [
-    {
-      tone: 'purple',
-      icon: 'calendar',
-      label: '任务总数',
-      value: counts?.total ?? null,
-      unit: '项',
-      note: '今日任务',
-    },
     {
       tone: 'success',
       icon: 'check',
-      label: '窗口已报',
-      value: counts?.reported ?? null,
-      unit: '项',
-      note: '起止时间已报',
+      label: '今日成功',
+      value: stats?.success ?? null,
+      unit: '个',
+      note: '按账号当日终态',
     },
     {
       tone: 'danger',
-      icon: 'close',
-      label: '停用任务',
-      value: counts?.disabled ?? null,
-      unit: '项',
-      note: '不参与调度',
+      icon: 'alertCircle',
+      label: '今日失败',
+      value: stats?.failed ?? null,
+      unit: '个',
+      note: '按账号当日终态',
+    },
+    {
+      tone: 'purple',
+      icon: 'gauge',
+      label: '今日成功率',
+      value: stats?.rate ?? null,
+      unit: '%',
+      note: '成功 ÷（成功 + 失败）',
+      pill: stats?.pill ?? null,
     },
     {
       tone: 'primary',
-      icon: 'filter',
-      label: '可用任务',
-      value: counts?.usable ?? null,
-      unit: '项',
-      note: '启用且有窗口',
+      icon: 'activity',
+      label: '进行中/待签',
+      value: stats?.active ?? null,
+      unit: '个',
+      note: '等待执行或执行中',
     },
   ]
 }

@@ -8,6 +8,8 @@
  * **口径**
  * 端点 `GET /api/capacity` 的 `x-roles` 是 master/admin；本卡不自行取数。
  * 选项只取「启用且起止时间都非 null」的今日窗口；默认选第一项。
+ * 今日窗口计数（总数/已报/停用/可用）以注脚呈现：窗口数据到了就有，
+ * 与容量报告成败无关；窗口读不到就没有注脚。
  * `shortfall>0` 用 danger 徽章；其余用 success。
  * 三个数字用滚动组件渲染，颜色继承所在容器（正文色或徽章色）。
  * 窗口失败与容量失败各有错误态与「重试」，不整页挂。
@@ -27,6 +29,7 @@ import {
   type CapacityOption,
   capacitySourceLabel,
   capacitySourceTone,
+  type WindowCounts,
 } from './display'
 
 type CapacityCardProps = {
@@ -34,6 +37,8 @@ type CapacityCardProps = {
   selectedValue: string
   onSelect: (value: string) => void
   report: CapacityReport | undefined
+  /** 今日窗口计数注脚：原窗口 KPI 并入本卡，窗口读不到时为 null（无注脚）。 */
+  counts: WindowCounts | null
   windowsLoading: boolean
   windowsError: string | null
   capacityLoading: boolean
@@ -47,6 +52,7 @@ export function CapacityCard({
   selectedValue,
   onSelect,
   report,
+  counts,
   windowsLoading,
   windowsError,
   capacityLoading,
@@ -134,6 +140,12 @@ export function CapacityCard({
           )}
         </>
       )}
+      {counts !== null ? (
+        <p className="app-muted app-capacity-meta">
+          今日窗口 {counts.total} 项 · 已报 {counts.reported} · 停用 {counts.disabled} · 可用{' '}
+          {counts.usable}
+        </p>
+      ) : null}
     </Card>
   )
 }
