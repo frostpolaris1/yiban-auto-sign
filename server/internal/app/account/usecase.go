@@ -300,11 +300,16 @@ func (s *Service) Create(ctx context.Context, scope corescope.Scope, in CreateIn
 
 // Update 改账号字段。换校返回 conflict。
 //
-// 唯一的状态副作用：账号凭据变更把 credential_error 恢复为 active。
-// 凭据面含手机号：provider 用手机号登录，改绑等同凭据变更。
-// 恢复判定在事务内、行锁下读取，避免漏掉引擎刚提交的 credential_error。
-// 账号行、凭据行与审计同事务；恢复时 account.credential_recovered
-// 与 account.update 相邻追加。
+// 状态副作用按优先级：
+//   - 被拒账号被编辑：回 pending 重新提交，清空驳回理由与审核戳。
+//     审核只收 pending，这是被拒账号唯一的再入队路径。
+//   - 改绑手机号：非 pending 账号回 pending 重审，清空理由与审核戳。
+//     手机号即登录凭据，审核结论绑定旧号；不改状态等于免审换号。
+//   - 其余凭据变更：credential_error 恢复为 active。
+//
+// 判定在事务内、行锁下读取，避免漏掉引擎刚提交的状态。
+// 账号行、凭据行与审计同事务；状态迁移时 account.resubmit 或
+// account.credential_recovered 与 account.update 相邻追加。
 func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, in UpdateInput, actor appaudit.Actor) (Record, error) {
 	if err := app.RequireScope(scope); err != nil {
 		return Record{}, err
@@ -346,47 +351,46 @@ func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, 
 	record := current
 	err = s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
 		now := s.deps.Clock.Now().UTC()
-		touchesCredential := needCredential || in.Phone != nil
 		// 状态判定必须在事务内、行锁下读：事务外的快照会把引擎刚提交的
-		// credential_error 看丢，从而漏掉恢复。
-		var locked Record
-		if touchesCredential {
-			var err error
-			locked, err = s.deps.Accounts.GetForUpdate(ctx, scope, id)
-			if err != nil {
-				return err
-			}
-			record = locked
+		// credential_error 或并发审核结果看丢。
+		locked, err := s.deps.Accounts.GetForUpdate(ctx, scope, id)
+		if err != nil {
+			return err
 		}
+		record = locked
+		rebind := in.Phone != nil && *in.Phone != locked.Phone
+		// 被拒账号的任何编辑都是重提；改绑把非 pending 账号送回队列。
+		// pending 行改绑仍停在 pending，不写 from=pending 的重提审计。
+		needsReview := locked.Status == StatusRejected ||
+			(rebind && locked.Status != StatusPending)
 		if in.Phone != nil {
-			var err error
 			record, err = s.deps.Accounts.UpdatePhone(ctx, scope, id, *in.Phone, now)
 			if err != nil {
 				return err
 			}
 		}
-		// 手机号是登录用户名。改绑与改密码同属凭据变更，都恢复 credential_error。
-		recovered := touchesCredential && locked.Status == StatusCredentialError
 		if needCredential {
 			if err := s.rewriteCredential(ctx, scope, record, in); err != nil {
 				return err
 			}
 		}
-		if recovered {
+		// 改绑优先于凭据恢复：换号后必须重审，不能借恢复路径免审回 active。
+		// 同值手机号不是凭据变更，不触发恢复。
+		recovered := !needsReview && needCredential && locked.Status == StatusCredentialError
+		switch {
+		case needsReview:
 			// 行锁已在本事务内，CAS 必然命中；并发状态写已被锁挡住。
-			var err error
+			record, err = s.deps.Accounts.SetStatus(ctx, scope, id,
+				locked.Status, StatusPending, now, "")
+		case recovered:
 			record, err = s.deps.Accounts.SetStatus(ctx, scope, id,
 				StatusCredentialError, StatusActive, now, "")
-			if err != nil {
-				return err
-			}
-		} else if needCredential {
+		case needCredential:
 			// 凭据写回不更新 accounts.updated_at；重读一次让响应带真实时间。
-			refreshed, err := s.deps.Accounts.Get(ctx, scope, id)
-			if err != nil {
-				return err
-			}
-			record = refreshed
+			record, err = s.deps.Accounts.Get(ctx, scope, id)
+		}
+		if err != nil {
+			return err
 		}
 		if _, err := s.deps.Audit.Append(ctx, coreaudit.Entry{
 			TS:          now,
@@ -401,11 +405,29 @@ func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, 
 		}); err != nil {
 			return err
 		}
+		if needsReview {
+			// 两条审计相邻追加：中间不做任何工作，链锁只多持一次插入。
+			_, err := s.deps.Audit.Append(ctx, coreaudit.Entry{
+				TS:          now,
+				SchoolID:    record.SchoolID,
+				ActorUserID: actor.UserID,
+				ActorRole:   actor.Role,
+				ActorLabel:  actor.Label,
+				Action:      coreaudit.ActionAccountResubmit,
+				TargetType:  "account",
+				TargetID:    record.ID,
+				Detail: map[string]any{
+					"field": "status",
+					"from":  string(locked.Status),
+					"to":    string(StatusPending),
+				},
+			})
+			return err
+		}
 		if !recovered {
 			return nil
 		}
-		// 两条审计相邻追加：中间不做任何工作，链锁只多持一次插入。
-		_, err := s.deps.Audit.Append(ctx, coreaudit.Entry{
+		_, err = s.deps.Audit.Append(ctx, coreaudit.Entry{
 			TS:          now,
 			SchoolID:    record.SchoolID,
 			ActorUserID: actor.UserID,

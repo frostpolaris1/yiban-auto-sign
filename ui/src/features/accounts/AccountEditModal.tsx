@@ -8,6 +8,8 @@
  * **口径**
  * 空表单不可提交；phone 前端校验 11 位、1 开头；两个 64 上限由控件封顶。
  * school 字段不出现：P1 变更必 409，不做可点必败控件。
+ * 被拒账号的入口与标题写「修改并重新提交」，模态里展示驳回理由。
+ * 保存后回待审核的两种形状先说清：编辑被拒账号、改绑手机号。
  */
 
 import { useEffect, useState, type ChangeEvent } from 'react'
@@ -44,6 +46,7 @@ export function AccountEditModal({
 }: AccountEditModalProps) {
   const [draft, setDraft] = useState<AccountUpdateDraft>(EMPTY_DRAFT)
   const validation = accountUpdateError(draft)
+  const resubmit = account?.status === 'rejected'
   // 判定逐字段对齐纯函数口径：密码原样（含纯空格，契约 minLength 1 合法），
   // 其余字段与 buildAccountUpdate 同样 trim——空格占位不算填写。
   const hasAny =
@@ -66,7 +69,7 @@ export function AccountEditModal({
       onOpenChange={(open) => {
         if (!open) onClose()
       }}
-      title="编辑账号？"
+      title={resubmit ? '修改并重新提交？' : '编辑账号？'}
       description={account ? `账号 ${account.phone_masked}` : undefined}
       returnFocusTo={returnFocusTo}
       footer={
@@ -84,6 +87,12 @@ export function AccountEditModal({
         </>
       }
     >
+      {resubmit ? (
+        <Alert tone="warning" title="已驳回">
+          驳回理由：{account?.reject_reason || '未填写'}。保存后重新提交，账号回到待审核。
+        </Alert>
+      ) : null}
+      <p className="app-muted">改绑手机号会回到待审核：审核结论绑定旧号。</p>
       <p className="app-muted">四个字段都只写不读：留空表示不修改。</p>
       <div className="app-form-stack">
         <TextInput

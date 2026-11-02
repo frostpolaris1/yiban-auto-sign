@@ -63,16 +63,19 @@ const (
 	ActionUserDelete         Action = "user.delete"
 	// UX-1 用户管理动作。role_change 记角色迁移；
 	// password_reset 记重置但**绝无口令值**；restore 记软删恢复。
-	ActionUserRoleChange      Action = "user.role_change"
-	ActionUserPasswordReset   Action = "user.password_reset"
-	ActionUserRestore         Action = "user.restore"
-	ActionSchoolCreate        Action = "school.create"
-	ActionSchoolUpdate        Action = "school.update"
-	ActionSchoolDisable       Action = "school.disable"
-	ActionAdminGrant          Action = "admin.grant"
-	ActionAdminRevoke         Action = "admin.revoke"
-	ActionAccountCreate       Action = "account.create"
-	ActionAccountUpdate       Action = "account.update"
+	ActionUserRoleChange    Action = "user.role_change"
+	ActionUserPasswordReset Action = "user.password_reset"
+	ActionUserRestore       Action = "user.restore"
+	ActionSchoolCreate      Action = "school.create"
+	ActionSchoolUpdate      Action = "school.update"
+	ActionSchoolDisable     Action = "school.disable"
+	ActionAdminGrant        Action = "admin.grant"
+	ActionAdminRevoke       Action = "admin.revoke"
+	ActionAccountCreate     Action = "account.create"
+	ActionAccountUpdate     Action = "account.update"
+	// 被拒账号编辑或改绑手机号把账号送回 pending：重提进待审队列。
+	// detail 只记状态迁移，不含手机号。
+	ActionAccountResubmit     Action = "account.resubmit"
 	ActionAccountReviewPass   Action = "account.review_approve"
 	ActionAccountReviewReject Action = "account.review_reject"
 	ActionAccountPause        Action = "account.pause"
@@ -86,7 +89,8 @@ const (
 	ActionCredentialRekey      Action = "credential.rekey"
 	// P4 引擎：明确登录失败把账号移出排期（active → credential_error）。
 	ActionAccountCredentialError Action = "account.credential_error"
-	// 凭据更新把 credential_error 账号放回排期（credential_error → active）。
+	// 口令或设备更新把 credential_error 账号放回排期（credential_error → active）。
+	// 改绑手机号不走恢复：它回 pending 重审。
 	ActionAccountCredentialRecovered Action = "account.credential_recovered"
 	ActionTaskReclaim                Action = "task.reclaim"
 	ActionTaskClaim                  Action = "task.claim"

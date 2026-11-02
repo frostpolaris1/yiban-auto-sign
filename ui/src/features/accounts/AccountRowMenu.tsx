@@ -15,6 +15,7 @@ import type { Account } from '@/lib/api/account'
 import type { Role } from '@/lib/api/auth'
 import { Icon, type IconName } from '@/components/ui/Icon'
 import { Menu, MenuItem } from '@/components/ui/Menu'
+import { editActionLabel } from './display'
 import { menuDenyReason, type RowMenuItem } from './permissions'
 
 type AccountRowMenuProps = {
@@ -57,7 +58,7 @@ export function AccountRowMenu({
       : [
           {
             item: 'edit',
-            label: '编辑',
+            label: editActionLabel(account.status),
             icon: 'edit',
             onRun: () => onEdit(account, triggerRef.current),
           },

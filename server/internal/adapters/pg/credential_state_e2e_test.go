@@ -468,9 +468,9 @@ func TestCredentialUpdateWaitsForEngineCommit(t *testing.T) {
 	}
 }
 
-// TestPhoneUpdateRecoversCredentialError 钉住「改绑也恢复」：
-// 手机号是登录用户名，改绑属凭据变更，账号回到 active 并写恢复审计。
-func TestPhoneUpdateRecoversCredentialError(t *testing.T) {
+// TestPhoneUpdateReturnsCredentialErrorToPending 钉住「改绑优先于凭据恢复」：
+// 手机号是登录用户名，改绑必须重新审核，不能借恢复路径免审回 active。
+func TestPhoneUpdateReturnsCredentialErrorToPending(t *testing.T) {
 	u := newUsecaseEnv(t)
 	_, accountID, _ := db1CredentialErrorAccount(t, u, "db1-phone-recover", "13500051003")
 	phone := "13500051004"
@@ -479,22 +479,22 @@ func TestPhoneUpdateRecoversCredentialError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update phone: %v", err)
 	}
-	if record.Status != coreaccount.StatusActive {
-		t.Fatalf("returned status = %q, want active", record.Status)
+	if record.Status != coreaccount.StatusPending {
+		t.Fatalf("returned status = %q, want pending", record.Status)
 	}
-	if got := u.accountStatus(accountID); got != coreaccount.StatusActive {
-		t.Fatalf("stored status = %q, want active", got)
+	if got := u.accountStatus(accountID); got != coreaccount.StatusPending {
+		t.Fatalf("stored status = %q, want pending", got)
 	}
 	if got := u.scalarString("SELECT phone FROM accounts WHERE id = $1::uuid", accountID); got != phone {
 		t.Fatalf("stored phone = %q, want %q", got, phone)
 	}
-	if got := u.db1RecoveredAuditRows(accountID); got != 1 {
-		t.Fatalf("recovery audit rows after a phone update = %d, want 1", got)
+	if got := u.db1RecoveredAuditRows(accountID); got != 0 {
+		t.Fatalf("recovery audit rows after a phone update = %d, want 0", got)
 	}
-	if got := u.scalarString(`SELECT actor_label FROM audit_logs
+	if got := u.scalarInt(`SELECT count(*) FROM audit_logs
 		WHERE action = $1 AND target_id = $2`,
-		string(coreaudit.ActionAccountCredentialRecovered), accountID); got != u.actor.Label {
-		t.Fatalf("recovery actor label = %q, want %q", got, u.actor.Label)
+		string(coreaudit.ActionAccountResubmit), accountID); got != 1 {
+		t.Fatalf("resubmit audit rows after a phone update = %d, want 1", got)
 	}
 }
 

@@ -478,9 +478,16 @@ export interface paths {
         head?: never;
         /**
          * Update account fields.
-         * @description Never changes status. Review and pause have dedicated endpoints. Changing
-         *     school is forbidden in P1 (decision 12.3) and returns conflict.
-         *     Changes are rate limited per caller; a 429 carries Retry-After.
+         * @description Status changes come from the review flow and from credential recovery.
+         *     Editing a rejected account returns it to pending. Changing the phone
+         *     returns a non-pending account to pending: a review decision binds to
+         *     the old phone. Both clear reject_reason and the review stamp. A
+         *     password or device edit recovers a credential_error account to active;
+         *     a phone change wins over that recovery. Other edits keep the status.
+         *     Review and pause have dedicated endpoints.
+         *     Changing school is forbidden in P1 (decision 12.3) and returns
+         *     conflict. Changes are rate limited per caller; a 429 carries
+         *     Retry-After.
          */
         patch: operations["AccountUpdate"];
         trace?: never;
@@ -1279,9 +1286,12 @@ export interface components {
             next_cursor: string;
         };
         /**
-         * @description pending on create; review moves to active or rejected. Pause moves
-         *     active to paused_admin or paused_user. credential_error is written by
-         *     the engine in P4 only; a credential or phone update returns it to active.
+         * @description pending on create; review moves to active or rejected. Editing a
+         *     rejected account returns it to pending. Pause moves active to
+         *     paused_admin or paused_user. credential_error is written by the
+         *     engine in P4 only; a password or device update returns it to active,
+         *     while a phone change returns it to pending. A phone change wins over
+         *     that recovery.
          * @enum {string}
          */
         AccountStatus: "pending" | "active" | "rejected" | "paused_admin" | "paused_user" | "credential_error";
@@ -1292,9 +1302,17 @@ export interface components {
             /** @description Masked phone. The raw phone never leaves the server. */
             phone_masked: string;
             status: components["schemas"]["AccountStatus"];
+            /**
+             * @description The last rejection reason; cleared when an edit returns the account
+             *     to pending.
+             */
             reject_reason: string;
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description Stamp of the last review; cleared when an edit returns the account to pending.
+             */
             reviewed_at: string | null;
+            /** @description Reviewer of the last review; cleared with reviewed_at. */
             reviewed_by: string | null;
             /** Format: date-time */
             created_at: string;
@@ -1327,6 +1345,12 @@ export interface components {
              *     forbidden in P1 (decision 12.3).
              */
             school_id?: string;
+            /**
+             * @description A new phone returns the account to pending: the review decision
+             *     binds to the old phone. An unchanged phone is not a rebind, so it
+             *     keeps the status unless the account is rejected; any edit of a
+             *     rejected account returns it to pending.
+             */
             phone?: string;
             password?: string;
             device_code?: string;

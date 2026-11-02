@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import { buildAccountSearch } from '../../src/lib/api/account.ts'
 import { listAllSchools } from '../../src/lib/api/school.ts'
+import { editActionLabel } from '../../src/features/accounts/display.ts'
 import {
   can,
   canChangePause,
@@ -219,4 +220,11 @@ test('listAllSchools stops at the ten page cap', async () => {
   }
   assert.equal(capture.calls.length, 10)
   assert.equal(schools.length, 10)
+})
+
+test('the edit entry says resubmit only for a rejected row', () => {
+  assert.equal(editActionLabel('rejected'), '修改并重新提交')
+  for (const status of ['pending', 'active', 'paused_admin', 'paused_user', 'credential_error']) {
+    assert.equal(editActionLabel(status), '编辑', status)
+  }
 })
