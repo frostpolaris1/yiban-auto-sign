@@ -58,6 +58,7 @@ function account(
     owner_user_id: 'user-1',
     owner_email_masked: 'u***@example.com',
     name,
+    display_name: name || `账号${phoneMasked.slice(-4)}`,
     phone_masked: phoneMasked,
     status,
     reject_reason: status === 'rejected' ? '合成驳回理由' : '',

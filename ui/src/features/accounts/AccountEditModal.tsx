@@ -104,12 +104,14 @@ export function AccountEditModal({
         </Alert>
       ) : null}
       <p className="app-muted">改绑手机号会回到待审核：审核结论绑定旧号。</p>
-      <p className="app-muted">除备注名外，各字段只写不读：留空表示不修改。</p>
+      <p className="app-muted">
+        除备注名外，各字段只写不读：留空表示不修改。备注名留空时显示为「账号+手机尾号」。
+      </p>
       <div className="app-form-stack">
         <TextInput
           id="account-edit-name"
           label="备注名"
-          placeholder="留空＝清除备注"
+          placeholder="留空＝使用默认名"
           maxLength={50}
           {...field('name')}
         />

@@ -23,11 +23,17 @@ type AccountRepo struct {
 // NewAccountRepo 构造账号仓储。
 func NewAccountRepo(db *DB) *AccountRepo { return &AccountRepo{db: db} }
 
+// accountDisplayNameSQL 是有效备注名的唯一 SQL 口径。
+// name 为空时派生「账号+手机尾 4 位」：列表展示与搜索都读这一个值，
+// 不允许一处看得到、另一处搜不到。
+const accountDisplayNameSQL = `coalesce(nullif(name, ''), '账号' || right(phone, 4))`
+
 // accountColumns 是账号读取的列清单。
 //
 // 属主邮箱用相关子查询取：账号行的 owner_user_id 始终指向未删用户，
 // 故邮箱必定存在。明文只进 Record，入口层掩码后才出服务端。
-const accountColumns = `id::text, school_id::text, owner_user_id::text, phone, name,
+const accountColumns = `id::text, school_id::text, owner_user_id::text, phone, name, ` +
+	accountDisplayNameSQL + `,
 	status::text, reject_reason, reviewed_at, coalesce(reviewed_by::text, ''),
 	created_at, updated_at, deleted_at, coalesce(deleted_by::text, ''),
 	coalesce((SELECT u.email FROM users u WHERE u.id = accounts.owner_user_id), '')`
@@ -495,27 +501,38 @@ func (r *AccountRepo) classifyRestoreMiss(ctx context.Context, s corescope.Scope
 
 // accountSearchWhere 把列表搜索串翻译成 WHERE 片段。
 //
-// 命中面是三列之或：备注名、属主邮箱、手机号。
-// 名称与邮箱按字面子串、大小写不敏感匹配：position 不做通配解读，
-// 用户输入 % 或 _ 不会被当成 LIKE 元字符。
-// 邮箱还接受**可见掩码**：串里含 "***" 时星号段按任意字符处理，
-// 故 a***@example.com 能命中同一掩码的全部账号；掩码公式仍只在 core/mask，
-// 这里只比对可见的前后缀，不复制掩码实现。
-// 手机号沿用既有长度口径：1..3 位前缀、4 位后缀、11 位全号；
-// 5..10 位不参与号码匹配，但仍可命中名称或邮箱。
-// 空串不过滤。
+// 完整手机号与完整邮箱走**精确直达**：管理员输入已知的完整标识时，
+// 结果只剩该账号（或该属主名下的全部账号），不与名称子串混在一起。
+// 手机号先归一 +86/86 前缀与分隔符；邮箱要求恰好一个 @、两侧非空且无空白。
+// 其余输入走发现面：
+//   - 有效备注名（name 或派生的「账号+手机尾 4 位」）按字面子串匹配，
+//     故搜「账号」能一次找到所有未命名账号；position 不解释 % 与 _。
+//   - 可见邮箱掩码：串里含 "***" 时星号段按任意字符处理；掩码公式仍只在
+//     core/mask，这里只比对可见的前后缀。
+//   - 手机号前 1..3 位与后 4 位仍按前缀/后缀匹配；5..10 位不参与号码匹配，
+//     但仍可命中备注名或掩码邮箱。
+//
+// 不按原始邮箱做部分子串：完整邮箱已可精确直达，部分输入用可见掩码即可，
+// 避免把一个可枚举的明文检索面暴露出去。
 func accountSearchWhere(search string, args *[]any) string {
 	term := strings.TrimSpace(search)
 	if term == "" {
 		return ""
 	}
+	if digits, ok := completePhoneQuery(term); ok {
+		*args = append(*args, digits)
+		return fmt.Sprintf(" AND phone = $%d", len(*args))
+	}
+	if isCompleteEmailQuery(term) {
+		*args = append(*args, strings.ToLower(term))
+		return fmt.Sprintf(` AND lower(coalesce(
+			(SELECT u.email FROM users u WHERE u.id = accounts.owner_user_id), '')) = $%d`, len(*args))
+	}
 	lower := strings.ToLower(term)
 	*args = append(*args, lower)
 	termIdx := len(*args)
 	clauses := []string{
-		fmt.Sprintf("position($%d in lower(name)) > 0", termIdx),
-		fmt.Sprintf(`position($%d in lower(coalesce(
-			(SELECT u.email FROM users u WHERE u.id = accounts.owner_user_id), ''))) > 0`, termIdx),
+		fmt.Sprintf("position($%d in lower(%s)) > 0", termIdx, accountDisplayNameSQL),
 	}
 	if prefix, suffix, ok := emailMaskParts(lower); ok {
 		*args = append(*args, prefix)
@@ -530,7 +547,7 @@ func accountSearchWhere(search string, args *[]any) string {
 			   AND right(u.email, char_length($%d)) = $%d)`,
 			prefixIdx, prefixIdx, suffixIdx, suffixIdx))
 	}
-	if digits := phoneDigits(term); digits != "" {
+	if digits := phoneQueryDigits(term); digits != "" {
 		// 参数只在真正生成子句时追加：5..10 位不参与号码匹配，
 		// 多传一个未引用的参数会让扩展协议报参数个数不符。
 		switch {
@@ -542,12 +559,46 @@ func accountSearchWhere(search string, args *[]any) string {
 			// 后缀：只暴露后 4 位，掩码本就展示这 4 位。
 			*args = append(*args, digits)
 			clauses = append(clauses, fmt.Sprintf("phone LIKE '%%' || $%d", len(*args)))
-		case len(digits) == 11:
-			*args = append(*args, digits)
-			clauses = append(clauses, fmt.Sprintf("phone = $%d", len(*args)))
 		}
 	}
 	return " AND (" + strings.Join(clauses, " OR ") + ")"
+}
+
+// completePhoneQuery 归一完整手机号：去掉非数字，13 位且以 86 开头时去掉国家码。
+// 返回 11 位号码与是否完整。
+func completePhoneQuery(term string) (string, bool) {
+	digits := phoneDigits(term)
+	if len(digits) == 13 && strings.HasPrefix(digits, "86") {
+		digits = digits[2:]
+	}
+	if len(digits) == 11 {
+		return digits, true
+	}
+	return "", false
+}
+
+// phoneQueryDigits 给部分输入用：只保留 11 位或 +86/86 前缀的 13 位。
+// 其余长度原样返回数字段，由调用方决定是否生成号码子句。
+func phoneQueryDigits(term string) string {
+	digits := phoneDigits(term)
+	if len(digits) == 13 && strings.HasPrefix(digits, "86") {
+		return digits[2:]
+	}
+	return digits
+}
+
+// isCompleteEmailQuery 判断输入是否是一个完整邮箱形状。
+// 与 users.email 的 CHECK 同形：恰好一个 @、两侧非空、无空白，且不含 *。
+// 含 *** 的串是可见掩码，交给掩码分支，不能当成完整邮箱去等值比较。
+func isCompleteEmailQuery(term string) bool {
+	if strings.Count(term, "@") != 1 || strings.Contains(term, "*") {
+		return false
+	}
+	at := strings.IndexByte(term, '@')
+	if at <= 0 || at == len(term)-1 {
+		return false
+	}
+	return !strings.ContainsAny(term, " \t\r\n")
 }
 
 // emailMaskParts 从可见掩码串取前缀与后缀。
@@ -583,7 +634,7 @@ func scanAccount(row pgx.Row) (coreaccount.Record, error) {
 		deletedAt  pgtype.Timestamptz
 	)
 	if err := row.Scan(&record.ID, &record.SchoolID, &record.OwnerUserID, &record.Phone, &record.Name,
-		&status, &record.RejectReason, &reviewedAt, &record.ReviewedBy,
+		&record.DisplayName, &status, &record.RejectReason, &reviewedAt, &record.ReviewedBy,
 		&record.CreatedAt, &record.UpdatedAt, &deletedAt, &record.DeletedBy, &record.OwnerEmail); err != nil {
 		return coreaccount.Record{}, err
 	}

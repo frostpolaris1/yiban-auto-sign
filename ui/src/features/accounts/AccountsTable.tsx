@@ -39,6 +39,8 @@ type AccountsTableProps = {
   loading: boolean
   error: string | null
   role: Role | null
+  /** 精确命中的行 id：完整手机号/邮箱或完整备注名。 */
+  highlightIds: ReadonlySet<string>
   pageIndex: number
   hasPrevious: boolean
   hasNext: boolean
@@ -58,6 +60,7 @@ export function AccountsTable({
   loading,
   error,
   role,
+  highlightIds,
   pageIndex,
   hasPrevious,
   hasNext,
@@ -122,18 +125,22 @@ export function AccountsTable({
             ) : null}
 
             {rows.map((account) => {
+              const exact = highlightIds.has(account.id)
               // 软删行只展示徽标与恢复菜单：其余动作对已删行都是 404。
               if (account.deleted_at != null) {
                 // 已删行不绑点击也不给「查看」：详情与设备刷新对已删行必 404，
                 // 唯一出口是行菜单的恢复。
                 return (
-                  <tr key={account.id} className="app-account-row">
+                  <tr
+                    key={account.id}
+                    className={`app-account-row${exact ? ' app-account-row-exact' : ''}`}
+                    data-exact-match={exact ? 'true' : undefined}
+                  >
                     <td>
-                      {account.name === '' ? (
-                        <span className="app-muted">—</span>
-                      ) : (
-                        account.name
-                      )}
+                      <div className="app-name-cell">
+                        <span>{account.display_name}</span>
+                        {exact ? <Badge tone="info">精确匹配</Badge> : null}
+                      </div>
                     </td>
                     <td>
                       <span className="data-cell-mono">{account.phone_masked}</span>
@@ -187,7 +194,8 @@ export function AccountsTable({
               return (
                 <tr
                   key={account.id}
-                  className="app-account-row"
+                  className={`app-account-row${exact ? ' app-account-row-exact' : ''}`}
+                  data-exact-match={exact ? 'true' : undefined}
                   tabIndex={0}
                   onClick={(event) => onOpenDetail(account, event.currentTarget)}
                   onKeyDown={(event) => {
@@ -199,11 +207,10 @@ export function AccountsTable({
                   }}
                 >
                   <td>
-                    {account.name === '' ? (
-                      <span className="app-muted">—</span>
-                    ) : (
-                      account.name
-                    )}
+                    <div className="app-name-cell">
+                      <span>{account.display_name}</span>
+                      {exact ? <Badge tone="info">精确匹配</Badge> : null}
+                    </div>
                   </td>
                   <td>
                     <button

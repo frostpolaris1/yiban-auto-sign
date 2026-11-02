@@ -97,7 +97,7 @@ export function AccountDetailDrawer({
           <dt>账号 ID</dt>
           <dd className="data-cell-mono">{data.id}</dd>
           <dt>备注名</dt>
-          <dd>{data.name || '—'}</dd>
+          <dd>{data.display_name}</dd>
           <dt>手机号</dt>
           <dd className="data-cell-mono">{data.phone_masked}</dd>
           <dt>学校</dt>

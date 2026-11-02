@@ -254,6 +254,19 @@
   outline-offset: -2px;
 }
 
+/* 精确命中行：完整手机号/邮箱或完整备注名。背景 + 左侧色条 + 行内徽标，
+ * 不只靠颜色传达；悬停时高亮仍然保留。 */
+.app-row-table tbody tr.app-account-row-exact {
+  background: var(--info-soft);
+  box-shadow: inset 3px 0 0 var(--info);
+}
+
+.app-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .app-cell-link {
   padding: 0;
   border: 0;

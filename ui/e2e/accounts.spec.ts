@@ -15,7 +15,7 @@ import {
 } from './support/fake-accounts-api'
 
 /**
- * 账号页的 9 条不变式。
+ * 账号页的 11 条不变式。
  *
  * 1. 筛选变更进请求；清空即移除参数。
  * 2. 游标栈只回退已访问页；无回退位时上一页禁用。
@@ -29,6 +29,8 @@ import {
  * 8. 删除必经确认；确认前零请求；行消失后焦点落筛选框。
  * 9. 关闭控件是 24×24 的可见目标，键盘焦点有 2px 实线环。
  * 10. 列表与详情只展示备注名与掩码归属邮箱，不展示明文邮箱。
+ * 11. 完整手机号/邮箱精确直达并高亮命中行；默认备注「账号+手机尾号」
+ *     可见且可搜；部分输入不高亮。
  *
  * 断言用户可见结果，不钉内部调用顺序。
  */
@@ -83,7 +85,7 @@ test('invariant 1: each filter rides the request and clearing removes it', async
   const q = page.getByLabel('账号筛选')
   await expect(q).toHaveAttribute(
     'placeholder',
-    '备注名 / 归属邮箱 / 手机号（前 1–3 位、后 4 位或全 11 位）',
+    '备注名 / 完整手机号或邮箱 / 手机号前 1–3 位或后 4 位',
   )
 
   await page.getByLabel('状态筛选').selectOption('active')
@@ -655,7 +657,7 @@ test('invariant 6: the name is prefilled and sent only when changed', async ({ p
   await dialog2.getByRole('button', { name: '保存修改' }).click()
   await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(2)
   expect(patchCalls(api, 'acc-1')[1].body).toEqual({ name: '' })
-  await expect(rowFor(page, '138****8000').getByText('—')).toBeVisible()
+  await expect(rowFor(page, '138****8000').getByText('账号8000')).toBeVisible()
 })
 
 test('invariant 6: a name-only edit keeps a rejected account rejected', async ({ page }) => {
@@ -707,6 +709,48 @@ test('invariant 10: the list shows the remark and the masked owner email', async
   await expect(drawer).toContainText('o***@example.com')
   await expect(drawer).toContainText('归属用户 ID')
   await expect(drawer).toContainText('user-1')
+})
+
+test('invariant 11: a complete phone or email highlights the matching rows', async ({ page }) => {
+  const api = await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+  const q = page.getByLabel('账号筛选')
+
+  // 完整手机号（含国家码与分隔符）只留精确行，整行高亮并带文字徽标。
+  await q.fill('+86 138 0013 8000')
+  await expect.poll(() => lastListCall(api)?.params.q).toBe('+86 138 0013 8000')
+  const exact = rowFor(page, '138****8000')
+  await expect(exact).toBeVisible()
+  await expect(exact).toHaveAttribute('data-exact-match', 'true')
+  await expect(exact.getByText('精确匹配')).toBeVisible()
+  await expect(page.getByRole('button', { name: '查看 139****9000' })).toHaveCount(0)
+
+  // 完整邮箱：同一属主的两个账号都命中、都高亮。
+  await q.fill('operator@example.com')
+  await expect(rowFor(page, '138****8000')).toHaveAttribute('data-exact-match', 'true')
+  await expect(rowFor(page, '135****0001')).toHaveAttribute('data-exact-match', 'true')
+  await expect(page.getByRole('button', { name: '查看 139****9000' })).toHaveCount(0)
+
+  // 部分输入即使只剩一行也不高亮。
+  await q.fill('138')
+  await expect(page.getByRole('button', { name: '查看 138****8000' })).toBeVisible()
+  await expect(page.getByText('精确匹配')).toHaveCount(0)
+})
+
+test('invariant 11: the default remark is displayed and searchable', async ({ page }) => {
+  await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+  const q = page.getByLabel('账号筛选')
+  const unnamed = rowFor(page, '135****0001')
+
+  await expect(unnamed).toContainText('账号0001')
+  await q.fill('账号')
+  await expect(page.getByRole('button', { name: '查看 135****0001' })).toBeVisible()
+  await expect(page.getByText('精确匹配')).toHaveCount(0)
+
+  await q.fill('账号0001')
+  await expect(unnamed).toHaveAttribute('data-exact-match', 'true')
+  await expect(unnamed.getByText('精确匹配')).toBeVisible()
 })
 
 test('ux2 master: the single form sends an optional remark name', async ({ page }) => {

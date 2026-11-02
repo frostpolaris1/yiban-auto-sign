@@ -311,6 +311,7 @@ func accountResponse(record appaccount.Record) oapi.Account {
 		OwnerEmailMasked: mask.EmailLabel(record.OwnerEmail),
 		PhoneMasked:      mask.MaskPhone(record.Phone),
 		Name:             record.Name,
+		DisplayName:      record.DisplayName,
 		Status:           oapi.AccountStatus(record.Status),
 		// 拒绝理由是自由文本；写库时保留原文，**出口一律掩码**。
 		// 审核、读取、列表三条响应同源，故只在这里处理一次。

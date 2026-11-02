@@ -6,8 +6,8 @@
  * `features/accounts` 展示层：只受控渲染，不改筛选状态。
  *
  * **口径**
- * 搜索口径与契约一致：备注名与归属邮箱按字面子串，手机号按
- * 前 1–3 位、后 4 位或完整 11 位；归属邮箱也可按可见掩码搜索。
+ * 搜索口径与契约一致：完整手机号/邮箱精确直达；其余输入按备注名子串、
+ * 可见邮箱掩码、手机号前 1–3 位或后 4 位发现。
  * 学校筛选的数据源只对 master/admin 开放，其余角色置灰并给原因。
  */
 
@@ -58,7 +58,7 @@ export function AccountFilters({
           className="input"
           type="search"
           aria-label="账号筛选"
-          placeholder="备注名 / 归属邮箱 / 手机号（前 1–3 位、后 4 位或全 11 位）"
+          placeholder="备注名 / 完整手机号或邮箱 / 手机号前 1–3 位或后 4 位"
           value={qInput}
           onChange={(event) => onQInputChange(event.target.value)}
         />

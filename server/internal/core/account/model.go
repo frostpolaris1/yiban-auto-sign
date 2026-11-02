@@ -52,11 +52,14 @@ func (s Status) Active() bool { return s == StatusActive }
 // OwnerEmail 是属主邮箱的明文，只在进程内用于生成掩码响应；
 // 入口层**不得**原样回显，掩码后才可以出服务端。
 type Record struct {
-	ID           string
-	SchoolID     string
-	OwnerUserID  string
-	Phone        string
-	Name         string
+	ID          string
+	SchoolID    string
+	OwnerUserID string
+	Phone       string
+	Name        string
+	// DisplayName 是列表展示用的有效备注名：name 为空时派生「账号+手机尾 4 位」。
+	// 搜索与展示共用这一个值，避免「看得到却搜不到」。
+	DisplayName  string
 	Status       Status
 	RejectReason string
 	ReviewedAt   *time.Time

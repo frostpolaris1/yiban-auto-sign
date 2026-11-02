@@ -31,6 +31,7 @@ import (
 type n190Account struct {
 	ID               string `json:"id"`
 	Name             string `json:"name"`
+	DisplayName      string `json:"display_name"`
 	OwnerEmailMasked string `json:"owner_email_masked"`
 	PhoneMasked      string `json:"phone_masked"`
 	Status           string `json:"status"`
@@ -79,6 +80,9 @@ func TestN190CreateAndUpdateName(t *testing.T) {
 	if created.Name != "宿舍甲" {
 		t.Fatalf("created name = %q, want the trimmed value", created.Name)
 	}
+	if created.DisplayName != "宿舍甲" {
+		t.Fatalf("display_name = %q, want the custom name", created.DisplayName)
+	}
 	if created.OwnerEmailMasked != "n***@example.com" {
 		t.Fatalf("owner_email_masked = %q, want n***@example.com", created.OwnerEmailMasked)
 	}
@@ -102,6 +106,9 @@ func TestN190CreateAndUpdateName(t *testing.T) {
 	cleared := n190Patch(t, e, created.ID, map[string]any{"name": ""}, issued)
 	if cleared.Name != "" {
 		t.Fatalf("name after clearing = %q, want empty", cleared.Name)
+	}
+	if cleared.DisplayName != "账号0040" {
+		t.Fatalf("display_name after clearing = %q, want 账号0040", cleared.DisplayName)
 	}
 	if stored := e.scalarString("SELECT name FROM accounts WHERE id = $1::uuid", created.ID); stored != "" {
 		t.Fatalf("stored name after clearing = %q, want empty", stored)
@@ -152,6 +159,9 @@ func TestN190NameOnlyEditKeepsRejected(t *testing.T) {
 	if got.Status != string(coreaccount.StatusRejected) {
 		t.Fatalf("status after a name-only edit = %q, want rejected", got.Status)
 	}
+	if got.DisplayName != "待补照片" {
+		t.Fatalf("display_name after a name-only edit = %q", got.DisplayName)
+	}
 	if got.RejectReason != "资料不全" {
 		t.Fatalf("reject_reason after a name-only edit = %q, want the original reason", got.RejectReason)
 	}
@@ -188,10 +198,12 @@ func TestN190SearchNameEmailAndPhone(t *testing.T) {
 	east := e.account(school.ID, ownerA.ID, "13800000040")
 	west := e.account(school.ID, ownerA2.ID, "13900000041")
 	teach := e.account(school.ID, ownerB.ID, "13500000042")
+	shared := e.account(school.ID, ownerA.ID, "13100000043")
 	for id, name := range map[string]string{
-		east:  "东区宿舍 East Dorm",
-		west:  "西区宿舍",
-		teach: "教学楼下 100%栋",
+		east:   "东区宿舍 East Dorm",
+		west:   "西区宿舍",
+		teach:  "教学楼下 100%栋",
+		shared: "同属主第二号",
 	} {
 		if _, err := e.db.Exec(e.ctx, "UPDATE accounts SET name = $2 WHERE id = $1::uuid", id, name); err != nil {
 			t.Fatalf("seed name for %s: %v", id, err)
@@ -213,25 +225,46 @@ func TestN190SearchNameEmailAndPhone(t *testing.T) {
 		t.Fatalf("q=100%% ids = %v, want only the percent-named row", n190IDs(page))
 	}
 
-	// 归属邮箱：原始子串。
-	if page, _ := n190List(t, e, "beta.owner", issued); !n190IDs(page)[teach] || len(page.Items) != 1 {
-		t.Fatalf("q=beta.owner ids = %v, want only the beta owner's row", n190IDs(page))
+	// 完整手机号精确直达；+86 与分隔符归一后同样直达。
+	if page, _ := n190List(t, e, "13800000040", issued); !n190IDs(page)[east] || len(page.Items) != 1 {
+		t.Fatalf("q=13800000040 ids = %v, want only the exact account", n190IDs(page))
+	}
+	if page, _ := n190List(t, e, "+86 138 0000 0040", issued); !n190IDs(page)[east] || len(page.Items) != 1 {
+		t.Fatalf("q=+86 138 0000 0040 ids = %v, want the normalized exact account", n190IDs(page))
+	}
+	// 完整邮箱精确直达；大小写不敏感；同一属主的多个账号一起返回。
+	if page, _ := n190List(t, e, "ALPHA.OWNER@example.com", issued); len(page.Items) != 2 ||
+		!n190IDs(page)[east] || !n190IDs(page)[shared] || n190IDs(page)[west] {
+		t.Fatalf("q=full email ids = %v, want the two alpha-owner accounts", n190IDs(page))
+	}
+	// 完整邮箱只走精确：部分原始邮箱不再是检索面。
+	if page, _ := n190List(t, e, "alpha.owner", issued); len(page.Items) != 0 {
+		t.Fatalf("partial raw email ids = %v, want no match", n190IDs(page))
 	}
 	// 可见掩码：a***@example.com 命中两个同掩码的属主，不命中 b***。
-	if page, _ := n190List(t, e, "a***@example.com", issued); !n190IDs(page)[east] ||
-		!n190IDs(page)[west] || n190IDs(page)[teach] || len(page.Items) != 2 {
-		t.Fatalf("masked email ids = %v, want the two a*** rows", n190IDs(page))
+	if page, _ := n190List(t, e, "a***@example.com", issued); len(page.Items) != 3 ||
+		!n190IDs(page)[east] || !n190IDs(page)[west] || !n190IDs(page)[shared] ||
+		n190IDs(page)[teach] {
+		t.Fatalf("masked email ids = %v, want the three a*** rows", n190IDs(page))
 	}
 
-	// 手机号：前缀、后缀、全号仍按原口径。
+	// 部分手机号：前缀、后缀仍按原口径。
 	if page, _ := n190List(t, e, "138", issued); !n190IDs(page)[east] {
 		t.Fatalf("q=138 ids = %v, want the 138 account", n190IDs(page))
 	}
 	if page, _ := n190List(t, e, "0041", issued); !n190IDs(page)[west] {
 		t.Fatalf("q=0041 ids = %v, want the suffix match", n190IDs(page))
 	}
-	if page, _ := n190List(t, e, "13500000042", issued); !n190IDs(page)[teach] || len(page.Items) != 1 {
-		t.Fatalf("q=13500000042 ids = %v, want the exact account", n190IDs(page))
+
+	// 完整邮箱的 254 字符上限：超长查询是显性 400，不静默当成不过滤。
+	tooLong := strings.Repeat("a", 250) + "@example.com"
+	if len(tooLong) <= 254 {
+		t.Fatalf("test query is %d characters, want more than 254", len(tooLong))
+	}
+	rec := e.do(http.MethodGet, "/api/accounts?q="+url.QueryEscape(tooLong), nil, issued)
+	w2cWantStatus(t, rec, http.StatusBadRequest)
+	if code := e.errorCode(rec); code != "validation_failed" {
+		t.Fatalf("long q code = %q, want validation_failed", code)
 	}
 
 	// 明文邮箱不进任何响应体。
@@ -241,6 +274,49 @@ func TestN190SearchNameEmailAndPhone(t *testing.T) {
 				t.Fatalf("response body leaked the raw owner email %q", raw)
 			}
 		}
+	}
+}
+
+// 未命名账号展示并搜索派生的默认备注「账号+手机尾 4 位」。
+// 旧线的根因：列表显示 display_name，搜索却只看 name，默认名永远搜不到。
+func TestN190DefaultDisplayNameIsSearchable(t *testing.T) {
+	e := w2cNewEnv(t)
+	owner := e.user("n190.default@example.com", coreauth.RoleUser)
+	school := e.school("n190-default")
+	master := e.user("n190.default-master@example.com", coreauth.RoleMaster)
+	first := e.account(school.ID, owner.ID, "13200000044")
+	second := e.account(school.ID, owner.ID, "13300000045")
+	named := e.account(school.ID, owner.ID, "13400000046")
+	if _, err := e.db.Exec(e.ctx, "UPDATE accounts SET name = '账号甲' WHERE id = $1::uuid", named); err != nil {
+		t.Fatalf("seed custom name: %v", err)
+	}
+	issued := e.login(master)
+
+	page, _ := n190List(t, e, "账号", issued)
+	if len(page.Items) != 3 || !n190IDs(page)[first] || !n190IDs(page)[second] || !n190IDs(page)[named] {
+		t.Fatalf("q=账号 ids = %v, want both default names and the custom 账号甲", n190IDs(page))
+	}
+	for _, item := range page.Items {
+		switch item.ID {
+		case first:
+			if item.DisplayName != "账号0044" {
+				t.Fatalf("first display_name = %q, want 账号0044", item.DisplayName)
+			}
+		case second:
+			if item.DisplayName != "账号0045" {
+				t.Fatalf("second display_name = %q, want 账号0045", item.DisplayName)
+			}
+		}
+	}
+
+	// 完整的默认备注直接命中一条。
+	if page, _ := n190List(t, e, "账号0044", issued); len(page.Items) != 1 || !n190IDs(page)[first] {
+		t.Fatalf("q=账号0044 ids = %v, want only the first default account", n190IDs(page))
+	}
+	// 片段命中两条默认名，自定义的「账号甲」不入选。
+	if page, _ := n190List(t, e, "账号00", issued); len(page.Items) != 2 ||
+		!n190IDs(page)[first] || !n190IDs(page)[second] || n190IDs(page)[named] {
+		t.Fatalf("q=账号00 ids = %v, want the two default accounts", n190IDs(page))
 	}
 }
 
@@ -255,6 +331,9 @@ func TestN190OwnerEmailMaskedOnRead(t *testing.T) {
 	page, body := n190List(t, e, "", issued)
 	if len(page.Items) != 1 || page.Items[0].OwnerEmailMasked != "n***@example.com" {
 		t.Fatalf("list owner_email_masked = %+v, want n***@example.com", page.Items)
+	}
+	if page.Items[0].DisplayName != "账号0040" {
+		t.Fatalf("default display_name = %q, want 账号0040", page.Items[0].DisplayName)
 	}
 	if strings.Contains(body, "n190.read@example.com") {
 		t.Fatalf("list body leaked the raw owner email")

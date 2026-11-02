@@ -45,7 +45,8 @@ var phonePattern = regexp.MustCompile(`^1[0-9]{10}$`)
 const maxPasswordBytes = 1024
 
 // maxQueryChars 限制列表搜索串长度。
-const maxQueryChars = 64
+// 完整邮箱最长 254 字符，搜索必须能装下一个完整地址。
+const maxQueryChars = 254
 
 // maxCredentialFieldChars 与契约的 maxLength: 64 同值。
 // 设备码与机型会进入凭据密文；不设上界时只受 1 MiB 体上界约束。

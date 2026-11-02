@@ -489,7 +489,12 @@ type Account struct {
 	// list was fetched with include_deleted=true. The restore entry
 	// needs this to mark deleted rows.
 	DeletedAt *time.Time `json:"deleted_at"`
-	Id        string     `json:"id"`
+
+	// DisplayName Effective remark shown in lists: the name when set, otherwise
+	// "账号" followed by the last four digits of the phone. The remark
+	// search matches this value, so the default label is findable.
+	DisplayName string `json:"display_name"`
+	Id          string `json:"id"`
 
 	// Name Remark name. Empty when unset. Trimmed free text; it is not a
 	// credential and does not take part in review or scheduling.
@@ -1360,17 +1365,21 @@ type AccountListParams struct {
 	SchoolId *string        `form:"school_id,omitempty" json:"school_id,omitempty"`
 	Status   *AccountStatus `form:"status,omitempty" json:"status,omitempty"`
 
-	// Q Matches the remark name, the owner email, or the phone. Name and
-	// email match as case-insensitive literal substrings; % and _ are
-	// not wildcards. The masked owner email also matches: a query
-	// containing "***" is read as a mask whose stars stand for any
-	// characters, so a***@example.com finds every account with that
-	// mask.
-	// For the phone, non-digits are stripped. A leading prefix of one
-	// to three digits, a trailing four-digit suffix, or the exact
-	// 11-digit phone matches. A 5..10 digit fragment never matches a
-	// phone, but it can still match a name or an email. The exact
-	// 11-digit phone still matches, so the number stays enumerable.
+	// Q A complete phone (11 digits, optionally prefixed by 86/+86, with
+	// separators ignored) matches the phone exactly. A complete email
+	// (exactly one @, non-empty sides, no whitespace) matches the owner
+	// email exactly, case-insensitively; the raw email is reachable only
+	// through a complete address.
+	// Any other query is a discovery filter:
+	// - the effective remark name (the name when set, otherwise "账号"
+	//   followed by the last four phone digits) matches as a
+	//   case-insensitive literal substring, so "账号" finds every
+	//   unnamed account;
+	// - a masked owner email containing "***" matches that visible
+	//   mask, so a***@example.com finds every account with that mask;
+	// - a phone prefix of one to three digits or a trailing four-digit
+	//   suffix matches; a 5..10 digit fragment never matches a phone.
+	// % and _ are literal characters. At most 254 characters.
 	// Login and password-reset rate limiting is a deployment precondition
 	// before public exposure (P7).
 	Q *string `form:"q,omitempty" json:"q,omitempty"`

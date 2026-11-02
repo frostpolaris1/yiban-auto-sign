@@ -249,7 +249,11 @@ function UserWizard({
           onChange={(event) => setPhone(event.target.value)}
         />
       </FilterField>
-      <FilterField id="account-create-name" label="备注名（选填）" hint="最多 50 字">
+      <FilterField
+        id="account-create-name"
+        label="备注名（选填）"
+        hint="最多 50 字；留空显示为「账号+手机尾号」"
+      >
         <input
           className="input"
           type="text"
@@ -526,7 +530,11 @@ function ManagerForm({
           onChange={(event) => setPhone(event.target.value)}
         />
       </FilterField>
-      <FilterField id="account-create-name-manager" label="备注名（选填）" hint="最多 50 字">
+      <FilterField
+        id="account-create-name-manager"
+        label="备注名（选填）"
+        hint="最多 50 字；留空显示为「账号+手机尾号」"
+      >
         <input
           className="input"
           type="text"
