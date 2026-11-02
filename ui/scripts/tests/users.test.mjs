@@ -8,6 +8,8 @@ import {
   roleLabel,
 } from '../../src/lib/identity.ts'
 import {
+  nextGroupWithMembers,
+  USER_GROUP_LABELS,
   USER_ROLE_OPTIONS,
   USER_STATUS_OPTIONS,
   userStatusLabel,
@@ -57,7 +59,9 @@ test('the user feature never restates the status words', () => {
 import {
   parseUserSearchRecord,
   userSearchRecord,
+  withDeleted,
   withFilter,
+  withGroup,
 } from '../../src/features/user/urlState.ts'
 
 test('the URL state parser keeps only known, valid values', () => {
@@ -105,4 +109,61 @@ test('changing a filter always drops the cursor', () => {
   const cleared = withFilter({ role: 'user', q: 'a' }, { q: undefined })
   assert.equal(cleared.q, undefined)
   assert.deepEqual(userSearchRecord(cleared), { role: 'user' })
+})
+
+// --- 分组：URL 状态与互斥 ---------------------------------------------------
+
+test('the URL state parser keeps a known group and lets it win over deleted', () => {
+  assert.deepEqual(parseUserSearchRecord({ group: 'pending' }), { group: 'pending' })
+  // 手写 URL 同时带 group 与 deleted：分组优先，软删行不参与分组。
+  assert.deepEqual(parseUserSearchRecord({ group: 'vacant', deleted: '1' }), { group: 'vacant' })
+  assert.deepEqual(parseUserSearchRecord({ group: 'bogus' }), {})
+})
+
+test('the URL search record never writes group and deleted together', () => {
+  assert.deepEqual(userSearchRecord({ group: 'normal', cursor: 'c1' }), {
+    group: 'normal',
+    cursor: 'c1',
+  })
+  assert.deepEqual(userSearchRecord({ group: 'normal', deleted: true }), { group: 'normal' })
+  assert.deepEqual(userSearchRecord({ deleted: true }), { deleted: '1' })
+})
+
+test('group and deleted are mutually exclusive and both drop the cursor', () => {
+  const grouped = withGroup({ role: 'user', deleted: true, cursor: 'c2' }, 'pending')
+  assert.equal(grouped.group, 'pending')
+  assert.equal(grouped.deleted, undefined)
+  assert.equal(grouped.cursor, undefined)
+  // 全部标签也退出已删除视图。
+  const all = withGroup({ deleted: true }, undefined)
+  assert.equal(all.group, undefined)
+  assert.equal(all.deleted, undefined)
+
+  const deleted = withDeleted({ role: 'user', group: 'vacant', cursor: 'c3' }, true)
+  assert.equal(deleted.deleted, true)
+  assert.equal(deleted.group, undefined)
+  assert.equal(deleted.cursor, undefined)
+  const live = withDeleted({ deleted: true }, false)
+  assert.equal(live.deleted, undefined)
+})
+
+test('an empty group points at the nearest non-empty sibling', () => {
+  assert.deepEqual(
+    nextGroupWithMembers('pending', { pending: 0, normal: 3, vacant: 1, deleted: 9 }),
+    { group: 'normal', label: '查看正式用户' },
+  )
+  assert.deepEqual(
+    nextGroupWithMembers('normal', { pending: 1, normal: 0, vacant: 2, deleted: 0 }),
+    { group: 'vacant', label: '查看空用户' },
+  )
+  assert.deepEqual(
+    nextGroupWithMembers('vacant', { pending: 1, normal: 0, vacant: 0, deleted: 0 }),
+    { group: 'pending', label: '查看待处理用户' },
+  )
+  assert.equal(nextGroupWithMembers('pending', undefined), null)
+  assert.equal(
+    nextGroupWithMembers('pending', { pending: 0, normal: 0, vacant: 0, deleted: 3 }),
+    null,
+  )
+  assert.deepEqual(Object.keys(USER_GROUP_LABELS), ['pending', 'normal', 'vacant'])
 })

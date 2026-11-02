@@ -307,6 +307,20 @@ paths:
             Email prefix. Matching is case-insensitive because stored
             addresses are lower case. Wildcards in the value are literal.
           schema: { type: string }
+        - name: group
+          in: query
+          required: false
+          description: |
+            Live-user group derived from the user's live accounts:
+            - pending: at least one pending or rejected account;
+            - normal: no pending/rejected account and at least one account;
+            - vacant: no live account.
+            UserPage.counts covers all live users and does not change with
+            this parameter. group cannot be combined with include_deleted
+            true; that combination answers 400.
+          schema:
+            type: string
+            enum: [pending, normal, vacant]
         - name: include_deleted
           in: query
           required: false
@@ -314,6 +328,7 @@ paths:
             Include soft-deleted users. Defaults to false, so the default
             behavior is unchanged: soft-deleted users never appear.
             Deleted rows carry deleted_at and keep their status value.
+            Cannot be combined with group.
           schema: { type: boolean }
       responses:
         '200':
@@ -2071,7 +2086,18 @@ components:
           description: Token the client sends back in X-CSRF-Token.
     User:
       type: object
-      required: [id, email, role, status, must_change_password, created_at, last_login_at, deleted_at]
+      required:
+        - id
+        - email
+        - role
+        - status
+        - must_change_password
+        - account_count
+        - pending_count
+        - review_count
+        - created_at
+        - last_login_at
+        - deleted_at
       properties:
         id: { type: string }
         email: { type: string, format: email }
@@ -2080,6 +2106,20 @@ components:
         status:
           $ref: '#/components/schemas/UserStatus'
         must_change_password: { type: boolean }
+        account_count:
+          type: integer
+          minimum: 0
+          description: Live accounts owned by the user.
+        pending_count:
+          type: integer
+          minimum: 0
+          description: Live accounts owned by the user with status pending.
+        review_count:
+          type: integer
+          minimum: 0
+          description: |
+            Live accounts owned by the user with status pending or rejected.
+            A value above zero puts the user in the pending group.
         created_at: { type: string, format: date-time }
         last_login_at:
           type: [string, "null"]
@@ -2778,7 +2818,7 @@ components:
           description: An existing photo visible to the caller; null clears the default.
     UserPage:
       type: object
-      required: [items, next_cursor]
+      required: [items, next_cursor, counts]
       properties:
         items:
           type: array
@@ -2787,6 +2827,28 @@ components:
         next_cursor:
           type: string
           description: Cursor for the next page; empty on the last page.
+        counts:
+          $ref: '#/components/schemas/UserCounts'
+    UserCounts:
+      type: object
+      description: |
+        Group totals over all users, independent of role, status, q, group
+        and pagination. pending, normal and vacant count live users; deleted
+        counts soft-deleted users.
+      required: [pending, normal, vacant, deleted]
+      properties:
+        pending:
+          type: integer
+          minimum: 0
+        normal:
+          type: integer
+          minimum: 0
+        vacant:
+          type: integer
+          minimum: 0
+        deleted:
+          type: integer
+          minimum: 0
     UserLookupPage:
       type: object
       required: [items]

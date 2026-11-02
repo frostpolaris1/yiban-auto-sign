@@ -481,6 +481,27 @@ func (e AdminTaskExportParamsState) Valid() bool {
 	}
 }
 
+// Defines values for UserListParamsGroup.
+const (
+	UserListParamsGroupNormal  UserListParamsGroup = "normal"
+	UserListParamsGroupPending UserListParamsGroup = "pending"
+	UserListParamsGroupVacant  UserListParamsGroup = "vacant"
+)
+
+// Valid indicates whether the value is a known member of the UserListParamsGroup enum.
+func (e UserListParamsGroup) Valid() bool {
+	switch e {
+	case UserListParamsGroupNormal:
+		return true
+	case UserListParamsGroupPending:
+		return true
+	case UserListParamsGroupVacant:
+		return true
+	default:
+		return false
+	}
+}
+
 // Account defines model for Account.
 type Account struct {
 	CreatedAt time.Time `json:"created_at"`
@@ -1239,7 +1260,9 @@ type TimePrefUpdate struct {
 
 // User defines model for User.
 type User struct {
-	CreatedAt time.Time `json:"created_at"`
+	// AccountCount Live accounts owned by the user.
+	AccountCount int       `json:"account_count"`
+	CreatedAt    time.Time `json:"created_at"`
 
 	// DeletedAt Soft-delete timestamp; null for live users. Only rows fetched
 	// with include_deleted=true can carry a non-null value.
@@ -1248,8 +1271,25 @@ type User struct {
 	Id                 string              `json:"id"`
 	LastLoginAt        *time.Time          `json:"last_login_at"`
 	MustChangePassword bool                `json:"must_change_password"`
-	Role               UserRole            `json:"role"`
-	Status             UserStatus          `json:"status"`
+
+	// PendingCount Live accounts owned by the user with status pending.
+	PendingCount int `json:"pending_count"`
+
+	// ReviewCount Live accounts owned by the user with status pending or rejected.
+	// A value above zero puts the user in the pending group.
+	ReviewCount int        `json:"review_count"`
+	Role        UserRole   `json:"role"`
+	Status      UserStatus `json:"status"`
+}
+
+// UserCounts Group totals over all users, independent of role, status, q, group
+// and pagination. pending, normal and vacant count live users; deleted
+// counts soft-deleted users.
+type UserCounts struct {
+	Deleted int `json:"deleted"`
+	Normal  int `json:"normal"`
+	Pending int `json:"pending"`
+	Vacant  int `json:"vacant"`
 }
 
 // UserCreate defines model for UserCreate.
@@ -1276,7 +1316,11 @@ type UserLookupRef struct {
 
 // UserPage defines model for UserPage.
 type UserPage struct {
-	Items []User `json:"items"`
+	// Counts Group totals over all users, independent of role, status, q, group
+	// and pagination. pending, normal and vacant count live users; deleted
+	// counts soft-deleted users.
+	Counts UserCounts `json:"counts"`
+	Items  []User     `json:"items"`
 
 	// NextCursor Cursor for the next page; empty on the last page.
 	NextCursor string `json:"next_cursor"`
@@ -1729,11 +1773,24 @@ type UserListParams struct {
 	// addresses are lower case. Wildcards in the value are literal.
 	Q *string `form:"q,omitempty" json:"q,omitempty"`
 
+	// Group Live-user group derived from the user's live accounts:
+	// - pending: at least one pending or rejected account;
+	// - normal: no pending/rejected account and at least one account;
+	// - vacant: no live account.
+	// UserPage.counts covers all live users and does not change with
+	// this parameter. group cannot be combined with include_deleted
+	// true; that combination answers 400.
+	Group *UserListParamsGroup `form:"group,omitempty" json:"group,omitempty"`
+
 	// IncludeDeleted Include soft-deleted users. Defaults to false, so the default
 	// behavior is unchanged: soft-deleted users never appear.
 	// Deleted rows carry deleted_at and keep their status value.
+	// Cannot be combined with group.
 	IncludeDeleted *bool `form:"include_deleted,omitempty" json:"include_deleted,omitempty"`
 }
+
+// UserListParamsGroup defines parameters for UserList.
+type UserListParamsGroup string
 
 // UserCreateParams defines parameters for UserCreate.
 type UserCreateParams struct {
@@ -4085,6 +4142,14 @@ func (siw *ServerInterfaceWrapper) UserList(c *gin.Context) {
 	err = runtime.BindQueryParameterWithOptions("form", true, false, "q", c.Request.URL.Query(), &params.Q, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
 	if err != nil {
 		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter q: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "group" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "group", c.Request.URL.Query(), &params.Group, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter group: %w", err), http.StatusBadRequest)
 		return
 	}
 

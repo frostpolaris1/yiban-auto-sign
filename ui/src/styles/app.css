@@ -275,6 +275,20 @@
   gap: 8px;
 }
 
+/* 用户分组切换：一行标签，计数与标签同按钮。 */
+.app-group-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.app-group-tab-count {
+  margin-left: 6px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
 .app-cell-link {
   padding: 0;
   border: 0;

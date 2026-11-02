@@ -35,9 +35,12 @@ import { showcaseUsers } from '@/lib/showcase'
 import { UserDetailDrawer } from './UserDetailDrawer'
 import { UserCreateModal } from './UserCreateModal'
 import { UserFilters } from './UserFilters'
+import { UserGroupTabs } from './UserGroupTabs'
 import { UsersTable } from './UsersTable'
-import { withFilter, type UserURLState } from './urlState'
+import { nextGroupWithMembers, USER_GROUP_LABELS } from './display'
+import { withDeleted, withFilter, withGroup, type UserURLState } from './urlState'
 import { AsyncState } from '@/components/ui/AsyncState'
+import { Button } from '@/components/ui/Button'
 
 /** 输入防抖窗口；上限 300ms。 */
 const SEARCH_DEBOUNCE_MS = 250
@@ -74,7 +77,10 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
     })
   }, [urlCursor])
 
-  const cursor = currentCursor(stack)
+  // 查询游标直接跟随 URL，不从游标栈取：栈由事件与 effect 更新，晚一拍
+  // 会让改筛选的那次请求仍带旧游标，先拿错页再自我纠正（多发一条错页请求）。
+  // 栈只负责「上一页」记忆与页码展示。
+  const cursor = urlCursor
 
   /** 回车是显式动作：同值也回第一页，末尾位置不保留。 */
   const commitQuery = () => {
@@ -97,6 +103,7 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
       urlState.role ?? null,
       urlState.status ?? null,
       urlState.q ?? null,
+      urlState.group ?? null,
       urlState.deleted ? 'deleted' : null,
       cursor ?? null,
     ],
@@ -108,6 +115,7 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
         role: urlState.role,
         status: urlState.status,
         q: urlState.q,
+        group: urlState.group,
         include_deleted: urlState.deleted,
         cursor,
       })
@@ -131,6 +139,10 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
 
   const rows = usersQuery.data?.items ?? []
   const error = usersQuery.isError ? describeApiError(usersQuery.error) : null
+  const counts = usersQuery.data?.counts
+  // 角色/状态/邮箱是收窄条件；分组与已删除是视图，不是「筛选残留」。
+  const narrowed = Boolean(urlState.role || urlState.status || urlState.q)
+  const crossGroup = urlState.group ? nextGroupWithMembers(urlState.group, counts) : null
 
   const listStatus: 'loading' | 'error' | 'empty' | 'data' = usersQuery.isPending
     ? 'loading'
@@ -139,6 +151,38 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
       : rows.length === 0
         ? 'empty'
         : 'data'
+
+  const emptyLabel = narrowed ? (
+    <>
+      <div>没有匹配的用户</div>
+      <div className="app-muted">调整筛选条件后重试。</div>
+      <Button variant="ghost" size="sm" onClick={() => onSearchChange({})}>
+        清除筛选
+      </Button>
+    </>
+  ) : urlState.deleted ? (
+    <>
+      <div>没有已删除的用户</div>
+      <Button variant="ghost" size="sm" onClick={() => onSearchChange(withDeleted(urlState, false))}>
+        返回全部用户
+      </Button>
+    </>
+  ) : urlState.group ? (
+    <>
+      <div>暂无{USER_GROUP_LABELS[urlState.group]}用户</div>
+      {crossGroup ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => onSearchChange(withGroup(urlState, crossGroup.group))}
+        >
+          {crossGroup.label}
+        </Button>
+      ) : null}
+    </>
+  ) : (
+    <div>暂无用户</div>
+  )
 
   return (
     <>
@@ -149,7 +193,7 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
             用户 <span className="accent">管理</span>
           </>
         }
-        subtitle="master 可查看全部账号的邮箱、角色与状态。"
+        subtitle="按待处理/正式/空用户分组；分组计数不随筛选变化。"
         actions={
           allowed ? (
             <BusyButton
@@ -169,25 +213,27 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
         <DeniedCard eyebrow="Users" reason={DENY_REASON} />
       ) : (
         <Card eyebrow="Users" title="用户列表" action={<span className="app-caption">游标分页</span>}>
+          <UserGroupTabs
+            group={urlState.group}
+            deleted={urlState.deleted}
+            counts={counts}
+            onGroupChange={(next) => onSearchChange(withGroup(urlState, next))}
+          />
           <UserFilters
             values={urlState}
             qInput={qInput}
+            deletedCount={counts?.deleted}
             // 筛选写 URL 一律 push：后退＝撤销最近一次筛选。
             onRoleChange={(next) => onSearchChange(withFilter(urlState, { role: next }))}
             onStatusChange={(next) => onSearchChange(withFilter(urlState, { status: next }))}
-            onDeletedChange={(next) => onSearchChange(withFilter(urlState, { deleted: next }))}
+            onDeletedChange={(next) => onSearchChange(withDeleted(urlState, next))}
             onQInputChange={setQInput}
             onQCommit={commitQuery}
           />
           <AsyncState
             status={listStatus}
             error={error ?? undefined}
-            emptyLabel={
-              <>
-                <div>没有匹配的用户</div>
-                <div className="app-muted">调整筛选条件后重试。</div>
-              </>
-            }
+            emptyLabel={emptyLabel}
             onRetry={
               usersQuery.isError
                 ? () => {
@@ -208,7 +254,13 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
                 onSearchChange(
                   prev
                     ? { ...urlState, cursor: prev }
-                    : { role: urlState.role, status: urlState.status, q: urlState.q, deleted: urlState.deleted },
+                    : {
+                        role: urlState.role,
+                        status: urlState.status,
+                        q: urlState.q,
+                        group: urlState.group,
+                        deleted: urlState.deleted,
+                      },
                 )
               }}
               onNext={() => {

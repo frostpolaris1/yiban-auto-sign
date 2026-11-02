@@ -67,8 +67,13 @@ func (f *fakeUserRepo) GetByEmail(context.Context, string) (Record, error) {
 	return Record{}, errors.New("not used")
 }
 
-func (f *fakeUserRepo) List(context.Context, coreauth.Role, coreauth.Status, string, string, int, bool) ([]Record, string, error) {
+func (f *fakeUserRepo) List(context.Context, coreauth.Role, coreauth.Status, string, coreuser.Group, string, int, bool) ([]Record, string, error) {
 	return nil, "", nil
+}
+
+// Counts 只为满足 Repo 接口：分组计数归列表流，Delete 流不读它。
+func (f *fakeUserRepo) Counts(context.Context) (coreuser.Counts, error) {
+	return coreuser.Counts{}, nil
 }
 
 func (f *fakeUserRepo) UpdatePassword(context.Context, string, string, bool, time.Time) error {

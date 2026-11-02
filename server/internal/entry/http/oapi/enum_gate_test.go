@@ -41,6 +41,7 @@ var contractEnums = []contractEnum{
 	{".", "ErrorCode", "../../../core/errs", "Code", "Code", 16},
 	{".", "ScheduleWindowSource", "../../../signing/contract", "WindowSource", "Window", 4},
 	{".", "SchoolStatus", "../../../core/school", "Status", "Status", 2},
+	{".", "UserListParamsGroup", "../../../core/user", "Group", "Group", 3},
 	{".", "UserRole", "../../../core/auth", "Role", "Role", 3},
 	{".", "UserStatus", "../../../core/auth", "Status", "Status", 2},
 }

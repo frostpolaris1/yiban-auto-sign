@@ -20,6 +20,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 )
 
 // TestUserListQueryOrdersByQualifiedID 钉住 ORDER BY 的两个承重属性：
@@ -27,11 +29,11 @@ import (
 // 二是限定名避免裸 id 被解析成输出列 id::text（那会退化为 Incremental Sort）。
 // 一次 Contains 同时守住两者：任何一处被改都会失配。
 func TestUserListQueryOrdersByQualifiedID(t *testing.T) {
-	sqlText, _, err := userListQuery("", "", "", "", 10, false)
+	sqlText, _, err := userListQuery("", "", "", "", "", 10, false)
 	if err != nil {
 		t.Fatalf("userListQuery: %v", err)
 	}
-	const want = " ORDER BY created_at DESC, users.id DESC"
+	const want = " ORDER BY u.created_at DESC, u.id DESC"
 	if !strings.Contains(sqlText, want) {
 		t.Fatalf("ORDER BY is not %q:\n%s", strings.TrimSpace(want), sqlText)
 	}
@@ -43,11 +45,11 @@ func TestUserListQueryKeysetShape(t *testing.T) {
 	const id = "0192f000-0000-7000-8000-000000000001"
 	at := time.Date(2026, 10, 28, 8, 0, 0, 0, time.UTC)
 
-	sqlText, args, err := userListQuery("", "", "", encodeCursor(at, id), 10, false)
+	sqlText, args, err := userListQuery("", "", "", "", encodeCursor(at, id), 10, false)
 	if err != nil {
 		t.Fatalf("userListQuery with cursor: %v", err)
 	}
-	const want = " AND (created_at, id) < ($1, $2::uuid)"
+	const want = " AND (u.created_at, u.id) < ($1, $2::uuid)"
 	if !strings.Contains(sqlText, want) {
 		t.Fatalf("keyset clause is not %q:\n%s", strings.TrimSpace(want), sqlText)
 	}
@@ -85,11 +87,11 @@ func TestUserListQueryEscapesLikeMetacharacters(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			sqlText, args, err := userListQuery("", "", tc.query, "", 10, false)
+			sqlText, args, err := userListQuery("", "", tc.query, "", "", 10, false)
 			if err != nil {
 				t.Fatalf("userListQuery(q=%q): %v", tc.query, err)
 			}
-			if !strings.Contains(sqlText, ` AND email LIKE $1 || '%' ESCAPE '\'`) {
+			if !strings.Contains(sqlText, ` AND u.email LIKE $1 || '%' ESCAPE '\'`) {
 				t.Fatalf("LIKE clause missing or reshaped:\n%s", sqlText)
 			}
 			if len(args) != 2 {
@@ -99,5 +101,35 @@ func TestUserListQueryEscapesLikeMetacharacters(t *testing.T) {
 				t.Fatalf("prefix arg = %q, want %q", args[0], tc.want)
 			}
 		})
+	}
+}
+
+// TestUserListQueryGroupClauses 钉住三个分组的派生谓词。
+// 分组只读账号聚合，不读用户状态：pending 看 review、normal 看 review=0 且有账号、
+// vacant 看没有账号。
+func TestUserListQueryGroupClauses(t *testing.T) {
+	cases := []struct {
+		group coreuser.Group
+		want  string
+	}{
+		{coreuser.GroupPending, " AND coalesce(c.review_count, 0) > 0"},
+		{coreuser.GroupNormal, " AND coalesce(c.review_count, 0) = 0 AND coalesce(c.account_count, 0) > 0"},
+		{coreuser.GroupVacant, " AND coalesce(c.account_count, 0) = 0"},
+	}
+	for _, tc := range cases {
+		sqlText, _, err := userListQuery("", "", "", tc.group, "", 10, false)
+		if err != nil {
+			t.Fatalf("userListQuery(group=%s): %v", tc.group, err)
+		}
+		if !strings.Contains(sqlText, tc.want) {
+			t.Fatalf("group %s clause is not %q:\n%s", tc.group, tc.want, sqlText)
+		}
+	}
+}
+
+// TestUserListQueryRejectsGroupWithDeleted 钉住互斥组合在 SQL 层也 fail closed。
+func TestUserListQueryRejectsGroupWithDeleted(t *testing.T) {
+	if _, _, err := userListQuery("", "", "", coreuser.GroupPending, "", 10, true); err == nil {
+		t.Fatal("group + include_deleted was accepted")
 	}
 }

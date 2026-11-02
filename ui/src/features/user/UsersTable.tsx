@@ -51,6 +51,7 @@ export function UsersTable({
               <th scope="col">邮箱</th>
               <th scope="col">角色</th>
               <th scope="col">状态</th>
+              <th scope="col">账号</th>
               <th scope="col">需要改密</th>
               <th scope="col">创建时间</th>
               <th scope="col">上次登录</th>
@@ -67,6 +68,14 @@ export function UsersTable({
                     {userStatusLabel(user.status)}
                   </Badge>{' '}
                   {user.deleted_at ? <Badge tone="danger">{USER_DELETED_LABEL}</Badge> : null}
+                </td>
+                <td>
+                  <div className="app-name-cell">
+                    <span className="data-cell-mono">{user.account_count}</span>
+                    {user.review_count > 0 ? (
+                      <Badge tone="warning">待处理 {user.review_count}</Badge>
+                    ) : null}
+                  </div>
                 </td>
                 <td>
                   {user.must_change_password ? (

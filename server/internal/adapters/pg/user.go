@@ -26,6 +26,25 @@ const userColumns = `id::text, email, password_hash, role::text, status::text,
 	must_change_password, password_changed_at, last_login_at, created_at,
 	updated_at, deleted_at, coalesce(deleted_by::text, '')`
 
+// accountCountsCTE 是用户列表与分组计数的唯一账号聚合口径。
+// 只数未软删账号：account 全部、pending 只 pending、review 含 pending 与 rejected。
+const accountCountsCTE = `WITH account_counts AS (
+		SELECT owner_user_id,
+		       count(*)::int AS account_count,
+		       count(*) FILTER (WHERE status = 'pending')::int AS pending_count,
+		       count(*) FILTER (WHERE status IN ('pending', 'rejected'))::int AS review_count
+		  FROM accounts
+		 WHERE deleted_at IS NULL
+		 GROUP BY owner_user_id
+	)`
+
+// userListColumns 是列表专用列清单：行字段 + 名下账号计数。
+// 计数用 LEFT JOIN，未持账号的用户得到 0。
+const userListColumns = `u.id::text, u.email, u.password_hash, u.role::text, u.status::text,
+	u.must_change_password, u.password_changed_at, u.last_login_at, u.created_at,
+	u.updated_at, u.deleted_at, coalesce(u.deleted_by::text, ''),
+	coalesce(c.account_count, 0), coalesce(c.pending_count, 0), coalesce(c.review_count, 0)`
+
 // Create 在活跃用户数低于 limit 时插入用户。
 //
 // **必须在事务内运行**。它按序取 UserCapacityLock、统计活跃行、插入，
@@ -104,11 +123,11 @@ func (r *UserRepo) GetByEmail(ctx context.Context, email string) (coreuser.Recor
 // 前缀按已归一（小写去空白）的邮箱比较，LIKE 的通配符被转义：
 // 邮箱里的 %、_ 与 \ 是合法字符，不得当成通配或转义符。
 // 归一后为空但入参非空时恒假，**不得**退化成「不过滤」。
-func (r *UserRepo) List(ctx context.Context, role coreauth.Role, status coreauth.Status, query, cursor string, limit int, includeDeleted bool) ([]coreuser.Record, string, error) {
+func (r *UserRepo) List(ctx context.Context, role coreauth.Role, status coreauth.Status, query string, group coreuser.Group, cursor string, limit int, includeDeleted bool) ([]coreuser.Record, string, error) {
 	if limit < 1 || limit > 200 {
 		return nil, "", validationError("limit must be between 1 and 200")
 	}
-	sqlText, args, err := userListQuery(role, status, query, cursor, limit, includeDeleted)
+	sqlText, args, err := userListQuery(role, status, query, group, cursor, limit, includeDeleted)
 	if err != nil {
 		return nil, "", err
 	}
@@ -121,7 +140,7 @@ func (r *UserRepo) List(ctx context.Context, role coreauth.Role, status coreauth
 
 	items := make([]coreuser.Record, 0, limit)
 	for rows.Next() {
-		record, err := scanUser(rows)
+		record, err := scanUserList(rows)
 		if err != nil {
 			return nil, "", mapError(err)
 		}
@@ -145,8 +164,14 @@ func (r *UserRepo) List(ctx context.Context, role coreauth.Role, status coreauth
 // 抽出本函数是为了让 SQL 形状可以被无数据库单测覆盖。
 // 三条承重性质由 user_query_test.go 逐字钉住：
 // 键集条件带 ::uuid、ORDER BY 带限定名与 tiebreaker、LIKE 元字符被转义。
-func userListQuery(role coreauth.Role, status coreauth.Status, query, cursor string, limit int, includeDeleted bool) (string, []any, error) {
-	where := ` WHERE deleted_at IS NULL`
+func userListQuery(role coreauth.Role, status coreauth.Status, query string, group coreuser.Group, cursor string, limit int, includeDeleted bool) (string, []any, error) {
+	if group != "" && !group.Valid() {
+		return "", nil, validationError("unknown user group")
+	}
+	if group != "" && includeDeleted {
+		return "", nil, validationError("group cannot be combined with include_deleted")
+	}
+	where := ` WHERE u.deleted_at IS NULL`
 	if includeDeleted {
 		where = ` WHERE TRUE`
 	}
@@ -156,36 +181,67 @@ func userListQuery(role coreauth.Role, status coreauth.Status, query, cursor str
 			return "", nil, validationError("unknown role")
 		}
 		args = append(args, string(role))
-		where += fmt.Sprintf(" AND role = $%d::user_role", len(args))
+		where += fmt.Sprintf(" AND u.role = $%d::user_role", len(args))
 	}
 	if status != "" {
 		if !status.Valid() {
 			return "", nil, validationError("unknown user status")
 		}
 		args = append(args, string(status))
-		where += fmt.Sprintf(" AND status = $%d::user_status", len(args))
+		where += fmt.Sprintf(" AND u.status = $%d::user_status", len(args))
 	}
 	prefix := coreuser.NormalizeEmail(query)
 	switch {
 	case prefix != "":
 		args = append(args, escapeLikePrefix(prefix))
-		where += fmt.Sprintf(` AND email LIKE $%d || '%%' ESCAPE '\'`, len(args))
+		where += fmt.Sprintf(` AND u.email LIKE $%d || '%%' ESCAPE '\'`, len(args))
 	case query != "":
 		where += " AND FALSE"
 	}
-	sqlText, args, err := appendKeyset(`SELECT `+userColumns+` FROM users`+where,
-		args, cursor, "created_at", "id")
+	switch group {
+	case coreuser.GroupPending:
+		where += " AND coalesce(c.review_count, 0) > 0"
+	case coreuser.GroupNormal:
+		where += " AND coalesce(c.review_count, 0) = 0 AND coalesce(c.account_count, 0) > 0"
+	case coreuser.GroupVacant:
+		where += " AND coalesce(c.account_count, 0) = 0"
+	}
+	base := accountCountsCTE + `
+		SELECT ` + userListColumns + `
+		  FROM users u
+		  LEFT JOIN account_counts c ON c.owner_user_id = u.id` + where
+	sqlText, args, err := appendKeyset(base, args, cursor, "u.created_at", "u.id")
 	if err != nil {
 		return "", nil, err
 	}
-	// ORDER BY 的 id 必须写成限定名 users.id。
-	// 选择列里的 id::text 也以 id 为输出名；裸 id 在 ORDER BY 中解析成该输出列。
-	// 排序键因此是 text，与 idx_users_created_live 的 uuid 列不同型。
-	// 计划退化为 Incremental Sort：索引只给 created_at 序，组内再按 text 排序。
-	// 限定 users.id 后排序键与索引同列同型，无过滤分页走纯 Index Scan。
-	sqlText += ` ORDER BY created_at DESC, users.id DESC`
+	// ORDER BY 的 id 必须写成限定名 u.id：
+	// 选择列里的 id::text 也以 id 为输出名；裸 id 在 ORDER BY 中解析成该输出列，
+	// 排序键会变成 text，与 idx_users_created_live 的 uuid 列不同型。
+	sqlText += ` ORDER BY u.created_at DESC, u.id DESC`
 	sqlText, args = appendLimit(sqlText, args, limit)
 	return sqlText, args, nil
+}
+
+// Counts 返回四个分组的全局计数。
+// 前三个只数未软删用户，Deleted 只数软删用户；与列表筛选和分页无关。
+func (r *UserRepo) Counts(ctx context.Context) (coreuser.Counts, error) {
+	row := r.db.q(ctx).QueryRow(ctx, accountCountsCTE+`
+		SELECT
+			count(*) FILTER (WHERE u.deleted_at IS NULL
+			                   AND coalesce(c.review_count, 0) > 0)::int,
+			count(*) FILTER (WHERE u.deleted_at IS NULL
+			                   AND coalesce(c.review_count, 0) = 0
+			                   AND coalesce(c.account_count, 0) > 0)::int,
+			count(*) FILTER (WHERE u.deleted_at IS NULL
+			                   AND coalesce(c.account_count, 0) = 0)::int,
+			count(*) FILTER (WHERE u.deleted_at IS NOT NULL)::int
+		  FROM users u
+		  LEFT JOIN account_counts c ON c.owner_user_id = u.id`)
+	var counts coreuser.Counts
+	if err := row.Scan(&counts.Pending, &counts.Normal, &counts.Vacant, &counts.Deleted); err != nil {
+		return coreuser.Counts{}, mapError(err)
+	}
+	return counts, nil
 }
 
 // escapeLikePrefix 转义 LIKE 的三个元字符。
@@ -445,6 +501,29 @@ func (r *UserRepo) Lookup(ctx context.Context, query string, limit int, exact bo
 		return nil, mapError(err)
 	}
 	return items, nil
+}
+
+// scanUserList 读列表专用列：行字段 + 名下账号计数。
+func scanUserList(row pgx.Row) (coreuser.Record, error) {
+	var (
+		record          coreuser.Record
+		role, status    string
+		passwordChanged pgtype.Timestamptz
+		lastLogin       pgtype.Timestamptz
+		deleted         pgtype.Timestamptz
+	)
+	if err := row.Scan(&record.ID, &record.Email, &record.PasswordHash, &role, &status,
+		&record.MustChangePassword, &passwordChanged, &lastLogin, &record.CreatedAt,
+		&record.UpdatedAt, &deleted, &record.DeletedBy,
+		&record.AccountCount, &record.PendingCount, &record.ReviewCount); err != nil {
+		return coreuser.Record{}, err
+	}
+	record.Role = coreauth.Role(role)
+	record.Status = coreauth.Status(status)
+	record.PasswordChangedAt = timePtr(passwordChanged)
+	record.LastLoginAt = timePtr(lastLogin)
+	record.DeletedAt = timePtr(deleted)
+	return record, nil
 }
 
 func scanUser(row pgx.Row) (coreuser.Record, error) {

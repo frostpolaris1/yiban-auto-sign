@@ -27,6 +27,7 @@ import (
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
+	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 )
 
 // maxQueryChars 限制邮箱前缀的长度。
@@ -39,14 +40,18 @@ type ListFilter struct {
 	Role   coreauth.Role
 	Status coreauth.Status
 	Query  string
+	// Group 按名下账号派生分组；空串表示不分组。
+	// 与 IncludeDeleted 互斥：软删行不参与账号分组。
+	Group coreuser.Group
 	// IncludeDeleted 置真时软删行也入选。缺省 false，行为不变。
 	IncludeDeleted bool
 }
 
-// Page 是一页用户。
+// Page 是一页用户，外加四个分组的全局计数。
 type Page struct {
 	Items      []Record
 	NextCursor string
+	Counts     coreuser.Counts
 }
 
 // List 列一页用户。**只有 master 可以调用**。
@@ -67,6 +72,12 @@ func (s *Service) List(ctx context.Context, scope corescope.Scope, filter ListFi
 	if filter.Status != "" && !filter.Status.Valid() {
 		return Page{}, errs.New(errs.CodeValidation, "status must be active or disabled")
 	}
+	if filter.Group != "" && !filter.Group.Valid() {
+		return Page{}, errs.New(errs.CodeValidation, "group must be pending, normal or vacant")
+	}
+	if filter.Group != "" && filter.IncludeDeleted {
+		return Page{}, errs.New(errs.CodeValidation, "group cannot be combined with include_deleted")
+	}
 	if utf8.RuneCountInString(filter.Query) > maxQueryChars {
 		return Page{}, errs.New(errs.CodeValidation, "q is too long")
 	}
@@ -74,9 +85,13 @@ func (s *Service) List(ctx context.Context, scope corescope.Scope, filter ListFi
 	if err != nil {
 		return Page{}, err
 	}
-	items, next, err := s.deps.Users.List(ctx, filter.Role, filter.Status, filter.Query, cursor, limit, filter.IncludeDeleted)
+	items, next, err := s.deps.Users.List(ctx, filter.Role, filter.Status, filter.Query, filter.Group, cursor, limit, filter.IncludeDeleted)
 	if err != nil {
 		return Page{}, err
 	}
-	return Page{Items: items, NextCursor: next}, nil
+	counts, err := s.deps.Users.Counts(ctx)
+	if err != nil {
+		return Page{}, err
+	}
+	return Page{Items: items, NextCursor: next, Counts: counts}, nil
 }

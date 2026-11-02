@@ -13,7 +13,7 @@
  */
 
 import type { Tone } from '@/components/ui/Badge'
-import type { UserRole, UserStatus } from '@/lib/api/user'
+import type { UserCounts, UserGroup, UserRole, UserStatus } from '@/lib/api/user'
 import { ACTIVE_STATUS_LABEL, DISABLED_STATUS_LABEL, roleLabel } from '@/lib/identity'
 
 /** 下拉选项与行内标签同源，避免两处文案漂移。 */
@@ -45,4 +45,38 @@ export function userStatusLabel(status: UserStatus): string {
 
 export function userStatusTone(status: UserStatus): Tone {
   return STATUS_TONES[status]
+}
+
+/** 分组标签。顺序固定：待处理 → 正式 → 空用户。 */
+export const USER_GROUP_LABELS: Record<UserGroup, string> = {
+  pending: '待处理',
+  normal: '正式',
+  vacant: '空用户',
+}
+
+/**
+ * 空分组时的跨组出路：按「先看最近的兄弟组」选第一个有人的组。
+ * 没有计数或兄弟组都空时返回 null，不造死链。
+ */
+export function nextGroupWithMembers(
+  group: UserGroup,
+  counts: UserCounts | undefined,
+): { group: UserGroup; label: string } | null {
+  if (!counts) return null
+  const order: Record<UserGroup, UserGroup[]> = {
+    pending: ['normal', 'vacant'],
+    normal: ['vacant', 'pending'],
+    vacant: ['normal', 'pending'],
+  }
+  const memberLabels: Record<UserGroup, string> = {
+    pending: '待处理用户',
+    normal: '正式用户',
+    vacant: '空用户',
+  }
+  for (const candidate of order[group]) {
+    if (counts[candidate] > 0) {
+      return { group: candidate, label: `查看${memberLabels[candidate]}` }
+    }
+  }
+  return null
 }

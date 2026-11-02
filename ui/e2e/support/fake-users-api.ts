@@ -1,5 +1,5 @@
 import type { Page, Route } from '@playwright/test'
-import type { User } from '../../src/lib/api/user'
+import type { User, UserCounts } from '../../src/lib/api/user'
 import { SESSION_CSRF, SESSION_EMAIL, type Role } from './fake-accounts-api'
 
 /**
@@ -33,6 +33,9 @@ export const USERS: User[] = [
     role: 'master',
     status: 'active',
     must_change_password: false,
+    account_count: 3,
+    pending_count: 0,
+    review_count: 0,
     created_at: '2026-01-05T00:00:00Z',
     last_login_at: '2026-10-28T01:00:00Z',
     deleted_at: null,
@@ -43,6 +46,9 @@ export const USERS: User[] = [
     role: 'admin',
     status: 'active',
     must_change_password: true,
+    account_count: 1,
+    pending_count: 0,
+    review_count: 0,
     created_at: '2026-02-05T00:00:00Z',
     last_login_at: null,
     deleted_at: null,
@@ -53,8 +59,24 @@ export const USERS: User[] = [
     role: 'user',
     status: 'disabled',
     must_change_password: false,
+    account_count: 0,
+    pending_count: 0,
+    review_count: 0,
     created_at: '2026-03-05T00:00:00Z',
     last_login_at: '2026-09-01T02:30:00Z',
+    deleted_at: null,
+  },
+  {
+    id: 'user-epsilon',
+    email: 'member-two@example.com',
+    role: 'user',
+    status: 'active',
+    must_change_password: false,
+    account_count: 2,
+    pending_count: 1,
+    review_count: 1,
+    created_at: '2026-04-05T00:00:00Z',
+    last_login_at: null,
     deleted_at: null,
   },
 ]
@@ -66,13 +88,35 @@ export const DELETED_USER: User = {
   role: 'user',
   status: 'disabled',
   must_change_password: false,
-  created_at: '2026-04-05T00:00:00Z',
+  account_count: 0,
+  pending_count: 0,
+  review_count: 0,
+  created_at: '2026-05-05T00:00:00Z',
   last_login_at: null,
   deleted_at: '2026-10-20T00:00:00Z',
 }
 
 /** password-reset 的一次性合成口令。 */
 export const FAKE_TEMP_PASSWORD = 'temp-pass-once-0123456789abcdefgh'
+
+/** 与服务端同口径：review>0 → pending；无账号 → vacant；否则 normal。 */
+function groupOf(user: User): 'pending' | 'normal' | 'vacant' {
+  if (user.review_count > 0) return 'pending'
+  return user.account_count === 0 ? 'vacant' : 'normal'
+}
+
+/** 全局分组计数：前三组只数未删用户，deleted 只数软删用户。 */
+function userCountsOf(items: User[]): UserCounts {
+  const counts: UserCounts = { pending: 0, normal: 0, vacant: 0, deleted: 0 }
+  for (const item of items) {
+    if (item.deleted_at !== null) {
+      counts.deleted += 1
+      continue
+    }
+    counts[groupOf(item)] += 1
+  }
+  return counts
+}
 
 export type MockUsersOptions = {
   role: Role | null
@@ -190,13 +234,29 @@ export async function mockUsersApi(
         )
       }
       const includeDeleted = url.searchParams.get('include_deleted') === 'true'
-      const visible = users.filter((item) => includeDeleted || item.deleted_at === null)
+      const group = url.searchParams.get('group') ?? ''
+      if (group !== '' && !['pending', 'normal', 'vacant'].includes(group)) {
+        return fail(route, 400, 'validation_failed', '未知用户分组')
+      }
+      if (group !== '' && includeDeleted) {
+        return fail(route, 400, 'validation_failed', 'group 不能与 include_deleted 组合')
+      }
+      const visible = users.filter((item) => {
+        if (group !== '') {
+          return item.deleted_at === null && groupOf(item) === group
+        }
+        return includeDeleted || item.deleted_at === null
+      })
       const cursor = url.searchParams.get('cursor') ?? ''
       const source = options.userPages
         ? (options.userPages[cursor] ?? [])
         : visible
       const next = options.userNextCursors?.[cursor] ?? ''
-      return json(route, { items: source, next_cursor: next })
+      return json(route, {
+        items: source,
+        next_cursor: next,
+        counts: userCountsOf(users),
+      })
     }
 
     if (url.pathname === '/api/users' && request.method() === 'POST') {
@@ -215,6 +275,9 @@ export async function mockUsersApi(
         role: input.role,
         status: 'active',
         must_change_password: false,
+        account_count: 0,
+        pending_count: 0,
+        review_count: 0,
         created_at: '2026-10-31T00:00:00Z',
         last_login_at: null,
         deleted_at: null,
