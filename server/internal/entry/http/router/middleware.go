@@ -46,6 +46,8 @@ var publicPaths = map[string]struct{}{
 	"/healthz":                  {},
 	"/api/auth/login":           {},
 	"/api/auth/logout":          {},
+	"/api/auth/register":        {},
+	"/api/auth/registration":    {},
 	"/api/auth/forgot-password": {},
 	"/api/auth/reset-password":  {},
 }
@@ -55,6 +57,7 @@ var publicPaths = map[string]struct{}{
 var csrfExemptPaths = map[string]struct{}{
 	"/healthz":                  {},
 	"/api/auth/login":           {},
+	"/api/auth/register":        {},
 	"/api/auth/forgot-password": {},
 	"/api/auth/reset-password":  {},
 }
@@ -177,6 +180,7 @@ func securityHeaders() gin.HandlerFunc {
 // 模式取 Gin 注册形状（:id），不是契约的 {id}。
 var rateLimitedPaths = map[string]struct{}{
 	"/api/auth/login":           {},
+	"/api/auth/register":        {},
 	"/api/auth/forgot-password": {},
 	"/api/auth/reset-password":  {},
 	"/api/auth/change-password": {},

@@ -15,9 +15,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
+	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/router"
 )
 
@@ -425,6 +428,18 @@ func (stubAuth) ResetPassword(context.Context, string, string) error { return ni
 
 func (stubAuth) ChangePassword(context.Context, auth.Session, string, string, string) error {
 	return nil
+}
+
+func (stubAuth) Registration(context.Context) (appauth.RegistrationStatus, error) {
+	return appauth.RegistrationStatus{}, nil
+}
+
+func (stubAuth) Register(context.Context, appauth.RegisterInput) (auth.Issued, error) {
+	return auth.Issued{}, nil
+}
+
+func (stubAuth) SetRegistration(context.Context, corescope.Scope, appaudit.Actor, bool) (appauth.RegistrationStatus, error) {
+	return appauth.RegistrationStatus{}, nil
 }
 
 func newAuthEngine(t *testing.T, issuer auth.SessionIssuer, svc router.AuthService) *gin.Engine {

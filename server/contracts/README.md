@@ -19,8 +19,12 @@ authoritative and a gate keeps both tables equal.
 - Rate limits: the inbound limiter answers **429** with `Retry-After` in
   seconds. Login, reset password, change password, verify and sign are limited
   per client IP and per account key; forgot password is limited per client IP
-  only. Account create and update are limited per caller. Other 429 answers
-  (time-preference cooldown, capacity) omit `Retry-After`.
+  only; register is limited per client IP and per normalized email. Account
+  create and update are limited per caller. Other 429 answers (time-preference
+  cooldown, capacity) omit `Retry-After`.
+- Public registration is closed by default. `GET /api/auth/registration` is
+  public; `PUT /api/auth/registration` is master only; `POST /api/auth/register`
+  creates a role user account and signs in.
 - No phone number, credential or upstream raw text in any response.
 
 ## Conditional requests
@@ -67,6 +71,9 @@ either side drifts.
 | POST | `/api/auth/forgot-password` | public | P1 |
 | POST | `/api/auth/reset-password` | public | P1 |
 | POST | `/api/auth/change-password` | master/admin/user | P1 |
+| GET | `/api/auth/registration` | public | S05 |
+| PUT | `/api/auth/registration` | master | S05 |
+| POST | `/api/auth/register` | public | S05 |
 | GET | `/api/users` | master | P1 |
 | POST | `/api/users` | master | P1 |
 | PATCH | `/api/users/:id` | master | UX-1 |

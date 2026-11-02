@@ -905,6 +905,37 @@ type PhotoUpload struct {
 	Image openapi_types.File `json:"image"`
 }
 
+// RegisterRequest defines model for RegisterRequest.
+type RegisterRequest struct {
+	AgreePrivacy bool                `json:"agree_privacy"`
+	AgreeTerms   bool                `json:"agree_terms"`
+	Email        openapi_types.Email `json:"email"`
+
+	// Password At least 10 characters and two of uppercase, lowercase, digits and
+	// symbols. The server enforces the classes; minLength mirrors the
+	// character floor. Inputs over 1024 bytes are rejected.
+	Password string `json:"password"`
+
+	// PrivacyVersion Must equal RegistrationStatus.privacy_version; a stale value is 409.
+	PrivacyVersion int `json:"privacy_version"`
+
+	// TermsVersion Must equal RegistrationStatus.terms_version; a stale value is 409.
+	TermsVersion int `json:"terms_version"`
+}
+
+// RegistrationSetRequest defines model for RegistrationSetRequest.
+type RegistrationSetRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+// RegistrationStatus defines model for RegistrationStatus.
+type RegistrationStatus struct {
+	// Enabled False by default. Only a master may change it.
+	Enabled        bool `json:"enabled"`
+	PrivacyVersion int  `json:"privacy_version"`
+	TermsVersion   int  `json:"terms_version"`
+}
+
 // ResetPasswordRequest defines model for ResetPasswordRequest.
 type ResetPasswordRequest struct {
 	NewPassword string `json:"new_password"`
@@ -1420,6 +1451,13 @@ type AuthLogoutParams struct {
 	XCSRFToken *CSRFTokenOptional `json:"X-CSRF-Token,omitempty"`
 }
 
+// AuthRegistrationSetParams defines parameters for AuthRegistrationSet.
+type AuthRegistrationSetParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
 // CapacityGetParams defines parameters for CapacityGet.
 type CapacityGetParams struct {
 	SchoolId SchoolIDQuery `form:"school_id" json:"school_id"`
@@ -1659,6 +1697,12 @@ type AuthForgotPasswordJSONRequestBody = ForgotPasswordRequest
 // AuthLoginJSONRequestBody defines body for AuthLogin for application/json ContentType.
 type AuthLoginJSONRequestBody = LoginRequest
 
+// AuthRegisterJSONRequestBody defines body for AuthRegister for application/json ContentType.
+type AuthRegisterJSONRequestBody = RegisterRequest
+
+// AuthRegistrationSetJSONRequestBody defines body for AuthRegistrationSet for application/json ContentType.
+type AuthRegistrationSetJSONRequestBody = RegistrationSetRequest
+
 // AuthResetPasswordJSONRequestBody defines body for AuthResetPassword for application/json ContentType.
 type AuthResetPasswordJSONRequestBody = ResetPasswordRequest
 
@@ -1766,6 +1810,15 @@ type ServerInterface interface {
 	// AuthMe Return the signed-in user and the CSRF token.
 	// (GET /api/auth/me)
 	AuthMe(c *gin.Context)
+	// AuthRegister Create a user account and sign in.
+	// (POST /api/auth/register)
+	AuthRegister(c *gin.Context)
+	// AuthRegistration Report whether public registration is open.
+	// (GET /api/auth/registration)
+	AuthRegistration(c *gin.Context)
+	// AuthRegistrationSet Open or close public registration.
+	// (PUT /api/auth/registration)
+	AuthRegistrationSet(c *gin.Context, params AuthRegistrationSetParams)
 	// AuthResetPassword Finish the password reset flow with a one-time token.
 	// (POST /api/auth/reset-password)
 	AuthResetPassword(c *gin.Context)
@@ -2833,6 +2886,75 @@ func (siw *ServerInterfaceWrapper) AuthMe(c *gin.Context) {
 	}
 
 	siw.Handler.AuthMe(c)
+}
+
+// AuthRegister operation middleware
+func (siw *ServerInterfaceWrapper) AuthRegister(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AuthRegister(c)
+}
+
+// AuthRegistration operation middleware
+func (siw *ServerInterfaceWrapper) AuthRegistration(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AuthRegistration(c)
+}
+
+// AuthRegistrationSet operation middleware
+func (siw *ServerInterfaceWrapper) AuthRegistrationSet(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AuthRegistrationSetParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AuthRegistrationSet(c, params)
 }
 
 // AuthResetPassword operation middleware
@@ -4138,6 +4260,9 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/auth/forgot-password", wrapper.AuthForgotPassword)
 	router.POST(options.BaseURL+"/api/auth/reset-password", wrapper.AuthResetPassword)
 	router.POST(options.BaseURL+"/api/auth/change-password", wrapper.AuthChangePassword)
+	router.GET(options.BaseURL+"/api/auth/registration", wrapper.AuthRegistration)
+	router.PUT(options.BaseURL+"/api/auth/registration", wrapper.AuthRegistrationSet)
+	router.POST(options.BaseURL+"/api/auth/register", wrapper.AuthRegister)
 	router.GET(options.BaseURL+"/api/users", wrapper.UserList)
 	router.POST(options.BaseURL+"/api/users", wrapper.UserCreate)
 	router.GET(options.BaseURL+"/api/users/lookup", wrapper.UserLookup)

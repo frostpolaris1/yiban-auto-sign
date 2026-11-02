@@ -30,6 +30,7 @@ import (
 	"net/url"
 	"os"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -42,7 +43,7 @@ import (
 // 恢复时按它找回备份时的行数基线。
 const manifestMarker = "-- yiban-backup-manifest"
 
-// manifestTables 是行数对账的表清单：迁移 00001–00017 的业务表全集。
+// manifestTables 是行数对账的表清单：全部迁移的业务表全集。
 // 新增迁移加表时必须同批加进本表，否则恢复后丢行不会被发现。
 // 完整性由两道门钉住：TestManifestTablesCoverEveryBusinessTable（静态）
 // 与 TestManifestTablesCoverLiveSchema（真库 information_schema）。
@@ -50,7 +51,8 @@ var manifestTables = []string{
 	"account_egress", "account_location", "accounts", "admin_schools",
 	"audit_logs", "credentials", "egresses", "legacy_ids", "password_resets",
 	"photo_retention", "photos", "school_tasks", "schools", "sessions",
-	"sign_tasks", "time_prefs", "users", "window_cache", "window_overrides",
+	"settings", "sign_tasks", "time_prefs", "users", "window_cache",
+	"window_overrides",
 }
 
 // manifestExemptTables 是**不**进对账的表与理由。
@@ -649,20 +651,50 @@ func runRestore(deps *backupDeps, args []string) int {
 	}
 
 	match := true
+	compared, skipped := 0, 0
 	_, _ = fmt.Fprintln(deps.stdout, "行数对账（备份时 / 恢复后）：")
+	current := make(map[string]bool, len(manifestTables))
 	for _, t := range manifestTables {
+		current[t] = true
+		want, inBaseline := baseline[t]
+		if !inBaseline {
+			// 旧版本二进制不认得这张表：恢复后的迁移会补默认行，
+			// 基线缺键不能按丢数据处理。跳过必须可见，故打印一行。
+			_, _ = fmt.Fprintf(deps.stdout, "  %-12s — / %d  %s\n",
+				t, restored[t], "基线无此项，未对账")
+			skipped++
+			continue
+		}
 		state := "一致"
-		if baseline[t] != restored[t] {
+		if want != restored[t] {
 			state = "不一致"
 			match = false
 		}
-		_, _ = fmt.Fprintf(deps.stdout, "  %-12s %d / %d  %s\n", t, baseline[t], restored[t], state)
+		compared++
+		_, _ = fmt.Fprintf(deps.stdout, "  %-12s %d / %d  %s\n", t, want, restored[t], state)
+	}
+	// 基线里有、本版本清单没有的表同样要显性说明，不静默跳过。
+	extra := make([]string, 0, len(baseline))
+	for t := range baseline {
+		if !current[t] {
+			extra = append(extra, t)
+		}
+	}
+	sort.Strings(extra)
+	for _, t := range extra {
+		_, _ = fmt.Fprintf(deps.stdout, "  %-12s %d / —  %s\n", t, baseline[t], "当前清单无此项，未对账")
+		skipped++
+	}
+	// 零项比较不是「一致」：清单为空或零交集时，对账整段没执行。
+	if compared == 0 {
+		_, _ = fmt.Fprintln(deps.stdout, "对账未执行：基线与当前清单零交集，按失败处理。")
+		return 1
 	}
 	if !match {
 		_, _ = fmt.Fprintln(deps.stdout, "对账不一致：恢复件与备份基线有出入，按失败处理。")
 		return 1
 	}
-	_, _ = fmt.Fprintln(deps.stdout, "对账一致。")
+	_, _ = fmt.Fprintf(deps.stdout, "共有键对账一致（%d 项未对账）。\n", skipped)
 
 	// 行数对账看不出审计行被截断或改写，故恢复后必须验链。
 	// 验不了（缺 pepper）按失败处理：恢复件的可信度不可声明。

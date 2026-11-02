@@ -146,6 +146,61 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/auth/registration": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Report whether public registration is open.
+         * @description Public. enabled is false by default. terms_version and
+         *     privacy_version identify the agreement text the client must show;
+         *     a register request must echo the same values.
+         */
+        get: operations["AuthRegistration"];
+        /**
+         * Open or close public registration.
+         * @description Master only. Writes one settings.registration audit row.
+         *     The response is the new status, with the current agreement versions.
+         */
+        put: operations["AuthRegistrationSet"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a user account and sign in.
+         * @description Public. Answers 403 while registration is closed. Both agreement
+         *     booleans must be true and the versions must equal the current ones;
+         *     a stale version is 409 conflict. The password needs at least 10
+         *     characters and two of uppercase, lowercase, digits and symbols.
+         *     A duplicate live email is 409 conflict. The new user has role user,
+         *     status active and must_change_password false. Success sets the
+         *     session cookie. Cross-site browser submissions are rejected like
+         *     login. Rate limited per client IP and per normalized email; a 429
+         *     carries Retry-After in seconds.
+         */
+        post: operations["AuthRegister"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/users": {
         parameters: {
             query?: never;
@@ -166,9 +221,11 @@ export interface paths {
         put?: never;
         /**
          * Create a master, admin or user account.
-         * @description Master only (decision 12.4). There is no public registration endpoint.
-         *     The password is stored as an argon2id hash. A duplicate email among
-         *     live users is a 409; a soft-deleted user's email may be reused.
+         * @description Master only (decision 12.4). Public registration creates role user
+         *     accounts through POST /api/auth/register; this endpoint remains the
+         *     only way to create a master or admin. The password is stored as an
+         *     argon2id hash. A duplicate email among live users is a 409; a
+         *     soft-deleted user's email may be reused.
          */
         post: operations["UserCreate"];
         delete?: never;
@@ -1215,6 +1272,31 @@ export interface components {
             current_password: string;
             new_password: string;
         };
+        RegistrationStatus: {
+            /** @description False by default. Only a master may change it. */
+            enabled: boolean;
+            terms_version: number;
+            privacy_version: number;
+        };
+        RegistrationSetRequest: {
+            enabled: boolean;
+        };
+        RegisterRequest: {
+            /** Format: email */
+            email: string;
+            /**
+             * @description At least 10 characters and two of uppercase, lowercase, digits and
+             *     symbols. The server enforces the classes; minLength mirrors the
+             *     character floor. Inputs over 1024 bytes are rejected.
+             */
+            password: string;
+            agree_terms: boolean;
+            agree_privacy: boolean;
+            /** @description Must equal RegistrationStatus.terms_version; a stale value is 409. */
+            terms_version: number;
+            /** @description Must equal RegistrationStatus.privacy_version; a stale value is 409. */
+            privacy_version: number;
+        };
         UserCreate: {
             /**
              * Format: email
@@ -2027,6 +2109,92 @@ export interface operations {
             };
             400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            409: components["responses"]["ConflictError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["TooManyRequestsError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AuthRegistration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Registration status. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegistrationStatus"];
+                };
+            };
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AuthRegistrationSet: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegistrationSetRequest"];
+            };
+        };
+        responses: {
+            /** @description Registration status. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegistrationStatus"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AuthRegister: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterRequest"];
+            };
+        };
+        responses: {
+            /** @description Account created and session established. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionUser"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
             403: components["responses"]["ForbiddenError"];
             409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];

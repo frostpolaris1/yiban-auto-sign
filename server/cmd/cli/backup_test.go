@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -467,6 +468,65 @@ func TestRestoreSuccessReconciles(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "通过校验") {
 		t.Fatalf("stdout must report the audit chain check: %q", stdout.String())
+	}
+}
+
+// 旧版本备份不认得新表：恢复后的迁移补默认行，不能误判为丢数据。
+// 反向的「基线有、当前清单没有」同样不判失败，但必须显性打印。
+func TestRestoreSkipsTablesMissingFromOldBaseline(t *testing.T) {
+	deps, runner, stdout, _ := newTestDeps(t)
+	out := filepath.Join(t.TempDir(), "b.gpg")
+	runner.script = []fakeRunResult{
+		{writeOut: "-- dump\n" + manifestMarker + ` {"users":3,"gone":4}` + "\n"},
+		{},
+	}
+	deps.migrate = func(context.Context, string) (int64, error) { return 21, nil }
+	deps.countRows = func(context.Context, string) (map[string]int64, error) {
+		return map[string]int64{"users": 3, "settings": 1}, nil
+	}
+	code := runRestore(deps, []string{"--in", out, "--dsn", testDSN, "--force", "--passphrase-file", passFileOf(t)})
+	if code != 0 {
+		t.Fatalf("code = %d, stderr=%q", code, stderrOf(deps))
+	}
+	if !strings.Contains(stdout.String(), "基线无此项，未对账") {
+		t.Fatalf("stdout must show the new-table skip: %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "settings") {
+		t.Fatalf("stdout must name the skipped table: %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "当前清单无此项，未对账") {
+		t.Fatalf("stdout must show the baseline-only skip: %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "gone") {
+		t.Fatalf("stdout must name the baseline-only table: %q", stdout.String())
+	}
+	// 计数口径：当前清单有、基线无的 len-1 项，加基线独有 1 项。
+	// 整行断言，防止计数写错时只有「一致」子串仍绿。
+	wantSummary := fmt.Sprintf("共有键对账一致（%d 项未对账）。", len(manifestTables))
+	if !strings.Contains(stdout.String(), wantSummary) {
+		t.Fatalf("stdout must state %q: %q", wantSummary, stdout.String())
+	}
+}
+
+// 零交集不是「一致」：对账整段没执行，必须按失败处理。
+func TestRestoreFailsWhenBaselineSharesNoTable(t *testing.T) {
+	for _, manifest := range []string{`{}`, `{"gone":4}`} {
+		deps, runner, stdout, _ := newTestDeps(t)
+		out := filepath.Join(t.TempDir(), "b.gpg")
+		runner.script = []fakeRunResult{
+			{writeOut: "-- dump\n" + manifestMarker + " " + manifest + "\n"},
+			{},
+		}
+		deps.countRows = func(context.Context, string) (map[string]int64, error) {
+			return map[string]int64{"users": 3}, nil
+		}
+		code := runRestore(deps, []string{"--in", out, "--dsn", testDSN, "--force", "--passphrase-file", passFileOf(t)})
+		if code != 1 {
+			t.Fatalf("manifest %s: code = %d, want 1", manifest, code)
+		}
+		if !strings.Contains(stdout.String(), "零交集") {
+			t.Fatalf("manifest %s: stdout must name the zero-overlap failure: %q", manifest, stdout.String())
+		}
 	}
 }
 

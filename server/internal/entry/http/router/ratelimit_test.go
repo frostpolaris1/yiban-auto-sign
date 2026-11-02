@@ -18,9 +18,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
+	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	ratelimit "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/ratelimit"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/router"
 )
@@ -48,6 +51,18 @@ func (s *countingAuth) ResetPassword(context.Context, string, string) error {
 
 func (s *countingAuth) ChangePassword(context.Context, auth.Session, string, string, string) error {
 	return nil
+}
+
+func (s *countingAuth) Registration(context.Context) (appauth.RegistrationStatus, error) {
+	return appauth.RegistrationStatus{}, nil
+}
+
+func (s *countingAuth) Register(context.Context, appauth.RegisterInput) (auth.Issued, error) {
+	return auth.Issued{}, nil
+}
+
+func (s *countingAuth) SetRegistration(context.Context, corescope.Scope, appaudit.Actor, bool) (appauth.RegistrationStatus, error) {
+	return appauth.RegistrationStatus{}, nil
 }
 
 func mustLimiter(t *testing.T, p ratelimit.Quota) *ratelimit.Throttle {
