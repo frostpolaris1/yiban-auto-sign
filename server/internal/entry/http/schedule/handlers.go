@@ -30,10 +30,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	openapi_types "github.com/oapi-codegen/runtime/types"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
+	appstats "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/stats"
 	apptimepref "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/timepref"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
@@ -59,6 +61,12 @@ type Planner interface {
 type TimePrefs interface {
 	Get(ctx context.Context, userID string) (apptimepref.View, error)
 	Set(ctx context.Context, userID string, offset *int) (apptimepref.View, error)
+}
+
+// Stats 是看板聚合端口（实现为 app/stats.Service）。
+type Stats interface {
+	SignStats(ctx context.Context, scope corescope.Scope, from, to string) (appstats.Report, error)
+	OffsetCounts(ctx context.Context, schoolID string) (map[int]int, error)
 }
 
 // Authorizer 把会话主体解析成作用域与审计主体。
@@ -87,6 +95,7 @@ type Config struct {
 type Handler struct {
 	planner Planner
 	prefs   TimePrefs
+	stats   Stats
 	authz   Authorizer
 	cfg     Config
 }
@@ -100,6 +109,12 @@ func NewHandler(planner Planner, prefs TimePrefs, authz Authorizer, cfg Config) 
 		cfg.Clock = coreclock.System{}
 	}
 	return &Handler{planner: planner, prefs: prefs, authz: authz, cfg: cfg}
+}
+
+// WithStats 注入看板聚合。未注入时两个统计端点回 500。
+func (h *Handler) WithStats(stats Stats) *Handler {
+	h.stats = stats
+	return h
 }
 
 // Windows 实现 GET /api/schedule/windows。
@@ -228,6 +243,128 @@ func (h *Handler) CapacityReport(c *gin.Context, params oapi.CapacityGetParams) 
 		Source:      oapi.ScheduleWindowSource(p.Source),
 		WindowStart: p.WindowStart, WindowEnd: p.WindowEnd,
 		Capacity: p.Capacity, Demand: p.Demand, Shortfall: p.Shortfall,
+	})
+}
+
+// SignStats 实现 GET /api/sign-stats。
+func (h *Handler) SignStats(c *gin.Context, params oapi.SignStatsParams) {
+	scope, ok := h.principal(c)
+	if !ok {
+		return
+	}
+	if h.stats == nil {
+		fail(c, errs.New(errs.CodeInternal, "stats service is not wired"))
+		return
+	}
+	days := 30
+	if params.Days != nil {
+		days = *params.Days
+	}
+	to := h.cfg.Clock.Now().In(h.cfg.Location)
+	toDate := time.Date(to.Year(), to.Month(), to.Day(), 0, 0, 0, 0, time.UTC)
+	fromDate := toDate.AddDate(0, 0, -(days - 1))
+	report, err := h.stats.SignStats(c.Request.Context(), scope,
+		fromDate.Format("2006-01-02"), toDate.Format("2006-01-02"))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	out := oapi.SignStatsReport{
+		Total: report.Total,
+		ByStatus: oapi.SignStatsCounts{
+			Pending: report.ByStatus.Pending,
+			Running: report.ByStatus.Running,
+			Success: report.ByStatus.Success,
+			Failed:  report.ByStatus.Failed,
+			Skipped: report.ByStatus.Skipped,
+		},
+		Days:        make([]oapi.SignStatsDay, 0, len(report.Days)),
+		DaysMissing: make([]openapi_types.Date, 0, len(report.DaysMissing)),
+	}
+	for _, day := range report.Days {
+		parsed, err := time.Parse("2006-01-02", day.Day)
+		if err != nil {
+			fail(c, errs.New(errs.CodeInternal, "invalid statistics day"))
+			return
+		}
+		out.Days = append(out.Days, oapi.SignStatsDay{
+			Day:     openapi_types.Date{Time: parsed},
+			Pending: day.Pending,
+			Running: day.Running,
+			Success: day.Success,
+			Failed:  day.Failed,
+			Skipped: day.Skipped,
+		})
+	}
+	for _, day := range report.DaysMissing {
+		parsed, err := time.Parse("2006-01-02", day)
+		if err != nil {
+			fail(c, errs.New(errs.CodeInternal, "invalid statistics day"))
+			return
+		}
+		out.DaysMissing = append(out.DaysMissing, openapi_types.Date{Time: parsed})
+	}
+	respond.JSON(c.Writer, 200, out)
+}
+
+// TimePrefStats 实现 GET /api/time-prefs/stats。
+// 窗口来自与容量同一份报告；人数只数该校有活跃账号的用户。
+func (h *Handler) TimePrefStats(c *gin.Context, params oapi.TimePrefStatsParams) {
+	scope, ok := h.principal(c)
+	if !ok {
+		return
+	}
+	if h.stats == nil {
+		fail(c, errs.New(errs.CodeInternal, "stats service is not wired"))
+		return
+	}
+	schoolID, taskID := string(params.SchoolId), string(params.TaskId)
+	if _, ok := h.authorizeTask(c, scope, schoolID, taskID); !ok {
+		return
+	}
+	day := h.today()
+	if params.Day != nil && *params.Day != "" {
+		day = *params.Day
+	}
+	window, err := h.planner.Report(c.Request.Context(), h.input(day, schoolID, taskID))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	counts, err := h.stats.OffsetCounts(c.Request.Context(), schoolID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	// 槽数与计划同源：只算整 5 分钟片（floor），最多两小时 24 片。
+	// 用 ceil 会多出计划永远用不到的尾槽（placePrefs 对越界偏移自动铺点）。
+	slices := int(window.WindowEnd.Sub(window.WindowStart) / (5 * time.Minute))
+	if slices > 24 {
+		slices = 24
+	}
+	// 计划对不足一片的窗口夹到 1 片（service.go 的 slices < 1）。
+	// 统计必须同源：否则 4 分钟窗口图里 0 槽，账号却落在 offset 0。
+	if slices < 1 {
+		slices = 1
+	}
+	slots := make([]oapi.PrefStatsSlot, 0, slices)
+	for index := 0; index < slices; index++ {
+		offset := index * 5
+		at := window.WindowStart.Add(time.Duration(offset) * time.Minute)
+		slots = append(slots, oapi.PrefStatsSlot{
+			OffsetMin: offset,
+			Label:     at.In(h.cfg.Location).Format("15:04"),
+			Count:     counts[offset],
+			Cap:       h.cfg.SlotsPerSlice,
+		})
+	}
+	respond.JSON(c.Writer, 200, oapi.PrefStatsReport{
+		SchoolId:    schoolID,
+		TaskId:      taskID,
+		Day:         window.Day,
+		WindowStart: window.WindowStart,
+		WindowEnd:   window.WindowEnd,
+		Slots:       slots,
 	})
 }
 

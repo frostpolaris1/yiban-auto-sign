@@ -1,17 +1,21 @@
 import { test, expect, type Page } from '@playwright/test'
 import { visibleText } from './support/visible-text'
 import {
+  DEFAULT_PREF_STATS,
+  DEFAULT_SIGN_STATS,
   type DashboardApiCall,
   capacityCalls,
   diagnosticsCalls,
   lastCapacityCall,
   mockDashboardApi,
+  prefStatsCalls,
+  signStatsCalls,
   signStatusCalls,
   windowsCalls,
 } from './support/fake-dashboard-api'
 
 /**
- * 看板的七条不变式。
+ * 看板的八条不变式。
  *
  * 1. 角色取数隔离：user 零窗口与容量请求；master/admin 零签到状态与诊断请求。
  * 2. KPI 由条目派生，四项计数与列表行数一致；空账号全零。
@@ -22,6 +26,8 @@ import {
  * 6. 空态与错误态：无账号两卡空态；空窗口说「今日无可用窗口」；
  *    单卡失败只挂该卡，另一卡照常。
  * 7. 展示模式零请求：`e2e/showcase.spec.ts`。
+ * 8. 聚合图：master/admin 三张图与两个聚合请求；user 零图零请求；
+ *    空数据说原因不画轴；单图失败只挂本图并单独重试；自选图跟随任务选择。
  *
  * 断言用户可见结果与请求参数，不钉组件内部结构。
  */
@@ -215,6 +221,10 @@ test('invariant 6: an empty window list says so and sends no capacity request', 
   await expect(page.getByText('今日无可用窗口')).toBeVisible()
   await expectKpi(page, '任务总数', '0项')
   expect(capacityCalls(api), 'no task means no capacity request').toHaveLength(0)
+  expect(prefStatsCalls(api), 'no task means no crowding request').toHaveLength(0)
+  await expect(chartCard(page, '签到时段拥挤度')).toContainText(
+    '暂无可用任务，暂不统计自选人数。',
+  )
 })
 
 test('invariant 6: a failing sign-status read leaves the diagnostics card usable', async ({
@@ -309,4 +319,109 @@ test('invariant 6: a failing window read marks the capacity card and leaves KPI 
   await expect(card.getByRole('button', { name: '重试' })).toBeVisible()
   await expectKpi(page, '任务总数', '—')
   expect(capacityCalls(api), 'no options means no capacity request').toHaveLength(0)
+})
+
+function chartCard(page: Page, title: string) {
+  return page.locator('.card').filter({ hasText: title })
+}
+
+test('invariant 8: a manager gets three aggregate charts and both stats reads', async ({
+  page,
+}) => {
+  const api = await mockDashboardApi(page, { role: 'admin' })
+  await openDashboard(page)
+
+  await expect(page.getByText('30 天签到趋势')).toBeVisible()
+  await expect(page.getByText('状态分布')).toBeVisible()
+  await expect(page.getByText('签到时段拥挤度')).toBeVisible()
+  await expect(page.locator('.app-chart-canvas')).toHaveCount(3)
+  expect(signStatsCalls(api), 'one read for trend and distribution').toHaveLength(1)
+  expect(prefStatsCalls(api), 'one read for the selected task').toHaveLength(1)
+  expect(prefStatsCalls(api)[0].params['school_id']).toBe('school-alpha')
+  expect(prefStatsCalls(api)[0].params['task_id']).toBe('task-daily')
+})
+
+test('invariant 8: a user dashboard renders no aggregate charts', async ({ page }) => {
+  const api = await mockDashboardApi(page, { role: 'user' })
+  await openDashboard(page)
+  await expect(signTable(page)).toBeVisible()
+
+  expect(signStatsCalls(api), 'a user never reads sign statistics').toHaveLength(0)
+  expect(prefStatsCalls(api), 'a user never reads crowding').toHaveLength(0)
+  await expect(page.getByText('30 天签到趋势')).toHaveCount(0)
+  await expect(page.locator('.app-chart-canvas')).toHaveCount(0)
+})
+
+test('invariant 8: empty aggregates name the reason instead of drawing axes', async ({
+  page,
+}) => {
+  const emptyStats = {
+    ...DEFAULT_SIGN_STATS,
+    days: DEFAULT_SIGN_STATS.days.map((day) => ({
+      ...day,
+      pending: 0,
+      running: 0,
+      success: 0,
+      failed: 0,
+      skipped: 0,
+    })),
+    by_status: { pending: 0, running: 0, success: 0, failed: 0, skipped: 0 },
+    total: 0,
+    days_missing: [],
+  }
+  await mockDashboardApi(page, {
+    role: 'admin',
+    signStats: emptyStats,
+    prefStats: { ...DEFAULT_PREF_STATS, slots: [] },
+  })
+  await openDashboard(page)
+
+  await expect(chartCard(page, '30 天签到趋势')).toContainText('近 30 天暂无签到记录。')
+  await expect(chartCard(page, '状态分布')).toContainText('窗口内暂无账号终态。')
+  await expect(chartCard(page, '签到时段拥挤度')).toContainText('当前窗口没有可展示的时间片。')
+})
+
+test('invariant 8: a stats failure stays on its own cards and retries alone', async ({
+  page,
+}) => {
+  const api = await mockDashboardApi(page, {
+    role: 'admin',
+    signStatsError: { status: 500, code: 'internal_error', message: '统计暂不可用', once: true },
+  })
+  await openDashboard(page)
+
+  const trend = chartCard(page, '30 天签到趋势')
+  await expect(trend).toContainText('统计暂不可用')
+  await expect(capacityCard(page)).toBeVisible()
+  const before = signStatsCalls(api).length
+
+  await trend.getByRole('button', { name: '重试' }).click()
+  await expect.poll(() => signStatsCalls(api).length).toBe(before + 1)
+  await expect(page.locator('.app-chart-canvas')).toHaveCount(3)
+})
+
+test('invariant 8: the crowding chart follows the selected task', async ({ page }) => {
+  const api = await mockDashboardApi(page, { role: 'admin' })
+  await openDashboard(page)
+  await expect.poll(() => prefStatsCalls(api).length).toBe(1)
+
+  await page.getByLabel('任务').selectOption('school-beta:task-night')
+  await expect
+    .poll(() => prefStatsCalls(api).at(-1)?.params['task_id'])
+    .toBe('task-night')
+  // 假 API 按任务给不同人数：摘要随数据变，而不是只换请求参数。
+  await expect(chartCard(page, '签到时段拥挤度')).toContainText('最热 20:10（3 人）')
+})
+
+test('invariant 8: switching the theme rebuilds the charts', async ({ page }) => {
+  await mockDashboardApi(page, { role: 'admin' })
+  await openDashboard(page)
+  const canvas = page.locator('.app-chart-canvas').first()
+  await expect(canvas).toBeVisible()
+
+  const before = await canvas.screenshot()
+  await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
+  await expect
+    .poll(async () => (await canvas.screenshot()).equals(before))
+    .toBe(false)
 })

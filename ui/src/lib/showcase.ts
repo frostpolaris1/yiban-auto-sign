@@ -26,6 +26,7 @@ import type {
   ScheduleWindow,
   ScheduleWindowList,
 } from './api/schedule'
+import type { PrefStatsReport, SignStatsReport } from './api/stats'
 
 let seq = 0
 
@@ -302,6 +303,67 @@ export function showcaseCapacity(query: {
     window_start: row.start,
     window_end: row.end,
     ...numbers,
+  }
+}
+
+/** 看板 30 天趋势与分布：固定合成日，不随展示机时钟漂移。 */
+export function showcaseSignStats(): SignStatsReport {
+  const days = Array.from({ length: 30 }, (_, index) => {
+    const day = `2026-10-${String(index + 1).padStart(2, '0')}`
+    return {
+      day,
+      pending: index === 29 ? 1 : 0,
+      running: 0,
+      success: index % 7 === 0 ? 2 : 3,
+      failed: index % 5 === 0 ? 1 : 0,
+      skipped: index % 11 === 0 ? 1 : 0,
+    }
+  })
+  return {
+    days,
+    total: 9,
+    by_status: { pending: 1, running: 0, success: 8, failed: 4, skipped: 2 },
+    days_missing: [],
+  }
+}
+
+/** 看板自选拥挤度：按选中的合成窗口生成 16 个五分钟槽。 */
+export function showcasePrefStats(query: {
+  day: string
+  schoolId: string
+  taskId: string
+}): PrefStatsReport {
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(query.day) ? query.day : today()
+  const row = showcaseWindows(day).items.find(
+    (item) => item.school_id === query.schoolId && item.task_id === query.taskId,
+  )
+  if (!row || row.start === null || row.end === null) {
+    throw new Error(`showcasePrefStats: 没有可用的合成窗口 ${query.schoolId}:${query.taskId}`)
+  }
+  // 窗口时刻是 UTC ISO 串；展示机按旧线口径显示 +08:00 的钟点。
+  const startDate = new Date(row.start)
+  const hour = (startDate.getUTCHours() + 8) % 24
+  const minute = startDate.getUTCMinutes()
+  // 槽数与服务端同逻辑：整 5 分钟片，最多两小时。
+  const spanMinutes = (Date.parse(row.end) - Date.parse(row.start)) / 60_000
+  const slices = Math.max(0, Math.min(24, Math.floor(spanMinutes / 5)))
+  const counts = [3, 5, 2, 1, 0, 0, 4, 6, 2, 1, 0, 3, 5, 2, 1, 0, 2, 3, 1, 0, 0, 1, 2, 0]
+  const slots = Array.from({ length: slices }, (_, index) => {
+    const total = hour * 60 + minute + index * 5
+    return {
+      offset_min: index * 5,
+      label: `${String(Math.floor(total / 60) % 24).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`,
+      count: counts[index] ?? 0,
+      cap: 5,
+    }
+  })
+  return {
+    school_id: row.school_id,
+    task_id: row.task_id,
+    day,
+    window_start: row.start,
+    window_end: row.end,
+    slots,
   }
 }
 

@@ -291,6 +291,24 @@ func (s *server) CapacityGet(c *gin.Context, params oapi.CapacityGetParams) {
 	s.schedule.CapacityReport(c, params)
 }
 
+// SignStats 委托签到统计处理器。未装配时仍是 501。
+func (s *server) SignStats(c *gin.Context, params oapi.SignStatsParams) {
+	if s.schedule == nil {
+		notImplemented(c)
+		return
+	}
+	s.schedule.SignStats(c, params)
+}
+
+// TimePrefStats 委托自选时间片统计处理器。未装配时仍是 501。
+func (s *server) TimePrefStats(c *gin.Context, params oapi.TimePrefStatsParams) {
+	if s.schedule == nil {
+		notImplemented(c)
+		return
+	}
+	s.schedule.TimePrefStats(c, params)
+}
+
 // AdminTaskList 委托任务检索处理器。未装配时仍是 501。
 func (s *server) AdminTaskList(c *gin.Context, params oapi.AdminTaskListParams) {
 	if s.tasks == nil {

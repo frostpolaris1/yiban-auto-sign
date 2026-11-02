@@ -91,6 +91,7 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | @jridgewell/resolve-uri | 3.1.2 | MIT | 开发 |
 | @jridgewell/sourcemap-codec | 1.6.0 | MIT | 开发 |
 | @jridgewell/trace-mapping | 0.3.31 | MIT | 开发 |
+| @kurkle/color | 0.3.4 | MIT | 运行时 |
 | @number-flow/react | 0.6.2 | MIT | 运行时 |
 | @oxc-project/types | 0.155.0 | MIT | 开发 |
 | @playwright/test | 1.64.1 | Apache-2.0 | 开发 |
@@ -233,6 +234,7 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | callsites | 3.1.0 | MIT | 开发 |
 | caniuse-lite | 1.0.30001820 | CC-BY-4.0 | 开发 |
 | chalk | 4.1.2 | MIT | 开发 |
+| chart.js | 4.5.1 | MIT | 运行时 |
 | color-convert | 2.0.1 | MIT | 开发 |
 | color-name | 1.1.4 | MIT | 开发 |
 | concat-map | 0.0.1 | MIT | 开发 |
@@ -463,4 +465,4 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | zod | 4.6.7 | MIT | 开发 |
 | zod-validation-error | 4.0.2 | MIT | 开发 |
 
-共 447 个包（运行时 98，开发 349）。
+共 449 个包（运行时 100，开发 349）。
