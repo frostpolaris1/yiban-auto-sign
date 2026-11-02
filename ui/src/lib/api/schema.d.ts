@@ -1301,6 +1301,15 @@ export interface components {
             role: components["schemas"]["UserRole"];
             status: components["schemas"]["UserStatus"];
             must_change_password: boolean;
+            /** @description Live accounts owned by the user. */
+            account_count: number;
+            /** @description Live accounts owned by the user with status pending. */
+            pending_count: number;
+            /**
+             * @description Live accounts owned by the user with status pending or rejected.
+             *     A value above zero puts the user in the pending group.
+             */
+            review_count: number;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -1787,6 +1796,18 @@ export interface components {
             items: components["schemas"]["User"][];
             /** @description Cursor for the next page; empty on the last page. */
             next_cursor: string;
+            counts: components["schemas"]["UserCounts"];
+        };
+        /**
+         * @description Group totals over all users, independent of role, status, q, group
+         *     and pagination. pending, normal and vacant count live users; deleted
+         *     counts soft-deleted users.
+         */
+        UserCounts: {
+            pending: number;
+            normal: number;
+            vacant: number;
+            deleted: number;
         };
         UserLookupPage: {
             items: components["schemas"]["UserLookupRef"][];
@@ -2344,9 +2365,20 @@ export interface operations {
                  */
                 q?: string;
                 /**
+                 * @description Live-user group derived from the user's live accounts:
+                 *     - pending: at least one pending or rejected account;
+                 *     - normal: no pending/rejected account and at least one account;
+                 *     - vacant: no live account.
+                 *     UserPage.counts covers all live users and does not change with
+                 *     this parameter. group cannot be combined with include_deleted
+                 *     true; that combination answers 400.
+                 */
+                group?: "pending" | "normal" | "vacant";
+                /**
                  * @description Include soft-deleted users. Defaults to false, so the default
                  *     behavior is unchanged: soft-deleted users never appear.
                  *     Deleted rows carry deleted_at and keep their status value.
+                 *     Cannot be combined with group.
                  */
                 include_deleted?: boolean;
             };

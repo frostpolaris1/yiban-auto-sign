@@ -122,7 +122,10 @@ function UsersRouteComponent() {
   const navigate = useNavigate()
   return (
     <UsersPage
-      search={search}
+      // loose search 会把手写 URL 的组合（?group=bogus、group×deleted）
+      // 原样带进来：传给页面前再归一一次，非法值落到缺省。
+      // 归一必须幂等：校验后的 deleted 是布尔，解析要兼容。
+      search={parseUserSearchRecord(search as Record<string, unknown>)}
       onSearchChange={(next, opts) => {
         void navigate({ to: '/users', search: userSearchRecord(next), replace: opts?.replace })
       }}

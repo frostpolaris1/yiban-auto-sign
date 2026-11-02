@@ -14,12 +14,16 @@ import {
  *
  * 1. 角色可见性：master 从侧栏进页见列表；admin/user 无导航项，
  *    直接访问只有无权限卡片，且零用户列表请求。
- * 2. 列表内容：邮箱、角色中文标签、状态、是否需要改密、创建时间与上次登录。
- *    空的上次登录显示破折号。
+ * 2. 列表内容：邮箱、角色中文标签、状态、账号数与待处理徽标、是否需要改密、
+ *    创建时间与上次登录。空的上次登录显示破折号。
  * 3. 游标翻页：两页数据不重不漏；末页「下一页」禁用；回退不发游标。
  * 4. 过滤：角色、状态、邮箱前缀各带进请求；连续输入只发一次请求（防抖）；
- *    回车立即使当前输入生效；改筛选回到第一页。
- * 5. 空态与错误态：空结果有文案；失败显示错误信封并可重试。
+ *    回车立即使当前输入生效；改筛选或切分组都回到第一页。
+ * 5. 空态与错误态：空结果有文案；收窄空态给「清除筛选」的出路且只撤
+ *    收窄条件（分组与已删除视图保留）；已删除空组有「返回全部用户」
+ *    的出路；失败显示错误信封并可重试。
+ * 6. 分组与计数：四个标签各带全局计数；切组带 group 进请求并同步 URL；
+ *    空分组有跨组出路；分组与含已删除互斥；手写 URL 组合归一到合法状态。
  *
  * 断言用户可见结果与请求参数，不钉内部调用顺序。
  * 390 宽无溢出由 `visual.spec.ts` 的溢出判据覆盖（`/users` 在常驻矩阵内）。
@@ -41,25 +45,34 @@ test('invariant 1: master reaches the user list from the navigation', async ({ p
   await expect(page.getByRole('table', { name: '用户列表' })).toBeVisible()
 })
 
-test('invariant 2: each row shows the email, role, status and password flag', async ({ page }) => {
+test('invariant 2: each row shows the email, role, status, accounts and password flag', async ({ page }) => {
   await mockUsersApi(page, { role: 'master' })
   await openUsers(page)
 
+  // 列序：邮箱 | 角色 | 状态 | 账号 | 需要改密 | 创建时间 | 上次登录 | 操作。
   const master = page.getByRole('row').filter({ hasText: 'master-one@example.com' })
   await expect(master.getByRole('cell').nth(1)).toHaveText('超级管理员')
   await expect(master.getByRole('cell').nth(2)).toHaveText('正常')
-  await expect(master.getByRole('cell').nth(3)).toHaveText('不需要')
-  await expect(master.getByRole('cell').nth(4)).toContainText('2026')
+  await expect(master.getByRole('cell').nth(3), 'the account count rides its own cell').toHaveText('3')
+  await expect(master.getByRole('cell').nth(4)).toHaveText('不需要')
+  await expect(master.getByRole('cell').nth(5)).toContainText('2026')
 
   const admin = page.getByRole('row').filter({ hasText: 'admin-one@example.com' })
   await expect(admin.getByRole('cell').nth(1)).toHaveText('管理员')
-  await expect(admin.getByRole('cell').nth(3), 'a pending reset is visible').toHaveText('需要')
-  await expect(admin.getByRole('cell').nth(5), 'no login yet reads as a dash').toHaveText('—')
+  await expect(admin.getByRole('cell').nth(3)).toHaveText('1')
+  await expect(admin.getByRole('cell').nth(4), 'a pending reset is visible').toHaveText('需要')
+  await expect(admin.getByRole('cell').nth(6), 'no login yet reads as a dash').toHaveText('—')
 
   const member = page.getByRole('row').filter({ hasText: 'member-one@example.com' })
   await expect(member.getByRole('cell').nth(1)).toHaveText('用户')
   await expect(member.getByRole('cell').nth(2)).toHaveText('停用')
-  await expect(member.getByRole('cell').nth(5)).toContainText('2026')
+  await expect(member.getByRole('cell').nth(3)).toHaveText('0')
+  await expect(member.getByRole('cell').nth(6)).toContainText('2026')
+
+  // 有待审账号的用户：账号列在计数旁给出「待处理 N」徽标。
+  const pending = page.getByRole('row').filter({ hasText: 'member-two@example.com' })
+  await expect(pending.getByRole('cell').nth(3), 'the count and badge share the cell').toContainText('2')
+  await expect(pending.getByRole('cell').nth(3)).toContainText('待处理 1')
 })
 
 for (const role of ['admin', 'user'] as const) {
@@ -179,13 +192,42 @@ test('invariant 4: changing a filter returns to the first page', async ({ page }
   await expect.poll(() => lastUserListCall(api)?.params.status).toBe('active')
   expect(lastUserListCall(api)?.params.cursor, 'a filter change drops the cursor').toBeUndefined()
   await expect(page.getByRole('button', { name: '上一页' })).toBeDisabled()
+
+  // 清掉状态筛选再切分组：分组视图吃同一套过滤，pending 视图下
+  // userPages 两页都被滤空——页面落到空组文案，且没有下一页游标。
+  await page.getByLabel('状态筛选').selectOption('')
+  await expect.poll(() => lastUserListCall(api)?.params.status).toBeUndefined()
+  await page.getByRole('group', { name: '用户分组' }).getByRole('button', { name: '待处理' }).click()
+  await expect.poll(() => lastUserListCall(api)?.params.group).toBe('pending')
+  expect(lastUserListCall(api)?.params.cursor, 'a group change drops the cursor too').toBeUndefined()
+  await expect(page.getByText('暂无待处理用户')).toBeVisible()
+  // 过滤后为空的页不发下一页游标；空态连翻页器都没有。
+  await expect(page.getByRole('button', { name: '上一页' })).toHaveCount(0)
+  await expect(
+    page.getByRole('button', { name: '下一页' }),
+    'a filtered-away page offers no pager at all',
+  ).toHaveCount(0)
 })
 
 test('invariant 5: an empty result says so', async ({ page }) => {
-  await mockUsersApi(page, { role: 'master', users: [] })
+  const api = await mockUsersApi(page, { role: 'master', users: [] })
   await page.goto('/users')
+  // 无筛选的空结果：直说没有用户。
+  await expect(page.getByText('暂无用户')).toBeVisible()
+
+  // 收窄后仍然空：说明「没有匹配」，并给出清除筛选的出路。
+  const search = page.getByLabel('邮箱前缀筛选')
+  await search.fill('ghost@example.com')
+  await expect.poll(() => lastUserListCall(api)?.params.q).toBe('ghost@example.com')
   await expect(page.getByText('没有匹配的用户')).toBeVisible()
   await expect(page.getByText('调整筛选条件后重试。')).toBeVisible()
+
+  await page.getByRole('button', { name: '清除筛选' }).click()
+  await expect(page).toHaveURL(/\/users$/)
+  expect(page.url(), 'clearing drops the q param').not.toContain('q=')
+  await expect(search, 'the input follows the URL back to empty').toHaveValue('')
+  await expect(page.getByText('暂无用户')).toBeVisible()
+  await expect.poll(() => lastUserListCall(api)?.params.q).toBeUndefined()
 })
 
 test('invariant 5: a failed list shows the envelope and can retry', async ({ page }) => {
@@ -199,6 +241,136 @@ test('invariant 5: a failed list shows the envelope and can retry', async ({ pag
   const before = listUserCalls(api).length
   await page.getByRole('button', { name: '重试' }).click()
   await expect.poll(() => listUserCalls(api).length).toBeGreaterThan(before)
+})
+
+// --- 分组与计数 ------------------------------------------------------------
+
+test('invariant 6: group tabs show global counts and each group filters its rows', async ({ page }) => {
+  const api = await mockUsersApi(page, { role: 'master' })
+  await openUsers(page)
+
+  // 计数是全局口径：全部 4 = 待处理 1 + 正式 2 + 空用户 1，不随筛选收窄。
+  const tabs = page.getByRole('group', { name: '用户分组' })
+  await expect(tabs.getByRole('button', { name: '全部' })).toHaveText(/全部\s*4/)
+  await expect(tabs.getByRole('button', { name: '待处理' })).toHaveText(/待处理\s*1/)
+  await expect(tabs.getByRole('button', { name: '正式' })).toHaveText(/正式\s*2/)
+  await expect(tabs.getByRole('button', { name: '空用户' })).toHaveText(/空用户\s*1/)
+
+  await tabs.getByRole('button', { name: '待处理' }).click()
+  await expect.poll(() => lastUserListCall(api)?.params.group).toBe('pending')
+  await expect(page).toHaveURL(/group=pending/)
+  await expect(page.getByText('member-two@example.com')).toBeVisible()
+  await expect(page.getByText('master-one@example.com')).toHaveCount(0)
+  // 分组页没有下一页：pending 组只有一行，游标到头。
+  await expect(page.getByRole('button', { name: '下一页' })).toBeDisabled()
+
+  await tabs.getByRole('button', { name: '正式' }).click()
+  await expect.poll(() => lastUserListCall(api)?.params.group).toBe('normal')
+  await expect(page.getByText('master-one@example.com')).toBeVisible()
+  await expect(page.getByText('admin-one@example.com')).toBeVisible()
+  await expect(page.getByText('member-two@example.com')).toHaveCount(0)
+
+  await tabs.getByRole('button', { name: '空用户' }).click()
+  await expect.poll(() => lastUserListCall(api)?.params.group).toBe('vacant')
+  await expect(page.getByText('member-one@example.com')).toBeVisible()
+  await expect(page.getByText('admin-one@example.com')).toHaveCount(0)
+})
+
+test('invariant 6: an empty group explains itself and points to a group with members', async ({ page }) => {
+  const api = await mockUsersApi(page, { role: 'master', users: [USERS[0], USERS[1], USERS[2]] })
+  await openUsers(page)
+  const tabs = page.getByRole('group', { name: '用户分组' })
+
+  await tabs.getByRole('button', { name: '待处理' }).click()
+  await expect.poll(() => lastUserListCall(api)?.params.group).toBe('pending')
+  await expect(page.getByText('暂无待处理用户')).toBeVisible()
+  await page.getByRole('button', { name: '查看正式用户' }).click()
+  await expect.poll(() => lastUserListCall(api)?.params.group).toBe('normal')
+  await expect(page.getByText('master-one@example.com')).toBeVisible()
+})
+
+test('invariant 6: a group and the deleted view are mutually exclusive', async ({ page }) => {
+  const api = await mockUsersApi(page, { role: 'master' })
+  await openUsers(page)
+
+  await page.getByLabel('含已删除').check()
+  await expect.poll(() => lastUserListCall(api)?.params.include_deleted).toBe('true')
+
+  // 已删除视图里点分组：分组赢，include_deleted 离场。
+  await page.getByRole('group', { name: '用户分组' }).getByRole('button', { name: '待处理' }).click()
+  await expect.poll(() => lastUserListCall(api)?.params.group).toBe('pending')
+  expect(
+    lastUserListCall(api)?.params.include_deleted,
+    'switching to a group exits the deleted view',
+  ).toBeUndefined()
+  await expect(page).toHaveURL(/group=pending/)
+  expect(page.url(), 'the deleted flag leaves the URL').not.toContain('deleted=')
+
+  // 反向：分组视图里勾已删除：deleted 赢，group 离场。
+  await page.getByLabel('含已删除').check()
+  await expect.poll(() => lastUserListCall(api)?.params.include_deleted).toBe('true')
+  expect(lastUserListCall(api)?.params.group, 'the deleted view drops the group').toBeUndefined()
+  await expect(page).toHaveURL(/deleted=true/)
+  expect(page.url(), 'the group leaves the URL').not.toContain('group=')
+})
+
+test('invariant 6: handwritten group URLs are normalized into a legal state', async ({ page }) => {
+  const api = await mockUsersApi(page, { role: 'master' })
+
+  // 未知分组不得打 400：归一后按无分组的「全部」视图请求。
+  await page.goto('/users?group=bogus')
+  await expect(page.getByRole('table', { name: '用户列表' })).toBeVisible()
+  await expect.poll(() => lastUserListCall(api)?.params.group).toBeUndefined()
+  await expect(page.getByText('master-one@example.com')).toBeVisible()
+
+  // group 与 deleted 同给：分组赢，请求不带 include_deleted。
+  await page.goto('/users?group=pending&deleted=true')
+  await expect.poll(() => lastUserListCall(api)?.params.group).toBe('pending')
+  expect(
+    lastUserListCall(api)?.params.include_deleted,
+    'the group wins the handwritten combination',
+  ).toBeUndefined()
+  await expect(page).toHaveURL(/group=pending/)
+})
+
+test('invariant 5: clearing filters keeps the current view', async ({ page }) => {
+  const api = await mockUsersApi(page, { role: 'master', users: [] })
+  await page.goto('/users')
+  await expect(page.getByText('暂无用户')).toBeVisible()
+
+  // 已删除视图 + 无命中前缀：收窄空态给「清除筛选」。
+  await page.getByLabel('含已删除').check()
+  await expect.poll(() => lastUserListCall(api)?.params.include_deleted).toBe('true')
+  const search = page.getByLabel('邮箱前缀筛选')
+  await search.fill('ghost@example.com')
+  await expect.poll(() => lastUserListCall(api)?.params.q).toBe('ghost@example.com')
+  await expect(page.getByText('没有匹配的用户')).toBeVisible()
+
+  await page.getByRole('button', { name: '清除筛选' }).click()
+  // 清除只撤收窄条件：已删除视图保留，q 离场。
+  await expect.poll(() => lastUserListCall(api)?.params.q).toBeUndefined()
+  expect(
+    lastUserListCall(api)?.params.include_deleted,
+    'the deleted view survives clearing',
+  ).toBe('true')
+  await expect(page.getByText('没有已删除的用户')).toBeVisible()
+})
+
+test('invariant 5: the deleted view empty state offers the way back', async ({ page }) => {
+  const api = await mockUsersApi(page, { role: 'master', users: [] })
+  await page.goto('/users')
+  await expect(page.getByText('暂无用户')).toBeVisible()
+
+  // 含已删除回的是全量行，空态只在空库出现：
+  // 夹具取空库（同样不含 DELETED_USER），视图直说没有已删除的用户。
+  await page.getByLabel('含已删除').check()
+  await expect.poll(() => lastUserListCall(api)?.params.include_deleted).toBe('true')
+  await expect(page.getByText('没有已删除的用户')).toBeVisible()
+
+  await page.getByRole('button', { name: '返回全部用户' }).click()
+  await expect.poll(() => lastUserListCall(api)?.params.include_deleted).toBeUndefined()
+  expect(page.url(), 'back to the all view').not.toContain('deleted=')
+  await expect(page.getByText('暂无用户')).toBeVisible()
 })
 
 // --- UX-1：建号、URL 状态、抽屉动作 ----------------------------------------

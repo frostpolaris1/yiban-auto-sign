@@ -132,7 +132,9 @@ func TestCanonicalRuleRowsPinned(t *testing.T) {
 	// internal/adapters/pg/usecase_e2e_test.go（用例层 e2e 需要真实 PG 适配器）。
 	// db1：allow 再增列 internal/adapters/pg/credential_state_e2e_test.go
 	// （凭据错结算与恢复的用例层 e2e 同样需要真实 PG 适配器）。
-	const want = "d621c05d90ee710977ee937ed965a454a020f9e82c427c200ae0f138e566224c"
+	// user-groups：status.literal allow 增列 internal/core/user/
+	// （用户展示分组的 pending 是分组词，不是任务状态）。
+	const want = "0a396278724a636ebd9375a6f7f1851aa707d81da853c780330c4f6bc1555b4d"
 	if got != want {
 		t.Fatalf("canonical 规则内容变了（hash %s）；确认改动后更新 TestCanonicalRuleRowsPinned 的哈希", got)
 	}

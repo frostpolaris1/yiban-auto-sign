@@ -109,12 +109,22 @@ func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, 
 				return err
 			}
 		}
-		// 重读一次让响应带真实状态；重读之后只剩相邻的两条审计追加。
+		// 重读一次让响应带真实状态；随后补名下账号计数，最后只剩审计追加。
 		// 仓储调用一律用归一化 id（P1-1 补漏：此处原用 raw id）。
 		record, err = s.deps.Users.GetByID(ctx, normalized)
 		if err != nil {
 			return err
 		}
+		// 响应带真实名下账号计数：行扫描（scanUser）不含聚合列，
+		// 与列表行的计数字段保持同一形状。计数读失败即回滚：
+		// 已提交的写不能配一条 500 响应；审计仍是事务最后一条语句。
+		counts, err := s.deps.Users.OwnerCounts(ctx, normalized)
+		if err != nil {
+			return err
+		}
+		record.AccountCount = counts.Account
+		record.PendingCount = counts.Pending
+		record.ReviewCount = counts.Review
 		if roleChanged {
 			if _, err := s.deps.Audit.Append(ctx, coreaudit.Entry{
 				TS:          now,

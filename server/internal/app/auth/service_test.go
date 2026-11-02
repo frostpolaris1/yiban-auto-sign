@@ -26,6 +26,7 @@ import (
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 )
 
 var testClock = clock.Fixed{T: time.Date(2026, 10, 26, 9, 0, 0, 0, time.UTC)}
@@ -79,7 +80,7 @@ func (f *fakeUsers) GetByEmail(_ context.Context, email string) (appuser.Record,
 	return appuser.Record{}, errs.ErrNotFound
 }
 
-func (f *fakeUsers) List(context.Context, coreauth.Role, coreauth.Status, string, string, int, bool) ([]appuser.Record, string, error) {
+func (f *fakeUsers) List(context.Context, coreauth.Role, coreauth.Status, string, coreuser.Group, string, int, bool) ([]appuser.Record, string, error) {
 	return nil, "", nil
 }
 
@@ -102,6 +103,14 @@ func (f *fakeUsers) Restore(context.Context, string, int) (appuser.Record, error
 }
 
 func (f *fakeUsers) CountLiveMasters(context.Context, string) (int, error) { return 0, nil }
+
+// Counts 只为满足 appuser.Repo 接口：分组计数归列表流，认证流不读它。
+func (f *fakeUsers) Counts(context.Context) (coreuser.Counts, error) { return coreuser.Counts{}, nil }
+
+// OwnerCounts 只为满足 appuser.Repo 接口：变更响应的计数补齐归用户用例。
+func (f *fakeUsers) OwnerCounts(context.Context, string) (coreuser.OwnerCounts, error) {
+	return coreuser.OwnerCounts{}, nil
+}
 
 func (f *fakeUsers) Lookup(context.Context, string, int, bool) ([]appuser.Record, error) {
 	return nil, nil

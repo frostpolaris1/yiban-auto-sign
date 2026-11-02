@@ -46,6 +46,16 @@ func (s *Service) Restore(ctx context.Context, scope corescope.Scope, id string,
 		if err != nil {
 			return err
 		}
+		// 响应带真实名下账号计数：行扫描（scanUser）不含聚合列，
+		// 与列表行的计数字段保持同一形状。计数读失败即回滚：
+		// 恢复重试不再撞已提交写的 500/404；审计仍是事务最后一条语句。
+		counts, err := s.deps.Users.OwnerCounts(ctx, record.ID)
+		if err != nil {
+			return err
+		}
+		record.AccountCount = counts.Account
+		record.PendingCount = counts.Pending
+		record.ReviewCount = counts.Review
 		_, err = s.deps.Audit.Append(ctx, coreaudit.Entry{
 			TS:          now,
 			ActorUserID: actor.UserID,

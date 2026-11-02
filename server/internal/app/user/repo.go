@@ -53,7 +53,13 @@ type Repo interface {
 	Create(ctx context.Context, in New, limit int) (Record, error)
 	GetByID(ctx context.Context, id string) (Record, error)
 	GetByEmail(ctx context.Context, email string) (Record, error)
-	List(ctx context.Context, role coreauth.Role, status coreauth.Status, query, cursor string, limit int, includeDeleted bool) ([]Record, string, error)
+	List(ctx context.Context, role coreauth.Role, status coreauth.Status, query string, group coreuser.Group, cursor string, limit int, includeDeleted bool) ([]Record, string, error)
+	// Counts 返回四个分组的全局计数；不随筛选或分页变化。
+	Counts(ctx context.Context) (coreuser.Counts, error)
+	// OwnerCounts 按行聚合某用户名下未软删账号的三计数，
+	// 口径与列表的账号聚合列一致。无账号返回零值。
+	// Update 与 Restore 的行扫描不含聚合列，用例层用它补齐响应。
+	OwnerCounts(ctx context.Context, id string) (coreuser.OwnerCounts, error)
 	UpdatePassword(ctx context.Context, id, passwordHash string, mustChange bool, at time.Time) error
 	// RehashPassword 只替换哈希，**不改 password_changed_at**。
 	// 登录时的透明升级走本方法：口令没有变，改密时刻不得前移。

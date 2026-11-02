@@ -387,8 +387,10 @@ func TestUsersListCarriesNoCredentialFields(t *testing.T) {
 	}{Items: &rows}); err != nil {
 		t.Fatalf("decode raw items: %v; body=%q", err, payload)
 	}
-	// UX-1 起契约 User 增加 deleted_at（可空）；键集逐字钉住。
-	want := []string{"created_at", "deleted_at", "email", "id", "last_login_at", "must_change_password", "role", "status"}
+	// 键集逐字钉住：只有展示字段与名下账号计数，没有任何凭据。
+	want := []string{"account_count", "created_at", "deleted_at", "email", "id",
+		"last_login_at", "must_change_password", "pending_count", "review_count",
+		"role", "status"}
 	for _, row := range rows {
 		keys := make([]string, 0, len(row))
 		for key := range row {

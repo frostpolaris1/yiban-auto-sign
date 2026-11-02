@@ -23,6 +23,7 @@ export type User = Schemas['User']
 export type UserRole = Schemas['UserRole']
 export type UserStatus = Schemas['UserStatus']
 export type UserPage = Schemas['UserPage']
+export type UserCounts = Schemas['UserCounts']
 export type UserUpdateBody = Schemas['UserUpdate']
 export type UserTempPassword = Schemas['UserTempPassword']
 export type UserLookupRef = Schemas['UserLookupRef']
@@ -31,6 +32,9 @@ export type UserCreateBody = Schemas['UserCreate']
 
 /** 查询串视图。字段直接取契约生成的 `UserList` 参数，不另写一份。 */
 export type UserQuery = NonNullable<operations['UserList']['parameters']['query']>
+
+/** 展示分组。值取自契约的 group 枚举，不另立字符串联合。 */
+export type UserGroup = NonNullable<UserQuery['group']>
 
 export const USER_PATHS = {
   list: '/api/users',
@@ -42,6 +46,7 @@ export function buildUserSearch(query: UserQuery = {}): string {
   if (query.role) params.set('role', query.role)
   if (query.status) params.set('status', query.status)
   if (query.q) params.set('q', query.q)
+  if (query.group) params.set('group', query.group)
   if (query.include_deleted) params.set('include_deleted', 'true')
   if (query.cursor) params.set('cursor', query.cursor)
   if (query.limit) params.set('limit', String(query.limit))

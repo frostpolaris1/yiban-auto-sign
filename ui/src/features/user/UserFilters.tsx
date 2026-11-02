@@ -21,6 +21,8 @@ import type { UserURLState } from './urlState'
 type UserFiltersProps = {
   values: UserURLState
   qInput: string
+  /** 软删用户总数；缺省时不显示计数。 */
+  deletedCount?: number
   onRoleChange: (role?: UserRole) => void
   onStatusChange: (status?: UserStatus) => void
   onDeletedChange: (deleted: boolean) => void
@@ -31,6 +33,7 @@ type UserFiltersProps = {
 export function UserFilters({
   values,
   qInput,
+  deletedCount,
   onRoleChange,
   onStatusChange,
   onDeletedChange,
@@ -98,6 +101,9 @@ export function UserFilters({
             onChange={(event) => onDeletedChange(event.target.checked)}
           />
           含已删除
+          {deletedCount !== undefined ? (
+            <span className="app-toolbar-note">（{deletedCount}）</span>
+          ) : null}
         </label>
       </div>
     </div>

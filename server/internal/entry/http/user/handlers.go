@@ -36,6 +36,7 @@ import (
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
+	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/respond"
 )
@@ -110,6 +111,9 @@ func (h *Handler) List(c *gin.Context, params oapi.UserListParams) {
 	if params.Q != nil {
 		filter.Query = *params.Q
 	}
+	if params.Group != nil {
+		filter.Group = coreuser.Group(*params.Group)
+	}
 	if params.IncludeDeleted != nil {
 		filter.IncludeDeleted = *params.IncludeDeleted
 	}
@@ -122,7 +126,16 @@ func (h *Handler) List(c *gin.Context, params oapi.UserListParams) {
 	for _, record := range page.Items {
 		items = append(items, userResponse(record))
 	}
-	respond.JSON(c.Writer, http.StatusOK, oapi.UserPage{Items: items, NextCursor: page.NextCursor})
+	respond.JSON(c.Writer, http.StatusOK, oapi.UserPage{
+		Items:      items,
+		NextCursor: page.NextCursor,
+		Counts: oapi.UserCounts{
+			Pending: page.Counts.Pending,
+			Normal:  page.Counts.Normal,
+			Vacant:  page.Counts.Vacant,
+			Deleted: page.Counts.Deleted,
+		},
+	})
 }
 
 // Update 实现 PATCH /api/users/{id}。
@@ -245,6 +258,9 @@ func userResponse(record appuser.Record) oapi.User {
 		Role:               oapi.UserRole(record.Role),
 		Status:             oapi.UserStatus(record.Status),
 		MustChangePassword: record.MustChangePassword,
+		AccountCount:       record.AccountCount,
+		PendingCount:       record.PendingCount,
+		ReviewCount:        record.ReviewCount,
 		CreatedAt:          record.CreatedAt,
 		LastLoginAt:        record.LastLoginAt,
 		DeletedAt:          record.DeletedAt,
