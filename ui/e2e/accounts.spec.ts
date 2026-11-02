@@ -766,12 +766,12 @@ test('invariant 11: a numeric remark name matches a normalized phone query', asy
     id: 'acc-name-phone',
     name: '13800138000',
     display_name: '13800138000',
-    phone_masked: '136****0004',
+    phone_masked: '136****6000',
   }
   await mockAccountsApi(page, {
     role: 'master',
     accounts: [...ACCOUNTS, numericName],
-    rawPhones: { 'acc-name-phone': '13600136004' },
+    rawPhones: { 'acc-name-phone': '13600006000' },
   })
   await openAccounts(page)
   const q = page.getByLabel('账号筛选')
@@ -779,8 +779,8 @@ test('invariant 11: a numeric remark name matches a normalized phone query', asy
   // 完整手机号与同值的数字备注名都命中；带国家码与分隔符也要归一后比较。
   await q.fill('+86 138 0013 8000')
   await expect(page.getByRole('button', { name: '查看 138****8000' })).toBeVisible()
-  await expect(page.getByRole('button', { name: '查看 136****0004' })).toBeVisible()
-  await expect(rowFor(page, '136****0004')).toHaveAttribute('data-exact-match', 'true')
+  await expect(page.getByRole('button', { name: '查看 136****6000' })).toBeVisible()
+  await expect(rowFor(page, '136****6000')).toHaveAttribute('data-exact-match', 'true')
 })
 
 test('invariant 11: the default remark is displayed and searchable', async ({ page }) => {
