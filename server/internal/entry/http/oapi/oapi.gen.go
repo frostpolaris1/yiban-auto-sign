@@ -488,9 +488,17 @@ type Account struct {
 	// DeletedAt Soft-delete timestamp. Null for live rows; non-null only when the
 	// list was fetched with include_deleted=true. The restore entry
 	// needs this to mark deleted rows.
-	DeletedAt   *time.Time `json:"deleted_at"`
-	Id          string     `json:"id"`
-	OwnerUserId string     `json:"owner_user_id"`
+	DeletedAt *time.Time `json:"deleted_at"`
+	Id        string     `json:"id"`
+
+	// Name Remark name. Empty when unset. Trimmed free text; it is not a
+	// credential and does not take part in review or scheduling.
+	Name string `json:"name"`
+
+	// OwnerEmailMasked Masked email of the owner. The raw email never leaves the server.
+	// Unmaskable input reads as "unknown".
+	OwnerEmailMasked string `json:"owner_email_masked"`
+	OwnerUserId      string `json:"owner_user_id"`
 
 	// PhoneMasked Masked phone. The raw phone never leaves the server.
 	PhoneMasked string `json:"phone_masked"`
@@ -519,6 +527,9 @@ type Account struct {
 // AccountCreate defines model for AccountCreate.
 type AccountCreate struct {
 	DeviceCode *string `json:"device_code,omitempty"`
+
+	// Name Optional remark name; trimmed. Empty means unnamed.
+	Name *string `json:"name,omitempty"`
 
 	// OwnerUserId Defaults to the caller. Only master and admin may set another
 	// user, and that user must exist and not be soft-deleted;
@@ -647,12 +658,17 @@ type AccountStatus string
 // AccountUpdate defines model for AccountUpdate.
 type AccountUpdate struct {
 	DeviceCode *string `json:"device_code,omitempty"`
-	Password   *string `json:"password,omitempty"`
 
-	// Phone A new phone returns the account to pending: the review decision
-	// binds to the old phone. An unchanged phone is not a rebind, so it
-	// keeps the status unless the account is rejected; any edit of a
-	// rejected account returns it to pending.
+	// Name Remark name; trimmed. An empty string clears it. A name-only edit
+	// keeps the status, including rejected.
+	Name     *string `json:"name,omitempty"`
+	Password *string `json:"password,omitempty"`
+
+	// Phone A new phone returns a non-pending account to pending: the review
+	// decision binds to the old phone. An unchanged phone is not a
+	// rebind and keeps the status. On a rejected account only a
+	// credential edit (a new phone, password, device code or model)
+	// resubmits; a name-only edit or an unchanged phone does not.
 	Phone      *string `json:"phone,omitempty"`
 	PhoneModel *string `json:"phone_model,omitempty"`
 
@@ -1344,9 +1360,16 @@ type AccountListParams struct {
 	SchoolId *string        `form:"school_id,omitempty" json:"school_id,omitempty"`
 	Status   *AccountStatus `form:"status,omitempty" json:"status,omitempty"`
 
-	// Q Phone filter. Non-digits are stripped. A leading prefix of one to
-	// three digits, a trailing four-digit suffix, or the exact 11-digit
-	// phone matches. A 5..10 digit fragment never matches. The exact
+	// Q Matches the remark name, the owner email, or the phone. Name and
+	// email match as case-insensitive literal substrings; % and _ are
+	// not wildcards. The masked owner email also matches: a query
+	// containing "***" is read as a mask whose stars stand for any
+	// characters, so a***@example.com finds every account with that
+	// mask.
+	// For the phone, non-digits are stripped. A leading prefix of one
+	// to three digits, a trailing four-digit suffix, or the exact
+	// 11-digit phone matches. A 5..10 digit fragment never matches a
+	// phone, but it can still match a name or an email. The exact
 	// 11-digit phone still matches, so the number stays enumerable.
 	// Login and password-reset rate limiting is a deployment precondition
 	// before public exposure (P7).

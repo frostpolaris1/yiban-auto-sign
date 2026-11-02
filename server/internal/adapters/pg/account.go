@@ -23,9 +23,14 @@ type AccountRepo struct {
 // NewAccountRepo 构造账号仓储。
 func NewAccountRepo(db *DB) *AccountRepo { return &AccountRepo{db: db} }
 
-const accountColumns = `id::text, school_id::text, owner_user_id::text, phone,
+// accountColumns 是账号读取的列清单。
+//
+// 属主邮箱用相关子查询取：账号行的 owner_user_id 始终指向未删用户，
+// 故邮箱必定存在。明文只进 Record，入口层掩码后才出服务端。
+const accountColumns = `id::text, school_id::text, owner_user_id::text, phone, name,
 	status::text, reject_reason, reviewed_at, coalesce(reviewed_by::text, ''),
-	created_at, updated_at, deleted_at, coalesce(deleted_by::text, '')`
+	created_at, updated_at, deleted_at, coalesce(deleted_by::text, ''),
+	coalesce((SELECT u.email FROM users u WHERE u.id = accounts.owner_user_id), '')`
 
 const credentialColumns = `c.account_id::text, c.school_id::text, c.alg, c.kid,
 	c.aad_version, c.nonce, c.ciphertext, c.version, c.created_at, c.updated_at,
@@ -66,12 +71,12 @@ func (r *AccountRepo) Create(ctx context.Context, in coreaccount.New, limit, own
 		WITH live AS (SELECT count(*) AS n FROM accounts WHERE deleted_at IS NULL),
 		     mine AS (SELECT count(*) AS n FROM accounts
 		               WHERE deleted_at IS NULL AND owner_user_id = $3::uuid)
-		INSERT INTO accounts (id, school_id, owner_user_id, phone)
-		SELECT $1::uuid, $2::uuid, $3::uuid, $4
+		INSERT INTO accounts (id, school_id, owner_user_id, phone, name)
+		SELECT $1::uuid, $2::uuid, $3::uuid, $4, $5
 		  FROM live, mine
-		 WHERE live.n < $5 AND mine.n < $6
+		 WHERE live.n < $6 AND mine.n < $7
 		RETURNING `+accountColumns,
-		id, in.SchoolID, in.OwnerUserID, in.Phone, limit, ownerLimit)
+		id, in.SchoolID, in.OwnerUserID, in.Phone, in.Name, limit, ownerLimit)
 	record, err := scanAccount(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// 两个上限共用 capacity_exceeded；文案区分全局与每属主。
@@ -117,10 +122,10 @@ func (r *AccountRepo) GetForUpdate(ctx context.Context, s corescope.Scope, id st
 // List 按作用域与可选过滤条件列账号，游标分页。
 //
 // 作用域与过滤条件是**与**关系：admin 指定未绑定院校时结果为空。
-// includeDeleted 置真时软删行也入选；缺省假，已删行不可发现（8v8⑥）。
-// search 只抽取数字，再按长度定过滤式：
-// 1..3 位前缀、4 位后缀、11 位全号精确，其余长度**恒假**。
-// 故中四位可被全号枚举恢复（10^4 次），依赖登录限速。
+// includeDeleted 置真时软删行也入选；缺省假，已删行不可发现。
+// search 同时匹配备注名、属主邮箱与手机号；手机号仍只按
+// 1..3 位前缀、4 位后缀、11 位全号精确命中，故中四位可被全号
+// 枚举恢复（10^4 次），依赖登录限速。
 func (r *AccountRepo) List(ctx context.Context, s corescope.Scope, schoolID string, status coreaccount.Status, search, cursor string, limit int, includeDeleted bool) ([]coreaccount.Record, string, error) {
 	if limit < 1 || limit > 200 {
 		return nil, "", validationError("limit must be between 1 and 200")
@@ -145,28 +150,7 @@ func (r *AccountRepo) List(ctx context.Context, s corescope.Scope, schoolID stri
 		args = append(args, string(status))
 		where += fmt.Sprintf(" AND status = $%d::account_status", len(args))
 	}
-	if term := phoneDigits(search); term != "" {
-		switch {
-		case len(term) <= 3:
-			// 前缀：只暴露前 3 位，掩码本就展示这 3 位。
-			args = append(args, term)
-			where += fmt.Sprintf(" AND phone LIKE $%d || '%%'", len(args))
-		case len(term) == 4:
-			// 后缀：只暴露后 4 位，掩码本就展示这 4 位。
-			args = append(args, term)
-			where += fmt.Sprintf(" AND phone LIKE '%%' || $%d", len(args))
-		case len(term) == 11:
-			args = append(args, term)
-			where += fmt.Sprintf(" AND phone = $%d", len(args))
-		default:
-			// 5..10 位覆盖掩码隐藏的中四位，一律不命中。
-			where += " AND FALSE"
-		}
-	} else if strings.TrimSpace(search) != "" {
-		// 非空串但没有数字：任何手机号都匹配不上，恒假。
-		// **不得**退化成「不过滤」：那会把全量当作搜索结果返回。
-		where += " AND FALSE"
-	}
+	where += accountSearchWhere(search, &args)
 	query, args, err := appendKeyset(`SELECT `+accountColumns+` FROM accounts`+where,
 		args, cursor, "created_at", "id")
 	if err != nil {
@@ -223,6 +207,27 @@ func (r *AccountRepo) UpdatePhone(ctx context.Context, s corescope.Scope, id, ph
 		   SET phone = $%d, updated_at = $%d
 		 WHERE id = $1::uuid AND deleted_at IS NULL%s
 		RETURNING %s`, phoneIdx, atIdx, scopeSQL, accountColumns), args...)
+	record, err := scanAccount(row)
+	return recordOrNotFound(record, err)
+}
+
+// UpdateName 在范围内改备注名。空串表示清空。
+// 长度由调用方与 ck_accounts_name_length 双重把关。
+func (r *AccountRepo) UpdateName(ctx context.Context, s corescope.Scope, id, name string, at time.Time) (coreaccount.Record, error) {
+	scopeSQL, scopeArgs, err := scopePredicate(s, 2, "")
+	if err != nil {
+		return coreaccount.Record{}, err
+	}
+	args := append([]any{id}, scopeArgs...)
+	nameIdx := len(args) + 1
+	args = append(args, name)
+	atIdx := len(args) + 1
+	args = append(args, at)
+	row := r.db.q(ctx).QueryRow(ctx, fmt.Sprintf(`
+		UPDATE accounts
+		   SET name = $%d, updated_at = $%d
+		 WHERE id = $1::uuid AND deleted_at IS NULL%s
+		RETURNING %s`, nameIdx, atIdx, scopeSQL, accountColumns), args...)
 	record, err := scanAccount(row)
 	return recordOrNotFound(record, err)
 }
@@ -488,6 +493,76 @@ func (r *AccountRepo) classifyRestoreMiss(ctx context.Context, s corescope.Scope
 	return coreaccount.Record{}, capacityError()
 }
 
+// accountSearchWhere 把列表搜索串翻译成 WHERE 片段。
+//
+// 命中面是三列之或：备注名、属主邮箱、手机号。
+// 名称与邮箱按字面子串、大小写不敏感匹配：position 不做通配解读，
+// 用户输入 % 或 _ 不会被当成 LIKE 元字符。
+// 邮箱还接受**可见掩码**：串里含 "***" 时星号段按任意字符处理，
+// 故 a***@example.com 能命中同一掩码的全部账号；掩码公式仍只在 core/mask，
+// 这里只比对可见的前后缀，不复制掩码实现。
+// 手机号沿用既有长度口径：1..3 位前缀、4 位后缀、11 位全号；
+// 5..10 位不参与号码匹配，但仍可命中名称或邮箱。
+// 空串不过滤。
+func accountSearchWhere(search string, args *[]any) string {
+	term := strings.TrimSpace(search)
+	if term == "" {
+		return ""
+	}
+	lower := strings.ToLower(term)
+	*args = append(*args, lower)
+	termIdx := len(*args)
+	clauses := []string{
+		fmt.Sprintf("position($%d in lower(name)) > 0", termIdx),
+		fmt.Sprintf(`position($%d in lower(coalesce(
+			(SELECT u.email FROM users u WHERE u.id = accounts.owner_user_id), ''))) > 0`, termIdx),
+	}
+	if prefix, suffix, ok := emailMaskParts(lower); ok {
+		*args = append(*args, prefix)
+		prefixIdx := len(*args)
+		*args = append(*args, suffix)
+		suffixIdx := len(*args)
+		// 邮箱库内恒为小写（ck_users_email_lower），入参已转小写。
+		clauses = append(clauses, fmt.Sprintf(`EXISTS (
+			SELECT 1 FROM users u
+			 WHERE u.id = accounts.owner_user_id
+			   AND left(u.email, char_length($%d)) = $%d
+			   AND right(u.email, char_length($%d)) = $%d)`,
+			prefixIdx, prefixIdx, suffixIdx, suffixIdx))
+	}
+	if digits := phoneDigits(term); digits != "" {
+		// 参数只在真正生成子句时追加：5..10 位不参与号码匹配，
+		// 多传一个未引用的参数会让扩展协议报参数个数不符。
+		switch {
+		case len(digits) <= 3:
+			// 前缀：只暴露前 3 位，掩码本就展示这 3 位。
+			*args = append(*args, digits)
+			clauses = append(clauses, fmt.Sprintf("phone LIKE $%d || '%%'", len(*args)))
+		case len(digits) == 4:
+			// 后缀：只暴露后 4 位，掩码本就展示这 4 位。
+			*args = append(*args, digits)
+			clauses = append(clauses, fmt.Sprintf("phone LIKE '%%' || $%d", len(*args)))
+		case len(digits) == 11:
+			*args = append(*args, digits)
+			clauses = append(clauses, fmt.Sprintf("phone = $%d", len(*args)))
+		}
+	}
+	return " AND (" + strings.Join(clauses, " OR ") + ")"
+}
+
+// emailMaskParts 从可见掩码串取前缀与后缀。
+// 只处理恰好一个 "***" 的输入：多个星号段不是可识别的掩码形状，不启用该分支。
+func emailMaskParts(term string) (string, string, bool) {
+	parts := strings.Split(term, "***")
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	if parts[0] == "" && parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
 // phoneDigits 只保留 search 里的 0..9。
 // 掩码串的 * 与分隔符在此消失；没有数字的串返回空串。
 func phoneDigits(search string) string {
@@ -507,9 +582,9 @@ func scanAccount(row pgx.Row) (coreaccount.Record, error) {
 		reviewedAt pgtype.Timestamptz
 		deletedAt  pgtype.Timestamptz
 	)
-	if err := row.Scan(&record.ID, &record.SchoolID, &record.OwnerUserID, &record.Phone,
+	if err := row.Scan(&record.ID, &record.SchoolID, &record.OwnerUserID, &record.Phone, &record.Name,
 		&status, &record.RejectReason, &reviewedAt, &record.ReviewedBy,
-		&record.CreatedAt, &record.UpdatedAt, &deletedAt, &record.DeletedBy); err != nil {
+		&record.CreatedAt, &record.UpdatedAt, &deletedAt, &record.DeletedBy, &record.OwnerEmail); err != nil {
 		return coreaccount.Record{}, err
 	}
 	record.Status = coreaccount.Status(status)

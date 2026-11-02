@@ -23,10 +23,12 @@ import {
  * 4. 写操作必经确认模态；确认前不发请求。
  * 5. 抽屉打开焦点进入；Esc 与遮罩关闭并还原焦点。
  * 6. 编辑（PATCH）只送填写字段；空表单不可提交。
- *    被拒账号的编辑即重提，改绑手机号也回待审核；仅改口令不动状态。
+ *    备注名回填、只在变了时发送；被拒账号改凭据才重提，
+ *    只改备注名保持已驳回；改绑手机号回待审核；仅改口令不动状态。
  * 7. 位置策略：auto 不送坐标；fixed 过 WGS84 范围；master 无权置灰。
  * 8. 删除必经确认；确认前零请求；行消失后焦点落筛选框。
  * 9. 关闭控件是 24×24 的可见目标，键盘焦点有 2px 实线环。
+ * 10. 列表与详情只展示备注名与掩码归属邮箱，不展示明文邮箱。
  *
  * 断言用户可见结果，不钉内部调用顺序。
  */
@@ -78,10 +80,10 @@ test('invariant 1: each filter rides the request and clearing removes it', async
   await expect.poll(() => lastListCall(api)?.params.school_id ?? 'absent').toBe('absent')
   await expect.poll(() => lastListCall(api)?.params.q ?? 'absent').toBe('absent')
 
-  const q = page.getByLabel('手机号筛选')
+  const q = page.getByLabel('账号筛选')
   await expect(q).toHaveAttribute(
     'placeholder',
-    '手机号：前 1–3 位 / 后 4 位 / 全 11 位',
+    '备注名 / 归属邮箱 / 手机号（前 1–3 位、后 4 位或全 11 位）',
   )
 
   await page.getByLabel('状态筛选').selectOption('active')
@@ -625,6 +627,105 @@ test('invariant 6: a password edit keeps the active status', async ({ page }) =>
   await expect(page.locator('[data-sonner-toast]').filter({ hasText: '已保存' })).toBeVisible()
 })
 
+test('invariant 6: the name is prefilled and sent only when changed', async ({ page }) => {
+  const api = await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+
+  const menu = await openRowMenu(page, '138****8000')
+  await menu.getByRole('menuitem', { name: /^编辑$/ }).click()
+  const dialog = page.getByRole('dialog', { name: '编辑账号？' })
+  const name = dialog.getByLabel('备注名')
+  await expect(name, 'the current remark is filled in').toHaveValue('东区宿舍')
+  await expect(
+    dialog.getByRole('button', { name: '保存修改' }),
+    'an unchanged form stays closed',
+  ).toBeDisabled()
+
+  await name.fill('  宿舍改名  ')
+  await dialog.getByRole('button', { name: '保存修改' }).click()
+  await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(1)
+  expect(patchCalls(api, 'acc-1')[0].body).toEqual({ name: '宿舍改名' })
+  await expect(rowFor(page, '138****8000')).toContainText('宿舍改名')
+
+  // 清空 = 删除备注：空串要真的发出去，列表回落到占位符。
+  const menu2 = await openRowMenu(page, '138****8000')
+  await menu2.getByRole('menuitem', { name: /^编辑$/ }).click()
+  const dialog2 = page.getByRole('dialog', { name: '编辑账号？' })
+  await dialog2.getByLabel('备注名').fill('')
+  await dialog2.getByRole('button', { name: '保存修改' }).click()
+  await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(2)
+  expect(patchCalls(api, 'acc-1')[1].body).toEqual({ name: '' })
+  await expect(rowFor(page, '138****8000').getByText('—')).toBeVisible()
+})
+
+test('invariant 6: a name-only edit keeps a rejected account rejected', async ({ page }) => {
+  const api = await mockAccountsApi(page, {
+    role: 'user',
+    accounts: accountsWith('acc-1', {
+      status: 'rejected',
+      reject_reason: '照片不清晰',
+      reviewed_at: '2026-10-20T08:41:00Z',
+      reviewed_by: 'user-9',
+    }),
+  })
+  await openAccounts(page)
+
+  const menu = await openRowMenu(page, '138****8000')
+  await menu.getByRole('menuitem', { name: /修改并重新提交/ }).click()
+  const dialog = page.getByRole('dialog', { name: '修改并重新提交？' })
+  await dialog.getByLabel('备注名').fill('待补照片')
+  await dialog.getByRole('button', { name: '保存修改' }).click()
+  await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(1)
+  expect(patchCalls(api, 'acc-1')[0].body).toEqual({ name: '待补照片' })
+
+  // 备注不是审核材料：状态与驳回理由都不动，toast 说「已保存」而不是「已重新提交」。
+  await expect(rowFor(page, '138****8000').getByText('已驳回')).toBeVisible()
+  await expect(page.locator('[data-sonner-toast]').filter({ hasText: '已保存' })).toBeVisible()
+  await expect(
+    page.locator('[data-sonner-toast]').filter({ hasText: '已重新提交' }),
+  ).toHaveCount(0)
+  await page.getByRole('button', { name: '查看 138****8000' }).click()
+  const drawer = page.getByRole('dialog', { name: '账号详情' })
+  await expect(drawer).toContainText('照片不清晰')
+})
+
+test('invariant 10: the list shows the remark and the masked owner email', async ({ page }) => {
+  await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+
+  const row = rowFor(page, '138****8000')
+  await expect(row).toContainText('东区宿舍')
+  await expect(row).toContainText('o***@example.com')
+  // 归属列不再直接暴露用户 UUID；明文邮箱从不出现在页面上。
+  await expect(row).not.toContainText('user-1')
+
+  await page.getByRole('button', { name: '查看 138****8000' }).click()
+  const drawer = page.getByRole('dialog', { name: '账号详情' })
+  await expect(drawer).toContainText('备注名')
+  await expect(drawer).toContainText('东区宿舍')
+  await expect(drawer).toContainText('归属邮箱')
+  await expect(drawer).toContainText('o***@example.com')
+  await expect(drawer).toContainText('归属用户 ID')
+  await expect(drawer).toContainText('user-1')
+})
+
+test('ux2 master: the single form sends an optional remark name', async ({ page }) => {
+  const api = await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+
+  await page.getByRole('button', { name: '新建账号' }).click()
+  const dialog = page.getByRole('dialog')
+  await dialog.getByLabel('学校').selectOption({ label: '合成学校甲' })
+  await dialog.getByLabel('手机号').fill('13800000000')
+  await dialog.getByLabel('备注名（选填）').fill('  东区宿舍  ')
+  await dialog.getByLabel('易班口令').fill('single-pass-1')
+  await dialog.getByRole('button', { name: '提交' }).click()
+  await expect.poll(() => createCalls(api).length).toBe(1)
+  expect(createCalls(api)[0].body).toMatchObject({ name: '东区宿舍' })
+  await expect(page.getByText('已创建 138****0000')).toBeVisible()
+  await expect(rowFor(page, '138****0000')).toContainText('东区宿舍')
+})
+
 test('invariant 6: a pending account keeps its queued status on a rebind', async ({ page }) => {
   const api = await mockAccountsApi(page, {
     role: 'user',
@@ -769,7 +870,7 @@ test('invariant 8: delete waits for confirmation and removes the row', async ({ 
   await expect(drawer).toBeHidden()
   await expect
     .poll(() => activeLabel(page), 'the row is gone; focus lands on the filter')
-    .toBe('手机号筛选')
+    .toBe('账号筛选')
 })
 
 test('invariant 9: the close control is a 24x24 target with a keyboard focus ring', async ({
@@ -819,7 +920,7 @@ test('invariant 9: the close control is a 24x24 target with a keyboard focus rin
 // 设备码在界面上是文本不是输入框：全文只在服务端，响应只给掩码。
 // ---------------------------------------------------------------------------
 
-const CREATE_FORM_LABELS = ['学校', '手机号', '易班口令'] as const
+const CREATE_FORM_LABELS = ['学校', '手机号', '备注名（选填）', '易班口令'] as const
 
 /** user 两页向导：填第 1 页并提交，进入第 2 页。表单字段一律在 dialog 内取。 */
 async function submitWizardPageOne(page: Page, phone = '13800000000') {
@@ -841,7 +942,7 @@ test('ux2 user: the wizard has two pages, zero email fields and a readonly devic
   await page.getByRole('button', { name: '新建账号' }).click()
   await expect(page.getByRole('heading', { name: '新建账号' })).toBeVisible()
 
-  // 第 1 页只有学校、手机号、口令；零邮箱字段、零绑定用户文案（8v8⑤）。
+  // 第 1 页只有学校、手机号、备注名、口令；零邮箱字段、零绑定用户文案（8v8⑤）。
   const dialog = page.getByRole('dialog')
   for (const label of CREATE_FORM_LABELS) {
     await expect(dialog.locator('label').filter({ hasText: label })).toBeVisible()
@@ -851,7 +952,7 @@ test('ux2 user: the wizard has two pages, zero email fields and a readonly devic
 
   await submitWizardPageOne(page)
 
-  // 建号请求只带三键，不带 owner_user_id：留空即自有。
+  // 建号请求不带 owner_user_id：留空即自有；备注名未填也不带。
   await expect.poll(() => createCalls(api).length).toBe(1)
   const create = createCalls(api)[0]
   expect(create.body).toMatchObject({ phone: '13800000000' })

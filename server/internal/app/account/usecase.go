@@ -51,6 +51,9 @@ const maxQueryChars = 64
 // 设备码与机型会进入凭据密文；不设上界时只受 1 MiB 体上界约束。
 const maxCredentialFieldChars = 64
 
+// maxNameChars 与契约的 maxLength: 50 及 ck_accounts_name_length 同值。
+const maxNameChars = 50
+
 // SchoolReader 读院校行。只用到按 id 取一条。
 type SchoolReader interface {
 	Get(ctx context.Context, id string) (coreschool.Record, error)
@@ -104,11 +107,12 @@ type ListFilter struct {
 	IncludeDeleted bool
 }
 
-// CreateInput 是建账号的输入。口令必填。
+// CreateInput 是建账号的输入。口令必填，备注名可选。
 type CreateInput struct {
 	SchoolID    string
 	OwnerUserID string
 	Phone       string
+	Name        string
 	Password    string
 	DeviceCode  string
 	PhoneModel  string
@@ -119,6 +123,7 @@ type CreateInput struct {
 type UpdateInput struct {
 	SchoolID   *string
 	Phone      *string
+	Name       *string
 	Password   *string
 	DeviceCode *string
 	PhoneModel *string
@@ -244,6 +249,10 @@ func (s *Service) Create(ctx context.Context, scope corescope.Scope, in CreateIn
 	if !phonePattern.MatchString(in.Phone) {
 		return Record{}, errs.New(errs.CodeValidation, "phone must match ^1[0-9]{10}$")
 	}
+	name, err := normalizeName(in.Name)
+	if err != nil {
+		return Record{}, err
+	}
 	if err := validatePassword(in.Password); err != nil {
 		return Record{}, err
 	}
@@ -264,6 +273,7 @@ func (s *Service) Create(ctx context.Context, scope corescope.Scope, in CreateIn
 			SchoolID:    in.SchoolID,
 			OwnerUserID: owner,
 			Phone:       in.Phone,
+			Name:        name,
 		}, s.deps.Limit, s.deps.OwnerLimit)
 		if err != nil {
 			return err
@@ -301,8 +311,9 @@ func (s *Service) Create(ctx context.Context, scope corescope.Scope, in CreateIn
 // Update 改账号字段。换校返回 conflict。
 //
 // 状态副作用按优先级：
-//   - 被拒账号被编辑：回 pending 重新提交，清空驳回理由与审核戳。
-//     审核只收 pending，这是被拒账号唯一的再入队路径。
+//   - 被拒账号改凭据（手机号、口令、设备码、机型）：回 pending 重新提交，
+//     清空驳回理由与审核戳。审核只收 pending，这是被拒账号唯一的再入队路径。
+//     只改备注名不算重提：备注不参与审核判定，被拒账号保持拒绝。
 //   - 改绑手机号：非 pending 账号回 pending 重审，清空理由与审核戳。
 //     手机号即登录凭据，审核结论绑定旧号；不改状态等于免审换号。
 //   - 其余凭据变更：credential_error 恢复为 active。
@@ -327,6 +338,13 @@ func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, 
 	}
 	if in.Phone != nil && !phonePattern.MatchString(*in.Phone) {
 		return Record{}, errs.New(errs.CodeValidation, "phone must match ^1[0-9]{10}$")
+	}
+	name := ""
+	if in.Name != nil {
+		name, err = normalizeName(*in.Name)
+		if err != nil {
+			return Record{}, err
+		}
 	}
 	if in.Password != nil {
 		if err := validatePassword(*in.Password); err != nil {
@@ -359,10 +377,20 @@ func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, 
 		}
 		record = locked
 		rebind := in.Phone != nil && *in.Phone != locked.Phone
-		// 被拒账号的任何编辑都是重提；改绑把非 pending 账号送回队列。
-		// pending 行改绑仍停在 pending，不写 from=pending 的重提审计。
-		needsReview := locked.Status == StatusRejected ||
+		// 凭据编辑才是重提：备注名是标签，只改它不把被拒账号送回队列。
+		// 同值手机号不是编辑，不单独触发重提。
+		credentialEdit := rebind || in.Password != nil ||
+			in.DeviceCode != nil || in.PhoneModel != nil
+		// 改绑把非 pending 账号送回队列；pending 行改绑仍停在 pending，
+		// 不写 from=pending 的重提审计。
+		needsReview := (locked.Status == StatusRejected && credentialEdit) ||
 			(rebind && locked.Status != StatusPending)
+		if in.Name != nil {
+			record, err = s.deps.Accounts.UpdateName(ctx, scope, id, name, now)
+			if err != nil {
+				return err
+			}
+		}
 		if in.Phone != nil {
 			record, err = s.deps.Accounts.UpdatePhone(ctx, scope, id, *in.Phone, now)
 			if err != nil {
@@ -673,6 +701,16 @@ func (s *Service) resolveOwner(ctx context.Context, scope corescope.Scope, actor
 	return requested, nil
 }
 
+// normalizeName 去首尾空白并限制 50 个字符。
+// 空串合法：表示未命名或清空备注。
+func normalizeName(value string) (string, error) {
+	name := strings.TrimSpace(value)
+	if utf8.RuneCountInString(name) > maxNameChars {
+		return "", errs.New(errs.CodeValidation, "name must be at most 50 characters")
+	}
+	return name, nil
+}
+
 // validateCredentialText 限制会进入凭据密文的自由文本长度。
 // 空串合法：设备码与机型都是可选项。
 func validateCredentialText(field, value string) error {
@@ -705,6 +743,8 @@ func changedField(in UpdateInput) (string, error) {
 		return "phone_model", nil
 	case in.SchoolID != nil:
 		return "school_id", nil
+	case in.Name != nil:
+		return "name", nil
 	default:
 		return "", errs.New(errs.CodeValidation, "at least one field is required")
 	}

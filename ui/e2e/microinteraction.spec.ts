@@ -382,7 +382,7 @@ test('invariant 4: rows stay clickable and focus returns after a delete', async 
   await expect(toast(page).filter({ hasText: '已删除 135****0001' })).toBeVisible()
   await expect
     .poll(() => page.evaluate(() => document.activeElement?.getAttribute('aria-label')))
-    .toBe('手机号筛选')
+    .toBe('账号筛选')
 
   // 列表过渡后剩余行仍可点：点行开抽屉，按钮开抽屉，菜单项不开抽屉。
   await page.getByRole('cell', { name: 'school-b', exact: true }).click()

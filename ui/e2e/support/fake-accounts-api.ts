@@ -59,6 +59,8 @@ function account(overrides: Partial<Account> & Pick<Account, 'id'>): Account {
   return {
     school_id: 'school-a',
     owner_user_id: 'user-1',
+    owner_email_masked: 'o***@example.com',
+    name: '',
     phone_masked: '138****8000',
     status: 'pending',
     deleted_at: null,
@@ -73,13 +75,15 @@ function account(overrides: Partial<Account> & Pick<Account, 'id'>): Account {
 
 /** 三个状态各一条。掩码由登记号 13800138000 / 13900139000 / 13500010001 派生。 */
 export const ACCOUNTS: Account[] = [
-  account({ id: 'acc-1', phone_masked: '138****8000', status: 'pending' }),
+  account({ id: 'acc-1', phone_masked: '138****8000', status: 'pending', name: '东区宿舍' }),
   account({
     id: 'acc-2',
     school_id: 'school-b',
     owner_user_id: 'user-2',
+    owner_email_masked: 't***@example.com',
     phone_masked: '139****9000',
     status: 'active',
+    name: '西区宿舍',
   }),
   account({
     id: 'acc-3',
@@ -356,11 +360,21 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
         const { status, code, message } = options.createError
         return fail(route, status, code, message)
       }
-      const input = (body ?? {}) as { school_id?: string; phone?: string; owner_user_id?: string }
+      const input = (body ?? {}) as {
+        school_id?: string
+        phone?: string
+        name?: string
+        owner_user_id?: string
+      }
+      const owner = LOOKUP_USERS.find((item) => item.id === input.owner_user_id)
       const created = account({
         id: 'acc-new',
         school_id: input.school_id ?? 'school-a',
         owner_user_id: input.owner_user_id ?? 'user-1',
+        owner_email_masked: owner
+          ? `${owner.email.slice(0, 1)}***${owner.email.slice(owner.email.indexOf('@'))}`
+          : 'o***@example.com',
+        name: input.name?.trim() ?? '',
         phone_masked: input.phone
           ? `${input.phone.slice(0, 3)}****${input.phone.slice(-4)}`
           : '138****8000',
@@ -397,6 +411,9 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
 
     if (!action && request.method() === 'PATCH') {
       const updates = (body ?? {}) as Record<string, unknown>
+      if (typeof updates.name === 'string') {
+        found.name = updates.name.trim()
+      }
       let rebind = false
       if (typeof updates.phone === 'string') {
         // 原号未知时按改绑处理：夹具里没有原号，宁可让用例显性失败，
@@ -410,9 +427,9 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
         typeof updates.password === 'string' ||
         typeof updates.device_code === 'string' ||
         typeof updates.phone_model === 'string'
-      // 与服务端同口径：改绑或编辑被拒账号回待审核，清理由与审核戳；
+      // 与服务端同口径：改绑或改凭据才把被拒账号回待审核；只改备注名不重提。
       // 改绑优先于凭据恢复。停在待审核的账号改绑仍是 pending。
-      if (rebind || found.status === 'rejected') {
+      if (rebind || (found.status === 'rejected' && credentialEdit)) {
         found.status = 'pending'
         found.reject_reason = ''
         found.reviewed_at = null

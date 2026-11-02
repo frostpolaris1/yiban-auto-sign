@@ -156,6 +156,7 @@ function UserWizard({
   const [step, setStep] = useState<1 | 2>(1)
   const [schoolId, setSchoolId] = useState('')
   const [phone, setPhone] = useState('')
+  const [name, setName] = useState('')
   const [password, setPassword] = useState('')
   const [phoneModel, setPhoneModel] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -179,6 +180,7 @@ function UserWizard({
       setStep(1)
       setSchoolId('')
       setPhone('')
+      setName('')
       setPassword('')
       setPhoneModel('')
       setError(null)
@@ -191,7 +193,9 @@ function UserWizard({
       return
     }
     setError(null)
-    create.mutate({ school_id: schoolId, phone: phone.trim(), password })
+    const body: AccountCreateBody = { school_id: schoolId, phone: phone.trim(), password }
+    if (name.trim() !== '') body.name = name.trim()
+    create.mutate(body)
   }
 
   if (step === 2 && createdAccount) {
@@ -243,6 +247,16 @@ function UserWizard({
           autoComplete="off"
           value={phone}
           onChange={(event) => setPhone(event.target.value)}
+        />
+      </FilterField>
+      <FilterField id="account-create-name" label="备注名（选填）" hint="最多 50 字">
+        <input
+          className="input"
+          type="text"
+          autoComplete="off"
+          maxLength={50}
+          value={name}
+          onChange={(event) => setName(event.target.value)}
         />
       </FilterField>
       <FilterField id="account-create-password" label="易班口令" required>
@@ -399,6 +413,7 @@ function ManagerForm({
 }) {
   const [schoolId, setSchoolId] = useState('')
   const [phone, setPhone] = useState('')
+  const [name, setName] = useState('')
   const [password, setPassword] = useState('')
   const [deviceCode, setDeviceCode] = useState('')
   const [phoneModel, setPhoneModel] = useState('')
@@ -414,6 +429,7 @@ function ManagerForm({
     if (!open) {
       setSchoolId('')
       setPhone('')
+      setName('')
       setPassword('')
       setDeviceCode('')
       setPhoneModel('')
@@ -466,6 +482,7 @@ function ManagerForm({
       phone: phone.trim(),
       password,
     }
+    if (name.trim() !== '') body.name = name.trim()
     if (deviceCode.trim() !== '') body.device_code = deviceCode.trim()
     if (phoneModel.trim() !== '') body.phone_model = phoneModel.trim()
     // 走到这里 ownerEmail 必为空或已命中：留空＝自有，命中＝带 id。
@@ -507,6 +524,16 @@ function ManagerForm({
           autoComplete="off"
           value={phone}
           onChange={(event) => setPhone(event.target.value)}
+        />
+      </FilterField>
+      <FilterField id="account-create-name-manager" label="备注名（选填）" hint="最多 50 字">
+        <input
+          className="input"
+          type="text"
+          autoComplete="off"
+          maxLength={50}
+          value={name}
+          onChange={(event) => setName(event.target.value)}
         />
       </FilterField>
       <FilterField id="account-create-password" label="易班口令" required>

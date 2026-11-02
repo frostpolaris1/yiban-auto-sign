@@ -49,12 +49,15 @@ function account(
   phoneMasked: string,
   status: AccountStatus,
   schoolId: string,
+  name = '',
 ): Account {
   seq += 1
   return {
     id,
     school_id: schoolId,
     owner_user_id: 'user-1',
+    owner_email_masked: 'u***@example.com',
+    name,
     phone_masked: phoneMasked,
     status,
     reject_reason: status === 'rejected' ? '合成驳回理由' : '',
@@ -70,11 +73,11 @@ function account(
 export function showcaseAccounts(): AccountPage {
   return {
     items: [
-      account('acc-0001', '138****8000', 'pending', 'school-a'),
-      account('acc-0002', '139****9000', 'active', 'school-a'),
-      account('acc-0003', '135****0001', 'active', 'school-b'),
+      account('acc-0001', '138****8000', 'pending', 'school-a', '东区宿舍'),
+      account('acc-0002', '139****9000', 'active', 'school-a', '西区宿舍'),
+      account('acc-0003', '135****0001', 'active', 'school-b', '图书馆'),
       account('acc-0004', '138****8000', 'paused_admin', 'school-b'),
-      account('acc-0005', '139****9000', 'rejected', 'school-a'),
+      account('acc-0005', '139****9000', 'rejected', 'school-a', '待补照片'),
       account('acc-0006', '135****0001', 'credential_error', 'school-a'),
     ],
     next_cursor: '',

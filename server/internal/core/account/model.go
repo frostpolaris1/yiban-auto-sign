@@ -48,11 +48,15 @@ func (s Status) Valid() bool {
 func (s Status) Active() bool { return s == StatusActive }
 
 // Record 是一行 accounts 记录。
+//
+// OwnerEmail 是属主邮箱的明文，只在进程内用于生成掩码响应；
+// 入口层**不得**原样回显，掩码后才可以出服务端。
 type Record struct {
 	ID           string
 	SchoolID     string
 	OwnerUserID  string
 	Phone        string
+	Name         string
 	Status       Status
 	RejectReason string
 	ReviewedAt   *time.Time
@@ -61,14 +65,17 @@ type Record struct {
 	UpdatedAt    time.Time
 	DeletedAt    *time.Time
 	DeletedBy    string
+	OwnerEmail   string
 }
 
 // New 是创建账号的输入。ID 为空时由存储层补 UUIDv7。
+// Name 是可选备注名，空串表示未命名。
 type New struct {
 	ID          string
 	SchoolID    string
 	OwnerUserID string
 	Phone       string
+	Name        string
 }
 
 // Credential 是一行加密凭据。

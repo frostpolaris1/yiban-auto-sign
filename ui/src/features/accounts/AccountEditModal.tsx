@@ -7,9 +7,10 @@
  *
  * **口径**
  * 空表单不可提交；phone 前端校验 11 位、1 开头；两个 64 上限由控件封顶。
+ * 备注名是唯一回填字段：与打开时相同则不发，清空即删除备注。
  * school 字段不出现：P1 变更必 409，不做可点必败控件。
  * 被拒账号的入口与标题写「修改并重新提交」，模态里展示驳回理由。
- * 保存后回待审核的两种形状先说清：编辑被拒账号、改绑手机号。
+ * 只改备注名不重提；改凭据或改绑手机号才回待审核，模态文案先说清。
  */
 
 import { useEffect, useState, type ChangeEvent } from 'react'
@@ -22,9 +23,15 @@ import { accountUpdateError, type AccountUpdateDraft } from './drafts'
 
 const EMPTY_DRAFT: Required<AccountUpdateDraft> = {
   phone: '',
+  name: '',
   password: '',
   device_code: '',
   phone_model: '',
+}
+
+/** 备注名按码点比较，与服务端 trim + rune 计长同口径。 */
+function normalizeName(value: string | undefined): string {
+  return (value ?? '').trim()
 }
 
 type AccountEditModalProps = {
@@ -47,9 +54,12 @@ export function AccountEditModal({
   const [draft, setDraft] = useState<AccountUpdateDraft>(EMPTY_DRAFT)
   const validation = accountUpdateError(draft)
   const resubmit = account?.status === 'rejected'
+  // 备注名回填后与打开时的原值比较：没变不算一次编辑。
+  const nameChanged = normalizeName(draft.name) !== normalizeName(account?.name)
   // 判定逐字段对齐纯函数口径：密码原样（含纯空格，契约 minLength 1 合法），
   // 其余字段与 buildAccountUpdate 同样 trim——空格占位不算填写。
   const hasAny =
+    nameChanged ||
     (draft.password !== undefined && draft.password !== '') ||
     [draft.phone, draft.device_code, draft.phone_model].some((v) => (v ?? '').trim() !== '')
 
@@ -60,7 +70,7 @@ export function AccountEditModal({
   })
 
   useEffect(() => {
-    if (account) setDraft(EMPTY_DRAFT)
+    if (account) setDraft({ ...EMPTY_DRAFT, name: account.name })
   }, [account])
 
   return (
@@ -89,12 +99,20 @@ export function AccountEditModal({
     >
       {resubmit ? (
         <Alert tone="warning" title="已驳回">
-          驳回理由：{account?.reject_reason || '未填写'}。保存后重新提交，账号回到待审核。
+          驳回理由：{account?.reject_reason || '未填写'}。修改凭据后重新提交；
+          只改备注名不会重提，账号保持已驳回。
         </Alert>
       ) : null}
       <p className="app-muted">改绑手机号会回到待审核：审核结论绑定旧号。</p>
-      <p className="app-muted">四个字段都只写不读：留空表示不修改。</p>
+      <p className="app-muted">除备注名外，各字段只写不读：留空表示不修改。</p>
       <div className="app-form-stack">
+        <TextInput
+          id="account-edit-name"
+          label="备注名"
+          placeholder="留空＝清除备注"
+          maxLength={50}
+          {...field('name')}
+        />
         <TextInput
           id="account-edit-phone"
           label="手机号"

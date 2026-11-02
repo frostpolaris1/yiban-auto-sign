@@ -108,7 +108,7 @@ test('invariant 8: every account write entry is disabled with the read-only reas
   await expect(activeRow.locator('.app-deny-note')).toHaveText(READ_ONLY_REASON)
 
   // 读操作照常：筛选控件可用。
-  await expect(page.getByLabel('手机号筛选')).toBeEnabled()
+  await expect(page.getByLabel('账号筛选')).toBeEnabled()
   await expect(page.getByLabel('状态筛选')).toBeEnabled()
   await expect(page.getByLabel('学校筛选')).toBeEnabled()
 

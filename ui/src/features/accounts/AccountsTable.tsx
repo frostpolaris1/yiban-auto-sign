@@ -83,10 +83,11 @@ export function AccountsTable({
           <caption className="app-visually-hidden">账号列表</caption>
           <thead>
             <tr>
+              <th scope="col">备注名</th>
               <th scope="col">手机号</th>
               <th scope="col">学校 ID</th>
               <th scope="col">状态</th>
-              <th scope="col">归属用户</th>
+              <th scope="col">归属邮箱</th>
               <th scope="col">更新时间</th>
               <th scope="col">操作</th>
             </tr>
@@ -94,7 +95,7 @@ export function AccountsTable({
           <tbody ref={tbodyRef}>
             {error ? (
               <tr>
-                <td colSpan={6}>
+                <td colSpan={7}>
                   <span className="app-muted">{error}</span>{' '}
                   <Button variant="ghost" size="sm" onClick={onRetry}>
                     重试
@@ -105,7 +106,7 @@ export function AccountsTable({
 
             {!error && loading && rows.length === 0 ? (
               <tr>
-                <td colSpan={6} className="app-muted">
+                <td colSpan={7} className="app-muted">
                   加载中…
                 </td>
               </tr>
@@ -113,7 +114,7 @@ export function AccountsTable({
 
             {!error && !loading && rows.length === 0 ? (
               <tr>
-                <td colSpan={6}>
+                <td colSpan={7}>
                   <div>没有匹配的账号</div>
                   <div className="app-muted">调整筛选条件后重试。</div>
                 </td>
@@ -128,6 +129,13 @@ export function AccountsTable({
                 return (
                   <tr key={account.id} className="app-account-row">
                     <td>
+                      {account.name === '' ? (
+                        <span className="app-muted">—</span>
+                      ) : (
+                        account.name
+                      )}
+                    </td>
+                    <td>
                       <span className="data-cell-mono">{account.phone_masked}</span>
                     </td>
                     <td className="data-cell-mono">{account.school_id}</td>
@@ -136,7 +144,7 @@ export function AccountsTable({
                         已删除
                       </Badge>
                     </td>
-                    <td className="data-cell-mono">{account.owner_user_id}</td>
+                    <td className="data-cell-mono">{account.owner_email_masked}</td>
                     <td className="data-cell-mono">{formatDateTime(account.updated_at)}</td>
                     <td>
                       <div className="data-cell-actions app-account-actions">
@@ -191,6 +199,13 @@ export function AccountsTable({
                   }}
                 >
                   <td>
+                    {account.name === '' ? (
+                      <span className="app-muted">—</span>
+                    ) : (
+                      account.name
+                    )}
+                  </td>
+                  <td>
                     <button
                       type="button"
                       className="app-cell-link data-cell-mono"
@@ -209,7 +224,7 @@ export function AccountsTable({
                       {statusLabel(account.status)}
                     </Badge>
                   </td>
-                  <td className="data-cell-mono">{account.owner_user_id}</td>
+                  <td className="data-cell-mono">{account.owner_email_masked}</td>
                   <td className="data-cell-mono">{formatDateTime(account.updated_at)}</td>
                   <td>
                     <div className="data-cell-actions app-account-actions">
