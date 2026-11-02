@@ -6,9 +6,10 @@
  * `features/accounts` 纯逻辑：无 React、无网络、无 DOM。
  *
  * **口径**
- * PATCH 四字段全 write-only：留空＝不修改，只带填写的字段。
+ * 凭据字段全 write-only：留空＝不修改，只带填写的字段。
+ * 备注名是唯一回填字段：与打开模态时的原值相同则不发，空串表示清空。
  * 除密码外首尾空格一律去掉；密码原样透传（服务端与登录表单都不动空格）。
- * phone 必须匹配契约 pattern（11 位、1 开头）。
+ * phone 必须匹配契约 pattern（11 位、1 开头）；备注名最多 50 个码点。
  * location auto 不带经纬度与理由；fixed 必填且过 WGS84 范围；理由只在不空时携带。
  * 校验不过时构造函数抛错；例外＝PATCH 空草稿返回 `{}`，
  * 由组件层的「至少填一项」把关（契约 minProperties: 1 在 UI 入口兑现）。
@@ -18,32 +19,51 @@ import type { AccountLocationUpdate, AccountUpdate } from '@/lib/api/account'
 
 export type AccountUpdateDraft = {
   phone?: string
+  name?: string
   password?: string
   device_code?: string
   phone_model?: string
 }
 
 const PHONE_PATTERN = /^1[0-9]{10}$/
+const NAME_MAX_CHARS = 50
 
 function clean(value: string | undefined): string {
   return (value ?? '').trim()
 }
 
-/** 留空合法；填写了 phone 时必须匹配契约 pattern。 */
+/** 按 Unicode 码点计长，与服务端的 rune 计数同口径。 */
+function charCount(value: string): number {
+  return Array.from(value).length
+}
+
+/** 留空合法；填写了 phone 时必须匹配契约 pattern；备注名不超过 50 字。 */
 export function accountUpdateError(draft: AccountUpdateDraft): string | null {
   const phone = clean(draft.phone)
   if (phone !== '' && !PHONE_PATTERN.test(phone)) {
     return '手机号需 11 位、1 开头'
   }
+  if (draft.name !== undefined && charCount(clean(draft.name)) > NAME_MAX_CHARS) {
+    return '备注名最多 50 字'
+  }
   return null
 }
 
-export function buildAccountUpdate(draft: AccountUpdateDraft): AccountUpdate {
+/**
+ * 构造 PATCH 体。
+ * originalName 是模态打开时的备注名：相同则不发，避免「只改口令」顺带
+ * 把一个未变的备注名写进审计；清空时 originalName 非空、name 为空串，照常发送。
+ */
+export function buildAccountUpdate(draft: AccountUpdateDraft, originalName = ''): AccountUpdate {
   const error = accountUpdateError(draft)
   if (error !== null) {
     throw new Error(error)
   }
   const body: AccountUpdate = {}
+  const name = clean(draft.name)
+  if (draft.name !== undefined && name !== clean(originalName)) {
+    body.name = name
+  }
   const phone = clean(draft.phone)
   if (phone !== '') body.phone = phone
   // 密码不 trim：服务端与登录表单都不动空格，trim 会静默改写用户输入的凭据。

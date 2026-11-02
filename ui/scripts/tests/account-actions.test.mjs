@@ -39,6 +39,25 @@ test('the password is sent verbatim, never trimmed', () => {
   assert.deepEqual(buildAccountUpdate({ password: 'pw' }), { password: 'pw' })
 })
 
+test('the name is sent only when it differs from the original', () => {
+  assert.deepEqual(buildAccountUpdate({ name: '' }, ''), {})
+  assert.deepEqual(buildAccountUpdate({ name: '  宿舍甲  ' }, '宿舍甲'), {})
+  assert.deepEqual(buildAccountUpdate({ name: '宿舍乙' }, '宿舍甲'), { name: '宿舍乙' })
+  // 清空备注必须真的发出空串，否则用户无法删掉旧名字。
+  assert.deepEqual(buildAccountUpdate({ name: '  ' }, '宿舍甲'), { name: '' })
+  // 没带 name 键的调用方（旧单测与程序化调用）不受影响。
+  assert.deepEqual(buildAccountUpdate({}), {})
+})
+
+test('the name is limited to 50 code points', () => {
+  assert.equal(accountUpdateError({ name: '测'.repeat(50) }), null)
+  assert.match(accountUpdateError({ name: '测'.repeat(51) }), /50/)
+  // 码点计长：50 个 emoji 是 50 个码点，不该按 UTF-16 长度算成 100。
+  assert.equal(accountUpdateError({ name: '😀'.repeat(50) }), null)
+  assert.match(accountUpdateError({ name: '😀'.repeat(51) }), /50/)
+  assert.throws(() => buildAccountUpdate({ name: '测'.repeat(51) }))
+})
+
 test('an invalid phone is refused with a named cause', () => {
   assert.match(accountUpdateError({ phone: '123' }), /11 位/)
   assert.match(accountUpdateError({ phone: '23800138001' }), /11 位/)

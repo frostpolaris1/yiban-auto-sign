@@ -5,6 +5,12 @@ import { buildAccountSearch } from '../../src/lib/api/account.ts'
 import { listAllSchools } from '../../src/lib/api/school.ts'
 import { editActionLabel } from '../../src/features/accounts/display.ts'
 import {
+  completePhoneQuery,
+  exactMatchIds,
+  isCompleteEmailQuery,
+  isExactIdentifier,
+} from '../../src/features/accounts/search.ts'
+import {
   can,
   canChangePause,
   denyReason,
@@ -227,4 +233,51 @@ test('the edit entry says resubmit only for a rejected row', () => {
   for (const status of ['pending', 'active', 'paused_admin', 'paused_user', 'credential_error']) {
     assert.equal(editActionLabel(status), '编辑', status)
   }
+})
+
+test('a complete phone normalizes separators and the 86 prefix', () => {
+  assert.equal(completePhoneQuery('13800138000'), '13800138000')
+  assert.equal(completePhoneQuery('+86 138-0013-8000'), '13800138000')
+  assert.equal(completePhoneQuery('8613800138000'), '13800138000')
+  assert.equal(completePhoneQuery('1380013800'), null)
+  assert.equal(completePhoneQuery('138001380000'), null)
+  // 含 @ 或字母的串不是手机号：合法邮箱不能被剥成 11 位号码。
+  assert.equal(completePhoneQuery('13800138000@example.com'), null)
+  assert.equal(completePhoneQuery('room13800138000'), null)
+  assert.equal(completePhoneQuery('+++'), null)
+  assert.equal(completePhoneQuery(''), null)
+})
+
+test('a complete email excludes masks and partial addresses', () => {
+  assert.equal(isCompleteEmailQuery('alpha.owner@example.com'), true)
+  assert.equal(isCompleteEmailQuery('ops@intranet'), true)
+  assert.equal(isCompleteEmailQuery('dorm@east'), true)
+  assert.equal(isCompleteEmailQuery('a***@example.com'), false)
+  assert.equal(isCompleteEmailQuery('alpha.owner'), false)
+  assert.equal(isCompleteEmailQuery('a@@b'), false)
+  assert.equal(isCompleteEmailQuery('alpha owner@example.com'), false)
+  assert.equal(isCompleteEmailQuery(''), false)
+  assert.equal(isExactIdentifier('13800138000'), true)
+  assert.equal(isExactIdentifier('13800138000@example.com'), true)
+  assert.equal(isExactIdentifier('alpha.owner@example.com'), true)
+  assert.equal(isExactIdentifier('a***@example.com'), false)
+})
+
+test('only exact identifiers or exact display names are highlighted', () => {
+  const rows = [
+    { id: 'a', display_name: '账号8000' },
+    { id: 'b', display_name: '东区宿舍' },
+    { id: 'c', display_name: '账号8001' },
+  ]
+  assert.deepEqual([...exactMatchIds(rows, '')], [])
+  // 完整手机号/邮箱由服务端精确过滤，整页都是命中行。
+  assert.deepEqual([...exactMatchIds(rows, '+86 138 0013 8000')], ['a', 'b', 'c'])
+  assert.deepEqual([...exactMatchIds(rows, 'ALPHA@EXAMPLE.COM')], ['a', 'b', 'c'])
+  // 完整备注名只高亮全等行；片段即使只剩一行也不高亮。
+  assert.deepEqual([...exactMatchIds(rows, '账号8000')], ['a'])
+  assert.deepEqual([...exactMatchIds(rows, '东区宿舍')], ['b'])
+  assert.deepEqual([...exactMatchIds(rows, '账号')], [])
+  assert.deepEqual([...exactMatchIds(rows, '东区')], [])
+  // 可见掩码不是完整标识，也不是完整备注名。
+  assert.deepEqual([...exactMatchIds(rows, 'o***@example.com')], [])
 })

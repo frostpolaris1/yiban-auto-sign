@@ -56,7 +56,8 @@ type Credential = coreaccount.Credential
 // 零行报 conflict（errs.CodeConflict）。**状态迁移规则归用例层，不归本端口**。
 // 目标状态为 pending 时清空驳回理由与审核戳：pending 不属于任何已审轮次。
 //
-// Get、GetForUpdate、SetStatus、SoftDelete、Restore、Credential、UpdatePhone、Review 都套范围。
+// Get、GetForUpdate、SetStatus、SoftDelete、Restore、Credential、UpdatePhone、
+// UpdateName、Review 都套范围。
 // 越权行报 not_found（errs.CodeNotFound），**绝不报 forbidden**。
 //
 // GetForUpdate 在事务内读账号并持有行锁到事务结束。
@@ -64,7 +65,8 @@ type Credential = coreaccount.Credential
 //
 // List 按作用域、可选院校、状态与搜索串过滤，并用游标分页。
 // 过滤条件与作用域是**与**关系：未绑定院校的过滤结果为空，不是全量。
-// includeDeleted 置真时软删行也入选；缺省假，行为不变（8v8⑥）。
+// 搜索串同时匹配备注名、属主邮箱与手机号；适配器负责具体口径。
+// includeDeleted 置真时软删行也入选；缺省假，行为不变。
 //
 // Review 只推进 pending 行：通过写 active，拒绝写 rejected 并记理由。
 // 非 pending 行报 conflict。
@@ -75,6 +77,7 @@ type Repo interface {
 	GetForUpdate(ctx context.Context, scope corescope.Scope, id string) (Record, error)
 	List(ctx context.Context, scope corescope.Scope, schoolID string, status Status, query, cursor string, limit int, includeDeleted bool) ([]Record, string, error)
 	UpdatePhone(ctx context.Context, scope corescope.Scope, id, phone string, at time.Time) (Record, error)
+	UpdateName(ctx context.Context, scope corescope.Scope, id, name string, at time.Time) (Record, error)
 	SetStatus(ctx context.Context, scope corescope.Scope, id string, from, to Status, at time.Time, reason string) (Record, error)
 	Review(ctx context.Context, scope corescope.Scope, id string, approve bool, reason, by string, at time.Time) (Record, error)
 	SoftDelete(ctx context.Context, scope corescope.Scope, id, by string, at time.Time) error

@@ -56,9 +56,12 @@ export const SCHOOLS = [
 ] as const
 
 function account(overrides: Partial<Account> & Pick<Account, 'id'>): Account {
-  return {
+  const base: Account = {
     school_id: 'school-a',
     owner_user_id: 'user-1',
+    owner_email_masked: 'o***@example.com',
+    name: '',
+    display_name: '',
     phone_masked: '138****8000',
     status: 'pending',
     deleted_at: null,
@@ -69,17 +72,34 @@ function account(overrides: Partial<Account> & Pick<Account, 'id'>): Account {
     updated_at: '2026-10-20T08:41:00Z',
     ...overrides,
   }
+  // 与服务端同一口径：name 为空时派生「账号+手机尾 4 位」。
+  return {
+    ...base,
+    display_name:
+      overrides.display_name ??
+      (base.name.trim() !== '' ? base.name.trim() : `账号${base.phone_masked.slice(-4)}`),
+  }
+}
+
+/** 完整邮箱形状，与服务端 isCompleteEmailQuery 同形。 */
+function isCompleteEmail(value: string): boolean {
+  const term = value.trim()
+  if (term.split('@').length !== 2 || term.includes('*')) return false
+  const [local, domain] = term.split('@')
+  return local !== '' && domain !== '' && !/\s/.test(term)
 }
 
 /** 三个状态各一条。掩码由登记号 13800138000 / 13900139000 / 13500010001 派生。 */
 export const ACCOUNTS: Account[] = [
-  account({ id: 'acc-1', phone_masked: '138****8000', status: 'pending' }),
+  account({ id: 'acc-1', phone_masked: '138****8000', status: 'pending', name: '东区宿舍' }),
   account({
     id: 'acc-2',
     school_id: 'school-b',
     owner_user_id: 'user-2',
+    owner_email_masked: 't***@example.com',
     phone_masked: '139****9000',
     status: 'active',
+    name: '西区宿舍',
   }),
   account({
     id: 'acc-3',
@@ -139,6 +159,11 @@ export type MockOptions = {
    * 缺省取内置登记表；自定义夹具的账号要在这里补原号。
    */
   rawPhones?: Record<string, string>
+  /**
+   * 属主用户 id → 原邮箱。完整邮箱检索要比原值；缺省取内置登记表。
+   * 自定义属主要在 here 补原邮箱，否则完整邮箱精确检索按无地址处理。
+   */
+  ownerEmails?: Record<string, string>
   signError?: { status: number; code: string; message: string }
   verifyError?: { status: number; code: string; message: string }
   verifyResult?: AccountVerifyResult
@@ -209,6 +234,64 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
     ['acc-del', '13100000000'],
     ...Object.entries(options.rawPhones ?? {}),
   ])
+  // 完整邮箱精确检索比原值；列表只展示掩码。
+  const ownerEmails = new Map<string, string>([
+    ['user-1', options.email ?? SESSION_EMAIL],
+    ['user-2', 'target.two@example.com'],
+    ...LOOKUP_USERS.map((item) => [item.id, item.email] as [string, string]),
+    ...Object.entries(options.ownerEmails ?? {}),
+  ])
+
+  /**
+   * 与服务端同口径的列表检索：
+   * 完整手机号/邮箱精确直达；其余输入按 display_name 子串、可见邮箱掩码、
+   * 手机号前 1..3 位或后 4 位发现。5..10 位数字不参与号码匹配。
+   */
+  const filterAccounts = (items: Account[], query: string): Account[] => {
+    const term = query.trim()
+    if (term === '') return items
+    const lower = term.toLowerCase()
+    const phoneShaped = /^[0-9+\-.\s()]+$/.test(term) && /\d/.test(term)
+    const digits = phoneShaped ? term.replace(/\D/g, '') : ''
+    const normalized =
+      digits.length === 13 && digits.startsWith('86') ? digits.slice(2) : digits
+    if (phoneShaped && normalized.length === 11) {
+      // 完整手机号，或备注名等于**归一后**的 11 位号码（与服务端同口径）。
+      return items.filter(
+        (item) =>
+          rawPhones.get(item.id) === normalized ||
+          item.display_name.toLowerCase() === normalized,
+      )
+    }
+    if (isCompleteEmail(term)) {
+      // 完整邮箱或同值的备注名：含 @ 的自定义名仍可精确搜到。
+      return items.filter(
+        (item) =>
+          (ownerEmails.get(item.owner_user_id) ?? '').toLowerCase() === lower ||
+          item.display_name.toLowerCase() === lower,
+      )
+    }
+    // 可见掩码只保留一个首字符；更长的前缀会暴露隐藏的本地部。
+    const mask = (() => {
+      if (!term.includes('***')) return null
+      const parts = lower.split('***')
+      if (parts.length !== 2) return null
+      if (Array.from(parts[0]).length !== 1 || !parts[1].startsWith('@')) return null
+      return { prefix: parts[0], suffix: parts[1] }
+    })()
+    return items.filter((item) => {
+      if (item.display_name.toLowerCase().includes(lower)) return true
+      if (mask) {
+        const email = item.owner_email_masked.toLowerCase()
+        if (email.startsWith(mask.prefix) && email.endsWith(mask.suffix)) return true
+      }
+      if (!phoneShaped) return false
+      const raw = rawPhones.get(item.id) ?? ''
+      if (normalized.length > 0 && normalized.length <= 3) return raw.startsWith(normalized)
+      if (normalized.length === 4) return raw.endsWith(normalized)
+      return false
+    })
+  }
 
   const json = (route: Route, body: unknown, status = 200) =>
     route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
@@ -356,11 +439,21 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
         const { status, code, message } = options.createError
         return fail(route, status, code, message)
       }
-      const input = (body ?? {}) as { school_id?: string; phone?: string; owner_user_id?: string }
+      const input = (body ?? {}) as {
+        school_id?: string
+        phone?: string
+        name?: string
+        owner_user_id?: string
+      }
+      const owner = LOOKUP_USERS.find((item) => item.id === input.owner_user_id)
       const created = account({
         id: 'acc-new',
         school_id: input.school_id ?? 'school-a',
         owner_user_id: input.owner_user_id ?? 'user-1',
+        owner_email_masked: owner
+          ? `${owner.email.slice(0, 1)}***${owner.email.slice(owner.email.indexOf('@'))}`
+          : 'o***@example.com',
+        name: input.name?.trim() ?? '',
         phone_masked: input.phone
           ? `${input.phone.slice(0, 3)}****${input.phone.slice(-4)}`
           : '138****8000',
@@ -378,7 +471,8 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       // 软删行只在 include_deleted=true 时入选，形状与服务端一致。
       const items = includeDeleted ? [...base, ...deletedAccounts] : base
       const next = options.nextCursors?.[cursor] ?? ''
-      return json(route, { items, next_cursor: next })
+      const q = url.searchParams.get('q') ?? ''
+      return json(route, { items: filterAccounts(items, q), next_cursor: next })
     }
 
     const match = url.pathname.match(
@@ -397,6 +491,9 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
 
     if (!action && request.method() === 'PATCH') {
       const updates = (body ?? {}) as Record<string, unknown>
+      if (typeof updates.name === 'string') {
+        found.name = updates.name.trim()
+      }
       let rebind = false
       if (typeof updates.phone === 'string') {
         // 原号未知时按改绑处理：夹具里没有原号，宁可让用例显性失败，
@@ -410,9 +507,9 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
         typeof updates.password === 'string' ||
         typeof updates.device_code === 'string' ||
         typeof updates.phone_model === 'string'
-      // 与服务端同口径：改绑或编辑被拒账号回待审核，清理由与审核戳；
+      // 与服务端同口径：改绑或改凭据才把被拒账号回待审核；只改备注名不重提。
       // 改绑优先于凭据恢复。停在待审核的账号改绑仍是 pending。
-      if (rebind || found.status === 'rejected') {
+      if (rebind || (found.status === 'rejected' && credentialEdit)) {
         found.status = 'pending'
         found.reject_reason = ''
         found.reviewed_at = null
@@ -420,6 +517,9 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       } else if (credentialEdit && found.status === 'credential_error') {
         found.status = 'active'
       }
+      // 备注名为空时回落到默认名；改绑手机号后尾号也要跟着变。
+      found.display_name =
+        found.name !== '' ? found.name : `账号${found.phone_masked.slice(-4)}`
       found.updated_at = '2026-10-28T09:30:00Z'
       return json(route, found)
     }

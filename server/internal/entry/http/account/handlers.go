@@ -11,8 +11,8 @@
 // Handler、NewHandler；Service、Authorizer 是装配接缝。
 //
 // # 口径
-// 响应只给 phone_masked；原始手机号在 Record 里，**不出本层**。
-// 口令与设备码只进请求体，本层不记录、不回显。
+// 响应只给 phone_masked 与 owner_email_masked；原始手机号与邮箱在 Record 里，
+// **不出本层**。口令与设备码只进请求体，本层不记录、不回显。
 // phone_model 在 P1 存在凭据密文里，契约的 Account 响应不声明该字段。
 package account
 
@@ -129,6 +129,7 @@ func (h *Handler) Create(c *gin.Context, _ oapi.AccountCreateParams) {
 	in := appaccount.CreateInput{
 		SchoolID:   body.SchoolId,
 		Phone:      body.Phone,
+		Name:       stringOf(body.Name),
 		Password:   body.Password,
 		DeviceCode: stringOf(body.DeviceCode),
 		PhoneModel: stringOf(body.PhoneModel),
@@ -174,6 +175,7 @@ func (h *Handler) Update(c *gin.Context, id oapi.AccountID, _ oapi.AccountUpdate
 	record, err := h.svc.Update(c.Request.Context(), scope, id, appaccount.UpdateInput{
 		SchoolID:   body.SchoolId,
 		Phone:      body.Phone,
+		Name:       body.Name,
 		Password:   body.Password,
 		DeviceCode: body.DeviceCode,
 		PhoneModel: body.PhoneModel,
@@ -303,11 +305,14 @@ func (h *Handler) principal(c *gin.Context) (corescope.Scope, appaudit.Actor, bo
 
 func accountResponse(record appaccount.Record) oapi.Account {
 	out := oapi.Account{
-		Id:          record.ID,
-		SchoolId:    record.SchoolID,
-		OwnerUserId: record.OwnerUserID,
-		PhoneMasked: mask.MaskPhone(record.Phone),
-		Status:      oapi.AccountStatus(record.Status),
+		Id:               record.ID,
+		SchoolId:         record.SchoolID,
+		OwnerUserId:      record.OwnerUserID,
+		OwnerEmailMasked: mask.EmailLabel(record.OwnerEmail),
+		PhoneMasked:      mask.MaskPhone(record.Phone),
+		Name:             record.Name,
+		DisplayName:      record.DisplayName,
+		Status:           oapi.AccountStatus(record.Status),
 		// 拒绝理由是自由文本；写库时保留原文，**出口一律掩码**。
 		// 审核、读取、列表三条响应同源，故只在这里处理一次。
 		RejectReason: mask.MaskText(record.RejectReason),

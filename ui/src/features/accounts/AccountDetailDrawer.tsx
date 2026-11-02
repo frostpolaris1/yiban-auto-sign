@@ -96,11 +96,15 @@ export function AccountDetailDrawer({
         <dl className="app-detail-list">
           <dt>账号 ID</dt>
           <dd className="data-cell-mono">{data.id}</dd>
+          <dt>备注名</dt>
+          <dd>{data.display_name}</dd>
           <dt>手机号</dt>
           <dd className="data-cell-mono">{data.phone_masked}</dd>
           <dt>学校</dt>
           <dd>{schoolName}</dd>
-          <dt>归属用户</dt>
+          <dt>归属邮箱</dt>
+          <dd className="data-cell-mono">{data.owner_email_masked}</dd>
+          <dt>归属用户 ID</dt>
           <dd className="data-cell-mono">{data.owner_user_id}</dd>
           <dt>状态</dt>
           <dd>

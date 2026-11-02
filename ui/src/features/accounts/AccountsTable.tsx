@@ -39,6 +39,8 @@ type AccountsTableProps = {
   loading: boolean
   error: string | null
   role: Role | null
+  /** 精确命中的行 id：完整手机号/邮箱或完整备注名。 */
+  highlightIds: ReadonlySet<string>
   pageIndex: number
   hasPrevious: boolean
   hasNext: boolean
@@ -58,6 +60,7 @@ export function AccountsTable({
   loading,
   error,
   role,
+  highlightIds,
   pageIndex,
   hasPrevious,
   hasNext,
@@ -83,10 +86,11 @@ export function AccountsTable({
           <caption className="app-visually-hidden">账号列表</caption>
           <thead>
             <tr>
+              <th scope="col">备注名</th>
               <th scope="col">手机号</th>
               <th scope="col">学校 ID</th>
               <th scope="col">状态</th>
-              <th scope="col">归属用户</th>
+              <th scope="col">归属邮箱</th>
               <th scope="col">更新时间</th>
               <th scope="col">操作</th>
             </tr>
@@ -94,7 +98,7 @@ export function AccountsTable({
           <tbody ref={tbodyRef}>
             {error ? (
               <tr>
-                <td colSpan={6}>
+                <td colSpan={7}>
                   <span className="app-muted">{error}</span>{' '}
                   <Button variant="ghost" size="sm" onClick={onRetry}>
                     重试
@@ -105,7 +109,7 @@ export function AccountsTable({
 
             {!error && loading && rows.length === 0 ? (
               <tr>
-                <td colSpan={6} className="app-muted">
+                <td colSpan={7} className="app-muted">
                   加载中…
                 </td>
               </tr>
@@ -113,7 +117,7 @@ export function AccountsTable({
 
             {!error && !loading && rows.length === 0 ? (
               <tr>
-                <td colSpan={6}>
+                <td colSpan={7}>
                   <div>没有匹配的账号</div>
                   <div className="app-muted">调整筛选条件后重试。</div>
                 </td>
@@ -121,12 +125,23 @@ export function AccountsTable({
             ) : null}
 
             {rows.map((account) => {
+              const exact = highlightIds.has(account.id)
               // 软删行只展示徽标与恢复菜单：其余动作对已删行都是 404。
               if (account.deleted_at != null) {
                 // 已删行不绑点击也不给「查看」：详情与设备刷新对已删行必 404，
                 // 唯一出口是行菜单的恢复。
                 return (
-                  <tr key={account.id} className="app-account-row">
+                  <tr
+                    key={account.id}
+                    className={`app-account-row${exact ? ' app-account-row-exact' : ''}`}
+                    data-exact-match={exact ? 'true' : undefined}
+                  >
+                    <td>
+                      <div className="app-name-cell">
+                        <span>{account.display_name}</span>
+                        {exact ? <Badge tone="info">精确匹配</Badge> : null}
+                      </div>
+                    </td>
                     <td>
                       <span className="data-cell-mono">{account.phone_masked}</span>
                     </td>
@@ -136,7 +151,7 @@ export function AccountsTable({
                         已删除
                       </Badge>
                     </td>
-                    <td className="data-cell-mono">{account.owner_user_id}</td>
+                    <td className="data-cell-mono">{account.owner_email_masked}</td>
                     <td className="data-cell-mono">{formatDateTime(account.updated_at)}</td>
                     <td>
                       <div className="data-cell-actions app-account-actions">
@@ -179,7 +194,8 @@ export function AccountsTable({
               return (
                 <tr
                   key={account.id}
-                  className="app-account-row"
+                  className={`app-account-row${exact ? ' app-account-row-exact' : ''}`}
+                  data-exact-match={exact ? 'true' : undefined}
                   tabIndex={0}
                   onClick={(event) => onOpenDetail(account, event.currentTarget)}
                   onKeyDown={(event) => {
@@ -190,6 +206,12 @@ export function AccountsTable({
                     }
                   }}
                 >
+                  <td>
+                    <div className="app-name-cell">
+                      <span>{account.display_name}</span>
+                      {exact ? <Badge tone="info">精确匹配</Badge> : null}
+                    </div>
+                  </td>
                   <td>
                     <button
                       type="button"
@@ -209,7 +231,7 @@ export function AccountsTable({
                       {statusLabel(account.status)}
                     </Badge>
                   </td>
-                  <td className="data-cell-mono">{account.owner_user_id}</td>
+                  <td className="data-cell-mono">{account.owner_email_masked}</td>
                   <td className="data-cell-mono">{formatDateTime(account.updated_at)}</td>
                   <td>
                     <div className="data-cell-actions app-account-actions">

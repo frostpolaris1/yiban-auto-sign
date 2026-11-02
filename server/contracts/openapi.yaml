@@ -780,10 +780,27 @@ paths:
           in: query
           required: false
           description: |
-            Phone filter. Non-digits are stripped. A leading prefix of one to
-            three digits, a trailing four-digit suffix, or the exact 11-digit
-            phone matches. A 5..10 digit fragment never matches. The exact
-            11-digit phone still matches, so the number stays enumerable.
+            A complete phone (11 digits, optionally prefixed by 86/+86) matches
+            the phone exactly, or an effective remark name equal to the
+            normalized 11 digits. A phone query consists only of digits and the
+            separators + - . ( ) and whitespace; letters or @ make it a
+            non-phone query.
+            A complete email (exactly one @, non-empty sides, no whitespace)
+            matches the owner email exactly, case-insensitively, or an
+            identical effective remark name; the raw email is reachable only
+            through a complete address.
+            Any other query is a discovery filter:
+            - the effective remark name (the name when set, otherwise "账号"
+              followed by the last four phone digits) matches as a
+              case-insensitive literal substring, so "账号" finds every
+              unnamed account;
+            - a masked owner email matches only when it keeps exactly the one
+              visible leading character and the visible domain, e.g.
+              a***@example.com; longer prefixes do not match;
+            - in a phone-shaped query, a prefix of one to three digits or a
+              trailing four-digit suffix matches; a 5..10 digit fragment never
+              matches a phone.
+            % and _ are literal characters. At most 254 characters.
             Login and password-reset rate limiting is a deployment precondition
             before public exposure (P7).
           schema: { type: string }
@@ -813,9 +830,10 @@ paths:
         owner_user_id defaults to the caller. Only master and admin may set it
         to another user, and the referenced user must exist and not be
         soft-deleted: an unknown or deleted owner answers 404. The account
-        starts in status pending. The global active-account limit and the
-        per-owner quota both answer 429 capacity_exceeded; the limiter 429
-        carries Retry-After and the quota 429 does not. Changes are rate
+        starts in status pending. The optional name is a remark label; it is
+        trimmed and limited to 50 characters. The global active-account limit
+        and the per-owner quota both answer 429 capacity_exceeded; the limiter
+        429 carries Retry-After and the quota 429 does not. Changes are rate
         limited per caller.
       x-roles: [master, admin, user]
       parameters:
@@ -866,11 +884,14 @@ paths:
       summary: Update account fields.
       description: |
         Status changes come from the review flow and from credential recovery.
-        Editing a rejected account returns it to pending. Changing the phone
-        returns a non-pending account to pending: a review decision binds to
-        the old phone. Both clear reject_reason and the review stamp. A
-        password or device edit recovers a credential_error account to active;
-        a phone change wins over that recovery. Other edits keep the status.
+        Editing the credentials of a rejected account (phone, password, device
+        code or model) returns it to pending. A name-only edit is not a
+        resubmission: the remark is not review material, so a rejected account
+        stays rejected. Changing the phone returns a non-pending account to
+        pending: a review decision binds to the old phone. Both resubmission
+        paths clear reject_reason and the review stamp. A password or device
+        edit recovers a credential_error account to active; a phone change wins
+        over that recovery. Other edits keep the status.
         Review and pause have dedicated endpoints.
         Changing school is forbidden in P1 (decision 12.3) and returns
         conflict. Changes are rate limited per caller; a 429 carries
@@ -2269,7 +2290,10 @@ components:
         - id
         - school_id
         - owner_user_id
+        - owner_email_masked
         - phone_masked
+        - name
+        - display_name
         - status
         - reject_reason
         - reviewed_at
@@ -2281,9 +2305,26 @@ components:
         id: { type: string }
         school_id: { type: string }
         owner_user_id: { type: string }
+        owner_email_masked:
+          type: string
+          description: |
+            Masked email of the owner. The raw email never leaves the server.
+            Unmaskable input reads as "unknown".
         phone_masked:
           type: string
           description: Masked phone. The raw phone never leaves the server.
+        name:
+          type: string
+          maxLength: 50
+          description: |
+            Remark name. Empty when unset. Trimmed free text; it is not a
+            credential and does not take part in review or scheduling.
+        display_name:
+          type: string
+          description: |
+            Effective remark shown in lists: the name when set, otherwise
+            "账号" followed by the last four digits of the phone. The remark
+            search matches this value, so the default label is findable.
         status:
           $ref: '#/components/schemas/AccountStatus'
         reject_reason:
@@ -2321,6 +2362,10 @@ components:
         phone:
           type: string
           pattern: '^1[0-9]{10}$'
+        name:
+          type: string
+          maxLength: 50
+          description: Optional remark name; trimmed. Empty means unnamed.
         password: { type: string, minLength: 1 }
         device_code: { type: string, maxLength: 64 }
         phone_model: { type: string, maxLength: 64 }
@@ -2333,14 +2378,21 @@ components:
           description: |
             A different value returns 409 conflict. Changing school is
             forbidden in P1 (decision 12.3).
+        name:
+          type: string
+          maxLength: 50
+          description: |
+            Remark name; trimmed. An empty string clears it. A name-only edit
+            keeps the status, including rejected.
         phone:
           type: string
           pattern: '^1[0-9]{10}$'
           description: |
-            A new phone returns the account to pending: the review decision
-            binds to the old phone. An unchanged phone is not a rebind, so it
-            keeps the status unless the account is rejected; any edit of a
-            rejected account returns it to pending.
+            A new phone returns a non-pending account to pending: the review
+            decision binds to the old phone. An unchanged phone is not a
+            rebind and keeps the status. On a rejected account only a
+            credential edit (a new phone, password, device code or model)
+            resubmits; a name-only edit or an unchanged phone does not.
         password: { type: string, minLength: 1 }
         device_code: { type: string, maxLength: 64 }
         phone_model: { type: string, maxLength: 64 }

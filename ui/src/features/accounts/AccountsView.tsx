@@ -53,6 +53,7 @@ import { AccountsTable } from './AccountsTable'
 import { currentCursor, emptyCursorStack, goNext, goPrevious, hasPreviousPage } from '@/lib/cursor'
 import { buildAccountUpdate, buildLocationUpdate, type AccountUpdateDraft, type LocationDraft } from './drafts'
 import { can, denyReason, type AccountActionKind } from './permissions'
+import { exactMatchIds } from './search'
 
 type MutationInput = {
   account: Account
@@ -77,7 +78,7 @@ function successText(kind: AccountActionKind, account: Account): string {
 
 /** 删除成功后行必消失：焦点直接落筛选输入，不让焦点掉到 body。 */
 function focusAfterRowRemoval() {
-  document.querySelector<HTMLElement>('[aria-label="手机号筛选"]')?.focus()
+  document.querySelector<HTMLElement>('[aria-label="账号筛选"]')?.focus()
 }
 
 type AccountsViewProps = {
@@ -327,6 +328,8 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
 
   const rows = accountsQuery.data?.items ?? []
   const error = accountsQuery.isError ? describeApiError(accountsQuery.error) : null
+  // 高亮只认已提交给服务端的 q：输入框还在防抖时不提前标。
+  const highlightIds = exactMatchIds(rows, filters.q)
 
   return (
     <>
@@ -337,7 +340,7 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
             账号 <span className="accent">列表</span>
           </>
         }
-        subtitle="按学校、状态与手机号筛选。点击任意行查看只读详情。"
+        subtitle="按学校、状态或备注名筛选；完整手机号/邮箱精确命中并高亮。"
         actions={
           <>
             {createReason ? <span className="app-deny-note">{createReason}</span> : null}
@@ -402,6 +405,7 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
           loading={accountsQuery.isLoading || accountsQuery.isFetching}
           error={error}
           role={role}
+          highlightIds={highlightIds}
           pageIndex={stack.index}
           hasPrevious={hasPreviousPage(stack)}
           hasNext={Boolean(accountsQuery.data?.next_cursor) && !accountsQuery.isFetching}
@@ -469,7 +473,7 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
           shapeMutation.mutate({
             account: editTarget,
             op: 'update',
-            body: buildAccountUpdate(draft),
+            body: buildAccountUpdate(draft, editTarget.name),
           })
         }}
       />

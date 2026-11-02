@@ -488,9 +488,22 @@ type Account struct {
 	// DeletedAt Soft-delete timestamp. Null for live rows; non-null only when the
 	// list was fetched with include_deleted=true. The restore entry
 	// needs this to mark deleted rows.
-	DeletedAt   *time.Time `json:"deleted_at"`
-	Id          string     `json:"id"`
-	OwnerUserId string     `json:"owner_user_id"`
+	DeletedAt *time.Time `json:"deleted_at"`
+
+	// DisplayName Effective remark shown in lists: the name when set, otherwise
+	// "账号" followed by the last four digits of the phone. The remark
+	// search matches this value, so the default label is findable.
+	DisplayName string `json:"display_name"`
+	Id          string `json:"id"`
+
+	// Name Remark name. Empty when unset. Trimmed free text; it is not a
+	// credential and does not take part in review or scheduling.
+	Name string `json:"name"`
+
+	// OwnerEmailMasked Masked email of the owner. The raw email never leaves the server.
+	// Unmaskable input reads as "unknown".
+	OwnerEmailMasked string `json:"owner_email_masked"`
+	OwnerUserId      string `json:"owner_user_id"`
 
 	// PhoneMasked Masked phone. The raw phone never leaves the server.
 	PhoneMasked string `json:"phone_masked"`
@@ -519,6 +532,9 @@ type Account struct {
 // AccountCreate defines model for AccountCreate.
 type AccountCreate struct {
 	DeviceCode *string `json:"device_code,omitempty"`
+
+	// Name Optional remark name; trimmed. Empty means unnamed.
+	Name *string `json:"name,omitempty"`
 
 	// OwnerUserId Defaults to the caller. Only master and admin may set another
 	// user, and that user must exist and not be soft-deleted;
@@ -647,12 +663,17 @@ type AccountStatus string
 // AccountUpdate defines model for AccountUpdate.
 type AccountUpdate struct {
 	DeviceCode *string `json:"device_code,omitempty"`
-	Password   *string `json:"password,omitempty"`
 
-	// Phone A new phone returns the account to pending: the review decision
-	// binds to the old phone. An unchanged phone is not a rebind, so it
-	// keeps the status unless the account is rejected; any edit of a
-	// rejected account returns it to pending.
+	// Name Remark name; trimmed. An empty string clears it. A name-only edit
+	// keeps the status, including rejected.
+	Name     *string `json:"name,omitempty"`
+	Password *string `json:"password,omitempty"`
+
+	// Phone A new phone returns a non-pending account to pending: the review
+	// decision binds to the old phone. An unchanged phone is not a
+	// rebind and keeps the status. On a rejected account only a
+	// credential edit (a new phone, password, device code or model)
+	// resubmits; a name-only edit or an unchanged phone does not.
 	Phone      *string `json:"phone,omitempty"`
 	PhoneModel *string `json:"phone_model,omitempty"`
 
@@ -1344,10 +1365,27 @@ type AccountListParams struct {
 	SchoolId *string        `form:"school_id,omitempty" json:"school_id,omitempty"`
 	Status   *AccountStatus `form:"status,omitempty" json:"status,omitempty"`
 
-	// Q Phone filter. Non-digits are stripped. A leading prefix of one to
-	// three digits, a trailing four-digit suffix, or the exact 11-digit
-	// phone matches. A 5..10 digit fragment never matches. The exact
-	// 11-digit phone still matches, so the number stays enumerable.
+	// Q A complete phone (11 digits, optionally prefixed by 86/+86) matches
+	// the phone exactly, or an effective remark name equal to the
+	// normalized 11 digits. A phone query consists only of digits and the
+	// separators + - . ( ) and whitespace; letters or @ make it a
+	// non-phone query.
+	// A complete email (exactly one @, non-empty sides, no whitespace)
+	// matches the owner email exactly, case-insensitively, or an
+	// identical effective remark name; the raw email is reachable only
+	// through a complete address.
+	// Any other query is a discovery filter:
+	// - the effective remark name (the name when set, otherwise "账号"
+	//   followed by the last four phone digits) matches as a
+	//   case-insensitive literal substring, so "账号" finds every
+	//   unnamed account;
+	// - a masked owner email matches only when it keeps exactly the one
+	//   visible leading character and the visible domain, e.g.
+	//   a***@example.com; longer prefixes do not match;
+	// - in a phone-shaped query, a prefix of one to three digits or a
+	//   trailing four-digit suffix matches; a 5..10 digit fragment never
+	//   matches a phone.
+	// % and _ are literal characters. At most 254 characters.
 	// Login and password-reset rate limiting is a deployment precondition
 	// before public exposure (P7).
 	Q *string `form:"q,omitempty" json:"q,omitempty"`
