@@ -192,20 +192,22 @@ func TestN190MutatingEndpointsCarryCounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed school: %v", err)
 	}
-	seedAccount := func(owner, phone string, status coreaccount.Status) {
+	seedAccount := func(owner, phone string, status coreaccount.Status, reason string) {
 		t.Helper()
 		if _, err := e.db.Exec(e.ctx, `
 			INSERT INTO accounts (school_id, owner_user_id, phone, status, reject_reason)
-			VALUES ($1::uuid, $2::uuid, $3, $4::account_status, '')`,
-			schoolID, owner, phone, string(status)); err != nil {
+			VALUES ($1::uuid, $2::uuid, $3, $4::account_status, $5)`,
+			schoolID, owner, phone, string(status), reason); err != nil {
 			t.Fatalf("seed account %s: %v", phone, err)
 		}
 	}
 
 	// PATCH：有账号的用户改状态，响应计数非零且与列表行同一口径。
+	// active+pending+rejected 三态齐全，钉住 review 含 pending 与 rejected。
 	target := w2dSeedUser(t, e, "n190-mut-target@example.com", "user-pass", coreauth.RoleUser)
-	seedAccount(target.ID, "13800000070", coreaccount.StatusActive)
-	seedAccount(target.ID, "13800000071", coreaccount.StatusPending)
+	seedAccount(target.ID, "13800000070", coreaccount.StatusActive, "")
+	seedAccount(target.ID, "13800000071", coreaccount.StatusPending, "")
+	seedAccount(target.ID, "13800000073", coreaccount.StatusRejected, "资料不全")
 
 	resp, payload := e.do(http.MethodPatch, "/api/users/"+target.ID,
 		map[string]any{"status": "disabled"}, map[string]string{"X-CSRF-Token": session.CSRFToken})
@@ -216,13 +218,13 @@ func TestN190MutatingEndpointsCarryCounts(t *testing.T) {
 	if err := json.Unmarshal(payload, &patched); err != nil {
 		t.Fatalf("decode patch: %v; body=%q", err, payload)
 	}
-	if patched.AccountCount != 2 || patched.PendingCount != 1 || patched.ReviewCount != 1 {
-		t.Fatalf("patched counts = %+v, want 2/1/1", patched)
+	if patched.AccountCount != 3 || patched.PendingCount != 1 || patched.ReviewCount != 2 {
+		t.Fatalf("patched counts = %+v, want 3/1/2", patched)
 	}
 
 	// Restore：软删用户名下有账号，恢复响应计数非零。
 	deleted := u1SeedDeletedUser(t, e, "n190-mut-deleted@example.com", boss.ID)
-	seedAccount(deleted.ID, "13800000072", coreaccount.StatusActive)
+	seedAccount(deleted.ID, "13800000072", coreaccount.StatusActive, "")
 
 	resp, payload = e.do(http.MethodPost, "/api/users/"+deleted.ID+"/restore", nil,
 		map[string]string{"X-CSRF-Token": session.CSRFToken})
