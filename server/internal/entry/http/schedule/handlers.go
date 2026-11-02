@@ -342,8 +342,10 @@ func (h *Handler) TimePrefStats(c *gin.Context, params oapi.TimePrefStatsParams)
 	if slices > 24 {
 		slices = 24
 	}
-	if slices < 0 {
-		slices = 0
+	// 计划对不足一片的窗口夹到 1 片（service.go 的 slices < 1）。
+	// 统计必须同源：否则 4 分钟窗口图里 0 槽，账号却落在 offset 0。
+	if slices < 1 {
+		slices = 1
 	}
 	slots := make([]oapi.PrefStatsSlot, 0, slices)
 	for index := 0; index < slices; index++ {

@@ -92,7 +92,7 @@ export function SignTrendCard({ report, loading, error, onRetry }: SignReportPro
       </div>
       {totals ? (
         <p className="app-muted">
-          近 30 天：成功 {totals.success} · 失败 {totals.failed} · 跳过 {totals.skipped}
+          近 30 天（账号日）：成功 {totals.success} · 失败 {totals.failed} · 跳过 {totals.skipped}
           {totals.missing > 0 ? ` · 缺失 ${totals.missing} 天` : ''}
         </p>
       ) : null}

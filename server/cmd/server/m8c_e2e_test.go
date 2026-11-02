@@ -315,10 +315,15 @@ func TestM8CTimePrefSlotBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create long task: %v", err)
 	}
+	tiny, err := e.sched.CreateSchoolTask(e.ctx, school.ID, "m8c-slot-tiny")
+	if err != nil {
+		t.Fatalf("create tiny task: %v", err)
+	}
 	nowLocal := coreclock.System{}.Now().In(m8cZone)
 	base := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 6, 30, 0, 0, m8cZone)
 	e.windows[short] = contract.Window{Start: base, End: base.Add(28 * time.Minute), Source: contract.WindowPlatform}
 	e.windows[long] = contract.Window{Start: base, End: base.Add(121 * time.Minute), Source: contract.WindowPlatform}
+	e.windows[tiny] = contract.Window{Start: base, End: base.Add(4 * time.Minute), Source: contract.WindowPlatform}
 	session := e.login(master)
 
 	for _, tc := range []struct {
@@ -327,6 +332,7 @@ func TestM8CTimePrefSlotBoundary(t *testing.T) {
 	}{
 		{short, 5},
 		{long, 24},
+		{tiny, 1},
 	} {
 		rec := e.do(http.MethodGet,
 			"/api/time-prefs/stats?school_id="+school.ID+"&task_id="+tc.task, nil, session)
