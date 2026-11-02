@@ -134,6 +134,11 @@ export type MockOptions = {
   /** 键是本次请求的 cursor；首屏键是空串。 */
   pages?: Record<string, Account[]>
   nextCursors?: Record<string, string>
+  /**
+   * 账号 id → 原号。响应只带掩码，改绑判定必须比原号。
+   * 缺省取内置登记表；自定义夹具的账号要在这里补原号。
+   */
+  rawPhones?: Record<string, string>
   signError?: { status: number; code: string; message: string }
   verifyError?: { status: number; code: string; message: string }
   verifyResult?: AccountVerifyResult
@@ -195,6 +200,15 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
   // 软删行每份测试一个副本：恢复会改行内标记，不能污染共享夹具。
   const deletedAccounts = DELETED_ACCOUNTS.map((item) => ({ ...item }))
   const knownAccounts = [...allAccounts, ...Object.values(pages).flat(), ...deletedAccounts]
+  // 改绑判定比原号，不比掩码：掩码相同、中四位不同的两个号是两次改绑。
+  // 内置夹具的原号来自 tests/synthetic-fixtures.json 的登记段。
+  const rawPhones = new Map<string, string>([
+    ['acc-1', '13800138000'],
+    ['acc-2', '13900139000'],
+    ['acc-3', '13500010001'],
+    ['acc-del', '13100000000'],
+    ...Object.entries(options.rawPhones ?? {}),
+  ])
 
   const json = (route: Route, body: unknown, status = 200) =>
     route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
@@ -353,6 +367,7 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       })
       allAccounts.push(created)
       knownAccounts.push(created)
+      if (input.phone) rawPhones.set(created.id, input.phone)
       return json(route, created, 201)
     }
 
@@ -384,17 +399,26 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       const updates = (body ?? {}) as Record<string, unknown>
       let rebind = false
       if (typeof updates.phone === 'string') {
-        const next = `${updates.phone.slice(0, 3)}****${updates.phone.slice(-4)}`
-        rebind = next !== found.phone_masked
-        found.phone_masked = next
+        // 原号未知时按改绑处理：夹具里没有原号，宁可让用例显性失败，
+        // 也不要把「掩码相同」误当成没改号。自定义夹具用 rawPhones 补原号。
+        const previous = rawPhones.get(found.id)
+        rebind = previous === undefined || previous !== updates.phone
+        rawPhones.set(found.id, updates.phone)
+        found.phone_masked = `${updates.phone.slice(0, 3)}****${updates.phone.slice(-4)}`
       }
-      // 与服务端同口径：改绑手机号或编辑被拒账号回待审核，清理由与审核戳。
-      // 停在待审核的账号改绑仍是 pending，不产生额外迁移。
+      const credentialEdit =
+        typeof updates.password === 'string' ||
+        typeof updates.device_code === 'string' ||
+        typeof updates.phone_model === 'string'
+      // 与服务端同口径：改绑或编辑被拒账号回待审核，清理由与审核戳；
+      // 改绑优先于凭据恢复。停在待审核的账号改绑仍是 pending。
       if (rebind || found.status === 'rejected') {
         found.status = 'pending'
         found.reject_reason = ''
         found.reviewed_at = null
         found.reviewed_by = null
+      } else if (credentialEdit && found.status === 'credential_error') {
+        found.status = 'active'
       }
       found.updated_at = '2026-10-28T09:30:00Z'
       return json(route, found)

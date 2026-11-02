@@ -351,7 +351,6 @@ func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, 
 	record := current
 	err = s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
 		now := s.deps.Clock.Now().UTC()
-		touchesCredential := needCredential || in.Phone != nil
 		// 状态判定必须在事务内、行锁下读：事务外的快照会把引擎刚提交的
 		// credential_error 或并发审核结果看丢。
 		locked, err := s.deps.Accounts.GetForUpdate(ctx, scope, id)
@@ -376,7 +375,8 @@ func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, 
 			}
 		}
 		// 改绑优先于凭据恢复：换号后必须重审，不能借恢复路径免审回 active。
-		recovered := !needsReview && touchesCredential && locked.Status == StatusCredentialError
+		// 同值手机号不是凭据变更，不触发恢复。
+		recovered := !needsReview && needCredential && locked.Status == StatusCredentialError
 		switch {
 		case needsReview:
 			// 行锁已在本事务内，CAS 必然命中；并发状态写已被锁挡住。

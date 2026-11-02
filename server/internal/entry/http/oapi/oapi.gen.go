@@ -495,7 +495,8 @@ type Account struct {
 	// PhoneMasked Masked phone. The raw phone never leaves the server.
 	PhoneMasked string `json:"phone_masked"`
 
-	// RejectReason The last rejection reason; empty unless status is rejected.
+	// RejectReason The last rejection reason; cleared when an edit returns the account
+	// to pending.
 	RejectReason string `json:"reject_reason"`
 
 	// ReviewedAt Stamp of the last review; cleared when an edit returns the account to pending.
@@ -509,7 +510,7 @@ type Account struct {
 	// rejected account returns it to pending. Pause moves active to
 	// paused_admin or paused_user. credential_error is written by the
 	// engine in P4 only; a password or device update returns it to active,
-	// while a phone update returns it to pending.
+	// while a phone change returns it to pending.
 	Status    AccountStatus `json:"status"`
 	UpdatedAt time.Time     `json:"updated_at"`
 }
@@ -638,7 +639,7 @@ type AccountSignAccepted struct {
 // rejected account returns it to pending. Pause moves active to
 // paused_admin or paused_user. credential_error is written by the
 // engine in P4 only; a password or device update returns it to active,
-// while a phone update returns it to pending.
+// while a phone change returns it to pending.
 type AccountStatus string
 
 // AccountUpdate defines model for AccountUpdate.
@@ -647,8 +648,9 @@ type AccountUpdate struct {
 	Password   *string `json:"password,omitempty"`
 
 	// Phone A new phone returns the account to pending: the review decision
-	// binds to the old phone. A value equal to the current phone keeps
-	// the status.
+	// binds to the old phone. An unchanged phone is not a rebind, so it
+	// keeps the status unless the account is rejected; any edit of a
+	// rejected account returns it to pending.
 	Phone      *string `json:"phone,omitempty"`
 	PhoneModel *string `json:"phone_model,omitempty"`
 

@@ -266,7 +266,7 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
         // 状态迁移以响应为准，不在前端猜字段。
         const updated = result as Account
         if (updated.status === 'pending' && input.account.status !== 'pending') {
-          notifySuccess(`已重新提交 ${input.account.phone_masked}，等待管理员审核`)
+          notifySuccess(`已重新提交 ${updated.phone_masked}，等待管理员审核`)
         } else {
           notifySuccess(`已保存 ${input.account.phone_masked}`)
         }

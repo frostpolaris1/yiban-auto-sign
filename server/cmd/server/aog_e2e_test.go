@@ -172,7 +172,7 @@ func TestAOGRebindReturnsActiveToPending(t *testing.T) {
 }
 
 // 改绑优先于凭据恢复：credential_error 账号换号后进待审，不是直接 active。
-// 只改口令时仍按恢复处理，两条路径互斥。
+// 只改口令时仍按恢复处理；同值手机号不是凭据变更，三条路径互斥。
 func TestAOGCredentialErrorRebindBeatsRecovery(t *testing.T) {
 	e := w2cNewEnv(t)
 	owner := e.user("aog-cred@example.com", coreauth.RoleUser)
@@ -181,8 +181,10 @@ func TestAOGCredentialErrorRebindBeatsRecovery(t *testing.T) {
 	e.bind(admin.ID, school.ID)
 	rebindID := e.account(school.ID, owner.ID, "13800000040")
 	passwordID := e.account(school.ID, owner.ID, "13800000041")
-	aogSetAccount(t, e, rebindID, string(coreaccount.StatusCredentialError), "", admin.ID)
-	aogSetAccount(t, e, passwordID, string(coreaccount.StatusCredentialError), "", admin.ID)
+	sameID := e.account(school.ID, owner.ID, "13800000060")
+	for _, id := range []string{rebindID, passwordID, sameID} {
+		aogSetAccount(t, e, id, string(coreaccount.StatusCredentialError), "", admin.ID)
+	}
 
 	rebound := aogPatch(t, e, rebindID, map[string]any{"phone": "13800000050"}, e.login(owner))
 	if rebound.Status != string(coreaccount.StatusPending) {
@@ -201,6 +203,18 @@ func TestAOGCredentialErrorRebindBeatsRecovery(t *testing.T) {
 	}
 	if n := aogCount(t, e, "account.resubmit", passwordID); n != 0 {
 		t.Fatalf("password edit wrote %d resubmit rows; want 0", n)
+	}
+
+	// 同值手机号没有换号，也没有改口令：状态与审计都不动。
+	same := aogPatch(t, e, sameID, map[string]any{"phone": "13800000060"}, e.login(owner))
+	if same.Status != string(coreaccount.StatusCredentialError) {
+		t.Fatalf("unchanged phone on credential_error = %q, want credential_error", same.Status)
+	}
+	if n := aogCount(t, e, "account.credential_recovered", sameID); n != 0 {
+		t.Fatalf("unchanged phone wrote %d recovery rows; want 0", n)
+	}
+	if n := aogCount(t, e, "account.resubmit", sameID); n != 0 {
+		t.Fatalf("unchanged phone wrote %d resubmit rows; want 0", n)
 	}
 }
 
