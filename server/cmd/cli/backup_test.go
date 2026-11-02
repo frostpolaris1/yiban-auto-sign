@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -498,6 +499,12 @@ func TestRestoreSkipsTablesMissingFromOldBaseline(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "gone") {
 		t.Fatalf("stdout must name the baseline-only table: %q", stdout.String())
+	}
+	// 计数口径：当前清单有、基线无的 len-1 项，加基线独有 1 项。
+	// 整行断言，防止计数写错时只有「一致」子串仍绿。
+	wantSummary := fmt.Sprintf("共有键对账一致（%d 项未对账）。", len(manifestTables))
+	if !strings.Contains(stdout.String(), wantSummary) {
+		t.Fatalf("stdout must state %q: %q", wantSummary, stdout.String())
 	}
 }
 
