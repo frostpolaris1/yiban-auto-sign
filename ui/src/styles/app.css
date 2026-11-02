@@ -255,9 +255,17 @@
 }
 
 /* 精确命中行：完整手机号/邮箱或完整备注名。背景 + 左侧色条 + 行内徽标，
- * 不只靠颜色传达；悬停时高亮仍然保留。 */
-.app-row-table tbody tr.app-account-row-exact {
+ * 不只靠颜色传达。vendor 的 hover 规则给 td 铺不透明背景，故高亮也落在 td；
+ * 悬停时显式保住高亮。 */
+.app-row-table tbody tr.app-account-row-exact td {
   background: var(--info-soft);
+}
+
+.app-row-table tbody tr.app-account-row-exact:hover td {
+  background: var(--info-soft);
+}
+
+.app-row-table tbody tr.app-account-row-exact td:first-child {
   box-shadow: inset 3px 0 0 var(--info);
 }
 

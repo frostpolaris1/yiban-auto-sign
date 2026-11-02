@@ -725,11 +725,33 @@ test('invariant 11: a complete phone or email highlights the matching rows', asy
   await expect(exact.getByText('精确匹配')).toBeVisible()
   await expect(page.getByRole('button', { name: '查看 139****9000' })).toHaveCount(0)
 
+  // 高亮落在 td 上：vendor 的 hover 背景不会把它盖掉。
+  const highlightCell = exact.locator('td').first()
+  const normalBackground = await highlightCell.evaluate(
+    (el) => getComputedStyle(el).backgroundColor,
+  )
+  expect(normalBackground).not.toBe('rgba(0, 0, 0, 0)')
+  await exact.hover()
+  expect(await highlightCell.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(
+    normalBackground,
+  )
+
   // 完整邮箱：同一属主的两个账号都命中、都高亮。
   await q.fill('operator@example.com')
   await expect(rowFor(page, '138****8000')).toHaveAttribute('data-exact-match', 'true')
   await expect(rowFor(page, '135****0001')).toHaveAttribute('data-exact-match', 'true')
   await expect(page.getByRole('button', { name: '查看 139****9000' })).toHaveCount(0)
+
+  // 可见掩码仍可发现同掩码账号；它不是完整标识，不高亮。
+  await q.fill('o***@example.com')
+  await expect(page.getByRole('button', { name: '查看 138****8000' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '查看 135****0001' })).toBeVisible()
+  await expect(page.getByText('精确匹配')).toHaveCount(0)
+
+  // 加长掩码前缀不能枚举隐藏的本地部：零命中。
+  await q.fill('ab***@example.com')
+  await expect(page.getByText('没有匹配的账号')).toBeVisible()
+  await expect(page.getByText('精确匹配')).toHaveCount(0)
 
   // 部分输入即使只剩一行也不高亮。
   await q.fill('138')

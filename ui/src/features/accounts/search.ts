@@ -10,15 +10,21 @@
  * 页面据此整页高亮，管理员一眼确认是谁。
  * 其余输入按子串发现；只有备注名（display_name）与输入全等时才高亮，
  * 部分子串即使只剩一行也不高亮。
- * 手机号归一与服务端同一口径：去非数字，13 位且以 86 开头时去国家码。
+ * 手机号归一与服务端同一口径：只接受数字与电话分隔符，13 位且以 86 开头
+ * 时去国家码；含 @ 或字母的串不是手机号（合法邮箱不抢手机号分支）。
  * 含 *** 的邮箱是可见掩码，不是完整邮箱，不触发精确高亮。
  */
 
 import type { Account } from '@/lib/api/account'
 
+/** 手机号形状：数字与 + - . ( ) 及空白，且至少一位数字。 */
+const PHONE_SHAPE = /^[0-9+\-.\s()]+$/
+
 /** 完整手机号返回 11 位号码；否则返回 null。 */
 export function completePhoneQuery(value: string | undefined): string | null {
-  const digits = (value ?? '').replace(/\D/g, '')
+  const term = (value ?? '').trim()
+  if (!PHONE_SHAPE.test(term) || !/\d/.test(term)) return null
+  const digits = term.replace(/\D/g, '')
   const normalized = digits.length === 13 && digits.startsWith('86') ? digits.slice(2) : digits
   return normalized.length === 11 ? normalized : null
 }

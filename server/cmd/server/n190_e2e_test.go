@@ -195,15 +195,22 @@ func TestN190SearchNameEmailAndPhone(t *testing.T) {
 	school := e.school("n190-search")
 	master := e.user("n190.master@example.com", coreauth.RoleMaster)
 
+	ownerDigits := e.user("13800138000@example.com", coreauth.RoleUser)
 	east := e.account(school.ID, ownerA.ID, "13800000040")
 	west := e.account(school.ID, ownerA2.ID, "13900000041")
 	teach := e.account(school.ID, ownerB.ID, "13500000042")
 	shared := e.account(school.ID, ownerA.ID, "13100000043")
+	digitsMail := e.account(school.ID, ownerDigits.ID, "13700000014")
+	phoneMatch := e.account(school.ID, ownerB.ID, "13800138000")
+	atName := e.account(school.ID, ownerB.ID, "13600136004")
 	for id, name := range map[string]string{
-		east:   "东区宿舍 East Dorm",
-		west:   "西区宿舍",
-		teach:  "教学楼下 100%栋",
-		shared: "同属主第二号",
+		east:       "东区宿舍 East Dorm",
+		west:       "西区宿舍",
+		teach:      "教学楼下 100%栋",
+		shared:     "同属主第二号",
+		digitsMail: "数字邮箱",
+		phoneMatch: "号码号",
+		atName:     "dorm@mail",
 	} {
 		if _, err := e.db.Exec(e.ctx, "UPDATE accounts SET name = $2 WHERE id = $1::uuid", id, name); err != nil {
 			t.Fatalf("seed name for %s: %v", id, err)
@@ -241,11 +248,26 @@ func TestN190SearchNameEmailAndPhone(t *testing.T) {
 	if page, _ := n190List(t, e, "alpha.owner", issued); len(page.Items) != 0 {
 		t.Fatalf("partial raw email ids = %v, want no match", n190IDs(page))
 	}
+	// 本地部是 11 位数字的合法邮箱：不得被手机号分支抢走。
+	if page, _ := n190List(t, e, "13800138000@example.com", issued); len(page.Items) != 1 ||
+		!n190IDs(page)[digitsMail] || n190IDs(page)[phoneMatch] {
+		t.Fatalf("digit-local email ids = %v, want only the email owner", n190IDs(page))
+	}
+	// 含 @ 的备注名仍可按完整名精确搜到。
+	if page, _ := n190List(t, e, "dorm@mail", issued); len(page.Items) != 1 || !n190IDs(page)[atName] {
+		t.Fatalf("at-name ids = %v, want only the dorm@mail account", n190IDs(page))
+	}
 	// 可见掩码：a***@example.com 命中两个同掩码的属主，不命中 b***。
 	if page, _ := n190List(t, e, "a***@example.com", issued); len(page.Items) != 3 ||
 		!n190IDs(page)[east] || !n190IDs(page)[west] || !n190IDs(page)[shared] ||
 		n190IDs(page)[teach] {
 		t.Fatalf("masked email ids = %v, want the three a*** rows", n190IDs(page))
+	}
+	// 加长掩码前缀不能枚举隐藏的本地部；空首字符与裸 *** 也不算可见掩码。
+	for _, query := range []string{"ab***@example.com", "***@example.com"} {
+		if page, _ := n190List(t, e, query, issued); len(page.Items) != 0 {
+			t.Fatalf("q=%s ids = %v, want no match", query, n190IDs(page))
+		}
 	}
 
 	// 部分手机号：前缀、后缀仍按原口径。

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -520,13 +522,17 @@ func accountSearchWhere(search string, args *[]any) string {
 		return ""
 	}
 	if digits, ok := completePhoneQuery(term); ok {
+		// 同值的数字备注名也算精确命中：手机号形状的备注不会被完整号码挡掉。
 		*args = append(*args, digits)
-		return fmt.Sprintf(" AND phone = $%d", len(*args))
+		return fmt.Sprintf(" AND (phone = $%d OR lower(%s) = $%d)",
+			len(*args), accountDisplayNameSQL, len(*args))
 	}
 	if isCompleteEmailQuery(term) {
-		*args = append(*args, strings.ToLower(term))
-		return fmt.Sprintf(` AND lower(coalesce(
-			(SELECT u.email FROM users u WHERE u.id = accounts.owner_user_id), '')) = $%d`, len(*args))
+		lower := strings.ToLower(term)
+		*args = append(*args, lower)
+		return fmt.Sprintf(` AND (lower(coalesce(
+			(SELECT u.email FROM users u WHERE u.id = accounts.owner_user_id), '')) = $%d
+			OR lower(%s) = $%d)`, len(*args), accountDisplayNameSQL, len(*args))
 	}
 	lower := strings.ToLower(term)
 	*args = append(*args, lower)
@@ -564,9 +570,29 @@ func accountSearchWhere(search string, args *[]any) string {
 	return " AND (" + strings.Join(clauses, " OR ") + ")"
 }
 
-// completePhoneQuery 归一完整手机号：去掉非数字，13 位且以 86 开头时去掉国家码。
+// isPhoneQueryShape 判断输入是否只由数字与常见电话分隔符组成。
+// 含 @、字母或其他字符的串不是手机号：13800138000@example.com 是合法邮箱，
+// 不能被剥成 11 位数字后当成手机号；备注名里的字母也不该触发号码匹配。
+func isPhoneQueryShape(term string) bool {
+	hasDigit := false
+	for _, r := range term {
+		switch {
+		case r >= '0' && r <= '9':
+			hasDigit = true
+		case r == '+' || r == '-' || r == '.' || r == '(' || r == ')' || unicode.IsSpace(r):
+		default:
+			return false
+		}
+	}
+	return hasDigit
+}
+
+// completePhoneQuery 归一完整手机号：仅接受电话形状，13 位且以 86 开头时去掉国家码。
 // 返回 11 位号码与是否完整。
 func completePhoneQuery(term string) (string, bool) {
+	if !isPhoneQueryShape(term) {
+		return "", false
+	}
 	digits := phoneDigits(term)
 	if len(digits) == 13 && strings.HasPrefix(digits, "86") {
 		digits = digits[2:]
@@ -578,8 +604,11 @@ func completePhoneQuery(term string) (string, bool) {
 }
 
 // phoneQueryDigits 给部分输入用：只保留 11 位或 +86/86 前缀的 13 位。
-// 其余长度原样返回数字段，由调用方决定是否生成号码子句。
+// 非电话形状返回空串：字母串只走备注名与掩码邮箱。
 func phoneQueryDigits(term string) string {
+	if !isPhoneQueryShape(term) {
+		return ""
+	}
 	digits := phoneDigits(term)
 	if len(digits) == 13 && strings.HasPrefix(digits, "86") {
 		return digits[2:]
@@ -602,16 +631,20 @@ func isCompleteEmailQuery(term string) bool {
 }
 
 // emailMaskParts 从可见掩码串取前缀与后缀。
-// 只处理恰好一个 "***" 的输入：多个星号段不是可识别的掩码形状，不启用该分支。
+//
+// 可见掩码只保留本地部首字符、隐藏其余部分，故前缀必须是**恰好一个字符**：
+// 允许更长的前缀等于把隐藏的本地部逐字符喂给检索面。
+// 后缀必须以 @ 开头（可见域名）；"***" 单独出现或多段星号都不算掩码。
 func emailMaskParts(term string) (string, string, bool) {
 	parts := strings.Split(term, "***")
 	if len(parts) != 2 {
 		return "", "", false
 	}
-	if parts[0] == "" && parts[1] == "" {
+	prefix, suffix := parts[0], parts[1]
+	if utf8.RuneCountInString(prefix) != 1 || !strings.HasPrefix(suffix, "@") {
 		return "", "", false
 	}
-	return parts[0], parts[1], true
+	return prefix, suffix, true
 }
 
 // phoneDigits 只保留 search 里的 0..9。

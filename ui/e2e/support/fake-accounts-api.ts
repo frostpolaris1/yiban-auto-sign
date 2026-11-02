@@ -250,26 +250,41 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
   const filterAccounts = (items: Account[], query: string): Account[] => {
     const term = query.trim()
     if (term === '') return items
-    const digits = term.replace(/\D/g, '')
+    const lower = term.toLowerCase()
+    const phoneShaped = /^[0-9+\-.\s()]+$/.test(term) && /\d/.test(term)
+    const digits = phoneShaped ? term.replace(/\D/g, '') : ''
     const normalized =
       digits.length === 13 && digits.startsWith('86') ? digits.slice(2) : digits
-    if (normalized.length === 11) {
-      return items.filter((item) => rawPhones.get(item.id) === normalized)
-    }
-    if (isCompleteEmail(term)) {
-      const lower = term.toLowerCase()
+    if (phoneShaped && normalized.length === 11) {
+      // 完整手机号或同值的数字备注名。
       return items.filter(
-        (item) => (ownerEmails.get(item.owner_user_id) ?? '').toLowerCase() === lower,
+        (item) =>
+          rawPhones.get(item.id) === normalized || item.display_name.toLowerCase() === lower,
       )
     }
-    const lower = term.toLowerCase()
-    const maskParts = term.includes('***') ? lower.split('***') : null
+    if (isCompleteEmail(term)) {
+      // 完整邮箱或同值的备注名：含 @ 的自定义名仍可精确搜到。
+      return items.filter(
+        (item) =>
+          (ownerEmails.get(item.owner_user_id) ?? '').toLowerCase() === lower ||
+          item.display_name.toLowerCase() === lower,
+      )
+    }
+    // 可见掩码只保留一个首字符；更长的前缀会暴露隐藏的本地部。
+    const mask = (() => {
+      if (!term.includes('***')) return null
+      const parts = lower.split('***')
+      if (parts.length !== 2) return null
+      if (Array.from(parts[0]).length !== 1 || !parts[1].startsWith('@')) return null
+      return { prefix: parts[0], suffix: parts[1] }
+    })()
     return items.filter((item) => {
       if (item.display_name.toLowerCase().includes(lower)) return true
-      if (maskParts && maskParts.length === 2 && (maskParts[0] !== '' || maskParts[1] !== '')) {
+      if (mask) {
         const email = item.owner_email_masked.toLowerCase()
-        if (email.startsWith(maskParts[0]) && email.endsWith(maskParts[1])) return true
+        if (email.startsWith(mask.prefix) && email.endsWith(mask.suffix)) return true
       }
+      if (!phoneShaped) return false
       const raw = rawPhones.get(item.id) ?? ''
       if (normalized.length > 0 && normalized.length <= 3) return raw.startsWith(normalized)
       if (normalized.length === 4) return raw.endsWith(normalized)

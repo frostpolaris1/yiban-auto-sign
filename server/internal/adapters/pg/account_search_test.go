@@ -85,6 +85,23 @@ func TestAccountSearchWhereExactIdentifiers(t *testing.T) {
 	if strings.Contains(clause, "position") {
 		t.Fatalf("complete email must not fall back to substring matching: %s", clause)
 	}
+
+	// 合法邮箱含 11 位数字：不得被手机号分支抢走；走邮箱等值。
+	args = nil
+	clause = accountSearchWhere("13800138000@example.com", &args)
+	if !strings.Contains(clause, "accounts.owner_user_id") || strings.Contains(clause, "phone =") {
+		t.Fatalf("digit-local email clause = %q, want the email branch", clause)
+	}
+	if len(args) != 1 || args[0] != "13800138000@example.com" {
+		t.Fatalf("digit-local email args = %v", args)
+	}
+
+	// 可见掩码不能靠加长前缀枚举本地部。
+	args = nil
+	clause = accountSearchWhere("ab***@example.com", &args)
+	if strings.Contains(clause, "EXISTS") {
+		t.Fatalf("long mask prefix produced an email EXISTS clause: %s", clause)
+	}
 }
 
 func TestCompletePhoneQuery(t *testing.T) {
@@ -98,6 +115,10 @@ func TestCompletePhoneQuery(t *testing.T) {
 		{"8613800138000", "13800138000", true},
 		{"1380013800", "", false},
 		{"138001380000", "", false},
+		// 含 @ 或字母的串不是手机号：完整邮箱不得被剥成号码。
+		{"13800138000@example.com", "", false},
+		{"room13800138000", "", false},
+		{"+++", "", false},
 		{"", "", false},
 	}
 	for _, tc := range cases {
@@ -138,8 +159,10 @@ func TestEmailMaskParts(t *testing.T) {
 		ok     bool
 	}{
 		{"a***@example.com", "a", "@example.com", true},
-		{"***@example.com", "", "@example.com", true},
-		{"a***", "a", "", true},
+		// 可见掩码只保留一个首字符；更长前缀会枚举隐藏的本地部。
+		{"ab***@example.com", "", "", false},
+		{"***@example.com", "", "", false},
+		{"a***", "", "", false},
 		{"***", "", "", false},
 		{"a***b***c", "", "", false},
 		{"plain", "", "", false},

@@ -780,20 +780,25 @@ paths:
           in: query
           required: false
           description: |
-            A complete phone (11 digits, optionally prefixed by 86/+86, with
-            separators ignored) matches the phone exactly. A complete email
-            (exactly one @, non-empty sides, no whitespace) matches the owner
-            email exactly, case-insensitively; the raw email is reachable only
+            A complete phone (11 digits, optionally prefixed by 86/+86) matches
+            the phone exactly, or an identical effective remark name. A phone
+            query consists only of digits and the separators + - . ( ) and
+            whitespace; letters or @ make it a non-phone query.
+            A complete email (exactly one @, non-empty sides, no whitespace)
+            matches the owner email exactly, case-insensitively, or an
+            identical effective remark name; the raw email is reachable only
             through a complete address.
             Any other query is a discovery filter:
             - the effective remark name (the name when set, otherwise "账号"
               followed by the last four phone digits) matches as a
               case-insensitive literal substring, so "账号" finds every
               unnamed account;
-            - a masked owner email containing "***" matches that visible
-              mask, so a***@example.com finds every account with that mask;
-            - a phone prefix of one to three digits or a trailing four-digit
-              suffix matches; a 5..10 digit fragment never matches a phone.
+            - a masked owner email matches only when it keeps exactly the one
+              visible leading character and the visible domain, e.g.
+              a***@example.com; longer prefixes do not match;
+            - in a phone-shaped query, a prefix of one to three digits or a
+              trailing four-digit suffix matches; a 5..10 digit fragment never
+              matches a phone.
             % and _ are literal characters. At most 254 characters.
             Login and password-reset rate limiting is a deployment precondition
             before public exposure (P7).
