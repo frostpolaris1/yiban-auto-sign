@@ -262,7 +262,14 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
       }
       if (input.op === 'update') {
         setEditTarget(null)
-        notifySuccess(`已保存 ${input.account.phone_masked}`)
+        // 两种编辑会把账号送回待审核：被拒账号重提、改绑手机号。
+        // 状态迁移以响应为准，不在前端猜字段。
+        const updated = result as Account
+        if (updated.status === 'pending' && input.account.status !== 'pending') {
+          notifySuccess(`已重新提交 ${input.account.phone_masked}，等待管理员审核`)
+        } else {
+          notifySuccess(`已保存 ${input.account.phone_masked}`)
+        }
       }
       if (input.op === 'restore') {
         notifySuccess(`已恢复 ${input.account.phone_masked}`)

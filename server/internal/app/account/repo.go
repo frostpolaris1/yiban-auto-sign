@@ -54,6 +54,7 @@ type Credential = coreaccount.Credential
 //
 // SetStatus 是比较并交换：仅当当前状态等于 from 才改。
 // 零行报 conflict（errs.CodeConflict）。**状态迁移规则归用例层，不归本端口**。
+// 目标状态为 pending 时清空驳回理由与审核戳：pending 不属于任何已审轮次。
 //
 // Get、GetForUpdate、SetStatus、SoftDelete、Restore、Credential、UpdatePhone、Review 都套范围。
 // 越权行报 not_found（errs.CodeNotFound），**绝不报 forbidden**。

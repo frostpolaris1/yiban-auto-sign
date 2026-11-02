@@ -780,9 +780,13 @@ paths:
       operationId: AccountUpdate
       summary: Update account fields.
       description: |
-        Never changes status. Review and pause have dedicated endpoints. Changing
-        school is forbidden in P1 (decision 12.3) and returns conflict.
-        Changes are rate limited per caller; a 429 carries Retry-After.
+        Status changes only as a review side effect. Editing a rejected account
+        returns it to pending, and changing the phone returns any account to
+        pending: a review decision binds to the old phone. Both clear
+        reject_reason and the review stamp. Other edits keep the status.
+        Review and pause have dedicated endpoints. Changing school is
+        forbidden in P1 (decision 12.3) and returns conflict. Changes are
+        rate limited per caller; a 429 carries Retry-After.
       x-roles: [master, admin, user]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -2045,9 +2049,11 @@ components:
     AccountStatus:
       type: string
       description: |
-        pending on create; review moves to active or rejected. Pause moves
-        active to paused_admin or paused_user. credential_error is written by
-        the engine in P4 only; a credential or phone update returns it to active.
+        pending on create; review moves to active or rejected. Editing a
+        rejected account returns it to pending. Pause moves active to
+        paused_admin or paused_user. credential_error is written by the
+        engine in P4 only; a password or device update returns it to active,
+        while a phone update returns it to pending.
       enum:
         - pending
         - active
@@ -2078,12 +2084,16 @@ components:
           description: Masked phone. The raw phone never leaves the server.
         status:
           $ref: '#/components/schemas/AccountStatus'
-        reject_reason: { type: string }
+        reject_reason:
+          type: string
+          description: The last rejection reason; empty unless status is rejected.
         reviewed_at:
           type: [string, "null"]
           format: date-time
+          description: Stamp of the last review; cleared when an edit returns the account to pending.
         reviewed_by:
           type: [string, "null"]
+          description: Reviewer of the last review; cleared with reviewed_at.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         deleted_at:
@@ -2122,6 +2132,10 @@ components:
         phone:
           type: string
           pattern: '^1[0-9]{10}$'
+          description: |
+            A new phone returns the account to pending: the review decision
+            binds to the old phone. A value equal to the current phone keeps
+            the status.
         password: { type: string, minLength: 1 }
         device_code: { type: string, maxLength: 64 }
         phone_model: { type: string, maxLength: 64 }

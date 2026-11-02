@@ -382,8 +382,19 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
 
     if (!action && request.method() === 'PATCH') {
       const updates = (body ?? {}) as Record<string, unknown>
+      let rebind = false
       if (typeof updates.phone === 'string') {
-        found.phone_masked = `${updates.phone.slice(0, 3)}****${updates.phone.slice(-4)}`
+        const next = `${updates.phone.slice(0, 3)}****${updates.phone.slice(-4)}`
+        rebind = next !== found.phone_masked
+        found.phone_masked = next
+      }
+      // 与服务端同口径：改绑手机号或编辑被拒账号回待审核，清理由与审核戳。
+      // 停在待审核的账号改绑仍是 pending，不产生额外迁移。
+      if (rebind || found.status === 'rejected') {
+        found.status = 'pending'
+        found.reject_reason = ''
+        found.reviewed_at = null
+        found.reviewed_by = null
       }
       found.updated_at = '2026-10-28T09:30:00Z'
       return json(route, found)

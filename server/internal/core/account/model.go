@@ -22,7 +22,8 @@ type Status string
 
 // 账号状态集合，v1 冻结。
 // **credential_error 只由 P4 引擎写入**；其他写入方不得使用该值。
-// 账号凭据变更（手机号/密码/设备码/机型）把 credential_error 恢复为 active。
+// 口令或设备变更把 credential_error 恢复为 active；
+// 改绑手机号例外：手机号即登录凭据，改绑一律回 pending 重审。
 const (
 	StatusPending         Status = "pending"
 	StatusActive          Status = "active"

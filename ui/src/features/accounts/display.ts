@@ -49,3 +49,11 @@ export function statusTone(status: AccountStatus): Tone {
 export function isPending(status: AccountStatus): boolean {
   return status === 'pending'
 }
+
+/**
+ * 行菜单与编辑模态的标题文案。
+ * 被拒账号的编辑即重新提交：入口写「修改并重新提交」，与保存后的状态迁移一致。
+ */
+export function editActionLabel(status: AccountStatus): string {
+  return status === 'rejected' ? '修改并重新提交' : '编辑'
+}

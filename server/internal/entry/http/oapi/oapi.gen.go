@@ -493,15 +493,23 @@ type Account struct {
 	OwnerUserId string     `json:"owner_user_id"`
 
 	// PhoneMasked Masked phone. The raw phone never leaves the server.
-	PhoneMasked  string     `json:"phone_masked"`
-	RejectReason string     `json:"reject_reason"`
-	ReviewedAt   *time.Time `json:"reviewed_at"`
-	ReviewedBy   *string    `json:"reviewed_by"`
-	SchoolId     string     `json:"school_id"`
+	PhoneMasked string `json:"phone_masked"`
 
-	// Status pending on create; review moves to active or rejected. Pause moves
-	// active to paused_admin or paused_user. credential_error is written by
-	// the engine in P4 only; a credential or phone update returns it to active.
+	// RejectReason The last rejection reason; empty unless status is rejected.
+	RejectReason string `json:"reject_reason"`
+
+	// ReviewedAt Stamp of the last review; cleared when an edit returns the account to pending.
+	ReviewedAt *time.Time `json:"reviewed_at"`
+
+	// ReviewedBy Reviewer of the last review; cleared with reviewed_at.
+	ReviewedBy *string `json:"reviewed_by"`
+	SchoolId   string  `json:"school_id"`
+
+	// Status pending on create; review moves to active or rejected. Editing a
+	// rejected account returns it to pending. Pause moves active to
+	// paused_admin or paused_user. credential_error is written by the
+	// engine in P4 only; a password or device update returns it to active,
+	// while a phone update returns it to pending.
 	Status    AccountStatus `json:"status"`
 	UpdatedAt time.Time     `json:"updated_at"`
 }
@@ -626,15 +634,21 @@ type AccountSignAccepted struct {
 	TaskId string `json:"task_id"`
 }
 
-// AccountStatus pending on create; review moves to active or rejected. Pause moves
-// active to paused_admin or paused_user. credential_error is written by
-// the engine in P4 only; a credential or phone update returns it to active.
+// AccountStatus pending on create; review moves to active or rejected. Editing a
+// rejected account returns it to pending. Pause moves active to
+// paused_admin or paused_user. credential_error is written by the
+// engine in P4 only; a password or device update returns it to active,
+// while a phone update returns it to pending.
 type AccountStatus string
 
 // AccountUpdate defines model for AccountUpdate.
 type AccountUpdate struct {
 	DeviceCode *string `json:"device_code,omitempty"`
 	Password   *string `json:"password,omitempty"`
+
+	// Phone A new phone returns the account to pending: the review decision
+	// binds to the old phone. A value equal to the current phone keeps
+	// the status.
 	Phone      *string `json:"phone,omitempty"`
 	PhoneModel *string `json:"phone_model,omitempty"`
 

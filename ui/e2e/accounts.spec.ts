@@ -23,6 +23,7 @@ import {
  * 4. 写操作必经确认模态；确认前不发请求。
  * 5. 抽屉打开焦点进入；Esc 与遮罩关闭并还原焦点。
  * 6. 编辑（PATCH）只送填写字段；空表单不可提交。
+ *    被拒账号的编辑即重提，改绑手机号也回待审核；仅改口令不动状态。
  * 7. 位置策略：auto 不送坐标；fixed 过 WGS84 范围；master 无权置灰。
  * 8. 删除必经确认；确认前零请求；行消失后焦点落筛选框。
  * 9. 关闭控件是 24×24 的可见目标，键盘焦点有 2px 实线环。
@@ -57,6 +58,14 @@ function rowFor(page: Page, phone: string) {
 /** 已删行的定位：行内没有「查看」按钮，按手机号文本找。 */
 function deletedRowFor(page: Page, phone: string) {
   return page.getByRole('row').filter({ hasText: phone })
+}
+
+/**
+ * 复用共享夹具，只改一条行的状态。
+ * 不往共享数组里加行：视觉基线按三行拍，新增行会让多组快照无谓重拍。
+ */
+function accountsWith(id: string, patch: Partial<(typeof ACCOUNTS)[number]>) {
+  return ACCOUNTS.map((item) => (item.id === id ? { ...item, ...patch } : item))
 }
 
 test('invariant 1: each filter rides the request and clearing removes it', async ({ page }) => {
@@ -539,6 +548,81 @@ test('invariant 6: an invalid phone blocks the edit form', async ({ page }) => {
 
   await dialog.getByLabel('手机号').fill('   ')
   await expect(dialog.getByRole('button', { name: '保存修改' })).toBeDisabled()
+})
+
+test('invariant 6: a rejected account resubmits from its edit entry', async ({ page }) => {
+  const api = await mockAccountsApi(page, {
+    role: 'user',
+    accounts: accountsWith('acc-1', {
+      status: 'rejected',
+      reject_reason: '照片不清晰',
+      reviewed_at: '2026-10-20T08:41:00Z',
+      reviewed_by: 'user-9',
+    }),
+  })
+  await openAccounts(page)
+
+  const menu = await openRowMenu(page, '138****8000')
+  const entry = menu.getByRole('menuitem', { name: /修改并重新提交/ })
+  await expect(entry, 'a rejected row offers the resubmit wording').toBeVisible()
+  await entry.click()
+  const dialog = page.getByRole('dialog', { name: '修改并重新提交？' })
+  await expect(dialog, 'the modal shows why the account was rejected').toContainText('照片不清晰')
+
+  await dialog.getByLabel('密码').fill('new-secret')
+  await dialog.getByRole('button', { name: '保存修改' }).click()
+  await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(1)
+  expect(patchCalls(api, 'acc-1')[0].body).toEqual({ password: 'new-secret' })
+
+  // 保存后回到待审核：徽标与 toast 都要说出来，旧驳回理由不再可见。
+  await expect(rowFor(page, '138****8000').getByText('待审核')).toBeVisible()
+  await expect(
+    page.locator('[data-sonner-toast]').filter({ hasText: '已重新提交' }),
+  ).toBeVisible()
+  await page.getByRole('button', { name: '查看 138****8000' }).click()
+  const drawer = page.getByRole('dialog', { name: '账号详情' })
+  await expect(drawer).toBeVisible()
+  await expect(drawer.getByText('照片不清晰')).toHaveCount(0)
+})
+
+test('invariant 6: a phone change sends an active account back to review', async ({ page }) => {
+  const api = await mockAccountsApi(page, {
+    role: 'user',
+    accounts: accountsWith('acc-1', { status: 'active', reject_reason: '' }),
+  })
+  await openAccounts(page)
+
+  const menu = await openRowMenu(page, '138****8000')
+  await menu.getByRole('menuitem', { name: /^编辑$/ }).click()
+  const dialog = page.getByRole('dialog', { name: '编辑账号？' })
+  await dialog.getByLabel('手机号').fill('13800138001')
+  await dialog.getByRole('button', { name: '保存修改' }).click()
+  await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(1)
+  expect(patchCalls(api, 'acc-1')[0].body).toEqual({ phone: '13800138001' })
+
+  await expect(rowFor(page, '138****8001').getByText('待审核')).toBeVisible()
+  await expect(
+    page.locator('[data-sonner-toast]').filter({ hasText: '已重新提交' }),
+  ).toBeVisible()
+})
+
+test('invariant 6: a password edit keeps the active status', async ({ page }) => {
+  const api = await mockAccountsApi(page, {
+    role: 'user',
+    accounts: accountsWith('acc-1', { status: 'active', reject_reason: '' }),
+  })
+  await openAccounts(page)
+
+  const menu = await openRowMenu(page, '138****8000')
+  await menu.getByRole('menuitem', { name: /^编辑$/ }).click()
+  const dialog = page.getByRole('dialog', { name: '编辑账号？' })
+  await dialog.getByLabel('密码').fill('new-secret')
+  await dialog.getByRole('button', { name: '保存修改' }).click()
+  await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(1)
+
+  // 只有改绑与被拒重提会动状态；改口令保持正常。
+  await expect(rowFor(page, '138****8000').getByText('正常')).toBeVisible()
+  await expect(page.locator('[data-sonner-toast]').filter({ hasText: '已保存' })).toBeVisible()
 })
 
 for (const theme of ['light', 'dark'] as const) {

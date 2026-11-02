@@ -268,6 +268,7 @@ func (r *AccountRepo) Review(ctx context.Context, s corescope.Scope, id string, 
 }
 
 // SetStatus 仅当当前状态等于 from 时改状态。
+// to 为 pending 时同时清空驳回理由与审核戳：pending 行不属于任何已审轮次。
 // 零行由 classifyMiss 区分：越权报 not_found，状态已变报冲突。
 func (r *AccountRepo) SetStatus(ctx context.Context, s corescope.Scope, id string, from, to coreaccount.Status, at time.Time, reason string) (coreaccount.Record, error) {
 	if !from.Valid() || !to.Valid() {
@@ -285,13 +286,25 @@ func (r *AccountRepo) SetStatus(ctx context.Context, s corescope.Scope, id strin
 	query := fmt.Sprintf(`
 		UPDATE accounts
 		   SET status = $%d::account_status,
-		       reject_reason = CASE WHEN $%d = 'rejected' THEN $%d ELSE reject_reason END,
+		       reject_reason = CASE
+		           WHEN $%d::account_status = 'rejected' THEN $%d
+		           WHEN $%d::account_status = 'pending' THEN ''
+		           ELSE reject_reason
+		       END,
+		       reviewed_at = CASE
+		           WHEN $%d::account_status = 'pending' THEN NULL
+		           ELSE reviewed_at
+		       END,
+		       reviewed_by = CASE
+		           WHEN $%d::account_status = 'pending' THEN NULL
+		           ELSE reviewed_by
+		       END,
 		       updated_at = $%d
 		 WHERE id = $1::uuid
 		   AND status = $%d::account_status
 		   AND deleted_at IS NULL%s
 		RETURNING %s`,
-		next, next, next+1, next+2, next+3, scopeSQL, accountColumns)
+		next, next, next+1, next, next, next, next+2, next+3, scopeSQL, accountColumns)
 	args = append(args, string(to), reason, at, string(from))
 	row := r.db.q(ctx).QueryRow(ctx, query, args...)
 	record, err := scanAccount(row)
