@@ -336,17 +336,19 @@ func (h *Handler) TimePrefStats(c *gin.Context, params oapi.TimePrefStatsParams)
 		fail(c, err)
 		return
 	}
-	// 槽覆盖有效窗口，最多两小时；超过窗口尾的偏移不再出现。
-	end := window.WindowStart.Add(2 * time.Hour)
-	if window.WindowEnd.Before(end) {
-		end = window.WindowEnd
+	// 槽数与计划同源：只算整 5 分钟片（floor），最多两小时 24 片。
+	// 用 ceil 会多出计划永远用不到的尾槽（placePrefs 对越界偏移自动铺点）。
+	slices := int(window.WindowEnd.Sub(window.WindowStart) / (5 * time.Minute))
+	if slices > 24 {
+		slices = 24
 	}
-	slots := make([]oapi.PrefStatsSlot, 0)
-	for offset := 0; ; offset += 5 {
+	if slices < 0 {
+		slices = 0
+	}
+	slots := make([]oapi.PrefStatsSlot, 0, slices)
+	for index := 0; index < slices; index++ {
+		offset := index * 5
 		at := window.WindowStart.Add(time.Duration(offset) * time.Minute)
-		if !at.Before(end) {
-			break
-		}
 		slots = append(slots, oapi.PrefStatsSlot{
 			OffsetMin: offset,
 			Label:     at.In(h.cfg.Location).Format("15:04"),

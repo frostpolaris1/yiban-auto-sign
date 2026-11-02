@@ -35,22 +35,32 @@ func NewStatsRepo(db *DB) *StatsRepo {
 
 // SignStats 读 [from, to] 的日/状态计数与窗口去重值。
 // 只返回库里出现过的日期；调用方补缺失日期。
+//
+// 同一账号同日在多个任务里出现时，**只取最后更新的一条**：
+// 唯一键含 school_task_id，一校多任务会留下多行；日桶必须按账号收敛。
 func (r *StatsRepo) SignStats(ctx context.Context, scope corescope.Scope, from, to string) (coreschedule.SignStats, error) {
 	scopeSQL, scopeArgs, err := scopePredicate(scope, 3, "a.")
 	if err != nil {
 		return coreschedule.SignStats{}, err
 	}
 	args := append([]any{from, to}, scopeArgs...)
-	const base = `
-		FROM sign_tasks t
-		JOIN accounts a ON a.id = t.account_id
-	   WHERE t.day >= $1::date AND t.day <= $2::date
-	     AND a.deleted_at IS NULL`
+	picked := `
+		WITH picked AS (
+			SELECT DISTINCT ON (t.account_id, t.day)
+			       t.account_id, t.day, t.state
+			  FROM sign_tasks t
+			  JOIN accounts a ON a.id = t.account_id
+			 WHERE t.day >= $1::date AND t.day <= $2::date
+			   AND a.deleted_at IS NULL` + scopeSQL + `
+			 ORDER BY t.account_id, t.day, t.updated_at DESC, t.id DESC
+		)`
 
 	byDayRows, err := r.db.q(ctx).Query(ctx,
-		`SELECT t.day::text, t.state::text, count(*)::int`+base+scopeSQL+`
-		 GROUP BY t.day, t.state
-		 ORDER BY t.day, t.state`, args...)
+		picked+`
+		SELECT picked.day::text, picked.state::text, count(*)::int
+		  FROM picked
+		 GROUP BY picked.day, picked.state
+		 ORDER BY picked.day, picked.state`, args...)
 	if err != nil {
 		return coreschedule.SignStats{}, mapError(err)
 	}
@@ -82,12 +92,14 @@ func (r *StatsRepo) SignStats(ctx context.Context, scope corescope.Scope, from, 
 	byDayRows.Close()
 
 	row := r.db.q(ctx).QueryRow(ctx,
-		`SELECT count(DISTINCT t.account_id)::int,
-		        count(DISTINCT t.account_id) FILTER (WHERE t.state = 'pending')::int,
-		        count(DISTINCT t.account_id) FILTER (WHERE t.state = 'running')::int,
-		        count(DISTINCT t.account_id) FILTER (WHERE t.state = 'success')::int,
-		        count(DISTINCT t.account_id) FILTER (WHERE t.state = 'failed')::int,
-		        count(DISTINCT t.account_id) FILTER (WHERE t.state = 'skipped')::int`+base+scopeSQL, args...)
+		picked+`
+		SELECT count(DISTINCT picked.account_id)::int,
+		       count(DISTINCT picked.account_id) FILTER (WHERE picked.state = 'pending')::int,
+		       count(DISTINCT picked.account_id) FILTER (WHERE picked.state = 'running')::int,
+		       count(DISTINCT picked.account_id) FILTER (WHERE picked.state = 'success')::int,
+		       count(DISTINCT picked.account_id) FILTER (WHERE picked.state = 'failed')::int,
+		       count(DISTINCT picked.account_id) FILTER (WHERE picked.state = 'skipped')::int
+		  FROM picked`, args...)
 	if err := row.Scan(&out.Total,
 		&out.ByStatus.Pending, &out.ByStatus.Running, &out.ByStatus.Success,
 		&out.ByStatus.Failed, &out.ByStatus.Skipped); err != nil {
@@ -96,8 +108,9 @@ func (r *StatsRepo) SignStats(ctx context.Context, scope corescope.Scope, from, 
 	return out, nil
 }
 
-// OffsetCounts 读该校有活跃账号的用户自选偏移分布。
-// 同一用户多个账号只计一次。
+// OffsetCounts 读该校有 active 账号的用户自选偏移分布。
+// 同一用户多个账号只计一次。待审、已拒与暂停账号不计入：
+// 它们不参与签到，拥挤度必须与引擎的领取面同源。
 func (r *StatsRepo) OffsetCounts(ctx context.Context, schoolID string) (map[int]int, error) {
 	rows, err := r.db.q(ctx).Query(ctx, `
 		SELECT p.offset_min, count(DISTINCT p.user_id)::int
@@ -105,6 +118,7 @@ func (r *StatsRepo) OffsetCounts(ctx context.Context, schoolID string) (map[int]
 		  JOIN accounts a ON a.owner_user_id = p.user_id
 		 WHERE a.school_id = $1::uuid
 		   AND a.deleted_at IS NULL
+		   AND a.status = 'active'::account_status
 		   AND p.offset_min IS NOT NULL
 		 GROUP BY p.offset_min
 		 ORDER BY p.offset_min`, schoolID)

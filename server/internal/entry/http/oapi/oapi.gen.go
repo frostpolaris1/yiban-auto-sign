@@ -920,7 +920,8 @@ type PrefStatsSlot struct {
 	// Cap Per-slice capacity used by the plan.
 	Cap int `json:"cap"`
 
-	// Count Users with a live account in the school who picked this offset.
+	// Count Users with an active account in the school who picked this offset.
+	// Pending, rejected and paused accounts do not count.
 	Count int    `json:"count"`
 	Label string `json:"label"`
 

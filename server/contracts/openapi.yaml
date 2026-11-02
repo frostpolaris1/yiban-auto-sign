@@ -1649,11 +1649,12 @@ paths:
       summary: Report per-account sign results for a day range.
       description: |
         Master and admin only. Each account lands in one state per day, so
-        the daily buckets are mutually exclusive. by_status counts distinct
-        accounts per state over the whole window; those buckets can overlap
-        and must not be summed into total. The range ends today in the
-        server time zone. A day with no task rows carries zero counts and
-        appears in days_missing.
+        the daily buckets are mutually exclusive. When a school runs several
+        tasks in one day, the task row updated last represents the account.
+        by_status counts distinct accounts per state over the whole window;
+        those buckets can overlap and must not be summed into total. The
+        range ends today in the server time zone. A day with no task rows
+        carries zero counts and appears in days_missing.
       x-roles: [master, admin]
       parameters:
         - name: days
@@ -1680,9 +1681,10 @@ paths:
       description: |
         Master and admin only. Each slot is a five-minute offset from the
         effective window start of the selected task and day. count is the
-        number of users with a live account in that school who picked the
-        offset; cap is the per-slice capacity the plan uses. Slots cover the
-        effective window and stop at two hours.
+        number of users with an active account in that school who picked the
+        offset; pending, rejected and paused accounts do not count. cap is
+        the per-slice capacity the plan uses. Slots cover the effective
+        window in whole five-minute slices and stop at two hours.
       x-roles: [master, admin]
       parameters:
         - $ref: '#/components/parameters/SchoolIDQuery'
@@ -2607,7 +2609,9 @@ components:
         label: { type: string }
         count:
           type: integer
-          description: Users with a live account in the school who picked this offset.
+          description: |
+            Users with an active account in the school who picked this offset.
+            Pending, rejected and paused accounts do not count.
         cap:
           type: integer
           description: Per-slice capacity used by the plan.

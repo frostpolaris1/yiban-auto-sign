@@ -106,14 +106,14 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
     retry: false,
   })
 
+  // 聚合只随页面挂载与手动重试取数：30 天窗口不参与 30 秒轮询。
+  // 旧线看板同样只加载一次；轮询面是 user 的 sign-status。
   const signStatsQuery = useQuery({
     queryKey: ['sign-stats', 30],
     queryFn: () => (SHOWCASE ? Promise.resolve(showcaseSignStats()) : getSignStats(30)),
     enabled: !isUser,
     staleTime: 0,
     retry: false,
-    refetchInterval: 30_000,
-    refetchIntervalInBackground: false,
   })
 
   const prefStatsQuery = useQuery({

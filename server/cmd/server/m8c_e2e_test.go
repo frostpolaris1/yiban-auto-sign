@@ -74,11 +74,26 @@ func m8cDay(n int) string {
 // m8cInsertTask 直接写一行签到任务，用作统计的终态载体。
 func m8cInsertTask(t *testing.T, e *w2cEnv, accountID, taskID, day, state string) {
 	t.Helper()
+	m8cInsertTaskAt(t, e, accountID, taskID, day, state, coreclock.System{}.Now().UTC())
+}
+
+// m8cInsertTaskAt 写入指定的 updated_at：同账号多任务时用它钉住「最后更新」。
+func m8cInsertTaskAt(t *testing.T, e *w2cEnv, accountID, taskID, day, state string, at time.Time) {
+	t.Helper()
 	if _, err := e.db.Exec(e.ctx, `
-		INSERT INTO sign_tasks (account_id, school_task_id, day, run_at, state)
-		VALUES ($1::uuid, $2::uuid, $3::date, $4, $5::sign_task_state)`,
-		accountID, taskID, day, coreclock.System{}.Now().UTC(), state); err != nil {
+		INSERT INTO sign_tasks (account_id, school_task_id, day, run_at, state, updated_at)
+		VALUES ($1::uuid, $2::uuid, $3::date, $4, $5::sign_task_state, $4)`,
+		accountID, taskID, day, at, state); err != nil {
 		t.Fatalf("insert sign task: %v", err)
+	}
+}
+
+// m8cActivate 把账号置为 active：自选人数与签到统计只认活跃账号。
+func m8cActivate(t *testing.T, e *w2cEnv, accountID string) {
+	t.Helper()
+	if _, err := e.db.Exec(e.ctx,
+		`UPDATE accounts SET status = 'active' WHERE id = $1::uuid`, accountID); err != nil {
+		t.Fatalf("activate account: %v", err)
 	}
 }
 
@@ -183,10 +198,15 @@ func TestM8CTimePrefStats(t *testing.T) {
 	schoolA := e.school("m8c-pref-a")
 	schoolB := e.school("m8c-pref-b")
 	e.bind(admin.ID, schoolA.ID)
-	e.account(schoolA.ID, master.ID, "13800000040")
-	e.account(schoolA.ID, admin.ID, "13800000041")
+	masterFirst := e.account(schoolA.ID, master.ID, "13800000040")
+	adminAccount := e.account(schoolA.ID, admin.ID, "13800000041")
 	// 同一用户两个账号只计一次。
-	e.account(schoolA.ID, master.ID, "13800000050")
+	m8cActivate(t, e, e.account(schoolA.ID, master.ID, "13800000050"))
+	m8cActivate(t, e, masterFirst)
+	m8cActivate(t, e, adminAccount)
+	// 待审账号不计入：它的用户即使选了 offset 0，首槽仍只应有 1 人。
+	pendingUser := e.user("m8c-pref-pending@example.com", coreauth.RoleUser)
+	e.account(schoolA.ID, pendingUser.ID, "13800000060")
 	taskA, err := e.sched.CreateSchoolTask(e.ctx, schoolA.ID, "m8c-pref-task-a")
 	if err != nil {
 		t.Fatalf("create task A: %v", err)
@@ -201,6 +221,7 @@ func TestM8CTimePrefStats(t *testing.T) {
 	}{
 		{master.ID, 0},
 		{admin.ID, 10},
+		{pendingUser.ID, 0},
 	} {
 		if _, err := e.db.Exec(e.ctx, `
 			INSERT INTO time_prefs (user_id, offset_min) VALUES ($1::uuid, $2)
@@ -244,4 +265,76 @@ func TestM8CTimePrefStats(t *testing.T) {
 	rec = e.do(http.MethodGet,
 		"/api/time-prefs/stats?school_id="+schoolA.ID+"&task_id="+taskA, nil, e.login(user))
 	w2cWantStatus(t, rec, http.StatusForbidden)
+}
+
+// 同账号同日两个任务：只取最后更新的一条，日桶合计等于账号数。
+func TestM8CSignStatsDedupesMultipleTasks(t *testing.T) {
+	e := w2cNewEnv(t)
+	master := e.user("m8c-dedupe@example.com", coreauth.RoleMaster)
+	school := e.school("m8c-dedupe")
+	account := e.account(school.ID, master.ID, "13800000040")
+	taskA, err := e.sched.CreateSchoolTask(e.ctx, school.ID, "m8c-dedupe-a")
+	if err != nil {
+		t.Fatalf("create task A: %v", err)
+	}
+	taskB, err := e.sched.CreateSchoolTask(e.ctx, school.ID, "m8c-dedupe-b")
+	if err != nil {
+		t.Fatalf("create task B: %v", err)
+	}
+	first := time.Date(2026, 11, 2, 6, 0, 0, 0, m8cZone)
+	m8cInsertTaskAt(t, e, account, taskA, m8cDay(0), string(corestatus.TaskSuccess), first)
+	m8cInsertTaskAt(t, e, account, taskB, m8cDay(0), string(corestatus.TaskFailed), first.Add(10*time.Minute))
+
+	got := m8cGetStats(t, e, "/api/sign-stats?days=1", e.login(master), http.StatusOK)
+	if got.Total != 1 {
+		t.Fatalf("total = %d, want 1", got.Total)
+	}
+	if got.ByStatus.Success != 0 || got.ByStatus.Failed != 1 {
+		t.Fatalf("by_status = %+v, want only the last updated failed row", got.ByStatus)
+	}
+	if len(got.Days) != 1 || got.Days[0].Success != 0 || got.Days[0].Failed != 1 {
+		t.Fatalf("day bucket = %+v, want one failed account", got.Days)
+	}
+	if got.Days[0].Success+got.Days[0].Failed+got.Days[0].Skipped+
+		got.Days[0].Pending+got.Days[0].Running != got.Total {
+		t.Fatalf("day bucket sum %+v must equal total %d", got.Days[0], got.Total)
+	}
+}
+
+// 槽数按整 5 分钟片（floor），最多两小时；非 5 分钟整数倍窗口不得多出尾槽。
+func TestM8CTimePrefSlotBoundary(t *testing.T) {
+	e := w2cNewEnv(t)
+	master := e.user("m8c-slot@example.com", coreauth.RoleMaster)
+	school := e.school("m8c-slot")
+	e.account(school.ID, master.ID, "13800000040")
+	short, err := e.sched.CreateSchoolTask(e.ctx, school.ID, "m8c-slot-short")
+	if err != nil {
+		t.Fatalf("create short task: %v", err)
+	}
+	long, err := e.sched.CreateSchoolTask(e.ctx, school.ID, "m8c-slot-long")
+	if err != nil {
+		t.Fatalf("create long task: %v", err)
+	}
+	nowLocal := coreclock.System{}.Now().In(m8cZone)
+	base := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 6, 30, 0, 0, m8cZone)
+	e.windows[short] = contract.Window{Start: base, End: base.Add(28 * time.Minute), Source: contract.WindowPlatform}
+	e.windows[long] = contract.Window{Start: base, End: base.Add(121 * time.Minute), Source: contract.WindowPlatform}
+	session := e.login(master)
+
+	for _, tc := range []struct {
+		task  string
+		slots int
+	}{
+		{short, 5},
+		{long, 24},
+	} {
+		rec := e.do(http.MethodGet,
+			"/api/time-prefs/stats?school_id="+school.ID+"&task_id="+tc.task, nil, session)
+		w2cWantStatus(t, rec, http.StatusOK)
+		var got m8cPrefStats
+		e.decode(rec, &got)
+		if len(got.Slots) != tc.slots {
+			t.Fatalf("task %s slots = %d, want %d", tc.task, len(got.Slots), tc.slots)
+		}
+	}
 }

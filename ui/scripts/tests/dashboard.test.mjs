@@ -316,3 +316,15 @@ test('the preference summary does not invent a hottest slot when nobody picked',
   }
   assert.deepEqual(prefSummary(report), { users: 0, hottest: null })
 })
+
+test('the showcase crowding slots follow the selected window', async () => {
+  const { showcasePrefStats, showcaseWindows } = await import('../../src/lib/showcase.ts')
+  const day = '2026-10-28'
+  const row = showcaseWindows(day).items.find((item) => item.task_id === 'task-daily')
+  assert.ok(row)
+  const report = showcasePrefStats({ day, schoolId: row.school_id, taskId: row.task_id })
+  // 08:30–09:00 是 30 分钟：整 6 个五分钟槽。
+  assert.equal(report.slots.length, 6)
+  assert.equal(report.slots.at(-1).offset_min, 25)
+  assert.equal(report.slots.at(-1).label, '08:55')
+})

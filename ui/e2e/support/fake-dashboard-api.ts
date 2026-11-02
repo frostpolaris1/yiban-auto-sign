@@ -227,6 +227,38 @@ function capacityFor(
   }
 }
 
+/** 按选中任务生成槽：槽数与服务端同逻辑（整 5 分钟片，最多两小时）。 */
+function prefStatsFor(day: string, schoolId: string, taskId: string): PrefStatsReport {
+  const rows = dashboardWindows(day)
+  const row = rows.find((item) => item.school_id === schoolId && item.task_id === taskId)
+  if (!row || row.start === null || row.end === null) {
+    return { ...DEFAULT_PREF_STATS, school_id: schoolId, task_id: taskId, day, slots: [] }
+  }
+  const [hour, minute] = row.start.slice(11, 16).split(':').map(Number)
+  const spanMinutes = (Date.parse(row.end) - Date.parse(row.start)) / 60_000
+  const slices = Math.max(0, Math.min(24, Math.floor(spanMinutes / 5)))
+  const counts =
+    taskId === 'task-night'
+      ? [0, 1, 3, 2, 0, 0, 1, 0, 0, 0, 2, 0]
+      : [2, 4, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  return {
+    school_id: row.school_id,
+    task_id: row.task_id,
+    day,
+    window_start: row.start,
+    window_end: row.end,
+    slots: Array.from({ length: slices }, (_, index) => {
+      const total = hour * 60 + minute + index * 5
+      return {
+        offset_min: index * 5,
+        label: `${String(Math.floor(total / 60) % 24).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`,
+        count: counts[index] ?? 0,
+        cap: 5,
+      }
+    }),
+  }
+}
+
 export type FakeDashboardApi = {
   calls: DashboardApiCall[]
 }
@@ -370,7 +402,11 @@ export async function mockDashboardApi(
       if (!(await deny(route, ['master', 'admin']))) return
       const failure = takeFailure('prefStats')
       if (failure) return fail(route, failure.status, failure.code, failure.message)
-      return json(route, options.prefStats ?? DEFAULT_PREF_STATS)
+      if (options.prefStats) return json(route, options.prefStats)
+      const day = options.day ?? DASHBOARD_DAY
+      const schoolId = url.searchParams.get('school_id') ?? ''
+      const taskId = url.searchParams.get('task_id') ?? ''
+      return json(route, prefStatsFor(day, schoolId, taskId))
     }
 
     return fail(route, 404, 'not_found', '未找到资源')

@@ -12,7 +12,7 @@
 // Service、Store、Report、SignStats。
 //
 // # 口径
-// 日桶互斥：每个账号每日恰落一个状态，日内相加合法。
+// 日桶互斥：同一账号同日的多任务行按最后更新收敛为一条，日内相加合法。
 // ByStatus 是窗口内按状态去重的账号数，桶间可有交集，不得相加当 Total。
 // 缺失日期补零并列入 DaysMissing：真 0 与没有数据必须可分。
 // 只给 master 与 admin；user 的今日状态走 /api/me/sign-status。

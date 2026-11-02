@@ -8,7 +8,7 @@
  * **口径**
  * 只画契约给的字段；空数据不画空坐标轴，给一句原因。
  * 分布图按状态去重，桶间可重叠，摘要明确写「不相加」。
- * 自选图只在有选中任务时挂载；无任务时不发请求。
+ * 自选图只在该任务存在时取数；无可用任务时给空态文案，不发请求。
  * 错误只挂本卡，重试只重取本卡。
  */
 
@@ -143,7 +143,12 @@ export function PrefCrowdingCard({ report, taskLabel, loading, error, onRetry }:
   )
   const summary = report ? prefSummary(report) : null
   const cap = report?.slots[0]?.cap ?? 0
-  const empty = report && report.slots.length === 0 ? '当前窗口没有可展示的时间片。' : null
+  const empty =
+    taskLabel === null
+      ? '暂无可用任务，暂不统计自选人数。'
+      : report && report.slots.length === 0
+        ? '当前窗口没有可展示的时间片。'
+        : null
   return (
     <CardShell
       className="col-12"

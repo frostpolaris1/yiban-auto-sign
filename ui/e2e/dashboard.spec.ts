@@ -221,6 +221,10 @@ test('invariant 6: an empty window list says so and sends no capacity request', 
   await expect(page.getByText('今日无可用窗口')).toBeVisible()
   await expectKpi(page, '任务总数', '0项')
   expect(capacityCalls(api), 'no task means no capacity request').toHaveLength(0)
+  expect(prefStatsCalls(api), 'no task means no crowding request').toHaveLength(0)
+  await expect(chartCard(page, '签到时段拥挤度')).toContainText(
+    '暂无可用任务，暂不统计自选人数。',
+  )
 })
 
 test('invariant 6: a failing sign-status read leaves the diagnostics card usable', async ({
@@ -405,4 +409,19 @@ test('invariant 8: the crowding chart follows the selected task', async ({ page 
   await expect
     .poll(() => prefStatsCalls(api).at(-1)?.params['task_id'])
     .toBe('task-night')
+  // 假 API 按任务给不同人数：摘要随数据变，而不是只换请求参数。
+  await expect(chartCard(page, '签到时段拥挤度')).toContainText('最热 20:10（3 人）')
+})
+
+test('invariant 8: switching the theme rebuilds the charts', async ({ page }) => {
+  await mockDashboardApi(page, { role: 'admin' })
+  await openDashboard(page)
+  const canvas = page.locator('.app-chart-canvas').first()
+  await expect(canvas).toBeVisible()
+
+  const before = await canvas.screenshot()
+  await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
+  await expect
+    .poll(async () => (await canvas.screenshot()).equals(before))
+    .toBe(false)
 })
