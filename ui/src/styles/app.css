@@ -802,6 +802,23 @@
   color: var(--warning);
 }
 
+/* ---------- 看板图表 ----------
+ * 画布高度由容器定，Chart.js 用 maintainAspectRatio:false 撑满。
+ * 高度是像素值，不让父级内容把图压扁；窄屏同样固定，横向滚动交给页面。 */
+.app-chart-box {
+  position: relative;
+  height: 240px;
+}
+
+.app-chart-box--wide {
+  height: 260px;
+}
+
+.app-chart-canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
 /* ---------- 数字滚动 ----------
  * 库在遮罩内分两层加内边距：`number__inner` 与 `digit__num`。
  * 每层上下各半个遮罩高，两层合计 4 × 半遮罩高，把字形下压、行盒撑高。

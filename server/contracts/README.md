@@ -105,6 +105,8 @@ either side drifts.
 | GET | `/api/me/time-pref` | master/admin/user | P4 |
 | PUT | `/api/me/time-pref` | master/admin/user | P4 |
 | GET | `/api/capacity` | master/admin | P4 |
+| GET | `/api/sign-stats` | master/admin | M8C |
+| GET | `/api/time-prefs/stats` | master/admin | M8C |
 | POST | `/api/accounts/:id/sign` | master/admin/user | P4 |
 | GET | `/api/me/photos` | master/admin/user | P5 |
 | POST | `/api/me/photos` | master/admin/user | P5 |

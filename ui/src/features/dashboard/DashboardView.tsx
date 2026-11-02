@@ -22,10 +22,12 @@ import { describeApiError } from '@/lib/api/client'
 import { getDiagnostics, getSignStatus } from '@/lib/api/me'
 import type { Role } from '@/lib/api/auth'
 import { getCapacity, listScheduleWindows } from '@/lib/api/schedule'
+import { getPrefStats, getSignStats } from '@/lib/api/stats'
 import { dayOf } from '@/lib/format'
 import { SHOWCASE } from '@/lib/session'
-import { showcaseCapacity, showcaseWindows } from '@/lib/showcase'
+import { showcaseCapacity, showcasePrefStats, showcaseSignStats, showcaseWindows } from '@/lib/showcase'
 import { CapacityCard } from './CapacityCard'
+import { PrefCrowdingCard, SignDistributionCard, SignTrendCard } from './ChartCards'
 import { DiagnosticsCard } from './DiagnosticsCard'
 import { KpiGrid } from './KpiGrid'
 import { SignStatusCard } from './SignStatusCard'
@@ -104,6 +106,37 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
     retry: false,
   })
 
+  const signStatsQuery = useQuery({
+    queryKey: ['sign-stats', 30],
+    queryFn: () => (SHOWCASE ? Promise.resolve(showcaseSignStats()) : getSignStats(30)),
+    enabled: !isUser,
+    staleTime: 0,
+    retry: false,
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: false,
+  })
+
+  const prefStatsQuery = useQuery({
+    queryKey: ['pref-stats', selected?.schoolId ?? '', selected?.taskId ?? '', day],
+    queryFn: () =>
+      SHOWCASE
+        ? Promise.resolve(
+            showcasePrefStats({
+              day,
+              schoolId: selected?.schoolId ?? '',
+              taskId: selected?.taskId ?? '',
+            }),
+          )
+        : getPrefStats({
+            day,
+            schoolId: selected?.schoolId ?? '',
+            taskId: selected?.taskId ?? '',
+          }),
+    enabled: !isUser && selected !== null,
+    staleTime: 0,
+    retry: false,
+  })
+
   const signStatusItems = signStatusQuery.data?.items ?? []
   const diagnosticsItems = diagnosticsQuery.data?.items ?? []
 
@@ -167,6 +200,33 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
           }}
           onRetryCapacity={() => {
             void capacityQuery.refetch()
+          }}
+        />
+      </div>
+      <div className="grid">
+        <SignTrendCard
+          report={signStatsQuery.data}
+          loading={signStatsQuery.isPending}
+          error={signStatsQuery.isError ? describeApiError(signStatsQuery.error) : null}
+          onRetry={() => {
+            void signStatsQuery.refetch()
+          }}
+        />
+        <SignDistributionCard
+          report={signStatsQuery.data}
+          loading={signStatsQuery.isPending}
+          error={signStatsQuery.isError ? describeApiError(signStatsQuery.error) : null}
+          onRetry={() => {
+            void signStatsQuery.refetch()
+          }}
+        />
+        <PrefCrowdingCard
+          report={prefStatsQuery.data}
+          taskLabel={selected?.label ?? null}
+          loading={prefStatsQuery.isPending && selected !== null}
+          error={prefStatsQuery.isError ? describeApiError(prefStatsQuery.error) : null}
+          onRetry={() => {
+            void prefStatsQuery.refetch()
           }}
         />
       </div>

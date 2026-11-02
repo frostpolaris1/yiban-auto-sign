@@ -5,13 +5,15 @@ import type {
   ScheduleWindow,
   TimePref,
 } from '../../src/lib/api/schedule'
+import type { PrefStatsReport, SignStatsReport } from '../../src/lib/api/stats'
 import { SESSION_CSRF, SESSION_EMAIL, type Role } from './fake-accounts-api'
 
 /**
  * 看板的假 API。
  *
  * 一份路由处理 `/api/auth/me`、`/api/me/sign-status`、`/api/me/diagnostics`、
- * `/api/me/time-pref`、`/api/schedule/windows` 与 `/api/capacity`。
+ * `/api/me/time-pref`、`/api/schedule/windows`、`/api/capacity`、
+ * `/api/sign-stats` 与 `/api/time-prefs/stats`。
  * 响应体只用登记过的合成值：学校与任务带「合成」前缀，账号是 `acc-000N`。
  * 角色按契约 `x-roles` 判：sign-status 仅 user；windows 与 capacity 仅 master/admin。
  * 调用记录供断言「零请求」「参数正确」与「轮询次数」。
@@ -49,6 +51,10 @@ export type MockDashboardOptions = {
   diagnosticsError?: Failure
   windowsError?: Failure
   capacityError?: Failure
+  signStats?: SignStatsReport
+  prefStats?: PrefStatsReport
+  signStatsError?: Failure
+  prefStatsError?: Failure
   timePref?: TimePref
 }
 
@@ -111,6 +117,40 @@ export const DEFAULT_DIAGNOSTICS: DiagnosticsItem[] = [
 ]
 
 export const DEFAULT_TIME_PREF: TimePref = { offset_min: 15, allowed: true }
+
+/** 30 天终态：固定到 DASHBOARD_DAY，视觉基线不随日历漂移。 */
+export const DEFAULT_SIGN_STATS: SignStatsReport = {
+  days: Array.from({ length: 30 }, (_, index) => {
+    const date = new Date(Date.UTC(2026, 8, 29))
+    date.setUTCDate(date.getUTCDate() + index)
+    return {
+      day: date.toISOString().slice(0, 10),
+      pending: index === 29 ? 1 : 0,
+      running: 0,
+      success: 3,
+      failed: index % 3 === 0 ? 1 : 0,
+      skipped: index % 5 === 0 ? 1 : 0,
+    }
+  }),
+  total: 10,
+  by_status: { pending: 1, running: 0, success: 9, failed: 4, skipped: 3 },
+  days_missing: [],
+}
+
+/** 合成窗口 08:30–09:00 的六个槽；人数固定。 */
+export const DEFAULT_PREF_STATS: PrefStatsReport = {
+  school_id: 'school-alpha',
+  task_id: 'task-daily',
+  day: DASHBOARD_DAY,
+  window_start: `${DASHBOARD_DAY}T08:30:00+08:00`,
+  window_end: `${DASHBOARD_DAY}T09:00:00+08:00`,
+  slots: [2, 4, 1, 0, 0, 0].map((count, index) => ({
+    offset_min: index * 5,
+    label: `08:${String(30 + index * 5).padStart(2, '0')}`,
+    count,
+    cap: 5,
+  })),
+}
 
 /** 四行窗口：两行可用、一行停用、一行平台未报窗口。 */
 export function dashboardWindows(day: string): ScheduleWindow[] {
@@ -212,11 +252,16 @@ export async function mockDashboardApi(
     ...item,
   }))
   const timePref: TimePref = { ...(options.timePref ?? DEFAULT_TIME_PREF) }
-  const failures: Record<'signStatus' | 'diagnostics' | 'windows' | 'capacity', FailureEntry> = {
+  const failures: Record<
+    'signStatus' | 'diagnostics' | 'windows' | 'capacity' | 'signStats' | 'prefStats',
+    FailureEntry
+  > = {
     signStatus: { spec: options.signStatusError, hits: 0 },
     diagnostics: { spec: options.diagnosticsError, hits: 0 },
     windows: { spec: options.windowsError, hits: 0 },
     capacity: { spec: options.capacityError, hits: 0 },
+    signStats: { spec: options.signStatsError, hits: 0 },
+    prefStats: { spec: options.prefStatsError, hits: 0 },
   }
 
   const json = (route: Route, body: unknown, status = 200) =>
@@ -314,6 +359,20 @@ export async function mockDashboardApi(
       return json(route, capacityFor(day, row))
     }
 
+    if (url.pathname === '/api/sign-stats' && request.method() === 'GET') {
+      if (!(await deny(route, ['master', 'admin']))) return
+      const failure = takeFailure('signStats')
+      if (failure) return fail(route, failure.status, failure.code, failure.message)
+      return json(route, options.signStats ?? DEFAULT_SIGN_STATS)
+    }
+
+    if (url.pathname === '/api/time-prefs/stats' && request.method() === 'GET') {
+      if (!(await deny(route, ['master', 'admin']))) return
+      const failure = takeFailure('prefStats')
+      if (failure) return fail(route, failure.status, failure.code, failure.message)
+      return json(route, options.prefStats ?? DEFAULT_PREF_STATS)
+    }
+
     return fail(route, 404, 'not_found', '未找到资源')
   })
 
@@ -334,6 +393,16 @@ export function windowsCalls(api: FakeDashboardApi): DashboardApiCall[] {
 
 export function capacityCalls(api: FakeDashboardApi): DashboardApiCall[] {
   return api.calls.filter((call) => call.method === 'GET' && call.path === '/api/capacity')
+}
+
+export function signStatsCalls(api: FakeDashboardApi): DashboardApiCall[] {
+  return api.calls.filter((call) => call.method === 'GET' && call.path === '/api/sign-stats')
+}
+
+export function prefStatsCalls(api: FakeDashboardApi): DashboardApiCall[] {
+  return api.calls.filter(
+    (call) => call.method === 'GET' && call.path === '/api/time-prefs/stats',
+  )
 }
 
 export function lastCapacityCall(api: FakeDashboardApi): DashboardApiCall | undefined {

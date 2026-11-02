@@ -55,6 +55,7 @@ import (
 	appretention "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/retention"
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
 	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
+	appstats "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/stats"
 	apptimepref "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/timepref"
 	appuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/user"
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
@@ -642,6 +643,11 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			closeFn()
 			return nil, fmt.Errorf("assembly: time preference service: %w", err)
 		}
+		statsSvc, err := appstats.NewService(pg.NewStatsRepo(db))
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("assembly: stats service: %w", err)
+		}
 		// 每片槽数取一个 5 分钟片的原始吞吐（util=1）。
 		// 与容量公式同源：容量只是把全窗吞吐再乘利用系数。
 		slots := corecapacity.Capacity(coreplan.SlotSpan, cfg.Workers, cfg.AvgAttempt, cfg.EgressRate, 1.0)
@@ -653,7 +659,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			Rate: cfg.EgressRate, Util: corecapacity.UtilDefault,
 			SlotsPerSlice: slots, Front: true, UsePrefs: cfg.AllowTimePref,
 			EdgeFront: cfg.EdgeFront, EdgeBack: cfg.EdgeBack,
-		})
+		}).WithStats(statsSvc)
 		// 运行页任务检索：只读，与计划用例共用排期仓储。
 		taskLib = schedulehttp.NewTasksHandler(
 			appschedule.NewTaskQuery(scheduleRepo, clk, loc), adminSvc,

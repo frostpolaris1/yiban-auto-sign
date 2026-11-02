@@ -70,6 +70,7 @@ const ALLOWED_BARE_IMPORTS = new Set([
   '@formkit/auto-animate',
   '@formkit/auto-animate/react',
   '@number-flow/react',
+  'chart.js',
 ])
 
 /** 唯一允许导入 `lucide-react` 的文件。 */

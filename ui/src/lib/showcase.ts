@@ -26,6 +26,7 @@ import type {
   ScheduleWindow,
   ScheduleWindowList,
 } from './api/schedule'
+import type { PrefStatsReport, SignStatsReport } from './api/stats'
 
 let seq = 0
 
@@ -302,6 +303,62 @@ export function showcaseCapacity(query: {
     window_start: row.start,
     window_end: row.end,
     ...numbers,
+  }
+}
+
+/** 看板 30 天趋势与分布：固定合成日，不随展示机时钟漂移。 */
+export function showcaseSignStats(): SignStatsReport {
+  const days = Array.from({ length: 30 }, (_, index) => {
+    const day = `2026-10-${String(index + 1).padStart(2, '0')}`
+    return {
+      day,
+      pending: index === 29 ? 1 : 0,
+      running: 0,
+      success: index % 7 === 0 ? 2 : 3,
+      failed: index % 5 === 0 ? 1 : 0,
+      skipped: index % 11 === 0 ? 1 : 0,
+    }
+  })
+  return {
+    days,
+    total: 9,
+    by_status: { pending: 1, running: 0, success: 8, failed: 4, skipped: 2 },
+    days_missing: [],
+  }
+}
+
+/** 看板自选拥挤度：按选中的合成窗口生成 16 个五分钟槽。 */
+export function showcasePrefStats(query: {
+  day: string
+  schoolId: string
+  taskId: string
+}): PrefStatsReport {
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(query.day) ? query.day : today()
+  const row = showcaseWindows(day).items.find(
+    (item) => item.school_id === query.schoolId && item.task_id === query.taskId,
+  )
+  if (!row || row.start === null || row.end === null) {
+    throw new Error(`showcasePrefStats: 没有可用的合成窗口 ${query.schoolId}:${query.taskId}`)
+  }
+  const base = row.start.slice(11, 16)
+  const [hour, minute] = base.split(':').map(Number)
+  const counts = [3, 5, 2, 1, 0, 0, 4, 6, 2, 1, 0, 3, 5, 2, 1, 0]
+  const slots = counts.map((count, index) => {
+    const total = hour * 60 + minute + index * 5
+    return {
+      offset_min: index * 5,
+      label: `${String(Math.floor(total / 60) % 24).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`,
+      count,
+      cap: 5,
+    }
+  })
+  return {
+    school_id: row.school_id,
+    task_id: row.task_id,
+    day,
+    window_start: row.start,
+    window_end: row.end,
+    slots,
   }
 }
 

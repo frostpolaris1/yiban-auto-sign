@@ -47,6 +47,7 @@ import (
 	appphotos "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/photos"
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
 	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
+	appstats "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/stats"
 	apptimepref "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/timepref"
 	appuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/user"
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
@@ -298,10 +299,14 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 	}
 	signingHandler := signinghttp.NewHandler(accountSvc, adminSvc, e.provider).
 		WithManual(e.worker).WithAccess(accountSvc)
+	statsSvc, err := appstats.NewService(pg.NewStatsRepo(e.db))
+	if err != nil {
+		t.Fatalf("new stats service: %v", err)
+	}
 	scheduleHandler := schedulehttp.NewHandler(scheduleSvc, prefSvc, adminSvc, schedulehttp.Config{
 		Location: loc, Workers: 1, Avg: 60 * time.Second, Rate: 1.0, Util: 0.8,
 		SlotsPerSlice: 5, Front: true, UsePrefs: true,
-	})
+	}).WithStats(statsSvc)
 	userSvc, err := appuser.NewService(appuser.Deps{
 		Users: e.users, Audit: e.audits, Tx: db, Clock: clk, KDF: coreauth.PlainHasher{}, Limit: 10000,
 		Sessions: e.sessions, OwnerAccounts: e.users,

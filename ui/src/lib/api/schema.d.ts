@@ -1099,6 +1099,55 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sign-stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Report per-account sign results for a day range.
+         * @description Master and admin only. Each account lands in one state per day, so
+         *     the daily buckets are mutually exclusive. by_status counts distinct
+         *     accounts per state over the whole window; those buckets can overlap
+         *     and must not be summed into total. The range ends today in the
+         *     server time zone. A day with no task rows carries zero counts and
+         *     appears in days_missing.
+         */
+        get: operations["SignStats"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/time-prefs/stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Report time-preference crowding for one school task.
+         * @description Master and admin only. Each slot is a five-minute offset from the
+         *     effective window start of the selected task and day. count is the
+         *     number of users with a live account in that school who picked the
+         *     offset; cap is the per-slice capacity the plan uses. Slots cover the
+         *     effective window and stop at two hours.
+         */
+        get: operations["TimePrefStats"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/me/photos": {
         parameters: {
             query?: never;
@@ -1599,6 +1648,49 @@ export interface components {
             capacity: number;
             demand: number;
             shortfall: number;
+        };
+        SignStatsDay: {
+            /** Format: date */
+            day: string;
+            pending: number;
+            running: number;
+            success: number;
+            failed: number;
+            skipped: number;
+        };
+        SignStatsCounts: {
+            pending: number;
+            running: number;
+            success: number;
+            failed: number;
+            skipped: number;
+        };
+        SignStatsReport: {
+            days: components["schemas"]["SignStatsDay"][];
+            /** @description Distinct accounts with at least one task row in the window. */
+            total: number;
+            by_status: components["schemas"]["SignStatsCounts"];
+            /** @description Days in the window with no task rows. */
+            days_missing: string[];
+        };
+        PrefStatsSlot: {
+            /** @description Minutes from the effective window start; multiple of five. */
+            offset_min: number;
+            label: string;
+            /** @description Users with a live account in the school who picked this offset. */
+            count: number;
+            /** @description Per-slice capacity used by the plan. */
+            cap: number;
+        };
+        PrefStatsReport: {
+            school_id: string;
+            task_id: string;
+            day: string;
+            /** Format: date-time */
+            window_start: string;
+            /** Format: date-time */
+            window_end: string;
+            slots: components["schemas"]["PrefStatsSlot"][];
         };
         TimePref: {
             /** @description Relative minute from the effective window start; multiple of five. */
@@ -3610,6 +3702,64 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CapacityReport"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    SignStats: {
+        parameters: {
+            query?: {
+                /** @description Window length in days, 1 to 90. Defaults to 30. */
+                days?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sign statistics. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignStatsReport"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    TimePrefStats: {
+        parameters: {
+            query: {
+                school_id: components["parameters"]["SchoolIDQuery"];
+                /** @description School task id from GET /api/schedule/windows. */
+                task_id: components["parameters"]["TaskIDQuery"];
+                /** @description Business day YYYY-MM-DD; defaults to today in the server time zone. */
+                day?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Time-preference crowding. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrefStatsReport"];
                 };
             };
             400: components["responses"]["ValidationError"];

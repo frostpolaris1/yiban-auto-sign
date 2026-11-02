@@ -192,3 +192,127 @@ test('the capacity card names window sources exactly like the schedule page', ()
     assert.equal(capacitySourceTone(source), sourceTone(source), `${source} tone must match`)
   }
 })
+
+// ---------- 看板三图的纯逻辑 ----------
+
+import {
+  distributionConfig,
+  prefConfig,
+  prefSummary,
+  trendConfig,
+  trendTotals,
+} from '../../src/features/dashboard/charts.ts'
+
+const CHART_PALETTE = {
+  success: '#10B981',
+  danger: '#EF4444',
+  warning: '#F59E0B',
+  info: '#0EA5E9',
+  primary: '#2563EB',
+  text: '#1E293B',
+  muted: '#64748B',
+  grid: '#E4E8EF',
+}
+
+function statsReport() {
+  return {
+    days: [
+      { day: '2026-10-01', pending: 0, running: 0, success: 3, failed: 1, skipped: 0 },
+      { day: '2026-10-02', pending: 1, running: 0, success: 2, failed: 0, skipped: 1 },
+    ],
+    total: 4,
+    by_status: { pending: 1, running: 0, success: 3, failed: 1, skipped: 1 },
+    days_missing: ['2026-09-30'],
+  }
+}
+
+test('trend totals add each day and count missing days separately', () => {
+  const totals = trendTotals(statsReport())
+  assert.deepEqual(totals, {
+    success: 5,
+    failed: 1,
+    skipped: 1,
+    pending: 1,
+    running: 0,
+    total: 8,
+    missing: 1,
+  })
+})
+
+test('the trend chart is null when every bucket is zero', () => {
+  const empty = {
+    days: [{ day: '2026-10-01', pending: 0, running: 0, success: 0, failed: 0, skipped: 0 }],
+    total: 0,
+    by_status: { pending: 0, running: 0, success: 0, failed: 0, skipped: 0 },
+    days_missing: [],
+  }
+  assert.equal(trendConfig(undefined, CHART_PALETTE), null)
+  assert.equal(trendConfig(empty, CHART_PALETTE), null)
+})
+
+test('the trend chart keeps three main series and adds in-flight states only when present', () => {
+  const config = trendConfig(statsReport(), CHART_PALETTE)
+  assert.deepEqual(config.data.labels, ['10-01', '10-02'])
+  assert.deepEqual(
+    config.data.datasets.map((dataset) => dataset.label),
+    ['成功', '失败', '跳过', '待签'],
+  )
+  const settled = trendConfig(
+    { ...statsReport(), by_status: { pending: 0, running: 0, success: 3, failed: 1, skipped: 1 } },
+    CHART_PALETTE,
+  )
+  assert.equal(settled.data.datasets.length, 3)
+  const running = trendConfig(
+    { ...statsReport(), by_status: { pending: 0, running: 2, success: 3, failed: 1, skipped: 1 } },
+    CHART_PALETTE,
+  )
+  assert.deepEqual(
+    running.data.datasets.map((dataset) => dataset.label),
+    ['成功', '失败', '跳过', '进行中'],
+  )
+})
+
+test('the distribution chart drops zero buckets and refuses an all-zero window', () => {
+  assert.equal(
+    distributionConfig(
+      { ...statsReport(), by_status: { pending: 0, running: 0, success: 0, failed: 0, skipped: 0 } },
+      CHART_PALETTE,
+    ),
+    null,
+  )
+  const config = distributionConfig(statsReport(), CHART_PALETTE)
+  assert.deepEqual(config.data.labels, ['成功', '失败', '跳过', '待签'])
+  assert.deepEqual(config.data.datasets[0].data, [3, 1, 1, 1])
+})
+
+test('the preference chart pairs counts with per-slice capacity', () => {
+  assert.equal(prefConfig(undefined, CHART_PALETTE), null)
+  const report = {
+    school_id: 'school-a',
+    task_id: 'task-1',
+    day: '2026-10-28',
+    window_start: '2026-10-28T08:30:00+08:00',
+    window_end: '2026-10-28T09:00:00+08:00',
+    slots: [
+      { offset_min: 0, label: '08:30', count: 2, cap: 5 },
+      { offset_min: 5, label: '08:35', count: 0, cap: 5 },
+    ],
+  }
+  const config = prefConfig(report, CHART_PALETTE)
+  assert.deepEqual(config.data.labels, ['08:30', '08:35'])
+  assert.equal(config.data.datasets.length, 2)
+  assert.deepEqual(config.data.datasets[1].data, [5, 5])
+  assert.deepEqual(prefSummary(report), { users: 2, hottest: { label: '08:30', count: 2 } })
+})
+
+test('the preference summary does not invent a hottest slot when nobody picked', () => {
+  const report = {
+    school_id: 'school-a',
+    task_id: 'task-1',
+    day: '2026-10-28',
+    window_start: '2026-10-28T08:30:00+08:00',
+    window_end: '2026-10-28T09:00:00+08:00',
+    slots: [{ offset_min: 0, label: '08:30', count: 0, cap: 5 }],
+  }
+  assert.deepEqual(prefSummary(report), { users: 0, hottest: null })
+})

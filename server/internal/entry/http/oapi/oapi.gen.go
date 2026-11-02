@@ -905,6 +905,29 @@ type PhotoUpload struct {
 	Image openapi_types.File `json:"image"`
 }
 
+// PrefStatsReport defines model for PrefStatsReport.
+type PrefStatsReport struct {
+	Day         string          `json:"day"`
+	SchoolId    string          `json:"school_id"`
+	Slots       []PrefStatsSlot `json:"slots"`
+	TaskId      string          `json:"task_id"`
+	WindowEnd   time.Time       `json:"window_end"`
+	WindowStart time.Time       `json:"window_start"`
+}
+
+// PrefStatsSlot defines model for PrefStatsSlot.
+type PrefStatsSlot struct {
+	// Cap Per-slice capacity used by the plan.
+	Cap int `json:"cap"`
+
+	// Count Users with a live account in the school who picked this offset.
+	Count int    `json:"count"`
+	Label string `json:"label"`
+
+	// OffsetMin Minutes from the effective window start; multiple of five.
+	OffsetMin int `json:"offset_min"`
+}
+
 // RegisterRequest defines model for RegisterRequest.
 type RegisterRequest struct {
 	AgreePrivacy bool                `json:"agree_privacy"`
@@ -1120,6 +1143,37 @@ type SessionUser struct {
 	MustChangePassword bool                `json:"must_change_password"`
 	Role               UserRole            `json:"role"`
 	Status             UserStatus          `json:"status"`
+}
+
+// SignStatsCounts defines model for SignStatsCounts.
+type SignStatsCounts struct {
+	Failed  int `json:"failed"`
+	Pending int `json:"pending"`
+	Running int `json:"running"`
+	Skipped int `json:"skipped"`
+	Success int `json:"success"`
+}
+
+// SignStatsDay defines model for SignStatsDay.
+type SignStatsDay struct {
+	Day     openapi_types.Date `json:"day"`
+	Failed  int                `json:"failed"`
+	Pending int                `json:"pending"`
+	Running int                `json:"running"`
+	Skipped int                `json:"skipped"`
+	Success int                `json:"success"`
+}
+
+// SignStatsReport defines model for SignStatsReport.
+type SignStatsReport struct {
+	ByStatus SignStatsCounts `json:"by_status"`
+	Days     []SignStatsDay  `json:"days"`
+
+	// DaysMissing Days in the window with no task rows.
+	DaysMissing []openapi_types.Date `json:"days_missing"`
+
+	// Total Distinct accounts with at least one task row in the window.
+	Total int `json:"total"`
 }
 
 // SignStatusItem defines model for SignStatusItem.
@@ -1605,6 +1659,23 @@ type SchoolDefaultPhotoSetParams struct {
 	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
 }
 
+// SignStatsParams defines parameters for SignStats.
+type SignStatsParams struct {
+	// Days Window length in days, 1 to 90. Defaults to 30.
+	Days *int `form:"days,omitempty" json:"days,omitempty"`
+}
+
+// TimePrefStatsParams defines parameters for TimePrefStats.
+type TimePrefStatsParams struct {
+	SchoolId SchoolIDQuery `form:"school_id" json:"school_id"`
+
+	// TaskId School task id from GET /api/schedule/windows.
+	TaskId TaskIDQuery `form:"task_id" json:"task_id"`
+
+	// Day Business day YYYY-MM-DD; defaults to today in the server time zone.
+	Day *string `form:"day,omitempty" json:"day,omitempty"`
+}
+
 // UserListParams defines parameters for UserList.
 type UserListParams struct {
 	// Cursor Opaque page cursor taken from next_cursor.
@@ -1888,6 +1959,12 @@ type ServerInterface interface {
 	// SchoolDefaultPhotoSet Set or clear the school default photo.
 	// (PUT /api/schools/{id}/default-photo)
 	SchoolDefaultPhotoSet(c *gin.Context, id SchoolID, params SchoolDefaultPhotoSetParams)
+	// SignStats Report per-account sign results for a day range.
+	// (GET /api/sign-stats)
+	SignStats(c *gin.Context, params SignStatsParams)
+	// TimePrefStats Report time-preference crowding for one school task.
+	// (GET /api/time-prefs/stats)
+	TimePrefStats(c *gin.Context, params TimePrefStatsParams)
 	// UserList List users with cursor pagination.
 	// (GET /api/users)
 	UserList(c *gin.Context, params UserListParams)
@@ -3853,6 +3930,76 @@ func (siw *ServerInterfaceWrapper) SchoolDefaultPhotoSet(c *gin.Context) {
 	siw.Handler.SchoolDefaultPhotoSet(c, id, params)
 }
 
+// SignStats operation middleware
+func (siw *ServerInterfaceWrapper) SignStats(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params SignStatsParams
+
+	// ------------- Optional query parameter "days" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "days", c.Request.URL.Query(), &params.Days, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter days: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.SignStats(c, params)
+}
+
+// TimePrefStats operation middleware
+func (siw *ServerInterfaceWrapper) TimePrefStats(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params TimePrefStatsParams
+
+	// ------------- Required query parameter "school_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "school_id", c.Request.URL.Query(), &params.SchoolId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter school_id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Required query parameter "task_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "task_id", c.Request.URL.Query(), &params.TaskId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter task_id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "day" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "day", c.Request.URL.Query(), &params.Day, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter day: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.TimePrefStats(c, params)
+}
+
 // UserList operation middleware
 func (siw *ServerInterfaceWrapper) UserList(c *gin.Context) {
 
@@ -4305,6 +4452,8 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/me/time-pref", wrapper.TimePrefGet)
 	router.PUT(options.BaseURL+"/api/me/time-pref", wrapper.TimePrefSet)
 	router.GET(options.BaseURL+"/api/capacity", wrapper.CapacityGet)
+	router.GET(options.BaseURL+"/api/sign-stats", wrapper.SignStats)
+	router.GET(options.BaseURL+"/api/time-prefs/stats", wrapper.TimePrefStats)
 	router.GET(options.BaseURL+"/api/me/photos", wrapper.PhotoList)
 	router.POST(options.BaseURL+"/api/me/photos", wrapper.PhotoUpload)
 	router.DELETE(options.BaseURL+"/api/me/photos/:id", wrapper.PhotoDelete)
