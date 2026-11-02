@@ -64,15 +64,6 @@ func n190Users(t *testing.T, e *authEnv, path string) n190UserPage {
 	return page
 }
 
-func n190UserByEmail(page n190UserPage, email string) (n190User, bool) {
-	for _, item := range page.Items {
-		if item.Email == email {
-			return item, true
-		}
-	}
-	return n190User{}, false
-}
-
 func TestN190UserGroupCountsAndFilters(t *testing.T) {
 	e := newAuthEnv(t)
 	master := w2dSeedUser(t, e, "n190-groups-boss@example.com", "boss-pass", coreauth.RoleMaster)
