@@ -304,13 +304,18 @@ func (f *fakeManual) Request(_ context.Context, _ string, actor appaudit.Actor) 
 }
 
 type fakeAccess struct {
-	err   error
-	calls int
+	err    error
+	status appaccount.Status
+	calls  int
 }
 
 func (f *fakeAccess) Get(context.Context, corescope.Scope, string) (appaccount.Record, error) {
 	f.calls++
-	return appaccount.Record{}, f.err
+	status := f.status
+	if status == "" {
+		status = appaccount.StatusActive
+	}
+	return appaccount.Record{Status: status}, f.err
 }
 
 // newSignRouter 装配带手动签到接缝的路由。
@@ -389,6 +394,33 @@ func TestSignAccepted(t *testing.T) {
 	}
 	if manual.actor != actor {
 		t.Fatalf("审计主体 = %+v, want %+v", manual.actor, actor)
+	}
+}
+
+// 非 active 账号不进入手动签到：旧线按钮只对 active 出现；
+// 入口层把“找不到可用任务”的 404 收敛成 409 conflict，
+// worker 侧仍以 active 谓词为根守卫。
+func TestSignRejectsInactiveAccount(t *testing.T) {
+	for _, status := range []appaccount.Status{
+		appaccount.StatusPending,
+		appaccount.StatusRejected,
+		appaccount.StatusPausedAdmin,
+		appaccount.StatusPausedUser,
+		appaccount.StatusCredentialError,
+	} {
+		manual := &fakeManual{taskID: "task-1"}
+		engine, issued := newSignRouterWithAccess(
+			t, &fakeAuthorizer{scope: corescope.Master()}, manual, &fakeAccess{status: status})
+		rec := callSign(t, engine, issued)
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("%s: status = %d, want 409: %s", status, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "conflict") {
+			t.Fatalf("%s: body = %s, want conflict code", status, rec.Body.String())
+		}
+		if manual.calls != 0 {
+			t.Fatalf("%s: manual.Request called %d times, want 0", status, manual.calls)
+		}
 	}
 }
 

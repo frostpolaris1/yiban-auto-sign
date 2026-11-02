@@ -54,16 +54,21 @@ test('invariant 1: a successful account write toasts and leaves no in-page notic
   await mockAccountsApi(page, { role: 'master' })
   await openAccounts(page)
 
+  // 先签再暂停：active 账号只有 139****9000，暂停后同一条行就不能再签。
+  await page.getByRole('button', { name: '签到 139****9000' }).click()
+  await page.getByRole('dialog', { name: '立即签到？' }).getByRole('button', { name: '确认签到' }).click()
+  await expect(toast(page).filter({ hasText: '已受理 139****9000 的签到任务' })).toBeVisible()
+  // 等签到 toast 退场，再触发暂停：否则两条 toast 同时在场，计数断言不再有判别力。
+  await expect(toast(page).filter({ hasText: '已受理 139****9000 的签到任务' })).toBeHidden({
+    timeout: 15_000,
+  })
+
   await confirmPause(page, '139****9000')
   await expect(toast(page)).toHaveCount(1)
   await expect(toast(page)).toHaveAttribute('data-type', 'success')
   await expect(toast(page)).toContainText('已暂停 139****9000')
   await expect(page.getByText('操作结果')).toHaveCount(0)
   await expect(page.locator('.alert.success')).toHaveCount(0)
-
-  await page.getByRole('button', { name: '签到 138****8000' }).click()
-  await page.getByRole('dialog', { name: '立即签到？' }).getByRole('button', { name: '确认签到' }).click()
-  await expect(toast(page).filter({ hasText: '已受理 138****8000 的签到任务' })).toBeVisible()
 
   await page.getByRole('button', { name: '恢复 135****0001' }).click()
   await page.getByRole('dialog', { name: '恢复账号？' }).getByRole('button', { name: '确认恢复' }).click()
@@ -85,12 +90,12 @@ test('invariant 1: a failed sign keeps its error in the dialog and sends no toas
   page,
 }) => {
   await mockAccountsApi(page, {
-    role: 'user',
+    role: 'admin',
     signError: { status: 409, code: 'window_closed', message: '签到窗口已关闭' },
   })
   await openAccounts(page)
 
-  await page.getByRole('button', { name: '签到 138****8000' }).click()
+  await page.getByRole('button', { name: '签到 139****9000' }).click()
   const dialog = page.getByRole('dialog', { name: '立即签到？' })
   await dialog.getByRole('button', { name: '确认签到' }).click()
   await expect(dialog).toContainText('签到窗口已关闭')
