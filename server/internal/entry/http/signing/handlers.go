@@ -96,8 +96,8 @@ func (h *Handler) WithAccess(a AccountAccess) *Handler {
 //
 // 成功是 202（已入队，不是已完成）。冲突由 worker 的错误码经
 // respond 映射成 409：already_signed / sign_running / window_closed /
-// task_ambiguous。三种角色都可发起，但账号必须在其可见面内：
-// 跨校或非本人一律 404。
+// task_ambiguous；非 active 账号另由本层回 409 conflict。三种角色都可发起，
+// 但账号必须在其可见面内：跨校或非本人一律 404。
 func (h *Handler) Sign(c *gin.Context, id oapi.AccountID, _ oapi.AccountSignParams) {
 	scope, actor, ok := h.principal(c)
 	if !ok {
@@ -113,8 +113,16 @@ func (h *Handler) Sign(c *gin.Context, id oapi.AccountID, _ oapi.AccountSignPara
 		fail(c, errs.New(errs.CodeInternal, "account access is not wired"))
 		return
 	}
-	if _, err := h.access.Get(c.Request.Context(), scope, string(id)); err != nil {
+	record, err := h.access.Get(c.Request.Context(), scope, string(id))
+	if err != nil {
 		fail(c, err)
+		return
+	}
+	// 旧线签到按钮只对 active 出现（web/routes/signin_api.py 对 status != active
+	// 一律拒绝）。这里把非 active 从“找不到可用任务”的 404 收敛成 409 conflict：
+	// “不入队”的根守卫仍在 resolveTask 的 active 谓词与 worker 认领查询。
+	if !record.Status.Active() {
+		fail(c, errs.New(errs.CodeConflict, "account is not active"))
 		return
 	}
 	taskID, err := h.manual.Request(c.Request.Context(), string(id), actor)

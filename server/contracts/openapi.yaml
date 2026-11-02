@@ -992,6 +992,9 @@ paths:
         A closed window returns 409 window_closed. A run in progress returns
         409 sign_running. A concluded success returns 409 already_signed.
         A failed or skipped row is re-armed and returns 202 again.
+        An account that is not active (pending, rejected, paused_admin,
+        paused_user, credential_error) returns 409 conflict and queues
+        nothing.
         Cross-scope accounts return 404 for every role.
         Rate limited per client IP and per account id; a 429 carries Retry-After.
       x-roles: [master, admin, user]

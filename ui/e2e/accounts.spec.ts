@@ -195,7 +195,9 @@ for (const theme of ['light', 'dark'] as const) {
 
     await expect(page.getByRole('button', { name: '验证 138****8000' })).toBeDisabled()
     await expect(page.getByRole('button', { name: '评审 138****8000' })).toBeDisabled()
-    await expect(page.getByRole('button', { name: '签到 138****8000' })).toBeEnabled()
+    const userSign = page.getByRole('button', { name: '签到 138****8000' })
+    await expect(userSign).toBeDisabled()
+    await expect(userSign).toHaveAttribute('title', '仅正常状态的账号可签到')
     await expect(page.getByRole('button', { name: '暂停 139****9000' })).toBeEnabled()
 
     await expect(page.getByRole('button', { name: '暂停 138****8000' })).toBeDisabled()
@@ -224,6 +226,26 @@ test('invariant 3: an admin may verify, review and filter by school', async ({ p
   await expect(rowFor(page, '138****8000').locator('.app-deny-note')).toContainText(
     '仅正常状态可暂停',
   )
+})
+
+test('invariant 12: a non-active account cannot be signed manually', async ({ page }) => {
+  const api = await mockAccountsApi(page, { role: 'admin' })
+  await openAccounts(page)
+
+  const pending = rowFor(page, '138****8000')
+  const pendingSign = pending.getByRole('button', { name: '签到 138****8000' })
+  await expect(pendingSign).toBeDisabled()
+  await expect(pendingSign).toHaveAttribute('title', '仅正常状态的账号可签到')
+  await expect(pending.locator('.app-deny-note')).toContainText('仅正常状态的账号可签到')
+
+  const paused = rowFor(page, '135****0001')
+  const pausedSign = paused.getByRole('button', { name: '签到 135****0001' })
+  await expect(pausedSign).toBeDisabled()
+
+  expect(
+    api.calls.filter((call) => call.path.endsWith('/sign')),
+    'a disabled sign action sends no request',
+  ).toHaveLength(0)
 })
 
 test('invariant 4: pause waits for confirmation and sends the flag', async ({ page }) => {
@@ -276,18 +298,18 @@ test('invariant 4: sign waits for confirmation and shows the conflict envelope',
   page,
 }) => {
   const api = await mockAccountsApi(page, {
-    role: 'user',
+    role: 'admin',
     signError: { status: 409, code: 'window_closed', message: '签到窗口已关闭' },
   })
   await openAccounts(page)
 
-  await page.getByRole('button', { name: '签到 138****8000' }).click()
+  await page.getByRole('button', { name: '签到 139****9000' }).click()
   const dialog = page.getByRole('dialog', { name: '立即签到？' })
   await expect(dialog).toBeVisible()
-  expect(postCalls(api, 'acc-1', 'sign'), 'no request before confirmation').toHaveLength(0)
+  expect(postCalls(api, 'acc-2', 'sign'), 'no request before confirmation').toHaveLength(0)
 
   await dialog.getByRole('button', { name: '确认签到' }).click()
-  await expect.poll(() => postCalls(api, 'acc-1', 'sign').length).toBe(1)
+  await expect.poll(() => postCalls(api, 'acc-2', 'sign').length).toBe(1)
   await expect(dialog).toContainText('签到窗口已关闭')
   await expect(dialog).toContainText('window_closed')
 })
@@ -312,15 +334,15 @@ for (const conflict of [
 ] as const) {
   test(`sign reports ${conflict.code}`, async ({ page }) => {
     const api = await mockAccountsApi(page, {
-      role: 'user',
+      role: 'admin',
       signError: { status: 409, code: conflict.code, message: conflict.message },
     })
     await openAccounts(page)
 
-    await page.getByRole('button', { name: '签到 138****8000' }).click()
+    await page.getByRole('button', { name: '签到 139****9000' }).click()
     const dialog = page.getByRole('dialog', { name: '立即签到？' })
     await dialog.getByRole('button', { name: '确认签到' }).click()
-    await expect.poll(() => postCalls(api, 'acc-1', 'sign').length).toBe(1)
+    await expect.poll(() => postCalls(api, 'acc-2', 'sign').length).toBe(1)
     await expect(dialog).toContainText(conflict.code)
     await expect(dialog).toContainText(conflict.message)
   })

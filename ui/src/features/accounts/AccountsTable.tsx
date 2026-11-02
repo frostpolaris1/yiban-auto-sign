@@ -166,8 +166,13 @@ export function AccountsTable({
               if (pauseReason) notes.add(pauseReason)
               // 展示构建只读时状态类说明是噪声：写动作都不可用。
               if (!SHOWCASE && reviewBlockedByStatus) notes.add('仅待审核账号可评审')
+              if (!SHOWCASE && can(role, 'sign') && account.status !== 'active') {
+                notes.add('仅正常状态的账号可签到')
+              }
 
-              const signReason = denyReason(role, 'sign')
+              const signReason =
+                denyReason(role, 'sign') ??
+                (account.status === 'active' ? null : '仅正常状态的账号可签到')
               const verifyReason = denyReason(role, 'verify')
               const reviewReason = denyReason(role, 'review') ?? (isPending(account.status) ? null : '仅待审核账号可评审')
 
