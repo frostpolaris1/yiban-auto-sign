@@ -214,6 +214,36 @@ func TestS05MasterTogglesRegistration(t *testing.T) {
 	}
 
 	csrf := s05Master(t, e)
+	// 必填字段缺失或为 null：400，且不改开关。
+	for _, body := range []map[string]any{{}, {"enabled": nil}} {
+		resp, payload := e.do(http.MethodPut, "/api/auth/registration", body,
+			map[string]string{"X-CSRF-Token": csrf})
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("PUT registration body %v = %d, want 400; body=%q", body, resp.StatusCode, payload)
+		}
+		if s05Status(t, e).Enabled {
+			t.Fatalf("malformed PUT %v changed the switch", body)
+		}
+	}
+	if n := e.scalarInt("SELECT count(*) FROM audit_logs WHERE action = 'settings.registration'"); n != 0 {
+		t.Fatalf("malformed PUT wrote %d audit rows", n)
+	}
+	// 有会话缺 CSRF：403；无会话：401。两条都不改开关。
+	csrfResp, csrfPayload := e.do(http.MethodPut, "/api/auth/registration",
+		map[string]any{"enabled": true}, nil)
+	if csrfResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("PUT without CSRF = %d, want 403; body=%q", csrfResp.StatusCode, csrfPayload)
+	}
+	// 无会话但带占位 CSRF 头：生成器先校验必填头，这里要走到用例层的 401。
+	anonResp, anonPayload := s05Do(t, e, s05Client(t), http.MethodPut,
+		"/api/auth/registration", map[string]any{"enabled": true},
+		map[string]string{"X-CSRF-Token": "anonymous"})
+	if anonResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("anonymous PUT = %d, want 401; body=%q", anonResp.StatusCode, anonPayload)
+	}
+	if s05Status(t, e).Enabled {
+		t.Fatal("an unauthorized PUT changed the switch")
+	}
 	if got := s05SetRegistration(t, e, csrf, true); !got.Enabled {
 		t.Fatal("master did not open registration")
 	}
@@ -315,6 +345,10 @@ func TestS05RegisterValidation(t *testing.T) {
 		{"stale privacy", "stale-privacy@example.com", func(body map[string]any) {
 			body["privacy_version"] = 2
 		}, http.StatusConflict},
+		{"missing versions", "missing-versions@example.com", func(body map[string]any) {
+			delete(body, "terms_version")
+			delete(body, "privacy_version")
+		}, http.StatusBadRequest},
 		{"invalid email", "not-an-email", func(map[string]any) {}, http.StatusBadRequest},
 	}
 	for _, tc := range cases {

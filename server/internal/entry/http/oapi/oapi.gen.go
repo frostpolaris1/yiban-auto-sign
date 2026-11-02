@@ -913,7 +913,7 @@ type RegisterRequest struct {
 
 	// Password At least 10 characters and two of uppercase, lowercase, digits and
 	// symbols. The server enforces the classes; minLength mirrors the
-	// character floor.
+	// character floor. Inputs over 1024 bytes are rejected.
 	Password string `json:"password"`
 
 	// PrivacyVersion Must equal RegistrationStatus.privacy_version; a stale value is 409.

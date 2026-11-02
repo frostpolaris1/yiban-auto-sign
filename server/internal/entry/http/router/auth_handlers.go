@@ -267,12 +267,20 @@ func (s *server) AuthRegistrationSet(c *gin.Context, _ oapi.AuthRegistrationSetP
 		respond.Error(c.Writer, c.Request, err)
 		return
 	}
-	var req oapi.AuthRegistrationSetJSONRequestBody
+	// enabled 是必填布尔：缺字段与 null 都回 400。
+	// 生成结构体的 bool 零值会把畸形请求读成「关闭注册」，不能静默接受。
+	var req struct {
+		Enabled *bool `json:"enabled"`
+	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		bindError(c, err)
 		return
 	}
-	status, err := s.auth.SetRegistration(c.Request.Context(), scope, actor, req.Enabled)
+	if req.Enabled == nil {
+		respond.Error(c.Writer, c.Request, errs.New(errs.CodeValidation, "enabled is required"))
+		return
+	}
+	status, err := s.auth.SetRegistration(c.Request.Context(), scope, actor, *req.Enabled)
 	if err != nil {
 		respond.Error(c.Writer, c.Request, err)
 		return

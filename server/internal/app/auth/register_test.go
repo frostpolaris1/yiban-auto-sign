@@ -102,6 +102,8 @@ func TestRegisterRejectsInvalidInput(t *testing.T) {
 		{"weak password", func(in *appauth.RegisterInput) { in.Password = "short" }, errs.CodeValidation},
 		{"no terms", func(in *appauth.RegisterInput) { in.AgreeTerms = false }, errs.CodeValidation},
 		{"no privacy", func(in *appauth.RegisterInput) { in.AgreePrivacy = false }, errs.CodeValidation},
+		{"missing terms version", func(in *appauth.RegisterInput) { in.TermsVersion = 0 }, errs.CodeValidation},
+		{"missing privacy version", func(in *appauth.RegisterInput) { in.PrivacyVersion = 0 }, errs.CodeValidation},
 		{"stale terms", func(in *appauth.RegisterInput) { in.TermsVersion++ }, errs.CodeConflict},
 		{"stale privacy", func(in *appauth.RegisterInput) { in.PrivacyVersion++ }, errs.CodeConflict},
 		{"invalid email", func(in *appauth.RegisterInput) { in.Email = "not-an-email" }, errs.CodeValidation},

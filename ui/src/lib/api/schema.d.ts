@@ -1287,7 +1287,7 @@ export interface components {
             /**
              * @description At least 10 characters and two of uppercase, lowercase, digits and
              *     symbols. The server enforces the classes; minLength mirrors the
-             *     character floor.
+             *     character floor. Inputs over 1024 bytes are rejected.
              */
             password: string;
             agree_terms: boolean;

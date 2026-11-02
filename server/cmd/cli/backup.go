@@ -30,6 +30,7 @@ import (
 	"net/url"
 	"os"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -651,13 +652,34 @@ func runRestore(deps *backupDeps, args []string) int {
 
 	match := true
 	_, _ = fmt.Fprintln(deps.stdout, "行数对账（备份时 / 恢复后）：")
+	current := make(map[string]bool, len(manifestTables))
 	for _, t := range manifestTables {
+		current[t] = true
+		want, inBaseline := baseline[t]
+		if !inBaseline {
+			// 旧版本二进制不认得这张表：恢复后的迁移会补默认行，
+			// 基线缺键不能按丢数据处理。跳过必须可见，故打印一行。
+			_, _ = fmt.Fprintf(deps.stdout, "  %-12s — / %d  %s\n",
+				t, restored[t], "基线无此项，未对账")
+			continue
+		}
 		state := "一致"
-		if baseline[t] != restored[t] {
+		if want != restored[t] {
 			state = "不一致"
 			match = false
 		}
-		_, _ = fmt.Fprintf(deps.stdout, "  %-12s %d / %d  %s\n", t, baseline[t], restored[t], state)
+		_, _ = fmt.Fprintf(deps.stdout, "  %-12s %d / %d  %s\n", t, want, restored[t], state)
+	}
+	// 基线里有、本版本清单没有的表同样要显性说明，不静默跳过。
+	extra := make([]string, 0, len(baseline))
+	for t := range baseline {
+		if !current[t] {
+			extra = append(extra, t)
+		}
+	}
+	sort.Strings(extra)
+	for _, t := range extra {
+		_, _ = fmt.Fprintf(deps.stdout, "  %-12s %d / —  %s\n", t, baseline[t], "当前清单无此项，未对账")
 	}
 	if !match {
 		_, _ = fmt.Fprintln(deps.stdout, "对账不一致：恢复件与备份基线有出入，按失败处理。")

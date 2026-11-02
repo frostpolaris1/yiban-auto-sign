@@ -2059,11 +2059,10 @@ components:
         password:
           type: string
           minLength: 10
-          maxLength: 1024
           description: |
             At least 10 characters and two of uppercase, lowercase, digits and
             symbols. The server enforces the classes; minLength mirrors the
-            character floor.
+            character floor. Inputs over 1024 bytes are rejected.
         agree_terms: { type: boolean }
         agree_privacy: { type: boolean }
         terms_version:

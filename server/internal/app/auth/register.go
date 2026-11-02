@@ -130,6 +130,9 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (coreauth.Issu
 	if !in.AgreeTerms || !in.AgreePrivacy {
 		return coreauth.Issued{}, errs.New(errs.CodeValidation, "agreement to the terms and privacy policy is required")
 	}
+	if in.TermsVersion <= 0 || in.PrivacyVersion <= 0 {
+		return coreauth.Issued{}, errs.New(errs.CodeValidation, "terms_version and privacy_version are required")
+	}
 	if in.TermsVersion != TermsVersion || in.PrivacyVersion != PrivacyVersion {
 		return coreauth.Issued{}, errs.New(errs.CodeConflict, "agreement version changed; reload and try again")
 	}
