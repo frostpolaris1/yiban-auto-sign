@@ -237,7 +237,7 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
   // 完整邮箱精确检索比原值；列表只展示掩码。
   const ownerEmails = new Map<string, string>([
     ['user-1', options.email ?? SESSION_EMAIL],
-    ['user-2', 'member.target@example.com'],
+    ['user-2', 'target.two@example.com'],
     ...LOOKUP_USERS.map((item) => [item.id, item.email] as [string, string]),
     ...Object.entries(options.ownerEmails ?? {}),
   ])

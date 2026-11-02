@@ -797,7 +797,7 @@ paths:
             % and _ are literal characters. At most 254 characters.
             Login and password-reset rate limiting is a deployment precondition
             before public exposure (P7).
-          schema: { type: string, maxLength: 254 }
+          schema: { type: string }
         - name: include_deleted
           in: query
           required: false
