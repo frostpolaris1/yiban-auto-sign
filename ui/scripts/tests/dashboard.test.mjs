@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { capacitySearch } from '../../src/lib/api/schedule.ts'
+import { dayOf } from '../../src/lib/format.ts'
 import {
   CAPACITY_SOURCE_LABELS,
   SUGGESTION_LABELS,
@@ -23,7 +24,8 @@ import { SOURCE_LABELS, sourceTone } from '../../src/features/schedule/display.t
  *
  * KPI 由条目派生，不另造统计端点；state=null 计入「无任务」，不进其余三项。
  * 今日终态口径：取报告末两天；成功率＝成功÷（成功+失败），跳过不计入；
- * 分母 0 为 null；pill 分「有对比/无对比」两态；报告未到不编数字。
+ * 分母 0 为 null；pill 分「有对比/无对比」两态；报告未到或 days 为空不编数字。
+ * 缓存键的业务日按上海时区取（dayOf）：+08:00 的 23:59 与 00:00 分属两日。
  * 状态标签取契约词汇，未知值原样显示：契约漂移必须可见。
  * 建议标签四值穷尽，键集与契约枚举相同。
  * 容量选项只取「启用且有窗口」的行；label 是 `学校名 · 任务名`。
@@ -200,6 +202,23 @@ test('a zero denominator and a missing report show dashes, not invented numbers'
 
   assert.equal(todayStats(null), null)
   assert.equal(todayStats(undefined), null)
+
+  // days 为空：报告在但没有终态，仍是 null，四卡「—」而不是编出来的 0。
+  assert.equal(
+    todayStats({
+      days: [],
+      total: 0,
+      by_status: { pending: 0, running: 0, success: 0, failed: 0, skipped: 0 },
+      days_missing: [],
+    }),
+    null,
+  )
+})
+
+test('the business day for the stats key rolls over at Shanghai midnight', () => {
+  // 复用 lib/format 的 dayOf（上海时区），与 sign-stats 服务端窗口终点同口径。
+  assert.equal(dayOf(new Date('2026-11-03T15:59:59Z')), '2026-11-03', '+08:00 的 23:59')
+  assert.equal(dayOf(new Date('2026-11-03T16:00:00Z')), '2026-11-04', '+08:00 的 00:00')
 })
 
 test('the manager KPI cards carry today numbers and an em dash without data', () => {

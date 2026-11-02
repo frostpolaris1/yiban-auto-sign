@@ -246,11 +246,11 @@ function dayRate(day: StatsDayBuckets | undefined): number | null {
 
 /**
  * 今日终态口径：取报告 `days` 的最后两项（最后一天是今天）。
- * 日期缺失按 0 桶处理，不编造；报告未到返回 null，四卡显「—」。
+ * 日期缺失按 0 桶处理，不编造；报告未到或 `days` 为空返回 null，四卡显「—」。
  * pill 只在今日成功率可算时出现：昨日无终态（成功+失败为 0）给「无昨日对比」。
  */
 export function todayStats(report: SignStatsReport | null | undefined): TodayStats | null {
-  if (report === null || report === undefined) return null
+  if (report === null || report === undefined || report.days.length === 0) return null
   const today = report.days.at(-1)
   const yesterday = report.days.at(-2)
   const rate = dayRate(today)

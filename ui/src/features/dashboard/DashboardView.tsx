@@ -11,13 +11,14 @@
  * 未命中的查询一律 `enabled: false`，挂载即零请求。
  * sign-status 每 30 秒轮询；页面隐藏时不轮询（`refetchIntervalInBackground: false`）。
  * windows 与时间片页共用缓存键 `['schedule-windows', day]`。
- * master/admin 的 KPI 取 `sign-stats` 报告末两天的今日终态，与图表共用一次读取。
+ * master/admin 的 KPI 取 `sign-stats` 报告末两天的今日终态，与图表共用一次读取；
+ * 缓存键带上海业务日，每 60 秒复核、跨日才重取。
  * 容量默认选第一个可用任务；没有可用任务就不发容量请求。
  * 各卡错误态独立，重试只重取该卡的数据。
  * 展示模式用合成夹具，零网络请求。
  */
 
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { describeApiError } from '@/lib/api/client'
 import { getDiagnostics, getSignStatus } from '@/lib/api/me'
@@ -108,10 +109,19 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
     retry: false,
   })
 
-  // 聚合只随页面挂载与手动重试取数：30 天窗口不参与 30 秒轮询。
-  // 旧线看板同样只加载一次；轮询面是 user 的 sign-status。
+  // 聚合只随页面挂载、业务日跨日与手动重试取数：30 天窗口不参与 30 秒轮询。
+  // 业务日按上海时区逐分钟复核（dayOf）：跨日才换缓存键触发一次重取，
+  // 长开的页面不会把昨日报告继续标成「今日」；不做聚合轮询。
+  const [businessDay, setBusinessDay] = useState(() => dayOf(new Date()))
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setBusinessDay(dayOf(new Date()))
+    }, 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
+
   const signStatsQuery = useQuery({
-    queryKey: ['sign-stats', 30],
+    queryKey: ['sign-stats', 30, businessDay],
     queryFn: () => (SHOWCASE ? Promise.resolve(showcaseSignStats()) : getSignStats(30)),
     enabled: !isUser,
     staleTime: 0,
