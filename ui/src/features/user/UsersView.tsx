@@ -15,6 +15,7 @@
  * 任一筛选变化回到第一页：游标从 URL 移除。
  * 游标栈只在会话内记忆「上一页」；刷新后从 URL 游标重建，只能前进。
  * 写操作成功的反馈走 toast；失败留在原控件旁，可回看。
+ * 列表每 10 秒条件轮询一次；模态或抽屉打开时暂停，展示模式不发请求。
  * 展示构建（`VITE_SHOWCASE=1`）取合成夹具，零网络请求。
  */
 
@@ -29,6 +30,7 @@ import type { Role } from '@/lib/api/auth'
 import { describeApiError } from '@/lib/api/client'
 import { listUsers, type User } from '@/lib/api/user'
 import { currentCursor, emptyCursorStack, goNext, goPrevious, hasPreviousPage, type CursorStack } from '@/lib/cursor'
+import { LIST_POLL_INTERVAL_MS } from '@/lib/query'
 import { USER_VIEW_ROLES, roleAllowed } from '@/lib/roles'
 import { SHOWCASE, useMe } from '@/lib/session'
 import { showcaseUsers } from '@/lib/showcase'
@@ -97,6 +99,18 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
     return () => window.clearTimeout(timer)
   }, [qInput, urlState, onSearchChange])
 
+  const invalidateUsers = () => {
+    void queryClient.invalidateQueries({ queryKey: ['users-page'] })
+  }
+
+  const [detailUser, setDetailUser] = useState<User | null>(null)
+  const [drawerReturnFocus, setDrawerReturnFocus] = useState<HTMLElement | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [createReturnFocus, setCreateReturnFocus] = useState<HTMLElement | null>(null)
+
+  // 模态或抽屉打开时暂停轮询：后台刷新不得改写用户正在操作的行。
+  const modalOpen = detailUser !== null || createOpen
+
   const usersQuery = useQuery({
     queryKey: [
       'users-page',
@@ -121,16 +135,10 @@ export function UsersView({ urlState, onSearchChange }: UsersViewProps) {
       })
     },
     enabled: allowed,
+    // 每 10 秒轮询一次；展示模式与模态/抽屉打开时零请求。
+    refetchInterval: SHOWCASE || modalOpen || !allowed ? false : LIST_POLL_INTERVAL_MS,
+    refetchIntervalInBackground: false,
   })
-
-  const invalidateUsers = () => {
-    void queryClient.invalidateQueries({ queryKey: ['users-page'] })
-  }
-
-  const [detailUser, setDetailUser] = useState<User | null>(null)
-  const [drawerReturnFocus, setDrawerReturnFocus] = useState<HTMLElement | null>(null)
-  const [createOpen, setCreateOpen] = useState(false)
-  const [createReturnFocus, setCreateReturnFocus] = useState<HTMLElement | null>(null)
 
   const openDetail = (user: User, opener: HTMLElement | null) => {
     setDetailUser(user)

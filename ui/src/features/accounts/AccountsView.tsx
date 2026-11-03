@@ -13,6 +13,7 @@
  * 待审提示条只对 master/admin 取数（user 不发 summary 请求），
  * 仅当 pending+rejected>0 显示；「只看待审核」把状态筛选设为 pending。
  * 写操作成功的反馈走 toast；错误反馈留在原模态内，可回看。
+ * 列表每 10 秒条件轮询一次；模态或抽屉打开时暂停，展示模式不发请求。
  * 角色来自 `GET /api/auth/me`。取不到时一切写操作置灰并给原因。
  */
 
@@ -60,6 +61,7 @@ import { AccountLocationModal } from './AccountLocationModal'
 import { AccountPendingBanner } from './AccountPendingBanner'
 import { AccountsTable } from './AccountsTable'
 import { currentCursor, emptyCursorStack, goNext, goPrevious, hasPreviousPage } from '@/lib/cursor'
+import { LIST_POLL_INTERVAL_MS } from '@/lib/query'
 import { buildAccountUpdate, buildLocationUpdate, type AccountUpdateDraft, type LocationDraft } from './drafts'
 import { can, denyReason, type AccountActionKind } from './permissions'
 import { exactMatchIds } from './search'
@@ -135,29 +137,6 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
     return () => clearTimeout(timer)
   }, [qInput, filters.q])
 
-  const accountsQuery = useQuery({
-    queryKey: [
-      'accounts',
-      filters.status ?? null,
-      filters.schoolId ?? null,
-      filters.q ?? null,
-      filters.includeDeleted ?? false,
-      cursor ?? null,
-    ],
-    // 列表随时可变。缓存键回到旧筛选时必须重新取数，不能给旧页。
-    staleTime: 0,
-    queryFn: () => {
-      if (SHOWCASE) return Promise.resolve(showcaseAccounts())
-      return listAccounts({
-        status: filters.status,
-        school_id: filters.schoolId,
-        q: filters.q,
-        include_deleted: filters.includeDeleted || undefined,
-        cursor,
-      })
-    },
-  })
-
   // 待审提示条：只对 master/admin 取数（user 不发 summary 请求）。
   // 与看板第 5 卡共用缓存键 `['account-summary']`；读取失败不显示提示条。
   const isManager = role === 'master' || role === 'admin'
@@ -199,6 +178,41 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
   const [createReturnFocus, setCreateReturnFocus] = useState<HTMLElement | null>(null)
   const [restoreError, setRestoreError] = useState<string | null>(null)
   const createReason = denyReason(role, 'create')
+
+  // 任一模态或抽屉打开时暂停轮询：后台刷新不得改写用户正在操作的页面。
+  const modalOpen =
+    createOpen ||
+    detailAccount !== null ||
+    action !== null ||
+    editTarget !== null ||
+    locationTarget !== null ||
+    deleteTarget !== null
+
+  const accountsQuery = useQuery({
+    queryKey: [
+      'accounts',
+      filters.status ?? null,
+      filters.schoolId ?? null,
+      filters.q ?? null,
+      filters.includeDeleted ?? false,
+      cursor ?? null,
+    ],
+    // 列表随时可变。缓存键回到旧筛选时必须重新取数，不能给旧页。
+    staleTime: 0,
+    queryFn: () => {
+      if (SHOWCASE) return Promise.resolve(showcaseAccounts())
+      return listAccounts({
+        status: filters.status,
+        school_id: filters.schoolId,
+        q: filters.q,
+        include_deleted: filters.includeDeleted || undefined,
+        cursor,
+      })
+    },
+    // 每 10 秒轮询一次，让外部变更可见；展示模式与模态打开时零请求。
+    refetchInterval: SHOWCASE || modalOpen ? false : LIST_POLL_INTERVAL_MS,
+    refetchIntervalInBackground: false,
+  })
 
   const mutation = useMutation({
     mutationFn: async (input: MutationInput) => {

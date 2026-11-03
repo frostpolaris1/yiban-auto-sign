@@ -596,3 +596,72 @@ test('UX-1: pressing Enter with the same value returns to the first page', async
   await expect(page.getByRole('button', { name: '上一页' })).toBeDisabled()
   await expect(page.getByText('master-one@example.com')).toBeVisible()
 })
+
+// --- 列表轮询 ---------------------------------------------------------------
+
+test('polling: the list revalidates after ten seconds with If-None-Match', async ({ page }) => {
+  await page.clock.install()
+  const api = await mockUsersApi(page, { role: 'master' })
+  await openUsers(page)
+
+  expect(listUserCalls(api).length, 'one read when the page mounts').toBe(1)
+  expect(lastUserListCall(api)?.headers['if-none-match']).toBeUndefined()
+
+  await page.clock.runFor(10_000)
+  await expect.poll(() => listUserCalls(api).length).toBe(2)
+  expect(lastUserListCall(api)?.headers['if-none-match']).toBeTruthy()
+  await expect(page.getByText('master-one@example.com')).toBeVisible()
+})
+
+test('polling: an external change appears after ten seconds', async ({ page }) => {
+  await page.clock.install()
+  const api = await mockUsersApi(page, { role: 'master' })
+  await openUsers(page)
+
+  api.setUsers([
+    ...USERS,
+    { ...USERS[0], id: 'user-poll-new', email: 'poll-new@example.com' },
+  ])
+  await page.clock.runFor(10_000)
+  await expect(page.getByText('poll-new@example.com')).toBeVisible()
+})
+
+test('polling: an open create modal pauses the list poll', async ({ page }) => {
+  await page.clock.install()
+  const api = await mockUsersApi(page, { role: 'master' })
+  await openUsers(page)
+  const base = listUserCalls(api).length
+
+  await page.getByRole('button', { name: '新建用户' }).click()
+  await expect(page.getByRole('dialog').getByText('新建用户', { exact: true })).toBeVisible()
+
+  await page.clock.runFor(10_000)
+  expect(listUserCalls(api).length, 'no poll while a modal is open').toBe(base)
+
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('dialog').getByText('新建用户', { exact: true })).toHaveCount(0)
+  await page.clock.runFor(10_000)
+  await expect.poll(() => listUserCalls(api).length).toBe(base + 1)
+})
+
+test('polling: an open detail drawer pauses the list poll', async ({ page }) => {
+  await page.clock.install()
+  const api = await mockUsersApi(page, { role: 'master' })
+  await openUsers(page)
+  const base = listUserCalls(api).length
+
+  await page
+    .getByRole('row')
+    .filter({ hasText: 'master-one@example.com' })
+    .getByRole('button', { name: '管理 master-one@example.com' })
+    .click()
+  await expect(page.getByRole('dialog').getByText('管理用户', { exact: true })).toBeVisible()
+
+  await page.clock.runFor(10_000)
+  expect(listUserCalls(api).length, 'no list poll while the drawer is open').toBe(base)
+
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('dialog').getByText('管理用户', { exact: true })).toHaveCount(0)
+  await page.clock.runFor(10_000)
+  await expect.poll(() => listUserCalls(api).length).toBe(base + 1)
+})

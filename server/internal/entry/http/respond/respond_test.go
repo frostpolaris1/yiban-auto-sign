@@ -1,6 +1,8 @@
 package respond
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"go/ast"
@@ -159,4 +161,105 @@ func declaredErrCodes(t *testing.T) map[errs.Code]string {
 		t.Fatal("core/errs 解析出 0 个错误码；门没有扫到东西")
 	}
 	return out
+}
+
+// 条件请求的判据：弱比较、逗号列表与 `*` 都认；无关值不命中。
+func TestIfNoneMatchHit(t *testing.T) {
+	const etag = `"abc"`
+	cases := []struct {
+		name   string
+		header string
+		want   bool
+	}{
+		{"exact", etag, true},
+		{"weak", "W/" + etag, true},
+		{"list", `"other", ` + etag, true},
+		{"weak in list", `"other", W/` + etag, true},
+		{"star", "*", true},
+		{"mismatch", `"other"`, false},
+		{"empty", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IfNoneMatchHit(tc.header, etag); got != tc.want {
+				t.Fatalf("IfNoneMatchHit(%q, %q) = %v, want %v", tc.header, etag, got, tc.want)
+			}
+		})
+	}
+}
+
+// ETag 必须与写出的字节严格对应：客户端按它决定是否复用旧体。
+func TestJSONWithETagWritesBodyAndMatchingValidator(t *testing.T) {
+	v := map[string]string{"hello": "world"}
+	rec := httptest.NewRecorder()
+	JSONWithETag(rec, httptest.NewRequest(http.MethodGet, "/x", nil), http.StatusOK, "", v)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json; charset=utf-8" {
+		t.Fatalf("Content-Type = %q", ct)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "private, max-age=0" {
+		t.Fatalf("Cache-Control = %q", cc)
+	}
+	sum := sha256.Sum256(rec.Body.Bytes())
+	wantETag := `"` + hex.EncodeToString(sum[:]) + `"`
+	if got := rec.Header().Get("ETag"); got != wantETag {
+		t.Fatalf("ETag = %q, want %q", got, wantETag)
+	}
+	var decoded map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if decoded["hello"] != "world" {
+		t.Fatalf("body = %q", rec.Body.Bytes())
+	}
+}
+
+// 304 只保留校验值：无体、无 Content-Type、无 Content-Length。
+func TestJSONWithETagNotModifiedHasNoBody(t *testing.T) {
+	v := map[string]string{"hello": "world"}
+	rec := httptest.NewRecorder()
+	JSONWithETag(rec, httptest.NewRequest(http.MethodGet, "/x", nil), http.StatusOK, "*", v)
+
+	if rec.Code != http.StatusNotModified {
+		t.Fatalf("status = %d, want 304", rec.Code)
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("304 不得带体：%q", rec.Body.Bytes())
+	}
+	if got := rec.Header().Get("ETag"); got == "" {
+		t.Fatal("304 必须带 ETag")
+	}
+	for _, name := range []string{"Content-Type", "Content-Length"} {
+		if got := rec.Header().Get(name); got != "" {
+			t.Fatalf("304 不得声明 %s：%q", name, got)
+		}
+	}
+}
+
+func TestJSONWithETagMismatchWritesBody(t *testing.T) {
+	rec := httptest.NewRecorder()
+	JSONWithETag(rec, httptest.NewRequest(http.MethodGet, "/x", nil), http.StatusOK, `"other"`,
+		map[string]string{"hello": "world"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if rec.Body.Len() == 0 {
+		t.Fatal("未命中必须写响应体")
+	}
+}
+
+// Marshal 失败不得留下半截成功响应。
+func TestJSONWithETagMarshalErrorUsesEnvelope(t *testing.T) {
+	rec := httptest.NewRecorder()
+	JSONWithETag(rec, httptest.NewRequest(http.MethodGet, "/x", nil), http.StatusOK, "", make(chan int))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	env := decode(t, rec.Body.Bytes())
+	if env.Error.Code != string(errs.CodeInternal) {
+		t.Fatalf("code = %q, want %q", env.Error.Code, errs.CodeInternal)
+	}
 }

@@ -8,7 +8,8 @@
 // entry/http 入口层。路由、中间件与处理器都经本包回错误。
 //
 // # 复用
-// Error、NotImplemented、JSON；Envelope、Body；RequestIDHeader。
+// Error、NotImplemented、JSON、JSONWithETag、IfNoneMatchHit；
+// Envelope、Body；RequestIDHeader。
 //
 // # 口径
 // 信封四键恒在：code、message、details、trace_id。
@@ -16,9 +17,12 @@
 package respond
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 )
@@ -82,6 +86,48 @@ func PayloadTooLarge(w http.ResponseWriter, r *http.Request) {
 // JSON 写成功响应体。
 func JSON(w http.ResponseWriter, status int, v any) {
 	writeJSON(w, status, v)
+}
+
+// JSONWithETag 写成功响应体，并用**实际写出的字节**做 ETag。
+//
+// ETag 是响应体的 sha256（带引号 hex），故 200 与 304 的两个校验值
+// 严格对应同一份字节。If-None-Match 命中时只写 ETag 与缓存指令，
+// 回 304：不声明 Content-Type/Content-Length，也不写响应体。
+// Marshal 失败走 Error 信封，不写半截成功响应。
+func JSONWithETag(w http.ResponseWriter, r *http.Request, status int, inm string, v any) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		Error(w, r, err)
+		return
+	}
+	sum := sha256.Sum256(raw)
+	etag := `"` + hex.EncodeToString(sum[:]) + `"`
+	w.Header().Set("ETag", etag)
+	// 入口中间件对 /api 统一发 no-store；列表需要每次复验而不是禁止缓存，
+	// 故这里覆写为 private, max-age=0，与照片单图同口径。
+	w.Header().Set("Cache-Control", "private, max-age=0")
+	if IfNoneMatchHit(inm, etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = w.Write(raw)
+}
+
+// IfNoneMatchHit 按 RFC 9110 的 If-None-Match 语义判命中：
+// 逗号列表、弱比较（W/ 前缀两侧等价）、`*` 匹配任一表示。
+func IfNoneMatchHit(header, etag string) bool {
+	for _, candidate := range strings.Split(header, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" {
+			return true
+		}
+		if strings.TrimPrefix(candidate, "W/") == etag {
+			return true
+		}
+	}
+	return false
 }
 
 func bodyOf(e *errs.Error, r *http.Request) Body {

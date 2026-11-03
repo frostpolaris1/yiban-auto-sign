@@ -32,7 +32,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -285,7 +284,7 @@ func (h *Handler) PhotoGet(c *gin.Context, id oapi.PhotoID, params oapi.PhotoGet
 	if params.IfNoneMatch != nil {
 		inm = *params.IfNoneMatch
 	}
-	if ifNoneMatchHit(inm, etag) {
+	if respond.IfNoneMatchHit(inm, etag) {
 		writePhotoValidator(c, etag)
 		c.Status(http.StatusNotModified)
 		return
@@ -311,21 +310,6 @@ func (h *Handler) PhotoGet(c *gin.Context, id oapi.PhotoID, params oapi.PhotoGet
 func writePhotoValidator(c *gin.Context, etag string) {
 	c.Header("ETag", etag)
 	c.Header("Cache-Control", "private, max-age=0")
-}
-
-// ifNoneMatchHit 按 RFC 9110 的 If-None-Match 语义判命中：
-// 逗号列表、弱比较（W/ 前缀两侧等价）、`*` 匹配任一表示。
-func ifNoneMatchHit(header, etag string) bool {
-	for _, candidate := range strings.Split(header, ",") {
-		candidate = strings.TrimSpace(candidate)
-		if candidate == "*" {
-			return true
-		}
-		if strings.TrimPrefix(candidate, "W/") == etag {
-			return true
-		}
-	}
-	return false
 }
 
 // PhotoDelete 实现 DELETE /api/me/photos/{id}。

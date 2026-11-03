@@ -111,7 +111,13 @@ func (h *Handler) List(c *gin.Context, params oapi.AccountListParams) {
 	for _, record := range page.Items {
 		items = append(items, accountResponse(record))
 	}
-	respond.JSON(c.Writer, http.StatusOK, oapi.AccountPage{Items: items, NextCursor: page.NextCursor})
+	// 列表可变：ETag 只省响应体，鉴权与作用域判定已经完成。
+	inm := ""
+	if params.IfNoneMatch != nil {
+		inm = *params.IfNoneMatch
+	}
+	respond.JSONWithETag(c.Writer, c.Request, http.StatusOK, inm,
+		oapi.AccountPage{Items: items, NextCursor: page.NextCursor})
 }
 
 // Create 实现 POST /api/accounts。

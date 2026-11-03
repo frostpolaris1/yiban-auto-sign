@@ -29,17 +29,22 @@ authoritative and a gate keeps both tables equal.
 
 ## Conditional requests
 
-`GET /api/me/photos/{id}` sends `ETag` on both the `200` and the `304`
-answer. `If-None-Match` uses the weak comparison function: `W/"x"` matches
-`"x"`, comma lists and `*` are honoured. Repeated `If-None-Match` header
-lines are merged into one comma-separated value per RFC 9110 section 5.3
-before binding, so a well-formed list answers `304` or `200`, never `400`.
+`GET /api/me/photos/{id}`, `GET /api/accounts` and `GET /api/users` send
+`ETag` on both the `200` and the `304` answer. The photo validator is the
+sha256 of the stored bytes; a list validator is the sha256 of the JSON body
+(quoted hex). `If-None-Match` uses the weak comparison function: `W/"x"`
+matches `"x"`, comma lists and `*` are honoured. Repeated `If-None-Match`
+header lines are merged into one comma-separated value per RFC 9110 section
+5.3 before binding, so a well-formed list answers `304` or `200`, never
+`400`.
 A `304` carries `ETag` and carries no `Content-Type`, no `Content-Length`
 and no body. The `304` response declares the `ETag` header in the YAML.
-The `200` path reads the record twice for an owner: `Get` for the validator,
-then `Open` for the stream. An admin whose owner read misses adds one more
-`Get` against the admin scope before `Open`. Merge the reads into one port
-call only if this path becomes a hotspot.
+Authentication and scope resolution run before the validator is computed:
+a session that cannot read a page never gets a `304` for it.
+The photo `200` path reads the record twice for an owner: `Get` for the
+validator, then `Open` for the stream. An admin whose owner read misses adds
+one more `Get` against the admin scope before `Open`. Merge the reads into
+one port call only if this path becomes a hotspot.
 
 ## Gates
 

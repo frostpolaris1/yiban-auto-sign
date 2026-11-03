@@ -216,6 +216,11 @@ export interface paths {
          *     start of the email address and never matches a name. A query
          *     longer than 254 characters is 400: no address can be that long,
          *     so no row can match.
+         *     The ETag is the sha256 of the response body (quoted hex). The 304
+         *     answer is decided after authentication and scope resolution, so a
+         *     request that cannot read this page never gets a 304. If-None-Match
+         *     honours the weak comparison, comma lists and `*`; repeated header
+         *     lines are merged per RFC 9110 section 5.3.
          */
         get: operations["UserList"];
         put?: never;
@@ -492,6 +497,11 @@ export interface paths {
          * List accounts with cursor pagination.
          * @description master sees all schools; admin sees bound schools; user sees own
          *     accounts. school_id, status and q narrow the result.
+         *     The ETag is the sha256 of the response body (quoted hex). The 304
+         *     answer is decided after authentication and scope resolution, so a
+         *     request that cannot read this page never gets a 304. If-None-Match
+         *     honours the weak comparison, comma lists and `*`; repeated header
+         *     lines are merged per RFC 9110 section 5.3.
          */
         get: operations["AccountList"];
         put?: never;
@@ -2417,7 +2427,13 @@ export interface operations {
                  */
                 include_deleted?: boolean;
             };
-            header?: never;
+            header?: {
+                /**
+                 * @description ETag(s) the client already holds; a match answers 304.
+                 *     Weak comparison, comma lists and `*` are honoured.
+                 */
+                "If-None-Match"?: string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -2426,11 +2442,22 @@ export interface operations {
             /** @description User page. */
             200: {
                 headers: {
+                    /** @description Strong validator of the response body (quoted sha256). */
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["UserPage"];
                 };
+            };
+            /** @description Not modified (ETag matched); no body. */
+            304: {
+                headers: {
+                    /** @description Strong validator of the response body (quoted sha256). */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
@@ -2957,7 +2984,13 @@ export interface operations {
                  */
                 include_deleted?: boolean;
             };
-            header?: never;
+            header?: {
+                /**
+                 * @description ETag(s) the client already holds; a match answers 304.
+                 *     Weak comparison, comma lists and `*` are honoured.
+                 */
+                "If-None-Match"?: string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -2966,11 +2999,22 @@ export interface operations {
             /** @description Account page. */
             200: {
                 headers: {
+                    /** @description Strong validator of the response body (quoted sha256). */
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["AccountPage"];
                 };
+            };
+            /** @description Not modified (ETag matched); no body. */
+            304: {
+                headers: {
+                    /** @description Strong validator of the response body (quoted sha256). */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
@@ -3992,6 +4036,8 @@ export interface operations {
             /** @description Image bytes. */
             200: {
                 headers: {
+                    /** @description Strong validator of the stored bytes (quoted sha256). */
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {
