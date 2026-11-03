@@ -164,6 +164,72 @@ func f(logger interface{}, ctx context.Context, err error) {
 	}
 }
 
+// helper 返回的 attrs 与 append 尾部都在扫描面内：不能靠拆函数绕过门。
+func TestRunChecksHelperAttrsAndAppendTails(t *testing.T) {
+	const redHelper = `package fixture
+
+// 该文件刻意不导入 logfield：scene 只能经 append 的转发参数递归到达。
+
+func scene() []any {
+	return []any{"error", 1}
+}
+
+func f(logger interface{}) {
+	attrs := []any{logfield.KeyDay, "2026-11-03"}
+	attrs = append(attrs, scene()...)
+	logger.Info("msg", attrs...)
+}
+`
+	rc, stdout, stderr := runFixture(t, redHelper)
+	if rc != 1 {
+		t.Fatalf("helper red rc = %d, want 1; stdout=%s stderr=%s", rc, stdout, stderr)
+	}
+	if !strings.Contains(stdout, `"error"`) {
+		t.Fatalf("helper red stdout = %q, want bare literal violation", stdout)
+	}
+
+	const redTail = `package fixture
+
+import "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
+
+func f(logger interface{}, err error) {
+	attrs := []any{logfield.KeyError, err.Error()}
+	attrs = append(attrs, "path", "/api")
+	logger.Info("msg", attrs...)
+}
+`
+	rc, stdout, stderr = runFixture(t, redTail)
+	if rc != 1 {
+		t.Fatalf("tail red rc = %d, want 1; stdout=%s stderr=%s", rc, stdout, stderr)
+	}
+	if !strings.Contains(stdout, `"path"`) {
+		t.Fatalf("tail red stdout = %q, want bare literal violation", stdout)
+	}
+
+	const green = `package fixture
+
+// 同 redHelper：不导入 logfield，键全靠 helper 递归校验。
+
+func scene() []any {
+	return []any{logfield.KeyDurationMS, 1}
+}
+
+func f(logger interface{}, err error) {
+	attrs := []any{logfield.KeyError, err.Error()}
+	attrs = append(attrs, scene()...)
+	attrs = append(attrs, logfield.KeyPath, "/api")
+	logger.Info("msg", attrs...)
+}
+`
+	rc, stdout, stderr = runFixture(t, green)
+	if rc != 0 {
+		t.Fatalf("green rc = %d, want 0; stdout=%s stderr=%s", rc, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "logfield: ok") {
+		t.Fatalf("green stdout = %q, want ok line", stdout)
+	}
+}
+
 // 空目录不得当绿：0 调用即拒绝。
 func TestRunRejectsEmptyTree(t *testing.T) {
 	dir := t.TempDir()

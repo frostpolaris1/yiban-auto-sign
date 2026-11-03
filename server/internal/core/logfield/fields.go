@@ -16,8 +16,9 @@
 // 命名规则（与既有日志字段一致）：
 //   - 标识符用 `<noun>_id`，如 account_id、school_task_id；
 //   - 日期用 `*_day`，值是业务日 YYYY-MM-DD；
-//   - 时长用 `duration_ms`，值是整数毫秒；
-//   - 计数用过去分词复数或复数名词，如 rows_deleted、sessions；
+//   - 时长用 `duration_ms`，值是整数毫秒；配置时长串用 `*_interval`，如 poll_interval；
+//   - 计数用过去分词复数或复数名词（rows_deleted、sessions），
+//     也允许裸计量词（count、remaining、batch、attempt、built）；
 //   - 布尔用形容词，如 retryable、history_available；
 //   - 错误用 `error`；
 //   - 枚举/词表裸写，如 outcome、reason、stage、kind、event、suggestion。
@@ -44,6 +45,8 @@ const (
 	KindError Kind = "error"
 	// KindEnum 是封闭词表取值，不得临时造词。
 	KindEnum Kind = "enum"
+	// KindNumber 是数值状态码或编号，不是计数。
+	KindNumber Kind = "number"
 	// KindText 是其余自由文本或标量（主机名、路径、掩码邮箱等）。
 	KindText Kind = "text"
 )
@@ -111,7 +114,7 @@ var All = []Field{
 	{Key: KeyAccountID, Const: "KeyAccountID", Kind: KindID, Meaning: "账号标识（accounts.id）"},
 	{Key: KeySchoolID, Const: "KeySchoolID", Kind: KindID, Meaning: "学校标识（schools.id）"},
 	{Key: KeySchoolTaskID, Const: "KeySchoolTaskID", Kind: KindID, Meaning: "学校任务标识（school_tasks.id）"},
-	{Key: KeyTaskID, Const: "KeyTaskID", Kind: KindID, Meaning: "当日签到任务标识（sign_tasks.id）"},
+	{Key: KeyTaskID, Const: "KeyTaskID", Kind: KindID, Meaning: "任务标识；当前调用点写入 school_tasks.id（非 sign_tasks.id）"},
 	{Key: KeyUserID, Const: "KeyUserID", Kind: KindID, Meaning: "用户标识（users.id）"},
 	{Key: KeyRequestID, Const: "KeyRequestID", Kind: KindID, Meaning: "HTTP 请求追踪标识"},
 	{Key: KeyDay, Const: "KeyDay", Kind: KindDay, Meaning: "业务日期（YYYY-MM-DD）"},
@@ -129,7 +132,7 @@ var All = []Field{
 	{Key: KeyTasks, Const: "KeyTasks", Kind: KindCount, Meaning: "已清理的旧任务行数"},
 	{Key: KeyBuilt, Const: "KeyBuilt", Kind: KindCount, Meaning: "本轮已构建的任务行数"},
 	{Key: KeyBytes, Const: "KeyBytes", Kind: KindCount, Meaning: "HTTP 响应体字节数"},
-	{Key: KeyStatus, Const: "KeyStatus", Kind: KindEnum, Meaning: "HTTP 状态码"},
+	{Key: KeyStatus, Const: "KeyStatus", Kind: KindNumber, Meaning: "HTTP 状态码"},
 	{Key: KeyPort, Const: "KeyPort", Kind: KindText, Meaning: "SMTP 端口（配置标量）"},
 	{Key: KeyPollInterval, Const: "KeyPollInterval", Kind: KindText, Meaning: "轮询间隔（时长串，如 2s）"},
 	{Key: KeyHost, Const: "KeyHost", Kind: KindText, Meaning: "SMTP 主机名"},
@@ -139,7 +142,7 @@ var All = []Field{
 	{Key: KeyTrigger, Const: "KeyTrigger", Kind: KindEnum, Meaning: "构建触发源（daily/startup）"},
 	{Key: KeyStage, Const: "KeyStage", Kind: KindEnum, Meaning: "签到阶段（discovery/submit/giveup）"},
 	{Key: KeyOutcome, Const: "KeyOutcome", Kind: KindEnum, Meaning: "签到结论词（signing contract 词表）"},
-	{Key: KeyReason, Const: "KeyReason", Kind: KindEnum, Meaning: "结论原因（封闭词或已掩码文本）"},
+	{Key: KeyReason, Const: "KeyReason", Kind: KindText, Meaning: "枚举或已掩码文本"},
 	{Key: KeySuggestion, Const: "KeySuggestion", Kind: KindEnum, Meaning: "诊断建议词（core/diagnostic 词表）"},
 	{Key: KeyCredentialKID, Const: "KeyCredentialKID", Kind: KindID, Meaning: "凭据指纹（credentials.kid）"},
 	{Key: KeyHistoryAvailable, Const: "KeyHistoryAvailable", Kind: KindBool, Meaning: "签到历史查询是否可用"},

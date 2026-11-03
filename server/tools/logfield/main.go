@@ -14,8 +14,13 @@
 // 与 Log（键从第 4 个实参起）。`err.Error()`、`entry.Info()` 这类
 // 非日志接收者不报。转发参数（如 `attrs...`）在同一函数内解析不到时，
 // 调用行或上一行必须有 `//logfield:allow <理由>`。
-// 含日志调用的函数里的 `[]any{...}` 复合字面量也按偶数位校验键。
+// 含日志调用的函数、以及导入了键表的文件的全部函数，其 `[]any{...}`
+// 字面量与 append 键值对都按偶数位校验；helper 返回的切片递归到同包函数体。
 // 空扫描（0 调用或 0 键）报错，不当绿。
+//
+// # 已知边界
+// LogAttrs 与 With 不在识别面；接收者名不含 log 的转发器也不识别。
+// 这两类由独立审查兜底，不在本门覆盖。
 package main
 
 import (
@@ -29,6 +34,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
@@ -39,6 +45,9 @@ func main() {
 	flag.Parse()
 	os.Exit(run(*root, os.Stdout, os.Stderr))
 }
+
+// logfieldImportPath 是键表自身的导入路径：导入了它的文件整文件扫描。
+const logfieldImportPath = "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
 
 // keyConstants 是允许出现在日志键位置的常量名集合。
 // 表为空时全部报未知：空登记不得让门放行。
@@ -62,15 +71,17 @@ type scanResult struct {
 	Calls      int
 	Keys       int
 	Violations []violation
-	seenKey    map[token.Pos]bool
-	seenMsg    map[string]bool
+	// seenKey 用「文件:偏移」而不是 token.Pos：每个文件各用独立 FileSet，
+	// 裸 Pos 跨文件会碰撞，导致键数少算。
+	seenKey map[string]bool
+	seenMsg map[string]bool
 }
 
 // run 返回进程退出码。
 // 它与 main 分离，使测试能用临时目录夹具钉住拒绝路径。
 func run(root string, stdout, stderr io.Writer) int {
 	res := &scanResult{
-		seenKey: make(map[token.Pos]bool),
+		seenKey: make(map[string]bool),
 		seenMsg: make(map[string]bool),
 	}
 	if err := scanTree(root, res); err != nil {
@@ -102,27 +113,24 @@ func run(root string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// scanTree 遍历 root 下的非测试 Go 文件。
+// scanTree 按目录遍历 root：同包函数要能互相解析（helper 递归）。
 func scanTree(root string, res *scanResult) error {
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if !d.IsDir() {
+			return nil
 		}
 		rel, relErr := filepath.Rel(root, path)
 		if relErr != nil {
 			return relErr
 		}
 		rel = filepath.ToSlash(rel)
-		if d.IsDir() {
-			if skipDir(rel, d.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
+		if skipDir(rel, d.Name()) {
+			return filepath.SkipDir
 		}
-		if !strings.HasSuffix(d.Name(), ".go") || strings.HasSuffix(d.Name(), "_test.go") {
-			return nil
-		}
-		return scanFile(path, rel, res)
+		return scanDir(path, rel, res)
 	})
 }
 
@@ -143,22 +151,117 @@ func skipDir(rel, name string) bool {
 	return false
 }
 
-// scanFile 解析一个文件并逐个函数扫描。
-func scanFile(path, rel string, res *scanResult) error {
+// sourceFile 是一个已解析的非测试 Go 文件。
+type sourceFile struct {
+	rel  string
+	fset *token.FileSet
+	file *ast.File
+	// importsLogfield 决定是否整文件扫描：attrs 常由不打日志的 helper 构造。
+	importsLogfield bool
+}
+
+// funcEntry 是同包函数/方法索引项，供 helper 递归。
+type funcEntry struct {
+	sf *sourceFile
+	fn *ast.FuncDecl
+}
+
+// scanDir 解析同一目录（同一包）的全部非测试文件后整体扫描。
+func scanDir(dir, relDir string, res *scanResult) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	var files []*sourceFile
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		rel := name
+		if relDir != "." {
+			rel = relDir + "/" + name
+		}
+		sf, err := parseSourceFile(filepath.Join(dir, name), rel)
+		if err != nil {
+			return err
+		}
+		files = append(files, sf)
+	}
+	if len(files) == 0 {
+		return nil
+	}
+	index := make(map[string][]funcEntry, len(files))
+	for _, sf := range files {
+		for _, decl := range sf.file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			index[fn.Name.Name] = append(index[fn.Name.Name], funcEntry{sf: sf, fn: fn})
+		}
+	}
+	for _, sf := range files {
+		scanSourceFile(sf, index, res)
+	}
+	return nil
+}
+
+// parseSourceFile 解析一个文件，并记录它是否导入了键表。
+func parseSourceFile(path, rel string) (*sourceFile, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 	if err != nil {
-		return fmt.Errorf("%s: %w", rel, err)
+		return nil, fmt.Errorf("%s: %w", rel, err)
 	}
-	allow := allowComments(fset, file)
-	for _, decl := range file.Decls {
+	return &sourceFile{
+		rel:             rel,
+		fset:            fset,
+		file:            file,
+		importsLogfield: importsPackage(file, logfieldImportPath),
+	}, nil
+}
+
+// importsPackage 报告文件是否导入指定包路径。
+func importsPackage(file *ast.File, path string) bool {
+	for _, imp := range file.Imports {
+		got, err := strconv.Unquote(imp.Path.Value)
+		if err == nil && got == path {
+			return true
+		}
+	}
+	return false
+}
+
+// scanSourceFile 逐函数扫描一个文件。
+// 导入了键表的文件整文件扫描：不打日志的 helper 也常构造 attrs。
+func scanSourceFile(sf *sourceFile, index map[string][]funcEntry, res *scanResult) {
+	allow := allowComments(sf.fset, sf.file)
+	for _, decl := range sf.file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
 			continue
 		}
-		scanFunc(fset, rel, fn.Body, allow, res)
+		if !sf.importsLogfield && !hasLogCall(fn.Body) {
+			continue
+		}
+		scanFunc(sf, fn.Body, index, allow, res)
 	}
-	return nil
+}
+
+// hasLogCall 报告函数体内是否有受检日志调用。
+func hasLogCall(body *ast.BlockStmt) bool {
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		if call, ok := n.(*ast.CallExpr); ok && isLogCall(call) {
+			found = true
+		}
+		return true
+	})
+	return found
 }
 
 // allowComments 收集 `//logfield:allow <理由>` 注释所在行。
@@ -176,9 +279,9 @@ func allowComments(fset *token.FileSet, file *ast.File) map[int]string {
 	return allow
 }
 
-// scanFunc 扫描一个函数体。没有日志调用的函数整段跳过：
-// 普通 `[]any{...}`（如 SQL 参数）不得被误判成日志键。
-func scanFunc(fset *token.FileSet, file string, body *ast.BlockStmt, allow map[int]string, res *scanResult) {
+// scanFunc 扫描一个函数体：日志调用、`[]any{...}` 字面量与 append 尾部。
+// 调用方已按「文件导入键表」或「函数内有日志调用」决定是否进来。
+func scanFunc(sf *sourceFile, body *ast.BlockStmt, index map[string][]funcEntry, allow map[int]string, res *scanResult) {
 	var calls []*ast.CallExpr
 	ast.Inspect(body, func(n ast.Node) bool {
 		if call, ok := n.(*ast.CallExpr); ok && isLogCall(call) {
@@ -186,19 +289,143 @@ func scanFunc(fset *token.FileSet, file string, body *ast.BlockStmt, allow map[i
 		}
 		return true
 	})
-	if len(calls) == 0 {
-		return
-	}
 	for _, call := range calls {
-		scanCall(fset, file, body, call, allow, res)
+		scanCall(sf.fset, sf.rel, body, call, allow, res)
 	}
-	// 同函数内的切片构造也按日志键口径校验：转发到日志的键常在字面量里。
+	scanAttrs(sf.fset, sf.rel, body, index, map[*ast.FuncDecl]bool{}, res)
+}
+
+// scanAttrs 校验 attrs 构造：`[]any{...}` 字面量与 append 的键值对。
+// helper 返回的切片经 `append(x, helper(...)...)` 递归到同包函数体，
+// visited 防自递归/互递归。
+func scanAttrs(fset *token.FileSet, file string, body *ast.BlockStmt, index map[string][]funcEntry, visited map[*ast.FuncDecl]bool, res *scanResult) {
+	names := anySliceNames(body)
 	ast.Inspect(body, func(n ast.Node) bool {
 		if lit, ok := n.(*ast.CompositeLit); ok && isAnySlice(lit) {
 			validatePairs(fset, file, lit.Elts, res)
 		}
 		return true
 	})
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || !isAppend(call) || len(call.Args) == 0 {
+			return true
+		}
+		if !isAnySliceBase(call.Args[0], names) {
+			return true
+		}
+		if call.Ellipsis == token.NoPos {
+			// append(attrs, "key", val)：尾部实参从下标 1 起成对。
+			validatePairs(fset, file, call.Args[1:], res)
+			return true
+		}
+		forwarded, ok := call.Args[len(call.Args)-1].(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		scanHelper(forwarded, index, visited, res)
+		return true
+	})
+}
+
+// scanHelper 递归扫描同包 helper 的 attrs 构造。
+func scanHelper(call *ast.CallExpr, index map[string][]funcEntry, visited map[*ast.FuncDecl]bool, res *scanResult) {
+	name := calleeName(call.Fun)
+	if name == "" {
+		return
+	}
+	for _, entry := range index[name] {
+		if visited[entry.fn] {
+			continue
+		}
+		visited[entry.fn] = true
+		scanAttrs(entry.sf.fset, entry.sf.rel, entry.fn.Body, index, visited, res)
+	}
+}
+
+// calleeName 返回函数/方法名：`scene(...)` 与 `s.scene(...)` 都得 scene。
+func calleeName(fun ast.Expr) string {
+	switch v := fun.(type) {
+	case *ast.Ident:
+		return v.Name
+	case *ast.SelectorExpr:
+		return v.Sel.Name
+	}
+	return ""
+}
+
+// anySliceNames 收集函数内可判定为 `[]any` 的变量名。
+// 只认明确来源：`var x []any`、`x := []any{...}`、以及根在二者上的 append。
+// 认不出的变量不当 attrs，避免把 `[]string` 的 append 误判成键值对。
+func anySliceNames(body *ast.BlockStmt) map[string]bool {
+	names := map[string]bool{}
+	for changed := true; changed; {
+		changed = false
+		mark := func(name string) {
+			if name == "" || names[name] {
+				return
+			}
+			names[name] = true
+			changed = true
+		}
+		ast.Inspect(body, func(n ast.Node) bool {
+			switch v := n.(type) {
+			case *ast.DeclStmt:
+				gen, ok := v.Decl.(*ast.GenDecl)
+				if !ok || gen.Tok != token.VAR {
+					return true
+				}
+				for _, spec := range gen.Specs {
+					vs, ok := spec.(*ast.ValueSpec)
+					if !ok || vs.Type == nil || !isAnySliceType(vs.Type) {
+						continue
+					}
+					for _, name := range vs.Names {
+						mark(name.Name)
+					}
+				}
+			case *ast.AssignStmt:
+				if len(v.Rhs) != 1 {
+					return true
+				}
+				if !isAnySliceValue(v.Rhs[0], names) {
+					return true
+				}
+				for _, lhs := range v.Lhs {
+					if id, ok := lhs.(*ast.Ident); ok {
+						mark(id.Name)
+					}
+				}
+			}
+			return true
+		})
+	}
+	return names
+}
+
+// isAnySliceValue 报告表达式是否明确产出 `[]any`。
+func isAnySliceValue(e ast.Expr, names map[string]bool) bool {
+	switch v := e.(type) {
+	case *ast.CompositeLit:
+		return isAnySlice(v)
+	case *ast.CallExpr:
+		if !isAppend(v) || len(v.Args) == 0 {
+			return false
+		}
+		return isAnySliceBase(v.Args[0], names)
+	}
+	return false
+}
+
+// isAnySliceBase 报告 append 的底座是否为 `[]any`。
+func isAnySliceBase(e ast.Expr, names map[string]bool) bool {
+	switch v := e.(type) {
+	case *ast.CompositeLit:
+		return isAnySlice(v)
+	case *ast.Ident:
+		return names[v.Name]
+	}
+	return false
 }
 
 // scanCall 校验一次日志调用的显式键与转发参数。
@@ -346,7 +573,7 @@ func validateKey(fset *token.FileSet, file string, e ast.Expr, res *scanResult) 
 					"未知日志常量 logfield."+v.Sel.Name+"；先在 core/logfield 登记")
 				return
 			}
-			countKey(res, e.Pos())
+			countKey(res, fset, file, e.Pos())
 			return
 		}
 	case *ast.ParenExpr:
@@ -399,7 +626,12 @@ func receiverName(e ast.Expr) string {
 
 // isAnySlice 报告字面量是否为 `[]any{...}` 或 `[]interface{}{...}`。
 func isAnySlice(lit *ast.CompositeLit) bool {
-	arr, ok := lit.Type.(*ast.ArrayType)
+	return isAnySliceType(lit.Type)
+}
+
+// isAnySliceType 报告类型表达式是否为 `[]any` / `[]interface{}`。
+func isAnySliceType(e ast.Expr) bool {
+	arr, ok := e.(*ast.ArrayType)
 	if !ok || arr.Len != nil {
 		return false
 	}
@@ -419,11 +651,13 @@ func isAppend(call *ast.CallExpr) bool {
 }
 
 // countKey 按位置计数：同一键表达式只计一次（调用与切片两遍扫描会重合）。
-func countKey(res *scanResult, pos token.Pos) {
-	if res.seenKey[pos] {
+// 键用「文件:偏移」：各文件独立 FileSet，裸 token.Pos 跨文件会碰撞。
+func countKey(res *scanResult, fset *token.FileSet, file string, pos token.Pos) {
+	k := file + ":" + strconv.Itoa(fset.Position(pos).Offset)
+	if res.seenKey[k] {
 		return
 	}
-	res.seenKey[pos] = true
+	res.seenKey[k] = true
 	res.Keys++
 }
 

@@ -49,6 +49,7 @@ func TestAllCoversEveryKeyConstant(t *testing.T) {
 		KindBool:     true,
 		KindError:    true,
 		KindEnum:     true,
+		KindNumber:   true,
 		KindText:     true,
 	}
 	rows := map[string]int{}
