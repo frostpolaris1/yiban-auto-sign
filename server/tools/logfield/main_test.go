@@ -132,6 +132,38 @@ func (l cronLog) Error(err error, msg string, keysAndValues ...any) {
 	}
 }
 
+// Context 变体也受检：键在 ctx、msg 之后；裸字符串仍红，常量绿。
+func TestRunChecksContextAwareMethods(t *testing.T) {
+	const red = `package fixture
+
+func f(logger interface{}, ctx context.Context, err error) {
+	logger.WarnContext(ctx, "msg", "error", err)
+}
+`
+	rc, stdout, stderr := runFixture(t, red)
+	if rc != 1 {
+		t.Fatalf("red rc = %d, want 1; stdout=%s stderr=%s", rc, stdout, stderr)
+	}
+	if !strings.Contains(stdout, `"error"`) {
+		t.Fatalf("red stdout = %q, want bare literal violation", stdout)
+	}
+
+	const green = `package fixture
+
+func f(logger interface{}, ctx context.Context, err error) {
+	logger.WarnContext(ctx, "msg", logfield.KeyError, err)
+	logger.InfoContext(ctx, "msg", logfield.KeyPath, "/api")
+}
+`
+	rc, stdout, stderr = runFixture(t, green)
+	if rc != 0 {
+		t.Fatalf("green rc = %d, want 0; stdout=%s stderr=%s", rc, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "logfield: ok") {
+		t.Fatalf("green stdout = %q, want ok line", stdout)
+	}
+}
+
 // 空目录不得当绿：0 调用即拒绝。
 func TestRunRejectsEmptyTree(t *testing.T) {
 	dir := t.TempDir()

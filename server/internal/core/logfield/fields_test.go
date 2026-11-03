@@ -4,6 +4,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -76,5 +78,62 @@ func TestAllCoversEveryKeyConstant(t *testing.T) {
 		if rows[name] != 1 {
 			t.Errorf("常量 %s 在 All 中登记 %d 行，want 1", name, rows[name])
 		}
+	}
+}
+
+// TestKeysArePinned 钉住键面本身：键串是日志读者的公开接口。
+// 只改常量值（如 KeyError = "err"）而不改调用点，其它测试仍绿；本测试会红。
+// 增删键是契约变更：常量、All 与这份 golden 必须同批改。
+func TestKeysArePinned(t *testing.T) {
+	golden := []string{
+		"account_id",
+		"attempt",
+		"batch",
+		"blobs_deleted",
+		"built",
+		"bytes",
+		"count",
+		"credential_kid",
+		"day",
+		"duration_ms",
+		"email",
+		"error",
+		"event",
+		"failed_days",
+		"history_available",
+		"host",
+		"kind",
+		"last_success_day",
+		"method",
+		"outcome",
+		"panic",
+		"path",
+		"poll_interval",
+		"port",
+		"reason",
+		"remaining",
+		"request_id",
+		"reset_tokens",
+		"retryable",
+		"rows_deleted",
+		"school_id",
+		"school_task_id",
+		"sessions",
+		"stage",
+		"status",
+		"suggestion",
+		"task_id",
+		"tasks",
+		"tls_mode",
+		"trigger",
+		"user_id",
+	}
+	got := make([]string, 0, len(All))
+	for _, f := range All {
+		got = append(got, f.Key)
+	}
+	sort.Strings(got)
+	if !slices.Equal(got, golden) {
+		t.Fatalf("日志键面变化：\n got  = %q\n want = %q", got, golden)
 	}
 }

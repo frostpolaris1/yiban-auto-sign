@@ -9,7 +9,8 @@
 // server/tools 下的检查工具，由 scripts/verify.sh 在 canonical gate 之后调用。
 //
 // # 口径
-// 识别的调用：接收者名含 log 的 Info/Warn/Error/Debug（键从第 2 个实参起）
+// 识别的调用：接收者名含 log 的 Info/Warn/Error/Debug 及其 Context 变体
+// （键从第 2 个实参起；*Context 变体跳过 ctx，从第 3 个实参起）
 // 与 Log（键从第 4 个实参起）。`err.Error()`、`entry.Info()` 这类
 // 非日志接收者不报。转发参数（如 `attrs...`）在同一函数内解析不到时，
 // 调用行或上一行必须有 `//logfield:allow <理由>`。
@@ -204,8 +205,12 @@ func scanFunc(fset *token.FileSet, file string, body *ast.BlockStmt, allow map[i
 func scanCall(fset *token.FileSet, file string, body *ast.BlockStmt, call *ast.CallExpr, allow map[int]string, res *scanResult) {
 	res.Calls++
 	start := 1
-	if callName(call) == "Log" {
+	switch callName(call) {
+	case "Log":
 		start = 3
+	case "InfoContext", "WarnContext", "ErrorContext", "DebugContext":
+		// ctx、msg 之后才是键。
+		start = 2
 	}
 	args := call.Args
 	if call.Ellipsis != token.NoPos && len(args) > 0 {
@@ -359,7 +364,8 @@ func isLogCall(call *ast.CallExpr) bool {
 		return false
 	}
 	switch sel.Sel.Name {
-	case "Info", "Warn", "Error", "Debug", "Log":
+	case "Info", "Warn", "Error", "Debug", "Log",
+		"InfoContext", "WarnContext", "ErrorContext", "DebugContext":
 	default:
 		return false
 	}
