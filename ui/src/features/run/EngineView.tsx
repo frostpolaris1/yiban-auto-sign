@@ -14,8 +14,10 @@
  * 待重试行以 sign_tasks 行 ID 为行身份（同账号同日可有多条），
  * 超过 200 条服务端截断并以 retrying_truncated 显式提示。
  * 租约剩余按客户端时钟每秒递减：服务端只给绝对到期时间。
- * 最近事件是本页开机以来经 SSE 收到的业务事件，容量 20 条，
- * 新事件在后；断线出横幅并可重连，断线期间快照每 10 秒轮询。
+ * 最近事件是本页开机以来经 SSE 收到的业务与控制事件，容量 20 条，
+ * 新事件在后；heartbeat 不列，行内带 lastEventId 证明续传位置。
+ * 断线出横幅并可重连，断线期间快照每 10 秒轮询；补发提示与
+ * 结束原因也走同一块横幅，补发/结束不轮询。
  * SSE 到达失效 `['engine-page']` 前缀查询；学校下拉不参与。
  * 展示构建（`VITE_SHOWCASE=1`）取合成夹具，零网络请求。
  */
@@ -23,7 +25,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AsyncState } from '@/components/ui/AsyncState'
-import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { DeniedCard } from '@/components/ui/DeniedCard'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -34,7 +35,13 @@ import { ENGINE_VIEW_ROLES, roleAllowed } from '@/lib/roles'
 import { SHOWCASE, useMe } from '@/lib/session'
 import { showcaseEngineSnapshot } from '@/lib/showcase'
 import { leaseRemainingText, useNow } from './engineDisplay'
-import { RUN_POLL_INTERVAL_MS, useRunLive } from './useRunLive'
+import { RunLiveBanner } from './RunLiveBanner'
+import {
+  RUN_LIVE_STATUS_LABELS,
+  RUN_POLL_INTERVAL_MS,
+  useRunLive,
+  type RunLiveStatus,
+} from './useRunLive'
 
 const DENY_REASON = '你的角色无权查看执行监控'
 
@@ -44,7 +51,7 @@ const EVENT_LIMIT = 20
 /** 时钟推进间隔：租约剩余按秒展示。 */
 const NOW_TICK_MS = 1000
 
-type EngineEvent = { key: number; type: string; at: Date }
+type EngineEvent = { key: number; type: string; at: Date; id?: string }
 
 const EVENT_TYPE_LABELS: Record<string, string> = {
   'task.progress': '任务重排',
@@ -52,6 +59,9 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
   'window.changed': '窗口重算',
   'capacity.changed': '容量缺口',
   'egress.health': '出口健康',
+  resync: '缺口重同步',
+  snapshot: '前景快照',
+  end: '流结束',
 }
 
 export function EngineView() {
@@ -62,10 +72,10 @@ export function EngineView() {
 
   const [events, setEvents] = useState<EngineEvent[]>([])
   const eventKey = useRef(0)
-  const onEvent = (type: string) => {
+  const onEvent = (type: string, id?: string) => {
     eventKey.current += 1
     setEvents((previous) =>
-      [...previous, { key: eventKey.current, type, at: new Date() }].slice(-EVENT_LIMIT),
+      [...previous, { key: eventKey.current, type, at: new Date(), id }].slice(-EVENT_LIMIT),
     )
   }
 
@@ -109,14 +119,7 @@ export function EngineView() {
         subtitle="此刻谁在签、今天签成了多少、哪些在等重试，都在这一页。"
       />
 
-      {live.status === 'disconnected' ? (
-        <div className="run-live-banner" role="status">
-          <span>已停止实时，最近更新 {live.since ?? '—'}。</span>
-          <Button variant="outline-primary" size="sm" onClick={live.reconnect}>
-            重连
-          </Button>
-        </div>
-      ) : null}
+      <RunLiveBanner live={live} />
 
       {!allowed ? (
         <DeniedCard eyebrow="Engine" reason={DENY_REASON} />
@@ -142,7 +145,7 @@ export function EngineView() {
 type EngineBodyProps = {
   snapshot: EngineSnapshot
   now: number
-  live: 'live' | 'disconnected'
+  live: RunLiveStatus
   events: EngineEvent[]
 }
 
@@ -173,7 +176,7 @@ function EngineBody({ snapshot, now, live, events }: EngineBodyProps) {
       <Card
         eyebrow="Engine · 在飞"
         title="在飞清单"
-        action={<span className="app-caption">{live === 'live' ? '实时' : '已停止实时'}</span>}
+        action={<span className="app-caption">{RUN_LIVE_STATUS_LABELS[live]}</span>}
       >
         {snapshot.inflight.length === 0 ? (
           <p className="engine-empty" role="status">
@@ -266,7 +269,10 @@ function EngineBody({ snapshot, now, live, events }: EngineBodyProps) {
               .reverse()
               .map((event) => (
                 <li key={event.key}>
-                  <span className="engine-event-type">{EVENT_TYPE_LABELS[event.type] ?? event.type}</span>
+                  <span className="engine-event-type">
+                    {EVENT_TYPE_LABELS[event.type] ?? event.type}
+                    {event.id ? <span className="engine-event-id"> #{event.id}</span> : null}
+                  </span>
                   <time dateTime={event.at.toISOString()}>{formatClock(event.at.toISOString())}</time>
                 </li>
               ))}
