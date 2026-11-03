@@ -497,3 +497,76 @@ func TestSendContextCancelledIsClassified(t *testing.T) {
 		t.Logf("取消未直接保留 errors.Is 链: %v", err)
 	}
 }
+
+// TestSendStartTLSMissingIsConfigClassified 钉住「服务器不提供 STARTTLS」的分类。
+//
+// starttls 模式的语义是强制升级：服务器不公告 STARTTLS 属于端口/模式
+// 配错，是 config 类失败，不可重试。旧实现本地判定；go-mail 把它报成
+// 普通拨号错误，适配器按稳定文本识别（见 smtp.go wrapConnect 注释），
+// 本测试在该文本随 go-mail 升级漂移时变红。
+func TestSendStartTLSMissingIsConfigClassified(t *testing.T) {
+	srv, err := mailtest.Start(mailtest.StartTLS)
+	if err != nil {
+		t.Fatalf("start fake smtp: %v", err)
+	}
+	t.Cleanup(srv.Close)
+	srv.SetSuppressSTARTTLS(true)
+
+	sender, err := mailadapter.NewSMTP(configFor(t, srv, "starttls"))
+	if err != nil {
+		t.Fatalf("NewSMTP: %v", err)
+	}
+	err = sender.Send(t.Context(), coremail.Message{
+		To: "user@example.test", Subject: "s", Text: "body",
+	})
+	if err == nil {
+		t.Fatal("服务器不提供 STARTTLS 时 Send 应当失败")
+	}
+	if kind, retryable := coremail.Classify(err); kind != coremail.KindConfig || retryable {
+		t.Fatalf("分类 = (%s, retryable=%t), want (config, false); err=%v", kind, retryable, err)
+	}
+	if srv.MessageCount() != 0 {
+		t.Fatal("未升级 TLS 仍然投递了邮件")
+	}
+}
+
+// TestSendDeliversRawUTF8BodyWith8BitCTE 钉住正文线上形状。
+//
+// 旧实现以 8bit 投递原始 UTF-8 正文。go-mail 的默认编码是
+// quoted-printable：会把链接里的 `=` 转义成 =3D，破坏
+// 「正文含完整链接」的判据。适配器选择 NoEncoding（CTE 8bit）保持
+// 正文原样出线；本测试钉住 CTE 头、非 ASCII 正文与含等号的链接
+// 都不被转义。
+func TestSendDeliversRawUTF8BodyWith8BitCTE(t *testing.T) {
+	srv, err := mailtest.Start(mailtest.StartTLS)
+	if err != nil {
+		t.Fatalf("start fake smtp: %v", err)
+	}
+	t.Cleanup(srv.Close)
+	srv.SetCredentials(testUser, testPass)
+
+	sender, err := mailadapter.NewSMTP(configFor(t, srv, "starttls"))
+	if err != nil {
+		t.Fatalf("NewSMTP: %v", err)
+	}
+	link := "https://app.example.test/reset-password?token=a=b"
+	if err := sender.Send(t.Context(), coremail.Message{
+		To: "user@example.test", Subject: "重置口令",
+		Text: "打开以下链接重置口令：\n" + link + "\n",
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if !srv.WaitMessages(1, 3*time.Second) {
+		t.Fatal("服务器没有收到邮件")
+	}
+	got := srv.Messages()[0]
+	if !strings.Contains(got.Data, "Content-Transfer-Encoding: 8bit") {
+		t.Fatalf("正文编码不是 8bit：\n%s", got.Data)
+	}
+	if !strings.Contains(got.Data, link) {
+		t.Fatalf("链接被编码破坏（应原样出现）：\n%s", got.Data)
+	}
+	if !strings.Contains(got.Data, "打开以下链接重置口令：") {
+		t.Fatalf("非 ASCII 正文应原样出线：\n%s", got.Data)
+	}
+}
