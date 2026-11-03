@@ -89,11 +89,11 @@ func run(root string, stdout, stderr io.Writer) int {
 		seenMsg: make(map[string]bool),
 	}
 	if err := scanTree(root, res); err != nil {
-		fmt.Fprintf(stderr, "logfield: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "logfield: %v\n", err)
 		return 2
 	}
 	if res.Calls == 0 {
-		fmt.Fprintf(stderr, "logfield: no log calls under %q; refused to pass\n", root)
+		_, _ = fmt.Fprintf(stderr, "logfield: no log calls under %q; refused to pass\n", root)
 		return 2
 	}
 	if len(res.Violations) > 0 {
@@ -104,16 +104,16 @@ func run(root string, stdout, stderr io.Writer) int {
 			return res.Violations[i].Line < res.Violations[j].Line
 		})
 		for _, v := range res.Violations {
-			fmt.Fprintf(stdout, "%s:%d: %s\n", v.File, v.Line, v.Msg)
+			_, _ = fmt.Fprintf(stdout, "%s:%d: %s\n", v.File, v.Line, v.Msg)
 		}
-		fmt.Fprintf(stderr, "logfield: %d violation(s)\n", len(res.Violations))
+		_, _ = fmt.Fprintf(stderr, "logfield: %d violation(s)\n", len(res.Violations))
 		return 1
 	}
 	if res.Keys == 0 {
-		fmt.Fprintf(stderr, "logfield: no log field keys under %q; refused to pass\n", root)
+		_, _ = fmt.Fprintf(stderr, "logfield: no log field keys under %q; refused to pass\n", root)
 		return 2
 	}
-	fmt.Fprintf(stdout, "logfield: ok (%d calls, %d keys)\n", res.Calls, res.Keys)
+	_, _ = fmt.Fprintf(stdout, "logfield: ok (%d calls, %d keys)\n", res.Calls, res.Keys)
 	return 0
 }
 
