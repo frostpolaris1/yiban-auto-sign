@@ -10,8 +10,8 @@
  * 复用 `GET /api/admin/events`，不新增事件类型。
  * `task.progress`、`task.concluded`、`window.changed` 触发刷新；
  * `capacity.changed`、`egress.health` 只进事件展示（onEvent），不触发刷新。
- * 每个 MessageEvent 的 lastEventId 直接传给 onEvent（空串不传），
- * 事件列表据此证明续传位置。
+ * 进入 onEvent 的每类帧把 lastEventId 一并传出（空串传 undefined），
+ * 事件列表据此证明续传位置；心跳不进 onEvent。
  * `heartbeat` 只算「流还活着」：回 live、更新最近时刻，不进 onEvent、不刷新。
  * `resync` 进补发态并刷新；`snapshot` 回实时并刷新；两者都进 onEvent。
  * `end` 进结束态、记 reason 并关闭 source，阻止 EventSource 自动重连；
@@ -173,7 +173,7 @@ export function useRunLive(
       source = createSource('/api/admin/events')
     } catch {
       updateStatus('disconnected')
-      setSince((value) => value ?? clockText(new Date()))
+      setSince((value) => value ?? clockText(new Date(lastEventAtRef.current)))
       return
     }
 
@@ -200,7 +200,7 @@ export function useRunLive(
       // 结束后的关闭不回落成断线；其余情况保留 source，让浏览器自动重连。
       if (endedRef.current) return
       updateStatus('disconnected')
-      setSince((value) => value ?? clockText(new Date()))
+      setSince((value) => value ?? clockText(new Date(lastEventAtRef.current)))
     }
     for (const name of REFRESH_EVENTS) {
       source.addEventListener(name, (event) => {
