@@ -29,6 +29,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
 	coremail "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mail"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
 )
@@ -133,9 +134,9 @@ func resetMailText(link string, ttl time.Duration) string {
 func (s *Service) deliverReset(to, token string) {
 	if s.mail == nil {
 		s.log.Warn("password reset token created but not delivered: SMTP is not configured",
-			"event", "password_reset.not_delivered",
-			"reason", "smtp_not_configured",
-			"email", mask.EmailLabel(to))
+			logfield.KeyEvent, "password_reset.not_delivered",
+			logfield.KeyReason, "smtp_not_configured",
+			logfield.KeyEmail, mask.EmailLabel(to))
 		return
 	}
 	msg := coremail.Message{
@@ -147,9 +148,9 @@ func (s *Service) deliverReset(to, token string) {
 	case s.mailSlots <- struct{}{}:
 	default:
 		s.log.Warn("password reset token created but not delivered: delivery slots are full",
-			"event", "password_reset.not_delivered",
-			"reason", "delivery_queue_full",
-			"email", mask.EmailLabel(to))
+			logfield.KeyEvent, "password_reset.not_delivered",
+			logfield.KeyReason, "delivery_queue_full",
+			logfield.KeyEmail, mask.EmailLabel(to))
 		return
 	}
 	s.mailWG.Add(1)
@@ -161,31 +162,31 @@ func (s *Service) deliverReset(to, token string) {
 		defer func() {
 			if r := recover(); r != nil {
 				s.log.Error("password reset mail delivery panicked",
-					"event", "password_reset.delivery_failed",
-					"kind", string(coremail.KindPanic),
-					"retryable", false,
-					"email", mask.EmailLabel(to))
+					logfield.KeyEvent, "password_reset.delivery_failed",
+					logfield.KeyKind, string(coremail.KindPanic),
+					logfield.KeyRetryable, false,
+					logfield.KeyEmail, mask.EmailLabel(to))
 			}
 		}()
 		if err := s.mail.Send(context.Background(), msg); err != nil {
 			kind, retryable := coremail.Classify(err)
 			attrs := []any{
-				"event", "password_reset.delivery_failed",
-				"kind", string(kind),
-				"retryable", retryable,
+				logfield.KeyEvent, "password_reset.delivery_failed",
+				logfield.KeyKind, string(kind),
+				logfield.KeyRetryable, retryable,
 			}
 			// 地址不可表达是配置类失败里最需要一眼区分的一种：
 			// 重试与改凭据都无用，只能改注册地址。
 			if errors.Is(err, coremail.ErrUnsupportedAddress) {
-				attrs = append(attrs, "reason", "unsupported_address")
+				attrs = append(attrs, logfield.KeyReason, "unsupported_address")
 			}
-			attrs = append(attrs, "email", mask.EmailLabel(to))
+			attrs = append(attrs, logfield.KeyEmail, mask.EmailLabel(to))
 			s.log.Warn("password reset mail delivery failed", attrs...)
 			return
 		}
 		s.log.Info("password reset mail delivered",
-			"event", "password_reset.delivered",
-			"email", mask.EmailLabel(to))
+			logfield.KeyEvent, "password_reset.delivered",
+			logfield.KeyEmail, mask.EmailLabel(to))
 	}()
 }
 

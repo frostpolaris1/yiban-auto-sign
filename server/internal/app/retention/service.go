@@ -24,6 +24,7 @@ import (
 	"time"
 
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
 )
 
 // 保留期与批量口径。
@@ -168,12 +169,12 @@ func (s *Service) runOnce(ctx context.Context, log *slog.Logger) {
 	pruned, err := s.Prune(ctx)
 	if err != nil {
 		if ctx.Err() == nil {
-			log.Warn("retention: prune failed", "error", err.Error())
+			log.Warn("retention: prune failed", logfield.KeyError, err.Error())
 		}
 		return
 	}
 	if pruned.Sessions+pruned.ResetTokens+pruned.Tasks > 0 {
-		log.Info("retention: pruned", "sessions", pruned.Sessions,
-			"reset_tokens", pruned.ResetTokens, "tasks", pruned.Tasks)
+		log.Info("retention: pruned", logfield.KeySessions, pruned.Sessions,
+			logfield.KeyResetTokens, pruned.ResetTokens, logfield.KeyTasks, pruned.Tasks)
 	}
 }

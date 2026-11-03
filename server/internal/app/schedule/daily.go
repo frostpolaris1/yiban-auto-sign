@@ -26,6 +26,7 @@ import (
 	"github.com/robfig/cron/v3"
 
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 )
 
@@ -159,7 +160,7 @@ func (d *DailyCron) Start() error {
 		// 启动补建与 cron 任务同等待遇：panic 只记日志，不终止进程。
 		defer func() {
 			if v := recover(); v != nil {
-				d.log.Error("schedule: startup build panicked", "panic", fmt.Sprint(v))
+				d.log.Error("schedule: startup build panicked", logfield.KeyPanic, fmt.Sprint(v))
 			}
 		}()
 		// 后台补建不随请求取消；用独立 ctx。
@@ -205,20 +206,21 @@ func (d *DailyCron) run(parent context.Context, trigger string) {
 	built, err := d.builder.BuildToday(ctx)
 	if err != nil {
 		d.log.Error("schedule: daily build failed",
-			"trigger", trigger, "built", built, "error", err.Error())
+			logfield.KeyTrigger, trigger, logfield.KeyBuilt, built, logfield.KeyError, err.Error())
 		return
 	}
-	d.log.Info("schedule: daily build done", "trigger", trigger, "built", built)
+	d.log.Info("schedule: daily build done", logfield.KeyTrigger, trigger, logfield.KeyBuilt, built)
 }
 
 // cronLog 把 robfig/cron 的日志接到 slog。
 type cronLog struct{ log *slog.Logger }
 
 func (l cronLog) Info(msg string, keysAndValues ...any) {
+	//logfield:allow robfig/cron 透传键
 	l.log.Info(msg, keysAndValues...)
 }
 
 func (l cronLog) Error(err error, msg string, keysAndValues ...any) {
-	args := append([]any{"error", err.Error()}, keysAndValues...)
+	args := append([]any{logfield.KeyError, err.Error()}, keysAndValues...)
 	l.log.Error(msg, args...)
 }

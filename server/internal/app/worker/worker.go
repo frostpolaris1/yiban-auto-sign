@@ -15,6 +15,7 @@ import (
 	corediagnostic "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/diagnostic"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corelocation "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/location"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
 	coreretry "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/retry"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
@@ -126,10 +127,10 @@ func (s *Service) Step(ctx context.Context, limit int) (int, error) {
 	// 先回收租约过期的行：崩溃或收尾失败留下的 running 不得跨 tick 卡住账号。
 	if reclaimed, err := s.deps.Store.ReclaimExpired(ctx, now, reclaimBatch); err != nil {
 		// 运行期必须可见：回收失败会让认领永久不可达，进程却看着健康。
-		s.log.Error("worker: reclaim expired leases failed", "error", err.Error())
+		s.log.Error("worker: reclaim expired leases failed", logfield.KeyError, err.Error())
 		return 0, err
 	} else if reclaimed > 0 {
-		s.log.Warn("worker: reclaimed expired task leases", "count", reclaimed)
+		s.log.Warn("worker: reclaimed expired task leases", logfield.KeyCount, reclaimed)
 	}
 	tasks, err := s.deps.Store.ClaimDue(ctx, now, limit)
 	if err != nil {
@@ -188,7 +189,7 @@ func (s *Service) logSettlementError(err error) {
 		return
 	}
 	if coreerrs.From(err).Code == coreerrs.CodeConflict {
-		s.log.Error("worker: settlement rejected by the claim fence", "error", err.Error())
+		s.log.Error("worker: settlement rejected by the claim fence", logfield.KeyError, err.Error())
 	}
 }
 
@@ -571,14 +572,14 @@ func (s *Service) logOutcome(ctx context.Context, task corescheduleTask, stage s
 		return
 	}
 	s.log.Log(ctx, appcore.OutcomeLogLevel(outcome), "signing outcome",
-		"stage", stage,
-		"school_id", task.SchoolID,
-		"account_id", task.AccountID,
-		"task_id", task.SchoolTaskID,
-		"day", task.Day,
-		"attempt", task.Attempts+1,
-		"outcome", string(outcome),
-		"reason", mask.MaskText(reason),
+		logfield.KeyStage, stage,
+		logfield.KeySchoolID, task.SchoolID,
+		logfield.KeyAccountID, task.AccountID,
+		logfield.KeyTaskID, task.SchoolTaskID,
+		logfield.KeyDay, task.Day,
+		logfield.KeyAttempt, task.Attempts+1,
+		logfield.KeyOutcome, string(outcome),
+		logfield.KeyReason, mask.MaskText(reason),
 	)
 }
 
@@ -598,15 +599,15 @@ func (s *Service) logGiveUp(ctx context.Context, task corescheduleTask, outcome 
 		diagWin = &corediagnostic.WindowInfo{Start: win.Start, End: win.End}
 	}
 	attrs := []any{
-		"stage", stageGiveUp,
-		"school_id", task.SchoolID,
-		"account_id", task.AccountID,
-		"task_id", task.SchoolTaskID,
-		"day", task.Day,
-		"attempt", task.Attempts + 1,
-		"outcome", string(outcome),
-		"reason", mask.MaskText(reason),
-		"suggestion", corediagnostic.SuggestionFor(
+		logfield.KeyStage, stageGiveUp,
+		logfield.KeySchoolID, task.SchoolID,
+		logfield.KeyAccountID, task.AccountID,
+		logfield.KeyTaskID, task.SchoolTaskID,
+		logfield.KeyDay, task.Day,
+		logfield.KeyAttempt, task.Attempts + 1,
+		logfield.KeyOutcome, string(outcome),
+		logfield.KeyReason, mask.MaskText(reason),
+		logfield.KeySuggestion, corediagnostic.SuggestionFor(
 			string(corestatus.TaskFailed), string(outcome), diagWin, now),
 	}
 	if outcome == contract.OutcomeCredentialBad {
@@ -626,19 +627,19 @@ func (s *Service) logGiveUp(ctx context.Context, task corescheduleTask, outcome 
 // credential_kid 先于历史查询追加：历史查询失败只丢日期与天数，不连坐
 // 凭据指纹。历史查询失败写 history_available=false，缺口显性但不编造日期。
 func (s *Service) authScene(ctx context.Context, task corescheduleTask, dur time.Duration) []any {
-	attrs := []any{"duration_ms", dur.Milliseconds()}
+	attrs := []any{logfield.KeyDurationMS, dur.Milliseconds()}
 	// credential_kid 对应 credentials.kid 列：日志读者不查库，写全名才懂。
 	if kid := s.deps.Creds.KID(); kid != "" {
-		attrs = append(attrs, "credential_kid", kid)
+		attrs = append(attrs, logfield.KeyCredentialKID, kid)
 	}
 	last, failedDays, err := s.deps.Store.AccountSignHistory(ctx, task.AccountID, task.Day)
 	if err != nil {
-		return append(attrs, "history_available", false)
+		return append(attrs, logfield.KeyHistoryAvailable, false)
 	}
 	if last == "" {
 		last = "never"
 	}
-	attrs = append(attrs, "last_success_day", last, "failed_days", failedDays+1)
+	attrs = append(attrs, logfield.KeyLastSuccessDay, last, logfield.KeyFailedDays, failedDays+1)
 	return attrs
 }
 

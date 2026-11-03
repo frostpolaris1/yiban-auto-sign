@@ -25,6 +25,7 @@ import (
 	"syscall"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/assembly"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
 )
 
 func main() {
@@ -33,7 +34,7 @@ func main() {
 	defer stop()
 
 	if err := assembly.Run(ctx, logger); err != nil {
-		logger.Error("server stopped", "error", err.Error())
+		logger.Error("server stopped", logfield.KeyError, err.Error())
 		os.Exit(1)
 	}
 }

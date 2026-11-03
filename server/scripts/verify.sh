@@ -28,6 +28,9 @@ go run ./tools/gate -root . -rules canonical.tsv
 # 使测试文件的 allow 登记被实际执行。
 go run ./tools/gate -root . -rules canonical.tsv -tests
 
+# 日志字段门：键必须是 core/logfield 的 Key* 常量，裸字符串即红。
+go run ./tools/logfield -root .
+
 # PostgreSQL e2e visibility. Without a DSN the suite skips, and a
 # skipped suite is not a pass: say so on stdout. With a DSN the suite must
 # actually run, and the top-level pass count must reach the P1 minimum.

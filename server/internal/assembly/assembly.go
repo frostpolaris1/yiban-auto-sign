@@ -65,6 +65,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	coreimage "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/image"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
 	coremail "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mail"
 	coreplan "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/plan"
 	corerate "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/rate"
@@ -136,7 +137,7 @@ func Run(ctx context.Context, logger *slog.Logger) error {
 			stack.Close()
 			return fmt.Errorf("server: start worker loop: %w", err)
 		}
-		logger.Info("worker: loop started", "poll_interval", workerPollInterval.String(), "batch", cfg.Workers)
+		logger.Info("worker: loop started", logfield.KeyPollInterval, workerPollInterval.String(), logfield.KeyBatch, cfg.Workers)
 	}
 
 	errc := make(chan error, 1)
@@ -191,12 +192,12 @@ func stopStack(srv *http.Server, stack *Stack, loop loopHandle, logger *slog.Log
 		case errors.Is(loopErr, context.DeadlineExceeded):
 			logger.Warn("worker: in-flight drain budget exhausted; remaining rows recover on next boot")
 		case loopErr != nil:
-			logger.Error("worker: drain bookkeeping failed", "error", loopErr.Error())
+			logger.Error("worker: drain bookkeeping failed", logfield.KeyError, loopErr.Error())
 		default:
-			logger.Info("worker: in-flight drained", "remaining", remain)
+			logger.Info("worker: in-flight drained", logfield.KeyRemaining, remain)
 		}
 		if err := loop.Err(); err != nil {
-			logger.Warn("worker: loop recorded a step error before shutdown", "error", err.Error())
+			logger.Warn("worker: loop recorded a step error before shutdown", logfield.KeyError, err.Error())
 		}
 	}
 	if srvErr != nil {
@@ -387,10 +388,10 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			}
 			mailer = sender
 			logger.Info("mail: SMTP delivery enabled",
-				"host", cfg.MailHost, "port", cfg.MailPort, "tls_mode", cfg.MailTLSMode)
+				logfield.KeyHost, cfg.MailHost, logfield.KeyPort, cfg.MailPort, logfield.KeyTLSMode, cfg.MailTLSMode)
 		} else {
 			logger.Warn("mail: SMTP delivery is disabled; password reset links are not delivered",
-				"reason", "YIBAN_RESET_MAIL_ENABLE is false")
+				logfield.KeyReason, "YIBAN_RESET_MAIL_ENABLE is false")
 		}
 		// 一个 KDF 闸服务全部用例：并发上限按进程计，不是按服务计。
 		kdf := auth.NewBounded(cfg.KDFConcurrency)
@@ -608,7 +609,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			closeFn()
 			return nil, fmt.Errorf("assembly: recover orphan tasks: %w", recErr)
 		} else if n > 0 {
-			logger.Info("worker: recovered orphan running rows", "count", n)
+			logger.Info("worker: recovered orphan running rows", logfield.KeyCount, n)
 		}
 		signing.WithManual(workerSvc)
 		// 手动签到的可见面判据：user 只能签自己的账号，
