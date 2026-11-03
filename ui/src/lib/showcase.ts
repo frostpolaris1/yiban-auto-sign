@@ -329,8 +329,14 @@ export function showcaseCapacity(query: {
   }
   const numbers =
     row.task_id === 'task-night'
-      ? { capacity: 20, demand: 26, shortfall: 6 }
-      : { capacity: 24, demand: 8, shortfall: 0 }
+      ? {
+          capacity: 20,
+          demand: 26,
+          shortfall: 6,
+          binding: 'workers' as const,
+          suggested_workers: 4,
+        }
+      : { capacity: 24, demand: 8, shortfall: 0, binding: 'workers' as const }
   return {
     school_id: row.school_id,
     task_id: row.task_id,

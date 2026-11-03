@@ -1,7 +1,9 @@
 import { test, expect, type Page } from '@playwright/test'
 import { visibleText } from './support/visible-text'
+import type { CapacityReport } from '../src/lib/api/schedule'
 import type { SignStatsDay } from '../src/lib/api/stats'
 import {
+  DASHBOARD_DAY,
   DEFAULT_PREF_STATS,
   DEFAULT_SIGN_STATS,
   type DashboardApiCall,
@@ -24,7 +26,8 @@ import {
  * 3. 轮询：30 秒后自动再取一次；页面隐藏时不轮询。
  * 4. 过期标记：stale=true 的行带「数据已过期」，全 false 时一处也没有。
  * 5. 容量体检：默认选第一可用任务并即发请求；切换选择器触发新请求；
- *    shortfall>0 用 danger 徽章。
+ *    shortfall>0 用 danger 徽章；缺口建议按瓶颈给配置动作（通道给数字与复制，
+ *    出口只给配置名），无缺口不渲染建议块。
  * 6. 空态与错误态：无账号两卡空态；空窗口说「今日无可用窗口」；
  *    单卡失败只挂该卡，另一卡照常；窗口计数以注脚形式留在容量卡。
  * 7. 展示模式零请求：`e2e/showcase.spec.ts`。
@@ -241,6 +244,72 @@ test('invariant 5: capacity defaults to the first usable task and follows the pi
   expect(capacityParams(lastCapacityCall(api), 'day')).toMatch(/^\d{4}-\d{2}-\d{2}$/)
   await expect.poll(() => visibleText(gap.locator('.badge'))).toBe('6')
   await expect(gap.locator('.badge')).toHaveClass(/danger/)
+})
+
+test('invariant 5: a channel-bound shortfall suggests a worker count and copies it', async ({
+  page,
+}) => {
+  // 剪贴板用确定性替身：只断言页面确实把配置行交给 writeText。
+  await page.addInitScript(() => {
+    const copied: string[] = []
+    Object.defineProperty(window, '__copiedConfig', { value: copied, configurable: true })
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async (text: string) => {
+          copied.push(text)
+        },
+      },
+    })
+  })
+  await mockDashboardApi(page, { role: 'admin' })
+  await openDashboard(page)
+
+  const card = capacityCard(page)
+  // 缺省任务无缺口：即使响应带建议值也不渲染建议块。
+  await expect(card.locator('.app-capacity-hint')).toHaveCount(0)
+  await expect(card.getByText(/YIBAN_WORKERS/)).toHaveCount(0)
+
+  await page.getByLabel('任务').selectOption('school-beta:task-night')
+  const hint = card.locator('.app-capacity-hint')
+  await expect(hint).toContainText('通道是瓶颈：把 YIBAN_WORKERS 提到 4。')
+  await expect(hint.locator('code')).toHaveText('YIBAN_WORKERS=4')
+
+  await hint.getByRole('button', { name: '复制' }).click()
+  await expect(page.getByText('已复制配置行')).toBeVisible()
+  const copied = await page.evaluate(
+    () => (window as unknown as { __copiedConfig: string[] }).__copiedConfig,
+  )
+  expect(copied).toEqual(['YIBAN_WORKERS=4'])
+})
+
+test('invariant 5: an egress-bound shortfall points at the rate, never a number', async ({
+  page,
+}) => {
+  const egress: CapacityReport = {
+    school_id: 'school-beta',
+    task_id: 'task-night',
+    day: DASHBOARD_DAY,
+    source: 'override',
+    window_start: `${DASHBOARD_DAY}T20:00:00+08:00`,
+    window_end: `${DASHBOARD_DAY}T21:00:00+08:00`,
+    capacity: 20,
+    demand: 26,
+    shortfall: 6,
+    binding: 'egress_rate',
+    // 出口瓶颈即使带了数字也不展示：加并发解决不了。
+    suggested_workers: 7,
+  }
+  await mockDashboardApi(page, { role: 'admin', capacity: egress })
+  await openDashboard(page)
+
+  const card = capacityCard(page)
+  const hint = card.locator('.app-capacity-hint')
+  await expect(hint).toContainText('出口速率是瓶颈：提高 YIBAN_EGRESS_RATE 或增加出口标识。')
+  await expect(hint.locator('code')).toHaveText('YIBAN_EGRESS_RATE')
+  await expect(hint).not.toContainText('YIBAN_WORKERS')
+  await expect(hint).not.toContainText('7')
+  await expect(hint.getByRole('button', { name: '复制' })).toHaveCount(0)
 })
 
 test('invariant 6: an empty window list says so and sends no capacity request', async ({

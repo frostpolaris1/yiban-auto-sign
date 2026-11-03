@@ -12,6 +12,9 @@
  * 与容量报告成败无关；窗口读不到就没有注脚。
  * `shortfall>0` 用 danger 徽章；其余用 success。
  * 三个数字用滚动组件渲染，颜色继承所在容器（正文色或徽章色）。
+ * 缺口为正时给一条可执行建议：通道瓶颈给 YIBAN_WORKERS 数值与复制按钮，
+ * 出口瓶颈只指向 YIBAN_EGRESS_RATE 或增加出口标识，不给数字。
+ * 建议块只在 `shortfall>0` 时出现；无缺口不渲染。
  * 窗口失败与容量失败各有错误态与「重试」，不整页挂。
  * 无可用任务时只说「今日无可用窗口」，不发容量请求。
  */
@@ -22,6 +25,7 @@ import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { SelectInput } from '@/components/ui/Input'
+import { notifySuccess } from '@/components/ui/toast'
 import type { CapacityReport } from '@/lib/api/schedule'
 import { formatClock } from '@/lib/format'
 import {
@@ -45,6 +49,47 @@ type CapacityCardProps = {
   capacityError: string | null
   onRetryWindows: () => void
   onRetryCapacity: () => void
+}
+
+/** 复制配置行；成功才发 toast，剪贴板不可用时静默（配置行已可选可抄）。 */
+function copyConfigLine(line: string): void {
+  const clipboard = navigator.clipboard
+  if (!clipboard) return
+  void clipboard.writeText(line).then(
+    () => notifySuccess('已复制配置行'),
+    () => undefined,
+  )
+}
+
+/** 缺口建议：按瓶颈归属给可执行动作，出口瓶颈不给数字。 */
+function CapacityHint({ report }: { report: CapacityReport }) {
+  if (report.shortfall <= 0) return null
+  const suggested = report.suggested_workers ?? 0
+  if (report.binding === 'workers' && suggested > 0) {
+    const line = `YIBAN_WORKERS=${suggested}`
+    return (
+      <div className="app-capacity-hint">
+        <p>通道是瓶颈：把 YIBAN_WORKERS 提到 {suggested}。</p>
+        <div className="app-capacity-hint-line">
+          <code>{line}</code>
+          <Button variant="ghost" size="sm" onClick={() => copyConfigLine(line)}>
+            复制
+          </Button>
+        </div>
+      </div>
+    )
+  }
+  if (report.binding === 'egress_rate') {
+    return (
+      <div className="app-capacity-hint">
+        <p>出口速率是瓶颈：提高 YIBAN_EGRESS_RATE 或增加出口标识。</p>
+        <div className="app-capacity-hint-line">
+          <code>YIBAN_EGRESS_RATE</code>
+        </div>
+      </div>
+    )
+  }
+  return null
 }
 
 export function CapacityCard({
@@ -128,6 +173,8 @@ export function CapacityCard({
                   </div>
                 </div>
               </div>
+
+              <CapacityHint report={report} />
 
               <p className="app-muted app-capacity-meta">
                 <Badge tone={capacitySourceTone(report.source)}>

@@ -61,6 +61,8 @@ export type MockDashboardOptions = {
   accountSummary?: AccountSummary
   accountSummaryError?: Failure
   timePref?: TimePref
+  /** 整份容量报告覆盖：用来给单个用例换瓶颈归属，缺省按选中的窗口生成。 */
+  capacity?: CapacityReport
 }
 
 const SIGN_STATUS_RUN_AT = '2026-10-28T06:41:00+08:00'
@@ -220,9 +222,21 @@ function capacityFor(
 ): CapacityReport {
   const numbers =
     row.school_id === 'school-alpha' && row.task_id === 'task-daily'
-      ? { capacity: 40, demand: 12, shortfall: 0 }
+      ? {
+          capacity: 40,
+          demand: 12,
+          shortfall: 0,
+          binding: 'workers' as const,
+          suggested_workers: 4,
+        }
       : row.school_id === 'school-beta' && row.task_id === 'task-night'
-        ? { capacity: 20, demand: 26, shortfall: 6 }
+        ? {
+            capacity: 20,
+            demand: 26,
+            shortfall: 6,
+            binding: 'workers' as const,
+            suggested_workers: 4,
+          }
         : { capacity: 0, demand: 0, shortfall: 0 }
   return {
     school_id: row.school_id,
@@ -403,7 +417,7 @@ export async function mockDashboardApi(
       if (!row || !row.start || !row.end) {
         return fail(route, 404, 'not_found', '任务窗口不存在')
       }
-      return json(route, capacityFor(day, row))
+      return json(route, options.capacity ?? capacityFor(day, row))
     }
 
     if (url.pathname === '/api/sign-stats' && request.method() === 'GET') {
