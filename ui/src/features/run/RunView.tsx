@@ -16,6 +16,7 @@
  * 搜索输入防抖 250ms；回车立即生效。任一筛选变化回到第一页。
  * 游标栈只在会话内记忆「上一页」；刷新后从 URL 游标重建，只能前进。
  * SSE 断线出横幅并提供重连；断线期间查询每 10 秒轮询一次。
+ * 补发出「正在补发事件…」；结束出原因与重连，其余状态不轮询。
  * SSE 到达（task.progress / task.concluded / window.changed）失效查询。
  * CSV 导出带当前筛选（不带游标与页大小）；失败留在控件旁可见。
  * 展示构建（`VITE_SHOWCASE=1`）取合成夹具，零网络请求。
@@ -47,9 +48,10 @@ import {
 import { runStateLabel, runStateTone } from './display'
 import { RunDiagnosticsDrawer } from './RunDiagnosticsDrawer'
 import { RunFilters } from './RunFilters'
+import { RunLiveBanner } from './RunLiveBanner'
 import { RunSummary, runCounts } from './RunSummary'
 import { SchoolLanes, lanesBySchool } from './SchoolLanes'
-import { RUN_POLL_INTERVAL_MS, useRunLive } from './useRunLive'
+import { RUN_LIVE_STATUS_LABELS, RUN_POLL_INTERVAL_MS, useRunLive } from './useRunLive'
 import { withRunFilter, type RunURLState } from './urlState'
 
 /** 输入防抖窗口。与用户页同窗。 */
@@ -233,14 +235,7 @@ export function RunView({ urlState, onSearchChange }: RunViewProps) {
         subtitle="今天的签到跑成了吗？哪次没成、为什么，都在这一页。"
       />
 
-      {live.status === 'disconnected' ? (
-        <div className="run-live-banner" role="status">
-          <span>已停止实时，最近更新 {live.since ?? '—'}。</span>
-          <Button variant="outline-primary" size="sm" onClick={live.reconnect}>
-            重连
-          </Button>
-        </div>
-      ) : null}
+      <RunLiveBanner live={live} />
 
       {!allowed ? (
         <DeniedCard eyebrow="Run" reason={DENY_REASON} />
@@ -267,9 +262,7 @@ export function RunView({ urlState, onSearchChange }: RunViewProps) {
           <Card
             eyebrow="Run · 泳道"
             title={`任务时间线 · ${day}`}
-            action={
-              <span className="app-caption">{live.status === 'live' ? '实时' : '已停止实时'}</span>
-            }
+            action={<span className="app-caption">{RUN_LIVE_STATUS_LABELS[live.status]}</span>}
           >
             <AsyncState
               status={listStatus}

@@ -253,6 +253,7 @@ export function schoolsCalls(api: FakeRunApi): ApiCall[] {
  * 注入可编程的假 EventSource。
  * 用例经 `window.__runES` 拿到实例：`open()` 触发建立、
  * `emit(type)` 派发业务事件、`fail()` 触发断线。
+ * 每个 MessageEvent 都带 lastEventId；`end` 帧到达后实例标记为已关闭。
  */
 export async function installFakeEventSource(page: Page): Promise<void> {
   await page.addInitScript(() => {
@@ -260,6 +261,7 @@ export async function installFakeEventSource(page: Page): Promise<void> {
     class FakeEventSource {
       url: string
       closed = false
+      closeCalls = 0
       onopen: ((event: Event) => void) | null = null
       onerror: ((event: Event) => void) | null = null
       private listeners = new Map<string, (event: MessageEvent) => void>()
@@ -270,6 +272,7 @@ export async function installFakeEventSource(page: Page): Promise<void> {
       }
       close() {
         this.closed = true
+        this.closeCalls += 1
       }
       addEventListener(type: string, listener: (event: MessageEvent) => void) {
         this.listeners.set(type, listener)
@@ -277,8 +280,8 @@ export async function installFakeEventSource(page: Page): Promise<void> {
       open() {
         this.onopen?.(new Event('open'))
       }
-      emit(type: string) {
-        this.listeners.get(type)?.(new MessageEvent(type, { data: '{}' }))
+      emit(type: string, data = '{}', id = '') {
+        this.listeners.get(type)?.(new MessageEvent(type, { data, lastEventId: id }))
       }
       fail() {
         this.onerror?.(new Event('error'))
@@ -287,53 +290,139 @@ export async function installFakeEventSource(page: Page): Promise<void> {
     ;(window as unknown as { __runES: unknown[] }).__runES = sources
     window.EventSource = FakeEventSource as unknown as typeof EventSource
     // 类实例经 evaluate 序列化会丢方法：动作由页面内的分发器执行。
-    ;(window as unknown as { __runESAct: RunESAction }).__runESAct = (action, arg) => {
-      if (action === 'count') return sources.length
+    // 动作参数整体走 JSON：帧的 data 由调用方给对象，序列化后才上 MessageEvent。
+    ;(window as unknown as { __runESAct: (action: RunESAction) => number }).__runESAct = (
+      action,
+    ) => {
+      if (action.action === 'count') return sources.length
       const source = sources[sources.length - 1] as RunESHandle | undefined
       if (!source) return sources.length
-      if (action === 'open') source.open()
-      if (action === 'fail') source.fail()
-      if (action === 'emit') source.emit(String(arg))
+      if (action.action === 'open') source.open()
+      if (action.action === 'fail') source.fail()
+      if (action.action === 'emit') {
+        source.emit(
+          action.frame.type,
+          action.frame.data === undefined ? '{}' : JSON.stringify(action.frame.data),
+          action.frame.id ?? '',
+        )
+      }
+      if (action.action === 'heartbeat') source.emit('heartbeat')
+      if (action.action === 'resync') {
+        source.emit('resync', JSON.stringify({ from: action.from }), action.id ?? '')
+      }
+      if (action.action === 'snapshot') {
+        source.emit(
+          'snapshot',
+          action.data === undefined ? '{}' : JSON.stringify(action.data),
+          action.id ?? '',
+        )
+      }
+      if (action.action === 'end') {
+        source.emit('end', JSON.stringify(action.reason ? { reason: action.reason } : {}), '')
+        // 服务端写完 end 即关闭连接。
+        source.closed = true
+      }
       return sources.length
     }
   })
 }
 
-type RunESHandle = {
-  open(): void
-  emit(type: string): void
-  fail(): void
-  closed: boolean
+/** 假事件源可派发的单帧；data 走 JSON 序列化，id 进 lastEventId。 */
+export type FakeEventFrame = {
+  type: string
+  data?: unknown
+  id?: string
 }
 
-type RunESAction = (action: 'count' | 'open' | 'fail' | 'emit', arg?: string) => number
+type RunESHandle = {
+  open(): void
+  emit(type: string, data?: string, id?: string): void
+  fail(): void
+  closed: boolean
+  closeCalls: number
+}
 
-async function act(page: Page, action: 'count' | 'open' | 'fail', arg?: string): Promise<number> {
+type RunESAction =
+  | { action: 'count' }
+  | { action: 'open' }
+  | { action: 'fail' }
+  | { action: 'emit'; frame: FakeEventFrame }
+  | { action: 'heartbeat' }
+  | { action: 'resync'; from: number; id?: string }
+  | { action: 'snapshot'; data?: unknown; id?: string }
+  | { action: 'end'; reason?: string }
+
+async function act(page: Page, action: RunESAction): Promise<number> {
   return page.evaluate(
-    ([action, arg]) => (window as unknown as { __runESAct: RunESAction }).__runESAct(action, arg),
-    [action, arg] as const,
+    (payload) =>
+      (window as unknown as { __runESAct: (action: RunESAction) => number }).__runESAct(payload),
+    action,
   )
 }
 
 /** 当前连接数（按创建序累计，重连不重置）。 */
 export async function fakeSourceCount(page: Page): Promise<number> {
-  return act(page, 'count')
+  return act(page, { action: 'count' })
 }
 
-/** 让最近一条连接派发一个业务事件。 */
-export async function fakeSourceEmit(page: Page, type: string): Promise<void> {
-  await page.evaluate(
-    ([action, arg]) => (window as unknown as { __runESAct: RunESAction }).__runESAct(action, arg),
-    ['emit', type] as const,
-  )
+/**
+ * 让最近一条连接派发一个业务事件。
+ * 字符串形态保留原签名；对象形态可带 id 与 data。
+ */
+export async function fakeSourceEmit(
+  page: Page,
+  event: string | FakeEventFrame,
+): Promise<void> {
+  const frame = typeof event === 'string' ? { type: event } : event
+  await act(page, { action: 'emit', frame })
+}
+
+/** 让最近一条连接派发心跳（15 秒一次的保活帧）。 */
+export async function fakeSourceHeartbeat(page: Page): Promise<void> {
+  await act(page, { action: 'heartbeat' })
+}
+
+/** 让最近一条连接派发 resync；from 是客户端落后的位置。 */
+export async function fakeSourceResync(page: Page, from: number, id?: string): Promise<void> {
+  await act(page, { action: 'resync', from, id })
+}
+
+/** 让最近一条连接派发 snapshot（resync 后现算的当日前景）。 */
+export async function fakeSourceSnapshot(
+  page: Page,
+  data?: unknown,
+  id?: string,
+): Promise<void> {
+  await act(page, { action: 'snapshot', data, id })
+}
+
+/** 让最近一条连接派发 end；reason 进 data.reason。 */
+export async function fakeSourceEnd(page: Page, reason?: string): Promise<void> {
+  await act(page, { action: 'end', reason })
+}
+
+/** 最近一条连接是否已关闭（end 帧或客户端 close 都会置位）。 */
+export async function fakeSourceClosed(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const sources = (window as unknown as { __runES: { closed: boolean }[] }).__runES
+    return sources[sources.length - 1]?.closed ?? false
+  })
+}
+
+/** 最近一条连接被 close() 的次数：证明是客户端主动关闭，而非帧自带的关闭。 */
+export async function fakeSourceCloseCalls(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const sources = (window as unknown as { __runES: { closeCalls: number }[] }).__runES
+    return sources[sources.length - 1]?.closeCalls ?? 0
+  })
 }
 
 /** 让最近一条连接进入断线。 */
 export async function fakeSourceFail(page: Page): Promise<void> {
-  await act(page, 'fail')
+  await act(page, { action: 'fail' })
 }
 
 /** 让最近一条连接完成建立。 */
 export async function fakeSourceOpen(page: Page): Promise<void> {
-  await act(page, 'open')
+  await act(page, { action: 'open' })
 }

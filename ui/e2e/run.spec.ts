@@ -4,6 +4,8 @@ import {
   fakeSourceEmit,
   fakeSourceFail,
   fakeSourceOpen,
+  fakeSourceResync,
+  fakeSourceSnapshot,
   installFakeEventSource,
   listTaskCalls,
   mockRunApi,
@@ -23,7 +25,7 @@ import {
  * 4. URL 状态：?day&state&school&q 刷新后保留；筛选写回查询串；
  *    学校是下拉（/api/schools 供选项），URL 存 id。
  * 5. SSE：业务事件触发刷新；断线出「已停止实时」横幅并可重连；
- *    断线期间 10 秒轮询降级。
+ *    断线期间 10 秒轮询降级；补发出补发横幅，snapshot 回实时。
  * 6. 诊断：点击与键盘（Enter）都能打开抽屉；抽屉调单账号诊断端点。
  * 7. 390 宽无横向溢出。
  *
@@ -197,6 +199,28 @@ test('invariant 5: a disconnected page polls every 10 seconds', async ({ page })
     .poll(() => listTaskCalls(api).length, { timeout: 15_000, intervals: [1_000, 5_000, 10_000] })
     .toBeGreaterThan(baseline)
   expect(schoolsCalls(api).length).toBe(schoolsBefore)
+})
+
+test('invariant 5: a resync banner clears when the snapshot lands', async ({ page }) => {
+  await installFakeEventSource(page)
+  const api = await mockRunApi(page, { role: 'master' })
+  await page.goto('/run')
+  await openRun(page)
+
+  const timeline = page.locator('section.card', {
+    has: page.getByRole('heading', { name: /任务时间线/ }),
+  })
+  const banner = page.locator('.run-live-banner')
+  const before = listTaskCalls(api).length
+
+  await fakeSourceResync(page, 3)
+  await expect(banner).toContainText('正在补发事件…')
+  await expect(timeline.getByText('补发中', { exact: true })).toBeVisible()
+  await expect.poll(() => listTaskCalls(api).length).toBeGreaterThan(before)
+
+  await fakeSourceSnapshot(page)
+  await expect(banner).toHaveCount(0)
+  await expect(timeline.getByText('实时', { exact: true })).toBeVisible()
 })
 
 test('invariant 6: a row opens diagnostics by click and by keyboard', async ({ page }) => {

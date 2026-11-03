@@ -5,10 +5,16 @@ import {
   ENGINE_SNAPSHOT,
 } from './support/fake-engine-api'
 import {
+  fakeSourceCloseCalls,
+  fakeSourceClosed,
   fakeSourceCount,
   fakeSourceEmit,
+  fakeSourceEnd,
   fakeSourceFail,
+  fakeSourceHeartbeat,
   fakeSourceOpen,
+  fakeSourceResync,
+  fakeSourceSnapshot,
   installFakeEventSource,
 } from './support/fake-run-api'
 
@@ -24,6 +30,9 @@ import {
  *    （行身份是任务行）；超过 200 条显式提示截断。
  * 5. 最近事件：SSE 业务事件实时进列表，最新在前；断线出
  *    「已停止实时」横幅并可重连；断线期间 10 秒轮询降级。
+ *    控制帧同样可断言：resync 出补发横幅、snapshot 回实时、
+ *    end 出原因并关闭 source；心跳不列，行内 #id 证明续传位置。
+ *    45 秒无事件由看门狗降级，任意事件回到实时。
  * 6. 错误态与空态语义分离：失败渲染 role=alert 的错误条，
  *    空渲染各自的空态文案。
  * 7. 全页不出现「队列」字样；390 宽无横向溢出。
@@ -185,6 +194,179 @@ test('invariant 5: the disconnected page falls back to polling', async ({ page }
   await expect
     .poll(() => engineCalls(api).length, { timeout: 12_000, intervals: [1_000] })
     .toBeGreaterThan(before)
+})
+
+test('invariant 5: an end frame closes the stream and stops refreshing', async ({ page }) => {
+  await page.clock.install()
+  await installFakeEventSource(page)
+  const api = await mockEngineApi(page, { role: 'master' })
+  await page.goto('/engine')
+  await openEngine(page)
+
+  const baseline = engineCalls(api).length
+  const banner = page.locator('.run-live-banner')
+  const inflightCard = page.locator('section.card', {
+    has: page.getByRole('heading', { name: '在飞清单' }),
+  })
+  await fakeSourceEnd(page, '会话已失效')
+
+  await expect(banner).toContainText('实时流已结束：会话已失效')
+  await expect(banner.getByRole('button', { name: '重连' })).toBeVisible()
+  expect(await fakeSourceClosed(page), 'end closes the client source').toBe(true)
+  expect(await fakeSourceCloseCalls(page), 'the hook calls close(), not only the frame').toBeGreaterThan(0)
+
+  // end 只失效查询一次；随后进入结束态，不再有断线轮询或自动重连。
+  await expect.poll(() => engineCalls(api).length).toBeGreaterThan(baseline)
+  const afterEnd = engineCalls(api).length
+  const sourceCount = await fakeSourceCount(page)
+  await page.clock.runFor(10_000)
+  expect(engineCalls(api).length, 'an ended stream sends no poll').toBe(afterEnd)
+  expect(await fakeSourceCount(page), 'an ended stream creates no source').toBe(sourceCount)
+
+  // 结束后的错误不得把状态改回断线。
+  await fakeSourceFail(page)
+  await expect(banner).toContainText('实时流已结束：会话已失效')
+  await expect(inflightCard.getByText('已结束', { exact: true })).toBeVisible()
+
+  const eventsCard = page.locator('section.card', { has: page.getByRole('heading', { name: '最近事件' }) })
+  await expect(eventsCard.getByText('流结束')).toBeVisible()
+
+  // 结束后仍可重连；没有 reason 的 end 用缺省文案。
+  await banner.getByRole('button', { name: '重连' }).click()
+  await expect(banner).toHaveCount(0)
+  expect(await fakeSourceCount(page), 'reconnect after end builds a new source').toBe(sourceCount + 1)
+  await fakeSourceEnd(page)
+  await expect(banner).toContainText('实时流已结束：服务器关闭连接')
+})
+
+test('invariant 5: resync marks the gap and snapshot returns to live', async ({ page }) => {
+  await installFakeEventSource(page)
+  const api = await mockEngineApi(page, { role: 'master' })
+  await page.goto('/engine')
+  await openEngine(page)
+
+  const inflightCard = page.locator('section.card', {
+    has: page.getByRole('heading', { name: '在飞清单' }),
+  })
+  const eventsCard = page.locator('section.card', {
+    has: page.getByRole('heading', { name: '最近事件' }),
+  })
+  const banner = page.locator('.run-live-banner')
+
+  const baseline = engineCalls(api).length
+  await fakeSourceResync(page, 2, '7')
+  await expect(banner).toContainText('正在补发事件…')
+  await expect(inflightCard.getByText('补发中', { exact: true })).toBeVisible()
+  await expect(eventsCard.getByText('缺口重同步')).toBeVisible()
+  await expect(eventsCard.getByText('#7')).toBeVisible()
+  await expect.poll(() => engineCalls(api).length).toBeGreaterThan(baseline)
+  const afterResync = engineCalls(api).length
+
+  await fakeSourceSnapshot(page, { due_now: 3 }, '8')
+  await expect(banner).toHaveCount(0)
+  await expect(inflightCard.getByText('实时', { exact: true })).toBeVisible()
+  await expect(eventsCard.getByText('前景快照')).toBeVisible()
+  await expect(eventsCard.getByText('#8')).toBeVisible()
+  await expect.poll(() => engineCalls(api).length).toBeGreaterThan(afterResync)
+})
+
+test('invariant 5: the heartbeat watchdog drops a silent stream to disconnected', async ({ page }) => {
+  await page.clock.install()
+  await installFakeEventSource(page)
+  const api = await mockEngineApi(page, { role: 'master' })
+  await page.goto('/engine')
+  await openEngine(page)
+
+  const banner = page.locator('.run-live-banner')
+  const inflightCard = page.locator('section.card', {
+    has: page.getByRole('heading', { name: '在飞清单' }),
+  })
+  const eventsCard = page.locator('section.card', {
+    has: page.getByRole('heading', { name: '最近事件' }),
+  })
+
+  // 45 秒（15 秒心跳 × 3）没有任何事件：降为断线，但不关闭 source。
+  await page.clock.runFor(45_000)
+  await expect(banner).toContainText('已停止实时')
+  expect(await fakeSourceClosed(page), 'the watchdog keeps the source for self-healing').toBe(false)
+  await expect(eventsCard.getByText('还没有收到业务事件。')).toBeVisible()
+
+  // 断线期间开始 10 秒轮询。
+  const before = engineCalls(api).length
+  await page.clock.runFor(10_000)
+  await page.clock.runFor(10_000)
+  await expect.poll(() => engineCalls(api).length).toBeGreaterThan(before)
+
+  // 任意事件都让流回到实时；心跳不进事件列表。
+  await fakeSourceHeartbeat(page)
+  await expect(banner).toHaveCount(0)
+  await expect(inflightCard.getByText('实时', { exact: true })).toBeVisible()
+  await expect(eventsCard.getByText('还没有收到业务事件。')).toBeVisible()
+})
+
+test('invariant 5: heartbeats inside the window keep the stream live', async ({ page }) => {
+  await page.clock.install()
+  await installFakeEventSource(page)
+  const api = await mockEngineApi(page, { role: 'master' })
+  await page.goto('/engine')
+  await openEngine(page)
+
+  const baseline = engineCalls(api).length
+  await fakeSourceOpen(page)
+  for (let index = 0; index < 4; index += 1) {
+    await page.clock.runFor(15_000)
+    await fakeSourceHeartbeat(page)
+  }
+
+  await expect(page.locator('.run-live-banner')).toHaveCount(0)
+  expect(engineCalls(api).length, 'a heartbeat never invalidates the snapshot').toBe(baseline)
+})
+
+test('invariant 5: a resumed event shows its id and reconnect starts a new source', async ({
+  page,
+}) => {
+  await installFakeEventSource(page)
+  const api = await mockEngineApi(page, { role: 'master' })
+  await page.goto('/engine')
+  await openEngine(page)
+
+  const eventsCard = page.locator('section.card', {
+    has: page.getByRole('heading', { name: '最近事件' }),
+  })
+  await fakeSourceEmit(page, { type: 'task.concluded', id: '7' })
+  await expect(eventsCard.getByText('任务终态')).toBeVisible()
+  await expect(eventsCard.getByText('#7')).toBeVisible()
+
+  await fakeSourceFail(page)
+  const banner = page.locator('.run-live-banner')
+  await expect(banner).toContainText('已停止实时')
+  const sourceBefore = await fakeSourceCount(page)
+  const callsBefore = engineCalls(api).length
+
+  // 手动重连没有 Last-Event-ID：换新 source 并走 REST 全量重同步。
+  await banner.getByRole('button', { name: '重连' }).click()
+  expect(await fakeSourceCount(page), 'reconnect builds a new source').toBe(sourceBefore + 1)
+  await expect(banner).toHaveCount(0)
+  await expect.poll(() => engineCalls(api).length).toBeGreaterThan(callsBefore)
+})
+
+test('invariant 5: an error keeps the browser source for automatic resumption', async ({
+  page,
+}) => {
+  await page.clock.install()
+  await installFakeEventSource(page)
+  await mockEngineApi(page, { role: 'master' })
+  await page.goto('/engine')
+  await openEngine(page)
+
+  const sourceBefore = await fakeSourceCount(page)
+  await fakeSourceFail(page)
+  await expect(page.locator('.run-live-banner')).toContainText('已停止实时')
+
+  // 不点重连：钩子不得替换 source，浏览器自己带 Last-Event-ID 续传。
+  await page.clock.runFor(10_000)
+  expect(await fakeSourceCount(page), 'onerror must not replace the source').toBe(sourceBefore)
+  await expect(page.locator('.run-live-banner')).toBeVisible()
 })
 
 test('invariant 6: an error renders an alert, never the empty copy', async ({ page }) => {
