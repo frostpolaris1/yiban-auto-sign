@@ -587,7 +587,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		scheduleRepo := pg.NewScheduleRepoWithAudit(db, audits).WithLease(cfg.TaskLease)
 		workerSvc, err = appworker.NewService(buildWorkerDeps(cfg, workerDeps{
 			store:    scheduleRepo,
-			creds:    workerCredentials{svc: accountSvc},
+			creds:    workerCredentials{svc: accountSvc, kid: cipher.KID()},
 			signer:   provider,
 			egress:   egressSvc,
 			clock:    clk,
@@ -846,6 +846,7 @@ func DeriveAuditKey(pepper []byte) ([]byte, error) {
 // 作用域用 master：执行循环是系统动作，不属于任何管理员的可见面。
 type workerCredentials struct {
 	svc *appaccount.Service
+	kid string
 }
 
 // Credential 取一次调用内有效的账号凭据。
@@ -861,6 +862,10 @@ func (w workerCredentials) Credential(ctx context.Context, accountID string) (co
 		PhoneModel: c.PhoneModel,
 	}, nil
 }
+
+// KID 报告当前凭据密钥的单向指纹，供 worker 的放弃行自证"我方解密正常"。
+// 只暴露指纹，不是密钥材料：由 Cipher 派生，sha256/HMAC 前 8 字节。
+func (w workerCredentials) KID() string { return w.kid }
 
 // accountDeviceReader 把 provider 的设备读回适配成账号用例的设备端口。
 //

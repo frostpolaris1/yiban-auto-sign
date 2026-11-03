@@ -57,6 +57,9 @@ func (loopCreds) Credential(context.Context, string) (contract.Credential, error
 	return contract.Credential{Phone: "13800070001", Password: "x", DeviceCode: "d", PhoneModel: "m"}, nil
 }
 
+// KID 空串：本文件不判密钥指纹字段。
+func (loopCreds) KID() string { return "" }
+
 func TestLoopGracefulStopLeavesNoRunningRows(t *testing.T) {
 	base := strings.TrimSpace(os.Getenv(authDSNEnv))
 	if base == "" {
