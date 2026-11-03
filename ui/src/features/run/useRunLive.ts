@@ -10,7 +10,7 @@
  * 复用 `GET /api/admin/events`，不新增事件类型。
  * `task.progress`、`task.concluded`、`window.changed` 触发刷新；
  * `capacity.changed`、`egress.health` 只进事件展示（onEvent），不触发刷新。
- * 每个 MessageEvent 的 lastEventId 记入 `lastEventId`（空串不覆盖），
+ * 每个 MessageEvent 的 lastEventId 直接传给 onEvent（空串不传），
  * 事件列表据此证明续传位置。
  * `heartbeat` 只算「流还活着」：回 live、更新最近时刻，不进 onEvent、不刷新。
  * `resync` 进补发态并刷新；`snapshot` 回实时并刷新；两者都进 onEvent。
@@ -18,8 +18,9 @@
  * 结束后的 onerror 不得把状态改回断线。
  * 自动重连由浏览器 EventSource 负责（带 Last-Event-ID，服务端补发）；
  * 钩子不因 onerror 主动关闭 source。
- * 心跳看门狗：45 秒（15 秒心跳 × 3）没有任意事件就把 live/resyncing
- * 降为 disconnected，但不关闭 source（浏览器可能自愈）；事件一到即回 live。
+ * 心跳看门狗：每 5 秒检查一次，相位从最近事件重算；45 秒
+ * （15 秒心跳 × 3）没有任意事件就把 live/resyncing 降为 disconnected，
+ * 但不关闭 source（浏览器可能自愈）；事件一到即回 live。
  * 手动重连是换代：新连接没有 Last-Event-ID，等于全量重同步，
  * 因此立即失效查询走 REST，并清除断线时刻。
  * 断线期间每 10 秒轮询一次（降级，由调用方执行）。
@@ -45,8 +46,8 @@ const HEARTBEAT_TIMEOUT_MS = 45_000
 /** 看门狗的检查间隔。 */
 const WATCHDOG_INTERVAL_MS = 5_000
 
-/** `end` 帧没带 reason 时的缺省文案。 */
-const DEFAULT_END_REASON = '服务器关闭连接'
+/** `end` 帧没带 reason 时的缺省文案。视图与钩子共用这一份。 */
+export const DEFAULT_END_REASON = '服务器关闭连接'
 
 export type RunLiveStatus = 'live' | 'disconnected' | 'resyncing' | 'ended'
 
@@ -62,8 +63,6 @@ export type RunLive = {
   status: RunLiveStatus
   /** 断线时刻的 HH:mm 文本；连接正常时为 null。 */
   since: string | null
-  /** 最近一个带 id 的事件位置；从未收到时为 null。 */
-  lastEventId: string | null
   /** `end` 帧的关闭原因；未结束时为 null。 */
   endedReason: string | null
   reconnect: () => void
@@ -119,7 +118,6 @@ export function useRunLive(
 ): RunLive {
   const [status, setStatus] = useState<RunLiveStatus>('live')
   const [since, setSince] = useState<string | null>(null)
-  const [lastEventId, setLastEventId] = useState<string | null>(null)
   const [endedReason, setEndedReason] = useState<string | null>(null)
   // 连接代数：重连时加一。它在 effect 依赖里，重连即重建连接。
   const [generation, setGeneration] = useState(0)
@@ -130,6 +128,8 @@ export function useRunLive(
   const endedRef = useRef(false)
   // 最近任意事件（含心跳）的时刻；看门狗只看它。
   const lastEventAtRef = useRef(0)
+  // 每次事件重置 5 秒检查的相位：45 秒边界从最近事件算起。
+  const rearmWatchdogRef = useRef<() => void>(() => {})
   const updateStatus = useCallback((next: RunLiveStatus) => {
     statusRef.current = next
     setStatus(next)
@@ -146,6 +146,12 @@ export function useRunLive(
     })
   }, [queryClient])
 
+  /** 任意事件到达都算续命：记时刻，并把看门狗的检查相位重置到此刻。 */
+  const noteEvent = useCallback(() => {
+    lastEventAtRef.current = Date.now()
+    rearmWatchdogRef.current()
+  }, [])
+
   const reconnect = useCallback(() => {
     endedRef.current = false
     setEndedReason(null)
@@ -158,6 +164,8 @@ export function useRunLive(
 
   useEffect(() => {
     if (!enabled) return
+    // ended 后 enabled 复亮不得再建连接：重连必须走 reconnect。
+    if (endedRef.current) return
     const thisGeneration = generationRef.current
     lastEventAtRef.current = Date.now()
     let source: EventSourceLike
@@ -169,16 +177,15 @@ export function useRunLive(
       return
     }
 
-    /** 事件通用前缀：代数守卫、记录续传位置、过滤结束后的迟到帧。 */
-    const accept = (event: MessageEvent): boolean => {
+    /** 事件通用前缀：代数守卫、过滤结束后的迟到帧。 */
+    const accept = (): boolean => {
       if (generationRef.current !== thisGeneration) return false
-      if (event.lastEventId) setLastEventId(event.lastEventId)
       return !endedRef.current
     }
 
     /** 任意事件都证明流还活着：更新时刻、清断线时刻、回实时。 */
     const alive = () => {
-      lastEventAtRef.current = Date.now()
+      noteEvent()
       setSince(null)
       updateStatus('live')
     }
@@ -197,7 +204,7 @@ export function useRunLive(
     }
     for (const name of REFRESH_EVENTS) {
       source.addEventListener(name, (event) => {
-        if (!accept(event)) return
+        if (!accept()) return
         alive()
         onEventRef.current?.(name, event.lastEventId || undefined)
         invalidate()
@@ -205,33 +212,32 @@ export function useRunLive(
     }
     for (const name of OBSERVE_EVENTS) {
       source.addEventListener(name, (event) => {
-        if (!accept(event)) return
+        if (!accept()) return
         alive()
         onEventRef.current?.(name, event.lastEventId || undefined)
       })
     }
     // 心跳只续命：不进事件列表、不触发查询失效。
-    source.addEventListener('heartbeat', (event) => {
-      if (!accept(event)) return
+    source.addEventListener('heartbeat', () => {
+      if (!accept()) return
       alive()
     })
     source.addEventListener('resync', (event) => {
-      if (!accept(event)) return
-      lastEventAtRef.current = Date.now()
+      if (!accept()) return
+      noteEvent()
       setSince(null)
       updateStatus('resyncing')
       onEventRef.current?.('resync', event.lastEventId || undefined)
       invalidate()
     })
     source.addEventListener('snapshot', (event) => {
-      if (!accept(event)) return
+      if (!accept()) return
       alive()
       onEventRef.current?.('snapshot', event.lastEventId || undefined)
       invalidate()
     })
     source.addEventListener('end', (event) => {
       if (generationRef.current !== thisGeneration) return
-      if (event.lastEventId) setLastEventId(event.lastEventId)
       if (endedRef.current) return
       endedRef.current = true
       updateStatus('ended')
@@ -246,23 +252,34 @@ export function useRunLive(
       source.onerror = null
       source.close()
     }
-  }, [enabled, createSource, queryClient, generation, invalidate, updateStatus])
+  }, [enabled, createSource, queryClient, generation, invalidate, noteEvent, updateStatus])
 
   // 心跳看门狗：任意事件超过 45 秒没来，就把在线的两种状态降为断线。
+  // 检查每 5 秒一次，相位从最近事件重算：第 9 次检查正好落在 45 秒边界。
   // 不关闭 source：浏览器自愈（带 Last-Event-ID 自动重连）仍有机会救回。
   useEffect(() => {
     if (!enabled) return
+    let timer: number | null = null
+    const arm = () => {
+      if (timer !== null) window.clearInterval(timer)
+      timer = window.setInterval(() => {
+        if (endedRef.current) return
+        const current = statusRef.current
+        if (current !== 'live' && current !== 'resyncing') return
+        if (Date.now() - lastEventAtRef.current < HEARTBEAT_TIMEOUT_MS) return
+        updateStatus('disconnected')
+        // 断线时刻取最近事件时刻，不取检测时刻（检测最多晚一个 5 秒档）。
+        setSince((value) => value ?? clockText(new Date(lastEventAtRef.current)))
+      }, WATCHDOG_INTERVAL_MS)
+    }
+    rearmWatchdogRef.current = arm
     lastEventAtRef.current = Date.now()
-    const timer = window.setInterval(() => {
-      if (endedRef.current) return
-      const current = statusRef.current
-      if (current !== 'live' && current !== 'resyncing') return
-      if (Date.now() - lastEventAtRef.current < HEARTBEAT_TIMEOUT_MS) return
-      updateStatus('disconnected')
-      setSince((value) => value ?? clockText(new Date()))
-    }, WATCHDOG_INTERVAL_MS)
-    return () => window.clearInterval(timer)
+    arm()
+    return () => {
+      rearmWatchdogRef.current = () => {}
+      if (timer !== null) window.clearInterval(timer)
+    }
   }, [enabled, updateStatus])
 
-  return { status, since, lastEventId, endedReason, reconnect }
+  return { status, since, endedReason, reconnect }
 }

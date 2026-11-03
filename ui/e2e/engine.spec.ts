@@ -208,6 +208,9 @@ test('invariant 5: an end frame closes the stream and stops refreshing', async (
   const inflightCard = page.locator('section.card', {
     has: page.getByRole('heading', { name: '在飞清单' }),
   })
+  const eventsCard = page.locator('section.card', {
+    has: page.getByRole('heading', { name: '最近事件' }),
+  })
   await fakeSourceEnd(page, '会话已失效')
 
   await expect(banner).toContainText('实时流已结束：会话已失效')
@@ -223,12 +226,19 @@ test('invariant 5: an end frame closes the stream and stops refreshing', async (
   expect(engineCalls(api).length, 'an ended stream sends no poll').toBe(afterEnd)
   expect(await fakeSourceCount(page), 'an ended stream creates no source').toBe(sourceCount)
 
+  // 迟到业务帧被丢弃：不列事件，也不失效查询。
+  const lateEvents = await eventsCard.locator('li').count()
+  await fakeSourceEmit(page, { type: 'task.concluded', id: '9' })
+  await page.clock.runFor(1_000)
+  await expect(eventsCard.locator('li')).toHaveCount(lateEvents)
+  await expect(eventsCard.getByText('#9')).toHaveCount(0)
+  expect(engineCalls(api).length, 'a late event does not invalidate').toBe(afterEnd)
+
   // 结束后的错误不得把状态改回断线。
   await fakeSourceFail(page)
   await expect(banner).toContainText('实时流已结束：会话已失效')
   await expect(inflightCard.getByText('已结束', { exact: true })).toBeVisible()
 
-  const eventsCard = page.locator('section.card', { has: page.getByRole('heading', { name: '最近事件' }) })
   await expect(eventsCard.getByText('流结束')).toBeVisible()
 
   // 结束后仍可重连；没有 reason 的 end 用缺省文案。
@@ -270,6 +280,36 @@ test('invariant 5: resync marks the gap and snapshot returns to live', async ({ 
   await expect.poll(() => engineCalls(api).length).toBeGreaterThan(afterResync)
 })
 
+test('invariant 5: a heartbeat pulls resyncing back to live', async ({ page }) => {
+  await installFakeEventSource(page)
+  await mockEngineApi(page, { role: 'master' })
+  await page.goto('/engine')
+  await openEngine(page)
+
+  const inflightCard = page.locator('section.card', {
+    has: page.getByRole('heading', { name: '在飞清单' }),
+  })
+  const eventsCard = page.locator('section.card', {
+    has: page.getByRole('heading', { name: '最近事件' }),
+  })
+  const banner = page.locator('.run-live-banner')
+
+  await fakeSourceResync(page, 2, '7')
+  await expect(banner).toContainText('正在补发事件…')
+  await expect(inflightCard.getByText('补发中', { exact: true })).toBeVisible()
+
+  // 心跳是流还活着的证据：把补发态收回实时，但不进事件列表。
+  await fakeSourceHeartbeat(page)
+  await expect(banner).toHaveCount(0)
+  await expect(inflightCard.getByText('实时', { exact: true })).toBeVisible()
+  await expect(eventsCard.locator('li')).toHaveCount(1)
+
+  await fakeSourceSnapshot(page, { due_now: 3 }, '8')
+  await expect(eventsCard.getByText('前景快照')).toBeVisible()
+  await expect(eventsCard.getByText('#8')).toBeVisible()
+  await expect(eventsCard.locator('li'), 'heartbeat is never listed').toHaveCount(2)
+})
+
 test('invariant 5: the heartbeat watchdog drops a silent stream to disconnected', async ({ page }) => {
   await page.clock.install()
   await installFakeEventSource(page)
@@ -285,8 +325,19 @@ test('invariant 5: the heartbeat watchdog drops a silent stream to disconnected'
     has: page.getByRole('heading', { name: '最近事件' }),
   })
 
+  // 用一次心跳把 5 秒检查的相位对齐到最近事件；先暂停页钟，
+  // 避免两次调用之间的真实时间把 44.999 秒推过 45 秒边界。
+  expect(await fakeSourceCount(page), 'one live source').toBe(1)
+  const now = await page.evaluate(() => Date.now())
+  await page.clock.pauseAt(now + 100)
+  const quietFrom = engineCalls(api).length
+  await fakeSourceHeartbeat(page)
+  await page.clock.runFor(44_999)
+  await expect(banner, '44.999s is still inside the window').toHaveCount(0)
+  expect(engineCalls(api).length, 'no poll while live').toBe(quietFrom)
+  await page.clock.runFor(1)
+
   // 45 秒（15 秒心跳 × 3）没有任何事件：降为断线，但不关闭 source。
-  await page.clock.runFor(45_000)
   await expect(banner).toContainText('已停止实时')
   expect(await fakeSourceClosed(page), 'the watchdog keeps the source for self-healing').toBe(false)
   await expect(eventsCard.getByText('还没有收到业务事件。')).toBeVisible()
@@ -302,6 +353,12 @@ test('invariant 5: the heartbeat watchdog drops a silent stream to disconnected'
   await expect(banner).toHaveCount(0)
   await expect(inflightCard.getByText('实时', { exact: true })).toBeVisible()
   await expect(eventsCard.getByText('还没有收到业务事件。')).toBeVisible()
+
+  // 恢复实时后轮询停止：再推进 20 秒没有新请求，也没有再次断线。
+  const recovered = engineCalls(api).length
+  await page.clock.runFor(20_000)
+  expect(engineCalls(api).length, 'recovery stops the poll').toBe(recovered)
+  await expect(banner).toHaveCount(0)
 })
 
 test('invariant 5: heartbeats inside the window keep the stream live', async ({ page }) => {

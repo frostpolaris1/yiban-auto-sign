@@ -12,7 +12,7 @@
  */
 
 import { Button } from '@/components/ui/Button'
-import type { RunLive } from './useRunLive'
+import { DEFAULT_END_REASON, type RunLive } from './useRunLive'
 
 export function RunLiveBanner({ live }: { live: RunLive }) {
   if (live.status === 'disconnected') {
@@ -35,7 +35,7 @@ export function RunLiveBanner({ live }: { live: RunLive }) {
   if (live.status === 'ended') {
     return (
       <div className="run-live-banner" role="status">
-        <span>实时流已结束：{live.endedReason ?? '服务器关闭连接'}</span>
+        <span>实时流已结束：{live.endedReason ?? DEFAULT_END_REASON}</span>
         <Button variant="outline-primary" size="sm" onClick={live.reconnect}>
           重连
         </Button>

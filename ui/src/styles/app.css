@@ -1217,6 +1217,11 @@
   color: var(--t-muted);
 }
 
+.engine-event-id {
+  font-variant-numeric: tabular-nums;
+  color: var(--t-muted);
+}
+
 @media (max-width: 720px) {
   .engine-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
