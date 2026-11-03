@@ -1512,3 +1512,57 @@ test('n190: a failing summary hides the banner and keeps the page usable', async
   await expect(page.getByRole('table', { name: '账号列表' })).toBeVisible()
   await expect(page.getByRole('button', { name: '查看 138****8000' })).toBeVisible()
 })
+
+// --- 列表轮询 ---------------------------------------------------------------
+
+test('polling: the list revalidates after ten seconds with If-None-Match', async ({ page }) => {
+  await page.clock.install()
+  const api = await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+
+  expect(listCalls(api).length, 'one read when the page mounts').toBe(1)
+  expect(lastListCall(api)?.headers['if-none-match']).toBeUndefined()
+
+  await page.clock.runFor(10_000)
+  await expect.poll(() => listCalls(api).length).toBe(2)
+  expect(lastListCall(api)?.headers['if-none-match']).toBeTruthy()
+  await expect(page.getByRole('button', { name: '查看 138****8000' })).toBeVisible()
+})
+
+test('polling: an external change appears after ten seconds', async ({ page }) => {
+  await page.clock.install()
+  const api = await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+
+  api.setAccounts([
+    ...ACCOUNTS,
+    {
+      ...ACCOUNTS[0],
+      id: 'acc-poll-new',
+      phone_masked: '137****0000',
+      name: '轮询新增',
+      display_name: '轮询新增',
+    },
+  ])
+  await page.clock.runFor(10_000)
+  await expect(page.getByRole('button', { name: '查看 137****0000' })).toBeVisible()
+  await expect(page.getByText('轮询新增')).toBeVisible()
+})
+
+test('polling: an open create modal pauses the list poll', async ({ page }) => {
+  await page.clock.install()
+  const api = await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+  const base = listCalls(api).length
+
+  await page.getByRole('button', { name: '新建账号' }).click()
+  await expect(page.getByRole('heading', { name: '新建账号' })).toBeVisible()
+
+  await page.clock.runFor(10_000)
+  expect(listCalls(api).length, 'no poll while a modal is open').toBe(base)
+
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('heading', { name: '新建账号' })).toHaveCount(0)
+  await page.clock.runFor(10_000)
+  await expect.poll(() => listCalls(api).length).toBe(base + 1)
+})

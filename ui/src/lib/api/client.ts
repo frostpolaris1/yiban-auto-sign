@@ -1,7 +1,7 @@
 /**
  * **功能**
  * 宿主 API 的共享 HTTP 客户端。
- * 统一处理 cookie、CSRF 头、错误信封与 204。
+ * 统一处理 cookie、CSRF 头、错误信封、204 与 GET 条件请求。
  *
  * **归属**
  * `lib/api` 工具层：各域桩都经此发请求。
@@ -10,6 +10,8 @@
  * 失败信封固定 `{ error: { code, message, details, trace_id } }`。
  * 请求一律带 cookie。写方法另带 `X-CSRF-Token`。
  * 401 另交注册的全局回调处置；分类规则在 `auth.ts`。
+ * GET 有缓存时带 `If-None-Match`；304 复用缓存体，200 带 ETag 时更新。
+ * 缓存键是完整路径（含查询串）；`init.headers` 的显式值优先。
  */
 
 export type ApiErrorPayload = {
@@ -88,8 +90,30 @@ async function raiseApiError(response: Response, path: string): Promise<never> {
   throw new ApiError(response.status, payload)
 }
 
+/** 条件请求缓存的上限。列表每页一个键，超出按插入序删最旧。 */
+const CONDITIONAL_CACHE_LIMIT = 100
+
+type CachedBody = { etag: string; body: unknown }
+
+/** 键是完整路径（含查询串）；值是该表示的 ETag 与解析后的响应体。 */
+const conditionalCache = new Map<string, CachedBody>()
+
+function rememberBody(path: string, etag: string, body: unknown): void {
+  // 先删再插：更新过的键排到队尾，淘汰顺序与「最久未更新」一致。
+  conditionalCache.delete(path)
+  conditionalCache.set(path, { etag, body })
+  if (conditionalCache.size > CONDITIONAL_CACHE_LIMIT) {
+    const oldest = conditionalCache.keys().next().value
+    if (oldest !== undefined) conditionalCache.delete(oldest)
+  }
+}
+
 export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const method = (init?.method ?? 'GET').toUpperCase()
+  const cached = conditionalCache.get(path)
+  const explicitHeaders = new Headers(init?.headers)
+  // 写请求不带 If-None-Match；显式头永远压过缓存。
+  const conditional = method === 'GET' && !explicitHeaders.has('If-None-Match')
   const response = await fetch(path, {
     credentials: 'include',
     ...init,
@@ -97,17 +121,31 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
       Accept: 'application/json',
       ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
       ...(csrfToken && UNSAFE_METHODS.has(method) ? { 'X-CSRF-Token': csrfToken } : {}),
+      ...(conditional && cached ? { 'If-None-Match': cached.etag } : {}),
       ...init?.headers,
     },
   })
+
+  // 304 只省响应体：有缓存就交回同一对象，让结构共享保持引用稳定。
+  if (response.status === 304) {
+    if (cached) return cached.body as T
+    return raiseApiError(response, path)
+  }
 
   if (!response.ok) return raiseApiError(response, path)
 
   // 204 无响应体。此时解析 JSON 会抛错，故直接返回。
   if (response.status === 204) {
+    if (method === 'GET') conditionalCache.delete(path)
     return undefined as T
   }
-  return (await response.json()) as T
+  const body = (await response.json()) as T
+  if (method === 'GET') {
+    const etag = response.headers.get('ETag')
+    if (etag) rememberBody(path, etag, body)
+    else conditionalCache.delete(path)
+  }
+  return body
 }
 
 /**

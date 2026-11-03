@@ -1,4 +1,5 @@
-import type { Page, Route } from '@playwright/test'
+import { createHash } from 'node:crypto'
+import type { Page, Request, Route } from '@playwright/test'
 import type { Account, AccountVerifyResult } from '../../src/lib/api/account'
 import { createPhotoFixture, handlePhotoRoute, type PhotoFixture } from './fake-photos'
 
@@ -201,11 +202,30 @@ export type MockOptions = {
 export type FakeApi = {
   calls: ApiCall[]
   photos: PhotoFixture
+  /**
+   * 替换列表数据源。轮询用例用它模拟「别人改了数据」：
+   * 下一次 10 秒请求带旧 ETag，假 API 回 200 新体。
+   */
+  setAccounts: (items: Account[]) => void
 }
 
 function errorBody(code: string, message: string) {
   return JSON.stringify({
     error: { code, message, details: { source: 'fake-accounts-api' }, trace_id: 'trace-test' },
+  })
+}
+
+/** 响应体的强校验值：与服务端同口径，取 JSON 字节的 sha256。 */
+function etagOf(body: unknown): string {
+  return `"${createHash('sha256').update(JSON.stringify(body)).digest('hex')}"`
+}
+
+/** 弱比较、逗号列表与 `*` 都认；与真实服务端和浏览器客户端同口径。 */
+function ifNoneMatchHit(header: string | undefined, etag: string): boolean {
+  if (!header) return false
+  return header.split(',').some((candidate) => {
+    const value = candidate.trim()
+    return value === '*' || value.replace(/^W\//, '') === etag
   })
 }
 
@@ -295,8 +315,18 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
     })
   }
 
-  const json = (route: Route, body: unknown, status = 200) =>
-    route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
+  const json = (route: Route, request: Request, body: unknown, status = 200) => {
+    const etag = etagOf(body)
+    if (request.method() === 'GET' && ifNoneMatchHit(request.headers()['if-none-match'], etag)) {
+      return route.fulfill({ status: 304, headers: { ETag: etag } })
+    }
+    return route.fulfill({
+      status,
+      contentType: 'application/json',
+      headers: { ETag: etag },
+      body: JSON.stringify(body),
+    })
+  }
 
   const fail = (route: Route, status: number, code: string, message: string) =>
     route.fulfill({ status, contentType: 'application/json', body: errorBody(code, message) })
@@ -353,7 +383,7 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
         return fail(route, 401, 'invalid_credentials', '邮箱或密码错误')
       }
       sessionRole = options.loginRole ?? 'master'
-      return json(route, sessionUser(sessionRole))
+      return json(route, request, sessionUser(sessionRole))
     }
 
     if (url.pathname === '/api/auth/logout' && request.method() === 'POST') {
@@ -404,12 +434,12 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
         await new Promise((resolve) => setTimeout(resolve, options.meDelayMs))
       }
       if (!sessionRole) return fail(route, 401, 'unauthorized', '会话失效')
-      return json(route, sessionUser(sessionRole))
+      return json(route, request, sessionUser(sessionRole))
     }
 
     if (url.pathname === '/api/schools' && request.method() === 'GET') {
       // UX-2 起契约对 user 放宽：三角色都可列学校（user 只见 active 行）。
-      return json(route, { items: SCHOOLS, next_cursor: '' })
+      return json(route, request, { items: SCHOOLS, next_cursor: '' })
     }
 
     // 归属选择器的受限查询：master/admin 专用，只回 id、掩码邮箱、状态。
@@ -432,7 +462,7 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
         email_masked: `${item.email.slice(0, 1)}***${item.email.indexOf('@') > 0 ? item.email.slice(item.email.indexOf('@')) : ''}`,
         status: item.status,
       }))
-      return json(route, { items })
+      return json(route, request, { items })
     }
 
     // 建号：成功 201，行并进列表供后续断言。
@@ -463,7 +493,7 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       allAccounts.push(created)
       knownAccounts.push(created)
       if (input.phone) rawPhones.set(created.id, input.phone)
-      return json(route, created, 201)
+      return json(route, request, created, 201)
     }
 
     if (url.pathname === '/api/accounts' && request.method() === 'GET') {
@@ -474,7 +504,7 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       const items = includeDeleted ? [...base, ...deletedAccounts] : base
       const next = options.nextCursors?.[cursor] ?? ''
       const q = url.searchParams.get('q') ?? ''
-      return json(route, { items: filterAccounts(items, q), next_cursor: next })
+      return json(route, request, { items: filterAccounts(items, q), next_cursor: next })
     }
 
     // 待处理账号计数：只数未软删行，从当前夹具实时推导，
@@ -488,7 +518,7 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
         return fail(route, status, code, message)
       }
       const live = [...allAccounts, ...Object.values(pages).flat()]
-      return json(route, {
+      return json(route, request, {
         pending: live.filter((item) => item.status === 'pending').length,
         rejected: live.filter((item) => item.status === 'rejected').length,
       })
@@ -505,7 +535,7 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
     if (!action && request.method() === 'GET') {
       // 详情与列表同口径：已删行不可发现，读取即 404。
       if (found.deleted_at) return fail(route, 404, 'not_found', '账号不存在')
-      return json(route, found)
+      return json(route, request, found)
     }
 
     if (!action && request.method() === 'PATCH') {
@@ -540,7 +570,7 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       found.display_name =
         found.name !== '' ? found.name : `账号${found.phone_masked.slice(-4)}`
       found.updated_at = '2026-10-28T09:30:00Z'
-      return json(route, found)
+      return json(route, request, found)
     }
     if (!action && request.method() === 'DELETE') {
       const owned = allAccounts.findIndex((item) => item.id === found.id)
@@ -558,7 +588,7 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
         lat?: number
         reason?: string
       }
-      return json(route, {
+      return json(route, request, {
         mode: update.mode,
         lng: update.mode === 'fixed' ? update.lng ?? null : null,
         lat: update.mode === 'fixed' ? update.lat ?? null : null,
@@ -569,13 +599,13 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
     if (action === 'pause' && request.method() === 'POST') {
       const paused = Boolean((body as { paused?: boolean } | null)?.paused)
       found.status = paused ? 'paused_admin' : 'active'
-      return json(route, found)
+      return json(route, request, found)
     }
     if (action === 'sign' && request.method() === 'POST') {
       if (options.signError) {
         return fail(route, options.signError.status, options.signError.code, options.signError.message)
       }
-      return json(route, { task_id: 'task-1' }, 202)
+      return json(route, request, { task_id: 'task-1' }, 202)
     }
     if (action === 'verify' && request.method() === 'POST') {
       if (options.verifyError) {
@@ -586,7 +616,7 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
           options.verifyError.message,
         )
       }
-      return json(route, options.verifyResult ?? { ok: true, code: 'success' })
+      return json(route, request, options.verifyResult ?? { ok: true, code: 'success' })
     }
     if (action === 'review' && request.method() === 'POST') {
       const decision = (body as { decision?: string } | null)?.decision
@@ -595,7 +625,7 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       if (decision === 'reject') found.reject_reason = '合成驳回理由'
       found.reviewed_at = '2026-10-28T09:30:00Z'
       found.reviewed_by = 'user-1'
-      return json(route, found)
+      return json(route, request, found)
     }
 
     // 设备刷新：无请求体。回读值缺省即 DEVICE_READ；错误由用例注入。
@@ -604,7 +634,7 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
         const { status, code, message } = options.deviceRefreshError
         return fail(route, status, code, message)
       }
-      return json(route, DEVICE_READ)
+      return json(route, request, DEVICE_READ)
     }
 
     // 恢复：只认软删行；未删行与服务端同判 409。
@@ -619,13 +649,26 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       found.deleted_at = null
       const live = allAccounts.find((item) => item.id === found.id)
       if (!live) allAccounts.push(found)
-      return json(route, found)
+      return json(route, request, found)
     }
 
     return fail(route, 405, 'internal_error', '不支持的方法')
   })
 
-  return { calls, photos }
+  return {
+    calls,
+    photos,
+    setAccounts(items: Account[]) {
+      allAccounts.splice(0, allAccounts.length, ...items.map((item) => ({ ...item })))
+      knownAccounts.splice(
+        0,
+        knownAccounts.length,
+        ...allAccounts,
+        ...Object.values(pages).flat(),
+        ...deletedAccounts,
+      )
+    },
+  }
 }
 
 export function listCalls(api: FakeApi): ApiCall[] {

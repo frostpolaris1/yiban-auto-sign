@@ -1,4 +1,5 @@
-import type { Page, Route } from '@playwright/test'
+import { createHash } from 'node:crypto'
+import type { Page, Request, Route } from '@playwright/test'
 import type { User, UserCounts } from '../../src/lib/api/user'
 import { SESSION_CSRF, SESSION_EMAIL, type Role } from './fake-accounts-api'
 
@@ -23,6 +24,7 @@ export type ApiCall = {
   search: string
   params: Record<string, string>
   body: unknown
+  headers: Record<string, string>
 }
 
 /** 合成用户。四条覆盖三个角色、两种状态与一种已删形状。 */
@@ -136,11 +138,30 @@ export type MockUsersOptions = {
 
 export type FakeUsersApi = {
   calls: ApiCall[]
+  /**
+   * 替换列表数据源。轮询用例用它模拟「别人改了数据」：
+   * 下一次 10 秒请求带旧 ETag，假 API 回 200 新体。
+   */
+  setUsers: (items: User[]) => void
 }
 
 function errorBody(code: string, message: string) {
   return JSON.stringify({
     error: { code, message, details: { source: 'fake-users-api' }, trace_id: 'trace-test' },
+  })
+}
+
+/** 响应体的强校验值：与服务端同口径，取 JSON 字节的 sha256。 */
+function etagOf(body: unknown): string {
+  return `"${createHash('sha256').update(JSON.stringify(body)).digest('hex')}"`
+}
+
+/** 弱比较、逗号列表与 `*` 都认；与真实服务端和浏览器客户端同口径。 */
+function ifNoneMatchHit(header: string | undefined, etag: string): boolean {
+  if (!header) return false
+  return header.split(',').some((candidate) => {
+    const value = candidate.trim()
+    return value === '*' || value.replace(/^W\//, '') === etag
   })
 }
 
@@ -159,8 +180,18 @@ export async function mockUsersApi(
   // deleted 行默认不在列表；include_deleted 时并入。
   const users = (options.users ?? [...USERS, DELETED_USER]).map((item) => ({ ...item }))
 
-  const json = (route: Route, body: unknown, status = 200) =>
-    route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
+  const json = (route: Route, request: Request, body: unknown, status = 200) => {
+    const etag = etagOf(body)
+    if (request.method() === 'GET' && ifNoneMatchHit(request.headers()['if-none-match'], etag)) {
+      return route.fulfill({ status: 304, headers: { ETag: etag } })
+    }
+    return route.fulfill({
+      status,
+      contentType: 'application/json',
+      headers: { ETag: etag },
+      body: JSON.stringify(body),
+    })
+  }
 
   const fail = (route: Route, status: number, code: string, message: string) =>
     route.fulfill({ status, contentType: 'application/json', body: errorBody(code, message) })
@@ -183,11 +214,12 @@ export async function mockUsersApi(
       search: url.search,
       params: Object.fromEntries(url.searchParams.entries()),
       body,
+      headers: request.headers(),
     })
 
     if (url.pathname === '/api/auth/me') {
       if (!sessionRole) return fail(route, 401, 'unauthorized', '会话失效')
-      return json(route, {
+      return json(route, request, {
         id: 'user-1',
         email: SESSION_EMAIL,
         role: sessionRole,
@@ -218,7 +250,7 @@ export async function mockUsersApi(
           email_masked: maskEmail(item.email),
           status: item.status,
         }))
-      return json(route, { items })
+      return json(route, request, { items })
     }
 
     if (url.pathname === '/api/users' && request.method() === 'GET') {
@@ -261,7 +293,7 @@ export async function mockUsersApi(
         : visible
       let next = options.userNextCursors?.[cursor] ?? ''
       if (options.userPages && source.length === 0) next = ''
-      return json(route, {
+      return json(route, request, {
         items: source,
         next_cursor: next,
         counts: userCountsOf(users),
@@ -292,7 +324,7 @@ export async function mockUsersApi(
         deleted_at: null,
       }
       users.push(created)
-      return json(route, created, 201)
+      return json(route, request, created, 201)
     }
 
     const userMatch = /^\/api\/users\/([^/]+)(\/(password-reset|restore))?$/.exec(url.pathname)
@@ -317,7 +349,7 @@ export async function mockUsersApi(
           return fail(route, 404, 'not_found', '用户未删除')
         }
         target.deleted_at = null
-        return json(route, target)
+        return json(route, request, target)
       }
       // PATCH / reset / delete 都不读软删行。
       if (target.deleted_at !== null) {
@@ -335,7 +367,7 @@ export async function mockUsersApi(
         const patch = body as { role?: User['role']; status?: User['status'] }
         if (patch.role) target.role = patch.role
         if (patch.status) target.status = patch.status
-        return json(route, target)
+        return json(route, request, target)
       }
       if (request.method() === 'POST' && action === 'password-reset') {
         if (options.resetError) {
@@ -347,7 +379,7 @@ export async function mockUsersApi(
           )
         }
         target.must_change_password = true
-        return json(route, { temp_password: FAKE_TEMP_PASSWORD })
+        return json(route, request, { temp_password: FAKE_TEMP_PASSWORD })
       }
       if (request.method() === 'DELETE') {
         if (options.deleteError) {
@@ -366,7 +398,12 @@ export async function mockUsersApi(
     return fail(route, 404, 'not_found', '未找到资源')
   })
 
-  return { calls }
+  return {
+    calls,
+    setUsers(items: User[]) {
+      users.splice(0, users.length, ...items.map((item) => ({ ...item })))
+    },
+  }
 }
 
 export function listUserCalls(api: FakeUsersApi): ApiCall[] {
