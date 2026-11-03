@@ -333,7 +333,8 @@ export function showcaseCapacity(query: {
   }
 }
 
-/** 看板 30 天趋势与分布：固定合成日，不随展示机时钟漂移。 */
+/** 看板 30 天趋势与分布：固定合成日，不随展示机时钟漂移。
+ * 末两天各带一个失败桶：今日终态 KPI 展示出非满分成功率与向上环比。 */
 export function showcaseSignStats(): SignStatsReport {
   const days = Array.from({ length: 30 }, (_, index) => {
     const day = `2026-10-${String(index + 1).padStart(2, '0')}`
@@ -342,7 +343,7 @@ export function showcaseSignStats(): SignStatsReport {
       pending: index === 29 ? 1 : 0,
       running: 0,
       success: index % 7 === 0 ? 2 : 3,
-      failed: index % 5 === 0 ? 1 : 0,
+      failed: index >= 28 ? 1 : 0,
       skipped: index % 11 === 0 ? 1 : 0,
     }
   })

@@ -9,6 +9,7 @@
  * 派生计数在 `display.ts`；本组件不认角色，也不认端点。
  * `value === null` 显示 `—`：没有数据就不编数字。
  * 数字用滚动组件渲染，语言 `zh-CN`，千分位与该语言一致。
+ * 卡片可带一枚环比 pill（`.kpi-pill`），样式取自 Adminator 既有令牌。
  * 终值是可见文本：数据到位后直接等于期望数字。
  */
 
@@ -35,6 +36,7 @@ export function KpiGrid({ cards }: { cards: KpiCard[] }) {
             {card.value === null ? null : <sup>{card.unit}</sup>}
           </div>
           <div className="kpi-compare">
+            {card.pill ? <span className={`kpi-pill ${card.pill.cls}`}>{card.pill.text}</span> : null}
             <span>{card.note}</span>
           </div>
         </article>

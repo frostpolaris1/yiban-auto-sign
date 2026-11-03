@@ -49,8 +49,11 @@ test('invariant 7: the showcase dashboard renders fixtures with zero requests', 
   await page.goto('/')
   await expect(page.getByRole('heading', { level: 1 })).toContainText('签到运行')
 
-  const total = page.locator('.kpi-card').filter({ hasText: '任务总数' })
-  await expect.poll(() => visibleText(total.locator('.kpi-value'))).toBe('4项')
+  // 精确匹配标签：`今日成功` 是 `今日成功率` 的子串。
+  const total = page
+    .locator('.kpi-card')
+    .filter({ has: page.getByText('今日成功', { exact: true }) })
+  await expect.poll(() => visibleText(total.locator('.kpi-value'))).toBe('3个')
 
   const card = page.locator('.card').filter({ hasText: '容量体检' })
   await expect(page.getByLabel('任务')).toHaveValue('school-a:task-daily')
