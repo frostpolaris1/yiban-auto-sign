@@ -13,7 +13,8 @@
 // # 复用
 // Start、Mode、ImplicitTLS、StartTLS；Server.Addr、Port、TLSConfig、
 // SetCredentials、SetAuthFail、SetRejectRecipient、SetGreetingDelay、
-// SetSuppressSTARTTLS、Messages、MessageCount、WaitMessages、Close。
+// SetSuppressSTARTTLS、SetSuppress8BitMIME、SetRejectSTARTTLS、
+// Messages、MessageCount、WaitMessages、Close。
 //
 // # 口径
 // 证书自签，有效期固定 2020-01-01 至 2100-01-01：测试不读系统时钟造证书。
@@ -74,6 +75,8 @@ type Server struct {
 	rejectRecipient  bool
 	greetingDelay    time.Duration
 	suppressSTARTTLS bool
+	suppress8BitMIME bool
+	rejectSTARTTLS   bool
 
 	connMu sync.Mutex
 	conns  map[net.Conn]struct{}
@@ -168,6 +171,22 @@ func (s *Server) SetSuppressSTARTTLS(suppress bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.suppressSTARTTLS = suppress
+}
+
+// SetSuppress8BitMIME 让 EHLO 应答不再公告 8BITMIME，
+// 用于钉住「服务器不支持 8bit 正文」时客户端的分类。
+func (s *Server) SetSuppress8BitMIME(suppress bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.suppress8BitMIME = suppress
+}
+
+// SetRejectSTARTTLS 让 STARTTLS 命令一律回 550，
+// 用于钉住「服务器拒绝升级 TLS」时客户端的分类。
+func (s *Server) SetRejectSTARTTLS(reject bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rejectSTARTTLS = reject
 }
 
 // Messages 返回已接收邮件的副本。
@@ -285,20 +304,29 @@ func (s *Server) handle(conn net.Conn) {
 
 		switch {
 		case strings.HasPrefix(upper, "EHLO"):
-			// 8BITMIME 与真实服务器一致：正文按 8bit 投递时，
-			// go-mail 会要求服务器公告该扩展才发 MAIL FROM。
-			if !secure && s.mode == StartTLS {
-				s.mu.Lock()
-				suppressed := s.suppressSTARTTLS
-				s.mu.Unlock()
-				if !suppressed {
-					if !writeLine(conn, "250-mailtest\r\n250-8BITMIME\r\n250-STARTTLS\r\n250 AUTH PLAIN") {
-						return
-					}
-					continue
+			// 扩展公告按开关拼装：8BITMIME 与真实服务器一致
+			// （正文按 8bit 投递时，客户端会要求该扩展才发 MAIL FROM）；
+			// STARTTLS 只在明文 StartTLS 模式且未被抑制时公告。
+			s.mu.Lock()
+			exts := []string{"mailtest"}
+			if !s.suppress8BitMIME {
+				exts = append(exts, "8BITMIME")
+			}
+			suppressed := s.suppressSTARTTLS
+			s.mu.Unlock()
+			if !secure && s.mode == StartTLS && !suppressed {
+				exts = append(exts, "STARTTLS")
+			}
+			exts = append(exts, "AUTH PLAIN")
+			parts := make([]string, len(exts))
+			for i, ext := range exts {
+				if i == len(exts)-1 {
+					parts[i] = "250 " + ext
+				} else {
+					parts[i] = "250-" + ext
 				}
 			}
-			if !writeLine(conn, "250-mailtest\r\n250-8BITMIME\r\n250 AUTH PLAIN") {
+			if !writeLine(conn, strings.Join(parts, "\r\n")) {
 				return
 			}
 		case strings.HasPrefix(upper, "HELO"):
@@ -306,6 +334,15 @@ func (s *Server) handle(conn net.Conn) {
 				return
 			}
 		case upper == "STARTTLS" && s.mode == StartTLS && !secure:
+			s.mu.Lock()
+			reject := s.rejectSTARTTLS
+			s.mu.Unlock()
+			if reject {
+				if !writeLine(conn, "550 5.7.0 TLS not permitted") {
+					return
+				}
+				continue
+			}
 			if !writeLine(conn, "220 2.0.0 ready to start TLS") {
 				return
 			}

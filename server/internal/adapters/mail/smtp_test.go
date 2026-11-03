@@ -570,3 +570,101 @@ func TestSendDeliversRawUTF8BodyWith8BitCTE(t *testing.T) {
 		t.Fatalf("非 ASCII 正文应原样出线：\n%s", got.Data)
 	}
 }
+
+// TestSendImplicitTLSDeliversOnNonLoopbackServerName 钉住隐式 TLS 下的认证前提。
+//
+// go-mail 靠 conn.(*tls.Conn) 判定连接已加密；判不出时 PlainAuth 拒发凭据，
+// 只有服务器名恰为 localhost/127.0.0.1/::1 时豁免。本测试用大写 LOCALHOST：
+// 解析与证书校验大小写不敏感（仍命中 mailtest 的 localhost 证书），
+// 但不在该豁免名单里——旧手写实现在这类主机名上一直能正常投递，
+// 本用例复现旧行为：隐式 TLS＋认证必须在非豁免服务器名上成功。
+func TestSendImplicitTLSDeliversOnNonLoopbackServerName(t *testing.T) {
+	srv, err := mailtest.Start(mailtest.ImplicitTLS)
+	if err != nil {
+		t.Fatalf("start fake smtp: %v", err)
+	}
+	t.Cleanup(srv.Close)
+	srv.SetCredentials(testUser, testPass)
+
+	cfg := configFor(t, srv, "implicit")
+	cfg.Host = "LOCALHOST"
+	sender, err := mailadapter.NewSMTP(cfg)
+	if err != nil {
+		t.Fatalf("NewSMTP: %v", err)
+	}
+	if err := sender.Send(t.Context(), coremail.Message{
+		To: "user@example.test", Subject: "s", Text: "body",
+	}); err != nil {
+		t.Fatalf("Send 在非豁免服务器名上被拒（凭据没有随隐式 TLS 发出）: %v", err)
+	}
+	if !srv.WaitMessages(1, 3*time.Second) {
+		t.Fatal("服务器没有收到邮件")
+	}
+	if got := srv.Messages()[0].AuthUser; got != testUser {
+		t.Fatalf("AUTH 用户 = %q, want %q", got, testUser)
+	}
+}
+
+// TestSendWithout8BitMIMEExtensionIsConfigClassified 登记一个已知的收严：
+//
+// 旧实现不查 8BITMIME，硬发 CTE 8bit；go-mail 要求服务器公告该扩展，
+// 未公告时本地拒绝（ErrNoUnencoded）。本仓决策：保留 8bit 正文
+// （QP 会转义重置链接里的 `=`），接受这一收严，分类为 config、
+// 不可重试——改服务器或改模式之前重试没有意义。
+func TestSendWithout8BitMIMEExtensionIsConfigClassified(t *testing.T) {
+	srv, err := mailtest.Start(mailtest.StartTLS)
+	if err != nil {
+		t.Fatalf("start fake smtp: %v", err)
+	}
+	t.Cleanup(srv.Close)
+	srv.SetCredentials(testUser, testPass)
+	srv.SetSuppress8BitMIME(true)
+
+	sender, err := mailadapter.NewSMTP(configFor(t, srv, "starttls"))
+	if err != nil {
+		t.Fatalf("NewSMTP: %v", err)
+	}
+	err = sender.Send(t.Context(), coremail.Message{
+		To: "user@example.test", Subject: "s", Text: "body",
+	})
+	if err == nil {
+		t.Fatal("服务器不公告 8BITMIME 时 Send 应当失败")
+	}
+	if kind, retryable := coremail.Classify(err); kind != coremail.KindConfig || retryable {
+		t.Fatalf("分类 = (%s, retryable=%t), want (config, false); err=%v", kind, retryable, err)
+	}
+	if srv.MessageCount() != 0 {
+		t.Fatal("未发 MAIL FROM 前被拒，不应有邮件入库")
+	}
+}
+
+// TestSendStartTLSRefusedIsConfigClassified 钉住升级被 5xx 拒绝的分类。
+//
+// 服务器对 STARTTLS 命令回 550：与「不公告 STARTTLS」同因——端口/模式
+// 配错，改配置之前重试没有意义。这是旧实现 phaseTLS 的判据，
+// 适配器重写后必须逐字保留（分类 config、不可重试）。
+func TestSendStartTLSRefusedIsConfigClassified(t *testing.T) {
+	srv, err := mailtest.Start(mailtest.StartTLS)
+	if err != nil {
+		t.Fatalf("start fake smtp: %v", err)
+	}
+	t.Cleanup(srv.Close)
+	srv.SetRejectSTARTTLS(true)
+
+	sender, err := mailadapter.NewSMTP(configFor(t, srv, "starttls"))
+	if err != nil {
+		t.Fatalf("NewSMTP: %v", err)
+	}
+	err = sender.Send(t.Context(), coremail.Message{
+		To: "user@example.test", Subject: "s", Text: "body",
+	})
+	if err == nil {
+		t.Fatal("STARTTLS 被拒时 Send 应当失败")
+	}
+	if kind, retryable := coremail.Classify(err); kind != coremail.KindConfig || retryable {
+		t.Fatalf("分类 = (%s, retryable=%t), want (config, false); err=%v", kind, retryable, err)
+	}
+	if srv.MessageCount() != 0 {
+		t.Fatal("未升级 TLS 仍然投递了邮件")
+	}
+}

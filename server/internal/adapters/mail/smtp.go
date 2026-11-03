@@ -3,8 +3,8 @@
 // # 功能
 // 用隐式 TLS（465 风格）或 STARTTLS（587 风格）投递纯文本邮件。
 // SMTP 传输引擎是 wneessen/go-mail（版本锁 v0.8.1，MIT）：
-// 连接、EHLO、STARTTLS、AUTH、MAIL/RCPT/DATA 由它驱动，本包只做
-// 配置翻译、地址口径与失败分类，不手写 SMTP 对话。
+// 报文构造、问候、STARTTLS、AUTH、MAIL/RCPT/DATA 由它驱动，本包只做
+// 配置翻译、地址口径、连接所有权与失败分类，不手写 SMTP 对话。
 // 失败按 core/mail.Kind 分类，并标记可重试性。
 // 本包**不**读环境变量、**不**记日志、**不**重试、**不**持久化。
 //
@@ -17,17 +17,25 @@
 //
 // # 口径
 // 两种 TLS 都**校验证书**；没有"跳过校验"开关。隐式 TLS 在本包的
-// 拨号函数里握手（go-mail 的 useSSL 只在默认拨号路径生效）；
-// STARTTLS 交由 go-mail 强制升级（TLSMandatory，未提供即失败）。
+// dial 里握手：vendored smtp.NewClient 用 conn.(*tls.Conn) 判定连接
+// 已加密，判不出时 PLAIN 认证只对 localhost/127.0.0.1/::1 豁免、
+// 生产主机名一律拒发凭据，故返回给它的必须是裸 *tls.Conn
+// （内部包着 deadlineCapConn，封顶不受影响）。STARTTLS 由本包决定：
+// 先显式问候，再查扩展（缺失即 config，不猜），升级失败按状态码分类。
+// 连接归一次 Send 所有：失败路径必关，成功路径在 QUIT 后幂等收尾。
 // 一次 Send 的全部阶段共用一个绝对截止时间（默认 10s）：
 // 连接、TLS、认证、DATA 都不单独续期。go-mail 在会话中途把连接
 // 截止时间重置为 connTimeout（checkConn→UpdateDeadline），本包用
 // deadlineCapConn 把每次重设压回共享预算内。
 // 失败分类：连接/TLS/超时可重试；认证、配置、DATA 之后的失败不可重试
 // （DATA 可能已被接收，重试会造成双发）。分类判据顺序与旧实现一致：
-// 取消/超时 → 证书 → STARTTLS 未提供 → SMTP 状态码 → 阶段缺省。
-// 认证用 go-mail 的 PLAIN（凭据只走 TLS 连接）；发送阶段按
-// go-mail SendError.Reason 映射回本包的阶段词表。
+// 取消/超时 → 证书 → SMTP 状态码 → 阶段缺省。
+// 认证用 go-mail 的 PLAIN（allowUnenc=false：凭据只走 TLS 连接）；
+// 发送阶段按 go-mail SendError.Reason 映射回本包的阶段词表。
+// 正文保持 CTE 8bit 原样 UTF-8（NoEncoding）：QP 会把链接里的 `=`
+// 转义成 =3D，破坏"正文含完整链接"的判据。已知收严：go-mail 要求
+// 服务器公告 8BITMIME 才发 8bit 正文（旧实现硬发），未公告时本地拒绝，
+// 分类 config、不可重试（smtp_test 有显式用例钉住该分类）。
 // 凭据只出现在 AUTH 命令里，不进错误文本、不进日志。
 //
 // **投递可接受集与注册可接受集的关系**：ASCII 地址里，投递不覆盖注册
@@ -50,6 +58,7 @@ import (
 	"net"
 	"net/mail"
 	"net/textproto"
+	"strconv"
 	"strings"
 	"time"
 
@@ -168,8 +177,9 @@ func resolveTLSMode(raw string, port int) (implicit bool, err error) {
 
 // Send 投递一封邮件。失败返回 *coremail.DeliveryError。
 //
-// 会话分三段分类：拨号（连接、TLS、EHLO、STARTTLS）、认证、发送
-// （MAIL/RCPT/DATA）。QUIT 失败不改变送达结论。
+// 会话分四段分类：拨号（连接、隐式 TLS 握手、220 问候、EHLO）、
+// STARTTLS 升级、认证、发送（MAIL/RCPT/DATA）。
+// QUIT 失败不改变送达结论。
 func (s *SMTP) Send(ctx context.Context, msg coremail.Message) error {
 	if err := ctx.Err(); err != nil {
 		return deliveryError(coremail.KindTimeout, true, err)
@@ -185,74 +195,85 @@ func (s *SMTP) Send(ctx context.Context, msg coremail.Message) error {
 		deadline = d
 	}
 
-	c, err := s.newClient(deadline)
+	c, err := gomail.NewClient(s.host,
+		gomail.WithTimeout(s.timeout),
+		gomail.WithoutNoop(),
+		gomail.WithoutRset(),
+	)
 	if err != nil {
 		return wrapConnect(err)
 	}
-	conn, err := c.DialToSMTPClientWithContext(ctx)
+
+	conn, err := s.dial(ctx, deadline)
 	if err != nil {
 		return wrapConnect(err)
+	}
+	// 连接归本次调用所有：任何失败路径都关掉，成功路径在 QUIT 之后
+	// 幂等收尾。长期运行的后台投递不得靠 GC 回收 fd。
+	defer func() { _ = conn.Close() }()
+
+	client, err := gmsmtp.NewClient(conn, s.host)
+	if err != nil {
+		return wrapConnect(err)
+	}
+	if err := client.Hello("localhost"); err != nil {
+		return wrapConnect(err)
+	}
+	if !s.implicit {
+		// 先显式问候（上方），再查 STARTTLS：问候失败按连接类分类，
+		// 而不是误报"服务器不支持 STARTTLS"。
+		if ok, _ := client.Extension("STARTTLS"); !ok {
+			return deliveryError(coremail.KindConfig, false,
+				errors.New("mail: server does not advertise STARTTLS"))
+		}
+		if err := client.StartTLS(s.clientTLSConfig()); err != nil {
+			return wrapStartTLS(err)
+		}
 	}
 	if s.user != "" {
-		// 两档 TLS 都在此之前建立。allowUnenc=false：凭据只走 TLS 连接，
-		// 与旧手写 plainAuth 的使用前提一致。
-		if err := conn.Auth(gmsmtp.PlainAuth("", s.user, s.pass, s.host, false)); err != nil {
+		// 两档 TLS 都在此之前建立：隐式档由本包 dial 握手，STARTTLS 档
+		// 由上一步升级成功。allowUnenc=false 与旧手写 plainAuth 同口径：
+		// 凭据只走 TLS 连接，是否真的 TLS 由 vendored 客户端自行判定。
+		if err := client.Auth(gmsmtp.PlainAuth("", s.user, s.pass, s.host, false)); err != nil {
 			return wrapAuth(err)
 		}
 	}
-	if err := c.SendWithSMTPClient(conn, m); err != nil {
+	if err := c.SendWithSMTPClient(client, m); err != nil {
 		return s.wrapSend(ctx, deadline, err)
 	}
 	// QUIT 失败不改变送达结论：服务器已 ACK 的邮件不得记成失败。
-	_ = c.CloseWithSMTPClient(conn)
+	_ = c.CloseWithSMTPClient(client)
 	return nil
 }
 
-// newClient 构造本次投递的 go-mail 客户端。
+// dial 建立到服务器的连接；隐式 TLS 在这里完成握手。
 //
-// 拨号函数注入共享截止时间（见 deadlineCapConn）；隐式 TLS 走 WithSSL
-// 只为告诉 go-mail「连接已是 TLS」，握手在拨号函数里完成。
-// WithoutNoop/WithoutRset：旧会话不含这两条命令，保持对话形状不变；
-// WithoutRset 同时保证 DATA 被 ACK 之后不再有能改变结论的命令。
-func (s *SMTP) newClient(deadline time.Time) (*gomail.Client, error) {
-	opts := []gomail.Option{
-		gomail.WithPort(s.port),
-		gomail.WithHELO("localhost"),
-		gomail.WithTimeout(s.timeout),
-		gomail.WithTLSConfig(s.clientTLSConfig()),
-		gomail.WithDialContextFunc(s.dial(deadline)),
-		gomail.WithoutNoop(),
-		gomail.WithoutRset(),
-		// 旧实现从不发 SMTPUTF8；go-mail 只要服务器公告该扩展就会在
-		// MAIL FROM 上附加参数。保持关：非 ASCII 地址已在本地拒收。
-		gomail.WithoutSMTPUTF8(),
+// 返回给 vendored smtp.NewClient 的连接必须能被它识别为 TLS：
+// 它用 conn.(*tls.Conn) 判定，判不出时 PLAIN 认证只在 localhost/
+// 127.0.0.1/::1 上放行，生产主机名一律拒发凭据（smtp_test 的
+// 非豁免服务器名用例钉住此事）。因此隐式档返回裸 *tls.Conn，
+// 但它在内部包着 deadlineCapConn，截止时间封顶仍然生效。
+// STARTTLS 档先明文拨号，升级交给调用方的 StartTLS。
+func (s *SMTP) dial(ctx context.Context, deadline time.Time) (net.Conn, error) {
+	addr := net.JoinHostPort(s.host, strconv.Itoa(s.port))
+	raw, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, err
 	}
-	if s.implicit {
-		opts = append(opts, gomail.WithSSL())
-	} else {
-		opts = append(opts, gomail.WithTLSPolicy(gomail.TLSMandatory))
+	capped := deadlineCapConn{Conn: raw, budget: deadline}
+	if err := capped.SetDeadline(deadline); err != nil {
+		_ = raw.Close()
+		return nil, err
 	}
-	return gomail.NewClient(s.host, opts...)
-}
-
-// dial 返回带截止时间上限的拨号函数。
-// 隐式 TLS 在这里直接握手（等价旧实现的 tls.Client+HandshakeContext）；
-// STARTTLS 先明文拨号，升级交给 go-mail 的 TLSMandatory 路径。
-func (s *SMTP) dial(deadline time.Time) gomail.DialContextFunc {
-	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		var d net.Dialer
-		var conn net.Conn
-		var err error
-		if s.implicit {
-			conn, err = (&tls.Dialer{NetDialer: &d, Config: s.clientTLSConfig()}).DialContext(ctx, network, addr)
-		} else {
-			conn, err = d.DialContext(ctx, network, addr)
-		}
-		if err != nil {
-			return nil, err
-		}
-		return deadlineCapConn{Conn: conn, budget: deadline}, nil
+	if !s.implicit {
+		return capped, nil
 	}
+	tlsConn := tls.Client(capped, s.clientTLSConfig())
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		_ = raw.Close()
+		return nil, err
+	}
+	return tlsConn, nil
 }
 
 // deadlineCapConn 把连接截止时间压在共享预算内。
@@ -261,6 +282,8 @@ func (s *SMTP) dial(deadline time.Time) gomail.DialContextFunc {
 // 不压住的话每个慢阶段都能各吃满一个预算，破坏「一次 Send 共用一个
 // 绝对截止时间」的口径。重设请求超过预算时按预算封顶，更早的截止时间
 // 原样保留（ctx 截止时间比配置预算早时仍然生效）。
+// 注意：它只包 TCP 裸连接；*tls.Conn 直接包在它外面，
+// 不存在「包装后类型断言失败」的问题。
 type deadlineCapConn struct {
 	net.Conn
 	budget time.Time
@@ -443,12 +466,9 @@ func deliveryError(kind coremail.Kind, retryable bool, err error) *coremail.Deli
 	return &coremail.DeliveryError{Kind: kind, Retryable: retryable, Err: err}
 }
 
-// wrapConnect 分类拨号阶段的失败：连接、隐式 TLS 握手、EHLO、STARTTLS。
-// 判据顺序与旧实现一致：取消/超时 → 证书 → STARTTLS 未提供 → 状态码 → 缺省。
-// 「服务器不提供 STARTTLS」旧实现本地判定为 config；go-mail 把它报成
-// 普通错误，这里按其稳定文本识别（版本锁 v0.8.1，升级时必须复核该文本）。
-// 其余 5xx 应答视为协议错误：旧实现按发生点细分 protocol/config，
-// 拨号阶段归并后统一不可重试，可重试性不变。
+// wrapConnect 分类拨号阶段的失败：TCP 连接、隐式 TLS 握手、220 问候、
+// EHLO。判据与旧实现一致：取消/超时 → 证书 → 5xx 视为协议错误 →
+// 其余按连接类（可重试）。
 func wrapConnect(err error) error {
 	if err == nil {
 		return nil
@@ -458,27 +478,8 @@ func wrapConnect(err error) error {
 }
 
 func classifyConnect(err error) (coremail.Kind, bool) {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return coremail.KindTimeout, true
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return coremail.KindTimeout, true
-	}
-	var certErr *tls.CertificateVerificationError
-	if errors.As(err, &certErr) {
-		return coremail.KindConfig, false
-	}
-	var unknownAuthority x509.UnknownAuthorityError
-	if errors.As(err, &unknownAuthority) {
-		return coremail.KindConfig, false
-	}
-	var hostnameErr x509.HostnameError
-	if errors.As(err, &hostnameErr) {
-		return coremail.KindConfig, false
-	}
-	if strings.Contains(err.Error(), "does not support STARTTLS") {
-		return coremail.KindConfig, false
+	if kind, retryable, ok := timeoutOrCert(err); ok {
+		return kind, retryable
 	}
 	if code, ok := smtpCode(err); ok && code/100 == 5 {
 		return coremail.KindProtocol, false
@@ -486,21 +487,64 @@ func classifyConnect(err error) (coremail.Kind, bool) {
 	return coremail.KindConnect, true
 }
 
+// wrapStartTLS 分类 STARTTLS 升级失败。
+// 判据与旧实现的 phaseTLS 一致：取消/超时 → 证书 →
+// 5xx 视为 config（服务器拒绝升级属端口/模式配错，改配置之前重试
+// 没有意义）→ 其余按连接类。
+func wrapStartTLS(err error) error {
+	if err == nil {
+		return nil
+	}
+	kind, retryable := classifyStartTLS(err)
+	return deliveryError(kind, retryable, err)
+}
+
+func classifyStartTLS(err error) (coremail.Kind, bool) {
+	if kind, retryable, ok := timeoutOrCert(err); ok {
+		return kind, retryable
+	}
+	if code, ok := smtpCode(err); ok && code/100 == 5 {
+		return coremail.KindConfig, false
+	}
+	return coremail.KindConnect, true
+}
+
 // wrapAuth 分类认证失败。
-// TLS 已在拨号阶段建立，故除取消/超时外一律不可重试：
+// TLS 已在拨号或 STARTTLS 阶段建立，故除取消/超时/证书外一律不可重试：
 // 凭据错重试只会再失败。
 func wrapAuth(err error) error {
 	if err == nil {
 		return nil
 	}
+	if kind, retryable, ok := timeoutOrCert(err); ok {
+		return deliveryError(kind, retryable, err)
+	}
+	return deliveryError(coremail.KindAuth, false, err)
+}
+
+// timeoutOrCert 是所有阶段共用的前置判据：取消/超时可重试，
+// 证书类失败是本机配置问题不可重试。命中返回 true。
+func timeoutOrCert(err error) (coremail.Kind, bool, bool) {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return deliveryError(coremail.KindTimeout, true, err)
+		return coremail.KindTimeout, true, true
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
-		return deliveryError(coremail.KindTimeout, true, err)
+		return coremail.KindTimeout, true, true
 	}
-	return deliveryError(coremail.KindAuth, false, err)
+	var certErr *tls.CertificateVerificationError
+	if errors.As(err, &certErr) {
+		return coremail.KindConfig, false, true
+	}
+	var unknownAuthority x509.UnknownAuthorityError
+	if errors.As(err, &unknownAuthority) {
+		return coremail.KindConfig, false, true
+	}
+	var hostnameErr x509.HostnameError
+	if errors.As(err, &hostnameErr) {
+		return coremail.KindConfig, false, true
+	}
+	return "", false, false
 }
 
 // wrapSend 分类发送阶段（MAIL/RCPT/DATA）的失败。
