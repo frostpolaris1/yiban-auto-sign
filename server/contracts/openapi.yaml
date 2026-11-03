@@ -1717,16 +1717,20 @@ paths:
         Capacity uses the same window resolution and formula as the plan.
         A positive shortfall means demand exceeds capacity and the plan
         compresses rows into the tail slice.
-        The binding names the side to raise to fit the demand: workers when
-        adding channels within the 64-channel cap can carry it; egress_rate
-        when the egress rate still caps capacity at the suggested channel
-        count. When the current capacity already fits, binding reports the
-        current bottleneck and no suggestion is needed. A workers binding
-        without suggested_workers means the demand exceeds the 64-channel cap.
-        A suggested_workers value appears only for the workers binding, only
-        when it is above the configured concurrency, at most 64, and that
-        count really fits the demand
+        The binding names the side to raise when capacity is short: workers
+        when raising concurrency is the side to raise — within the
+        64-channel cap that means a count exists that fits the demand; beyond
+        it the demand needs more than 64 channels and no allowed count fits.
+        egress_rate means raising concurrency alone cannot fit the demand
+        because the egress rate is the hard limit. A suggested_workers value
+        appears only for the workers binding, only when capacity is short,
+        only when it is above the configured concurrency, at most 64, and
+        that count really fits the demand
         (ceil(demand × average seconds ÷ (window seconds × utilization))).
+        When capacity is short and the workers binding carries no
+        suggested_workers, the demand needs more than the 64-channel cap.
+        When the current capacity already fits, binding reports the current
+        bottleneck and suggested_workers is absent.
         Raising concurrency is a restart-level configuration change; the
         report never changes it.
         The window is read from the daily cache by default: a cached day makes
@@ -2781,13 +2785,12 @@ components:
         binding:
           type: string
           description: |
-            Side to raise to fit the demand. workers means adding channels
-            within the 64-channel cap can carry the demand. egress_rate means
-            the egress rate still caps capacity at the suggested channel count.
-            When the current capacity already fits, it reports the current
-            bottleneck and suggested_workers is absent. A workers binding
-            without suggested_workers means the demand exceeds the 64-channel
-            cap.
+            Side to raise when capacity is short. workers means raise
+            concurrency: a count at most 64 fits the demand, or the demand
+            needs more than 64 channels and no allowed count fits.
+            egress_rate means raising concurrency alone cannot fit the
+            demand. When the current capacity already fits, it reports the
+            current bottleneck and suggested_workers is absent.
           enum: [workers, egress_rate]
         suggested_workers:
           type: integer
@@ -2796,9 +2799,9 @@ components:
             Total channel count that fits the demand. Present only when
             binding is workers, the value is above the configured concurrency,
             at most 64, and that count really fits the demand. Absent for the
-            egress_rate binding (raising concurrency does not help) and when
-            the demand exceeds the 64-channel cap. Applying it means changing
-            YIBAN_WORKERS and restarting.
+            egress_rate binding (raising concurrency alone cannot fit the
+            demand) and when the demand exceeds the 64-channel cap. Applying
+            it means changing YIBAN_WORKERS and restarting.
     SignStatsDay:
       type: object
       required: [day, pending, running, success, failed, skipped]

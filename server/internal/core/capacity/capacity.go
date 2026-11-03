@@ -18,7 +18,8 @@
 // util 必须落在 [0,1]，越界值被夹取。
 // BindingOf 报当前瓶颈；Advise 按需求给出要抬的一侧与建议通道数：
 // 加通道（不超过 MaxWorkers）能装下需求才归 workers 并给数；
-// 加了通道仍被出口速率封顶则归 egress_rate 且不给数。
+// 所需通道数不超过 MaxWorkers、加了通道仍被出口速率封顶则归
+// egress_rate 且不给数；所需通道数超过 MaxWorkers 时归 workers 且不给数。
 // 入口与 UI 只消费本包结论，不复写公式。
 package capacity
 
