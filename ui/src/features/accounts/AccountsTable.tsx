@@ -8,7 +8,8 @@
  * **口径**
  * 服务端游标分页，没有总数。页脚只报当前位置与本页条数。
  * 删除时间列只随「含已删除」渲染：已删行给软删时刻，活行该列是「—」；
- * 未勾选时整列不出现，活行保持 7 列不变宽。
+ * 未勾选时整列不出现，活行保持 8 列不变宽。
+ * 机型来自凭据明文，空值（未设置或不可读）显示「—」。
  * 有筛选的空态给「清除筛选」出路；无筛选的空态保持纯文案。
  * 行高固定 48px；表格最小宽度由内容决定，窄屏在 `.table-scroll` 内滚动。
  * 无权限与不可评审一律置灰，并给一句可见原因。
@@ -47,7 +48,7 @@ type AccountsTableProps = {
   /** 任一筛选生效时为真：空态才给「清除筛选」出路。 */
   hasActiveFilters: boolean
   onClearFilters: () => void
-  /** 勾选「含已删除」时才渲染删除时间列：活行保持 7 列不变宽。 */
+  /** 勾选「含已删除」时才渲染删除时间列：活行保持 8 列不变宽。 */
   includeDeleted: boolean
   pageIndex: number
   hasPrevious: boolean
@@ -91,7 +92,7 @@ export function AccountsTable({
     disrespectUserMotionPreference: false,
   })
   // 删除时间列只随「含已删除」出现：占位列会把行菜单挤出窄视口。
-  const colSpan = includeDeleted ? 8 : 7
+  const colSpan = includeDeleted ? 9 : 8
   return (
     <>
       <div className="table-scroll">
@@ -101,6 +102,7 @@ export function AccountsTable({
             <tr>
               <th scope="col">备注名</th>
               <th scope="col">手机号</th>
+              <th scope="col">机型</th>
               <th scope="col">学校 ID</th>
               <th scope="col">状态</th>
               <th scope="col">归属邮箱</th>
@@ -164,6 +166,7 @@ export function AccountsTable({
                     <td>
                       <span className="data-cell-mono">{account.phone_masked}</span>
                     </td>
+                    <td className="data-cell-mono">{account.phone_model || '—'}</td>
                     <td className="data-cell-mono">{account.school_id}</td>
                     <td>
                       <Badge tone="danger" dot>
@@ -247,6 +250,7 @@ export function AccountsTable({
                       {account.phone_masked}
                     </button>
                   </td>
+                  <td className="data-cell-mono">{account.phone_model || '—'}</td>
                   <td className="data-cell-mono">{account.school_id}</td>
                   <td>
                     <Badge tone={statusTone(account.status)} dot>

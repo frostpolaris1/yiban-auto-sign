@@ -92,7 +92,13 @@ function isCompleteEmail(value: string): boolean {
 
 /** 三个状态各一条。掩码由登记号 13800138000 / 13900139000 / 13500010001 派生。 */
 export const ACCOUNTS: Account[] = [
-  account({ id: 'acc-1', phone_masked: '138****8000', status: 'pending', name: '东区宿舍' }),
+  account({
+    id: 'acc-1',
+    phone_masked: '138****8000',
+    status: 'pending',
+    name: '东区宿舍',
+    phone_model: 'Pixel 7',
+  }),
   account({
     id: 'acc-2',
     school_id: 'school-b',
@@ -101,6 +107,7 @@ export const ACCOUNTS: Account[] = [
     phone_masked: '139****9000',
     status: 'active',
     name: '西区宿舍',
+    phone_model: 'iPhone 13',
   }),
   account({
     id: 'acc-3',
@@ -489,6 +496,7 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
         phone?: string
         name?: string
         owner_user_id?: string
+        phone_model?: string
       }
       const owner = LOOKUP_USERS.find((item) => item.id === input.owner_user_id)
       const created = account({
@@ -502,6 +510,8 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
         phone_masked: input.phone
           ? `${input.phone.slice(0, 3)}****${input.phone.slice(-4)}`
           : '138****8000',
+        // 建号响应与服务端同口径：机型来自刚写入的凭据。
+        phone_model: input.phone_model?.trim() ?? '',
       })
       allAccounts.push(created)
       knownAccounts.push(created)
@@ -569,6 +579,10 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
         typeof updates.password === 'string' ||
         typeof updates.device_code === 'string' ||
         typeof updates.phone_model === 'string'
+      // 机型写在凭据里：列表/详情再读时看到的是新值。
+      if (typeof updates.phone_model === 'string') {
+        found.phone_model = updates.phone_model
+      }
       // 与服务端同口径：改绑或改凭据才把被拒账号回待审核；只改备注名不重提。
       // 改绑优先于凭据恢复。停在待审核的账号改绑仍是 pending。
       if (rebind || (found.status === 'rejected' && credentialEdit)) {
