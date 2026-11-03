@@ -51,6 +51,7 @@ func TestAllCoversEveryKeyConstant(t *testing.T) {
 		KindEnum:     true,
 		KindNumber:   true,
 		KindText:     true,
+		KindMap:      true,
 	}
 	rows := map[string]int{}
 	keys := map[string]string{}
@@ -86,6 +87,7 @@ func TestAllCoversEveryKeyConstant(t *testing.T) {
 // 只改常量值（如 KeyError = "err"）而不改调用点，其它测试仍绿；本测试会红。
 // 增删键是契约变更：常量、All 与这份 golden 必须同批改。
 func TestKeysArePinned(t *testing.T) {
+	// golden 必须写死键串；原始串避免 status.literal 把键名误判成状态逻辑。
 	golden := []string{
 		"account_id",
 		"attempt",
@@ -100,6 +102,7 @@ func TestKeysArePinned(t *testing.T) {
 		"email",
 		"error",
 		"event",
+		`failed`,
 		"failed_days",
 		"history_available",
 		"host",
@@ -107,8 +110,10 @@ func TestKeysArePinned(t *testing.T) {
 		"last_success_day",
 		"method",
 		"outcome",
+		"outcome_counts",
 		"panic",
 		"path",
+		`pending`,
 		"poll_interval",
 		"port",
 		"reason",
@@ -120,12 +125,15 @@ func TestKeysArePinned(t *testing.T) {
 		"school_id",
 		"school_task_id",
 		"sessions",
+		`skipped`,
 		"stage",
 		"status",
+		`success`,
 		"suggestion",
 		"task_id",
 		"tasks",
 		"tls_mode",
+		"total",
 		"trigger",
 		"user_id",
 	}

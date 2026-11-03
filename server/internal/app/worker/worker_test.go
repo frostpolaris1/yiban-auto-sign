@@ -44,6 +44,12 @@ type fakeStore struct {
 	// 断言在 Step 返回后读取，那时已无并发写者。
 	mu sync.Mutex
 
+	// dayCounts 按业务日注入轮末汇总；缺省零值（total=0，不出汇总行）。
+	// dayCountsErr 注入汇总查询失败；dayCountCalls 记录被查的业务日。
+	dayCounts     map[string]appworker.DayOutcomeCounts
+	dayCountsErr  error
+	dayCountCalls []string
+
 	// 观测面
 	claimed      []string
 	finished     map[string]corestatus.TaskState
@@ -66,6 +72,7 @@ func newStore(tasks ...coreschedule.TaskRow) *fakeStore {
 		rearmed:      map[string]string{},
 		rearmActor:   map[string]appaudit.Actor{},
 		history:      map[string]signHistory{},
+		dayCounts:    map[string]appworker.DayOutcomeCounts{},
 	}
 }
 
@@ -294,6 +301,18 @@ func (f *fakeStore) AccountSignHistory(_ context.Context, accountID, _ string) (
 	}
 	h := f.history[accountID]
 	return h.lastSuccess, h.failedDays, nil
+}
+
+// DayOutcomeCounts 返回按日注入的汇总。缺省零值等于 total=0（不出汇总行）。
+// 与库语义一致：按任务行计数，调用方不做账号去重。
+func (f *fakeStore) DayOutcomeCounts(_ context.Context, day string) (appworker.DayOutcomeCounts, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.dayCountCalls = append(f.dayCountCalls, day)
+	if f.dayCountsErr != nil {
+		return appworker.DayOutcomeCounts{}, f.dayCountsErr
+	}
+	return f.dayCounts[day], nil
 }
 
 type fakeCreds struct {

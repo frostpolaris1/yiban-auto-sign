@@ -9,7 +9,7 @@
 // core 层纯领域包。app/schedule 声明端口，adapters/pg 实现。
 //
 // # 复用
-// PlanRow、WindowRecord、TimePref、State 转换、自选偏移的取值边界。
+// PlanRow、WindowRecord、DayOutcomeCounts、TimePref、State 转换、自选偏移的取值边界。
 //
 // # 口径
 // 一行计划 = 一个账号 × 一个学校任务 × 一个业务日。
@@ -112,4 +112,19 @@ type TaskRow struct {
 	// ClaimSeq 是本次认领的栅栏序号。结算与重排必须原样带回。
 	ClaimSeq    int
 	OwnerUserID string
+}
+
+// DayOutcomeCounts 是一个业务日的任务行汇总。
+//
+// 口径：
+//   - 按 sign_tasks 任务行计数，不做账号去重（同账号多任务即多行）；
+//   - Pending 含 pending 与 running：两者都还没有当日结论；
+//   - FailedByOutcome 只含 state=failed 行的 result 原值；空串保留，
+//     由汇总方归入 unknown。
+//
+// 定义在 core 而不是 app：adapters/pg 是端口的实现方，
+// 不得反向依赖 app。
+type DayOutcomeCounts struct {
+	Total, Success, Failed, Skipped, Pending int
+	FailedByOutcome                          map[string]int
 }
