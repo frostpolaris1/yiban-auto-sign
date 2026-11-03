@@ -12,14 +12,20 @@
  * 时区只有 `Asia/Shanghai` 一个可写值。
  * create 只带契约字段 code、name、timezone。
  * update 只带变更字段；无变更返回空对象，由组件禁用保存。
+ * 校验判据单一来源在 `schema.ts`（S2 起委托 zod，不再各写一套）。
  * 校验不过时构造函数抛错。
  */
 
 import type { School, SchoolCreate, SchoolStatus, SchoolUpdate } from '../../lib/api/school'
+import {
+  SCHOOL_TIMEZONE,
+  schoolCodeSchema,
+  schoolCreateSchema,
+  schoolNameSchema,
+  schoolUpdateSchema,
+} from './schema'
 
-export const SCHOOL_CODE_PATTERN = /^[a-z0-9][a-z0-9-]{1,31}$/
-export const SCHOOL_NAME_MAX = 128
-export const SCHOOL_TIMEZONE = 'Asia/Shanghai' as const
+export { SCHOOL_CODE_PATTERN, SCHOOL_NAME_MAX, SCHOOL_TIMEZONE } from './schema'
 
 export type SchoolTimezone = typeof SCHOOL_TIMEZONE
 
@@ -35,34 +41,24 @@ export type SchoolUpdateDraft = {
   timezone: string
 }
 
+/** 校验消息统一取 zod 的第一条 issue（schema.ts 是判据单一来源）。 */
+function issueText(result: { success: boolean; error?: { issues: Array<{ message?: string }> } }): string | null {
+  if (result.success) return null
+  return result.error?.issues[0]?.message ?? null
+}
+
 /** 创建时校验原始 code。首尾空格由 `buildSchoolCreate` 先去掉。 */
 export function schoolCodeError(code: string): string | null {
-  if (code === '') return '学校代码必填'
-  if (!SCHOOL_CODE_PATTERN.test(code)) {
-    return '代码需 2–32 位，小写字母、数字或连字符，且以字母或数字开头'
-  }
-  return null
+  return issueText(schoolCodeSchema.safeParse(code))
 }
 
 /** 名称校验与表单共用一份：去首尾空格后 1..128 字。 */
 export function schoolNameError(name: string): string | null {
-  const trimmed = name.trim()
-  if (trimmed === '') return '学校名称必填'
-  if (trimmed.length > SCHOOL_NAME_MAX) return `学校名称最多 ${SCHOOL_NAME_MAX} 字`
-  return null
-}
-
-function timezoneError(timezone: string): string | null {
-  if (timezone !== SCHOOL_TIMEZONE) return '时区当前仅支持 Asia/Shanghai'
-  return null
+  return issueText(schoolNameSchema.safeParse(name))
 }
 
 export function schoolCreateError(draft: SchoolCreateDraft): string | null {
-  return (
-    schoolCodeError(draft.code.trim()) ??
-    schoolNameError(draft.name) ??
-    timezoneError(draft.timezone)
-  )
+  return issueText(schoolCreateSchema.safeParse(draft))
 }
 
 export function buildSchoolCreate(draft: SchoolCreateDraft): SchoolCreate {
@@ -82,11 +78,7 @@ export function buildSchoolCreate(draft: SchoolCreateDraft): SchoolCreate {
  * 历史学校若存了别的时区，名字与状态仍可改。
  */
 export function schoolUpdateError(current: School, draft: SchoolUpdateDraft): string | null {
-  const name = draft.name.trim()
-  const nameIssue = schoolNameError(name)
-  if (nameIssue !== null) return nameIssue
-  if (draft.timezone !== current.timezone) return timezoneError(draft.timezone)
-  return null
+  return issueText(schoolUpdateSchema(current).safeParse(draft))
 }
 
 /** 只把真正变了的字段放进 PATCH 体。code 永不出现。 */

@@ -10,6 +10,7 @@
  * 备注名是唯一回填字段：与打开模态时的原值相同则不发，空串表示清空。
  * 除密码外首尾空格一律去掉；密码原样透传（服务端与登录表单都不动空格）。
  * phone 必须匹配契约 pattern（11 位、1 开头）；备注名最多 50 个码点。
+ * 校验判据单一来源在 `schema.ts`（S2 起委托 zod，不再各写一套）。
  * location auto 不带经纬度与理由；fixed 必填且过 WGS84 范围；理由只在不空时携带。
  * 校验不过时构造函数抛错；例外＝PATCH 空草稿返回 `{}`，
  * 由组件层的「至少填一项」把关（契约 minProperties: 1 在 UI 入口兑现）。
@@ -18,6 +19,7 @@
  */
 
 import type { AccountLocationUpdate, AccountUpdate } from '@/lib/api/account'
+import { accountUpdateSchema } from './schema'
 
 export type AccountUpdateDraft = {
   phone?: string
@@ -29,28 +31,15 @@ export type AccountUpdateDraft = {
   clear_device_code?: boolean
 }
 
-const PHONE_PATTERN = /^1[0-9]{10}$/
-const NAME_MAX_CHARS = 50
-
 function clean(value: string | undefined): string {
   return (value ?? '').trim()
 }
 
-/** 按 Unicode 码点计长，与服务端的 rune 计数同口径。 */
-function charCount(value: string): number {
-  return Array.from(value).length
-}
-
 /** 留空合法；填写了 phone 时必须匹配契约 pattern；备注名不超过 50 字。 */
 export function accountUpdateError(draft: AccountUpdateDraft): string | null {
-  const phone = clean(draft.phone)
-  if (phone !== '' && !PHONE_PATTERN.test(phone)) {
-    return '手机号需 11 位、1 开头'
-  }
-  if (draft.name !== undefined && charCount(clean(draft.name)) > NAME_MAX_CHARS) {
-    return '备注名最多 50 字'
-  }
-  return null
+  const parsed = accountUpdateSchema.safeParse(draft)
+  if (parsed.success) return null
+  return parsed.error.issues[0]?.message ?? null
 }
 
 /**

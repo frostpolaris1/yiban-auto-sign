@@ -5,6 +5,8 @@
  * **归属**
  * `features/accounts` 展示层：建号走 `POST /api/accounts`，
  * 设备刷新走 `POST /api/accounts/{id}/device-refresh`，机型走 PATCH。
+ * 表单状态与校验走 react-hook-form＋zod（2026-10-29 天花板裁决 S2）；
+ * 判据单一来源在 `schema.ts`，这里只保留请求体构造与角色分支。
  *
  * **口径**
  * 双形状按会话角色分（8v8）：user 两页——第 1 页学校、手机号、易班口令；
@@ -14,9 +16,12 @@
  * 普通用户界面零邮箱字段：本组件按角色分支，user 分支不渲染任何邮箱输入。
  * 提交仍以服务端校验为准：lookup 只是预检，两步之间可被软删。
  * 学校列表三角色均可读（8v8①），下拉数据源在弹窗打开时取。
+ * 必填判据失败是历史模态级单条文案（schema.ts 的常量），不移动焦点。
  */
 
 import { useEffect, useState } from 'react'
+import { useForm, type UseFormRegisterReturn } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Alert } from '@/components/ui/Alert'
 import { Badge } from '@/components/ui/Badge'
@@ -38,14 +43,7 @@ import { lookupUsers } from '@/lib/api/user'
 import type { Role } from '@/lib/api/auth'
 import { AccountDeviceView } from './AccountDeviceView'
 import { userStatusLabel } from '@/lib/identity'
-
-type AccountCreateModalProps = {
-  open: boolean
-  role: Role | null
-  returnFocusTo: HTMLElement | null
-  onClose: () => void
-  onCreated: (account: Account) => void
-}
+import { ACCOUNT_CREATE_REQUIRED_TEXT, accountCreateSchema, type AccountCreateFormValues } from './schema'
 
 const UNREGISTERED_TEXT = '该邮箱未注册，请先在用户管理建号'
 const INCOMPLETE_EMAIL_TEXT = '请继续输入完整邮箱'
@@ -58,6 +56,14 @@ const INCOMPLETE_EMAIL_TEXT = '请继续输入完整邮箱'
  */
 function isCompleteEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+$/.test(value)
+}
+
+type AccountCreateModalProps = {
+  open: boolean
+  role: Role | null
+  returnFocusTo: HTMLElement | null
+  onClose: () => void
+  onCreated: (account: Account) => void
 }
 
 export function AccountCreateModal({
@@ -154,12 +160,15 @@ function UserWizard({
   onCreated: (account: Account) => void
 }) {
   const [step, setStep] = useState<1 | 2>(1)
-  const [schoolId, setSchoolId] = useState('')
-  const [phone, setPhone] = useState('')
-  const [name, setName] = useState('')
-  const [password, setPassword] = useState('')
   const [phoneModel, setPhoneModel] = useState('')
   const [error, setError] = useState<string | null>(null)
+
+  const { register, handleSubmit, reset } = useForm<AccountCreateFormValues>({
+    resolver: zodResolver(accountCreateSchema),
+    // 与现状一致：必填失败只有模态级文案，不把焦点搬去字段。
+    shouldFocusError: false,
+    defaultValues: { school_id: '', phone: '', name: '', password: '' },
+  })
 
   // 第 1 页成功不关弹窗：进第 2 页；onCreated 在跳过/完成关闭时才交回容器。
   const create = useMutation({
@@ -178,25 +187,26 @@ function UserWizard({
   useEffect(() => {
     if (!open) {
       setStep(1)
-      setSchoolId('')
-      setPhone('')
-      setName('')
-      setPassword('')
       setPhoneModel('')
       setError(null)
+      reset()
     }
-  }, [open])
+  }, [open, reset])
 
-  const submitPageOne = () => {
-    if (!schoolId || !phone.trim() || !password) {
-      setError('学校、手机号与易班口令都是必填')
-      return
-    }
-    setError(null)
-    const body: AccountCreateBody = { school_id: schoolId, phone: phone.trim(), password }
-    if (name.trim() !== '') body.name = name.trim()
-    create.mutate(body)
-  }
+  // 校验入口在 zod（schema.ts）：非法值零请求；合法体逐字与迁移前一致。
+  const submitPageOne = handleSubmit(
+    (values) => {
+      setError(null)
+      const body: AccountCreateBody = {
+        school_id: values.school_id,
+        phone: values.phone.trim(),
+        password: values.password,
+      }
+      if (values.name.trim() !== '') body.name = values.name.trim()
+      create.mutate(body)
+    },
+    () => setError(ACCOUNT_CREATE_REQUIRED_TEXT),
+  )
 
   if (step === 2 && createdAccount) {
     return (
@@ -238,15 +248,14 @@ function UserWizard({
         </>
       }
     >
-      <SchoolSelect schoolId={schoolId} onSchoolChange={setSchoolId} schools={schools.data ?? []} />
+      <SchoolSelect registration={register('school_id')} schools={schools.data ?? []} />
       <FilterField id="account-create-phone" label="手机号" required>
         <input
           className="input"
           type="tel"
           inputMode="numeric"
           autoComplete="off"
-          value={phone}
-          onChange={(event) => setPhone(event.target.value)}
+          {...register('phone')}
         />
       </FilterField>
       <FilterField
@@ -259,8 +268,7 @@ function UserWizard({
           type="text"
           autoComplete="off"
           maxLength={50}
-          value={name}
-          onChange={(event) => setName(event.target.value)}
+          {...register('name')}
         />
       </FilterField>
       <FilterField id="account-create-password" label="易班口令" required>
@@ -268,8 +276,7 @@ function UserWizard({
           className="input"
           type="password"
           autoComplete="new-password"
-          value={password}
-          onChange={(event) => setPassword(event.target.value)}
+          {...register('password')}
         />
       </FilterField>
     </CreateShell>
@@ -277,21 +284,15 @@ function UserWizard({
 }
 
 function SchoolSelect({
-  schoolId,
-  onSchoolChange,
+  registration,
   schools,
 }: {
-  schoolId: string
-  onSchoolChange: (id: string) => void
+  registration: UseFormRegisterReturn
   schools: { id: string; name: string }[]
 }) {
   return (
     <FilterField id="account-create-school" label="学校" required>
-      <select
-        className="select"
-        value={schoolId}
-        onChange={(event) => onSchoolChange(event.target.value)}
-      >
+      <select className="select" {...registration}>
         <option value="">选择学校</option>
         {schools.map((school) => (
           <option key={school.id} value={school.id}>
@@ -415,15 +416,23 @@ function ManagerForm({
   onClose: () => void
   onCreated: (account: Account) => void
 }) {
-  const [schoolId, setSchoolId] = useState('')
-  const [phone, setPhone] = useState('')
-  const [name, setName] = useState('')
-  const [password, setPassword] = useState('')
-  const [deviceCode, setDeviceCode] = useState('')
-  const [phoneModel, setPhoneModel] = useState('')
   const [ownerEmail, setOwnerEmail] = useState('')
   const [debouncedEmail, setDebouncedEmail] = useState('')
   const [error, setError] = useState<string | null>(null)
+
+  const { register, handleSubmit, reset } = useForm<AccountCreateFormValues>({
+    resolver: zodResolver(accountCreateSchema),
+    // 与现状一致：必填失败只有模态级文案，不把焦点搬去字段。
+    shouldFocusError: false,
+    defaultValues: {
+      school_id: '',
+      phone: '',
+      name: '',
+      password: '',
+      device_code: '',
+      phone_model: '',
+    },
+  })
 
   const create = useCreateMutation(onCreated, setError)
 
@@ -431,20 +440,16 @@ function ManagerForm({
 
   useEffect(() => {
     if (!open) {
-      setSchoolId('')
-      setPhone('')
-      setName('')
-      setPassword('')
-      setDeviceCode('')
-      setPhoneModel('')
       setOwnerEmail('')
       setDebouncedEmail('')
       setError(null)
+      reset()
     }
-  }, [open])
+  }, [open, reset])
 
   // 300ms 防抖：只在完整邮箱上查。exact=true 全等匹配（F1）：
   // 前缀＋掩码会把 a.one 与 a.two 绑成同一个人。
+  // 邮箱的完整性与命中是异步预检，不走 schema（行为冻结，见 e2e ux2 master）。
   useEffect(() => {
     const trimmed = ownerEmail.trim()
     if (trimmed === debouncedEmail) return
@@ -471,28 +476,29 @@ function ManagerForm({
   // 否则三种情况都会静默落成「留空＝自有」，账号记到操作者名下。
   const ownerUnresolved = ownerEmail.trim() !== '' && matched === null
 
-  const submit = () => {
-    if (!schoolId || !phone.trim() || !password) {
-      setError('学校、手机号与易班口令都是必填')
-      return
-    }
-    if (ownerUnresolved) {
-      setError('绑定用户未确认：命中已注册邮箱，或清空该字段')
-      return
-    }
-    setError(null)
-    const body: AccountCreateBody = {
-      school_id: schoolId,
-      phone: phone.trim(),
-      password,
-    }
-    if (name.trim() !== '') body.name = name.trim()
-    if (deviceCode.trim() !== '') body.device_code = deviceCode.trim()
-    if (phoneModel.trim() !== '') body.phone_model = phoneModel.trim()
-    // 走到这里 ownerEmail 必为空或已命中：留空＝自有，命中＝带 id。
-    if (matched) body.owner_user_id = matched.id
-    create.mutate(body)
-  }
+  const submit = handleSubmit(
+    (values) => {
+      if (ownerUnresolved) {
+        setError('绑定用户未确认：命中已注册邮箱，或清空该字段')
+        return
+      }
+      setError(null)
+      const body: AccountCreateBody = {
+        school_id: values.school_id,
+        phone: values.phone.trim(),
+        password: values.password,
+      }
+      if (values.name.trim() !== '') body.name = values.name.trim()
+      const deviceCode = (values.device_code ?? '').trim()
+      if (deviceCode !== '') body.device_code = deviceCode
+      const phoneModel = (values.phone_model ?? '').trim()
+      if (phoneModel !== '') body.phone_model = phoneModel
+      // 走到这里 ownerEmail 必为空或已命中：留空＝自有，命中＝带 id。
+      if (matched) body.owner_user_id = matched.id
+      create.mutate(body)
+    },
+    () => setError(ACCOUNT_CREATE_REQUIRED_TEXT),
+  )
 
   return (
     <CreateShell
@@ -519,15 +525,14 @@ function ManagerForm({
         </>
       }
     >
-      <SchoolSelect schoolId={schoolId} onSchoolChange={setSchoolId} schools={schools.data ?? []} />
+      <SchoolSelect registration={register('school_id')} schools={schools.data ?? []} />
       <FilterField id="account-create-phone" label="手机号" required>
         <input
           className="input"
           type="tel"
           inputMode="numeric"
           autoComplete="off"
-          value={phone}
-          onChange={(event) => setPhone(event.target.value)}
+          {...register('phone')}
         />
       </FilterField>
       <FilterField
@@ -540,8 +545,7 @@ function ManagerForm({
           type="text"
           autoComplete="off"
           maxLength={50}
-          value={name}
-          onChange={(event) => setName(event.target.value)}
+          {...register('name')}
         />
       </FilterField>
       <FilterField id="account-create-password" label="易班口令" required>
@@ -549,8 +553,7 @@ function ManagerForm({
           className="input"
           type="password"
           autoComplete="new-password"
-          value={password}
-          onChange={(event) => setPassword(event.target.value)}
+          {...register('password')}
         />
       </FilterField>
       <FilterField
@@ -562,8 +565,7 @@ function ManagerForm({
           className="input"
           type="text"
           autoComplete="off"
-          value={deviceCode}
-          onChange={(event) => setDeviceCode(event.target.value)}
+          {...register('device_code')}
         />
       </FilterField>
       <FilterField id="account-create-phone-model-manager" label="机型（选填）">
@@ -571,8 +573,7 @@ function ManagerForm({
           className="input"
           type="text"
           autoComplete="off"
-          value={phoneModel}
-          onChange={(event) => setPhoneModel(event.target.value)}
+          {...register('phone_model')}
         />
       </FilterField>
       <FilterField id="account-create-owner" label="绑定用户（选填）" hint="输入已注册邮箱">

@@ -71,6 +71,10 @@ const ALLOWED_BARE_IMPORTS = new Set([
   '@formkit/auto-animate/react',
   '@number-flow/react',
   'chart.js',
+  // S2 表单库（2026-10-29 天花板裁决）：react-hook-form + zod + resolvers。
+  'react-hook-form',
+  'zod',
+  '@hookform/resolvers/zod',
 ])
 
 /** 唯一允许导入 `lucide-react` 的文件。 */

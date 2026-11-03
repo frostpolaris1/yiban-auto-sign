@@ -195,7 +195,11 @@ WSL 读 `-chromium-linux.png`，Windows 读 `-chromium-win32.png`。
   master/admin 读 `/api/schedule/windows`、`/api/capacity`、`/api/sign-stats`
   与 `/api/time-prefs/stats`。master/admin 看板画三张图：30 天签到趋势、
   状态分布、自选时间片拥挤度；颜色只取主题令牌，换肤重建实例，动画关闭。
-- 不接 TanStack Table、react-day-picker；图表用 Chart.js 4.5.1（与旧线 vendor 同版本）。
+- 表单库（S2，2026-10-29 天花板裁决）：账号与学校四张表单用
+  `react-hook-form` 7＋`zod` 4＋`@hookform/resolvers` 5；校验判据集中在
+  `features/<域>/schema.ts`，请求体构造仍在各域 `drafts.ts`。
+  TanStack Table（S3）与 react-day-picker（S1）由后续批次接入，当前未接；
+  图表用 Chart.js 4.5.1（与旧线 vendor 同版本）。
   实时流用原生 `EventSource`（运行页）。
 - 忘记密码与重置密码两页已接公开的令牌流。服务端按 `YIBAN_RESET_MAIL_ENABLE`
   投递重置邮件；关闭时只生成令牌并留显性日志。

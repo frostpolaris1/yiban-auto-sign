@@ -3,10 +3,14 @@
  * 编辑账号模态：PATCH 四字段全 write-only，留空＝不修改。
  *
  * **归属**
- * `features/accounts` 展示层：草稿校验在 drafts，发请求由调用方做。
+ * `features/accounts` 展示层：表单状态与校验走 react-hook-form＋zod
+ * （2026-10-29 天花板裁决 S2），判据单一来源在 `schema.ts`；
+ * 请求体构造在 `drafts.ts`（buildAccountUpdate），发请求由调用方做。
  *
  * **口径**
  * 空表单不可提交；phone 前端校验 11 位、1 开头；两个 64 上限由控件封顶。
+ * 校验实时（mode: onChange），与迁移前的逐渲染判据一致；
+ * 校验文案沿用历史位置：统一显示在手机号字段下。
  * 备注名是唯一回填字段：与打开时相同则不发，清空即删除备注。
  * school 字段不出现：P1 变更必 409，不做可点必败控件。
  * 设备识别码只对 master/admin 显示：user 的设备码只能由平台回读，
@@ -16,14 +20,17 @@
  * 只改备注名不重提；改凭据或改绑手机号才回待审核，模态文案先说清。
  */
 
-import { useEffect, useState, type ChangeEvent } from 'react'
+import { useEffect } from 'react'
+import { useForm } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
 import type { Account } from '@/lib/api/account'
 import type { Role } from '@/lib/api/auth'
 import { Alert } from '@/components/ui/Alert'
 import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
 import { TextInput } from '@/components/ui/Input'
-import { accountUpdateError, type AccountUpdateDraft } from './drafts'
+import { accountUpdateSchema, type AccountUpdateFormValues } from './schema'
+import type { AccountUpdateDraft } from './drafts'
 
 const EMPTY_DRAFT: Required<AccountUpdateDraft> = {
   phone: '',
@@ -33,9 +40,6 @@ const EMPTY_DRAFT: Required<AccountUpdateDraft> = {
   phone_model: '',
   clear_device_code: false,
 }
-
-/** 草稿里可直接绑到文本控件的键；清除开关是布尔值，单独处理。 */
-type TextFieldKey = 'phone' | 'name' | 'password' | 'device_code' | 'phone_model'
 
 /** 备注名按码点比较，与服务端 trim + rune 计长同口径。 */
 function normalizeName(value: string | undefined): string {
@@ -61,31 +65,36 @@ export function AccountEditModal({
   onClose,
   onConfirm,
 }: AccountEditModalProps) {
-  const [draft, setDraft] = useState<AccountUpdateDraft>(EMPTY_DRAFT)
-  const validation = accountUpdateError(draft)
+  const { register, watch, getValues, reset, handleSubmit, formState } =
+    useForm<AccountUpdateFormValues>({
+      resolver: zodResolver(accountUpdateSchema),
+      // 实时校验与迁移前一致：判据逐渲染生效，不等首次提交。
+      mode: 'onChange',
+      // 与现状一致：不把焦点搬去字段。
+      shouldFocusError: false,
+      defaultValues: EMPTY_DRAFT,
+    })
+  const values = watch()
   const resubmit = account?.status === 'rejected'
   // 设备码归平台设备身份：只有管理者能手填或清除。
   const canManageDevice = role === 'master' || role === 'admin'
-  const clearingDevice = draft.clear_device_code === true
+  const clearingDevice = values.clear_device_code === true
   // 备注名回填后与打开时的原值比较：没变不算一次编辑。
-  const nameChanged = normalizeName(draft.name) !== normalizeName(account?.name)
-  // 判定逐字段对齐纯函数口径：密码原样（含纯空格，契约 minLength 1 合法），
-  // 其余字段与 buildAccountUpdate 同样 trim——空格占位不算填写。
+  const nameChanged = normalizeName(values.name) !== normalizeName(account?.name)
+  // 判定逐字段对齐 buildAccountUpdate 口径：密码原样（含纯空格，契约
+  // minLength 1 合法），其余字段同样 trim——空格占位不算填写。
   const hasAny =
     nameChanged ||
-    (draft.password !== undefined && draft.password !== '') ||
+    (values.password !== undefined && values.password !== '') ||
     clearingDevice ||
-    [draft.phone, draft.device_code, draft.phone_model].some((v) => (v ?? '').trim() !== '')
+    [values.phone, values.device_code, values.phone_model].some((v) => (v ?? '').trim() !== '')
 
-  const field = (key: TextFieldKey) => ({
-    value: draft[key] ?? '',
-    onChange: (event: ChangeEvent<HTMLInputElement>) =>
-      setDraft((previous) => ({ ...previous, [key]: event.target.value })),
-  })
+  // 校验入口在 zod（schema.ts）。历史 UX：校验文案统一挂在手机号字段下。
+  const validation = formState.errors.phone?.message ?? formState.errors.name?.message ?? null
 
   useEffect(() => {
-    if (account) setDraft({ ...EMPTY_DRAFT, name: account.name })
-  }, [account])
+    if (account) reset({ ...EMPTY_DRAFT, name: account.name })
+  }, [account, reset])
 
   return (
     <Modal
@@ -104,7 +113,7 @@ export function AccountEditModal({
           <Button
             variant="primary"
             disabled={pending || validation !== null || !hasAny}
-            onClick={() => onConfirm(draft)}
+            onClick={handleSubmit(() => onConfirm(getValues()))}
           >
             保存修改
           </Button>
@@ -127,7 +136,7 @@ export function AccountEditModal({
           label="备注名"
           placeholder="留空＝使用默认名"
           maxLength={50}
-          {...field('name')}
+          {...register('name')}
         />
         <TextInput
           id="account-edit-phone"
@@ -135,14 +144,14 @@ export function AccountEditModal({
           placeholder="留空＝不修改"
           inputMode="numeric"
           error={validation ?? undefined}
-          {...field('phone')}
+          {...register('phone')}
         />
         <TextInput
           id="account-edit-password"
           label="密码"
           type="password"
           placeholder="留空＝不修改"
-          {...field('password')}
+          {...register('password')}
         />
         {canManageDevice ? (
           <>
@@ -152,19 +161,10 @@ export function AccountEditModal({
               placeholder={clearingDevice ? '保存后清除' : '留空＝不修改'}
               maxLength={64}
               disabled={clearingDevice}
-              {...field('device_code')}
+              {...register('device_code')}
             />
             <label className="app-filter-check">
-              <input
-                type="checkbox"
-                checked={clearingDevice}
-                onChange={(event) =>
-                  setDraft((previous) => ({
-                    ...previous,
-                    clear_device_code: event.target.checked,
-                  }))
-                }
-              />
+              <input type="checkbox" {...register('clear_device_code')} />
               清除设备识别码
             </label>
           </>
@@ -174,7 +174,7 @@ export function AccountEditModal({
           label="机型"
           placeholder="留空＝不修改"
           maxLength={64}
-          {...field('phone_model')}
+          {...register('phone_model')}
         />
       </div>
       {error ? (
