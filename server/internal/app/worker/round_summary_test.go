@@ -10,6 +10,7 @@ import (
 	"errors"
 	"log/slog"
 	"testing"
+	"time"
 
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
@@ -105,6 +106,33 @@ func TestRoundSummaryFirstRunReportsPreviousDay(t *testing.T) {
 	}
 }
 
+// 有未了结行：pending 只在大于零时出现，且不挤掉 outcome_counts。
+func TestRoundSummaryReportsPending(t *testing.T) {
+	st := newStore()
+	st.dayCounts["2026-10-28"] = appworker.DayOutcomeCounts{
+		Total: 5, Success: 2, Failed: 1, Pending: 2,
+		FailedByOutcome: map[string]int{"rejected": 1},
+	}
+	sink := &logSink{}
+	svc := newSummaryService(t, st, coreclock.Fixed{T: testNow()}, newSinkLogger(sink))
+
+	if _, err := svc.Step(context.Background(), 1); err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	recs := recordsWithMsg(sink.records(t), "round summary")
+	if len(recs) != 1 {
+		t.Fatalf("汇总行数 = %d, want 1", len(recs))
+	}
+	rec := recs[0]
+	wantCount(t, rec, logfield.KeyTotal, 5)
+	wantCount(t, rec, logfield.KeySuccess, 2)
+	wantCount(t, rec, logfield.KeyFailed, 1)
+	wantCount(t, rec, logfield.KeyPending, 2)
+	if got := outcomeCount(rec, "rejected"); got != 1 {
+		t.Fatalf("outcome_counts[rejected] = %d, want 1（pending 不得挤掉失败分布）", got)
+	}
+}
+
 // 零失败：出汇总行，但不带 outcome_counts，级别 Info。
 func TestRoundSummaryNoFailuresOmitsOutcomeCounts(t *testing.T) {
 	st := newStore()
@@ -154,15 +182,15 @@ func TestRoundSummaryEmptyResultBecomesUnknown(t *testing.T) {
 	if got := outcomeCount(recs[0], "unknown"); got != 2 {
 		t.Fatalf("outcome_counts[unknown] = %d, want 2（空串与字面 unknown 合并）", got)
 	}
-	if raw, _ := recs[0]["outcome_counts"].(map[string]any); len(raw) != 1 {
-		t.Fatalf("outcome_counts 应只有 unknown 一个桶: %v", recs[0]["outcome_counts"])
+	if raw, _ := recs[0][logfield.KeyOutcomeCounts].(map[string]any); len(raw) != 1 {
+		t.Fatalf("outcome_counts 应只有 unknown 一个桶: %v", recs[0][logfield.KeyOutcomeCounts])
 	}
 	if got := outcomeCount(recs[0], ""); got != -1 {
 		t.Fatalf("outcome_counts 不该保留空键: %d", got)
 	}
 }
 
-// 查询失败：只出一条 Warn，Step 与签到结论照常。
+// 查询失败：只出一条 Warn，Step 与签到结论照常；同一日不再重试。
 func TestRoundSummaryQueryFailureDoesNotAffectStep(t *testing.T) {
 	st := newStore(baseTask())
 	st.windows["st-1|2026-10-29"] = openWindow()
@@ -170,9 +198,14 @@ func TestRoundSummaryQueryFailureDoesNotAffectStep(t *testing.T) {
 	sink := &logSink{}
 	svc := newSummaryService(t, st, coreclock.Fixed{T: testNow()}, newSinkLogger(sink))
 
-	n, err := svc.Step(context.Background(), 10)
+	ctx := context.Background()
+	n, err := svc.Step(ctx, 10)
 	if err != nil || n != 1 {
 		t.Fatalf("Step = (%d,%v), want (1,nil)", n, err)
+	}
+	// 同日第二次 Step：汇总已标记为当日完成，不得再查一次。
+	if _, err := svc.Step(ctx, 10); err != nil {
+		t.Fatalf("同日第二次 Step: %v", err)
 	}
 	if st.finished["t1"] != corestatus.TaskSuccess {
 		t.Fatalf("签到结论 = %v, want success", st.finished["t1"])
@@ -180,7 +213,13 @@ func TestRoundSummaryQueryFailureDoesNotAffectStep(t *testing.T) {
 	recs := sink.records(t)
 	failed := recordsWithMsg(recs, "round summary failed")
 	if len(failed) != 1 {
-		t.Fatalf("失败告警行数 = %d, want 1", len(failed))
+		t.Fatalf("失败告警行数 = %d, want 1（查询失败当日不重试）", len(failed))
+	}
+	if len(st.dayCountCalls) != 1 {
+		t.Fatalf("DayOutcomeCounts 调用次数 = %d, want 1（查询失败当日不重试）", len(st.dayCountCalls))
+	}
+	if st.dayCountCalls[0] != "2026-10-28" {
+		t.Fatalf("告警 day = %v, want 2026-10-28", st.dayCountCalls[0])
 	}
 	if failed[0]["day"] != "2026-10-28" {
 		t.Fatalf("告警 day = %v, want 2026-10-28", failed[0]["day"])
@@ -231,6 +270,41 @@ func TestRoundSummaryOncePerBusinessDay(t *testing.T) {
 	}
 	if recs[0]["day"] != "2026-10-28" || recs[1]["day"] != "2026-10-29" {
 		t.Fatalf("汇总日 = %v/%v, want 10-28/10-29", recs[0]["day"], recs[1]["day"])
+	}
+}
+
+// 23:59→00:00：业务日翻转只汇总一次，两日各一条，不重复。
+func TestRoundSummaryCrossesMidnight(t *testing.T) {
+	st := newStore()
+	st.dayCounts["2026-10-28"] = appworker.DayOutcomeCounts{Total: 1, Success: 1}
+	st.dayCounts["2026-10-29"] = appworker.DayOutcomeCounts{Total: 1, Skipped: 1}
+	clk := &stepClock{t: time.Date(2026, 10, 29, 23, 59, 0, 0, loc)}
+	sink := &logSink{}
+	svc := newSummaryService(t, st, clk, newSinkLogger(sink))
+
+	ctx := context.Background()
+	if _, err := svc.Step(ctx, 1); err != nil {
+		t.Fatalf("23:59 Step: %v", err)
+	}
+	clk.t = time.Date(2026, 10, 30, 0, 0, 0, 0, loc)
+	if _, err := svc.Step(ctx, 1); err != nil {
+		t.Fatalf("00:00 Step: %v", err)
+	}
+	// 同日再跑一次：不得重复汇总。
+	if _, err := svc.Step(ctx, 1); err != nil {
+		t.Fatalf("00:00 同日 Step: %v", err)
+	}
+
+	if len(st.dayCountCalls) != 2 ||
+		st.dayCountCalls[0] != "2026-10-28" || st.dayCountCalls[1] != "2026-10-29" {
+		t.Fatalf("查询日次 = %v, want [2026-10-28 2026-10-29]", st.dayCountCalls)
+	}
+	recs := recordsWithMsg(sink.records(t), "round summary")
+	if len(recs) != 2 {
+		t.Fatalf("汇总行数 = %d, want 2（两日各一次）", len(recs))
+	}
+	if recs[0][logfield.KeyDay] != "2026-10-28" || recs[1][logfield.KeyDay] != "2026-10-29" {
+		t.Fatalf("汇总日 = %v/%v, want 10-28/10-29", recs[0][logfield.KeyDay], recs[1][logfield.KeyDay])
 	}
 }
 

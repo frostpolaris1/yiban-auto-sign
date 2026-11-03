@@ -87,7 +87,7 @@ func TestAllCoversEveryKeyConstant(t *testing.T) {
 // 只改常量值（如 KeyError = "err"）而不改调用点，其它测试仍绿；本测试会红。
 // 增删键是契约变更：常量、All 与这份 golden 必须同批改。
 func TestKeysArePinned(t *testing.T) {
-	// 四个状态同形键用原始串：这里钉的是日志键名，不是任务状态逻辑。
+	// golden 必须写死键串；原始串避免 status.literal 把键名误判成状态逻辑。
 	golden := []string{
 		"account_id",
 		"attempt",

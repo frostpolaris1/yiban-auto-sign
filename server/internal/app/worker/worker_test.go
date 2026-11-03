@@ -40,15 +40,15 @@ type fakeStore struct {
 	history    map[string]signHistory
 	historyErr error
 
+	// mu 保护下面全部字段：Step 批内并行，多个执行协程同时读写替身状态。
+	// 断言在 Step 返回后读取，那时已无并发写者。
+	mu sync.Mutex
+
 	// dayCounts 按业务日注入轮末汇总；缺省零值（total=0，不出汇总行）。
 	// dayCountsErr 注入汇总查询失败；dayCountCalls 记录被查的业务日。
 	dayCounts     map[string]appworker.DayOutcomeCounts
 	dayCountsErr  error
 	dayCountCalls []string
-
-	// mu 保护下面全部字段：Step 批内并行，多个执行协程同时读写替身状态。
-	// 断言在 Step 返回后读取，那时已无并发写者。
-	mu sync.Mutex
 
 	// 观测面
 	claimed      []string

@@ -51,8 +51,8 @@ const (
 	KindNumber Kind = "number"
 	// KindText 是其余自由文本或标量（主机名、路径、掩码邮箱等）。
 	KindText Kind = "text"
-	// KindMap 是映射型值：键取自封闭词表，值是计数。
-	// 用于把一组分布压进一个字段（如 outcome_counts）。
+	// KindMap 是映射型值：键按 contract.Outcome 词表，值是计数。
+	// 未识别值原样保留，漂移可见；用于把一组分布压进一个字段（如 outcome_counts）。
 	KindMap Kind = "map"
 )
 
@@ -158,7 +158,7 @@ var All = []Field{
 	{Key: KeyTrigger, Const: "KeyTrigger", Kind: KindEnum, Meaning: "构建触发源（daily/startup）"},
 	{Key: KeyStage, Const: "KeyStage", Kind: KindEnum, Meaning: "签到阶段（discovery/submit/giveup）"},
 	{Key: KeyOutcome, Const: "KeyOutcome", Kind: KindEnum, Meaning: "签到结论词（signing contract 词表）"},
-	{Key: KeyOutcomeCounts, Const: "KeyOutcomeCounts", Kind: KindMap, Meaning: "失败 outcome → 任务行数的映射（只含 state=failed 行，按任务行计数）"},
+	{Key: KeyOutcomeCounts, Const: "KeyOutcomeCounts", Kind: KindMap, Meaning: "失败 outcome → 任务行数的映射（键按 contract.Outcome 词表；未识别值原样保留，漂移可见；只含 state=failed 行）"},
 	{Key: KeyReason, Const: "KeyReason", Kind: KindText, Meaning: "枚举或已掩码文本"},
 	{Key: KeySuggestion, Const: "KeySuggestion", Kind: KindEnum, Meaning: "诊断建议词（core/diagnostic 词表）"},
 	{Key: KeyCredentialKID, Const: "KeyCredentialKID", Kind: KindID, Meaning: "凭据指纹（credentials.kid）"},

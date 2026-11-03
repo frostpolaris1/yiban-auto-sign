@@ -775,6 +775,7 @@ func (r *ScheduleRepo) AccountSignHistory(ctx context.Context, accountID, today 
 //
 // 一条 GROUP BY 查询，Go 内累加：结果行数 = 状态×结果组合数，
 // 远小于任务行数。按日过滤走 day 列，别的业务日不计。
+// day 当前无单列索引：每日一次聚合，规模增长后再评估。
 func (r *ScheduleRepo) DayOutcomeCounts(ctx context.Context, day string) (coreschedule.DayOutcomeCounts, error) {
 	rows, err := r.db.q(ctx).Query(ctx,
 		`SELECT state::text, result, count(*)::int
