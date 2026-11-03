@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -62,6 +63,13 @@ const locationOutOfRange = "location_out_of_range" // 与 core/errs.CodeLocation
 type Service struct {
 	deps Deps
 	log  *slog.Logger
+
+	// summaryMu 只保护 lastDay 状态。汇总查询在锁外执行：
+	// Step 生产上串行，锁的职责仅是"同一进程同一业务日只汇总一次"。
+	summaryMu sync.Mutex
+	// lastDay 是进程最近一次见过的业务日（YYYY-MM-DD，上海时区）。
+	// 空串表示进程尚未跑过 Step：首跑汇总前一日。
+	lastDay string
 }
 
 // NewService 构造服务。缺依赖即失败。
@@ -124,6 +132,9 @@ func (s *Service) Step(ctx context.Context, limit int) (int, error) {
 		limit = 1
 	}
 	now := s.deps.Clock.Now()
+	// 轮末汇总：进程跨业务日时把上一日的任务结果记成一行日志。
+	// 只读、失败不改变 Step 与签到结论。
+	s.summarizePreviousDay(ctx, now)
 	// 先回收租约过期的行：崩溃或收尾失败留下的 running 不得跨 tick 卡住账号。
 	if reclaimed, err := s.deps.Store.ReclaimExpired(ctx, now, reclaimBatch); err != nil {
 		// 运行期必须可见：回收失败会让认领永久不可达，进程却看着健康。

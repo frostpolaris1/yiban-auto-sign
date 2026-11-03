@@ -32,6 +32,15 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
 
+// DayOutcomeCounts 是一个业务日的任务行汇总。
+//
+// 类型本体在 core/schedule：adapters/pg 实现 Store 端口时需要引用它，
+// 而 adapters 不得反向依赖 app。
+// 口径：按 sign_tasks 任务行计数，不做账号去重；Pending 含 pending 与
+// running；FailedByOutcome 只含 failed 行的 result 原值，空串归 unknown
+// 由 app 层处理。
+type DayOutcomeCounts = coreschedule.DayOutcomeCounts
+
 // Store 是任务队列的存储端口。
 type Store interface {
 	// ClaimDue 认领到期任务并推进到 running（单语句 CAS）。
@@ -75,6 +84,11 @@ type Store interface {
 	// failedDays 是自那次成功之后（不含 today）落在 failed 的天数。
 	// 只读、无副作用：调用方失败时降级为"历史不可用"，不得影响签到结论。
 	AccountSignHistory(ctx context.Context, accountID, today string) (lastSuccess string, failedDays int, err error)
+	// DayOutcomeCounts 汇总某业务日的任务行状态与失败分布。
+	// 任务行口径：按 sign_tasks 行计数，不做账号去重。
+	// Pending 含 pending 与 running；FailedByOutcome 只含 failed 行的
+	// result 原值，空串保留，由 app 层归入 unknown。
+	DayOutcomeCounts(ctx context.Context, day string) (DayOutcomeCounts, error)
 }
 
 // Credentials 取一次调用内有效的账号凭据。

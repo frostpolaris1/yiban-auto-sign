@@ -49,6 +49,9 @@ const (
 	KindNumber Kind = "number"
 	// KindText 是其余自由文本或标量（主机名、路径、掩码邮箱等）。
 	KindText Kind = "text"
+	// KindMap 是映射型值：键取自封闭词表，值是计数。
+	// 用于把一组分布压进一个字段（如 outcome_counts）。
+	KindMap Kind = "map"
 )
 
 // Field 是日志字段键的一条登记。
@@ -86,6 +89,11 @@ const (
 	KeyTasks            = "tasks"
 	KeyBuilt            = "built"
 	KeyBytes            = "bytes"
+	KeyTotal            = "total"
+	KeySuccess          = "success"
+	KeyFailed           = "failed"
+	KeySkipped          = "skipped"
+	KeyPending          = "pending"
 	KeyStatus           = "status"
 	KeyPort             = "port"
 	KeyPollInterval     = "poll_interval"
@@ -96,6 +104,7 @@ const (
 	KeyTrigger          = "trigger"
 	KeyStage            = "stage"
 	KeyOutcome          = "outcome"
+	KeyOutcomeCounts    = "outcome_counts"
 	KeyReason           = "reason"
 	KeySuggestion       = "suggestion"
 	KeyCredentialKID    = "credential_kid"
@@ -132,6 +141,11 @@ var All = []Field{
 	{Key: KeyTasks, Const: "KeyTasks", Kind: KindCount, Meaning: "已清理的旧任务行数"},
 	{Key: KeyBuilt, Const: "KeyBuilt", Kind: KindCount, Meaning: "本轮已构建的任务行数"},
 	{Key: KeyBytes, Const: "KeyBytes", Kind: KindCount, Meaning: "HTTP 响应体字节数"},
+	{Key: KeyTotal, Const: "KeyTotal", Kind: KindCount, Meaning: "某业务日的任务行总数（含未了结行）"},
+	{Key: KeySuccess, Const: "KeySuccess", Kind: KindCount, Meaning: "某业务日 state=success 的任务行数"},
+	{Key: KeyFailed, Const: "KeyFailed", Kind: KindCount, Meaning: "某业务日 state=failed 的任务行数"},
+	{Key: KeySkipped, Const: "KeySkipped", Kind: KindCount, Meaning: "某业务日 state=skipped 的任务行数"},
+	{Key: KeyPending, Const: "KeyPending", Kind: KindCount, Meaning: "某业务日尚未了结的任务行数（pending+running）"},
 	{Key: KeyStatus, Const: "KeyStatus", Kind: KindNumber, Meaning: "HTTP 状态码"},
 	{Key: KeyPort, Const: "KeyPort", Kind: KindText, Meaning: "SMTP 端口（配置标量）"},
 	{Key: KeyPollInterval, Const: "KeyPollInterval", Kind: KindText, Meaning: "轮询间隔（时长串，如 2s）"},
@@ -142,6 +156,7 @@ var All = []Field{
 	{Key: KeyTrigger, Const: "KeyTrigger", Kind: KindEnum, Meaning: "构建触发源（daily/startup）"},
 	{Key: KeyStage, Const: "KeyStage", Kind: KindEnum, Meaning: "签到阶段（discovery/submit/giveup）"},
 	{Key: KeyOutcome, Const: "KeyOutcome", Kind: KindEnum, Meaning: "签到结论词（signing contract 词表）"},
+	{Key: KeyOutcomeCounts, Const: "KeyOutcomeCounts", Kind: KindMap, Meaning: "失败 outcome → 任务行数的映射（只含 state=failed 行，按任务行计数）"},
 	{Key: KeyReason, Const: "KeyReason", Kind: KindText, Meaning: "枚举或已掩码文本"},
 	{Key: KeySuggestion, Const: "KeySuggestion", Kind: KindEnum, Meaning: "诊断建议词（core/diagnostic 词表）"},
 	{Key: KeyCredentialKID, Const: "KeyCredentialKID", Kind: KindID, Meaning: "凭据指纹（credentials.kid）"},

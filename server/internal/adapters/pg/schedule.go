@@ -765,6 +765,53 @@ func (r *ScheduleRepo) AccountSignHistory(ctx context.Context, accountID, today 
 	return last, failedDays, nil
 }
 
+// DayOutcomeCounts 汇总某业务日的任务行状态与失败分布。
+//
+// 口径：
+//   - 按 sign_tasks 任务行计数，不做账号去重（同账号多任务即多行）；
+//   - Pending 含 pending 与 running：两者都还没有当日结论；
+//   - FailedByOutcome 只收 state='failed' 行的 result 原值；空串保留，
+//     由 app 层归入 unknown（本层不替调用方造词）。
+//
+// 一条 GROUP BY 查询，Go 内累加：结果行数 = 状态×结果组合数，
+// 远小于任务行数。按日过滤走 day 列，别的业务日不计。
+func (r *ScheduleRepo) DayOutcomeCounts(ctx context.Context, day string) (coreschedule.DayOutcomeCounts, error) {
+	rows, err := r.db.q(ctx).Query(ctx,
+		`SELECT state::text, result, count(*)::int
+		   FROM sign_tasks
+		  WHERE day = $1::date
+		  GROUP BY state, result`, day)
+	if err != nil {
+		return coreschedule.DayOutcomeCounts{}, mapError(err)
+	}
+	defer rows.Close()
+	var counts coreschedule.DayOutcomeCounts
+	for rows.Next() {
+		var state, result string
+		var n int
+		if err := rows.Scan(&state, &result, &n); err != nil {
+			return coreschedule.DayOutcomeCounts{}, mapError(err)
+		}
+		// Total 数全部行：即使状态词表将来扩展，总数也不缺口。
+		counts.Total += n
+		switch corestatus.TaskState(state) {
+		case corestatus.TaskSuccess:
+			counts.Success += n
+		case corestatus.TaskFailed:
+			counts.Failed += n
+			if counts.FailedByOutcome == nil {
+				counts.FailedByOutcome = map[string]int{}
+			}
+			counts.FailedByOutcome[result] += n
+		case corestatus.TaskSkipped:
+			counts.Skipped += n
+		case corestatus.TaskPending, corestatus.TaskRunning:
+			counts.Pending += n
+		}
+	}
+	return counts, mapError(rows.Err())
+}
+
 // taskIDs 执行一个返回任务 ID 列表的查询。
 // 零行不是错误：清单类查询的空结果由调用方按业务解释。
 func (r *ScheduleRepo) taskIDs(ctx context.Context, query string, args ...any) ([]string, error) {
