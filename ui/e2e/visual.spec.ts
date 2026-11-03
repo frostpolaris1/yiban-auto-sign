@@ -304,9 +304,9 @@ for (const theme of THEMES) {
       ],
     })
     await openWithTheme(page, '/accounts', theme)
-    const badge = page.locator('.d-sidebar .nav-link[href="/accounts"] .nav-badge')
-    await expect(badge).toHaveText('3')
-    await expect(badge).toHaveAttribute('aria-label', '待处理账号 3')
+    await expectData(page, '/accounts')
+    const link = page.getByRole('link', { name: '账号，待处理账号 3' })
+    await expect(link.locator('.nav-badge')).toHaveText('3')
     await expect(page).toHaveScreenshot(`nav-badge-${theme}-1440.png`, { fullPage: true })
   })
 }

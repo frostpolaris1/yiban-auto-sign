@@ -54,9 +54,11 @@ async function openAccounts(page: Page) {
   await expect(page.getByRole('button', { name: '查看 138****8000' })).toBeVisible()
 }
 
-/** 侧栏「账号」链接。徽标有 aria-label，链接可访问名不再是裸「账号」。 */
+/** 侧栏「账号」链接。按可访问名匹配，文案仍须是「账号」。 */
 function accountsNavLink(page: Page) {
-  return page.locator('.d-sidebar .nav-link[href="/accounts"]')
+  return page
+    .locator('.d-sidebar')
+    .getByRole('link', { name: /^账号(?:，待处理账号 \d+)?$/ })
 }
 
 function rowFor(page: Page, phone: string) {
@@ -558,6 +560,7 @@ test('clearing filters from an empty second page returns to the first', async ({
 test('the sidebar reaches the accounts page', async ({ page }) => {
   await mockAccountsApi(page, { role: 'master' })
   await page.goto('/')
+  await expect(accountsNavLink(page)).toContainText('账号')
   await accountsNavLink(page).click()
   await expect(page).toHaveURL(/\/accounts$/)
   await expect(page.getByRole('table', { name: '账号列表' })).toBeVisible()
@@ -1499,9 +1502,12 @@ for (const role of ['master', 'admin'] as const) {
     })
     await openAccounts(page)
 
-    const badge = accountsNavLink(page).locator('.nav-badge')
+    const link = accountsNavLink(page)
+    const badge = link.locator('.nav-badge')
+    await expect(link).toContainText('账号')
+    await expect(link).toHaveAttribute('aria-label', '账号，待处理账号 2')
     await expect(badge).toHaveText('2')
-    await expect(badge).toHaveAttribute('aria-label', '待处理账号 2')
+    await expect(badge).toHaveAttribute('aria-hidden', 'true')
     expect(summaryCalls(api).length, 'the shell reads the summary').toBeGreaterThanOrEqual(1)
   })
 }

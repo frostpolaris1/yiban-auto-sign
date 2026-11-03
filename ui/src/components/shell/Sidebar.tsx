@@ -10,7 +10,8 @@
  * 分组手动开合优先。未手动时跟随当前路由。
  * 底部工作区块读真实会话：头像、显示名、角色都来自 `GET /api/auth/me`。
  * 「账号」计数只对 master/admin 取数，与账号页/看板共用 `['account-summary']`；
- * user 与展示构建零请求、零徽标。0 不渲染，写操作失效后随同键刷新。
+ * user 零请求、零徽标。0 不渲染，写操作失效后随同键刷新。
+ * 展示构建读同一份合成 summary，静态显示、不发请求。
  */
 
 import { useState } from 'react'
@@ -21,6 +22,7 @@ import { getAccountSummary } from '@/lib/api/account'
 import type { SessionUser } from '@/lib/api/auth'
 import { displayNameFor, initialsFor, roleLabel } from '@/lib/identity'
 import { SHOWCASE } from '@/lib/session'
+import { showcaseAccountSummary } from '@/lib/showcase'
 import { BrandMark } from '@/components/ui/BrandMark'
 import { Icon } from '@/components/ui/Icon'
 import { isNavGroup, visibleNav, type NavGroup, type NavLeaf } from './nav'
@@ -40,15 +42,16 @@ export function Sidebar({ me, pathname, onNavigate }: SidebarProps) {
   const sections = visibleNav(me.role)
 
   // 账号待处理计数：与账号页提示条、看板第 5 卡共用缓存键。
-  // 只对 master/admin 取数；展示构建没有后端，一条请求都不发。
+  // 只对 master/admin 取数；展示构建读合成夹具，不走网络。
   const isManager = me.role === 'master' || me.role === 'admin'
   const summaryQuery = useQuery({
     queryKey: ['account-summary'],
-    queryFn: getAccountSummary,
-    enabled: isManager && !SHOWCASE,
+    queryFn: () =>
+      SHOWCASE ? Promise.resolve(showcaseAccountSummary()) : getAccountSummary(),
+    enabled: isManager,
     staleTime: 0,
     retry: false,
-    refetchInterval: SUMMARY_POLL_MS,
+    refetchInterval: SHOWCASE ? false : SUMMARY_POLL_MS,
     refetchIntervalInBackground: false,
   })
   const pendingAccounts = summaryQuery.data
@@ -128,6 +131,7 @@ function NavLeafView({
     <Link
       to={item.to}
       className="nav-link"
+      aria-label={badge !== null ? `${item.text}，待处理账号 ${badge}` : undefined}
       activeProps={{ className: 'nav-link is-active' }}
       activeOptions={{ exact: true }}
       onClick={onNavigate}
@@ -136,7 +140,7 @@ function NavLeafView({
       <span>{item.text}</span>
       {item.badge ? <span className={cx('nav-badge', item.badge.kind)}>{item.badge.text}</span> : null}
       {badge !== null ? (
-        <span className="nav-badge" aria-label={`待处理账号 ${badge}`}>
+        <span className="nav-badge nav-badge--count" aria-hidden="true">
           {badge}
         </span>
       ) : null}

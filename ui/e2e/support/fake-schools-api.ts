@@ -1,4 +1,5 @@
 import type { Page, Route } from '@playwright/test'
+import type { AccountSummary } from '../../src/lib/api/account'
 import type { School, SchoolAdmin } from '../../src/lib/api/school'
 import { EMPTY_ACCOUNT_SUMMARY, SESSION_CSRF, SESSION_EMAIL, type Role } from './fake-accounts-api'
 import { createPhotoFixture, handlePhotoRoute, type PhotoFixture } from './fake-photos'
@@ -70,6 +71,8 @@ export type MockSchoolsOptions = {
   adminNextCursors?: Record<string, Record<string, string>>
   listError?: { status: number; code: string; message: string }
   createError?: { status: number; code: string; message: string }
+  /** 壳摘要读数。学校页自身不查 summary，缺省零计数。 */
+  accountSummary?: AccountSummary
   /** 照片夹具。缺省为一份含 school-alpha 缺省图的合成库。 */
   photos?: PhotoFixture
 }
@@ -166,8 +169,8 @@ export async function mockSchoolsApi(
     }
 
     if (url.pathname === '/api/accounts/summary' && request.method() === 'GET') {
-      // 壳在每页为 master/admin 读一次；学校页不关心计数。
-      return json(route, EMPTY_ACCOUNT_SUMMARY)
+      // 壳在每页为 master/admin 读一次；学校页不额外读取。
+      return json(route, options.accountSummary ?? EMPTY_ACCOUNT_SUMMARY)
     }
 
     if (url.pathname === '/api/schools' && request.method() === 'GET') {

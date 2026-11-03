@@ -64,6 +64,14 @@ test('invariant 7: the showcase dashboard renders fixtures with zero requests', 
     .poll(() => visibleText(card.locator('.app-metric').filter({ hasText: '需求' })))
     .toBe('需求8')
 
+  // 展示构建直接读合成 summary：徽标与合成数据同值，仍不发请求。
+  const accountsLink = page.getByRole('link', { name: '账号，待处理账号 2' })
+  await expect(accountsLink.locator('.nav-badge')).toHaveText('2')
+  expect(
+    apiRequests.filter((path) => path === '/api/accounts/summary'),
+    'the showcase badge reads no summary request',
+  ).toHaveLength(0)
+
   expect(apiRequests, 'the showcase build never touches the API').toEqual([])
 })
 
