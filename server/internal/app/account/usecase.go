@@ -192,6 +192,9 @@ func (s *Service) List(ctx context.Context, scope corescope.Scope, filter ListFi
 	if err != nil {
 		return Page{}, err
 	}
+	if err := s.attachPhoneModels(ctx, scope, items); err != nil {
+		return Page{}, err
+	}
 	return Page{Items: items, NextCursor: next}, nil
 }
 
@@ -200,7 +203,62 @@ func (s *Service) Get(ctx context.Context, scope corescope.Scope, id string) (Re
 	if err := app.RequireScope(scope); err != nil {
 		return Record{}, err
 	}
-	return s.deps.Accounts.Get(ctx, scope, id)
+	record, err := s.deps.Accounts.Get(ctx, scope, id)
+	if err != nil {
+		return Record{}, err
+	}
+	s.attachPhoneModel(ctx, scope, &record)
+	return record, nil
+}
+
+// attachPhoneModels 为一页账号批量填机型。
+// 只读未软删行；凭据缺失或解密失败的行留空，列表仍成功。
+// 批量读库本身失败才返回错误。
+func (s *Service) attachPhoneModels(ctx context.Context, scope corescope.Scope, items []Record) error {
+	if s.deps.Cipher == nil {
+		return nil
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.DeletedAt == nil {
+			ids = append(ids, item.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	credentials, err := s.deps.Accounts.Credentials(ctx, scope, ids)
+	if err != nil {
+		return err
+	}
+	for i := range items {
+		credential, ok := credentials[items[i].ID]
+		if !ok {
+			continue
+		}
+		payload, err := s.deps.Cipher.Open(credential)
+		if err != nil {
+			continue
+		}
+		items[i].PhoneModel = payload.PhoneModel
+	}
+	return nil
+}
+
+// attachPhoneModel 为单个账号填机型。凭据缺失或不可读时留空，详情不失败。
+func (s *Service) attachPhoneModel(ctx context.Context, scope corescope.Scope, record *Record) {
+	if s.deps.Cipher == nil || record.DeletedAt != nil {
+		return
+	}
+	credential, err := s.deps.Accounts.Credential(ctx, scope, record.ID)
+	if err != nil {
+		return
+	}
+	payload, err := s.deps.Cipher.Open(credential)
+	if err != nil {
+		return
+	}
+	record.PhoneModel = payload.PhoneModel
 }
 
 // Summary 汇总作用域内待处理的账号数：pending 与 rejected，均只数未软删行。
@@ -325,6 +383,8 @@ func (s *Service) Create(ctx context.Context, scope corescope.Scope, in CreateIn
 	if err != nil {
 		return Record{}, err
 	}
+	// 新行的凭据刚写入；响应直接回入参，不必再解密一次。
+	record.PhoneModel = in.PhoneModel
 	return record, nil
 }
 
@@ -501,6 +561,13 @@ func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, 
 	if err != nil {
 		return Record{}, err
 	}
+	// 凭据写回不保证响应带最新机型：显式给了新值就用新值，
+	// 否则重读凭据，让共用 Account schema 的响应口径一致。
+	if in.PhoneModel != nil {
+		record.PhoneModel = *in.PhoneModel
+	} else {
+		s.attachPhoneModel(ctx, scope, &record)
+	}
 	return record, nil
 }
 
@@ -554,6 +621,7 @@ func (s *Service) Review(ctx context.Context, scope corescope.Scope, id string, 
 	if err != nil {
 		return Record{}, err
 	}
+	s.attachPhoneModel(ctx, scope, &record)
 	return record, nil
 }
 
@@ -642,6 +710,7 @@ func (s *Service) transition(ctx context.Context, scope corescope.Scope, id stri
 	if err != nil {
 		return Record{}, err
 	}
+	s.attachPhoneModel(ctx, scope, &record)
 	return record, nil
 }
 
@@ -744,6 +813,15 @@ func validateCredentialText(field, value string) error {
 		return errs.New(errs.CodeValidation, field+" must be at most 64 characters")
 	}
 	return nil
+}
+
+// truncateCredentialText 按 rune 截到契约上限。
+// 只用于非用户输入路径（平台回读）：用户输入超限仍报校验错。
+func truncateCredentialText(value string) string {
+	if utf8.RuneCountInString(value) <= maxCredentialFieldChars {
+		return value
+	}
+	return string([]rune(value)[:maxCredentialFieldChars])
 }
 
 func validatePassword(password string) error {

@@ -92,7 +92,13 @@ function isCompleteEmail(value: string): boolean {
 
 /** 三个状态各一条。掩码由登记号 13800138000 / 13900139000 / 13500010001 派生。 */
 export const ACCOUNTS: Account[] = [
-  account({ id: 'acc-1', phone_masked: '138****8000', status: 'pending', name: '东区宿舍' }),
+  account({
+    id: 'acc-1',
+    phone_masked: '138****8000',
+    status: 'pending',
+    name: '东区宿舍',
+    phone_model: 'Pixel 7',
+  }),
   account({
     id: 'acc-2',
     school_id: 'school-b',
@@ -101,6 +107,7 @@ export const ACCOUNTS: Account[] = [
     phone_masked: '139****9000',
     status: 'active',
     name: '西区宿舍',
+    phone_model: 'iPhone 13',
   }),
   account({
     id: 'acc-3',
@@ -162,6 +169,8 @@ export type MockOptions = {
   /** 键是本次请求的 cursor；首屏键是空串。 */
   pages?: Record<string, Account[]>
   nextCursors?: Record<string, string>
+  /** 列表响应的额外延迟（毫秒）；用来观察加载态行。 */
+  listDelayMs?: number
   /**
    * 账号 id → 原号。响应只带掩码，改绑判定必须比原号。
    * 缺省取内置登记表；自定义夹具的账号要在这里补原号。
@@ -489,6 +498,7 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
         phone?: string
         name?: string
         owner_user_id?: string
+        phone_model?: string
       }
       const owner = LOOKUP_USERS.find((item) => item.id === input.owner_user_id)
       const created = account({
@@ -502,6 +512,8 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
         phone_masked: input.phone
           ? `${input.phone.slice(0, 3)}****${input.phone.slice(-4)}`
           : '138****8000',
+        // 建号响应与服务端同口径：机型来自刚写入的凭据。
+        phone_model: input.phone_model?.trim() ?? '',
       })
       allAccounts.push(created)
       knownAccounts.push(created)
@@ -510,6 +522,9 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
     }
 
     if (url.pathname === '/api/accounts' && request.method() === 'GET') {
+      if (options.listDelayMs) {
+        await new Promise((resolve) => setTimeout(resolve, options.listDelayMs))
+      }
       const cursor = url.searchParams.get('cursor') ?? ''
       const includeDeleted = url.searchParams.get('include_deleted') === 'true'
       const base = pages[cursor] ?? allAccounts
@@ -569,6 +584,10 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
         typeof updates.password === 'string' ||
         typeof updates.device_code === 'string' ||
         typeof updates.phone_model === 'string'
+      // 机型写在凭据里：列表/详情再读时看到的是新值。
+      if (typeof updates.phone_model === 'string') {
+        found.phone_model = updates.phone_model
+      }
       // 与服务端同口径：改绑或改凭据才把被拒账号回待审核；只改备注名不重提。
       // 改绑优先于凭据恢复。停在待审核的账号改绑仍是 pending。
       if (rebind || (found.status === 'rejected' && credentialEdit)) {

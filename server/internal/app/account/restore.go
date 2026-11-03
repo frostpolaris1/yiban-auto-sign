@@ -57,5 +57,6 @@ func (s *Service) Restore(ctx context.Context, scope corescope.Scope, id string,
 	if err != nil {
 		return Record{}, err
 	}
+	s.attachPhoneModel(ctx, scope, &record)
 	return record, nil
 }

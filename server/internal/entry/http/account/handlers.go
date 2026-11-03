@@ -13,7 +13,7 @@
 // # 口径
 // 响应只给 phone_masked 与 owner_email_masked；原始手机号与邮箱在 Record 里，
 // **不出本层**。口令与设备码只进请求体，本层不记录、不回显。
-// phone_model 在 P1 存在凭据密文里，契约的 Account 响应不声明该字段。
+// phone_model 来自凭据密文，只回机型；设备码与口令永不出服务端。
 package account
 
 import (
@@ -349,6 +349,11 @@ func accountResponse(record appaccount.Record) oapi.Account {
 	if record.ReviewedBy != "" {
 		reviewedBy := record.ReviewedBy
 		out.ReviewedBy = &reviewedBy
+	}
+	// 机型来自凭据明文；空串表示未设置或不可读，此时不发该字段。
+	if record.PhoneModel != "" {
+		phoneModel := record.PhoneModel
+		out.PhoneModel = &phoneModel
 	}
 	return out
 }

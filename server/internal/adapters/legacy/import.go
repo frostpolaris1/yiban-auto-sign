@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
 	coreaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/account"
@@ -451,6 +452,18 @@ func mapLegacyStatus(row map[string]any) (string, bool) {
 	}
 }
 
+// maxLegacyPhoneModelRunes 与契约的 phone_model.maxLength 同值。
+// 旧库没有长度约束，导入侧必须在写入前截断。
+const maxLegacyPhoneModelRunes = 64
+
+// truncatePhoneModel 按 rune 截断机型，保留 UTF-8 完整性。
+func truncatePhoneModel(value string) string {
+	if utf8.RuneCountInString(value) <= maxLegacyPhoneModelRunes {
+		return value
+	}
+	return string([]rune(value)[:maxLegacyPhoneModelRunes])
+}
+
 // importCredential 重建一行凭据：旧信封解密（AAD=手机号）→ 新负载（三键
 // 全出现，device_code 置空串）→ 新信封（AAD=school_id|account_id）。
 // 明文只在内存。
@@ -482,7 +495,7 @@ func (s *importState) importCredential(ctx context.Context, opts Options, row ma
 		cred, err := s.sealer.Seal(opts.SchoolID, accountID, CredentialPayload{
 			DeviceCode: "",
 			Password:   plain,
-			PhoneModel: valueString(row["phone_model"]),
+			PhoneModel: truncatePhoneModel(valueString(row["phone_model"])),
 		})
 		if err != nil {
 			return fmt.Errorf("account %s: seal credential: %v", masked, err)

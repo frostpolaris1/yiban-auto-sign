@@ -428,6 +428,41 @@ func (r *AccountRepo) Credential(ctx context.Context, s corescope.Scope, account
 	return recordOrNotFound(record, err)
 }
 
+// Credentials 批量读未软删账号的凭据，按账号 ID 建索引。
+// 空 ids 不发查询，直接回空 map。
+// 软删行与作用域外行不出现在结果里；缺失的行不报错。
+func (r *AccountRepo) Credentials(ctx context.Context, s corescope.Scope, ids []string) (map[string]coreaccount.Credential, error) {
+	out := make(map[string]coreaccount.Credential, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	scopeSQL, scopeArgs, err := scopePredicate(s, 2, "a.")
+	if err != nil {
+		return nil, err
+	}
+	args := append([]any{ids}, scopeArgs...)
+	rows, err := r.db.q(ctx).Query(ctx, `
+		SELECT `+credentialColumns+`
+		  FROM credentials c
+		  JOIN accounts a ON a.id = c.account_id
+		 WHERE c.account_id = ANY($1::text[]::uuid[]) AND a.deleted_at IS NULL`+scopeSQL, args...)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		record, err := scanCredential(rows)
+		if err != nil {
+			return nil, mapError(err)
+		}
+		out[record.AccountID] = record
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapError(err)
+	}
+	return out, nil
+}
+
 // InsertCredential 存储账号的首条凭据。
 // 复合外键拒绝与账号院校不一致的院校。
 func (r *AccountRepo) InsertCredential(ctx context.Context, in coreaccount.Credential) error {

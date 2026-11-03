@@ -20,13 +20,47 @@ import (
 
 type fakeListRepo struct {
 	Repo
-	lists int
-	items []Record
+	lists           int
+	items           []Record
+	credentialCalls int
+	credentialIDs   []string
+	credentials     map[string]Credential
+	credentialErr   error
 }
 
 func (f *fakeListRepo) List(_ context.Context, _ corescope.Scope, _ string, _ Status, _, _ string, _ int, _ bool) ([]Record, string, error) {
 	f.lists++
 	return f.items, "", nil
+}
+
+func (f *fakeListRepo) Credentials(_ context.Context, _ corescope.Scope, ids []string) (map[string]Credential, error) {
+	f.credentialCalls++
+	f.credentialIDs = append([]string(nil), ids...)
+	if f.credentialErr != nil {
+		return nil, f.credentialErr
+	}
+	return f.credentials, nil
+}
+
+// newListService 构造只关心 List 的用例。
+func newListService(t *testing.T, repo Repo, cipher *Cipher) *Service {
+	t.Helper()
+	svc, err := NewService(Deps{
+		Accounts:   repo,
+		Schools:    fakeSchoolReader{},
+		Audit:      fakeAuditRepo{},
+		Tx:         fakeTxManager{},
+		Clock:      clock.Fixed{T: time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)},
+		Cipher:     cipher,
+		Owner:      fakeOwnerReader{},
+		Device:     &fakeDeviceReader{},
+		Limit:      10,
+		OwnerLimit: 10,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	return svc
 }
 
 // failingOwnerReader 模拟属主读库失败：基础设施错误，不是资源缺失。
@@ -98,5 +132,112 @@ func TestListRejectsZeroValueScope(t *testing.T) {
 	}
 	if repo.lists != 0 {
 		t.Fatalf("List queried the repository %d times with a zero-value scope", repo.lists)
+	}
+}
+
+// newTestCipher 构造 32 字节测试钥的凭据加解密器。
+func newTestCipher(t *testing.T) *Cipher {
+	t.Helper()
+	cipher, err := NewCipher([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("NewCipher: %v", err)
+	}
+	return cipher
+}
+
+// TestListSkipsCredentialReadWithoutCipher 钉住 fail-open 的展示面：
+// 未装配 Cipher 时列表仍成功，且不触发凭据查询。
+func TestListSkipsCredentialReadWithoutCipher(t *testing.T) {
+	repo := &fakeListRepo{items: []Record{{ID: "acc-1"}}}
+	svc := newListService(t, repo, nil)
+
+	page, err := svc.List(context.Background(), corescope.Master(), ListFilter{}, "", 10)
+	if err != nil {
+		t.Fatalf("List without a cipher: %v", err)
+	}
+	if repo.credentialCalls != 0 {
+		t.Fatalf("List read credentials %d times without a cipher", repo.credentialCalls)
+	}
+	if len(page.Items) != 1 || page.Items[0].PhoneModel != "" {
+		t.Fatalf("page items = %+v, want one row with an empty model", page.Items)
+	}
+}
+
+// TestListReturnsCredentialReadError 钉住批量读库失败必须上抛，不伪装成空机型。
+func TestListReturnsCredentialReadError(t *testing.T) {
+	repo := &fakeListRepo{
+		items:         []Record{{ID: "acc-1"}},
+		credentialErr: errors.New("db down"),
+	}
+	svc := newListService(t, repo, newTestCipher(t))
+
+	if _, err := svc.List(context.Background(), corescope.Master(), ListFilter{}, "", 10); err == nil {
+		t.Fatal("List swallowed a credential read failure")
+	} else if err.Error() != "db down" {
+		t.Fatalf("List rewrote the credential read failure: %v", err)
+	}
+	if repo.credentialCalls != 1 {
+		t.Fatalf("credential reads = %d, want 1", repo.credentialCalls)
+	}
+}
+
+// TestListEmptyPageSkipsCredentialRead 钉住空页不发批量查询。
+func TestListEmptyPageSkipsCredentialRead(t *testing.T) {
+	repo := &fakeListRepo{}
+	svc := newListService(t, repo, newTestCipher(t))
+
+	page, err := svc.List(context.Background(), corescope.Master(), ListFilter{}, "", 10)
+	if err != nil {
+		t.Fatalf("List on an empty page: %v", err)
+	}
+	if len(page.Items) != 0 {
+		t.Fatalf("empty page returned %d rows", len(page.Items))
+	}
+	if repo.credentialCalls != 0 {
+		t.Fatalf("empty page read credentials %d times", repo.credentialCalls)
+	}
+}
+
+// TestListDecryptFailureLeavesModelEmpty 钉住坏凭据只影响该行展示。
+func TestListDecryptFailureLeavesModelEmpty(t *testing.T) {
+	repo := &fakeListRepo{
+		items: []Record{{ID: "acc-1"}},
+		credentials: map[string]Credential{
+			"acc-1": {AccountID: "acc-1", SchoolID: "school-1", KID: "0000000000000000"},
+		},
+	}
+	svc := newListService(t, repo, newTestCipher(t))
+
+	page, err := svc.List(context.Background(), corescope.Master(), ListFilter{}, "", 10)
+	if err != nil {
+		t.Fatalf("List with an unreadable credential: %v", err)
+	}
+	if len(page.Items) != 1 || page.Items[0].PhoneModel != "" {
+		t.Fatalf("page items = %+v, want the row with an empty model", page.Items)
+	}
+	if repo.credentialCalls != 1 {
+		t.Fatalf("credential reads = %d, want 1", repo.credentialCalls)
+	}
+}
+
+// TestListFillsModelFromCredential 钉住成功路径把机型写回行。
+func TestListFillsModelFromCredential(t *testing.T) {
+	cipher := newTestCipher(t)
+	credential, err := cipher.Seal("school-1", "acc-1", CredentialPayload{PhoneModel: "Pixel 7"})
+	if err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	repo := &fakeListRepo{
+		items:       []Record{{ID: "acc-1"}},
+		credentials: map[string]Credential{"acc-1": credential},
+	}
+	svc := newListService(t, repo, cipher)
+
+	page, err := svc.List(context.Background(), corescope.Master(), ListFilter{}, "", 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(page.Items) != 1 || page.Items[0].PhoneModel != "Pixel 7" {
+		t.Fatalf("page items = %+v, want Pixel 7", page.Items)
 	}
 }

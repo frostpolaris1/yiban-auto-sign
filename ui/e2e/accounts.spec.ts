@@ -831,6 +831,39 @@ test('invariant 10: the list shows the remark and the masked owner email', async
   await expect(drawer).toContainText('user-1')
 })
 
+test('the list shows the device model and falls back to a dash', async ({ page }) => {
+  await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+
+  // 机型列在手机号之后：值来自凭据密文，空值（未设置或不可读）显示「—」。
+  await expect(page.getByRole('columnheader', { name: '机型' })).toBeVisible()
+  await expect(rowFor(page, '138****8000')).toContainText('Pixel 7')
+  await expect(rowFor(page, '139****9000')).toContainText('iPhone 13')
+  await expect(rowFor(page, '135****0001').getByText('—')).toHaveCount(1)
+})
+
+test('a user sees the device model of an own account', async ({ page }) => {
+  await mockAccountsApi(page, { role: 'user' })
+  await openAccounts(page)
+
+  await expect(rowFor(page, '138****8000')).toContainText('Pixel 7')
+})
+
+test('loading and empty rows span every column', async ({ page }) => {
+  // 空夹具加列表延迟：先看到加载态行，再看到空态行。
+  await mockAccountsApi(page, { role: 'master', accounts: [], listDelayMs: 1200 })
+  await page.goto('/accounts')
+  const table = page.getByRole('table', { name: '账号列表' })
+
+  // 默认 8 列：备注名、手机号、机型、学校、状态、归属、更新时间、操作。
+  await expect(table.locator('td[colspan="8"]')).toContainText('加载中…')
+  await expect(table.locator('td[colspan="8"]')).toContainText('没有匹配的账号')
+
+  // 勾选含已删除后多一列删除时间：加载态行同步为 9。
+  await page.getByRole('checkbox', { name: '含已删除' }).check()
+  await expect(table.locator('td[colspan="9"]')).toContainText('加载中…')
+})
+
 test('invariant 11: a complete phone or email highlights the matching rows', async ({ page }) => {
   const api = await mockAccountsApi(page, { role: 'master' })
   await openAccounts(page)
@@ -1453,7 +1486,7 @@ test('the deleted-at column only renders while the deleted filter is on', async 
   await mockAccountsApi(page, { role: 'master' })
   await openAccounts(page)
 
-  // 默认视图没有删除时间列：活行保持 7 列不变宽。
+  // 默认视图没有删除时间列：活行保持 8 列不变宽。
   await expect(page.getByRole('columnheader', { name: '删除时间' })).toHaveCount(0)
 
   await page.getByRole('checkbox', { name: '含已删除' }).check()
@@ -1463,7 +1496,8 @@ test('the deleted-at column only renders while the deleted filter is on', async 
   await expect(page.getByRole('columnheader', { name: '删除时间' })).toBeVisible()
   // 已删行给真实删除时间（软删时刻按上海墙钟渲染），不留空占位。
   await expect(deletedRow.getByText('2026/10/25 08:00')).toBeVisible()
-  await expect(deletedRow.getByText('—')).toHaveCount(0)
+  // 软删行不读凭据，机型列只剩一个占位符。
+  await expect(deletedRow.getByText('—')).toHaveCount(1)
   // 活行该列只有占位符：恰好一个「—」。
   await expect(rowFor(page, '138****8000').getByText('—')).toHaveCount(1)
 

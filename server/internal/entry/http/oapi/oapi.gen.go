@@ -529,6 +529,11 @@ type Account struct {
 	// PhoneMasked Masked phone. The raw phone never leaves the server.
 	PhoneMasked string `json:"phone_masked"`
 
+	// PhoneModel Device model stored inside the encrypted credential payload. Empty
+	// when the credential is missing or unreadable, and for soft-deleted
+	// rows. The device code and password are never returned.
+	PhoneModel *string `json:"phone_model,omitempty"`
+
 	// RejectReason The last rejection reason; cleared when an edit returns the account
 	// to pending.
 	RejectReason string `json:"reject_reason"`

@@ -59,7 +59,10 @@ type Record struct {
 	Name        string
 	// DisplayName 是列表展示用的有效备注名：name 为空时派生「账号+手机尾 4 位」。
 	// 搜索与展示共用这一个值，避免「看得到却搜不到」。
-	DisplayName  string
+	DisplayName string
+	// PhoneModel 是凭据明文里的机型，只用于展示。
+	// 空串表示未设置或凭据不可读；**不是设备身份**，不进任何判据。
+	PhoneModel   string
 	Status       Status
 	RejectReason string
 	ReviewedAt   *time.Time
