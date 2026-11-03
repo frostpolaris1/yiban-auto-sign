@@ -513,6 +513,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/accounts/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Count the live accounts awaiting a review decision.
+         * @description Master and admin only. pending counts the live accounts whose
+         *     status is pending; rejected counts the live accounts whose status
+         *     is rejected. Soft-deleted rows never enter either number, so the
+         *     summary always answers from the same population the list serves
+         *     without include_deleted. This is a static path segment next to
+         *     /api/accounts/{id}; the other methods on /api/accounts/summary are
+         *     matched by the {id} route and answer for the literal id "summary"
+         *     like any other unknown account id.
+         */
+        get: operations["AccountSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/accounts/{id}": {
         parameters: {
             query?: never;
@@ -1839,6 +1866,14 @@ export interface components {
             /** @description Cursor for the next page; empty on the last page. */
             next_cursor: string;
         };
+        /**
+         * @description Review workload counts over live accounts only: a row with a
+         *     deleted_at stamp never enters either number.
+         */
+        AccountSummary: {
+            pending: number;
+            rejected: number;
+        };
         HealthStatus: {
             /** @constant */
             status: "ok";
@@ -2978,6 +3013,29 @@ export interface operations {
             409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
             429: components["responses"]["TooManyRequestsError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AccountSummary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Review workload counts. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountSummary"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
             default: components["responses"]["DefaultError"];
         };
     };

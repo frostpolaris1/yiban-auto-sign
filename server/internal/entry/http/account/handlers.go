@@ -1,7 +1,7 @@
 // Package account 把账号用例映射到 HTTP。
 //
 // # 功能
-// 列表、创建、读取、修改、审核、暂停、软删、恢复、设备刷新九个端点。
+// 列表、创建、读取、汇总、修改、审核、暂停、软删、恢复、设备刷新十个端点。
 // 本包**不**写 SQL、**不**判状态迁移、**不**加密凭据。
 //
 // # 归属
@@ -42,6 +42,7 @@ type Service interface {
 	List(ctx context.Context, scope corescope.Scope, filter appaccount.ListFilter, cursor string, limit int) (appaccount.Page, error)
 	Create(ctx context.Context, scope corescope.Scope, in appaccount.CreateInput, actor appaudit.Actor) (appaccount.Record, error)
 	Get(ctx context.Context, scope corescope.Scope, id string) (appaccount.Record, error)
+	Summary(ctx context.Context, scope corescope.Scope) (appaccount.StatusCounts, error)
 	Update(ctx context.Context, scope corescope.Scope, id string, in appaccount.UpdateInput, actor appaudit.Actor) (appaccount.Record, error)
 	Review(ctx context.Context, scope corescope.Scope, id string, approve bool, reason string, actor appaudit.Actor) (appaccount.Record, error)
 	Pause(ctx context.Context, scope corescope.Scope, id string, paused bool, actor appaudit.Actor) (appaccount.Record, error)
@@ -157,6 +158,24 @@ func (h *Handler) Get(c *gin.Context, id oapi.AccountID) {
 		return
 	}
 	respond.JSON(c.Writer, http.StatusOK, accountResponse(record))
+}
+
+// Summary 实现 GET /api/accounts/summary（静态段，紧邻 {id} 路由）。
+// 只读计数：角色门槛（master/admin）在用例层，本层不重判。
+func (h *Handler) Summary(c *gin.Context) {
+	scope, _, ok := h.principal(c)
+	if !ok {
+		return
+	}
+	counts, err := h.svc.Summary(c.Request.Context(), scope)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	respond.JSON(c.Writer, http.StatusOK, oapi.AccountSummary{
+		Pending:  counts.Pending,
+		Rejected: counts.Rejected,
+	})
 }
 
 // Update 实现 PATCH /api/accounts/{id}。

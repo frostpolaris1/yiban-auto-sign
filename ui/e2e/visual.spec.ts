@@ -196,7 +196,13 @@ for (const theme of THEMES) {
           await expect(page.getByLabel('任务')).toHaveValue('school-alpha:task-daily')
           await expect(page.locator('.app-metric')).toHaveCount(3)
           await expectNumbers(page.locator('.app-metric'), ['容量40', '需求12', '缺口0'])
-          await expectNumbers(page.locator('.kpi-card .kpi-value'), ['3个', '0个', '100%', '1个'])
+          await expectNumbers(page.locator('.kpi-card .kpi-value'), [
+            '3个',
+            '0个',
+            '100%',
+            '1个',
+            '3个',
+          ])
         }
         await expect(page).toHaveScreenshot(`${view.name}-${theme}-${viewport.name}.png`, {
           fullPage: true,
@@ -434,7 +440,13 @@ for (const theme of THEMES) {
     // 背景是看板：滚动数字全部落定再拍，菜单态不能带中间帧。
     await expect(page.getByLabel('任务')).toHaveValue('school-alpha:task-daily')
     await expectNumbers(page.locator('.app-metric'), ['容量40', '需求12', '缺口0'])
-    await expectNumbers(page.locator('.kpi-card .kpi-value'), ['3个', '0个', '100%', '1个'])
+    await expectNumbers(page.locator('.kpi-card .kpi-value'), [
+      '3个',
+      '0个',
+      '100%',
+      '1个',
+      '3个',
+    ])
     await page.getByRole('button', { name: '账号菜单' }).click()
     await expect(page.getByRole('menu')).toBeVisible()
     // 菜单入场动画会改变整页的合成层，进而改变文字抗锯齿；等它结束再拍。

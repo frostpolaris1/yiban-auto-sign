@@ -1,6 +1,6 @@
 /**
  * **功能**
- * 账号页装配：角色、学校、筛选（含已删除）、游标、列表、
+ * 账号页装配：角色、学校、筛选（含已删除）、待审提示条、游标、列表、
  * 创建、恢复、抽屉与写操作模态。
  *
  * **归属**
@@ -8,7 +8,10 @@
  *
  * **口径**
  * 筛选变更重置游标栈。手机号输入防抖 250ms。
- * 列表与详情走 react-query；写操作成功后失效两者的缓存。
+ * 列表与详情走 react-query；写操作成功后失效两者的缓存，
+ * 并同时失效 `['account-summary']`（与看板第 5 卡同键），计数不滞后。
+ * 待审提示条只对 master/admin 取数（user 不发 summary 请求），
+ * 仅当 pending+rejected>0 显示；「只看待审核」把状态筛选设为 pending。
  * 写操作成功的反馈走 toast；错误反馈留在原模态内，可回看。
  * 角色来自 `GET /api/auth/me`。取不到时一切写操作置灰并给原因。
  */
@@ -22,6 +25,7 @@ import { PageHeader } from '@/components/ui/PageHeader'
 import { notifySuccess } from '@/components/ui/toast'
 import {
   deleteAccount,
+  getAccountSummary,
   listAccounts,
   pauseAccount,
   restoreAccount,
@@ -41,7 +45,11 @@ import type { Role } from '@/lib/api/auth'
 import { describeApiError } from '@/lib/api/client'
 import { listAllSchools } from '@/lib/api/school'
 import { SHOWCASE, useMe } from '@/lib/session'
-import { showcaseAccounts, showcaseAllSchools } from '@/lib/showcase'
+import {
+  showcaseAccountSummary,
+  showcaseAccounts,
+  showcaseAllSchools,
+} from '@/lib/showcase'
 import { AccountActionModal, type AccountActionState, type ReviewInput } from './AccountActionModal'
 import { AccountCreateModal } from './AccountCreateModal'
 import { AccountDeleteModal } from './AccountDeleteModal'
@@ -49,6 +57,7 @@ import { AccountDetailDrawer } from './AccountDetailDrawer'
 import { AccountEditModal } from './AccountEditModal'
 import { AccountFilters, type AccountFilterValues } from './AccountFilters'
 import { AccountLocationModal } from './AccountLocationModal'
+import { AccountPendingBanner } from './AccountPendingBanner'
 import { AccountsTable } from './AccountsTable'
 import { currentCursor, emptyCursorStack, goNext, goPrevious, hasPreviousPage } from '@/lib/cursor'
 import { buildAccountUpdate, buildLocationUpdate, type AccountUpdateDraft, type LocationDraft } from './drafts'
@@ -149,6 +158,27 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
     },
   })
 
+  // 待审提示条：只对 master/admin 取数（user 不发 summary 请求）。
+  // 与看板第 5 卡共用缓存键 `['account-summary']`；读取失败不显示提示条。
+  const isManager = role === 'master' || role === 'admin'
+  const summaryQuery = useQuery({
+    queryKey: ['account-summary'],
+    queryFn: () =>
+      SHOWCASE ? Promise.resolve(showcaseAccountSummary()) : getAccountSummary(),
+    enabled: isManager,
+    staleTime: 0,
+    retry: false,
+  })
+  const summary = summaryQuery.data ?? null
+  const showPendingBanner =
+    isManager && summary !== null && summary.pending + summary.rejected > 0
+
+  /** 「只看待审核」：与状态下拉同一写法，连带复位游标栈。 */
+  const filterPending = () => {
+    setFilters((previous) => ({ ...previous, status: 'pending' }))
+    setStack(emptyCursorStack())
+  }
+
   const [detailAccount, setDetailAccount] = useState<Account | null>(null)
   const [returnFocusTo, setReturnFocusTo] = useState<HTMLElement | null>(null)
 
@@ -191,6 +221,8 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
     onSuccess: (result, input) => {
       void queryClient.invalidateQueries({ queryKey: ['accounts'] })
       void queryClient.invalidateQueries({ queryKey: ['account', input.account.id] })
+      // 审核会迁移状态：汇总计数与看板第 5 卡同键，一并失效。
+      void queryClient.invalidateQueries({ queryKey: ['account-summary'] })
       setActionError(null)
       if (input.kind === 'verify') {
         const verify = result as AccountVerifyResult
@@ -265,6 +297,8 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
     onSuccess: (result, input) => {
       void queryClient.invalidateQueries({ queryKey: ['accounts'] })
       void queryClient.invalidateQueries({ queryKey: ['account', input.account.id] })
+      // 删除/恢复/重提都会改待处理计数：与看板第 5 卡同键，一并失效。
+      void queryClient.invalidateQueries({ queryKey: ['account-summary'] })
       if (input.op === 'delete') {
         // 行将随刷新消失：先清还原点，让模态卸载的 onCloseAutoFocus
         // 不把焦点抢回已注定删除的触发器，再直接落筛选输入。
@@ -392,6 +426,15 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
           </div>
         ) : null}
 
+        {/* 待审提示条在筛选栏上方：有未处理行才出现，不占空态位置。 */}
+        {showPendingBanner ? (
+          <AccountPendingBanner
+            pending={summary.pending}
+            rejected={summary.rejected}
+            onFilterPending={filterPending}
+          />
+        ) : null}
+
         <AccountFilters
           values={filters}
           qInput={qInput}
@@ -450,6 +493,8 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
         onCreated={(account: Account) => {
           setCreateOpen(false)
           void queryClient.invalidateQueries({ queryKey: ['accounts'] })
+          // 新号固定进 pending：提示条与看板第 5 卡的计数随之失效。
+          void queryClient.invalidateQueries({ queryKey: ['account-summary'] })
           notifySuccess(`已创建 ${account.phone_masked}`)
         }}
       />

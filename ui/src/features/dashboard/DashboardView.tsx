@@ -7,12 +7,15 @@
  *
  * **口径**
  * 角色取数隔离是本容器的第一不变式：
- * user 只读 sign-status 与 diagnostics；master/admin 只读 windows、capacity 与 sign-stats。
+ * user 只读 sign-status 与 diagnostics；master/admin 只读 windows、capacity、
+ * sign-stats 与 account summary。
  * 未命中的查询一律 `enabled: false`，挂载即零请求。
  * sign-status 每 30 秒轮询；页面隐藏时不轮询（`refetchIntervalInBackground: false`）。
  * windows 与时间片页共用缓存键 `['schedule-windows', day]`。
  * master/admin 的 KPI 取 `sign-stats` 报告末两天的今日终态，与图表共用一次读取；
  * 缓存键带上海业务日，每 60 秒复核、跨日才重取。
+ * 第 5 卡「待处理账号」读 `['account-summary']`（与账号页提示条共用缓存键），
+ * 与 sign-stats 独立：加载或失败显「—」，账号页写操作会失效该键。
  * 容量默认选第一个可用任务；没有可用任务就不发容量请求。
  * 各卡错误态独立，重试只重取该卡的数据。
  * 展示模式用合成夹具，零网络请求。
@@ -21,13 +24,20 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { describeApiError } from '@/lib/api/client'
+import { getAccountSummary } from '@/lib/api/account'
 import { getDiagnostics, getSignStatus } from '@/lib/api/me'
 import type { Role } from '@/lib/api/auth'
 import { getCapacity, listScheduleWindows } from '@/lib/api/schedule'
 import { getPrefStats, getSignStats } from '@/lib/api/stats'
 import { dayOf } from '@/lib/format'
 import { SHOWCASE } from '@/lib/session'
-import { showcaseCapacity, showcasePrefStats, showcaseSignStats, showcaseWindows } from '@/lib/showcase'
+import {
+  showcaseAccountSummary,
+  showcaseCapacity,
+  showcasePrefStats,
+  showcaseSignStats,
+  showcaseWindows,
+} from '@/lib/showcase'
 import { CapacityCard } from './CapacityCard'
 import { PrefCrowdingCard, SignDistributionCard, SignTrendCard } from './ChartCards'
 import { DiagnosticsCard } from './DiagnosticsCard'
@@ -35,6 +45,7 @@ import { KpiGrid } from './KpiGrid'
 import { SignStatusCard } from './SignStatusCard'
 import {
   capacityOptions,
+  pendingAccountCard,
   signCounts,
   signKpiCards,
   todayKpiCards,
@@ -128,6 +139,16 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
     retry: false,
   })
 
+  // 第 5 卡「待处理账号」：独立查询，读数失败只挂本卡（显「—」）。
+  // 账号页的建号/审核/删除/恢复会失效这个键，回到看板即取新计数。
+  const accountSummaryQuery = useQuery({
+    queryKey: ['account-summary'],
+    queryFn: () => (SHOWCASE ? Promise.resolve(showcaseAccountSummary()) : getAccountSummary()),
+    enabled: !isUser,
+    staleTime: 0,
+    retry: false,
+  })
+
   const prefStatsQuery = useQuery({
     queryKey: ['pref-stats', selected?.schoolId ?? '', selected?.taskId ?? '', day],
     queryFn: () =>
@@ -192,7 +213,7 @@ export function DashboardView({ role, extraCards }: DashboardViewProps) {
 
   return (
     <>
-      <KpiGrid cards={todayKpiCards(stats)} />
+      <KpiGrid cards={[...todayKpiCards(stats), pendingAccountCard(accountSummaryQuery.data ?? null)]} />
       <div className="grid">
         <CapacityCard
           options={options}

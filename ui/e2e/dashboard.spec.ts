@@ -5,6 +5,7 @@ import {
   DEFAULT_PREF_STATS,
   DEFAULT_SIGN_STATS,
   type DashboardApiCall,
+  accountSummaryCalls,
   capacityCalls,
   diagnosticsCalls,
   lastCapacityCall,
@@ -547,6 +548,41 @@ test('invariant 9: the header creates an account and exports nothing', async ({ 
 
   await page.getByRole('button', { name: '新建账号' }).click()
   await expect(page).toHaveURL(/\/accounts$/)
+})
+
+test('invariant 9: the pending KPI reads the summary and links to accounts', async ({ page }) => {
+  const api = await mockDashboardApi(page, {
+    role: 'admin',
+    accountSummary: { pending: 2, rejected: 1 },
+  })
+  await openDashboard(page)
+
+  await expectKpi(page, '待处理账号', '3个')
+  const card = kpiCard(page, '待处理账号')
+  await expect(card).toContainText('待审核 2 · 已拒绝 1')
+  expect(accountSummaryCalls(api), 'one summary read').toHaveLength(1)
+
+  await card.click()
+  await expect(page).toHaveURL(/\/accounts$/)
+})
+
+test('invariant 9: a user never reads the account summary', async ({ page }) => {
+  const api = await mockDashboardApi(page, { role: 'user' })
+  await openDashboard(page)
+
+  expect(accountSummaryCalls(api), 'a user never reads the summary').toHaveLength(0)
+  await expect(page.locator('.kpi-card').filter({ hasText: '待处理账号' })).toHaveCount(0)
+})
+
+test('invariant 9: a failed summary keeps the pending card at an em dash', async ({ page }) => {
+  await mockDashboardApi(page, {
+    role: 'admin',
+    accountSummaryError: { status: 500, code: 'internal_error', message: '汇总不可用' },
+  })
+  await openDashboard(page)
+
+  await expectKpi(page, '待处理账号', '—')
+  await expect(kpiCard(page, '待处理账号')).toContainText('等待读取')
 })
 
 test('invariant 9: the stats read refetches once when the business day rolls over', async ({

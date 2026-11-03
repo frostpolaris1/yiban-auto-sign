@@ -39,7 +39,8 @@ export function Menu({ trigger, children, align = 'end', profile }: MenuProps) {
           <DropdownMenu.Content
             className={cx('dd-menu', profile && 'dd-profile')}
             align={align}
-            sideOffset={10}
+            sideOffset={4}
+            collisionPadding={8}
           >
             {children}
           </DropdownMenu.Content>

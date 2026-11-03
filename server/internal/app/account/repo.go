@@ -46,6 +46,9 @@ type New = coreaccount.New
 // Credential 是一行 credentials 记录。
 type Credential = coreaccount.Credential
 
+// StatusCounts 是未软删账号的状态计数汇总。
+type StatusCounts = coreaccount.StatusCounts
+
 // Repo 是账号仓储端口。
 //
 // Create 与 Restore 执行全局与每属主活跃账号上限。两者**必须在事务内运行**：
@@ -70,12 +73,16 @@ type Credential = coreaccount.Credential
 //
 // Review 只推进 pending 行：通过写 active，拒绝写 rejected 并记理由。
 // 非 pending 行报 conflict。
+//
+// StatusCounts 按作用域统计未软删账号的 pending 与 rejected 行数，
+// 口径与 List 缺省（不含软删）一致。
 type Repo interface {
 	// Create 建号；limit 是全局活跃账号上限，ownerLimit 是每属主活跃账号上限。
 	Create(ctx context.Context, in New, limit, ownerLimit int) (Record, error)
 	Get(ctx context.Context, scope corescope.Scope, id string) (Record, error)
 	GetForUpdate(ctx context.Context, scope corescope.Scope, id string) (Record, error)
 	List(ctx context.Context, scope corescope.Scope, schoolID string, status Status, query, cursor string, limit int, includeDeleted bool) ([]Record, string, error)
+	StatusCounts(ctx context.Context, scope corescope.Scope) (StatusCounts, error)
 	UpdatePhone(ctx context.Context, scope corescope.Scope, id, phone string, at time.Time) (Record, error)
 	UpdateName(ctx context.Context, scope corescope.Scope, id, name string, at time.Time) (Record, error)
 	SetStatus(ctx context.Context, scope corescope.Scope, id string, from, to Status, at time.Time, reason string) (Record, error)

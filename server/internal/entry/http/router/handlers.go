@@ -159,6 +159,15 @@ func (s *server) AccountGet(c *gin.Context, id oapi.AccountID) {
 	s.accounts.Get(c, id)
 }
 
+// AccountSummary 委托账号处理器（静态段，紧邻 {id} 路由）。未装配时仍是 501。
+func (s *server) AccountSummary(c *gin.Context) {
+	if s.accounts == nil {
+		notImplemented(c)
+		return
+	}
+	s.accounts.Summary(c)
+}
+
 // AccountUpdate 委托账号处理器。未装配时仍是 501。
 func (s *server) AccountUpdate(c *gin.Context, id oapi.AccountID, params oapi.AccountUpdateParams) {
 	if s.accounts == nil {

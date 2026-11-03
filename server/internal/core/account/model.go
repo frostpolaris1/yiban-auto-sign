@@ -81,6 +81,13 @@ type New struct {
 	Name        string
 }
 
+// StatusCounts 是未软删账号的状态计数汇总，口径与账号列表同源：
+// 只数 deleted_at IS NULL 的行。只覆盖审核面关心的两个状态。
+type StatusCounts struct {
+	Pending  int
+	Rejected int
+}
+
 // Credential 是一行加密凭据。
 // **明文永不入数据库**；适配器原样存储这些字节，不再加解密。
 type Credential struct {

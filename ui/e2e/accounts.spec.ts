@@ -12,6 +12,7 @@ import {
   patchCalls,
   postCalls,
   restoreCalls,
+  summaryCalls,
 } from './support/fake-accounts-api'
 
 /**
@@ -1406,5 +1407,108 @@ test('the deleted-at column only renders while the deleted filter is on', async 
   await page.getByRole('checkbox', { name: '含已删除' }).uncheck()
   await expect(page.getByRole('columnheader', { name: '删除时间' })).toHaveCount(0)
   await expect(deletedRowFor(page, '131****0000')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '查看 138****8000' })).toBeVisible()
+})
+
+// N190：待处理汇总（GET /api/accounts/summary）与账号页提示条。
+
+test('n190: the pending banner shows the counts and the button filters pending', async ({
+  page,
+}) => {
+  const api = await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+
+  // 缺省夹具：1 行 pending、0 行 rejected；软删行不进计数。
+  const banner = page.locator('.app-pending-banner')
+  await expect(banner).toContainText('待审核 1 · 已拒绝 0')
+  await expect(banner.getByRole('button', { name: '只看待审核' })).toBeVisible()
+  expect(summaryCalls(api).length, 'the banner reads the summary once').toBeGreaterThanOrEqual(1)
+
+  // 「只看待审核」把状态筛选设为 pending：请求与下拉同时变。
+  await banner.getByRole('button', { name: '只看待审核' }).click()
+  await expect.poll(() => lastListCall(api)?.params.status).toBe('pending')
+  await expect(page.getByLabel('状态筛选')).toHaveValue('pending')
+})
+
+test('n190: creating an account invalidates the summary', async ({ page }) => {
+  const api = await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+  await expect(page.locator('.app-pending-banner')).toContainText('待审核 1 · 已拒绝 0')
+  const before = summaryCalls(api).length
+
+  await page.getByRole('button', { name: '新建账号' }).click()
+  const dialog = page.getByRole('dialog')
+  await dialog.getByLabel('学校').selectOption({ label: '合成学校甲' })
+  await dialog.getByLabel('手机号').fill('13800000000')
+  await dialog.getByLabel('易班口令').fill('single-pass-1')
+  await dialog.getByRole('button', { name: '提交' }).click()
+  await expect.poll(() => createCalls(api).length).toBe(1)
+
+  // 新号固定进 pending：汇总失效并重取，提示条数字加一。
+  await expect
+    .poll(() => summaryCalls(api).length, 'the create invalidates the summary')
+    .toBeGreaterThan(before)
+  await expect(page.locator('.app-pending-banner')).toContainText('待审核 2 · 已拒绝 0')
+})
+
+test('n190: a review invalidates the summary and an empty one hides the banner', async ({
+  page,
+}) => {
+  const api = await mockAccountsApi(page, { role: 'admin' })
+  await openAccounts(page)
+  await expect(page.locator('.app-pending-banner')).toContainText('待审核 1 · 已拒绝 0')
+  const before = summaryCalls(api).length
+
+  // 通过评审把唯一的 pending 行送走：写成功必须失效汇总并重取。
+  await page.getByRole('button', { name: '评审 138****8000' }).click()
+  const dialog = page.getByRole('dialog', { name: '评审账号？' })
+  await dialog.getByLabel('评审结论').selectOption('approve')
+  await dialog.getByRole('button', { name: '提交评审' }).click()
+  await expect
+    .poll(() => summaryCalls(api).length, 'the write invalidates the summary')
+    .toBeGreaterThan(before)
+
+  // 计数归零：提示条整体消失，不是显示「待审核 0 · 已拒绝 0」。
+  await expect(page.locator('.app-pending-banner')).toHaveCount(0)
+})
+
+test('n190: deleting the pending account refetches the summary and hides the banner', async ({
+  page,
+}) => {
+  const api = await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+  await expect(page.locator('.app-pending-banner')).toContainText('待审核 1 · 已拒绝 0')
+  const before = summaryCalls(api).length
+
+  const menu = await openRowMenu(page, '138****8000')
+  await menu.getByRole('menuitem', { name: /删除/ }).click()
+  await page
+    .getByRole('dialog', { name: '删除账号？' })
+    .getByRole('button', { name: '确认删除' })
+    .click()
+  await expect.poll(() => deleteCalls(api, 'acc-1').length).toBe(1)
+  await expect
+    .poll(() => summaryCalls(api).length, 'the delete invalidates the summary')
+    .toBeGreaterThan(before)
+  await expect(page.locator('.app-pending-banner')).toHaveCount(0)
+})
+
+test('n190: a user never reads the summary and sees no banner', async ({ page }) => {
+  const api = await mockAccountsApi(page, { role: 'user' })
+  await openAccounts(page)
+
+  expect(summaryCalls(api), 'a user never reads the account summary').toHaveLength(0)
+  await expect(page.locator('.app-pending-banner')).toHaveCount(0)
+})
+
+test('n190: a failing summary hides the banner and keeps the page usable', async ({ page }) => {
+  await mockAccountsApi(page, {
+    role: 'master',
+    summaryError: { status: 500, code: 'internal_error', message: '汇总暂不可用' },
+  })
+  await openAccounts(page)
+
+  await expect(page.locator('.app-pending-banner')).toHaveCount(0)
+  await expect(page.getByRole('table', { name: '账号列表' })).toBeVisible()
   await expect(page.getByRole('button', { name: '查看 138****8000' })).toBeVisible()
 })
