@@ -4,7 +4,7 @@ package main
 // user 也走同一个写口，故设备识别码必须由用例层按角色把住。
 //
 // # 功能
-// 覆盖 user 与 master 在 POST/PATCH /api/accounts 上的设备码差异、
+// 覆盖 user、admin 与 master 在 POST/PATCH /api/accounts 上的设备码差异、
 // user 保留的机型/手机号/口令写口，以及 master 的清除设备码哨兵。
 // 清除后用凭据明文确认设备码真的空了，而不是只看响应形状。
 //
@@ -15,7 +15,7 @@ package main
 // 缺 DSN 时整包跳过并打可见横幅。跳过不是绿。
 // 每个测试独占一个 schema，互不依赖。
 // 手机号只取登记的合成段（tests/synthetic-fixtures.json）。
-// 设备码明文只在本进程内读一次，不进响应断言、不进日志。
+// 设备码明文只在进程内读取，不进响应与日志。
 
 import (
 	"encoding/json"
@@ -30,20 +30,23 @@ import (
 
 // 本文件的合成手机号全部取自登记段（tests/synthetic-fixtures.json）。
 const (
-	n190DevicePhoneUser    = "13900000006"
-	n190DevicePhoneRebind  = "13900000007"
-	n190DevicePhoneBlocked = "13900000008"
-	n190DevicePhoneMaster  = "13900000009"
-	n190DevicePhoneClear   = "13900000011"
+	n190DevicePhoneUser       = "13900000006"
+	n190DevicePhoneRebind     = "13900000007"
+	n190DevicePhoneBlocked    = "13900000008"
+	n190DevicePhoneMaster     = "13900000009"
+	n190DevicePhoneClear      = "13900000011"
+	n190DevicePhoneEmptyPatch = "13900000012"
+	n190DevicePhoneAdmin      = "13900000013"
 )
 
 // n190DeviceCreateBody 是带设备字段的建号请求体。
 type n190DeviceCreateBody struct {
-	SchoolID   string `json:"school_id"`
-	Phone      string `json:"phone"`
-	Password   string `json:"password"`
-	DeviceCode string `json:"device_code,omitempty"`
-	PhoneModel string `json:"phone_model,omitempty"`
+	SchoolID    string `json:"school_id"`
+	Phone       string `json:"phone"`
+	Password    string `json:"password"`
+	OwnerUserID string `json:"owner_user_id,omitempty"`
+	DeviceCode  string `json:"device_code,omitempty"`
+	PhoneModel  string `json:"phone_model,omitempty"`
 }
 
 // n190CredentialPayload 用测试钥解出账号当前凭据明文。
@@ -186,10 +189,76 @@ func TestN190DeviceRoleGate(t *testing.T) {
 	if got := n190CredentialPayload(t, e, masterAccount.ID); got.DeviceCode != "master-patch-device" {
 		t.Fatalf("device code after master patch = %q, want master-patch-device", got.DeviceCode)
 	}
+
+	// master 先给 user 的账号种设备码，再让 user 用空串 PATCH：
+	// 空串同样是 device_code 写入，必须 403；被拒后种子值原样保留。
+	resp, payload = u2Do(e, e.client, http.MethodPost, "/api/accounts", n190DeviceCreateBody{
+		SchoolID:    schoolID,
+		Phone:       n190DevicePhoneEmptyPatch,
+		Password:    "member-pass-2",
+		OwnerUserID: member.ID,
+		DeviceCode:  "seeded-device",
+	}, masterSession.CSRFToken)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("master seed device_code = %d, want 201; body=%q", resp.StatusCode, payload)
+	}
+	seeded := n190DecodeAccount(t, payload)
+	if got := n190CredentialPayload(t, e, seeded.ID); got.DeviceCode != "seeded-device" {
+		t.Fatalf("seeded device code = %q, want seeded-device", got.DeviceCode)
+	}
+
+	patchResp, patchPayload = n190PatchAccount(e, memberClient, memberSession.CSRFToken, seeded.ID,
+		map[string]string{"device_code": ""})
+	if patchResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("user patch empty device_code = %d, want 403; body=%q", patchResp.StatusCode, patchPayload)
+	}
+	if code, _ := errorCode(t, patchPayload); code != "forbidden" {
+		t.Fatalf("user patch empty device_code error = %q, want forbidden", code)
+	}
+	if got := n190CredentialPayload(t, e, seeded.ID); got.DeviceCode != "seeded-device" {
+		t.Fatalf("device code after forbidden empty patch = %q, want seeded-device", got.DeviceCode)
+	}
+}
+
+// TestN190DeviceAdminWrites 覆盖绑定院校的 admin 仍可建号与改号时带设备码。
+// 若更新门被收窄成 master-only，本用例变红。
+func TestN190DeviceAdminWrites(t *testing.T) {
+	e := newAuthEnv(t)
+	schoolID := u2SeedSchool(t, e, "n190-device-admin")
+
+	admin := u2SeedUser(t, e, "n190-device-admin@example.com", "admin-pass", coreauth.RoleAdmin)
+	u2BindSchool(t, e, admin.ID, schoolID)
+	adminClient := u2FreshClient(t)
+	adminSession := u2LoginOn(e, adminClient, "n190-device-admin@example.com", "admin-pass")
+
+	// admin 建号带设备码：201，设备码写进凭据。
+	resp, payload := u2Do(e, adminClient, http.MethodPost, "/api/accounts", n190DeviceCreateBody{
+		SchoolID:   schoolID,
+		Phone:      n190DevicePhoneAdmin,
+		Password:   "admin-pass-2",
+		DeviceCode: "admin-create-device",
+	}, adminSession.CSRFToken)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("admin create with device_code = %d, want 201; body=%q", resp.StatusCode, payload)
+	}
+	created := n190DecodeAccount(t, payload)
+	if got := n190CredentialPayload(t, e, created.ID); got.DeviceCode != "admin-create-device" {
+		t.Fatalf("device code after admin create = %q, want admin-create-device", got.DeviceCode)
+	}
+
+	// admin 改设备码：200。
+	patchResp, patchPayload := n190PatchAccount(e, adminClient, adminSession.CSRFToken, created.ID,
+		map[string]string{"device_code": "admin-patch-device"})
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("admin patch device_code = %d, want 200; body=%q", patchResp.StatusCode, patchPayload)
+	}
+	if got := n190CredentialPayload(t, e, created.ID); got.DeviceCode != "admin-patch-device" {
+		t.Fatalf("device code after admin patch = %q, want admin-patch-device", got.DeviceCode)
+	}
 }
 
 // TestN190DeviceClearSentinel 覆盖 master 用空串清除设备码的哨兵：
-// 清除后凭据里设备码为空，可以再由 device-refresh 重新登记。
+// 清除后凭据里设备码为空，机型与口令保持不变，可以再由 device-refresh 重新登记。
 func TestN190DeviceClearSentinel(t *testing.T) {
 	e := newAuthEnv(t)
 	schoolID := u2SeedSchool(t, e, "n190-device-clear")
@@ -224,5 +293,8 @@ func TestN190DeviceClearSentinel(t *testing.T) {
 	}
 	if cleared.PhoneModel != "Mi 9 合成机型" {
 		t.Fatalf("phone model after clear = %q, want the previous value", cleared.PhoneModel)
+	}
+	if cleared.Password != "master-pass-2" {
+		t.Fatal("clearing the device code must keep the password")
 	}
 }

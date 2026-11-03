@@ -1531,8 +1531,9 @@ export interface components {
          * @description A user may not set device_code: the device code is the platform device
          *     identity, and a user can only obtain it through device-refresh. A
          *     create carrying a non-empty device_code from a user answers 403.
-         *     phone_model is a non-credential label and stays writable for every
-         *     role.
+         *     phone_model is not a device identity, but a model edit still counts as
+         *     a credential edit (a rejected account resubmits and a
+         *     credential_error account recovers), and every role may write it.
          */
         AccountCreate: {
             school_id: string;
@@ -1546,6 +1547,11 @@ export interface components {
             /** @description Optional remark name; trimmed. Empty means unnamed. */
             name?: string;
             password: string;
+            /**
+             * @description master and admin may set it. A user can only obtain it through
+             *     device-refresh: a non-empty value answers 403, an empty string is
+             *     the same as omitting it.
+             */
             device_code?: string;
             phone_model?: string;
         };
@@ -1553,8 +1559,10 @@ export interface components {
          * @description A user may not set or change device_code: the device code is the
          *     platform device identity, and a user can only obtain it through
          *     device-refresh. A user update carrying any device_code, including an
-         *     empty string, answers 403. phone_model is a non-credential label and
-         *     stays writable for every role.
+         *     empty string, answers 403. phone_model is not a device identity, but
+         *     a model edit still counts as a credential edit (a rejected account
+         *     resubmits and a credential_error account recovers), and every role
+         *     may write it.
          */
         AccountUpdate: {
             /**
@@ -1576,6 +1584,11 @@ export interface components {
              */
             phone?: string;
             password?: string;
+            /**
+             * @description master and admin may set or clear it: an empty string clears the
+             *     stored device code. A user update carrying any device_code,
+             *     including an empty string, answers 403.
+             */
             device_code?: string;
             phone_model?: string;
         };
