@@ -550,7 +550,11 @@ type Account struct {
 	UpdatedAt time.Time     `json:"updated_at"`
 }
 
-// AccountCreate defines model for AccountCreate.
+// AccountCreate A user may not set device_code: the device code is the platform device
+// identity, and a user can only obtain it through device-refresh. A
+// create carrying a non-empty device_code from a user answers 403.
+// phone_model is a non-credential label and stays writable for every
+// role.
 type AccountCreate struct {
 	DeviceCode *string `json:"device_code,omitempty"`
 
@@ -688,7 +692,11 @@ type AccountSummary struct {
 	Rejected int `json:"rejected"`
 }
 
-// AccountUpdate defines model for AccountUpdate.
+// AccountUpdate A user may not set or change device_code: the device code is the
+// platform device identity, and a user can only obtain it through
+// device-refresh. A user update carrying any device_code, including an
+// empty string, answers 403. phone_model is a non-credential label and
+// stays writable for every role.
 type AccountUpdate struct {
 	DeviceCode *string `json:"device_code,omitempty"`
 

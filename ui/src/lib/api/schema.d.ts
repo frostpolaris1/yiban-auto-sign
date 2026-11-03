@@ -1527,6 +1527,13 @@ export interface components {
              */
             deleted_at: string | null;
         };
+        /**
+         * @description A user may not set device_code: the device code is the platform device
+         *     identity, and a user can only obtain it through device-refresh. A
+         *     create carrying a non-empty device_code from a user answers 403.
+         *     phone_model is a non-credential label and stays writable for every
+         *     role.
+         */
         AccountCreate: {
             school_id: string;
             /**
@@ -1542,6 +1549,13 @@ export interface components {
             device_code?: string;
             phone_model?: string;
         };
+        /**
+         * @description A user may not set or change device_code: the device code is the
+         *     platform device identity, and a user can only obtain it through
+         *     device-refresh. A user update carrying any device_code, including an
+         *     empty string, answers 403. phone_model is a non-credential label and
+         *     stays writable for every role.
+         */
         AccountUpdate: {
             /**
              * @description A different value returns 409 conflict. Changing school is

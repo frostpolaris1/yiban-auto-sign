@@ -2463,6 +2463,12 @@ components:
             needs this to mark deleted rows.
     AccountCreate:
       type: object
+      description: |
+        A user may not set device_code: the device code is the platform device
+        identity, and a user can only obtain it through device-refresh. A
+        create carrying a non-empty device_code from a user answers 403.
+        phone_model is a non-credential label and stays writable for every
+        role.
       required: [school_id, phone, password]
       properties:
         school_id: { type: string }
@@ -2484,6 +2490,12 @@ components:
         phone_model: { type: string, maxLength: 64 }
     AccountUpdate:
       type: object
+      description: |
+        A user may not set or change device_code: the device code is the
+        platform device identity, and a user can only obtain it through
+        device-refresh. A user update carrying any device_code, including an
+        empty string, answers 403. phone_model is a non-credential label and
+        stays writable for every role.
       minProperties: 1
       properties:
         school_id:
