@@ -38,6 +38,7 @@ var contractEnums = []contractEnum{
 	{".", "AdminTaskListParamsState", "../../../core/status", "TaskState", "Task", 5},
 	{".", "AccountLocationMode", "../../../signing/contract", "LocationMode", "Location", 2},
 	{".", "AccountStatus", "../../../core/account", "Status", "Status", 6},
+	{".", "CapacityReportBinding", "../../../core/capacity", "Binding", "Binding", 2},
 	{".", "ErrorCode", "../../../core/errs", "Code", "Code", 16},
 	{".", "ScheduleWindowSource", "../../../signing/contract", "WindowSource", "Window", 4},
 	{".", "SchoolStatus", "../../../core/school", "Status", "Status", 2},

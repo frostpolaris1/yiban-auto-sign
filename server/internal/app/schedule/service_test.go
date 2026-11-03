@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
+	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
+	corecapacity "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/capacity"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	coreplan "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/plan"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
@@ -374,6 +377,12 @@ func TestBuildRejectsCapacityShortfall(t *testing.T) {
 	} else if details := coreerrs.From(err).Details; details["demand"] != 100 ||
 		details["capacity"] == nil || details["shortfall"] == nil {
 		t.Fatalf("details = %v, want 需求/容量/缺口三个数", details)
+	} else if details["binding"] != string(corecapacity.BindingWorkers) {
+		t.Fatalf("binding = %v, want workers", details["binding"])
+	} else if details["suggested_workers"] != 2 {
+		t.Fatalf("suggested_workers = %v, want 2", details["suggested_workers"])
+	} else if want := "容量不足：需求 100，容量 64；通道是瓶颈，建议 YIBAN_WORKERS=2"; coreerrs.From(err).Message != want {
+		t.Fatalf("message = %q, want %q", coreerrs.From(err).Message, want)
 	}
 	if len(ps.inserted) != 0 {
 		t.Fatalf("缺口计划不得落库, inserted = %d 批", len(ps.inserted))
@@ -405,10 +414,199 @@ func TestCapacityShortfallReported(t *testing.T) {
 	if prev.Shortfall <= 0 {
 		t.Fatalf("应报缺口, capacity=%d demand=%d", prev.Capacity, prev.Demand)
 	}
+	if prev.Binding != corecapacity.BindingWorkers {
+		t.Fatalf("Binding = %q, want workers", prev.Binding)
+	}
+	// 100×60 ÷ (4800×0.8) = 1.5625 → 2 个通道；当前 1 个，故给出建议。
+	if prev.SuggestedWorkers != 2 {
+		t.Fatalf("SuggestedWorkers = %d, want 2", prev.SuggestedWorkers)
+	}
 	for _, r := range prev.Rows {
 		if r.RunAt.Before(prev.WindowStart) || !r.RunAt.Before(prev.WindowEnd) {
 			t.Fatalf("超容量行越窗: %v", r.RunAt)
 		}
+	}
+}
+
+// 出口速率是瓶颈：不给数字建议，409 message 指向出口配置。
+func TestCapacityEgressShortfall(t *testing.T) {
+	ids := make([]string, 100)
+	for i := range ids {
+		ids[i] = "acct-" + string(rune('a'+i%26)) + string(rune('0'+i/26))
+	}
+	svc := newService(t, &fakeWindowStore{task: enabledTask()}, &fakePlanStore{},
+		fakeAccounts{ids: ids}, &fakeDiscover{window: platformWindow(6, 30, 6, 31)})
+	in := baseInput()
+	in.Workers = 4
+	in.Avg = 3 * time.Second // 通道吞吐 1.33/s > 出口 0.5/s
+	in.Rate = 0.5
+	prev, err := svc.Preview(context.Background(), in)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if prev.Binding != corecapacity.BindingEgressRate {
+		t.Fatalf("Binding = %q, want egress_rate", prev.Binding)
+	}
+	// 容量 floor(60×0.5×0.8)=24 < 需求 100；即使理论通道数够也不能建议加并发。
+	if prev.SuggestedWorkers != 0 {
+		t.Fatalf("出口瓶颈不应给建议, SuggestedWorkers = %d", prev.SuggestedWorkers)
+	}
+
+	_, err = svc.Build(context.Background(), in)
+	if err == nil {
+		t.Fatal("缺口计划应被拒")
+	}
+	e := coreerrs.From(err)
+	if e.Code != coreerrs.CodeCapacityShortfall {
+		t.Fatalf("错误码 = %q, want capacity_shortfall", e.Code)
+	}
+	if e.Details["binding"] != string(corecapacity.BindingEgressRate) {
+		t.Fatalf("binding = %v, want egress_rate", e.Details["binding"])
+	}
+	if _, ok := e.Details["suggested_workers"]; ok {
+		t.Fatalf("出口瓶颈不得给 suggested_workers: %v", e.Details)
+	}
+	want := "容量不足：需求 100，容量 24；出口速率是瓶颈，建议提高 YIBAN_EGRESS_RATE 或增加出口标识"
+	if e.Message != want {
+		t.Fatalf("message = %q, want %q", e.Message, want)
+	}
+}
+
+// 建议值必须真的装得下需求：加通道后撞上出口速率时改报 egress_rate。
+func TestCapacitySuggestionRespectsEgressCap(t *testing.T) {
+	n := &recordingPlanNotifier{}
+	svc := newNotifyingSchedule(t, &fakeWindowStore{task: enabledTask()}, &fakePlanStore{},
+		notifyAccounts(1500), &fakeDiscover{window: platformWindow(6, 30, 7, 0)}, n)
+	in := baseInput()
+	in.Workers = 4
+	in.Avg = 10 * time.Second
+	in.Rate = 1.0
+	prev, err := svc.Preview(context.Background(), in)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	// 30 分钟 × min(4/10, 1) × 0.8 = 576；需求 1500，缺口 924。
+	if prev.Capacity != 576 || prev.Shortfall != 924 {
+		t.Fatalf("capacity/shortfall = %d/%d, want 576/924", prev.Capacity, prev.Shortfall)
+	}
+	// 公式给出 11 个通道，但 11/10 > 出口 1/s：实得 1440，仍装不下。
+	if prev.Binding != corecapacity.BindingEgressRate {
+		t.Fatalf("Binding = %q, want egress_rate", prev.Binding)
+	}
+	if prev.SuggestedWorkers != 0 {
+		t.Fatalf("不可达建议不得下发, SuggestedWorkers = %d", prev.SuggestedWorkers)
+	}
+
+	_, err = svc.Build(context.Background(), in)
+	if err == nil {
+		t.Fatal("缺口计划应被拒")
+	}
+	e := coreerrs.From(err)
+	if e.Details["binding"] != string(corecapacity.BindingEgressRate) {
+		t.Fatalf("binding = %v, want egress_rate", e.Details["binding"])
+	}
+	if _, ok := e.Details["suggested_workers"]; ok {
+		t.Fatalf("不可达建议不得出现在 details: %v", e.Details)
+	}
+	if strings.Contains(e.Message, "YIBAN_WORKERS") {
+		t.Fatalf("出口瓶颈不得建议加并发: %q", e.Message)
+	}
+	if len(n.events) != 1 || n.events[0].kind != appevents.TypeCapacityChanged {
+		t.Fatalf("事件 = %+v, want 仅 capacity.changed", n.events)
+	}
+	payload := n.events[0].payload
+	if payload["binding"] != string(corecapacity.BindingEgressRate) {
+		t.Fatalf("事件 binding = %v, want egress_rate", payload["binding"])
+	}
+	if _, ok := payload["suggested_workers"]; ok {
+		t.Fatalf("事件不得带 suggested_workers: %v", payload)
+	}
+}
+
+// 建议值超过配置上限时不给：total 79 > 64，保持 workers 但不写数字。
+func TestCapacitySuggestionOverCap(t *testing.T) {
+	ids := make([]string, 1000)
+	for i := range ids {
+		ids[i] = "acct-" + string(rune('a'+i%26)) + string(rune('0'+i/26))
+	}
+	svc := newService(t, &fakeWindowStore{task: enabledTask()}, &fakePlanStore{},
+		fakeAccounts{ids: ids}, &fakeDiscover{window: platformWindow(6, 30, 7, 50)})
+	in := baseInput()
+	in.Workers = 1
+	in.Avg = 300 * time.Second // 1000×300 ÷ (4800×0.8) = 78.125 → 79 > 64
+	in.Rate = 1.0
+	prev, err := svc.Preview(context.Background(), in)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	// 1 通道、每次 300 秒、80 分钟：capacity = floor(4800/300×0.8) = 12。
+	if prev.Capacity != 12 || prev.Shortfall != 988 {
+		t.Fatalf("capacity/shortfall = %d/%d, want 12/988", prev.Capacity, prev.Shortfall)
+	}
+	if prev.Binding != corecapacity.BindingWorkers {
+		t.Fatalf("Binding = %q, want workers", prev.Binding)
+	}
+	if prev.SuggestedWorkers != 0 {
+		t.Fatalf("超过上限不得给建议, SuggestedWorkers = %d", prev.SuggestedWorkers)
+	}
+
+	_, err = svc.Build(context.Background(), in)
+	if err == nil {
+		t.Fatal("缺口计划应被拒")
+	}
+	e := coreerrs.From(err)
+	if _, ok := e.Details["suggested_workers"]; ok {
+		t.Fatalf("超上限建议不得出现在 details: %v", e.Details)
+	}
+	if want := "容量不足：需求 1000，容量 12"; e.Message != want {
+		t.Fatalf("message = %q, want %q", e.Message, want)
+	}
+}
+
+// 浮点边界：容量恰好等于需求时不得给建议（want 会因浮点算成 2 > 当前 1）。
+func TestCapacityAdviceAtExactBoundary(t *testing.T) {
+	ids := make([]string, 1260)
+	for i := range ids {
+		ids[i] = "acct-" + string(rune('a'+i%26)) + string(rune('0'+i/26))
+	}
+	svc := newService(t, &fakeWindowStore{}, &fakePlanStore{}, fakeAccounts{ids: ids},
+		&fakeDiscover{window: platformWindow(6, 30, 8, 0)})
+	in := baseInput()
+	in.Workers = 1
+	in.Avg = 3 * time.Second
+	in.Rate = 1.0
+	in.Util = 0.7 // 90 分钟 × 1/3 × 0.7 = 1260，恰好等于需求。
+	prev, err := svc.Preview(context.Background(), in)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if prev.Capacity != 1260 || prev.Shortfall != 0 {
+		t.Fatalf("capacity/shortfall = %d/%d, want 1260/0", prev.Capacity, prev.Shortfall)
+	}
+	if prev.SuggestedWorkers != 0 {
+		t.Fatalf("容量恰好够时不得给建议, SuggestedWorkers = %d", prev.SuggestedWorkers)
+	}
+}
+
+// 需求装得下时不给建议：want <= 当前 workers，也没有缺口。
+func TestCapacitySuggestionSkipsWhenWorkersSuffice(t *testing.T) {
+	ids := make([]string, 10)
+	for i := range ids {
+		ids[i] = "acct-" + string(rune('a'+i%26)) + string(rune('0'+i/26))
+	}
+	svc := newService(t, &fakeWindowStore{}, &fakePlanStore{}, fakeAccounts{ids: ids},
+		&fakeDiscover{window: platformWindow(6, 30, 7, 50)})
+	in := baseInput()
+	in.Rate = 10.0 // 通道吞吐 2/s 低于出口 10/s：瓶颈在通道，不是出口。
+	prev, err := svc.Preview(context.Background(), in)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if prev.Shortfall != 0 || prev.Binding != corecapacity.BindingWorkers {
+		t.Fatalf("shortfall/binding = %d/%q, want 0/workers", prev.Shortfall, prev.Binding)
+	}
+	if prev.SuggestedWorkers != 0 {
+		t.Fatalf("通道足够时不得给建议, SuggestedWorkers = %d", prev.SuggestedWorkers)
 	}
 }
 

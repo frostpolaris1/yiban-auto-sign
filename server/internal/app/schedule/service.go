@@ -94,6 +94,10 @@ type Preview struct {
 	Capacity  int
 	Demand    int
 	Shortfall int
+	// Binding 是容量瓶颈归属（workers 或 egress_rate）。
+	Binding corecapacity.Binding
+	// SuggestedWorkers 是建议的总并发通道数；0 表示不给建议。
+	SuggestedWorkers int
 	// Histogram 是 5 分钟片的落点计数，键为片号（相对有效窗口起点）。
 	Histogram map[int]int
 	Rows      []Row
@@ -478,15 +482,27 @@ func (s *Service) buildOnce(ctx context.Context, in Input) (Preview, bool, error
 }
 
 // shortfallError 把容量缺口翻成 409 capacity_shortfall。
-// details 带需求、容量与缺口三个数：调用方不必重算，
-// 也不必从 message 里抠数字。
+// details 带需求、容量、缺口与瓶颈：调用方不必重算，也不必从 message 里抠数字。
+// 建议值只在真能加通道解决时出现（workers 且有不超过上限的总数）。
 func shortfallError(p Preview) error {
-	err := coreerrs.New(coreerrs.CodeCapacityShortfall,
-		fmt.Sprintf("容量不足：需求 %d，容量 %d", p.Demand, p.Capacity))
+	message := fmt.Sprintf("容量不足：需求 %d，容量 %d", p.Demand, p.Capacity)
+	switch p.Binding {
+	case corecapacity.BindingWorkers:
+		if p.SuggestedWorkers > 0 {
+			message += fmt.Sprintf("；通道是瓶颈，建议 YIBAN_WORKERS=%d", p.SuggestedWorkers)
+		}
+	case corecapacity.BindingEgressRate:
+		message += "；出口速率是瓶颈，建议提高 YIBAN_EGRESS_RATE 或增加出口标识"
+	}
+	err := coreerrs.New(coreerrs.CodeCapacityShortfall, message)
 	err.Details = map[string]any{
 		"demand":    p.Demand,
 		"capacity":  p.Capacity,
 		"shortfall": p.Shortfall,
+		"binding":   string(p.Binding),
+	}
+	if p.SuggestedWorkers > 0 {
+		err.Details["suggested_workers"] = p.SuggestedWorkers
 	}
 	return err
 }
@@ -515,12 +531,17 @@ func (s *Service) publishCapacity(ctx context.Context, in Input, p Preview) {
 		return
 	}
 	defer func() { _ = recover() }() // 发布失败只丢事件
+	payload := map[string]any{
+		"capacity":  p.Capacity,
+		"demand":    p.Demand,
+		"shortfall": p.Shortfall,
+		"binding":   string(p.Binding),
+	}
+	if p.SuggestedWorkers > 0 {
+		payload["suggested_workers"] = p.SuggestedWorkers
+	}
 	s.deps.Notifier.PlanEvent(ctx, in.SchoolID, in.SchoolTaskID, in.Day,
-		appevents.TypeCapacityChanged, map[string]any{
-			"capacity":  p.Capacity,
-			"demand":    p.Demand,
-			"shortfall": p.Shortfall,
-		})
+		appevents.TypeCapacityChanged, payload)
 }
 
 // windowPolicy 是窗口解析口径。
@@ -720,18 +741,24 @@ func (s *Service) buildRows(ctx context.Context, in Input, eff corewindow.Window
 		rows[i] = Row{AccountID: acct.ID, RunAt: eff.Start.Add(off)}
 		hist[coreplan.SlotOf(off)]++
 	}
+	demand := len(accounts)
 	capacity := corecapacity.Capacity(span, in.Workers, in.Avg, in.Rate, in.Util)
+	shortfall := corecapacity.Shortfall(demand, capacity)
+	// 要抬哪一侧、给不给数字，全由 core 判定；入口不重写需求校验。
+	advice := corecapacity.Advise(span, in.Workers, in.Avg, in.Rate, in.Util, demand)
 	return Preview{
-		Day:         in.Day,
-		Source:      contract.WindowSource(raw.Source),
-		WindowStart: eff.Start,
-		WindowEnd:   eff.End,
-		Version:     0,
-		Capacity:    capacity,
-		Demand:      len(accounts),
-		Shortfall:   corecapacity.Shortfall(len(accounts), capacity),
-		Histogram:   hist,
-		Rows:        rows,
+		Day:              in.Day,
+		Source:           contract.WindowSource(raw.Source),
+		WindowStart:      eff.Start,
+		WindowEnd:        eff.End,
+		Version:          0,
+		Capacity:         capacity,
+		Demand:           demand,
+		Shortfall:        shortfall,
+		Binding:          advice.Binding,
+		SuggestedWorkers: advice.SuggestedWorkers,
+		Histogram:        hist,
+		Rows:             rows,
 	}, nil
 }
 

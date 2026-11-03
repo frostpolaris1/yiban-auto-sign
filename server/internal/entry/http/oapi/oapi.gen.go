@@ -145,6 +145,24 @@ func (e AccountStatus) Valid() bool {
 	}
 }
 
+// Defines values for CapacityReportBinding.
+const (
+	EgressRate CapacityReportBinding = "egress_rate"
+	Workers    CapacityReportBinding = "workers"
+)
+
+// Valid indicates whether the value is a known member of the CapacityReportBinding enum.
+func (e CapacityReportBinding) Valid() bool {
+	switch e {
+	case EgressRate:
+		return true
+	case Workers:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for DiagnosticsItemSuggestion.
 const (
 	DiagnosticsItemSuggestionContactAdmin DiagnosticsItemSuggestion = "contact_admin"
@@ -769,19 +787,42 @@ type AdminTaskRow struct {
 
 // CapacityReport defines model for CapacityReport.
 type CapacityReport struct {
-	Capacity  int    `json:"capacity"`
-	Day       string `json:"day"`
-	Demand    int    `json:"demand"`
-	SchoolId  string `json:"school_id"`
-	Shortfall int    `json:"shortfall"`
+	// Binding Side to raise when capacity is short. workers means raise
+	// concurrency: a count at most 64 fits the demand, or the demand
+	// needs more than 64 channels and no allowed count fits.
+	// egress_rate means raising concurrency alone cannot fit the
+	// demand. When the current capacity already fits, it reports the
+	// current bottleneck and suggested_workers is absent.
+	Binding   *CapacityReportBinding `json:"binding,omitempty"`
+	Capacity  int                    `json:"capacity"`
+	Day       string                 `json:"day"`
+	Demand    int                    `json:"demand"`
+	SchoolId  string                 `json:"school_id"`
+	Shortfall int                    `json:"shortfall"`
 
 	// Source platform and cache come from discovery; fallback is the local
 	// default window; override is a master or admin replacement.
-	Source      ScheduleWindowSource `json:"source"`
-	TaskId      string               `json:"task_id"`
-	WindowEnd   time.Time            `json:"window_end"`
-	WindowStart time.Time            `json:"window_start"`
+	Source ScheduleWindowSource `json:"source"`
+
+	// SuggestedWorkers Total channel count that fits the demand. Present only when
+	// binding is workers, the value is above the configured concurrency,
+	// at most 64, and that count really fits the demand. Absent for the
+	// egress_rate binding (raising concurrency alone cannot fit the
+	// demand) and when the demand exceeds the 64-channel cap. Applying
+	// it means changing YIBAN_WORKERS and restarting.
+	SuggestedWorkers *int      `json:"suggested_workers,omitempty"`
+	TaskId           string    `json:"task_id"`
+	WindowEnd        time.Time `json:"window_end"`
+	WindowStart      time.Time `json:"window_start"`
 }
+
+// CapacityReportBinding Side to raise when capacity is short. workers means raise
+// concurrency: a count at most 64 fits the demand, or the demand
+// needs more than 64 channels and no allowed count fits.
+// egress_rate means raising concurrency alone cannot fit the
+// demand. When the current capacity already fits, it reports the
+// current bottleneck and suggested_workers is absent.
+type CapacityReportBinding string
 
 // ChangePasswordRequest defines model for ChangePasswordRequest.
 type ChangePasswordRequest struct {

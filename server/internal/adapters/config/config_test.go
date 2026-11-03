@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	corecapacity "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/capacity"
 	coremail "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mail"
 )
 
@@ -270,6 +271,15 @@ func TestScheduleConfigDefaultsAndBounds(t *testing.T) {
 		if _, err := LoadFrom(src); err == nil {
 			t.Fatalf("%s=%q 必须被拒绝", c.key, c.value)
 		}
+	}
+}
+
+// TestWorkersCapMatchesCapacity 钉住配置上限与容量建议上限同值：
+// 建议值超过配置上限时不可应用，两处 64 漂移会让建议变成不可执行的数字。
+func TestWorkersCapMatchesCapacity(t *testing.T) {
+	if keyWorkers.max != corecapacity.MaxWorkers {
+		t.Fatalf("YIBAN_WORKERS 上限 = %d, capacity.MaxWorkers = %d",
+			keyWorkers.max, corecapacity.MaxWorkers)
 	}
 }
 

@@ -12,16 +12,22 @@
  * 与容量报告成败无关；窗口读不到就没有注脚。
  * `shortfall>0` 用 danger 徽章；其余用 success。
  * 三个数字用滚动组件渲染，颜色继承所在容器（正文色或徽章色）。
+ * 缺口为正时给一条可执行建议：通道瓶颈给 YIBAN_WORKERS 数值与复制按钮，
+ * 出口瓶颈只指向 YIBAN_EGRESS_RATE 或增加出口标识，不给数字。
+ * 建议块只在 `shortfall>0` 时出现；无缺口不渲染。
+ * 复制失败时在建议块内留可见提示，配置行本身可手选复制。
  * 窗口失败与容量失败各有错误态与「重试」，不整页挂。
  * 无可用任务时只说「今日无可用窗口」，不发容量请求。
  */
 
+import { useState } from 'react'
 import { Alert } from '@/components/ui/Alert'
 import { AnimatedNumber } from '@/components/ui/AnimatedNumber'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { SelectInput } from '@/components/ui/Input'
+import { notifySuccess } from '@/components/ui/toast'
 import type { CapacityReport } from '@/lib/api/schedule'
 import { formatClock } from '@/lib/format'
 import {
@@ -45,6 +51,63 @@ type CapacityCardProps = {
   capacityError: string | null
   onRetryWindows: () => void
   onRetryCapacity: () => void
+}
+
+/** 复制配置行；成功发 toast，失败交给建议块内的可见提示。 */
+function copyConfigLine(line: string, onFailure: () => void): void {
+  const clipboard = navigator.clipboard
+  if (!clipboard) {
+    onFailure()
+    return
+  }
+  void clipboard.writeText(line).then(
+    () => notifySuccess('已复制配置行'),
+    () => onFailure(),
+  )
+}
+
+/** 缺口建议：按瓶颈归属给可执行动作，出口瓶颈不给数字。 */
+function CapacityHint({ report }: { report: CapacityReport }) {
+  const [copyFailed, setCopyFailed] = useState(false)
+  if (report.shortfall <= 0) return null
+  const suggested = report.suggested_workers ?? 0
+  if (report.binding === 'workers' && suggested > 0) {
+    const line = `YIBAN_WORKERS=${suggested}`
+    return (
+      <div className="app-capacity-hint">
+        <p>通道是瓶颈：把 YIBAN_WORKERS 提到 {suggested}。</p>
+        <div className="app-capacity-hint-line">
+          <code>{line}</code>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setCopyFailed(false)
+              copyConfigLine(line, () => setCopyFailed(true))
+            }}
+          >
+            复制
+          </Button>
+        </div>
+        {copyFailed ? (
+          <p className="app-capacity-copy-error" role="alert">
+            复制失败，请手动选择文本
+          </p>
+        ) : null}
+      </div>
+    )
+  }
+  if (report.binding === 'egress_rate') {
+    return (
+      <div className="app-capacity-hint">
+        <p>出口速率是瓶颈：提高 YIBAN_EGRESS_RATE 或增加出口标识。</p>
+        <div className="app-capacity-hint-line">
+          <code>YIBAN_EGRESS_RATE</code>
+        </div>
+      </div>
+    )
+  }
+  return null
 }
 
 export function CapacityCard({
@@ -128,6 +191,11 @@ export function CapacityCard({
                   </div>
                 </div>
               </div>
+
+              <CapacityHint
+                key={`${report.task_id}:${report.suggested_workers ?? 0}:${report.shortfall}`}
+                report={report}
+              />
 
               <p className="app-muted app-capacity-meta">
                 <Badge tone={capacitySourceTone(report.source)}>

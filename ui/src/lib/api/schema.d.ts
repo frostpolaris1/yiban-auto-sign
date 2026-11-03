@@ -1054,7 +1054,9 @@ export interface paths {
          *     Capacity shortfall returns 409 capacity_shortfall and writes nothing:
          *     the demand exceeds what the window can carry at the configured
          *     concurrency, average duration and egress rate. `details` carries
-         *     demand, capacity and shortfall. Preview still reports the numbers.
+         *     demand, capacity, shortfall, binding, and suggested_workers when
+         *     raising the channel count within the 64-channel cap fits the demand.
+         *     Preview still reports the numbers.
          */
         post: operations["SchedulePlan"];
         delete?: never;
@@ -1127,6 +1129,22 @@ export interface paths {
          * @description Capacity uses the same window resolution and formula as the plan.
          *     A positive shortfall means demand exceeds capacity and the plan
          *     compresses rows into the tail slice.
+         *     The binding names the side to raise when capacity is short: workers
+         *     when raising concurrency is the side to raise — within the
+         *     64-channel cap that means a count exists that fits the demand; beyond
+         *     it the demand needs more than 64 channels and no allowed count fits.
+         *     egress_rate means raising concurrency alone cannot fit the demand
+         *     because the egress rate is the hard limit. A suggested_workers value
+         *     appears only for the workers binding, only when capacity is short,
+         *     only when it is above the configured concurrency, at most 64, and
+         *     that count really fits the demand
+         *     (ceil(demand × average seconds ÷ (window seconds × utilization))).
+         *     When capacity is short and the workers binding carries no
+         *     suggested_workers, the demand needs more than the 64-channel cap.
+         *     When the current capacity already fits, binding reports the current
+         *     bottleneck and suggested_workers is absent.
+         *     Raising concurrency is a restart-level configuration change; the
+         *     report never changes it.
          *     The window is read from the daily cache by default: a cached day makes
          *     no platform call, a missing day is discovered once and then cached.
          *     Set refresh=true to discover again. An override still wins over both.
@@ -1759,6 +1777,25 @@ export interface components {
             capacity: number;
             demand: number;
             shortfall: number;
+            /**
+             * @description Side to raise when capacity is short. workers means raise
+             *     concurrency: a count at most 64 fits the demand, or the demand
+             *     needs more than 64 channels and no allowed count fits.
+             *     egress_rate means raising concurrency alone cannot fit the
+             *     demand. When the current capacity already fits, it reports the
+             *     current bottleneck and suggested_workers is absent.
+             * @enum {string}
+             */
+            binding?: "workers" | "egress_rate";
+            /**
+             * @description Total channel count that fits the demand. Present only when
+             *     binding is workers, the value is above the configured concurrency,
+             *     at most 64, and that count really fits the demand. Absent for the
+             *     egress_rate binding (raising concurrency alone cannot fit the
+             *     demand) and when the demand exceeds the 64-channel cap. Applying
+             *     it means changing YIBAN_WORKERS and restarting.
+             */
+            suggested_workers?: number;
         };
         SignStatsDay: {
             /** Format: date */
