@@ -13,6 +13,8 @@
  * location auto 不带经纬度与理由；fixed 必填且过 WGS84 范围；理由只在不空时携带。
  * 校验不过时构造函数抛错；例外＝PATCH 空草稿返回 `{}`，
  * 由组件层的「至少填一项」把关（契约 minProperties: 1 在 UI 入口兑现）。
+ * `clear_device_code` 是唯一允许发送空设备码的路径，且优先于输入值：
+ * 其他情况下留空都表示不修改。
  */
 
 import type { AccountLocationUpdate, AccountUpdate } from '@/lib/api/account'
@@ -23,6 +25,8 @@ export type AccountUpdateDraft = {
   password?: string
   device_code?: string
   phone_model?: string
+  /** 清除哨兵：勾选后 PATCH 体带 device_code: ''，优先于输入值。 */
+  clear_device_code?: boolean
 }
 
 const PHONE_PATTERN = /^1[0-9]{10}$/
@@ -69,8 +73,13 @@ export function buildAccountUpdate(draft: AccountUpdateDraft, originalName = '')
   // 密码不 trim：服务端与登录表单都不动空格，trim 会静默改写用户输入的凭据。
   const password = draft.password
   if (password !== undefined && password !== '') body.password = password
+  // 清除哨兵优先：勾选后输入框禁用且草稿里的旧值不再发送。
   const deviceCode = clean(draft.device_code)
-  if (deviceCode !== '') body.device_code = deviceCode
+  if (draft.clear_device_code === true) {
+    body.device_code = ''
+  } else if (deviceCode !== '') {
+    body.device_code = deviceCode
+  }
   const phoneModel = clean(draft.phone_model)
   if (phoneModel !== '') body.phone_model = phoneModel
   return body
