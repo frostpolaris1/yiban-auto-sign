@@ -14,7 +14,7 @@
  * 用户管理页的邮箱前缀固定 `master-one`／`admin-one`／`member-one`，明示合成口径。
  */
 
-import type { Account, AccountPage, AccountStatus } from './api/account'
+import type { Account, AccountPage, AccountStatus, AccountSummary } from './api/account'
 import type { Photo, PhotoPage } from './api/photo'
 import type { School, SchoolAdmin, SchoolPage } from './api/school'
 import type { EngineSnapshot } from './api/engine'
@@ -82,6 +82,15 @@ export function showcaseAccounts(): AccountPage {
       account('acc-0006', '135****0001', 'credential_error', 'school-a'),
     ],
     next_cursor: '',
+  }
+}
+
+/** 待处理账号计数。与账号列表夹具同源：只数未软删的 pending 与 rejected。 */
+export function showcaseAccountSummary(): AccountSummary {
+  const items = showcaseAccounts().items
+  return {
+    pending: items.filter((item) => item.status === 'pending').length,
+    rejected: items.filter((item) => item.status === 'rejected').length,
   }
 }
 

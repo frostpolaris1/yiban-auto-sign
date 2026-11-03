@@ -190,6 +190,8 @@ export type MockOptions = {
   deviceRefreshError?: { status: number; code: string; message: string }
   /** 恢复的失败注入。缺省清掉软删标记。 */
   restoreError?: { status: number; code: string; message: string }
+  /** 待处理汇总（/api/accounts/summary）的失败注入。缺省按夹具实时计数。 */
+  summaryError?: { status: number; code: string; message: string }
   /** 归属选择器 lookup 的失败注入。 */
   lookupError?: { status: number; code: string; message: string }
   /** 照片夹具。缺省为一份 user-1 拥有两张图的合成库。 */
@@ -475,6 +477,23 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
       return json(route, { items: filterAccounts(items, q), next_cursor: next })
     }
 
+    // 待处理账号计数：只数未软删行，从当前夹具实时推导，
+    // 写操作（建号/审核/删除/恢复）改列表后计数随之变。
+    if (url.pathname === '/api/accounts/summary' && request.method() === 'GET') {
+      if (sessionRole !== 'master' && sessionRole !== 'admin') {
+        return fail(route, 403, 'forbidden', '仅 master/admin 可读账号汇总')
+      }
+      if (options.summaryError) {
+        const { status, code, message } = options.summaryError
+        return fail(route, status, code, message)
+      }
+      const live = [...allAccounts, ...Object.values(pages).flat()]
+      return json(route, {
+        pending: live.filter((item) => item.status === 'pending').length,
+        rejected: live.filter((item) => item.status === 'rejected').length,
+      })
+    }
+
     const match = url.pathname.match(
       /^\/api\/accounts\/([^/]+)(?:\/(pause|sign|verify|review|location|device-refresh|restore))?$/,
     )
@@ -571,7 +590,12 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
     }
     if (action === 'review' && request.method() === 'POST') {
       const decision = (body as { decision?: string } | null)?.decision
-      return json(route, { ...found, status: decision === 'reject' ? 'rejected' : 'active' })
+      // 与服务端同口径：审核推进夹具行的状态，待处理汇总随之变化。
+      found.status = decision === 'reject' ? 'rejected' : 'active'
+      if (decision === 'reject') found.reject_reason = '合成驳回理由'
+      found.reviewed_at = '2026-10-28T09:30:00Z'
+      found.reviewed_by = 'user-1'
+      return json(route, found)
     }
 
     // 设备刷新：无请求体。回读值缺省即 DEVICE_READ；错误由用例注入。
@@ -670,6 +694,12 @@ export function restoreCalls(api: FakeApi, id: string): ApiCall[] {
 
 export function lookupCalls(api: FakeApi): ApiCall[] {
   return api.calls.filter((call) => call.method === 'GET' && call.path === '/api/users/lookup')
+}
+
+export function summaryCalls(api: FakeApi): ApiCall[] {
+  return api.calls.filter(
+    (call) => call.method === 'GET' && call.path === '/api/accounts/summary',
+  )
 }
 
 export function changePasswordCalls(api: FakeApi): ApiCall[] {

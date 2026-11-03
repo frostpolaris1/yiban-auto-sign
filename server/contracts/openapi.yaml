@@ -874,6 +874,31 @@ paths:
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
+  /api/accounts/summary:
+    get:
+      tags: [accounts]
+      operationId: AccountSummary
+      summary: Count the live accounts awaiting a review decision.
+      description: |
+        Master and admin only. pending counts the live accounts whose
+        status is pending; rejected counts the live accounts whose status
+        is rejected. Soft-deleted rows never enter either number, so the
+        summary always answers from the same population the list serves
+        without include_deleted. This is a static path segment next to
+        /api/accounts/{id}; the other methods on /api/accounts/summary are
+        matched by the {id} route and answer for the literal id "summary"
+        like any other unknown account id.
+      x-roles: [master, admin]
+      responses:
+        '200':
+          description: Review workload counts.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountSummary'
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        default: { $ref: '#/components/responses/DefaultError' }
   /api/accounts/{id}:
     get:
       tags: [accounts]
@@ -2893,6 +2918,15 @@ components:
         next_cursor:
           type: string
           description: Cursor for the next page; empty on the last page.
+    AccountSummary:
+      type: object
+      required: [pending, rejected]
+      description: |
+        Review workload counts over live accounts only: a row with a
+        deleted_at stamp never enters either number.
+      properties:
+        pending: { type: integer, minimum: 0 }
+        rejected: { type: integer, minimum: 0 }
     HealthStatus:
       type: object
       required: [status]

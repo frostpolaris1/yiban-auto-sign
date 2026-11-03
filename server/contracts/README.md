@@ -90,6 +90,8 @@ either side drifts.
 | DELETE | `/api/schools/:id/admins/:uid` | master | P1 |
 | GET | `/api/accounts` | master/admin/user | P1 |
 | POST | `/api/accounts` | master/admin/user | P1 |
+| GET | `/api/accounts/summary` | master/admin | N190 |
+|  |  |  | 只数未软删账号：`pending` 与 `rejected` 两计数，供看板待处理 KPI 与账号页提示条。 |
 | GET | `/api/accounts/:id` | master/admin/user | P1 |
 | PATCH | `/api/accounts/:id` | master/admin/user | P1 |
 | POST | `/api/accounts/:id/review` | master/admin | P1 |

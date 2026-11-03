@@ -681,6 +681,13 @@ type AccountSignAccepted struct {
 // that recovery.
 type AccountStatus string
 
+// AccountSummary Review workload counts over live accounts only: a row with a
+// deleted_at stamp never enters either number.
+type AccountSummary struct {
+	Pending  int `json:"pending"`
+	Rejected int `json:"rejected"`
+}
+
 // AccountUpdate defines model for AccountUpdate.
 type AccountUpdate struct {
 	DeviceCode *string `json:"device_code,omitempty"`
@@ -1914,6 +1921,9 @@ type ServerInterface interface {
 	// AccountCreate Register a platform account.
 	// (POST /api/accounts)
 	AccountCreate(c *gin.Context, params AccountCreateParams)
+	// AccountSummary Count the live accounts awaiting a review decision.
+	// (GET /api/accounts/summary)
+	AccountSummary(c *gin.Context)
 	// AccountDelete Soft-delete an account.
 	// (DELETE /api/accounts/{id})
 	AccountDelete(c *gin.Context, id AccountID, params AccountDeleteParams)
@@ -2204,6 +2214,19 @@ func (siw *ServerInterfaceWrapper) AccountCreate(c *gin.Context) {
 	}
 
 	siw.Handler.AccountCreate(c, params)
+}
+
+// AccountSummary operation middleware
+func (siw *ServerInterfaceWrapper) AccountSummary(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AccountSummary(c)
 }
 
 // AccountDelete operation middleware
@@ -4531,6 +4554,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.DELETE(options.BaseURL+"/api/schools/:id/admins/:uid", wrapper.SchoolAdminRemove)
 	router.GET(options.BaseURL+"/api/accounts", wrapper.AccountList)
 	router.POST(options.BaseURL+"/api/accounts", wrapper.AccountCreate)
+	router.GET(options.BaseURL+"/api/accounts/summary", wrapper.AccountSummary)
 	router.DELETE(options.BaseURL+"/api/accounts/:id", wrapper.AccountDelete)
 	router.GET(options.BaseURL+"/api/accounts/:id", wrapper.AccountGet)
 	router.PATCH(options.BaseURL+"/api/accounts/:id", wrapper.AccountUpdate)

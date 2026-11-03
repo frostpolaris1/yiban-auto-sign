@@ -20,6 +20,7 @@
 
 import type { Tone } from '@/components/ui/Badge'
 import type { IconName } from '@/components/ui/Icon'
+import type { AccountSummary } from '@/lib/api/account'
 import type { SignStatusItem } from '@/lib/api/me'
 import type { DiagnosticsSuggestion } from '@/lib/api/me'
 import type { ScheduleWindow, ScheduleWindowSource } from '@/lib/api/schedule'
@@ -181,6 +182,8 @@ export type KpiCard = {
   note: string
   /** 成功率卡的环比 pill；其余卡不设。 */
   pill?: RatePill | null
+  /** 整卡链接目标。设置时卡片渲染为站内链接，可访问名称来自卡内文本。 */
+  href?: '/accounts'
 }
 
 /** `counts` 为 null 时值是 `—`：没有数据就不编数字。 */
@@ -313,6 +316,28 @@ export function todayKpiCards(stats: TodayStats | null): KpiCard[] {
       note: '等待执行或执行中',
     },
   ]
+}
+
+/**
+ * 第 5 卡「待处理账号」：值＝pending+rejected（未软删），note 拆两数。
+ * 汇总未到或读取失败都是 null：显示「—」，不编 0。整卡链接到账号页。
+ */
+export function pendingAccountCard(summary: AccountSummary | null): KpiCard {
+  const pending = summary?.pending ?? null
+  const rejected = summary?.rejected ?? null
+  const value = pending === null || rejected === null ? null : pending + rejected
+  return {
+    tone: 'purple',
+    icon: 'edit',
+    label: '待处理账号',
+    value,
+    unit: '个',
+    note:
+      pending === null || rejected === null
+        ? '等待读取'
+        : `待审核 ${pending} · 已拒绝 ${rejected}`,
+    href: '/accounts',
+  }
 }
 
 export const EMPTY_SIGN_TEXT = '今日暂无签到任务'

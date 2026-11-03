@@ -203,6 +203,19 @@ func (s *Service) Get(ctx context.Context, scope corescope.Scope, id string) (Re
 	return s.deps.Accounts.Get(ctx, scope, id)
 }
 
+// Summary 汇总作用域内待处理的账号数：pending 与 rejected，均只数未软删行。
+// master 统计全校；admin 只统计绑定校。**只有 master 与 admin 可以读**；
+// user 一律 403。只读，不写审计。
+func (s *Service) Summary(ctx context.Context, scope corescope.Scope) (StatusCounts, error) {
+	if err := app.RequireScope(scope); err != nil {
+		return StatusCounts{}, err
+	}
+	if scope.Kind() != corescope.KindMaster && scope.Kind() != corescope.KindAdmin {
+		return StatusCounts{}, errs.New(errs.CodeForbidden, "role cannot read the account summary")
+	}
+	return s.deps.Accounts.StatusCounts(ctx, scope)
+}
+
 // SigningCredential 读取并解密一个账号的凭据。
 // 作用域外与已软删返回 404；未配置 Cipher 即失败（fail-closed）。
 // 明文只交给签到链，本层不记录、不回显。

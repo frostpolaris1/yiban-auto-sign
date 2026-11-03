@@ -38,6 +38,10 @@ func (f *fakeService) Get(context.Context, corescope.Scope, string) (appaccount.
 	return appaccount.Record{}, nil
 }
 
+func (f *fakeService) Summary(context.Context, corescope.Scope) (appaccount.StatusCounts, error) {
+	return appaccount.StatusCounts{}, nil
+}
+
 func (f *fakeService) Update(context.Context, corescope.Scope, string, appaccount.UpdateInput, appaudit.Actor) (appaccount.Record, error) {
 	f.updates++
 	return appaccount.Record{}, nil

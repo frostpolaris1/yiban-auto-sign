@@ -19,6 +19,7 @@ type Schemas = components['schemas']
 export type AccountStatus = Schemas['AccountStatus']
 export type Account = Schemas['Account']
 export type AccountPage = Schemas['AccountPage']
+export type AccountSummary = Schemas['AccountSummary']
 export type AccountPauseRequest = Schemas['AccountPauseRequest']
 export type AccountReviewRequest = Schemas['AccountReviewRequest']
 export type AccountSignAccepted = Schemas['AccountSignAccepted']
@@ -35,6 +36,7 @@ export type AccountQuery = NonNullable<operations['AccountList']['parameters']['
 export const ACCOUNT_PATHS = {
   list: '/api/accounts',
   create: '/api/accounts',
+  summary: '/api/accounts/summary',
   detail: (id: string) => `/api/accounts/${encodeURIComponent(id)}`,
   review: (id: string) => `/api/accounts/${encodeURIComponent(id)}/review`,
   pause: (id: string) => `/api/accounts/${encodeURIComponent(id)}/pause`,
@@ -63,6 +65,14 @@ export function buildAccountSearch(query: AccountQuery = {}): string {
 
 export function listAccounts(query: AccountQuery = {}): Promise<AccountPage> {
   return apiRequest<AccountPage>(`${ACCOUNT_PATHS.list}${buildAccountSearch(query)}`)
+}
+
+/**
+ * 待处理账号计数。只数未软删账号，与列表缺省口径同源；
+ * 仅 master/admin，user 调用收到 403。
+ */
+export function getAccountSummary(): Promise<AccountSummary> {
+  return apiRequest<AccountSummary>(ACCOUNT_PATHS.summary)
 }
 
 export function getAccount(id: string): Promise<Account> {

@@ -1,4 +1,5 @@
 import type { Page, Route } from '@playwright/test'
+import type { AccountSummary } from '../../src/lib/api/account'
 import type { DiagnosticsItem, SignStatusItem } from '../../src/lib/api/me'
 import type {
   CapacityReport,
@@ -13,9 +14,10 @@ import { SESSION_CSRF, SESSION_EMAIL, type Role } from './fake-accounts-api'
  *
  * 一份路由处理 `/api/auth/me`、`/api/me/sign-status`、`/api/me/diagnostics`、
  * `/api/me/time-pref`、`/api/schedule/windows`、`/api/capacity`、
- * `/api/sign-stats` 与 `/api/time-prefs/stats`。
+ * `/api/sign-stats`、`/api/time-prefs/stats` 与 `/api/accounts/summary`。
  * 响应体只用登记过的合成值：学校与任务带「合成」前缀，账号是 `acc-000N`。
- * 角色按契约 `x-roles` 判：sign-status 仅 user；windows 与 capacity 仅 master/admin。
+ * 角色按契约 `x-roles` 判：sign-status 仅 user；windows、capacity 与
+ * summary 仅 master/admin。
  * 调用记录供断言「零请求」「参数正确」与「轮询次数」。
  * 错误注入默认每次都失败；`once: true` 时只有第一次失败，用来验「重试」。
  */
@@ -55,6 +57,9 @@ export type MockDashboardOptions = {
   prefStats?: PrefStatsReport
   signStatsError?: Failure
   prefStatsError?: Failure
+  /** 待处理账号计数。缺省 {pending: 2, rejected: 1}，第 5 卡值 3。 */
+  accountSummary?: AccountSummary
+  accountSummaryError?: Failure
   timePref?: TimePref
 }
 
@@ -117,6 +122,9 @@ export const DEFAULT_DIAGNOSTICS: DiagnosticsItem[] = [
 ]
 
 export const DEFAULT_TIME_PREF: TimePref = { offset_min: 15, allowed: true }
+
+/** 待处理账号计数的缺省夹具：与容量/统计缺省同套合成口径。 */
+export const DEFAULT_ACCOUNT_SUMMARY: AccountSummary = { pending: 2, rejected: 1 }
 
 /** 30 天终态：固定到 DASHBOARD_DAY，视觉基线不随日历漂移。 */
 export const DEFAULT_SIGN_STATS: SignStatsReport = {
@@ -285,7 +293,13 @@ export async function mockDashboardApi(
   }))
   const timePref: TimePref = { ...(options.timePref ?? DEFAULT_TIME_PREF) }
   const failures: Record<
-    'signStatus' | 'diagnostics' | 'windows' | 'capacity' | 'signStats' | 'prefStats',
+    | 'signStatus'
+    | 'diagnostics'
+    | 'windows'
+    | 'capacity'
+    | 'signStats'
+    | 'prefStats'
+    | 'accountSummary',
     FailureEntry
   > = {
     signStatus: { spec: options.signStatusError, hits: 0 },
@@ -294,6 +308,7 @@ export async function mockDashboardApi(
     capacity: { spec: options.capacityError, hits: 0 },
     signStats: { spec: options.signStatsError, hits: 0 },
     prefStats: { spec: options.prefStatsError, hits: 0 },
+    accountSummary: { spec: options.accountSummaryError, hits: 0 },
   }
 
   const json = (route: Route, body: unknown, status = 200) =>
@@ -409,6 +424,14 @@ export async function mockDashboardApi(
       return json(route, prefStatsFor(day, schoolId, taskId))
     }
 
+    // 待处理账号计数：静态段，先于 /api/accounts/:id 的兜底匹配。
+    if (url.pathname === '/api/accounts/summary' && request.method() === 'GET') {
+      if (!(await deny(route, ['master', 'admin']))) return
+      const failure = takeFailure('accountSummary')
+      if (failure) return fail(route, failure.status, failure.code, failure.message)
+      return json(route, options.accountSummary ?? DEFAULT_ACCOUNT_SUMMARY)
+    }
+
     return fail(route, 404, 'not_found', '未找到资源')
   })
 
@@ -438,6 +461,12 @@ export function signStatsCalls(api: FakeDashboardApi): DashboardApiCall[] {
 export function prefStatsCalls(api: FakeDashboardApi): DashboardApiCall[] {
   return api.calls.filter(
     (call) => call.method === 'GET' && call.path === '/api/time-prefs/stats',
+  )
+}
+
+export function accountSummaryCalls(api: FakeDashboardApi): DashboardApiCall[] {
+  return api.calls.filter(
+    (call) => call.method === 'GET' && call.path === '/api/accounts/summary',
   )
 }
 

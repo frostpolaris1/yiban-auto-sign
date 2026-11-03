@@ -10,6 +10,7 @@ import {
   STATE_LABELS,
   capacityOptions,
   capacitySourceTone,
+  pendingAccountCard,
   signCounts,
   signKpiCards,
   stateLabel,
@@ -251,6 +252,26 @@ test('the manager KPI cards carry today numbers and an em dash without data', ()
     blank.map((card) => card.pill ?? null),
     [null, null, null, null],
   )
+})
+
+test('the pending-accounts card sums the summary and never invents a number', () => {
+  const card = pendingAccountCard({ pending: 3, rejected: 2 })
+  assert.equal(card.label, '待处理账号')
+  assert.equal(card.value, 5, 'pending + rejected is the workload')
+  assert.equal(card.note, '待审核 3 · 已拒绝 2')
+  assert.equal(card.href, '/accounts', 'the whole card links to the accounts page')
+
+  // 全零是合法数据：显 0，不是「—」。
+  const zero = pendingAccountCard({ pending: 0, rejected: 0 })
+  assert.equal(zero.value, 0)
+  assert.equal(zero.note, '待审核 0 · 已拒绝 0')
+
+  // 汇总未到或失败都是 null：显「—」，不编 0。
+  for (const missing of [null, undefined]) {
+    const dash = pendingAccountCard(missing)
+    assert.equal(dash.value, null)
+    assert.equal(dash.note, '等待读取')
+  }
 })
 
 test('every contract state has a label and null means no task', () => {

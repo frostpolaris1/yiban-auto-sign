@@ -194,6 +194,24 @@ func (r *AccountRepo) List(ctx context.Context, s corescope.Scope, schoolID stri
 	return items, next, nil
 }
 
+// StatusCounts 按作用域统计未软删账号的 pending 与 rejected 行数。
+// 口径与 List 缺省一致：deleted_at IS NULL 才计入；软删行不进任何计数。
+// 一次扫描出两个计数；其余状态不进本结果。
+func (r *AccountRepo) StatusCounts(ctx context.Context, s corescope.Scope) (coreaccount.StatusCounts, error) {
+	scopeSQL, args, err := scopePredicate(s, 1, "")
+	if err != nil {
+		return coreaccount.StatusCounts{}, err
+	}
+	query := `SELECT count(*) FILTER (WHERE status = 'pending'),
+		count(*) FILTER (WHERE status = 'rejected')
+		FROM accounts WHERE deleted_at IS NULL` + scopeSQL
+	var counts coreaccount.StatusCounts
+	if err := r.db.q(ctx).QueryRow(ctx, query, args...).Scan(&counts.Pending, &counts.Rejected); err != nil {
+		return coreaccount.StatusCounts{}, mapError(err)
+	}
+	return counts, nil
+}
+
 // UpdatePhone 在范围内改登录手机号。
 // 与另一活跃行同校同号时撞唯一索引，映射为 conflict。
 func (r *AccountRepo) UpdatePhone(ctx context.Context, s corescope.Scope, id, phone string, at time.Time) (coreaccount.Record, error) {

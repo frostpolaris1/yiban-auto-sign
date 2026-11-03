@@ -1228,3 +1228,27 @@
   font-size: 13px;
   color: var(--t-warning);
 }
+
+/* ---------- N190 账号汇总 ----------
+ * 待处理账号 KPI 整卡是链接：链接默认色与下划线交给卡面令牌，
+ * `.kpi-card.c-*` 已定义 color，这里只关掉下划线。
+ * 账号页提示条：与筛选栏同宽，info 软底只用于提示，不写颜色字面量。
+ */
+a.kpi-card {
+  text-decoration: none;
+}
+
+.app-pending-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--info);
+  border-radius: 8px;
+  background: var(--info-soft);
+  font-size: 13px;
+}
