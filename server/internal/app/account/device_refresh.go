@@ -82,6 +82,8 @@ func (s *Service) DeviceRefresh(ctx context.Context, scope corescope.Scope, id s
 	if state.PhoneModel != "" {
 		effective.PhoneModel = state.PhoneModel
 	}
+	// 平台回读也是写入路径：按契约上限截断，不让超长机型进密文或响应。
+	effective.PhoneModel = truncateCredentialText(effective.PhoneModel)
 	err = s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
 		if err := s.writeBackDevice(ctx, scope, id, credential, effective); err != nil {
 			return err

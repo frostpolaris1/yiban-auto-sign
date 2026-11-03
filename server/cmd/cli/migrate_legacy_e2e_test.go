@@ -58,6 +58,9 @@ var (
 	e2ePhoneC      = "13800000003" // rejected，凭据明文驻留（导出后为空串）
 	e2ePhoneD      = "13800000004" // 活跃 + user_paused，phone_code 有信封
 	e2ePhoneOrphan = "13899999999" // time_prefs 孤儿
+	// 旧库机型没有长度约束：导入时必须按 rune 截到契约的 64。
+	e2eLongPhoneModel      = strings.Repeat("机", 70)
+	e2eTruncatedPhoneModel = strings.Repeat("机", 64)
 )
 
 // e2eNewKeyB64 是新栈凭据 KEK（32 字节合成值的 base64）。
@@ -116,7 +119,7 @@ func e2eWriteExport(t *testing.T, root string) (string, map[string][]map[string]
 	envCode := e2eSealOld(t, legacyKey, e2ePhoneD, "code-fixture-0001")
 	accounts := []map[string]any{
 		{"id": json.Number("1"), "sort_order": json.Number("0"), "name": "acct-a", "phone": e2ePhoneA,
-			"password": envA, "phone_model": "model-0000", "phone_code": "", "owner": "admin",
+			"password": envA, "phone_model": e2eLongPhoneModel, "phone_code": "", "owner": "admin",
 			"status": "active", "reject_reason": "", "deleted": json.Number("0"),
 			"deleted_at": "", "deleted_by": "", "user_paused": json.Number("0")},
 		{"id": json.Number("2"), "sort_order": json.Number("1"), "name": "acct-b", "phone": e2ePhoneB,
@@ -379,7 +382,7 @@ func TestMigrateLegacyImportReconcileE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open re-sealed credential: %v", err)
 	}
-	if payload.Password != e2eCredPW || payload.DeviceCode != "" || payload.PhoneModel != "model-0000" {
+	if payload.Password != e2eCredPW || payload.DeviceCode != "" || payload.PhoneModel != e2eTruncatedPhoneModel {
 		t.Fatalf("payload drifted: %+v", payload)
 	}
 

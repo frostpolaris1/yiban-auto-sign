@@ -849,6 +849,21 @@ test('a user sees the device model of an own account', async ({ page }) => {
   await expect(rowFor(page, '138****8000')).toContainText('Pixel 7')
 })
 
+test('loading and empty rows span every column', async ({ page }) => {
+  // 空夹具加列表延迟：先看到加载态行，再看到空态行。
+  await mockAccountsApi(page, { role: 'master', accounts: [], listDelayMs: 1200 })
+  await page.goto('/accounts')
+  const table = page.getByRole('table', { name: '账号列表' })
+
+  // 默认 8 列：备注名、手机号、机型、学校、状态、归属、更新时间、操作。
+  await expect(table.locator('td[colspan="8"]')).toContainText('加载中…')
+  await expect(table.locator('td[colspan="8"]')).toContainText('没有匹配的账号')
+
+  // 勾选含已删除后多一列删除时间：加载态行同步为 9。
+  await page.getByRole('checkbox', { name: '含已删除' }).check()
+  await expect(table.locator('td[colspan="9"]')).toContainText('加载中…')
+})
+
 test('invariant 11: a complete phone or email highlights the matching rows', async ({ page }) => {
   const api = await mockAccountsApi(page, { role: 'master' })
   await openAccounts(page)

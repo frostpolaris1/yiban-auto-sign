@@ -169,6 +169,8 @@ export type MockOptions = {
   /** 键是本次请求的 cursor；首屏键是空串。 */
   pages?: Record<string, Account[]>
   nextCursors?: Record<string, string>
+  /** 列表响应的额外延迟（毫秒）；用来观察加载态行。 */
+  listDelayMs?: number
   /**
    * 账号 id → 原号。响应只带掩码，改绑判定必须比原号。
    * 缺省取内置登记表；自定义夹具的账号要在这里补原号。
@@ -520,6 +522,9 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
     }
 
     if (url.pathname === '/api/accounts' && request.method() === 'GET') {
+      if (options.listDelayMs) {
+        await new Promise((resolve) => setTimeout(resolve, options.listDelayMs))
+      }
       const cursor = url.searchParams.get('cursor') ?? ''
       const includeDeleted = url.searchParams.get('include_deleted') === 'true'
       const base = pages[cursor] ?? allAccounts

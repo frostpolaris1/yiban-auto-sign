@@ -561,10 +561,12 @@ func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, 
 	if err != nil {
 		return Record{}, err
 	}
-	// 凭据写回不保证响应带最新机型：只在本次显式给了新值时回填。
-	// 其余情况列表与详情会再读凭据。
+	// 凭据写回不保证响应带最新机型：显式给了新值就用新值，
+	// 否则重读凭据，让共用 Account schema 的响应口径一致。
 	if in.PhoneModel != nil {
 		record.PhoneModel = *in.PhoneModel
+	} else {
+		s.attachPhoneModel(ctx, scope, &record)
 	}
 	return record, nil
 }
@@ -619,6 +621,7 @@ func (s *Service) Review(ctx context.Context, scope corescope.Scope, id string, 
 	if err != nil {
 		return Record{}, err
 	}
+	s.attachPhoneModel(ctx, scope, &record)
 	return record, nil
 }
 
@@ -707,6 +710,7 @@ func (s *Service) transition(ctx context.Context, scope corescope.Scope, id stri
 	if err != nil {
 		return Record{}, err
 	}
+	s.attachPhoneModel(ctx, scope, &record)
 	return record, nil
 }
 
@@ -809,6 +813,15 @@ func validateCredentialText(field, value string) error {
 		return errs.New(errs.CodeValidation, field+" must be at most 64 characters")
 	}
 	return nil
+}
+
+// truncateCredentialText 按 rune 截到契约上限。
+// 只用于非用户输入路径（平台回读）：用户输入超限仍报校验错。
+func truncateCredentialText(value string) string {
+	if utf8.RuneCountInString(value) <= maxCredentialFieldChars {
+		return value
+	}
+	return string([]rune(value)[:maxCredentialFieldChars])
 }
 
 func validatePassword(password string) error {
