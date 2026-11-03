@@ -2463,6 +2463,13 @@ components:
             needs this to mark deleted rows.
     AccountCreate:
       type: object
+      description: |
+        A user may not set device_code: the device code is the platform device
+        identity, and a user can only obtain it through device-refresh. A
+        create carrying a non-empty device_code from a user answers 403.
+        phone_model is not a device identity, but a model edit still counts as
+        a credential edit (a rejected account resubmits and a
+        credential_error account recovers), and every role may write it.
       required: [school_id, phone, password]
       properties:
         school_id: { type: string }
@@ -2480,10 +2487,24 @@ components:
           maxLength: 50
           description: Optional remark name; trimmed. Empty means unnamed.
         password: { type: string, minLength: 1 }
-        device_code: { type: string, maxLength: 64 }
+        device_code:
+          type: string
+          maxLength: 64
+          description: |
+            master and admin may set it. A user can only obtain it through
+            device-refresh: a non-empty value answers 403, an empty string is
+            the same as omitting it.
         phone_model: { type: string, maxLength: 64 }
     AccountUpdate:
       type: object
+      description: |
+        A user may not set or change device_code: the device code is the
+        platform device identity, and a user can only obtain it through
+        device-refresh. A user update carrying any device_code, including an
+        empty string, answers 403. phone_model is not a device identity, but
+        a model edit still counts as a credential edit (a rejected account
+        resubmits and a credential_error account recovers), and every role
+        may write it.
       minProperties: 1
       properties:
         school_id:
@@ -2507,7 +2528,13 @@ components:
             credential edit (a new phone, password, device code or model)
             resubmits; a name-only edit or an unchanged phone does not.
         password: { type: string, minLength: 1 }
-        device_code: { type: string, maxLength: 64 }
+        device_code:
+          type: string
+          maxLength: 64
+          description: |
+            master and admin may set or clear it: an empty string clears the
+            stored device code. A user update carrying any device_code,
+            including an empty string, answers 403.
         phone_model: { type: string, maxLength: 64 }
     AccountReviewRequest:
       type: object

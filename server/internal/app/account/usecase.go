@@ -249,9 +249,15 @@ func (s *Service) SigningCredential(ctx context.Context, scope corescope.Scope, 
 
 // Create 建账号。状态固定为 pending。
 // 账号行、凭据行与 account.create 审计同事务。
+//
+// 设备码是平台设备身份，user 不得自填，只能走 device-refresh；
+// 机型是非凭据标签，user 可以设置。master 与 admin 不受此限。
 func (s *Service) Create(ctx context.Context, scope corescope.Scope, in CreateInput, actor appaudit.Actor) (Record, error) {
 	if err := app.RequireScope(scope); err != nil {
 		return Record{}, err
+	}
+	if scope.Kind() == corescope.KindUser && in.DeviceCode != "" {
+		return Record{}, errs.New(errs.CodeForbidden, "users cannot set the device code")
 	}
 	owner, err := s.resolveOwner(ctx, scope, actor, in.OwnerUserID)
 	if err != nil {
@@ -335,9 +341,15 @@ func (s *Service) Create(ctx context.Context, scope corescope.Scope, in CreateIn
 // 判定在事务内、行锁下读取，避免漏掉引擎刚提交的状态。
 // 账号行、凭据行与审计同事务；状态迁移时 account.resubmit 或
 // account.credential_recovered 与 account.update 相邻追加。
+//
+// 设备码是平台设备身份，user 不得改，只能走 device-refresh；
+// 机型是非凭据标签，user 可以改。master 与 admin 不受此限。
 func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, in UpdateInput, actor appaudit.Actor) (Record, error) {
 	if err := app.RequireScope(scope); err != nil {
 		return Record{}, err
+	}
+	if scope.Kind() == corescope.KindUser && in.DeviceCode != nil {
+		return Record{}, errs.New(errs.CodeForbidden, "users cannot set the device code")
 	}
 	current, err := s.deps.Accounts.Get(ctx, scope, id)
 	if err != nil {

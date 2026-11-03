@@ -537,6 +537,7 @@ export function AccountsView({ photoSection }: AccountsViewProps = {}) {
 
       <AccountEditModal
         account={editTarget}
+        role={role}
         pending={shapeMutation.isPending && shapeMutation.variables?.op === 'update'}
         error={editError}
         returnFocusTo={editReturnFocus}

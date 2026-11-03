@@ -9,12 +9,16 @@
  * 空表单不可提交；phone 前端校验 11 位、1 开头；两个 64 上限由控件封顶。
  * 备注名是唯一回填字段：与打开时相同则不发，清空即删除备注。
  * school 字段不出现：P1 变更必 409，不做可点必败控件。
+ * 设备识别码只对 master/admin 显示：user 的设备码只能由平台回读，
+ * 这里不给必败控件。机型是非凭据标签，三角色都可改。
+ * 清除设备识别码是唯一发送空串的路径；勾选后输入禁用，取消即恢复。
  * 被拒账号的入口与标题写「修改并重新提交」，模态里展示驳回理由。
  * 只改备注名不重提；改凭据或改绑手机号才回待审核，模态文案先说清。
  */
 
 import { useEffect, useState, type ChangeEvent } from 'react'
 import type { Account } from '@/lib/api/account'
+import type { Role } from '@/lib/api/auth'
 import { Alert } from '@/components/ui/Alert'
 import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
@@ -27,7 +31,11 @@ const EMPTY_DRAFT: Required<AccountUpdateDraft> = {
   password: '',
   device_code: '',
   phone_model: '',
+  clear_device_code: false,
 }
+
+/** 草稿里可直接绑到文本控件的键；清除开关是布尔值，单独处理。 */
+type TextFieldKey = 'phone' | 'name' | 'password' | 'device_code' | 'phone_model'
 
 /** 备注名按码点比较，与服务端 trim + rune 计长同口径。 */
 function normalizeName(value: string | undefined): string {
@@ -36,6 +44,7 @@ function normalizeName(value: string | undefined): string {
 
 type AccountEditModalProps = {
   account: Account | null
+  role: Role | null
   pending: boolean
   error: string | null
   returnFocusTo: HTMLElement | null
@@ -45,6 +54,7 @@ type AccountEditModalProps = {
 
 export function AccountEditModal({
   account,
+  role,
   pending,
   error,
   returnFocusTo,
@@ -54,6 +64,9 @@ export function AccountEditModal({
   const [draft, setDraft] = useState<AccountUpdateDraft>(EMPTY_DRAFT)
   const validation = accountUpdateError(draft)
   const resubmit = account?.status === 'rejected'
+  // 设备码归平台设备身份：只有管理者能手填或清除。
+  const canManageDevice = role === 'master' || role === 'admin'
+  const clearingDevice = draft.clear_device_code === true
   // 备注名回填后与打开时的原值比较：没变不算一次编辑。
   const nameChanged = normalizeName(draft.name) !== normalizeName(account?.name)
   // 判定逐字段对齐纯函数口径：密码原样（含纯空格，契约 minLength 1 合法），
@@ -61,9 +74,10 @@ export function AccountEditModal({
   const hasAny =
     nameChanged ||
     (draft.password !== undefined && draft.password !== '') ||
+    clearingDevice ||
     [draft.phone, draft.device_code, draft.phone_model].some((v) => (v ?? '').trim() !== '')
 
-  const field = (key: keyof AccountUpdateDraft) => ({
+  const field = (key: TextFieldKey) => ({
     value: draft[key] ?? '',
     onChange: (event: ChangeEvent<HTMLInputElement>) =>
       setDraft((previous) => ({ ...previous, [key]: event.target.value })),
@@ -130,13 +144,31 @@ export function AccountEditModal({
           placeholder="留空＝不修改"
           {...field('password')}
         />
-        <TextInput
-          id="account-edit-device"
-          label="设备识别码"
-          placeholder="留空＝不修改"
-          maxLength={64}
-          {...field('device_code')}
-        />
+        {canManageDevice ? (
+          <>
+            <TextInput
+              id="account-edit-device"
+              label="设备识别码"
+              placeholder={clearingDevice ? '保存后清除' : '留空＝不修改'}
+              maxLength={64}
+              disabled={clearingDevice}
+              {...field('device_code')}
+            />
+            <label className="app-filter-check">
+              <input
+                type="checkbox"
+                checked={clearingDevice}
+                onChange={(event) =>
+                  setDraft((previous) => ({
+                    ...previous,
+                    clear_device_code: event.target.checked,
+                  }))
+                }
+              />
+              清除设备识别码
+            </label>
+          </>
+        ) : null}
         <TextInput
           id="account-edit-model"
           label="机型"

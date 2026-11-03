@@ -578,7 +578,8 @@ test('invariant 6: PATCH sends only the filled fields', async ({ page }) => {
   const save = dialog.getByRole('button', { name: '保存修改' })
   await expect(save, 'an empty form stays closed').toBeDisabled()
 
-  await dialog.getByLabel('设备识别码').fill('dev-1')
+  // exact：旁边的「清除设备识别码」开关也命中「设备识别码」子串。
+  await dialog.getByLabel('设备识别码', { exact: true }).fill('dev-1')
   await expect(save).toBeEnabled()
   await save.click()
   await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(1)
@@ -746,6 +747,60 @@ test('invariant 6: a name-only edit keeps a rejected account rejected', async ({
   await page.getByRole('button', { name: '查看 138****8000' }).click()
   const drawer = page.getByRole('dialog', { name: '账号详情' })
   await expect(drawer).toContainText('照片不清晰')
+})
+
+// ---------------------------------------------------------------------------
+// 设备字段的角色门：设备码是平台设备身份，user 只能由平台回读；
+// 机型是非凭据标签，user 可改。清除哨兵只在管理者模态提供。
+// ---------------------------------------------------------------------------
+
+test('device gate: a user edit hides the device code and keeps the model', async ({ page }) => {
+  const api = await mockAccountsApi(page, { role: 'user' })
+  await openAccounts(page)
+
+  const menu = await openRowMenu(page, '138****8000')
+  await menu.getByRole('menuitem', { name: /^编辑$/ }).click()
+  const dialog = page.getByRole('dialog', { name: '编辑账号？' })
+  await expect(dialog.getByLabel('设备识别码', { exact: true })).toHaveCount(0)
+  await expect(dialog.getByLabel('清除设备识别码')).toHaveCount(0)
+  await expect(dialog.getByLabel('机型')).toBeVisible()
+
+  await dialog.getByLabel('机型').fill('Pixel')
+  await dialog.getByRole('button', { name: '保存修改' }).click()
+  await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(1)
+  expect(patchCalls(api, 'acc-1')[0].body).toEqual({ phone_model: 'Pixel' })
+})
+
+test('device gate: an admin clears the device code with the sentinel', async ({ page }) => {
+  const api = await mockAccountsApi(page, { role: 'admin' })
+  await openAccounts(page)
+
+  const menu = await openRowMenu(page, '138****8000')
+  await menu.getByRole('menuitem', { name: /^编辑$/ }).click()
+  const dialog = page.getByRole('dialog', { name: '编辑账号？' })
+  const device = dialog.getByLabel('设备识别码', { exact: true })
+  await expect(device).toBeEnabled()
+
+  const clear = dialog.getByLabel('清除设备识别码')
+  await clear.check()
+  await expect(device).toBeDisabled()
+  // 只勾清除也算一次改动：保存可点，提交体是空串哨兵。
+  await dialog.getByRole('button', { name: '保存修改' }).click()
+  await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(1)
+  expect(patchCalls(api, 'acc-1')[0].body).toEqual({ device_code: '' })
+
+  // 取消清除恢复输入：只改机型时不再发送设备码。
+  const menu2 = await openRowMenu(page, '138****8000')
+  await menu2.getByRole('menuitem', { name: /^编辑$/ }).click()
+  const dialog2 = page.getByRole('dialog', { name: '编辑账号？' })
+  await dialog2.getByLabel('清除设备识别码').check()
+  await expect(dialog2.getByLabel('设备识别码', { exact: true })).toBeDisabled()
+  await dialog2.getByLabel('清除设备识别码').uncheck()
+  await expect(dialog2.getByLabel('设备识别码', { exact: true })).toBeEnabled()
+  await dialog2.getByLabel('机型').fill('Pixel')
+  await dialog2.getByRole('button', { name: '保存修改' }).click()
+  await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(2)
+  expect(patchCalls(api, 'acc-1')[1].body).toEqual({ phone_model: 'Pixel' })
 })
 
 test('invariant 10: the list shows the remark and the masked owner email', async ({ page }) => {

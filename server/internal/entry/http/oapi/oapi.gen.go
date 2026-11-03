@@ -550,8 +550,16 @@ type Account struct {
 	UpdatedAt time.Time     `json:"updated_at"`
 }
 
-// AccountCreate defines model for AccountCreate.
+// AccountCreate A user may not set device_code: the device code is the platform device
+// identity, and a user can only obtain it through device-refresh. A
+// create carrying a non-empty device_code from a user answers 403.
+// phone_model is not a device identity, but a model edit still counts as
+// a credential edit (a rejected account resubmits and a
+// credential_error account recovers), and every role may write it.
 type AccountCreate struct {
+	// DeviceCode master and admin may set it. A user can only obtain it through
+	// device-refresh: a non-empty value answers 403, an empty string is
+	// the same as omitting it.
 	DeviceCode *string `json:"device_code,omitempty"`
 
 	// Name Optional remark name; trimmed. Empty means unnamed.
@@ -688,8 +696,17 @@ type AccountSummary struct {
 	Rejected int `json:"rejected"`
 }
 
-// AccountUpdate defines model for AccountUpdate.
+// AccountUpdate A user may not set or change device_code: the device code is the
+// platform device identity, and a user can only obtain it through
+// device-refresh. A user update carrying any device_code, including an
+// empty string, answers 403. phone_model is not a device identity, but
+// a model edit still counts as a credential edit (a rejected account
+// resubmits and a credential_error account recovers), and every role
+// may write it.
 type AccountUpdate struct {
+	// DeviceCode master and admin may set or clear it: an empty string clears the
+	// stored device code. A user update carrying any device_code,
+	// including an empty string, answers 403.
 	DeviceCode *string `json:"device_code,omitempty"`
 
 	// Name Remark name; trimmed. An empty string clears it. A name-only edit

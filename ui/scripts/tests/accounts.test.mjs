@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import { buildAccountSearch } from '../../src/lib/api/account.ts'
 import { listAllSchools } from '../../src/lib/api/school.ts'
+import { accountUpdateError, buildAccountUpdate } from '../../src/features/accounts/drafts.ts'
 import { editActionLabel } from '../../src/features/accounts/display.ts'
 import {
   completePhoneQuery,
@@ -280,4 +281,36 @@ test('only exact identifiers or exact display names are highlighted', () => {
   assert.deepEqual([...exactMatchIds(rows, '东区')], [])
   // 可见掩码不是完整标识，也不是完整备注名。
   assert.deepEqual([...exactMatchIds(rows, 'o***@example.com')], [])
+})
+
+test('the update draft sends only the filled credential fields', () => {
+  assert.deepEqual(buildAccountUpdate({}), {})
+  assert.deepEqual(buildAccountUpdate({ device_code: 'dev-1' }), { device_code: 'dev-1' })
+  assert.deepEqual(buildAccountUpdate({ device_code: '   ' }), {})
+  assert.deepEqual(buildAccountUpdate({ phone_model: 'Pixel' }), { phone_model: 'Pixel' })
+  assert.deepEqual(
+    buildAccountUpdate({ phone: '13800138000', password: ' pass ' }),
+    { phone: '13800138000', password: ' pass ' },
+  )
+  // 备注名与打开时相同则不发；空串表示清空。
+  assert.deepEqual(buildAccountUpdate({ name: '东区宿舍' }, '东区宿舍'), {})
+  assert.deepEqual(buildAccountUpdate({ name: '' }, '东区宿舍'), { name: '' })
+  assert.equal(accountUpdateError({ phone: '123' }), '手机号需 11 位、1 开头')
+})
+
+test('the clear sentinel is the only path that sends an empty device code', () => {
+  // 只勾清除也合法：空草稿不会被「至少一项」误判。
+  assert.equal(accountUpdateError({ clear_device_code: true }), null)
+  assert.deepEqual(buildAccountUpdate({ clear_device_code: true }), { device_code: '' })
+  // 清除优先于输入值：输入框禁用前的旧值不上线。
+  assert.deepEqual(
+    buildAccountUpdate({ clear_device_code: true, device_code: 'stale-dev' }),
+    { device_code: '' },
+  )
+  // 未勾清除时留空仍表示不修改。
+  assert.deepEqual(buildAccountUpdate({ clear_device_code: false, device_code: '' }), {})
+  assert.deepEqual(
+    buildAccountUpdate({ clear_device_code: true, phone_model: 'Pixel' }),
+    { device_code: '', phone_model: 'Pixel' },
+  )
 })
