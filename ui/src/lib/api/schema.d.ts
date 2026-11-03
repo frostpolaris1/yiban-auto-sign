@@ -1492,6 +1492,12 @@ export interface components {
             /** @description Masked phone. The raw phone never leaves the server. */
             phone_masked: string;
             /**
+             * @description Device model stored inside the encrypted credential payload. Empty
+             *     when the credential is missing or unreadable, and for soft-deleted
+             *     rows. The device code and password are never returned.
+             */
+            phone_model?: string;
+            /**
              * @description Remark name. Empty when unset. Trimmed free text; it is not a
              *     credential and does not take part in review or scheduling.
              */

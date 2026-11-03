@@ -4,6 +4,7 @@ package pg_test
 // 依赖真实 PostgreSQL：排序键、键集比较与 uuid 排序都在库侧执行。
 
 import (
+	"context"
 	"sort"
 	"testing"
 	"time"
@@ -105,5 +106,93 @@ func TestAccountListOrdersAndPaginates(t *testing.T) {
 		if !got[i].CreatedAt.UTC().Equal(all[i].at) {
 			t.Fatalf("row %d created_at is %s; want %s", i, got[i].CreatedAt, all[i].at)
 		}
+	}
+}
+
+// TestAccountCredentialsBatch 钉住批量凭据读取的筛选口径。
+// 判据：多 ID 一次读回、缺少凭据的行缺席、软删行与作用域外行不出现、
+// 空 ids 不发查询直接回空 map。
+func TestAccountCredentialsBatch(t *testing.T) {
+	e := newEnv(t)
+	schoolA := e.createSchool("cred-batch-a")
+	schoolB := e.createSchool("cred-batch-b")
+	ownerA := e.createUser("cred-batch-a@example.com")
+	ownerB := e.createUser("cred-batch-b@example.com")
+
+	first := e.createAccount(schoolA.ID, ownerA.ID, "13800000020")
+	second := e.createAccount(schoolA.ID, ownerA.ID, "13800000021")
+	other := e.createAccount(schoolB.ID, ownerB.ID, "13800000022")
+	noCredential := e.createAccount(schoolA.ID, ownerA.ID, "13800000023")
+
+	insert := func(rec coreaccount.Record, kid string) {
+		t.Helper()
+		cred := coreaccount.Credential{
+			AccountID:  rec.ID,
+			SchoolID:   rec.SchoolID,
+			Alg:        "AES-256-GCM",
+			KID:        kid,
+			AADVersion: 1,
+			Nonce:      []byte("123456789012"),
+			Ciphertext: []byte("0123456789abcdef"),
+			Version:    1,
+		}
+		mustNotError(t, e.db.InTx(e.ctx, func(ctx context.Context) error {
+			return e.accts.InsertCredential(ctx, cred)
+		}), "insert credential for "+rec.ID)
+	}
+	insert(first, "0000000000000001")
+	insert(second, "0000000000000002")
+	insert(other, "0000000000000003")
+
+	ids := []string{first.ID, second.ID, other.ID, noCredential.ID}
+	got, err := e.accts.Credentials(e.ctx, corescope.Master(), ids)
+	mustNotError(t, err, "batch read credentials")
+	if len(got) != 3 {
+		t.Fatalf("batch returned %d credentials, want 3", len(got))
+	}
+	if got[first.ID].KID != "0000000000000001" || got[other.ID].KID != "0000000000000003" {
+		t.Fatalf("batch keyed the wrong rows: %+v", got)
+	}
+	if _, ok := got[noCredential.ID]; ok {
+		t.Fatal("a row without a credential must stay absent")
+	}
+
+	// 空 ids 直接回空 map。
+	empty, err := e.accts.Credentials(e.ctx, corescope.Master(), nil)
+	mustNotError(t, err, "empty batch")
+	if len(empty) != 0 {
+		t.Fatalf("empty batch returned %d rows, want 0", len(empty))
+	}
+
+	// user 作用域只读自己的行。
+	users, err := e.accts.Credentials(e.ctx, corescope.User(ownerA.ID), ids)
+	mustNotError(t, err, "user scoped batch")
+	if len(users) != 2 {
+		t.Fatalf("user scoped batch returned %d rows, want 2", len(users))
+	}
+	if _, ok := users[other.ID]; ok {
+		t.Fatal("a user batch leaked another owner's credential")
+	}
+
+	// admin 作用域只读绑定院校的行。
+	admins, err := e.accts.Credentials(e.ctx, corescope.Admin([]string{schoolB.ID}), ids)
+	mustNotError(t, err, "admin scoped batch")
+	if len(admins) != 1 {
+		t.Fatalf("admin scoped batch returned %d rows, want 1", len(admins))
+	}
+	if _, ok := admins[other.ID]; !ok {
+		t.Fatal("admin scoped batch dropped the bound-school credential")
+	}
+
+	// 软删行的凭据不再读出。
+	mustNotError(t, e.accts.SoftDelete(e.ctx, corescope.Master(), first.ID, ownerA.ID,
+		time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)), "soft delete an account")
+	after, err := e.accts.Credentials(e.ctx, corescope.Master(), ids)
+	mustNotError(t, err, "batch after soft delete")
+	if _, ok := after[first.ID]; ok {
+		t.Fatal("a soft-deleted account's credential was returned")
+	}
+	if len(after) != 2 {
+		t.Fatalf("batch after soft delete returned %d rows, want 2", len(after))
 	}
 }
