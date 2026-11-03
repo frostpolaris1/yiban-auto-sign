@@ -13,6 +13,7 @@ import (
 
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
 	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
 )
 
@@ -54,7 +55,7 @@ func wantCount(t *testing.T, rec map[string]any, key string, want int) {
 
 // outcomeCount 取 outcome_counts 里某个词的数量；缺失返回 -1。
 func outcomeCount(rec map[string]any, outcome string) int {
-	raw, ok := rec["outcome_counts"].(map[string]any)
+	raw, ok := rec[logfield.KeyOutcomeCounts].(map[string]any)
 	if !ok {
 		return -1
 	}
@@ -83,15 +84,15 @@ func TestRoundSummaryFirstRunReportsPreviousDay(t *testing.T) {
 		t.Fatalf("汇总行数 = %d, want 1", len(recs))
 	}
 	rec := recs[0]
-	if rec["day"] != "2026-10-28" {
-		t.Fatalf("day = %v, want 2026-10-28", rec["day"])
+	if rec[logfield.KeyDay] != "2026-10-28" {
+		t.Fatalf("day = %v, want 2026-10-28", rec[logfield.KeyDay])
 	}
-	wantCount(t, rec, "total", 5)
-	wantCount(t, rec, "success", 3)
-	wantCount(t, rec, "failed", 2)
-	wantCount(t, rec, "skipped", 0)
-	if _, ok := rec["pending"]; ok {
-		t.Fatalf("pending=0 不该带 pending 键: %v", rec["pending"])
+	wantCount(t, rec, logfield.KeyTotal, 5)
+	wantCount(t, rec, logfield.KeySuccess, 3)
+	wantCount(t, rec, logfield.KeyFailed, 2)
+	wantCount(t, rec, logfield.KeySkipped, 0)
+	if _, ok := rec[logfield.KeyPending]; ok {
+		t.Fatalf("pending=0 不该带 pending 键: %v", rec[logfield.KeyPending])
 	}
 	if got := outcomeCount(rec, "rejected"); got != 1 {
 		t.Fatalf("outcome_counts[rejected] = %d, want 1", got)
@@ -121,13 +122,13 @@ func TestRoundSummaryNoFailuresOmitsOutcomeCounts(t *testing.T) {
 		t.Fatalf("汇总行数 = %d, want 1", len(recs))
 	}
 	rec := recs[0]
-	if _, ok := rec["outcome_counts"]; ok {
-		t.Fatalf("failed=0 不该带 outcome_counts: %v", rec["outcome_counts"])
+	if _, ok := rec[logfield.KeyOutcomeCounts]; ok {
+		t.Fatalf("failed=0 不该带 outcome_counts: %v", rec[logfield.KeyOutcomeCounts])
 	}
-	wantCount(t, rec, "total", 4)
-	wantCount(t, rec, "success", 3)
-	wantCount(t, rec, "failed", 0)
-	wantCount(t, rec, "skipped", 1)
+	wantCount(t, rec, logfield.KeyTotal, 4)
+	wantCount(t, rec, logfield.KeySuccess, 3)
+	wantCount(t, rec, logfield.KeyFailed, 0)
+	wantCount(t, rec, logfield.KeySkipped, 1)
 	if rec["level"] != "INFO" {
 		t.Fatalf("无失败时级别 = %v, want INFO", rec["level"])
 	}

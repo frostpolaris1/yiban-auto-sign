@@ -13,6 +13,7 @@ import (
 
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
 
 // setTaskOutcome 把一条已存在的任务行改成给定状态与结果。
@@ -57,7 +58,7 @@ func TestDayOutcomeCountsCountsTaskRowsNotAccounts(t *testing.T) {
 	}
 
 	// 同账号两行：证明口径按任务行，不做账号去重。
-	setTaskOutcome(t, e, acct1, taskA, day, corestatus.TaskSuccess, "success")
+	setTaskOutcome(t, e, acct1, taskA, day, corestatus.TaskSuccess, string(contract.OutcomeSuccess))
 	setTaskOutcome(t, e, acct1, taskB, day, corestatus.TaskFailed, "rejected")
 	// 空 result 的失败行：本层保留空键，app 层归 unknown。
 	setTaskOutcome(t, e, acct2, taskA, day, corestatus.TaskFailed, "")
@@ -66,7 +67,7 @@ func TestDayOutcomeCountsCountsTaskRowsNotAccounts(t *testing.T) {
 	setTaskOutcome(t, e, acct3, taskA, day, corestatus.TaskPending, "")
 	setTaskOutcome(t, e, acct3, taskB, day, corestatus.TaskRunning, "")
 	// 别的日期：不计入 day。
-	setTaskOutcome(t, e, acct1, taskA, otherDay, corestatus.TaskSuccess, "success")
+	setTaskOutcome(t, e, acct1, taskA, otherDay, corestatus.TaskSuccess, string(contract.OutcomeSuccess))
 
 	counts, err := e.sched.DayOutcomeCounts(e.ctx, day)
 	if err != nil {

@@ -27,6 +27,8 @@
 // 只允许在确认无消费方后整体迁移。
 package logfield
 
+import corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
+
 // Kind 是字段值的语义类别，供读者与审查判断该键该装什么。
 type Kind string
 
@@ -90,10 +92,10 @@ const (
 	KeyBuilt            = "built"
 	KeyBytes            = "bytes"
 	KeyTotal            = "total"
-	KeySuccess          = "success"
-	KeyFailed           = "failed"
-	KeySkipped          = "skipped"
-	KeyPending          = "pending"
+	KeySuccess          = string(corestatus.TaskSuccess)
+	KeyFailed           = string(corestatus.TaskFailed)
+	KeySkipped          = string(corestatus.TaskSkipped)
+	KeyPending          = string(corestatus.TaskPending)
 	KeyStatus           = "status"
 	KeyPort             = "port"
 	KeyPollInterval     = "poll_interval"
