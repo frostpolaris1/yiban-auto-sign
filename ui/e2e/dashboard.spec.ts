@@ -31,7 +31,8 @@ import {
  *    空数据说原因不画轴；单图失败只挂本图并单独重试；自选图跟随任务选择。
  * 9. 今日终态 KPI：master/admin 四卡取报告最后两天；成功率＝成功÷（成功+失败），
  *    跳过不计入；分母 0 显「—」；环比 pill 分「有对比/无对比」两态；
- *    KPI 与图表共用同一次 sign-stats 读取，不新增请求。
+ *    KPI 与图表共用同一次 sign-stats 读取，不新增请求；
+ *    业务日跨日换键恰好重取一次，同一业务日内不轮询。
  *
  * 断言用户可见结果与请求参数，不钉组件内部结构。
  */
@@ -546,4 +547,24 @@ test('invariant 9: the header creates an account and exports nothing', async ({ 
 
   await page.getByRole('button', { name: '新建账号' }).click()
   await expect(page).toHaveURL(/\/accounts$/)
+})
+
+test('invariant 9: the stats read refetches once when the business day rolls over', async ({
+  page,
+}) => {
+  // +08:00 的 23:59:30 进入看板：60 秒后跨过零点，业务日换键。
+  await page.clock.install({ time: new Date('2026-11-03T15:59:30Z') })
+  const api = await mockDashboardApi(page, { role: 'admin' })
+  await openDashboard(page)
+
+  // 首屏一次读取：KPI 与图表共用。
+  await expect.poll(() => signStatsCalls(api).length).toBe(1)
+
+  // 跨到 +08:00 00:00:30：业务日换了缓存键，恰好再取一次。
+  await page.clock.runFor(60_000)
+  await expect.poll(() => signStatsCalls(api).length, 'the rollover refetches once').toBe(2)
+
+  // 仍在同一业务日：60 秒定时器照跑，但不再取数。
+  await page.clock.runFor(60_000)
+  await expect(signStatsCalls(api).length, 'the same business day does not refetch').toBe(2)
 })
