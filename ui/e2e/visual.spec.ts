@@ -359,6 +359,11 @@ for (const theme of THEMES) {
     const toast = page.locator('[data-sonner-toast]')
     await expect(toast).toBeVisible()
     await expect(toast).toContainText('已暂停 139****9000')
+    // 暂停后行内说明变宽，Linux 字体下表格横向溢出，点击与焦点会留下滚动位置。
+    // 本用例只钉 toast 与页面组成：截图前把表格滚回左端，去掉平台相关的滚动差。
+    await page.locator('.table-scroll').evaluate((el) => {
+      el.scrollLeft = 0
+    })
     await expect(page).toHaveScreenshot(`toast-${theme}-1440.png`)
   })
 }
