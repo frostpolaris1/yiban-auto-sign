@@ -15,10 +15,12 @@
  * 缺口为正时给一条可执行建议：通道瓶颈给 YIBAN_WORKERS 数值与复制按钮，
  * 出口瓶颈只指向 YIBAN_EGRESS_RATE 或增加出口标识，不给数字。
  * 建议块只在 `shortfall>0` 时出现；无缺口不渲染。
+ * 复制失败时在建议块内留可见提示，配置行本身可手选复制。
  * 窗口失败与容量失败各有错误态与「重试」，不整页挂。
  * 无可用任务时只说「今日无可用窗口」，不发容量请求。
  */
 
+import { useState } from 'react'
 import { Alert } from '@/components/ui/Alert'
 import { AnimatedNumber } from '@/components/ui/AnimatedNumber'
 import { Badge } from '@/components/ui/Badge'
@@ -51,18 +53,22 @@ type CapacityCardProps = {
   onRetryCapacity: () => void
 }
 
-/** 复制配置行；成功才发 toast，剪贴板不可用时静默（配置行已可选可抄）。 */
-function copyConfigLine(line: string): void {
+/** 复制配置行；成功发 toast，失败交给建议块内的可见提示。 */
+function copyConfigLine(line: string, onFailure: () => void): void {
   const clipboard = navigator.clipboard
-  if (!clipboard) return
+  if (!clipboard) {
+    onFailure()
+    return
+  }
   void clipboard.writeText(line).then(
     () => notifySuccess('已复制配置行'),
-    () => undefined,
+    () => onFailure(),
   )
 }
 
 /** 缺口建议：按瓶颈归属给可执行动作，出口瓶颈不给数字。 */
 function CapacityHint({ report }: { report: CapacityReport }) {
+  const [copyFailed, setCopyFailed] = useState(false)
   if (report.shortfall <= 0) return null
   const suggested = report.suggested_workers ?? 0
   if (report.binding === 'workers' && suggested > 0) {
@@ -72,10 +78,22 @@ function CapacityHint({ report }: { report: CapacityReport }) {
         <p>通道是瓶颈：把 YIBAN_WORKERS 提到 {suggested}。</p>
         <div className="app-capacity-hint-line">
           <code>{line}</code>
-          <Button variant="ghost" size="sm" onClick={() => copyConfigLine(line)}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setCopyFailed(false)
+              copyConfigLine(line, () => setCopyFailed(true))
+            }}
+          >
             复制
           </Button>
         </div>
+        {copyFailed ? (
+          <p className="app-capacity-copy-error" role="alert">
+            复制失败，请手动选择文本
+          </p>
+        ) : null}
       </div>
     )
   }
@@ -174,7 +192,10 @@ export function CapacityCard({
                 </div>
               </div>
 
-              <CapacityHint report={report} />
+              <CapacityHint
+                key={`${report.task_id}:${report.suggested_workers ?? 0}:${report.shortfall}`}
+                report={report}
+              />
 
               <p className="app-muted app-capacity-meta">
                 <Badge tone={capacitySourceTone(report.source)}>

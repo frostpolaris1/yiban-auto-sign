@@ -283,6 +283,29 @@ test('invariant 5: a channel-bound shortfall suggests a worker count and copies 
   expect(copied).toEqual(['YIBAN_WORKERS=4'])
 })
 
+test('invariant 5: a failed copy leaves a visible hint instead of a silent no-op', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async () => {
+          throw new Error('clipboard denied')
+        },
+      },
+    })
+  })
+  await mockDashboardApi(page, { role: 'admin' })
+  await openDashboard(page)
+
+  await page.getByLabel('任务').selectOption('school-beta:task-night')
+  const hint = capacityCard(page).locator('.app-capacity-hint')
+  await hint.getByRole('button', { name: '复制' }).click()
+  await expect(hint.getByRole('alert')).toHaveText('复制失败，请手动选择文本')
+  await expect(page.getByText('已复制配置行')).toHaveCount(0)
+})
+
 test('invariant 5: an egress-bound shortfall points at the rate, never a number', async ({
   page,
 }) => {

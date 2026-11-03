@@ -1019,6 +1019,12 @@
   user-select: all;
 }
 
+.app-capacity-copy-error {
+  margin: 8px 0 0;
+  color: var(--danger);
+  font-size: 12.5px;
+}
+
 /* ---------- 设置页两卡对齐 ----------
  * 账号信息卡与改密卡内容高度不同。默认 stretch 会把短卡拉齐到长卡，
  * 卡片底部留出空白。只在本页的 grid 上改为顶部对齐。
