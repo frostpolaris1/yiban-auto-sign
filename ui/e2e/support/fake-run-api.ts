@@ -1,6 +1,6 @@
 import type { Page, Route } from '@playwright/test'
 import type { AdminTaskRow } from '../../src/lib/api/task'
-import { SESSION_CSRF, SESSION_EMAIL, type Role } from './fake-accounts-api'
+import { EMPTY_ACCOUNT_SUMMARY, SESSION_CSRF, SESSION_EMAIL, type Role } from './fake-accounts-api'
 import { SCHOOLS } from './fake-schools-api'
 
 /**
@@ -170,6 +170,11 @@ export async function mockRunApi(page: Page, options: MockRunOptions): Promise<F
         must_change_password: false,
         csrf_token: SESSION_CSRF,
       })
+    }
+
+    if (url.pathname === '/api/accounts/summary' && request.method() === 'GET') {
+      // 壳在每页为 master/admin 读一次；运行页不关心计数。
+      return json(route, EMPTY_ACCOUNT_SUMMARY)
     }
 
     if (url.pathname === '/api/schools' && request.method() === 'GET') {

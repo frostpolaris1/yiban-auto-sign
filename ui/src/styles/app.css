@@ -1252,3 +1252,23 @@ a.kpi-card {
   background: var(--info-soft);
   font-size: 13px;
 }
+
+/* ---------- 侧栏计数徽标 ----------
+ * vendor 的 `.nav-badge` 只给静态 NEW/PRO 标签：几何齐全，没有计数配色。
+ * 专用修饰类只染计数徽标，未来静态标签不会被改成 danger。
+ * 文字用 `--t-base`、底用 danger 软色、边框用 danger 实色：
+ * 实测浅色组合 13.37:1，深色组合 15.80:1。
+ * 数字等宽，跳动时不挤动文字。
+ */
+.nav-link > .nav-badge--count {
+  flex: 0 0 auto;
+  margin-left: auto;
+  min-width: 18px;
+  padding: 1px 5px;
+  border: 1px solid var(--danger);
+  border-radius: 999px;
+  background: var(--danger-soft);
+  color: var(--t-base);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}

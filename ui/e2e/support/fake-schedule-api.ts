@@ -1,6 +1,6 @@
 import type { Page, Route } from '@playwright/test'
 import type { SchedulePlan, ScheduleWindow, TimePref } from '../../src/lib/api/schedule'
-import { SESSION_CSRF, SESSION_EMAIL, type Role } from './fake-accounts-api'
+import { EMPTY_ACCOUNT_SUMMARY, SESSION_CSRF, SESSION_EMAIL, type Role } from './fake-accounts-api'
 
 /**
  * 时间片页与时间偏好卡的假 API。
@@ -215,6 +215,11 @@ export async function mockScheduleApi(
         must_change_password: false,
         csrf_token: SESSION_CSRF,
       })
+    }
+
+    if (url.pathname === '/api/accounts/summary' && request.method() === 'GET') {
+      // 壳在每页为 master/admin 读一次；时间片页不关心计数。
+      return json(route, EMPTY_ACCOUNT_SUMMARY)
     }
 
     if (url.pathname === '/api/schedule/windows' && request.method() === 'GET') {

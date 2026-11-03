@@ -69,6 +69,24 @@ for (const role of ['master', 'admin'] as const) {
   })
 }
 
+test('invariant 1: the shell badge reads the account summary once on the school page', async ({
+  page,
+}) => {
+  const api = await mockSchoolsApi(page, {
+    role: 'master',
+    accountSummary: { pending: 2, rejected: 1 },
+  })
+  await openSchools(page)
+
+  const link = page.locator('.d-sidebar').getByRole('link', { name: '账号，待处理账号 3' })
+  await expect(link).toContainText('账号')
+  await expect(link.locator('.nav-badge')).toHaveText('3')
+  expect(
+    api.calls.filter((call) => call.method === 'GET' && call.path === '/api/accounts/summary'),
+    'the school page itself reads no summary',
+  ).toHaveLength(1)
+})
+
 test('invariant 1: a user has no school entry and no list request', async ({ page }) => {
   const api = await mockSchoolsApi(page, { role: 'user' })
   await page.goto('/')

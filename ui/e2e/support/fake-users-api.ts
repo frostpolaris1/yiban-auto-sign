@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { Page, Request, Route } from '@playwright/test'
 import type { User, UserCounts } from '../../src/lib/api/user'
-import { SESSION_CSRF, SESSION_EMAIL, type Role } from './fake-accounts-api'
+import { EMPTY_ACCOUNT_SUMMARY, SESSION_CSRF, SESSION_EMAIL, type Role } from './fake-accounts-api'
 
 /**
  * 用户管理页的假 API。
@@ -233,6 +233,11 @@ export async function mockUsersApi(
         must_change_password: false,
         csrf_token: SESSION_CSRF,
       })
+    }
+
+    if (url.pathname === '/api/accounts/summary' && request.method() === 'GET') {
+      // 壳在每页为 master/admin 读一次；用户管理页不关心计数。
+      return json(route, request, EMPTY_ACCOUNT_SUMMARY)
     }
 
     if (url.pathname === '/api/users/lookup' && request.method() === 'GET') {

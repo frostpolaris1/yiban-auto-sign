@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { Page, Request, Route } from '@playwright/test'
-import type { Account, AccountVerifyResult } from '../../src/lib/api/account'
+import type { Account, AccountSummary, AccountVerifyResult } from '../../src/lib/api/account'
 import { createPhotoFixture, handlePhotoRoute, type PhotoFixture } from './fake-photos'
 
 /**
@@ -119,6 +119,13 @@ export const DELETED_ACCOUNTS: Account[] = [
     deleted_at: '2026-10-25T00:00:00Z',
   }),
 ]
+
+/**
+ * 其它页面假 API 的壳摘要夹具。
+ * 壳对 master/admin 在所有页面读 `GET /api/accounts/summary`；
+ * 不关心计数的页面统一回零，徽标就不渲染。
+ */
+export const EMPTY_ACCOUNT_SUMMARY: AccountSummary = { pending: 0, rejected: 0 }
 
 /** 归属选择器的合成用户。邮箱是保留域 example.com。 */
 export const LOOKUP_USERS = [

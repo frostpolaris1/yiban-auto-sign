@@ -54,6 +54,13 @@ async function openAccounts(page: Page) {
   await expect(page.getByRole('button', { name: '查看 138****8000' })).toBeVisible()
 }
 
+/** 侧栏「账号」链接。按可访问名匹配，文案仍须是「账号」。 */
+function accountsNavLink(page: Page) {
+  return page
+    .locator('.d-sidebar')
+    .getByRole('link', { name: /^账号(?:，待处理账号 \d+)?$/ })
+}
+
 function rowFor(page: Page, phone: string) {
   return page
     .getByRole('row')
@@ -553,7 +560,8 @@ test('clearing filters from an empty second page returns to the first', async ({
 test('the sidebar reaches the accounts page', async ({ page }) => {
   await mockAccountsApi(page, { role: 'master' })
   await page.goto('/')
-  await page.locator('.d-sidebar').getByRole('link', { name: '账号', exact: true }).click()
+  await expect(accountsNavLink(page)).toContainText('账号')
+  await accountsNavLink(page).click()
   await expect(page).toHaveURL(/\/accounts$/)
   await expect(page.getByRole('table', { name: '账号列表' })).toBeVisible()
 })
@@ -1485,10 +1493,43 @@ test('n190: the pending banner shows the counts and the button filters pending',
   await expect(page.getByLabel('状态筛选')).toHaveValue('pending')
 })
 
+for (const role of ['master', 'admin'] as const) {
+  test(`n190: the ${role} nav badge counts pending plus rejected`, async ({ page }) => {
+    const api = await mockAccountsApi(page, {
+      role,
+      // 1 行 pending、1 行 rejected：徽标必须把两种都算进去。
+      accounts: accountsWith('acc-2', { status: 'rejected' }),
+    })
+    await openAccounts(page)
+
+    const link = accountsNavLink(page)
+    const badge = link.locator('.nav-badge')
+    await expect(link).toContainText('账号')
+    await expect(link).toHaveAttribute('aria-label', '账号，待处理账号 2')
+    await expect(badge).toHaveText('2')
+    await expect(badge).toHaveAttribute('aria-hidden', 'true')
+    expect(summaryCalls(api).length, 'the shell reads the summary').toBeGreaterThanOrEqual(1)
+  })
+}
+
+test('n190: a zero count renders no nav badge', async ({ page }) => {
+  const api = await mockAccountsApi(page, {
+    role: 'master',
+    accounts: ACCOUNTS.map((item) => ({ ...item, status: 'active' as const })),
+  })
+  await openAccounts(page)
+
+  await expect.poll(() => summaryCalls(api).length, 'the zero came from a read').toBeGreaterThanOrEqual(1)
+  await expect(accountsNavLink(page)).toBeVisible()
+  await expect(accountsNavLink(page).locator('.nav-badge')).toHaveCount(0)
+})
+
 test('n190: creating an account invalidates the summary', async ({ page }) => {
   const api = await mockAccountsApi(page, { role: 'master' })
   await openAccounts(page)
   await expect(page.locator('.app-pending-banner')).toContainText('待审核 1 · 已拒绝 0')
+  const badge = accountsNavLink(page).locator('.nav-badge')
+  await expect(badge).toHaveText('1')
   const before = summaryCalls(api).length
 
   await page.getByRole('button', { name: '新建账号' }).click()
@@ -1499,11 +1540,12 @@ test('n190: creating an account invalidates the summary', async ({ page }) => {
   await dialog.getByRole('button', { name: '提交' }).click()
   await expect.poll(() => createCalls(api).length).toBe(1)
 
-  // 新号固定进 pending：汇总失效并重取，提示条数字加一。
+  // 新号固定进 pending：汇总失效并重取，提示条与侧栏徽标同步加一。
   await expect
     .poll(() => summaryCalls(api).length, 'the create invalidates the summary')
     .toBeGreaterThan(before)
   await expect(page.locator('.app-pending-banner')).toContainText('待审核 2 · 已拒绝 0')
+  await expect(badge).toHaveText('2')
 })
 
 test('n190: a review invalidates the summary and an empty one hides the banner', async ({
@@ -1548,12 +1590,13 @@ test('n190: deleting the pending account refetches the summary and hides the ban
   await expect(page.locator('.app-pending-banner')).toHaveCount(0)
 })
 
-test('n190: a user never reads the summary and sees no banner', async ({ page }) => {
+test('n190: a user never reads the summary and sees no banner or badge', async ({ page }) => {
   const api = await mockAccountsApi(page, { role: 'user' })
   await openAccounts(page)
 
   expect(summaryCalls(api), 'a user never reads the account summary').toHaveLength(0)
   await expect(page.locator('.app-pending-banner')).toHaveCount(0)
+  await expect(accountsNavLink(page).locator('.nav-badge')).toHaveCount(0)
 })
 
 test('n190: a failing summary hides the banner and keeps the page usable', async ({ page }) => {
