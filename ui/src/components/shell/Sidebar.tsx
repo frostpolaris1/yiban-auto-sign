@@ -9,16 +9,24 @@
  * 导航项全部来自 `NAV`。本文件不硬编码路径。
  * 分组手动开合优先。未手动时跟随当前路由。
  * 底部工作区块读真实会话：头像、显示名、角色都来自 `GET /api/auth/me`。
+ * 「账号」计数只对 master/admin 取数，与账号页/看板共用 `['account-summary']`；
+ * user 与展示构建零请求、零徽标。0 不渲染，写操作失效后随同键刷新。
  */
 
 import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
+import { useQuery } from '@tanstack/react-query'
 import { cx } from '@/lib/cx'
+import { getAccountSummary } from '@/lib/api/account'
 import type { SessionUser } from '@/lib/api/auth'
 import { displayNameFor, initialsFor, roleLabel } from '@/lib/identity'
+import { SHOWCASE } from '@/lib/session'
 import { BrandMark } from '@/components/ui/BrandMark'
 import { Icon } from '@/components/ui/Icon'
 import { isNavGroup, visibleNav, type NavGroup, type NavLeaf } from './nav'
+
+/** 待处理账号计数的复核间隔。summary 便宜，但 10 秒的列表轮询不必同步给它。 */
+const SUMMARY_POLL_MS = 30_000
 
 type SidebarProps = {
   me: SessionUser
@@ -30,6 +38,23 @@ export function Sidebar({ me, pathname, onNavigate }: SidebarProps) {
   const [manualOpen, setManualOpen] = useState<Record<string, boolean>>({})
   // 整页无权限的导航项不渲染：判据来自 nav 的 roles 元数据。
   const sections = visibleNav(me.role)
+
+  // 账号待处理计数：与账号页提示条、看板第 5 卡共用缓存键。
+  // 只对 master/admin 取数；展示构建没有后端，一条请求都不发。
+  const isManager = me.role === 'master' || me.role === 'admin'
+  const summaryQuery = useQuery({
+    queryKey: ['account-summary'],
+    queryFn: getAccountSummary,
+    enabled: isManager && !SHOWCASE,
+    staleTime: 0,
+    retry: false,
+    refetchInterval: SUMMARY_POLL_MS,
+    refetchIntervalInBackground: false,
+  })
+  const pendingAccounts = summaryQuery.data
+    ? summaryQuery.data.pending + summaryQuery.data.rejected
+    : 0
+  const accountsBadge = isManager && pendingAccounts > 0 ? pendingAccounts : null
 
   return (
     <aside className="d-sidebar" aria-label="主导航">
@@ -48,7 +73,14 @@ export function Sidebar({ me, pathname, onNavigate }: SidebarProps) {
           <div className="nav-label">{section.label}</div>
           {section.items.map((item) => {
             if (!isNavGroup(item)) {
-              return <NavLeafView key={item.key} item={item} onNavigate={onNavigate} />
+              return (
+                <NavLeafView
+                  key={item.key}
+                  item={item}
+                  badge={item.key === 'accounts' ? accountsBadge : null}
+                  onNavigate={onNavigate}
+                />
+              )
             }
             const activeGroup = item.children.some((child) => child.to === pathname)
             // 手动状态优先。未手动时按当前路由自动展开。
@@ -82,7 +114,16 @@ export function Sidebar({ me, pathname, onNavigate }: SidebarProps) {
   )
 }
 
-function NavLeafView({ item, onNavigate }: { item: NavLeaf; onNavigate: () => void }) {
+function NavLeafView({
+  item,
+  badge,
+  onNavigate,
+}: {
+  item: NavLeaf
+  /** 动态计数：0 已收敛为 null，不渲染。 */
+  badge: number | null
+  onNavigate: () => void
+}) {
   return (
     <Link
       to={item.to}
@@ -94,6 +135,11 @@ function NavLeafView({ item, onNavigate }: { item: NavLeaf; onNavigate: () => vo
       <Icon name={item.icon} />
       <span>{item.text}</span>
       {item.badge ? <span className={cx('nav-badge', item.badge.kind)}>{item.badge.text}</span> : null}
+      {badge !== null ? (
+        <span className="nav-badge" aria-label={`待处理账号 ${badge}`}>
+          {badge}
+        </span>
+      ) : null}
     </Link>
   )
 }
