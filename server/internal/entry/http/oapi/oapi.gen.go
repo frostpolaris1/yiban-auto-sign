@@ -1444,6 +1444,10 @@ type AccountListParams struct {
 	// IncludeDeleted When true, soft-deleted accounts are also returned. Defaults to
 	// false: soft-deleted rows never appear without the flag.
 	IncludeDeleted *bool `form:"include_deleted,omitempty" json:"include_deleted,omitempty"`
+
+	// IfNoneMatch ETag(s) the client already holds; a match answers 304.
+	// Weak comparison, comma lists and `*` are honoured.
+	IfNoneMatch *string `json:"If-None-Match,omitempty"`
 }
 
 // AccountCreateParams defines parameters for AccountCreate.
@@ -1794,6 +1798,10 @@ type UserListParams struct {
 	// Deleted rows carry deleted_at and keep their status value.
 	// Cannot be combined with group.
 	IncludeDeleted *bool `form:"include_deleted,omitempty" json:"include_deleted,omitempty"`
+
+	// IfNoneMatch ETag(s) the client already holds; a match answers 304.
+	// Weak comparison, comma lists and `*` are honoured.
+	IfNoneMatch *string `json:"If-None-Match,omitempty"`
 }
 
 // UserListParamsGroup defines parameters for UserList.
@@ -2161,6 +2169,27 @@ func (siw *ServerInterfaceWrapper) AccountList(c *gin.Context) {
 	if err != nil {
 		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter include_deleted: %w", err), http.StatusBadRequest)
 		return
+	}
+
+	headers := c.Request.Header
+
+	// ------------- Optional header parameter "If-None-Match" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("If-None-Match")]; found {
+		var IfNoneMatch string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for If-None-Match, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "If-None-Match", valueList[0], &IfNoneMatch, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter If-None-Match: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.IfNoneMatch = &IfNoneMatch
+
 	}
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4182,6 +4211,27 @@ func (siw *ServerInterfaceWrapper) UserList(c *gin.Context) {
 	if err != nil {
 		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter include_deleted: %w", err), http.StatusBadRequest)
 		return
+	}
+
+	headers := c.Request.Header
+
+	// ------------- Optional header parameter "If-None-Match" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("If-None-Match")]; found {
+		var IfNoneMatch string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for If-None-Match, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "If-None-Match", valueList[0], &IfNoneMatch, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter If-None-Match: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.IfNoneMatch = &IfNoneMatch
+
 	}
 
 	for _, middleware := range siw.HandlerMiddlewares {

@@ -286,6 +286,11 @@ paths:
         start of the email address and never matches a name. A query
         longer than 254 characters is 400: no address can be that long,
         so no row can match.
+        The ETag is the sha256 of the response body (quoted hex). The 304
+        answer is decided after authentication and scope resolution, so a
+        request that cannot read this page never gets a 304. If-None-Match
+        honours the weak comparison, comma lists and `*`; repeated header
+        lines are merged per RFC 9110 section 5.3.
       x-roles: [master]
       parameters:
         - $ref: '#/components/parameters/Cursor'
@@ -330,13 +335,30 @@ paths:
             Deleted rows carry deleted_at and keep their status value.
             Cannot be combined with group.
           schema: { type: boolean }
+        - name: If-None-Match
+          in: header
+          required: false
+          description: |
+            ETag(s) the client already holds; a match answers 304.
+            Weak comparison, comma lists and `*` are honoured.
+          schema: { type: string }
       responses:
         '200':
           description: User page.
+          headers:
+            ETag:
+              description: Strong validator of the response body (quoted sha256).
+              schema: { type: string }
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/UserPage'
+        '304':
+          description: Not modified (ETag matched); no body.
+          headers:
+            ETag:
+              description: Strong validator of the response body (quoted sha256).
+              schema: { type: string }
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
@@ -778,6 +800,11 @@ paths:
       description: |
         master sees all schools; admin sees bound schools; user sees own
         accounts. school_id, status and q narrow the result.
+        The ETag is the sha256 of the response body (quoted hex). The 304
+        answer is decided after authentication and scope resolution, so a
+        request that cannot read this page never gets a 304. If-None-Match
+        honours the weak comparison, comma lists and `*`; repeated header
+        lines are merged per RFC 9110 section 5.3.
       x-roles: [master, admin, user]
       parameters:
         - $ref: '#/components/parameters/Cursor'
@@ -826,13 +853,30 @@ paths:
             When true, soft-deleted accounts are also returned. Defaults to
             false: soft-deleted rows never appear without the flag.
           schema: { type: boolean }
+        - name: If-None-Match
+          in: header
+          required: false
+          description: |
+            ETag(s) the client already holds; a match answers 304.
+            Weak comparison, comma lists and `*` are honoured.
+          schema: { type: string }
       responses:
         '200':
           description: Account page.
+          headers:
+            ETag:
+              description: Strong validator of the response body (quoted sha256).
+              schema: { type: string }
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AccountPage'
+        '304':
+          description: Not modified (ETag matched); no body.
+          headers:
+            ETag:
+              description: Strong validator of the response body (quoted sha256).
+              schema: { type: string }
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }

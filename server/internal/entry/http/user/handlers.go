@@ -126,7 +126,12 @@ func (h *Handler) List(c *gin.Context, params oapi.UserListParams) {
 	for _, record := range page.Items {
 		items = append(items, userResponse(record))
 	}
-	respond.JSON(c.Writer, http.StatusOK, oapi.UserPage{
+	// 列表可变：ETag 只省响应体，鉴权与作用域判定已经完成。
+	inm := ""
+	if params.IfNoneMatch != nil {
+		inm = *params.IfNoneMatch
+	}
+	respond.JSONWithETag(c.Writer, c.Request, http.StatusOK, inm, oapi.UserPage{
 		Items:      items,
 		NextCursor: page.NextCursor,
 		Counts: oapi.UserCounts{
