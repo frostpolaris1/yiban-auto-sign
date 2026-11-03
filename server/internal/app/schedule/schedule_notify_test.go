@@ -121,6 +121,10 @@ func TestBuildShortfallRejectsAndPublishesCapacity(t *testing.T) {
 	}
 	if e := n.events[0]; e.payload["demand"] != 500 {
 		t.Fatalf("payload = %v, want demand=500", e.payload)
+	} else if e.payload["binding"] != "workers" {
+		t.Fatalf("payload binding = %v, want workers", e.payload["binding"])
+	} else if e.payload["suggested_workers"] != 8 {
+		t.Fatalf("payload suggested_workers = %v, want 8", e.payload["suggested_workers"])
 	}
 	if len(p.inserted) != 0 {
 		t.Fatalf("缺口计划不得落库, inserted = %d 批", len(p.inserted))

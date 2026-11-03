@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -467,6 +468,108 @@ func TestCapacityEgressShortfall(t *testing.T) {
 	want := "容量不足：需求 100，容量 24；出口速率是瓶颈，建议提高 YIBAN_EGRESS_RATE 或增加出口标识"
 	if e.Message != want {
 		t.Fatalf("message = %q, want %q", e.Message, want)
+	}
+}
+
+// 建议值必须真的装得下需求：加通道后撞上出口速率时改报 egress_rate。
+func TestCapacitySuggestionRespectsEgressCap(t *testing.T) {
+	ids := make([]string, 1500)
+	for i := range ids {
+		ids[i] = "acct-" + string(rune('a'+i%26)) + string(rune('0'+i/26))
+	}
+	svc := newService(t, &fakeWindowStore{task: enabledTask()}, &fakePlanStore{},
+		fakeAccounts{ids: ids}, &fakeDiscover{window: platformWindow(6, 30, 7, 0)})
+	in := baseInput()
+	in.Workers = 4
+	in.Avg = 10 * time.Second
+	in.Rate = 1.0
+	prev, err := svc.Preview(context.Background(), in)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	// 30 分钟 × min(4/10, 1) × 0.8 = 576；需求 1500，缺口 924。
+	if prev.Capacity != 576 || prev.Shortfall != 924 {
+		t.Fatalf("capacity/shortfall = %d/%d, want 576/924", prev.Capacity, prev.Shortfall)
+	}
+	// 公式给出 11 个通道，但 11/10 > 出口 1/s：实得 1440，仍装不下。
+	if prev.Binding != corecapacity.BindingEgressRate {
+		t.Fatalf("Binding = %q, want egress_rate", prev.Binding)
+	}
+	if prev.SuggestedWorkers != 0 {
+		t.Fatalf("不可达建议不得下发, SuggestedWorkers = %d", prev.SuggestedWorkers)
+	}
+
+	_, err = svc.Build(context.Background(), in)
+	if err == nil {
+		t.Fatal("缺口计划应被拒")
+	}
+	e := coreerrs.From(err)
+	if e.Details["binding"] != string(corecapacity.BindingEgressRate) {
+		t.Fatalf("binding = %v, want egress_rate", e.Details["binding"])
+	}
+	if _, ok := e.Details["suggested_workers"]; ok {
+		t.Fatalf("不可达建议不得出现在 details: %v", e.Details)
+	}
+	if strings.Contains(e.Message, "YIBAN_WORKERS") {
+		t.Fatalf("出口瓶颈不得建议加并发: %q", e.Message)
+	}
+}
+
+// 建议值超过配置上限时不给：total 79 > 64，保持 workers 但不写数字。
+func TestCapacitySuggestionOverCap(t *testing.T) {
+	ids := make([]string, 100)
+	for i := range ids {
+		ids[i] = "acct-" + string(rune('a'+i%26)) + string(rune('0'+i/26))
+	}
+	svc := newService(t, &fakeWindowStore{task: enabledTask()}, &fakePlanStore{},
+		fakeAccounts{ids: ids}, &fakeDiscover{window: platformWindow(6, 30, 7, 50)})
+	in := baseInput()
+	in.Workers = 1
+	in.Avg = 3000 * time.Second // 100×3000 ÷ (4800×0.8) = 78.125 → 79 > 64
+	in.Rate = 1.0
+	prev, err := svc.Preview(context.Background(), in)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if prev.Binding != corecapacity.BindingWorkers {
+		t.Fatalf("Binding = %q, want workers", prev.Binding)
+	}
+	if prev.SuggestedWorkers != 0 {
+		t.Fatalf("超过上限不得给建议, SuggestedWorkers = %d", prev.SuggestedWorkers)
+	}
+
+	_, err = svc.Build(context.Background(), in)
+	if err == nil {
+		t.Fatal("缺口计划应被拒")
+	}
+	e := coreerrs.From(err)
+	if _, ok := e.Details["suggested_workers"]; ok {
+		t.Fatalf("超上限建议不得出现在 details: %v", e.Details)
+	}
+	if want := "容量不足：需求 100，容量 1"; e.Message != want {
+		t.Fatalf("message = %q, want %q", e.Message, want)
+	}
+}
+
+// 需求装得下时不给建议：want <= 当前 workers，也没有缺口。
+func TestCapacitySuggestionSkipsWhenWorkersSuffice(t *testing.T) {
+	ids := make([]string, 10)
+	for i := range ids {
+		ids[i] = "acct-" + string(rune('a'+i%26)) + string(rune('0'+i/26))
+	}
+	svc := newService(t, &fakeWindowStore{}, &fakePlanStore{}, fakeAccounts{ids: ids},
+		&fakeDiscover{window: platformWindow(6, 30, 7, 50)})
+	in := baseInput()
+	in.Rate = 10.0 // 通道吞吐 2/s 低于出口 10/s：瓶颈在通道，不是出口。
+	prev, err := svc.Preview(context.Background(), in)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if prev.Shortfall != 0 || prev.Binding != corecapacity.BindingWorkers {
+		t.Fatalf("shortfall/binding = %d/%q, want 0/workers", prev.Shortfall, prev.Binding)
+	}
+	if prev.SuggestedWorkers != 0 {
+		t.Fatalf("通道足够时不得给建议, SuggestedWorkers = %d", prev.SuggestedWorkers)
 	}
 }
 
