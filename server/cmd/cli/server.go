@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/assembly"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
 )
 
 // runAssembly 是转调接缝：测试注入替身，避免测试启动真实服务。
@@ -24,7 +25,7 @@ func runServer(args []string) int {
 	ctx, stop := signalCtx()
 	defer stop()
 	if err := runAssembly(ctx, logger); err != nil {
-		logger.Error("server stopped", "error", err.Error())
+		logger.Error("server stopped", logfield.KeyError, err.Error())
 		return 1
 	}
 	return 0

@@ -33,6 +33,7 @@ import (
 	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
 	corecapacity "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/capacity"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
 	coreplan "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/plan"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
@@ -674,10 +675,10 @@ func (s *Service) logWindowFailure(ctx context.Context, in Input, outcome, reaso
 		level = appcore.OutcomeLogLevel(contract.Outcome(outcome))
 	}
 	s.log.Log(ctx, level, "window discovery failed",
-		"school_task_id", in.SchoolTaskID,
-		"day", in.Day,
-		"outcome", outcome,
-		"reason", mask.MaskText(reason),
+		logfield.KeySchoolTaskID, in.SchoolTaskID,
+		logfield.KeyDay, in.Day,
+		logfield.KeyOutcome, outcome,
+		logfield.KeyReason, mask.MaskText(reason),
 	)
 }
 

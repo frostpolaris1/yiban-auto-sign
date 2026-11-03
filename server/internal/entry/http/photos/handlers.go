@@ -43,6 +43,7 @@ import (
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
 	corephoto "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/photo"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
@@ -368,7 +369,7 @@ func (h *Handler) extendReadDeadline(c *gin.Context, budget time.Duration) {
 	err := http.NewResponseController(c.Writer).SetReadDeadline(h.clock.Now().Add(budget))
 	if err != nil {
 		h.logger.WarnContext(c.Request.Context(), "photo: cannot extend the read deadline",
-			"error", err.Error(), "path", c.Request.URL.Path)
+			logfield.KeyError, err.Error(), logfield.KeyPath, c.Request.URL.Path)
 	}
 }
 
@@ -377,7 +378,7 @@ func (h *Handler) extendWriteDeadline(c *gin.Context, budget time.Duration) {
 	err := http.NewResponseController(c.Writer).SetWriteDeadline(h.clock.Now().Add(budget))
 	if err != nil {
 		h.logger.WarnContext(c.Request.Context(), "photo: cannot extend the write deadline",
-			"error", err.Error(), "path", c.Request.URL.Path)
+			logfield.KeyError, err.Error(), logfield.KeyPath, c.Request.URL.Path)
 	}
 }
 

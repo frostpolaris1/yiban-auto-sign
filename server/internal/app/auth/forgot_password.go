@@ -7,6 +7,7 @@ import (
 
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
 	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 )
@@ -43,8 +44,8 @@ func (s *Service) ForgotPassword(ctx context.Context, email string) error {
 	now := s.clock.Now().UTC()
 	if !s.throttle.allow(email, now) {
 		s.log.Info("password reset request throttled",
-			"event", "password_reset.throttled",
-			"email", mask.EmailLabel(email))
+			logfield.KeyEvent, "password_reset.throttled",
+			logfield.KeyEmail, mask.EmailLabel(email))
 		// 被限速的请求不得比正常请求便宜：同样付一次 KDF。
 		return s.verifyDummyPassword(ctx, "yiban-forgot-timing")
 	}

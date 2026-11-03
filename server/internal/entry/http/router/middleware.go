@@ -18,6 +18,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/respond"
 )
 
@@ -131,8 +132,8 @@ func bindError(c *gin.Context, err error) {
 func recoverPanic(logger *slog.Logger) gin.HandlerFunc {
 	return gin.CustomRecovery(func(c *gin.Context, _ any) {
 		logger.Error("panic recovered",
-			"path", c.Request.URL.Path,
-			"request_id", c.GetString(contextRequestID),
+			logfield.KeyPath, c.Request.URL.Path,
+			logfield.KeyRequestID, c.GetString(contextRequestID),
 		)
 		respond.Error(c.Writer, c.Request, errs.New(errs.CodeInternal, "internal error"))
 		c.Abort()
@@ -147,15 +148,15 @@ func accessLog(logger *slog.Logger, clk clock.Clock) gin.HandlerFunc {
 		start := clk.Now()
 		c.Next()
 		attrs := []any{
-			"method", c.Request.Method,
-			"path", c.Request.URL.Path,
-			"status", c.Writer.Status(),
-			"bytes", c.Writer.Size(),
-			"duration_ms", clk.Now().Sub(start).Milliseconds(),
-			"request_id", c.GetString(contextRequestID),
+			logfield.KeyMethod, c.Request.Method,
+			logfield.KeyPath, c.Request.URL.Path,
+			logfield.KeyStatus, c.Writer.Status(),
+			logfield.KeyBytes, c.Writer.Size(),
+			logfield.KeyDurationMS, clk.Now().Sub(start).Milliseconds(),
+			logfield.KeyRequestID, c.GetString(contextRequestID),
 		}
 		if sess, ok := auth.FromContext(c.Request.Context()); ok {
-			attrs = append(attrs, "user_id", sess.User.ID)
+			attrs = append(attrs, logfield.KeyUserID, sess.User.ID)
 		}
 		logger.Info("http request", attrs...)
 	}

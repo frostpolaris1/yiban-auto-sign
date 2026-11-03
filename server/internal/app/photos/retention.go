@@ -23,6 +23,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
 )
 
 const (
@@ -101,14 +103,14 @@ func (l *RetentionLoop) sweep(ctx context.Context) {
 	result, err := l.svc.Sweep(ctx, l.batch)
 	if err != nil {
 		l.log.Error("photo retention sweep failed",
-			"error", err.Error(),
-			"rows_deleted", result.RowsDeleted,
-			"blobs_deleted", result.BlobsDeleted)
+			logfield.KeyError, err.Error(),
+			logfield.KeyRowsDeleted, result.RowsDeleted,
+			logfield.KeyBlobsDeleted, result.BlobsDeleted)
 		return
 	}
 	l.log.Info("photo retention sweep",
-		"rows_deleted", result.RowsDeleted,
-		"blobs_deleted", result.BlobsDeleted)
+		logfield.KeyRowsDeleted, result.RowsDeleted,
+		logfield.KeyBlobsDeleted, result.BlobsDeleted)
 }
 
 // StartRetention 在后台启动生产口径的清理循环，返回停止函数。
