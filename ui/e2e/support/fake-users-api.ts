@@ -180,9 +180,15 @@ export async function mockUsersApi(
   // deleted 行默认不在列表；include_deleted 时并入。
   const users = (options.users ?? [...USERS, DELETED_USER]).map((item) => ({ ...item }))
 
+  // 只有列表 GET 带校验值：详情与写端点与真服务端一致，不发 ETag。
   const json = (route: Route, request: Request, body: unknown, status = 200) => {
+    const conditional =
+      request.method() === 'GET' && new URL(request.url()).pathname === '/api/users'
+    if (!conditional) {
+      return route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
+    }
     const etag = etagOf(body)
-    if (request.method() === 'GET' && ifNoneMatchHit(request.headers()['if-none-match'], etag)) {
+    if (ifNoneMatchHit(request.headers()['if-none-match'], etag)) {
       return route.fulfill({ status: 304, headers: { ETag: etag } })
     }
     return route.fulfill({

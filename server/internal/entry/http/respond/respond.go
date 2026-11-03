@@ -103,6 +103,8 @@ func JSONWithETag(w http.ResponseWriter, r *http.Request, status int, inm string
 	sum := sha256.Sum256(raw)
 	etag := `"` + hex.EncodeToString(sum[:]) + `"`
 	w.Header().Set("ETag", etag)
+	// 入口中间件对 /api 统一发 no-store；列表需要每次复验而不是禁止缓存，
+	// 故这里覆写为 private, max-age=0，与照片单图同口径。
 	w.Header().Set("Cache-Control", "private, max-age=0")
 	if IfNoneMatchHit(inm, etag) {
 		w.WriteHeader(http.StatusNotModified)

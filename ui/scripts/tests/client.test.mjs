@@ -350,3 +350,62 @@ test('the cache keeps at most one hundred entries and drops the oldest', async (
     'the oldest entry is evicted once the cap is exceeded',
   )
 })
+
+test('an explicit If-None-Match 304 never reuses the cached body', async () => {
+  const path = '/api/conditional-explicit-304'
+  const capture = queueFetch([
+    jsonResponse({ n: 1 }, '"v1"'),
+    // The explicit validator matched on the server; the local cache holds
+    // another validator, so its body is not provably the answer.
+    notModified('"manual"'),
+  ])
+  try {
+    await apiRequest(path)
+    await assert.rejects(
+      apiRequest(path, { headers: { 'If-None-Match': '"manual"' } }),
+      (error) => error instanceof ApiError && error.status === 304,
+    )
+  } finally {
+    capture.restore()
+  }
+
+  assert.equal(sentHeader(capture.calls[1], 'If-None-Match'), '"manual"')
+})
+
+test('a 304 hit refreshes the cache order so polling keys survive eviction', async () => {
+  const responses = []
+  for (let i = 0; i < 100; i += 1) {
+    responses.push(jsonResponse({ i }, `"e${i}"`))
+  }
+  // One revalidation of the oldest key, then one insert past the cap.
+  responses.push(notModified('"e0"'))
+  responses.push(jsonResponse({ i: 100 }, '"e100"'))
+  // The checks: key 0 must still be cached, key 1 must have been evicted.
+  responses.push(jsonResponse({ i: 0 }, '"e0"'))
+  responses.push(jsonResponse({ i: 1 }, '"e1"'))
+
+  const capture = queueFetch(responses)
+  try {
+    for (let i = 0; i < 100; i += 1) {
+      await apiRequest(`/api/conditional-order-${i}`)
+    }
+    await apiRequest('/api/conditional-order-0')
+    await apiRequest('/api/conditional-order-100')
+    await apiRequest('/api/conditional-order-0')
+    await apiRequest('/api/conditional-order-1')
+  } finally {
+    capture.restore()
+  }
+
+  assert.equal(sentHeader(capture.calls[100], 'If-None-Match'), '"e0"')
+  assert.equal(
+    sentHeader(capture.calls[102], 'If-None-Match'),
+    '"e0"',
+    'a revalidated key must be moved to the newest position',
+  )
+  assert.equal(
+    sentHeader(capture.calls[103], 'If-None-Match'),
+    null,
+    'the key that was actually oldest is evicted',
+  )
+})

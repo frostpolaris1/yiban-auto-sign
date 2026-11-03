@@ -1566,3 +1566,22 @@ test('polling: an open create modal pauses the list poll', async ({ page }) => {
   await page.clock.runFor(10_000)
   await expect.poll(() => listCalls(api).length).toBe(base + 1)
 })
+
+test('polling: an open detail drawer pauses the list poll', async ({ page }) => {
+  await page.clock.install()
+  const api = await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+  const base = listCalls(api).length
+
+  await page.getByRole('button', { name: '查看 138****8000' }).click()
+  const drawer = page.getByRole('dialog', { name: '账号详情' })
+  await expect(drawer).toBeVisible()
+
+  await page.clock.runFor(10_000)
+  expect(listCalls(api).length, 'no list poll while the drawer is open').toBe(base)
+
+  await page.keyboard.press('Escape')
+  await expect(drawer).toBeHidden()
+  await page.clock.runFor(10_000)
+  await expect.poll(() => listCalls(api).length).toBe(base + 1)
+})

@@ -4036,6 +4036,8 @@ export interface operations {
             /** @description Image bytes. */
             200: {
                 headers: {
+                    /** @description Strong validator of the stored bytes (quoted sha256). */
+                    ETag?: string;
                     [name: string]: unknown;
                 };
                 content: {

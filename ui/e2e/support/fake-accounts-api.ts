@@ -315,9 +315,15 @@ export async function mockAccountsApi(page: Page, options: MockOptions): Promise
     })
   }
 
+  // 只有列表 GET 带校验值：详情与写端点与真服务端一致，不发 ETag。
   const json = (route: Route, request: Request, body: unknown, status = 200) => {
+    const conditional =
+      request.method() === 'GET' && new URL(request.url()).pathname === '/api/accounts'
+    if (!conditional) {
+      return route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
+    }
     const etag = etagOf(body)
-    if (request.method() === 'GET' && ifNoneMatchHit(request.headers()['if-none-match'], etag)) {
+    if (ifNoneMatchHit(request.headers()['if-none-match'], etag)) {
       return route.fulfill({ status: 304, headers: { ETag: etag } })
     }
     return route.fulfill({

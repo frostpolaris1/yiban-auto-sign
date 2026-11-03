@@ -127,8 +127,13 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
   })
 
   // 304 只省响应体：有缓存就交回同一对象，让结构共享保持引用稳定。
+  // 显式 If-None-Match 的 304 只证明调用方那一值命中，不能复用本地缓存体。
   if (response.status === 304) {
-    if (cached) return cached.body as T
+    if (cached && conditional) {
+      // 命中也要刷新插入序：轮询键不能被误当成最旧而先淘汰。
+      rememberBody(path, cached.etag, cached.body)
+      return cached.body as T
+    }
     return raiseApiError(response, path)
   }
 

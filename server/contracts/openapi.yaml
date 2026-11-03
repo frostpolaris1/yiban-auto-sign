@@ -1892,6 +1892,10 @@ paths:
       responses:
         '200':
           description: Image bytes.
+          headers:
+            ETag:
+              description: Strong validator of the stored bytes (quoted sha256).
+              schema: { type: string }
           content:
             image/jpeg:
               schema: { type: string, format: binary }

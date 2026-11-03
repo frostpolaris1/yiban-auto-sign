@@ -643,3 +643,25 @@ test('polling: an open create modal pauses the list poll', async ({ page }) => {
   await page.clock.runFor(10_000)
   await expect.poll(() => listUserCalls(api).length).toBe(base + 1)
 })
+
+test('polling: an open detail drawer pauses the list poll', async ({ page }) => {
+  await page.clock.install()
+  const api = await mockUsersApi(page, { role: 'master' })
+  await openUsers(page)
+  const base = listUserCalls(api).length
+
+  await page
+    .getByRole('row')
+    .filter({ hasText: 'master-one@example.com' })
+    .getByRole('button', { name: '管理 master-one@example.com' })
+    .click()
+  await expect(page.getByRole('dialog').getByText('管理用户', { exact: true })).toBeVisible()
+
+  await page.clock.runFor(10_000)
+  expect(listUserCalls(api).length, 'no list poll while the drawer is open').toBe(base)
+
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('dialog').getByText('管理用户', { exact: true })).toHaveCount(0)
+  await page.clock.runFor(10_000)
+  await expect.poll(() => listUserCalls(api).length).toBe(base + 1)
+})
