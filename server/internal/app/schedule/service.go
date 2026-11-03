@@ -744,22 +744,8 @@ func (s *Service) buildRows(ctx context.Context, in Input, eff corewindow.Window
 	demand := len(accounts)
 	capacity := corecapacity.Capacity(span, in.Workers, in.Avg, in.Rate, in.Util)
 	shortfall := corecapacity.Shortfall(demand, capacity)
-	binding := corecapacity.BindingOf(span, in.Workers, in.Avg, in.Rate, in.Util)
-	suggested := 0
-	// 只有缺口才给建议：无缺口时浮动尾数可能算出比当前更大的值，不能据此劝加并发。
-	if shortfall > 0 && binding == corecapacity.BindingWorkers {
-		want := corecapacity.SuggestedWorkers(demand, span, in.Avg, in.Util)
-		// 只建议"加通道能解决"且不越过配置上限的值；出口瓶颈不给数字。
-		if want > in.Workers && want <= corecapacity.MaxWorkers {
-			// 契约承诺该值能装下需求：提高通道后可能撞上出口速率硬上界。
-			// 若加了通道仍装不下，瓶颈已转到出口，改报 egress_rate 且不给数字。
-			if corecapacity.Capacity(span, want, in.Avg, in.Rate, in.Util) >= demand {
-				suggested = want
-			} else {
-				binding = corecapacity.BindingEgressRate
-			}
-		}
-	}
+	// 要抬哪一侧、给不给数字，全由 core 判定；入口不重写需求校验。
+	advice := corecapacity.Advise(span, in.Workers, in.Avg, in.Rate, in.Util, demand)
 	return Preview{
 		Day:              in.Day,
 		Source:           contract.WindowSource(raw.Source),
@@ -769,8 +755,8 @@ func (s *Service) buildRows(ctx context.Context, in Input, eff corewindow.Window
 		Capacity:         capacity,
 		Demand:           demand,
 		Shortfall:        shortfall,
-		Binding:          binding,
-		SuggestedWorkers: suggested,
+		Binding:          advice.Binding,
+		SuggestedWorkers: advice.SuggestedWorkers,
 		Histogram:        hist,
 		Rows:             rows,
 	}, nil

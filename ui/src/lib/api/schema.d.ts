@@ -1054,8 +1054,8 @@ export interface paths {
          *     Capacity shortfall returns 409 capacity_shortfall and writes nothing:
          *     the demand exceeds what the window can carry at the configured
          *     concurrency, average duration and egress rate. `details` carries
-         *     demand, capacity, shortfall, binding, and suggested_workers when the
-         *     bottleneck is the channel count and raising it can fit the demand.
+         *     demand, capacity, shortfall, binding, and suggested_workers when
+         *     raising the channel count within the 64-channel cap fits the demand.
          *     Preview still reports the numbers.
          */
         post: operations["SchedulePlan"];
@@ -1129,11 +1129,15 @@ export interface paths {
          * @description Capacity uses the same window resolution and formula as the plan.
          *     A positive shortfall means demand exceeds capacity and the plan
          *     compresses rows into the tail slice.
-         *     The binding names the limiting factor: workers when channel
-         *     throughput is no greater than the egress rate, egress_rate otherwise.
+         *     The binding names the side to raise to fit the demand: workers when
+         *     adding channels within the 64-channel cap can carry it; egress_rate
+         *     when the egress rate still caps capacity at the suggested channel
+         *     count. When the current capacity already fits, binding reports the
+         *     current bottleneck and no suggestion is needed. A workers binding
+         *     without suggested_workers means the demand exceeds the 64-channel cap.
          *     A suggested_workers value appears only for the workers binding, only
-         *     when it is above the configured concurrency and at most 64, and it is
-         *     the total channel count needed to fit the demand
+         *     when it is above the configured concurrency, at most 64, and that
+         *     count really fits the demand
          *     (ceil(demand × average seconds ÷ (window seconds × utilization))).
          *     Raising concurrency is a restart-level configuration change; the
          *     report never changes it.
@@ -1770,18 +1774,22 @@ export interface components {
             demand: number;
             shortfall: number;
             /**
-             * @description Limiting factor of the capacity formula. workers means channel
-             *     throughput is no greater than the egress rate; egress_rate means
-             *     the egress rate is the hard upper bound (a non-positive rate also
-             *     reports egress_rate).
+             * @description Side to raise to fit the demand. workers means adding channels
+             *     within the 64-channel cap can carry the demand. egress_rate means
+             *     the egress rate still caps capacity at the suggested channel count.
+             *     When the current capacity already fits, it reports the current
+             *     bottleneck and suggested_workers is absent. A workers binding
+             *     without suggested_workers means the demand exceeds the 64-channel
+             *     cap.
              * @enum {string}
              */
             binding?: "workers" | "egress_rate";
             /**
-             * @description Total channel count that would fit the demand. Present only when
-             *     binding is workers, the value is above the configured concurrency
-             *     and at most 64. Absent for the egress_rate binding: raising
-             *     concurrency does not help there. Applying it means changing
+             * @description Total channel count that fits the demand. Present only when
+             *     binding is workers, the value is above the configured concurrency,
+             *     at most 64, and that count really fits the demand. Absent for the
+             *     egress_rate binding (raising concurrency does not help) and when
+             *     the demand exceeds the 64-channel cap. Applying it means changing
              *     YIBAN_WORKERS and restarting.
              */
             suggested_workers?: number;

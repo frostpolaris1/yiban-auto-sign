@@ -207,11 +207,12 @@ configured concurrency, average duration and egress rate, the build refuses
 instead of writing a plan whose tail cannot finish; a first build of the day
 therefore leaves the day without a plan. Rows written by an earlier successful
 build are not deleted by a later refusal. `details` carries `demand`,
-`capacity`, `shortfall`, `binding` (`workers` or `egress_rate`) and, for a
-channel-bound shortfall that raising concurrency can fix, `suggested_workers`.
-Preview and the capacity report still show the numbers, and the rejection
-publishes `capacity.changed`. A daily build that fails this way logs one error
-line, so watch that line or the event.
+`capacity`, `shortfall`, `binding` (`workers` when raising concurrency within
+the 64-channel cap fits the demand, `egress_rate` when the egress rate still
+caps it) and `suggested_workers` when such a count exists. Preview and the
+capacity report still show the numbers, and the rejection publishes
+`capacity.changed`. A daily build that fails this way logs one error line, so
+watch that line or the event.
 
 ## Password reset mail
 

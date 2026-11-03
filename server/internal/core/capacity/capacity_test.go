@@ -41,6 +41,44 @@ func TestCapacityUtilClamp(t *testing.T) {
 	}
 }
 
+// 建议按需求判定要抬的一侧：容量够不给；加通道能装下才给数字；
+// 加了还装不下改报出口；超过并发上限只报 workers 不给数。
+func TestAdvise(t *testing.T) {
+	cases := []struct {
+		name     string
+		window   time.Duration
+		channels int
+		avg      time.Duration
+		rate     float64
+		util     float64
+		demand   int
+		want     Advice
+	}{
+		// 5400 秒 × 1/3 × 0.7 = 1260，恰好等于需求：不给建议。
+		{"容量恰好够", 90 * time.Minute, 1, 3 * time.Second, 1.0, 0.7, 1260,
+			Advice{Binding: BindingWorkers}},
+		// 400×3 ÷ (600×0.8) = 2.5 → 3 个通道；3 个通道容量 480 装得下。
+		{"加通道可装下", 10 * time.Minute, 2, 3 * time.Second, 10.0, 0.8, 400,
+			Advice{Binding: BindingWorkers, SuggestedWorkers: 3}},
+		// 1000×300 ÷ (4800×0.8) = 78.125 → 79 > 64：并发上限内无法给数。
+		{"超过并发上限", 80 * time.Minute, 1, 300 * time.Second, 1.0, 0.8, 1000,
+			Advice{Binding: BindingWorkers}},
+		// 需求 1500，当前容量 576；want 11，但 11 通道实得 1440，仍缺 60。
+		{"加通道仍被出口封顶", 30 * time.Minute, 4, 10 * time.Second, 1.0, 0.8, 1500,
+			Advice{Binding: BindingEgressRate}},
+		{"零速率归出口", 10 * time.Minute, 2, 3 * time.Second, 0, 0.8, 1,
+			Advice{Binding: BindingEgressRate}},
+		{"需求装得下不给数", 80 * time.Minute, 6, 3 * time.Second, 10.0, 0.8, 10,
+			Advice{Binding: BindingWorkers}},
+	}
+	for _, c := range cases {
+		got := Advise(c.window, c.channels, c.avg, c.rate, c.util, c.demand)
+		if got != c.want {
+			t.Fatalf("%s: Advise = %+v, want %+v", c.name, got, c.want)
+		}
+	}
+}
+
 func TestShortfall(t *testing.T) {
 	// 缺口 = 需求 − 容量，负值归零（无缺口）；恰等也归零（<= 边界，突变验证点）。
 	if got := Shortfall(100, 80); got != 20 {

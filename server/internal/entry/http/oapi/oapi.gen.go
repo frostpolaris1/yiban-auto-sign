@@ -787,10 +787,13 @@ type AdminTaskRow struct {
 
 // CapacityReport defines model for CapacityReport.
 type CapacityReport struct {
-	// Binding Limiting factor of the capacity formula. workers means channel
-	// throughput is no greater than the egress rate; egress_rate means
-	// the egress rate is the hard upper bound (a non-positive rate also
-	// reports egress_rate).
+	// Binding Side to raise to fit the demand. workers means adding channels
+	// within the 64-channel cap can carry the demand. egress_rate means
+	// the egress rate still caps capacity at the suggested channel count.
+	// When the current capacity already fits, it reports the current
+	// bottleneck and suggested_workers is absent. A workers binding
+	// without suggested_workers means the demand exceeds the 64-channel
+	// cap.
 	Binding   *CapacityReportBinding `json:"binding,omitempty"`
 	Capacity  int                    `json:"capacity"`
 	Day       string                 `json:"day"`
@@ -802,10 +805,11 @@ type CapacityReport struct {
 	// default window; override is a master or admin replacement.
 	Source ScheduleWindowSource `json:"source"`
 
-	// SuggestedWorkers Total channel count that would fit the demand. Present only when
-	// binding is workers, the value is above the configured concurrency
-	// and at most 64. Absent for the egress_rate binding: raising
-	// concurrency does not help there. Applying it means changing
+	// SuggestedWorkers Total channel count that fits the demand. Present only when
+	// binding is workers, the value is above the configured concurrency,
+	// at most 64, and that count really fits the demand. Absent for the
+	// egress_rate binding (raising concurrency does not help) and when
+	// the demand exceeds the 64-channel cap. Applying it means changing
 	// YIBAN_WORKERS and restarting.
 	SuggestedWorkers *int      `json:"suggested_workers,omitempty"`
 	TaskId           string    `json:"task_id"`
@@ -813,10 +817,13 @@ type CapacityReport struct {
 	WindowStart      time.Time `json:"window_start"`
 }
 
-// CapacityReportBinding Limiting factor of the capacity formula. workers means channel
-// throughput is no greater than the egress rate; egress_rate means
-// the egress rate is the hard upper bound (a non-positive rate also
-// reports egress_rate).
+// CapacityReportBinding Side to raise to fit the demand. workers means adding channels
+// within the 64-channel cap can carry the demand. egress_rate means
+// the egress rate still caps capacity at the suggested channel count.
+// When the current capacity already fits, it reports the current
+// bottleneck and suggested_workers is absent. A workers binding
+// without suggested_workers means the demand exceeds the 64-channel
+// cap.
 type CapacityReportBinding string
 
 // ChangePasswordRequest defines model for ChangePasswordRequest.

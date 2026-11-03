@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
 	corecapacity "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/capacity"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
@@ -473,12 +474,9 @@ func TestCapacityEgressShortfall(t *testing.T) {
 
 // 建议值必须真的装得下需求：加通道后撞上出口速率时改报 egress_rate。
 func TestCapacitySuggestionRespectsEgressCap(t *testing.T) {
-	ids := make([]string, 1500)
-	for i := range ids {
-		ids[i] = "acct-" + string(rune('a'+i%26)) + string(rune('0'+i/26))
-	}
-	svc := newService(t, &fakeWindowStore{task: enabledTask()}, &fakePlanStore{},
-		fakeAccounts{ids: ids}, &fakeDiscover{window: platformWindow(6, 30, 7, 0)})
+	n := &recordingPlanNotifier{}
+	svc := newNotifyingSchedule(t, &fakeWindowStore{task: enabledTask()}, &fakePlanStore{},
+		notifyAccounts(1500), &fakeDiscover{window: platformWindow(6, 30, 7, 0)}, n)
 	in := baseInput()
 	in.Workers = 4
 	in.Avg = 10 * time.Second
@@ -513,11 +511,21 @@ func TestCapacitySuggestionRespectsEgressCap(t *testing.T) {
 	if strings.Contains(e.Message, "YIBAN_WORKERS") {
 		t.Fatalf("出口瓶颈不得建议加并发: %q", e.Message)
 	}
+	if len(n.events) != 1 || n.events[0].kind != appevents.TypeCapacityChanged {
+		t.Fatalf("事件 = %+v, want 仅 capacity.changed", n.events)
+	}
+	payload := n.events[0].payload
+	if payload["binding"] != string(corecapacity.BindingEgressRate) {
+		t.Fatalf("事件 binding = %v, want egress_rate", payload["binding"])
+	}
+	if _, ok := payload["suggested_workers"]; ok {
+		t.Fatalf("事件不得带 suggested_workers: %v", payload)
+	}
 }
 
 // 建议值超过配置上限时不给：total 79 > 64，保持 workers 但不写数字。
 func TestCapacitySuggestionOverCap(t *testing.T) {
-	ids := make([]string, 100)
+	ids := make([]string, 1000)
 	for i := range ids {
 		ids[i] = "acct-" + string(rune('a'+i%26)) + string(rune('0'+i/26))
 	}
@@ -525,11 +533,15 @@ func TestCapacitySuggestionOverCap(t *testing.T) {
 		fakeAccounts{ids: ids}, &fakeDiscover{window: platformWindow(6, 30, 7, 50)})
 	in := baseInput()
 	in.Workers = 1
-	in.Avg = 3000 * time.Second // 100×3000 ÷ (4800×0.8) = 78.125 → 79 > 64
+	in.Avg = 300 * time.Second // 1000×300 ÷ (4800×0.8) = 78.125 → 79 > 64
 	in.Rate = 1.0
 	prev, err := svc.Preview(context.Background(), in)
 	if err != nil {
 		t.Fatalf("preview: %v", err)
+	}
+	// 1 通道、每次 300 秒、80 分钟：capacity = floor(4800/300×0.8) = 12。
+	if prev.Capacity != 12 || prev.Shortfall != 988 {
+		t.Fatalf("capacity/shortfall = %d/%d, want 12/988", prev.Capacity, prev.Shortfall)
 	}
 	if prev.Binding != corecapacity.BindingWorkers {
 		t.Fatalf("Binding = %q, want workers", prev.Binding)
@@ -546,8 +558,33 @@ func TestCapacitySuggestionOverCap(t *testing.T) {
 	if _, ok := e.Details["suggested_workers"]; ok {
 		t.Fatalf("超上限建议不得出现在 details: %v", e.Details)
 	}
-	if want := "容量不足：需求 100，容量 1"; e.Message != want {
+	if want := "容量不足：需求 1000，容量 12"; e.Message != want {
 		t.Fatalf("message = %q, want %q", e.Message, want)
+	}
+}
+
+// 浮点边界：容量恰好等于需求时不得给建议（want 会因浮点算成 2 > 当前 1）。
+func TestCapacityAdviceAtExactBoundary(t *testing.T) {
+	ids := make([]string, 1260)
+	for i := range ids {
+		ids[i] = "acct-" + string(rune('a'+i%26)) + string(rune('0'+i/26))
+	}
+	svc := newService(t, &fakeWindowStore{}, &fakePlanStore{}, fakeAccounts{ids: ids},
+		&fakeDiscover{window: platformWindow(6, 30, 8, 0)})
+	in := baseInput()
+	in.Workers = 1
+	in.Avg = 3 * time.Second
+	in.Rate = 1.0
+	in.Util = 0.7 // 90 分钟 × 1/3 × 0.7 = 1260，恰好等于需求。
+	prev, err := svc.Preview(context.Background(), in)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if prev.Capacity != 1260 || prev.Shortfall != 0 {
+		t.Fatalf("capacity/shortfall = %d/%d, want 1260/0", prev.Capacity, prev.Shortfall)
+	}
+	if prev.SuggestedWorkers != 0 {
+		t.Fatalf("容量恰好够时不得给建议, SuggestedWorkers = %d", prev.SuggestedWorkers)
 	}
 }
 
