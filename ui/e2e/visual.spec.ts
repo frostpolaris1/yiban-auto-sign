@@ -1,5 +1,5 @@
 import { test, expect, type Locator, type Page } from '@playwright/test'
-import { mockAccountsApi, RESET_TOKEN } from './support/fake-accounts-api'
+import { ACCOUNTS, mockAccountsApi, RESET_TOKEN } from './support/fake-accounts-api'
 import { mockDashboardApi } from './support/fake-dashboard-api'
 import { SCHEDULE_DAY, mockScheduleApi } from './support/fake-schedule-api'
 import { mockRunApi, installFakeEventSource } from './support/fake-run-api'
@@ -14,7 +14,7 @@ import { visibleText } from './support/visible-text'
  * 矩阵：10 条常驻路由（UX-3 起 /run 固定业务日入矩阵；UX-5 起 /engine
  * 入矩阵，页内 Date 冻结在 VISUAL_NOW，快照时刻全部派生自它）与看板的两个视角（user/admin），
  * × 2 套主题 × 2 个宽度 = 48 张；另有抽屉／模态／菜单、
- * 无权限页与溢出判据，文件合计 95 条用例（2026-11-01 win32 实数）。
+ * 无权限页与溢出判据，文件合计 97 条用例（2026-11-03 win32 实数）。
  * 仪表盘按角色分视角：user 是签到状态／诊断，admin 是窗口／容量体检。
  * 时间片页按固定业务日另拍（缺省日期会随日历漂移，不能进常驻矩阵），
  * 补 1440 与 390 两个宽度。
@@ -288,6 +288,26 @@ for (const theme of THEMES) {
     await page.getByRole('menu').getByRole('menuitem', { name: /删除/ }).click()
     await expect(page.getByRole('dialog', { name: '删除账号？' })).toBeVisible()
     await expect(page).toHaveScreenshot(`accounts-delete-${theme}-1440.png`)
+  })
+}
+
+for (const theme of THEMES) {
+  test(`visual nav badge ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    // 专属用例：把三行改成 2 行待审 + 1 行已拒，徽标与提示条同为一个 3。
+    await mockAccountsApi(page, {
+      role: 'master',
+      accounts: [
+        { ...ACCOUNTS[0], status: 'pending' },
+        { ...ACCOUNTS[1], status: 'rejected' },
+        { ...ACCOUNTS[2], status: 'pending' },
+      ],
+    })
+    await openWithTheme(page, '/accounts', theme)
+    const badge = page.locator('.d-sidebar .nav-link[href="/accounts"] .nav-badge')
+    await expect(badge).toHaveText('3')
+    await expect(badge).toHaveAttribute('aria-label', '待处理账号 3')
+    await expect(page).toHaveScreenshot(`nav-badge-${theme}-1440.png`, { fullPage: true })
   })
 }
 
