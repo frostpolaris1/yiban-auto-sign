@@ -54,12 +54,20 @@ test.beforeEach(async ({ page }) => {
 })
 
 /** 登录与密码找回三页都没有会话。壳内路由需要会话，这几页需要没有会话。 */
+function isAuthPath(path: string): boolean {
+  return (
+    path === '/login' ||
+    path.startsWith('/forgot-password') ||
+    path.startsWith('/reset-password')
+  )
+}
+
 async function mockSessionFor(
   page: Page,
   path: string,
   role: 'master' | 'admin' | 'user' = 'master',
 ) {
-  if (path === '/login' || path.startsWith('/forgot-password') || path.startsWith('/reset-password')) {
+  if (isAuthPath(path)) {
     await mockAccountsApi(page, { role: null })
     return
   }
@@ -104,6 +112,8 @@ async function openWithTheme(
   path: string,
   theme: (typeof THEMES)[number],
   role: 'master' | 'admin' | 'user' = 'master',
+  /** 会话故意过期等会离开壳的用例传 false：徽标随壳卸载，不能等可见。 */
+  settleBadge = true,
 ) {
   await mockSessionFor(page, path, role)
   await page.addInitScript((value) => {
@@ -113,8 +123,34 @@ async function openWithTheme(
       /* localStorage 可能被禁用。引导脚本会退回媒体查询。 */
     }
   }, theme)
+  // summary 只对 master/admin 发：非 auth 路径先挂响应等待，避免只等字体时徽标还没落定。
+  // user 视角零请求；auth 三页没有壳，都不等。
+  const summaryResponse =
+    !isAuthPath(path) && role !== 'user'
+      ? page
+          .waitForResponse(
+            (response) => new URL(response.url()).pathname === '/api/accounts/summary',
+            { timeout: 5000 },
+          )
+          .catch(() => null)
+      : null
   await page.goto(path)
   await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
+  if (summaryResponse) {
+    const response = await summaryResponse
+    const summary = response
+      ? ((await response.json().catch(() => null)) as {
+          pending?: number
+          rejected?: number
+        } | null)
+      : null
+    const badge = (summary?.pending ?? 0) + (summary?.rejected ?? 0)
+    // 只有计数大于 0 才有徽标；零计数不白等。确有徽标时必须等到可见，
+    // 慢机也不静默拍出没有徽标的基线。
+    if (badge > 0 && settleBadge) {
+      await page.locator('.nav-badge--count').first().waitFor({ state: 'visible', timeout: 5000 })
+    }
+  }
   // 字体到位是截图的必要条件；数据态由各用例自己断言之后再拍。
   await page.evaluate(() => document.fonts.ready)
 }
@@ -478,7 +514,7 @@ for (const theme of THEMES) {
     // 有会话进账号页，列表请求返回 401：真实用户路径，落到登录页并带过期提示。
     await mockAccountsApi(page, { role: 'master', expireOn: ['/api/accounts'] })
     await page.setViewportSize({ width: 1440, height: 900 })
-    await openWithTheme(page, '/accounts', theme)
+    await openWithTheme(page, '/accounts', theme, 'master', false)
     await expect(page.getByText('会话已过期，请重新登录')).toBeVisible()
     await expect(page).toHaveScreenshot(`session-expired-${theme}-1440.png`)
   })
