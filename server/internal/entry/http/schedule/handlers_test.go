@@ -396,6 +396,10 @@ func TestCapacityReport(t *testing.T) {
 		preview: samplePreview(),
 		task:    coreschedule.TaskInfo{ID: "t1", SchoolID: "s1"},
 	}
+	planner.preview.Demand = 100
+	planner.preview.Shortfall = 36
+	planner.preview.Binding = "workers"
+	planner.preview.SuggestedWorkers = 4
 	engine, issued := newRouter(t, corescope.Master(), planner, &fakeTimePrefs{})
 	rec := do(t, engine, issued, http.MethodGet, "/api/capacity?school_id=s1&task_id=t1", nil)
 	if rec.Code != http.StatusOK {
@@ -408,8 +412,11 @@ func TestCapacityReport(t *testing.T) {
 	if _, ok := raw["rows"]; ok {
 		t.Fatal("容量报告不应含行明细")
 	}
-	if raw["capacity"].(float64) != 64 || raw["demand"].(float64) != 1 {
+	if raw["capacity"].(float64) != 64 || raw["demand"].(float64) != 100 {
 		t.Fatalf("raw = %v", raw)
+	}
+	if raw["binding"] != "workers" || raw["suggested_workers"] != float64(4) {
+		t.Fatalf("binding/suggested = %v/%v", raw["binding"], raw["suggested_workers"])
 	}
 	if raw["day"].(string) == "" {
 		t.Fatal("缺省日期应补今天")
@@ -430,6 +437,23 @@ func TestCapacityReport(t *testing.T) {
 	if planner.reportCalls != 2 || !planner.lastInput.Refresh {
 		t.Fatalf("refresh 未透传：calls = %d refresh = %v",
 			planner.reportCalls, planner.lastInput.Refresh)
+	}
+
+	// 建议值 0 表示不给：字段整体缺席，不写 0。
+	planner.preview.SuggestedWorkers = 0
+	rec = do(t, engine, issued, http.MethodGet, "/api/capacity?school_id=s1&task_id=t1", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("no suggestion status = %d: %s", rec.Code, rec.Body.String())
+	}
+	raw = nil
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := raw["suggested_workers"]; ok {
+		t.Fatalf("建议值 0 必须省略: %v", raw)
+	}
+	if raw["binding"] != "workers" {
+		t.Fatalf("binding = %v, want workers", raw["binding"])
 	}
 }
 

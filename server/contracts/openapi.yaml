@@ -1598,7 +1598,9 @@ paths:
         Capacity shortfall returns 409 capacity_shortfall and writes nothing:
         the demand exceeds what the window can carry at the configured
         concurrency, average duration and egress rate. `details` carries
-        demand, capacity and shortfall. Preview still reports the numbers.
+        demand, capacity, shortfall, binding, and suggested_workers when the
+        bottleneck is the channel count and raising it can fit the demand.
+        Preview still reports the numbers.
       x-roles: [master, admin]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -1715,6 +1717,14 @@ paths:
         Capacity uses the same window resolution and formula as the plan.
         A positive shortfall means demand exceeds capacity and the plan
         compresses rows into the tail slice.
+        The binding names the limiting factor: workers when channel
+        throughput is no greater than the egress rate, egress_rate otherwise.
+        A suggested_workers value appears only for the workers binding, only
+        when it is above the configured concurrency and at most 64, and it is
+        the total channel count needed to fit the demand
+        (ceil(demand × average seconds ÷ (window seconds × utilization))).
+        Raising concurrency is a restart-level configuration change; the
+        report never changes it.
         The window is read from the daily cache by default: a cached day makes
         no platform call, a missing day is discovered once and then cached.
         Set refresh=true to discover again. An override still wins over both.
@@ -2764,6 +2774,23 @@ components:
         capacity: { type: integer }
         demand: { type: integer }
         shortfall: { type: integer }
+        binding:
+          type: string
+          description: |
+            Limiting factor of the capacity formula. workers means channel
+            throughput is no greater than the egress rate; egress_rate means
+            the egress rate is the hard upper bound (a non-positive rate also
+            reports egress_rate).
+          enum: [workers, egress_rate]
+        suggested_workers:
+          type: integer
+          minimum: 1
+          description: |
+            Total channel count that would fit the demand. Present only when
+            binding is workers, the value is above the configured concurrency
+            and at most 64. Absent for the egress_rate binding: raising
+            concurrency does not help there. Applying it means changing
+            YIBAN_WORKERS and restarting.
     SignStatsDay:
       type: object
       required: [day, pending, running, success, failed, skipped]

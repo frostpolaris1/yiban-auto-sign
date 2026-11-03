@@ -53,3 +53,71 @@ func TestShortfall(t *testing.T) {
 		t.Fatalf("恰好相等应归零, got %d", got)
 	}
 }
+
+// 瓶颈判定与容量同口径：通道吞吐不大于出口速率归 workers，否则归 egress_rate。
+func TestBindingOf(t *testing.T) {
+	cases := []struct {
+		name     string
+		window   time.Duration
+		channels int
+		avg      time.Duration
+		rate     float64
+		util     float64
+		want     Binding
+	}{
+		{"通道是瓶颈", 10 * time.Minute, 2, 3 * time.Second, 10.0, UtilDefault, BindingWorkers},
+		{"速率是瓶颈", 10 * time.Minute, 8, 3 * time.Second, 0.5, UtilDefault, BindingEgressRate},
+		{"恰好相等归通道", 10 * time.Minute, 2, 2 * time.Second, 1.0, UtilDefault, BindingWorkers},
+		{"零速率归出口", 10 * time.Minute, 2, 3 * time.Second, 0, UtilDefault, BindingEgressRate},
+		{"负速率归出口", 10 * time.Minute, 2, 3 * time.Second, -1, UtilDefault, BindingEgressRate},
+		{"零窗口归通道", 0, 2, 3 * time.Second, 1.0, UtilDefault, BindingWorkers},
+		{"零平均耗时归通道", 10 * time.Minute, 2, 0, 1.0, UtilDefault, BindingWorkers},
+		// rate 判据优先：零窗口同时零速率时仍归出口。
+		{"零窗口零速率归出口", 0, 2, 3 * time.Second, 0, UtilDefault, BindingEgressRate},
+		{"零通道归通道", 10 * time.Minute, 0, 3 * time.Second, 1.0, UtilDefault, BindingWorkers},
+		// util=0 时容量为 0，没有可用的吞吐比较：不能据此归咎出口。
+		{"零利用系数归通道", 10 * time.Minute, 8, 3 * time.Second, 0.5, 0, BindingWorkers},
+		// util 不参与瓶颈比较：越界值也不能翻转归属。
+		{"util 越界不改变归属", 10 * time.Minute, 8, 3 * time.Second, 0.5, 2.0, BindingEgressRate},
+	}
+	for _, c := range cases {
+		got := BindingOf(c.window, c.channels, c.avg, c.rate, c.util)
+		if got != c.want {
+			t.Fatalf("%s: BindingOf = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// 建议值 = ceil(需求 × 平均耗时 ÷ (窗口 × util))；非正输入归 0。
+func TestSuggestedWorkers(t *testing.T) {
+	cases := []struct {
+		name   string
+		demand int
+		window time.Duration
+		avg    time.Duration
+		util   float64
+		want   int
+	}{
+		// 100×60 ÷ (4800×0.8) = 1.5625 → 2。
+		{"向上取整", 100, 80 * time.Minute, 60 * time.Second, 0.8, 2},
+		// 64×60 ÷ (4800×0.8) = 1，整除不多要一个。
+		{"整除不多要", 64, 80 * time.Minute, 60 * time.Second, 0.8, 1},
+		{"零需求", 0, 80 * time.Minute, 60 * time.Second, 0.8, 0},
+		{"零窗口", 100, 0, 60 * time.Second, 0.8, 0},
+		{"零平均耗时", 100, 80 * time.Minute, 0, 0.8, 0},
+		{"零利用系数", 100, 80 * time.Minute, 60 * time.Second, 0, 0},
+		// 100000×60 ÷ (4800×0.8) = 1562.5 → 1563，超过 64 由调用方决定不给建议。
+		{"超过上限也如实返回", 100000, 80 * time.Minute, 60 * time.Second, 0.8, 1563},
+		// util 与 Capacity 同口径夹到 1：100×60 ÷ 4800 = 1.25 → 2。
+		{"util 越界夹取", 100, 80 * time.Minute, 60 * time.Second, 2.0, 2},
+	}
+	for _, c := range cases {
+		got := SuggestedWorkers(c.demand, c.window, c.avg, c.util)
+		if got != c.want {
+			t.Fatalf("%s: SuggestedWorkers = %d, want %d", c.name, got, c.want)
+		}
+	}
+	if MaxWorkers != 64 {
+		t.Fatalf("MaxWorkers = %d, want 64（与配置上限一致）", MaxWorkers)
+	}
+}

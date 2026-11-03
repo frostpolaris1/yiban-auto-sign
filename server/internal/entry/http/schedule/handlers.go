@@ -238,12 +238,22 @@ func (h *Handler) CapacityReport(c *gin.Context, params oapi.CapacityGetParams) 
 		fail(c, err)
 		return
 	}
-	respond.JSON(c.Writer, 200, oapi.CapacityReport{
+	report := oapi.CapacityReport{
 		SchoolId: in.SchoolID, TaskId: in.SchoolTaskID, Day: p.Day,
 		Source:      oapi.ScheduleWindowSource(p.Source),
 		WindowStart: p.WindowStart, WindowEnd: p.WindowEnd,
 		Capacity: p.Capacity, Demand: p.Demand, Shortfall: p.Shortfall,
-	})
+	}
+	// 两个新字段可选：瓶颈恒有值；建议值 0 表示不给，契约里就不出现。
+	if p.Binding != "" {
+		binding := oapi.CapacityReportBinding(p.Binding)
+		report.Binding = &binding
+	}
+	if p.SuggestedWorkers > 0 {
+		suggested := p.SuggestedWorkers
+		report.SuggestedWorkers = &suggested
+	}
+	respond.JSON(c.Writer, 200, report)
 }
 
 // SignStats 实现 GET /api/sign-stats。

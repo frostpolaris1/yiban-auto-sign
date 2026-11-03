@@ -164,5 +164,6 @@ a shape failure.
 
 The list grows by addition only: values are never renamed or removed.
 `capacity_shortfall` is a plan-build refusal (409, details carry demand,
-capacity and shortfall); `task_ambiguous` means two enabled tasks apply to the
-same account and the server will not guess which one a manual sign means.
+capacity, shortfall, binding and, when applicable, suggested_workers);
+`task_ambiguous` means two enabled tasks apply to the same account and the
+server will not guess which one a manual sign means.

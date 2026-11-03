@@ -8,6 +8,7 @@ import (
 	"time"
 
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
+	corecapacity "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/capacity"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	coreplan "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/plan"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
@@ -374,6 +375,12 @@ func TestBuildRejectsCapacityShortfall(t *testing.T) {
 	} else if details := coreerrs.From(err).Details; details["demand"] != 100 ||
 		details["capacity"] == nil || details["shortfall"] == nil {
 		t.Fatalf("details = %v, want 需求/容量/缺口三个数", details)
+	} else if details["binding"] != string(corecapacity.BindingWorkers) {
+		t.Fatalf("binding = %v, want workers", details["binding"])
+	} else if details["suggested_workers"] != 2 {
+		t.Fatalf("suggested_workers = %v, want 2", details["suggested_workers"])
+	} else if want := "容量不足：需求 100，容量 64；通道是瓶颈，建议 YIBAN_WORKERS=2"; coreerrs.From(err).Message != want {
+		t.Fatalf("message = %q, want %q", coreerrs.From(err).Message, want)
 	}
 	if len(ps.inserted) != 0 {
 		t.Fatalf("缺口计划不得落库, inserted = %d 批", len(ps.inserted))
@@ -405,10 +412,61 @@ func TestCapacityShortfallReported(t *testing.T) {
 	if prev.Shortfall <= 0 {
 		t.Fatalf("应报缺口, capacity=%d demand=%d", prev.Capacity, prev.Demand)
 	}
+	if prev.Binding != corecapacity.BindingWorkers {
+		t.Fatalf("Binding = %q, want workers", prev.Binding)
+	}
+	// 100×60 ÷ (4800×0.8) = 1.5625 → 2 个通道；当前 1 个，故给出建议。
+	if prev.SuggestedWorkers != 2 {
+		t.Fatalf("SuggestedWorkers = %d, want 2", prev.SuggestedWorkers)
+	}
 	for _, r := range prev.Rows {
 		if r.RunAt.Before(prev.WindowStart) || !r.RunAt.Before(prev.WindowEnd) {
 			t.Fatalf("超容量行越窗: %v", r.RunAt)
 		}
+	}
+}
+
+// 出口速率是瓶颈：不给数字建议，409 message 指向出口配置。
+func TestCapacityEgressShortfall(t *testing.T) {
+	ids := make([]string, 100)
+	for i := range ids {
+		ids[i] = "acct-" + string(rune('a'+i%26)) + string(rune('0'+i/26))
+	}
+	svc := newService(t, &fakeWindowStore{task: enabledTask()}, &fakePlanStore{},
+		fakeAccounts{ids: ids}, &fakeDiscover{window: platformWindow(6, 30, 6, 31)})
+	in := baseInput()
+	in.Workers = 4
+	in.Avg = 3 * time.Second // 通道吞吐 1.33/s > 出口 0.5/s
+	in.Rate = 0.5
+	prev, err := svc.Preview(context.Background(), in)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if prev.Binding != corecapacity.BindingEgressRate {
+		t.Fatalf("Binding = %q, want egress_rate", prev.Binding)
+	}
+	// 容量 floor(60×0.5×0.8)=24 < 需求 100；即使理论通道数够也不能建议加并发。
+	if prev.SuggestedWorkers != 0 {
+		t.Fatalf("出口瓶颈不应给建议, SuggestedWorkers = %d", prev.SuggestedWorkers)
+	}
+
+	_, err = svc.Build(context.Background(), in)
+	if err == nil {
+		t.Fatal("缺口计划应被拒")
+	}
+	e := coreerrs.From(err)
+	if e.Code != coreerrs.CodeCapacityShortfall {
+		t.Fatalf("错误码 = %q, want capacity_shortfall", e.Code)
+	}
+	if e.Details["binding"] != string(corecapacity.BindingEgressRate) {
+		t.Fatalf("binding = %v, want egress_rate", e.Details["binding"])
+	}
+	if _, ok := e.Details["suggested_workers"]; ok {
+		t.Fatalf("出口瓶颈不得给 suggested_workers: %v", e.Details)
+	}
+	want := "容量不足：需求 100，容量 24；出口速率是瓶颈，建议提高 YIBAN_EGRESS_RATE 或增加出口标识"
+	if e.Message != want {
+		t.Fatalf("message = %q, want %q", e.Message, want)
 	}
 }
 
