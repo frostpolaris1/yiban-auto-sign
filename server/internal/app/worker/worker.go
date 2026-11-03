@@ -12,6 +12,7 @@ import (
 	appcore "github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
+	corediagnostic "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/diagnostic"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corelocation "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/location"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
@@ -46,8 +47,7 @@ const (
 	waitRate           = "wait_rate"           // 出口限速未放行
 	waitEgress         = "wait_egress"         // 出口不可用（无可用出口或分配失败）
 	waitBatchAborted   = "wait_batch_aborted"  // 本行前置步骤遇基础设施失败，退回队列
-	unreadableCred     = "credential_invalid"
-	windowMissingRetry = 10 * time.Minute // 窗口未发现时的重试间隔
+	windowMissingRetry = 10 * time.Minute      // 窗口未发现时的重试间隔
 	// reclaimBatch 是每 tick 回收过期租约的上限。
 	reclaimBatch = 100
 )
@@ -246,11 +246,16 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 		switch coreerrs.From(err).Code {
 		case coreerrs.CodeNotFound, coreerrs.CodeValidation,
 			coreerrs.CodeForbidden, coreerrs.CodeUnauthorized:
-			return false, s.finish(ctx, task, corestatus.TaskFailed, unreadableCred)
+			return false, s.finishFailed(ctx, task, contract.OutcomeCredentialBad,
+				"账号不可用（已删除或停用），凭据读取失败", 0, nil, s.deps.Clock.Now())
 		default:
 			return false, err
 		}
 	}
+	// 一次真实尝试从凭据就绪算起：发现与提交都在内，耗时能区分
+	// "平台快速拒绝"与"网络超时"（后者通常秒级以上）。
+	// 时间源走注入时钟：域内不直接读墙上时间（gate: clock.now）。
+	attemptStart := s.deps.Clock.Now()
 	ref := contract.AccountRef{ID: task.AccountID, SchoolID: task.SchoolID, Platform: "yiban"}
 
 	// 发现阶段可能直接给出业务结论（OutcomeError），例如 no_target、
@@ -262,10 +267,11 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 	if err != nil {
 		if outcome, reason, ok := outcomeOf(err); ok {
 			s.logOutcome(ctx, task, stageDiscovery, outcome, reason)
-			return false, s.settleOutcome(ctx, task, win, now, outcome)
+			return false, s.settleOutcome(ctx, task, win, now, outcome, reason, s.deps.Clock.Now().Sub(attemptStart))
 		}
-		s.logOutcome(ctx, task, stageDiscovery, contract.OutcomeTransient, mask.SafeErrorText(err))
-		return false, s.settleOutcome(ctx, task, win, now, contract.OutcomeTransient)
+		reason := mask.SafeErrorText(err)
+		s.logOutcome(ctx, task, stageDiscovery, contract.OutcomeTransient, reason)
+		return false, s.settleOutcome(ctx, task, win, now, contract.OutcomeTransient, reason, s.deps.Clock.Now().Sub(attemptStart))
 	}
 	if len(targets) == 0 {
 		return false, s.finish(ctx, task, corestatus.TaskSkipped, string(contract.OutcomeNoTarget))
@@ -335,13 +341,14 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 	if err != nil {
 		if outcome, reason, ok := outcomeOf(err); ok {
 			s.logOutcome(ctx, task, stageSubmit, outcome, reason)
-			return true, s.settleOutcome(ctx, task, win, now, outcome)
+			return true, s.settleOutcome(ctx, task, win, now, outcome, reason, s.deps.Clock.Now().Sub(attemptStart))
 		}
-		s.logOutcome(ctx, task, stageSubmit, contract.OutcomeTransient, mask.SafeErrorText(err))
-		return true, s.settleOutcome(ctx, task, win, now, contract.OutcomeTransient)
+		reason := mask.SafeErrorText(err)
+		s.logOutcome(ctx, task, stageSubmit, contract.OutcomeTransient, reason)
+		return true, s.settleOutcome(ctx, task, win, now, contract.OutcomeTransient, reason, s.deps.Clock.Now().Sub(attemptStart))
 	}
 	s.logOutcome(ctx, task, stageSubmit, result.Outcome, result.Message)
-	return true, s.settleOutcome(ctx, task, win, now, result.Outcome)
+	return true, s.settleOutcome(ctx, task, win, now, result.Outcome, result.Message, s.deps.Clock.Now().Sub(attemptStart))
 }
 
 // settleOutcome 按结论词表落终态或退避重排。
@@ -353,7 +360,7 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 //   - 确定性失败：rejected、photo_rejected、blocked → failed；
 //   - 凭据错：credential_invalid → failed，并把账号移出排期；
 //   - 可重试面：transient、pending_upstream、unknown → 预算内退避。
-func (s *Service) settleOutcome(ctx context.Context, task corescheduleTask, win corewindow.Window, now time.Time, outcome contract.Outcome) error {
+func (s *Service) settleOutcome(ctx context.Context, task corescheduleTask, win corewindow.Window, now time.Time, outcome contract.Outcome, reason string, dur time.Duration) error {
 	switch outcome {
 	case contract.OutcomeSuccess, contract.OutcomeAlreadyDone:
 		return s.finish(ctx, task, corestatus.TaskSuccess, string(outcome))
@@ -363,23 +370,32 @@ func (s *Service) settleOutcome(ctx context.Context, task corescheduleTask, win 
 		return s.finish(ctx, task, corestatus.TaskSkipped, string(outcome))
 	case contract.OutcomeRejected, contract.OutcomePhotoRejected,
 		contract.OutcomeBlocked:
-		return s.finish(ctx, task, corestatus.TaskFailed, string(outcome))
+		return s.finishFailed(ctx, task, outcome, reason, dur, &win, now)
 	case contract.OutcomeCredentialBad:
-		return s.finishCredentialInvalid(ctx, task)
+		return s.finishCredentialInvalid(ctx, task, reason, dur, &win, now)
 	}
 	// 重试面：预算耗尽或窗口放不下即落 failed。
 	// 退避档位按"已发生的尝试序号"取：第 1 次失败取基础间隔，之后指数放大。
 	// 抖动与放大由 core/retry 统一计算，本处只判预算与窗口。
 	policy := coreretry.BudgetFor(string(outcome))
 	if task.Attempts+1 >= policy.MaxAttempts {
-		return s.finish(ctx, task, corestatus.TaskFailed, string(outcome))
+		return s.finishFailed(ctx, task, outcome, reason, dur, &win, now)
 	}
 	delay, ok := coreretry.NextDelay(policy, task.Attempts+1, coreretry.Window{End: win.End}, now)
 	if !ok {
-		return s.finish(ctx, task, corestatus.TaskFailed, string(outcome))
+		return s.finishFailed(ctx, task, outcome, reason, dur, &win, now)
 	}
 	// 业务失败重排要计尝试数（与等待型 RequeueWait 区分）。
 	return s.requeueRetry(ctx, task, now.Add(delay), string(outcome))
+}
+
+// finishFailed 先落放弃行，再落 failed 终态。
+//
+// 顺序有讲究：日志先写，库写失败时现场仍在日志里；
+// 反过来会丢掉那条唯一能解释失败原因的行。
+func (s *Service) finishFailed(ctx context.Context, task corescheduleTask, outcome contract.Outcome, reason string, dur time.Duration, win *corewindow.Window, now time.Time) error {
+	s.logGiveUp(ctx, task, outcome, reason, dur, win, now)
+	return s.finish(ctx, task, corestatus.TaskFailed, string(outcome))
 }
 
 // requeueWait 是等待型重排：成功后发 task.progress。
@@ -451,7 +467,8 @@ func (s *Service) finish(ctx context.Context, task corescheduleTask, state cores
 //
 // 为什么不能复用 finish：账号状态是排期输入。只落任务不落账号，
 // 次日仍会认领同一账号并再打一次失败登录（验收 3）。
-func (s *Service) finishCredentialInvalid(ctx context.Context, task corescheduleTask) error {
+func (s *Service) finishCredentialInvalid(ctx context.Context, task corescheduleTask, reason string, dur time.Duration, win *corewindow.Window, now time.Time) error {
+	s.logGiveUp(ctx, task, contract.OutcomeCredentialBad, reason, dur, win, now)
 	ctx, cancel := settlementContext(ctx)
 	defer cancel()
 	if err := s.deps.Store.FinishCredentialInvalid(ctx, task.SchoolID, task.AccountID, task.SchoolTaskID, task.Day, task.ClaimSeq, s.deps.Clock.Now()); err != nil {
@@ -537,6 +554,8 @@ func outcomeOf(err error) (contract.Outcome, string, bool) {
 const (
 	stageDiscovery = "discovery"
 	stageSubmit    = "submit"
+	// stageGiveUp 标记最终放弃行：与逐次尝试行区分，日志检索按 stage 分档。
+	stageGiveUp = "giveup"
 )
 
 // logOutcome 记录一次结论的原因。
@@ -560,6 +579,66 @@ func (s *Service) logOutcome(ctx context.Context, task corescheduleTask, stage s
 		"outcome", string(outcome),
 		"reason", mask.MaskText(reason),
 	)
+}
+
+// logGiveUp 记录最终放弃行。
+//
+// 与逐次尝试行用同一个 msg，靠 stage=giveup 区分：同一事实只在字段里出现一次，
+// 不在消息文本里复述（消息拼句会让 code/reason/耗时各出现两遍）。
+// 现场只给认证类：那条结论的风险最高，也最需要自证"我方解密没坏"；
+// 其余类带全量现场只会刷屏，管理员看 outcome 与 reason 已足够。
+//
+// 历史查询失败不改结论：现场缺项显式写 hist=unavailable，缺口本身可见。
+// 级别与逐次行同一口径（app.OutcomeLogLevel），不另立告警面。
+func (s *Service) logGiveUp(ctx context.Context, task corescheduleTask, outcome contract.Outcome, reason string, dur time.Duration, win *corewindow.Window, now time.Time) {
+	// 建议词取诊断面的封闭词表，不在这里另造一套"下一步做什么"。
+	var diagWin *corediagnostic.WindowInfo
+	if win != nil {
+		diagWin = &corediagnostic.WindowInfo{Start: win.Start, End: win.End}
+	}
+	attrs := []any{
+		"stage", stageGiveUp,
+		"school_id", task.SchoolID,
+		"account_id", task.AccountID,
+		"task_id", task.SchoolTaskID,
+		"day", task.Day,
+		"attempt", task.Attempts + 1,
+		"outcome", string(outcome),
+		"reason", mask.MaskText(reason),
+		"suggestion", corediagnostic.SuggestionFor(
+			string(corestatus.TaskFailed), string(outcome), diagWin, now),
+	}
+	if outcome == contract.OutcomeCredentialBad {
+		attrs = append(attrs, s.authScene(ctx, task, dur)...)
+	}
+	s.log.Log(ctx, appcore.OutcomeLogLevel(outcome), "signing outcome", attrs...)
+}
+
+// authScene 补齐认证类放弃行的现场字段。
+//
+// 命名跟着全仓日志口径：日期串用 *_day（与 day 同源），计数用过去分词 plural
+// （与 rows_deleted 同形），布尔用形容词（与 retryable 同形）。
+// 耗时取注入时钟差（域内不读墙上时间）；从未成过功写 last_success_day=never，
+// 不写空串——空串会被读成"字段缺失"。failed_days 含本次。
+// 历史查询失败写 history_available=false，缺口显性但不编造日期。
+func (s *Service) authScene(ctx context.Context, task corescheduleTask, dur time.Duration) []any {
+	var attrs []any
+	if dur > 0 {
+		attrs = append(attrs, "duration_ms", dur.Milliseconds())
+	}
+	last, failedDays, err := s.deps.Store.AccountSignHistory(ctx, task.AccountID, task.Day)
+	if err != nil {
+		return append(attrs, "history_available", false)
+	}
+	if last == "" {
+		last = "never"
+	}
+	attrs = append(attrs, "last_success_day", last, "failed_days", failedDays+1)
+	// credential_kid 对应 credentials.kid 列：日志读者不查库，写全名才懂。
+	if kid := s.deps.Creds.KID(); kid != "" {
+		attrs = append(attrs, "credential_kid", kid)
+	}
+	return attrs
 }
 
 // Request 是手动签到入口：解析当日的目标任务，确保任务行存在并返回行 ID。

@@ -68,11 +68,21 @@ type Store interface {
 	// EnabledTasks 返回账号所属学校的全部启用任务 ID。
 	// 账号不可用（停用、软删、不存在）返回 errs.ErrNotFound。
 	AccountEnabledTasks(ctx context.Context, accountID string) ([]string, error)
+	// AccountSignHistory 返回账号在 today 之前的签到历史，供放弃行现场使用。
+	// lastSuccess 是最近一次 success 的日期（YYYY-MM-DD）；从未成功返回空串。
+	// failedDays 是自那次成功之后（不含 today）落在 failed 的天数。
+	// 只读、无副作用：调用方失败时降级为"历史不可用"，不得影响签到结论。
+	AccountSignHistory(ctx context.Context, accountID, today string) (lastSuccess string, failedDays int, err error)
 }
 
 // Credentials 取一次调用内有效的账号凭据。
+//
+// KID 是当前凭据密钥的单向指纹：放弃行用它自证"我方解密密文正常、
+// 是平台拒绝了这组凭据"，不必再靠备份取证（2026-11-03 排查成本）。
+// 空串表示未装配密钥面，日志不带该字段。
 type Credentials interface {
 	Credential(ctx context.Context, accountID string) (contract.Credential, error)
+	KID() string
 }
 
 // Signer 是 signing 契约的执行子集。

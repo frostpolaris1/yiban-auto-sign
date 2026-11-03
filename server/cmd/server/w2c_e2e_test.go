@@ -371,6 +371,9 @@ func (e2eCreds) Credential(context.Context, string) (contract.Credential, error)
 	return contract.Credential{}, nil
 }
 
+// KID 空串：本文件不判密钥指纹字段。
+func (e2eCreds) KID() string { return "" }
+
 // w2cDeviceStub 满足账号用例的设备端口：本文件的用例不调设备刷新。
 type w2cDeviceStub struct{}
 

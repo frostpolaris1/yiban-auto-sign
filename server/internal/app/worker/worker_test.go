@@ -36,6 +36,10 @@ type fakeStore struct {
 	dayTasks     []string
 	enabledTasks []string
 
+	// history 按账号给签到历史；historyErr 注入查询失败。
+	history    map[string]signHistory
+	historyErr error
+
 	// mu 保护下面全部字段：Step 批内并行，多个执行协程同时读写替身状态。
 	// 断言在 Step 返回后读取，那时已无并发写者。
 	mu sync.Mutex
@@ -61,6 +65,7 @@ func newStore(tasks ...coreschedule.TaskRow) *fakeStore {
 		requeued:     map[string]time.Time{},
 		rearmed:      map[string]string{},
 		rearmActor:   map[string]appaudit.Actor{},
+		history:      map[string]signHistory{},
 	}
 }
 
@@ -275,7 +280,26 @@ func (f *fakeStore) AccountEnabledTasks(context.Context, string) ([]string, erro
 	return f.enabledTasks, nil
 }
 
-type fakeCreds struct{ err error }
+// signHistory 是放弃行现场用的历史切片。
+type signHistory struct {
+	lastSuccess string
+	failedDays  int
+}
+
+func (f *fakeStore) AccountSignHistory(_ context.Context, accountID, _ string) (string, int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.historyErr != nil {
+		return "", 0, f.historyErr
+	}
+	h := f.history[accountID]
+	return h.lastSuccess, h.failedDays, nil
+}
+
+type fakeCreds struct {
+	err error
+	kid string
+}
 
 func (f fakeCreds) Credential(context.Context, string) (contract.Credential, error) {
 	if f.err != nil {
@@ -283,6 +307,8 @@ func (f fakeCreds) Credential(context.Context, string) (contract.Credential, err
 	}
 	return contract.Credential{Phone: "13800000000", Password: "x"}, nil
 }
+
+func (f fakeCreds) KID() string { return f.kid }
 
 type fakeSigner struct {
 	mu      sync.Mutex

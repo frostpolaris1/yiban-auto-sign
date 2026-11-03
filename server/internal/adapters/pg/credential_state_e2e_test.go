@@ -45,6 +45,9 @@ func (db1Creds) Credential(context.Context, string) (contract.Credential, error)
 	return contract.Credential{Phone: "13800000000", Password: "secret"}, nil
 }
 
+// KID 空串：本文件不判密钥指纹字段。
+func (db1Creds) KID() string { return "" }
+
 // db1Signer 在提交阶段返回凭据错结论。
 // beforeSign 在返回结论前执行，用于制造"认领后、结算前"的状态变化。
 type db1Signer struct {
