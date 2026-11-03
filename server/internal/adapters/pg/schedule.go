@@ -734,9 +734,13 @@ func (r *ScheduleRepo) AccountEnabledTasks(ctx context.Context, accountID string
 // AccountSignHistory 返回账号在 today 之前的签到历史。
 //
 // 口径（与 worker 放弃行的现场一致）：
-//   - lastSuccess：today 之前最近一次 success 的日期；从未成功返回空串；
+//   - 历史只覆盖保留窗口（sign_tasks 保留 90 天）内、today 之前的行；
+//     更早的行已被清理，查不到不等于没发生过。
+//   - lastSuccess：today 之前最近一次 success 的日期；窗口内从未成功返回空串；
 //   - failedDays：自那次成功之后、today 之前落在 failed 的天数。
 //
+// 空串由调用方写成 never：语义是"保留窗口内无成功"，
+// 不是"账号历史上从未成功"。
 // 一校多任务会让同一天出现多行，故按 day 去重计数（DISTINCT）。
 // 只读单行聚合，不加锁；失败时调用方降级为"历史不可用"。
 func (r *ScheduleRepo) AccountSignHistory(ctx context.Context, accountID, today string) (string, int, error) {

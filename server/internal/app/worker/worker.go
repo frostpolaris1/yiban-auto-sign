@@ -246,6 +246,7 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 		switch coreerrs.From(err).Code {
 		case coreerrs.CodeNotFound, coreerrs.CodeValidation,
 			coreerrs.CodeForbidden, coreerrs.CodeUnauthorized:
+			// 凭据读取即失败：还没进入计时阶段，duration_ms=0。
 			return false, s.finishFailed(ctx, task, contract.OutcomeCredentialBad,
 				"账号不可用（已删除或停用），凭据读取失败", 0, nil, s.deps.Clock.Now())
 		default:
@@ -588,7 +589,7 @@ func (s *Service) logOutcome(ctx context.Context, task corescheduleTask, stage s
 // 现场只给认证类：那条结论的风险最高，也最需要自证"我方解密没坏"；
 // 其余类带全量现场只会刷屏，管理员看 outcome 与 reason 已足够。
 //
-// 历史查询失败不改结论：现场缺项显式写 hist=unavailable，缺口本身可见。
+// 历史查询失败不改结论：现场缺项显式写 history_available=false，缺口本身可见。
 // 级别与逐次行同一口径（app.OutcomeLogLevel），不另立告警面。
 func (s *Service) logGiveUp(ctx context.Context, task corescheduleTask, outcome contract.Outcome, reason string, dur time.Duration, win *corewindow.Window, now time.Time) {
 	// 建议词取诊断面的封闭词表，不在这里另造一套"下一步做什么"。
@@ -618,13 +619,17 @@ func (s *Service) logGiveUp(ctx context.Context, task corescheduleTask, outcome 
 //
 // 命名跟着全仓日志口径：日期串用 *_day（与 day 同源），计数用过去分词 plural
 // （与 rows_deleted 同形），布尔用形容词（与 retryable 同形）。
-// 耗时取注入时钟差（域内不读墙上时间）；从未成过功写 last_success_day=never，
-// 不写空串——空串会被读成"字段缺失"。failed_days 含本次。
-// 历史查询失败写 history_available=false，缺口显性但不编造日期。
+// 耗时取注入时钟差（域内不读墙上时间），整数毫秒：0 表示未进入计时阶段
+// 或不足 1ms。历史只覆盖保留窗口（sign_tasks 保留 90 天）内、today 之前：
+// 窗口内无成功写 last_success_day=never，不是"账号历史上从未成功"。
+// 该值不写空串——空串会被读成"字段缺失"。failed_days 含本次。
+// credential_kid 先于历史查询追加：历史查询失败只丢日期与天数，不连坐
+// 凭据指纹。历史查询失败写 history_available=false，缺口显性但不编造日期。
 func (s *Service) authScene(ctx context.Context, task corescheduleTask, dur time.Duration) []any {
-	var attrs []any
-	if dur > 0 {
-		attrs = append(attrs, "duration_ms", dur.Milliseconds())
+	attrs := []any{"duration_ms", dur.Milliseconds()}
+	// credential_kid 对应 credentials.kid 列：日志读者不查库，写全名才懂。
+	if kid := s.deps.Creds.KID(); kid != "" {
+		attrs = append(attrs, "credential_kid", kid)
 	}
 	last, failedDays, err := s.deps.Store.AccountSignHistory(ctx, task.AccountID, task.Day)
 	if err != nil {
@@ -634,10 +639,6 @@ func (s *Service) authScene(ctx context.Context, task corescheduleTask, dur time
 		last = "never"
 	}
 	attrs = append(attrs, "last_success_day", last, "failed_days", failedDays+1)
-	// credential_kid 对应 credentials.kid 列：日志读者不查库，写全名才懂。
-	if kid := s.deps.Creds.KID(); kid != "" {
-		attrs = append(attrs, "credential_kid", kid)
-	}
 	return attrs
 }
 

@@ -69,7 +69,9 @@ type Store interface {
 	// 账号不可用（停用、软删、不存在）返回 errs.ErrNotFound。
 	AccountEnabledTasks(ctx context.Context, accountID string) ([]string, error)
 	// AccountSignHistory 返回账号在 today 之前的签到历史，供放弃行现场使用。
-	// lastSuccess 是最近一次 success 的日期（YYYY-MM-DD）；从未成功返回空串。
+	// 历史只覆盖保留窗口（sign_tasks 保留 90 天）内、today 之前的行：
+	// 窗口内无成功即返回空串（放弃行写 never），不是"账号历史上从未成功"。
+	// lastSuccess 是最近一次 success 的日期（YYYY-MM-DD）。
 	// failedDays 是自那次成功之后（不含 today）落在 failed 的天数。
 	// 只读、无副作用：调用方失败时降级为"历史不可用"，不得影响签到结论。
 	AccountSignHistory(ctx context.Context, accountID, today string) (lastSuccess string, failedDays int, err error)
