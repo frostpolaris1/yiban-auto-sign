@@ -1045,6 +1045,11 @@ run_mode() {
     assert_eq "R8b 服务用户写不了更新器根" \
         "$(setpriv --reuid=yiban --regid=yiban --clear-groups sh -c 'test -w /var/lib/yiban-updater && echo yes || echo no')" "no"
     assert_eq "R8b 备份件仍属 root" "$(stat -c '%U' "$NEWEST_R8_BACKUP/db.dump")" "root"
+    # install.sh 只 chown photos/ui（必要时 home 目录本身），不再递归整棵树：
+    # 旧备份目录与 U1 的密钥指纹状态必须保持 root 属主。
+    assert_eq "R8b 旧 pre-migrate 仍 root 0700"         "$(stat -c '%a %U' /var/lib/yiban/pre-migrate)" "700 root"
+    assert_eq "R8b 旧 pre-migrate 里无服务用户可读件"         "$(setpriv --reuid=yiban --regid=yiban --clear-groups sh -c 'test -r /var/lib/yiban/pre-migrate && echo yes || echo no')" "no"
+    assert_eq "R8b U1 密钥状态仍属 root" "$(stat -c '%U' /var/lib/yiban/update-state.json)" "root"
     R8B_SELF_RC=0
     bash "$UPDATE_SH" --selfcheck-only >"$E2E_LOG_DIR/R8b-selfcheck.log" 2>&1 || R8B_SELF_RC=$?
     assert_eq "R8b 重装后 selfcheck-only 退出码" "$R8B_SELF_RC" "0"
@@ -1164,7 +1169,8 @@ run_mode() {
 
     # ---- R10 数据库恢复失败：manual action、不启动旧件 -----------------------
     e2e_step "R10" "数据库恢复失败：exit 2 + manual action，服务停住"
-    # R9b 故意把服务留在停住状态（等人工处置）。R10 前模拟运维恢复：起旧件。
+    # R9b 的回滚会继续走完（旧件已起，只是 CLI 没换回）。这里仍先确保服务在跑，
+    # 让 R10 的门（service.yiban）有健康的升级前状态。
     systemctl start "$UNIT" >/dev/null 2>&1 || e2e_die "R10：起服务失败"
     assert_eq "R10 前置 unit 状态" "$(unit_active)" "active"
     # 只放行 --list 的 pg_restore 包装器：备份校验通过、真恢复必失败。

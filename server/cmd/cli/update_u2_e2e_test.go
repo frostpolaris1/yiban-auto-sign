@@ -6,7 +6,7 @@ package main
 // 钉住 U2 新增的四件事：
 //   1. 自检门：yiban-cli selfcheck --json 有 FAIL → exit 2，不停服、不写安装位；
 //      --selfcheck-only 只读跑同一判据，零写入。
-//   2. 统一备份：<状态目录>/backups/<ts>/ 下 db.dump/db.list/db-schema.txt/
+//   2. 统一备份：/var/lib/yiban-updater/backups/<ts>/ 下 db.dump/db.list/db-schema.txt/
 //      bin/ 与 SHA256SUMS；目录 0700、文件 0600；--keep-backups 保留最近 N 份。
 //   3. 状态与日志：update-state.json（result/exit_code/version/backup_dir/
 //      db_schema_before/after/db_restore）与 update.log。
@@ -224,7 +224,7 @@ exit 0
 	if !strings.Contains(out, "config.ui_dir") || !strings.Contains(out, "selfcheck FAILED") {
 		t.Fatalf("必须点名失败项与自检门：%s", out)
 	}
-	if _, err := os.Stat(filepath.Join(f.root, "var/lib/yiban/updates")); err == nil {
+	if _, err := os.Stat(filepath.Join(f.root, "var/lib/yiban-updater")); err == nil {
 		t.Fatalf("自检失败不得创建状态目录")
 	}
 	if n := len(f.backupDirs(t)); n != 0 {
@@ -247,7 +247,7 @@ func TestUpdateShSelfcheckOnlyIsReadOnly(t *testing.T) {
 	if !strings.Contains(out, "selfcheck: 1 过 / 0 败 / 0 跳") {
 		t.Fatalf("必须打印人读摘要：%s", out)
 	}
-	if _, err := os.Stat(filepath.Join(f.root, "var/lib/yiban/updates")); err == nil {
+	if _, err := os.Stat(filepath.Join(f.root, "var/lib/yiban-updater")); err == nil {
 		t.Fatalf("--selfcheck-only 不得写状态目录")
 	}
 	if _, err := os.Stat(filepath.Join(f.root, "usr/local/bin/yiban-server.lock")); err == nil {
@@ -810,6 +810,53 @@ func TestUpdateShStripsQueryPasswordWithoutUserinfo(t *testing.T) {
 	}
 }
 
+// TestUpdateShStripsQueryPasswordWithoutPath 钉 H4（复审五轮）：
+// 连路径段都没有的 URI（postgres://host:port?password=...）也必须解析查询串，
+// 否则口令原样留在 psql/pg_dump 的 argv 里。
+func TestUpdateShStripsQueryPasswordWithoutPath(t *testing.T) {
+	requireBash(t)
+	f := newU2Fixture(t)
+	dsn := "postgres://127.0.0.1:5432?password=" + u2CanaryPassword + "&sslmode=disable"
+	if err := os.WriteFile(filepath.Join(f.root, "etc/yiban/.env"),
+		[]byte("YIBAN_DATABASE_URL="+dsn+"\n"), 0o600); err != nil {
+		t.Fatalf("write env: %v", err)
+	}
+	newBin := fakeBin(t, f.binDir, "yiban-server-new", "echo NEW\n")
+	out, rc := runScript(t, scriptPath(t, "update.sh"), f.env,
+		"--server-bin", newBin, "--allow-unsigned")
+	if rc != 0 {
+		t.Fatalf("update rc=%d out=%s", rc, out)
+	}
+	argvLog := readAll(t, f.env["U2_ARGV_LOG"])
+	if strings.Contains(argvLog, u2CanaryPassword) || strings.Contains(argvLog, "password=") {
+		t.Fatalf("无路径段的 ?password= 泄漏到 argv：\n%s", argvLog)
+	}
+	if !strings.Contains(argvLog, "sslmode=disable") {
+		t.Fatalf("其余查询参数必须保留：\n%s", argvLog)
+	}
+	if !strings.Contains(argvLog, "pgpass=/") {
+		t.Fatalf("查询串口令必须走 PGPASSFILE：\n%s", argvLog)
+	}
+}
+
+// TestUpdateShRejectsWritableBackupParent 钉 MEDIUM-5：
+// 只查叶子不够——/tmp/evil/backups 的父目录谁都能写，服务用户能把 evil 换名。
+func TestUpdateShRejectsWritableBackupParent(t *testing.T) {
+	requireBash(t)
+	f := newU2Fixture(t)
+	newBin := fakeBin(t, f.binDir, "yiban-server-new", "echo NEW\n")
+	for _, dir := range []string{"/tmp/yiban-evil/backups", "/var/tmp/yiban-evil/backups"} {
+		out, rc := runScript(t, scriptPath(t, "update.sh"), f.env,
+			"--server-bin", newBin, "--allow-unsigned", "--backup-dir", dir)
+		if rc != 2 {
+			t.Fatalf("--backup-dir %s 的父目录可写，必须 exit 2：rc=%d out=%s", dir, rc, out)
+		}
+		if !strings.Contains(out, "parent") {
+			t.Fatalf("拒绝必须点名父目录：%s", out)
+		}
+	}
+}
+
 // TestUpdateShAcceptsUpdaterBackupRoot 钉 MEDIUM：更新器自己的备份根
 // （/var/lib/yiban-updater/backups）必须被 --backup-dir 接受，防名单误伤。
 func TestUpdateShAcceptsUpdaterBackupRoot(t *testing.T) {
@@ -862,5 +909,18 @@ func TestUpdateShRejectsSymlinkedStateDir(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(evil, "update.log")); err == nil {
 		t.Fatalf("root 不得顺着软链写日志（%s/update.log 被创建）", evil)
+	}
+	// M6 变体：目标里预置 result=running 的状态文件，EXIT trap 也不得写穿。
+	planted := []byte("{\n  \"result\": \"running\"\n}\n")
+	if err := os.WriteFile(filepath.Join(evil, "update-state.json"), planted, 0o600); err != nil {
+		t.Fatalf("plant state: %v", err)
+	}
+	out, rc = runScript(t, scriptPath(t, "update.sh"), f.env,
+		"--server-bin", newBin, "--allow-unsigned")
+	if rc != 2 {
+		t.Fatalf("软链状态目录（预置 running）必须 exit 2：rc=%d out=%s", rc, out)
+	}
+	if got := readAll(t, filepath.Join(evil, "update-state.json")); got != string(planted) {
+		t.Fatalf("root 顺着软链改了预置状态文件：\n%s", got)
 	}
 }

@@ -78,7 +78,12 @@ if [ -z "$ROOT" ]; then
     id "$SERVICE_USER" >/dev/null 2>&1 \
         || useradd --system --home "$SERVICE_HOME" --shell /usr/sbin/nologin "$SERVICE_USER"
     mkdir -p "$SERVICE_HOME/photos"
-    chown -R "$SERVICE_USER:$SERVICE_USER" "$SERVICE_HOME"
+    # 只把服务用户真正要写的子树交给它：photos 与（下面步骤里的）ui。
+    # **不**做 chown -R "$SERVICE_HOME"：那里还可能有旧版本留下的
+    # pre-migrate/backups/updates 备份（含凭据密文）与 U1 的密钥指纹状态，
+    # 递归 chown 会把它们改成服务用户可读（复审 MEDIUM-1）。
+    chown "$SERVICE_USER:$SERVICE_USER" "$SERVICE_HOME"
+    chown -R "$SERVICE_USER:$SERVICE_USER" "$SERVICE_HOME/photos"
     # 更新器的状态/备份根（/var/lib/yiban-updater/{state,backups}）与
     # $SERVICE_HOME 同级，**不**在递归 chown 的范围内：那里是 root 独占目录
     # （备份含凭据密文，回滚还会执行备份里的 CLI）。重装时若它已存在，

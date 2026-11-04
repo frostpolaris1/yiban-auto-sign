@@ -39,10 +39,15 @@
 #   1 升级失败但已回滚到旧件（旧二进制在跑且健康）；签名/对账/版本校验
 #     不通过也归 1（与旧版一致，校验失败不碰旧件）
 #   2 用法错误、并发锁被占、自检 FAIL、预检（CREATEDB/口令隔离/备份）FAILED、
-#     停服失败（什么都没换）、回滚后仍不健康、数据库恢复失败（打印 manual action）
+#     停服失败（什么都没换）、回滚不完整（见下）、回滚后仍不健康、
+#     数据库恢复失败（都打印 manual action）
 #   停服成功之后任何一步失败（migrate、换件、systemctl start、健康检查）
-#   都走同一条回滚：换回 server/CLI/UI，再按需恢复数据库；最终码只由
-#   「旧件是否健康」决定（健康=1，不健康=2），不会把新件留在安装位。
+#   都走同一条回滚：换回 server/CLI/UI，再按需恢复数据库，最后起旧件探活。
+#   退出码：
+#     · 二进制/UI/CLI 全部换回且旧件健康 → 1；
+#     · 旧件健康但 CLI 没换回（备份里缺 CLI、或备份 CLI 被篡改而拒绝执行）
+#       → 2 + manual action（旧件在跑，CLI 版本不配对，必须人工处置）；
+#     · 旧件不健康，或数据库恢复失败 → 2 + manual action。
 #
 # 自检门（U2 新增，fail-closed）：
 #   - 用**已安装**的 yiban-cli 跑 `selfcheck --json`：它的嵌入迁移号与库
@@ -221,6 +226,46 @@ UPDATER_ROOT="$(dest /var/lib/yiban-updater)"
 STATE_DIR="$UPDATER_ROOT/state"
 STATE_FILE="$STATE_DIR/update-state.json"
 LOG_FILE="$STATE_DIR/update.log"
+
+# check_backup_parent_chain <dir>：备份根的**父链**必须是 root 独占。
+# 只查叶子不够：/tmp/evil/backups 的叶子可以自己建，但 /tmp 谁都能写，
+# 服务用户能把 evil 换名/塞成软链，root 随后顺着它写（复审 MEDIUM-5）。
+# 判据：沿父链找第一个已存在目录，它必须不是软链、属主不是服务用户、
+# 组/其他不可写；再往上不再查（更上层由系统保证）。
+check_backup_parent_chain() {
+    local dir="$1" parent owner mode next
+    parent="$(dirname -- "$dir")"
+    while :; do
+        if [ -L "$parent" ]; then
+            echo "update: --backup-dir parent is a symlink: $parent" >&2
+            return 1
+        fi
+        if [ -e "$parent" ]; then
+            if [ ! -d "$parent" ]; then
+                echo "update: --backup-dir parent is not a directory: $parent" >&2
+                return 1
+            fi
+            owner="$(stat -c '%U' -- "$parent" 2>/dev/null || true)"
+            mode="$(stat -c '%a' -- "$parent" 2>/dev/null || true)"
+            case "$mode" in
+                ''|*[!0-7]*) mode=777 ;;
+            esac
+            if [ "$owner" = "$SERVICE_USER" ]; then
+                echo "update: --backup-dir parent is owned by the service user: $parent" >&2
+                return 1
+            fi
+            if [ $(( 8#$mode & 8#022 )) -ne 0 ]; then
+                echo "update: --backup-dir parent is group/other writable (mode $mode): $parent" >&2
+                return 1
+            fi
+            return 0
+        fi
+        next="$(dirname -- "$parent")"
+        [ "$next" = "$parent" ] && return 1
+        parent="$next"
+    done
+}
+
 if [ -n "$BACKUP_ROOT_FLAG" ]; then
     case "$BACKUP_ROOT_FLAG" in
         /*) ;;
@@ -241,6 +286,9 @@ fi
 case "$BACKUP_ROOT" in
     /|*/) echo "update: refusing backup root path: $BACKUP_ROOT" >&2; exit 2 ;;
 esac
+if ! check_backup_parent_chain "$BACKUP_ROOT"; then
+    exit 2
+fi
 case "$KEEP_BACKUPS" in
     ''|*[!0-9]*) echo "update: --keep-backups must be a non-negative integer: $KEEP_BACKUPS" >&2; exit 2 ;;
 esac
@@ -318,6 +366,11 @@ warn() {
 write_state() {
     local result="$1" code="$2" tmp
     [ -n "$STATE_FILE" ] || return 0
+    # 与 log_event 同闸门：EXIT trap 可能在状态目录被换成软链后才跑到这里，
+    # 不校验就等于 root 顺着软链写（复审 MEDIUM-6）。
+    [ "$STATE_READY" -eq 1 ] || return 1
+    [ ! -L "$STATE_DIR" ] || return 1
+    [ ! -L "$STATE_FILE" ] || return 1
     FINISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     tmp="$STATE_FILE.tmp.$$"
     (
@@ -391,7 +444,10 @@ print_manual_action() {
     echo "update: 2) 核对失败库：psql \"\$YIBAN_DATABASE_URL\" -c 'select max(version_id) from goose_db_version'" >&2
     echo "update: 3) 手工恢复（选一）：" >&2
     echo "update:    a. sudo -u postgres createdb ${target}" >&2
-    echo "update:       sudo -u postgres pg_restore --no-owner --no-privileges -d ${target} ${BACKUP_SET:-<备份目录>}/db.dump" >&2
+    echo "update:       # db.dump 是 root 0600（含凭据密文），postgres 读不到原文：复制一份给它，用完删。" >&2
+    echo "update:       sudo install -m 0640 -o postgres -g postgres ${BACKUP_SET:-<备份目录>}/db.dump /tmp/yiban-restore.dump" >&2
+    echo "update:       sudo -u postgres pg_restore --no-owner --no-privileges -d ${target} /tmp/yiban-restore.dump" >&2
+    echo "update:       sudo rm -f /tmp/yiban-restore.dump" >&2
     echo "update:       然后把 /etc/yiban/.env 的 YIBAN_DATABASE_URL 改到 ${target}，systemctl start $UNIT" >&2
     echo "update:    b. 若已确认旧二进制与新 schema 兼容：sudo systemctl start $UNIT" >&2
     echo "update: 4) 原库未删除，保留供取证；确认无误后再人工处置" >&2
@@ -569,19 +625,19 @@ dsn_kw_unquote() {
 # （不论有没有 userinfo——没有 userinfo 的 `?password=` 一样是秘密）。
 # 解析失败返回 1（调用方失败关闭，绝不把口令塞回 argv）。
 dsn_split2() {
-    local dsn="$1" prefix rest authority hostpart userpart user pass tail
+    local dsn="$1" prefix rest authority hostpart userpart user pass remainder
     local path_part="" query="" param joined="" has_userinfo=0
     case "$dsn" in
         postgres://*|postgresql://*)
             prefix="${dsn%%://*}"
             rest="${dsn#*://}"
-            # authority＝userinfo@host[:port]（到第一个 / 为止）；
-            # 路径与 query 单独取，不能混进 hostpart。
-            authority="${rest%%/*}"
+            # authority＝userinfo@host[:port]，终止符是第一个 / **或 ?**：
+            # postgres://dbhost?password=... 这种「无路径段」形态的查询串
+            # 也必须被解析，否则口令会原样留在 argv 里（复审 H4）。
+            authority="${rest%%[/?]*}"
+            remainder=""
             if [ "$authority" != "$rest" ]; then
-                tail="/${rest#*/}"
-            else
-                tail=""
+                remainder="${rest#"$authority"}"
             fi
             case "$authority" in
                 *@*) has_userinfo=1 ;;
@@ -602,9 +658,9 @@ dsn_split2() {
             fi
             # 查询串里的 ?password= 同样是秘密：不论有没有 userinfo 都要摘掉。
             # （libpq 的 URI 解析让查询参数覆盖 userinfo，这里同口径。）
-            path_part="$tail"
-            case "$tail" in
-                *\?*) path_part="${tail%%\?*}"; query="${tail#*\?}" ;;
+            path_part="${remainder%%\?*}"
+            case "$remainder" in
+                *\?*) query="${remainder#*\?}" ;;
             esac
             if [ -n "$query" ]; then
                 local -a kept_params=()
@@ -856,8 +912,8 @@ run_selfcheck_gate() {
 
 # ---- 备份 ------------------------------------------------------------------
 
-# prepare_state_dir：建状态目录（0700 root）。备份根目录不在这里建：
-# 它属于具体备份步骤，失败即中止且不留半成品。
+# prepare_state_dir：建/校验更新器的 root 独占树（父目录 + state + backups，
+# 都 0700 root）。备份根在这里建：后续每次更新只建自己的子目录。
 prepare_state_dir() {
     # 顺序即安全边界（复审 HIGH-3）：父目录 → 状态目录 → 备份根 → 日志文件，
     # 每一步都复核「不是软链、属主 root、组/其他不可写」。
@@ -1321,6 +1377,11 @@ fail_after_stop() {
     fi
     # CLI 回滚失败不在这里停机：DB 恢复、UI 回滚、起旧件都要继续走完，
     # 最后统一按「回滚是否完整」定退出码（复审 MEDIUM-1）。
+    if [ "$CLI_SWAPPED" -eq 1 ] && [ ! -f "$BACKUP_SET/bin/yiban-cli" ]; then
+        # 备份里没有 CLI：不能把新 CLI 留在安装位（版本不配对）。
+        echo "update: the backup has no yiban-cli; the new cli stays in place" >&2
+        CLI_ROLLBACK_FAILED=1
+    fi
     if [ "$CLI_SWAPPED" -eq 1 ] && [ -f "$BACKUP_SET/bin/yiban-cli" ]; then
         if verify_root_artifact "$BACKUP_SET/bin/yiban-cli" "backup cli"; then
             if install -m 0755 "$BACKUP_SET/bin/yiban-cli" "$CLI_DEST"; then

@@ -226,7 +226,7 @@ ROLLBACK_E2E_GOPROXY=https://goproxy.cn,direct \
 | R9（健康失败 + UI 回滚） | 跑 v6（迁移集与 v4 相同 → migrate 空转）并带 `--ui-dir` 换页面：rc=1；日志含 `healthz failed after swap`/`rolled back`；安装位回到 v4；`ui.bak` 无残留、`index.html` 是旧页 `ui-one`；`YIBAN_UI_DIR` 只有一行且指回 `/var/lib/yiban/ui`；DSN 不变；状态 `db_restore=not-needed`/`exit_code=1`；unit active；healthz OK |
 | R8b（install.sh 重跑） | 重装当前版本（v4）：rc=0 且 `install complete: healthz ok`；`/var/lib/yiban-updater`、`state`、`backups` 仍 0700 root（install.sh 对 `/var/lib/yiban` 的递归 chown 到不了同级目录）；服务用户写不了更新器根；备份件仍属 root；`update.sh --selfcheck-only` 仍 rc=0 |
 | R8c（状态目录软链） | 把 `state` 换成指向 `/tmp` 的软链后跑 `update.sh`：rc=2；日志点名 `symlinked updater directory`；软链目标里没有 `update.log`/`update-state.json`；修复后 unit active、healthz OK、selfcheck-only rc=0 |
-| R9b（备份件被篡改） | 在健康探活窗口里把本轮备份目录内的 `bin/yiban-cli` 改成组/其他可写（属主仍 root）：rc=2；日志含 `refusing to install the backup cli` 与 `writable by group or others`；安装位 CLI 未被篡改件替换（仍是本轮换上的 v6）；安装位 server 已换回 v4；状态 `exit_code=2`；unit inactive |
+| R9b（备份件被篡改） | 在健康探活窗口里把本轮备份目录内的 `bin/yiban-cli` 改成组/其他可写（属主仍 root）：rc=2；日志含 `refusing to install the backup cli` 与 `writable by group or others`；回滚继续走完（DB 恢复/起旧件），unit **active**、healthz OK，但 CLI 未回滚（日志 `backup cli was NOT restored`）；安装位 CLI 仍是本轮换上的 v6；安装位 server 已换回 v4；状态 `exit_code=2` |
 | R10（恢复失败） | 装一个只放行 `pg_restore --list` 的包装器（备份校验过、真恢复必失败），跑 v5（再迁移一档＋panic）：rc=2；日志含 `db restore FAILED` 与 `manual action required`；状态 `db_restore=failed`/`exit_code=2`，`db_restore_target` 是真实库名且出现在 manual action 里；DSN 不变；二进制已换回 v4；unit **inactive**（库状态未知，不自动起旧件） |
 
 判据与 `update.sh` 头注一致：迁移失败回滚＝旧件继续跑（exit 1）；
