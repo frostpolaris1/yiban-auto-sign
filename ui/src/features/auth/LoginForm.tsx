@@ -8,16 +8,17 @@
  * **口径**
  * 提交体只含契约 `LoginRequest` 的两个字段。
  * 成功：写入会话缓存 → 导航到 `redirect` 目标或 `/`。
- * 失败：就地显示错误，不导航。
+ * 失败：就地显示错误并聚焦错误块，不导航；改任一字段即收起旧错误。
  * **不得添加「保持登录」选项**。会话期限由服务端定。
+ * 密码框提供显隐开关；大写锁定时给出可见提示。
  */
 
-import { useState } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Alert } from '@/components/ui/Alert'
 import { Icon } from '@/components/ui/Icon'
-import { TextInput } from '@/components/ui/Input'
+import { PasswordInput, TextInput } from '@/components/ui/Input'
 import { login } from '@/lib/api/auth'
 import { sanitizeRedirect } from '@/lib/redirect'
 import { clearSessionExpired, ME_QUERY_KEY, SHOWCASE } from '@/lib/session'
@@ -39,6 +40,8 @@ export function LoginForm({ redirect, expired, onSignInStart, onSignInFailed }: 
   const queryClient = useQueryClient()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [capsLock, setCapsLock] = useState(false)
+  const errorRef = useRef<HTMLDivElement>(null)
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -74,16 +77,31 @@ export function LoginForm({ redirect, expired, onSignInStart, onSignInFailed }: 
 
   const pending = mutation.isPending
 
+  // 错误块只在失败次数变化时接焦点：同一次失败不重复抢焦点，
+  // 重试再失败会重新落位。role=alert 负责播报，焦点负责定位。
+  useEffect(() => {
+    if (mutation.failureCount > 0) errorRef.current?.focus()
+  }, [mutation.failureCount])
+
+  /** 改动输入即收起上一次的失败提示，避免旧结论压着新输入。 */
+  function clearRejectedError(): void {
+    if (mutation.isError) mutation.reset()
+  }
+
+  function trackCapsLock(event: KeyboardEvent<HTMLInputElement>): void {
+    setCapsLock(event.getModifierState('CapsLock'))
+  }
+
   return (
-    <div className="auth-card">
+    <>
       {expired ? (
         <div className="app-auth-notice">
           <Alert tone="warning">会话已过期，请重新登录</Alert>
         </div>
       ) : null}
 
-      <h2>登录</h2>
-      <p className="sub">使用账号登录控制台。</p>
+      <h2>欢迎回来</h2>
+      <p className="sub">登录后查看账号与今天的签到结果。</p>
 
       <form
         className="auth-form"
@@ -99,42 +117,51 @@ export function LoginForm({ redirect, expired, onSignInStart, onSignInFailed }: 
           id="login-email"
           label="邮箱"
           type="email"
+          name="email"
+          inputMode="email"
           icon="mail"
           placeholder="name@example.com"
           autoComplete="username"
           required
           value={email}
-          onChange={(event) => setEmail(event.target.value)}
+          onChange={(event) => {
+            setEmail(event.target.value)
+            clearRejectedError()
+          }}
         />
 
-        <div className="field">
-          <div className="field-row">
-            <label className="field-label" htmlFor="login-password">
-              密码
-            </label>
+        <PasswordInput
+          id="login-password"
+          label="密码"
+          name="password"
+          placeholder="输入密码"
+          autoComplete="current-password"
+          enterKeyHint="go"
+          required
+          value={password}
+          labelAction={
             <Link className="app-inline-link" to="/forgot-password">
               忘记密码？
             </Link>
-          </div>
-          <div className="input-icon">
-            <span className="ico">
-              <Icon name="shield" />
-            </span>
-            <input
-              id="login-password"
-              className="input"
-              type="password"
-              placeholder="••••••••"
-              autoComplete="current-password"
-              required
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-            />
-          </div>
-        </div>
+          }
+          onChange={(event) => {
+            setPassword(event.target.value)
+            clearRejectedError()
+          }}
+          onKeyDown={trackCapsLock}
+          onKeyUp={trackCapsLock}
+          onBlur={() => setCapsLock(false)}
+        />
+
+        {capsLock ? (
+          <p className="app-caps-hint" role="status">
+            <Icon name="alertCircle" size={12} />
+            大写锁定已开启
+          </p>
+        ) : null}
 
         {mutation.isError ? (
-          <div className="app-alert-block">
+          <div className="app-alert-block" ref={errorRef} tabIndex={-1}>
             <Alert tone="danger">{loginErrorMessage(mutation.error)}</Alert>
           </div>
         ) : null}
@@ -145,10 +172,12 @@ export function LoginForm({ redirect, expired, onSignInStart, onSignInFailed }: 
           disabled={pending}
           aria-busy={pending}
         >
-          {pending ? '登录中…' : '登录控制台'}
-          <Icon name="arrowRight" />
+          {pending ? '登录中…' : '登录'}
         </button>
       </form>
-    </div>
+
+      <p className="auth-switch-hint">还没有账号？请联系管理员开通。</p>
+
+    </>
   )
 }

@@ -8,7 +8,12 @@ import {
 } from '../../src/lib/api/auth.ts'
 import { ApiError } from '../../src/lib/api/client.ts'
 import { sanitizeRedirect } from '../../src/lib/redirect.ts'
-import { buildLoginBody, isLoginPath } from '../../src/features/auth/login.ts'
+import {
+  buildLoginBody,
+  isLoginPath,
+  LOGIN_NETWORK_ERROR,
+  loginErrorMessage,
+} from '../../src/features/auth/login.ts'
 import {
   buildForgotBody,
   buildResetBody,
@@ -78,6 +83,29 @@ test('buildLoginBody carries exactly the contract fields', () => {
   })
   assert.deepEqual(Object.keys(body).sort(), ['email', 'password'])
   assert.deepEqual(body, { email: 'a@example.com', password: ' pw ' })
+})
+
+test('login errors use human copy instead of envelopes', () => {
+  assert.equal(
+    loginErrorMessage(new ApiError(401, { code: 'unauthorized', message: 'invalid' })),
+    '邮箱或密码错误',
+  )
+  assert.equal(
+    loginErrorMessage(new ApiError(429, { code: 'rate_limited', message: 'too many' })),
+    '登录尝试过多，请稍后再试',
+  )
+  assert.equal(
+    loginErrorMessage(new ApiError(503, { code: 'internal_error', message: 'down' })),
+    '服务暂时不可用，请稍后再试',
+  )
+  // 其余 4xx 用服务端的人话消息，不带 `code · message` 调试格式。
+  assert.equal(
+    loginErrorMessage(new ApiError(403, { code: 'forbidden', message: '账号已停用' })),
+    '账号已停用',
+  )
+  // 非 ApiError 一律按断网处理，不回显底层异常。
+  assert.equal(loginErrorMessage(new Error('Failed to fetch')), LOGIN_NETWORK_ERROR)
+  assert.equal(loginErrorMessage('boom'), LOGIN_NETWORK_ERROR)
 })
 
 test('only a business 401 counts as session expiry', () => {

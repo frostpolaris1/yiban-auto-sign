@@ -15,7 +15,7 @@
 import { useState } from 'react'
 import { Navigate } from '@tanstack/react-router'
 import { SessionLoading } from '@/components/ui/SessionLoading'
-import { AuthAside } from '@/features/auth/AuthAside'
+import { AuthLayout } from '@/features/auth/AuthLayout'
 import { LoginForm } from '@/features/auth/LoginForm'
 import { SHOWCASE, useMe, useSessionExpired } from '@/lib/session'
 
@@ -39,16 +39,13 @@ export function LoginPage({ redirect }: LoginPageProps) {
   if (meQuery.data && !expired && !signingIn) return <Navigate to="/" replace />
 
   return (
-    <div className="auth-shell">
-      <AuthAside />
-      <main className="auth-main">
-        <LoginForm
-          redirect={redirect}
-          expired={expired}
-          onSignInStart={() => setSigningIn(true)}
-          onSignInFailed={() => setSigningIn(false)}
-        />
-      </main>
-    </div>
+    <AuthLayout>
+      <LoginForm
+        redirect={redirect}
+        expired={expired}
+        onSignInStart={() => setSigningIn(true)}
+        onSignInFailed={() => setSigningIn(false)}
+      />
+    </AuthLayout>
   )
 }

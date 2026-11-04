@@ -739,7 +739,7 @@
 
 /* ---------- 会话守卫 ----------
  * 会话解析期间的整页加载态。守卫在 me 返回前显示它，不先渲染登录页。
- * 登录页的过期提示与表单同宽；`auth-card` 的 `margin:auto` 仍负责纵向居中。
+ * 登录页的过期提示与表单同宽；`auth-main-center` 负责整块的纵向居中。
  */
 .app-session-loading {
   min-height: 100vh;
@@ -753,6 +753,323 @@
   width: 100%;
   max-width: 400px;
   margin: 0 auto 16px;
+}
+
+
+/* ---------- 公开认证页 ----------
+ * 登录 / 忘记密码 / 重置密码三页共用 AuthLayout。
+ * 左栏从 vendor 的饱和渐变改成两套安静底色：浅色白底彩晕、深色近黑彩晕。
+ * 文字一律走 --t-base：彩晕上的 --t-muted 实测 4.03–4.42，不到正文 AA 4.5。
+ * 表单卡补表面与边界；输入框边界抬到 1.4.11 的 3:1 附近。
+ * 颜色只用 token 与 color-mix，不写字面量（token 门会红）。
+ */
+.auth-shell,
+.auth-main {
+  min-height: 100dvh;
+}
+
+/* 极光底：低透明彩晕，不抢表单。漂移层是纯装饰，不用。 */
+.auth-aside {
+  color: var(--t-base);
+  border-right: 1px solid var(--border);
+  background-color: var(--bg-card);
+  background-image:
+    radial-gradient(60% 55% at 12% 8%, color-mix(in srgb, var(--primary) 18%, transparent), transparent 62%),
+    radial-gradient(55% 50% at 88% 4%, color-mix(in srgb, var(--purple) 14%, transparent), transparent 60%),
+    radial-gradient(60% 55% at 78% 92%, color-mix(in srgb, var(--teal) 10%, transparent), transparent 62%),
+    radial-gradient(50% 45% at 8% 88%, color-mix(in srgb, var(--pink) 8%, transparent), transparent 60%);
+}
+.auth-aside::before,
+.auth-aside::after {
+  display: none;
+}
+:root[data-theme="dark"] .auth-aside {
+  background-color: var(--bg-body);
+  background-image:
+    radial-gradient(60% 55% at 12% 8%, color-mix(in srgb, var(--primary) 16%, transparent), transparent 62%),
+    radial-gradient(55% 50% at 88% 4%, color-mix(in srgb, var(--purple) 14%, transparent), transparent 60%),
+    radial-gradient(60% 55% at 78% 92%, color-mix(in srgb, var(--teal) 10%, transparent), transparent 62%),
+    radial-gradient(50% 45% at 8% 88%, color-mix(in srgb, var(--pink) 8%, transparent), transparent 60%);
+}
+
+.auth-brand .logo {
+  background: var(--primary);
+  border: 0;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.auth-brand .name,
+.auth-aside h1,
+.auth-aside .auth-aside-lead,
+.auth-aside-eyebrow,
+.auth-aside-footer {
+  color: var(--t-base);
+}
+.auth-aside h1 {
+  font-size: clamp(30px, 3.2vw, 40px);
+  line-height: 1.15;
+  letter-spacing: -0.025em;
+  margin: 0 0 14px;
+}
+.auth-aside .auth-aside-lead {
+  max-width: 360px;
+  margin: 0 0 24px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+/* 能力清单：图标用主色，文本用正文色。 */
+.auth-points {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.auth-points li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--t-base);
+}
+.auth-points li svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--primary);
+}
+
+/* 顶栏：窄屏补品牌；桌面只留主题开关，靠右。 */
+.auth-main-top {
+  min-height: 36px;
+  justify-content: flex-end;
+}
+.auth-mobile-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: auto;
+  color: var(--t-base);
+  font-weight: 700;
+}
+.auth-mobile-brand .logo {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--primary);
+}
+.auth-mobile-brand .logo svg {
+  width: 17px;
+  height: 17px;
+}
+@media (min-width: 901px) {
+  .auth-mobile-brand {
+    display: none;
+  }
+}
+.app-theme-toggle {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-card);
+  color: var(--t-muted);
+  cursor: pointer;
+  transition: background-color 160ms, color 160ms, border-color 160ms;
+}
+@media (hover: hover) and (pointer: fine) {
+  .app-theme-toggle:hover {
+    background: var(--bg-hover);
+    color: var(--t-base);
+  }
+}
+
+/* 表单卡：有表面、有边界、有阴影，不再浮在背景上。 */
+.auth-main-center {
+  width: 100%;
+  max-width: 400px;
+  margin: auto;
+  padding: 16px 0;
+}
+.auth-main-center > .auth-card {
+  max-width: none;
+  margin: 0;
+}
+.auth-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 28px 26px;
+  box-shadow: var(--shadow-lg);
+}
+.auth-card h2 {
+  margin: 0 0 6px;
+}
+.auth-card .sub {
+  margin: 0 0 22px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--t-muted);
+}
+
+/* 字段：组间 16，标签行里的恢复入口保证 24px 点击区。 */
+.auth-form {
+  gap: 16px;
+}
+.auth-main .input {
+  min-height: 42px;
+}
+/* 只在默认态抬边界；聚焦与出错态交回 vendor 的 --primary / --danger 规则。 */
+.auth-main .input:not(:focus):not(.is-invalid) {
+  border-color: color-mix(in srgb, var(--t-muted) 75%, var(--border));
+}
+:root[data-theme="dark"] .auth-main .input:not(:focus):not(.is-invalid) {
+  border-color: color-mix(in srgb, var(--t-muted) 50%, var(--border));
+}
+.auth-main .input::placeholder {
+  color: var(--t-muted);
+}
+.auth-form .field-row .app-inline-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+}
+.auth-submit {
+  min-height: 44px;
+  margin-top: 4px;
+  justify-content: center;
+}
+/* 暗色下 --primary 是浅蓝：白字只有 2.54:1。反色字 7.41:1，亮色不变。 */
+.auth-main .btn--primary {
+  color: var(--t-inverse);
+}
+
+/* 密码显隐：36×36 热区，图标用 --t-muted（--t-light 在浅底不足 3:1）。 */
+.input-affix {
+  position: relative;
+}
+.input-affix .input {
+  padding-right: 44px;
+}
+.input-affix .affix-btn {
+  position: absolute;
+  right: 1px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--t-muted);
+  cursor: pointer;
+  transition: background-color 160ms, color 160ms;
+}
+.input-affix .affix-btn svg {
+  width: 15px;
+  height: 15px;
+}
+@media (hover: hover) and (pointer: fine) {
+  .input-affix .affix-btn:hover {
+    background: var(--bg-hover);
+    color: var(--t-base);
+  }
+}
+
+.app-caps-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--t-muted);
+}
+.app-caps-hint svg {
+  flex-shrink: 0;
+  color: var(--warning);
+}
+
+/* 卡片内的导航与帮助：文字在 --bg-card 上，--t-muted 达 AA。 */
+.auth-switch-hint {
+  margin: 16px 0 0;
+  text-align: center;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--t-muted);
+}
+.auth-switch-hint a,
+.auth-switch-hint button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  color: var(--primary);
+  font-weight: 700;
+}
+/* 页脚：事实与出口。亮色用正文色，暗色退回辅助色，两边都过 AA。 */
+.auth-main-bottom {
+  margin-top: 20px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  text-align: center;
+  color: var(--t-base);
+}
+:root[data-theme="dark"] .auth-main-bottom {
+  color: var(--t-muted);
+}
+.app-auth-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+.app-auth-links a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  color: var(--primary);
+  font-weight: 600;
+}
+.app-auth-links span {
+  color: var(--t-muted);
+}
+
+/* 键盘焦点：vendor 只给链接一层软阴影，按钮没有可见环。 */
+.auth-main .input:focus-visible,
+.auth-main .btn:focus-visible,
+.auth-main .affix-btn:focus-visible,
+.auth-main .app-theme-toggle:focus-visible,
+.auth-main .auth-switch-hint a:focus-visible,
+.auth-main .app-auth-links a:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+@media (max-width: 900px) {
+  .auth-main-center {
+    padding: 12px 0;
+  }
+  .auth-card {
+    padding: 24px 20px;
+    border-radius: 14px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-theme-toggle,
+  .input-affix .affix-btn {
+    transition: none;
+  }
 }
 
 /* ---------- 弹窗层级与限高 ----------

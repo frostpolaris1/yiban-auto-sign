@@ -21,8 +21,10 @@ import {
 
 async function submitLogin(page: Page, email = SESSION_EMAIL, password = SESSION_PASSWORD) {
   await page.getByLabel('邮箱').fill(email)
-  await page.getByLabel('密码').fill(password)
-  await page.getByRole('button', { name: '登录控制台' }).click()
+  // 标签文本带必填星号，getByLabel('密码', { exact: true }) 不命中；
+  // 显隐按钮的 aria-label 也含「密码」。用契约 id 定位。
+  await page.locator('#login-password').fill(password)
+  await page.getByRole('button', { name: '登录', exact: true }).click()
 }
 
 test('invariant 1: an unauthenticated shell route lands on login and returns after sign-in', async ({
@@ -32,7 +34,7 @@ test('invariant 1: an unauthenticated shell route lands on login and returns aft
   await page.goto('/accounts')
 
   await expect(page).toHaveURL(/\/login\?redirect=%2Faccounts$/)
-  await expect(page.getByRole('heading', { name: '登录', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '欢迎回来', exact: true })).toBeVisible()
 
   await submitLogin(page)
   await expect(page).toHaveURL(/\/accounts$/)
@@ -46,7 +48,7 @@ for (const offSite of ['%2F%2Fevil.com', 'https%3A%2F%2Fevil.com', '%2F.%2F%2Fev
 
     await submitLogin(page)
     await expect(page).toHaveURL(/\/$/)
-    await expect(page.getByRole('heading', { name: '登录', exact: true })).toHaveCount(0)
+    await expect(page.getByRole('heading', { name: '欢迎回来', exact: true })).toHaveCount(0)
   })
 }
 
@@ -69,7 +71,7 @@ for (const variant of [
 
     await submitLogin(page)
     // 任何拼写都不得把已登录用户留在表单上：漏网时登录页守卫接手。
-    await expect(page.getByRole('heading', { name: '登录', exact: true })).toHaveCount(0)
+    await expect(page.getByRole('heading', { name: '欢迎回来', exact: true })).toHaveCount(0)
     await expect(page).toHaveURL('/')
   })
 }
@@ -79,7 +81,7 @@ test('invariant 2: a signed-in visitor is sent away from the login page', async 
   await page.goto('/login')
 
   await expect(page).toHaveURL(/\/$/)
-  await expect(page.getByRole('heading', { name: '登录', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: '欢迎回来', exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: '账号菜单' })).toBeVisible()
 })
 
@@ -105,15 +107,16 @@ test('invariant 3: a rejected credential shows the message and keeps the URL', a
 
   await submitLogin(page, SESSION_EMAIL, 'wrong-password')
   await expect(page.getByRole('alert')).toContainText('邮箱或密码错误')
+  await expect(page.locator('.app-alert-block')).toBeFocused()
   await expect(page).toHaveURL(/\/login$/)
-  await expect(page.getByRole('heading', { name: '登录', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '欢迎回来', exact: true })).toBeVisible()
 })
 
 test('invariant 4: no long-lived session control exists on the login page', async ({ page }) => {
   await mockAccountsApi(page, { role: null })
   await page.goto('/login')
 
-  await expect(page.getByRole('heading', { name: '登录', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '欢迎回来', exact: true })).toBeVisible()
   await expect(page.locator('.auth-form input[type="checkbox"]')).toHaveCount(0)
   await expect(page.getByText(/保持登录|记住我/)).toHaveCount(0)
 })
@@ -151,6 +154,7 @@ test('invariant 6: a login 401 is a credential error, not an expiry', async ({ p
 
   await submitLogin(page, SESSION_EMAIL, 'wrong-password')
   await expect(page.getByRole('alert')).toContainText('邮箱或密码错误')
+  await expect(page.locator('.app-alert-block')).toBeFocused()
   await expect(page).toHaveURL(/\/login$/)
   await expect(page.getByText('会话已过期，请重新登录')).toHaveCount(0)
 })
@@ -225,6 +229,54 @@ test('invariant 9: the login form links to the forgot-password page', async ({ p
   await expect(page.getByRole('heading', { name: '忘记密码' })).toBeVisible()
 })
 
+test('login: the password can be revealed without leaving the form', async ({ page }) => {
+  await mockAccountsApi(page, { role: null })
+  await page.goto('/login')
+
+  const password = page.locator('#login-password')
+  await expect(password).toHaveAttribute('type', 'password')
+  await page.getByRole('button', { name: '显示密码' }).click()
+  await expect(password).toHaveAttribute('type', 'text')
+  await expect(page.getByRole('button', { name: '隐藏密码' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  )
+  await page.getByRole('button', { name: '隐藏密码' }).click()
+  await expect(password).toHaveAttribute('type', 'password')
+})
+
+test('login: the public page keeps the brand and the theme toggle on mobile', async ({ page }) => {
+  await mockAccountsApi(page, { role: null })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/login')
+
+  await expect(page.locator('.auth-mobile-brand')).toContainText('易班自动签到')
+  const html = page.locator('html')
+  const initial = await html.getAttribute('data-theme')
+  expect(initial).toMatch(/^(light|dark)$/)
+  await page.getByRole('button', { name: /切换到/ }).click()
+  await expect(html).not.toHaveAttribute('data-theme', initial ?? '')
+})
+
+test('login: the footer and the no-account hint are reachable', async ({ page }) => {
+  await mockAccountsApi(page, { role: null })
+  await page.goto('/login')
+
+  await expect(page.getByText('还没有账号？请联系管理员开通。')).toBeVisible()
+  await expect(page.getByRole('link', { name: 'GitHub' })).toHaveAttribute(
+    'href',
+    'https://github.com/frostpolaris1/yiban-auto-sign',
+  )
+  await expect(page.getByRole('link', { name: '用户协议' })).toHaveAttribute(
+    'href',
+    /USER_AGREEMENT\.md$/,
+  )
+  await expect(page.getByRole('link', { name: '隐私政策' })).toHaveAttribute(
+    'href',
+    /PRIVACY_POLICY\.md$/,
+  )
+})
+
 // ---------- 密码找回：忘记密码与重置密码 ----------
 //
 // 两页都是公开页：未登录可用，已登录送回 `/`。
@@ -255,8 +307,8 @@ async function submitForgot(page: Page, email: string): Promise<void> {
 }
 
 async function submitReset(page: Page, password: string, confirmation: string): Promise<void> {
-  await page.getByLabel('新密码').fill(password)
-  await page.getByLabel('确认密码').fill(confirmation)
+  await page.locator('#reset-password').fill(password)
+  await page.locator('#reset-confirm').fill(confirmation)
   await page.getByRole('button', { name: '重置密码' }).click()
 }
 
@@ -330,7 +382,7 @@ for (const bad of BAD_TOKENS) {
       '/forgot-password',
     )
     // 表单不得出现：用户没有可提交的内容。
-    await expect(page.getByLabel('新密码')).toHaveCount(0)
+    await expect(page.locator('#reset-password')).toHaveCount(0)
     expectNoPasswordPosts(api, bad.label)
   })
 }
@@ -339,11 +391,15 @@ test('reset password: mismatched entries are stopped in the page', async ({ page
   const api = await mockAccountsApi(page, { role: null })
   await page.goto(`/reset-password?token=${RESET_TOKEN}`)
 
+  // 两枚密码框各自有唯一的显隐按钮名，读屏不会听到两个「显示密码」。
+  await expect(page.getByRole('button', { name: '显示新密码' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '显示确认密码' })).toBeVisible()
+
   await submitReset(page, NEW_PASSWORD, `${NEW_PASSWORD}-other`)
 
   await expect(page.getByText('两次输入的密码不一致')).toBeVisible()
-  await expect(page.getByLabel('确认密码')).toBeFocused()
-  await expect(page.getByLabel('新密码')).toBeVisible()
+  await expect(page.locator('#reset-confirm')).toBeFocused()
+  await expect(page.locator('#reset-password')).toBeVisible()
   expectNoPasswordPosts(api, 'mismatch')
 })
 
@@ -380,7 +436,7 @@ test('reset password: a rejected body keeps the form and reports the envelope', 
 
   await expect(page.getByRole('alert')).toContainText('validation_error')
   await expectFocusOnNotice(page, 'validation_error')
-  await expect(page.getByLabel('新密码')).toBeVisible()
+  await expect(page.locator('#reset-password')).toBeVisible()
   await expect(page.getByRole('heading', { name: '密码已重置' })).toHaveCount(0)
   expect(resetPasswordCalls(api), 'the request was attempted once').toHaveLength(1)
 })
@@ -405,7 +461,7 @@ test('reset password: an expired link is reported and does not expire the sessio
   await page.getByRole('link', { name: '重新申请' }).click()
   await expect(page).toHaveURL(/\/forgot-password$/)
   await page.getByRole('link', { name: '返回登录' }).click()
-  await expect(page.getByRole('heading', { name: '登录', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '欢迎回来', exact: true })).toBeVisible()
   await expect(page.getByText('会话已过期，请重新登录')).toHaveCount(0)
 })
 
@@ -425,10 +481,10 @@ test('reset password: the keyboard alone completes the flow', async ({ page }) =
   const api = await mockAccountsApi(page, { role: null })
   await page.goto(`/reset-password?token=${RESET_TOKEN}`)
 
-  await page.getByLabel('新密码').pressSequentially(NEW_PASSWORD)
-  await page.getByLabel('新密码').press('Tab')
-  await page.getByLabel('确认密码').pressSequentially(NEW_PASSWORD)
-  await page.getByLabel('确认密码').press('Enter')
+  await page.locator('#reset-password').pressSequentially(NEW_PASSWORD)
+  await page.locator('#reset-password').press('Tab')
+  await page.locator('#reset-confirm').pressSequentially(NEW_PASSWORD)
+  await page.locator('#reset-confirm').press('Enter')
 
   await expect(page.getByRole('heading', { name: '密码已重置' })).toBeVisible()
   expect(resetPasswordCalls(api), 'Enter submits the form').toHaveLength(1)

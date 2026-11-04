@@ -16,7 +16,6 @@ import { Link } from '@tanstack/react-router'
 import { useMutation } from '@tanstack/react-query'
 import { Alert } from '@/components/ui/Alert'
 import { Button } from '@/components/ui/Button'
-import { Icon } from '@/components/ui/Icon'
 import { TextInput } from '@/components/ui/Input'
 import { PublicAuthPage } from '@/features/auth/PublicAuthPage'
 import { buildForgotBody, passwordErrorMessage } from '@/features/auth/password-reset'
@@ -119,13 +118,12 @@ export function ForgotPasswordPage() {
               aria-busy={pending}
             >
               {pending ? '发送中…' : '发送重置链接'}
-              <Icon name="arrowRight" />
             </Button>
           </form>
 
-          <div className="auth-main-bottom">
+          <p className="auth-switch-hint">
             <Link to="/login">返回登录</Link>
-          </div>
+          </p>
         </>
       )}
     </PublicAuthPage>

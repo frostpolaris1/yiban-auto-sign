@@ -1,9 +1,9 @@
 /**
  * **功能**
- * 公开认证页的外壳：会话守卫、左侧介绍面板、右侧卡片位。
+ * 公开认证页的会话守卫：解析中显示加载态，已登录送回首页。
  *
  * **归属**
- * `features/auth` 域组件：只排布，只读会话。
+ * `features/auth` 域组件：只读会话，排布交给 `AuthLayout`。
  *
  * **口径**
  * 会话解析中显示整页加载态，不先闪表单。
@@ -15,7 +15,7 @@ import type { ReactNode } from 'react'
 import { Navigate } from '@tanstack/react-router'
 import { SessionLoading } from '@/components/ui/SessionLoading'
 import { useMe } from '@/lib/session'
-import { AuthAside } from './AuthAside'
+import { AuthLayout } from './AuthLayout'
 
 type PublicAuthPageProps = {
   children: ReactNode
@@ -27,12 +27,5 @@ export function PublicAuthPage({ children }: PublicAuthPageProps) {
   if (meQuery.isPending) return <SessionLoading />
   if (meQuery.data) return <Navigate to="/" replace />
 
-  return (
-    <div className="auth-shell">
-      <AuthAside />
-      <main className="auth-main">
-        <div className="auth-card">{children}</div>
-      </main>
-    </div>
-  )
+  return <AuthLayout>{children}</AuthLayout>
 }
