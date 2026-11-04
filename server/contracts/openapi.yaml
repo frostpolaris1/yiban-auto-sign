@@ -1939,6 +1939,118 @@ paths:
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         '429': { $ref: '#/components/responses/DefaultError' }
         default: { $ref: '#/components/responses/DefaultError' }
+  /api/me/accounts/{id}/delete:
+    post:
+      tags: [accounts]
+      operationId: MyAccountDelete
+      summary: Soft-delete one of the caller's own signing accounts.
+      description: |
+        Self-service counterpart of DELETE /api/accounts/{id}. Any signed-in
+        role may delete an account it owns; ownership comes from the session
+        user id, never from a request field. The row is soft-deleted
+        (deleted_at set, deleted_by is the caller) and the audit action is
+        account.self_delete; its detail never carries the phone or email.
+        Another user's account answers 404, never 403, so foreign accounts
+        are not disclosed. Deleting an already deleted account answers 400.
+        The grace window is 7 days (core/account.SelfRestoreGrace), shared
+        with POST /api/me/accounts/{id}/restore; once it has passed the
+        retention job may purge the row and no self-service undo exists.
+      x-roles: [master, admin, user]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - $ref: '#/components/parameters/AccountID'
+      responses:
+        '204': { description: Account soft-deleted. }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/me/accounts/{id}/restore:
+    post:
+      tags: [accounts]
+      operationId: MyAccountRestore
+      summary: Undo the caller's own soft delete.
+      description: |
+        Only a self-deleted account can be restored: the row must carry
+        deleted_by equal to the session user. An account an administrator
+        deleted answers 403, so a removed account cannot be revived by its
+        owner. The undo is accepted only within 7 days of deleted_at
+        (core/account.SelfRestoreGrace); past the window it answers 409
+        conflict. The owner must have no other live account: an existing
+        live account answers 400. A missing or foreign account answers 404;
+        a live (not deleted) account answers 409. Capacity is enforced like
+        the administrator restore and answers 429 capacity_exceeded.
+        The audit action is account.self_restore.
+      x-roles: [master, admin, user]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - $ref: '#/components/parameters/AccountID'
+      responses:
+        '200':
+          description: The restored account.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        '409': { $ref: '#/components/responses/ConflictError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        '429': { $ref: '#/components/responses/DefaultError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/me/mail-notify:
+    get:
+      tags: [settings]
+      operationId: MailNotifyGet
+      summary: Read the caller's sign-failure mail switch.
+      description: |
+        Every signed-in role reads its own switch. A user who never changed
+        the value reads true. The switch only gates sign-failure mail;
+        authentication and credential mail bypass it. Delivery itself lands
+        in a later phase; this endpoint only stores and reads the value.
+      x-roles: [master, admin, user]
+      responses:
+        '200':
+          description: Current switch state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MailNotify'
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+    put:
+      tags: [settings]
+      operationId: MailNotifySet
+      summary: Set the caller's sign-failure mail switch.
+      description: |
+        enabled is required and must be a JSON boolean; a missing key answers
+        400. The write and one user.mail_notify audit row share a
+        transaction; the detail carries only the field and on/off, never the
+        email. No mail is sent by this endpoint.
+      x-roles: [master, admin, user]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MailNotifyUpdate'
+      responses:
+        '200':
+          description: Stored switch state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MailNotify'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        default: { $ref: '#/components/responses/DefaultError' }
   /api/capacity:
     get:
       tags: [schedule]
@@ -3279,6 +3391,23 @@ components:
         offset_min:
           type: [integer, "null"]
           description: Null clears the preference.
+
+    MailNotify:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+          description: |
+            True when sign-failure mail is enabled for the signed-in user.
+            A user who never changed the switch reads true.
+    MailNotifyUpdate:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+          description: New state of the sign-failure mail switch.
 
     Photo:
       type: object

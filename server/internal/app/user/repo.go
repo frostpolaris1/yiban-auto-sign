@@ -67,6 +67,10 @@ type Repo interface {
 	UpdateRole(ctx context.Context, id string, role coreauth.Role, at time.Time) error
 	SetStatus(ctx context.Context, id string, status coreauth.Status, at time.Time) error
 	MarkLogin(ctx context.Context, id string, at time.Time) error
+	// MailNotify 读未删用户的签到失败邮件开关；默认 true。
+	// SetMailNotify 写开关；未删行才更新，零行报 not_found。
+	MailNotify(ctx context.Context, id string) (bool, error)
+	SetMailNotify(ctx context.Context, id string, enabled bool) error
 	SoftDelete(ctx context.Context, id, by string, at time.Time) error
 	Restore(ctx context.Context, id string, limit int) (Record, error)
 	CountLiveMasters(ctx context.Context, excludeID string) (int, error)

@@ -23,6 +23,9 @@ import (
 type fakeService struct {
 	creates int
 	updates int
+	// 自助面记录：作用域必须由会话构造，且对任何角色都是 user 形状。
+	selfDeletes int
+	selfScope   corescope.Scope
 }
 
 func (f *fakeService) List(context.Context, corescope.Scope, appaccount.ListFilter, string, int) (appaccount.Page, error) {
@@ -65,6 +68,16 @@ func (f *fakeService) DeviceRefresh(context.Context, corescope.Scope, string, ap
 
 func (f *fakeService) Delete(context.Context, corescope.Scope, string, appaudit.Actor) error {
 	return nil
+}
+
+func (f *fakeService) SelfDelete(_ context.Context, scope corescope.Scope, _ string, _ appaudit.Actor) error {
+	f.selfDeletes++
+	f.selfScope = scope
+	return nil
+}
+
+func (f *fakeService) SelfRestore(context.Context, corescope.Scope, string, appaudit.Actor) (appaccount.Record, error) {
+	return appaccount.Record{}, nil
 }
 
 type fakeAuthorizer struct{}
@@ -131,5 +144,62 @@ func TestUpdateRateLimitedPerOwner(t *testing.T) {
 	}
 	if svc.updates != 0 {
 		t.Fatal("限流命中后不得调用用例")
+	}
+}
+
+// masterAuthorizer 返回全量作用域，代表管理角色登录后的常规授权形状。
+type masterAuthorizer struct{}
+
+func (masterAuthorizer) Authorize(context.Context, coreauth.User) (corescope.Scope, appaudit.Actor, error) {
+	return corescope.Master(), appaudit.Actor{UserID: "u1", Role: coreauth.RoleMaster}, nil
+}
+
+// newMasterContext 构造 master 会话的请求上下文。
+func newMasterContext(t *testing.T) (*gin.Context, *httptest.ResponseRecorder) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/api/me/accounts/a1/delete", nil)
+	req = req.WithContext(coreauth.WithSession(req.Context(), coreauth.Session{
+		User: coreauth.User{ID: "u1", Role: coreauth.RoleMaster, Status: coreauth.StatusActive},
+	}))
+	c.Request = req
+	return c, rec
+}
+
+// 自助端点对 master 也只用会话 user id 构造作用域：
+// 授权解析出的是全量作用域，但传给用例的必须是 user 形状。
+func TestMyAccountDeleteNarrowsMasterScope(t *testing.T) {
+	svc := &fakeService{}
+	h := accounthttp.NewHandler(svc, masterAuthorizer{})
+	c, _ := newMasterContext(t)
+	h.MyAccountDelete(c, "a1", oapi.MyAccountDeleteParams{})
+	// 直接调用处理器时 gin 尚不落盘状态码（无响应体），读 Writer.Status。
+	if got := c.Writer.Status(); got != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", got)
+	}
+	if svc.selfDeletes != 1 {
+		t.Fatalf("self deletes = %d, want 1", svc.selfDeletes)
+	}
+	if svc.selfScope.Kind() != corescope.KindUser || svc.selfScope.UserID() != "u1" {
+		t.Fatalf("scope = kind %d user %q, want user u1", svc.selfScope.Kind(), svc.selfScope.UserID())
+	}
+}
+
+// 无会话：401，且用例不被调用。
+func TestMyAccountDeleteRequiresSession(t *testing.T) {
+	svc := &fakeService{}
+	h := accounthttp.NewHandler(svc, fakeAuthorizer{})
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/me/accounts/a1/delete", nil)
+	h.MyAccountDelete(c, "a1", oapi.MyAccountDeleteParams{})
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401: %s", rec.Code, rec.Body.String())
+	}
+	if svc.selfDeletes != 0 {
+		t.Fatal("无会话不得调用用例")
 	}
 }

@@ -1078,6 +1078,19 @@ type LoginRequest struct {
 	Password string              `json:"password"`
 }
 
+// MailNotify defines model for MailNotify.
+type MailNotify struct {
+	// Enabled True when sign-failure mail is enabled for the signed-in user.
+	// A user who never changed the switch reads true.
+	Enabled bool `json:"enabled"`
+}
+
+// MailNotifyUpdate defines model for MailNotifyUpdate.
+type MailNotifyUpdate struct {
+	// Enabled New state of the sign-failure mail switch.
+	Enabled bool `json:"enabled"`
+}
+
 // MailTestResult defines model for MailTestResult.
 type MailTestResult struct {
 	// Message User-safe confirmation. It never carries the SMTP reply, the
@@ -1941,6 +1954,27 @@ type CapacityGetParams struct {
 	Refresh *bool `form:"refresh,omitempty" json:"refresh,omitempty"`
 }
 
+// MyAccountDeleteParams defines parameters for MyAccountDelete.
+type MyAccountDeleteParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
+// MyAccountRestoreParams defines parameters for MyAccountRestore.
+type MyAccountRestoreParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
+// MailNotifySetParams defines parameters for MailNotifySet.
+type MailNotifySetParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
 // PhotoRetentionSetParams defines parameters for PhotoRetentionSet.
 type PhotoRetentionSetParams struct {
 	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
@@ -2213,6 +2247,9 @@ type AuthRegistrationSetJSONRequestBody = RegistrationSetRequest
 // AuthResetPasswordJSONRequestBody defines body for AuthResetPassword for application/json ContentType.
 type AuthResetPasswordJSONRequestBody = ResetPasswordRequest
 
+// MailNotifySetJSONRequestBody defines body for MailNotifySet for application/json ContentType.
+type MailNotifySetJSONRequestBody = MailNotifyUpdate
+
 // PhotoRetentionSetJSONRequestBody defines body for PhotoRetentionSet for application/json ContentType.
 type PhotoRetentionSetJSONRequestBody = PhotoRetentionUpdate
 
@@ -2444,9 +2481,21 @@ type ServerInterface interface {
 	// CapacityGet Report capacity and demand for one school task.
 	// (GET /api/capacity)
 	CapacityGet(c *gin.Context, params CapacityGetParams)
+	// MyAccountDelete Soft-delete one of the caller's own signing accounts.
+	// (POST /api/me/accounts/{id}/delete)
+	MyAccountDelete(c *gin.Context, id AccountID, params MyAccountDeleteParams)
+	// MyAccountRestore Undo the caller's own soft delete.
+	// (POST /api/me/accounts/{id}/restore)
+	MyAccountRestore(c *gin.Context, id AccountID, params MyAccountRestoreParams)
 	// MeDiagnostics Diagnostics for the signed-in user's own accounts.
 	// (GET /api/me/diagnostics)
 	MeDiagnostics(c *gin.Context)
+	// MailNotifyGet Read the caller's sign-failure mail switch.
+	// (GET /api/me/mail-notify)
+	MailNotifyGet(c *gin.Context)
+	// MailNotifySet Set the caller's sign-failure mail switch.
+	// (PUT /api/me/mail-notify)
+	MailNotifySet(c *gin.Context, params MailNotifySetParams)
 	// PhotoRetentionSet Set the photo retention period.
 	// (PUT /api/me/photo-retention)
 	PhotoRetentionSet(c *gin.Context, params PhotoRetentionSetParams)
@@ -3915,6 +3964,110 @@ func (siw *ServerInterfaceWrapper) CapacityGet(c *gin.Context) {
 	siw.Handler.CapacityGet(c, params)
 }
 
+// MyAccountDelete operation middleware
+func (siw *ServerInterfaceWrapper) MyAccountDelete(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id AccountID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", c.Param("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params MyAccountDeleteParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.MyAccountDelete(c, id, params)
+}
+
+// MyAccountRestore operation middleware
+func (siw *ServerInterfaceWrapper) MyAccountRestore(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id AccountID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", c.Param("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params MyAccountRestoreParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.MyAccountRestore(c, id, params)
+}
+
 // MeDiagnostics operation middleware
 func (siw *ServerInterfaceWrapper) MeDiagnostics(c *gin.Context) {
 
@@ -3926,6 +4079,62 @@ func (siw *ServerInterfaceWrapper) MeDiagnostics(c *gin.Context) {
 	}
 
 	siw.Handler.MeDiagnostics(c)
+}
+
+// MailNotifyGet operation middleware
+func (siw *ServerInterfaceWrapper) MailNotifyGet(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.MailNotifyGet(c)
+}
+
+// MailNotifySet operation middleware
+func (siw *ServerInterfaceWrapper) MailNotifySet(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params MailNotifySetParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.MailNotifySet(c, params)
 }
 
 // PhotoRetentionSet operation middleware
@@ -5305,6 +5514,10 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/schedule/override", wrapper.ScheduleOverride)
 	router.GET(options.BaseURL+"/api/me/time-pref", wrapper.TimePrefGet)
 	router.PUT(options.BaseURL+"/api/me/time-pref", wrapper.TimePrefSet)
+	router.POST(options.BaseURL+"/api/me/accounts/:id/delete", wrapper.MyAccountDelete)
+	router.POST(options.BaseURL+"/api/me/accounts/:id/restore", wrapper.MyAccountRestore)
+	router.GET(options.BaseURL+"/api/me/mail-notify", wrapper.MailNotifyGet)
+	router.PUT(options.BaseURL+"/api/me/mail-notify", wrapper.MailNotifySet)
 	router.GET(options.BaseURL+"/api/capacity", wrapper.CapacityGet)
 	router.GET(options.BaseURL+"/api/sign-stats", wrapper.SignStats)
 	router.GET(options.BaseURL+"/api/time-prefs/stats", wrapper.TimePrefStats)

@@ -24,7 +24,7 @@ func NewUserRepo(db *DB) *UserRepo { return &UserRepo{db: db} }
 
 const userColumns = `id::text, email, password_hash, role::text, status::text,
 	must_change_password, password_changed_at, last_login_at, created_at,
-	updated_at, deleted_at, coalesce(deleted_by::text, '')`
+	updated_at, deleted_at, coalesce(deleted_by::text, ''), mail_notify`
 
 // accountCountsCTE 是用户列表与分组计数的唯一账号聚合口径。
 // 只数未软删账号：account 全部、pending 只 pending、review 含 pending 与 rejected。
@@ -42,7 +42,7 @@ const accountCountsCTE = `WITH account_counts AS (
 // 计数用 LEFT JOIN，未持账号的用户得到 0。
 const userListColumns = `u.id::text, u.email, u.password_hash, u.role::text, u.status::text,
 	u.must_change_password, u.password_changed_at, u.last_login_at, u.created_at,
-	u.updated_at, u.deleted_at, coalesce(u.deleted_by::text, ''),
+	u.updated_at, u.deleted_at, coalesce(u.deleted_by::text, ''), u.mail_notify,
 	coalesce(c.account_count, 0), coalesce(c.pending_count, 0), coalesce(c.review_count, 0)`
 
 // Create 在活跃用户数低于 limit 时插入用户。
@@ -323,6 +323,34 @@ func (r *UserRepo) MarkLogin(ctx context.Context, id string, at time.Time) error
 	return nil
 }
 
+// MailNotify 读未删用户的签到失败邮件开关。
+// 行不存在或已软删报 not_found：开关属于仍然生效的本人。
+func (r *UserRepo) MailNotify(ctx context.Context, id string) (bool, error) {
+	var enabled bool
+	err := r.db.q(ctx).QueryRow(ctx,
+		`SELECT mail_notify FROM users WHERE id = $1::uuid AND deleted_at IS NULL`,
+		id).Scan(&enabled)
+	if err != nil {
+		return false, mapError(err)
+	}
+	return enabled, nil
+}
+
+// SetMailNotify 写签到失败邮件开关。未删行才更新；零行报 not_found。
+// 审计由用例层在同一事务里追加。
+func (r *UserRepo) SetMailNotify(ctx context.Context, id string, enabled bool) error {
+	tag, err := r.db.q(ctx).Exec(ctx, `
+		UPDATE users SET mail_notify = $2, updated_at = now()
+		 WHERE id = $1::uuid AND deleted_at IS NULL`, id, enabled)
+	if err != nil {
+		return mapError(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return coreerrNotFound()
+	}
+	return nil
+}
+
 // SoftDelete 把用户标记为已删除。
 // 物理删除留给后续清理任务；用户名下的账号未清空之前，删除会被拦截。
 func (r *UserRepo) SoftDelete(ctx context.Context, id, by string, at time.Time) error {
@@ -534,7 +562,7 @@ func scanUserList(row pgx.Row) (coreuser.Record, error) {
 	)
 	if err := row.Scan(&record.ID, &record.Email, &record.PasswordHash, &role, &status,
 		&record.MustChangePassword, &passwordChanged, &lastLogin, &record.CreatedAt,
-		&record.UpdatedAt, &deleted, &record.DeletedBy,
+		&record.UpdatedAt, &deleted, &record.DeletedBy, &record.MailNotify,
 		&record.AccountCount, &record.PendingCount, &record.ReviewCount); err != nil {
 		return coreuser.Record{}, err
 	}
@@ -556,7 +584,7 @@ func scanUser(row pgx.Row) (coreuser.Record, error) {
 	)
 	if err := row.Scan(&record.ID, &record.Email, &record.PasswordHash, &role, &status,
 		&record.MustChangePassword, &passwordChanged, &lastLogin, &record.CreatedAt,
-		&record.UpdatedAt, &deleted, &record.DeletedBy); err != nil {
+		&record.UpdatedAt, &deleted, &record.DeletedBy, &record.MailNotify); err != nil {
 		return coreuser.Record{}, err
 	}
 	record.Role = coreauth.Role(role)

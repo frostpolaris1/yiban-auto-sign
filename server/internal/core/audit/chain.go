@@ -68,11 +68,14 @@ const (
 	ActionUserRoleChange    Action = "user.role_change"
 	ActionUserPasswordReset Action = "user.password_reset"
 	ActionUserRestore       Action = "user.restore"
-	ActionSchoolCreate      Action = "school.create"
-	ActionSchoolUpdate      Action = "school.update"
-	ActionSchoolDisable     Action = "school.disable"
-	ActionAdminGrant        Action = "admin.grant"
-	ActionAdminRevoke       Action = "admin.revoke"
+	// 自助面（5mx）：本人签到失败邮件开关。detail 只记字段与
+	// 目标状态（on/off），**绝无邮箱或口令**。
+	ActionUserMailNotify Action = "user.mail_notify"
+	ActionSchoolCreate   Action = "school.create"
+	ActionSchoolUpdate   Action = "school.update"
+	ActionSchoolDisable  Action = "school.disable"
+	ActionAdminGrant     Action = "admin.grant"
+	ActionAdminRevoke    Action = "admin.revoke"
 	// 全局设置写入：目前只有公开注册开关。
 	// detail 只记字段与目标状态（enabled/disabled）。
 	ActionSettingsRegistration Action = "settings.registration"
@@ -92,6 +95,10 @@ const (
 	ActionAccountResume       Action = "account.resume"
 	ActionAccountDelete       Action = "account.delete"
 	ActionAccountRestore      Action = "account.restore"
+	// 自助面（5mx）：本人注销与撤销注销。deleted_by 记本人；
+	// detail 只记 deleted_at 字段名，不含手机号或邮箱。
+	ActionAccountSelfDelete  Action = "account.self_delete"
+	ActionAccountSelfRestore Action = "account.self_restore"
 	// UX-2 设备刷新：只在平台读回成功且本事务提交时出现。
 	// detail 只记 field=device_code，**绝无设备码全文或机型明文**。
 	ActionAccountDeviceRefresh Action = "account.device_refresh"

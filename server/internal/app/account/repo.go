@@ -59,9 +59,13 @@ type StatusCounts = coreaccount.StatusCounts
 // 零行报 conflict（errs.CodeConflict）。**状态迁移规则归用例层，不归本端口**。
 // 目标状态为 pending 时清空驳回理由与审核戳：pending 不属于任何已审轮次。
 //
-// Get、GetForUpdate、SetStatus、SoftDelete、Restore、Credential、UpdatePhone、
-// UpdateName、Review 都套范围。
-// 越权行报 not_found（errs.CodeNotFound），**绝不报 forbidden**。
+// Get 与 GetIncludingDeleted 都套范围：Get 只回未软删行，
+// GetIncludingDeleted 也回软删行（本人自助面用它区分「不是我的」与「已删」）。
+// 越权行一律 not_found。
+//
+// RestoreSelf 是本人撤销注销：条件 UPDATE 一次判完备
+// deleted_by=by、deleted_at 不早于 notBefore、名下无其他生效账号与容量；
+// 零行按原因报 not_found / conflict / forbidden / validation / capacity。
 //
 // GetForUpdate 在事务内读账号并持有行锁到事务结束。
 // 恢复判定必须在锁下读取：事务外的快照会把已提交的 credential_error 看丢。
@@ -80,6 +84,7 @@ type Repo interface {
 	// Create 建号；limit 是全局活跃账号上限，ownerLimit 是每属主活跃账号上限。
 	Create(ctx context.Context, in New, limit, ownerLimit int) (Record, error)
 	Get(ctx context.Context, scope corescope.Scope, id string) (Record, error)
+	GetIncludingDeleted(ctx context.Context, scope corescope.Scope, id string) (Record, error)
 	GetForUpdate(ctx context.Context, scope corescope.Scope, id string) (Record, error)
 	List(ctx context.Context, scope corescope.Scope, schoolID string, status Status, query, cursor string, limit int, includeDeleted bool) ([]Record, string, error)
 	StatusCounts(ctx context.Context, scope corescope.Scope) (StatusCounts, error)
@@ -89,6 +94,7 @@ type Repo interface {
 	Review(ctx context.Context, scope corescope.Scope, id string, approve bool, reason, by string, at time.Time) (Record, error)
 	SoftDelete(ctx context.Context, scope corescope.Scope, id, by string, at time.Time) error
 	Restore(ctx context.Context, scope corescope.Scope, id string, limit, ownerLimit int) (Record, error)
+	RestoreSelf(ctx context.Context, scope corescope.Scope, id, by string, notBefore time.Time, limit, ownerLimit int) (Record, error)
 	Credential(ctx context.Context, scope corescope.Scope, accountID string) (Credential, error)
 	// Credentials 批量读多个账号的凭据，按账号 ID 建索引。
 	// 空 ids 回空 map；软删行与作用域外的行不出现在结果里。

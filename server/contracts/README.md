@@ -113,6 +113,14 @@ either side drifts.
 | POST | `/api/schedule/override` | master/admin | P4 |
 | GET | `/api/me/time-pref` | master/admin/user | P4 |
 | PUT | `/api/me/time-pref` | master/admin/user | P4 |
+| POST | `/api/me/accounts/:id/delete` | master/admin/user | 5mx |
+|  |  |  | 本人软删自己的账号；`deleted_by` 记本人；审计 `account.self_delete`。已删除再删 400；他人账号 404。 |
+| POST | `/api/me/accounts/:id/restore` | master/admin/user | 5mx |
+|  |  |  | 撤销本人自删；仅 `deleted_by`＝本人、7 天内（`core/account.SelfRestoreGrace`）、名下无其他生效账号。管理员删除 403；超窗 409；已有生效账号 400；审计 `account.self_restore`。 |
+| GET | `/api/me/mail-notify` | master/admin/user | 5mx |
+|  |  |  | 本人签到失败邮件开关；缺省 true。 |
+| PUT | `/api/me/mail-notify` | master/admin/user | 5mx |
+|  |  |  | 写本人开关；审计 `user.mail_notify`，detail 只含字段与 on/off。 |
 | GET | `/api/capacity` | master/admin | P4 |
 | GET | `/api/sign-stats` | master/admin | M8C |
 | GET | `/api/time-prefs/stats` | master/admin | M8C |

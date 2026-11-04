@@ -47,6 +47,12 @@ func (s Status) Valid() bool {
 // **只有 active 账号可被引擎认领**；其他状态一律不进候选集。
 func (s Status) Active() bool { return s == StatusActive }
 
+// SelfRestoreGrace 是本人撤销注销的宽限窗口：7 天。
+// 取值与旧线 parity（yiban/adapters/persistence/users.py 的
+// SOFT_DELETE_RETENTION_DAYS = 7）；窗口从 deleted_at 起算，
+// 恰好 7 天仍可恢复，超过即拒绝。物理清除归保留期任务，不在本批。
+const SelfRestoreGrace = 7 * 24 * time.Hour
+
 // Record 是一行 accounts 记录。
 //
 // OwnerEmail 是属主邮箱的明文，只在进程内用于生成掩码响应；

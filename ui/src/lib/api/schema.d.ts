@@ -1295,6 +1295,94 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/me/accounts/{id}/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Soft-delete one of the caller's own signing accounts.
+         * @description Self-service counterpart of DELETE /api/accounts/{id}. Any signed-in
+         *     role may delete an account it owns; ownership comes from the session
+         *     user id, never from a request field. The row is soft-deleted
+         *     (deleted_at set, deleted_by is the caller) and the audit action is
+         *     account.self_delete; its detail never carries the phone or email.
+         *     Another user's account answers 404, never 403, so foreign accounts
+         *     are not disclosed. Deleting an already deleted account answers 400.
+         *     The grace window is 7 days (core/account.SelfRestoreGrace), shared
+         *     with POST /api/me/accounts/{id}/restore; once it has passed the
+         *     retention job may purge the row and no self-service undo exists.
+         */
+        post: operations["MyAccountDelete"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/accounts/{id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Undo the caller's own soft delete.
+         * @description Only a self-deleted account can be restored: the row must carry
+         *     deleted_by equal to the session user. An account an administrator
+         *     deleted answers 403, so a removed account cannot be revived by its
+         *     owner. The undo is accepted only within 7 days of deleted_at
+         *     (core/account.SelfRestoreGrace); past the window it answers 409
+         *     conflict. The owner must have no other live account: an existing
+         *     live account answers 400. A missing or foreign account answers 404;
+         *     a live (not deleted) account answers 409. Capacity is enforced like
+         *     the administrator restore and answers 429 capacity_exceeded.
+         *     The audit action is account.self_restore.
+         */
+        post: operations["MyAccountRestore"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/mail-notify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the caller's sign-failure mail switch.
+         * @description Every signed-in role reads its own switch. A user who never changed
+         *     the value reads true. The switch only gates sign-failure mail;
+         *     authentication and credential mail bypass it. Delivery itself lands
+         *     in a later phase; this endpoint only stores and reads the value.
+         */
+        get: operations["MailNotifyGet"];
+        /**
+         * Set the caller's sign-failure mail switch.
+         * @description enabled is required and must be a JSON boolean; a missing key answers
+         *     400. The write and one user.mail_notify audit row share a
+         *     transaction; the detail carries only the field and on/off, never the
+         *     email. No mail is sent by this endpoint.
+         */
+        put: operations["MailNotifySet"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/capacity": {
         parameters: {
             query?: never;
@@ -2146,6 +2234,17 @@ export interface components {
         TimePrefUpdate: {
             /** @description Null clears the preference. */
             offset_min: number | null;
+        };
+        MailNotify: {
+            /**
+             * @description True when sign-failure mail is enabled for the signed-in user.
+             *     A user who never changed the switch reads true.
+             */
+            enabled: boolean;
+        };
+        MailNotifyUpdate: {
+            /** @description New state of the sign-failure mail switch. */
+            enabled: boolean;
         };
         Photo: {
             id: string;
@@ -4431,6 +4530,130 @@ export interface operations {
             403: components["responses"]["ForbiddenError"];
             413: components["responses"]["PayloadTooLargeError"];
             429: components["responses"]["DefaultError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    MyAccountDelete: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["AccountID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Account soft-deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    MyAccountRestore: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["AccountID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The restored account. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Account"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            409: components["responses"]["ConflictError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["DefaultError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    MailNotifyGet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current switch state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailNotify"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    MailNotifySet: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MailNotifyUpdate"];
+            };
+        };
+        responses: {
+            /** @description Stored switch state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailNotify"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["PayloadTooLargeError"];
             default: components["responses"]["DefaultError"];
         };
     };

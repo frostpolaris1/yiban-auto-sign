@@ -50,6 +50,10 @@ type Service interface {
 	Delete(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) error
 	Restore(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) (appuser.Record, error)
 	Lookup(ctx context.Context, scope corescope.Scope, query string, limit int, exact bool) ([]appuser.LookupRef, error)
+	// MailNotify 与 SetMailNotify 只作用于调用者自己的开关；
+	// 目标 id 由入口层取会话用户，不来自请求字段。
+	MailNotify(ctx context.Context, userID string) (bool, error)
+	SetMailNotify(ctx context.Context, userID string, enabled bool, actor appaudit.Actor) (bool, error)
 }
 
 // Authorizer 把会话主体解析成作用域与审计主体。
@@ -237,6 +241,46 @@ func (h *Handler) Lookup(c *gin.Context, params oapi.UserLookupParams) {
 		})
 	}
 	respond.JSON(c.Writer, http.StatusOK, oapi.UserLookupPage{Items: items})
+}
+
+// MailNotifyGet 实现 GET /api/me/mail-notify。
+// 只读本人开关：用户 id 取自会话主体，请求没有可指定他人的字段。
+func (h *Handler) MailNotifyGet(c *gin.Context) {
+	_, actor, ok := h.principal(c)
+	if !ok {
+		return
+	}
+	enabled, err := h.svc.MailNotify(c.Request.Context(), actor.UserID)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	respond.JSON(c.Writer, http.StatusOK, oapi.MailNotify{Enabled: enabled})
+}
+
+// MailNotifySet 实现 PUT /api/me/mail-notify。
+// enabled 是必填布尔值，故用指针解码区分「缺字段」与 false。
+func (h *Handler) MailNotifySet(c *gin.Context, _ oapi.MailNotifySetParams) {
+	_, actor, ok := h.principal(c)
+	if !ok {
+		return
+	}
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if !decode(c, &body) {
+		return
+	}
+	if body.Enabled == nil {
+		fail(c, errs.New(errs.CodeValidation, "enabled is required"))
+		return
+	}
+	enabled, err := h.svc.SetMailNotify(c.Request.Context(), actor.UserID, *body.Enabled, actor)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	respond.JSON(c.Writer, http.StatusOK, oapi.MailNotify{Enabled: enabled})
 }
 
 // principal 取会话并解析作用域。失败时已写响应。
