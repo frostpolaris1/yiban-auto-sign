@@ -207,23 +207,24 @@ ROLLBACK_E2E_GOPROXY=https://goproxy.cn,direct \
 | H1 | docker 可用；宿主跑 `run` 被守卫拒绝（rc=2、零写入、安装位元数据快照一致） |
 | H2 | OS 镜像含真 systemd 与 openssl（缺则按裸机同款 Dockerfile 构建） |
 | H3 | PostgreSQL 18 就绪；应用角色 `yiban`（非超级用户、非库属主）有 public CREATE 与 CREATEDB |
-| H4 | 五组二进制（v1..v5）真编译产出，server sha256 两两不同 |
+| H4 | 六组二进制（v1..v6）真编译产出，server sha256 两两不同 |
 | H5 | 演练容器 systemd 就绪；标记已写；`pg_dump`/`pg_restore`/`psql`（PG18 客户端）容器内可用；`scripts/release` 已复制（R2 真验签） |
-| H6 | 容器内演练（R1..R9）退出码 0 |
+| H6 | 容器内演练（R1..R10）退出码 0 |
 
 容器内演练步骤（前缀 R）：
 
 | 步骤 | 断言 |
 |------|------|
-| R1 | `install.sh` 装 v1 退出 0；unit active；独立 healthcheck 通过；schema 版本＝迁移目录最大编号；`update.sh --selfcheck-only` rc=0 且不创建状态目录 |
+| R1 | `install.sh` 装 v1 退出 0；unit active；独立 healthcheck 通过；schema 版本＝迁移目录最大编号；`update.sh --selfcheck-only` rc=0 且不创建状态目录；再放一个老机的 `/var/lib/yiban/pre-migrate`（root 0700）后，明文 `yiban-cli selfcheck` 仍 rc=0 且 `fs.backup_dir` 不是 FAIL（备份目录默认值跟上了 U2） |
 | R2（签名错） | 现场生成 Ed25519 密钥、签发清单后篡改一字节：rc=1；日志含 `signing verification FAILED`；安装位不变；无 `.bak`/`.new`/状态目录；unit active |
 | R3（自检 FAIL） | 把照片目录改成 root 专属（U1 的 `config.photo_dir`/`fs.photo_dir` 按服务用户判权）：rc=2；日志点名 `selfcheck FAILED` 与失败项；无状态目录；安装位不变；unit active；healthz OK |
-| R4（备份失败） | 用普通文件占住备份根目录：rc=2；日志含 `backup FAILED`；状态 `phase=backup`/`result=aborted`；`update.log` 无 `service stopped`；无备份目录；unit active |
+| R4（备份失败） | 把 `pg_dump` 换成「找得到但一跑就失败」的桩（tools 检查只做 LookPath）：rc=2；日志含 `backup FAILED`；状态 `phase=backup`/`result=aborted`；`update.log` 无 `service stopped`；无备份目录（半成品被清掉）；unit active |
 | R5（无 CREATEDB） | `ALTER ROLE yiban NOCREATEDB` 后跑 `update.sh`：rc=2；日志点名 `CREATEDB` 与 `--no-restore-db`；状态 `phase=preflight`；无备份；unit active；随后还原 CREATEDB |
 | R6（迁移失败） | `REVOKE CREATE ON SCHEMA public` 后跑 `update.sh --no-restore-db`：rc=1；日志含 `migrate FAILED` 与 `permission denied for schema public`；安装位仍是 v1；无 `.bak`/`.new`；unit active；healthz OK；schema 不前进；DSN 不变；状态 `db_restore=disabled` |
 | R7（健康失败+回库） | 跑含真迁移＋`main()` panic 的 v3：rc=1；日志含 `healthz failed after swap`、`db restore`、`rolled back`；DSN 切到 `yiban_restore_<ts>`；新库 schema＝升级前；原库保留且 schema 前进一档；恢复件 `users` 可读；安装位与 CLI 回到 v1；`.bak` 无残留；备份 `db.dump` 0600、目录 0700；unit active；healthz OK；状态 `db_restore=restored` |
-| R8（正常升级） | 在恢复后的新库上升级到 v4：rc=0；安装位＝v4；`.bak`＝v1；schema＋2；`e2e_rollback_probe` 表存在；状态 `success`/`exit_code=0`/`db_restore=not-needed`；新增一份备份；状态文件 0600；证据文件不含 DSN 口令 |
-| R9（恢复失败） | 装一个只放行 `pg_restore --list` 的包装器（备份校验过、真恢复必失败），跑 v5（再迁移一档＋panic）：rc=2；日志含 `db restore FAILED` 与 `manual action required`；状态 `db_restore=failed`/`exit_code=2`；DSN 不变；二进制已换回 v4；unit **inactive**（库状态未知，不自动起旧件） |
+| R8（正常升级） | 在恢复后的新库上升级到 v4，并首次带 `--ui-dir` 装页面：rc=0；安装位＝v4；`.bak`＝v1；schema＋2；`e2e_rollback_probe` 表存在；状态 `success`/`exit_code=0`/`db_restore=not-needed`；新增一份备份；备份根 0700 属 `yiban`、本份 0700 root、`env.backup` 0600；页面与 `.env` 的 `YIBAN_UI_DIR` 各就位且只有一行；状态文件 0600；证据文件不含 DSN 口令；pg 客户端 argv 不含口令且都拿到 PGPASSFILE |
+| R9（健康失败 + UI 回滚） | 跑 v6（迁移集与 v4 相同 → migrate 空转）并带 `--ui-dir` 换页面：rc=1；日志含 `healthz failed after swap`/`rolled back`；安装位回到 v4；`ui.bak` 无残留、`index.html` 是旧页 `ui-one`；`YIBAN_UI_DIR` 只有一行且指回 `/var/lib/yiban/ui`；DSN 不变；状态 `db_restore=not-needed`/`exit_code=1`；unit active；healthz OK |
+| R10（恢复失败） | 装一个只放行 `pg_restore --list` 的包装器（备份校验过、真恢复必失败），跑 v5（再迁移一档＋panic）：rc=2；日志含 `db restore FAILED` 与 `manual action required`；状态 `db_restore=failed`/`exit_code=2`，`db_restore_target` 是真实库名且出现在 manual action 里；DSN 不变；二进制已换回 v4；unit **inactive**（库状态未知，不自动起旧件） |
 
 判据与 `update.sh` 头注一致：迁移失败回滚＝旧件继续跑（exit 1）；
 健康检查失败回滚＝`.bak` 换回（exit 1）；迁移后失败且库已改变＝数据库恢复到
@@ -233,10 +234,11 @@ ROLLBACK_E2E_GOPROXY=https://goproxy.cn,direct \
 注入手法：迁移 SQL 嵌在二进制里改不了，演练在编译期给「新版」源码副本加
 真迁移（号段从仓库实测最大编号 +1 起，不写死）；R6 用 psql
 `REVOKE CREATE ON SCHEMA public FROM yiban` 让真 goose 路径撞权限错误
-（应用角色不是超级用户也不是库属主，REVOKE 才咬得住）；R9 用只放行
-`--list` 的 `pg_restore` 包装器制造「备份可读、恢复失败」。
+（应用角色不是超级用户也不是库属主，REVOKE 才咬得住）；R4 用一跑就失败的
+`pg_dump` 桩打备份步；R10 用只放行 `--list` 的 `pg_restore` 包装器制造
+「备份可读、恢复失败」。v6 是「同迁移集 + panic」，用来只测 UI/二进制回滚。
 
-R3..R9 走 `--allow-unsigned` 显式逃生口；R2 走真签名链
+R3..R10 走 `--allow-unsigned` 显式逃生口；R2 走真签名链
 （默认拒未签名的守卫是 `server/cmd/cli/install_update_e2e_test.go`
 的 `TestUpdateShDeniesUnsignedByDefault`）。
 
@@ -245,7 +247,7 @@ R3..R9 走 `--allow-unsigned` 显式逃生口；R2 走真签名链
 - Docker 前置：`--privileged` 与 host cgroup（同裸机路径）；镜像
   `postgres:18`、`golang:1.27-alpine`、`ubuntu:24.04`（或已构建的
   `yiban-e2e-os:ubuntu24.04`）。
-- 实测耗时（2026-11-04，本机 WSL2 Docker，U2 矩阵 R1..R9；口径＝脚本内
+- 实测耗时（2026-11-04，本机 WSL2 Docker，U2 矩阵 R1..R10；口径＝脚本内
   `P0.log` 创建到 `exit-code` 写盘的墙钟）：
   OS 镜像、Go 镜像与 Go 缓存卷全热时单遍约 2 分 40 秒；连跑两遍均 rc=0。
   冷首跑另含 OS 镜像构建（apt 装 systemd/openssl）与 Go 模块冷缓存。
@@ -275,6 +277,29 @@ sha256）、真 `systemctl` 停起 unit、真 goose 迁移成败、真
 镜像整包提取，带私有库目录跑在 `/opt/pg18`，包装器落 `/usr/local/bin`。
 提取只换客户端来源，不改变 `update.sh` 的任何步骤。
 
-边界四：R9 的恢复失败是注入的（只放行 `--list` 的 `pg_restore` 包装器），
+边界四：R10 的恢复失败是注入的（只放行 `--list` 的 `pg_restore` 包装器），
 不是真的磁盘满/转储损坏；被测性质是「恢复失败时 exit 2、打印 manual action、
 不自动启动旧件」。
+
+边界五：容器内 `deps.Containerized` 为真，U1 自检的 `tools.*` 与
+`fs.backup_dir` 按设计 SKIP；R1 只要求它不是 FAIL。备份目录默认值的
+「老机不误红」由 Go 单测
+（`TestBackupDirDefaultIsWritableByServiceUser`）与 R1 的明文自检共同钉住。
+
+边界六：v6 与 v4 迁移集相同、只多一个起手 panic：它不推进 schema，
+所以 R9 只测 UI/二进制回滚，不混测数据库回滚。
+
+### 8.5 CI 接线
+
+`.github/workflows/deploy-gate.yml` 的 `update-rollback-e2e` job 两步：
+
+1. `go test ./cmd/cli/ -run 'TestUpdateSh|TestInstallSh'`：update.sh 干跑契约
+   （自检门、统一备份、start 失败回滚、首次装页面回滚、argv 无口令、缺值 exit 2）。
+   不需要 docker，托管 runner 上必定真跑。
+2. `bash scripts/e2e/update-rollback-e2e.sh host ...`：R1..R10 全矩阵。
+   托管 runner 上 `--privileged` systemd 容器未实测：环境起不来时脚本 exit 2，
+   job 打印 `SKIP` 并写进 step summary 后退出 0 —— **SKIP 不算绿**，
+   release-check 项 7 仍记 POINTER，发布前按 §1 手跑一遍。
+
+`tests/test_deploy_e2e_wiring.py` 钉住这条接线：job 存在、有超时门、
+真的调用脚本、干跑契约在场、SKIP 路径写进 step summary。

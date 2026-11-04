@@ -38,8 +38,11 @@
 #   0 成功（含 --selfcheck-only 全 PASS/SKIP）
 #   1 升级失败但已回滚到旧件（旧二进制在跑且健康）；签名/对账/版本校验
 #     不通过也归 1（与旧版一致，校验失败不碰旧件）
-#   2 用法错误、并发锁被占、自检 FAIL、预检（CREATEDB/备份/快照）FAILED、
-#     回滚后仍不健康、数据库恢复失败（此时打印 manual action）
+#   2 用法错误、并发锁被占、自检 FAIL、预检（CREATEDB/口令隔离/备份）FAILED、
+#     停服失败（什么都没换）、回滚后仍不健康、数据库恢复失败（打印 manual action）
+#   停服成功之后任何一步失败（migrate、换件、systemctl start、健康检查）
+#   都走同一条回滚：换回 server/CLI/UI，再按需恢复数据库；最终码只由
+#   「旧件是否健康」决定（健康=1，不健康=2），不会把新件留在安装位。
 #
 # 自检门（U2 新增，fail-closed）：
 #   - 用**已安装**的 yiban-cli 跑 `selfcheck --json`：它的嵌入迁移号与库
@@ -48,23 +51,34 @@
 #     含 U1 的发布件。自检不可用不等于绿。
 #   - --selfcheck-only 不取锁、不写任何文件，只打印摘要与失败项。
 #
-# 统一备份（U2 新增；落在 <状态目录>/backups/<ts>/，0700/0600）：
+# 统一备份（U2 新增；落在 /var/lib/yiban/backups/<ts>/，0700/0600）：
 #   状态目录 = /var/lib/yiban/updates（root 0700；update-state.json、
-#   update.log、selfcheck-*.json）。每次备份目录：
+#   update.log、selfcheck-*.json）。备份根与状态目录同级（不在其下）：
+#   U1 的 fs.backup_dir 按**服务用户**判权，缺目录时还按最近的已存在祖先
+#   判；/var/lib/yiban 属服务用户 ⇒ 首次运行 SKIP、之后 PASS。挂在 root
+#   0700 的 updates/ 下会因祖先不可写而判 FAIL，挡住所有升级。
+#   备份根本身 0700、属服务用户；每次更新的子目录与文件仍是 root
+#   0700/0600（服务用户读不到密文、删不掉非空子目录）。每次备份目录：
 #     db.dump             pg_dump -Fc（--no-owner --no-privileges），0600
 #     db.list             pg_restore --list 的清单，0600（校验转储可读）
 #     db-counts.txt       可选：yiban-cli backup 的行数基线（stdout）
 #     db.sql.gpg          可选：yiban-cli backup 的 GPG 对称加密归档（含
 #                         行数 manifest）——需要口令文件或 YIBAN_BACKUP_PASSPHRASE
-#     db-schema.txt       迁移前 goose 版本与 public 基表数（恢复后对账基线）
+#     db-schema.txt       迁移前库名、goose 版本与 public 基表数（恢复后对账基线）
+#     env.backup          /etc/yiban/.env 快照（0600；内含密钥与 DSN 原文）
 #     photos.tar          照片目录快照（tar -h，只读；照片不进数据库备份）
 #     bin/                当前已装的 server/cli（含仍在的旧 .bak 归档）
 #     SHA256SUMS          以上文件的 sha256（0600，写入后立即 -c 校验）
 #   保留最近 --keep-backups 份（缺省 5；0 = 不清理）。只删本目录下形如
 #   20261104T101500Z 的子目录；备份失败不删任何东西。
-#   备份根目录是 root 0700：U1 自检的 fs.backup_dir 按**服务用户**判权，
-#   不适用于 root 专属目录，故本脚本不把它喂给该检查；这里以「备份真的
-#   写成功」作为可写性判据（失败即中止）。
+#
+# DSN 与口令（U2 新增）：
+#   连接口令**不进任何子进程 argv**（/proc/<pid>/cmdline 全局可读）。
+#   update.sh 把 DSN 里的口令摘出来写进 0600 的 PGPASSFILE（暂存目录，
+#   退出即删），交给 libpq；argv 只保留去掉口令的 DSN。URI 里的百分号
+#   编码会解码；key=value 形态按 libpq conninfo 词法解析。解析不了就
+#   exit 2（fail-closed），绝不把口令塞回 argv。yiban-cli 走环境变量，
+#   不传 --dsn。
 #
 # 数据库恢复（U2 新增；默认开启）：
 #   - 触发条件：失败发生在 migrate 之后（含 migrate 失败），且库已改变
@@ -83,9 +97,10 @@
 # 状态与日志：
 #   /var/lib/yiban/updates/update-state.json（0600）每次更新整体重写：
 #   schema_version=1、update_id、started_at、finished_at、result
-#   （running/success/failed/aborted）、exit_code、phase、version_from、
-#   version_to、backup_dir、db_schema_before/after、db_restore
-#   （disabled/not-needed/restored/failed）、db_restore_target、log_file。
+#   （running/success/failed/aborted/interrupted）、exit_code、phase、
+#   version_from、version_to、backup_dir、db_name_before/after、
+#   db_schema_before/after、db_restore（disabled/not-needed/restored/failed）、
+#   db_restore_target、log_file。
 #   /var/lib/yiban/updates/update.log 追加一行一事件（时间/阶段/结果）。
 #   两者都不含 DSN 口令、密钥与 GPG 口令；DSN 只出现库名与主机。
 #
@@ -146,22 +161,30 @@ NO_RESTORE_DB=""
 BACKUP_DIR_FLAG=""
 KEEP_BACKUPS="5"
 BACKUP_PASS_FILE=""
+# need_value <flag> [value]：缺值/空值是用例错误（exit 2）。
+# 不用 ${2:?}：它退 1，而用法错误的口径是 2。
+need_value() {
+    if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+        echo "update: $1 requires a non-empty value" >&2
+        exit 2
+    fi
+}
 while [ $# -gt 0 ]; do
     case "$1" in
-        --server-bin) SERVER_BIN="${2:?}"; shift 2 ;;
-        --cli-bin) CLI_BIN="${2:?}"; shift 2 ;;
-        --ui-dir) UI_DIR="${2:?}"; shift 2 ;;
-        --registry) REGISTRY="${2:?}"; shift 2 ;;
-        --manifest) MANIFEST="${2:?}"; shift 2 ;;
-        --signature) SIGNATURE="${2:?}"; shift 2 ;;
-        --pubkey) PUBKEY="${2:?}"; shift 2 ;;
-        --expect-version) EXPECT_VERSION="${2:?}"; shift 2 ;;
+        --server-bin) need_value "$@"; SERVER_BIN="$2"; shift 2 ;;
+        --cli-bin) need_value "$@"; CLI_BIN="$2"; shift 2 ;;
+        --ui-dir) need_value "$@"; UI_DIR="$2"; shift 2 ;;
+        --registry) need_value "$@"; REGISTRY="$2"; shift 2 ;;
+        --manifest) need_value "$@"; MANIFEST="$2"; shift 2 ;;
+        --signature) need_value "$@"; SIGNATURE="$2"; shift 2 ;;
+        --pubkey) need_value "$@"; PUBKEY="$2"; shift 2 ;;
+        --expect-version) need_value "$@"; EXPECT_VERSION="$2"; shift 2 ;;
         --allow-unsigned) ALLOW_UNSIGNED=1; shift ;;
         --selfcheck-only) SELFCHECK_ONLY=1; shift ;;
         --no-restore-db) NO_RESTORE_DB=1; shift ;;
-        --backup-dir) BACKUP_DIR_FLAG="${2:?}"; shift 2 ;;
-        --keep-backups) KEEP_BACKUPS="${2:?}"; shift 2 ;;
-        --backup-passphrase-file) BACKUP_PASS_FILE="${2:?}"; shift 2 ;;
+        --backup-dir) need_value "$@"; BACKUP_DIR_FLAG="$2"; shift 2 ;;
+        --keep-backups) need_value "$@"; KEEP_BACKUPS="$2"; shift 2 ;;
+        --backup-passphrase-file) need_value "$@"; BACKUP_PASS_FILE="$2"; shift 2 ;;
         *) echo "update: unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -184,6 +207,10 @@ UI_BAK="$UI_DEST.bak"
 ENV_FILE="$(dest /etc/yiban/.env)"
 
 # 状态目录与备份根目录。备份根可用 --backup-dir 覆盖（必须是绝对路径）。
+# 备份根是 /var/lib/yiban/backups（与状态目录同级，不在其下）：
+# U1 的 fs.backup_dir 按**服务用户**判权，目录缺失时判最近的已存在祖先；
+# /var/lib/yiban 属服务用户，所以「首次运行=SKIP、之后=PASS」；若挂在
+# root 0700 的 updates/ 下，祖先不可写会判 FAIL 并挡住所有升级。
 STATE_DIR="$(dest "$SERVICE_HOME/updates")"
 STATE_FILE="$STATE_DIR/update-state.json"
 LOG_FILE="$STATE_DIR/update.log"
@@ -194,7 +221,7 @@ if [ -n "$BACKUP_DIR_FLAG" ]; then
     esac
     BACKUP_ROOT="$BACKUP_DIR_FLAG"
 else
-    BACKUP_ROOT="$STATE_DIR/backups"
+    BACKUP_ROOT="$(dest "$SERVICE_HOME/backups")"
 fi
 case "$BACKUP_ROOT" in
     /|*/) echo "update: refusing backup root path: $BACKUP_ROOT" >&2; exit 2 ;;
@@ -222,8 +249,16 @@ DB_RESTORE_TARGET=""
 BINARY_SWAPPED=0
 CLI_SWAPPED=0
 UI_OLD_MOVED=0
+UI_ACTIVATED=0
 DB_RESTORE_FAILED=0
+# DSN_FULL 是含口令的原文：只用于写回 /etc/yiban/.env 与进程环境。
+# DSN 是去掉口令的 argv 安全形态；口令经 0600 PGPASSFILE 交给 libpq。
+DSN_FULL=""
 DSN=""
+DSN_PASSWORD=""
+DSN_NAME=""
+DSN_NAME_AFTER=""
+PGPASS_FILE=""
 
 # json_escape 把值转成 JSON 字符串内容。只做最小必要转义：
 # 反斜杠、双引号先处理；控制字符换成空格（路径/版本里不该出现）。
@@ -276,6 +311,8 @@ write_state() {
         printf '  "version_from": "%s",\n' "$(json_escape "$VERSION_FROM")"
         printf '  "version_to": "%s",\n' "$(json_escape "$VERSION_TO")"
         printf '  "backup_dir": "%s",\n' "$(json_escape "$BACKUP_DIR")"
+        printf '  "db_name_before": "%s",\n' "$(json_escape "$DSN_NAME")"
+        printf '  "db_name_after": "%s",\n' "$(json_escape "$DSN_NAME_AFTER")"
         printf '  "db_schema_before": "%s",\n' "$(json_escape "$PRE_SCHEMA_VERSION")"
         printf '  "db_schema_after": "%s",\n' "$(json_escape "$POST_SCHEMA_VERSION")"
         printf '  "db_restore": "%s",\n' "$(json_escape "$(db_restore_label)")"
@@ -370,7 +407,8 @@ load_env_file() {
 }
 
 # psql_q <dsn> <sql>：单值查询（unaligned tuples），失败返回非 0。
-# 口令在 argv 里（与既有 pg_dump 调用同源）；输出与日志不回显 DSN。
+# 传进来的 DSN 必须是 prepare_pgpass 之后的**无口令**形态；连接口令走
+# PGPASSFILE（argv 里没有秘密）。输出与日志不回显 DSN。
 psql_q() {
     psql "$1" -X -q -A -t -v ON_ERROR_STOP=1 -c "$2" 2>/dev/null
 }
@@ -403,6 +441,220 @@ version_of() {
     out="$(printf '%s\n' "$out" | sed -n 's/^version: *//p' | head -n1)"
     [ -n "$out" ] || { printf 'unknown'; return 0; }
     printf '%s' "$out" | tr -cd 'A-Za-z0-9._+-'
+}
+
+# ---- DSN 与口令隔离 --------------------------------------------------------
+# 任何子进程（psql/pg_dump/pg_restore）的 argv 都不得含口令：
+# 口令经 0600 的 PGPASSFILE 交给 libpq（与 cmd/cli/backup.go 同口径），
+# argv 只留「去掉口令的 DSN」。解析不了就失败关闭——绝不把口令塞回 argv。
+
+# urldecode <百分号编码串>：按字节还原 %XX（先转义反斜杠，避免 %b 误读）。
+urldecode() {
+    local s
+    s="$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/%\([0-9A-Fa-f][0-9A-Fa-f]\)/\\x\1/g')" \
+        || return 1
+    printf '%b' "$s"
+}
+
+# dsn_kw_fields <conninfo>：按 libpq conninfo 词法切进全局数组
+# DSN_KW_FIELDS，每项保留原文 `key=value`（值含引号与转义原样保留）。
+# 规则：= 两侧空白可选；单引号内的空白与 = 不切；反斜杠转义下一字符；
+# 引号内相邻两个单引号表示一个字面单引号。非键值片段原样交出，调用方判失败。
+dsn_kw_fields() {
+    local s="$1" n=${#1} i=0 key val start c
+    DSN_KW_FIELDS=()
+    while [ "$i" -lt "$n" ]; do
+        while [ "$i" -lt "$n" ]; do
+            case "${s:i:1}" in ' '|$'\t'|$'\n'|$'\r') i=$((i + 1)) ;; *) break ;; esac
+        done
+        [ "$i" -lt "$n" ] || break
+        key=""
+        while [ "$i" -lt "$n" ]; do
+            c="${s:i:1}"
+            case "$c" in '='|' '|$'\t'|$'\n'|$'\r') break ;; esac
+            key="$key$c"
+            i=$((i + 1))
+        done
+        while [ "$i" -lt "$n" ]; do
+            case "${s:i:1}" in ' '|$'\t'|$'\n'|$'\r') i=$((i + 1)) ;; *) break ;; esac
+        done
+        if [ "$i" -ge "$n" ] || [ "${s:i:1}" != "=" ]; then
+            DSN_KW_FIELDS+=("$key")
+            continue
+        fi
+        i=$((i + 1))
+        while [ "$i" -lt "$n" ]; do
+            case "${s:i:1}" in ' '|$'\t'|$'\n'|$'\r') i=$((i + 1)) ;; *) break ;; esac
+        done
+        start=$i
+        if [ "$i" -lt "$n" ] && [ "${s:i:1}" = "'" ]; then
+            i=$((i + 1))
+            while [ "$i" -lt "$n" ]; do
+                c="${s:i:1}"
+                if [ "$c" = "\\" ]; then
+                    i=$((i + 2))
+                    continue
+                fi
+                if [ "$c" = "'" ]; then
+                    if [ $((i + 1)) -lt "$n" ] && [ "${s:i+1:1}" = "'" ]; then
+                        i=$((i + 2))
+                        continue
+                    fi
+                    i=$((i + 1))
+                    break
+                fi
+                i=$((i + 1))
+            done
+        else
+            while [ "$i" -lt "$n" ]; do
+                case "${s:i:1}" in ' '|$'\t'|$'\n'|$'\r') break ;; esac
+                i=$((i + 1))
+            done
+        fi
+        val="${s:start:i-start}"
+        DSN_KW_FIELDS+=("$key=$val")
+    done
+}
+
+# dsn_kw_unquote <原始值>：去两端单引号并还原 libpq 转义（\x 与 ''）。
+dsn_kw_unquote() {
+    local v="$1" out="" i=0 n
+    case "$v" in
+        \'*\') v="${v:1:${#v}-2}" ;;
+        *) printf '%s' "$v"; return 0 ;;
+    esac
+    n=${#v}
+    while [ "$i" -lt "$n" ]; do
+        if [ "${v:i:1}" = "\\" ] && [ $((i + 1)) -lt "$n" ]; then
+            out="$out${v:i+1:1}"
+            i=$((i + 2))
+            continue
+        fi
+        if [ "${v:i:1}" = "'" ] && [ $((i + 1)) -lt "$n" ] && [ "${v:i+1:1}" = "'" ]; then
+            out="$out'"
+            i=$((i + 2))
+            continue
+        fi
+        out="$out${v:i:1}"
+        i=$((i + 1))
+    done
+    printf '%s' "$out"
+}
+
+# dsn_split2 <dsn>：把 DSN 拆成「去口令的 DSN」与「口令」两行输出。
+# 第 1 行＝argv 安全形态（口令已摘除），第 2 行＝口令原文（可能为空）。
+# 用两行协议而不是全局变量：本函数总在 $( ) 子 shell 里跑，全局变量传不出来。
+# 无口令时原样输出 DSN + 空行。解析失败返回 1（调用方失败关闭）。
+dsn_split2() {
+    local dsn="$1" prefix rest authority hostpart userpart user pass tail raw key
+    case "$dsn" in
+        postgres://*|postgresql://*)
+            prefix="${dsn%%://*}"
+            rest="${dsn#*://}"
+            case "$rest" in
+                *@*) ;;
+                *)
+                    printf '%s\n' "$dsn"
+                    return 0
+                    ;;
+            esac
+            # authority＝userinfo@host[:port]（到第一个 / 为止）；
+            # 路径与 query 单独取，不能混进 hostpart。
+            authority="${rest%%/*}"
+            hostpart="${authority##*@}"
+            userpart="${authority%@*}"
+            case "$rest" in
+                */*) tail="/${rest#*/}" ;;
+                *) tail="" ;;
+            esac
+            user="$userpart"
+            pass=""
+            case "$userpart" in
+                *:*) user="${userpart%%:*}"; pass="${userpart#*:}" ;;
+            esac
+            if [ -n "$pass" ]; then
+                pass="$(urldecode "$pass")" || return 1
+            fi
+            printf '%s://%s@%s%s\n%s' "$prefix" "$user" "$hostpart" "$tail" "$pass"
+            return 0
+            ;;
+    esac
+    dsn_kw_fields "$dsn"
+    local -a keep_fields=()
+    for raw in "${DSN_KW_FIELDS[@]}"; do
+        case "$raw" in
+            *=*) ;;
+            *) return 1 ;;
+        esac
+        key="${raw%%=*}"
+        if [ "$key" = "password" ]; then
+            pass="$(dsn_kw_unquote "${raw#*=}")" || return 1
+            continue
+        fi
+        keep_fields+=("$raw")
+    done
+    [ "${#keep_fields[@]}" -gt 0 ] || return 1
+    printf '%s\n%s' "${keep_fields[*]}" "${pass:-}"
+}
+
+# dsn_dbname <dsn>：取库名（URI 路径段或 dbname= 值）。取不到返回空。
+dsn_dbname() {
+    local dsn="$1" rest pathq raw
+    case "$dsn" in
+        postgres://*|postgresql://*)
+            rest="${dsn#*://}"
+            case "$rest" in
+                */*) pathq="${rest#*/}" ;;
+                *) return 0 ;;
+            esac
+            printf '%s' "${pathq%%\?*}"
+            return 0
+            ;;
+    esac
+    dsn_kw_fields "$dsn"
+    for raw in "${DSN_KW_FIELDS[@]}"; do
+        case "$raw" in
+            dbname=*) dsn_kw_unquote "${raw#*=}"; return 0 ;;
+        esac
+    done
+    return 0
+}
+
+# pgpass_field <值>：.pgpass 字段转义（反斜杠与冒号前加反斜杠）。
+pgpass_field() {
+    case "$1" in
+        "") printf '*' ;;
+        *) printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/:/\\:/g' ;;
+    esac
+}
+
+# prepare_pgpass：把口令从 DSN 里摘出来写进 0600 的 PGPASSFILE，
+# 之后所有 psql/pg_dump/pg_restore 的 argv 只带无口令 DSN。
+# 口令为空时不动 DSN（没有可泄漏的东西）。失败关闭：解析不了就报错返回 1。
+prepare_pgpass() {
+    local split
+    [ -n "$DSN_FULL" ] || return 0
+    split="$(dsn_split2 "$DSN_FULL")" || {
+        echo "update: cannot separate the password from YIBAN_DATABASE_URL without putting it in argv; use a postgres:// URI or a key=value DSN with password=..." >&2
+        return 1
+    }
+    DSN="${split%%$'\n'*}"
+    DSN_PASSWORD="${split#*$'\n'}"
+    [ -n "$DSN_PASSWORD" ] || return 0
+    case "$DSN_PASSWORD" in
+        *$'\n'*|*$'\r'*)
+            echo "update: the database password contains a line break; refusing to write a pgpass file" >&2
+            return 1
+            ;;
+    esac
+    PGPASS_FILE="$STAGE/pgpass"
+    if ! ( umask 077; printf '*:*:*:*:%s\n' "$(pgpass_field "$DSN_PASSWORD")" > "$PGPASS_FILE" ); then
+        echo "update: cannot write the pgpass file: $PGPASS_FILE" >&2
+        return 1
+    fi
+    chmod 600 "$PGPASS_FILE" || return 1
+    export PGPASSFILE="$PGPASS_FILE"
+    return 0
 }
 
 # dsn_with_dbname <dsn> <newdb>：把 DSN 的库名换成 newdb。
@@ -517,7 +769,9 @@ run_selfcheck_gate() {
         echo "update: selfcheck FAILED — no yiban-cli available (install.sh installs it)" >&2
         return 2
     }
-    "$cli" selfcheck --json >"$report" 2>"$report.err" || rc=$?
+    # --backup-dir 显式给：判权对象必须是本脚本真正写入的目录，
+    # 不能吃 U1 的历史缺省（老机上那是 root 0700 的 pre-migrate，会误红）。
+    "$cli" selfcheck --json --backup-dir "$BACKUP_ROOT" >"$report" 2>"$report.err" || rc=$?
     if ! grep -q '"schema_version": 1' "$report" 2>/dev/null; then
         if [ -s "$report.err" ]; then
             sed 's/^/update: selfcheck: /' "$report.err" >&2
@@ -547,6 +801,20 @@ prepare_state_dir() {
     chmod 700 "$STATE_DIR" || return 1
     if [ -z "$ROOT" ]; then
         chown root:root "$STATE_DIR" || return 1
+    fi
+    # 备份根对**服务用户**可写：U1 的 fs.backup_dir 按服务用户判权
+    # （缺目录时还按最近的已存在祖先判），root 专属目录会把它判成 FAIL 并
+    # 挡住所有升级。目录 0700 属服务用户；每轮的子目录与文件仍是 root
+    # 0700/0600，服务用户读不到密文、也删不掉非空子目录。
+    # 符号链接一律拒绝：否则 root 会顺着被改写的路径写备份。
+    if [ -L "$BACKUP_ROOT" ]; then
+        echo "update: refusing symlinked backup root: $BACKUP_ROOT" >&2
+        return 1
+    fi
+    [ -d "$BACKUP_ROOT" ] || mkdir -p "$BACKUP_ROOT" || return 1
+    chmod 700 "$BACKUP_ROOT" || return 1
+    if [ -z "$ROOT" ]; then
+        chown "$SERVICE_USER:$SERVICE_USER" "$BACKUP_ROOT" || return 1
     fi
     ( umask 077; : >> "$LOG_FILE" ) || return 1
     chmod 600 "$LOG_FILE" || return 1
@@ -579,21 +847,11 @@ do_backup() {
     done
     UPDATE_ID="$(basename -- "$BACKUP_DIR")"
 
-    if [ -L "$BACKUP_ROOT" ]; then
-        echo "update: backup FAILED — backup root is a symlink: $BACKUP_ROOT" >&2
+    # 备份根由 prepare_state_dir 建好（0700、属服务用户，U1 判据要的）。
+    # 这里只复核形状：符号链接或被换掉就直接失败关闭。
+    if [ -L "$BACKUP_ROOT" ] || [ ! -d "$BACKUP_ROOT" ]; then
+        echo "update: backup FAILED — backup root is not a directory: $BACKUP_ROOT" >&2
         return 1
-    fi
-    if ! mkdir -p "$BACKUP_ROOT"; then
-        echo "update: backup FAILED — cannot create backup root: $BACKUP_ROOT" >&2
-        return 1
-    fi
-    if [ -L "$BACKUP_ROOT" ]; then
-        echo "update: backup FAILED — backup root turned into a symlink: $BACKUP_ROOT" >&2
-        return 1
-    fi
-    chmod 700 "$BACKUP_ROOT" || return 1
-    if [ -z "$ROOT" ]; then
-        chown root:root "$BACKUP_ROOT" || return 1
     fi
     if ! mkdir "$BACKUP_DIR"; then
         echo "update: backup FAILED — backup directory already exists: $BACKUP_DIR" >&2
@@ -619,10 +877,21 @@ do_backup() {
     PRE_TABLE_COUNT="$(table_count_of "$DSN" || true)"
     (
         umask 077
-        printf 'goose_version=%s\npublic_base_tables=%s\n' \
-            "$PRE_SCHEMA_VERSION" "$PRE_TABLE_COUNT" > "$BACKUP_DIR/db-schema.txt"
+        printf 'database=%s\ngoose_version=%s\npublic_base_tables=%s\n' \
+            "$DSN_NAME" "$PRE_SCHEMA_VERSION" "$PRE_TABLE_COUNT" \
+            > "$BACKUP_DIR/db-schema.txt"
     ) || return 1
     files+=("db-schema.txt")
+
+    # .env 快照：数据库回滚会改写 YIBAN_DATABASE_URL，原文必须留一份
+    # （0600，与其余备份文件同权限），供人工对照/回退。里面有密钥与口令，
+    # 只进 root 专属目录，不进日志。
+    if [ -r "$ENV_FILE" ]; then
+        ( umask 077; install -m 0600 "$ENV_FILE" "$BACKUP_DIR/env.backup" ) || return 1
+        files+=("env.backup")
+    else
+        warn "cannot read $ENV_FILE; env snapshot SKIPPED"
+    fi
 
     # pg_dump -Fc：可 pg_restore 直接恢复到新库；umask 077 让转储从创建
     # 那一刻就是 0600（含凭据密文与审计行）。
@@ -655,7 +924,9 @@ do_backup() {
             echo "update: backup FAILED — no yiban-cli to produce the GPG archive" >&2
             return 1
         fi
-        backup_cmd=("$cli_for_backup" backup --dsn "$DSN" --out "$BACKUP_DIR/db.sql.gpg")
+        # DSN 走进程环境（YIBAN_DATABASE_URL），不进 argv：CLI 内部用自己的
+        # PGPASSFILE 交给 pg_dump。
+        backup_cmd=("$cli_for_backup" backup --out "$BACKUP_DIR/db.sql.gpg")
         if [ -n "$BACKUP_PASS_FILE" ]; then
             backup_cmd+=(--passphrase-file "$BACKUP_PASS_FILE")
         fi
@@ -774,7 +1045,7 @@ db_changed() {
 # 只在停服后、备份通过校验时调用。原库不删不改（取证）。
 # 成功返回 0 并设置 DSN/DB_RESTORED；失败返回非 0（调用方打印 manual action）。
 restore_database() {
-    local dump="$BACKUP_DIR/db.dump" target new_dsn got err_file filtered
+    local dump="$BACKUP_DIR/db.dump" target new_dsn new_dsn_argv new_split got err_file filtered
     local want_ver="$PRE_SCHEMA_VERSION" want_tables="$PRE_TABLE_COUNT"
 
     [ "$DB_BACKUP_VERIFIED" -eq 1 ] || return 1
@@ -788,6 +1059,9 @@ restore_database() {
     fi
 
     target="yiban_restore_$(date -u +%Y%m%d%H%M%S)"
+    # 建库之前就记下目标名：CREATE DATABASE 成功而后续校验失败时，
+    # 状态文件与 manual action 必须给出真名（否则人工会撞名或找不到库）。
+    DB_RESTORE_TARGET="$target"
     err_file="$STATE_DIR/db-restore.log"
     filtered="$STATE_DIR/db-restore.filtered"
 
@@ -798,13 +1072,19 @@ restore_database() {
         return 1
     fi
 
-    new_dsn="$(dsn_with_dbname "$DSN" "$target")" || {
+    # 含口令原文只用来写回 .env；argv 用去口令形态 + PGPASSFILE。
+    new_dsn="$(dsn_with_dbname "$DSN_FULL" "$target")" || {
         echo "update: db restore: cannot rewrite the DSN to point at $target" >&2
         return 1
     }
+    new_split="$(dsn_split2 "$new_dsn")" || {
+        echo "update: db restore: cannot separate the password from the new DSN" >&2
+        return 1
+    }
+    new_dsn_argv="${new_split%%$'\n'*}"
     # 关键守卫：restore 之前先证明新 DSN 真的连到新库。
     # 解析出错时 new_dsn 可能仍指向原库，直接 pg_restore 会覆盖生产库。
-    got="$(psql_q "$new_dsn" "SELECT current_database()" || true)"
+    got="$(psql_q "$new_dsn_argv" "SELECT current_database()" || true)"
     if [ "$got" != "$target" ]; then
         echo "update: db restore: new DSN resolves to '$got' instead of '$target'; refusing to restore" >&2
         return 1
@@ -812,7 +1092,7 @@ restore_database() {
 
     # pg_restore 到空库。public schema 已存在是已知良性错误（转储自带
     # CREATE SCHEMA public）：过滤它，其余任何错误都算恢复失败。
-    ( umask 077; pg_restore --no-owner --no-privileges --dbname="$new_dsn" "$dump" \
+    ( umask 077; pg_restore --no-owner --no-privileges --dbname="$new_dsn_argv" "$dump" \
         >/dev/null 2>"$err_file" ) || true
     if [ -s "$err_file" ]; then
         grep -v -e 'schema "public" already exists' \
@@ -828,12 +1108,12 @@ restore_database() {
     fi
 
     # 对账：goose 版本与 public 基表数必须与备份基线一致。
-    got="$(schema_version_of "$new_dsn" || true)"
+    got="$(schema_version_of "$new_dsn_argv" || true)"
     if [ -n "$want_ver" ] && [ "$got" != "$want_ver" ]; then
         echo "update: db restore: goose version $got does not match backup baseline $want_ver" >&2
         return 1
     fi
-    got="$(table_count_of "$new_dsn" || true)"
+    got="$(table_count_of "$new_dsn_argv" || true)"
     if [ -n "$want_tables" ] && [ "$got" != "$want_tables" ]; then
         echo "update: db restore: public base tables $got do not match backup baseline $want_tables" >&2
         return 1
@@ -844,7 +1124,9 @@ restore_database() {
         echo "update: db restore: cannot rewrite YIBAN_DATABASE_URL in $ENV_FILE" >&2
         return 1
     fi
-    DSN="$new_dsn"
+    DSN_FULL="$new_dsn"
+    DSN="$new_dsn_argv"
+    DSN_NAME_AFTER="$target"
     DB_RESTORED=1
     DB_RESTORE_TARGET="$target"
     export YIBAN_DATABASE_URL="$new_dsn"
@@ -862,11 +1144,17 @@ db_restore_wanted() {
 
 # ---- 回滚 ------------------------------------------------------------------
 
-# rollback_ui：把 UI 换回 .bak（或撤掉首次安装的指针）。
-# 只在真正动过 UI 之后调用（UI_OLD_MOVED=1），否则会删掉旧页面。
+# rollback_ui：撤掉本轮装上的页面，只留旧件。
+# 动过 UI 的两种形态都要回滚：
+#   - 换过旧目录（UI_OLD_MOVED=1）：删新目录、把 ui.bak 换回；
+#   - 首次安装（UI_OLD_MOVED=0、UI_ACTIVATED=1）：删新目录、去掉本轮写的
+#     YIBAN_UI_DIR（旧二进制恢复「无页面」形态）。
+# 两者都没发生过（UI 没动过）直接返回：不能按变量盲删真实目录。
 rollback_ui() {
-    [ "$UI_OLD_MOVED" -eq 1 ] || return 0
     [ -n "$UI_DIR" ] || return 0
+    if [ "$UI_OLD_MOVED" -eq 0 ] && [ "$UI_ACTIVATED" -eq 0 ]; then
+        return 0
+    fi
     case "$UI_DEST" in
         */var/lib/yiban/ui) rm -rf -- "$UI_DEST" ;;
         *) echo "update: refusing to remove unexpected ui path: $UI_DEST" >&2; return 1 ;;
@@ -874,11 +1162,13 @@ rollback_ui() {
     if [ -e "$UI_BAK" ]; then
         mv -T "$UI_BAK" "$UI_DEST" || return 1
     else
-        # 首次装页面就回滚：撤掉指针，旧二进制恢复「无页面」形态。
+        # 首次装页面就回滚：没有旧页面可留，撤掉本轮写的指针。
         if ! drop_ui_env; then
             echo "update: cannot clear YIBAN_UI_DIR; manual fix needed" >&2
         fi
     fi
+    UI_OLD_MOVED=0
+    UI_ACTIVATED=0
     return 0
 }
 
@@ -1048,6 +1338,7 @@ chmod 0700 "$STAGE" || {
 # 栈外退出（set -e、信号、意外早退）不得让状态文件长期停在 running。
 cleanup() {
     local rc=$?
+    rm -f -- "${PGPASS_FILE:-}" 2>/dev/null || true
     rm -rf -- "$STAGE" 2>/dev/null || true
     rm -f -- "$SERVER_NEW" 2>/dev/null || true
     rm -f -- "$CLI_DEST.new" 2>/dev/null || true
@@ -1213,7 +1504,9 @@ fi
 
 # ---- 自检门（U2）：任何停服/写安装位之前 -----------------------------------
 load_env_file "$ENV_FILE"
-DSN="${YIBAN_DATABASE_URL:-}"
+DSN_FULL="${YIBAN_DATABASE_URL:-}"
+DSN="$DSN_FULL"
+DSN_NAME="$(dsn_dbname "$DSN_FULL" || true)"
 VERSION_FROM="$(version_of "$SERVER_DEST")"
 VERSION_TO="$(version_of "$SNAP_SERVER")"
 
@@ -1233,6 +1526,13 @@ note "selfcheck: ok (version $VERSION_FROM -> $VERSION_TO)"
 if ! prepare_state_dir; then
     echo "update: cannot prepare the update state directory: $STATE_DIR" >&2
     exit 2
+fi
+# 口令从 DSN 里摘出来写进 0600 PGPASSFILE：此后所有 psql/pg_dump 的
+# argv 都不含口令。解析不了就失败关闭（exit 2，什么都没动）。
+if ! prepare_pgpass; then
+    echo "update: preflight FAILED — cannot keep the database password out of argv" >&2
+    log_event "preflight failed: DSN password isolation"
+    finish "aborted" 2
 fi
 install -m 0600 "$SELFCHECK_REPORT" "$STATE_DIR/selfcheck-latest.json" || {
     echo "update: cannot persist the selfcheck report" >&2
@@ -1318,7 +1618,11 @@ fi
 # ---- 停服 → 迁移 → 换件 → 起服务 ------------------------------------------
 PHASE="stop"
 echo "update: stopping $UNIT"
-"$SYSTEMCTL" stop "$UNIT"
+if ! "$SYSTEMCTL" stop "$UNIT"; then
+    echo "update: cannot stop $UNIT; aborting before any file swap" >&2
+    log_event "stop failed; aborted"
+    finish "aborted" 2
+fi
 log_event "service stopped"
 
 PHASE="migrate"
@@ -1381,6 +1685,7 @@ if [ -n "$UI_DIR" ]; then
         echo "update: cannot activate the new ui" >&2
         fail_after_stop "cannot activate the new ui"
     fi
+    UI_ACTIVATED=1
     # 目录就位后才写指针：早退路径不会留下悬空 YIBAN_UI_DIR。
     if ! write_ui_env; then
         echo "update: cannot write $ENV_FILE" >&2
@@ -1391,7 +1696,10 @@ fi
 
 PHASE="health"
 echo "update: starting $UNIT"
-"$SYSTEMCTL" start "$UNIT"
+if ! "$SYSTEMCTL" start "$UNIT"; then
+    echo "update: systemctl start FAILED after the swap; rolling back" >&2
+    fail_after_stop "start failed after swap"
+fi
 
 if ! probe; then
     echo "update: healthz failed after swap; rolling back to $BAK" >&2

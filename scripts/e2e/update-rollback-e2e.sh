@@ -13,8 +13,9 @@
 #   R7 健康失败+回库    → exit 1，二进制/UI 换回，数据库恢复到新库
 #                         yiban_restore_<ts> 并切 .env 的 DSN，服务活着，
 #                         新库 schema = 升级前，原库保留（schema 已前进）；
-#   R8 正常升级         → exit 0，.bak 保存升级前旧件，schema +2；
-#   R9 恢复失败         → exit 2，打印 manual action，服务停住（库状态未知）。
+#   R8 正常升级         → exit 0，.bak 保存升级前旧件，schema +2，首次装页面生效；
+#   R9 健康失败+UI 回滚 → exit 1，旧页面换回、指针只剩一行、库不动（migrate 空转）；
+#   R10 恢复失败        → exit 2，打印 manual action（含真实目标库名），服务停住。
 #
 # 为什么容器内是真跑（AGENTS §32）：
 #   被测性质：update.sh 的自检门、统一备份（pg_dump -Fc + pg_restore --list）、
@@ -43,13 +44,14 @@
 #
 # 步骤（宿主驱动）：
 #   H1 前置与负向守卫      H2 OS 镜像（systemd + openssl）
-#   H3 PostgreSQL 18 与应用角色（含 CREATEDB）   H4 构建五组二进制
+#   H3 PostgreSQL 18 与应用角色（含 CREATEDB）   H4 构建六组二进制
 #   H5 演练容器与物料就位   H6 容器内演练（run 模式）
 # 步骤（容器内 run）：
 #   R1 基线安装（install.sh + v1）与自检门自证
 #   R2 签名错  R3 自检 FAIL  R4 备份失败  R5 无 CREATEDB
 #   R6 迁移失败（--no-restore-db）  R7 健康失败 + 数据库回滚
-#   R8 正常升级  R9 数据库恢复失败（manual action）
+#   R8 正常升级（含 --ui-dir）  R9 健康失败 + UI 回滚
+#   R10 数据库恢复失败（manual action）
 #
 # 失败口径：退出码 1，打印 failed step: <ID> <标题>；每步日志在 --log-dir。
 # 退出码 2 = 用法、环境错误，或守卫拒绝。
@@ -58,15 +60,19 @@
 #   真签名三件套路径由 deploy-baremetal-e2e B4b 覆盖。
 #
 # 坏件注入（编译期改源码副本，不改仓库）：
-#   v2 = 源码 + 00021（CREATE TABLE，R6 的迁移靶子）；
+#   v2 = 源码 + MIG1（CREATE TABLE，R6 的迁移靶子）；
 #   v3 = v2 + main() 起手 panic（R7 的健康靶子；迁移会真的前进一档）；
-#   v4 = 源码 + 00021 + 00022（R8 的正常升级件）；
-#   v5 = v4 + 00023 + panic（R9：迁移前进、健康失败、恢复失败）。
+#   v4 = 源码 + MIG1 + MIG2（R8 的正常升级件）；
+#   v5 = v4 + MIG3 + panic（R10：迁移前进、健康失败、恢复失败）；
+#   v6 = v4 + panic（R9：迁移集与 v4 相同，migrate 空转 → 只测 UI/二进制回滚）。
+#   MIG* 从仓库实测最大迁移号 +1 起，不写死。
 #   R6 用 psql 对应用角色 REVOKE CREATE ON SCHEMA public 让真 goose 撞权限错误；
-#   R9 用只放行 --list 的 pg_restore 包装器让「校验通过、恢复失败」。
+#   R4 用「一跑就失败」的 pg_dump 桩让备份步失败；
+#   R10 用只放行 --list 的 pg_restore 包装器让「校验通过、恢复失败」。
 #
-# 发布门状态：发布前手跑项（MANUAL）。需要 docker --privileged 与
-#   host cgroup；CI 托管 runner 可用性未实测，故不进自动轨。
+# 发布门状态：本脚本在 CI 的 update-rollback-e2e job 里自动跑（docker
+#   --privileged；跑不起来时该 job 显性打印 SKIP，不当绿）。release-check
+#   项 7 仍是 POINTER；演练本身打印 MANUAL 行登记等价性边界。
 #
 # 隔离：独立容器名/网络/卷（前缀 ROLLBACK_E2E_PREFIX，默认
 #   yiban-e2e-rollback），不碰本机既有容器。
@@ -79,7 +85,7 @@ REPO="$(cd "$SELF_DIR/../.." && pwd)"
 # shellcheck source=lib/deploy-e2e.sh
 . "$SELF_DIR/lib/deploy-e2e.sh"
 
-usage() { sed -n '2,73p' "$SELF"; }
+usage() { sed -n '2,79p' "$SELF"; }
 
 die_usage() {
     echo "update-rollback-e2e: $1" >&2
@@ -183,11 +189,15 @@ host_mode() {
     }
     trap cleanup EXIT
 
+    # wait_pg <秒>：等到「能真正连上并跑查询」为止。
+    # 只看 pg_isready 会撞上 postgres 镜像 entrypoint 的 initdb 临时实例：
+    # 它先起一个临时 server（isready 通过），随后关掉再起正式 server，
+    # 这中间跑 SQL 会得到 "the database system is shutting down"（实测偶发）。
     wait_pg() {
         local limit="$1"
         local end=$((SECONDS + limit))
         while [ "$SECONDS" -lt "$end" ]; do
-            if docker exec "$PG" pg_isready -U postgres -d yiban >/dev/null 2>&1; then
+            if docker exec "$PG" psql -U postgres -d yiban -tAc 'select 1' >/dev/null 2>&1; then
                 return 0
             fi
             sleep 2
@@ -311,7 +321,7 @@ EOF
     e2e_ok "PostgreSQL 18 就绪；应用角色 yiban（非属主）有 public CREATE 与 CREATEDB"
 
     # ---- H4 构建四组二进制 --------------------------------------------------
-    e2e_step "H4" "构建五组二进制"
+    e2e_step "H4" "构建六组二进制"
     BIN_OUT="$LOG_DIR/bin"
     rm -rf "$BIN_OUT"
     mkdir -p "$BIN_OUT"
@@ -325,10 +335,12 @@ EOF
     # v2 = 仓库源码 + MIG1（CREATE TABLE，R6 的迁移靶子）。
     # v3 = v2 + main() 起手 panic（R7 的健康靶子；迁移真的前进一档）。
     # v4 = 仓库源码 + MIG1 + MIG2（R8 的正常升级件）。
-    # v5 = v4 + MIG3 + panic（R9：迁移前进、健康失败、恢复失败）。
+    # v5 = v4 + MIG3 + panic（R10：迁移前进、健康失败、恢复失败）。
+    # v6 = v4 + panic（R9：迁移集与 v4 相同 → migrate 空转，只测换件后
+    #      健康失败时的二进制/UI 回滚，不混测数据库回滚）。
     # 同一 --log-dir 复跑时旧树必须先清：cp -a 对已存在目标会把源嵌进
     # <目标>/server/，挂载的仍是旧源码。
-    rm -rf "$LOG_DIR/srv-v2" "$LOG_DIR/srv-v3" "$LOG_DIR/srv-v4" "$LOG_DIR/srv-v5"
+    rm -rf "$LOG_DIR/srv-v2" "$LOG_DIR/srv-v3" "$LOG_DIR/srv-v4" "$LOG_DIR/srv-v5" "$LOG_DIR/srv-v6"
     cp -a "$REPO/server" "$LOG_DIR/srv-v2"
     cat > "$LOG_DIR/srv-v2/migrations/postgres/${MIG1}_e2e_rollback_probe.sql" <<'EOF'
 -- +goose Up
@@ -371,9 +383,14 @@ EOF
         "$LOG_DIR/srv-v5/cmd/server/main.go"
     grep -q 'injected unhealthy build for restore failure' "$LOG_DIR/srv-v5/cmd/server/main.go" \
         || e2e_die "v5 源码注入失败（main.go 形状与预期不符）"
+    cp -a "$LOG_DIR/srv-v4" "$LOG_DIR/srv-v6"
+    sed -i 's|func main() {$|func main() {\n\tpanic("e2e-rollback-e2e: injected unhealthy build for ui rollback")|' \
+        "$LOG_DIR/srv-v6/cmd/server/main.go"
+    grep -q 'injected unhealthy build for ui rollback' "$LOG_DIR/srv-v6/cmd/server/main.go" \
+        || e2e_die "v6 源码注入失败（main.go 形状与预期不符）"
     # 嵌套自检：拷贝后的 scratch 树顶层必须是源码根。
     # 挂载点对着顶层；嵌套一层时构建的「新版」就是旧源码（判据静默失效）。
-    for d in srv-v2 srv-v3 srv-v4 srv-v5; do
+    for d in srv-v2 srv-v3 srv-v4 srv-v5 srv-v6; do
         [ -f "$LOG_DIR/$d/go.mod" ] \
             || e2e_die "$d 顶层缺 go.mod（源码被嵌套拷贝，挂载的不是顶层源码）"
         [ ! -d "$LOG_DIR/$d/server" ] \
@@ -393,7 +410,7 @@ export CGO_ENABLED=0 GOCACHE=/tmp/gocache GOPATH=/tmp/gopath
 if [ -n "${ROLLBACK_E2E_GOPROXY:-}" ]; then
     export GOPROXY="$ROLLBACK_E2E_GOPROXY"
 fi
-for v in v1 v2 v3 v4 v5; do
+for v in v1 v2 v3 v4 v5 v6; do
     cd "/src/$v"
     go build -trimpath -ldflags="-s -w" -o "/out/yiban-server-$v" ./cmd/server
     go build -trimpath -ldflags="-s -w" -o "/out/yiban-cli-$v" ./cmd/cli
@@ -406,6 +423,7 @@ EOF
         -v "$LOG_DIR/srv-v3:/src/v3" \
         -v "$LOG_DIR/srv-v4:/src/v4" \
         -v "$LOG_DIR/srv-v5:/src/v5" \
+        -v "$LOG_DIR/srv-v6:/src/v6" \
         -v "$BIN_OUT:/out" \
         -v "$LOG_DIR/build-all.sh:/build-all.sh:ro" \
         -v "$GO_CACHE_VOL:/tmp/gocache" \
@@ -416,7 +434,7 @@ EOF
     fi
     for b in yiban-server-v1 yiban-cli-v1 yiban-server-v2 yiban-cli-v2 \
              yiban-server-v3 yiban-cli-v3 yiban-server-v4 yiban-cli-v4 \
-             yiban-server-v5 yiban-cli-v5; do
+             yiban-server-v5 yiban-cli-v5 yiban-server-v6 yiban-cli-v6; do
         [ -x "$BIN_OUT/$b" ] || e2e_die "$b 未产出或不可执行"
     done
     SHA_V1="$(e2e_sha256 "$BIN_OUT/yiban-server-v1")"
@@ -424,10 +442,11 @@ EOF
     SHA_V3="$(e2e_sha256 "$BIN_OUT/yiban-server-v3")"
     SHA_V4="$(e2e_sha256 "$BIN_OUT/yiban-server-v4")"
     SHA_V5="$(e2e_sha256 "$BIN_OUT/yiban-server-v5")"
-    # 五组两两不同：排序去重后的行数必须等于 5。
-    UNIQ_SHAS="$(printf '%s\n' "$SHA_V1" "$SHA_V2" "$SHA_V3" "$SHA_V4" "$SHA_V5" | sort -u | wc -l | tr -d '[:space:]')"
-    [ "$UNIQ_SHAS" -eq 5 ] || e2e_die "五组 server 二进制 sha256 有重复（期望两两不同，实得 $UNIQ_SHAS）"
-    e2e_ok "v1..v5 各产出 server+cli；sha256 两两不同"
+    SHA_V6="$(e2e_sha256 "$BIN_OUT/yiban-server-v6")"
+    # 六组两两不同：排序去重后的行数必须等于 6。
+    UNIQ_SHAS="$(printf '%s\n' "$SHA_V1" "$SHA_V2" "$SHA_V3" "$SHA_V4" "$SHA_V5" "$SHA_V6" | sort -u | wc -l | tr -d '[:space:]')"
+    [ "$UNIQ_SHAS" -eq 6 ] || e2e_die "六组 server 二进制 sha256 有重复（期望两两不同，实得 $UNIQ_SHAS）"
+    e2e_ok "v1..v6 各产出 server+cli；sha256 两两不同"
 
     # ---- H5 演练容器与物料就位 ----------------------------------------------
     e2e_step "H5" "演练容器与物料就位"
@@ -462,7 +481,7 @@ EOF
         >>"$E2E_STEP_LOG" 2>&1 || e2e_die "复制演练共用件失败"
     for b in yiban-server-v1 yiban-cli-v1 yiban-server-v2 yiban-cli-v2 \
              yiban-server-v3 yiban-cli-v3 yiban-server-v4 yiban-cli-v4 \
-             yiban-server-v5 yiban-cli-v5; do
+             yiban-server-v5 yiban-cli-v5 yiban-server-v6 yiban-cli-v6; do
         docker cp "$BIN_OUT/$b" "$OS:/opt/e2e-dist/$b" >>"$E2E_STEP_LOG" 2>&1 || e2e_die "复制 $b 失败"
     done
     # R5/R6 的权限注入 SQL：psql 在容器内执行（走 H5 提取的 PG 客户端）。
@@ -514,18 +533,23 @@ EOF
     cat > "$LOG_DIR/wrapper-pg_dump.sh" <<EOF
 #!/bin/sh
 # E-2 演练：PG ${PG_MAJOR} 客户端运行于 /opt/pg18，带私有库目录。
+# argv 与 PGPASSFILE 落到 /var/log/yiban-e2e-pgargv.log：演练用它钉
+# 「DSN 口令不进 argv、连接口令走 pgpass」。
+printf 'pg_dump %s pgpass=%s\n' "\$*" "\${PGPASSFILE:-<unset>}" >> /var/log/yiban-e2e-pgargv.log 2>/dev/null || true
 exec env LD_LIBRARY_PATH=/opt/pg18/lib/x86_64-linux-gnu \
     /opt/pg18/usr/lib/postgresql/${PG_MAJOR}/bin/pg_dump "\$@"
 EOF
     cat > "$LOG_DIR/wrapper-pg_restore.sh" <<EOF
 #!/bin/sh
 # E-2 演练：PG ${PG_MAJOR} 客户端运行于 /opt/pg18，带私有库目录。
+printf 'pg_restore %s pgpass=%s\n' "\$*" "\${PGPASSFILE:-<unset>}" >> /var/log/yiban-e2e-pgargv.log 2>/dev/null || true
 exec env LD_LIBRARY_PATH=/opt/pg18/lib/x86_64-linux-gnu \
     /opt/pg18/usr/lib/postgresql/${PG_MAJOR}/bin/pg_restore "\$@"
 EOF
     cat > "$LOG_DIR/wrapper-psql.sh" <<EOF
 #!/bin/sh
 # E-2 演练：PG ${PG_MAJOR} 客户端运行于 /opt/pg18，带私有库目录。
+printf 'psql %s pgpass=%s\n' "\$*" "\${PGPASSFILE:-<unset>}" >> /var/log/yiban-e2e-pgargv.log 2>/dev/null || true
 exec env LD_LIBRARY_PATH=/opt/pg18/lib/x86_64-linux-gnu \
     /opt/pg18/usr/lib/postgresql/${PG_MAJOR}/bin/psql "\$@"
 EOF
@@ -560,7 +584,8 @@ EOF
     e2e_ok "容器内演练 rc=0"
 
     e2e_say ""
-    e2e_say "MANUAL（发布前手跑项）：本脚本不在自动轨（--privileged 未在托管 runner 实测）。"
+    e2e_say "CI：deploy-gate.yml 的 update-rollback-e2e job 自动跑「干跑契约 + 本演练 R1..R10」；"
+    e2e_say "环境起不来时该 job 显性 SKIP（写进 step summary，不算绿）。"
     e2e_say "等价性登记：真 systemd + 真 PostgreSQL 18 + 真 goose 迁移 + 真 update.sh 回滚；"
     e2e_say "不等价的一维是没有真实内核启动与硬件。"
     e2e_say "日志目录：$LOG_DIR（容器内演练明细在 container-run/）"
@@ -615,7 +640,9 @@ run_mode() {
     ENV_FILE="/etc/yiban/.env"
     STATE_DIR="/var/lib/yiban/updates"
     STATE_FILE="$STATE_DIR/update-state.json"
-    BACKUP_ROOT="$STATE_DIR/backups"
+    # 备份根与状态目录同级（不在其下）：U1 的 fs.backup_dir 按服务用户判权，
+    # 祖先必须是服务用户可写的 /var/lib/yiban。
+    BACKUP_ROOT="/var/lib/yiban/backups"
 
     # sha <文件>：容器内 sha256sum（coreutils 必有）。
     sha() { sha256sum "$1" | cut -d' ' -f1; }
@@ -625,8 +652,24 @@ run_mode() {
     current_app_dsn() {
         { grep -E '^YIBAN_DATABASE_URL=' "$ENV_FILE" || true; } | head -n 1 | cut -d= -f2-
     }
-    # psql_app <SQL>：应用角色对**当前库**执行单条 SQL。
-    psql_app() { psql "$(current_app_dsn)" -v ON_ERROR_STOP=1 -tAc "$1"; }
+    # 演练自己的 psql 也不把应用角色口令放进 argv：口令进 0600 PGPASSFILE，
+    # argv 用去掉口令的 DSN。否则「argv 无口令」的断言会被演练自己打红。
+    APP_PW_ONLY="${APP_DSN#*://}"
+    APP_PW_ONLY="${APP_PW_ONLY#*:}"
+    APP_PW_ONLY="${APP_PW_ONLY%%@*}"
+    ( umask 077; printf '*:*:*:*:%s\n' "$APP_PW_ONLY" > /opt/e2e/app.pgpass )
+    chmod 600 /opt/e2e/app.pgpass
+    export PGPASSFILE=/opt/e2e/app.pgpass
+    # psql_app <SQL>：应用角色对**当前库**执行单条 SQL（argv 无口令）。
+    psql_app() {
+        local dsn rest userpass after user
+        dsn="$(current_app_dsn)"
+        rest="${dsn#*://}"
+        userpass="${rest%%@*}"
+        after="${rest#*@}"
+        user="${userpass%%:*}"
+        psql "postgres://${user}@${after}" -v ON_ERROR_STOP=1 -tAc "$1"
+    }
     goose_version() {
         psql_app "select coalesce(max(version_id), 0) from goose_db_version where is_applied" \
             | tr -d '[:space:]'
@@ -680,7 +723,7 @@ run_mode() {
     done
     for b in yiban-server-v1 yiban-cli-v1 yiban-server-v2 yiban-cli-v2 \
              yiban-server-v3 yiban-cli-v3 yiban-server-v4 yiban-cli-v4 \
-             yiban-server-v5 yiban-cli-v5; do
+             yiban-server-v5 yiban-cli-v5 yiban-server-v6 yiban-cli-v6; do
         [ -x "$DIST/$b" ] || e2e_die "二进制缺失：$DIST/$b"
     done
     if ! psql_admin "select 1" >/dev/null 2>&1; then
@@ -720,7 +763,32 @@ run_mode() {
     assert_eq "selfcheck-only 退出码" "$SELFCHECK_RC" "0"
     assert_grep "$E2E_LOG_DIR/R1-selfcheck.log" 'selfcheck:' "自检必须打印人读摘要"
     [ ! -e "$STATE_DIR" ] || e2e_die "--selfcheck-only 不得创建状态目录 $STATE_DIR"
-    e2e_ok "install.sh rc=0；server=v1；unit active；healthz ok；schema=$EXPECTED_SCHEMA；selfcheck-only rc=0 且零写入"
+    # HIGH 3：老机上留着旧 update.sh 的 /var/lib/yiban/pre-migrate（root 0700）。
+    # 自检的 fs.backup_dir 若仍判这个目录就会 FAIL，把所有升级挡在门外。
+    install -d -m 0700 /var/lib/yiban/pre-migrate
+    chown root:root /var/lib/yiban/pre-migrate
+    assert_eq "老机 pre-migrate 存在" "$(stat -c '%a %U' /var/lib/yiban/pre-migrate)" "700 root"
+    SELFCHECK_LEGACY_RC=0
+    bash "$UPDATE_SH" --selfcheck-only >"$E2E_LOG_DIR/R1-selfcheck-legacy.log" 2>&1 || SELFCHECK_LEGACY_RC=$?
+    assert_eq "老机 pre-migrate 在场时 selfcheck-only 退出码" "$SELFCHECK_LEGACY_RC" "0"
+    # 再加一遍**不带 --backup-dir** 的明文自检：判的是 U1 的默认值
+    # （updatecheck.DefaultBackupDir）。默认值若被改回 root 专属目录，
+    # 这里会看到 [FAIL] fs.backup_dir —— 正是要挡的误红。
+    # 直接调 CLI 要自己载入 .env（update.sh 才替它做这件事）。
+    SELFCHECK_TEXT_RC=0
+    (
+        set -a
+        # shellcheck disable=SC1091
+        . /etc/yiban/.env
+        set +a
+        exec "$CLI_DEST" selfcheck
+    ) >"$E2E_LOG_DIR/R1-selfcheck-legacy-text.log" 2>&1 || SELFCHECK_TEXT_RC=$?
+    assert_eq "老机 pre-migrate 在场时明文自检退出码" "$SELFCHECK_TEXT_RC" "0"
+    assert_grep "$E2E_LOG_DIR/R1-selfcheck-legacy-text.log" 'fs.backup_dir' "自检必须列出备份目录判据"
+    if grep -q '^\[FAIL\] fs\.backup_dir' "$E2E_LOG_DIR/R1-selfcheck-legacy-text.log"; then
+        e2e_die "老机的 /var/lib/yiban/pre-migrate（root 0700）让 fs.backup_dir 误红：备份目录默认值没跟上 U2"
+    fi
+    e2e_ok "install.sh rc=0；server=v1；unit active；healthz ok；schema=$EXPECTED_SCHEMA；selfcheck-only rc=0 且零写入；老机 pre-migrate 不误红"
 
     # ---- R2 签名错：验签失败不碰旧件 ----------------------------------------
     e2e_step "R2" "签名错：验签失败不碰旧件、不停服"
@@ -776,14 +844,16 @@ run_mode() {
 
     # ---- R4 备份失败：停服前中止 --------------------------------------------
     e2e_step "R4" "备份失败：停服前中止"
-    mkdir -p "$STATE_DIR"
-    chmod 700 "$STATE_DIR"
-    rm -rf "$BACKUP_ROOT"
-    : > "$BACKUP_ROOT" # 普通文件占位：备份根建不出来（root 也绕不过）
+    # 注入口：pg_dump 在运行期失败（备份根已由自检判权，占位文件会先在门里红）。
+    # tools.pg_dump 只做 LookPath，所以「找得到但一跑就失败」正好落在备份步。
+    mv /usr/local/bin/pg_dump /usr/local/bin/pg_dump.ok
+    printf '#!/bin/sh\necho "pg_dump: simulated failure" >&2\nexit 1\n' > /usr/local/bin/pg_dump
+    chmod 755 /usr/local/bin/pg_dump
     R4_RC=0
     bash "$UPDATE_SH" --server-bin "$DIST/yiban-server-v2" --cli-bin "$DIST/yiban-cli-v2" \
         --allow-unsigned >"$E2E_LOG_DIR/R4-update.log" 2>&1 || R4_RC=$?
-    rm -f "$BACKUP_ROOT"
+    mv /usr/local/bin/pg_dump.ok /usr/local/bin/pg_dump
+    chmod 755 /usr/local/bin/pg_dump
     assert_eq "R4 update.sh 退出码" "$R4_RC" "2"
     assert_grep "$E2E_LOG_DIR/R4-update.log" 'backup FAILED' "必须点名备份失败"
     assert_eq "R4 状态 phase" "$(state_str phase)" "backup"
@@ -882,11 +952,15 @@ run_mode() {
     assert_eq "R7 备份目录权限" "$(stat -c '%a' "$NEWEST_BACKUP")" "700"
     e2e_ok "rc=1；DSN → $RESTORE_TARGET；新库 schema=$EXPECTED_SCHEMA；原库保留且 schema=$((EXPECTED_SCHEMA + 1))；unit active"
 
-    # ---- R8 正常升级（在恢复后的新库上） -------------------------------------
-    e2e_step "R8" "正常升级：rc=0、.bak 留旧件、schema 前进两档"
+    # ---- R8 正常升级（在恢复后的新库上，首次装页面） -------------------------
+    e2e_step "R8" "正常升级：rc=0、.bak 留旧件、schema 前进两档、首次装页面"
+    UI_ONE="/opt/e2e/ui-one"
+    install -d -m 0755 "$UI_ONE"
+    printf '<div id="root">ui-one</div>\n' > "$UI_ONE/index.html"
     BACKUPS_BEFORE="$(backup_sets)"
     R8_RC=0
     bash "$UPDATE_SH" --server-bin "$DIST/yiban-server-v4" --cli-bin "$DIST/yiban-cli-v4" \
+        --ui-dir "$UI_ONE" \
         --allow-unsigned >"$E2E_LOG_DIR/R8-update.log" 2>&1 || R8_RC=$?
     assert_grep "$E2E_LOG_DIR/R8-update.log" 'update complete: healthz ok' "必须报告升级完成"
     assert_eq "R8 update.sh 退出码" "$R8_RC" "0"
@@ -917,10 +991,61 @@ run_mode() {
         done
     fi
     assert_eq "R8 状态文件权限" "$(stat -c '%a' "$STATE_FILE")" "600"
-    e2e_ok "rc=0；.bak=升级前旧件；unit active；healthz ok；schema=$((EXPECTED_SCHEMA + 2))；日志无口令"
+    # HIGH 4：pg 客户端 argv 里不得有口令；连接一律走 PGPASSFILE。
+    if [ ! -f /var/log/yiban-e2e-pgargv.log ]; then
+        e2e_die "没有 pg argv 记录（包装器没装上？）"
+    fi
+    cp /var/log/yiban-e2e-pgargv.log "$E2E_LOG_DIR/pg-argv.log"
+    grep -qF -- "$APP_PW" /var/log/yiban-e2e-pgargv.log \
+        && e2e_die "pg 客户端 argv 出现 DSN 口令（见 pg-argv.log）"
+    # `--version` 只是探测、不连库，允许没有 PGPASSFILE；真实连接一律要有。
+    if grep 'pgpass=<unset>' /var/log/yiban-e2e-pgargv.log | grep -v -- ' --version' | grep -q .; then
+        grep 'pgpass=<unset>' /var/log/yiban-e2e-pgargv.log | grep -v -- ' --version' \
+            | head -n 5 | sed 's/^/  /' >&2
+        e2e_die "pg 客户端没拿到 PGPASSFILE（口令隔离没接线，见上）"
+    fi
+    # 备份落位：根 0700 属服务用户（U1 判据要的），本份 0700 root。
+    NEWEST_R8_BACKUP="$({ ls -1d "$BACKUP_ROOT"/*/ 2>/dev/null || true; } | sort | tail -n 1)"
+    NEWEST_R8_BACKUP="${NEWEST_R8_BACKUP%/}"
+    assert_eq "R8 备份根权限与属主" "$(stat -c '%a %U' "$BACKUP_ROOT")" "700 yiban"
+    assert_eq "R8 备份子目录属主" "$(stat -c '%U' "$NEWEST_R8_BACKUP")" "root"
+    [ -f "$NEWEST_R8_BACKUP/env.backup" ] || e2e_die "R8：备份缺 env.backup"
+    assert_eq "R8 env.backup 权限" "$(stat -c '%a' "$NEWEST_R8_BACKUP/env.backup")" "600"
+    # 首次装页面：目录与指针都生效。
+    grep -q 'ui-one' /var/lib/yiban/ui/index.html || e2e_die "R8：首次装页面没生效"
+    assert_eq "R8 YIBAN_UI_DIR 唯一" "$(grep -c '^YIBAN_UI_DIR=' "$ENV_FILE")" "1"
+    assert_grep "$ENV_FILE" '^YIBAN_UI_DIR=/var/lib/yiban/ui$' "指针必须指到 /var/lib/yiban/ui"
+    e2e_ok "rc=0；.bak=升级前旧件；unit active；healthz ok；schema=$((EXPECTED_SCHEMA + 2))；首次装页面生效；argv 无口令"
 
-    # ---- R9 数据库恢复失败：manual action、不启动旧件 ------------------------
-    e2e_step "R9" "数据库恢复失败：exit 2 + manual action，服务停住"
+    # ---- R9 健康失败 + UI 回滚：旧页面换回 -----------------------------------
+    e2e_step "R9" "健康失败 + UI 回滚：旧页面换回、.bak 不残留"
+    UI_TWO="/opt/e2e/ui-two"
+    install -d -m 0755 "$UI_TWO"
+    printf '<div id="root">ui-two</div>\n' > "$UI_TWO/index.html"
+    PRE_DSN="$(current_app_dsn)"
+    R9_RC=0
+    bash "$UPDATE_SH" --server-bin "$DIST/yiban-server-v6" --cli-bin "$DIST/yiban-cli-v6" \
+        --ui-dir "$UI_TWO" \
+        --allow-unsigned >"$E2E_LOG_DIR/R9-update.log" 2>&1 || R9_RC=$?
+    assert_grep "$E2E_LOG_DIR/R9-update.log" 'healthz failed after swap' "必须在健康检查处失败"
+    assert_grep "$E2E_LOG_DIR/R9-update.log" 'rolled back' "必须回滚旧件"
+    assert_eq "R9 update.sh 退出码" "$R9_RC" "1"
+    assert_eq "R9 安装位回到旧件" "$(sha "$SERVER_DEST")" "$SHA_V4"
+    [ ! -e "$SERVER_DEST.bak" ] || e2e_die "R9：.bak 应已换回安装位"
+    [ ! -e /var/lib/yiban/ui.bak ] || e2e_die "R9：ui.bak 应已换回安装位"
+    grep -q 'ui-one' /var/lib/yiban/ui/index.html \
+        || e2e_die "R9：回滚后页面必须是 ui-one（旧件配新页面是禁止的混装）"
+    assert_eq "R9 YIBAN_UI_DIR 唯一" "$(grep -c '^YIBAN_UI_DIR=' "$ENV_FILE")" "1"
+    assert_grep "$ENV_FILE" '^YIBAN_UI_DIR=/var/lib/yiban/ui$' "指针必须指回 /var/lib/yiban/ui"
+    assert_eq "R9 DSN 不变（migrate 空转，无需回库）" "$(current_app_dsn)" "$PRE_DSN"
+    assert_eq "R9 状态 db_restore" "$(state_str db_restore)" "not-needed"
+    assert_eq "R9 状态 exit_code" "$(state_num exit_code)" "1"
+    assert_eq "R9 unit 状态" "$(unit_active)" "active"
+    if ! health_ok; then e2e_die "R9：回滚后 healthz 探活失败"; fi
+    e2e_ok "rc=1；UI 回到 ui-one；无 ui.bak；unit active；healthz ok"
+
+    # ---- R10 数据库恢复失败：manual action、不启动旧件 -----------------------
+    e2e_step "R10" "数据库恢复失败：exit 2 + manual action，服务停住"
     # 只放行 --list 的 pg_restore 包装器：备份校验通过、真恢复必失败。
     REAL_RESTORE="$(ls /opt/pg18/usr/lib/postgresql/*/bin/pg_restore | head -n 1)"
     [ -x "$REAL_RESTORE" ] || e2e_die "找不到真实 pg_restore（$REAL_RESTORE）"
@@ -935,20 +1060,27 @@ exit 1
 EOF
     chmod 755 /usr/local/bin/pg_restore
     PRE_DSN="$(current_app_dsn)"
-    R9_RC=0
+    R10_RC=0
     bash "$UPDATE_SH" --server-bin "$DIST/yiban-server-v5" --cli-bin "$DIST/yiban-cli-v5" \
-        --allow-unsigned >"$E2E_LOG_DIR/R9-update.log" 2>&1 || R9_RC=$?
-    assert_eq "R9 update.sh 退出码" "$R9_RC" "2"
-    assert_grep "$E2E_LOG_DIR/R9-update.log" 'db restore FAILED' "必须点名恢复失败"
-    assert_grep "$E2E_LOG_DIR/R9-update.log" 'manual action required' "必须打印 manual action"
-    assert_eq "R9 状态 db_restore" "$(state_str db_restore)" "failed"
-    assert_eq "R9 状态 exit_code" "$(state_num exit_code)" "2"
-    assert_eq "R9 DSN 未改" "$(current_app_dsn)" "$PRE_DSN"
-    assert_eq "R9 二进制已换回旧件" "$(sha "$SERVER_DEST")" "$SHA_V4"
+        --allow-unsigned >"$E2E_LOG_DIR/R10-update.log" 2>&1 || R10_RC=$?
+    assert_eq "R10 update.sh 退出码" "$R10_RC" "2"
+    assert_grep "$E2E_LOG_DIR/R10-update.log" 'db restore FAILED' "必须点名恢复失败"
+    assert_grep "$E2E_LOG_DIR/R10-update.log" 'manual action required' "必须打印 manual action"
+    assert_eq "R10 状态 db_restore" "$(state_str db_restore)" "failed"
+    assert_eq "R10 状态 exit_code" "$(state_num exit_code)" "2"
+    # MEDIUM 6：CREATE DATABASE 已成功 → 目标名必须记下，manual action 给真名。
+    R10_TARGET="$(state_str db_restore_target)"
+    case "$R10_TARGET" in
+        yiban_restore_*) ;;
+        *) e2e_die "R10：db_restore_target 必须是真库名，got '$R10_TARGET'" ;;
+    esac
+    assert_grep "$E2E_LOG_DIR/R10-update.log" "$R10_TARGET" "manual action 必须点出真实目标库"
+    assert_eq "R10 DSN 未改" "$(current_app_dsn)" "$PRE_DSN"
+    assert_eq "R10 二进制已换回旧件" "$(sha "$SERVER_DEST")" "$SHA_V4"
     # 库状态未知：不自动起旧件（stop 之后不得再有 start）。
-    assert_eq "R9 unit 未启动" "$(unit_active)" "inactive"
+    assert_eq "R10 unit 未启动" "$(unit_active)" "inactive"
     journalctl -u "$UNIT" --no-pager -n 20 >>"$E2E_STEP_LOG" 2>&1 || true
-    e2e_ok "rc=2；db_restore=failed；manual action；DSN 不变；unit inactive（人工处置）"
+    e2e_ok "rc=2；db_restore=failed（target=$R10_TARGET）；manual action 给真名；DSN 不变；unit inactive（人工处置）"
 
     e2e_say ""
     e2e_say "等价性登记：真 systemd + 真 PostgreSQL 18 + 真 goose 迁移 + 真 update.sh 自检/备份/回滚；"

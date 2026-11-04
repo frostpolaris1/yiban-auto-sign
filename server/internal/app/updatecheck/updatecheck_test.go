@@ -775,3 +775,44 @@ func assertNoSecrets(t *testing.T, text string) {
 		}
 	}
 }
+
+// TestBackupDirDefaultIsWritableByServiceUser 钉 U2 的备份根目录缺省值
+// 与「老机不误红」：缺省必须是 /var/lib/yiban/backups（与 update.sh 同源），
+// 且判权对象是这个目录本身，不是历史遗留的 /var/lib/yiban/pre-migrate。
+//
+// 背景（U2 审查 HIGH）：老机上的 pre-migrate 是 root:root 0700；若判权仍
+// 指向它，fs.backup_dir 每个更新都会 FAIL，一键更新直接 exit 2 全部挡住。
+func TestBackupDirDefaultIsWritableByServiceUser(t *testing.T) {
+	if DefaultBackupDir != "/var/lib/yiban/backups" {
+		t.Fatalf("DefaultBackupDir = %q，want /var/lib/yiban/backups（与 update.sh 同源）", DefaultBackupDir)
+	}
+	f := newFixture()
+	f.opts.BackupDir = DefaultBackupDir
+	// 新目录：0700、属服务用户（update.sh 的 prepare_state_dir 这样建）。
+	f.fs.mkdir(DefaultBackupDir)
+	f.owners[DefaultBackupDir] = fsperm.Owner{OwnerName: "yiban", GroupName: "yiban", Mode: 0o700}
+	// 老机的历史目录：root:root 0700（旧 update.sh 的产物）。
+	f.fs.mkdir("/var/lib/yiban/pre-migrate")
+	f.owners["/var/lib/yiban/pre-migrate"] = fsperm.Owner{OwnerName: "root", GroupName: "root", Mode: 0o700}
+	got := checkFSBackupDir(f.deps, f.opts)
+	if got.Status != StatusPass {
+		t.Fatalf("fs.backup_dir = %s (%s)，want PASS：判权必须看 U2 的备份根，不能看老机的 pre-migrate",
+			got.Status, got.Detail)
+	}
+
+	// 新目录若是 root 专属（update.sh 忘了 chown），必须 FAIL：跳过 ≠ 绿，
+	// 而这个 FAIL 正是「服务用户写不了备份」的真相。
+	f.owners[DefaultBackupDir] = fsperm.Owner{OwnerName: "root", GroupName: "root", Mode: 0o700}
+	got = checkFSBackupDir(f.deps, f.opts)
+	if got.Status != StatusFail {
+		t.Fatalf("root 专属的备份根 = %s (%s)，want FAIL", got.Status, got.Detail)
+	}
+
+	// 反证「误红」：把判权对象换回历史值 pre-migrate（root 0700），
+	// 同一条检查必须 FAIL —— 这就是 U2 之前会挡住所有升级的形状。
+	f.opts.BackupDir = "/var/lib/yiban/pre-migrate"
+	got = checkFSBackupDir(f.deps, f.opts)
+	if got.Status != StatusFail {
+		t.Fatalf("历史 pre-migrate（root 0700）应判 FAIL（误红形状），got %s (%s)", got.Status, got.Detail)
+	}
+}

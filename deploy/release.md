@@ -103,7 +103,9 @@ backup/restore 子命令。
 - 统一备份：`pg_dump -Fc` + `pg_restore --list` 校验 + 照片 tar + sha256 清单，
   失败即中止（仍不停服）；
 - 迁移失败：保留旧二进制并重启服务（退出码 1）；
-- 健康检查失败：stop → 换回 `.bak` 旧二进制（与 UI、CLI）→ start（退出码 1）；
+- 停服失败：什么都没换（退出码 2）；
+- 健康检查或 `systemctl start` 失败：stop → 换回 `.bak` 旧二进制（与 UI、CLI）
+  → start（退出码 1）；首次装页面时删新页面并撤掉 `YIBAN_UI_DIR`；
 - 迁移后失败且库已改变：默认把 pre-migrate 备份恢复到新库
   `yiban_restore_<ts>`、原子切 `/etc/yiban/.env` 的 DSN、起旧件；原库保留取证；
   `--no-restore-db` 显式关闭；
@@ -113,19 +115,24 @@ backup/restore 子命令。
 既有守卫与本项指向：
 
 ```bash
-bash scripts/e2e/update-rollback-e2e.sh host --log-dir <日志目录>   # R1..R9 全矩阵，一次性 systemd 容器真跑（需 docker --privileged；用法与安全守卫见 docs/dev/deploy-e2e.md §8）
+bash scripts/e2e/update-rollback-e2e.sh host --log-dir <日志目录>   # R1..R10 全矩阵，一次性 systemd 容器真跑（需 docker --privileged；用法与安全守卫见 docs/dev/deploy-e2e.md §8）
 go test ./cmd/cli/ -run 'TestUpdateSh' -count=1
 ```
 
-期望：演练脚本退出码 0，`run.log` 末尾 `result=PASS`，R1..R9 全 PASS
+CI：`deploy-gate.yml` 的 `update-rollback-e2e` job 自动跑上面两条
+（第一条是干跑契约，必定真跑；第二条环境起不来时显性 SKIP，不算绿）。
+
+期望：演练脚本退出码 0，`run.log` 末尾 `result=PASS`，R1..R10 全 PASS
 （签名错／自检 FAIL／备份失败／无 CREATEDB／迁移失败／健康失败+回库／
-正常升级／数据库恢复失败）。同一脚本连跑两遍 rc 均 0。
+正常升级+首次装页面／健康失败+UI 回滚／数据库恢复失败）。
+同一脚本连跑两遍 rc 均 0。
 红：任一退出码非 0 或摘要含 FAIL。
 安全边界：演练步骤只在一次性容器内执行；容器外跑 `run` 子命令被守卫
 拒绝（退出码 2、零写入），该拒绝本身是演练脚本 H1 步的常演断言。
 旧线 `deploy_gate.sh --phase B`（回滚 v0.6.2）：本项不再指向；
 脚本与旧线 CI 仍在（phase B 未删）。
-脚本侧红：`update.sh` 无 `.bak` 回滚路径、无自检门/统一备份/数据库恢复标记，
+脚本侧红：`update.sh` 无 `.bak` 回滚路径、无自检门/统一备份/数据库恢复标记、
+`deploy-gate.yml` 没有 `update-rollback-e2e` job 或该 job 不调用演练，
 或演练脚本/守卫用例名消失。
 
 ## 项 8　ed25519/SPA 发布件检查（item 名 `signing`，可执行门；2026-10-29 起）

@@ -25,9 +25,14 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
+
+// u2CanaryPassword 是干跑环境里的 DSN 口令。它只允许出现在 .env 与
+// pgpass 文件里；任何 pg 客户端的 argv 出现它就是缺陷（HIGH）。
+const u2CanaryPassword = "c4n4ry-pw-with-:colon"
 
 // u2Fixture 是一套 U2 干跑环境。
 type u2Fixture struct {
@@ -53,6 +58,7 @@ for a in "$@"; do
   case "$a" in --file=*) prev="${a#--file=}" ;; esac
 done
 echo "pg_dump $*" >> "$U2_CALL_LOG"
+if [ -n "${U2_ARGV_LOG:-}" ]; then printf 'pg_dump %s\n' "$*" >> "$U2_ARGV_LOG"; fi
 if [ -n "$prev" ]; then printf 'PGDMP' > "$prev"; fi
 exit 0
 `)
@@ -65,6 +71,7 @@ for a in "$@"; do
   prev="$a"
 done
 echo "pg_restore $*" >> "$U2_CALL_LOG"
+if [ -n "${U2_ARGV_LOG:-}" ]; then printf 'pg_restore %s\n' "$*" >> "$U2_ARGV_LOG"; fi
 if [ -f "$U2_RESTORE_FAIL" ]; then
   echo "pg_restore: error: could not execute query: ERROR: disk full" >&2
   exit 1
@@ -75,6 +82,7 @@ exit 0
 	fakeBin(t, f.binDir, "psql", `
 db="$(printf '%s' "$1" | sed -n 's#^[a-z]*://[^/]*/\([^?]*\).*#\1#p')"
 echo "psql $*" >> "$U2_CALL_LOG"
+if [ -n "${U2_ARGV_LOG:-}" ]; then printf 'psql %s pgpass=%s\n' "$*" "${PGPASSFILE:-<unset>}" >> "$U2_ARGV_LOG"; fi
 case "$*" in
   *rolcreatedb*)
     if [ -f "$U2_NO_CREATEDB" ]; then echo f; else echo t; fi
@@ -121,7 +129,9 @@ func newU2Fixture(t *testing.T) *u2Fixture {
 	if err := os.MkdirAll(filepath.Join(f.root, "etc/yiban"), 0o755); err != nil {
 		t.Fatalf("mkdir etc: %v", err)
 	}
-	envBody := "YIBAN_DATABASE_URL=postgres://yiban:pw@127.0.0.1:5432/yiban?sslmode=disable\n" +
+	// canary 口令：测试断言它不出现在任何 pg 客户端的 argv 里。
+	envBody := "YIBAN_DATABASE_URL=postgres://yiban:" + u2CanaryPassword +
+		"@127.0.0.1:5432/yiban?sslmode=disable\n" +
 		"YIBAN_UI_DIR=/var/lib/yiban/ui\n"
 	if err := os.WriteFile(filepath.Join(f.root, "etc/yiban/.env"), []byte(envBody), 0o600); err != nil {
 		t.Fatalf("write env: %v", err)
@@ -134,6 +144,8 @@ func newU2Fixture(t *testing.T) *u2Fixture {
 		"U2_BACKUP_SCHEMA":            filepath.Join(t.TempDir(), "backup-schema"),
 		"U2_NO_CREATEDB":              filepath.Join(t.TempDir(), "no-createdb"),
 		"U2_RESTORE_FAIL":             filepath.Join(t.TempDir(), "restore-fail"),
+		"U2_ARGV_LOG":                 filepath.Join(t.TempDir(), "argv.log"),
+		"FAKE_SELFCHECK_ARGS":         filepath.Join(t.TempDir(), "selfcheck-args.log"),
 		"YIBAN_HEALTH_RETRIES":        "1",
 		"YIBAN_HEALTH_RETRY_INTERVAL": "0",
 		"PATH":                        f.binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
@@ -167,7 +179,7 @@ func (f *u2Fixture) readState(t *testing.T) map[string]any {
 // backupDirs 列出本次环境下的备份目录。
 func (f *u2Fixture) backupDirs(t *testing.T) []string {
 	t.Helper()
-	dirs, err := filepath.Glob(filepath.Join(f.root, "var/lib/yiban/updates/backups/*"))
+	dirs, err := filepath.Glob(filepath.Join(f.root, "var/lib/yiban/backups/*"))
 	if err != nil {
 		t.Fatalf("glob backups: %v", err)
 	}
@@ -295,7 +307,8 @@ func TestUpdateShBackupLayoutStateAndRetention(t *testing.T) {
 		t.Fatalf("--keep-backups 2 应保留 2 份备份，got %d: %v", len(dirs), dirs)
 	}
 	latest := dirs[len(dirs)-1]
-	for _, name := range []string{"db.dump", "db.list", "db-schema.txt", "SHA256SUMS", "bin/yiban-server", "bin/yiban-cli"} {
+	for _, name := range []string{"db.dump", "db.list", "db-schema.txt", "env.backup",
+		"SHA256SUMS", "bin/yiban-server", "bin/yiban-cli"} {
 		if _, err := os.Stat(filepath.Join(latest, name)); err != nil {
 			t.Fatalf("备份缺 %s: %v", name, err)
 		}
@@ -306,20 +319,32 @@ func TestUpdateShBackupLayoutStateAndRetention(t *testing.T) {
 	} else if perm := info.Mode().Perm(); perm != 0o700 {
 		t.Fatalf("备份目录权限 = %04o, want 0700", perm)
 	}
-	for _, name := range []string{"db.dump", "db.list", "db-schema.txt", "SHA256SUMS"} {
+	for _, name := range []string{"db.dump", "db.list", "db-schema.txt", "env.backup", "SHA256SUMS"} {
 		if info, err := os.Stat(filepath.Join(latest, name)); err != nil {
 			t.Fatalf("stat %s: %v", name, err)
 		} else if perm := info.Mode().Perm(); perm != 0o600 {
 			t.Fatalf("%s 权限 = %04o, want 0600", name, perm)
 		}
 	}
+	// .env 快照里必须有 DSN 原文（回滚会改写它，人工回退要用）。
+	if body := readAll(t, filepath.Join(latest, "env.backup")); !strings.Contains(body, "YIBAN_DATABASE_URL=") {
+		t.Fatalf("env.backup 不含 .env 原文：\n%s", body)
+	}
+	// db-schema.txt 记库名，状态里也有 db_name_before。
+	if body := readAll(t, filepath.Join(latest, "db-schema.txt")); !strings.Contains(body, "database=yiban") {
+		t.Fatalf("db-schema.txt 缺 database=：\n%s", body)
+	}
 	// 状态文件：字段齐、0600、success/0。
 	doc := f.readState(t)
+	if doc["db_name_before"] != "yiban" {
+		t.Fatalf("状态 db_name_before 应为 yiban：%v", doc)
+	}
 	if doc["result"] != "success" || doc["exit_code"].(float64) != 0 {
 		t.Fatalf("状态文件应记 success/0：%v", doc)
 	}
 	for _, key := range []string{"update_id", "started_at", "finished_at", "phase",
-		"version_from", "version_to", "backup_dir", "db_schema_before", "db_schema_after", "db_restore"} {
+		"version_from", "version_to", "backup_dir", "db_name_before", "db_name_after",
+		"db_schema_before", "db_schema_after", "db_restore"} {
 		if _, ok := doc[key]; !ok {
 			t.Fatalf("状态文件缺字段 %s：%v", key, doc)
 		}
@@ -413,6 +438,15 @@ func TestUpdateShRestoreFailureStopsAndAsksForManualAction(t *testing.T) {
 	if doc["db_restore"] != "failed" {
 		t.Fatalf("状态文件 db_restore 应为 failed：%v", doc)
 	}
+	// M6：CREATE DATABASE 已成功但恢复失败 → 目标名必须记在状态里，
+	// manual action 也必须给出真名（占位名会让人工撞名或找不到库）。
+	target, _ := doc["db_restore_target"].(string)
+	if !strings.HasPrefix(target, "yiban_restore_") {
+		t.Fatalf("恢复失败时 db_restore_target 必须是真库名，got %q", target)
+	}
+	if !strings.Contains(out, target) {
+		t.Fatalf("manual action 必须点出真实目标库 %q：%s", target, out)
+	}
 	envBody := readAll(t, filepath.Join(f.root, "etc/yiban/.env"))
 	if strings.Contains(envBody, "yiban_restore_") {
 		t.Fatalf("恢复失败不得改 .env：\n%s", envBody)
@@ -422,5 +456,212 @@ func TestUpdateShRestoreFailureStopsAndAsksForManualAction(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(log), "\n")
 	if len(lines) == 0 || !strings.HasPrefix(lines[len(lines)-1], "systemctl stop") {
 		t.Fatalf("恢复失败后不得启动旧件：\n%s", log)
+	}
+}
+
+// ---- 审查补测（HIGH/MEDIUM 逐项） ------------------------------------------
+
+// useFailingStart 把假 systemctl 换成「前 n 次 start 失败」的版本。
+// start 失败是 HIGH 1 的靶子：update.sh 必须走回滚，不能让新二进制留在
+// 安装位、服务停着却退 1。
+func (f *u2Fixture) useFailingStart(t *testing.T, n int) {
+	t.Helper()
+	counter := filepath.Join(t.TempDir(), "start-fail-left")
+	if err := os.WriteFile(counter, []byte(strconv.Itoa(n)), 0o644); err != nil {
+		t.Fatalf("seed start counter: %v", err)
+	}
+	f.sysctl = fakeBin(t, f.binDir, "systemctl", `
+echo "systemctl $*" >> "`+f.sysctlLo+`"
+case "$1" in
+  start)
+    left="$(cat "`+counter+`" 2>/dev/null || echo 0)"
+    if [ "${left:-0}" -gt 0 ]; then
+      echo $((left - 1)) > "`+counter+`"
+      echo "systemctl: start failed (injected)" >&2
+      exit 1
+    fi
+    ;;
+esac
+exit 0
+`)
+	f.env["SYSTEMCTL"] = f.sysctl
+}
+
+// TestUpdateShSystemctlStartFailureRollsBack 钉 HIGH 1：
+// start 失败绝不能裸退（set -e）把新二进制留在安装位；必须回滚旧件。
+//
+//	分支一：只有第一次 start 失败 → 回滚成功 → exit 1、安装位是旧件。
+//	分支二：start 一直失败 + 探活也失败 → exit 2、打印 manual action。
+func TestUpdateShSystemctlStartFailureRollsBack(t *testing.T) {
+	requireBash(t)
+	f := newU2Fixture(t)
+	f.useFailingStart(t, 1)
+	newBin := fakeBin(t, f.binDir, "yiban-server-new", "echo NEW\n")
+	oldBody := readAll(t, filepath.Join(f.root, "usr/local/bin/yiban-server"))
+
+	out, rc := runScript(t, scriptPath(t, "update.sh"), f.env,
+		"--server-bin", newBin, "--allow-unsigned")
+	if rc != 1 {
+		t.Fatalf("start 失败但回滚成功应 exit 1：rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "start FAILED after the swap") {
+		t.Fatalf("必须点名 start 失败：%s", out)
+	}
+	if !strings.Contains(out, "rolled back") {
+		t.Fatalf("必须走回滚：%s", out)
+	}
+	if got := readAll(t, filepath.Join(f.root, "usr/local/bin/yiban-server")); got != oldBody {
+		t.Fatalf("安装位必须是旧件（新件不能留下）：\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(f.root, "usr/local/bin/yiban-server.bak")); err == nil {
+		t.Fatalf(".bak 应已换回安装位（不应残留）")
+	}
+	doc := f.readState(t)
+	if doc["result"] != "failed" || doc["exit_code"].(float64) != 1 {
+		t.Fatalf("状态应为 failed/1：%v", doc)
+	}
+
+	// 分支二：start 恒失败 + 探活恒失败 → 回滚不回来，exit 2。
+	f2 := newU2Fixture(t)
+	f2.useFailingStart(t, 99)
+	healthFail := filepath.Join(t.TempDir(), "health-fail")
+	if err := os.WriteFile(healthFail, []byte("x"), 0o644); err != nil {
+		t.Fatalf("arm health fail: %v", err)
+	}
+	fakeUpdateCLI(t, filepath.Join(f2.root, "usr/local/bin"), "yiban-cli", `  migrate) exit 0 ;;
+  healthcheck) [ -f "$FAKE_HEALTH_FAIL" ] && exit 1; exit 0 ;;`)
+	f2.env["FAKE_HEALTH_FAIL"] = healthFail
+	newBin2 := fakeBin(t, f2.binDir, "yiban-server-new", "echo NEW\n")
+	out, rc = runScript(t, scriptPath(t, "update.sh"), f2.env,
+		"--server-bin", newBin2, "--allow-unsigned")
+	if rc != 2 {
+		t.Fatalf("回滚后仍不健康应 exit 2：rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "manual action required") {
+		t.Fatalf("必须打印 manual action：%s", out)
+	}
+}
+
+// TestUpdateShFirstUIInstallRollsBackOnHealthFailure 钉 HIGH 2：
+// 首次装页面（没有旧 ui 目录）时健康失败，必须删掉新页面并撤掉本轮写的
+// YIBAN_UI_DIR——旧二进制配新页面是明确禁止的混装。
+func TestUpdateShFirstUIInstallRollsBackOnHealthFailure(t *testing.T) {
+	requireBash(t)
+	f := newU2Fixture(t)
+	// 只装 API：.env 里没有 YIBAN_UI_DIR，也没有 ui 目录。
+	if err := os.WriteFile(filepath.Join(f.root, "etc/yiban/.env"),
+		[]byte("YIBAN_DATABASE_URL=postgres://yiban:"+u2CanaryPassword+"@127.0.0.1:5432/yiban?sslmode=disable\n"),
+		0o600); err != nil {
+		t.Fatalf("write env: %v", err)
+	}
+	newBin := fakeBin(t, f.binDir, "yiban-server-new", "echo NEW\n")
+	// 新版：迁移成功、探活恒失败 → 换件后必失败。
+	newCLI := fakeUpdateCLI(t, f.binDir, "yiban-cli-new", `  migrate) exit 0 ;;
+  healthcheck) exit 1 ;;`)
+	ui := writeUIDistDir(t, "first-ui")
+
+	out, rc := runScript(t, scriptPath(t, "update.sh"), f.env,
+		"--server-bin", newBin, "--cli-bin", newCLI, "--ui-dir", ui, "--allow-unsigned")
+	if rc != 1 {
+		t.Fatalf("回滚成功应 exit 1：rc=%d out=%s", rc, out)
+	}
+	uiDir := filepath.Join(f.root, "var/lib/yiban/ui")
+	if _, err := os.Stat(uiDir); err == nil {
+		t.Fatalf("首次安装回滚后不得留下新页面目录：%s", uiDir)
+	}
+	if body := readAll(t, filepath.Join(f.root, "etc/yiban/.env")); strings.Contains(body, "YIBAN_UI_DIR=") {
+		t.Fatalf("首次安装回滚后必须撤掉 YIBAN_UI_DIR：\n%s", body)
+	}
+	if _, err := os.Stat(uiDir + ".new"); err == nil {
+		t.Fatalf("不得残留 ui.new")
+	}
+	if out, _ := runScript(t, filepath.Join(f.root, "usr/local/bin/yiban-cli"),
+		map[string]string{}, "selfcheck", "--json"); !strings.Contains(out, "schema_version") {
+		t.Fatalf("回滚后安装位 CLI 必须是旧件（能跑 selfcheck）：%s", out)
+	}
+}
+
+// TestUpdateShSelfcheckGatePassesBackupDir 钉 HIGH 3 的接线：
+// 自检门必须显式传 --backup-dir（判权对象＝真正写入的备份根），
+// 不能吃 U1 的历史缺省（老机上那是 root 0700 的 pre-migrate）。
+func TestUpdateShSelfcheckGatePassesBackupDir(t *testing.T) {
+	requireBash(t)
+	f := newU2Fixture(t)
+	newBin := fakeBin(t, f.binDir, "yiban-server-new", "echo NEW\n")
+	out, rc := runScript(t, scriptPath(t, "update.sh"), f.env,
+		"--server-bin", newBin, "--allow-unsigned")
+	if rc != 0 {
+		t.Fatalf("update rc=%d out=%s", rc, out)
+	}
+	args := readAll(t, f.env["FAKE_SELFCHECK_ARGS"])
+	wantBackup := filepath.Join(f.root, "var/lib/yiban/backups")
+	if !strings.Contains(args, "--backup-dir "+wantBackup) {
+		t.Fatalf("自检门没有传 --backup-dir %s：\n%s", wantBackup, args)
+	}
+	if strings.Contains(args, "pre-migrate") {
+		t.Fatalf("自检门仍在用历史 pre-migrate 目录：\n%s", args)
+	}
+}
+
+// TestUpdateShKeepsPasswordOutOfArgv 钉 HIGH 4：
+// 所有 psql/pg_dump/pg_restore 的 argv 都不含 DSN 口令；口令只经 0600
+// 的 PGPASSFILE 传给 libpq，进程退出后该文件被删。
+func TestUpdateShKeepsPasswordOutOfArgv(t *testing.T) {
+	requireBash(t)
+	f := newU2Fixture(t)
+	newBin := fakeBin(t, f.binDir, "yiban-server-new", "echo NEW\n")
+	// 走一次带数据库回滚的失败路径：迁移推进一档、健康失败 →
+	// psql/pg_dump/pg_restore 都会被调用（argv 才有可判材料）。
+	newCLI := f.newBCLI(t)
+	out, rc := runScript(t, scriptPath(t, "update.sh"), f.env,
+		"--server-bin", newBin, "--cli-bin", newCLI, "--allow-unsigned")
+	if rc != 1 {
+		t.Fatalf("回滚成功应 exit 1：rc=%d out=%s", rc, out)
+	}
+	argvLog := readAll(t, f.env["U2_ARGV_LOG"])
+	if strings.Contains(argvLog, u2CanaryPassword) {
+		t.Fatalf("pg 客户端 argv 泄漏了口令：\n%s", argvLog)
+	}
+	if !strings.Contains(argvLog, "postgres://yiban@") {
+		t.Fatalf("argv 里应保留去掉口令的 DSN（证明走的是同一连接串）：\n%s", argvLog)
+	}
+	if !strings.Contains(argvLog, "pgpass=") || strings.Contains(argvLog, "pgpass=<unset>") {
+		t.Fatalf("psql 必须拿到 PGPASSFILE：\n%s", argvLog)
+	}
+	// pgpass 文件在退出后必须删掉（含带口令的副本）。
+	for _, line := range strings.Split(argvLog, "\n") {
+		idx := strings.Index(line, "pgpass=")
+		if idx < 0 {
+			continue
+		}
+		path := line[idx+len("pgpass="):]
+		if strings.Contains(path, " ") {
+			path = path[:strings.Index(path, " ")]
+		}
+		if path == "" || path == "<unset>" {
+			continue
+		}
+		// 文件在暂存目录里，随暂存目录一起删。
+		if _, err := os.Stat(path); err == nil {
+			t.Fatalf("pgpass 文件退出后仍在：%s", path)
+		}
+	}
+}
+
+// TestUpdateShMissingFlagValueIsUsageError 钉 MEDIUM 5：
+// 缺值/空值必须是用法错误（exit 2），不是 ${2:?} 的 1。
+func TestUpdateShMissingFlagValueIsUsageError(t *testing.T) {
+	requireBash(t)
+	f := newU2Fixture(t)
+	for _, args := range [][]string{
+		{"--server-bin"},
+		{"--server-bin", "", "--allow-unsigned"},
+		{"--server-bin", "/bin/true", "--allow-unsigned", "--keep-backups"},
+		{"--server-bin", "/bin/true", "--allow-unsigned", "--backup-dir", ""},
+	} {
+		out, rc := runScript(t, scriptPath(t, "update.sh"), f.env, args...)
+		if rc != 2 {
+			t.Fatalf("%v 缺值应 exit 2：rc=%d out=%s", args, rc, out)
+		}
 	}
 }

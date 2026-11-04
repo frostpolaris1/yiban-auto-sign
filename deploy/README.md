@@ -152,13 +152,16 @@ sudo bash deploy/linux/update.sh --selfcheck-only    # 0 全 PASS/SKIP；2 有 F
 
 **统一备份（停服前，失败即中止）**
 
-落在 `/var/lib/yiban/updates/backups/<UTC时间戳>/`（目录 0700、文件 0600）：
+落在 `/var/lib/yiban/backups/<UTC时间戳>/`（目录 0700、文件 0600；
+`/var/lib/yiban/updates/` 只放状态与日志）。备份根 0700、属服务用户
+`yiban`（U1 自检按服务用户判权）；每份子目录仍是 root 0700、文件 0600。
 
 | 文件 | 内容 |
 |---|---|
 | `db.dump` | `pg_dump -Fc`（含凭据密文与审计行） |
 | `db.list` | `pg_restore --list` 的清单（证明转储可读） |
-| `db-schema.txt` | 迁移前 goose 版本与 public 基表数（恢复后的对账基线） |
+| `db-schema.txt` | 迁移前库名、goose 版本与 public 基表数（恢复后的对账基线） |
+| `env.backup` | `/etc/yiban/.env` 快照（0600；库回滚会改写 DSN，人工回退要用） |
 | `photos.tar` | 照片目录快照（`tar -h`；照片不进数据库备份） |
 | `bin/yiban-server`、`bin/yiban-cli` | 更新前的二进制（含既有 `.bak` 的归档） |
 | `SHA256SUMS` | 以上文件的 sha256，写入后立即校验 |
@@ -174,7 +177,7 @@ sudo bash deploy/linux/update.sh --selfcheck-only    # 0 全 PASS/SKIP；2 有 F
 
 | 路径 | 内容 |
 |---|---|
-| `/var/lib/yiban/updates/update-state.json` | 最近一次更新：`result`（running/success/failed/aborted/interrupted）、`exit_code`、`phase`、版本、备份路径、`db_schema_before/after`、`db_restore` |
+| `/var/lib/yiban/updates/update-state.json` | 最近一次更新：`result`（running/success/failed/aborted/interrupted）、`exit_code`、`phase`、版本、备份路径、`db_name_before/after`、`db_schema_before/after`、`db_restore` |
 | `/var/lib/yiban/updates/update.log` | 追加日志（时间／阶段／结果），一行一事件 |
 | `/var/lib/yiban/updates/selfcheck-latest.json` | 停服前自检的完整 JSON 报告 |
 
@@ -188,10 +191,20 @@ sudo bash deploy/linux/update.sh --selfcheck-only    # 0 全 PASS/SKIP；2 有 F
 |---|---|---|
 | 签名/对账/版本校验 | 不碰旧件、不停服 | 1 |
 | 自检 FAIL / 无 CREATEDB / 备份失败 | 不开始（不停服） | 2 |
+| 停服失败 | 什么都没换，服务保持原样 | 2 |
 | 迁移失败 | 旧二进制继续服务；库没变就不动库 | 1 |
+| 换件后 `systemctl start` 失败 | 与健康失败同一条回滚（换回 server/CLI/UI） | 1（回滚健康）/ 2（仍不健康） |
 | 迁移后（换件/健康）失败 | 二进制与 UI 换回旧件；**数据库默认恢复到升级前** | 1 |
 | 数据库恢复失败 | 停住（不启动旧件），打印 manual action | 2 |
 | 回滚后仍不健康 | 打印 manual action | 2 |
+
+口令不进 argv：`update.sh` 把 DSN 里的口令摘出来写进 0600 的
+`PGPASSFILE`（暂存目录内，进程退出即删），交给 libpq；`psql`/`pg_dump`/
+`pg_restore` 的 argv 只留去掉口令的 DSN。URI 的百分号编码会解码，
+key=value 形态按 libpq 词法解析；解析不了就 `exit 2`（绝不再把口令塞回 argv）。
+
+页面回滚：换过旧目录就删新目录、把 `ui.bak` 换回；首次装页面就删新目录、
+撤掉本轮写的 `YIBAN_UI_DIR`（旧二进制恢复「无页面」形态）。
 
 数据库回滚（默认开启，`--no-restore-db` 关闭）：
 
@@ -249,6 +262,13 @@ sudo systemctl start yiban.service
 
 人工恢复后重跑 `sudo bash deploy/linux/update.sh --selfcheck-only` 确认全 PASS，
 再重新执行升级。
+
+**自动验证**
+
+`.github/workflows/deploy-gate.yml` 的 `update-rollback-e2e` job 先真跑 update.sh
+的干跑契约（`go test ./cmd/cli/ -run 'TestUpdateSh|TestInstallSh'`），再跑
+一次性 systemd 容器里的失败矩阵 R1..R10。托管 runner 起不了特权容器时该 job
+显性打印 SKIP（不算绿），发布前仍按 `docs/dev/deploy-e2e.md` §8 手跑一遍。
 
 ## 5. 反向代理
 

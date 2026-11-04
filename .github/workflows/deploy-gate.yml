@@ -76,3 +76,37 @@ jobs:
 
       - name: Container deploy e2e — build, up, migrate, healthz, SIGTERM, down
         run: bash scripts/e2e/deploy-container-e2e.sh
+
+  # ---- 一键更新失败矩阵（U2） ----------------------------------------------
+  # 判据与跑法：scripts/e2e/update-rollback-e2e.sh（R1..R10）与
+  # docs/dev/deploy-e2e.md §8。两步：
+  #   ① update.sh 干跑契约（真实执行，不依赖 docker）：自检门、统一备份、
+  #     systemctl start 失败回滚、首次装页面回滚、argv 无口令、缺值 exit 2。
+  #   ② 一次性 systemd 容器里的完整失败矩阵（docker --privileged + host cgroup）。
+  # ② 在托管 runner 上的可用性未实测：环境起不来时脚本 exit 2（环境错误），
+  # 本 job 显性打印 SKIP 并写进 step summary —— SKIP 不算绿（发布前仍按
+  # docs/dev/deploy-e2e.md 手跑一遍）。真失败（rc≠0/2）照常红。
+  update-rollback-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: update.sh 干跑契约（自检门/备份/回滚/argv 无口令）
+        run: |
+          command -v go >/dev/null 2>&1 || { echo "go not found on the runner"; exit 1; }
+          cd server && go test ./cmd/cli/ -run 'TestUpdateSh|TestInstallSh' -count=1
+
+      - name: 一键更新失败矩阵 R1..R10（一次性 systemd 容器）
+        run: |
+          set +e
+          bash scripts/e2e/update-rollback-e2e.sh host --log-dir "$RUNNER_TEMP/update-rollback-e2e"
+          rc=$?
+          if [ "$rc" -eq 2 ]; then
+            echo "SKIP: docker 起不了 --privileged systemd 容器（脚本 rc=2 = 环境错误）；这一遍不算通过。"
+            echo "::warning title=update-rollback-e2e SKIP::环境起不来，演练跳过（SKIP 不是绿）"
+            echo "### update-rollback-e2e: SKIP（不是通过）— 环境起不来" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          exit "$rc"
