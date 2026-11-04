@@ -40,6 +40,8 @@ var contractEnums = []contractEnum{
 	{".", "AccountStatus", "../../../core/account", "Status", "Status", 6},
 	{".", "CapacityReportBinding", "../../../core/capacity", "Binding", "Binding", 2},
 	{".", "ErrorCode", "../../../core/errs", "Code", "Code", 16},
+	{".", "NotifyCategory", "../../../core/notify", "Category", "Category", 4},
+	{".", "NotifyChannel", "../../../core/notify", "Channel", "Channel", 2},
 	{".", "ScheduleWindowSource", "../../../signing/contract", "WindowSource", "Window", 4},
 	{".", "SchoolStatus", "../../../core/school", "Status", "Status", 2},
 	{".", "UserListParamsGroup", "../../../core/user", "Group", "Group", 3},
@@ -65,6 +67,7 @@ var contractEnumExempt = []contractExempt{
 	{"PhotoMime", "core 无显式类型；库侧 CHECK 为同 2 值"},
 	{"SchoolCreateTimezone", "无 pg ENUM"},
 	{"SchoolUpdateTimezone", "无 pg ENUM"},
+	{"SettingSource", "纯输出枚举；词表在 app/settings（用例层，不在 core），无 pg ENUM"},
 }
 
 // walkConsts 解析 dir 下全部非 _test.go 的 .go 文件。

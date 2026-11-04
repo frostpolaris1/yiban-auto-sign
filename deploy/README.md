@@ -42,6 +42,14 @@ docker compose -f deploy/docker/docker-compose.yml up -d --build
 
 镜像包含页面：前端在构建段执行 `npm ci && npm run build`，产物落在 `/srv/ui`。
 
+镜像同时包含配置名册：`config/registry.json` 装到 `/etc/yiban/registry.json`（root 属主，0644），
+`GET /api/admin/settings` 直接读取它。要在不重建镜像时替换名册，可在 compose 里加只读挂载：
+
+```yaml
+volumes:
+  - ../../config/registry.json:/etc/yiban/registry.json:ro
+```
+
 验证：
 
 ```bash

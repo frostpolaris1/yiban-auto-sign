@@ -916,6 +916,149 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/notify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the caller's effective notification subscriptions.
+         * @description master and admin each manage their own subscriptions; the answer
+         *     covers every category and channel with the effective state. A user
+         *     has no subscription surface and answers 403. A pair with no stored
+         *     row reads as the default:
+         *     review_pending is in_app and email; credential_invalid is in_app;
+         *     sign_failed_daily is email; capacity_rejected is in_app.
+         *     This endpoint stores and reads subscriptions only; nothing is
+         *     delivered in this phase.
+         */
+        get: operations["AdminNotifyGet"];
+        /**
+         * Replace the caller's subscription overrides.
+         * @description Idempotent replacement of the caller's override set. Every item must
+         *     name a known category and channel; an unknown value or a repeated
+         *     (category, channel) pair answers 400. Pairs absent from the request
+         *     keep no override and read as their defaults, so an empty list resets
+         *     every subscription to the default state. The answer is the effective
+         *     state after the write. No notification is delivered.
+         */
+        put: operations["AdminNotifySet"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the deployment configuration roster, grouped.
+         * @description Read-only. The keys come from config/registry.json, grouped by the
+         *     group registered there. A non-sensitive key carries the resolved
+         *     value (the environment value when set, otherwise the registered
+         *     default; a key with neither reads null). A sensitive key never
+         *     carries a value: it answers a sensitive view with set, a fixed
+         *     masked form and the source. The source is env when the environment
+         *     provides the key, default when the roster registers a default, and
+         *     unknown when the key is unset with no default. The file source is
+         *     reserved for a configuration layer that reads files; the current
+         *     server never reports it.
+         */
+        get: operations["AdminSettings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/announcement": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Publish or clear the site announcement.
+         * @description Master only. The text is trimmed, must stay on one line (a line
+         *     break or line separator answers 400) and is limited to 200
+         *     characters, matching the previous deployment. An empty text clears
+         *     the announcement. The write and one settings.announcement audit row
+         *     commit in one transaction; the detail records only the field name,
+         *     never the text.
+         */
+        put: operations["AnnouncementSet"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/announcement": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the published site announcement.
+         * @description Every signed-in role reads the same text. An announcement that was
+         *     never set, or was cleared, answers an empty text and a null
+         *     updated_at. The raw author id never leaves the server.
+         */
+        get: operations["AnnouncementGet"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/audit-logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read audit rows with cursor pagination.
+         * @description Master and admin only. Rows are ordered newest first and paged with
+         *     the opaque cursor; limit is 1..200 with a default of 50. action
+         *     filters by the exact action word, actor filters by the masked actor
+         *     label (the value is masked with the same rule the writer used, so a
+         *     full email matches its stored masked form), from and to bound the
+         *     row time inclusively; both take an RFC3339 timestamp. Each row
+         *     carries the row id, the time, the action, the masked actor label and
+         *     the detail JSON text, which is passed through the mask rules on the
+         *     way out. The chain is not verified here and there is no export.
+         *     Legacy parity: the previous console showed every school's rows to
+         *     both master and admin; this endpoint deliberately keeps that global
+         *     view and does not narrow by the caller's school scope.
+         */
+        get: operations["AuditLogList"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/me/diagnostics": {
         parameters: {
             query?: never;
@@ -1316,6 +1459,115 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * @description Closed set of notification subjects for this phase.
+         * @enum {string}
+         */
+        NotifyCategory: "credential_invalid" | "review_pending" | "sign_failed_daily" | "capacity_rejected";
+        /**
+         * @description Closed set of delivery channels; nothing is delivered in this phase.
+         * @enum {string}
+         */
+        NotifyChannel: "in_app" | "email";
+        NotifyPref: {
+            category: components["schemas"]["NotifyCategory"];
+            channel: components["schemas"]["NotifyChannel"];
+            /**
+             * @description Effective state: the stored override when present, the category
+             *     default otherwise.
+             */
+            enabled: boolean;
+        };
+        /**
+         * @description All four categories across both channels, so the client renders the
+         *     full matrix without merging defaults itself. Exactly eight items in
+         *     a stable order.
+         */
+        NotifyPrefPage: {
+            items: components["schemas"]["NotifyPref"][];
+        };
+        /**
+         * @description The complete replacement override set. Every pair must be known and
+         *     unique; unlisted pairs drop their override and read as defaults.
+         */
+        NotifyPrefsUpdate: {
+            items: components["schemas"]["NotifyPref"][];
+        };
+        /**
+         * @description env: the process environment provides the key. file: a file-backed
+         *     configuration layer provides it (never reported by this server).
+         *     default: unset, the roster registers a default. unknown: unset with
+         *     no registered default.
+         * @enum {string}
+         */
+        SettingSource: "env" | "file" | "default" | "unknown";
+        /** @description One roster key with its resolved view. */
+        SettingItem: {
+            key: string;
+            /** @description First group registered for the key in the roster. */
+            group: string;
+            source: components["schemas"]["SettingSource"];
+            /**
+             * @description Resolved value of a non-sensitive key: the environment value when
+             *     set, otherwise the registered default rendered by the key type,
+             *     otherwise null. Absent (null) for a sensitive key.
+             */
+            value: (string | null) | (number | null) | (boolean | null);
+            /** @description Masked view for a sensitive key; null for a non-sensitive key. */
+            sensitive: {
+                /** @description True when the environment provides the key. */
+                set: boolean;
+                /**
+                 * @description Fixed form - "****" when set, empty string otherwise. It carries
+                 *     no character of the stored value.
+                 */
+                masked: string;
+                source: components["schemas"]["SettingSource"];
+            } | null;
+        };
+        SettingGroup: {
+            name: string;
+            items: components["schemas"]["SettingItem"][];
+        };
+        SettingsReport: {
+            groups: components["schemas"]["SettingGroup"][];
+        };
+        Announcement: {
+            /** @description Current announcement body; empty when none is set. Single line. */
+            text: string;
+            /**
+             * Format: date-time
+             * @description When the announcement was last written; null when never set.
+             */
+            updated_at: string | null;
+        };
+        AnnouncementUpdate: {
+            /**
+             * @description Trimmed body, at most 200 characters, one line: a line break or
+             *     line separator answers 400. An empty text clears the
+             *     announcement.
+             */
+            text: string;
+        };
+        AuditLogItem: {
+            /**
+             * Format: int64
+             * @description Row id of the audit chain row.
+             */
+            id: number;
+            /** Format: date-time */
+            at: string;
+            action: string;
+            /** @description Masked actor label fixed at write time; never a raw address. */
+            actor: string;
+            /** @description Detail JSON text; passed through the mask rules on the way out. */
+            detail: string;
+        };
+        AuditLogPage: {
+            items: components["schemas"]["AuditLogItem"][];
+            /** @description Cursor for the next page; empty on the last page. */
+            next_cursor: string;
+        };
         Error: {
             error: components["schemas"]["ErrorBody"];
         };
@@ -3659,6 +3911,184 @@ export interface operations {
                     "application/json": components["schemas"]["EngineSnapshot"];
                 };
             };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AdminNotifyGet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Effective subscriptions for all categories and channels. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotifyPrefPage"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AdminNotifySet: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NotifyPrefsUpdate"];
+            };
+        };
+        responses: {
+            /** @description Effective subscriptions after the replacement. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotifyPrefPage"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AdminSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Grouped configuration roster. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsReport"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AnnouncementSet: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AnnouncementUpdate"];
+            };
+        };
+        responses: {
+            /** @description Announcement after the write. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Announcement"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AnnouncementGet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current announcement. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Announcement"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AuditLogList: {
+        parameters: {
+            query?: {
+                /** @description Opaque page cursor taken from next_cursor. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size, 1 to 200. */
+                limit?: components["parameters"]["Limit"];
+                /** @description Exact action word, e.g. auth.login. */
+                action?: string;
+                /**
+                 * @description Actor filter. Masked with the writer's rule before matching, so
+                 *     a full address matches its stored masked label.
+                 */
+                actor?: string;
+                /** @description Inclusive lower bound on the row time (RFC3339). */
+                from?: string;
+                /** @description Inclusive upper bound on the row time (RFC3339). */
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Audit page. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditLogPage"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             default: components["responses"]["DefaultError"];

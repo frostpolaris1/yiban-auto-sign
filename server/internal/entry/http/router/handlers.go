@@ -470,3 +470,57 @@ func (s *server) MeSignStatus(c *gin.Context) {
 	}
 	s.events.MeSignStatus(c)
 }
+
+// AdminNotifyGet 委托通知订阅读取。未装配时仍是 501。
+func (s *server) AdminNotifyGet(c *gin.Context) {
+	if s.settings == nil {
+		notImplemented(c)
+		return
+	}
+	s.settings.AdminNotifyGet(c)
+}
+
+// AdminNotifySet 委托通知订阅替换。未装配时仍是 501。
+func (s *server) AdminNotifySet(c *gin.Context, params oapi.AdminNotifySetParams) {
+	if s.settings == nil {
+		notImplemented(c)
+		return
+	}
+	s.settings.AdminNotifySet(c, params)
+}
+
+// AdminSettings 委托设置名册读取。未装配时仍是 501。
+func (s *server) AdminSettings(c *gin.Context) {
+	if s.settings == nil {
+		notImplemented(c)
+		return
+	}
+	s.settings.AdminSettings(c)
+}
+
+// AnnouncementGet 委托公告读取。未装配时仍是 501。
+func (s *server) AnnouncementGet(c *gin.Context) {
+	if s.settings == nil {
+		notImplemented(c)
+		return
+	}
+	s.settings.AnnouncementGet(c)
+}
+
+// AnnouncementSet 委托公告写入。未装配时仍是 501。
+func (s *server) AnnouncementSet(c *gin.Context, params oapi.AnnouncementSetParams) {
+	if s.settings == nil {
+		notImplemented(c)
+		return
+	}
+	s.settings.AnnouncementSet(c, params)
+}
+
+// AuditLogList 委托审计列表。未装配时仍是 501。
+func (s *server) AuditLogList(c *gin.Context, params oapi.AuditLogListParams) {
+	if s.audit == nil {
+		notImplemented(c)
+		return
+	}
+	s.audit.AuditLogList(c, params)
+}

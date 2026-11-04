@@ -76,6 +76,8 @@ const (
 	// 全局设置写入：目前只有公开注册开关。
 	// detail 只记字段与目标状态（enabled/disabled）。
 	ActionSettingsRegistration Action = "settings.registration"
+	// 全站公告写入或清空。detail 只记字段名，**绝无公告正文**。
+	ActionSettingsAnnouncement Action = "settings.announcement"
 	ActionAccountCreate        Action = "account.create"
 	ActionAccountUpdate        Action = "account.update"
 	// 被拒账号编辑或改绑手机号把账号送回 pending：重提进待审队列。
@@ -157,6 +159,28 @@ type Report struct {
 	FirstID int64
 	LastID  int64
 	Count   int64
+}
+
+// LogRow 是只读列表使用的一行审计记录。
+// 它不含 prev_hash/hash 与目标字段：列表不校验链、不导出。
+// ActorLabel 是写入时固定的掩码标签，永不是原始地址。
+type LogRow struct {
+	ID         int64
+	TS         time.Time
+	Action     string
+	ActorLabel string
+	Detail     string
+}
+
+// LogQuery 是审计只读列表的已定型条件。Actor 是已掩码的标签。
+// From 与 To 是闭区间时间界；nil 表示该侧不限。
+type LogQuery struct {
+	Action string
+	Actor  string
+	From   *time.Time
+	To     *time.Time
+	Cursor string
+	Limit  int
 }
 
 // ErrEmptyChain 表示校验了零行。

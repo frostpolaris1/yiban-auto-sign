@@ -32,6 +32,7 @@ import (
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	accounthttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/account"
 	adminhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/admin"
+	audithttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/audit"
 	eventshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/events"
 	locationhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/location"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
@@ -40,6 +41,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/respond"
 	schedulehttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/schedule"
 	schoolhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/school"
+	settingshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/settings"
 	signinghttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/signing"
 	userhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/user"
 )
@@ -84,6 +86,10 @@ type Options struct {
 	Locations *locationhttp.Handler
 	// Events 提供管理员事件流与诊断轮询端点。为 nil 时这些端点回 501。
 	Events *eventshttp.Handler
+	// Settings 提供通知订阅、设置名册与公告端点。为 nil 时这些端点回 501。
+	Settings *settingshttp.Handler
+	// Audit 提供审计只读列表端点。为 nil 时该端点回 501。
+	Audit *audithttp.Handler
 	// RateLimit 限制入站速率。nil 表示不限流：只用于测试与降级进程。
 	// 生产装配必须给值，且必须带可信代理表。
 	RateLimit *ratelimit.Guard
@@ -124,6 +130,8 @@ type server struct {
 	photos         *photoshttp.Handler
 	locations      *locationhttp.Handler
 	events         *eventshttp.Handler
+	settings       *settingshttp.Handler
+	audit          *audithttp.Handler
 	rateLimit      *ratelimit.Guard
 	loginOrigin    string
 	trustedProxies []ratelimit.Prefix
@@ -164,6 +172,8 @@ func New(opts Options) (*gin.Engine, error) {
 	srv.photos = opts.Photos
 	srv.locations = opts.Locations
 	srv.events = opts.Events
+	srv.settings = opts.Settings
+	srv.audit = opts.Audit
 	srv.rateLimit = opts.RateLimit
 	srv.loginOrigin = opts.LoginOrigin
 	srv.trustedProxies = opts.TrustedProxies

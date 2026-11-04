@@ -181,8 +181,9 @@ func inContainer() bool {
 
 // registryCandidates 是名册的缺省查找顺序：安装位优先。
 // install.sh 把 config/registry.json 装到 /etc/yiban/registry.json。
+// 顺序只在 adapters/config 定义一份，服务端装配与体检共用。
 func registryCandidates() []string {
-	return []string{"/etc/yiban/registry.json", "config/registry.json"}
+	return config.RegistryCandidates()
 }
 
 // pickRegistry 解析名册路径：显式值优先，否则取首个存在的候选。

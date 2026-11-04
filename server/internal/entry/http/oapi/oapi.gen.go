@@ -4,6 +4,7 @@
 package oapi
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -268,6 +269,48 @@ func (e HealthStatusStatus) Valid() bool {
 	}
 }
 
+// Defines values for NotifyCategory.
+const (
+	CapacityRejected  NotifyCategory = "capacity_rejected"
+	CredentialInvalid NotifyCategory = "credential_invalid"
+	ReviewPending     NotifyCategory = "review_pending"
+	SignFailedDaily   NotifyCategory = "sign_failed_daily"
+)
+
+// Valid indicates whether the value is a known member of the NotifyCategory enum.
+func (e NotifyCategory) Valid() bool {
+	switch e {
+	case CapacityRejected:
+		return true
+	case CredentialInvalid:
+		return true
+	case ReviewPending:
+		return true
+	case SignFailedDaily:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for NotifyChannel.
+const (
+	Email NotifyChannel = "email"
+	InApp NotifyChannel = "in_app"
+)
+
+// Valid indicates whether the value is a known member of the NotifyChannel enum.
+func (e NotifyChannel) Valid() bool {
+	switch e {
+	case Email:
+		return true
+	case InApp:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PhotoMime.
 const (
 	Imagejpeg PhotoMime = "image/jpeg"
@@ -400,6 +443,30 @@ const (
 func (e SchoolUpdateTimezone) Valid() bool {
 	switch e {
 	case SchoolUpdateTimezoneAsiaShanghai:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SettingSource.
+const (
+	Default SettingSource = "default"
+	Env     SettingSource = "env"
+	File    SettingSource = "file"
+	Unknown SettingSource = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the SettingSource enum.
+func (e SettingSource) Valid() bool {
+	switch e {
+	case Default:
+		return true
+	case Env:
+		return true
+	case File:
+		return true
+	case Unknown:
 		return true
 	default:
 		return false
@@ -785,6 +852,46 @@ type AdminTaskRow struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// Announcement defines model for Announcement.
+type Announcement struct {
+	// Text Current announcement body; empty when none is set. Single line.
+	Text string `json:"text"`
+
+	// UpdatedAt When the announcement was last written; null when never set.
+	UpdatedAt *time.Time `json:"updated_at"`
+}
+
+// AnnouncementUpdate defines model for AnnouncementUpdate.
+type AnnouncementUpdate struct {
+	// Text Trimmed body, at most 200 characters, one line: a line break or
+	// line separator answers 400. An empty text clears the
+	// announcement.
+	Text string `json:"text"`
+}
+
+// AuditLogItem defines model for AuditLogItem.
+type AuditLogItem struct {
+	Action string `json:"action"`
+
+	// Actor Masked actor label fixed at write time; never a raw address.
+	Actor string    `json:"actor"`
+	At    time.Time `json:"at"`
+
+	// Detail Detail JSON text; passed through the mask rules on the way out.
+	Detail string `json:"detail"`
+
+	// Id Row id of the audit chain row.
+	Id int64 `json:"id"`
+}
+
+// AuditLogPage defines model for AuditLogPage.
+type AuditLogPage struct {
+	Items []AuditLogItem `json:"items"`
+
+	// NextCursor Cursor for the next page; empty on the last page.
+	NextCursor string `json:"next_cursor"`
+}
+
 // CapacityReport defines model for CapacityReport.
 type CapacityReport struct {
 	// Binding Side to raise when capacity is short. workers means raise
@@ -969,6 +1076,38 @@ type HealthStatusStatus string
 type LoginRequest struct {
 	Email    openapi_types.Email `json:"email"`
 	Password string              `json:"password"`
+}
+
+// NotifyCategory Closed set of notification subjects for this phase.
+type NotifyCategory string
+
+// NotifyChannel Closed set of delivery channels; nothing is delivered in this phase.
+type NotifyChannel string
+
+// NotifyPref defines model for NotifyPref.
+type NotifyPref struct {
+	// Category Closed set of notification subjects for this phase.
+	Category NotifyCategory `json:"category"`
+
+	// Channel Closed set of delivery channels; nothing is delivered in this phase.
+	Channel NotifyChannel `json:"channel"`
+
+	// Enabled Effective state: the stored override when present, the category
+	// default otherwise.
+	Enabled bool `json:"enabled"`
+}
+
+// NotifyPrefPage All four categories across both channels, so the client renders the
+// full matrix without merging defaults itself. Exactly eight items in
+// a stable order.
+type NotifyPrefPage struct {
+	Items []NotifyPref `json:"items"`
+}
+
+// NotifyPrefsUpdate The complete replacement override set. Every pair must be known and
+// unique; unlisted pairs drop their override and read as defaults.
+type NotifyPrefsUpdate struct {
+	Items []NotifyPref `json:"items"`
 }
 
 // Photo defines model for Photo.
@@ -1256,6 +1395,73 @@ type SessionUser struct {
 	MustChangePassword bool                `json:"must_change_password"`
 	Role               UserRole            `json:"role"`
 	Status             UserStatus          `json:"status"`
+}
+
+// SettingGroup defines model for SettingGroup.
+type SettingGroup struct {
+	Items []SettingItem `json:"items"`
+	Name  string        `json:"name"`
+}
+
+// SettingItem One roster key with its resolved view.
+type SettingItem struct {
+	// Group First group registered for the key in the roster.
+	Group string `json:"group"`
+	Key   string `json:"key"`
+
+	// Sensitive Masked view for a sensitive key; null for a non-sensitive key.
+	Sensitive *struct {
+		// Masked Fixed form - "****" when set, empty string otherwise. It carries
+		// no character of the stored value.
+		Masked string `json:"masked"`
+
+		// Set True when the environment provides the key.
+		Set bool `json:"set"`
+
+		// Source env: the process environment provides the key. file: a file-backed
+		// configuration layer provides it (never reported by this server).
+		// default: unset, the roster registers a default. unknown: unset with
+		// no registered default.
+		Source SettingSource `json:"source"`
+	} `json:"sensitive"`
+
+	// Source env: the process environment provides the key. file: a file-backed
+	// configuration layer provides it (never reported by this server).
+	// default: unset, the roster registers a default. unknown: unset with
+	// no registered default.
+	Source SettingSource `json:"source"`
+
+	// Value Resolved value of a non-sensitive key: the environment value when
+	// set, otherwise the registered default rendered by the key type,
+	// otherwise null. Absent (null) for a sensitive key.
+	Value SettingItem_Value `json:"value"`
+}
+
+// SettingItemValue0 defines model for SettingItem.Value.0.
+type SettingItemValue0 = string
+
+// SettingItemValue1 defines model for SettingItem.Value.1.
+type SettingItemValue1 = float64
+
+// SettingItemValue2 defines model for SettingItem.Value.2.
+type SettingItemValue2 = bool
+
+// SettingItem_Value Resolved value of a non-sensitive key: the environment value when
+// set, otherwise the registered default rendered by the key type,
+// otherwise null. Absent (null) for a sensitive key.
+type SettingItem_Value struct {
+	union json.RawMessage
+}
+
+// SettingSource env: the process environment provides the key. file: a file-backed
+// configuration layer provides it (never reported by this server).
+// default: unset, the roster registers a default. unknown: unset with
+// no registered default.
+type SettingSource string
+
+// SettingsReport defines model for SettingsReport.
+type SettingsReport struct {
+	Groups []SettingGroup `json:"groups"`
 }
 
 // SignStatsCounts defines model for SignStatsCounts.
@@ -1592,10 +1798,24 @@ type AccountVerifyParams struct {
 	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
 }
 
+// AnnouncementSetParams defines parameters for AnnouncementSet.
+type AnnouncementSetParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
 // AdminEventsParams defines parameters for AdminEvents.
 type AdminEventsParams struct {
 	// LastEventID Last event id seen by the client, for resumption.
 	LastEventID *string `json:"Last-Event-ID,omitempty"`
+}
+
+// AdminNotifySetParams defines parameters for AdminNotifySet.
+type AdminNotifySetParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
 }
 
 // AdminTaskListParams defines parameters for AdminTaskList.
@@ -1647,6 +1867,28 @@ type AdminTaskExportParams struct {
 
 // AdminTaskExportParamsState defines parameters for AdminTaskExport.
 type AdminTaskExportParamsState string
+
+// AuditLogListParams defines parameters for AuditLogList.
+type AuditLogListParams struct {
+	// Cursor Opaque page cursor taken from next_cursor.
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Limit Page size, 1 to 200.
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Action Exact action word, e.g. auth.login.
+	Action *string `form:"action,omitempty" json:"action,omitempty"`
+
+	// Actor Actor filter. Masked with the writer's rule before matching, so
+	// a full address matches its stored masked label.
+	Actor *string `form:"actor,omitempty" json:"actor,omitempty"`
+
+	// From Inclusive lower bound on the row time (RFC3339).
+	From *time.Time `form:"from,omitempty" json:"from,omitempty"`
+
+	// To Inclusive upper bound on the row time (RFC3339).
+	To *time.Time `form:"to,omitempty" json:"to,omitempty"`
+}
 
 // AuthChangePasswordParams defines parameters for AuthChangePassword.
 type AuthChangePasswordParams struct {
@@ -1933,6 +2175,12 @@ type AccountPauseJSONRequestBody = AccountPauseRequest
 // AccountReviewJSONRequestBody defines body for AccountReview for application/json ContentType.
 type AccountReviewJSONRequestBody = AccountReviewRequest
 
+// AnnouncementSetJSONRequestBody defines body for AnnouncementSet for application/json ContentType.
+type AnnouncementSetJSONRequestBody = AnnouncementUpdate
+
+// AdminNotifySetJSONRequestBody defines body for AdminNotifySet for application/json ContentType.
+type AdminNotifySetJSONRequestBody = NotifyPrefsUpdate
+
 // AuthChangePasswordJSONRequestBody defines body for AuthChangePassword for application/json ContentType.
 type AuthChangePasswordJSONRequestBody = ChangePasswordRequest
 
@@ -1984,6 +2232,94 @@ type UserCreateJSONRequestBody = UserCreate
 // UserUpdateJSONRequestBody defines body for UserUpdate for application/json ContentType.
 type UserUpdateJSONRequestBody = UserUpdate
 
+// AsSettingItemValue0 returns the union data inside the SettingItem_Value as a SettingItemValue0
+func (t SettingItem_Value) AsSettingItemValue0() (SettingItemValue0, error) {
+	var body SettingItemValue0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSettingItemValue0 overwrites any union data inside the SettingItem_Value as the provided SettingItemValue0
+func (t *SettingItem_Value) FromSettingItemValue0(v SettingItemValue0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSettingItemValue0 performs a merge with any union data inside the SettingItem_Value, using the provided SettingItemValue0
+func (t *SettingItem_Value) MergeSettingItemValue0(v SettingItemValue0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsSettingItemValue1 returns the union data inside the SettingItem_Value as a SettingItemValue1
+func (t SettingItem_Value) AsSettingItemValue1() (SettingItemValue1, error) {
+	var body SettingItemValue1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSettingItemValue1 overwrites any union data inside the SettingItem_Value as the provided SettingItemValue1
+func (t *SettingItem_Value) FromSettingItemValue1(v SettingItemValue1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSettingItemValue1 performs a merge with any union data inside the SettingItem_Value, using the provided SettingItemValue1
+func (t *SettingItem_Value) MergeSettingItemValue1(v SettingItemValue1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsSettingItemValue2 returns the union data inside the SettingItem_Value as a SettingItemValue2
+func (t SettingItem_Value) AsSettingItemValue2() (SettingItemValue2, error) {
+	var body SettingItemValue2
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSettingItemValue2 overwrites any union data inside the SettingItem_Value as the provided SettingItemValue2
+func (t *SettingItem_Value) FromSettingItemValue2(v SettingItemValue2) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSettingItemValue2 performs a merge with any union data inside the SettingItem_Value, using the provided SettingItemValue2
+func (t *SettingItem_Value) MergeSettingItemValue2(v SettingItemValue2) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t SettingItem_Value) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *SettingItem_Value) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// AccountList List accounts with cursor pagination.
@@ -2031,18 +2367,36 @@ type ServerInterface interface {
 	// AccountVerify Verify the stored credentials against the platform.
 	// (POST /api/accounts/{id}/verify)
 	AccountVerify(c *gin.Context, id AccountID, params AccountVerifyParams)
+	// AnnouncementSet Publish or clear the site announcement.
+	// (PUT /api/admin/announcement)
+	AnnouncementSet(c *gin.Context, params AnnouncementSetParams)
 	// AdminEngine One-process execution monitor snapshot.
 	// (GET /api/admin/engine)
 	AdminEngine(c *gin.Context)
 	// AdminEvents Subscribe to the admin event stream (SSE).
 	// (GET /api/admin/events)
 	AdminEvents(c *gin.Context, params AdminEventsParams)
+	// AdminNotifyGet Read the caller's effective notification subscriptions.
+	// (GET /api/admin/notify)
+	AdminNotifyGet(c *gin.Context)
+	// AdminNotifySet Replace the caller's subscription overrides.
+	// (PUT /api/admin/notify)
+	AdminNotifySet(c *gin.Context, params AdminNotifySetParams)
+	// AdminSettings Read the deployment configuration roster, grouped.
+	// (GET /api/admin/settings)
+	AdminSettings(c *gin.Context)
 	// AdminTaskList Search sign tasks for one business day.
 	// (GET /api/admin/tasks)
 	AdminTaskList(c *gin.Context, params AdminTaskListParams)
 	// AdminTaskExport Download the task search as CSV.
 	// (GET /api/admin/tasks/export)
 	AdminTaskExport(c *gin.Context, params AdminTaskExportParams)
+	// AnnouncementGet Read the published site announcement.
+	// (GET /api/announcement)
+	AnnouncementGet(c *gin.Context)
+	// AuditLogList Read audit rows with cursor pagination.
+	// (GET /api/audit-logs)
+	AuditLogList(c *gin.Context, params AuditLogListParams)
 	// AuthChangePassword Change the password of the signed-in user.
 	// (POST /api/auth/change-password)
 	AuthChangePassword(c *gin.Context, params AuthChangePasswordParams)
@@ -2883,6 +3237,49 @@ func (siw *ServerInterfaceWrapper) AccountVerify(c *gin.Context) {
 	siw.Handler.AccountVerify(c, id, params)
 }
 
+// AnnouncementSet operation middleware
+func (siw *ServerInterfaceWrapper) AnnouncementSet(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AnnouncementSetParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AnnouncementSet(c, params)
+}
+
 // AdminEngine operation middleware
 func (siw *ServerInterfaceWrapper) AdminEngine(c *gin.Context) {
 
@@ -2934,6 +3331,75 @@ func (siw *ServerInterfaceWrapper) AdminEvents(c *gin.Context) {
 	}
 
 	siw.Handler.AdminEvents(c, params)
+}
+
+// AdminNotifyGet operation middleware
+func (siw *ServerInterfaceWrapper) AdminNotifyGet(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AdminNotifyGet(c)
+}
+
+// AdminNotifySet operation middleware
+func (siw *ServerInterfaceWrapper) AdminNotifySet(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AdminNotifySetParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AdminNotifySet(c, params)
+}
+
+// AdminSettings operation middleware
+func (siw *ServerInterfaceWrapper) AdminSettings(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AdminSettings(c)
 }
 
 // AdminTaskList operation middleware
@@ -3052,6 +3518,86 @@ func (siw *ServerInterfaceWrapper) AdminTaskExport(c *gin.Context) {
 	}
 
 	siw.Handler.AdminTaskExport(c, params)
+}
+
+// AnnouncementGet operation middleware
+func (siw *ServerInterfaceWrapper) AnnouncementGet(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AnnouncementGet(c)
+}
+
+// AuditLogList operation middleware
+func (siw *ServerInterfaceWrapper) AuditLogList(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AuditLogListParams
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "cursor", c.Request.URL.Query(), &params.Cursor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter cursor: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", c.Request.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter limit: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "action" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "action", c.Request.URL.Query(), &params.Action, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter action: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "actor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "actor", c.Request.URL.Query(), &params.Actor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter actor: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "from" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "from", c.Request.URL.Query(), &params.From, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter from: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "to" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "to", c.Request.URL.Query(), &params.To, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter to: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AuditLogList(c, params)
 }
 
 // AuthChangePassword operation middleware
@@ -4683,6 +5229,12 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/admin/tasks", wrapper.AdminTaskList)
 	router.GET(options.BaseURL+"/api/admin/tasks/export", wrapper.AdminTaskExport)
 	router.GET(options.BaseURL+"/api/admin/engine", wrapper.AdminEngine)
+	router.GET(options.BaseURL+"/api/admin/notify", wrapper.AdminNotifyGet)
+	router.PUT(options.BaseURL+"/api/admin/notify", wrapper.AdminNotifySet)
+	router.GET(options.BaseURL+"/api/admin/settings", wrapper.AdminSettings)
+	router.PUT(options.BaseURL+"/api/admin/announcement", wrapper.AnnouncementSet)
+	router.GET(options.BaseURL+"/api/announcement", wrapper.AnnouncementGet)
+	router.GET(options.BaseURL+"/api/audit-logs", wrapper.AuditLogList)
 	router.GET(options.BaseURL+"/api/me/diagnostics", wrapper.MeDiagnostics)
 	router.GET(options.BaseURL+"/api/accounts/:id/diagnostics", wrapper.AccountDiagnostics)
 	router.GET(options.BaseURL+"/api/me/sign-status", wrapper.MeSignStatus)
