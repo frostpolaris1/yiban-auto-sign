@@ -122,7 +122,8 @@ go test ./cmd/cli/ -run 'TestUpdateSh' -count=1
 CI：`deploy-gate.yml` 的 `update-rollback-e2e` job 自动跑上面两条
 （第一条是干跑契约，必定真跑；第二条环境起不来时显性 SKIP，不算绿）。
 
-期望：演练脚本退出码 0，`run.log` 末尾 `result=PASS`，R1..R10 全 PASS
+期望：演练脚本退出码 0，`run.log` 末尾 `result=PASS`，R1..R10（含 R8b install 重跑、
+R8c 状态目录软链、R9b 备份件被篡改）全 PASS
 （签名错／自检 FAIL／备份失败／无 CREATEDB／迁移失败／健康失败+回库／
 正常升级+首次装页面／健康失败+UI 回滚／数据库恢复失败）。
 同一脚本连跑两遍 rc 均 0。

@@ -159,7 +159,7 @@ func newU2Fixture(t *testing.T) *u2Fixture {
 
 // statePath 返回本次环境的状态文件路径。
 func (f *u2Fixture) statePath() string {
-	return filepath.Join(f.root, "var/lib/yiban/updates/update-state.json")
+	return filepath.Join(f.root, "var/lib/yiban-updater/state/update-state.json")
 }
 
 // readState 读状态文件并解码为 map。
@@ -179,7 +179,7 @@ func (f *u2Fixture) readState(t *testing.T) map[string]any {
 // backupDirs 列出本次环境下的备份目录。
 func (f *u2Fixture) backupDirs(t *testing.T) []string {
 	t.Helper()
-	dirs, err := filepath.Glob(filepath.Join(f.root, "var/lib/yiban/backups/*"))
+	dirs, err := filepath.Glob(filepath.Join(f.root, "var/lib/yiban-updater/backups/*"))
 	if err != nil {
 		t.Fatalf("glob backups: %v", err)
 	}
@@ -354,7 +354,7 @@ func TestUpdateShBackupLayoutStateAndRetention(t *testing.T) {
 	} else if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Fatalf("状态文件权限 = %04o, want 0600", perm)
 	}
-	if body := readAll(t, filepath.Join(f.root, "var/lib/yiban/updates/update.log")); !strings.Contains(body, "result=success") {
+	if body := readAll(t, filepath.Join(f.root, "var/lib/yiban-updater/state/update.log")); !strings.Contains(body, "result=success") {
 		t.Fatalf("update.log 缺结果行：\n%s", body)
 	}
 }
@@ -594,7 +594,7 @@ func TestUpdateShSelfcheckGatePassesBackupDir(t *testing.T) {
 		t.Fatalf("update rc=%d out=%s", rc, out)
 	}
 	args := readAll(t, f.env["FAKE_SELFCHECK_ARGS"])
-	wantBackup := filepath.Join(f.root, "var/lib/yiban/backups")
+	wantBackup := filepath.Join(f.root, "var/lib/yiban-updater/backups")
 	if !strings.Contains(args, "--backup-dir "+wantBackup) {
 		t.Fatalf("自检门没有传 --backup-dir %s：\n%s", wantBackup, args)
 	}
@@ -778,5 +778,89 @@ func TestUpdateShStripsQueryPassword(t *testing.T) {
 	}
 	if !strings.Contains(argvLog, "pgpass=/") {
 		t.Fatalf("查询串口令必须走 PGPASSFILE：\n%s", argvLog)
+	}
+}
+
+// TestUpdateShStripsQueryPasswordWithoutUserinfo 钉 HIGH（H4 复查）：
+// 没有 userinfo 的 DSN 也可能把口令写在查询串里
+// （postgres://host:port/db?password=...）。这种形态同样必须摘掉。
+func TestUpdateShStripsQueryPasswordWithoutUserinfo(t *testing.T) {
+	requireBash(t)
+	f := newU2Fixture(t)
+	dsn := "postgres://127.0.0.1:5432/yiban?password=" + u2CanaryPassword + "&sslmode=disable"
+	if err := os.WriteFile(filepath.Join(f.root, "etc/yiban/.env"),
+		[]byte("YIBAN_DATABASE_URL="+dsn+"\n"), 0o600); err != nil {
+		t.Fatalf("write env: %v", err)
+	}
+	newBin := fakeBin(t, f.binDir, "yiban-server-new", "echo NEW\n")
+	out, rc := runScript(t, scriptPath(t, "update.sh"), f.env,
+		"--server-bin", newBin, "--allow-unsigned")
+	if rc != 0 {
+		t.Fatalf("update rc=%d out=%s", rc, out)
+	}
+	argvLog := readAll(t, f.env["U2_ARGV_LOG"])
+	if strings.Contains(argvLog, u2CanaryPassword) || strings.Contains(argvLog, "password=") {
+		t.Fatalf("无 userinfo 的 ?password= 泄漏到 argv：\n%s", argvLog)
+	}
+	if !strings.Contains(argvLog, "sslmode=disable") {
+		t.Fatalf("其余查询参数必须保留：\n%s", argvLog)
+	}
+	if !strings.Contains(argvLog, "pgpass=/") {
+		t.Fatalf("查询串口令必须走 PGPASSFILE：\n%s", argvLog)
+	}
+}
+
+// TestUpdateShAcceptsUpdaterBackupRoot 钉 MEDIUM：更新器自己的备份根
+// （/var/lib/yiban-updater/backups）必须被 --backup-dir 接受，防名单误伤。
+func TestUpdateShAcceptsUpdaterBackupRoot(t *testing.T) {
+	requireBash(t)
+	f := newU2Fixture(t)
+	newBin := fakeBin(t, f.binDir, "yiban-server-new", "echo NEW\n")
+	root := filepath.Join(f.root, "var/lib/yiban-updater/backups")
+	out, rc := runScript(t, scriptPath(t, "update.sh"), f.env,
+		"--server-bin", newBin, "--allow-unsigned", "--backup-dir", root)
+	if rc != 0 {
+		t.Fatalf("默认更新器备份根必须被接受：rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "backup: "+root) {
+		t.Fatalf("备份应落在 %s：%s", root, out)
+	}
+	// 服务用户的 HOME 子目录必须被拒（install.sh 会递归 chown 那里）。
+	home := filepath.Join(f.root, "var/lib/yiban")
+	out, rc = runScript(t, scriptPath(t, "update.sh"), f.env,
+		"--server-bin", newBin, "--allow-unsigned", "--backup-dir", home)
+	if rc != 2 {
+		t.Fatalf("服务用户目录做备份根应 exit 2：rc=%d out=%s", rc, out)
+	}
+}
+
+// TestUpdateShRejectsSymlinkedStateDir 钉 HIGH-3：
+// 状态目录被换成软链时，root 的 >> / chmod 会跟随到别处（例如 /etc/passwd）。
+// 必须在写入之前 exit 2。
+func TestUpdateShRejectsSymlinkedStateDir(t *testing.T) {
+	requireBash(t)
+	f := newU2Fixture(t)
+	updater := filepath.Join(f.root, "var/lib/yiban-updater")
+	if err := os.MkdirAll(updater, 0o700); err != nil {
+		t.Fatalf("mkdir updater root: %v", err)
+	}
+	evil := filepath.Join(f.root, "evil-target")
+	if err := os.MkdirAll(evil, 0o755); err != nil {
+		t.Fatalf("mkdir evil: %v", err)
+	}
+	if err := os.Symlink(evil, filepath.Join(updater, "state")); err != nil {
+		t.Skipf("SKIP: 本平台不支持符号链接：%v", err)
+	}
+	newBin := fakeBin(t, f.binDir, "yiban-server-new", "echo NEW\n")
+	out, rc := runScript(t, scriptPath(t, "update.sh"), f.env,
+		"--server-bin", newBin, "--allow-unsigned")
+	if rc != 2 {
+		t.Fatalf("软链状态目录必须 exit 2：rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "symlinked updater directory") {
+		t.Fatalf("必须点名软链：%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(evil, "update.log")); err == nil {
+		t.Fatalf("root 不得顺着软链写日志（%s/update.log 被创建）", evil)
 	}
 }

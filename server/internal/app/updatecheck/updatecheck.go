@@ -45,9 +45,11 @@ const (
 	// DefaultStatePath 是更新状态文件的缺省路径。
 	DefaultStatePath = "/var/lib/yiban/update-state.json"
 	// DefaultBackupDir 是一键更新备份根目录的缺省路径（与 update.sh 同源）。
-	// U2 起 update.sh 写这里；目录 0700、属服务用户（备份文件本身 0600 root）。
-	// 不能指向 root 专属目录：本检查按**服务用户**判权，会把它判成 FAIL。
-	DefaultBackupDir = "/var/lib/yiban/backups"
+	// 必须放在服务用户不可重命名的 root 独占父目录下：
+	// /var/lib 属 root ⇒ yiban 换不了 /var/lib/yiban-updater；
+	// 该根与 backups 都是 root:root 0700（备份含凭据密文，回滚还会执行
+	// 备份里的 CLI）。本检查也按「属主 root + 调用者可写」判权。
+	DefaultBackupDir = "/var/lib/yiban-updater/backups"
 	// DefaultUnit 是 systemd 单元名（不带 .service 后缀）。
 	DefaultUnit = "yiban"
 )

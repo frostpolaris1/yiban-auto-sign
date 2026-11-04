@@ -539,7 +539,7 @@ exit 0
 	if dumpAt < 0 || migrateAt < 0 || dumpAt > migrateAt {
 		t.Fatalf("备份必须先于迁移：dump=%d migrate=%d\n%s", dumpAt, migrateAt, log)
 	}
-	dumps, err := filepath.Glob(filepath.Join(root, "var/lib/yiban/backups/*/db.dump"))
+	dumps, err := filepath.Glob(filepath.Join(root, "var/lib/yiban-updater/backups/*/db.dump"))
 	if err != nil || len(dumps) != 1 {
 		t.Fatalf("统一备份里的 db.dump 缺失: %v %v", dumps, err)
 	}
@@ -577,7 +577,7 @@ exit 0
 		t.Fatalf("备份失败必须在停服之前中止：\n%s", log)
 	}
 	// 半成品备份目录不许留着：看着像备份比没有备份更危险。
-	left, err := filepath.Glob(filepath.Join(root, "var/lib/yiban/backups/*/db.dump"))
+	left, err := filepath.Glob(filepath.Join(root, "var/lib/yiban-updater/backups/*/db.dump"))
 	if err != nil {
 		t.Fatalf("glob backups: %v", err)
 	}

@@ -152,8 +152,8 @@ sudo bash deploy/linux/update.sh --selfcheck-only    # 0 全 PASS/SKIP；2 有 F
 
 **统一备份（停服前，失败即中止）**
 
-落在 `/var/lib/yiban/backups/<UTC时间戳>/`（目录 0700、文件 0600；
-`/var/lib/yiban/updates/` 只放状态与日志）。**备份根与状态目录都是
+落在 `/var/lib/yiban-updater/backups/<UTC时间戳>/`（目录 0700、文件 0600；
+`/var/lib/yiban-updater/state/` 只放状态与日志）。**备份根与状态目录都是
 root:root 0700**：备份含凭据密文，回滚还会执行备份内的 CLI，因此服务用户
 不得能写（U1 自检的 `fs.backup_dir` 也按调用者 root 判权）；每份子目录
 0700、文件 0600。
@@ -175,16 +175,26 @@ root:root 0700**：备份含凭据密文，回滚还会执行备份内的 CLI，
 保留最近 `--keep-backups N` 份（缺省 5；`0` = 不清理）。只删本目录下形如
 `20261104T101500Z` 的备份目录；备份失败不删任何东西，半成品目录直接清掉。
 
+更新器的状态/备份根放在 `/var/lib/yiban-updater/{state,backups}`：它与服务用户的
+`/var/lib/yiban` **同级**，install.sh 重装时对 `/var/lib/yiban` 的递归 chown
+到不了这里（否则备份目录会被改成 yiban 属主，更新器随后拒绝运行）。
+
+**从旧布局升级**：旧版本写在 `/var/lib/yiban/{pre-migrate,backups,updates}` 下的
+备份与状态**不会删**。新备份落新根；旧备份仍可按上面「看本次备份」的方式手工
+`pg_restore`（文件是 root 0600，需 root 读）。自检的 `fs.backup_dir` 判的是新根，
+旧目录（典型是 root:root 0700 的 `pre-migrate`）在场也不会误红。
+
 **状态与日志**
 
 | 路径 | 内容 |
 |---|---|
-| `/var/lib/yiban/updates/update-state.json` | 最近一次更新：`result`（running/success/failed/aborted/interrupted）、`exit_code`、`phase`、版本、备份路径、`db_name_before/after`、`db_schema_before/after`、`db_restore` |
-| `/var/lib/yiban/updates/update.log` | 追加日志（时间／阶段／结果），一行一事件 |
-| `/var/lib/yiban/updates/selfcheck-latest.json` | 停服前自检的完整 JSON 报告 |
+| `/var/lib/yiban-updater/state/update-state.json` | 最近一次更新：`result`（running/success/failed/aborted/interrupted）、`exit_code`、`phase`、版本、备份路径、`db_name_before/after`、`db_schema_before/after`、`db_restore` |
+| `/var/lib/yiban-updater/state/update.log` | 追加日志（时间／阶段／结果），一行一事件 |
+| `/var/lib/yiban-updater/state/selfcheck-latest.json` | 停服前自检的完整 JSON 报告 |
 
-`/var/lib/yiban/update-state.json`（注意不是 `updates/` 下那份）是 U1 的**密钥指纹**
-状态，只由 `yiban-cli selfcheck --record-keys` 写；更新成功时脚本会自动调用它。
+`/var/lib/yiban/update-state.json`（与更新器的 `/var/lib/yiban-updater/state/`
+不是一份）是 U1 的**密钥指纹**状态，只由 `yiban-cli selfcheck --record-keys` 写；
+更新成功时脚本会自动调用它。
 两份文件都不含 DSN 口令、密钥原文与 GPG 口令。
 
 **失败回滚**
@@ -241,20 +251,25 @@ key=value 形态按 libpq 词法解析；解析不了就 `exit 2`（绝不再把
 
 ```bash
 # 1) 看最近一次更新做了什么
-sudo cat /var/lib/yiban/updates/update-state.json
-sudo tail -n 50 /var/lib/yiban/updates/update.log
+sudo cat /var/lib/yiban-updater/state/update-state.json
+sudo tail -n 50 /var/lib/yiban-updater/state/update.log
 
 # 2) 看停服前自检的完整报告（FAIL 项在 checks[] 里，status=FAIL）
-sudo python3 -m json.tool /var/lib/yiban/updates/selfcheck-latest.json | less
+sudo python3 -m json.tool /var/lib/yiban-updater/state/selfcheck-latest.json | less
 
 # 3) 看本次备份与校验
-sudo ls -l /var/lib/yiban/backups/
-sudo sh -c 'cd /var/lib/yiban/backups/<ts> && sha256sum -c SHA256SUMS'
+sudo ls -l /var/lib/yiban-updater/backups/
+sudo sh -c 'cd /var/lib/yiban-updater/backups/<ts> && sha256sum -c SHA256SUMS'
 
 # 4) 数据库恢复失败（exit 2）时，按打印的 manual action 操作，等价命令：
+#    注意：db.dump 是 root 0600（含凭据密文），postgres 用户读不到原文，
+#    先复制一份给它（用完即删），不要改 dump 权限。
 sudo -u postgres createdb yiban_restore_manual
+sudo install -m 0640 -o postgres -g postgres \
+  /var/lib/yiban-updater/backups/<ts>/db.dump /tmp/yiban-restore.dump
 sudo -u postgres pg_restore --no-owner --no-privileges \
-  -d yiban_restore_manual /var/lib/yiban/backups/<ts>/db.dump
+  -d yiban_restore_manual /tmp/yiban-restore.dump
+sudo rm -f /tmp/yiban-restore.dump
 sudo sed -i 's|^YIBAN_DATABASE_URL=.*|YIBAN_DATABASE_URL=postgres://…/yiban_restore_manual|' /etc/yiban/.env
 sudo systemctl start yiban.service
 

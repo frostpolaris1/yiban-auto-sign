@@ -15,6 +15,8 @@
 #                         新库 schema = 升级前，原库保留（schema 已前进）；
 #   R8 正常升级         → exit 0，.bak 保存升级前旧件，schema +2，首次装页面生效；
 #   R9 健康失败+UI 回滚 → exit 1，旧页面换回、指针只剩一行、库不动（migrate 空转）；
+#   R8b install.sh 重跑 → 更新器 root/state/backups 仍是 root 0700（递归 chown 到不了）；
+#   R8c 状态目录软链    → exit 2，root 不顺着软链写状态/日志；
 #   R9b 备份件被篡改    → exit 2，回滚拒绝执行备份里的 CLI（属主/权限复核）；
 #   R10 恢复失败        → exit 2，打印 manual action（含真实目标库名），服务停住。
 #
@@ -51,7 +53,8 @@
 #   R1 基线安装（install.sh + v1）与自检门自证
 #   R2 签名错  R3 自检 FAIL  R4 备份失败  R5 无 CREATEDB
 #   R6 迁移失败（--no-restore-db）  R7 健康失败 + 数据库回滚
-#   R8 正常升级（含 --ui-dir）  R9 健康失败 + UI 回滚
+#   R8 正常升级（含 --ui-dir）  R8b install.sh 重跑  R8c 状态目录软链
+#   R9 健康失败 + UI 回滚
 #   R9b 备份件被篡改（回滚拒绝执行）
 #   R10 数据库恢复失败（manual action）
 #
@@ -87,7 +90,7 @@ REPO="$(cd "$SELF_DIR/../.." && pwd)"
 # shellcheck source=lib/deploy-e2e.sh
 . "$SELF_DIR/lib/deploy-e2e.sh"
 
-usage() { sed -n '2,81p' "$SELF"; }
+usage() { sed -n '2,84p' "$SELF"; }
 
 die_usage() {
     echo "update-rollback-e2e: $1" >&2
@@ -640,11 +643,12 @@ run_mode() {
     CLI_DEST="/usr/local/bin/yiban-cli"
     UNIT="yiban.service"
     ENV_FILE="/etc/yiban/.env"
-    STATE_DIR="/var/lib/yiban/updates"
+    UPDATER_ROOT="/var/lib/yiban-updater"
+    STATE_DIR="$UPDATER_ROOT/state"
     STATE_FILE="$STATE_DIR/update-state.json"
-    # 备份根与状态目录同级（不在其下）：U1 的 fs.backup_dir 按服务用户判权，
-    # 祖先必须是服务用户可写的 /var/lib/yiban。
-    BACKUP_ROOT="/var/lib/yiban/backups"
+    # 更新器的 root 独占树：父目录 /var/lib 属 root ⇒ yiban 换不了它；
+    # 与 /var/lib/yiban 同级（install.sh 的递归 chown 到不了这里）。
+    BACKUP_ROOT="$UPDATER_ROOT/backups"
 
     # sha <文件>：容器内 sha256sum（coreutils 必有）。
     sha() { sha256sum "$1" | cut -d' ' -f1; }
@@ -1006,9 +1010,11 @@ run_mode() {
             | head -n 5 | sed 's/^/  /' >&2
         e2e_die "pg 客户端没拿到 PGPASSFILE（口令隔离没接线，见上）"
     fi
-    # 备份落位：根 0700 属服务用户（U1 判据要的），本份 0700 root。
+    # 备份落位：根与状态目录都在 root 独占父目录下（0700 root），本份也 0700 root。
     NEWEST_R8_BACKUP="$({ ls -1d "$BACKUP_ROOT"/*/ 2>/dev/null || true; } | sort | tail -n 1)"
     NEWEST_R8_BACKUP="${NEWEST_R8_BACKUP%/}"
+    assert_eq "R8 更新器父目录权限与属主" "$(stat -c '%a %U' "$UPDATER_ROOT")" "700 root"
+    assert_eq "R8 状态目录权限与属主" "$(stat -c '%a %U' "$STATE_DIR")" "700 root"
     assert_eq "R8 备份根权限与属主" "$(stat -c '%a %U' "$BACKUP_ROOT")" "700 root"
     assert_eq "R8 备份子目录属主" "$(stat -c '%U' "$NEWEST_R8_BACKUP")" "root"
     [ -f "$NEWEST_R8_BACKUP/env.backup" ] || e2e_die "R8：备份缺 env.backup"
@@ -1018,6 +1024,55 @@ run_mode() {
     assert_eq "R8 YIBAN_UI_DIR 唯一" "$(grep -c '^YIBAN_UI_DIR=' "$ENV_FILE")" "1"
     assert_grep "$ENV_FILE" '^YIBAN_UI_DIR=/var/lib/yiban/ui$' "指针必须指到 /var/lib/yiban/ui"
     e2e_ok "rc=0；.bak=升级前旧件；unit active；healthz ok；schema=$((EXPECTED_SCHEMA + 2))；首次装页面生效；argv 无口令"
+
+    # ---- R8b install.sh 重跑：更新器根不被递归 chown -------------------------
+    e2e_step "R8b" "install.sh 重跑：更新器根仍是 root 独占"
+    # install.sh 会对 /var/lib/yiban 递归 chown（服务用户要拥有 photos/ui）。
+    # 更新器的 state/backups 必须在它的递归范围之外，重装后仍是 root 0700。
+    R8B_INSTALL_RC=0
+    YIBAN_HEALTH_RETRIES=60 YIBAN_HEALTH_RETRY_INTERVAL=1 \
+        bash "$INSTALL_SH" --server-bin "$DIST/yiban-server-v4" \
+        --cli-bin "$DIST/yiban-cli-v4" --database-url "$(current_app_dsn)" \
+        >"$E2E_LOG_DIR/R8b-install.log" 2>&1 || R8B_INSTALL_RC=$?
+    if [ "$R8B_INSTALL_RC" -ne 0 ]; then
+        tail -n 20 "$E2E_LOG_DIR/R8b-install.log" >>"$E2E_STEP_LOG" 2>&1 || true
+        e2e_die "R8b：install.sh 重跑失败（rc=$R8B_INSTALL_RC）"
+    fi
+    assert_grep "$E2E_LOG_DIR/R8b-install.log" 'install complete: healthz ok' "重装后必须健康"
+    for d in "$UPDATER_ROOT" "$STATE_DIR" "$BACKUP_ROOT"; do
+        assert_eq "R8b $(basename "$d") 权限与属主" "$(stat -c '%a %U' "$d")" "700 root"
+    done
+    assert_eq "R8b 服务用户写不了更新器根" \
+        "$(setpriv --reuid=yiban --regid=yiban --clear-groups sh -c 'test -w /var/lib/yiban-updater && echo yes || echo no')" "no"
+    assert_eq "R8b 备份件仍属 root" "$(stat -c '%U' "$NEWEST_R8_BACKUP/db.dump")" "root"
+    R8B_SELF_RC=0
+    bash "$UPDATE_SH" --selfcheck-only >"$E2E_LOG_DIR/R8b-selfcheck.log" 2>&1 || R8B_SELF_RC=$?
+    assert_eq "R8b 重装后 selfcheck-only 退出码" "$R8B_SELF_RC" "0"
+    e2e_ok "install.sh 重跑 rc=0；更新器 root/state/backups 仍 0700 root；服务用户不可写；selfcheck-only rc=0"
+
+    # ---- R8c 状态目录被换成软链：拒绝写入 -----------------------------------
+    e2e_step "R8c" "状态目录被换成软链：写入前拒绝"
+    EVIL_TARGET="/tmp/yiban-evil-state"
+    rm -rf "$EVIL_TARGET"
+    install -d -m 0755 "$EVIL_TARGET"
+    mv "$STATE_DIR" "$UPDATER_ROOT/state.real"
+    ln -s "$EVIL_TARGET" "$STATE_DIR"
+    R8C_RC=0
+    bash "$UPDATE_SH" --server-bin "$DIST/yiban-server-v4" --cli-bin "$DIST/yiban-cli-v4" \
+        --allow-unsigned >"$E2E_LOG_DIR/R8c-update.log" 2>&1 || R8C_RC=$?
+    rm -f "$STATE_DIR"
+    mv "$UPDATER_ROOT/state.real" "$STATE_DIR"
+    assert_eq "R8c update.sh 退出码" "$R8C_RC" "2"
+    assert_grep "$E2E_LOG_DIR/R8c-update.log" 'symlinked updater directory' "必须点名软链"
+    if [ -e "$EVIL_TARGET/update.log" ] || [ -e "$EVIL_TARGET/update-state.json" ]; then
+        e2e_die "R8c：root 顺着软链写了状态文件（$EVIL_TARGET）"
+    fi
+    assert_eq "R8c 修复后 unit 状态" "$(unit_active)" "active"
+    if ! health_ok; then e2e_die "R8c：服务必须继续可用"; fi
+    R8C_SELF_RC=0
+    bash "$UPDATE_SH" --selfcheck-only >"$E2E_LOG_DIR/R8c-selfcheck.log" 2>&1 || R8C_SELF_RC=$?
+    assert_eq "R8c 修复后 selfcheck-only 退出码" "$R8C_SELF_RC" "0"
+    e2e_ok "rc=2；未顺着软链写；修复后 unit active、healthz ok、selfcheck-only rc=0"
 
     # ---- R9 健康失败 + UI 回滚：旧页面换回 -----------------------------------
     e2e_step "R9" "健康失败 + UI 回滚：旧页面换回、.bak 不残留"
@@ -1049,38 +1104,48 @@ run_mode() {
     # ---- R9b 备份件被篡改：回滚拒绝执行备份里的 CLI -------------------------
     e2e_step "R9b" "备份件被篡改：回滚拒绝执行备份里的 CLI"
     # 复审 CRITICAL：备份根已 root:root 0700，这里再演一层「万一权限被放开」。
-    # 在健康探活窗口里把备份内的 CLI 改成组/其他可写：回滚必须拒绝安装它。
+    # 在健康探活窗口里反复把本轮备份内的 CLI 改成组/其他可写：回滚必须拒绝安装它。
+    # 用 watcher 而不是单次 chmod：进程可能在备份件刚出现时就已进入回滚，
+    # 单次篡改会漏；watcher 一直把权限按在 0666，直到本轮 update 结束。
     R9B_LOG="$E2E_LOG_DIR/R9b-update.log"
-    # 先快照既有备份目录：只篡改**本轮新建**的那一份（旧份属于别的用例）。
     R9B_BEFORE="$({ ls -1d "$BACKUP_ROOT"/*/ 2>/dev/null || true; })"
     (
-        YIBAN_HEALTH_RETRIES=8 YIBAN_HEALTH_RETRY_INTERVAL=1 \
-            bash "$UPDATE_SH" --server-bin "$DIST/yiban-server-v6" \
-            --cli-bin "$DIST/yiban-cli-v6" --allow-unsigned >"$R9B_LOG" 2>&1
+        YIBAN_HEALTH_RETRIES=8 YIBAN_HEALTH_RETRY_INTERVAL=1             bash "$UPDATE_SH" --server-bin "$DIST/yiban-server-v6"             --cli-bin "$DIST/yiban-cli-v6" --allow-unsigned >"$R9B_LOG" 2>&1
     ) &
     R9B_PID=$!
-    TAMPER_TARGET=""
-    for _ in $(seq 1 150); do
-        for d in "$BACKUP_ROOT"/*/; do
-            [ -d "$d" ] || continue
-            case $'\n'"$R9B_BEFORE"$'\n' in
-                *$'\n'"$d"$'\n'*) continue ;;
-            esac
-            if [ -f "${d}bin/yiban-cli" ]; then
-                TAMPER_TARGET="${d}bin/yiban-cli"
-                break
-            fi
+    R9B_TAMPER_LOG="$E2E_LOG_DIR/R9b-tamper.log"
+    : >"$R9B_TAMPER_LOG"
+    (
+        for _ in $(seq 1 300); do
+            for d in "$BACKUP_ROOT"/*/; do
+                [ -d "$d" ] || continue
+                case $'
+'"$R9B_BEFORE"$'
+' in
+                    *$'
+'"$d"$'
+'*) continue ;;
+                esac
+                if [ -f "${d}bin/yiban-cli" ]; then
+                    chmod 0666 "${d}bin/yiban-cli" 2>/dev/null || true
+                    printf '%s
+' "${d}bin/yiban-cli" >>"$R9B_TAMPER_LOG"
+                    break
+                fi
+            done
+            sleep 0.1
         done
-        [ -n "$TAMPER_TARGET" ] && break
-        sleep 0.1
-    done
-    if [ -z "$TAMPER_TARGET" ]; then
-        wait "$R9B_PID" || true
-        e2e_die "R9b：等不到备份里的 CLI（$BACKUP_ROOT/*/bin/yiban-cli）"
-    fi
-    chmod 0666 "$TAMPER_TARGET"
+    ) &
+    R9B_WATCH_PID=$!
     R9B_RC=0
     wait "$R9B_PID" || R9B_RC=$?
+    kill "$R9B_WATCH_PID" 2>/dev/null || true
+    wait "$R9B_WATCH_PID" 2>/dev/null || true
+    if [ ! -s "$R9B_TAMPER_LOG" ]; then
+        e2e_die "R9b：等不到备份里的 CLI（$BACKUP_ROOT/*/bin/yiban-cli）"
+    fi
+    TAMPER_TARGET="$(head -n 1 "$R9B_TAMPER_LOG")"
+    e2e_say "R9b: tampered ${TAMPER_TARGET} ($(stat -c '%a %U' "$TAMPER_TARGET" 2>/dev/null || echo gone))"
     assert_eq "R9b update.sh 退出码" "$R9B_RC" "2"
     assert_grep "$R9B_LOG" 'refusing to install the backup cli' "必须拒绝安装被篡改的备份 CLI"
     assert_grep "$R9B_LOG" 'writable by group or others' "拒绝原因必须点名权限被放开"
@@ -1090,8 +1155,12 @@ run_mode() {
         "$(sha "$CLI_DEST")" "$(sha "$DIST/yiban-cli-v6")"
     assert_eq "R9b 安装位 server 已换回旧件" "$(sha "$SERVER_DEST")" "$SHA_V4"
     assert_eq "R9b 状态 exit_code" "$(state_num exit_code)" "2"
-    assert_eq "R9b unit 未启动" "$(unit_active)" "inactive"
-    e2e_ok "rc=2；拒绝执行被篡改的备份 CLI；安装位未被替换；unit inactive（人工处置）"
+    # MEDIUM-1 起：CLI 校验失败不提前退出，回滚继续走完（DB/UI/起旧件），
+    # 旧二进制在跑但 CLI 没回来 ⇒ 仍按 exit 2 + manual action 收口。
+    assert_eq "R9b 旧件已起（CLI 未回滚）" "$(unit_active)" "active"
+    if ! health_ok; then e2e_die "R9b：旧件必须健康（只有 CLI 没回滚）"; fi
+    assert_grep "$R9B_LOG" 'backup cli was NOT restored' "必须点明 CLI 未回滚"
+    e2e_ok "rc=2；拒绝执行被篡改的备份 CLI；旧件在跑、CLI 未回滚（manual action）"
 
     # ---- R10 数据库恢复失败：manual action、不启动旧件 -----------------------
     e2e_step "R10" "数据库恢复失败：exit 2 + manual action，服务停住"

@@ -25,7 +25,7 @@ func goldenReport(t *testing.T) Report {
 	f := newFixture()
 	f.opts.UIDir = ""
 	delete(f.fs.dirs, "/var/lib/yiban/photos")
-	delete(f.fs.dirs, "/var/lib/yiban/pre-migrate")
+	delete(f.fs.dirs, DefaultBackupDir)
 	f.deps.LookPath = func(name string) (string, error) {
 		if name == "pg_restore" {
 			return "", os.ErrNotExist

@@ -51,12 +51,16 @@
 #     含 U1 的发布件。自检不可用不等于绿。
 #   - --selfcheck-only 不取锁、不写任何文件，只打印摘要与失败项。
 #
-# 统一备份（U2 新增；落在 /var/lib/yiban/backups/<ts>/，0700/0600）：
-#   状态目录 = /var/lib/yiban/updates（root 0700；update-state.json、
+# 统一备份（U2 新增；落在 /var/lib/yiban-updater/backups/<ts>/，0700/0600）：
+#   状态目录 = /var/lib/yiban-updater/state（root 0700；update-state.json、
 #   update.log、selfcheck-*.json）。备份根与状态目录同级（不在其下）。
-#   备份根与状态目录都是 **root:root 0700**：备份含凭据密文，回滚还会执行
-#   备份内的 CLI；服务用户若能换名/塞件，root 回滚就等于执行它的代码。
+#   备份根与状态目录都是 **root:root 0700**，父目录 /var/lib/yiban-updater
+#   也归 root（服务用户改不了名，塞不进软链/恶意件）；备份含凭据密文，回滚
+#   还会执行备份内的 CLI。放在 /var/lib/yiban 下则会被 install.sh 的递归
+#   chown 改成服务用户属主，更新器随后拒绝运行。
 #   U1 的 fs.backup_dir 按**调用者（root）**判权；服务用户写不了是要求，不是故障。
+#   旧布局 /var/lib/yiban/{pre-migrate,backups,updates} 不删、不读：新备份只落
+#   新根，旧备份仍可手工 pg_restore（root 0600，需 root 读）。
 #   每次备份目录：
 #     db.dump             pg_dump -Fc（--no-owner --no-privileges），0600
 #     db.list             pg_restore --list 的清单，0600（校验转储可读）
@@ -94,13 +98,13 @@
 #     exit 2 并打印 manual action。
 #
 # 状态与日志：
-#   /var/lib/yiban/updates/update-state.json（0600）每次更新整体重写：
+#   /var/lib/yiban-updater/state/update-state.json（0600）每次更新整体重写：
 #   schema_version=1、update_id、started_at、finished_at、result
 #   （running/success/failed/aborted/interrupted）、exit_code、phase、
 #   version_from、version_to、backup_dir、db_name_before/after、
 #   db_schema_before/after、db_restore（disabled/not-needed/restored/failed）、
 #   db_restore_target、log_file。
-#   /var/lib/yiban/updates/update.log 追加一行一事件（时间/阶段/结果）。
+#   /var/lib/yiban-updater/state/update.log 追加一行一事件（时间/阶段/结果）。
 #   两者都不含 DSN 口令、密钥与 GPG 口令；DSN 只出现库名与主机。
 #
 # 签名发布物（默认强制，docs/dev/release-signing.md）：
@@ -205,11 +209,16 @@ UI_NEW="$UI_DEST.new"
 UI_BAK="$UI_DEST.bak"
 ENV_FILE="$(dest /etc/yiban/.env)"
 
-# 状态目录与备份根目录。备份根可用 --backup-dir 覆盖（必须是绝对路径）。
-# 备份根是 /var/lib/yiban/backups（与状态目录同级，不在其下）。
-# 备份根与状态目录都是 **root:root 0700**：备份里含凭据密文，且回滚会
-# 执行备份内的 CLI——绝不能给服务用户写权限（否则它能换名/塞恶意件让 root 执行）。
-STATE_DIR="$(dest "$SERVICE_HOME/updates")"
+# 更新器的状态与备份根：/var/lib/yiban-updater/{state,backups}。
+# 为什么不在服务用户的 $SERVICE_HOME 里：install.sh 会对 $SERVICE_HOME 做
+# 递归 chown（服务用户必须拥有 photos/ui），放进它的任何子目录都会被改成
+# yiban 属主；服务用户随后就能换名备份目录、塞 bin/yiban-cli，root 回滚时
+# 执行它。放在**服务用户不可重命名的 root 独占父目录**下才是安全的：
+#   /var/lib        root:root 0755（yiban 无写权限 ⇒ 不能改名/换软链）
+#   /var/lib/yiban-updater  root:root 0700（yiban 连列目录都不行）
+# 备份根可用 --backup-dir 覆盖（必须是绝对路径，且拒绝系统/共享目录）。
+UPDATER_ROOT="$(dest /var/lib/yiban-updater)"
+STATE_DIR="$UPDATER_ROOT/state"
 STATE_FILE="$STATE_DIR/update-state.json"
 LOG_FILE="$STATE_DIR/update.log"
 if [ -n "$BACKUP_ROOT_FLAG" ]; then
@@ -219,14 +228,15 @@ if [ -n "$BACKUP_ROOT_FLAG" ]; then
     esac
     BACKUP_ROOT="$BACKUP_ROOT_FLAG"
     # --backup-dir 会被 chmod 0700：拒绝共享/系统目录（先例 scripts/backup.sh）。
+    # 服务用户主目录（$SERVICE_HOME 及其干跑前缀）也拒：install.sh 会递归 chown 它。
     case "$BACKUP_ROOT" in
-        /|/var|/var/backups|/tmp|/home|/root|/etc|/usr|/opt|/srv|/boot|/dev|/proc|/sys|/run|/var/lib|/var/log)
-            echo "update: --backup-dir $BACKUP_ROOT is a shared/system directory; point it at a dedicated subdirectory (e.g. /var/lib/yiban/backups)" >&2
+        /|/var|/var/backups|/tmp|/home|/root|/etc|/usr|/opt|/srv|/boot|/dev|/proc|/sys|/run|/var/lib|/var/log|/var/lib/yiban|"$SERVICE_HOME"|"$SERVICE_HOME"/*|"$(dest "$SERVICE_HOME")"|"$(dest "$SERVICE_HOME")"/*)
+            echo "update: --backup-dir $BACKUP_ROOT is a shared/system directory; point it at a dedicated subdirectory (e.g. /var/lib/yiban-updater/backups)" >&2
             exit 2
             ;;
     esac
 else
-    BACKUP_ROOT="$(dest "$SERVICE_HOME/backups")"
+    BACKUP_ROOT="$UPDATER_ROOT/backups"
 fi
 case "$BACKUP_ROOT" in
     /|*/) echo "update: refusing backup root path: $BACKUP_ROOT" >&2; exit 2 ;;
@@ -255,7 +265,11 @@ BINARY_SWAPPED=0
 CLI_SWAPPED=0
 UI_OLD_MOVED=0
 UI_ACTIVATED=0
+CLI_ROLLBACK_FAILED=0
 DB_RESTORE_FAILED=0
+# STATE_READY=1 表示状态/备份目录已通过 prepare_state_dir 的安全校验
+# （非软链、属主 root、组/其他不可写）。日志写入以它为闸门。
+STATE_READY=0
 # DSN_FULL 是含口令的原文：只用于写回 /etc/yiban/.env 与进程环境。
 # DSN 是去掉口令的 argv 安全形态；口令经 0600 PGPASSFILE 交给 libpq。
 DSN_FULL=""
@@ -278,10 +292,13 @@ json_escape() {
 }
 
 # log_event 追加一行事件到 update.log。日志写失败不中止升级：
-# 状态文件与屏幕输出是主证据，日志是附加。状态目录尚未建立时静默跳过
-# （自检门在它之前，那时不许写文件）。
+# 状态文件与屏幕输出是主证据，日志是附加。
+# 只在 prepare_state_dir 校验通过（STATE_READY=1）后才写：校验之前状态目录
+# 可能是攻击者放的软链，root 的 >> 会顺着它写到别处（复审 HIGH-3）。
 log_event() {
-    [ -n "$LOG_FILE" ] && [ -d "$STATE_DIR" ] || return 0
+    [ "$STATE_READY" -eq 1 ] || return 0
+    [ ! -L "$STATE_DIR" ] || return 0
+    [ ! -L "$LOG_FILE" ] || return 0
     printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" 2>/dev/null >>"$LOG_FILE" || true
 }
 
@@ -546,44 +563,46 @@ dsn_kw_unquote() {
     printf '%s' "$out"
 }
 
-# dsn_split2 <dsn>：把 DSN 拆成「去口令的 DSN」与「口令」两行输出。
-# 第 1 行＝argv 安全形态（口令已摘除），第 2 行＝口令原文（可能为空）。
-# 用两行协议而不是全局变量：本函数总在 $( ) 子 shell 里跑，全局变量传不出来。
-# 无口令时原样输出 DSN + 空行。解析失败返回 1（调用方失败关闭）。
+# dsn_split2 <dsn>：把 DSN 拆成「去口令的 DSN」与「口令」两段输出，
+# 用 US（\037）分隔——$( ) 只削尾换行，空口令也不会把整条 DSN 当成口令。
+# URI 与 key=value 两种形态都支持；URI 查询串里的 password= 同样摘掉
+# （不论有没有 userinfo——没有 userinfo 的 `?password=` 一样是秘密）。
+# 解析失败返回 1（调用方失败关闭，绝不把口令塞回 argv）。
 dsn_split2() {
-    local dsn="$1" prefix rest authority hostpart userpart user pass tail raw key
+    local dsn="$1" prefix rest authority hostpart userpart user pass tail
+    local path_part="" query="" param joined="" has_userinfo=0
     case "$dsn" in
         postgres://*|postgresql://*)
             prefix="${dsn%%://*}"
             rest="${dsn#*://}"
-            case "$rest" in
-                *@*) ;;
-                *)
-                    printf '%s' "$dsn"
-                    printf '\037'
-                    return 0
-                    ;;
-            esac
             # authority＝userinfo@host[:port]（到第一个 / 为止）；
             # 路径与 query 单独取，不能混进 hostpart。
             authority="${rest%%/*}"
-            hostpart="${authority##*@}"
-            userpart="${authority%@*}"
-            case "$rest" in
-                */*) tail="/${rest#*/}" ;;
-                *) tail="" ;;
-            esac
-            user="$userpart"
-            pass=""
-            case "$userpart" in
-                *:*) user="${userpart%%:*}"; pass="${userpart#*:}" ;;
-            esac
-            if [ -n "$pass" ]; then
-                pass="$(urldecode "$pass")" || return 1
+            if [ "$authority" != "$rest" ]; then
+                tail="/${rest#*/}"
+            else
+                tail=""
             fi
-            # 查询串里的 ?password= 同样是秘密：摘掉，argv 只留其余参数。
+            case "$authority" in
+                *@*) has_userinfo=1 ;;
+            esac
+            hostpart="$authority"
+            user=""
+            pass=""
+            if [ "$has_userinfo" -eq 1 ]; then
+                hostpart="${authority##*@}"
+                userpart="${authority%@*}"
+                user="$userpart"
+                case "$userpart" in
+                    *:*) user="${userpart%%:*}"; pass="${userpart#*:}" ;;
+                esac
+                if [ -n "$pass" ]; then
+                    pass="$(urldecode "$pass")" || return 1
+                fi
+            fi
+            # 查询串里的 ?password= 同样是秘密：不论有没有 userinfo 都要摘掉。
             # （libpq 的 URI 解析让查询参数覆盖 userinfo，这里同口径。）
-            local path_part="$tail" query="" param joined="" 
+            path_part="$tail"
             case "$tail" in
                 *\?*) path_part="${tail%%\?*}"; query="${tail#*\?}" ;;
             esac
@@ -604,7 +623,11 @@ dsn_split2() {
                 done
                 query="${joined:+?$joined}"
             fi
-            printf '%s://%s@%s%s%s' "$prefix" "$user" "$hostpart" "$path_part" "$query"
+            if [ "$has_userinfo" -eq 1 ]; then
+                printf '%s://%s@%s%s%s' "$prefix" "$user" "$hostpart" "$path_part" "$query"
+            else
+                printf '%s://%s%s%s' "$prefix" "$hostpart" "$path_part" "$query"
+            fi
             printf '\037%s' "$pass"
             return 0
             ;;
@@ -836,39 +859,55 @@ run_selfcheck_gate() {
 # prepare_state_dir：建状态目录（0700 root）。备份根目录不在这里建：
 # 它属于具体备份步骤，失败即中止且不留半成品。
 prepare_state_dir() {
-    [ -d "$STATE_DIR" ] || mkdir -p "$STATE_DIR" || return 1
-    chmod 700 "$STATE_DIR" || return 1
-    if [ -z "$ROOT" ]; then
-        chown root:root "$STATE_DIR" || return 1
-    fi
-    # 备份根：root:root 0700，**不**给服务用户任何写权限。
-    # 备份里既有凭据密文，回滚时还会执行备份内的 CLI；服务用户若能换名
-    # 备份目录或塞进 bin/yiban-cli，root 回滚就等于执行它的代码。
-    # 符号链接一律拒绝：否则 root 会顺着被改写的路径写备份。
-    if [ -L "$BACKUP_ROOT" ]; then
-        echo "update: refusing symlinked backup root: $BACKUP_ROOT" >&2
+    # 顺序即安全边界（复审 HIGH-3）：父目录 → 状态目录 → 备份根 → 日志文件，
+    # 每一步都复核「不是软链、属主 root、组/其他不可写」。
+    # 攻击形状：服务用户把 state 换名成软链指向 /etc/passwd，root 的 >> 追随它。
+    local d cur_owner cur_mode
+    local -a dirs=()
+
+    if [ -L "$UPDATER_ROOT" ]; then
+        echo "update: refusing symlinked updater root: $UPDATER_ROOT" >&2
         return 1
     fi
+    [ -d "$UPDATER_ROOT" ] || mkdir -p "$UPDATER_ROOT" || return 1
+    [ -d "$STATE_DIR" ] || mkdir -p "$STATE_DIR" || return 1
     [ -d "$BACKUP_ROOT" ] || mkdir -p "$BACKUP_ROOT" || return 1
-    chmod 700 "$BACKUP_ROOT" || return 1
-    local cur_owner cur_mode
-    cur_owner="$(stat -c '%U' -- "$BACKUP_ROOT" 2>/dev/null || true)"
-    cur_mode="$(stat -c '%a' -- "$BACKUP_ROOT" 2>/dev/null || true)"
-    if [ -n "$ROOT" ]; then
-        : # 干跑：不校验属主（非 root 造不出 root 属主）
-    else
-        [ "$cur_owner" = "root" ] || {
-            echo "update: backup root must be owned by root: $BACKUP_ROOT (owner: ${cur_owner:-unknown})" >&2
+    dirs=("$UPDATER_ROOT" "$STATE_DIR" "$BACKUP_ROOT")
+
+    for d in "${dirs[@]}"; do
+        if [ -L "$d" ]; then
+            echo "update: refusing symlinked updater directory: $d" >&2
             return 1
-        }
-        chown root:root "$BACKUP_ROOT" || return 1
-        [ $(( (8#$cur_mode >> 3) & 2 )) -eq 0 ] && [ $(( 8#$cur_mode & 2 )) -eq 0 ] || {
-            echo "update: backup root is writable by group or others (mode $cur_mode): $BACKUP_ROOT" >&2
-            return 1
-        }
+        fi
+        chmod 700 "$d" || return 1
+        if [ -z "$ROOT" ]; then
+            # 干跑不校验属主（非 root 造不出 root 属主）。
+            cur_owner="$(stat -c '%U' -- "$d" 2>/dev/null || true)"
+            cur_mode="$(stat -c '%a' -- "$d" 2>/dev/null || true)"
+            case "$cur_mode" in
+                ''|*[!0-7]*) cur_mode=777 ;;
+            esac
+            if [ "$cur_owner" != "root" ]; then
+                echo "update: updater directory must be owned by root: $d (owner: ${cur_owner:-unknown})" >&2
+                return 1
+            fi
+            if [ $(( 8#$cur_mode & 8#022 )) -ne 0 ]; then
+                echo "update: updater directory is writable by group or others (mode $cur_mode): $d" >&2
+                return 1
+            fi
+            chown root:root "$d" || return 1
+        fi
+    done
+
+    # 日志是 root 追加写的普通文件；软链一律拒绝（否则会写到别处）。
+    if [ -L "$LOG_FILE" ] || [ -L "$STATE_FILE" ]; then
+        echo "update: refusing symlinked state file under $STATE_DIR" >&2
+        return 1
     fi
     ( umask 077; : >> "$LOG_FILE" ) || return 1
     chmod 600 "$LOG_FILE" || return 1
+    # 只有到这里（目录与文件都验过）才允许 log_event 写盘。
+    STATE_READY=1
 }
 
 # verify_root_artifact <path> <描述>：回滚会执行/导入的文件必须是 root 属主、
@@ -1280,17 +1319,19 @@ fail_after_stop() {
         fi
         BINARY_SWAPPED=0
     fi
+    # CLI 回滚失败不在这里停机：DB 恢复、UI 回滚、起旧件都要继续走完，
+    # 最后统一按「回滚是否完整」定退出码（复审 MEDIUM-1）。
     if [ "$CLI_SWAPPED" -eq 1 ] && [ -f "$BACKUP_SET/bin/yiban-cli" ]; then
-        if ! verify_root_artifact "$BACKUP_SET/bin/yiban-cli" "backup cli"; then
-            echo "update: refusing to install the backup cli from an untrusted path" >&2
-            print_manual_action "backup cli failed ownership check"
-            write_state "failed" 2
-            exit 2
-        fi
-        if install -m 0755 "$BACKUP_SET/bin/yiban-cli" "$CLI_DEST"; then
-            CLI_SWAPPED=0
+        if verify_root_artifact "$BACKUP_SET/bin/yiban-cli" "backup cli"; then
+            if install -m 0755 "$BACKUP_SET/bin/yiban-cli" "$CLI_DEST"; then
+                CLI_SWAPPED=0
+            else
+                warn "cannot restore the previous yiban-cli from $BACKUP_SET/bin/yiban-cli"
+                CLI_ROLLBACK_FAILED=1
+            fi
         else
-            warn "cannot restore the previous yiban-cli from $BACKUP_SET/bin/yiban-cli"
+            echo "update: refusing to install the backup cli from an untrusted path" >&2
+            CLI_ROLLBACK_FAILED=1
         fi
     fi
     if ! rollback_ui; then
@@ -1317,6 +1358,13 @@ fail_after_stop() {
     # 4) 起旧件并探活。
     "$SYSTEMCTL" start "$UNIT" >/dev/null 2>&1 || true
     if probe; then
+        if [ "$CLI_ROLLBACK_FAILED" -eq 1 ]; then
+            # 旧二进制在跑，但 CLI 仍是本轮新件：版本不配对，必须人工处置。
+            echo "update: the backup cli was NOT restored (untrusted); the old binary is serving" >&2
+            print_manual_action "backup cli rollback refused"
+            write_state "failed" 2
+            exit 2
+        fi
         echo "update: rolled back ($reason); old binary is serving again" >&2
         log_event "rollback ok: $reason"
         write_state "failed" 1

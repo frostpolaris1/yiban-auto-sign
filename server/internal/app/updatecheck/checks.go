@@ -398,20 +398,45 @@ type accessVerdict struct {
 }
 
 // currentUserAccess 按**调用者**（通常是 root）判目录权限，用于备份目录。
-// 身份与属主都按进程真实 uid/gid；探针缺失时 SKIP 并说明（不冒充 root）。
+// 两条判据缺一不可，与 update.sh 的写入者一致：
+//
+//	① 目录属主必须是 root（root 独占才轮不到服务用户换名/塞件）；
+//	② 调用者要能写（root 有 CAP_DAC_OVERRIDE，位只识别「明显不可写」）。
+//
+// 探针缺失时 SKIP 并说明（不冒充 root）。
 func currentUserAccess(deps Deps, path string, want fsperm.Access, verb string) accessVerdict {
 	if deps.CurrentIdentity == nil {
 		return accessVerdict{skip: "当前用户身份探针未注入（备份目录按调用者判权）"}
+	}
+	if deps.StatPermission == nil {
+		return accessVerdict{skip: "权限探针未注入"}
 	}
 	id, ok := deps.CurrentIdentity()
 	if !ok {
 		return accessVerdict{skip: "本平台拿不到当前用户身份（Windows），无法判备份目录权限"}
 	}
+	owner, ok := deps.StatPermission(path)
+	if !ok {
+		return accessVerdict{skip: "本平台拿不到 POSIX 属主/权限位（Windows），无法判备份目录权限"}
+	}
+	if !ownerIsRoot(owner) {
+		return accessVerdict{detail: fmt.Sprintf(
+			"%s 的属主不是 root（属主 %s、组 %s、权限 %04o）；备份目录必须 root 独占",
+			path, ownerLabel(owner), groupLabel(owner), owner.Mode.Perm())}
+	}
 	who := "当前用户"
 	if id.Name != "" {
 		who = "当前用户 " + id.Name
 	}
-	return judgeDirAccessFor(deps, path, id, who, want, verb)
+	return verdictForOwner(owner, id, who, want, verb)
+}
+
+// ownerIsRoot 判目录属主是 root（按名字或 uid 0）。
+func ownerIsRoot(owner fsperm.Owner) bool {
+	if owner.OwnerName != "" {
+		return owner.OwnerName == "root"
+	}
+	return owner.HasIDs && owner.UID == 0
 }
 
 // judgeDirAccess 按服务用户的 POSIX 属主/组/模式位判目录权限。

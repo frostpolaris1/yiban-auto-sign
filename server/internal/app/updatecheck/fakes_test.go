@@ -168,7 +168,10 @@ func newFixture() *fixture {
 	fs.mkdir("/srv/ui", "index.html", "assets")
 	fs.mkdir("/var/lib/yiban")
 	fs.mkdir("/var/lib/yiban/photos")
-	fs.mkdir("/var/lib/yiban/pre-migrate")
+	// 更新器的 root 独占树（与 /var/lib/yiban 同级，install.sh 的递归
+	// chown 到不了这里）。
+	fs.mkdir("/var/lib/yiban-updater")
+	fs.mkdir(DefaultBackupDir)
 	db := &fakeDB{version: 22}
 	f := &fixture{
 		fs: fs,
@@ -180,17 +183,18 @@ func newFixture() *fixture {
 			PhotoDir:      "/var/lib/yiban/photos",
 			CredentialKey: testCredentialKey,
 			HashPepper:    testPepper,
-			BackupDir:     "/var/lib/yiban/pre-migrate",
+			BackupDir:     DefaultBackupDir,
 			StatePath:     "/var/lib/yiban/update-state.json",
 			Unit:          "yiban",
 			ServiceUser:   "yiban",
 		},
 		embedded: 22,
 		owners: map[string]fsperm.Owner{
-			"/srv/ui":                    {OwnerName: "yiban", GroupName: "yiban", Mode: 0o755},
-			"/var/lib/yiban":             {OwnerName: "yiban", GroupName: "yiban", Mode: 0o755},
-			"/var/lib/yiban/photos":      {OwnerName: "yiban", GroupName: "yiban", Mode: 0o750},
-			"/var/lib/yiban/pre-migrate": {OwnerName: "yiban", GroupName: "yiban", Mode: 0o700},
+			"/srv/ui":                {OwnerName: "yiban", GroupName: "yiban", Mode: 0o755},
+			"/var/lib/yiban":         {OwnerName: "yiban", GroupName: "yiban", Mode: 0o755},
+			"/var/lib/yiban/photos":  {OwnerName: "yiban", GroupName: "yiban", Mode: 0o750},
+			"/var/lib/yiban-updater": {OwnerName: "root", GroupName: "root", Mode: 0o700},
+			DefaultBackupDir:         {OwnerName: "root", GroupName: "root", Mode: 0o700},
 		},
 		identities: map[string]fsperm.Identity{
 			"yiban": {Name: "yiban", GroupNames: []string{"yiban"}},

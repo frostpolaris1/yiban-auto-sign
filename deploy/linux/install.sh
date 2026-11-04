@@ -79,6 +79,15 @@ if [ -z "$ROOT" ]; then
         || useradd --system --home "$SERVICE_HOME" --shell /usr/sbin/nologin "$SERVICE_USER"
     mkdir -p "$SERVICE_HOME/photos"
     chown -R "$SERVICE_USER:$SERVICE_USER" "$SERVICE_HOME"
+    # 更新器的状态/备份根（/var/lib/yiban-updater/{state,backups}）与
+    # $SERVICE_HOME 同级，**不**在递归 chown 的范围内：那里是 root 独占目录
+    # （备份含凭据密文，回滚还会执行备份里的 CLI）。重装时若它已存在，
+    # 顺手把属主钉回 root——防有人手工 chown -R 到服务用户后更新器拒绝运行。
+    UPDATER_ROOT="/var/lib/yiban-updater"
+    if [ -d "$UPDATER_ROOT" ]; then
+        chown root:root "$UPDATER_ROOT"
+        chmod 700 "$UPDATER_ROOT"
+    fi
 else
     echo "install: dry-run (YIBAN_INSTALL_ROOT set): skip service user and chown"
     mkdir -p "$(dest "$SERVICE_HOME/photos")"
