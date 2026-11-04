@@ -440,6 +440,21 @@ func scanNullable(t *testing.T, doc string) []nullableProp {
 			if prop == "" {
 				t.Fatalf("%s:%d 无法确定可空字段名", contractSpecPath, i+1)
 			}
+			// oneOf/anyOf/allOf 的可空分支属于**外层属性**的可空性：
+			// 属性名与 required 判定要上提一层，否则会把组合关键字
+			// 误当成字段名（type: [number, "null"] 的常见形状）。
+			if prop == "oneOf" || prop == "anyOf" || prop == "allOf" {
+				parentIndent := propIndent - 2
+				for j := i - 1; j >= start; j-- {
+					if contractIndent(lines[j]) != parentIndent {
+						continue
+					}
+					if m := contractKeyLine.FindStringSubmatch(lines[j]); m != nil {
+						prop, propIndent = m[1], parentIndent
+						break
+					}
+				}
+			}
 			ok := false
 			for _, r := range required {
 				if r.indent == propIndent-2 && r.names[prop] {
@@ -465,6 +480,31 @@ func TestNullablePropertiesAreRequired(t *testing.T) {
 			t.Errorf("%s.%s 可空但未列入 required（openapi.yaml:%d）：输出会缺键",
 				p.schema, p.prop, p.line)
 		}
+	}
+}
+
+// oneOf 分支上的可空类型属于外层属性：门必须上提一层判定 required。
+// 否则 type: [number, "null"] 会把组合关键字误报成字段名。
+func TestScanNullableAttributesOneOfBranchesToParent(t *testing.T) {
+	doc := strings.Join([]string{
+		"openapi: 3.1.0",
+		"components:",
+		"  schemas:",
+		"    Box:",
+		"      type: object",
+		"      required: [value]",
+		"      properties:",
+		"        value:",
+		"          oneOf:",
+		`            - { type: [number, "null"] }`,
+		"            - { type: boolean }",
+	}, "\n")
+	props := scanNullable(t, doc)
+	if len(props) != 1 {
+		t.Fatalf("nullable props = %d, want 1", len(props))
+	}
+	if props[0].schema != "Box" || props[0].prop != "value" || !props[0].required {
+		t.Fatalf("prop = %+v, want Box.value required", props[0])
 	}
 }
 

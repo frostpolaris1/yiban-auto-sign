@@ -176,7 +176,7 @@ func TestNotifyRoleGate(t *testing.T) {
 	}
 }
 
-// 负向：未知类别/渠道、重复对、缺失 items 都是 400。
+// 负向：未知类别/渠道、重复对、缺失必填字段都是 400。
 func TestNotifySetRejectsInvalid(t *testing.T) {
 	handler, _, _ := newHandler(t)
 	cases := map[string]string{
@@ -185,6 +185,10 @@ func TestNotifySetRejectsInvalid(t *testing.T) {
 		"duplicate":        `{"items":[{"category":"review_pending","channel":"email","enabled":true},{"category":"review_pending","channel":"email","enabled":false}]}`,
 		"missing items":    `{}`,
 		"null items":       `{"items":null}`,
+		"missing enabled":  `{"items":[{"category":"review_pending","channel":"email"}]}`,
+		"null enabled":     `{"items":[{"category":"review_pending","channel":"email","enabled":null}]}`,
+		"missing category": `{"items":[{"channel":"email","enabled":true}]}`,
+		"missing channel":  `{"items":[{"category":"review_pending","enabled":true}]}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {

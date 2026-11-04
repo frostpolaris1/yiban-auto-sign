@@ -1603,6 +1603,9 @@ paths:
         carries the row id, the time, the action, the masked actor label and
         the detail JSON text, which is passed through the mask rules on the
         way out. The chain is not verified here and there is no export.
+        Legacy parity: the previous console showed every school's rows to
+        both master and admin; this endpoint deliberately keeps that global
+        view and does not narrow by the caller's school scope.
       x-roles: [master, admin]
       parameters:
         - $ref: '#/components/parameters/Cursor'
@@ -2353,21 +2356,6 @@ components:
         default: unset, the roster registers a default. unknown: unset with
         no registered default.
       enum: [env, file, default, unknown]
-    SensitiveSetting:
-      type: object
-      description: Masked view of a sensitive key. The raw value never leaves the server.
-      required: [set, masked, source]
-      properties:
-        set:
-          type: boolean
-          description: True when the environment provides the key.
-        masked:
-          type: string
-          description: |
-            Fixed form - "****" when set, empty string otherwise. It carries
-            no character of the stored value.
-        source:
-          $ref: '#/components/schemas/SettingSource'
     SettingItem:
       type: object
       description: One roster key with its resolved view.
@@ -2385,15 +2373,24 @@ components:
             set, otherwise the registered default rendered by the key type,
             otherwise null. Absent (null) for a sensitive key.
           oneOf:
-            - { type: string }
-            - { type: number }
-            - { type: boolean }
-            - { enum: [null] }
+            - { type: [string, "null"] }
+            - { type: [number, "null"], format: double }
+            - { type: [boolean, "null"] }
         sensitive:
           description: Masked view for a sensitive key; null for a non-sensitive key.
           type: [object, "null"]
-          allOf:
-            - $ref: '#/components/schemas/SensitiveSetting'
+          required: [set, masked, source]
+          properties:
+            set:
+              type: boolean
+              description: True when the environment provides the key.
+            masked:
+              type: string
+              description: |
+                Fixed form - "****" when set, empty string otherwise. It carries
+                no character of the stored value.
+            source:
+              $ref: '#/components/schemas/SettingSource'
     SettingGroup:
       type: object
       required: [name, items]

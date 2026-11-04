@@ -3,7 +3,8 @@
 // 功能：按 action/actor/from/to 筛选审计行，游标分页，出口脱敏。
 // 归属：app 层用例；端口 Lister 由 adapters/pg 实现。
 // 口径：actor 过滤值先按写入口径掩码再匹配；detail 出口过 mask.MaskText；
-// 不校验链、不导出、不返回 target 字段。admin 与 master 看到同一份列表。
+// 不校验链、不导出、不返回 target 字段。
+// 旧线 parity：master 与 admin 看同一份全局列表，不按院校收窄。
 
 package audit
 

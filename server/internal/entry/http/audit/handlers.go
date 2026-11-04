@@ -8,6 +8,9 @@
 //
 // 口径：actor 过滤值按写入口径掩码；detail 已在用例出口脱敏。
 // 游标由仓储编解码，处理器只透传。
+// 旧线 parity：master 与 admin 都看全局审计，**不按院校作用域收窄**
+// （旧 web/routes/audit_api.py 同为全局视图）。这是已接受的风险，
+// 与「admin 只见绑定校」的一般规则刻意不同。
 
 package audit
 

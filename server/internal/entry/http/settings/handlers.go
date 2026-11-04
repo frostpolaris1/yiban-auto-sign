@@ -84,23 +84,44 @@ func (h *Handler) AdminNotifySet(c *gin.Context, _ oapi.AdminNotifySetParams) {
 	if !h.allowAdmin(c, session) {
 		return
 	}
-	var body oapi.NotifyPrefsUpdate
+	// 三个字段都是契约 required：用指针区分「缺失/null」与零值。
+	// items 缺失或 null 不得等同于「清空全部覆盖」；
+	// enabled 缺失不得静默当成 false。
+	var body struct {
+		Items *[]struct {
+			Category *string `json:"category"`
+			Channel  *string `json:"channel"`
+			Enabled  *bool   `json:"enabled"`
+		} `json:"items"`
+	}
 	if err := json.NewDecoder(c.Request.Body).Decode(&body); err != nil {
 		respond.BindError(c.Writer, c.Request, err)
 		return
 	}
-	// items 是必填键：缺失或 null 不得等同于「清空全部覆盖」。
-	// [] 解码为非 nil 空切片，表示回到全默认。
-	var items []appnotify.Pref
-	if body.Items != nil {
-		items = make([]appnotify.Pref, 0, len(body.Items))
-		for _, item := range body.Items {
-			items = append(items, appnotify.Pref{
-				Category: appnotify.Category(item.Category),
-				Channel:  appnotify.Channel(item.Channel),
-				Enabled:  item.Enabled,
-			})
+	if body.Items == nil {
+		fail(c, errs.New(errs.CodeValidation, "items is required"))
+		return
+	}
+	// [] 解码为指向空切片的非 nil 指针，表示回到全默认。
+	items := make([]appnotify.Pref, 0, len(*body.Items))
+	for _, item := range *body.Items {
+		if item.Category == nil {
+			fail(c, errs.New(errs.CodeValidation, "category is required"))
+			return
 		}
+		if item.Channel == nil {
+			fail(c, errs.New(errs.CodeValidation, "channel is required"))
+			return
+		}
+		if item.Enabled == nil {
+			fail(c, errs.New(errs.CodeValidation, "enabled is required"))
+			return
+		}
+		items = append(items, appnotify.Pref{
+			Category: appnotify.Category(*item.Category),
+			Channel:  appnotify.Channel(*item.Channel),
+			Enabled:  *item.Enabled,
+		})
 	}
 	page, err := h.notify.Set(c.Request.Context(), session.User.ID, items)
 	if err != nil {
@@ -219,7 +240,11 @@ func settingResponse(item appsettings.Item) oapi.SettingItem {
 		Source: oapi.SettingSource(item.Source),
 	}
 	if item.Sensitive != nil {
-		out.Sensitive = &oapi.SensitiveSetting{
+		out.Sensitive = &struct {
+			Masked string             `json:"masked"`
+			Set    bool               `json:"set"`
+			Source oapi.SettingSource `json:"source"`
+		}{
 			Masked: item.Sensitive.Masked,
 			Set:    item.Sensitive.Set,
 			Source: oapi.SettingSource(item.Sensitive.Source),
@@ -232,6 +257,7 @@ func settingResponse(item appsettings.Item) oapi.SettingItem {
 
 // settingValue 把解析值装进生成的一of 联合类型。
 // 名册缺省值只允许标量；未知类型返回零值（JSON null），不猜测。
+// 契约的 number 分支是 format: double，故 Go 侧是 float64，不做窄化。
 func settingValue(value any) oapi.SettingItem_Value {
 	var union oapi.SettingItem_Value
 	switch typed := value.(type) {
@@ -240,13 +266,11 @@ func settingValue(value any) oapi.SettingItem_Value {
 	case bool:
 		_ = union.FromSettingItemValue2(typed)
 	case float64:
-		_ = union.FromSettingItemValue1(float32(typed))
-	case float32:
 		_ = union.FromSettingItemValue1(typed)
 	case int:
-		_ = union.FromSettingItemValue1(float32(typed))
+		_ = union.FromSettingItemValue1(float64(typed))
 	case int64:
-		_ = union.FromSettingItemValue1(float32(typed))
+		_ = union.FromSettingItemValue1(float64(typed))
 	}
 	return union
 }

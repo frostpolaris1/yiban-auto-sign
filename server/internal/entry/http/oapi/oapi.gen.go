@@ -1386,22 +1386,6 @@ type SchoolUpdate struct {
 // SchoolUpdateTimezone defines model for SchoolUpdate.Timezone.
 type SchoolUpdateTimezone string
 
-// SensitiveSetting Masked view of a sensitive key. The raw value never leaves the server.
-type SensitiveSetting struct {
-	// Masked Fixed form - "****" when set, empty string otherwise. It carries
-	// no character of the stored value.
-	Masked string `json:"masked"`
-
-	// Set True when the environment provides the key.
-	Set bool `json:"set"`
-
-	// Source env: the process environment provides the key. file: a file-backed
-	// configuration layer provides it (never reported by this server).
-	// default: unset, the roster registers a default. unknown: unset with
-	// no registered default.
-	Source SettingSource `json:"source"`
-}
-
 // SessionUser defines model for SessionUser.
 type SessionUser struct {
 	// CsrfToken Token the client sends back in X-CSRF-Token.
@@ -1426,7 +1410,20 @@ type SettingItem struct {
 	Key   string `json:"key"`
 
 	// Sensitive Masked view for a sensitive key; null for a non-sensitive key.
-	Sensitive *SensitiveSetting `json:"sensitive"`
+	Sensitive *struct {
+		// Masked Fixed form - "****" when set, empty string otherwise. It carries
+		// no character of the stored value.
+		Masked string `json:"masked"`
+
+		// Set True when the environment provides the key.
+		Set bool `json:"set"`
+
+		// Source env: the process environment provides the key. file: a file-backed
+		// configuration layer provides it (never reported by this server).
+		// default: unset, the roster registers a default. unknown: unset with
+		// no registered default.
+		Source SettingSource `json:"source"`
+	} `json:"sensitive"`
 
 	// Source env: the process environment provides the key. file: a file-backed
 	// configuration layer provides it (never reported by this server).
@@ -1444,13 +1441,10 @@ type SettingItem struct {
 type SettingItemValue0 = string
 
 // SettingItemValue1 defines model for SettingItem.Value.1.
-type SettingItemValue1 = float32
+type SettingItemValue1 = float64
 
 // SettingItemValue2 defines model for SettingItem.Value.2.
 type SettingItemValue2 = bool
-
-// SettingItemValue3 defines model for SettingItem.Value.3.
-type SettingItemValue3 = interface{}
 
 // SettingItem_Value Resolved value of a non-sensitive key: the environment value when
 // set, otherwise the registered default rendered by the key type,
@@ -2306,32 +2300,6 @@ func (t *SettingItem_Value) FromSettingItemValue2(v SettingItemValue2) error {
 
 // MergeSettingItemValue2 performs a merge with any union data inside the SettingItem_Value, using the provided SettingItemValue2
 func (t *SettingItem_Value) MergeSettingItemValue2(v SettingItemValue2) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsSettingItemValue3 returns the union data inside the SettingItem_Value as a SettingItemValue3
-func (t SettingItem_Value) AsSettingItemValue3() (SettingItemValue3, error) {
-	var body SettingItemValue3
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromSettingItemValue3 overwrites any union data inside the SettingItem_Value as the provided SettingItemValue3
-func (t *SettingItem_Value) FromSettingItemValue3(v SettingItemValue3) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeSettingItemValue3 performs a merge with any union data inside the SettingItem_Value, using the provided SettingItemValue3
-func (t *SettingItem_Value) MergeSettingItemValue3(v SettingItemValue3) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err

@@ -245,6 +245,13 @@ func appendAuditAt(t *testing.T, e *testEnv, ts time.Time, action coreaudit.Acti
 // 审计列表：最新在前、键集游标、action/actor/from/to 筛选。
 func TestAuditLogListE2E(t *testing.T) {
 	e := newEnv(t)
+	// 列表的排序与 actor 过滤必须有索引：缺索引时每页全表排序。
+	for _, index := range []string{"idx_audit_ts_id", "idx_audit_actor_label_ts"} {
+		if n := e.scalarInt(
+			"SELECT count(*) FROM pg_indexes WHERE schemaname = current_schema() AND indexname = $1", index); n != 1 {
+			t.Fatalf("index %s missing (count=%d)", index, n)
+		}
+	}
 	base := time.Date(2026, 11, 4, 8, 0, 0, 0, time.UTC)
 	specs := []struct {
 		action coreaudit.Action
