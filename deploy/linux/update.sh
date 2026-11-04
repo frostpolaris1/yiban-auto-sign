@@ -33,12 +33,15 @@
 #   只给 --server-bin 时迁移用已安装的 yiban-cli；--ui-dir 给新的前端构建
 #   产物，旧目录留 .bak 供人工回退。--expect-version 要求清单版本严格相等
 #   （防已签名旧包重放）。
+#   旧布局保护：仅存 /etc/yiban/.env（旧名）而无 server.env 时 exit 2 并打印
+#   迁移步骤——生成新 server.env 会产生新密钥，旧凭据密文将不可解密。
 #
 # 退出码（保留既有语义；预检拒绝归 2）：
 #   0 成功（含 --selfcheck-only 全 PASS/SKIP）
 #   1 升级失败但已回滚到旧件（旧二进制在跑且健康）；签名/对账/版本校验
 #     不通过也归 1（与旧版一致，校验失败不碰旧件）
 #   2 用法错误、并发锁被占、自检 FAIL、预检（CREATEDB/口令隔离/备份）FAILED、
+#     旧布局保护（/etc/yiban/.env 无 server.env）、
 #     停服失败（什么都没换）、回滚不完整（见下）、回滚后仍不健康、
 #     数据库恢复失败（都打印 manual action）
 #   停服成功之后任何一步失败（migrate、换件、systemctl start、健康检查）
@@ -1485,6 +1488,22 @@ probe() {
     done
     return 1
 }
+
+# ---- 旧布局保护 ------------------------------------------------------------
+# 只有旧名 /etc/yiban/.env、没有 server.env 时拒绝升级（含 --selfcheck-only）。
+# 此时静默生成 server.env 会产生**新的** YIBAN_HASH_PEPPER / YIBAN_CREDENTIAL_KEY：
+# 旧钥加密的凭据将永远无法解密（数据丢失）。fail-closed 并给出迁移步骤；
+# 密钥只复制、不重生成，老部署迁移后照常启动。
+if [ -f "$(dest /etc/yiban/.env)" ] && [ ! -f "$ENV_FILE" ]; then
+    echo "update: found legacy /etc/yiban/.env without $ENV_FILE" >&2
+    echo "update: migrate the old runtime file first (secrets are preserved, NOT regenerated):" >&2
+    echo "update:   sudo install -m 0600 -o root -g root /etc/yiban/.env /etc/yiban/server.env" >&2
+    echo "update:   sudo rm -f /etc/yiban/.env" >&2
+    echo "update:   then re-run update.sh" >&2
+    echo "update: refusing: generating a fresh server.env here would create NEW pepper/credential keys" >&2
+    echo "update:          and make existing credentials permanently undecryptable" >&2
+    exit 2
+fi
 
 # ---- 只读自检模式 ----------------------------------------------------------
 # 不取锁、不建状态目录、不写任何文件：只跑 U1 自检并打印摘要。

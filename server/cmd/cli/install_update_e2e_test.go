@@ -1693,3 +1693,131 @@ exec `+realMv+` "$@"
 		t.Fatalf("ui.bak 应保留旧页面：\n%s", body)
 	}
 }
+
+// TestInstallShRefusesLegacyDotEnv 钉住旧布局保护（MEDIUM-2）。
+// 只有旧名 /etc/yiban/.env、没有 server.env 时安装必须 exit 2 并打印迁移步骤：
+// 静默生成 server.env 会产生新的 pepper/credential key，旧钥加密的凭据将无法解密。
+func TestInstallShRefusesLegacyDotEnv(t *testing.T) {
+	requireBash(t)
+	root := t.TempDir()
+	binDir := t.TempDir()
+	sysctlLog := filepath.Join(t.TempDir(), "systemctl.log")
+	serverBin := fakeBin(t, binDir, "yiban-server", "while :; do sleep 1; done")
+	cliBin := fakeBin(t, binDir, "yiban-cli", "exit 0\n")
+	envDir := filepath.Join(root, "etc/yiban")
+	if err := os.MkdirAll(envDir, 0o755); err != nil {
+		t.Fatalf("mkdir env dir: %v", err)
+	}
+	const legacyBody = "YIBAN_ENV=production\n" +
+		"YIBAN_DATABASE_URL=postgres://old:pw@127.0.0.1:5432/yiban\n" +
+		"YIBAN_HASH_PEPPER=0123456789abcdef0123456789abcdef\n" +
+		"YIBAN_CREDENTIAL_KEY=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=\n"
+	legacy := filepath.Join(envDir, ".env")
+	if err := os.WriteFile(legacy, []byte(legacyBody), 0o600); err != nil {
+		t.Fatalf("write legacy .env: %v", err)
+	}
+	env := map[string]string{
+		"YIBAN_INSTALL_ROOT": root,
+		"SYSTEMCTL": fakeBin(t, binDir, "systemctl",
+			"echo \"systemctl $*\" >> \""+sysctlLog+"\"\nexit 0\n"),
+		"YIBAN_DATABASE_URL": "postgres://yiban:pw@127.0.0.1:5432/yiban",
+		"PATH":               binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}
+	out, rc := runScript(t, scriptPath(t, "install.sh"), env,
+		"--server-bin", serverBin, "--cli-bin", cliBin)
+	if rc != 2 {
+		t.Fatalf("旧布局必须拒装（rc=2），got rc=%d out=%s", rc, out)
+	}
+	// 迁移步骤必须可执行：点名两个路径与复制命令，并说明密钥不重生成。
+	for _, want := range []string{
+		"/etc/yiban/.env",
+		"/etc/yiban/server.env",
+		"install -m 0600",
+		"NOT regenerated",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("拒绝文案缺 %q:\n%s", want, out)
+		}
+	}
+	// 不写任何安装产物：新 server.env 不生成（密钥不重生成）、旧 .env 原文不动、
+	// systemd 单元不落位（systemctl 一次都不该被调）。
+	if _, err := os.Stat(filepath.Join(envDir, "server.env")); err == nil {
+		t.Fatal("拒绝后不得创建 server.env（会生成新密钥）")
+	}
+	if got := readAll(t, legacy); got != legacyBody {
+		t.Fatalf("旧 .env 必须原样保留:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(root, "etc/systemd/system/yiban.service")); err == nil {
+		t.Fatal("拒绝后不得落位 systemd 单元")
+	}
+	// systemctl 一次都不该被调：拒装发生在所有写入之前，日志文件都不该产生。
+	if log, err := os.ReadFile(sysctlLog); err == nil && strings.Contains(string(log), "enable") {
+		t.Fatalf("拒绝后不得调用 systemctl enable:\n%s", log)
+	}
+	// 迁移动作本身必须真能走通：按提示复制后重跑 install，应当成功且保留旧密钥。
+	if err := os.WriteFile(filepath.Join(envDir, "server.env"), []byte(legacyBody), 0o600); err != nil {
+		t.Fatalf("simulate migration copy: %v", err)
+	}
+	if err := os.Remove(legacy); err != nil {
+		t.Fatalf("simulate legacy removal: %v", err)
+	}
+	healthFlag := filepath.Join(t.TempDir(), "health-ok")
+	if err := os.WriteFile(healthFlag, []byte("ok"), 0o644); err != nil {
+		t.Fatalf("write health flag: %v", err)
+	}
+	env["FAKE_HEALTH_OK"] = healthFlag
+	env["YIBAN_HEALTH_RETRIES"] = "1"
+	env["YIBAN_HEALTH_RETRY_INTERVAL"] = "0"
+	out, rc = runScript(t, scriptPath(t, "install.sh"), env,
+		"--server-bin", serverBin, "--cli-bin", cliBin)
+	if rc != 0 {
+		t.Fatalf("迁移后重装必须成功（rc=0），got rc=%d out=%s", rc, out)
+	}
+	if body := readAll(t, filepath.Join(envDir, "server.env")); !strings.Contains(body, "0123456789abcdef0123456789abcdef") {
+		t.Fatalf("迁移后的 server.env 必须保留旧 pepper（install.sh 不得重生成）:\n%s", body)
+	}
+}
+
+// TestUpdateShRefusesLegacyDotEnv 钉住升级器的同一条旧布局保护。
+// --selfcheck-only 也必须拒绝：自检读不到 DSN 会 FAIL，但运维要的是迁移步骤。
+func TestUpdateShRefusesLegacyDotEnv(t *testing.T) {
+	requireBash(t)
+	root := t.TempDir()
+	binDir := t.TempDir()
+	envDir := filepath.Join(root, "etc/yiban")
+	if err := os.MkdirAll(envDir, 0o755); err != nil {
+		t.Fatalf("mkdir env dir: %v", err)
+	}
+	const legacyBody = "YIBAN_ENV=production\nYIBAN_DATABASE_URL=postgres://old:pw@127.0.0.1:5432/yiban\n"
+	if err := os.WriteFile(filepath.Join(envDir, ".env"), []byte(legacyBody), 0o600); err != nil {
+		t.Fatalf("write legacy .env: %v", err)
+	}
+	env := map[string]string{
+		"YIBAN_INSTALL_ROOT": root,
+		"PATH":               binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}
+	out, rc := runScript(t, scriptPath(t, "update.sh"), env, "--selfcheck-only")
+	if rc != 2 {
+		t.Fatalf("旧布局必须拒绝升级（rc=2），got rc=%d out=%s", rc, out)
+	}
+	for _, want := range []string{
+		"/etc/yiban/.env",
+		"/etc/yiban/server.env",
+		"install -m 0600",
+		"NOT regenerated",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("拒绝文案缺 %q:\n%s", want, out)
+		}
+	}
+	// 不写任何东西：新 server.env 不生成、更新器状态目录不创建、旧 .env 原文不动。
+	if _, err := os.Stat(filepath.Join(envDir, "server.env")); err == nil {
+		t.Fatal("拒绝后不得创建 server.env")
+	}
+	if _, err := os.Stat(filepath.Join(root, "var/lib/yiban-updater")); err == nil {
+		t.Fatal("--selfcheck-only 不得创建更新器状态目录")
+	}
+	if got := readAll(t, filepath.Join(envDir, ".env")); got != legacyBody {
+		t.Fatalf("旧 .env 必须原样保留:\n%s", got)
+	}
+}

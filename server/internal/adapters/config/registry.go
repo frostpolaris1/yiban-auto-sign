@@ -22,12 +22,26 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/configdata"
 )
 
+// Scope 是名册条目的读者面。
+// server 键由服务进程（internal/adapters/config）读取，进设置页与三份模板；
+// cli 键只被运维 CLI（backup/migrate-legacy/bench）读取，不进设置页与模板。
+type Scope string
+
+const (
+	// ScopeServer 是服务进程读取的键。
+	ScopeServer Scope = "server"
+	// ScopeCLI 是运维 CLI 读取的键。doctor 的未登记键体检按全集校验：
+	// 误报会诱导运维删掉 backup 的口令，退回明文备份。
+	ScopeCLI Scope = "cli"
+)
+
 // RegistryEntry 是名册里的一行。
 // Default 只在 HasDefault 为真时有意义；显式 null 按无缺省处理。
 type RegistryEntry struct {
 	Key        string
 	Type       string
 	Group      string
+	Scope      Scope
 	Sensitive  bool
 	Default    any
 	HasDefault bool
@@ -66,13 +80,24 @@ func ParseRegistry(raw []byte) ([]RegistryEntry, error) {
 		var item struct {
 			Type      string          `json:"type"`
 			Group     []string        `json:"group"`
+			Scope     string          `json:"scope"`
 			Sensitive bool            `json:"sensitive"`
 			Default   json.RawMessage `json:"default"`
 		}
 		if err := json.Unmarshal(document[key], &item); err != nil {
 			return nil, fmt.Errorf("config: registry key %s: %w", key, err)
 		}
-		entry := RegistryEntry{Key: key, Type: item.Type, Sensitive: item.Sensitive}
+		// scope 缺省按 server：名册的绝大多数条目是服务端键；
+		// 嵌入名册的每条都显式写 scope，由门核对，不靠缺省。
+		scope := Scope(item.Scope)
+		switch scope {
+		case "":
+			scope = ScopeServer
+		case ScopeServer, ScopeCLI:
+		default:
+			return nil, fmt.Errorf("config: registry key %s has unknown scope %q (want server or cli)", key, item.Scope)
+		}
+		entry := RegistryEntry{Key: key, Type: item.Type, Scope: scope, Sensitive: item.Sensitive}
 		if len(item.Group) > 0 {
 			entry.Group = item.Group[0]
 		}

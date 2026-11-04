@@ -505,6 +505,20 @@ func TestDoctorUnknownKeysUsesEmbeddedRegistry(t *testing.T) {
 	if row := rowOf(t, runChecks(context.Background(), p), "env.unknown_keys"); row.fail {
 		t.Fatalf("全部键已登记时不得 FAIL: %s", row.detail)
 	}
+
+	// scope=cli 的键按全集校验放行：doctor 误报会诱导运维删掉 backup 口令，
+	// 退回明文备份。它们不进设置页（scope 门在 assembly），但也不算未登记。
+	p.src = fakeSource{
+		"YIBAN_ENV":                 "production",
+		"YIBAN_HASH_PEPPER":         testPepper,
+		"YIBAN_CREDENTIAL_KEY":      testKeyB64,
+		"YIBAN_DATABASE_URL":        "postgres://u:p@127.0.0.1:5432/db",
+		"YIBAN_BACKUP_PASSPHRASE":   "e2e-passphrase",
+		"YIBAN_LEGACY_ACCOUNTS_KEY": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	}
+	if row := rowOf(t, runChecks(context.Background(), p), "env.unknown_keys"); row.fail {
+		t.Fatalf("scope=cli 的键不得判未登记（会诱导删除 backup 口令）: %s", row.detail)
+	}
 }
 
 // TestServiceUserDefaultFollowsSystemdUnit 钉住服务用户缺省判据。

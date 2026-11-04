@@ -243,6 +243,33 @@ docker version --format '{{.Server.Version}}' >>"$E2E_STEP_LOG" 2>&1 || true
 git -C "$REPO" rev-parse HEAD >>"$E2E_STEP_LOG" 2>&1 || true
 e2e_ok "项目 $PROJECT，端口 $HTTP_PORT，compose $COMPOSE_VERSION，GOPROXY=${GOPROXY_ARG:-<default>}"
 
+# ---- C1b compose config：显式 env-file 是硬前提 ----------------------------
+# compose 文件里有 ${POSTGRES_PASSWORD:?} 插值：不带 --env-file 必须解析失败
+# （fail-closed），带 --env-file 必须渲染出派生 DSN 与可信代理缺省。
+# 这条断言把 deploy/README 的命令形状钉住：少写 --env-file 的文档会在这里红。
+e2e_step "C1b" "compose config 显式 env-file"
+if docker compose -p "$PROJECT" -f "$COMPOSE_FILE" config >"$LOG_DIR/config-no-envfile.yml" 2>&1; then
+    e2e_die "不带 --env-file 的 compose config 竟然成功：口令插值必须显式给值（fail-closed）"
+fi
+if ! docker compose --env-file "$COMPOSE_ENV" -p "$PROJECT" \
+        -f "$COMPOSE_FILE" -f "$OVERRIDE" config >"$LOG_DIR/compose-config.yml" 2>>"$E2E_STEP_LOG"; then
+    e2e_die "带 --env-file 的 compose config 失败"
+fi
+grep -q 'YIBAN_DATABASE_URL: postgres://yiban:' "$LOG_DIR/compose-config.yml" \
+    || e2e_die "渲染缺派生 DSN（POSTGRES_PASSWORD 未进插值）"
+grep -q 'YIBAN_TRUSTED_PROXIES: 172.16.0.0/12,127.0.0.1' "$LOG_DIR/compose-config.yml" \
+    || e2e_die "渲染缺可信代理缺省（透传行失效）"
+grep -q 'YIBAN_ENV: production' "$LOG_DIR/compose-config.yml" \
+    || e2e_die "渲染缺 env_file 注入的 YIBAN_ENV"
+# export 覆盖必须赢过 --env-file：deploy/README §5 的方式一靠它。
+if ! YIBAN_TRUSTED_PROXIES=192.0.2.10 docker compose --env-file "$COMPOSE_ENV" -p "$PROJECT" \
+        -f "$COMPOSE_FILE" -f "$OVERRIDE" config >"$LOG_DIR/compose-config-override.yml" 2>>"$E2E_STEP_LOG"; then
+    e2e_die "带覆盖变量的 compose config 失败"
+fi
+grep -q 'YIBAN_TRUSTED_PROXIES: 192.0.2.10' "$LOG_DIR/compose-config-override.yml" \
+    || e2e_die "shell 覆盖未透传 YIBAN_TRUSTED_PROXIES"
+e2e_ok "无 --env-file 拒绝解析；有 --env-file 渲染出派生 DSN/代理缺省/YIBAN_ENV；export 覆盖生效"
+
 # ---- C2 构建镜像 -----------------------------------------------------------
 e2e_step "C2" "构建镜像"
 E2E_STARTED=1

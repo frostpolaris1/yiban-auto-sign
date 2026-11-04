@@ -19,14 +19,15 @@
 #                                    同时跳过服务用户与 chown（无特权）。
 #   SYSTEMCTL=/path/fake-systemctl   覆盖 systemctl 调用（记录用）。
 #
-# 步骤：依赖检查 → 服务用户 → 二进制落位 → /etc/yiban/server.env
+# 步骤：依赖检查 → 旧布局保护（仅存旧 /etc/yiban/.env 时 exit 2，给迁移步骤）
+#       → 服务用户 → 二进制落位 → /etc/yiban/server.env
 #       （缺则生成随机 pepper/credential key 并打印一次）
 #       → /etc/yiban/server.env.example（0644，无密钥的运行模板）
 #       → 前端产物落位（给了 --ui-dir 时）
 #       → systemd 单元 → enable --now → /healthz 重试探测。
 #
 # 退出码：0 成功；1 健康检查超时或前端产物落位失败（可查日志定位）；
-#         2 用法错误或依赖缺失。
+#         2 用法错误或依赖缺失（含旧布局保护：仅存 /etc/yiban/.env 时拒装）。
 # ============================================================
 set -euo pipefail
 
@@ -71,6 +72,24 @@ fi
 
 # dest 把系统绝对路径映射到干跑前缀下。
 dest() { printf '%s%s' "$ROOT" "$1"; }
+
+# 0) 旧布局保护：只有旧名 /etc/yiban/.env、没有 server.env 时拒绝安装。
+#    此时静默生成 server.env 会产生**新的** YIBAN_HASH_PEPPER / YIBAN_CREDENTIAL_KEY：
+#    旧钥加密的凭据将永远无法解密（数据丢失）。fail-closed 并给出迁移步骤；
+#    密钥只复制、不重生成，老部署升级后照常启动。
+#    server.env 已存在时不算旧布局（新栈已装），照常走幂等安装。
+LEGACY_ENV="$(dest /etc/yiban/.env)"
+NEW_ENV="$(dest /etc/yiban/server.env)"
+if [ -f "$LEGACY_ENV" ] && [ ! -f "$NEW_ENV" ]; then
+    echo "install: found legacy $LEGACY_ENV without $NEW_ENV" >&2
+    echo "install: migrate the old runtime file first (secrets are preserved, NOT regenerated):" >&2
+    echo "install:   sudo install -m 0600 -o root -g root /etc/yiban/.env /etc/yiban/server.env" >&2
+    echo "install:   sudo rm -f /etc/yiban/.env" >&2
+    echo "install:   then re-run install.sh (it keeps an existing server.env in place)" >&2
+    echo "install: refusing: generating a fresh server.env here would create NEW pepper/credential keys" >&2
+    echo "install:          and make existing credentials permanently undecryptable" >&2
+    exit 2
+fi
 
 # 1) 服务用户与运行目录。干跑（有前缀）时跳过：本机可能没有 yiban 用户。
 if [ -z "$ROOT" ]; then

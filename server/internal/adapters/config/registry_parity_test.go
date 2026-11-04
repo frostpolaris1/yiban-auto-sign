@@ -282,39 +282,100 @@ func TestEveryConfigReadHasRegistryComparison(t *testing.T) {
 // keyLiteral 匹配整段被引号包住的 YIBAN_* 键名。
 var keyLiteral = regexp.MustCompile("[`\"]YIBAN_[A-Z0-9_]+[`\"]")
 
-// TestRegistryEqualsServerKeySurface 是双向门：Go 服务端读到的键 ⇔ 新名册键。
+// scopeSets 把名册键按 scope 分成 server 与 cli 两组。
+// 嵌入名册的每条都必须显式写 scope：靠缺省会让「settings 只列 server」
+// 变成实现细节，名册少写一个 scope 就静默改变设置页的键面。
+func scopeSets(t *testing.T, reg map[string]json.RawMessage) (server, cli map[string]bool) {
+	t.Helper()
+	server, cli = map[string]bool{}, map[string]bool{}
+	for key, raw := range reg {
+		if key == "_meta" {
+			continue
+		}
+		var item struct {
+			Scope string `json:"scope"`
+		}
+		if err := json.Unmarshal(raw, &item); err != nil {
+			t.Fatalf("解析 %s 的 scope 失败: %v", key, err)
+		}
+		switch item.Scope {
+		case "server":
+			server[key] = true
+		case "cli":
+			cli[key] = true
+		default:
+			t.Fatalf("%s 的 scope = %q，必须是显式的 server 或 cli", key, item.Scope)
+		}
+	}
+	return server, cli
+}
+
+// TestRegistryEqualsServerKeySurface 是双向门：Go 读到的键 ⇔ 名册键，按 scope 分区。
 //
-// 扫描面是服务侧的生产 Go 文件（cmd/server、internal/**、tools/**），
-// 不含运维 CLI（cmd/cli 的 backup/migrate-legacy 读 YIBAN_BACKUP_PASSPHRASE、
-// YIBAN_LEGACY_ACCOUNTS_KEY，那些不是服务端配置）与 bench。
-// 两个方向都判：
-//   - 代码读到而名册没登记 → 设置页看不见该键，doctor 误报未登记；
-//   - 名册登记而代码不读 → 名册退化成旧键清单，模板会诱导部署者配无效键。
+// 扫描面是 server 树的全部生产 Go 文件（含 cmd/cli 与 cmd/bench）。
+// 四个方向都判：
+//   - 任何 Go 读取点（全集）而名册没登记 → doctor 误报未登记键；
+//   - 名册登记而代码不读 → 名册退化成旧键清单，模板会诱导部署者配无效键；
+//   - server 键必须由 internal/adapters/config 读取（服务进程唯一的读点）；
+//   - cli 键必须出现在 cmd/cli 或 cmd/bench（运维工具自己的读取点）。
 func TestRegistryEqualsServerKeySurface(t *testing.T) {
 	reg := loadRegistry(t)
-	inRegistry := map[string]bool{}
-	for key := range reg {
-		if key != "_meta" {
-			inRegistry[key] = true
-		}
-	}
+	serverKeys, cliKeys := scopeSets(t, reg)
+	root := filepath.Join("..", "..", "..")
+	const loaderRel = "internal/adapters/config/config.go"
 	inCode := map[string]bool{}
-	for _, path := range serverProductionGoFiles(t) {
+	cliCode := map[string]bool{}
+	loaderKeys := map[string]bool{}
+	for _, path := range productionGoFiles(t) {
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			t.Fatalf("rel %s: %v", path, err)
+		}
+		relSlash := filepath.ToSlash(rel)
+		inCLI := strings.HasPrefix(relSlash, "cmd/cli/") || strings.HasPrefix(relSlash, "cmd/bench/")
 		for _, raw := range keyLiteral.FindAllString(readFile(t, path), -1) {
-			inCode[strings.Trim(raw, "`\"")] = true
+			key := strings.Trim(raw, "`\"")
+			inCode[key] = true
+			if inCLI {
+				cliCode[key] = true
+			}
+		}
+		if relSlash == loaderRel {
+			for _, raw := range keyLiteral.FindAllString(readFile(t, path), -1) {
+				loaderKeys[strings.Trim(raw, "`\"")] = true
+			}
 		}
 	}
-	if len(inCode) < 30 || len(inRegistry) < 30 {
-		t.Fatalf("扫描面塌了：代码 %d 键 / 名册 %d 键", len(inCode), len(inRegistry))
+	if len(inCode) < 36 || len(serverKeys)+len(cliKeys) < 36 {
+		t.Fatalf("扫描面塌了：代码 %d 键 / 名册 %d 键", len(inCode), len(serverKeys)+len(cliKeys))
+	}
+	if len(serverKeys) == 0 || len(cliKeys) == 0 {
+		t.Fatalf("scope 分区塌了：server %d / cli %d", len(serverKeys), len(cliKeys))
 	}
 	for key := range inCode {
-		if !inRegistry[key] {
-			t.Errorf("%s 被服务端读取，但不在嵌入名册内", key)
+		if !serverKeys[key] && !cliKeys[key] {
+			t.Errorf("%s 被 Go 读取，但不在嵌入名册内", key)
 		}
 	}
-	for key := range inRegistry {
+	for key := range serverKeys {
 		if !inCode[key] {
-			t.Errorf("%s 在嵌入名册内，但服务端没有任何读取点", key)
+			t.Errorf("%s（scope=server）在嵌入名册内，但没有任何读取点", key)
+		}
+		if !loaderKeys[key] {
+			t.Errorf("%s（scope=server）必须由 internal/adapters/config 读取，那里没有它的字面量", key)
+		}
+	}
+	for key := range cliKeys {
+		if !inCode[key] {
+			t.Errorf("%s（scope=cli）在嵌入名册内，但没有任何读取点", key)
+		}
+		if !cliCode[key] {
+			t.Errorf("%s（scope=cli）必须出现在 cmd/cli 或 cmd/bench，服务进程不得读它", key)
+		}
+	}
+	for key := range loaderKeys {
+		if !serverKeys[key] {
+			t.Errorf("internal/adapters/config 读到 %s，但它的 scope 不是 server", key)
 		}
 	}
 }
@@ -322,9 +383,11 @@ func TestRegistryEqualsServerKeySurface(t *testing.T) {
 // TestRegistrySensitiveMatchesCode 钉住名册的 sensitive 标记与代码口径。
 //
 // 设置页的掩码完全由名册驱动：名册漏标一个密钥，GET /api/admin/settings
-// 就会回显原文。两侧逐键相等：名册多标或少标都红。
+// 就会回显原文。server 键两侧逐键相等：名册多标或少标都红。
+// scope=cli 的键不进设置页，掩码不适用，sensitive 只作文档，不在此比对。
 func TestRegistrySensitiveMatchesCode(t *testing.T) {
 	reg := loadRegistry(t)
+	serverKeys, _ := scopeSets(t, reg)
 	want := map[string]bool{}
 	for _, key := range sensitiveKeys {
 		want[key] = true
@@ -334,7 +397,7 @@ func TestRegistrySensitiveMatchesCode(t *testing.T) {
 	}
 	got := map[string]bool{}
 	for key, raw := range reg {
-		if key == "_meta" {
+		if key == "_meta" || !serverKeys[key] {
 			continue
 		}
 		var item struct {
@@ -364,7 +427,7 @@ func TestRegistrySensitiveMatchesCode(t *testing.T) {
 // 旧 Python 栈的 config/registry.json（187 键）继续服务旧线，但 Go 生产代码
 // 不得引用它：读旧文件等于把旧键混进新栈的键面。
 func TestGoStackDoesNotReadLegacyRoster(t *testing.T) {
-	for _, path := range serverProductionGoFiles(t) {
+	for _, path := range productionGoFiles(t) {
 		if strings.Contains(readFile(t, path), "config/registry.json") {
 			t.Errorf("%s 引用了旧名册 config/registry.json；Go 栈读嵌入名册", path)
 		}
@@ -386,10 +449,10 @@ func TestGoStackDoesNotReadLegacyRoster(t *testing.T) {
 	}
 }
 
-// serverProductionGoFiles 列出服务侧的生产 Go 文件：cmd/server、internal/** 与 tools/**。
-// 运维 CLI 与 bench 不在扫描面：它们读的是命令行工具自己的环境键。
+// productionGoFiles 列出 server 树的全部生产 Go 文件（含 cmd/cli 与 cmd/bench：
+// 名册的 scope=cli 键由它们读取，门按 scope 分区校验落点）。
 // 2026-11-05 实测 170+ 个；少于 150 视为扫描面塌陷。
-func serverProductionGoFiles(t *testing.T) []string {
+func productionGoFiles(t *testing.T) []string {
 	t.Helper()
 	root := filepath.Join("..", "..", "..")
 	var out []string
@@ -397,18 +460,9 @@ func serverProductionGoFiles(t *testing.T) []string {
 		if err != nil {
 			return err
 		}
-		rel, relErr := filepath.Rel(root, path)
-		if relErr != nil {
-			return relErr
-		}
-		rel = filepath.ToSlash(rel)
 		if d.IsDir() {
-			switch {
-			case rel == ".":
-				return nil
-			case d.Name() == ".git" || d.Name() == "node_modules" || d.Name() == "testdata":
-				return filepath.SkipDir
-			case rel == "cmd/cli" || rel == "cmd/bench" || rel == "cmd/probe-login":
+			switch d.Name() {
+			case ".git", "node_modules", "testdata":
 				return filepath.SkipDir
 			}
 			return nil
@@ -475,16 +529,13 @@ var composeOnlyKeys = map[string]bool{"POSTGRES_PASSWORD": true}
 
 // TestTemplatesMatchRegistry 钉住三份 env 模板的键面。
 //
-// 模板键面 == 新名册键（容器模板的 DSN 由 compose 派生，见 composeDerivedKey），
+// 模板键面 == scope=server 的名册键（容器模板的 DSN 由 compose 派生，见
+// composeDerivedKey）；scope=cli 的键是运维 CLI 专用，写进模板会诱导部署者
+// 把 backup 口令放进服务进程环境，故显式禁止。
 // 秘密键在模板里必须为空：仓库里不得出现任何真实值或占位口令。
 func TestTemplatesMatchRegistry(t *testing.T) {
 	reg := loadRegistry(t)
-	registryKeys := map[string]bool{}
-	for key := range reg {
-		if key != "_meta" {
-			registryKeys[key] = true
-		}
-	}
+	serverKeys, cliKeys := scopeSets(t, reg)
 	cases := []struct {
 		name string
 		path string
@@ -516,13 +567,15 @@ func TestTemplatesMatchRegistry(t *testing.T) {
 			}
 			for key := range keys {
 				switch {
-				case registryKeys[key]:
+				case serverKeys[key]:
+				case cliKeys[key]:
+					t.Errorf("%s 出现 scope=cli 的键 %s：CLI 专用键不得进运行配置模板", tc.path, key)
 				case tc.extras[key]:
 				default:
 					t.Errorf("%s 出现名册外的键 %s", tc.path, key)
 				}
 			}
-			for key := range registryKeys {
+			for key := range serverKeys {
 				if tc.derived[key] {
 					continue
 				}
@@ -552,20 +605,23 @@ func TestTemplatesMatchRegistry(t *testing.T) {
 	}
 }
 
-// TestContainerComposeDerivesDSN 钉住容器模板的例外：
-// YIBAN_DATABASE_URL 不在 compose.env 里，而由 compose 从 POSTGRES_PASSWORD 派生。
-// 没有本测试，模板缺一个必填键就会静默通过键面门。
+// TestContainerComposeDerivesDSN 钉住容器模板的两个例外：
+// YIBAN_DATABASE_URL 不在 compose.env 里，由 compose 从 POSTGRES_PASSWORD 派生；
+// YIBAN_TRUSTED_PROXIES 走插值透传，export 覆盖才不会静默失效。
+// 没有本测试，模板缺一个必填键或文档命令漏写 --env-file 都会静默通过键面门。
 func TestContainerComposeDerivesDSN(t *testing.T) {
 	compose := readFile(t, filepath.Join("..", "..", "..", "..", "deploy", "docker", "docker-compose.yml"))
 	for _, want := range []string{
 		"YIBAN_DATABASE_URL:",
 		"${POSTGRES_PASSWORD",
+		"YIBAN_TRUSTED_PROXIES:",
+		"${YIBAN_TRUSTED_PROXIES:-",
 		"env_file:",
 		"compose.env",
 		"--env-file",
 	} {
 		if !strings.Contains(compose, want) {
-			t.Errorf("docker-compose.yml 缺少 %q：容器必须显式加载 compose.env 并派生 DSN", want)
+			t.Errorf("docker-compose.yml 缺少 %q：容器必须显式加载 compose.env、派生 DSN 并透传可信代理", want)
 		}
 	}
 }

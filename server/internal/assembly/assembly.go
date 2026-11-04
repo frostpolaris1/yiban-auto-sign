@@ -807,9 +807,15 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 }
 
 // rosterEntries 把适配器的名册条目转成用例视图。
+// 只放行 scope=server：设置页展示的是服务进程的配置面；
+// scope=cli 的键（backup 口令、迁移旧钥、bench DSN）不属于它，
+// 列出来等于把运维工具的密钥位暴露给管理员界面。
 func rosterEntries(entries []config.RegistryEntry) []appsettings.Entry {
 	out := make([]appsettings.Entry, 0, len(entries))
 	for _, entry := range entries {
+		if entry.Scope != config.ScopeServer {
+			continue
+		}
 		out = append(out, appsettings.Entry{
 			Key:        entry.Key,
 			Group:      entry.Group,

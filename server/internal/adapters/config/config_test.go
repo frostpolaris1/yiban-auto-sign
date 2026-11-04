@@ -541,8 +541,10 @@ func TestDatabasePresenceIsExplicit(t *testing.T) {
 				t.Fatalf("%s 的错误没有点名 %s: %v", env, key, err)
 			}
 		}
-		// 2. 显式逃生口放行。
-		cfg, err := LoadFrom(baseSource())
+		// 2. 显式逃生口放行：正例与负例同一 env，表驱动到每个环境。
+		allow := baseSource()
+		allow["YIBAN_ENV"] = env
+		cfg, err := LoadFrom(allow)
 		if err != nil {
 			t.Fatalf("%s 显式 YIBAN_ALLOW_NO_DB=1 必须放行: %v", env, err)
 		}

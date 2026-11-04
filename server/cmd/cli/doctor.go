@@ -934,12 +934,6 @@ func newProbe(dsn, photoDir, binPath, serviceUser string) *probe {
 	}
 }
 
-// fileExists 报告路径是否存在。
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
-}
-
 // runDoctor 是 doctor 子命令入口。返回进程退出码。
 func runDoctor(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("doctor", stderr)

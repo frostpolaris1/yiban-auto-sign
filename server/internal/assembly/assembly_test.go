@@ -17,6 +17,7 @@ package assembly
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -325,4 +326,51 @@ func TestNewServerClosesPoolOnHTTPShutdown(t *testing.T) {
 	if !closed.Load() {
 		t.Fatal("NewServer 的 server 在 Shutdown 后必须释放连接池")
 	}
+}
+
+// TestRosterEntriesOnlyServerScope 钉住设置页的 scope 边界。
+// scope=cli 的键（backup 口令、迁移旧钥、bench DSN）只服务运维 CLI，
+// 列进 GET /api/admin/settings 会把运维工具的密钥位暴露给管理员界面。
+func TestRosterEntriesOnlyServerScope(t *testing.T) {
+	entries, err := config.Registry()
+	if err != nil {
+		t.Fatalf("Registry: %v", err)
+	}
+	out := rosterEntries(entries)
+	byKey := map[string]bool{}
+	for _, entry := range out {
+		byKey[entry.Key] = true
+	}
+	cli := []string{"YIBAN_BACKUP_PASSPHRASE", "YIBAN_LEGACY_ACCOUNTS_KEY", "YIBAN_TEST_DATABASE_URL"}
+	for _, key := range cli {
+		if byKey[key] {
+			t.Fatalf("scope=cli 的 %s 不得进入设置名册", key)
+		}
+	}
+	server, _, err := countScope(entries)
+	if err != nil {
+		t.Fatalf("countScope: %v", err)
+	}
+	if len(out) != server {
+		t.Fatalf("rosterEntries = %d 条，want 全部 %d 条 scope=server", len(out), server)
+	}
+	if len(out) == 0 {
+		t.Fatal("设置名册为空——过滤面塌了即拒判")
+	}
+}
+
+// countScope 数名册里 scope=server 的条目数（本文件用，不进生产代码）。
+func countScope(entries []config.RegistryEntry) (int, int, error) {
+	server, cli := 0, 0
+	for _, entry := range entries {
+		switch entry.Scope {
+		case config.ScopeServer:
+			server++
+		case config.ScopeCLI:
+			cli++
+		default:
+			return 0, 0, fmt.Errorf("unknown scope %q", entry.Scope)
+		}
+	}
+	return server, cli, nil
 }

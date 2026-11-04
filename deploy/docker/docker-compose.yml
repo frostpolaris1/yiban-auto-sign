@@ -57,6 +57,14 @@ services:
       # DSN 由数据库口令派生：口令只保留一处来源（compose.env 的
       # POSTGRES_PASSWORD），不在 env_file 里再抄一遍。
       YIBAN_DATABASE_URL: postgres://yiban:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/container/compose.env}@db:5432/yiban?sslmode=disable
+      # 可信代理表走插值透传而不是只靠 env_file：`export YIBAN_TRUSTED_PROXIES=…`
+      # 的覆盖（deploy/README §5）必须继续生效。取值优先级：
+      # shell 环境 > --env-file（compose.env）> 下面的缺省；
+      # environment 恒覆盖 env_file，故 compose.env 与这里写同一个缺省值。
+      # TLS 在外部终结时，外层代理必须传 X-Forwarded-Proto。Docker 发布端口
+      # 经网桥网关转发：容器看到的来源是网关（172.16.0.0/12 的网关地址），
+      # 不是 127.0.0.1（2026-11-01 实测）。
+      YIBAN_TRUSTED_PROXIES: "${YIBAN_TRUSTED_PROXIES:-172.16.0.0/12,127.0.0.1}"
     volumes:
       - photos:/data/photos
     ports:

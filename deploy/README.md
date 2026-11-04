@@ -62,10 +62,12 @@ curl -fsS http://127.0.0.1:8080/healthz     # {"status":"ok"}
 curl -fsS http://127.0.0.1:8080/ | head     # 前端首页 HTML
 ```
 
-创建第一个 master：
+创建第一个 master（同样要显式 `--env-file`：compose 文件里有
+`${POSTGRES_PASSWORD:?}` 插值，缺它连 `exec` 都解析不了）：
 
 ```bash
-docker compose -f deploy/docker/docker-compose.yml exec -T app \
+docker compose --env-file deploy/container/compose.env \
+  -f deploy/docker/docker-compose.yml exec -T app \
   /usr/local/bin/yiban-cli user create-master \
   --email you@example.com --password-stdin <<< "$PASSWORD"
 ```
@@ -315,18 +317,26 @@ sudo systemctl start yiban.service
 - 所有请求按代理地址计，登录等受限端点共用同一个 IP 桶（默认 60 次/分钟）。
 - 外部 TLS 的登录来源判定看到 `http`：带同源 Fetch Metadata 的现代浏览器走 401，旧浏览器与非浏览器客户端回 403。
 
-容器部署的 compose 默认值已覆盖 Docker 网桥与回环：
+容器部署的 compose 默认值已覆盖 Docker 网桥与回环（compose 文件里
+`${YIBAN_TRUSTED_PROXIES:-172.16.0.0/12,127.0.0.1}` 插值透传）：
 
 ```text
 YIBAN_TRUSTED_PROXIES=172.16.0.0/12,127.0.0.1
 ```
 
 原因：发布端口经网桥网关转发，容器看到的来源是网关，不是 `127.0.0.1`（2026-11-01 实测：`127.0.0.1:8080` 发布 → 容器内 `RemoteAddr=172.18.0.1`）。
-外层代理在别的地址时覆盖它：
+外层代理在别的地址时有两种覆盖方式，取值优先级为 shell 环境 > compose.env > compose 缺省：
 
 ```bash
+# 方式一：shell 环境覆盖（插值透传，优先级最高）
 export YIBAN_TRUSTED_PROXIES=192.0.2.10
-docker compose -f deploy/docker/docker-compose.yml up -d
+docker compose --env-file deploy/container/compose.env \
+  -f deploy/docker/docker-compose.yml up -d
+```
+
+```bash
+# 方式二：改 deploy/container/compose.env 里的 YIBAN_TRUSTED_PROXIES 行，
+# 再用 --env-file 启动（运行配置以 compose.env 为正本）。
 ```
 
 裸机部署的代理在宿主回环。`install.sh` 新装的 `server.env` 已写入：
