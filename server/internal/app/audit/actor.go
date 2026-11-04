@@ -6,6 +6,8 @@ package audit
 // 三个用例域原样透传，避免各域复写掩码规则。
 
 import (
+	"strings"
+
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
@@ -25,4 +27,22 @@ func NewActor(user coreauth.User) Actor {
 		label = "unknown"
 	}
 	return Actor{UserID: user.ID, Role: user.Role, Label: label}
+}
+
+// FilterLabel 把列表筛选的 actor 原值变成可匹配的标签。
+//
+// 完整邮箱先归一为小写再掩码：写入口径存储的邮箱已由注册归一而小写，
+// 故大小写不同的查询也能命中。已是掩码标签（含 ***）或非邮箱形状
+// （如 unknown）原样返回——它们本身就是存储里的标签值。
+// 空串表示不筛选。
+func FilterLabel(raw string) string {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	if value == "" {
+		return ""
+	}
+	masked := mask.MaskEmail(value)
+	if masked == value {
+		return value
+	}
+	return masked
 }

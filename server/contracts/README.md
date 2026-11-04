@@ -128,6 +128,18 @@ either side drifts.
 | GET | `/api/admin/tasks` | master/admin | UX-3 swh |
 | GET | `/api/admin/tasks/export` | master/admin | UX-3 swh |
 | GET | `/api/admin/engine` | master/admin | UX-5 aqn |
+| GET | `/api/admin/notify` | master/admin | 2ws A |
+|  |  |  | 各自管理自己的订阅：返回全部类别×渠道的有效状态；缺行按默认（review=in_app+email；credential_invalid=in_app；sign_failed_daily=email；capacity_rejected=in_app）。本阶段只存取，不投递。 |
+| PUT | `/api/admin/notify` | master/admin | 2ws A |
+|  |  |  | 幂等替换本人的覆盖集；未知类别/渠道或重复对 400；未列出的对回默认。 |
+| GET | `/api/admin/settings` | master/admin | 2ws A |
+|  |  |  | 只读配置名册，按组返回；敏感键只给 `{set, masked, source}`，永不回显原文；source=env/default/unknown（file 保留，本服务不产出）。键全集来自 `config/registry.json`。 |
+| PUT | `/api/admin/announcement` | master | 2ws A |
+|  |  |  | 发布或下线全站公告；去首尾空白后单行、上限 200 字（与旧线一致）；写 `settings.announcement` 审计，detail 不含正文。 |
+| GET | `/api/announcement` | master/admin/user | 2ws A |
+|  |  |  | 所有已登录角色读同一正文；未设置或已清空回空文本与 null 时间。 |
+| GET | `/api/audit-logs` | master/admin | 2ws A |
+|  |  |  | 只读审计行：游标分页＋action/actor/from/to 筛选；actor 过滤值按写入同口径掩码；detail 出口过掩码口径；不校验链、不导出。 |
 | GET | `/api/me/diagnostics` | master/admin/user | P6 |
 | GET | `/api/accounts/:id/diagnostics` | user/admin/master | UX-3 (was user/admin) |
 | GET | `/api/me/sign-status` | master/admin/user | P6 |

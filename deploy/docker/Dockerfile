@@ -87,6 +87,10 @@ COPY --chown=65532:65532 --from=build /out/photos /data/photos
 # 目录与文件是 root 属主、世界可读；distroless nonroot 只需要读。
 COPY --from=ui /src/ui/dist /srv/ui
 
+# 配置名册：GET /api/admin/settings 运行时读取 /etc/yiban/registry.json。
+# 安装位与裸机 install.sh 一致（root 属主，源文件 0644）；只读，进程只需读权限。
+COPY config/registry.json /etc/yiban/registry.json
+
 # 容器内必须监听全部接口；照片目录独立卷，便于备份与迁移。
 ENV YIBAN_HTTP_ADDR=0.0.0.0:8080 \
     YIBAN_PHOTO_DIR=/data/photos \

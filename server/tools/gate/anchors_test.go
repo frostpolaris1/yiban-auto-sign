@@ -139,7 +139,9 @@ func TestCanonicalRuleRowsPinned(t *testing.T) {
 	// update-u2：env.get 与 status.literal 的 allow 增列
 	// cmd/cli/update_u2_e2e_test.go（干跑 update.sh 的 PATH 沿用既有口径；
 	// 状态文件里的 success/failed 是更新结果的词表，不是任务状态）。
-	const want = "93a0606a31da6203966a823097a227d101eecdd5ec73372ad0ae6702e0d86ccd"
+	// parity-be-a2：boundary.adapters allow 增列
+	// internal/adapters/pg/settings_e2e_test.go（订阅/公告/审计列表的用例层 e2e）。
+	const want = "7ff82527ebdc7742ea055897d41212277fd8cbe9030de369123480a4ed2f1d31"
 	if got != want {
 		t.Fatalf("canonical 规则内容变了（hash %s）；确认改动后更新 TestCanonicalRuleRowsPinned 的哈希", got)
 	}

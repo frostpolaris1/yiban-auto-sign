@@ -46,15 +46,18 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/storage"
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
 	appadmin "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/admin"
+	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
 	appdiagnostic "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/diagnostic"
 	appegress "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/egress"
 	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
 	applocation "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/location"
+	appnotify "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/notify"
 	appphotos "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/photos"
 	appretention "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/retention"
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
 	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
+	appsettings "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/settings"
 	appstats "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/stats"
 	apptimepref "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/timepref"
 	appuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/user"
@@ -72,6 +75,7 @@ import (
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	accounthttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/account"
 	adminhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/admin"
+	audithttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/audit"
 	eventshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/events"
 	locationhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/location"
 	photoshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/photos"
@@ -79,6 +83,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/router"
 	schedulehttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/schedule"
 	schoolhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/school"
+	settingshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/settings"
 	signinghttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/signing"
 	userhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/user"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
@@ -298,21 +303,23 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 	}
 	clk := clock.System{}
 	var (
-		issuer    auth.SessionIssuer
-		authSvc   *appauth.Service
-		schools   *schoolhttp.Handler
-		admins    *adminhttp.Handler
-		accounts  *accounthttp.Handler
-		users     *userhttp.Handler
-		signing   *signinghttp.Handler
-		planning  *schedulehttp.Handler
-		taskLib   *schedulehttp.TasksHandler
-		engineLib *schedulehttp.EngineHandler
-		photoLib  *photoshttp.Handler
-		locLib    *locationhttp.Handler
-		eventLib  *eventshttp.Handler
-		db        *pg.DB
-		workerSvc *appworker.Service
+		issuer      auth.SessionIssuer
+		authSvc     *appauth.Service
+		schools     *schoolhttp.Handler
+		admins      *adminhttp.Handler
+		accounts    *accounthttp.Handler
+		users       *userhttp.Handler
+		signing     *signinghttp.Handler
+		planning    *schedulehttp.Handler
+		taskLib     *schedulehttp.TasksHandler
+		engineLib   *schedulehttp.EngineHandler
+		photoLib    *photoshttp.Handler
+		locLib      *locationhttp.Handler
+		eventLib    *eventshttp.Handler
+		settingsLib *settingshttp.Handler
+		auditLib    *audithttp.Handler
+		db          *pg.DB
+		workerSvc   *appworker.Service
 		// authz 只给 master 专属的注册开关用。无数据库时为 nil，端点回 501。
 		authz router.Authorizer
 		// engineState 是执行循环的进程内时刻记录，DB 分支构造：
@@ -360,6 +367,13 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		if err != nil {
 			closeFn()
 			return nil, fmt.Errorf("assembly: audit repo: %w", err)
+		}
+		// 设置面：订阅、公告、名册与审计列表。
+		// 名册缺失只让 GET /api/admin/settings 回 501：其余三个端点不依赖它。
+		settingsLib, auditLib, err = buildSettings(db, audits, clk, logger)
+		if err != nil {
+			closeFn()
+			return nil, err
 		}
 		sessionRepo := pg.NewSessionRepo(db)
 		issuer, err = pg.NewSessionIssuer(sessionRepo, audits, cfg.HashPepper, clk)
@@ -729,6 +743,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		Photos:          photoLib,
 		Locations:       locLib,
 		Events:          eventLib,
+		Settings:        settingsLib,
+		Audit:           auditLib,
 		RateLimit:       guard,
 		LoginOrigin:     publicOrigin(cfg.PublicBaseURL),
 		TrustedProxies:  trustedProxies,
@@ -742,6 +758,64 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 	var closeOnce sync.Once
 	closeAll := func() { closeOnce.Do(closeFn) }
 	return &Stack{Engine: engine, DB: db, Worker: workerSvc, EngineState: engineState, Close: closeAll}, nil
+}
+
+// buildSettings 装配通知订阅、公告、设置名册与审计只读列表。
+//
+// 名册文件缺失只让 GET /api/admin/settings 回 501 并留显性告警：
+// 订阅、公告与审计列表不依赖名册。
+// 名册存在但损坏（解析失败、键重复、空名册）时**失败关闭**：
+// 带病的名册会把错误的信息展示成配置事实。
+func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
+	logger *slog.Logger) (*settingshttp.Handler, *audithttp.Handler, error) {
+	notifySvc, err := appnotify.NewService(pg.NewNotificationPrefsRepo(db))
+	if err != nil {
+		return nil, nil, fmt.Errorf("assembly: notify service: %w", err)
+	}
+	announcementSvc, err := appsettings.NewService(appsettings.Deps{
+		Store: pg.NewAnnouncementRepo(db),
+		Audit: audits,
+		Tx:    db,
+		Clock: clk,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("assembly: announcement service: %w", err)
+	}
+	reader, err := appaudit.NewReader(audits)
+	if err != nil {
+		return nil, nil, fmt.Errorf("assembly: audit reader: %w", err)
+	}
+
+	var roster *appsettings.Roster
+	entries, err := config.LoadRegistry("")
+	switch {
+	case errors.Is(err, config.ErrRegistryNotFound):
+		logger.Warn("settings: configuration registry not found; GET /api/admin/settings returns 501",
+			logfield.KeyError, err.Error())
+	case err != nil:
+		return nil, nil, fmt.Errorf("assembly: load configuration registry: %w", err)
+	default:
+		roster, err = appsettings.NewRoster(rosterEntries(entries), config.Env{})
+		if err != nil {
+			return nil, nil, fmt.Errorf("assembly: configuration roster: %w", err)
+		}
+	}
+	return settingshttp.NewHandler(notifySvc, roster, announcementSvc), audithttp.NewHandler(reader), nil
+}
+
+// rosterEntries 把适配器的名册条目转成用例视图。
+func rosterEntries(entries []config.RegistryEntry) []appsettings.Entry {
+	out := make([]appsettings.Entry, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, appsettings.Entry{
+			Key:        entry.Key,
+			Group:      entry.Group,
+			Sensitive:  entry.Sensitive,
+			Default:    entry.Default,
+			HasDefault: entry.HasDefault,
+		})
+	}
+	return out
 }
 
 // publicOrigin 把公开基址收敛成 scheme://host[:port]。
