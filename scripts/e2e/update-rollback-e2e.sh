@@ -15,7 +15,8 @@
 #                         新库 schema = 升级前，原库保留（schema 已前进）；
 #   R8 正常升级         → exit 0，.bak 保存升级前旧件，schema +2，首次装页面生效；
 #   R9 健康失败+UI 回滚 → exit 1，旧页面换回、指针只剩一行、库不动（migrate 空转）；
-#   R8b install.sh 重跑 → 更新器 root/state/backups 仍是 root 0700（递归 chown 到不了）；
+#   R8a UI 预置软链      → 安装/更新都不顺链写，mv -T 原子替换（受害者字节/权限不变）；
+#   R8b install.sh 重跑  → 更新器 root/state/backups 仍是 root 0700（install.sh 只 chown photos/ui）；
 #   R8c 状态目录软链    → exit 2，root 不顺着软链写状态/日志；
 #   R9b 备份件被篡改    → exit 2，回滚拒绝执行备份里的 CLI（属主/权限复核）；
 #   R10 恢复失败        → exit 2，打印 manual action（含真实目标库名），服务停住。
@@ -53,7 +54,8 @@
 #   R1 基线安装（install.sh + v1）与自检门自证
 #   R2 签名错  R3 自检 FAIL  R4 备份失败  R5 无 CREATEDB
 #   R6 迁移失败（--no-restore-db）  R7 健康失败 + 数据库回滚
-#   R8 正常升级（含 --ui-dir）  R8b install.sh 重跑  R8c 状态目录软链
+#   R8 正常升级（含 --ui-dir）  R8a UI 预置软链
+#   R8b install.sh 重跑  R8c 状态目录软链
 #   R9 健康失败 + UI 回滚
 #   R9b 备份件被篡改（回滚拒绝执行）
 #   R10 数据库恢复失败（manual action）
@@ -90,7 +92,7 @@ REPO="$(cd "$SELF_DIR/../.." && pwd)"
 # shellcheck source=lib/deploy-e2e.sh
 . "$SELF_DIR/lib/deploy-e2e.sh"
 
-usage() { sed -n '2,84p' "$SELF"; }
+usage() { sed -n '2,86p' "$SELF"; }
 
 die_usage() {
     echo "update-rollback-e2e: $1" >&2
@@ -647,7 +649,7 @@ run_mode() {
     STATE_DIR="$UPDATER_ROOT/state"
     STATE_FILE="$STATE_DIR/update-state.json"
     # 更新器的 root 独占树：父目录 /var/lib 属 root ⇒ yiban 换不了它；
-    # 与 /var/lib/yiban 同级（install.sh 的递归 chown 到不了这里）。
+    # 与 /var/lib/yiban 同级（install.sh 只 chown photos/ui，不碰这里）。
     BACKUP_ROOT="$UPDATER_ROOT/backups"
 
     # sha <文件>：容器内 sha256sum（coreutils 必有）。
@@ -1025,10 +1027,49 @@ run_mode() {
     assert_grep "$ENV_FILE" '^YIBAN_UI_DIR=/var/lib/yiban/ui$' "指针必须指到 /var/lib/yiban/ui"
     e2e_ok "rc=0；.bak=升级前旧件；unit active；healthz ok；schema=$((EXPECTED_SCHEMA + 2))；首次装页面生效；argv 无口令"
 
-    # ---- R8b install.sh 重跑：更新器根不被递归 chown -------------------------
+    # ---- R8a UI 落位：预置软链不被跟随 ---------------------------------------
+    e2e_step "R8a" "UI 落位：服务用户预置的软链不被跟随"
+    # 复审 HIGH：服务用户能把 $SERVICE_HOME/ui 预置成软链；root 的 cp/chmod
+    # 若顺链走，会把 /root 或旧备份写坏并改权限。落位必须 mv -T 原子替换。
+    VICTIM="/opt/e2e/ui-victim"
+    rm -rf "$VICTIM"
+    # 受害目录对服务用户可读（否则自检的 config.ui_dir 会先把它判 FAIL，
+    # 走不到 UI 落位逻辑）；真正要证明的是 cp/chmod 不顺链改文件与权限。
+    install -d -m 0755 "$VICTIM"
+    printf 'SECRET\n' > "$VICTIM/index.html"
+    chmod 0600 "$VICTIM/index.html"
+    install -d -m 0700 "$VICTIM/sub"
+    printf 'KEEP\n' > "$VICTIM/sub/keep.txt"
+    chmod 0600 "$VICTIM/sub/keep.txt"
+    UI_THREE="/opt/e2e/ui-three"
+    install -d -m 0755 "$UI_THREE"
+    printf '<div id="root">ui-three</div>\n' > "$UI_THREE/index.html"
+    mv /var/lib/yiban/ui /var/lib/yiban/ui.keep
+    ln -s "$VICTIM" /var/lib/yiban/ui
+    R8A_RC=0
+    bash "$UPDATE_SH" --server-bin "$DIST/yiban-server-v4" --cli-bin "$DIST/yiban-cli-v4" \
+        --ui-dir "$UI_THREE" --allow-unsigned >"$E2E_LOG_DIR/R8a-update.log" 2>&1 || R8A_RC=$?
+    assert_eq "R8a update.sh 退出码" "$R8A_RC" "0"
+    if [ -L /var/lib/yiban/ui ]; then
+        e2e_die "R8a：安装位 ui 仍是软链"
+    fi
+    grep -q 'ui-three' /var/lib/yiban/ui/index.html || e2e_die "R8a：新页面没有落位"
+    # 受害目录：字节与权限都不能被动过（cp/chmod 顺链的判据）。
+    assert_eq "R8a 软链目标内容未变" "$(cat "$VICTIM/index.html")" "SECRET"
+    assert_eq "R8a 软链目标文件权限未变" "$(stat -c '%a' "$VICTIM/index.html")" "600"
+    assert_eq "R8a 软链目标子文件未变" "$(cat "$VICTIM/sub/keep.txt")" "KEEP"
+    assert_eq "R8a 软链目标子目录权限未变" "$(stat -c '%a' "$VICTIM/sub")" "700"
+    # 恢复 R8 装的那份页面，供 R9 的 UI 回滚断言使用。
+    rm -rf /var/lib/yiban/ui
+    mv /var/lib/yiban/ui.keep /var/lib/yiban/ui
+    assert_eq "R8a 恢复后 unit 状态" "$(unit_active)" "active"
+    if ! health_ok; then e2e_die "R8a：恢复页面后 healthz 应仍 OK"; fi
+    e2e_ok "rc=0；软链目标字节/权限未变；安装位是真实目录；页面=ui-three"
+
+    # ---- R8b install.sh 重跑：更新器根仍是 root 独占 -------------------------
     e2e_step "R8b" "install.sh 重跑：更新器根仍是 root 独占"
-    # install.sh 会对 /var/lib/yiban 递归 chown（服务用户要拥有 photos/ui）。
-    # 更新器的 state/backups 必须在它的递归范围之外，重装后仍是 root 0700。
+    # install.sh 只把 home 与 photos/ui 交给服务用户（不再递归整棵树）。
+    # 更新器的 state/backups 与它同级、本就不可达，重装后仍是 root 0700。
     R8B_INSTALL_RC=0
     YIBAN_HEALTH_RETRIES=60 YIBAN_HEALTH_RETRY_INTERVAL=1 \
         bash "$INSTALL_SH" --server-bin "$DIST/yiban-server-v4" \

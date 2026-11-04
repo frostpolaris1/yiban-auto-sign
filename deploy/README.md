@@ -176,8 +176,8 @@ root:root 0700**：备份含凭据密文，回滚还会执行备份内的 CLI，
 `20261104T101500Z` 的备份目录；备份失败不删任何东西，半成品目录直接清掉。
 
 更新器的状态/备份根放在 `/var/lib/yiban-updater/{state,backups}`：它与服务用户的
-`/var/lib/yiban` **同级**，install.sh 重装时对 `/var/lib/yiban` 的递归 chown
-到不了这里（否则备份目录会被改成 yiban 属主，更新器随后拒绝运行）。
+`/var/lib/yiban` **同级**，install.sh 只把 `photos`/`ui` 交给服务用户（不再对整棵
+树递归 chown），因此重装不会把更新器根改成 yiban 属主。
 
 **从旧布局升级**：旧版本写在 `/var/lib/yiban/{pre-migrate,backups,updates}` 下的
 备份与状态**不会删**。新备份落新根；旧备份仍可按上面「看本次备份」的方式手工

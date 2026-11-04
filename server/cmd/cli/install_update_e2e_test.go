@@ -1396,3 +1396,73 @@ func TestUpdateShFirstUIWritesEnvOnlyAfterActivation(t *testing.T) {
 		t.Fatalf("successful activation must install the page:\n%s", body)
 	}
 }
+
+// TestInstallShReplacesPlantedUISymlink 钉 HIGH（复审六轮）的安装侧：
+// $SERVICE_HOME/ui 可能是服务用户预置的软链；install.sh 不得 cp/chmod 顺链
+// 写到 /root 或旧备份，必须在 root 独占目录里造好再 mv -T 原子替换。
+func TestInstallShReplacesPlantedUISymlink(t *testing.T) {
+	requireBash(t)
+	root := t.TempDir()
+	binDir := t.TempDir()
+	victim := filepath.Join(root, "victim")
+	sub := filepath.Join(victim, "sub")
+	if err := os.MkdirAll(sub, 0o700); err != nil {
+		t.Fatalf("mkdir victim: %v", err)
+	}
+	secret := filepath.Join(victim, "index.html")
+	if err := os.WriteFile(secret, []byte("VICTIM"), 0o600); err != nil {
+		t.Fatalf("write victim: %v", err)
+	}
+	hidden := filepath.Join(sub, "keep.txt")
+	if err := os.WriteFile(hidden, []byte("KEEP"), 0o600); err != nil {
+		t.Fatalf("write victim sub: %v", err)
+	}
+	if err := os.Chmod(sub, 0o700); err != nil {
+		t.Fatalf("chmod victim sub: %v", err)
+	}
+	uiTarget := filepath.Join(root, "var/lib/yiban/ui")
+	if err := os.MkdirAll(filepath.Dir(uiTarget), 0o755); err != nil {
+		t.Fatalf("mkdir ui parent: %v", err)
+	}
+	if err := os.Symlink(victim, uiTarget); err != nil {
+		t.Skipf("SKIP: 本平台不支持符号链接：%v", err)
+	}
+	serverBin := fakeBin(t, binDir, "yiban-server", "exit 0\n")
+	cliBin := fakeBin(t, binDir, "yiban-cli", "exit 0\n")
+	ui := writeUIDistDir(t, "installed-ui")
+
+	env := map[string]string{
+		"YIBAN_INSTALL_ROOT":          root,
+		"SYSTEMCTL":                   fakeBin(t, binDir, "systemctl", "exit 0\n"),
+		"YIBAN_DATABASE_URL":          "postgres://yiban:pw@127.0.0.1:5432/yiban?sslmode=disable",
+		"YIBAN_HEALTH_RETRIES":        "1",
+		"YIBAN_HEALTH_RETRY_INTERVAL": "0",
+		"PATH":                        binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}
+	out, rc := runScript(t, scriptPath(t, "install.sh"), env,
+		"--server-bin", serverBin, "--cli-bin", cliBin, "--ui-dir", ui)
+	if rc != 0 {
+		t.Fatalf("install rc=%d out=%s", rc, out)
+	}
+	if info, err := os.Lstat(uiTarget); err != nil || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("安装位 ui 必须是真实目录：err=%v", err)
+	}
+	if body := readAll(t, filepath.Join(uiTarget, "index.html")); !strings.Contains(body, "installed-ui") {
+		t.Fatalf("页面没有落位：\n%s", body)
+	}
+	if body := readAll(t, secret); body != "VICTIM" {
+		t.Fatalf("软链目标被改写：%q", body)
+	}
+	if body := readAll(t, hidden); body != "KEEP" {
+		t.Fatalf("软链目标子文件被改写：%q", body)
+	}
+	if info, err := os.Stat(secret); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("软链目标文件权限被改：%v", err)
+	}
+	if info, err := os.Stat(sub); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("软链目标子目录权限被改：%v", err)
+	}
+	if body := readAll(t, filepath.Join(root, "etc/yiban/.env")); !strings.Contains(body, "YIBAN_UI_DIR=/var/lib/yiban/ui") {
+		t.Fatalf(".env 缺 YIBAN_UI_DIR：\n%s", body)
+	}
+}

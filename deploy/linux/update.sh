@@ -210,15 +210,18 @@ CLI_DEST="$(dest /usr/local/bin/yiban-cli)"
 SERVER_NEW="$SERVER_DEST.new"
 BAK="$SERVER_DEST.bak"
 UI_DEST="$(dest "$SERVICE_HOME/ui")"
-UI_NEW="$UI_DEST.new"
+# UI 暂存在 root 独占的更新器目录里（与 /var/lib/yiban 同文件系统 ⇒ mv -T
+# 是原子 rename）。不能就地 cp 到 $UI_DEST.new：服务用户能在那里预置软链，
+# root 的 cp/chmod 会顺链写到 /root 或旧备份并改坏其权限（复审 HIGH）。
+UI_STAGE=""
 UI_BAK="$UI_DEST.bak"
 ENV_FILE="$(dest /etc/yiban/.env)"
 
 # 更新器的状态与备份根：/var/lib/yiban-updater/{state,backups}。
-# 为什么不在服务用户的 $SERVICE_HOME 里：install.sh 会对 $SERVICE_HOME 做
-# 递归 chown（服务用户必须拥有 photos/ui），放进它的任何子目录都会被改成
-# yiban 属主；服务用户随后就能换名备份目录、塞 bin/yiban-cli，root 回滚时
-# 执行它。放在**服务用户不可重命名的 root 独占父目录**下才是安全的：
+# 为什么不放在 $SERVICE_HOME 里：那里归服务用户（install.sh 把 home 与
+# photos/ui 交给它），任何子目录它都能换名/替换；备份里含凭据密文，回滚还会
+# 执行备份里的 CLI，root 顺着被替换的路径写/执行就是提权。
+# 放在**服务用户不可重命名的 root 独占父目录**下才安全：
 #   /var/lib        root:root 0755（yiban 无写权限 ⇒ 不能改名/换软链）
 #   /var/lib/yiban-updater  root:root 0700（yiban 连列目录都不行）
 # 备份根可用 --backup-dir 覆盖（必须是绝对路径，且拒绝系统/共享目录）。
@@ -227,43 +230,63 @@ STATE_DIR="$UPDATER_ROOT/state"
 STATE_FILE="$STATE_DIR/update-state.json"
 LOG_FILE="$STATE_DIR/update.log"
 
-# check_backup_parent_chain <dir>：备份根的**父链**必须是 root 独占。
+# check_backup_parent_chain <dir>：备份根必须是「root 独占路径」。
 # 只查叶子不够：/tmp/evil/backups 的叶子可以自己建，但 /tmp 谁都能写，
-# 服务用户能把 evil 换名/塞成软链，root 随后顺着它写（复审 MEDIUM-5）。
-# 判据：沿父链找第一个已存在目录，它必须不是软链、属主不是服务用户、
-# 组/其他不可写；再往上不再查（更上层由系统保证）。
+# 服务用户能把 evil 换名/塞成软链，root 随后顺着它写。
+# 判据（复审 MEDIUM-1）：
+#   · 路径里不许有 `..`（/tmp/../etc 这类绕道直接拒）；
+#   · realpath -m 归一化，逐级走到 /（干跑时走到安装根为止）；
+#   · 每一级都必须是目录、不是软链、属主不是服务用户、组/其他不可写
+#     （/tmp 的 sticky 位也算「可写」）。
+# 成功时把归一化后的路径打到 stdout，调用方用它覆盖 BACKUP_ROOT。
 check_backup_parent_chain() {
-    local dir="$1" parent owner mode next
-    parent="$(dirname -- "$dir")"
+    local dir="$1" norm p owner mode stop_at="$ROOT"
+    case "$dir" in
+        *..*)
+            echo "update: --backup-dir must not contain '..': $dir" >&2
+            return 1
+            ;;
+    esac
+    command -v realpath >/dev/null 2>&1 || {
+        echo "update: realpath not found; cannot validate the backup path" >&2
+        return 1
+    }
+    norm="$(realpath -m -- "$dir")" || {
+        echo "update: cannot normalize the backup path: $dir" >&2
+        return 1
+    }
+    p="$norm"
     while :; do
-        if [ -L "$parent" ]; then
-            echo "update: --backup-dir parent is a symlink: $parent" >&2
+        p="$(dirname -- "$p")"
+        if [ -n "$stop_at" ] && [ "$p" = "$stop_at" ]; then
+            break
+        fi
+        if [ -L "$p" ]; then
+            echo "update: --backup-dir parent is a symlink: $p" >&2
             return 1
         fi
-        if [ -e "$parent" ]; then
-            if [ ! -d "$parent" ]; then
-                echo "update: --backup-dir parent is not a directory: $parent" >&2
+        if [ -e "$p" ]; then
+            if [ ! -d "$p" ]; then
+                echo "update: --backup-dir parent is not a directory: $p" >&2
                 return 1
             fi
-            owner="$(stat -c '%U' -- "$parent" 2>/dev/null || true)"
-            mode="$(stat -c '%a' -- "$parent" 2>/dev/null || true)"
+            owner="$(stat -c '%U' -- "$p" 2>/dev/null || true)"
+            mode="$(stat -c '%a' -- "$p" 2>/dev/null || true)"
             case "$mode" in
                 ''|*[!0-7]*) mode=777 ;;
             esac
             if [ "$owner" = "$SERVICE_USER" ]; then
-                echo "update: --backup-dir parent is owned by the service user: $parent" >&2
+                echo "update: --backup-dir parent is owned by the service user: $p" >&2
                 return 1
             fi
             if [ $(( 8#$mode & 8#022 )) -ne 0 ]; then
-                echo "update: --backup-dir parent is group/other writable (mode $mode): $parent" >&2
+                echo "update: --backup-dir parent is group/other writable (mode $mode): $p" >&2
                 return 1
             fi
-            return 0
         fi
-        next="$(dirname -- "$parent")"
-        [ "$next" = "$parent" ] && return 1
-        parent="$next"
+        [ "$p" = "/" ] && break
     done
+    printf '%s' "$norm"
 }
 
 if [ -n "$BACKUP_ROOT_FLAG" ]; then
@@ -272,23 +295,25 @@ if [ -n "$BACKUP_ROOT_FLAG" ]; then
         *) echo "update: --backup-dir must be an absolute path: $BACKUP_ROOT_FLAG" >&2; exit 2 ;;
     esac
     BACKUP_ROOT="$BACKUP_ROOT_FLAG"
-    # --backup-dir 会被 chmod 0700：拒绝共享/系统目录（先例 scripts/backup.sh）。
-    # 服务用户主目录（$SERVICE_HOME 及其干跑前缀）也拒：install.sh 会递归 chown 它。
-    case "$BACKUP_ROOT" in
-        /|/var|/var/backups|/tmp|/home|/root|/etc|/usr|/opt|/srv|/boot|/dev|/proc|/sys|/run|/var/lib|/var/log|/var/lib/yiban|"$SERVICE_HOME"|"$SERVICE_HOME"/*|"$(dest "$SERVICE_HOME")"|"$(dest "$SERVICE_HOME")"/*)
-            echo "update: --backup-dir $BACKUP_ROOT is a shared/system directory; point it at a dedicated subdirectory (e.g. /var/lib/yiban-updater/backups)" >&2
-            exit 2
-            ;;
-    esac
 else
     BACKUP_ROOT="$UPDATER_ROOT/backups"
 fi
 case "$BACKUP_ROOT" in
     /|*/) echo "update: refusing backup root path: $BACKUP_ROOT" >&2; exit 2 ;;
 esac
-if ! check_backup_parent_chain "$BACKUP_ROOT"; then
+# 归一化 + 父链校验；成功时函数回写归一化路径。
+if ! BACKUP_ROOT="$(check_backup_parent_chain "$BACKUP_ROOT")"; then
     exit 2
 fi
+# 归一化之后再查一遍共享/系统目录名单（拼写变体在这里兜底）。
+# 服务用户主目录（$SERVICE_HOME 及其干跑前缀）也拒：install.sh 不再递归 chown 它，
+# 但那里的内容仍归服务用户，不能当备份根。
+case "$BACKUP_ROOT" in
+    /|/var|/var/backups|/tmp|/home|/root|/etc|/usr|/opt|/srv|/boot|/dev|/proc|/sys|/run|/var/lib|/var/log|/var/lib/yiban|"$SERVICE_HOME"|"$SERVICE_HOME"/*|"$(dest "$SERVICE_HOME")"|"$(dest "$SERVICE_HOME")"/*)
+        echo "update: --backup-dir $BACKUP_ROOT is a shared/system directory; point it at a dedicated subdirectory (e.g. /var/lib/yiban-updater/backups)" >&2
+        exit 2
+        ;;
+esac
 case "$KEEP_BACKUPS" in
     ''|*[!0-9]*) echo "update: --keep-backups must be a non-negative integer: $KEEP_BACKUPS" >&2; exit 2 ;;
 esac
@@ -1534,7 +1559,7 @@ chmod 0700 "$STAGE" || {
     echo "update: cannot secure staging directory: $STAGE" >&2
     exit 2
 }
-# 失败路径不留暂存件：快照目录、$SERVER_NEW、$CLI_DEST.new 与 $UI_NEW 一并删除。
+# 失败路径不留暂存件：快照目录、$SERVER_NEW、$CLI_DEST.new、UI 暂存目录与旧的 .new 一并删除。
 # 另外把「已写 running、但没走到终态」的状态文件收口成 interrupted：
 # 栈外退出（set -e、信号、意外早退）不得让状态文件长期停在 running。
 cleanup() {
@@ -1543,7 +1568,8 @@ cleanup() {
     rm -rf -- "$STAGE" 2>/dev/null || true
     rm -f -- "$SERVER_NEW" 2>/dev/null || true
     rm -f -- "$CLI_DEST.new" 2>/dev/null || true
-    rm -rf -- "$UI_NEW" 2>/dev/null || true
+    rm -rf -- "${UI_STAGE:-}" 2>/dev/null || true
+    rm -rf -- "$UI_DEST.new" 2>/dev/null || true
     # 换名两步之间被打断：把 ui.bak 换回，别留「无页面目录＋指针」。
     if [ -n "${UI_BAK:-}" ] && [ -e "$UI_BAK" ] && [ ! -e "$UI_DEST" ]; then
         mv -T "$UI_BAK" "$UI_DEST" 2>/dev/null || true
@@ -1800,14 +1826,39 @@ fi
 # 暂存失败时服务仍在跑旧件，旧 UI 原样。
 if [ -n "$UI_DIR" ]; then
     [ -r "$ENV_FILE" ] || { echo "update: cannot read $ENV_FILE; ui unchanged" >&2; exit 1; }
-    rm -rf -- "$UI_NEW"
-    if ! install -d -m 0755 "$UI_NEW" || ! cp -R "$UI_DIR/." "$UI_NEW/"; then
-        echo "update: cannot stage new ui at $UI_NEW; installed files unchanged" >&2
+    # UI 的父目录不得是软链（目标本身可以是：mv -T 会替换链接而不是跟随）。
+    if [ -L "$(dest "$SERVICE_HOME")" ]; then
+        echo "update: refusing symlinked $SERVICE_HOME; the page stays unchanged" >&2
         exit 1
     fi
-    chmod -R a+rX "$UI_NEW"
+    # mv -T 要求父目录存在（首次装页面时 $SERVICE_HOME 可能还没有）。
+    if [ ! -d "$(dest "$SERVICE_HOME")" ]; then
+        if ! mkdir -p "$(dest "$SERVICE_HOME")"; then
+            echo "update: cannot create $SERVICE_HOME; the page stays unchanged" >&2
+            exit 1
+        fi
+        if [ -z "$ROOT" ]; then
+            chown "$SERVICE_USER:$SERVICE_USER" "$(dest "$SERVICE_HOME")" || exit 1
+        fi
+    fi
+    [ -d "$UPDATER_ROOT" ] || { echo "update: updater root missing: $UPDATER_ROOT" >&2; exit 1; }
+    UI_STAGE="$(mktemp -d "$UPDATER_ROOT/ui.XXXXXX")" || {
+        echo "update: cannot create a private ui staging directory" >&2
+        exit 1
+    }
+    chmod 0700 "$UI_STAGE" || { rm -rf -- "$UI_STAGE"; exit 1; }
     if [ -z "$ROOT" ]; then
-        chown -R "$SERVICE_USER:$SERVICE_USER" "$UI_NEW"
+        chown root:root "$UI_STAGE" || { rm -rf -- "$UI_STAGE"; exit 1; }
+    fi
+    if ! cp -R "$UI_DIR/." "$UI_STAGE/"; then
+        rm -rf -- "$UI_STAGE"
+        echo "update: cannot stage new ui; installed files unchanged" >&2
+        exit 1
+    fi
+    # chmod 只作用于刚造出来的真实目录（先于 rename），不碰已就位的目标。
+    chmod -R a+rX "$UI_STAGE"
+    if [ -z "$ROOT" ]; then
+        chown -R "$SERVICE_USER:$SERVICE_USER" "$UI_STAGE" || { rm -rf -- "$UI_STAGE"; exit 1; }
     fi
 else
     # 已装过页面却漏了参数：页面停在旧版本，必须显性可见（跳过 ≠ 绿）。
@@ -1874,6 +1925,14 @@ if [ -n "$UI_DIR" ]; then
         echo "update: cannot clear the previous ui: $UI_BAK" >&2
         fail_after_stop "cannot clear the previous ui"
     fi
+    # 目标本身是软链：不是合法页面目录（服务用户预置），直接摘链接，
+    # 不进 .bak——否则回滚会把这个链接换回来（复审 HIGH）。
+    if [ -L "$UI_DEST" ]; then
+        if ! rm -f -- "$UI_DEST"; then
+            echo "update: cannot remove the planted ui symlink: $UI_DEST" >&2
+            fail_after_stop "cannot remove ui symlink"
+        fi
+    fi
     if [ -e "$UI_DEST" ]; then
         if ! mv -T "$UI_DEST" "$UI_BAK"; then
             echo "update: cannot move the current ui aside: $UI_DEST" >&2
@@ -1882,7 +1941,7 @@ if [ -n "$UI_DIR" ]; then
         UI_OLD_MOVED=1
     fi
     # -T 把目标当普通路径：目标仍在时直接失败，不会把新目录嵌进旧目录。
-    if ! mv -T "$UI_NEW" "$UI_DEST" || [ ! -f "$UI_DEST/index.html" ]; then
+    if ! mv -T "$UI_STAGE" "$UI_DEST" || [ ! -f "$UI_DEST/index.html" ]; then
         echo "update: cannot activate the new ui" >&2
         fail_after_stop "cannot activate the new ui"
     fi

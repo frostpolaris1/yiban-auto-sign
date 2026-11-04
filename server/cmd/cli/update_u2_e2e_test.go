@@ -720,7 +720,8 @@ func TestUpdateShRejectsSharedBackupDir(t *testing.T) {
 		if rc != 2 {
 			t.Fatalf("--backup-dir %s 应 exit 2：rc=%d out=%s", dir, rc, out)
 		}
-		if !strings.Contains(out, "shared/system directory") {
+		if !strings.Contains(out, "shared/system directory") &&
+			!strings.Contains(out, "refusing backup root path") {
 			t.Fatalf("--backup-dir %s 的拒绝必须说明原因：%s", dir, out)
 		}
 	}
@@ -922,5 +923,112 @@ func TestUpdateShRejectsSymlinkedStateDir(t *testing.T) {
 	}
 	if got := readAll(t, filepath.Join(evil, "update-state.json")); got != string(planted) {
 		t.Fatalf("root 顺着软链改了预置状态文件：\n%s", got)
+	}
+}
+
+// TestUpdateShReplacesPlantedUISymlink 钉 HIGH（复审六轮）：
+// 服务用户能把 $SERVICE_HOME/ui 预置成软链；root 的 cp/chmod 若顺着它走，
+// 会把 /root 或旧备份写坏。落位必须走 root 独占暂存目录 + mv -T 原子替换。
+func TestUpdateShReplacesPlantedUISymlink(t *testing.T) {
+	requireBash(t)
+	f := newU2Fixture(t)
+	victim := filepath.Join(f.root, "victim")
+	sub := filepath.Join(victim, "sub")
+	if err := os.MkdirAll(sub, 0o700); err != nil {
+		t.Fatalf("mkdir victim: %v", err)
+	}
+	secret := filepath.Join(victim, "index.html")
+	if err := os.WriteFile(secret, []byte("VICTIM"), 0o600); err != nil {
+		t.Fatalf("write victim: %v", err)
+	}
+	hidden := filepath.Join(sub, "keep.txt")
+	if err := os.WriteFile(hidden, []byte("KEEP"), 0o600); err != nil {
+		t.Fatalf("write victim sub: %v", err)
+	}
+	if err := os.Chmod(sub, 0o700); err != nil {
+		t.Fatalf("chmod victim sub: %v", err)
+	}
+	uiDir := filepath.Join(f.root, "var/lib/yiban/ui")
+	if err := os.MkdirAll(filepath.Dir(uiDir), 0o755); err != nil {
+		t.Fatalf("mkdir ui parent: %v", err)
+	}
+	if err := os.Symlink(victim, uiDir); err != nil {
+		t.Skipf("SKIP: 本平台不支持符号链接：%v", err)
+	}
+	newBin := fakeBin(t, f.binDir, "yiban-server-new", "echo NEW\n")
+	newUI := writeUIDistDir(t, "new-ui")
+
+	out, rc := runScript(t, scriptPath(t, "update.sh"), f.env,
+		"--server-bin", newBin, "--ui-dir", newUI, "--allow-unsigned")
+	if rc != 0 {
+		t.Fatalf("update rc=%d out=%s", rc, out)
+	}
+	if info, err := os.Lstat(uiDir); err != nil || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("安装位 ui 必须是真实目录：err=%v", err)
+	}
+	if body := readAll(t, filepath.Join(uiDir, "index.html")); !strings.Contains(body, "new-ui") {
+		t.Fatalf("页面没有落位：\n%s", body)
+	}
+	// 受害目录：字节与权限都不能被动过。
+	if body := readAll(t, secret); body != "VICTIM" {
+		t.Fatalf("软链目标被改写：%q", body)
+	}
+	if body := readAll(t, hidden); body != "KEEP" {
+		t.Fatalf("软链目标子文件被改写：%q", body)
+	}
+	if info, err := os.Stat(secret); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("软链目标文件权限被改：%v", err)
+	}
+	if info, err := os.Stat(sub); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("软链目标子目录权限被改：%v", err)
+	}
+	// 预置软链直接摘掉，不进 .bak（否则回滚会把它换回来）。
+	if info, err := os.Lstat(uiDir + ".bak"); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("ui.bak 不得是预置软链")
+	}
+}
+
+// TestUpdateShMissingBackupCLIKeepsManualAction 钉 MEDIUM（复审六轮）：
+// 备份里没有 CLI 时，回滚不能把新 CLI 留在安装位却退 1——按「CLI 未回滚」
+// 收口：manual action + exit 2。
+func TestUpdateShMissingBackupCLIKeepsManualAction(t *testing.T) {
+	requireBash(t)
+	f := newU2Fixture(t)
+	// 已装 CLI 删掉：备份阶段就没有 bin/yiban-cli 可抄。
+	if err := os.Remove(filepath.Join(f.root, "usr/local/bin/yiban-cli")); err != nil {
+		t.Fatalf("remove installed cli: %v", err)
+	}
+	// 自检门走 PATH 里的桩（同一份 JSON 输出能力）。
+	fakeUpdateCLI(t, f.binDir, "yiban-cli", "")
+	// 新版 CLI：迁移成功；第一次探活失败（之后成功），让回滚走到 CLI 分支。
+	counter := filepath.Join(t.TempDir(), "probe")
+	newCLI := fakeUpdateCLI(t, f.binDir, "yiban-cli-new", `  migrate) exit 0 ;;
+  healthcheck)
+    if [ ! -f "`+counter+`" ]; then : > "`+counter+`"; exit 1; fi
+    exit 0
+    ;;`)
+	newBin := fakeBin(t, f.binDir, "yiban-server-new", "echo NEW\n")
+
+	out, rc := runScript(t, scriptPath(t, "update.sh"), f.env,
+		"--server-bin", newBin, "--cli-bin", newCLI, "--allow-unsigned")
+	if rc != 2 {
+		t.Fatalf("备份缺 CLI 应 exit 2：rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "backup has no yiban-cli") {
+		t.Fatalf("必须点名备份缺 CLI：%s", out)
+	}
+	if !strings.Contains(out, "backup cli was NOT restored") {
+		t.Fatalf("必须点明 CLI 未回滚：%s", out)
+	}
+	if !strings.Contains(out, "manual action required") {
+		t.Fatalf("必须打印 manual action：%s", out)
+	}
+	// 安装位 CLI 仍是本轮换上的新版（没有被换成「无」）。
+	if body := readAll(t, filepath.Join(f.root, "usr/local/bin/yiban-cli")); !strings.Contains(body, "probe") {
+		t.Fatalf("安装位 CLI 应保持本轮换上的新版：\n%s", body)
+	}
+	// 旧 server 已换回并健康（回滚走完了）。
+	if body := readAll(t, filepath.Join(f.root, "usr/local/bin/yiban-server")); !strings.Contains(body, "OLD-SERVER") {
+		t.Fatalf("旧 server 应已换回：\n%s", body)
 	}
 }

@@ -143,14 +143,49 @@ fi
 
 # 3b) 前端产物落位（给了 --ui-dir 时）。
 # 目标是运行期真实路径；干跑只把文件放到前缀下，.env 写的仍是真实路径，
-# 与 systemd 单元同一口径。旧哈希资产不删：它们不再被 index.html 引用，留着无害。
+# 与 systemd 单元同一口径。
+# 落位方式：在 root 独占的更新器根里造好完整目录，再 mv -T 原子替换目标。
+# 不能就地 cp -R/chmod：$SERVICE_HOME/ui 可能是服务用户预置的软链，root 会
+# 顺链写到 /root 或旧备份并改坏其权限（复审 HIGH）。mv -T 替换的是链接本身。
 UI_TARGET="$(dest "$SERVICE_HOME/ui")"
+UI_PARENT="$(dest "$SERVICE_HOME")"
+UI_ROOT="$(dest /var/lib/yiban-updater)"
 if [ -n "$UI_DIR" ]; then
-    install -d -m 0755 "$UI_TARGET"
-    cp -R "$UI_DIR/." "$UI_TARGET/"
-    chmod -R a+rX "$UI_TARGET"
+    if [ -L "$UI_PARENT" ]; then
+        echo "install: refusing symlinked $UI_PARENT" >&2
+        exit 1
+    fi
+    install -d -m 0700 "$UI_ROOT"
     if [ -z "$ROOT" ]; then
-        chown -R "$SERVICE_USER:$SERVICE_USER" "$UI_TARGET"
+        chown root:root "$UI_ROOT"
+        chmod 0700 "$UI_ROOT"
+    fi
+    UI_STAGE="$(mktemp -d "$UI_ROOT/ui.XXXXXX")" || {
+        echo "install: cannot create a private ui staging directory" >&2
+        exit 1
+    }
+    chmod 0700 "$UI_STAGE"
+    if ! cp -R "$UI_DIR/." "$UI_STAGE/"; then
+        rm -rf -- "$UI_STAGE"
+        echo "install: cannot copy --ui-dir into the staging directory" >&2
+        exit 1
+    fi
+    chmod -R a+rX "$UI_STAGE"
+    if [ -z "$ROOT" ]; then
+        chown -R "$SERVICE_USER:$SERVICE_USER" "$UI_STAGE"
+    fi
+    # 预置的软链不是合法页面目录：先摘链接再 rename（mv -T 不覆盖软链）。
+    if [ -L "$UI_TARGET" ]; then
+        if ! rm -f -- "$UI_TARGET"; then
+            rm -rf -- "$UI_STAGE"
+            echo "install: cannot remove the planted ui symlink: $UI_TARGET" >&2
+            exit 1
+        fi
+    fi
+    if ! mv -T "$UI_STAGE" "$UI_TARGET"; then
+        rm -rf -- "$UI_STAGE"
+        echo "install: cannot activate the ui at $UI_TARGET" >&2
+        exit 1
     fi
     # 幂等写键：删旧行再追加，不重排 .env 的其余行。
     # .env 刚创建或已收紧权限，读不到即中止：不能把它截断成只剩一行。
