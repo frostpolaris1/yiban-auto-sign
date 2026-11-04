@@ -83,7 +83,7 @@ SELF = "scripts/check-config-registry.py"      # POSIX 相对路径：_scan_file
 DEFAULT_SCAN = ("yiban", "web", "scripts", "docker", "deploy", "frontend",
                 "run.sh", "run_probe.sh", "docker-compose.yml")
 #: 被扫的文件扩展名。`.go` 保留：旧线树里出现 .go（如新线文件误放旧线目录）时
-#: 同样受本门判红（2026-10-25 审查 P1-3 的覆盖口径不收窄）。
+#: 同样受本门判红（2026-10-25 审查的覆盖口径不收窄）。
 SCAN_EXTS = (".py", ".sh", ".js", ".mjs", ".ts", ".vue", ".yml", ".yaml",
              ".html", ".conf", ".service", ".toml", ".example", ".go")
 SKIP_DIRS = {"__pycache__", ".venv", ".pytest_cache", ".ruff_cache", ".git",
@@ -107,8 +107,8 @@ SKIP_PREFIXES = ("deploy/baremetal/", "deploy/container/", "deploy/docker/",
 #: 被扫文件里必须出现的最小文件数（防"扫描面塌了 ⇒ 零命中 ⇒ 全绿"）。
 #: 2026-11-05 实测（新口径＝旧线生产面：server/ui 进 BENIGN_TOP_DIRS、新栈
 #: 部署/升级脚本进 SKIP_PREFIXES）：本分支 383 个被扫文件（门自报，已扣 SELF），
-#: origin/develop 同口径 384 个（`git ls-tree -r --name-only` 按同一套
-#: DEFAULT_SCAN/SCAN_EXTS/SKIP_PREFIXES 数出；本批未动旧线文件，两树几乎相等）。
+#: origin/develop 同口径也是 383 个（`git ls-tree -r --name-only` 按同一套
+#: DEFAULT_SCAN/SCAN_EXTS/SKIP_PREFIXES 数出；含 SELF 时两树均为 384）。
 #: 旧值 600 是按含 server/ui 的 635/667 定的，扫描面收窄后必先拒绝运行。
 #: 新值取 350：实测下方留 ~33 个文件余量，仍远高于"删掉一半扫描面"（~190）的
 #: 塌陷形态；新栈面再扩大也不会抬高本门（它们已移出扫描面）。
@@ -120,10 +120,12 @@ DEFAULT_MIN_FILES = 350
 BENIGN_TOP_DIRS = {
     ".git", ".github", ".pytest_cache", ".ruff_cache", ".venv", "__pycache__",
     "build", "docs", "node_modules", "out", "tests", "work",
-    # 新栈（Go 后端 + React 前端）生产面：它们有自己的配置名册
-    # （server/internal/configdata/registry.json，go:embed）与双向键面门
-    # （server/internal/adapters/config/registry_parity_test.go），键面归新门管；
-    # 旧名册（config/registry.json）只定义旧线键，拿它判 server/ui 的新键
+    # 新栈（Go 后端 + React 前端）生产面：server 的键面由
+    # server/internal/configdata/registry.json（go:embed）与
+    # registry_parity_test.go 的双向门自守；ui 只把既有键名
+    # （YIBAN_WORKERS / YIBAN_EGRESS_RATE）展示为操作提示，`.tsx` 从不在本门
+    # SCAN_EXTS 内，故没有对应的键面门——改这些键名时须人工同步界面文案。
+    # 旧名册（config/registry.json）只定义旧线键，拿它判新栈的新键
     # （如 YIBAN_ALLOW_NO_DB）必假红。旧线退役后两套门一起删。
     "server", "ui",
 }
