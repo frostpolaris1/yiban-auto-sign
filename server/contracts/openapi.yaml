@@ -2372,7 +2372,7 @@ components:
             Resolved value of a non-sensitive key: the environment value when
             set, otherwise the registered default rendered by the key type,
             otherwise null. Absent (null) for a sensitive key.
-          oneOf:
+          anyOf:
             - { type: [string, "null"] }
             - { type: [number, "null"], format: double }
             - { type: [boolean, "null"] }
