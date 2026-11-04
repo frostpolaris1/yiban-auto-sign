@@ -1538,10 +1538,19 @@ func TestInstallShUIActivationFailureRestoresBackup(t *testing.T) {
 		t.Fatalf("首次安装 rc=%d out=%s", rc, out)
 	}
 
-	// 第二次：mv 桩拒绝对 ui.XXXXXX 的换入。
+	// 第二次：mv 桩拒绝对 ui.XXXXXX 的换入，**并先造一个非空目标**——
+	// 真实的 ENOTEMPTY 现场：目标被占住，恢复必须先 rm -rf 才换得回来
+	// （去掉 install.sh 的 rm -rf，本用例必须变红）。
 	stubDir := t.TempDir()
 	fakeBin(t, stubDir, "mv", `for a in "$@"; do
-  case "$a" in */ui.??????) echo "mv: injected failure" >&2; exit 1 ;; esac
+  case "$a" in
+    */ui.??????)
+      mkdir -p "`+target+`" 2>/dev/null || true
+      : > "`+target+`/leftover.txt" 2>/dev/null || true
+      echo "mv: injected ENOTEMPTY" >&2
+      exit 1
+      ;;
+  esac
 done
 exec `+realMv+` "$@"
 `)
@@ -1601,5 +1610,75 @@ func TestInstallShUIBakRotation(t *testing.T) {
 			}
 		}
 		previous = marker
+	}
+}
+
+// TestInstallShUIRestoreFailureKeepsBak 钉复审 M3 的 manual action 分支：
+// 换入失败、且换回也失败（mv -T .bak 目标 报错）时，必须点名 MANUAL ACTION
+// 并保留 ui.bak——不能静默吞错让用户以为页面还在。
+func TestInstallShUIRestoreFailureKeepsBak(t *testing.T) {
+	requireBash(t)
+	realMv, err := exec.LookPath("mv")
+	if err != nil {
+		t.Skipf("SKIP: 找不到 mv：%v", err)
+	}
+	root := t.TempDir()
+	binDir := t.TempDir()
+	serverBin := fakeBin(t, binDir, "yiban-server", "exit 0\n")
+	cliBin := fakeBin(t, binDir, "yiban-cli", "exit 0\n")
+	uiOld := writeUIDistDir(t, "ui-old")
+	uiNew := writeUIDistDir(t, "ui-new")
+	basePath := binDir + string(os.PathListSeparator) + os.Getenv("PATH")
+	env := map[string]string{
+		"YIBAN_INSTALL_ROOT":          root,
+		"SYSTEMCTL":                   fakeBin(t, binDir, "systemctl", "exit 0\n"),
+		"YIBAN_DATABASE_URL":          "postgres://yiban:pw@127.0.0.1:5432/yiban?sslmode=disable",
+		"YIBAN_HEALTH_RETRIES":        "1",
+		"YIBAN_HEALTH_RETRY_INTERVAL": "0",
+		"PATH":                        basePath,
+	}
+	target := filepath.Join(root, "var/lib/yiban/ui")
+	if out, rc := runScript(t, scriptPath(t, "install.sh"), env,
+		"--server-bin", serverBin, "--cli-bin", cliBin, "--ui-dir", uiOld); rc != 0 {
+		t.Fatalf("首次安装 rc=%d out=%s", rc, out)
+	}
+
+	// 换入失败 + 换回也失败：两条 mv 都被桩拒绝。
+	stubDir := t.TempDir()
+	fakeBin(t, stubDir, "mv", `src=""
+for a in "$@"; do
+  case "$a" in -*) continue ;; esac
+  src="$a"
+  break
+done
+case "$src" in
+  */ui.??????)
+    mkdir -p "`+target+`" 2>/dev/null || true
+    : > "`+target+`/leftover.txt" 2>/dev/null || true
+    echo "mv: injected ENOTEMPTY" >&2
+    exit 1
+    ;;
+  *.bak)
+    echo "mv: injected restore failure" >&2
+    exit 1
+    ;;
+esac
+exec `+realMv+` "$@"
+`)
+	env["PATH"] = stubDir + string(os.PathListSeparator) + basePath
+	out, rc := runScript(t, scriptPath(t, "install.sh"), env,
+		"--server-bin", serverBin, "--cli-bin", cliBin, "--ui-dir", uiNew)
+	if rc != 1 {
+		t.Fatalf("换入+换回都失败应 rc=1：rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "MANUAL ACTION") {
+		t.Fatalf("必须打印 MANUAL ACTION：%s", out)
+	}
+	if !strings.Contains(out, target+".bak") {
+		t.Fatalf("manual action 必须点名 ui.bak 路径：%s", out)
+	}
+	// 旧页面仍在 ui.bak（没被删、也没被新件顶掉）。
+	if body := readAll(t, filepath.Join(target+".bak", "index.html")); !strings.Contains(body, "ui-old") {
+		t.Fatalf("ui.bak 应保留旧页面：\n%s", body)
 	}
 }
