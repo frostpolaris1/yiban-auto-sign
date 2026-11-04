@@ -58,8 +58,9 @@ usage() {
 
 # 项 1 版本一致性。考古（2026-10-27，ref ad5b3639）：
 #   版本唯一来源 = yiban/__init__.py 的 __version__（tests/test_release_version_source.py 守卫）。
-#   二进制 --version 不存在（server/cmd/server/main.go 不读参数，server/cmd/cli 无 version 子命令）。
-#   openapi info.version = "1.0.0"，是 API 契约版本，不随发布走。两条缺口在 deploy/release.md 登记。
+#   二进制自报版本自 2026-11-04 起存在：yiban-server --version / yiban-cli version，
+#   三值由构建期 -ldflags -X 注入 server/internal/buildinfo（未注入显性 dev/unknown）。
+#   openapi info.version = "1.0.0"，是 API 契约版本，不随发布走。该缺口在 deploy/release.md 登记。
 #   本项钉存在的两处：发布 tag v$V 存在且指向 HEAD；__version__ 与 CHANGELOG 顶部一致。
 check_version() {
     local init="$ROOT/yiban/__init__.py" changelog="$ROOT/CHANGELOG.md"

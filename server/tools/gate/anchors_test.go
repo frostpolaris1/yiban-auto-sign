@@ -134,7 +134,9 @@ func TestCanonicalRuleRowsPinned(t *testing.T) {
 	// （凭据错结算与恢复的用例层 e2e 同样需要真实 PG 适配器）。
 	// user-groups：status.literal allow 增列 internal/core/user/
 	// （用户展示分组的 pending 是分组词，不是任务状态）。
-	const want = "0a396278724a636ebd9375a6f7f1851aa707d81da853c780330c4f6bc1555b4d"
+	// update-u1：env.get allow 增列 cmd/cli/selfcheck_pg_e2e_test.go
+	// （自检真库 e2e 沿用既有 os.Getenv 读测试 DSN 的口径）。
+	const want = "f845f755c50b3d668142984fc964b0964fa12b8855de413959368d89543c79cf"
 	if got != want {
 		t.Fatalf("canonical 规则内容变了（hash %s）；确认改动后更新 TestCanonicalRuleRowsPinned 的哈希", got)
 	}

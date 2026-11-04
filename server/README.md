@@ -15,6 +15,8 @@ server/
 ├── canonical.tsv              single-source rules (concept, owner, pattern)
 ├── contracts/                 host API contract v1 (OpenAPI 3.1 YAML)
 ├── oapi-codegen.yaml          generator config (pinned v2.8.1)
+├── internal/buildinfo         release identity (version/commit/build_time via ldflags)
+├── internal/core/fsperm       the only POSIX permission-bit judgment
 ├── internal/core/clock        the only wall-clock reader
 ├── internal/core/status       the only task-state definition
 ├── internal/core/errs         stable error codes
@@ -32,6 +34,7 @@ server/
 ├── internal/core/school       school and binding types
 ├── internal/core/user         user record types
 ├── internal/app/<domain>      use cases and repository ports
+├── internal/app/updatecheck   one-click update self-check (read-only)
 ├── internal/adapters/pg       PostgreSQL repositories, pool, transactions, migrations
 ├── internal/core/image        the only image preprocessing
 ├── internal/adapters/config   the only environment reader

@@ -66,10 +66,18 @@ docker compose -f deploy/docker/docker-compose.yml exec -T app \
 ### 4.1 构建
 
 ```bash
-# 后端
+# 后端。版本身份由 ldflags 注入，发布构建必须给三个值；
+# 不注入时 --version 显性打印 dev/unknown（不编造 sha 或时间）。
 cd server
-CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o ../dist/yiban-server ./cmd/server
-CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o ../dist/yiban-cli ./cmd/cli
+BUILD_VERSION=0.7.0
+BUILD_COMMIT=$(git rev-parse --short HEAD)
+BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS="-s -w \
+  -X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.version=$BUILD_VERSION \
+  -X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.commit=$BUILD_COMMIT \
+  -X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.buildTime=$BUILD_TIME"
+CGO_ENABLED=0 go build -trimpath -ldflags="$LDFLAGS" -o ../dist/yiban-server ./cmd/server
+CGO_ENABLED=0 go build -trimpath -ldflags="$LDFLAGS" -o ../dist/yiban-cli ./cmd/cli
 cd ..
 
 # 前端

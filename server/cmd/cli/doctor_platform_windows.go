@@ -7,6 +7,8 @@ package main
 import (
 	"errors"
 	"os"
+
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/fsperm"
 )
 
 // errDiskUnsupported 说明 Windows 无 statfs 探针。
@@ -21,6 +23,9 @@ func dirStatOf(dir string) (dirInfo, bool) { return dirInfo{}, false }
 
 // userGroupNames 在 Windows 上不可用：组模型与 POSIX 不同。
 func userGroupNames(string) ([]string, bool) { return nil, false }
+
+// userIdentityOf 在 Windows 上拿不到 POSIX uid/gid；调用方按 SKIP 处理。
+func userIdentityOf(string) (fsperm.Identity, bool) { return fsperm.Identity{}, false }
 
 // isExecutable 恒返回可执行：Windows 的模式位没有 POSIX 语义
 // （Go 的 os.Stat 从不报告执行位），本平台不存在「无执行位」状态。

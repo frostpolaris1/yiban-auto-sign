@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"os"
 	"os/user"
+	"strconv"
 	"syscall"
+
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/fsperm"
 )
 
 // statfsFree 返回目录所在卷的剩余字节。
@@ -38,7 +41,10 @@ func dirStatOf(dir string) (dirInfo, bool) {
 	if g, err := user.LookupGroupId(group); err == nil {
 		group = g.Name
 	}
-	return dirInfo{owner: owner, group: group, perm: st.Mode().Perm()}, true
+	return dirInfo{
+		owner: owner, group: group, perm: st.Mode().Perm(),
+		uid: sys.Uid, gid: sys.Gid, hasIDs: true,
+	}, true
 }
 
 // userGroupNames 返回用户所属的组名。ok=false 表示拿不到。
@@ -58,6 +64,36 @@ func userGroupNames(name string) ([]string, bool) {
 		}
 	}
 	return names, true
+}
+
+// userIdentityOf 返回用户身份（uid/gid/组 id 与组名）。
+// 名字查不到返回 false；组列表查不到仍返回主身份。
+func userIdentityOf(name string) (fsperm.Identity, bool) {
+	u, err := user.Lookup(name)
+	if err != nil {
+		return fsperm.Identity{}, false
+	}
+	id := fsperm.Identity{Name: u.Username}
+	uid, uidErr := strconv.ParseUint(u.Uid, 10, 32)
+	gid, gidErr := strconv.ParseUint(u.Gid, 10, 32)
+	if uidErr == nil && gidErr == nil {
+		id.UID = uint32(uid)
+		id.GID = uint32(gid)
+		id.HasIDs = true
+	}
+	ids, err := u.GroupIds()
+	if err != nil {
+		return id, true
+	}
+	for _, raw := range ids {
+		if v, err := strconv.ParseUint(raw, 10, 32); err == nil {
+			id.GroupIDs = append(id.GroupIDs, uint32(v))
+		}
+		if g, err := user.LookupGroupId(raw); err == nil {
+			id.GroupNames = append(id.GroupNames, g.Name)
+		}
+	}
+	return id, true
 }
 
 // isExecutable 判 POSIX 执行位（属主/组/其他任一即可）。

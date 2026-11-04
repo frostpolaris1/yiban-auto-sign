@@ -19,9 +19,11 @@
 3. **git tag**：发布时打 `vX.Y.Z`。`scripts/deploy_gate.sh` 的迁移演练按
    `GATE_OLD_REF`（默认 `v0.6.2`）取不可变 tag。基底 `ad5b3639` 上
    `v0.6.4` 的 tag 尚未打——本项在打完发布 tag 后跑。
-4. **二进制 `--version`：缺机制，待立项。** `server/cmd/server/main.go` 不读
-   命令行参数；`server/cmd/cli/main.go` 的子命令表没有 version。发布件无法
-   自报版本。
+4. **二进制自报版本（2026-11-04 U1 落地）。** `yiban-server --version` 与
+   `yiban-cli version` 输出 version/commit/build_time；值由构建期
+   `-ldflags -X` 注入 `server/internal/buildinfo`，未注入时显性打印
+   dev/unknown（不编造 sha 或时间）。发布构建必须注入三个值，
+   命令见 `deploy/README.md` §4.1。
 5. **openapi `info.version`：不随发布走，待立项。**
    `server/contracts/openapi.yaml` 的 `version: "1.0.0"` 是 API 契约版本，
    与发布版本无同步机制。
@@ -145,9 +147,8 @@ go test ./cmd/cli/ -run TestUpdateShRollsBackOnFailedMigration -count=1
 
 ## 已登记缺口（待立项，本清单不现场补造）
 
-1. 二进制无 `--version`（项 1 考古第 4 条）。
-2. openapi `info.version` 与发布版本无同步（项 1 考古第 5 条）。
-3. 迁移无 down 迁移，schema 不随二进制回滚（项 7 边界，
+1. openapi `info.version` 与发布版本无同步（项 1 考古第 5 条）。
+2. 迁移无 down 迁移，schema 不随二进制回滚（项 7 边界，
    `deploy/linux/update.sh` 头注登记）。
-4. 已签名旧包可重放（降级）：不传 `--expect-version` 时无版本下限。
+3. 已签名旧包可重放（降级）：不传 `--expect-version` 时无版本下限。
    该参数已提供；发布操作必须传（`docs/dev/release-signing.md` §7）。
