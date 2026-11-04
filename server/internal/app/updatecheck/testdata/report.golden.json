@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-11-04T12:00:00Z",
+  "build": {
+    "version": "0.7.0",
+    "commit": "abc1234",
+    "build_time": "2026-11-04T10:00:00Z"
+  },
+  "checks": [
+    {
+      "name": "config.dsn",
+      "status": "PASS",
+      "detail": "已设置；目标 127.0.0.1:5432/yiban"
+    },
+    {
+      "name": "config.http_addr",
+      "status": "PASS",
+      "detail": "值 127.0.0.1:47183"
+    },
+    {
+      "name": "config.ui_dir",
+      "status": "SKIP",
+      "detail": "未配置 YIBAN_UI_DIR（仅 API 部署）"
+    },
+    {
+      "name": "config.photo_dir",
+      "status": "SKIP",
+      "detail": "配置为 /var/lib/yiban/photos，目录尚不存在（首次运行会创建）"
+    },
+    {
+      "name": "db.connect",
+      "status": "PASS",
+      "detail": "连接成功"
+    },
+    {
+      "name": "db.schema_version",
+      "status": "PASS",
+      "detail": "当前 goose 版本 21"
+    },
+    {
+      "name": "db.migrations_embedded",
+      "status": "PASS",
+      "detail": "嵌入最高迁移 22"
+    },
+    {
+      "name": "db.migrations_pending",
+      "status": "FAIL",
+      "detail": "有待执行迁移：当前 21，嵌入 22（差 1）",
+      "hint": "yiban-cli migrate（U2 在停机窗口内执行）"
+    },
+    {
+      "name": "tools.pg_dump",
+      "status": "PASS",
+      "detail": "找到 /usr/bin/pg_dump"
+    },
+    {
+      "name": "tools.pg_restore",
+      "status": "FAIL",
+      "detail": "pg_restore 未在 PATH 找到",
+      "hint": "安装 PostgreSQL 客户端（Debian/Ubuntu: apt install postgresql-client）"
+    },
+    {
+      "name": "tools.psql",
+      "status": "PASS",
+      "detail": "找到 /usr/bin/psql"
+    },
+    {
+      "name": "tools.gpg",
+      "status": "PASS",
+      "detail": "找到 /usr/bin/gpg"
+    },
+    {
+      "name": "tools.tar",
+      "status": "PASS",
+      "detail": "找到 /usr/bin/tar"
+    },
+    {
+      "name": "fs.photo_dir",
+      "status": "SKIP",
+      "detail": "目录不存在，跳过写检查：/var/lib/yiban/photos"
+    },
+    {
+      "name": "fs.backup_dir",
+      "status": "SKIP",
+      "detail": "不存在；/var/lib/yiban 可写，U2 备份前会创建 /var/lib/yiban/pre-migrate"
+    },
+    {
+      "name": "keys.credential_key",
+      "status": "PASS",
+      "detail": "指纹 sha256:4fd6e695…"
+    },
+    {
+      "name": "keys.hash_pepper",
+      "status": "PASS",
+      "detail": "指纹 sha256:ea9683c1…"
+    },
+    {
+      "name": "keys.state",
+      "status": "FAIL",
+      "detail": "hash_pepper 指纹变化（记录 sha256:7b0d6e6c…，当前 sha256:ea9683c1…）",
+      "hint": "更新不改密钥：先确认轮换是否为有意操作；确认后重跑 selfcheck --record-keys"
+    },
+    {
+      "name": "service.yiban",
+      "status": "FAIL",
+      "detail": "yiban.service 状态 inactive",
+      "hint": "systemctl start yiban（升级前服务应在运行）"
+    }
+  ],
+  "summary": {
+    "pass": 11,
+    "fail": 4,
+    "skip": 4,
+    "exit_code": 1
+  }
+}

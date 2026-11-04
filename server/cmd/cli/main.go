@@ -1,18 +1,19 @@
 // Command yiban-cli 是 Go 服务端的运维命令行。
 //
 // # 功能
-// 六个子命令：server（起服务，与 cmd/server 同实现）、
+// 子命令清单见 usage：server（起服务，与 cmd/server 同实现）、
 // migrate（应用迁移并打印版本）、doctor（故障体检）、
+// selfcheck（一键更新的只读自检）、version（版本身份）、
 // healthcheck（对 /healthz 做一次探活，容器 healthcheck 用）、
 // backup/restore（pg_dump + GPG + 行数对账）。
 // 本命令**不**进 OpenAPI。
 //
 // # 归属
 // entry 层可执行件。装配与关闭在 internal/assembly；
-// 体检在 doctor.go；备份恢复在 backup.go。
+// 体检在 doctor.go；自检在 selfcheck.go；备份恢复在 backup.go。
 //
 // # 口径
-// 退出码：成功 0；用法错误 2；体检有 FAIL 或运行失败 1。
+// 退出码：成功 0；用法错误 2；体检/自检有 FAIL 或运行失败 1。
 // 子命令不交互：需要确认的动作必须显式给 flag（agent/CI 无 stdin）。
 package main
 
@@ -43,6 +44,10 @@ func main() {
 		code = runBackfillTimePrefs(os.Args[2:], os.Stdout, os.Stderr)
 	case "doctor":
 		code = runDoctor(os.Args[2:], os.Stdout, os.Stderr)
+	case "selfcheck":
+		code = runSelfcheck(os.Args[2:], os.Stdout, os.Stderr)
+	case "version":
+		code = runVersion(os.Args[2:], os.Stdout, os.Stderr)
 	case "healthcheck":
 		code = runHealthcheck(os.Args[2:], os.Stderr)
 	case "backup":
@@ -71,6 +76,8 @@ func usage(w io.Writer) {
   migrate-legacy 旧栈导出物导入（P8-A 导出物 → 新库；凭据重加密）
   backfill-time-prefs 旧自选时间片补录（按归属用户写 offset_min；默认 dry-run）
   doctor       故障模式体检（每条 FAIL 附修复命令）
+  selfcheck    一键更新的只读自检（人读或 --json；默认不写文件）
+  version      打印版本身份（version/commit/build_time）
   healthcheck  探活 /healthz（容器 healthcheck 用）
   backup       pg_dump + GPG 对称加密备份（含行数清单）
   restore      解密导入 + 迁移 + 行数对账（--force 或交互确认）

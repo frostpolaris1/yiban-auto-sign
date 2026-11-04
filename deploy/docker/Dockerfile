@@ -41,6 +41,15 @@ FROM golang:1.27-alpine AS build
 # 缺省不注入，沿用工具链默认（本仓不为任何镜像源背书）。
 ARG GOPROXY
 
+# 版本身份：注入 `yiban-server --version` 与 `yiban-cli version`。
+# 缺省 dev/unknown 是显性占位符（不编造 sha 或时间）；发布构建必须传：
+#   --build-arg YIBAN_VERSION=0.7.0 \
+#   --build-arg YIBAN_COMMIT=$(git rev-parse --short HEAD) \
+#   --build-arg YIBAN_BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+ARG YIBAN_VERSION=dev
+ARG YIBAN_COMMIT=unknown
+ARG YIBAN_BUILD_TIME=unknown
+
 WORKDIR /src/server
 
 # 先只拷模块清单：依赖不变时，源码改动不触发 go mod download。
@@ -49,8 +58,18 @@ RUN if [ -n "${GOPROXY:-}" ]; then go env -w GOPROXY="${GOPROXY}"; fi \
  && go mod download
 
 COPY server/ ./
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/yiban-server ./cmd/server \
- && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/yiban-cli ./cmd/cli \
+RUN CGO_ENABLED=0 go build -trimpath \
+      -ldflags="-s -w \
+        -X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.version=${YIBAN_VERSION} \
+        -X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.commit=${YIBAN_COMMIT} \
+        -X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.buildTime=${YIBAN_BUILD_TIME}" \
+      -o /out/yiban-server ./cmd/server \
+ && CGO_ENABLED=0 go build -trimpath \
+      -ldflags="-s -w \
+        -X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.version=${YIBAN_VERSION} \
+        -X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.commit=${YIBAN_COMMIT} \
+        -X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.buildTime=${YIBAN_BUILD_TIME}" \
+      -o /out/yiban-cli ./cmd/cli \
  && mkdir -p /out/photos
 
 # ---- 运行段 ----------------------------------------------------------------

@@ -20,8 +20,8 @@ func TestUsageListsEverySubcommand(t *testing.T) {
 	usage(&b)
 	out := b.String()
 	for _, name := range []string{
-		"server", "migrate", "doctor", "healthcheck", "backup", "restore", "user", "help",
-		"backfill-time-prefs",
+		"server", "migrate", "doctor", "selfcheck", "version", "healthcheck",
+		"backup", "restore", "user", "help", "backfill-time-prefs",
 	} {
 		re := regexp.MustCompile(`(?m)^\s{2}` + regexp.QuoteMeta(name) + `\b`)
 		if !re.MatchString(out) {
