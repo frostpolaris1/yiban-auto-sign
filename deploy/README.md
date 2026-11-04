@@ -164,7 +164,7 @@ root:root 0700**：备份含凭据密文，回滚还会执行备份内的 CLI，
 | `db.list` | `pg_restore --list` 的清单（证明转储可读） |
 | `db-schema.txt` | 迁移前库名、goose 版本与 public 基表数（恢复后的对账基线） |
 | `env.backup` | `/etc/yiban/.env` 快照（0600；库回滚会改写 DSN，人工回退要用） |
-| `photos.tar` | 照片目录快照（`tar -h`；照片不进数据库备份） |
+| `photos.tar` | 照片目录快照（照片不进数据库备份）。照片目录本身是软链时先解析成真实目录；**目录内部的软链只存链接本身，不跟随**——避免把软链指向的 root-only 文件读进备份 |
 | `bin/yiban-server`、`bin/yiban-cli` | 更新前的二进制（含既有 `.bak` 的归档） |
 | `SHA256SUMS` | 以上文件的 sha256，写入后立即校验 |
 

@@ -1073,13 +1073,18 @@ run_mode() {
     R8B_INSTALL_RC=0
     YIBAN_HEALTH_RETRIES=60 YIBAN_HEALTH_RETRY_INTERVAL=1 \
         bash "$INSTALL_SH" --server-bin "$DIST/yiban-server-v4" \
-        --cli-bin "$DIST/yiban-cli-v4" --database-url "$(current_app_dsn)" \
+        --cli-bin "$DIST/yiban-cli-v4" --ui-dir "$UI_ONE" \
+        --database-url "$(current_app_dsn)" \
         >"$E2E_LOG_DIR/R8b-install.log" 2>&1 || R8B_INSTALL_RC=$?
     if [ "$R8B_INSTALL_RC" -ne 0 ]; then
         tail -n 20 "$E2E_LOG_DIR/R8b-install.log" >>"$E2E_STEP_LOG" 2>&1 || true
         e2e_die "R8b：install.sh 重跑失败（rc=$R8B_INSTALL_RC）"
     fi
     assert_grep "$E2E_LOG_DIR/R8b-install.log" 'install complete: healthz ok' "重装后必须健康"
+    # 同一 --ui-dir 连跑两次（R8 一次、R8b 一次）都要成功：目标已是非空
+    # 真实目录时 mv -T 会 ENOTEMPTY，必须先换到 .bak（复审七轮 HIGH）。
+    grep -q 'ui-one' /var/lib/yiban/ui/index.html || e2e_die "R8b：重装后页面不对"
+    [ -e /var/lib/yiban/ui.bak/index.html ] || e2e_die "R8b：重装后应留下 ui.bak（上一份页面）"
     for d in "$UPDATER_ROOT" "$STATE_DIR" "$BACKUP_ROOT"; do
         assert_eq "R8b $(basename "$d") 权限与属主" "$(stat -c '%a %U' "$d")" "700 root"
     done

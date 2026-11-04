@@ -1466,3 +1466,44 @@ func TestInstallShReplacesPlantedUISymlink(t *testing.T) {
 		t.Fatalf(".env 缺 YIBAN_UI_DIR：\n%s", body)
 	}
 }
+
+// TestInstallShRerunWithSameUIDir 钉 HIGH（复审七轮）：
+// 同一 --ui-dir 连跑两次必须都成功。目标已是非空真实目录时 mv -T 会
+// ENOTEMPTY，因此必须先清旧 .bak、把旧目录换过去，再换入新目录。
+func TestInstallShRerunWithSameUIDir(t *testing.T) {
+	requireBash(t)
+	root := t.TempDir()
+	binDir := t.TempDir()
+	serverBin := fakeBin(t, binDir, "yiban-server", "exit 0\n")
+	cliBin := fakeBin(t, binDir, "yiban-cli", "exit 0\n")
+	ui := writeUIDistDir(t, "rerun-ui")
+	env := map[string]string{
+		"YIBAN_INSTALL_ROOT":          root,
+		"SYSTEMCTL":                   fakeBin(t, binDir, "systemctl", "exit 0\n"),
+		"YIBAN_DATABASE_URL":          "postgres://yiban:pw@127.0.0.1:5432/yiban?sslmode=disable",
+		"YIBAN_HEALTH_RETRIES":        "1",
+		"YIBAN_HEALTH_RETRY_INTERVAL": "0",
+		"PATH":                        binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}
+	target := filepath.Join(root, "var/lib/yiban/ui")
+	for i := 1; i <= 2; i++ {
+		out, rc := runScript(t, scriptPath(t, "install.sh"), env,
+			"--server-bin", serverBin, "--cli-bin", cliBin, "--ui-dir", ui)
+		if rc != 0 {
+			t.Fatalf("第 %d 次 install.sh rc=%d out=%s", i, rc, out)
+		}
+		if info, err := os.Lstat(target); err != nil || info.Mode()&os.ModeSymlink != 0 {
+			t.Fatalf("第 %d 次后安装位不是真实目录：err=%v", i, err)
+		}
+		if body := readAll(t, filepath.Join(target, "index.html")); !strings.Contains(body, "rerun-ui") {
+			t.Fatalf("第 %d 次后页面内容不对：\n%s", i, body)
+		}
+	}
+	// 第二次把第一次的目录换到 .bak：旧页面留着（与 update.sh 同序）。
+	if body := readAll(t, filepath.Join(target+".bak", "index.html")); !strings.Contains(body, "rerun-ui") {
+		t.Fatalf("重装后 ui.bak 应是上一份页面：\n%s", body)
+	}
+	if got := strings.Count(readAll(t, filepath.Join(root, "etc/yiban/.env")), "YIBAN_UI_DIR="); got != 1 {
+		t.Fatalf("YIBAN_UI_DIR 必须恰好一行，got %d", got)
+	}
+}

@@ -61,8 +61,8 @@
 #   update.log、selfcheck-*.json）。备份根与状态目录同级（不在其下）。
 #   备份根与状态目录都是 **root:root 0700**，父目录 /var/lib/yiban-updater
 #   也归 root（服务用户改不了名，塞不进软链/恶意件）；备份含凭据密文，回滚
-#   还会执行备份内的 CLI。放在 /var/lib/yiban 下则会被 install.sh 的递归
-#   chown 改成服务用户属主，更新器随后拒绝运行。
+#   还会执行备份内的 CLI。为什么不放在 /var/lib/yiban 下：那里归服务用户
+#   （install.sh 把 home 与 photos/ui 交给它），任何子目录它都能换名/替换。
 #   U1 的 fs.backup_dir 按**调用者（root）**判权；服务用户写不了是要求，不是故障。
 #   旧布局 /var/lib/yiban/{pre-migrate,backups,updates} 不删、不读：新备份只落
 #   新根，旧备份仍可手工 pg_restore（root 0600，需 root 读）。
@@ -74,7 +74,7 @@
 #                         行数 manifest）——需要口令文件或 YIBAN_BACKUP_PASSPHRASE
 #     db-schema.txt       迁移前库名、goose 版本与 public 基表数（恢复后对账基线）
 #     env.backup          /etc/yiban/.env 快照（0600；内含密钥与 DSN 原文）
-#     photos.tar          照片目录快照（tar -h，只读；照片不进数据库备份）
+#     photos.tar          照片目录快照（不跟随内部软链；照片不进数据库备份）
 #     bin/                当前已装的 server/cli（含仍在的旧 .bak 归档）
 #     SHA256SUMS          以上文件的 sha256（0600，写入后立即 -c 校验）
 #   保留最近 --keep-backups 份（缺省 5；0 = 不清理）。只删本目录下形如
@@ -1145,7 +1145,10 @@ do_backup() {
         warn "no backup passphrase (--backup-passphrase-file or YIBAN_BACKUP_PASSPHRASE); GPG archive SKIPPED (plain -Fc dump only)"
     fi
 
-    # 照片快照：tar -h 解引用符号链接（照片目录可能是挂载点链接）。
+    # 照片快照：不跟随软链（默认 tar 行为）。
+    # 照片目录**本身**若是软链（挂载点常见），先 readlink -f 解析成真实目录再打包；
+    # 目录**内部**的软链只存链接本身——否则 tar 会顺着服务用户能造的链接，
+    # 把软链指向的 root-only 文件读进备份（复审建议）。
     # 目录不存在 → 显性 WARN 跳过（首次运行会创建）。
     photo_dir="${YIBAN_PHOTO_DIR:-$(dest "$SERVICE_HOME/photos")}"
     case "$photo_dir" in
@@ -1163,8 +1166,16 @@ do_backup() {
                 return 1
                 ;;
         esac
-        if ! ( umask 077; tar -h -C "$(dirname -- "$photo_dir")" \
-                -cf "$BACKUP_SET/photos.tar" -- "$(basename -- "$photo_dir")" ); then
+        photo_src="$photo_dir"
+        if [ -L "$photo_src" ]; then
+            photo_src="$(readlink -f -- "$photo_src" 2>/dev/null || true)"
+            if [ -z "$photo_src" ] || [ ! -d "$photo_src" ]; then
+                echo "update: backup FAILED — cannot resolve the photo dir symlink: $photo_dir" >&2
+                return 1
+            fi
+        fi
+        if ! ( umask 077; tar -C "$(dirname -- "$photo_src")" \
+                -cf "$BACKUP_SET/photos.tar" -- "$(basename -- "$photo_src")" ); then
             echo "update: backup FAILED — tar of photo dir failed: $photo_dir" >&2
             return 1
         fi

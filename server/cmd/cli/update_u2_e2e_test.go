@@ -24,6 +24,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -714,14 +715,19 @@ func TestUpdateShRejectsSharedBackupDir(t *testing.T) {
 	requireBash(t)
 	f := newU2Fixture(t)
 	newBin := fakeBin(t, f.binDir, "yiban-server-new", "echo NEW\n")
-	for _, dir := range []string{"/", "/tmp", "/var/backups", "/home", "/etc", "/var/log"} {
+	// 后三条是 `..` 绕道：归一化后分别指向 /etc、/etc、/etc，必须直接拒。
+	for _, dir := range []string{
+		"/", "/tmp", "/var/backups", "/home", "/etc", "/var/log",
+		"/tmp/../etc", "/srv/../etc", "/var/lib/yiban-updater/../etc",
+	} {
 		out, rc := runScript(t, scriptPath(t, "update.sh"), f.env,
 			"--server-bin", newBin, "--allow-unsigned", "--backup-dir", dir)
 		if rc != 2 {
 			t.Fatalf("--backup-dir %s 应 exit 2：rc=%d out=%s", dir, rc, out)
 		}
 		if !strings.Contains(out, "shared/system directory") &&
-			!strings.Contains(out, "refusing backup root path") {
+			!strings.Contains(out, "refusing backup root path") &&
+			!strings.Contains(out, "must not contain '..'") {
 			t.Fatalf("--backup-dir %s 的拒绝必须说明原因：%s", dir, out)
 		}
 	}
@@ -873,7 +879,7 @@ func TestUpdateShAcceptsUpdaterBackupRoot(t *testing.T) {
 	if !strings.Contains(out, "backup: "+root) {
 		t.Fatalf("备份应落在 %s：%s", root, out)
 	}
-	// 服务用户的 HOME 子目录必须被拒（install.sh 会递归 chown 那里）。
+	// 服务用户的 HOME 子目录必须被拒（那里归服务用户，它能换名/替换）。
 	home := filepath.Join(f.root, "var/lib/yiban")
 	out, rc = runScript(t, scriptPath(t, "update.sh"), f.env,
 		"--server-bin", newBin, "--allow-unsigned", "--backup-dir", home)
@@ -1030,5 +1036,53 @@ func TestUpdateShMissingBackupCLIKeepsManualAction(t *testing.T) {
 	// 旧 server 已换回并健康（回滚走完了）。
 	if body := readAll(t, filepath.Join(f.root, "usr/local/bin/yiban-server")); !strings.Contains(body, "OLD-SERVER") {
 		t.Fatalf("旧 server 应已换回：\n%s", body)
+	}
+}
+
+// TestUpdateShPhotosTarDoesNotFollowSymlinks 钉复审建议：
+// 照片目录内部的软链只存链接本身，不把软链指向的 root-only 文件读进备份。
+func TestUpdateShPhotosTarDoesNotFollowSymlinks(t *testing.T) {
+	requireBash(t)
+	f := newU2Fixture(t)
+	photos := filepath.Join(f.root, "var/lib/yiban/photos")
+	if err := os.MkdirAll(photos, 0o755); err != nil {
+		t.Fatalf("mkdir photos: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(photos, "a.jpg"), []byte("PHOTO"), 0o600); err != nil {
+		t.Fatalf("write photo: %v", err)
+	}
+	secret := filepath.Join(f.root, "outside-secret.txt")
+	if err := os.WriteFile(secret, []byte("TOPSECRET"), 0o600); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+	if err := os.Symlink(secret, filepath.Join(photos, "link.txt")); err != nil {
+		t.Skipf("SKIP: 本平台不支持符号链接：%v", err)
+	}
+	f.env["YIBAN_PHOTO_DIR"] = photos
+	newBin := fakeBin(t, f.binDir, "yiban-server-new", "echo NEW\n")
+	out, rc := runScript(t, scriptPath(t, "update.sh"), f.env,
+		"--server-bin", newBin, "--allow-unsigned")
+	if rc != 0 {
+		t.Fatalf("update rc=%d out=%s", rc, out)
+	}
+	dirs := f.backupDirs(t)
+	if len(dirs) != 1 {
+		t.Fatalf("应只有一份备份，got %v", dirs)
+	}
+	tarPath := filepath.Join(dirs[0], "photos.tar")
+	linkBody, err := exec.Command("tar", "-xOf", tarPath, "photos/link.txt").Output()
+	if err != nil {
+		t.Fatalf("tar -xOf (link): %v", err)
+	}
+	if strings.Contains(string(linkBody), "TOPSECRET") {
+		t.Fatalf("photos.tar 跟随软链读进了 root-only 文件：%q", string(linkBody))
+	}
+	// 真实照片必须在包里。
+	photoBody, err := exec.Command("tar", "-xOf", tarPath, "photos/a.jpg").Output()
+	if err != nil {
+		t.Fatalf("tar -xOf (photo): %v", err)
+	}
+	if !strings.Contains(string(photoBody), "PHOTO") {
+		t.Fatalf("photos.tar 缺真实照片：%q", string(photoBody))
 	}
 }

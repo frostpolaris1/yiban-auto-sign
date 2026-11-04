@@ -85,7 +85,7 @@ if [ -z "$ROOT" ]; then
     chown "$SERVICE_USER:$SERVICE_USER" "$SERVICE_HOME"
     chown -R "$SERVICE_USER:$SERVICE_USER" "$SERVICE_HOME/photos"
     # 更新器的状态/备份根（/var/lib/yiban-updater/{state,backups}）与
-    # $SERVICE_HOME 同级，**不**在递归 chown 的范围内：那里是 root 独占目录
+    # $SERVICE_HOME 同级，**不**在任何 chown 的范围内：那里是 root 独占目录
     # （备份含凭据密文，回滚还会执行备份里的 CLI）。重装时若它已存在，
     # 顺手把属主钉回 root——防有人手工 chown -R 到服务用户后更新器拒绝运行。
     UPDATER_ROOT="/var/lib/yiban-updater"
@@ -174,7 +174,7 @@ if [ -n "$UI_DIR" ]; then
     if [ -z "$ROOT" ]; then
         chown -R "$SERVICE_USER:$SERVICE_USER" "$UI_STAGE"
     fi
-    # 预置的软链不是合法页面目录：先摘链接再 rename（mv -T 不覆盖软链）。
+    # 预置的软链不是合法页面目录：先摘链接（mv -T 不覆盖软链）。
     if [ -L "$UI_TARGET" ]; then
         if ! rm -f -- "$UI_TARGET"; then
             rm -rf -- "$UI_STAGE"
@@ -182,8 +182,29 @@ if [ -n "$UI_DIR" ]; then
             exit 1
         fi
     fi
+    # 目标已存在（重装）时 mv -T 不会覆盖非空目录（ENOTEMPTY）：
+    # 与 update.sh 同序——先清旧 .bak，把旧目录换过去，再换入新目录；
+    # 换入失败就把 .bak 换回来（旧页面继续服务）。
+    UI_BAK="$UI_TARGET.bak"
+    if ! rm -rf -- "$UI_BAK"; then
+        rm -rf -- "$UI_STAGE"
+        echo "install: cannot clear $UI_BAK" >&2
+        exit 1
+    fi
+    UI_OLD_MOVED=0
+    if [ -e "$UI_TARGET" ]; then
+        if ! mv -T "$UI_TARGET" "$UI_BAK"; then
+            rm -rf -- "$UI_STAGE"
+            echo "install: cannot move the current ui aside: $UI_TARGET" >&2
+            exit 1
+        fi
+        UI_OLD_MOVED=1
+    fi
     if ! mv -T "$UI_STAGE" "$UI_TARGET"; then
         rm -rf -- "$UI_STAGE"
+        if [ "$UI_OLD_MOVED" -eq 1 ]; then
+            mv -T "$UI_BAK" "$UI_TARGET" 2>/dev/null || true
+        fi
         echo "install: cannot activate the ui at $UI_TARGET" >&2
         exit 1
     fi
