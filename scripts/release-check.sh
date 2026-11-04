@@ -2,12 +2,13 @@
 # ============================================================
 # release-check.sh —— 发布门清单（P8-D 切片）
 # ============================================================
-# 用途：把发布前要过的检查收成一条命令。八项清单与考古结论见
+# 用途：把发布前要过的检查收成一条命令。九项清单与考古结论见
 #   deploy/release.md（权威版）；本脚本只负责可执行的部分。
 #
 # 用法（在仓库根目录或任意位置执行）：
-#   bash scripts/release-check.sh                # 跑全部八项
-#   bash scripts/release-check.sh --only version # 只跑一项
+#   bash scripts/release-check.sh                # 跑全部九项
+#   bash scripts/release-check.sh --only version # 只跑一项（旧 Python 线遗留）
+#   bash scripts/release-check.sh --only go-version # Go 线：按根 VERSION 构建并验自报版本 + 发布 tag
 #   bash scripts/release-check.sh --list         # 列出项名
 #   bash scripts/release-check.sh --require-signing  # 发布操作档：signing 的 SKIP 升为 FAIL
 #   bash scripts/release-check.sh --only signing --require-signing \
@@ -37,6 +38,8 @@
 #   2. --only 不存在的项名报错退出非零；
 #   3. 帮助文本只取文件头注释块；sign.sh 不把私钥写成输出；
 #      realpath 缺失时锚外判定 FAIL（缺工具即拒绝）。
+#   go-version 项（2026-11-05 版本批）钉四类突变：缺 VERSION、坏 semver、
+#   构建不注入（自报 dev）、tag 不指向 HEAD，各必须非零；一致夹具必须绿。
 # ============================================================
 set -u
 
@@ -45,7 +48,7 @@ ROOT="${RELEASE_CHECK_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 REQUIRE_SIGNING=0
 PUBKEY_SHA256_FILE=""
 
-ITEMS="version license generate tests container backup rollback signing"
+ITEMS="version go-version license generate tests container backup rollback signing"
 
 # 帮助文本只取文件头注释块（到第一个非注释行为止）：行号会随改动漂移。
 usage() {
@@ -56,11 +59,13 @@ usage() {
 # 约定：每个 check_* 把结果写进全局 STATUS_<item>（PASS/FAIL/SKIP/POINTER/MANUAL）
 # 与 REASON_<item>，明细直接打到 stdout。
 
-# 项 1 版本一致性。考古（2026-10-27，ref ad5b3639）：
+# 项 1 版本一致性（旧 Python 线遗留；Go 线用 go-version 项）。考古（2026-10-27，ref ad5b3639）：
 #   版本唯一来源 = yiban/__init__.py 的 __version__（tests/test_release_version_source.py 守卫）。
 #   二进制自报版本自 2026-11-04 起存在：yiban-server --version / yiban-cli version，
 #   三值由构建期 -ldflags -X 注入 server/internal/buildinfo（未注入显性 dev/unknown）。
-#   openapi info.version = "1.0.0"，是 API 契约版本，不随发布走。该缺口在 deploy/release.md 登记。
+#   openapi info.version = "1.0.0"，是 API 契约版本，不随发布走；2026-11-05 口径落定：
+#   契约版本只在破坏性契约变更时升，发布 tag 用 v$VERSION（根 VERSION），两者独立，
+#   见 server/contracts/README.md 与 deploy/release.md 项 1b。
 #   本项钉存在的两处：发布 tag v$V 存在且指向 HEAD；__version__ 与 CHANGELOG 顶部一致。
 check_version() {
     local init="$ROOT/yiban/__init__.py" changelog="$ROOT/CHANGELOG.md"
@@ -93,6 +98,75 @@ check_version() {
     fi
     STATUS_version=PASS
     echo "version: __version__=$v, CHANGELOG top=$top, tag $tag -> HEAD ok"
+}
+
+# 项 1b Go 线产品版本与发布 tag（2026-11-05 版本批）。
+#   单一来源 = 仓库根 VERSION（单行 X.Y.Z，换行结尾）；旧 Python 线的
+#   yiban/__init__.py 与 CHANGELOG 保持冻结，不在本项范围。
+#   三个动作：
+#   a) 真构建：调 server/scripts/build-release.sh 到 mktemp 临时目录，
+#      跑 yiban-server --version 与 yiban-cli version，断言自报 version
+#      == VERSION（输出是稳定的 "version: X" 三行文本，机器可读）；
+#   b) tag 对账：v$VERSION 存在且指向 HEAD；不存在 ⇒ FAIL 并提示先打 tag；
+#   c) 契约版本不参与：openapi info.version 只在破坏性契约变更时升，
+#      与本项无关（server/contracts/README.md）。
+#   真仓库在打 v0.7.0 tag 之前本项 FAIL 是预期（发布时才绿）；selftest 用
+#   桩 builder（不编译 Go）覆盖四类突变。构建开销：模块缓存热时约数秒。
+check_go_version() {
+    STATUS_go_version=FAIL; REASON_go_version=""
+    local vfile="$ROOT/VERSION"
+    if [ ! -f "$vfile" ]; then
+        REASON_go_version="missing $vfile (Go-line product version single source)"; return
+    fi
+    local vlines ver
+    vlines="$(wc -l < "$vfile" | tr -d ' ')"
+    if [ "$vlines" != "1" ]; then
+        REASON_go_version="$vfile must be exactly one newline-terminated line, found $vlines"; return
+    fi
+    ver="$(head -n 1 "$vfile" | tr -d '\r')"
+    if ! printf '%s' "$ver" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+        REASON_go_version="$vfile content is not X.Y.Z semver: '$ver'"; return
+    fi
+    local builder="$ROOT/server/scripts/build-release.sh"
+    if [ ! -f "$builder" ]; then
+        REASON_go_version="missing $builder"; return
+    fi
+    if ! git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+        REASON_go_version="$ROOT is not a git checkout"; return
+    fi
+    # a) 真构建 + 自报版本断言。产物名后缀规则见 build-release.sh 头注。
+    local out build_out brc exe sv cv sver cver
+    out="$(mktemp -d)" || { REASON_go_version="mktemp failed"; return; }
+    build_out="$(bash "$builder" "$out" 2>&1)"; brc=$?
+    if [ "$brc" -ne 0 ]; then
+        rm -rf "$out"
+        REASON_go_version="build-release.sh exit $brc: $(printf '%s' "$build_out" | tail -1)"
+        return
+    fi
+    printf '%s\n' "$build_out" | grep '^build-release: version=' | head -1
+    exe=""
+    case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) exe=".exe" ;; esac
+    sv="$("$out/yiban-server$exe" --version 2>&1)"
+    cv="$("$out/yiban-cli$exe" version 2>&1)"
+    sver="$(printf '%s\n' "$sv" | sed -n 's/^version: //p')"
+    cver="$(printf '%s\n' "$cv" | sed -n 's/^version: //p')"
+    rm -rf "$out"
+    if [ "$sver" != "$ver" ] || [ "$cver" != "$ver" ]; then
+        REASON_go_version="self-report mismatch: server='${sver:-none}' cli='${cver:-none}', want $ver"
+        return
+    fi
+    # b) 发布 tag 对账：v$VERSION 存在且指向 HEAD。
+    local tag="v$ver" tag_sha head_sha
+    tag_sha="$(git -C "$ROOT" rev-parse -q --verify "refs/tags/$tag^{commit}" 2>/dev/null || true)"
+    head_sha="$(git -C "$ROOT" rev-parse HEAD)"
+    if [ -z "$tag_sha" ]; then
+        REASON_go_version="tag $tag does not exist; cut the release tag first (Go line: root VERSION)"; return
+    fi
+    if [ "$tag_sha" != "$head_sha" ]; then
+        REASON_go_version="tag $tag points at $tag_sha, HEAD is $head_sha"; return
+    fi
+    STATUS_go_version=PASS
+    echo "go-version: VERSION=$ver, yiban-server/yiban-cli self-report $ver, tag $tag -> HEAD ok"
 }
 
 # 项 2 许可证清单重生成。server/scripts/license.sh 退出码语义：
@@ -371,19 +445,26 @@ check_signing() {
 
 # ---------- 汇总与入口 ----------
 
+# 项名 → 状态变量/检查函数后缀：item 名可带连字符（go-version），
+# bash 变量与函数名不可，故统一把 - 映射为 _。
+# 必须是纯 bash 展开（不借 tr 等外部命令）：selftest 会在受限 PATH 下
+# 跑本脚本，外部命令可能缺失或不可用（MSYS 复制的 exe 缺共享库）。
+item_var() { printf '%s' "${1//-/_}"; }
+
 run_items() {
-    local only="$1" item failed=0 skipped=""
+    local only="$1" item vs failed=0 skipped=""
     for item in $ITEMS; do
         if [ -n "$only" ] && [ "$item" != "$only" ]; then continue; fi
-        "check_$item"
+        "check_$(item_var "$item")"
     done
     echo "---- release-check summary (root=$ROOT) ----"
     for item in $ITEMS; do
         if [ -n "$only" ] && [ "$item" != "$only" ]; then continue; fi
-        printf '%-9s %-8s %s\n' "$item" "$(eval "printf '%s' \"\$STATUS_$item\"")" \
-            "$(eval "printf '%s' \"\$REASON_$item\"")"
-        if [ "$(eval "printf '%s' \"\$STATUS_$item\"")" = "FAIL" ]; then failed=1; fi
-        if [ "$(eval "printf '%s' \"\$STATUS_$item\"")" = "SKIP" ]; then
+        vs="$(item_var "$item")"
+        printf '%-10s %-8s %s\n' "$item" "$(eval "printf '%s' \"\$STATUS_$vs\"")" \
+            "$(eval "printf '%s' \"\$REASON_$vs\"")"
+        if [ "$(eval "printf '%s' \"\$STATUS_$vs\"")" = "FAIL" ]; then failed=1; fi
+        if [ "$(eval "printf '%s' \"\$STATUS_$vs\"")" = "SKIP" ]; then
             skipped="$skipped $item"
         fi
     done
@@ -422,6 +503,63 @@ selftest() {
     printf '__version__ = "9.9.10"\n' > "$tmp/yiban/__init__.py"
     RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only version >/dev/null 2>&1; rc=$?
     expect "version red after breaking __version__" 1 "$rc"
+    rm -rf "$tmp"
+
+    # 不变式 1g：go-version 项有牙（2026-11-05 版本批）。夹具用桩 builder
+    # （不编译 Go）模拟产物自报，覆盖一致夹具绿 + 四类突变红：
+    #   a) 缺 VERSION；b) 坏 semver；c) 构建不注入（自报 dev）；
+    #   d) tag 不指向 HEAD。
+    tmp="$(mktemp -d)"
+    git -C "$tmp" init -q
+    git -C "$tmp" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+    mkdir -p "$tmp/server/scripts"
+    # 桩 builder：产两个自报 STUB_VERSION（缺省 dev）的假二进制，命名规则与
+    # 真 build-release.sh 一致（Windows 宿主带 .exe）。
+    cat > "$tmp/server/scripts/build-release.sh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+out="$1"
+exe=""
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) exe=".exe" ;; esac
+ver="${STUB_VERSION:-dev}"
+for name in yiban-server yiban-cli; do
+    {
+        printf '#!/usr/bin/env bash\n'
+        printf "printf 'version: %s\\ncommit: deadbee\\nbuild_time: 2026-01-01T00:00:00Z\\n'\n" "$ver"
+    } > "$out/$name$exe"
+    chmod +x "$out/$name$exe"
+done
+echo "build-release: version=$ver commit=deadbee build_time=2026-01-01T00:00:00Z"
+STUB
+    chmod +x "$tmp/server/scripts/build-release.sh"
+    printf '9.9.9\n' > "$tmp/VERSION"
+    git -C "$tmp" add -A
+    git -C "$tmp" -c user.email=t@t -c user.name=t commit -q -m v
+    git -C "$tmp" tag v9.9.9
+    STUB_VERSION=9.9.9 RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only go-version >/dev/null 2>&1; rc=$?
+    expect "go-version green on consistent fixture" 0 "$rc"
+    # 突变 c：构建不注入（桩自报 dev）→ 自报 != VERSION → 红。
+    RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only go-version >/dev/null 2>&1; rc=$?
+    expect "go-version red when build self-reports dev (not injected)" 1 "$rc"
+    RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only go-version 2>/dev/null \
+        | grep -q "self-report mismatch: server='dev'" \
+        || { say "MISMATCH: non-injected build not named"; fails=$((fails+1)); }
+    # 突变 b：坏 semver → 红。
+    printf '9.9\n' > "$tmp/VERSION"
+    STUB_VERSION=9.9.9 RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only go-version >/dev/null 2>&1; rc=$?
+    expect "go-version red on non-semver VERSION" 1 "$rc"
+    # 突变 d：tag 不指向 HEAD（HEAD 前进一个提交）→ 红。
+    printf '9.9.9\n' > "$tmp/VERSION"
+    git -C "$tmp" -c user.email=t@t -c user.name=t commit -q --allow-empty -m next
+    STUB_VERSION=9.9.9 RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only go-version >/dev/null 2>&1; rc=$?
+    expect "go-version red when tag does not point at HEAD" 1 "$rc"
+    # 突变 a：缺 VERSION → 红。
+    rm -f "$tmp/VERSION"
+    STUB_VERSION=9.9.9 RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only go-version >/dev/null 2>&1; rc=$?
+    expect "go-version red when VERSION is missing" 1 "$rc"
+    RELEASE_CHECK_ROOT="$tmp" bash "$SELF" --only go-version 2>/dev/null \
+        | grep -q 'missing .*VERSION' \
+        || { say "MISMATCH: missing VERSION not named"; fails=$((fails+1)); }
     rm -rf "$tmp"
 
     # 不变式 1b：generate 项透传被引命令的非零退出码。

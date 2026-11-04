@@ -43,10 +43,17 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
       # 受限网络覆盖点：不设即用官方源。
-      # 这两个是构建参数，不是运行配置：不进 Go 配置名册。
+      # 这些是构建参数，不是运行配置：不进 Go 配置名册。
+      # 版本三元组从环境取（deploy/docker/build.sh 会一次给齐并调 docker build；
+      # 直接 compose build 时不导出即落 Dockerfile 的显性缺省 dev/unknown）。
+      # 版本口径：BUILD_VERSION 来自仓库根 VERSION（Go 线单一来源），
+      # 发布 tag 用 v$VERSION；openapi info.version 是契约版本，两者独立。
       args:
         GOPROXY: ${BUILD_GOPROXY:-}
         NPM_CONFIG_REGISTRY: ${BUILD_NPM_REGISTRY:-}
+        BUILD_VERSION: ${BUILD_VERSION:-dev}
+        BUILD_COMMIT: ${BUILD_COMMIT:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
     image: yiban-server:local
     # 运行配置全部来自这一份 0600 宿主文件（模板：compose.env.example）。
     # 缺省路径相对本文件：deploy/container/compose.env。

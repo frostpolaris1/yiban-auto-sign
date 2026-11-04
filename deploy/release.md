@@ -24,14 +24,42 @@
    `-ldflags -X` 注入 `server/internal/buildinfo`，未注入时显性打印
    dev/unknown（不编造 sha 或时间）。发布构建必须注入三个值，
    命令见 `deploy/README.md` §4.1。
-5. **openapi `info.version`：不随发布走，待立项。**
+5. **openapi `info.version`：契约版本，不随发布走（口径 2026-11-05 落定）。**
    `server/contracts/openapi.yaml` 的 `version: "1.0.0"` 是 API 契约版本，
-   与发布版本无同步机制。
+   只在破坏性契约变更时升；产品发布版本在仓库根 `VERSION`（Go 线单一来源），
+   发布 tag 用 `v$VERSION`。两个计数器独立，不做同步（见项 1b 与
+   `server/contracts/README.md`）。
 
 本项可执行部分钉存在的两处：tag `v$__version__` 存在且指向 HEAD；
 `__version__` 与 CHANGELOG 顶部一致。期望输出
 `version: __version__=…, CHANGELOG top=…, tag vX.Y.Z -> HEAD ok`，退出码 0。
 红：tag 不存在／不指向 HEAD／两处版本不一致，退出码 1。
+
+## 项 1b　Go 线产品版本与发布 tag（item 名 `go-version`；2026-11-05 版本批）
+
+命令：`bash scripts/release-check.sh --only go-version`
+
+口径：Go 线（`server/` + `ui/`）的产品版本单一来源是仓库根 `VERSION`
+（单行 `X.Y.Z`，换行结尾）；旧 Python 线的 `yiban/__init__.py` 与 CHANGELOG
+保持冻结，不在此项范围。契约版本独立（项 1 第 5 条）。
+
+本项三个动作：
+
+1. **真构建**：调 `server/scripts/build-release.sh` 到 `mktemp` 临时目录，
+   跑 `yiban-server --version` 与 `yiban-cli version`，断言两者自报
+   `version == VERSION`（自报输出是稳定的三行文本 `version/commit/build_time`，
+   机器可读）。构建注入口径见 `server/internal/buildinfo/buildinfo.go` 头注。
+2. **发布 tag 对账**：`v$VERSION` 存在且指向 HEAD；不存在 ⇒ FAIL 并提示
+   先打 tag。
+3. **不碰契约版本**：openapi `info.version` 与本项无关。
+
+期望输出含 `go-version: VERSION=…, yiban-server/yiban-cli self-report …, tag vX.Y.Z -> HEAD ok`，
+退出码 0。红（退出码 1）：VERSION 缺失/非 semver/多行、构建脚本失败、
+自报版本不符、tag 不存在或不指向 HEAD。
+**真仓库在打 `v$VERSION` tag 之前本项 FAIL 是预期**（发布时才绿）；
+`--selftest` 用桩 builder（不编译 Go）覆盖四类突变（缺 VERSION、坏 semver、
+构建不注入自报 dev、tag 不指向 HEAD）且全部非零，一致夹具绿。
+容器侧同一组值由 `deploy/docker/build.sh`（读根 VERSION）传给 Dockerfile。
 
 ## 项 2　许可证清单重生成（item 名 `license`）
 
@@ -162,7 +190,9 @@ R8c 状态目录软链、R9b 备份件被篡改）全 PASS
 
 ## 已登记缺口（待立项，本清单不现场补造）
 
-1. openapi `info.version` 与发布版本无同步（项 1 考古第 5 条）。
+1. ~~openapi `info.version` 与发布版本无同步~~ **口径已落定（2026-11-05 版本批）**：
+   契约版本只在破坏性契约变更时升（`server/contracts/README.md`），发布 tag 用
+   `v$VERSION`（根 `VERSION`），两者独立、不同步；见项 1 第 5 条与项 1b。
 2. 迁移无 down 迁移，schema 不随二进制回滚（项 7 边界，
    `deploy/linux/update.sh` 头注登记）。
 3. 已签名旧包可重放（降级）：不传 `--expect-version` 时无版本下限。

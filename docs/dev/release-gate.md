@@ -74,6 +74,17 @@ bash scripts/backup.sh --restore <最新备份包> <临时目标目录>   # 退�
 7=密文校验不过、8=轮转后当日归档失踪——任一非 0 都必须先修再谈发布）。
 **照抄 compose 的 environment**，否则会出现"手动 run 缺 6 个键 → 打不开数据库"的假失败。
 
+Go 线（`server/` + `ui/`）发布件：**按仓库根 `VERSION` 构建并验自报版本**——
+
+```bash
+bash scripts/release-check.sh --only go-version
+```
+
+该门内部用 `server/scripts/build-release.sh` 构建两个二进制，断言
+`yiban-server --version` 与 `yiban-cli version` 自报 `== VERSION`，且发布 tag
+`v$VERSION` 指向 HEAD；打 tag 前该项 FAIL 是预期（发布时才绿）。openapi
+`info.version` 是契约版本，不随产品版本走（`server/contracts/README.md`）。
+
 两种演练形态各有一键脚本（演练轮，证据只进本地 `work/`，不计入 §3 的有效轮次）：
 
 - **裸机（宿主 / systemd 形态）**：`scripts/drill-baremetal.sh` —— B1 依赖装配、

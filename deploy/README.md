@@ -44,6 +44,18 @@ docker compose --env-file deploy/container/compose.env \
   -f deploy/docker/docker-compose.yml up -d --build
 ```
 
+镜像里的二进制版本身份来自三个构建参数（`BUILD_VERSION/BUILD_COMMIT/BUILD_TIME`）。
+正式构建入口是 `deploy/docker/build.sh`：它从仓库根 `VERSION` 读版本，三个值
+一次给齐后调 `docker build`：
+
+```bash
+bash deploy/docker/build.sh yiban-server:0.7.0
+```
+
+不走该入口时（例如上面 `compose up -d --build`），compose 的 `build.args`
+从环境取这三个变量，不导出即落 Dockerfile 的显性缺省 `dev/unknown`。
+三个值是构建期参数，不进运行时配置名册。构建后验自报版本见 §4.1。
+
 运行配置只来自 `deploy/container/compose.env`（0600 宿主）：
 compose 用 `env_file` 把它注入 app，`--env-file` 供 db 的服务口令插值。
 **不读取仓库根 `.env`**——旧 Python 栈的配置因此不可能混进 Go 容器。
@@ -81,19 +93,12 @@ docker compose --env-file deploy/container/compose.env \
 ### 4.1 构建
 
 ```bash
-# 后端。版本身份由 ldflags 注入，发布构建必须给三个值；
-# 不注入时 --version 显性打印 dev/unknown（不编造 sha 或时间）。
-cd server
-BUILD_VERSION=0.7.0
-BUILD_COMMIT=$(git rev-parse --short HEAD)
-BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-LDFLAGS="-s -w \
-  -X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.version=$BUILD_VERSION \
-  -X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.commit=$BUILD_COMMIT \
-  -X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.buildTime=$BUILD_TIME"
-CGO_ENABLED=0 go build -trimpath -ldflags="$LDFLAGS" -o ../dist/yiban-server ./cmd/server
-CGO_ENABLED=0 go build -trimpath -ldflags="$LDFLAGS" -o ../dist/yiban-cli ./cmd/cli
-cd ..
+# 后端。版本身份由 server/scripts/build-release.sh 注入：它从仓库根
+# VERSION（Go 线产品版本单一来源）读版本，连同 commit/build_time 用
+# ldflags -X 写进两个二进制，并打印 version/commit/build_time 一行汇总。
+# 缺 VERSION / 非 X.Y.Z / 非 git 检出时 exit 2，不产发布件。
+bash server/scripts/build-release.sh dist
+# Linux 产物：dist/yiban-server 与 dist/yiban-cli（Windows 宿主加 .exe 后缀）。
 
 # 前端
 cd ui
@@ -101,6 +106,10 @@ npm ci
 npm run build      # 产物：ui/dist
 cd ..
 ```
+
+装好后验一下自报版本与 `VERSION` 一致：`dist/yiban-server --version`
+（CLI 是 `dist/yiban-cli version`）。发布 tag 用 `v$VERSION`；openapi
+`info.version` 是契约版本，不随产品版本走（`server/contracts/README.md`）。
 
 ### 4.2 安装
 
