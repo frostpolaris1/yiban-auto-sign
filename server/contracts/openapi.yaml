@@ -37,6 +37,8 @@ tags:
   - name: schedule
   - name: photos
   - name: events
+  - name: settings
+  - name: audit
   - name: health
 security:
   - sessionCookie: []
@@ -1450,6 +1452,194 @@ paths:
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         default: { $ref: '#/components/responses/DefaultError' }
+  /api/admin/notify:
+    get:
+      tags: [settings]
+      operationId: AdminNotifyGet
+      summary: Read the caller's effective notification subscriptions.
+      description: |
+        master and admin each manage their own subscriptions; the answer
+        covers every category and channel with the effective state. A user
+        has no subscription surface and answers 403. A pair with no stored
+        row reads as the default:
+        review_pending is in_app and email; credential_invalid is in_app;
+        sign_failed_daily is email; capacity_rejected is in_app.
+        This endpoint stores and reads subscriptions only; nothing is
+        delivered in this phase.
+      x-roles: [master, admin]
+      responses:
+        '200':
+          description: Effective subscriptions for all categories and channels.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotifyPrefPage'
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+    put:
+      tags: [settings]
+      operationId: AdminNotifySet
+      summary: Replace the caller's subscription overrides.
+      description: |
+        Idempotent replacement of the caller's override set. Every item must
+        name a known category and channel; an unknown value or a repeated
+        (category, channel) pair answers 400. Pairs absent from the request
+        keep no override and read as their defaults, so an empty list resets
+        every subscription to the default state. The answer is the effective
+        state after the write. No notification is delivered.
+      x-roles: [master, admin]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotifyPrefsUpdate'
+      responses:
+        '200':
+          description: Effective subscriptions after the replacement.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotifyPrefPage'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/admin/settings:
+    get:
+      tags: [settings]
+      operationId: AdminSettings
+      summary: Read the deployment configuration roster, grouped.
+      description: |
+        Read-only. The keys come from config/registry.json, grouped by the
+        group registered there. A non-sensitive key carries the resolved
+        value (the environment value when set, otherwise the registered
+        default; a key with neither reads null). A sensitive key never
+        carries a value: it answers a sensitive view with set, a fixed
+        masked form and the source. The source is env when the environment
+        provides the key, default when the roster registers a default, and
+        unknown when the key is unset with no default. The file source is
+        reserved for a configuration layer that reads files; the current
+        server never reports it.
+      x-roles: [master, admin]
+      responses:
+        '200':
+          description: Grouped configuration roster.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingsReport'
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/admin/announcement:
+    put:
+      tags: [settings]
+      operationId: AnnouncementSet
+      summary: Publish or clear the site announcement.
+      description: |
+        Master only. The text is trimmed, must stay on one line (a line
+        break or line separator answers 400) and is limited to 200
+        characters, matching the previous deployment. An empty text clears
+        the announcement. The write and one settings.announcement audit row
+        commit in one transaction; the detail records only the field name,
+        never the text.
+      x-roles: [master]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnnouncementUpdate'
+      responses:
+        '200':
+          description: Announcement after the write.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Announcement'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/announcement:
+    get:
+      tags: [settings]
+      operationId: AnnouncementGet
+      summary: Read the published site announcement.
+      description: |
+        Every signed-in role reads the same text. An announcement that was
+        never set, or was cleared, answers an empty text and a null
+        updated_at. The raw author id never leaves the server.
+      x-roles: [master, admin, user]
+      responses:
+        '200':
+          description: Current announcement.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Announcement'
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/audit-logs:
+    get:
+      tags: [audit]
+      operationId: AuditLogList
+      summary: Read audit rows with cursor pagination.
+      description: |
+        Master and admin only. Rows are ordered newest first and paged with
+        the opaque cursor; limit is 1..200 with a default of 50. action
+        filters by the exact action word, actor filters by the masked actor
+        label (the value is masked with the same rule the writer used, so a
+        full email matches its stored masked form), from and to bound the
+        row time inclusively; both take an RFC3339 timestamp. Each row
+        carries the row id, the time, the action, the masked actor label and
+        the detail JSON text, which is passed through the mask rules on the
+        way out. The chain is not verified here and there is no export.
+      x-roles: [master, admin]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: action
+          in: query
+          required: false
+          description: Exact action word, e.g. auth.login.
+          schema: { type: string, maxLength: 128 }
+        - name: actor
+          in: query
+          required: false
+          description: |
+            Actor filter. Masked with the writer's rule before matching, so
+            a full address matches its stored masked label.
+          schema: { type: string, maxLength: 254 }
+        - name: from
+          in: query
+          required: false
+          description: Inclusive lower bound on the row time (RFC3339).
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          description: Inclusive upper bound on the row time (RFC3339).
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Audit page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLogPage'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        default: { $ref: '#/components/responses/DefaultError' }
   /api/me/diagnostics:
     get:
       tags: [events]
@@ -2111,6 +2301,169 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
   schemas:
+    NotifyCategory:
+      type: string
+      description: Closed set of notification subjects for this phase.
+      enum: [credential_invalid, review_pending, sign_failed_daily, capacity_rejected]
+    NotifyChannel:
+      type: string
+      description: Closed set of delivery channels; nothing is delivered in this phase.
+      enum: [in_app, email]
+    NotifyPref:
+      type: object
+      required: [category, channel, enabled]
+      properties:
+        category:
+          $ref: '#/components/schemas/NotifyCategory'
+        channel:
+          $ref: '#/components/schemas/NotifyChannel'
+        enabled:
+          type: boolean
+          description: |
+            Effective state: the stored override when present, the category
+            default otherwise.
+    NotifyPrefPage:
+      type: object
+      required: [items]
+      description: |
+        All four categories across both channels, so the client renders the
+        full matrix without merging defaults itself. Exactly eight items in
+        a stable order.
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/NotifyPref'
+    NotifyPrefsUpdate:
+      type: object
+      required: [items]
+      description: |
+        The complete replacement override set. Every pair must be known and
+        unique; unlisted pairs drop their override and read as defaults.
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/NotifyPref'
+    SettingSource:
+      type: string
+      description: |
+        env: the process environment provides the key. file: a file-backed
+        configuration layer provides it (never reported by this server).
+        default: unset, the roster registers a default. unknown: unset with
+        no registered default.
+      enum: [env, file, default, unknown]
+    SensitiveSetting:
+      type: object
+      description: Masked view of a sensitive key. The raw value never leaves the server.
+      required: [set, masked, source]
+      properties:
+        set:
+          type: boolean
+          description: True when the environment provides the key.
+        masked:
+          type: string
+          description: |
+            Fixed form - "****" when set, empty string otherwise. It carries
+            no character of the stored value.
+        source:
+          $ref: '#/components/schemas/SettingSource'
+    SettingItem:
+      type: object
+      description: One roster key with its resolved view.
+      required: [key, group, source, value, sensitive]
+      properties:
+        key: { type: string }
+        group:
+          type: string
+          description: First group registered for the key in the roster.
+        source:
+          $ref: '#/components/schemas/SettingSource'
+        value:
+          description: |
+            Resolved value of a non-sensitive key: the environment value when
+            set, otherwise the registered default rendered by the key type,
+            otherwise null. Absent (null) for a sensitive key.
+          oneOf:
+            - { type: string }
+            - { type: number }
+            - { type: boolean }
+            - { type: "null" }
+        sensitive:
+          description: Masked view for a sensitive key; null for a non-sensitive key.
+          type: [object, "null"]
+          required: [set, masked, source]
+          properties:
+            set: { type: boolean }
+            masked: { type: string }
+            source:
+              $ref: '#/components/schemas/SettingSource'
+    SettingGroup:
+      type: object
+      required: [name, items]
+      properties:
+        name: { type: string }
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SettingItem'
+    SettingsReport:
+      type: object
+      required: [groups]
+      properties:
+        groups:
+          type: array
+          items:
+            $ref: '#/components/schemas/SettingGroup'
+    Announcement:
+      type: object
+      required: [text, updated_at]
+      properties:
+        text:
+          type: string
+          description: Current announcement body; empty when none is set. Single line.
+        updated_at:
+          type: [string, "null"]
+          format: date-time
+          description: When the announcement was last written; null when never set.
+    AnnouncementUpdate:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+          maxLength: 200
+          description: |
+            Trimmed body, at most 200 characters, one line: a line break or
+            line separator answers 400. An empty text clears the
+            announcement.
+    AuditLogItem:
+      type: object
+      required: [id, at, action, actor, detail]
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: Row id of the audit chain row.
+        at: { type: string, format: date-time }
+        action: { type: string }
+        actor:
+          type: string
+          description: Masked actor label fixed at write time; never a raw address.
+        detail:
+          type: string
+          description: Detail JSON text; passed through the mask rules on the way out.
+    AuditLogPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditLogItem'
+        next_cursor:
+          type: string
+          description: Cursor for the next page; empty on the last page.
     Error:
       type: object
       required: [error]
