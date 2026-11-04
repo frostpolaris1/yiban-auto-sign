@@ -238,7 +238,8 @@ verify 里（占）。⇒ 重且必须独占核的用例，优先放 `slow`，�
 （AGENTS §46–49；扫描面下限 500 文件，扫空判红；突变用例覆盖每种判据），
 `check-path-env-reads.py` 数名册里 `ast:` 路由的键（同一枚键只许一个引擎计数），
 `check-config-registry.py` 判配置名册三条（`config/registry.json` 自校验、已登记键的
-缺省值字面量在代码内清零、未登记键不得出现在生产代码），`check-import-linter.py` 跑
+缺省值字面量在代码内清零、未登记键不得出现在旧 Python 线生产代码；新栈键面由
+`server/internal/configdata/registry.json` 的双向门判定），`check-import-linter.py` 跑
 `.importlinter` 的依赖方向契约（P0 批四条；批 A0 为新层补三条。门禁对**任何**违规
 红；确需接受的边逐条写进对应契约的 `ignore_imports`，基线文件只是墓碑）。名册门禁的
 元测试是**突变验证**：每条放行断言都配一条同形状的污染断言，门禁判据写反即红。

@@ -79,9 +79,12 @@ done
 
 e2e_init "container" "$LOG_DIR"
 
-# ---- compose 包装：固定项目名、空 env-file（不读仓库里的 .env）、标准输入关闭 ----
+# ---- compose 包装：固定项目名、隔离的 compose.env（不读仓库根 .env）、标准输入关闭 ----
+# COMPOSE_ENV 由模板现场生成（0600，只在本机 LOG_DIR）：键面与运行值同生产，
+# 但不把密钥写进仓库可提交路径。YIBAN_COMPOSE_ENV_FILE 让 compose 的
+# env_file 指到它；--env-file 供 db 的 ${POSTGRES_PASSWORD} 插值。
 dc() {
-    docker compose --env-file "$LOG_DIR/empty.env" -p "$PROJECT" \
+    docker compose --env-file "$COMPOSE_ENV" -p "$PROJECT" \
         -f "$COMPOSE_FILE" -f "$OVERRIDE" "$@"
 }
 
@@ -93,7 +96,7 @@ cleanup() {
     if [ "$E2E_STARTED" -eq 1 ]; then
         if [ "$KEEP" -eq 1 ]; then
             e2e_say "(--keep) 保留容器与卷。手动清理："
-            e2e_say "  docker compose --env-file $LOG_DIR/empty.env -p $PROJECT -f $COMPOSE_FILE -f $OVERRIDE down -v"
+            e2e_say "  docker compose --env-file $COMPOSE_ENV -p $PROJECT -f $COMPOSE_FILE -f $OVERRIDE down -v"
         else
             dc down -v --remove-orphans >>"$LOG_DIR/cleanup.log" 2>&1 || true
         fi
@@ -185,15 +188,29 @@ if ! e2e_port_free "$HTTP_PORT"; then
 fi
 OVERRIDE="$LOG_DIR/compose-override.yml"
 write_override
-: > "$LOG_DIR/empty.env"
 
-# 凭据只在本进程环境里；不写文件、不进日志。
-# 必须在任何 dc 调用之前导出：compose 用 ${VAR:?} 插值，
-# 缺变量时连 dc down 都失败，残留清理会静默失效。
-export YIBAN_HASH_PEPPER YIBAN_CREDENTIAL_KEY YIBAN_PG_PASSWORD
+# 运行配置：模板 + 现场生成的三个秘密，落在 LOG_DIR（0600）。
+# 必须在任何 dc 调用之前就位：compose 用 ${VAR:?} 插值与环境文件，
+# 缺它连 dc down 都失败，残留清理会静默失效。
+# POSTGRES_PASSWORD 是编排层变量（非 YIBAN_ 前缀）：它只给 db 与 DSN 派生用，
+# 不会进 Go 名册，也不会让容器里的 doctor 误报未登记键。
+COMPOSE_ENV="$LOG_DIR/compose.env"
+POSTGRES_PASSWORD="$(e2e_secret_hex 16)"
 YIBAN_HASH_PEPPER="$(e2e_secret_hex 32)"
 YIBAN_CREDENTIAL_KEY="$(e2e_secret_b64 32)"
-YIBAN_PG_PASSWORD="$(e2e_secret_hex 16)"
+(
+    umask 077
+    grep -Ev '^(YIBAN_HASH_PEPPER|YIBAN_CREDENTIAL_KEY|POSTGRES_PASSWORD)=' \
+        "$REPO/deploy/container/compose.env.example" > "$COMPOSE_ENV"
+    printf 'YIBAN_HASH_PEPPER=%s\n' "$YIBAN_HASH_PEPPER" >> "$COMPOSE_ENV"
+    printf 'YIBAN_CREDENTIAL_KEY=%s\n' "$YIBAN_CREDENTIAL_KEY" >> "$COMPOSE_ENV"
+    printf 'POSTGRES_PASSWORD=%s\n' "$POSTGRES_PASSWORD" >> "$COMPOSE_ENV"
+)
+chmod 600 "$COMPOSE_ENV"
+export YIBAN_COMPOSE_ENV_FILE="$COMPOSE_ENV"
+if [ "$(stat -c '%a' "$COMPOSE_ENV" 2>/dev/null || echo unknown)" != "600" ]; then
+    e2e_die "$COMPOSE_ENV 必须是 0600"
+fi
 
 # 上次失败可能留下本项目名的资源。先清，再断言零残留。
 # 只动本项目名的资源；其他项目（含 test47 上的 yiban-go-test）一律不碰。
@@ -225,6 +242,33 @@ fi
 docker version --format '{{.Server.Version}}' >>"$E2E_STEP_LOG" 2>&1 || true
 git -C "$REPO" rev-parse HEAD >>"$E2E_STEP_LOG" 2>&1 || true
 e2e_ok "项目 $PROJECT，端口 $HTTP_PORT，compose $COMPOSE_VERSION，GOPROXY=${GOPROXY_ARG:-<default>}"
+
+# ---- C1b compose config：显式 env-file 是硬前提 ----------------------------
+# compose 文件里有 ${POSTGRES_PASSWORD:?} 插值：不带 --env-file 必须解析失败
+# （fail-closed），带 --env-file 必须渲染出派生 DSN 与可信代理缺省。
+# 这条断言把 deploy/README 的命令形状钉住：少写 --env-file 的文档会在这里红。
+e2e_step "C1b" "compose config 显式 env-file"
+if docker compose -p "$PROJECT" -f "$COMPOSE_FILE" config >"$LOG_DIR/config-no-envfile.yml" 2>&1; then
+    e2e_die "不带 --env-file 的 compose config 竟然成功：口令插值必须显式给值（fail-closed）"
+fi
+if ! docker compose --env-file "$COMPOSE_ENV" -p "$PROJECT" \
+        -f "$COMPOSE_FILE" -f "$OVERRIDE" config >"$LOG_DIR/compose-config.yml" 2>>"$E2E_STEP_LOG"; then
+    e2e_die "带 --env-file 的 compose config 失败"
+fi
+grep -q 'YIBAN_DATABASE_URL: postgres://yiban:' "$LOG_DIR/compose-config.yml" \
+    || e2e_die "渲染缺派生 DSN（POSTGRES_PASSWORD 未进插值）"
+grep -q 'YIBAN_TRUSTED_PROXIES: 172.16.0.0/12,127.0.0.1' "$LOG_DIR/compose-config.yml" \
+    || e2e_die "渲染缺可信代理缺省（透传行失效）"
+grep -q 'YIBAN_ENV: production' "$LOG_DIR/compose-config.yml" \
+    || e2e_die "渲染缺 env_file 注入的 YIBAN_ENV"
+# export 覆盖必须赢过 --env-file：deploy/README §5 的方式一靠它。
+if ! YIBAN_TRUSTED_PROXIES=192.0.2.10 docker compose --env-file "$COMPOSE_ENV" -p "$PROJECT" \
+        -f "$COMPOSE_FILE" -f "$OVERRIDE" config >"$LOG_DIR/compose-config-override.yml" 2>>"$E2E_STEP_LOG"; then
+    e2e_die "带覆盖变量的 compose config 失败"
+fi
+grep -q 'YIBAN_TRUSTED_PROXIES: 192.0.2.10' "$LOG_DIR/compose-config-override.yml" \
+    || e2e_die "shell 覆盖未透传 YIBAN_TRUSTED_PROXIES"
+e2e_ok "无 --env-file 拒绝解析；有 --env-file 渲染出派生 DSN/代理缺省/YIBAN_ENV；export 覆盖生效"
 
 # ---- C2 构建镜像 -----------------------------------------------------------
 e2e_step "C2" "构建镜像"

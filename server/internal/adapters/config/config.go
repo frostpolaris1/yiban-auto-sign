@@ -16,6 +16,11 @@
 // 环境名是闭集，未知值即启动错误。
 // YIBAN_HASH_PEPPER 至少 16 字符；production 拒绝不安全 cookie。
 // YIBAN_CREDENTIAL_KEY 是 32 字节的 base64，形状错即启动错误。
+// 无数据库启动必须显式：YIBAN_DATABASE_URL 为空时只有
+// YIBAN_ALLOW_NO_DB=1 才放行（development/test/staging）；
+// production 既要求 DSN，也拒绝 YIBAN_ALLOW_NO_DB。
+// 缺省值与域的唯一登记处是嵌入名册 internal/configdata/registry.json，
+// registry_parity_test 双向钉住代码与名册。
 // 打开重置邮件投递（YIBAN_RESET_MAIL_ENABLE）时，YIBAN_PUBLIC_BASE_URL
 // 必须是显式设置的公网地址：缺省值指向本机回环，收件人点开就是死链，
 // 故启动即失败。YIBAN_MAIL_ENABLE 不参与本判定：它只服务旧通知线。
@@ -97,7 +102,7 @@ type Config struct {
 	// **必填**：缺少它的部署无法加密新凭据。
 	CredentialKey []byte
 
-	// 以下为调度面参数。缺省值与域见 config/registry.json；
+	// 以下为调度面参数。缺省值与域见嵌入名册 internal/configdata/registry.json；
 	// 两侧相等由 registry_parity_test 钉住。越界即启动错误，不静默夹取。
 	Workers          int
 	AvgAttempt       time.Duration
@@ -115,7 +120,7 @@ type Config struct {
 	// 空表示只提供 API；非空时服务端同时托管页面与深链。
 	UIDir string
 
-	// 入站限流面。默认开启；阈值与域见 config/registry.json。
+	// 入站限流面。默认开启；阈值与域见嵌入名册。
 	RateLimitEnabled  bool
 	RateIPPerMin      int
 	RateIPBurst       int
@@ -283,9 +288,10 @@ func (k enumKey) spec() keySpec {
 }
 
 // 读取规格表：缺省与域在代码里只出现一次。
-// LoadFrom 逐键取规格读取；registry_parity_test 用同一张表对 config/registry.json。
+// LoadFrom 逐键取规格读取；registry_parity_test 用同一张表对嵌入名册。
 // 浮点键的域取 core/rate 的常量，不在本包复写 0.2/4.0。
 var (
+	keyAllowNoDB        = boolKey{"YIBAN_ALLOW_NO_DB", false}
 	keyWorkers          = intKey{"YIBAN_WORKERS", 1, 1, 64}
 	keyAvgAttemptSec    = intKey{"YIBAN_AVG_ATTEMPT_SEC", 3, 1, 300}
 	keyWindowEdgeFront  = intKey{"YIBAN_WINDOW_EDGE_FRONT_SEC", 60, 0, 300}
@@ -324,6 +330,7 @@ var (
 // 的键字面量，表外出现即红。
 func configSpecs() []keySpec {
 	return []keySpec{
+		keyAllowNoDB.spec(),
 		keyWorkers.spec(),
 		keyAvgAttemptSec.spec(),
 		keyWindowEdgeFront.spec(),
@@ -354,6 +361,21 @@ func configSpecs() []keySpec {
 		keyKDFConcurrency.spec(),
 		keyMaxAccountsPerOwner.spec(),
 	}
+}
+
+// sensitiveKeys 是代码判定为敏感、永不以原值出包的键。
+//
+// 名册的 sensitive 标记必须与之逐键一致：设置页的掩码完全由名册驱动，
+// 名册漏标一个键就会把密钥或含口令的 DSN 原文回显给管理员。
+// 本表与 registry_parity_test 的 TestRegistrySensitiveMatchesCode 互为判据：
+// 只改一侧即红。
+var sensitiveKeys = []string{
+	"YIBAN_DATABASE_URL",
+	"YIBAN_HASH_PEPPER",
+	"YIBAN_CREDENTIAL_KEY",
+	"YIBAN_MAIL_USER",
+	"YIBAN_MAIL_PASS",
+	"YIBAN_MAIL_FROM",
 }
 
 // Load 读取进程环境。
@@ -518,7 +540,39 @@ func LoadFrom(src Source) (*Config, error) {
 				problem, base)
 		}
 	}
+	// 无库启动必须显式。放在最后：键形状错误先报，修复顺序与 doctor 的清单一致。
+	if err := checkDatabasePresence(env, cfg.DatabaseURL, src); err != nil {
+		return nil, err
+	}
 	return cfg, nil
+}
+
+// checkDatabasePresence 钉住「有库才跑业务」的启动判据。
+//
+// 三条判据：
+//   - production 设 YIBAN_ALLOW_NO_DB=1 即拒绝：生产必须连库，
+//     逃生口只能给开发/测试/预发。
+//   - production 的 DSN 为空即拒绝，错误点名键。
+//   - 其他环境 DSN 为空时，必须显式 YIBAN_ALLOW_NO_DB=1；
+//     静默无库启动会让 auth/user/school 端点回 501 而不报错。
+func checkDatabasePresence(env, dsn string, src Source) error {
+	allowNoDB, err := keyAllowNoDB.read(src)
+	if err != nil {
+		return err
+	}
+	if env == "production" && allowNoDB {
+		return errors.New("config: YIBAN_ALLOW_NO_DB is not allowed in production; set YIBAN_DATABASE_URL instead")
+	}
+	if strings.TrimSpace(dsn) != "" {
+		return nil
+	}
+	if env == "production" {
+		return errors.New("config: YIBAN_DATABASE_URL is required in production")
+	}
+	if !allowNoDB {
+		return errors.New("config: YIBAN_DATABASE_URL is empty; set it, or set YIBAN_ALLOW_NO_DB=1 to start without a database")
+	}
+	return nil
 }
 
 // publicBaseURLProblem 判定重置链接基址能否用于真实投递。

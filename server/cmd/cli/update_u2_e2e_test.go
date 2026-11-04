@@ -10,7 +10,7 @@ package main
 //      bin/ 与 SHA256SUMS；目录 0700、文件 0600；--keep-backups 保留最近 N 份。
 //   3. 状态与日志：update-state.json（result/exit_code/version/backup_dir/
 //      db_schema_before/after/db_restore）与 update.log。
-//   4. 数据库回滚：迁移后健康失败时默认恢复到新库并原子切 .env 的
+//   4. 数据库回滚：迁移后健康失败时默认恢复到新库并原子切 server.env 的
 //      YIBAN_DATABASE_URL；原库不动；恢复失败退出 2 + manual action，
 //      且不启动旧件（库状态未知）。
 //
@@ -31,7 +31,7 @@ import (
 	"testing"
 )
 
-// u2CanaryPassword 是干跑环境里的 DSN 口令。它只允许出现在 .env 与
+// u2CanaryPassword 是干跑环境里的 DSN 口令。它只允许出现在 server.env 与
 // pgpass 文件里；任何 pg 客户端的 argv 出现它就是缺陷（HIGH）。
 const u2CanaryPassword = "c4n4ry-pw-with-:colon"
 
@@ -134,7 +134,7 @@ func newU2Fixture(t *testing.T) *u2Fixture {
 	envBody := "YIBAN_DATABASE_URL=postgres://yiban:" + u2CanaryPassword +
 		"@127.0.0.1:5432/yiban?sslmode=disable\n" +
 		"YIBAN_UI_DIR=/var/lib/yiban/ui\n"
-	if err := os.WriteFile(filepath.Join(f.root, "etc/yiban/.env"), []byte(envBody), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(f.root, "etc/yiban/server.env"), []byte(envBody), 0o600); err != nil {
 		t.Fatalf("write env: %v", err)
 	}
 	f.env = map[string]string{
@@ -327,9 +327,9 @@ func TestUpdateShBackupLayoutStateAndRetention(t *testing.T) {
 			t.Fatalf("%s 权限 = %04o, want 0600", name, perm)
 		}
 	}
-	// .env 快照里必须有 DSN 原文（回滚会改写它，人工回退要用）。
+	// server.env 快照里必须有 DSN 原文（回滚会改写它，人工回退要用）。
 	if body := readAll(t, filepath.Join(latest, "env.backup")); !strings.Contains(body, "YIBAN_DATABASE_URL=") {
-		t.Fatalf("env.backup 不含 .env 原文：\n%s", body)
+		t.Fatalf("env.backup 不含 server.env 原文：\n%s", body)
 	}
 	// db-schema.txt 记库名，状态里也有 db_name_before。
 	if body := readAll(t, filepath.Join(latest, "db-schema.txt")); !strings.Contains(body, "database=yiban") {
@@ -362,7 +362,7 @@ func TestUpdateShBackupLayoutStateAndRetention(t *testing.T) {
 
 // TestUpdateShRestoresDatabaseToNewDatabase 钉数据库回滚成功路径：
 // 迁移把库从 16 推到 17、健康失败 ⇒ 恢复 pre-migrate 备份到新库、
-// 原子切 .env 的 DSN、起旧件；原库不删不改。
+// 原子切 server.env 的 DSN、起旧件；原库不删不改。
 func TestUpdateShRestoresDatabaseToNewDatabase(t *testing.T) {
 	requireBash(t)
 	f := newU2Fixture(t)
@@ -385,7 +385,7 @@ func TestUpdateShRestoresDatabaseToNewDatabase(t *testing.T) {
 	if !strings.HasPrefix(target, "yiban_restore_") {
 		t.Fatalf("恢复目标库名不对：%q", target)
 	}
-	envBody := readAll(t, filepath.Join(f.root, "etc/yiban/.env"))
+	envBody := readAll(t, filepath.Join(f.root, "etc/yiban/server.env"))
 	if !strings.Contains(envBody, "/"+target+"?") {
 		t.Fatalf(".env 的 DSN 未切到新库：\n%s", envBody)
 	}
@@ -448,9 +448,9 @@ func TestUpdateShRestoreFailureStopsAndAsksForManualAction(t *testing.T) {
 	if !strings.Contains(out, target) {
 		t.Fatalf("manual action 必须点出真实目标库 %q：%s", target, out)
 	}
-	envBody := readAll(t, filepath.Join(f.root, "etc/yiban/.env"))
+	envBody := readAll(t, filepath.Join(f.root, "etc/yiban/server.env"))
 	if strings.Contains(envBody, "yiban_restore_") {
-		t.Fatalf("恢复失败不得改 .env：\n%s", envBody)
+		t.Fatalf("恢复失败不得改 server.env：\n%s", envBody)
 	}
 	// 最后一条 systemctl 必须是 stop：库状态未知时不自动起旧件。
 	log := readAll(t, f.sysctlLo)
@@ -550,7 +550,7 @@ func TestUpdateShFirstUIInstallRollsBackOnHealthFailure(t *testing.T) {
 	requireBash(t)
 	f := newU2Fixture(t)
 	// 只装 API：.env 里没有 YIBAN_UI_DIR，也没有 ui 目录。
-	if err := os.WriteFile(filepath.Join(f.root, "etc/yiban/.env"),
+	if err := os.WriteFile(filepath.Join(f.root, "etc/yiban/server.env"),
 		[]byte("YIBAN_DATABASE_URL=postgres://yiban:"+u2CanaryPassword+"@127.0.0.1:5432/yiban?sslmode=disable\n"),
 		0o600); err != nil {
 		t.Fatalf("write env: %v", err)
@@ -570,7 +570,7 @@ func TestUpdateShFirstUIInstallRollsBackOnHealthFailure(t *testing.T) {
 	if _, err := os.Stat(uiDir); err == nil {
 		t.Fatalf("首次安装回滚后不得留下新页面目录：%s", uiDir)
 	}
-	if body := readAll(t, filepath.Join(f.root, "etc/yiban/.env")); strings.Contains(body, "YIBAN_UI_DIR=") {
+	if body := readAll(t, filepath.Join(f.root, "etc/yiban/server.env")); strings.Contains(body, "YIBAN_UI_DIR=") {
 		t.Fatalf("首次安装回滚后必须撤掉 YIBAN_UI_DIR：\n%s", body)
 	}
 	if _, err := os.Stat(uiDir + ".new"); err == nil {
@@ -738,7 +738,7 @@ func TestUpdateShRejectsSharedBackupDir(t *testing.T) {
 func TestUpdateShPasswordlessDSNWritesNoPgpass(t *testing.T) {
 	requireBash(t)
 	f := newU2Fixture(t)
-	if err := os.WriteFile(filepath.Join(f.root, "etc/yiban/.env"),
+	if err := os.WriteFile(filepath.Join(f.root, "etc/yiban/server.env"),
 		[]byte("YIBAN_DATABASE_URL=postgres://yiban@127.0.0.1:5432/yiban?sslmode=disable\n"), 0o600); err != nil {
 		t.Fatalf("write env: %v", err)
 	}
@@ -763,7 +763,7 @@ func TestUpdateShStripsQueryPassword(t *testing.T) {
 	requireBash(t)
 	f := newU2Fixture(t)
 	dsn := "postgres://yiban@127.0.0.1:5432/yiban?password=" + u2CanaryPassword + "&sslmode=disable"
-	if err := os.WriteFile(filepath.Join(f.root, "etc/yiban/.env"),
+	if err := os.WriteFile(filepath.Join(f.root, "etc/yiban/server.env"),
 		[]byte("YIBAN_DATABASE_URL="+dsn+"\n"), 0o600); err != nil {
 		t.Fatalf("write env: %v", err)
 	}
@@ -795,7 +795,7 @@ func TestUpdateShStripsQueryPasswordWithoutUserinfo(t *testing.T) {
 	requireBash(t)
 	f := newU2Fixture(t)
 	dsn := "postgres://127.0.0.1:5432/yiban?password=" + u2CanaryPassword + "&sslmode=disable"
-	if err := os.WriteFile(filepath.Join(f.root, "etc/yiban/.env"),
+	if err := os.WriteFile(filepath.Join(f.root, "etc/yiban/server.env"),
 		[]byte("YIBAN_DATABASE_URL="+dsn+"\n"), 0o600); err != nil {
 		t.Fatalf("write env: %v", err)
 	}
@@ -824,7 +824,7 @@ func TestUpdateShStripsQueryPasswordWithoutPath(t *testing.T) {
 	requireBash(t)
 	f := newU2Fixture(t)
 	dsn := "postgres://127.0.0.1:5432?password=" + u2CanaryPassword + "&sslmode=disable"
-	if err := os.WriteFile(filepath.Join(f.root, "etc/yiban/.env"),
+	if err := os.WriteFile(filepath.Join(f.root, "etc/yiban/server.env"),
 		[]byte("YIBAN_DATABASE_URL="+dsn+"\n"), 0o600); err != nil {
 		t.Fatalf("write env: %v", err)
 	}

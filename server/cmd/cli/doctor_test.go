@@ -94,12 +94,6 @@ func healthyProbe(t *testing.T) (*probe, *fakeDB) {
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write fake binary: %v", err)
 	}
-	reg := filepath.Join(t.TempDir(), "registry.json")
-	regBody := `{"_meta":{},"YIBAN_ENV":{},"YIBAN_HASH_PEPPER":{},"YIBAN_CREDENTIAL_KEY":{},` +
-		`"YIBAN_DATABASE_URL":{},"YIBAN_TZ":{},"YIBAN_HTTP_ADDR":{},"YIBAN_PHOTO_DIR":{}}`
-	if err := os.WriteFile(reg, []byte(regBody), 0o644); err != nil {
-		t.Fatalf("write registry: %v", err)
-	}
 	base := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
 	embedded, err := pg.EmbeddedVersion()
 	if err != nil {
@@ -122,8 +116,7 @@ func healthyProbe(t *testing.T) (*probe, *fakeDB) {
 			"YIBAN_HTTP_ADDR":      "127.0.0.1:0",
 			"YIBAN_PHOTO_DIR":      dir,
 		},
-		registry: reg,
-		binPath:  bin,
+		binPath: bin,
 		// 健康态：当前进程就是服务用户，走实测写入路径。
 		serviceUser: currentUserNameForTest(t),
 		now:         func() time.Time { return base },
@@ -309,17 +302,18 @@ func TestDoctorSchemaVersionAheadFails(t *testing.T) {
 
 func TestDoctorSkipCarriesReason(t *testing.T) {
 	p, _ := healthyProbe(t)
-	p.registry = filepath.Join(t.TempDir(), "missing.json") // 名册缺失
 	p.diskFree = func(string) (uint64, error) { return 0, errors.New("statfs unsupported here") }
 	rep := runChecks(context.Background(), p)
-	for _, name := range []string{"env.unknown_keys", "fs.disk"} {
-		row := rowOf(t, rep, name)
-		if !row.skip {
-			t.Fatalf("%s: want SKIP, got fail=%v detail=%q", name, row.fail, row.detail)
-		}
-		if strings.TrimSpace(row.detail+row.fix) == "" {
-			t.Fatalf("%s: SKIP reason is empty", name)
-		}
+	row := rowOf(t, rep, "fs.disk")
+	if !row.skip {
+		t.Fatalf("fs.disk: want SKIP, got fail=%v detail=%q", row.fail, row.detail)
+	}
+	if strings.TrimSpace(row.detail+row.fix) == "" {
+		t.Fatal("fs.disk: SKIP reason is empty")
+	}
+	// 名册随二进制嵌入：env.unknown_keys 不再有「名册文件缺失」这条 SKIP 路径。
+	if row := rowOf(t, rep, "env.unknown_keys"); row.skip {
+		t.Fatalf("env.unknown_keys 不得跳过：嵌入名册总会存在（detail=%q）", row.detail)
 	}
 }
 
@@ -480,33 +474,50 @@ func TestDoctorOwnerChecksUseServiceUser(t *testing.T) {
 	})
 }
 
-// TestDefaultRegistryResolvesInstalledPath 钉住名册缺省查找顺序。
-// 生产不在仓库根跑 doctor：先找安装位 /etc/yiban/registry.json。
-func TestDefaultRegistryResolvesInstalledPath(t *testing.T) {
-	// 查找顺序本身也是判据：安装位必须排第一，仓库相对路径兜底。
-	if cands := registryCandidates(); len(cands) == 0 || cands[0] != "/etc/yiban/registry.json" {
-		t.Fatalf("registryCandidates() = %v，首位必须是安装位 /etc/yiban/registry.json", cands)
+// TestDoctorUnknownKeysUsesEmbeddedRegistry 钉住未登记键体检的名册来源。
+// 名册随二进制嵌入：没有安装位文件可读，也没有 --registry 路径可指定。
+func TestDoctorUnknownKeysUsesEmbeddedRegistry(t *testing.T) {
+	p, _ := healthyProbe(t)
+	p.src = fakeSource{
+		"YIBAN_ENV":             "production",
+		"YIBAN_HASH_PEPPER":     testPepper,
+		"YIBAN_CREDENTIAL_KEY":  testKeyB64,
+		"YIBAN_DATABASE_URL":    "postgres://u:p@127.0.0.1:5432/db",
+		"YIBAN_NOT_A_REAL_KEY":  "x",
+		"YIBAN_MAIL_ENABLE_OLD": "1",
 	}
-	dir := t.TempDir()
-	installed := filepath.Join(dir, "etc-yiban-registry.json")
-	if err := os.WriteFile(installed, []byte(`{"_meta":{}}`), 0o644); err != nil {
-		t.Fatalf("write installed registry: %v", err)
+	row := rowOf(t, runChecks(context.Background(), p), "env.unknown_keys")
+	if !row.fail {
+		t.Fatalf("未登记键必须 FAIL, got detail=%q", row.detail)
 	}
-	missing := filepath.Join(dir, "missing.json")
-	got := pickRegistry("", func(p string) bool {
-		_, err := os.Stat(p)
-		return err == nil
-	}, missing, installed, "config/registry.json")
-	if got != installed {
-		t.Fatalf("pickRegistry = %q，want %q（首个存在的候选）", got, installed)
+	for _, key := range []string{"YIBAN_NOT_A_REAL_KEY", "YIBAN_MAIL_ENABLE_OLD"} {
+		if !strings.Contains(row.detail, key) {
+			t.Fatalf("FAIL 文案没有点名 %s: %s", key, row.detail)
+		}
 	}
-	if got := pickRegistry("/explicit/path.json", func(string) bool { return false }, installed); got != "/explicit/path.json" {
-		t.Fatalf("显式 --registry 必须优先，got %q", got)
+	// 全部登记时不 FAIL。
+	p.src = fakeSource{
+		"YIBAN_ENV":            "production",
+		"YIBAN_HASH_PEPPER":    testPepper,
+		"YIBAN_CREDENTIAL_KEY": testKeyB64,
+		"YIBAN_DATABASE_URL":   "postgres://u:p@127.0.0.1:5432/db",
 	}
-	// 全不存在时返回最后一个候选：SKIP 文案要点名它。
-	got = pickRegistry("", func(string) bool { return false }, missing, "config/registry.json")
-	if got != "config/registry.json" {
-		t.Fatalf("全部缺失时返回 = %q，want 末位候选", got)
+	if row := rowOf(t, runChecks(context.Background(), p), "env.unknown_keys"); row.fail {
+		t.Fatalf("全部键已登记时不得 FAIL: %s", row.detail)
+	}
+
+	// scope=cli 的键按全集校验放行：doctor 误报会诱导运维删掉 backup 口令，
+	// 退回明文备份。它们不进设置页（scope 门在 assembly），但也不算未登记。
+	p.src = fakeSource{
+		"YIBAN_ENV":                 "production",
+		"YIBAN_HASH_PEPPER":         testPepper,
+		"YIBAN_CREDENTIAL_KEY":      testKeyB64,
+		"YIBAN_DATABASE_URL":        "postgres://u:p@127.0.0.1:5432/db",
+		"YIBAN_BACKUP_PASSPHRASE":   "e2e-passphrase",
+		"YIBAN_LEGACY_ACCOUNTS_KEY": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	}
+	if row := rowOf(t, runChecks(context.Background(), p), "env.unknown_keys"); row.fail {
+		t.Fatalf("scope=cli 的键不得判未登记（会诱导删除 backup 口令）: %s", row.detail)
 	}
 }
 
@@ -600,5 +611,26 @@ func TestDoctorContainerPhotoFixUsesHostCommand(t *testing.T) {
 		if !strings.Contains(row.fix, "宿主机") || !strings.Contains(row.fix, "docker run") {
 			t.Fatalf("%s 的修复必须在宿主机执行：%q", name, row.fix)
 		}
+	}
+}
+
+// TestDoctorEnvConfigNamesMissingDSN 钉住无库启动判据在体检里的可见性。
+// production 缺 YIBAN_DATABASE_URL 必须 FAIL，且修复文案给的是 server.env 的写法。
+func TestDoctorEnvConfigNamesMissingDSN(t *testing.T) {
+	p, _ := healthyProbe(t)
+	p.src = fakeSource{
+		"YIBAN_ENV":            "production",
+		"YIBAN_HASH_PEPPER":    testPepper,
+		"YIBAN_CREDENTIAL_KEY": testKeyB64,
+	}
+	row := rowOf(t, runChecks(context.Background(), p), "env.config")
+	if !row.fail {
+		t.Fatalf("production 缺 DSN 必须 FAIL: %q", row.detail)
+	}
+	if !strings.Contains(row.detail, "YIBAN_DATABASE_URL") {
+		t.Fatalf("detail 没有点名 YIBAN_DATABASE_URL: %s", row.detail)
+	}
+	if !strings.Contains(row.fix, "/etc/yiban/server.env") {
+		t.Fatalf("fix 没有指向 /etc/yiban/server.env: %s", row.fix)
 	}
 }

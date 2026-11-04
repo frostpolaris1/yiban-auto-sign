@@ -74,9 +74,18 @@ ASSUME_ALL_TRACKED=0
 # 引擎路由标记：名册"判定模式"列以此开头的行交给 AST 门计数（约定见文件头与名册文件头）
 ENGINE_PREFIX="ast:"
 
-# 生产树默认扫描面（相对于 --root）。文档、锁定清单、名册自身不在内：
-# 它们不是"定义点"，把它们算进来只会让上限虚高。
-DEFAULT_SCOPE="yiban scripts web docker deploy .github run.sh run_probe.sh docker-compose.yml pyproject.toml .env.example .env.docker.example"
+# 生产树默认扫描面（相对于 --root，**旧 Python 线**）。文档、锁定清单、名册自身
+# 不在内：它们不是"定义点"，把它们算进来只会让上限虚高。
+#
+# `deploy` 收窄为 `deploy/prod`（2026-11-05）：`deploy/` 下其余子树
+# 已属新栈（Go 线）——deploy/linux 是 Go 裸机安装/升级器，deploy/docker 是 Go
+# 容器编排，deploy/baremetal 与 deploy/container 是 Go 运行配置模板
+# （server.env.example / compose.env.example）。它们含有 YIBAN_WORKERS、
+# Asia/Shanghai 等共享事实的**同形字符串**（新栈模板照名册写键是应该的），
+# 算进本门只会给 tsv 的上限族凭空加定义点、逼上限虚高。新栈键面由
+# server/internal/configdata/registry.json + registry_parity_test 自守，
+# 与本门（旧线名册 scripts/gate/shared-facts.tsv）互不引用。
+DEFAULT_SCOPE="yiban scripts web docker deploy/prod .github run.sh run_probe.sh docker-compose.yml pyproject.toml .env.example .env.docker.example"
 
 # 只扫代码/配置类文件（名册是 .tsv，天然落在这张白名单外——否则名册自己会把
 # 每条判定模式都命中一遍，门禁当场自杀）。
@@ -88,7 +97,13 @@ DEFAULT_SCOPE="yiban scripts web docker deploy .github run.sh run_probe.sh docke
 #   而本名册另一行写着拒绝这么做的理由（"会把上限抬高，新增的生产绕过点落进
 #   虚高余量里不被发现"）。故按根因处置：把夹具排除出生产扫描面，上限保持实测。
 EXT_RE='\.(py|sh|bash|js|html|htm|j2|css|conf|cfg|ini|service|yml|yaml|toml|example)$|(^|/)(Dockerfile|cron\.d/[^/]+)$'
-EXCL_RE='(^|/)(\.git|\.venv|__pycache__|node_modules|out|\.tmp|vendor|\.pytest_cache|\.ruff_cache|web/static/vue/assets|protocol_fake)(/|$)'
+# `scripts/e2e` 排除在扫描面外（2026-11-05）：三条部署/升级 e2e 属新栈
+#   （Go 线），它们引用 YIBAN_TRUSTED_PROXIES 等键是**新栈模板/断言的应然形状**，
+#   不是旧线共享事实的定义点。不排除的代价是实测到的：容器 e2e 的 compose
+#   config 断言让 XFF 族 42→44 顶格翻红。deploy/* 新栈子树已随
+#   DEFAULT_SCOPE 收窄为 deploy/prod 移出；两处口径合并后，本门的扫描面
+#   只剩旧 Python 线生产树（新栈键面由 server/internal/configdata 名册自守）。
+EXCL_RE='(^|/)(\.git|\.venv|__pycache__|node_modules|out|\.tmp|vendor|\.pytest_cache|\.ruff_cache|web/static/vue/assets|protocol_fake|scripts/e2e)(/|$)'
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -489,6 +504,8 @@ done < "$TMP/hits"
 viol=0
 active=0
 zero=0
+# note 本行只读不用（口径备注是给人看的）：shellcheck 的 SC2034 登记在册。
+# shellcheck disable=SC2034
 while IFS=$'\t' read -r fam key status pat scope max note; do
     case "$fam" in ''|'#'*) continue ;; esac
     if [ -z "${key:-}" ] || [ "$status" != "active" ]; then continue; fi

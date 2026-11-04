@@ -143,7 +143,7 @@ either side drifts.
 | PUT | `/api/admin/notify` | master/admin | 2ws A |
 |  |  |  | 幂等替换本人的覆盖集；未知类别/渠道或重复对 400；未列出的对回默认。 |
 | GET | `/api/admin/settings` | master/admin | 2ws A |
-|  |  |  | 只读配置名册，按组返回；敏感键只给 `{set, masked, source}`，永不回显原文；source=env/default/unknown（file 保留，本服务不产出）。键全集来自 `config/registry.json`。 |
+|  |  |  | 只读配置名册，按组返回；敏感键只给 `{set, masked, source}`，永不回显原文；source=env/default/unknown（file 保留，本服务不产出）。键全集来自编译期嵌入的 `internal/configdata/registry.json`。 |
 | POST | `/api/admin/mail/test` | master | c3e |
 |  |  |  | 向当前会话邮箱同步发一封测试信；空请求体，收件人不可由客户端指定；邮件投递关闭（SMTP 未启用）与无邮箱均 409（文案不同）、发送失败 502（不含 SMTP 应答/主机/口令）；每次外呼（成功/失败）写 `settings.mail_test` 审计，detail 只含 result 与粗分类；每管理员 60s 冷却（进程内，重启清空）429＋Retry-After。 |
 | PUT | `/api/admin/announcement` | master | 2ws A |

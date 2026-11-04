@@ -107,7 +107,7 @@ backup/restore 子命令。
 - 健康检查或 `systemctl start` 失败：stop → 换回 `.bak` 旧二进制（与 UI、CLI）
   → start（退出码 1）；首次装页面时删新页面并撤掉 `YIBAN_UI_DIR`；
 - 迁移后失败且库已改变：默认把 pre-migrate 备份恢复到新库
-  `yiban_restore_<ts>`、原子切 `/etc/yiban/.env` 的 DSN、起旧件；原库保留取证；
+  `yiban_restore_<ts>`、原子切 `/etc/yiban/server.env` 的 DSN、起旧件；原库保留取证；
   `--no-restore-db` 显式关闭；
 - 数据库恢复失败：退出码 2，打印 manual action，不启动旧件（库状态未知）；
 - 回滚后仍不健康：退出码 2，报「manual action required」。

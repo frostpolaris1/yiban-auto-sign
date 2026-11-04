@@ -10,7 +10,9 @@
 #
 # 构建与运行（在仓库根）：
 #   docker build -f deploy/docker/Dockerfile -t yiban-server .
-#   docker compose -f deploy/docker/docker-compose.yml up -d
+#   cp deploy/container/compose.env.example deploy/container/compose.env  # 填密钥
+#   docker compose --env-file deploy/container/compose.env \
+#     -f deploy/docker/docker-compose.yml up -d
 #
 # 旧 Python 镜像（docker/）与本镜像并存；Go 线发布时旧栈退役。
 
@@ -87,11 +89,11 @@ COPY --chown=65532:65532 --from=build /out/photos /data/photos
 # 目录与文件是 root 属主、世界可读；distroless nonroot 只需要读。
 COPY --from=ui /src/ui/dist /srv/ui
 
-# 配置名册：GET /api/admin/settings 运行时读取 /etc/yiban/registry.json。
-# 安装位与裸机 install.sh 一致（root 属主，源文件 0644）；只读，进程只需读权限。
-COPY config/registry.json /etc/yiban/registry.json
+# 配置名册随二进制嵌入（server/internal/configdata），镜像里不再有
+# /etc/yiban/registry.json；运行配置全部来自 compose 的 env_file。
 
 # 容器内必须监听全部接口；照片目录独立卷，便于备份与迁移。
+# deploy/container/compose.env 会显式给出同名的三个键（值相同）。
 ENV YIBAN_HTTP_ADDR=0.0.0.0:8080 \
     YIBAN_PHOTO_DIR=/data/photos \
     YIBAN_UI_DIR=/srv/ui

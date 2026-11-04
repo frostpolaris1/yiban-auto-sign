@@ -4,7 +4,7 @@
 #
 # 模拟的真实用户动作（AGENTS §8g）：
 #   一台干净的 Ubuntu 24.04 主机按 deploy/linux/install.sh 的用法，
-#   落位二进制与前端产物、生成 /etc/yiban/.env、装 systemd 单元、
+#   落位二进制与前端产物、生成 /etc/yiban/server.env、装 systemd 单元、
 #   enable --now，然后访问首页与 /healthz、再停机。
 #
 # 为什么容器内仍是「真装」（AGENTS §32）：
@@ -420,7 +420,7 @@ LOGIN_CODE="$(os_exec curl -sS --max-time 5 -o /tmp/e2e-login.json -w '%{http_co
     -d '{"email":"nobody@example.com","password":"wrong-password"}' \
     2>>"$E2E_STEP_LOG" || true)"
 if [ "$LOGIN_CODE" = "403" ]; then
-    e2e_die "登录回 403：.env 的 YIBAN_TRUSTED_PROXIES 未覆盖宿主回环"
+    e2e_die "登录回 403：server.env 的 YIBAN_TRUSTED_PROXIES 未覆盖宿主回环"
 fi
 if [ "$LOGIN_CODE" != "401" ]; then
     e2e_die "登录 HTTP $LOGIN_CODE（期望 401 无效凭据；403 表示信任链断了）"
@@ -429,8 +429,8 @@ e2e_ok "X-Forwarded-Proto=https 被采信，登录回 401 而非 403"
 
 # ---- B8 落位与权限 ---------------------------------------------------------
 e2e_step "B8" "落位与权限"
-ENV_META="$(os_exec stat -c '%a:%U:%G' /etc/yiban/.env 2>>"$E2E_STEP_LOG" || true)"
-[ "$ENV_META" = "600:root:root" ] || e2e_die "/etc/yiban/.env 权限=$ENV_META（期望 600:root:root）"
+ENV_META="$(os_exec stat -c '%a:%U:%G' /etc/yiban/server.env 2>>"$E2E_STEP_LOG" || true)"
+[ "$ENV_META" = "600:root:root" ] || e2e_die "/etc/yiban/server.env 权限=$ENV_META（期望 600:root:root）"
 for b in yiban-server yiban-cli; do
     META="$(os_exec stat -c '%a' "/usr/local/bin/$b" 2>>"$E2E_STEP_LOG" || true)"
     [ "$META" = "755" ] || e2e_die "/usr/local/bin/$b 权限=$META（期望 755）"
@@ -440,25 +440,30 @@ os_exec test -f /etc/systemd/system/yiban.service >>"$E2E_STEP_LOG" 2>&1 \
 os_exec id -u yiban >>"$E2E_STEP_LOG" 2>&1 || e2e_die "服务用户 yiban 不存在"
 PHOTO_META="$(os_exec stat -c '%U:%G' /var/lib/yiban/photos 2>>"$E2E_STEP_LOG" || true)"
 [ "$PHOTO_META" = "yiban:yiban" ] || e2e_die "photos 目录属主=$PHOTO_META（期望 yiban:yiban）"
-os_exec grep -qE '^YIBAN_HASH_PEPPER=[0-9a-f]{64}$' /etc/yiban/.env >>"$E2E_STEP_LOG" 2>&1 \
-    || e2e_die ".env 的 YIBAN_HASH_PEPPER 不是 64 位十六进制"
-KEY_BYTES="$(os_exec sh -c "grep -E '^YIBAN_CREDENTIAL_KEY=' /etc/yiban/.env | cut -d= -f2- | base64 -d | wc -c" 2>>"$E2E_STEP_LOG" | tr -d '[:space:]' || true)"
+os_exec grep -qE '^YIBAN_HASH_PEPPER=[0-9a-f]{64}$' /etc/yiban/server.env >>"$E2E_STEP_LOG" 2>&1 \
+    || e2e_die "server.env 的 YIBAN_HASH_PEPPER 不是 64 位十六进制"
+KEY_BYTES="$(os_exec sh -c "grep -E '^YIBAN_CREDENTIAL_KEY=' /etc/yiban/server.env | cut -d= -f2- | base64 -d | wc -c" 2>>"$E2E_STEP_LOG" | tr -d '[:space:]' || true)"
 [ "$KEY_BYTES" = "32" ] || e2e_die "YIBAN_CREDENTIAL_KEY 解码后 $KEY_BYTES 字节（期望 32）"
-os_exec grep -Fxq "YIBAN_DATABASE_URL=$DSN" /etc/yiban/.env >>"$E2E_STEP_LOG" 2>&1 \
-    || e2e_die ".env 的 YIBAN_DATABASE_URL 与传入值不一致"
-os_exec grep -Fxq 'YIBAN_UI_DIR=/var/lib/yiban/ui' /etc/yiban/.env >>"$E2E_STEP_LOG" 2>&1 \
-    || e2e_die ".env 缺 YIBAN_UI_DIR=/var/lib/yiban/ui"
-os_exec grep -Fxq 'YIBAN_TRUSTED_PROXIES=127.0.0.1' /etc/yiban/.env >>"$E2E_STEP_LOG" 2>&1 \
-    || e2e_die ".env 缺 YIBAN_TRUSTED_PROXIES=127.0.0.1（宿主反代在回环）"
+os_exec grep -Fxq "YIBAN_DATABASE_URL=$DSN" /etc/yiban/server.env >>"$E2E_STEP_LOG" 2>&1 \
+    || e2e_die "server.env 的 YIBAN_DATABASE_URL 与传入值不一致"
+os_exec grep -Fxq 'YIBAN_UI_DIR=/var/lib/yiban/ui' /etc/yiban/server.env >>"$E2E_STEP_LOG" 2>&1 \
+    || e2e_die "server.env 缺 YIBAN_UI_DIR=/var/lib/yiban/ui"
+os_exec grep -Fxq 'YIBAN_TRUSTED_PROXIES=127.0.0.1' /etc/yiban/server.env >>"$E2E_STEP_LOG" 2>&1 \
+    || e2e_die "server.env 缺 YIBAN_TRUSTED_PROXIES=127.0.0.1（宿主反代在回环）"
 os_exec test -f /var/lib/yiban/ui/index.html >>"$E2E_STEP_LOG" 2>&1 \
     || e2e_die "前端产物未落到 /var/lib/yiban/ui"
 UI_META="$(os_exec stat -c '%U:%G' /var/lib/yiban/ui 2>>"$E2E_STEP_LOG" || true)"
 [ "$UI_META" = "yiban:yiban" ] || e2e_die "ui 目录属主=$UI_META（期望 yiban:yiban）"
-HOST_REG_SUM="$(e2e_sha256 "$REPO/config/registry.json" || true)"
-GUEST_REG_SUM="$(os_exec sha256sum /etc/yiban/registry.json 2>>"$E2E_STEP_LOG" | cut -d' ' -f1 || true)"
-[ -n "$HOST_REG_SUM" ] && [ "$HOST_REG_SUM" = "$GUEST_REG_SUM" ] \
-    || e2e_die "安装的 registry.json 与 config/registry.json 不一致"
-e2e_ok ".env 600 root:root；二进制 755；photos 与 ui 属 yiban；名册逐字节一致"
+HOST_EXAMPLE_SUM="$(e2e_sha256 "$REPO/deploy/baremetal/server.env.example" || true)"
+GUEST_EXAMPLE_SUM="$(os_exec sha256sum /etc/yiban/server.env.example 2>>"$E2E_STEP_LOG" | cut -d' ' -f1 || true)"
+[ -n "$HOST_EXAMPLE_SUM" ] && [ "$HOST_EXAMPLE_SUM" = "$GUEST_EXAMPLE_SUM" ] \
+    || e2e_die "安装的 server.env.example 与 deploy/baremetal/server.env.example 不一致"
+EXAMPLE_META="$(os_exec stat -c '%a:%U:%G' /etc/yiban/server.env.example 2>>"$E2E_STEP_LOG" || true)"
+[ "$EXAMPLE_META" = "644:root:root" ] || e2e_die "/etc/yiban/server.env.example 权限=$EXAMPLE_META（期望 644:root:root）"
+if os_exec test -e /etc/yiban/registry.json >>"$E2E_STEP_LOG" 2>&1; then
+    e2e_die "安装位不得有 registry.json：名册随二进制嵌入"
+fi
+e2e_ok "server.env 600 root:root；模板 644 root:root；二进制 755；photos 与 ui 属 yiban；无名册文件"
 
 # ---- B9 迁移版本与干净库 ---------------------------------------------------
 e2e_step "B9" "迁移版本与干净库"
@@ -466,7 +471,7 @@ EXPECTED_SCHEMA="$(e2e_expected_schema_version "$REPO")"
 if [ "$EXPECTED_SCHEMA" -le 0 ]; then
     e2e_die "server/migrations/postgres 里没有迁移文件"
 fi
-if ! os_exec bash -c 'set -a; . /etc/yiban/.env; set +a; /usr/local/bin/yiban-cli migrate' \
+if ! os_exec bash -c 'set -a; . /etc/yiban/server.env; set +a; /usr/local/bin/yiban-cli migrate' \
     >"$LOG_DIR/B9-migrate.log" 2>&1; then
     cat "$LOG_DIR/B9-migrate.log" >>"$E2E_STEP_LOG" 2>/dev/null || true
     e2e_die "已装 yiban-cli migrate 失败"

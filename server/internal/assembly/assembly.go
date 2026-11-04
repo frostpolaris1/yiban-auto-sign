@@ -769,10 +769,9 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 
 // buildSettings 装配通知订阅、公告、设置名册与审计只读列表。
 //
-// 名册文件缺失只让 GET /api/admin/settings 回 501 并留显性告警：
-// 订阅、公告与审计列表不依赖名册。
-// 名册存在但损坏（解析失败、键重复、空名册）时**失败关闭**：
-// 带病的名册会把错误的信息展示成配置事实。
+// 名册随二进制嵌入（internal/configdata），不存在“文件缺失”的降级路径：
+// 嵌入名册损坏是构建缺陷，一律失败关闭。带病的名册会把错误的信息
+// 展示成配置事实。
 func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 	logger *slog.Logger, mailer coremail.Sender, cooldown appsettings.Cooldown) (*settingshttp.Handler, *audithttp.Handler, error) {
 	notifySvc, err := appnotify.NewService(pg.NewNotificationPrefsRepo(db))
@@ -796,27 +795,27 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 		return nil, nil, fmt.Errorf("assembly: audit reader: %w", err)
 	}
 
-	var roster *appsettings.Roster
-	entries, err := config.LoadRegistry("")
-	switch {
-	case errors.Is(err, config.ErrRegistryNotFound):
-		logger.Warn("settings: configuration registry not found; GET /api/admin/settings returns 501",
-			logfield.KeyError, err.Error())
-	case err != nil:
-		return nil, nil, fmt.Errorf("assembly: load configuration registry: %w", err)
-	default:
-		roster, err = appsettings.NewRoster(rosterEntries(entries), config.Env{})
-		if err != nil {
-			return nil, nil, fmt.Errorf("assembly: configuration roster: %w", err)
-		}
+	entries, err := config.Registry()
+	if err != nil {
+		return nil, nil, fmt.Errorf("assembly: configuration registry: %w", err)
+	}
+	roster, err := appsettings.NewRoster(rosterEntries(entries), config.Env{})
+	if err != nil {
+		return nil, nil, fmt.Errorf("assembly: configuration roster: %w", err)
 	}
 	return settingshttp.NewHandler(notifySvc, roster, announcementSvc, announcementSvc), audithttp.NewHandler(reader), nil
 }
 
 // rosterEntries 把适配器的名册条目转成用例视图。
+// 只放行 scope=server：设置页展示的是服务进程的配置面；
+// scope=cli 的键（backup 口令、迁移旧钥、bench DSN）不属于它，
+// 列出来等于把运维工具的密钥位暴露给管理员界面。
 func rosterEntries(entries []config.RegistryEntry) []appsettings.Entry {
 	out := make([]appsettings.Entry, 0, len(entries))
 	for _, entry := range entries {
+		if entry.Scope != config.ScopeServer {
+			continue
+		}
 		out = append(out, appsettings.Entry{
 			Key:        entry.Key,
 			Group:      entry.Group,

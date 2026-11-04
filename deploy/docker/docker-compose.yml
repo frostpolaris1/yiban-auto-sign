@@ -1,19 +1,24 @@
 # deploy/docker/docker-compose.yml — Go 服务端＋React 前端的单机编排。
 #
-# 一步装成（在仓库根，先 export 三个必需变量）：
-#   export YIBAN_HASH_PEPPER=$(openssl rand -hex 32)
-#   export YIBAN_CREDENTIAL_KEY=$(openssl rand -base64 32)
-#   export YIBAN_PG_PASSWORD=$(openssl rand -hex 16)
-#   docker compose -f deploy/docker/docker-compose.yml up -d
+# 一步装成（在仓库根）：
+#   cp deploy/container/compose.env.example deploy/container/compose.env
+#   chmod 600 deploy/container/compose.env
+#   # 填 POSTGRES_PASSWORD / YIBAN_HASH_PEPPER / YIBAN_CREDENTIAL_KEY
+#   docker compose --env-file deploy/container/compose.env \
+#     -f deploy/docker/docker-compose.yml up -d --build
 #   curl http://127.0.0.1:8080/healthz   # 期望 {"status":"ok"}
 #   curl http://127.0.0.1:8080/          # 期望前端首页 HTML
 #
+# 运行配置只来自 deploy/container/compose.env（0600 宿主）：本文件用
+# env_file 注入 app，并用 --env-file 供 db 的服务口令插值。
+# 不读取仓库根 .env：Compose 的隐式 .env 自动加载被显式 --env-file 取代，
+# 旧 Python 栈的 .env 因此不可能泄漏进 Go 容器。
+# 缺失 POSTGRES_PASSWORD 即拒绝启动（:? 语法），不静默用缺省口令上生产。
+#
 # 页面由 app 镜像内的 Go 进程托管（YIBAN_UI_DIR=/srv/ui），没有第二个代理。
-# 密钥只从部署环境注入，不写进本文件。三个变量缺失即拒绝启动（:? 语法），
-# 不静默用缺省密钥上生产。TLS 终结应放在容器外的反向代理：
-# production 拒绝不安全 cookie，明文 HTTP 下登录不可用是预期行为。
-# 外部 TLS 终结时，外层代理传 X-Forwarded-Proto；
-# 本文件默认信任 Docker 网桥网关与回环，宿主反代即可生效。
+# TLS 终结应放在容器外的反向代理：production 拒绝不安全 cookie，
+# 明文 HTTP 下登录不可用是预期行为。外部 TLS 终结时，外层代理传
+# X-Forwarded-Proto；compose.env 默认信任 Docker 网桥网关与回环。
 
 services:
   db:
@@ -21,7 +26,7 @@ services:
     environment:
       POSTGRES_DB: yiban
       POSTGRES_USER: yiban
-      POSTGRES_PASSWORD: ${YIBAN_PG_PASSWORD:?set YIBAN_PG_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/container/compose.env}
     # postgres:18 镜像改用 pg_ctlcluster 兼容布局：
     # 数据落在 /var/lib/postgresql/<主版本>/ 子目录，卷挂 /var/lib/postgresql。
     volumes:
@@ -38,24 +43,27 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
       # 受限网络覆盖点：不设即用官方源。
-      # 这两个是构建参数，不是运行配置：不进 config/registry.json。
+      # 这两个是构建参数，不是运行配置：不进 Go 配置名册。
       args:
         GOPROXY: ${BUILD_GOPROXY:-}
         NPM_CONFIG_REGISTRY: ${BUILD_NPM_REGISTRY:-}
     image: yiban-server:local
+    # 运行配置全部来自这一份 0600 宿主文件（模板：compose.env.example）。
+    # 缺省路径相对本文件：deploy/container/compose.env。
+    # YIBAN_COMPOSE_ENV_FILE 只给 e2e 换到隔离目录用，生产不必设置。
+    env_file:
+      - ${YIBAN_COMPOSE_ENV_FILE:-../container/compose.env}
     environment:
-      YIBAN_ENV: production
-      YIBAN_DATABASE_URL: postgres://yiban:${YIBAN_PG_PASSWORD}@db:5432/yiban?sslmode=disable
-      YIBAN_HASH_PEPPER: ${YIBAN_HASH_PEPPER:?set YIBAN_HASH_PEPPER}
-      YIBAN_CREDENTIAL_KEY: ${YIBAN_CREDENTIAL_KEY:?set YIBAN_CREDENTIAL_KEY}
-      YIBAN_HTTP_ADDR: 0.0.0.0:8080
-      YIBAN_TZ: Asia/Shanghai
-      YIBAN_PHOTO_DIR: /data/photos
-      # TLS 在外部终结时，外层代理必须传 X-Forwarded-Proto。
-      # Docker 发布端口经网桥网关转发：容器看到的来源是网关，不是 127.0.0.1
-      # （2026-11-01 实测：127.0.0.1:8080 发布 → 容器内 RemoteAddr=172.18.0.1）。
-      # 默认信任 Docker 默认网桥池与回环，让宿主反代立即生效；
-      # 外层代理若在别的地址，用同名变量覆盖。
+      # DSN 由数据库口令派生：口令只保留一处来源（compose.env 的
+      # POSTGRES_PASSWORD），不在 env_file 里再抄一遍。
+      YIBAN_DATABASE_URL: postgres://yiban:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/container/compose.env}@db:5432/yiban?sslmode=disable
+      # 可信代理表走插值透传而不是只靠 env_file：`export YIBAN_TRUSTED_PROXIES=…`
+      # 的覆盖（deploy/README §5）必须继续生效。取值优先级：
+      # shell 环境 > --env-file（compose.env）> 下面的缺省；
+      # environment 恒覆盖 env_file，故 compose.env 与这里写同一个缺省值。
+      # TLS 在外部终结时，外层代理必须传 X-Forwarded-Proto。Docker 发布端口
+      # 经网桥网关转发：容器看到的来源是网关（172.16.0.0/12 的网关地址），
+      # 不是 127.0.0.1（2026-11-01 实测）。
       YIBAN_TRUSTED_PROXIES: "${YIBAN_TRUSTED_PROXIES:-172.16.0.0/12,127.0.0.1}"
     volumes:
       - photos:/data/photos

@@ -66,7 +66,7 @@ func TestUpdateShRollsBackOnFailedHealth(t *testing.T) {
 	if err := os.WriteFile(running, []byte("#!/bin/sh\n"+oldBody), 0o644); err != nil {
 		t.Fatalf("seed running: %v", err)
 	}
-	// 已装页面与 .env：健康回滚必须连页面一起换回。
+	// 已装页面与 server.env：健康回滚必须连页面一起换回。
 	oldUIDir := filepath.Join(root, "var/lib/yiban/ui")
 	if err := os.MkdirAll(oldUIDir, 0o755); err != nil {
 		t.Fatalf("mkdir old ui: %v", err)
@@ -77,7 +77,7 @@ func TestUpdateShRollsBackOnFailedHealth(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "etc/yiban"), 0o755); err != nil {
 		t.Fatalf("mkdir etc: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "etc/yiban/.env"),
+	if err := os.WriteFile(filepath.Join(root, "etc/yiban/server.env"),
 		[]byte("YIBAN_UI_DIR=/var/lib/yiban/ui\n"), 0o600); err != nil {
 		t.Fatalf("write env: %v", err)
 	}

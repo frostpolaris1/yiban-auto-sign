@@ -48,7 +48,7 @@ AST 里键名是 `ast.Constant`、缺省值是另一处 `ast.Constant`，"同行
     scripts/check-config-registry.py [--root DIR] [--registry FILE] [--scan 路径 ...]
                                      [--min-keys N]
 默认 `--root` = 本脚本所在仓库根；`--registry` = `<root>/config/registry.json`；
-`--scan` 缺省扫生产树（见 `DEFAULT_SCAN`）。
+`--scan` 缺省扫**旧 Python 线**生产树（见 `DEFAULT_SCAN`；新栈生产面在 BENIGN_TOP_DIRS）。
 
 **退出码**
     0  三条判据全过
@@ -77,15 +77,13 @@ if _REPO_ROOT not in sys.path:
 from yiban.adapters.config import loader as CL  # noqa: E402  （引导块必须在 import 之前）
 
 #: 本门不扫自己：判据文本里必然出现键名形状的示例。
-SELF = os.path.join("scripts", "check-config-registry.py")
-#: 缺省扫描面（生产树；`tests/` 不在内——测试夹具设的是既有键的夹具值，改不了生产行为）。
+SELF = "scripts/check-config-registry.py"      # POSIX 相对路径：_scan_files 产出的是 POSIX 形
+#: 缺省扫描面（**旧 Python 线**的生产树；`tests/` 不在内——测试夹具设的是既有键的
+#: 夹具值，改不了生产行为）。
 DEFAULT_SCAN = ("yiban", "web", "scripts", "docker", "deploy", "frontend",
-                "run.sh", "run_probe.sh", "docker-compose.yml",
-                # 实验线生产面（P0 起）：Go 后端与 React 前端同属生产代码，
-                # 其中的配置键字面量同样受本门判红（B1 目标树契约）。
-                "server", "ui")
-#: 被扫的文件扩展名。`.go` 是实验线生产面（B1 目标树契约）：Go 后端的
-#: 配置键字面量同样受本门判红。漏了它扫描面就是假的（2026-10-25 审查 P1-3）。
+                "run.sh", "run_probe.sh", "docker-compose.yml")
+#: 被扫的文件扩展名。`.go` 保留：旧线树里出现 .go（如新线文件误放旧线目录）时
+#: 同样受本门判红（2026-10-25 审查的覆盖口径不收窄）。
 SCAN_EXTS = (".py", ".sh", ".js", ".mjs", ".ts", ".vue", ".yml", ".yaml",
              ".html", ".conf", ".service", ".toml", ".example", ".go")
 SKIP_DIRS = {"__pycache__", ".venv", ".pytest_cache", ".ruff_cache", ".git",
@@ -97,18 +95,39 @@ TOKEN_QUOTED = re.compile(
     r"""["'](YIBAN_[A-Z0-9_]+)["']"""          # 引号字面量
     r"""|\$\{?(YIBAN_[A-Z0-9_]+)""")           # bash 展开 `${YIBAN_X…` / `$YIBAN_X`
 TOKEN_KEYLINE = re.compile(r"(?:^|[\s\-\[])(YIBAN_[A-Z0-9_]+)\s*[=:]")
+#: 新栈（Go 线）的部署/升级脚本前缀：在 `deploy`/`scripts` 两个扫描条目**内部**
+#: 整目录跳过（`_scan_files`）。它们不属于旧 Python 生产面——新栈的键面由
+#: `server/internal/adapters/config/registry_parity_test.go` 的双向门与三份
+#: `*.env.example` 键面门自守（其名册是 `server/internal/configdata/registry.json`，
+#: 与旧名册互不引用）；放进本门的扫描面只会拿旧名册去判新栈的新键（如
+#: `YIBAN_ALLOW_NO_DB`），方向就是错的。`deploy/prod`（旧线生产安装器）与
+#: `scripts/` 其余旧线运维脚本仍在本门扫描面内。
+SKIP_PREFIXES = ("deploy/baremetal/", "deploy/container/", "deploy/docker/",
+                 "deploy/linux/", "scripts/e2e/")
 #: 被扫文件里必须出现的最小文件数（防"扫描面塌了 ⇒ 零命中 ⇒ 全绿"）。
-#: 2026-10-27 实测（WSL、含 server/ui 的实验线树）：本分支 635 个文件、
-#: P7 分支 667；origin/develop 只有 388 个被扫文件，且脚本在它上面先被
-#: 扫描面守卫拒绝。旧值 100 允许删掉八成扫描面仍报绿，取 600 留余量。
-DEFAULT_MIN_FILES = 600
+#: 2026-11-05 实测（新口径＝旧线生产面：server/ui 进 BENIGN_TOP_DIRS、新栈
+#: 部署/升级脚本进 SKIP_PREFIXES）：本分支 383 个被扫文件（门自报，已扣 SELF），
+#: origin/develop 同口径也是 383 个（`git ls-tree -r --name-only` 按同一套
+#: DEFAULT_SCAN/SCAN_EXTS/SKIP_PREFIXES 数出；含 SELF 时两树均为 384）。
+#: 旧值 600 是按含 server/ui 的 635/667 定的，扫描面收窄后必先拒绝运行。
+#: 新值取 350：实测下方留 ~33 个文件余量，仍远高于"删掉一半扫描面"（~190）的
+#: 塌陷形态；新栈面再扩大也不会抬高本门（它们已移出扫描面）。
+DEFAULT_MIN_FILES = 350
 #: 额外豁免的顶层目录。扫描面残缺守卫先按 **git 跟踪集**排除无被跟踪文件的目录
 #: （见 `_guard_scan_surface`），故被忽略/未入库的本地工具目录不必在此登记。
-#: 本表只收**被跟踪但不属生产面**的目录（如 docs/、tests/）——否则门禁会把它们的
-#: 键按生产面判红。新增被跟踪的顶层目录要么进 `DEFAULT_SCAN`、要么进本表并写明理由。
+#: 本表只收**被跟踪但不属本门生产面**的目录——否则门禁会把它们的键按旧线
+#: 生产面判红。新增被跟踪的顶层目录要么进 `DEFAULT_SCAN`、要么进本表并写明理由。
 BENIGN_TOP_DIRS = {
     ".git", ".github", ".pytest_cache", ".ruff_cache", ".venv", "__pycache__",
     "build", "docs", "node_modules", "out", "tests", "work",
+    # 新栈（Go 后端 + React 前端）生产面：server 的键面由
+    # server/internal/configdata/registry.json（go:embed）与
+    # registry_parity_test.go 的双向门自守；ui 只把既有键名
+    # （YIBAN_WORKERS / YIBAN_EGRESS_RATE）展示为操作提示，`.tsx` 从不在本门
+    # SCAN_EXTS 内，故没有对应的键面门——改这些键名时须人工同步界面文案。
+    # 旧名册（config/registry.json）只定义旧线键，拿它判新栈的新键
+    # （如 YIBAN_ALLOW_NO_DB）必假红。旧线退役后两套门一起删。
+    "server", "ui",
 }
 
 
@@ -261,7 +280,11 @@ def _guard_scan_surface(root, entries):
 
 
 def _scan_files(root, entries):
-    """扫描面下的被扫文件（相对路径，POSIX 分隔）。条目不存在 ⇒ 硬失败（拒判）。"""
+    """扫描面下的被扫文件（相对路径，POSIX 分隔）。条目不存在 ⇒ 硬失败（拒判）。
+
+    `SKIP_PREFIXES` 命中的文件**不算被扫文件**：它们不进 min-files 计数，也不进
+    判据——新栈部署/升级脚本拿旧名册判只会假红（理由见常量处的注释）。
+    """
     found = []
     for entry in entries:
         target = os.path.join(root, entry)
@@ -276,7 +299,10 @@ def _scan_files(root, entries):
             for name in fnames:
                 if name.endswith(SCAN_EXTS):
                     rel = os.path.relpath(os.path.join(cur, name), root)
-                    found.append(rel.replace(os.sep, "/"))
+                    rel = rel.replace(os.sep, "/")
+                    if rel.startswith(SKIP_PREFIXES):
+                        continue
+                    found.append(rel)
     return sorted(set(found))
 
 
@@ -408,7 +434,7 @@ def main(argv=None):
     ap.add_argument("--root", default=_REPO_ROOT)
     ap.add_argument("--registry", default=None)
     ap.add_argument("--scan", action="append", default=None,
-                    help="扫描面条目（可重复）；缺省扫生产树")
+                    help="扫描面条目（可重复）；缺省扫旧 Python 线生产树")
     # 2026-10-27 实测：本分支 163 键、P7 分支 169、origin/develop 158。
     # 旧值 50 允许删掉七成名册仍报绿；取 150 保留正常增删余量。
     ap.add_argument("--min-keys", type=int, default=150)

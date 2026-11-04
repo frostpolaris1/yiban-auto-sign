@@ -86,8 +86,8 @@ C7 的日志断言有独立守卫：`TestRunClosesPoolAfterWorkerDrain`
 | B6 | `install.sh --ui-dir` 退出 0，输出 `install complete: healthz ok` |
 | B7 | 单元 active + enabled；独立 `yiban-cli healthcheck` 通过 |
 | B7b | 容器内 `curl /` 与深链 `/accounts` 返回 200 且含 `<div id="root">`；未知 `/api/*` 是 JSON 404；`/assets/*.js` 带 `immutable` 长缓存 |
-| B7c | 带 `Origin: https://<loopback>` 与 `X-Forwarded-Proto: https` 的登录请求回 401，不得回 403（`.env` 的信任链生效） |
-| B8 | `.env` 600 root:root 且含 `YIBAN_UI_DIR=/var/lib/yiban/ui` 与 `YIBAN_TRUSTED_PROXIES=127.0.0.1`；二进制 755；photos 与 ui 属 yiban；名册逐字节一致；密钥形状正确 |
+| B7c | 带 `Origin: https://<loopback>` 与 `X-Forwarded-Proto: https` 的登录请求回 401，不得回 403（`server.env` 的信任链生效） |
+| B8 | `server.env` 600 root:root 且含 `YIBAN_UI_DIR=/var/lib/yiban/ui` 与 `YIBAN_TRUSTED_PROXIES=127.0.0.1`；`server.env.example` 644 root:root 且与仓库模板逐字节一致；二进制 755；photos 与 ui 属 yiban；无名册文件；密钥形状正确 |
 | B9 | 已装 `yiban-cli migrate` 打印最新版本；`users=0` |
 | B10 | `systemctl stop` 后 `ExecMainStatus=0`、`Result=success`；healthcheck 已失败 |
 | B11 | 容器/网络/卷清零 |
@@ -222,7 +222,7 @@ ROLLBACK_E2E_GOPROXY=https://goproxy.cn,direct \
 | R5（无 CREATEDB） | `ALTER ROLE yiban NOCREATEDB` 后跑 `update.sh`：rc=2；日志点名 `CREATEDB` 与 `--no-restore-db`；状态 `phase=preflight`；无备份；unit active；随后还原 CREATEDB |
 | R6（迁移失败） | `REVOKE CREATE ON SCHEMA public` 后跑 `update.sh --no-restore-db`：rc=1；日志含 `migrate FAILED` 与 `permission denied for schema public`；安装位仍是 v1；无 `.bak`/`.new`；unit active；healthz OK；schema 不前进；DSN 不变；状态 `db_restore=disabled` |
 | R7（健康失败+回库） | 跑含真迁移＋`main()` panic 的 v3：rc=1；日志含 `healthz failed after swap`、`db restore`、`rolled back`；DSN 切到 `yiban_restore_<ts>`；新库 schema＝升级前；原库保留且 schema 前进一档；恢复件 `users` 可读；安装位与 CLI 回到 v1；`.bak` 无残留；备份 `db.dump` 0600、目录 0700；unit active；healthz OK；状态 `db_restore=restored` |
-| R8（正常升级） | 在恢复后的新库上升级到 v4，并首次带 `--ui-dir` 装页面：rc=0；安装位＝v4；`.bak`＝v1；schema＋2；`e2e_rollback_probe` 表存在；状态 `success`/`exit_code=0`/`db_restore=not-needed`；新增一份备份；备份根 0700 属 root、本份 0700 root、`env.backup` 0600；页面与 `.env` 的 `YIBAN_UI_DIR` 各就位且只有一行；状态文件 0600；证据文件不含 DSN 口令；pg 客户端 argv 不含口令且都拿到 PGPASSFILE |
+| R8（正常升级） | 在恢复后的新库上升级到 v4，并首次带 `--ui-dir` 装页面：rc=0；安装位＝v4；`.bak`＝v1；schema＋2；`e2e_rollback_probe` 表存在；状态 `success`/`exit_code=0`/`db_restore=not-needed`；新增一份备份；备份根 0700 属 root、本份 0700 root、`env.backup` 0600；页面与 `server.env` 的 `YIBAN_UI_DIR` 各就位且只有一行；状态文件 0600；证据文件不含 DSN 口令；pg 客户端 argv 不含口令且都拿到 PGPASSFILE |
 | R9（健康失败 + UI 回滚） | 跑 v6（迁移集与 v4 相同 → migrate 空转）并带 `--ui-dir` 换页面：rc=1；日志含 `healthz failed after swap`/`rolled back`；安装位回到 v4；`ui.bak` 无残留、`index.html` 是旧页 `ui-one`；`YIBAN_UI_DIR` 只有一行且指回 `/var/lib/yiban/ui`；DSN 不变；状态 `db_restore=not-needed`/`exit_code=1`；unit active；healthz OK |
 | R8a（UI 预置软链） | 把 `/var/lib/yiban/ui` 换成指向受害目录的软链（受害目录含 0600 文件与 0700 子目录）后带 `--ui-dir` 升级：rc=0；安装位是真实目录、页面＝ui-three；受害目录的字节与权限全未变（cp/chmod 顺链的判据）；恢复原页面后 unit active、healthz OK |
 | R8b（install.sh 重跑） | 重装当前版本（v4）：rc=0 且 `install complete: healthz ok`；`/var/lib/yiban-updater`、`state`、`backups` 仍 0700 root（install.sh 只把 `photos`/`ui` 交给服务用户，并把更新器根钉回 root）；服务用户写不了更新器根；备份件仍属 root；`update.sh --selfcheck-only` 仍 rc=0 |
