@@ -1160,20 +1160,22 @@ do_backup() {
     if [ ! -d "$photo_dir" ]; then
         warn "photo dir does not exist: $photo_dir; photos snapshot SKIPPED"
     else
-        case "$photo_dir/" in
-            "$STATE_DIR"/*)
-                echo "update: backup FAILED — photo dir must not live inside the update state dir: $photo_dir" >&2
+        # 无条件 readlink -f：既解开目录本身的软链（含 `YIBAN_PHOTO_DIR/`
+        # 尾斜杠形态），也归一化 `..` 与重复斜杠——后面的判据都看解析结果。
+        photo_src="$(readlink -f -- "$photo_dir" 2>/dev/null || true)"
+        if [ -z "$photo_src" ] || [ ! -d "$photo_src" ]; then
+            echo "update: backup FAILED — cannot resolve the photo dir: $photo_dir" >&2
+            return 1
+        fi
+        # 解析目标必须是一棵「照片树」，不能是系统目录或更新器自己的目录：
+        # 否则 root 会把 /etc、/root、状态/备份根里的 root-only 文件 tar 进备份，
+        # 而备份里的 0600 挡不住 tar -xOf（复审 M2）。
+        case "$photo_src" in
+            /|"$UPDATER_ROOT"|"$UPDATER_ROOT"/*|"$STATE_DIR"|"$STATE_DIR"/*|"$BACKUP_ROOT"|"$BACKUP_ROOT"/*|/etc|/etc/*|/root|/root/*|/usr|/usr/*|/boot|/boot/*|/dev|/dev/*|/proc|/proc/*|/sys|/sys/*|/run|/run/*|/var/log|/var/log/*|/var/lib/yiban-updater|/var/lib/yiban-updater/*)
+                echo "update: backup FAILED — photo dir resolves to a system/updater directory: $photo_dir -> $photo_src" >&2
                 return 1
                 ;;
         esac
-        photo_src="$photo_dir"
-        if [ -L "$photo_src" ]; then
-            photo_src="$(readlink -f -- "$photo_src" 2>/dev/null || true)"
-            if [ -z "$photo_src" ] || [ ! -d "$photo_src" ]; then
-                echo "update: backup FAILED — cannot resolve the photo dir symlink: $photo_dir" >&2
-                return 1
-            fi
-        fi
         if ! ( umask 077; tar -C "$(dirname -- "$photo_src")" \
                 -cf "$BACKUP_SET/photos.tar" -- "$(basename -- "$photo_src")" ); then
             echo "update: backup FAILED — tar of photo dir failed: $photo_dir" >&2

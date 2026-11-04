@@ -203,9 +203,17 @@ if [ -n "$UI_DIR" ]; then
     if ! mv -T "$UI_STAGE" "$UI_TARGET"; then
         rm -rf -- "$UI_STAGE"
         if [ "$UI_OLD_MOVED" -eq 1 ]; then
-            mv -T "$UI_BAK" "$UI_TARGET" 2>/dev/null || true
+            # 目标可能被非空目录占住（ENOTEMPTY）：先清再换回，别让 restore
+            # 静默失败（复审 M3）。换回失败必须点名 manual action。
+            rm -rf -- "$UI_TARGET" 2>/dev/null || true
+            if mv -T "$UI_BAK" "$UI_TARGET"; then
+                echo "install: cannot activate the new ui; restored the previous directory" >&2
+            else
+                echo "install: MANUAL ACTION — cannot activate the new ui and restoring failed; the previous page is at $UI_BAK (mv -T $UI_BAK $UI_TARGET)" >&2
+            fi
+        else
+            echo "install: cannot activate the ui at $UI_TARGET (no previous page to restore)" >&2
         fi
-        echo "install: cannot activate the ui at $UI_TARGET" >&2
         exit 1
     fi
     # 幂等写键：删旧行再追加，不重排 .env 的其余行。

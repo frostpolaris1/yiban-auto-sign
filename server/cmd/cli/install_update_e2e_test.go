@@ -1507,3 +1507,99 @@ func TestInstallShRerunWithSameUIDir(t *testing.T) {
 		t.Fatalf("YIBAN_UI_DIR 必须恰好一行，got %d", got)
 	}
 }
+
+// TestInstallShUIActivationFailureRestoresBackup 钉复审 M3：
+// 换入新页面失败时旧页面必须从 .bak 换回；换回过程不能静默吞错。
+// 用 mv 桩拒绝「暂存目录 → 目标」这一步（模拟 ENOTEMPTY/跨设备失败）。
+func TestInstallShUIActivationFailureRestoresBackup(t *testing.T) {
+	requireBash(t)
+	realMv, err := exec.LookPath("mv")
+	if err != nil {
+		t.Skipf("SKIP: 找不到 mv：%v", err)
+	}
+	root := t.TempDir()
+	binDir := t.TempDir()
+	serverBin := fakeBin(t, binDir, "yiban-server", "exit 0\n")
+	cliBin := fakeBin(t, binDir, "yiban-cli", "exit 0\n")
+	uiOld := writeUIDistDir(t, "ui-old")
+	uiNew := writeUIDistDir(t, "ui-new")
+	basePath := binDir + string(os.PathListSeparator) + os.Getenv("PATH")
+	env := map[string]string{
+		"YIBAN_INSTALL_ROOT":          root,
+		"SYSTEMCTL":                   fakeBin(t, binDir, "systemctl", "exit 0\n"),
+		"YIBAN_DATABASE_URL":          "postgres://yiban:pw@127.0.0.1:5432/yiban?sslmode=disable",
+		"YIBAN_HEALTH_RETRIES":        "1",
+		"YIBAN_HEALTH_RETRY_INTERVAL": "0",
+		"PATH":                        basePath,
+	}
+	target := filepath.Join(root, "var/lib/yiban/ui")
+	if out, rc := runScript(t, scriptPath(t, "install.sh"), env,
+		"--server-bin", serverBin, "--cli-bin", cliBin, "--ui-dir", uiOld); rc != 0 {
+		t.Fatalf("首次安装 rc=%d out=%s", rc, out)
+	}
+
+	// 第二次：mv 桩拒绝对 ui.XXXXXX 的换入。
+	stubDir := t.TempDir()
+	fakeBin(t, stubDir, "mv", `for a in "$@"; do
+  case "$a" in */ui.??????) echo "mv: injected failure" >&2; exit 1 ;; esac
+done
+exec `+realMv+` "$@"
+`)
+	env["PATH"] = stubDir + string(os.PathListSeparator) + basePath
+	out, rc := runScript(t, scriptPath(t, "install.sh"), env,
+		"--server-bin", serverBin, "--cli-bin", cliBin, "--ui-dir", uiNew)
+	if rc != 1 {
+		t.Fatalf("换入失败应 rc=1：rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "restored the previous directory") {
+		t.Fatalf("必须显性说明已换回旧页面：%s", out)
+	}
+	if body := readAll(t, filepath.Join(target, "index.html")); !strings.Contains(body, "ui-old") {
+		t.Fatalf("换回后页面应是旧件：\n%s", body)
+	}
+	if _, err := os.Stat(target + ".bak"); err == nil {
+		t.Fatalf("换回后不应残留 ui.bak")
+	}
+}
+
+// TestInstallShUIBakRotation 钉复审 M4：连续三次 --ui-dir 运行时，
+// ui.bak 必须始终是「上一份」页面（不是更早的、也不是空的）。
+func TestInstallShUIBakRotation(t *testing.T) {
+	requireBash(t)
+	root := t.TempDir()
+	binDir := t.TempDir()
+	serverBin := fakeBin(t, binDir, "yiban-server", "exit 0\n")
+	cliBin := fakeBin(t, binDir, "yiban-cli", "exit 0\n")
+	env := map[string]string{
+		"YIBAN_INSTALL_ROOT":          root,
+		"SYSTEMCTL":                   fakeBin(t, binDir, "systemctl", "exit 0\n"),
+		"YIBAN_DATABASE_URL":          "postgres://yiban:pw@127.0.0.1:5432/yiban?sslmode=disable",
+		"YIBAN_HEALTH_RETRIES":        "1",
+		"YIBAN_HEALTH_RETRY_INTERVAL": "0",
+		"PATH":                        binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}
+	target := filepath.Join(root, "var/lib/yiban/ui")
+	markers := []string{"ui-a", "ui-b", "ui-c"}
+	previous := ""
+	for i, marker := range markers {
+		ui := writeUIDistDir(t, marker)
+		out, rc := runScript(t, scriptPath(t, "install.sh"), env,
+			"--server-bin", serverBin, "--cli-bin", cliBin, "--ui-dir", ui)
+		if rc != 0 {
+			t.Fatalf("第 %d 次 install.sh rc=%d out=%s", i+1, rc, out)
+		}
+		if body := readAll(t, filepath.Join(target, "index.html")); !strings.Contains(body, marker) {
+			t.Fatalf("第 %d 次后页面应是 %s：\n%s", i+1, marker, body)
+		}
+		if previous != "" {
+			bak := readAll(t, filepath.Join(target+".bak", "index.html"))
+			if !strings.Contains(bak, previous) {
+				t.Fatalf("第 %d 次后 ui.bak 应是上一份 %s：\n%s", i+1, previous, bak)
+			}
+			if strings.Contains(bak, marker) {
+				t.Fatalf("第 %d 次后 ui.bak 不该是本轮的新件：\n%s", i+1, bak)
+			}
+		}
+		previous = marker
+	}
+}

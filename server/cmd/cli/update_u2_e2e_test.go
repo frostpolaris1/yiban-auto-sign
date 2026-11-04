@@ -1086,3 +1086,83 @@ func TestUpdateShPhotosTarDoesNotFollowSymlinks(t *testing.T) {
 		t.Fatalf("photos.tar 缺真实照片：%q", string(photoBody))
 	}
 }
+
+// TestUpdateShPhotosSymlinkWithTrailingSlash 钉复审 M1（尾斜杠回归）：
+// YIBAN_PHOTO_DIR 带尾斜杠时 [ -L ] 为假，之前不会解析软链，photos.tar
+// 只剩链接本身（照片静默缺失）。现在无条件 readlink -f。
+func TestUpdateShPhotosSymlinkWithTrailingSlash(t *testing.T) {
+	requireBash(t)
+	f := newU2Fixture(t)
+	store := filepath.Join(f.root, "photo-store")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatalf("mkdir store: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(store, "a.jpg"), []byte("PHOTO"), 0o600); err != nil {
+		t.Fatalf("write photo: %v", err)
+	}
+	link := filepath.Join(f.root, "var/lib/yiban/photos")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatalf("mkdir photos parent: %v", err)
+	}
+	if err := os.Symlink(store, link); err != nil {
+		t.Skipf("SKIP: 本平台不支持符号链接：%v", err)
+	}
+	// 尾斜杠形态：旧实现 [ -L "$dir" ] 为假，软链不解析。
+	f.env["YIBAN_PHOTO_DIR"] = link + "/"
+	newBin := fakeBin(t, f.binDir, "yiban-server-new", "echo NEW\n")
+	out, rc := runScript(t, scriptPath(t, "update.sh"), f.env,
+		"--server-bin", newBin, "--allow-unsigned")
+	if rc != 0 {
+		t.Fatalf("update rc=%d out=%s", rc, out)
+	}
+	dirs := f.backupDirs(t)
+	if len(dirs) != 1 {
+		t.Fatalf("应只有一份备份，got %v", dirs)
+	}
+	tarPath := filepath.Join(dirs[0], "photos.tar")
+	body, err := exec.Command("tar", "-xOf", tarPath, "photo-store/a.jpg").Output()
+	if err != nil {
+		t.Fatalf("photos.tar 里没有真实照片（尾斜杠软链未解析？）：%v", err)
+	}
+	if !strings.Contains(string(body), "PHOTO") {
+		t.Fatalf("photos.tar 内容不对：%q", string(body))
+	}
+}
+
+// TestUpdateShRejectsPhotoDirResolvingToSensitiveTargets 钉复审 M2：
+// 照片目录解析后如果是状态/备份根或系统目录，root 会把 root-only 文件
+// tar 进备份（0600 挡不住 tar -xOf）。必须在备份前置失败。
+func TestUpdateShRejectsPhotoDirResolvingToSensitiveTargets(t *testing.T) {
+	requireBash(t)
+	f := newU2Fixture(t)
+	link := filepath.Join(f.root, "var/lib/yiban/photos")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatalf("mkdir photos parent: %v", err)
+	}
+	stateDir := filepath.Join(f.root, "var/lib/yiban-updater/state")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatalf("mkdir state: %v", err)
+	}
+	newBin := fakeBin(t, f.binDir, "yiban-server-new", "echo NEW\n")
+
+	for _, target := range []string{stateDir, "/etc"} {
+		if err := os.Remove(link); err != nil && !os.IsNotExist(err) {
+			t.Fatalf("remove link: %v", err)
+		}
+		if err := os.Symlink(target, link); err != nil {
+			t.Skipf("SKIP: 本平台不支持符号链接：%v", err)
+		}
+		f.env["YIBAN_PHOTO_DIR"] = link
+		out, rc := runScript(t, scriptPath(t, "update.sh"), f.env,
+			"--server-bin", newBin, "--allow-unsigned")
+		if rc != 2 {
+			t.Fatalf("照片目录指向 %s 应 exit 2：rc=%d out=%s", target, rc, out)
+		}
+		if !strings.Contains(out, "photo dir resolves to a system/updater directory") {
+			t.Fatalf("必须点名解析目标：%s", out)
+		}
+		if n := len(f.backupDirs(t)); n != 0 {
+			t.Fatalf("失败轮不得留下备份目录，got %d", n)
+		}
+	}
+}
