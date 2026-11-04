@@ -14,6 +14,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/fsperm"
 )
 
 // 检查项名。U2 按键名判门，改名即接口变更。
@@ -97,13 +99,13 @@ func checkConfigHTTPAddr(opts Options) Check {
 	return pass(nameConfigHTTPAddr, "值 "+opts.HTTPAddr)
 }
 
-// checkConfigUIDir 检查前端目录存在、可读且含 index.html。
+// checkConfigUIDir 检查前端目录存在、含 index.html，且服务用户可读。
 // 未配置是合法形态（仅 API 部署），按 SKIP 显性说明。
-func checkConfigUIDir(fsys FileSystem, opts Options) Check {
+func checkConfigUIDir(deps Deps, opts Options) Check {
 	if opts.UIDir == "" {
 		return skip(nameConfigUIDir, "未配置 YIBAN_UI_DIR（仅 API 部署）")
 	}
-	info, err := fsys.Stat(opts.UIDir)
+	info, err := deps.FS.Stat(opts.UIDir)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		return fail(nameConfigUIDir, "目录不存在："+opts.UIDir,
@@ -115,27 +117,41 @@ func checkConfigUIDir(fsys FileSystem, opts Options) Check {
 		return fail(nameConfigUIDir, "不是目录："+opts.UIDir,
 			"YIBAN_UI_DIR 必须指向前端构建产物目录")
 	}
-	entries, err := fsys.ReadDir(opts.UIDir)
+	entries, err := deps.FS.ReadDir(opts.UIDir)
 	if err != nil {
 		return fail(nameConfigUIDir, "目录不可读 "+opts.UIDir+"："+err.Error(),
 			"检查目录权限（页面目录应对服务用户可读）")
 	}
+	hasIndex := false
 	for _, entry := range entries {
 		if entry.Name() == "index.html" && !entry.IsDir() {
-			return pass(nameConfigUIDir, "可读，含 index.html："+opts.UIDir)
+			hasIndex = true
+			break
 		}
 	}
-	return fail(nameConfigUIDir, "缺 index.html："+opts.UIDir,
-		"重新构建前端并把 dist 目录作为 --ui-dir 安装")
+	if !hasIndex {
+		return fail(nameConfigUIDir, "缺 index.html："+opts.UIDir,
+			"重新构建前端并把 dist 目录作为 --ui-dir 安装")
+	}
+	verdict := judgeDirAccess(deps, opts, opts.UIDir, fsperm.Read|fsperm.Execute, "读")
+	if verdict.skip != "" {
+		return skip(nameConfigUIDir, "目录含 index.html；"+verdict.skip)
+	}
+	if !verdict.allowed {
+		return fail(nameConfigUIDir, verdict.detail+"；目录含 index.html",
+			"chown -R "+opts.ServiceUser+":"+opts.ServiceUser+" "+opts.UIDir+"（页面目录应对服务用户可读）")
+	}
+	return pass(nameConfigUIDir, "含 index.html；"+verdict.detail)
 }
 
-// checkConfigPhotoDir 检查照片目录已配置且可读。目录不存在留待首次启动创建。
-func checkConfigPhotoDir(fsys FileSystem, opts Options) Check {
+// checkConfigPhotoDir 检查照片目录已配置、存在且服务用户可读。
+// 目录不存在留待首次启动创建；可判定性按服务用户，不按调用者（可能是 root）。
+func checkConfigPhotoDir(deps Deps, opts Options) Check {
 	if opts.PhotoDir == "" {
 		return fail(nameConfigPhotoDir, "YIBAN_PHOTO_DIR 为空",
 			"设置 YIBAN_PHOTO_DIR=/var/lib/yiban/photos")
 	}
-	info, err := fsys.Stat(opts.PhotoDir)
+	info, err := deps.FS.Stat(opts.PhotoDir)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		return skip(nameConfigPhotoDir,
@@ -147,11 +163,15 @@ func checkConfigPhotoDir(fsys FileSystem, opts Options) Check {
 		return fail(nameConfigPhotoDir, "不是目录："+opts.PhotoDir,
 			"YIBAN_PHOTO_DIR 必须是目录")
 	}
-	if err := fsys.ProbeReadable(opts.PhotoDir); err != nil {
-		return fail(nameConfigPhotoDir, "目录不可读 "+opts.PhotoDir+"："+err.Error(),
-			"chown -R yiban:yiban "+opts.PhotoDir)
+	verdict := judgeDirAccess(deps, opts, opts.PhotoDir, fsperm.Read|fsperm.Execute, "读")
+	if verdict.skip != "" {
+		return skip(nameConfigPhotoDir, verdict.skip)
 	}
-	return pass(nameConfigPhotoDir, "存在且可读："+opts.PhotoDir)
+	if !verdict.allowed {
+		return fail(nameConfigPhotoDir, verdict.detail,
+			"chown -R "+opts.ServiceUser+":"+opts.ServiceUser+" "+opts.PhotoDir)
+	}
+	return pass(nameConfigPhotoDir, verdict.detail)
 }
 
 // checkDatabase 是数据库面四行：连接、当前版本、嵌入版本、待执行迁移。
@@ -245,10 +265,16 @@ func checkDatabase(ctx context.Context, deps Deps, opts Options) []Check {
 }
 
 // checkTools 逐个探测更新链路的外部命令。
+// 容器（distroless）内没有这些工具：SKIP 并指向宿主，不装绿也不误报。
 func checkTools(deps Deps) []Check {
 	rows := make([]Check, 0, len(requiredTools))
 	for _, t := range requiredTools {
 		name := "tools." + t.name
+		if deps.Containerized {
+			rows = append(rows, skip(name,
+				"容器路径请在宿主运行 selfcheck（distroless 无 "+t.name+" 等工具）"))
+			continue
+		}
 		if deps.LookPath == nil {
 			rows = append(rows, skip(name, "PATH 探测未注入"))
 			continue
@@ -263,13 +289,13 @@ func checkTools(deps Deps) []Check {
 	return rows
 }
 
-// checkFSPhotoDir 检查照片目录可写（只在目录存在时检查）。
-func checkFSPhotoDir(fsys FileSystem, opts Options) Check {
+// checkFSPhotoDir 检查照片目录对服务用户可写（只在目录存在时检查）。
+func checkFSPhotoDir(deps Deps, opts Options) Check {
 	if opts.PhotoDir == "" {
 		return fail(nameFSPhotoDir, "YIBAN_PHOTO_DIR 为空",
 			"设置 YIBAN_PHOTO_DIR=/var/lib/yiban/photos")
 	}
-	info, err := fsys.Stat(opts.PhotoDir)
+	info, err := deps.FS.Stat(opts.PhotoDir)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		return skip(nameFSPhotoDir, "目录不存在，跳过写检查："+opts.PhotoDir)
@@ -280,59 +306,75 @@ func checkFSPhotoDir(fsys FileSystem, opts Options) Check {
 		return fail(nameFSPhotoDir, "不是目录："+opts.PhotoDir,
 			"YIBAN_PHOTO_DIR 必须是目录")
 	}
-	if err := fsys.ProbeWritable(opts.PhotoDir); err != nil {
-		return fail(nameFSPhotoDir, "目录不可写 "+opts.PhotoDir+"："+err.Error(),
-			"chown -R yiban:yiban "+opts.PhotoDir)
+	verdict := judgeDirAccess(deps, opts, opts.PhotoDir, fsperm.Write|fsperm.Execute, "写")
+	if verdict.skip != "" {
+		return skip(nameFSPhotoDir, verdict.skip)
 	}
-	return pass(nameFSPhotoDir, "可写："+opts.PhotoDir)
+	if !verdict.allowed {
+		return fail(nameFSPhotoDir, verdict.detail,
+			"chown -R "+opts.ServiceUser+":"+opts.ServiceUser+" "+opts.PhotoDir)
+	}
+	return pass(nameFSPhotoDir, verdict.detail)
 }
 
-// checkFSBackupDir 检查迁移前备份目录可写。
-// 目录不存在时看最近的已存在祖先：可写则 SKIP（U2 备份前创建），否则 FAIL。
-func checkFSBackupDir(fsys FileSystem, opts Options) Check {
+// checkFSBackupDir 检查迁移前备份目录对服务用户可写。
+// 容器内跳过：备份目录在宿主；裸机目录不存在时看最近的已存在祖先。
+func checkFSBackupDir(deps Deps, opts Options) Check {
+	if deps.Containerized {
+		return skip(nameFSBackupDir, "容器路径请在宿主运行 selfcheck（备份目录在宿主）")
+	}
 	dir := opts.BackupDir
 	if dir == "" {
 		return fail(nameFSBackupDir, "备份目录为空",
 			"用 --backup-dir 指定目录（缺省 "+DefaultBackupDir+"）")
 	}
-	info, err := fsys.Stat(dir)
+	info, err := deps.FS.Stat(dir)
 	if err == nil {
 		if !info.IsDir() {
 			return fail(nameFSBackupDir, "不是目录："+dir,
 				"换一个目录或删除同名文件")
 		}
-		if err := fsys.ProbeWritable(dir); err != nil {
-			return fail(nameFSBackupDir, "目录不可写 "+dir+"："+err.Error(),
-				"chmod 700 "+dir+" 或 chown 给运行更新的用户")
+		verdict := judgeDirAccess(deps, opts, dir, fsperm.Write|fsperm.Execute, "写")
+		if verdict.skip != "" {
+			return skip(nameFSBackupDir, verdict.skip)
 		}
-		return pass(nameFSBackupDir, "可写："+dir)
+		if !verdict.allowed {
+			return fail(nameFSBackupDir, verdict.detail,
+				"chown "+opts.ServiceUser+":"+opts.ServiceUser+" "+dir+" 或 chmod 700 "+dir)
+		}
+		return pass(nameFSBackupDir, verdict.detail)
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return fail(nameFSBackupDir, "无法读取目录 "+dir+"："+err.Error(),
 			"检查路径与进程权限")
 	}
-	return missingBackupDirRow(fsys, dir)
+	return missingBackupDirRow(deps, opts, dir)
 }
 
-// missingBackupDirRow 沿父目录上溯，找最近的可写祖先。
+// missingBackupDirRow 沿父目录上溯，按服务用户判最近祖先的可写性。
 // 找不到可写祖先即 FAIL：更新在停机后才发现备份不了，代价更大。
-func missingBackupDirRow(fsys FileSystem, dir string) Check {
+func missingBackupDirRow(deps Deps, opts Options, dir string) Check {
 	ancestor := parentDir(dir)
 	for {
-		info, err := fsys.Stat(ancestor)
+		info, err := deps.FS.Stat(ancestor)
 		switch {
 		case err == nil:
 			if !info.IsDir() {
 				return fail(nameFSBackupDir, "不存在，且最近路径 "+ancestor+" 不是目录",
 					"换一个备份目录")
 			}
-			if err := fsys.ProbeWritable(ancestor); err != nil {
+			verdict := judgeDirAccess(deps, opts, ancestor, fsperm.Write|fsperm.Execute, "写")
+			switch {
+			case verdict.skip != "":
+				return skip(nameFSBackupDir, verdict.skip+"（"+dir+" 不存在）")
+			case !verdict.allowed:
 				return fail(nameFSBackupDir,
-					"不存在，且最近的已存在目录 "+ancestor+" 不可写："+err.Error(),
-					"用 --backup-dir 指向可写目录，或先创建并 chown")
+					dir+" 不存在；最近的已存在目录 "+ancestor+" 上"+verdict.detail,
+					"用 --backup-dir 指向服务用户可写目录，或先创建并 chown")
+			default:
+				return skip(nameFSBackupDir,
+					"不存在；"+ancestor+" 对服务用户可写，U2 备份前会创建 "+dir)
 			}
-			return skip(nameFSBackupDir,
-				"不存在；"+ancestor+" 可写，U2 备份前会创建 "+dir)
 		case !errors.Is(err, os.ErrNotExist):
 			return fail(nameFSBackupDir, "无法读取 "+ancestor+"："+err.Error(),
 				"检查路径与进程权限")
@@ -344,6 +386,60 @@ func missingBackupDirRow(fsys FileSystem, dir string) Check {
 		}
 		ancestor = parent
 	}
+}
+
+// accessVerdict 是服务用户目录权限的判定结果。
+type accessVerdict struct {
+	allowed bool
+	detail  string
+	skip    string
+}
+
+// judgeDirAccess 按服务用户的 POSIX 属主/组/模式位判目录权限。
+// 不读目录、不建临时文件；判据与 doctor 共用 core/fsperm。
+func judgeDirAccess(deps Deps, opts Options, path string, want fsperm.Access, verb string) accessVerdict {
+	if deps.StatPermission == nil || deps.UserIdentity == nil {
+		return accessVerdict{skip: "权限探针未注入"}
+	}
+	owner, ok := deps.StatPermission(path)
+	if !ok {
+		return accessVerdict{skip: "本平台拿不到 POSIX 属主/权限位（Windows），无法按服务用户判权"}
+	}
+	if opts.ServiceUser == "" {
+		return accessVerdict{skip: "服务用户未知（用 --service-user 指定；systemctl show 取不到）"}
+	}
+	id, ok := deps.UserIdentity(opts.ServiceUser)
+	if !ok {
+		return accessVerdict{skip: "查不到服务用户 " + opts.ServiceUser + " 的身份"}
+	}
+	if !fsperm.Allowed(owner, id, want) {
+		return accessVerdict{detail: fmt.Sprintf("服务用户 %s 无%s权限（属主 %s、组 %s、权限 %04o）",
+			opts.ServiceUser, verb, ownerLabel(owner), groupLabel(owner), owner.Mode.Perm())}
+	}
+	return accessVerdict{allowed: true, detail: fmt.Sprintf("服务用户 %s 可%s（属主 %s、组 %s、权限 %04o）",
+		opts.ServiceUser, verb, ownerLabel(owner), groupLabel(owner), owner.Mode.Perm())}
+}
+
+// ownerLabel 优先名字，缺名字回退 uid。
+func ownerLabel(owner fsperm.Owner) string {
+	if owner.OwnerName != "" {
+		return owner.OwnerName
+	}
+	if owner.HasIDs {
+		return strconv.FormatUint(uint64(owner.UID), 10)
+	}
+	return "unknown"
+}
+
+// groupLabel 优先组名，缺名字回退 gid。
+func groupLabel(owner fsperm.Owner) string {
+	if owner.GroupName != "" {
+		return owner.GroupName
+	}
+	if owner.HasIDs {
+		return strconv.FormatUint(uint64(owner.GID), 10)
+	}
+	return "unknown"
 }
 
 // parentDir 取父目录，同时接受 / 与 \ 分隔符：

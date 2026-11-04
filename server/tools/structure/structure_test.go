@@ -238,8 +238,9 @@ func TestStructureRowsPinned(t *testing.T) {
 	}
 	got := hex.EncodeToString(h.Sum(nil))
 	// update-u1：server/internal 增 buildinfo（编译期版本身份），
-	// server/internal/app 增 updatecheck（一键更新自检）。
-	const want = "8f4d2b277483d47cbbb8d036b5abe6e40144115642869c09ffaa4b3411312d13"
+	// server/internal/app 增 updatecheck（一键更新自检），
+	// server/internal/core 增 fsperm（doctor 与 selfcheck 共用的 POSIX 判权）。
+	const want = "01a45565153cfb806338adc691e9295f8f5e54f4a0255cd02cf955d820726962"
 	if got != want {
 		t.Fatalf("structure 内容变了（hash %s）；确认改动后更新 TestStructureRowsPinned 的哈希", got)
 	}

@@ -14,6 +14,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/fsperm"
 )
 
 // wantCheckNames 是检查清单的唯一顺序；U2 依赖它保持稳定。
@@ -259,6 +261,9 @@ func TestUIDirChecks(t *testing.T) {
 		{"no-index", func(f *fixture) { f.fs.dirs["/srv/ui"] = []os.DirEntry{fakeEntry{"assets"}} }, StatusFail},
 		{"stat-error", func(f *fixture) { f.fs.statErr["/srv/ui"] = errors.New("permission denied") }, StatusFail},
 		{"unreadable", func(f *fixture) { f.fs.readErr["/srv/ui"] = errors.New("permission denied") }, StatusFail},
+		{"not-readable-by-service-user", func(f *fixture) {
+			f.owners["/srv/ui"] = fsperm.Owner{OwnerName: "root", GroupName: "root", Mode: 0o300}
+		}, StatusFail},
 		{"ok", func(*fixture) {}, StatusPass},
 	}
 	for _, tc := range cases {
@@ -286,7 +291,7 @@ func TestPhotoDirChecks(t *testing.T) {
 	})
 	t.Run("not-writable", func(t *testing.T) {
 		f := newFixture()
-		f.fs.probeErr["/var/lib/yiban/photos"] = errors.New("permission denied")
+		f.owners["/var/lib/yiban/photos"] = fsperm.Owner{OwnerName: "yiban", GroupName: "yiban", Mode: 0o500}
 		rep := f.run(t)
 		if c := byName(t, rep, nameConfigPhotoDir); c.Status != StatusPass {
 			t.Fatalf("config = %+v", c)
@@ -309,7 +314,7 @@ func TestPhotoDirChecks(t *testing.T) {
 	})
 	t.Run("unreadable", func(t *testing.T) {
 		f := newFixture()
-		f.fs.readErr["/var/lib/yiban/photos"] = errors.New("permission denied")
+		f.owners["/var/lib/yiban/photos"] = fsperm.Owner{OwnerName: "yiban", GroupName: "yiban", Mode: 0o300}
 		if got := byName(t, f.run(t), nameConfigPhotoDir).Status; got != StatusFail {
 			t.Fatalf("config = %s, want FAIL", got)
 		}
@@ -335,7 +340,7 @@ func TestBackupDirChecks(t *testing.T) {
 	}{
 		{"writable", func(*fixture) {}, StatusPass},
 		{"not-writable", func(f *fixture) {
-			f.fs.probeErr["/var/lib/yiban/pre-migrate"] = errors.New("permission denied")
+			f.owners["/var/lib/yiban/pre-migrate"] = fsperm.Owner{OwnerName: "yiban", GroupName: "yiban", Mode: 0o500}
 		}, StatusFail},
 		{"is-file", func(f *fixture) {
 			f.fs.files["/var/lib/yiban/pre-migrate"] = []byte("x")
@@ -346,7 +351,7 @@ func TestBackupDirChecks(t *testing.T) {
 		}, StatusSkip},
 		{"missing-parent-unwritable", func(f *fixture) {
 			delete(f.fs.dirs, "/var/lib/yiban/pre-migrate")
-			f.fs.probeErr["/var/lib/yiban"] = errors.New("read-only file system")
+			f.owners["/var/lib/yiban"] = fsperm.Owner{OwnerName: "root", GroupName: "root", Mode: 0o500}
 		}, StatusFail},
 		{"missing-no-ancestor", func(f *fixture) {
 			f.opts.BackupDir = "/nope/pre-migrate"
@@ -445,10 +450,20 @@ func TestFingerprintsAreDomainSeparatedAndStable(t *testing.T) {
 func TestShortFingerprint(t *testing.T) {
 	full := "sha256:" + strings.Repeat("a", 64)
 	if got := ShortFingerprint(full); got == full || !strings.HasSuffix(got, "…") {
-		t.Fatalf("ShortFingerprint() = %q", got)
+		t.Fatalf("ShortFingerprint(valid) = %q", got)
 	}
-	if got := ShortFingerprint("raw"); got != "raw" {
-		t.Fatalf("non-fingerprint should pass through, got %q", got)
+	invalid := []string{
+		"raw",
+		"sha256:",
+		"sha256:" + strings.Repeat("A", 64), // 大写非法
+		"sha256:" + strings.Repeat("a", 63),
+		"sha256:" + strings.Repeat("a", 65),
+		"sha256:" + strings.Repeat("z", 64),
+	}
+	for _, value := range invalid {
+		if got := ShortFingerprint(value); got != "<invalid>" {
+			t.Fatalf("ShortFingerprint(%q) = %q, want <invalid>", value, got)
+		}
 	}
 }
 
@@ -479,7 +494,9 @@ func TestKeyStateComparison(t *testing.T) {
 	})
 	t.Run("missing-name", func(t *testing.T) {
 		f := newFixture()
-		f.fs.files[f.opts.StatePath] = []byte(`{"schema_version":1,"key_fingerprints":{"credential_key":"sha256:aa"},"recorded_at":"2026-01-01T00:00:00Z"}`)
+		validCred := "sha256:" + strings.Repeat("a", 64)
+		f.fs.files[f.opts.StatePath] = []byte(`{"schema_version":1,"key_fingerprints":{"credential_key":"` +
+			validCred + `"},"recorded_at":"2026-01-01T00:00:00Z"}`)
 		c := byName(t, f.run(t), nameKeysState)
 		if c.Status != StatusFail || !strings.Contains(c.Detail, "hash_pepper 在记录里缺失") {
 			t.Fatalf("keys.state = %+v", c)
@@ -532,6 +549,153 @@ func TestServiceChecks(t *testing.T) {
 				t.Fatalf("%s = %+v, want %s", nameService, c, tc.want)
 			}
 		})
+	}
+}
+
+func TestServiceUserUnknownSkipsPermissionChecks(t *testing.T) {
+	f := newFixture()
+	f.opts.ServiceUser = ""
+	rep := f.run(t)
+	for _, name := range []string{
+		nameConfigUIDir, nameConfigPhotoDir, nameFSPhotoDir, nameFSBackupDir,
+	} {
+		c := byName(t, rep, name)
+		if c.Status != StatusSkip || !strings.Contains(c.Detail, "服务用户未知") {
+			t.Fatalf("%s = %+v, want SKIP with service-user reason", name, c)
+		}
+	}
+}
+
+func TestPermissionProbeUnavailable(t *testing.T) {
+	t.Run("not-injected", func(t *testing.T) {
+		f := newFixture()
+		f.deps.StatPermission = nil
+		c := byName(t, f.run(t), nameFSPhotoDir)
+		if c.Status != StatusSkip || !strings.Contains(c.Detail, "权限探针未注入") {
+			t.Fatalf("fs.photo_dir = %+v", c)
+		}
+	})
+	t.Run("platform-unsupported", func(t *testing.T) {
+		f := newFixture()
+		f.deps.StatPermission = func(string) (fsperm.Owner, bool) { return fsperm.Owner{}, false }
+		c := byName(t, f.run(t), nameFSPhotoDir)
+		if c.Status != StatusSkip || !strings.Contains(c.Detail, "Windows") {
+			t.Fatalf("fs.photo_dir = %+v", c)
+		}
+	})
+	t.Run("identity-unknown", func(t *testing.T) {
+		f := newFixture()
+		f.opts.ServiceUser = "ghost"
+		c := byName(t, f.run(t), nameFSPhotoDir)
+		if c.Status != StatusSkip || !strings.Contains(c.Detail, "查不到服务用户") {
+			t.Fatalf("fs.photo_dir = %+v", c)
+		}
+	})
+}
+
+func TestRootOwnedDirsFailForServiceUser(t *testing.T) {
+	f := newFixture()
+	rootOnly := fsperm.Owner{OwnerName: "root", GroupName: "root", Mode: 0o700}
+	f.owners["/srv/ui"] = rootOnly
+	f.owners["/var/lib/yiban/photos"] = rootOnly
+	f.owners["/var/lib/yiban/pre-migrate"] = rootOnly
+	rep := f.run(t)
+	for _, name := range []string{
+		nameConfigUIDir, nameConfigPhotoDir, nameFSPhotoDir, nameFSBackupDir,
+	} {
+		c := byName(t, rep, name)
+		if c.Status != StatusFail {
+			t.Fatalf("%s = %+v, want FAIL (root caller must not mask service user)", name, c)
+		}
+	}
+	if rep.ExitCode() != 1 {
+		t.Fatalf("exit = %d, want 1", rep.ExitCode())
+	}
+}
+
+func TestGroupBitsAllowServiceUser(t *testing.T) {
+	f := newFixture()
+	f.owners["/var/lib/yiban/photos"] = fsperm.Owner{
+		OwnerName: "root", GroupName: "yiban", Mode: 0o770,
+	}
+	rep := f.run(t)
+	if c := byName(t, rep, nameConfigPhotoDir); c.Status != StatusPass {
+		t.Fatalf("config.photo_dir = %+v", c)
+	}
+	if c := byName(t, rep, nameFSPhotoDir); c.Status != StatusPass {
+		t.Fatalf("fs.photo_dir = %+v", c)
+	}
+}
+
+func TestOtherBitsOnly(t *testing.T) {
+	f := newFixture()
+	f.owners["/var/lib/yiban/photos"] = fsperm.Owner{
+		OwnerName: "root", GroupName: "root", Mode: 0o005,
+	}
+	rep := f.run(t)
+	if c := byName(t, rep, nameConfigPhotoDir); c.Status != StatusPass {
+		t.Fatalf("other r-x should allow directory read: %+v", c)
+	}
+	if c := byName(t, rep, nameFSPhotoDir); c.Status != StatusFail {
+		t.Fatalf("other r-x must not allow write: %+v", c)
+	}
+}
+
+func TestExecuteBitRequiredForDirectoryAccess(t *testing.T) {
+	f := newFixture()
+	f.owners["/var/lib/yiban/photos"] = fsperm.Owner{
+		OwnerName: "yiban", GroupName: "yiban", Mode: 0o600,
+	}
+	rep := f.run(t)
+	if c := byName(t, rep, nameConfigPhotoDir); c.Status != StatusFail {
+		t.Fatalf("read without execute must fail: %+v", c)
+	}
+	if c := byName(t, rep, nameFSPhotoDir); c.Status != StatusFail {
+		t.Fatalf("write without execute must fail: %+v", c)
+	}
+}
+
+func TestNumericIDsTakePrecedence(t *testing.T) {
+	f := newFixture()
+	f.owners["/var/lib/yiban/photos"] = fsperm.Owner{
+		UID: 1000, GID: 1000, OwnerName: "stale", GroupName: "stale",
+		Mode: 0o700, HasIDs: true,
+	}
+	f.identities["yiban"] = fsperm.Identity{
+		UID: 1000, GID: 1000, Name: "yiban", HasIDs: true,
+	}
+	rep := f.run(t)
+	if c := byName(t, rep, nameFSPhotoDir); c.Status != StatusPass {
+		t.Fatalf("matching uid must allow write: %+v", c)
+	}
+}
+
+func TestSelfcheckIsZeroWrite(t *testing.T) {
+	f := newFixture()
+	f.run(t)
+	if len(f.fs.writes) != 0 {
+		t.Fatalf("normal selfcheck wrote files: %v", f.fs.writes)
+	}
+}
+
+func TestContainerSkipsToolsAndBackup(t *testing.T) {
+	f := newFixture()
+	f.deps.Containerized = true
+	rep := f.run(t)
+	for _, name := range []string{
+		"tools.pg_dump", "tools.pg_restore", "tools.psql", "tools.gpg", "tools.tar",
+	} {
+		c := byName(t, rep, name)
+		if c.Status != StatusSkip || !strings.Contains(c.Detail, "容器路径请在宿主运行 selfcheck") {
+			t.Fatalf("%s = %+v, want container SKIP", name, c)
+		}
+	}
+	backup := byName(t, rep, nameFSBackupDir)
+	if backup.Status != StatusSkip || !strings.Contains(backup.Detail, "宿主") {
+		t.Fatalf("fs.backup_dir = %+v, want container SKIP", backup)
+	}
+	if byName(t, rep, nameFSPhotoDir).Status != StatusPass {
+		t.Fatalf("photo checks still apply inside the container when service user is known")
 	}
 }
 

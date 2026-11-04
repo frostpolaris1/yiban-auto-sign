@@ -42,12 +42,15 @@ func TestLoadStateMissingIsNotAnError(t *testing.T) {
 func TestRecordKeysRoundTripPreservesUnknownFields(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "update-state.json")
+	oldFP := "sha256:" + strings.Repeat("a", 64)
+	oldPepperFP := "sha256:" + strings.Repeat("b", 64)
+	futureFP := "sha256:" + strings.Repeat("c", 64)
 	raw := `{
   "schema_version": 1,
   "key_fingerprints": {
-    "credential_key": "sha256:old",
-    "hash_pepper": "sha256:old",
-    "future_key": "sha256:keep"
+    "credential_key": "` + oldFP + `",
+    "hash_pepper": "` + oldPepperFP + `",
+    "future_key": "` + futureFP + `"
   },
   "recorded_at": "2026-01-01T00:00:00Z",
   "last_update": {"version": "0.6.4"},
@@ -61,7 +64,7 @@ func TestRecordKeysRoundTripPreservesUnknownFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RecordKeys: %v", err)
 	}
-	if st.KeyFingerprints["future_key"] != "sha256:keep" {
+	if st.KeyFingerprints["future_key"] != futureFP {
 		t.Fatalf("unknown fingerprint key not preserved: %+v", st.KeyFingerprints)
 	}
 	body, err := os.ReadFile(path)
@@ -169,16 +172,35 @@ func TestLoadStateRejectsBadShapes(t *testing.T) {
 		{"no-version", `{"key_fingerprints":{}}`},
 		{"bad-version", `{"schema_version":"one"}`},
 		{"bad-fingerprints", `{"schema_version":1,"key_fingerprints":"nope"}`},
+		{"bad-fingerprint-value", `{"schema_version":1,"key_fingerprints":{"credential_key":"leak-me-not"}}`},
 		{"bad-recorded-at", `{"schema_version":1,"recorded_at":42}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeFS()
 			f.files["/state.json"] = []byte(tc.body)
-			if _, _, err := LoadState(f, "/state.json"); err == nil {
+			_, _, err := LoadState(f, "/state.json")
+			if err == nil {
 				t.Fatal("LoadState accepted a bad state file")
 			}
+			if strings.Contains(err.Error(), "leak-me-not") {
+				t.Fatalf("error echoes the invalid fingerprint: %v", err)
+			}
 		})
+	}
+}
+
+func TestSaveStateRejectsInvalidFingerprint(t *testing.T) {
+	err := SaveState(newFakeFS(), "/state.json", State{
+		SchemaVersion:   StateSchemaVersion,
+		KeyFingerprints: map[string]string{"credential_key": "leak-me-not"},
+		RecordedAt:      "2026-11-04T12:00:00Z",
+	})
+	if err == nil {
+		t.Fatal("SaveState accepted an invalid fingerprint")
+	}
+	if strings.Contains(err.Error(), "leak-me-not") {
+		t.Fatalf("error echoes the invalid fingerprint: %v", err)
 	}
 }
 
@@ -196,40 +218,5 @@ func TestOSFileSystemWriteReplacesExistingFile(t *testing.T) {
 	}
 	if string(body) != "new" {
 		t.Fatalf("body = %q, want new", body)
-	}
-}
-
-func TestProbeWritableRequiresExistingDirectory(t *testing.T) {
-	dir := t.TempDir()
-	if err := (OSFileSystem{}).ProbeWritable(dir); err != nil {
-		t.Fatalf("ProbeWritable(existing): %v", err)
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("readdir: %v", err)
-	}
-	if len(entries) != 0 {
-		t.Fatalf("probe left files behind: %v", entries)
-	}
-	missing := filepath.Join(dir, "missing")
-	if err := (OSFileSystem{}).ProbeWritable(missing); err == nil {
-		t.Fatal("ProbeWritable(missing) = nil, want error")
-	}
-}
-
-func TestProbeReadable(t *testing.T) {
-	dir := t.TempDir()
-	// 空目录可读（Readdirnames 返回 io.EOF）。
-	if err := (OSFileSystem{}).ProbeReadable(dir); err != nil {
-		t.Fatalf("ProbeReadable(empty): %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "one"), []byte("x"), 0o600); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	if err := (OSFileSystem{}).ProbeReadable(dir); err != nil {
-		t.Fatalf("ProbeReadable(non-empty): %v", err)
-	}
-	if err := (OSFileSystem{}).ProbeReadable(filepath.Join(dir, "missing")); err == nil {
-		t.Fatal("ProbeReadable(missing) = nil, want error")
 	}
 }

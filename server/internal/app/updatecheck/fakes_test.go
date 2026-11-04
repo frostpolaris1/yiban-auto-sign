@@ -11,6 +11,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/fsperm"
 )
 
 // fixedNow 是报告与状态文件测试共用的时刻。
@@ -58,7 +60,6 @@ type fakeFS struct {
 	dirs     map[string][]os.DirEntry
 	statErr  map[string]error
 	readErr  map[string]error
-	probeErr map[string]error
 	writeErr error
 
 	writes map[string][]byte
@@ -67,13 +68,12 @@ type fakeFS struct {
 
 func newFakeFS() *fakeFS {
 	return &fakeFS{
-		files:    map[string][]byte{},
-		dirs:     map[string][]os.DirEntry{},
-		statErr:  map[string]error{},
-		readErr:  map[string]error{},
-		probeErr: map[string]error{},
-		writes:   map[string][]byte{},
-		perms:    map[string]os.FileMode{},
+		files:   map[string][]byte{},
+		dirs:    map[string][]os.DirEntry{},
+		statErr: map[string]error{},
+		readErr: map[string]error{},
+		writes:  map[string][]byte{},
+		perms:   map[string]os.FileMode{},
 	}
 }
 
@@ -129,29 +129,6 @@ func (f *fakeFS) ReadDir(name string) ([]os.DirEntry, error) {
 	return entries, nil
 }
 
-func (f *fakeFS) ProbeReadable(dir string) error {
-	if err := f.statErr[dir]; err != nil {
-		return err
-	}
-	if err := f.readErr[dir]; err != nil {
-		return err
-	}
-	if _, ok := f.dirs[dir]; !ok {
-		return &os.PathError{Op: "open", Path: dir, Err: os.ErrNotExist}
-	}
-	return nil
-}
-
-func (f *fakeFS) ProbeWritable(dir string) error {
-	if err := f.probeErr[dir]; err != nil {
-		return err
-	}
-	if _, ok := f.dirs[dir]; !ok {
-		return &os.PathError{Op: "create", Path: dir, Err: os.ErrNotExist}
-	}
-	return nil
-}
-
 func (f *fakeFS) WriteFileAtomic(name string, data []byte, perm os.FileMode) error {
 	if f.writeErr != nil {
 		return f.writeErr
@@ -174,14 +151,16 @@ func (d *fakeDB) Close() { d.closed = true }
 
 // fixture 是一次自检的固定输入。
 type fixture struct {
-	fs       *fakeFS
-	deps     Deps
-	opts     Options
-	db       *fakeDB
-	embedded int64
+	fs         *fakeFS
+	deps       Deps
+	opts       Options
+	db         *fakeDB
+	embedded   int64
+	owners     map[string]fsperm.Owner
+	identities map[string]fsperm.Identity
 }
 
-// newFixture 构造全通过的基线：目录齐、工具齐、库连得上、服务 active。
+// newFixture 构造全通过的基线：目录齐、权限按服务用户可读可写、工具齐、库连得上、服务 active。
 func newFixture() *fixture {
 	fs := newFakeFS()
 	fs.mkdir("/srv/ui", "index.html", "assets")
@@ -202,8 +181,18 @@ func newFixture() *fixture {
 			BackupDir:     "/var/lib/yiban/pre-migrate",
 			StatePath:     "/var/lib/yiban/update-state.json",
 			Unit:          "yiban",
+			ServiceUser:   "yiban",
 		},
 		embedded: 22,
+		owners: map[string]fsperm.Owner{
+			"/srv/ui":                    {OwnerName: "yiban", GroupName: "yiban", Mode: 0o755},
+			"/var/lib/yiban":             {OwnerName: "yiban", GroupName: "yiban", Mode: 0o755},
+			"/var/lib/yiban/photos":      {OwnerName: "yiban", GroupName: "yiban", Mode: 0o750},
+			"/var/lib/yiban/pre-migrate": {OwnerName: "yiban", GroupName: "yiban", Mode: 0o700},
+		},
+		identities: map[string]fsperm.Identity{
+			"yiban": {Name: "yiban", GroupNames: []string{"yiban"}},
+		},
 	}
 	f.deps = Deps{
 		Now: func() time.Time { return fixedNow },
@@ -215,6 +204,14 @@ func newFixture() *fixture {
 		OpenDB:          func(context.Context, string) (DB, error) { return db, nil },
 		EmbeddedVersion: func() (int64, error) { return f.embedded, nil },
 		ServiceProbe:    func(context.Context) (bool, bool, string) { return true, true, "active" },
+		StatPermission: func(path string) (fsperm.Owner, bool) {
+			owner, ok := f.owners[path]
+			return owner, ok
+		},
+		UserIdentity: func(name string) (fsperm.Identity, bool) {
+			id, ok := f.identities[name]
+			return id, ok
+		},
 	}
 	return f
 }

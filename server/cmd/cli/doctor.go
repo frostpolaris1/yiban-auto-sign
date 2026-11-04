@@ -35,6 +35,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/fsperm"
 	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
 )
 
@@ -114,13 +115,19 @@ type probe struct {
 	dirStat func(dir string) (dirInfo, bool)
 	// userGroups 返回用户所属组名；拿不到返回 false。
 	userGroups func(name string) ([]string, bool)
+	// userIdentity 返回用户身份（uid/gid/组）；拿不到返回 false。
+	// 生产装配 userIdentityOf；测试可只注入 userGroups，按名字判。
+	userIdentity func(name string) (fsperm.Identity, bool)
 }
 
 // dirInfo 是目录的身份与权限位。
 type dirInfo struct {
-	owner string
-	group string
-	perm  os.FileMode
+	owner  string
+	group  string
+	perm   os.FileMode
+	uid    uint32
+	gid    uint32
+	hasIDs bool
 }
 
 // defaultServiceUser 是 systemd 单元里的服务用户。
@@ -202,29 +209,33 @@ func serviceUserOf(p *probe) string {
 	return defaultServiceUser
 }
 
-// writableByServiceUser 按属主、组、其他三类写位判断服务用户是否可写。
+// writableByServiceUser 按 POSIX 权限位判断服务用户是否可写目录。
+// 判据与 selfcheck 共用 core/fsperm；目录写还要求执行位。
 // 判据不落盘、不借用当前进程身份：doctor 常以 root 跑，
 // root 自己可写不代表服务用户可写。
 func writableByServiceUser(info dirInfo, user string, p *probe) bool {
-	if info.perm&0o002 != 0 {
-		return true
-	}
-	if info.owner == user {
-		return info.perm&0o200 != 0
-	}
-	if info.perm&0o020 == 0 {
-		return false
-	}
-	groups, ok := p.userGroups(user)
+	id, ok := serviceIdentity(p, user)
 	if !ok {
 		return false
 	}
-	for _, g := range groups {
-		if g == info.group {
-			return true
-		}
+	return fsperm.Allowed(fsperm.Owner{
+		UID: info.uid, GID: info.gid,
+		OwnerName: info.owner, GroupName: info.group,
+		Mode: info.perm, HasIDs: info.hasIDs,
+	}, id, fsperm.Write|fsperm.Execute)
+}
+
+// serviceIdentity 解析服务用户身份。生产走 userIdentityOf；
+// 测试只注入 userGroups 时退化为名字口径。
+func serviceIdentity(p *probe, user string) (fsperm.Identity, bool) {
+	if p.userIdentity != nil {
+		return p.userIdentity(user)
 	}
-	return false
+	groups, ok := p.userGroups(user)
+	if !ok {
+		return fsperm.Identity{}, false
+	}
+	return fsperm.Identity{Name: user, GroupNames: groups}, true
 }
 
 // closer 是端口探针拿到的监听句柄；探完即关。
@@ -935,11 +946,12 @@ func newProbe(dsn, photoDir, registry, binPath, serviceUser string) *probe {
 			_, _ = io.Copy(io.Discard, resp.Body)
 			return resp.StatusCode, nil
 		},
-		openDB:      openPgProbe,
-		diskFree:    statfsFree,
-		currentUser: currentUserName,
-		dirStat:     dirStatOf,
-		userGroups:  userGroupNames,
+		openDB:       openPgProbe,
+		diskFree:     statfsFree,
+		currentUser:  currentUserName,
+		dirStat:      dirStatOf,
+		userGroups:   userGroupNames,
+		userIdentity: userIdentityOf,
 	}
 }
 

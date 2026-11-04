@@ -3,8 +3,9 @@
 // # 功能
 // 输出 PASS/FAIL/SKIP 报告，覆盖配置、数据库 schema、外部工具、
 // 目录权限、密钥指纹与 systemd 服务；同时提供人读文本与 JSON。
-// 本包**不**写数据库、**不**停服务、**不**改动被检目录；
-// 唯一的写路径是显式调用的 RecordKeys（更新成功后记录密钥指纹）。
+// 本包**不**写数据库、**不**停服务、**不**改动被检目录：
+// 正常自检零写入，临时文件探针已移除；目录权限按服务用户的
+// POSIX 属主/组/模式位推断。唯一的写路径是显式调用的 RecordKeys。
 //
 // # 归属
 // app 层用例。外部依赖全部经 Deps 注入：文件系统、PATH 探测、
@@ -32,6 +33,7 @@ import (
 	"time"
 
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/fsperm"
 )
 
 // 报告与状态文件的 schema 版本。两者独立演进，改动需同批升版本。
@@ -158,6 +160,12 @@ type Deps struct {
 	EmbeddedVersion func() (int64, error)
 	// ServiceProbe 探测 systemd；nil 时服务检查 SKIP。
 	ServiceProbe ServiceProbe
+	// StatPermission 返回目录的属主/组/模式；false 表示平台不支持。
+	StatPermission func(path string) (fsperm.Owner, bool)
+	// UserIdentity 返回服务用户的 uid/gid/组；false 表示查不到。
+	UserIdentity func(name string) (fsperm.Identity, bool)
+	// Containerized 表示本进程在容器内：工具与宿主备份目录检查按 SKIP。
+	Containerized bool
 	// Build 是报告里的版本身份。
 	Build BuildInfo
 }
@@ -182,6 +190,9 @@ type Options struct {
 	StatePath string
 	// Unit 是 systemd 单元名；空取 DefaultUnit。
 	Unit string
+	// ServiceUser 是运行服务的系统用户（如 yiban）。
+	// 空表示未知：目录权限检查按 SKIP 处理，不按调用者（可能是 root）判。
+	ServiceUser string
 }
 
 // DefaultDeps 返回只读自检的最小依赖：真实时钟与 OS 文件系统。
@@ -213,14 +224,14 @@ func Run(ctx context.Context, deps Deps, opts Options) (Report, error) {
 	rep.Checks = append(rep.Checks,
 		checkConfigDSN(opts),
 		checkConfigHTTPAddr(opts),
-		checkConfigUIDir(deps.FS, opts),
-		checkConfigPhotoDir(deps.FS, opts),
+		checkConfigUIDir(deps, opts),
+		checkConfigPhotoDir(deps, opts),
 	)
 	rep.Checks = append(rep.Checks, checkDatabase(ctx, deps, opts)...)
 	rep.Checks = append(rep.Checks, checkTools(deps)...)
 	rep.Checks = append(rep.Checks,
-		checkFSPhotoDir(deps.FS, opts),
-		checkFSBackupDir(deps.FS, opts),
+		checkFSPhotoDir(deps, opts),
+		checkFSBackupDir(deps, opts),
 	)
 	rep.Checks = append(rep.Checks, checkKeys(deps.FS, opts)...)
 	rep.Checks = append(rep.Checks, checkService(ctx, deps, opts))
@@ -247,5 +258,6 @@ func normalizeOptions(opts Options) Options {
 	opts.BackupDir = strings.TrimSpace(opts.BackupDir)
 	opts.StatePath = strings.TrimSpace(opts.StatePath)
 	opts.Unit = strings.TrimSpace(opts.Unit)
+	opts.ServiceUser = strings.TrimSpace(opts.ServiceUser)
 	return opts
 }

@@ -127,14 +127,34 @@ func fingerprint(domain string, material []byte) string {
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
 
-// ShortFingerprint 把指纹截成可打印前缀；非本包形状原样返回。
-// 指纹不是密钥，但仍不整串打进终端。
+// ShortFingerprint 把指纹截成可打印前缀。
+// 非 sha256:<64 位小写 hex> 的值只显示 <invalid>：绝不回显原文。
 func ShortFingerprint(fp string) string {
-	const prefix = "sha256:"
-	if strings.HasPrefix(fp, prefix) && len(fp) > len(prefix)+8 {
-		return fp[:len(prefix)+8] + "…"
+	if !validFingerprint(fp) {
+		return "<invalid>"
 	}
-	return fp
+	return fp[:len(fingerprintScheme)+8] + "…"
+}
+
+// fingerprintScheme 是指纹的固定前缀。
+const fingerprintScheme = "sha256:"
+
+// validFingerprint 校验 sha256:<64 位小写 hex>。
+func validFingerprint(fp string) bool {
+	if !strings.HasPrefix(fp, fingerprintScheme) {
+		return false
+	}
+	hexPart := fp[len(fingerprintScheme):]
+	if len(hexPart) != 64 {
+		return false
+	}
+	for i := 0; i < len(hexPart); i++ {
+		c := hexPart[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // LoadState 读状态文件。exists=false 表示文件不存在（不是错误）。
@@ -169,6 +189,12 @@ func LoadState(fsys FileSystem, path string) (state State, exists bool, err erro
 			return State{}, false, fmt.Errorf("状态文件 %s 的 key_fingerprints 形状不对", path)
 		}
 	}
+	for name, value := range st.KeyFingerprints {
+		if !validFingerprint(value) {
+			return State{}, false, fmt.Errorf(
+				"状态文件 %s 的 key_fingerprints[%q] 不是 sha256:<64hex>；拒绝回显该值", path, name)
+		}
+	}
 	if rawAt, ok := raw["recorded_at"]; ok && string(rawAt) != "null" {
 		if err := json.Unmarshal(rawAt, &st.RecordedAt); err != nil {
 			return State{}, false, fmt.Errorf("状态文件 %s 的 recorded_at 不是字符串", path)
@@ -196,6 +222,11 @@ func SaveState(fsys FileSystem, path string, st State) error {
 	fps := st.KeyFingerprints
 	if fps == nil {
 		fps = map[string]string{}
+	}
+	for name, value := range fps {
+		if !validFingerprint(value) {
+			return fmt.Errorf("updatecheck: 拒绝写非法指纹 key_fingerprints[%q]", name)
+		}
 	}
 	encoded, err := marshalField(st.SchemaVersion)
 	if err != nil {

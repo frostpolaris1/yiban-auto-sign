@@ -31,6 +31,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/app/updatecheck"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/fsperm"
 )
 
 // selfcheckLookup 读取进程环境。环境读点仍收敛在 adapters/config。
@@ -39,13 +40,17 @@ func selfcheckLookup(key string) string {
 	return strings.TrimSpace(v)
 }
 
-// newSelfcheckDeps 装配生产依赖：PATH、数据库探针、嵌入迁移版本、systemd。
+// newSelfcheckDeps 装配生产依赖：PATH、数据库探针、嵌入迁移版本、systemd、
+// 服务用户的 POSIX 权限探针。目录判权复用 doctor 的 dirStatOf/userIdentityOf。
 func newSelfcheckDeps() updatecheck.Deps {
 	deps := updatecheck.DefaultDeps()
 	deps.LookPath = exec.LookPath
 	deps.OpenDB = openSelfcheckDB
 	deps.EmbeddedVersion = pg.EmbeddedVersion
 	deps.ServiceProbe = systemdServiceProbe
+	deps.StatPermission = statPermissionOf
+	deps.UserIdentity = userIdentityOf
+	deps.Containerized = inContainer()
 	info := buildinfo.Current()
 	deps.Build = updatecheck.BuildInfo{
 		Version:   info.Version,
@@ -53,6 +58,38 @@ func newSelfcheckDeps() updatecheck.Deps {
 		BuildTime: info.BuildTime,
 	}
 	return deps
+}
+
+// statPermissionOf 把 doctor 的目录 stat 转成 fsperm 判据输入。
+func statPermissionOf(path string) (fsperm.Owner, bool) {
+	info, ok := dirStatOf(path)
+	if !ok {
+		return fsperm.Owner{}, false
+	}
+	return fsperm.Owner{
+		UID: info.uid, GID: info.gid,
+		OwnerName: info.owner, GroupName: info.group,
+		Mode: info.perm, HasIDs: info.hasIDs,
+	}, true
+}
+
+// systemdServiceUserFromUnit 从单元文件取运行用户。
+// 无 systemctl、无 systemd 或命令失败都返回空串：调用方按未知处理并 SKIP。
+func systemdServiceUserFromUnit() string {
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return ""
+	}
+	if _, err := os.Stat("/run/systemd/system"); err != nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "systemctl",
+		"show", updatecheck.DefaultUnit+".service", "-p", "User", "--value").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // openSelfcheckDB 复用 doctor 的只读探针（pgHandle 已实现 SchemaVersion）。
@@ -90,11 +127,11 @@ func systemdServiceProbe(ctx context.Context) (available, active bool, state str
 
 // runSelfcheck 是 selfcheck 子命令入口。
 func runSelfcheck(args []string, stdout, stderr io.Writer) int {
-	return runSelfcheckWith(args, stdout, stderr, selfcheckLookup, newSelfcheckDeps())
+	return runSelfcheckWith(args, stdout, stderr, selfcheckLookup, newSelfcheckDeps(), systemdServiceUserFromUnit)
 }
 
-// runSelfcheckWith 是测试接缝：lookup 与 deps 都可注入。
-func runSelfcheckWith(args []string, stdout, stderr io.Writer, lookup func(string) string, deps updatecheck.Deps) int {
+// runSelfcheckWith 是测试接缝：lookup、deps 与服务用户缺省值都可注入。
+func runSelfcheckWith(args []string, stdout, stderr io.Writer, lookup func(string) string, deps updatecheck.Deps, serviceUserDefault func() string) int {
 	fs := newFlagSet("selfcheck", stderr)
 	dsn := fs.String("dsn", "", "覆盖 YIBAN_DATABASE_URL")
 	httpAddr := fs.String("http-addr", "", "覆盖 YIBAN_HTTP_ADDR")
@@ -102,6 +139,8 @@ func runSelfcheckWith(args []string, stdout, stderr io.Writer, lookup func(strin
 	photoDir := fs.String("photo-dir", "", "覆盖 YIBAN_PHOTO_DIR")
 	backupDir := fs.String("backup-dir", "", "迁移前备份目录（缺省 "+updatecheck.DefaultBackupDir+"）")
 	statePath := fs.String("state", "", "更新状态文件（缺省 "+updatecheck.DefaultStatePath+"）")
+	serviceUser := fs.String("service-user", "",
+		"运行服务的系统用户（缺省 systemctl show "+updatecheck.DefaultUnit+".service -p User --value）")
 	asJSON := fs.Bool("json", false, "输出 JSON 报告（不混人读行）")
 	recordKeys := fs.Bool("record-keys", false, "把当前密钥指纹写入状态文件（更新成功后调用）")
 	timeout := fs.Duration("timeout", 15*time.Second, "整体超时")
@@ -122,6 +161,10 @@ func runSelfcheckWith(args []string, stdout, stderr io.Writer, lookup func(strin
 		_, _ = fmt.Fprintln(stderr, "selfcheck: --timeout 必须大于 0")
 		return 2
 	}
+	svcUser := strings.TrimSpace(*serviceUser)
+	if svcUser == "" && serviceUserDefault != nil {
+		svcUser = strings.TrimSpace(serviceUserDefault())
+	}
 
 	opts := updatecheck.Options{
 		DSN:           firstNonEmpty(*dsn, lookup("YIBAN_DATABASE_URL")),
@@ -133,6 +176,7 @@ func runSelfcheckWith(args []string, stdout, stderr io.Writer, lookup func(strin
 		BackupDir:     firstNonEmpty(*backupDir, updatecheck.DefaultBackupDir),
 		StatePath:     firstNonEmpty(*statePath, updatecheck.DefaultStatePath),
 		Unit:          updatecheck.DefaultUnit,
+		ServiceUser:   svcUser,
 	}
 
 	if *recordKeys {
@@ -185,6 +229,8 @@ func selfcheckUsage(fs *flag.FlagSet, w io.Writer) {
 	_, _ = fmt.Fprintf(w, `用法: yiban-cli selfcheck [选项]
 
 只读自检：不写数据库、不停服务、不改被检目录。
+正常自检零写入；临时文件探针已移除。
+目录权限按 --service-user 的 POSIX 属主/组/模式位推断。
 除 --record-keys 外不写任何文件。
 退出码：全 PASS/SKIP 为 0；有 FAIL 为 1；用法错误 2。
 

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/app/updatecheck"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/fsperm"
 )
 
 const (
@@ -38,9 +39,10 @@ func (d *cliFakeDB) Close() {}
 
 // selfcheckFixture 是一组不依赖真实环境的输入。
 type selfcheckFixture struct {
-	env  map[string]string
-	deps updatecheck.Deps
-	dir  string
+	env            map[string]string
+	deps           updatecheck.Deps
+	dir            string
+	serviceUserFor func() string
 }
 
 // newSelfcheckFixture 建齐 UI、照片、备份目录。
@@ -66,10 +68,27 @@ func newSelfcheckFixture(t *testing.T, dbVersion int64) *selfcheckFixture {
 	}
 	deps.EmbeddedVersion = func() (int64, error) { return dbVersion, nil }
 	deps.ServiceProbe = func(context.Context) (bool, bool, string) { return true, true, "active" }
+	owners := map[string]fsperm.Owner{
+		ui:     {OwnerName: "yiban", GroupName: "yiban", Mode: 0o755},
+		photos: {OwnerName: "yiban", GroupName: "yiban", Mode: 0o750},
+		backup: {OwnerName: "yiban", GroupName: "yiban", Mode: 0o700},
+		dir:    {OwnerName: "yiban", GroupName: "yiban", Mode: 0o755},
+	}
+	deps.StatPermission = func(path string) (fsperm.Owner, bool) {
+		owner, ok := owners[path]
+		return owner, ok
+	}
+	deps.UserIdentity = func(name string) (fsperm.Identity, bool) {
+		if name != "yiban" {
+			return fsperm.Identity{}, false
+		}
+		return fsperm.Identity{Name: "yiban", GroupNames: []string{"yiban"}}, true
+	}
 	deps.Build = updatecheck.BuildInfo{Version: "dev", Commit: "unknown", BuildTime: "unknown"}
 	return &selfcheckFixture{
-		dir:  dir,
-		deps: deps,
+		dir:            dir,
+		deps:           deps,
+		serviceUserFor: func() string { return "yiban" },
 		env: map[string]string{
 			"YIBAN_DATABASE_URL":   "postgres://yiban:s3cret-pass-word@127.0.0.1:5432/yiban?sslmode=disable",
 			"YIBAN_HTTP_ADDR":      "127.0.0.1:47183",
@@ -91,7 +110,7 @@ func (f *selfcheckFixture) statePath() string { return filepath.Join(f.dir, "upd
 func (f *selfcheckFixture) run(t *testing.T, args ...string) (int, string, string) {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
-	code := runSelfcheckWith(args, &stdout, &stderr, f.lookup, f.deps)
+	code := runSelfcheckWith(args, &stdout, &stderr, f.lookup, f.deps, f.serviceUserFor)
 	return code, stdout.String(), stderr.String()
 }
 
@@ -236,6 +255,35 @@ func TestSelfcheckJSONWithFailure(t *testing.T) {
 	}
 	if strings.Contains(stdout, "[FAIL]") {
 		t.Fatalf("JSON output contains human rows")
+	}
+}
+
+func TestSelfcheckServiceUserFlagOverridesUnknownDefault(t *testing.T) {
+	f := newSelfcheckFixture(t, 22)
+	f.serviceUserFor = func() string { return "" }
+	code, stdout, stderr := f.run(t, "--service-user", "yiban", "--state", f.statePath())
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "[ OK ] fs.photo_dir") {
+		t.Fatalf("photo check should pass with --service-user:\n%s", stdout)
+	}
+}
+
+func TestSelfcheckUnknownServiceUserSkipsDirectoryChecks(t *testing.T) {
+	f := newSelfcheckFixture(t, 22)
+	f.serviceUserFor = func() string { return "" }
+	code, stdout, _ := f.run(t, "--state", f.statePath())
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (SKIP is not FAIL)", code)
+	}
+	for _, name := range []string{"config.ui_dir", "config.photo_dir", "fs.photo_dir", "fs.backup_dir"} {
+		if !strings.Contains(stdout, "[SKIP] "+name) {
+			t.Fatalf("%s should SKIP when the service user is unknown:\n%s", name, stdout)
+		}
+	}
+	if !strings.Contains(stdout, "服务用户未知") {
+		t.Fatalf("skip reason missing:\n%s", stdout)
 	}
 }
 
