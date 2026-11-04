@@ -3,26 +3,25 @@
  * 新建学校模态：code、name、timezone 三个契约字段。
  *
  * **归属**
- * `features/schools` 展示层：校验在 drafts，发请求由调用方做。
+ * `features/schools` 展示层：表单状态与校验走 react-hook-form＋zod
+ * （2026-10-29 天花板裁决 S2），判据单一来源在 `schema.ts`；
+ * 请求体构造在 `drafts.ts`（buildSchoolCreate），发请求由调用方做。
  *
  * **口径**
- * code 非法时保存禁用，并显示契约 pattern 的原因。
+ * code 非法时保存禁用，并显示契约 pattern 的原因；空输入不报错，只显示提示。
  * name 上限 128 由控件封顶。
  * 时区只有 `Asia/Shanghai` 一个选项。
- * 打开即重置草稿，避免上一次的输入残留。
+ * 打开即重置草稿（调用方按开合换 key），避免上一次的输入残留。
  */
 
-import { useState, type ChangeEvent } from 'react'
+import { useForm } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
 import { Alert } from '@/components/ui/Alert'
 import { Button } from '@/components/ui/Button'
 import { SelectInput, TextInput } from '@/components/ui/Input'
 import { Modal } from '@/components/ui/Modal'
-import {
-  SCHOOL_TIMEZONE,
-  schoolCodeError,
-  schoolCreateError,
-  type SchoolCreateDraft,
-} from './drafts'
+import { SCHOOL_TIMEZONE, type SchoolCreateDraft } from './drafts'
+import { schoolCreateSchema, type SchoolCreateFormValues } from './schema'
 
 const EMPTY_DRAFT: SchoolCreateDraft = {
   code: '',
@@ -50,16 +49,18 @@ export function SchoolCreateModal({
   onConfirm,
 }: SchoolCreateModalProps) {
   // 调用方按开合换 key：每次打开都是空表单。
-  const [draft, setDraft] = useState<SchoolCreateDraft>(EMPTY_DRAFT)
-  const validation = schoolCreateError(draft)
-  // 空输入不报错，只显示提示；填了非法值才显示原因。
-  const codeError = draft.code.trim() === '' ? undefined : (schoolCodeError(draft.code.trim()) ?? undefined)
-
-  const field = (key: 'code' | 'name') => ({
-    value: draft[key],
-    onChange: (event: ChangeEvent<HTMLInputElement>) =>
-      setDraft((previous) => ({ ...previous, [key]: event.target.value })),
+  const { register, watch, handleSubmit, formState } = useForm<SchoolCreateFormValues>({
+    resolver: zodResolver(schoolCreateSchema),
+    // 实时校验与迁移前一致：判据逐渲染生效，不等首次提交。
+    mode: 'onChange',
+    // 与现状一致：不把焦点搬去字段。
+    shouldFocusError: false,
+    defaultValues: EMPTY_DRAFT,
   })
+  const codeValue = watch('code')
+  // 空输入不报错，只显示提示；填了非法值才显示原因。
+  const codeError =
+    codeValue.trim() === '' ? undefined : (formState.errors.code?.message ?? undefined)
 
   return (
     <Modal
@@ -77,8 +78,8 @@ export function SchoolCreateModal({
           </Button>
           <Button
             variant="primary"
-            disabled={pending || validation !== null}
-            onClick={() => onConfirm(draft)}
+            disabled={pending || !formState.isValid}
+            onClick={handleSubmit((values) => onConfirm(values))}
           >
             创建学校
           </Button>
@@ -93,7 +94,7 @@ export function SchoolCreateModal({
           placeholder="例如 syn-school-01"
           hint="2–32 位，小写字母、数字或连字符，且以字母或数字开头。"
           error={codeError}
-          {...field('code')}
+          {...register('code')}
         />
         <TextInput
           id="school-create-name"
@@ -101,16 +102,14 @@ export function SchoolCreateModal({
           required
           maxLength={128}
           placeholder="合成学校名称"
-          {...field('name')}
+          {...register('name')}
         />
         <SelectInput
           id="school-create-timezone"
           label="时区"
           options={TIMEZONE_OPTIONS}
           hint="当前仅支持 Asia/Shanghai。"
-          value={draft.timezone}
-          // 单选项：控件只提供契约里唯一可写值。
-          onChange={() => setDraft((previous) => ({ ...previous, timezone: SCHOOL_TIMEZONE }))}
+          {...register('timezone')}
         />
       </div>
       {error ? (

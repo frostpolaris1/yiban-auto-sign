@@ -80,6 +80,7 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | @floating-ui/react-dom | 2.1.9 | MIT | 运行时 |
 | @floating-ui/utils | 0.2.12 | MIT | 运行时 |
 | @formkit/auto-animate | 0.10.0 | MIT | 运行时 |
+| @hookform/resolvers | 5.9.2 | MIT | 运行时 |
 | @humanfs/core | 0.19.2 | Apache-2.0 | 开发 |
 | @humanfs/node | 0.16.8 | Apache-2.0 | 开发 |
 | @humanfs/types | 0.15.0 | Apache-2.0 | 开发 |
@@ -171,6 +172,7 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | @rolldown/binding-win32-arm64-msvc | 1.2.15 | MIT | 开发 |
 | @rolldown/binding-win32-x64-msvc | 1.2.15 | MIT | 开发 |
 | @rolldown/pluginutils | 1.0.1 | MIT | 开发 |
+| @standard-schema/utils | 0.3.0 | MIT | 运行时 |
 | @tanstack/history | 1.162.5 | MIT | 运行时 |
 | @tanstack/query-core | 5.104.5 | MIT | 运行时 |
 | @tanstack/react-query | 5.104.5 | MIT | 运行时 |
@@ -405,6 +407,7 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | radix-ui | 1.8.1 | MIT | 运行时 |
 | react | 19.3.1 | MIT | 运行时 |
 | react-dom | 19.3.1 | MIT | 运行时 |
+| react-hook-form | 7.91.0 | MIT | 运行时 |
 | react-remove-scroll | 2.7.2 | MIT | 运行时 |
 | react-remove-scroll-bar | 2.3.8 | MIT | 运行时 |
 | react-style-singleton | 2.2.3 | MIT | 运行时 |
@@ -462,7 +465,7 @@ Unlicense（isbot）只出现在运行时依赖；公有领域，无传染问题
 | word-wrap | 1.2.5 | MIT | 开发 |
 | yallist | 3.1.1 | ISC | 开发 |
 | yocto-queue | 0.1.0 | MIT | 开发 |
-| zod | 4.6.7 | MIT | 开发 |
+| zod | 4.6.7 | MIT | 运行时 |
 | zod-validation-error | 4.0.2 | MIT | 开发 |
 
-共 449 个包（运行时 100，开发 349）。
+共 452 个包（运行时 104，开发 348）。

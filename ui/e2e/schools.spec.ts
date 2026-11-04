@@ -215,6 +215,18 @@ test('invariant 3: edit prefills, sends only the changed field and blocks a no-o
   expect(patchSchoolCalls(api, 'school-alpha')[1].body).toEqual({ status: 'disabled' })
 })
 
+test('invariant 3: a cleared name blocks save', async ({ page }) => {
+  await mockSchoolsApi(page, { role: 'master' })
+  await openSchools(page)
+
+  const menu = await openRowMenu(page, '合成学校甲')
+  await menu.getByRole('menuitem', { name: /编辑/ }).click()
+  const dialog = page.getByRole('dialog', { name: '编辑学校？' })
+  await dialog.getByLabel('学校名称').fill('   ')
+  await expect(dialog).toContainText('学校名称必填')
+  await expect(dialog.getByRole('button', { name: '保存修改' })).toBeDisabled()
+})
+
 for (const theme of ['light', 'dark'] as const) {
   test(`invariant 3: an admin sees edit and admins greyed with reasons in ${theme}`, async ({
     page,

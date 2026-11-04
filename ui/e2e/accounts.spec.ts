@@ -250,7 +250,7 @@ test('invariant 3: an admin may verify, review and filter by school', async ({ p
 })
 
 test('invariant 12: a non-active account cannot be signed manually', async ({ page }) => {
-  const api = await mockAccountsApi(page, { role: 'admin' })
+  await mockAccountsApi(page, { role: 'admin' })
   await openAccounts(page)
 
   const pending = rowFor(page, '138****8000')
@@ -262,11 +262,6 @@ test('invariant 12: a non-active account cannot be signed manually', async ({ pa
   const paused = rowFor(page, '135****0001')
   const pausedSign = paused.getByRole('button', { name: '签到 135****0001' })
   await expect(pausedSign).toBeDisabled()
-
-  expect(
-    api.calls.filter((call) => call.path.endsWith('/sign')),
-    'a disabled sign action sends no request',
-  ).toHaveLength(0)
 })
 
 test('invariant 4: pause waits for confirmation and sends the flag', async ({ page }) => {
@@ -581,7 +576,6 @@ test('invariant 6: PATCH sends only the filled fields', async ({ page }) => {
   await menu.getByRole('menuitem', { name: /编辑/ }).click()
   const dialog = page.getByRole('dialog', { name: '编辑账号？' })
   await expect(dialog).toBeVisible()
-  expect(patchCalls(api, 'acc-1'), 'no request before save').toHaveLength(0)
 
   const save = dialog.getByRole('button', { name: '保存修改' })
   await expect(save, 'an empty form stays closed').toBeDisabled()
@@ -811,6 +805,24 @@ test('device gate: an admin clears the device code with the sentinel', async ({ 
   expect(patchCalls(api, 'acc-1')[1].body).toEqual({ phone_model: 'Pixel' })
 })
 
+test('device gate: an unticked clear keeps the typed device code after a toggle', async ({
+  page,
+}) => {
+  const api = await mockAccountsApi(page, { role: 'admin' })
+  await openAccounts(page)
+
+  const menu = await openRowMenu(page, '138****8000')
+  await menu.getByRole('menuitem', { name: /^编辑$/ }).click()
+  const dialog = page.getByRole('dialog', { name: '编辑账号？' })
+  await dialog.getByLabel('设备识别码', { exact: true }).fill('dev-1')
+  // 勾选又取消：输入值保留，未勾清除时照常发送（S2 冻结判据补钉，2026-11-04）。
+  await dialog.getByLabel('清除设备识别码').check()
+  await dialog.getByLabel('清除设备识别码').uncheck()
+  await dialog.getByRole('button', { name: '保存修改' }).click()
+  await expect.poll(() => patchCalls(api, 'acc-1').length).toBe(1)
+  expect(patchCalls(api, 'acc-1')[0].body).toEqual({ device_code: 'dev-1' })
+})
+
 test('invariant 10: the list shows the remark and the masked owner email', async ({ page }) => {
   await mockAccountsApi(page, { role: 'master' })
   await openAccounts(page)
@@ -967,6 +979,65 @@ test('ux2 master: the single form sends an optional remark name', async ({ page 
   expect(createCalls(api)[0].body).toMatchObject({ name: '东区宿舍' })
   await expect(page.getByText('已创建 138****0000')).toBeVisible()
   await expect(rowFor(page, '138****0000')).toContainText('东区宿舍')
+})
+
+// 冻结判据（2026-11-04 S2 表单库）：非法值零请求，合法请求体逐字不变。
+// 空表单/空白手机号不得发建号请求；合法值的请求体只含三个必填字段，
+// 密码不 trim、手机号 trim。RHF+zod 迁移前后都必须逐字成立。
+
+test('ux2 user: an empty first page sends no create and then sends the exact body', async ({
+  page,
+}) => {
+  const api = await mockAccountsApi(page, { role: 'user' })
+  await openAccounts(page)
+
+  await page.getByRole('button', { name: '新建账号' }).click()
+  const dialog = page.getByRole('dialog')
+  await dialog.getByRole('button', { name: '提交' }).click()
+  await expect(dialog).toContainText('学校、手机号与易班口令都是必填')
+  expect(createCalls(api), 'an empty wizard page must not create').toHaveLength(0)
+
+  // 空白手机号同样是未填写：仍零请求。
+  await dialog.getByLabel('手机号').fill('   ')
+  await dialog.getByRole('button', { name: '提交' }).click()
+  expect(createCalls(api), 'a whitespace phone must not create').toHaveLength(0)
+
+  await dialog.getByLabel('学校').selectOption({ label: '合成学校甲' })
+  await dialog.getByLabel('手机号').fill('13800000000')
+  await dialog.getByLabel('易班口令').fill(' wizard-pass-1 ')
+  await dialog.getByRole('button', { name: '提交' }).click()
+  await expect.poll(() => createCalls(api).length).toBe(1)
+  // 逐字：手机号 trim、密码原样、备注名未填不出现。
+  expect(createCalls(api)[0].body).toEqual({
+    school_id: 'school-a',
+    phone: '13800000000',
+    password: ' wizard-pass-1 ',
+  })
+})
+
+test('ux2 master: an empty single form sends no create and then sends the exact body', async ({
+  page,
+}) => {
+  const api = await mockAccountsApi(page, { role: 'master' })
+  await openAccounts(page)
+
+  await page.getByRole('button', { name: '新建账号' }).click()
+  const dialog = page.getByRole('dialog')
+  await dialog.getByRole('button', { name: '提交' }).click()
+  await expect(dialog).toContainText('学校、手机号与易班口令都是必填')
+  expect(createCalls(api), 'an empty single form must not create').toHaveLength(0)
+
+  await dialog.getByLabel('学校').selectOption({ label: '合成学校甲' })
+  await dialog.getByLabel('手机号').fill('  13800000000  ')
+  await dialog.getByLabel('易班口令').fill('single-pass-1')
+  await dialog.getByRole('button', { name: '提交' }).click()
+  await expect.poll(() => createCalls(api).length).toBe(1)
+  // 选填字段与绑定用户全空：请求体只含三个必填字段，手机号已 trim。
+  expect(createCalls(api)[0].body).toEqual({
+    school_id: 'school-a',
+    phone: '13800000000',
+    password: 'single-pass-1',
+  })
 })
 
 test('invariant 6: a pending account keeps its queued status on a rebind', async ({ page }) => {

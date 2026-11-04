@@ -3,7 +3,9 @@
  * 编辑学校模态：预填当前值，只发变更字段。
  *
  * **归属**
- * `features/schools` 展示层：差分在 drafts，发请求由调用方做。
+ * `features/schools` 展示层：表单状态与校验走 react-hook-form＋zod
+ * （2026-10-29 天花板裁决 S2），判据单一来源在 `schema.ts`；
+ * 差分在 `drafts.ts`（buildSchoolUpdate），发请求由调用方做。
  *
  * **口径**
  * code 创建后不可改，只读展示，永不进请求体。
@@ -11,22 +13,19 @@
  * 历史时区不在枚举内时，作为只读选项保留，避免下拉静默改写预填值。
  */
 
-import { useState } from 'react'
+import { useMemo } from 'react'
+import { useForm } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
 import type { School, SchoolStatus, SchoolUpdate } from '@/lib/api/school'
 import { Alert } from '@/components/ui/Alert'
 import { Button } from '@/components/ui/Button'
 import { SelectInput, TextInput } from '@/components/ui/Input'
 import { Modal } from '@/components/ui/Modal'
 import { SCHOOL_STATUS_OPTIONS } from './display'
-import {
-  SCHOOL_TIMEZONE,
-  buildSchoolUpdate,
-  schoolNameError,
-  schoolUpdateError,
-  type SchoolUpdateDraft,
-} from './drafts'
+import { SCHOOL_TIMEZONE, buildSchoolUpdate, type SchoolUpdateDraft } from './drafts'
+import { schoolUpdateSchema, type SchoolUpdateFormValues } from './schema'
 
-const EMPTY_DRAFT: SchoolUpdateDraft = {
+const EMPTY_DRAFT: SchoolUpdateFormValues = {
   name: '',
   status: 'active',
   timezone: SCHOOL_TIMEZONE,
@@ -50,13 +49,38 @@ export function SchoolEditModal({
   onConfirm,
 }: SchoolEditModalProps) {
   // 调用方按学校 ID 换 key：每次打开都从当前值重新预填，不残留上一次草稿。
-  const [draft, setDraft] = useState<SchoolUpdateDraft>(() =>
-    school ? { name: school.name, status: school.status, timezone: school.timezone } : EMPTY_DRAFT,
+  // resolver 随 current.timezone 记忆化：历史时区原值放行由 schema 表达。
+  const schema = useMemo(
+    () => schoolUpdateSchema(school ?? { timezone: SCHOOL_TIMEZONE }),
+    [school],
   )
+  const { register, watch, handleSubmit } = useForm<SchoolUpdateFormValues>({
+    resolver: zodResolver(schema),
+    // 实时校验与迁移前一致：判据逐渲染生效，不等首次提交。
+    mode: 'onChange',
+    // 与现状一致：不把焦点搬去字段。
+    shouldFocusError: false,
+    defaultValues: school
+      ? { name: school.name, status: school.status, timezone: school.timezone }
+      : EMPTY_DRAFT,
+  })
+  const values = watch()
 
-  const validation = school ? schoolUpdateError(school, draft) : null
-  const nameIssue = school ? schoolNameError(draft.name) : null
-  const body = school && validation === null ? buildSchoolUpdate(school, draft) : {}
+  // 校验入口在 zod（schema.ts）：名字 + 「时区要改才是合法值」。
+  // 门与展示用同步 safeParse：resolver 是异步的，渲染里若只读
+  // formState.errors 会慢一拍，差分会在校验落地前跑到 buildSchoolUpdate。
+  const parsed = schema.safeParse(values)
+  const validation = parsed.success ? null : (parsed.error.issues[0]?.message ?? null)
+  const nameIssue =
+    parsed.success ? null : (parsed.error.issues.find((issue) => issue.path[0] === 'name')?.message ?? null)
+  const body =
+    school && validation === null
+      ? buildSchoolUpdate(school, {
+          name: values.name,
+          status: values.status as SchoolStatus,
+          timezone: values.timezone,
+        } satisfies SchoolUpdateDraft)
+      : {}
   const changed = Object.keys(body).length > 0
 
   const timezoneOptions =
@@ -84,7 +108,7 @@ export function SchoolEditModal({
           <Button
             variant="primary"
             disabled={pending || !changed}
-            onClick={() => onConfirm(body)}
+            onClick={handleSubmit(() => onConfirm(body))}
           >
             保存修改
           </Button>
@@ -103,30 +127,20 @@ export function SchoolEditModal({
           required
           maxLength={128}
           error={nameIssue ?? undefined}
-          value={draft.name}
-          onChange={(event) => setDraft((previous) => ({ ...previous, name: event.target.value }))}
+          {...register('name')}
         />
         <SelectInput
           id="school-edit-status"
           label="状态"
           options={SCHOOL_STATUS_OPTIONS}
-          value={draft.status}
-          onChange={(event) =>
-            setDraft((previous) => ({
-              ...previous,
-              status: event.target.value as SchoolStatus,
-            }))
-          }
+          {...register('status')}
         />
         <SelectInput
           id="school-edit-timezone"
           label="时区"
           options={timezoneOptions}
           hint="可写值当前仅支持 Asia/Shanghai。"
-          value={draft.timezone}
-          onChange={(event) =>
-            setDraft((previous) => ({ ...previous, timezone: event.target.value }))
-          }
+          {...register('timezone')}
         />
       </div>
       {error ? (
