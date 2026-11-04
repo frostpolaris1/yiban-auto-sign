@@ -139,14 +139,23 @@ class GateHappyPathTest(unittest.TestCase):
 
 
 class ScanSurfaceGuardTest(unittest.TestCase):
-    """扫描面自检（2026-10-25 复审 P2-3）：`.go` 覆盖可被静默移除就是假的。
+    """扫描面自检：`.go` 覆盖可被静默移除就是假的；新旧栈边界漂移同样假。
 
-    从门脚本源码 AST 里断言 SCAN_EXTS 含 `.go`、DEFAULT_SCAN 含 server/ui。
-    删掉任一项，本用例红——实验线 Go 生产面的键字面量从此必须受门判红。
+    从门脚本源码 AST 里断言四件事：
+      ① SCAN_EXTS 含 `.go`（旧线树里混进 .go 文件时仍受本门判红）；
+      ② DEFAULT_SCAN **不含** server/ui——新栈键面归新栈自己的门
+        （`server/internal/configdata/registry.json` + registry_parity_test 的
+        双向门）；旧名册拿去判新栈的新键（如 YIBAN_ALLOW_NO_DB）只会假红；
+      ③ server/ui **显式**登记在 BENIGN_TOP_DIRS——边界靠显式声明钉住，
+        静默从扫描面删掉（两者都不在）会让扫描面残缺守卫把整棵新栈当
+        "未登记的生产目录"判红，静默塞回扫描面则回到假红；
+      ④ SKIP_PREFIXES 含新栈部署/升级脚本前缀——它们在 `deploy`/`scripts`
+        扫描条目内部，不整目录跳过就会拿旧名册判 `YIBAN_COMPOSE_ENV_FILE` 等
+        新栈编排变量（假红），而 SKIP_PREFIXES 整表被删会退回那个假红形态。
     用 AST 而非文本匹配：重排元组、换引号都不误伤；删除元素才红。
     """
 
-    def _tuple_of(self, tree, name):
+    def _assign_of(self, tree, name):
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign):
                 for tgt in node.targets:
@@ -154,26 +163,38 @@ class ScanSurfaceGuardTest(unittest.TestCase):
                         return node.value
         return None
 
-    def _elements(self, tup):
-        if isinstance(tup, (ast.Tuple, ast.List)):
-            return [ast.literal_eval(e) for e in tup.elts]
+    def _elements(self, node):
+        if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+            return [ast.literal_eval(e) for e in node.elts]
         return []
 
-    def test_go_scan_and_server_surface_are_declared(self):
+    def test_scan_face_declares_the_new_stack_boundary(self):
         with open(GATE, encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
-        scan_exts = self._tuple_of(tree, "SCAN_EXTS")
-        default_scan = self._tuple_of(tree, "DEFAULT_SCAN")
-        self.assertIsNotNone(scan_exts, "SCAN_EXTS 定义丢失")
-        self.assertIsNotNone(default_scan, "DEFAULT_SCAN 定义丢失")
+        scan_exts = self._assign_of(tree, "SCAN_EXTS")
+        default_scan = self._assign_of(tree, "DEFAULT_SCAN")
+        benign = self._assign_of(tree, "BENIGN_TOP_DIRS")
+        skip = self._assign_of(tree, "SKIP_PREFIXES")
+        for name, node in (("SCAN_EXTS", scan_exts), ("DEFAULT_SCAN", default_scan),
+                           ("BENIGN_TOP_DIRS", benign), ("SKIP_PREFIXES", skip)):
+            self.assertIsNotNone(node, "%s 定义丢失" % name)
         exts = self._elements(scan_exts)
         scan = self._elements(default_scan)
+        benign = self._elements(benign)
+        skip = self._elements(skip)
         self.assertIn(".go", exts,
-                      "SCAN_EXTS 丢了 .go：Go 生产面的配置键字面量从此不受门判红（假覆盖）")
-        self.assertIn("server", scan,
-                      "DEFAULT_SCAN 丢了 server：实验线 Go 后端被移出扫描面")
-        self.assertIn("ui", scan,
-                      "DEFAULT_SCAN 丢了 ui：实验线 React 前端被移出扫描面")
+                      "SCAN_EXTS 丢了 .go：混进旧线树的 Go 文件不再受门判红（假覆盖）")
+        for newstack in ("server", "ui"):
+            self.assertNotIn(newstack, scan,
+                             "DEFAULT_SCAN 不该再扫 %s：新栈键面归新栈的 configdata 门管，"
+                             "旧名册判它必假红" % newstack)
+            self.assertIn(newstack, benign,
+                          "BENIGN_TOP_DIRS 丢了 %s：新栈边界必须显式声明，"
+                          "否则扫描面残缺守卫把整棵新栈判成未登记生产目录" % newstack)
+        for prefix in ("deploy/baremetal/", "deploy/container/", "deploy/docker/",
+                       "deploy/linux/", "scripts/e2e/"):
+            self.assertIn(prefix, skip,
+                          "SKIP_PREFIXES 丢了 %s：新栈部署/升级脚本会被旧名册假红" % prefix)
 
 
 class GateDefaultLiteralMutationTest(unittest.TestCase):

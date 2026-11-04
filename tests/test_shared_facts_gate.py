@@ -102,7 +102,7 @@ NEW_FAMILY_KEY_COUNTS = {TRUST_FAMILY: CENSUS_REAL_KEY_COUNTS[TRUST_FAMILY],
 WIRE_ZERO_DEF_KEY = "JS 侧状态字符串硬编码比较（17 处消费、零定义点）"
 #: census 的族汇总/交付状态元行不是一枚共享事实，不许被登记成键
 CENSUS_META_MARKERS = ("(交付状态)", "__STATUS__")
-#: 生产扫描路径名（`check-shared-facts.sh` 的 DEFAULT_SCOPE 里的条目）
+#: 生产扫描路径前缀（`check-shared-facts.sh` 的 DEFAULT_SCOPE 覆盖面）
 PRODUCTION_PATHS = ("yiban", "scripts", "web", "docker", "deploy", ".github",
                     "run.sh", "run_probe.sh")
 #: 测试路径名——与生产口径混在一行就是 gxf4 要消灭的 `tsv:92` 形状
