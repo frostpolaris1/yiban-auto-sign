@@ -341,12 +341,9 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 	}
 	// 测试邮件冷却：每个管理员 60s 一封。复用入站限流器的令牌桶实现，
 	// 但独立实例与键前缀：不占用登录/签到等账号限流额度。
-	mailTestThrottle, err := ratelimit.NewThrottle(ratelimit.Quota{
-		PerMinute: int(time.Minute / appsettings.TestMailCooldown),
-		Burst:     1,
-	})
+	mailTestThrottle, err := buildMailTestThrottle()
 	if err != nil {
-		return nil, fmt.Errorf("assembly: mail test throttle: %w", err)
+		return nil, err
 	}
 
 	if strings.TrimSpace(cfg.DatabaseURL) == "" {
@@ -865,6 +862,20 @@ func buildRateLimit(cfg *config.Config) (*ratelimit.Guard, error) {
 		return nil, fmt.Errorf("assembly: account rate limit: %w", err)
 	}
 	return &ratelimit.Guard{IP: ip, Account: account, Trusted: trusted}, nil
+}
+
+// buildMailTestThrottle 构造测试邮件的每管理员冷却。
+// 60s 冷却 = 1/min + burst 1：burst 若大于 1，窗口开头可连发，
+// 与「每管理员 60s 一封」的口径不符。独立实例，不占账号限流额度。
+func buildMailTestThrottle() (*ratelimit.Throttle, error) {
+	throttle, err := ratelimit.NewThrottle(ratelimit.Quota{
+		PerMinute: int(time.Minute / appsettings.TestMailCooldown),
+		Burst:     1,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("assembly: mail test throttle: %w", err)
+	}
+	return throttle, nil
 }
 
 // egressBurst 是每出口令牌桶的突发深度（账号尝试数）。

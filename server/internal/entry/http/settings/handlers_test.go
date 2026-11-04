@@ -460,7 +460,7 @@ func TestMailTestMasterOnly(t *testing.T) {
 // 收件人只取会话邮箱：请求体里的 to 被忽略。
 func TestMailTestUsesSessionMailbox(t *testing.T) {
 	sender := &fakeSender{}
-	handler, _, _ := newHandlerWith(t, sender, &fakeCooldown{allowed: true})
+	handler, _, audits := newHandlerWith(t, sender, &fakeCooldown{allowed: true})
 
 	c, rec := newContextWithEmail(http.MethodPost, "/api/admin/mail/test",
 		`{"to":"attacker@example.com"}`, coreauth.RoleMaster, "owner@example.com")
@@ -476,6 +476,9 @@ func TestMailTestUsesSessionMailbox(t *testing.T) {
 	}
 	if sender.msg.Subject == "" || sender.msg.Text == "" {
 		t.Fatalf("message = %+v, want subject and body", sender.msg)
+	}
+	if len(audits.entries) != 1 || audits.entries[0].Action != coreaudit.ActionSettingsMailTest {
+		t.Fatalf("audit = %+v, want one settings.mail_test row", audits.entries)
 	}
 }
 
@@ -510,7 +513,7 @@ func TestMailTestErrorMapping(t *testing.T) {
 		sender := &fakeSender{err: &coremail.DeliveryError{
 			Kind: coremail.KindAuth, Err: errors.New(secret),
 		}}
-		handler, _, _ := newHandlerWith(t, sender, nil)
+		handler, _, audits := newHandlerWith(t, sender, nil)
 		c, rec := newContext(http.MethodPost, "/api/admin/mail/test", "", coreauth.RoleMaster)
 		handler.AdminMailTest(c, oapi.AdminMailTestParams{})
 		if rec.Code != http.StatusBadGateway || errorCode(t, rec) != "upstream_unavailable" {
@@ -518,6 +521,9 @@ func TestMailTestErrorMapping(t *testing.T) {
 		}
 		if strings.Contains(rec.Body.String(), secret) || strings.Contains(rec.Body.String(), "kind=") {
 			t.Fatalf("delivery detail leaked: %s", rec.Body.String())
+		}
+		if len(audits.entries) != 1 || audits.entries[0].Detail["result"] != "error" {
+			t.Fatalf("audit = %+v, want one error settings.mail_test row", audits.entries)
 		}
 	})
 

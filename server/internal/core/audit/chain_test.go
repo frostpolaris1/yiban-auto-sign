@@ -256,6 +256,28 @@ func TestEncodeDetailAcceptsLocationSetKeys(t *testing.T) {
 	}
 }
 
+// 测试邮件审计的三个新键：result/kind 是状态词，retryable 只接受布尔。
+// 形状外或自由文本一律拒绝，detail 不得成为第二个日志面。
+func TestEncodeDetailAcceptsMailTestKeys(t *testing.T) {
+	for _, detail := range []map[string]any{
+		{"result": "sent"},
+		{"result": "error", "kind": "auth", "retryable": false},
+	} {
+		if _, err := coreaudit.EncodeDetail(detail); err != nil {
+			t.Fatalf("mail test detail %v 被拒绝: %v", detail, err)
+		}
+	}
+	if _, err := coreaudit.EncodeDetail(map[string]any{"result": "owner@example.com"}); err == nil {
+		t.Fatal("result 接受了邮箱自由文本")
+	}
+	if _, err := coreaudit.EncodeDetail(map[string]any{"kind": "SMTP-AUTH"}); err == nil {
+		t.Fatal("kind 非状态词未被拒绝")
+	}
+	if _, err := coreaudit.EncodeDetail(map[string]any{"retryable": "no"}); err == nil {
+		t.Fatal("retryable 字符串未被拒绝")
+	}
+}
+
 // P5 图片入库审计的键：crop_* 只接受 0..10 整数，
 // sha256 只接受 64 位小写十六进制（输出摘要，无 PII 容量）。
 func TestEncodeDetailAcceptsPhotoUploadKeys(t *testing.T) {

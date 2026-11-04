@@ -78,8 +78,11 @@ const (
 	ActionSettingsRegistration Action = "settings.registration"
 	// 全站公告写入或清空。detail 只记字段名，**绝无公告正文**。
 	ActionSettingsAnnouncement Action = "settings.announcement"
-	ActionAccountCreate        Action = "account.create"
-	ActionAccountUpdate        Action = "account.update"
+	// 设置页测试邮件。每次外呼都记，成功与失败同动作；
+	// detail 只记结果与投递粗分类，**绝无** SMTP 应答、邮箱原文或口令。
+	ActionSettingsMailTest Action = "settings.mail_test"
+	ActionAccountCreate    Action = "account.create"
+	ActionAccountUpdate    Action = "account.update"
 	// 被拒账号编辑或改绑手机号把账号送回 pending：重提进待审队列。
 	// detail 只记状态迁移，不含手机号。
 	ActionAccountResubmit     Action = "account.resubmit"
@@ -269,6 +272,11 @@ var detailKeys = map[string]bool{
 	// 注册时同意的协议版本：1..1000 的整数，无自由文本容量。
 	"terms_version":   true,
 	"privacy_version": true,
+	// 测试邮件审计：result/kind 是状态词，retryable 是布尔。
+	// 三者无自由文本容量，不构成隐私面。
+	"result":    true,
+	"kind":      true,
+	"retryable": true,
 }
 
 // cropPercentKeys 是裁切比例 detail 键集。取值限 0..10 闭区间。
@@ -400,7 +408,7 @@ func validateDetailString(key, text string) error {
 			return fmt.Errorf("%w: %q has the wrong field shape", ErrDetailShape, key)
 		}
 		return nil
-	case "from", "to", "mode":
+	case "from", "to", "mode", "result", "kind":
 		if !wordShape.MatchString(text) {
 			return fmt.Errorf("%w: %q has the wrong value shape", ErrDetailShape, key)
 		}

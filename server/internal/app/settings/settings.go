@@ -6,7 +6,7 @@
 // Service 读写全站公告：正文单行、去首尾空白、上限 200 字符；
 // 写入与 settings.announcement 审计同事务。
 // Service 还向当前管理员自己的邮箱发一封测试信：复用 core/mail 端口，
-// 同步投递，失败按粗分类记账，并按管理员冷却限频。
+// 同步投递，成功与失败各写一条 settings.mail_test 审计，并按管理员冷却限频。
 // 本包**不**读环境变量、**不**读名册文件、**不**写 SQL、**不**实现 SMTP。
 //
 // # 归属
@@ -23,7 +23,8 @@
 // 两者都没有即 unknown。file 保留给文件层，本服务永不产出。
 // 敏感键的 masked 是固定 "****"，不含原值任何字符。
 // 测试邮件收件人只取会话用户邮箱，**不接受**请求体指定；
-// 失败只记 core/mail 粗分类与掩码邮箱，SMTP 应答与口令不进响应和日志。
+// 审计 detail 只含 result 与投递粗分类；
+// SMTP 应答、邮箱原文与口令不进响应、审计和日志。
 package settings
 
 import (
@@ -323,10 +324,12 @@ const (
 // 收件人只取会话用户邮箱，**不接受**调用方指定地址。
 // 同步投递：返回 nil 表示 SMTP 服务器已接收（DATA 已 ACK），
 // 不代表邮箱已读；失败回 upstream_unavailable，错误文本不含 SMTP 应答。
-// SMTP 关闭/未配置回 conflict（与无邮箱同状态、文案不同）；
+// 邮件投递关闭（SMTP 未启用）回 conflict（与无邮箱同状态、文案不同）；
 // 会话邮箱为空回 conflict；冷却内重复请求回 rate_limited，
 // details 带 retry_after_seconds。
-// 不写审计：审计词表是安全动作的闭集，投递结果走结构化日志。
+// 每次真正外呼都写 settings.mail_test 审计，成功与失败同动作；
+// detail 只含 result 与投递粗分类，**不含** SMTP 应答、邮箱原文或口令。
+// 审计写失败时回 internal：审计完整性优先于本轮响应。
 func (s *Service) SendTestMail(ctx context.Context, user coreauth.User) error {
 	to := strings.TrimSpace(user.Email)
 	if to == "" {
@@ -344,7 +347,7 @@ func (s *Service) SendTestMail(ctx context.Context, user coreauth.User) error {
 			}
 			return &coreerrs.Error{
 				Code:    coreerrs.CodeRateLimited,
-				Message: "a test email was sent recently; retry later",
+				Message: "a test email was attempted recently; retry later",
 				Details: map[string]any{"retry_after_seconds": seconds},
 			}
 		}
@@ -364,10 +367,47 @@ func (s *Service) SendTestMail(ctx context.Context, user coreauth.User) error {
 			attrs = append(attrs, logfield.KeyReason, "unsupported_address")
 		}
 		s.log.Warn("test mail delivery failed", attrs...)
+		if auditErr := s.recordTestMailAudit(ctx, user, map[string]any{
+			"result":    "error",
+			"kind":      string(kind),
+			"retryable": retryable,
+		}); auditErr != nil {
+			s.log.Error("test mail audit failed",
+				logfield.KeyEvent, "mail_test.audit_failed",
+				logfield.KeyReason, "audit_write_failed")
+			return coreerrs.New(coreerrs.CodeInternal, "internal error")
+		}
 		return coreerrs.New(coreerrs.CodeUpstream, "test email delivery failed")
+	}
+	if auditErr := s.recordTestMailAudit(ctx, user, map[string]any{"result": "sent"}); auditErr != nil {
+		s.log.Error("test mail audit failed",
+			logfield.KeyEvent, "mail_test.audit_failed",
+			logfield.KeyReason, "audit_write_failed")
+		return coreerrs.New(coreerrs.CodeInternal, "internal error")
 	}
 	s.log.Info("test mail delivered",
 		logfield.KeyEvent, "mail_test.delivered",
 		logfield.KeyEmail, mask.EmailLabel(to))
 	return nil
+}
+
+// recordTestMailAudit 写一条测试邮件审计。
+// 审计主体由会话用户构造，Label 是掩码邮箱。
+// detail 调用方只传结果词与粗分类；写入口径由 core/audit 的白名单兜底。
+func (s *Service) recordTestMailAudit(ctx context.Context, user coreauth.User, detail map[string]any) error {
+	user.Email = strings.TrimSpace(user.Email)
+	actor := appaudit.NewActor(user)
+	return s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
+		_, err := s.deps.Audit.Append(ctx, coreaudit.Entry{
+			TS:          s.deps.Clock.Now().UTC(),
+			ActorUserID: actor.UserID,
+			ActorRole:   actor.Role,
+			ActorLabel:  actor.Label,
+			Action:      coreaudit.ActionSettingsMailTest,
+			TargetType:  "settings",
+			TargetID:    "mail",
+			Detail:      detail,
+		})
+		return err
+	})
 }

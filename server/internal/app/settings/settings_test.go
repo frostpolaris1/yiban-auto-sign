@@ -365,23 +365,25 @@ func (f *fakeCooldown) Allow(key string) (bool, time.Duration) {
 	return f.allowed, f.wait
 }
 
-func newMailService(t *testing.T, sender coremail.Sender, cooldown appsettings.Cooldown) *appsettings.Service {
+func newMailService(t *testing.T, sender coremail.Sender, cooldown appsettings.Cooldown) (*appsettings.Service, *fakeAudit, *fakeTx) {
 	t.Helper()
+	audits := &fakeAudit{}
+	tx := &fakeTx{}
 	svc, err := appsettings.NewService(appsettings.Deps{
-		Store: &fakeStore{}, Audit: &fakeAudit{}, Tx: &fakeTx{}, Clock: fixedClock{},
+		Store: &fakeStore{}, Audit: audits, Tx: tx, Clock: fixedClock{},
 		Mail: sender, Cooldown: cooldown,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	return svc
+	return svc, audits, tx
 }
 
 // 收件人只取会话邮箱：签名里没有第二个地址来源。
 func TestSendTestMailUsesSessionAddress(t *testing.T) {
 	sender := &fakeMail{}
 	cooldown := &fakeCooldown{allowed: true}
-	svc := newMailService(t, sender, cooldown)
+	svc, audits, tx := newMailService(t, sender, cooldown)
 	user := coreauth.User{ID: "master-1", Email: "  owner@example.com  "}
 	if err := svc.SendTestMail(context.Background(), user); err != nil {
 		t.Fatalf("SendTestMail: %v", err)
@@ -398,13 +400,29 @@ func TestSendTestMailUsesSessionAddress(t *testing.T) {
 	if len(cooldown.keys) != 1 || cooldown.keys[0] != "admin-mail-test:master-1" {
 		t.Fatalf("cooldown keys = %v", cooldown.keys)
 	}
+	if tx.calls != 1 {
+		t.Fatalf("audit transactions = %d, want 1", tx.calls)
+	}
+	if len(audits.entries) != 1 {
+		t.Fatalf("audit entries = %d, want 1", len(audits.entries))
+	}
+	entry := audits.entries[0]
+	if entry.Action != coreaudit.ActionSettingsMailTest || entry.TargetType != "settings" || entry.TargetID != "mail" {
+		t.Fatalf("audit entry = %+v", entry)
+	}
+	if entry.Detail["result"] != "sent" {
+		t.Fatalf("audit detail = %v, want result=sent", entry.Detail)
+	}
+	if strings.Contains(entry.ActorLabel, "owner@example.com") {
+		t.Fatalf("audit actor label leaks the full address: %q", entry.ActorLabel)
+	}
 }
 
-// 会话邮箱为空：409，且不触达发送器。
+// 会话邮箱为空：409，且不触达发送器、不写审计。
 func TestSendTestMailRejectsMissingMailbox(t *testing.T) {
 	for _, email := range []string{"", "   "} {
 		sender := &fakeMail{}
-		svc := newMailService(t, sender, nil)
+		svc, audits, _ := newMailService(t, sender, nil)
 		err := svc.SendTestMail(context.Background(), coreauth.User{ID: "master-1", Email: email})
 		if code := errs.From(err).Code; code != errs.CodeConflict {
 			t.Fatalf("email %q: code = %s, want conflict", email, code)
@@ -412,25 +430,31 @@ func TestSendTestMailRejectsMissingMailbox(t *testing.T) {
 		if sender.sends != 0 {
 			t.Fatal("a mailbox-less account reached the sender")
 		}
+		if len(audits.entries) != 0 {
+			t.Fatal("a mailbox-less account wrote an audit row")
+		}
 	}
 }
 
-// SMTP 关闭：409，不静默成功。
+// 邮件投递关闭：409，不静默成功、不写审计。
 func TestSendTestMailDisabled(t *testing.T) {
-	svc := newMailService(t, nil, nil)
+	svc, audits, _ := newMailService(t, nil, nil)
 	err := svc.SendTestMail(context.Background(), coreauth.User{ID: "master-1", Email: "owner@example.com"})
 	if code := errs.From(err).Code; code != errs.CodeConflict {
 		t.Fatalf("code = %s, want conflict", code)
 	}
+	if len(audits.entries) != 0 {
+		t.Fatal("a disabled delivery wrote an audit row")
+	}
 }
 
-// 投递失败：502，错误文本不含 SMTP 应答或口令。
+// 投递失败：502，错误文本与审计 detail 都不含 SMTP 应答或口令。
 func TestSendTestMailDeliveryFailureHidesTransportDetail(t *testing.T) {
 	const secret = "smtp-secret-9f21"
 	sender := &fakeMail{err: &coremail.DeliveryError{
 		Kind: coremail.KindAuth, Err: errors.New("535 auth failed: " + secret),
 	}}
-	svc := newMailService(t, sender, nil)
+	svc, audits, _ := newMailService(t, sender, nil)
 	err := svc.SendTestMail(context.Background(), coreauth.User{ID: "master-1", Email: "owner@example.com"})
 	if code := errs.From(err).Code; code != errs.CodeUpstream {
 		t.Fatalf("code = %s, want upstream_unavailable", code)
@@ -438,13 +462,45 @@ func TestSendTestMailDeliveryFailureHidesTransportDetail(t *testing.T) {
 	if strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "535") {
 		t.Fatalf("error text leaks transport detail: %v", err)
 	}
+	if len(audits.entries) != 1 {
+		t.Fatalf("audit entries = %d, want 1", len(audits.entries))
+	}
+	detail := audits.entries[0].Detail
+	if detail["result"] != "error" || detail["kind"] != "auth" || detail["retryable"] != false {
+		t.Fatalf("audit detail = %v, want error/auth/false", detail)
+	}
+	for _, value := range detail {
+		if text, ok := value.(string); ok && strings.Contains(text, secret) {
+			t.Fatalf("audit detail leaks the SMTP reply: %v", detail)
+		}
+	}
 }
 
-// 冷却内的请求：429，带 retry_after_seconds，且不触达发送器。
+// 审计写失败必须失败关闭：邮件可能已发出，但结果不能无审计地当成功。
+func TestSendTestMailFailsClosedWhenAuditFails(t *testing.T) {
+	sender := &fakeMail{}
+	audits := &fakeAudit{err: errors.New("audit down")}
+	svc, err := appsettings.NewService(appsettings.Deps{
+		Store: &fakeStore{}, Audit: audits, Tx: &fakeTx{}, Clock: fixedClock{},
+		Mail: sender,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	err = svc.SendTestMail(context.Background(), coreauth.User{ID: "master-1", Email: "owner@example.com"})
+	if code := errs.From(err).Code; code != errs.CodeInternal {
+		t.Fatalf("code = %s, want internal_error", code)
+	}
+	if sender.sends != 1 {
+		t.Fatalf("sends = %d, want 1", sender.sends)
+	}
+}
+
+// 冷却内的请求：429，带 retry_after_seconds，且不触达发送器、不写审计。
 func TestSendTestMailCooldown(t *testing.T) {
 	sender := &fakeMail{}
 	cooldown := &fakeCooldown{allowed: false, wait: 42 * time.Second}
-	svc := newMailService(t, sender, cooldown)
+	svc, audits, _ := newMailService(t, sender, cooldown)
 	err := svc.SendTestMail(context.Background(), coreauth.User{ID: "master-1", Email: "owner@example.com"})
 	if code := errs.From(err).Code; code != errs.CodeRateLimited {
 		t.Fatalf("code = %s, want rate_limited", code)
@@ -458,5 +514,8 @@ func TestSendTestMailCooldown(t *testing.T) {
 	}
 	if sender.sends != 0 {
 		t.Fatal("a throttled request reached the sender")
+	}
+	if len(audits.entries) != 0 {
+		t.Fatal("a throttled request wrote an audit row")
 	}
 }

@@ -997,14 +997,17 @@ export interface paths {
          *     The request body is empty and ignored, so the client can never pick
          *     the recipient. Delivery is synchronous: a 200 means the SMTP server
          *     accepted the message (DATA was acknowledged), not that the mailbox
-         *     received it. SMTP disabled or not configured answers 409 with a
+         *     received it. Mail delivery disabled (SMTP is off) answers 409 with a
          *     distinct message; a master whose account has no email address also
          *     answers 409. A delivery failure answers 502 with no SMTP reply,
          *     relay host, address or credential detail. At most one test message
          *     per master per 60 seconds; a request inside that window answers 429
-         *     with Retry-After.
-         *     No audit row is written: audit holds security actions, while this is
-         *     an operational probe; delivery outcomes go to the structured log.
+         *     with Retry-After. The cooldown is process-local and resets when the
+         *     server restarts.
+         *     Every send attempt, success or failure, appends one
+         *     settings.mail_test audit row whose detail holds only the result and
+         *     the coarse delivery class; it never holds the SMTP reply, address,
+         *     relay host or credential.
          */
         post: operations["AdminMailTest"];
         delete?: never;
