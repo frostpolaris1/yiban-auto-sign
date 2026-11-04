@@ -339,6 +339,15 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 测试邮件冷却：每个管理员 60s 一封。复用入站限流器的令牌桶实现，
+	// 但独立实例与键前缀：不占用登录/签到等账号限流额度。
+	mailTestThrottle, err := ratelimit.NewThrottle(ratelimit.Quota{
+		PerMinute: int(time.Minute / appsettings.TestMailCooldown),
+		Burst:     1,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("assembly: mail test throttle: %w", err)
+	}
 
 	if strings.TrimSpace(cfg.DatabaseURL) == "" {
 		issuer = session.NewMemory(clk, cfg.HashPepper)
@@ -368,20 +377,10 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			closeFn()
 			return nil, fmt.Errorf("assembly: audit repo: %w", err)
 		}
-		// 设置面：订阅、公告、名册与审计列表。
-		// 名册缺失只让 GET /api/admin/settings 回 501：其余三个端点不依赖它。
-		settingsLib, auditLib, err = buildSettings(db, audits, clk, logger)
-		if err != nil {
-			closeFn()
-			return nil, err
-		}
-		sessionRepo := pg.NewSessionRepo(db)
-		issuer, err = pg.NewSessionIssuer(sessionRepo, audits, cfg.HashPepper, clk)
-		if err != nil {
-			closeFn()
-			return nil, fmt.Errorf("assembly: session issuer: %w", err)
-		}
-		// 邮件端口：关闭时留显性启动警告；打开但配置不全由 config.Load 拒绝。
+		// 设置面：订阅、公告、名册、测试邮件与审计列表。
+		// 名册缺失只让 GET /api/admin/settings 回 501：其余端点不依赖它。
+		// 邮件端口先于设置面构造：测试邮件与忘记口令共用同一实现。
+		// 关闭时留显性启动警告；打开但配置不全由 config.Load 拒绝。
 		// 只看 YIBAN_RESET_MAIL_ENABLE：YIBAN_MAIL_ENABLE 属旧通知线，Go 侧不读。
 		// 日志只记 host/port/tls_mode：用户名与口令是敏感值，不得出现。
 		var mailer coremail.Sender
@@ -404,8 +403,19 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			logger.Info("mail: SMTP delivery enabled",
 				logfield.KeyHost, cfg.MailHost, logfield.KeyPort, cfg.MailPort, logfield.KeyTLSMode, cfg.MailTLSMode)
 		} else {
-			logger.Warn("mail: SMTP delivery is disabled; password reset links are not delivered",
+			logger.Warn("mail: SMTP delivery is disabled; password reset links and test mail are not delivered",
 				logfield.KeyReason, "YIBAN_RESET_MAIL_ENABLE is false")
+		}
+		settingsLib, auditLib, err = buildSettings(db, audits, clk, logger, mailer, mailTestThrottle)
+		if err != nil {
+			closeFn()
+			return nil, err
+		}
+		sessionRepo := pg.NewSessionRepo(db)
+		issuer, err = pg.NewSessionIssuer(sessionRepo, audits, cfg.HashPepper, clk)
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("assembly: session issuer: %w", err)
 		}
 		// 一个 KDF 闸服务全部用例：并发上限按进程计，不是按服务计。
 		kdf := auth.NewBounded(cfg.KDFConcurrency)
@@ -767,16 +777,19 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 // 名册存在但损坏（解析失败、键重复、空名册）时**失败关闭**：
 // 带病的名册会把错误的信息展示成配置事实。
 func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
-	logger *slog.Logger) (*settingshttp.Handler, *audithttp.Handler, error) {
+	logger *slog.Logger, mailer coremail.Sender, cooldown appsettings.Cooldown) (*settingshttp.Handler, *audithttp.Handler, error) {
 	notifySvc, err := appnotify.NewService(pg.NewNotificationPrefsRepo(db))
 	if err != nil {
 		return nil, nil, fmt.Errorf("assembly: notify service: %w", err)
 	}
 	announcementSvc, err := appsettings.NewService(appsettings.Deps{
-		Store: pg.NewAnnouncementRepo(db),
-		Audit: audits,
-		Tx:    db,
-		Clock: clk,
+		Store:    pg.NewAnnouncementRepo(db),
+		Audit:    audits,
+		Tx:       db,
+		Clock:    clk,
+		Mail:     mailer,
+		Cooldown: cooldown,
+		Logger:   logger,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("assembly: announcement service: %w", err)
@@ -800,7 +813,7 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 			return nil, nil, fmt.Errorf("assembly: configuration roster: %w", err)
 		}
 	}
-	return settingshttp.NewHandler(notifySvc, roster, announcementSvc), audithttp.NewHandler(reader), nil
+	return settingshttp.NewHandler(notifySvc, roster, announcementSvc, announcementSvc), audithttp.NewHandler(reader), nil
 }
 
 // rosterEntries 把适配器的名册条目转成用例视图。

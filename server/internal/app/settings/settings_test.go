@@ -12,6 +12,7 @@ import (
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	coremail "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mail"
 )
 
 // mapSource 是固定环境面。空串按未设置处理，与 config.Load 一致。
@@ -336,5 +337,126 @@ func TestAnnouncementGet(t *testing.T) {
 	}
 	if announcement.Text != "公告" || announcement.UpdatedAt == nil || !announcement.UpdatedAt.Equal(now) {
 		t.Fatalf("announcement = %+v", announcement)
+	}
+}
+
+// fakeMail 记录最后一次投递，并按需返回错误。
+type fakeMail struct {
+	msg   coremail.Message
+	err   error
+	sends int
+}
+
+func (f *fakeMail) Send(_ context.Context, msg coremail.Message) error {
+	f.sends++
+	f.msg = msg
+	return f.err
+}
+
+// fakeCooldown 是固定判据的冷却替身。
+type fakeCooldown struct {
+	allowed bool
+	wait    time.Duration
+	keys    []string
+}
+
+func (f *fakeCooldown) Allow(key string) (bool, time.Duration) {
+	f.keys = append(f.keys, key)
+	return f.allowed, f.wait
+}
+
+func newMailService(t *testing.T, sender coremail.Sender, cooldown appsettings.Cooldown) *appsettings.Service {
+	t.Helper()
+	svc, err := appsettings.NewService(appsettings.Deps{
+		Store: &fakeStore{}, Audit: &fakeAudit{}, Tx: &fakeTx{}, Clock: fixedClock{},
+		Mail: sender, Cooldown: cooldown,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	return svc
+}
+
+// 收件人只取会话邮箱：签名里没有第二个地址来源。
+func TestSendTestMailUsesSessionAddress(t *testing.T) {
+	sender := &fakeMail{}
+	cooldown := &fakeCooldown{allowed: true}
+	svc := newMailService(t, sender, cooldown)
+	user := coreauth.User{ID: "master-1", Email: "  owner@example.com  "}
+	if err := svc.SendTestMail(context.Background(), user); err != nil {
+		t.Fatalf("SendTestMail: %v", err)
+	}
+	if sender.sends != 1 {
+		t.Fatalf("sends = %d, want 1", sender.sends)
+	}
+	if sender.msg.To != "owner@example.com" {
+		t.Fatalf("recipient = %q, want trimmed session address", sender.msg.To)
+	}
+	if sender.msg.Subject == "" || sender.msg.Text == "" {
+		t.Fatalf("message = %+v, want subject and body", sender.msg)
+	}
+	if len(cooldown.keys) != 1 || cooldown.keys[0] != "admin-mail-test:master-1" {
+		t.Fatalf("cooldown keys = %v", cooldown.keys)
+	}
+}
+
+// 会话邮箱为空：409，且不触达发送器。
+func TestSendTestMailRejectsMissingMailbox(t *testing.T) {
+	for _, email := range []string{"", "   "} {
+		sender := &fakeMail{}
+		svc := newMailService(t, sender, nil)
+		err := svc.SendTestMail(context.Background(), coreauth.User{ID: "master-1", Email: email})
+		if code := errs.From(err).Code; code != errs.CodeConflict {
+			t.Fatalf("email %q: code = %s, want conflict", email, code)
+		}
+		if sender.sends != 0 {
+			t.Fatal("a mailbox-less account reached the sender")
+		}
+	}
+}
+
+// SMTP 关闭：409，不静默成功。
+func TestSendTestMailDisabled(t *testing.T) {
+	svc := newMailService(t, nil, nil)
+	err := svc.SendTestMail(context.Background(), coreauth.User{ID: "master-1", Email: "owner@example.com"})
+	if code := errs.From(err).Code; code != errs.CodeConflict {
+		t.Fatalf("code = %s, want conflict", code)
+	}
+}
+
+// 投递失败：502，错误文本不含 SMTP 应答或口令。
+func TestSendTestMailDeliveryFailureHidesTransportDetail(t *testing.T) {
+	const secret = "smtp-secret-9f21"
+	sender := &fakeMail{err: &coremail.DeliveryError{
+		Kind: coremail.KindAuth, Err: errors.New("535 auth failed: " + secret),
+	}}
+	svc := newMailService(t, sender, nil)
+	err := svc.SendTestMail(context.Background(), coreauth.User{ID: "master-1", Email: "owner@example.com"})
+	if code := errs.From(err).Code; code != errs.CodeUpstream {
+		t.Fatalf("code = %s, want upstream_unavailable", code)
+	}
+	if strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "535") {
+		t.Fatalf("error text leaks transport detail: %v", err)
+	}
+}
+
+// 冷却内的请求：429，带 retry_after_seconds，且不触达发送器。
+func TestSendTestMailCooldown(t *testing.T) {
+	sender := &fakeMail{}
+	cooldown := &fakeCooldown{allowed: false, wait: 42 * time.Second}
+	svc := newMailService(t, sender, cooldown)
+	err := svc.SendTestMail(context.Background(), coreauth.User{ID: "master-1", Email: "owner@example.com"})
+	if code := errs.From(err).Code; code != errs.CodeRateLimited {
+		t.Fatalf("code = %s, want rate_limited", code)
+	}
+	var stable *errs.Error
+	if !errors.As(err, &stable) {
+		t.Fatalf("err = %T, want *errs.Error", err)
+	}
+	if got := stable.Details["retry_after_seconds"]; got != 42 {
+		t.Fatalf("retry_after_seconds = %v, want 42", got)
+	}
+	if sender.sends != 0 {
+		t.Fatal("a throttled request reached the sender")
 	}
 }

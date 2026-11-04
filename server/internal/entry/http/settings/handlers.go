@@ -1,22 +1,26 @@
-// Package settings 把设置名册、通知订阅与全站公告映射到 HTTP。
+// Package settings 把设置名册、通知订阅、全站公告与测试邮件映射到 HTTP。
 //
 // 功能：
 // GET/PUT /api/admin/notify（master/admin 管理自己的订阅）、
 // GET /api/admin/settings（master/admin 只读名册）、
+// POST /api/admin/mail/test（master 向自己的邮箱发测试信）、
 // PUT /api/admin/announcement（master）、GET /api/announcement（所有已登录角色）。
 // 本包**不**写 SQL、**不**投递通知、**不**回显敏感值。
 //
 // 归属：entry/http 入口层。用例来自 app/notify 与 app/settings；
-// 角色是运行时门：设置与订阅限 master/admin，公告写限 master。
+// 角色是运行时门：设置与订阅限 master/admin，公告写与测试邮件限 master。
 //
 // 口径：通知订阅按会话 userID 收敛到本人，跨人不可见。
 // 敏感配置只回 {set, masked, source}；公告正文不经审计 detail。
+// 测试邮件收件人只取会话用户邮箱，响应只给固定文案。
 package settings
 
 import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -46,16 +50,22 @@ type Announcement interface {
 	Set(ctx context.Context, text string, actor appaudit.Actor) (appsettings.Announcement, error)
 }
 
-// Handler 处理通知订阅、设置名册与公告端点。
+// MailTest 是测试邮件用例端口。
+type MailTest interface {
+	SendTestMail(ctx context.Context, user coreauth.User) error
+}
+
+// Handler 处理通知订阅、设置名册、公告与测试邮件端点。
 type Handler struct {
 	notify       Notify
 	roster       Roster
 	announcement Announcement
+	mailTest     MailTest
 }
 
 // NewHandler 构造设置处理器。
-func NewHandler(notify Notify, roster Roster, announcement Announcement) *Handler {
-	return &Handler{notify: notify, roster: roster, announcement: announcement}
+func NewHandler(notify Notify, roster Roster, announcement Announcement, mailTest MailTest) *Handler {
+	return &Handler{notify: notify, roster: roster, announcement: announcement, mailTest: mailTest}
 }
 
 // AdminNotifyGet 实现 GET /api/admin/notify。
@@ -154,6 +164,48 @@ func (h *Handler) AdminSettings(c *gin.Context) {
 		groups = append(groups, oapi.SettingGroup{Name: group.Name, Items: items})
 	}
 	respond.JSON(c.Writer, http.StatusOK, oapi.SettingsReport{Groups: groups})
+}
+
+// AdminMailTest 实现 POST /api/admin/mail/test。仅 master。
+// 请求体为空且被忽略：收件人只取会话用户邮箱，客户端无法指定。
+func (h *Handler) AdminMailTest(c *gin.Context, _ oapi.AdminMailTestParams) {
+	session, ok := requester(c)
+	if !ok {
+		return
+	}
+	if session.User.Role != coreauth.RoleMaster {
+		fail(c, errs.New(errs.CodeForbidden, "master role is required"))
+		return
+	}
+	if h.mailTest == nil {
+		respond.NotImplemented(c.Writer, c.Request)
+		return
+	}
+	if err := h.mailTest.SendTestMail(c.Request.Context(), session.User); err != nil {
+		retryAfter(c, err)
+		fail(c, err)
+		return
+	}
+	respond.JSON(c.Writer, http.StatusOK, oapi.MailTestResult{
+		Message: "test email accepted by the SMTP server",
+	})
+}
+
+// retryAfter 把冷却等待写进 Retry-After 头。
+// 只有用例层显式带 retry_after_seconds 时才写；其余 429 保持无头。
+func retryAfter(c *gin.Context, err error) {
+	e := errs.From(err)
+	if e == nil || e.Code != errs.CodeRateLimited {
+		return
+	}
+	seconds, ok := e.Details["retry_after_seconds"].(int)
+	if !ok || seconds < 1 {
+		seconds = int(appsettings.TestMailCooldown / time.Second)
+	}
+	if seconds < 1 {
+		seconds = 1
+	}
+	c.Header("Retry-After", strconv.Itoa(seconds))
 }
 
 // AnnouncementGet 实现 GET /api/announcement。所有已登录角色可读。

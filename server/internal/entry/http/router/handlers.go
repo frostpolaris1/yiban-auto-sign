@@ -498,6 +498,15 @@ func (s *server) AdminSettings(c *gin.Context) {
 	s.settings.AdminSettings(c)
 }
 
+// AdminMailTest 委托测试邮件端点。未装配时仍是 501。
+func (s *server) AdminMailTest(c *gin.Context, params oapi.AdminMailTestParams) {
+	if s.settings == nil {
+		notImplemented(c)
+		return
+	}
+	s.settings.AdminMailTest(c, params)
+}
+
 // AnnouncementGet 委托公告读取。未装配时仍是 501。
 func (s *server) AnnouncementGet(c *gin.Context) {
 	if s.settings == nil {

@@ -1078,6 +1078,13 @@ type LoginRequest struct {
 	Password string              `json:"password"`
 }
 
+// MailTestResult defines model for MailTestResult.
+type MailTestResult struct {
+	// Message User-safe confirmation. It never carries the SMTP reply, the
+	// recipient address, the relay host or any credential.
+	Message string `json:"message"`
+}
+
 // NotifyCategory Closed set of notification subjects for this phase.
 type NotifyCategory string
 
@@ -1811,6 +1818,13 @@ type AdminEventsParams struct {
 	LastEventID *string `json:"Last-Event-ID,omitempty"`
 }
 
+// AdminMailTestParams defines parameters for AdminMailTest.
+type AdminMailTestParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
 // AdminNotifySetParams defines parameters for AdminNotifySet.
 type AdminNotifySetParams struct {
 	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
@@ -2376,6 +2390,9 @@ type ServerInterface interface {
 	// AdminEvents Subscribe to the admin event stream (SSE).
 	// (GET /api/admin/events)
 	AdminEvents(c *gin.Context, params AdminEventsParams)
+	// AdminMailTest Send a test email to the signed-in master.
+	// (POST /api/admin/mail/test)
+	AdminMailTest(c *gin.Context, params AdminMailTestParams)
 	// AdminNotifyGet Read the caller's effective notification subscriptions.
 	// (GET /api/admin/notify)
 	AdminNotifyGet(c *gin.Context)
@@ -3331,6 +3348,49 @@ func (siw *ServerInterfaceWrapper) AdminEvents(c *gin.Context) {
 	}
 
 	siw.Handler.AdminEvents(c, params)
+}
+
+// AdminMailTest operation middleware
+func (siw *ServerInterfaceWrapper) AdminMailTest(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AdminMailTestParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AdminMailTest(c, params)
 }
 
 // AdminNotifyGet operation middleware
@@ -5232,6 +5292,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/admin/notify", wrapper.AdminNotifyGet)
 	router.PUT(options.BaseURL+"/api/admin/notify", wrapper.AdminNotifySet)
 	router.GET(options.BaseURL+"/api/admin/settings", wrapper.AdminSettings)
+	router.POST(options.BaseURL+"/api/admin/mail/test", wrapper.AdminMailTest)
 	router.PUT(options.BaseURL+"/api/admin/announcement", wrapper.AnnouncementSet)
 	router.GET(options.BaseURL+"/api/announcement", wrapper.AnnouncementGet)
 	router.GET(options.BaseURL+"/api/audit-logs", wrapper.AuditLogList)

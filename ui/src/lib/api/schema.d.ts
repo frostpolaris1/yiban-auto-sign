@@ -981,6 +981,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/mail/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Send a test email to the signed-in master.
+         * @description Master only. Sends one plain-text message through the configured
+         *     SMTP delivery path to the signed-in account's own email address.
+         *     The request body is empty and ignored, so the client can never pick
+         *     the recipient. Delivery is synchronous: a 200 means the SMTP server
+         *     accepted the message (DATA was acknowledged), not that the mailbox
+         *     received it. SMTP disabled or not configured answers 409 with a
+         *     distinct message; a master whose account has no email address also
+         *     answers 409. A delivery failure answers 502 with no SMTP reply,
+         *     relay host, address or credential detail. At most one test message
+         *     per master per 60 seconds; a request inside that window answers 429
+         *     with Retry-After.
+         *     No audit row is written: audit holds security actions, while this is
+         *     an operational probe; delivery outcomes go to the structured log.
+         */
+        post: operations["AdminMailTest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/announcement": {
         parameters: {
             query?: never;
@@ -1531,6 +1563,13 @@ export interface components {
         };
         SettingsReport: {
             groups: components["schemas"]["SettingGroup"][];
+        };
+        MailTestResult: {
+            /**
+             * @description User-safe confirmation. It never carries the SMTP reply, the
+             *     recipient address, the relay host or any credential.
+             */
+            message: string;
         };
         Announcement: {
             /** @description Current announcement body; empty when none is set. Single line. */
@@ -3994,6 +4033,38 @@ export interface operations {
             };
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AdminMailTest: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The SMTP server accepted the test message. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailTestResult"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            409: components["responses"]["ConflictError"];
+            429: components["responses"]["TooManyRequestsError"];
+            502: components["responses"]["DefaultError"];
             default: components["responses"]["DefaultError"];
         };
     };
