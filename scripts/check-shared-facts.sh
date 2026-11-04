@@ -504,6 +504,8 @@ done < "$TMP/hits"
 viol=0
 active=0
 zero=0
+# note 本行只读不用（口径备注是给人看的）：shellcheck 的 SC2034 登记在册。
+# shellcheck disable=SC2034
 while IFS=$'\t' read -r fam key status pat scope max note; do
     case "$fam" in ''|'#'*) continue ;; esac
     if [ -z "${key:-}" ] || [ "$status" != "active" ]; then continue; fi
