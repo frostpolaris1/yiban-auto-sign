@@ -24,9 +24,12 @@
 // 先显式问候，再查扩展（缺失即 config，不猜），升级失败按状态码分类。
 // 连接归一次 Send 所有：失败路径必关，成功路径在 QUIT 后幂等收尾。
 // 一次 Send 的全部阶段共用一个绝对截止时间（默认 10s）：
-// 连接、TLS、认证、DATA 都不单独续期。go-mail 在会话中途把连接
-// 截止时间重置为 connTimeout（checkConn→UpdateDeadline），本包用
-// deadlineCapConn 把每次重设压回共享预算内。
+// 连接、TLS、认证、DATA 都不单独续期。拨号也受同一预算约束（dial 里
+// context.WithDeadline）：生产调用方传 context.Background()，只信 ctx
+// 的话，黑洞主机要等 OS 的 SYN 超时（Linux 约 127s），足以占满全部
+// 投递槽。go-mail 在会话中途把连接截止时间重置为 connTimeout
+// （checkConn→UpdateDeadline），本包用 deadlineCapConn 把每次重设
+// 压回共享预算内。
 // 失败分类：连接/TLS/超时可重试；认证、配置、DATA 之后的失败不可重试
 // （DATA 可能已被接收，重试会造成双发）。分类判据顺序与旧实现一致：
 // 取消/超时 → 证书 → SMTP 状态码 → 阶段缺省。
@@ -44,7 +47,8 @@
 // 严格侧拒绝时按裸 addr-spec 接收（注册用 core/user.ValidEmail，较宽松）。
 // 域名含 `>`、`,`、`;` 等主机名字符以外的字符时，分隔符会逃出尖括号：
 // addrSpecSafe 拒收。该守卫是必需的注入守卫，不可删。
-// 非 ASCII 与含控制字符的注册地址由投递侧显性拒收（SMTPUTF8 未实现）。
+// 非 ASCII 与含控制字符的注册地址由投递侧显性拒收（SMTPUTF8 参数
+// 在 Send 里主动抑制，见 SkipSMTPUTF8）。
 // 注册接受但投递拒收的地址记 reason=unsupported_address。
 // 改动此处必须同时看 parseAddress 的注释与 smtp_test 的口径用例。
 package mail
@@ -216,6 +220,11 @@ func (s *SMTP) Send(ctx context.Context, msg coremail.Message) error {
 	if err != nil {
 		return wrapConnect(err)
 	}
+	// 旧实现（含 5a40a011 首版适配）从不发 SMTPUTF8；go-mail 只要服务器
+	// 公告该扩展就会在 MAIL FROM 上附加参数。保持抑制：非 ASCII 地址已在
+	// 本地拒收，参数只会增加与既有服务器对话的变量。smtp_test 有用例
+	// （mailtest 常驻公告 SMTPUTF8）钉住线上 MAIL FROM 不含该参数。
+	client.SkipSMTPUTF8(true)
 	if err := client.Hello("localhost"); err != nil {
 		return wrapConnect(err)
 	}
@@ -248,6 +257,13 @@ func (s *SMTP) Send(ctx context.Context, msg coremail.Message) error {
 
 // dial 建立到服务器的连接；隐式 TLS 在这里完成握手。
 //
+// 拨号与握手都套 Send 顶部算出的绝对预算（context.WithDeadline）：
+// 生产调用方传 context.Background()，只信 ctx 的话，黑洞主机（SYN 无
+// 应答）要等 OS 的 connect 超时——Linux 约 127s、Windows 约 21s——
+// 足以占满全部投递槽（smtp_test 的黑洞用例钉住此事）。连接建立后
+// 取消该 ctx 不影响已建立的连接（net 与 crypto/tls 的契约），故
+// defer cancel 安全。
+//
 // 返回给 vendored smtp.NewClient 的连接必须能被它识别为 TLS：
 // 它用 conn.(*tls.Conn) 判定，判不出时 PLAIN 认证只在 localhost/
 // 127.0.0.1/::1 上放行，生产主机名一律拒发凭据（smtp_test 的
@@ -256,7 +272,9 @@ func (s *SMTP) Send(ctx context.Context, msg coremail.Message) error {
 // STARTTLS 档先明文拨号，升级交给调用方的 StartTLS。
 func (s *SMTP) dial(ctx context.Context, deadline time.Time) (net.Conn, error) {
 	addr := net.JoinHostPort(s.host, strconv.Itoa(s.port))
-	raw, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	dialCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	raw, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", addr)
 	if err != nil {
 		return nil, err
 	}
@@ -269,7 +287,7 @@ func (s *SMTP) dial(ctx context.Context, deadline time.Time) (net.Conn, error) {
 		return capped, nil
 	}
 	tlsConn := tls.Client(capped, s.clientTLSConfig())
-	if err := tlsConn.HandshakeContext(ctx); err != nil {
+	if err := tlsConn.HandshakeContext(dialCtx); err != nil {
 		_ = raw.Close()
 		return nil, err
 	}

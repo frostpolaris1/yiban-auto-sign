@@ -56,6 +56,9 @@ type Message struct {
 	To       []string
 	Data     string
 	AuthUser string
+	// MailFromLine 是 MAIL FROM 命令的原始参数串（含扩展参数，
+	// 如 BODY=8BITMIME）。用于钉住客户端的线上形状（如 SMTPUTF8 抑制）。
+	MailFromLine string
 }
 
 // Server 是最小 SMTP 服务器。
@@ -290,9 +293,10 @@ func (s *Server) handle(conn net.Conn) {
 
 	secure := s.mode == ImplicitTLS
 	var (
-		from     string
-		rcpts    []string
-		authUser string
+		from         string
+		rcpts        []string
+		authUser     string
+		mailFromLine string
 	)
 	for {
 		line, err := br.ReadString('\n')
@@ -307,11 +311,14 @@ func (s *Server) handle(conn net.Conn) {
 			// 扩展公告按开关拼装：8BITMIME 与真实服务器一致
 			// （正文按 8bit 投递时，客户端会要求该扩展才发 MAIL FROM）；
 			// STARTTLS 只在明文 StartTLS 模式且未被抑制时公告。
+			// SMTPUTF8 常驻公告：真实服务器普遍公告它，客户端必须自行
+			// 抑制该参数（smtp_test 的 SMTPUTF8 用例靠它获得判别力）。
 			s.mu.Lock()
 			exts := []string{"mailtest"}
 			if !s.suppress8BitMIME {
 				exts = append(exts, "8BITMIME")
 			}
+			exts = append(exts, "SMTPUTF8")
 			suppressed := s.suppressSTARTTLS
 			s.mu.Unlock()
 			if !secure && s.mode == StartTLS && !suppressed {
@@ -370,6 +377,7 @@ func (s *Server) handle(conn net.Conn) {
 			}
 		case strings.HasPrefix(upper, "MAIL FROM:"):
 			from = parseEnvelopeAddr(line[len("MAIL FROM:"):])
+			mailFromLine = strings.TrimSpace(line[len("MAIL FROM:"):])
 			if !writeLine(conn, "250 2.1.0 ok") {
 				return
 			}
@@ -398,6 +406,7 @@ func (s *Server) handle(conn net.Conn) {
 			s.mu.Lock()
 			s.messages = append(s.messages, Message{
 				From: from, To: append([]string(nil), rcpts...), Data: data, AuthUser: authUser,
+				MailFromLine: mailFromLine,
 			})
 			s.mu.Unlock()
 			if !writeLine(conn, "250 2.0.0 queued") {
