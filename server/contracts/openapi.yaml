@@ -2388,16 +2388,12 @@ components:
             - { type: string }
             - { type: number }
             - { type: boolean }
-            - { type: "null" }
+            - { enum: [null] }
         sensitive:
           description: Masked view for a sensitive key; null for a non-sensitive key.
           type: [object, "null"]
-          required: [set, masked, source]
-          properties:
-            set: { type: boolean }
-            masked: { type: string }
-            source:
-              $ref: '#/components/schemas/SettingSource'
+          allOf:
+            - $ref: '#/components/schemas/SensitiveSetting'
     SettingGroup:
       type: object
       required: [name, items]

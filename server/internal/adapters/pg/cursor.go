@@ -9,6 +9,7 @@ package pg
 import (
 	"encoding/base64"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -79,4 +80,45 @@ func appendKeyset(where string, args []any, cursor, timeColumn, idColumn string)
 func appendLimit(query string, args []any, limit int) (string, []any) {
 	args = append(args, limit+1)
 	return fmt.Sprintf("%s LIMIT $%d", query, len(args)), args
+}
+
+// encodeIntCursor 把 (时刻, 整数 id) 编成游标。
+// 审计行的主键是 bigint，与 UUID 主键的列表分开编解码：
+// 同一游标格式不接受两种 id 形状，形状错即校验失败。
+func encodeIntCursor(at time.Time, id int64) string {
+	raw := at.UTC().Format(time.RFC3339Nano) + cursorSep + strconv.FormatInt(id, 10)
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+// decodeIntCursor 解析整数 id 游标。空串表示首页。
+func decodeIntCursor(cursor string) (time.Time, int64, error) {
+	if cursor == "" {
+		return time.Time{}, 0, nil
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		return time.Time{}, 0, errs.New(errs.CodeValidation, "invalid cursor")
+	}
+	parts := strings.SplitN(string(raw), cursorSep, 2)
+	if len(parts) != 2 {
+		return time.Time{}, 0, errs.New(errs.CodeValidation, "invalid cursor")
+	}
+	at, err := time.Parse(time.RFC3339Nano, parts[0])
+	if err != nil {
+		return time.Time{}, 0, errs.New(errs.CodeValidation, "invalid cursor")
+	}
+	id, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || id <= 0 {
+		return time.Time{}, 0, errs.New(errs.CodeValidation, "invalid cursor")
+	}
+	return at, id, nil
+}
+
+// nextIntCursor 返回本页末行的整数 id 游标；末页返回空串。
+func nextIntCursor[T any](rows []T, more bool, key func(T) (time.Time, int64)) string {
+	if !more || len(rows) == 0 {
+		return ""
+	}
+	at, id := key(rows[len(rows)-1])
+	return encodeIntCursor(at, id)
 }

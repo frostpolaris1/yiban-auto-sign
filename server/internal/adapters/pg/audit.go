@@ -3,6 +3,7 @@ package pg
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -126,4 +127,68 @@ func (r *AuditRepo) Verify(ctx context.Context, from, to int64) (coreaudit.Repor
 		return coreaudit.Report{}, mapError(err)
 	}
 	return coreaudit.Verify(r.key, entries)
+}
+
+// ListLogs 读取审计只读列表，按 (ts DESC, id DESC) 键集分页。
+// action 与 actor 是精确匹配；from/to 是闭区间时间界；
+// actor 已由用例层掩码。本方法**不**校验链、**不**返回目标字段。
+func (r *AuditRepo) ListLogs(ctx context.Context, query coreaudit.LogQuery) ([]coreaudit.LogRow, string, error) {
+	if query.Limit < 1 || query.Limit > 200 {
+		return nil, "", validationError("limit must be between 1 and 200")
+	}
+	where := " WHERE TRUE"
+	var args []any
+	if query.Action != "" {
+		args = append(args, query.Action)
+		where += fmt.Sprintf(" AND action = $%d", len(args))
+	}
+	if query.Actor != "" {
+		args = append(args, query.Actor)
+		where += fmt.Sprintf(" AND actor_label = $%d", len(args))
+	}
+	if query.From != nil {
+		args = append(args, query.From.UTC())
+		where += fmt.Sprintf(" AND ts >= $%d", len(args))
+	}
+	if query.To != nil {
+		args = append(args, query.To.UTC())
+		where += fmt.Sprintf(" AND ts <= $%d", len(args))
+	}
+	if query.Cursor != "" {
+		at, id, err := decodeIntCursor(query.Cursor)
+		if err != nil {
+			return nil, "", err
+		}
+		args = append(args, at, id)
+		where += fmt.Sprintf(" AND (ts, id) < ($%d, $%d)", len(args)-1, len(args))
+	}
+	sqlText := `SELECT id, ts, action, actor_label, detail FROM audit_logs` + where +
+		` ORDER BY ts DESC, id DESC`
+	sqlText, args = appendLimit(sqlText, args, query.Limit)
+
+	rows, err := r.db.q(ctx).Query(ctx, sqlText, args...)
+	if err != nil {
+		return nil, "", mapError(err)
+	}
+	defer rows.Close()
+
+	items := make([]coreaudit.LogRow, 0, query.Limit)
+	for rows.Next() {
+		var row coreaudit.LogRow
+		if err := rows.Scan(&row.ID, &row.TS, &row.Action, &row.ActorLabel, &row.Detail); err != nil {
+			return nil, "", mapError(err)
+		}
+		items = append(items, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", mapError(err)
+	}
+	more := len(items) > query.Limit
+	if more {
+		items = items[:query.Limit]
+	}
+	next := nextIntCursor(items, more, func(row coreaudit.LogRow) (time.Time, int64) {
+		return row.TS, row.ID
+	})
+	return items, next, nil
 }
