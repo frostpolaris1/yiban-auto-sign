@@ -136,7 +136,10 @@ func TestCanonicalRuleRowsPinned(t *testing.T) {
 	// （用户展示分组的 pending 是分组词，不是任务状态）。
 	// update-u1：env.get allow 增列 cmd/cli/selfcheck_pg_e2e_test.go
 	// （自检真库 e2e 沿用既有 os.Getenv 读测试 DSN 的口径）。
-	const want = "f845f755c50b3d668142984fc964b0964fa12b8855de413959368d89543c79cf"
+	// update-u2：env.get 与 status.literal 的 allow 增列
+	// cmd/cli/update_u2_e2e_test.go（干跑 update.sh 的 PATH 沿用既有口径；
+	// 状态文件里的 success/failed 是更新结果的词表，不是任务状态）。
+	const want = "93a0606a31da6203966a823097a227d101eecdd5ec73372ad0ae6702e0d86ccd"
 	if got != want {
 		t.Fatalf("canonical 规则内容变了（hash %s）；确认改动后更新 TestCanonicalRuleRowsPinned 的哈希", got)
 	}

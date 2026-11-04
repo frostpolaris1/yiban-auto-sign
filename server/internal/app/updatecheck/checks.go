@@ -373,7 +373,7 @@ func missingBackupDirRow(deps Deps, opts Options, dir string) Check {
 					"用 --backup-dir 指向服务用户可写目录，或先创建并 chown")
 			default:
 				return skip(nameFSBackupDir,
-					"不存在；"+ancestor+" 对服务用户可写，U2 备份前会创建 "+dir)
+					"不存在；最近的已存在目录 "+ancestor+" 对服务用户可写（"+dir+" 未创建）")
 			}
 		case !errors.Is(err, os.ErrNotExist):
 			return fail(nameFSBackupDir, "无法读取 "+ancestor+"："+err.Error(),

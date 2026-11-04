@@ -117,7 +117,7 @@ printf '%s\n' "$PASSWORD" | yiban-cli user create-master \
   --email you@example.com --password-stdin
 ```
 
-### 4.3 升级
+### 4.3 升级（一键更新 U2）
 
 ```bash
 sudo bash deploy/linux/update.sh \
@@ -126,13 +126,129 @@ sudo bash deploy/linux/update.sh \
   --ui-dir ui/dist \
   --manifest release/manifest.json \
   --signature release/manifest.sig \
-  --pubkey release-pubkey.pem
+  --pubkey release-pubkey.pem \
+  --expect-version 0.7.0
 ```
 
+一条命令走完：**自检 → 备份（数据库＋照片）→ 停服 → 迁移 → 换件 → 健康检查 →
+失败回滚**。脚本不做静默自动应用：它是命令，不是守护进程。
+
 - 签名是默认要求。未签名升级必须显式给 `--allow-unsigned`，脚本会打印 WARN。
-- 页面在二进制就位后激活，不会先于新 API 生效。
-- 迁移或健康失败时二进制与页面一起回滚；旧页面留在 `/var/lib/yiban/ui.bak`。
+- 页面在二进制就位后激活，不会先于新 API 生效；回滚时页面一起换回，
+  旧页面留在 `/var/lib/yiban/ui.bak`。
 - 漏给 `--ui-dir` 时页面停在旧版本，脚本打印 WARN。
+
+**自检门（停服前，fail-closed）**
+
+用**已安装**的 `yiban-cli selfcheck --json` 跑 U1 判据（配置、数据库 schema、
+工具、目录权限、密钥指纹、服务状态）。任何 FAIL 即 `exit 2`，不停服、不写安装位。
+已安装 CLI 太旧（不含 `selfcheck`）同样拒绝：自检不可用不等于绿。
+
+只跑自检、不做任何修改（不取锁、不写文件）：
+
+```bash
+sudo bash deploy/linux/update.sh --selfcheck-only    # 0 全 PASS/SKIP；2 有 FAIL
+```
+
+**统一备份（停服前，失败即中止）**
+
+落在 `/var/lib/yiban/updates/backups/<UTC时间戳>/`（目录 0700、文件 0600）：
+
+| 文件 | 内容 |
+|---|---|
+| `db.dump` | `pg_dump -Fc`（含凭据密文与审计行） |
+| `db.list` | `pg_restore --list` 的清单（证明转储可读） |
+| `db-schema.txt` | 迁移前 goose 版本与 public 基表数（恢复后的对账基线） |
+| `photos.tar` | 照片目录快照（`tar -h`；照片不进数据库备份） |
+| `bin/yiban-server`、`bin/yiban-cli` | 更新前的二进制（含既有 `.bak` 的归档） |
+| `SHA256SUMS` | 以上文件的 sha256，写入后立即校验 |
+
+给了口令（`--backup-passphrase-file` 或环境 `YIBAN_BACKUP_PASSPHRASE`）时，
+另外跑 `yiban-cli backup` 产出 `db.sql.gpg`（GPG 对称加密，含行数清单）。
+没有口令时只留未加密的 `-Fc` 转储，脚本打印 WARN（跳过 ≠ 绿）。
+
+保留最近 `--keep-backups N` 份（缺省 5；`0` = 不清理）。只删本目录下形如
+`20261104T101500Z` 的备份目录；备份失败不删任何东西，半成品目录直接清掉。
+
+**状态与日志**
+
+| 路径 | 内容 |
+|---|---|
+| `/var/lib/yiban/updates/update-state.json` | 最近一次更新：`result`（running/success/failed/aborted/interrupted）、`exit_code`、`phase`、版本、备份路径、`db_schema_before/after`、`db_restore` |
+| `/var/lib/yiban/updates/update.log` | 追加日志（时间／阶段／结果），一行一事件 |
+| `/var/lib/yiban/updates/selfcheck-latest.json` | 停服前自检的完整 JSON 报告 |
+
+`/var/lib/yiban/update-state.json`（注意不是 `updates/` 下那份）是 U1 的**密钥指纹**
+状态，只由 `yiban-cli selfcheck --record-keys` 写；更新成功时脚本会自动调用它。
+两份文件都不含 DSN 口令、密钥原文与 GPG 口令。
+
+**失败回滚**
+
+| 失败点 | 行为 | 退出码 |
+|---|---|---|
+| 签名/对账/版本校验 | 不碰旧件、不停服 | 1 |
+| 自检 FAIL / 无 CREATEDB / 备份失败 | 不开始（不停服） | 2 |
+| 迁移失败 | 旧二进制继续服务；库没变就不动库 | 1 |
+| 迁移后（换件/健康）失败 | 二进制与 UI 换回旧件；**数据库默认恢复到升级前** | 1 |
+| 数据库恢复失败 | 停住（不启动旧件），打印 manual action | 2 |
+| 回滚后仍不健康 | 打印 manual action | 2 |
+
+数据库回滚（默认开启，`--no-restore-db` 关闭）：
+
+1. 只在**停服后**、且本次 `db.dump` 通过 `pg_restore --list` 校验时执行；
+2. 迁移前后 goose 版本相同（库没变）就跳过——不为了回滚而回滚；
+3. 迁移改变了库时：`CREATE DATABASE yiban_restore_<UTC时间戳>` →
+   `pg_restore` 到新库 → 校验新 DSN 的 `current_database()` 与新库同名（绝不写回原库）
+   → 校验 goose 版本与基表数和备份基线一致 → 原子改写 `/etc/yiban/.env` 的
+   `YIBAN_DATABASE_URL` → 起旧二进制；
+4. **原库原样保留**（迁移过的失败库）供取证；不删、不 `--clean`、不原地覆盖。
+
+前提：连接角色必须有 `CREATEDB`。没有且未给 `--no-restore-db` 时预检直接
+`exit 2`，不允许在「失败后回不了库」的状态下开始。
+已知代价：健康探测窗口内新二进制写入的行不会保留（恢复到备份时刻）；旧库仍在。
+
+**回滚点与并发**
+
+- 二进制回滚点始终是 `yiban-server.bak`（与旧版相同）；本次升级开始前若已有
+  `.bak`，先原样归档进备份目录 `bin/yiban-server.rollback-point`，不覆盖。
+- 升级成功后 `.bak` 保留旧件，供人工回退；`--no-restore-db` 时尤其重要。
+- `flock` 保证同一时刻只有一个更新；第二个进程 `exit 2`。
+
+**退出码**
+
+| 码 | 含义 |
+|---|---|
+| 0 | 成功（含 `--selfcheck-only` 全 PASS/SKIP） |
+| 1 | 升级失败但已回滚到旧件（旧件在跑且健康）；验签/对账失败 |
+| 2 | 用法错误、并发锁、自检 FAIL、预检/备份失败、数据库恢复失败、回滚后仍不健康 |
+
+**runbook：看状态与人工恢复**
+
+```bash
+# 1) 看最近一次更新做了什么
+sudo cat /var/lib/yiban/updates/update-state.json
+sudo tail -n 50 /var/lib/yiban/updates/update.log
+
+# 2) 看停服前自检的完整报告（FAIL 项在 checks[] 里，status=FAIL）
+sudo python3 -m json.tool /var/lib/yiban/updates/selfcheck-latest.json | less
+
+# 3) 看本次备份与校验
+sudo ls -l /var/lib/yiban/updates/backups/
+sudo sh -c 'cd /var/lib/yiban/updates/backups/<ts> && sha256sum -c SHA256SUMS'
+
+# 4) 数据库恢复失败（exit 2）时，按打印的 manual action 操作，等价命令：
+sudo -u postgres createdb yiban_restore_manual
+sudo -u postgres pg_restore --no-owner --no-privileges \
+  -d yiban_restore_manual /var/lib/yiban/updates/backups/<ts>/db.dump
+sudo sed -i 's|^YIBAN_DATABASE_URL=.*|YIBAN_DATABASE_URL=postgres://…/yiban_restore_manual|' /etc/yiban/.env
+sudo systemctl start yiban.service
+
+# 5) 确认旧件与新 schema 兼容、选择不回库时：
+sudo systemctl start yiban.service
+```
+
+人工恢复后重跑 `sudo bash deploy/linux/update.sh --selfcheck-only` 确认全 PASS，
+再重新执行升级。
 
 ## 5. 反向代理
 
