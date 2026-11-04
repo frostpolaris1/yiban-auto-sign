@@ -51,6 +51,24 @@ func Allowed(owner Owner, id Identity, want Access) bool {
 	return accessBitsOK(bits, want)
 }
 
+// RootAllows 判 root（uid 0）对目录的访问。
+// root 有 CAP_DAC_OVERRIDE，模式位并不真正拦住它；这里只用位识别
+// 「明显不可写/不可进入」的目录（三类都没有该位），供以 root 运行的
+// 更新器判自己的备份目录。非 root 身份请用 Allowed。
+func RootAllows(owner Owner, want Access) bool {
+	mode := owner.Mode.Perm()
+	if want&Read != 0 && mode&0o444 == 0 {
+		return false
+	}
+	if want&Write != 0 && mode&0o222 == 0 {
+		return false
+	}
+	if want&Execute != 0 && mode&0o111 == 0 {
+		return false
+	}
+	return true
+}
+
 // accessBitsOK 检查请求位是否都在该类权限里。
 func accessBitsOK(bits os.FileMode, want Access) bool {
 	if want&Read != 0 && bits&0o4 == 0 {

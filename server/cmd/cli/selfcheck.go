@@ -49,6 +49,7 @@ func newSelfcheckDeps() updatecheck.Deps {
 	deps.EmbeddedVersion = pg.EmbeddedVersion
 	deps.ServiceProbe = systemdServiceProbe
 	deps.StatPermission = statPermissionOf
+	deps.CurrentIdentity = currentIdentityOf
 	deps.UserIdentity = userIdentityOf
 	deps.Containerized = inContainer()
 	info := buildinfo.Current()
@@ -137,7 +138,7 @@ func runSelfcheckWith(args []string, stdout, stderr io.Writer, lookup func(strin
 	httpAddr := fs.String("http-addr", "", "覆盖 YIBAN_HTTP_ADDR")
 	uiDir := fs.String("ui-dir", "", "覆盖 YIBAN_UI_DIR")
 	photoDir := fs.String("photo-dir", "", "覆盖 YIBAN_PHOTO_DIR")
-	backupDir := fs.String("backup-dir", "", "迁移前备份目录（缺省 "+updatecheck.DefaultBackupDir+"）")
+	backupDir := fs.String("backup-dir", "", "更新备份根目录（缺省 "+updatecheck.DefaultBackupDir+"）")
 	statePath := fs.String("state", "", "更新状态文件（缺省 "+updatecheck.DefaultStatePath+"）")
 	serviceUser := fs.String("service-user", "",
 		"运行服务的系统用户（缺省 systemctl show "+updatecheck.DefaultUnit+".service -p User --value）")

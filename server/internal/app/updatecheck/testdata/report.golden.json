@@ -82,7 +82,7 @@
     {
       "name": "fs.backup_dir",
       "status": "SKIP",
-      "detail": "不存在；/var/lib/yiban 对服务用户可写，U2 备份前会创建 /var/lib/yiban/pre-migrate"
+      "detail": "不存在；最近的已存在目录 /var/lib/yiban-updater 上当前用户 root 可写（属主 root、组 root、权限 0700）（/var/lib/yiban-updater/backups 未创建）"
     },
     {
       "name": "keys.credential_key",

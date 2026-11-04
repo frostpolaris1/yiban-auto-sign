@@ -78,7 +78,21 @@ if [ -z "$ROOT" ]; then
     id "$SERVICE_USER" >/dev/null 2>&1 \
         || useradd --system --home "$SERVICE_HOME" --shell /usr/sbin/nologin "$SERVICE_USER"
     mkdir -p "$SERVICE_HOME/photos"
-    chown -R "$SERVICE_USER:$SERVICE_USER" "$SERVICE_HOME"
+    # 只把服务用户真正要写的子树交给它：photos 与（下面步骤里的）ui。
+    # **不**做 chown -R "$SERVICE_HOME"：那里还可能有旧版本留下的
+    # pre-migrate/backups/updates 备份（含凭据密文）与 U1 的密钥指纹状态，
+    # 递归 chown 会把它们改成服务用户可读（复审 MEDIUM-1）。
+    chown "$SERVICE_USER:$SERVICE_USER" "$SERVICE_HOME"
+    chown -R "$SERVICE_USER:$SERVICE_USER" "$SERVICE_HOME/photos"
+    # 更新器的状态/备份根（/var/lib/yiban-updater/{state,backups}）与
+    # $SERVICE_HOME 同级，**不**在任何 chown 的范围内：那里是 root 独占目录
+    # （备份含凭据密文，回滚还会执行备份里的 CLI）。重装时若它已存在，
+    # 顺手把属主钉回 root——防有人手工 chown -R 到服务用户后更新器拒绝运行。
+    UPDATER_ROOT="/var/lib/yiban-updater"
+    if [ -d "$UPDATER_ROOT" ]; then
+        chown root:root "$UPDATER_ROOT"
+        chmod 700 "$UPDATER_ROOT"
+    fi
 else
     echo "install: dry-run (YIBAN_INSTALL_ROOT set): skip service user and chown"
     mkdir -p "$(dest "$SERVICE_HOME/photos")"
@@ -129,14 +143,78 @@ fi
 
 # 3b) 前端产物落位（给了 --ui-dir 时）。
 # 目标是运行期真实路径；干跑只把文件放到前缀下，.env 写的仍是真实路径，
-# 与 systemd 单元同一口径。旧哈希资产不删：它们不再被 index.html 引用，留着无害。
+# 与 systemd 单元同一口径。
+# 落位方式：在 root 独占的更新器根里造好完整目录，再 mv -T 原子替换目标。
+# 不能就地 cp -R/chmod：$SERVICE_HOME/ui 可能是服务用户预置的软链，root 会
+# 顺链写到 /root 或旧备份并改坏其权限（复审 HIGH）。mv -T 替换的是链接本身。
 UI_TARGET="$(dest "$SERVICE_HOME/ui")"
+UI_PARENT="$(dest "$SERVICE_HOME")"
+UI_ROOT="$(dest /var/lib/yiban-updater)"
 if [ -n "$UI_DIR" ]; then
-    install -d -m 0755 "$UI_TARGET"
-    cp -R "$UI_DIR/." "$UI_TARGET/"
-    chmod -R a+rX "$UI_TARGET"
+    if [ -L "$UI_PARENT" ]; then
+        echo "install: refusing symlinked $UI_PARENT" >&2
+        exit 1
+    fi
+    install -d -m 0700 "$UI_ROOT"
     if [ -z "$ROOT" ]; then
-        chown -R "$SERVICE_USER:$SERVICE_USER" "$UI_TARGET"
+        chown root:root "$UI_ROOT"
+        chmod 0700 "$UI_ROOT"
+    fi
+    UI_STAGE="$(mktemp -d "$UI_ROOT/ui.XXXXXX")" || {
+        echo "install: cannot create a private ui staging directory" >&2
+        exit 1
+    }
+    chmod 0700 "$UI_STAGE"
+    if ! cp -R "$UI_DIR/." "$UI_STAGE/"; then
+        rm -rf -- "$UI_STAGE"
+        echo "install: cannot copy --ui-dir into the staging directory" >&2
+        exit 1
+    fi
+    chmod -R a+rX "$UI_STAGE"
+    if [ -z "$ROOT" ]; then
+        chown -R "$SERVICE_USER:$SERVICE_USER" "$UI_STAGE"
+    fi
+    # 预置的软链不是合法页面目录：先摘链接（mv -T 不覆盖软链）。
+    if [ -L "$UI_TARGET" ]; then
+        if ! rm -f -- "$UI_TARGET"; then
+            rm -rf -- "$UI_STAGE"
+            echo "install: cannot remove the planted ui symlink: $UI_TARGET" >&2
+            exit 1
+        fi
+    fi
+    # 目标已存在（重装）时 mv -T 不会覆盖非空目录（ENOTEMPTY）：
+    # 与 update.sh 同序——先清旧 .bak，把旧目录换过去，再换入新目录；
+    # 换入失败就把 .bak 换回来（旧页面继续服务）。
+    UI_BAK="$UI_TARGET.bak"
+    if ! rm -rf -- "$UI_BAK"; then
+        rm -rf -- "$UI_STAGE"
+        echo "install: cannot clear $UI_BAK" >&2
+        exit 1
+    fi
+    UI_OLD_MOVED=0
+    if [ -e "$UI_TARGET" ]; then
+        if ! mv -T "$UI_TARGET" "$UI_BAK"; then
+            rm -rf -- "$UI_STAGE"
+            echo "install: cannot move the current ui aside: $UI_TARGET" >&2
+            exit 1
+        fi
+        UI_OLD_MOVED=1
+    fi
+    if ! mv -T "$UI_STAGE" "$UI_TARGET"; then
+        rm -rf -- "$UI_STAGE"
+        if [ "$UI_OLD_MOVED" -eq 1 ]; then
+            # 目标可能被非空目录占住（ENOTEMPTY）：先清再换回，别让 restore
+            # 静默失败（复审 M3）。换回失败必须点名 manual action。
+            rm -rf -- "$UI_TARGET" 2>/dev/null || true
+            if mv -T "$UI_BAK" "$UI_TARGET"; then
+                echo "install: cannot activate the new ui; restored the previous directory" >&2
+            else
+                echo "install: MANUAL ACTION — cannot activate the new ui and restoring failed; the previous page is at $UI_BAK (mv -T $UI_BAK $UI_TARGET)" >&2
+            fi
+        else
+            echo "install: cannot activate the ui at $UI_TARGET (no previous page to restore)" >&2
+        fi
+        exit 1
     fi
     # 幂等写键：删旧行再追加，不重排 .env 的其余行。
     # .env 刚创建或已收紧权限，读不到即中止：不能把它截断成只剩一行。

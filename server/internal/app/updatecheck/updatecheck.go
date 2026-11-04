@@ -44,8 +44,12 @@ const (
 	StateSchemaVersion = 1
 	// DefaultStatePath 是更新状态文件的缺省路径。
 	DefaultStatePath = "/var/lib/yiban/update-state.json"
-	// DefaultBackupDir 是迁移前备份目录的缺省路径（与 update.sh 同源）。
-	DefaultBackupDir = "/var/lib/yiban/pre-migrate"
+	// DefaultBackupDir 是一键更新备份根目录的缺省路径（与 update.sh 同源）。
+	// 必须放在服务用户不可重命名的 root 独占父目录下：
+	// /var/lib 属 root ⇒ yiban 换不了 /var/lib/yiban-updater；
+	// 该根与 backups 都是 root:root 0700（备份含凭据密文，回滚还会执行
+	// 备份里的 CLI）。本检查也按「属主 root + 调用者可写」判权。
+	DefaultBackupDir = "/var/lib/yiban-updater/backups"
 	// DefaultUnit 是 systemd 单元名（不带 .service 后缀）。
 	DefaultUnit = "yiban"
 )
@@ -162,6 +166,10 @@ type Deps struct {
 	ServiceProbe ServiceProbe
 	// StatPermission 返回目录的属主/组/模式；false 表示平台不支持。
 	StatPermission func(path string) (fsperm.Owner, bool)
+	// CurrentIdentity 返回**调用者**（通常是 root）的身份，用于备份目录判权
+	// （备份由更新器以 root 写入，按服务用户判权会把安全要求误判成故障）。
+	// nil 或 false 时该判定 SKIP。
+	CurrentIdentity func() (fsperm.Identity, bool)
 	// UserIdentity 返回服务用户的 uid/gid/组；false 表示查不到。
 	UserIdentity func(name string) (fsperm.Identity, bool)
 	// Containerized 表示本进程在容器内：工具与宿主备份目录检查按 SKIP。

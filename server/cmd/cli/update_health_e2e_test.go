@@ -97,11 +97,23 @@ esac
 exit 0
 `)
 	sysctl := fakeSystemd(t, binDir, sysctlLog, installed, running, stateDir)
+	// U2 起停服前有自检门与统一备份；健康失败后默认还会尝试数据库恢复。
+	// psql 桩对迁移前后都报同一版本 ⇒ 恢复判定为 not-needed（本用例只测二进制/UI 回滚）。
+	// 安装位 CLI 与服务用同一套探活判据：回滚会把 CLI 也换回旧件，
+	// 之后的探活必须仍在「守护进程跑的是旧件」时成功、在 alwaysFail 时失败。
+	fakeUpdateCLI(t, filepath.Join(root, "usr/local/bin"), "yiban-cli", `  migrate) exit 0 ;;
+  healthcheck)
+    [ -f "$FAKE_HEALTH_FAIL" ] && exit 1
+    grep -q OLD-SERVER "$FAKE_RUNNING" || exit 1
+    exit 0
+    ;;`)
+	fakePgTools(t, binDir)
 	env := map[string]string{
 		"YIBAN_INSTALL_ROOT":          root,
 		"SYSTEMCTL":                   sysctl,
 		"FAKE_HEALTH_FAIL":            alwaysFail,
 		"FAKE_RUNNING":                running,
+		"YIBAN_DATABASE_URL":          "postgres://yiban:pw@127.0.0.1:5432/yiban?sslmode=disable",
 		"YIBAN_HEALTH_RETRIES":        "1",
 		"YIBAN_HEALTH_RETRY_INTERVAL": "0",
 		"PATH":                        binDir + string(os.PathListSeparator) + os.Getenv("PATH"),

@@ -158,6 +158,8 @@ type fixture struct {
 	embedded   int64
 	owners     map[string]fsperm.Owner
 	identities map[string]fsperm.Identity
+	// currentIdentity 覆盖「调用者」身份；nil = root。
+	currentIdentity *fsperm.Identity
 }
 
 // newFixture 构造全通过的基线：目录齐、权限按服务用户可读可写、工具齐、库连得上、服务 active。
@@ -166,7 +168,10 @@ func newFixture() *fixture {
 	fs.mkdir("/srv/ui", "index.html", "assets")
 	fs.mkdir("/var/lib/yiban")
 	fs.mkdir("/var/lib/yiban/photos")
-	fs.mkdir("/var/lib/yiban/pre-migrate")
+	// 更新器的 root 独占树（与 /var/lib/yiban 同级，install.sh 的递归
+	// chown 到不了这里）。
+	fs.mkdir("/var/lib/yiban-updater")
+	fs.mkdir(DefaultBackupDir)
 	db := &fakeDB{version: 22}
 	f := &fixture{
 		fs: fs,
@@ -178,17 +183,18 @@ func newFixture() *fixture {
 			PhotoDir:      "/var/lib/yiban/photos",
 			CredentialKey: testCredentialKey,
 			HashPepper:    testPepper,
-			BackupDir:     "/var/lib/yiban/pre-migrate",
+			BackupDir:     DefaultBackupDir,
 			StatePath:     "/var/lib/yiban/update-state.json",
 			Unit:          "yiban",
 			ServiceUser:   "yiban",
 		},
 		embedded: 22,
 		owners: map[string]fsperm.Owner{
-			"/srv/ui":                    {OwnerName: "yiban", GroupName: "yiban", Mode: 0o755},
-			"/var/lib/yiban":             {OwnerName: "yiban", GroupName: "yiban", Mode: 0o755},
-			"/var/lib/yiban/photos":      {OwnerName: "yiban", GroupName: "yiban", Mode: 0o750},
-			"/var/lib/yiban/pre-migrate": {OwnerName: "yiban", GroupName: "yiban", Mode: 0o700},
+			"/srv/ui":                {OwnerName: "yiban", GroupName: "yiban", Mode: 0o755},
+			"/var/lib/yiban":         {OwnerName: "yiban", GroupName: "yiban", Mode: 0o755},
+			"/var/lib/yiban/photos":  {OwnerName: "yiban", GroupName: "yiban", Mode: 0o750},
+			"/var/lib/yiban-updater": {OwnerName: "root", GroupName: "root", Mode: 0o700},
+			DefaultBackupDir:         {OwnerName: "root", GroupName: "root", Mode: 0o700},
 		},
 		identities: map[string]fsperm.Identity{
 			"yiban": {Name: "yiban", GroupNames: []string{"yiban"}},
@@ -207,6 +213,13 @@ func newFixture() *fixture {
 		StatPermission: func(path string) (fsperm.Owner, bool) {
 			owner, ok := f.owners[path]
 			return owner, ok
+		},
+		// 备份目录按调用者（root）判权：生产里 selfcheck 以 root 跑。
+		CurrentIdentity: func() (fsperm.Identity, bool) {
+			if f.currentIdentity == nil {
+				return fsperm.Identity{UID: 0, GID: 0, Name: "root", HasIDs: true}, true
+			}
+			return *f.currentIdentity, true
 		},
 		UserIdentity: func(name string) (fsperm.Identity, bool) {
 			id, ok := f.identities[name]

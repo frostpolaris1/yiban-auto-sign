@@ -212,3 +212,57 @@ class WiringCheckerLiveCounterExampleTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---- 一键更新失败矩阵（U2）的接线守卫 --------------------------------------
+# 判据：R1..R10 必须有一条**真调用**的自动轨，且 job 有超时门；
+# 环境起不来时 workflow 必须显性 SKIP（写进 step summary），不许静默当绿。
+
+UPDATE_ROLLBACK = os.path.join(BASE, "scripts", "e2e", "update-rollback-e2e.sh")
+UPDATE_ROLLBACK_REL = "scripts/e2e/update-rollback-e2e.sh"
+
+_UPDATE_ROLLBACK_INVOCATION = re.compile(
+    r"^(?:sudo\s+)?(?:bash|sh)\s+(?:\./)?scripts/e2e/update-rollback-e2e\.sh(?:\s|$)"
+    r"|^\./(?:\./)?scripts/e2e/update-rollback-e2e\.sh(?:\s|$)")
+
+
+class UpdateRollbackE2EWiringTest(unittest.TestCase):
+    """U2 一键更新的失败矩阵必须在自动轨上，且 SKIP 不许冒充通过。"""
+
+    def test_script_exists_and_parses(self):
+        if not BASH:
+            self.skipTest("bash 不在 PATH：更新演练脚本语法检查跳过（CI/WSL 有 bash）")
+        self.assertTrue(os.path.isfile(UPDATE_ROLLBACK), "缺 %s" % UPDATE_ROLLBACK_REL)
+        proc = subprocess.run([BASH, "-n", UPDATE_ROLLBACK],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=60)
+        self.assertEqual(proc.returncode, 0,
+                         "bash -n 失败：%s\n%s" % (UPDATE_ROLLBACK_REL,
+                                                  proc.stderr.decode("utf-8", "replace")))
+
+    def test_some_workflow_really_invokes_it(self):
+        hits = _workflows_invoking(WORKFLOWS, _UPDATE_ROLLBACK_INVOCATION)
+        self.assertTrue(hits, "没有 workflow 真的调用 %s（注释或 echo 不算）" % UPDATE_ROLLBACK_REL)
+        automated = [n for n in hits if _has_auto_trigger(_read(os.path.join(WORKFLOWS, n)))]
+        self.assertTrue(automated, "调用更新演练的 workflow 只有 workflow_dispatch")
+
+    def test_job_declares_timeout_and_runs_dry_run_suite(self):
+        path = os.path.join(WORKFLOWS, "deploy-gate.yml")
+        block = _job_block(_read(path), "update-rollback-e2e")
+        self.assertTrue(block, "deploy-gate.yml 里没有 update-rollback-e2e job")
+        self.assertIn("timeout-minutes:", block, "update-rollback-e2e 没有超时门")
+        # 没有 docker 的机器上也必须有一条真跑的命令：update.sh 干跑契约。
+        self.assertIn("go test", block, "job 没有跑 update.sh 干跑契约")
+        self.assertIn("TestUpdateSh", block, "干跑命令没点名 TestUpdateSh")
+
+    def test_environment_skip_is_explicit(self):
+        path = os.path.join(WORKFLOWS, "deploy-gate.yml")
+        block = _job_block(_read(path), "update-rollback-e2e")
+        self.assertTrue(block, "deploy-gate.yml 里没有 update-rollback-e2e job")
+        # 环境错误（脚本 rc=2）才允许 SKIP：判定必须钉在 -eq 2 上，
+        # 不是「任何失败都可以跳过」。
+        self.assertIn('"$rc" -eq 2', block, "SKIP 必须只对脚本 rc=2（环境错误）生效")
+        self.assertIn("SKIP", block, "环境起不来时没有显性 SKIP")
+        self.assertIn("GITHUB_STEP_SUMMARY", block, "SKIP 没有写进 step summary（不算留痕）")
+        self.assertIn("不是通过", block, "SKIP 必须写明「不算通过」，不能冒充绿")
+        # 真失败（rc≠0/2）必须原样传出，不许被 SKIP 分支吞掉。
+        self.assertIn('exit "$rc"', block, "job 没有把真失败的退出码传出去")

@@ -84,6 +84,103 @@ func readAll(t *testing.T, path string) string {
 	return string(body)
 }
 
+// selfcheckPassJSON 是一份「全 PASS」的自检报告（U1 的 --json 形状）。
+// 用 MarshalIndent 的缩进形状：name/status/detail 各占一行，
+// update.sh 的失败摘要按行解析。
+const selfcheckPassJSON = `{
+  "schema_version": 1,
+  "generated_at": "2026-11-04T00:00:00Z",
+  "build": {
+    "version": "0.0.0-test",
+    "commit": "test",
+    "build_time": "test"
+  },
+  "checks": [
+    {
+      "name": "config.dsn",
+      "status": "PASS",
+      "detail": "已设置"
+    }
+  ],
+  "summary": {
+    "pass": 1,
+    "fail": 0,
+    "skip": 0,
+    "exit_code": 0
+  }
+}`
+
+// installFakeUpdateCLI 在安装位放一个已装的 yiban-cli 桩。
+// U2 起 update.sh 在停服前跑 `yiban-cli selfcheck --json`（fail-closed），
+// 干跑用例必须让这一步可判：桩返回一份 schema_version=1 的全 PASS 报告。
+// 其余子命令给安全缺省（migrate/healthcheck/backup 成功）；
+// 需要失败行为的用例用 fakeUpdateCLI 覆盖 migrate/healthcheck。
+func installFakeUpdateCLI(t *testing.T, root string) string {
+	t.Helper()
+	return fakeUpdateCLI(t, filepath.Join(root, "usr/local/bin"), "yiban-cli", "")
+}
+
+// fakeUpdateCLI 写一个 yiban-cli 桩：selfcheck/version/backup 固定行为，
+// extra 是额外的 case 分支（migrate/healthcheck 等），直接拼在 `case "$1" in`
+// 之内。升级成功后新版 CLI 会落到安装位，所以 --cli-bin 桩也必须能跑
+// selfcheck（第二次运行时它是「已安装」的那一份）。
+func fakeUpdateCLI(t *testing.T, dir, name, extra string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir fake cli dir: %v", err)
+	}
+	body := `case "$1" in
+  selfcheck)
+    if [ -n "${FAKE_SELFCHECK_ARGS:-}" ]; then printf '%s\n' "$*" >> "$FAKE_SELFCHECK_ARGS"; fi
+    case "$2" in
+      --json) cat <<'JSON'
+` + selfcheckPassJSON + `
+JSON
+        exit 0 ;;
+      --record-keys) echo "recorded"; exit 0 ;;
+    esac ;;
+` + extra + `
+  version) printf 'version: 0.0.0-test\ncommit: test\nbuild_time: test\n' ;;
+  backup)
+    out=""
+    for a in "$@"; do
+      case "$a" in --out=*) out="${a#--out=}" ;; esac
+    done
+    if [ -n "$out" ]; then : > "$out"; fi
+    echo "row counts: users=0"
+    exit 0 ;;
+esac
+exit 0
+`
+	return fakeBin(t, dir, name, body)
+}
+
+// fakePgTools 装备份/预检链路需要的三个 pg 客户端桩：
+// pg_dump 按 --file= 建出转储；pg_restore --list 打印一段 TOC；
+// psql 回答 CREATEDB、goose 版本与 public 基表数。
+func fakePgTools(t *testing.T, dir string) {
+	t.Helper()
+	fakePgDump(t, dir)
+	fakeBin(t, dir, "pg_restore", `
+for a in "$@"; do
+  case "$a" in
+    --list) echo "; TOC"; echo "1; 1259 16385 TABLE public users yiban"; exit 0 ;;
+  esac
+done
+exit 0
+`)
+	fakeBin(t, dir, "psql", `
+case "$*" in
+  *rolcreatedb*) echo t ;;
+  *goose_db_version*) echo 16 ;;
+  *information_schema.tables*) echo 20 ;;
+  *current_database*) printf 'yiban' ;;
+  *) echo 0 ;;
+esac
+exit 0
+`)
+}
+
 func TestInstallShDryRun(t *testing.T) {
 	requireBash(t)
 	root := t.TempDir()
@@ -284,6 +381,9 @@ func TestUpdateShRollsBackOnFailedMigration(t *testing.T) {
 	}
 	newUI := writeUIDistDir(t, "new-ui")
 	newBin := fakeBin(t, binDir, "yiban-server-new", newBody)
+	// U2 起停服前有自检门与统一备份：装已装 CLI 桩与 pg 客户端桩。
+	installFakeUpdateCLI(t, root)
+	fakePgTools(t, binDir)
 	// 假 cli：migrate 在打标文件存在时失败；healthcheck 成功。
 	migrateFail := filepath.Join(t.TempDir(), "migrate-fail")
 	cliBin := fakeBin(t, binDir, "yiban-cli", `
@@ -297,8 +397,9 @@ exit 0
 		"YIBAN_INSTALL_ROOT": root,
 		"SYSTEMCTL": fakeBin(t, binDir, "systemctl",
 			"echo \"systemctl $*\" >> \""+sysctlLog+"\"\nexit 0\n"),
-		"FAKE_MIGRATE_FAIL": migrateFail,
-		"PATH":              binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"FAKE_MIGRATE_FAIL":  migrateFail,
+		"YIBAN_DATABASE_URL": "postgres://yiban:pw@127.0.0.1:5432/yiban?sslmode=disable",
+		"PATH":               binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
 	}
 	if err := os.WriteFile(migrateFail, []byte("x"), 0o644); err != nil {
 		t.Fatalf("arm migrate fail: %v", err)
@@ -389,14 +490,10 @@ func TestUpdateShSnapshotsBeforeMigrate(t *testing.T) {
 	if err := os.WriteFile(installed, []byte("#!/bin/sh\necho OLD\n"), 0o755); err != nil {
 		t.Fatalf("seed installed: %v", err)
 	}
+	installFakeUpdateCLI(t, root)
 	newBin := fakeBin(t, binDir, "yiban-server-new", "echo NEW\n")
-	cliBin := fakeBin(t, binDir, "yiban-cli", `
-case "$1" in
-  migrate) echo migrate >> "$CALL_LOG"; exit 0 ;;
-  healthcheck) exit 0 ;;
-esac
-exit 0
-`)
+	cliBin := fakeUpdateCLI(t, binDir, "yiban-cli", `  migrate) echo migrate >> "$CALL_LOG"; exit 0 ;;
+  healthcheck) exit 0 ;;`)
 	// 假 pg_dump：记录调用，并按 --file= 建出目标文件。
 	dumpBody := `
 echo "pg_dump $*" >> "$CALL_LOG"
@@ -408,6 +505,21 @@ if [ -n "$prev" ]; then : > "$prev"; fi
 exit 0
 `
 	pgDump := fakeBin(t, binDir, "pg_dump", dumpBody)
+	fakeBin(t, binDir, "pg_restore", `
+for a in "$@"; do
+  case "$a" in --list) echo "; TOC"; echo "1; 1259 16385 TABLE public users yiban"; exit 0 ;; esac
+done
+exit 0
+`)
+	fakeBin(t, binDir, "psql", `
+case "$*" in
+  *rolcreatedb*) echo t ;;
+  *goose_db_version*) echo 16 ;;
+  *information_schema.tables*) echo 20 ;;
+  *) echo 0 ;;
+esac
+exit 0
+`)
 	env := map[string]string{
 		"YIBAN_INSTALL_ROOT": root,
 		"SYSTEMCTL": fakeBin(t, binDir, "systemctl",
@@ -425,20 +537,23 @@ exit 0
 	log := readAll(t, callLog)
 	dumpAt, migrateAt := strings.Index(log, "pg_dump"), strings.Index(log, "migrate")
 	if dumpAt < 0 || migrateAt < 0 || dumpAt > migrateAt {
-		t.Fatalf("快照必须先于迁移：dump=%d migrate=%d\n%s", dumpAt, migrateAt, log)
+		t.Fatalf("备份必须先于迁移：dump=%d migrate=%d\n%s", dumpAt, migrateAt, log)
 	}
-	dumps, err := filepath.Glob(filepath.Join(root, "var/lib/yiban/pre-migrate/pre-migrate-*.dump"))
+	dumps, err := filepath.Glob(filepath.Join(root, "var/lib/yiban-updater/backups/*/db.dump"))
 	if err != nil || len(dumps) != 1 {
-		t.Fatalf("pre-migrate 快照缺失: %v %v", dumps, err)
+		t.Fatalf("统一备份里的 db.dump 缺失: %v %v", dumps, err)
 	}
-	// 快照含凭据密文：落盘期间就必须是 0600（umask 077），不是事后 chmod。
+	// 转储含凭据密文：落盘期间就必须是 0600（umask 077），不是事后 chmod。
 	if info, err := os.Stat(dumps[0]); err != nil {
-		t.Fatalf("stat snapshot: %v", err)
+		t.Fatalf("stat dump: %v", err)
 	} else if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Fatalf("快照权限 = %o, want 600", perm)
+		t.Fatalf("转储权限 = %o, want 600", perm)
 	}
-
-	// 快照失败：中止升级，迁移不跑，服务重启。
+	// 清单必须存在并覆盖转储：校验失败等于没有备份。
+	if body := readAll(t, filepath.Join(filepath.Dir(dumps[0]), "SHA256SUMS")); !strings.Contains(body, "db.dump") {
+		t.Fatalf("SHA256SUMS 未覆盖 db.dump:\n%s", body)
+	}
+	// 备份失败：中止升级；U2 的判据是**不停服、不迁移**（此前是停服后回滚）。
 	if err := os.WriteFile(pgDump, []byte("#!/bin/sh\necho dump-failed >> \"$CALL_LOG\"\nexit 1\n"), 0o755); err != nil {
 		t.Fatalf("break pg_dump: %v", err)
 	}
@@ -448,15 +563,26 @@ exit 0
 	}
 	out, rc = runScript(t, scriptPath(t, "update.sh"), env,
 		"--server-bin", newBin, "--cli-bin", cliBin, "--allow-unsigned")
-	if rc == 0 {
-		t.Fatalf("快照失败却升级成功：%s", out)
+	if rc != 2 {
+		t.Fatalf("备份失败必须中止（rc=2）：rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "backup FAILED") {
+		t.Fatalf("失败必须点名备份步骤：%s", out)
 	}
 	log = readAll(t, callLog)
 	if strings.Contains(log, "migrate") {
-		t.Fatalf("快照失败后不得跑迁移：\n%s", log)
+		t.Fatalf("备份失败后不得跑迁移：\n%s", log)
 	}
-	if !strings.Contains(log, "systemctl start") {
-		t.Fatalf("快照失败必须把服务拉回来：\n%s", log)
+	if strings.Contains(log, "systemctl stop") {
+		t.Fatalf("备份失败必须在停服之前中止：\n%s", log)
+	}
+	// 半成品备份目录不许留着：看着像备份比没有备份更危险。
+	left, err := filepath.Glob(filepath.Join(root, "var/lib/yiban-updater/backups/*/db.dump"))
+	if err != nil {
+		t.Fatalf("glob backups: %v", err)
+	}
+	if len(left) != 1 {
+		t.Fatalf("失败轮不应留下新的备份目录（只应保留第一轮的 1 份）：%v", left)
 	}
 }
 
@@ -569,11 +695,15 @@ case "$1" in
 esac
 exit 0
 `)
+	// 自检门与统一备份的前置：安装位 CLI 能出 JSON 报告，PATH 里有 pg 客户端。
+	installFakeUpdateCLI(t, root)
+	fakePgTools(t, binDir)
 	env := map[string]string{
 		"YIBAN_INSTALL_ROOT": root,
 		"SYSTEMCTL": fakeBin(t, binDir, "systemctl",
 			"echo \"systemctl $*\" >> \""+sysctlLog+"\"\nexit 0\n"),
-		"PATH": binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"YIBAN_DATABASE_URL": "postgres://yiban:pw@127.0.0.1:5432/yiban?sslmode=disable",
+		"PATH":               binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
 	}
 	return env, sysctlLog
 }
@@ -1111,16 +1241,15 @@ func TestUpdateShReplacesUIDir(t *testing.T) {
 	sysctlLog := filepath.Join(t.TempDir(), "systemctl.log")
 
 	installedServer := filepath.Join(root, "usr/local/bin/yiban-server")
-	installedCLI := filepath.Join(root, "usr/local/bin/yiban-cli")
 	if err := os.MkdirAll(filepath.Dir(installedServer), 0o755); err != nil {
 		t.Fatalf("mkdir bin: %v", err)
 	}
 	if err := os.WriteFile(installedServer, []byte("#!/bin/sh\necho OLD\n"), 0o755); err != nil {
 		t.Fatalf("seed server: %v", err)
 	}
-	if err := os.WriteFile(installedCLI, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("seed cli: %v", err)
-	}
+	// 已装 CLI 必须支持 selfcheck（停服前的自检门）。
+	installFakeUpdateCLI(t, root)
+	fakePgTools(t, binDir)
 	// 旧 UI 与已存在的 .env。
 	oldUI := filepath.Join(root, "var/lib/yiban/ui")
 	if err := os.MkdirAll(oldUI, 0o755); err != nil {
@@ -1144,6 +1273,7 @@ func TestUpdateShReplacesUIDir(t *testing.T) {
 	env := map[string]string{
 		"YIBAN_INSTALL_ROOT":          root,
 		"SYSTEMCTL":                   fakeBin(t, binDir, "systemctl", "echo \"systemctl $*\" >> \""+sysctlLog+"\"\nexit 0\n"),
+		"YIBAN_DATABASE_URL":          "postgres://yiban:pw@127.0.0.1:5432/yiban?sslmode=disable",
 		"YIBAN_HEALTH_RETRIES":        "1",
 		"YIBAN_HEALTH_RETRY_INTERVAL": "0",
 		"PATH":                        binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
@@ -1207,9 +1337,11 @@ func TestUpdateShFirstUIWritesEnvOnlyAfterActivation(t *testing.T) {
 		t.Fatalf("mkdir etc: %v", err)
 	}
 	envPath := filepath.Join(root, "etc/yiban/.env")
-	if err := os.WriteFile(envPath, []byte("YIBAN_HTTP_ADDR=127.0.0.1:47183\n"), 0o600); err != nil {
+	if err := os.WriteFile(envPath, []byte("YIBAN_HTTP_ADDR=127.0.0.1:47183\nYIBAN_DATABASE_URL=postgres://yiban:pw@127.0.0.1:5432/yiban\n"), 0o600); err != nil {
 		t.Fatalf("write env: %v", err)
 	}
+	installFakeUpdateCLI(t, root)
+	fakePgTools(t, binDir)
 
 	newServer := fakeBin(t, binDir, "yiban-server-new", "exit 0\n")
 	// migrate 在打标文件存在时失败；health 成功。
@@ -1217,13 +1349,8 @@ func TestUpdateShFirstUIWritesEnvOnlyAfterActivation(t *testing.T) {
 	if err := os.WriteFile(migrateFail, []byte("x"), 0o644); err != nil {
 		t.Fatalf("arm migrate fail: %v", err)
 	}
-	cliBin := fakeBin(t, binDir, "yiban-cli", `
-case "$1" in
-  migrate) [ -f "$FAKE_MIGRATE_FAIL" ] && exit 1; exit 0 ;;
-  healthcheck) exit 0 ;;
-esac
-exit 0
-`)
+	cliBin := fakeUpdateCLI(t, binDir, "yiban-cli", `  migrate) [ -f "$FAKE_MIGRATE_FAIL" ] && exit 1; exit 0 ;;
+  healthcheck) exit 0 ;;`)
 	ui := writeUIDistDir(t, "first-ui")
 	env := map[string]string{
 		"YIBAN_INSTALL_ROOT": root,
@@ -1267,5 +1394,291 @@ exit 0
 	}
 	if body := readAll(t, filepath.Join(root, "var/lib/yiban/ui/index.html")); !strings.Contains(body, "first-ui") {
 		t.Fatalf("successful activation must install the page:\n%s", body)
+	}
+}
+
+// TestInstallShReplacesPlantedUISymlink 钉 HIGH（复审六轮）的安装侧：
+// $SERVICE_HOME/ui 可能是服务用户预置的软链；install.sh 不得 cp/chmod 顺链
+// 写到 /root 或旧备份，必须在 root 独占目录里造好再 mv -T 原子替换。
+func TestInstallShReplacesPlantedUISymlink(t *testing.T) {
+	requireBash(t)
+	root := t.TempDir()
+	binDir := t.TempDir()
+	victim := filepath.Join(root, "victim")
+	sub := filepath.Join(victim, "sub")
+	if err := os.MkdirAll(sub, 0o700); err != nil {
+		t.Fatalf("mkdir victim: %v", err)
+	}
+	secret := filepath.Join(victim, "index.html")
+	if err := os.WriteFile(secret, []byte("VICTIM"), 0o600); err != nil {
+		t.Fatalf("write victim: %v", err)
+	}
+	hidden := filepath.Join(sub, "keep.txt")
+	if err := os.WriteFile(hidden, []byte("KEEP"), 0o600); err != nil {
+		t.Fatalf("write victim sub: %v", err)
+	}
+	if err := os.Chmod(sub, 0o700); err != nil {
+		t.Fatalf("chmod victim sub: %v", err)
+	}
+	uiTarget := filepath.Join(root, "var/lib/yiban/ui")
+	if err := os.MkdirAll(filepath.Dir(uiTarget), 0o755); err != nil {
+		t.Fatalf("mkdir ui parent: %v", err)
+	}
+	if err := os.Symlink(victim, uiTarget); err != nil {
+		t.Skipf("SKIP: 本平台不支持符号链接：%v", err)
+	}
+	serverBin := fakeBin(t, binDir, "yiban-server", "exit 0\n")
+	cliBin := fakeBin(t, binDir, "yiban-cli", "exit 0\n")
+	ui := writeUIDistDir(t, "installed-ui")
+
+	env := map[string]string{
+		"YIBAN_INSTALL_ROOT":          root,
+		"SYSTEMCTL":                   fakeBin(t, binDir, "systemctl", "exit 0\n"),
+		"YIBAN_DATABASE_URL":          "postgres://yiban:pw@127.0.0.1:5432/yiban?sslmode=disable",
+		"YIBAN_HEALTH_RETRIES":        "1",
+		"YIBAN_HEALTH_RETRY_INTERVAL": "0",
+		"PATH":                        binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}
+	out, rc := runScript(t, scriptPath(t, "install.sh"), env,
+		"--server-bin", serverBin, "--cli-bin", cliBin, "--ui-dir", ui)
+	if rc != 0 {
+		t.Fatalf("install rc=%d out=%s", rc, out)
+	}
+	if info, err := os.Lstat(uiTarget); err != nil || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("安装位 ui 必须是真实目录：err=%v", err)
+	}
+	if body := readAll(t, filepath.Join(uiTarget, "index.html")); !strings.Contains(body, "installed-ui") {
+		t.Fatalf("页面没有落位：\n%s", body)
+	}
+	if body := readAll(t, secret); body != "VICTIM" {
+		t.Fatalf("软链目标被改写：%q", body)
+	}
+	if body := readAll(t, hidden); body != "KEEP" {
+		t.Fatalf("软链目标子文件被改写：%q", body)
+	}
+	if info, err := os.Stat(secret); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("软链目标文件权限被改：%v", err)
+	}
+	if info, err := os.Stat(sub); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("软链目标子目录权限被改：%v", err)
+	}
+	if body := readAll(t, filepath.Join(root, "etc/yiban/.env")); !strings.Contains(body, "YIBAN_UI_DIR=/var/lib/yiban/ui") {
+		t.Fatalf(".env 缺 YIBAN_UI_DIR：\n%s", body)
+	}
+}
+
+// TestInstallShRerunWithSameUIDir 钉 HIGH（复审七轮）：
+// 同一 --ui-dir 连跑两次必须都成功。目标已是非空真实目录时 mv -T 会
+// ENOTEMPTY，因此必须先清旧 .bak、把旧目录换过去，再换入新目录。
+func TestInstallShRerunWithSameUIDir(t *testing.T) {
+	requireBash(t)
+	root := t.TempDir()
+	binDir := t.TempDir()
+	serverBin := fakeBin(t, binDir, "yiban-server", "exit 0\n")
+	cliBin := fakeBin(t, binDir, "yiban-cli", "exit 0\n")
+	ui := writeUIDistDir(t, "rerun-ui")
+	env := map[string]string{
+		"YIBAN_INSTALL_ROOT":          root,
+		"SYSTEMCTL":                   fakeBin(t, binDir, "systemctl", "exit 0\n"),
+		"YIBAN_DATABASE_URL":          "postgres://yiban:pw@127.0.0.1:5432/yiban?sslmode=disable",
+		"YIBAN_HEALTH_RETRIES":        "1",
+		"YIBAN_HEALTH_RETRY_INTERVAL": "0",
+		"PATH":                        binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}
+	target := filepath.Join(root, "var/lib/yiban/ui")
+	for i := 1; i <= 2; i++ {
+		out, rc := runScript(t, scriptPath(t, "install.sh"), env,
+			"--server-bin", serverBin, "--cli-bin", cliBin, "--ui-dir", ui)
+		if rc != 0 {
+			t.Fatalf("第 %d 次 install.sh rc=%d out=%s", i, rc, out)
+		}
+		if info, err := os.Lstat(target); err != nil || info.Mode()&os.ModeSymlink != 0 {
+			t.Fatalf("第 %d 次后安装位不是真实目录：err=%v", i, err)
+		}
+		if body := readAll(t, filepath.Join(target, "index.html")); !strings.Contains(body, "rerun-ui") {
+			t.Fatalf("第 %d 次后页面内容不对：\n%s", i, body)
+		}
+	}
+	// 第二次把第一次的目录换到 .bak：旧页面留着（与 update.sh 同序）。
+	if body := readAll(t, filepath.Join(target+".bak", "index.html")); !strings.Contains(body, "rerun-ui") {
+		t.Fatalf("重装后 ui.bak 应是上一份页面：\n%s", body)
+	}
+	if got := strings.Count(readAll(t, filepath.Join(root, "etc/yiban/.env")), "YIBAN_UI_DIR="); got != 1 {
+		t.Fatalf("YIBAN_UI_DIR 必须恰好一行，got %d", got)
+	}
+}
+
+// TestInstallShUIActivationFailureRestoresBackup 钉复审 M3：
+// 换入新页面失败时旧页面必须从 .bak 换回；换回过程不能静默吞错。
+// 用 mv 桩拒绝「暂存目录 → 目标」这一步（模拟 ENOTEMPTY/跨设备失败）。
+func TestInstallShUIActivationFailureRestoresBackup(t *testing.T) {
+	requireBash(t)
+	realMv, err := exec.LookPath("mv")
+	if err != nil {
+		t.Skipf("SKIP: 找不到 mv：%v", err)
+	}
+	root := t.TempDir()
+	binDir := t.TempDir()
+	serverBin := fakeBin(t, binDir, "yiban-server", "exit 0\n")
+	cliBin := fakeBin(t, binDir, "yiban-cli", "exit 0\n")
+	uiOld := writeUIDistDir(t, "ui-old")
+	uiNew := writeUIDistDir(t, "ui-new")
+	basePath := binDir + string(os.PathListSeparator) + os.Getenv("PATH")
+	env := map[string]string{
+		"YIBAN_INSTALL_ROOT":          root,
+		"SYSTEMCTL":                   fakeBin(t, binDir, "systemctl", "exit 0\n"),
+		"YIBAN_DATABASE_URL":          "postgres://yiban:pw@127.0.0.1:5432/yiban?sslmode=disable",
+		"YIBAN_HEALTH_RETRIES":        "1",
+		"YIBAN_HEALTH_RETRY_INTERVAL": "0",
+		"PATH":                        basePath,
+	}
+	target := filepath.Join(root, "var/lib/yiban/ui")
+	if out, rc := runScript(t, scriptPath(t, "install.sh"), env,
+		"--server-bin", serverBin, "--cli-bin", cliBin, "--ui-dir", uiOld); rc != 0 {
+		t.Fatalf("首次安装 rc=%d out=%s", rc, out)
+	}
+
+	// 第二次：mv 桩拒绝对 ui.XXXXXX 的换入，**并先造一个非空目标**——
+	// 真实的 ENOTEMPTY 现场：目标被占住，恢复必须先 rm -rf 才换得回来
+	// （去掉 install.sh 的 rm -rf，本用例必须变红）。
+	stubDir := t.TempDir()
+	fakeBin(t, stubDir, "mv", `for a in "$@"; do
+  case "$a" in
+    */ui.??????)
+      mkdir -p "`+target+`" 2>/dev/null || true
+      : > "`+target+`/leftover.txt" 2>/dev/null || true
+      echo "mv: injected ENOTEMPTY" >&2
+      exit 1
+      ;;
+  esac
+done
+exec `+realMv+` "$@"
+`)
+	env["PATH"] = stubDir + string(os.PathListSeparator) + basePath
+	out, rc := runScript(t, scriptPath(t, "install.sh"), env,
+		"--server-bin", serverBin, "--cli-bin", cliBin, "--ui-dir", uiNew)
+	if rc != 1 {
+		t.Fatalf("换入失败应 rc=1：rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "restored the previous directory") {
+		t.Fatalf("必须显性说明已换回旧页面：%s", out)
+	}
+	if body := readAll(t, filepath.Join(target, "index.html")); !strings.Contains(body, "ui-old") {
+		t.Fatalf("换回后页面应是旧件：\n%s", body)
+	}
+	if _, err := os.Stat(target + ".bak"); err == nil {
+		t.Fatalf("换回后不应残留 ui.bak")
+	}
+}
+
+// TestInstallShUIBakRotation 钉复审 M4：连续三次 --ui-dir 运行时，
+// ui.bak 必须始终是「上一份」页面（不是更早的、也不是空的）。
+func TestInstallShUIBakRotation(t *testing.T) {
+	requireBash(t)
+	root := t.TempDir()
+	binDir := t.TempDir()
+	serverBin := fakeBin(t, binDir, "yiban-server", "exit 0\n")
+	cliBin := fakeBin(t, binDir, "yiban-cli", "exit 0\n")
+	env := map[string]string{
+		"YIBAN_INSTALL_ROOT":          root,
+		"SYSTEMCTL":                   fakeBin(t, binDir, "systemctl", "exit 0\n"),
+		"YIBAN_DATABASE_URL":          "postgres://yiban:pw@127.0.0.1:5432/yiban?sslmode=disable",
+		"YIBAN_HEALTH_RETRIES":        "1",
+		"YIBAN_HEALTH_RETRY_INTERVAL": "0",
+		"PATH":                        binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}
+	target := filepath.Join(root, "var/lib/yiban/ui")
+	markers := []string{"ui-a", "ui-b", "ui-c"}
+	previous := ""
+	for i, marker := range markers {
+		ui := writeUIDistDir(t, marker)
+		out, rc := runScript(t, scriptPath(t, "install.sh"), env,
+			"--server-bin", serverBin, "--cli-bin", cliBin, "--ui-dir", ui)
+		if rc != 0 {
+			t.Fatalf("第 %d 次 install.sh rc=%d out=%s", i+1, rc, out)
+		}
+		if body := readAll(t, filepath.Join(target, "index.html")); !strings.Contains(body, marker) {
+			t.Fatalf("第 %d 次后页面应是 %s：\n%s", i+1, marker, body)
+		}
+		if previous != "" {
+			bak := readAll(t, filepath.Join(target+".bak", "index.html"))
+			if !strings.Contains(bak, previous) {
+				t.Fatalf("第 %d 次后 ui.bak 应是上一份 %s：\n%s", i+1, previous, bak)
+			}
+			if strings.Contains(bak, marker) {
+				t.Fatalf("第 %d 次后 ui.bak 不该是本轮的新件：\n%s", i+1, bak)
+			}
+		}
+		previous = marker
+	}
+}
+
+// TestInstallShUIRestoreFailureKeepsBak 钉复审 M3 的 manual action 分支：
+// 换入失败、且换回也失败（mv -T .bak 目标 报错）时，必须点名 MANUAL ACTION
+// 并保留 ui.bak——不能静默吞错让用户以为页面还在。
+func TestInstallShUIRestoreFailureKeepsBak(t *testing.T) {
+	requireBash(t)
+	realMv, err := exec.LookPath("mv")
+	if err != nil {
+		t.Skipf("SKIP: 找不到 mv：%v", err)
+	}
+	root := t.TempDir()
+	binDir := t.TempDir()
+	serverBin := fakeBin(t, binDir, "yiban-server", "exit 0\n")
+	cliBin := fakeBin(t, binDir, "yiban-cli", "exit 0\n")
+	uiOld := writeUIDistDir(t, "ui-old")
+	uiNew := writeUIDistDir(t, "ui-new")
+	basePath := binDir + string(os.PathListSeparator) + os.Getenv("PATH")
+	env := map[string]string{
+		"YIBAN_INSTALL_ROOT":          root,
+		"SYSTEMCTL":                   fakeBin(t, binDir, "systemctl", "exit 0\n"),
+		"YIBAN_DATABASE_URL":          "postgres://yiban:pw@127.0.0.1:5432/yiban?sslmode=disable",
+		"YIBAN_HEALTH_RETRIES":        "1",
+		"YIBAN_HEALTH_RETRY_INTERVAL": "0",
+		"PATH":                        basePath,
+	}
+	target := filepath.Join(root, "var/lib/yiban/ui")
+	if out, rc := runScript(t, scriptPath(t, "install.sh"), env,
+		"--server-bin", serverBin, "--cli-bin", cliBin, "--ui-dir", uiOld); rc != 0 {
+		t.Fatalf("首次安装 rc=%d out=%s", rc, out)
+	}
+
+	// 换入失败 + 换回也失败：两条 mv 都被桩拒绝。
+	stubDir := t.TempDir()
+	fakeBin(t, stubDir, "mv", `src=""
+for a in "$@"; do
+  case "$a" in -*) continue ;; esac
+  src="$a"
+  break
+done
+case "$src" in
+  */ui.??????)
+    mkdir -p "`+target+`" 2>/dev/null || true
+    : > "`+target+`/leftover.txt" 2>/dev/null || true
+    echo "mv: injected ENOTEMPTY" >&2
+    exit 1
+    ;;
+  *.bak)
+    echo "mv: injected restore failure" >&2
+    exit 1
+    ;;
+esac
+exec `+realMv+` "$@"
+`)
+	env["PATH"] = stubDir + string(os.PathListSeparator) + basePath
+	out, rc := runScript(t, scriptPath(t, "install.sh"), env,
+		"--server-bin", serverBin, "--cli-bin", cliBin, "--ui-dir", uiNew)
+	if rc != 1 {
+		t.Fatalf("换入+换回都失败应 rc=1：rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "MANUAL ACTION") {
+		t.Fatalf("必须打印 MANUAL ACTION：%s", out)
+	}
+	if !strings.Contains(out, target+".bak") {
+		t.Fatalf("manual action 必须点名 ui.bak 路径：%s", out)
+	}
+	// 旧页面仍在 ui.bak（没被删、也没被新件顶掉）。
+	if body := readAll(t, filepath.Join(target+".bak", "index.html")); !strings.Contains(body, "ui-old") {
+		t.Fatalf("ui.bak 应保留旧页面：\n%s", body)
 	}
 }

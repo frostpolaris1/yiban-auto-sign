@@ -185,35 +185,67 @@ check_backup() {
 
 # 项 7 回滚演练。考古（2026-10-27，ref ad5b3639）：机制存在——
 #   deploy/linux/update.sh 迁移失败回滚为旧件继续跑（exit 1）、健康检查失败换回
-#   .bak 旧二进制再起（exit 1）、回滚后仍不健康 exit 2。已知边界：schema 不随
-#   二进制回滚（无 down 迁移），update.sh 头注登记。
-#   既有守卫：server/cmd/cli/install_update_e2e_test.go 的
-#   TestUpdateShRollsBackOnFailedMigration。2026-10-31（E-2）起演练正本＝
-#   scripts/e2e/update-rollback-e2e.sh（U3 迁移失败／U4 健康失败／U5 正常升级，
-#   一次性 systemd 容器真跑 update.sh；容器外跑 run 被守卫拒绝，exit 2 零写入）。
+#   .bak 旧二进制再起（exit 1）、回滚后仍不健康 exit 2。
+#   2026-11-04（U2）起 update.sh 是一键更新：停服前自检门（selfcheck --json，
+#   FAIL 即 exit 2）、统一备份（pg_dump -Fc + pg_restore --list + 照片 tar +
+#   sha256）、迁移后失败默认把 pre-migrate 备份恢复到新库并切 DSN
+#   （--no-restore-db 关闭）、恢复失败 exit 2 + manual action 且不启动旧件；
+#   二进制/UI/CLI 一律自动回滚。
+#   既有守卫：server/cmd/cli/update_u2_e2e_test.go（自检门、备份布局/保留、
+#   数据库回滚成功/失败）与 install_update_e2e_test.go（.bak 回滚、签名）。
+#   演练正本＝scripts/e2e/update-rollback-e2e.sh（R1..R10 全矩阵，一次性
+#   systemd 容器真跑 update.sh；容器外跑 run 被守卫拒绝，exit 2 零写入）。
+#   2026-11-04（U2 审查）：失败矩阵已进 CI——deploy-gate.yml 的
+#   update-rollback-e2e job 先真跑 update.sh 干跑契约，再跑容器演练；
+#   环境起不来时显性 SKIP（写进 step summary，不算绿）。本项仍记 POINTER：
+#   CI 的 SKIP 不是绿，发布前要按下面那条命令手跑一遍。
 #   旧线 deploy_gate.sh --phase B：本项不再指向；脚本与旧线 CI 仍在
 #   （phase B 未删）。
 check_rollback() {
     STATUS_rollback=FAIL; REASON_rollback=""
     local upd="$ROOT/deploy/linux/update.sh"
     local drill="$ROOT/scripts/e2e/update-rollback-e2e.sh"
+    local guard="$ROOT/server/cmd/cli/update_u2_e2e_test.go"
+    local marker
     [ -f "$upd" ] || { REASON_rollback="missing $upd"; return; }
     if ! grep -q 'BAK' "$upd" || ! grep -q 'rolling back' "$upd"; then
         REASON_rollback="update.sh has no .bak rollback path"; return
     fi
+    # U2 的三个机件必须在 update.sh 里真接线，不能只写在文档里。
+    for marker in 'selfcheck FAILED' 'backup FAILED' 'db restore' 'manual action required'; do
+        if ! grep -q "$marker" "$upd"; then
+            REASON_rollback="update.sh is missing the U2 mechanism: $marker"; return
+        fi
+    done
     [ -f "$drill" ] || { REASON_rollback="missing $drill"; return; }
     if ! grep -q 'REFUSING to run the drill outside the e2e container' "$drill"; then
         REASON_rollback="drill script has no container guard"; return
     fi
+    # 演练必须覆盖失败矩阵的每一类，不能只剩三步。
+    for marker in '备份失败' '自检 FAIL' 'CREATEDB' '数据库恢复失败'; do
+        if ! grep -q "$marker" "$drill"; then
+            REASON_rollback="drill does not cover: $marker"; return
+        fi
+    done
     if ! grep -q 'TestUpdateShRollsBackOnFailedMigration' \
         "$ROOT/server/cmd/cli/install_update_e2e_test.go"; then
         REASON_rollback="rollback e2e guard missing in install_update_e2e_test.go"; return
     fi
+    [ -f "$guard" ] || { REASON_rollback="missing $guard"; return; }
+    # CI 接线：job 必须在，且真的调用演练（不是只在注释里）。
+    local wf="$ROOT/.github/workflows/deploy-gate.yml"
+    [ -f "$wf" ] || { REASON_rollback="missing $wf"; return; }
+    if ! grep -q '^  update-rollback-e2e:' "$wf"; then
+        REASON_rollback="deploy-gate.yml has no update-rollback-e2e job"; return
+    fi
+    if ! grep -q 'bash scripts/e2e/update-rollback-e2e.sh host' "$wf"; then
+        REASON_rollback="update-rollback-e2e job does not invoke the drill"; return
+    fi
     STATUS_rollback=POINTER; REASON_rollback="not executed here"
-    echo "rollback: POINTER — mechanism exists (update.sh .bak swap-back; no down migrations)."
+    echo "rollback: POINTER — mechanism exists (update.sh .bak swap-back; DB restore into a new database; no down migrations)."
     echo "  release operator runs:"
-    echo "  bash scripts/e2e/update-rollback-e2e.sh host --log-dir <日志目录>   # U3/U4/U5 真跑（docker --privileged；守卫只许容器内跑 run）"
-    echo "  go test ./cmd/cli/ -run TestUpdateShRollsBackOnFailedMigration -count=1"
+    echo "  bash scripts/e2e/update-rollback-e2e.sh host --log-dir <日志目录>   # R1..R10 全矩阵真跑（docker --privileged；守卫只许容器内跑 run）"
+    echo "  go test ./cmd/cli/ -run 'TestUpdateSh' -count=1"
 }
 
 # 项 8 ed25519/SPA 发布件检查。考古（2026-10-27，ref ad5b3639）：无既有门，
