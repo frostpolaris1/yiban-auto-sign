@@ -49,6 +49,7 @@ ALLOWED_TOP = {
     "server",        # 实验线 Go 后端（P0 起新栈；结构与门禁见 server/structure.tsv）
     "ui",            # 实验线 React 前端（Adminator；结构与门禁见 server/structure.tsv）
     "STRUCTURE.md",  # 实验线仓库结构说明（B1 目标树契约的入口文档）
+    "VERSION",       # Go 线产品版本单源（build-release.sh / release-check go-version 读取）
 }
 
 #: 顶层条目数的下限：白名单再小也不会少于这个数。用于"扫空不得当绿"。

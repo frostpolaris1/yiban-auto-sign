@@ -68,6 +68,7 @@ fast	tests/test_backup_hardening.py	# backup.sh 回环/优先级/状态件（stu
 fast	tests/test_backup_require_encrypt.py
 fast	tests/test_backup_sentinel.py
 slow	tests/test_breaker.py	# 真等待：4 条用例各等一次真实 5s 超时（本机 31.1s）
+fast	tests/test_build_version_wiring.py	# Go 线版本接线静态门；纯静态不编译
 fast	tests/test_builtin_admin_sid.py
 fast	tests/test_business_day_source_gate.py	# 业务日事实源静态门：测试不得用宿主/浏览器钟取日（P0 2026-10-25）
 fast	tests/test_calendar_state_visibility.py

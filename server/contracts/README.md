@@ -56,6 +56,19 @@ against a base git ref and fails on ERR-level breaking changes; without a base
 ref it prints a visible skip. CI runs the gate only when a change touches
 `server/contracts/`. spectral is pinned in `server/contracts/tools`.
 
+## Versioning
+
+The `info.version` field in `openapi.yaml` (currently `1.0.0`) is the **API
+contract version**, not the product release version. It only changes when the
+contract itself takes a breaking change; additive changes keep it untouched.
+
+The product release version lives in the repository root `VERSION` file (the
+single source for the Go line) and is tagged `v$VERSION` at release time. The
+two counters are independent by design and are never synchronized:
+`scripts/release-check.sh` item `go-version` asserts the product side only
+(`VERSION` present and semver, built binaries self-reporting it, release tag
+`v$VERSION` pointing at HEAD) and never reads `info.version`.
+
 ## Roles
 
 | Role | Scope |

@@ -26,6 +26,7 @@ ROOT="$(cd "$SELF_DIR/.." && pwd)"
 SHELL_FILES=(
     deploy/linux/install.sh
     deploy/linux/update.sh
+    deploy/docker/build.sh
     scripts/e2e/deploy-container-e2e.sh
     scripts/e2e/deploy-baremetal-e2e.sh
     scripts/e2e/update-rollback-e2e.sh
@@ -33,6 +34,7 @@ SHELL_FILES=(
     scripts/verify-stacks.sh
     scripts/tooling-gate.sh
     scripts/contract-gate.sh
+    server/scripts/build-release.sh
     server/scripts/generate.sh
     server/scripts/license.sh
     server/scripts/verify.sh
