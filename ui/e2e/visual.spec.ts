@@ -323,6 +323,11 @@ for (const theme of THEMES) {
     const toast = page.locator('[data-sonner-toast]')
     await expect(toast).toBeVisible()
     await expect(toast).toContainText('已暂停 139****9000')
+    // 暂停确认后行内说明变宽，Linux 字体下账号表在 .table-scroll 内横向溢出。
+    // 点击/焦点会给该容器留下 scrollLeft，截图前归零，避免与基线偏差。
+    await page.locator('.table-scroll').evaluate((el) => {
+      el.scrollLeft = 0
+    })
     await expect(page).toHaveScreenshot(`toast-${theme}-1440.png`)
   })
 }
