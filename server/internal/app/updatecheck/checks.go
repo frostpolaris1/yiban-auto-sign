@@ -459,18 +459,6 @@ func judgeDirAccess(deps Deps, opts Options, path string, want fsperm.Access, ve
 	return verdictForOwner(owner, id, "服务用户 "+opts.ServiceUser, want, verb)
 }
 
-// judgeDirAccessFor 用给定身份判目录权限；who 是报告里的身份描述。
-func judgeDirAccessFor(deps Deps, path string, id fsperm.Identity, who string, want fsperm.Access, verb string) accessVerdict {
-	if deps.StatPermission == nil {
-		return accessVerdict{skip: "权限探针未注入"}
-	}
-	owner, ok := deps.StatPermission(path)
-	if !ok {
-		return accessVerdict{skip: "本平台拿不到 POSIX 属主/权限位（Windows），无法按" + who + "判权"}
-	}
-	return verdictForOwner(owner, id, who, want, verb)
-}
-
 // verdictForOwner 把「属主/模式 + 身份」折成 allowed/detail。
 // root（uid 0）有 CAP_DAC_OVERRIDE：位只用来识别「明显不可写」的目录。
 func verdictForOwner(owner fsperm.Owner, id fsperm.Identity, who string, want fsperm.Access, verb string) accessVerdict {

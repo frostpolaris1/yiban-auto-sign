@@ -347,9 +347,9 @@ EOF
     #      健康失败时的二进制/UI 回滚，不混测数据库回滚）。
     # 同一 --log-dir 复跑时旧树必须先清：cp -a 对已存在目标会把源嵌进
     # <目标>/server/，挂载的仍是旧源码。
-    rm -rf "$LOG_DIR/srv-v2" "$LOG_DIR/srv-v3" "$LOG_DIR/srv-v4" "$LOG_DIR/srv-v5" "$LOG_DIR/srv-v6"
-    cp -a "$REPO/server" "$LOG_DIR/srv-v2"
-    cat > "$LOG_DIR/srv-v2/migrations/postgres/${MIG1}_e2e_rollback_probe.sql" <<'EOF'
+    rm -rf "$LOG_DIR/srv_v2" "$LOG_DIR/srv_v3" "$LOG_DIR/srv_v4" "$LOG_DIR/srv_v5" "$LOG_DIR/srv_v6"
+    cp -a "$REPO/server" "$LOG_DIR/srv_v2"
+    cat > "$LOG_DIR/srv_v2/migrations/postgres/${MIG1}_e2e_rollback_probe.sql" <<'EOF'
 -- +goose Up
 -- E-2 回滚演练件：需要 public 模式 CREATE 权限，供 R6 注入 REVOKE 后
 -- 走真 goose 路径失败。建出的表同时证明「迁移不随二进制回滚」这一
@@ -362,13 +362,13 @@ CREATE TABLE e2e_rollback_probe (
 -- +goose Down
 DROP TABLE IF EXISTS e2e_rollback_probe;
 EOF
-    cp -a "$LOG_DIR/srv-v2" "$LOG_DIR/srv-v3"
+    cp -a "$LOG_DIR/srv_v2" "$LOG_DIR/srv_v3"
     sed -i 's|^func main() {$|func main() {\n\tpanic("e2e-rollback-e2e: injected unhealthy build")|' \
-        "$LOG_DIR/srv-v3/cmd/server/main.go"
-    grep -q 'injected unhealthy build' "$LOG_DIR/srv-v3/cmd/server/main.go" \
+        "$LOG_DIR/srv_v3/cmd/server/main.go"
+    grep -q 'injected unhealthy build' "$LOG_DIR/srv_v3/cmd/server/main.go" \
         || e2e_die "v3 源码注入失败（main.go 形状与预期不符）"
-    cp -a "$LOG_DIR/srv-v2" "$LOG_DIR/srv-v4"
-    cat > "$LOG_DIR/srv-v4/migrations/postgres/${MIG2}_e2e_version_bump.sql" <<'EOF'
+    cp -a "$LOG_DIR/srv_v2" "$LOG_DIR/srv_v4"
+    cat > "$LOG_DIR/srv_v4/migrations/postgres/${MIG2}_e2e_version_bump.sql" <<'EOF'
 -- +goose Up
 -- E-2 回滚演练件：R8 正常升级的可应用迁移（无 DDL，靠 SELECT 走通
 -- goose 全流程并推高一档版本）。
@@ -377,8 +377,8 @@ SELECT 1;
 -- +goose Down
 SELECT 1;
 EOF
-    cp -a "$LOG_DIR/srv-v4" "$LOG_DIR/srv-v5"
-    cat > "$LOG_DIR/srv-v5/migrations/postgres/${MIG3}_e2e_version_bump.sql" <<'EOF'
+    cp -a "$LOG_DIR/srv_v4" "$LOG_DIR/srv_v5"
+    cat > "$LOG_DIR/srv_v5/migrations/postgres/${MIG3}_e2e_version_bump.sql" <<'EOF'
 -- +goose Up
 -- E-2 回滚演练件：R9 的可应用迁移（把版本再推一档，制造「库已前进」）。
 SELECT 1;
@@ -387,28 +387,28 @@ SELECT 1;
 SELECT 1;
 EOF
     sed -i 's|^func main() {$|func main() {\n\tpanic("e2e-rollback-e2e: injected unhealthy build for restore failure")|' \
-        "$LOG_DIR/srv-v5/cmd/server/main.go"
-    grep -q 'injected unhealthy build for restore failure' "$LOG_DIR/srv-v5/cmd/server/main.go" \
+        "$LOG_DIR/srv_v5/cmd/server/main.go"
+    grep -q 'injected unhealthy build for restore failure' "$LOG_DIR/srv_v5/cmd/server/main.go" \
         || e2e_die "v5 源码注入失败（main.go 形状与预期不符）"
-    cp -a "$LOG_DIR/srv-v4" "$LOG_DIR/srv-v6"
+    cp -a "$LOG_DIR/srv_v4" "$LOG_DIR/srv_v6"
     sed -i 's|func main() {$|func main() {\n\tpanic("e2e-rollback-e2e: injected unhealthy build for ui rollback")|' \
-        "$LOG_DIR/srv-v6/cmd/server/main.go"
-    grep -q 'injected unhealthy build for ui rollback' "$LOG_DIR/srv-v6/cmd/server/main.go" \
+        "$LOG_DIR/srv_v6/cmd/server/main.go"
+    grep -q 'injected unhealthy build for ui rollback' "$LOG_DIR/srv_v6/cmd/server/main.go" \
         || e2e_die "v6 源码注入失败（main.go 形状与预期不符）"
     # 嵌套自检：拷贝后的 scratch 树顶层必须是源码根。
     # 挂载点对着顶层；嵌套一层时构建的「新版」就是旧源码（判据静默失效）。
-    for d in srv-v2 srv-v3 srv-v4 srv-v5 srv-v6; do
+    for d in srv_v2 srv_v3 srv_v4 srv_v5 srv_v6; do
         [ -f "$LOG_DIR/$d/go.mod" ] \
             || e2e_die "$d 顶层缺 go.mod（源码被嵌套拷贝，挂载的不是顶层源码）"
         [ ! -d "$LOG_DIR/$d/server" ] \
             || e2e_die "$d 内出现嵌套 server/ 目录（cp 目标已存在）"
     done
-    [ -f "$LOG_DIR/srv-v2/migrations/postgres/${MIG1}_e2e_rollback_probe.sql" ] \
-        || e2e_die "srv-v2 顶层缺 ${MIG1} 演练迁移"
-    [ -f "$LOG_DIR/srv-v4/migrations/postgres/${MIG2}_e2e_version_bump.sql" ] \
-        || e2e_die "srv-v4 顶层缺 ${MIG2} 演练迁移"
-    [ -f "$LOG_DIR/srv-v5/migrations/postgres/${MIG3}_e2e_version_bump.sql" ] \
-        || e2e_die "srv-v5 顶层缺 ${MIG3} 演练迁移"
+    [ -f "$LOG_DIR/srv_v2/migrations/postgres/${MIG1}_e2e_rollback_probe.sql" ] \
+        || e2e_die "srv_v2 顶层缺 ${MIG1} 演练迁移"
+    [ -f "$LOG_DIR/srv_v4/migrations/postgres/${MIG2}_e2e_version_bump.sql" ] \
+        || e2e_die "srv_v4 顶层缺 ${MIG2} 演练迁移"
+    [ -f "$LOG_DIR/srv_v5/migrations/postgres/${MIG3}_e2e_version_bump.sql" ] \
+        || e2e_die "srv_v5 顶层缺 ${MIG3} 演练迁移"
     cat > "$LOG_DIR/build-all.sh" <<'EOF'
 #!/bin/sh
 # 五组二进制一次编译：共享 GOCACHE/GOPATH（挂载卷，跨次运行复用）。
@@ -426,11 +426,11 @@ EOF
     if ! docker run --rm \
         -e "ROLLBACK_E2E_GOPROXY=$GOPROXY_ARG" \
         -v "$REPO/server:/src/v1:ro" \
-        -v "$LOG_DIR/srv-v2:/src/v2" \
-        -v "$LOG_DIR/srv-v3:/src/v3" \
-        -v "$LOG_DIR/srv-v4:/src/v4" \
-        -v "$LOG_DIR/srv-v5:/src/v5" \
-        -v "$LOG_DIR/srv-v6:/src/v6" \
+        -v "$LOG_DIR/srv_v2:/src/v2" \
+        -v "$LOG_DIR/srv_v3:/src/v3" \
+        -v "$LOG_DIR/srv_v4:/src/v4" \
+        -v "$LOG_DIR/srv_v5:/src/v5" \
+        -v "$LOG_DIR/srv_v6:/src/v6" \
         -v "$BIN_OUT:/out" \
         -v "$LOG_DIR/build-all.sh:/build-all.sh:ro" \
         -v "$GO_CACHE_VOL:/tmp/gocache" \

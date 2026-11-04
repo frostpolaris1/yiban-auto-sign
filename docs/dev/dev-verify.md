@@ -215,10 +215,10 @@ slow 行 + `FAST_KNOWN_SLOW` 长尾 4 条），与 verify 并行、每次 push �
 连续两次红后移入，理由见名册该行）
 （文件数口径：`tests/lane-roster.tsv` 的非注释行按车道计数；测量命令
 `awk -F'\t' '!/^#/ && ($1=="fast" || $1=="slow" || $1=="serial") {print $1}' tests/lane-roster.tsv | sort | uniq -c`）。
-用例数口径 5347 ＝ 快集 5106 ＋ 慢集 173 ＋ 串行轨 68
+用例数口径 5351 ＝ 快集 5110 ＋ 慢集 173 ＋ 串行轨 68
 （口径：`pytest tests/ --collect-only -q` 的 `tests/…::…` 行按文件归道计数；测量命令
 `python -m pytest tests/ --collect-only -q -p no:randomly --no-header | grep -c '^tests/.*::'`
-输出 `5347`（Python 3.12 venv，POSIX 侧复测；Windows 侧收集会少 1 条，因为
+输出 `5351`（Python 3.12 venv，POSIX 侧复测；Windows 侧收集会少 1 条，因为
 `tests/test_install_log_dir_e2e.py` 用 `os.geteuid`，只在 POSIX 可收集）；
 分道数由 `tests/test_gate_lane_roster.py::DocNumbersMatchRealityTest` 复算，
 
