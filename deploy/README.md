@@ -153,8 +153,10 @@ sudo bash deploy/linux/update.sh --selfcheck-only    # 0 全 PASS/SKIP；2 有 F
 **统一备份（停服前，失败即中止）**
 
 落在 `/var/lib/yiban/backups/<UTC时间戳>/`（目录 0700、文件 0600；
-`/var/lib/yiban/updates/` 只放状态与日志）。备份根 0700、属服务用户
-`yiban`（U1 自检按服务用户判权）；每份子目录仍是 root 0700、文件 0600。
+`/var/lib/yiban/updates/` 只放状态与日志）。**备份根与状态目录都是
+root:root 0700**：备份含凭据密文，回滚还会执行备份内的 CLI，因此服务用户
+不得能写（U1 自检的 `fs.backup_dir` 也按调用者 root 判权）；每份子目录
+0700、文件 0600。
 
 | 文件 | 内容 |
 |---|---|
@@ -246,13 +248,13 @@ sudo tail -n 50 /var/lib/yiban/updates/update.log
 sudo python3 -m json.tool /var/lib/yiban/updates/selfcheck-latest.json | less
 
 # 3) 看本次备份与校验
-sudo ls -l /var/lib/yiban/updates/backups/
-sudo sh -c 'cd /var/lib/yiban/updates/backups/<ts> && sha256sum -c SHA256SUMS'
+sudo ls -l /var/lib/yiban/backups/
+sudo sh -c 'cd /var/lib/yiban/backups/<ts> && sha256sum -c SHA256SUMS'
 
 # 4) 数据库恢复失败（exit 2）时，按打印的 manual action 操作，等价命令：
 sudo -u postgres createdb yiban_restore_manual
 sudo -u postgres pg_restore --no-owner --no-privileges \
-  -d yiban_restore_manual /var/lib/yiban/updates/backups/<ts>/db.dump
+  -d yiban_restore_manual /var/lib/yiban/backups/<ts>/db.dump
 sudo sed -i 's|^YIBAN_DATABASE_URL=.*|YIBAN_DATABASE_URL=postgres://…/yiban_restore_manual|' /etc/yiban/.env
 sudo systemctl start yiban.service
 

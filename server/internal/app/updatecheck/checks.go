@@ -317,7 +317,9 @@ func checkFSPhotoDir(deps Deps, opts Options) Check {
 	return pass(nameFSPhotoDir, verdict.detail)
 }
 
-// checkFSBackupDir 检查迁移前备份目录对服务用户可写。
+// checkFSBackupDir 检查备份目录对**调用者**（root）可写。
+// 备份由 update.sh 以 root 写入，目录也是 root:root 0700：按服务用户判权
+// 会得出「服务用户写不了 ⇒ FAIL」，而那正是安全要求（服务用户不得能塞件）。
 // 容器内跳过：备份目录在宿主；裸机目录不存在时看最近的已存在祖先。
 func checkFSBackupDir(deps Deps, opts Options) Check {
 	if deps.Containerized {
@@ -334,13 +336,13 @@ func checkFSBackupDir(deps Deps, opts Options) Check {
 			return fail(nameFSBackupDir, "不是目录："+dir,
 				"换一个目录或删除同名文件")
 		}
-		verdict := judgeDirAccess(deps, opts, dir, fsperm.Write|fsperm.Execute, "写")
+		verdict := currentUserAccess(deps, dir, fsperm.Write|fsperm.Execute, "写")
 		if verdict.skip != "" {
 			return skip(nameFSBackupDir, verdict.skip)
 		}
 		if !verdict.allowed {
 			return fail(nameFSBackupDir, verdict.detail,
-				"chown "+opts.ServiceUser+":"+opts.ServiceUser+" "+dir+" 或 chmod 700 "+dir)
+				"更新器以 root 写备份：chmod 700 "+dir+" 并确保 root 可写（目录属主应为 root）")
 		}
 		return pass(nameFSBackupDir, verdict.detail)
 	}
@@ -351,7 +353,7 @@ func checkFSBackupDir(deps Deps, opts Options) Check {
 	return missingBackupDirRow(deps, opts, dir)
 }
 
-// missingBackupDirRow 沿父目录上溯，按服务用户判最近祖先的可写性。
+// missingBackupDirRow 沿父目录上溯，按调用者（root）判最近祖先的可写性。
 // 找不到可写祖先即 FAIL：更新在停机后才发现备份不了，代价更大。
 func missingBackupDirRow(deps Deps, opts Options, dir string) Check {
 	ancestor := parentDir(dir)
@@ -363,17 +365,17 @@ func missingBackupDirRow(deps Deps, opts Options, dir string) Check {
 				return fail(nameFSBackupDir, "不存在，且最近路径 "+ancestor+" 不是目录",
 					"换一个备份目录")
 			}
-			verdict := judgeDirAccess(deps, opts, ancestor, fsperm.Write|fsperm.Execute, "写")
+			verdict := currentUserAccess(deps, ancestor, fsperm.Write|fsperm.Execute, "写")
 			switch {
 			case verdict.skip != "":
 				return skip(nameFSBackupDir, verdict.skip+"（"+dir+" 不存在）")
 			case !verdict.allowed:
 				return fail(nameFSBackupDir,
 					dir+" 不存在；最近的已存在目录 "+ancestor+" 上"+verdict.detail,
-					"用 --backup-dir 指向服务用户可写目录，或先创建并 chown")
+					"用 --backup-dir 指向可写目录，或先创建并 chown root:root")
 			default:
 				return skip(nameFSBackupDir,
-					"不存在；最近的已存在目录 "+ancestor+" 对服务用户可写（"+dir+" 未创建）")
+					"不存在；最近的已存在目录 "+ancestor+" 上"+verdict.detail+"（"+dir+" 未创建）")
 			}
 		case !errors.Is(err, os.ErrNotExist):
 			return fail(nameFSBackupDir, "无法读取 "+ancestor+"："+err.Error(),
@@ -395,6 +397,23 @@ type accessVerdict struct {
 	skip    string
 }
 
+// currentUserAccess 按**调用者**（通常是 root）判目录权限，用于备份目录。
+// 身份与属主都按进程真实 uid/gid；探针缺失时 SKIP 并说明（不冒充 root）。
+func currentUserAccess(deps Deps, path string, want fsperm.Access, verb string) accessVerdict {
+	if deps.CurrentIdentity == nil {
+		return accessVerdict{skip: "当前用户身份探针未注入（备份目录按调用者判权）"}
+	}
+	id, ok := deps.CurrentIdentity()
+	if !ok {
+		return accessVerdict{skip: "本平台拿不到当前用户身份（Windows），无法判备份目录权限"}
+	}
+	who := "当前用户"
+	if id.Name != "" {
+		who = "当前用户 " + id.Name
+	}
+	return judgeDirAccessFor(deps, path, id, who, want, verb)
+}
+
 // judgeDirAccess 按服务用户的 POSIX 属主/组/模式位判目录权限。
 // 不读目录、不建临时文件；判据与 doctor 共用 core/fsperm。
 func judgeDirAccess(deps Deps, opts Options, path string, want fsperm.Access, verb string) accessVerdict {
@@ -412,12 +431,34 @@ func judgeDirAccess(deps Deps, opts Options, path string, want fsperm.Access, ve
 	if !ok {
 		return accessVerdict{skip: "查不到服务用户 " + opts.ServiceUser + " 的身份"}
 	}
-	if !fsperm.Allowed(owner, id, want) {
-		return accessVerdict{detail: fmt.Sprintf("服务用户 %s 无%s权限（属主 %s、组 %s、权限 %04o）",
-			opts.ServiceUser, verb, ownerLabel(owner), groupLabel(owner), owner.Mode.Perm())}
+	return verdictForOwner(owner, id, "服务用户 "+opts.ServiceUser, want, verb)
+}
+
+// judgeDirAccessFor 用给定身份判目录权限；who 是报告里的身份描述。
+func judgeDirAccessFor(deps Deps, path string, id fsperm.Identity, who string, want fsperm.Access, verb string) accessVerdict {
+	if deps.StatPermission == nil {
+		return accessVerdict{skip: "权限探针未注入"}
 	}
-	return accessVerdict{allowed: true, detail: fmt.Sprintf("服务用户 %s 可%s（属主 %s、组 %s、权限 %04o）",
-		opts.ServiceUser, verb, ownerLabel(owner), groupLabel(owner), owner.Mode.Perm())}
+	owner, ok := deps.StatPermission(path)
+	if !ok {
+		return accessVerdict{skip: "本平台拿不到 POSIX 属主/权限位（Windows），无法按" + who + "判权"}
+	}
+	return verdictForOwner(owner, id, who, want, verb)
+}
+
+// verdictForOwner 把「属主/模式 + 身份」折成 allowed/detail。
+// root（uid 0）有 CAP_DAC_OVERRIDE：位只用来识别「明显不可写」的目录。
+func verdictForOwner(owner fsperm.Owner, id fsperm.Identity, who string, want fsperm.Access, verb string) accessVerdict {
+	allowed := fsperm.Allowed(owner, id, want)
+	if id.HasIDs && id.UID == 0 {
+		allowed = fsperm.RootAllows(owner, want)
+	}
+	if !allowed {
+		return accessVerdict{detail: fmt.Sprintf("%s 无%s权限（属主 %s、组 %s、权限 %04o）",
+			who, verb, ownerLabel(owner), groupLabel(owner), owner.Mode.Perm())}
+	}
+	return accessVerdict{allowed: true, detail: fmt.Sprintf("%s 可%s（属主 %s、组 %s、权限 %04o）",
+		who, verb, ownerLabel(owner), groupLabel(owner), owner.Mode.Perm())}
 }
 
 // ownerLabel 优先名字，缺名字回退 uid。

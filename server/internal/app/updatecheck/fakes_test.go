@@ -158,6 +158,8 @@ type fixture struct {
 	embedded   int64
 	owners     map[string]fsperm.Owner
 	identities map[string]fsperm.Identity
+	// currentIdentity 覆盖「调用者」身份；nil = root。
+	currentIdentity *fsperm.Identity
 }
 
 // newFixture 构造全通过的基线：目录齐、权限按服务用户可读可写、工具齐、库连得上、服务 active。
@@ -207,6 +209,13 @@ func newFixture() *fixture {
 		StatPermission: func(path string) (fsperm.Owner, bool) {
 			owner, ok := f.owners[path]
 			return owner, ok
+		},
+		// 备份目录按调用者（root）判权：生产里 selfcheck 以 root 跑。
+		CurrentIdentity: func() (fsperm.Identity, bool) {
+			if f.currentIdentity == nil {
+				return fsperm.Identity{UID: 0, GID: 0, Name: "root", HasIDs: true}, true
+			}
+			return *f.currentIdentity, true
 		},
 		UserIdentity: func(name string) (fsperm.Identity, bool) {
 			id, ok := f.identities[name]

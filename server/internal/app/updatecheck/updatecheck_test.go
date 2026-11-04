@@ -556,13 +556,18 @@ func TestServiceUserUnknownSkipsPermissionChecks(t *testing.T) {
 	f := newFixture()
 	f.opts.ServiceUser = ""
 	rep := f.run(t)
+	// 页面/照片按服务用户判：服务用户未知 ⇒ SKIP 并说明。
 	for _, name := range []string{
-		nameConfigUIDir, nameConfigPhotoDir, nameFSPhotoDir, nameFSBackupDir,
+		nameConfigUIDir, nameConfigPhotoDir, nameFSPhotoDir,
 	} {
 		c := byName(t, rep, name)
 		if c.Status != StatusSkip || !strings.Contains(c.Detail, "服务用户未知") {
 			t.Fatalf("%s = %+v, want SKIP with service-user reason", name, c)
 		}
+	}
+	// 备份目录按调用者判：服务用户未知不影响它（写入者是 root）。
+	if c := byName(t, rep, nameFSBackupDir); c.Status != StatusPass {
+		t.Fatalf("fs.backup_dir = %+v, want PASS（按调用者判权，与服务用户无关）", c)
 	}
 }
 
@@ -600,13 +605,18 @@ func TestRootOwnedDirsFailForServiceUser(t *testing.T) {
 	f.owners["/var/lib/yiban/photos"] = rootOnly
 	f.owners["/var/lib/yiban/pre-migrate"] = rootOnly
 	rep := f.run(t)
+	// 页面/照片按**服务用户**判：root 专属 ⇒ 服务用户读不了 ⇒ FAIL。
 	for _, name := range []string{
-		nameConfigUIDir, nameConfigPhotoDir, nameFSPhotoDir, nameFSBackupDir,
+		nameConfigUIDir, nameConfigPhotoDir, nameFSPhotoDir,
 	} {
 		c := byName(t, rep, name)
 		if c.Status != StatusFail {
 			t.Fatalf("%s = %+v, want FAIL (root caller must not mask service user)", name, c)
 		}
+	}
+	// 备份目录相反：写入者是 root，root:root 0700 正是安全要求 ⇒ PASS。
+	if c := byName(t, rep, nameFSBackupDir); c.Status != StatusPass {
+		t.Fatalf("fs.backup_dir = %+v, want PASS（root 写备份，服务用户不可写才是对的）", c)
 	}
 	if rep.ExitCode() != 1 {
 		t.Fatalf("exit = %d, want 1", rep.ExitCode())
@@ -776,43 +786,51 @@ func assertNoSecrets(t *testing.T, text string) {
 	}
 }
 
-// TestBackupDirDefaultIsWritableByServiceUser 钉 U2 的备份根目录缺省值
-// 与「老机不误红」：缺省必须是 /var/lib/yiban/backups（与 update.sh 同源），
-// 且判权对象是这个目录本身，不是历史遗留的 /var/lib/yiban/pre-migrate。
+// TestBackupDirIsJudgedByCaller 钉 U2 的备份根判权口径。
 //
-// 背景（U2 审查 HIGH）：老机上的 pre-migrate 是 root:root 0700；若判权仍
-// 指向它，fs.backup_dir 每个更新都会 FAIL，一键更新直接 exit 2 全部挡住。
-func TestBackupDirDefaultIsWritableByServiceUser(t *testing.T) {
+// 背景（U2 复审 CRITICAL）：备份根必须 root:root 0700——它含凭据密文，
+// 回滚还会执行备份里的 CLI。若按服务用户判权，那个安全要求会被判成 FAIL，
+// 逼着 update.sh 把目录 chown 给服务用户（等于让被服务进程能塞 root 执行的件）。
+// 因此本检查按**调用者**（root）判权：
+//
+//	· 服务用户不可写的 root 目录 ⇒ PASS（这正是要的）；
+//	· 明显不可写（三类都无写位）⇒ FAIL；
+//	· 身份探针拿不到 ⇒ SKIP（不装绿）。
+func TestBackupDirIsJudgedByCaller(t *testing.T) {
 	if DefaultBackupDir != "/var/lib/yiban/backups" {
 		t.Fatalf("DefaultBackupDir = %q，want /var/lib/yiban/backups（与 update.sh 同源）", DefaultBackupDir)
 	}
 	f := newFixture()
-	f.opts.BackupDir = DefaultBackupDir
-	// 新目录：0700、属服务用户（update.sh 的 prepare_state_dir 这样建）。
-	f.fs.mkdir(DefaultBackupDir)
-	f.owners[DefaultBackupDir] = fsperm.Owner{OwnerName: "yiban", GroupName: "yiban", Mode: 0o700}
-	// 老机的历史目录：root:root 0700（旧 update.sh 的产物）。
-	f.fs.mkdir("/var/lib/yiban/pre-migrate")
+	dir := DefaultBackupDir
+	f.opts.BackupDir = dir
+	f.fs.mkdir(dir)
+	// root 专属 0700：服务用户完全写不进去 —— 这是 U2 的安全目标。
+	f.owners[dir] = fsperm.Owner{OwnerName: "root", GroupName: "root", Mode: 0o700}
+	// 老机的历史目录同样 root 0700，必须在场也不影响结论。
 	f.owners["/var/lib/yiban/pre-migrate"] = fsperm.Owner{OwnerName: "root", GroupName: "root", Mode: 0o700}
-	got := checkFSBackupDir(f.deps, f.opts)
-	if got.Status != StatusPass {
-		t.Fatalf("fs.backup_dir = %s (%s)，want PASS：判权必须看 U2 的备份根，不能看老机的 pre-migrate",
+	if got := checkFSBackupDir(f.deps, f.opts); got.Status != StatusPass {
+		t.Fatalf("root:root 0700 的备份根 = %s (%s)，want PASS（判权看调用者 root）",
 			got.Status, got.Detail)
 	}
 
-	// 新目录若是 root 专属（update.sh 忘了 chown），必须 FAIL：跳过 ≠ 绿，
-	// 而这个 FAIL 正是「服务用户写不了备份」的真相。
-	f.owners[DefaultBackupDir] = fsperm.Owner{OwnerName: "root", GroupName: "root", Mode: 0o700}
-	got = checkFSBackupDir(f.deps, f.opts)
-	if got.Status != StatusFail {
-		t.Fatalf("root 专属的备份根 = %s (%s)，want FAIL", got.Status, got.Detail)
+	// 明显不可写：三类都无写位 ⇒ root 也判 FAIL（位只用于识别这种目录）。
+	f.owners[dir] = fsperm.Owner{OwnerName: "root", GroupName: "root", Mode: 0o500}
+	if got := checkFSBackupDir(f.deps, f.opts); got.Status != StatusFail {
+		t.Fatalf("0500 的备份根 = %s (%s)，want FAIL", got.Status, got.Detail)
 	}
 
-	// 反证「误红」：把判权对象换回历史值 pre-migrate（root 0700），
-	// 同一条检查必须 FAIL —— 这就是 U2 之前会挡住所有升级的形状。
-	f.opts.BackupDir = "/var/lib/yiban/pre-migrate"
-	got = checkFSBackupDir(f.deps, f.opts)
-	if got.Status != StatusFail {
-		t.Fatalf("历史 pre-migrate（root 0700）应判 FAIL（误红形状），got %s (%s)", got.Status, got.Detail)
+	// 非 root 调用者（例如运维误用非特权账号）按普通身份判：yiban 0700 不可写 ⇒ FAIL。
+	f.owners[dir] = fsperm.Owner{OwnerName: "yiban", GroupName: "yiban", Mode: 0o700}
+	f.deps.CurrentIdentity = func() (fsperm.Identity, bool) {
+		return fsperm.Identity{UID: 1001, GID: 1001, Name: "ops", HasIDs: true}, true
+	}
+	if got := checkFSBackupDir(f.deps, f.opts); got.Status != StatusFail {
+		t.Fatalf("非 root、非属主的调用者 = %s (%s)，want FAIL", got.Status, got.Detail)
+	}
+
+	// 探针拿不到：SKIP 带原因，不装绿。
+	f.deps.CurrentIdentity = nil
+	if got := checkFSBackupDir(f.deps, f.opts); got.Status != StatusSkip {
+		t.Fatalf("身份探针缺失 = %s (%s)，want SKIP", got.Status, got.Detail)
 	}
 }

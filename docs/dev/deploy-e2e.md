@@ -222,8 +222,9 @@ ROLLBACK_E2E_GOPROXY=https://goproxy.cn,direct \
 | R5（无 CREATEDB） | `ALTER ROLE yiban NOCREATEDB` 后跑 `update.sh`：rc=2；日志点名 `CREATEDB` 与 `--no-restore-db`；状态 `phase=preflight`；无备份；unit active；随后还原 CREATEDB |
 | R6（迁移失败） | `REVOKE CREATE ON SCHEMA public` 后跑 `update.sh --no-restore-db`：rc=1；日志含 `migrate FAILED` 与 `permission denied for schema public`；安装位仍是 v1；无 `.bak`/`.new`；unit active；healthz OK；schema 不前进；DSN 不变；状态 `db_restore=disabled` |
 | R7（健康失败+回库） | 跑含真迁移＋`main()` panic 的 v3：rc=1；日志含 `healthz failed after swap`、`db restore`、`rolled back`；DSN 切到 `yiban_restore_<ts>`；新库 schema＝升级前；原库保留且 schema 前进一档；恢复件 `users` 可读；安装位与 CLI 回到 v1；`.bak` 无残留；备份 `db.dump` 0600、目录 0700；unit active；healthz OK；状态 `db_restore=restored` |
-| R8（正常升级） | 在恢复后的新库上升级到 v4，并首次带 `--ui-dir` 装页面：rc=0；安装位＝v4；`.bak`＝v1；schema＋2；`e2e_rollback_probe` 表存在；状态 `success`/`exit_code=0`/`db_restore=not-needed`；新增一份备份；备份根 0700 属 `yiban`、本份 0700 root、`env.backup` 0600；页面与 `.env` 的 `YIBAN_UI_DIR` 各就位且只有一行；状态文件 0600；证据文件不含 DSN 口令；pg 客户端 argv 不含口令且都拿到 PGPASSFILE |
+| R8（正常升级） | 在恢复后的新库上升级到 v4，并首次带 `--ui-dir` 装页面：rc=0；安装位＝v4；`.bak`＝v1；schema＋2；`e2e_rollback_probe` 表存在；状态 `success`/`exit_code=0`/`db_restore=not-needed`；新增一份备份；备份根 0700 属 root、本份 0700 root、`env.backup` 0600；页面与 `.env` 的 `YIBAN_UI_DIR` 各就位且只有一行；状态文件 0600；证据文件不含 DSN 口令；pg 客户端 argv 不含口令且都拿到 PGPASSFILE |
 | R9（健康失败 + UI 回滚） | 跑 v6（迁移集与 v4 相同 → migrate 空转）并带 `--ui-dir` 换页面：rc=1；日志含 `healthz failed after swap`/`rolled back`；安装位回到 v4；`ui.bak` 无残留、`index.html` 是旧页 `ui-one`；`YIBAN_UI_DIR` 只有一行且指回 `/var/lib/yiban/ui`；DSN 不变；状态 `db_restore=not-needed`/`exit_code=1`；unit active；healthz OK |
+| R9b（备份件被篡改） | 在健康探活窗口里把本轮备份目录内的 `bin/yiban-cli` 改成组/其他可写（属主仍 root）：rc=2；日志含 `refusing to install the backup cli` 与 `writable by group or others`；安装位 CLI 未被篡改件替换（仍是本轮换上的 v6）；安装位 server 已换回 v4；状态 `exit_code=2`；unit inactive |
 | R10（恢复失败） | 装一个只放行 `pg_restore --list` 的包装器（备份校验过、真恢复必失败），跑 v5（再迁移一档＋panic）：rc=2；日志含 `db restore FAILED` 与 `manual action required`；状态 `db_restore=failed`/`exit_code=2`，`db_restore_target` 是真实库名且出现在 manual action 里；DSN 不变；二进制已换回 v4；unit **inactive**（库状态未知，不自动起旧件） |
 
 判据与 `update.sh` 头注一致：迁移失败回滚＝旧件继续跑（exit 1）；
@@ -260,7 +261,7 @@ R3..R10 走 `--allow-unsigned` 显式逃生口；R2 走真签名链
 （U1 判据）、统一备份（真 `pg_dump -Fc` + `pg_restore --list` + 照片 tar +
 sha256）、真 `systemctl` 停起 unit、真 goose 迁移成败、真
 `CREATE DATABASE`/`pg_restore` 的数据库回滚与 DSN 切换、状态文件与退出码、
-`/healthz` 探活。
+`/healthz` 探活、备份件所有权复核（被篡改的备份 CLI 不得被执行）。
 
 不等价的一维：容器没有真实内核启动与硬件；`network-online.target`
 由 systemd 直接满足。该维不影响上述任一性质。
@@ -282,9 +283,9 @@ sha256）、真 `systemctl` 停起 unit、真 goose 迁移成败、真
 不自动启动旧件」。
 
 边界五：容器内 `deps.Containerized` 为真，U1 自检的 `tools.*` 与
-`fs.backup_dir` 按设计 SKIP；R1 只要求它不是 FAIL。备份目录默认值的
-「老机不误红」由 Go 单测
-（`TestBackupDirDefaultIsWritableByServiceUser`）与 R1 的明文自检共同钉住。
+`fs.backup_dir` 按设计 SKIP；R1 只要求它不是 FAIL。备份目录判权口径
+（按调用者 root，而非服务用户）由 Go 单测
+`TestBackupDirIsJudgedByCaller` 与 R1 的明文自检共同钉住。
 
 边界六：v6 与 v4 迁移集相同、只多一个起手 panic：它不推进 schema，
 所以 R9 只测 UI/二进制回滚，不混测数据库回滚。

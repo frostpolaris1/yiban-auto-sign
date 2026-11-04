@@ -258,7 +258,11 @@ class UpdateRollbackE2EWiringTest(unittest.TestCase):
         path = os.path.join(WORKFLOWS, "deploy-gate.yml")
         block = _job_block(_read(path), "update-rollback-e2e")
         self.assertTrue(block, "deploy-gate.yml 里没有 update-rollback-e2e job")
-        # 环境错误（脚本 rc=2）要显性 SKIP 并留痕，不能静默当绿。
-        self.assertIn("rc", block, "job 没有判演练退出码")
+        # 环境错误（脚本 rc=2）才允许 SKIP：判定必须钉在 -eq 2 上，
+        # 不是「任何失败都可以跳过」。
+        self.assertIn('"$rc" -eq 2', block, "SKIP 必须只对脚本 rc=2（环境错误）生效")
         self.assertIn("SKIP", block, "环境起不来时没有显性 SKIP")
         self.assertIn("GITHUB_STEP_SUMMARY", block, "SKIP 没有写进 step summary（不算留痕）")
+        self.assertIn("不是通过", block, "SKIP 必须写明「不算通过」，不能冒充绿")
+        # 真失败（rc≠0/2）必须原样传出，不许被 SKIP 分支吞掉。
+        self.assertIn('exit "$rc"', block, "job 没有把真失败的退出码传出去")

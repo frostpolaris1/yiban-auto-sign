@@ -53,12 +53,11 @@
 #
 # 统一备份（U2 新增；落在 /var/lib/yiban/backups/<ts>/，0700/0600）：
 #   状态目录 = /var/lib/yiban/updates（root 0700；update-state.json、
-#   update.log、selfcheck-*.json）。备份根与状态目录同级（不在其下）：
-#   U1 的 fs.backup_dir 按**服务用户**判权，缺目录时还按最近的已存在祖先
-#   判；/var/lib/yiban 属服务用户 ⇒ 首次运行 SKIP、之后 PASS。挂在 root
-#   0700 的 updates/ 下会因祖先不可写而判 FAIL，挡住所有升级。
-#   备份根本身 0700、属服务用户；每次更新的子目录与文件仍是 root
-#   0700/0600（服务用户读不到密文、删不掉非空子目录）。每次备份目录：
+#   update.log、selfcheck-*.json）。备份根与状态目录同级（不在其下）。
+#   备份根与状态目录都是 **root:root 0700**：备份含凭据密文，回滚还会执行
+#   备份内的 CLI；服务用户若能换名/塞件，root 回滚就等于执行它的代码。
+#   U1 的 fs.backup_dir 按**调用者（root）**判权；服务用户写不了是要求，不是故障。
+#   每次备份目录：
 #     db.dump             pg_dump -Fc（--no-owner --no-privileges），0600
 #     db.list             pg_restore --list 的清单，0600（校验转储可读）
 #     db-counts.txt       可选：yiban-cli backup 的行数基线（stdout）
@@ -158,7 +157,7 @@ EXPECT_VERSION=""
 ALLOW_UNSIGNED=""
 SELFCHECK_ONLY=""
 NO_RESTORE_DB=""
-BACKUP_DIR_FLAG=""
+BACKUP_ROOT_FLAG=""
 KEEP_BACKUPS="5"
 BACKUP_PASS_FILE=""
 # need_value <flag> [value]：缺值/空值是用例错误（exit 2）。
@@ -182,7 +181,7 @@ while [ $# -gt 0 ]; do
         --allow-unsigned) ALLOW_UNSIGNED=1; shift ;;
         --selfcheck-only) SELFCHECK_ONLY=1; shift ;;
         --no-restore-db) NO_RESTORE_DB=1; shift ;;
-        --backup-dir) need_value "$@"; BACKUP_DIR_FLAG="$2"; shift 2 ;;
+        --backup-dir) need_value "$@"; BACKUP_ROOT_FLAG="$2"; shift 2 ;;
         --keep-backups) need_value "$@"; KEEP_BACKUPS="$2"; shift 2 ;;
         --backup-passphrase-file) need_value "$@"; BACKUP_PASS_FILE="$2"; shift 2 ;;
         *) echo "update: unknown argument: $1" >&2; exit 2 ;;
@@ -207,19 +206,25 @@ UI_BAK="$UI_DEST.bak"
 ENV_FILE="$(dest /etc/yiban/.env)"
 
 # 状态目录与备份根目录。备份根可用 --backup-dir 覆盖（必须是绝对路径）。
-# 备份根是 /var/lib/yiban/backups（与状态目录同级，不在其下）：
-# U1 的 fs.backup_dir 按**服务用户**判权，目录缺失时判最近的已存在祖先；
-# /var/lib/yiban 属服务用户，所以「首次运行=SKIP、之后=PASS」；若挂在
-# root 0700 的 updates/ 下，祖先不可写会判 FAIL 并挡住所有升级。
+# 备份根是 /var/lib/yiban/backups（与状态目录同级，不在其下）。
+# 备份根与状态目录都是 **root:root 0700**：备份里含凭据密文，且回滚会
+# 执行备份内的 CLI——绝不能给服务用户写权限（否则它能换名/塞恶意件让 root 执行）。
 STATE_DIR="$(dest "$SERVICE_HOME/updates")"
 STATE_FILE="$STATE_DIR/update-state.json"
 LOG_FILE="$STATE_DIR/update.log"
-if [ -n "$BACKUP_DIR_FLAG" ]; then
-    case "$BACKUP_DIR_FLAG" in
+if [ -n "$BACKUP_ROOT_FLAG" ]; then
+    case "$BACKUP_ROOT_FLAG" in
         /*) ;;
-        *) echo "update: --backup-dir must be an absolute path: $BACKUP_DIR_FLAG" >&2; exit 2 ;;
+        *) echo "update: --backup-dir must be an absolute path: $BACKUP_ROOT_FLAG" >&2; exit 2 ;;
     esac
-    BACKUP_ROOT="$BACKUP_DIR_FLAG"
+    BACKUP_ROOT="$BACKUP_ROOT_FLAG"
+    # --backup-dir 会被 chmod 0700：拒绝共享/系统目录（先例 scripts/backup.sh）。
+    case "$BACKUP_ROOT" in
+        /|/var|/var/backups|/tmp|/home|/root|/etc|/usr|/opt|/srv|/boot|/dev|/proc|/sys|/run|/var/lib|/var/log)
+            echo "update: --backup-dir $BACKUP_ROOT is a shared/system directory; point it at a dedicated subdirectory (e.g. /var/lib/yiban/backups)" >&2
+            exit 2
+            ;;
+    esac
 else
     BACKUP_ROOT="$(dest "$SERVICE_HOME/backups")"
 fi
@@ -239,11 +244,11 @@ STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 FINISHED_AT=""
 VERSION_FROM="unknown"
 VERSION_TO="unknown"
-BACKUP_DIR=""
+BACKUP_SET=""
 DB_BACKUP_VERIFIED=0
-PRE_SCHEMA_VERSION=""
+PRE_GOOSE_VERSION=""
 PRE_TABLE_COUNT=""
-POST_SCHEMA_VERSION=""
+POST_GOOSE_VERSION=""
 DB_RESTORED=0
 DB_RESTORE_TARGET=""
 BINARY_SWAPPED=0
@@ -310,11 +315,11 @@ write_state() {
         printf '  "phase": "%s",\n' "$(json_escape "$PHASE")"
         printf '  "version_from": "%s",\n' "$(json_escape "$VERSION_FROM")"
         printf '  "version_to": "%s",\n' "$(json_escape "$VERSION_TO")"
-        printf '  "backup_dir": "%s",\n' "$(json_escape "$BACKUP_DIR")"
+        printf '  "backup_dir": "%s",\n' "$(json_escape "$BACKUP_SET")"
         printf '  "db_name_before": "%s",\n' "$(json_escape "$DSN_NAME")"
         printf '  "db_name_after": "%s",\n' "$(json_escape "$DSN_NAME_AFTER")"
-        printf '  "db_schema_before": "%s",\n' "$(json_escape "$PRE_SCHEMA_VERSION")"
-        printf '  "db_schema_after": "%s",\n' "$(json_escape "$POST_SCHEMA_VERSION")"
+        printf '  "db_schema_before": "%s",\n' "$(json_escape "$PRE_GOOSE_VERSION")"
+        printf '  "db_schema_after": "%s",\n' "$(json_escape "$POST_GOOSE_VERSION")"
         printf '  "db_restore": "%s",\n' "$(json_escape "$(db_restore_label)")"
         printf '  "db_restore_target": "%s",\n' "$(json_escape "$DB_RESTORE_TARGET")"
         printf '  "log_file": "%s"\n' "$(json_escape "$LOG_FILE")"
@@ -365,11 +370,11 @@ print_manual_action() {
     local reason="$1"
     local target="${DB_RESTORE_TARGET:-yiban_restore_<ts>}"
     echo "update: manual action required ($reason)" >&2
-    echo "update: 1) 备份在 ${BACKUP_DIR:-<无>}（db.dump, db.list, SHA256SUMS）" >&2
+    echo "update: 1) 备份在 ${BACKUP_SET:-<无>}（db.dump, db.list, SHA256SUMS）" >&2
     echo "update: 2) 核对失败库：psql \"\$YIBAN_DATABASE_URL\" -c 'select max(version_id) from goose_db_version'" >&2
     echo "update: 3) 手工恢复（选一）：" >&2
     echo "update:    a. sudo -u postgres createdb ${target}" >&2
-    echo "update:       sudo -u postgres pg_restore --no-owner --no-privileges -d ${target} ${BACKUP_DIR:-<备份目录>}/db.dump" >&2
+    echo "update:       sudo -u postgres pg_restore --no-owner --no-privileges -d ${target} ${BACKUP_SET:-<备份目录>}/db.dump" >&2
     echo "update:       然后把 /etc/yiban/.env 的 YIBAN_DATABASE_URL 改到 ${target}，systemctl start $UNIT" >&2
     echo "update:    b. 若已确认旧二进制与新 schema 兼容：sudo systemctl start $UNIT" >&2
     echo "update: 4) 原库未删除，保留供取证；确认无误后再人工处置" >&2
@@ -554,7 +559,8 @@ dsn_split2() {
             case "$rest" in
                 *@*) ;;
                 *)
-                    printf '%s\n' "$dsn"
+                    printf '%s' "$dsn"
+                    printf '\037'
                     return 0
                     ;;
             esac
@@ -575,7 +581,31 @@ dsn_split2() {
             if [ -n "$pass" ]; then
                 pass="$(urldecode "$pass")" || return 1
             fi
-            printf '%s://%s@%s%s\n%s' "$prefix" "$user" "$hostpart" "$tail" "$pass"
+            # 查询串里的 ?password= 同样是秘密：摘掉，argv 只留其余参数。
+            # （libpq 的 URI 解析让查询参数覆盖 userinfo，这里同口径。）
+            local path_part="$tail" query="" param joined="" 
+            case "$tail" in
+                *\?*) path_part="${tail%%\?*}"; query="${tail#*\?}" ;;
+            esac
+            if [ -n "$query" ]; then
+                local -a kept_params=()
+                local IFS='&'
+                for param in $query; do
+                    case "$param" in
+                        password=*)
+                            pass="$(urldecode "${param#password=}")" || return 1
+                            ;;
+                        *) kept_params+=("$param") ;;
+                    esac
+                done
+                unset IFS
+                for param in "${kept_params[@]}"; do
+                    joined="${joined:+$joined&}$param"
+                done
+                query="${joined:+?$joined}"
+            fi
+            printf '%s://%s@%s%s%s' "$prefix" "$user" "$hostpart" "$path_part" "$query"
+            printf '\037%s' "$pass"
             return 0
             ;;
     esac
@@ -594,7 +624,8 @@ dsn_split2() {
         keep_fields+=("$raw")
     done
     [ "${#keep_fields[@]}" -gt 0 ] || return 1
-    printf '%s\n%s' "${keep_fields[*]}" "${pass:-}"
+    printf '%s' "${keep_fields[*]}"
+    printf '\037%s' "${pass:-}"
 }
 
 # dsn_dbname <dsn>：取库名（URI 路径段或 dbname= 值）。取不到返回空。
@@ -638,8 +669,16 @@ prepare_pgpass() {
         echo "update: cannot separate the password from YIBAN_DATABASE_URL without putting it in argv; use a postgres:// URI or a key=value DSN with password=..." >&2
         return 1
     }
-    DSN="${split%%$'\n'*}"
-    DSN_PASSWORD="${split#*$'\n'}"
+    # 分隔符是 US（）：$( ) 只削尾换行，空口令时也不会把整条 DSN 当口令。
+    case "$split" in
+        *$'\037'*) ;;
+        *)
+            echo "update: internal: DSN split has no separator; refusing to guess the password" >&2
+            return 1
+            ;;
+    esac
+    DSN="${split%%$'\037'*}"
+    DSN_PASSWORD="${split#*$'\037'}"
     [ -n "$DSN_PASSWORD" ] || return 0
     case "$DSN_PASSWORD" in
         *$'\n'*|*$'\r'*)
@@ -802,10 +841,9 @@ prepare_state_dir() {
     if [ -z "$ROOT" ]; then
         chown root:root "$STATE_DIR" || return 1
     fi
-    # 备份根对**服务用户**可写：U1 的 fs.backup_dir 按服务用户判权
-    # （缺目录时还按最近的已存在祖先判），root 专属目录会把它判成 FAIL 并
-    # 挡住所有升级。目录 0700 属服务用户；每轮的子目录与文件仍是 root
-    # 0700/0600，服务用户读不到密文、也删不掉非空子目录。
+    # 备份根：root:root 0700，**不**给服务用户任何写权限。
+    # 备份里既有凭据密文，回滚时还会执行备份内的 CLI；服务用户若能换名
+    # 备份目录或塞进 bin/yiban-cli，root 回滚就等于执行它的代码。
     # 符号链接一律拒绝：否则 root 会顺着被改写的路径写备份。
     if [ -L "$BACKUP_ROOT" ]; then
         echo "update: refusing symlinked backup root: $BACKUP_ROOT" >&2
@@ -813,17 +851,64 @@ prepare_state_dir() {
     fi
     [ -d "$BACKUP_ROOT" ] || mkdir -p "$BACKUP_ROOT" || return 1
     chmod 700 "$BACKUP_ROOT" || return 1
-    if [ -z "$ROOT" ]; then
-        chown "$SERVICE_USER:$SERVICE_USER" "$BACKUP_ROOT" || return 1
+    local cur_owner cur_mode
+    cur_owner="$(stat -c '%U' -- "$BACKUP_ROOT" 2>/dev/null || true)"
+    cur_mode="$(stat -c '%a' -- "$BACKUP_ROOT" 2>/dev/null || true)"
+    if [ -n "$ROOT" ]; then
+        : # 干跑：不校验属主（非 root 造不出 root 属主）
+    else
+        [ "$cur_owner" = "root" ] || {
+            echo "update: backup root must be owned by root: $BACKUP_ROOT (owner: ${cur_owner:-unknown})" >&2
+            return 1
+        }
+        chown root:root "$BACKUP_ROOT" || return 1
+        [ $(( (8#$cur_mode >> 3) & 2 )) -eq 0 ] && [ $(( 8#$cur_mode & 2 )) -eq 0 ] || {
+            echo "update: backup root is writable by group or others (mode $cur_mode): $BACKUP_ROOT" >&2
+            return 1
+        }
     fi
     ( umask 077; : >> "$LOG_FILE" ) || return 1
     chmod 600 "$LOG_FILE" || return 1
 }
 
+# verify_root_artifact <path> <描述>：回滚会执行/导入的文件必须是 root 属主、
+# 组与其他不可写、且不是符号链接。备份根虽已 root 0700，这里再钉一层：
+# 一旦有人放开权限或塞进软链，root 执行备份里的 CLI 就等于执行别人的代码。
+verify_root_artifact() {
+    local path="$1" what="$2" owner mode
+    if [ -L "$path" ]; then
+        echo "update: refusing symlinked $what: $path" >&2
+        return 1
+    fi
+    if [ ! -e "$path" ]; then
+        echo "update: $what missing: $path" >&2
+        return 1
+    fi
+    owner="$(stat -c '%U' -- "$path" 2>/dev/null || true)"
+    mode="$(stat -c '%a' -- "$path" 2>/dev/null || true)"
+    case "$mode" in
+        ''|*[!0-7]*) mode=777 ;;
+    esac
+    # 干跑（YIBAN_INSTALL_ROOT）：整棵树由调用者造，属主只可能是调用者本人。
+    local want_owner="root"
+    if [ -n "$ROOT" ]; then
+        want_owner="$(id -un 2>/dev/null || printf 'root')"
+    fi
+    if [ "$owner" != "$want_owner" ]; then
+        echo "update: $what must be owned by root: $path (owner: ${owner:-unknown})" >&2
+        return 1
+    fi
+    if [ $(( 8#$mode & 8#022 )) -ne 0 ]; then
+        echo "update: $what is writable by group or others (mode $mode): $path" >&2
+        return 1
+    fi
+    return 0
+}
+
 # backup_sha256 <相对文件名...>：写 SHA256SUMS 并立即校验。
 backup_sha256() {
     (
-        cd "$BACKUP_DIR" || exit 1
+        cd "$BACKUP_SET" || exit 1
         umask 077
         sha256sum -- "$@" > SHA256SUMS || exit 1
         sha256sum -c --quiet SHA256SUMS || exit 1
@@ -837,31 +922,31 @@ do_backup() {
     local photo_dir files=() tar_entries
 
     UPDATE_ID="$(date -u +%Y%m%dT%H%M%SZ)"
-    BACKUP_DIR="$BACKUP_ROOT/$UPDATE_ID"
+    BACKUP_SET="$BACKUP_ROOT/$UPDATE_ID"
     # 同一秒内的重跑（脚本很快、或上一次刚失败）不得覆盖已有的备份目录。
     # 后缀用 `_N`：字典序排在 `Z` 之后，保留策略仍按时间从新到旧。
     local n=1
-    while [ -e "$BACKUP_DIR" ]; do
+    while [ -e "$BACKUP_SET" ]; do
         n=$((n + 1))
-        BACKUP_DIR="$BACKUP_ROOT/${UPDATE_ID}_$n"
+        BACKUP_SET="$BACKUP_ROOT/${UPDATE_ID}_$n"
     done
-    UPDATE_ID="$(basename -- "$BACKUP_DIR")"
+    UPDATE_ID="$(basename -- "$BACKUP_SET")"
 
-    # 备份根由 prepare_state_dir 建好（0700、属服务用户，U1 判据要的）。
+    # 备份根由 prepare_state_dir 建好（root:root 0700，服务用户不可写）。
     # 这里只复核形状：符号链接或被换掉就直接失败关闭。
     if [ -L "$BACKUP_ROOT" ] || [ ! -d "$BACKUP_ROOT" ]; then
         echo "update: backup FAILED — backup root is not a directory: $BACKUP_ROOT" >&2
         return 1
     fi
-    if ! mkdir "$BACKUP_DIR"; then
-        echo "update: backup FAILED — backup directory already exists: $BACKUP_DIR" >&2
+    if ! mkdir "$BACKUP_SET"; then
+        echo "update: backup FAILED — backup directory already exists: $BACKUP_SET" >&2
         return 1
     fi
-    chmod 700 "$BACKUP_DIR" || return 1
+    chmod 700 "$BACKUP_SET" || return 1
     if [ -z "$ROOT" ]; then
-        chown root:root "$BACKUP_DIR" || return 1
+        chown root:root "$BACKUP_SET" || return 1
     fi
-    note "backup: $BACKUP_DIR"
+    note "backup: $BACKUP_SET"
 
     if [ -z "$DSN" ]; then
         echo "update: backup FAILED — YIBAN_DATABASE_URL is empty; refusing to update without a database backup" >&2
@@ -873,13 +958,13 @@ do_backup() {
         || { echo "update: backup FAILED — pg_restore not found (needed to verify the dump)" >&2; return 1; }
 
     # 迁移前基线：goose 版本与 public 基表数（恢复后对账用）。
-    PRE_SCHEMA_VERSION="$(schema_version_of "$DSN" || true)"
+    PRE_GOOSE_VERSION="$(schema_version_of "$DSN" || true)"
     PRE_TABLE_COUNT="$(table_count_of "$DSN" || true)"
     (
         umask 077
         printf 'database=%s\ngoose_version=%s\npublic_base_tables=%s\n' \
-            "$DSN_NAME" "$PRE_SCHEMA_VERSION" "$PRE_TABLE_COUNT" \
-            > "$BACKUP_DIR/db-schema.txt"
+            "$DSN_NAME" "$PRE_GOOSE_VERSION" "$PRE_TABLE_COUNT" \
+            > "$BACKUP_SET/db-schema.txt"
     ) || return 1
     files+=("db-schema.txt")
 
@@ -887,7 +972,7 @@ do_backup() {
     # （0600，与其余备份文件同权限），供人工对照/回退。里面有密钥与口令，
     # 只进 root 专属目录，不进日志。
     if [ -r "$ENV_FILE" ]; then
-        ( umask 077; install -m 0600 "$ENV_FILE" "$BACKUP_DIR/env.backup" ) || return 1
+        ( umask 077; install -m 0600 "$ENV_FILE" "$BACKUP_SET/env.backup" ) || return 1
         files+=("env.backup")
     else
         warn "cannot read $ENV_FILE; env snapshot SKIPPED"
@@ -896,22 +981,22 @@ do_backup() {
     # pg_dump -Fc：可 pg_restore 直接恢复到新库；umask 077 让转储从创建
     # 那一刻就是 0600（含凭据密文与审计行）。
     if ! ( umask 077 && pg_dump --format=custom --no-owner --no-privileges \
-            --file="$BACKUP_DIR/db.dump" "$DSN" ); then
+            --file="$BACKUP_SET/db.dump" "$DSN" ); then
         echo "update: backup FAILED — pg_dump failed" >&2
         return 1
     fi
-    if ! ( umask 077; pg_restore --list "$BACKUP_DIR/db.dump" > "$BACKUP_DIR/db.list" ) \
-            2>"$BACKUP_DIR/db.list.err"; then
+    if ! ( umask 077; pg_restore --list "$BACKUP_SET/db.dump" > "$BACKUP_SET/db.list" ) \
+            2>"$BACKUP_SET/db.list.err"; then
         echo "update: backup FAILED — pg_restore --list rejected the dump" >&2
         return 1
     fi
-    if [ ! -s "$BACKUP_DIR/db.list" ]; then
+    if [ ! -s "$BACKUP_SET/db.list" ]; then
         echo "update: backup FAILED — pg_restore --list produced an empty table of contents" >&2
         return 1
     fi
-    rm -f -- "$BACKUP_DIR/db.list.err"
+    rm -f -- "$BACKUP_SET/db.list.err"
     files+=("db.dump" "db.list")
-    note "backup: database dump verified ($(wc -l < "$BACKUP_DIR/db.list" | tr -d ' ') TOC entries, $(wc -c < "$BACKUP_DIR/db.dump" | tr -d ' ') bytes)"
+    note "backup: database dump verified ($(wc -l < "$BACKUP_SET/db.list" | tr -d ' ') TOC entries, $(wc -c < "$BACKUP_SET/db.dump" | tr -d ' ') bytes)"
 
     # 可选：yiban-cli backup 产出 GPG 对称加密归档（含行数 manifest）。
     # 口令来源与 CLI 同源：--backup-passphrase-file > YIBAN_BACKUP_PASSPHRASE。
@@ -926,12 +1011,12 @@ do_backup() {
         fi
         # DSN 走进程环境（YIBAN_DATABASE_URL），不进 argv：CLI 内部用自己的
         # PGPASSFILE 交给 pg_dump。
-        backup_cmd=("$cli_for_backup" backup --out "$BACKUP_DIR/db.sql.gpg")
+        backup_cmd=("$cli_for_backup" backup --out "$BACKUP_SET/db.sql.gpg")
         if [ -n "$BACKUP_PASS_FILE" ]; then
             backup_cmd+=(--passphrase-file "$BACKUP_PASS_FILE")
         fi
-        if ! ( umask 077; "${backup_cmd[@]}" > "$BACKUP_DIR/db-counts.txt" 2>&1 ); then
-            echo "update: backup FAILED — yiban-cli backup (GPG) failed; see $BACKUP_DIR/db-counts.txt" >&2
+        if ! ( umask 077; "${backup_cmd[@]}" > "$BACKUP_SET/db-counts.txt" 2>&1 ); then
+            echo "update: backup FAILED — yiban-cli backup (GPG) failed; see $BACKUP_SET/db-counts.txt" >&2
             return 1
         fi
         files+=("db.sql.gpg" "db-counts.txt")
@@ -959,33 +1044,33 @@ do_backup() {
                 ;;
         esac
         if ! ( umask 077; tar -h -C "$(dirname -- "$photo_dir")" \
-                -cf "$BACKUP_DIR/photos.tar" -- "$(basename -- "$photo_dir")" ); then
+                -cf "$BACKUP_SET/photos.tar" -- "$(basename -- "$photo_dir")" ); then
             echo "update: backup FAILED — tar of photo dir failed: $photo_dir" >&2
             return 1
         fi
-        if ! tar_entries="$(tar -tf "$BACKUP_DIR/photos.tar" 2>/dev/null)"; then
+        if ! tar_entries="$(tar -tf "$BACKUP_SET/photos.tar" 2>/dev/null)"; then
             echo "update: backup FAILED — photos.tar is not readable" >&2
             return 1
         fi
         files+=("photos.tar")
-        note "backup: photos.tar ($(printf '%s\n' "$tar_entries" | wc -l | tr -d ' ') entries, $(wc -c < "$BACKUP_DIR/photos.tar" | tr -d ' ') bytes)"
+        note "backup: photos.tar ($(printf '%s\n' "$tar_entries" | wc -l | tr -d ' ') entries, $(wc -c < "$BACKUP_SET/photos.tar" | tr -d ' ') bytes)"
     fi
 
     # 当前二进制归档：本次更新前的可回滚件（含仍存在的旧 .bak）。
-    if ! mkdir -p "$BACKUP_DIR/bin" || ! chmod 700 "$BACKUP_DIR/bin"; then
-        echo "update: backup FAILED — cannot create $BACKUP_DIR/bin" >&2
+    if ! mkdir -p "$BACKUP_SET/bin" || ! chmod 700 "$BACKUP_SET/bin"; then
+        echo "update: backup FAILED — cannot create $BACKUP_SET/bin" >&2
         return 1
     fi
     if [ -x "$SERVER_DEST" ]; then
-        install -m 0700 "$SERVER_DEST" "$BACKUP_DIR/bin/yiban-server" || return 1
+        install -m 0700 "$SERVER_DEST" "$BACKUP_SET/bin/yiban-server" || return 1
         files+=("bin/yiban-server")
     fi
     if [ -x "$CLI_DEST" ]; then
-        install -m 0700 "$CLI_DEST" "$BACKUP_DIR/bin/yiban-cli" || return 1
+        install -m 0700 "$CLI_DEST" "$BACKUP_SET/bin/yiban-cli" || return 1
         files+=("bin/yiban-cli")
     fi
     if [ -e "$BAK" ]; then
-        install -m 0700 "$BAK" "$BACKUP_DIR/bin/yiban-server.rollback-point" || return 1
+        install -m 0700 "$BAK" "$BACKUP_SET/bin/yiban-server.rollback-point" || return 1
         files+=("bin/yiban-server.rollback-point")
         note "backup: previous .bak archived as bin/yiban-server.rollback-point"
     fi
@@ -996,7 +1081,7 @@ do_backup() {
     fi
     DB_BACKUP_VERIFIED=1
     note "backup: SHA256SUMS verified (${#files[@]} files)"
-    log_event "backup ok dir=$BACKUP_DIR schema=$PRE_SCHEMA_VERSION tables=$PRE_TABLE_COUNT"
+    log_event "backup ok dir=$BACKUP_SET schema=$PRE_GOOSE_VERSION tables=$PRE_TABLE_COUNT"
 
     prune_backups
     return 0
@@ -1018,7 +1103,7 @@ prune_backups() {
         esac
         count=$((count + 1))
         [ "$count" -gt "$keep" ] || continue
-        [ "$dir" = "$BACKUP_DIR" ] && continue
+        [ "$dir" = "$BACKUP_SET" ] && continue
         case "$dir" in
             "$BACKUP_ROOT"/*) ;;
             *) continue ;;
@@ -1036,25 +1121,26 @@ prune_backups() {
 
 # db_changed：迁移有没有改变库。读不到版本时按「已改变」保守处理。
 db_changed() {
-    [ -n "$PRE_SCHEMA_VERSION" ] || return 0
-    [ -n "$POST_SCHEMA_VERSION" ] || return 0
-    [ "$PRE_SCHEMA_VERSION" != "$POST_SCHEMA_VERSION" ]
+    [ -n "$PRE_GOOSE_VERSION" ] || return 0
+    [ -n "$POST_GOOSE_VERSION" ] || return 0
+    [ "$PRE_GOOSE_VERSION" != "$POST_GOOSE_VERSION" ]
 }
 
 # restore_database：把 pre-migrate 备份恢复到一个新库并切换 DSN。
 # 只在停服后、备份通过校验时调用。原库不删不改（取证）。
 # 成功返回 0 并设置 DSN/DB_RESTORED；失败返回非 0（调用方打印 manual action）。
 restore_database() {
-    local dump="$BACKUP_DIR/db.dump" target new_dsn new_dsn_argv new_split got err_file filtered
-    local want_ver="$PRE_SCHEMA_VERSION" want_tables="$PRE_TABLE_COUNT"
+    local dump="$BACKUP_SET/db.dump" target new_dsn new_dsn_argv new_split got err_file filtered
+    local want_ver="$PRE_GOOSE_VERSION" want_tables="$PRE_TABLE_COUNT"
 
     [ "$DB_BACKUP_VERIFIED" -eq 1 ] || return 1
-    [ -f "$dump" ] || return 1
+    verify_root_artifact "$BACKUP_SET" "backup directory" || return 1
+    verify_root_artifact "$dump" "backup dump" || return 1
     [ -n "$DSN" ] || return 1
     command -v pg_restore >/dev/null 2>&1 || return 1
     # 没有基线就没法证明恢复件与备份一致：宁可失败，也不宣布一个没对过账的恢复。
     if [ -z "$want_ver" ] || [ -z "$want_tables" ]; then
-        echo "update: db restore: no schema baseline in $BACKUP_DIR/db-schema.txt; refusing to restore" >&2
+        echo "update: db restore: no schema baseline in $BACKUP_SET/db-schema.txt; refusing to restore" >&2
         return 1
     fi
 
@@ -1081,7 +1167,7 @@ restore_database() {
         echo "update: db restore: cannot separate the password from the new DSN" >&2
         return 1
     }
-    new_dsn_argv="${new_split%%$'\n'*}"
+    new_dsn_argv="${new_split%%$'\037'*}"
     # 关键守卫：restore 之前先证明新 DSN 真的连到新库。
     # 解析出错时 new_dsn 可能仍指向原库，直接 pg_restore 会覆盖生产库。
     got="$(psql_q "$new_dsn_argv" "SELECT current_database()" || true)"
@@ -1194,11 +1280,17 @@ fail_after_stop() {
         fi
         BINARY_SWAPPED=0
     fi
-    if [ "$CLI_SWAPPED" -eq 1 ] && [ -f "$BACKUP_DIR/bin/yiban-cli" ]; then
-        if install -m 0755 "$BACKUP_DIR/bin/yiban-cli" "$CLI_DEST"; then
+    if [ "$CLI_SWAPPED" -eq 1 ] && [ -f "$BACKUP_SET/bin/yiban-cli" ]; then
+        if ! verify_root_artifact "$BACKUP_SET/bin/yiban-cli" "backup cli"; then
+            echo "update: refusing to install the backup cli from an untrusted path" >&2
+            print_manual_action "backup cli failed ownership check"
+            write_state "failed" 2
+            exit 2
+        fi
+        if install -m 0755 "$BACKUP_SET/bin/yiban-cli" "$CLI_DEST"; then
             CLI_SWAPPED=0
         else
-            warn "cannot restore the previous yiban-cli from $BACKUP_DIR/bin/yiban-cli"
+            warn "cannot restore the previous yiban-cli from $BACKUP_SET/bin/yiban-cli"
         fi
     fi
     if ! rollback_ui; then
@@ -1209,7 +1301,7 @@ fail_after_stop() {
     fi
 
     # 3) 数据库：仅在库确实变了且备份已验证时。恢复失败即停住。
-    POST_SCHEMA_VERSION="$(schema_version_of "$DSN" || true)"
+    POST_GOOSE_VERSION="$(schema_version_of "$DSN" || true)"
     if db_restore_wanted; then
         if ! restore_database; then
             DB_RESTORE_FAILED=1
@@ -1219,7 +1311,7 @@ fail_after_stop() {
             exit 2
         fi
     elif [ -z "$NO_RESTORE_DB" ]; then
-        note "db restore: not needed (schema ${PRE_SCHEMA_VERSION:-unknown} -> ${POST_SCHEMA_VERSION:-unknown})"
+        note "db restore: not needed (schema ${PRE_GOOSE_VERSION:-unknown} -> ${POST_GOOSE_VERSION:-unknown})"
     fi
 
     # 4) 起旧件并探活。
@@ -1564,9 +1656,9 @@ fi
 PHASE="backup"
 if ! do_backup; then
     # 半成品备份目录不许留着：看着像备份比没有备份更危险。
-    if [ -n "$BACKUP_DIR" ] && [ -d "$BACKUP_DIR" ]; then
-        case "$BACKUP_DIR" in
-            "$BACKUP_ROOT"/*) rm -rf -- "$BACKUP_DIR" ;;
+    if [ -n "$BACKUP_SET" ] && [ -d "$BACKUP_SET" ]; then
+        case "$BACKUP_SET" in
+            "$BACKUP_ROOT"/*) rm -rf -- "$BACKUP_SET" ;;
         esac
     fi
     echo "update: backup FAILED; aborting before any service change" >&2
@@ -1632,15 +1724,15 @@ if [ ! -x "$MIGRATE_BIN" ]; then
     fail_after_stop "migrate: cli missing"
 fi
 
-# 迁移前版本在备份阶段已记录（PRE_SCHEMA_VERSION）；这里再读一次作为
+# 迁移前版本在备份阶段已记录（PRE_GOOSE_VERSION）；这里再读一次作为
 # migrate 的起点，避免备份与停服之间的漂移。
-PRE_SCHEMA_VERSION="${PRE_SCHEMA_VERSION:-$(schema_version_of "$DSN" || true)}"
+PRE_GOOSE_VERSION="${PRE_GOOSE_VERSION:-$(schema_version_of "$DSN" || true)}"
 if ! "$MIGRATE_BIN" migrate; then
     echo "update: migrate FAILED; rolling back to the previous release" >&2
     fail_after_stop "migrate failed"
 fi
-POST_SCHEMA_VERSION="$(schema_version_of "$DSN" || true)"
-note "migrate: schema ${PRE_SCHEMA_VERSION:-unknown} -> ${POST_SCHEMA_VERSION:-unknown}"
+POST_GOOSE_VERSION="$(schema_version_of "$DSN" || true)"
+note "migrate: schema ${PRE_GOOSE_VERSION:-unknown} -> ${POST_GOOSE_VERSION:-unknown}"
 
 PHASE="swap"
 # 换二进制：旧件留 .bak 供回滚（既有 .bak 已在备份阶段归档）。
@@ -1714,5 +1806,5 @@ else
     warn "selfcheck --record-keys failed; see $STATE_DIR/record-keys.log (next selfcheck may report keys.state FAIL until it is re-recorded)"
 fi
 echo "update complete: healthz ok at $ADDR (old binary kept at $BAK)"
-note "version $VERSION_FROM -> $VERSION_TO; backup $BACKUP_DIR"
+note "version $VERSION_FROM -> $VERSION_TO; backup $BACKUP_SET"
 finish "success" 0

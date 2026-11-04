@@ -27,6 +27,10 @@ func userGroupNames(string) ([]string, bool) { return nil, false }
 // userIdentityOf 在 Windows 上拿不到 POSIX uid/gid；调用方按 SKIP 处理。
 func userIdentityOf(string) (fsperm.Identity, bool) { return fsperm.Identity{}, false }
 
+// currentIdentityOf 在 Windows 上没有 POSIX 语义：显性「拿不到」，
+// 备份目录判权按 SKIP 带原因处理（生产运行件是 Linux）。
+func currentIdentityOf() (fsperm.Identity, bool) { return fsperm.Identity{}, false }
+
 // isExecutable 恒返回可执行：Windows 的模式位没有 POSIX 语义
 // （Go 的 os.Stat 从不报告执行位），本平台不存在「无执行位」状态。
 // 生产运行件是 Linux，本实现只服务开发机，不作为安全判据。

@@ -49,6 +49,7 @@ func newSelfcheckDeps() updatecheck.Deps {
 	deps.EmbeddedVersion = pg.EmbeddedVersion
 	deps.ServiceProbe = systemdServiceProbe
 	deps.StatPermission = statPermissionOf
+	deps.CurrentIdentity = currentIdentityOf
 	deps.UserIdentity = userIdentityOf
 	deps.Containerized = inContainer()
 	info := buildinfo.Current()

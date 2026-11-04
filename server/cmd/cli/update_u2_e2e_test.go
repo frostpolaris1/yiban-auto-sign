@@ -665,3 +665,118 @@ func TestUpdateShMissingFlagValueIsUsageError(t *testing.T) {
 		}
 	}
 }
+
+// useFailingStop 把假 systemctl 换成「stop 恒失败」的版本。
+func (f *u2Fixture) useFailingStop(t *testing.T) {
+	t.Helper()
+	f.sysctl = fakeBin(t, f.binDir, "systemctl", `
+echo "systemctl $*" >> "`+f.sysctlLo+`"
+case "$1" in
+  stop) echo "systemctl: stop failed (injected)" >&2; exit 1 ;;
+esac
+exit 0
+`)
+	f.env["SYSTEMCTL"] = f.sysctl
+}
+
+// TestUpdateShStopFailureAbortsWith2 钉 MEDIUM：
+// 停服失败什么都没换 ⇒ exit 2（不是 1，也不是裸退），安装位与状态都留证据。
+func TestUpdateShStopFailureAbortsWith2(t *testing.T) {
+	requireBash(t)
+	f := newU2Fixture(t)
+	f.useFailingStop(t)
+	newBin := fakeBin(t, f.binDir, "yiban-server-new", "echo NEW\n")
+	oldBody := readAll(t, filepath.Join(f.root, "usr/local/bin/yiban-server"))
+
+	out, rc := runScript(t, scriptPath(t, "update.sh"), f.env,
+		"--server-bin", newBin, "--allow-unsigned")
+	if rc != 2 {
+		t.Fatalf("停服失败应 exit 2：rc=%d out=%s", rc, out)
+	}
+	if !strings.Contains(out, "cannot stop") {
+		t.Fatalf("必须点名停服失败：%s", out)
+	}
+	if got := readAll(t, filepath.Join(f.root, "usr/local/bin/yiban-server")); got != oldBody {
+		t.Fatalf("停服失败不得换件：\n%s", got)
+	}
+	doc := f.readState(t)
+	if doc["result"] != "aborted" || doc["exit_code"].(float64) != 2 {
+		t.Fatalf("状态应为 aborted/2：%v", doc)
+	}
+	if _, err := os.Stat(filepath.Join(f.root, "usr/local/bin/yiban-server.bak")); err == nil {
+		t.Fatalf("停服失败不得产生 .bak")
+	}
+}
+
+// TestUpdateShRejectsSharedBackupDir 钉 MEDIUM：
+// --backup-dir 会被 chmod 0700，共享/系统目录必须拒绝（exit 2，且不开始）。
+func TestUpdateShRejectsSharedBackupDir(t *testing.T) {
+	requireBash(t)
+	f := newU2Fixture(t)
+	newBin := fakeBin(t, f.binDir, "yiban-server-new", "echo NEW\n")
+	for _, dir := range []string{"/", "/tmp", "/var/backups", "/home", "/etc", "/var/log"} {
+		out, rc := runScript(t, scriptPath(t, "update.sh"), f.env,
+			"--server-bin", newBin, "--allow-unsigned", "--backup-dir", dir)
+		if rc != 2 {
+			t.Fatalf("--backup-dir %s 应 exit 2：rc=%d out=%s", dir, rc, out)
+		}
+		if !strings.Contains(out, "shared/system directory") {
+			t.Fatalf("--backup-dir %s 的拒绝必须说明原因：%s", dir, out)
+		}
+	}
+}
+
+// TestUpdateShPasswordlessDSNWritesNoPgpass 钉 MEDIUM：
+// 无口令 DSN 不得写出（错误内容的）PGPASSFILE；argv 里也不该出现口令。
+func TestUpdateShPasswordlessDSNWritesNoPgpass(t *testing.T) {
+	requireBash(t)
+	f := newU2Fixture(t)
+	if err := os.WriteFile(filepath.Join(f.root, "etc/yiban/.env"),
+		[]byte("YIBAN_DATABASE_URL=postgres://yiban@127.0.0.1:5432/yiban?sslmode=disable\n"), 0o600); err != nil {
+		t.Fatalf("write env: %v", err)
+	}
+	newBin := fakeBin(t, f.binDir, "yiban-server-new", "echo NEW\n")
+	out, rc := runScript(t, scriptPath(t, "update.sh"), f.env,
+		"--server-bin", newBin, "--allow-unsigned")
+	if rc != 0 {
+		t.Fatalf("无口令 DSN 应正常升级：rc=%d out=%s", rc, out)
+	}
+	argvLog := readAll(t, f.env["U2_ARGV_LOG"])
+	if strings.Contains(argvLog, "pgpass=/") {
+		t.Fatalf("无口令 DSN 不应写 PGPASSFILE：\n%s", argvLog)
+	}
+	if !strings.Contains(argvLog, "postgres://yiban@") {
+		t.Fatalf("argv 应保留去掉口令的 DSN：\n%s", argvLog)
+	}
+}
+
+// TestUpdateShStripsQueryPassword 钉 HIGH（H4 残留）：
+// URI 查询串里的 ?password= 同样是秘密，必须摘掉并走 PGPASSFILE。
+func TestUpdateShStripsQueryPassword(t *testing.T) {
+	requireBash(t)
+	f := newU2Fixture(t)
+	dsn := "postgres://yiban@127.0.0.1:5432/yiban?password=" + u2CanaryPassword + "&sslmode=disable"
+	if err := os.WriteFile(filepath.Join(f.root, "etc/yiban/.env"),
+		[]byte("YIBAN_DATABASE_URL="+dsn+"\n"), 0o600); err != nil {
+		t.Fatalf("write env: %v", err)
+	}
+	newBin := fakeBin(t, f.binDir, "yiban-server-new", "echo NEW\n")
+	out, rc := runScript(t, scriptPath(t, "update.sh"), f.env,
+		"--server-bin", newBin, "--allow-unsigned")
+	if rc != 0 {
+		t.Fatalf("update rc=%d out=%s", rc, out)
+	}
+	argvLog := readAll(t, f.env["U2_ARGV_LOG"])
+	if strings.Contains(argvLog, u2CanaryPassword) {
+		t.Fatalf("查询串里的口令泄漏到 argv：\n%s", argvLog)
+	}
+	if !strings.Contains(argvLog, "sslmode=disable") {
+		t.Fatalf("其余查询参数必须保留：\n%s", argvLog)
+	}
+	if strings.Contains(argvLog, "password=") {
+		t.Fatalf("argv 仍带 password= 参数：\n%s", argvLog)
+	}
+	if !strings.Contains(argvLog, "pgpass=/") {
+		t.Fatalf("查询串口令必须走 PGPASSFILE：\n%s", argvLog)
+	}
+}

@@ -96,6 +96,28 @@ func userIdentityOf(name string) (fsperm.Identity, bool) {
 	return id, true
 }
 
+// currentIdentityOf 返回**调用者**（通常是 root）的身份，供 selfcheck 判
+// 备份目录权限。身份取自进程真实 uid/gid，不信任环境变量。
+func currentIdentityOf() (fsperm.Identity, bool) {
+	uid, gid := os.Getuid(), os.Getgid()
+	id := fsperm.Identity{UID: uint32(uid), GID: uint32(gid), HasIDs: true}
+	if u, err := user.LookupId(strconv.Itoa(uid)); err == nil {
+		id.Name = u.Username
+	}
+	if g, err := user.LookupGroupId(strconv.Itoa(gid)); err == nil {
+		id.GroupNames = append(id.GroupNames, g.Name)
+	}
+	if gids, err := os.Getgroups(); err == nil {
+		for _, v := range gids {
+			id.GroupIDs = append(id.GroupIDs, uint32(v))
+			if g, err := user.LookupGroupId(strconv.Itoa(v)); err == nil {
+				id.GroupNames = append(id.GroupNames, g.Name)
+			}
+		}
+	}
+	return id, true
+}
+
 // isExecutable 判 POSIX 执行位（属主/组/其他任一即可）。
 func isExecutable(path string) (bool, error) {
 	st, err := os.Stat(path)

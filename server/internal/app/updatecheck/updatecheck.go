@@ -164,6 +164,10 @@ type Deps struct {
 	ServiceProbe ServiceProbe
 	// StatPermission 返回目录的属主/组/模式；false 表示平台不支持。
 	StatPermission func(path string) (fsperm.Owner, bool)
+	// CurrentIdentity 返回**调用者**（通常是 root）的身份，用于备份目录判权
+	// （备份由更新器以 root 写入，按服务用户判权会把安全要求误判成故障）。
+	// nil 或 false 时该判定 SKIP。
+	CurrentIdentity func() (fsperm.Identity, bool)
 	// UserIdentity 返回服务用户的 uid/gid/组；false 表示查不到。
 	UserIdentity func(name string) (fsperm.Identity, bool)
 	// Containerized 表示本进程在容器内：工具与宿主备份目录检查按 SKIP。

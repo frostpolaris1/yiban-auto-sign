@@ -15,6 +15,7 @@
 #                         新库 schema = 升级前，原库保留（schema 已前进）；
 #   R8 正常升级         → exit 0，.bak 保存升级前旧件，schema +2，首次装页面生效；
 #   R9 健康失败+UI 回滚 → exit 1，旧页面换回、指针只剩一行、库不动（migrate 空转）；
+#   R9b 备份件被篡改    → exit 2，回滚拒绝执行备份里的 CLI（属主/权限复核）；
 #   R10 恢复失败        → exit 2，打印 manual action（含真实目标库名），服务停住。
 #
 # 为什么容器内是真跑（AGENTS §32）：
@@ -51,6 +52,7 @@
 #   R2 签名错  R3 自检 FAIL  R4 备份失败  R5 无 CREATEDB
 #   R6 迁移失败（--no-restore-db）  R7 健康失败 + 数据库回滚
 #   R8 正常升级（含 --ui-dir）  R9 健康失败 + UI 回滚
+#   R9b 备份件被篡改（回滚拒绝执行）
 #   R10 数据库恢复失败（manual action）
 #
 # 失败口径：退出码 1，打印 failed step: <ID> <标题>；每步日志在 --log-dir。
@@ -85,7 +87,7 @@ REPO="$(cd "$SELF_DIR/../.." && pwd)"
 # shellcheck source=lib/deploy-e2e.sh
 . "$SELF_DIR/lib/deploy-e2e.sh"
 
-usage() { sed -n '2,79p' "$SELF"; }
+usage() { sed -n '2,81p' "$SELF"; }
 
 die_usage() {
     echo "update-rollback-e2e: $1" >&2
@@ -533,23 +535,23 @@ EOF
     cat > "$LOG_DIR/wrapper-pg_dump.sh" <<EOF
 #!/bin/sh
 # E-2 演练：PG ${PG_MAJOR} 客户端运行于 /opt/pg18，带私有库目录。
-# argv 与 PGPASSFILE 落到 /var/log/yiban-e2e-pgargv.log：演练用它钉
+# argv 与 PGPASSFILE 落到演练日志目录（/opt/e2e-logs）：演练用它钉
 # 「DSN 口令不进 argv、连接口令走 pgpass」。
-printf 'pg_dump %s pgpass=%s\n' "\$*" "\${PGPASSFILE:-<unset>}" >> /var/log/yiban-e2e-pgargv.log 2>/dev/null || true
+printf 'pg_dump %s pgpass=%s\n' "\$*" "\${PGPASSFILE:-<unset>}" >> /opt/e2e-logs/pg-argv.log 2>/dev/null || true
 exec env LD_LIBRARY_PATH=/opt/pg18/lib/x86_64-linux-gnu \
     /opt/pg18/usr/lib/postgresql/${PG_MAJOR}/bin/pg_dump "\$@"
 EOF
     cat > "$LOG_DIR/wrapper-pg_restore.sh" <<EOF
 #!/bin/sh
 # E-2 演练：PG ${PG_MAJOR} 客户端运行于 /opt/pg18，带私有库目录。
-printf 'pg_restore %s pgpass=%s\n' "\$*" "\${PGPASSFILE:-<unset>}" >> /var/log/yiban-e2e-pgargv.log 2>/dev/null || true
+printf 'pg_restore %s pgpass=%s\n' "\$*" "\${PGPASSFILE:-<unset>}" >> /opt/e2e-logs/pg-argv.log 2>/dev/null || true
 exec env LD_LIBRARY_PATH=/opt/pg18/lib/x86_64-linux-gnu \
     /opt/pg18/usr/lib/postgresql/${PG_MAJOR}/bin/pg_restore "\$@"
 EOF
     cat > "$LOG_DIR/wrapper-psql.sh" <<EOF
 #!/bin/sh
 # E-2 演练：PG ${PG_MAJOR} 客户端运行于 /opt/pg18，带私有库目录。
-printf 'psql %s pgpass=%s\n' "\$*" "\${PGPASSFILE:-<unset>}" >> /var/log/yiban-e2e-pgargv.log 2>/dev/null || true
+printf 'psql %s pgpass=%s\n' "\$*" "\${PGPASSFILE:-<unset>}" >> /opt/e2e-logs/pg-argv.log 2>/dev/null || true
 exec env LD_LIBRARY_PATH=/opt/pg18/lib/x86_64-linux-gnu \
     /opt/pg18/usr/lib/postgresql/${PG_MAJOR}/bin/psql "\$@"
 EOF
@@ -992,22 +994,22 @@ run_mode() {
     fi
     assert_eq "R8 状态文件权限" "$(stat -c '%a' "$STATE_FILE")" "600"
     # HIGH 4：pg 客户端 argv 里不得有口令；连接一律走 PGPASSFILE。
-    if [ ! -f /var/log/yiban-e2e-pgargv.log ]; then
+    if [ ! -f /opt/e2e-logs/pg-argv.log ]; then
         e2e_die "没有 pg argv 记录（包装器没装上？）"
     fi
-    cp /var/log/yiban-e2e-pgargv.log "$E2E_LOG_DIR/pg-argv.log"
-    grep -qF -- "$APP_PW" /var/log/yiban-e2e-pgargv.log \
+    # 日志本来就在 $E2E_LOG_DIR 里（包装器直接写那里），无需再拷。
+    grep -qF -- "$APP_PW" /opt/e2e-logs/pg-argv.log \
         && e2e_die "pg 客户端 argv 出现 DSN 口令（见 pg-argv.log）"
     # `--version` 只是探测、不连库，允许没有 PGPASSFILE；真实连接一律要有。
-    if grep 'pgpass=<unset>' /var/log/yiban-e2e-pgargv.log | grep -v -- ' --version' | grep -q .; then
-        grep 'pgpass=<unset>' /var/log/yiban-e2e-pgargv.log | grep -v -- ' --version' \
+    if grep 'pgpass=<unset>' /opt/e2e-logs/pg-argv.log | grep -v -- ' --version' | grep -q .; then
+        grep 'pgpass=<unset>' /opt/e2e-logs/pg-argv.log | grep -v -- ' --version' \
             | head -n 5 | sed 's/^/  /' >&2
         e2e_die "pg 客户端没拿到 PGPASSFILE（口令隔离没接线，见上）"
     fi
     # 备份落位：根 0700 属服务用户（U1 判据要的），本份 0700 root。
     NEWEST_R8_BACKUP="$({ ls -1d "$BACKUP_ROOT"/*/ 2>/dev/null || true; } | sort | tail -n 1)"
     NEWEST_R8_BACKUP="${NEWEST_R8_BACKUP%/}"
-    assert_eq "R8 备份根权限与属主" "$(stat -c '%a %U' "$BACKUP_ROOT")" "700 yiban"
+    assert_eq "R8 备份根权限与属主" "$(stat -c '%a %U' "$BACKUP_ROOT")" "700 root"
     assert_eq "R8 备份子目录属主" "$(stat -c '%U' "$NEWEST_R8_BACKUP")" "root"
     [ -f "$NEWEST_R8_BACKUP/env.backup" ] || e2e_die "R8：备份缺 env.backup"
     assert_eq "R8 env.backup 权限" "$(stat -c '%a' "$NEWEST_R8_BACKUP/env.backup")" "600"
@@ -1044,8 +1046,58 @@ run_mode() {
     if ! health_ok; then e2e_die "R9：回滚后 healthz 探活失败"; fi
     e2e_ok "rc=1；UI 回到 ui-one；无 ui.bak；unit active；healthz ok"
 
+    # ---- R9b 备份件被篡改：回滚拒绝执行备份里的 CLI -------------------------
+    e2e_step "R9b" "备份件被篡改：回滚拒绝执行备份里的 CLI"
+    # 复审 CRITICAL：备份根已 root:root 0700，这里再演一层「万一权限被放开」。
+    # 在健康探活窗口里把备份内的 CLI 改成组/其他可写：回滚必须拒绝安装它。
+    R9B_LOG="$E2E_LOG_DIR/R9b-update.log"
+    # 先快照既有备份目录：只篡改**本轮新建**的那一份（旧份属于别的用例）。
+    R9B_BEFORE="$({ ls -1d "$BACKUP_ROOT"/*/ 2>/dev/null || true; })"
+    (
+        YIBAN_HEALTH_RETRIES=8 YIBAN_HEALTH_RETRY_INTERVAL=1 \
+            bash "$UPDATE_SH" --server-bin "$DIST/yiban-server-v6" \
+            --cli-bin "$DIST/yiban-cli-v6" --allow-unsigned >"$R9B_LOG" 2>&1
+    ) &
+    R9B_PID=$!
+    TAMPER_TARGET=""
+    for _ in $(seq 1 150); do
+        for d in "$BACKUP_ROOT"/*/; do
+            [ -d "$d" ] || continue
+            case $'\n'"$R9B_BEFORE"$'\n' in
+                *$'\n'"$d"$'\n'*) continue ;;
+            esac
+            if [ -f "${d}bin/yiban-cli" ]; then
+                TAMPER_TARGET="${d}bin/yiban-cli"
+                break
+            fi
+        done
+        [ -n "$TAMPER_TARGET" ] && break
+        sleep 0.1
+    done
+    if [ -z "$TAMPER_TARGET" ]; then
+        wait "$R9B_PID" || true
+        e2e_die "R9b：等不到备份里的 CLI（$BACKUP_ROOT/*/bin/yiban-cli）"
+    fi
+    chmod 0666 "$TAMPER_TARGET"
+    R9B_RC=0
+    wait "$R9B_PID" || R9B_RC=$?
+    assert_eq "R9b update.sh 退出码" "$R9B_RC" "2"
+    assert_grep "$R9B_LOG" 'refusing to install the backup cli' "必须拒绝安装被篡改的备份 CLI"
+    assert_grep "$R9B_LOG" 'writable by group or others' "拒绝原因必须点名权限被放开"
+    assert_grep "$R9B_LOG" 'manual action required' "必须打印 manual action"
+    # 被篡改的那份没有被装进安装位：安装位 CLI 仍是本轮换上的 v6 件。
+    assert_eq "R9b 安装位 CLI 未被篡改件替换" \
+        "$(sha "$CLI_DEST")" "$(sha "$DIST/yiban-cli-v6")"
+    assert_eq "R9b 安装位 server 已换回旧件" "$(sha "$SERVER_DEST")" "$SHA_V4"
+    assert_eq "R9b 状态 exit_code" "$(state_num exit_code)" "2"
+    assert_eq "R9b unit 未启动" "$(unit_active)" "inactive"
+    e2e_ok "rc=2；拒绝执行被篡改的备份 CLI；安装位未被替换；unit inactive（人工处置）"
+
     # ---- R10 数据库恢复失败：manual action、不启动旧件 -----------------------
     e2e_step "R10" "数据库恢复失败：exit 2 + manual action，服务停住"
+    # R9b 故意把服务留在停住状态（等人工处置）。R10 前模拟运维恢复：起旧件。
+    systemctl start "$UNIT" >/dev/null 2>&1 || e2e_die "R10：起服务失败"
+    assert_eq "R10 前置 unit 状态" "$(unit_active)" "active"
     # 只放行 --list 的 pg_restore 包装器：备份校验通过、真恢复必失败。
     REAL_RESTORE="$(ls /opt/pg18/usr/lib/postgresql/*/bin/pg_restore | head -n 1)"
     [ -x "$REAL_RESTORE" ] || e2e_die "找不到真实 pg_restore（$REAL_RESTORE）"
