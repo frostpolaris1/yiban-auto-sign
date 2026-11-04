@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -284,6 +285,54 @@ func TestSelfcheckUnknownServiceUserSkipsDirectoryChecks(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "服务用户未知") {
 		t.Fatalf("skip reason missing:\n%s", stdout)
+	}
+}
+
+func TestSelfcheckCanaryPasswordNotLeaked(t *testing.T) {
+	const canary = "leak-canary-7f3d9a"
+	canaryDSN := "postgres://yiban:" + canary + "@127.0.0.1:5432/yiban?sslmode=disable"
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"human", nil},
+		{"json", []string{"--json"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSelfcheckFixture(t, 22)
+			f.env["YIBAN_DATABASE_URL"] = canaryDSN
+			// 最坏情况：驱动错误回显完整 DSN 与 password= 字段。
+			f.deps.OpenDB = func(context.Context, string) (updatecheck.DB, error) {
+				return nil, errors.New("connect failed: " + canaryDSN + " password=" + canary)
+			}
+			args := append(append([]string{}, tc.args...), "--state", f.statePath())
+			code, stdout, stderr := f.run(t, args...)
+			if code != 1 {
+				t.Fatalf("exit = %d, want 1; stderr=%s", code, stderr)
+			}
+			if !strings.Contains(stdout, "db.connect") {
+				t.Fatalf("db.connect row missing:\n%s", stdout)
+			}
+			for _, out := range []string{stdout, stderr} {
+				assertNoCanary(t, out, canary, canaryDSN)
+			}
+		})
+	}
+}
+
+// assertNoCanary 只钉哨兵与泄漏形态；不匹配通用 password= 掩码文本。
+func assertNoCanary(t *testing.T, out, canary, dsn string) {
+	t.Helper()
+	for _, forbidden := range []string{
+		canary,
+		dsn,
+		"yiban:" + canary + "@",
+		"password=" + canary,
+	} {
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("output leaks %q:\n%s", forbidden, out)
+		}
 	}
 }
 

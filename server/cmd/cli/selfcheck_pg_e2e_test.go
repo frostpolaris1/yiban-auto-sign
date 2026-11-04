@@ -96,9 +96,10 @@ func TestSelfcheckReadsSchemaVersionFromPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatalf("JSON: %v", err)
 	}
-	if pw := dsnPassword(base); pw != "" && strings.Contains(string(body), pw) {
-		t.Fatalf("JSON report leaks the database password")
-	}
+	// 测试库的口令与库名同为 yiban_test；裸口令子串会合法出现在
+	// config.dsn 的 host:port/dbname 里。这里只钉真正的泄漏形态。
+	assertNoSensitiveDSN(t, string(body), base, dsn)
+	assertNoSensitiveDSN(t, rep.Text(), base, dsn)
 }
 
 func TestSelfcheckDetectsPendingMigrations(t *testing.T) {
@@ -129,6 +130,12 @@ func TestSelfcheckDetectsPendingMigrations(t *testing.T) {
 	if rep.ExitCode() != 1 {
 		t.Fatalf("exit = %d, want 1", rep.ExitCode())
 	}
+	assertNoSensitiveDSN(t, rep.Text(), base, dsn)
+	body, err := rep.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	assertNoSensitiveDSN(t, string(body), base, dsn)
 }
 
 // findCheck 按名找检查行。
@@ -143,12 +150,39 @@ func findCheck(t *testing.T, rep updatecheck.Report, name string) updatecheck.Ch
 	return updatecheck.Check{}
 }
 
-// dsnPassword 取测试 DSN 的口令，仅用于断言报告不泄漏。
-func dsnPassword(dsn string) string {
-	u, err := url.Parse(dsn)
-	if err != nil || u.User == nil {
-		return ""
+// assertNoSensitiveDSN 断言输出不含 DSN 的敏感形态。
+// 不按裸口令全串匹配：测试库 user/password/dbname 都是 yiban_test，
+// 而 config.dsn 合法打印 host:port/dbname，裸子串必然命中。
+// 钉四种泄漏形态：完整 DSN、password=、URI userinfo、user:pass@。
+func assertNoSensitiveDSN(t *testing.T, out string, dsns ...string) {
+	t.Helper()
+	lower := strings.ToLower(out)
+	if strings.Contains(lower, "password=") {
+		t.Fatalf("output contains a password= field")
 	}
-	pw, _ := u.User.Password()
-	return pw
+	for _, dsn := range dsns {
+		if dsn == "" {
+			continue
+		}
+		if strings.Contains(out, dsn) {
+			t.Fatalf("output echoes the full DSN")
+		}
+		u, err := url.Parse(dsn)
+		if err != nil || u.User == nil {
+			continue
+		}
+		if userinfo := u.User.String(); userinfo != "" && strings.Contains(out, userinfo+"@") {
+			t.Fatalf("output contains URI userinfo")
+		}
+		pw, ok := u.User.Password()
+		if !ok || pw == "" {
+			continue
+		}
+		if strings.Contains(out, ":"+pw+"@") {
+			t.Fatalf("output contains user:pass@ userinfo")
+		}
+		if encoded := url.QueryEscape(pw); encoded != pw && strings.Contains(out, ":"+encoded+"@") {
+			t.Fatalf("output contains percent-encoded user:pass@ userinfo")
+		}
+	}
 }

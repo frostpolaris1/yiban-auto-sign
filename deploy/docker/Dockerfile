@@ -43,12 +43,12 @@ ARG GOPROXY
 
 # 版本身份：注入 `yiban-server --version` 与 `yiban-cli version`。
 # 缺省 dev/unknown 是显性占位符（不编造 sha 或时间）；发布构建必须传：
-#   --build-arg YIBAN_VERSION=0.7.0 \
-#   --build-arg YIBAN_COMMIT=$(git rev-parse --short HEAD) \
-#   --build-arg YIBAN_BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-ARG YIBAN_VERSION=dev
-ARG YIBAN_COMMIT=unknown
-ARG YIBAN_BUILD_TIME=unknown
+#   --build-arg BUILD_VERSION=0.7.0 \
+#   --build-arg BUILD_COMMIT=$(git rev-parse --short HEAD) \
+#   --build-arg BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+ARG BUILD_VERSION=dev
+ARG BUILD_COMMIT=unknown
+ARG BUILD_TIME=unknown
 
 WORKDIR /src/server
 
@@ -60,15 +60,15 @@ RUN if [ -n "${GOPROXY:-}" ]; then go env -w GOPROXY="${GOPROXY}"; fi \
 COPY server/ ./
 RUN CGO_ENABLED=0 go build -trimpath \
       -ldflags="-s -w \
-        -X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.version=${YIBAN_VERSION} \
-        -X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.commit=${YIBAN_COMMIT} \
-        -X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.buildTime=${YIBAN_BUILD_TIME}" \
+        -X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.version=${BUILD_VERSION} \
+        -X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.commit=${BUILD_COMMIT} \
+        -X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.buildTime=${BUILD_TIME}" \
       -o /out/yiban-server ./cmd/server \
  && CGO_ENABLED=0 go build -trimpath \
       -ldflags="-s -w \
-        -X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.version=${YIBAN_VERSION} \
-        -X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.commit=${YIBAN_COMMIT} \
-        -X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.buildTime=${YIBAN_BUILD_TIME}" \
+        -X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.version=${BUILD_VERSION} \
+        -X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.commit=${BUILD_COMMIT} \
+        -X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.buildTime=${BUILD_TIME}" \
       -o /out/yiban-cli ./cmd/cli \
  && mkdir -p /out/photos
 

@@ -225,8 +225,8 @@ func checkDatabase(ctx context.Context, deps Deps, opts Options) []Check {
 
 	var embedded int64
 	embeddedOK := false
-	switch {
-	case deps.EmbeddedVersion == nil:
+	switch deps.EmbeddedVersion {
+	case nil:
 		rows = append(rows, skip(nameDBEmbedded, "嵌入迁移版本未注入"))
 	default:
 		version, err := deps.EmbeddedVersion()

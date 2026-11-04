@@ -31,9 +31,9 @@ func TestDockerfileUsesBuildinfoSymbols(t *testing.T) {
 	}
 	compact := strings.Join(strings.Fields(string(body)), "")
 	for _, want := range []string{
-		"-X" + buildinfoModule + ".version=${YIBAN_VERSION}",
-		"-X" + buildinfoModule + ".commit=${YIBAN_COMMIT}",
-		"-X" + buildinfoModule + ".buildTime=${YIBAN_BUILD_TIME}",
+		"-X" + buildinfoModule + ".version=${BUILD_VERSION}",
+		"-X" + buildinfoModule + ".commit=${BUILD_COMMIT}",
+		"-X" + buildinfoModule + ".buildTime=${BUILD_TIME}",
 	} {
 		if !strings.Contains(compact, want) {
 			t.Fatalf("Dockerfile 缺注入符号 %q；版本门必须覆盖镜像构建", want)
