@@ -4,9 +4,10 @@ package main
 //
 // # 功能
 // 真跑仓库根的 server/scripts/build-release.sh 到 t.TempDir()，再执行产出的
-// yiban-server 与 yiban-cli，断言两者自报 version == 仓库根 VERSION，且
-// commit/build_time 不是占位符（证明 -ldflags -X 注入真的发生，不是回落
-// dev/unknown）。Python 侧 tests/test_build_version_wiring.py 钉静态接线；
+// yiban-server 与 yiban-cli，断言两者自报 version == 仓库根 VERSION、
+// commit == git rev-parse --short HEAD、build_time 是 RFC3339 UTC（能和
+// 仓库对账，证明 -ldflags -X 注入真的发生，不是回落 dev/unknown）。
+// Python 侧 tests/test_build_version_wiring.py 钉静态接线；
 // 本门证执行面，两者并存防漂移。
 //
 // # 口径
@@ -55,6 +56,15 @@ func TestBuildReleaseScriptWiresVersion(t *testing.T) {
 	if ver == "" {
 		t.Fatalf("VERSION is empty; Go line must carry a single X.Y.Z line")
 	}
+
+	// 对账基准：注入的 commit 必须等于 HEAD 短哈希，build_time 必须是
+	// RFC3339 UTC——不是"非 unknown 就行"（审查 P1-1）。
+	commitRaw, err := exec.Command("git", "-C", root, "rev-parse", "--short", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("git rev-parse --short HEAD: %v", err)
+	}
+	wantCommit := strings.TrimSpace(string(commitRaw))
+	var buildTimeRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$`)
 
 	out := t.TempDir()
 	cmd := exec.Command("bash", script, filepath.ToSlash(out))
@@ -114,11 +124,11 @@ func TestBuildReleaseScriptWiresVersion(t *testing.T) {
 		if got := line(output, "version", c.bin); got != ver {
 			t.Fatalf("%s self-reports version %q, want %q (repo root VERSION)", c.name, got, ver)
 		}
-		if got := line(output, "commit", c.bin); got == "unknown" || got == "" {
-			t.Fatalf("%s commit is %q; build-release.sh must inject a real commit", c.name, got)
+		if got := line(output, "commit", c.bin); got != wantCommit {
+			t.Fatalf("%s self-reports commit %q, want %q (git rev-parse --short HEAD)", c.name, got, wantCommit)
 		}
-		if got := line(output, "build_time", c.bin); got == "unknown" || got == "" {
-			t.Fatalf("%s build_time is %q; build-release.sh must inject the build time", c.name, got)
+		if got := line(output, "build_time", c.bin); !buildTimeRe.MatchString(got) {
+			t.Fatalf("%s self-reports build_time %q, want RFC3339 UTC (YYYY-MM-DDTHH:MM:SSZ)", c.name, got)
 		}
 	}
 }

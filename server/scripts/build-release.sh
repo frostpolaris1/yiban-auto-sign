@@ -12,8 +12,9 @@
 #
 # 行为口径：
 #   - VERSION 缺失 / 非 X.Y.Z / 多行 ⇒ exit 2 并点名；
-#   - outdir 已存在则复用（幂等），缺失则创建；产物只写 outdir，
-#     不写仓库内任何文件；
+#   - outdir 已存在则复用（幂等），缺失则创建；相对路径先归一为绝对
+#     路径（后文会 cd 进 server/ 编译，不归一会让相对 outdir 落进
+#     server/ 下）；产物只写 outdir，不写仓库内任何文件；
 #   - commit 取 git rev-parse --short HEAD；取不到（非 git 检出）⇒
 #     exit 2：发布件必须带真实提交，不许回落 unknown；
 #   - 一律不注入分支名：发布件不带分支身份；
@@ -66,15 +67,20 @@ commit="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null)" \
     || die "$ROOT is not a usable git checkout; release builds must carry a real commit"
 build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-# 隔离构建环境：外部 GOFLAGS/CGO_ENABLED 不得改写发布件形状。
+# 隔离构建环境：外部 GOFLAGS/CGO_ENABLED 不得改写发布件形状；
+# GOOS/GOARCH 必须按宿主（继承 GOOS=linux 会产出 linux 二进制却按
+# 宿主 uname 命名，产物名与内容错位）。
 export CGO_ENABLED=0
 export GOFLAGS=
+unset GOOS GOARCH
 ldflags="-s -w \
 -X ${BUILDINFO_PKG}.version=${ver} \
 -X ${BUILDINFO_PKG}.commit=${commit} \
 -X ${BUILDINFO_PKG}.buildTime=${build_time}"
 
 mkdir -p "$OUT"
+# 归一为绝对路径：后面要 cd 进 server/ 编译，相对 outdir 不归一会写进 server/ 下。
+OUT="$(cd "$OUT" && pwd)"
 exe="$(exe_suffix)"
 (
     cd "$ROOT/server"

@@ -104,13 +104,14 @@ check_version() {
 #   单一来源 = 仓库根 VERSION（单行 X.Y.Z，换行结尾）；旧 Python 线的
 #   yiban/__init__.py 与 CHANGELOG 保持冻结，不在本项范围。
 #   三个动作：
-#   a) 真构建：调 server/scripts/build-release.sh 到 mktemp 临时目录，
+#   a) tag 对账：v$VERSION 存在且指向 HEAD；不存在 ⇒ FAIL 并提示先打
+#      tag（先于构建：缺 tag 时不再白付一次编译）；
+#   b) 真构建：调 server/scripts/build-release.sh 到 mktemp 临时目录，
 #      跑 yiban-server --version 与 yiban-cli version，断言自报 version
 #      == VERSION（输出是稳定的 "version: X" 三行文本，机器可读）；
-#   b) tag 对账：v$VERSION 存在且指向 HEAD；不存在 ⇒ FAIL 并提示先打 tag；
 #   c) 契约版本不参与：openapi info.version 只在破坏性契约变更时升，
 #      与本项无关（server/contracts/README.md）。
-#   真仓库在打 v0.7.0 tag 之前本项 FAIL 是预期（发布时才绿）；selftest 用
+#   真仓库在打发布 tag 之前本项 FAIL 是预期（发布时才绿）；selftest 用
 #   桩 builder（不编译 Go）覆盖四类突变。构建开销：模块缓存热时约数秒。
 check_go_version() {
     STATUS_go_version=FAIL; REASON_go_version=""
@@ -134,7 +135,18 @@ check_go_version() {
     if ! git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
         REASON_go_version="$ROOT is not a git checkout"; return
     fi
-    # a) 真构建 + 自报版本断言。产物名后缀规则见 build-release.sh 头注。
+    # a) 发布 tag 对账在前：缺 tag／tag 不指向 HEAD 时直接红，
+    #    不白付一次两二进制的编译（审查 P2）。
+    local tag="v$ver" tag_sha head_sha
+    tag_sha="$(git -C "$ROOT" rev-parse -q --verify "refs/tags/$tag^{commit}" 2>/dev/null || true)"
+    head_sha="$(git -C "$ROOT" rev-parse HEAD)"
+    if [ -z "$tag_sha" ]; then
+        REASON_go_version="tag $tag does not exist; cut the release tag first (Go line: root VERSION)"; return
+    fi
+    if [ "$tag_sha" != "$head_sha" ]; then
+        REASON_go_version="tag $tag points at $tag_sha, HEAD is $head_sha"; return
+    fi
+    # b) 真构建 + 自报版本断言。产物名后缀规则见 build-release.sh 头注。
     local out build_out brc exe sv cv sver cver
     out="$(mktemp -d)" || { REASON_go_version="mktemp failed"; return; }
     build_out="$(bash "$builder" "$out" 2>&1)"; brc=$?
@@ -154,16 +166,6 @@ check_go_version() {
     if [ "$sver" != "$ver" ] || [ "$cver" != "$ver" ]; then
         REASON_go_version="self-report mismatch: server='${sver:-none}' cli='${cver:-none}', want $ver"
         return
-    fi
-    # b) 发布 tag 对账：v$VERSION 存在且指向 HEAD。
-    local tag="v$ver" tag_sha head_sha
-    tag_sha="$(git -C "$ROOT" rev-parse -q --verify "refs/tags/$tag^{commit}" 2>/dev/null || true)"
-    head_sha="$(git -C "$ROOT" rev-parse HEAD)"
-    if [ -z "$tag_sha" ]; then
-        REASON_go_version="tag $tag does not exist; cut the release tag first (Go line: root VERSION)"; return
-    fi
-    if [ "$tag_sha" != "$head_sha" ]; then
-        REASON_go_version="tag $tag points at $tag_sha, HEAD is $head_sha"; return
     fi
     STATUS_go_version=PASS
     echo "go-version: VERSION=$ver, yiban-server/yiban-cli self-report $ver, tag $tag -> HEAD ok"

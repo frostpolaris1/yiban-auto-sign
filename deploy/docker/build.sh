@@ -9,7 +9,7 @@
 #
 # 用法（在任意目录执行）：
 #   bash deploy/docker/build.sh <image-tag>
-#   例：bash deploy/docker/build.sh yiban-server:0.7.0
+#   例：bash deploy/docker/build.sh "yiban-server:v$(cat VERSION)"
 #
 # 行为口径：
 #   - VERSION 缺失 / 非 X.Y.Z / 多行 ⇒ exit 2 并点名（与

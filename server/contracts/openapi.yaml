@@ -25,10 +25,10 @@ info:
     users, schools, admins and accounts answer from their use cases.
 
     Versioning: this `info.version` is the API contract version; it only
-    changes on a breaking contract change and is independent of the product
-    release version, which lives in the repository root `VERSION` file and is
-    tagged `v$VERSION` at release time (see contracts/README.md "Versioning"
-    and release-check item `go-version`).
+    changes on a breaking contract change and is independent of the Go-line
+    product release version, which lives in the repository root `VERSION`
+    file and is tagged `v$VERSION` at release time (see contracts/README.md
+    "Versioning" and release-check item `go-version`).
   contact:
     name: yiban-auto-sign maintainers
     url: https://github.com/frostpolaris1/yiban-auto-sign

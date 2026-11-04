@@ -49,7 +49,7 @@ docker compose --env-file deploy/container/compose.env \
 一次给齐后调 `docker build`：
 
 ```bash
-bash deploy/docker/build.sh yiban-server:0.7.0
+bash deploy/docker/build.sh "yiban-server:v$(cat VERSION)"
 ```
 
 不走该入口时（例如上面 `compose up -d --build`），compose 的 `build.args`

@@ -17,7 +17,10 @@ import unittest
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RELEASE_GATE = os.path.join(BASE, "docs", "dev", "release-gate.md")
-SCRIPT_REF = re.compile(r"scripts/[A-Za-z0-9_.-]+\.(?:sh|py)")
+# `server/scripts/...` 是合法入库路径（Go 线脚本），必须整体识别；
+# 负向后顾挡住 `xscripts/`、`foo.scripts/` 这类误匹配。裸 `scripts/...`
+# 行为不变。不含子目录层级（既有口径，`scripts/e2e/...` 引用面本就未覆盖）。
+SCRIPT_REF = re.compile(r"(?<![A-Za-z0-9_.-])((?:server/)?scripts/[A-Za-z0-9_.-]+\.(?:sh|py))")
 DRILL_SCRIPTS = ("scripts/drill-baremetal.sh", "scripts/drill-container.sh")
 
 
@@ -44,7 +47,10 @@ class ReleaseGateScriptsTest(unittest.TestCase):
             if text.startswith(prefix):
                 target = text[len(prefix):].strip()
                 m = re.match(r"^([A-Za-z]):[\\/](.*)$", target)
-                if m:
+                if m and os.name != "nt":
+                    # Windows 盘符路径只有 WSL 侧 git 需要翻译成 /mnt/...；
+                    # Windows 原生 git 直接认原路径（直译会让本门在
+                    # Windows 检出上假红，git ls-files 退出 128）。
                     target = "/mnt/%s/%s" % (m.group(1).lower(),
                                               m.group(2).replace("\\", "/"))
                 args += ["--git-dir", target, "--work-tree", BASE]
