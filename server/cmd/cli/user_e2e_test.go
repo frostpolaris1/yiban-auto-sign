@@ -115,7 +115,7 @@ func TestUserCreateMasterE2E(t *testing.T) {
 }
 
 // TestCreateMasterKeepsSecretOutOfArgv 钉住口令/DSN/pepper 不进 argv。
-// 真实用户动作：运维按 install.sh 的提示先载入 .env，再把口令管道喂给
+// 真实用户动作：运维按 install.sh 的提示先载入 server.env，再把口令管道喂给
 // `user create-master --password-stdin`。断言 argv 不含任何机密，
 // 且 stdin 路径在真库上能建号、口令可校验。
 func TestCreateMasterKeepsSecretOutOfArgv(t *testing.T) {

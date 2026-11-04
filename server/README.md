@@ -165,15 +165,34 @@ for the `stacks` job.
 only. `YIBAN_ENV` is required: an unset or empty value stops startup, so a
 deployment cannot silently fall back to development defaults.
 
+The default values and domains live in
+`internal/configdata/registry.json`, embedded at build time (`go:embed`).
+`GET /api/admin/settings` and `yiban-cli doctor` read that same copy; no
+installation path, working directory or image layer holds a registry file. A
+bidirectional gate keeps the registry exactly equal to the key literals the
+server reads.
+
+Canonical runtime files:
+
+- bare metal: `/etc/yiban/server.env` (0600 root:root), installed by
+  `deploy/linux/install.sh`; a key-complete, secret-free template is at
+  `/etc/yiban/server.env.example` (0644).
+- container: `deploy/container/compose.env` (0600 on the host), loaded with an
+  explicit `--env-file` plus the compose `env_file` entry. The repository root
+  `.env` belongs to the old Python stack and is never read.
+
 | Variable | Required | Default | Meaning |
 |---|---|---|---|
 | `YIBAN_ENV` | yes | — | `development`, `test`, `staging` or `production` |
 | `YIBAN_HTTP_ADDR` | no | `127.0.0.1:47183` | listen address |
-| `YIBAN_DATABASE_URL` | no | empty | PostgreSQL DSN; unused until W1 |
+| `YIBAN_DATABASE_URL` | **yes** in production; otherwise required unless `YIBAN_ALLOW_NO_DB=1` | empty | PostgreSQL 18 DSN. An empty value under `production` stops startup and names the key. The value carries a password: it never appears in logs, errors or the settings page. |
+| `YIBAN_ALLOW_NO_DB` | no | `false` | explicit opt-in to start without a database in `development`, `test` and `staging`. `production` rejects a true value: the deployment must give a DSN. |
 | `YIBAN_TZ` | no | `Asia/Shanghai` | business time zone |
 | `YIBAN_INSECURE_COOKIES` | no | `true` for development and test | use the unprefixed cookie name; production refuses a true value |
 | `YIBAN_HASH_PEPPER` | **yes** | — | at least 16 characters; keys the HMAC digests of IP addresses and user agents, and derives the audit chain key. Rotating it breaks verification of the existing audit chain. |
 | `YIBAN_CREDENTIAL_KEY` | **yes** | — | base64 of exactly 32 bytes; encrypts stored credentials with AES-256-GCM. Rotating it goes through kid re-encryption (P4/P8), so old rows stay decryptable. |
+| `YIBAN_PHOTO_DIR` | no | `data/photos` | photo blob root; a relative path is resolved against the process working directory |
+| `YIBAN_UI_DIR` | no | empty | frontend build directory containing `index.html`; empty serves the API only |
 | `YIBAN_RESET_MAIL_ENABLE` | no | `false` | delivers password reset links over SMTP. A true value requires `YIBAN_PUBLIC_BASE_URL` and sender credentials; a missing or loopback base URL stops startup with the key name in the error. |
 | `YIBAN_PUBLIC_BASE_URL` | no | `http://127.0.0.1:47183` | base of the reset links and an accepted login origin, as an absolute http(s) URL without a trailing slash and without credentials. Set it to the public https origin when TLS terminates in front of the app. See the paragraph below. |
 | `YIBAN_MAIL_SMTP_HOST` | no | `smtp.qq.com` | SMTP server host. The certificate is verified against this name. |

@@ -226,16 +226,14 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    R["config/registry.json · 唯一定义点<br/>类型 · 域 · 默认 · 分组 · 敏感级别 · 热重载"]
-    ENV[".env · 行为配置 KEY=value"]
-    SEC["secrets.env · 密钥"]
-    LOAD["加载器<br/>env 与文件合并 · 域校验"]
+    R["server/internal/configdata/registry.json · 唯一定义点<br/>go:embed · 类型 · 域 · 默认 · 分组 · 敏感级别"]
+    ENV["server.env · 行为配置+密钥 KEY=value<br/>裸机 /etc/yiban/server.env 0600 root:root<br/>容器 deploy/container/compose.env 0600 宿主"]
+    LOAD["加载器 internal/adapters/config<br/>读取 · 域校验 · 启动判据"]
     R --> LOAD
     ENV --> LOAD
-    SEC --> LOAD
 ```
 
-三层职责：**名册**（`config/registry.json`）是默认值与合法域的唯一来源；**`.env`** 只放行为配置；**`secrets.env`** 只放密钥。迁移期密钥双写一个版本周期，加载器读 `secrets.env` 优先。
+两层职责：**名册**只登记 Go 服务端实际读取的键，编译期嵌入二进制，默认值与合法域以它为准；**`server.env`** 是唯一的运行配置文件（0600，含密钥与 DSN 口令）。旧 Python 栈的 `config/registry.json` 与旧 `.env` 只服务旧线，不参与新栈。
 
 ## 7. 施工判据
 

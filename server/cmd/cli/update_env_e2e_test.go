@@ -1,16 +1,16 @@
 package main
 
-// update.sh 载入 /etc/yiban/.env 的 e2e。
+// update.sh 载入 /etc/yiban/server.env 的 e2e。
 //
 // # 功能
-// 模拟真实运维动作：管理员把含特殊字符的 DSN 写进 .env，
+// 模拟真实运维动作：管理员把含特殊字符的 DSN 写进 server.env，
 // 再跑 update.sh 升级。迁移进程必须收到完整 DSN。
 // 特殊字符：`&` 与 `#` —— 用 shell source 载入时，
 // `&` 把赋值切成后台子 shell，变量不外泄，迁移拿到空 DSN。
 // 无签名调用点显式带 --allow-unsigned：默认强制验签（E-3）的逃生口。
 //
 // # 口径
-// 断言假 yiban-cli 的 migrate 收到的 YIBAN_DATABASE_URL 与 .env 原文一致。
+// 断言假 yiban-cli 的 migrate 收到的 YIBAN_DATABASE_URL 与 server.env 原文一致。
 // 干跑前缀：不碰真 /etc、不需要 root。
 
 import (
@@ -44,7 +44,7 @@ func TestUpdateShLoadsEnvWithoutShellExpansion(t *testing.T) {
 	}
 	sysctl := fakeSystemd(t, binDir, sysctlLog, installed, running, stateDir)
 
-	// .env 里放三种形状：注释行、含 & 与 # 的 DSN、成对引号值。
+	// server.env 里放三种形状：注释行、含 & 与 # 的 DSN、成对引号值。
 	envDir := filepath.Join(root, "etc/yiban")
 	if err := os.MkdirAll(envDir, 0o755); err != nil {
 		t.Fatalf("mkdir env dir: %v", err)
@@ -54,8 +54,8 @@ func TestUpdateShLoadsEnvWithoutShellExpansion(t *testing.T) {
 		"\n" +
 		"YIBAN_DATABASE_URL=" + dsn + "\n" +
 		"YIBAN_HASH_PEPPER='0123456789abcdef'\n"
-	if err := os.WriteFile(filepath.Join(envDir, ".env"), []byte(envBody), 0o600); err != nil {
-		t.Fatalf("write .env: %v", err)
+	if err := os.WriteFile(filepath.Join(envDir, "server.env"), []byte(envBody), 0o600); err != nil {
+		t.Fatalf("write server.env: %v", err)
 	}
 
 	dsnOut := filepath.Join(t.TempDir(), "dsn.txt")
@@ -72,7 +72,7 @@ esac
 exit 0
 `)
 	// 有 DSN 时 update.sh 要求统一备份：装 pg 客户端桩，
-	// 本用例关心的是 .env 原文（含 & 与 #）能原样交给 cli。
+	// 本用例关心的是 server.env 原文（含 & 与 #）能原样交给 cli。
 	// 停服前的自检门要求安装位 CLI 能出 JSON 报告。
 	installFakeUpdateCLI(t, root)
 	fakePgTools(t, binDir)
@@ -98,15 +98,19 @@ exit 0
 	if got := readAll(t, pepperOut); got != "0123456789abcdef" {
 		t.Fatalf("成对单引号必须去掉：pepper = %q", got)
 	}
-	// 名册随升级一起落位：与仓库内那份逐字节一致。
-	wantReg, err := os.ReadFile(filepath.Join("..", "..", "..", "config", "registry.json"))
+	// 运行模板随升级一起落位：与仓库内那份逐字节一致。
+	wantExample, err := os.ReadFile(filepath.Join("..", "..", "..", "deploy", "baremetal", "server.env.example"))
 	if err != nil {
-		t.Fatalf("read repo registry: %v", err)
+		t.Fatalf("read server.env template: %v", err)
 	}
-	if got := []byte(readAll(t, filepath.Join(root, "etc/yiban/registry.json"))); !bytes.Equal(got, wantReg) {
-		t.Fatalf("升级后的名册与 config/registry.json 不一致（%d vs %d 字节）", len(got), len(wantReg))
+	if got := []byte(readAll(t, filepath.Join(root, "etc/yiban/server.env.example"))); !bytes.Equal(got, wantExample) {
+		t.Fatalf("升级后的 server.env.example 与模板不一致（%d vs %d 字节）", len(got), len(wantExample))
+	}
+	// 运行名册已随二进制嵌入：升级器不得再落位 registry.json。
+	if _, err := os.Stat(filepath.Join(root, "etc/yiban/registry.json")); err == nil {
+		t.Fatal("update.sh 不得再安装 /etc/yiban/registry.json")
 	}
 	if strings.Contains(out, "command not found") {
-		t.Fatalf("脚本里出现 command not found：.env 被当脚本执行了\n%s", out)
+		t.Fatalf("脚本里出现 command not found：server.env 被当脚本执行了\n%s", out)
 	}
 }

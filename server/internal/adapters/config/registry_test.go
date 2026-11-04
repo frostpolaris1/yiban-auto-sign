@@ -6,7 +6,6 @@ package config
 // 空名册、非法缺省值与非标量缺省值必须失败：空名册不得当绿。
 
 import (
-	"errors"
 	"testing"
 )
 
@@ -67,19 +66,31 @@ func TestParseRegistryRejectsInvalid(t *testing.T) {
 	}
 }
 
-func TestRegistryCandidatesInstallPathFirst(t *testing.T) {
-	candidates := RegistryCandidates()
-	if len(candidates) < 2 {
-		t.Fatalf("candidates = %v", candidates)
+// TestEmbeddedRegistryLoads 钉住嵌入名册本身可解析且非空。
+// 名册随二进制发布：空名册或形状损坏是构建缺陷，必须当红。
+func TestEmbeddedRegistryLoads(t *testing.T) {
+	entries, err := Registry()
+	if err != nil {
+		t.Fatalf("Registry: %v", err)
 	}
-	if candidates[0] != "/etc/yiban/registry.json" {
-		t.Fatalf("candidates[0] = %q, want the installed path first", candidates[0])
+	if len(entries) < 30 {
+		t.Fatalf("嵌入名册只有 %d 条——删空或截断即拒判", len(entries))
+	}
+	for _, entry := range entries {
+		if entry.Key == "" || entry.Group == "" || entry.Type == "" {
+			t.Fatalf("名册条目缺键/分组/类型: %+v", entry)
+		}
 	}
 }
 
-func TestLoadRegistryMissingIsTyped(t *testing.T) {
-	_, err := LoadRegistry(t.TempDir() + "/absent.json")
-	if !errors.Is(err, ErrRegistryNotFound) {
-		t.Fatalf("err = %v, want ErrRegistryNotFound for an explicit missing path", err)
+// TestRegistryJSONIsACopy 钉住调用方改不到嵌入字节。
+func TestRegistryJSONIsACopy(t *testing.T) {
+	first := RegistryJSON()
+	if len(first) == 0 {
+		t.Fatal("RegistryJSON is empty")
+	}
+	first[0] = 'X'
+	if second := RegistryJSON(); len(second) == 0 || second[0] == 'X' {
+		t.Fatal("RegistryJSON 返回了共享切片：嵌入名册被调用方改写")
 	}
 }

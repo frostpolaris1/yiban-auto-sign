@@ -33,22 +33,27 @@ Go 进程不做 gzip/brotli 压缩；压缩交给外层反向代理（它已在�
 在仓库根执行：
 
 ```bash
-export YIBAN_HASH_PEPPER=$(openssl rand -hex 32)
-export YIBAN_CREDENTIAL_KEY=$(openssl rand -base64 32)
-export YIBAN_PG_PASSWORD=$(openssl rand -hex 16)
+cp deploy/container/compose.env.example deploy/container/compose.env
+chmod 600 deploy/container/compose.env
+# 编辑 compose.env：填 POSTGRES_PASSWORD / YIBAN_HASH_PEPPER / YIBAN_CREDENTIAL_KEY
+openssl rand -hex 32      # YIBAN_HASH_PEPPER
+openssl rand -base64 32   # YIBAN_CREDENTIAL_KEY
+openssl rand -hex 16      # POSTGRES_PASSWORD
 
-docker compose -f deploy/docker/docker-compose.yml up -d --build
+docker compose --env-file deploy/container/compose.env \
+  -f deploy/docker/docker-compose.yml up -d --build
 ```
+
+运行配置只来自 `deploy/container/compose.env`（0600 宿主）：
+compose 用 `env_file` 把它注入 app，`--env-file` 供 db 的服务口令插值。
+**不读取仓库根 `.env`**——旧 Python 栈的配置因此不可能混进 Go 容器。
+`YIBAN_DATABASE_URL` 由 compose 从 `POSTGRES_PASSWORD` 派生（口令只有一处来源）。
+
+配置名册随二进制嵌入（`server/internal/configdata/registry.json`），
+镜像与安装位里都没有 `registry.json` 文件；`GET /api/admin/settings`
+读的就是编译进二进制的那一份。
 
 镜像包含页面：前端在构建段执行 `npm ci && npm run build`，产物落在 `/srv/ui`。
-
-镜像同时包含配置名册：`config/registry.json` 装到 `/etc/yiban/registry.json`（root 属主，0644），
-`GET /api/admin/settings` 直接读取它。要在不重建镜像时替换名册，可在 compose 里加只读挂载：
-
-```yaml
-volumes:
-  - ../../config/registry.json:/etc/yiban/registry.json:ro
-```
 
 验证：
 
@@ -111,8 +116,9 @@ sudo bash deploy/linux/install.sh \
 
 - 建 `yiban` 服务用户与 `/var/lib/yiban`。
 - 二进制落 `/usr/local/bin`。
-- 页面落 `/var/lib/yiban/ui`（重装时旧页面留 `ui.bak`），并在 `/etc/yiban/.env` 写 `YIBAN_UI_DIR`。
-- 生成密钥并写 `/etc/yiban/.env`（0600 root:root），只打印一次。
+- 页面落 `/var/lib/yiban/ui`（重装时旧页面留 `ui.bak`），并在 `/etc/yiban/server.env` 写 `YIBAN_UI_DIR`。
+- 生成密钥并写 `/etc/yiban/server.env`（0600 root:root），只打印一次；
+  同时落一份无密钥模板 `/etc/yiban/server.env.example`（0644）。
 - 装 systemd 单元，`enable --now`，再探测 `/healthz`。
 
 不给 `--ui-dir` 时只装 API。安装器会打印显性提示。
@@ -120,7 +126,7 @@ sudo bash deploy/linux/install.sh \
 创建第一个 master：
 
 ```bash
-set -a; . /etc/yiban/.env; set +a
+set -a; . /etc/yiban/server.env; set +a
 printf '%s\n' "$PASSWORD" | yiban-cli user create-master \
   --email you@example.com --password-stdin
 ```
@@ -171,7 +177,7 @@ root:root 0700**：备份含凭据密文，回滚还会执行备份内的 CLI，
 | `db.dump` | `pg_dump -Fc`（含凭据密文与审计行） |
 | `db.list` | `pg_restore --list` 的清单（证明转储可读） |
 | `db-schema.txt` | 迁移前库名、goose 版本与 public 基表数（恢复后的对账基线） |
-| `env.backup` | `/etc/yiban/.env` 快照（0600；库回滚会改写 DSN，人工回退要用） |
+| `env.backup` | `/etc/yiban/server.env` 快照（0600；库回滚会改写 DSN，人工回退要用） |
 | `photos.tar` | 照片目录快照（照片不进数据库备份）。目录路径先 `readlink -f` 解析（含尾斜杠/软链挂载）；解析结果若是 `/`、系统目录、更新器根或状态/备份根则拒绝备份；**目录内部的软链只存链接本身，不跟随**——避免把软链指向的 root-only 文件读进备份 |
 | `bin/yiban-server`、`bin/yiban-cli` | 更新前的二进制（含既有 `.bak` 的归档） |
 | `SHA256SUMS` | 以上文件的 sha256，写入后立即校验 |
@@ -233,7 +239,7 @@ key=value 形态按 libpq 词法解析；解析不了就 `exit 2`（绝不再把
 2. 迁移前后 goose 版本相同（库没变）就跳过——不为了回滚而回滚；
 3. 迁移改变了库时：`CREATE DATABASE yiban_restore_<UTC时间戳>` →
    `pg_restore` 到新库 → 校验新 DSN 的 `current_database()` 与新库同名（绝不写回原库）
-   → 校验 goose 版本与基表数和备份基线一致 → 原子改写 `/etc/yiban/.env` 的
+   → 校验 goose 版本与基表数和备份基线一致 → 原子改写 `/etc/yiban/server.env` 的
    `YIBAN_DATABASE_URL` → 起旧二进制；
 4. **原库原样保留**（迁移过的失败库）供取证；不删、不 `--clean`、不原地覆盖。
 
@@ -279,7 +285,7 @@ sudo install -m 0640 -o postgres -g postgres \
 sudo -u postgres pg_restore --no-owner --no-privileges \
   -d yiban_restore_manual /tmp/yiban-restore.dump
 sudo rm -f /tmp/yiban-restore.dump
-sudo sed -i 's|^YIBAN_DATABASE_URL=.*|YIBAN_DATABASE_URL=postgres://…/yiban_restore_manual|' /etc/yiban/.env
+sudo sed -i 's|^YIBAN_DATABASE_URL=.*|YIBAN_DATABASE_URL=postgres://…/yiban_restore_manual|' /etc/yiban/server.env
 sudo systemctl start yiban.service
 
 # 5) 确认旧件与新 schema 兼容、选择不回库时：
@@ -323,16 +329,16 @@ export YIBAN_TRUSTED_PROXIES=192.0.2.10
 docker compose -f deploy/docker/docker-compose.yml up -d
 ```
 
-裸机部署的代理在宿主回环。`install.sh` 新装的 `.env` 已写入：
+裸机部署的代理在宿主回环。`install.sh` 新装的 `server.env` 已写入：
 
 ```text
 YIBAN_TRUSTED_PROXIES=127.0.0.1
 ```
 
-已有 `.env` 手工补一行后重启：
+已有 `server.env` 手工补一行后重启：
 
 ```bash
-sudo sh -c "printf 'YIBAN_TRUSTED_PROXIES=127.0.0.1\n' >> /etc/yiban/.env"
+sudo sh -c "printf 'YIBAN_TRUSTED_PROXIES=127.0.0.1\n' >> /etc/yiban/server.env"
 sudo systemctl restart yiban.service
 ```
 
@@ -342,7 +348,7 @@ sudo systemctl restart yiban.service
 
 | 键 | 作用 | 缺省 |
 |---|---|---|
-| `YIBAN_DATABASE_URL` | PostgreSQL DSN | 空：业务端点回 501 |
+| `YIBAN_DATABASE_URL` | PostgreSQL DSN | production 必填；其他环境留空须显式 `YIBAN_ALLOW_NO_DB=1` |
 | `YIBAN_HASH_PEPPER` | 摘要与审计链密钥 | 必填 |
 | `YIBAN_CREDENTIAL_KEY` | 凭据加密钥（32 字节） | 必填 |
 | `YIBAN_HTTP_ADDR` | 监听地址 | `127.0.0.1:47183` |
@@ -350,7 +356,7 @@ sudo systemctl restart yiban.service
 | `YIBAN_TRUSTED_PROXIES` | 可信代理 IP/CIDR，逗号分隔 | 空：不信任转发头（compose 默认 `172.16.0.0/12,127.0.0.1`） |
 | `YIBAN_PHOTO_DIR` | 照片目录 | `data/photos` |
 
-完整名册与每键说明见 `config/registry.json`。
+完整名册与每键说明见 `server/internal/configdata/registry.json`（编译期嵌入二进制）。
 
 ## 7. 排障
 

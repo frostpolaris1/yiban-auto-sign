@@ -3,8 +3,6 @@ package config
 import (
 	"encoding/base64"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -29,13 +27,24 @@ const (
 	longCredentialKey = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWZY"
 )
 
-// baseSource 是只含三个必填项的最小环境。
+// baseSource 是只含三个必填项与「允许无库」的最小开发环境。
+// 无库启动必须显式（YIBAN_ALLOW_NO_DB=1）：生产用例要把它删掉并给 DSN。
 func baseSource() mapSource {
 	return mapSource{
 		"YIBAN_ENV":            "development",
 		"YIBAN_HASH_PEPPER":    validPepper,
 		"YIBAN_CREDENTIAL_KEY": validCredentialKey,
+		"YIBAN_ALLOW_NO_DB":    "1",
 	}
+}
+
+// productionSource 是 production 的最小合法环境：有 DSN，无无库逃生口。
+func productionSource() mapSource {
+	src := baseSource()
+	src["YIBAN_ENV"] = "production"
+	src["YIBAN_DATABASE_URL"] = "postgres://yiban@127.0.0.1:5432/yiban"
+	delete(src, "YIBAN_ALLOW_NO_DB")
+	return src
 }
 
 func TestLoadFromRequiresEnv(t *testing.T) {
@@ -63,8 +72,7 @@ func TestLoadFromDefaults(t *testing.T) {
 }
 
 func TestLoadFromOverrides(t *testing.T) {
-	src := baseSource()
-	src["YIBAN_ENV"] = "production"
+	src := productionSource()
 	src["YIBAN_HTTP_ADDR"] = "127.0.0.1:8080"
 	src["YIBAN_DATABASE_URL"] = "  postgres://x  "
 	src["YIBAN_TZ"] = "UTC"
@@ -105,6 +113,10 @@ func TestInsecureCookiesFollowEnv(t *testing.T) {
 	for _, tc := range cases {
 		src := baseSource()
 		src["YIBAN_ENV"] = tc.env
+		if tc.env == "production" {
+			src["YIBAN_DATABASE_URL"] = "postgres://yiban@127.0.0.1:5432/yiban"
+			delete(src, "YIBAN_ALLOW_NO_DB")
+		}
 		cfg, err := LoadFrom(src)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.env, err)
@@ -127,8 +139,7 @@ func TestInsecureCookiesOverride(t *testing.T) {
 		t.Fatal("override was ignored")
 	}
 
-	prod := baseSource()
-	prod["YIBAN_ENV"] = "production"
+	prod := productionSource()
 	prod["YIBAN_INSECURE_COOKIES"] = "1"
 	if _, err := LoadFrom(prod); err == nil {
 		t.Fatal("production must refuse insecure cookies")
@@ -287,12 +298,8 @@ func TestWorkersCapMatchesCapacity(t *testing.T) {
 // 名册是配置的唯一定义点：域与 getInt 的上下界漂移时，
 // doctor 的 env.unknown_keys/域校验与启动校验会给出两套答案。
 func TestRegistryDomainMatchesCodeBounds(t *testing.T) {
-	body, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "config", "registry.json"))
-	if err != nil {
-		t.Fatalf("read registry: %v", err)
-	}
 	var reg map[string]json.RawMessage
-	if err := json.Unmarshal(body, &reg); err != nil {
+	if err := json.Unmarshal(RegistryJSON(), &reg); err != nil {
 		t.Fatalf("parse registry: %v", err)
 	}
 	raw, ok := reg["YIBAN_TIME_PREF_COOLDOWN_SEC"]
@@ -510,5 +517,71 @@ func TestPublicBaseURLValidation(t *testing.T) {
 		if _, err := LoadFrom(src); err == nil {
 			t.Fatalf("非法基址 %q 必须被拒绝", bad)
 		}
+	}
+}
+
+// TestDatabasePresenceIsExplicit 钉住「有库才跑业务」的启动判据。
+//
+// 四条判据对应四种部署动作：
+//  1. 非生产环境 DSN 为空且没有 YIBAN_ALLOW_NO_DB：启动失败，错误点名两个键。
+//  2. 显式 YIBAN_ALLOW_NO_DB=1：放行，DSN 仍为空。
+//  3. production 缺 DSN：启动失败，错误点名 YIBAN_DATABASE_URL。
+//  4. production 设 YIBAN_ALLOW_NO_DB=1：拒绝，即使 DSN 齐全——生产不留逃生口。
+func TestDatabasePresenceIsExplicit(t *testing.T) {
+	for _, env := range []string{"development", "test", "staging"} {
+		src := baseSource()
+		src["YIBAN_ENV"] = env
+		delete(src, "YIBAN_ALLOW_NO_DB")
+		_, err := LoadFrom(src)
+		if err == nil {
+			t.Fatalf("%s 无 DSN 且未显式允许无库时必须失败", env)
+		}
+		for _, key := range []string{"YIBAN_DATABASE_URL", "YIBAN_ALLOW_NO_DB"} {
+			if !strings.Contains(err.Error(), key) {
+				t.Fatalf("%s 的错误没有点名 %s: %v", env, key, err)
+			}
+		}
+		// 2. 显式逃生口放行。
+		cfg, err := LoadFrom(baseSource())
+		if err != nil {
+			t.Fatalf("%s 显式 YIBAN_ALLOW_NO_DB=1 必须放行: %v", env, err)
+		}
+		if cfg.DatabaseURL != "" {
+			t.Fatalf("%s DatabaseURL = %q, want empty", env, cfg.DatabaseURL)
+		}
+	}
+
+	// 3. production 缺 DSN：错误点名键。
+	prod := baseSource()
+	prod["YIBAN_ENV"] = "production"
+	delete(prod, "YIBAN_ALLOW_NO_DB")
+	_, err := LoadFrom(prod)
+	if err == nil {
+		t.Fatal("production 无 DSN 必须启动失败")
+	}
+	if !strings.Contains(err.Error(), "YIBAN_DATABASE_URL") {
+		t.Fatalf("错误没有点名 YIBAN_DATABASE_URL: %v", err)
+	}
+
+	// 4. production 设逃生口：拒绝，错误点名 YIBAN_ALLOW_NO_DB。
+	for name, src := range map[string]mapSource{
+		"with dsn":    productionSource(),
+		"without dsn": func() mapSource { s := productionSource(); delete(s, "YIBAN_DATABASE_URL"); return s }(),
+	} {
+		src["YIBAN_ALLOW_NO_DB"] = "1"
+		_, err := LoadFrom(src)
+		if err == nil {
+			t.Fatalf("production %s 设 YIBAN_ALLOW_NO_DB=1 必须拒绝", name)
+		}
+		if !strings.Contains(err.Error(), "YIBAN_ALLOW_NO_DB") {
+			t.Fatalf("production %s 的错误没有点名 YIBAN_ALLOW_NO_DB: %v", name, err)
+		}
+	}
+
+	// 非布尔值属于形状错误，先于无库判据报出。
+	bad := baseSource()
+	bad["YIBAN_ALLOW_NO_DB"] = "yes"
+	if _, err := LoadFrom(bad); err == nil {
+		t.Fatal("YIBAN_ALLOW_NO_DB=yes 必须被拒绝")
 	}
 }

@@ -19,7 +19,6 @@ package main
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -95,7 +94,6 @@ type probe struct {
 	// dsn 与 photoDir 是命令行覆盖；空则回退环境。
 	dsn      string
 	photoDir string
-	registry string // 配置名册路径（见 registryCandidates）
 	binPath  string // 自身二进制路径
 
 	// serviceUser 是 systemd 单元里的运行用户（User=）。
@@ -177,29 +175,6 @@ func inContainer() bool {
 		}
 	}
 	return false
-}
-
-// registryCandidates 是名册的缺省查找顺序：安装位优先。
-// install.sh 把 config/registry.json 装到 /etc/yiban/registry.json。
-// 顺序只在 adapters/config 定义一份，服务端装配与体检共用。
-func registryCandidates() []string {
-	return config.RegistryCandidates()
-}
-
-// pickRegistry 解析名册路径：显式值优先，否则取首个存在的候选。
-// 全部缺失时返回末位候选：SKIP 文案点名它，路径不出自空气。
-func pickRegistry(explicit string, exists func(string) bool, candidates ...string) string {
-	if strings.TrimSpace(explicit) != "" {
-		return explicit
-	}
-	last := ""
-	for _, c := range candidates {
-		last = c
-		if exists(c) {
-			return c
-		}
-	}
-	return last
 }
 
 // serviceUserOf 返回服务用户名：探针给定值优先，否则缺省。
@@ -356,9 +331,15 @@ func checkEnvConfig(_ context.Context, p *probe) checkRow {
 	case strings.Contains(msg, "YIBAN_INSECURE_COOKIES"):
 		return checkRow{fail: true, detail: msg,
 			fix: `删除 YIBAN_INSECURE_COOKIES 或设为 false（production 拒绝不安全 cookie）`}
+	case strings.Contains(msg, "YIBAN_ALLOW_NO_DB is not allowed"):
+		return checkRow{fail: true, detail: msg,
+			fix: `删除 YIBAN_ALLOW_NO_DB，并在 /etc/yiban/server.env 写 YIBAN_DATABASE_URL（production 必须连库）`}
+	case strings.Contains(msg, "YIBAN_DATABASE_URL"):
+		return checkRow{fail: true, detail: msg,
+			fix: `在 /etc/yiban/server.env 写 YIBAN_DATABASE_URL=postgres://用户:口令@主机:5432/库?sslmode=disable；开发态可显式设 YIBAN_ALLOW_NO_DB=1`}
 	default:
 		return checkRow{fail: true, detail: msg,
-			fix: `按 config/registry.json 的类型与域修正对应 YIBAN_* 键`}
+			fix: `按嵌入名册（configdata/registry.json）的类型与域修正对应 YIBAN_* 键`}
 	}
 }
 
@@ -367,7 +348,7 @@ func checkPepper(_ context.Context, p *probe) checkRow {
 	raw, ok := lookupStr(p.src, "YIBAN_HASH_PEPPER")
 	if !ok || raw == "" {
 		return checkRow{fail: true, detail: "YIBAN_HASH_PEPPER 未设置",
-			fix: `openssl rand -hex 32 生成后写入 /etc/yiban/.env 的 YIBAN_HASH_PEPPER`}
+			fix: `openssl rand -hex 32 生成后写入 /etc/yiban/server.env 的 YIBAN_HASH_PEPPER`}
 	}
 	if len(raw) < 16 {
 		return checkRow{fail: true, detail: fmt.Sprintf("YIBAN_HASH_PEPPER 只有 %d 字符，至少 16", len(raw)),
@@ -381,7 +362,7 @@ func checkCredentialKey(_ context.Context, p *probe) checkRow {
 	raw, ok := lookupStr(p.src, "YIBAN_CREDENTIAL_KEY")
 	if !ok || raw == "" {
 		return checkRow{fail: true, detail: "YIBAN_CREDENTIAL_KEY 未设置",
-			fix: `openssl rand -base64 32 生成后写入 /etc/yiban/.env 的 YIBAN_CREDENTIAL_KEY`}
+			fix: `openssl rand -base64 32 生成后写入 /etc/yiban/server.env 的 YIBAN_CREDENTIAL_KEY`}
 	}
 	key, err := base64StdDecode(raw)
 	if err != nil {
@@ -400,7 +381,7 @@ func checkTZSet(_ context.Context, p *probe) checkRow {
 	raw, ok := lookupStr(p.src, "YIBAN_TZ")
 	if !ok || raw == "" {
 		return checkRow{fail: true, detail: "YIBAN_TZ 未设置（当前会静默用缺省 " + config.DefaultTimezone + "）",
-			fix: `在 /etc/yiban/.env 写 YIBAN_TZ=<IANA 时区名>，例如 YIBAN_TZ=UTC`}
+			fix: `在 /etc/yiban/server.env 写 YIBAN_TZ=<IANA 时区名>，例如 YIBAN_TZ=UTC`}
 	}
 	return checkRow{detail: "已显式设置 " + raw}
 }
@@ -418,31 +399,32 @@ func checkTZName(_ context.Context, p *probe) checkRow {
 	return checkRow{detail: "时区 " + name + " 可加载"}
 }
 
-// checkUnknownKeys 枚举环境里的 YIBAN_* 键，逐个对名册。
-// 名册缺失显性跳过：扫空不得当绿。
+// checkUnknownKeys 枚举环境里的 YIBAN_* 键，逐个对嵌入名册。
+// 名册随二进制发布，没有“文件缺失”可跳：解析失败是构建缺陷，判 FAIL。
 func checkUnknownKeys(_ context.Context, p *probe) checkRow {
 	es, ok := p.src.(config.EnumeratedSource)
 	if !ok {
 		return checkRow{skip: true, detail: "跳过：环境来源不可枚举（测试替身未实现 Environ）"}
 	}
-	body, err := os.ReadFile(p.registry)
+	entries, err := config.Registry()
 	if err != nil {
-		return checkRow{skip: true, detail: fmt.Sprintf("跳过：名册文件不可读 %s（--registry 指定路径）", p.registry)}
+		return checkRow{fail: true, detail: "嵌入名册不可用（二进制构建缺陷）: " + err.Error(),
+			fix: "重装官方发布件；名册随二进制嵌入，磁盘上没有可修的文件"}
 	}
-	var reg map[string]json.RawMessage
-	if err := json.Unmarshal(body, &reg); err != nil {
-		return checkRow{skip: true, detail: fmt.Sprintf("跳过：名册 JSON 解析失败 %s: %v", p.registry, err)}
+	reg := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		reg[entry.Key] = true
 	}
 	unknown := []string{}
 	for _, key := range config.PrefixedKeys(es, "YIBAN_") {
-		if _, in := reg[key]; !in {
+		if !reg[key] {
 			unknown = append(unknown, key)
 		}
 	}
 	if len(unknown) > 0 {
 		sort.Strings(unknown)
 		return checkRow{fail: true, detail: "未登记键：" + strings.Join(unknown, ", "),
-			fix: "把上述键登记进 config/registry.json，或从环境删除"}
+			fix: "从 /etc/yiban/server.env（容器：deploy/container/compose.env）删除上述键：Go 服务端不读它们"}
 	}
 	return checkRow{detail: "环境里的 YIBAN_* 键全部登记"}
 }
@@ -697,7 +679,7 @@ func auditChainRow(rep coreaudit.Report, err error, rotation bool) checkRow {
 	if errors.Is(err, coreaudit.ErrBrokenChain) {
 		if rotation {
 			return checkRow{fail: true, detail: "审计链断裂，近期轮换过 YIBAN_HASH_PEPPER 是最常见原因",
-				fix: `恢复 /etc/yiban/.env 里原 YIBAN_HASH_PEPPER 后重启；确认未轮换再按 db.audit_chain 处理`}
+				fix: `恢复 /etc/yiban/server.env 里原 YIBAN_HASH_PEPPER 后重启；确认未轮换再按 db.audit_chain 处理`}
 		}
 		return checkRow{fail: true, detail: fmt.Sprintf("审计链在校验区间 [%d,%d] 断裂", rep.FirstID, rep.LastID),
 			fix: `保留现场并排查：先看 db.pepper_rotation；确认无轮换后按安全事件处理（链被改写）`}
@@ -916,20 +898,16 @@ func base64StdDecode(s string) ([]byte, error) {
 }
 
 // newProbe 装配生产探针：真环境、真网络、真 statfs。
-func newProbe(dsn, photoDir, registry, binPath, serviceUser string) *probe {
+func newProbe(dsn, photoDir, binPath, serviceUser string) *probe {
 	if binPath == "" {
 		if self, err := os.Executable(); err == nil {
 			binPath = self
 		}
 	}
-	if registry == "" {
-		registry = pickRegistry("", fileExists, registryCandidates()...)
-	}
 	return &probe{
 		src:           config.Env{},
 		dsn:           dsn,
 		photoDir:      photoDir,
-		registry:      registry,
 		binPath:       binPath,
 		serviceUser:   serviceUser,
 		containerized: inContainer(),
@@ -956,7 +934,7 @@ func newProbe(dsn, photoDir, registry, binPath, serviceUser string) *probe {
 	}
 }
 
-// fileExists 是 pickRegistry 的存在判定。
+// fileExists 报告路径是否存在。
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
@@ -967,7 +945,6 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("doctor", stderr)
 	dsn := fs.String("dsn", "", "覆盖 YIBAN_DATABASE_URL")
 	photoDir := fs.String("photo-dir", "", "覆盖 YIBAN_PHOTO_DIR")
-	registry := fs.String("registry", "", "配置名册路径（缺省依次试 /etc/yiban/registry.json 与 config/registry.json）")
 	binPath := fs.String("bin", "", "被检二进制路径（缺省为自身）")
 	serviceUser := fs.String("service-user", defaultServiceUserResolved(),
 		"systemd 单元的运行用户（User=）；无单元时取当前用户")
@@ -975,7 +952,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	p := newProbe(*dsn, *photoDir, *registry, *binPath, *serviceUser)
+	p := newProbe(*dsn, *photoDir, *binPath, *serviceUser)
 	rep := runChecks(context.Background(), p)
 	_, _ = fmt.Fprint(stdout, rep.text())
 	if rep.failed > 0 {

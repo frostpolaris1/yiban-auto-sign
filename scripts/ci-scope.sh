@@ -8,9 +8,9 @@
 # 口径：
 # - 旧线代码面＝yiban/ web/ tests/ frontend/ docker/ deploy/ scripts/
 #   run.sh run_probe.sh docker-compose.yml requirements*.txt requirements.lock。
-# - 共享配置面＝config/registry.json。它同时被两条线读（旧线：设置页与名册相关测试；
-#   新栈：`update_env`、`doctor`、安装脚本都按它校验 YIBAN_* 键）。Go 批次加配置键
-#   必须登记它，故它单列一类。
+# - 共享配置面＝config/registry.json。2026-11-05 起它只服务旧线：Go 名册改为
+#   编译期嵌入 server/internal/configdata/registry.json。仍单列一类，使旧线
+#   名册相关测试在它变动时点名跑，不必重跑整套旧线 pytest。
 # - 其余（server/ ui/ docs/ 等）＝新栈面或文档面。
 # - 旧线代码＋新栈都动＝mixed（两套都跑）。
 # - 只动共享配置＝shared：跑读该文件的旧线测试，不跑旧线整套。

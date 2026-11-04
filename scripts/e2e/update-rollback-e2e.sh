@@ -640,11 +640,11 @@ run_mode() {
 
     UPDATE_SH="$SRC/deploy/linux/update.sh"
     INSTALL_SH="$SRC/deploy/linux/install.sh"
-    REGISTRY="$SRC/config/registry.json"
+    ENV_EXAMPLE="$SRC/deploy/baremetal/server.env.example"
     SERVER_DEST="/usr/local/bin/yiban-server"
     CLI_DEST="/usr/local/bin/yiban-cli"
     UNIT="yiban.service"
-    ENV_FILE="/etc/yiban/.env"
+    ENV_FILE="/etc/yiban/server.env"
     UPDATER_ROOT="/var/lib/yiban-updater"
     STATE_DIR="$UPDATER_ROOT/state"
     STATE_FILE="$STATE_DIR/update-state.json"
@@ -656,7 +656,7 @@ run_mode() {
     sha() { sha256sum "$1" | cut -d' ' -f1; }
     # psql_admin <SQL>：超级用户对**原库**执行单条 SQL。
     psql_admin() { psql "$ADMIN_DSN" -v ON_ERROR_STOP=1 -tAc "$1"; }
-    # current_app_dsn：当前生效的 DSN（数据库回滚会改 /etc/yiban/.env）。
+    # current_app_dsn：当前生效的 DSN（数据库回滚会改 /etc/yiban/server.env）。
     current_app_dsn() {
         { grep -E '^YIBAN_DATABASE_URL=' "$ENV_FILE" || true; } | head -n 1 | cut -d= -f2-
     }
@@ -726,7 +726,7 @@ run_mode() {
     # ---- R1 基线安装与自检门自证 --------------------------------------------
     e2e_step "R1" "基线安装与自检门自证"
     [ -f /etc/yiban-e2e-container ] || e2e_die "容器标记丢失（守卫被判据钉住，此处为纵深）"
-    for f in "$UPDATE_SH" "$INSTALL_SH" "$REGISTRY"; do
+    for f in "$UPDATE_SH" "$INSTALL_SH" "$ENV_EXAMPLE"; do
         [ -f "$f" ] || e2e_die "物料缺失：$f"
     done
     for b in yiban-server-v1 yiban-cli-v1 yiban-server-v2 yiban-cli-v2 \
@@ -749,7 +749,7 @@ run_mode() {
     fi
     grep -q 'install complete: healthz ok' "$E2E_LOG_DIR/R1-install.log" \
         || e2e_die "install.sh 未报告 install complete: healthz ok"
-    HEALTH_ADDR="$(grep -E '^YIBAN_HTTP_ADDR=' /etc/yiban/.env | head -n 1 | cut -d= -f2- || true)"
+    HEALTH_ADDR="$(grep -E '^YIBAN_HTTP_ADDR=' /etc/yiban/server.env | head -n 1 | cut -d= -f2- || true)"
     HEALTH_ADDR="${HEALTH_ADDR:-127.0.0.1:47183}"
     SHA_V1="$(sha "$DIST/yiban-server-v1")"
     SHA_V2="$(sha "$DIST/yiban-server-v2")"
@@ -782,12 +782,12 @@ run_mode() {
     # 再加一遍**不带 --backup-dir** 的明文自检：判的是 U1 的默认值
     # （updatecheck.DefaultBackupDir）。默认值若被改回 root 专属目录，
     # 这里会看到 [FAIL] fs.backup_dir —— 正是要挡的误红。
-    # 直接调 CLI 要自己载入 .env（update.sh 才替它做这件事）。
+    # 直接调 CLI 要自己载入 server.env（update.sh 才替它做这件事）。
     SELFCHECK_TEXT_RC=0
     (
         set -a
         # shellcheck disable=SC1091
-        . /etc/yiban/.env
+        . /etc/yiban/server.env
         set +a
         exec "$CLI_DEST" selfcheck
     ) >"$E2E_LOG_DIR/R1-selfcheck-legacy-text.log" 2>&1 || SELFCHECK_TEXT_RC=$?

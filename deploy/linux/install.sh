@@ -19,8 +19,9 @@
 #                                    同时跳过服务用户与 chown（无特权）。
 #   SYSTEMCTL=/path/fake-systemctl   覆盖 systemctl 调用（记录用）。
 #
-# 步骤：依赖检查 → 服务用户 → 二进制落位 → /etc/yiban/.env
+# 步骤：依赖检查 → 服务用户 → 二进制落位 → /etc/yiban/server.env
 #       （缺则生成随机 pepper/credential key 并打印一次）
+#       → /etc/yiban/server.env.example（0644，无密钥的运行模板）
 #       → 前端产物落位（给了 --ui-dir 时）
 #       → systemd 单元 → enable --now → /healthz 重试探测。
 #
@@ -35,21 +36,19 @@ UNIT="yiban.service"
 SERVICE_USER="yiban"
 SERVICE_HOME="/var/lib/yiban"
 
-# 仓库根由脚本自身位置推出：名册缺省取 <repo>/config/registry.json。
+# 仓库根由脚本自身位置推出：运行配置模板取 <repo>/deploy/baremetal/server.env.example。
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 SERVER_BIN=""
 CLI_BIN=""
 DSN_FLAG=""
-REGISTRY=""
 UI_DIR=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --server-bin) SERVER_BIN="${2:?}"; shift 2 ;;
         --cli-bin) CLI_BIN="${2:?}"; shift 2 ;;
         --database-url) DSN_FLAG="${2:?}"; shift 2 ;;
-        --registry) REGISTRY="${2:?}"; shift 2 ;;
         --ui-dir) UI_DIR="${2:?}"; shift 2 ;;
         *) echo "install: unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -59,8 +58,8 @@ done
 [ -n "$CLI_BIN" ] || { echo "install: --cli-bin is required" >&2; exit 2; }
 [ -x "$SERVER_BIN" ] || { echo "install: server binary missing or not executable: $SERVER_BIN" >&2; exit 2; }
 [ -x "$CLI_BIN" ] || { echo "install: cli binary missing or not executable: $CLI_BIN" >&2; exit 2; }
-REGISTRY="${REGISTRY:-$REPO_ROOT/config/registry.json}"
-[ -f "$REGISTRY" ] || { echo "install: config registry missing: $REGISTRY" >&2; exit 2; }
+ENV_EXAMPLE="${ENV_EXAMPLE:-$REPO_ROOT/deploy/baremetal/server.env.example}"
+[ -f "$ENV_EXAMPLE" ] || { echo "install: server.env template missing: $ENV_EXAMPLE" >&2; exit 2; }
 DATABASE_URL="${DSN_FLAG:-${YIBAN_DATABASE_URL:-}}"
 [ -n "$DATABASE_URL" ] || { echo "install: --database-url or YIBAN_DATABASE_URL is required" >&2; exit 2; }
 command -v openssl >/dev/null 2>&1 || { echo "install: openssl is required" >&2; exit 2; }
@@ -104,9 +103,15 @@ mkdir -p "$(dest /usr/local/bin)" "$(dest /etc/yiban)" "$(dest /etc/systemd/syst
 install -m 0755 "$SERVER_BIN" "$(dest /usr/local/bin/yiban-server)"
 install -m 0755 "$CLI_BIN" "$(dest /usr/local/bin/yiban-cli)"
 
-# 3) /etc/yiban/.env：缺则生成。0600 root:root —— systemd 以 root 读它，
+# 3) /etc/yiban/server.env：缺则生成。0600 root:root —— systemd 以 root 读它，
 #    服务进程经 EnvironmentFile 拿到值，yiban 用户无需可读。
-ENV_FILE="$(dest /etc/yiban/.env)"
+#    同时落一份无密钥模板 server.env.example（0644）：运维照键面补配置，
+#    不必猜键名。模板不含任何真实值。
+install -m 0644 "$ENV_EXAMPLE" "$(dest /etc/yiban/server.env.example)"
+if [ -z "$ROOT" ]; then
+    chown root:root "$(dest /etc/yiban/server.env.example)"
+fi
+ENV_FILE="$(dest /etc/yiban/server.env)"
 GENERATED=0
 if [ ! -f "$ENV_FILE" ]; then
     GENERATED=1
@@ -125,7 +130,7 @@ else
     echo "install: $ENV_FILE exists; keeping it (secrets are never regenerated in place)"
 fi
 
-# 已有 .env 也必须收紧：密钥只给 root 读。
+# 已有 server.env 也必须收紧：密钥只给 root 读。
 # 干跑（有前缀）时跳过 chown：非特权用户改不了属主。
 chmod 600 "$ENV_FILE"
 if [ -z "$ROOT" ]; then
@@ -134,15 +139,8 @@ else
     echo "install: dry-run: skip chown root:root on $ENV_FILE"
 fi
 
-# 配置名册随二进制一起落位：doctor 的未登记键体检要有名册，
-# 否则该检查在生产永远 SKIP。名册不含密钥，0644 可读。
-install -m 0644 "$REGISTRY" "$(dest /etc/yiban/registry.json)"
-if [ -z "$ROOT" ]; then
-    chown root:root "$(dest /etc/yiban/registry.json)"
-fi
-
 # 3b) 前端产物落位（给了 --ui-dir 时）。
-# 目标是运行期真实路径；干跑只把文件放到前缀下，.env 写的仍是真实路径，
+# 目标是运行期真实路径；干跑只把文件放到前缀下，server.env 写的仍是真实路径，
 # 与 systemd 单元同一口径。
 # 落位方式：在 root 独占的更新器根里造好完整目录，再 mv -T 原子替换目标。
 # 不能就地 cp -R/chmod：$SERVICE_HOME/ui 可能是服务用户预置的软链，root 会
@@ -216,8 +214,8 @@ if [ -n "$UI_DIR" ]; then
         fi
         exit 1
     fi
-    # 幂等写键：删旧行再追加，不重排 .env 的其余行。
-    # .env 刚创建或已收紧权限，读不到即中止：不能把它截断成只剩一行。
+    # 幂等写键：删旧行再追加，不重排 server.env 的其余行。
+    # server.env 刚创建或已收紧权限，读不到即中止：不能把它截断成只剩一行。
     # umask 077 让临时文件从创建那一刻就是 0600：密钥没有可读窗口。
     [ -r "$ENV_FILE" ] || { echo "install: cannot read $ENV_FILE" >&2; exit 1; }
     TMP_ENV="$ENV_FILE.tmp.$$"
@@ -256,7 +254,7 @@ Wants=network-online.target
 Type=simple
 User=$SERVICE_USER
 Group=$SERVICE_USER
-EnvironmentFile=/etc/yiban/.env
+EnvironmentFile=/etc/yiban/server.env
 ExecStart=/usr/local/bin/yiban-server
 Restart=on-failure
 RestartSec=5
@@ -272,8 +270,8 @@ EOF
 "$SYSTEMCTL" enable --now "$UNIT"
 
 # 6) /healthz 重试探测。间隔与次数可用环境变量缩放（e2e 用小值）。
-ENV_BODY="$(dest /etc/yiban/.env)"
-# 键缺失不是错误：手写的 .env 可能没有该行，按缺省地址探活。
+ENV_BODY="$(dest /etc/yiban/server.env)"
+# 键缺失不是错误：手写的 server.env 可能没有该行，按缺省地址探活。
 ADDR="$(grep -E '^YIBAN_HTTP_ADDR=' "$ENV_BODY" | head -n 1 | cut -d= -f2- || true)"
 ADDR="${ADDR:-127.0.0.1:47183}"
 RETRIES="${YIBAN_HEALTH_RETRIES:-10}"
@@ -283,10 +281,10 @@ while [ "$i" -le "$RETRIES" ]; do
     if "$(dest /usr/local/bin/yiban-cli)" healthcheck --addr "$ADDR" --timeout 2s; then
         echo "install complete: healthz ok at $ADDR (attempt $i/$RETRIES)"
         # 干净库还没有可登录账号：建第一个 master 是部署的最后一步。
-        # .env 是 0600 root-only，新 shell 里 YIBAN_* 未设置：
+        # server.env 是 0600 root-only，新 shell 里 YIBAN_* 未设置：
         # 先载入环境，再用管道喂口令（口令不进 argv）。
         echo "next: create the first master:"
-        echo "  set -a; . /etc/yiban/.env; set +a"
+        echo "  set -a; . /etc/yiban/server.env; set +a"
         echo '  printf "%s\n" "$PASS" | yiban-cli user create-master --email <addr> --password-stdin'
         exit 0
     fi

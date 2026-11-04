@@ -253,3 +253,9 @@ _ocr_review_*
 
 # 本机构建的 Windows 二进制（`go build ./cmd/cli` 会就地落盘 cli.exe）
 *.exe
+
+# Go 服务端运行配置（含密钥/DSN 口令，只按模板现场生成，绝不入库）。
+# 裸机运行位在 /etc/yiban/server.env；仓库里只允许 *.example。
+deploy/container/compose.env
+deploy/baremetal/server.env
+server/.env

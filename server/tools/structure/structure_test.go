@@ -242,7 +242,8 @@ func TestStructureRowsPinned(t *testing.T) {
 	// server/internal/core 增 fsperm（doctor 与 selfcheck 共用的 POSIX 判权）。
 	// parity-be-a2：core 增 notify；app 增 notify/settings；
 	// entry/http 增 settings/audit（2ws A 的四个端点）。
-	const want = "769f072b5ba3b2f1fa9026026a4fe45cb12f57b122b4be6ba374b06b70e3c380"
+	// arch-p0-config：server/internal 增 configdata（go:embed 的配置名册）。
+	const want = "d304fe0bded2eb840884a04807dd970a2c89197397eb9f81919ba22a89f28415"
 	if got != want {
 		t.Fatalf("structure 内容变了（hash %s）；确认改动后更新 TestStructureRowsPinned 的哈希", got)
 	}

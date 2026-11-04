@@ -18,7 +18,7 @@
 #   8. 起服务 → /healthz 重试探活
 #   9. 成功：selfcheck --record-keys（失败只 WARN，不回滚）、写状态、保留备份
 #   10. 失败：停服 → 换回 .bak 二进制与 UI → 迁移后若库已改变且备份已验证，
-#       默认恢复到新库 yiban_restore_<ts> 并原子切 /etc/yiban/.env 的
+#       默认恢复到新库 yiban_restore_<ts> 并原子切 /etc/yiban/server.env 的
 #       YIBAN_DATABASE_URL（原库原样保留取证）→ 起旧件 → 探活。
 #       --no-restore-db 显式关闭数据库恢复（只回二进制/UI）。
 #
@@ -73,7 +73,7 @@
 #     db.sql.gpg          可选：yiban-cli backup 的 GPG 对称加密归档（含
 #                         行数 manifest）——需要口令文件或 YIBAN_BACKUP_PASSPHRASE
 #     db-schema.txt       迁移前库名、goose 版本与 public 基表数（恢复后对账基线）
-#     env.backup          /etc/yiban/.env 快照（0600；内含密钥与 DSN 原文）
+#     env.backup          /etc/yiban/server.env 快照（0600；内含密钥与 DSN 原文）
 #     photos.tar          照片目录快照（不跟随内部软链；照片不进数据库备份）
 #     bin/                当前已装的 server/cli（含仍在的旧 .bak 归档）
 #     SHA256SUMS          以上文件的 sha256（0600，写入后立即 -c 校验）
@@ -95,7 +95,7 @@
 #   - 动作：CREATE DATABASE yiban_restore_<UTC时间戳>（要求连接角色有
 #     CREATEDB）→ pg_restore 到新库 → 校验新 DSN 的 current_database() 与
 #     新库同名（绝不把备份写回原库）→ 校验 goose 版本与基表数和备份基线
-#     一致 → 原子改写 /etc/yiban/.env 的 YIBAN_DATABASE_URL → 起旧二进制。
+#     一致 → 原子改写 /etc/yiban/server.env 的 YIBAN_DATABASE_URL → 起旧二进制。
 #   - 原库原样保留（迁移过的失败库）供取证；不删、不 --clean、不原地覆盖。
 #   - 已知代价：健康探测窗口内新二进制写入的行不会保留（恢复到备份时刻）；
 #     旧库仍在，供人工对账。
@@ -148,7 +148,7 @@ ROOT="${YIBAN_INSTALL_ROOT:-}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 UNIT="yiban.service"
 
-# 仓库根由脚本自身位置推出：名册缺省取 <repo>/config/registry.json。
+# 仓库根由脚本自身位置推出：运行配置模板取 <repo>/deploy/baremetal/server.env.example。
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
@@ -158,7 +158,6 @@ dest() { printf '%s%s' "$ROOT" "$1"; }
 SERVER_BIN=""
 CLI_BIN=""
 UI_DIR=""
-REGISTRY=""
 MANIFEST=""
 SIGNATURE=""
 PUBKEY=""
@@ -182,7 +181,6 @@ while [ $# -gt 0 ]; do
         --server-bin) need_value "$@"; SERVER_BIN="$2"; shift 2 ;;
         --cli-bin) need_value "$@"; CLI_BIN="$2"; shift 2 ;;
         --ui-dir) need_value "$@"; UI_DIR="$2"; shift 2 ;;
-        --registry) need_value "$@"; REGISTRY="$2"; shift 2 ;;
         --manifest) need_value "$@"; MANIFEST="$2"; shift 2 ;;
         --signature) need_value "$@"; SIGNATURE="$2"; shift 2 ;;
         --pubkey) need_value "$@"; PUBKEY="$2"; shift 2 ;;
@@ -215,7 +213,7 @@ UI_DEST="$(dest "$SERVICE_HOME/ui")"
 # root 的 cp/chmod 会顺链写到 /root 或旧备份并改坏其权限（复审 HIGH）。
 UI_STAGE=""
 UI_BAK="$UI_DEST.bak"
-ENV_FILE="$(dest /etc/yiban/.env)"
+ENV_FILE="$(dest /etc/yiban/server.env)"
 
 # 更新器的状态与备份根：/var/lib/yiban-updater/{state,backups}。
 # 为什么不放在 $SERVICE_HOME 里：那里归服务用户（install.sh 把 home 与
@@ -343,7 +341,7 @@ DB_RESTORE_FAILED=0
 # STATE_READY=1 表示状态/备份目录已通过 prepare_state_dir 的安全校验
 # （非软链、属主 root、组/其他不可写）。日志写入以它为闸门。
 STATE_READY=0
-# DSN_FULL 是含口令的原文：只用于写回 /etc/yiban/.env 与进程环境。
+# DSN_FULL 是含口令的原文：只用于写回 /etc/yiban/server.env 与进程环境。
 # DSN 是去掉口令的 argv 安全形态；口令经 0600 PGPASSFILE 交给 libpq。
 DSN_FULL=""
 DSN=""
@@ -473,13 +471,13 @@ print_manual_action() {
     echo "update:       sudo install -m 0640 -o postgres -g postgres ${BACKUP_SET:-<备份目录>}/db.dump /tmp/yiban-restore.dump" >&2
     echo "update:       sudo -u postgres pg_restore --no-owner --no-privileges -d ${target} /tmp/yiban-restore.dump" >&2
     echo "update:       sudo rm -f /tmp/yiban-restore.dump" >&2
-    echo "update:       然后把 /etc/yiban/.env 的 YIBAN_DATABASE_URL 改到 ${target}，systemctl start $UNIT" >&2
+    echo "update:       然后把 /etc/yiban/server.env 的 YIBAN_DATABASE_URL 改到 ${target}，systemctl start $UNIT" >&2
     echo "update:    b. 若已确认旧二进制与新 schema 兼容：sudo systemctl start $UNIT" >&2
     echo "update: 4) 原库未删除，保留供取证；确认无误后再人工处置" >&2
     log_event "manual action required: $reason"
 }
 
-# readonly_env 载入 /etc/yiban/.env 的 KEY=VALUE（systemd 同源）。
+# readonly_env 载入 /etc/yiban/server.env 的 KEY=VALUE（systemd 同源）。
 # **不** source：DSN 含 `&` 或 `#` 时 shell 会切开赋值，变量落进子 shell
 # 不外泄，迁移收到空 DSN。本函数只做四件事：跳过空行与 `#` 注释、
 # 取第一个 `=` 分割键值、去掉值两端的成对单/双引号、只导出合法键名。
@@ -1546,8 +1544,8 @@ if [ -n "$UI_DIR" ]; then
     [ -f "$UI_DIR/index.html" ] \
         || { echo "update: --ui-dir has no index.html: $UI_DIR" >&2; exit 2; }
 fi
-REGISTRY="${REGISTRY:-$REPO_ROOT/config/registry.json}"
-[ -f "$REGISTRY" ] || { echo "update: config registry missing: $REGISTRY" >&2; exit 2; }
+ENV_EXAMPLE="${ENV_EXAMPLE:-$REPO_ROOT/deploy/baremetal/server.env.example}"
+[ -f "$ENV_EXAMPLE" ] || { echo "update: server.env template missing: $ENV_EXAMPLE" >&2; exit 2; }
 
 [ -x "$SERVER_DEST" ] || { echo "update: no installed server at $SERVER_DEST; run install.sh first" >&2; exit 2; }
 
@@ -1825,17 +1823,17 @@ if [ -n "$SNAP_CLI" ]; then
 fi
 install -m 0755 "$SNAP_SERVER" "$SERVER_NEW"
 
-# 名册随二进制一起升级：新版本可能新增配置键，
-# 只换二进制不换名册会让 doctor 的未登记键体检过时。
+# 运行模板随二进制一起升级：新版本可能新增配置键，
+# 只换二进制不换模板会让运维看不到新键（server.env 本身不动：密钥不重写）。
 # 落在停服务之前：失败时服务仍在跑旧件。
 mkdir -p "$(dest /etc/yiban)"
-install -m 0644 "$REGISTRY" "$(dest /etc/yiban/registry.json)"
+install -m 0644 "$ENV_EXAMPLE" "$(dest /etc/yiban/server.env.example)"
 if [ -z "$ROOT" ]; then
-    chown root:root "$(dest /etc/yiban/registry.json)"
+    chown root:root "$(dest /etc/yiban/server.env.example)"
 fi
 
 # 前端产物暂存：停服务之前复制。
-# 换名与 .env 都留到二进制就位之后：新 UI 与指针不得先于新二进制生效。
+# 换名与 server.env 都留到二进制就位之后：新 UI 与指针不得先于新二进制生效。
 # 暂存失败时服务仍在跑旧件，旧 UI 原样。
 if [ -n "$UI_DIR" ]; then
     [ -r "$ENV_FILE" ] || { echo "update: cannot read $ENV_FILE; ui unchanged" >&2; exit 1; }

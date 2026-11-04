@@ -68,7 +68,7 @@ func skip(name, reason string) Check {
 func checkConfigDSN(opts Options) Check {
 	if opts.DSN == "" {
 		return fail(nameConfigDSN, "YIBAN_DATABASE_URL 未设置（也可用 --dsn 传入）",
-			`在 /etc/yiban/.env 设置 YIBAN_DATABASE_URL=postgres://用户:口令@主机:5432/库?sslmode=disable`)
+			`在 /etc/yiban/server.env 设置 YIBAN_DATABASE_URL=postgres://用户:口令@主机:5432/库?sslmode=disable`)
 	}
 	target, err := dsnTarget(opts.DSN)
 	if err != nil {

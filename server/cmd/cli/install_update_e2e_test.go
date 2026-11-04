@@ -218,32 +218,43 @@ exit 0
 	for _, p := range []string{
 		filepath.Join(root, "usr/local/bin/yiban-server"),
 		filepath.Join(root, "usr/local/bin/yiban-cli"),
-		filepath.Join(root, "etc/yiban/.env"),
-		filepath.Join(root, "etc/yiban/registry.json"),
+		filepath.Join(root, "etc/yiban/server.env"),
+		filepath.Join(root, "etc/yiban/server.env.example"),
 		filepath.Join(root, "etc/systemd/system/yiban.service"),
 	} {
 		if _, err := os.Stat(p); err != nil {
 			t.Fatalf("install tree missing %s: %v\nout=%s", p, err, out)
 		}
 	}
-	// 名册必须与仓库内那的一份逐字节一致：doctor 的未登记键体检靠它。
-	wantReg, err := os.ReadFile(filepath.Join("..", "..", "..", "config", "registry.json"))
+	// 安装位不得再有运行名册：名册随二进制嵌入。
+	if _, err := os.Stat(filepath.Join(root, "etc/yiban/registry.json")); err == nil {
+		t.Fatal("install.sh 不得再安装 /etc/yiban/registry.json（名册已随二进制嵌入）")
+	}
+	// 运行模板必须与仓库内那份逐字节一致：运维照它补键。
+	wantExample, err := os.ReadFile(filepath.Join("..", "..", "..", "deploy", "baremetal", "server.env.example"))
 	if err != nil {
-		t.Fatalf("read repo registry: %v", err)
+		t.Fatalf("read server.env template: %v", err)
 	}
-	if got := []byte(readAll(t, filepath.Join(root, "etc/yiban/registry.json"))); !bytes.Equal(got, wantReg) {
-		t.Fatalf("安装的名册与 config/registry.json 不一致（%d vs %d 字节）", len(got), len(wantReg))
+	if got := []byte(readAll(t, filepath.Join(root, "etc/yiban/server.env.example"))); !bytes.Equal(got, wantExample) {
+		t.Fatalf("安装的 server.env.example 与 deploy/baremetal/server.env.example 不一致（%d vs %d 字节）", len(got), len(wantExample))
 	}
-	envBody := readAll(t, filepath.Join(root, "etc/yiban/.env"))
+	// 模板不含密钥：秘密键必须是空值。
+	exampleBody := readAll(t, filepath.Join(root, "etc/yiban/server.env.example"))
+	for _, key := range []string{"YIBAN_HASH_PEPPER=", "YIBAN_CREDENTIAL_KEY=", "YIBAN_MAIL_PASS="} {
+		if !strings.Contains(exampleBody, key+"\n") {
+			t.Fatalf("server.env.example 的 %s 必须留空:\n%s", key, exampleBody)
+		}
+	}
+	envBody := readAll(t, filepath.Join(root, "etc/yiban/server.env"))
 	for _, key := range []string{"YIBAN_ENV=", "YIBAN_HASH_PEPPER=", "YIBAN_CREDENTIAL_KEY=", "YIBAN_DATABASE_URL="} {
 		if !strings.Contains(envBody, key) {
-			t.Fatalf(".env missing %s:\n%s", key, envBody)
+			t.Fatalf("server.env missing %s:\n%s", key, envBody)
 		}
 	}
 	unit := readAll(t, filepath.Join(root, "etc/systemd/system/yiban.service"))
 	if !strings.Contains(unit, "ExecStart=/usr/local/bin/yiban-server") ||
 		!strings.Contains(unit, "User=yiban") ||
-		!strings.Contains(unit, "EnvironmentFile=/etc/yiban/.env") {
+		!strings.Contains(unit, "EnvironmentFile=/etc/yiban/server.env") {
 		t.Fatalf("unit file shape wrong:\n%s", unit)
 	}
 	log := readAll(t, sysctlLog)
@@ -264,8 +275,8 @@ exit 0
 	}
 	// 提示必须给出环境载入方式：.env 是 0600 root-only，
 	// 新开的 shell 里 YIBAN_* 未设置，直接跑 create-master 会报缺 DSN。
-	if !strings.Contains(out, "set -a; . /etc/yiban/.env; set +a") {
-		t.Fatalf("install must print how to load /etc/yiban/.env before create-master; out=%s", out)
+	if !strings.Contains(out, "set -a; . /etc/yiban/server.env; set +a") {
+		t.Fatalf("install must print how to load /etc/yiban/server.env before create-master; out=%s", out)
 	}
 	// 口令只走管道：推荐用法不得把口令、DSN、pepper 写进 argv。
 	if !strings.Contains(out, "--password-stdin") {
@@ -282,8 +293,8 @@ exit 0
 	}
 }
 
-// TestInstallShSecuresExistingEnv 钉住已有 .env 的权限。
-// 预置 0644 的 .env：安装后必须是 0600，否则同机其他用户可读密钥。
+// TestInstallShSecuresExistingEnv 钉住已有 server.env 的权限。
+// 预置 0644 的 server.env：安装后必须是 0600，否则同机其他用户可读密钥。
 func TestInstallShSecuresExistingEnv(t *testing.T) {
 	requireBash(t)
 	root := t.TempDir()
@@ -295,13 +306,13 @@ func TestInstallShSecuresExistingEnv(t *testing.T) {
 	if err := os.MkdirAll(envDir, 0o755); err != nil {
 		t.Fatalf("mkdir env dir: %v", err)
 	}
-	envPath := filepath.Join(envDir, ".env")
+	envPath := filepath.Join(envDir, "server.env")
 	if err := os.WriteFile(envPath, []byte("YIBAN_ENV=production\n"), 0o644); err != nil {
-		t.Fatalf("write .env: %v", err)
+		t.Fatalf("write server.env: %v", err)
 	}
 	// 确保预置位确实是 0644：umask 可能压掉组/其他位。
 	if err := os.Chmod(envPath, 0o644); err != nil {
-		t.Fatalf("chmod .env: %v", err)
+		t.Fatalf("chmod server.env: %v", err)
 	}
 
 	env := map[string]string{
@@ -317,7 +328,7 @@ func TestInstallShSecuresExistingEnv(t *testing.T) {
 	}
 	info, err := os.Stat(envPath)
 	if err != nil {
-		t.Fatalf("stat .env: %v", err)
+		t.Fatalf("stat server.env: %v", err)
 	}
 	if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Fatalf(".env 权限 = %04o，want 0600（已有文件也必须收紧）", perm)
@@ -364,7 +375,7 @@ func TestUpdateShRollsBackOnFailedMigration(t *testing.T) {
 	if err := os.WriteFile(installed, []byte("#!/bin/sh\n"+oldBody), 0o755); err != nil {
 		t.Fatalf("seed installed: %v", err)
 	}
-	// 已装页面与 .env：失败路径必须保持旧页面。
+	// 已装页面与 server.env：失败路径必须保持旧页面。
 	oldUIDir := filepath.Join(root, "var/lib/yiban/ui")
 	if err := os.MkdirAll(oldUIDir, 0o755); err != nil {
 		t.Fatalf("mkdir old ui: %v", err)
@@ -375,7 +386,7 @@ func TestUpdateShRollsBackOnFailedMigration(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "etc/yiban"), 0o755); err != nil {
 		t.Fatalf("mkdir etc: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "etc/yiban/.env"),
+	if err := os.WriteFile(filepath.Join(root, "etc/yiban/server.env"),
 		[]byte("YIBAN_UI_DIR=/var/lib/yiban/ui\n"), 0o600); err != nil {
 		t.Fatalf("write env: %v", err)
 	}
@@ -1153,9 +1164,9 @@ func TestUpdateShRejectsWritableAnchorFile(t *testing.T) {
 
 // ---- 前端产物落位 ------------------------------------------------
 //
-// 被测性质：install.sh 把 --ui-dir 落到 /var/lib/yiban/ui 并写 .env 的
+// 被测性质：install.sh 把 --ui-dir 落到 /var/lib/yiban/ui 并写 server.env 的
 // YIBAN_UI_DIR；缺 index.html 时在动任何文件之前退出 2。
-// update.sh 用 --ui-dir 换目录、留 .bak，并保持 .env 单行。
+// update.sh 用 --ui-dir 换目录、留 .bak，并保持 server.env 单行。
 
 // writeUIDistDir 造一个最小前端产物目录，marker 写在 index.html 里。
 func writeUIDistDir(t *testing.T, marker string) string {
@@ -1202,7 +1213,7 @@ func TestInstallShInstallsUIDir(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "var/lib/yiban/ui/assets/app-1.js")); err != nil {
 		t.Fatalf("installed ui asset missing: %v", err)
 	}
-	envBody := readAll(t, filepath.Join(root, "etc/yiban/.env"))
+	envBody := readAll(t, filepath.Join(root, "etc/yiban/server.env"))
 	if !strings.Contains(envBody, "YIBAN_UI_DIR=/var/lib/yiban/ui") {
 		t.Fatalf(".env missing YIBAN_UI_DIR:\n%s", envBody)
 	}
@@ -1250,7 +1261,7 @@ func TestUpdateShReplacesUIDir(t *testing.T) {
 	// 已装 CLI 必须支持 selfcheck（停服前的自检门）。
 	installFakeUpdateCLI(t, root)
 	fakePgTools(t, binDir)
-	// 旧 UI 与已存在的 .env。
+	// 旧 UI 与已存在的 server.env。
 	oldUI := filepath.Join(root, "var/lib/yiban/ui")
 	if err := os.MkdirAll(oldUI, 0o755); err != nil {
 		t.Fatalf("mkdir old ui: %v", err)
@@ -1261,7 +1272,7 @@ func TestUpdateShReplacesUIDir(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "etc/yiban"), 0o755); err != nil {
 		t.Fatalf("mkdir etc: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "etc/yiban/.env"),
+	if err := os.WriteFile(filepath.Join(root, "etc/yiban/server.env"),
 		[]byte("YIBAN_UI_DIR=/var/lib/yiban/ui\nYIBAN_HTTP_ADDR=127.0.0.1:47183\n"), 0o600); err != nil {
 		t.Fatalf("write env: %v", err)
 	}
@@ -1289,7 +1300,7 @@ func TestUpdateShReplacesUIDir(t *testing.T) {
 	if body := readAll(t, filepath.Join(root, "var/lib/yiban/ui.bak/index.html")); !strings.Contains(body, "old-ui") {
 		t.Fatalf("previous ui must be kept at ui.bak:\n%s", body)
 	}
-	envBody := readAll(t, filepath.Join(root, "etc/yiban/.env"))
+	envBody := readAll(t, filepath.Join(root, "etc/yiban/server.env"))
 	if got := strings.Count(envBody, "YIBAN_UI_DIR="); got != 1 {
 		t.Fatalf("YIBAN_UI_DIR must appear exactly once, got %d:\n%s", got, envBody)
 	}
@@ -1336,7 +1347,7 @@ func TestUpdateShFirstUIWritesEnvOnlyAfterActivation(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "etc/yiban"), 0o755); err != nil {
 		t.Fatalf("mkdir etc: %v", err)
 	}
-	envPath := filepath.Join(root, "etc/yiban/.env")
+	envPath := filepath.Join(root, "etc/yiban/server.env")
 	if err := os.WriteFile(envPath, []byte("YIBAN_HTTP_ADDR=127.0.0.1:47183\nYIBAN_DATABASE_URL=postgres://yiban:pw@127.0.0.1:5432/yiban\n"), 0o600); err != nil {
 		t.Fatalf("write env: %v", err)
 	}
@@ -1462,7 +1473,7 @@ func TestInstallShReplacesPlantedUISymlink(t *testing.T) {
 	if info, err := os.Stat(sub); err != nil || info.Mode().Perm() != 0o700 {
 		t.Fatalf("软链目标子目录权限被改：%v", err)
 	}
-	if body := readAll(t, filepath.Join(root, "etc/yiban/.env")); !strings.Contains(body, "YIBAN_UI_DIR=/var/lib/yiban/ui") {
+	if body := readAll(t, filepath.Join(root, "etc/yiban/server.env")); !strings.Contains(body, "YIBAN_UI_DIR=/var/lib/yiban/ui") {
 		t.Fatalf(".env 缺 YIBAN_UI_DIR：\n%s", body)
 	}
 }
@@ -1503,7 +1514,7 @@ func TestInstallShRerunWithSameUIDir(t *testing.T) {
 	if body := readAll(t, filepath.Join(target+".bak", "index.html")); !strings.Contains(body, "rerun-ui") {
 		t.Fatalf("重装后 ui.bak 应是上一份页面：\n%s", body)
 	}
-	if got := strings.Count(readAll(t, filepath.Join(root, "etc/yiban/.env")), "YIBAN_UI_DIR="); got != 1 {
+	if got := strings.Count(readAll(t, filepath.Join(root, "etc/yiban/server.env")), "YIBAN_UI_DIR="); got != 1 {
 		t.Fatalf("YIBAN_UI_DIR 必须恰好一行，got %d", got)
 	}
 }

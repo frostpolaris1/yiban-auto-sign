@@ -1,14 +1,14 @@
-// 本文件读取配置名册（config/registry.json）。
+// 本文件解析编译期嵌入的配置名册（internal/configdata/registry.json）。
 //
 // 功能：把名册解析成有序条目：键、类型、分组、敏感级别与缺省值。
 // 本文件**不**读取任何 YIBAN_* 的值，**不**判断运行环境。
 //
 // 归属：adapters 层设施包。cmd/server 经组合根注入 app/settings；
-// doctor 与本文件共用 RegistryCandidates 的查找顺序。
+// doctor 与本文件共用同一份嵌入名册。
 //
-// 口径：安装位优先（/etc/yiban/registry.json），其次仓库根
-// config/registry.json。文件缺失、空名册或非法缺省值一律报错，
-// **不返回空名册冒充成功**。
+// 口径：名册随二进制一起发布（go:embed），不存在安装位文件，
+// 也没有"名册缺失即降级"的分支。名册损坏（空、非法缺省值）是构建缺陷，
+// 一律报错，**不返回空名册冒充成功**。
 
 package config
 
@@ -17,8 +17,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"sort"
+
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/configdata"
 )
 
 // RegistryEntry 是名册里的一行。
@@ -32,40 +33,12 @@ type RegistryEntry struct {
 	HasDefault bool
 }
 
-// RegistryCandidates 是名册的缺省查找顺序：安装位优先。
-// install.sh 把 config/registry.json 装到 /etc/yiban/registry.json。
-func RegistryCandidates() []string {
-	return []string{"/etc/yiban/registry.json", "config/registry.json"}
-}
+// RegistryJSON 返回嵌入名册的原文副本。
+// 测试与门用它核对名册文件，不复制任何缺省值字面量。
+func RegistryJSON() []byte { return configdata.JSON() }
 
-// ErrRegistryNotFound 表示按缺省顺序找不到名册文件。
-// 调用方据此区分「未安装名册」（可降级）与「名册损坏」（应失败关闭）。
-var ErrRegistryNotFound = errors.New("config: configuration registry not found")
-
-// LoadRegistry 读取名册。explicit 非空时只读该路径；
-// 为空时按 RegistryCandidates 顺序取首个可读文件。
-func LoadRegistry(explicit string) ([]RegistryEntry, error) {
-	path := explicit
-	if path == "" {
-		for _, candidate := range RegistryCandidates() {
-			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-				path = candidate
-				break
-			}
-		}
-	}
-	if path == "" {
-		return nil, fmt.Errorf("%w (tried %v)", ErrRegistryNotFound, RegistryCandidates())
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("%w (%s)", ErrRegistryNotFound, path)
-		}
-		return nil, fmt.Errorf("config: read configuration registry %s: %w", path, err)
-	}
-	return ParseRegistry(raw)
-}
+// Registry 解析嵌入名册。返回按名册键排序的条目。
+func Registry() ([]RegistryEntry, error) { return ParseRegistry(configdata.JSON()) }
 
 // ParseRegistry 解析名册字节。
 // 逐键校验形状；出现未知的缺省值类型即失败，不静默丢弃。
