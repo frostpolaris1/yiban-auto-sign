@@ -13,7 +13,8 @@
 // # 复用
 // Start、Mode、ImplicitTLS、StartTLS；Server.Addr、Port、TLSConfig、
 // SetCredentials、SetAuthFail、SetRejectRecipient、SetGreetingDelay、
-// Messages、MessageCount、WaitMessages、Close。
+// SetSuppressSTARTTLS、SetSuppress8BitMIME、SetRejectSTARTTLS、
+// Advertises、Messages、MessageCount、WaitMessages、Close。
 //
 // # 口径
 // 证书自签，有效期固定 2020-01-01 至 2100-01-01：测试不读系统时钟造证书。
@@ -55,6 +56,9 @@ type Message struct {
 	To       []string
 	Data     string
 	AuthUser string
+	// MailFromLine 是 MAIL FROM 命令的原始参数串（含扩展参数，
+	// 如 BODY=8BITMIME）。用于钉住客户端的线上形状（如 SMTPUTF8 抑制）。
+	MailFromLine string
 }
 
 // Server 是最小 SMTP 服务器。
@@ -66,13 +70,17 @@ type Server struct {
 	addr   string
 	closed chan struct{}
 
-	mu              sync.Mutex
-	messages        []Message
-	username        string
-	password        string
-	authFail        bool
-	rejectRecipient bool
-	greetingDelay   time.Duration
+	mu               sync.Mutex
+	messages         []Message
+	advertised       []string
+	username         string
+	password         string
+	authFail         bool
+	rejectRecipient  bool
+	greetingDelay    time.Duration
+	suppressSTARTTLS bool
+	suppress8BitMIME bool
+	rejectSTARTTLS   bool
 
 	connMu sync.Mutex
 	conns  map[net.Conn]struct{}
@@ -159,6 +167,45 @@ func (s *Server) SetGreetingDelay(d time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.greetingDelay = d
+}
+
+// SetSuppressSTARTTLS 让 EHLO 应答不再公告 STARTTLS，
+// 用于钉住「服务器不支持 STARTTLS」时客户端的分类。
+func (s *Server) SetSuppressSTARTTLS(suppress bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.suppressSTARTTLS = suppress
+}
+
+// SetSuppress8BitMIME 让 EHLO 应答不再公告 8BITMIME，
+// 用于钉住「服务器不支持 8bit 正文」时客户端的分类。
+func (s *Server) SetSuppress8BitMIME(suppress bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.suppress8BitMIME = suppress
+}
+
+// SetRejectSTARTTLS 让 STARTTLS 命令一律回 550，
+// 用于钉住「服务器拒绝升级 TLS」时客户端的分类。
+func (s *Server) SetRejectSTARTTLS(reject bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rejectSTARTTLS = reject
+}
+
+// Advertises 报告最近一次 EHLO 应答是否公告了 ext（大小写不敏感）。
+//
+// 供测试先断言前置条件再断言结论：公告被删时用例显式变红，
+// 而不是空转通过。未发生 EHLO 时返回 false。
+func (s *Server) Advertises(ext string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, got := range s.advertised {
+		if strings.EqualFold(got, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 // Messages 返回已接收邮件的副本。
@@ -262,9 +309,10 @@ func (s *Server) handle(conn net.Conn) {
 
 	secure := s.mode == ImplicitTLS
 	var (
-		from     string
-		rcpts    []string
-		authUser string
+		from         string
+		rcpts        []string
+		authUser     string
+		mailFromLine string
 	)
 	for {
 		line, err := br.ReadString('\n')
@@ -276,11 +324,35 @@ func (s *Server) handle(conn net.Conn) {
 
 		switch {
 		case strings.HasPrefix(upper, "EHLO"):
-			if !secure && s.mode == StartTLS {
-				if !writeLine(conn, "250-mailtest\r\n250-STARTTLS\r\n250 AUTH PLAIN") {
-					return
+			// 扩展公告按开关拼装：8BITMIME 与真实服务器一致
+			// （正文按 8bit 投递时，客户端会要求该扩展才发 MAIL FROM）；
+			// STARTTLS 只在明文 StartTLS 模式且未被抑制时公告。
+			// SMTPUTF8 常驻公告：真实服务器普遍公告它，客户端必须自行
+			// 抑制该参数（smtp_test 的 SMTPUTF8 用例靠它获得判别力）。
+			s.mu.Lock()
+			exts := []string{"mailtest"}
+			if !s.suppress8BitMIME {
+				exts = append(exts, "8BITMIME")
+			}
+			exts = append(exts, "SMTPUTF8")
+			suppressed := s.suppressSTARTTLS
+			s.mu.Unlock()
+			if !secure && s.mode == StartTLS && !suppressed {
+				exts = append(exts, "STARTTLS")
+			}
+			exts = append(exts, "AUTH PLAIN")
+			s.mu.Lock()
+			s.advertised = append([]string(nil), exts...)
+			s.mu.Unlock()
+			parts := make([]string, len(exts))
+			for i, ext := range exts {
+				if i == len(exts)-1 {
+					parts[i] = "250 " + ext
+				} else {
+					parts[i] = "250-" + ext
 				}
-			} else if !writeLine(conn, "250-mailtest\r\n250 AUTH PLAIN") {
+			}
+			if !writeLine(conn, strings.Join(parts, "\r\n")) {
 				return
 			}
 		case strings.HasPrefix(upper, "HELO"):
@@ -288,6 +360,15 @@ func (s *Server) handle(conn net.Conn) {
 				return
 			}
 		case upper == "STARTTLS" && s.mode == StartTLS && !secure:
+			s.mu.Lock()
+			reject := s.rejectSTARTTLS
+			s.mu.Unlock()
+			if reject {
+				if !writeLine(conn, "550 5.7.0 TLS not permitted") {
+					return
+				}
+				continue
+			}
 			if !writeLine(conn, "220 2.0.0 ready to start TLS") {
 				return
 			}
@@ -314,7 +395,8 @@ func (s *Server) handle(conn net.Conn) {
 				return
 			}
 		case strings.HasPrefix(upper, "MAIL FROM:"):
-			from = strings.Trim(strings.TrimSpace(line[len("MAIL FROM:"):]), "<>")
+			from = parseEnvelopeAddr(line[len("MAIL FROM:"):])
+			mailFromLine = strings.TrimSpace(line[len("MAIL FROM:"):])
 			if !writeLine(conn, "250 2.1.0 ok") {
 				return
 			}
@@ -343,6 +425,7 @@ func (s *Server) handle(conn net.Conn) {
 			s.mu.Lock()
 			s.messages = append(s.messages, Message{
 				From: from, To: append([]string(nil), rcpts...), Data: data, AuthUser: authUser,
+				MailFromLine: mailFromLine,
 			})
 			s.mu.Unlock()
 			if !writeLine(conn, "250 2.0.0 queued") {
@@ -366,6 +449,23 @@ func (s *Server) handle(conn net.Conn) {
 			}
 		}
 	}
+}
+
+// parseEnvelopeAddr 从 MAIL FROM 的参数串里取信封地址。
+// ESMTP 允许地址后跟参数（如 8BITMIME 的 BODY=8BITMIME）：
+// 取第一个 < 与其配对 > 之间的内容；没有尖括号时取首个空白分隔词。
+// 与旧实现的 Trim("<>") 口径兼容：裸 <addr> 仍解析出 addr。
+func parseEnvelopeAddr(rest string) string {
+	rest = strings.TrimSpace(rest)
+	if start := strings.Index(rest, "<"); start >= 0 {
+		if end := strings.Index(rest[start:], ">"); end > 0 {
+			return rest[start+1 : start+end]
+		}
+	}
+	if i := strings.IndexAny(rest, " \t"); i >= 0 {
+		return rest[:i]
+	}
+	return rest
 }
 
 // checkAuth 解析 AUTH PLAIN 的 base64 参数并对账配置。

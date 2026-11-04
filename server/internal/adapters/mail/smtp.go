@@ -2,6 +2,9 @@
 //
 // # 功能
 // 用隐式 TLS（465 风格）或 STARTTLS（587 风格）投递纯文本邮件。
+// SMTP 传输引擎是 wneessen/go-mail（版本锁 v0.8.1，MIT）：
+// 报文构造、问候、STARTTLS、AUTH、MAIL/RCPT/DATA 由它驱动，本包只做
+// 配置翻译、地址口径、连接所有权与失败分类，不手写 SMTP 对话。
 // 失败按 core/mail.Kind 分类，并标记可重试性。
 // 本包**不**读环境变量、**不**记日志、**不**重试、**不**持久化。
 //
@@ -13,11 +16,29 @@
 // Config、SMTP、NewSMTP、DefaultTimeout；错误分类词表在 core/mail。
 //
 // # 口径
-// 两种 TLS 都**校验证书**；没有"跳过校验"开关。
+// 两种 TLS 都**校验证书**；没有"跳过校验"开关。隐式 TLS 在本包的
+// dial 里握手：vendored smtp.NewClient 用 conn.(*tls.Conn) 判定连接
+// 已加密，判不出时 PLAIN 认证只对 localhost/127.0.0.1/::1 豁免、
+// 生产主机名一律拒发凭据，故返回给它的必须是裸 *tls.Conn
+// （内部包着 deadlineCapConn，封顶不受影响）。STARTTLS 由本包决定：
+// 先显式问候，再查扩展（缺失即 config，不猜），升级失败按状态码分类。
+// 连接归一次 Send 所有：失败路径必关，成功路径在 QUIT 后幂等收尾。
 // 一次 Send 的全部阶段共用一个绝对截止时间（默认 10s）：
-// 连接、TLS、认证、DATA 都不单独续期。
+// 连接、TLS、认证、DATA 都不单独续期。拨号也受同一预算约束（dial 里
+// context.WithDeadline）：生产调用方传 context.Background()，只信 ctx
+// 的话，黑洞主机要等 OS 的 SYN 超时（Linux 约 127s），足以占满全部
+// 投递槽。go-mail 在会话中途把连接截止时间重置为 connTimeout
+// （checkConn→UpdateDeadline），本包用 deadlineCapConn 把每次重设
+// 压回共享预算内。
 // 失败分类：连接/TLS/超时可重试；认证、配置、DATA 之后的失败不可重试
-// （DATA 可能已被接收，重试会造成双发）。
+// （DATA 可能已被接收，重试会造成双发）。分类判据顺序与旧实现一致：
+// 取消/超时 → 证书 → SMTP 状态码 → 阶段缺省。
+// 认证用 go-mail 的 PLAIN（allowUnenc=false：凭据只走 TLS 连接）；
+// 发送阶段按 go-mail SendError.Reason 映射回本包的阶段词表。
+// 正文保持 CTE 8bit 原样 UTF-8（NoEncoding）：QP 会把链接里的 `=`
+// 转义成 =3D，破坏"正文含完整链接"的判据。已知收严：go-mail 要求
+// 服务器公告 8BITMIME 才发 8bit 正文（旧实现硬发），未公告时本地拒绝，
+// 分类 config、不可重试（smtp_test 有显式用例钉住该分类）。
 // 凭据只出现在 AUTH 命令里，不进错误文本、不进日志。
 //
 // **投递可接受集与注册可接受集的关系**：ASCII 地址里，投递不覆盖注册
@@ -26,7 +47,8 @@
 // 严格侧拒绝时按裸 addr-spec 接收（注册用 core/user.ValidEmail，较宽松）。
 // 域名含 `>`、`,`、`;` 等主机名字符以外的字符时，分隔符会逃出尖括号：
 // addrSpecSafe 拒收。该守卫是必需的注入守卫，不可删。
-// 非 ASCII 与含控制字符的注册地址由投递侧显性拒收（SMTPUTF8 未实现）。
+// 非 ASCII 与含控制字符的注册地址由投递侧显性拒收（SMTPUTF8 参数
+// 在 Send 里主动抑制，见 SkipSMTPUTF8）。
 // 注册接受但投递拒收的地址记 reason=unsupported_address。
 // 改动此处必须同时看 parseAddress 的注释与 smtp_test 的口径用例。
 package mail
@@ -37,13 +59,15 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"mime"
 	"net"
 	"net/mail"
-	"net/smtp"
 	"net/textproto"
+	"strconv"
 	"strings"
 	"time"
+
+	gomail "github.com/wneessen/go-mail"
+	gmsmtp "github.com/wneessen/go-mail/smtp"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	coremail "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mail"
@@ -79,10 +103,10 @@ type Config struct {
 // SMTP 实现 core/mail.Sender。
 type SMTP struct {
 	host     string
-	addr     string
+	port     int
 	user     string
 	pass     string
-	from     string
+	from     *mail.Address
 	implicit bool
 	timeout  time.Duration
 	tlsConf  *tls.Config
@@ -126,7 +150,7 @@ func NewSMTP(cfg Config) (*SMTP, error) {
 	}
 	return &SMTP{
 		host:     host,
-		addr:     net.JoinHostPort(host, fmt.Sprintf("%d", cfg.Port)),
+		port:     cfg.Port,
 		user:     cfg.Username,
 		pass:     cfg.Password,
 		from:     from,
@@ -156,11 +180,15 @@ func resolveTLSMode(raw string, port int) (implicit bool, err error) {
 }
 
 // Send 投递一封邮件。失败返回 *coremail.DeliveryError。
+//
+// 会话分四段分类：拨号（连接、隐式 TLS 握手、220 问候、EHLO）、
+// STARTTLS 升级、认证、发送（MAIL/RCPT/DATA）。
+// QUIT 失败不改变送达结论。
 func (s *SMTP) Send(ctx context.Context, msg coremail.Message) error {
 	if err := ctx.Err(); err != nil {
 		return deliveryError(coremail.KindTimeout, true, err)
 	}
-	to, body, err := s.encode(msg)
+	m, err := s.encode(msg)
 	if err != nil {
 		return err
 	}
@@ -171,68 +199,131 @@ func (s *SMTP) Send(ctx context.Context, msg coremail.Message) error {
 		deadline = d
 	}
 
-	dialer := &net.Dialer{Timeout: s.timeout}
-	conn, err := dialer.DialContext(ctx, "tcp", s.addr)
+	c, err := gomail.NewClient(s.host,
+		gomail.WithTimeout(s.timeout),
+		gomail.WithoutNoop(),
+		gomail.WithoutRset(),
+	)
 	if err != nil {
-		return wrapPhase(phaseConnect, err)
+		return wrapConnect(err)
 	}
+
+	conn, err := s.dial(ctx, deadline)
+	if err != nil {
+		return wrapConnect(err)
+	}
+	// 连接归本次调用所有：任何失败路径都关掉，成功路径在 QUIT 之后
+	// 幂等收尾。长期运行的后台投递不得靠 GC 回收 fd。
 	defer func() { _ = conn.Close() }()
-	_ = conn.SetDeadline(deadline)
 
-	if s.implicit {
-		tlsConn := tls.Client(conn, s.clientTLSConfig())
-		if err := tlsConn.HandshakeContext(ctx); err != nil {
-			return wrapPhase(phaseTLS, err)
-		}
-		conn = tlsConn
-	}
-
-	c, err := smtp.NewClient(conn, s.host)
+	client, err := gmsmtp.NewClient(conn, s.host)
 	if err != nil {
-		return wrapPhase(phaseConnect, err)
+		return wrapConnect(err)
 	}
-	defer func() { _ = c.Close() }()
-
+	// 旧实现（含 5a40a011 首版适配）从不发 SMTPUTF8；go-mail 只要服务器
+	// 公告该扩展就会在 MAIL FROM 上附加参数。保持抑制：非 ASCII 地址已在
+	// 本地拒收，参数只会增加与既有服务器对话的变量。smtp_test 有用例
+	// （mailtest 常驻公告 SMTPUTF8）钉住线上 MAIL FROM 不含该参数。
+	client.SkipSMTPUTF8(true)
+	if err := client.Hello("localhost"); err != nil {
+		return wrapConnect(err)
+	}
 	if !s.implicit {
-		// 先显式问候：EHLO 失败按连接类分类，而不是误报"服务器不支持 STARTTLS"。
-		if err := c.Hello("localhost"); err != nil {
-			return wrapPhase(phaseConnect, err)
-		}
-		if ok, _ := c.Extension("STARTTLS"); !ok {
+		// 先显式问候（上方），再查 STARTTLS：问候失败按连接类分类，
+		// 而不是误报"服务器不支持 STARTTLS"。
+		if ok, _ := client.Extension("STARTTLS"); !ok {
 			return deliveryError(coremail.KindConfig, false,
 				errors.New("mail: server does not advertise STARTTLS"))
 		}
-		if err := c.StartTLS(s.clientTLSConfig()); err != nil {
-			return wrapPhase(phaseTLS, err)
+		if err := client.StartTLS(s.clientTLSConfig()); err != nil {
+			return wrapStartTLS(err)
 		}
 	}
 	if s.user != "" {
-		// 两档 TLS 都在此之前建立；自定义 Auth 不受 net/smtp 的
-		// "明文连接拒绝 PLAIN" 判定影响（隐式 TLS 下 Client.TLS 仍为 false）。
-		if err := c.Auth(plainAuth{user: s.user, pass: s.pass}); err != nil {
-			return wrapPhase(phaseAuth, err)
+		// 两档 TLS 都在此之前建立：隐式档由本包 dial 握手，STARTTLS 档
+		// 由上一步升级成功。allowUnenc=false 与旧手写 plainAuth 同口径：
+		// 凭据只走 TLS 连接，是否真的 TLS 由 vendored 客户端自行判定。
+		if err := client.Auth(gmsmtp.PlainAuth("", s.user, s.pass, s.host, false)); err != nil {
+			return wrapAuth(err)
 		}
 	}
-	if err := c.Mail(s.from); err != nil {
-		return wrapPhase(phaseSender, err)
-	}
-	if err := c.Rcpt(to); err != nil {
-		return wrapPhase(phaseRecipient, err)
-	}
-	w, err := c.Data()
-	if err != nil {
-		return wrapPhase(phaseData, err)
-	}
-	if _, err := w.Write(body); err != nil {
-		_ = w.Close()
-		return wrapPhase(phaseData, err)
-	}
-	if err := w.Close(); err != nil {
-		return wrapPhase(phaseData, err)
+	if err := c.SendWithSMTPClient(client, m); err != nil {
+		return s.wrapSend(ctx, deadline, err)
 	}
 	// QUIT 失败不改变送达结论：服务器已 ACK 的邮件不得记成失败。
-	_ = c.Quit()
+	_ = c.CloseWithSMTPClient(client)
 	return nil
+}
+
+// dial 建立到服务器的连接；隐式 TLS 在这里完成握手。
+//
+// 拨号与握手都套 Send 顶部算出的绝对预算（context.WithDeadline）：
+// 生产调用方传 context.Background()，只信 ctx 的话，黑洞主机（SYN 无
+// 应答）要等 OS 的 connect 超时——Linux 约 127s、Windows 约 21s——
+// 足以占满全部投递槽（smtp_test 的黑洞用例钉住此事）。连接建立后
+// 取消该 ctx 不影响已建立的连接（net 与 crypto/tls 的契约），故
+// defer cancel 安全。
+//
+// 返回给 vendored smtp.NewClient 的连接必须能被它识别为 TLS：
+// 它用 conn.(*tls.Conn) 判定，判不出时 PLAIN 认证只在 localhost/
+// 127.0.0.1/::1 上放行，生产主机名一律拒发凭据（smtp_test 的
+// 非豁免服务器名用例钉住此事）。因此隐式档返回裸 *tls.Conn，
+// 但它在内部包着 deadlineCapConn，截止时间封顶仍然生效。
+// STARTTLS 档先明文拨号，升级交给调用方的 StartTLS。
+func (s *SMTP) dial(ctx context.Context, deadline time.Time) (net.Conn, error) {
+	addr := net.JoinHostPort(s.host, strconv.Itoa(s.port))
+	dialCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	raw, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	capped := deadlineCapConn{Conn: raw, budget: deadline}
+	if err := capped.SetDeadline(deadline); err != nil {
+		_ = raw.Close()
+		return nil, err
+	}
+	if !s.implicit {
+		return capped, nil
+	}
+	tlsConn := tls.Client(capped, s.clientTLSConfig())
+	if err := tlsConn.HandshakeContext(dialCtx); err != nil {
+		_ = raw.Close()
+		return nil, err
+	}
+	return tlsConn, nil
+}
+
+// deadlineCapConn 把连接截止时间压在共享预算内。
+//
+// go-mail 在会话中途把截止时间重设为 connTimeout（checkConn 与拨号路径）；
+// 不压住的话每个慢阶段都能各吃满一个预算，破坏「一次 Send 共用一个
+// 绝对截止时间」的口径。重设请求超过预算时按预算封顶，更早的截止时间
+// 原样保留（ctx 截止时间比配置预算早时仍然生效）。
+// 注意：它只包 TCP 裸连接；*tls.Conn 直接包在它外面，
+// 不存在「包装后类型断言失败」的问题。
+type deadlineCapConn struct {
+	net.Conn
+	budget time.Time
+}
+
+func (c deadlineCapConn) SetDeadline(t time.Time) error {
+	return c.Conn.SetDeadline(c.cap(t))
+}
+
+func (c deadlineCapConn) SetReadDeadline(t time.Time) error {
+	return c.Conn.SetReadDeadline(c.cap(t))
+}
+
+func (c deadlineCapConn) SetWriteDeadline(t time.Time) error {
+	return c.Conn.SetWriteDeadline(c.cap(t))
+}
+
+func (c deadlineCapConn) cap(t time.Time) time.Time {
+	if t.After(c.budget) {
+		return c.budget
+	}
+	return t
 }
 
 // clientTLSConfig 返回本次连接使用的 TLS 配置。默认校验证书。
@@ -250,36 +341,37 @@ func (s *SMTP) clientTLSConfig() *tls.Config {
 	return cfg
 }
 
-// encode 校验地址与头部形状，返回信封收件人与完整报文。
-func (s *SMTP) encode(msg coremail.Message) (string, []byte, error) {
+// encode 校验地址与头部形状，把 Message 翻译成 go-mail 报文。
+//
+// 报文形状与旧手写实现一致：信封与头部只用 addr-spec（显示名丢弃）、
+// 主题 Q 编码（go-mail 对非 ASCII 头自动做）、正文 8bit 原样 UTF-8
+// （NoEncoding；QP 会把链接里的 `=` 转义成 =3D，破坏"正文含完整链接"
+// 的判据）。日期取注入时钟的 UTC 值。失败只来自本地形状检查。
+func (s *SMTP) encode(msg coremail.Message) (*gomail.Msg, error) {
 	to, err := parseAddress(msg.To)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	if strings.ContainsAny(msg.Subject, "\r\n") {
-		return "", nil, deliveryError(coremail.KindConfig, false,
+		return nil, deliveryError(coremail.KindConfig, false,
 			errors.New("mail: subject contains a line break"))
 	}
-	subject := mime.QEncoding.Encode("UTF-8", msg.Subject)
-	var b strings.Builder
-	fmt.Fprintf(&b, "From: <%s>\r\n", s.from)
-	fmt.Fprintf(&b, "To: <%s>\r\n", to)
-	fmt.Fprintf(&b, "Subject: %s\r\n", subject)
-	fmt.Fprintf(&b, "Date: %s\r\n", s.clock.Now().UTC().Format(time.RFC1123Z))
-	b.WriteString("MIME-Version: 1.0\r\n")
-	b.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
-	b.WriteString("Content-Transfer-Encoding: 8bit\r\n\r\n")
-	b.WriteString(normalizeNewlines(msg.Text))
-	return to, []byte(b.String()), nil
+	m := gomail.NewMsg(gomail.WithEncoding(gomail.NoEncoding))
+	m.SetDateWithValue(s.clock.Now().UTC())
+	m.FromMailAddress(s.from)
+	m.ToMailAddress(to)
+	m.Subject(msg.Subject)
+	m.SetBodyString(gomail.TypeTextPlain, normalizeNewlines(msg.Text))
+	return m, nil
 }
 
-// parseAddress 解析地址并返回可用于信封与头部的形态。
+// parseAddress 解析地址并返回可直接放进信封与头部的形态。
 //
 // 判据顺序：
 //  1. 换行一律拒绝：它们能把内容挤出 SMTP 命令与头部。
 //  2. 控制字符（< 0x20 或 0x7F）一律拒绝，扫整串输入（见 controlCharReason）。
-//  3. net/mail.ParseAddress 通过时，取其规范化 addr-spec；
-//     该 addr-spec 含非 ASCII 字符则拒绝（见 nonASCIIReason）。
+//  3. net/mail.ParseAddress 通过时，取其 addr-spec；该 addr-spec 含
+//     非 ASCII 字符则拒绝（见 nonASCIIReason）。
 //     显示名不进入信封与头部，故显示名里的非 ASCII 不受此限。
 //  4. 否则 core/user.ValidEmail 通过时，按裸 addr-spec 接收；
 //     先扫原文的非 ASCII 字符，再查域名形状（见 addrSpecSafe）。
@@ -292,33 +384,36 @@ func (s *SMTP) encode(msg coremail.Message) (string, []byte, error) {
 // 域名里的 `>`、`,`、`;` 等分隔符能逃出尖括号，addrSpecSafe 必须拒收；
 // 该守卫是注入面，不可删。
 // 第 5 条把「注册接受、投递不能表达」收成一个谓词：日志原因不按分支发散。
-func parseAddress(raw string) (string, error) {
+// 返回的 mail.Address 只带 addr-spec；头部与信封由 mail.Address.String()
+// 渲染——它对特殊局部部分加引号（a,b@example.com 变 "a,b"@example.com），
+// 与旧 quoteAddress 同一机制，故不在此预加引号。
+func parseAddress(raw string) (*mail.Address, error) {
 	if strings.ContainsAny(raw, "\r\n") {
-		return "", deliveryError(coremail.KindConfig, false,
+		return nil, deliveryError(coremail.KindConfig, false,
 			errors.New("mail: address contains a line break"))
 	}
 	s := strings.TrimSpace(raw)
 	if err := controlCharReason(s); err != nil {
-		return "", deliveryError(coremail.KindConfig, false, err)
+		return nil, deliveryError(coremail.KindConfig, false, err)
 	}
 	if addr, err := mail.ParseAddress(s); err == nil && addr.Address != "" {
 		if err := nonASCIIReason(addr.Address); err != nil {
-			return "", deliveryError(coremail.KindConfig, false, err)
+			return nil, deliveryError(coremail.KindConfig, false, err)
 		}
-		return quoteAddress(addr.Address), nil
+		return &mail.Address{Address: addr.Address}, nil
 	}
 	if err := nonASCIIReason(s); err != nil {
-		return "", deliveryError(coremail.KindConfig, false, err)
+		return nil, deliveryError(coremail.KindConfig, false, err)
 	}
 	if coreuser.ValidEmail(s) && addrSpecSafe(s) {
-		return quoteAddress(s), nil
+		return &mail.Address{Address: s}, nil
 	}
 	if coreuser.ValidEmail(s) {
-		return "", deliveryError(coremail.KindConfig, false,
+		return nil, deliveryError(coremail.KindConfig, false,
 			fmt.Errorf("mail: address cannot be put in the SMTP envelope: %w",
 				coremail.ErrUnsupportedAddress))
 	}
-	return "", deliveryError(coremail.KindConfig, false,
+	return nil, deliveryError(coremail.KindConfig, false,
 		errors.New("mail: address is not a valid mail address"))
 }
 
@@ -356,17 +451,9 @@ func nonASCIIReason(addrSpec string) error {
 	return nil
 }
 
-// quoteAddress 把 addr-spec 转成可放进 SMTP 命令与头部的形态。
-// 局部部分的特殊字符由 net/mail 加引号：a,b@example.com 变成 "a,b"@example.com。
-// 返回去掉尖括号的形式；调用方按需补 < >。
-func quoteAddress(addrSpec string) string {
-	quoted := (&mail.Address{Address: addrSpec}).String()
-	return strings.TrimSuffix(strings.TrimPrefix(quoted, "<"), ">")
-}
-
 // addrSpecSafe 报告裸 addr-spec 能否安全放进 SMTP 命令。
 //
-// 局部部分由 quoteAddress 引用，分隔符不会逃出引号。
+// 局部部分由 mail.Address.String() 引用，分隔符不会逃出引号。
 // 域名不经引用，故只接受字母、数字、点与连字符：
 // 其余字符（如 <>(),;）会提前闭合尖括号，改变命令结构。
 // 非 ASCII 已由 nonASCIIReason 在调用点拒掉：这里不再放行。
@@ -392,99 +479,129 @@ func normalizeNewlines(text string) string {
 	return strings.ReplaceAll(text, "\r", "\n")
 }
 
-// plainAuth 是最小 AUTH PLAIN 实现。
-//
-// net/smtp 的 PlainAuth 在隐式 TLS 下仍认为连接是明文
-// （Client.TLS 只在 StartTLS 后置真），会拒绝发送凭据。
-// 本实现只在调用方已建立 TLS 之后使用。
-type plainAuth struct {
-	user string
-	pass string
-}
-
-func (a plainAuth) Start(*smtp.ServerInfo) (string, []byte, error) {
-	return "PLAIN", []byte("\x00" + a.user + "\x00" + a.pass), nil
-}
-
-func (a plainAuth) Next([]byte, bool) ([]byte, error) {
-	return nil, nil
-}
-
-// phase 是失败发生的会话阶段。分类按阶段与 SMTP 状态码共同决定。
-type phase int
-
-const (
-	phaseConnect phase = iota
-	phaseTLS
-	phaseAuth
-	phaseSender
-	phaseRecipient
-	phaseData
-)
-
 // deliveryError 构造分类错误。
 func deliveryError(kind coremail.Kind, retryable bool, err error) *coremail.DeliveryError {
 	return &coremail.DeliveryError{Kind: kind, Retryable: retryable, Err: err}
 }
 
-// wrapPhase 按阶段分类。
-func wrapPhase(p phase, err error) error {
+// wrapConnect 分类拨号阶段的失败：TCP 连接、隐式 TLS 握手、220 问候、
+// EHLO。判据与旧实现一致：取消/超时 → 证书 → 5xx 视为协议错误 →
+// 其余按连接类（可重试）。
+func wrapConnect(err error) error {
 	if err == nil {
 		return nil
 	}
-	kind, retryable := classifyPhase(p, err)
+	kind, retryable := classifyConnect(err)
 	return deliveryError(kind, retryable, err)
 }
 
-// classifyPhase 的判据顺序：取消/超时 → 证书 → 状态码 → 阶段缺省。
-func classifyPhase(p phase, err error) (coremail.Kind, bool) {
+func classifyConnect(err error) (coremail.Kind, bool) {
+	if kind, retryable, ok := timeoutOrCert(err); ok {
+		return kind, retryable
+	}
+	if code, ok := smtpCode(err); ok && code/100 == 5 {
+		return coremail.KindProtocol, false
+	}
+	return coremail.KindConnect, true
+}
+
+// wrapStartTLS 分类 STARTTLS 升级失败。
+// 判据与旧实现的 phaseTLS 一致：取消/超时 → 证书 →
+// 5xx 视为 config（服务器拒绝升级属端口/模式配错，改配置之前重试
+// 没有意义）→ 其余按连接类。
+func wrapStartTLS(err error) error {
+	if err == nil {
+		return nil
+	}
+	kind, retryable := classifyStartTLS(err)
+	return deliveryError(kind, retryable, err)
+}
+
+func classifyStartTLS(err error) (coremail.Kind, bool) {
+	if kind, retryable, ok := timeoutOrCert(err); ok {
+		return kind, retryable
+	}
+	if code, ok := smtpCode(err); ok && code/100 == 5 {
+		return coremail.KindConfig, false
+	}
+	return coremail.KindConnect, true
+}
+
+// wrapAuth 分类认证失败。
+// TLS 已在拨号或 STARTTLS 阶段建立，故除取消/超时/证书外一律不可重试：
+// 凭据错重试只会再失败。
+func wrapAuth(err error) error {
+	if err == nil {
+		return nil
+	}
+	if kind, retryable, ok := timeoutOrCert(err); ok {
+		return deliveryError(kind, retryable, err)
+	}
+	return deliveryError(coremail.KindAuth, false, err)
+}
+
+// timeoutOrCert 是所有阶段共用的前置判据：取消/超时可重试，
+// 证书类失败是本机配置问题不可重试。命中返回 true。
+func timeoutOrCert(err error) (coremail.Kind, bool, bool) {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return coremail.KindTimeout, true
+		return coremail.KindTimeout, true, true
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
-		return coremail.KindTimeout, true
+		return coremail.KindTimeout, true, true
 	}
 	var certErr *tls.CertificateVerificationError
 	if errors.As(err, &certErr) {
-		return coremail.KindConfig, false
+		return coremail.KindConfig, false, true
 	}
 	var unknownAuthority x509.UnknownAuthorityError
 	if errors.As(err, &unknownAuthority) {
-		return coremail.KindConfig, false
+		return coremail.KindConfig, false, true
 	}
 	var hostnameErr x509.HostnameError
 	if errors.As(err, &hostnameErr) {
-		return coremail.KindConfig, false
+		return coremail.KindConfig, false, true
 	}
+	return "", false, false
+}
 
-	code, hasCode := smtpCode(err)
-	switch p {
-	case phaseConnect:
-		if hasCode && code/100 == 5 {
-			return coremail.KindProtocol, false
-		}
-		return coremail.KindConnect, true
-	case phaseTLS:
-		if hasCode && code/100 == 5 {
-			return coremail.KindConfig, false
-		}
-		return coremail.KindConnect, true
-	case phaseAuth:
-		return coremail.KindAuth, false
-	case phaseSender:
-		return coremail.KindSender, hasCode && code/100 == 4
-	case phaseRecipient:
-		return coremail.KindRecipient, hasCode && code/100 == 4
-	case phaseData:
+// wrapSend 分类发送阶段（MAIL/RCPT/DATA）的失败。
+//
+// 连接级截止时间到只暴露成读写超时，不一定带 ctx 错误，故先查
+// ctx 与共享预算：预算耗尽按超时分类，与旧实现一致。
+// go-mail 用 SendError.Reason 区分步骤，映射回本包词表：
+// MAIL 4xx 可重试、RCPT 4xx 可重试、DATA 之后一律不可重试（双发风险）、
+// 连接检查失败归连接类。无码即不可重试，与旧实现同判据。
+func (s *SMTP) wrapSend(ctx context.Context, deadline time.Time, err error) error {
+	if err == nil {
+		return nil
+	}
+	if ctx.Err() != nil || s.clock.Now().After(deadline) {
+		return deliveryError(coremail.KindTimeout, true, err)
+	}
+	var se *gomail.SendError
+	if !errors.As(err, &se) {
+		return deliveryError(coremail.KindProtocol, false, err)
+	}
+	switch se.Reason {
+	case gomail.ErrConnCheck:
+		return deliveryError(coremail.KindConnect, true, err)
+	case gomail.ErrGetSender, gomail.ErrGetRcpts, gomail.ErrNoUnencoded:
+		// 地址已过本包口径仍被拒，或服务器不支持 8bit：属配置/能力错。
+		return deliveryError(coremail.KindConfig, false, err)
+	case gomail.ErrSMTPMailFrom:
+		return deliveryError(coremail.KindSender, se.ErrorCode()/100 == 4, err)
+	case gomail.ErrSMTPRcptTo:
+		return deliveryError(coremail.KindRecipient, se.ErrorCode()/100 == 4, err)
+	case gomail.ErrSMTPData, gomail.ErrSMTPDataClose, gomail.ErrWriteContent:
 		// DATA 可能已被接收；重试有双发风险。
-		return coremail.KindMessage, false
+		return deliveryError(coremail.KindMessage, false, err)
 	default:
-		return coremail.KindProtocol, false
+		return deliveryError(coremail.KindProtocol, false, err)
 	}
 }
 
-// smtpCode 取服务器应答码。net/smtp 用 *textproto.Error 承载它。
+// smtpCode 取服务器应答码。SMTP 会话错误用 *textproto.Error 承载它。
 func smtpCode(err error) (int, bool) {
 	var te *textproto.Error
 	if errors.As(err, &te) {

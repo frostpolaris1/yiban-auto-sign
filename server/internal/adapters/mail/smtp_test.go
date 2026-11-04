@@ -497,3 +497,258 @@ func TestSendContextCancelledIsClassified(t *testing.T) {
 		t.Logf("取消未直接保留 errors.Is 链: %v", err)
 	}
 }
+
+// TestSendStartTLSMissingIsConfigClassified 钉住「服务器不提供 STARTTLS」的分类。
+//
+// starttls 模式的语义是强制升级：服务器不公告 STARTTLS 属于端口/模式
+// 配错，是 config 类失败，不可重试。旧实现与现实现都是本地判定：
+// 适配器在显式问候后先查 STARTTLS 扩展公告（smtp.go Send 里的
+// Extension 检查），缺失即返回 config 类错误，不依赖 go-mail 的
+// 错误文本，也不会随 go-mail 升级漂移。
+func TestSendStartTLSMissingIsConfigClassified(t *testing.T) {
+	srv, err := mailtest.Start(mailtest.StartTLS)
+	if err != nil {
+		t.Fatalf("start fake smtp: %v", err)
+	}
+	t.Cleanup(srv.Close)
+	srv.SetSuppressSTARTTLS(true)
+
+	sender, err := mailadapter.NewSMTP(configFor(t, srv, "starttls"))
+	if err != nil {
+		t.Fatalf("NewSMTP: %v", err)
+	}
+	err = sender.Send(t.Context(), coremail.Message{
+		To: "user@example.test", Subject: "s", Text: "body",
+	})
+	if err == nil {
+		t.Fatal("服务器不提供 STARTTLS 时 Send 应当失败")
+	}
+	if kind, retryable := coremail.Classify(err); kind != coremail.KindConfig || retryable {
+		t.Fatalf("分类 = (%s, retryable=%t), want (config, false); err=%v", kind, retryable, err)
+	}
+	if srv.MessageCount() != 0 {
+		t.Fatal("未升级 TLS 仍然投递了邮件")
+	}
+}
+
+// TestSendDeliversRawUTF8BodyWith8BitCTE 钉住正文线上形状。
+//
+// 旧实现以 8bit 投递原始 UTF-8 正文。go-mail 的默认编码是
+// quoted-printable：会把链接里的 `=` 转义成 =3D，破坏
+// 「正文含完整链接」的判据。适配器选择 NoEncoding（CTE 8bit）保持
+// 正文原样出线；本测试钉住 CTE 头、非 ASCII 正文与含等号的链接
+// 都不被转义。
+func TestSendDeliversRawUTF8BodyWith8BitCTE(t *testing.T) {
+	srv, err := mailtest.Start(mailtest.StartTLS)
+	if err != nil {
+		t.Fatalf("start fake smtp: %v", err)
+	}
+	t.Cleanup(srv.Close)
+	srv.SetCredentials(testUser, testPass)
+
+	sender, err := mailadapter.NewSMTP(configFor(t, srv, "starttls"))
+	if err != nil {
+		t.Fatalf("NewSMTP: %v", err)
+	}
+	link := "https://app.example.test/reset-password?token=a=b"
+	if err := sender.Send(t.Context(), coremail.Message{
+		To: "user@example.test", Subject: "重置口令",
+		Text: "打开以下链接重置口令：\n" + link + "\n",
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if !srv.WaitMessages(1, 3*time.Second) {
+		t.Fatal("服务器没有收到邮件")
+	}
+	got := srv.Messages()[0]
+	if !strings.Contains(got.Data, "Content-Transfer-Encoding: 8bit") {
+		t.Fatalf("正文编码不是 8bit：\n%s", got.Data)
+	}
+	if !strings.Contains(got.Data, link) {
+		t.Fatalf("链接被编码破坏（应原样出现）：\n%s", got.Data)
+	}
+	if !strings.Contains(got.Data, "打开以下链接重置口令：") {
+		t.Fatalf("非 ASCII 正文应原样出线：\n%s", got.Data)
+	}
+}
+
+// TestSendImplicitTLSDeliversOnNonLoopbackServerName 钉住隐式 TLS 下的认证前提。
+//
+// go-mail 靠 conn.(*tls.Conn) 判定连接已加密；判不出时 PlainAuth 拒发凭据，
+// 只有服务器名恰为 localhost/127.0.0.1/::1 时豁免。本测试用大写 LOCALHOST：
+// 解析与证书校验大小写不敏感（仍命中 mailtest 的 localhost 证书），
+// 但不在该豁免名单里——旧手写实现在这类主机名上一直能正常投递，
+// 本用例复现旧行为：隐式 TLS＋认证必须在非豁免服务器名上成功。
+func TestSendImplicitTLSDeliversOnNonLoopbackServerName(t *testing.T) {
+	srv, err := mailtest.Start(mailtest.ImplicitTLS)
+	if err != nil {
+		t.Fatalf("start fake smtp: %v", err)
+	}
+	t.Cleanup(srv.Close)
+	srv.SetCredentials(testUser, testPass)
+
+	cfg := configFor(t, srv, "implicit")
+	cfg.Host = "LOCALHOST"
+	sender, err := mailadapter.NewSMTP(cfg)
+	if err != nil {
+		t.Fatalf("NewSMTP: %v", err)
+	}
+	if err := sender.Send(t.Context(), coremail.Message{
+		To: "user@example.test", Subject: "s", Text: "body",
+	}); err != nil {
+		t.Fatalf("Send 在非豁免服务器名上被拒（凭据没有随隐式 TLS 发出）: %v", err)
+	}
+	if !srv.WaitMessages(1, 3*time.Second) {
+		t.Fatal("服务器没有收到邮件")
+	}
+	if got := srv.Messages()[0].AuthUser; got != testUser {
+		t.Fatalf("AUTH 用户 = %q, want %q", got, testUser)
+	}
+}
+
+// TestSendWithout8BitMIMEExtensionIsConfigClassified 登记一个已知的收严：
+//
+// 旧实现不查 8BITMIME，硬发 CTE 8bit；go-mail 要求服务器公告该扩展，
+// 未公告时本地拒绝（ErrNoUnencoded）。本仓决策：保留 8bit 正文
+// （QP 会转义重置链接里的 `=`），接受这一收严，分类为 config、
+// 不可重试——改服务器或改模式之前重试没有意义。
+func TestSendWithout8BitMIMEExtensionIsConfigClassified(t *testing.T) {
+	srv, err := mailtest.Start(mailtest.StartTLS)
+	if err != nil {
+		t.Fatalf("start fake smtp: %v", err)
+	}
+	t.Cleanup(srv.Close)
+	srv.SetCredentials(testUser, testPass)
+	srv.SetSuppress8BitMIME(true)
+
+	sender, err := mailadapter.NewSMTP(configFor(t, srv, "starttls"))
+	if err != nil {
+		t.Fatalf("NewSMTP: %v", err)
+	}
+	err = sender.Send(t.Context(), coremail.Message{
+		To: "user@example.test", Subject: "s", Text: "body",
+	})
+	if err == nil {
+		t.Fatal("服务器不公告 8BITMIME 时 Send 应当失败")
+	}
+	if kind, retryable := coremail.Classify(err); kind != coremail.KindConfig || retryable {
+		t.Fatalf("分类 = (%s, retryable=%t), want (config, false); err=%v", kind, retryable, err)
+	}
+	if srv.MessageCount() != 0 {
+		t.Fatal("未发 MAIL FROM 前被拒，不应有邮件入库")
+	}
+}
+
+// TestSendStartTLSRefusedIsConfigClassified 钉住升级被 5xx 拒绝的分类。
+//
+// 服务器对 STARTTLS 命令回 550：与「不公告 STARTTLS」同因——端口/模式
+// 配错，改配置之前重试没有意义。这是旧实现 phaseTLS 的判据，
+// 适配器重写后必须逐字保留（分类 config、不可重试）。
+func TestSendStartTLSRefusedIsConfigClassified(t *testing.T) {
+	srv, err := mailtest.Start(mailtest.StartTLS)
+	if err != nil {
+		t.Fatalf("start fake smtp: %v", err)
+	}
+	t.Cleanup(srv.Close)
+	srv.SetRejectSTARTTLS(true)
+
+	sender, err := mailadapter.NewSMTP(configFor(t, srv, "starttls"))
+	if err != nil {
+		t.Fatalf("NewSMTP: %v", err)
+	}
+	err = sender.Send(t.Context(), coremail.Message{
+		To: "user@example.test", Subject: "s", Text: "body",
+	})
+	if err == nil {
+		t.Fatal("STARTTLS 被拒时 Send 应当失败")
+	}
+	if kind, retryable := coremail.Classify(err); kind != coremail.KindConfig || retryable {
+		t.Fatalf("分类 = (%s, retryable=%t), want (config, false); err=%v", kind, retryable, err)
+	}
+	if srv.MessageCount() != 0 {
+		t.Fatal("未升级 TLS 仍然投递了邮件")
+	}
+}
+
+// TestSendDialBlackholeReturnsWithinBudget 钉住拨号阶段受总预算约束。
+//
+// 生产调用方传 context.Background()（app/auth/mail.go），若拨号只信
+// ctx，黑洞主机（SYN 无应答）要等 OS 的 connect 超时——Linux 约 127s、
+// Windows 约 21s——足以占满全部投递槽触发 delivery_queue_full。
+// 203.0.113.9 是 RFC 5737 TEST-NET-3，按规范不可路由；个别网络会把它
+// 拦在本地（立即回 refusal/unreachable，或透明代理代答 TCP 握手——
+// 实测有的本机代理只代答 25 端口，故用 587）。
+// 本用例只对「拨号挂起」的网络形状有判别力：立即失败的形状会显式
+// t.Skip（不静默通过，SKIP 不是绿）；只有 timeout 分类算通过。
+// 断言两条：Send 在预算（750ms）加裕量内返回——上界远低于两端 OS
+// 超时，挂到 OS 超时必红；错误分类为 timeout 且可重试。
+func TestSendDialBlackholeReturnsWithinBudget(t *testing.T) {
+	sender, err := mailadapter.NewSMTP(mailadapter.Config{
+		Host: "203.0.113.9", Port: 587, Username: testUser, Password: testPass,
+		From: testUser, TLSMode: "starttls", Timeout: 750 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewSMTP: %v", err)
+	}
+	start := clock.System{}.Now()
+	err = sender.Send(context.Background(), coremail.Message{
+		To: "user@example.test", Subject: "s", Text: "body",
+	})
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("Send 用时 %v：拨号不受预算约束，挂到了 OS 超时", elapsed)
+	}
+	if err == nil {
+		t.Fatal("拨到不可路由地址应当失败（本网络把 TEST-NET-3 路由出去了？）")
+	}
+	kind, retryable := coremail.Classify(err)
+	if kind == coremail.KindConnect {
+		// 立即 refusal/unreachable：拨号没有经历挂起，本用例无法区分
+		// 「预算生效」与「OS 秒回」。显式跳过而不是静默通过。
+		t.Skipf("网络对 TEST-NET-3 立即失败（%v）；本用例需要黑洞路由才有判别力", err)
+	}
+	if kind != coremail.KindTimeout || !retryable {
+		t.Fatalf("黑洞拨号分类 = (%s, retryable=%t), want (timeout, true); err=%v",
+			kind, retryable, err)
+	}
+}
+
+// TestSendSuppressesSMTPUTF8EvenWhenAdvertised 钉住 SMTPUTF8 参数抑制。
+//
+// 5a40a011 首版适配显式关闭该参数；换 vendored smtp 客户端时抑制一度
+// 丢失：服务器公告 SMTPUTF8 时 MAIL FROM 就会带上参数。mailtest 的
+// EHLO 常驻公告 SMTPUTF8，本测试断言线上 MAIL FROM 不含它——非 ASCII
+// 地址已在本地拒收，参数只会增加与既有服务器对话的变量。
+// 先断言前置条件（服务器真的公告了 SMTPUTF8），再断言结论：公告被
+// 删时本用例显式变红，而不是空转通过。
+func TestSendSuppressesSMTPUTF8EvenWhenAdvertised(t *testing.T) {
+	srv, err := mailtest.Start(mailtest.StartTLS)
+	if err != nil {
+		t.Fatalf("start fake smtp: %v", err)
+	}
+	t.Cleanup(srv.Close)
+	srv.SetCredentials(testUser, testPass)
+
+	sender, err := mailadapter.NewSMTP(configFor(t, srv, "starttls"))
+	if err != nil {
+		t.Fatalf("NewSMTP: %v", err)
+	}
+	if err := sender.Send(t.Context(), coremail.Message{
+		To: "user@example.test", Subject: "s", Text: "body",
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if !srv.WaitMessages(1, 3*time.Second) {
+		t.Fatal("服务器没有收到邮件")
+	}
+	// 前置条件：没有公告就没有约束对象，本用例失去判别力。
+	if !srv.Advertises("SMTPUTF8") {
+		t.Fatal("mailtest 的 EHLO 没有公告 SMTPUTF8，本用例失去判别力")
+	}
+	got := srv.Messages()[0]
+	if strings.Contains(strings.ToUpper(got.MailFromLine), "SMTPUTF8") {
+		t.Fatalf("MAIL FROM 带了 SMTPUTF8 参数: %q", got.MailFromLine)
+	}
+	if got.From != testUser {
+		t.Fatalf("信封发件人 = %q, want %q（扩展参数不得破坏信封解析）", got.From, testUser)
+	}
+}
