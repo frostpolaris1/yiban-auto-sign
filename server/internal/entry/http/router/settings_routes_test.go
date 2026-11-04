@@ -50,11 +50,11 @@ func (stubRoster) Report() appsettings.Report { return appsettings.Report{} }
 
 type stubAnnouncement struct{ text string }
 
-func (s stubAnnouncement) Get(context.Context) (appsettings.Announcement, error) {
+func (s *stubAnnouncement) Get(context.Context) (appsettings.Announcement, error) {
 	return appsettings.Announcement{Text: s.text}, nil
 }
 
-func (s stubAnnouncement) Set(_ context.Context, text string, _ appaudit.Actor) (appsettings.Announcement, error) {
+func (s *stubAnnouncement) Set(_ context.Context, text string, _ appaudit.Actor) (appsettings.Announcement, error) {
 	s.text = text
 	return appsettings.Announcement{Text: text}, nil
 }
@@ -71,7 +71,7 @@ func newSettingsEngine(t *testing.T) (*gin.Engine, *stubIssuer) {
 	gin.SetMode(gin.TestMode)
 	engine, err := router.New(router.Options{
 		Sessions: issuer,
-		Settings: settingshttp.NewHandler(stubNotify{}, stubRoster{}, stubAnnouncement{}),
+		Settings: settingshttp.NewHandler(stubNotify{}, stubRoster{}, &stubAnnouncement{}),
 		Audit:    audithttp.NewHandler(stubAuditReader{}),
 	})
 	if err != nil {
