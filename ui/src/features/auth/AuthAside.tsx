@@ -1,22 +1,27 @@
 /**
  * **功能**
- * 登录页左侧介绍面板：品牌、标语、页脚。
+ * 认证页左侧介绍面板：品牌、一句话说明、能力清单、许可证页脚。
  *
  * **归属**
  * `features/auth` 域组件。
  *
  * **口径**
  * 纯文案，不发请求。
- * 不承诺会话期限，也不描述登录后的具体行为。
+ * 只写产品确实具备的能力，不承诺会话期限与登录后的具体行为。
+ * 不再使用「证言卡」：引言、头像与署名会伪装成用户背书。
  */
 
 import { BrandMark } from '@/components/ui/BrandMark'
 import { Icon } from '@/components/ui/Icon'
 
-/**
- * 结构与类名照 Adminator `src/signin.html`。
- * 文案只陈述产品能力，不再声明「未接后端」。
- */
+/** 能力清单。每条都能在 README 与后端能力里找到对应。 */
+const POINTS = [
+  { icon: 'calendar', text: '每天按时签到，窗口内错峰' },
+  { icon: 'rotateCcw', text: '失败自动重试，不连击' },
+  { icon: 'activity', text: '签到记录与统计都在' },
+  { icon: 'shield', text: '账号凭据加密存储' },
+] as const
+
 export function AuthAside() {
   return (
     <aside className="auth-aside">
@@ -28,22 +33,26 @@ export function AuthAside() {
       </div>
 
       <div className="auth-aside-body">
-        <span className="auth-aside-eyebrow">账号控制台</span>
-        <h1>登录后管理账号与签到。</h1>
-        <p>登录状态由服务端管理。</p>
-        <div className="auth-quote">
-          设计令牌来自 Adminator 4。明暗两套取值与上游一致。
-          <div className="auth-quote-author">
-            <div className="av">UI</div>
-            <div>易班自动签到 · 控制台</div>
-          </div>
-        </div>
+        <span className="auth-aside-eyebrow">SELF-HOSTED · AGPL-3.0</span>
+        <h1>
+          把每天的签到，
+          <br />
+          交给它。
+        </h1>
+        <p className="auth-aside-lead">按你的时间偏好自动执行，失败会自己重试。</p>
+        <ul className="auth-points">
+          {POINTS.map((point) => (
+            <li key={point.text}>
+              <Icon name={point.icon} size={18} />
+              <span>{point.text}</span>
+            </li>
+          ))}
+        </ul>
       </div>
 
       <div className="auth-aside-footer">
         <span>2026</span>
-        <span>ADMINATOR 4</span>
-        <Icon name="external" size={11} />
+        <span>SELF-HOSTED</span>
       </div>
     </aside>
   )

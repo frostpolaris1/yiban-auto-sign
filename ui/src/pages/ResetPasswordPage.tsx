@@ -17,7 +17,7 @@ import { Link } from '@tanstack/react-router'
 import { useMutation } from '@tanstack/react-query'
 import { Alert } from '@/components/ui/Alert'
 import { Button } from '@/components/ui/Button'
-import { TextInput } from '@/components/ui/Input'
+import { PasswordInput } from '@/components/ui/Input'
 import { PublicAuthPage } from '@/features/auth/PublicAuthPage'
 import { buildResetBody, isValidResetToken, passwordErrorMessage } from '@/features/auth/password-reset'
 import { resetPassword } from '@/lib/api/auth'
@@ -85,9 +85,9 @@ export function ResetPasswordPage({ token }: ResetPasswordPageProps) {
             重新申请
           </Link>
         </div>
-        <div className="auth-main-bottom">
+        <p className="auth-switch-hint">
           <Link to="/login">返回登录</Link>
-        </div>
+        </p>
       </PublicAuthPage>
     )
   }
@@ -120,9 +120,9 @@ export function ResetPasswordPage({ token }: ResetPasswordPageProps) {
             重新申请
           </Link>
         </div>
-        <div className="auth-main-bottom">
+        <p className="auth-switch-hint">
           <Link to="/login">返回登录</Link>
-        </div>
+        </p>
       </PublicAuthPage>
     )
   }
@@ -146,24 +146,22 @@ export function ResetPasswordPage({ token }: ResetPasswordPageProps) {
           mutation.mutate()
         }}
       >
-        <TextInput
+        <PasswordInput
           id={PASSWORD_FIELD_ID}
           label="新密码"
-          type="password"
-          icon="shield"
-          placeholder="••••••••"
+          name="new_password"
+          placeholder="设置新密码"
           autoComplete="new-password"
           required
           value={password}
           onChange={(event) => setPassword(event.target.value)}
         />
 
-        <TextInput
+        <PasswordInput
           id={CONFIRM_FIELD_ID}
           label="确认密码"
-          type="password"
-          icon="shield"
-          placeholder="••••••••"
+          name="password_confirmation"
+          placeholder="再次输入新密码"
           autoComplete="new-password"
           required
           value={confirmation}
@@ -188,9 +186,9 @@ export function ResetPasswordPage({ token }: ResetPasswordPageProps) {
         </Button>
       </form>
 
-      <div className="auth-main-bottom">
+      <p className="auth-switch-hint">
         <Link to="/login">返回登录</Link>
-      </div>
+      </p>
     </PublicAuthPage>
   )
 }

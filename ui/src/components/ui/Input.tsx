@@ -1,6 +1,6 @@
 /**
  * **功能**
- * 表单控件：文本、下拉、多行。
+ * 表单控件：文本、密码、下拉、多行。
  * 字段壳统一渲染标签、提示与错误。
  *
  * **归属**
@@ -11,7 +11,7 @@
  * `aria-describedby` 只指向当前可见的那一条。
  */
 
-import type { ComponentPropsWithoutRef, ReactNode } from 'react'
+import { useState, type ComponentPropsWithoutRef, type ReactNode } from 'react'
 import { cx } from '@/lib/cx'
 import { fieldDescribedBy, fieldErrorId, fieldHintId } from '@/lib/field-aria'
 import { Icon, type IconName } from '@/components/ui/Icon'
@@ -22,6 +22,8 @@ type FieldShellProps = {
   hint?: string
   error?: string
   required?: boolean
+  /** 标签行右侧的附加操作，例如「忘记密码」。 */
+  labelAction?: ReactNode
   children: ReactNode
 }
 
@@ -29,13 +31,28 @@ type FieldShellProps = {
  * 三个控件共用字段壳。标签、提示、错误的 id 都在这里生成。
  * 错误与提示互斥，故控件只关联当前可见的一条。
  */
-function FieldShell({ id, label, hint, error, required, children }: FieldShellProps) {
+function FieldShell({ id, label, hint, error, required, labelAction, children }: FieldShellProps) {
+  const labelNode = (
+    <label className="field-label" htmlFor={id}>
+      {label}
+      {required ? (
+        <span className="req" aria-hidden="true">
+          *
+        </span>
+      ) : null}
+    </label>
+  )
+
   return (
     <div className="field">
-      <label className="field-label" htmlFor={id}>
-        {label}
-        {required ? <span className="req">*</span> : null}
-      </label>
+      {labelAction ? (
+        <div className="field-row">
+          {labelNode}
+          {labelAction}
+        </div>
+      ) : (
+        labelNode
+      )}
       {children}
       {hint && !error ? (
         <div className="field-help" id={fieldHintId(id)}>
@@ -105,6 +122,67 @@ export function TextInput({
       ) : (
         control
       )}
+    </FieldShell>
+  )
+}
+
+export type PasswordInputProps = CommonFieldProps &
+  Omit<ComponentPropsWithoutRef<'input'>, 'id' | 'type'> & {
+    labelAction?: ReactNode
+  }
+
+/**
+ * 密码框：右侧一枚显隐按钮。
+ * 按钮不参与表单提交，`aria-pressed` 表示当前是否明文。
+ */
+export function PasswordInput({
+  id,
+  label,
+  hint,
+  error,
+  required,
+  className,
+  labelAction,
+  ...rest
+}: PasswordInputProps) {
+  const [visible, setVisible] = useState(false)
+  const describedBy = fieldDescribedBy(id, hint, error)
+  // 同一页可能有两枚密码框：按钮名带上字段标签，读屏不会听到两个「显示密码」。
+  const visibilityLabel = `${visible ? '隐藏' : '显示'}${label}`
+
+  return (
+    <FieldShell
+      id={id}
+      label={label}
+      hint={hint}
+      error={error}
+      required={required}
+      labelAction={labelAction}
+    >
+      <div className="input-affix">
+        <input
+          id={id}
+          type={visible ? 'text' : 'password'}
+          className={cx('input', error && 'is-invalid', className)}
+          required={required}
+          spellCheck={false}
+          autoCapitalize="off"
+          aria-invalid={error ? true : undefined}
+          aria-describedby={describedBy}
+          {...rest}
+        />
+        <button
+          type="button"
+          className="affix-btn"
+          aria-label={visibilityLabel}
+          aria-pressed={visible}
+          aria-controls={id}
+          title={visibilityLabel}
+          onClick={() => setVisible((current) => !current)}
+        >
+          <Icon name={visible ? 'eyeOff' : 'eye'} />
+        </button>
+      </div>
     </FieldShell>
   )
 }

@@ -153,7 +153,7 @@ async function expectData(page: Page, path: string) {
     await expect(page.getByLabel('邮箱')).toBeVisible()
   } else if (path.startsWith('/reset-password')) {
     // 令牌合法：页面停在表单态，不是「链接不完整」态。
-    await expect(page.getByLabel('新密码')).toBeVisible()
+    await expect(page.locator('#reset-password')).toBeVisible()
   }
 }
 

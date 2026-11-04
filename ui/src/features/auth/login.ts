@@ -7,11 +7,15 @@
  *
  * **口径**
  * 请求体只含契约 `LoginRequest` 的两个字段。
- * 401 是凭据错误，固定文案；其余错误按信封如实展示。
+ * 401 是凭据错误，固定文案；429 与 5xx 用可行动的中文；断网固定文案。
+ * 其余 4xx 用服务端的人话消息，不回显 `code · message` 的调试格式。
  */
 
 import type { LoginRequest } from '../../lib/api/auth'
-import { ApiError, describeApiError } from '../../lib/api/client'
+import { ApiError } from '../../lib/api/client'
+
+/** 断网与外壳异常的统一文案。 */
+export const LOGIN_NETWORK_ERROR = '网络异常，请检查网络后重试'
 
 export type LoginDraft = {
   email: string
@@ -24,8 +28,11 @@ export function buildLoginBody(draft: LoginDraft & Record<string, unknown>): Log
 }
 
 export function loginErrorMessage(error: unknown): string {
-  if (error instanceof ApiError && error.status === 401) return '邮箱或密码错误'
-  return describeApiError(error)
+  if (!(error instanceof ApiError)) return LOGIN_NETWORK_ERROR
+  if (error.status === 401) return '邮箱或密码错误'
+  if (error.status === 429) return '登录尝试过多，请稍后再试'
+  if (error.status >= 500) return '服务暂时不可用，请稍后再试'
+  return error.message || '登录失败，请稍后重试'
 }
 
 /** 路由比较基准。只用于路径规范化，不参与实际导航。 */

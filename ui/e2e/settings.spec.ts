@@ -234,8 +234,8 @@ test('settings: an unauthenticated visitor lands on login and returns after sign
 
   await expect(page).toHaveURL(/\/login\?redirect=%2Fsettings$/)
   await page.getByLabel('邮箱').fill(SESSION_EMAIL)
-  await page.getByLabel('密码').fill(SESSION_PASSWORD)
-  await page.getByRole('button', { name: '登录控制台' }).click()
+  await page.locator('#login-password').fill(SESSION_PASSWORD)
+  await page.getByRole('button', { name: '登录', exact: true }).click()
 
   await expect(page).toHaveURL(/\/settings$/)
   await expect(page.getByRole('heading', { name: '修改密码' })).toBeVisible()
