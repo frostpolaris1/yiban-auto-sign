@@ -678,10 +678,10 @@ func TestSendStartTLSRefusedIsConfigClassified(t *testing.T) {
 // 203.0.113.9 是 RFC 5737 TEST-NET-3，按规范不可路由；个别网络会把它
 // 拦在本地（立即回 refusal/unreachable，或透明代理代答 TCP 握手——
 // 实测有的本机代理只代答 25 端口，故用 587）。
-// 断言对三种网络形状都成立：Send 在预算（750ms）加裕量内返回——上界
-// 远低于两端 OS 超时，挂到 OS 超时必红；错误是连接阶段的可重试分类——
-// 黑洞路径是 timeout，立即失败是 connect。测试只依赖「预算内返回」，
-// 不依赖具体网络行为。
+// 本用例只对「拨号挂起」的网络形状有判别力：立即失败的形状会显式
+// t.Skip（不静默通过，SKIP 不是绿）；只有 timeout 分类算通过。
+// 断言两条：Send 在预算（750ms）加裕量内返回——上界远低于两端 OS
+// 超时，挂到 OS 超时必红；错误分类为 timeout 且可重试。
 func TestSendDialBlackholeReturnsWithinBudget(t *testing.T) {
 	sender, err := mailadapter.NewSMTP(mailadapter.Config{
 		Host: "203.0.113.9", Port: 587, Username: testUser, Password: testPass,
@@ -701,8 +701,13 @@ func TestSendDialBlackholeReturnsWithinBudget(t *testing.T) {
 		t.Fatal("拨到不可路由地址应当失败（本网络把 TEST-NET-3 路由出去了？）")
 	}
 	kind, retryable := coremail.Classify(err)
-	if !retryable || (kind != coremail.KindTimeout && kind != coremail.KindConnect) {
-		t.Fatalf("黑洞拨号分类 = (%s, retryable=%t), want 连接阶段的可重试失败; err=%v",
+	if kind == coremail.KindConnect {
+		// 立即 refusal/unreachable：拨号没有经历挂起，本用例无法区分
+		// 「预算生效」与「OS 秒回」。显式跳过而不是静默通过。
+		t.Skipf("网络对 TEST-NET-3 立即失败（%v）；本用例需要黑洞路由才有判别力", err)
+	}
+	if kind != coremail.KindTimeout || !retryable {
+		t.Fatalf("黑洞拨号分类 = (%s, retryable=%t), want (timeout, true); err=%v",
 			kind, retryable, err)
 	}
 }
@@ -713,6 +718,8 @@ func TestSendDialBlackholeReturnsWithinBudget(t *testing.T) {
 // 丢失：服务器公告 SMTPUTF8 时 MAIL FROM 就会带上参数。mailtest 的
 // EHLO 常驻公告 SMTPUTF8，本测试断言线上 MAIL FROM 不含它——非 ASCII
 // 地址已在本地拒收，参数只会增加与既有服务器对话的变量。
+// 先断言前置条件（服务器真的公告了 SMTPUTF8），再断言结论：公告被
+// 删时本用例显式变红，而不是空转通过。
 func TestSendSuppressesSMTPUTF8EvenWhenAdvertised(t *testing.T) {
 	srv, err := mailtest.Start(mailtest.StartTLS)
 	if err != nil {
@@ -732,6 +739,10 @@ func TestSendSuppressesSMTPUTF8EvenWhenAdvertised(t *testing.T) {
 	}
 	if !srv.WaitMessages(1, 3*time.Second) {
 		t.Fatal("服务器没有收到邮件")
+	}
+	// 前置条件：没有公告就没有约束对象，本用例失去判别力。
+	if !srv.Advertises("SMTPUTF8") {
+		t.Fatal("mailtest 的 EHLO 没有公告 SMTPUTF8，本用例失去判别力")
 	}
 	got := srv.Messages()[0]
 	if strings.Contains(strings.ToUpper(got.MailFromLine), "SMTPUTF8") {

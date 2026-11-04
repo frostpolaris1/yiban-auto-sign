@@ -14,7 +14,7 @@
 // Start、Mode、ImplicitTLS、StartTLS；Server.Addr、Port、TLSConfig、
 // SetCredentials、SetAuthFail、SetRejectRecipient、SetGreetingDelay、
 // SetSuppressSTARTTLS、SetSuppress8BitMIME、SetRejectSTARTTLS、
-// Messages、MessageCount、WaitMessages、Close。
+// Advertises、Messages、MessageCount、WaitMessages、Close。
 //
 // # 口径
 // 证书自签，有效期固定 2020-01-01 至 2100-01-01：测试不读系统时钟造证书。
@@ -72,6 +72,7 @@ type Server struct {
 
 	mu               sync.Mutex
 	messages         []Message
+	advertised       []string
 	username         string
 	password         string
 	authFail         bool
@@ -190,6 +191,21 @@ func (s *Server) SetRejectSTARTTLS(reject bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.rejectSTARTTLS = reject
+}
+
+// Advertises 报告最近一次 EHLO 应答是否公告了 ext（大小写不敏感）。
+//
+// 供测试先断言前置条件再断言结论：公告被删时用例显式变红，
+// 而不是空转通过。未发生 EHLO 时返回 false。
+func (s *Server) Advertises(ext string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, got := range s.advertised {
+		if strings.EqualFold(got, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 // Messages 返回已接收邮件的副本。
@@ -325,6 +341,9 @@ func (s *Server) handle(conn net.Conn) {
 				exts = append(exts, "STARTTLS")
 			}
 			exts = append(exts, "AUTH PLAIN")
+			s.mu.Lock()
+			s.advertised = append([]string(nil), exts...)
+			s.mu.Unlock()
 			parts := make([]string, len(exts))
 			for i, ext := range exts {
 				if i == len(exts)-1 {
