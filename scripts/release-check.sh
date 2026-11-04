@@ -152,7 +152,7 @@ check_go_version() {
     build_out="$(bash "$builder" "$out" 2>&1)"; brc=$?
     if [ "$brc" -ne 0 ]; then
         rm -rf "$out"
-        REASON_go_version="build-release.sh exit $brc: $(printf '%s' "$build_out" | tail -1)"
+        REASON_go_version="release build failed: build-release.sh exit $brc: $(printf '%s' "$build_out" | tail -1)"
         return
     fi
     printf '%s\n' "$build_out" | grep '^build-release: version=' | head -1
