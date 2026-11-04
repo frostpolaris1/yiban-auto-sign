@@ -24,7 +24,7 @@ React 19 + Vite 8 + TypeScript 7。视觉语言复用 Adminator 4.4.0。
 | `npm run gate:license` | 依赖许可证门。禁用许可证或清单漂移即红 |
 | `npm run test:unit` | fetch、查询默认值、游标、账号页、学校页、时间片页、账号设置页、用户管理页、看板与认证纯逻辑单测，加上图标来源门（`icon-source`：lucide 唯一、TS 字符串载荷无内联 svg、CSS data URI 登记、品牌标记 JSX 全量哈希、导入白名单），运行器为 `node:test` |
 | `npm run build:showcase` | 构建 `VITE_SHOWCASE=1` 的展示产物到 `dist-showcase/` |
-| `npm run test:e2e` | 全量 Playwright（427 条），串行。先跑 `npm run build` |
+| `npm run test:e2e` | 全量 Playwright（431 条），串行。先跑 `npm run build` |
 | `npm run test:e2e:fast` | 收口快路：行为 4 并发 + 视觉 1 并发。先跑 `npm run build` |
 | `npm run test:behavior` | 只跑行为用例，4 并发（`e2e/` 下除视觉外的全部 spec） |
 | `npm run test:shots` | 只跑视觉用例，1 并发 |
@@ -135,10 +135,10 @@ profile 菜单与会话过期提示各 2 张，toast 明暗各 1 张；
 win32 与 linux 两套各 96 个文件均已入库（2026-11-03 实测 `ls e2e/visual.spec.ts-snapshots | grep -c win32|linux`）。
 两平台文件数合计 192。
 
-行为用例 330 条：账号页 74 条、认证 40 条、看板 32 条、画廊 9 条、学校页 22 条、
+行为用例 334 条：账号页 77 条、认证 40 条、看板 32 条、画廊 9 条、学校页 23 条、
 时间片页与时间偏好 21 条、账号设置页 14 条、用户管理页 31 条、照片页 15 条、
 展示模式 9 条、微交互 25 条、运行页 16 条、引擎 19 条、组件 3 条。
-视觉文件另有无溢出 1 条。Playwright 总计 427 条（2026-11-04 实测 `npx playwright test --list`）。
+视觉文件另有无溢出 1 条。Playwright 总计 431 条（2026-11-04 实测 `npx playwright test --list`）。
 
 **基线收口（2026-10-30）**：两平台各 86 张全部重拍并入库；2026-10-29 登记的 linux 缺 8 张、
 linux 过期 16 张、win32 既有偏差 5 条（forgot ×4／reset ×1，2–9 像素）均已消除。

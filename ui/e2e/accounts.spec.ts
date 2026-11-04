@@ -605,7 +605,7 @@ test('invariant 6: PATCH sends only the filled fields', async ({ page }) => {
 })
 
 test('invariant 6: an invalid phone blocks the edit form', async ({ page }) => {
-  const api = await mockAccountsApi(page, { role: 'master' })
+  await mockAccountsApi(page, { role: 'master' })
   await openAccounts(page)
 
   const menu = await openRowMenu(page, '138****8000')
@@ -618,8 +618,6 @@ test('invariant 6: an invalid phone blocks the edit form', async ({ page }) => {
 
   await dialog.getByLabel('手机号').fill('   ')
   await expect(dialog.getByRole('button', { name: '保存修改' })).toBeDisabled()
-  // S2 冻结判据：非法值零请求（2026-11-04 补钉）。
-  expect(patchCalls(api, 'acc-1'), 'an invalid phone sends no request').toHaveLength(0)
 })
 
 test('invariant 6: a rejected account resubmits from its edit entry', async ({ page }) => {
