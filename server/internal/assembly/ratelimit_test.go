@@ -4,6 +4,7 @@ package assembly
 
 import (
 	"testing"
+	"time"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/config"
 )
@@ -49,6 +50,28 @@ func TestBuildRateLimitEnabled(t *testing.T) {
 	}
 	if len(guard.Trusted) != 2 {
 		t.Fatalf("可信代理 = %d, want 2", len(guard.Trusted))
+	}
+}
+
+// 测试邮件冷却必须咬住「每管理员 60s 一封」。
+// burst 改成 2 时第二次会放行；PerMinute 调高时等待会明显小于 60s。
+func TestMailTestThrottleIsOnePerAdminPerMinute(t *testing.T) {
+	throttle, err := buildMailTestThrottle()
+	if err != nil {
+		t.Fatalf("buildMailTestThrottle: %v", err)
+	}
+	if ok, _ := throttle.Allow("admin-1"); !ok {
+		t.Fatal("第一次测试邮件被拒绝")
+	}
+	ok, wait := throttle.Allow("admin-1")
+	if ok {
+		t.Fatal("同一管理员 60s 内第二次测试邮件被放行")
+	}
+	if wait < 55*time.Second || wait > 61*time.Second {
+		t.Fatalf("冷却等待 = %v, want 约 60s", wait)
+	}
+	if ok, _ := throttle.Allow("admin-2"); !ok {
+		t.Fatal("不同管理员共用冷却桶")
 	}
 }
 

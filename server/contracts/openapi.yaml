@@ -1536,6 +1536,44 @@ paths:
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         default: { $ref: '#/components/responses/DefaultError' }
+  /api/admin/mail/test:
+    post:
+      tags: [settings]
+      operationId: AdminMailTest
+      summary: Send a test email to the signed-in master.
+      description: |
+        Master only. Sends one plain-text message through the configured
+        SMTP delivery path to the signed-in account's own email address.
+        The request body is empty and ignored, so the client can never pick
+        the recipient. Delivery is synchronous: a 200 means the SMTP server
+        accepted the message (DATA was acknowledged), not that the mailbox
+        received it. Mail delivery disabled (SMTP is off) answers 409 with a
+        distinct message; a master whose account has no email address also
+        answers 409. A delivery failure answers 502 with no SMTP reply,
+        relay host, address or credential detail. At most one test-mail
+        attempt per master per 60 seconds; a request inside that window
+        answers 429 with Retry-After. The cooldown is process-local and
+        resets when the server restarts.
+        Every send attempt, success or failure, appends one
+        settings.mail_test audit row whose detail holds only the result and
+        the coarse delivery class; it never holds the SMTP reply, address,
+        relay host or credential.
+      x-roles: [master]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '200':
+          description: The SMTP server accepted the test message.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MailTestResult'
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '409': { $ref: '#/components/responses/ConflictError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
+        '502': { $ref: '#/components/responses/DefaultError' }
+        default: { $ref: '#/components/responses/DefaultError' }
   /api/admin/announcement:
     put:
       tags: [settings]
@@ -2408,6 +2446,15 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/SettingGroup'
+    MailTestResult:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          description: |
+            User-safe confirmation. It never carries the SMTP reply, the
+            recipient address, the relay host or any credential.
     Announcement:
       type: object
       required: [text, updated_at]

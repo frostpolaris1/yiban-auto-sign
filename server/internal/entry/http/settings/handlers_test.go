@@ -3,6 +3,7 @@ package settings_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	appsettings "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/settings"
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
+	coremail "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mail"
 	corenotify "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/notify"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
 	settingshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/settings"
@@ -84,7 +86,37 @@ type fixedClock struct{}
 
 func (fixedClock) Now() time.Time { return time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC) }
 
+// fakeSender 记录最后一次投递，并按需返回错误。
+type fakeSender struct {
+	msg   coremail.Message
+	err   error
+	sends int
+}
+
+func (f *fakeSender) Send(_ context.Context, msg coremail.Message) error {
+	f.sends++
+	f.msg = msg
+	return f.err
+}
+
+// fakeCooldown 是固定判据的冷却替身。
+type fakeCooldown struct {
+	allowed bool
+	wait    time.Duration
+	keys    []string
+}
+
+func (f *fakeCooldown) Allow(key string) (bool, time.Duration) {
+	f.keys = append(f.keys, key)
+	return f.allowed, f.wait
+}
+
 func newHandler(t *testing.T) (*settingshttp.Handler, *memAnnouncementStore, *memAudit) {
+	t.Helper()
+	return newHandlerWith(t, nil, nil)
+}
+
+func newHandlerWith(t *testing.T, sender coremail.Sender, cooldown appsettings.Cooldown) (*settingshttp.Handler, *memAnnouncementStore, *memAudit) {
 	t.Helper()
 	notifySvc, err := appnotify.NewService(&memNotifyRepo{})
 	if err != nil {
@@ -101,14 +133,20 @@ func newHandler(t *testing.T) (*settingshttp.Handler, *memAnnouncementStore, *me
 	audits := &memAudit{}
 	announcementSvc, err := appsettings.NewService(appsettings.Deps{
 		Store: store, Audit: audits, Tx: passthroughTx{}, Clock: fixedClock{},
+		Mail: sender, Cooldown: cooldown,
 	})
 	if err != nil {
 		t.Fatalf("announcement service: %v", err)
 	}
-	return settingshttp.NewHandler(notifySvc, roster, announcementSvc), store, audits
+	return settingshttp.NewHandler(notifySvc, roster, announcementSvc, announcementSvc), store, audits
 }
 
 func newContext(method, path, body string, role coreauth.Role) (*gin.Context, *httptest.ResponseRecorder) {
+	return newContextWithEmail(method, path, body, role, "admin@example.com")
+}
+
+func newContextWithEmail(method, path, body string, role coreauth.Role,
+	email string) (*gin.Context, *httptest.ResponseRecorder) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -116,7 +154,7 @@ func newContext(method, path, body string, role coreauth.Role) (*gin.Context, *h
 	if role != "" {
 		req = req.WithContext(coreauth.WithSession(req.Context(), coreauth.Session{
 			User: coreauth.User{
-				ID: "11111111-1111-1111-1111-111111111111", Email: "admin@example.com",
+				ID: "11111111-1111-1111-1111-111111111111", Email: email,
 				Role: role, Status: coreauth.StatusActive,
 			},
 			CSRFToken: "csrf",
@@ -384,4 +422,128 @@ func TestAnnouncementClear(t *testing.T) {
 	if body.Text != "" || body.UpdatedAt != nil {
 		t.Fatalf("body = %+v", body)
 	}
+}
+
+// 测试邮件：未登录 401；admin/user 403；master 200 且固定文案。
+func TestMailTestMasterOnly(t *testing.T) {
+	handler, _, _ := newHandlerWith(t, &fakeSender{}, nil)
+
+	c, rec := newContext(http.MethodPost, "/api/admin/mail/test", "", "")
+	handler.AdminMailTest(c, oapi.AdminMailTestParams{})
+	if rec.Code != http.StatusUnauthorized || errorCode(t, rec) != "unauthorized" {
+		t.Fatalf("anonymous = %d %s", rec.Code, rec.Body.String())
+	}
+	for _, role := range []coreauth.Role{coreauth.RoleUser, coreauth.RoleAdmin} {
+		c, rec = newContext(http.MethodPost, "/api/admin/mail/test", "", role)
+		handler.AdminMailTest(c, oapi.AdminMailTestParams{})
+		if rec.Code != http.StatusForbidden || errorCode(t, rec) != "forbidden" {
+			t.Fatalf("%s = %d %s", role, rec.Code, rec.Body.String())
+		}
+	}
+
+	c, rec = newContext(http.MethodPost, "/api/admin/mail/test", "", coreauth.RoleMaster)
+	handler.AdminMailTest(c, oapi.AdminMailTestParams{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("master = %d %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Message == "" {
+		t.Fatal("success answer carries no message")
+	}
+}
+
+// 收件人只取会话邮箱：请求体里的 to 被忽略。
+func TestMailTestUsesSessionMailbox(t *testing.T) {
+	sender := &fakeSender{}
+	handler, _, audits := newHandlerWith(t, sender, &fakeCooldown{allowed: true})
+
+	c, rec := newContextWithEmail(http.MethodPost, "/api/admin/mail/test",
+		`{"to":"attacker@example.com"}`, coreauth.RoleMaster, "owner@example.com")
+	handler.AdminMailTest(c, oapi.AdminMailTestParams{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if sender.sends != 1 {
+		t.Fatalf("sends = %d, want 1", sender.sends)
+	}
+	if sender.msg.To != "owner@example.com" {
+		t.Fatalf("recipient = %q, want the session mailbox", sender.msg.To)
+	}
+	if sender.msg.Subject == "" || sender.msg.Text == "" {
+		t.Fatalf("message = %+v, want subject and body", sender.msg)
+	}
+	if len(audits.entries) != 1 || audits.entries[0].Action != coreaudit.ActionSettingsMailTest {
+		t.Fatalf("audit = %+v, want one settings.mail_test row", audits.entries)
+	}
+}
+
+// 失败映射：未配置 409、无邮箱 409、发送失败 502、冷却 429＋Retry-After。
+// 响应体不得出现 SMTP 应答或口令。
+func TestMailTestErrorMapping(t *testing.T) {
+	t.Run("mail disabled", func(t *testing.T) {
+		handler, _, _ := newHandlerWith(t, nil, nil)
+		c, rec := newContext(http.MethodPost, "/api/admin/mail/test", "", coreauth.RoleMaster)
+		handler.AdminMailTest(c, oapi.AdminMailTestParams{})
+		if rec.Code != http.StatusConflict || errorCode(t, rec) != "conflict" {
+			t.Fatalf("status = %d %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("no email", func(t *testing.T) {
+		sender := &fakeSender{}
+		handler, _, _ := newHandlerWith(t, sender, nil)
+		c, rec := newContextWithEmail(http.MethodPost, "/api/admin/mail/test",
+			"", coreauth.RoleMaster, "")
+		handler.AdminMailTest(c, oapi.AdminMailTestParams{})
+		if rec.Code != http.StatusConflict || errorCode(t, rec) != "conflict" {
+			t.Fatalf("status = %d %s", rec.Code, rec.Body.String())
+		}
+		if sender.sends != 0 {
+			t.Fatal("a mailbox-less account reached the sender")
+		}
+	})
+
+	t.Run("send failed", func(t *testing.T) {
+		const secret = "smtp-secret-9f21"
+		sender := &fakeSender{err: &coremail.DeliveryError{
+			Kind: coremail.KindAuth, Err: errors.New(secret),
+		}}
+		handler, _, audits := newHandlerWith(t, sender, nil)
+		c, rec := newContext(http.MethodPost, "/api/admin/mail/test", "", coreauth.RoleMaster)
+		handler.AdminMailTest(c, oapi.AdminMailTestParams{})
+		if rec.Code != http.StatusBadGateway || errorCode(t, rec) != "upstream_unavailable" {
+			t.Fatalf("status = %d %s", rec.Code, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), secret) || strings.Contains(rec.Body.String(), "kind=") {
+			t.Fatalf("delivery detail leaked: %s", rec.Body.String())
+		}
+		if len(audits.entries) != 1 || audits.entries[0].Detail["result"] != "error" {
+			t.Fatalf("audit = %+v, want one error settings.mail_test row", audits.entries)
+		}
+	})
+
+	t.Run("cooldown", func(t *testing.T) {
+		sender := &fakeSender{}
+		cooldown := &fakeCooldown{allowed: false, wait: 42 * time.Second}
+		handler, _, _ := newHandlerWith(t, sender, cooldown)
+		c, rec := newContext(http.MethodPost, "/api/admin/mail/test", "", coreauth.RoleMaster)
+		handler.AdminMailTest(c, oapi.AdminMailTestParams{})
+		if rec.Code != http.StatusTooManyRequests || errorCode(t, rec) != "rate_limited" {
+			t.Fatalf("status = %d %s", rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("Retry-After"); got != "42" {
+			t.Fatalf("Retry-After = %q, want 42", got)
+		}
+		if sender.sends != 0 {
+			t.Fatal("a throttled request reached the sender")
+		}
+		if len(cooldown.keys) != 1 || !strings.HasPrefix(cooldown.keys[0], "admin-mail-test:") {
+			t.Fatalf("cooldown keys = %v", cooldown.keys)
+		}
+	})
 }

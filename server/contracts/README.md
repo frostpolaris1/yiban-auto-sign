@@ -20,8 +20,10 @@ authoritative and a gate keeps both tables equal.
   seconds. Login, reset password, change password, verify and sign are limited
   per client IP and per account key; forgot password is limited per client IP
   only; register is limited per client IP and per normalized email. Account
-  create and update are limited per caller. Other 429 answers (time-preference
-  cooldown, capacity) omit `Retry-After`.
+  create and update are limited per caller. The admin test-email endpoint is
+  limited to one attempt per master per 60 seconds (process-local; a restart
+  clears it) and answers 429 with `Retry-After`. Other 429 answers
+  (time-preference cooldown, capacity) omit `Retry-After`.
 - Public registration is closed by default. `GET /api/auth/registration` is
   public; `PUT /api/auth/registration` is master only; `POST /api/auth/register`
   creates a role user account and signs in.
@@ -134,6 +136,8 @@ either side drifts.
 |  |  |  | 幂等替换本人的覆盖集；未知类别/渠道或重复对 400；未列出的对回默认。 |
 | GET | `/api/admin/settings` | master/admin | 2ws A |
 |  |  |  | 只读配置名册，按组返回；敏感键只给 `{set, masked, source}`，永不回显原文；source=env/default/unknown（file 保留，本服务不产出）。键全集来自 `config/registry.json`。 |
+| POST | `/api/admin/mail/test` | master | c3e |
+|  |  |  | 向当前会话邮箱同步发一封测试信；空请求体，收件人不可由客户端指定；邮件投递关闭（SMTP 未启用）与无邮箱均 409（文案不同）、发送失败 502（不含 SMTP 应答/主机/口令）；每次外呼（成功/失败）写 `settings.mail_test` 审计，detail 只含 result 与粗分类；每管理员 60s 冷却（进程内，重启清空）429＋Retry-After。 |
 | PUT | `/api/admin/announcement` | master | 2ws A |
 |  |  |  | 发布或下线全站公告；去首尾空白后单行、上限 200 字（与旧线一致）；写 `settings.announcement` 审计，detail 不含正文。 |
 | GET | `/api/announcement` | master/admin/user | 2ws A |

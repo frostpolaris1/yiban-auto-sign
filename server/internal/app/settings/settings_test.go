@@ -12,6 +12,7 @@ import (
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	coremail "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mail"
 )
 
 // mapSource 是固定环境面。空串按未设置处理，与 config.Load 一致。
@@ -336,5 +337,185 @@ func TestAnnouncementGet(t *testing.T) {
 	}
 	if announcement.Text != "公告" || announcement.UpdatedAt == nil || !announcement.UpdatedAt.Equal(now) {
 		t.Fatalf("announcement = %+v", announcement)
+	}
+}
+
+// fakeMail 记录最后一次投递，并按需返回错误。
+type fakeMail struct {
+	msg   coremail.Message
+	err   error
+	sends int
+}
+
+func (f *fakeMail) Send(_ context.Context, msg coremail.Message) error {
+	f.sends++
+	f.msg = msg
+	return f.err
+}
+
+// fakeCooldown 是固定判据的冷却替身。
+type fakeCooldown struct {
+	allowed bool
+	wait    time.Duration
+	keys    []string
+}
+
+func (f *fakeCooldown) Allow(key string) (bool, time.Duration) {
+	f.keys = append(f.keys, key)
+	return f.allowed, f.wait
+}
+
+func newMailService(t *testing.T, sender coremail.Sender, cooldown appsettings.Cooldown) (*appsettings.Service, *fakeAudit, *fakeTx) {
+	t.Helper()
+	audits := &fakeAudit{}
+	tx := &fakeTx{}
+	svc, err := appsettings.NewService(appsettings.Deps{
+		Store: &fakeStore{}, Audit: audits, Tx: tx, Clock: fixedClock{},
+		Mail: sender, Cooldown: cooldown,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	return svc, audits, tx
+}
+
+// 收件人只取会话邮箱：签名里没有第二个地址来源。
+func TestSendTestMailUsesSessionAddress(t *testing.T) {
+	sender := &fakeMail{}
+	cooldown := &fakeCooldown{allowed: true}
+	svc, audits, tx := newMailService(t, sender, cooldown)
+	user := coreauth.User{ID: "master-1", Email: "  owner@example.com  "}
+	if err := svc.SendTestMail(context.Background(), user); err != nil {
+		t.Fatalf("SendTestMail: %v", err)
+	}
+	if sender.sends != 1 {
+		t.Fatalf("sends = %d, want 1", sender.sends)
+	}
+	if sender.msg.To != "owner@example.com" {
+		t.Fatalf("recipient = %q, want trimmed session address", sender.msg.To)
+	}
+	if sender.msg.Subject == "" || sender.msg.Text == "" {
+		t.Fatalf("message = %+v, want subject and body", sender.msg)
+	}
+	if len(cooldown.keys) != 1 || cooldown.keys[0] != "admin-mail-test:master-1" {
+		t.Fatalf("cooldown keys = %v", cooldown.keys)
+	}
+	if tx.calls != 1 {
+		t.Fatalf("audit transactions = %d, want 1", tx.calls)
+	}
+	if len(audits.entries) != 1 {
+		t.Fatalf("audit entries = %d, want 1", len(audits.entries))
+	}
+	entry := audits.entries[0]
+	if entry.Action != coreaudit.ActionSettingsMailTest || entry.TargetType != "settings" || entry.TargetID != "mail" {
+		t.Fatalf("audit entry = %+v", entry)
+	}
+	if entry.Detail["result"] != "sent" {
+		t.Fatalf("audit detail = %v, want result=sent", entry.Detail)
+	}
+	if strings.Contains(entry.ActorLabel, "owner@example.com") {
+		t.Fatalf("audit actor label leaks the full address: %q", entry.ActorLabel)
+	}
+}
+
+// 会话邮箱为空：409，且不触达发送器、不写审计。
+func TestSendTestMailRejectsMissingMailbox(t *testing.T) {
+	for _, email := range []string{"", "   "} {
+		sender := &fakeMail{}
+		svc, audits, _ := newMailService(t, sender, nil)
+		err := svc.SendTestMail(context.Background(), coreauth.User{ID: "master-1", Email: email})
+		if code := errs.From(err).Code; code != errs.CodeConflict {
+			t.Fatalf("email %q: code = %s, want conflict", email, code)
+		}
+		if sender.sends != 0 {
+			t.Fatal("a mailbox-less account reached the sender")
+		}
+		if len(audits.entries) != 0 {
+			t.Fatal("a mailbox-less account wrote an audit row")
+		}
+	}
+}
+
+// 邮件投递关闭：409，不静默成功、不写审计。
+func TestSendTestMailDisabled(t *testing.T) {
+	svc, audits, _ := newMailService(t, nil, nil)
+	err := svc.SendTestMail(context.Background(), coreauth.User{ID: "master-1", Email: "owner@example.com"})
+	if code := errs.From(err).Code; code != errs.CodeConflict {
+		t.Fatalf("code = %s, want conflict", code)
+	}
+	if len(audits.entries) != 0 {
+		t.Fatal("a disabled delivery wrote an audit row")
+	}
+}
+
+// 投递失败：502，错误文本与审计 detail 都不含 SMTP 应答或口令。
+func TestSendTestMailDeliveryFailureHidesTransportDetail(t *testing.T) {
+	const secret = "smtp-secret-9f21"
+	sender := &fakeMail{err: &coremail.DeliveryError{
+		Kind: coremail.KindAuth, Err: errors.New("535 auth failed: " + secret),
+	}}
+	svc, audits, _ := newMailService(t, sender, nil)
+	err := svc.SendTestMail(context.Background(), coreauth.User{ID: "master-1", Email: "owner@example.com"})
+	if code := errs.From(err).Code; code != errs.CodeUpstream {
+		t.Fatalf("code = %s, want upstream_unavailable", code)
+	}
+	if strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "535") {
+		t.Fatalf("error text leaks transport detail: %v", err)
+	}
+	if len(audits.entries) != 1 {
+		t.Fatalf("audit entries = %d, want 1", len(audits.entries))
+	}
+	detail := audits.entries[0].Detail
+	if detail["result"] != "error" || detail["kind"] != "auth" || detail["retryable"] != false {
+		t.Fatalf("audit detail = %v, want error/auth/false", detail)
+	}
+	for _, value := range detail {
+		if text, ok := value.(string); ok && strings.Contains(text, secret) {
+			t.Fatalf("audit detail leaks the SMTP reply: %v", detail)
+		}
+	}
+}
+
+// 审计写失败必须失败关闭：邮件可能已发出，但结果不能无审计地当成功。
+func TestSendTestMailFailsClosedWhenAuditFails(t *testing.T) {
+	sender := &fakeMail{}
+	audits := &fakeAudit{err: errors.New("audit down")}
+	svc, err := appsettings.NewService(appsettings.Deps{
+		Store: &fakeStore{}, Audit: audits, Tx: &fakeTx{}, Clock: fixedClock{},
+		Mail: sender,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	err = svc.SendTestMail(context.Background(), coreauth.User{ID: "master-1", Email: "owner@example.com"})
+	if code := errs.From(err).Code; code != errs.CodeInternal {
+		t.Fatalf("code = %s, want internal_error", code)
+	}
+	if sender.sends != 1 {
+		t.Fatalf("sends = %d, want 1", sender.sends)
+	}
+}
+
+// 冷却内的请求：429，带 retry_after_seconds，且不触达发送器、不写审计。
+func TestSendTestMailCooldown(t *testing.T) {
+	sender := &fakeMail{}
+	cooldown := &fakeCooldown{allowed: false, wait: 42 * time.Second}
+	svc, audits, _ := newMailService(t, sender, cooldown)
+	err := svc.SendTestMail(context.Background(), coreauth.User{ID: "master-1", Email: "owner@example.com"})
+	if code := errs.From(err).Code; code != errs.CodeRateLimited {
+		t.Fatalf("code = %s, want rate_limited", code)
+	}
+	var stable *errs.Error
+	if !errors.As(err, &stable) {
+		t.Fatalf("err = %T, want *errs.Error", err)
+	}
+	if got := stable.Details["retry_after_seconds"]; got != 42 {
+		t.Fatalf("retry_after_seconds = %v, want 42", got)
+	}
+	if sender.sends != 0 {
+		t.Fatal("a throttled request reached the sender")
+	}
+	if len(audits.entries) != 0 {
+		t.Fatal("a throttled request wrote an audit row")
 	}
 }

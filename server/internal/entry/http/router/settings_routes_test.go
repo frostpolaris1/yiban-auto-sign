@@ -65,13 +65,17 @@ func (stubAuditReader) List(context.Context, appaudit.ListFilter) (appaudit.LogP
 	return appaudit.LogPage{}, nil
 }
 
+type stubMailTest struct{}
+
+func (stubMailTest) SendTestMail(context.Context, auth.User) error { return nil }
+
 func newSettingsEngine(t *testing.T) (*gin.Engine, *stubIssuer) {
 	t.Helper()
 	issuer := newStubIssuer()
 	gin.SetMode(gin.TestMode)
 	engine, err := router.New(router.Options{
 		Sessions: issuer,
-		Settings: settingshttp.NewHandler(stubNotify{}, stubRoster{}, &stubAnnouncement{}),
+		Settings: settingshttp.NewHandler(stubNotify{}, stubRoster{}, &stubAnnouncement{}, stubMailTest{}),
 		Audit:    audithttp.NewHandler(stubAuditReader{}),
 	})
 	if err != nil {
@@ -112,7 +116,7 @@ func requestWithSession(method, path, body, csrf string, session *auth.Session) 
 func TestSettingsRoutesAreWired(t *testing.T) {
 	engine, issuer := newSettingsEngine(t)
 
-	// 未登录：四个端点都 401（announcement 读同样要求会话）。
+	// 未登录：四个读端点都 401；测试邮件是 POST，单独断言。
 	for _, path := range []string{
 		"/api/admin/notify", "/api/admin/settings", "/api/announcement", "/api/audit-logs",
 	} {
@@ -120,6 +124,10 @@ func TestSettingsRoutesAreWired(t *testing.T) {
 		if rec.Code != http.StatusUnauthorized {
 			t.Fatalf("%s anonymous = %d", path, rec.Code)
 		}
+	}
+	rec := serve(engine, requestWithSession(http.MethodPost, "/api/admin/mail/test", "", "", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("mail test anonymous = %d", rec.Code)
 	}
 
 	user := issueUser(t, issuer, auth.RoleUser)
@@ -142,6 +150,10 @@ func TestSettingsRoutesAreWired(t *testing.T) {
 		{"notify put admin", http.MethodPut, "/api/admin/notify", `{"items":[]}`, admin, true, http.StatusOK},
 		{"settings user", http.MethodGet, "/api/admin/settings", "", user, false, http.StatusForbidden},
 		{"settings admin", http.MethodGet, "/api/admin/settings", "", admin, false, http.StatusOK},
+		{"mail test user", http.MethodPost, "/api/admin/mail/test", "", user, true, http.StatusForbidden},
+		{"mail test admin", http.MethodPost, "/api/admin/mail/test", "", admin, true, http.StatusForbidden},
+		{"mail test master without csrf", http.MethodPost, "/api/admin/mail/test", "", master, false, http.StatusForbidden},
+		{"mail test master", http.MethodPost, "/api/admin/mail/test", "", master, true, http.StatusOK},
 		{"announcement user", http.MethodGet, "/api/announcement", "", user, false, http.StatusOK},
 		{"announcement admin", http.MethodGet, "/api/announcement", "", admin, false, http.StatusOK},
 		{"announcement write admin", http.MethodPut, "/api/admin/announcement", `{"text":"公告"}`, admin, true, http.StatusForbidden},
