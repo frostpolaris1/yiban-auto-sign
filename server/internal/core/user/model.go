@@ -32,6 +32,11 @@ type Record struct {
 	Role               coreauth.Role
 	Status             coreauth.Status
 	MustChangePassword bool
+	// MailNotify 是本人签到失败邮件总开关。缺省 true（旧线 parity）；
+	// 只影响用户本人邮件的投递判断，不影响登录与凭据类邮件。
+	// 管理员摘要走 notification_prefs.sign_failed_daily，两者不互相替代：
+	// 0v8 投递用户邮件要求 mail_notify=true；管理员摘要只看 prefs。
+	MailNotify bool
 	// 名下未软删账号的计数。列表与抽屉共用。
 	AccountCount      int
 	PendingCount      int

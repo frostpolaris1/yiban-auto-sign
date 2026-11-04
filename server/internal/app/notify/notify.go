@@ -16,6 +16,9 @@
 // # 口径
 // 存储只放覆盖值，不放默认值：PUT 的 items 就是完整覆盖集，
 // 未列出的对随之回到默认。默认表在 core/notify 只有一份。
+// 本表是**管理员订阅**面；用户本人的签到失败邮件总开关是
+// users.mail_notify。0v8 投递用户邮件要求 mail_notify=true，
+// 管理员摘要只看本表，两者分别判定。
 package notify
 
 import (

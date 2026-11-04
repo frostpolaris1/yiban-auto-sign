@@ -107,6 +107,13 @@ func (r *AccountRepo) Get(ctx context.Context, s corescope.Scope, id string) (co
 	return r.fetch(ctx, s, id, false)
 }
 
+// GetIncludingDeleted 在范围内返回一个账号，软删行也返回。
+// 本人自助面用它读自己刚软删的行：Get 对软删行报 404，
+// 无法区分「不是我的」与「已删」。
+func (r *AccountRepo) GetIncludingDeleted(ctx context.Context, s corescope.Scope, id string) (coreaccount.Record, error) {
+	return r.fetch(ctx, s, id, true)
+}
+
 // GetForUpdate 在范围内返回一个未删除账号，并持有行锁到事务结束。
 //
 // **必须在事务内运行**：无事务报 ErrNoTransaction。
@@ -346,7 +353,8 @@ func (r *AccountRepo) SetStatus(ctx context.Context, s corescope.Scope, id strin
 }
 
 // SoftDelete 把一个账号标记为已删除。
-// 行保留 30 天，误删可恢复；凭据行一并保留。
+// 行保留到保留期任务物理清除；本人自助恢复窗口见
+// core/account.SelfRestoreGrace（7 天）。凭据行一并保留。
 func (r *AccountRepo) SoftDelete(ctx context.Context, s corescope.Scope, id, by string, at time.Time) error {
 	if strings.TrimSpace(by) == "" {
 		return validationError("deleted_by is required")
@@ -410,6 +418,90 @@ func (r *AccountRepo) Restore(ctx context.Context, s corescope.Scope, id string,
 		return coreaccount.Record{}, mapError(err)
 	}
 	return r.classifyRestoreMiss(ctx, s, id)
+}
+
+// RestoreSelf 恢复本人自删的账号。
+//
+// **必须在事务内运行**。条件 UPDATE 一次判完全部自助判据：
+// 只恢复 deleted_by=by 的行、deleted_at 不早于 notBefore（宽限窗口）、
+// 且该属主名下没有其他未软删账号；容量与管理员恢复同口径，
+// 在同一个容量 advisory lock 下重数。
+//
+// 零行分类：不可见或不存在 → not_found；未删 → conflict；
+// 删除者不是本人 → forbidden；超窗 → conflict；名下已有生效账号 →
+// validation；其余按容量不足报 capacity_exceeded。
+func (r *AccountRepo) RestoreSelf(ctx context.Context, s corescope.Scope, id, by string, notBefore time.Time, limit, ownerLimit int) (coreaccount.Record, error) {
+	if !r.db.hasTx(ctx) {
+		return coreaccount.Record{}, ErrNoTransaction
+	}
+	if strings.TrimSpace(by) == "" {
+		return coreaccount.Record{}, validationError("deleted_by is required")
+	}
+	if notBefore.IsZero() {
+		return coreaccount.Record{}, validationError("grace cutoff is required")
+	}
+	if limit <= 0 || ownerLimit <= 0 {
+		return coreaccount.Record{}, validationError("limit must be positive")
+	}
+	if _, err := r.db.q(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock($1)", AccountCapacityLock); err != nil {
+		return coreaccount.Record{}, mapError(err)
+	}
+	scopeSQL, scopeArgs, err := scopePredicate(s, 6, "")
+	if err != nil {
+		return coreaccount.Record{}, err
+	}
+	args := append([]any{id, limit, ownerLimit, notBefore, by}, scopeArgs...)
+	row := r.db.q(ctx).QueryRow(ctx, `
+		UPDATE accounts
+		   SET deleted_at = NULL, deleted_by = NULL, updated_at = now()
+		 WHERE id = $1::uuid
+		   AND deleted_at IS NOT NULL
+		   AND deleted_at >= $4
+		   AND deleted_by = $5::uuid
+		   AND NOT EXISTS (SELECT 1 FROM accounts live
+		                    WHERE live.owner_user_id = accounts.owner_user_id
+		                      AND live.deleted_at IS NULL)
+		   AND (SELECT count(*) FROM accounts WHERE deleted_at IS NULL) < $2
+		   AND (SELECT count(*) FROM accounts
+		         WHERE deleted_at IS NULL
+		           AND owner_user_id = (SELECT owner_user_id FROM accounts WHERE id = $1::uuid)) < $3`+scopeSQL+`
+		RETURNING `+accountColumns, args...)
+	record, err := scanAccount(row)
+	if err == nil {
+		return record, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return coreaccount.Record{}, mapError(err)
+	}
+	return r.classifySelfRestoreMiss(ctx, s, id, by, notBefore)
+}
+
+// classifySelfRestoreMiss 解释一次零行自助恢复，按判据顺序给出稳定错误。
+// 读取在 UPDATE 之后：同事务的后续语句看到的是最新已提交快照。
+func (r *AccountRepo) classifySelfRestoreMiss(ctx context.Context, s corescope.Scope, id, by string, notBefore time.Time) (coreaccount.Record, error) {
+	record, err := r.fetch(ctx, s, id, true)
+	if err != nil {
+		return coreaccount.Record{}, err
+	}
+	switch {
+	case record.DeletedAt == nil:
+		return coreaccount.Record{}, conflictError("account is not deleted")
+	case record.DeletedBy != by:
+		return coreaccount.Record{}, coreerrs.New(coreerrs.CodeForbidden,
+			"only a self-deleted account can be restored")
+	case record.DeletedAt.Before(notBefore):
+		return coreaccount.Record{}, conflictError("the self-restore grace period has expired")
+	}
+	var live int
+	if err := r.db.q(ctx).QueryRow(ctx,
+		`SELECT count(*) FROM accounts WHERE owner_user_id = $1::uuid AND deleted_at IS NULL`,
+		record.OwnerUserID).Scan(&live); err != nil {
+		return coreaccount.Record{}, mapError(err)
+	}
+	if live > 0 {
+		return coreaccount.Record{}, validationError("an active account already exists")
+	}
+	return coreaccount.Record{}, capacityError()
 }
 
 // Credential 在范围内返回某账号的凭据行。

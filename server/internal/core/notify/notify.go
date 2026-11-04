@@ -21,6 +21,9 @@ package notify
 type Category string
 
 // 类别词表。顺序即响应顺序，与契约 enum 一致。
+// sign_failed_daily 是**管理员订阅**的每日摘要渠道；
+// 用户本人的签到失败邮件总开关是 users.mail_notify，
+// 0v8 投递时两者分别判定，不互相替代。
 const (
 	CategoryCredentialInvalid Category = "credential_invalid"
 	CategoryReviewPending     Category = "review_pending"

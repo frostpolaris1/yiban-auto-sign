@@ -195,6 +195,42 @@ func (s *server) AccountRestore(c *gin.Context, id oapi.AccountID, params oapi.A
 	s.accounts.Restore(c, id, params)
 }
 
+// MyAccountDelete 委托账号处理器。未装配时仍是 501。
+func (s *server) MyAccountDelete(c *gin.Context, id oapi.AccountID, params oapi.MyAccountDeleteParams) {
+	if s.accounts == nil {
+		notImplemented(c)
+		return
+	}
+	s.accounts.MyAccountDelete(c, id, params)
+}
+
+// MyAccountRestore 委托账号处理器。未装配时仍是 501。
+func (s *server) MyAccountRestore(c *gin.Context, id oapi.AccountID, params oapi.MyAccountRestoreParams) {
+	if s.accounts == nil {
+		notImplemented(c)
+		return
+	}
+	s.accounts.MyAccountRestore(c, id, params)
+}
+
+// MailNotifyGet 委托用户处理器。未装配时仍是 501。
+func (s *server) MailNotifyGet(c *gin.Context) {
+	if s.users == nil {
+		notImplemented(c)
+		return
+	}
+	s.users.MailNotifyGet(c)
+}
+
+// MailNotifySet 委托用户处理器。未装配时仍是 501。
+func (s *server) MailNotifySet(c *gin.Context, params oapi.MailNotifySetParams) {
+	if s.users == nil {
+		notImplemented(c)
+		return
+	}
+	s.users.MailNotifySet(c, params)
+}
+
 // AccountDeviceRefresh 委托账号处理器。未装配时仍是 501。
 func (s *server) AccountDeviceRefresh(c *gin.Context, id oapi.AccountID, params oapi.AccountDeviceRefreshParams) {
 	if s.accounts == nil {

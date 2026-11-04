@@ -108,6 +108,14 @@ func (f *fakeUserRepo) MarkLogin(context.Context, string, time.Time) error {
 	return errors.New("not used")
 }
 
+func (f *fakeUserRepo) MailNotify(context.Context, string) (bool, error) {
+	return true, errors.New("not used")
+}
+
+func (f *fakeUserRepo) SetMailNotify(context.Context, string, bool) error {
+	return errors.New("not used")
+}
+
 func (f *fakeUserRepo) SoftDelete(_ context.Context, id, _ string, at time.Time) error {
 	rec, ok := f.records[id]
 	if !ok || rec.DeletedAt != nil {

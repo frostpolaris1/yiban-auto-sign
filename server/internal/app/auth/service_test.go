@@ -120,6 +120,10 @@ func (f *fakeUsers) SetStatus(context.Context, string, coreauth.Status, time.Tim
 func (f *fakeUsers) MarkLogin(context.Context, string, time.Time) error                  { return nil }
 func (f *fakeUsers) SoftDelete(context.Context, string, string, time.Time) error         { return nil }
 
+// MailNotify 只为满足 appuser.Repo 接口：认证流不读邮件开关。
+func (f *fakeUsers) MailNotify(context.Context, string) (bool, error)  { return true, nil }
+func (f *fakeUsers) SetMailNotify(context.Context, string, bool) error { return nil }
+
 type fakeSessions struct {
 	issued        []coreauth.User
 	revokedAll    []string

@@ -48,6 +48,10 @@ type Service interface {
 	Pause(ctx context.Context, scope corescope.Scope, id string, paused bool, actor appaudit.Actor) (appaccount.Record, error)
 	Delete(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) error
 	Restore(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) (appaccount.Record, error)
+	// SelfDelete 与 SelfRestore 只作用于调用者自己的账号；
+	// scope 由入口层用会话 user id 构造，不来自请求字段。
+	SelfDelete(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) error
+	SelfRestore(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) (appaccount.Record, error)
 	DeviceRefresh(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) (appaccount.DeviceRefreshResult, error)
 }
 
@@ -240,6 +244,36 @@ func (h *Handler) Restore(c *gin.Context, id oapi.AccountID, _ oapi.AccountResto
 	respond.JSON(c.Writer, http.StatusOK, accountResponse(record))
 }
 
+// MyAccountDelete 实现 POST /api/me/accounts/{id}/delete。
+// 自助面只认会话 user id：任何角色都只能删自己名下的行。
+// 他人账号由仓储的范围谓词报 404，本层不先读、不暴露存在性。
+func (h *Handler) MyAccountDelete(c *gin.Context, id oapi.AccountID, _ oapi.MyAccountDeleteParams) {
+	scope, actor, ok := h.selfPrincipal(c)
+	if !ok {
+		return
+	}
+	if err := h.svc.SelfDelete(c.Request.Context(), scope, id, actor); err != nil {
+		fail(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// MyAccountRestore 实现 POST /api/me/accounts/{id}/restore。
+// 管理员删除的账号、超窗与已有生效账号的判据都在用例与适配器。
+func (h *Handler) MyAccountRestore(c *gin.Context, id oapi.AccountID, _ oapi.MyAccountRestoreParams) {
+	scope, actor, ok := h.selfPrincipal(c)
+	if !ok {
+		return
+	}
+	record, err := h.svc.SelfRestore(c.Request.Context(), scope, id, actor)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	respond.JSON(c.Writer, http.StatusOK, accountResponse(record))
+}
+
 // DeviceRefresh 实现 POST /api/accounts/{id}/device-refresh。
 // 请求无体：读存量凭据，平台回读由用例编排。
 // 用例返回的 DeviceCode 是明文；在这里掩码后进响应，
@@ -326,6 +360,22 @@ func (h *Handler) principal(c *gin.Context) (corescope.Scope, appaudit.Actor, bo
 		return corescope.Scope{}, appaudit.Actor{}, false
 	}
 	return scope, actor, true
+}
+
+// selfPrincipal 构造只覆盖会话用户自己的作用域。
+// 角色不改变作用域形状：master/admin 的自助动作同样只碰自己的行。
+func (h *Handler) selfPrincipal(c *gin.Context) (corescope.Scope, appaudit.Actor, bool) {
+	session, ok := coreauth.FromContext(c.Request.Context())
+	if !ok {
+		fail(c, errs.New(errs.CodeUnauthorized, "authentication required"))
+		return corescope.Scope{}, appaudit.Actor{}, false
+	}
+	_, actor, err := h.authz.Authorize(c.Request.Context(), session.User)
+	if err != nil {
+		fail(c, err)
+		return corescope.Scope{}, appaudit.Actor{}, false
+	}
+	return corescope.User(session.User.ID), actor, true
 }
 
 func accountResponse(record appaccount.Record) oapi.Account {

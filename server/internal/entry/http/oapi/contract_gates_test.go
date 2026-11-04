@@ -1067,3 +1067,23 @@ func TestNotModifiedScannerShapes(t *testing.T) {
 		t.Fatal("子键值里的 ETag 被当成头声明")
 	}
 }
+
+// 两套邮件开关的分工必须写死在契约里，0v8 不得按错开关：
+// users.mail_notify 是用户本人的签到失败邮件总开关；
+// notification_prefs.sign_failed_daily 是管理员订阅的每日摘要渠道。
+// 投递用户邮件要求 mail_notify=true；管理员摘要只看 prefs。
+// 本门读契约文本并压平换行，缺任一句即红。
+func TestMailNotifySwitchScopeIsDocumented(t *testing.T) {
+	spec := contractRead(t, contractSpecPath)
+	flat := strings.Join(strings.Fields(spec), " ")
+	for _, want := range []string{
+		"users.mail_notify is the signed-in user's own sign-failure mail master switch",
+		"notification_prefs.sign_failed_daily is the administrator subscription channel for the daily digest",
+		"user sign-failure mail requires the user's mail_notify=true and a delivery trigger",
+		"the administrator digest reads only notification_prefs",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("contract does not state the mail switch boundary: %q", want)
+		}
+	}
+}

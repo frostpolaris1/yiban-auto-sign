@@ -344,6 +344,13 @@ func TestMigrateLegacyImportReconcileE2E(t *testing.T) {
 	if n := e2eCount(t, dsn, "SELECT count(*) FROM admin_schools"); n != 0 {
 		t.Fatalf("admin_schools rows = %d, want 0", n)
 	}
+	// 邮件开关按旧值导入：opt-out 不得被新列默认 true 静默打开。
+	if n := e2eCount(t, dsn, "SELECT count(*) FROM users WHERE email = '"+e2eDeletedMail+"' AND mail_notify = false"); n != 1 {
+		t.Fatalf("imported mail_notify=false rows = %d, want 1", n)
+	}
+	if n := e2eCount(t, dsn, "SELECT count(*) FROM users WHERE email = '"+e2eLiveEmail+"' AND mail_notify = true"); n != 1 {
+		t.Fatalf("imported mail_notify=true rows = %d, want 1", n)
+	}
 
 	// 凭据重封装可用新钥解回，device_code 为空串（解码前提）。
 	ctx := context.Background()
