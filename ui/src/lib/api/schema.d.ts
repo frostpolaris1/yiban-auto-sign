@@ -933,6 +933,9 @@ export interface paths {
          *     sign_failed_daily is email; capacity_rejected is in_app.
          *     This endpoint stores and reads subscriptions only; nothing is
          *     delivered in this phase.
+         *     notification_prefs.sign_failed_daily is the administrator
+         *     subscription channel for the daily digest. It does not gate a user's
+         *     own sign-failure mail, which the user's mail_notify switch controls.
          */
         get: operations["AdminNotifyGet"];
         /**
@@ -1366,6 +1369,10 @@ export interface paths {
          *     the value reads true. The switch only gates sign-failure mail;
          *     authentication and credential mail bypass it. Delivery itself lands
          *     in a later phase; this endpoint only stores and reads the value.
+         *     The switch is the user's own sign-failure mail master switch, not the
+         *     administrator digest subscription. Delivery (a later phase) requires
+         *     mail_notify=true for user mail; the administrator digest reads only
+         *     notification_prefs (see GET /api/admin/notify).
          */
         get: operations["MailNotifyGet"];
         /**
@@ -1374,6 +1381,11 @@ export interface paths {
          *     400. The write and one user.mail_notify audit row share a
          *     transaction; the detail carries only the field and on/off, never the
          *     email. No mail is sent by this endpoint.
+         *     This switch is the user's own sign-failure mail master switch, not
+         *     the administrator digest subscription. When 0v8 delivers mail, user
+         *     sign-failure mail requires the user's mail_notify=true and a delivery
+         *     trigger; the administrator digest reads only notification_prefs.
+         *     The two switches are never OR-ed and never substitute for each other.
          */
         put: operations["MailNotifySet"];
         post?: never;
@@ -2235,6 +2247,16 @@ export interface components {
             /** @description Null clears the preference. */
             offset_min: number | null;
         };
+        /**
+         * @description The signed-in user's own sign-failure mail master switch.
+         *     users.mail_notify is the signed-in user's own sign-failure mail
+         *     master switch; notification_prefs.sign_failed_daily is the
+         *     administrator subscription channel for the daily digest. When 0v8
+         *     delivers mail, user sign-failure mail requires the user's
+         *     mail_notify=true and a delivery trigger; the administrator digest
+         *     reads only notification_prefs. The two switches are never OR-ed and
+         *     never substitute for each other.
+         */
         MailNotify: {
             /**
              * @description True when sign-failure mail is enabled for the signed-in user.

@@ -5,6 +5,12 @@
 -- 本批只存取取值并写审计。
 -- 开关属于用户行，不建表：取值只有一份，不复制到 notification_prefs。
 --
+-- 语义边界（0v8 投递口径）：
+--   users.mail_notify                 = 用户**本人**签到失败邮件的总开关；
+--   notification_prefs.sign_failed_daily = 管理员订阅的每日摘要渠道。
+-- 投递用户邮件必须同时满足本人 mail_notify=true 与投递触发条件；
+-- 管理员摘要只看 notification_prefs。两者不得 OR，也不得互相替代。
+--
 -- Governance: migrations are forward-only. There is no Down section.
 
 -- +goose Up

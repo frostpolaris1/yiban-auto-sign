@@ -307,9 +307,9 @@ func (s *importState) importUser(ctx context.Context, opts Options, row map[stri
 
 	txErr := opts.DB.InSavepoint(ctx, func(ctx context.Context) error {
 		createdID, err := opts.DB.QueryString(ctx,
-			`INSERT INTO users (email, password_hash, role, created_at, deleted_at)
-			 VALUES ($1, $2, $3, $4, $5) RETURNING id::text`,
-			email, valueString(row["password_hash"]), role, createdAt, deletedAt)
+			`INSERT INTO users (email, password_hash, role, created_at, deleted_at, mail_notify)
+			 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id::text`,
+			email, valueString(row["password_hash"]), role, createdAt, deletedAt, legacyMailNotify(row))
 		if err != nil {
 			return err
 		}
@@ -557,6 +557,25 @@ func valueIntOr(v any) int64 {
 		return 0
 	}
 	return n
+}
+
+// legacyMailNotify 把旧 users.mail_notify 映射成新布尔列。
+//
+// 旧列是 INTEGER DEFAULT 1，旧读取口径（filter_mail_notify）只把
+// "1"/"true"/"on"/"yes" 当开启。缺键或 null 按缺省 true；
+// 其余值（含 "0"、false、空串）一律 false，保持旧 opt-out 不被静默打开。
+// 布尔值先经 valueString 变成 "true"/"false"，与字符串口径同一支。
+func legacyMailNotify(row map[string]any) bool {
+	value, ok := row["mail_notify"]
+	if !ok || value == nil {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(valueString(value))) {
+	case "1", "true", "on", "yes":
+		return true
+	default:
+		return false
+	}
 }
 
 func orEmpty(s string) string {

@@ -12,6 +12,9 @@
 // 只动调用者自己的行：userID 必须等于审计主体的 user id。
 // 缺省 true（旧线 parity）；行缺失或已软删报 not_found。
 // detail 只记字段与目标状态 on/off，**绝无邮箱原文**。
+// 开关是用户**本人**的签到失败邮件总开关，不是管理员摘要订阅：
+// 0v8 投递用户邮件要求 mail_notify=true；管理员每日摘要只看
+// notification_prefs.sign_failed_daily。两者不得 OR，也不得互相替代。
 package user
 
 import (

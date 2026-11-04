@@ -1078,7 +1078,14 @@ type LoginRequest struct {
 	Password string              `json:"password"`
 }
 
-// MailNotify defines model for MailNotify.
+// MailNotify The signed-in user's own sign-failure mail master switch.
+// users.mail_notify is the signed-in user's own sign-failure mail
+// master switch; notification_prefs.sign_failed_daily is the
+// administrator subscription channel for the daily digest. When 0v8
+// delivers mail, user sign-failure mail requires the user's
+// mail_notify=true and a delivery trigger; the administrator digest
+// reads only notification_prefs. The two switches are never OR-ed and
+// never substitute for each other.
 type MailNotify struct {
 	// Enabled True when sign-failure mail is enabled for the signed-in user.
 	// A user who never changed the switch reads true.
