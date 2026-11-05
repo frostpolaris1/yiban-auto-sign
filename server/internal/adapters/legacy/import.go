@@ -3,7 +3,7 @@ package legacy
 // 导入编排：读导出物 → 校验 → 单事务写入 → 提交前对账 → 报告输出。
 //
 // 退出码语义（由 cmd/cli 落到进程退出码）：
-//   - 2：用法/校验失败（缺文件、school/owner 不存在、schools 非空、
+//   - 2：用法/校验失败（缺文件、school/fallback owner/admin school 不存在、
 //     导出物对账表对不上）。对账比对在事务提交**前**执行，
 //     不一致即回滚，exit 2 零写入。
 //   - 1：--strict 下有孤儿，或存在行级错误。行级写入是原子单元
@@ -26,6 +26,7 @@ import (
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
 	coreaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/account"
+	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	coremask "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
 	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
@@ -77,8 +78,11 @@ type Options struct {
 	DB *pg.DB
 	// SchoolID 是全部账号的目标学校（须已存在，不造学校）。
 	SchoolID string
-	// OwnerUserID 是全部账号的归属用户（须已存在且未删除）。
-	OwnerUserID string
+	// FallbackOwnerUserID 接收 owner 对不上的 active 账号（须已存在且未删）。
+	// 本批生产数据里是旧内置 master 名下的账号；非 active 账号不落这里。
+	FallbackOwnerUserID string
+	// AdminSchoolID 是旧 admin 的 admin_schools 绑定学校；空串沿用 SchoolID。
+	AdminSchoolID string
 	// Strict 为真时存在孤儿即失败。
 	Strict bool
 	// LegacyKey 是旧栈 YIBAN_ACCOUNTS_KEY（32 字节）。
@@ -98,12 +102,19 @@ func Run(ctx context.Context, opts Options) (summary map[string]any, exitCode in
 	if opts.Dir == "" || opts.OutDir == "" {
 		return nil, 2, fatal(2, "--dir and --out are required")
 	}
+	if opts.FallbackOwnerUserID == "" {
+		return nil, 2, fatal(2, "--fallback-owner-user-id is required")
+	}
+	if opts.AdminSchoolID == "" {
+		opts.AdminSchoolID = opts.SchoolID
+	}
 	rows, err := readExport(opts.Dir)
 	if err != nil {
 		return nil, 2, err
 	}
 
-	// 前置校验：学校与归属用户必须已存在。不造学校、不猜归属。
+	// 前置校验：学校、admin 绑定学校与 fallback 归属用户必须已存在。
+	// 不造学校、不猜归属，也不接受已删用户当兜底。
 	n, err := opts.DB.QueryInt64(ctx,
 		`SELECT count(*) FROM schools WHERE id = $1::uuid`, opts.SchoolID)
 	if err != nil {
@@ -112,13 +123,23 @@ func Run(ctx context.Context, opts Options) (summary map[string]any, exitCode in
 	if n == 0 {
 		return nil, 2, fatal(2, "school %s does not exist in the new database; create it first", opts.SchoolID)
 	}
+	if opts.AdminSchoolID != opts.SchoolID {
+		n, err = opts.DB.QueryInt64(ctx,
+			`SELECT count(*) FROM schools WHERE id = $1::uuid`, opts.AdminSchoolID)
+		if err != nil {
+			return nil, 2, fatal(2, "check admin school: %v", err)
+		}
+		if n == 0 {
+			return nil, 2, fatal(2, "admin school %s does not exist in the new database; create it first", opts.AdminSchoolID)
+		}
+	}
 	n, err = opts.DB.QueryInt64(ctx,
-		`SELECT count(*) FROM users WHERE id = $1::uuid AND deleted_at IS NULL`, opts.OwnerUserID)
+		`SELECT count(*) FROM users WHERE id = $1::uuid AND deleted_at IS NULL`, opts.FallbackOwnerUserID)
 	if err != nil {
-		return nil, 2, fatal(2, "check owner user: %v", err)
+		return nil, 2, fatal(2, "check fallback owner user: %v", err)
 	}
 	if n == 0 {
-		return nil, 2, fatal(2, "owner user %s does not exist in the new database; create it first", opts.OwnerUserID)
+		return nil, 2, fatal(2, "fallback owner user %s does not exist or is deleted in the new database; create it first", opts.FallbackOwnerUserID)
 	}
 
 	// 孤儿口径：time_prefs.phone 无对应账号。strict 即失败；默认跳过＋计数。
@@ -140,7 +161,7 @@ func Run(ctx context.Context, opts Options) (summary map[string]any, exitCode in
 		return nil, 2, fatal(2, "credential sealer is not wired")
 	}
 
-	state := newState(orphanRows)
+	state := newState(orphanRows, newOwnerIndex(rows["users"]))
 	state.sealer = opts.Sealer
 	state.err = opts.Err
 	if state.err == nil {
@@ -190,19 +211,23 @@ func Run(ctx context.Context, opts Options) (summary map[string]any, exitCode in
 }
 
 // newState 建计数状态。嵌套 map 的键集合就是 summary 的输出形状。
-func newState(orphanRows int) *importState {
+func newState(orphanRows int, owners *ownerIndex) *importState {
 	return &importState{
 		summary: map[string]any{
-			"format":              "yiban-legacy-import/1",
-			"mask_rule":           maskRuleText,
-			"recon_hash":          reconHashText,
-			"rows_read":           map[string]any{"users": 0, "accounts": 0, "time_prefs": 0, "audit": 0},
-			"rows_imported":       map[string]any{"users": 0, "accounts": 0},
-			"already_imported":    map[string]any{"users": 0, "accounts": 0},
-			"row_errors":          map[string]any{"users": 0, "accounts": 0},
-			"role_mapping":        map[string]any{},
-			"status_mapping":      map[string]any{},
-			"owner_values":        map[string]any{},
+			"format":           "yiban-legacy-import/1",
+			"mask_rule":        maskRuleText,
+			"recon_hash":       reconHashText,
+			"rows_read":        map[string]any{"users": 0, "accounts": 0, "time_prefs": 0, "audit": 0},
+			"rows_imported":    map[string]any{"users": 0, "accounts": 0},
+			"already_imported": map[string]any{"users": 0, "accounts": 0},
+			"row_errors":       map[string]any{"users": 0, "accounts": 0},
+			"role_mapping":     map[string]any{},
+			"status_mapping":   map[string]any{},
+			"owner_resolution": map[string]any{
+				ownerViaExact: 0, ownerViaPrefix: 0, "fallback": 0, "unresolved": 0, "ambiguous": 0,
+			},
+			"fallback_owner_rows": 0,
+			"admin_schools":       map[string]any{"bound": 0, "created": 0},
 			"credentials":         map[string]any{"created": 0, "missing": 0, "decrypt_failed": 0, "phone_code_dropped": 0},
 			"orphan_time_prefs":   orphanRows,
 			"time_prefs_imported": 0,
@@ -211,8 +236,10 @@ func newState(orphanRows int) *importState {
 				"Value semantics are equivalent (slot_min == offset_min, 5-minute grain); the attach point is not.",
 			"audit_imported":  0,
 			"audit_note":      "legacy audit chain is not appended to the new append-only chain; evidence stays in the export (audit.jsonl)",
-			"columns_dropped": "accounts.name, accounts.sort_order: the new schema has no counterpart columns",
+			"columns_dropped": "accounts.sort_order: the new schema has no counterpart column",
 		},
+		owners:  owners,
+		userIDs: map[int64]string{},
 	}
 }
 
@@ -223,15 +250,30 @@ type importState struct {
 	summary    map[string]any
 	reconLines []string
 	rowErrors  int
+	owners     *ownerIndex
+	// userIDs 是旧 user id → 新 user id，用户行先导入，账号行才能逐行解析 owner。
+	userIDs map[int64]string
 }
 
 func (s *importState) bump(group, key string) {
+	s.add(group, key, 1)
+}
+
+func (s *importState) add(group, key string, n int) {
 	m := s.summary[group].(map[string]any)
-	if n, ok := m[key].(int); ok {
-		m[key] = n + 1
+	if cur, ok := m[key].(int); ok {
+		m[key] = cur + n
 		return
 	}
-	m[key] = 1
+	m[key] = n
+}
+
+func (s *importState) bumpTop(key string) {
+	if n, ok := s.summary[key].(int); ok {
+		s.summary[key] = n + 1
+		return
+	}
+	s.summary[key] = 1
 }
 
 func (s *importState) bumpRead(table string) {
@@ -252,8 +294,9 @@ func (s *importState) appendRecon(table string, row map[string]any, key string) 
 }
 
 // importUser 重建一行旧 users。幂等判据＝legacy_ids。
-// 写段（主行＋映射）在保存点内同存亡：任一失败整行回滚，
-// 落地行必有 legacy_ids 映射。
+// 写段（主行＋映射＋admin 绑定）在保存点内同存亡：任一失败整行回滚，
+// 落地行必有 legacy_ids 映射。已导入的旧 admin 重跑时补确保绑定，
+// ON CONFLICT DO NOTHING 保持幂等。
 func (s *importState) importUser(ctx context.Context, opts Options, row map[string]any) {
 	s.bumpRead("users")
 	oldID, ok := valueInt(row["id"])
@@ -261,6 +304,9 @@ func (s *importState) importUser(ctx context.Context, opts Options, row map[stri
 		s.addRowError("users", "id", fmt.Errorf("missing or non-numeric id"))
 		return
 	}
+
+	oldRole := valueString(row["role"])
+	role, roleOK := mapLegacyRole(oldRole)
 	newID, hit, err := legacyIDHit(ctx, opts.DB, "users", oldID)
 	if err != nil {
 		s.addRowError("users", "legacy_ids lookup", err)
@@ -276,14 +322,26 @@ func (s *importState) importUser(ctx context.Context, opts Options, row map[stri
 			s.addRowError("users", "legacy_ids target", fmt.Errorf("user %d maps to %s but the row is gone", oldID, newID))
 			return
 		}
+		if !roleOK {
+			s.addRowError("users", "role", fmt.Errorf("user %d has unknown role %q; not guessing", oldID, oldRole))
+			return
+		}
+		s.userIDs[oldID] = newID
+		if role == string(coreauth.RoleAdmin) {
+			created, err := s.bindAdminSchool(ctx, opts, newID)
+			if err != nil {
+				s.addRowError("users", "admin school binding", fmt.Errorf("user %d: %v", oldID, err))
+				return
+			}
+			s.bump("admin_schools", "bound")
+			s.add("admin_schools", "created", int(created))
+		}
 		s.bump("already_imported", "users")
 		s.appendRecon("users", row, fmt.Sprint(oldID))
 		return
 	}
 
-	oldRole := valueString(row["role"])
-	role, ok := mapLegacyRole(oldRole)
-	if !ok {
+	if !roleOK {
 		s.addRowError("users", "role", fmt.Errorf("user %d has unknown role %q; not guessing", oldID, oldRole))
 		return
 	}
@@ -305,6 +363,7 @@ func (s *importState) importUser(ctx context.Context, opts Options, row map[stri
 		deletedAt = &at
 	}
 
+	var adminCreated int64
 	txErr := opts.DB.InSavepoint(ctx, func(ctx context.Context) error {
 		createdID, err := opts.DB.QueryString(ctx,
 			`INSERT INTO users (email, password_hash, role, created_at, deleted_at, mail_notify)
@@ -318,24 +377,45 @@ func (s *importState) importUser(ctx context.Context, opts Options, row map[stri
 			oldID, createdID); err != nil {
 			return err
 		}
+		if role == string(coreauth.RoleAdmin) {
+			adminCreated, err = s.bindAdminSchool(ctx, opts, createdID)
+			if err != nil {
+				return err
+			}
+		}
+		s.userIDs[oldID] = createdID
 		return nil
 	})
 	if txErr != nil {
 		s.addRowError("users", "insert", fmt.Errorf("user %d (%s): %v", oldID, coremask.MaskEmail(email), txErr))
 		return
 	}
+	if role == string(coreauth.RoleAdmin) {
+		s.bump("admin_schools", "bound")
+		s.add("admin_schools", "created", int(adminCreated))
+	}
 	s.bump("rows_imported", "users")
 	s.appendRecon("users", row, fmt.Sprint(oldID))
 }
 
-// mapLegacyRole 是角色映射表：admin→master、user→user。
-// 旧库无 school 级 admin，不产生 admin_schools 行。
+// bindAdminSchool 为旧 admin 写一条院校绑定。重复绑定是空操作，
+// 返回新建行数（0 或 1）。
+func (s *importState) bindAdminSchool(ctx context.Context, opts Options, userID string) (int64, error) {
+	return opts.DB.Exec(ctx,
+		`INSERT INTO admin_schools (user_id, school_id) VALUES ($1::uuid, $2::uuid)
+		 ON CONFLICT (user_id, school_id) DO NOTHING`,
+		userID, opts.AdminSchoolID)
+}
+
+// mapLegacyRole 是角色映射表：admin→admin、user→user。
+// 旧库没有学校级 admin，旧 admin 的院校范围由 importUser 写一条
+// admin_schools 绑定补齐。
 func mapLegacyRole(old string) (string, bool) {
 	switch old {
 	case "admin":
-		return "master", true
+		return string(coreauth.RoleAdmin), true
 	case "user":
-		return "user", true
+		return string(coreauth.RoleUser), true
 	default:
 		return "", false
 	}
@@ -344,7 +424,11 @@ func mapLegacyRole(old string) (string, bool) {
 // importAccount 重建一行旧 accounts 与其凭据。幂等判据＝legacy_ids。
 // 写段（主行＋凭据＋映射）在保存点内同存亡：任一失败整行回滚，
 // 落地行必有 legacy_ids 映射，不留无凭据的半行（凭据缺行/解密失败除外，
-// 见 importCredential——那是 的「账号照建」语义）。
+// 见 importCredential——那是「账号照建」语义）。
+//
+// owner 逐行解析到旧 user，再经 legacy_ids 落新 user：每条账号写自己的
+// owner_user_id。解析不到时，只有旧 status=active 的账号落
+// --fallback-owner-user-id；其余按行错误处理，不猜、不静默改归属。
 func (s *importState) importAccount(ctx context.Context, opts Options, row map[string]any) {
 	s.bumpRead("accounts")
 	oldID, ok := valueInt(row["id"])
@@ -352,8 +436,6 @@ func (s *importState) importAccount(ctx context.Context, opts Options, row map[s
 		s.addRowError("accounts", "id", fmt.Errorf("missing or non-numeric id"))
 		return
 	}
-	// 旧 owner 是自由文本（多数为 'admin'），不做可信映射，只计数。
-	s.bump("owner_values", orEmpty(valueString(row["owner"])))
 
 	newID, hit, err := legacyIDHit(ctx, opts.DB, "accounts", oldID)
 	if err != nil {
@@ -391,11 +473,16 @@ func (s *importState) importAccount(ctx context.Context, opts Options, row map[s
 		deletedAt = &at
 	}
 
+	ownerID, ok := s.resolveOwner(opts, row, oldID, phone)
+	if !ok {
+		return
+	}
+
 	txErr := opts.DB.InSavepoint(ctx, func(ctx context.Context) error {
 		createdID, err := opts.DB.QueryString(ctx,
-			`INSERT INTO accounts (school_id, owner_user_id, phone, status, reject_reason, deleted_at)
-			 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6) RETURNING id::text`,
-			opts.SchoolID, opts.OwnerUserID, phone, newStatus,
+			`INSERT INTO accounts (school_id, owner_user_id, phone, name, status, reject_reason, deleted_at)
+			 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7) RETURNING id::text`,
+			opts.SchoolID, ownerID, phone, valueString(row["name"]), newStatus,
 			valueString(row["reject_reason"]), deletedAt)
 		if err != nil {
 			return err
@@ -416,6 +503,51 @@ func (s *importState) importAccount(ctx context.Context, opts Options, row map[s
 	}
 	s.bump("rows_imported", "accounts")
 	s.appendRecon("accounts", row, fmt.Sprint(oldID))
+}
+
+// resolveOwner 把旧 owner 文本解析成新 user id。
+// 返回 false 表示本行已记行错误，调用方不得继续写。
+// 错误文本只带旧行 id 与掩码手机号，不回放 owner 原文。
+func (s *importState) resolveOwner(opts Options, row map[string]any, oldID int64, phone string) (string, bool) {
+	match := s.owners.resolve(valueString(row["owner"]))
+	if match.found {
+		newID, ok := s.userIDs[match.oldID]
+		if !ok {
+			s.bump("owner_resolution", "unresolved")
+			s.addRowError("accounts", "owner",
+				fmt.Errorf("account %d (%s): owner names legacy user %d, which has no imported row",
+					oldID, coremask.MaskPhone(phone), match.oldID))
+			return "", false
+		}
+		s.bump("owner_resolution", match.via)
+		return newID, true
+	}
+	if match.candidates > 1 {
+		s.bump("owner_resolution", "ambiguous")
+		s.addRowError("accounts", "owner",
+			fmt.Errorf("account %d (%s): owner matches %d legacy users; refusing to guess",
+				oldID, coremask.MaskPhone(phone), match.candidates))
+		return "", false
+	}
+	if !legacyStatusActive(row) {
+		s.bump("owner_resolution", "unresolved")
+		s.addRowError("accounts", "owner",
+			fmt.Errorf("account %d (%s): owner matches no legacy user and the account is not active; fallback applies to active accounts only",
+				oldID, coremask.MaskPhone(phone)))
+		return "", false
+	}
+	s.bump("owner_resolution", "fallback")
+	s.bumpTop("fallback_owner_rows")
+	_, _ = fmt.Fprintf(s.err, "migrate-legacy: fallback owner applied to account %d (%s)\n",
+		oldID, coremask.MaskPhone(phone))
+	return opts.FallbackOwnerUserID, true
+}
+
+// legacyStatusActive 报告旧行在旧栈是否属于 active（含用户自暂停）。
+// fallback 只在旧 active 账号上生效：pending/rejected 对不上归属时
+// 没有可信落点，显性报行错误比塞给兜底用户更安全。
+func legacyStatusActive(row map[string]any) bool {
+	return coreaccount.Status(valueString(row["status"])) == coreaccount.StatusActive
 }
 
 // mapLegacyStatus 是状态映射表。
@@ -576,13 +708,6 @@ func legacyMailNotify(row map[string]any) bool {
 	default:
 		return false
 	}
-}
-
-func orEmpty(s string) string {
-	if s == "" {
-		return "<empty>"
-	}
-	return s
 }
 
 // readExport 读入五个 .jsonl；schools 必须为空（旧库无学校表，非空即契约违约）。

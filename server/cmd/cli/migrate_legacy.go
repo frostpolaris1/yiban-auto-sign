@@ -5,7 +5,12 @@
 //
 // # 口径
 // 退出码：0 成功（默认档孤儿跳过含在内）；1 孤儿 strict 失败或行级错误；
-// 2 用法/校验失败（缺旗、钥形状错、school/owner 不存在、导出物不全或被改）。
+// 2 用法/校验失败（缺旗、钥形状错、school/fallback owner/admin school
+// 不存在或已删、导出物不全或被改）。
+// 归属：每条旧账号按 accounts.owner 解析到旧 user，再经 legacy_ids 落到
+// 新 user；解析不到的 active 账号落 --fallback-owner-user-id。
+// 旧 admin 导入为 admin 并写一条 admin_schools 绑定（学校取
+// --admin-school-id，缺省同 --school-id）。
 // 钥来源：新 KEK 只走环境变量 YIBAN_CREDENTIAL_KEY（与新栈装配方同一来源）；
 // 旧钥只走环境变量 YIBAN_LEGACY_ACCOUNTS_KEY（64 位 hex），不收 argv——
 // 命令行参数会进 shell 历史与 ps 输出，钥不过 argv。
@@ -52,17 +57,18 @@ func (s cipherSealer) Seal(schoolID, accountID string, p legacy.CredentialPayloa
 func runMigrateLegacy(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("migrate-legacy", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	dir := fs.String("dir", "", "导出物目录（P8-A db_export.py 产物，必填）")
+	dir := fs.String("dir", "", "导出物目录（scripts/db_export.py 产物，必填）")
 	out := fs.String("out", "", "报告输出目录（reconciliation.jsonl + summary.json，必填）")
 	dsnFlag := fs.String("dsn", "", "覆盖 YIBAN_DATABASE_URL")
 	schoolID := fs.String("school-id", "", "目标学校 id（须已存在于新库，必填）")
-	ownerID := fs.String("owner-user-id", "", "账号归属用户 id（须已存在于新库，必填）")
+	fallbackOwnerID := fs.String("fallback-owner-user-id", "", "owner 对不上的 active 账号的归属用户 id（须已存在且未删，必填）")
+	adminSchoolID := fs.String("admin-school-id", "", "旧 admin 的院校绑定学校 id（缺省同 --school-id）")
 	strict := fs.Bool("strict", false, "存在孤儿 time_prefs 即失败（默认跳过＋计数）")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *dir == "" || *out == "" || *schoolID == "" || *ownerID == "" {
-		_, _ = fmt.Fprintln(stderr, "migrate-legacy: --dir --out --school-id --owner-user-id 全部必填")
+	if *dir == "" || *out == "" || *schoolID == "" || *fallbackOwnerID == "" {
+		_, _ = fmt.Fprintln(stderr, "migrate-legacy: --dir --out --school-id --fallback-owner-user-id 全部必填")
 		return 2
 	}
 	dsn := strings.TrimSpace(*dsnFlag)
@@ -110,16 +116,17 @@ func runMigrateLegacy(args []string, stdout, stderr io.Writer) int {
 	defer db.Close()
 
 	summary, code, err := legacy.Run(ctx, legacy.Options{
-		Dir:         *dir,
-		OutDir:      *out,
-		DB:          db,
-		SchoolID:    *schoolID,
-		OwnerUserID: *ownerID,
-		Strict:      *strict,
-		LegacyKey:   legacyKey,
-		Sealer:      cipherSealer{c: cipher},
-		Now:         coreclock.System{}.Now().UTC(),
-		Err:         stderr,
+		Dir:                 *dir,
+		OutDir:              *out,
+		DB:                  db,
+		SchoolID:            *schoolID,
+		FallbackOwnerUserID: *fallbackOwnerID,
+		AdminSchoolID:       *adminSchoolID,
+		Strict:              *strict,
+		LegacyKey:           legacyKey,
+		Sealer:              cipherSealer{c: cipher},
+		Now:                 coreclock.System{}.Now().UTC(),
+		Err:                 stderr,
 	})
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "%v\n", err)

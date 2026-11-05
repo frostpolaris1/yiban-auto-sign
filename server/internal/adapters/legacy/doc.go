@@ -24,11 +24,20 @@
 //
 // # 裁决
 //   - 旧库无 schools 表：不造学校，全部账号挂 --school-id（须已存在）。
-//   - 旧 accounts.owner 是自由文本：不做可信映射，全部账号挂
-//     --owner-user-id，旧 owner 值分布进 summary。
+//   - 旧 accounts.owner 逐行解析：先 lower(trim(email)) 精确命中旧 user，
+//     再按邮箱 @ 前缀命中；同一级命中多行即行错误，不按行序猜。
+//     旧 user → 新 user 走 legacy_ids（用户先导入，同事务可见），每条账号
+//     写自己的 owner_user_id。对不上的 active 账号落
+//     --fallback-owner-user-id（本批是旧内置 master 名下的账号）；
+//     非 active 账号对不上时按行错误处理。
+//   - 旧角色：admin→admin、user→user。旧 admin 额外写一条
+//     admin_schools 绑定（学校取 --admin-school-id，缺省同 --school-id），
+//     重跑 ON CONFLICT DO NOTHING 幂等。旧库的内置 master 不在 users 表，
+//     部署时用新邮箱与新口令单独创建；导入器不导入、不伪造该身份。
+//   - 旧 accounts.name 写入新 accounts.name（空串照常）；旧 sort_order
+//     在新 schema 无对应列，弃置并在 summary 声明。
 //   - 旧 time_prefs 挂手机号（每账号一行），新栈 time_prefs 挂 user_id
-//     （每用户一行、作用于名下全部账号）：导入器拿不到可信的
-//     phone→user 映射，硬塞会让多行塌缩互相覆盖，故**不导入**、显性计数。
+//     （每用户一行、作用于名下全部账号）：导入器不导入、显性计数。
 //     值语义本身等价（旧 slot_min＝相对窗口起点的分钟偏移、5 对齐＝新
 //     offset_min），缺的是挂接点，不是数值口径。
 //     挂接点由 `cmd/cli backfill-time-prefs` 在导入后补齐：
@@ -39,6 +48,8 @@
 //     device_code 置空串（解码侧允许空串，app/account/cipher.go
 //     DisallowUnknownFields 只拒缺键与未知键，2026-10-27 已核）。
 //     旧 phone_code（验证码信封）在新负载无对应键，弃置并显性计数。
+//   - 日志与报告不回放完整邮箱、姓名、手机号或 owner 原文；
+//     行级错误只带旧行 id 与掩码手机号，summary 只出计数。
 //
 // # 归属
 // adapters 层一次性迁移件。SQL 直写（仓储端口表达不了状态回填、
