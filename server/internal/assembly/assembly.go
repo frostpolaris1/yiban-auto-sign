@@ -494,13 +494,18 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		// 共用同一端口，也共用 YIBAN_RESET_MAIL_ENABLE 开关；未配置时
 		// 通知账本行落 skipped(smtp_not_configured)，不静默丢弃。
 		// 投递端口先于账号服务构造：ReviewAlerts 在 account 构造时注入。
+		// 摘要端口是同一仓储的可选面：每日摘要与事件投递共用同一
+		// dispatcher 与邮件账本，但收件人与去重键各自判定。
+		digestRepo := pg.NewNotificationDigestRepo(db)
 		notificationDispatcher, err := appnotify.NewDispatcher(appnotify.DispatcherDeps{
-			Notes:    pg.NewNotificationRepo(db),
-			Ledger:   pg.NewNotificationDeliveryRepo(db),
-			Audience: pg.NewNotificationAudienceRepo(db),
-			Mail:     mailer,
-			Clock:    clk,
-			Logger:   logger,
+			Notes:          pg.NewNotificationRepo(db),
+			Ledger:         pg.NewNotificationDeliveryRepo(db),
+			Audience:       pg.NewNotificationAudienceRepo(db),
+			Mail:           mailer,
+			Clock:          clk,
+			Logger:         logger,
+			DigestSource:   digestRepo,
+			DigestAudience: digestRepo,
 		})
 		if err != nil {
 			closeFn()
@@ -750,6 +755,24 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			_ = daily.Stop(ctx)
 			cancel()
 			prevClose()
+		}
+		// 每日签到失败摘要：业务日 09:00 发上一日，启动补发一次。
+		// 与日切构建互不共享状态；摘要只读 sign_tasks 的 failed 终态。
+		digestCron, err := appnotify.NewDigestCron(notificationDispatcher, clk, loc, logger)
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("assembly: digest cron: %w", err)
+		}
+		if err := digestCron.Start(); err != nil {
+			closeFn()
+			return nil, fmt.Errorf("assembly: start digest cron: %w", err)
+		}
+		prevDigestClose := closeFn
+		closeFn = func() {
+			ctx, cancel := context.WithTimeout(context.Background(), shutdownBudget)
+			_ = digestCron.Stop(ctx)
+			cancel()
+			prevDigestClose()
 		}
 		diagSvc, err := appdiagnostic.NewService(appdiagnostic.Deps{
 			Accounts: accountSvc,

@@ -25,8 +25,8 @@ package notify
 // 不留永久 pending 行。
 // SMTP 未配置时仍写通知行与账本行，账本立即 skipped(smtp_not_configured)：
 // 跳过是显性事实，不静默丢弃。
-// Dispatch 只服务管理员的三类事件；sign_failed_daily 的管理员摘要是 C 批的
-// DispatchDigest（独立入口，本批不实现），**不复用** Dispatch。
+// Dispatch 只服务管理员的三类事件；sign_failed_daily 的管理员摘要走
+// DispatchDigest（digest.go 的独立入口），**不复用** Dispatch。
 
 import (
 	"context"
@@ -116,23 +116,29 @@ type Audience interface {
 
 // DispatcherDeps 是投递服务的依赖。
 // Mail 可为 nil：此时账本行落 skipped(smtp_not_configured)，其余行为不变。
+// DigestSource 与 DigestAudience 是每日摘要的可选端口：缺失时
+// DispatchDigest 报错，三类事件与用户失败邮件的投递不受影响。
 type DispatcherDeps struct {
-	Notes    NotificationWriter
-	Ledger   DeliveryLedger
-	Audience Audience
-	Mail     coremail.Sender
-	Clock    coreclock.Clock
-	Logger   *slog.Logger
+	Notes          NotificationWriter
+	Ledger         DeliveryLedger
+	Audience       Audience
+	Mail           coremail.Sender
+	Clock          coreclock.Clock
+	Logger         *slog.Logger
+	DigestSource   DigestSource
+	DigestAudience DigestAudience
 }
 
 // Dispatcher 是通知投递用例服务。
 type Dispatcher struct {
-	notes    NotificationWriter
-	ledger   DeliveryLedger
-	audience Audience
-	mail     coremail.Sender
-	clock    coreclock.Clock
-	log      *slog.Logger
+	notes          NotificationWriter
+	ledger         DeliveryLedger
+	audience       Audience
+	mail           coremail.Sender
+	clock          coreclock.Clock
+	log            *slog.Logger
+	digestSource   DigestSource
+	digestAudience DigestAudience
 }
 
 // NewDispatcher 构造投递服务。缺站内信写入、账本、收件人端口或时钟即失败。
@@ -154,12 +160,14 @@ func NewDispatcher(deps DispatcherDeps) (*Dispatcher, error) {
 		log = slog.Default()
 	}
 	return &Dispatcher{
-		notes:    deps.Notes,
-		ledger:   deps.Ledger,
-		audience: deps.Audience,
-		mail:     deps.Mail,
-		clock:    deps.Clock,
-		log:      log,
+		notes:          deps.Notes,
+		ledger:         deps.Ledger,
+		audience:       deps.Audience,
+		mail:           deps.Mail,
+		clock:          deps.Clock,
+		log:            log,
+		digestSource:   deps.DigestSource,
+		digestAudience: deps.DigestAudience,
 	}, nil
 }
 
@@ -168,8 +176,8 @@ func NewDispatcher(deps DispatcherDeps) (*Dispatcher, error) {
 // 每收件人一行站内信；email 订阅启用时在同一事务里再入一条账本行。
 // 重复事件由 (user_id, dedupe_key) 与账本唯一键吸收，不重复投递。
 // 单个收件人失败不阻断其余收件人；返回第一条错误供调用方记日志。
-// 只接受管理员的三类事件：sign_failed_daily 的摘要是 C 批 DispatchDigest
-// 的入口，不经本方法。
+// 只接受管理员的三类事件：sign_failed_daily 的摘要走 DispatchDigest
+// 的独立入口，不经本方法。
 func (d *Dispatcher) Dispatch(ctx context.Context, event corenotify.Event) error {
 	if !event.Category.Valid() || event.Category == corenotify.CategorySignFailedDaily {
 		return errs.New(errs.CodeValidation, "Dispatch only accepts administrator event categories")

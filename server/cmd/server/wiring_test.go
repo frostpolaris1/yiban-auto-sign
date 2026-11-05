@@ -12,6 +12,7 @@ import (
 	appegress "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/egress"
 	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
 	applocation "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/location"
+	appnotify "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/notify"
 	appphotos "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/photos"
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
 	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
@@ -85,4 +86,7 @@ var (
 	_ eventshttp.Authorizer       = (*appadmin.Service)(nil)
 	// 邮件投递：用例层端口由 adapters/mail 的 SMTP 实现。
 	_ coremail.Sender = (*mailadapter.SMTP)(nil)
+	// 0v8 C 摘要端口：同一仓储同时服务失败明细与收件人解析。
+	_ appnotify.DigestSource   = (*pg.NotificationDigestRepo)(nil)
+	_ appnotify.DigestAudience = (*pg.NotificationDigestRepo)(nil)
 )
