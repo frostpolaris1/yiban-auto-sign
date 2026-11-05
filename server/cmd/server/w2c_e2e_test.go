@@ -1416,6 +1416,8 @@ func TestW2CP32RealStackWiresDomainHandlers(t *testing.T) {
 	}{
 		"schools":       {"/api/schools", http.StatusOK},
 		"accounts":      {"/api/accounts", http.StatusOK},
+		"notifications": {"/api/me/notifications", http.StatusOK},
+		"unread-count":  {"/api/me/notifications/unread-count", http.StatusOK},
 		"school-admins": {"/api/schools/018f0000-0000-7000-8000-00000000000f/admins", http.StatusNotFound},
 	} {
 		resp, payload := e.do(http.MethodGet, tc.path, nil, nil)

@@ -767,7 +767,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 	return &Stack{Engine: engine, DB: db, Worker: workerSvc, EngineState: engineState, Close: closeAll}, nil
 }
 
-// buildSettings 装配通知订阅、公告、设置名册与审计只读列表。
+// buildSettings 装配通知订阅、站内信、公告、设置名册与审计只读列表。
 //
 // 名册随二进制嵌入（internal/configdata），不存在“文件缺失”的降级路径：
 // 嵌入名册损坏是构建缺陷，一律失败关闭。带病的名册会把错误的信息
@@ -777,6 +777,13 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 	notifySvc, err := appnotify.NewService(pg.NewNotificationPrefsRepo(db))
 	if err != nil {
 		return nil, nil, fmt.Errorf("assembly: notify service: %w", err)
+	}
+	inboxSvc, err := appnotify.NewInbox(appnotify.InboxDeps{
+		Repo:  pg.NewNotificationRepo(db),
+		Clock: clk,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("assembly: notification inbox: %w", err)
 	}
 	announcementSvc, err := appsettings.NewService(appsettings.Deps{
 		Store:    pg.NewAnnouncementRepo(db),
@@ -803,7 +810,8 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 	if err != nil {
 		return nil, nil, fmt.Errorf("assembly: configuration roster: %w", err)
 	}
-	return settingshttp.NewHandler(notifySvc, roster, announcementSvc, announcementSvc), audithttp.NewHandler(reader), nil
+	return settingshttp.NewHandler(notifySvc, roster, announcementSvc, announcementSvc).
+		WithInbox(inboxSvc), audithttp.NewHandler(reader), nil
 }
 
 // rosterEntries 把适配器的名册条目转成用例视图。

@@ -14,11 +14,12 @@ import (
 
 // fakeStore 按预设批次返回行数；批次用完后恒返回 0。
 type fakeStore struct {
-	sessions, resets, tasks [][]int64
-	errOn                   string
+	sessions, resets, tasks, notifications [][]int64
+	errOn                                  string
 
-	cutoffs []string
-	calls   int
+	cutoffs             []string
+	notificationCutoffs []time.Time
+	calls               int
 }
 
 func (f *fakeStore) next(name string, batches *[][]int64) (int64, error) {
@@ -47,6 +48,11 @@ func (f *fakeStore) DeleteTasksBefore(_ context.Context, before string, _ int) (
 	return f.next("tasks", &f.tasks)
 }
 
+func (f *fakeStore) DeleteNotificationsBefore(_ context.Context, before time.Time, _ int) (int64, error) {
+	f.notificationCutoffs = append(f.notificationCutoffs, before)
+	return f.next("notifications", &f.notifications)
+}
+
 var shanghai = time.FixedZone("CST", 8*3600)
 
 func newService(t *testing.T, st *fakeStore) *appretention.Service {
@@ -64,15 +70,21 @@ func newService(t *testing.T, st *fakeStore) *appretention.Service {
 // 每张表跑到不足一批为止，总数按批累加。
 func TestPruneDrainsEachTable(t *testing.T) {
 	st := &fakeStore{
-		sessions: [][]int64{{appretention.BatchSize}, {500}},
-		resets:   [][]int64{{3}},
-		tasks:    [][]int64{{appretention.BatchSize}, {0}},
+		sessions:      [][]int64{{appretention.BatchSize}, {500}},
+		resets:        [][]int64{{3}},
+		tasks:         [][]int64{{appretention.BatchSize}, {0}},
+		notifications: [][]int64{{4}},
 	}
 	pruned, err := newService(t, st).Prune(context.Background())
 	if err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
-	want := appretention.Pruned{Sessions: appretention.BatchSize + 500, ResetTokens: 3, Tasks: appretention.BatchSize}
+	want := appretention.Pruned{
+		Sessions:      appretention.BatchSize + 500,
+		ResetTokens:   3,
+		Tasks:         appretention.BatchSize,
+		Notifications: 4,
+	}
 	if pruned != want {
 		t.Fatalf("pruned = %+v, want %+v", pruned, want)
 	}
@@ -86,6 +98,19 @@ func TestPruneTaskCutoffUsesLocation(t *testing.T) {
 	}
 	if len(st.cutoffs) != 1 || st.cutoffs[0] != "2026-08-02" {
 		t.Fatalf("cutoff = %v, want 2026-08-02", st.cutoffs)
+	}
+}
+
+// 站内信保留期是 30 天，按同一时刻回退：
+// 2026-10-31 09:00 +08:00 减 30 天 = 2026-10-01 09:00 +08:00。
+func TestPruneNotificationCutoffIsThirtyDays(t *testing.T) {
+	st := &fakeStore{}
+	if _, err := newService(t, st).Prune(context.Background()); err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	want := time.Date(2026, 10, 1, 9, 0, 0, 0, shanghai)
+	if len(st.notificationCutoffs) != 1 || !st.notificationCutoffs[0].Equal(want) {
+		t.Fatalf("notification cutoff = %v, want %v", st.notificationCutoffs, want)
 	}
 }
 

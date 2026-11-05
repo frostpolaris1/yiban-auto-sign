@@ -525,6 +525,42 @@ func (s *server) AdminNotifySet(c *gin.Context, params oapi.AdminNotifySetParams
 	s.settings.AdminNotifySet(c, params)
 }
 
+// NotificationList 委托站内信列表。未装配时仍是 501。
+func (s *server) NotificationList(c *gin.Context, params oapi.NotificationListParams) {
+	if s.settings == nil {
+		notImplemented(c)
+		return
+	}
+	s.settings.NotificationList(c, params)
+}
+
+// NotificationUnreadCount 委托未读数读取。未装配时仍是 501。
+func (s *server) NotificationUnreadCount(c *gin.Context) {
+	if s.settings == nil {
+		notImplemented(c)
+		return
+	}
+	s.settings.NotificationUnreadCount(c)
+}
+
+// NotificationMarkRead 委托标记已读。未装配时仍是 501。
+func (s *server) NotificationMarkRead(c *gin.Context, params oapi.NotificationMarkReadParams) {
+	if s.settings == nil {
+		notImplemented(c)
+		return
+	}
+	s.settings.NotificationMarkRead(c, params)
+}
+
+// NotificationMarkAllRead 委托全部已读。未装配时仍是 501。
+func (s *server) NotificationMarkAllRead(c *gin.Context, params oapi.NotificationMarkAllReadParams) {
+	if s.settings == nil {
+		notImplemented(c)
+		return
+	}
+	s.settings.NotificationMarkAllRead(c, params)
+}
+
 // AdminSettings 委托设置名册读取。未装配时仍是 501。
 func (s *server) AdminSettings(c *gin.Context) {
 	if s.settings == nil {

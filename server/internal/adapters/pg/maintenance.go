@@ -1,6 +1,6 @@
 package pg
 
-// 过期数据清理的仓储。只清三张表：会话、重置令牌、旧任务行。
+// 过期数据清理的仓储。只清四张表：会话、重置令牌、旧任务行、旧站内信。
 //
 // 审计链（audit_logs）不在这里清：它是 append-only，清理只能走迁移级
 // 操作（重写 guard），否则保留期与不可篡改互相打架。见 core/audit 口径。
@@ -38,6 +38,12 @@ func (r *MaintenanceRepo) DeleteTasksBefore(ctx context.Context, before string, 
 		DELETE FROM sign_tasks WHERE id IN (
 		  SELECT id FROM sign_tasks WHERE day < $1::date
 		   ORDER BY day LIMIT $2)`, before, limit)
+}
+
+// DeleteNotificationsBefore 删除 created_at < before 的站内信，每批至多 limit 行。
+// 投递账本随外键级联删除；本方法不碰审计链。
+func (r *MaintenanceRepo) DeleteNotificationsBefore(ctx context.Context, before time.Time, limit int) (int64, error) {
+	return deleteNotificationsBefore(ctx, r.db, before, limit)
 }
 
 // deleteBatch 执行一条按 id 子查询限定批量的 DELETE。
