@@ -78,11 +78,10 @@ ENGINE_PREFIX="ast:"
 # 不在内：它们不是"定义点"，把它们算进来只会让上限虚高。
 #
 # `deploy` 收窄为 `deploy/prod`（2026-11-05）：`deploy/` 下其余子树
-# 已属新栈（Go 线）——deploy/linux 是 Go 裸机安装/升级器，deploy/docker 是 Go
-# 容器编排，deploy/baremetal 与 deploy/container 是 Go 运行配置模板
-# （server.env.example / compose.env.example）。它们含有 YIBAN_WORKERS、
-# Asia/Shanghai 等共享事实的**同形字符串**（新栈模板照名册写键是应该的），
-# 算进本门只会给 tsv 的上限族凭空加定义点、逼上限虚高。新栈键面由
+# 已属新栈（Go 线）——deploy/baremetal 是 Go 裸机安装/升级器与运行配置模板，
+# deploy/container 是 Go 容器编排、镜像构建与运行配置模板。它们含有
+# YIBAN_WORKERS、Asia/Shanghai 等共享事实的**同形字符串**（新栈模板照名册写键
+# 是应该的），算进本门只会给 tsv 的上限族凭空加定义点、逼上限虚高。新栈键面由
 # server/internal/configdata/registry.json + registry_parity_test 自守，
 # 与本门（旧线名册 scripts/gate/shared-facts.tsv）互不引用。
 DEFAULT_SCOPE="yiban scripts web docker deploy/prod .github run.sh run_probe.sh docker-compose.yml pyproject.toml .env.example .env.docker.example"

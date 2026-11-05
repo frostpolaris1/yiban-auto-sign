@@ -191,8 +191,7 @@ class ScanSurfaceGuardTest(unittest.TestCase):
             self.assertIn(newstack, benign,
                           "BENIGN_TOP_DIRS 丢了 %s：新栈边界必须显式声明，"
                           "否则扫描面残缺守卫把整棵新栈判成未登记生产目录" % newstack)
-        for prefix in ("deploy/baremetal/", "deploy/container/", "deploy/docker/",
-                       "deploy/linux/", "scripts/e2e/"):
+        for prefix in ("deploy/baremetal/", "deploy/container/", "scripts/e2e/"):
             self.assertIn(prefix, skip,
                           "SKIP_PREFIXES 丢了 %s：新栈部署/升级脚本会被旧名册假红" % prefix)
 

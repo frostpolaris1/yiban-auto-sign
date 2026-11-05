@@ -6,7 +6,7 @@ package main
 // 1. 用 -X 注入 version/commit/buildTime，跑 yiban-server --version 与
 //    yiban-cli version，断言三值原样输出；
 // 2. 不带 ldflags 构建，断言显性 dev/unknown/unknown；
-// 3. 静态守卫 deploy/docker/Dockerfile 的 -X 符号与构建参数。
+// 3. 静态守卫 deploy/container/Dockerfile 的 -X 符号与构建参数。
 //
 // # 口径
 // 编译型用例在 -short 下跳过；Dockerfile 静态守卫始终运行。
@@ -25,7 +25,7 @@ import (
 const buildinfoModule = "github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo"
 
 func TestDockerfileUsesBuildinfoSymbols(t *testing.T) {
-	body, err := os.ReadFile(filepath.Join("..", "..", "..", "deploy", "docker", "Dockerfile"))
+	body, err := os.ReadFile(filepath.Join("..", "..", "..", "deploy", "container", "Dockerfile"))
 	if err != nil {
 		t.Fatalf("read Dockerfile: %v", err)
 	}

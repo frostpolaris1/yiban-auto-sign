@@ -24,9 +24,10 @@ ROOT="$(cd "$SELF_DIR/.." && pwd)"
 
 # 新栈脚本清单。旧线（yiban/ web/ scripts/ 的旧入口）已冻结，不做同批整改。
 SHELL_FILES=(
-    deploy/linux/install.sh
-    deploy/linux/update.sh
-    deploy/docker/build.sh
+    deploy/baremetal/install.sh
+    deploy/baremetal/update.sh
+    deploy/container/build.sh
+    deploy/container/backup.sh
     scripts/e2e/deploy-container-e2e.sh
     scripts/e2e/deploy-baremetal-e2e.sh
     scripts/e2e/update-rollback-e2e.sh

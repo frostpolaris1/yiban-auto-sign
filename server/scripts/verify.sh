@@ -11,7 +11,7 @@ fi
 
 go vet ./...
 # -count=1：Go 的测试缓存会让 shell/fixture 改动看不见。
-# 实测：改 deploy/linux/install.sh 后不带 -count=1 返回 cached 绿。
+# 实测：改 deploy/baremetal/install.sh 后不带 -count=1 返回 cached 绿。
 #
 # 三个真库包下面还要带 -v 再跑一次（要数顶层 PASS）。有 DSN 时先把它们从这一轮
 # 剔掉：同一批用例跑两遍是纯等待（CI 实测约 60s）。没有 DSN 时不剔——它们在这一轮

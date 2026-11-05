@@ -3,7 +3,7 @@
 # scripts/e2e/deploy-baremetal-e2e.sh — 裸机部署路径的干净环境 e2e（工单 6jk）。
 #
 # 模拟的真实用户动作（AGENTS §8g）：
-#   一台干净的 Ubuntu 24.04 主机按 deploy/linux/install.sh 的用法，
+#   一台干净的 Ubuntu 24.04 主机按 deploy/baremetal/install.sh 的用法，
 #   落位二进制与前端产物、生成 /etc/yiban/server.env、装 systemd 单元、
 #   enable --now，然后访问首页与 /healthz、再停机。
 #
@@ -18,11 +18,13 @@
 #   不使用假 systemctl、不使用 YIBAN_INSTALL_ROOT 干跑前缀。
 #
 # 步骤：
-#   B1 前置与干净环境      B2 OS 镜像（systemd + openssl + curl）
+#   B1 前置与干净环境      B2 OS 镜像（systemd + dbus + openssl + curl）
 #   B3 干净 PostgreSQL 18   B4 构建二进制（golang 容器，真编译）
 #   B4c 构建前端产物（node 容器，真 npm run build）
 #   B5 一次性 OS 容器       B6 install.sh 真装（含 --ui-dir）
-#   B7 服务状态             B7b 页面与深链
+#   B6b 单元加固            B6c 照片目录白名单负向
+#   B6d 重装重启            B7 服务状态
+#   B7d 加固沙箱写照片      B7b 页面与深链
 #   B7c 反代信任链          B8 落位与权限
 #   B9 迁移版本与干净库     B10 SIGTERM 优雅停机
 #   B11 资源清理
@@ -178,7 +180,7 @@ e2e_step "B2" "OS 镜像（systemd + openssl + curl）"
 os_image_ready() {
     docker image inspect "$OS_IMAGE" >/dev/null 2>&1 \
         && docker run --rm "$OS_IMAGE" sh -c \
-            'test -x /sbin/init && test -x /usr/bin/openssl && test -x /usr/bin/curl' \
+            'test -x /sbin/init && test -x /usr/bin/openssl && test -x /usr/bin/curl && test -x /usr/bin/dbus-daemon' \
             >/dev/null 2>&1
 }
 if os_image_ready; then
@@ -188,7 +190,7 @@ else
 FROM $OS_BASE
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \\
- && apt-get install -y --no-install-recommends systemd systemd-sysv openssl ca-certificates curl \\
+ && apt-get install -y --no-install-recommends systemd systemd-sysv dbus openssl ca-certificates curl \\
  && rm -rf /var/lib/apt/lists/*
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]
@@ -286,7 +288,7 @@ else
         | docker run --rm -i -v "$UI_OUT:/out" -w /src \
             "${NPM_ENV[@]}" \
             "$NODE_IMAGE" sh -c \
-            'tar -xf - && npm ci --no-audit --no-fund && npm run build && cp -a dist/. /out/' \
+            'tar -xf - && npm ci --include=optional --fetch-retries=5 --fetch-timeout=120000 --no-audit --no-fund && npm run build && cp -a dist/. /out/' \
             >>"$E2E_STEP_LOG" 2>&1; then
         e2e_die "前端构建失败（受限网络请设 DEPLOY_E2E_NPM_REGISTRY）"
     fi
@@ -349,7 +351,7 @@ docker cp "$UI_OUT" "$OS:/opt/e2e-dist/ui" >>"$E2E_STEP_LOG" 2>&1 \
 # YIBAN_HEALTH_RETRIES 放大到 60：容器内首次启动要连库并跑迁移。
 # 它只放大等待，不放松判据（仍然必须拿到 200）。
 if ! docker exec -e YIBAN_HEALTH_RETRIES=60 -e YIBAN_HEALTH_RETRY_INTERVAL=1 \
-    "$OS" bash /opt/e2e-src/deploy/linux/install.sh \
+    "$OS" bash /opt/e2e-src/deploy/baremetal/install.sh \
     --server-bin /opt/e2e-dist/yiban-server \
     --cli-bin /opt/e2e-dist/yiban-cli \
     --ui-dir /opt/e2e-dist/ui \
@@ -361,6 +363,141 @@ if ! grep -q 'install complete: healthz ok' "$E2E_STEP_LOG"; then
     e2e_die "install.sh 未报告 install complete: healthz ok"
 fi
 e2e_ok "install.sh 退出码 0，healthz ok"
+
+# ---- B6b systemd 单元加固 --------------------------------------------------
+# 加固键必须真进单元，并被 systemd 接受（不是只写在安装器注释里）。
+e2e_step "B6b" "systemd 单元加固"
+if ! os_exec systemd-analyze verify /etc/systemd/system/yiban.service \
+    >>"$E2E_STEP_LOG" 2>&1; then
+    e2e_die "systemd-analyze verify /etc/systemd/system/yiban.service 失败"
+fi
+UNIT_TEXT="$(os_exec cat /etc/systemd/system/yiban.service 2>>"$E2E_STEP_LOG" || true)"
+for key in \
+    'NoNewPrivileges=true' \
+    'PrivateTmp=true' \
+    'UMask=0077' \
+    'ProtectSystem=strict' \
+    'ProtectHome=true' \
+    'ReadWritePaths=-/var/lib/yiban/photos'; do
+    printf '%s\n' "$UNIT_TEXT" | grep -Fxq "$key" \
+        || e2e_die "systemd 单元缺 $key"
+done
+# systemd 载入后的属性值：文件里写对但被忽略（拼错键名）也会在这里红。
+for prop in \
+    'NoNewPrivileges=yes' \
+    'PrivateTmp=yes' \
+    'ProtectSystem=strict' \
+    'ProtectHome=yes' \
+    'UMask=0077'; do
+    if ! SHOW="$(os_exec systemctl show -p "${prop%%=*}" yiban.service 2>>"$E2E_STEP_LOG")"; then
+        e2e_die "systemctl show -p ${prop%%=*} 失败"
+    fi
+    printf '%s\n' "$SHOW" | grep -Fxq "$prop" \
+        || e2e_die "systemd 未接受加固键 $prop"
+done
+# ReadWritePaths 是路径列表（不是布尔），单独查：漏配会让首次上传才失败。
+SHOW_RW="$(os_exec systemctl show -p ReadWritePaths yiban.service 2>>"$E2E_STEP_LOG" || true)"
+printf '%s\n' "$SHOW_RW" | grep -Fq '/var/lib/yiban/photos' \
+    || e2e_die "systemd 的 ReadWritePaths 未包含照片目录"
+e2e_ok "systemd-analyze verify 通过；加固键全部被 systemd 接受"
+
+# ---- B6c 照片目录白名单负向（真 root） -------------------------------------
+# 坏 YIBAN_PHOTO_DIR 必须在任何写入/chown 前退 2；判据是属主与单元字节不变。
+# 所有可能失败的命令都放在 if 条件里：os_exec 内部失败会触发 ERR trap，
+# `cmd || handler` 不足以抑制（set -E 会让 trap 进入函数体）。
+e2e_step "B6c" "照片目录白名单负向"
+if ! UNIT_SUM_BEFORE="$(os_exec sha256sum /etc/systemd/system/yiban.service)"; then
+    e2e_die "读取 unit 校验和失败"
+fi
+UNIT_SUM_BEFORE="${UNIT_SUM_BEFORE%% *}"
+
+run_bad_photo() {
+    local value="$1" label="$2" probe="$3" symlink="${4:-0}"
+    local owner_before="" owner_after="" unit_after="" pid_before="" pid_after="" rc=0
+    if ! os_exec cp -a /etc/yiban/server.env /tmp/e2e-server.env.bak >>"$E2E_STEP_LOG" 2>&1; then
+        e2e_die "$label: 备份 server.env 失败"
+    fi
+    if [ "$symlink" = "1" ]; then
+        if ! os_exec ln -sfn /etc /var/lib/yiban/photos-probe >>"$E2E_STEP_LOG" 2>&1; then
+            e2e_die "$label: 造软链失败"
+        fi
+    fi
+    if ! os_exec sed -i "s|^YIBAN_PHOTO_DIR=.*|YIBAN_PHOTO_DIR=$value|" /etc/yiban/server.env \
+        >>"$E2E_STEP_LOG" 2>&1; then
+        e2e_die "$label: 改 server.env 失败"
+    fi
+    if ! owner_before="$(os_exec stat -c '%U:%G' "$probe")"; then
+        e2e_die "$label: 读 $probe 属主失败"
+    fi
+    if ! pid_before="$(os_exec systemctl show -p MainPID --value yiban.service)"; then
+        e2e_die "$label: 读 MainPID 失败"
+    fi
+    if os_exec env YIBAN_HEALTH_RETRIES=1 bash /opt/e2e-src/deploy/baremetal/install.sh \
+        --server-bin /opt/e2e-dist/yiban-server \
+        --cli-bin /opt/e2e-dist/yiban-cli \
+        --database-url "$DSN" >>"$E2E_STEP_LOG" 2>&1; then
+        rc=0
+    else
+        rc=$?
+    fi
+    [ "$rc" = "2" ] || e2e_die "$label: rc=$rc（期望 2）"
+    if ! owner_after="$(os_exec stat -c '%U:%G' "$probe")"; then
+        e2e_die "$label: 读回 $probe 属主失败"
+    fi
+    [ "$owner_before" = "$owner_after" ] \
+        || e2e_die "$label: chown 越界（$probe $owner_before -> $owner_after）"
+    if ! unit_after="$(os_exec sha256sum /etc/systemd/system/yiban.service)"; then
+        e2e_die "$label: 读回 unit 校验和失败"
+    fi
+    unit_after="${unit_after%% *}"
+    [ "$UNIT_SUM_BEFORE" = "$unit_after" ] || e2e_die "$label: 失败路径改写了 unit"
+    if ! pid_after="$(os_exec systemctl show -p MainPID --value yiban.service)"; then
+        e2e_die "$label: 读回 MainPID 失败"
+    fi
+    [ "$pid_before" = "$pid_after" ] || e2e_die "$label: 失败路径重启了服务"
+    if ! os_exec mv /tmp/e2e-server.env.bak /etc/yiban/server.env >>"$E2E_STEP_LOG" 2>&1; then
+        e2e_die "$label: 恢复 server.env 失败"
+    fi
+    if ! os_exec chmod 600 /etc/yiban/server.env >>"$E2E_STEP_LOG" 2>&1; then
+        e2e_die "$label: 恢复 server.env 权限失败"
+    fi
+    if ! os_exec chown root:root /etc/yiban/server.env >>"$E2E_STEP_LOG" 2>&1; then
+        e2e_die "$label: 恢复 server.env 属主失败"
+    fi
+    if [ "$symlink" = "1" ]; then
+        if ! os_exec rm -f /var/lib/yiban/photos-probe >>"$E2E_STEP_LOG" 2>&1; then
+            e2e_die "$label: 删除软链失败"
+        fi
+    fi
+    e2e_say "  [PASS] $label：rc=2，属主/unit/MainPID 未变"
+}
+run_bad_photo "/var/lib/yiban/photos/../.." "dotdot-escape" "/var/lib"
+run_bad_photo "/etc" "etc" "/etc"
+run_bad_photo "/var/lib/yiban-updater" "updater-root" "/var/lib/yiban-updater"
+run_bad_photo "/var/lib/yiban/photos-probe" "symlink-to-etc" "/etc" 1
+e2e_ok "dotdot/裸目录/updater/软链全部退 2；无 chown、无 unit 改写、无重启"
+
+# ---- B6d 重装重启 active unit ----------------------------------------------
+# enable --now 对 active 单元是 no-op；restart 必须换 MainPID，否则加固不生效。
+e2e_step "B6d" "重装重启 active unit"
+PID_BEFORE="$(os_exec systemctl show -p MainPID --value yiban.service 2>>"$E2E_STEP_LOG" || true)"
+if ! os_exec env YIBAN_HEALTH_RETRIES=60 bash /opt/e2e-src/deploy/baremetal/install.sh \
+    --server-bin /opt/e2e-dist/yiban-server \
+    --cli-bin /opt/e2e-dist/yiban-cli \
+    --ui-dir /opt/e2e-dist/ui \
+    --database-url "$DSN" >>"$E2E_STEP_LOG" 2>&1; then
+    e2e_die "重装 install.sh 失败"
+fi
+sleep 1
+PID_AFTER="$(os_exec systemctl show -p MainPID --value yiban.service 2>>"$E2E_STEP_LOG" || true)"
+[ -n "$PID_AFTER" ] && [ "$PID_AFTER" != "0" ] || e2e_die "重装后 MainPID=$PID_AFTER"
+[ "$PID_AFTER" != "$PID_BEFORE" ] \
+    || e2e_die "重装未重启服务（MainPID 仍为 $PID_BEFORE）"
+if ! os_exec /usr/local/bin/yiban-cli healthcheck --addr "$HEALTH_ADDR" --timeout 2s \
+    >>"$E2E_STEP_LOG" 2>&1; then
+    e2e_die "重装后 healthcheck 失败"
+fi
+e2e_ok "重装 rc=0；MainPID $PID_BEFORE -> $PID_AFTER；healthz ok"
 
 # ---- B7 服务状态 -----------------------------------------------------------
 e2e_step "B7" "服务状态"
@@ -382,6 +519,37 @@ if ! os_exec /usr/local/bin/yiban-cli healthcheck --addr "$HEALTH_ADDR" --timeou
     e2e_die "独立 healthcheck 失败（$HEALTH_ADDR）"
 fi
 e2e_ok "active + enabled；独立 healthcheck 通过"
+
+# ---- B7d 加固沙箱真实写照片 ------------------------------------------------
+# 用与单元相同的隔离属性起一次性 systemd 单元：服务用户必须能写照片目录；
+# 去掉 ReadWritePaths 后同一写操作必须失败（证明该行不是装饰）。
+e2e_step "B7d" "加固沙箱写照片"
+# systemd-run 走 D-Bus；OS 镜像装 dbus 并显式起服务，避免“连不上 bus”误判。
+if ! os_exec systemctl start dbus.service >>"$E2E_STEP_LOG" 2>&1; then
+    e2e_die "启动 dbus.service 失败（systemd-run 需要 D-Bus）"
+fi
+if ! os_exec systemd-run --unit=yiban-photo-probe --wait --collect \
+    -p User=yiban -p Group=yiban -p ProtectSystem=strict -p ProtectHome=true \
+    -p PrivateTmp=true -p NoNewPrivileges=true \
+    -p ReadWritePaths=-/var/lib/yiban/photos \
+    /bin/sh -c 'printf probe > /var/lib/yiban/photos/e2e-photo-probe && chmod 600 /var/lib/yiban/photos/e2e-photo-probe' \
+    >>"$E2E_STEP_LOG" 2>&1; then
+    e2e_die "服务用户在加固沙箱内写照片失败（ReadWritePaths 漏配？）"
+fi
+PROBE_META="$(os_exec stat -c '%a:%U:%G' /var/lib/yiban/photos/e2e-photo-probe 2>>"$E2E_STEP_LOG" || true)"
+[ "$PROBE_META" = "600:yiban:yiban" ] \
+    || e2e_die "照片探针权限=$PROBE_META（期望 600:yiban:yiban）"
+if os_exec systemd-run --unit=yiban-photo-deny --wait --collect \
+    -p User=yiban -p Group=yiban -p ProtectSystem=strict -p ProtectHome=true \
+    -p PrivateTmp=true -p NoNewPrivileges=true \
+    /bin/sh -c 'printf denied > /var/lib/yiban/photos/e2e-photo-denied' \
+    >>"$E2E_STEP_LOG" 2>&1; then
+    e2e_die "无 ReadWritePaths 时仍能写照片（判据无牙）"
+fi
+os_exec test ! -e /var/lib/yiban/photos/e2e-photo-denied \
+    >>"$E2E_STEP_LOG" 2>&1 || e2e_die "拒绝写入后仍留下探针文件"
+os_exec rm -f /var/lib/yiban/photos/e2e-photo-probe >>"$E2E_STEP_LOG" 2>&1 || true
+e2e_ok "服务用户可在加固沙箱写照片；去掉 ReadWritePaths 即拒绝"
 
 # ---- B7b 页面与前端深链（CLEAN-0） ----------------------------------------
 e2e_step "B7b" "页面与前端深链"

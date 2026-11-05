@@ -6,7 +6,7 @@
 #   bash scripts/release/verify.sh --pubkey PUB.pem --manifest manifest.json --signature manifest.sig
 #
 # 公钥与清单、签名都用显式路径传入，本脚本不读任何默认位置。
-# **公钥不入仓库**：仓库只收指纹示例（deploy/linux/release-pubkey.sha256.example）
+# **公钥不入仓库**：仓库只收指纹示例（deploy/baremetal/release-pubkey.sha256.example）
 # 与文档。信任锚由调用方钉住：
 #   - update.sh：读 YIBAN_RELEASE_PUBKEY_SHA256 或 <安装根>/release-pubkey.sha256，
 #     先比对指纹再调本脚本；

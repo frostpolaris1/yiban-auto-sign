@@ -22,6 +22,11 @@ env
 # 环境与密钥（严禁进镜像）
 .env
 .env.*
+# 新栈运行配置与备份：compose.env 含数据库口令/pepper/凭据钥，
+# 备份目录含凭据密文。它们只留在宿主，构建上下文也不收。
+deploy/container/compose.env
+deploy/container/backups
+deploy/baremetal/server.env
 config.local.py
 
 # 数据文件（SQLite / 账号 / 用户，严禁进镜像）

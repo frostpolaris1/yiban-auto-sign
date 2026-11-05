@@ -3,7 +3,7 @@
 # scripts/e2e/update-rollback-e2e.sh — 一键更新（U2）与回滚演练 e2e。
 #
 # 模拟的真实用户动作（AGENTS §8g）：
-#   操作员在一台已装好 yiban 的 Ubuntu 主机上跑 deploy/linux/update.sh。
+#   操作员在一台已装好 yiban 的 Ubuntu 主机上跑 deploy/baremetal/update.sh。
 #   容器内真跑 U2 的完整失败矩阵：
 #   R2 签名错           → exit 1，不碰旧件、不停服；
 #   R3 自检 FAIL        → exit 2，不停服、不写状态/备份；
@@ -362,9 +362,22 @@ CREATE TABLE e2e_rollback_probe (
 -- +goose Down
 DROP TABLE IF EXISTS e2e_rollback_probe;
 EOF
+    # 注入“启动后不健康”：先睡过 systemctl start，再 panic。
+    # Type=simple 的 start 在进程立即退出时会与健康探测竞争；CI 快机上
+    # start 可能直接返回失败，R7/R9/R10 的 “healthz failed after swap”
+    # 断言就永远等不到。1.5s 让 start 稳定返回 0，健康探测再失败。
+    inject_unhealthy_main() {
+        local file="$1" msg="$2"
+        sed -i 's|^\t"syscall"$|\t"syscall"\n\t"time"|' "$file" \
+            || e2e_die "注入 time import 失败"
+        sed -i "s|^func main() {$|func main() {\n\ttime.Sleep(1500 * time.Millisecond)\n\tpanic(\"$msg\")|" "$file" \
+            || e2e_die "注入 panic 失败"
+        grep -q 'time.Sleep(1500 \* time.Millisecond)' "$file" \
+            || e2e_die "源码注入未生效（main.go 形状与预期不符）"
+    }
     cp -a "$LOG_DIR/srv_v2" "$LOG_DIR/srv_v3"
-    sed -i 's|^func main() {$|func main() {\n\tpanic("e2e-rollback-e2e: injected unhealthy build")|' \
-        "$LOG_DIR/srv_v3/cmd/server/main.go"
+    inject_unhealthy_main "$LOG_DIR/srv_v3/cmd/server/main.go" \
+        "e2e-rollback-e2e: injected unhealthy build"
     grep -q 'injected unhealthy build' "$LOG_DIR/srv_v3/cmd/server/main.go" \
         || e2e_die "v3 源码注入失败（main.go 形状与预期不符）"
     cp -a "$LOG_DIR/srv_v2" "$LOG_DIR/srv_v4"
@@ -386,13 +399,13 @@ SELECT 1;
 -- +goose Down
 SELECT 1;
 EOF
-    sed -i 's|^func main() {$|func main() {\n\tpanic("e2e-rollback-e2e: injected unhealthy build for restore failure")|' \
-        "$LOG_DIR/srv_v5/cmd/server/main.go"
+    inject_unhealthy_main "$LOG_DIR/srv_v5/cmd/server/main.go" \
+        "e2e-rollback-e2e: injected unhealthy build for restore failure"
     grep -q 'injected unhealthy build for restore failure' "$LOG_DIR/srv_v5/cmd/server/main.go" \
         || e2e_die "v5 源码注入失败（main.go 形状与预期不符）"
     cp -a "$LOG_DIR/srv_v4" "$LOG_DIR/srv_v6"
-    sed -i 's|func main() {$|func main() {\n\tpanic("e2e-rollback-e2e: injected unhealthy build for ui rollback")|' \
-        "$LOG_DIR/srv_v6/cmd/server/main.go"
+    inject_unhealthy_main "$LOG_DIR/srv_v6/cmd/server/main.go" \
+        "e2e-rollback-e2e: injected unhealthy build for ui rollback"
     grep -q 'injected unhealthy build for ui rollback' "$LOG_DIR/srv_v6/cmd/server/main.go" \
         || e2e_die "v6 源码注入失败（main.go 形状与预期不符）"
     # 嵌套自检：拷贝后的 scratch 树顶层必须是源码根。
@@ -638,8 +651,8 @@ run_mode() {
     }
     trap cleanup EXIT
 
-    UPDATE_SH="$SRC/deploy/linux/update.sh"
-    INSTALL_SH="$SRC/deploy/linux/install.sh"
+    UPDATE_SH="$SRC/deploy/baremetal/update.sh"
+    INSTALL_SH="$SRC/deploy/baremetal/install.sh"
     ENV_EXAMPLE="$SRC/deploy/baremetal/server.env.example"
     SERVER_DEST="/usr/local/bin/yiban-server"
     CLI_DEST="/usr/local/bin/yiban-cli"
@@ -709,7 +722,10 @@ run_mode() {
     }
     # assert_grep <文件> <模式> <说明>：文件里必须出现该模式。
     assert_grep() {
-        grep -q -- "$2" "$1" || e2e_die "$3（$1 里没有「$2」）"
+        if ! grep -q -- "$2" "$1"; then
+            e2e_tail "$1" 30 || true
+            e2e_die "$3（$1 里没有「$2」）"
+        fi
     }
     # state_str / state_num：读 update-state.json 的字段（格式由 update.sh 固定）。
     # 管道里的 `|| true` 只为兜住「文件不存在」：本脚本 set -E（errtrace），

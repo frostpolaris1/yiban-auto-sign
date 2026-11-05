@@ -145,6 +145,11 @@ docs/dev/*
 # 前导斜杠只指仓库根的发布件目录；无斜杠会连 `scripts/release/` 一起吞掉。
 /release/
 !docs/dev/time-prefs-backfill.md
+# 运维配置地图（docs/ops/config-map.md）是部署面交付物：运营者按它找运行文件与
+# 生效方式。与 docs/dev 同一套白名单写法：先放行目录，再逐个放行文件。
+!docs/ops/
+docs/ops/*
+!docs/ops/config-map.md
 .superpowers/
 
 # ZCode 工具目录
@@ -258,4 +263,6 @@ _ocr_review_*
 # 裸机运行位在 /etc/yiban/server.env；仓库里只允许 *.example。
 deploy/container/compose.env
 deploy/baremetal/server.env
+# 容器备份产物（含凭据密文；缺省落 deploy/container/backups，绝不入库）。
+deploy/container/backups/
 server/.env

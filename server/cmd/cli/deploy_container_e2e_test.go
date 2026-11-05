@@ -60,7 +60,7 @@ func TestContainerPhotoDirWritableByNonroot(t *testing.T) {
 		t.Fatalf("resolve repo root: %v", err)
 	}
 	const image = "yiban-p7-photo-test:local"
-	buildArgs := []string{"build", "-f", filepath.Join(root, "deploy", "docker", "Dockerfile"), "-t", image}
+	buildArgs := []string{"build", "-f", filepath.Join(root, "deploy", "container", "Dockerfile"), "-t", image}
 	// 受限网络可给 YIBAN_DOCKER_GOPROXY 覆盖构建段代理；
 	// 缺省不注入，与 Dockerfile 的口径一致。
 	if proxy := os.Getenv("YIBAN_DOCKER_GOPROXY"); proxy != "" {

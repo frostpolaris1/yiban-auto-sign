@@ -121,7 +121,11 @@ export const PLAN_REBUILT: SchedulePlan = {
   rows: PLAN_ALPHA.rows,
 }
 
-export const DEFAULT_TIME_PREF: TimePref = { offset_min: 15, allowed: true }
+export const DEFAULT_TIME_PREF: TimePref = {
+  offset_min: 15,
+  allowed: true,
+  window: { start: '06:00', end: '06:30' },
+}
 
 export type ScheduleApiCall = {
   method: string

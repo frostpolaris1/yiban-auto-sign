@@ -123,7 +123,11 @@ export const DEFAULT_DIAGNOSTICS: DiagnosticsItem[] = [
   },
 ]
 
-export const DEFAULT_TIME_PREF: TimePref = { offset_min: 15, allowed: true }
+export const DEFAULT_TIME_PREF: TimePref = {
+  offset_min: 15,
+  allowed: true,
+  window: { start: '06:00', end: '06:30' },
+}
 
 /** 待处理账号计数的缺省夹具：与容量/统计缺省同套合成口径。 */
 export const DEFAULT_ACCOUNT_SUMMARY: AccountSummary = { pending: 2, rejected: 1 }

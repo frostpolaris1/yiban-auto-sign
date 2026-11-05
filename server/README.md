@@ -175,7 +175,7 @@ server reads.
 Canonical runtime files:
 
 - bare metal: `/etc/yiban/server.env` (0600 root:root), installed by
-  `deploy/linux/install.sh`; a key-complete, secret-free template is at
+  `deploy/baremetal/install.sh`; a key-complete, secret-free template is at
   `/etc/yiban/server.env.example` (0644).
 - container: `deploy/container/compose.env` (0600 on the host), loaded with an
   explicit `--env-file` plus the compose `env_file` entry. The repository root

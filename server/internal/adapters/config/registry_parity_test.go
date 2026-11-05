@@ -610,7 +610,7 @@ func TestTemplatesMatchRegistry(t *testing.T) {
 // YIBAN_TRUSTED_PROXIES 走插值透传，export 覆盖才不会静默失效。
 // 没有本测试，模板缺一个必填键或文档命令漏写 --env-file 都会静默通过键面门。
 func TestContainerComposeDerivesDSN(t *testing.T) {
-	compose := readFile(t, filepath.Join("..", "..", "..", "..", "deploy", "docker", "docker-compose.yml"))
+	compose := readFile(t, filepath.Join("..", "..", "..", "..", "deploy", "container", "docker-compose.yml"))
 	for _, want := range []string{
 		"YIBAN_DATABASE_URL:",
 		"${POSTGRES_PASSWORD",

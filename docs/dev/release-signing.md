@@ -11,7 +11,7 @@
 | `scripts/release/make-manifest.sh <version> <file>...` | 生成单行 `manifest.json`：`{"version":...,"files":[{"name":...,"sha256":...}]}`；键序固定、结尾换行（可复现字节） |
 | `scripts/release/sign.sh --key PRIVATE.pem --in manifest.json --out manifest.json.sig` | openssl 3 Ed25519 纯签名（`-rawin`），签名字节＝清单文件字节 |
 | `scripts/release/verify.sh --pubkey PUB.pem --manifest manifest.json --signature manifest.sig` | 只验签，不判断公钥是否可信；rc=0 通过／rc=1 不通过／rc=2 验证没跑 |
-| `deploy/linux/update.sh --manifest/--signature/--pubkey [--expect-version V]` | 先比指纹，再验签，再对账 sha256；任何失败不碰旧件、不停服务。未给三件默认拒绝（exit 2）；`--allow-unsigned` 是显式逃生口，与三件互斥 |
+| `deploy/baremetal/update.sh --manifest/--signature/--pubkey [--expect-version V]` | 先比指纹，再验签，再对账 sha256；任何失败不碰旧件、不停服务。未给三件默认拒绝（exit 2）；`--allow-unsigned` 是显式逃生口，与三件互斥 |
 | `<安装根>/release-pubkey.sha256` | 信任锚：管理员在安装时写入的发布公钥 SHA-256 |
 | `scripts/release-check.sh` 项 8（`signing`） | 三件齐全且**外部锚**匹配时验签；缺件或验证没跑显性 SKIP（跳过≠绿） |
 
@@ -20,7 +20,7 @@
 - 生成：`openssl genpkey -algorithm ED25519 -out yiban-release-key.pem`；
   公钥：`openssl pkey -in yiban-release-key.pem -pubout -out release-pubkey.pem`。
 - **私钥红线**：私钥永不入库、不与部署机同机明文存放。私钥只留在发布者机器。
-- **公钥不入库**：仓库只收指纹示例 `deploy/linux/release-pubkey.sha256.example`
+- **公钥不入库**：仓库只收指纹示例 `deploy/baremetal/release-pubkey.sha256.example`
   与本文档。真实公钥随发布件分发，但不提交。
 - **指纹入受管配置**：指纹不是秘密，要防的是篡改。
   部署机写 `/release-pubkey.sha256`（root 持有）；一次性调用可用环境变量
@@ -62,7 +62,7 @@
    `--require-signing` 把缺件、缺锚与缺 openssl 从 SKIP 升为 FAIL。
    发布操作必须用它。
 6. 升级：
-   `sudo bash deploy/linux/update.sh --server-bin NEW [--cli-bin NEW] --manifest manifest.json --signature manifest.sig --pubkey release-pubkey.pem --expect-version 0.7.0`
+   `sudo bash deploy/baremetal/update.sh --server-bin NEW [--cli-bin NEW] --manifest manifest.json --signature manifest.sig --pubkey release-pubkey.pem --expect-version 0.7.0`
    未给三件 → 默认拒绝（exit 2，发生在停服务之前）。
    钥匙仪式未完成的部署显式给 `--allow-unsigned` 放行（显性 WARN，跳过≠绿）；
    逃生口与三件互斥，同给即 exit 2。

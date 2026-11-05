@@ -42,7 +42,7 @@ DEPLOY_E2E_NPM_REGISTRY=https://registry.npmmirror.com bash scripts/e2e/deploy-c
 
 ## 2. 容器路径断言
 
-脚本 `scripts/e2e/deploy-container-e2e.sh` 按 `deploy/docker/docker-compose.yml` 起栈。
+脚本 `scripts/e2e/deploy-container-e2e.sh` 按 `deploy/container/docker-compose.yml` 起栈。
 独立 compose 项目、独立卷、独立网络、独立回环端口。
 镜像同时构建前端（Dockerfile 的 `ui` 段），页面由 Go 进程托管。
 
@@ -53,6 +53,8 @@ DEPLOY_E2E_NPM_REGISTRY=https://registry.npmmirror.com bash scripts/e2e/deploy-c
 | C3 | db 与 app 均 healthy |
 | C4 | 容器内 `yiban-cli migrate` 打印嵌入集最新版本 |
 | C4b | 签发→验签通过；错公钥必须被拒；篡改清单一字节后验签必须被拒（openssl 现场生成密钥，不入仓） |
+| C4c | `backup` profile 一次性任务退出 0；产物含 `db.dump`/`db.list`/`photos.tar.gz`/`SHA256SUMS`，宿主侧 `sha256sum -c` 通过；`db.list` 是 `pg_restore` 清单（转储可读） |
+| C4d | 恢复冒烟：`pg_restore --clean` 回同库；照片 tar 解包后探针存在；`users=0`；app 重新 healthy |
 | C5 | 宿主 `curl /healthz` 返回 200，body 为 `{"status":"ok"}` |
 | C5b | 宿主 `curl /` 与深链 `/accounts` 都返回 200 且含 `<div id="root">`；未知 `/api/*` 仍是 JSON 404（`code=not_found`）且不含页面；`/assets/*.js` 带 `immutable` 长缓存 |
 | C5c | 带 `Origin: https://<host>` 与 `X-Forwarded-Proto: https` 的登录请求回 401（无效凭据），不得回 403；403 表示 compose 默认可信代理未覆盖网桥网关 |
@@ -71,20 +73,24 @@ C7 的日志断言有独立守卫：`TestRunClosesPoolAfterWorkerDrain`
 
 ## 3. 裸机路径断言
 
-脚本 `scripts/e2e/deploy-baremetal-e2e.sh` 真跑 `deploy/linux/install.sh`。
+脚本 `scripts/e2e/deploy-baremetal-e2e.sh` 真跑 `deploy/baremetal/install.sh`。
 它不用假 systemctl，也不用 `YIBAN_INSTALL_ROOT` 干跑前缀。
 
 | 步骤 | 断言 |
 |------|------|
 | B1 | docker 可用；本前缀资源未占用 |
-| B2 | 一次性 OS 镜像含真 systemd（PID1）、openssl 与 curl；旧缓存缺工具即重建 |
+| B2 | 一次性 OS 镜像含真 systemd（PID1）、dbus（`systemd-run` 需要）、openssl 与 curl；旧缓存缺工具即重建 |
 | B3 | 全新 PostgreSQL 18；public 表数为 0 |
 | B4 | 用 `golang:1.27-alpine` 真编译 server 与 cli |
 | B4c | 用 `node:22-alpine` 真跑 `npm ci && npm run build`；产物含 `index.html` 与 `assets/*.js`（可复用外部产物排障） |
 | B4b | 对真编译产物签发清单→验签通过 |
 | B5 | OS 容器 systemd 就绪；`/etc/yiban`、`yiban` 用户、二进制均不存在 |
 | B6 | `install.sh --ui-dir` 退出 0，输出 `install complete: healthz ok` |
+| B6b | `systemd-analyze verify` 通过；单元含 `NoNewPrivileges=true`/`PrivateTmp=true`/`UMask=0077`/`ProtectSystem=strict`/`ProtectHome=true`/`ReadWritePaths=-/var/lib/yiban/photos`；`systemctl show` 的 `NoNewPrivileges`/`PrivateTmp`/`ProtectSystem`/`ProtectHome`/`UMask` 与之一致；`ReadWritePaths` 含照片目录 |
+| B6c | 坏 `YIBAN_PHOTO_DIR`（`..` 逃逸、`/etc`、`/var/lib/yiban-updater`、软链）rc=2；目标属主、unit 字节与 MainPID 均不变 |
+| B6d | 重跑 `install.sh` rc=0；MainPID 变化；healthz ok（`enable --now` 的 no-op 不会让加固停在旧进程） |
 | B7 | 单元 active + enabled；独立 `yiban-cli healthcheck` 通过 |
+| B7d | 用与单元相同的加固属性跑 `systemd-run`：服务用户能写 `/var/lib/yiban/photos` 探针（0600 yiban）；去掉 `ReadWritePaths` 后同一写操作失败 |
 | B7b | 容器内 `curl /` 与深链 `/accounts` 返回 200 且含 `<div id="root">`；未知 `/api/*` 是 JSON 404；`/assets/*.js` 带 `immutable` 长缓存 |
 | B7c | 带 `Origin: https://<loopback>` 与 `X-Forwarded-Proto: https` 的登录请求回 401，不得回 403（`server.env` 的信任链生效） |
 | B8 | `server.env` 600 root:root 且含 `YIBAN_UI_DIR=/var/lib/yiban/ui` 与 `YIBAN_TRUSTED_PROXIES=127.0.0.1`；`server.env.example` 644 root:root 且与仓库模板逐字节一致；二进制 755；photos 与 ui 属 yiban；无名册文件；密钥形状正确 |
@@ -171,7 +177,7 @@ WSL 里不要把日志落 `/mnt/d`。跨文件系统追加会给 rc=141。
 
 ## 8. 一键更新与回滚演练（update-rollback-e2e，U2 失败矩阵）
 
-脚本 `scripts/e2e/update-rollback-e2e.sh` 真跑 `deploy/linux/update.sh`。
+脚本 `scripts/e2e/update-rollback-e2e.sh` 真跑 `deploy/baremetal/update.sh`。
 壳与裸机路径同款：一次性 Ubuntu 容器（真 systemd PID1、`--privileged`、
 host cgroup）＋ 真 PostgreSQL 18 ＋ 独立前缀/网络/卷。
 

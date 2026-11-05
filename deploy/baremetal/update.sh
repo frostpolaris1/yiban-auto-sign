@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-# deploy/linux/update.sh — 裸机一键更新：自检 → 备份 → 停服 → 迁移 →
+# deploy/baremetal/update.sh — 裸机一键更新：自检 → 备份 → 停服 → 迁移 →
 # 切换 → 健康检查 → 失败回滚（二进制/UI 总是回滚；数据库默认恢复）。
 #
 # 顺序（U2，2026-11-04）：
@@ -23,12 +23,12 @@
 #       --no-restore-db 显式关闭数据库恢复（只回二进制/UI）。
 #
 # 用法：
-#   sudo bash deploy/linux/update.sh --server-bin NEW [--cli-bin NEW] \
+#   sudo bash deploy/baremetal/update.sh --server-bin NEW [--cli-bin NEW] \
 #       [--ui-dir NEW_DIST] \
 #       --manifest M --signature S --pubkey K [--expect-version V] \
 #       [--no-restore-db] [--backup-dir DIR] [--keep-backups N] \
 #       [--backup-passphrase-file FILE]
-#   sudo bash deploy/linux/update.sh --selfcheck-only
+#   sudo bash deploy/baremetal/update.sh --selfcheck-only
 #
 #   只给 --server-bin 时迁移用已安装的 yiban-cli；--ui-dir 给新的前端构建
 #   产物，旧目录留 .bak 供人工回退。--expect-version 要求清单版本严格相等
