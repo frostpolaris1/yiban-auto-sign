@@ -1569,17 +1569,11 @@ type SignCalendarAccount struct {
 	// Attempts Business attempts consumed by the latest row.
 	Attempts int `json:"attempts"`
 
-	// Reason Present only when the stored row carries a reason.
-	Reason *string `json:"reason,omitempty"`
-
 	// RunAt Planned run time of the latest row; absent when the row has none.
 	RunAt *time.Time `json:"run_at,omitempty"`
 
 	// State Normalised account outcome for the day.
 	State SignCalendarAccountState `json:"state"`
-
-	// Suggestion Present only when the stored row carries a suggestion.
-	Suggestion *string `json:"suggestion,omitempty"`
 }
 
 // SignCalendarAccountState Normalised account outcome for the day.
@@ -1609,6 +1603,9 @@ type SignCalendarDayDetail struct {
 
 	// Day Business day, YYYY-MM-DD.
 	Day string `json:"day"`
+
+	// Future True for days after the server business day; accounts is empty.
+	Future bool `json:"future"`
 
 	// Timezone Server business time zone.
 	Timezone string `json:"timezone"`
@@ -1677,9 +1674,12 @@ type TimePref struct {
 	// OffsetMin Relative minute from the effective window start; multiple of five.
 	OffsetMin *int `json:"offset_min"`
 
-	// Slots Five-minute anchors relative to the server signing window. Present
-	// when the server can build the window; each label is the absolute
-	// clock time. disabled follows the deployment gate and the window.
+	// Slots Five-minute anchors relative to the server standard signing
+	// window. Each label is a clock time inside that window. The window
+	// actually executed for a task may be shifted by the platform
+	// window or a per-task override, so a label is a preference time,
+	// not the promised execution time. disabled follows the deployment
+	// gate and the window.
 	Slots  *[]TimePrefSlot `json:"slots,omitempty"`
 	Window TimePrefWindow  `json:"window"`
 }
@@ -1707,10 +1707,12 @@ type TimePrefUpdate struct {
 
 // TimePrefWindow defines model for TimePrefWindow.
 type TimePrefWindow struct {
-	// End Server signing window end, HH:MM.
+	// End Server standard signing window end, HH:MM. Actual execution may
+	// be shifted by the platform window or a per-task override.
 	End string `json:"end"`
 
-	// Start Server signing window start, HH:MM.
+	// Start Server standard signing window start, HH:MM. Actual execution may
+	// be shifted by the platform window or a per-task override.
 	Start string `json:"start"`
 }
 

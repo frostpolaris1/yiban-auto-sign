@@ -146,6 +146,7 @@ func (s *Service) Range(ctx context.Context, userID, from, to string) (coresched
 
 // Day 返回一个业务日的逐账号结果。
 // 没有任务的账号不出现；无数据的日期返回空列表而不是 404。
+// 未来日与范围读面同口径：Future=true 且账号列表为空。
 func (s *Service) Day(ctx context.Context, userID, day string) (coreschedule.CalendarDayDetail, error) {
 	if userID == "" {
 		return coreschedule.CalendarDayDetail{}, coreerrs.New(coreerrs.CodeInternal,
@@ -153,6 +154,15 @@ func (s *Service) Day(ctx context.Context, userID, day string) (coreschedule.Cal
 	}
 	if _, err := s.parseDay("day", day); err != nil {
 		return coreschedule.CalendarDayDetail{}, err
+	}
+	today := coreclock.BusinessDay(s.deps.Clock.Now(), s.deps.Location)
+	if day > today {
+		return coreschedule.CalendarDayDetail{
+			Day:      day,
+			Timezone: s.deps.Location.String(),
+			Accounts: []coreschedule.CalendarAccountOutcome{},
+			Future:   true,
+		}, nil
 	}
 	rows, err := s.deps.Store.CalendarTasks(ctx, userID, day, day)
 	if err != nil {
@@ -194,6 +204,8 @@ type dayKey struct {
 
 // latestByAccountDay 按 (账号, 日期) 取最近更新的一行，并给出全范围最大更新时间。
 // 存储层按更新时间倒序返回；这里再比较一次，排序变化不会让结果变旧。
+// 同口径还出现在 adapters/pg/stats.go 的 DISTINCT ON：
+// tie-break 是 updated_at DESC, id DESC，两处必须同改。
 func latestByAccountDay(rows []coreschedule.CalendarTaskRow) (map[dayKey]coreschedule.CalendarTaskRow, time.Time) {
 	latest := make(map[dayKey]coreschedule.CalendarTaskRow, len(rows))
 	var updatedAt time.Time

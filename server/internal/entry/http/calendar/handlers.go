@@ -129,18 +129,17 @@ func dayDetailResponse(d coreschedule.CalendarDayDetail) oapi.SignCalendarDayDet
 	accounts := make([]oapi.SignCalendarAccount, len(d.Accounts))
 	for i, item := range d.Accounts {
 		accounts[i] = oapi.SignCalendarAccount{
-			AccountId:  item.AccountID,
-			State:      oapi.SignCalendarAccountState(item.State),
-			RunAt:      item.RunAt,
-			Attempts:   item.Attempts,
-			Reason:     item.Reason,
-			Suggestion: item.Suggestion,
+			AccountId: item.AccountID,
+			State:     oapi.SignCalendarAccountState(item.State),
+			RunAt:     item.RunAt,
+			Attempts:  item.Attempts,
 		}
 	}
 	return oapi.SignCalendarDayDetail{
 		Day:      d.Day,
 		Timezone: d.Timezone,
 		Accounts: accounts,
+		Future:   d.Future,
 	}
 }
 

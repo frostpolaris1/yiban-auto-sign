@@ -52,14 +52,16 @@ type Deps struct {
 	Cooldown time.Duration
 }
 
-// Window 是服务端签到窗口的展示值，HH:MM。
+// Window 是服务端标准签到窗口的展示值，HH:MM。
+// 它不是执行承诺：实际窗口可能被平台发现窗口或逐任务 override 平移。
 type Window struct {
 	Start string
 	End   string
 }
 
-// Slot 是窗口内的一个 5 分钟锚点。
-// OffsetMin 相对窗口起点；Label 是绝对时刻；Disabled 为真时 Reason 非空。
+// Slot 是标准窗口内的一个 5 分钟锚点。
+// OffsetMin 相对标准窗口起点；Label 是该窗口内的时钟时刻，不是实际执行时刻。
+// Disabled 为真时 Reason 非空。
 type Slot struct {
 	OffsetMin int
 	Label     string
@@ -137,6 +139,8 @@ func (s *Service) Set(ctx context.Context, userID string, offset *int) (View, er
 
 // view 组装读面。窗口与槽位只由 core/schedule 的默认常量派生：
 // 计划回退窗口与自选展示窗口不会出现两套 06:30/07:50。
+// 这里是服务端标准窗口；实际执行窗口可被平台窗口或 override 平移，
+// slot label 只表示相对标准窗口的偏好时刻。
 func (s *Service) view(offset *int) View {
 	start := coreschedule.DefaultSignWindowStartMinute
 	end := coreschedule.DefaultSignWindowEndMinute

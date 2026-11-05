@@ -127,10 +127,11 @@ either side drifts.
 | POST | `/api/schedule/override` | master/admin | P4 |
 | GET | `/api/me/time-pref` | master/admin/user | P4 |
 | PUT | `/api/me/time-pref` | master/admin/user | P4 |
+|  |  |  | GET 返回服务端标准签到窗口与 5 分钟槽位；`label` 是相对该窗口的偏好时刻，实际执行可能被平台窗口或 override 平移。 |
 | GET | `/api/me/sign-calendar` | user | pm7 |
 |  |  |  | 本人账号的逐日签到计数；按账号当日最近一行去重，软删账号排除；`from`/`to` 必填且含首尾至多 31 天。 |
 | GET | `/api/me/sign-calendar/:day` | user | pm7 |
-|  |  |  | 本人账号在指定业务日的逐账号结果；他人账号与软删账号不出现。 |
+|  |  |  | 本人账号在指定业务日的逐账号结果；他人账号与软删账号不出现；未来日 `future=true` 且 `accounts=[]`；v1 不提供 `reason`/`suggestion`。 |
 | POST | `/api/me/accounts/:id/delete` | master/admin/user | 5mx |
 |  |  |  | 本人软删自己的账号；`deleted_by` 记本人；审计 `account.self_delete`。已删除再删 400；他人账号 404。 |
 | POST | `/api/me/accounts/:id/restore` | master/admin/user | 5mx |

@@ -34,7 +34,7 @@ func mapError(err error) error {
 		return &errs.Error{Code: errs.CodeConflict, Message: "conflict"}
 	case "23503", "23001": // foreign_key_violation, restrict_violation
 		return &errs.Error{Code: errs.CodeConflict, Message: "conflict"}
-	case "23502", "23514", "22P02", "22001", "22003": // not_null, check, bad text, too long, out of range
+	case "23502", "23514", "22P02", "22001", "22003", "22008": // not_null, check, bad text, too long, out of range, datetime overflow
 		return &errs.Error{Code: errs.CodeValidation, Message: "validation failed"}
 	case "55P03", "57014", "40001", "40P01": // lock timeout, cancel, serialization, deadlock
 		return &errs.Error{Code: errs.CodeUpstream, Message: "database is busy"}

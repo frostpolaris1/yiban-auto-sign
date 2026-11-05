@@ -1803,8 +1803,10 @@ paths:
         state is that account's most recently updated row, normalised to
         success, failed, skipped or unknown (pending and running are
         unknown). Accounts owned by another user and soft-deleted accounts
-        are excluded. reason and suggestion are present only when the stored
-        row has such a field.
+        are excluded. A future day returns future=true and an empty accounts
+        list, matching the range endpoint's zeroed future days. v1 carries
+        no reason or suggestion: sign_tasks stores only result, and the
+        upstream text is never mapped into these fields.
       x-roles: [user]
       parameters:
         - name: day
@@ -3644,9 +3646,12 @@ components:
         slots:
           type: array
           description: |
-            Five-minute anchors relative to the server signing window. Present
-            when the server can build the window; each label is the absolute
-            clock time. disabled follows the deployment gate and the window.
+            Five-minute anchors relative to the server standard signing
+            window. Each label is a clock time inside that window. The window
+            actually executed for a task may be shifted by the platform
+            window or a per-task override, so a label is a preference time,
+            not the promised execution time. disabled follows the deployment
+            gate and the window.
           items:
             $ref: '#/components/schemas/TimePrefSlot'
     TimePrefWindow:
@@ -3657,11 +3662,15 @@ components:
         start:
           type: string
           pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
-          description: Server signing window start, HH:MM.
+          description: |
+            Server standard signing window start, HH:MM. Actual execution may
+            be shifted by the platform window or a per-task override.
         end:
           type: string
           pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
-          description: Server signing window end, HH:MM.
+          description: |
+            Server standard signing window end, HH:MM. Actual execution may
+            be shifted by the platform window or a per-task override.
     TimePrefSlot:
       type: object
       additionalProperties: false
@@ -4124,7 +4133,7 @@ components:
     SignCalendarDayDetail:
       type: object
       additionalProperties: false
-      required: [day, timezone, accounts]
+      required: [day, timezone, accounts, future]
       properties:
         day:
           type: string
@@ -4136,6 +4145,9 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/SignCalendarAccount'
+        future:
+          type: boolean
+          description: True for days after the server business day; accounts is empty.
     SignCalendarAccount:
       type: object
       additionalProperties: false
@@ -4154,9 +4166,3 @@ components:
           type: integer
           minimum: 0
           description: Business attempts consumed by the latest row.
-        reason:
-          type: string
-          description: Present only when the stored row carries a reason.
-        suggestion:
-          type: string
-          description: Present only when the stored row carries a suggestion.

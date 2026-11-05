@@ -30,14 +30,13 @@ type CalendarDayCounts struct {
 }
 
 // CalendarAccountOutcome 是一个账号在某个业务日的最近一行结果。
-// RunAt 为 nil 表示该行没有计划时刻；Reason/Suggestion 只在存储层有列时才有值。
+// RunAt 为 nil 表示该行没有计划时刻。
+// v1 不提供 reason/suggestion：sign_tasks 只有 result，不把上游原文映射进响应。
 type CalendarAccountOutcome struct {
-	AccountID  string
-	State      string // success / failed / skipped / unknown
-	RunAt      *time.Time
-	Attempts   int
-	Reason     *string
-	Suggestion *string
+	AccountID string
+	State     string // success / failed / skipped / unknown
+	RunAt     *time.Time
+	Attempts  int
 }
 
 // CalendarRange 是 GET /api/me/sign-calendar 的读模型。
@@ -50,8 +49,10 @@ type CalendarRange struct {
 }
 
 // CalendarDayDetail 是 GET /api/me/sign-calendar/{day} 的读模型。
+// Future 为真时 Accounts 为空；与范围读面的未来日清零同口径。
 type CalendarDayDetail struct {
 	Day      string
 	Timezone string
 	Accounts []CalendarAccountOutcome
+	Future   bool
 }

@@ -28,6 +28,8 @@ type CalendarRepo struct {
 func NewCalendarRepo(db *DB) *CalendarRepo { return &CalendarRepo{db: db} }
 
 // CalendarTasks 读 userID 名下未软删账号在 from..to（含首尾）的任务行。
+// 同账号同日去重的 tie-break 与 stats.go 的 DISTINCT ON 同口径：
+// updated_at DESC, id DESC；两处必须同改。
 func (r *CalendarRepo) CalendarTasks(ctx context.Context, userID, from, to string) ([]coreschedule.CalendarTaskRow, error) {
 	rows, err := r.db.q(ctx).Query(ctx,
 		`SELECT st.account_id::text, st.day::text, st.state::text, st.run_at, st.attempts, st.updated_at

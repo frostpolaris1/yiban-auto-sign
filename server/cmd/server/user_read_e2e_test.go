@@ -110,6 +110,9 @@ func TestSignCalendarRangeAndDetail(t *testing.T) {
 	// 软删账号：即使有终态行也不得出现。
 	e.seedTask(acctDeleted, task1, today, corestatus.TaskFailed, 1,
 		userReadAt(t, today, 6, 34, 0), userReadAt(t, today, 6, 34, 0))
+	// 未来日：库里即使有行，范围计数也必须清零，日详情也不得列出。
+	e.seedTask(acctA, task1, future, corestatus.TaskPending, 0,
+		userReadAt(t, future, 5, 0, 0), userReadAt(t, today, 4, 0, 0))
 
 	rec := e.do(http.MethodGet, "/api/me/sign-calendar?from="+twoDaysAgo+"&to="+future, nil, issued)
 	if rec.Code != http.StatusOK {
@@ -150,6 +153,9 @@ func TestSignCalendarRangeAndDetail(t *testing.T) {
 	if day.Day != today || day.Timezone != loc.String() {
 		t.Fatalf("day detail header = %+v", day)
 	}
+	if day.Future {
+		t.Fatal("今天不应标为 future")
+	}
 	states := map[string]oapi.SignCalendarAccountState{}
 	for _, item := range day.Accounts {
 		states[item.AccountId] = item.State
@@ -186,6 +192,16 @@ func TestSignCalendarRangeAndDetail(t *testing.T) {
 	if emptyDay.Accounts == nil || len(emptyDay.Accounts) != 0 {
 		t.Fatalf("空日 accounts = %#v, want 空数组", emptyDay.Accounts)
 	}
+
+	futureDetail := e.do(http.MethodGet, "/api/me/sign-calendar/"+future, nil, issued)
+	if futureDetail.Code != http.StatusOK {
+		t.Fatalf("future day status = %d: %s", futureDetail.Code, futureDetail.Body.String())
+	}
+	var futureDay oapi.SignCalendarDayDetail
+	e.decode(futureDetail, &futureDay)
+	if !futureDay.Future || futureDay.Accounts == nil || len(futureDay.Accounts) != 0 {
+		t.Fatalf("未来日详情 = %+v, want future=true 且 accounts=[]", futureDay)
+	}
 }
 
 // TestSignCalendarRangeBoundsAndRoles 覆盖 31 天边界、非法输入与角色矩阵。
@@ -198,8 +214,10 @@ func TestSignCalendarRangeBoundsAndRoles(t *testing.T) {
 	admin := e.user("user-read-bounds-admin@example.com", coreauth.RoleAdmin)
 
 	userIssued := e.login(user)
+	before := clock.System{}.Now()
 	rec := e.do(http.MethodGet,
 		"/api/me/sign-calendar?from="+userReadDay(t, today, -30)+"&to="+today, nil, userIssued)
+	after := clock.System{}.Now()
 	if rec.Code != http.StatusOK {
 		t.Fatalf("31 天范围 status = %d: %s", rec.Code, rec.Body.String())
 	}
@@ -207,6 +225,13 @@ func TestSignCalendarRangeBoundsAndRoles(t *testing.T) {
 	e.decode(rec, &report)
 	if len(report.Days) != 31 {
 		t.Fatalf("31 天范围 days = %d, want 31", len(report.Days))
+	}
+	// 范围内无任务行：updated_at 必须回落服务端 now，不能是零值。
+	if report.UpdatedAt.IsZero() ||
+		report.UpdatedAt.Before(before.Add(-time.Minute)) ||
+		report.UpdatedAt.After(after.Add(time.Minute)) {
+		t.Fatalf("空范围 updated_at = %v, want 服务端 now（%v..%v）",
+			report.UpdatedAt, before, after)
 	}
 
 	cases := []struct {
@@ -219,10 +244,22 @@ func TestSignCalendarRangeBoundsAndRoles(t *testing.T) {
 		{"缺 from", "/api/me/sign-calendar?to=" + today},
 		{"缺 to", "/api/me/sign-calendar?from=" + today},
 		{"日详情非法", "/api/me/sign-calendar/2026-13-01"},
+		{"0000 范围", "/api/me/sign-calendar?from=0000-01-01&to=0000-01-31"},
+		{"0000 日详情", "/api/me/sign-calendar/0000-01-01"},
 	}
 	for _, tc := range cases {
 		if got := e.do(http.MethodGet, tc.path, nil, userIssued).Code; got != http.StatusBadRequest {
 			t.Errorf("%s status = %d, want 400", tc.name, got)
+		}
+	}
+
+	// 0001 是 Postgres 可接受的边界年：两端点都必须 200，空数据。
+	for _, path := range []string{
+		"/api/me/sign-calendar?from=0001-01-01&to=0001-01-31",
+		"/api/me/sign-calendar/0001-01-01",
+	} {
+		if got := e.do(http.MethodGet, path, nil, userIssued).Code; got != http.StatusOK {
+			t.Errorf("0001 边界 %s status = %d, want 200", path, got)
 		}
 	}
 
