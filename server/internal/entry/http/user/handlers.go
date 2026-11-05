@@ -17,6 +17,8 @@
 // # 口径
 // 响应只给契约 User 的字段集；口令与哈希**不出本层**。
 // temp_password 只在 password-reset 的响应出现一次，本层不留副本。
+// 改角色/状态、删用户与重置口令是危险操作：先验二次口令
+// （acting user 自己的登录口令）再进用例，失败零写入。
 // 列表与 lookup 的 items 空页输出 []，不是 null。
 // 错误一律走 respond.Error，形状由信封包保证。
 
@@ -61,15 +63,30 @@ type Authorizer interface {
 	Authorize(ctx context.Context, user coreauth.User) (corescope.Scope, appaudit.Actor, error)
 }
 
+// Reauth 是危险操作二次口令的窄接口（实现在 app/auth.Service）。
+// userID 是会话主体；password 是它重新提交的登录口令。
+// 缺值 400、错误 403、连续失败 429 都由错误码经 respond.Error 映射。
+type Reauth interface {
+	Reauthenticate(ctx context.Context, userID, password string) error
+}
+
 // Handler 处理 /api/users。
 type Handler struct {
-	svc   Service
-	authz Authorizer
+	svc    Service
+	authz  Authorizer
+	reauth Reauth
 }
 
 // NewHandler 构造用户处理器。
 func NewHandler(svc Service, authz Authorizer) *Handler {
 	return &Handler{svc: svc, authz: authz}
+}
+
+// WithReauth 注入危险操作二次口令用例。
+// 未注入时改角色/状态、删用户与重置口令按 internal 拒绝（失败关闭）。
+func (h *Handler) WithReauth(r Reauth) *Handler {
+	h.reauth = r
+	return h
 }
 
 // Create 实现 POST /api/users。
@@ -157,6 +174,9 @@ func (h *Handler) Update(c *gin.Context, id string, _ oapi.UserUpdateParams) {
 	if !decode(c, &body) {
 		return
 	}
+	if !h.reauthenticate(c, actor.UserID, body.CurrentPassword) {
+		return
+	}
 	in := appuser.UpdateInput{}
 	if body.Role != nil {
 		role := coreauth.Role(*body.Role)
@@ -181,6 +201,13 @@ func (h *Handler) PasswordReset(c *gin.Context, id string, _ oapi.UserPasswordRe
 	if !ok {
 		return
 	}
+	var body oapi.UserPasswordResetRequest
+	if !decode(c, &body) {
+		return
+	}
+	if !h.reauthenticate(c, actor.UserID, body.CurrentPassword) {
+		return
+	}
 	temp, err := h.svc.PasswordReset(c.Request.Context(), scope, id, actor)
 	if err != nil {
 		fail(c, err)
@@ -193,6 +220,13 @@ func (h *Handler) PasswordReset(c *gin.Context, id string, _ oapi.UserPasswordRe
 func (h *Handler) Delete(c *gin.Context, id string, _ oapi.UserDeleteParams) {
 	scope, actor, ok := h.principal(c)
 	if !ok {
+		return
+	}
+	var body oapi.UserDeleteRequest
+	if !decode(c, &body) {
+		return
+	}
+	if !h.reauthenticate(c, actor.UserID, body.CurrentPassword) {
 		return
 	}
 	if err := h.svc.Delete(c.Request.Context(), scope, id, actor); err != nil {
@@ -296,6 +330,30 @@ func (h *Handler) principal(c *gin.Context) (corescope.Scope, appaudit.Actor, bo
 		return corescope.Scope{}, appaudit.Actor{}, false
 	}
 	return scope, actor, true
+}
+
+// reauthenticate 校验危险操作的二次口令并写出失败响应。
+// 缺值（nil 或空串）回 400；用例错误按码映射（403/429/500）。
+// 返回 false 表示已写响应，调用方直接返回。
+func (h *Handler) reauthenticate(c *gin.Context, userID string, password *string) bool {
+	if h.reauth == nil {
+		// 生产装配必须注入；缺失是接线错误，失败关闭。
+		fail(c, errs.New(errs.CodeInternal, "reauthentication is not wired"))
+		return false
+	}
+	value := ""
+	if password != nil {
+		value = *password
+	}
+	if value == "" {
+		fail(c, errs.New(errs.CodeValidation, "current_password is required"))
+		return false
+	}
+	if err := h.reauth.Reauthenticate(c.Request.Context(), userID, value); err != nil {
+		fail(c, err)
+		return false
+	}
+	return true
 }
 
 // userResponse 把用户行映射成契约 shape。

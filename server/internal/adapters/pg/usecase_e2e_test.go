@@ -340,7 +340,7 @@ func auditedWrites() []auditedWrite {
 				const email = "rb-user-create@example.com"
 				return func() error {
 						_, err := u.users.Create(u.ctx, corescope.Master(), appuser.CreateInput{
-							Email: email, Password: "secret", Role: coreauth.RoleAdmin,
+							Email: email, Password: "AuditPass123!", Role: coreauth.RoleAdmin,
 						}, u.actor)
 						return err
 					}, func() {

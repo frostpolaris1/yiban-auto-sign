@@ -290,7 +290,8 @@ func TestUX2G10RestoreRoundTrip(t *testing.T) {
 		t.Fatalf("decode create: %v", err)
 	}
 
-	delResp, delPayload := u2Do(e, e.client, http.MethodDelete, "/api/accounts/"+created.ID, nil, masterSession.CSRFToken)
+	delResp, delPayload := u2Do(e, e.client, http.MethodDelete, "/api/accounts/"+created.ID,
+		u1ReauthBody("master-pass"), masterSession.CSRFToken)
 	if delResp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete = %d, want 204; body=%q", delResp.StatusCode, delPayload)
 	}
@@ -465,7 +466,7 @@ func u2NewEnv(t *testing.T) *u2Env {
 		Logger:          slog.New(slog.NewTextHandler(io.Discard, nil)),
 		InsecureCookies: true,
 		Schools:         schoolhttp.NewHandler(schoolSvc, adminSvc),
-		Accounts:        accounthttp.NewHandler(accountSvc, adminSvc),
+		Accounts:        accounthttp.NewHandler(accountSvc, adminSvc).WithReauth(e2eAcceptReauth{}),
 	})
 	if err != nil {
 		t.Fatalf("router.New: %v", err)
@@ -542,7 +543,7 @@ func (e *u2Env) seedUser(email string, role coreauth.Role) coreuser.Record {
 		var err error
 		rec, err = e.users.Create(ctx, coreuser.New{
 			Email:        email,
-			PasswordHash: "argon2id$test",
+			PasswordHash: w2cSeedHash(e.t),
 			Role:         role,
 		}, 10000)
 		return err
@@ -652,7 +653,8 @@ func TestUX2G9DeviceRefresh(t *testing.T) {
 		state: appaccount.DeviceState{Authorized: true, Code: fullCode, PhoneModel: "Mi 9 SE"},
 	}}
 	before := e.credentialVersion(accountID)
-	code, payload := e.do(http.MethodPost, "/api/accounts/"+accountID+"/device-refresh", nil, masterIssued)
+	code, payload := e.do(http.MethodPost, "/api/accounts/"+accountID+"/device-refresh",
+		u1ReauthBody(w2cSeedPassword), masterIssued)
 	if code != http.StatusOK {
 		t.Fatalf("device refresh = %d, want 200; body=%q", code, payload)
 	}
@@ -696,7 +698,8 @@ func TestUX2G9DeviceRefresh(t *testing.T) {
 		state: appaccount.DeviceState{Authorized: true},
 	}}
 	before = e.credentialVersion(accountID)
-	code, payload = e.do(http.MethodPost, "/api/accounts/"+accountID+"/device-refresh", nil, masterIssued)
+	code, payload = e.do(http.MethodPost, "/api/accounts/"+accountID+"/device-refresh",
+		u1ReauthBody(w2cSeedPassword), masterIssued)
 	if code != http.StatusOK {
 		t.Fatalf("empty-fields refresh = %d, want 200; body=%q", code, payload)
 	}
@@ -721,7 +724,8 @@ func TestUX2G9DeviceRefresh(t *testing.T) {
 	// 失败：零写库零审计。
 	e.reader.script = []u2DeviceOutcome{{err: fmt.Errorf("platform down")}}
 	before = e.credentialVersion(accountID)
-	code, payload = e.do(http.MethodPost, "/api/accounts/"+accountID+"/device-refresh", nil, masterIssued)
+	code, payload = e.do(http.MethodPost, "/api/accounts/"+accountID+"/device-refresh",
+		u1ReauthBody(w2cSeedPassword), masterIssued)
 	if code != http.StatusBadGateway {
 		t.Fatalf("failed refresh = %d, want 502; body=%q", code, payload)
 	}
@@ -762,21 +766,24 @@ func TestUX2G12DeviceRefreshScope(t *testing.T) {
 
 	// user 自己 → 200。
 	ownIssued := e.issue(owner)
-	code, payload := e.do(http.MethodPost, "/api/accounts/"+ownID+"/device-refresh", nil, ownIssued)
+	code, payload := e.do(http.MethodPost, "/api/accounts/"+ownID+"/device-refresh",
+		u1ReauthBody(w2cSeedPassword), ownIssued)
 	if code != http.StatusOK {
 		t.Fatalf("own refresh = %d, want 200; body=%q", code, payload)
 	}
 
 	// user 看别人的 → 404，且不触达平台。
 	strangerIssued := e.issue(stranger)
-	code, payload = e.do(http.MethodPost, "/api/accounts/"+ownID+"/device-refresh", nil, strangerIssued)
+	code, payload = e.do(http.MethodPost, "/api/accounts/"+ownID+"/device-refresh",
+		u1ReauthBody(w2cSeedPassword), strangerIssued)
 	if code != http.StatusNotFound {
 		t.Fatalf("cross-owner refresh = %d, want 404; body=%q", code, payload)
 	}
 
 	// admin 对可见面之外的账号 → 404。
 	adminIssued := e.issue(admin)
-	code, payload = e.do(http.MethodPost, "/api/accounts/"+ownID+"/device-refresh", nil, adminIssued)
+	code, payload = e.do(http.MethodPost, "/api/accounts/"+ownID+"/device-refresh",
+		u1ReauthBody(w2cSeedPassword), adminIssued)
 	if code != http.StatusNotFound {
 		t.Fatalf("cross-school refresh = %d, want 404; body=%q", code, payload)
 	}
@@ -966,7 +973,7 @@ func TestUX2IncludeDeletedList(t *testing.T) {
 	}
 
 	delResp, delPayload := u2Do(e, e.client, http.MethodDelete,
-		"/api/accounts/"+memberAccount.ID, nil, masterSession.CSRFToken)
+		"/api/accounts/"+memberAccount.ID, u1ReauthBody("master-pass"), masterSession.CSRFToken)
 	if delResp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete = %d, want 204; body=%q", delResp.StatusCode, delPayload)
 	}

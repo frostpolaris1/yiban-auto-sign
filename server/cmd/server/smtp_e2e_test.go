@@ -134,14 +134,14 @@ func TestSMTPForgotPasswordDeliversWorkingResetLink(t *testing.T) {
 
 	// 用户点链接后的动作：提交新口令。
 	resp, payload = e.do(http.MethodPost, "/api/auth/reset-password",
-		map[string]string{"token": token, "new_password": "new-horse"}, nil)
+		map[string]string{"token": token, "new_password": "new-horse-42"}, nil)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("reset status = %d, want 204; body=%q", resp.StatusCode, payload)
 	}
 	if oldResp, _ := e.login("ivy@example.com", "old-horse"); oldResp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("旧口令登录 = %d, want 401", oldResp.StatusCode)
 	}
-	if newResp, body := e.login("ivy@example.com", "new-horse"); newResp.StatusCode != http.StatusOK {
+	if newResp, body := e.login("ivy@example.com", "new-horse-42"); newResp.StatusCode != http.StatusOK {
 		t.Fatalf("新口令登录 = %d, want 200; body=%+v", newResp.StatusCode, body)
 	}
 }

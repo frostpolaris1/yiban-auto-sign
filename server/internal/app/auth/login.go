@@ -85,6 +85,8 @@ type Service struct {
 	mailWG    sync.WaitGroup
 	// throttle 按归一邮箱限制重置请求频率（见 ForgotCooldown）。
 	throttle resetThrottle
+	// reauth 按用户限制危险操作二次口令的失败次数（见 reauthenticate.go）。
+	reauth *reauthThrottle
 }
 
 // NewService 构造用例服务。任一必需依赖缺失即失败关闭。
@@ -134,6 +136,7 @@ func NewService(d Deps) (*Service, error) {
 		mailBase:      mailBase,
 		log:           log,
 		mailSlots:     make(chan struct{}, maxConcurrentResetMails),
+		reauth:        newReauthThrottle(d.Clock, ReauthFailureLimit, ReauthWindow),
 	}, nil
 }
 

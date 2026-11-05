@@ -138,7 +138,7 @@ func TestUX8SelfDeleteRestore(t *testing.T) {
 	csrf := session.CSRFToken
 
 	resp, payload := u1Do(e, client, http.MethodPost,
-		"/api/me/accounts/"+account.ID+"/delete", nil, csrf)
+		"/api/me/accounts/"+account.ID+"/delete", u1ReauthBody("correct-horse"), csrf)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("self delete = %d, want 204; body=%q", resp.StatusCode, payload)
 	}
@@ -228,7 +228,7 @@ func TestUX8SelfServiceOwnership(t *testing.T) {
 
 	// 他人的账号：404，不暴露存在性。
 	resp, payload := u1Do(e, aliceClient, http.MethodPost,
-		"/api/me/accounts/"+bobAccount.ID+"/delete", nil, aliceCSRF)
+		"/api/me/accounts/"+bobAccount.ID+"/delete", u1ReauthBody("correct-horse"), aliceCSRF)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("delete foreign account = %d, want 404; body=%q", resp.StatusCode, payload)
 	}
@@ -248,7 +248,7 @@ func TestUX8SelfServiceOwnership(t *testing.T) {
 	masterClient := u1FreshClient(t)
 	masterSession := u1LoginOn(e, masterClient, "ux8-master@example.com", "correct-horse")
 	resp, payload = u1Do(e, masterClient, http.MethodPost,
-		"/api/me/accounts/"+aliceAccount.ID+"/delete", nil, masterSession.CSRFToken)
+		"/api/me/accounts/"+aliceAccount.ID+"/delete", u1ReauthBody("correct-horse"), masterSession.CSRFToken)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("master delete foreign account = %d, want 404; body=%q", resp.StatusCode, payload)
 	}
@@ -263,7 +263,7 @@ func TestUX8SelfServiceOwnership(t *testing.T) {
 		"/api/me/accounts/" + missing + "/delete",
 		"/api/me/accounts/" + missing + "/restore",
 	} {
-		resp, payload = u1Do(e, aliceClient, http.MethodPost, path, nil, aliceCSRF)
+		resp, payload = u1Do(e, aliceClient, http.MethodPost, path, u1ReauthBody("correct-horse"), aliceCSRF)
 		if resp.StatusCode != http.StatusNotFound {
 			t.Fatalf("%s = %d, want 404; body=%q", path, resp.StatusCode, payload)
 		}
@@ -321,7 +321,7 @@ func TestUX8SelfRestoreGuards(t *testing.T) {
 	live := ux8SeedAccount(t, e, user.ID, "13300133000")
 	deleted := ux8SeedAccount(t, e, user.ID, "13400134000")
 	resp, payload = u1Do(e, client, http.MethodPost,
-		"/api/me/accounts/"+deleted.ID+"/delete", nil, csrf)
+		"/api/me/accounts/"+deleted.ID+"/delete", u1ReauthBody("correct-horse"), csrf)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("self delete second account = %d, want 204; body=%q", resp.StatusCode, payload)
 	}
@@ -458,7 +458,7 @@ func TestUX8RoleMatrix(t *testing.T) {
 			}
 
 			resp, payload = u1Do(e, client, http.MethodPost,
-				"/api/me/accounts/"+account.ID+"/delete", nil, session.CSRFToken)
+				"/api/me/accounts/"+account.ID+"/delete", u1ReauthBody("correct-horse"), session.CSRFToken)
 			if resp.StatusCode != http.StatusNoContent {
 				t.Fatalf("self delete = %d, want 204; body=%q", resp.StatusCode, payload)
 			}

@@ -155,12 +155,12 @@ func (masterAuthorizer) Authorize(context.Context, coreauth.User) (corescope.Sco
 }
 
 // newMasterContext 构造 master 会话的请求上下文。
-func newMasterContext(t *testing.T) (*gin.Context, *httptest.ResponseRecorder) {
+func newMasterContext(t *testing.T, body string) (*gin.Context, *httptest.ResponseRecorder) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	req := httptest.NewRequest(http.MethodPost, "/api/me/accounts/a1/delete", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/me/accounts/a1/delete", strings.NewReader(body))
 	req = req.WithContext(coreauth.WithSession(req.Context(), coreauth.Session{
 		User: coreauth.User{ID: "u1", Role: coreauth.RoleMaster, Status: coreauth.StatusActive},
 	}))
@@ -168,12 +168,17 @@ func newMasterContext(t *testing.T) (*gin.Context, *httptest.ResponseRecorder) {
 	return c, rec
 }
 
+// acceptReauth 是放行一切口令的二次口令替身。
+type acceptReauth struct{}
+
+func (acceptReauth) Reauthenticate(context.Context, string, string) error { return nil }
+
 // 自助端点对 master 也只用会话 user id 构造作用域：
 // 授权解析出的是全量作用域，但传给用例的必须是 user 形状。
 func TestMyAccountDeleteNarrowsMasterScope(t *testing.T) {
 	svc := &fakeService{}
-	h := accounthttp.NewHandler(svc, masterAuthorizer{})
-	c, _ := newMasterContext(t)
+	h := accounthttp.NewHandler(svc, masterAuthorizer{}).WithReauth(acceptReauth{})
+	c, _ := newMasterContext(t, `{"current_password":"pw"}`)
 	h.MyAccountDelete(c, "a1", oapi.MyAccountDeleteParams{})
 	// 直接调用处理器时 gin 尚不落盘状态码（无响应体），读 Writer.Status。
 	if got := c.Writer.Status(); got != http.StatusNoContent {

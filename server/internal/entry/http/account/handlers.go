@@ -13,6 +13,9 @@
 // # 口径
 // 响应只给 phone_masked 与 owner_email_masked；原始手机号与邮箱在 Record 里，
 // **不出本层**。口令与设备码只进请求体，本层不记录、不回显。
+// 凭据编辑（phone/password/device_code）、删号、自助删号与设备刷新是
+// 危险操作：先验二次口令（acting user 自己的登录口令）再进用例，
+// 失败零写入。只改 name/phone_model/school_id 不要求二次口令。
 // phone_model 来自凭据密文，只回机型；设备码与口令永不出服务端。
 package account
 
@@ -60,6 +63,13 @@ type Authorizer interface {
 	Authorize(ctx context.Context, user coreauth.User) (corescope.Scope, appaudit.Actor, error)
 }
 
+// Reauth 是危险操作二次口令的窄接口（实现在 app/auth.Service）。
+// userID 是会话主体；password 是它重新提交的登录口令。
+// 缺值 400、错误 403、连续失败 429 都由错误码经 respond.Error 映射。
+type Reauth interface {
+	Reauthenticate(ctx context.Context, userID, password string) error
+}
+
 // Throttle 是账号变更的每属主限流面（实现为 ratelimit.Guard）。
 // nil 表示不限流：只用于测试与降级进程。
 type Throttle interface {
@@ -71,6 +81,7 @@ type Handler struct {
 	svc     Service
 	authz   Authorizer
 	limiter Throttle
+	reauth  Reauth
 }
 
 // NewHandler 构造账号处理器。limiter 可省略（测试与降级进程）。
@@ -80,6 +91,13 @@ func NewHandler(svc Service, authz Authorizer, limiter ...Throttle) *Handler {
 		l = limiter[0]
 	}
 	return &Handler{svc: svc, authz: authz, limiter: l}
+}
+
+// WithReauth 注入危险操作二次口令用例。
+// 未注入时凭据编辑、删号、自助删号与设备刷新按 internal 拒绝（失败关闭）。
+func (h *Handler) WithReauth(r Reauth) *Handler {
+	h.reauth = r
+	return h
 }
 
 // List 实现 GET /api/accounts。
@@ -189,6 +207,8 @@ func (h *Handler) Summary(c *gin.Context) {
 }
 
 // Update 实现 PATCH /api/accounts/{id}。
+// body 带 phone/password/device_code（凭据面）时要求二次口令；
+// 只改 name/phone_model/school_id 不要求。
 func (h *Handler) Update(c *gin.Context, id oapi.AccountID, _ oapi.AccountUpdateParams) {
 	scope, actor, ok := h.principal(c)
 	if !ok {
@@ -200,6 +220,11 @@ func (h *Handler) Update(c *gin.Context, id oapi.AccountID, _ oapi.AccountUpdate
 	var body oapi.AccountUpdate
 	if !decode(c, &body) {
 		return
+	}
+	if touchesCredential(body) {
+		if !h.reauthenticate(c, actor.UserID, body.CurrentPassword) {
+			return
+		}
 	}
 	record, err := h.svc.Update(c.Request.Context(), scope, id, appaccount.UpdateInput{
 		SchoolID:   body.SchoolId,
@@ -216,10 +241,24 @@ func (h *Handler) Update(c *gin.Context, id oapi.AccountID, _ oapi.AccountUpdate
 	respond.JSON(c.Writer, http.StatusOK, accountResponse(record))
 }
 
+// touchesCredential 判改号请求是否携带凭据面字段。
+// 键存在即算：device_code 空串对 master/admin 是清除动作，同样是凭据面。
+func touchesCredential(body oapi.AccountUpdate) bool {
+	return body.Phone != nil || body.Password != nil || body.DeviceCode != nil
+}
+
 // Delete 实现 DELETE /api/accounts/{id}。
+// 总是要求二次口令；请求体现在契约里带 current_password。
 func (h *Handler) Delete(c *gin.Context, id oapi.AccountID, _ oapi.AccountDeleteParams) {
 	scope, actor, ok := h.principal(c)
 	if !ok {
+		return
+	}
+	var body oapi.AccountDeleteRequest
+	if !decode(c, &body) {
+		return
+	}
+	if !h.reauthenticate(c, actor.UserID, body.CurrentPassword) {
 		return
 	}
 	if err := h.svc.Delete(c.Request.Context(), scope, id, actor); err != nil {
@@ -246,10 +285,18 @@ func (h *Handler) Restore(c *gin.Context, id oapi.AccountID, _ oapi.AccountResto
 
 // MyAccountDelete 实现 POST /api/me/accounts/{id}/delete。
 // 自助面只认会话 user id：任何角色都只能删自己名下的行。
+// 总是要求二次口令。
 // 他人账号由仓储的范围谓词报 404，本层不先读、不暴露存在性。
 func (h *Handler) MyAccountDelete(c *gin.Context, id oapi.AccountID, _ oapi.MyAccountDeleteParams) {
 	scope, actor, ok := h.selfPrincipal(c)
 	if !ok {
+		return
+	}
+	var body oapi.MyAccountDeleteRequest
+	if !decode(c, &body) {
+		return
+	}
+	if !h.reauthenticate(c, actor.UserID, body.CurrentPassword) {
 		return
 	}
 	if err := h.svc.SelfDelete(c.Request.Context(), scope, id, actor); err != nil {
@@ -275,12 +322,19 @@ func (h *Handler) MyAccountRestore(c *gin.Context, id oapi.AccountID, _ oapi.MyA
 }
 
 // DeviceRefresh 实现 POST /api/accounts/{id}/device-refresh。
-// 请求无体：读存量凭据，平台回读由用例编排。
+// 设备身份即凭据：总是要求二次口令。
 // 用例返回的 DeviceCode 是明文；在这里掩码后进响应，
 // **本函数与响应之间不再有明文出口**（掩码即豁免边界）。
 func (h *Handler) DeviceRefresh(c *gin.Context, id oapi.AccountID, _ oapi.AccountDeviceRefreshParams) {
 	scope, actor, ok := h.principal(c)
 	if !ok {
+		return
+	}
+	var body oapi.AccountDeviceRefreshRequest
+	if !decode(c, &body) {
+		return
+	}
+	if !h.reauthenticate(c, actor.UserID, body.CurrentPassword) {
 		return
 	}
 	result, err := h.svc.DeviceRefresh(c.Request.Context(), scope, id, actor)
@@ -360,6 +414,30 @@ func (h *Handler) principal(c *gin.Context) (corescope.Scope, appaudit.Actor, bo
 		return corescope.Scope{}, appaudit.Actor{}, false
 	}
 	return scope, actor, true
+}
+
+// reauthenticate 校验危险操作的二次口令并写出失败响应。
+// 缺值（nil 或空串）回 400；用例错误按码映射（403/429/500）。
+// 返回 false 表示已写响应，调用方直接返回。
+func (h *Handler) reauthenticate(c *gin.Context, userID string, password *string) bool {
+	if h.reauth == nil {
+		// 生产装配必须注入；缺失是接线错误，失败关闭。
+		fail(c, errs.New(errs.CodeInternal, "reauthentication is not wired"))
+		return false
+	}
+	value := ""
+	if password != nil {
+		value = *password
+	}
+	if value == "" {
+		fail(c, errs.New(errs.CodeValidation, "current_password is required"))
+		return false
+	}
+	if err := h.reauth.Reauthenticate(c.Request.Context(), userID, value); err != nil {
+		fail(c, err)
+		return false
+	}
+	return true
 }
 
 // selfPrincipal 构造只覆盖会话用户自己的作用域。

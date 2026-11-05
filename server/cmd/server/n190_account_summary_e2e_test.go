@@ -96,7 +96,7 @@ func TestN190AccountSummary(t *testing.T) {
 
 	// 软删一行 pending：删除后不得再进任何计数。
 	delResp, delPayload := u2Do(e, adminClient, http.MethodDelete,
-		"/api/accounts/"+created["deleted"], nil, adminSession.CSRFToken)
+		"/api/accounts/"+created["deleted"], u1ReauthBody("admin-pass"), adminSession.CSRFToken)
 	if delResp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete = %d, want 204; body=%q", delResp.StatusCode, delPayload)
 	}

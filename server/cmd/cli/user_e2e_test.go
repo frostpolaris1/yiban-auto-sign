@@ -114,6 +114,35 @@ func TestUserCreateMasterE2E(t *testing.T) {
 	}
 }
 
+// TestCreateMasterEnforcesPasswordPolicy 钉住 CLI 建号走 app/user.Create 的策略档：
+// master 目标 12 字符三类；11 字符三类与 12 字符两类都拒，弱口令不落库。
+func TestCreateMasterEnforcesPasswordPolicy(t *testing.T) {
+	dsn := userTestSchema(t)
+	ctx := context.Background()
+
+	if out, code := runCLI(t, []string{"user", "create-master", "--email", "weak@example.com",
+		"--password", "Ab1!ab1!ab1", "--dsn", dsn, "--pepper", cliTestPepper}); code != 1 {
+		t.Fatalf("11 字符三类 code = %d, want 1; out=%s", code, out)
+	}
+	if out, code := runCLI(t, []string{"user", "create-master", "--email", "weak2@example.com",
+		"--password", "abcdefghij12", "--dsn", dsn, "--pepper", cliTestPepper}); code != 1 {
+		t.Fatalf("12 字符两类 code = %d, want 1; out=%s", code, out)
+	}
+
+	db, err := pg.Open(ctx, pg.Options{DSN: dsn, MaxConns: 2, StatementTimeout: 10 * time.Second})
+	if err != nil {
+		t.Fatalf("open schema db: %v", err)
+	}
+	defer db.Close()
+	n, err := db.QueryInt64(ctx, "SELECT count(*) FROM users")
+	if err != nil {
+		t.Fatalf("count users: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("users = %d, want 0: a rejected CLI create must not write a row", n)
+	}
+}
+
 // TestCreateMasterKeepsSecretOutOfArgv 钉住口令/DSN/pepper 不进 argv。
 // 真实用户动作：运维按 install.sh 的提示先载入 server.env，再把口令管道喂给
 // `user create-master --password-stdin`。断言 argv 不含任何机密，

@@ -375,8 +375,12 @@ func TestN190OwnerEmailMaskedOnRead(t *testing.T) {
 }
 
 // n190Patch 发一次 PATCH 并解出账号。
+// 统一补二次口令：凭据面编辑必用；name-only 编辑里它是冗余键，被忽略。
 func n190Patch(t *testing.T, e *w2cEnv, id string, body map[string]any, issued *coreauth.Issued) n190Account {
 	t.Helper()
+	if _, ok := body["current_password"]; !ok {
+		body["current_password"] = w2cSeedPassword
+	}
 	rec := e.do(http.MethodPatch, "/api/accounts/"+id, body, issued)
 	w2cWantStatus(t, rec, http.StatusOK)
 	var got n190Account

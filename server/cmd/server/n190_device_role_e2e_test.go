@@ -79,8 +79,11 @@ func n190DecodeAccount(t *testing.T, payload []byte) u2Account {
 }
 
 // n190PatchAccount 发一次带 CSRF 的账号 PATCH。
-func n190PatchAccount(e *authEnv, client *http.Client, csrf, id string, body map[string]string) (*http.Response, []byte) {
+// password 是 acting 用户的登录口令：带凭据面字段的 PATCH 需要二次口令，
+// name-only 编辑里它是冗余键。
+func n190PatchAccount(e *authEnv, client *http.Client, csrf, id string, body map[string]string, password string) (*http.Response, []byte) {
 	e.t.Helper()
+	body["current_password"] = password
 	return u2Do(e, client, http.MethodPatch, "/api/accounts/"+id, body, csrf)
 }
 
@@ -116,7 +119,7 @@ func TestN190DeviceRoleGate(t *testing.T) {
 
 	// user 改自己的设备码：403，且设备码没有被写进去。
 	patchResp, patchPayload := n190PatchAccount(e, memberClient, memberSession.CSRFToken, own.ID,
-		map[string]string{"device_code": "user-set-device"})
+		map[string]string{"device_code": "user-set-device"}, "member-pass")
 	if patchResp.StatusCode != http.StatusForbidden {
 		t.Fatalf("user patch device_code = %d, want 403; body=%q", patchResp.StatusCode, patchPayload)
 	}
@@ -129,7 +132,7 @@ func TestN190DeviceRoleGate(t *testing.T) {
 
 	// user 改机型：200，凭据里机型更新。
 	patchResp, patchPayload = n190PatchAccount(e, memberClient, memberSession.CSRFToken, own.ID,
-		map[string]string{"phone_model": "Pixel"})
+		map[string]string{"phone_model": "Pixel"}, "member-pass")
 	if patchResp.StatusCode != http.StatusOK {
 		t.Fatalf("user patch phone_model = %d, want 200; body=%q", patchResp.StatusCode, patchPayload)
 	}
@@ -139,14 +142,14 @@ func TestN190DeviceRoleGate(t *testing.T) {
 
 	// user 改绑手机号：200。
 	patchResp, patchPayload = n190PatchAccount(e, memberClient, memberSession.CSRFToken, own.ID,
-		map[string]string{"phone": n190DevicePhoneRebind})
+		map[string]string{"phone": n190DevicePhoneRebind}, "member-pass")
 	if patchResp.StatusCode != http.StatusOK {
 		t.Fatalf("user patch phone = %d, want 200; body=%q", patchResp.StatusCode, patchPayload)
 	}
 
 	// user 改口令：200。
 	patchResp, patchPayload = n190PatchAccount(e, memberClient, memberSession.CSRFToken, own.ID,
-		map[string]string{"password": "member-pass-3"})
+		map[string]string{"password": "member-pass-3"}, "member-pass")
 	if patchResp.StatusCode != http.StatusOK {
 		t.Fatalf("user patch password = %d, want 200; body=%q", patchResp.StatusCode, patchPayload)
 	}
@@ -182,7 +185,7 @@ func TestN190DeviceRoleGate(t *testing.T) {
 
 	// master 改设备码：200。
 	patchResp, patchPayload = n190PatchAccount(e, e.client, masterSession.CSRFToken, masterAccount.ID,
-		map[string]string{"device_code": "master-patch-device"})
+		map[string]string{"device_code": "master-patch-device"}, "master-pass")
 	if patchResp.StatusCode != http.StatusOK {
 		t.Fatalf("master patch device_code = %d, want 200; body=%q", patchResp.StatusCode, patchPayload)
 	}
@@ -208,7 +211,7 @@ func TestN190DeviceRoleGate(t *testing.T) {
 	}
 
 	patchResp, patchPayload = n190PatchAccount(e, memberClient, memberSession.CSRFToken, seeded.ID,
-		map[string]string{"device_code": ""})
+		map[string]string{"device_code": ""}, "member-pass")
 	if patchResp.StatusCode != http.StatusForbidden {
 		t.Fatalf("user patch empty device_code = %d, want 403; body=%q", patchResp.StatusCode, patchPayload)
 	}
@@ -248,7 +251,7 @@ func TestN190DeviceAdminWrites(t *testing.T) {
 
 	// admin 改设备码：200。
 	patchResp, patchPayload := n190PatchAccount(e, adminClient, adminSession.CSRFToken, created.ID,
-		map[string]string{"device_code": "admin-patch-device"})
+		map[string]string{"device_code": "admin-patch-device"}, "admin-pass")
 	if patchResp.StatusCode != http.StatusOK {
 		t.Fatalf("admin patch device_code = %d, want 200; body=%q", patchResp.StatusCode, patchPayload)
 	}
@@ -283,7 +286,7 @@ func TestN190DeviceClearSentinel(t *testing.T) {
 
 	// 空串是清除哨兵：200，设备码为空，机型保持不变。
 	patchResp, patchPayload := n190PatchAccount(e, e.client, masterSession.CSRFToken, created.ID,
-		map[string]string{"device_code": ""})
+		map[string]string{"device_code": ""}, "master-pass")
 	if patchResp.StatusCode != http.StatusOK {
 		t.Fatalf("master clear device_code = %d, want 200; body=%q", patchResp.StatusCode, patchPayload)
 	}

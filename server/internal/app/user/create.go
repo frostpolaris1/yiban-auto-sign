@@ -14,6 +14,7 @@
 // # 口径
 // 只有 master 可以建号。其余角色一律 403。
 // 邮箱先归一再校验，口径取自 core/user。
+// 初始口令按目标角色档判强度策略（core/auth.PasswordPolicyErrorForRole）。
 // 口令在开事务**之前**算哈希：argon2id 校验耗时见 password.go 参数（m=19456KiB, t=2），不进事务、不持锁。
 // 写行与 user.create 审计同事务。
 
@@ -107,6 +108,11 @@ func (s *Service) Create(ctx context.Context, scope corescope.Scope, in CreateIn
 	}
 	if !in.Role.Valid() {
 		return Record{}, errs.New(errs.CodeValidation, "role must be master, admin or user")
+	}
+	// 初始口令按目标角色的档位判强度策略：user 10 字符两类、
+	// master/admin 12 字符三类。CLI create-master 走同一路径，同受约束。
+	if reason := coreauth.PasswordPolicyErrorForRole(in.Password, in.Role); reason != "" {
+		return Record{}, errs.New(errs.CodeValidation, reason)
 	}
 
 	hash, err := s.deps.KDF.Hash(ctx, in.Password)

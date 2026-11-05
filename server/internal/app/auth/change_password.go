@@ -21,7 +21,8 @@ var ErrPasswordUnchanged = errs.New(errs.CodeConflict, "new password must differ
 // 以下五步同属一个事务：读用户、校验旧口令、写新哈希、
 // 撤销本人其余会话、写审计。任一步失败即整体回滚。
 // 旧口令错误与用户消失都返回 ErrInvalidCredentials，**不区分**。
-// 新口令等于旧口令返回 ErrPasswordUnchanged。
+// 新口令等于旧口令返回 ErrPasswordUnchanged；新口令按会话用户的
+// 角色档判强度策略（见 core/auth 口令分档）。
 // keepToken 对应的当前会话**保留**，其余会话全部撤销。
 // 成功后 must_change_password 置 false，password_changed_at 写本次时刻。
 func (s *Service) ChangePassword(ctx context.Context, sess coreauth.Session, keepToken, currentPassword, newPassword string) error {
@@ -34,6 +35,11 @@ func (s *Service) ChangePassword(ctx context.Context, sess coreauth.Session, kee
 	if keepToken == "" {
 		// 入口层已从 cookie 取到令牌；空值即接线错误，不是用户输入问题。
 		return errs.New(errs.CodeInternal, "session token is required")
+	}
+	// 新口令按会话用户的角色档判强度策略：user 10 字符两类，
+	// master/admin 12 字符三类。弱口令在付 KDF 成本之前拒绝。
+	if reason := coreauth.PasswordPolicyErrorForRole(newPassword, sess.User.Role); reason != "" {
+		return errs.New(errs.CodeValidation, reason)
 	}
 	// 哈希在事务外算：argon2id 约几十毫秒，不该占住行锁与链锁。
 	newHash, err := s.kdf.Hash(ctx, newPassword)
