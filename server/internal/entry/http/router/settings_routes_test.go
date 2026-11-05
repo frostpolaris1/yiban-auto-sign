@@ -84,12 +84,19 @@ func (stubMailTest) SendTestMail(context.Context, auth.User) error { return nil 
 
 func newSettingsEngine(t *testing.T) (*gin.Engine, *stubIssuer) {
 	t.Helper()
+	return newSettingsEngineWith(t,
+		notifyhttp.NewHandler(stubNotify{}).WithInbox(stubInbox{}),
+		systemhttp.NewHandler(stubRoster{}, &stubAnnouncement{}, stubMailTest{}))
+}
+
+func newSettingsEngineWith(t *testing.T, notify *notifyhttp.Handler, system *systemhttp.Handler) (*gin.Engine, *stubIssuer) {
+	t.Helper()
 	issuer := newStubIssuer()
 	gin.SetMode(gin.TestMode)
 	engine, err := router.New(router.Options{
 		Sessions: issuer,
-		Notify:   notifyhttp.NewHandler(stubNotify{}).WithInbox(stubInbox{}),
-		System:   systemhttp.NewHandler(stubRoster{}, &stubAnnouncement{}, stubMailTest{}),
+		Notify:   notify,
+		System:   system,
 		Audit:    audithttp.NewHandler(stubAuditReader{}),
 	})
 	if err != nil {
@@ -244,4 +251,70 @@ func TestSettingsRoutesNilHandlersReturn501(t *testing.T) {
 			}
 		})
 	}
+}
+
+type settingsEndpoint struct {
+	method string
+	path   string
+	body   string
+	csrf   bool
+	status int
+}
+
+// 单侧装配：只装通知面时系统面 4 条路径仍回 501，只装系统面时通知面 6 条仍回 501。
+// 双 nil 只证明两边都缺时回 501；两组单侧用例钉住每个 wrapper 读的是自己的字段，
+// 把 s.notify 误写成 s.system（或反之）必须变红。
+func TestSettingsRoutesSingleSideWiring(t *testing.T) {
+	notifyCases := []settingsEndpoint{
+		{http.MethodGet, "/api/admin/notify", "", false, http.StatusOK},
+		{http.MethodPut, "/api/admin/notify", `{"items":[]}`, true, http.StatusOK},
+		{http.MethodGet, "/api/me/notifications", "", false, http.StatusOK},
+		{http.MethodGet, "/api/me/notifications/unread-count", "", false, http.StatusOK},
+		{http.MethodPost, "/api/me/notifications/read", `{"ids":["018f4a4e-0000-7000-8000-000000000001"]}`, true, http.StatusNoContent},
+		{http.MethodPost, "/api/me/notifications/read-all", "", true, http.StatusNoContent},
+	}
+	systemCases := []settingsEndpoint{
+		{http.MethodGet, "/api/admin/settings", "", false, http.StatusOK},
+		{http.MethodPost, "/api/admin/mail/test", "", true, http.StatusOK},
+		{http.MethodGet, "/api/announcement", "", false, http.StatusOK},
+		{http.MethodPut, "/api/admin/announcement", `{"text":"公告"}`, true, http.StatusOK},
+	}
+
+	run := func(t *testing.T, engine *gin.Engine, session auth.Session, tc settingsEndpoint) {
+		t.Helper()
+		csrf := ""
+		if tc.csrf {
+			csrf = session.CSRFToken
+		}
+		rec := serve(engine, requestWithSession(tc.method, tc.path, tc.body, csrf, &session))
+		if rec.Code != tc.status {
+			t.Fatalf("%s %s = %d, want %d; body=%s", tc.method, tc.path, rec.Code, tc.status, rec.Body.String())
+		}
+	}
+
+	t.Run("notify only", func(t *testing.T) {
+		notifyHandler := notifyhttp.NewHandler(stubNotify{}).WithInbox(stubInbox{})
+		engine, issuer := newSettingsEngineWith(t, notifyHandler, nil)
+		master := issueUser(t, issuer, auth.RoleMaster)
+		for _, tc := range notifyCases {
+			run(t, engine, master, tc)
+		}
+		for _, tc := range systemCases {
+			tc.status = http.StatusNotImplemented
+			run(t, engine, master, tc)
+		}
+	})
+
+	t.Run("system only", func(t *testing.T) {
+		systemHandler := systemhttp.NewHandler(stubRoster{}, &stubAnnouncement{}, stubMailTest{})
+		engine, issuer := newSettingsEngineWith(t, nil, systemHandler)
+		master := issueUser(t, issuer, auth.RoleMaster)
+		for _, tc := range notifyCases {
+			tc.status = http.StatusNotImplemented
+			run(t, engine, master, tc)
+		}
+		for _, tc := range systemCases {
+			run(t, engine, master, tc)
+		}
+	})
 }
