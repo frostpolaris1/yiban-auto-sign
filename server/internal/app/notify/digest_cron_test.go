@@ -55,7 +55,9 @@ func TestDigestCronStartupBackfillsPreviousBusinessDay(t *testing.T) {
 	if err := cron.Stop(ctx); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	cron.Stop(ctx) // 幂等
+	if err := cron.Stop(ctx); err != nil { // 幂等
+		t.Fatalf("second Stop: %v", err)
+	}
 	if days := source.queriedDays(); len(days) != 1 || days[0] != "2026-10-30" {
 		t.Fatalf("查询业务日 = %v", days)
 	}
