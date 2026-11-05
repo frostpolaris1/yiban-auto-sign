@@ -3,13 +3,16 @@
 # scripts/e2e/deploy-container-e2e.sh — 容器部署路径的干净环境 e2e（工单 6jk）。
 #
 # 模拟的真实用户动作（AGENTS §8g）：
-#   一台新主机按 deploy/docker/docker-compose.yml 头部的命令，
+#   一台新主机按 deploy/container/docker-compose.yml 头部的命令，
 #   从零 build 镜像、起 db+app、访问首页与 /healthz、再停机。
 # 断言用户可见结果：
 #   C1 前置成立，且本项目无旧容器/卷/网络、端口空闲（干净环境）
 #   C2 docker compose build 退出 0（Dockerfile 真构建，含前端构建段）
 #   C3 db 与 app 均 healthy
 #   C4 迁移到嵌入集的最新版本（版本号从 server/migrations 现取）
+#   C4b 签名发布物：签发→验签；错公钥与篡改清单必须被拒
+#   C4c backup profile 一次性任务：db.dump + photos.tar.gz + SHA256SUMS 齐备
+#       且自校验通过；db.list 证明转储可读
 #   C5 宿主 curl /healthz 返回 200 且 body 为 {"status":"ok"}
 #   C5b 宿主 curl / 与前端深链 /accounts 返回首页；未知 /api 仍是 JSON 404；
 #       哈希资产带 immutable 长缓存
@@ -61,7 +64,7 @@ NPM_REGISTRY_ARG="${DEPLOY_E2E_NPM_REGISTRY:-}"
 IMAGE="${DEPLOY_E2E_IMAGE:-${PROJECT}-server:e2e}"
 LOG_DIR="${DEPLOY_E2E_LOG_DIR:-$REPO/work/deploy-e2e-container}"
 KEEP=0
-COMPOSE_FILE="$REPO/deploy/docker/docker-compose.yml"
+COMPOSE_FILE="$REPO/deploy/container/docker-compose.yml"
 OVERRIDE=""
 E2E_STARTED=0
 
@@ -208,6 +211,9 @@ YIBAN_CREDENTIAL_KEY="$(e2e_secret_b64 32)"
 )
 chmod 600 "$COMPOSE_ENV"
 export YIBAN_COMPOSE_ENV_FILE="$COMPOSE_ENV"
+# 备份任务的宿主落点：留在本次 e2e 的日志目录，不写仓库里的缺省 ./backups。
+YIBAN_BACKUP_HOST_DIR="$LOG_DIR/container-backups"
+export YIBAN_BACKUP_HOST_DIR
 if [ "$(stat -c '%a' "$COMPOSE_ENV" 2>/dev/null || echo unknown)" != "600" ]; then
     e2e_die "$COMPOSE_ENV 必须是 0600"
 fi
@@ -345,6 +351,26 @@ if bash "$REPO/scripts/release/verify.sh" --pubkey "$SIGN_DIR/pub.pem" \
     e2e_die "篡改清单后验签竟然通过（门无牙）"
 fi
 e2e_ok "签发/验签通过；错公钥被拒；篡改清单被拒"
+
+# ---- C4c 容器备份任务（PG＋照片，单一路径） --------------------------------
+# backup profile 是一次性任务：跑完即退。产物必须同时覆盖数据库与照片卷，
+# 且 sha256 自校验通过；db.list 证明转储可读（没有可读性就等于没备份）。
+e2e_step "C4c" "容器备份任务"
+if ! dc --profile backup run --rm backup >"$LOG_DIR/C4c-backup.log" 2>&1; then
+    cat "$LOG_DIR/C4c-backup.log" >>"$E2E_STEP_LOG" 2>/dev/null || true
+    e2e_die "backup profile 任务失败"
+fi
+LATEST_BACKUP="$(ls -1d "$YIBAN_BACKUP_HOST_DIR"/*/ 2>/dev/null | sort | tail -n 1 || true)"
+[ -n "$LATEST_BACKUP" ] || e2e_die "备份目录为空：$YIBAN_BACKUP_HOST_DIR"
+for f in db.dump db.list photos.tar.gz SHA256SUMS; do
+    [ -f "$LATEST_BACKUP$f" ] || e2e_die "备份缺 $f（$LATEST_BACKUP）"
+done
+if ! (cd "$LATEST_BACKUP" && sha256sum -c SHA256SUMS >/dev/null 2>>"$E2E_STEP_LOG"); then
+    e2e_die "备份 SHA256SUMS 校验失败"
+fi
+grep -q 'Archive created at' "$LATEST_BACKUP/db.list" \
+    || e2e_die "db.list 不是 pg_restore 清单（转储不可读）"
+e2e_ok "备份含 db.dump/db.list/photos.tar.gz/SHA256SUMS；sha256 与 pg_restore 清单通过"
 
 # ---- C5 /healthz -----------------------------------------------------------
 e2e_step "C5" "宿主 /healthz"

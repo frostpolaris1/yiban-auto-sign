@@ -2,14 +2,14 @@
 # ============================================================
 # build.sh —— 容器镜像发布构建入口（2026-11-05 版本批）
 # ============================================================
-# 用途：从仓库根 VERSION 读产品版本，给 deploy/docker/Dockerfile
+# 用途：从仓库根 VERSION 读产品版本，给 deploy/container/Dockerfile
 #   传齐三个 build-arg（BUILD_VERSION/BUILD_COMMIT/BUILD_TIME），
 #   构建生产镜像。这是 docker compose build 之外、带版本身份的
 #   正式构建入口；裸 `docker build` 不传参时二进制显性自报 dev。
 #
 # 用法（在任意目录执行）：
-#   bash deploy/docker/build.sh <image-tag>
-#   例：bash deploy/docker/build.sh "yiban-server:v$(cat VERSION)"
+#   bash deploy/container/build.sh <image-tag>
+#   例：bash deploy/container/build.sh "yiban-server:v$(cat VERSION)"
 #
 # 行为口径：
 #   - VERSION 缺失 / 非 X.Y.Z / 多行 ⇒ exit 2 并点名（与
@@ -25,11 +25,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
 usage() {
-    echo "usage: bash deploy/docker/build.sh <image-tag>" >&2
+    echo "usage: bash deploy/container/build.sh <image-tag>" >&2
 }
 
 die() {
-    echo "deploy/docker/build.sh: $1" >&2
+    echo "deploy/container/build.sh: $1" >&2
     exit 2
 }
 
@@ -58,7 +58,7 @@ export BUILD_TIME="$build_time"
 echo "build.sh: version=$BUILD_VERSION commit=$BUILD_COMMIT build_time=$BUILD_TIME tag=$TAG"
 
 docker build \
-    -f "$ROOT/deploy/docker/Dockerfile" \
+    -f "$ROOT/deploy/container/Dockerfile" \
     --build-arg BUILD_VERSION="$BUILD_VERSION" \
     --build-arg BUILD_COMMIT="$BUILD_COMMIT" \
     --build-arg BUILD_TIME="$BUILD_TIME" \

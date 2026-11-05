@@ -5,10 +5,10 @@
 覆盖：仓库根 VERSION 是 Go 线产品版本单一来源（单行 semver）；build-release.sh
     真把 VERSION 注入 buildinfo 三元组；release-check 的 go-version 项真调
     build-release.sh；Dockerfile 三处 -X 注入；compose build.args 传三个构建
-    参数；deploy/docker/build.sh 从 VERSION 取值。
+    参数；deploy/container/build.sh 从 VERSION 取值。
 对应实现：VERSION、server/scripts/build-release.sh、scripts/release-check.sh
-    （check_go_version）、deploy/docker/Dockerfile、deploy/docker/docker-compose.yml、
-    deploy/docker/build.sh、server/internal/buildinfo/buildinfo.go。
+    （check_go_version）、deploy/container/Dockerfile、deploy/container/docker-compose.yml、
+    deploy/container/build.sh、server/internal/buildinfo/buildinfo.go。
 关键断言：执行面由 Go 门（server/cmd/cli/build_release_e2e_test.go）真构建证明；
     本文件证静态接线不漂移——任何一处把注入改成字面量、删掉调用或换掉变量
     来源，这里立刻红。每条断言配突变（内存临时副本改坏即红，真文件零写入）。
@@ -102,15 +102,15 @@ def assert_compose_build_args(compose_text):
 def assert_docker_build_sh(script_text):
     """容器构建入口必须从 VERSION 取版本并传三个 build-arg。"""
     assert re.search(r"\$ROOT/VERSION\b", script_text), (
-        "deploy/docker/build.sh 没有读仓库根 VERSION"
+        "deploy/container/build.sh 没有读仓库根 VERSION"
     )
     for arg in ("BUILD_VERSION", "BUILD_COMMIT", "BUILD_TIME"):
         # $ARG 与 ${ARG} 两种 shell 写法都认；字面量（无 $）一律红。
         assert re.search(rf'--build-arg {arg}="\$\{{?{arg}\}}?"', script_text), (
-            f"deploy/docker/build.sh 缺 --build-arg {arg} 透传"
+            f"deploy/container/build.sh 缺 --build-arg {arg} 透传"
         )
     assert re.search(r'^export BUILD_VERSION="\$ver"$', script_text, re.M), (
-        "deploy/docker/build.sh 的 BUILD_VERSION 没有来自 VERSION 读入的 ver 变量"
+        "deploy/container/build.sh 的 BUILD_VERSION 没有来自 VERSION 读入的 ver 变量"
     )
 
 
@@ -129,13 +129,13 @@ class TestBuildVersionWiring(unittest.TestCase):
         assert_release_check_calls_builder(read_repo_file("scripts/release-check.sh"))
 
     def test_dockerfile_injects_buildinfo(self):
-        assert_dockerfile_injections(read_repo_file("deploy/docker/Dockerfile"))
+        assert_dockerfile_injections(read_repo_file("deploy/container/Dockerfile"))
 
     def test_compose_build_args_pass_build_version(self):
-        assert_compose_build_args(read_repo_file("deploy/docker/docker-compose.yml"))
+        assert_compose_build_args(read_repo_file("deploy/container/docker-compose.yml"))
 
     def test_docker_build_sh_reads_version(self):
-        assert_docker_build_sh(read_repo_file("deploy/docker/build.sh"))
+        assert_docker_build_sh(read_repo_file("deploy/container/build.sh"))
 
     # ---------- 突变（内存副本改坏即红；真文件零写入） ----------
 
@@ -171,7 +171,7 @@ class TestBuildVersionWiring(unittest.TestCase):
             assert_release_check_calls_builder(mutant_b)
 
     def test_mutation_dockerfile_red(self):
-        good = read_repo_file("deploy/docker/Dockerfile")
+        good = read_repo_file("deploy/container/Dockerfile")
         mutant = good.replace(
             "-X github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo.version=${BUILD_VERSION}", "")
         self.assertNotEqual(mutant, good, "突变未生效：源文本里找不到注入行")
@@ -179,14 +179,14 @@ class TestBuildVersionWiring(unittest.TestCase):
             assert_dockerfile_injections(mutant)
 
     def test_mutation_compose_red(self):
-        good = read_repo_file("deploy/docker/docker-compose.yml")
+        good = read_repo_file("deploy/container/docker-compose.yml")
         mutant = good.replace("        BUILD_VERSION: ${BUILD_VERSION:-dev}\n", "")
         self.assertNotEqual(mutant, good, "突变未生效：源文本里找不到 build.args 行")
         with self.assertRaises(AssertionError):
             assert_compose_build_args(mutant)
 
     def test_mutation_docker_build_sh_red(self):
-        good = read_repo_file("deploy/docker/build.sh")
+        good = read_repo_file("deploy/container/build.sh")
         # 突变 A：版本硬编码（不再来自 VERSION）。
         mutant = good.replace('export BUILD_VERSION="$ver"', 'export BUILD_VERSION="9.9.9"')
         self.assertNotEqual(mutant, good, "突变未生效：源文本里找不到 export 行")
@@ -201,8 +201,8 @@ class TestBuildVersionWiring(unittest.TestCase):
     def test_wiring_files_present(self):
         """接线文件存在性兜底：任何一份被删，本文件的真文件断言会红，这里给点名。"""
         for rel in ("VERSION", "server/scripts/build-release.sh", "scripts/release-check.sh",
-                    "deploy/docker/Dockerfile", "deploy/docker/docker-compose.yml",
-                    "deploy/docker/build.sh"):
+                    "deploy/container/Dockerfile", "deploy/container/docker-compose.yml",
+                    "deploy/container/build.sh"):
             self.assertTrue(os.path.isfile(os.path.join(BASE, rel)), f"接线文件缺失: {rel}")
 
 

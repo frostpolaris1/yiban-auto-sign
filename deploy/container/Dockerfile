@@ -1,4 +1,4 @@
-# deploy/docker/Dockerfile — Go 服务端＋React 前端的生产镜像。
+# deploy/container/Dockerfile — Go 服务端＋React 前端的生产镜像。
 #
 # 形状：三阶段构建。前端段用 node:22 构建 dist；Go 段用
 # golang:1.27-alpine 全量工具链；运行段用 distroless/static
@@ -9,10 +9,10 @@
 # （internal/assembly/tzdata.go），不依赖镜像内的 zoneinfo。
 #
 # 构建与运行（在仓库根）：
-#   docker build -f deploy/docker/Dockerfile -t yiban-server .
+#   docker build -f deploy/container/Dockerfile -t yiban-server .
 #   cp deploy/container/compose.env.example deploy/container/compose.env  # 填密钥
 #   docker compose --env-file deploy/container/compose.env \
-#     -f deploy/docker/docker-compose.yml up -d
+#     -f deploy/container/docker-compose.yml up -d
 #
 # 旧 Python 镜像（docker/）与本镜像并存；Go 线发布时旧栈退役。
 

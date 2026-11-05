@@ -790,11 +790,11 @@ func photoOwnerFix(p *probe, dir, svc string) string {
 
 // containerPhotoFix 给宿主机可执行的修复。
 // distroless 镜像没有 shell 与 chown：容器内跑 chown 必然失败。
-// 结构性修法是让镜像预建目录并 chown（deploy/docker/Dockerfile）。
+// 结构性修法是让镜像预建目录并 chown（deploy/container/Dockerfile）。
 func containerPhotoFix(dir string) string {
 	return fmt.Sprintf("在宿主机执行（distroless 镜像内无 shell/chown）："+
 		"docker run --rm -u 0 -v <照片卷>:%s busybox chown -R 65532:65532 %s；"+
-		"或让镜像预建并 chown %s（deploy/docker/Dockerfile 的 COPY --chown=65532:65532）",
+		"或让镜像预建并 chown %s（deploy/container/Dockerfile 的 COPY --chown=65532:65532）",
 		dir, dir, dir)
 }
 

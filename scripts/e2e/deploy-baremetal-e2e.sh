@@ -3,7 +3,7 @@
 # scripts/e2e/deploy-baremetal-e2e.sh — 裸机部署路径的干净环境 e2e（工单 6jk）。
 #
 # 模拟的真实用户动作（AGENTS §8g）：
-#   一台干净的 Ubuntu 24.04 主机按 deploy/linux/install.sh 的用法，
+#   一台干净的 Ubuntu 24.04 主机按 deploy/baremetal/install.sh 的用法，
 #   落位二进制与前端产物、生成 /etc/yiban/server.env、装 systemd 单元、
 #   enable --now，然后访问首页与 /healthz、再停机。
 #
@@ -22,10 +22,10 @@
 #   B3 干净 PostgreSQL 18   B4 构建二进制（golang 容器，真编译）
 #   B4c 构建前端产物（node 容器，真 npm run build）
 #   B5 一次性 OS 容器       B6 install.sh 真装（含 --ui-dir）
-#   B7 服务状态             B7b 页面与深链
-#   B7c 反代信任链          B8 落位与权限
-#   B9 迁移版本与干净库     B10 SIGTERM 优雅停机
-#   B11 资源清理
+#   B6b 单元加固            B7 服务状态
+#   B7b 页面与深链          B7c 反代信任链
+#   B8 落位与权限           B9 迁移版本与干净库
+#   B10 SIGTERM 优雅停机    B11 资源清理
 # 失败口径：退出码 1，并打印 failed step: <ID> <标题>；每步日志在 --log-dir。
 # 退出码 2 = 用法或环境错误（缺 docker 等）。
 #
@@ -349,7 +349,7 @@ docker cp "$UI_OUT" "$OS:/opt/e2e-dist/ui" >>"$E2E_STEP_LOG" 2>&1 \
 # YIBAN_HEALTH_RETRIES 放大到 60：容器内首次启动要连库并跑迁移。
 # 它只放大等待，不放松判据（仍然必须拿到 200）。
 if ! docker exec -e YIBAN_HEALTH_RETRIES=60 -e YIBAN_HEALTH_RETRY_INTERVAL=1 \
-    "$OS" bash /opt/e2e-src/deploy/linux/install.sh \
+    "$OS" bash /opt/e2e-src/deploy/baremetal/install.sh \
     --server-bin /opt/e2e-dist/yiban-server \
     --cli-bin /opt/e2e-dist/yiban-cli \
     --ui-dir /opt/e2e-dist/ui \
@@ -361,6 +361,39 @@ if ! grep -q 'install complete: healthz ok' "$E2E_STEP_LOG"; then
     e2e_die "install.sh 未报告 install complete: healthz ok"
 fi
 e2e_ok "install.sh 退出码 0，healthz ok"
+
+# ---- B6b systemd 单元加固 --------------------------------------------------
+# 加固键必须真进单元，并被 systemd 接受（不是只写在安装器注释里）。
+e2e_step "B6b" "systemd 单元加固"
+if ! os_exec systemd-analyze verify /etc/systemd/system/yiban.service \
+    >>"$E2E_STEP_LOG" 2>&1; then
+    e2e_die "systemd-analyze verify /etc/systemd/system/yiban.service 失败"
+fi
+UNIT_TEXT="$(os_exec cat /etc/systemd/system/yiban.service 2>>"$E2E_STEP_LOG" || true)"
+for key in \
+    'NoNewPrivileges=true' \
+    'PrivateTmp=true' \
+    'UMask=0077' \
+    'ProtectSystem=strict' \
+    'ProtectHome=true' \
+    'ReadWritePaths=-/var/lib/yiban/photos'; do
+    printf '%s\n' "$UNIT_TEXT" | grep -Fxq "$key" \
+        || e2e_die "systemd 单元缺 $key"
+done
+# systemd 载入后的属性值：文件里写对但被忽略（拼错键名）也会在这里红。
+for prop in \
+    'NoNewPrivileges=yes' \
+    'PrivateTmp=yes' \
+    'ProtectSystem=strict' \
+    'ProtectHome=yes' \
+    'UMask=0077'; do
+    if ! SHOW="$(os_exec systemctl show -p "${prop%%=*}" yiban.service 2>>"$E2E_STEP_LOG")"; then
+        e2e_die "systemctl show -p ${prop%%=*} 失败"
+    fi
+    printf '%s\n' "$SHOW" | grep -Fxq "$prop" \
+        || e2e_die "systemd 未接受加固键 $prop"
+done
+e2e_ok "systemd-analyze verify 通过；加固键全部被 systemd 接受"
 
 # ---- B7 服务状态 -----------------------------------------------------------
 e2e_step "B7" "服务状态"

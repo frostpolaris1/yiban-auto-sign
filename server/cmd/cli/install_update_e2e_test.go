@@ -24,10 +24,10 @@ import (
 	"testing"
 )
 
-// scriptPath 返回 deploy/linux 下脚本的绝对路径。
+// scriptPath 返回 deploy/baremetal 下脚本的绝对路径。
 func scriptPath(t *testing.T, name string) string {
 	t.Helper()
-	p, err := filepath.Abs(filepath.Join("..", "..", "..", "deploy", "linux", name))
+	p, err := filepath.Abs(filepath.Join("..", "..", "..", "deploy", "baremetal", name))
 	if err != nil {
 		t.Fatalf("resolve script: %v", err)
 	}

@@ -260,7 +260,7 @@ check_backup() {
 }
 
 # 项 7 回滚演练。考古（2026-10-27，ref ad5b3639）：机制存在——
-#   deploy/linux/update.sh 迁移失败回滚为旧件继续跑（exit 1）、健康检查失败换回
+#   deploy/baremetal/update.sh 迁移失败回滚为旧件继续跑（exit 1）、健康检查失败换回
 #   .bak 旧二进制再起（exit 1）、回滚后仍不健康 exit 2。
 #   2026-11-04（U2）起 update.sh 是一键更新：停服前自检门（selfcheck --json，
 #   FAIL 即 exit 2）、统一备份（pg_dump -Fc + pg_restore --list + 照片 tar +
@@ -279,7 +279,7 @@ check_backup() {
 #   （phase B 未删）。
 check_rollback() {
     STATUS_rollback=FAIL; REASON_rollback=""
-    local upd="$ROOT/deploy/linux/update.sh"
+    local upd="$ROOT/deploy/baremetal/update.sh"
     local drill="$ROOT/scripts/e2e/update-rollback-e2e.sh"
     local guard="$ROOT/server/cmd/cli/update_u2_e2e_test.go"
     local marker

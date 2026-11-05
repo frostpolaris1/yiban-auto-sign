@@ -33,7 +33,7 @@
 | 前端体验 | React / TypeScript / CSS | `ui/src/`、`ui/e2e/` | 开放 |
 | 文档 | 技术写作 | `README.md`、`docs/`、`server/README.md`、`ui/README.md` | 开放 |
 | 测试与质量 | Go / TypeScript 测试 | `server/internal/`、`ui/e2e/` | 开放 |
-| 部署体验 | Shell / 反向代理 | `deploy/linux/`、`docs/dev/deploy-e2e.md` | 部分开放，见 §3 |
+| 部署体验 | Shell / 反向代理 | `deploy/baremetal/`、`docs/dev/deploy-e2e.md` | 部分开放，见 §3 |
 | 独立验证 | 测试 / 审计 | 公开 issue | 开放 |
 
 ## 3. 具体任务
@@ -43,7 +43,7 @@
 | 任务 | 范围 | 验收 | 难度 |
 |---|---|---|---|
 | 顶层 README 重写 | 把 `README.md` 的主线改成 Go＋React；旧 Python 内容折叠为附录或移入归档文档 | 新读者 5 分钟内找到安装、配置、测试命令；引用路径都在库内；文档门绿 | 中 |
-| 升级维护页 | 在 `deploy/linux/` 下新增静态维护页，并在 `docs/dev/deploy-e2e.md` 写反代片段 | 服务停止时反代能返回该页；无 JavaScript；键盘可达；文案说明升级进度 | 小 |
+| 升级维护页 | 在 `deploy/baremetal/` 下新增静态维护页，并在 `docs/dev/deploy-e2e.md` 写反代片段 | 服务停止时反代能返回该页；无 JavaScript；键盘可达；文案说明升级进度 | 小 |
 | 测试时序清理 | 把 `ui/e2e/` 里的固定等待改为等待条件 | 不改变任何断言；`test:behavior` 连跑 5 次稳定；不许放宽超时掩盖抖动 | 小 |
 | 部署故障排查 | 扩充 `docs/dev/troubleshooting.md` 的 Go 线条目 | 每类故障给症状、命令、期望输出；只写可复现内容 | 小 |
 | 可访问性巡检 | 检查 `ui/src/` 的键盘可达、`label` 关联、焦点可见 | 先交报告与问题清单；修复按页分批；不新增依赖 | 中 |

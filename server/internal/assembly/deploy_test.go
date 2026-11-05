@@ -11,6 +11,10 @@ package assembly
 // 3. 镜像必须预建 /data/photos 并归 nonroot(65532)：
 //    命名卷首次挂载继承镜像内目录的属主；不预建则 Docker 以 root
 //    建空目录，distroless nonroot 不可写。
+// 4. install.sh 生成的 systemd 单元必须带加固键：键名拼错或丢失时服务仍能
+//    启动，隔离面却静默消失。
+// 5. 容器备份 profile 必须同时覆盖数据库与照片，且脚本校验转储可读；
+//    只备一半会在恢复时才发现。
 //
 // # 口径
 // 只读文件，不启容器：判据都在构建产物里可判。
@@ -120,7 +124,7 @@ func composeStopGrace(t *testing.T, body string) time.Duration {
 }
 
 func TestComposeStopGraceExceedsShutdownBudget(t *testing.T) {
-	body := deployFile(t, "docker/docker-compose.yml")
+	body := deployFile(t, "container/docker-compose.yml")
 	grace := composeStopGrace(t, body)
 	if grace <= shutdownBudget {
 		t.Fatalf("stop_grace_period=%s 必须大于 shutdownBudget=%s；否则 SIGKILL 打断优雅收尾",
@@ -131,11 +135,11 @@ func TestComposeStopGraceExceedsShutdownBudget(t *testing.T) {
 // TestInstallUnitStopTimeoutExceedsShutdownBudget 钉住 systemd 单元的停机预算。
 // TimeoutStopSec 小于 shutdownBudget 时，systemd 在优雅收尾完成前发 SIGKILL。
 func TestInstallUnitStopTimeoutExceedsShutdownBudget(t *testing.T) {
-	body := deployFile(t, "linux/install.sh")
+	body := deployFile(t, "baremetal/install.sh")
 	re := regexp.MustCompile(`(?m)^TimeoutStopSec=(\d+)$`)
 	m := re.FindStringSubmatch(body)
 	if m == nil {
-		t.Fatal("deploy/linux/install.sh 的 systemd 单元缺 TimeoutStopSec=<秒>")
+		t.Fatal("deploy/baremetal/install.sh 的 systemd 单元缺 TimeoutStopSec=<秒>")
 	}
 	secs, err := strconv.Atoi(m[1])
 	if err != nil {
@@ -147,10 +151,34 @@ func TestInstallUnitStopTimeoutExceedsShutdownBudget(t *testing.T) {
 	}
 }
 
+// TestInstallUnitHardening 钉住 systemd 单元的加固键。
+// 键名拼错或丢失时服务仍能启动，但隔离面静默消失；安装器在运行时生成单元，
+// 所以这里按模板行形状判（注释行以 # 开头，不会误命中）。
+// 行为面由 scripts/e2e/deploy-baremetal-e2e.sh 的 B6b 用 systemd-analyze verify
+// 与 systemctl show 再验一遍。
+func TestInstallUnitHardening(t *testing.T) {
+	body := deployFile(t, "baremetal/install.sh")
+	for _, want := range []string{
+		"User=$SERVICE_USER",
+		"Group=$SERVICE_USER",
+		"UMask=0077",
+		"NoNewPrivileges=true",
+		"PrivateTmp=true",
+		"ProtectSystem=strict",
+		"ProtectHome=true",
+		"ReadWritePaths=-$PHOTO_DIR",
+	} {
+		re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(want) + `$`)
+		if !re.MatchString(body) {
+			t.Fatalf("install.sh 生成的 systemd 单元缺 %q（加固面会静默丢失）", want)
+		}
+	}
+}
+
 func TestDockerfilePhotoDirOwnedByNonroot(t *testing.T) {
 	// distroless/static-debian12:nonroot 的运行用户。
 	const nonroot = "65532"
-	body := deployFile(t, "docker/Dockerfile")
+	body := deployFile(t, "container/Dockerfile")
 	for _, line := range strings.Split(body, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "#") {
@@ -172,8 +200,39 @@ func TestDockerfilePhotoDirOwnedByNonroot(t *testing.T) {
 
 // TestComposePhotoVolumeTarget 钉住卷挂载点与镜像预建目录一致。
 func TestComposePhotoVolumeTarget(t *testing.T) {
-	body := deployFile(t, "docker/docker-compose.yml")
+	body := deployFile(t, "container/docker-compose.yml")
 	if !strings.Contains(body, ":/data/photos") {
 		t.Fatal("docker-compose.yml 未把照片卷挂在 /data/photos")
+	}
+}
+
+// TestContainerBackupProfileCoversDBAndPhotos 钉住容器备份的接线：
+// 任务只在 backup profile 下出现，脚本被挂进容器，且同时导出数据库与照片。
+// 判据缺失时备份会退化成只有数据库（或只有文档），恢复时才发现照片丢了。
+func TestContainerBackupProfileCoversDBAndPhotos(t *testing.T) {
+	compose := deployFile(t, "container/docker-compose.yml")
+	for _, want := range []string{
+		`profiles: ["backup"]`,
+		"./backup.sh:/usr/local/bin/yiban-backup:ro",
+		"${YIBAN_BACKUP_HOST_DIR:-./backups}:/backups",
+		"photos:/photos",
+	} {
+		if !strings.Contains(compose, want) {
+			t.Errorf("docker-compose.yml 缺 %q（容器备份路径不完整）", want)
+		}
+	}
+	script, err := readRepoFile("deploy/container/backup.sh")
+	if err != nil {
+		t.Fatalf("read deploy/container/backup.sh: %v", err)
+	}
+	for _, want := range []string{
+		"pg_dump -Fc",
+		"pg_restore --list",
+		"photos.tar.gz",
+		"sha256sum -c SHA256SUMS",
+	} {
+		if !strings.Contains(string(script), want) {
+			t.Errorf("backup.sh 缺 %q（备份未覆盖数据库或照片，或没做可读性校验）", want)
+		}
 	}
 }

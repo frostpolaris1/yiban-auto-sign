@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # ============================================================
-# deploy/linux/install.sh — Go 服务端＋React 前端的裸机安装器（systemd 宿主）。
+# deploy/baremetal/install.sh — Go 服务端＋React 前端的裸机安装器（systemd 宿主）。
 #
 # 前提：PostgreSQL 18 已就绪且可连（建库不在本脚本职责内；
-# 容器形态走 deploy/docker，不用本脚本）。
+# 容器形态走 deploy/container，不用本脚本）。
 #
 # 用法：
-#   sudo bash deploy/linux/install.sh \
+#   sudo bash deploy/baremetal/install.sh \
 #     --server-bin ./dist/yiban-server --cli-bin ./dist/yiban-cli \
 #     --ui-dir ./ui/dist \
 #     [--database-url postgres://...]
@@ -24,7 +24,7 @@
 #       （缺则生成随机 pepper/credential key 并打印一次）
 #       → /etc/yiban/server.env.example（0644，无密钥的运行模板）
 #       → 前端产物落位（给了 --ui-dir 时）
-#       → systemd 单元 → enable --now → /healthz 重试探测。
+#       → systemd 单元（加固：只开照片目录可写）→ enable --now → /healthz 重试探测。
 #
 # 退出码：0 成功；1 健康检查超时或前端产物落位失败（可查日志定位）；
 #         2 用法错误或依赖缺失（含旧布局保护：仅存 /etc/yiban/.env 时拒装）。
@@ -263,6 +263,49 @@ fi
 #    再等在飞结算，10s 上限）并留出余量。
 # 单元内容里的路径永远是真实运行路径：干跑只改文件的落位，
 # 不改单元声明的路径（否则干跑产物与真件不一致，检查就失去意义）。
+#
+# 4a) 加固用的可写路径：服务只需要写照片目录（数据库在 PostgreSQL，
+#     状态/日志/备份都在服务用户之外）。值以 server.env 为准（与进程读到的
+#     是同一个），缺省回落到安装器的运行目录。以下形态直接拒绝：
+#     相对路径、含空白（systemd 指令按空白切参数）、被 ProtectHome 遮住的
+#     /home|/root|/run/user、被 PrivateTmp 私有化的 /tmp|/var/tmp|/dev/shm，
+#     以及服务主目录本身或其父目录（会把 ui 与旧备份一并开放写）。
+PHOTO_DIR="$(grep -E '^YIBAN_PHOTO_DIR=' "$ENV_FILE" 2>/dev/null | tail -n 1 | cut -d= -f2- || true)"
+PHOTO_DIR="${PHOTO_DIR:-$SERVICE_HOME/photos}"
+# 去掉尾斜杠：/var/lib/yiban/ 与 /var/lib/yiban 必须是同一条判据。
+while [ "${#PHOTO_DIR}" -gt 1 ] && [ "${PHOTO_DIR%/}" != "$PHOTO_DIR" ]; do
+    PHOTO_DIR="${PHOTO_DIR%/}"
+done
+case "$PHOTO_DIR" in
+    /*) ;;
+    *) echo "install: YIBAN_PHOTO_DIR must be an absolute path: $PHOTO_DIR" >&2; exit 2 ;;
+esac
+case "$PHOTO_DIR" in
+    *[[:space:]]*)
+        echo "install: YIBAN_PHOTO_DIR must not contain whitespace: $PHOTO_DIR" >&2; exit 2 ;;
+    /home/*|/root/*|/run/user/*)
+        echo "install: YIBAN_PHOTO_DIR=$PHOTO_DIR is hidden by ProtectHome=true; use a path outside /home, /root and /run/user" >&2; exit 2 ;;
+    /tmp/*|/var/tmp/*|/dev/shm/*)
+        echo "install: YIBAN_PHOTO_DIR=$PHOTO_DIR would be private to the unit (PrivateTmp=true); photos would vanish with it" >&2; exit 2 ;;
+    /)
+        echo "install: YIBAN_PHOTO_DIR must not be /" >&2; exit 2 ;;
+esac
+if [ "$PHOTO_DIR" = "$SERVICE_HOME" ]; then
+    echo "install: YIBAN_PHOTO_DIR must be a subdirectory of $SERVICE_HOME, not $SERVICE_HOME itself" >&2
+    exit 2
+fi
+case "$SERVICE_HOME/" in
+    "$PHOTO_DIR"/*)
+        echo "install: YIBAN_PHOTO_DIR=$PHOTO_DIR is a parent of $SERVICE_HOME; refusing to expose ui and old backups" >&2
+        exit 2 ;;
+esac
+# ProtectSystem=strict 下服务无法自己创建目录：安装器先把照片根建好并交给
+# 服务用户。非递归 chown：只保证能落新照片，既有文件的权限不被改写。
+mkdir -p "$(dest "$PHOTO_DIR")"
+if [ -z "$ROOT" ]; then
+    chown "$SERVICE_USER:$SERVICE_USER" "$(dest "$PHOTO_DIR")"
+fi
+
 cat > "$(dest "/etc/systemd/system/$UNIT")" <<EOF
 [Unit]
 Description=yiban Go server (auto sign backend)
@@ -273,12 +316,22 @@ Wants=network-online.target
 Type=simple
 User=$SERVICE_USER
 Group=$SERVICE_USER
+UMask=0077
 EnvironmentFile=/etc/yiban/server.env
 ExecStart=/usr/local/bin/yiban-server
 Restart=on-failure
 RestartSec=5
 KillSignal=SIGTERM
 TimeoutStopSec=15
+# 加固：除照片目录外整个文件系统只读；/home、/root、/run/user 不可见；
+# 进程有私有 /tmp；禁止提权；新建文件默认 0600。
+# ReadWritePaths 的 "-" 前缀只表示「路径不存在时不要拒绝启动」，
+# 不改变写权限范围：安装器在启动前已建好照片目录。
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=-$PHOTO_DIR
 
 [Install]
 WantedBy=multi-user.target

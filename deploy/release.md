@@ -59,7 +59,7 @@
 **真仓库在打 `v$VERSION` tag 之前本项 FAIL 是预期**（发布时才绿）；
 `--selftest` 用桩 builder（不编译 Go）覆盖四类突变（缺 VERSION、坏 semver、
 构建不注入自报 dev、tag 不指向 HEAD）且全部非零，一致夹具绿。
-容器侧同一组值由 `deploy/docker/build.sh`（读根 VERSION）传给 Dockerfile。
+容器侧同一组值由 `deploy/container/build.sh`（读根 VERSION）传给 Dockerfile。
 
 ## 项 2　许可证清单重生成（item 名 `license`）
 
@@ -125,7 +125,7 @@ backup/restore 子命令。
 
 ## 项 7　回滚演练（item 名 `rollback`，POINTER）
 
-考古结论：**回滚机制存在。** `deploy/linux/update.sh`（U2 起是一键更新）：
+考古结论：**回滚机制存在。** `deploy/baremetal/update.sh`（U2 起是一键更新）：
 
 - 自检门：停服前跑 `yiban-cli selfcheck --json`，有 FAIL 即 exit 2，不碰旧件；
 - 统一备份：`pg_dump -Fc` + `pg_restore --list` 校验 + 照片 tar + sha256 清单，
@@ -194,6 +194,6 @@ R8c 状态目录软链、R9b 备份件被篡改）全 PASS
    契约版本只在破坏性契约变更时升（`server/contracts/README.md`），发布 tag 用
    `v$VERSION`（根 `VERSION`），两者独立、不同步；见项 1 第 5 条与项 1b。
 2. 迁移无 down 迁移，schema 不随二进制回滚（项 7 边界，
-   `deploy/linux/update.sh` 头注登记）。
+   `deploy/baremetal/update.sh` 头注登记）。
 3. 已签名旧包可重放（降级）：不传 `--expect-version` 时无版本下限。
    该参数已提供；发布操作必须传（`docs/dev/release-signing.md` §7）。

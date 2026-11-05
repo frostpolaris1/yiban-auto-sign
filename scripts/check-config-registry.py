@@ -102,8 +102,7 @@ TOKEN_KEYLINE = re.compile(r"(?:^|[\s\-\[])(YIBAN_[A-Z0-9_]+)\s*[=:]")
 #: 与旧名册互不引用）；放进本门的扫描面只会拿旧名册去判新栈的新键（如
 #: `YIBAN_ALLOW_NO_DB`），方向就是错的。`deploy/prod`（旧线生产安装器）与
 #: `scripts/` 其余旧线运维脚本仍在本门扫描面内。
-SKIP_PREFIXES = ("deploy/baremetal/", "deploy/container/", "deploy/docker/",
-                 "deploy/linux/", "scripts/e2e/")
+SKIP_PREFIXES = ("deploy/baremetal/", "deploy/container/", "scripts/e2e/")
 #: 被扫文件里必须出现的最小文件数（防"扫描面塌了 ⇒ 零命中 ⇒ 全绿"）。
 #: 2026-11-05 实测（新口径＝旧线生产面：server/ui 进 BENIGN_TOP_DIRS、新栈
 #: 部署/升级脚本进 SKIP_PREFIXES）：本分支 383 个被扫文件（门自报，已扣 SELF），

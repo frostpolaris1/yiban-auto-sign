@@ -20,14 +20,14 @@
 #   - 一律不注入分支名：发布件不带分支身份；
 #   - 产出版本/提交/时间各打印一行（build-release: version=… …）。
 #
-# 产物名：Linux 为 yiban-server / yiban-cli（与 deploy/linux/install.sh、
+# 产物名：Linux 为 yiban-server / yiban-cli（与 deploy/baremetal/install.sh、
 #   scripts/release/make-manifest.sh 的命名一致）；Windows 宿主（开发与
 #   门环境，Git Bash）为 yiban-server.exe / yiban-cli.exe——Go 的
 #   os/exec 在 Windows 上不认无 .exe 后缀的 PE。
 #
 # 口径对齐：-X 的注入名是 Go 标识符（version/commit/buildTime），
 #   见 server/internal/buildinfo/buildinfo.go 头注。Dockerfile 与本脚本
-#   注入同一组符号；deploy/docker/build.sh 给容器构建传同一组值。
+#   注入同一组符号；deploy/container/build.sh 给容器构建传同一组值。
 # ============================================================
 set -euo pipefail
 

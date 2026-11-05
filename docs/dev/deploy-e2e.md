@@ -42,7 +42,7 @@ DEPLOY_E2E_NPM_REGISTRY=https://registry.npmmirror.com bash scripts/e2e/deploy-c
 
 ## 2. 容器路径断言
 
-脚本 `scripts/e2e/deploy-container-e2e.sh` 按 `deploy/docker/docker-compose.yml` 起栈。
+脚本 `scripts/e2e/deploy-container-e2e.sh` 按 `deploy/container/docker-compose.yml` 起栈。
 独立 compose 项目、独立卷、独立网络、独立回环端口。
 镜像同时构建前端（Dockerfile 的 `ui` 段），页面由 Go 进程托管。
 
@@ -53,6 +53,7 @@ DEPLOY_E2E_NPM_REGISTRY=https://registry.npmmirror.com bash scripts/e2e/deploy-c
 | C3 | db 与 app 均 healthy |
 | C4 | 容器内 `yiban-cli migrate` 打印嵌入集最新版本 |
 | C4b | 签发→验签通过；错公钥必须被拒；篡改清单一字节后验签必须被拒（openssl 现场生成密钥，不入仓） |
+| C4c | `backup` profile 一次性任务退出 0；产物含 `db.dump`/`db.list`/`photos.tar.gz`/`SHA256SUMS`，宿主侧 `sha256sum -c` 通过；`db.list` 是 `pg_restore` 清单（转储可读） |
 | C5 | 宿主 `curl /healthz` 返回 200，body 为 `{"status":"ok"}` |
 | C5b | 宿主 `curl /` 与深链 `/accounts` 都返回 200 且含 `<div id="root">`；未知 `/api/*` 仍是 JSON 404（`code=not_found`）且不含页面；`/assets/*.js` 带 `immutable` 长缓存 |
 | C5c | 带 `Origin: https://<host>` 与 `X-Forwarded-Proto: https` 的登录请求回 401（无效凭据），不得回 403；403 表示 compose 默认可信代理未覆盖网桥网关 |
@@ -71,7 +72,7 @@ C7 的日志断言有独立守卫：`TestRunClosesPoolAfterWorkerDrain`
 
 ## 3. 裸机路径断言
 
-脚本 `scripts/e2e/deploy-baremetal-e2e.sh` 真跑 `deploy/linux/install.sh`。
+脚本 `scripts/e2e/deploy-baremetal-e2e.sh` 真跑 `deploy/baremetal/install.sh`。
 它不用假 systemctl，也不用 `YIBAN_INSTALL_ROOT` 干跑前缀。
 
 | 步骤 | 断言 |
@@ -84,6 +85,7 @@ C7 的日志断言有独立守卫：`TestRunClosesPoolAfterWorkerDrain`
 | B4b | 对真编译产物签发清单→验签通过 |
 | B5 | OS 容器 systemd 就绪；`/etc/yiban`、`yiban` 用户、二进制均不存在 |
 | B6 | `install.sh --ui-dir` 退出 0，输出 `install complete: healthz ok` |
+| B6b | `systemd-analyze verify` 通过；单元含 `NoNewPrivileges=true`/`PrivateTmp=true`/`UMask=0077`/`ProtectSystem=strict`/`ProtectHome=true`/`ReadWritePaths=-/var/lib/yiban/photos`；`systemctl show` 的 `NoNewPrivileges`/`PrivateTmp`/`ProtectSystem`/`ProtectHome`/`UMask` 与之一致（键被 systemd 接受，不是只写在文件里） |
 | B7 | 单元 active + enabled；独立 `yiban-cli healthcheck` 通过 |
 | B7b | 容器内 `curl /` 与深链 `/accounts` 返回 200 且含 `<div id="root">`；未知 `/api/*` 是 JSON 404；`/assets/*.js` 带 `immutable` 长缓存 |
 | B7c | 带 `Origin: https://<loopback>` 与 `X-Forwarded-Proto: https` 的登录请求回 401，不得回 403（`server.env` 的信任链生效） |
@@ -171,7 +173,7 @@ WSL 里不要把日志落 `/mnt/d`。跨文件系统追加会给 rc=141。
 
 ## 8. 一键更新与回滚演练（update-rollback-e2e，U2 失败矩阵）
 
-脚本 `scripts/e2e/update-rollback-e2e.sh` 真跑 `deploy/linux/update.sh`。
+脚本 `scripts/e2e/update-rollback-e2e.sh` 真跑 `deploy/baremetal/update.sh`。
 壳与裸机路径同款：一次性 Ubuntu 容器（真 systemd PID1、`--privileged`、
 host cgroup）＋ 真 PostgreSQL 18 ＋ 独立前缀/网络/卷。
 

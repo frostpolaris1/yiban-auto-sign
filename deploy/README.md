@@ -3,6 +3,8 @@
 > 适用对象：本仓的**新架构**（`server/` + `ui/`）。
 > 旧 Python 栈的部署说明在根 `README.md`，两者不要混用。
 > 部署 e2e 的命令与断言见 [`docs/dev/deploy-e2e.md`](../docs/dev/deploy-e2e.md)。
+> 「改什么去哪、秘密与非秘密、怎么生效」的一页地图见
+> [`docs/ops/config-map.md`](../docs/ops/config-map.md)。
 
 ## 1. 产物形态
 
@@ -41,15 +43,15 @@ openssl rand -base64 32   # YIBAN_CREDENTIAL_KEY
 openssl rand -hex 16      # POSTGRES_PASSWORD
 
 docker compose --env-file deploy/container/compose.env \
-  -f deploy/docker/docker-compose.yml up -d --build
+  -f deploy/container/docker-compose.yml up -d --build
 ```
 
 镜像里的二进制版本身份来自三个构建参数（`BUILD_VERSION/BUILD_COMMIT/BUILD_TIME`）。
-正式构建入口是 `deploy/docker/build.sh`：它从仓库根 `VERSION` 读版本，三个值
+正式构建入口是 `deploy/container/build.sh`：它从仓库根 `VERSION` 读版本，三个值
 一次给齐后调 `docker build`：
 
 ```bash
-bash deploy/docker/build.sh "yiban-server:v$(cat VERSION)"
+bash deploy/container/build.sh "yiban-server:v$(cat VERSION)"
 ```
 
 不走该入口时（例如上面 `compose up -d --build`），compose 的 `build.args`
@@ -60,6 +62,11 @@ bash deploy/docker/build.sh "yiban-server:v$(cat VERSION)"
 compose 用 `env_file` 把它注入 app，`--env-file` 供 db 的服务口令插值。
 **不读取仓库根 `.env`**——旧 Python 栈的配置因此不可能混进 Go 容器。
 `YIBAN_DATABASE_URL` 由 compose 从 `POSTGRES_PASSWORD` 派生（口令只有一处来源）。
+这三个键只放一份：模板 `deploy/container/compose.env.example` → 运行文件
+`deploy/container/compose.env`（0600，已 gitignore）；没有第二份容器配置。
+
+compose 文件顶部固定了项目名 `name: yiban`：目录改名不会把卷名从
+`yiban_pgdata` 换成另一个前缀；e2e 的 `-p` 仍然优先。
 
 配置名册随二进制嵌入（`server/internal/configdata/registry.json`），
 镜像与安装位里都没有 `registry.json` 文件；`GET /api/admin/settings`
@@ -79,12 +86,80 @@ curl -fsS http://127.0.0.1:8080/ | head     # 前端首页 HTML
 
 ```bash
 docker compose --env-file deploy/container/compose.env \
-  -f deploy/docker/docker-compose.yml exec -T app \
+  -f deploy/container/docker-compose.yml exec -T app \
   /usr/local/bin/yiban-cli user create-master \
   --email you@example.com --password-stdin <<< "$PASSWORD"
 ```
 
-数据卷有两个：`pgdata`（数据库）与 `photos`（签到照片）。备份要同时覆盖两者。
+### 3.1 容器备份（数据库＋照片）
+
+数据卷有两个：`pgdata`（数据库）与 `photos`（签到照片）。
+备份是同一条一次性任务，两个都覆盖——只备数据库会丢照片，只备卷会在
+数据库写入中途拿到不一致的副本。
+
+```bash
+# 在仓库根执行；产物落 deploy/container/backups/<UTC 时间戳>/
+docker compose --env-file deploy/container/compose.env \
+  -f deploy/container/docker-compose.yml --profile backup run --rm backup
+```
+
+任务用 `postgres:18` 镜像（客户端与 db 同版本），产物：
+
+| 文件 | 内容 |
+|---|---|
+| `db.dump` | `pg_dump -Fc`（含凭据密文与审计行） |
+| `db.list` | `pg_restore --list` 清单（证明转储可读；读不了等于没备份） |
+| `photos.tar.gz` | 照片卷快照（照片不进数据库备份） |
+| `SHA256SUMS` | 以上文件的 sha256；任务内写入后立即 `-c` 校验 |
+
+目录与文件按 `umask 077` 落盘（目录 0700、文件 0600）：备份含凭据密文。
+默认落点 `deploy/container/backups`（已 gitignore）；换路径用
+`YIBAN_BACKUP_HOST_DIR=/srv/backups`（宿主绝对路径），命令里其余部分不变。
+
+**调度。** 任务不常驻，用宿主 cron 或 systemd timer 定时跑。cron 例：
+
+```cron
+15 3 * * * cd /path/to/yiban-auto-sign && /usr/bin/docker compose \
+  --env-file deploy/container/compose.env \
+  -f deploy/container/docker-compose.yml --profile backup run --rm backup \
+  >> /var/log/yiban-backup.log 2>&1
+```
+
+systemd timer 等价：`OnCalendar=*-*-* 03:15:00`，service 的 `ExecStart` 就是上面
+那条 `docker compose … run --rm backup`。两种方式都只管“拉起任务”，不复制
+compose.env 里的秘密（任务自己从同一个 `--env-file` 取）。
+
+**恢复。**
+
+```bash
+# 1) 停 app，避免恢复期间还有写入
+docker compose --env-file deploy/container/compose.env \
+  -f deploy/container/docker-compose.yml stop app
+
+# 2) 数据库：pg_restore 从 stdin 读宿主上的 db.dump（--clean 覆盖同名对象）
+docker compose --env-file deploy/container/compose.env \
+  -f deploy/container/docker-compose.yml exec -T db \
+  pg_restore -U yiban -d yiban --clean --if-exists --no-owner --no-privileges \
+  < deploy/container/backups/<时间戳>/db.dump
+
+# 3) 照片：用同一个一次性任务解包到 photos 卷
+docker compose --env-file deploy/container/compose.env \
+  -f deploy/container/docker-compose.yml --profile backup run --rm \
+  --entrypoint sh backup -c 'tar -xzf /backups/<时间戳>/photos.tar.gz -C /photos'
+
+# 4) 起 app 并验活
+docker compose --env-file deploy/container/compose.env \
+  -f deploy/container/docker-compose.yml start app
+curl -fsS http://127.0.0.1:8080/healthz
+```
+
+恢复前先把 `<时间戳>` 换成备份目录名，并确认 `sha256sum -c SHA256SUMS` 通过。
+需要静态加密时，在宿主对备份目录执行
+`gpg --symmetric --cipher-algo AES256 db.dump`，把口令存到独立位置；
+容器任务本身不加密（GPG 口令不应进 compose.env 或容器环境）。
+
+保留策略由宿主负责：按需删除旧时间戳目录。不要删除仍被
+`update.sh`/人工回退引用的备份。
 
 ## 4. 裸机部署（systemd）
 
@@ -114,7 +189,7 @@ cd ..
 ### 4.2 安装
 
 ```bash
-sudo bash deploy/linux/install.sh \
+sudo bash deploy/baremetal/install.sh \
   --server-bin dist/yiban-server \
   --cli-bin dist/yiban-cli \
   --ui-dir ui/dist \
@@ -134,6 +209,32 @@ sudo bash deploy/linux/install.sh \
 
 不给 `--ui-dir` 时只装 API。安装器会打印显性提示。
 
+**systemd 加固。** 安装器生成的 `yiban.service` 在 `User=`/`Group=` 之外带：
+
+| 指令 | 作用 |
+|---|---|
+| `NoNewPrivileges=true` | 进程及其子进程不得提权 |
+| `PrivateTmp=true` | 私有 `/tmp`、`/var/tmp`，不与其他服务共享 |
+| `UMask=0077` | 新建文件默认 0600（照片仍由同一进程读取） |
+| `ProtectSystem=strict` | 除 `/dev`、`/proc`、`/sys` 外整个文件系统只读 |
+| `ProtectHome=true` | `/home`、`/root`、`/run/user` 不可见 |
+| `ReadWritePaths=-/var/lib/yiban/photos` | 只开照片目录可写 |
+
+`ReadWritePaths` 取 `server.env` 的 `YIBAN_PHOTO_DIR`（缺省
+`/var/lib/yiban/photos`）。安装器会先建好该目录并把它交给服务用户
+（`ProtectSystem=strict` 下进程自己建不了目录）。安装器拒绝这些形态：相对路径、
+含空白、`/home|/root|/run/user`（被 `ProtectHome` 遮住）、
+`/tmp|/var/tmp|/dev/shm`（被 `PrivateTmp` 私有化后照片会随进程消失），以及
+`/var/lib/yiban` 本身或其父目录（会把页面与旧备份一并开放写）。改照片目录要
+同时改 `server.env` 并重跑 `install.sh`（它会按新值重写单元的 `ReadWritePaths`），
+然后 `systemctl restart yiban.service`。
+
+升级、回滚、自检与备份都在服务进程之外运行（`update.sh` 以 root 停服、
+`pg_dump`、tar 照片、换件、再起服），加固不改变这些路径；`update.sh` 不改写
+systemd 单元——已由旧安装器装过的机器要获得加固，重跑一次 `install.sh`。
+真 systemd 容器里的 `systemd-analyze verify` 与 `systemctl show` 断言见
+`scripts/e2e/deploy-baremetal-e2e.sh` 的 B6b。
+
 创建第一个 master：
 
 ```bash
@@ -145,7 +246,7 @@ printf '%s\n' "$PASSWORD" | yiban-cli user create-master \
 ### 4.3 升级（一键更新 U2）
 
 ```bash
-sudo bash deploy/linux/update.sh \
+sudo bash deploy/baremetal/update.sh \
   --server-bin dist/yiban-server \
   --cli-bin dist/yiban-cli \
   --ui-dir ui/dist \
@@ -172,7 +273,7 @@ sudo bash deploy/linux/update.sh \
 只跑自检、不做任何修改（不取锁、不写文件）：
 
 ```bash
-sudo bash deploy/linux/update.sh --selfcheck-only    # 0 全 PASS/SKIP；2 有 FAIL
+sudo bash deploy/baremetal/update.sh --selfcheck-only    # 0 全 PASS/SKIP；2 有 FAIL
 ```
 
 **统一备份（停服前，失败即中止）**
@@ -303,7 +404,7 @@ sudo systemctl start yiban.service
 sudo systemctl start yiban.service
 ```
 
-人工恢复后重跑 `sudo bash deploy/linux/update.sh --selfcheck-only` 确认全 PASS，
+人工恢复后重跑 `sudo bash deploy/baremetal/update.sh --selfcheck-only` 确认全 PASS，
 再重新执行升级。
 
 **自动验证**
@@ -340,7 +441,7 @@ YIBAN_TRUSTED_PROXIES=172.16.0.0/12,127.0.0.1
 # 方式一：shell 环境覆盖（插值透传，优先级最高）
 export YIBAN_TRUSTED_PROXIES=192.0.2.10
 docker compose --env-file deploy/container/compose.env \
-  -f deploy/docker/docker-compose.yml up -d
+  -f deploy/container/docker-compose.yml up -d
 ```
 
 ```bash
@@ -377,6 +478,11 @@ sudo systemctl restart yiban.service
 
 完整名册与每键说明见 `server/internal/configdata/registry.json`（编译期嵌入二进制）。
 
+容器形态另有两个编排层变量，不进 Go 名册，也不在镜像里：`POSTGRES_PASSWORD`
+（db 初始口令，同时是派生 `YIBAN_DATABASE_URL` 的唯一来源）与
+`YIBAN_BACKUP_HOST_DIR`（备份宿主目录，缺省 `./backups`）。两者都只在
+`deploy/container/compose.env` 或 shell 环境里给。
+
 ## 7. 排障
 
 | 现象 | 先查 |
@@ -385,6 +491,7 @@ sudo systemctl restart yiban.service
 | 登录回 403 | 代理是否传 `X-Forwarded-Proto`；`YIBAN_TRUSTED_PROXIES` 是否包含代理地址 |
 | 登录成功但立刻掉线 | 是否用 HTTP 访问；`production` 的 cookie 带 `Secure` |
 | 进程起不来 | `YIBAN_UI_DIR` 指向的目录缺 `index.html` 时服务端**拒绝启动**。这是有意行为 |
+| 上传/读取照片失败（裸机） | `server.env` 的 `YIBAN_PHOTO_DIR` 是否等于单元里 `ReadWritePaths` 的路径；改目录后重跑 `install.sh` 再 `systemctl restart` |
 
 ## 8. 部署判据
 

@@ -3,7 +3,7 @@
 # scripts/e2e/update-rollback-e2e.sh — 一键更新（U2）与回滚演练 e2e。
 #
 # 模拟的真实用户动作（AGENTS §8g）：
-#   操作员在一台已装好 yiban 的 Ubuntu 主机上跑 deploy/linux/update.sh。
+#   操作员在一台已装好 yiban 的 Ubuntu 主机上跑 deploy/baremetal/update.sh。
 #   容器内真跑 U2 的完整失败矩阵：
 #   R2 签名错           → exit 1，不碰旧件、不停服；
 #   R3 自检 FAIL        → exit 2，不停服、不写状态/备份；
@@ -638,8 +638,8 @@ run_mode() {
     }
     trap cleanup EXIT
 
-    UPDATE_SH="$SRC/deploy/linux/update.sh"
-    INSTALL_SH="$SRC/deploy/linux/install.sh"
+    UPDATE_SH="$SRC/deploy/baremetal/update.sh"
+    INSTALL_SH="$SRC/deploy/baremetal/install.sh"
     ENV_EXAMPLE="$SRC/deploy/baremetal/server.env.example"
     SERVER_DEST="/usr/local/bin/yiban-server"
     CLI_DEST="/usr/local/bin/yiban-cli"
