@@ -55,6 +55,7 @@ type NotificationQuery struct {
 
 // Delivery 是投递账本的一行。
 // Status 与 LastErrorKind 是账本内部字符串，对客户端不可见。
+// LastErrorKind 只存 core/mail.Kind 词表；SkipReason 只存跳过原因。
 type Delivery struct {
 	ID             string
 	NotificationID string
@@ -63,6 +64,7 @@ type Delivery struct {
 	Status         string
 	Attempts       int
 	LastErrorKind  string
+	SkipReason     string
 	NextRetryAt    *time.Time
 	CreatedAt      time.Time
 	UpdatedAt      time.Time

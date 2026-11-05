@@ -12,6 +12,7 @@
 # - Error envelope: {"error":{"code","message","details","trace_id"}}.
 # - Cross-scope object: 404. Action forbidden: 403.
 # - Pagination: ?cursor=&limit= (default 50, max 200).
+#   Notifications are the exception: default 20, max 100.
 # - No raw phone number, credential or upstream raw text in any response.
 openapi: 3.1.0
 info:
@@ -2078,6 +2079,7 @@ paths:
         master and admin read only their own rows; a user has no in-app
         notification surface and answers 403. Rows are ordered by
         (created_at DESC, id DESC) and page with the opaque next_cursor.
+        next_cursor is always present; an empty string marks the last page.
         limit defaults to 20 and must be between 1 and 100; an out-of-range
         limit or a malformed cursor answers 400. dedupe_key is internal and
         never appears in a response. school_id is null for a deployment-wide
@@ -2634,7 +2636,7 @@ components:
           description: First read timestamp; null while unread.
     NotificationPage:
       type: object
-      required: [items]
+      required: [items, next_cursor]
       description: One page of the caller's notifications.
       properties:
         items:
@@ -2643,7 +2645,7 @@ components:
             $ref: '#/components/schemas/Notification'
         next_cursor:
           type: string
-          description: Opaque cursor for the next page; absent on the last page.
+          description: Opaque cursor for the next page; empty on the last page.
     UnreadCount:
       type: object
       required: [count]

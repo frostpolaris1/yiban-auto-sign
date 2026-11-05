@@ -196,8 +196,8 @@ func TestNotificationListShape(t *testing.T) {
 	}
 }
 
-// 末页不输出 next_cursor 键（契约里是可选项）。
-func TestNotificationListLastPageOmitsCursor(t *testing.T) {
+// 末页仍输出 next_cursor，值为空串（键恒在）。
+func TestNotificationListLastPageHasEmptyCursor(t *testing.T) {
 	repo := &inboxRepo{items: []corenotify.Notification{}}
 	c, rec := newContext(http.MethodGet, "/api/me/notifications", "", coreauth.RoleAdmin)
 	newInboxHandler(t, repo).NotificationList(c, oapi.NotificationListParams{})
@@ -208,8 +208,9 @@ func TestNotificationListLastPageOmitsCursor(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if _, ok := body["next_cursor"]; ok {
-		t.Fatalf("next_cursor must be absent on the last page: %v", body)
+	cursor, ok := body["next_cursor"]
+	if !ok || cursor != "" {
+		t.Fatalf("next_cursor must be present and empty on the last page: %v", body)
 	}
 	if items, ok := body["items"].([]any); !ok || len(items) != 0 {
 		t.Fatalf("items = %v, want an empty array", body["items"])

@@ -191,10 +191,8 @@ func (h *Handler) NotificationList(c *gin.Context, params oapi.NotificationListP
 	for _, item := range page.Items {
 		items = append(items, notificationResponse(item))
 	}
-	out := oapi.NotificationPage{Items: items}
-	if page.NextCursor != "" {
-		out.NextCursor = &page.NextCursor
-	}
+	// next_cursor 恒在：末页发空串，与其余列表页同一形状。
+	out := oapi.NotificationPage{Items: items, NextCursor: page.NextCursor}
 	respond.JSON(c.Writer, http.StatusOK, out)
 }
 

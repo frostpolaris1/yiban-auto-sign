@@ -30,3 +30,8 @@ CREATE INDEX idx_notifications_page ON notifications (user_id, created_at DESC, 
 
 -- 未读数只关心未读行；部分索引不随已读行增长。
 CREATE INDEX idx_notifications_unread ON notifications (user_id) WHERE read_at IS NULL;
+
+-- 保留期按 created_at 取批：
+--   WHERE created_at < $1 ORDER BY created_at, id LIMIT $2
+-- 缺本索引时每轮清理都要全表排序。
+CREATE INDEX idx_notifications_created_at ON notifications (created_at, id);

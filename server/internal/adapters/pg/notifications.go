@@ -139,20 +139,8 @@ func (r *NotificationRepo) MarkAllRead(ctx context.Context, userID string, now t
 	return ct.RowsAffected(), nil
 }
 
-// DeleteBefore 删除 created_at < before 的站内信，每批至多 limit 行。
-// 投递账本随外键级联删除；本方法不碰审计链。
-func (r *NotificationRepo) DeleteBefore(ctx context.Context, before time.Time, limit int) (int64, error) {
-	if before.IsZero() {
-		return 0, validationError("retention cutoff is required")
-	}
-	if limit < 1 {
-		return 0, validationError("limit must be positive")
-	}
-	return deleteNotificationsBefore(ctx, r.db, before, limit)
-}
-
 // deleteNotificationsBefore 是站内信保留期删除的唯一 SQL 形状。
-// 通知仓储与维护仓储共用它，避免同一清理条件写两遍。
+// 维护仓储是唯一调用方；通知仓储不再重复暴露清理方法。
 func deleteNotificationsBefore(ctx context.Context, db *DB, before time.Time, limit int) (int64, error) {
 	ct, err := db.q(ctx).Exec(ctx, `
 		DELETE FROM notifications WHERE id IN (
@@ -243,7 +231,7 @@ func NewNotificationDeliveryRepo(db *DB) *NotificationDeliveryRepo {
 
 // deliveryColumns 是账本读模型列，顺序与 scanDelivery 一致。
 const deliveryColumns = `id::text, notification_id::text, user_id::text, channel,
-	status, attempts, last_error_kind, next_retry_at, created_at, updated_at`
+	status, attempts, last_error_kind, skip_reason, next_retry_at, created_at, updated_at`
 
 // InsertPending 插入一条待投递行并返回落库行。
 // (notification_id, channel, user_id) 冲突时返回已存在的行：
@@ -270,7 +258,7 @@ func (r *NotificationDeliveryRepo) InsertPending(ctx context.Context, in corenot
 		RETURNING `+deliveryColumns,
 		in.NotificationID, in.UserID, string(in.Channel), in.NextRetryAt).
 		Scan(&item.ID, &item.NotificationID, &item.UserID, &item.Channel, &item.Status,
-			&item.Attempts, &item.LastErrorKind, &next,
+			&item.Attempts, &item.LastErrorKind, &item.SkipReason, &next,
 			&item.CreatedAt, &item.UpdatedAt)
 	if err == nil {
 		item.NextRetryAt = timePtr(next)
@@ -284,7 +272,7 @@ func (r *NotificationDeliveryRepo) InsertPending(ctx context.Context, in corenot
 		 WHERE notification_id = $1::uuid AND channel = $2 AND user_id = $3::uuid`,
 		in.NotificationID, string(in.Channel), in.UserID).
 		Scan(&item.ID, &item.NotificationID, &item.UserID, &item.Channel, &item.Status,
-			&item.Attempts, &item.LastErrorKind, &next,
+			&item.Attempts, &item.LastErrorKind, &item.SkipReason, &next,
 			&item.CreatedAt, &item.UpdatedAt)
 	if err != nil {
 		return corenotify.Delivery{}, mapError(err)
@@ -331,7 +319,7 @@ func (r *NotificationDeliveryRepo) MarkSent(ctx context.Context, id string) erro
 	return r.markTerminal(ctx, id, `
 		UPDATE notification_deliveries
 		   SET status = 'sent', attempts = attempts + 1, last_error_kind = '',
-		       next_retry_at = NULL, updated_at = now()
+		       skip_reason = '', next_retry_at = NULL, updated_at = now()
 		 WHERE id = $1::uuid AND status = 'pending'`)
 }
 
@@ -347,6 +335,7 @@ func (r *NotificationDeliveryRepo) MarkFailed(ctx context.Context, id, errorKind
 		   SET status = CASE WHEN $3::timestamptz IS NULL THEN 'failed' ELSE 'pending' END,
 		       attempts = attempts + 1,
 		       last_error_kind = $2,
+		       skip_reason = '',
 		       next_retry_at = $3,
 		       updated_at = now()
 		 WHERE id = $1::uuid AND status = 'pending'`, id, errorKind, nextRetryAt)
@@ -354,11 +343,12 @@ func (r *NotificationDeliveryRepo) MarkFailed(ctx context.Context, id, errorKind
 }
 
 // MarkSkipped 把一条待投递行记为跳过。
-// 跳过不是发送尝试，故 attempts 不递增；原因只写入账本，不写审计。
+// 跳过不是发送尝试，故 attempts 不递增；原因写 skip_reason，
+// last_error_kind 清空——后者只存 core/mail.Kind 词表。
 func (r *NotificationDeliveryRepo) MarkSkipped(ctx context.Context, id, reason string) error {
 	return r.markTerminal(ctx, id, `
 		UPDATE notification_deliveries
-		   SET status = 'skipped', last_error_kind = $2,
+		   SET status = 'skipped', skip_reason = $2, last_error_kind = '',
 		       next_retry_at = NULL, updated_at = now()
 		 WHERE id = $1::uuid AND status = 'pending'`, reason)
 }
@@ -382,7 +372,7 @@ func scanDelivery(row pgx.Row) (corenotify.Delivery, error) {
 		next pgtype.Timestamptz
 	)
 	if err := row.Scan(&item.ID, &item.NotificationID, &item.UserID, &item.Channel,
-		&item.Status, &item.Attempts, &item.LastErrorKind, &next,
+		&item.Status, &item.Attempts, &item.LastErrorKind, &item.SkipReason, &next,
 		&item.CreatedAt, &item.UpdatedAt); err != nil {
 		return corenotify.Delivery{}, mapError(err)
 	}

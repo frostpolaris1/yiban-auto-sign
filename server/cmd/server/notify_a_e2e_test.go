@@ -242,15 +242,15 @@ func TestNotificationHTTPPagination(t *testing.T) {
 		t.Fatalf("page 1 = %d %s", rec.Code, rec.Body.String())
 	}
 	first := e.page(rec)
-	if len(first.Items) != 2 || first.NextCursor == nil || *first.NextCursor == "" {
+	if len(first.Items) != 2 || first.NextCursor == "" {
 		t.Fatalf("page 1 = %+v", first)
 	}
-	rec = e.do(http.MethodGet, "/api/me/notifications?limit=2&cursor="+*first.NextCursor, nil, issued)
+	rec = e.do(http.MethodGet, "/api/me/notifications?limit=2&cursor="+first.NextCursor, nil, issued)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("page 2 = %d %s", rec.Code, rec.Body.String())
 	}
 	second := e.page(rec)
-	if len(second.Items) != 1 || second.NextCursor != nil {
+	if len(second.Items) != 1 || second.NextCursor != "" {
 		t.Fatalf("page 2 = %+v", second)
 	}
 	seen := map[string]bool{}

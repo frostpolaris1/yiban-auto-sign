@@ -1407,6 +1407,7 @@ export interface paths {
          * @description master and admin read only their own rows; a user has no in-app
          *     notification surface and answers 403. Rows are ordered by
          *     (created_at DESC, id DESC) and page with the opaque next_cursor.
+         *     next_cursor is always present; an empty string marks the last page.
          *     limit defaults to 20 and must be between 1 and 100; an out-of-range
          *     limit or a malformed cursor answers 400. dedupe_key is internal and
          *     never appears in a response. school_id is null for a deployment-wide
@@ -1741,8 +1742,8 @@ export interface components {
         /** @description One page of the caller's notifications. */
         NotificationPage: {
             items: components["schemas"]["Notification"][];
-            /** @description Opaque cursor for the next page; absent on the last page. */
-            next_cursor?: string;
+            /** @description Opaque cursor for the next page; empty on the last page. */
+            next_cursor: string;
         };
         UnreadCount: {
             /** @description Unread notifications owned by the signed-in user. */

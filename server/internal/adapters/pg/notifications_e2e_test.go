@@ -336,9 +336,10 @@ func TestNotificationDeliveryLedger(t *testing.T) {
 	if err := deliveryRepo.MarkFailed(ctx, first.ID, "connect", &retryAt); err != nil {
 		t.Fatalf("mark failed retry: %v", err)
 	}
-	status, attempts, kind, next := deliveryState(t, e, first.ID)
-	if status != corenotify.DeliveryStatusPending || attempts != 1 || kind != "connect" || next == "" {
-		t.Fatalf("retry state = %s/%d/%q/%q", status, attempts, kind, next)
+	status, attempts, kind, skip, next := deliveryState(t, e, first.ID)
+	if status != corenotify.DeliveryStatusPending || attempts != 1 || kind != "connect" ||
+		skip != "" || next == "" {
+		t.Fatalf("retry state = %s/%d/%q/%q/%q", status, attempts, kind, skip, next)
 	}
 	if listed, _ := deliveryRepo.ListDue(ctx, now, 10); len(listed) != 0 {
 		t.Fatalf("retry row is due before its next_retry_at: %+v", listed)
@@ -350,23 +351,25 @@ func TestNotificationDeliveryLedger(t *testing.T) {
 	if err := deliveryRepo.MarkSent(ctx, first.ID); err != nil {
 		t.Fatalf("mark sent: %v", err)
 	}
-	status, attempts, kind, next = deliveryState(t, e, first.ID)
-	if status != corenotify.DeliveryStatusSent || attempts != 2 || kind != "" || next != "" {
-		t.Fatalf("sent state = %s/%d/%q/%q", status, attempts, kind, next)
+	status, attempts, kind, skip, next = deliveryState(t, e, first.ID)
+	if status != corenotify.DeliveryStatusSent || attempts != 2 || kind != "" ||
+		skip != "" || next != "" {
+		t.Fatalf("sent state = %s/%d/%q/%q/%q", status, attempts, kind, skip, next)
 	}
 	if err := deliveryRepo.MarkSent(ctx, first.ID); err != nil {
 		t.Fatalf("mark sent again: %v", err)
 	}
-	if _, attempts, _, _ = deliveryState(t, e, first.ID); attempts != 2 {
+	if _, attempts, _, _, _ = deliveryState(t, e, first.ID); attempts != 2 {
 		t.Fatalf("terminal row was rewritten: attempts = %d", attempts)
 	}
 
 	if err := deliveryRepo.MarkFailed(ctx, futureRow.ID, "auth", nil); err != nil {
 		t.Fatalf("mark failed terminal: %v", err)
 	}
-	status, attempts, kind, next = deliveryState(t, e, futureRow.ID)
-	if status != corenotify.DeliveryStatusFailed || attempts != 1 || kind != "auth" || next != "" {
-		t.Fatalf("failed state = %s/%d/%q/%q", status, attempts, kind, next)
+	status, attempts, kind, skip, next = deliveryState(t, e, futureRow.ID)
+	if status != corenotify.DeliveryStatusFailed || attempts != 1 || kind != "auth" ||
+		skip != "" || next != "" {
+		t.Fatalf("failed state = %s/%d/%q/%q/%q", status, attempts, kind, skip, next)
 	}
 
 	skipped, err := deliveryRepo.InsertPending(ctx, corenotify.DeliveryInsert{
@@ -378,9 +381,10 @@ func TestNotificationDeliveryLedger(t *testing.T) {
 	if err := deliveryRepo.MarkSkipped(ctx, skipped.ID, "smtp_not_configured"); err != nil {
 		t.Fatalf("mark skipped: %v", err)
 	}
-	status, attempts, kind, next = deliveryState(t, e, skipped.ID)
-	if status != corenotify.DeliveryStatusSkipped || attempts != 0 || kind != "smtp_not_configured" || next != "" {
-		t.Fatalf("skipped state = %s/%d/%q/%q", status, attempts, kind, next)
+	status, attempts, kind, skip, next = deliveryState(t, e, skipped.ID)
+	if status != corenotify.DeliveryStatusSkipped || attempts != 0 || kind != "" ||
+		skip != "smtp_not_configured" || next != "" {
+		t.Fatalf("skipped state = %s/%d/%q/%q/%q", status, attempts, kind, skip, next)
 	}
 
 	// 唯一键在数据库层也生效：绕过仓储直接插入必须被拒。
@@ -412,7 +416,9 @@ func TestNotificationDeliveryLedger(t *testing.T) {
 }
 
 // deliveryState 读一行的 (status, attempts, last_error_kind, next_retry_at)。
-func deliveryState(t *testing.T, e *testEnv, id string) (string, int64, string, string) {
+// deliveryState 读一行的
+// (status, attempts, last_error_kind, skip_reason, next_retry_at)。
+func deliveryState(t *testing.T, e *testEnv, id string) (string, int64, string, string, string) {
 	t.Helper()
 	status := e.scalarString(
 		"SELECT status FROM notification_deliveries WHERE id = $1::uuid", id)
@@ -420,7 +426,9 @@ func deliveryState(t *testing.T, e *testEnv, id string) (string, int64, string, 
 		"SELECT attempts FROM notification_deliveries WHERE id = $1::uuid", id)
 	kind := e.scalarString(
 		"SELECT last_error_kind FROM notification_deliveries WHERE id = $1::uuid", id)
+	skip := e.scalarString(
+		"SELECT skip_reason FROM notification_deliveries WHERE id = $1::uuid", id)
 	next := e.scalarString(
 		"SELECT coalesce(next_retry_at::text, '') FROM notification_deliveries WHERE id = $1::uuid", id)
-	return status, attempts, kind, next
+	return status, attempts, kind, skip, next
 }

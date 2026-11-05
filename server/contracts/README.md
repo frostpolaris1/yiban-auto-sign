@@ -14,7 +14,8 @@ authoritative and a gate keeps both tables equal.
 {"error":{"code":"forbidden","message":"...","details":{},"trace_id":"..."}}
 ```
 
-- Pagination: `?cursor=&limit=` (default 50, max 200).
+- Pagination: `?cursor=&limit=` (default 50, max 200). Notifications are the
+  exception: default 20, max 100.
 - Cross-scope object: **404**. Action forbidden: **403**.
 - Rate limits: the inbound limiter answers **429** with `Retry-After` in
   seconds. Login, reset password, change password, verify and sign are limited

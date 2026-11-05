@@ -1127,8 +1127,8 @@ type Notification struct {
 type NotificationPage struct {
 	Items []Notification `json:"items"`
 
-	// NextCursor Opaque cursor for the next page; absent on the last page.
-	NextCursor *string `json:"next_cursor,omitempty"`
+	// NextCursor Opaque cursor for the next page; empty on the last page.
+	NextCursor string `json:"next_cursor"`
 }
 
 // NotificationRead Notification ids to mark read. At least one and at most 100 unique
