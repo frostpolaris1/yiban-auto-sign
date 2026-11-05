@@ -8,7 +8,7 @@
 // 本包**不**解码图片、**不**写库、**不**决定保留期。
 //
 // # 归属
-// entry/http 入口层。作用域由 Authorizer（app/admin）解析；
+// entry/http 入口层。作用域由 Authorizer（app/schooladmin）解析；
 // 用例由 app/photos 提供，blob 由 adapters/storage 提供。
 //
 // # 复用

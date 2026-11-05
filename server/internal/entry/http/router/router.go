@@ -36,14 +36,15 @@ import (
 	calendarhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/calendar"
 	eventshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/events"
 	locationhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/location"
+	notifyhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/notify"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
 	photoshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/photos"
 	ratelimit "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/ratelimit"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/respond"
 	schedulehttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/schedule"
 	schoolhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/school"
-	settingshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/settings"
 	signinghttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/signing"
+	systemhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/system"
 	userhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/user"
 )
 
@@ -89,8 +90,10 @@ type Options struct {
 	Events *eventshttp.Handler
 	// Calendar 提供用户签到日历端点。为 nil 时这些端点回 501。
 	Calendar *calendarhttp.Handler
-	// Settings 提供通知订阅、设置名册与公告端点。为 nil 时这些端点回 501。
-	Settings *settingshttp.Handler
+	// Notify 提供通知订阅与站内信读端点。为 nil 时这些端点回 501。
+	Notify *notifyhttp.Handler
+	// System 提供设置名册、公告与测试邮件端点。为 nil 时这些端点回 501。
+	System *systemhttp.Handler
 	// Audit 提供审计只读列表端点。为 nil 时该端点回 501。
 	Audit *audithttp.Handler
 	// RateLimit 限制入站速率。nil 表示不限流：只用于测试与降级进程。
@@ -110,7 +113,7 @@ type Options struct {
 }
 
 // Authorizer 把会话用户解析为作用域与审计主体。
-// 实现是 app/admin.Service；入口层只依赖这个窄接口。
+// 实现是 app/schooladmin.Service；入口层只依赖这个窄接口。
 type Authorizer interface {
 	Authorize(ctx context.Context, user auth.User) (corescope.Scope, appaudit.Actor, error)
 }
@@ -134,7 +137,8 @@ type server struct {
 	locations      *locationhttp.Handler
 	events         *eventshttp.Handler
 	calendar       *calendarhttp.Handler
-	settings       *settingshttp.Handler
+	notify         *notifyhttp.Handler
+	system         *systemhttp.Handler
 	audit          *audithttp.Handler
 	rateLimit      *ratelimit.Guard
 	loginOrigin    string
@@ -177,7 +181,8 @@ func New(opts Options) (*gin.Engine, error) {
 	srv.locations = opts.Locations
 	srv.events = opts.Events
 	srv.calendar = opts.Calendar
-	srv.settings = opts.Settings
+	srv.notify = opts.Notify
+	srv.system = opts.System
 	srv.audit = opts.Audit
 	srv.rateLimit = opts.RateLimit
 	srv.loginOrigin = opts.LoginOrigin

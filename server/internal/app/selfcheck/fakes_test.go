@@ -1,4 +1,4 @@
-package updatecheck
+package selfcheck
 
 // 自检测试的内存替身：文件系统、数据库、时钟与固定输入。
 //

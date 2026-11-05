@@ -5,7 +5,7 @@
 // 本包**不**写 SQL、**不**判状态迁移、**不**加密凭据。
 //
 // # 归属
-// entry/http 入口层。作用域由 Authorizer（app/admin）解析。
+// entry/http 入口层。作用域由 Authorizer（app/schooladmin）解析。
 //
 // # 复用
 // Handler、NewHandler；Service、Authorizer 是装配接缝。

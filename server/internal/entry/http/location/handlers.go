@@ -5,7 +5,7 @@
 // 本包**不**写 SQL、**不**做围栏几何、**不**决定可见面。
 //
 // # 归属
-// entry/http 入口层。作用域由 Authorizer（app/admin）解析，
+// entry/http 入口层。作用域由 Authorizer（app/schooladmin）解析，
 // 可见面判据在 app/location（复用 app/account 的口径）。
 //
 // # 复用

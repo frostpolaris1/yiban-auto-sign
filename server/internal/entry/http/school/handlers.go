@@ -6,7 +6,7 @@
 //
 // # 归属
 // entry/http 入口层。不要在 handler 里改作用域：
-// 作用域只由 Authorizer（app/admin）解析。
+// 作用域只由 Authorizer（app/schooladmin）解析。
 //
 // # 复用
 // Handler、NewHandler；Service、Authorizer 是测试与装配的接缝。

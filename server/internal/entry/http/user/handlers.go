@@ -8,7 +8,7 @@
 // 本包**不**写 SQL、**不**判角色白名单、**不**算口令哈希。
 //
 // # 归属
-// entry/http 入口层。作用域由 Authorizer（app/admin）解析，
+// entry/http 入口层。作用域由 Authorizer（app/schooladmin）解析，
 // 本层不重新解释 403 与 404。
 //
 // # 复用

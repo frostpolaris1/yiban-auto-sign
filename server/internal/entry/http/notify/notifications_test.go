@@ -1,12 +1,13 @@
-package settings_test
+package notify_test
 
-// 站内信端点的入口判据：角色门、响应形状、204 幂等、请求体校验。
+// 通知订阅与站内信端点的入口判据：角色门、响应形状、请求体校验、204 幂等。
 // 用例与存储由内存替身承载；真库翻页与所有权由 adapters/pg e2e 覆盖。
 
 import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -17,9 +18,160 @@ import (
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	corenotify "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/notify"
+	notifyhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/notify"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
-	settingshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/settings"
 )
+
+func newContext(method, path, body string, role coreauth.Role) (*gin.Context, *httptest.ResponseRecorder) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	if role != "" {
+		req = req.WithContext(coreauth.WithSession(req.Context(), coreauth.Session{
+			User: coreauth.User{
+				ID: "11111111-1111-1111-1111-111111111111", Email: "admin@example.com",
+				Role: role, Status: coreauth.StatusActive,
+			},
+			CSRFToken: "csrf",
+		}))
+	}
+	c.Request = req
+	return c, rec
+}
+
+func errorCode(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	var envelope struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode error envelope: %v; body=%q", err, rec.Body.String())
+	}
+	return envelope.Error.Code
+}
+
+// memNotifyRepo 是订阅覆盖集的内存实现。
+type memNotifyRepo struct{ overrides map[corenotify.Pair]bool }
+
+func (m *memNotifyRepo) Overrides(context.Context, string) (map[corenotify.Pair]bool, error) {
+	out := make(map[corenotify.Pair]bool, len(m.overrides))
+	for pair, enabled := range m.overrides {
+		out[pair] = enabled
+	}
+	return out, nil
+}
+
+func (m *memNotifyRepo) Replace(_ context.Context, _ string, prefs []corenotify.Pref) error {
+	m.overrides = make(map[corenotify.Pair]bool, len(prefs))
+	for _, pref := range prefs {
+		m.overrides[corenotify.Pair{Category: pref.Category, Channel: pref.Channel}] = pref.Enabled
+	}
+	return nil
+}
+
+func newHandler(t *testing.T) *notifyhttp.Handler {
+	t.Helper()
+	notifySvc, err := appnotify.NewService(&memNotifyRepo{})
+	if err != nil {
+		t.Fatalf("notify service: %v", err)
+	}
+	return notifyhttp.NewHandler(notifySvc)
+}
+
+// 未登录 401；user 403；master/admin 200。
+func TestNotifyRoleGate(t *testing.T) {
+	handler := newHandler(t)
+	c, rec := newContext(http.MethodGet, "/api/admin/notify", "", "")
+	handler.AdminNotifyGet(c)
+	if rec.Code != http.StatusUnauthorized || errorCode(t, rec) != "unauthorized" {
+		t.Fatalf("anonymous = %d %s", rec.Code, rec.Body.String())
+	}
+
+	c, rec = newContext(http.MethodGet, "/api/admin/notify", "", coreauth.RoleUser)
+	handler.AdminNotifyGet(c)
+	if rec.Code != http.StatusForbidden || errorCode(t, rec) != "forbidden" {
+		t.Fatalf("user = %d %s", rec.Code, rec.Body.String())
+	}
+
+	for _, role := range []coreauth.Role{coreauth.RoleAdmin, coreauth.RoleMaster} {
+		c, rec = newContext(http.MethodGet, "/api/admin/notify", "", role)
+		handler.AdminNotifyGet(c)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s = %d %s", role, rec.Code, rec.Body.String())
+		}
+		var page struct {
+			Items []struct {
+				Category string `json:"category"`
+				Channel  string `json:"channel"`
+				Enabled  bool   `json:"enabled"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+			t.Fatalf("decode page: %v", err)
+		}
+		if len(page.Items) != 8 {
+			t.Fatalf("%s items = %d, want 8", role, len(page.Items))
+		}
+	}
+}
+
+// 负向：未知类别/渠道、重复对、缺失必填字段都是 400。
+func TestNotifySetRejectsInvalid(t *testing.T) {
+	handler := newHandler(t)
+	cases := map[string]string{
+		"unknown category": `{"items":[{"category":"weekly_digest","channel":"in_app","enabled":true}]}`,
+		"unknown channel":  `{"items":[{"category":"review_pending","channel":"sms","enabled":true}]}`,
+		"duplicate":        `{"items":[{"category":"review_pending","channel":"email","enabled":true},{"category":"review_pending","channel":"email","enabled":false}]}`,
+		"missing items":    `{}`,
+		"null items":       `{"items":null}`,
+		"missing enabled":  `{"items":[{"category":"review_pending","channel":"email"}]}`,
+		"null enabled":     `{"items":[{"category":"review_pending","channel":"email","enabled":null}]}`,
+		"missing category": `{"items":[{"channel":"email","enabled":true}]}`,
+		"missing channel":  `{"items":[{"category":"review_pending","enabled":true}]}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			c, rec := newContext(http.MethodPut, "/api/admin/notify", body, coreauth.RoleAdmin)
+			handler.AdminNotifySet(c, oapi.AdminNotifySetParams{})
+			if rec.Code != http.StatusBadRequest || errorCode(t, rec) != "validation_failed" {
+				t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+// PUT 是完整替换，响应即替换后的有效状态。
+func TestNotifySetReplaces(t *testing.T) {
+	handler := newHandler(t)
+	c, rec := newContext(http.MethodPut, "/api/admin/notify",
+		`{"items":[{"category":"review_pending","channel":"email","enabled":false}]}`,
+		coreauth.RoleAdmin)
+	handler.AdminNotifySet(c, oapi.AdminNotifySetParams{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var page struct {
+		Items []struct {
+			Category string `json:"category"`
+			Channel  string `json:"channel"`
+			Enabled  bool   `json:"enabled"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode page: %v", err)
+	}
+	for _, item := range page.Items {
+		if item.Category == "review_pending" && item.Channel == "email" && item.Enabled {
+			t.Fatal("stored override false was ignored")
+		}
+		if item.Category == "capacity_rejected" && item.Channel == "in_app" && !item.Enabled {
+			t.Fatal("unlisted pair did not fall back to its default")
+		}
+	}
+}
 
 type inboxRepo struct {
 	items     []corenotify.Notification
@@ -62,7 +214,7 @@ func (r *inboxRepo) MarkAllRead(_ context.Context, userID string, now time.Time)
 
 var inboxClock = time.Date(2026, 11, 5, 10, 0, 0, 0, time.UTC)
 
-func newInboxHandler(t *testing.T, repo *inboxRepo) *settingshttp.Handler {
+func newInboxHandler(t *testing.T, repo *inboxRepo) *notifyhttp.Handler {
 	t.Helper()
 	svc, err := appnotify.NewInbox(appnotify.InboxDeps{
 		Repo:  repo,
@@ -71,29 +223,29 @@ func newInboxHandler(t *testing.T, repo *inboxRepo) *settingshttp.Handler {
 	if err != nil {
 		t.Fatalf("NewInbox: %v", err)
 	}
-	return settingshttp.NewHandler(nil, nil, nil, nil).WithInbox(svc)
+	return notifyhttp.NewHandler(nil).WithInbox(svc)
 }
 
 type notificationEndpoint struct {
 	name   string
 	method string
 	body   string
-	invoke func(*settingshttp.Handler, *gin.Context)
+	invoke func(*notifyhttp.Handler, *gin.Context)
 }
 
 func notificationEndpoints() []notificationEndpoint {
 	return []notificationEndpoint{
-		{"list", http.MethodGet, "", func(h *settingshttp.Handler, c *gin.Context) {
+		{"list", http.MethodGet, "", func(h *notifyhttp.Handler, c *gin.Context) {
 			h.NotificationList(c, oapi.NotificationListParams{})
 		}},
-		{"count", http.MethodGet, "", func(h *settingshttp.Handler, c *gin.Context) {
+		{"count", http.MethodGet, "", func(h *notifyhttp.Handler, c *gin.Context) {
 			h.NotificationUnreadCount(c)
 		}},
 		{"read", http.MethodPost, `{"ids":["018f4a4e-0000-7000-8000-000000000001"]}`,
-			func(h *settingshttp.Handler, c *gin.Context) {
+			func(h *notifyhttp.Handler, c *gin.Context) {
 				h.NotificationMarkRead(c, oapi.NotificationMarkReadParams{})
 			}},
-		{"read-all", http.MethodPost, "", func(h *settingshttp.Handler, c *gin.Context) {
+		{"read-all", http.MethodPost, "", func(h *notifyhttp.Handler, c *gin.Context) {
 			h.NotificationMarkAllRead(c, oapi.NotificationMarkAllReadParams{})
 		}},
 	}
@@ -294,7 +446,7 @@ func TestNotificationMarkReadNoContent(t *testing.T) {
 
 // 未注入用例时四个端点回 501，不伪装成成功。
 func TestNotificationUnwiredReturns501(t *testing.T) {
-	handler := settingshttp.NewHandler(nil, nil, nil, nil)
+	handler := notifyhttp.NewHandler(nil)
 	c, rec := newContext(http.MethodGet, "/api/me/notifications", "", coreauth.RoleAdmin)
 	handler.NotificationList(c, oapi.NotificationListParams{})
 	if rec.Code != http.StatusNotImplemented {

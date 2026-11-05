@@ -1,4 +1,4 @@
-package updatecheck
+package selfcheck
 
 // 状态文件与密钥指纹的判据。
 //

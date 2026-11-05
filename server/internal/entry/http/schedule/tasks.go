@@ -8,7 +8,7 @@ package schedule
 // 本包**不**查库、**不**决定作用域；检索用例在 app/schedule.TaskQuery。
 //
 // # 归属
-// entry/http 入口层。作用域由 Authorizer（app/admin）解析，
+// entry/http 入口层。作用域由 Authorizer（app/schooladmin）解析，
 // 判据与计划管理面同源（resolveAdminPrincipal）。
 //
 // # 口径

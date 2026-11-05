@@ -7,7 +7,7 @@
 //   - sanitizeText 在错误文本里抹掉口令（原文、百分号编码与 password= 形状）。
 //
 // 解析失败一律返回静态错误，不回显输入（回显就等于打印口令）。
-package updatecheck
+package selfcheck
 
 import (
 	"errors"

@@ -3,7 +3,7 @@
 // # 口径
 // 结构稳定、字段名固定；U2 按 schema_version 与 check.name 消费。
 // --json 只输出这一份 JSON，不混人读行。
-package updatecheck
+package selfcheck
 
 import (
 	"encoding/json"

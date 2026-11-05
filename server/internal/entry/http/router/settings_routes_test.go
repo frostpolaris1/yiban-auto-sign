@@ -1,9 +1,9 @@
 package router_test
 
-// 设置面四个端点的接线门。
+// 设置面拆包后的接线门。
 //
-// 断言：路由确实挂上了 settings/audit 处理器；未登录 401、user 403、
-// master/admin 按契约放行；写端点缺 CSRF 令牌 403。
+// 断言：通知与系统两端点的处理器都真的挂上路由；未登录 401、user 403、
+// master/admin 按契约放行；写端点缺 CSRF 令牌 403；未装配时每端点 501。
 // 本文件不连数据库：端口用进程内替身，判据是「路由与角色门咬住接线」。
 
 import (
@@ -21,8 +21,9 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	corenotify "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/notify"
 	audithttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/audit"
+	notifyhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/notify"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/router"
-	settingshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/settings"
+	systemhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/system"
 )
 
 type stubNotify struct{}
@@ -43,6 +44,18 @@ func (stubNotify) Get(context.Context, string) (appnotify.Page, error) {
 func (s stubNotify) Set(ctx context.Context, userID string, _ []appnotify.Pref) (appnotify.Page, error) {
 	return s.Get(ctx, userID)
 }
+
+type stubInbox struct{}
+
+func (stubInbox) List(context.Context, string, string, int) (appnotify.NotificationPage, error) {
+	return appnotify.NotificationPage{Items: []corenotify.Notification{}}, nil
+}
+
+func (stubInbox) UnreadCount(context.Context, string) (int64, error) { return 0, nil }
+
+func (stubInbox) MarkRead(context.Context, string, []string) error { return nil }
+
+func (stubInbox) MarkAllRead(context.Context, string) error { return nil }
 
 type stubRoster struct{}
 
@@ -75,7 +88,8 @@ func newSettingsEngine(t *testing.T) (*gin.Engine, *stubIssuer) {
 	gin.SetMode(gin.TestMode)
 	engine, err := router.New(router.Options{
 		Sessions: issuer,
-		Settings: settingshttp.NewHandler(stubNotify{}, stubRoster{}, &stubAnnouncement{}, stubMailTest{}),
+		Notify:   notifyhttp.NewHandler(stubNotify{}).WithInbox(stubInbox{}),
+		System:   systemhttp.NewHandler(stubRoster{}, &stubAnnouncement{}, stubMailTest{}),
 		Audit:    audithttp.NewHandler(stubAuditReader{}),
 	})
 	if err != nil {
@@ -116,9 +130,10 @@ func requestWithSession(method, path, body, csrf string, session *auth.Session) 
 func TestSettingsRoutesAreWired(t *testing.T) {
 	engine, issuer := newSettingsEngine(t)
 
-	// 未登录：四个读端点都 401；测试邮件是 POST，单独断言。
+	// 未登录：读端点都 401；写端点是 POST/PUT，缺 CSRF 先 403。
 	for _, path := range []string{
 		"/api/admin/notify", "/api/admin/settings", "/api/announcement", "/api/audit-logs",
+		"/api/me/notifications", "/api/me/notifications/unread-count",
 	} {
 		rec := serve(engine, requestWithSession(http.MethodGet, path, "", "", nil))
 		if rec.Code != http.StatusUnauthorized {
@@ -134,6 +149,8 @@ func TestSettingsRoutesAreWired(t *testing.T) {
 	admin := issueUser(t, issuer, auth.RoleAdmin)
 	master := issueUser(t, issuer, auth.RoleMaster)
 
+	const notificationID = "018f4a4e-0000-7000-8000-000000000001"
+	readBody := `{"ids":["` + notificationID + `"]}`
 	cases := []struct {
 		name    string
 		method  string
@@ -148,6 +165,17 @@ func TestSettingsRoutesAreWired(t *testing.T) {
 		{"notify master", http.MethodGet, "/api/admin/notify", "", master, false, http.StatusOK},
 		{"notify put without csrf", http.MethodPut, "/api/admin/notify", `{"items":[]}`, admin, false, http.StatusForbidden},
 		{"notify put admin", http.MethodPut, "/api/admin/notify", `{"items":[]}`, admin, true, http.StatusOK},
+		{"notifications list user", http.MethodGet, "/api/me/notifications", "", user, false, http.StatusForbidden},
+		{"notifications list admin", http.MethodGet, "/api/me/notifications", "", admin, false, http.StatusOK},
+		{"notifications list master", http.MethodGet, "/api/me/notifications", "", master, false, http.StatusOK},
+		{"notifications count user", http.MethodGet, "/api/me/notifications/unread-count", "", user, false, http.StatusForbidden},
+		{"notifications count admin", http.MethodGet, "/api/me/notifications/unread-count", "", admin, false, http.StatusOK},
+		{"notifications read user", http.MethodPost, "/api/me/notifications/read", readBody, user, true, http.StatusForbidden},
+		{"notifications read without csrf", http.MethodPost, "/api/me/notifications/read", readBody, admin, false, http.StatusForbidden},
+		{"notifications read admin", http.MethodPost, "/api/me/notifications/read", readBody, admin, true, http.StatusNoContent},
+		{"notifications read-all user", http.MethodPost, "/api/me/notifications/read-all", "", user, true, http.StatusForbidden},
+		{"notifications read-all admin", http.MethodPost, "/api/me/notifications/read-all", "", admin, true, http.StatusNoContent},
+		{"notifications read-all master", http.MethodPost, "/api/me/notifications/read-all", "", master, true, http.StatusNoContent},
 		{"settings user", http.MethodGet, "/api/admin/settings", "", user, false, http.StatusForbidden},
 		{"settings admin", http.MethodGet, "/api/admin/settings", "", admin, false, http.StatusOK},
 		{"mail test user", http.MethodPost, "/api/admin/mail/test", "", user, true, http.StatusForbidden},
@@ -172,6 +200,47 @@ func TestSettingsRoutesAreWired(t *testing.T) {
 			rec := serve(engine, requestWithSession(tc.method, tc.path, tc.body, csrf, &session))
 			if rec.Code != tc.status {
 				t.Fatalf("%s %s = %d, want %d; body=%s", tc.method, tc.path, rec.Code, tc.status, rec.Body.String())
+			}
+		})
+	}
+}
+
+// 两端点都未装配时，每个端点仍是 501：拆包不得让某一路由静默消失。
+func TestSettingsRoutesNilHandlersReturn501(t *testing.T) {
+	issuer := newStubIssuer()
+	gin.SetMode(gin.TestMode)
+	engine, err := router.New(router.Options{Sessions: issuer})
+	if err != nil {
+		t.Fatalf("router.New: %v", err)
+	}
+	master := issueUser(t, issuer, auth.RoleMaster)
+
+	cases := []struct {
+		method string
+		path   string
+		body   string
+		csrf   bool
+	}{
+		{http.MethodGet, "/api/admin/notify", "", false},
+		{http.MethodPut, "/api/admin/notify", `{"items":[]}`, true},
+		{http.MethodGet, "/api/me/notifications", "", false},
+		{http.MethodGet, "/api/me/notifications/unread-count", "", false},
+		{http.MethodPost, "/api/me/notifications/read", `{"ids":["018f4a4e-0000-7000-8000-000000000001"]}`, true},
+		{http.MethodPost, "/api/me/notifications/read-all", "", true},
+		{http.MethodGet, "/api/admin/settings", "", false},
+		{http.MethodPost, "/api/admin/mail/test", "", true},
+		{http.MethodGet, "/api/announcement", "", false},
+		{http.MethodPut, "/api/admin/announcement", `{"text":"x"}`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			csrf := ""
+			if tc.csrf {
+				csrf = master.CSRFToken
+			}
+			rec := serve(engine, requestWithSession(tc.method, tc.path, tc.body, csrf, &master))
+			if rec.Code != http.StatusNotImplemented {
+				t.Fatalf("%s %s = %d, want 501; body=%s", tc.method, tc.path, rec.Code, rec.Body.String())
 			}
 		})
 	}

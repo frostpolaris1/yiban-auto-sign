@@ -45,7 +45,6 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/session"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/storage"
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
-	appadmin "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/admin"
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
 	appcalendar "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/calendar"
@@ -58,6 +57,7 @@ import (
 	appretention "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/retention"
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
 	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
+	appadmin "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schooladmin"
 	appsettings "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/settings"
 	appstats "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/stats"
 	apptimepref "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/timepref"
@@ -80,13 +80,14 @@ import (
 	calendarhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/calendar"
 	eventshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/events"
 	locationhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/location"
+	notifyhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/notify"
 	photoshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/photos"
 	ratelimit "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/ratelimit"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/router"
 	schedulehttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/schedule"
 	schoolhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/school"
-	settingshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/settings"
 	signinghttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/signing"
+	systemhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/system"
 	userhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/user"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/providers/yiban"
@@ -319,7 +320,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		locLib      *locationhttp.Handler
 		eventLib    *eventshttp.Handler
 		calendarLib *calendarhttp.Handler
-		settingsLib *settingshttp.Handler
+		notifyLib   *notifyhttp.Handler
+		systemLib   *systemhttp.Handler
 		auditLib    *audithttp.Handler
 		db          *pg.DB
 		workerSvc   *appworker.Service
@@ -408,7 +410,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			logger.Warn("mail: SMTP delivery is disabled; password reset links, test mail and notification mail are not delivered",
 				logfield.KeyReason, "YIBAN_RESET_MAIL_ENABLE is false")
 		}
-		settingsLib, auditLib, err = buildSettings(db, audits, clk, logger, mailer, mailTestThrottle)
+		notifyLib, systemLib, auditLib, err = buildSettings(db, audits, clk, logger, mailer, mailTestThrottle)
 		if err != nil {
 			closeFn()
 			return nil, err
@@ -796,7 +798,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		Locations:       locLib,
 		Events:          eventLib,
 		Calendar:        calendarLib,
-		Settings:        settingsLib,
+		Notify:          notifyLib,
+		System:          systemLib,
 		Audit:           auditLib,
 		RateLimit:       guard,
 		LoginOrigin:     publicOrigin(cfg.PublicBaseURL),
@@ -819,17 +822,17 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 // 嵌入名册损坏是构建缺陷，一律失败关闭。带病的名册会把错误的信息
 // 展示成配置事实。
 func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
-	logger *slog.Logger, mailer coremail.Sender, cooldown appsettings.Cooldown) (*settingshttp.Handler, *audithttp.Handler, error) {
+	logger *slog.Logger, mailer coremail.Sender, cooldown appsettings.Cooldown) (*notifyhttp.Handler, *systemhttp.Handler, *audithttp.Handler, error) {
 	notifySvc, err := appnotify.NewService(pg.NewNotificationPrefsRepo(db))
 	if err != nil {
-		return nil, nil, fmt.Errorf("assembly: notify service: %w", err)
+		return nil, nil, nil, fmt.Errorf("assembly: notify service: %w", err)
 	}
 	inboxSvc, err := appnotify.NewInbox(appnotify.InboxDeps{
 		Repo:  pg.NewNotificationRepo(db),
 		Clock: clk,
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("assembly: notification inbox: %w", err)
+		return nil, nil, nil, fmt.Errorf("assembly: notification inbox: %w", err)
 	}
 	announcementSvc, err := appsettings.NewService(appsettings.Deps{
 		Store:    pg.NewAnnouncementRepo(db),
@@ -841,23 +844,24 @@ func buildSettings(db *pg.DB, audits *pg.AuditRepo, clk clock.Clock,
 		Logger:   logger,
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("assembly: announcement service: %w", err)
+		return nil, nil, nil, fmt.Errorf("assembly: announcement service: %w", err)
 	}
 	reader, err := appaudit.NewReader(audits)
 	if err != nil {
-		return nil, nil, fmt.Errorf("assembly: audit reader: %w", err)
+		return nil, nil, nil, fmt.Errorf("assembly: audit reader: %w", err)
 	}
 
 	entries, err := config.Registry()
 	if err != nil {
-		return nil, nil, fmt.Errorf("assembly: configuration registry: %w", err)
+		return nil, nil, nil, fmt.Errorf("assembly: configuration registry: %w", err)
 	}
 	roster, err := appsettings.NewRoster(rosterEntries(entries), config.Env{})
 	if err != nil {
-		return nil, nil, fmt.Errorf("assembly: configuration roster: %w", err)
+		return nil, nil, nil, fmt.Errorf("assembly: configuration roster: %w", err)
 	}
-	return settingshttp.NewHandler(notifySvc, roster, announcementSvc, announcementSvc).
-		WithInbox(inboxSvc), audithttp.NewHandler(reader), nil
+	notifyHandler := notifyhttp.NewHandler(notifySvc).WithInbox(inboxSvc)
+	systemHandler := systemhttp.NewHandler(roster, announcementSvc, announcementSvc)
+	return notifyHandler, systemHandler, audithttp.NewHandler(reader), nil
 }
 
 // rosterEntries 把适配器的名册条目转成用例视图。

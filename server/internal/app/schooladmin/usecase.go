@@ -1,4 +1,4 @@
-// Package admin 实现管理员绑定与作用域解析。
+// Package schooladmin 实现管理员绑定与作用域解析。
 //
 // # 功能
 // 绑定、解绑、按院校列管理员；把会话主体解析成院校作用域。
@@ -15,7 +15,7 @@
 // 只有 master 可以绑定或解绑管理员。
 // admin 的作用域每次请求从 admin_schools 读，P1 不缓存。
 // 绑定幂等；解绑不存在的绑定报 not_found。
-package admin
+package schooladmin
 
 import (
 	"context"

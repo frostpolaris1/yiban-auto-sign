@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/frostpolaris1/yiban-auto-sign/server/internal/app/updatecheck"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/app/selfcheck"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/fsperm"
 )
 
@@ -28,7 +28,7 @@ const (
 	testCLIPepper        = "0123456789abcdef0123456789abcdef"
 )
 
-// cliFakeDB 实现 updatecheck.DB。
+// cliFakeDB 实现 selfcheck.DB。
 type cliFakeDB struct {
 	version int64
 	err     error
@@ -41,7 +41,7 @@ func (d *cliFakeDB) Close() {}
 // selfcheckFixture 是一组不依赖真实环境的输入。
 type selfcheckFixture struct {
 	env            map[string]string
-	deps           updatecheck.Deps
+	deps           selfcheck.Deps
 	dir            string
 	serviceUserFor func() string
 }
@@ -61,10 +61,10 @@ func newSelfcheckFixture(t *testing.T, dbVersion int64) *selfcheckFixture {
 	if err := os.WriteFile(filepath.Join(ui, "index.html"), []byte("<!doctype html>"), 0o644); err != nil {
 		t.Fatalf("write index: %v", err)
 	}
-	deps := updatecheck.DefaultDeps()
+	deps := selfcheck.DefaultDeps()
 	deps.Now = func() time.Time { return time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC) }
 	deps.LookPath = func(name string) (string, error) { return "/usr/bin/" + name, nil }
-	deps.OpenDB = func(context.Context, string) (updatecheck.DB, error) {
+	deps.OpenDB = func(context.Context, string) (selfcheck.DB, error) {
 		return &cliFakeDB{version: dbVersion}, nil
 	}
 	deps.EmbeddedVersion = func() (int64, error) { return dbVersion, nil }
@@ -85,7 +85,7 @@ func newSelfcheckFixture(t *testing.T, dbVersion int64) *selfcheckFixture {
 		}
 		return fsperm.Identity{Name: "yiban", GroupNames: []string{"yiban"}}, true
 	}
-	deps.Build = updatecheck.BuildInfo{Version: "dev", Commit: "unknown", BuildTime: "unknown"}
+	deps.Build = selfcheck.BuildInfo{Version: "dev", Commit: "unknown", BuildTime: "unknown"}
 	return &selfcheckFixture{
 		dir:            dir,
 		deps:           deps,
@@ -169,7 +169,7 @@ func TestSelfcheckJSONOnlyOutput(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
 		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout)
 	}
-	if doc.SchemaVersion != updatecheck.ReportSchemaVersion || doc.Summary.ExitCode != 0 {
+	if doc.SchemaVersion != selfcheck.ReportSchemaVersion || doc.Summary.ExitCode != 0 {
 		t.Fatalf("report = %+v", doc)
 	}
 	if len(doc.Checks) == 0 {
@@ -303,7 +303,7 @@ func TestSelfcheckCanaryPasswordNotLeaked(t *testing.T) {
 			f := newSelfcheckFixture(t, 22)
 			f.env["YIBAN_DATABASE_URL"] = canaryDSN
 			// 最坏情况：驱动错误回显完整 DSN 与 password= 字段。
-			f.deps.OpenDB = func(context.Context, string) (updatecheck.DB, error) {
+			f.deps.OpenDB = func(context.Context, string) (selfcheck.DB, error) {
 				return nil, errors.New("connect failed: " + canaryDSN + " password=" + canary)
 			}
 			args := append(append([]string{}, tc.args...), "--state", f.statePath())

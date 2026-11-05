@@ -1,4 +1,4 @@
-package settings_test
+package system_test
 
 import (
 	"context"
@@ -12,34 +12,13 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	appnotify "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/notify"
 	appsettings "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/settings"
 	coreaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/audit"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	coremail "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mail"
-	corenotify "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/notify"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
-	settingshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/settings"
+	systemhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/system"
 )
-
-// memNotifyRepo 是订阅覆盖集的内存实现。
-type memNotifyRepo struct{ overrides map[corenotify.Pair]bool }
-
-func (m *memNotifyRepo) Overrides(context.Context, string) (map[corenotify.Pair]bool, error) {
-	out := make(map[corenotify.Pair]bool, len(m.overrides))
-	for pair, enabled := range m.overrides {
-		out[pair] = enabled
-	}
-	return out, nil
-}
-
-func (m *memNotifyRepo) Replace(_ context.Context, _ string, prefs []corenotify.Pref) error {
-	m.overrides = make(map[corenotify.Pair]bool, len(prefs))
-	for _, pref := range prefs {
-		m.overrides[corenotify.Pair{Category: pref.Category, Channel: pref.Channel}] = pref.Enabled
-	}
-	return nil
-}
 
 type memAnnouncementStore struct {
 	text      string
@@ -111,17 +90,13 @@ func (f *fakeCooldown) Allow(key string) (bool, time.Duration) {
 	return f.allowed, f.wait
 }
 
-func newHandler(t *testing.T) (*settingshttp.Handler, *memAnnouncementStore, *memAudit) {
+func newHandler(t *testing.T) (*systemhttp.Handler, *memAnnouncementStore, *memAudit) {
 	t.Helper()
 	return newHandlerWith(t, nil, nil)
 }
 
-func newHandlerWith(t *testing.T, sender coremail.Sender, cooldown appsettings.Cooldown) (*settingshttp.Handler, *memAnnouncementStore, *memAudit) {
+func newHandlerWith(t *testing.T, sender coremail.Sender, cooldown appsettings.Cooldown) (*systemhttp.Handler, *memAnnouncementStore, *memAudit) {
 	t.Helper()
-	notifySvc, err := appnotify.NewService(&memNotifyRepo{})
-	if err != nil {
-		t.Fatalf("notify service: %v", err)
-	}
 	roster, err := appsettings.NewRoster([]appsettings.Entry{
 		{Key: "YIBAN_WORKERS", Group: "调度", Default: float64(1), HasDefault: true},
 		{Key: "YIBAN_MAIL_PASS", Group: "发布", Sensitive: true},
@@ -138,7 +113,7 @@ func newHandlerWith(t *testing.T, sender coremail.Sender, cooldown appsettings.C
 	if err != nil {
 		t.Fatalf("announcement service: %v", err)
 	}
-	return settingshttp.NewHandler(notifySvc, roster, announcementSvc, announcementSvc), store, audits
+	return systemhttp.NewHandler(roster, announcementSvc, announcementSvc), store, audits
 }
 
 func newContext(method, path, body string, role coreauth.Role) (*gin.Context, *httptest.ResponseRecorder) {
@@ -175,98 +150,6 @@ func errorCode(t *testing.T, rec *httptest.ResponseRecorder) string {
 		t.Fatalf("decode error envelope: %v; body=%q", err, rec.Body.String())
 	}
 	return envelope.Error.Code
-}
-
-// 未登录 401；user 403；master/admin 200。
-func TestNotifyRoleGate(t *testing.T) {
-	handler, _, _ := newHandler(t)
-	c, rec := newContext(http.MethodGet, "/api/admin/notify", "", "")
-	handler.AdminNotifyGet(c)
-	if rec.Code != http.StatusUnauthorized || errorCode(t, rec) != "unauthorized" {
-		t.Fatalf("anonymous = %d %s", rec.Code, rec.Body.String())
-	}
-
-	c, rec = newContext(http.MethodGet, "/api/admin/notify", "", coreauth.RoleUser)
-	handler.AdminNotifyGet(c)
-	if rec.Code != http.StatusForbidden || errorCode(t, rec) != "forbidden" {
-		t.Fatalf("user = %d %s", rec.Code, rec.Body.String())
-	}
-
-	for _, role := range []coreauth.Role{coreauth.RoleAdmin, coreauth.RoleMaster} {
-		c, rec = newContext(http.MethodGet, "/api/admin/notify", "", role)
-		handler.AdminNotifyGet(c)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("%s = %d %s", role, rec.Code, rec.Body.String())
-		}
-		var page struct {
-			Items []struct {
-				Category string `json:"category"`
-				Channel  string `json:"channel"`
-				Enabled  bool   `json:"enabled"`
-			} `json:"items"`
-		}
-		if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
-			t.Fatalf("decode page: %v", err)
-		}
-		if len(page.Items) != 8 {
-			t.Fatalf("%s items = %d, want 8", role, len(page.Items))
-		}
-	}
-}
-
-// 负向：未知类别/渠道、重复对、缺失必填字段都是 400。
-func TestNotifySetRejectsInvalid(t *testing.T) {
-	handler, _, _ := newHandler(t)
-	cases := map[string]string{
-		"unknown category": `{"items":[{"category":"weekly_digest","channel":"in_app","enabled":true}]}`,
-		"unknown channel":  `{"items":[{"category":"review_pending","channel":"sms","enabled":true}]}`,
-		"duplicate":        `{"items":[{"category":"review_pending","channel":"email","enabled":true},{"category":"review_pending","channel":"email","enabled":false}]}`,
-		"missing items":    `{}`,
-		"null items":       `{"items":null}`,
-		"missing enabled":  `{"items":[{"category":"review_pending","channel":"email"}]}`,
-		"null enabled":     `{"items":[{"category":"review_pending","channel":"email","enabled":null}]}`,
-		"missing category": `{"items":[{"channel":"email","enabled":true}]}`,
-		"missing channel":  `{"items":[{"category":"review_pending","enabled":true}]}`,
-	}
-	for name, body := range cases {
-		t.Run(name, func(t *testing.T) {
-			c, rec := newContext(http.MethodPut, "/api/admin/notify", body, coreauth.RoleAdmin)
-			handler.AdminNotifySet(c, oapi.AdminNotifySetParams{})
-			if rec.Code != http.StatusBadRequest || errorCode(t, rec) != "validation_failed" {
-				t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
-			}
-		})
-	}
-}
-
-// PUT 是完整替换，响应即替换后的有效状态。
-func TestNotifySetReplaces(t *testing.T) {
-	handler, _, _ := newHandler(t)
-	c, rec := newContext(http.MethodPut, "/api/admin/notify",
-		`{"items":[{"category":"review_pending","channel":"email","enabled":false}]}`,
-		coreauth.RoleAdmin)
-	handler.AdminNotifySet(c, oapi.AdminNotifySetParams{})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
-	}
-	var page struct {
-		Items []struct {
-			Category string `json:"category"`
-			Channel  string `json:"channel"`
-			Enabled  bool   `json:"enabled"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
-		t.Fatalf("decode page: %v", err)
-	}
-	for _, item := range page.Items {
-		if item.Category == "review_pending" && item.Channel == "email" && item.Enabled {
-			t.Fatal("stored override false was ignored")
-		}
-		if item.Category == "capacity_rejected" && item.Channel == "in_app" && !item.Enabled {
-			t.Fatal("unlisted pair did not fall back to its default")
-		}
-	}
 }
 
 // 设置名册：user 403；admin 200；敏感键不回显原值。

@@ -8,7 +8,7 @@
 // 本包**不**写 SQL、**不**解析会话、**不**决定可见面。
 //
 // # 归属
-// entry/http 入口层。作用域由 Authorizer（app/admin）解析；
+// entry/http 入口层。作用域由 Authorizer（app/schooladmin）解析；
 // 诊断数据来自 app/diagnostic，事件来自 app/events.Broker。
 //
 // # 复用

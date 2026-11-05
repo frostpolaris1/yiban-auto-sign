@@ -1,4 +1,4 @@
-// Package updatecheck 实现一键更新的只读自检。
+// Package selfcheck 实现一键更新的只读自检。
 //
 // # 功能
 // 输出 PASS/FAIL/SKIP 报告，覆盖配置、数据库 schema、外部工具、
@@ -23,7 +23,7 @@
 // 输出不得出现 DSN 口令、密钥原文与会话值：
 // DSN 只打印脱敏目标，密钥只打印指纹前缀。
 // 状态文件缺省 /var/lib/yiban/update-state.json，目录 0700、文件 0600（写入时）。
-package updatecheck
+package selfcheck
 
 import (
 	"context"

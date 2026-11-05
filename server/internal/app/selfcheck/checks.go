@@ -4,7 +4,7 @@
 // 每条检查只做只读动作：SELECT、stat/readdir、PATH 探测、systemctl is-active。
 // 数据库检查共用一次连接（自检是低频运维动作，但没必要开四次池）。
 // 任一 FAIL 必须给修复提示；任一 SKIP 必须写原因。
-package updatecheck
+package selfcheck
 
 import (
 	"context"

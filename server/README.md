@@ -34,7 +34,7 @@ server/
 ├── internal/core/school       school and binding types
 ├── internal/core/user         user record types
 ├── internal/app/<domain>      use cases and repository ports
-├── internal/app/updatecheck   one-click update self-check (read-only)
+├── internal/app/selfcheck     one-click update self-check (read-only)
 ├── internal/adapters/pg       PostgreSQL repositories, pool, transactions, migrations
 ├── internal/core/image        the only image preprocessing
 ├── internal/adapters/config   the only environment reader

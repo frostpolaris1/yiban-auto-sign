@@ -6,7 +6,7 @@
 // 本文件**不**打印密钥原文，也不把指纹当密钥：指纹只用于检测变化。
 //
 // # 归属
-// updatecheck 包内状态面。FileSystem 由调用方注入。
+// selfcheck 包内状态面。FileSystem 由调用方注入。
 //
 // # 口径
 // 状态文件 schema：schema_version、key_fingerprints、recorded_at。
@@ -18,7 +18,7 @@
 //   - hash_pepper 的材料是去空白后的原文（服务端同样把原文当 HMAC 密钥）。
 //
 // 域字符串一经发布不得修改：改域会把所有既有状态判成「指纹变化」。
-package updatecheck
+package selfcheck
 
 import (
 	"crypto/sha256"

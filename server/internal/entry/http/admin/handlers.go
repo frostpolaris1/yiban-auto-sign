@@ -2,7 +2,7 @@
 //
 // # 功能
 // 列绑定、绑定、解绑三个端点。
-// 本包**不**写 SQL、**不**判角色、**不**解析作用域（由 app/admin 负责）。
+// 本包**不**写 SQL、**不**判角色、**不**解析作用域（由 app/schooladmin 负责）。
 //
 // # 归属
 // entry/http 入口层。路由把 /api/schools/{id}/admins 交给本包。
@@ -25,8 +25,8 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
-	appadmin "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/admin"
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
+	appadmin "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schooladmin"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
