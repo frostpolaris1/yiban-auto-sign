@@ -1167,6 +1167,61 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/me/sign-calendar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Daily sign outcome counts for the caller's own accounts.
+         * @description One row per business day in the inclusive range from..to, including
+         *     days without task rows. Counts are per account: an account with
+         *     several task rows on one day contributes once, using its most
+         *     recently updated row. Retries, attempts and event history are never
+         *     counted. Accounts owned by another user and soft-deleted accounts
+         *     are excluded. from and to are required, from <= to, and the range is
+         *     at most 31 days. today and timezone come from the server so a client
+         *     clock cannot move the day boundary. Accounts without a task row on a
+         *     day are not counted.
+         */
+        get: operations["SignCalendarGet"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/sign-calendar/{day}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Per-account sign outcome for one business day.
+         * @description One item per account that has at least one task row on the day. The
+         *     state is that account's most recently updated row, normalised to
+         *     success, failed, skipped or unknown (pending and running are
+         *     unknown). Accounts owned by another user and soft-deleted accounts
+         *     are excluded. A future day returns future=true and an empty accounts
+         *     list, matching the range endpoint's zeroed future days. v1 carries
+         *     no reason or suggestion: sign_tasks stores only result, and the
+         *     upstream text is never mapped into these fields.
+         */
+        get: operations["SignCalendarDayGet"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/schedule/windows": {
         parameters: {
             query?: never;
@@ -1648,7 +1703,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Read the photo retention period.
+         * @description Returns the caller's own retention. A user who never set one reads
+         *     the default 90 days, so the settings page can show the effective
+         *     value instead of assuming it.
+         */
+        get: operations["PhotoRetentionGet"];
         /**
          * Set the photo retention period.
          * @description days is one of 30, 90, 180 or 365. Missing retention means 90 days.
@@ -2370,6 +2431,38 @@ export interface components {
             offset_min: number | null;
             /** @description False when the deployment disables user time preferences. */
             allowed: boolean;
+            window: components["schemas"]["TimePrefWindow"];
+            /**
+             * @description Five-minute anchors relative to the server standard signing
+             *     window. Each label is a clock time inside that window. The window
+             *     actually executed for a task may be shifted by the platform
+             *     window or a per-task override, so a label is a preference time,
+             *     not the promised execution time. disabled follows the deployment
+             *     gate and the window.
+             */
+            slots?: components["schemas"]["TimePrefSlot"][];
+        };
+        TimePrefWindow: {
+            /**
+             * @description Server standard signing window start, HH:MM. Actual execution may
+             *     be shifted by the platform window or a per-task override.
+             */
+            start: string;
+            /**
+             * @description Server standard signing window end, HH:MM. Actual execution may
+             *     be shifted by the platform window or a per-task override.
+             */
+            end: string;
+        };
+        TimePrefSlot: {
+            /** @description Minute offset from the window start, a multiple of five. */
+            offset_min: number;
+            /** @description Absolute clock time of the slot. */
+            label: string;
+            /** @description True when the deployment gate or the window forbids the slot. */
+            disabled: boolean;
+            /** @description Human-readable reason when disabled is true. */
+            reason?: string;
         };
         TimePrefUpdate: {
             /** @description Null clears the preference. */
@@ -2649,6 +2742,56 @@ export interface components {
             /** Format: date-time */
             run_at: string | null;
             stale: boolean;
+        };
+        SignCalendar: {
+            /** @description Server business time zone used for today and every day key. */
+            timezone: string;
+            /** @description Server business day, YYYY-MM-DD. */
+            today: string;
+            /**
+             * Format: date-time
+             * @description Maximum task-row update time inside the range; the server clock
+             *     when the range holds no rows.
+             */
+            updated_at: string;
+            days: components["schemas"]["SignCalendarDay"][];
+        };
+        SignCalendarDay: {
+            /** @description Business day, YYYY-MM-DD. */
+            day: string;
+            /** @description Accounts counted that day; the sum of the four buckets. */
+            total: number;
+            success: number;
+            failed: number;
+            skipped: number;
+            /** @description Accounts whose latest row is pending, running or unrecognised. */
+            unknown: number;
+            /** @description True for days after the server business day; all counts are zero. */
+            future: boolean;
+        };
+        SignCalendarDayDetail: {
+            /** @description Business day, YYYY-MM-DD. */
+            day: string;
+            /** @description Server business time zone. */
+            timezone: string;
+            accounts: components["schemas"]["SignCalendarAccount"][];
+            /** @description True for days after the server business day; accounts is empty. */
+            future: boolean;
+        };
+        SignCalendarAccount: {
+            account_id: string;
+            /**
+             * @description Normalised account outcome for the day.
+             * @enum {string}
+             */
+            state: "success" | "failed" | "skipped" | "unknown";
+            /**
+             * Format: date-time
+             * @description Planned run time of the latest row; absent when the row has none.
+             */
+            run_at?: string;
+            /** @description Business attempts consumed by the latest row. */
+            attempts: number;
         };
     };
     responses: {
@@ -4488,6 +4631,62 @@ export interface operations {
             default: components["responses"]["DefaultError"];
         };
     };
+    SignCalendarGet: {
+        parameters: {
+            query: {
+                /** @description First business day, YYYY-MM-DD. */
+                from: string;
+                /** @description Last business day, YYYY-MM-DD; at most 31 days after from. */
+                to: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Daily counts for the range. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignCalendar"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    SignCalendarDayGet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Business day, YYYY-MM-DD. */
+                day: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Per-account outcomes for the day. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignCalendarDayDetail"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
     ScheduleWindows: {
         parameters: {
             query?: {
@@ -5147,6 +5346,29 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    PhotoRetentionGet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current retention. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PhotoRetention"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
             default: components["responses"]["DefaultError"];
         };
     };
