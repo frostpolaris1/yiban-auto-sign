@@ -182,7 +182,8 @@ if [ -z "$ROOT" ]; then
     # pre-migrate/backups/updates 备份（含凭据密文）与 U1 的密钥指纹状态，
     # 递归 chown 会把它们改成服务用户可读（复审 MEDIUM-1）。
     chown "$SERVICE_USER:$SERVICE_USER" "$SERVICE_HOME"
-    chown -R "$SERVICE_USER:$SERVICE_USER" "$SERVICE_HOME/photos"
+    # -h 配默认 -P：photos 若是软链，只改链接本身，不跟随目标（与后面 -h 同口径）。
+    chown -R -h "$SERVICE_USER:$SERVICE_USER" "$SERVICE_HOME/photos"
     # 更新器的状态/备份根（/var/lib/yiban-updater/{state,backups}）与
     # $SERVICE_HOME 同级，**不**在任何 chown 的范围内：那里是 root 独占目录
     # （备份含凭据密文，回滚还会执行备份里的 CLI）。重装时若它已存在，
