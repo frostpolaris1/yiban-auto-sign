@@ -27,6 +27,7 @@ import (
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	coreegress "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/egress"
+	corenotify "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/notify"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
@@ -138,9 +139,18 @@ type Notifier interface {
 	TaskEvent(ctx context.Context, schoolID, taskID, day string, kind string, payload map[string]any)
 }
 
+// Alerts 是通知投递端口（实现为 app/notify.Dispatcher）。
+// 为 nil 时不投递，现行为不变；实现失败或 panic 只记日志，不改结算返回。
+// 事件类型来自 core/notify：适配器因此无须导入 app 层。
+type Alerts interface {
+	Dispatch(ctx context.Context, event corenotify.Event) error
+	DispatchUserFailure(ctx context.Context, failure corenotify.UserFailure) error
+}
+
 // Deps 是执行循环的依赖。Locations 与 Photos 可为 nil：
 // 缺哪个端口就退回哪个面的现行为（LocationAuto、无图注入）。
 // Notifier 可为 nil：缺端口就不发事件。
+// Alerts 可为 nil：缺端口就不投递通知。
 // Logger 可为 nil：用 slog.Default。结论原因进日志，见 logOutcome。
 type Deps struct {
 	Store     Store
@@ -153,5 +163,6 @@ type Deps struct {
 	Locations LocationSource
 	Photos    PhotoSource
 	Notifier  Notifier
+	Alerts    Alerts
 	Logger    *slog.Logger
 }

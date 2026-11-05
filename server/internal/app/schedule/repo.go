@@ -7,6 +7,7 @@ import (
 
 	appcore "github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
+	corenotify "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/notify"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
@@ -68,6 +69,13 @@ type Discoverer interface {
 	DiscoverWindow(ctx context.Context, schoolTaskID string) (contract.Window, error)
 }
 
+// CapacityAlerts 是容量缺口通知的投递端口（实现为 app/notify.Dispatcher）。
+// 为 nil 时不投递，现行为不变；失败或 panic 只记日志，不改业务返回。
+// 事件类型来自 core/notify：适配器因此无须导入 app 层。
+type CapacityAlerts interface {
+	Dispatch(ctx context.Context, event corenotify.Event) error
+}
+
 // Deps 是计划用例的依赖。
 // Tx 让"写窗口＋重排＋补插"三步同事务：任一步失败整体回滚，
 // 不留下"版本已推进但计划未重排"的半成品。
@@ -81,6 +89,8 @@ type Deps struct {
 	Tx       appcore.TxManager
 	// Notifier 可为 nil：缺端口就不发事件。
 	Notifier Notifier
+	// CapacityAlerts 可为 nil：缺端口就不投递容量缺口通知。
+	CapacityAlerts CapacityAlerts
 	// Logger 可为 nil：用 slog.Default。窗口发现失败的原因进日志。
 	Logger *slog.Logger
 }
