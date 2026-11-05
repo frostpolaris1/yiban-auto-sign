@@ -11,7 +11,10 @@ package pg
 //   - 在飞：running 且认领与租约都已写；
 //   - 到期：pending 且 run_at <= now（如实反映「到点未执行」，
 //     不再判账号可用性——那是认领判据，不是监控口径）；
-//   - 当日终态：success 与 failed 各一计数（FILTER 一次扫完）；
+//   - 当日终态：每账号只看当日作用域内最后一条任务行
+//     （tie-break updated_at DESC, id DESC，与 stats/calendar 同源），
+//     该行 success 计一账号、failed 计一账号，其余状态不进两者，
+//     软删账号整段排除——看板 KPI 与 sign-stats 同口径；
 //   - 待重试：pending 且 attempts>0，按 run_at 升序，
 //     行数截断于 EngineRetryLimit（多取一行探测截断）。
 // 列表顺序固定（在飞按认领时刻、待重试按落点），行 id 兜底，可重放。
@@ -25,8 +28,9 @@ import (
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
-// engineFrom 是四段查询共享的 JOIN 骨架与作用域占位。
-// 作用域谓词作用在 st（school_tasks 的 school_id 列）上。
+// engineFrom 是三段查询共享的 JOIN 骨架与作用域占位
+// （在飞/到期/待重试；当日终态自建 FROM：无需 schools，
+// 另带软删过滤）。作用域谓词作用在 st（school_tasks 的 school_id 列）上。
 const engineFrom = ` FROM sign_tasks s
 JOIN school_tasks st ON st.id = s.school_task_id
 JOIN schools sc ON sc.id = st.school_id
@@ -58,18 +62,46 @@ func (r *ScheduleRepo) EngineSnapshot(ctx context.Context, scope corescope.Scope
 		return coreschedule.EngineData{}, err
 	}
 
-	// 计数查询的 $1/$2 是 now 与 day：作用域谓词占 $3。
-	countScopeClause, countScopeArgs, err := scopePredicate(scope, 3, "st.")
+	// 到期计数保持原口径：pending 且 run_at<=now 的行数。
+	// $1 是 now：作用域谓词占 $2。
+	dueScopeClause, dueScopeArgs, err := scopePredicate(scope, 2, "st.")
 	if err != nil {
 		return coreschedule.EngineData{}, err
 	}
-	counts := `SELECT
-		  count(*) FILTER (WHERE s.state = 'pending' AND s.run_at <= $1),
-		  count(*) FILTER (WHERE s.day = $2::date AND s.state = 'success'),
-		  count(*) FILTER (WHERE s.day = $2::date AND s.state = 'failed')` + engineFrom + countScopeClause
-	countArgs := append([]any{now, day}, countScopeArgs...)
-	if err := r.db.q(ctx).QueryRow(ctx, counts, countArgs...).
-		Scan(&data.DueNow, &data.TodaySuccess, &data.TodayFailed); err != nil {
+	due := `SELECT count(*) FILTER (WHERE s.state = 'pending' AND s.run_at <= $1)` +
+		engineFrom + dueScopeClause
+	dueArgs := append([]any{now}, dueScopeArgs...)
+	if err := r.db.q(ctx).QueryRow(ctx, due, dueArgs...).Scan(&data.DueNow); err != nil {
+		return coreschedule.EngineData{}, mapError(err)
+	}
+
+	// 当日终态按账号去重：每账号只取当日作用域内最后一条任务行
+	// （DISTINCT ON，tie-break updated_at DESC, id DESC，与
+	// StatsRepo.SignStats 及 calendar 同源），该行 success 计一账号、
+	// failed 计一账号；skipped/pending/running 都不进两者；
+	// 软删账号整段排除。注意 updated_at 是通用 set_updated_at()
+	// 触发器时间（BEFORE UPDATE，任意 UPDATE 都会刷新），
+	// 不是「状态最后变更」时刻——同源口径取的都是「最后更新」。
+	// 作用域谓词仍打 st.（$2）：
+	// admin 空绑定给空集，绝不退化成全量。
+	termScopeClause, termScopeArgs, err := scopePredicate(scope, 2, "st.")
+	if err != nil {
+		return coreschedule.EngineData{}, err
+	}
+	terminal := `WITH latest AS (
+		SELECT DISTINCT ON (s.account_id) s.state
+		  FROM sign_tasks s
+		  JOIN school_tasks st ON st.id = s.school_task_id
+		  JOIN accounts a ON a.id = s.account_id
+		 WHERE s.day = $1::date
+		   AND a.deleted_at IS NULL` + termScopeClause + `
+		 ORDER BY s.account_id, s.updated_at DESC, s.id DESC)
+	SELECT count(*) FILTER (WHERE latest.state = 'success'),
+	       count(*) FILTER (WHERE latest.state = 'failed')
+	  FROM latest`
+	termArgs := append([]any{day}, termScopeArgs...)
+	if err := r.db.q(ctx).QueryRow(ctx, terminal, termArgs...).
+		Scan(&data.TodaySuccess, &data.TodayFailed); err != nil {
 		return coreschedule.EngineData{}, mapError(err)
 	}
 

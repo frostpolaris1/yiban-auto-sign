@@ -204,8 +204,9 @@ type dayKey struct {
 
 // latestByAccountDay 按 (账号, 日期) 取最近更新的一行，并给出全范围最大更新时间。
 // 存储层按更新时间倒序返回；这里再比较一次，排序变化不会让结果变旧。
-// 同口径还出现在 adapters/pg/stats.go 的 DISTINCT ON：
-// tie-break 是 updated_at DESC, id DESC，两处必须同改。
+// 同口径还出现在 adapters/pg/stats.go 的 DISTINCT ON 与
+// adapters/pg/engine.go 的当日终态：
+// tie-break 是 updated_at DESC, id DESC，同口径各处必须同改。
 func latestByAccountDay(rows []coreschedule.CalendarTaskRow) (map[dayKey]coreschedule.CalendarTaskRow, time.Time) {
 	latest := make(map[dayKey]coreschedule.CalendarTaskRow, len(rows))
 	var updatedAt time.Time
