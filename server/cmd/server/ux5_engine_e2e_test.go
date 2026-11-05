@@ -4,9 +4,10 @@ package main
 //
 // # 功能
 // 覆盖 aqn 验收的后端面：在飞 0 与非 0、租约字段、due_now 计数、
-// 当日 success/failed 计数、待重试行（pending 且 attempts>0）、
-// admin 只见绑定校、手机号只出掩码、进程内时刻未启动为 null、
-// user 无可见面（403）、未登录 401。
+// 当日 success/failed 计数（按账号终态去重）、待重试行
+// （pending 且 attempts>0）、admin 只见绑定校、空绑定全 0、
+// 手机号只出掩码、进程内时刻未启动为 null、user 无可见面（403）、
+// 未登录 401。
 // 走真实栈：真库、真登录、真 cookie、真 HTTP。
 //
 // # 归属
@@ -35,6 +36,7 @@ import (
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
+	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
 )
 
@@ -118,6 +120,20 @@ func u5SeedRunning(t *testing.T, e *authEnv, taskID, accountID, day string, now 
 		t.Fatalf("seed lease: %v", err)
 	}
 	return rowID
+}
+
+// u5SeedTerminalTask 直接铺一行带指定 updated_at 的任务行：
+// 同账号同日多任务时用它钉住「最后更新」的次序
+// （u3SeedSignTask 的改写路径会刷新 updated_at，钉不住先后）。
+// day 显式给出，与 updated_at 无关：行挂在哪个业务日只看 day 列。
+func u5SeedTerminalTask(t *testing.T, e *authEnv, taskID, accountID, day string, at time.Time, state status.TaskState) {
+	t.Helper()
+	if _, err := e.db.Exec(e.ctx, `
+		INSERT INTO sign_tasks (account_id, school_task_id, day, run_at, state, updated_at)
+		VALUES ($1::uuid, $2::uuid, $3::date, $4, $5::sign_task_state, $4)`,
+		accountID, taskID, day, at, string(state)); err != nil {
+		t.Fatalf("seed terminal task at %v: %v", at, err)
+	}
 }
 
 // --- 用例 ----------------------------------------------------------------
@@ -237,6 +253,178 @@ func TestU5EngineTodayCounts(t *testing.T) {
 	}
 	if snap.TodayFailed != 1 {
 		t.Fatalf("today_failed = %d, want 1 (skipped is not a failure; yesterday's row is another day)", snap.TodayFailed)
+	}
+}
+
+// 当日终态按账号去重：每账号只取最后一条任务行（updated_at DESC, id DESC）。
+// success 在前 failed 在后 → 只计 failed；反过来 → 只计 success；
+// 两账号合计 1/1，不得按任务行重复计。
+func TestU5EngineTodayTerminalPicksLatestRow(t *testing.T) {
+	e := u3NewEnv(t)
+	_, client := u3LoginSeed(t, e, "u5-master@example.com", "master-pass", coreauth.RoleMaster)
+	owner := w2dSeedUser(t, e, "u5-owner@example.com", "owner-pass", coreauth.RoleUser)
+
+	now := u5NowFromServer(t, e, client)
+	day := now.UTC().Format("2006-01-02")
+	school := u3SeedSchool(t, e, "U5 终态学校")
+	taskA := u3SeedTask(t, e, school.ID, "早签到")
+	taskB := u3SeedTask(t, e, school.ID, "晚自习签到")
+
+	early := now.Add(-2 * time.Hour)
+	late := now.Add(-time.Hour)
+	accF := u3SeedAccount(t, e, owner.ID, school.ID, "13800000001")
+	u5SeedTerminalTask(t, e, taskA, accF, day, early, status.TaskSuccess)
+	u5SeedTerminalTask(t, e, taskB, accF, day, late, status.TaskFailed)
+	accS := u3SeedAccount(t, e, owner.ID, school.ID, "13800000002")
+	u5SeedTerminalTask(t, e, taskA, accS, day, early, status.TaskFailed)
+	u5SeedTerminalTask(t, e, taskB, accS, day, late, status.TaskSuccess)
+
+	resp, snap, body := u5EngineGet(e, client)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if snap.TodaySuccess != 1 || snap.TodayFailed != 1 {
+		t.Fatalf("today counts = success %d failed %d, want 1/1 "+
+			"(only each account's latest row counts, not every task row); body=%s",
+			snap.TodaySuccess, snap.TodayFailed, body)
+	}
+}
+
+// updated_at 并列时按 id DESC 决胜：较大 id 的行胜出。
+// 同账号同刻两行（不同学校任务），胜者的 state 决定 KPI 落桶。
+// 胜者按库内现查的 id 大小计算，不赌 uuidv7 的生成次序；
+// 决胜方向反转（ASC）时计数值必然对调，本用例即红。
+func TestU5EngineTodayTerminalTieBreaksByID(t *testing.T) {
+	e := u3NewEnv(t)
+	_, client := u3LoginSeed(t, e, "u5-master@example.com", "master-pass", coreauth.RoleMaster)
+	owner := w2dSeedUser(t, e, "u5-owner@example.com", "owner-pass", coreauth.RoleUser)
+
+	now := u5NowFromServer(t, e, client)
+	day := now.UTC().Format("2006-01-02")
+	school := u3SeedSchool(t, e, "U5 并列学校")
+	taskA := u3SeedTask(t, e, school.ID, "早签到")
+	taskB := u3SeedTask(t, e, school.ID, "晚自习签到")
+
+	acc := u3SeedAccount(t, e, owner.ID, school.ID, "13800000003")
+	sameAt := now.Add(-time.Hour)
+	u5SeedTerminalTask(t, e, taskA, acc, day, sameAt, status.TaskSuccess)
+	u5SeedTerminalTask(t, e, taskB, acc, day, sameAt, status.TaskFailed)
+	successID := e.scalarString(
+		`SELECT id::text FROM sign_tasks
+		  WHERE account_id = $1::uuid AND school_task_id = $2::uuid AND day = $3::date`,
+		acc, taskA, day)
+	failedID := e.scalarString(
+		`SELECT id::text FROM sign_tasks
+		  WHERE account_id = $1::uuid AND school_task_id = $2::uuid AND day = $3::date`,
+		acc, taskB, day)
+
+	resp, snap, body := u5EngineGet(e, client)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	wantSuccess, wantFailed := 1, 0
+	if failedID > successID {
+		wantSuccess, wantFailed = 0, 1
+	}
+	if snap.TodaySuccess != wantSuccess || snap.TodayFailed != wantFailed {
+		t.Fatalf("tied updated_at: counts = success %d failed %d, want %d/%d "+
+			"(the larger id must win the tie: success %s vs failed %s); body=%s",
+			snap.TodaySuccess, snap.TodayFailed, wantSuccess, wantFailed,
+			successID, failedID, body)
+	}
+}
+
+// 终态不认 skipped：最后一条是 skipped 的账号两个计数都不进，
+// 即使更早还有一条 success——被 skipped 掩盖的旧结果不能漏回 KPI。
+func TestU5EngineTodayTerminalSkippedNotCounted(t *testing.T) {
+	e := u3NewEnv(t)
+	_, client := u3LoginSeed(t, e, "u5-master@example.com", "master-pass", coreauth.RoleMaster)
+	owner := w2dSeedUser(t, e, "u5-owner@example.com", "owner-pass", coreauth.RoleUser)
+
+	now := u5NowFromServer(t, e, client)
+	day := now.UTC().Format("2006-01-02")
+	school := u3SeedSchool(t, e, "U5 跳过学校")
+	taskA := u3SeedTask(t, e, school.ID, "早签到")
+	taskB := u3SeedTask(t, e, school.ID, "晚自习签到")
+
+	accK := u3SeedAccount(t, e, owner.ID, school.ID, "13800000004")
+	u5SeedTerminalTask(t, e, taskA, accK, day, now.Add(-2*time.Hour), status.TaskSuccess)
+	u5SeedTerminalTask(t, e, taskB, accK, day, now.Add(-time.Hour), status.TaskSkipped)
+	accOnlyK := u3SeedAccount(t, e, owner.ID, school.ID, "13800000005")
+	u5SeedTerminalTask(t, e, taskA, accOnlyK, day, now.Add(-time.Hour), status.TaskSkipped)
+
+	resp, snap, body := u5EngineGet(e, client)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if snap.TodaySuccess != 0 || snap.TodayFailed != 0 {
+		t.Fatalf("today counts = success %d failed %d, want 0/0 "+
+			"(a skipped latest row hides the account from both KPIs); body=%s",
+			snap.TodaySuccess, snap.TodayFailed, body)
+	}
+}
+
+// 软删账号整段排除：deleted_at 非空的账号当日行不计；
+// 未删账号照常计数，排除不能把活账号一起抹掉。
+func TestU5EngineTodayTerminalExcludesSoftDeleted(t *testing.T) {
+	e := u3NewEnv(t)
+	_, client := u3LoginSeed(t, e, "u5-master@example.com", "master-pass", coreauth.RoleMaster)
+	owner := w2dSeedUser(t, e, "u5-owner@example.com", "owner-pass", coreauth.RoleUser)
+
+	now := u5NowFromServer(t, e, client)
+	day := now.UTC().Format("2006-01-02")
+	school := u3SeedSchool(t, e, "U5 软删学校")
+	task := u3SeedTask(t, e, school.ID, "早签到")
+
+	accGone := u3SeedAccount(t, e, owner.ID, school.ID, "13800000006")
+	u5SeedTerminalTask(t, e, task, accGone, day, now.Add(-time.Hour), status.TaskFailed)
+	if err := pg.NewAccountRepo(e.db).SoftDelete(e.ctx, corescope.Master(), accGone, owner.ID, now); err != nil {
+		t.Fatalf("soft delete account: %v", err)
+	}
+	accLive := u3SeedAccount(t, e, owner.ID, school.ID, "13800000007")
+	u5SeedTerminalTask(t, e, task, accLive, day, now.Add(-time.Hour), status.TaskSuccess)
+
+	resp, snap, body := u5EngineGet(e, client)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if snap.TodaySuccess != 1 || snap.TodayFailed != 0 {
+		t.Fatalf("today counts = success %d failed %d, want 1/0 "+
+			"(the soft-deleted account's failed row must not count); body=%s",
+			snap.TodaySuccess, snap.TodayFailed, body)
+	}
+}
+
+// admin 无绑定校：当日终态全 0，绝不退化成全量；
+// 同一份数据 master 照常看到。
+func TestU5EngineAdminEmptyBinding(t *testing.T) {
+	e := u3NewEnv(t)
+	_, adminClient := u3LoginSeed(t, e, "u5-nobind-admin@example.com", "admin-pass", coreauth.RoleAdmin)
+	_, masterClient := u3LoginSeed(t, e, "u5-nobind-master@example.com", "master-pass", coreauth.RoleMaster)
+	owner := w2dSeedUser(t, e, "u5-nobind-owner@example.com", "owner-pass", coreauth.RoleUser)
+
+	now := u5NowFromServer(t, e, adminClient)
+	day := now.UTC().Format("2006-01-02")
+	school := u3SeedSchool(t, e, "U5 无绑定学校")
+	task := u3SeedTask(t, e, school.ID, "早签到")
+	acc := u3SeedAccount(t, e, owner.ID, school.ID, "13800000008")
+	u5SeedTerminalTask(t, e, task, acc, day, now.Add(-time.Hour), status.TaskFailed)
+
+	resp, adminSnap, _ := u5EngineGet(e, adminClient)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin status = %d, want 200", resp.StatusCode)
+	}
+	if adminSnap.TodaySuccess != 0 || adminSnap.TodayFailed != 0 {
+		t.Fatalf("admin counts = success %d failed %d, want 0/0 "+
+			"(an admin with no school binding must not fall back to the full set)",
+			adminSnap.TodaySuccess, adminSnap.TodayFailed)
+	}
+	resp, masterSnap, _ := u5EngineGet(e, masterClient)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("master status = %d, want 200", resp.StatusCode)
+	}
+	if masterSnap.TodayFailed != 1 {
+		t.Fatalf("master today_failed = %d, want 1 (the same row is in master's scope)", masterSnap.TodayFailed)
 	}
 }
 

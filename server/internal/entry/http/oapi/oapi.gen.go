@@ -1050,10 +1050,14 @@ type EngineSnapshot struct {
 	// RetryingTruncated True when more retry rows exist beyond the 200-row cap; the client must not read the list as complete.
 	RetryingTruncated bool `json:"retrying_truncated"`
 
-	// TodayFailed Tasks that reached failed on the current business day, in the caller's school scope.
+	// TodayFailed Distinct accounts whose latest task row (by last update, then row
+	// id) on the current business day reached failed, in the caller's
+	// school scope. Soft-deleted accounts never count.
 	TodayFailed int `json:"today_failed"`
 
-	// TodaySuccess Tasks that reached success on the current business day, in the caller's school scope.
+	// TodaySuccess Distinct accounts whose latest task row (by last update, then row
+	// id) on the current business day reached success, in the caller's
+	// school scope. Soft-deleted accounts never count.
 	TodaySuccess int `json:"today_success"`
 
 	// WorkerStartedAt In-process time when the loop started; null while the loop has not started.

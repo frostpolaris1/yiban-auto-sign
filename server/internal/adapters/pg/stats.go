@@ -38,8 +38,11 @@ func NewStatsRepo(db *DB) *StatsRepo {
 //
 // 同一账号同日在多个任务里出现时，**只取最后更新的一条**：
 // 唯一键含 school_task_id，一校多任务会留下多行；日桶必须按账号收敛。
-// 同口径还出现在 adapters/pg/calendar.go 与 app/calendar.latestByAccountDay；
-// tie-break 是 updated_at DESC, id DESC，三处必须同改。
+// 同口径还出现在 adapters/pg/calendar.go、app/calendar.latestByAccountDay
+// 与 adapters/pg/engine.go 的当日终态；
+// tie-break 是 updated_at DESC, id DESC，四处必须同改。
+// updated_at 是通用 set_updated_at() 触发器时间（任意 UPDATE 都会刷新），
+// 不是「状态最后变更」时刻——本口径取的是「最后更新」。
 func (r *StatsRepo) SignStats(ctx context.Context, scope corescope.Scope, from, to string) (coreschedule.SignStats, error) {
 	scopeSQL, scopeArgs, err := scopePredicate(scope, 3, "a.")
 	if err != nil {

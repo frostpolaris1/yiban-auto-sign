@@ -3950,10 +3950,16 @@ components:
           description: Pending tasks whose run time has passed, in the caller's school scope.
         today_success:
           type: integer
-          description: Tasks that reached success on the current business day, in the caller's school scope.
+          description: |
+            Distinct accounts whose latest task row (by last update, then row
+            id) on the current business day reached success, in the caller's
+            school scope. Soft-deleted accounts never count.
         today_failed:
           type: integer
-          description: Tasks that reached failed on the current business day, in the caller's school scope.
+          description: |
+            Distinct accounts whose latest task row (by last update, then row
+            id) on the current business day reached failed, in the caller's
+            school scope. Soft-deleted accounts never count.
         retrying:
           type: array
           description: |

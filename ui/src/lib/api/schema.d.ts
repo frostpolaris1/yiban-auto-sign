@@ -2632,9 +2632,17 @@ export interface components {
             inflight: components["schemas"]["EngineInflightRow"][];
             /** @description Pending tasks whose run time has passed, in the caller's school scope. */
             due_now: number;
-            /** @description Tasks that reached success on the current business day, in the caller's school scope. */
+            /**
+             * @description Distinct accounts whose latest task row (by last update, then row
+             *     id) on the current business day reached success, in the caller's
+             *     school scope. Soft-deleted accounts never count.
+             */
             today_success: number;
-            /** @description Tasks that reached failed on the current business day, in the caller's school scope. */
+            /**
+             * @description Distinct accounts whose latest task row (by last update, then row
+             *     id) on the current business day reached failed, in the caller's
+             *     school scope. Soft-deleted accounts never count.
+             */
             today_failed: number;
             /**
              * @description Pending tasks with at least one business attempt, ordered by the
