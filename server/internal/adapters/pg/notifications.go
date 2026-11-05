@@ -3,7 +3,8 @@ package pg
 // 站内信与投递账本的 PostgreSQL 适配器。
 //
 // 功能：站内信列表（键集分页）、未读数、标记已读、全部已读、
-// 30 天清理，以及投递账本的入队、到期扫描与终态记账。
+// 30 天清理、通知与账本的同事务写入（InsertWithPending），
+// 以及投递账本的入队、到期扫描与终态记账。
 // 本文件不判角色、不拼通知文案、不投递邮件、不写审计。
 //
 // 归属：adapters 层。app/notify 只依赖端口，不见本类型。
@@ -202,6 +203,35 @@ func (r *NotificationRepo) Insert(ctx context.Context, in corenotify.Notificatio
 	return item, nil
 }
 
+// InsertWithPending 在同一事务里写站内信与待投递账本行。
+//
+// 通知的 (user_id, dedupe_key) 与账本的 (notification_id, channel, user_id)
+// 各有一道唯一键：重复事件返回已存在的两行，不产生第二份。
+// pending 的 NotificationID/UserID 由本方法按通知行填入，调用方留空。
+// 原子性保证「有通知必有账本」：中途崩溃不会留下没有账本行的邮件事件。
+func (r *NotificationRepo) InsertWithPending(ctx context.Context, note corenotify.NotificationInsert,
+	pending corenotify.DeliveryInsert) (corenotify.NotificationWithDelivery, error) {
+	var out corenotify.NotificationWithDelivery
+	err := r.db.InTx(ctx, func(ctx context.Context) error {
+		notification, err := r.Insert(ctx, note)
+		if err != nil {
+			return err
+		}
+		pending.NotificationID = notification.ID
+		pending.UserID = note.UserID
+		delivery, err := insertPending(ctx, r.db.q(ctx), pending)
+		if err != nil {
+			return err
+		}
+		out = corenotify.NotificationWithDelivery{Notification: notification, Delivery: delivery}
+		return nil
+	})
+	if err != nil {
+		return corenotify.NotificationWithDelivery{}, err
+	}
+	return out, nil
+}
+
 // scanNotification 读一行通知。类别不在词表内即报错，不静默降级：
 // 界面把未知类别显示成任意一类都是错误事实。
 func scanNotification(row pgx.Row) (corenotify.Notification, error) {
@@ -237,6 +267,13 @@ const deliveryColumns = `id::text, notification_id::text, user_id::text, channel
 // (notification_id, channel, user_id) 冲突时返回已存在的行：
 // 重复事件与并发双插都只留一行。
 func (r *NotificationDeliveryRepo) InsertPending(ctx context.Context, in corenotify.DeliveryInsert) (corenotify.Delivery, error) {
+	return insertPending(ctx, r.db.q(ctx), in)
+}
+
+// insertPending 是插入账本行的唯一 SQL 形状。
+// q 可以是连接池，也可以是事务：通知仓储的 InsertWithPending 复用同一实现，
+// 保证两条写入路径的列集与冲突口径只有一份。
+func insertPending(ctx context.Context, q queryer, in corenotify.DeliveryInsert) (corenotify.Delivery, error) {
 	if in.NotificationID == "" {
 		return corenotify.Delivery{}, validationError("notification id is required")
 	}
@@ -250,7 +287,7 @@ func (r *NotificationDeliveryRepo) InsertPending(ctx context.Context, in corenot
 		item corenotify.Delivery
 		next pgtype.Timestamptz
 	)
-	err := r.db.q(ctx).QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		INSERT INTO notification_deliveries
 		       (notification_id, user_id, channel, next_retry_at)
 		VALUES ($1::uuid, $2::uuid, $3, coalesce($4, now()))
@@ -267,7 +304,8 @@ func (r *NotificationDeliveryRepo) InsertPending(ctx context.Context, in corenot
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return corenotify.Delivery{}, mapInsertForeignKey(err)
 	}
-	err = r.db.q(ctx).QueryRow(ctx, `
+	// 唯一键冲突走独立语句：新语句取新快照，能看到并发事务已提交的行。
+	err = q.QueryRow(ctx, `
 		SELECT `+deliveryColumns+` FROM notification_deliveries
 		 WHERE notification_id = $1::uuid AND channel = $2 AND user_id = $3::uuid`,
 		in.NotificationID, string(in.Channel), in.UserID).

@@ -8,8 +8,11 @@ package schedule_test
 // 端口失败或 panic 不改 Build 的拒建结论。
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -151,5 +154,32 @@ func TestCapacityAlertFailureDoesNotChangeRejection(t *testing.T) {
 				t.Fatal("缺口计划应被拒，投递失败不得吞掉结论")
 			}
 		})
+	}
+}
+
+// 投递端口 panic 要留一条不含 panic 值的显性告警。
+func TestCapacityAlertPanicIsLogged(t *testing.T) {
+	var logs bytes.Buffer
+	svc, err := appschedule.NewService(appschedule.Deps{
+		Windows:        &fakeWindowStore{task: enabledTask()},
+		Plans:          &fakePlanStore{},
+		Accounts:       notifyAccounts(500),
+		Discover:       &fakeDiscover{window: platformWindow(6, 30, 7, 50)},
+		Tx:             &fakeTx{},
+		CapacityAlerts: &recordingCapacityAlerts{panicNow: true},
+		Logger:         slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := svc.Build(context.Background(), shortfallInput()); err == nil {
+		t.Fatal("缺口计划应被拒")
+	}
+	logged := logs.String()
+	if !strings.Contains(logged, "notify.dispatch_panic") {
+		t.Fatalf("缺 notify.dispatch_panic 告警：%s", logged)
+	}
+	if strings.Contains(logged, "capacity alert panic") {
+		t.Fatalf("日志复述了 panic 值：%s", logged)
 	}
 }

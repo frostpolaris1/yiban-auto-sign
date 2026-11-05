@@ -133,6 +133,27 @@ func TestNotificationAudienceAccountReads(t *testing.T) {
 		t.Fatalf("FailureOwner = (%+v,%v)", got, err)
 	}
 
+	// 投递前复核：活跃为真，停用/软删为假。
+	active, err := audience.RecipientActive(e.ctx, owner.ID)
+	if err != nil || !active {
+		t.Fatalf("RecipientActive(active) = (%v,%v)", active, err)
+	}
+	if _, err := e.db.Exec(e.ctx, "UPDATE users SET status = 'disabled' WHERE id = $1::uuid", owner.ID); err != nil {
+		t.Fatalf("disable owner: %v", err)
+	}
+	if active, err = audience.RecipientActive(e.ctx, owner.ID); err != nil || active {
+		t.Fatalf("RecipientActive(disabled) = (%v,%v)", active, err)
+	}
+	if _, err := e.db.Exec(e.ctx, "UPDATE users SET status = 'active', deleted_at = now() WHERE id = $1::uuid", owner.ID); err != nil {
+		t.Fatalf("soft delete owner: %v", err)
+	}
+	if active, err = audience.RecipientActive(e.ctx, owner.ID); err != nil || active {
+		t.Fatalf("RecipientActive(deleted) = (%v,%v)", active, err)
+	}
+	if _, err := audience.RecipientActive(e.ctx, ""); errs.From(err).Code != errs.CodeValidation {
+		t.Fatalf("空 user id code = %v", errs.From(err).Code)
+	}
+
 	// 停用属主：仍不是可投收件人。
 	if _, err := e.db.Exec(e.ctx, "UPDATE users SET status = 'disabled' WHERE id = $1::uuid", owner.ID); err != nil {
 		t.Fatalf("disable owner: %v", err)
@@ -229,5 +250,68 @@ func TestNotificationDeliveryDueRowsCarryText(t *testing.T) {
 	if status != corenotify.DeliveryStatusSkipped || attempts != 0 || kind != "" ||
 		skip != "smtp_not_configured" {
 		t.Fatalf("skipped 状态 = %s/%d/%q/%q", status, attempts, kind, skip)
+	}
+}
+
+// InsertWithPending 在同一事务写通知与账本行：两行同时存在；
+// 重复事件返回同一对父行，不产生第二份。
+func TestNotificationInsertWithPendingAtomic(t *testing.T) {
+	e := newEnv(t)
+	user := e.createUser("atomic-owner@example.com")
+	notes := pg.NewNotificationRepo(e.db)
+	now := time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)
+
+	note := corenotify.NotificationInsert{
+		UserID: user.ID, Category: corenotify.CategoryReviewPending,
+		DedupeKey: "atomic/1", Title: "账号待审核", Body: "body", CreatedAt: now,
+	}
+	pending := corenotify.DeliveryInsert{
+		Channel: corenotify.ChannelEmail, NextRetryAt: &now,
+	}
+	first, err := notes.InsertWithPending(e.ctx, note, pending)
+	if err != nil {
+		t.Fatalf("InsertWithPending: %v", err)
+	}
+	if first.Notification.ID == "" || first.Delivery.ID == "" {
+		t.Fatalf("返回行不完整：%+v", first)
+	}
+	if first.Delivery.NotificationID != first.Notification.ID ||
+		first.Delivery.UserID != user.ID {
+		t.Fatalf("账本外键 = %+v", first.Delivery)
+	}
+	if got := e.scalarInt(`SELECT count(*) FROM notifications`); got != 1 {
+		t.Fatalf("通知行 = %d, want 1", got)
+	}
+	if got := e.scalarInt(`SELECT count(*) FROM notification_deliveries`); got != 1 {
+		t.Fatalf("账本行 = %d, want 1", got)
+	}
+
+	// 重复事件：两侧唯一键各吸收一次，返回同一对行。
+	again, err := notes.InsertWithPending(e.ctx, note, pending)
+	if err != nil {
+		t.Fatalf("InsertWithPending 重放: %v", err)
+	}
+	if again.Notification.ID != first.Notification.ID ||
+		again.Delivery.ID != first.Delivery.ID {
+		t.Fatalf("重放返回新行：%+v vs %+v", again, first)
+	}
+	if got := e.scalarInt(`SELECT count(*) FROM notifications`); got != 1 {
+		t.Fatalf("重放后通知行 = %d, want 1", got)
+	}
+	if got := e.scalarInt(`SELECT count(*) FROM notification_deliveries`); got != 1 {
+		t.Fatalf("重放后账本行 = %d, want 1", got)
+	}
+
+	// 账本侧失败必须回滚通知行：不留没有账本的邮件事件。
+	broken := note
+	broken.DedupeKey = "atomic/2"
+	if _, err := notes.InsertWithPending(e.ctx, broken, corenotify.DeliveryInsert{
+		Channel: corenotify.Channel("sms"), NextRetryAt: &now,
+	}); err == nil {
+		t.Fatal("非法渠道应失败")
+	}
+	if got := e.scalarInt(
+		`SELECT count(*) FROM notifications WHERE dedupe_key = 'atomic/2'`); got != 0 {
+		t.Fatalf("失败事务留下了 %d 行通知", got)
 	}
 }

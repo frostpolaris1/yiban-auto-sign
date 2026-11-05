@@ -26,12 +26,18 @@ import (
 const reviewAlertTimeout = 2 * time.Second
 
 // alertReviewPending 发一条待审核通知。
-// 端口为 nil 时不投递；失败只记日志，panic 就地吞掉。
+// 端口为 nil 时不投递；失败只记日志，panic 记一条不含 panic 值的警告。
 func (s *Service) alertReviewPending(ctx context.Context, record Record) {
 	if s.deps.ReviewAlerts == nil {
 		return
 	}
-	defer func() { _ = recover() }() // 投递失败只记日志
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Warn("account: review alert dispatch panicked",
+				logfield.KeyEvent, "notify.dispatch_panic",
+				logfield.KeyAccountID, record.ID)
+		}
+	}()
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reviewAlertTimeout)
 	defer cancel()
 	if err := s.deps.ReviewAlerts.Dispatch(ctx, corenotify.Event{

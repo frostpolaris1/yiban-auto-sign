@@ -77,9 +77,14 @@ func deliveryKey(notificationID, userID string) string {
 func (s *fakeStore) Insert(_ context.Context, in corenotify.NotificationInsert) (corenotify.Notification, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.insertLocked(in), nil
+}
+
+// insertLocked 写一条通知。调用方已持锁。
+func (s *fakeStore) insertLocked(in corenotify.NotificationInsert) corenotify.Notification {
 	key := notificationKey(in.UserID, in.DedupeKey)
 	if existing, ok := s.notifications[key]; ok {
-		return *existing, nil
+		return *existing
 	}
 	s.seq++
 	item := corenotify.Notification{
@@ -92,15 +97,33 @@ func (s *fakeStore) Insert(_ context.Context, in corenotify.NotificationInsert) 
 	}
 	s.notifications[key] = &item
 	s.order = append(s.order, key)
-	return item, nil
+	return item
+}
+
+func (s *fakeStore) InsertWithPending(_ context.Context, note corenotify.NotificationInsert,
+	pending corenotify.DeliveryInsert) (corenotify.NotificationWithDelivery, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	notification := s.insertLocked(note)
+	pending.NotificationID = notification.ID
+	pending.UserID = note.UserID
+	return corenotify.NotificationWithDelivery{
+		Notification: notification,
+		Delivery:     s.insertPendingLocked(pending),
+	}, nil
 }
 
 func (s *fakeStore) InsertPending(_ context.Context, in corenotify.DeliveryInsert) (corenotify.Delivery, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.insertPendingLocked(in), nil
+}
+
+// insertPendingLocked 写一条账本行。调用方已持锁。
+func (s *fakeStore) insertPendingLocked(in corenotify.DeliveryInsert) corenotify.Delivery {
 	key := deliveryKey(in.NotificationID, in.UserID)
 	if existing, ok := s.deliveries[key]; ok {
-		return existing.Delivery, nil
+		return existing.Delivery
 	}
 	next := in.NextRetryAt
 	item := &corenotify.DueDelivery{
@@ -116,7 +139,7 @@ func (s *fakeStore) InsertPending(_ context.Context, in corenotify.DeliveryInser
 	}
 	s.deliveries[key] = item
 	s.deliveryOrder = append(s.deliveryOrder, key)
-	return item.Delivery, nil
+	return item.Delivery
 }
 
 func (s *fakeStore) ListDueForSend(_ context.Context, now time.Time, limit int) ([]corenotify.DueDelivery, error) {
@@ -220,10 +243,12 @@ func (s *fakeStore) deliveryList() []corenotify.DueDelivery {
 }
 
 // fakeAudience 固定返回注入的收件人、手机号与属主。
+// inactive 里的 userID 视为已停用/软删；其余一律 active。
 type fakeAudience struct {
 	subscribers []corenotify.Subscriber
 	phones      map[string]string
 	owners      map[string]corenotify.Owner
+	inactive    map[string]bool
 }
 
 func (a *fakeAudience) AdminSubscribers(context.Context, string) ([]corenotify.Subscriber, error) {
@@ -244,6 +269,10 @@ func (a *fakeAudience) FailureOwner(_ context.Context, accountID string) (coreno
 		return corenotify.Owner{}, errs.ErrNotFound
 	}
 	return owner, nil
+}
+
+func (a *fakeAudience) RecipientActive(_ context.Context, userID string) (bool, error) {
+	return !a.inactive[userID], nil
 }
 
 // fakeSender 按脚本返回结果，并记录已发邮件。
@@ -436,7 +465,7 @@ func TestDispatchCapacityRejectedIsIdempotent(t *testing.T) {
 		DedupeKey: "capacity_rejected/task-1/2026-10-29",
 		Day:       "2026-10-29",
 		Capacity: corenotify.CapacityFigures{
-			Demand: 500, Capacity: 120, Shortfall: 380, Binding: "workers",
+			Demand: 500, Capacity: 120, Shortfall: 380, Binding: "workers", SuggestedWorkers: 8,
 		},
 	}
 	for i := 0; i < 2; i++ {
@@ -451,7 +480,9 @@ func TestDispatchCapacityRejectedIsIdempotent(t *testing.T) {
 	if notes[0].Title != "容量不足" ||
 		!strings.Contains(notes[0].Body, "需求 500") ||
 		!strings.Contains(notes[0].Body, "容量 120") ||
-		!strings.Contains(notes[0].Body, "缺口 380") {
+		!strings.Contains(notes[0].Body, "缺口 380") ||
+		!strings.Contains(notes[0].Body, "瓶颈：workers") ||
+		!strings.Contains(notes[0].Body, "建议 YIBAN_WORKERS=8") {
 		t.Fatalf("容量文本 = %+v", notes[0])
 	}
 }
@@ -602,6 +633,99 @@ func TestDispatchWithoutSMTPMarksSkipped(t *testing.T) {
 	}
 }
 
+// 投递前复核收件人：入队后软删/停用的用户不发信，账本落 skipped。
+// 跳过原因与用户标识进日志，邮箱不进日志。
+func TestSendDueSkipsInactiveRecipient(t *testing.T) {
+	store := newFakeStore()
+	clk := newManualClock()
+	audience := &fakeAudience{
+		subscribers: []corenotify.Subscriber{
+			overriding("master-1", "master-1@example.com", map[corenotify.Pair]bool{
+				{Category: corenotify.CategoryCredentialInvalid, Channel: corenotify.ChannelEmail}: true,
+			}),
+		},
+		phones:   map[string]string{"acct-1": "13800000001"},
+		inactive: map[string]bool{"master-1": true},
+	}
+	store.emails["master-1"] = "master-1@example.com"
+	sender := &fakeSender{}
+	var logs bytes.Buffer
+	dispatcher := newDelivery(t, store, audience, sender, clk, &logs)
+
+	if err := dispatcher.Dispatch(context.Background(), credentialEvent("acct-1")); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	// 入队时仍活跃（投递前复核尚未发生）：通知与账本各一行。
+	if len(store.notificationList()) != 1 || len(store.deliveryList()) != 1 {
+		t.Fatalf("入队行数 = %d/%d", len(store.notificationList()), len(store.deliveryList()))
+	}
+	if err := dispatcher.SendDue(context.Background()); err != nil {
+		t.Fatalf("SendDue: %v", err)
+	}
+	if sender.calls() != 0 {
+		t.Fatalf("不活跃收件人仍被投递 %d 次", sender.calls())
+	}
+	delivery := store.deliveryList()[0]
+	if delivery.Status != corenotify.DeliveryStatusSkipped ||
+		delivery.SkipReason != "recipient_inactive" || delivery.Attempts != 0 ||
+		delivery.NextRetryAt != nil {
+		t.Fatalf("账本 = %+v", delivery)
+	}
+	logged := logs.String()
+	if !strings.Contains(logged, "recipient_inactive") || !strings.Contains(logged, "master-1") {
+		t.Fatalf("缺跳过原因或用户标识：%s", logged)
+	}
+	if strings.Contains(logged, "master-1@example.com") {
+		t.Fatalf("日志含完整邮箱：%s", logged)
+	}
+}
+
+// in_app 关闭、email 开启：锚点行仍会写（会出现在管理员站内信列表）。
+// 这是实施单裁决：账本外键需要父行，本批不为可见性拆表。
+func TestEmailOnlyStillWritesAnchorNotification(t *testing.T) {
+	store := newFakeStore()
+	clk := newManualClock()
+	audience := &fakeAudience{
+		subscribers: []corenotify.Subscriber{
+			overriding("master-1", "master-1@example.com", map[corenotify.Pair]bool{
+				{Category: corenotify.CategoryCredentialInvalid, Channel: corenotify.ChannelInApp}: false,
+				{Category: corenotify.CategoryCredentialInvalid, Channel: corenotify.ChannelEmail}: true,
+			}),
+		},
+		phones: map[string]string{"acct-1": "13800000001"},
+	}
+	store.emails["master-1"] = "master-1@example.com"
+	dispatcher := newDelivery(t, store, audience, &fakeSender{}, clk, nil)
+
+	if err := dispatcher.Dispatch(context.Background(), credentialEvent("acct-1")); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	notes := store.notificationList()
+	if len(notes) != 1 {
+		t.Fatalf("锚点行 = %d, want 1（in_app 关闭不影响账本锚）", len(notes))
+	}
+	if notes[0].Title != "账号凭据失效" {
+		t.Fatalf("锚点文本 = %+v", notes[0])
+	}
+	deliveries := store.deliveryList()
+	if len(deliveries) != 1 || deliveries[0].Status != corenotify.DeliveryStatusPending {
+		t.Fatalf("账本 = %+v", deliveries)
+	}
+	// 两个开关都关才整条跳过。
+	audience.subscribers[0].Overrides = map[corenotify.Pair]bool{
+		{Category: corenotify.CategoryCredentialInvalid, Channel: corenotify.ChannelInApp}: false,
+		{Category: corenotify.CategoryCredentialInvalid, Channel: corenotify.ChannelEmail}: false,
+	}
+	other := credentialEvent("acct-1")
+	other.DedupeKey = "credential_invalid/acct-1/other"
+	if err := dispatcher.Dispatch(context.Background(), other); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if len(store.notificationList()) != 1 || len(store.deliveryList()) != 1 {
+		t.Fatalf("两开关都关仍写行：%d/%d", len(store.notificationList()), len(store.deliveryList()))
+	}
+}
+
 // 隐私：通知文本、邮件正文与日志都不含完整手机号/邮箱。
 func TestDeliveryTextsAndLogsCarryNoFullIdentifiers(t *testing.T) {
 	const phone = "13800000001"
@@ -705,6 +829,8 @@ func TestDispatchValidatesInput(t *testing.T) {
 	audience := &fakeAudience{phones: map[string]string{"acct-1": "13800000001"}}
 	dispatcher := newDelivery(t, store, audience, &fakeSender{}, clk, nil)
 
+	// sign_failed_daily 的管理员摘要是 C 批 DispatchDigest 的入口：
+	// Dispatch 明确拒绝，避免两条投递路径共用同一收件人判定。
 	if err := dispatcher.Dispatch(context.Background(), corenotify.Event{
 		Category: corenotify.CategorySignFailedDaily, SchoolID: "school-1",
 		AccountID: "acct-1", DedupeKey: "x",

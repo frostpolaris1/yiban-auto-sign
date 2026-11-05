@@ -58,6 +58,8 @@ type NotificationQuery struct {
 // Delivery 是投递账本的一行。
 // Status 与 LastErrorKind 是账本内部字符串，对客户端不可见。
 // LastErrorKind 只存 core/mail.Kind 词表；SkipReason 只存跳过原因。
+// Attempts 是**发送尝试数**：MarkSent 与 MarkFailed 都递增，
+// skipped 不是尝试、不递增。
 type Delivery struct {
 	ID             string
 	NotificationID string
@@ -79,6 +81,13 @@ type DeliveryInsert struct {
 	UserID         string
 	Channel        Channel
 	NextRetryAt    *time.Time
+}
+
+// NotificationWithDelivery 是一次原子写入的结果：
+// 通知行与（可选）待投递账本行。Delivery 的 ID 为空表示未入账本。
+type NotificationWithDelivery struct {
+	Notification Notification
+	Delivery     Delivery
 }
 
 // DueDelivery 是一条待投递的邮件账本行，连同投递所需的正文与收件地址。

@@ -134,12 +134,29 @@ func (r *NotificationAudienceRepo) FailureOwner(ctx context.Context, accountID s
 	return owner, nil
 }
 
+// RecipientActive 报告用户当前仍是可投收件人：status='active' 且未软删。
+// 投递前复核用：入队与发送之间用户可能被停用或软删。
+func (r *NotificationAudienceRepo) RecipientActive(ctx context.Context, userID string) (bool, error) {
+	if userID == "" {
+		return false, validationError("user id is required")
+	}
+	var active bool
+	if err := r.db.q(ctx).QueryRow(ctx, `
+		SELECT EXISTS (
+		  SELECT 1 FROM users
+		   WHERE id = $1::uuid AND status = 'active' AND deleted_at IS NULL)`,
+		userID).Scan(&active); err != nil {
+		return false, mapError(err)
+	}
+	return active, nil
+}
+
 // ListDueForSend 返回 next_retry_at <= now 的 pending 行，连同通知正文与收件地址。
 //
 // 与 ListDue 同一条扫描口径，只多两列读模型：投递用例按落库文本发信，
 // 收件地址只进 SMTP 信封。收件人集合在 Dispatch 时定型；
-// 投递时不重查 users.mail_notify 与软删状态（退避窗口最长约 36 分钟，
-// 代价与「邮件不重查 mail_notify」同一笔账）。
+// 投递时不重查 users.mail_notify（开关只在 Dispatch 判定），
+// 但会经 RecipientActive 复核「仍 active 且未软删」，不活跃行落 skipped。
 func (r *NotificationDeliveryRepo) ListDueForSend(ctx context.Context, now time.Time, limit int) ([]corenotify.DueDelivery, error) {
 	if now.IsZero() {
 		return nil, validationError("due timestamp is required")

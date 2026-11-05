@@ -511,12 +511,18 @@ func alertContext(ctx context.Context) (context.Context, context.CancelFunc) {
 }
 
 // alertCredentialInvalid 发管理员凭据失效事件。
-// 端口为 nil 时不投递；失败只记日志，panic 就地吞掉。
+// 端口为 nil 时不投递；失败只记日志，panic 记一条不含 panic 值的警告。
 func (s *Service) alertCredentialInvalid(ctx context.Context, task corescheduleTask) {
 	if s.deps.Alerts == nil {
 		return
 	}
-	defer func() { _ = recover() }() // 投递失败只记日志
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Warn("worker: notification dispatch panicked",
+				logfield.KeyEvent, "notify.dispatch_panic",
+				logfield.KeyAccountID, task.AccountID)
+		}
+	}()
 	ctx, cancel := alertContext(ctx)
 	defer cancel()
 	if err := s.deps.Alerts.Dispatch(ctx, corenotify.Event{
@@ -535,12 +541,18 @@ func (s *Service) alertCredentialInvalid(ctx context.Context, task corescheduleT
 }
 
 // alertUserFailure 发用户本人的签到失败邮件。
-// 开关与收件人在投递端口内判定；失败只记日志，panic 就地吞掉。
+// 开关与收件人在投递端口内判定；失败只记日志，panic 记一条不含 panic 值的警告。
 func (s *Service) alertUserFailure(ctx context.Context, task corescheduleTask, outcome, reason string) {
 	if s.deps.Alerts == nil {
 		return
 	}
-	defer func() { _ = recover() }() // 投递失败只记日志
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Warn("worker: notification dispatch panicked",
+				logfield.KeyEvent, "notify.dispatch_panic",
+				logfield.KeyAccountID, task.AccountID)
+		}
+	}()
 	ctx, cancel := alertContext(ctx)
 	defer cancel()
 	if err := s.deps.Alerts.DispatchUserFailure(ctx, corenotify.UserFailure{

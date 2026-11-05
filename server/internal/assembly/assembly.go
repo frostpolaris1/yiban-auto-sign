@@ -403,7 +403,9 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			logger.Info("mail: SMTP delivery enabled",
 				logfield.KeyHost, cfg.MailHost, logfield.KeyPort, cfg.MailPort, logfield.KeyTLSMode, cfg.MailTLSMode)
 		} else {
-			logger.Warn("mail: SMTP delivery is disabled; password reset links and test mail are not delivered",
+			// 通知邮件与忘记口令、测试邮件共用同一 SMTP 端口与同一开关；
+			// 关掉时通知账本行落 skipped(smtp_not_configured)，不静默丢弃。
+			logger.Warn("mail: SMTP delivery is disabled; password reset links, test mail and notification mail are not delivered",
 				logfield.KeyReason, "YIBAN_RESET_MAIL_ENABLE is false")
 		}
 		settingsLib, auditLib, err = buildSettings(db, audits, clk, logger, mailer, mailTestThrottle)
@@ -486,8 +488,9 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		// 失效全部会话。OwnerAccounts 用同一份用户仓储：名下账号计数是
 		// 它的一条只读 SQL。
 		userRepo := pg.NewUserRepo(db)
-		// 通知投递：三个管理员事件与用户本人失败邮件。SMTP 与忘记口令共用
-		// 同一端口；未配置时账本行落 skipped(smtp_not_configured)，不静默丢弃。
+		// 通知投递：三个管理员事件与用户本人失败邮件。SMTP 与忘记口令
+		// 共用同一端口，也共用 YIBAN_RESET_MAIL_ENABLE 开关；未配置时
+		// 通知账本行落 skipped(smtp_not_configured)，不静默丢弃。
 		// 投递端口先于账号服务构造：ReviewAlerts 在 account 构造时注入。
 		notificationDispatcher, err := appnotify.NewDispatcher(appnotify.DispatcherDeps{
 			Notes:    pg.NewNotificationRepo(db),

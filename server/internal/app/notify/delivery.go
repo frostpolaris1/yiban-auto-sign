@@ -4,21 +4,29 @@ package notify
 // 邮件账本的重试循环。
 //
 // # 归属
-// app 层用例。端口 DeliveryRepo 与 Audience 由 adapters/pg 实现；
-// 邮件端口是 core/mail.Sender；本文件不写 SQL、不发 HTTP。
+// app 层用例。端口 NotificationWriter、DeliveryLedger 与 Audience 由
+// adapters/pg 实现；邮件端口是 core/mail.Sender；本文件不写 SQL、不发 HTTP。
 //
 // # 口径
 // 站内信行同时是事件档案与邮件账本锚：收件人只要有一个渠道启用就写一行，
 // 邮件行通过 notification_id 外键挂靠。两个开关都关才整条跳过。
+// **in_app 关闭、email 开启时锚点行仍会出现在管理员站内信列表**：
+// 这是实施单裁决（账本外键需要父行），本批不为可见性再拆表或删行。
 // 用户失败邮件只看 users.mail_notify；管理员事件只看 notification_prefs。
 // 两条订阅面分别判定，**永不 OR**。
 // 文案在本文件拼装：手机号在落库前过 mask，title ≤ 80 字、body ≤ 500 字。
+// 通知与账本行在同一事务写入（NotificationWriter.InsertWithPending）：
+// 中途崩溃不会留下没有账本的邮件事件。
 // 投递是至少一次：站内信与账本各一道唯一键吸收重复事件。
 // 重试间隔 1m/5m/30m，共 3 次重试后落 failed；不可重试与 panic 立即 failed。
-// 退避窗口最长约 36 分钟；本轮不做投递时的二次开关判定，
+// 退避窗口最长约 36 分钟；投递时**不复核** mail_notify/订阅开关，
 // 代价是关掉开关前已入队的邮件仍会送达。
+// 投递时复核收件人仍是 active 且未软删：不活跃则 skipped(recipient_inactive)，
+// 不留永久 pending 行。
 // SMTP 未配置时仍写通知行与账本行，账本立即 skipped(smtp_not_configured)：
 // 跳过是显性事实，不静默丢弃。
+// Dispatch 只服务管理员的三类事件；sign_failed_daily 的管理员摘要是 C 批的
+// DispatchDigest（独立入口，本批不实现），**不复用** Dispatch。
 
 import (
 	"context"
@@ -60,6 +68,8 @@ const (
 
 	// skipReasonSMTPNotConfigured 是 SMTP 未配置的跳过原因。
 	skipReasonSMTPNotConfigured = "smtp_not_configured"
+	// skipReasonRecipientInactive 是收件人已停用或软删的跳过原因。
+	skipReasonRecipientInactive = "recipient_inactive"
 
 	// mailSubjectPrefix 是通知邮件的主题前缀。
 	mailSubjectPrefix = "【易班签到】"
@@ -74,6 +84,11 @@ var deliveryRetryDelays = []time.Duration{time.Minute, 5 * time.Minute, 30 * tim
 // NotificationWriter 写站内信行。实现是 pg.NotificationRepo。
 type NotificationWriter interface {
 	Insert(ctx context.Context, in corenotify.NotificationInsert) (corenotify.Notification, error)
+	// InsertWithPending 在同一事务里写站内信与待投递账本行。
+	// pending 的 NotificationID/UserID 由实现按 note 填入，调用方留空；
+	// Channel 与 NextRetryAt 以 pending 为准。重复事件返回已存在的两行。
+	InsertWithPending(ctx context.Context, note corenotify.NotificationInsert,
+		pending corenotify.DeliveryInsert) (corenotify.NotificationWithDelivery, error)
 }
 
 // DeliveryLedger 读写投递账本。实现是 pg.NotificationDeliveryRepo。
@@ -91,10 +106,12 @@ type DeliveryLedger interface {
 // AdminSubscribers 返回某校事件的管理员收件人：master 收全部，
 // admin 只收 admin_schools 绑定校；只取 active 且未软删的用户。
 // AccountPhone 供文案掩码取号；FailureOwner 只回 active、未软删的属主。
+// RecipientActive 供投递前复核：入队后收件人可能被停用或软删。
 type Audience interface {
 	AdminSubscribers(ctx context.Context, schoolID string) ([]corenotify.Subscriber, error)
 	AccountPhone(ctx context.Context, accountID string) (string, error)
 	FailureOwner(ctx context.Context, accountID string) (corenotify.Owner, error)
+	RecipientActive(ctx context.Context, userID string) (bool, error)
 }
 
 // DispatcherDeps 是投递服务的依赖。
@@ -148,12 +165,14 @@ func NewDispatcher(deps DispatcherDeps) (*Dispatcher, error) {
 
 // Dispatch 把一条管理员事件投给该校的订阅者。
 //
-// 每收件人一行站内信；email 订阅启用时再入一条账本行。
-// 重复事件由 (user_id, dedupe_key) 吸收，不重复投递。
+// 每收件人一行站内信；email 订阅启用时在同一事务里再入一条账本行。
+// 重复事件由 (user_id, dedupe_key) 与账本唯一键吸收，不重复投递。
 // 单个收件人失败不阻断其余收件人；返回第一条错误供调用方记日志。
+// 只接受管理员的三类事件：sign_failed_daily 的摘要是 C 批 DispatchDigest
+// 的入口，不经本方法。
 func (d *Dispatcher) Dispatch(ctx context.Context, event corenotify.Event) error {
 	if !event.Category.Valid() || event.Category == corenotify.CategorySignFailedDaily {
-		return errs.New(errs.CodeValidation, "unsupported notification category")
+		return errs.New(errs.CodeValidation, "Dispatch only accepts administrator event categories")
 	}
 	if event.DedupeKey == "" {
 		return errs.New(errs.CodeValidation, "dedupe key is required")
@@ -180,7 +199,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, event corenotify.Event) error
 		if !inApp && !email {
 			continue
 		}
-		notification, err := d.notes.Insert(ctx, corenotify.NotificationInsert{
+		insert := corenotify.NotificationInsert{
 			UserID:    recipient.UserID,
 			Category:  event.Category,
 			DedupeKey: event.DedupeKey,
@@ -188,19 +207,23 @@ func (d *Dispatcher) Dispatch(ctx context.Context, event corenotify.Event) error
 			Body:      body,
 			SchoolID:  event.SchoolID,
 			CreatedAt: now,
-		})
+		}
+		if !email {
+			if _, err := d.notes.Insert(ctx, insert); err != nil {
+				recordError(&firstErr, err)
+			}
+			continue
+		}
+		// email 开启时通知与账本同事务写入。in_app 关闭时这一行仍是
+		// 事件档案/账本锚，会出现在管理员站内信列表（实施单裁决）。
+		wasSkipped, err := d.insertWithDelivery(ctx, insert, now)
 		if err != nil {
 			recordError(&firstErr, err)
 			continue
 		}
-		if !email {
-			continue
+		if wasSkipped {
+			skipped++
 		}
-		if err := d.enqueue(ctx, notification.ID, recipient.UserID, now); err != nil {
-			recordError(&firstErr, err)
-			continue
-		}
-		skipped++
 	}
 	d.warnIfMailDisabled(skipped)
 	return firstErr
@@ -237,7 +260,9 @@ func (d *Dispatcher) DispatchUserFailure(ctx context.Context, failure corenotify
 	}
 	title, body = sanitizeCopy(title, body)
 	now := d.clock.Now()
-	notification, err := d.notes.Insert(ctx, corenotify.NotificationInsert{
+	// 通知行与账本行同事务写入：用户没有站内信读端点，
+	// 这一行只作账本锚（行不外显）。
+	skipped, err := d.insertWithDelivery(ctx, corenotify.NotificationInsert{
 		UserID:    owner.UserID,
 		Category:  corenotify.CategorySignFailedDaily,
 		DedupeKey: "user_fail_mail/" + failure.AccountID + "/" + failure.Day,
@@ -245,14 +270,13 @@ func (d *Dispatcher) DispatchUserFailure(ctx context.Context, failure corenotify
 		Body:      body,
 		SchoolID:  failure.SchoolID,
 		CreatedAt: now,
-	})
+	}, now)
 	if err != nil {
 		return err
 	}
-	if err := d.enqueue(ctx, notification.ID, owner.UserID, now); err != nil {
-		return err
+	if skipped {
+		d.warnIfMailDisabled(1)
 	}
-	d.warnIfMailDisabled(1)
 	return nil
 }
 
@@ -274,11 +298,25 @@ func (d *Dispatcher) SendDue(ctx context.Context) error {
 
 // deliver 投递一条到期行并记终态。
 //
+// 发送前复核收件人仍是 active 且未软删：入队后可能被停用或软删，
+// 这类行落 skipped(recipient_inactive)，不留永久 pending。
 // 失败分类只取 core/mail.Kind 词表；KindPanic 由 send 的 recover 产出。
 // 账本写入用 WithoutCancel：停机取消不得留下 pending 行造成重复投递。
 func (d *Dispatcher) deliver(ctx context.Context, row corenotify.DueDelivery) error {
+	active, err := d.audience.RecipientActive(ctx, row.UserID)
+	if err != nil {
+		// 读库失败不等于收件人失效：保留 pending，下一轮再试。
+		d.log.Warn("notify: recipient check failed",
+			logfield.KeyEvent, "notify.recipient_check_failed",
+			logfield.KeyUserID, row.UserID,
+			logfield.KeyError, err.Error())
+		return err
+	}
+	if !active {
+		return d.skipInactive(ctx, row)
+	}
 	if d.mail == nil {
-		return d.markSkipped(ctx, row.ID)
+		return d.markSkipped(ctx, row.ID, skipReasonSMTPNotConfigured)
 	}
 	kind, retryable, err := d.send(ctx, row)
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ledgerTimeout)
@@ -287,7 +325,6 @@ func (d *Dispatcher) deliver(ctx context.Context, row corenotify.DueDelivery) er
 		if markErr := d.ledger.MarkSent(writeCtx, row.ID); markErr != nil {
 			d.log.Warn("notify: record delivery result failed",
 				logfield.KeyEvent, "notify.delivery_result_failed",
-				logfield.KeyStatus, "sent",
 				logfield.KeyError, markErr.Error())
 			return markErr
 		}
@@ -349,8 +386,15 @@ func (d *Dispatcher) adminCopy(ctx context.Context, event corenotify.Event) (str
 		}
 		return "账号待审核", fmt.Sprintf("账号 %s 已提交审核，请及时处理。", masked), nil
 	case corenotify.CategoryCapacityRejected:
-		return "容量不足", fmt.Sprintf("%s 的计划需求 %d、容量 %d，缺口 %d。",
-			event.Day, event.Capacity.Demand, event.Capacity.Capacity, event.Capacity.Shortfall), nil
+		body := fmt.Sprintf("%s 的计划需求 %d、容量 %d，缺口 %d。",
+			event.Day, event.Capacity.Demand, event.Capacity.Capacity, event.Capacity.Shortfall)
+		if event.Capacity.Binding != "" {
+			body += "瓶颈：" + event.Capacity.Binding + "。"
+		}
+		if event.Capacity.SuggestedWorkers > 0 {
+			body += fmt.Sprintf("建议 YIBAN_WORKERS=%d。", event.Capacity.SuggestedWorkers)
+		}
+		return "容量不足", body, nil
 	default:
 		return "", "", errs.New(errs.CodeValidation, "unsupported notification category")
 	}
@@ -368,30 +412,47 @@ func (d *Dispatcher) maskedPhone(ctx context.Context, accountID string) (string,
 	return mask.MaskPhone(phone), nil
 }
 
-// enqueue 写入一条 email 账本行。
-// SMTP 未配置时立即落 skipped：跳过是显性事实，不留给重试循环空转。
-func (d *Dispatcher) enqueue(ctx context.Context, notificationID, userID string, now time.Time) error {
-	delivery, err := d.ledger.InsertPending(ctx, corenotify.DeliveryInsert{
-		NotificationID: notificationID,
-		UserID:         userID,
-		Channel:        corenotify.ChannelEmail,
-		NextRetryAt:    &now,
+// insertWithDelivery 在同一事务里写通知与 email 账本行。
+// SMTP 未配置时账本立即落 skipped：跳过是显性事实，不留给重试循环空转。
+// 返回是否发生了跳过（调用方按每条事件聚合成一条警告）。
+func (d *Dispatcher) insertWithDelivery(ctx context.Context, insert corenotify.NotificationInsert, now time.Time) (bool, error) {
+	result, err := d.notes.InsertWithPending(ctx, insert, corenotify.DeliveryInsert{
+		Channel:     corenotify.ChannelEmail,
+		NextRetryAt: &now,
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 	if d.mail != nil {
-		return nil
+		return false, nil
 	}
-	return d.markSkipped(ctx, delivery.ID)
+	if err := d.markSkipped(ctx, result.Delivery.ID, skipReasonSMTPNotConfigured); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
-// markSkipped 把一条待投递行记为 smtp_not_configured。
-func (d *Dispatcher) markSkipped(ctx context.Context, deliveryID string) error {
-	if err := d.ledger.MarkSkipped(ctx, deliveryID, skipReasonSMTPNotConfigured); err != nil {
+// skipInactive 把一条到期行记为 recipient_inactive。
+// 日志只记 user_id 与原因：邮箱不进日志。
+func (d *Dispatcher) skipInactive(ctx context.Context, row corenotify.DueDelivery) error {
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ledgerTimeout)
+	defer cancel()
+	if err := d.markSkipped(writeCtx, row.ID, skipReasonRecipientInactive); err != nil {
+		return err
+	}
+	d.log.Info("notify: delivery skipped for inactive recipient",
+		logfield.KeyEvent, "notify.delivery_skipped",
+		logfield.KeyReason, skipReasonRecipientInactive,
+		logfield.KeyUserID, row.UserID)
+	return nil
+}
+
+// markSkipped 把一条待投递行记为跳过，并记录失败原因。
+func (d *Dispatcher) markSkipped(ctx context.Context, deliveryID, reason string) error {
+	if err := d.ledger.MarkSkipped(ctx, deliveryID, reason); err != nil {
 		d.log.Warn("notify: record skipped delivery failed",
 			logfield.KeyEvent, "notify.delivery_result_failed",
-			logfield.KeyReason, skipReasonSMTPNotConfigured,
+			logfield.KeyReason, reason,
 			logfield.KeyError, err.Error())
 		return err
 	}
@@ -399,7 +460,8 @@ func (d *Dispatcher) markSkipped(ctx context.Context, deliveryID string) error {
 }
 
 // nextRetry 返回下一次重试时刻；不可重试或重试次数用完返回 nil（落 failed）。
-// attempts 是本次失败前已记录的次数：0 取 1m，1 取 5m，2 取 30m，3 起落 failed。
+// attempts 是账本里已记录的发送尝试数：0 取 1m，1 取 5m，2 取 30m，3 起落 failed。
+// MarkSent 与 MarkFailed 都递增 attempts，skipped 不是尝试、不递增。
 func (d *Dispatcher) nextRetry(attempts int, retryable bool) *time.Time {
 	if !retryable || attempts < 0 || attempts >= len(deliveryRetryDelays) {
 		return nil

@@ -552,13 +552,19 @@ func (s *Service) publishCapacityEvent(ctx context.Context, in Input, p Preview)
 const capacityAlertTimeout = 2 * time.Second
 
 // alertCapacity 投递容量缺口通知。端口为 nil 时不投递；
-// 失败只记日志，panic 就地吞掉，不改 Build 的返回。
+// 失败只记日志，panic 记一条不含 panic 值的警告，不改 Build 的返回。
 // 去重键带 school_task_id 与业务日：缺口期内重复发布由唯一键吸收。
 func (s *Service) alertCapacity(ctx context.Context, in Input, p Preview) {
 	if s.deps.CapacityAlerts == nil {
 		return
 	}
-	defer func() { _ = recover() }() // 投递失败只记日志
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Warn("schedule: capacity alert dispatch panicked",
+				logfield.KeyEvent, "notify.dispatch_panic",
+				logfield.KeySchoolTaskID, in.SchoolTaskID)
+		}
+	}()
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), capacityAlertTimeout)
 	defer cancel()
 	if err := s.deps.CapacityAlerts.Dispatch(ctx, corenotify.Event{

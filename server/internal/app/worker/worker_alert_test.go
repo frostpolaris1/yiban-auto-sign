@@ -11,6 +11,8 @@ package worker_test
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 
 	appworker "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/worker"
@@ -47,10 +49,17 @@ func (a *recordingAlerts) DispatchUserFailure(_ context.Context, failure corenot
 // newAlertService 构造带通知端口的执行循环。
 func newAlertService(t *testing.T, st *fakeStore, signer appworker.Signer, alerts appworker.Alerts) *appworker.Service {
 	t.Helper()
+	return newAlertServiceLogged(t, st, signer, alerts, nil)
+}
+
+// newAlertServiceLogged 允许用例注入 logger（panic 告警断言用）。
+func newAlertServiceLogged(t *testing.T, st *fakeStore, signer appworker.Signer,
+	alerts appworker.Alerts, logger *slog.Logger) *appworker.Service {
+	t.Helper()
 	svc, err := appworker.NewService(appworker.Deps{
 		Store: st, Creds: fakeCreds{}, Signer: signer, Egress: fakeEgress{},
 		Limiter: fakeLimiter{allow: true}, Clock: coreclock.Fixed{T: testNow()}, Location: loc,
-		Alerts: alerts,
+		Alerts: alerts, Logger: logger,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -181,5 +190,58 @@ func TestAlertFailureDoesNotChangeSettlement(t *testing.T) {
 				t.Fatalf("state = %q, want failed", got)
 			}
 		})
+	}
+}
+
+// 退避重排不是终态：transient 走 requeueRetry，不发任何投递。
+func TestTransientRequeueDoesNotDispatchAlerts(t *testing.T) {
+	st := newStore(baseTask())
+	st.windows["st-1|2026-10-29"] = openWindow()
+	signer := &scriptedSigner{
+		targets:    []contract.Target{{ID: "pos-1"}},
+		signResult: contract.Result{Outcome: contract.OutcomeTransient, Message: "网络抖动"},
+	}
+	alerts := &recordingAlerts{}
+	svc := newAlertService(t, st, signer, alerts)
+
+	if _, err := svc.Step(context.Background(), 10); err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	if _, requeued := st.requeued["t1"]; !requeued {
+		t.Fatalf("transient 未走退避重排：requeued=%v finished=%v",
+			st.requeued, st.finished)
+	}
+	if len(alerts.events) != 0 || len(alerts.failures) != 0 {
+		t.Fatalf("退避重排不应投递：events=%d failures=%d", len(alerts.events), len(alerts.failures))
+	}
+}
+
+// 投递端口 panic 要留一条不含 panic 值的显性告警。
+func TestAlertPanicIsLogged(t *testing.T) {
+	st := newStore(baseTask())
+	st.windows["st-1|2026-10-29"] = openWindow()
+	signer := &scriptedSigner{
+		targets: []contract.Target{{ID: "pos-1"}},
+		signErr: &contract.OutcomeError{
+			Outcome: contract.OutcomeCredentialBad, Message: "登录失败"},
+	}
+	sink := &logSink{}
+	svc := newAlertServiceLogged(t, st, signer, &recordingAlerts{panicNow: true},
+		slog.New(slog.NewJSONHandler(sink, nil)))
+
+	if _, err := svc.Step(context.Background(), 10); err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	var found bool
+	for _, rec := range sink.records(t) {
+		if rec["event"] == "notify.dispatch_panic" {
+			found = true
+			if strings.Contains(rec["msg"].(string), "alert dispatch panic") {
+				t.Fatal("日志复述了 panic 值")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("缺 notify.dispatch_panic 告警：%v", sink.records(t))
 	}
 }

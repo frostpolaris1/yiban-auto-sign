@@ -8,9 +8,11 @@ package account
 // 端口失败或 panic 不改建号/更新结果。
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -98,6 +100,13 @@ func (reviewFakeOwners) GetByID(_ context.Context, id string) (coreuser.Record, 
 // reviewFakeTx 直接执行事务体。
 type reviewFakeTx struct{ app.TxManager }
 
+// reviewFailingTx 让事务整体失败：事务体不执行，用于回滚路径。
+type reviewFailingTx struct{ app.TxManager }
+
+func (reviewFailingTx) InTx(context.Context, func(context.Context) error) error {
+	return errors.New("transaction rolled back")
+}
+
 func (reviewFakeTx) InTx(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) }
 
 // reviewFakeAudit 只记录追加，不校验链。
@@ -128,6 +137,13 @@ func (a *recordingReviewAlerts) Dispatch(_ context.Context, event corenotify.Eve
 
 func newReviewAlertService(t *testing.T, repo Repo, alerts ReviewAlerts) *Service {
 	t.Helper()
+	return newReviewAlertServiceWith(t, repo, alerts, reviewFakeTx{}, nil)
+}
+
+// newReviewAlertServiceWith 允许用例替换事务管理与 logger。
+func newReviewAlertServiceWith(t *testing.T, repo Repo, alerts ReviewAlerts,
+	tx app.TxManager, logger *slog.Logger) *Service {
+	t.Helper()
 	cipher, err := NewCipher([]byte("0123456789abcdef0123456789abcdef"))
 	if err != nil {
 		t.Fatalf("NewCipher: %v", err)
@@ -136,7 +152,7 @@ func newReviewAlertService(t *testing.T, repo Repo, alerts ReviewAlerts) *Servic
 		Accounts:     repo,
 		Schools:      reviewFakeSchools{},
 		Audit:        &reviewFakeAudit{},
-		Tx:           reviewFakeTx{},
+		Tx:           tx,
 		Clock:        clock.Fixed{T: time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)},
 		Cipher:       cipher,
 		Owner:        reviewFakeOwners{},
@@ -144,6 +160,7 @@ func newReviewAlertService(t *testing.T, repo Repo, alerts ReviewAlerts) *Servic
 		Limit:        10,
 		OwnerLimit:   10,
 		ReviewAlerts: alerts,
+		Logger:       logger,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -285,6 +302,57 @@ func TestReviewAlertFailureDoesNotChangeResult(t *testing.T) {
 				t.Fatalf("Update 不得因投递失败返回错误: %v", err)
 			}
 		})
+	}
+}
+
+// 事务回滚不发通知：Create 与 Update 都只在提交成功后投递。
+func TestReviewAlertNotDispatchedOnRollback(t *testing.T) {
+	alerts := &recordingReviewAlerts{}
+	svc := newReviewAlertServiceWith(t, &reviewFakeRepo{}, alerts, reviewFailingTx{}, nil)
+
+	_, err := svc.Create(context.Background(), corescope.Master(), createInput("13800000001"),
+		appaudit.Actor{UserID: "master-1", Role: "master"})
+	if err == nil {
+		t.Fatal("事务失败时 Create 必须返回错误")
+	}
+	if len(alerts.events) != 0 {
+		t.Fatalf("回滚的 Create 仍发事件：%+v", alerts.events)
+	}
+
+	rejected := &reviewFakeRepo{current: Record{
+		ID: "acct-1", SchoolID: "school-1", OwnerUserID: "owner-1",
+		Phone: "13800000001", Status: StatusRejected,
+	}}
+	svc = newReviewAlertServiceWith(t, rejected, alerts, reviewFailingTx{}, nil)
+	if _, err := svc.Update(context.Background(), corescope.Master(), "acct-1",
+		UpdateInput{Password: ptr("new-password")},
+		appaudit.Actor{UserID: "master-1", Role: "master"}); err == nil {
+		t.Fatal("事务失败时 Update 必须返回错误")
+	}
+	if len(alerts.events) != 0 {
+		t.Fatalf("回滚的 Update 仍发事件：%+v", alerts.events)
+	}
+	if rejected.current.Status != StatusRejected {
+		t.Fatalf("回滚后状态 = %q, want rejected", rejected.current.Status)
+	}
+}
+
+// 投递端口 panic 要留一条不含 panic 值的显性告警。
+func TestReviewAlertPanicIsLogged(t *testing.T) {
+	var logs bytes.Buffer
+	svc := newReviewAlertServiceWith(t, &reviewFakeRepo{}, &recordingReviewAlerts{panicNow: true},
+		reviewFakeTx{}, slog.New(slog.NewTextHandler(&logs, nil)))
+
+	if _, err := svc.Create(context.Background(), corescope.Master(), createInput("13800000001"),
+		appaudit.Actor{UserID: "master-1", Role: "master"}); err != nil {
+		t.Fatalf("Create 不得因投递 panic 返回错误: %v", err)
+	}
+	logged := logs.String()
+	if !strings.Contains(logged, "notify.dispatch_panic") {
+		t.Fatalf("缺 notify.dispatch_panic 告警：%s", logged)
+	}
+	if strings.Contains(logged, "review alert panic") {
+		t.Fatalf("日志复述了 panic 值：%s", logged)
 	}
 }
 

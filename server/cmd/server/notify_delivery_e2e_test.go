@@ -394,6 +394,72 @@ func TestNotifyDeliveryUserFailureHonorsMailNotify(t *testing.T) {
 	}
 }
 
+// 入队后收件人被软删：投递前复核拦下，不发信，账本落 skipped。
+func TestNotifyDeliverySkipsInactiveRecipient(t *testing.T) {
+	e := newNotifyDeliveryEnv(t)
+	school := e.school("inactive")
+	master := e.admin("inactive-master@example.com", coreauth.RoleMaster)
+	owner := e.user("inactive-owner@example.com", coreauth.RoleUser)
+	account := e.account(school, owner.ID, "13800000001")
+	e.setPrefs(master.ID, corenotify.Pref{
+		Category: corenotify.CategoryReviewPending, Channel: corenotify.ChannelEmail, Enabled: true,
+	})
+	sender := &scriptedMailSender{}
+	dispatcher := e.dispatcher(sender, newNotifyTestClock())
+
+	dedupe := "review_pending/" + account + "/event-1"
+	if err := dispatcher.Dispatch(e.ctx, corenotify.Event{
+		Category: corenotify.CategoryReviewPending, SchoolID: school,
+		AccountID: account, DedupeKey: dedupe,
+	}); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	// 入队后软删收件人；投递时复核必须拦下。
+	if _, err := e.db.Exec(e.ctx,
+		"UPDATE users SET deleted_at = now() WHERE id = $1::uuid", master.ID); err != nil {
+		t.Fatalf("soft delete recipient: %v", err)
+	}
+	if err := dispatcher.SendDue(e.ctx); err != nil {
+		t.Fatalf("SendDue: %v", err)
+	}
+	if sender.calls != 0 {
+		t.Fatalf("不活跃收件人仍被投递 %d 次", sender.calls)
+	}
+	status, attempts, kind, skip, next := e.deliveryStateFromDB(master.ID, dedupe)
+	if status != corenotify.DeliveryStatusSkipped || attempts != 0 || kind != "" ||
+		skip != "recipient_inactive" || next != "" {
+		t.Fatalf("账本 = %s/%d/%q/%q/%q", status, attempts, kind, skip, next)
+	}
+	// 停用同属不活跃：换一位仍活跃的收件人入队，再停用后投递。
+	master2 := e.admin("inactive-master-2@example.com", coreauth.RoleMaster)
+	e.setPrefs(master2.ID, corenotify.Pref{
+		Category: corenotify.CategoryReviewPending, Channel: corenotify.ChannelEmail, Enabled: true,
+	})
+	owner2 := e.user("inactive-owner-2@example.com", coreauth.RoleUser)
+	account2 := e.account(school, owner2.ID, "13800000002")
+	dedupe2 := "review_pending/" + account2 + "/event-1"
+	if err := dispatcher.Dispatch(e.ctx, corenotify.Event{
+		Category: corenotify.CategoryReviewPending, SchoolID: school,
+		AccountID: account2, DedupeKey: dedupe2,
+	}); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if _, err := e.db.Exec(e.ctx,
+		"UPDATE users SET status = 'disabled' WHERE id = $1::uuid", master2.ID); err != nil {
+		t.Fatalf("disable recipient: %v", err)
+	}
+	if err := dispatcher.SendDue(e.ctx); err != nil {
+		t.Fatalf("SendDue: %v", err)
+	}
+	if sender.calls != 0 {
+		t.Fatalf("停用收件人仍被投递 %d 次", sender.calls)
+	}
+	status, _, _, skip, _ = e.deliveryStateFromDB(master2.ID, dedupe2)
+	if status != corenotify.DeliveryStatusSkipped || skip != "recipient_inactive" {
+		t.Fatalf("停用账本 = %s/%q", status, skip)
+	}
+}
+
 // 容量事件：同任务同日重复触发只落一行通知、一条账本行；默认不发信。
 func TestNotifyDeliveryCapacityRejectedIdempotent(t *testing.T) {
 	e := newNotifyDeliveryEnv(t)
@@ -424,7 +490,9 @@ func TestNotifyDeliveryCapacityRejectedIdempotent(t *testing.T) {
 	body := e.scalarString(
 		`SELECT body FROM notifications WHERE user_id = $1::uuid AND dedupe_key = $2`,
 		master.ID, event.DedupeKey)
-	if !strings.Contains(body, "需求 500") || !strings.Contains(body, "缺口 380") {
+	if !strings.Contains(body, "需求 500") || !strings.Contains(body, "缺口 380") ||
+		!strings.Contains(body, "瓶颈：workers") ||
+		!strings.Contains(body, "建议 YIBAN_WORKERS=8") {
 		t.Fatalf("容量正文 = %q", body)
 	}
 	// SMTP 未配置：账本行落 skipped，但只有一条。
