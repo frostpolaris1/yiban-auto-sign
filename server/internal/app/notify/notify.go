@@ -1,17 +1,18 @@
-// Package notify 实现每用户通知订阅用例（2ws A）。
+// Package notify 实现通知订阅、站内信读面与事件投递。
 //
 // # 功能
-// 读、写当前管理员自己的订阅覆盖集；缺行按默认解释。
+// 订阅：读、写当前管理员自己的订阅覆盖集；缺行按默认解释。
+// 站内信：列表、未读数、标记已读（见 inbox.go）。
+// 投递：管理员事件与用户本人失败邮件 → 站内信 + 邮件账本与重试（见 delivery.go）。
 // 类别与渠道是闭合词表；未知值或重复对一律校验失败。
-// 本包**不**投递站内信、**不**发邮件、**不**写审计。
+// 本包**不**写 SQL、**不**发 HTTP、**不**写审计。
 //
 // # 归属
-// app 层用例。端口见本文件，adapters/pg 实现；
-// 本批只存取订阅，投递随后续批次落地。
+// app 层用例。端口见各文件，adapters/pg 实现；投递的邮件端口是 core/mail.Sender。
 //
 // # 复用
-// Service、Page、Repo；类型别名 Category、Channel、Pair、Pref 与
-// 常量 Category*、Channel* 都来自 core/notify。
+// Service、Page、Repo；Inbox、InboxDeps；Dispatcher、DispatcherDeps、Audience；
+// 类型别名 Category、Channel、Pair、Pref 与常量 Category*、Channel* 都来自 core/notify。
 //
 // # 口径
 // 存储只放覆盖值，不放默认值：PUT 的 items 就是完整覆盖集，

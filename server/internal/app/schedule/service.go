@@ -35,6 +35,7 @@ import (
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
+	corenotify "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/notify"
 	coreplan "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/plan"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
@@ -516,11 +517,21 @@ func (s *Service) publishWindow(ctx context.Context, in Input, p Preview, change
 		})
 }
 
-// publishCapacity 在出现容量缺口后发 capacity.changed。
+// publishCapacity 在出现容量缺口后发 capacity.changed，并投递管理员通知。
 // 口径偏差（已申报）：服务无历史 Shortfall 可比，取「Shortfall>0 即发」；
 // 缺口持续时会重复发布，管理员侧按幂等处理。
+// 两个端口各自判空：缺 SSE 端口不影响通知投递，反之亦然。
 func (s *Service) publishCapacity(ctx context.Context, in Input, p Preview) {
-	if p.Shortfall <= 0 || s.deps.Notifier == nil {
+	if p.Shortfall <= 0 {
+		return
+	}
+	s.publishCapacityEvent(ctx, in, p)
+	s.alertCapacity(ctx, in, p)
+}
+
+// publishCapacityEvent 发 capacity.changed。未装配 Notifier 时不发。
+func (s *Service) publishCapacityEvent(ctx context.Context, in Input, p Preview) {
+	if s.deps.Notifier == nil {
 		return
 	}
 	defer func() { _ = recover() }() // 发布失败只丢事件
@@ -535,6 +546,45 @@ func (s *Service) publishCapacity(ctx context.Context, in Input, p Preview) {
 	}
 	s.deps.Notifier.PlanEvent(ctx, in.SchoolID, in.SchoolTaskID, in.Day,
 		appevents.TypeCapacityChanged, payload)
+}
+
+// capacityAlertTimeout 是一次通知投递的上限：发布请求不得因通知而挂起。
+const capacityAlertTimeout = 2 * time.Second
+
+// alertCapacity 投递容量缺口通知。端口为 nil 时不投递；
+// 失败只记日志，panic 记一条不含 panic 值的警告，不改 Build 的返回。
+// 去重键带 school_task_id 与业务日：缺口期内重复发布由唯一键吸收。
+func (s *Service) alertCapacity(ctx context.Context, in Input, p Preview) {
+	if s.deps.CapacityAlerts == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Warn("schedule: capacity alert dispatch panicked",
+				logfield.KeyEvent, "notify.dispatch_panic",
+				logfield.KeySchoolTaskID, in.SchoolTaskID)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), capacityAlertTimeout)
+	defer cancel()
+	if err := s.deps.CapacityAlerts.Dispatch(ctx, corenotify.Event{
+		Category:  corenotify.CategoryCapacityRejected,
+		SchoolID:  in.SchoolID,
+		DedupeKey: "capacity_rejected/" + in.SchoolTaskID + "/" + in.Day,
+		Day:       in.Day,
+		Capacity: corenotify.CapacityFigures{
+			Demand:           p.Demand,
+			Capacity:         p.Capacity,
+			Shortfall:        p.Shortfall,
+			Binding:          string(p.Binding),
+			SuggestedWorkers: p.SuggestedWorkers,
+		},
+	}); err != nil {
+		s.log.Warn("schedule: capacity alert dispatch failed",
+			logfield.KeyEvent, "notify.dispatch_failed",
+			logfield.KeySchoolTaskID, in.SchoolTaskID,
+			logfield.KeyError, err.Error())
+	}
 }
 
 // windowPolicy 是窗口解析口径。

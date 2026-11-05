@@ -23,6 +23,7 @@ package account
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -33,6 +34,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
+	corenotify "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/notify"
 	coreschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/school"
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
@@ -68,8 +70,17 @@ type OwnerReader interface {
 	GetByID(ctx context.Context, id string) (coreuser.Record, error)
 }
 
+// ReviewAlerts 是待审核通知的投递端口（实现为 app/notify.Dispatcher）。
+// 为 nil 时不投递，现行为不变；失败或 panic 只记日志，不改业务返回。
+// 事件类型来自 core/notify：适配器因此无须导入 app 层。
+type ReviewAlerts interface {
+	Dispatch(ctx context.Context, event corenotify.Event) error
+}
+
 // Deps 是账号用例的依赖。
 // Cipher 可为 nil；此时任何写入口令/设备码的请求都失败（fail-closed）。
+// ReviewAlerts 可为 nil：缺端口就不投递待审核通知。
+// Logger 可为 nil：用 slog.Default。
 type Deps struct {
 	Accounts Repo
 	Schools  SchoolReader
@@ -85,11 +96,15 @@ type Deps struct {
 	Limit int
 	// OwnerLimit 是每个属主的活跃账号上限。
 	OwnerLimit int
+	// ReviewAlerts 是待审核通知端口。
+	ReviewAlerts ReviewAlerts
+	Logger       *slog.Logger
 }
 
 // Service 是账号用例服务。
 type Service struct {
 	deps Deps
+	log  *slog.Logger
 }
 
 // Page 是一页账号。
@@ -169,7 +184,11 @@ func NewService(deps Deps) (*Service, error) {
 	if deps.Device == nil {
 		return nil, errors.New("account: nil device reader")
 	}
-	return &Service{deps: deps}, nil
+	log := deps.Logger
+	if log == nil {
+		log = slog.Default()
+	}
+	return &Service{deps: deps, log: log}, nil
 }
 
 // List 按作用域列账号。
@@ -383,6 +402,8 @@ func (s *Service) Create(ctx context.Context, scope corescope.Scope, in CreateIn
 	if err != nil {
 		return Record{}, err
 	}
+	// 事务已提交：待审核通知是补充事实，失败不影响建号结果。
+	s.alertReviewPending(ctx, record)
 	// 新行的凭据刚写入；响应直接回入参，不必再解密一次。
 	record.PhoneModel = in.PhoneModel
 	return record, nil
@@ -453,6 +474,8 @@ func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, 
 	}
 
 	record := current
+	// needsReview 提到事务外：事务提交后按它决定是否发待审核通知。
+	needsReview := false
 	err = s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
 		now := s.deps.Clock.Now().UTC()
 		// 状态判定必须在事务内、行锁下读：事务外的快照会把引擎刚提交的
@@ -469,7 +492,7 @@ func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, 
 			in.DeviceCode != nil || in.PhoneModel != nil
 		// 改绑把非 pending 账号送回队列；pending 行改绑仍停在 pending，
 		// 不写 from=pending 的重提审计。
-		needsReview := (locked.Status == StatusRejected && credentialEdit) ||
+		needsReview = (locked.Status == StatusRejected && credentialEdit) ||
 			(rebind && locked.Status != StatusPending)
 		if in.Name != nil {
 			record, err = s.deps.Accounts.UpdateName(ctx, scope, id, name, now)
@@ -560,6 +583,11 @@ func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, 
 	})
 	if err != nil {
 		return Record{}, err
+	}
+	// 事务已提交：重提回到审核队列才发待审核通知，失败不影响更新结果。
+	// 普通编辑、备注名与凭据恢复都不发。
+	if needsReview {
+		s.alertReviewPending(ctx, record)
 	}
 	// 凭据写回不保证响应带最新机型：显式给了新值就用新值，
 	// 否则重读凭据，让共用 Account schema 的响应口径一致。

@@ -31,7 +31,8 @@ const (
 	CategoryCapacityRejected  Category = "capacity_rejected"
 )
 
-// Channel 是投递渠道的闭合词表。本批不投递。
+// Channel 是投递渠道的闭合词表。两个渠道都已接线：
+// in_app 落站内信行，email 走投递账本与重试。
 type Channel string
 
 // 渠道词表。in_app 与 email 是仅有的两个值。

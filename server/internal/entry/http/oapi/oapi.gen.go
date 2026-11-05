@@ -1164,7 +1164,7 @@ type NotificationRead struct {
 // NotifyCategory Closed set of notification subjects for this phase.
 type NotifyCategory string
 
-// NotifyChannel Closed set of delivery channels; nothing is delivered in this phase.
+// NotifyChannel Closed set of delivery channels; in_app and email are the only values.
 type NotifyChannel string
 
 // NotifyPref defines model for NotifyPref.
@@ -1172,7 +1172,7 @@ type NotifyPref struct {
 	// Category Closed set of notification subjects for this phase.
 	Category NotifyCategory `json:"category"`
 
-	// Channel Closed set of delivery channels; nothing is delivered in this phase.
+	// Channel Closed set of delivery channels; in_app and email are the only values.
 	Channel NotifyChannel `json:"channel"`
 
 	// Enabled Effective state: the stored override when present, the category

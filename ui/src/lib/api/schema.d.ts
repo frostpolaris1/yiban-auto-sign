@@ -931,8 +931,8 @@ export interface paths {
          *     row reads as the default:
          *     review_pending is in_app and email; credential_invalid is in_app;
          *     sign_failed_daily is email; capacity_rejected is in_app.
-         *     This endpoint stores and reads subscriptions only; nothing is
-         *     delivered in this phase.
+         *     These effective subscriptions decide delivery: enabled in_app pairs
+         *     land in the inbox, enabled email pairs are queued for mail delivery.
          *     notification_prefs.sign_failed_daily is the administrator
          *     subscription channel for the daily digest. It does not gate a user's
          *     own sign-failure mail, which the user's mail_notify switch controls.
@@ -1422,10 +1422,11 @@ export interface paths {
          * Read the caller's sign-failure mail switch.
          * @description Every signed-in role reads its own switch. A user who never changed
          *     the value reads true. The switch only gates sign-failure mail;
-         *     authentication and credential mail bypass it. Delivery itself lands
-         *     in a later phase; this endpoint only stores and reads the value.
+         *     authentication and credential mail bypass it. Sign-failure mail is
+         *     delivered while the switch is true; a delivery already queued when
+         *     the switch is turned off may still arrive.
          *     The switch is the user's own sign-failure mail master switch, not the
-         *     administrator digest subscription. Delivery (a later phase) requires
+         *     administrator digest subscription. Delivery requires
          *     mail_notify=true for user mail; the administrator digest reads only
          *     notification_prefs (see GET /api/admin/notify).
          */
@@ -1753,7 +1754,7 @@ export interface components {
          */
         NotifyCategory: "credential_invalid" | "review_pending" | "sign_failed_daily" | "capacity_rejected";
         /**
-         * @description Closed set of delivery channels; nothing is delivered in this phase.
+         * @description Closed set of delivery channels; in_app and email are the only values.
          * @enum {string}
          */
         NotifyChannel: "in_app" | "email";

@@ -403,7 +403,9 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			logger.Info("mail: SMTP delivery enabled",
 				logfield.KeyHost, cfg.MailHost, logfield.KeyPort, cfg.MailPort, logfield.KeyTLSMode, cfg.MailTLSMode)
 		} else {
-			logger.Warn("mail: SMTP delivery is disabled; password reset links and test mail are not delivered",
+			// 通知邮件与忘记口令、测试邮件共用同一 SMTP 端口与同一开关；
+			// 关掉时通知账本行落 skipped(smtp_not_configured)，不静默丢弃。
+			logger.Warn("mail: SMTP delivery is disabled; password reset links, test mail and notification mail are not delivered",
 				logfield.KeyReason, "YIBAN_RESET_MAIL_ENABLE is false")
 		}
 		settingsLib, auditLib, err = buildSettings(db, audits, clk, logger, mailer, mailTestThrottle)
@@ -486,20 +488,38 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		// 失效全部会话。OwnerAccounts 用同一份用户仓储：名下账号计数是
 		// 它的一条只读 SQL。
 		userRepo := pg.NewUserRepo(db)
+		// 通知投递：三个管理员事件与用户本人失败邮件。SMTP 与忘记口令
+		// 共用同一端口，也共用 YIBAN_RESET_MAIL_ENABLE 开关；未配置时
+		// 通知账本行落 skipped(smtp_not_configured)，不静默丢弃。
+		// 投递端口先于账号服务构造：ReviewAlerts 在 account 构造时注入。
+		notificationDispatcher, err := appnotify.NewDispatcher(appnotify.DispatcherDeps{
+			Notes:    pg.NewNotificationRepo(db),
+			Ledger:   pg.NewNotificationDeliveryRepo(db),
+			Audience: pg.NewNotificationAudienceRepo(db),
+			Mail:     mailer,
+			Clock:    clk,
+			Logger:   logger,
+		})
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("assembly: notification dispatcher: %w", err)
+		}
 		// 一个 provider 同时服务"凭据校验"、"设备刷新"与"执行循环"：
 		// 三者必须走同一六请求链实现，避免校验用一套、签到用另一套的漂移。
 		provider := yiban.NewProvider(yiban.New(yiban.Config{Clock: clk}))
 		accountSvc, err := appaccount.NewService(appaccount.Deps{
-			Accounts:   pg.NewAccountRepo(db),
-			Schools:    schoolRepo,
-			Audit:      audits,
-			Tx:         db,
-			Clock:      clk,
-			Cipher:     cipher,
-			Owner:      userRepo,
-			Device:     accountDeviceReader{provider: provider},
-			Limit:      accountCapacityLimit,
-			OwnerLimit: cfg.MaxAccountsPerOwner,
+			Accounts:     pg.NewAccountRepo(db),
+			Schools:      schoolRepo,
+			Audit:        audits,
+			Tx:           db,
+			Clock:        clk,
+			Cipher:       cipher,
+			Owner:        userRepo,
+			Device:       accountDeviceReader{provider: provider},
+			Limit:        accountCapacityLimit,
+			OwnerLimit:   cfg.MaxAccountsPerOwner,
+			ReviewAlerts: notificationDispatcher,
+			Logger:       logger,
 		})
 		if err != nil {
 			closeFn()
@@ -596,6 +616,14 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			stopDataRetention()
 			beforeRetention()
 		}
+		// 通知邮件的重试循环：启动即跑一轮，之后每 DeliveryInterval 一轮。
+		// 独立 context：Build 的超时 context 在返回时取消，会把循环一起停掉。
+		stopNotifyDeliveries := appnotify.Start(context.Background(), notificationDispatcher, logger)
+		beforeNotify := closeFn
+		closeFn = func() {
+			stopNotifyDeliveries()
+			beforeNotify()
+		}
 		locationSvc, err := applocation.NewService(applocation.Deps{
 			Store:    pg.NewLocationRepo(db),
 			Accounts: accountSvc,
@@ -622,6 +650,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			photos:    photoSvc,
 			// P6 注入面：任务事件发布。缺端口时不发事件。
 			notifier: WorkerNotifier{Broker: broker, Clock: clk},
+			// 0v8 B 注入面：结算后的通知投递。缺端口时不投递。
+			alerts: notificationDispatcher,
 			// 结论原因进日志（OCR M1）。
 			logger: logger,
 		}))
@@ -653,6 +683,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			Tx:       db,
 			// P6 注入面：计划事件发布。缺端口时不发事件。
 			Notifier: ScheduleNotifier{Broker: broker, Clock: clk},
+			// 0v8 B 注入面：容量缺口通知。缺端口时不投递。
+			CapacityAlerts: notificationDispatcher,
 			// 窗口发现失败的原因进日志（OCR M1）。
 			Logger: logger,
 		})
@@ -916,6 +948,7 @@ type workerDeps struct {
 	locations appworker.LocationSource
 	photos    appworker.PhotoSource
 	notifier  appworker.Notifier
+	alerts    appworker.Alerts
 	logger    *slog.Logger
 }
 
@@ -935,6 +968,7 @@ func buildWorkerDeps(cfg *config.Config, d workerDeps) appworker.Deps {
 		Locations: d.locations,
 		Photos:    d.photos,
 		Notifier:  d.notifier,
+		Alerts:    d.alerts,
 		Logger:    d.logger,
 	}
 }

@@ -18,6 +18,7 @@ import (
 	corelocation "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/location"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/logfield"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
+	corenotify "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/notify"
 	coreretry "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/retry"
 	coreschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/schedule"
 	corestatus "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/status"
@@ -406,9 +407,14 @@ func (s *Service) settleOutcome(ctx context.Context, task corescheduleTask, win 
 //
 // 顺序有讲究：日志先写，库写失败时现场仍在日志里；
 // 反过来会丢掉那条唯一能解释失败原因的行。
+// 落库成功后才发用户失败邮件：投递不是结算的一部分，失败不影响返回。
 func (s *Service) finishFailed(ctx context.Context, task corescheduleTask, outcome contract.Outcome, reason string, dur time.Duration, win *corewindow.Window, now time.Time) error {
 	s.logGiveUp(ctx, task, outcome, reason, dur, win, now)
-	return s.finish(ctx, task, corestatus.TaskFailed, string(outcome))
+	if err := s.finish(ctx, task, corestatus.TaskFailed, string(outcome)); err != nil {
+		return err
+	}
+	s.alertUserFailure(ctx, task, string(outcome), reason)
+	return nil
 }
 
 // requeueWait 是等待型重排：成功后发 task.progress。
@@ -488,7 +494,79 @@ func (s *Service) finishCredentialInvalid(ctx context.Context, task coreschedule
 		return err
 	}
 	s.notifyConcluded(ctx, task, corestatus.TaskFailed)
+	// 凭据错是真实失败：管理员事件与用户本人失败邮件都发（后者是唯一路径）。
+	s.alertCredentialInvalid(ctx, task)
+	s.alertUserFailure(ctx, task, string(contract.OutcomeCredentialBad), reason)
 	return nil
+}
+
+// alertTimeout 是一次通知投递的上限。
+// 结算已经落库，投递不得拖住下一轮；2s 只够一次本地库写入。
+const alertTimeout = 2 * time.Second
+
+// alertContext 让投递不受停机取消与结算短截止影响：结算完成后
+// ctx 可能已被取消或已临近截止，投递仍应有一次自己的机会。
+func alertContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), alertTimeout)
+}
+
+// alertCredentialInvalid 发管理员凭据失效事件。
+// 端口为 nil 时不投递；失败只记日志，panic 记一条不含 panic 值的警告。
+func (s *Service) alertCredentialInvalid(ctx context.Context, task corescheduleTask) {
+	if s.deps.Alerts == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Warn("worker: notification dispatch panicked",
+				logfield.KeyEvent, "notify.dispatch_panic",
+				logfield.KeyAccountID, task.AccountID)
+		}
+	}()
+	ctx, cancel := alertContext(ctx)
+	defer cancel()
+	if err := s.deps.Alerts.Dispatch(ctx, corenotify.Event{
+		Category:  corenotify.CategoryCredentialInvalid,
+		SchoolID:  task.SchoolID,
+		AccountID: task.AccountID,
+		// 同账号同业务日只落一行：重复结算被唯一键吸收。
+		DedupeKey: "credential_invalid/" + task.AccountID + "/" + task.Day,
+		Day:       task.Day,
+	}); err != nil {
+		s.log.Warn("worker: credential invalid alert dispatch failed",
+			logfield.KeyEvent, "notify.dispatch_failed",
+			logfield.KeyAccountID, task.AccountID,
+			logfield.KeyError, err.Error())
+	}
+}
+
+// alertUserFailure 发用户本人的签到失败邮件。
+// 开关与收件人在投递端口内判定；失败只记日志，panic 记一条不含 panic 值的警告。
+func (s *Service) alertUserFailure(ctx context.Context, task corescheduleTask, outcome, reason string) {
+	if s.deps.Alerts == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Warn("worker: notification dispatch panicked",
+				logfield.KeyEvent, "notify.dispatch_panic",
+				logfield.KeyAccountID, task.AccountID)
+		}
+	}()
+	ctx, cancel := alertContext(ctx)
+	defer cancel()
+	if err := s.deps.Alerts.DispatchUserFailure(ctx, corenotify.UserFailure{
+		SchoolID:  task.SchoolID,
+		AccountID: task.AccountID,
+		Day:       task.Day,
+		Outcome:   outcome,
+		Reason:    reason,
+	}); err != nil {
+		s.log.Warn("worker: sign failure mail dispatch failed",
+			logfield.KeyEvent, "notify.dispatch_failed",
+			logfield.KeyAccountID, task.AccountID,
+			logfield.KeyError, err.Error())
+	}
 }
 
 // notifyConcluded 发布 task.concluded。
