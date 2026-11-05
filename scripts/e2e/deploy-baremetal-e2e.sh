@@ -288,7 +288,7 @@ else
         | docker run --rm -i -v "$UI_OUT:/out" -w /src \
             "${NPM_ENV[@]}" \
             "$NODE_IMAGE" sh -c \
-            'tar -xf - && npm ci --no-audit --no-fund && npm run build && cp -a dist/. /out/' \
+            'tar -xf - && npm ci --include=optional --fetch-retries=5 --fetch-timeout=120000 --no-audit --no-fund && npm run build && cp -a dist/. /out/' \
             >>"$E2E_STEP_LOG" 2>&1; then
         e2e_die "前端构建失败（受限网络请设 DEPLOY_E2E_NPM_REGISTRY）"
     fi

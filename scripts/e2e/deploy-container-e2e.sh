@@ -369,22 +369,48 @@ if ! dc --profile backup run --rm backup >"$LOG_DIR/C4c-backup.log" 2>&1; then
     e2e_die "backup profile 任务失败"
 fi
 LATEST_BACKUP="$(ls -1d "$YIBAN_BACKUP_HOST_DIR"/*/ 2>/dev/null | sort | tail -n 1 || true)"
-[ -n "$LATEST_BACKUP" ] || e2e_die "备份目录为空：$YIBAN_BACKUP_HOST_DIR"
-for f in db.dump db.list photos.tar.gz SHA256SUMS; do
-    [ -f "$LATEST_BACKUP$f" ] || e2e_die "备份缺 $f（$LATEST_BACKUP）"
-done
-if ! (cd "$LATEST_BACKUP" && sha256sum -c SHA256SUMS >/dev/null 2>>"$E2E_STEP_LOG"); then
-    e2e_die "备份 SHA256SUMS 校验失败"
+if [ -z "$LATEST_BACKUP" ]; then
+    {
+        echo "--- C4c-backup.log ---"
+        cat "$LOG_DIR/C4c-backup.log" 2>/dev/null || true
+        echo "--- host $YIBAN_BACKUP_HOST_DIR ---"
+        ls -la "$YIBAN_BACKUP_HOST_DIR" 2>&1 || true
+    } | tee -a "$E2E_STEP_LOG"
+    e2e_die "备份目录为空：$YIBAN_BACKUP_HOST_DIR"
 fi
-grep -q 'Archive created at' "$LATEST_BACKUP/db.list" \
-    || e2e_die "db.list 不是 pg_restore 清单（转储不可读）"
 BACKUP_TS="$(basename "${LATEST_BACKUP%/}")"
+
+# 备份目录由容器内 root 以 0700/0600 落盘（含凭据密文，必须如此）。
+# CI 的宿主进程是 runner，不是 root：宿主的 test/sha256sum 会被 0700 挡住。
+# 因此把“文件齐备＋校验和＋清单可读”放进同一镜像的 root 容器里判。
+backup_check() {
+    dc --profile backup run --rm --entrypoint sh backup -c \
+        "cd /backups/$BACKUP_TS && for f in db.dump db.list photos.tar.gz SHA256SUMS; do test -f \"\$f\" || { echo \"missing \$f\" >&2; exit 1; }; done && sha256sum -c SHA256SUMS >/dev/null && grep -q 'Archive created at' db.list"
+}
+backup_diag() {
+    {
+        echo "--- C4c-backup.log ---"
+        cat "$LOG_DIR/C4c-backup.log" 2>/dev/null || true
+        echo "--- host $YIBAN_BACKUP_HOST_DIR (runner cannot read 0700 children) ---"
+        ls -la "$YIBAN_BACKUP_HOST_DIR" 2>&1 || true
+        ls -la "$LATEST_BACKUP" 2>&1 || true
+        echo "--- container /backups/$BACKUP_TS (root) ---"
+        dc --profile backup run --rm --entrypoint sh backup -c "ls -la /backups/$BACKUP_TS" 2>&1 || true
+    } | tee -a "$E2E_STEP_LOG"
+}
+if ! backup_check >"$LOG_DIR/C4c-check.log" 2>&1; then
+    cat "$LOG_DIR/C4c-check.log" >>"$E2E_STEP_LOG" 2>/dev/null || true
+    backup_diag
+    e2e_die "备份文件不齐或校验失败（容器内检查；宿主不是 root）"
+fi
 
 # ---- C4d 恢复冒烟：库回滚＋照片解包 ---------------------------------------
 e2e_step "C4d" "备份恢复冒烟"
 dc stop app >>"$E2E_STEP_LOG" 2>&1 || e2e_die "恢复前停 app 失败"
-if ! dc exec -T db pg_restore -U yiban -d yiban --clean --if-exists \
-    --no-owner --no-privileges < "$LATEST_BACKUP/db.dump" >>"$E2E_STEP_LOG" 2>&1; then
+# 同一原因：dump 是 root 0600，宿主的 shell 重定向读不到；在备份容器里恢复。
+if ! dc --profile backup run --rm --entrypoint sh backup -c \
+    "pg_restore -U yiban -d yiban --clean --if-exists --no-owner --no-privileges < /backups/$BACKUP_TS/db.dump" \
+    >>"$E2E_STEP_LOG" 2>&1; then
     e2e_die "pg_restore 恢复失败"
 fi
 if ! dc --profile backup run --rm --entrypoint sh backup \
