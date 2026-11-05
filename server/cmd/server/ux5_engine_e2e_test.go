@@ -272,10 +272,10 @@ func TestU5EngineTodayTerminalPicksLatestRow(t *testing.T) {
 
 	early := now.Add(-2 * time.Hour)
 	late := now.Add(-time.Hour)
-	accF := u3SeedAccount(t, e, owner.ID, school.ID, "13800138051")
+	accF := u3SeedAccount(t, e, owner.ID, school.ID, "13800000001")
 	u5SeedTerminalTask(t, e, taskA, accF, day, early, status.TaskSuccess)
 	u5SeedTerminalTask(t, e, taskB, accF, day, late, status.TaskFailed)
-	accS := u3SeedAccount(t, e, owner.ID, school.ID, "13800138052")
+	accS := u3SeedAccount(t, e, owner.ID, school.ID, "13800000002")
 	u5SeedTerminalTask(t, e, taskA, accS, day, early, status.TaskFailed)
 	u5SeedTerminalTask(t, e, taskB, accS, day, late, status.TaskSuccess)
 
@@ -305,7 +305,7 @@ func TestU5EngineTodayTerminalTieBreaksByID(t *testing.T) {
 	taskA := u3SeedTask(t, e, school.ID, "早签到")
 	taskB := u3SeedTask(t, e, school.ID, "晚自习签到")
 
-	acc := u3SeedAccount(t, e, owner.ID, school.ID, "13800138058")
+	acc := u3SeedAccount(t, e, owner.ID, school.ID, "13800000003")
 	sameAt := now.Add(-time.Hour)
 	u5SeedTerminalTask(t, e, taskA, acc, day, sameAt, status.TaskSuccess)
 	u5SeedTerminalTask(t, e, taskB, acc, day, sameAt, status.TaskFailed)
@@ -347,10 +347,10 @@ func TestU5EngineTodayTerminalSkippedNotCounted(t *testing.T) {
 	taskA := u3SeedTask(t, e, school.ID, "早签到")
 	taskB := u3SeedTask(t, e, school.ID, "晚自习签到")
 
-	accK := u3SeedAccount(t, e, owner.ID, school.ID, "13800138053")
+	accK := u3SeedAccount(t, e, owner.ID, school.ID, "13800000004")
 	u5SeedTerminalTask(t, e, taskA, accK, day, now.Add(-2*time.Hour), status.TaskSuccess)
 	u5SeedTerminalTask(t, e, taskB, accK, day, now.Add(-time.Hour), status.TaskSkipped)
-	accOnlyK := u3SeedAccount(t, e, owner.ID, school.ID, "13800138054")
+	accOnlyK := u3SeedAccount(t, e, owner.ID, school.ID, "13800000005")
 	u5SeedTerminalTask(t, e, taskA, accOnlyK, day, now.Add(-time.Hour), status.TaskSkipped)
 
 	resp, snap, body := u5EngineGet(e, client)
@@ -376,12 +376,12 @@ func TestU5EngineTodayTerminalExcludesSoftDeleted(t *testing.T) {
 	school := u3SeedSchool(t, e, "U5 软删学校")
 	task := u3SeedTask(t, e, school.ID, "早签到")
 
-	accGone := u3SeedAccount(t, e, owner.ID, school.ID, "13800138055")
+	accGone := u3SeedAccount(t, e, owner.ID, school.ID, "13800000006")
 	u5SeedTerminalTask(t, e, task, accGone, day, now.Add(-time.Hour), status.TaskFailed)
 	if err := pg.NewAccountRepo(e.db).SoftDelete(e.ctx, corescope.Master(), accGone, owner.ID, now); err != nil {
 		t.Fatalf("soft delete account: %v", err)
 	}
-	accLive := u3SeedAccount(t, e, owner.ID, school.ID, "13800138056")
+	accLive := u3SeedAccount(t, e, owner.ID, school.ID, "13800000007")
 	u5SeedTerminalTask(t, e, task, accLive, day, now.Add(-time.Hour), status.TaskSuccess)
 
 	resp, snap, body := u5EngineGet(e, client)
@@ -407,7 +407,7 @@ func TestU5EngineAdminEmptyBinding(t *testing.T) {
 	day := now.UTC().Format("2006-01-02")
 	school := u3SeedSchool(t, e, "U5 无绑定学校")
 	task := u3SeedTask(t, e, school.ID, "早签到")
-	acc := u3SeedAccount(t, e, owner.ID, school.ID, "13800138057")
+	acc := u3SeedAccount(t, e, owner.ID, school.ID, "13800000008")
 	u5SeedTerminalTask(t, e, task, acc, day, now.Add(-time.Hour), status.TaskFailed)
 
 	resp, adminSnap, _ := u5EngineGet(e, adminClient)
