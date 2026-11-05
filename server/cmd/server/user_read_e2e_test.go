@@ -78,11 +78,11 @@ func TestSignCalendarRangeAndDetail(t *testing.T) {
 	task1 := e.schoolTask(school.ID, "晨签")
 	task2 := e.schoolTask(school.ID, "晚签")
 
-	acctA := e.account(school.ID, u1.ID, "13800009201")
-	acctB := e.account(school.ID, u1.ID, "13800009202")
-	acctC := e.account(school.ID, u1.ID, "13800009203")
-	acctOther := e.account(school.ID, u2.ID, "13800009204")
-	acctDeleted := e.account(school.ID, u1.ID, "13800009205")
+	acctA := e.account(school.ID, u1.ID, "13800000001")
+	acctB := e.account(school.ID, u1.ID, "13800000002")
+	acctC := e.account(school.ID, u1.ID, "13800000003")
+	acctOther := e.account(school.ID, u2.ID, "13800000004")
+	acctDeleted := e.account(school.ID, u1.ID, "13800000005")
 	if _, err := e.db.Exec(e.ctx,
 		"UPDATE accounts SET deleted_at = now() WHERE id = $1::uuid", acctDeleted); err != nil {
 		t.Fatalf("soft delete account: %v", err)
