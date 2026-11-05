@@ -13,6 +13,7 @@
 #   C4b 签名发布物：签发→验签；错公钥与篡改清单必须被拒
 #   C4c backup profile 一次性任务：db.dump + photos.tar.gz + SHA256SUMS 齐备
 #       且自校验通过；db.list 证明转储可读
+#   C4d 恢复冒烟：pg_restore 回同库、照片 tar 解包、探针与库计数、app 复健康
 #   C5 宿主 curl /healthz 返回 200 且 body 为 {"status":"ok"}
 #   C5b 宿主 curl / 与前端深链 /accounts 返回首页；未知 /api 仍是 JSON 404；
 #       哈希资产带 immutable 长缓存
@@ -355,7 +356,14 @@ e2e_ok "签发/验签通过；错公钥被拒；篡改清单被拒"
 # ---- C4c 容器备份任务（PG＋照片，单一路径） --------------------------------
 # backup profile 是一次性任务：跑完即退。产物必须同时覆盖数据库与照片卷，
 # 且 sha256 自校验通过；db.list 证明转储可读（没有可读性就等于没备份）。
+# 随后做一次恢复冒烟：删掉照片探针后从 tar 解包、pg_restore 回同一个库，
+# 再起 app 验活——只写备份不验证恢复等于没测到恢复路径。
 e2e_step "C4c" "容器备份任务"
+if ! dc --profile backup run --rm --entrypoint sh backup \
+    -c 'printf restore-probe > /photos/e2e-restore-probe' >"$LOG_DIR/C4c-probe.log" 2>&1; then
+    cat "$LOG_DIR/C4c-probe.log" >>"$E2E_STEP_LOG" 2>/dev/null || true
+    e2e_die "写入照片恢复探针失败"
+fi
 if ! dc --profile backup run --rm backup >"$LOG_DIR/C4c-backup.log" 2>&1; then
     cat "$LOG_DIR/C4c-backup.log" >>"$E2E_STEP_LOG" 2>/dev/null || true
     e2e_die "backup profile 任务失败"
@@ -370,7 +378,37 @@ if ! (cd "$LATEST_BACKUP" && sha256sum -c SHA256SUMS >/dev/null 2>>"$E2E_STEP_LO
 fi
 grep -q 'Archive created at' "$LATEST_BACKUP/db.list" \
     || e2e_die "db.list 不是 pg_restore 清单（转储不可读）"
-e2e_ok "备份含 db.dump/db.list/photos.tar.gz/SHA256SUMS；sha256 与 pg_restore 清单通过"
+BACKUP_TS="$(basename "${LATEST_BACKUP%/}")"
+
+# ---- C4d 恢复冒烟：库回滚＋照片解包 ---------------------------------------
+e2e_step "C4d" "备份恢复冒烟"
+dc stop app >>"$E2E_STEP_LOG" 2>&1 || e2e_die "恢复前停 app 失败"
+if ! dc exec -T db pg_restore -U yiban -d yiban --clean --if-exists \
+    --no-owner --no-privileges < "$LATEST_BACKUP/db.dump" >>"$E2E_STEP_LOG" 2>&1; then
+    e2e_die "pg_restore 恢复失败"
+fi
+if ! dc --profile backup run --rm --entrypoint sh backup \
+    -c 'rm -f /photos/e2e-restore-probe' >>"$E2E_STEP_LOG" 2>&1; then
+    e2e_die "删除照片探针失败"
+fi
+if ! dc --profile backup run --rm --entrypoint sh backup \
+    -c "tar -xzf /backups/$BACKUP_TS/photos.tar.gz -C /photos" \
+    >>"$E2E_STEP_LOG" 2>&1; then
+    e2e_die "照片解包失败"
+fi
+if ! dc --profile backup run --rm --entrypoint sh backup \
+    -c 'test -f /photos/e2e-restore-probe' >>"$E2E_STEP_LOG" 2>&1; then
+    e2e_die "照片恢复后探针不存在"
+fi
+RESTORED_USERS="$(dc exec -T db psql -U yiban -d yiban -tAc 'select count(*) from users' \
+    2>>"$E2E_STEP_LOG" | tr -d '[:space:]' || true)"
+[ "$RESTORED_USERS" = "0" ] || e2e_die "恢复后 users=$RESTORED_USERS（期望 0）"
+dc start app >>"$E2E_STEP_LOG" 2>&1 || e2e_die "恢复后启动 app 失败"
+if ! wait_health app "$WAIT_SEC"; then
+    dc logs --tail 60 app >>"$E2E_STEP_LOG" 2>&1 || true
+    e2e_die "恢复后 app 未在 ${WAIT_SEC}s 内 healthy"
+fi
+e2e_ok "恢复冒烟：照片探针从 tar 解包、users=0、app 复健康"
 
 # ---- C5 /healthz -----------------------------------------------------------
 e2e_step "C5" "宿主 /healthz"

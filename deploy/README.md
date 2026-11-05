@@ -65,8 +65,10 @@ compose 用 `env_file` 把它注入 app，`--env-file` 供 db 的服务口令插
 这三个键只放一份：模板 `deploy/container/compose.env.example` → 运行文件
 `deploy/container/compose.env`（0600，已 gitignore）；没有第二份容器配置。
 
-compose 文件顶部固定了项目名 `name: yiban`：目录改名不会把卷名从
-`yiban_pgdata` 换成另一个前缀；e2e 的 `-p` 仍然优先。
+compose 文件顶部固定了项目名 `name: yiban`：首次部署的卷名是
+`yiban_pgdata`、`yiban_photos`，与仓库目录名无关；e2e 的 `-p` 仍然优先。
+**没有存量迁移**：新线从未部署。只有更早的实验配置（未固定项目名）起过栈时，
+旧卷前缀才不同；那种情况按旧项目名手工迁移卷，正常安装不需要。
 
 配置名册随二进制嵌入（`server/internal/configdata/registry.json`），
 镜像与安装位里都没有 `registry.json` 文件；`GET /api/admin/settings`
@@ -203,9 +205,10 @@ sudo bash deploy/baremetal/install.sh \
 - 建 `yiban` 服务用户与 `/var/lib/yiban`。
 - 二进制落 `/usr/local/bin`。
 - 页面落 `/var/lib/yiban/ui`（重装时旧页面留 `ui.bak`），并在 `/etc/yiban/server.env` 写 `YIBAN_UI_DIR`。
-- 生成密钥并写 `/etc/yiban/server.env`（0600 root:root），只打印一次；
-  同时落一份无密钥模板 `/etc/yiban/server.env.example`（0644）。
-- 装 systemd 单元，`enable --now`，再探测 `/healthz`。
+- 生成密钥并写 `/etc/yiban/server.env`（0600 root:root）；只打印写入位置与
+  指纹（sha256 前 16 位），不打印值。
+- 同时落一份无密钥模板 `/etc/yiban/server.env.example`（0644）。
+- 装 systemd 单元，`enable`＋`restart`（重装也换进程），再探测 `/healthz`。
 
 不给 `--ui-dir` 时只装 API。安装器会打印显性提示。
 
@@ -222,12 +225,14 @@ sudo bash deploy/baremetal/install.sh \
 
 `ReadWritePaths` 取 `server.env` 的 `YIBAN_PHOTO_DIR`（缺省
 `/var/lib/yiban/photos`）。安装器会先建好该目录并把它交给服务用户
-（`ProtectSystem=strict` 下进程自己建不了目录）。安装器拒绝这些形态：相对路径、
-含空白、`/home|/root|/run/user`（被 `ProtectHome` 遮住）、
-`/tmp|/var/tmp|/dev/shm`（被 `PrivateTmp` 私有化后照片会随进程消失），以及
-`/var/lib/yiban` 本身或其父目录（会把页面与旧备份一并开放写）。改照片目录要
-同时改 `server.env` 并重跑 `install.sh`（它会按新值重写单元的 `ReadWritePaths`），
-然后 `systemctl restart yiban.service`。
+（`ProtectSystem=strict` 下进程自己建不了目录）。判据是**白名单**：
+路径先用 `realpath -m` 归一化（`..` 与软链一起解析），归一化结果必须是
+`/var/lib/yiban/` 下的真实子目录；`/var/lib/yiban` 本身、
+`/var/lib/yiban-updater` 与其它裸目录一律拒绝。路径本身是软链也拒绝，
+`chown` 前再用 `realpath -e` 复核，且只做非递归 `chown -h`。
+拒绝发生在任何写入或 `chown` 之前（exit 2）。改照片目录要同时改
+`server.env` 并重跑 `install.sh`（它会按新值重写 `ReadWritePaths` 并
+`restart` 服务），不需要手写 `systemctl restart`。
 
 升级、回滚、自检与备份都在服务进程之外运行（`update.sh` 以 root 停服、
 `pg_dump`、tar 照片、换件、再起服），加固不改变这些路径；`update.sh` 不改写

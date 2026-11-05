@@ -40,10 +40,10 @@
 | 服务端行为（`YIBAN_*`） | 裸机 `/etc/yiban/server.env`；容器 `deploy/container/compose.env` | 裸机 `sudo systemctl restart yiban.service`；容器 `docker compose --env-file deploy/container/compose.env -f deploy/container/docker-compose.yml up -d`（重建容器才重读 `env_file`，只 `restart` 不会） |
 | 数据库口令 | 容器 `compose.env` 的 `POSTGRES_PASSWORD` | 只影响首次初始化。已有库要改角色口令：先 `ALTER ROLE yiban PASSWORD '…'`，再改 `compose.env`，最后 `up -d` 重建 app（DSN 由它派生） |
 | 不可信代理 / 反代地址 | `YIBAN_TRUSTED_PROXIES` | 裸机写 `server.env` 后重启；容器可写 `compose.env`，也可 `export` 后 `up -d`（shell 环境 > `--env-file` > compose 缺省） |
-| 照片目录 | `YIBAN_PHOTO_DIR` | 裸机改 `server.env` 后**重跑 `install.sh`**（按新值重写单元的 `ReadWritePaths`）再重启；容器改 `compose.env` 后 `up -d`，并确认卷挂载点同步 |
+| 照片目录 | `YIBAN_PHOTO_DIR` | 裸机改 `server.env` 后**重跑 `install.sh`**：它按新值重写 `ReadWritePaths` 并 `restart`（目录必须在 `/var/lib/yiban/` 下且不是软链）；容器改 `compose.env` 后 `up -d`，并确认卷挂载点同步 |
 | 备份落点 | 容器 `YIBAN_BACKUP_HOST_DIR`（宿主绝对路径，缺省 `./backups`） | 下一次 `--profile backup run` 生效；不在 Go 名册 |
 | 前端产物 | 裸机 `YIBAN_UI_DIR`（安装器写；`--ui-dir` 升级会一并换页面） | 重跑 `install.sh` 或 `update.sh --ui-dir`；手改后重启 |
-| systemd 隔离面 | 不手改单元；改 `install.sh` 的生成模板并重装 | `sudo bash deploy/baremetal/install.sh …` 重写单元 + `systemctl daemon-reload` |
+| systemd 隔离面 | 不手改单元；改 `install.sh` 的生成模板并重装 | 重跑 `install.sh`（重写单元 + `daemon-reload` + `restart`） |
 | 版本 / 构建参数 | 仓库根 `VERSION`、`BUILD_VERSION/BUILD_COMMIT/BUILD_TIME` | **构建期**，不是运行配置；改后重新构建发布件 |
 
 ## 4. 秘密与非秘密
@@ -65,6 +65,8 @@
 
 - 生成：`openssl rand -hex 32`（pepper）、`openssl rand -base64 32`
   （credential key）、`openssl rand -hex 16`（数据库口令）。
+- `install.sh` 首配只打印写入路径与指纹（sha256 前 16 位），**不打印值**；
+  值只留在 `/etc/yiban/server.env`，root 可读。
 - 模板里秘密键一律留空；真实值只出现在运行文件。
 - 备份（裸机 `update.sh`、容器 `backup` profile）含凭据密文：目录 0700、
   文件 0600，按秘密级保管。容器备份需要静态加密时在宿主做 GPG，
@@ -77,13 +79,17 @@
 # 已装 CLI 自检（裸机；只读，不改任何文件）
 sudo bash deploy/baremetal/update.sh --selfcheck-only   # 0 全 PASS/SKIP；2 有 FAIL
 
-# 容器：确认渲染出的运行值（不打印口令）
+# 容器：看渲染结果，先去敏再输出。完整 config 含秘密，禁止直接粘贴。
 docker compose --env-file deploy/container/compose.env \
-  -f deploy/container/docker-compose.yml config
+  -f deploy/container/docker-compose.yml config \
+  | sed -E 's/(YIBAN_HASH_PEPPER|YIBAN_CREDENTIAL_KEY|YIBAN_DATABASE_URL|YIBAN_MAIL_PASS|PGPASSWORD|POSTGRES_PASSWORD):.*/\1: <redacted>/'
 
 # 生效中的键面（管理接口，需 master）
 curl -fsS https://<域名>/api/admin/settings
 ```
+
+`docker compose config` 的原始输出包含数据库口令、pepper 与凭据钥：
+它只用于本机核对，不得粘进工单、CI 日志或聊天记录。
 
 名册、默认值与每键说明在 `server/internal/configdata/registry.json`；
 部署步骤与排障见 `deploy/README.md`。

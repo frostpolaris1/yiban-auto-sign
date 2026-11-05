@@ -15,6 +15,8 @@ package assembly
 //    启动，隔离面却静默消失。
 // 5. 容器备份 profile 必须同时覆盖数据库与照片，且脚本校验转储可读；
 //    只备一半会在恢复时才发现。
+// 6. install.sh 的 YIBAN_PHOTO_DIR 白名单：realpath 归一化后只允许
+//    /var/lib/yiban/ 下的真实子目录，软链与 .. 逃逸在 chown 前拒绝。
 //
 // # 口径
 // 只读文件，不启容器：判据都在构建产物里可判。
@@ -151,14 +153,11 @@ func TestInstallUnitStopTimeoutExceedsShutdownBudget(t *testing.T) {
 	}
 }
 
-// TestInstallUnitHardening 钉住 systemd 单元的加固键。
+// installUnitHardeningMissing 返回缺失的加固行（空 = 全在）。
 // 键名拼错或丢失时服务仍能启动，但隔离面静默消失；安装器在运行时生成单元，
 // 所以这里按模板行形状判（注释行以 # 开头，不会误命中）。
-// 行为面由 scripts/e2e/deploy-baremetal-e2e.sh 的 B6b 用 systemd-analyze verify
-// 与 systemctl show 再验一遍。
-func TestInstallUnitHardening(t *testing.T) {
-	body := deployFile(t, "baremetal/install.sh")
-	for _, want := range []string{
+func installUnitHardeningMissing(body string) []string {
+	wants := []string{
 		"User=$SERVICE_USER",
 		"Group=$SERVICE_USER",
 		"UMask=0077",
@@ -167,10 +166,78 @@ func TestInstallUnitHardening(t *testing.T) {
 		"ProtectSystem=strict",
 		"ProtectHome=true",
 		"ReadWritePaths=-$PHOTO_DIR",
-	} {
+	}
+	var missing []string
+	for _, want := range wants {
 		re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(want) + `$`)
 		if !re.MatchString(body) {
-			t.Fatalf("install.sh 生成的 systemd 单元缺 %q（加固面会静默丢失）", want)
+			missing = append(missing, want)
+		}
+	}
+	return missing
+}
+
+// TestInstallUnitHardening 钉住 systemd 单元的加固键。
+// 行为面由 scripts/e2e/deploy-baremetal-e2e.sh 的 B6b 用 systemd-analyze verify
+// 与 systemctl show 再验一遍。
+func TestInstallUnitHardening(t *testing.T) {
+	body := deployFile(t, "baremetal/install.sh")
+	if missing := installUnitHardeningMissing(body); len(missing) > 0 {
+		t.Fatalf("install.sh 生成的 systemd 单元缺 %q（加固面会静默丢失）", missing)
+	}
+	// 突变：删掉 ReadWritePaths 后判据必须变红（防“门只测 helper”）。
+	mutant := strings.Replace(body, "\nReadWritePaths=-$PHOTO_DIR\n", "\n", 1)
+	if mutant == body {
+		t.Fatal("突变未生效：找不到 ReadWritePaths 行")
+	}
+	if missing := installUnitHardeningMissing(mutant); len(missing) == 0 {
+		t.Fatal("删掉 ReadWritePaths 后判据仍绿")
+	}
+}
+
+// installPhotoDirGuardMissing 返回照片目录白名单/软链判据的缺失片段。
+func installPhotoDirGuardMissing(body string) []string {
+	wants := []string{
+		`realpath -m -- "$raw"`,
+		`[ -L "$raw" ]`,
+		`"$PHOTO_ROOT"/*) ;;`,
+		`realpath -e -- "$PHOTO_DIR"`,
+		`chown -h "$SERVICE_USER:$SERVICE_USER" "$PHOTO_DIR"`,
+	}
+	var missing []string
+	for _, want := range wants {
+		if !strings.Contains(body, want) {
+			missing = append(missing, want)
+		}
+	}
+	return missing
+}
+
+// TestInstallPhotoDirGuard 钉住 P1-1 的白名单：realpath 归一化、只允许
+// /var/lib/yiban/ 下的真实子目录、软链判据、chown 前复核与非递归 chown。
+// 每条判据都配一次内存突变：删掉任一条，判据必须变红。
+func TestInstallPhotoDirGuard(t *testing.T) {
+	body := deployFile(t, "baremetal/install.sh")
+	if missing := installPhotoDirGuardMissing(body); len(missing) > 0 {
+		t.Fatalf("install.sh 缺照片目录判据 %q", missing)
+	}
+	mutations := []struct {
+		name string
+		old  string
+	}{
+		{"whitelist", "        \"$PHOTO_ROOT\"/*) ;;\n"},
+		{"realpath-m", `realpath -m -- "$raw"`},
+		{"symlink-source", `[ -L "$raw" ]`},
+		{"realpath-e", `realpath -e -- "$PHOTO_DIR"`},
+		{"chown-h", `chown -h "$SERVICE_USER:$SERVICE_USER" "$PHOTO_DIR"`},
+	}
+	for _, m := range mutations {
+		mutant := strings.Replace(body, m.old, "", 1)
+		if mutant == body {
+			t.Fatalf("突变未生效：找不到 %s 判据", m.name)
+		}
+		if missing := installPhotoDirGuardMissing(mutant); len(missing) == 0 {
+			t.Fatalf("删掉 %s 后判据仍绿", m.name)
 		}
 	}
 }

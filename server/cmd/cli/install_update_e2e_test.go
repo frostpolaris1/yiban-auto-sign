@@ -213,6 +213,7 @@ exit 0
 	if rc == 0 {
 		t.Fatalf("healthcheck not reachable, install must fail; out=%s", out)
 	}
+	firstOut := out
 
 	// 文件树断言。
 	for _, p := range []string{
@@ -258,8 +259,25 @@ exit 0
 		t.Fatalf("unit file shape wrong:\n%s", unit)
 	}
 	log := readAll(t, sysctlLog)
-	if !strings.Contains(log, "daemon-reload") || !strings.Contains(log, "enable --now") {
+	if !strings.Contains(log, "daemon-reload") ||
+		!strings.Contains(log, "enable yiban.service") ||
+		!strings.Contains(log, "restart yiban.service") {
 		t.Fatalf("systemctl sequence missing steps:\n%s", log)
+	}
+	// 密钥值不得出现在 stdout：只允许路径与指纹（首配那次才有指纹）。
+	for _, line := range strings.Split(envBody, "\n") {
+		for _, key := range []string{"YIBAN_HASH_PEPPER=", "YIBAN_CREDENTIAL_KEY="} {
+			if strings.HasPrefix(line, key) {
+				secret := strings.TrimPrefix(line, key)
+				if secret != "" && strings.Contains(firstOut, secret) {
+					t.Fatalf("install printed the value of %s (must print only a fingerprint)", key)
+				}
+			}
+		}
+	}
+	if !strings.Contains(firstOut, "values are NOT printed") ||
+		!strings.Contains(firstOut, "secret fingerprint YIBAN_HASH_PEPPER sha256:") {
+		t.Fatalf("install must report the destination and fingerprints, not values; out=%s", firstOut)
 	}
 
 	// 第二次：健康检查放行 → 安装应走完并退出 0。
@@ -340,6 +358,113 @@ func touchHealthFlag(t *testing.T, path string) {
 	if err := os.WriteFile(path, []byte("ok"), 0o644); err != nil {
 		t.Fatalf("touch health flag: %v", err)
 	}
+}
+
+// TestInstallShPhotoDirAllowlist 钉住 YIBAN_PHOTO_DIR 的白名单：
+// 只有 /var/lib/yiban/ 下的真实子目录能进 ReadWritePaths 与 chown。
+// 拒绝必须发生在写 unit/建目录/chown 之前（这里用 dry-run 断言 unit 未生成；
+// 真 root 的“无 chown”由 deploy-baremetal-e2e 的 B6c 断言属主未变）。
+func TestInstallShPhotoDirAllowlist(t *testing.T) {
+	requireBash(t)
+	bad := []struct {
+		name  string
+		photo string
+	}{
+		{"home", "/home"},
+		{"root", "/root"},
+		{"run-user", "/run/user"},
+		{"tmp", "/tmp"},
+		{"var-tmp", "/var/tmp"},
+		{"dev-shm", "/dev/shm"},
+		{"etc", "/etc"},
+		{"usr", "/usr"},
+		{"opt", "/opt"},
+		{"srv", "/srv"},
+		{"var-log", "/var/log"},
+		{"service-home", "/var/lib/yiban"},
+		{"updater-root", "/var/lib/yiban-updater"},
+		{"dotdot-escape", "/var/lib/yiban/photos/../.."},
+	}
+	for _, tc := range bad {
+		t.Run("reject_"+tc.name, func(t *testing.T) {
+			root, env, serverBin, cliBin := installDryRunEnv(t, tc.photo, false)
+			out, rc := installDryRun(t, env, serverBin, cliBin)
+			if rc != 2 {
+				t.Fatalf("YIBAN_PHOTO_DIR=%s: rc=%d, want 2\nout=%s", tc.photo, rc, out)
+			}
+			if _, err := os.Stat(filepath.Join(root, "etc/systemd/system/yiban.service")); err == nil {
+				t.Fatalf("YIBAN_PHOTO_DIR=%s: unit written despite rejection", tc.photo)
+			}
+		})
+	}
+	t.Run("reject_symlink", func(t *testing.T) {
+		root, env, serverBin, cliBin := installDryRunEnv(t, "/var/lib/yiban/photos", true)
+		out, rc := installDryRun(t, env, serverBin, cliBin)
+		if rc != 2 {
+			t.Fatalf("symlinked photo dir: rc=%d, want 2\nout=%s", rc, out)
+		}
+		if _, err := os.Stat(filepath.Join(root, "etc/systemd/system/yiban.service")); err == nil {
+			t.Fatal("unit written despite symlinked photo dir")
+		}
+	})
+	t.Run("accept_default", func(t *testing.T) {
+		root, env, serverBin, cliBin := installDryRunEnv(t, "/var/lib/yiban/photos", false)
+		out, rc := installDryRun(t, env, serverBin, cliBin)
+		if rc != 0 {
+			t.Fatalf("default photo dir: rc=%d, want 0\nout=%s", rc, out)
+		}
+		unit := readAll(t, filepath.Join(root, "etc/systemd/system/yiban.service"))
+		if !strings.Contains(unit, "ReadWritePaths=-/var/lib/yiban/photos") {
+			t.Fatalf("unit missing ReadWritePaths for the accepted dir:\n%s", unit)
+		}
+		if info, err := os.Stat(filepath.Join(root, "var/lib/yiban/photos")); err != nil || !info.IsDir() {
+			t.Fatalf("photo dir not created: %v", err)
+		}
+	})
+}
+
+// installDryRunEnv 造一份预置 server.env 与假二进制；photo 写进 YIBAN_PHOTO_DIR。
+// symlink=true 时在干跑前缀下把 photos 做成指向 etc 的软链。
+func installDryRunEnv(t *testing.T, photo string, symlink bool) (string, map[string]string, string, string) {
+	t.Helper()
+	root := t.TempDir()
+	binDir := t.TempDir()
+	serverBin := fakeBin(t, binDir, "yiban-server", "exit 0\n")
+	cliBin := fakeBin(t, binDir, "yiban-cli", "exit 0\n")
+	envDir := filepath.Join(root, "etc/yiban")
+	if err := os.MkdirAll(envDir, 0o755); err != nil {
+		t.Fatalf("mkdir env dir: %v", err)
+	}
+	if symlink {
+		if err := os.MkdirAll(filepath.Join(root, "var/lib/yiban"), 0o755); err != nil {
+			t.Fatalf("mkdir photo parent: %v", err)
+		}
+		if err := os.Symlink(filepath.Join(root, "etc"), filepath.Join(root, "var/lib/yiban/photos")); err != nil {
+			t.Fatalf("symlink photo dir: %v", err)
+		}
+	}
+	body := "YIBAN_DATABASE_URL=postgres://yiban:pw@127.0.0.1:5432/yiban\n" +
+		"YIBAN_HASH_PEPPER=" + strings.Repeat("a", 64) + "\n" +
+		"YIBAN_CREDENTIAL_KEY=" + strings.Repeat("A", 43) + "=\n" +
+		"YIBAN_PHOTO_DIR=" + photo + "\n"
+	if err := os.WriteFile(filepath.Join(envDir, "server.env"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write server.env: %v", err)
+	}
+	env := map[string]string{
+		"YIBAN_INSTALL_ROOT":          root,
+		"SYSTEMCTL":                   fakeBin(t, binDir, "systemctl", "exit 0\n"),
+		"YIBAN_DATABASE_URL":          "postgres://yiban:pw@127.0.0.1:5432/yiban",
+		"YIBAN_HEALTH_RETRIES":        "1",
+		"YIBAN_HEALTH_RETRY_INTERVAL": "0",
+		"PATH":                        binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}
+	return root, env, serverBin, cliBin
+}
+
+func installDryRun(t *testing.T, env map[string]string, serverBin, cliBin string) (string, int) {
+	t.Helper()
+	return runScript(t, scriptPath(t, "install.sh"), env,
+		"--server-bin", serverBin, "--cli-bin", cliBin)
 }
 
 func TestInstallShRejectsMissingBinary(t *testing.T) {

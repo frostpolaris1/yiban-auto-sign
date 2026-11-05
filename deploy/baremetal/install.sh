@@ -20,11 +20,13 @@
 #   SYSTEMCTL=/path/fake-systemctl   覆盖 systemctl 调用（记录用）。
 #
 # 步骤：依赖检查 → 旧布局保护（仅存旧 /etc/yiban/.env 时 exit 2，给迁移步骤）
+#       → 照片目录归一化白名单（坏路径在任何写入/chown 前 exit 2）
 #       → 服务用户 → 二进制落位 → /etc/yiban/server.env
-#       （缺则生成随机 pepper/credential key 并打印一次）
+#       （缺则生成随机 pepper/credential key；只打印写入路径与指纹，不打印值）
 #       → /etc/yiban/server.env.example（0644，无密钥的运行模板）
 #       → 前端产物落位（给了 --ui-dir 时）
-#       → systemd 单元（加固：只开照片目录可写）→ enable --now → /healthz 重试探测。
+#       → 照片目录建目录/属主 → systemd 单元（加固：只开照片目录可写）
+#       → enable + restart → /healthz 重试探测。
 #
 # 退出码：0 成功；1 健康检查超时或前端产物落位失败（可查日志定位）；
 #         2 用法错误或依赖缺失（含旧布局保护：仅存 /etc/yiban/.env 时拒装）。
@@ -64,6 +66,8 @@ ENV_EXAMPLE="${ENV_EXAMPLE:-$REPO_ROOT/deploy/baremetal/server.env.example}"
 DATABASE_URL="${DSN_FLAG:-${YIBAN_DATABASE_URL:-}}"
 [ -n "$DATABASE_URL" ] || { echo "install: --database-url or YIBAN_DATABASE_URL is required" >&2; exit 2; }
 command -v openssl >/dev/null 2>&1 || { echo "install: openssl is required" >&2; exit 2; }
+# realpath 用来归一化 YIBAN_PHOTO_DIR（含 .. 与软链）；缺它就无法做白名单判据。
+command -v realpath >/dev/null 2>&1 || { echo "install: realpath is required" >&2; exit 2; }
 if [ -n "$UI_DIR" ]; then
     [ -d "$UI_DIR" ] || { echo "install: --ui-dir is not a directory: $UI_DIR" >&2; exit 2; }
     [ -f "$UI_DIR/index.html" ] \
@@ -72,6 +76,83 @@ fi
 
 # dest 把系统绝对路径映射到干跑前缀下。
 dest() { printf '%s%s' "$ROOT" "$1"; }
+
+ENV_FILE="$(dest /etc/yiban/server.env)"
+PHOTO_ROOT="$SERVICE_HOME"
+
+# resolve_photo_dir 从 server.env 取照片目录并归一化，只允许服务主目录下的
+# 真实子目录。它只读不写：拒绝时在任何 mkdir/chown 之前 exit 2。
+#
+# 为什么白名单：systemd 单元把该路径写进 ReadWritePaths（ProtectSystem=strict），
+# 它同时是 chown 的目标。若允许任意绝对路径，/etc、/root、/var/lib 甚至
+# /var/lib/yiban-updater 都可能被交给服务用户；`..` 或软链还会让 chown 越界。
+# realpath -m 先归一化（不要求存在），白名单再判前缀；`-L` 拒绝路径本身是软链。
+resolve_photo_dir() {
+    local raw canon
+    raw="$(grep -E '^YIBAN_PHOTO_DIR=' "$ENV_FILE" 2>/dev/null | tail -n 1 | cut -d= -f2- || true)"
+    raw="${raw:-$PHOTO_ROOT/photos}"
+    # 去掉尾斜杠：/var/lib/yiban/photos/ 与 /var/lib/yiban/photos 同一条判据。
+    while [ "${#raw}" -gt 1 ] && [ "${raw%/}" != "$raw" ]; do
+        raw="${raw%/}"
+    done
+    case "$raw" in
+        /*) ;;
+        *) echo "install: YIBAN_PHOTO_DIR must be an absolute path: $raw" >&2; exit 2 ;;
+    esac
+    case "$raw" in
+        *[[:space:]]*)
+            echo "install: YIBAN_PHOTO_DIR must not contain whitespace: $raw" >&2; exit 2 ;;
+    esac
+    # 路径本身是软链时拒绝：chown 默认会跟随目标，systemd 也会把它解析到别处。
+    # 同时检查干跑前缀下的同名路径，测试夹具才能钉住这条判据。
+    if [ -L "$raw" ] || [ -L "$(dest "$raw")" ]; then
+        echo "install: YIBAN_PHOTO_DIR must not be a symlink: $raw" >&2
+        exit 2
+    fi
+    canon="$(realpath -m -- "$raw" 2>/dev/null)" \
+        || { echo "install: cannot normalize YIBAN_PHOTO_DIR: $raw" >&2; exit 2; }
+    case "$canon" in
+        "$PHOTO_ROOT"/*) ;;
+        *)
+            echo "install: YIBAN_PHOTO_DIR=$raw resolves to $canon; it must be a subdirectory of $PHOTO_ROOT (not $PHOTO_ROOT itself or a sibling such as $PHOTO_ROOT-updater)" >&2
+            exit 2 ;;
+    esac
+    PHOTO_DIR="$canon"
+}
+
+# ensure_photo_dir 在服务用户存在后建目录并交给它；只做非递归属主变更。
+# 创建后再归一化一次：软链替换或 .. 逃逸在这一步仍然被拒绝。
+ensure_photo_dir() {
+    local target canon
+    target="$(dest "$PHOTO_DIR")"
+    if ! mkdir -p -- "$target"; then
+        echo "install: cannot create YIBAN_PHOTO_DIR: $target" >&2
+        exit 2
+    fi
+    if [ -L "$target" ] || [ ! -d "$target" ]; then
+        echo "install: YIBAN_PHOTO_DIR is not a real directory: $target" >&2
+        exit 2
+    fi
+    if [ -z "$ROOT" ]; then
+        if [ -L "$PHOTO_DIR" ]; then
+            echo "install: YIBAN_PHOTO_DIR became a symlink: $PHOTO_DIR" >&2
+            exit 2
+        fi
+        canon="$(realpath -e -- "$PHOTO_DIR" 2>/dev/null)" \
+            || { echo "install: cannot resolve YIBAN_PHOTO_DIR: $PHOTO_DIR" >&2; exit 2; }
+        if [ "$canon" != "$PHOTO_DIR" ]; then
+            echo "install: YIBAN_PHOTO_DIR changed while installing: $PHOTO_DIR -> $canon" >&2
+            exit 2
+        fi
+        if ! chown -h "$SERVICE_USER:$SERVICE_USER" "$PHOTO_DIR"; then
+            echo "install: cannot give YIBAN_PHOTO_DIR to $SERVICE_USER: $PHOTO_DIR" >&2
+            exit 2
+        fi
+    fi
+}
+
+# 早于任何 chown/写入：已有 server.env 的坏 YIBAN_PHOTO_DIR 在这里就拒绝。
+resolve_photo_dir
 
 # 0) 旧布局保护：只有旧名 /etc/yiban/.env、没有 server.env 时拒绝安装。
 #    此时静默生成 server.env 会产生**新的** YIBAN_HASH_PEPPER / YIBAN_CREDENTIAL_KEY：
@@ -130,7 +211,6 @@ install -m 0644 "$ENV_EXAMPLE" "$(dest /etc/yiban/server.env.example)"
 if [ -z "$ROOT" ]; then
     chown root:root "$(dest /etc/yiban/server.env.example)"
 fi
-ENV_FILE="$(dest /etc/yiban/server.env)"
 GENERATED=0
 if [ ! -f "$ENV_FILE" ]; then
     GENERATED=1
@@ -148,6 +228,9 @@ EOF
 else
     echo "install: $ENV_FILE exists; keeping it (secrets are never regenerated in place)"
 fi
+
+# 再读一次：文件可能刚生成，或在上一步被并发改写；坏路径仍要在写单元前拒绝。
+resolve_photo_dir
 
 # 已有 server.env 也必须收紧：密钥只给 root 读。
 # 干跑（有前缀）时跳过 chown：非特权用户改不了属主。
@@ -253,10 +336,20 @@ else
     echo "install: --ui-dir not given: API only (no page at /)"
 fi
 
-# 生成的密钥只在这里打印一次；丢了就只能重新生成并承担轮换口径。
+# 密钥值不打印：stdout 可能进终端回滚、工单或 CI 日志。只报写入位置与指纹，
+# 指纹是 sha256 前 16 位，可由 root 从 server.env 复算对账。
 if [ "$GENERATED" -eq 1 ]; then
-    echo "install: generated secrets (shown ONCE, store them elsewhere):"
-    grep -E '^YIBAN_(HASH_PEPPER|CREDENTIAL_KEY)=' "$ENV_FILE"
+    echo "install: wrote secrets to $ENV_FILE (0600 root:root); values are NOT printed"
+    if command -v sha256sum >/dev/null 2>&1; then
+        grep -E '^YIBAN_(HASH_PEPPER|CREDENTIAL_KEY)=' "$ENV_FILE" \
+            | while IFS='=' read -r key value; do
+                [ -n "$key" ] || continue
+                fp="$(printf '%s' "$value" | sha256sum | cut -c1-16)"
+                echo "install: secret fingerprint $key sha256:$fp (first 16 hex)"
+            done
+    else
+        echo "install: sha256sum not found; secret fingerprints were NOT printed (SKIP, not green)"
+    fi
 fi
 
 # 4) systemd 单元。TimeoutStopSec 覆盖优雅停机预算（先停 worker 领取，
@@ -264,47 +357,9 @@ fi
 # 单元内容里的路径永远是真实运行路径：干跑只改文件的落位，
 # 不改单元声明的路径（否则干跑产物与真件不一致，检查就失去意义）。
 #
-# 4a) 加固用的可写路径：服务只需要写照片目录（数据库在 PostgreSQL，
-#     状态/日志/备份都在服务用户之外）。值以 server.env 为准（与进程读到的
-#     是同一个），缺省回落到安装器的运行目录。以下形态直接拒绝：
-#     相对路径、含空白（systemd 指令按空白切参数）、被 ProtectHome 遮住的
-#     /home|/root|/run/user、被 PrivateTmp 私有化的 /tmp|/var/tmp|/dev/shm，
-#     以及服务主目录本身或其父目录（会把 ui 与旧备份一并开放写）。
-PHOTO_DIR="$(grep -E '^YIBAN_PHOTO_DIR=' "$ENV_FILE" 2>/dev/null | tail -n 1 | cut -d= -f2- || true)"
-PHOTO_DIR="${PHOTO_DIR:-$SERVICE_HOME/photos}"
-# 去掉尾斜杠：/var/lib/yiban/ 与 /var/lib/yiban 必须是同一条判据。
-while [ "${#PHOTO_DIR}" -gt 1 ] && [ "${PHOTO_DIR%/}" != "$PHOTO_DIR" ]; do
-    PHOTO_DIR="${PHOTO_DIR%/}"
-done
-case "$PHOTO_DIR" in
-    /*) ;;
-    *) echo "install: YIBAN_PHOTO_DIR must be an absolute path: $PHOTO_DIR" >&2; exit 2 ;;
-esac
-case "$PHOTO_DIR" in
-    *[[:space:]]*)
-        echo "install: YIBAN_PHOTO_DIR must not contain whitespace: $PHOTO_DIR" >&2; exit 2 ;;
-    /home/*|/root/*|/run/user/*)
-        echo "install: YIBAN_PHOTO_DIR=$PHOTO_DIR is hidden by ProtectHome=true; use a path outside /home, /root and /run/user" >&2; exit 2 ;;
-    /tmp/*|/var/tmp/*|/dev/shm/*)
-        echo "install: YIBAN_PHOTO_DIR=$PHOTO_DIR would be private to the unit (PrivateTmp=true); photos would vanish with it" >&2; exit 2 ;;
-    /)
-        echo "install: YIBAN_PHOTO_DIR must not be /" >&2; exit 2 ;;
-esac
-if [ "$PHOTO_DIR" = "$SERVICE_HOME" ]; then
-    echo "install: YIBAN_PHOTO_DIR must be a subdirectory of $SERVICE_HOME, not $SERVICE_HOME itself" >&2
-    exit 2
-fi
-case "$SERVICE_HOME/" in
-    "$PHOTO_DIR"/*)
-        echo "install: YIBAN_PHOTO_DIR=$PHOTO_DIR is a parent of $SERVICE_HOME; refusing to expose ui and old backups" >&2
-        exit 2 ;;
-esac
-# ProtectSystem=strict 下服务无法自己创建目录：安装器先把照片根建好并交给
-# 服务用户。非递归 chown：只保证能落新照片，既有文件的权限不被改写。
-mkdir -p "$(dest "$PHOTO_DIR")"
-if [ -z "$ROOT" ]; then
-    chown "$SERVICE_USER:$SERVICE_USER" "$(dest "$PHOTO_DIR")"
-fi
+# 4a) 照片目录已在读配置时归一化并过白名单（resolve_photo_dir）。
+#     ProtectSystem=strict 下服务无法自己创建目录：现在建好并交给服务用户。
+ensure_photo_dir
 
 cat > "$(dest "/etc/systemd/system/$UNIT")" <<EOF
 [Unit]
@@ -337,9 +392,20 @@ ReadWritePaths=-$PHOTO_DIR
 WantedBy=multi-user.target
 EOF
 
-# 5) 启用并启动。
-"$SYSTEMCTL" daemon-reload
-"$SYSTEMCTL" enable --now "$UNIT"
+# 5) 启用并重启。enable --now 对已 active 的单元是 no-op：重装不会应用新单元，
+#    加固与 EnvironmentFile 改动都停在旧进程里。restart 保证每次安装都换进程。
+if ! "$SYSTEMCTL" daemon-reload; then
+    echo "install: systemctl daemon-reload failed" >&2
+    exit 2
+fi
+if ! "$SYSTEMCTL" enable "$UNIT"; then
+    echo "install: systemctl enable $UNIT failed" >&2
+    exit 2
+fi
+if ! "$SYSTEMCTL" restart "$UNIT"; then
+    echo "install: systemctl restart $UNIT failed" >&2
+    exit 1
+fi
 
 # 6) /healthz 重试探测。间隔与次数可用环境变量缩放（e2e 用小值）。
 ENV_BODY="$(dest /etc/yiban/server.env)"
