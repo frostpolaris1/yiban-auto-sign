@@ -127,6 +127,10 @@ either side drifts.
 | POST | `/api/schedule/override` | master/admin | P4 |
 | GET | `/api/me/time-pref` | master/admin/user | P4 |
 | PUT | `/api/me/time-pref` | master/admin/user | P4 |
+| GET | `/api/me/sign-calendar` | user | pm7 |
+|  |  |  | 本人账号的逐日签到计数；按账号当日最近一行去重，软删账号排除；`from`/`to` 必填且含首尾至多 31 天。 |
+| GET | `/api/me/sign-calendar/:day` | user | pm7 |
+|  |  |  | 本人账号在指定业务日的逐账号结果；他人账号与软删账号不出现。 |
 | POST | `/api/me/accounts/:id/delete` | master/admin/user | 5mx |
 |  |  |  | 本人软删自己的账号；`deleted_by` 记本人；审计 `account.self_delete`。已删除再删 400；他人账号 404。 |
 | POST | `/api/me/accounts/:id/restore` | master/admin/user | 5mx |
@@ -151,6 +155,7 @@ either side drifts.
 | POST | `/api/me/photos` | master/admin/user | P5 |
 | DELETE | `/api/me/photos/:id` | master/admin/user | P5 |
 | GET | `/api/me/photos/:id` | master/admin/user | P5 |
+| GET | `/api/me/photo-retention` | master/admin/user | P5 |
 | PUT | `/api/me/photo-retention` | master/admin/user | P5 |
 | PUT | `/api/accounts/:id/location` | user/admin | P5 |
 | GET | `/api/accounts/:id/photos` | user/admin | P5 |

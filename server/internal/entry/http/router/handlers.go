@@ -435,6 +435,15 @@ func (s *server) PhotoDelete(c *gin.Context, id oapi.PhotoID, params oapi.PhotoD
 	s.photos.PhotoDelete(c, id, params)
 }
 
+// PhotoRetentionGet 委托图片处理器。未装配时仍是 501。
+func (s *server) PhotoRetentionGet(c *gin.Context) {
+	if s.photos == nil {
+		notImplemented(c)
+		return
+	}
+	s.photos.PhotoRetentionGet(c)
+}
+
 // PhotoRetentionSet 委托图片处理器。未装配时仍是 501。
 func (s *server) PhotoRetentionSet(c *gin.Context, params oapi.PhotoRetentionSetParams) {
 	if s.photos == nil {
@@ -505,6 +514,24 @@ func (s *server) MeSignStatus(c *gin.Context) {
 		return
 	}
 	s.events.MeSignStatus(c)
+}
+
+// SignCalendarGet 委托日历处理器。未装配时仍是 501。
+func (s *server) SignCalendarGet(c *gin.Context, params oapi.SignCalendarGetParams) {
+	if s.calendar == nil {
+		notImplemented(c)
+		return
+	}
+	s.calendar.SignCalendarGet(c, params)
+}
+
+// SignCalendarDayGet 委托日历处理器。未装配时仍是 501。
+func (s *server) SignCalendarDayGet(c *gin.Context, day string) {
+	if s.calendar == nil {
+		notImplemented(c)
+		return
+	}
+	s.calendar.SignCalendarDayGet(c, day)
 }
 
 // AdminNotifyGet 委托通知订阅读取。未装配时仍是 501。

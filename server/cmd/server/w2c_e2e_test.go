@@ -40,6 +40,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/storage"
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
 	appadmin "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/admin"
+	appcalendar "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/calendar"
 	appdiagnostic "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/diagnostic"
 	appegress "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/egress"
 	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
@@ -60,6 +61,7 @@ import (
 	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 	accounthttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/account"
 	adminhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/admin"
+	calendarhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/calendar"
 	eventshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/events"
 	locationhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/location"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
@@ -291,6 +293,14 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 	if err != nil {
 		t.Fatalf("new diagnostic service: %v", err)
 	}
+	calendarSvc, err := appcalendar.NewService(appcalendar.Deps{
+		Store:    pg.NewCalendarRepo(db),
+		Clock:    clk,
+		Location: loc,
+	})
+	if err != nil {
+		t.Fatalf("new calendar service: %v", err)
+	}
 	prefSvc, err := apptimepref.NewService(apptimepref.Deps{
 		Store: e.prefs, Clock: clk, Allow: true, Cooldown: 30 * time.Second,
 	})
@@ -330,6 +340,7 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		Locations:       locationhttp.NewHandler(locationSvc, adminSvc),
 		Events: eventshttp.NewHandler(e.broker, diagSvc, adminSvc, clk, nil).
 			WithSessionResolver(e.sessions, coreauth.InsecureCookieName),
+		Calendar: calendarhttp.NewHandler(calendarSvc, adminSvc),
 	})
 	if err != nil {
 		t.Fatalf("router.New: %v", err)

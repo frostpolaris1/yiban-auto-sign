@@ -42,13 +42,6 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
 
-// fallbackStartHM / fallbackEndHM 是平台与缓存都不可用时的回退窗口（06:30~07:50）。
-// 只是作者部署的典型时段；来源会标 fallback，UI 必须显示。
-const (
-	fallbackStartHM = 6*60 + 30
-	fallbackEndHM   = 7*60 + 50
-)
-
 // Input 是一次计划构建的输入。
 type Input struct {
 	SchoolID     string
@@ -677,8 +670,8 @@ func (s *Service) resolveWindow(ctx context.Context, in Input, day time.Time, lo
 	default:
 		res.effective = coreschedule.WindowRecord{
 			SchoolTaskID: in.SchoolTaskID, Day: in.Day,
-			Start:  fallbackAt(day, loc, fallbackStartHM),
-			End:    fallbackAt(day, loc, fallbackEndHM),
+			Start:  fallbackAt(day, loc, coreschedule.DefaultSignWindowStartMinute),
+			End:    fallbackAt(day, loc, coreschedule.DefaultSignWindowEndMinute),
 			Source: string(contract.WindowFallback),
 		}
 	}

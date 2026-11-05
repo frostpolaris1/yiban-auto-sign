@@ -68,6 +68,7 @@ var contractEnumExempt = []contractExempt{
 	{"SchoolCreateTimezone", "无 pg ENUM"},
 	{"SchoolUpdateTimezone", "无 pg ENUM"},
 	{"SettingSource", "纯输出枚举；词表在 app/settings（用例层，不在 core），无 pg ENUM"},
+	{"SignCalendarAccountState", "纯输出四桶；终态取 core/status，unknown 是日历归并值，无码侧显式类型"},
 }
 
 // walkConsts 解析 dir 下全部非 _test.go 的 .go 文件。
