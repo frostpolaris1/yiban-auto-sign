@@ -1,4 +1,4 @@
-package updatecheck
+package selfcheck
 
 // 自检逐项判据。
 //

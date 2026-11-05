@@ -2,7 +2,7 @@
 //
 // # 功能
 // 装配生产探针（真实环境变量、PATH、PostgreSQL、systemd），
-// 调 internal/app/updatecheck 生成人读报告或 JSON。
+// 调 internal/app/selfcheck 生成人读报告或 JSON。
 // 本子命令**不**写数据库、**不**停服务、**不**改被检目录；
 // 唯一写路径是显式 --record-keys（更新成功后记录指纹）。
 //
@@ -29,7 +29,7 @@ import (
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/config"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
-	"github.com/frostpolaris1/yiban-auto-sign/server/internal/app/updatecheck"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/app/selfcheck"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/buildinfo"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/fsperm"
 )
@@ -42,8 +42,8 @@ func selfcheckLookup(key string) string {
 
 // newSelfcheckDeps 装配生产依赖：PATH、数据库探针、嵌入迁移版本、systemd、
 // 服务用户的 POSIX 权限探针。目录判权复用 doctor 的 dirStatOf/userIdentityOf。
-func newSelfcheckDeps() updatecheck.Deps {
-	deps := updatecheck.DefaultDeps()
+func newSelfcheckDeps() selfcheck.Deps {
+	deps := selfcheck.DefaultDeps()
 	deps.LookPath = exec.LookPath
 	deps.OpenDB = openSelfcheckDB
 	deps.EmbeddedVersion = pg.EmbeddedVersion
@@ -53,7 +53,7 @@ func newSelfcheckDeps() updatecheck.Deps {
 	deps.UserIdentity = userIdentityOf
 	deps.Containerized = inContainer()
 	info := buildinfo.Current()
-	deps.Build = updatecheck.BuildInfo{
+	deps.Build = selfcheck.BuildInfo{
 		Version:   info.Version,
 		Commit:    info.Commit,
 		BuildTime: info.BuildTime,
@@ -86,7 +86,7 @@ func systemdServiceUserFromUnit() string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "systemctl",
-		"show", updatecheck.DefaultUnit+".service", "-p", "User", "--value").Output()
+		"show", selfcheck.DefaultUnit+".service", "-p", "User", "--value").Output()
 	if err != nil {
 		return ""
 	}
@@ -95,7 +95,7 @@ func systemdServiceUserFromUnit() string {
 
 // openSelfcheckDB 复用 doctor 的只读探针（pgHandle 已实现 SchemaVersion）。
 // pepper 传 nil：自检不校验审计链，只读 schema 版本。
-func openSelfcheckDB(ctx context.Context, dsn string) (updatecheck.DB, error) {
+func openSelfcheckDB(ctx context.Context, dsn string) (selfcheck.DB, error) {
 	handle, err := openPgProbe(ctx, dsn, nil)
 	if err != nil {
 		return nil, err
@@ -115,7 +115,7 @@ func systemdServiceProbe(ctx context.Context) (available, active bool, state str
 	if _, err := os.Stat("/run/systemd/system"); err != nil {
 		return false, false, ""
 	}
-	out, err := exec.CommandContext(ctx, "systemctl", "is-active", updatecheck.DefaultUnit).Output()
+	out, err := exec.CommandContext(ctx, "systemctl", "is-active", selfcheck.DefaultUnit).Output()
 	state = strings.TrimSpace(string(out))
 	if err != nil {
 		if state == "" {
@@ -132,16 +132,16 @@ func runSelfcheck(args []string, stdout, stderr io.Writer) int {
 }
 
 // runSelfcheckWith 是测试接缝：lookup、deps 与服务用户缺省值都可注入。
-func runSelfcheckWith(args []string, stdout, stderr io.Writer, lookup func(string) string, deps updatecheck.Deps, serviceUserDefault func() string) int {
+func runSelfcheckWith(args []string, stdout, stderr io.Writer, lookup func(string) string, deps selfcheck.Deps, serviceUserDefault func() string) int {
 	fs := newFlagSet("selfcheck", stderr)
 	dsn := fs.String("dsn", "", "覆盖 YIBAN_DATABASE_URL")
 	httpAddr := fs.String("http-addr", "", "覆盖 YIBAN_HTTP_ADDR")
 	uiDir := fs.String("ui-dir", "", "覆盖 YIBAN_UI_DIR")
 	photoDir := fs.String("photo-dir", "", "覆盖 YIBAN_PHOTO_DIR")
-	backupDir := fs.String("backup-dir", "", "更新备份根目录（缺省 "+updatecheck.DefaultBackupDir+"）")
-	statePath := fs.String("state", "", "更新状态文件（缺省 "+updatecheck.DefaultStatePath+"）")
+	backupDir := fs.String("backup-dir", "", "更新备份根目录（缺省 "+selfcheck.DefaultBackupDir+"）")
+	statePath := fs.String("state", "", "更新状态文件（缺省 "+selfcheck.DefaultStatePath+"）")
 	serviceUser := fs.String("service-user", "",
-		"运行服务的系统用户（缺省 systemctl show "+updatecheck.DefaultUnit+".service -p User --value）")
+		"运行服务的系统用户（缺省 systemctl show "+selfcheck.DefaultUnit+".service -p User --value）")
 	asJSON := fs.Bool("json", false, "输出 JSON 报告（不混人读行）")
 	recordKeys := fs.Bool("record-keys", false, "把当前密钥指纹写入状态文件（更新成功后调用）")
 	timeout := fs.Duration("timeout", 15*time.Second, "整体超时")
@@ -167,36 +167,36 @@ func runSelfcheckWith(args []string, stdout, stderr io.Writer, lookup func(strin
 		svcUser = strings.TrimSpace(serviceUserDefault())
 	}
 
-	opts := updatecheck.Options{
+	opts := selfcheck.Options{
 		DSN:           firstNonEmpty(*dsn, lookup("YIBAN_DATABASE_URL")),
 		HTTPAddr:      firstNonEmpty(*httpAddr, lookup("YIBAN_HTTP_ADDR"), config.DefaultHTTPAddr),
 		UIDir:         firstNonEmpty(*uiDir, lookup("YIBAN_UI_DIR")),
 		PhotoDir:      firstNonEmpty(*photoDir, lookup("YIBAN_PHOTO_DIR"), config.DefaultPhotoDir),
 		CredentialKey: lookup("YIBAN_CREDENTIAL_KEY"),
 		HashPepper:    lookup("YIBAN_HASH_PEPPER"),
-		BackupDir:     firstNonEmpty(*backupDir, updatecheck.DefaultBackupDir),
-		StatePath:     firstNonEmpty(*statePath, updatecheck.DefaultStatePath),
-		Unit:          updatecheck.DefaultUnit,
+		BackupDir:     firstNonEmpty(*backupDir, selfcheck.DefaultBackupDir),
+		StatePath:     firstNonEmpty(*statePath, selfcheck.DefaultStatePath),
+		Unit:          selfcheck.DefaultUnit,
 		ServiceUser:   svcUser,
 	}
 
 	if *recordKeys {
-		state, err := updatecheck.RecordKeys(deps.FS, opts.StatePath, opts, deps.Now())
+		state, err := selfcheck.RecordKeys(deps.FS, opts.StatePath, opts, deps.Now())
 		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "selfcheck: 记录密钥指纹失败: %v\n", err)
 			return 1
 		}
 		_, _ = fmt.Fprintf(stdout, "已记录密钥指纹到 %s\ncredential_key=%s\nhash_pepper=%s\nrecorded_at=%s\n",
 			opts.StatePath,
-			updatecheck.ShortFingerprint(state.KeyFingerprints[updatecheck.FingerprintCredentialKey]),
-			updatecheck.ShortFingerprint(state.KeyFingerprints[updatecheck.FingerprintHashPepper]),
+			selfcheck.ShortFingerprint(state.KeyFingerprints[selfcheck.FingerprintCredentialKey]),
+			selfcheck.ShortFingerprint(state.KeyFingerprints[selfcheck.FingerprintHashPepper]),
 			state.RecordedAt)
 		return 0
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	rep, err := updatecheck.Run(ctx, deps, opts)
+	rep, err := selfcheck.Run(ctx, deps, opts)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "selfcheck: %v\n", err)
 		return 1

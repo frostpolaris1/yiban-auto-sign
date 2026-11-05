@@ -1,7 +1,7 @@
 // 自检的文件系统端口与 OS 实现。
 //
 // # 归属
-// updatecheck 包内的端口定义（app 层不依赖 adapters）。
+// selfcheck 包内的端口定义（app 层不依赖 adapters）。
 // 测试注入内存替身；生产用 OSFileSystem。
 //
 // # 口径
@@ -9,7 +9,7 @@
 // WriteFileAtomic 用同目录临时文件 + chmod + rename：
 // 文件从创建那一刻就是 0600；父目录不存在时按 0700 创建，
 // 已存在的父目录不改权限（/var/lib/yiban 还承载照片与页面目录）。
-package updatecheck
+package selfcheck
 
 import (
 	"os"

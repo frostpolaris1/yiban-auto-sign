@@ -244,7 +244,9 @@ func TestStructureRowsPinned(t *testing.T) {
 	// entry/http 增 settings/audit（2ws A 的四个端点）。
 	// arch-p0-config：server/internal 增 configdata（go:embed 的配置名册）。
 	// 用户签到日历：app 与 entry/http 各增 calendar（只读面）。
-	const want = "d65b1ad652d0f1d276591c71988ece830fa8a2fa8e1a724382b0042f0744fead"
+	// arch-a1b：app 的 updatecheck 改名 selfcheck、admin 改名 schooladmin；
+	// entry/http 的 settings 拆为 notify 与 system（路由与形状不变）。
+	const want = "3d7a176de5707e9c36685891981608d9be2ed74b428ccdda1133eab1c6c08edc"
 	if got != want {
 		t.Fatalf("structure 内容变了（hash %s）；确认改动后更新 TestStructureRowsPinned 的哈希", got)
 	}

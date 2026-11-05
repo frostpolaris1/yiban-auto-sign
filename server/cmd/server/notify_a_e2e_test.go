@@ -4,7 +4,7 @@ package main
 //
 // 覆盖：匿名 401、user 403、master/admin 200；键集翻页无重无漏；
 // 非法 cursor/limit 400；越权 id 静默忽略；read-all 幂等；未读数只算本人。
-// 不经过 assembly：本文件只装配 settings 处理器与真实 inbox 用例。
+// 不经过 assembly：本文件只装配 notify 处理器与真实 inbox 用例。
 
 import (
 	"bytes"
@@ -26,9 +26,9 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	corenotify "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/notify"
 	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
+	notifyhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/notify"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/router"
-	settingshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/settings"
 )
 
 type notifyHTTPEnv struct {
@@ -84,7 +84,7 @@ func newNotifyHTTPEnv(t *testing.T) *notifyHTTPEnv {
 		Clock:           clk,
 		Logger:          logger,
 		InsecureCookies: true,
-		Settings:        settingshttp.NewHandler(nil, nil, nil, nil).WithInbox(inboxSvc),
+		Notify:          notifyhttp.NewHandler(nil).WithInbox(inboxSvc),
 	})
 	if err != nil {
 		t.Fatalf("router.New: %v", err)

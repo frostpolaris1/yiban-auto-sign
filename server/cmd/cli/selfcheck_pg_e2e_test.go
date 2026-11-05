@@ -18,13 +18,13 @@ import (
 	"time"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
-	"github.com/frostpolaris1/yiban-auto-sign/server/internal/app/updatecheck"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/app/selfcheck"
 )
 
 // selfcheckE2EDeps 返回生产依赖 + 临时目录输入。
-func selfcheckE2EOptions(t *testing.T, dsn string) updatecheck.Options {
+func selfcheckE2EOptions(t *testing.T, dsn string) selfcheck.Options {
 	t.Helper()
-	return updatecheck.Options{
+	return selfcheck.Options{
 		DSN:           dsn,
 		HTTPAddr:      "127.0.0.1:47183",
 		PhotoDir:      t.TempDir(),
@@ -32,7 +32,7 @@ func selfcheckE2EOptions(t *testing.T, dsn string) updatecheck.Options {
 		StatePath:     filepath.Join(t.TempDir(), "update-state.json"),
 		CredentialKey: testCLICredentialKey,
 		HashPepper:    testCLIPepper,
-		Unit:          updatecheck.DefaultUnit,
+		Unit:          selfcheck.DefaultUnit,
 	}
 }
 
@@ -76,7 +76,7 @@ func TestSelfcheckReadsSchemaVersionFromPostgres(t *testing.T) {
 		t.Fatalf("embedded version: %v", err)
 	}
 
-	rep, err := updatecheck.Run(ctx, newSelfcheckDeps(), selfcheckE2EOptions(t, dsn))
+	rep, err := selfcheck.Run(ctx, newSelfcheckDeps(), selfcheckE2EOptions(t, dsn))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestSelfcheckReadsSchemaVersionFromPostgres(t *testing.T) {
 		"db.connect", "db.schema_version", "db.migrations_embedded", "db.migrations_pending",
 	} {
 		c := findCheck(t, rep, name)
-		if c.Status != updatecheck.StatusPass {
+		if c.Status != selfcheck.StatusPass {
 			t.Fatalf("%s = %+v, want PASS\n%s", name, c, rep.Text())
 		}
 	}
@@ -112,19 +112,19 @@ func TestSelfcheckDetectsPendingMigrations(t *testing.T) {
 	dsn, cleanup := createSelfcheckSchema(t, base, "selfcheck_empty")
 	defer cleanup()
 
-	rep, err := updatecheck.Run(ctx, newSelfcheckDeps(), selfcheckE2EOptions(t, dsn))
+	rep, err := selfcheck.Run(ctx, newSelfcheckDeps(), selfcheckE2EOptions(t, dsn))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if c := findCheck(t, rep, "db.connect"); c.Status != updatecheck.StatusPass {
+	if c := findCheck(t, rep, "db.connect"); c.Status != selfcheck.StatusPass {
 		t.Fatalf("db.connect = %+v", c)
 	}
 	schema := findCheck(t, rep, "db.schema_version")
-	if schema.Status != updatecheck.StatusPass || !strings.Contains(schema.Detail, "尚未迁移") {
+	if schema.Status != selfcheck.StatusPass || !strings.Contains(schema.Detail, "尚未迁移") {
 		t.Fatalf("db.schema_version = %+v", schema)
 	}
 	pending := findCheck(t, rep, "db.migrations_pending")
-	if pending.Status != updatecheck.StatusFail || !strings.Contains(pending.Detail, "有待执行迁移") {
+	if pending.Status != selfcheck.StatusFail || !strings.Contains(pending.Detail, "有待执行迁移") {
 		t.Fatalf("db.migrations_pending = %+v", pending)
 	}
 	if rep.ExitCode() != 1 {
@@ -139,7 +139,7 @@ func TestSelfcheckDetectsPendingMigrations(t *testing.T) {
 }
 
 // findCheck 按名找检查行。
-func findCheck(t *testing.T, rep updatecheck.Report, name string) updatecheck.Check {
+func findCheck(t *testing.T, rep selfcheck.Report, name string) selfcheck.Check {
 	t.Helper()
 	for _, c := range rep.Checks {
 		if c.Name == name {
@@ -147,7 +147,7 @@ func findCheck(t *testing.T, rep updatecheck.Report, name string) updatecheck.Ch
 		}
 	}
 	t.Fatalf("check %q not found", name)
-	return updatecheck.Check{}
+	return selfcheck.Check{}
 }
 
 // assertNoSensitiveDSN 断言输出不含 DSN 的敏感形态。

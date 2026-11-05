@@ -7,7 +7,7 @@
 // 本包**不**写库、**不**聚合计数、**不**解析平台结果。
 //
 // # 归属
-// entry/http 入口层。作用域由 Authorizer（app/admin）解析；
+// entry/http 入口层。作用域由 Authorizer（app/schooladmin）解析；
 // 读模型由 app/calendar 提供。
 //
 // # 复用

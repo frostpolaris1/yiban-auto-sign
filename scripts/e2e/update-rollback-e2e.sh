@@ -796,7 +796,7 @@ run_mode() {
     bash "$UPDATE_SH" --selfcheck-only >"$E2E_LOG_DIR/R1-selfcheck-legacy.log" 2>&1 || SELFCHECK_LEGACY_RC=$?
     assert_eq "老机 pre-migrate 在场时 selfcheck-only 退出码" "$SELFCHECK_LEGACY_RC" "0"
     # 再加一遍**不带 --backup-dir** 的明文自检：判的是 U1 的默认值
-    # （updatecheck.DefaultBackupDir）。默认值若被改回 root 专属目录，
+    # （selfcheck.DefaultBackupDir）。默认值若被改回 root 专属目录，
     # 这里会看到 [FAIL] fs.backup_dir —— 正是要挡的误红。
     # 直接调 CLI 要自己载入 server.env（update.sh 才替它做这件事）。
     SELFCHECK_TEXT_RC=0

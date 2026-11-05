@@ -536,92 +536,92 @@ func (s *server) SignCalendarDayGet(c *gin.Context, day string) {
 
 // AdminNotifyGet 委托通知订阅读取。未装配时仍是 501。
 func (s *server) AdminNotifyGet(c *gin.Context) {
-	if s.settings == nil {
+	if s.notify == nil {
 		notImplemented(c)
 		return
 	}
-	s.settings.AdminNotifyGet(c)
+	s.notify.AdminNotifyGet(c)
 }
 
 // AdminNotifySet 委托通知订阅替换。未装配时仍是 501。
 func (s *server) AdminNotifySet(c *gin.Context, params oapi.AdminNotifySetParams) {
-	if s.settings == nil {
+	if s.notify == nil {
 		notImplemented(c)
 		return
 	}
-	s.settings.AdminNotifySet(c, params)
+	s.notify.AdminNotifySet(c, params)
 }
 
 // NotificationList 委托站内信列表。未装配时仍是 501。
 func (s *server) NotificationList(c *gin.Context, params oapi.NotificationListParams) {
-	if s.settings == nil {
+	if s.notify == nil {
 		notImplemented(c)
 		return
 	}
-	s.settings.NotificationList(c, params)
+	s.notify.NotificationList(c, params)
 }
 
 // NotificationUnreadCount 委托未读数读取。未装配时仍是 501。
 func (s *server) NotificationUnreadCount(c *gin.Context) {
-	if s.settings == nil {
+	if s.notify == nil {
 		notImplemented(c)
 		return
 	}
-	s.settings.NotificationUnreadCount(c)
+	s.notify.NotificationUnreadCount(c)
 }
 
 // NotificationMarkRead 委托标记已读。未装配时仍是 501。
 func (s *server) NotificationMarkRead(c *gin.Context, params oapi.NotificationMarkReadParams) {
-	if s.settings == nil {
+	if s.notify == nil {
 		notImplemented(c)
 		return
 	}
-	s.settings.NotificationMarkRead(c, params)
+	s.notify.NotificationMarkRead(c, params)
 }
 
 // NotificationMarkAllRead 委托全部已读。未装配时仍是 501。
 func (s *server) NotificationMarkAllRead(c *gin.Context, params oapi.NotificationMarkAllReadParams) {
-	if s.settings == nil {
+	if s.notify == nil {
 		notImplemented(c)
 		return
 	}
-	s.settings.NotificationMarkAllRead(c, params)
+	s.notify.NotificationMarkAllRead(c, params)
 }
 
 // AdminSettings 委托设置名册读取。未装配时仍是 501。
 func (s *server) AdminSettings(c *gin.Context) {
-	if s.settings == nil {
+	if s.system == nil {
 		notImplemented(c)
 		return
 	}
-	s.settings.AdminSettings(c)
+	s.system.AdminSettings(c)
 }
 
 // AdminMailTest 委托测试邮件端点。未装配时仍是 501。
 func (s *server) AdminMailTest(c *gin.Context, params oapi.AdminMailTestParams) {
-	if s.settings == nil {
+	if s.system == nil {
 		notImplemented(c)
 		return
 	}
-	s.settings.AdminMailTest(c, params)
+	s.system.AdminMailTest(c, params)
 }
 
 // AnnouncementGet 委托公告读取。未装配时仍是 501。
 func (s *server) AnnouncementGet(c *gin.Context) {
-	if s.settings == nil {
+	if s.system == nil {
 		notImplemented(c)
 		return
 	}
-	s.settings.AnnouncementGet(c)
+	s.system.AnnouncementGet(c)
 }
 
 // AnnouncementSet 委托公告写入。未装配时仍是 501。
 func (s *server) AnnouncementSet(c *gin.Context, params oapi.AnnouncementSetParams) {
-	if s.settings == nil {
+	if s.system == nil {
 		notImplemented(c)
 		return
 	}
-	s.settings.AnnouncementSet(c, params)
+	s.system.AnnouncementSet(c, params)
 }
 
 // AuditLogList 委托审计列表。未装配时仍是 501。

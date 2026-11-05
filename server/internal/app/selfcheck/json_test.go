@@ -1,4 +1,4 @@
-package updatecheck
+package selfcheck
 
 // --json 结构 golden。
 //

@@ -17,10 +17,10 @@ import (
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
-	appadmin "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/admin"
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	applocation "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/location"
 	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
+	appadmin "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schooladmin"
 	appuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/user"
 	coreaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/account"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
