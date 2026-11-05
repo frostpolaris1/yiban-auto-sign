@@ -3,7 +3,8 @@
 // # 功能
 // 读、写、清除当前用户的自选偏移；执行部署开关、粒度与冷却判据。
 // 偏移是相对有效窗口起点的分钟数，按 5 分钟粒度存储。
-// 本包**不**查计划、**不**算窗口、**不**发 HTTP 请求。
+// 读面同时给出服务端默认签到窗口与 5 分钟锚点，供界面回显。
+// 本包**不**查计划、**不**读平台窗口、**不**发 HTTP 请求。
 //
 // # 归属
 // app 层用例。端口见本文件，adapters/pg 实现；
@@ -11,16 +12,18 @@
 //
 // # 复用
 // Service、View、Store、Deps。取值边界取自 core/schedule
-// （MaxOffsetMin、GranularityMin）；建表 CHECK（00014）取同值。
+// （MaxOffsetMin、GranularityMin、DefaultSignWindow*）；建表 CHECK（00014）取同值。
 //
 // # 口径
 // 关闭开关时不读、不写：已存值可读但计划忽略它。
 // 冷却只按上一次写入时间判定，进程重启不丢。
+// 窗口值只取 core/schedule 的默认常量：与计划回退窗口同源，不复制第二份。
 package timepref
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
@@ -49,10 +52,29 @@ type Deps struct {
 	Cooldown time.Duration
 }
 
+// Window 是服务端标准签到窗口的展示值，HH:MM。
+// 它不是执行承诺：实际窗口可能被平台发现窗口或逐任务 override 平移。
+type Window struct {
+	Start string
+	End   string
+}
+
+// Slot 是标准窗口内的一个 5 分钟锚点。
+// OffsetMin 相对标准窗口起点；Label 是该窗口内的时钟时刻，不是实际执行时刻。
+// Disabled 为真时 Reason 非空。
+type Slot struct {
+	OffsetMin int
+	Label     string
+	Disabled  bool
+	Reason    string
+}
+
 // View 是对外读数。
 type View struct {
 	OffsetMin *int
 	Allowed   bool
+	Window    Window
+	Slots     []Slot
 }
 
 // Service 是自选用例服务。
@@ -80,11 +102,11 @@ func (s *Service) Get(ctx context.Context, userID string) (View, error) {
 	pref, err := s.deps.Store.Get(ctx, userID)
 	if err != nil {
 		if errors.Is(err, coreerrs.ErrNotFound) {
-			return View{Allowed: s.deps.Allow}, nil
+			return s.view(nil), nil
 		}
 		return View{}, err
 	}
-	return View{OffsetMin: pref.OffsetMin, Allowed: s.deps.Allow}, nil
+	return s.view(pref.OffsetMin), nil
 }
 
 // Set 写或清除自选。
@@ -112,5 +134,49 @@ func (s *Service) Set(ctx context.Context, userID string, offset *int) (View, er
 		return View{}, coreerrs.New(coreerrs.CodeRateLimited,
 			"time preference changed too recently")
 	}
-	return View{OffsetMin: offset, Allowed: true}, nil
+	return s.view(offset), nil
+}
+
+// view 组装读面。窗口与槽位只由 core/schedule 的默认常量派生：
+// 计划回退窗口与自选展示窗口不会出现两套 06:30/07:50。
+// 这里是服务端标准窗口；实际执行窗口可被平台窗口或 override 平移，
+// slot label 只表示相对标准窗口的偏好时刻。
+func (s *Service) view(offset *int) View {
+	start := coreschedule.DefaultSignWindowStartMinute
+	end := coreschedule.DefaultSignWindowEndMinute
+	out := View{
+		OffsetMin: offset,
+		Allowed:   s.deps.Allow,
+		Window:    Window{Start: clockLabel(start), End: clockLabel(end)},
+	}
+	width := end - start
+	if width <= 0 {
+		return out
+	}
+	slots := width / coreschedule.GranularityMin
+	limit := coreschedule.MaxOffsetMin / coreschedule.GranularityMin
+	if slots > limit {
+		slots = limit
+	}
+	reason := ""
+	if !s.deps.Allow {
+		// 关闭开关时槽位仍列出，但全部不可选：界面显示原因而不是空白。
+		reason = "time preference is disabled"
+	}
+	out.Slots = make([]Slot, 0, slots)
+	for i := 0; i < slots; i++ {
+		offsetMin := i * coreschedule.GranularityMin
+		out.Slots = append(out.Slots, Slot{
+			OffsetMin: offsetMin,
+			Label:     clockLabel(start + offsetMin),
+			Disabled:  !s.deps.Allow,
+			Reason:    reason,
+		})
+	}
+	return out
+}
+
+// clockLabel 把当日分钟数格式化成 HH:MM。
+func clockLabel(minute int) string {
+	return fmt.Sprintf("%02d:%02d", minute/60, minute%60)
 }

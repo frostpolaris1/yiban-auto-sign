@@ -1,7 +1,7 @@
 // Package photos 把图片库用例映射到 HTTP。
 //
 // # 功能
-// 自有图片五端点（列表、上传、读取、软删、保留期）、
+// 自有图片六端点（列表、上传、读取、软删、保留期读与写）、
 // 按账号列照片、学校默认图读写。
 // 上传走 multipart/form-data，单文件字段名 image。
 // 读取直接流式写响应，先判作用域再写字节。
@@ -70,6 +70,7 @@ type Service interface {
 	Get(ctx context.Context, scope corescope.Scope, id string) (corephoto.Record, error)
 	Open(ctx context.Context, scope corescope.Scope, id string) (corephoto.Record, io.ReadCloser, error)
 	Delete(ctx context.Context, scope corescope.Scope, id string) (corephoto.Record, error)
+	Retention(ctx context.Context, scope corescope.Scope) (int, error)
 	SetRetention(ctx context.Context, scope corescope.Scope, days int) (int, error)
 	GetSchoolDefault(ctx context.Context, scope corescope.Scope, schoolID string) (appphotos.SchoolDefaultPhoto, error)
 	SetSchoolDefault(ctx context.Context, scope corescope.Scope, schoolID string, photoID *string, actor appaudit.Actor) (appphotos.SchoolDefaultPhoto, error)
@@ -324,6 +325,21 @@ func (h *Handler) PhotoDelete(c *gin.Context, id oapi.PhotoID, _ oapi.PhotoDelet
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// PhotoRetentionGet 实现 GET /api/me/photo-retention。
+// 任何角色都只读自己的保留期；未设置时由用例补缺省 90 天。
+func (h *Handler) PhotoRetentionGet(c *gin.Context) {
+	session, _, _, ok := h.principal(c)
+	if !ok {
+		return
+	}
+	days, err := h.svc.Retention(c.Request.Context(), ownerScope(session))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	respond.JSON(c.Writer, http.StatusOK, oapi.PhotoRetention{Days: oapi.PhotoRetentionDays(days)})
 }
 
 // PhotoRetentionSet 实现 PUT /api/me/photo-retention。

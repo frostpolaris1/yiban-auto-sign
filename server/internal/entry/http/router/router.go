@@ -33,6 +33,7 @@ import (
 	accounthttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/account"
 	adminhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/admin"
 	audithttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/audit"
+	calendarhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/calendar"
 	eventshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/events"
 	locationhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/location"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
@@ -86,6 +87,8 @@ type Options struct {
 	Locations *locationhttp.Handler
 	// Events 提供管理员事件流与诊断轮询端点。为 nil 时这些端点回 501。
 	Events *eventshttp.Handler
+	// Calendar 提供用户签到日历端点。为 nil 时这些端点回 501。
+	Calendar *calendarhttp.Handler
 	// Settings 提供通知订阅、设置名册与公告端点。为 nil 时这些端点回 501。
 	Settings *settingshttp.Handler
 	// Audit 提供审计只读列表端点。为 nil 时该端点回 501。
@@ -130,6 +133,7 @@ type server struct {
 	photos         *photoshttp.Handler
 	locations      *locationhttp.Handler
 	events         *eventshttp.Handler
+	calendar       *calendarhttp.Handler
 	settings       *settingshttp.Handler
 	audit          *audithttp.Handler
 	rateLimit      *ratelimit.Guard
@@ -172,6 +176,7 @@ func New(opts Options) (*gin.Engine, error) {
 	srv.photos = opts.Photos
 	srv.locations = opts.Locations
 	srv.events = opts.Events
+	srv.calendar = opts.Calendar
 	srv.settings = opts.Settings
 	srv.audit = opts.Audit
 	srv.rateLimit = opts.RateLimit

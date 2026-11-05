@@ -48,6 +48,7 @@ import (
 	appadmin "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/admin"
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
+	appcalendar "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/calendar"
 	appdiagnostic "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/diagnostic"
 	appegress "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/egress"
 	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
@@ -76,6 +77,7 @@ import (
 	accounthttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/account"
 	adminhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/admin"
 	audithttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/audit"
+	calendarhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/calendar"
 	eventshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/events"
 	locationhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/location"
 	photoshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/photos"
@@ -316,6 +318,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		photoLib    *photoshttp.Handler
 		locLib      *locationhttp.Handler
 		eventLib    *eventshttp.Handler
+		calendarLib *calendarhttp.Handler
 		settingsLib *settingshttp.Handler
 		auditLib    *audithttp.Handler
 		db          *pg.DB
@@ -730,6 +733,16 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		}
 		eventLib = eventshttp.NewHandler(broker, diagSvc, adminSvc, clk, nil).
 			WithSessionResolver(issuer, cookieName)
+		calendarSvc, err := appcalendar.NewService(appcalendar.Deps{
+			Store:    pg.NewCalendarRepo(db),
+			Clock:    clk,
+			Location: loc,
+		})
+		if err != nil {
+			closeFn()
+			return nil, fmt.Errorf("assembly: sign calendar service: %w", err)
+		}
+		calendarLib = calendarhttp.NewHandler(calendarSvc, adminSvc)
 	}
 
 	engine, err := router.New(router.Options{
@@ -750,6 +763,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		Photos:          photoLib,
 		Locations:       locLib,
 		Events:          eventLib,
+		Calendar:        calendarLib,
 		Settings:        settingsLib,
 		Audit:           auditLib,
 		RateLimit:       guard,

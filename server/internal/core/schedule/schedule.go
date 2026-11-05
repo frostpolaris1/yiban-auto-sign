@@ -26,6 +26,13 @@ const (
 	MaxOffsetMin = 1440
 	// GranularityMin 是偏移粒度，与计划片跨度一致。
 	GranularityMin = 5
+
+	// DefaultSignWindowStartMinute 是服务端默认签到窗口起点（06:30）。
+	// 平台与缓存都不可用时，计划回退用它；用户自选读面也按它展示窗口。
+	// 两处必须取同一对常量：复制一份就是第二个事实源。
+	DefaultSignWindowStartMinute = 6*60 + 30
+	// DefaultSignWindowEndMinute 是服务端默认签到窗口终点（07:50）。
+	DefaultSignWindowEndMinute = 7*60 + 50
 )
 
 // PlanRow 是一行排期任务：账号 A 在业务日 D 为学校任务 T 预留的尝试位。

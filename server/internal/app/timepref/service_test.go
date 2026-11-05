@@ -155,3 +155,64 @@ func TestClear(t *testing.T) {
 		t.Fatalf("清除后仍非空: view=%+v store=%+v", view, store.pref)
 	}
 }
+
+// 读面窗口与槽位：默认窗口 06:30~07:50，5 分钟粒度共 16 槽。
+func TestViewWindowAndSlots(t *testing.T) {
+	now := time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)
+	svc := newService(t, &fakeStore{}, now, true, 30*time.Second)
+	view, err := svc.Get(context.Background(), "u1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if view.Window.Start != "06:30" || view.Window.End != "07:50" {
+		t.Fatalf("window = %+v", view.Window)
+	}
+	if len(view.Slots) != 16 {
+		t.Fatalf("slots = %d, want 16", len(view.Slots))
+	}
+	if view.Slots[0].OffsetMin != 0 || view.Slots[0].Label != "06:30" {
+		t.Fatalf("首槽 = %+v", view.Slots[0])
+	}
+	if view.Slots[15].OffsetMin != 75 || view.Slots[15].Label != "07:45" {
+		t.Fatalf("末槽 = %+v", view.Slots[15])
+	}
+	for _, slot := range view.Slots {
+		if slot.Disabled || slot.Reason != "" {
+			t.Fatalf("开启态槽位不可用: %+v", slot)
+		}
+	}
+}
+
+// 部署开关关闭时槽位仍列出，但全部 disabled 且带原因。
+func TestViewSlotsDisabledWhenGateOff(t *testing.T) {
+	now := time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)
+	svc := newService(t, &fakeStore{}, now, false, 30*time.Second)
+	view, err := svc.Get(context.Background(), "u1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(view.Slots) != 16 {
+		t.Fatalf("slots = %d, want 16", len(view.Slots))
+	}
+	for _, slot := range view.Slots {
+		if !slot.Disabled || slot.Reason == "" {
+			t.Fatalf("关闭态槽位应 disabled 且有原因: %+v", slot)
+		}
+	}
+}
+
+// Set 的返回值与 Get 同形：窗口与槽位不因写入而消失。
+func TestSetKeepsWindowAndSlots(t *testing.T) {
+	now := time.Date(2026, 10, 29, 6, 0, 0, 0, time.UTC)
+	svc := newService(t, &fakeStore{}, now, true, 0)
+	view, err := svc.Set(context.Background(), "u1", ptr(10))
+	if err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if view.OffsetMin == nil || *view.OffsetMin != 10 {
+		t.Fatalf("offset = %v", view.OffsetMin)
+	}
+	if view.Window.Start != "06:30" || len(view.Slots) != 16 {
+		t.Fatalf("Set 未返回窗口/槽位: %+v", view)
+	}
+}

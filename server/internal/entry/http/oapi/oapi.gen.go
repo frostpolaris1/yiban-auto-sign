@@ -451,22 +451,46 @@ func (e SchoolUpdateTimezone) Valid() bool {
 
 // Defines values for SettingSource.
 const (
-	Default SettingSource = "default"
-	Env     SettingSource = "env"
-	File    SettingSource = "file"
-	Unknown SettingSource = "unknown"
+	SettingSourceDefault SettingSource = "default"
+	SettingSourceEnv     SettingSource = "env"
+	SettingSourceFile    SettingSource = "file"
+	SettingSourceUnknown SettingSource = "unknown"
 )
 
 // Valid indicates whether the value is a known member of the SettingSource enum.
 func (e SettingSource) Valid() bool {
 	switch e {
-	case Default:
+	case SettingSourceDefault:
 		return true
-	case Env:
+	case SettingSourceEnv:
 		return true
-	case File:
+	case SettingSourceFile:
 		return true
-	case Unknown:
+	case SettingSourceUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SignCalendarAccountState.
+const (
+	SignCalendarAccountStateFailed  SignCalendarAccountState = "failed"
+	SignCalendarAccountStateSkipped SignCalendarAccountState = "skipped"
+	SignCalendarAccountStateSuccess SignCalendarAccountState = "success"
+	SignCalendarAccountStateUnknown SignCalendarAccountState = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the SignCalendarAccountState enum.
+func (e SignCalendarAccountState) Valid() bool {
+	switch e {
+	case SignCalendarAccountStateFailed:
+		return true
+	case SignCalendarAccountStateSkipped:
+		return true
+	case SignCalendarAccountStateSuccess:
+		return true
+	case SignCalendarAccountStateUnknown:
 		return true
 	default:
 		return false
@@ -1523,6 +1547,70 @@ type SettingsReport struct {
 	Groups []SettingGroup `json:"groups"`
 }
 
+// SignCalendar defines model for SignCalendar.
+type SignCalendar struct {
+	Days []SignCalendarDay `json:"days"`
+
+	// Timezone Server business time zone used for today and every day key.
+	Timezone string `json:"timezone"`
+
+	// Today Server business day, YYYY-MM-DD.
+	Today string `json:"today"`
+
+	// UpdatedAt Maximum task-row update time inside the range; the server clock
+	// when the range holds no rows.
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// SignCalendarAccount defines model for SignCalendarAccount.
+type SignCalendarAccount struct {
+	AccountId string `json:"account_id"`
+
+	// Attempts Business attempts consumed by the latest row.
+	Attempts int `json:"attempts"`
+
+	// RunAt Planned run time of the latest row; absent when the row has none.
+	RunAt *time.Time `json:"run_at,omitempty"`
+
+	// State Normalised account outcome for the day.
+	State SignCalendarAccountState `json:"state"`
+}
+
+// SignCalendarAccountState Normalised account outcome for the day.
+type SignCalendarAccountState string
+
+// SignCalendarDay defines model for SignCalendarDay.
+type SignCalendarDay struct {
+	// Day Business day, YYYY-MM-DD.
+	Day    string `json:"day"`
+	Failed int    `json:"failed"`
+
+	// Future True for days after the server business day; all counts are zero.
+	Future  bool `json:"future"`
+	Skipped int  `json:"skipped"`
+	Success int  `json:"success"`
+
+	// Total Accounts counted that day; the sum of the four buckets.
+	Total int `json:"total"`
+
+	// Unknown Accounts whose latest row is pending, running or unrecognised.
+	Unknown int `json:"unknown"`
+}
+
+// SignCalendarDayDetail defines model for SignCalendarDayDetail.
+type SignCalendarDayDetail struct {
+	Accounts []SignCalendarAccount `json:"accounts"`
+
+	// Day Business day, YYYY-MM-DD.
+	Day string `json:"day"`
+
+	// Future True for days after the server business day; accounts is empty.
+	Future bool `json:"future"`
+
+	// Timezone Server business time zone.
+	Timezone string `json:"timezone"`
+}
+
 // SignStatsCounts defines model for SignStatsCounts.
 type SignStatsCounts struct {
 	Failed  int `json:"failed"`
@@ -1585,12 +1673,47 @@ type TimePref struct {
 
 	// OffsetMin Relative minute from the effective window start; multiple of five.
 	OffsetMin *int `json:"offset_min"`
+
+	// Slots Five-minute anchors relative to the server standard signing
+	// window. Each label is a clock time inside that window. The window
+	// actually executed for a task may be shifted by the platform
+	// window or a per-task override, so a label is a preference time,
+	// not the promised execution time. disabled follows the deployment
+	// gate and the window.
+	Slots  *[]TimePrefSlot `json:"slots,omitempty"`
+	Window TimePrefWindow  `json:"window"`
+}
+
+// TimePrefSlot defines model for TimePrefSlot.
+type TimePrefSlot struct {
+	// Disabled True when the deployment gate or the window forbids the slot.
+	Disabled bool `json:"disabled"`
+
+	// Label Absolute clock time of the slot.
+	Label string `json:"label"`
+
+	// OffsetMin Minute offset from the window start, a multiple of five.
+	OffsetMin int `json:"offset_min"`
+
+	// Reason Human-readable reason when disabled is true.
+	Reason *string `json:"reason,omitempty"`
 }
 
 // TimePrefUpdate defines model for TimePrefUpdate.
 type TimePrefUpdate struct {
 	// OffsetMin Null clears the preference.
 	OffsetMin *int `json:"offset_min"`
+}
+
+// TimePrefWindow defines model for TimePrefWindow.
+type TimePrefWindow struct {
+	// End Server standard signing window end, HH:MM. Actual execution may
+	// be shifted by the platform window or a per-task override.
+	End string `json:"end"`
+
+	// Start Server standard signing window start, HH:MM. Actual execution may
+	// be shifted by the platform window or a per-task override.
+	Start string `json:"start"`
 }
 
 // UnreadCount defines model for UnreadCount.
@@ -2080,6 +2203,15 @@ type PhotoDeleteParams struct {
 type PhotoGetParams struct {
 	// IfNoneMatch ETag(s) the client already holds; a match answers 304.
 	IfNoneMatch *string `json:"If-None-Match,omitempty"`
+}
+
+// SignCalendarGetParams defines parameters for SignCalendarGet.
+type SignCalendarGetParams struct {
+	// From First business day, YYYY-MM-DD.
+	From string `form:"from" json:"from"`
+
+	// To Last business day, YYYY-MM-DD; at most 31 days after from.
+	To string `form:"to" json:"to"`
 }
 
 // TimePrefSetParams defines parameters for TimePrefSet.
@@ -2582,6 +2714,9 @@ type ServerInterface interface {
 	// NotificationUnreadCount Count the caller's unread in-app notifications.
 	// (GET /api/me/notifications/unread-count)
 	NotificationUnreadCount(c *gin.Context)
+	// PhotoRetentionGet Read the photo retention period.
+	// (GET /api/me/photo-retention)
+	PhotoRetentionGet(c *gin.Context)
 	// PhotoRetentionSet Set the photo retention period.
 	// (PUT /api/me/photo-retention)
 	PhotoRetentionSet(c *gin.Context, params PhotoRetentionSetParams)
@@ -2597,6 +2732,12 @@ type ServerInterface interface {
 	// PhotoGet Stream one photo.
 	// (GET /api/me/photos/{id})
 	PhotoGet(c *gin.Context, id PhotoID, params PhotoGetParams)
+	// SignCalendarGet Daily sign outcome counts for the caller's own accounts.
+	// (GET /api/me/sign-calendar)
+	SignCalendarGet(c *gin.Context, params SignCalendarGetParams)
+	// SignCalendarDayGet Per-account sign outcome for one business day.
+	// (GET /api/me/sign-calendar/{day})
+	SignCalendarDayGet(c *gin.Context, day string)
 	// MeSignStatus Polling status for the signed-in user's own accounts.
 	// (GET /api/me/sign-status)
 	MeSignStatus(c *gin.Context)
@@ -4357,6 +4498,19 @@ func (siw *ServerInterfaceWrapper) NotificationUnreadCount(c *gin.Context) {
 	siw.Handler.NotificationUnreadCount(c)
 }
 
+// PhotoRetentionGet operation middleware
+func (siw *ServerInterfaceWrapper) PhotoRetentionGet(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.PhotoRetentionGet(c)
+}
+
 // PhotoRetentionSet operation middleware
 func (siw *ServerInterfaceWrapper) PhotoRetentionSet(c *gin.Context) {
 
@@ -4577,6 +4731,66 @@ func (siw *ServerInterfaceWrapper) PhotoGet(c *gin.Context) {
 	}
 
 	siw.Handler.PhotoGet(c, id, params)
+}
+
+// SignCalendarGet operation middleware
+func (siw *ServerInterfaceWrapper) SignCalendarGet(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params SignCalendarGetParams
+
+	// ------------- Required query parameter "from" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "from", c.Request.URL.Query(), &params.From, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter from: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Required query parameter "to" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "to", c.Request.URL.Query(), &params.To, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter to: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.SignCalendarGet(c, params)
+}
+
+// SignCalendarDayGet operation middleware
+func (siw *ServerInterfaceWrapper) SignCalendarDayGet(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "day" -------------
+	var day string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "day", c.Param("day"), &day, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter day: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.SignCalendarDayGet(c, day)
 }
 
 // MeSignStatus operation middleware
@@ -5728,6 +5942,8 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/me/diagnostics", wrapper.MeDiagnostics)
 	router.GET(options.BaseURL+"/api/accounts/:id/diagnostics", wrapper.AccountDiagnostics)
 	router.GET(options.BaseURL+"/api/me/sign-status", wrapper.MeSignStatus)
+	router.GET(options.BaseURL+"/api/me/sign-calendar", wrapper.SignCalendarGet)
+	router.GET(options.BaseURL+"/api/me/sign-calendar/:day", wrapper.SignCalendarDayGet)
 	router.GET(options.BaseURL+"/api/schedule/windows", wrapper.ScheduleWindows)
 	router.GET(options.BaseURL+"/api/schedule/preview", wrapper.SchedulePreview)
 	router.POST(options.BaseURL+"/api/schedule/plan", wrapper.SchedulePlan)
@@ -5749,6 +5965,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/me/photos", wrapper.PhotoUpload)
 	router.DELETE(options.BaseURL+"/api/me/photos/:id", wrapper.PhotoDelete)
 	router.GET(options.BaseURL+"/api/me/photos/:id", wrapper.PhotoGet)
+	router.GET(options.BaseURL+"/api/me/photo-retention", wrapper.PhotoRetentionGet)
 	router.PUT(options.BaseURL+"/api/me/photo-retention", wrapper.PhotoRetentionSet)
 	router.GET(options.BaseURL+"/healthz", wrapper.HealthCheck)
 }

@@ -572,8 +572,32 @@ func planResponse(p appschedule.Preview, enabled bool) oapi.SchedulePlan {
 }
 
 // timePrefView 把自选读数转成传输形状。
+// slots 始终由服务端生成：窗口为空时省略整个键，而不是给空数组。
 func timePrefView(v apptimepref.View) oapi.TimePref {
-	return oapi.TimePref{OffsetMin: v.OffsetMin, Allowed: v.Allowed}
+	out := oapi.TimePref{
+		OffsetMin: v.OffsetMin,
+		Allowed:   v.Allowed,
+		Window: oapi.TimePrefWindow{
+			Start: v.Window.Start,
+			End:   v.Window.End,
+		},
+	}
+	if len(v.Slots) > 0 {
+		slots := make([]oapi.TimePrefSlot, len(v.Slots))
+		for i, slot := range v.Slots {
+			slots[i] = oapi.TimePrefSlot{
+				OffsetMin: slot.OffsetMin,
+				Label:     slot.Label,
+				Disabled:  slot.Disabled,
+			}
+			if slot.Reason != "" {
+				reason := slot.Reason
+				slots[i].Reason = &reason
+			}
+		}
+		out.Slots = &slots
+	}
+	return out
 }
 
 // fail 写标准错误信封。

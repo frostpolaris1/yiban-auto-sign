@@ -85,6 +85,11 @@ func (f *fakeService) Delete(_ context.Context, scope corescope.Scope, _ string)
 	return corephoto.Record{}, f.deleteErr
 }
 
+func (f *fakeService) Retention(_ context.Context, scope corescope.Scope) (int, error) {
+	f.scopes = append(f.scopes, scope)
+	return f.retentionDays, f.retentionErr
+}
+
 func (f *fakeService) SetRetention(_ context.Context, scope corescope.Scope, _ int) (int, error) {
 	f.scopes = append(f.scopes, scope)
 	return f.retentionDays, f.retentionErr
