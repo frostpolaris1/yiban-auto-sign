@@ -56,6 +56,19 @@ func TestOwnerIndexSkipsRowsWithoutIDOrEmail(t *testing.T) {
 	}
 }
 
+// TestOwnerIndexExactAmbiguity 钉住 exact 级的歧义分支：
+// 两行归一后同邮箱时 byEmail 保留两个候选，resolve 不得先到先得。
+func TestOwnerIndexExactAmbiguity(t *testing.T) {
+	idx := newOwnerIndex([]map[string]any{
+		{"id": JSONNumber("1"), "email": "dup@example.invalid"},
+		{"id": JSONNumber("2"), "email": "  DUP@Example.INVALID  "},
+	})
+	got := idx.resolve(" dup@example.invalid ")
+	if got.found || got.oldID != 0 || got.via != "" || got.candidates != 2 {
+		t.Fatalf("exact ambiguity must report 2 candidates and no winner: %+v", got)
+	}
+}
+
 func TestMapLegacyRole(t *testing.T) {
 	cases := []struct {
 		old  string

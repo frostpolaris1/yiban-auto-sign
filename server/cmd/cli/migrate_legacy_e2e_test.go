@@ -797,6 +797,37 @@ func TestMigrateLegacyMissingConfigE2E(t *testing.T) {
 	}
 }
 
+// TestMigrateLegacyMissingAdminSchoolE2E：--admin-school-id 指向不存在的学校
+// → exit 2 零写入，错误点名该学校。
+func TestMigrateLegacyMissingAdminSchoolE2E(t *testing.T) {
+	env := e2eSetupDB(t)
+	root := t.TempDir()
+	dir := e2eWriteExport(t, root, e2eFixture(t))
+	missingID := "00000000-0000-0000-0000-000000000000"
+	args := env.defaults()
+	args.adminSchoolID = missingID
+
+	code, output := e2eRun(t, env, dir, filepath.Join(root, "report"), args)
+	if code != 2 {
+		t.Fatalf("missing admin school exit = %d, want 2:\n%s", code, output)
+	}
+	if !strings.Contains(output, "admin school "+missingID+" does not exist") {
+		t.Fatalf("output must name the missing admin school, got:\n%s", output)
+	}
+	if n := e2eCount(t, env.dsn, "SELECT count(*) FROM users"); n != 1 {
+		t.Fatalf("config failure must write no users, got %d (fallback master only)", n)
+	}
+	if n := e2eCount(t, env.dsn, "SELECT count(*) FROM accounts"); n != 0 {
+		t.Fatalf("config failure must write no accounts, got %d", n)
+	}
+	if n := e2eCount(t, env.dsn, "SELECT count(*) FROM legacy_ids"); n != 0 {
+		t.Fatalf("config failure must write no legacy_ids, got %d", n)
+	}
+	if n := e2eCount(t, env.dsn, "SELECT count(*) FROM admin_schools"); n != 0 {
+		t.Fatalf("config failure must write no admin_schools, got %d", n)
+	}
+}
+
 // TestMigrateLegacyAdminSchoolDefaultE2E：--admin-school-id 缺省时绑定 --school-id。
 func TestMigrateLegacyAdminSchoolDefaultE2E(t *testing.T) {
 	env := e2eSetupDB(t)
@@ -1045,6 +1076,56 @@ func TestMigrateLegacyAmbiguousOwnerRowErrorE2E(t *testing.T) {
 	owners := summary["owner_resolution"].(map[string]any)
 	if owners["ambiguous"].(float64) != 1 || owners["fallback"].(float64) != 0 {
 		t.Fatalf("owner resolution drifted: %v", owners)
+	}
+	if summary["recon_compare"] != "not compared: row errors present" {
+		t.Fatalf("recon compare must be skipped on row errors, got %v", summary["recon_compare"])
+	}
+}
+
+// TestMigrateLegacyExactOwnerAmbiguityE2E：两行归一后同邮箱（live＋deleted）
+// 时 exact 级命中两个候选 → 账号行错误，不取第一条。
+func TestMigrateLegacyExactOwnerAmbiguityE2E(t *testing.T) {
+	env := e2eSetupDB(t)
+	root := t.TempDir()
+	deleted := e2eUserRow(2, e2eAdminEmail, "user", 1, 1)
+	deleted["deleted_at"] = "2026-01-02T00:00:00"
+	ex := e2eExport{
+		Users: []map[string]any{
+			e2eUserRow(1, e2eAdminEmail, "user", 0, 1),
+			deleted,
+		},
+		Accounts: []map[string]any{
+			e2eAccountRow(1, "acct-exact-dup", e2ePhoneA, "  "+strings.ToUpper(e2eAdminEmail)+"  ",
+				"active", "", "", 0, 0),
+		},
+	}
+	dir := e2eWriteExport(t, root, ex)
+	out := filepath.Join(root, "report")
+
+	code, output := e2eRun(t, env, dir, out, env.defaults())
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (row error):\n%s", code, output)
+	}
+	if !strings.Contains(output, "owner matches 2 legacy users") {
+		t.Fatalf("output must report the exact-level ambiguity, got:\n%s", output)
+	}
+	if strings.Contains(output, e2eAdminEmail) {
+		t.Fatalf("owner email must not be echoed, got:\n%s", output)
+	}
+	if n := e2eCount(t, env.dsn, "SELECT count(*) FROM users"); n != 3 {
+		t.Fatalf("users = %d, want 3 (live + deleted + fallback)", n)
+	}
+	if n := e2eCount(t, env.dsn, "SELECT count(*) FROM accounts"); n != 0 {
+		t.Fatalf("exact-ambiguous account must not land, got %d", n)
+	}
+	if n := e2eCount(t, env.dsn, "SELECT count(*) FROM legacy_ids"); n != 2 {
+		t.Fatalf("legacy_ids = %d, want 2 (user rows only)", n)
+	}
+	e2eAssertLegacyInvariant(t, env.dsn)
+	summary := e2eSummary(t, out)
+	owners := summary["owner_resolution"].(map[string]any)
+	if owners["ambiguous"].(float64) != 1 || owners["exact_email"].(float64) != 0 {
+		t.Fatalf("exact-level ambiguity must count as ambiguous only: %v", owners)
 	}
 	if summary["recon_compare"] != "not compared: row errors present" {
 		t.Fatalf("recon compare must be skipped on row errors, got %v", summary["recon_compare"])
