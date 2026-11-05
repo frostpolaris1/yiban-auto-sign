@@ -71,6 +71,9 @@ type digestAccount struct {
 //
 // 每收件人一行站内信；email 订阅启用时同事务再入一条账本行。
 // 重复触发由 (user_id, dedupe_key) 与账本唯一键吸收，不重复投递。
+// 同日重复触发或重启补发只保留**首份正文**：唯一键吸收的是行与账本，
+// 不是「整轮跳过」；09:00 之后才出现的 failed 不会进入当天已发摘要，
+// 次日摘要也不回补前一日（同日幂等是唯一键语义，属已登记取舍）。
 // 单个收件人失败不阻断其余收件人；返回第一条错误供调用方记日志。
 func (d *Dispatcher) DispatchDigest(ctx context.Context, day string) error {
 	if day == "" {

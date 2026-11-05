@@ -62,7 +62,7 @@ func NewDigestCron(dispatcher *Dispatcher, clk coreclock.Clock,
 	}
 	c := &DigestCron{dispatcher: dispatcher, clock: clk, location: location, log: log}
 	c.cron = cron.New(cron.WithLocation(location))
-	if _, err := c.cron.AddFunc(digestSpec, func() { c.run(context.Background(), "cron") }); err != nil {
+	if _, err := c.cron.AddFunc(digestSpec, func() { c.run(context.Background(), "daily") }); err != nil {
 		return nil, fmt.Errorf("notify: add digest job: %w", err)
 	}
 	return c, nil
