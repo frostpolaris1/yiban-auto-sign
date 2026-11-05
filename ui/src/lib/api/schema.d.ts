@@ -1395,6 +1395,97 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/me/notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the caller's in-app notifications.
+         * @description master and admin read only their own rows; a user has no in-app
+         *     notification surface and answers 403. Rows are ordered by
+         *     (created_at DESC, id DESC) and page with the opaque next_cursor.
+         *     limit defaults to 20 and must be between 1 and 100; an out-of-range
+         *     limit or a malformed cursor answers 400. dedupe_key is internal and
+         *     never appears in a response. school_id is null for a deployment-wide
+         *     event; read_at is null while the row is unread.
+         */
+        get: operations["NotificationList"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/notifications/unread-count": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Count the caller's unread in-app notifications.
+         * @description Counts only the signed-in user's rows with read_at null. A user has
+         *     no in-app notification surface and answers 403.
+         */
+        get: operations["NotificationUnreadCount"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/notifications/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mark the caller's notifications as read.
+         * @description ids must name 1 to 100 UUIDs. Only the signed-in user's rows are
+         *     updated; an id owned by another user or no longer present is ignored
+         *     silently, so repeated calls are idempotent. Already-read rows keep
+         *     their first read timestamp. The answer is 204.
+         */
+        post: operations["NotificationMarkRead"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/notifications/read-all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mark every unread notification of the caller as read.
+         * @description Only the signed-in user's unread rows are updated. A second call with
+         *     nothing left unread still answers 204: the operation is idempotent.
+         */
+        post: operations["NotificationMarkAllRead"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/capacity": {
         parameters: {
             query?: never;
@@ -1627,6 +1718,42 @@ export interface components {
          */
         NotifyPrefsUpdate: {
             items: components["schemas"]["NotifyPref"][];
+        };
+        /**
+         * @description One in-app notification owned by the signed-in user. The internal
+         *     dedupe key is never exposed.
+         */
+        Notification: {
+            id: string;
+            category: components["schemas"]["NotifyCategory"];
+            title: string;
+            body: string;
+            /** @description School scope of the event; null for a deployment-wide event. */
+            school_id: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /**
+             * Format: date-time
+             * @description First read timestamp; null while unread.
+             */
+            read_at: string | null;
+        };
+        /** @description One page of the caller's notifications. */
+        NotificationPage: {
+            items: components["schemas"]["Notification"][];
+            /** @description Opaque cursor for the next page; absent on the last page. */
+            next_cursor?: string;
+        };
+        UnreadCount: {
+            /** @description Unread notifications owned by the signed-in user. */
+            count: number;
+        };
+        /**
+         * @description Notification ids to mark read. At least one and at most 100 unique
+         *     UUIDs; ids owned by another user are ignored.
+         */
+        NotificationRead: {
+            ids: string[];
         };
         /**
          * @description env: the process environment provides the key. file: a file-backed
@@ -2604,6 +2731,8 @@ export interface components {
         Cursor: string;
         /** @description Page size, 1 to 200. */
         Limit: number;
+        /** @description Page size, 1 to 100. Defaults to 20. */
+        NotificationLimit: number;
         /**
          * @description CSRF token returned by GET /api/auth/me. Required on every
          *     state-changing request that carries a session.
@@ -4676,6 +4805,118 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             413: components["responses"]["PayloadTooLargeError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    NotificationList: {
+        parameters: {
+            query?: {
+                /** @description Opaque page cursor taken from next_cursor. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size, 1 to 100. Defaults to 20. */
+                limit?: components["parameters"]["NotificationLimit"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page of the caller's notifications. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationPage"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    NotificationUnreadCount: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Unread count for the signed-in user. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UnreadCount"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    NotificationMarkRead: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NotificationRead"];
+            };
+        };
+        responses: {
+            /** @description Read state updated; unknown ids were ignored. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    NotificationMarkAllRead: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every unread row of the caller is read. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
             default: components["responses"]["DefaultError"];
         };
     };

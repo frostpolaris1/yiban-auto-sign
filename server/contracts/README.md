@@ -134,6 +134,14 @@ either side drifts.
 |  |  |  | 本人签到失败邮件开关；缺省 true。 |
 | PUT | `/api/me/mail-notify` | master/admin/user | 5mx |
 |  |  |  | 写本人开关；审计 `user.mail_notify`，detail 只含字段与 on/off。 |
+| GET | `/api/me/notifications` | master/admin | notify A |
+|  |  |  | 本人站内信；按 `(created_at DESC, id DESC)` 键集分页，`limit` 缺省 20 上限 100。 |
+| GET | `/api/me/notifications/unread-count` | master/admin | notify A |
+|  |  |  | 本人未读数。 |
+| POST | `/api/me/notifications/read` | master/admin | notify A |
+|  |  |  | 标记本人指定 id 已读；越权/不存在 id 静默忽略，幂等。 |
+| POST | `/api/me/notifications/read-all` | master/admin | notify A |
+|  |  |  | 标记本人全部未读；重复调用幂等。 |
 | GET | `/api/capacity` | master/admin | P4 |
 | GET | `/api/sign-stats` | master/admin | M8C |
 | GET | `/api/time-prefs/stats` | master/admin | M8C |

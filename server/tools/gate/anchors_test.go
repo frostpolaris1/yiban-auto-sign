@@ -141,7 +141,9 @@ func TestCanonicalRuleRowsPinned(t *testing.T) {
 	// 状态文件里的 success/failed 是更新结果的词表，不是任务状态）。
 	// parity-be-a2：boundary.adapters allow 增列
 	// internal/adapters/pg/settings_e2e_test.go（订阅/公告/审计列表的用例层 e2e）。
-	const want = "7ff82527ebdc7742ea055897d41212277fd8cbe9030de369123480a4ed2f1d31"
+	// 0v8-a：status.literal allow 增列 internal/core/notify/
+	// （投递账本的 pending/sent/failed/skipped 是投递状态，不是任务状态）。
+	const want = "3677b09c7999a06ccfafafc1cca2ea4e2e86dfee982ba5a5cc72d69c7ce2ac2f"
 	if got != want {
 		t.Fatalf("canonical 规则内容变了（hash %s）；确认改动后更新 TestCanonicalRuleRowsPinned 的哈希", got)
 	}

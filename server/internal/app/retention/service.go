@@ -1,7 +1,7 @@
 // Package retention 清理过期数据。
 //
 // # 功能
-// 按保留期删三张表：过期会话、过期重置令牌、旧签到任务行。
+// 按保留期删四张表：过期会话、过期重置令牌、旧签到任务行、旧站内信。
 // 每批有上限，跑完一批再跑下一批；单次失败只记日志，不退出进程。
 //
 // # 归属
@@ -14,6 +14,7 @@
 // **审计链不清**：audit_logs 是 append-only，清理只能走迁移级操作，
 // 否则保留期与不可篡改互相打架。图片保留期归 app/photos，不在这里。
 // 任务行保留 TaskRetentionDays 天（按业务日切点算，不看时刻）。
+// 站内信保留 NotificationRetentionDays 天；投递账本随外键级联删除。
 package retention
 
 import (
@@ -32,6 +33,9 @@ const (
 	// TaskRetentionDays 是签到任务行的保留天数。
 	// 报表按 30 天看，留 90 天给对账与复盘。
 	TaskRetentionDays = 90
+	// NotificationRetentionDays 是站内信的保留天数。
+	// 投递账本不单独清理：随通知行按外键级联删除。
+	NotificationRetentionDays = 30
 	// BatchSize 是单批删除上限：长事务会挡住认领与登录。
 	BatchSize = 1000
 	// Interval 是清理间隔。保留期以天计，不需要更密。
@@ -45,6 +49,7 @@ type Store interface {
 	DeleteExpiredSessions(ctx context.Context, before time.Time, limit int) (int64, error)
 	DeleteExpiredPasswordResets(ctx context.Context, before time.Time, limit int) (int64, error)
 	DeleteTasksBefore(ctx context.Context, before string, limit int) (int64, error)
+	DeleteNotificationsBefore(ctx context.Context, before time.Time, limit int) (int64, error)
 }
 
 // Deps 是清理服务的依赖。Location 决定"多少天前"按哪个时区数。
@@ -63,9 +68,10 @@ type Service struct {
 
 // Pruned 是一轮清理删掉的行数。
 type Pruned struct {
-	Sessions    int64
-	ResetTokens int64
-	Tasks       int64
+	Sessions      int64
+	ResetTokens   int64
+	Tasks         int64
+	Notifications int64
 }
 
 // NewService 构造清理服务。缺端口即失败。
@@ -86,7 +92,7 @@ func NewService(deps Deps) (*Service, error) {
 	return &Service{deps: deps, log: log}, nil
 }
 
-// Prune 跑一轮清理：三张表各自跑到不足一批为止。
+// Prune 跑一轮清理：四张表各自跑到不足一批为止。
 // 任一表失败即返回已删数与该错误；调用方决定是否记日志。
 func (s *Service) Prune(ctx context.Context) (Pruned, error) {
 	now := s.deps.Clock.Now()
@@ -105,6 +111,12 @@ func (s *Service) Prune(ctx context.Context) (Pruned, error) {
 	cutoff := now.In(s.deps.Location).AddDate(0, 0, -TaskRetentionDays).Format("2006-01-02")
 	if out.Tasks, err = s.drain(ctx, func(limit int) (int64, error) {
 		return s.deps.Store.DeleteTasksBefore(ctx, cutoff, limit)
+	}); err != nil {
+		return out, err
+	}
+	notificationCutoff := now.In(s.deps.Location).AddDate(0, 0, -NotificationRetentionDays)
+	if out.Notifications, err = s.drain(ctx, func(limit int) (int64, error) {
+		return s.deps.Store.DeleteNotificationsBefore(ctx, notificationCutoff, limit)
 	}); err != nil {
 		return out, err
 	}
@@ -173,8 +185,9 @@ func (s *Service) runOnce(ctx context.Context, log *slog.Logger) {
 		}
 		return
 	}
-	if pruned.Sessions+pruned.ResetTokens+pruned.Tasks > 0 {
+	if pruned.Sessions+pruned.ResetTokens+pruned.Tasks+pruned.Notifications > 0 {
 		log.Info("retention: pruned", logfield.KeySessions, pruned.Sessions,
-			logfield.KeyResetTokens, pruned.ResetTokens, logfield.KeyTasks, pruned.Tasks)
+			logfield.KeyResetTokens, pruned.ResetTokens, logfield.KeyTasks, pruned.Tasks,
+			logfield.KeyNotifications, pruned.Notifications)
 	}
 }

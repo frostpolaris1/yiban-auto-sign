@@ -2069,6 +2069,95 @@ paths:
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         default: { $ref: '#/components/responses/DefaultError' }
+  /api/me/notifications:
+    get:
+      tags: [settings]
+      operationId: NotificationList
+      summary: Read the caller's in-app notifications.
+      description: |
+        master and admin read only their own rows; a user has no in-app
+        notification surface and answers 403. Rows are ordered by
+        (created_at DESC, id DESC) and page with the opaque next_cursor.
+        limit defaults to 20 and must be between 1 and 100; an out-of-range
+        limit or a malformed cursor answers 400. dedupe_key is internal and
+        never appears in a response. school_id is null for a deployment-wide
+        event; read_at is null while the row is unread.
+      x-roles: [master, admin]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/NotificationLimit'
+      responses:
+        '200':
+          description: One page of the caller's notifications.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPage'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/me/notifications/unread-count:
+    get:
+      tags: [settings]
+      operationId: NotificationUnreadCount
+      summary: Count the caller's unread in-app notifications.
+      description: |
+        Counts only the signed-in user's rows with read_at null. A user has
+        no in-app notification surface and answers 403.
+      x-roles: [master, admin]
+      responses:
+        '200':
+          description: Unread count for the signed-in user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnreadCount'
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/me/notifications/read:
+    post:
+      tags: [settings]
+      operationId: NotificationMarkRead
+      summary: Mark the caller's notifications as read.
+      description: |
+        ids must name 1 to 100 UUIDs. Only the signed-in user's rows are
+        updated; an id owned by another user or no longer present is ignored
+        silently, so repeated calls are idempotent. Already-read rows keep
+        their first read timestamp. The answer is 204.
+      x-roles: [master, admin]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationRead'
+      responses:
+        '204': { description: Read state updated; unknown ids were ignored. }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/me/notifications/read-all:
+    post:
+      tags: [settings]
+      operationId: NotificationMarkAllRead
+      summary: Mark every unread notification of the caller as read.
+      description: |
+        Only the signed-in user's unread rows are updated. A second call with
+        nothing left unread still answers 204: the operation is idempotent.
+      x-roles: [master, admin]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      responses:
+        '204': { description: Every unread row of the caller is read. }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        default: { $ref: '#/components/responses/DefaultError' }
   /api/capacity:
     get:
       tags: [schedule]
@@ -2371,6 +2460,12 @@ components:
       required: false
       description: Page size, 1 to 200.
       schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    NotificationLimit:
+      name: limit
+      in: query
+      required: false
+      description: Page size, 1 to 100. Defaults to 20.
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
     CSRFToken:
       name: X-CSRF-Token
       in: header
@@ -2516,6 +2611,60 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/NotifyPref'
+    Notification:
+      type: object
+      description: |
+        One in-app notification owned by the signed-in user. The internal
+        dedupe key is never exposed.
+      required: [id, category, title, body, school_id, created_at, read_at]
+      properties:
+        id: { type: string }
+        category:
+          $ref: '#/components/schemas/NotifyCategory'
+        title: { type: string }
+        body: { type: string }
+        school_id:
+          type: [string, "null"]
+          description: |
+            School scope of the event; null for a deployment-wide event.
+        created_at: { type: string, format: date-time }
+        read_at:
+          type: [string, "null"]
+          format: date-time
+          description: First read timestamp; null while unread.
+    NotificationPage:
+      type: object
+      required: [items]
+      description: One page of the caller's notifications.
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Notification'
+        next_cursor:
+          type: string
+          description: Opaque cursor for the next page; absent on the last page.
+    UnreadCount:
+      type: object
+      required: [count]
+      properties:
+        count:
+          type: integer
+          minimum: 0
+          description: Unread notifications owned by the signed-in user.
+    NotificationRead:
+      type: object
+      required: [ids]
+      description: |
+        Notification ids to mark read. At least one and at most 100 unique
+        UUIDs; ids owned by another user are ignored.
+      properties:
+        ids:
+          type: array
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+          items: { type: string, format: uuid }
     SettingSource:
       type: string
       description: |

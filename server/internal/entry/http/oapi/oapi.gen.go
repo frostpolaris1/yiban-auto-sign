@@ -1105,6 +1105,38 @@ type MailTestResult struct {
 	Message string `json:"message"`
 }
 
+// Notification One in-app notification owned by the signed-in user. The internal
+// dedupe key is never exposed.
+type Notification struct {
+	Body string `json:"body"`
+
+	// Category Closed set of notification subjects for this phase.
+	Category  NotifyCategory `json:"category"`
+	CreatedAt time.Time      `json:"created_at"`
+	Id        string         `json:"id"`
+
+	// ReadAt First read timestamp; null while unread.
+	ReadAt *time.Time `json:"read_at"`
+
+	// SchoolId School scope of the event; null for a deployment-wide event.
+	SchoolId *string `json:"school_id"`
+	Title    string  `json:"title"`
+}
+
+// NotificationPage One page of the caller's notifications.
+type NotificationPage struct {
+	Items []Notification `json:"items"`
+
+	// NextCursor Opaque cursor for the next page; absent on the last page.
+	NextCursor *string `json:"next_cursor,omitempty"`
+}
+
+// NotificationRead Notification ids to mark read. At least one and at most 100 unique
+// UUIDs; ids owned by another user are ignored.
+type NotificationRead struct {
+	Ids []openapi_types.UUID `json:"ids"`
+}
+
 // NotifyCategory Closed set of notification subjects for this phase.
 type NotifyCategory string
 
@@ -1561,6 +1593,12 @@ type TimePrefUpdate struct {
 	OffsetMin *int `json:"offset_min"`
 }
 
+// UnreadCount defines model for UnreadCount.
+type UnreadCount struct {
+	// Count Unread notifications owned by the signed-in user.
+	Count int `json:"count"`
+}
+
 // User defines model for User.
 type User struct {
 	// AccountCount Live accounts owned by the user.
@@ -1662,6 +1700,9 @@ type Cursor = string
 
 // Limit defines model for Limit.
 type Limit = int
+
+// NotificationLimit defines model for NotificationLimit.
+type NotificationLimit = int
 
 // PhotoID defines model for PhotoID.
 type PhotoID = string
@@ -1982,6 +2023,29 @@ type MailNotifySetParams struct {
 	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
 }
 
+// NotificationListParams defines parameters for NotificationList.
+type NotificationListParams struct {
+	// Cursor Opaque page cursor taken from next_cursor.
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Limit Page size, 1 to 100. Defaults to 20.
+	Limit *NotificationLimit `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// NotificationMarkReadParams defines parameters for NotificationMarkRead.
+type NotificationMarkReadParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
+// NotificationMarkAllReadParams defines parameters for NotificationMarkAllRead.
+type NotificationMarkAllReadParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
 // PhotoRetentionSetParams defines parameters for PhotoRetentionSet.
 type PhotoRetentionSetParams struct {
 	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
@@ -2257,6 +2321,9 @@ type AuthResetPasswordJSONRequestBody = ResetPasswordRequest
 // MailNotifySetJSONRequestBody defines body for MailNotifySet for application/json ContentType.
 type MailNotifySetJSONRequestBody = MailNotifyUpdate
 
+// NotificationMarkReadJSONRequestBody defines body for NotificationMarkRead for application/json ContentType.
+type NotificationMarkReadJSONRequestBody = NotificationRead
+
 // PhotoRetentionSetJSONRequestBody defines body for PhotoRetentionSet for application/json ContentType.
 type PhotoRetentionSetJSONRequestBody = PhotoRetentionUpdate
 
@@ -2503,6 +2570,18 @@ type ServerInterface interface {
 	// MailNotifySet Set the caller's sign-failure mail switch.
 	// (PUT /api/me/mail-notify)
 	MailNotifySet(c *gin.Context, params MailNotifySetParams)
+	// NotificationList Read the caller's in-app notifications.
+	// (GET /api/me/notifications)
+	NotificationList(c *gin.Context, params NotificationListParams)
+	// NotificationMarkRead Mark the caller's notifications as read.
+	// (POST /api/me/notifications/read)
+	NotificationMarkRead(c *gin.Context, params NotificationMarkReadParams)
+	// NotificationMarkAllRead Mark every unread notification of the caller as read.
+	// (POST /api/me/notifications/read-all)
+	NotificationMarkAllRead(c *gin.Context, params NotificationMarkAllReadParams)
+	// NotificationUnreadCount Count the caller's unread in-app notifications.
+	// (GET /api/me/notifications/unread-count)
+	NotificationUnreadCount(c *gin.Context)
 	// PhotoRetentionSet Set the photo retention period.
 	// (PUT /api/me/photo-retention)
 	PhotoRetentionSet(c *gin.Context, params PhotoRetentionSetParams)
@@ -4144,6 +4223,140 @@ func (siw *ServerInterfaceWrapper) MailNotifySet(c *gin.Context) {
 	siw.Handler.MailNotifySet(c, params)
 }
 
+// NotificationList operation middleware
+func (siw *ServerInterfaceWrapper) NotificationList(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params NotificationListParams
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "cursor", c.Request.URL.Query(), &params.Cursor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter cursor: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", c.Request.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter limit: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.NotificationList(c, params)
+}
+
+// NotificationMarkRead operation middleware
+func (siw *ServerInterfaceWrapper) NotificationMarkRead(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params NotificationMarkReadParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.NotificationMarkRead(c, params)
+}
+
+// NotificationMarkAllRead operation middleware
+func (siw *ServerInterfaceWrapper) NotificationMarkAllRead(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params NotificationMarkAllReadParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.NotificationMarkAllRead(c, params)
+}
+
+// NotificationUnreadCount operation middleware
+func (siw *ServerInterfaceWrapper) NotificationUnreadCount(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.NotificationUnreadCount(c)
+}
+
 // PhotoRetentionSet operation middleware
 func (siw *ServerInterfaceWrapper) PhotoRetentionSet(c *gin.Context) {
 
@@ -5525,6 +5738,10 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/me/accounts/:id/restore", wrapper.MyAccountRestore)
 	router.GET(options.BaseURL+"/api/me/mail-notify", wrapper.MailNotifyGet)
 	router.PUT(options.BaseURL+"/api/me/mail-notify", wrapper.MailNotifySet)
+	router.GET(options.BaseURL+"/api/me/notifications", wrapper.NotificationList)
+	router.GET(options.BaseURL+"/api/me/notifications/unread-count", wrapper.NotificationUnreadCount)
+	router.POST(options.BaseURL+"/api/me/notifications/read", wrapper.NotificationMarkRead)
+	router.POST(options.BaseURL+"/api/me/notifications/read-all", wrapper.NotificationMarkAllRead)
 	router.GET(options.BaseURL+"/api/capacity", wrapper.CapacityGet)
 	router.GET(options.BaseURL+"/api/sign-stats", wrapper.SignStats)
 	router.GET(options.BaseURL+"/api/time-prefs/stats", wrapper.TimePrefStats)

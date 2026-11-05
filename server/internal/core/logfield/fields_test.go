@@ -109,6 +109,7 @@ func TestKeysArePinned(t *testing.T) {
 		"kind",
 		"last_success_day",
 		"method",
+		"notifications",
 		"outcome",
 		"outcome_counts",
 		"panic",
