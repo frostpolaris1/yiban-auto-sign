@@ -73,7 +73,7 @@ func usage(w io.Writer) {
 子命令:
   server       启动 HTTP API（与 cmd/server 同一装配与优雅关闭）
   migrate      应用数据库迁移并打印 schema 版本
-  migrate-legacy 旧栈导出物导入（P8-A 导出物 → 新库；凭据重加密）
+  migrate-legacy 旧栈导出物导入（多 owner 解析、admin 绑定、凭据重加密）
   backfill-time-prefs 旧自选时间片补录（按归属用户写 offset_min；默认 dry-run）
   doctor       故障模式体检（每条 FAIL 附修复命令）
   selfcheck    一键更新的只读自检（人读或 --json；默认不写文件）

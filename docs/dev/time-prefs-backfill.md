@@ -8,7 +8,7 @@
 
 前提有两条：
 
-1. 旧库已用 P8-A 导出器导出。
+1. 旧库已用 `scripts/db_export.py` 导出。
 2. `migrate-legacy` 已跑完，`legacy_ids` 已有旧账号到新账号的映射。
 
 补录靠 `legacy_ids` 找新账号，再取该账号的 `owner_user_id`。
@@ -27,9 +27,14 @@ python3 scripts/db_export.py --out /var/lib/yiban/export
 
 ```bash
 yiban-cli migrate-legacy --dir /var/lib/yiban/export --out /var/lib/yiban/import \
-  --school-id <school-uuid> --owner-user-id <user-uuid>
+  --school-id <school-uuid> --fallback-owner-user-id <master-uuid> \
+  [--admin-school-id <school-uuid>]
 ```
 
+导入器按 `accounts.owner` 逐行解析归属：先完整邮箱（去空白、转小写），
+再邮箱 @ 前缀；命中多个旧用户即该行报错。对不上的 active 账号落
+`--fallback-owner-user-id`。旧 admin 导入为 admin，并写一条
+`admin_schools` 绑定；`--admin-school-id` 缺省同 `--school-id`。
 这一步写入 `legacy_ids`。补录依赖它。
 命令的完整旗位与退出码见 `server/cmd/cli/migrate_legacy.go` 的包头注释。
 
@@ -79,8 +84,8 @@ stdout 是一份 JSON 报告。stderr 只放错误。
 `conflicts` 的口径：同一用户映射到多个旧账号，且取值不一致。
 工具不合并、不猜测。整用户跳过。人按下表核对后手工决定。
 
-全部账号同一 owner 是 `migrate-legacy` 的常态：一个新用户名下导入多个旧账号。
-这些账号的旧自选不同时，整用户进 `conflicts` 是预期行为，不是工具故障。
+同一 owner 名下有多个旧账号是常见形状：这些账号的旧自选不同时，
+整用户进 `conflicts` 是预期行为，不是工具故障。
 
 ## 6. 落库
 
