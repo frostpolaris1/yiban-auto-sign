@@ -3377,7 +3377,12 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody: {
+        /**
+         * @description The envelope is optional in the schema for wire compatibility;
+         *     the server still requires current_password and answers 400 when
+         *     it is missing.
+         */
+        requestBody?: {
             content: {
                 "application/json": components["schemas"]["UserDeleteRequest"];
             };
@@ -3455,7 +3460,12 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody: {
+        /**
+         * @description The envelope is optional in the schema for wire compatibility;
+         *     the server still requires current_password and answers 400 when
+         *     it is missing.
+         */
+        requestBody?: {
             content: {
                 "application/json": components["schemas"]["UserPasswordResetRequest"];
             };
@@ -3964,7 +3974,12 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody: {
+        /**
+         * @description The envelope is optional in the schema for wire compatibility;
+         *     the server still requires current_password and answers 400 when
+         *     it is missing.
+         */
+        requestBody?: {
             content: {
                 "application/json": components["schemas"]["AccountDeleteRequest"];
             };
@@ -4119,7 +4134,12 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody: {
+        /**
+         * @description The envelope is optional in the schema for wire compatibility;
+         *     the server still requires current_password and answers 400 when
+         *     it is missing.
+         */
+        requestBody?: {
             content: {
                 "application/json": components["schemas"]["AccountDeviceRefreshRequest"];
             };
@@ -4995,7 +5015,12 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody: {
+        /**
+         * @description The envelope is optional in the schema for wire compatibility;
+         *     the server still requires current_password and answers 400 when
+         *     it is missing.
+         */
+        requestBody?: {
             content: {
                 "application/json": components["schemas"]["MyAccountDeleteRequest"];
             };

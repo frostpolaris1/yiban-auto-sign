@@ -524,7 +524,11 @@ paths:
           required: true
           schema: { type: string }
       requestBody:
-        required: true
+        required: false
+        description: |
+          The envelope is optional in the schema for wire compatibility;
+          the server still requires current_password and answers 400 when
+          it is missing.
         content:
           application/json:
             schema:
@@ -564,7 +568,11 @@ paths:
           required: true
           schema: { type: string }
       requestBody:
-        required: true
+        required: false
+        description: |
+          The envelope is optional in the schema for wire compatibility;
+          the server still requires current_password and answers 400 when
+          it is missing.
         content:
           application/json:
             schema:
@@ -1065,7 +1073,11 @@ paths:
         - $ref: '#/components/parameters/CSRFToken'
         - $ref: '#/components/parameters/AccountID'
       requestBody:
-        required: true
+        required: false
+        description: |
+          The envelope is optional in the schema for wire compatibility;
+          the server still requires current_password and answers 400 when
+          it is missing.
         content:
           application/json:
             schema:
@@ -1168,7 +1180,11 @@ paths:
         - $ref: '#/components/parameters/CSRFToken'
         - $ref: '#/components/parameters/AccountID'
       requestBody:
-        required: true
+        required: false
+        description: |
+          The envelope is optional in the schema for wire compatibility;
+          the server still requires current_password and answers 400 when
+          it is missing.
         content:
           application/json:
             schema:
@@ -2106,7 +2122,11 @@ paths:
         - $ref: '#/components/parameters/CSRFToken'
         - $ref: '#/components/parameters/AccountID'
       requestBody:
-        required: true
+        required: false
+        description: |
+          The envelope is optional in the schema for wire compatibility;
+          the server still requires current_password and answers 400 when
+          it is missing.
         content:
           application/json:
             schema:

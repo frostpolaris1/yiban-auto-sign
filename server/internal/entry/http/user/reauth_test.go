@@ -188,7 +188,7 @@ func TestUserDeleteReauthGate(t *testing.T) {
 func TestUserPasswordResetReauthGate(t *testing.T) {
 	svc := &fakeUserService{}
 	h := userhttp.NewHandler(svc, fakeUserAuthorizer{}).WithReauth(&recordingReauth{})
-	code, body, _ := callUserHandler(t, h, http.MethodPost, "/api/users/t1/password-reset", `{}`,
+	code, _, _ := callUserHandler(t, h, http.MethodPost, "/api/users/t1/password-reset", `{}`,
 		func(h *userhttp.Handler, c *gin.Context) { h.PasswordReset(c, "t1", oapi.UserPasswordResetParams{}) })
 	if code != http.StatusBadRequest {
 		t.Fatalf("missing password status = %d, want 400", code)
@@ -196,7 +196,7 @@ func TestUserPasswordResetReauthGate(t *testing.T) {
 	if svc.resets != 0 {
 		t.Fatal("a missing password must not reach the use case")
 	}
-	code, body, _ = callUserHandler(t, h, http.MethodPost, "/api/users/t1/password-reset",
+	code, body, _ := callUserHandler(t, h, http.MethodPost, "/api/users/t1/password-reset",
 		`{"current_password":"pw"}`,
 		func(h *userhttp.Handler, c *gin.Context) {
 			h.PasswordReset(c, "t1", oapi.UserPasswordResetParams{})

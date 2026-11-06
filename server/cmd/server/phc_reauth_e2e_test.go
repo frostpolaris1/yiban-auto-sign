@@ -198,7 +198,7 @@ func TestPHCReauthUserPasswordResetGate(t *testing.T) {
 func TestPHCReauthAccountPatchGate(t *testing.T) {
 	e := newAuthEnv(t)
 	owner := w2dSeedUser(t, e, "phc-acct@example.com", "owner-pass-42", coreauth.RoleUser)
-	account := ux8SeedAccount(t, e, owner.ID, "13500135011")
+	account := ux8SeedAccount(t, e, owner.ID, "13800000009")
 	path := "/api/accounts/" + account.ID
 
 	client := u1FreshClient(t)
@@ -214,21 +214,21 @@ func TestPHCReauthAccountPatchGate(t *testing.T) {
 	baseline := phcAuditCount(t, e, account.ID)
 
 	// phone 缺口令：400，手机号未变。
-	resp, payload = e.doAs(client, http.MethodPatch, path, map[string]any{"phone": "13500135012"}, csrf)
+	resp, payload = e.doAs(client, http.MethodPatch, path, map[string]any{"phone": "13800000010"}, csrf)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("phone without password = %d, want 400; body=%q", resp.StatusCode, payload)
 	}
-	if got := e.scalarString("SELECT phone FROM accounts WHERE id = $1", account.ID); got != "13500135011" {
+	if got := e.scalarString("SELECT phone FROM accounts WHERE id = $1", account.ID); got != "13800000009" {
 		t.Fatalf("phone after missing password = %q, want unchanged", got)
 	}
 
 	// phone 错误口令：403，手机号未变，零审计。
 	resp, payload = e.doAs(client, http.MethodPatch, path,
-		map[string]any{"phone": "13500135012", "current_password": "wrong-pass-42"}, csrf)
+		map[string]any{"phone": "13800000010", "current_password": "wrong-pass-42"}, csrf)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("phone with wrong password = %d, want 403; body=%q", resp.StatusCode, payload)
 	}
-	if got := e.scalarString("SELECT phone FROM accounts WHERE id = $1", account.ID); got != "13500135011" {
+	if got := e.scalarString("SELECT phone FROM accounts WHERE id = $1", account.ID); got != "13800000009" {
 		t.Fatalf("phone after wrong password = %q, want unchanged", got)
 	}
 	if n := phcAuditCount(t, e, account.ID); n != baseline {
@@ -237,11 +237,11 @@ func TestPHCReauthAccountPatchGate(t *testing.T) {
 
 	// phone 正确口令：200，换绑回 pending。
 	resp, payload = e.doAs(client, http.MethodPatch, path,
-		map[string]any{"phone": "13500135012", "current_password": "owner-pass-42"}, csrf)
+		map[string]any{"phone": "13800000010", "current_password": "owner-pass-42"}, csrf)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("phone with right password = %d, want 200; body=%q", resp.StatusCode, payload)
 	}
-	if got := e.scalarString("SELECT phone FROM accounts WHERE id = $1", account.ID); got != "13500135012" {
+	if got := e.scalarString("SELECT phone FROM accounts WHERE id = $1", account.ID); got != "13800000010" {
 		t.Fatalf("phone after right password = %q, want the new number", got)
 	}
 	if got := e.scalarString("SELECT status::text FROM accounts WHERE id = $1", account.ID); got != string(coreaccount.StatusPending) {
@@ -264,7 +264,7 @@ func TestPHCReauthAccountPatchGate(t *testing.T) {
 func TestPHCReauthAccountDeleteGate(t *testing.T) {
 	e := newAuthEnv(t)
 	owner := w2dSeedUser(t, e, "phc-acct-del@example.com", "owner-pass-42", coreauth.RoleUser)
-	account := ux8SeedAccount(t, e, owner.ID, "13500135013")
+	account := ux8SeedAccount(t, e, owner.ID, "13800000011")
 	path := "/api/accounts/" + account.ID
 
 	client := u1FreshClient(t)
@@ -305,7 +305,7 @@ func TestPHCReauthAccountDeleteGate(t *testing.T) {
 func TestPHCReauthMyAccountDeleteGate(t *testing.T) {
 	e := newAuthEnv(t)
 	owner := w2dSeedUser(t, e, "phc-self-del@example.com", "owner-pass-42", coreauth.RoleUser)
-	account := ux8SeedAccount(t, e, owner.ID, "13500135014")
+	account := ux8SeedAccount(t, e, owner.ID, "13800000012")
 	path := "/api/me/accounts/" + account.ID + "/delete"
 
 	client := u1FreshClient(t)
@@ -343,7 +343,7 @@ func TestPHCReauthMyAccountDeleteGate(t *testing.T) {
 func TestPHCReauthDeviceRefreshGate(t *testing.T) {
 	e := newAuthEnv(t)
 	owner := w2dSeedUser(t, e, "phc-device@example.com", "owner-pass-42", coreauth.RoleUser)
-	account := ux8SeedAccount(t, e, owner.ID, "13500135015")
+	account := ux8SeedAccount(t, e, owner.ID, "13800000013")
 	path := "/api/accounts/" + account.ID + "/device-refresh"
 
 	client := u1FreshClient(t)
