@@ -335,7 +335,8 @@ func (r *ScheduleRepo) ActiveAccounts(ctx context.Context, schoolID string) ([]c
 func (r *ScheduleRepo) GetOverride(ctx context.Context, schoolTaskID, day string) (coreschedule.WindowOverride, error) {
 	var ov coreschedule.WindowOverride
 	err := r.db.q(ctx).QueryRow(ctx,
-		`SELECT school_task_id::text, day::text, start_at, end_at, reason, created_by::text
+		`SELECT school_task_id::text, day::text, start_at, end_at, reason,
+		        coalesce(created_by::text, '')
 		 FROM window_overrides WHERE school_task_id = $1::uuid AND day = $2::date`,
 		schoolTaskID, day).Scan(&ov.SchoolTaskID, &ov.Day, &ov.Start, &ov.End, &ov.Reason, &ov.CreatedBy)
 	if err != nil {

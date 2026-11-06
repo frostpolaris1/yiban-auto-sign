@@ -1,8 +1,9 @@
 // Package retention 清理过期数据。
 //
 // # 功能
-// 按保留期删四张表：过期会话、过期重置令牌、旧签到任务行、旧站内信。
-// 每批有上限，跑完一批再跑下一批；单次失败只记日志，不退出进程。
+// 按保留期删六张表：过期会话、过期重置令牌、旧签到任务行、旧站内信、
+// 软删满期的账号与用户。每批有上限，跑完一批再跑下一批；
+// 单次失败只记日志，不退出进程。
 //
 // # 归属
 // app 层用例。端口见本文件：Store 接 adapters/pg；本包不写 SQL、不发 HTTP。
@@ -15,6 +16,9 @@
 // 否则保留期与不可篡改互相打架。图片保留期归 app/photos，不在这里。
 // 任务行保留 TaskRetentionDays 天（按业务日切点算，不看时刻）。
 // 站内信保留 NotificationRetentionDays 天；投递账本随外键级联删除。
+// 账号软删满 AccountRetentionDays 天物理删除；用户软删满
+// UserRetentionDays 天物理删除（先清名下账号；覆盖保留，
+// 创建者引用由迁移置空）。
 package retention
 
 import (
@@ -36,6 +40,11 @@ const (
 	// NotificationRetentionDays 是站内信的保留天数。
 	// 投递账本不单独清理：随通知行按外键级联删除。
 	NotificationRetentionDays = 30
+	// AccountRetentionDays 是软删账号的保留天数：
+	// 软删后 30 天内可恢复，满期物理删除。
+	AccountRetentionDays = 30
+	// UserRetentionDays 是软删用户的保留天数：满期物理删除。
+	UserRetentionDays = 90
 	// BatchSize 是单批删除上限：长事务会挡住认领与登录。
 	BatchSize = 1000
 	// Interval 是清理间隔。保留期以天计，不需要更密。
@@ -50,6 +59,8 @@ type Store interface {
 	DeleteExpiredPasswordResets(ctx context.Context, before time.Time, limit int) (int64, error)
 	DeleteTasksBefore(ctx context.Context, before string, limit int) (int64, error)
 	DeleteNotificationsBefore(ctx context.Context, before time.Time, limit int) (int64, error)
+	DeleteAccountsDeletedBefore(ctx context.Context, before time.Time, limit int) (int64, error)
+	DeleteUsersDeletedBefore(ctx context.Context, before time.Time, limit int) (int64, error)
 }
 
 // Deps 是清理服务的依赖。Location 决定"多少天前"按哪个时区数。
@@ -72,6 +83,11 @@ type Pruned struct {
 	ResetTokens   int64
 	Tasks         int64
 	Notifications int64
+	// Accounts 是账号批次物理删除的软删账号数；
+	// 用户批次连带删除的名下账号不计入。
+	Accounts int64
+	// Users 是用户批次物理删除的软删用户数。
+	Users int64
 }
 
 // NewService 构造清理服务。缺端口即失败。
@@ -92,7 +108,9 @@ func NewService(deps Deps) (*Service, error) {
 	return &Service{deps: deps, log: log}, nil
 }
 
-// Prune 跑一轮清理：四张表各自跑到不足一批为止。
+// Prune 跑一轮清理：各表各自跑到不足一批为止。
+// 账号先于用户：accounts.owner_user_id 是 RESTRICT，
+// 用户名下账号不清空，用户行删不掉。
 // 任一表失败即返回已删数与该错误；调用方决定是否记日志。
 func (s *Service) Prune(ctx context.Context) (Pruned, error) {
 	now := s.deps.Clock.Now()
@@ -117,6 +135,18 @@ func (s *Service) Prune(ctx context.Context) (Pruned, error) {
 	notificationCutoff := now.In(s.deps.Location).AddDate(0, 0, -NotificationRetentionDays)
 	if out.Notifications, err = s.drain(ctx, func(limit int) (int64, error) {
 		return s.deps.Store.DeleteNotificationsBefore(ctx, notificationCutoff, limit)
+	}); err != nil {
+		return out, err
+	}
+	accountCutoff := now.In(s.deps.Location).AddDate(0, 0, -AccountRetentionDays)
+	if out.Accounts, err = s.drain(ctx, func(limit int) (int64, error) {
+		return s.deps.Store.DeleteAccountsDeletedBefore(ctx, accountCutoff, limit)
+	}); err != nil {
+		return out, err
+	}
+	userCutoff := now.In(s.deps.Location).AddDate(0, 0, -UserRetentionDays)
+	if out.Users, err = s.drain(ctx, func(limit int) (int64, error) {
+		return s.deps.Store.DeleteUsersDeletedBefore(ctx, userCutoff, limit)
 	}); err != nil {
 		return out, err
 	}
@@ -185,9 +215,11 @@ func (s *Service) runOnce(ctx context.Context, log *slog.Logger) {
 		}
 		return
 	}
-	if pruned.Sessions+pruned.ResetTokens+pruned.Tasks+pruned.Notifications > 0 {
+	if pruned.Sessions+pruned.ResetTokens+pruned.Tasks+pruned.Notifications+
+		pruned.Accounts+pruned.Users > 0 {
 		log.Info("retention: pruned", logfield.KeySessions, pruned.Sessions,
 			logfield.KeyResetTokens, pruned.ResetTokens, logfield.KeyTasks, pruned.Tasks,
-			logfield.KeyNotifications, pruned.Notifications)
+			logfield.KeyNotifications, pruned.Notifications,
+			logfield.KeyAccounts, pruned.Accounts, logfield.KeyUsers, pruned.Users)
 	}
 }

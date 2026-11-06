@@ -90,6 +90,7 @@ func TestKeysArePinned(t *testing.T) {
 	// golden 必须写死键串；原始串避免 status.literal 把键名误判成状态逻辑。
 	golden := []string{
 		"account_id",
+		"accounts",
 		"attempt",
 		"batch",
 		"blobs_deleted",
@@ -137,6 +138,7 @@ func TestKeysArePinned(t *testing.T) {
 		"total",
 		"trigger",
 		"user_id",
+		"users",
 	}
 	got := make([]string, 0, len(All))
 	for _, f := range All {
