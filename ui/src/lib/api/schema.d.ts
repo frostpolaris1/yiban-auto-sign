@@ -72,6 +72,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/auth/password-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the password policy for the signed-in user.
+         * @description Returns the same password strength tier the host enforces on password
+         *     writes, selected by the session role. A user needs 10 characters and
+         *     2 character classes; master and admin need 12 characters and 3
+         *     classes. max_bytes is the UTF-8 byte ceiling. The response carries
+         *     numbers only: validation messages stay on the write endpoints.
+         *     A request without a session answers 401. This read writes no row and
+         *     records no audit entry.
+         */
+        get: operations["PasswordPolicyGet"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/forgot-password": {
         parameters: {
             query?: never;
@@ -2021,6 +2047,20 @@ export interface components {
             terms_version: number;
             privacy_version: number;
         };
+        PasswordPolicy: {
+            /**
+             * @description Minimum Unicode character count for the session role: 10 for user,
+             *     12 for master and admin.
+             */
+            min_chars: number;
+            /**
+             * @description Minimum number of character classes hit, counted over uppercase,
+             *     lowercase, digits and symbols: 2 for user, 3 for master and admin.
+             */
+            min_classes: number;
+            /** @description UTF-8 byte ceiling for the plaintext password. */
+            max_bytes: number;
+        };
         RegistrationSetRequest: {
             enabled: boolean;
         };
@@ -3068,6 +3108,28 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SessionUser"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    PasswordPolicyGet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Password policy for the session role. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PasswordPolicy"];
                 };
             };
             401: components["responses"]["UnauthorizedError"];

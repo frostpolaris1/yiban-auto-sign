@@ -44,6 +44,32 @@ func TestPasswordPolicyRejects(t *testing.T) {
 }
 
 // 角色分档：user 10/2、master/admin 12/3；未知角色按 user 档。
+// 档位与判定必须同源：查询值与 PasswordPolicyErrorForRole 的边界一致。
+func TestPasswordPolicyForRoleTiers(t *testing.T) {
+	cases := []struct {
+		name       string
+		role       coreauth.Role
+		minChars   int
+		minClasses int
+		maxBytes   int
+	}{
+		{"user", coreauth.RoleUser, 10, 2, 1024},
+		{"admin", coreauth.RoleAdmin, 12, 3, 1024},
+		{"master", coreauth.RoleMaster, 12, 3, 1024},
+		{"unknown role falls back to user", coreauth.Role("robot"), 10, 2, 1024},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			minChars, minClasses, maxBytes := coreauth.PasswordPolicyForRole(tc.role)
+			if minChars != tc.minChars || minClasses != tc.minClasses || maxBytes != tc.maxBytes {
+				t.Fatalf("PasswordPolicyForRole(%q) = %d/%d/%d, want %d/%d/%d",
+					tc.role, minChars, minClasses, maxBytes, tc.minChars, tc.minClasses, tc.maxBytes)
+			}
+		})
+	}
+}
+
+// 角色分档：user 10/2、master/admin 12/3；未知角色按 user 档。
 func TestPasswordPolicyForRole(t *testing.T) {
 	t.Run("user tier", func(t *testing.T) {
 		// 10 字符两类恰好通过；11 字符一类仍拒。

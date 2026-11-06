@@ -89,6 +89,7 @@ either side drifts.
 | POST | `/api/auth/login` | public | P1 |
 | POST | `/api/auth/logout` | public | P1 |
 | GET | `/api/auth/me` | master/admin/user | P1 |
+| GET | `/api/auth/password-policy` | master/admin/user | PW-1 |
 | POST | `/api/auth/forgot-password` | public | P1 |
 | POST | `/api/auth/reset-password` | public | P1 |
 | POST | `/api/auth/change-password` | master/admin/user | P1 |

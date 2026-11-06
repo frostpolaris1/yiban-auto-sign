@@ -121,6 +121,25 @@ func (s *server) AuthMe(c *gin.Context) {
 	respond.JSON(c.Writer, http.StatusOK, sessionUserOf(sess))
 }
 
+// PasswordPolicyGet 返回会话角色对应的口令强度档位。
+//
+// 只读：不写库、不写审计。响应只有三个数字，**不**回英文校验文案，
+// 也**不**带用户标识；界面自行本地化提示。
+func (s *server) PasswordPolicyGet(c *gin.Context) {
+	sess, ok := coreauth.FromContext(c.Request.Context())
+	if !ok {
+		// 中间件已拒绝无会话请求；这里保留同口径，避免接线变更后放行。
+		respond.Error(c.Writer, c.Request, errs.New(errs.CodeUnauthorized, "authentication required"))
+		return
+	}
+	minChars, minClasses, maxBytes := coreauth.PasswordPolicyForRole(sess.User.Role)
+	respond.JSON(c.Writer, http.StatusOK, oapi.PasswordPolicy{
+		MinChars:   minChars,
+		MinClasses: minClasses,
+		MaxBytes:   maxBytes,
+	})
+}
+
 // AuthForgotPassword 创建一次性重置令牌。
 // **始终回 204**，不区分邮箱是否存在。
 func (s *server) AuthForgotPassword(c *gin.Context) {
