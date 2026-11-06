@@ -118,6 +118,29 @@ paths:
                 $ref: '#/components/schemas/SessionUser'
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         default: { $ref: '#/components/responses/DefaultError' }
+  /api/auth/password-policy:
+    get:
+      tags: [auth]
+      operationId: PasswordPolicyGet
+      summary: Read the password policy for the signed-in user.
+      description: |
+        Returns the same password strength tier the host enforces on password
+        writes, selected by the session role. A user needs 10 characters and
+        2 character classes; master and admin need 12 characters and 3
+        classes. max_bytes is the UTF-8 byte ceiling. The response carries
+        numbers only: validation messages stay on the write endpoints.
+        A request without a session answers 401. This read writes no row and
+        records no audit entry.
+      x-roles: [master, admin, user]
+      responses:
+        '200':
+          description: Password policy for the session role.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasswordPolicy'
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        default: { $ref: '#/components/responses/DefaultError' }
   /api/auth/forgot-password:
     post:
       tags: [auth]
@@ -3137,6 +3160,27 @@ components:
           description: False by default. Only a master may change it.
         terms_version: { type: integer, minimum: 1 }
         privacy_version: { type: integer, minimum: 1 }
+    PasswordPolicy:
+      type: object
+      required: [min_chars, min_classes, max_bytes]
+      properties:
+        min_chars:
+          type: integer
+          minimum: 1
+          description: |
+            Minimum Unicode character count for the session role: 10 for user,
+            12 for master and admin.
+        min_classes:
+          type: integer
+          minimum: 1
+          maximum: 4
+          description: |
+            Minimum number of character classes hit, counted over uppercase,
+            lowercase, digits and symbols: 2 for user, 3 for master and admin.
+        max_bytes:
+          type: integer
+          minimum: 1
+          description: UTF-8 byte ceiling for the plaintext password.
     RegistrationSetRequest:
       type: object
       required: [enabled]

@@ -1282,6 +1282,20 @@ type NotifyPrefsUpdate struct {
 	Items []NotifyPref `json:"items"`
 }
 
+// PasswordPolicy defines model for PasswordPolicy.
+type PasswordPolicy struct {
+	// MaxBytes UTF-8 byte ceiling for the plaintext password.
+	MaxBytes int `json:"max_bytes"`
+
+	// MinChars Minimum Unicode character count for the session role: 10 for user,
+	// 12 for master and admin.
+	MinChars int `json:"min_chars"`
+
+	// MinClasses Minimum number of character classes hit, counted over uppercase,
+	// lowercase, digits and symbols: 2 for user, 3 for master and admin.
+	MinClasses int `json:"min_classes"`
+}
+
 // Photo defines model for Photo.
 type Photo struct {
 	Bytes     int64     `json:"bytes"`
@@ -2824,6 +2838,9 @@ type ServerInterface interface {
 	// AuthMe Return the signed-in user and the CSRF token.
 	// (GET /api/auth/me)
 	AuthMe(c *gin.Context)
+	// PasswordPolicyGet Read the password policy for the signed-in user.
+	// (GET /api/auth/password-policy)
+	PasswordPolicyGet(c *gin.Context)
 	// AuthRegister Create a user account and sign in.
 	// (POST /api/auth/register)
 	AuthRegister(c *gin.Context)
@@ -4233,6 +4250,19 @@ func (siw *ServerInterfaceWrapper) AuthMe(c *gin.Context) {
 	}
 
 	siw.Handler.AuthMe(c)
+}
+
+// PasswordPolicyGet operation middleware
+func (siw *ServerInterfaceWrapper) PasswordPolicyGet(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.PasswordPolicyGet(c)
 }
 
 // AuthRegister operation middleware
@@ -6070,6 +6100,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/auth/login", wrapper.AuthLogin)
 	router.POST(options.BaseURL+"/api/auth/logout", wrapper.AuthLogout)
 	router.GET(options.BaseURL+"/api/auth/me", wrapper.AuthMe)
+	router.GET(options.BaseURL+"/api/auth/password-policy", wrapper.PasswordPolicyGet)
 	router.POST(options.BaseURL+"/api/auth/forgot-password", wrapper.AuthForgotPassword)
 	router.POST(options.BaseURL+"/api/auth/reset-password", wrapper.AuthResetPassword)
 	router.POST(options.BaseURL+"/api/auth/change-password", wrapper.AuthChangePassword)

@@ -37,32 +37,39 @@ const (
 	PasswordMaxBytes = 1024
 )
 
+// PasswordPolicyForRole 返回目标角色档的最小字符数、最少类别数与字节上限。
+//
+// master/admin 走特权档（12 字符、三类），user 与未知角色走普通档（10 字符、
+// 两类）。未知角色按普通档处理是安全方向的缺省。
+// 本函数是档位的唯一事实源：判定与只读查询都从这里取值。
+func PasswordPolicyForRole(role Role) (minChars, minClasses, maxBytes int) {
+	if role == RoleMaster || role == RoleAdmin {
+		return PasswordMinCharsPrivileged, PasswordMinClassesPrivileged, PasswordMaxBytes
+	}
+	return PasswordMinChars, PasswordMinClasses, PasswordMaxBytes
+}
+
 // PasswordPolicyError 返回口令不满足普通用户档策略的原因；通过时返回空串。
 //
 // 返回英文稳定文案，供 API 直接下发；界面可自行本地化。
 // 判定顺序固定：先长度，再字节上限，再类别。
 func PasswordPolicyError(password string) string {
-	return passwordPolicyErrorFor(password, PasswordMinChars, PasswordMinClasses)
+	return PasswordPolicyErrorForRole(password, RoleUser)
 }
 
 // PasswordPolicyErrorForRole 返回口令不满足目标角色档策略的原因；通过时返回空串。
-//
-// master/admin 走特权档（12 字符、三类），user 与未知角色走普通档（10 字符、
-// 两类）。未知角色按普通档处理是安全方向的缺省。
 func PasswordPolicyErrorForRole(password string, role Role) string {
-	if role == RoleMaster || role == RoleAdmin {
-		return passwordPolicyErrorFor(password, PasswordMinCharsPrivileged, PasswordMinClassesPrivileged)
-	}
-	return PasswordPolicyError(password)
+	minChars, minClasses, maxBytes := PasswordPolicyForRole(role)
+	return passwordPolicyErrorFor(password, minChars, minClasses, maxBytes)
 }
 
 // passwordPolicyErrorFor 是分档实现的唯一判定点。
 // 类别文案用英文数词，与既有稳定文案逐字一致。
-func passwordPolicyErrorFor(password string, minChars, minClasses int) string {
+func passwordPolicyErrorFor(password string, minChars, minClasses, maxBytes int) string {
 	if utf8.RuneCountInString(password) < minChars {
 		return "password must be at least " + strconv.Itoa(minChars) + " characters"
 	}
-	if len(password) > PasswordMaxBytes {
+	if len(password) > maxBytes {
 		return "password is too long"
 	}
 	if PasswordClassCount(password) < minClasses {
