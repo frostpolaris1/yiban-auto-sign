@@ -166,7 +166,7 @@ func TestR4BCblNullKeysPresent(t *testing.T) {
 
 	// 用户：从未登录时 last_login_at 输出 null。
 	rec = e.do(http.MethodPost, "/api/users", map[string]any{
-		"email": "r4b-null-new@example.com", "password": "correct-horse", "role": "user",
+		"email": "r4b-null-new@example.com", "password": "reauth-pass-42", "role": "user",
 	}, masterIssued)
 	w2cWantStatus(t, rec, http.StatusCreated)
 	r4bWantNull(t, r4bJSON(t, rec.Body.Bytes()), "last_login_at")

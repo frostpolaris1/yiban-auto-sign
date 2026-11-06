@@ -43,6 +43,42 @@ func TestPasswordPolicyRejects(t *testing.T) {
 	}
 }
 
+// 角色分档：user 10/2、master/admin 12/3；未知角色按 user 档。
+func TestPasswordPolicyForRole(t *testing.T) {
+	t.Run("user tier", func(t *testing.T) {
+		// 10 字符两类恰好通过；11 字符一类仍拒。
+		if reason := coreauth.PasswordPolicyErrorForRole("abcdefghij1", coreauth.RoleUser); reason != "" {
+			t.Fatalf("user-tier 10/2 = %q, want pass", reason)
+		}
+		if reason := coreauth.PasswordPolicyErrorForRole("abcdefghi", coreauth.RoleUser); !strings.Contains(reason, "10 characters") {
+			t.Fatalf("user-tier 9 chars = %q, want 10 characters", reason)
+		}
+		if reason := coreauth.PasswordPolicyErrorForRole("abcdefghij", coreauth.RoleUser); !strings.Contains(reason, "two of") {
+			t.Fatalf("user-tier one class = %q, want two of", reason)
+		}
+	})
+	t.Run("privileged tier", func(t *testing.T) {
+		// 11 字符三类也必须拒：长度差一就是差。
+		if reason := coreauth.PasswordPolicyErrorForRole("Abcdefghij1", coreauth.RoleAdmin); !strings.Contains(reason, "12 characters") {
+			t.Fatalf("admin 11 chars 3 classes = %q, want 12 characters", reason)
+		}
+		if reason := coreauth.PasswordPolicyErrorForRole("Abcdefghij1!", coreauth.RoleAdmin); reason != "" {
+			t.Fatalf("admin 12/3 = %q, want pass", reason)
+		}
+		if reason := coreauth.PasswordPolicyErrorForRole("abcdefghij12", coreauth.RoleAdmin); !strings.Contains(reason, "three of") {
+			t.Fatalf("admin 12 chars 2 classes = %q, want three of", reason)
+		}
+		if reason := coreauth.PasswordPolicyErrorForRole("Abcdefghij1!", coreauth.RoleMaster); reason != "" {
+			t.Fatalf("master 12/3 = %q, want pass", reason)
+		}
+	})
+	t.Run("unknown role falls back to user tier", func(t *testing.T) {
+		if reason := coreauth.PasswordPolicyErrorForRole("abcdefghij1", coreauth.Role("robot")); reason != "" {
+			t.Fatalf("unknown role 10/2 = %q, want pass", reason)
+		}
+	})
+}
+
 func TestPasswordClassCount(t *testing.T) {
 	cases := map[string]int{
 		"":          0,

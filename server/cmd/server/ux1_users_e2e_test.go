@@ -91,6 +91,11 @@ func u1LoginOn(e *authEnv, client *http.Client, email, password string) sessionU
 	return body
 }
 
+// u1ReauthBody 是危险操作请求体的二次口令形状：acting master 自己的登录口令。
+func u1ReauthBody(password string) map[string]any {
+	return map[string]any{"current_password": password}
+}
+
 // u1AuditActions 按 id 序返回 target 的审计动作。
 func u1AuditActions(e *authEnv, targetID string) []string {
 	e.t.Helper()
@@ -188,7 +193,7 @@ func TestUX1G1FullLifecycle(t *testing.T) {
 
 	// 改角色。
 	patchResp, patchPayload := u1Do(e, e.client, http.MethodPatch, "/api/users/"+created.ID,
-		map[string]any{"role": "admin"}, boss.CSRFToken)
+		map[string]any{"role": "admin", "current_password": "boss-pass"}, boss.CSRFToken)
 	if patchResp.StatusCode != http.StatusOK {
 		t.Fatalf("patch role = %d, want 200; body=%q", patchResp.StatusCode, patchPayload)
 	}
@@ -202,7 +207,7 @@ func TestUX1G1FullLifecycle(t *testing.T) {
 
 	// 重置口令。
 	resetResp, resetPayload := u1Do(e, e.client, http.MethodPost,
-		"/api/users/"+created.ID+"/password-reset", nil, boss.CSRFToken)
+		"/api/users/"+created.ID+"/password-reset", u1ReauthBody("boss-pass"), boss.CSRFToken)
 	if resetResp.StatusCode != http.StatusOK {
 		t.Fatalf("password reset = %d, want 200; body=%q", resetResp.StatusCode, resetPayload)
 	}
@@ -218,7 +223,7 @@ func TestUX1G1FullLifecycle(t *testing.T) {
 
 	// 软删。
 	deleteResp, deletePayload := u1Do(e, e.client, http.MethodDelete,
-		"/api/users/"+created.ID, nil, boss.CSRFToken)
+		"/api/users/"+created.ID, u1ReauthBody("boss-pass"), boss.CSRFToken)
 	if deleteResp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete = %d, want 204; body=%q", deleteResp.StatusCode, deletePayload)
 	}
@@ -318,16 +323,16 @@ func TestUX1G2LastMasterIsProtected(t *testing.T) {
 
 	// 先降级 peer：boss 仍在，允许。
 	demoteResp, demotePayload := u1Do(e, e.client, http.MethodPatch, "/api/users/"+peer.ID,
-		map[string]any{"role": "user"}, boss.CSRFToken)
+		map[string]any{"role": "user", "current_password": "boss-pass"}, boss.CSRFToken)
 	if demoteResp.StatusCode != http.StatusOK {
 		t.Fatalf("demote second master = %d, want 200; body=%q", demoteResp.StatusCode, demotePayload)
 	}
 
 	// 此后 boss 是唯一未删 master：降级与停用都 409。
 	for _, body := range []map[string]any{
-		{"role": "user"},
-		{"role": "admin"},
-		{"status": "disabled"},
+		{"role": "user", "current_password": "boss-pass"},
+		{"role": "admin", "current_password": "boss-pass"},
+		{"status": "disabled", "current_password": "boss-pass"},
 	} {
 		resp, payload := u1Do(e, e.client, http.MethodPatch, "/api/users/"+boss.ID,
 			body, boss.CSRFToken)
@@ -362,7 +367,7 @@ func TestUX1G3DeleteBlockedByOwnedAccounts(t *testing.T) {
 	u1SeedAccount(t, e, owner.ID, "13800138010")
 
 	delResp, delPayload := u1Do(e, e.client, http.MethodDelete,
-		"/api/users/"+owner.ID, nil, boss.CSRFToken)
+		"/api/users/"+owner.ID, u1ReauthBody("boss-pass"), boss.CSRFToken)
 	if delResp.StatusCode != http.StatusConflict {
 		t.Fatalf("delete user with accounts = %d, want 409; body=%q", delResp.StatusCode, delPayload)
 	}
@@ -378,7 +383,7 @@ func TestUX1G3DeleteBlockedByOwnedAccounts(t *testing.T) {
 		t.Fatalf("delete accounts: %v", err)
 	}
 	againResp, againPayload := u1Do(e, e.client, http.MethodDelete,
-		"/api/users/"+owner.ID, nil, boss.CSRFToken)
+		"/api/users/"+owner.ID, u1ReauthBody("boss-pass"), boss.CSRFToken)
 	if againResp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete after clearing accounts = %d, want 204; body=%q", againResp.StatusCode, againPayload)
 	}
@@ -403,7 +408,7 @@ func TestUX1G4PasswordResetRevokesSessions(t *testing.T) {
 	}
 
 	resetResp, resetPayload := u1Do(e, e.client, http.MethodPost,
-		"/api/users/"+target.ID+"/password-reset", nil, boss.CSRFToken)
+		"/api/users/"+target.ID+"/password-reset", u1ReauthBody("boss-pass"), boss.CSRFToken)
 	if resetResp.StatusCode != http.StatusOK {
 		t.Fatalf("password reset = %d, want 200; body=%q", resetResp.StatusCode, resetPayload)
 	}
@@ -605,7 +610,7 @@ func TestUX1G7Lookup(t *testing.T) {
 	// 静态段遮蔽：PATCH /api/users/lookup 命中用户域的 PATCH 族。
 	// 判据：不是把 "lookup" 当 UUID 校验失败的 400；404 或 200 都算遮蔽成立。
 	shadowResp, shadowPayload := u1Do(e, bossClient, http.MethodPatch, "/api/users/lookup",
-		map[string]any{"role": "admin"}, boss.CSRFToken)
+		map[string]any{"role": "admin", "current_password": "boss-pass"}, boss.CSRFToken)
 	if shadowResp.StatusCode == http.StatusBadRequest {
 		t.Fatalf("PATCH /api/users/lookup = 400 (id parsed as UUID); body=%q", shadowPayload)
 	}
@@ -621,14 +626,15 @@ func TestUX1G8SelfResetAndDeleteAreForbidden(t *testing.T) {
 	boss := e.w2dLoginAs("g8-boss@example.com", "boss-pass")
 
 	resetResp, resetPayload := u1Do(e, e.client, http.MethodPost,
-		"/api/users/"+boss.ID+"/password-reset", nil, boss.CSRFToken)
+		"/api/users/"+boss.ID+"/password-reset", u1ReauthBody("boss-pass"), boss.CSRFToken)
 	if resetResp.StatusCode != http.StatusForbidden {
 		t.Fatalf("self reset = %d, want 403; body=%q", resetResp.StatusCode, resetPayload)
 	}
 	if code, _ := errorCode(t, resetPayload); code != "forbidden" {
 		t.Fatalf("self reset code = %q, want forbidden", code)
 	}
-	delResp, delPayload := u1Do(e, e.client, http.MethodDelete, "/api/users/"+boss.ID, nil, boss.CSRFToken)
+	delResp, delPayload := u1Do(e, e.client, http.MethodDelete,
+		"/api/users/"+boss.ID, u1ReauthBody("boss-pass"), boss.CSRFToken)
 	if delResp.StatusCode != http.StatusForbidden {
 		t.Fatalf("self delete = %d, want 403; body=%q", delResp.StatusCode, delPayload)
 	}
@@ -655,12 +661,12 @@ func TestUX1G11SoftDeletedIsUnreachable(t *testing.T) {
 	}
 
 	patchResp, patchPayload := u1Do(e, e.client, http.MethodPatch, "/api/users/"+victim.ID,
-		map[string]any{"role": "admin"}, boss.CSRFToken)
+		map[string]any{"role": "admin", "current_password": "boss-pass"}, boss.CSRFToken)
 	if patchResp.StatusCode != http.StatusNotFound {
 		t.Fatalf("patch deleted user = %d, want 404; body=%q", patchResp.StatusCode, patchPayload)
 	}
 	resetResp, resetPayload := u1Do(e, e.client, http.MethodPost,
-		"/api/users/"+victim.ID+"/password-reset", nil, boss.CSRFToken)
+		"/api/users/"+victim.ID+"/password-reset", u1ReauthBody("boss-pass"), boss.CSRFToken)
 	if resetResp.StatusCode != http.StatusNotFound {
 		t.Fatalf("reset deleted user = %d, want 404; body=%q", resetResp.StatusCode, resetPayload)
 	}
@@ -672,19 +678,22 @@ func TestUX1G11SoftDeletedIsUnreachable(t *testing.T) {
 		t.Fatalf("restore live user = %d, want 404; body=%q", restoreLiveResp.StatusCode, restoreLivePayload)
 	}
 	missingResp, missingPayload := u1Do(e, e.client, http.MethodDelete,
-		"/api/users/00000000-0000-0000-0000-000000000000", nil, boss.CSRFToken)
+		"/api/users/00000000-0000-0000-0000-000000000000", u1ReauthBody("boss-pass"), boss.CSRFToken)
 	if missingResp.StatusCode != http.StatusNotFound {
 		t.Fatalf("delete missing user = %d, want 404; body=%q", missingResp.StatusCode, missingPayload)
 	}
 
-	// 空 PATCH 体：minProperties 判据在用例层，400。
+	// 空 PATCH 体：口令门已过（带正确口令），minProperties 判据在用例层，400。
 	emptyResp, emptyPayload := u1Do(e, e.client, http.MethodPatch, "/api/users/"+live.ID,
-		map[string]any{}, boss.CSRFToken)
+		map[string]any{"current_password": "boss-pass"}, boss.CSRFToken)
 	if emptyResp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("empty patch = %d, want 400; body=%q", emptyResp.StatusCode, emptyPayload)
 	}
 	if code, _ := errorCode(t, emptyPayload); code != "validation_failed" {
 		t.Fatalf("empty patch code = %q, want validation_failed", code)
+	}
+	if _, msg := errorCode(t, emptyPayload); !strings.Contains(msg, "at least one of role or status") {
+		t.Fatalf("empty patch message = %q, want the use-case minProperties reason", msg)
 	}
 }
 
@@ -703,7 +712,7 @@ func TestUX1G13DisabledMasterIsNoPath(t *testing.T) {
 
 	// A 停用 B：A 仍是唯一 active master，允许。
 	if resp, payload := u1Do(e, e.client, http.MethodPatch, "/api/users/"+b.ID,
-		map[string]any{"status": "disabled"}, a.CSRFToken); resp.StatusCode != http.StatusOK {
+		map[string]any{"status": "disabled", "current_password": "a-pass"}, a.CSRFToken); resp.StatusCode != http.StatusOK {
 		t.Fatalf("disable B = %d, want 200; body=%q", resp.StatusCode, payload)
 	}
 	// B 被停用后不能登录：登录要求 active（app/auth/login.go）。
@@ -714,9 +723,9 @@ func TestUX1G13DisabledMasterIsNoPath(t *testing.T) {
 	}
 	// A 自降与自停都 409。
 	for _, body := range []map[string]any{
-		{"role": "user"},
-		{"role": "admin"},
-		{"status": "disabled"},
+		{"role": "user", "current_password": "a-pass"},
+		{"role": "admin", "current_password": "a-pass"},
+		{"status": "disabled", "current_password": "a-pass"},
 	} {
 		resp, payload := u1Do(e, e.client, http.MethodPatch, "/api/users/"+a.ID, body, a.CSRFToken)
 		if resp.StatusCode != http.StatusConflict {
@@ -738,7 +747,8 @@ func TestUX1G14SelfBypassViaNonCanonicalUUID(t *testing.T) {
 	boss := e.w2dLoginAs("g14-boss@example.com", "boss-pass")
 	upper := strings.ToUpper(boss.ID)
 
-	delResp, delPayload := u1Do(e, e.client, http.MethodDelete, "/api/users/"+upper, nil, boss.CSRFToken)
+	delResp, delPayload := u1Do(e, e.client, http.MethodDelete,
+		"/api/users/"+upper, u1ReauthBody("boss-pass"), boss.CSRFToken)
 	if delResp.StatusCode != http.StatusForbidden {
 		t.Fatalf("self delete via uppercase id = %d, want 403; body=%q", delResp.StatusCode, delPayload)
 	}
@@ -746,7 +756,7 @@ func TestUX1G14SelfBypassViaNonCanonicalUUID(t *testing.T) {
 		t.Fatalf("self delete code = %q, want forbidden", code)
 	}
 	resetResp, resetPayload := u1Do(e, e.client, http.MethodPost,
-		"/api/users/"+upper+"/password-reset", nil, boss.CSRFToken)
+		"/api/users/"+upper+"/password-reset", u1ReauthBody("boss-pass"), boss.CSRFToken)
 	if resetResp.StatusCode != http.StatusForbidden {
 		t.Fatalf("self reset via uppercase id = %d, want 403; body=%q", resetResp.StatusCode, resetPayload)
 	}
@@ -778,7 +788,7 @@ func TestUX1G12StatusChangeKillsSessions(t *testing.T) {
 
 	// 停用（target 是 user，不触发最后 master 判据）。
 	if resp, payload := u1Do(e, e.client, http.MethodPatch, "/api/users/"+target.ID,
-		map[string]any{"status": "disabled"}, boss.CSRFToken); resp.StatusCode != http.StatusOK {
+		map[string]any{"status": "disabled", "current_password": "boss-pass"}, boss.CSRFToken); resp.StatusCode != http.StatusOK {
 		t.Fatalf("disable = %d, want 200; body=%q", resp.StatusCode, payload)
 	}
 	meResp, _ := u1Do(e, client, http.MethodGet, "/api/auth/me", nil, "")
@@ -787,7 +797,7 @@ func TestUX1G12StatusChangeKillsSessions(t *testing.T) {
 	}
 
 	// 软删：解析层 JOIN 判 deleted_at，旧 cookie 仍 401。
-	if resp, payload := u1Do(e, e.client, http.MethodDelete, "/api/users/"+target.ID, nil, boss.CSRFToken); resp.StatusCode != http.StatusNoContent {
+	if resp, payload := u1Do(e, e.client, http.MethodDelete, "/api/users/"+target.ID, u1ReauthBody("boss-pass"), boss.CSRFToken); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete = %d, want 204; body=%q", resp.StatusCode, payload)
 	}
 	again, _ := u1Do(e, client, http.MethodGet, "/api/auth/me", nil, "")

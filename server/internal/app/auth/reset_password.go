@@ -13,10 +13,12 @@ import (
 
 // ResetPassword 用一次性令牌替换口令。
 //
-// 以下五步同属一个事务：消费令牌、读用户、写新哈希、撤销全部会话、写审计。
-// 任一步失败即整体回滚，故令牌不会「消费了但口令没改」。
+// 以下六步同属一个事务：消费令牌、读用户、判口令策略、写新哈希、
+// 撤销全部会话、写审计。任一步失败即整体回滚，
+// 故令牌不会「消费了但口令没改」。
 // 令牌未知、已用或过期统一返回 ErrInvalidResetToken。
-// 新口令一律 argon2id，且 must_change_password 置 false。
+// 新口令按令牌对应用户的角色档判强度策略，一律 argon2id，
+// 且 must_change_password 置 false。
 func (s *Service) ResetPassword(ctx context.Context, token, newPassword string) error {
 	if token == "" {
 		return errs.New(errs.CodeValidation, "token is required")
@@ -51,6 +53,11 @@ func (s *Service) ResetPassword(ctx context.Context, token, newPassword string) 
 				return ErrInvalidResetToken
 			}
 			return err
+		}
+		// 新口令按令牌对应用户的角色档判强度策略。事务内判：
+		// 回滚即零写入，弱口令不会落库。
+		if reason := coreauth.PasswordPolicyErrorForRole(newPassword, rec.Role); reason != "" {
+			return errs.New(errs.CodeValidation, reason)
 		}
 		if err := s.users.UpdatePassword(ctx, rec.ID, newHash, false, now); err != nil {
 			return err

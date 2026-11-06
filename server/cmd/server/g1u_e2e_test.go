@@ -177,7 +177,8 @@ func TestG1UAdminReadsBoundSchoolPhoto(t *testing.T) {
 	}
 
 	// 账号软删后 admin 失去读取面：A 校不再有该属主的账号。
-	if rec := e.do("DELETE", "/api/accounts/"+f.acctA1, nil, f.owner1); rec.Code != http.StatusNoContent {
+	if rec := e.do("DELETE", "/api/accounts/"+f.acctA1,
+		map[string]any{"current_password": w2cSeedPassword}, f.owner1); rec.Code != http.StatusNoContent {
 		t.Fatalf("删号 status = %d: %s", rec.Code, rec.Body.String())
 	}
 	if rec := e.do("GET", path, nil, f.adminA); rec.Code != http.StatusNotFound {

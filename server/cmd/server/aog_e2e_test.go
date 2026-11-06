@@ -58,8 +58,12 @@ func aogSetAccount(t *testing.T, e *w2cEnv, id, status, reason, reviewerID strin
 }
 
 // aogPatch 发一次 PATCH 并解出账号。
+// 全部用例都编辑凭据面字段，统一补上二次口令。
 func aogPatch(t *testing.T, e *w2cEnv, id string, body map[string]any, issued *coreauth.Issued) aogAccount {
 	t.Helper()
+	if _, ok := body["current_password"]; !ok {
+		body["current_password"] = w2cSeedPassword
+	}
 	rec := e.do(http.MethodPatch, "/api/accounts/"+id, body, issued)
 	w2cWantStatus(t, rec, http.StatusOK)
 	var got aogAccount
@@ -298,7 +302,7 @@ func TestAOGRebindConflictKeepsState(t *testing.T) {
 	aogSetAccount(t, e, second, string(coreaccount.StatusActive), "", admin.ID)
 
 	rec := e.do(http.MethodPatch, "/api/accounts/"+first,
-		map[string]any{"phone": "13800000060"}, e.login(owner))
+		map[string]any{"phone": "13800000060", "current_password": w2cSeedPassword}, e.login(owner))
 	w2cWantStatus(t, rec, http.StatusConflict)
 	if code := e.errorCode(rec); code != "conflict" {
 		t.Fatalf("code = %q, want conflict", code)

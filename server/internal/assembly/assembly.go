@@ -548,8 +548,11 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		}
 		schools = schoolhttp.NewHandler(schoolSvc, adminSvc)
 		admins = adminhttp.NewHandler(adminSvc, adminSvc)
-		accounts = accounthttp.NewHandler(accountSvc, adminSvc, guard)
-		users = userhttp.NewHandler(userSvc, adminSvc)
+		// 二次口令用例注入两个危险操作面：改角色/删用户/重置口令与
+		// 凭据编辑/删号/自助删号/设备刷新。用例是 authSvc 的窄接口，
+		// handler 只见 Reauthenticate。
+		accounts = accounthttp.NewHandler(accountSvc, adminSvc, guard).WithReauth(authSvc)
+		users = userhttp.NewHandler(userSvc, adminSvc).WithReauth(authSvc)
 		signing = signinghttp.NewHandler(accountSvc, adminSvc, provider)
 
 		// 事件总线先于 worker 与计划装配：两者的发布端口引用同一实例。

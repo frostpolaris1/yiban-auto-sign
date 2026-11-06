@@ -32,9 +32,15 @@ import (
 	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
+// tempPasswordAttempts 是临时口令满足目标角色策略的重生成上限。
+// 43 字符 base64url 几乎必然命中三类；上限只为极端随机序列兜底。
+const tempPasswordAttempts = 5
+
 // PasswordReset 重置目标用户口令并撤销其全部会话。
 // 返回的临时口令只此一次，调用方必须立即交给响应。
 // **只有 master 可以调用**；目标是自己 403。
+// 临时口令生成后按目标角色档断言强度策略，不满足则重新生成；
+// 上限次内仍不满足回 internal（随机源故障形状）。
 func (s *Service) PasswordReset(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) (string, error) {
 	if err := app.RequireScope(scope); err != nil {
 		return "", err
@@ -49,7 +55,14 @@ func (s *Service) PasswordReset(ctx context.Context, scope corescope.Scope, id s
 	if normalized == actor.UserID {
 		return "", errs.New(errs.CodeForbidden, "resetting your own password is not allowed here")
 	}
-	temp, err := coreauth.NewToken()
+	// 目标角色先读一次：临时口令要按它断言策略。
+	// 事务内还会重读一次作 404 判据，两次读之间的角色漂移不影响结果：
+	// 重读行只用于写行与审计，策略断言的是生成时刻的目标档位。
+	target, err := s.deps.Users.GetByID(ctx, normalized)
+	if err != nil {
+		return "", err
+	}
+	temp, err := tempPasswordForRole(target.Role)
 	if err != nil {
 		return "", err
 	}
@@ -86,4 +99,20 @@ func (s *Service) PasswordReset(ctx context.Context, scope corescope.Scope, id s
 		return "", err
 	}
 	return temp, nil
+}
+
+// tempPasswordForRole 生成满足目标角色档策略的一次性临时口令。
+// 上限次内不满足即 internal：43 字符 base64url 命中三类是压倒性事件，
+// 连续失败只说明随机源坏了。
+func tempPasswordForRole(role coreauth.Role) (string, error) {
+	for i := 0; i < tempPasswordAttempts; i++ {
+		candidate, err := coreauth.NewToken()
+		if err != nil {
+			return "", err
+		}
+		if coreauth.PasswordPolicyErrorForRole(candidate, role) == "" {
+			return candidate, nil
+		}
+	}
+	return "", errs.New(errs.CodeInternal, "cannot generate a temporary password satisfying the policy")
 }

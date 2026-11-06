@@ -201,7 +201,8 @@ func TestN190MutatingEndpointsCarryCounts(t *testing.T) {
 	seedAccount(target.ID, "13800000073", coreaccount.StatusRejected, "资料不全")
 
 	resp, payload := e.do(http.MethodPatch, "/api/users/"+target.ID,
-		map[string]any{"status": "disabled"}, map[string]string{"X-CSRF-Token": session.CSRFToken})
+		map[string]any{"status": "disabled", "current_password": "boss-pass"},
+		map[string]string{"X-CSRF-Token": session.CSRFToken})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("PATCH = %d; body=%q", resp.StatusCode, payload)
 	}

@@ -143,7 +143,9 @@ func TestCanonicalRuleRowsPinned(t *testing.T) {
 	// internal/adapters/pg/settings_e2e_test.go（订阅/公告/审计列表的用例层 e2e）。
 	// status.literal allow 增列 internal/core/notify/
 	// （投递账本的 pending/sent/failed/skipped 是投递状态，不是任务状态）。
-	const want = "3677b09c7999a06ccfafafc1cca2ea4e2e86dfee982ba5a5cc72d69c7ce2ac2f"
+	// phc：clock.now allow 增列 cmd/server/phc_reauth_e2e_test.go
+	// （重置令牌播种沿用 auth_e2e_test.go 的真实墙钟口径）。
+	const want = "04a6d26158f8999456f360c47f3c1b49075122abcb88f09c4705c1de032b78a1"
 	if got != want {
 		t.Fatalf("canonical 规则内容变了（hash %s）；确认改动后更新 TestCanonicalRuleRowsPinned 的哈希", got)
 	}

@@ -29,6 +29,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -332,7 +333,7 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		InsecureCookies: true,
 		Schools:         schoolhttp.NewHandler(schoolSvc, adminSvc),
 		Admins:          adminhttp.NewHandler(adminSvc, adminSvc),
-		Accounts:        accounthttp.NewHandler(accountSvc, adminSvc),
+		Accounts:        accounthttp.NewHandler(accountSvc, adminSvc).WithReauth(e2eAcceptReauth{}),
 		Users:           userhttp.NewHandler(userSvc, adminSvc),
 		Signing:         signingHandler,
 		Schedule:        scheduleHandler,
@@ -452,6 +453,35 @@ func w2cRandomHex(n int) string {
 
 // --- 造数 -----------------------------------------------------------------
 
+// w2cSeedPassword 是 w2c 环境全部用户的登录口令（满足 user 档 10 字符两类）。
+// 危险操作的二次口令要校验真哈希：占位串会让 reauth 回 500，故存真哈希。
+// 会话仍由 issuer 直接签发，测试不真登录。
+const w2cSeedPassword = "reauth-pass-42"
+
+var (
+	w2cSeedHashOnce sync.Once
+	w2cSeedHashVal  string
+)
+
+// e2eAcceptReauth 是测试引擎的二次口令替身：一律放行。
+// 缺口令的 400 形状由入口层判据保证，不经本替身。
+type e2eAcceptReauth struct{}
+
+func (e2eAcceptReauth) Reauthenticate(context.Context, string, string) error { return nil }
+
+// w2cSeedHash 返回种子口令的 argon2id 哈希，每进程只算一次。
+func w2cSeedHash(t *testing.T) string {
+	t.Helper()
+	w2cSeedHashOnce.Do(func() {
+		hash, err := coreauth.HashPassword(w2cSeedPassword)
+		if err != nil {
+			t.Fatalf("hash seed password: %v", err)
+		}
+		w2cSeedHashVal = hash
+	})
+	return w2cSeedHashVal
+}
+
 func (e *w2cEnv) user(email string, role coreauth.Role) coreuser.Record {
 	e.t.Helper()
 	var rec coreuser.Record
@@ -459,7 +489,7 @@ func (e *w2cEnv) user(email string, role coreauth.Role) coreuser.Record {
 		var err error
 		rec, err = e.users.Create(ctx, coreuser.New{
 			Email:        email,
-			PasswordHash: "argon2id$test",
+			PasswordHash: w2cSeedHash(e.t),
 			Role:         role,
 		}, 10000)
 		return err
@@ -666,7 +696,7 @@ func TestW2CE31UserCannotUpdateAnotherUsersAccount(t *testing.T) {
 	account := e.account(school.ID, bob.ID, "13800138001")
 
 	rec := e.do(http.MethodPatch, "/api/accounts/"+account,
-		map[string]any{"phone": "13900139000"}, e.login(alice))
+		map[string]any{"phone": "13900139000", "current_password": w2cSeedPassword}, e.login(alice))
 	w2cWantStatus(t, rec, http.StatusNotFound)
 	if code := e.errorCode(rec); code != "not_found" {
 		t.Fatalf("code = %q, want not_found", code)
@@ -803,7 +833,7 @@ func TestW2CE33ReviewApprovesAccount(t *testing.T) {
 
 	// 改口令：版本自增，旧负载里的空设备码/机型被保留。
 	rec = e.do(http.MethodPatch, "/api/accounts/"+created.ID,
-		map[string]any{"password": "rotated-password"}, masterSess)
+		map[string]any{"password": "rotated-password", "current_password": w2cSeedPassword}, masterSess)
 	w2cWantStatus(t, rec, http.StatusOK)
 	var updated w2cAccount
 	e.decode(rec, &updated)
@@ -905,7 +935,8 @@ func TestW2CE35SoftDeletedAccountIsGone(t *testing.T) {
 	account := e.account(school.ID, master.ID, "13800138004")
 	masterSess := e.login(master)
 
-	w2cWantStatus(t, e.do(http.MethodDelete, "/api/accounts/"+account, nil, masterSess), http.StatusNoContent)
+	w2cWantStatus(t, e.do(http.MethodDelete, "/api/accounts/"+account,
+		map[string]any{"current_password": w2cSeedPassword}, masterSess), http.StatusNoContent)
 	w2cWantStatus(t, e.do(http.MethodGet, "/api/accounts/"+account, nil, masterSess), http.StatusNotFound)
 
 	rec := e.do(http.MethodGet, "/api/accounts", nil, masterSess)
@@ -1199,8 +1230,9 @@ func TestW2CP11CrossSchoolWritesAre404(t *testing.T) {
 		{"pause", http.MethodPost, "/api/accounts/" + paused + "/pause",
 			map[string]any{"paused": true}, paused},
 		{"update-phone", http.MethodPatch, "/api/accounts/" + phoned,
-			map[string]any{"phone": "13900139099"}, phoned},
-		{"soft-delete", http.MethodDelete, "/api/accounts/" + deleted, nil, deleted},
+			map[string]any{"phone": "13900139099", "current_password": w2cSeedPassword}, phoned},
+		{"soft-delete", http.MethodDelete, "/api/accounts/" + deleted,
+			map[string]any{"current_password": w2cSeedPassword}, deleted},
 	}
 	for _, tc := range cases {
 		before := e.accountSnapshot(tc.id)

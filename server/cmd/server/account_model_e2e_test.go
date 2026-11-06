@@ -271,7 +271,8 @@ func TestAccountPhoneModelResponses(t *testing.T) {
 	})
 
 	// 软删行不读凭据：列表仍 200，该行机型为空，活行不受影响。
-	resp, payload := u2Do(e, memberClient, http.MethodDelete, "/api/accounts/"+own.ID, nil, memberSession.CSRFToken)
+	resp, payload := u2Do(e, memberClient, http.MethodDelete, "/api/accounts/"+own.ID,
+		u1ReauthBody("member-pass"), memberSession.CSRFToken)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("user delete own account = %d, want 204; body=%q", resp.StatusCode, payload)
 	}
@@ -375,7 +376,8 @@ func TestAccountDeviceRefreshTruncatesLongPhoneModel(t *testing.T) {
 	e.reader.script = []u2DeviceOutcome{{
 		state: appaccount.DeviceState{Authorized: true, PhoneModel: longModel},
 	}}
-	code, payload := e.do(http.MethodPost, "/api/accounts/"+accountID+"/device-refresh", nil, e.issue(master))
+	code, payload := e.do(http.MethodPost, "/api/accounts/"+accountID+"/device-refresh",
+		u1ReauthBody(w2cSeedPassword), e.issue(master))
 	if code != http.StatusOK {
 		t.Fatalf("device refresh = %d, want 200; body=%q", code, payload)
 	}

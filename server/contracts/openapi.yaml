@@ -467,6 +467,10 @@ paths:
         row and a status change writes user.disable or user.enable; both
         take effect from the next request because sessions resolve the
         user row every time.
+        Every request must carry current_password, the acting user's own
+        login password: a missing value answers 400, a wrong value 403,
+        and repeated failures answer 429. A rejected reauthentication
+        writes nothing.
       x-roles: [master]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -493,6 +497,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/ConflictError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
     delete:
       tags: [users]
@@ -507,6 +512,10 @@ paths:
         session of that user and writes one user.delete audit row. The
         row keeps its email; a later restore can conflict with a live
         user that has taken the address.
+        Every request must carry current_password, the acting user's own
+        login password: a missing value answers 400, a wrong value 403,
+        and repeated failures answer 429. A rejected reauthentication
+        writes nothing.
       x-roles: [master]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -514,12 +523,25 @@ paths:
           in: path
           required: true
           schema: { type: string }
+      requestBody:
+        required: false
+        description: |
+          The envelope is optional in the schema for wire compatibility;
+          the server still requires current_password and answers 400 when
+          it is missing.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserDeleteRequest'
       responses:
         '204': { description: User soft-deleted. }
+        '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/ConflictError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/users/{id}/password-reset:
     post:
@@ -534,6 +556,10 @@ paths:
         user.password_reset audit row without the secret. temp_password
         appears exactly once, in this response; it is never stored or
         returned again.
+        Every request must carry current_password, the acting user's own
+        login password: a missing value answers 400, a wrong value 403,
+        and repeated failures answer 429. A rejected reauthentication
+        writes nothing.
       x-roles: [master]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -541,6 +567,16 @@ paths:
           in: path
           required: true
           schema: { type: string }
+      requestBody:
+        required: false
+        description: |
+          The envelope is optional in the schema for wire compatibility;
+          the server still requires current_password and answers 400 when
+          it is missing.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserPasswordResetRequest'
       responses:
         '200':
           description: Temporary password. Shown once.
@@ -548,9 +584,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/UserTempPassword'
+        '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/users/{id}/restore:
     post:
@@ -989,6 +1028,11 @@ paths:
         Changing school is forbidden in P1 (decision 12.3) and returns
         conflict. Changes are rate limited per caller; a 429 carries
         Retry-After.
+        A request that carries phone, password or device_code must also
+        carry current_password, the acting user's own login password (a
+        name, phone_model or school_id edit does not): a missing value
+        answers 400, a wrong value 403, and repeated failures answer 429.
+        A rejected reauthentication writes nothing.
       x-roles: [master, admin, user]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -1018,16 +1062,34 @@ paths:
       tags: [accounts]
       operationId: AccountDelete
       summary: Soft-delete an account.
-      description: Sets deleted_at and deleted_by. Cascades hide credentials.
+      description: |
+        Sets deleted_at and deleted_by. Cascades hide credentials.
+        Every request must carry current_password, the acting user's own
+        login password: a missing value answers 400, a wrong value 403,
+        and repeated failures answer 429. A rejected reauthentication
+        writes nothing.
       x-roles: [master, admin, user]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
         - $ref: '#/components/parameters/AccountID'
+      requestBody:
+        required: false
+        description: |
+          The envelope is optional in the schema for wire compatibility;
+          the server still requires current_password and answers 400 when
+          it is missing.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountDeleteRequest'
       responses:
         '204': { description: Account deleted. }
+        '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/accounts/{id}/review:
     post:
@@ -1099,7 +1161,7 @@ paths:
       operationId: AccountDeviceRefresh
       summary: Re-read the device fields registered on the platform.
       description: |
-        Takes no body. The server reads the stored credentials, asks the
+        The server reads the stored credentials, asks the
         platform for its registered device state and, on success, writes the
         non-empty fields back into the credential ciphertext inside one
         transaction; platform-side empty fields never overwrite hand-filled
@@ -1109,10 +1171,24 @@ paths:
         form, the phone model and the authorized flag. Like every write here,
         403 comes from the CSRF middleware when the token is missing or
         wrong, not from a role check.
+        Every request must carry current_password, the acting user's own
+        login password (the device identity is a credential): a missing
+        value answers 400, a wrong value 403, and repeated failures answer
+        429. A rejected reauthentication writes nothing.
       x-roles: [master, admin, user]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
         - $ref: '#/components/parameters/AccountID'
+      requestBody:
+        required: false
+        description: |
+          The envelope is optional in the schema for wire compatibility;
+          the server still requires current_password and answers 400 when
+          it is missing.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountDeviceRefreshRequest'
       responses:
         '200':
           description: The refreshed device view.
@@ -1120,10 +1196,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AccountDevice'
+        '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
         '502': { $ref: '#/components/responses/DefaultError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/accounts/{id}/restore:
@@ -2035,16 +2113,32 @@ paths:
         The grace window is 7 days (core/account.SelfRestoreGrace), shared
         with POST /api/me/accounts/{id}/restore; once it has passed the
         retention job may purge the row and no self-service undo exists.
+        Every request must carry current_password, the acting user's own
+        login password: a missing value answers 400, a wrong value 403,
+        and repeated failures answer 429. A rejected reauthentication
+        writes nothing.
       x-roles: [master, admin, user]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
         - $ref: '#/components/parameters/AccountID'
+      requestBody:
+        required: false
+        description: |
+          The envelope is optional in the schema for wire compatibility;
+          the server still requires current_password and answers 400 when
+          it is missing.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MyAccountDeleteRequest'
       responses:
         '204': { description: Account soft-deleted. }
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/me/accounts/{id}/restore:
     post:
@@ -3079,6 +3173,43 @@ components:
           $ref: '#/components/schemas/UserRole'
         status:
           $ref: '#/components/schemas/UserStatus'
+        current_password:
+          $ref: '#/components/schemas/CurrentPassword'
+    CurrentPassword:
+      type: string
+      minLength: 1
+      description: |
+        The acting user's own login password, used to re-authenticate a
+        dangerous operation. It is never the signing account's platform
+        credential, and it is never stored, logged or audited. Optional in
+        this schema; the server requires it on the dangerous endpoints and
+        answers 400 when it is missing, 403 when it is wrong and 429 after
+        repeated failures.
+    UserDeleteRequest:
+      type: object
+      properties:
+        current_password:
+          $ref: '#/components/schemas/CurrentPassword'
+    UserPasswordResetRequest:
+      type: object
+      properties:
+        current_password:
+          $ref: '#/components/schemas/CurrentPassword'
+    AccountDeleteRequest:
+      type: object
+      properties:
+        current_password:
+          $ref: '#/components/schemas/CurrentPassword'
+    MyAccountDeleteRequest:
+      type: object
+      properties:
+        current_password:
+          $ref: '#/components/schemas/CurrentPassword'
+    AccountDeviceRefreshRequest:
+      type: object
+      properties:
+        current_password:
+          $ref: '#/components/schemas/CurrentPassword'
     UserTempPassword:
       type: object
       required: [temp_password]
@@ -3294,6 +3425,10 @@ components:
         a model edit still counts as a credential edit (a rejected account
         resubmits and a credential_error account recovers), and every role
         may write it.
+        current_password is the acting user's own login password, never the
+        account credential. The server requires it when the request carries
+        phone, password or device_code and answers 400 when it is missing,
+        403 when it is wrong and 429 after repeated failures.
       minProperties: 1
       properties:
         school_id:
@@ -3325,6 +3460,8 @@ components:
             stored device code. A user update carrying any device_code,
             including an empty string, answers 403.
         phone_model: { type: string, maxLength: 64 }
+        current_password:
+          $ref: '#/components/schemas/CurrentPassword'
     AccountReviewRequest:
       type: object
       required: [decision]

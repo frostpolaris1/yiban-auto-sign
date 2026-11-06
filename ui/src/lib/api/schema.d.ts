@@ -290,6 +290,10 @@ export interface paths {
          *     session of that user and writes one user.delete audit row. The
          *     row keeps its email; a later restore can conflict with a live
          *     user that has taken the address.
+         *     Every request must carry current_password, the acting user's own
+         *     login password: a missing value answers 400, a wrong value 403,
+         *     and repeated failures answer 429. A rejected reauthentication
+         *     writes nothing.
          */
         delete: operations["UserDelete"];
         options?: never;
@@ -304,6 +308,10 @@ export interface paths {
          *     row and a status change writes user.disable or user.enable; both
          *     take effect from the next request because sessions resolve the
          *     user row every time.
+         *     Every request must carry current_password, the acting user's own
+         *     login password: a missing value answers 400, a wrong value 403,
+         *     and repeated failures answer 429. A rejected reauthentication
+         *     writes nothing.
          */
         patch: operations["UserUpdate"];
         trace?: never;
@@ -326,6 +334,10 @@ export interface paths {
          *     user.password_reset audit row without the secret. temp_password
          *     appears exactly once, in this response; it is never stored or
          *     returned again.
+         *     Every request must carry current_password, the acting user's own
+         *     login password: a missing value answers 400, a wrong value 403,
+         *     and repeated failures answer 429. A rejected reauthentication
+         *     writes nothing.
          */
         post: operations["UserPasswordReset"];
         delete?: never;
@@ -567,6 +579,10 @@ export interface paths {
         /**
          * Soft-delete an account.
          * @description Sets deleted_at and deleted_by. Cascades hide credentials.
+         *     Every request must carry current_password, the acting user's own
+         *     login password: a missing value answers 400, a wrong value 403,
+         *     and repeated failures answer 429. A rejected reauthentication
+         *     writes nothing.
          */
         delete: operations["AccountDelete"];
         options?: never;
@@ -586,6 +602,11 @@ export interface paths {
          *     Changing school is forbidden in P1 (decision 12.3) and returns
          *     conflict. Changes are rate limited per caller; a 429 carries
          *     Retry-After.
+         *     A request that carries phone, password or device_code must also
+         *     carry current_password, the acting user's own login password (a
+         *     name, phone_model or school_id edit does not): a missing value
+         *     answers 400, a wrong value 403, and repeated failures answer 429.
+         *     A rejected reauthentication writes nothing.
          */
         patch: operations["AccountUpdate"];
         trace?: never;
@@ -644,7 +665,7 @@ export interface paths {
         put?: never;
         /**
          * Re-read the device fields registered on the platform.
-         * @description Takes no body. The server reads the stored credentials, asks the
+         * @description The server reads the stored credentials, asks the
          *     platform for its registered device state and, on success, writes the
          *     non-empty fields back into the credential ciphertext inside one
          *     transaction; platform-side empty fields never overwrite hand-filled
@@ -654,6 +675,10 @@ export interface paths {
          *     form, the phone model and the authorized flag. Like every write here,
          *     403 comes from the CSRF middleware when the token is missing or
          *     wrong, not from a role check.
+         *     Every request must carry current_password, the acting user's own
+         *     login password (the device identity is a credential): a missing
+         *     value answers 400, a wrong value 403, and repeated failures answer
+         *     429. A rejected reauthentication writes nothing.
          */
         post: operations["AccountDeviceRefresh"];
         delete?: never;
@@ -1374,6 +1399,10 @@ export interface paths {
          *     The grace window is 7 days (core/account.SelfRestoreGrace), shared
          *     with POST /api/me/accounts/{id}/restore; once it has passed the
          *     retention job may purge the row and no self-service undo exists.
+         *     Every request must carry current_password, the acting user's own
+         *     login password: a missing value answers 400, a wrong value 403,
+         *     and repeated failures answer 429. A rejected reauthentication
+         *     writes nothing.
          */
         post: operations["MyAccountDelete"];
         delete?: never;
@@ -2014,6 +2043,31 @@ export interface components {
         UserUpdate: {
             role?: components["schemas"]["UserRole"];
             status?: components["schemas"]["UserStatus"];
+            current_password?: components["schemas"]["CurrentPassword"];
+        };
+        /**
+         * @description The acting user's own login password, used to re-authenticate a
+         *     dangerous operation. It is never the signing account's platform
+         *     credential, and it is never stored, logged or audited. Optional in
+         *     this schema; the server requires it on the dangerous endpoints and
+         *     answers 400 when it is missing, 403 when it is wrong and 429 after
+         *     repeated failures.
+         */
+        CurrentPassword: string;
+        UserDeleteRequest: {
+            current_password?: components["schemas"]["CurrentPassword"];
+        };
+        UserPasswordResetRequest: {
+            current_password?: components["schemas"]["CurrentPassword"];
+        };
+        AccountDeleteRequest: {
+            current_password?: components["schemas"]["CurrentPassword"];
+        };
+        MyAccountDeleteRequest: {
+            current_password?: components["schemas"]["CurrentPassword"];
+        };
+        AccountDeviceRefreshRequest: {
+            current_password?: components["schemas"]["CurrentPassword"];
         };
         UserTempPassword: {
             /**
@@ -2171,6 +2225,10 @@ export interface components {
          *     a model edit still counts as a credential edit (a rejected account
          *     resubmits and a credential_error account recovers), and every role
          *     may write it.
+         *     current_password is the acting user's own login password, never the
+         *     account credential. The server requires it when the request carries
+         *     phone, password or device_code and answers 400 when it is missing,
+         *     403 when it is wrong and 429 after repeated failures.
          */
         AccountUpdate: {
             /**
@@ -2199,6 +2257,7 @@ export interface components {
              */
             device_code?: string;
             phone_model?: string;
+            current_password?: components["schemas"]["CurrentPassword"];
         };
         AccountReviewRequest: {
             /** @enum {string} */
@@ -3318,7 +3377,16 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        /**
+         * @description The envelope is optional in the schema for wire compatibility;
+         *     the server still requires current_password and answers 400 when
+         *     it is missing.
+         */
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["UserDeleteRequest"];
+            };
+        };
         responses: {
             /** @description User soft-deleted. */
             204: {
@@ -3327,10 +3395,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -3370,6 +3441,7 @@ export interface operations {
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -3388,7 +3460,16 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        /**
+         * @description The envelope is optional in the schema for wire compatibility;
+         *     the server still requires current_password and answers 400 when
+         *     it is missing.
+         */
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["UserPasswordResetRequest"];
+            };
+        };
         responses: {
             /** @description Temporary password. Shown once. */
             200: {
@@ -3399,9 +3480,12 @@ export interface operations {
                     "application/json": components["schemas"]["UserTempPassword"];
                 };
             };
+            400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -3890,7 +3974,16 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        /**
+         * @description The envelope is optional in the schema for wire compatibility;
+         *     the server still requires current_password and answers 400 when
+         *     it is missing.
+         */
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AccountDeleteRequest"];
+            };
+        };
         responses: {
             /** @description Account deleted. */
             204: {
@@ -3899,9 +3992,12 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -4038,7 +4134,16 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        /**
+         * @description The envelope is optional in the schema for wire compatibility;
+         *     the server still requires current_password and answers 400 when
+         *     it is missing.
+         */
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AccountDeviceRefreshRequest"];
+            };
+        };
         responses: {
             /** @description The refreshed device view. */
             200: {
@@ -4049,10 +4154,12 @@ export interface operations {
                     "application/json": components["schemas"]["AccountDevice"];
                 };
             };
+            400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
             413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["TooManyRequestsError"];
             502: components["responses"]["DefaultError"];
             default: components["responses"]["DefaultError"];
         };
@@ -4908,7 +5015,16 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        /**
+         * @description The envelope is optional in the schema for wire compatibility;
+         *     the server still requires current_password and answers 400 when
+         *     it is missing.
+         */
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["MyAccountDeleteRequest"];
+            };
+        };
         responses: {
             /** @description Account soft-deleted. */
             204: {
@@ -4921,6 +5037,8 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
         };
     };
