@@ -332,9 +332,9 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		Logger:          logger,
 		InsecureCookies: true,
 		Schools:         schoolhttp.NewHandler(schoolSvc, adminSvc),
-		Admins:          adminhttp.NewHandler(adminSvc, adminSvc),
+		Admins:          adminhttp.NewHandler(adminSvc, adminSvc).WithReauth(e2eAcceptReauth{}),
 		Accounts:        accounthttp.NewHandler(accountSvc, adminSvc).WithReauth(e2eAcceptReauth{}),
-		Users:           userhttp.NewHandler(userSvc, adminSvc),
+		Users:           userhttp.NewHandler(userSvc, adminSvc).WithReauth(e2eAcceptReauth{}),
 		Signing:         signingHandler,
 		Schedule:        scheduleHandler,
 		Photos:          photoshttp.NewHandler(photoSvc, adminSvc),
@@ -725,7 +725,7 @@ func TestW2CE32MasterCreatesSchoolAndBindsAdmin(t *testing.T) {
 	}
 
 	rec = e.do(http.MethodPost, "/api/schools/"+created.ID+"/admins",
-		map[string]any{"user_id": adminUser.ID}, masterSess)
+		map[string]any{"user_id": adminUser.ID, "current_password": w2cSeedPassword}, masterSess)
 	w2cWantStatus(t, rec, http.StatusCreated)
 
 	if got := e.scalarInt("SELECT count(*) FROM audit_logs WHERE action = 'school.create'"); got != 1 {
@@ -760,7 +760,8 @@ func TestW2CE32MasterCreatesSchoolAndBindsAdmin(t *testing.T) {
 
 	// 解绑后列表为空，且被解绑者不再看到该校。
 	w2cWantStatus(t, e.do(http.MethodDelete,
-		"/api/schools/"+created.ID+"/admins/"+adminUser.ID, nil, masterSess), http.StatusNoContent)
+		"/api/schools/"+created.ID+"/admins/"+adminUser.ID,
+		u1ReauthBody(w2cSeedPassword), masterSess), http.StatusNoContent)
 	rec = e.do(http.MethodGet, "/api/schools/"+created.ID+"/admins", nil, masterSess)
 	w2cWantStatus(t, rec, http.StatusOK)
 	e.decode(rec, &admins)
@@ -967,7 +968,7 @@ func TestW2CE36AuditChainVerifiesAndDetectsTamper(t *testing.T) {
 	var created w2cSchool
 	e.decode(rec, &created)
 	w2cWantStatus(t, e.do(http.MethodPost, "/api/schools/"+created.ID+"/admins",
-		map[string]any{"user_id": adminUser.ID}, masterSess), http.StatusCreated)
+		map[string]any{"user_id": adminUser.ID, "current_password": w2cSeedPassword}, masterSess), http.StatusCreated)
 	w2cWantStatus(t, e.do(http.MethodPatch, "/api/schools/"+created.ID,
 		map[string]any{"name": "E36 renamed"}, masterSess), http.StatusOK)
 	e.account(school.ID, master.ID, "13800138005")

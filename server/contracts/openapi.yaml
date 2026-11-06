@@ -405,6 +405,10 @@ paths:
         only way to create a master or admin. The password is stored as an
         argon2id hash. A duplicate email among live users is a 409; a
         soft-deleted user's email may be reused.
+        Every request must carry current_password, the acting user's own
+        login password: a missing value answers 400, a wrong value 403,
+        and repeated failures answer 429. A rejected reauthentication
+        writes nothing.
       x-roles: [master]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -426,7 +430,7 @@ paths:
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '409': { $ref: '#/components/responses/ConflictError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
-        '429': { $ref: '#/components/responses/DefaultError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/users/lookup:
     get:
@@ -625,6 +629,10 @@ paths:
         address the partial unique index rejects it with 409. Restoring
         above the live-user capacity is 429. Sessions were revoked when
         the user was deleted, so the user must sign in again.
+        Every request must carry current_password, the acting user's own
+        login password: a missing value answers 400, a wrong value 403,
+        and repeated failures answer 429. A rejected reauthentication
+        writes nothing.
       x-roles: [master]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -632,6 +640,16 @@ paths:
           in: path
           required: true
           schema: { type: string }
+      requestBody:
+        required: false
+        description: |
+          The envelope is optional in the schema for wire compatibility;
+          the server still requires current_password and answers 400 when
+          it is missing.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserRestoreRequest'
       responses:
         '200':
           description: User restored.
@@ -639,10 +657,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/User'
+        '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/ConflictError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/schools:
@@ -820,6 +840,10 @@ paths:
       description: |
         P1 has no invitation flow (decision 12.15). The user must already exist
         and have role admin or master.
+        Every request must carry current_password, the acting user's own
+        login password: a missing value answers 400, a wrong value 403,
+        and repeated failures answer 429. A rejected reauthentication
+        writes nothing.
       x-roles: [master]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
@@ -843,6 +867,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/ConflictError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/schools/{id}/admins/{uid}:
     delete:
@@ -852,16 +877,33 @@ paths:
       description: |
         master only. Unbinds the admin from the school and keeps the user
         account. A missing binding answers 404.
+        Every request must carry current_password, the acting user's own
+        login password: a missing value answers 400, a wrong value 403,
+        and repeated failures answer 429. A rejected reauthentication
+        writes nothing.
       x-roles: [master]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
         - $ref: '#/components/parameters/SchoolID'
         - $ref: '#/components/parameters/UserID'
+      requestBody:
+        required: false
+        description: |
+          The envelope is optional in the schema for wire compatibility;
+          the server still requires current_password and answers 400 when
+          it is missing.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SchoolAdminRemoveRequest'
       responses:
         '204': { description: Admin unbound. }
+        '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/accounts:
     get:
@@ -1237,10 +1279,24 @@ paths:
         status. A missing or out-of-scope account answers 404; a live (not
         deleted) account answers 409 conflict; the global or the per-owner
         active-account quota answers 429 capacity_exceeded.
+        Every request must carry current_password, the acting user's own
+        login password: a missing value answers 400, a wrong value 403,
+        and repeated failures answer 429. A rejected reauthentication
+        writes nothing.
       x-roles: [master, admin]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
         - $ref: '#/components/parameters/AccountID'
+      requestBody:
+        required: false
+        description: |
+          The envelope is optional in the schema for wire compatibility;
+          the server still requires current_password and answers 400 when
+          it is missing.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountRestoreRequest'
       responses:
         '200':
           description: The restored account.
@@ -1248,6 +1304,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Account'
+        '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '404': { $ref: '#/components/responses/NotFoundError' }
@@ -2205,10 +2262,24 @@ paths:
         a live (not deleted) account answers 409. Capacity is enforced like
         the administrator restore and answers 429 capacity_exceeded.
         The audit action is account.self_restore.
+        Every request must carry current_password, the acting user's own
+        login password: a missing value answers 400, a wrong value 403,
+        and repeated failures answer 429. A rejected reauthentication
+        writes nothing.
       x-roles: [master, admin, user]
       parameters:
         - $ref: '#/components/parameters/CSRFToken'
         - $ref: '#/components/parameters/AccountID'
+      requestBody:
+        required: false
+        description: |
+          The envelope is optional in the schema for wire compatibility;
+          the server still requires current_password and answers 400 when
+          it is missing.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MyAccountRestoreRequest'
       responses:
         '200':
           description: The restored account.
@@ -2222,7 +2293,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFoundError' }
         '409': { $ref: '#/components/responses/ConflictError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
-        '429': { $ref: '#/components/responses/DefaultError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/me/mail-notify:
     get:
@@ -2768,7 +2839,10 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
     TooManyRequestsError:
-      description: Inbound rate limit exceeded; Retry-After says when to retry.
+      description: |
+        Rate, reauthentication or capacity limit reached. Retry-After is
+        present when the server can estimate the wait (inbound and
+        reauthentication throttles); a capacity rejection omits it.
       headers:
         Retry-After:
           description: Seconds to wait before retrying; always at least 1.
@@ -3234,6 +3308,8 @@ components:
         password: { type: string, minLength: 1 }
         role:
           $ref: '#/components/schemas/UserRole'
+        current_password:
+          $ref: '#/components/schemas/CurrentPassword'
     UserUpdate:
       type: object
       minProperties: 1
@@ -3256,6 +3332,26 @@ components:
         answers 400 when it is missing, 403 when it is wrong and 429 after
         repeated failures.
     UserDeleteRequest:
+      type: object
+      properties:
+        current_password:
+          $ref: '#/components/schemas/CurrentPassword'
+    UserRestoreRequest:
+      type: object
+      properties:
+        current_password:
+          $ref: '#/components/schemas/CurrentPassword'
+    AccountRestoreRequest:
+      type: object
+      properties:
+        current_password:
+          $ref: '#/components/schemas/CurrentPassword'
+    MyAccountRestoreRequest:
+      type: object
+      properties:
+        current_password:
+          $ref: '#/components/schemas/CurrentPassword'
+    SchoolAdminRemoveRequest:
       type: object
       properties:
         current_password:
@@ -3353,6 +3449,8 @@ components:
       required: [user_id]
       properties:
         user_id: { type: string }
+        current_password:
+          $ref: '#/components/schemas/CurrentPassword'
     SchoolAdminPage:
       type: object
       required: [items, next_cursor]

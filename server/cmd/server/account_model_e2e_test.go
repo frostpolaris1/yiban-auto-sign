@@ -291,7 +291,7 @@ func TestAccountPhoneModelResponses(t *testing.T) {
 
 	// 恢复响应同样带机型：凭据行仍在，软删只挡列表读取。
 	restoreResp, restorePayload := u2Do(e, e.client, http.MethodPost, "/api/accounts/"+own.ID+"/restore",
-		nil, masterSession.CSRFToken)
+		u1ReauthBody("master-pass"), masterSession.CSRFToken)
 	if restoreResp.StatusCode != http.StatusOK {
 		t.Fatalf("restore = %d, want 200; body=%q", restoreResp.StatusCode, restorePayload)
 	}

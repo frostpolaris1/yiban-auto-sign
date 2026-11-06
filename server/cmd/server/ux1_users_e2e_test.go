@@ -178,7 +178,8 @@ func TestUX1G1FullLifecycle(t *testing.T) {
 
 	// 建号。
 	createResp, createPayload := u1Do(e, e.client, http.MethodPost, "/api/users",
-		map[string]any{"email": "g1-target@example.com", "password": "first-pass", "role": "user"},
+		map[string]any{"email": "g1-target@example.com", "password": "first-pass", "role": "user",
+			"current_password": "boss-pass"},
 		boss.CSRFToken)
 	if createResp.StatusCode != http.StatusCreated {
 		t.Fatalf("create = %d, want 201; body=%q", createResp.StatusCode, createPayload)
@@ -251,7 +252,7 @@ func TestUX1G1FullLifecycle(t *testing.T) {
 
 	// 恢复。
 	restoreResp, restorePayload := u1Do(e, e.client, http.MethodPost,
-		"/api/users/"+created.ID+"/restore", nil, boss.CSRFToken)
+		"/api/users/"+created.ID+"/restore", u1ReauthBody("boss-pass"), boss.CSRFToken)
 	if restoreResp.StatusCode != http.StatusOK {
 		t.Fatalf("restore = %d, want 200; body=%q", restoreResp.StatusCode, restorePayload)
 	}
@@ -462,14 +463,15 @@ func TestUX1G5RestoreEmailCollisionIsConflict(t *testing.T) {
 	old := u1SeedDeletedUser(t, e, "g5-shared@example.com", boss.ID)
 	// 同邮箱的活跃新用户：软删行的邮箱可被复用。
 	createResp, createPayload := u1Do(e, e.client, http.MethodPost, "/api/users",
-		map[string]any{"email": "g5-shared@example.com", "password": "fresh-pass", "role": "user"},
+		map[string]any{"email": "g5-shared@example.com", "password": "fresh-pass", "role": "user",
+			"current_password": "boss-pass"},
 		boss.CSRFToken)
 	if createResp.StatusCode != http.StatusCreated {
 		t.Fatalf("create reuse = %d, want 201; body=%q", createResp.StatusCode, createPayload)
 	}
 
 	restoreResp, restorePayload := u1Do(e, e.client, http.MethodPost,
-		"/api/users/"+old.ID+"/restore", nil, boss.CSRFToken)
+		"/api/users/"+old.ID+"/restore", u1ReauthBody("boss-pass"), boss.CSRFToken)
 	if restoreResp.StatusCode != http.StatusConflict {
 		t.Fatalf("restore with taken email = %d, want 409; body=%q", restoreResp.StatusCode, restorePayload)
 	}
@@ -500,7 +502,7 @@ func TestUX1G6RestoreAtCapacityIs429(t *testing.T) {
 	}
 
 	resp, payload := u1Do(e, e.client, http.MethodPost,
-		"/api/users/"+victim.ID+"/restore", nil, boss.CSRFToken)
+		"/api/users/"+victim.ID+"/restore", u1ReauthBody("boss-pass"), boss.CSRFToken)
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("restore at capacity = %d, want 429; body=%q", resp.StatusCode, payload)
 	}
@@ -673,7 +675,7 @@ func TestUX1G11SoftDeletedIsUnreachable(t *testing.T) {
 	// 未删行恢复 404；不存在的 id 404。
 	live := w2dSeedUser(t, e, "g11-live@example.com", "live-pass", coreauth.RoleUser)
 	restoreLiveResp, restoreLivePayload := u1Do(e, e.client, http.MethodPost,
-		"/api/users/"+live.ID+"/restore", nil, boss.CSRFToken)
+		"/api/users/"+live.ID+"/restore", u1ReauthBody("boss-pass"), boss.CSRFToken)
 	if restoreLiveResp.StatusCode != http.StatusNotFound {
 		t.Fatalf("restore live user = %d, want 404; body=%q", restoreLiveResp.StatusCode, restoreLivePayload)
 	}

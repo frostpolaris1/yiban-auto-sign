@@ -13,9 +13,10 @@
 // # 口径
 // 响应只给 phone_masked 与 owner_email_masked；原始手机号与邮箱在 Record 里，
 // **不出本层**。口令与设备码只进请求体，本层不记录、不回显。
-// 凭据编辑（phone/password/device_code）、删号、自助删号与设备刷新是
-// 危险操作：先验二次口令（acting user 自己的登录口令）再进用例，
-// 失败零写入。只改 name/phone_model/school_id 不要求二次口令。
+// 凭据编辑（phone/password/device_code）、删号、自助删号、设备刷新与
+// 恢复（管理员恢复与自助恢复）是危险操作：先验二次口令（acting user
+// 自己的登录口令）再进用例，失败零写入。只改 name/phone_model/school_id
+// 不要求二次口令。
 // phone_model 来自凭据密文，只回机型；设备码与口令永不出服务端。
 package account
 
@@ -96,7 +97,7 @@ func NewHandler(svc Service, authz Authorizer, limiter ...Throttle) *Handler {
 }
 
 // WithReauth 注入危险操作二次口令用例。
-// 未注入时凭据编辑、删号、自助删号与设备刷新按 internal 拒绝（失败关闭）。
+// 未注入时凭据编辑、删号、自助删号、设备刷新与恢复按 internal 拒绝（失败关闭）。
 func (h *Handler) WithReauth(r Reauth) *Handler {
 	h.reauth = r
 	return h
@@ -273,9 +274,17 @@ func (h *Handler) Delete(c *gin.Context, id oapi.AccountID, _ oapi.AccountDelete
 
 // Restore 实现 POST /api/accounts/{id}/restore。
 // 角色门槛（master/admin）与容量判定都在用例与适配器，本层不重判。
+// 恢复会把账号重新计入容量并让它再次参与签到，故要求二次口令。
 func (h *Handler) Restore(c *gin.Context, id oapi.AccountID, _ oapi.AccountRestoreParams) {
 	scope, actor, ok := h.principal(c)
 	if !ok {
+		return
+	}
+	var body oapi.AccountRestoreRequest
+	if !decode(c, &body) {
+		return
+	}
+	if !h.reauthenticate(c, actor.UserID, body.CurrentPassword) {
 		return
 	}
 	record, err := h.svc.Restore(c.Request.Context(), scope, id, actor)
@@ -311,9 +320,17 @@ func (h *Handler) MyAccountDelete(c *gin.Context, id oapi.AccountID, _ oapi.MyAc
 
 // MyAccountRestore 实现 POST /api/me/accounts/{id}/restore。
 // 管理员删除的账号、超窗与已有生效账号的判据都在用例与适配器。
+// 恢复会把账号重新计入容量并让它再次参与签到，故要求二次口令。
 func (h *Handler) MyAccountRestore(c *gin.Context, id oapi.AccountID, _ oapi.MyAccountRestoreParams) {
 	scope, actor, ok := h.selfPrincipal(c)
 	if !ok {
+		return
+	}
+	var body oapi.MyAccountRestoreRequest
+	if !decode(c, &body) {
+		return
+	}
+	if !h.reauthenticate(c, actor.UserID, body.CurrentPassword) {
 		return
 	}
 	record, err := h.svc.SelfRestore(c.Request.Context(), scope, id, actor)

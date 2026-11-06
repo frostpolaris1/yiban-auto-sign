@@ -64,9 +64,15 @@ func w2dSeedUser(t *testing.T, e *authEnv, email, password string, role coreauth
 }
 
 // w2dCreate 以当前会话调 POST /api/users。
-func (e *authEnv) w2dCreate(csrf string, body map[string]any) (*http.Response, []byte) {
+// password 是 acting user 自己的登录口令，注入请求体的二次口令字段。
+func (e *authEnv) w2dCreate(csrf, password string, body map[string]any) (*http.Response, []byte) {
 	e.t.Helper()
-	return e.do(http.MethodPost, "/api/users", body, map[string]string{"X-CSRF-Token": csrf})
+	payload := make(map[string]any, len(body)+1)
+	for key, value := range body {
+		payload[key] = value
+	}
+	payload["current_password"] = password
+	return e.do(http.MethodPost, "/api/users", payload, map[string]string{"X-CSRF-Token": csrf})
 }
 
 // w2dLoginAs 登录并返回会话体，失败即终止。
@@ -95,7 +101,7 @@ func TestW2DE40MasterCreatesUser(t *testing.T) {
 	session := e.w2dLoginAs("boss@example.com", "boss-pass")
 
 	// 混合大小写与首尾空白：库内 CHECK 要求 email = lower(email)。
-	resp, payload := e.w2dCreate(session.CSRFToken, map[string]any{
+	resp, payload := e.w2dCreate(session.CSRFToken, "boss-pass", map[string]any{
 		"email":    "  New.User@Example.COM  ",
 		"password": "first-pass-123",
 		"role":     "user",
@@ -176,7 +182,7 @@ func TestW2DE41DuplicateEmailConflicts(t *testing.T) {
 	w2dSeedUser(t, e, "boss@example.com", "boss-pass", coreauth.RoleMaster)
 	session := e.w2dLoginAs("boss@example.com", "boss-pass")
 
-	first, firstPayload := e.w2dCreate(session.CSRFToken, map[string]any{
+	first, firstPayload := e.w2dCreate(session.CSRFToken, "boss-pass", map[string]any{
 		"email":    "dana@example.com",
 		"password": "dana-pass-123",
 		"role":     "admin",
@@ -186,7 +192,7 @@ func TestW2DE41DuplicateEmailConflicts(t *testing.T) {
 	}
 	afterFirst := e.w2dLiveUsers()
 
-	second, secondPayload := e.w2dCreate(session.CSRFToken, map[string]any{
+	second, secondPayload := e.w2dCreate(session.CSRFToken, "boss-pass", map[string]any{
 		"email":    "DANA@Example.com",
 		"password": "other-pass-123",
 		"role":     "user",
@@ -221,7 +227,7 @@ func TestW2DE42NonMasterIsForbidden(t *testing.T) {
 		{"plain@example.com", "plain-pass"},
 	} {
 		session := e.w2dLoginAs(actor.email, actor.password)
-		resp, payload := e.w2dCreate(session.CSRFToken, map[string]any{
+		resp, payload := e.w2dCreate(session.CSRFToken, actor.password, map[string]any{
 			"email":    "sneak@example.com",
 			"password": "sneak-pass-123",
 			"role":     "user",
@@ -265,7 +271,7 @@ func TestW2DE43InvalidInputIsRejected(t *testing.T) {
 		{"email with zero-width space", map[string]any{"email": "zero\u200bwidth@example.com", "password": "x-pass-123", "role": "user"}},
 	}
 	for _, tc := range cases {
-		resp, payload := e.w2dCreate(session.CSRFToken, tc.body)
+		resp, payload := e.w2dCreate(session.CSRFToken, "boss-pass", tc.body)
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("%s status = %d, want 400; body=%q", tc.name, resp.StatusCode, payload)
 		}
@@ -291,7 +297,7 @@ func TestW2DE44CreatedUserCanLogIn(t *testing.T) {
 	w2dSeedUser(t, e, "boss@example.com", "boss-pass", coreauth.RoleMaster)
 	session := e.w2dLoginAs("boss@example.com", "boss-pass")
 
-	resp, payload := e.w2dCreate(session.CSRFToken, map[string]any{
+	resp, payload := e.w2dCreate(session.CSRFToken, "boss-pass", map[string]any{
 		"email":    "erin@example.com",
 		"password": "erin-pass-123",
 		"role":     "admin",
@@ -335,7 +341,7 @@ func TestW2DE45NonASCIIEmailSurvivesLogin(t *testing.T) {
 	w2dSeedUser(t, e, "boss@example.com", "boss-pass", coreauth.RoleMaster)
 	session := e.w2dLoginAs("boss@example.com", "boss-pass")
 
-	resp, payload := e.w2dCreate(session.CSRFToken, map[string]any{
+	resp, payload := e.w2dCreate(session.CSRFToken, "boss-pass", map[string]any{
 		"email":    "学生@example.com",
 		"password": "non-ascii-pass",
 		"role":     "user",
