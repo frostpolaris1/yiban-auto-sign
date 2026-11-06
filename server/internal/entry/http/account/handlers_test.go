@@ -24,8 +24,10 @@ type fakeService struct {
 	creates int
 	updates int
 	// 自助面记录：作用域必须由会话构造，且对任何角色都是 user 形状。
-	selfDeletes int
-	selfScope   corescope.Scope
+	selfDeletes  int
+	selfRestores int
+	selfScope    corescope.Scope
+	restores     int
 }
 
 func (f *fakeService) List(context.Context, corescope.Scope, appaccount.ListFilter, string, int) (appaccount.Page, error) {
@@ -59,6 +61,7 @@ func (f *fakeService) Pause(context.Context, corescope.Scope, string, bool, appa
 }
 
 func (f *fakeService) Restore(context.Context, corescope.Scope, string, appaudit.Actor) (appaccount.Record, error) {
+	f.restores++
 	return appaccount.Record{}, nil
 }
 
@@ -76,7 +79,9 @@ func (f *fakeService) SelfDelete(_ context.Context, scope corescope.Scope, _ str
 	return nil
 }
 
-func (f *fakeService) SelfRestore(context.Context, corescope.Scope, string, appaudit.Actor) (appaccount.Record, error) {
+func (f *fakeService) SelfRestore(_ context.Context, scope corescope.Scope, _ string, _ appaudit.Actor) (appaccount.Record, error) {
+	f.selfRestores++
+	f.selfScope = scope
 	return appaccount.Record{}, nil
 }
 

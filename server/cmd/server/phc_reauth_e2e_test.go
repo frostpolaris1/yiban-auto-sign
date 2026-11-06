@@ -548,6 +548,270 @@ func TestPHCPasswordPolicyResetByToken(t *testing.T) {
 	}
 }
 
+// --- POST /api/users：建 master/admin 也要二次口令 -------------------------
+
+func TestPHCReauthUserCreateGate(t *testing.T) {
+	e := newAuthEnv(t)
+	session := phcLoginMaster(t, e, "phc-create-boss@example.com", "boss-pass")
+	csrf := map[string]string{"X-CSRF-Token": session.CSRFToken}
+	body := func(password string) map[string]any {
+		out := map[string]any{
+			"email": "phc-create-new@example.com", "password": "fresh-pass-42", "role": "admin",
+		}
+		if password != "" {
+			out["current_password"] = password
+		}
+		return out
+	}
+	before := e.scalarInt("SELECT count(*) FROM users WHERE deleted_at IS NULL")
+
+	resp, payload := e.do(http.MethodPost, "/api/users", body(""), csrf)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing password = %d, want 400; body=%q", resp.StatusCode, payload)
+	}
+	resp, payload = e.do(http.MethodPost, "/api/users", body("wrong-pass-42"), csrf)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("wrong password = %d, want 403; body=%q", resp.StatusCode, payload)
+	}
+	if got := e.scalarInt("SELECT count(*) FROM users WHERE deleted_at IS NULL"); got != before {
+		t.Fatalf("live users = %d, want %d after rejected creates", got, before)
+	}
+
+	resp, payload = e.do(http.MethodPost, "/api/users", body("boss-pass"), csrf)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("right password = %d, want 201; body=%q", resp.StatusCode, payload)
+	}
+}
+
+// --- POST /api/users/{id}/restore -----------------------------------------
+
+func TestPHCReauthUserRestoreGate(t *testing.T) {
+	e := newAuthEnv(t)
+	session := phcLoginMaster(t, e, "phc-restore-boss@example.com", "boss-pass")
+	boss := e.scalarString("SELECT id::text FROM users WHERE email = 'phc-restore-boss@example.com'")
+	target := u1SeedDeletedUser(t, e, "phc-restore-target@example.com", boss)
+	path := "/api/users/" + target.ID + "/restore"
+	csrf := map[string]string{"X-CSRF-Token": session.CSRFToken}
+
+	resp, payload := e.do(http.MethodPost, path, nil, csrf)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing password = %d, want 400; body=%q", resp.StatusCode, payload)
+	}
+	resp, payload = e.do(http.MethodPost, path,
+		map[string]any{"current_password": "wrong-pass-42"}, csrf)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("wrong password = %d, want 403; body=%q", resp.StatusCode, payload)
+	}
+	if got := e.scalarString("SELECT coalesce(deleted_at::text, '') FROM users WHERE id = $1", target.ID); got == "" {
+		t.Fatal("a rejected restore revived the user")
+	}
+	if n := e.scalarInt("SELECT count(*) FROM audit_logs WHERE target_id = $1 AND action = 'user.restore'", target.ID); n != 0 {
+		t.Fatalf("user.restore rows after rejected restores = %d, want 0", n)
+	}
+
+	resp, payload = e.do(http.MethodPost, path,
+		map[string]any{"current_password": "boss-pass"}, csrf)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("right password = %d, want 200; body=%q", resp.StatusCode, payload)
+	}
+}
+
+// --- POST /api/accounts/{id}/restore --------------------------------------
+
+func TestPHCReauthAccountRestoreGate(t *testing.T) {
+	e := newAuthEnv(t)
+	session := phcLoginMaster(t, e, "phc-acct-restore-boss@example.com", "boss-pass")
+	owner := w2dSeedUser(t, e, "phc-acct-restore-owner@example.com", "owner-pass-42", coreauth.RoleUser)
+	account := ux8SeedAccount(t, e, owner.ID, "13800072001")
+	ux8SoftDelete(t, e, account.ID, owner.ID)
+	path := "/api/accounts/" + account.ID + "/restore"
+	csrf := map[string]string{"X-CSRF-Token": session.CSRFToken}
+
+	resp, payload := e.do(http.MethodPost, path, nil, csrf)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing password = %d, want 400; body=%q", resp.StatusCode, payload)
+	}
+	resp, payload = e.do(http.MethodPost, path,
+		map[string]any{"current_password": "wrong-pass-42"}, csrf)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("wrong password = %d, want 403; body=%q", resp.StatusCode, payload)
+	}
+	if got := e.scalarString(
+		"SELECT coalesce(deleted_at::text, '') FROM accounts WHERE id = $1::uuid", account.ID); got == "" {
+		t.Fatal("a rejected restore revived the account")
+	}
+	if got := e.scalarInt(
+		"SELECT count(*) FROM audit_logs WHERE target_id = $1 AND action = 'account.restore'", account.ID); got != 0 {
+		t.Fatalf("account.restore rows after rejected restores = %d, want 0", got)
+	}
+
+	resp, payload = e.do(http.MethodPost, path,
+		map[string]any{"current_password": "boss-pass"}, csrf)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("right password = %d, want 200; body=%q", resp.StatusCode, payload)
+	}
+	if got := e.scalarString(
+		"SELECT coalesce(deleted_at::text, '') FROM accounts WHERE id = $1::uuid", account.ID); got != "" {
+		t.Fatal("the right password did not restore the account")
+	}
+}
+
+// --- POST /api/me/accounts/{id}/restore -----------------------------------
+
+func TestPHCReauthMyAccountRestoreGate(t *testing.T) {
+	e := newAuthEnv(t)
+	owner := w2dSeedUser(t, e, "phc-self-restore@example.com", "owner-pass-42", coreauth.RoleUser)
+	session := u1LoginOn(e, e.client, "phc-self-restore@example.com", "owner-pass-42")
+	account := ux8SeedAccount(t, e, owner.ID, "13800072002")
+	csrf := map[string]string{"X-CSRF-Token": session.CSRFToken}
+
+	resp, payload := e.do(http.MethodPost, "/api/me/accounts/"+account.ID+"/delete",
+		map[string]any{"current_password": "owner-pass-42"}, csrf)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("self delete = %d, want 204; body=%q", resp.StatusCode, payload)
+	}
+	path := "/api/me/accounts/" + account.ID + "/restore"
+
+	resp, payload = e.do(http.MethodPost, path, nil, csrf)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing password = %d, want 400; body=%q", resp.StatusCode, payload)
+	}
+	resp, payload = e.do(http.MethodPost, path,
+		map[string]any{"current_password": "wrong-pass-42"}, csrf)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("wrong password = %d, want 403; body=%q", resp.StatusCode, payload)
+	}
+	if got := e.scalarString(
+		"SELECT coalesce(deleted_at::text, '') FROM accounts WHERE id = $1::uuid", account.ID); got == "" {
+		t.Fatal("a rejected self restore revived the account")
+	}
+
+	resp, payload = e.do(http.MethodPost, path,
+		map[string]any{"current_password": "owner-pass-42"}, csrf)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("right password = %d, want 200; body=%q", resp.StatusCode, payload)
+	}
+}
+
+// --- POST/DELETE /api/schools/{id}/admins ---------------------------------
+
+func TestPHCReauthSchoolAdminGates(t *testing.T) {
+	e := newAuthEnv(t)
+	session := phcLoginMaster(t, e, "phc-bind-boss@example.com", "boss-pass")
+	admin := w2dSeedUser(t, e, "phc-bind-admin@example.com", "admin-pass-42", coreauth.RoleAdmin)
+	csrf := map[string]string{"X-CSRF-Token": session.CSRFToken}
+
+	resp, payload := e.do(http.MethodPost, "/api/schools",
+		map[string]any{"code": "phc-bind", "name": "PHC Bind"}, csrf)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create school = %d, want 201; body=%q", resp.StatusCode, payload)
+	}
+	var school struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(payload, &school); err != nil || school.ID == "" {
+		t.Fatalf("decode school: %v; body=%q", err, payload)
+	}
+	add := "/api/schools/" + school.ID + "/admins"
+	remove := add + "/" + admin.ID
+
+	resp, payload = e.do(http.MethodPost, add, map[string]any{"user_id": admin.ID}, csrf)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("add missing password = %d, want 400; body=%q", resp.StatusCode, payload)
+	}
+	resp, payload = e.do(http.MethodPost, add,
+		map[string]any{"user_id": admin.ID, "current_password": "wrong-pass-42"}, csrf)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("add wrong password = %d, want 403; body=%q", resp.StatusCode, payload)
+	}
+	if got := e.scalarInt("SELECT count(*) FROM admin_schools WHERE user_id = $1", admin.ID); got != 0 {
+		t.Fatalf("admin bindings after rejected add = %d, want 0", got)
+	}
+	if got := e.scalarInt(
+		"SELECT count(*) FROM audit_logs WHERE target_id = $1 AND action = 'admin.grant'", admin.ID); got != 0 {
+		t.Fatalf("admin.grant rows after rejected add = %d, want 0", got)
+	}
+
+	resp, payload = e.do(http.MethodPost, add,
+		map[string]any{"user_id": admin.ID, "current_password": "boss-pass"}, csrf)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("add right password = %d, want 201; body=%q", resp.StatusCode, payload)
+	}
+
+	resp, payload = e.do(http.MethodDelete, remove, nil, csrf)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("remove missing password = %d, want 400; body=%q", resp.StatusCode, payload)
+	}
+	if got := e.scalarInt("SELECT count(*) FROM admin_schools WHERE user_id = $1", admin.ID); got != 1 {
+		t.Fatalf("admin bindings after rejected remove = %d, want 1", got)
+	}
+	resp, payload = e.do(http.MethodDelete, remove,
+		map[string]any{"current_password": "wrong-pass-42"}, csrf)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("remove wrong password = %d, want 403; body=%q", resp.StatusCode, payload)
+	}
+	if got := e.scalarInt("SELECT count(*) FROM admin_schools WHERE user_id = $1", admin.ID); got != 1 {
+		t.Fatalf("admin bindings after wrong-password remove = %d, want 1", got)
+	}
+	if got := e.scalarInt(
+		"SELECT count(*) FROM audit_logs WHERE target_id = $1 AND action = 'admin.revoke'", admin.ID); got != 0 {
+		t.Fatalf("admin.revoke rows after rejected remove = %d, want 0", got)
+	}
+
+	resp, payload = e.do(http.MethodDelete, remove,
+		map[string]any{"current_password": "boss-pass"}, csrf)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("remove right password = %d, want 204; body=%q", resp.StatusCode, payload)
+	}
+}
+
+// --- 新接线的节流：连续错口令后 429 + Retry-After -------------------------
+
+func TestPHCReauthSchoolAdminThrottle(t *testing.T) {
+	e := newAuthEnv(t)
+	session := phcLoginMaster(t, e, "phc-bind-throttle-boss@example.com", "boss-pass")
+	admin := w2dSeedUser(t, e, "phc-bind-throttle-admin@example.com", "admin-pass-42", coreauth.RoleAdmin)
+	csrf := map[string]string{"X-CSRF-Token": session.CSRFToken}
+
+	resp, payload := e.do(http.MethodPost, "/api/schools",
+		map[string]any{"code": "phc-bind-throttle", "name": "PHC Bind Throttle"}, csrf)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create school = %d, want 201; body=%q", resp.StatusCode, payload)
+	}
+	var school struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(payload, &school); err != nil || school.ID == "" {
+		t.Fatalf("decode school: %v; body=%q", err, payload)
+	}
+	path := "/api/schools/" + school.ID + "/admins"
+
+	// 窗口内前 5 次错口令各付一次 KDF，均 403。
+	for i := 0; i < 5; i++ {
+		resp, payload = e.do(http.MethodPost, path,
+			map[string]any{"user_id": admin.ID, "current_password": "wrong-pass-42"}, csrf)
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("attempt %d = %d, want 403; body=%q", i+1, resp.StatusCode, payload)
+		}
+	}
+	// 第 6 次不再付 KDF，直接 429，并给 Retry-After。
+	resp, payload = e.do(http.MethodPost, path,
+		map[string]any{"user_id": admin.ID, "current_password": "wrong-pass-42"}, csrf)
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("throttled attempt = %d, want 429; body=%q", resp.StatusCode, payload)
+	}
+	retry := resp.Header.Get("Retry-After")
+	if retry == "" {
+		t.Fatal("429 is missing Retry-After")
+	}
+	if seconds, err := strconv.Atoi(retry); err != nil || seconds < 1 {
+		t.Fatalf("Retry-After = %q, want an integer >= 1", retry)
+	}
+	if got := e.scalarInt("SELECT count(*) FROM admin_schools WHERE user_id = $1", admin.ID); got != 0 {
+		t.Fatalf("admin bindings after throttled add = %d, want 0", got)
+	}
+}
+
 // --- 口令策略：POST /api/users 按目标角色分档 ------------------------------
 
 func TestPHCPasswordPolicyUserCreate(t *testing.T) {
@@ -572,7 +836,8 @@ func TestPHCPasswordPolicyUserCreate(t *testing.T) {
 	}
 	for _, tc := range cases {
 		resp, payload := e.do(http.MethodPost, path,
-			map[string]any{"email": tc.email, "password": tc.password, "role": tc.role}, csrf)
+			map[string]any{"email": tc.email, "password": tc.password, "role": tc.role,
+				"current_password": "boss-pass"}, csrf)
 		if resp.StatusCode != tc.want {
 			t.Fatalf("%s = %d, want %d; body=%q", tc.name, resp.StatusCode, tc.want, payload)
 		}

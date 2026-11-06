@@ -360,9 +360,10 @@ func TestListFreshnessUsersETag(t *testing.T) {
 	}
 
 	created, createdBody := e.do(http.MethodPost, "/api/users", map[string]any{
-		"email":    "lf-created@example.com",
-		"password": "not-a-real-password",
-		"role":     "user",
+		"email":            "lf-created@example.com",
+		"password":         "not-a-real-password",
+		"role":             "user",
+		"current_password": "master-pass",
 	}, map[string]string{"X-CSRF-Token": session.CSRFToken})
 	if created.StatusCode != http.StatusCreated {
 		t.Fatalf("create user status = %d, want 201; body=%q", created.StatusCode, createdBody)

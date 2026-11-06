@@ -3,9 +3,9 @@ package user_test
 // 危险操作二次口令的入口层判据（用户域）。
 //
 // # 功能
-// 钉住三个端点的门形：改角色/状态、删用户与重置口令总是要求
-// current_password。缺失 400、错误 403、正确进用例、未接线 500。
-// 本文件**不**连数据库，**不**做真实口令校验。
+// 钉住五个端点的门形：改角色/状态、删用户、重置口令、恢复与新建
+// 总是要求 current_password。缺失 400、错误 403、正确进用例、
+// 未接线 500。本文件**不**连数据库，**不**做真实口令校验。
 
 import (
 	"context"
@@ -30,14 +30,17 @@ import (
 
 // fakeUserService 记录调用并返回固定形状。
 type fakeUserService struct {
+	creates  int
 	updates  int
 	deletes  int
 	resets   int
+	restores int
 	updateIn appuser.UpdateInput
 }
 
 func (f *fakeUserService) Create(context.Context, corescope.Scope, appuser.CreateInput, appaudit.Actor) (appuser.Record, error) {
-	return appuser.Record{}, nil
+	f.creates++
+	return appuser.Record{ID: "t2", Email: "t2@example.com", Role: coreauth.RoleUser, Status: coreauth.StatusActive}, nil
 }
 
 func (f *fakeUserService) List(context.Context, corescope.Scope, appuser.ListFilter, string, int) (appuser.Page, error) {
@@ -61,7 +64,8 @@ func (f *fakeUserService) Delete(context.Context, corescope.Scope, string, appau
 }
 
 func (f *fakeUserService) Restore(context.Context, corescope.Scope, string, appaudit.Actor) (appuser.Record, error) {
-	return appuser.Record{}, nil
+	f.restores++
+	return appuser.Record{ID: "t1", Email: "t1@example.com", Role: coreauth.RoleUser, Status: coreauth.StatusActive}, nil
 }
 
 func (f *fakeUserService) Lookup(context.Context, corescope.Scope, string, int, bool) ([]appuser.LookupRef, error) {
@@ -210,6 +214,70 @@ func TestUserPasswordResetReauthGate(t *testing.T) {
 	// temp_password 在响应体出现恰好一次（fake 用例固定返回 temp-password-42）。
 	if got := strings.Count(body, "temp-password-42"); got != 1 {
 		t.Fatalf("temp_password occurrences = %d, want 1; body=%q", got, body)
+	}
+}
+
+// 新建用户：可用该端点建 master/admin，故缺口令 400、错口令 403、正确 201。
+func TestUserCreateReauthGate(t *testing.T) {
+	svc := &fakeUserService{}
+	r := &recordingReauth{}
+	h := userhttp.NewHandler(svc, fakeUserAuthorizer{}).WithReauth(r)
+	body := `{"email":"new@example.com","password":"secret","role":"admin"}`
+
+	code, _, _ := callUserHandler(t, h, http.MethodPost, "/api/users", body,
+		func(h *userhttp.Handler, c *gin.Context) { h.Create(c, oapi.UserCreateParams{}) })
+	if code != http.StatusBadRequest {
+		t.Fatalf("missing password status = %d, want 400", code)
+	}
+	if svc.creates != 0 || r.calls != 0 {
+		t.Fatalf("creates=%d reauth=%d, want 0/0", svc.creates, r.calls)
+	}
+
+	r.err = errs.New(errs.CodeForbidden, "reauthentication failed")
+	code, _, _ = callUserHandler(t, h, http.MethodPost, "/api/users",
+		`{"email":"new@example.com","password":"secret","role":"admin","current_password":"wrong"}`,
+		func(h *userhttp.Handler, c *gin.Context) { h.Create(c, oapi.UserCreateParams{}) })
+	if code != http.StatusForbidden {
+		t.Fatalf("wrong password status = %d, want 403", code)
+	}
+	if svc.creates != 0 {
+		t.Fatal("a rejected reauth must not reach the use case")
+	}
+
+	r.err = nil
+	code, _, _ = callUserHandler(t, h, http.MethodPost, "/api/users",
+		`{"email":"new@example.com","password":"secret","role":"admin","current_password":"pw"}`,
+		func(h *userhttp.Handler, c *gin.Context) { h.Create(c, oapi.UserCreateParams{}) })
+	if code != http.StatusCreated {
+		t.Fatalf("right password status = %d, want 201", code)
+	}
+	if svc.creates != 1 || r.calls != 2 {
+		t.Fatalf("creates=%d reauth=%d, want 1/2", svc.creates, r.calls)
+	}
+}
+
+// 恢复用户：缺口令 400、正确口令 200；失败零调用。
+func TestUserRestoreReauthGate(t *testing.T) {
+	svc := &fakeUserService{}
+	h := userhttp.NewHandler(svc, fakeUserAuthorizer{}).WithReauth(&recordingReauth{})
+
+	code, _, _ := callUserHandler(t, h, http.MethodPost, "/api/users/t1/restore", `{}`,
+		func(h *userhttp.Handler, c *gin.Context) { h.Restore(c, "t1", oapi.UserRestoreParams{}) })
+	if code != http.StatusBadRequest {
+		t.Fatalf("missing password status = %d, want 400", code)
+	}
+	if svc.restores != 0 {
+		t.Fatal("a missing password must not reach the use case")
+	}
+
+	code, _, _ = callUserHandler(t, h, http.MethodPost, "/api/users/t1/restore",
+		`{"current_password":"pw"}`,
+		func(h *userhttp.Handler, c *gin.Context) { h.Restore(c, "t1", oapi.UserRestoreParams{}) })
+	if code != http.StatusOK {
+		t.Fatalf("right password status = %d, want 200", code)
+	}
+	if svc.restores != 1 {
+		t.Fatalf("restores=%d, want 1", svc.restores)
 	}
 }
 

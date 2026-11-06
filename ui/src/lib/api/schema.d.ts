@@ -257,6 +257,10 @@ export interface paths {
          *     only way to create a master or admin. The password is stored as an
          *     argon2id hash. A duplicate email among live users is a 409; a
          *     soft-deleted user's email may be reused.
+         *     Every request must carry current_password, the acting user's own
+         *     login password: a missing value answers 400, a wrong value 403,
+         *     and repeated failures answer 429. A rejected reauthentication
+         *     writes nothing.
          */
         post: operations["UserCreate"];
         delete?: never;
@@ -388,6 +392,10 @@ export interface paths {
          *     address the partial unique index rejects it with 409. Restoring
          *     above the live-user capacity is 429. Sessions were revoked when
          *     the user was deleted, so the user must sign in again.
+         *     Every request must carry current_password, the acting user's own
+         *     login password: a missing value answers 400, a wrong value 403,
+         *     and repeated failures answer 429. A rejected reauthentication
+         *     writes nothing.
          */
         post: operations["UserRestore"];
         delete?: never;
@@ -495,6 +503,10 @@ export interface paths {
          * Bind an existing user as an admin of the school.
          * @description P1 has no invitation flow (decision 12.15). The user must already exist
          *     and have role admin or master.
+         *     Every request must carry current_password, the acting user's own
+         *     login password: a missing value answers 400, a wrong value 403,
+         *     and repeated failures answer 429. A rejected reauthentication
+         *     writes nothing.
          */
         post: operations["SchoolAdminAdd"];
         delete?: never;
@@ -517,6 +529,10 @@ export interface paths {
          * Unbind an admin from the school.
          * @description master only. Unbinds the admin from the school and keeps the user
          *     account. A missing binding answers 404.
+         *     Every request must carry current_password, the acting user's own
+         *     login password: a missing value answers 400, a wrong value 403,
+         *     and repeated failures answer 429. A rejected reauthentication
+         *     writes nothing.
          */
         delete: operations["SchoolAdminRemove"];
         options?: never;
@@ -728,6 +744,10 @@ export interface paths {
          *     status. A missing or out-of-scope account answers 404; a live (not
          *     deleted) account answers 409 conflict; the global or the per-owner
          *     active-account quota answers 429 capacity_exceeded.
+         *     Every request must carry current_password, the acting user's own
+         *     login password: a missing value answers 400, a wrong value 403,
+         *     and repeated failures answer 429. A rejected reauthentication
+         *     writes nothing.
          */
         post: operations["AccountRestore"];
         delete?: never;
@@ -1467,6 +1487,10 @@ export interface paths {
          *     a live (not deleted) account answers 409. Capacity is enforced like
          *     the administrator restore and answers 429 capacity_exceeded.
          *     The audit action is account.self_restore.
+         *     Every request must carry current_password, the acting user's own
+         *     login password: a missing value answers 400, a wrong value 403,
+         *     and repeated failures answer 429. A rejected reauthentication
+         *     writes nothing.
          */
         post: operations["MyAccountRestore"];
         delete?: never;
@@ -2088,6 +2112,7 @@ export interface components {
             email: string;
             password: string;
             role: components["schemas"]["UserRole"];
+            current_password?: components["schemas"]["CurrentPassword"];
         };
         UserUpdate: {
             role?: components["schemas"]["UserRole"];
@@ -2104,6 +2129,18 @@ export interface components {
          */
         CurrentPassword: string;
         UserDeleteRequest: {
+            current_password?: components["schemas"]["CurrentPassword"];
+        };
+        UserRestoreRequest: {
+            current_password?: components["schemas"]["CurrentPassword"];
+        };
+        AccountRestoreRequest: {
+            current_password?: components["schemas"]["CurrentPassword"];
+        };
+        MyAccountRestoreRequest: {
+            current_password?: components["schemas"]["CurrentPassword"];
+        };
+        SchoolAdminRemoveRequest: {
             current_password?: components["schemas"]["CurrentPassword"];
         };
         UserPasswordResetRequest: {
@@ -2169,6 +2206,7 @@ export interface components {
         };
         SchoolAdminCreate: {
             user_id: string;
+            current_password?: components["schemas"]["CurrentPassword"];
         };
         SchoolAdminPage: {
             items: components["schemas"]["SchoolAdmin"][];
@@ -2970,7 +3008,11 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
-        /** @description Inbound rate limit exceeded; Retry-After says when to retry. */
+        /**
+         * @description Rate, reauthentication or capacity limit reached. Retry-After is
+         *     present when the server can estimate the wait (inbound and
+         *     reauthentication throttles); a capacity rejection omits it.
+         */
         TooManyRequestsError: {
             headers: {
                 /** @description Seconds to wait before retrying; always at least 1. */
@@ -3426,7 +3468,7 @@ export interface operations {
             403: components["responses"]["ForbiddenError"];
             409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
-            429: components["responses"]["DefaultError"];
+            429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -3606,7 +3648,16 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        /**
+         * @description The envelope is optional in the schema for wire compatibility;
+         *     the server still requires current_password and answers 400 when
+         *     it is missing.
+         */
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["UserRestoreRequest"];
+            };
+        };
         responses: {
             /** @description User restored. */
             200: {
@@ -3617,10 +3668,12 @@ export interface operations {
                     "application/json": components["schemas"]["User"];
                 };
             };
+            400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
+            413: components["responses"]["PayloadTooLargeError"];
             429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
         };
@@ -3862,6 +3915,7 @@ export interface operations {
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -3881,7 +3935,16 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        /**
+         * @description The envelope is optional in the schema for wire compatibility;
+         *     the server still requires current_password and answers 400 when
+         *     it is missing.
+         */
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["SchoolAdminRemoveRequest"];
+            };
+        };
         responses: {
             /** @description Admin unbound. */
             204: {
@@ -3890,9 +3953,12 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
         };
     };
@@ -4281,7 +4347,16 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        /**
+         * @description The envelope is optional in the schema for wire compatibility;
+         *     the server still requires current_password and answers 400 when
+         *     it is missing.
+         */
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AccountRestoreRequest"];
+            };
+        };
         responses: {
             /** @description The restored account. */
             200: {
@@ -4292,6 +4367,7 @@ export interface operations {
                     "application/json": components["schemas"]["Account"];
                 };
             };
+            400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
@@ -5186,7 +5262,16 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        /**
+         * @description The envelope is optional in the schema for wire compatibility;
+         *     the server still requires current_password and answers 400 when
+         *     it is missing.
+         */
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["MyAccountRestoreRequest"];
+            };
+        };
         responses: {
             /** @description The restored account. */
             200: {
@@ -5203,7 +5288,7 @@ export interface operations {
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
-            429: components["responses"]["DefaultError"];
+            429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
         };
     };

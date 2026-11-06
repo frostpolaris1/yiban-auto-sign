@@ -303,13 +303,13 @@ func TestUX2G10RestoreRoundTrip(t *testing.T) {
 	memberClient := u2FreshClient(t)
 	memberSession := u2LoginOn(e, memberClient, "u2-g10-member@example.com", "member-pass")
 	userResp, userPayload := u2Do(e, memberClient, http.MethodPost,
-		"/api/accounts/"+created.ID+"/restore", nil, memberSession.CSRFToken)
+		"/api/accounts/"+created.ID+"/restore", u1ReauthBody("member-pass"), memberSession.CSRFToken)
 	if userResp.StatusCode != http.StatusForbidden {
 		t.Fatalf("user restore = %d, want 403; body=%q", userResp.StatusCode, userPayload)
 	}
 
 	restoreResp, restorePayload := u2Do(e, e.client, http.MethodPost,
-		"/api/accounts/"+created.ID+"/restore", nil, masterSession.CSRFToken)
+		"/api/accounts/"+created.ID+"/restore", u1ReauthBody("master-pass"), masterSession.CSRFToken)
 	if restoreResp.StatusCode != http.StatusOK {
 		t.Fatalf("restore = %d, want 200; body=%q", restoreResp.StatusCode, restorePayload)
 	}
@@ -326,7 +326,7 @@ func TestUX2G10RestoreRoundTrip(t *testing.T) {
 
 	// 未删行再恢复 → 409（恢复只认软删行；适配器口径）。
 	againResp, againPayload := u2Do(e, e.client, http.MethodPost,
-		"/api/accounts/"+created.ID+"/restore", nil, masterSession.CSRFToken)
+		"/api/accounts/"+created.ID+"/restore", u1ReauthBody("master-pass"), masterSession.CSRFToken)
 	if againResp.StatusCode != http.StatusConflict {
 		t.Fatalf("restore of a live account = %d, want 409; body=%q", againResp.StatusCode, againPayload)
 	}

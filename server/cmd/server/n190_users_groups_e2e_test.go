@@ -218,7 +218,8 @@ func TestN190MutatingEndpointsCarryCounts(t *testing.T) {
 	deleted := u1SeedDeletedUser(t, e, "n190-mut-deleted@example.com", boss.ID)
 	seedAccount(deleted.ID, "13800000072", coreaccount.StatusActive, "")
 
-	resp, payload = e.do(http.MethodPost, "/api/users/"+deleted.ID+"/restore", nil,
+	resp, payload = e.do(http.MethodPost, "/api/users/"+deleted.ID+"/restore",
+		u1ReauthBody("boss-pass"),
 		map[string]string{"X-CSRF-Token": session.CSRFToken})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("restore = %d; body=%q", resp.StatusCode, payload)

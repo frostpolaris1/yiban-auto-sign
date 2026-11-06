@@ -170,7 +170,7 @@ func TestUX8SelfDeleteRestore(t *testing.T) {
 
 	// 恢复：仓行清空 deleted_at/deleted_by，响应带真实 null。
 	resp, payload = u1Do(e, client, http.MethodPost,
-		"/api/me/accounts/"+account.ID+"/restore", nil, csrf)
+		"/api/me/accounts/"+account.ID+"/restore", u1ReauthBody("correct-horse"), csrf)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("self restore = %d, want 200; body=%q", resp.StatusCode, payload)
 	}
@@ -191,7 +191,7 @@ func TestUX8SelfDeleteRestore(t *testing.T) {
 
 	// 未删再恢复 409。
 	resp, payload = u1Do(e, client, http.MethodPost,
-		"/api/me/accounts/"+account.ID+"/restore", nil, csrf)
+		"/api/me/accounts/"+account.ID+"/restore", u1ReauthBody("correct-horse"), csrf)
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("restore live account = %d, want 409; body=%q", resp.StatusCode, payload)
 	}
@@ -239,7 +239,7 @@ func TestUX8SelfServiceOwnership(t *testing.T) {
 
 	ux8SoftDelete(t, e, bobAccount.ID, bob.ID)
 	resp, payload = u1Do(e, aliceClient, http.MethodPost,
-		"/api/me/accounts/"+bobAccount.ID+"/restore", nil, aliceCSRF)
+		"/api/me/accounts/"+bobAccount.ID+"/restore", u1ReauthBody("correct-horse"), aliceCSRF)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("restore foreign account = %d, want 404; body=%q", resp.StatusCode, payload)
 	}
@@ -284,7 +284,7 @@ func TestUX8SelfRestoreGuards(t *testing.T) {
 	adminDeleted := ux8SeedAccount(t, e, user.ID, "13500135008")
 	ux8SoftDelete(t, e, adminDeleted.ID, boss.ID)
 	resp, payload := u1Do(e, client, http.MethodPost,
-		"/api/me/accounts/"+adminDeleted.ID+"/restore", nil, csrf)
+		"/api/me/accounts/"+adminDeleted.ID+"/restore", u1ReauthBody("correct-horse"), csrf)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("restore admin-deleted = %d, want 403; body=%q", resp.StatusCode, payload)
 	}
@@ -297,7 +297,7 @@ func TestUX8SelfRestoreGuards(t *testing.T) {
 	expired := ux8SeedAccount(t, e, user.ID, "13500135009")
 	ux8BackdateDelete(t, e, expired.ID, user.ID, 8)
 	resp, payload = u1Do(e, client, http.MethodPost,
-		"/api/me/accounts/"+expired.ID+"/restore", nil, csrf)
+		"/api/me/accounts/"+expired.ID+"/restore", u1ReauthBody("correct-horse"), csrf)
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("restore expired = %d, want 409; body=%q", resp.StatusCode, payload)
 	}
@@ -309,7 +309,7 @@ func TestUX8SelfRestoreGuards(t *testing.T) {
 	within := ux8SeedAccount(t, e, user.ID, "13700137000")
 	ux8BackdateDelete(t, e, within.ID, user.ID, 6)
 	resp, payload = u1Do(e, client, http.MethodPost,
-		"/api/me/accounts/"+within.ID+"/restore", nil, csrf)
+		"/api/me/accounts/"+within.ID+"/restore", u1ReauthBody("correct-horse"), csrf)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("restore within grace = %d, want 200; body=%q", resp.StatusCode, payload)
 	}
@@ -326,7 +326,7 @@ func TestUX8SelfRestoreGuards(t *testing.T) {
 		t.Fatalf("self delete second account = %d, want 204; body=%q", resp.StatusCode, payload)
 	}
 	resp, payload = u1Do(e, client, http.MethodPost,
-		"/api/me/accounts/"+deleted.ID+"/restore", nil, csrf)
+		"/api/me/accounts/"+deleted.ID+"/restore", u1ReauthBody("correct-horse"), csrf)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("restore with live account = %d, want 400; body=%q", resp.StatusCode, payload)
 	}
@@ -463,7 +463,7 @@ func TestUX8RoleMatrix(t *testing.T) {
 				t.Fatalf("self delete = %d, want 204; body=%q", resp.StatusCode, payload)
 			}
 			resp, payload = u1Do(e, client, http.MethodPost,
-				"/api/me/accounts/"+account.ID+"/restore", nil, session.CSRFToken)
+				"/api/me/accounts/"+account.ID+"/restore", u1ReauthBody("correct-horse"), session.CSRFToken)
 			if resp.StatusCode != http.StatusOK {
 				t.Fatalf("self restore = %d, want 200; body=%q", resp.StatusCode, payload)
 			}

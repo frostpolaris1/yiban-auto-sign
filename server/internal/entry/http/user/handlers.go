@@ -17,8 +17,9 @@
 // # 口径
 // 响应只给契约 User 的字段集；口令与哈希**不出本层**。
 // temp_password 只在 password-reset 的响应出现一次，本层不留副本。
-// 改角色/状态、删用户与重置口令是危险操作：先验二次口令
-// （acting user 自己的登录口令）再进用例，失败零写入。
+// 改角色/状态、删用户、重置口令、恢复用户与新建用户（可建 master）
+// 是危险操作：先验二次口令（acting user 自己的登录口令）再进用例，
+// 失败零写入。
 // 列表与 lookup 的 items 空页输出 []，不是 null。
 // 错误一律走 respond.Error，形状由信封包保证。
 
@@ -87,13 +88,14 @@ func NewHandler(svc Service, authz Authorizer) *Handler {
 }
 
 // WithReauth 注入危险操作二次口令用例。
-// 未注入时改角色/状态、删用户与重置口令按 internal 拒绝（失败关闭）。
+// 未注入时改角色/状态、删用户、重置口令、恢复与新建按 internal 拒绝（失败关闭）。
 func (h *Handler) WithReauth(r Reauth) *Handler {
 	h.reauth = r
 	return h
 }
 
 // Create 实现 POST /api/users。
+// 该端点可建 master/admin，故与改角色同级：总是要求二次口令。
 func (h *Handler) Create(c *gin.Context, _ oapi.UserCreateParams) {
 	scope, actor, ok := h.principal(c)
 	if !ok {
@@ -101,6 +103,9 @@ func (h *Handler) Create(c *gin.Context, _ oapi.UserCreateParams) {
 	}
 	var body oapi.UserCreate
 	if !decode(c, &body) {
+		return
+	}
+	if !h.reauthenticate(c, actor.UserID, body.CurrentPassword) {
 		return
 	}
 	record, err := h.svc.Create(c.Request.Context(), scope, appuser.CreateInput{
@@ -241,9 +246,17 @@ func (h *Handler) Delete(c *gin.Context, id string, _ oapi.UserDeleteParams) {
 }
 
 // Restore 实现 POST /api/users/{id}/restore。
+// 恢复会重新占用 live-user 容量并恢复登录能力，故要求二次口令。
 func (h *Handler) Restore(c *gin.Context, id string, _ oapi.UserRestoreParams) {
 	scope, actor, ok := h.principal(c)
 	if !ok {
+		return
+	}
+	var body oapi.UserRestoreRequest
+	if !decode(c, &body) {
+		return
+	}
+	if !h.reauthenticate(c, actor.UserID, body.CurrentPassword) {
 		return
 	}
 	record, err := h.svc.Restore(c.Request.Context(), scope, id, actor)

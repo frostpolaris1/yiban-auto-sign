@@ -547,10 +547,10 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			return nil, fmt.Errorf("assembly: user service: %w", err)
 		}
 		schools = schoolhttp.NewHandler(schoolSvc, adminSvc)
-		admins = adminhttp.NewHandler(adminSvc, adminSvc)
-		// 二次口令用例注入两个危险操作面：改角色/删用户/重置口令与
-		// 凭据编辑/删号/自助删号/设备刷新。用例是 authSvc 的窄接口，
-		// handler 只见 Reauthenticate。
+		admins = adminhttp.NewHandler(adminSvc, adminSvc).WithReauth(authSvc)
+		// 二次口令用例注入三个危险操作面：改角色/删用户/重置口令/恢复/新建、
+		// 凭据编辑/删号/自助删号/设备刷新/恢复、学校管理员绑定/解绑。
+		// 用例是 authSvc 的窄接口，handler 只见 Reauthenticate。
 		accounts = accounthttp.NewHandler(accountSvc, adminSvc, guard).WithReauth(authSvc)
 		users = userhttp.NewHandler(userSvc, adminSvc).WithReauth(authSvc)
 		signing = signinghttp.NewHandler(accountSvc, adminSvc, provider)

@@ -3,9 +3,10 @@ package account_test
 // 危险操作二次口令的入口层判据。
 //
 // # 功能
-// 钉住四个端点的门形：删号、自助删号与设备刷新总是要求
-// current_password；改号只在携带 phone/password/device_code 时要求，
-// 只改 name 不要求。缺失 400、错误 403、用例不被调用。
+// 钉住六个端点的门形：删号、自助删号、设备刷新、管理员恢复与
+// 自助恢复总是要求 current_password；改号只在携带
+// phone/password/device_code 时要求，只改 name 不要求。
+// 缺失 400、错误 403、用例不被调用。
 // 本文件**不**连数据库，**不**做真实口令校验。
 //
 // # 口径
@@ -250,5 +251,72 @@ func TestReauthInternalErrorPropagates(t *testing.T) {
 	}
 	if svc.deletes != 0 {
 		t.Fatal("use case must not run after a reauth failure")
+	}
+}
+
+// 管理员恢复：缺口令 400、错口令 403、正确口令 200；失败零调用。
+func TestAccountRestoreReauthGate(t *testing.T) {
+	svc := &fakeService{}
+	r := &recordingReauth{}
+	h := accounthttp.NewHandler(svc, fakeAuthorizer{}).WithReauth(r)
+
+	code := callHandler(t, h, http.MethodPost, "/api/accounts/a1/restore", `{}`,
+		func(h *accounthttp.Handler, c *gin.Context) { h.Restore(c, "a1", oapi.AccountRestoreParams{}) })
+	if code != http.StatusBadRequest {
+		t.Fatalf("missing password status = %d, want 400", code)
+	}
+	if svc.restores != 0 || r.calls != 0 {
+		t.Fatalf("restores=%d reauth=%d, want 0/0", svc.restores, r.calls)
+	}
+
+	r.err = errs.New(errs.CodeForbidden, "reauthentication failed")
+	code = callHandler(t, h, http.MethodPost, "/api/accounts/a1/restore",
+		`{"current_password":"wrong"}`,
+		func(h *accounthttp.Handler, c *gin.Context) { h.Restore(c, "a1", oapi.AccountRestoreParams{}) })
+	if code != http.StatusForbidden {
+		t.Fatalf("wrong password status = %d, want 403", code)
+	}
+	if svc.restores != 0 {
+		t.Fatal("a rejected reauth must not reach the use case")
+	}
+
+	r.err = nil
+	code = callHandler(t, h, http.MethodPost, "/api/accounts/a1/restore",
+		`{"current_password":"pw"}`,
+		func(h *accounthttp.Handler, c *gin.Context) { h.Restore(c, "a1", oapi.AccountRestoreParams{}) })
+	if code != http.StatusOK {
+		t.Fatalf("right password status = %d, want 200", code)
+	}
+	if svc.restores != 1 || r.calls != 2 {
+		t.Fatalf("restores=%d reauth=%d, want 1/2", svc.restores, r.calls)
+	}
+}
+
+// 自助恢复：缺口令 400，用例不被调用；带口令 200 且作用域仍是会话本人。
+func TestMyAccountRestoreReauthGate(t *testing.T) {
+	svc := &fakeService{}
+	h := accounthttp.NewHandler(svc, fakeAuthorizer{}).WithReauth(&recordingReauth{})
+
+	code := callHandler(t, h, http.MethodPost, "/api/me/accounts/a1/restore", `{}`,
+		func(h *accounthttp.Handler, c *gin.Context) {
+			h.MyAccountRestore(c, "a1", oapi.MyAccountRestoreParams{})
+		})
+	if code != http.StatusBadRequest {
+		t.Fatalf("missing password status = %d, want 400", code)
+	}
+	if svc.selfRestores != 0 {
+		t.Fatal("a missing password must not reach the use case")
+	}
+
+	code = callHandler(t, h, http.MethodPost, "/api/me/accounts/a1/restore",
+		`{"current_password":"pw"}`,
+		func(h *accounthttp.Handler, c *gin.Context) {
+			h.MyAccountRestore(c, "a1", oapi.MyAccountRestoreParams{})
+		})
+	if code != http.StatusOK {
+		t.Fatalf("right password status = %d, want 200", code)
+	}
+	if svc.selfRestores != 1 || svc.selfScope.Kind() != corescope.KindUser {
+		t.Fatalf("selfRestores=%d scope kind=%v", svc.selfRestores, svc.selfScope.Kind())
 	}
 }

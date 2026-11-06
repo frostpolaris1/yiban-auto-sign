@@ -816,6 +816,17 @@ type AccountPauseRequest struct {
 	Paused bool `json:"paused"`
 }
 
+// AccountRestoreRequest defines model for AccountRestoreRequest.
+type AccountRestoreRequest struct {
+	// CurrentPassword The acting user's own login password, used to re-authenticate a
+	// dangerous operation. It is never the signing account's platform
+	// credential, and it is never stored, logged or audited. Optional in
+	// this schema; the server requires it on the dangerous endpoints and
+	// answers 400 when it is missing, 403 when it is wrong and 429 after
+	// repeated failures.
+	CurrentPassword *CurrentPassword `json:"current_password,omitempty"`
+}
+
 // AccountReviewRequest defines model for AccountReviewRequest.
 type AccountReviewRequest struct {
 	Decision AccountReviewRequestDecision `json:"decision"`
@@ -1229,6 +1240,17 @@ type MyAccountDeleteRequest struct {
 	CurrentPassword *CurrentPassword `json:"current_password,omitempty"`
 }
 
+// MyAccountRestoreRequest defines model for MyAccountRestoreRequest.
+type MyAccountRestoreRequest struct {
+	// CurrentPassword The acting user's own login password, used to re-authenticate a
+	// dangerous operation. It is never the signing account's platform
+	// credential, and it is never stored, logged or audited. Optional in
+	// this schema; the server requires it on the dangerous endpoints and
+	// answers 400 when it is missing, 403 when it is wrong and 429 after
+	// repeated failures.
+	CurrentPassword *CurrentPassword `json:"current_password,omitempty"`
+}
+
 // Notification One in-app notification owned by the signed-in user. The internal
 // dedupe key is never exposed.
 type Notification struct {
@@ -1525,7 +1547,14 @@ type SchoolAdmin struct {
 
 // SchoolAdminCreate defines model for SchoolAdminCreate.
 type SchoolAdminCreate struct {
-	UserId string `json:"user_id"`
+	// CurrentPassword The acting user's own login password, used to re-authenticate a
+	// dangerous operation. It is never the signing account's platform
+	// credential, and it is never stored, logged or audited. Optional in
+	// this schema; the server requires it on the dangerous endpoints and
+	// answers 400 when it is missing, 403 when it is wrong and 429 after
+	// repeated failures.
+	CurrentPassword *CurrentPassword `json:"current_password,omitempty"`
+	UserId          string           `json:"user_id"`
 }
 
 // SchoolAdminPage defines model for SchoolAdminPage.
@@ -1534,6 +1563,17 @@ type SchoolAdminPage struct {
 
 	// NextCursor Cursor for the next page; empty on the last page.
 	NextCursor string `json:"next_cursor"`
+}
+
+// SchoolAdminRemoveRequest defines model for SchoolAdminRemoveRequest.
+type SchoolAdminRemoveRequest struct {
+	// CurrentPassword The acting user's own login password, used to re-authenticate a
+	// dangerous operation. It is never the signing account's platform
+	// credential, and it is never stored, logged or audited. Optional in
+	// this schema; the server requires it on the dangerous endpoints and
+	// answers 400 when it is missing, 403 when it is wrong and 429 after
+	// repeated failures.
+	CurrentPassword *CurrentPassword `json:"current_password,omitempty"`
 }
 
 // SchoolCreate defines model for SchoolCreate.
@@ -1888,6 +1928,14 @@ type UserCounts struct {
 
 // UserCreate defines model for UserCreate.
 type UserCreate struct {
+	// CurrentPassword The acting user's own login password, used to re-authenticate a
+	// dangerous operation. It is never the signing account's platform
+	// credential, and it is never stored, logged or audited. Optional in
+	// this schema; the server requires it on the dangerous endpoints and
+	// answers 400 when it is missing, 403 when it is wrong and 429 after
+	// repeated failures.
+	CurrentPassword *CurrentPassword `json:"current_password,omitempty"`
+
 	// Email The server also limits the address to 254 UTF-8 bytes. maxLength counts Unicode code points, so the server check is the stricter one for non-ASCII addresses.
 	Email    openapi_types.Email `json:"email"`
 	Password string              `json:"password"`
@@ -1933,6 +1981,17 @@ type UserPage struct {
 
 // UserPasswordResetRequest defines model for UserPasswordResetRequest.
 type UserPasswordResetRequest struct {
+	// CurrentPassword The acting user's own login password, used to re-authenticate a
+	// dangerous operation. It is never the signing account's platform
+	// credential, and it is never stored, logged or audited. Optional in
+	// this schema; the server requires it on the dangerous endpoints and
+	// answers 400 when it is missing, 403 when it is wrong and 429 after
+	// repeated failures.
+	CurrentPassword *CurrentPassword `json:"current_password,omitempty"`
+}
+
+// UserRestoreRequest defines model for UserRestoreRequest.
+type UserRestoreRequest struct {
 	// CurrentPassword The acting user's own login password, used to re-authenticate a
 	// dangerous operation. It is never the signing account's platform
 	// credential, and it is never stored, logged or audited. Optional in
@@ -2588,6 +2647,9 @@ type AccountLocationSetJSONRequestBody = AccountLocationUpdate
 // AccountPauseJSONRequestBody defines body for AccountPause for application/json ContentType.
 type AccountPauseJSONRequestBody = AccountPauseRequest
 
+// AccountRestoreJSONRequestBody defines body for AccountRestore for application/json ContentType.
+type AccountRestoreJSONRequestBody = AccountRestoreRequest
+
 // AccountReviewJSONRequestBody defines body for AccountReview for application/json ContentType.
 type AccountReviewJSONRequestBody = AccountReviewRequest
 
@@ -2617,6 +2679,9 @@ type AuthResetPasswordJSONRequestBody = ResetPasswordRequest
 
 // MyAccountDeleteJSONRequestBody defines body for MyAccountDelete for application/json ContentType.
 type MyAccountDeleteJSONRequestBody = MyAccountDeleteRequest
+
+// MyAccountRestoreJSONRequestBody defines body for MyAccountRestore for application/json ContentType.
+type MyAccountRestoreJSONRequestBody = MyAccountRestoreRequest
 
 // MailNotifySetJSONRequestBody defines body for MailNotifySet for application/json ContentType.
 type MailNotifySetJSONRequestBody = MailNotifyUpdate
@@ -2648,6 +2713,9 @@ type SchoolUpdateJSONRequestBody = SchoolUpdate
 // SchoolAdminAddJSONRequestBody defines body for SchoolAdminAdd for application/json ContentType.
 type SchoolAdminAddJSONRequestBody = SchoolAdminCreate
 
+// SchoolAdminRemoveJSONRequestBody defines body for SchoolAdminRemove for application/json ContentType.
+type SchoolAdminRemoveJSONRequestBody = SchoolAdminRemoveRequest
+
 // SchoolDefaultPhotoSetJSONRequestBody defines body for SchoolDefaultPhotoSet for application/json ContentType.
 type SchoolDefaultPhotoSetJSONRequestBody = SchoolDefaultPhotoUpdate
 
@@ -2662,6 +2730,9 @@ type UserUpdateJSONRequestBody = UserUpdate
 
 // UserPasswordResetJSONRequestBody defines body for UserPasswordReset for application/json ContentType.
 type UserPasswordResetJSONRequestBody = UserPasswordResetRequest
+
+// UserRestoreJSONRequestBody defines body for UserRestore for application/json ContentType.
+type UserRestoreJSONRequestBody = UserRestoreRequest
 
 // AsSettingItemValue0 returns the union data inside the SettingItem_Value as a SettingItemValue0
 func (t SettingItem_Value) AsSettingItemValue0() (SettingItemValue0, error) {
