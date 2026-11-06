@@ -1133,13 +1133,17 @@ func TestMigrateLegacyExactOwnerAmbiguityE2E(t *testing.T) {
 }
 
 // TestMigrateLegacySpaceSeparatedTimestampsE2E 守卫旧生产时间形状：
-// users.created_at 与 accounts.deleted_at 是 `YYYY-MM-DD HH:MM:SS`
-// （空格分隔、无时区）。导入必须按旧栈本地时区（+08:00）解读，
-// 不挡用户/账号落地、owner 解析、旧 admin 绑定与凭据重建。
+// users.created_at、users.deleted_at 与 accounts.deleted_at 是
+// `YYYY-MM-DD HH:MM:SS`（空格分隔、无时区）。导入必须按旧栈本地时区
+// （+08:00）解读，不挡用户/账号落地、owner 解析、旧 admin 绑定与凭据重建。
 func TestMigrateLegacySpaceSeparatedTimestampsE2E(t *testing.T) {
+	const deletedEmail = "user0003@example.invalid"
 	env := e2eSetupDB(t)
 	root := t.TempDir()
 	ex := e2eFixture(t)
+	deletedUser := e2eUserRow(4, deletedEmail, "user", 1, 1)
+	deletedUser["deleted_at"] = "2026-01-02 00:00:00"
+	ex.Users = append(ex.Users, deletedUser)
 	for _, row := range ex.Users {
 		row["created_at"] = "2026-01-01 00:00:00"
 	}
@@ -1161,8 +1165,8 @@ func TestMigrateLegacySpaceSeparatedTimestampsE2E(t *testing.T) {
 		t.Fatalf("space-separated timestamps must not produce row errors:\n%s", output)
 	}
 
-	if n := e2eCount(t, env.dsn, "SELECT count(*) FROM users"); n != 4 {
-		t.Fatalf("users = %d, want 4 (3 imported + fallback master)", n)
+	if n := e2eCount(t, env.dsn, "SELECT count(*) FROM users"); n != 5 {
+		t.Fatalf("users = %d, want 5 (4 imported + fallback master)", n)
 	}
 	if n := e2eCount(t, env.dsn, "SELECT count(*) FROM accounts"); n != 5 {
 		t.Fatalf("accounts = %d, want 5", n)
@@ -1170,8 +1174,8 @@ func TestMigrateLegacySpaceSeparatedTimestampsE2E(t *testing.T) {
 	if n := e2eCount(t, env.dsn, "SELECT count(*) FROM credentials"); n != 3 {
 		t.Fatalf("credentials = %d, want 3", n)
 	}
-	if n := e2eCount(t, env.dsn, "SELECT count(*) FROM legacy_ids"); n != 8 {
-		t.Fatalf("legacy_ids = %d, want 8", n)
+	if n := e2eCount(t, env.dsn, "SELECT count(*) FROM legacy_ids"); n != 9 {
+		t.Fatalf("legacy_ids = %d, want 9", n)
 	}
 	e2eAssertLegacyInvariant(t, env.dsn)
 
@@ -1202,8 +1206,13 @@ func TestMigrateLegacySpaceSeparatedTimestampsE2E(t *testing.T) {
 
 	// 空格串按旧栈本地时区（+08:00）解读：本地 2026-01-01 00:00:00 = UTC 前一天 16:00。
 	if n := e2eCount(t, env.dsn,
-		`SELECT count(*) FROM users WHERE created_at = TIMESTAMPTZ '2025-12-31 16:00:00+00'`); n != 3 {
-		t.Fatalf("users with legacy-local created_at = %d, want 3", n)
+		`SELECT count(*) FROM users WHERE created_at = TIMESTAMPTZ '2025-12-31 16:00:00+00'`); n != 4 {
+		t.Fatalf("users with legacy-local created_at = %d, want 4", n)
+	}
+	if n := e2eCount(t, env.dsn,
+		`SELECT count(*) FROM users WHERE email = $1 AND deleted_at = TIMESTAMPTZ '2026-01-01 16:00:00+00'`,
+		deletedEmail); n != 1 {
+		t.Fatalf("soft-deleted legacy user deleted_at = %d, want 1", n)
 	}
 	if n := e2eCount(t, env.dsn,
 		`SELECT count(*) FROM accounts WHERE phone = $1 AND deleted_at = TIMESTAMPTZ '2026-01-01 16:00:00+00'`,

@@ -671,8 +671,8 @@ var legacyTZ = time.FixedZone("legacy-0800", 8*3600)
 // 解读后转 UTC；空串按迁移时刻。
 //
 // 旧生产库的 TEXT 列实际写的是 `YYYY-MM-DD HH:MM:SS`（空格分隔、无时区），
-// 与旧栈 `datetime('now','localtime')` 的落库形状一致；T 分隔与空格分隔
-// 都按 legacyTZ 解读，不猜其他格式。
+// 与旧栈 Python `strftime("%Y-%m-%d %H:%M:%S")` 的落库形状一致；
+// T 分隔与空格分隔都按 legacyTZ 解读，不猜其他格式。
 func parseLegacyTime(s string, now time.Time) (time.Time, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
