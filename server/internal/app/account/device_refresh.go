@@ -12,7 +12,8 @@
 //
 // # 口径
 // 明文凭据只经 SigningCredential 交给端口；端口返回值不含凭据。
-// 平台返回的空字段**不覆盖**手填值；合并后无变化的成功不空转写版本。
+// 平台返回的空字段**不覆盖**手填值；合并后无变化的成功不空转写版本，
+// 也不推进账号 updated_at。
 // 审计与凭据写回同事务，审计追加是事务最后一条语句。
 // 明文设备码只走到入口层的掩码点，不落日志、不落审计、不进响应。
 package account
@@ -57,7 +58,9 @@ type DeviceRefreshResult struct {
 // 再在事务外调平台；平台失败返回 upstream_unavailable，
 // 此时凭据版本与审计行都是失败前的原样（安全不变量 8）。
 // 成功后事务内合并写回：平台空字段不覆盖手填值，
-// 无变化不空转写版本；审计 account.device_refresh 与写回同事务。
+// 无变化不空转写版本；设备字段真正变化时同事务推进账号
+// updated_at，使携带刷新前 expected_updated_at 的 PATCH 得到 409。
+// 审计 account.device_refresh 与写回同事务。
 func (s *Service) DeviceRefresh(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) (DeviceRefreshResult, error) {
 	if err := app.RequireScope(scope); err != nil {
 		return DeviceRefreshResult{}, err
@@ -85,11 +88,21 @@ func (s *Service) DeviceRefresh(ctx context.Context, scope corescope.Scope, id s
 	// 平台回读也是写入路径：按契约上限截断，不让超长机型进密文或响应。
 	effective.PhoneModel = truncateCredentialText(effective.PhoneModel)
 	err = s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
-		if err := s.writeBackDevice(ctx, scope, id, credential, effective); err != nil {
+		now := s.deps.Clock.Now().UTC()
+		changed, err := s.writeBackDevice(ctx, scope, id, credential, effective)
+		if err != nil {
 			return err
 		}
-		_, err := s.deps.Audit.Append(ctx, coreaudit.Entry{
-			TS:          s.deps.Clock.Now().UTC(),
+		if changed {
+			// 凭据写回不碰 accounts 行；不推进 updated_at 时，
+			// 刷新前读到的 expected_updated_at 仍会命中，旧设备码可覆盖刚回读的值。
+			// 失败即回滚：本次凭据写回与审计一并作废。
+			if _, err := s.deps.Accounts.Touch(ctx, scope, id, now); err != nil {
+				return err
+			}
+		}
+		_, err = s.deps.Audit.Append(ctx, coreaudit.Entry{
+			TS:          now,
 			SchoolID:    credential.SchoolID,
 			ActorUserID: actor.UserID,
 			ActorRole:   actor.Role,
@@ -111,26 +124,30 @@ func (s *Service) DeviceRefresh(ctx context.Context, scope corescope.Scope, id s
 // 凭据行在本事务内重读：与外层读之间若有并发改写，乐观锁冲突回滚，
 // 审计一并作废——失败零写库的形状因此对并发也成立。
 // 合并后与存量一致时不写：版本是「凭据变了」的事实，不该为空转+1。
-func (s *Service) writeBackDevice(ctx context.Context, scope corescope.Scope, id string, before SigningCredential, effective DeviceRefreshResult) error {
+// 返回是否真的写回了凭据；调用方只在 true 时推进账号 updated_at。
+func (s *Service) writeBackDevice(ctx context.Context, scope corescope.Scope, id string, before SigningCredential, effective DeviceRefreshResult) (bool, error) {
 	if effective.DeviceCode == before.DeviceCode && effective.PhoneModel == before.PhoneModel {
-		return nil
+		return false, nil
 	}
 	if s.deps.Cipher == nil {
-		return errors.New("account: credential cipher is not configured")
+		return false, errors.New("account: credential cipher is not configured")
 	}
 	row, err := s.deps.Accounts.Credential(ctx, scope, id)
 	if err != nil {
-		return err
+		return false, err
 	}
 	payload, err := s.deps.Cipher.Open(row)
 	if err != nil {
-		return err
+		return false, err
 	}
 	payload.DeviceCode = effective.DeviceCode
 	payload.PhoneModel = effective.PhoneModel
 	sealed, err := s.deps.Cipher.Seal(row.SchoolID, id, payload)
 	if err != nil {
-		return err
+		return false, err
 	}
-	return s.deps.Accounts.ReplaceCredential(ctx, sealed, row.Version)
+	if err := s.deps.Accounts.ReplaceCredential(ctx, sealed, row.Version); err != nil {
+		return false, err
+	}
+	return true, nil
 }
