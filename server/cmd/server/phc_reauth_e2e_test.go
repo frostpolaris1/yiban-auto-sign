@@ -622,7 +622,7 @@ func TestPHCReauthAccountRestoreGate(t *testing.T) {
 	e := newAuthEnv(t)
 	session := phcLoginMaster(t, e, "phc-acct-restore-boss@example.com", "boss-pass")
 	owner := w2dSeedUser(t, e, "phc-acct-restore-owner@example.com", "owner-pass-42", coreauth.RoleUser)
-	account := ux8SeedAccount(t, e, owner.ID, "13800072001")
+	account := ux8SeedAccount(t, e, owner.ID, "13800138012")
 	ux8SoftDelete(t, e, account.ID, owner.ID)
 	path := "/api/accounts/" + account.ID + "/restore"
 	csrf := map[string]string{"X-CSRF-Token": session.CSRFToken}
@@ -662,7 +662,7 @@ func TestPHCReauthMyAccountRestoreGate(t *testing.T) {
 	e := newAuthEnv(t)
 	owner := w2dSeedUser(t, e, "phc-self-restore@example.com", "owner-pass-42", coreauth.RoleUser)
 	session := u1LoginOn(e, e.client, "phc-self-restore@example.com", "owner-pass-42")
-	account := ux8SeedAccount(t, e, owner.ID, "13800072002")
+	account := ux8SeedAccount(t, e, owner.ID, "13800138013")
 	csrf := map[string]string{"X-CSRF-Token": session.CSRFToken}
 
 	resp, payload := e.do(http.MethodPost, "/api/me/accounts/"+account.ID+"/delete",
