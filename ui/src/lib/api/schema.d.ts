@@ -775,7 +775,16 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Read the account location policy.
+         * @description Returns the stored policy. The visible scope is the same source as
+         *     PUT /api/accounts/{id}/location: a user reads own accounts and an
+         *     admin reads accounts of bound schools; a cross-user, cross-school or
+         *     soft-deleted account answers 404. An account without a stored policy
+         *     reads as mode auto with null lng/lat and an empty reason. master is
+         *     not in x-roles and answers 403.
+         */
+        get: operations["AccountLocationGet"];
         /**
          * Set the account location policy.
          * @description mode auto clears the stored point; mode fixed requires lng and lat
@@ -4282,6 +4291,33 @@ export interface operations {
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["DefaultError"];
             429: components["responses"]["TooManyRequestsError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AccountLocationGet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["AccountID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Location policy. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountLocation"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
             default: components["responses"]["DefaultError"];
         };
     };

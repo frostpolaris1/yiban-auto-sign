@@ -1,6 +1,6 @@
 package location_test
 
-// PUT /api/accounts/{id}/location 的入口层判据：
+// GET/PUT /api/accounts/{id}/location 的入口层判据：
 // 200 回显策略、400 校验、404 跨面、403 角色不符、501 未装配。
 
 import (
@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
@@ -26,9 +27,22 @@ import (
 type fakeService struct {
 	out contract.Location
 	err error
+
+	getOut contract.Location
+	getErr error
+
 	// lastIn 记录最后一次入参，供断言透传。
 	lastIn applocation.Input
-	calls  int
+	// lastGetID 记录最后一次读取的账号 ID。
+	lastGetID string
+	calls     int
+	getCalls  int
+}
+
+func (f *fakeService) Get(_ context.Context, _ corescope.Scope, accountID string) (contract.Location, error) {
+	f.getCalls++
+	f.lastGetID = accountID
+	return f.getOut, f.getErr
 }
 
 func (f *fakeService) Set(_ context.Context, _ corescope.Scope, _ string, in applocation.Input, _ appaudit.Actor) (contract.Location, error) {
@@ -195,6 +209,76 @@ func TestSetLocationForbiddenMapped(t *testing.T) {
 		t.Fatalf("status = %d", rec.Code)
 	}
 	if svc.calls != 0 {
+		t.Fatal("作用域解析失败不应调用用例")
+	}
+}
+
+// GET auto：200，lng/lat 落 null，账号 ID 透传到用例。
+func TestGetLocationAutoNullPoint(t *testing.T) {
+	svc := &fakeService{getOut: contract.Location{Mode: contract.LocationAuto}}
+	engine, issued := newRouter(t, &fakeAuthorizer{scope: corescope.User("u1")}, svc)
+	rec := doJSON(t, engine, issued, http.MethodGet, "/api/accounts/a1/location", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var out oapi.AccountLocation
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if string(out.Mode) != "auto" || out.Lng != nil || out.Lat != nil || out.Reason != "" {
+		t.Fatalf("out = %+v", out)
+	}
+	if svc.lastGetID != "a1" {
+		t.Fatalf("lastGetID = %q", svc.lastGetID)
+	}
+}
+
+// GET fixed：坐标原样回读；空 reason 仍出现在响应里。
+func TestGetLocationFixedOK(t *testing.T) {
+	svc := &fakeService{getOut: contract.Location{
+		Mode: contract.LocationFixed, Lng: 116.4, Lat: 39.9,
+	}}
+	engine, issued := newRouter(t, &fakeAuthorizer{scope: corescope.User("u1")}, svc)
+	rec := doJSON(t, engine, issued, http.MethodGet, "/api/accounts/a1/location", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); !strings.Contains(body, `"reason":""`) {
+		t.Fatalf("空 reason 未输出: %s", body)
+	}
+	var out oapi.AccountLocation
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if string(out.Mode) != "fixed" || out.Lng == nil || *out.Lng != 116.4 ||
+		out.Lat == nil || *out.Lat != 39.9 {
+		t.Fatalf("out = %+v", out)
+	}
+}
+
+// GET 跨面（他人账号、未绑定校、软删）映射 404，不触达写入。
+func TestGetLocationNotFoundMapped(t *testing.T) {
+	svc := &fakeService{getErr: errs.ErrNotFound}
+	engine, issued := newRouter(t, &fakeAuthorizer{scope: corescope.User("user-2")}, svc)
+	rec := doJSON(t, engine, issued, http.MethodGet, "/api/accounts/a1/location", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if svc.calls != 0 {
+		t.Fatal("读取失败不应调用写入用例")
+	}
+}
+
+// GET 作用域解析失败映射 403，用例不调用。
+func TestGetLocationForbiddenMapped(t *testing.T) {
+	svc := &fakeService{}
+	denied := &fakeAuthorizer{err: errs.New(errs.CodeForbidden, "role cannot access location")}
+	engine, issued := newRouter(t, denied, svc)
+	rec := doJSON(t, engine, issued, http.MethodGet, "/api/accounts/a1/location", nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if svc.getCalls != 0 {
 		t.Fatal("作用域解析失败不应调用用例")
 	}
 }

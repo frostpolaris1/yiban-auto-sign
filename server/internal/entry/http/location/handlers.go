@@ -1,7 +1,7 @@
 // Package location 把定位策略用例映射到 HTTP。
 //
 // # 功能
-// PUT /api/accounts/{id}/location 一个端点。
+// GET /api/accounts/{id}/location 与 PUT /api/accounts/{id}/location 两个端点。
 // 本包**不**写 SQL、**不**做围栏几何、**不**决定可见面。
 //
 // # 归属
@@ -35,6 +35,7 @@ import (
 
 // Service 是定位策略用例端口（实现为 app/location.Service）。
 type Service interface {
+	Get(ctx context.Context, scope corescope.Scope, accountID string) (contract.Location, error)
 	Set(ctx context.Context, scope corescope.Scope, accountID string, in applocation.Input, actor appaudit.Actor) (contract.Location, error)
 }
 
@@ -52,6 +53,26 @@ type Handler struct {
 // NewHandler 构造定位策略处理器。
 func NewHandler(svc Service, authz Authorizer) *Handler {
 	return &Handler{svc: svc, authz: authz}
+}
+
+// GetLocation 实现 GET /api/accounts/{id}/location。
+// 可见面由用例判定：跨校、跨用户与已软删一律 404。
+func (h *Handler) GetLocation(c *gin.Context, id oapi.AccountID) {
+	session, ok := h.principal(c)
+	if !ok {
+		return
+	}
+	scope, _, err := h.authz.Authorize(c.Request.Context(), session.User)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	out, err := h.svc.Get(c.Request.Context(), scope, string(id))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	respond.JSON(c.Writer, http.StatusOK, locationResponse(out))
 }
 
 // SetLocation 实现 PUT /api/accounts/{id}/location。

@@ -221,6 +221,131 @@ func TestP5CPhotoMissingSkips(t *testing.T) {
 	}
 }
 
+// user 回读自己的定位：从未设置时按 auto 返回，lng/lat 为 null。
+func TestP5CGetLocationDefaultsToAuto(t *testing.T) {
+	e, issued, acct := p5cSetup(t)
+	rec := e.do("GET", "/api/accounts/"+acct+"/location", nil, issued)
+	if rec.Code != 200 {
+		t.Fatalf("get location status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var out oapi.AccountLocation
+	e.decode(rec, &out)
+	if out.Mode != oapi.AccountLocationModeAuto || out.Lng != nil || out.Lat != nil || out.Reason != "" {
+		t.Fatalf("out = %+v", out)
+	}
+	// 两个坐标键必须显式落 null，客户端据此区分 auto 与 0 度点。
+	if body := rec.Body.String(); !strings.Contains(body, `"lng":null`) ||
+		!strings.Contains(body, `"lat":null`) {
+		t.Fatalf("响应体 = %s", body)
+	}
+}
+
+// fixed 原样回读；改回 auto 后坐标再次为 null、reason 为空串。
+func TestP5CGetLocationFixedRoundTrip(t *testing.T) {
+	e, issued, acct := p5cSetup(t)
+	if code := p5cSetLocation(t, e, issued, acct, map[string]any{
+		"mode": "fixed", "lng": 105.0, "lat": 25.0, "reason": "宿舍",
+	}); code != 200 {
+		t.Fatalf("set fixed status = %d", code)
+	}
+	rec := e.do("GET", "/api/accounts/"+acct+"/location", nil, issued)
+	if rec.Code != 200 {
+		t.Fatalf("get fixed status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var fixed oapi.AccountLocation
+	e.decode(rec, &fixed)
+	if fixed.Mode != oapi.AccountLocationModeFixed || fixed.Lng == nil || *fixed.Lng != 105 ||
+		fixed.Lat == nil || *fixed.Lat != 25 || fixed.Reason != "宿舍" {
+		t.Fatalf("fixed = %+v", fixed)
+	}
+
+	if code := p5cSetLocation(t, e, issued, acct, map[string]any{"mode": "auto"}); code != 200 {
+		t.Fatalf("set auto status = %d", code)
+	}
+	rec = e.do("GET", "/api/accounts/"+acct+"/location", nil, issued)
+	if rec.Code != 200 {
+		t.Fatalf("get auto status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var auto oapi.AccountLocation
+	e.decode(rec, &auto)
+	if auto.Mode != oapi.AccountLocationModeAuto || auto.Lng != nil || auto.Lat != nil || auto.Reason != "" {
+		t.Fatalf("auto = %+v", auto)
+	}
+}
+
+// 跨用户、跨校 admin、软删账号与不存在的账号：读取一律 404。
+func TestP5CGetLocationCrossScopeNotFound(t *testing.T) {
+	e, issued, acct := p5cSetup(t)
+	if code := p5cSetLocation(t, e, issued, acct, map[string]any{
+		"mode": "fixed", "lng": 105.0, "lat": 25.0,
+	}); code != 200 {
+		t.Fatalf("set location status = %d", code)
+	}
+	other := e.user("p5c-read-other@example.com", coreauth.RoleUser)
+	otherIssued := e.login(other)
+	admin := e.user("p5c-read-admin@example.com", coreauth.RoleAdmin)
+	adminIssued := e.login(admin)
+	e.bind(admin.ID, e.school("p5c-read-other-school").ID)
+
+	if rec := e.do("GET", "/api/accounts/"+acct+"/location", nil, otherIssued); rec.Code != 404 {
+		t.Fatalf("他人读取 status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec := e.do("GET", "/api/accounts/"+acct+"/location", nil, adminIssued); rec.Code != 404 {
+		t.Fatalf("跨校 admin status = %d: %s", rec.Code, rec.Body.String())
+	}
+	const missing = "00000000-0000-0000-0000-000000000000"
+	if rec := e.do("GET", "/api/accounts/"+missing+"/location", nil, issued); rec.Code != 404 {
+		t.Fatalf("不存在账号 status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if _, err := e.db.Exec(e.ctx,
+		"UPDATE accounts SET deleted_at = now(), deleted_by = $2::uuid WHERE id = $1::uuid",
+		acct, issued.User.ID); err != nil {
+		t.Fatalf("soft delete account: %v", err)
+	}
+	if rec := e.do("GET", "/api/accounts/"+acct+"/location", nil, issued); rec.Code != 404 {
+		t.Fatalf("软删账号 status = %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// 绑定账号所在校的 admin：可读同一份策略。
+func TestP5CGetLocationByBoundAdmin(t *testing.T) {
+	e, issued, acct := p5cSetup(t)
+	if code := p5cSetLocation(t, e, issued, acct, map[string]any{
+		"mode": "fixed", "lng": 105.0, "lat": 25.0, "reason": "宿舍",
+	}); code != 200 {
+		t.Fatalf("set location status = %d", code)
+	}
+	admin := e.user("p5c-read-bound@example.com", coreauth.RoleAdmin)
+	adminIssued := e.login(admin)
+	e.bind(admin.ID, e.scalarString("SELECT school_id::text FROM accounts WHERE id = $1::uuid", acct))
+
+	rec := e.do("GET", "/api/accounts/"+acct+"/location", nil, adminIssued)
+	if rec.Code != 200 {
+		t.Fatalf("绑定校 admin status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var out oapi.AccountLocation
+	e.decode(rec, &out)
+	if out.Mode != oapi.AccountLocationModeFixed || out.Lng == nil || *out.Lng != 105 ||
+		out.Lat == nil || *out.Lat != 25 || out.Reason != "宿舍" {
+		t.Fatalf("out = %+v", out)
+	}
+}
+
+// master 不在契约 x-roles 内：读取 403，账号存在与否都不改变结论。
+func TestP5CGetLocationMasterForbidden(t *testing.T) {
+	e, _, acct := p5cSetup(t)
+	master := e.user("p5c-read-master@example.com", coreauth.RoleMaster)
+	masterIssued := e.login(master)
+
+	if rec := e.do("GET", "/api/accounts/"+acct+"/location", nil, masterIssued); rec.Code != 403 {
+		t.Fatalf("master 读取 status = %d: %s", rec.Code, rec.Body.String())
+	}
+	const missing = "00000000-0000-0000-0000-000000000000"
+	if rec := e.do("GET", "/api/accounts/"+missing+"/location", nil, masterIssued); rec.Code != 403 {
+		t.Fatalf("master 读不存在账号 status = %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // 定位端点的入口判据：跨用户 404、跨校 admin 404、非法 mode 400。
 func TestP5CLocationEndpointGuards(t *testing.T) {
 	e, issued, acct := p5cSetup(t)
