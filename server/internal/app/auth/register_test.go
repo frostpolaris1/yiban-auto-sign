@@ -48,8 +48,8 @@ func TestRegisterClosedDoesNotHash(t *testing.T) {
 	if _, err := h.svc.Register(context.Background(), validRegisterInput()); errs.From(err).Code != errs.CodeForbidden {
 		t.Fatalf("Register while closed = %v, want forbidden", err)
 	}
-	if h.kdf.hashes != 0 {
-		t.Fatalf("closed registration hashed %d times; want 0", h.kdf.hashes)
+	if h.kdf.hashes.Load() != 0 {
+		t.Fatalf("closed registration hashed %d times; want 0", h.kdf.hashes.Load())
 	}
 	if len(h.users.byEmail) != 0 {
 		t.Fatalf("closed registration created %d users", len(h.users.byEmail))
@@ -117,8 +117,8 @@ func TestRegisterRejectsInvalidInput(t *testing.T) {
 			if _, err := h.svc.Register(context.Background(), in); errs.From(err).Code != tc.code {
 				t.Fatalf("Register = %v, want %s", err, tc.code)
 			}
-			if h.kdf.hashes != 0 {
-				t.Fatalf("rejected registration hashed %d times; want 0", h.kdf.hashes)
+			if h.kdf.hashes.Load() != 0 {
+				t.Fatalf("rejected registration hashed %d times; want 0", h.kdf.hashes.Load())
 			}
 			if len(h.users.byEmail) != 0 {
 				t.Fatalf("rejected registration created %d users", len(h.users.byEmail))
@@ -141,8 +141,8 @@ func TestRegisterMapsDuplicateEmail(t *testing.T) {
 	if errs.From(err).Code != errs.CodeConflict {
 		t.Fatalf("duplicate registration = %v, want conflict", err)
 	}
-	if h.kdf.hashes != 1 {
-		t.Fatalf("duplicate registration hashed %d times; want 1 (timing parity)", h.kdf.hashes)
+	if h.kdf.hashes.Load() != 1 {
+		t.Fatalf("duplicate registration hashed %d times; want 1 (timing parity)", h.kdf.hashes.Load())
 	}
 }
 

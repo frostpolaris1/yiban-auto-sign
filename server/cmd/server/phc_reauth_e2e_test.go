@@ -20,6 +20,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -398,6 +399,14 @@ func TestPHCReauthThrottle(t *testing.T) {
 	}
 	if code, _ := errorCode(t, payload); code != "rate_limited" {
 		t.Fatalf("sixth attempt code = %q, want rate_limited", code)
+	}
+	// 429 必须带 Retry-After：秒数存在且 >0。
+	retryAfter := resp.Header.Get("Retry-After")
+	if retryAfter == "" {
+		t.Fatal("429 is missing the Retry-After header")
+	}
+	if seconds, err := strconv.Atoi(retryAfter); err != nil || seconds <= 0 {
+		t.Fatalf("Retry-After = %q, want a positive integer", retryAfter)
 	}
 	if got := e.scalarString("SELECT role::text FROM users WHERE id = $1", target.ID); got != "user" {
 		t.Fatal("the throttled window still changed the role")

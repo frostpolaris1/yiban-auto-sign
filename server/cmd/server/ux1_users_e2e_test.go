@@ -683,14 +683,17 @@ func TestUX1G11SoftDeletedIsUnreachable(t *testing.T) {
 		t.Fatalf("delete missing user = %d, want 404; body=%q", missingResp.StatusCode, missingPayload)
 	}
 
-	// 空 PATCH 体：minProperties 判据在用例层，400。
+	// 空 PATCH 体：口令门已过（带正确口令），minProperties 判据在用例层，400。
 	emptyResp, emptyPayload := u1Do(e, e.client, http.MethodPatch, "/api/users/"+live.ID,
-		map[string]any{}, boss.CSRFToken)
+		map[string]any{"current_password": "boss-pass"}, boss.CSRFToken)
 	if emptyResp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("empty patch = %d, want 400; body=%q", emptyResp.StatusCode, emptyPayload)
 	}
 	if code, _ := errorCode(t, emptyPayload); code != "validation_failed" {
 		t.Fatalf("empty patch code = %q, want validation_failed", code)
+	}
+	if _, msg := errorCode(t, emptyPayload); !strings.Contains(msg, "at least one of role or status") {
+		t.Fatalf("empty patch message = %q, want the use-case minProperties reason", msg)
 	}
 }
 

@@ -3436,6 +3436,7 @@ export interface operations {
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
             413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
         };
     };

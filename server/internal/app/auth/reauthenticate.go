@@ -11,8 +11,11 @@
 //
 // # 口径
 // 错误统一 forbidden（errs.CodeForbidden）→ HTTP 403；
-// 节流命中 rate_limited → HTTP 429。每用户 5 分钟窗口内失败 5 次后，
+// 节流命中 rate_limited → HTTP 429，错误携带建议重试秒数，
+// 入口层据此写 Retry-After。每用户 5 分钟窗口内失败 5 次后，
 // 后续尝试一律 429，**不**再付 KDF 成本；成功一次即清零。
+// 占坑与判限在同一把锁内完成（reserve），并发不可越过上限。
+// 基础设施错误（仓储、KDF 故障）撤销占坑：服务器故障不算用户的失败。
 // 哈希串不可读是数据事故，与登录同口径回 internal，不伪装成 403。
 
 package auth
@@ -38,7 +41,33 @@ const ReauthWindow = 5 * time.Minute
 // 与登录失败不同：这里不区分「用户不存在」与「口令错误」，且**不写审计**。
 var ErrReauthFailed = errs.New(errs.CodeForbidden, "reauthentication failed")
 
-// reauthFailures 记录一个用户的失败时刻。
+// ErrReauthThrottledMessage 是节流错误的稳定文案。
+const ErrReauthThrottledMessage = "too many failed reauth attempts"
+
+// ReauthThrottled 是节流命中的 typed 错误。
+// 包装 rate_limited 稳定错误（Unwrap 供 errs.From 按码映射 429）；
+// RetryAfter 是建议重试时长，入口层据此写 Retry-After 头。
+type ReauthThrottled struct {
+	err        *errs.Error
+	RetryAfter time.Duration
+}
+
+// NewReauthThrottled 构造节流错误：稳定码 rate_limited 加建议重试时长。
+// 入口替身与测试共用本构造，字段保持私有。
+func NewReauthThrottled(retryAfter time.Duration) *ReauthThrottled {
+	return &ReauthThrottled{
+		err:        errs.New(errs.CodeRateLimited, ErrReauthThrottledMessage),
+		RetryAfter: retryAfter,
+	}
+}
+
+// Error 实现 error。
+func (e *ReauthThrottled) Error() string { return e.err.Error() }
+
+// Unwrap 暴露稳定错误：respond 按 rate_limited 码回 429。
+func (e *ReauthThrottled) Unwrap() error { return e.err }
+
+// reauthFailures 记录一个用户的失败（占坑）时刻。
 type reauthFailures struct {
 	at []time.Time
 }
@@ -62,37 +91,45 @@ func newReauthThrottle(clk clock.Clock, limit int, window time.Duration) *reauth
 	}
 }
 
-// blocked 报告该用户当前是否已达失败上限。
-// 窗口内失败**已达** limit 即拦：第 6 次尝试（哪怕口令正确）一律 429。
-func (t *reauthThrottle) blocked(userID string) bool {
+// reserve 原子占坑：清窗、判限与递增在同一把锁内完成。
+// 并发请求最多放行 limit 个坑位，其余不得付 KDF 成本。
+// ok=false 表示已达上限；wait 是最早一个坑位离开窗口的剩余时长。
+func (t *reauthThrottle) reserve(userID string) (wait time.Duration, ok bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	state, ok := t.fails[userID]
-	if !ok {
-		return false
-	}
 	now := t.clock.Now().UTC()
-	kept := state.prune(now, t.window)
-	if kept == 0 {
+	state := t.fails[userID]
+	if state != nil && state.prune(now, t.window) == 0 {
 		delete(t.fails, userID)
-		return false
+		state = nil
 	}
-	return kept >= t.limit
-}
-
-// record 记一次失败；返回当前窗口内失败次数。
-func (t *reauthThrottle) record(userID string) int {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	state, ok := t.fails[userID]
-	if !ok {
+	if state != nil && len(state.at) >= t.limit {
+		wait := t.window - now.Sub(state.at[0])
+		if wait < 0 {
+			wait = 0
+		}
+		return wait, false
+	}
+	if state == nil {
 		state = &reauthFailures{}
 		t.fails[userID] = state
 	}
-	now := t.clock.Now().UTC()
-	state.prune(now, t.window)
 	state.at = append(state.at, now)
-	return len(state.at)
+	return 0, true
+}
+
+// release 撤销一次占坑。基础设施错误不是用户的失败，不得计入。
+func (t *reauthThrottle) release(userID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	state, ok := t.fails[userID]
+	if !ok || len(state.at) == 0 {
+		return
+	}
+	state.at = state.at[:len(state.at)-1]
+	if len(state.at) == 0 {
+		delete(t.fails, userID)
+	}
 }
 
 // clear 清掉该用户的全部失败计数。成功校验后调用。
@@ -118,8 +155,9 @@ func (f *reauthFailures) prune(now time.Time, window time.Duration) int {
 //
 // userID 是会话主体；password 是它重新提交的登录口令。
 // 用户不存在时仍执行一次等价校验压平计时，再统一回 ErrReauthFailed。
-// 节流：窗口内失败达 ReauthFailureLimit 后，本方法直接回
-// rate_limited，不付 KDF 成本；校验成功清零计数。
+// 节流：付 KDF 成本**之前**原子占坑；窗口内失败达 ReauthFailureLimit 后，
+// 本方法回 *ReauthThrottled（rate_limited + Retry-After 秒数），
+// 不付 KDF 成本；校验成功清零计数。
 // 本方法**不写库、不写审计**：日志只记 user_id 与结果，口令不出现在
 // 任何日志字段里。
 func (s *Service) Reauthenticate(ctx context.Context, userID, password string) error {
@@ -127,28 +165,30 @@ func (s *Service) Reauthenticate(ctx context.Context, userID, password string) e
 		// 缺口令是入口层判 400 的形状；走到这里按缺值处理。
 		return errs.New(errs.CodeValidation, "current_password is required")
 	}
-	if s.reauth.blocked(userID) {
-		return errs.New(errs.CodeRateLimited, "too many failed reauth attempts")
+	wait, ok := s.reauth.reserve(userID)
+	if !ok {
+		return NewReauthThrottled(wait)
 	}
 	rec, err := s.users.GetByID(ctx, userID)
 	if err != nil {
 		if !isNotFound(err) {
+			s.reauth.release(userID)
 			return err
 		}
 		if err := s.verifyDummyPassword(ctx, password); err != nil {
+			s.reauth.release(userID)
 			return err
 		}
-		s.reauth.record(userID)
 		s.logReauth(userID, "unknown_user")
 		return ErrReauthFailed
 	}
 	check, err := s.kdf.Verify(ctx, password, rec.PasswordHash)
 	if err != nil {
 		// 坏哈希是数据事故，不是口令错误；与登录同口径回 internal。
+		s.reauth.release(userID)
 		return errs.New(errs.CodeInternal, "stored hash is unreadable")
 	}
 	if !check.Valid || rec.Status != coreauth.StatusActive {
-		s.reauth.record(userID)
 		s.logReauth(userID, "invalid_credentials")
 		return ErrReauthFailed
 	}

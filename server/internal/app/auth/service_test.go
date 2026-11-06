@@ -17,6 +17,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -229,17 +230,18 @@ type harness struct {
 // countingKDF 计数哈希与校验次数，行为与 PlainHasher 相同。
 // 用于钉住「垃圾重置令牌不付 Argon2」与「有效令牌只哈希一次」。
 type countingKDF struct {
-	hashes   int
-	verifies int
+	// 并发 reauth 用例会在多 goroutine 上计数，必须是原子量。
+	hashes   atomic.Int64
+	verifies atomic.Int64
 }
 
 func (c *countingKDF) Hash(ctx context.Context, password string) (string, error) {
-	c.hashes++
+	c.hashes.Add(1)
 	return coreauth.PlainHasher{}.Hash(ctx, password)
 }
 
 func (c *countingKDF) Verify(ctx context.Context, password, encoded string) (coreauth.PasswordCheck, error) {
-	c.verifies++
+	c.verifies.Add(1)
 	return coreauth.PlainHasher{}.Verify(ctx, password, encoded)
 }
 
@@ -470,8 +472,8 @@ func TestResetPasswordRejectsUnknownToken(t *testing.T) {
 		t.Fatal("an unknown token changed a password")
 	}
 	// 先验令牌再算哈希：垃圾令牌不得触发任何 Argon2 成本。
-	if h.kdf.hashes != 0 {
-		t.Fatalf("垃圾令牌触发了 %d 次哈希，want 0", h.kdf.hashes)
+	if h.kdf.hashes.Load() != 0 {
+		t.Fatalf("垃圾令牌触发了 %d 次哈希，want 0", h.kdf.hashes.Load())
 	}
 	if h.resets.peek != 1 || h.resets.consume != 0 {
 		t.Fatalf("peek=%d consume=%d, want 1/0", h.resets.peek, h.resets.consume)
@@ -487,8 +489,8 @@ func TestResetPasswordRevokesAllSessions(t *testing.T) {
 	if err := h.svc.ResetPassword(t.Context(), "good-token", "new-password"); err != nil {
 		t.Fatalf("ResetPassword: %v", err)
 	}
-	if h.kdf.hashes != 1 {
-		t.Fatalf("有效令牌哈希次数 = %d, want 1", h.kdf.hashes)
+	if h.kdf.hashes.Load() != 1 {
+		t.Fatalf("有效令牌哈希次数 = %d, want 1", h.kdf.hashes.Load())
 	}
 	if len(h.users.updated) != 1 || !strings.Contains(h.users.updated[0], "$argon2id$") {
 		t.Fatalf("password updates = %v, want one argon2id write", h.users.updated)

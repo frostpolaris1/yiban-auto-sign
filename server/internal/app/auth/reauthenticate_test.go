@@ -12,6 +12,7 @@ package auth_test
 // 口令全部取固定合成值。
 
 import (
+	"errors"
 	"io"
 	"log/slog"
 	"sync"
@@ -153,12 +154,15 @@ func TestReauthenticateThrottlesAfterFiveFailures(t *testing.T) {
 		}
 	}
 	// 第 6 次：即使口令正确也 429，不再付 KDF 成本。
-	verifies := h.kdf.verifies
+	verifies := h.kdf.verifies.Load()
 	err := h.svc.Reauthenticate(ctx, "u1", password)
+	if err == nil {
+		t.Fatal("sixth attempt = nil error, want throttled")
+	}
 	if errs.From(err).Code != errs.CodeRateLimited {
 		t.Fatalf("sixth attempt code = %q, want rate_limited", errs.From(err).Code)
 	}
-	if h.kdf.verifies != verifies {
+	if h.kdf.verifies.Load() != verifies {
 		t.Fatal("a throttled attempt still ran a KDF verify")
 	}
 	// 窗口滑过（5 分钟后）：计数清空，正确口令通过。
@@ -188,8 +192,64 @@ func TestReauthenticateSuccessClearsCounter(t *testing.T) {
 			t.Fatalf("failure %d after reset = %v", i+1, err)
 		}
 	}
-	if err := h.svc.Reauthenticate(ctx, "u1", password); errs.From(err).Code != errs.CodeRateLimited {
+	err := h.svc.Reauthenticate(ctx, "u1", password)
+	if err == nil {
+		t.Fatal("sixth failure after reset = nil error, want throttled")
+	}
+	if errs.From(err).Code != errs.CodeRateLimited {
 		t.Fatalf("sixth failure after reset code = %v, want rate_limited", err)
+	}
+}
+
+// 并发占坑：20 个 goroutine 同用户同错口令，恰好 5 个付 KDF 并失败，
+// 其余 15 个不得付 KDF，直接节流。占坑与判限在同一临界区才守得住这条界。
+func TestReauthenticateThrottleIsConcurrencySafe(t *testing.T) {
+	h := newHarness(t)
+	seedActiveUser(t, h, "u1")
+	ctx := t.Context()
+
+	const attempts = 20
+	var wg sync.WaitGroup
+	results := make([]error, attempts)
+	start := make(chan struct{})
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			results[i] = h.svc.Reauthenticate(ctx, "u1", "wrong-password-42")
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	failed, throttled := 0, 0
+	for _, err := range results {
+		if err == nil {
+			t.Fatal("a wrong password must never succeed")
+		}
+		switch {
+		case errors.Is(err, appauth.ErrReauthFailed):
+			failed++
+		default:
+			var throttledErr *appauth.ReauthThrottled
+			if !errors.As(err, &throttledErr) {
+				t.Fatalf("unexpected error = %v", err)
+			}
+			if throttledErr.RetryAfter <= 0 {
+				t.Fatalf("throttled error carries no Retry-After: %v", throttledErr.RetryAfter)
+			}
+			throttled++
+		}
+	}
+	if failed != appauth.ReauthFailureLimit {
+		t.Fatalf("paid attempts = %d, want %d", failed, appauth.ReauthFailureLimit)
+	}
+	if throttled != attempts-appauth.ReauthFailureLimit {
+		t.Fatalf("throttled = %d, want %d", throttled, attempts-appauth.ReauthFailureLimit)
+	}
+	if h.kdf.verifies.Load() != appauth.ReauthFailureLimit {
+		t.Fatalf("KDF verifies = %d, want %d", h.kdf.verifies.Load(), appauth.ReauthFailureLimit)
 	}
 }
 

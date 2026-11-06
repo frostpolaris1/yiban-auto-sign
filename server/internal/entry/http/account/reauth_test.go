@@ -16,6 +16,9 @@ import (
 	"errors"
 	"net/http"
 	"testing"
+	"time"
+
+	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
 
 	"github.com/gin-gonic/gin"
 
@@ -213,6 +216,25 @@ func TestUpdateReauthOnlyForCredentialFields(t *testing.T) {
 	}
 	if r.calls != 2 || r.pw != "pw" {
 		t.Fatalf("reauth calls=%d pw=%q, want 2/pw", r.calls, r.pw)
+	}
+}
+
+// 节流命中：429 + Retry-After 头（秒，向上取整）。
+func TestDeleteThrottledWritesRetryAfter(t *testing.T) {
+	svc := &deleteFake{}
+	r := &recordingReauth{err: appauth.NewReauthThrottled(90 * time.Second)}
+	h := accounthttp.NewHandler(svc, fakeAuthorizer{}).WithReauth(r)
+	gin.SetMode(gin.TestMode)
+	c, rec := newContext(t, http.MethodDelete, "/api/accounts/a1", `{"current_password":"pw"}`)
+	h.Delete(c, "a1", oapi.AccountDeleteParams{})
+	if got := c.Writer.Status(); got != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", got)
+	}
+	if got := rec.Header().Get("Retry-After"); got != "90" {
+		t.Fatalf("Retry-After = %q, want 90", got)
+	}
+	if svc.deletes != 0 {
+		t.Fatal("a throttled request must not reach the use case")
 	}
 }
 

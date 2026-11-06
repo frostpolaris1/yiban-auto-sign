@@ -14,10 +14,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
+	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
 	appuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/user"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
@@ -90,12 +92,14 @@ func (r *recordingReauth) Reauthenticate(context.Context, string, string) error 
 	return r.err
 }
 
-// callUserHandler 在测试上下文里调 handler 并返回 gin 状态码。
+// callUserHandler 在测试上下文里调 handler，返回 gin 状态码、响应体与响应头。
+// gin 的包装 writer 才知道真实状态码（recorder 默认 200）。
 func callUserHandler(t *testing.T, h *userhttp.Handler, method, path, body string,
-	invoke func(*userhttp.Handler, *gin.Context)) int {
+	invoke func(*userhttp.Handler, *gin.Context)) (int, string, http.Header) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
 	var reader io.Reader
 	if body != "" {
 		reader = strings.NewReader(body)
@@ -108,7 +112,7 @@ func callUserHandler(t *testing.T, h *userhttp.Handler, method, path, body strin
 	}))
 	c.Request = req
 	invoke(h, c)
-	return c.Writer.Status()
+	return c.Writer.Status(), rec.Body.String(), rec.Header()
 }
 
 // 缺口令：400，用例与 reauth 都不被调用。
@@ -116,7 +120,7 @@ func TestUserUpdateRequiresCurrentPassword(t *testing.T) {
 	svc := &fakeUserService{}
 	r := &recordingReauth{}
 	h := userhttp.NewHandler(svc, fakeUserAuthorizer{}).WithReauth(r)
-	code := callUserHandler(t, h, http.MethodPatch, "/api/users/t1", `{"role":"admin"}`,
+	code, _, _ := callUserHandler(t, h, http.MethodPatch, "/api/users/t1", `{"role":"admin"}`,
 		func(h *userhttp.Handler, c *gin.Context) { h.Update(c, "t1", oapi.UserUpdateParams{}) })
 	if code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", code)
@@ -131,7 +135,7 @@ func TestUserUpdateRejectsWrongPassword(t *testing.T) {
 	svc := &fakeUserService{}
 	r := &recordingReauth{err: errs.New(errs.CodeForbidden, "reauthentication failed")}
 	h := userhttp.NewHandler(svc, fakeUserAuthorizer{}).WithReauth(r)
-	code := callUserHandler(t, h, http.MethodPatch, "/api/users/t1",
+	code, _, _ := callUserHandler(t, h, http.MethodPatch, "/api/users/t1",
 		`{"role":"admin","current_password":"pw"}`,
 		func(h *userhttp.Handler, c *gin.Context) { h.Update(c, "t1", oapi.UserUpdateParams{}) })
 	if code != http.StatusForbidden {
@@ -146,7 +150,7 @@ func TestUserUpdateRejectsWrongPassword(t *testing.T) {
 func TestUserUpdatePassesWithRightPassword(t *testing.T) {
 	svc := &fakeUserService{}
 	h := userhttp.NewHandler(svc, fakeUserAuthorizer{}).WithReauth(&recordingReauth{})
-	code := callUserHandler(t, h, http.MethodPatch, "/api/users/t1",
+	code, _, _ := callUserHandler(t, h, http.MethodPatch, "/api/users/t1",
 		`{"role":"admin","current_password":"pw"}`,
 		func(h *userhttp.Handler, c *gin.Context) { h.Update(c, "t1", oapi.UserUpdateParams{}) })
 	if code != http.StatusOK {
@@ -162,7 +166,7 @@ func TestUserDeleteReauthGate(t *testing.T) {
 	svc := &fakeUserService{}
 	r := &recordingReauth{}
 	h := userhttp.NewHandler(svc, fakeUserAuthorizer{}).WithReauth(r)
-	code := callUserHandler(t, h, http.MethodDelete, "/api/users/t1", `{}`,
+	code, _, _ := callUserHandler(t, h, http.MethodDelete, "/api/users/t1", `{}`,
 		func(h *userhttp.Handler, c *gin.Context) { h.Delete(c, "t1", oapi.UserDeleteParams{}) })
 	if code != http.StatusBadRequest {
 		t.Fatalf("missing password status = %d, want 400", code)
@@ -170,7 +174,7 @@ func TestUserDeleteReauthGate(t *testing.T) {
 	if svc.deletes != 0 {
 		t.Fatal("a missing password must not reach the use case")
 	}
-	code = callUserHandler(t, h, http.MethodDelete, "/api/users/t1", `{"current_password":"pw"}`,
+	code, _, _ = callUserHandler(t, h, http.MethodDelete, "/api/users/t1", `{"current_password":"pw"}`,
 		func(h *userhttp.Handler, c *gin.Context) { h.Delete(c, "t1", oapi.UserDeleteParams{}) })
 	if code != http.StatusNoContent {
 		t.Fatalf("right password status = %d, want 204", code)
@@ -184,7 +188,7 @@ func TestUserDeleteReauthGate(t *testing.T) {
 func TestUserPasswordResetReauthGate(t *testing.T) {
 	svc := &fakeUserService{}
 	h := userhttp.NewHandler(svc, fakeUserAuthorizer{}).WithReauth(&recordingReauth{})
-	code := callUserHandler(t, h, http.MethodPost, "/api/users/t1/password-reset", `{}`,
+	code, body, _ := callUserHandler(t, h, http.MethodPost, "/api/users/t1/password-reset", `{}`,
 		func(h *userhttp.Handler, c *gin.Context) { h.PasswordReset(c, "t1", oapi.UserPasswordResetParams{}) })
 	if code != http.StatusBadRequest {
 		t.Fatalf("missing password status = %d, want 400", code)
@@ -192,8 +196,7 @@ func TestUserPasswordResetReauthGate(t *testing.T) {
 	if svc.resets != 0 {
 		t.Fatal("a missing password must not reach the use case")
 	}
-	var body string
-	code = callUserHandler(t, h, http.MethodPost, "/api/users/t1/password-reset",
+	code, body, _ = callUserHandler(t, h, http.MethodPost, "/api/users/t1/password-reset",
 		`{"current_password":"pw"}`,
 		func(h *userhttp.Handler, c *gin.Context) {
 			h.PasswordReset(c, "t1", oapi.UserPasswordResetParams{})
@@ -201,8 +204,31 @@ func TestUserPasswordResetReauthGate(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("right password status = %d, want 200", code)
 	}
-	if svc.resets != 1 || body != "" {
+	if svc.resets != 1 {
 		t.Fatalf("resets=%d", svc.resets)
+	}
+	// temp_password 在响应体出现恰好一次（fake 用例固定返回 temp-password-42）。
+	if got := strings.Count(body, "temp-password-42"); got != 1 {
+		t.Fatalf("temp_password occurrences = %d, want 1; body=%q", got, body)
+	}
+}
+
+// 节流命中：429 + Retry-After 头（秒，向上取整）。
+func TestUserUpdateThrottledWritesRetryAfter(t *testing.T) {
+	svc := &fakeUserService{}
+	r := &recordingReauth{err: appauth.NewReauthThrottled(90 * time.Second)}
+	h := userhttp.NewHandler(svc, fakeUserAuthorizer{}).WithReauth(r)
+	code, _, header := callUserHandler(t, h, http.MethodPatch, "/api/users/t1",
+		`{"role":"admin","current_password":"pw"}`,
+		func(h *userhttp.Handler, c *gin.Context) { h.Update(c, "t1", oapi.UserUpdateParams{}) })
+	if code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", code)
+	}
+	if got := header.Get("Retry-After"); got != "90" {
+		t.Fatalf("Retry-After = %q, want 90", got)
+	}
+	if svc.updates != 0 {
+		t.Fatal("a throttled request must not reach the use case")
 	}
 }
 
@@ -210,7 +236,7 @@ func TestUserPasswordResetReauthGate(t *testing.T) {
 func TestUserDeleteWithoutWiredReauthFailsClosed(t *testing.T) {
 	svc := &fakeUserService{}
 	h := userhttp.NewHandler(svc, fakeUserAuthorizer{})
-	code := callUserHandler(t, h, http.MethodDelete, "/api/users/t1", `{"current_password":"pw"}`,
+	code, _, _ := callUserHandler(t, h, http.MethodDelete, "/api/users/t1", `{"current_password":"pw"}`,
 		func(h *userhttp.Handler, c *gin.Context) { h.Delete(c, "t1", oapi.UserDeleteParams{}) })
 	if code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", code)

@@ -22,6 +22,7 @@ package account
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"net/http"
 	"strconv"
@@ -32,6 +33,7 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
+	appauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/auth"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
@@ -417,7 +419,8 @@ func (h *Handler) principal(c *gin.Context) (corescope.Scope, appaudit.Actor, bo
 }
 
 // reauthenticate 校验危险操作的二次口令并写出失败响应。
-// 缺值（nil 或空串）回 400；用例错误按码映射（403/429/500）。
+// 缺值（nil 或空串）回 400；用例错误按码映射（403/429/500）；
+// 节流命中时先写 Retry-After 头再回 429。
 // 返回 false 表示已写响应，调用方直接返回。
 func (h *Handler) reauthenticate(c *gin.Context, userID string, password *string) bool {
 	if h.reauth == nil {
@@ -434,10 +437,25 @@ func (h *Handler) reauthenticate(c *gin.Context, userID string, password *string
 		return false
 	}
 	if err := h.reauth.Reauthenticate(c.Request.Context(), userID, value); err != nil {
+		writeRetryAfter(c, err)
 		fail(c, err)
 		return false
 	}
 	return true
+}
+
+// writeRetryAfter 在节流错误上写 Retry-After 头（秒，向上取整，至少 1）。
+// 与账号变更限流的 429 响应口径一致。
+func writeRetryAfter(c *gin.Context, err error) {
+	var throttled *appauth.ReauthThrottled
+	if !errors.As(err, &throttled) {
+		return
+	}
+	seconds := int(math.Ceil(throttled.RetryAfter.Seconds()))
+	if seconds < 1 {
+		seconds = 1
+	}
+	c.Header("Retry-After", strconv.Itoa(seconds))
 }
 
 // selfPrincipal 构造只覆盖会话用户自己的作用域。
