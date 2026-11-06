@@ -235,7 +235,7 @@
     "type": "bool",
     "default": false,
     "group": ["发布"],
-    "doc": "Go 服务端口令重置邮件投递开关。开启时须给发件凭据与非回环的 YIBAN_PUBLIC_BASE_URL",
+    "doc": "Go 侧 SMTP 投递总开关（名称是历史遗留）：口令重置、测试邮件、通知与每日摘要邮件都受它控制。开启时须给发件凭据与非回环的 YIBAN_PUBLIC_BASE_URL",
     "sensitive": false,
     "scope": "server"
   },
