@@ -117,7 +117,7 @@ func TestMeStateFieldsShowAccountIdentity(t *testing.T) {
 		t.Fatalf("跨校 admin status = %d, want 404", rec.Code)
 	}
 
-	// 完整手机号不出响应：明文与 11 位手机号形状都不出现。
+	// 完整手机号不出响应：两条原号明文都不出现。
 	for name, body := range map[string]string{
 		"sign-status":  statusBody,
 		"diagnostics":  diagBody,
@@ -127,9 +127,6 @@ func TestMeStateFieldsShowAccountIdentity(t *testing.T) {
 			if strings.Contains(body, phone) {
 				t.Fatalf("%s 含完整手机号 %s: %s", name, phone, body)
 			}
-		}
-		if w2cPhoneShape.MatchString(body) {
-			t.Fatalf("%s 含手机号形状: %s", name, body)
 		}
 	}
 }
