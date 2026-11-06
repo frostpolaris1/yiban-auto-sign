@@ -54,8 +54,8 @@
 - `YIBAN_DATABASE_URL`（含口令）
 - `YIBAN_HASH_PEPPER`（摘要与审计链；轮换会让审计链断）
 - `YIBAN_CREDENTIAL_KEY`（32 字节；轮换会让既有凭据密文无法解密）
-- `YIBAN_MAIL_USER`、`YIBAN_MAIL_PASS`（`YIBAN_RESET_MAIL_ENABLE` 打开时；
-  SMTP 发件账号与授权码）
+- `YIBAN_MAIL_USER`、`YIBAN_MAIL_PASS`、`YIBAN_MAIL_FROM`
+  （`YIBAN_RESET_MAIL_ENABLE` 打开时；发件账号、授权码与发件地址）
 - `POSTGRES_PASSWORD`（容器编排层；db 初始化与 DSN 派生）
 
 **非秘密（可写模板/文档）**

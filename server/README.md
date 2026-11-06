@@ -193,12 +193,12 @@ Canonical runtime files:
 | `YIBAN_CREDENTIAL_KEY` | **yes** | — | base64 of exactly 32 bytes; encrypts stored credentials with AES-256-GCM. Rotating it goes through kid re-encryption (P4/P8), so old rows stay decryptable. |
 | `YIBAN_PHOTO_DIR` | no | `data/photos` | photo blob root; a relative path is resolved against the process working directory |
 | `YIBAN_UI_DIR` | no | empty | frontend build directory containing `index.html`; empty serves the API only |
-| `YIBAN_RESET_MAIL_ENABLE` | no | `false` | delivers password reset links over SMTP. A true value requires `YIBAN_PUBLIC_BASE_URL` and sender credentials; a missing or loopback base URL stops startup with the key name in the error. |
+| `YIBAN_RESET_MAIL_ENABLE` | no | `false` | Go-side SMTP master switch (legacy name): password reset links, test mail, notification mail and daily digest mail all depend on it. A true value requires `YIBAN_PUBLIC_BASE_URL` and sender credentials; a missing or loopback base URL stops startup with the key name in the error. |
 | `YIBAN_PUBLIC_BASE_URL` | no | `http://127.0.0.1:47183` | base of the reset links and an accepted login origin, as an absolute http(s) URL without a trailing slash and without credentials. Set it to the public https origin when TLS terminates in front of the app. See the paragraph below. |
 | `YIBAN_MAIL_SMTP_HOST` | no | `smtp.qq.com` | SMTP server host. The certificate is verified against this name. |
 | `YIBAN_MAIL_SMTP_PORT` | no | `465` | SMTP port. Port 465 uses implicit TLS; other ports use STARTTLS. |
-| `YIBAN_MAIL_USER` | no | empty | AUTH PLAIN account. Required together with the password when reset mail is on. |
-| `YIBAN_MAIL_PASS` | no | empty | AUTH PLAIN password or app key. Required together with the user when reset mail is on. It never appears in logs or errors. |
+| `YIBAN_MAIL_USER` | no | empty | AUTH PLAIN account. Required together with the password when SMTP delivery is on. |
+| `YIBAN_MAIL_PASS` | no | empty | AUTH PLAIN password or app key. Required together with the user when SMTP delivery is on. It never appears in logs or errors. |
 | `YIBAN_MAIL_FROM` | no | empty | envelope and header sender. Empty means `YIBAN_MAIL_USER`. A form like `Name <user@example.com>` is accepted; only the address part is used. |
 | `YIBAN_MAIL_TLS_MODE` | no | `auto` | `auto`, `implicit` or `starttls`. No switch disables certificate checks. |
 | `YIBAN_RATE_LIMIT_ENABLE` | no | `true` | inbound rate limiting for login, forgot/reset password, change password, verify and sign |
@@ -237,12 +237,16 @@ capacity report still show the numbers, and the rejection publishes
 `capacity.changed`. A daily build that fails this way logs one error line, so
 watch that line or the event.
 
-## Password reset mail
+## SMTP delivery (reset, test and notification mail)
 
-The switch is `YIBAN_RESET_MAIL_ENABLE`. The Go server does not read
-`YIBAN_MAIL_ENABLE`: that key belongs to the old Python notification line.
-The two switches are independent, so an old deployment that only set
-`YIBAN_MAIL_ENABLE` keeps starting after an upgrade.
+`YIBAN_RESET_MAIL_ENABLE` is the Go-side SMTP master switch; the name is
+historical. Password reset links, admin test mail, notification mail and the
+daily digest all depend on it. When false, none are delivered and notification
+ledger rows record `skipped(smtp_not_configured)`.
+
+The Go server does not read `YIBAN_MAIL_ENABLE`: that key belongs to the old
+Python notification line. The two switches are independent, so an old
+deployment that only set `YIBAN_MAIL_ENABLE` keeps starting after an upgrade.
 
 A true `YIBAN_RESET_MAIL_ENABLE` requires three things at startup: a
 non-empty SMTP host (the default supplies one), a user with a password, and an
