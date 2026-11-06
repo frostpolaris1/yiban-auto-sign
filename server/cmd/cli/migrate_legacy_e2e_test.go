@@ -1132,6 +1132,137 @@ func TestMigrateLegacyExactOwnerAmbiguityE2E(t *testing.T) {
 	}
 }
 
+// TestMigrateLegacySpaceSeparatedTimestampsE2E 守卫旧生产时间形状：
+// users.created_at 与 accounts.deleted_at 是 `YYYY-MM-DD HH:MM:SS`
+// （空格分隔、无时区）。导入必须按旧栈本地时区（+08:00）解读，
+// 不挡用户/账号落地、owner 解析、旧 admin 绑定与凭据重建。
+func TestMigrateLegacySpaceSeparatedTimestampsE2E(t *testing.T) {
+	env := e2eSetupDB(t)
+	root := t.TempDir()
+	ex := e2eFixture(t)
+	for _, row := range ex.Users {
+		row["created_at"] = "2026-01-01 00:00:00"
+	}
+	for _, row := range ex.Accounts {
+		if row["phone"] == e2ePhoneD {
+			row["deleted_at"] = "2026-01-02 00:00:00"
+		}
+	}
+	dir := e2eWriteExport(t, root, ex)
+	out := filepath.Join(root, "report")
+	args := env.defaults()
+	args.adminSchoolID = env.adminSchoolID
+
+	code, output := e2eRun(t, env, dir, out, args)
+	if code != 0 {
+		t.Fatalf("exit %d (space-separated timestamps must import):\n%s", code, output)
+	}
+	if strings.Contains(output, "row error") {
+		t.Fatalf("space-separated timestamps must not produce row errors:\n%s", output)
+	}
+
+	if n := e2eCount(t, env.dsn, "SELECT count(*) FROM users"); n != 4 {
+		t.Fatalf("users = %d, want 4 (3 imported + fallback master)", n)
+	}
+	if n := e2eCount(t, env.dsn, "SELECT count(*) FROM accounts"); n != 5 {
+		t.Fatalf("accounts = %d, want 5", n)
+	}
+	if n := e2eCount(t, env.dsn, "SELECT count(*) FROM credentials"); n != 3 {
+		t.Fatalf("credentials = %d, want 3", n)
+	}
+	if n := e2eCount(t, env.dsn, "SELECT count(*) FROM legacy_ids"); n != 8 {
+		t.Fatalf("legacy_ids = %d, want 8", n)
+	}
+	e2eAssertLegacyInvariant(t, env.dsn)
+
+	// owner 解析不被时间格式挡住：完整邮箱、@ 前缀、fallback 各走各的路。
+	adminNew := e2eLegacyNewID(t, env.dsn, "users", 1)
+	user1New := e2eLegacyNewID(t, env.dsn, "users", 2)
+	user2New := e2eLegacyNewID(t, env.dsn, "users", 3)
+	for _, tc := range []struct {
+		phone string
+		want  string
+	}{
+		{e2ePhoneA, adminNew}, {e2ePhoneB, user1New}, {e2ePhoneC, env.fallbackID},
+		{e2ePhoneD, user2New}, {e2ePhoneE, user1New},
+	} {
+		got := e2eQueryString(t, env.dsn,
+			`SELECT owner_user_id::text FROM accounts WHERE phone = $1`, tc.phone)
+		if got != tc.want {
+			t.Fatalf("owner of %s = %s, want %s", coremask.MaskPhone(tc.phone), got, tc.want)
+		}
+	}
+
+	// 旧 admin 绑定与凭据路径同样不被时间格式挡住。
+	if n := e2eCount(t, env.dsn,
+		"SELECT count(*) FROM admin_schools WHERE user_id = $1::uuid AND school_id = $2::uuid",
+		adminNew, env.adminSchoolID); n != 1 {
+		t.Fatalf("admin_schools binding = %d, want 1", n)
+	}
+
+	// 空格串按旧栈本地时区（+08:00）解读：本地 2026-01-01 00:00:00 = UTC 前一天 16:00。
+	if n := e2eCount(t, env.dsn,
+		`SELECT count(*) FROM users WHERE created_at = TIMESTAMPTZ '2025-12-31 16:00:00+00'`); n != 3 {
+		t.Fatalf("users with legacy-local created_at = %d, want 3", n)
+	}
+	if n := e2eCount(t, env.dsn,
+		`SELECT count(*) FROM accounts WHERE phone = $1 AND deleted_at = TIMESTAMPTZ '2026-01-01 16:00:00+00'`,
+		e2ePhoneD); n != 1 {
+		t.Fatalf("soft-deleted account deleted_at = %d, want 1", n)
+	}
+
+	summary := e2eSummary(t, out)
+	rowErrors := summary["row_errors"].(map[string]any)
+	if rowErrors["users"].(float64) != 0 || rowErrors["accounts"].(float64) != 0 {
+		t.Fatalf("row_errors must be zero, got %v", rowErrors)
+	}
+	owners := summary["owner_resolution"].(map[string]any)
+	if owners["exact_email"].(float64) != 3 || owners["email_prefix"].(float64) != 1 ||
+		owners["fallback"].(float64) != 1 || owners["unresolved"].(float64) != 0 ||
+		owners["ambiguous"].(float64) != 0 {
+		t.Fatalf("owner resolution drifted: %v", owners)
+	}
+}
+
+// TestMigrateLegacyInvalidTimestampRowErrorE2E 负向：空格格式不是任意字符串。
+// 真正非法的 created_at 仍按行错误处理，坏行不落地，好行照常导入。
+func TestMigrateLegacyInvalidTimestampRowErrorE2E(t *testing.T) {
+	env := e2eSetupDB(t)
+	root := t.TempDir()
+	good := e2eUserRow(1, e2eAdminEmail, "admin", 0, 1)
+	good["created_at"] = "2026-01-01 00:00:00"
+	bad := e2eUserRow(2, e2eUserEmail1, "user", 0, 1)
+	bad["created_at"] = "2026-13-01 00:00:00"
+	ex := e2eExport{Users: []map[string]any{good, bad}}
+	dir := e2eWriteExport(t, root, ex)
+	out := filepath.Join(root, "report")
+
+	code, output := e2eRun(t, env, dir, out, env.defaults())
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (invalid timestamp is a row error):\n%s", code, output)
+	}
+	if !strings.Contains(output, "row error in users (created_at)") {
+		t.Fatalf("output must report the created_at row error, got:\n%s", output)
+	}
+	if n := e2eCount(t, env.dsn, "SELECT count(*) FROM users"); n != 2 {
+		t.Fatalf("users = %d, want 2 (valid row + fallback master)", n)
+	}
+	if n := e2eCount(t, env.dsn, "SELECT count(*) FROM legacy_ids"); n != 1 {
+		t.Fatalf("legacy_ids = %d, want 1 (invalid row must leave nothing)", n)
+	}
+	if n := e2eCount(t, env.dsn, "SELECT count(*) FROM admin_schools"); n != 1 {
+		t.Fatalf("admin_schools = %d, want 1 (valid admin row still binds)", n)
+	}
+	summary := e2eSummary(t, out)
+	rowErrors := summary["row_errors"].(map[string]any)
+	if rowErrors["users"].(float64) != 1 || rowErrors["accounts"].(float64) != 0 {
+		t.Fatalf("row_errors drifted: %v", rowErrors)
+	}
+	if summary["recon_compare"] != "not compared: row errors present" {
+		t.Fatalf("recon compare must be skipped on row errors, got %v", summary["recon_compare"])
+	}
+}
+
 // TestMigrateLegacyUnmatchedNonActiveOwnerE2E：owner 对不上的非 active
 // 账号不落 fallback，显性行错误。
 func TestMigrateLegacyUnmatchedNonActiveOwnerE2E(t *testing.T) {
