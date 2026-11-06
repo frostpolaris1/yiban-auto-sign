@@ -229,12 +229,13 @@ func (h *Handler) Update(c *gin.Context, id oapi.AccountID, _ oapi.AccountUpdate
 		}
 	}
 	record, err := h.svc.Update(c.Request.Context(), scope, id, appaccount.UpdateInput{
-		SchoolID:   body.SchoolId,
-		Phone:      body.Phone,
-		Name:       body.Name,
-		Password:   body.Password,
-		DeviceCode: body.DeviceCode,
-		PhoneModel: body.PhoneModel,
+		SchoolID:          body.SchoolId,
+		Phone:             body.Phone,
+		Name:              body.Name,
+		Password:          body.Password,
+		DeviceCode:        body.DeviceCode,
+		PhoneModel:        body.PhoneModel,
+		ExpectedUpdatedAt: body.ExpectedUpdatedAt,
 	}, actor)
 	if err != nil {
 		fail(c, err)

@@ -2307,6 +2307,16 @@ export interface components {
             device_code?: string;
             phone_model?: string;
             current_password?: components["schemas"]["CurrentPassword"];
+            /**
+             * Format: date-time
+             * @description Optimistic-lock precondition. Clients echo updated_at from the most
+             *     recent Account response. When it differs from the current row the
+             *     update answers 409 conflict and writes nothing: no account field,
+             *     credential or audit row. Omitting it keeps the legacy
+             *     last-write-wins behavior for older clients; new clients should
+             *     always send it.
+             */
+            expected_updated_at?: string;
         };
         AccountReviewRequest: {
             /** @enum {string} */

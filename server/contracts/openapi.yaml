@@ -3532,6 +3532,16 @@ components:
         phone_model: { type: string, maxLength: 64 }
         current_password:
           $ref: '#/components/schemas/CurrentPassword'
+        expected_updated_at:
+          type: string
+          format: date-time
+          description: |
+            Optimistic-lock precondition. Clients echo updated_at from the most
+            recent Account response. When it differs from the current row the
+            update answers 409 conflict and writes nothing: no account field,
+            credential or audit row. Omitting it keeps the legacy
+            last-write-wins behavior for older clients; new clients should
+            always send it.
     AccountReviewRequest:
       type: object
       required: [decision]

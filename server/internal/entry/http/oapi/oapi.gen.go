@@ -873,6 +873,14 @@ type AccountUpdate struct {
 	// including an empty string, answers 403.
 	DeviceCode *string `json:"device_code,omitempty"`
 
+	// ExpectedUpdatedAt Optimistic-lock precondition. Clients echo updated_at from the most
+	// recent Account response. When it differs from the current row the
+	// update answers 409 conflict and writes nothing: no account field,
+	// credential or audit row. Omitting it keeps the legacy
+	// last-write-wins behavior for older clients; new clients should
+	// always send it.
+	ExpectedUpdatedAt *time.Time `json:"expected_updated_at,omitempty"`
+
 	// Name Remark name; trimmed. An empty string clears it. A name-only edit
 	// keeps the status, including rejected.
 	Name     *string `json:"name,omitempty"`
