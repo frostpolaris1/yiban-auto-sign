@@ -26,6 +26,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
@@ -136,13 +137,15 @@ type CreateInput struct {
 
 // UpdateInput 携带可选的列变更。nil 字段不改。
 // SchoolID 只用于拒绝换校，P1 不支持迁移。
+// ExpectedUpdatedAt 是客户端最近一次读到的 updated_at；nil 或零值不校验。
 type UpdateInput struct {
-	SchoolID   *string
-	Phone      *string
-	Name       *string
-	Password   *string
-	DeviceCode *string
-	PhoneModel *string
+	SchoolID          *string
+	Phone             *string
+	Name              *string
+	Password          *string
+	DeviceCode        *string
+	PhoneModel        *string
+	ExpectedUpdatedAt *time.Time
 }
 
 // SigningCredential 是签到链需要的明文凭据。
@@ -425,6 +428,10 @@ func (s *Service) Create(ctx context.Context, scope corescope.Scope, in CreateIn
 //
 // 设备码是平台设备身份，user 不得改，只能走 device-refresh；
 // 机型是非凭据标签，user 可以改。master 与 admin 不受此限。
+//
+// ExpectedUpdatedAt 非空且非零时在行锁下比较：与当前行不一致即 conflict，
+// 不写账号、凭据或任何审计。比较先于字段校验与重提判定，
+// 故过期请求即使字段非法也先得到 409。
 func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, in UpdateInput, actor appaudit.Actor) (Record, error) {
 	if err := app.RequireScope(scope); err != nil {
 		return Record{}, err
@@ -439,39 +446,6 @@ func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, 
 	if in.SchoolID != nil && *in.SchoolID != "" && *in.SchoolID != current.SchoolID {
 		return Record{}, errs.New(errs.CodeConflict, "changing school is not supported")
 	}
-	field, err := changedField(in)
-	if err != nil {
-		return Record{}, err
-	}
-	if in.Phone != nil && !phonePattern.MatchString(*in.Phone) {
-		return Record{}, errs.New(errs.CodeValidation, "phone must match ^1[0-9]{10}$")
-	}
-	name := ""
-	if in.Name != nil {
-		name, err = normalizeName(*in.Name)
-		if err != nil {
-			return Record{}, err
-		}
-	}
-	if in.Password != nil {
-		if err := validatePassword(*in.Password); err != nil {
-			return Record{}, err
-		}
-	}
-	if in.DeviceCode != nil {
-		if err := validateCredentialText("device_code", *in.DeviceCode); err != nil {
-			return Record{}, err
-		}
-	}
-	if in.PhoneModel != nil {
-		if err := validateCredentialText("phone_model", *in.PhoneModel); err != nil {
-			return Record{}, err
-		}
-	}
-	needCredential := in.Password != nil || in.DeviceCode != nil || in.PhoneModel != nil
-	if needCredential && s.deps.Cipher == nil {
-		return Record{}, errs.New(errs.CodeInternal, "credential cipher is not configured")
-	}
 
 	record := current
 	// needsReview 提到事务外：事务提交后按它决定是否发待审核通知。
@@ -481,6 +455,19 @@ func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, 
 		// 状态判定必须在事务内、行锁下读：事务外的快照会把引擎刚提交的
 		// credential_error 或并发审核结果看丢。
 		locked, err := s.deps.Accounts.GetForUpdate(ctx, scope, id)
+		if err != nil {
+			return err
+		}
+		// 乐观锁：客户端带回最近一次响应的 updated_at。行锁下、任何写之前比较；
+		// 不一致即 409，账号、凭据与审计都不动。省略或零值保持旧客户端行为。
+		// PostgreSQL timestamptz 精度为微秒，pgx 与 JSON 往返都保持该精度，
+		// 故用 Equal 比瞬间即可，不做截断。
+		if in.ExpectedUpdatedAt != nil && !in.ExpectedUpdatedAt.IsZero() &&
+			!locked.UpdatedAt.Equal(*in.ExpectedUpdatedAt) {
+			return errs.New(errs.CodeConflict, "account was modified by another request")
+		}
+		// 字段校验放在锁与乐观锁判定之后：过期请求先得 409，不被 400 抢先。
+		field, name, needCredential, err := prepareUpdate(in, s.deps.Cipher != nil)
 		if err != nil {
 			return err
 		}
@@ -523,8 +510,9 @@ func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, 
 			record, err = s.deps.Accounts.SetStatus(ctx, scope, id,
 				StatusCredentialError, StatusActive, now, "")
 		case needCredential:
-			// 凭据写回不更新 accounts.updated_at；重读一次让响应带真实时间。
-			record, err = s.deps.Accounts.Get(ctx, scope, id)
+			// 凭据写回不改 accounts 行；显式 touch updated_at，
+			// 否则并发凭据编辑的 expected_updated_at 永远命中旧值。
+			record, err = s.deps.Accounts.Touch(ctx, scope, id, now)
 		}
 		if err != nil {
 			return err
@@ -860,6 +848,46 @@ func validatePassword(password string) error {
 		return errs.New(errs.CodeValidation, "password is too long")
 	}
 	return nil
+}
+
+// prepareUpdate 校验可选的列变更，返回审计代表字段、规范化备注名与是否写凭据。
+//
+// 调用点必须在事务内、行锁与 expected_updated_at 判定之后：
+// 过期请求先得 409，不能被字段校验的 400 抢先。
+func prepareUpdate(in UpdateInput, cipherReady bool) (field, name string, needCredential bool, err error) {
+	field, err = changedField(in)
+	if err != nil {
+		return "", "", false, err
+	}
+	if in.Phone != nil && !phonePattern.MatchString(*in.Phone) {
+		return "", "", false, errs.New(errs.CodeValidation, "phone must match ^1[0-9]{10}$")
+	}
+	if in.Name != nil {
+		name, err = normalizeName(*in.Name)
+		if err != nil {
+			return "", "", false, err
+		}
+	}
+	if in.Password != nil {
+		if err := validatePassword(*in.Password); err != nil {
+			return "", "", false, err
+		}
+	}
+	if in.DeviceCode != nil {
+		if err := validateCredentialText("device_code", *in.DeviceCode); err != nil {
+			return "", "", false, err
+		}
+	}
+	if in.PhoneModel != nil {
+		if err := validateCredentialText("phone_model", *in.PhoneModel); err != nil {
+			return "", "", false, err
+		}
+	}
+	needCredential = in.Password != nil || in.DeviceCode != nil || in.PhoneModel != nil
+	if needCredential && !cipherReady {
+		return "", "", false, errs.New(errs.CodeInternal, "credential cipher is not configured")
+	}
+	return field, name, needCredential, nil
 }
 
 // changedField 返回本次改动的代表字段，并拒绝空变更。

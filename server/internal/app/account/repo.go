@@ -70,6 +70,10 @@ type StatusCounts = coreaccount.StatusCounts
 // GetForUpdate 在事务内读账号并持有行锁到事务结束。
 // 恢复判定必须在锁下读取：事务外的快照会把已提交的 credential_error 看丢。
 //
+// Touch 只推进 accounts.updated_at 并回读整行，**必须在事务内运行**。
+// 仅改凭据时账号行没有别的写，若不 touch，乐观锁的期望值不会变化，
+// 并发凭据编辑就绕过了前置条件。
+//
 // List 按作用域、可选院校、状态与搜索串过滤，并用游标分页。
 // 过滤条件与作用域是**与**关系：未绑定院校的过滤结果为空，不是全量。
 // 搜索串同时匹配备注名、属主邮箱与手机号；适配器负责具体口径。
@@ -86,6 +90,7 @@ type Repo interface {
 	Get(ctx context.Context, scope corescope.Scope, id string) (Record, error)
 	GetIncludingDeleted(ctx context.Context, scope corescope.Scope, id string) (Record, error)
 	GetForUpdate(ctx context.Context, scope corescope.Scope, id string) (Record, error)
+	Touch(ctx context.Context, scope corescope.Scope, id string, at time.Time) (Record, error)
 	List(ctx context.Context, scope corescope.Scope, schoolID string, status Status, query, cursor string, limit int, includeDeleted bool) ([]Record, string, error)
 	StatusCounts(ctx context.Context, scope corescope.Scope) (StatusCounts, error)
 	UpdatePhone(ctx context.Context, scope corescope.Scope, id, phone string, at time.Time) (Record, error)
