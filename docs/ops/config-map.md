@@ -4,6 +4,7 @@
 > 改完怎么生效」，不用读源码。
 > 键面唯一事实源是 `server/internal/configdata/registry.json`（编译期嵌进二进制）；
 > 本页只讲文件位置与生效方式，不复制每个键的语义。
+> 旧栈 SQLite 到新栈 PostgreSQL 的一次性导入见 [`legacy-import.md`](legacy-import.md)。
 
 ## 1. 运行文件（只有两份）
 
@@ -53,13 +54,25 @@
 - `YIBAN_DATABASE_URL`（含口令）
 - `YIBAN_HASH_PEPPER`（摘要与审计链；轮换会让审计链断）
 - `YIBAN_CREDENTIAL_KEY`（32 字节；轮换会让既有凭据密文无法解密）
-- `YIBAN_MAIL_PASS`（开启重置邮件时）
+- `YIBAN_MAIL_USER`、`YIBAN_MAIL_PASS`、`YIBAN_MAIL_FROM`
+  （`YIBAN_RESET_MAIL_ENABLE` 打开时；发件账号、授权码与发件地址）
 - `POSTGRES_PASSWORD`（容器编排层；db 初始化与 DSN 派生）
 
 **非秘密（可写模板/文档）**
 
 - 监听地址、时区、并发/节流/窗口、`YIBAN_TRUSTED_PROXIES`、
   `YIBAN_UI_DIR`、`YIBAN_PHOTO_DIR`、SMTP 主机/端口/模式、`YIBAN_BACKUP_HOST_DIR`。
+
+**邮件投递开关**
+
+`YIBAN_RESET_MAIL_ENABLE` 是 Go 侧 SMTP 投递总开关（名称是历史遗留，
+不只是重置邮件）：口令重置、设置页测试邮件、通知与每日摘要邮件都受它控制。
+关闭时这些邮件都不投递；通知类投递在通知账本记
+`skipped(smtp_not_configured)`，启动日志给出显性警告。SMTP 主机/端口/TLS
+与发件账号见
+`YIBAN_MAIL_SMTP_HOST`、`YIBAN_MAIL_SMTP_PORT`、`YIBAN_MAIL_TLS_MODE`、
+`YIBAN_MAIL_USER`、`YIBAN_MAIL_PASS`、`YIBAN_MAIL_FROM`；旧线的
+`YIBAN_MAIL_ENABLE` Go 侧不读。
 
 **操作约束**
 
