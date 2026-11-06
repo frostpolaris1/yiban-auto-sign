@@ -669,6 +669,10 @@ var legacyTZ = time.FixedZone("legacy-0800", 8*3600)
 
 // parseLegacyTime 解旧库时间戳：RFC3339 原样；无时区的朴素串按旧栈本地时区
 // 解读后转 UTC；空串按迁移时刻。
+//
+// 旧生产库的 TEXT 列实际写的是 `YYYY-MM-DD HH:MM:SS`（空格分隔、无时区），
+// 与旧栈 Python `strftime("%Y-%m-%d %H:%M:%S")` 的落库形状一致；
+// T 分隔与空格分隔都按 legacyTZ 解读，不猜其他格式。
 func parseLegacyTime(s string, now time.Time) (time.Time, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -677,8 +681,10 @@ func parseLegacyTime(s string, now time.Time) (time.Time, error) {
 	if t, err := time.Parse(time.RFC3339, s); err == nil {
 		return t.UTC(), nil
 	}
-	if t, err := time.ParseInLocation("2006-01-02T15:04:05", s, legacyTZ); err == nil {
-		return t.UTC(), nil
+	for _, layout := range []string{"2006-01-02T15:04:05", "2006-01-02 15:04:05"} {
+		if t, err := time.ParseInLocation(layout, s, legacyTZ); err == nil {
+			return t.UTC(), nil
+		}
 	}
 	return time.Time{}, fmt.Errorf("unparsable timestamp %q", s)
 }
