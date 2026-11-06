@@ -26,14 +26,14 @@ func TestMeStateFieldsShowAccountIdentity(t *testing.T) {
 	issued := e.login(owner)
 	school := e.school("fe-state-school")
 
-	activeID := e.account(school.ID, owner.ID, "13800061234")
+	activeID := e.account(school.ID, owner.ID, "13800000014")
 	e.activateAccount(activeID)
 	if _, err := e.db.Exec(e.ctx,
 		"UPDATE accounts SET name = $2 WHERE id = $1::uuid", activeID, "小明"); err != nil {
 		t.Fatalf("set remark name: %v", err)
 	}
 	// 待审账号：默认 pending，当日没有任务行。
-	pendingID := e.account(school.ID, owner.ID, "13800065678")
+	pendingID := e.account(school.ID, owner.ID, "13800000015")
 
 	type readItem struct {
 		AccountID     string  `json:"account_id"`
@@ -62,13 +62,13 @@ func TestMeStateFieldsShowAccountIdentity(t *testing.T) {
 		t.Fatalf("sign-status items = %d, want 2", len(status.Items))
 	}
 	if got := statusByID[activeID]; got.DisplayName != "小明" ||
-		got.PhoneMasked != "138****1234" || got.AccountStatus != string(coreaccount.StatusActive) {
-		t.Fatalf("sign-status active = %+v, want 小明/138****1234/active", got)
+		got.PhoneMasked != "138****0014" || got.AccountStatus != string(coreaccount.StatusActive) {
+		t.Fatalf("sign-status active = %+v, want 小明/138****0014/active", got)
 	}
-	if got := statusByID[pendingID]; got.DisplayName != "账号5678" ||
-		got.PhoneMasked != "138****5678" || got.AccountStatus != string(coreaccount.StatusPending) ||
+	if got := statusByID[pendingID]; got.DisplayName != "账号0015" ||
+		got.PhoneMasked != "138****0015" || got.AccountStatus != string(coreaccount.StatusPending) ||
 		got.State != nil {
-		t.Fatalf("sign-status pending = %+v, want 账号5678/138****5678/pending/state=nil", got)
+		t.Fatalf("sign-status pending = %+v, want 账号0015/138****0015/pending/state=nil", got)
 	}
 
 	// 诊断列表：无任务行的待审账号同样出现，且带账号状态。
@@ -83,7 +83,7 @@ func TestMeStateFieldsShowAccountIdentity(t *testing.T) {
 	for _, it := range diag.Items {
 		diagByID[it.AccountID] = it
 	}
-	if got := diagByID[pendingID]; got.DisplayName != "账号5678" ||
+	if got := diagByID[pendingID]; got.DisplayName != "账号0015" ||
 		got.AccountStatus != string(coreaccount.StatusPending) || got.State != nil {
 		t.Fatalf("diagnostics pending = %+v, want pending account with state=nil", got)
 	}
@@ -99,7 +99,7 @@ func TestMeStateFieldsShowAccountIdentity(t *testing.T) {
 	var detail readItem
 	e.decode(rec, &detail)
 	detailBody := rec.Body.String()
-	if detail.DisplayName != "账号5678" || detail.PhoneMasked != "138****5678" ||
+	if detail.DisplayName != "账号0015" || detail.PhoneMasked != "138****0015" ||
 		detail.AccountStatus != string(coreaccount.StatusPending) {
 		t.Fatalf("admin detail = %+v", detail)
 	}
@@ -123,7 +123,7 @@ func TestMeStateFieldsShowAccountIdentity(t *testing.T) {
 		"diagnostics":  diagBody,
 		"admin-detail": detailBody,
 	} {
-		for _, phone := range []string{"13800061234", "13800065678"} {
+		for _, phone := range []string{"13800000014", "13800000015"} {
 			if strings.Contains(body, phone) {
 				t.Fatalf("%s 含完整手机号 %s: %s", name, phone, body)
 			}

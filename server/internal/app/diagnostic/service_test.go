@@ -221,7 +221,7 @@ func TestItemsCarryAccountReadFields(t *testing.T) {
 	named.Phone, named.Status = "13800060001", coreaccount.StatusActive
 	unnamed := acctRecord("a2")
 	unnamed.DisplayName = "账号0002" // 仓储已按 name 空回退派生。
-	unnamed.Phone, unnamed.Status = "13800060002", coreaccount.StatusPending
+	unnamed.Phone, unnamed.Status = "13800000002", coreaccount.StatusPending
 
 	accts := &fakeAccounts{page: appaccount.Page{Items: []appaccount.Record{named, unnamed}}}
 	st := &fakeStore{tasks: []corediag.TaskRow{
