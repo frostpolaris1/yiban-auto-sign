@@ -55,7 +55,8 @@ type WindowRecord struct {
 }
 
 // WindowOverride 是一次人工窗口覆盖：任务 T 在业务日 D 改用指定起止。
-// Reason 必填并留存，供事后复核；CreatedBy 是操作用户。
+// Reason 必填并留存，供事后复核；CreatedBy 是操作用户，
+// 可为空：创建者被保留期清除后只留空引用。
 type WindowOverride struct {
 	SchoolTaskID string
 	Day          string

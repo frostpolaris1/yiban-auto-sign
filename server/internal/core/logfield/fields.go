@@ -90,6 +90,8 @@ const (
 	KeyResetTokens      = "reset_tokens"
 	KeyTasks            = "tasks"
 	KeyNotifications    = "notifications"
+	KeyAccounts         = "accounts"
+	KeyUsers            = "users"
 	KeyBuilt            = "built"
 	KeyBytes            = "bytes"
 	KeyTotal            = "total"
@@ -143,6 +145,8 @@ var All = []Field{
 	{Key: KeyResetTokens, Const: "KeyResetTokens", Kind: KindCount, Meaning: "已清理的过期重置令牌数"},
 	{Key: KeyTasks, Const: "KeyTasks", Kind: KindCount, Meaning: "已清理的旧任务行数"},
 	{Key: KeyNotifications, Const: "KeyNotifications", Kind: KindCount, Meaning: "已清理的过期站内信行数"},
+	{Key: KeyAccounts, Const: "KeyAccounts", Kind: KindCount, Meaning: "账号批次物理删除的软删账号数（用户批次连带删的不计）"},
+	{Key: KeyUsers, Const: "KeyUsers", Kind: KindCount, Meaning: "已物理删除的软删用户数"},
 	{Key: KeyBuilt, Const: "KeyBuilt", Kind: KindCount, Meaning: "本轮已构建的任务行数"},
 	{Key: KeyBytes, Const: "KeyBytes", Kind: KindCount, Meaning: "HTTP 响应体字节数"},
 	{Key: KeyTotal, Const: "KeyTotal", Kind: KindCount, Meaning: "某业务日的任务行总数（含未了结行）"},
