@@ -228,13 +228,16 @@ func diagnosticsResponse(r appdiagnostic.Report) oapi.DiagnosticsReport {
 	items := make([]oapi.DiagnosticsItem, len(r.Items))
 	for i, it := range r.Items {
 		items[i] = oapi.DiagnosticsItem{
-			AccountId:   it.AccountID,
-			State:       it.State,
-			RunAt:       it.RunAt,
-			Attempts:    it.Attempts,
-			Result:      it.Result,
-			NextRetryAt: it.NextRetryAt,
-			Suggestion:  oapi.DiagnosticsItemSuggestion(it.Suggestion),
+			AccountId:     it.AccountID,
+			DisplayName:   it.DisplayName,
+			PhoneMasked:   it.PhoneMasked,
+			AccountStatus: oapi.AccountStatus(it.AccountStatus),
+			State:         it.State,
+			RunAt:         it.RunAt,
+			Attempts:      it.Attempts,
+			Result:        it.Result,
+			NextRetryAt:   it.NextRetryAt,
+			Suggestion:    oapi.DiagnosticsItemSuggestion(it.Suggestion),
 		}
 	}
 	return oapi.DiagnosticsReport{UpdatedAt: r.UpdatedAt, Items: items}
@@ -244,13 +247,16 @@ func diagnosticsResponse(r appdiagnostic.Report) oapi.DiagnosticsReport {
 // 生成的 allOf 被拍平成单结构体：window 与 egress 是匿名内嵌。
 func accountDiagnosticsResponse(d appdiagnostic.Detail) oapi.AccountDiagnostics {
 	out := oapi.AccountDiagnostics{
-		AccountId:   d.AccountID,
-		State:       d.State,
-		RunAt:       d.RunAt,
-		Attempts:    d.Attempts,
-		Result:      d.Result,
-		NextRetryAt: d.NextRetryAt,
-		Suggestion:  oapi.AccountDiagnosticsSuggestion(d.Suggestion),
+		AccountId:     d.AccountID,
+		DisplayName:   d.DisplayName,
+		PhoneMasked:   d.PhoneMasked,
+		AccountStatus: oapi.AccountStatus(d.AccountStatus),
+		State:         d.State,
+		RunAt:         d.RunAt,
+		Attempts:      d.Attempts,
+		Result:        d.Result,
+		NextRetryAt:   d.NextRetryAt,
+		Suggestion:    oapi.AccountDiagnosticsSuggestion(d.Suggestion),
 	}
 	if d.Window != nil {
 		out.Window = &struct {
@@ -277,10 +283,13 @@ func signStatusResponse(s appdiagnostic.StatusReport) oapi.SignStatusReport {
 	items := make([]oapi.SignStatusItem, len(s.Items))
 	for i, it := range s.Items {
 		items[i] = oapi.SignStatusItem{
-			AccountId: it.AccountID,
-			State:     it.State,
-			RunAt:     it.RunAt,
-			Stale:     it.Stale,
+			AccountId:     it.AccountID,
+			DisplayName:   it.DisplayName,
+			PhoneMasked:   it.PhoneMasked,
+			AccountStatus: oapi.AccountStatus(it.AccountStatus),
+			State:         it.State,
+			RunAt:         it.RunAt,
+			Stale:         it.Stale,
 		}
 	}
 	return oapi.SignStatusReport{UpdatedAt: s.UpdatedAt, Items: items}

@@ -19,7 +19,8 @@
 // 业务日按 Deps.Location 解析，与执行循环同口径。
 // stale = now - sign_tasks.updated_at > corediag.StaleAfter。
 // 一账号当日多任务行时取最近更新的一行：轮询用户关心的是
-// 「现在怎么样」。响应不含手机号、凭据与平台原文。
+// 「现在怎么样」。响应含掩码手机号与账号状态，不含完整手机号、
+// 凭据与平台原文。
 package diagnostic
 
 import (
@@ -29,6 +30,7 @@ import (
 
 	appcore "github.com/frostpolaris1/yiban-auto-sign/server/internal/app"
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
+	coreaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/account"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	corediag "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/diagnostic"
 	coremask "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
@@ -81,14 +83,19 @@ func NewService(deps Deps) (*Service, error) {
 
 // Item 是一条账号诊断。
 // State 为 nil 表示该账号当日没有任务行。
+// DisplayName、PhoneMasked 与 AccountStatus 是账号展示面：
+// 首页与诊断只给 id 时用户认不出是哪一个账号。
 type Item struct {
-	AccountID   string
-	State       *string
-	RunAt       *time.Time
-	Attempts    int
-	Result      string
-	NextRetryAt *time.Time
-	Suggestion  string
+	AccountID     string
+	DisplayName   string
+	PhoneMasked   string
+	AccountStatus coreaccount.Status
+	State         *string
+	RunAt         *time.Time
+	Attempts      int
+	Result        string
+	NextRetryAt   *time.Time
+	Suggestion    string
 }
 
 // Report 是 /api/me/diagnostics 的响应体。
@@ -105,11 +112,16 @@ type Detail struct {
 }
 
 // StatusItem 是轮询条目。stale 的口径见 corediag.StaleAfter。
+// 展示面字段与 Item 同源；无任务行的账号仍带账号状态，
+// 待审账号因此不会被读成“没有账号”。
 type StatusItem struct {
-	AccountID string
-	State     *string
-	RunAt     *time.Time
-	Stale     bool
+	AccountID     string
+	DisplayName   string
+	PhoneMasked   string
+	AccountStatus coreaccount.Status
+	State         *string
+	RunAt         *time.Time
+	Stale         bool
 }
 
 // StatusReport 是 /api/me/sign-status 的响应体。
@@ -145,7 +157,11 @@ func (s *Service) SignStatus(ctx context.Context, userID string) (StatusReport, 
 	latest := latestByAccount(rows)
 	items := make([]StatusItem, 0, len(accounts))
 	for _, a := range accounts {
-		item := StatusItem{AccountID: a.ID}
+		name, phone, status := accountFields(a)
+		item := StatusItem{
+			AccountID: a.ID, DisplayName: name,
+			PhoneMasked: phone, AccountStatus: status,
+		}
 		if row, ok := latest[a.ID]; ok {
 			state, runAt := row.State, row.RunAt
 			item.State, item.RunAt = &state, &runAt
@@ -168,7 +184,11 @@ func (s *Service) Account(ctx context.Context, scope corescope.Scope, accountID 
 	if err != nil {
 		return Detail{}, err
 	}
-	item := Item{AccountID: record.ID, Suggestion: corediag.SuggestWait}
+	name, phone, status := accountFields(record)
+	item := Item{
+		AccountID: record.ID, DisplayName: name, PhoneMasked: phone,
+		AccountStatus: status, Suggestion: corediag.SuggestWait,
+	}
 	var row *corediag.TaskRow
 	if len(rows) > 0 {
 		r := latestByAccount(rows)[record.ID]
@@ -256,7 +276,11 @@ func (s *Service) report(ctx context.Context, accounts []appaccount.Record) (Rep
 	}
 	items := make([]Item, 0, len(accounts))
 	for _, a := range accounts {
-		item := Item{AccountID: a.ID, Suggestion: corediag.SuggestWait}
+		name, phone, status := accountFields(a)
+		item := Item{
+			AccountID: a.ID, DisplayName: name, PhoneMasked: phone,
+			AccountStatus: status, Suggestion: corediag.SuggestWait,
+		}
 		if row, ok := latest[a.ID]; ok {
 			state, runAt, result := row.State, row.RunAt, coremask.MaskText(row.Result)
 			item.State, item.RunAt, item.Attempts, item.Result = &state, &runAt, row.Attempts, result
@@ -308,4 +332,11 @@ func accountIDs(accounts []appaccount.Record) []string {
 		out[i] = a.ID
 	}
 	return out
+}
+
+// accountFields 返回账号展示面。DisplayName 取 Record 已派生的
+// 有效备注名（name 或「账号+手机尾 4 位」）；派生规则只在账号仓储，
+// 本包不重写。Phone 只以掩码出服务端。
+func accountFields(a appaccount.Record) (displayName, phoneMasked string, status coreaccount.Status) {
+	return a.DisplayName, coremask.MaskPhone(a.Phone), a.Status
 }

@@ -1,6 +1,6 @@
 import { test, expect, type Locator, type Page } from '@playwright/test'
 import { deleteCalls, mockAccountsApi } from './support/fake-accounts-api'
-import { mockDashboardApi } from './support/fake-dashboard-api'
+import { accountIdentity, mockDashboardApi } from './support/fake-dashboard-api'
 import {
   SCHEDULE_DAY,
   mockScheduleApi,
@@ -292,13 +292,13 @@ for (const failure of [
 
 test('invariant 3: dashboard KPI numbers settle on the exact counts', async ({ page }) => {
   const items = [
-    { account_id: 'acc-0001', state: 'success', run_at: null, stale: false },
-    { account_id: 'acc-0002', state: 'success', run_at: null, stale: false },
-    { account_id: 'acc-0003', state: 'pending', run_at: null, stale: false },
-    { account_id: 'acc-0004', state: 'running', run_at: null, stale: false },
-    { account_id: 'acc-0005', state: 'failed', run_at: null, stale: false },
-    { account_id: 'acc-0006', state: 'skipped', run_at: null, stale: false },
-    { account_id: 'acc-0007', state: null, run_at: null, stale: false },
+    { ...accountIdentity('acc-0001'), account_id: 'acc-0001', state: 'success', run_at: null, stale: false },
+    { ...accountIdentity('acc-0002'), account_id: 'acc-0002', state: 'success', run_at: null, stale: false },
+    { ...accountIdentity('acc-0003'), account_id: 'acc-0003', state: 'pending', run_at: null, stale: false },
+    { ...accountIdentity('acc-0004'), account_id: 'acc-0004', state: 'running', run_at: null, stale: false },
+    { ...accountIdentity('acc-0005'), account_id: 'acc-0005', state: 'failed', run_at: null, stale: false },
+    { ...accountIdentity('acc-0006'), account_id: 'acc-0006', state: 'skipped', run_at: null, stale: false },
+    { ...accountIdentity('acc-0007'), account_id: 'acc-0007', state: null, run_at: null, stale: false },
   ]
   await mockDashboardApi(page, { role: 'user', signStatusItems: items })
   await page.goto('/')

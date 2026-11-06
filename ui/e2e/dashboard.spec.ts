@@ -7,6 +7,7 @@ import {
   DEFAULT_PREF_STATS,
   DEFAULT_SIGN_STATS,
   type DashboardApiCall,
+  accountIdentity,
   accountSummaryCalls,
   capacityCalls,
   diagnosticsCalls,
@@ -120,13 +121,13 @@ test('invariant 1: a manager sends no sign-status or diagnostics request', async
 
 test('invariant 2: the four KPI counts match the rows', async ({ page }) => {
   const items = [
-    { account_id: 'acc-0001', state: 'success', run_at: null, stale: false },
-    { account_id: 'acc-0002', state: 'success', run_at: null, stale: false },
-    { account_id: 'acc-0003', state: 'pending', run_at: null, stale: false },
-    { account_id: 'acc-0004', state: 'running', run_at: null, stale: false },
-    { account_id: 'acc-0005', state: 'failed', run_at: null, stale: false },
-    { account_id: 'acc-0006', state: 'skipped', run_at: null, stale: false },
-    { account_id: 'acc-0007', state: null, run_at: null, stale: false },
+    { ...accountIdentity('acc-0001'), account_id: 'acc-0001', state: 'success', run_at: null, stale: false },
+    { ...accountIdentity('acc-0002'), account_id: 'acc-0002', state: 'success', run_at: null, stale: false },
+    { ...accountIdentity('acc-0003'), account_id: 'acc-0003', state: 'pending', run_at: null, stale: false },
+    { ...accountIdentity('acc-0004'), account_id: 'acc-0004', state: 'running', run_at: null, stale: false },
+    { ...accountIdentity('acc-0005'), account_id: 'acc-0005', state: 'failed', run_at: null, stale: false },
+    { ...accountIdentity('acc-0006'), account_id: 'acc-0006', state: 'skipped', run_at: null, stale: false },
+    { ...accountIdentity('acc-0007'), account_id: 'acc-0007', state: null, run_at: null, stale: false },
   ]
   await mockDashboardApi(page, { role: 'user', signStatusItems: items })
   await openDashboard(page)
@@ -192,8 +193,8 @@ test('invariant 4: a stale row carries the expiry badge', async ({ page }) => {
   await mockDashboardApi(page, {
     role: 'user',
     signStatusItems: [
-      { account_id: 'acc-0001', state: 'success', run_at: null, stale: true },
-      { account_id: 'acc-0002', state: 'pending', run_at: null, stale: false },
+      { ...accountIdentity('acc-0001'), account_id: 'acc-0001', state: 'success', run_at: null, stale: true },
+      { ...accountIdentity('acc-0002'), account_id: 'acc-0002', state: 'pending', run_at: null, stale: false },
     ],
   })
   await openDashboard(page)

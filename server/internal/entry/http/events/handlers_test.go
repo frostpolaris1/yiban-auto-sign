@@ -18,6 +18,7 @@ import (
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	appdiagnostic "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/diagnostic"
 	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
+	coreaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/account"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	corediag "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/diagnostic"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
@@ -166,7 +167,8 @@ func sampleReport() appdiagnostic.Report {
 	return appdiagnostic.Report{
 		UpdatedAt: diagNowTime,
 		Items: []appdiagnostic.Item{{
-			AccountID: "a1", State: &state, RunAt: &runAt,
+			AccountID: "a1", DisplayName: "小明", PhoneMasked: "138****0001",
+			AccountStatus: coreaccount.StatusActive, State: &state, RunAt: &runAt,
 			Attempts: 2, Result: "wait_window_open",
 			NextRetryAt: &next, Suggestion: corediag.SuggestWait,
 		}},
@@ -192,6 +194,10 @@ func TestMeDiagnosticsOK(t *testing.T) {
 		item["suggestion"] != "wait" {
 		t.Fatalf("item = %v", item)
 	}
+	if item["display_name"] != "小明" || item["phone_masked"] != "138****0001" ||
+		item["account_status"] != string(coreaccount.StatusActive) {
+		t.Fatalf("读面字段 = %v", item)
+	}
 	if item["next_retry_at"] == nil || item["run_at"] == nil {
 		t.Fatalf("run_at/next_retry_at 缺失: %v", item)
 	}
@@ -207,8 +213,10 @@ func TestMeSignStatusOK(t *testing.T) {
 	diag := &fakeDiag{status: appdiagnostic.StatusReport{
 		UpdatedAt: diagNowTime,
 		Items: []appdiagnostic.StatusItem{
-			{AccountID: "a1", State: &state, RunAt: &runAt, Stale: true},
-			{AccountID: "a2", Stale: false},
+			{AccountID: "a1", DisplayName: "小明", PhoneMasked: "138****0001",
+				AccountStatus: coreaccount.StatusActive, State: &state, RunAt: &runAt, Stale: true},
+			{AccountID: "a2", DisplayName: "账号0002", PhoneMasked: "138****0002",
+				AccountStatus: coreaccount.StatusPending, Stale: false},
 		},
 	}}
 	engine, issued := newEngine(t, nil, diag, appevents.NewBroker())
@@ -219,11 +227,15 @@ func TestMeSignStatusOK(t *testing.T) {
 	body := decodeBody(t, rec)
 	items := body["items"].([]any)
 	first := items[0].(map[string]any)
-	if first["stale"] != true || first["account_id"] != "a1" {
+	if first["stale"] != true || first["account_id"] != "a1" ||
+		first["display_name"] != "小明" || first["phone_masked"] != "138****0001" ||
+		first["account_status"] != string(coreaccount.StatusActive) {
 		t.Fatalf("item0 = %v", first)
 	}
 	second := items[1].(map[string]any)
-	if second["state"] != nil || second["stale"] != false {
+	if second["state"] != nil || second["stale"] != false ||
+		second["display_name"] != "账号0002" || second["phone_masked"] != "138****0002" ||
+		second["account_status"] != string(coreaccount.StatusPending) {
 		t.Fatalf("无行账号 = %v", second)
 	}
 }
@@ -235,7 +247,8 @@ func TestAccountDiagnosticsOK(t *testing.T) {
 	end := diagNowTime.Add(time.Hour)
 	diag := &fakeDiag{detail: appdiagnostic.Detail{
 		Item: appdiagnostic.Item{
-			AccountID: "a1", State: &state, Attempts: 3,
+			AccountID: "a1", DisplayName: "小明", PhoneMasked: "138****0001",
+			AccountStatus: coreaccount.StatusActive, State: &state, Attempts: 3,
 			Result: "rejected", Suggestion: corediag.SuggestRetryNow,
 		},
 		Window: &corediag.WindowInfo{Start: start, End: end, Source: "platform", Version: 4},
@@ -249,6 +262,10 @@ func TestAccountDiagnosticsOK(t *testing.T) {
 	body := decodeBody(t, rec)
 	if body["account_id"] != "a1" || body["suggestion"] != "retry_now" {
 		t.Fatalf("body = %v", body)
+	}
+	if body["display_name"] != "小明" || body["phone_masked"] != "138****0001" ||
+		body["account_status"] != string(coreaccount.StatusActive) {
+		t.Fatalf("读面字段 = %v", body)
 	}
 	win, ok := body["window"].(map[string]any)
 	if !ok || win["source"] != "platform" || win["version"] != float64(4) {

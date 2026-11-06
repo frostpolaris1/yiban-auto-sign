@@ -16,6 +16,7 @@ import (
 
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
 	appdiagnostic "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/diagnostic"
+	coreaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/account"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
 	corediag "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/diagnostic"
 	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
@@ -209,6 +210,91 @@ func TestAccountDetailIncludesWindowAndEgress(t *testing.T) {
 	accts.getErr = coreerrs.ErrNotFound
 	if _, err := svc.Account(context.Background(), corescope.User("user-1"), "a1"); !errors.Is(err, coreerrs.ErrNotFound) {
 		t.Fatalf("跨用户错误 = %v, want not_found", err)
+	}
+}
+
+// 读面字段：备注名、掩码手机号与账号状态随账号行下发。
+// 空备注时用 Record 已派生的「账号+尾 4 位」，本层不重写派生规则。
+func TestItemsCarryAccountReadFields(t *testing.T) {
+	named := acctRecord("a1")
+	named.Name, named.DisplayName = "小明", "小明"
+	named.Phone, named.Status = "13800060001", coreaccount.StatusActive
+	unnamed := acctRecord("a2")
+	unnamed.DisplayName = "账号0002" // 仓储已按 name 空回退派生。
+	unnamed.Phone, unnamed.Status = "13800000002", coreaccount.StatusPending
+
+	accts := &fakeAccounts{page: appaccount.Page{Items: []appaccount.Record{named, unnamed}}}
+	st := &fakeStore{tasks: []corediag.TaskRow{
+		taskRow("a1", string(corestatus.TaskSuccess), "ok", 1, time.Second),
+	}}
+	svc := newDiagService(t, accts, st)
+
+	report, err := svc.Mine(context.Background(), "user-1")
+	if err != nil {
+		t.Fatalf("Mine: %v", err)
+	}
+	byID := map[string]appdiagnostic.Item{}
+	for _, it := range report.Items {
+		byID[it.AccountID] = it
+	}
+	if got := byID["a1"]; got.DisplayName != "小明" || got.PhoneMasked != "138****0001" ||
+		got.AccountStatus != coreaccount.StatusActive {
+		t.Fatalf("a1 读面 = %+v, want 小明/138****0001/active", got)
+	}
+	if got := byID["a2"]; got.DisplayName != "账号0002" || got.PhoneMasked != "138****0002" ||
+		got.AccountStatus != coreaccount.StatusPending || got.State != nil {
+		t.Fatalf("a2 读面 = %+v, want 账号0002/138****0002/pending/state=nil", got)
+	}
+
+	// 轮询条目同样带读面字段：无任务行的 pending 账号也在列表里，
+	// 不会因为 state=null 被前端当成“没有账号”。
+	status, err := svc.SignStatus(context.Background(), "user-1")
+	if err != nil {
+		t.Fatalf("SignStatus: %v", err)
+	}
+	statusByID := map[string]appdiagnostic.StatusItem{}
+	for _, it := range status.Items {
+		statusByID[it.AccountID] = it
+	}
+	if got := statusByID["a2"]; got.DisplayName != "账号0002" ||
+		got.PhoneMasked != "138****0002" || got.AccountStatus != coreaccount.StatusPending ||
+		got.State != nil {
+		t.Fatalf("sign-status a2 = %+v, want pending account with state=null", got)
+	}
+
+	// 单账号详版字段同源。
+	accts.get = unnamed
+	detail, err := svc.Account(context.Background(), corescope.User("user-1"), "a2")
+	if err != nil {
+		t.Fatalf("Account: %v", err)
+	}
+	if detail.DisplayName != "账号0002" || detail.PhoneMasked != "138****0002" ||
+		detail.AccountStatus != coreaccount.StatusPending {
+		t.Fatalf("detail 读面 = %+v", detail.Item)
+	}
+}
+
+// 账号状态闭集原样透传：pending/active/rejected/paused_admin/
+// paused_user/credential_error 一个不丢、一个不多。
+func TestAccountStatusPassesThroughClosedValues(t *testing.T) {
+	statuses := []coreaccount.Status{
+		coreaccount.StatusPending, coreaccount.StatusActive, coreaccount.StatusRejected,
+		coreaccount.StatusPausedAdmin, coreaccount.StatusPausedUser, coreaccount.StatusCredentialError,
+	}
+	for _, want := range statuses {
+		t.Run(string(want), func(t *testing.T) {
+			rec := acctRecord("a1")
+			rec.Status = want
+			accts := &fakeAccounts{page: appaccount.Page{Items: []appaccount.Record{rec}}}
+			svc := newDiagService(t, accts, &fakeStore{})
+			report, err := svc.Mine(context.Background(), "user-1")
+			if err != nil {
+				t.Fatalf("Mine: %v", err)
+			}
+			if got := report.Items[0].AccountStatus; got != want {
+				t.Fatalf("account_status = %q, want %q", got, want)
+			}
+		})
 	}
 }
 
