@@ -210,7 +210,7 @@ func TestPruneDeletesSoftDeletedUsersPastRetention(t *testing.T) {
 	e := newEnv(t)
 	now := time.Date(2026, 11, 6, 9, 0, 0, 0, time.UTC)
 	schoolID, taskID, _ := e.seedTask(
-		"prune-user", "晨间签到", "prune-user-staff@example.com", "13800007000")
+		"prune-user", "晨间签到", "prune-user-staff@example.com", "13800000020")
 	userA := e.createUser("prune-user-a@example.com") // 软删 91 天：删
 	userB := e.createUser("prune-user-b@example.com") // 软删 89 天：留
 	userC := e.createUser("prune-user-c@example.com") // 活用户
