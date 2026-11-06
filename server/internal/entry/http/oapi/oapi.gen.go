@@ -2752,6 +2752,9 @@ type ServerInterface interface {
 	// AccountDiagnostics Detailed diagnostics for one account.
 	// (GET /api/accounts/{id}/diagnostics)
 	AccountDiagnostics(c *gin.Context, id AccountID)
+	// AccountLocationGet Read the account location policy.
+	// (GET /api/accounts/{id}/location)
+	AccountLocationGet(c *gin.Context, id AccountID)
 	// AccountLocationSet Set the account location policy.
 	// (PUT /api/accounts/{id}/location)
 	AccountLocationSet(c *gin.Context, id AccountID, params AccountLocationSetParams)
@@ -3321,6 +3324,31 @@ func (siw *ServerInterfaceWrapper) AccountDiagnostics(c *gin.Context) {
 	}
 
 	siw.Handler.AccountDiagnostics(c, id)
+}
+
+// AccountLocationGet operation middleware
+func (siw *ServerInterfaceWrapper) AccountLocationGet(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id AccountID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", c.Param("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AccountLocationGet(c, id)
 }
 
 // AccountLocationSet operation middleware
@@ -6075,6 +6103,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/accounts/:id/restore", wrapper.AccountRestore)
 	router.POST(options.BaseURL+"/api/accounts/:id/verify", wrapper.AccountVerify)
 	router.POST(options.BaseURL+"/api/accounts/:id/sign", wrapper.AccountSign)
+	router.GET(options.BaseURL+"/api/accounts/:id/location", wrapper.AccountLocationGet)
 	router.PUT(options.BaseURL+"/api/accounts/:id/location", wrapper.AccountLocationSet)
 	router.GET(options.BaseURL+"/api/accounts/:id/photos", wrapper.AccountPhotoList)
 	router.GET(options.BaseURL+"/api/admin/events", wrapper.AdminEvents)

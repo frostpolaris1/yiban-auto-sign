@@ -1299,6 +1299,32 @@ paths:
         '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
   /api/accounts/{id}/location:
+    get:
+      tags: [accounts]
+      operationId: AccountLocationGet
+      summary: Read the account location policy.
+      description: |
+        Returns the stored policy. The visible scope is the same source as
+        PUT /api/accounts/{id}/location: a user reads own accounts and an
+        admin reads accounts of bound schools; a cross-user, cross-school or
+        soft-deleted account answers 404. An account without a stored policy
+        reads as mode auto with null lng/lat and an empty reason. master is
+        not in x-roles and answers 403.
+      x-roles: [user, admin]
+      parameters:
+        - $ref: '#/components/parameters/AccountID'
+      responses:
+        '200':
+          description: Location policy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountLocation'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        default: { $ref: '#/components/responses/DefaultError' }
     put:
       tags: [accounts]
       operationId: AccountLocationSet

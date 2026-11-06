@@ -270,6 +270,15 @@ func (s *server) AccountSign(c *gin.Context, id oapi.AccountID, params oapi.Acco
 	s.signing.Sign(c, id, params)
 }
 
+// AccountLocationGet 委托定位策略读取处理器。未装配时仍是 501。
+func (s *server) AccountLocationGet(c *gin.Context, id oapi.AccountID) {
+	if s.locations == nil {
+		notImplemented(c)
+		return
+	}
+	s.locations.GetLocation(c, id)
+}
+
 // AccountLocationSet 委托定位策略处理器。未装配时仍是 501。
 func (s *server) AccountLocationSet(c *gin.Context, id oapi.AccountID, params oapi.AccountLocationSetParams) {
 	if s.locations == nil {

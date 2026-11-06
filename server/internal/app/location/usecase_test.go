@@ -51,11 +51,14 @@ type fakeStore struct {
 	rows map[string]applocation.Row
 	// sets 记录每次写入，供断言坐标清空语义。
 	sets []applocation.Pref
+	// gets 记录读取次数，供断言角色门先于存储读取。
+	gets int
 }
 
 func newFakeStore() *fakeStore { return &fakeStore{rows: map[string]applocation.Row{}} }
 
 func (f *fakeStore) Get(_ context.Context, accountID string) (applocation.Row, error) {
+	f.gets++
 	row, ok := f.rows[accountID]
 	if !ok {
 		return applocation.Row{}, errs.ErrNotFound
@@ -281,6 +284,94 @@ func TestResolveShapes(t *testing.T) {
 	loc, err = svc.Resolve(ctx, "acct-b")
 	if err != nil || loc.Mode != contract.LocationAuto {
 		t.Fatalf("auto Resolve = (%+v,%v)", loc, err)
+	}
+}
+
+// Get 无存储行按 auto 回读：零值表示无点位，不是 0 度点。
+func TestGetDefaultsToAuto(t *testing.T) {
+	store := newFakeStore()
+	svc, _ := newService(store, fakeAccounts{recs: map[string]coreaccount.Record{"acct-a": acctA}}, &fakeAudit{})
+
+	out, err := svc.Get(context.Background(), corescope.User("user-1"), "acct-a")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if out != (contract.Location{Mode: contract.LocationAuto}) {
+		t.Fatalf("out = %+v, want auto 零值", out)
+	}
+}
+
+// Get fixed 原样回读；auto 行即使残留坐标也归零，reason 仍按存储回读。
+func TestGetReadsStoredPolicy(t *testing.T) {
+	store := newFakeStore()
+	store.rows["acct-a"] = applocation.Row{
+		AccountID: "acct-a", Mode: "fixed", Lng: 116.4, Lat: 39.9, Reason: "",
+	}
+	store.rows["acct-b"] = applocation.Row{
+		AccountID: "acct-b", Mode: "auto", Lng: 1, Lat: 2, Reason: "旧原因",
+	}
+	svc, _ := newService(store, fakeAccounts{recs: map[string]coreaccount.Record{
+		"acct-a": acctA, "acct-b": acctB,
+	}}, &fakeAudit{})
+
+	ctx := context.Background()
+	fixed, err := svc.Get(ctx, corescope.User("user-1"), "acct-a")
+	if err != nil || fixed != (contract.Location{
+		Mode: contract.LocationFixed, Lng: 116.4, Lat: 39.9, Reason: "",
+	}) {
+		t.Fatalf("fixed Get = (%+v,%v)", fixed, err)
+	}
+	auto, err := svc.Get(ctx, corescope.Admin([]string{"school-2"}), "acct-b")
+	if err != nil || auto != (contract.Location{Mode: contract.LocationAuto, Reason: "旧原因"}) {
+		t.Fatalf("auto Get = (%+v,%v)", auto, err)
+	}
+}
+
+// Get 可见面：跨用户与跨校 404，绑定校 admin 可读。
+func TestGetVisibility(t *testing.T) {
+	store := newFakeStore()
+	store.rows["acct-a"] = applocation.Row{
+		AccountID: "acct-a", Mode: "fixed", Lng: 116.4, Lat: 39.9,
+	}
+	accounts := fakeAccounts{recs: map[string]coreaccount.Record{
+		"acct-a": acctA, "acct-b": acctB,
+	}}
+	svc, _ := newService(store, accounts, &fakeAudit{})
+	ctx := context.Background()
+
+	for name, tc := range map[string]struct {
+		scope corescope.Scope
+		id    string
+	}{
+		"user 读他人账号":    {scope: corescope.User("user-2"), id: "acct-a"},
+		"admin 读未绑定校账号": {scope: corescope.Admin([]string{"school-2"}), id: "acct-a"},
+		"user 读不存在的账号":  {scope: corescope.User("user-1"), id: "acct-x"},
+		"admin 读不存在账号":  {scope: corescope.Admin([]string{"school-1"}), id: "acct-x"},
+	} {
+		_, err := svc.Get(ctx, tc.scope, tc.id)
+		if !errors.Is(err, errs.ErrNotFound) {
+			t.Fatalf("%s: err = %v, want not_found", name, err)
+		}
+	}
+
+	out, err := svc.Get(ctx, corescope.Admin([]string{"school-1"}), "acct-a")
+	if err != nil || out.Mode != contract.LocationFixed || out.Lng != 116.4 {
+		t.Fatalf("绑定校 admin Get = (%+v,%v)", out, err)
+	}
+}
+
+// master 不在契约 x-roles 内：读定位 403。
+// 用不存在的账号也不变 404：角色门先于可见面与存储读取。
+func TestGetMasterForbidden(t *testing.T) {
+	store := newFakeStore()
+	svc, _ := newService(store, fakeAccounts{}, &fakeAudit{})
+
+	_, err := svc.Get(context.Background(), corescope.Master(), "acct-missing")
+	if code := errs.From(err).Code; code != errs.CodeForbidden {
+		t.Fatalf("master 读取 err = %v, want forbidden", err)
+	}
+	if store.gets != 0 {
+		t.Fatalf("master 被拒后仍读存储: gets=%d", store.gets)
 	}
 }
 

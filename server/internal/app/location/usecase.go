@@ -14,7 +14,7 @@
 // # 口径
 // 可见面判据与账号域一致：user 只能改自己的账号，admin 只能改
 // 绑定学校的账号，跨校一律 404（403 会泄漏存在性）。
-// 写入角色按契约 x-roles 收紧为 user 与 admin；master 回 403。
+// 读写角色按契约 x-roles 收紧为 user 与 admin；master 回 403。
 // 审计只记 mode 与 has_reason：原因原文可能含任意词句，
 // 进审计链必须先过掩码口径，本切片不存原文。
 package location
@@ -91,7 +91,7 @@ type Input struct {
 // Set 校验可见面与参数，覆盖写定位策略并记 location.set 审计。
 // 跨校、跨用户与已软删账号一律 404。
 func (s *Service) Set(ctx context.Context, scope corescope.Scope, accountID string, in Input, actor appaudit.Actor) (contract.Location, error) {
-	if err := requireWriter(scope); err != nil {
+	if err := requireReaderOrWriter(scope); err != nil {
 		return contract.Location{}, err
 	}
 	record, err := s.deps.Accounts.Get(ctx, scope, accountID)
@@ -149,6 +149,37 @@ func (s *Service) Set(ctx context.Context, scope corescope.Scope, accountID stri
 	return out, nil
 }
 
+// Get 读一个账号的定位策略，供控制台回读当前设置。
+// 可见面与 Set 同源：user 只读自己的账号，admin 只读绑定学校的账号，
+// 跨用户、跨校与已软删账号一律 404。
+// 角色门先于可见面读取：master 不在契约 x-roles 内，恒 403，
+// 不因账号是否存在而变成 404。
+// 无存储行的账号按 auto 回读：缺省策略就是 auto，不是 404。
+func (s *Service) Get(ctx context.Context, scope corescope.Scope, accountID string) (contract.Location, error) {
+	if err := requireReaderOrWriter(scope); err != nil {
+		return contract.Location{}, err
+	}
+	if _, err := s.deps.Accounts.Get(ctx, scope, accountID); err != nil {
+		return contract.Location{}, err
+	}
+	row, err := s.deps.Store.Get(ctx, accountID)
+	if err != nil {
+		if errs.From(err).Code == errs.CodeNotFound {
+			return contract.Location{Mode: contract.LocationAuto}, nil
+		}
+		return contract.Location{}, err
+	}
+	// 非 fixed 行一律按 auto：坐标只在 fixed 行有意义，
+	// 传输层据此把 lng/lat 落 null，不留 0。reason 仍按存储回读：
+	// PUT 的 200 回显同一个值，读写两端不能各说一套。
+	if row.Mode != "fixed" {
+		return contract.Location{Mode: contract.LocationAuto, Reason: row.Reason}, nil
+	}
+	return contract.Location{
+		Mode: contract.LocationFixed, Lng: row.Lng, Lat: row.Lat, Reason: row.Reason,
+	}, nil
+}
+
 // Resolve 返回账号的定位策略，供执行循环注入 SignRequest。
 // 无行或 auto 行返回 LocationAuto；fixed 行带经纬度与原因。
 // 本方法服务于系统动作（worker），不取作用域。
@@ -168,10 +199,10 @@ func (s *Service) Resolve(ctx context.Context, accountID string) (contract.Locat
 	}, nil
 }
 
-// requireWriter 限定定位写入只给 user 与 admin。
-// 契约 x-roles 是 [user, admin]：master 不得经本端点改定位。
-// 形状与 app/photos 的 requireUser 相同，只是多放行 admin。
-func requireWriter(scope corescope.Scope) error {
+// requireReaderOrWriter 限定定位读写只给 user 与 admin。
+// 契约 x-roles 是 [user, admin]：master 不得经本组端点读或改定位。
+// 形状与 app/photos 的 requireAccountReader 相同，只是多放行 admin。
+func requireReaderOrWriter(scope corescope.Scope) error {
 	if err := app.RequireScope(scope); err != nil {
 		return err
 	}
@@ -179,7 +210,7 @@ func requireWriter(scope corescope.Scope) error {
 	case corescope.KindUser, corescope.KindAdmin:
 		return nil
 	}
-	return errs.New(errs.CodeForbidden, "role cannot change the account location")
+	return errs.New(errs.CodeForbidden, "role cannot access the account location")
 }
 
 // validatePoint 拒绝非有限值与越界经纬度。
