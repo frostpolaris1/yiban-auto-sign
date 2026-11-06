@@ -2309,12 +2309,15 @@ export interface components {
             current_password?: components["schemas"]["CurrentPassword"];
             /**
              * Format: date-time
-             * @description Optimistic-lock precondition. Clients echo updated_at from the most
-             *     recent Account response. When it differs from the current row the
-             *     update answers 409 conflict and writes nothing: no account field,
-             *     credential or audit row. Omitting it keeps the legacy
-             *     last-write-wins behavior for older clients; new clients should
-             *     always send it.
+             * @description Optimistic-lock precondition. Send back the raw updated_at string
+             *     from the most recent Account response, byte for byte. Do not pass
+             *     it through a JavaScript Date or toISOString(): those keep only
+             *     milliseconds, drop the microsecond digits PostgreSQL stores, and
+             *     make every update answer 409. When the value differs from the
+             *     current row the update answers 409 conflict and writes nothing: no
+             *     account field, credential or audit row. Omitting it keeps the
+             *     legacy last-write-wins behavior for older clients; new clients
+             *     should always send it.
              */
             expected_updated_at?: string;
         };

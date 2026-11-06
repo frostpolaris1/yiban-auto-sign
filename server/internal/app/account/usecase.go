@@ -510,8 +510,9 @@ func (s *Service) Update(ctx context.Context, scope corescope.Scope, id string, 
 			record, err = s.deps.Accounts.SetStatus(ctx, scope, id,
 				StatusCredentialError, StatusActive, now, "")
 		case needCredential:
-			// 凭据写回不更新 accounts.updated_at；重读一次让响应带真实时间。
-			record, err = s.deps.Accounts.Get(ctx, scope, id)
+			// 凭据写回不改 accounts 行；显式 touch updated_at，
+			// 否则并发凭据编辑的 expected_updated_at 永远命中旧值。
+			record, err = s.deps.Accounts.Touch(ctx, scope, id, now)
 		}
 		if err != nil {
 			return err

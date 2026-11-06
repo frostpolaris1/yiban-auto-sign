@@ -153,10 +153,94 @@ func TestUpdateStaleBeatsFieldValidation(t *testing.T) {
 	_, err := svc.Update(context.Background(), corescope.Master(), "acct-1",
 		UpdateInput{Phone: &invalid, ExpectedUpdatedAt: &expected},
 		appaudit.Actor{UserID: "master-1", Role: "master"})
+	if err == nil {
+		t.Fatal("过期请求带非法手机号时必须失败")
+	}
 	if got := errs.From(err).Code; got != errs.CodeConflict {
 		t.Fatalf("错误码 = %q, want conflict（字段校验不得抢先）", got)
 	}
 	if len(audit.entries) != 0 {
 		t.Fatalf("过期请求写了审计: %+v", audit.entries)
+	}
+}
+
+// splitSnapshotRepo 让事务外 Get 与行锁下 GetForUpdate 返回不同行。
+// 用来钉住「判定必须在锁下」，而不是用事务外快照做前置检查。
+type splitSnapshotRepo struct {
+	Repo
+	snapshot Record
+	locked   Record
+	writes   int
+}
+
+func (f *splitSnapshotRepo) Get(context.Context, corescope.Scope, string) (Record, error) {
+	return f.snapshot, nil
+}
+
+func (f *splitSnapshotRepo) GetForUpdate(context.Context, corescope.Scope, string) (Record, error) {
+	return f.locked, nil
+}
+
+func (f *splitSnapshotRepo) UpdateName(_ context.Context, _ corescope.Scope, _ string, name string, _ time.Time) (Record, error) {
+	f.writes++
+	f.locked.Name = name
+	return f.locked, nil
+}
+
+func (f *splitSnapshotRepo) Credential(context.Context, corescope.Scope, string) (Credential, error) {
+	return Credential{}, errs.ErrNotFound
+}
+
+// 事务外快照仍等于 expected，但行锁下已前进：必须 409。
+// 只用事务外 Get 比较时本用例红。
+func TestUpdateRejectsStaleDespiteMatchingPreRead(t *testing.T) {
+	old := updateInstant
+	current := updateInstant.Add(time.Microsecond)
+	base := optimisticRecord()
+	repo := &splitSnapshotRepo{
+		snapshot: func() Record { r := base; r.UpdatedAt = old; return r }(),
+		locked:   func() Record { r := base; r.UpdatedAt = current; return r }(),
+	}
+	svc, audit := newOptimisticService(t, repo)
+	name := "不该落库的备注名"
+
+	_, err := svc.Update(context.Background(), corescope.Master(), "acct-1",
+		UpdateInput{Name: &name, ExpectedUpdatedAt: &old},
+		appaudit.Actor{UserID: "master-1", Role: "master"})
+	if err == nil {
+		t.Fatal("事务外快照命中但行锁值已变时，必须拒绝")
+	}
+	if got := errs.From(err).Code; got != errs.CodeConflict {
+		t.Fatalf("错误码 = %q, want conflict（行锁下的最新值必须生效）", got)
+	}
+	if repo.writes != 0 {
+		t.Fatalf("过期请求写了 %d 次账号字段", repo.writes)
+	}
+	if len(audit.entries) != 0 {
+		t.Fatalf("过期请求写了审计: %+v", audit.entries)
+	}
+}
+
+// JS Date/toISOString 只保留毫秒；截断后必须 409，不能静默放行。
+func TestUpdateRejectsMillisecondTruncatedUpdatedAt(t *testing.T) {
+	repo := &reviewFakeRepo{current: optimisticRecord()}
+	svc, audit := newOptimisticService(t, repo)
+	truncated := updateInstant.Truncate(time.Millisecond)
+	if truncated.Equal(updateInstant) {
+		t.Fatal("夹具必须有亚毫秒位，否则截断用例无意义")
+	}
+	name := "不该落库的备注名"
+
+	_, err := svc.Update(context.Background(), corescope.Master(), "acct-1",
+		UpdateInput{Name: &name, ExpectedUpdatedAt: &truncated},
+		appaudit.Actor{UserID: "master-1", Role: "master"})
+	if err == nil {
+		t.Fatal("毫秒截断的 expected 必须被拒绝")
+	}
+	if got := errs.From(err).Code; got != errs.CodeConflict {
+		t.Fatalf("毫秒截断的错误码 = %q, want conflict", got)
+	}
+	if repo.current.Name != "" || len(audit.entries) != 0 {
+		t.Fatalf("截断值被当成最新：name=%q audit=%d", repo.current.Name, len(audit.entries))
 	}
 }

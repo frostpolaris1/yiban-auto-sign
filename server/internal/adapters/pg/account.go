@@ -134,6 +134,31 @@ func (r *AccountRepo) GetForUpdate(ctx context.Context, s corescope.Scope, id st
 	return recordOrNotFound(record, err)
 }
 
+// Touch 在范围内推进 accounts.updated_at 并回读整行。
+//
+// **必须在事务内运行**：仅改凭据的更新只写 credentials，
+// 不推进账号行时间戳就会让并发凭据编辑绕过乐观锁前置条件。
+// set_updated_at() 触发器仍以 now() 落库；at 保留与同族更新同形。
+func (r *AccountRepo) Touch(ctx context.Context, s corescope.Scope, id string, at time.Time) (coreaccount.Record, error) {
+	if !r.db.hasTx(ctx) {
+		return coreaccount.Record{}, ErrNoTransaction
+	}
+	scopeSQL, scopeArgs, err := scopePredicate(s, 2, "")
+	if err != nil {
+		return coreaccount.Record{}, err
+	}
+	args := append([]any{id}, scopeArgs...)
+	atIdx := len(args) + 1
+	args = append(args, at)
+	row := r.db.q(ctx).QueryRow(ctx, fmt.Sprintf(`
+		UPDATE accounts
+		   SET updated_at = $%d
+		 WHERE id = $1::uuid AND deleted_at IS NULL%s
+		RETURNING %s`, atIdx, scopeSQL, accountColumns), args...)
+	record, err := scanAccount(row)
+	return recordOrNotFound(record, err)
+}
+
 // List 按作用域与可选过滤条件列账号，游标分页。
 //
 // 作用域与过滤条件是**与**关系：admin 指定未绑定院校时结果为空。

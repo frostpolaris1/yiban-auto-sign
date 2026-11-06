@@ -85,6 +85,20 @@ func staleAuditRows(t *testing.T, e *authEnv, id string) int64 {
 		WHERE target_id = $1 AND action IN ('account.update', 'account.resubmit')`, id)
 }
 
+// staleCredential 是凭据行的写前快照：版本与密文摘要。
+type staleCredential struct {
+	version int64
+	digest  string
+}
+
+func staleReadCredential(t *testing.T, e *authEnv, id string) staleCredential {
+	t.Helper()
+	return staleCredential{
+		version: e.scalarInt("SELECT version FROM credentials WHERE account_id = $1", id),
+		digest:  e.scalarString("SELECT encode(ciphertext, 'hex') FROM credentials WHERE account_id = $1", id),
+	}
+}
+
 // TestAccountUpdateExpectedUpdatedAt 覆盖并发编辑的 409 与零写。
 func TestAccountUpdateExpectedUpdatedAt(t *testing.T) {
 	e := newAuthEnv(t)
@@ -205,5 +219,124 @@ func TestAccountUpdateExpectedUpdatedAt(t *testing.T) {
 	}
 	if got := staleAuditRows(t, e, account.ID); got != auditBefore+2 {
 		t.Fatalf("成功重试的审计 = %d 条, want %d", got, auditBefore+2)
+	}
+}
+
+// TestAccountUpdateExpectedUpdatedAtCredentialOnly 钉住凭据-only 编辑也推进 updated_at。
+//
+// 判据一：active 账号只改口令成功后，响应里的 updated_at 必须前进。
+// 判据二：B 带旧 expected 改口令 → 409；账号行、凭据版本/密文、审计都不变。
+// 判据三：B 带旧 expected 改设备码 → 409，同样零写。
+// 判据四：B 刷新后重试 → 200，凭据版本前进且只多一条 account.update。
+//
+// 若只写 credentials 而不 touch accounts.updated_at，判据二/三红：
+// 旧 expected 仍等于账号行时间戳，过期口令会覆盖 A 的凭据。
+func TestAccountUpdateExpectedUpdatedAtCredentialOnly(t *testing.T) {
+	e := newAuthEnv(t)
+	const masterPassword = "master-pass-42"
+	owner := w2dSeedUser(t, e, "stale-cred-owner@example.com", "owner-pass-42", coreauth.RoleUser)
+	// master 可编辑任意账号，也能写设备码；两个会话代表两台设备。
+	w2dSeedUser(t, e, "stale-cred-master@example.com", masterPassword, coreauth.RoleMaster)
+	account := ux8SeedAccount(t, e, owner.ID, "13800000041")
+	path := "/api/accounts/" + account.ID
+	if _, err := e.db.Exec(e.ctx,
+		`UPDATE accounts SET status = 'active' WHERE id = $1`, account.ID); err != nil {
+		t.Fatalf("seed active account: %v", err)
+	}
+
+	clientA := u1FreshClient(t)
+	clientB := u1FreshClient(t)
+	csrfA := u1LoginOn(e, clientA, "stale-cred-master@example.com", masterPassword).CSRFToken
+	csrfB := u1LoginOn(e, clientB, "stale-cred-master@example.com", masterPassword).CSRFToken
+
+	// 先种一条凭据：首次口令写走 InsertCredential。
+	resp, payload := u2Do(e, clientA, http.MethodPatch, path, map[string]any{
+		"password":         "first-secret",
+		"current_password": masterPassword,
+	}, csrfA)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("种凭据 = %d, want 200; body=%q", resp.StatusCode, payload)
+	}
+	readA := staleRead(t, e, clientA, account.ID)
+	readB := staleRead(t, e, clientB, account.ID)
+	if readA.UpdatedAt != readB.UpdatedAt {
+		t.Fatalf("两个客户端读到不同 updated_at: %q vs %q", readA.UpdatedAt, readB.UpdatedAt)
+	}
+	if readA.Status != string(coreaccount.StatusActive) {
+		t.Fatalf("status = %q, want active", readA.Status)
+	}
+
+	// A 只改口令：凭据-only 路径。updated_at 必须前进，否则乐观锁无判别力。
+	resp, payload = u2Do(e, clientA, http.MethodPatch, path, map[string]any{
+		"password":         "second-secret",
+		"current_password": masterPassword,
+	}, csrfA)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("A 改口令 = %d, want 200; body=%q", resp.StatusCode, payload)
+	}
+	afterA := staleRead(t, e, clientA, account.ID)
+	if afterA.UpdatedAt == readB.UpdatedAt {
+		t.Fatalf("凭据-only 编辑未推进 updated_at（%q）：过期口令会覆盖 A 的凭据", afterA.UpdatedAt)
+	}
+
+	before := staleReadRow(t, e, account.ID)
+	credentialBefore := staleReadCredential(t, e, account.ID)
+	auditBefore := staleAuditRows(t, e, account.ID)
+
+	// B 带旧 expected 改口令：409，凭据与审计都不动。
+	resp, payload = u2Do(e, clientB, http.MethodPatch, path, map[string]any{
+		"password":            "stale-secret",
+		"current_password":    masterPassword,
+		"expected_updated_at": readB.UpdatedAt,
+	}, csrfB)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("过期口令编辑 = %d, want 409; body=%q", resp.StatusCode, payload)
+	}
+	if code, _ := errorCode(t, payload); code != "conflict" {
+		t.Fatalf("过期口令编辑错误码 = %q, want conflict", code)
+	}
+	staleReadRow(t, e, account.ID).assertUnchanged(t, before, "过期口令编辑")
+	if got := staleReadCredential(t, e, account.ID); got != credentialBefore {
+		t.Fatalf("过期口令编辑改了凭据:\n got %+v\nwant %+v", got, credentialBefore)
+	}
+	if got := staleAuditRows(t, e, account.ID); got != auditBefore {
+		t.Fatalf("过期口令编辑产生审计: %d 条, want %d", got, auditBefore)
+	}
+
+	// B 带旧 expected 改设备码：同样 409，零写。
+	resp, payload = u2Do(e, clientB, http.MethodPatch, path, map[string]any{
+		"device_code":         "stale-device",
+		"current_password":    masterPassword,
+		"expected_updated_at": readB.UpdatedAt,
+	}, csrfB)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("过期设备码编辑 = %d, want 409; body=%q", resp.StatusCode, payload)
+	}
+	if code, _ := errorCode(t, payload); code != "conflict" {
+		t.Fatalf("过期设备码编辑错误码 = %q, want conflict", code)
+	}
+	staleReadRow(t, e, account.ID).assertUnchanged(t, before, "过期设备码编辑")
+	if got := staleReadCredential(t, e, account.ID); got != credentialBefore {
+		t.Fatalf("过期设备码编辑改了凭据:\n got %+v\nwant %+v", got, credentialBefore)
+	}
+	if got := staleAuditRows(t, e, account.ID); got != auditBefore {
+		t.Fatalf("过期设备码编辑产生审计: %d 条, want %d", got, auditBefore)
+	}
+
+	// B 刷新后重试成功：版本前进，只多一条 account.update。
+	fresh := staleRead(t, e, clientB, account.ID)
+	resp, payload = u2Do(e, clientB, http.MethodPatch, path, map[string]any{
+		"password":            "fresh-secret",
+		"current_password":    masterPassword,
+		"expected_updated_at": fresh.UpdatedAt,
+	}, csrfB)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("刷新后改口令 = %d, want 200; body=%q", resp.StatusCode, payload)
+	}
+	if got := staleReadCredential(t, e, account.ID); got.version != credentialBefore.version+1 {
+		t.Fatalf("凭据版本 = %d, want %d", got.version, credentialBefore.version+1)
+	}
+	if got := staleAuditRows(t, e, account.ID); got != auditBefore+1 {
+		t.Fatalf("成功改口令的审计 = %d 条, want %d", got, auditBefore+1)
 	}
 }
