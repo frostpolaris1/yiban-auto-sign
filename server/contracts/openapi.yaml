@@ -4169,9 +4169,30 @@ components:
           description: The persisted outcome word of the last attempt, free-text masked.
     DiagnosticsItem:
       type: object
-      required: [account_id, state, run_at, attempts, result, next_retry_at, suggestion]
+      required:
+        - account_id
+        - display_name
+        - phone_masked
+        - account_status
+        - state
+        - run_at
+        - attempts
+        - result
+        - next_retry_at
+        - suggestion
       properties:
         account_id: { type: string }
+        display_name:
+          type: string
+          description: |
+            Effective remark: the name when set, otherwise "账号" followed by
+            the last four digits of the phone. Read from the account record;
+            the read surface never re-derives it.
+        phone_masked:
+          type: string
+          description: First 3 and last 4 digits of the account phone; the full number never leaves the server.
+        account_status:
+          $ref: '#/components/schemas/AccountStatus'
         state:
           type: [string, "null"]
           description: pending, running, success, failed or skipped; null when the account has no task row today.
@@ -4221,9 +4242,27 @@ components:
             $ref: '#/components/schemas/SignStatusItem'
     SignStatusItem:
       type: object
-      required: [account_id, state, run_at, stale]
+      required:
+        - account_id
+        - display_name
+        - phone_masked
+        - account_status
+        - state
+        - run_at
+        - stale
       properties:
         account_id: { type: string }
+        display_name:
+          type: string
+          description: |
+            Effective remark: the name when set, otherwise "账号" followed by
+            the last four digits of the phone. Read from the account record;
+            the read surface never re-derives it.
+        phone_masked:
+          type: string
+          description: First 3 and last 4 digits of the account phone; the full number never leaves the server.
+        account_status:
+          $ref: '#/components/schemas/AccountStatus'
         state:
           type: [string, "null"]
           description: pending, running, success, failed or skipped; null when the account has no task row today.

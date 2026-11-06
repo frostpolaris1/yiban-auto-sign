@@ -75,17 +75,33 @@ const CAPACITY_SOURCES: readonly CapacityReport['source'][] = [
   'override',
 ]
 
+/**
+ * 读面身份字段的合成值：展示名与服务端派生同形（账号+尾 4 位），
+ * 手机号只出掩码。看板目前不渲染这三项，夹具只保证契约必填。
+ */
+export function accountIdentity(
+  accountId: string,
+): Pick<SignStatusItem, 'display_name' | 'phone_masked' | 'account_status'> {
+  const suffix = accountId.slice(-4)
+  return {
+    display_name: `账号${suffix}`,
+    phone_masked: `138****${suffix}`,
+    account_status: 'active',
+  }
+}
+
 /** 覆盖 success、pending、failed 与 null 四种状态。 */
 export const DEFAULT_SIGN_STATUS: SignStatusItem[] = [
-  { account_id: 'acc-0001', state: 'success', run_at: SIGN_STATUS_RUN_AT, stale: false },
-  { account_id: 'acc-0002', state: 'pending', run_at: null, stale: false },
-  { account_id: 'acc-0003', state: 'failed', run_at: '2026-10-28T06:52:00+08:00', stale: false },
-  { account_id: 'acc-0004', state: null, run_at: null, stale: false },
+  { ...accountIdentity('acc-0001'), account_id: 'acc-0001', state: 'success', run_at: SIGN_STATUS_RUN_AT, stale: false },
+  { ...accountIdentity('acc-0002'), account_id: 'acc-0002', state: 'pending', run_at: null, stale: false },
+  { ...accountIdentity('acc-0003'), account_id: 'acc-0003', state: 'failed', run_at: '2026-10-28T06:52:00+08:00', stale: false },
+  { ...accountIdentity('acc-0004'), account_id: 'acc-0004', state: null, run_at: null, stale: false },
 ]
 
 /** 四条建议各一条，覆盖契约枚举全值。 */
 export const DEFAULT_DIAGNOSTICS: DiagnosticsItem[] = [
   {
+    ...accountIdentity('acc-0001'),
     account_id: 'acc-0001',
     state: 'success',
     run_at: SIGN_STATUS_RUN_AT,
@@ -95,6 +111,7 @@ export const DEFAULT_DIAGNOSTICS: DiagnosticsItem[] = [
     suggestion: 'wait',
   },
   {
+    ...accountIdentity('acc-0002'),
     account_id: 'acc-0002',
     state: 'pending',
     run_at: null,
@@ -104,6 +121,7 @@ export const DEFAULT_DIAGNOSTICS: DiagnosticsItem[] = [
     suggestion: 'retry_now',
   },
   {
+    ...accountIdentity('acc-0003'),
     account_id: 'acc-0003',
     state: 'failed',
     run_at: '2026-10-28T06:52:00+08:00',
@@ -113,6 +131,7 @@ export const DEFAULT_DIAGNOSTICS: DiagnosticsItem[] = [
     suggestion: 're_arm',
   },
   {
+    ...accountIdentity('acc-0004'),
     account_id: 'acc-0004',
     state: null,
     run_at: null,

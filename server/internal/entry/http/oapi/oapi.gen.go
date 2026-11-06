@@ -725,7 +725,20 @@ type AccountDeviceRefreshRequest struct {
 // AccountDiagnostics defines model for AccountDiagnostics.
 type AccountDiagnostics struct {
 	AccountId string `json:"account_id"`
-	Attempts  int    `json:"attempts"`
+
+	// AccountStatus pending on create; review moves to active or rejected. Editing a
+	// rejected account returns it to pending. Pause moves active to
+	// paused_admin or paused_user. credential_error is written by the
+	// engine in P4 only; a password or device update returns it to active,
+	// while a phone change returns it to pending. A phone change wins over
+	// that recovery.
+	AccountStatus AccountStatus `json:"account_status"`
+	Attempts      int           `json:"attempts"`
+
+	// DisplayName Effective remark: the name when set, otherwise "账号" followed by
+	// the last four digits of the phone. Read from the account record;
+	// the read surface never re-derives it.
+	DisplayName string `json:"display_name"`
 
 	// Egress The account's sticky egress label; null when not assigned yet.
 	Egress *struct {
@@ -734,6 +747,9 @@ type AccountDiagnostics struct {
 
 	// NextRetryAt When the task is queued again after a failure; null otherwise.
 	NextRetryAt *time.Time `json:"next_retry_at"`
+
+	// PhoneMasked First 3 and last 4 digits of the account phone; the full number never leaves the server.
+	PhoneMasked string     `json:"phone_masked"`
 	Result      string     `json:"result"`
 	RunAt       *time.Time `json:"run_at"`
 
@@ -1006,10 +1022,26 @@ type CurrentPassword = string
 // DiagnosticsItem defines model for DiagnosticsItem.
 type DiagnosticsItem struct {
 	AccountId string `json:"account_id"`
-	Attempts  int    `json:"attempts"`
+
+	// AccountStatus pending on create; review moves to active or rejected. Editing a
+	// rejected account returns it to pending. Pause moves active to
+	// paused_admin or paused_user. credential_error is written by the
+	// engine in P4 only; a password or device update returns it to active,
+	// while a phone change returns it to pending. A phone change wins over
+	// that recovery.
+	AccountStatus AccountStatus `json:"account_status"`
+	Attempts      int           `json:"attempts"`
+
+	// DisplayName Effective remark: the name when set, otherwise "账号" followed by
+	// the last four digits of the phone. Read from the account record;
+	// the read surface never re-derives it.
+	DisplayName string `json:"display_name"`
 
 	// NextRetryAt When the task is queued again after a failure; null otherwise.
 	NextRetryAt *time.Time `json:"next_retry_at"`
+
+	// PhoneMasked First 3 and last 4 digits of the account phone; the full number never leaves the server.
+	PhoneMasked string     `json:"phone_masked"`
 	Result      string     `json:"result"`
 	RunAt       *time.Time `json:"run_at"`
 
@@ -1701,9 +1733,25 @@ type SignStatsReport struct {
 
 // SignStatusItem defines model for SignStatusItem.
 type SignStatusItem struct {
-	AccountId string     `json:"account_id"`
-	RunAt     *time.Time `json:"run_at"`
-	Stale     bool       `json:"stale"`
+	AccountId string `json:"account_id"`
+
+	// AccountStatus pending on create; review moves to active or rejected. Editing a
+	// rejected account returns it to pending. Pause moves active to
+	// paused_admin or paused_user. credential_error is written by the
+	// engine in P4 only; a password or device update returns it to active,
+	// while a phone change returns it to pending. A phone change wins over
+	// that recovery.
+	AccountStatus AccountStatus `json:"account_status"`
+
+	// DisplayName Effective remark: the name when set, otherwise "账号" followed by
+	// the last four digits of the phone. Read from the account record;
+	// the read surface never re-derives it.
+	DisplayName string `json:"display_name"`
+
+	// PhoneMasked First 3 and last 4 digits of the account phone; the full number never leaves the server.
+	PhoneMasked string     `json:"phone_masked"`
+	RunAt       *time.Time `json:"run_at"`
+	Stale       bool       `json:"stale"`
 
 	// State pending, running, success, failed or skipped; null when the account has no task row today.
 	State *string `json:"state"`

@@ -101,6 +101,9 @@ export const RUN_TASKS: AdminTaskRow[] = [
 /** 单账号诊断夹具：与 `AccountDiagnostics` 形状一致。 */
 export const RUN_DIAGNOSTICS = {
   account_id: 'account-1',
+  display_name: '账号0001',
+  phone_masked: '138****0001',
+  account_status: 'active',
   state: 'failed',
   run_at: '2026-10-31T08:10:00+08:00',
   attempts: 3,

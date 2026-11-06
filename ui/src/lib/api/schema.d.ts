@@ -2768,6 +2768,15 @@ export interface components {
         };
         DiagnosticsItem: {
             account_id: string;
+            /**
+             * @description Effective remark: the name when set, otherwise "账号" followed by
+             *     the last four digits of the phone. Read from the account record;
+             *     the read surface never re-derives it.
+             */
+            display_name: string;
+            /** @description First 3 and last 4 digits of the account phone; the full number never leaves the server. */
+            phone_masked: string;
+            account_status: components["schemas"]["AccountStatus"];
             /** @description pending, running, success, failed or skipped; null when the account has no task row today. */
             state: string | null;
             /** Format: date-time */
@@ -2805,6 +2814,15 @@ export interface components {
         };
         SignStatusItem: {
             account_id: string;
+            /**
+             * @description Effective remark: the name when set, otherwise "账号" followed by
+             *     the last four digits of the phone. Read from the account record;
+             *     the read surface never re-derives it.
+             */
+            display_name: string;
+            /** @description First 3 and last 4 digits of the account phone; the full number never leaves the server. */
+            phone_masked: string;
+            account_status: components["schemas"]["AccountStatus"];
             /** @description pending, running, success, failed or skipped; null when the account has no task row today. */
             state: string | null;
             /** Format: date-time */
