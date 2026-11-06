@@ -73,6 +73,7 @@ type StatusCounts = coreaccount.StatusCounts
 // Touch 只推进 accounts.updated_at 并回读整行，**必须在事务内运行**。
 // 仅改凭据时账号行没有别的写，若不 touch，乐观锁的期望值不会变化，
 // 并发凭据编辑就绕过了前置条件。
+// at 仅占位：accounts 的 set_updated_at() 触发器以库内 now() 落库。
 //
 // List 按作用域、可选院校、状态与搜索串过滤，并用游标分页。
 // 过滤条件与作用域是**与**关系：未绑定院校的过滤结果为空，不是全量。

@@ -10,6 +10,7 @@ package main
 // 判据四：带刷新后的 expected_updated_at 重试 → 200，凭据与审计各前进一步。
 // 判据五：Touch 失败（测试 schema 注入 BEFORE UPDATE 异常）→ 500，
 // 本次凭据写回与审计整体回滚；移除注入后同一刷新成功。
+// 判据六：与 PATCH 并发时锁序一致（accounts → credentials），不出现 40P01。
 //
 // # 归属
 // cmd/server 是唯一可同时引用 adapters、app、entry 的位置；
@@ -21,13 +22,19 @@ package main
 // 手机号只取登记的合成段（tests/synthetic-fixtures.json）。
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
+	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
+	corescope "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/scope"
 )
 
 // u2DeviceTimestamp 读账号详情里的 updated_at。
@@ -226,5 +233,156 @@ func TestUX2G13DeviceRefreshTouchFailureRollsBack(t *testing.T) {
 	}
 	if got := e.auditCount(accountID, "account.device_refresh"); got != auditsBefore+1 {
 		t.Fatalf("恢复后的审计 = %d 条, want %d", got, auditsBefore+1)
+	}
+}
+
+// u2LockBarrierRepo 在 Update 取得账号行锁后停住，
+// 让 DeviceRefresh 先在账号行锁上排队，再放行 Update。
+// 两步都打真实 pg 仓储；屏障只包在 Go 侧，不改 SQL。
+type u2LockBarrierRepo struct {
+	appaccount.Repo
+	patchHolding chan struct{}
+	releasePatch chan struct{}
+	touchCalled  chan struct{}
+	patchOnce    sync.Once
+	touchOnce    sync.Once
+}
+
+// GetForUpdate 持锁后停住，模拟 PATCH 在「账号行锁 → 凭据行写」之间的窗口。
+func (r *u2LockBarrierRepo) GetForUpdate(ctx context.Context, scope corescope.Scope, id string) (appaccount.Record, error) {
+	record, err := r.Repo.GetForUpdate(ctx, scope, id)
+	if err != nil {
+		return record, err
+	}
+	r.patchOnce.Do(func() { close(r.patchHolding) })
+	<-r.releasePatch
+	return record, nil
+}
+
+// Touch 在真正执行账号行 UPDATE 前发信号；
+// 刷新与 Update 都会经过它，首次信号来自先到者（本用例里是刷新）。
+func (r *u2LockBarrierRepo) Touch(ctx context.Context, scope corescope.Scope, id string, at time.Time) (appaccount.Record, error) {
+	r.touchOnce.Do(func() { close(r.touchCalled) })
+	return r.Repo.Touch(ctx, scope, id, at)
+}
+
+// u2WaitSignal 在超时前等待一个关闭信号。
+func u2WaitSignal(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s: 5s 内未到达", what)
+	}
+}
+
+// u2WaitErr 在超时前收敛一个 goroutine 的错误。
+func u2WaitErr(t *testing.T, ch <-chan error, what string) error {
+	t.Helper()
+	select {
+	case err := <-ch:
+		return err
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%s: 10s 内未返回", what)
+		return nil
+	}
+}
+
+// u2WaitUngranted 等到出现至少 want 个未授予锁。
+// 并发屏障用它在放行前确认刷新已经真的在等账号行锁。
+// 行锁等待落在 transactionid 锁上，其 database 列为 NULL，
+// 故不按当前库过滤；本用例独占进程，不存在无关等待者。
+func u2WaitUngranted(t *testing.T, e *u2Env, want int64) {
+	t.Helper()
+	clk := clock.System{}
+	deadline := clk.Now().Add(5 * time.Second)
+	for {
+		n, err := e.db.QueryInt64(e.ctx, `SELECT count(*) FROM pg_locks WHERE NOT granted`)
+		if err != nil {
+			t.Fatalf("read pg_locks: %v", err)
+		}
+		if n >= want {
+			return
+		}
+		if clk.Now().After(deadline) {
+			t.Fatalf("等待中的锁 = %d, want >= %d", n, want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestUX2G13DeviceRefreshLockOrderNoDeadlock 钉住刷新与 PATCH 的锁序一致。
+//
+// 判据：Update 先持账号行锁；DeviceRefresh 启动后必须在账号行锁上等待，
+// 而不是先占凭据行。放行后两者都成功，不出现 40P01。
+// 锁序反了（先 ReplaceCredential 后 Touch）时，Update 放行后会等凭据，
+// 刷新持凭据等账号，PostgreSQL 必报死锁。
+func TestUX2G13DeviceRefreshLockOrderNoDeadlock(t *testing.T) {
+	e := u2NewEnv(t)
+	accountID, issued := u2DeviceSeedActive(t, e, "touch-lock-order")
+
+	audits, err := pg.NewAuditRepo(e.db, []byte("ux2-lock-order-audit-key-0001"))
+	if err != nil {
+		t.Fatalf("new audit repo: %v", err)
+	}
+	barrier := &u2LockBarrierRepo{
+		Repo:         e.accounts,
+		patchHolding: make(chan struct{}),
+		releasePatch: make(chan struct{}),
+		touchCalled:  make(chan struct{}),
+	}
+	svc, err := appaccount.NewService(appaccount.Deps{
+		Accounts:   barrier,
+		Schools:    e.schools,
+		Audit:      audits,
+		Tx:         e.db,
+		Clock:      clock.System{},
+		Cipher:     e.cipher,
+		Owner:      e.users,
+		Device:     e.reader,
+		Limit:      10000,
+		OwnerLimit: 10000,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	actor := appaudit.NewActor(issued.User)
+
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(barrier.releasePatch) }) }
+	defer release()
+
+	// Update（PATCH 用例）先持账号行锁并停在屏障上。
+	patchDone := make(chan error, 1)
+	newPassword := "concurrent-password"
+	go func() {
+		_, err := svc.Update(e.ctx, corescope.Master(), accountID,
+			appaccount.UpdateInput{Password: &newPassword}, actor)
+		patchDone <- err
+	}()
+	u2WaitSignal(t, barrier.patchHolding, "Update 未取得账号行锁")
+
+	// 刷新必须排在账号行锁之后，而不是先写凭据。
+	e.reader.script = []u2DeviceOutcome{{
+		state: appaccount.DeviceState{Authorized: true, Code: "LOCK-ORDER-CODE", PhoneModel: "Lock Order Phone"},
+	}}
+	refreshDone := make(chan error, 1)
+	go func() {
+		_, err := svc.DeviceRefresh(e.ctx, corescope.Master(), accountID, actor)
+		refreshDone <- err
+	}()
+	u2WaitSignal(t, barrier.touchCalled, "DeviceRefresh 未到达账号行写")
+	u2WaitUngranted(t, e, 1)
+
+	release()
+	if err := u2WaitErr(t, patchDone, "Update"); err != nil {
+		t.Fatalf("并发 Update 失败（锁序可能反了）: %v", err)
+	}
+	if err := u2WaitErr(t, refreshDone, "DeviceRefresh"); err != nil {
+		t.Fatalf("并发 DeviceRefresh 失败（锁序可能反了）: %v", err)
+	}
+	merged := e.credentialPayload(accountID)
+	if merged.Password != newPassword || merged.DeviceCode != "LOCK-ORDER-CODE" || merged.PhoneModel != "Lock Order Phone" {
+		t.Fatalf("并发后的凭据 = %+v，want 两边写入都生效", merged)
 	}
 }

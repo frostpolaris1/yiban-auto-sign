@@ -138,7 +138,9 @@ func (r *AccountRepo) GetForUpdate(ctx context.Context, s corescope.Scope, id st
 //
 // **必须在事务内运行**：仅改凭据的更新只写 credentials，
 // 不推进账号行时间戳就会让并发凭据编辑绕过乐观锁前置条件。
-// set_updated_at() 触发器仍以 now() 落库；at 保留与同族更新同形。
+// at 仅是与同族更新同形的占位实参：accounts 的 set_updated_at()
+// 触发器会用库内 now() 覆盖它，实际落库取数据库时钟。
+// 因此 Touch 与调用方时钟无关，跨事务的时间戳仍然前进。
 func (r *AccountRepo) Touch(ctx context.Context, s corescope.Scope, id string, at time.Time) (coreaccount.Record, error) {
 	if !r.db.hasTx(ctx) {
 		return coreaccount.Record{}, ErrNoTransaction
