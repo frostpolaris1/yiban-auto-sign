@@ -27,6 +27,9 @@
 - 以下命令以裸机 `/etc/yiban/server.env` 为例。容器形态不要照抄，
   也不要把旧钥写进 `compose.env` 常驻；容器导入另走受控入口：
   旧钥在容器内用 `read -rs` 从 stdin 注入，导出物临时挂载并在导入后删除。
+- 容器禁用 `docker compose exec -e YIBAN_LEGACY_ACCOUNTS_KEY=...`
+  （argv 可见）；旧钥只允许容器内 `read -rs` stdin 或一次性 secret 挂载。
+  容器不是本 runbook 主路径。
 
 ### 1.1 旧库备份
 
@@ -130,12 +133,12 @@ yiban-cli migrate-legacy \
 |---|---|---|
 | `0` | 成功；`--strict` 下无孤儿、无行错误 | 已提交 |
 | `1` | `--strict` 有孤儿：事务开始前失败 | 零写入 |
-| `1` | 行级错误：好行已提交，坏行未提交 | 部分提交 |
+| `1` | 行级错误：好行已提交，其他坏行未提交；解密失败行保留账号行，仅凭据缺失 | 部分提交 |
 | `1` | 连接、迁移或事务失败（非行级） | 业务数据未提交；迁移可能已部分应用，先 `yiban-cli migrate` 收敛再重跑 |
 | `2` | 用法、学校/兜底用户、导出物或对账校验失败 | 事务回滚，零写入 |
 
-退出码 `0` 不代表凭据齐全：`decrypt_failed > 0` 时账号已落地、
-`legacy_ids` 已写、凭据行缺失，命令仍可返回 `0`。
+`decrypt_failed > 0` 是行级错误，退出码 `1`；该账号已落地、
+`legacy_ids` 已写、凭据行缺失。不能靠重跑补，必须丢库重导或人工修复。
 
 报告写入失败也返回 `2`，但导入事务已经提交。遇到这种 `2` 先查库内
 `legacy_ids` 与行数（`summary.json` 可能不存在），再决定是否重跑；
@@ -150,7 +153,7 @@ yiban-cli migrate-legacy \
 | 核对项 | 看哪里 | 通过条件 |
 |---|---|---|
 | 输入行数 | 导出 `summary.json.rows` 与导入 `rows_read` | users/accounts 逐项相等；time_prefs/audit 的 `rows_read` 恒为 0，改用导出 `rows` 与 `reconciliation.jsonl` 行数核对 |
-| 落库守恒 | `rows_read`、`rows_imported`、`already_imported`、`row_errors` | users/accounts 各自相加相等；time_prefs/audit 不参与 |
+| 落库守恒 | `rows_read`、`rows_imported`、`already_imported`、`row_errors` | users/accounts 各自相加相等；该等式只在 `row_errors=0` 时成立 |
 | 用户/账号 | `rows_imported` | 首导为全量；重跑为 0 |
 | 归属 | `owner_resolution`、`fallback_owner_rows` | `fallback_owner_rows` 等于 `owner_resolution.fallback`；`unresolved` 与 `ambiguous` 为 0，否则逐条看行错误 |
 | 角色 | `role_mapping` | 首导 `admin->admin` 与 `user->user` 计数之和等于 `rows_imported.users`；重跑为空是正常 |
@@ -171,6 +174,10 @@ python3 -c 'import json,sys,collections; c=collections.Counter(json.loads(x)["ta
 
 无行错误时，四项计数应与导出 `summary.json.rows` 的
 users/accounts/time_prefs/audit 一致。
+
+`decrypt_failed` 行会同时计入 `rows_imported.accounts` 与
+`row_errors.accounts`：账号行已落地，凭据缺失。此时落库守恒等式不成立，
+不能拿它当唯一对账依据。
 
 以下查询只回计数与枚举值，不选邮箱、手机号或姓名。连接参数用 `PG*`
 环境或 `~/.pg_service.conf`，不要把 DSN 放进命令行。
@@ -222,10 +229,10 @@ python3 -c 'import json,sys; rows=[json.loads(x) for x in open(sys.argv[1], enco
 应等于 `credentials.created`；旧口令为空串的账号计 `credentials.missing`。
 两者之和应覆盖已导入账号（前提是导出物没有被改出裸串）。
 
-`decrypt_failed > 0` 时不要靠重跑：账号已落地并写 `legacy_ids`，重跑会跳过，
-重跑 summary 的 `credentials` 全为 0，缺失凭据不会补。只能丢弃新库重导
-（修旧钥、信封或导出物后），或按受控流程人工修复凭据行；修复后重新对拍
-库内凭据数。
+`decrypt_failed > 0` 时首导退出码为 1，但账号已落地并写 `legacy_ids`；
+重跑会跳过这些账号，summary 的 `credentials` 全为 0，缺失凭据不会补。
+只能丢弃新库重导（修旧钥、信封或导出物后），或按受控流程人工修复凭据行；
+修复后重新对拍库内凭据数。
 
 ## 5. 幂等重跑
 
@@ -294,13 +301,15 @@ dropdb --if-exists <新库名>
 
 ## 8. 生产窗口步骤
 
-1. T-1：在一次性/隔离 PG 上彩排；准备目标新库、master 与学校；
-   核对三个密钥形状与旧库备份；发维护通知。
+1. T-1：在一次性/隔离 PG 上彩排；准备目标新库。先启动临时入口
+   （直连或临时反代），用新 master 登录并建学校；master 可先用 CLI 建。
+   建完停掉临时入口。正式反代仍指旧栈。核对三个密钥形状与旧库备份；
+   发维护通知。
 2. T0：停旧栈写入（停服务或进维护模式），确认不再有写。
 3. T0：备份旧库，`chmod 600`，记录 sha256。
 4. T0：从冻结后的旧库导出到 `0700` 目录，记录导出 `summary.json`。
-5. T0：`migrate-legacy ... --strict`，记录退出码、stdout 与 stderr。
-   需要留 stderr 时重定向到 `0600` 文件。
+5. T0：`migrate-legacy ... --strict`，记录退出码与 stdout。
+   从 T0 起 stderr 必须直接落 `0600` 文件（畸形掩码值会原样出现）。
 6. T0：按第 4 节对账。任何一项不符即停止，不切流量；需要回退时恢复旧栈服务。
 7. T0：启动新栈到临时监听端口或临时入口，按第 6 节直连冒烟；
    不要切正式反代。
