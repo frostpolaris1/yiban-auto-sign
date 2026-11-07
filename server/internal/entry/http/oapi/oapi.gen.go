@@ -16,28 +16,28 @@ import (
 
 // Defines values for AccountBatchAction.
 const (
-	Delete        AccountBatchAction = "delete"
-	Pause         AccountBatchAction = "pause"
-	Restore       AccountBatchAction = "restore"
-	Resume        AccountBatchAction = "resume"
-	ReviewApprove AccountBatchAction = "review_approve"
-	ReviewReject  AccountBatchAction = "review_reject"
+	AccountBatchActionDelete        AccountBatchAction = "delete"
+	AccountBatchActionPause         AccountBatchAction = "pause"
+	AccountBatchActionRestore       AccountBatchAction = "restore"
+	AccountBatchActionResume        AccountBatchAction = "resume"
+	AccountBatchActionReviewApprove AccountBatchAction = "review_approve"
+	AccountBatchActionReviewReject  AccountBatchAction = "review_reject"
 )
 
 // Valid indicates whether the value is a known member of the AccountBatchAction enum.
 func (e AccountBatchAction) Valid() bool {
 	switch e {
-	case Delete:
+	case AccountBatchActionDelete:
 		return true
-	case Pause:
+	case AccountBatchActionPause:
 		return true
-	case Restore:
+	case AccountBatchActionRestore:
 		return true
-	case Resume:
+	case AccountBatchActionResume:
 		return true
-	case ReviewApprove:
+	case AccountBatchActionReviewApprove:
 		return true
-	case ReviewReject:
+	case AccountBatchActionReviewReject:
 		return true
 	default:
 		return false
@@ -539,6 +539,51 @@ func (e SignCalendarAccountState) Valid() bool {
 	case SignCalendarAccountStateSuccess:
 		return true
 	case SignCalendarAccountStateUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for UserBatchAction.
+const (
+	UserBatchActionDelete        UserBatchAction = "delete"
+	UserBatchActionDisable       UserBatchAction = "disable"
+	UserBatchActionEnable        UserBatchAction = "enable"
+	UserBatchActionResetPassword UserBatchAction = "reset_password"
+	UserBatchActionRestore       UserBatchAction = "restore"
+)
+
+// Valid indicates whether the value is a known member of the UserBatchAction enum.
+func (e UserBatchAction) Valid() bool {
+	switch e {
+	case UserBatchActionDelete:
+		return true
+	case UserBatchActionDisable:
+		return true
+	case UserBatchActionEnable:
+		return true
+	case UserBatchActionResetPassword:
+		return true
+	case UserBatchActionRestore:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for UserBatchItemStatus.
+const (
+	UserBatchItemStatusError UserBatchItemStatus = "error"
+	UserBatchItemStatusOk    UserBatchItemStatus = "ok"
+)
+
+// Valid indicates whether the value is a known member of the UserBatchItemStatus enum.
+func (e UserBatchItemStatus) Valid() bool {
+	switch e {
+	case UserBatchItemStatusError:
+		return true
+	case UserBatchItemStatusOk:
 		return true
 	default:
 		return false
@@ -2030,6 +2075,64 @@ type User struct {
 	Status      UserStatus `json:"status"`
 }
 
+// UserBatchAction The single action applied to every id in one user batch request. Each
+// value maps to the matching single-user flow and keeps its existing
+// audit, session-revocation, last-active-master and self-action
+// semantics.
+type UserBatchAction string
+
+// UserBatchItem One id's outcome. status ok means the item succeeded: a change was
+// applied and audited inside its own transaction, while an idempotent
+// item with nothing to change wrote no audit row. status error carries
+// the same stable code the matching single-item endpoint answers with:
+// not_found for a missing id, forbidden for a self-action item,
+// conflict for the last-active-master protection or a live email
+// clash on restore.
+type UserBatchItem struct {
+	// Code Stable codes frozen in P0. New values are additive only.
+	Code *ErrorCode `json:"code,omitempty"`
+	Id   string     `json:"id"`
+
+	// Message User-safe error text; present only on an error item.
+	Message *string             `json:"message,omitempty"`
+	Status  UserBatchItemStatus `json:"status"`
+
+	// TempPassword The one-time temporary password of a successful reset_password
+	// item. Each secret appears exactly once — only in this response —
+	// never in logs, audit rows or any later response.
+	TempPassword *string `json:"temp_password,omitempty"`
+}
+
+// UserBatchItemStatus defines model for UserBatchItem.Status.
+type UserBatchItemStatus string
+
+// UserBatchRequest defines model for UserBatchRequest.
+type UserBatchRequest struct {
+	// Action The single action applied to every id in one user batch request. Each
+	// value maps to the matching single-user flow and keeps its existing
+	// audit, session-revocation, last-active-master and self-action
+	// semantics.
+	Action UserBatchAction `json:"action"`
+
+	// CurrentPassword Required here (the shared CurrentPassword shape marks it optional;
+	// this endpoint does not). The acting user's own login password,
+	// used to re-authenticate the batch: a missing value answers 400,
+	// a wrong value 403, and repeated failures answer 429. It is never
+	// the signing account's platform credential, and it is never
+	// stored, logged or audited.
+	CurrentPassword string `json:"current_password"`
+
+	// Ids One to ten distinct user ids. The answer keeps this order. A
+	// missing id is a per-item error, not a request failure.
+	Ids []string `json:"ids"`
+}
+
+// UserBatchResult defines model for UserBatchResult.
+type UserBatchResult struct {
+	// Items One entry per request id, in the request order.
+	Items []UserBatchItem `json:"items"`
+}
+
 // UserCounts Group totals over all users, independent of role, status, q, group
 // and pagination. pending, normal and vacant count live users; deleted
 // counts soft-deleted users.
@@ -2727,6 +2830,13 @@ type UserCreateParams struct {
 	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
 }
 
+// UserBatchParams defines parameters for UserBatch.
+type UserBatchParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
 // UserLookupParams defines parameters for UserLookup.
 type UserLookupParams struct {
 	// Q Email prefix; wildcards in the value are literal.
@@ -2873,6 +2983,9 @@ type SchoolDefaultPhotoSetJSONRequestBody = SchoolDefaultPhotoUpdate
 
 // UserCreateJSONRequestBody defines body for UserCreate for application/json ContentType.
 type UserCreateJSONRequestBody = UserCreate
+
+// UserBatchJSONRequestBody defines body for UserBatch for application/json ContentType.
+type UserBatchJSONRequestBody = UserBatchRequest
 
 // UserDeleteJSONRequestBody defines body for UserDelete for application/json ContentType.
 type UserDeleteJSONRequestBody = UserDeleteRequest
@@ -3207,6 +3320,9 @@ type ServerInterface interface {
 	// UserCreate Create a master, admin or user account.
 	// (POST /api/users)
 	UserCreate(c *gin.Context, params UserCreateParams)
+	// UserBatch Apply one action to up to ten users.
+	// (POST /api/users/batch)
+	UserBatch(c *gin.Context, params UserBatchParams)
 	// UserLookup Restricted user search for owner pickers.
 	// (GET /api/users/lookup)
 	UserLookup(c *gin.Context, params UserLookupParams)
@@ -6147,6 +6263,49 @@ func (siw *ServerInterfaceWrapper) UserCreate(c *gin.Context) {
 	siw.Handler.UserCreate(c, params)
 }
 
+// UserBatch operation middleware
+func (siw *ServerInterfaceWrapper) UserBatch(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params UserBatchParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UserBatch(c, params)
+}
+
 // UserLookup operation middleware
 func (siw *ServerInterfaceWrapper) UserLookup(c *gin.Context) {
 
@@ -6502,6 +6661,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/auth/register", wrapper.AuthRegister)
 	router.GET(options.BaseURL+"/api/users", wrapper.UserList)
 	router.POST(options.BaseURL+"/api/users", wrapper.UserCreate)
+	router.POST(options.BaseURL+"/api/users/batch", wrapper.UserBatch)
 	router.GET(options.BaseURL+"/api/users/lookup", wrapper.UserLookup)
 	router.DELETE(options.BaseURL+"/api/users/:id", wrapper.UserDelete)
 	router.PATCH(options.BaseURL+"/api/users/:id", wrapper.UserUpdate)

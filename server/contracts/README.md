@@ -98,6 +98,8 @@ either side drifts.
 | POST | `/api/auth/register` | public | S05 |
 | GET | `/api/users` | master | P1 |
 | POST | `/api/users` | master | P1 |
+| POST | `/api/users/batch` | master | 870 |
+|  |  |  | 一次对 1–10 个用户执行同一动作（disable/enable/reset_password/delete/restore）：逐条独立事务、部分失败可见，`items` 与请求 `ids` 同序；与单条端点同口径——有变化写一行审计，幂等无变化（如已停用再 disable）不写；`temp_password` 只在成功的 `reset_password` 项出现一次；二次口令门形与单条端点一致，二次口令失败零写入；逐条失败只影响该条；未知动作、ids 空/超限/重复整批 400。 |
 | PATCH | `/api/users/:id` | master | UX-1 |
 | POST | `/api/users/:id/password-reset` | master | UX-1 |
 | DELETE | `/api/users/:id` | master | UX-1 |

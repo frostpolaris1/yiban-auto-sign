@@ -432,6 +432,57 @@ paths:
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
+  /api/users/batch:
+    post:
+      tags: [users]
+      operationId: UserBatch
+      summary: Apply one action to up to ten users.
+      description: |
+        Master only; admin and user answer 403 for the whole batch. The same
+        action runs against 1 to 10 users given by id: disable, enable,
+        reset_password, delete or restore. Each id is processed through the
+        matching single-user use case inside its own transaction: one failing
+        item neither blocks the items after it nor rolls back the ones
+        already applied. The request answers 200 whenever
+        it passes validation; every item then carries status ok or error, and
+        an errored item carries the same stable code the matching single-item
+        endpoint answers with, last-active-master and self-action protection
+        included. Items keep the single-item audit semantics: an item that
+        changes the row writes one audit row; an idempotent item with nothing
+        to change (disabling an already disabled user) succeeds and writes
+        none. The items order always matches the request ids order.
+        temp_password appears only on successful reset_password items; every
+        such secret is one-time, shown once here and never stored, logged
+        or audited.
+        Every request must carry current_password, the acting user's own
+        login password: a missing value answers 400, a wrong value 403, and
+        repeated failures answer 429. A rejected reauthentication writes
+        nothing: no user change and no audit row for any item.
+        An unknown action, an empty or duplicate id list, or more than ten
+        ids answer 400 validation_failed and run nothing. A single missing
+        id is a per-item error, never a request failure.
+      x-roles: [master]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserBatchRequest'
+      responses:
+        '200':
+          description: Per-item outcomes in request order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserBatchResult'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
+        default: { $ref: '#/components/responses/DefaultError' }
   /api/users/lookup:
     get:
       tags: [users]
@@ -3527,6 +3578,81 @@ components:
           description: |
             The one-time temporary password. It appears only in this
             response: never in logs, audit rows or any later response.
+    UserBatchAction:
+      type: string
+      description: |
+        The single action applied to every id in one user batch request. Each
+        value maps to the matching single-user flow and keeps its existing
+        audit, session-revocation, last-active-master and self-action
+        semantics.
+      enum:
+        - disable
+        - enable
+        - reset_password
+        - delete
+        - restore
+    UserBatchRequest:
+      type: object
+      required: [action, ids, current_password]
+      properties:
+        action:
+          $ref: '#/components/schemas/UserBatchAction'
+        ids:
+          type: array
+          minItems: 1
+          maxItems: 10
+          uniqueItems: true
+          items: { type: string }
+          description: |
+            One to ten distinct user ids. The answer keeps this order. A
+            missing id is a per-item error, not a request failure.
+        current_password:
+          type: string
+          minLength: 1
+          description: |
+            Required here (the shared CurrentPassword shape marks it optional;
+            this endpoint does not). The acting user's own login password,
+            used to re-authenticate the batch: a missing value answers 400,
+            a wrong value 403, and repeated failures answer 429. It is never
+            the signing account's platform credential, and it is never
+            stored, logged or audited.
+    UserBatchItem:
+      type: object
+      description: |
+        One id's outcome. status ok means the item succeeded: a change was
+        applied and audited inside its own transaction, while an idempotent
+        item with nothing to change wrote no audit row. status error carries
+        the same stable code the matching single-item endpoint answers with:
+        not_found for a missing id, forbidden for a self-action item,
+        conflict for the last-active-master protection or a live email
+        clash on restore.
+      required: [id, status]
+      properties:
+        id: { type: string }
+        status:
+          type: string
+          enum: [ok, error]
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        message:
+          type: string
+          description: User-safe error text; present only on an error item.
+        temp_password:
+          type: string
+          minLength: 1
+          description: |
+            The one-time temporary password of a successful reset_password
+            item. Each secret appears exactly once — only in this response —
+            never in logs, audit rows or any later response.
+    UserBatchResult:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          description: One entry per request id, in the request order.
+          items:
+            $ref: '#/components/schemas/UserBatchItem'
     SchoolStatus:
       type: string
       enum: [active, disabled]
