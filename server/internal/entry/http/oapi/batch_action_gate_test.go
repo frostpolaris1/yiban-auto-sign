@@ -24,17 +24,19 @@ import (
 )
 
 // TestBatchActionEnumMatchesAppConstants：契约生成值与 app 常量逐值一致。
+// 常量名带类型前缀是生成器的全局去重：delete/restore 与 UserBatchAction
+// 撞值后，两个枚举的全部成员都改为全名。
 func TestBatchActionEnumMatchesAppConstants(t *testing.T) {
 	pairs := []struct {
 		api    oapi.AccountBatchAction
 		action string
 	}{
-		{oapi.ReviewApprove, appaccount.BatchReviewApprove},
-		{oapi.ReviewReject, appaccount.BatchReviewReject},
-		{oapi.Pause, appaccount.BatchPause},
-		{oapi.Resume, appaccount.BatchResume},
-		{oapi.Delete, appaccount.BatchDelete},
-		{oapi.Restore, appaccount.BatchRestore},
+		{oapi.AccountBatchActionReviewApprove, appaccount.BatchReviewApprove},
+		{oapi.AccountBatchActionReviewReject, appaccount.BatchReviewReject},
+		{oapi.AccountBatchActionPause, appaccount.BatchPause},
+		{oapi.AccountBatchActionResume, appaccount.BatchResume},
+		{oapi.AccountBatchActionDelete, appaccount.BatchDelete},
+		{oapi.AccountBatchActionRestore, appaccount.BatchRestore},
 	}
 	if len(pairs) != 6 {
 		t.Fatalf("pairs = %d, want 6", len(pairs))

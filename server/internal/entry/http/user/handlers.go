@@ -58,6 +58,9 @@ type Service interface {
 	Restore(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) (appuser.Record, error)
 	// Purge 物理删除一个已软删用户；只允许 master。
 	Purge(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) error
+	// Batch 对 1–10 个用户执行同一动作，逐条独立事务、逐条审计；
+	// 请求级校验失败返回错误，单条失败写入该条结果并继续。
+	Batch(ctx context.Context, scope corescope.Scope, action string, ids []string, actor appaudit.Actor) ([]appuser.BatchItemResult, error)
 	Lookup(ctx context.Context, scope corescope.Scope, query string, limit int, exact bool) ([]appuser.LookupRef, error)
 	// MailNotify 与 SetMailNotify 只作用于调用者自己的开关；
 	// 目标 id 由入口层取会话用户，不来自请求字段。
@@ -289,6 +292,51 @@ func (h *Handler) Purge(c *gin.Context, id string, _ oapi.UserPurgeParams) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// Batch 实现 POST /api/users/batch。
+// 角色门槛（master）与逐条作用域判定都在用例层，本层不重判。
+// 二次口令与单条危险操作同形：缺失 400、错误 403、连续失败 429；
+// 失败零写入——用例不被调用，任何一条都不落库不审计。
+// 响应 items 与请求 ids 同序；单条失败不阻断后续。
+// temp_password 只在 reset_password 成功项出现一次，本层不留副本。
+func (h *Handler) Batch(c *gin.Context, _ oapi.UserBatchParams) {
+	scope, actor, ok := h.principal(c)
+	if !ok {
+		return
+	}
+	var body oapi.UserBatchRequest
+	if !decode(c, &body) {
+		return
+	}
+	if !h.reauthenticate(c, actor.UserID, &body.CurrentPassword) {
+		return
+	}
+	results, err := h.svc.Batch(c.Request.Context(), scope,
+		string(body.Action), body.Ids, actor)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	items := make([]oapi.UserBatchItem, 0, len(results))
+	for _, result := range results {
+		item := oapi.UserBatchItem{Id: result.ID}
+		if result.OK() {
+			item.Status = oapi.UserBatchItemStatusOk
+		} else {
+			item.Status = oapi.UserBatchItemStatusError
+			code := oapi.ErrorCode(result.Code)
+			message := result.Message
+			item.Code = &code
+			item.Message = &message
+		}
+		if result.TempPassword != "" {
+			temp := result.TempPassword
+			item.TempPassword = &temp
+		}
+		items = append(items, item)
+	}
+	respond.JSON(c.Writer, http.StatusOK, oapi.UserBatchResult{Items: items})
 }
 
 // Lookup 实现 GET /api/users/lookup。

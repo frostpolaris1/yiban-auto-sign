@@ -78,6 +78,10 @@ func (f *fakeUserService) Lookup(context.Context, corescope.Scope, string, int, 
 	return []appuser.LookupRef{}, nil
 }
 
+func (f *fakeUserService) Batch(context.Context, corescope.Scope, string, []string, appaudit.Actor) ([]appuser.BatchItemResult, error) {
+	return []appuser.BatchItemResult{}, nil
+}
+
 func (f *fakeUserService) MailNotify(context.Context, string) (bool, error) { return true, nil }
 
 func (f *fakeUserService) SetMailNotify(context.Context, string, bool, appaudit.Actor) (bool, error) {

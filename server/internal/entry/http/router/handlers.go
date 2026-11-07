@@ -33,6 +33,15 @@ func (s *server) UserCreate(c *gin.Context, params oapi.UserCreateParams) {
 	s.users.Create(c, params)
 }
 
+// UserBatch 委托用户处理器（静态段，紧邻 {id} 路由）。未装配时仍是 501。
+func (s *server) UserBatch(c *gin.Context, params oapi.UserBatchParams) {
+	if s.users == nil {
+		notImplemented(c)
+		return
+	}
+	s.users.Batch(c, params)
+}
+
 // UserUpdate 委托用户处理器。未装配时仍是 501。
 func (s *server) UserUpdate(c *gin.Context, id string, params oapi.UserUpdateParams) {
 	if s.users == nil {

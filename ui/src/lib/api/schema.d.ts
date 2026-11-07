@@ -269,6 +269,48 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/users/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply one action to up to ten users.
+         * @description Master only; admin and user answer 403 for the whole batch. The same
+         *     action runs against 1 to 10 users given by id: disable, enable,
+         *     reset_password, delete or restore. Each id is processed through the
+         *     matching single-user use case inside its own transaction: one failing
+         *     item neither blocks the items after it nor rolls back the ones
+         *     already applied. The request answers 200 whenever
+         *     it passes validation; every item then carries status ok or error, and
+         *     an errored item carries the same stable code the matching single-item
+         *     endpoint answers with, last-active-master and self-action protection
+         *     included. Items keep the single-item audit semantics: an item that
+         *     changes the row writes one audit row; an idempotent item with nothing
+         *     to change (disabling an already disabled user) succeeds and writes
+         *     none. The items order always matches the request ids order.
+         *     temp_password appears only on successful reset_password items; every
+         *     such secret is one-time, shown once here and never stored, logged
+         *     or audited.
+         *     Every request must carry current_password, the acting user's own
+         *     login password: a missing value answers 400, a wrong value 403, and
+         *     repeated failures answer 429. A rejected reauthentication writes
+         *     nothing: no user change and no audit row for any item.
+         *     An unknown action, an empty or duplicate id list, or more than ten
+         *     ids answer 400 validation_failed and run nothing. A single missing
+         *     id is a per-item error, never a request failure.
+         */
+        post: operations["UserBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/users/lookup": {
         parameters: {
             query?: never;
@@ -2265,6 +2307,58 @@ export interface components {
              */
             temp_password: string;
         };
+        /**
+         * @description The single action applied to every id in one user batch request. Each
+         *     value maps to the matching single-user flow and keeps its existing
+         *     audit, session-revocation, last-active-master and self-action
+         *     semantics.
+         * @enum {string}
+         */
+        UserBatchAction: "disable" | "enable" | "reset_password" | "delete" | "restore";
+        UserBatchRequest: {
+            action: components["schemas"]["UserBatchAction"];
+            /**
+             * @description One to ten distinct user ids. The answer keeps this order. A
+             *     missing id is a per-item error, not a request failure.
+             */
+            ids: string[];
+            /**
+             * @description Required here (the shared CurrentPassword shape marks it optional;
+             *     this endpoint does not). The acting user's own login password,
+             *     used to re-authenticate the batch: a missing value answers 400,
+             *     a wrong value 403, and repeated failures answer 429. It is never
+             *     the signing account's platform credential, and it is never
+             *     stored, logged or audited.
+             */
+            current_password: string;
+        };
+        /**
+         * @description One id's outcome. status ok means the item succeeded: a change was
+         *     applied and audited inside its own transaction, while an idempotent
+         *     item with nothing to change wrote no audit row. status error carries
+         *     the same stable code the matching single-item endpoint answers with:
+         *     not_found for a missing id, forbidden for a self-action item,
+         *     conflict for the last-active-master protection or a live email
+         *     clash on restore.
+         */
+        UserBatchItem: {
+            id: string;
+            /** @enum {string} */
+            status: "ok" | "error";
+            code?: components["schemas"]["ErrorCode"];
+            /** @description User-safe error text; present only on an error item. */
+            message?: string;
+            /**
+             * @description The one-time temporary password of a successful reset_password
+             *     item. Each secret appears exactly once — only in this response —
+             *     never in logs, audit rows or any later response.
+             */
+            temp_password?: string;
+        };
+        UserBatchResult: {
+            /** @description One entry per request id, in the request order. */
+            items: components["schemas"]["UserBatchItem"][];
+        };
         /** @enum {string} */
         SchoolStatus: "active" | "disabled";
         School: {
@@ -3620,6 +3714,42 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             409: components["responses"]["ConflictError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["TooManyRequestsError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    UserBatch: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Per-item outcomes in request order. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserBatchResult"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
             413: components["responses"]["PayloadTooLargeError"];
             429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
