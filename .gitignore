@@ -152,6 +152,7 @@ docs/dev/*
 docs/ops/*
 !docs/ops/config-map.md
 !docs/ops/legacy-import.md
+!docs/ops/cutover.md
 .superpowers/
 
 # ZCode 工具目录
