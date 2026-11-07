@@ -23,7 +23,6 @@ package schedule
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -193,8 +192,8 @@ func (s *Service) storeFresh(ctx context.Context, res windowResolution) (int, er
 // 版本竞争（ErrWindowStale）时整体重试一次；仍失败即上抛。
 // 事务由本方法自开：入口层不得再包一层事务（提交时点会随之改变）。
 // 成功且窗口真实变化后发 window.changed。
-// 容量缺口拒建（C2）：回 409 capacity_shortfall，**一行都不落库**，
-// 并先发 capacity.changed 让订阅方看到缺口数（见 publishCapacity）。
+// 容量缺口自然降级：按可用容量落库并照常成功，不做运行期自适应；
+// 缺口事件与管理员通知在落库后发出（见 publishCapacity）。
 // 停用任务拒建计划（k0y-6）：回 conflict，且在发现平台窗口之前拒绝。
 func (s *Service) Build(ctx context.Context, in Input) (Preview, error) {
 	if err := validateInput(in); err != nil {
@@ -209,11 +208,10 @@ func (s *Service) Build(ctx context.Context, in Input) (Preview, error) {
 		p, changed, err = s.buildOnce(ctx, in)
 	}
 	if err != nil {
-		// 缺口路径带回已算好的 Preview；其余错误是零值，事件自然不发。
-		s.publishCapacity(ctx, in, p)
 		return Preview{}, err
 	}
 	s.publishWindow(ctx, in, p, changed)
+	s.publishCapacity(ctx, in, p)
 	return p, nil
 }
 
@@ -441,20 +439,20 @@ func scopeAllowsSchool(scope corescope.Scope, schoolID string) bool {
 	return false
 }
 
-// buildOnce 是一次完整尝试：预览 → 容量门 → 同事务写入。
+// buildOnce 是一次完整尝试：预览 → 容量降级 → 同事务写入。
 // 返回值带 changed：窗口是否真实重写（发布判据用）。
-// 容量缺口在写库之前拒绝：Preview 原样带回，供调用方报缺口数。
+// 容量缺口自然降级：按可用容量截断计划行（能排多少排多少），
+// Preview 的数字保持真实口径，缺口在落库后由调用方发出。
 func (s *Service) buildOnce(ctx context.Context, in Input) (Preview, bool, error) {
 	p, res, err := s.previewWithWindow(ctx, in, policyLive)
 	if err != nil {
 		return Preview{}, false, err
 	}
+	rows := planRows(in, p.Rows)
 	if p.Shortfall > 0 {
-		// 超卖计划不落库：尾段账号必然落空，还让管理员以为已排好。
-		return p, false, shortfallError(p)
+		rows, p = degradeToCapacity(in, p)
 	}
 	changed := res.changed()
-	rows := planRows(in, p.Rows)
 	err = s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
 		if changed {
 			version, err := s.deps.Windows.PutWindow(ctx, res.effective, res.version())
@@ -475,30 +473,21 @@ func (s *Service) buildOnce(ctx context.Context, in Input) (Preview, bool, error
 	return p, changed, nil
 }
 
-// shortfallError 把容量缺口翻成 409 capacity_shortfall。
-// details 带需求、容量、缺口与瓶颈：调用方不必重算，也不必从 message 里抠数字。
-// 建议值只在真能加通道解决时出现（workers 且有不超过上限的总数）。
-func shortfallError(p Preview) error {
-	message := fmt.Sprintf("容量不足：需求 %d，容量 %d", p.Demand, p.Capacity)
-	switch p.Binding {
-	case corecapacity.BindingWorkers:
-		if p.SuggestedWorkers > 0 {
-			message += fmt.Sprintf("；通道是瓶颈，建议 YIBAN_WORKERS=%d", p.SuggestedWorkers)
-		}
-	case corecapacity.BindingEgressRate:
-		message += "；出口速率是瓶颈，建议提高 YIBAN_EGRESS_RATE 或增加出口标识"
+// degradeToCapacity 把预览截到可用容量：能排多少排多少。
+// 行序保持铺点顺序：front 模式前 capacity 行恰是最早一段，
+// uniform 模式前 capacity 行是均匀铺开的子集；直方图按截后行重算，
+// 与返回的行同源。demand/capacity/shortfall/瓶颈/建议值一律不动：
+// 缺口是事实，响应与告警都要如实看到。
+// 调用前提是 Shortfall>0，此时 capacity < demand == len(rows)。
+func degradeToCapacity(in Input, p Preview) ([]coreschedule.PlanRow, Preview) {
+	kept := p.Rows[:p.Capacity]
+	hist := make(map[int]int, len(p.Histogram))
+	for _, r := range kept {
+		hist[coreplan.SlotOf(r.RunAt.Sub(p.WindowStart))]++
 	}
-	err := coreerrs.New(coreerrs.CodeCapacityShortfall, message)
-	err.Details = map[string]any{
-		"demand":    p.Demand,
-		"capacity":  p.Capacity,
-		"shortfall": p.Shortfall,
-		"binding":   string(p.Binding),
-	}
-	if p.SuggestedWorkers > 0 {
-		err.Details["suggested_workers"] = p.SuggestedWorkers
-	}
-	return err
+	p.Rows = kept
+	p.Histogram = hist
+	return planRows(in, kept), p
 }
 
 // publishWindow 在窗口真实变化后发 window.changed。

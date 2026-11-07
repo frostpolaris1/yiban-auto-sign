@@ -224,19 +224,17 @@ password hash. Other 429 answers (time-preference cooldown, capacity) may omit
 `Retry-After`. The reset flow checks the one-time token before hashing the new
 password.
 
-A plan build refuses a capacity shortfall with 409 `capacity_shortfall` and
-writes no rows. When the demand exceeds what the window can carry at the
-configured concurrency, average duration and egress rate, the build refuses
-instead of writing a plan whose tail cannot finish; a first build of the day
-therefore leaves the day without a plan. Rows written by an earlier successful
-build are not deleted by a later refusal. `details` carries `demand`,
-`capacity`, `shortfall`, `binding` (`workers` when raising concurrency fits
-the demand, or when the demand needs more than the 64-channel cap and no
-number is given; `egress_rate` when raising concurrency alone cannot fit it)
-and `suggested_workers` when such a count exists. Preview and the
-capacity report still show the numbers, and the rejection publishes
-`capacity.changed`. A daily build that fails this way logs one error line, so
-watch that line or the event.
+A plan build does not refuse a capacity shortfall. When the demand exceeds
+what the window can carry at the configured concurrency, average duration and
+egress rate, the build degrades: it persists only the rows that fit and the
+request succeeds. The response and the preview keep the true numbers
+(`demand`, `capacity`, `shortfall`), and the shortfall publishes
+`capacity.changed` plus an administrator `capacity_rejected` notification
+that names the gap and, when raising concurrency within the 64-channel cap
+fits the demand, the suggested `YIBAN_WORKERS` count. Rows written by an
+earlier build are not deleted; a rebuild only inserts what is missing. The
+409 `capacity_shortfall` code stays in the error enum for wire compatibility
+but is no longer returned.
 
 ## SMTP delivery (reset, test and notification mail)
 

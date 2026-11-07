@@ -790,6 +790,9 @@ type AccountBatchItem struct {
 	// Code Stable codes frozen in P0. New values are additive only.
 	// task_ambiguous is retained for wire compatibility but is no longer
 	// returned: several equivalent tasks are resolved by random choice.
+	// capacity_shortfall is retained for wire compatibility but is no
+	// longer returned: a shortfall plan degrades to the available
+	// capacity and succeeds.
 	Code *ErrorCode `json:"code,omitempty"`
 	Id   string     `json:"id"`
 
@@ -844,6 +847,9 @@ type AccountBatchSignItem struct {
 	// Code Stable codes frozen in P0. New values are additive only.
 	// task_ambiguous is retained for wire compatibility but is no longer
 	// returned: several equivalent tasks are resolved by random choice.
+	// capacity_shortfall is retained for wire compatibility but is no
+	// longer returned: a shortfall plan degrades to the available
+	// capacity and succeeds.
 	Code *ErrorCode `json:"code,omitempty"`
 	Id   string     `json:"id"`
 
@@ -1389,6 +1395,9 @@ type ErrorBody struct {
 	// Code Stable codes frozen in P0. New values are additive only.
 	// task_ambiguous is retained for wire compatibility but is no longer
 	// returned: several equivalent tasks are resolved by random choice.
+	// capacity_shortfall is retained for wire compatibility but is no
+	// longer returned: a shortfall plan degrades to the available
+	// capacity and succeeds.
 	Code ErrorCode `json:"code"`
 
 	// Details Machine-readable extras; an empty object when unused.
@@ -1404,6 +1413,9 @@ type ErrorBody struct {
 // ErrorCode Stable codes frozen in P0. New values are additive only.
 // task_ambiguous is retained for wire compatibility but is no longer
 // returned: several equivalent tasks are resolved by random choice.
+// capacity_shortfall is retained for wire compatibility but is no
+// longer returned: a shortfall plan degrades to the available
+// capacity and succeeds.
 type ErrorCode string
 
 // ForgotPasswordRequest defines model for ForgotPasswordRequest.
@@ -2156,6 +2168,9 @@ type UserBatchItem struct {
 	// Code Stable codes frozen in P0. New values are additive only.
 	// task_ambiguous is retained for wire compatibility but is no longer
 	// returned: several equivalent tasks are resolved by random choice.
+	// capacity_shortfall is retained for wire compatibility but is no
+	// longer returned: a shortfall plan degrades to the available
+	// capacity and succeeds.
 	Code *ErrorCode `json:"code,omitempty"`
 	Id   string     `json:"id"`
 

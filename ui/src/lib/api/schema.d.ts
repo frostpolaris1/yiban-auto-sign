@@ -1555,12 +1555,14 @@ export interface paths {
          *     and writes nothing. Only the current business day is accepted; any
          *     other day is 400 validation_failed.
          *
-         *     Capacity shortfall returns 409 capacity_shortfall and writes nothing:
-         *     the demand exceeds what the window can carry at the configured
-         *     concurrency, average duration and egress rate. `details` carries
-         *     demand, capacity, shortfall, binding, and suggested_workers when
-         *     raising the channel count within the 64-channel cap fits the demand.
-         *     Preview still reports the numbers.
+         *     Capacity shortfall no longer returns 409 capacity_shortfall: the
+         *     plan is built against the available capacity and the request
+         *     succeeds. Only rows that fit are persisted; the window cache is
+         *     still written; the shortfall stays visible in the response numbers,
+         *     and an administrator capacity_rejected notification carries the gap
+         *     with the suggested channel count. The 409 value remains in the
+         *     error-code enum for wire compatibility only. Preview still reports
+         *     the numbers.
          */
         post: operations["SchedulePlan"];
         delete?: never;
@@ -2194,6 +2196,9 @@ export interface components {
          * @description Stable codes frozen in P0. New values are additive only.
          *     task_ambiguous is retained for wire compatibility but is no longer
          *     returned: several equivalent tasks are resolved by random choice.
+         *     capacity_shortfall is retained for wire compatibility but is no
+         *     longer returned: a shortfall plan degrades to the available
+         *     capacity and succeeds.
          * @enum {string}
          */
         ErrorCode: "validation_failed" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "rate_limited" | "capacity_exceeded" | "capacity_shortfall" | "window_closed" | "already_signed" | "sign_running" | "task_ambiguous" | "photo_missing" | "photo_invalid" | "photo_rejected" | "location_out_of_range" | "upstream_unavailable" | "internal_error";

@@ -45,6 +45,7 @@ import (
 	appegress "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/egress"
 	appevents "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/events"
 	applocation "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/location"
+	appnotify "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/notify"
 	appphotos "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/photos"
 	appschedule "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/schedule"
 	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
@@ -278,10 +279,24 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 	if err != nil {
 		t.Fatalf("new worker service: %v", err)
 	}
+	// 通知投递与生产装配同形：SMTP 未配置（Mail 为 nil）时账本行落
+	// skipped(smtp_not_configured)，站内信行照常落库——容量缺口事件
+	// 的可观察面就是 notifications 表。
+	capacityAlerts, err := appnotify.NewDispatcher(appnotify.DispatcherDeps{
+		Notes:    pg.NewNotificationRepo(db),
+		Ledger:   pg.NewNotificationDeliveryRepo(db),
+		Audience: pg.NewNotificationAudienceRepo(db),
+		Clock:    clk,
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("new notification dispatcher: %v", err)
+	}
 	scheduleSvc, err := appschedule.NewService(appschedule.Deps{
 		Windows: e.sched, Plans: e.sched, Accounts: e.sched,
 		Discover: e.discover, Prefs: e.prefs, Tx: db,
-		Notifier: assembly.ScheduleNotifier{Broker: e.broker, Clock: clk},
+		Notifier:       assembly.ScheduleNotifier{Broker: e.broker, Clock: clk},
+		CapacityAlerts: capacityAlerts,
 	})
 	if err != nil {
 		t.Fatalf("new schedule service: %v", err)
