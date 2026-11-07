@@ -1,6 +1,7 @@
 package signing_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
 	appaudit "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/audit"
@@ -484,5 +486,304 @@ func TestSignCrossScopeNotFound(t *testing.T) {
 	}
 	if manual.calls != 0 {
 		t.Fatalf("可见面失败后不得入队, manual=%d", manual.calls)
+	}
+}
+
+// --- 批量签到 --------------------------------------------------------------
+
+// batchAccess 按 id 给出可见面结论：errs 命中报错，status 命中用该状态，
+// 其余视为 active。calls 记录访问顺序，供「失败继续」断言使用。
+type batchAccess struct {
+	errs   map[string]error
+	status map[string]appaccount.Status
+	calls  []string
+}
+
+func (f *batchAccess) Get(_ context.Context, _ corescope.Scope, id string) (appaccount.Record, error) {
+	f.calls = append(f.calls, id)
+	if err, ok := f.errs[id]; ok {
+		return appaccount.Record{}, err
+	}
+	status := f.status[id]
+	if status == "" {
+		status = appaccount.StatusActive
+	}
+	return appaccount.Record{Status: status}, nil
+}
+
+// batchManual 按 id 给出入队结论：errs 命中报错，其余回 task-<id>。
+type batchManual struct {
+	errs  map[string]error
+	calls []string
+}
+
+func (f *batchManual) Request(_ context.Context, accountID string, _ appaudit.Actor) (string, error) {
+	f.calls = append(f.calls, accountID)
+	if err, ok := f.errs[accountID]; ok {
+		return "", err
+	}
+	return "task-" + accountID, nil
+}
+
+// batchLimiter 按 id 拒绝限流：denied 命中即拒，其余放行。
+// calls 记录判定顺序，供「逐项判定、每 id 判一次」断言使用。
+type batchLimiter struct {
+	denied map[string]bool
+	calls  []string
+}
+
+func (f *batchLimiter) AllowAccount(id string) (bool, time.Duration) {
+	f.calls = append(f.calls, id)
+	return !f.denied[id], 0
+}
+
+// newBatchSignRouter 装配带全部接缝的路由（限流全放行），
+// 供批量用例按 id 定制结论。
+func newBatchSignRouter(t *testing.T, authz *fakeAuthorizer, manual *batchManual, access *batchAccess) (http.Handler, coreauth.Issued) {
+	return newBatchSignRouterLimiter(t, authz, manual, access, &batchLimiter{})
+}
+
+// newBatchSignRouterLimiter 装配指定限流器的路由；limiter 为 nil 时
+// 不注入，供「未接线 500」用例使用。
+func newBatchSignRouterLimiter(t *testing.T, authz *fakeAuthorizer, manual *batchManual, access *batchAccess, limiter signinghttp.AccountLimiter) (http.Handler, coreauth.Issued) {
+	t.Helper()
+	issuer := &fakeIssuer{secret: []byte("0123456789abcdef0123456789abcdef")}
+	issued, err := issuer.Issue(context.Background(), coreauth.User{
+		ID: "u1", Email: "boss@example.com", Role: coreauth.RoleMaster, Status: coreauth.StatusActive,
+	})
+	if err != nil {
+		t.Fatalf("issue session: %v", err)
+	}
+	handler := signinghttp.NewHandler(&fakeService{}, authz, &fakeVerifier{}).
+		WithManual(manual).
+		WithAccess(access)
+	if limiter != nil {
+		handler = handler.WithAccountLimiter(limiter)
+	}
+	engine, err := router.New(router.Options{Sessions: issuer, InsecureCookies: true, Signing: handler})
+	if err != nil {
+		t.Fatalf("router: %v", err)
+	}
+	return engine, issued
+}
+
+func callBatchSign(t *testing.T, engine http.Handler, issued coreauth.Issued, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/accounts/batch/sign", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: coreauth.InsecureCookieName, Value: issued.Token})
+	req.Header.Set("X-CSRF-Token", issued.CSRFToken)
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+	return rec
+}
+
+func decodeBatchResult(t *testing.T, rec *httptest.ResponseRecorder) oapi.AccountBatchSignResult {
+	t.Helper()
+	var result oapi.AccountBatchSignResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode %q: %v", rec.Body.String(), err)
+	}
+	return result
+}
+
+// user 整批 403：角色门先于任何逐条动作，一条都不入队。
+func TestBatchSignUserForbidden(t *testing.T) {
+	manual := &batchManual{}
+	engine, issued := newBatchSignRouter(t,
+		&fakeAuthorizer{scope: corescope.User("u1")}, manual, &batchAccess{})
+	rec := callBatchSign(t, engine, issued, oapi.AccountBatchSignRequest{Ids: []string{"acc-1"}})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: %s", rec.Code, rec.Body.String())
+	}
+	if len(manual.calls) != 0 {
+		t.Fatalf("user 不得入队任何一条, manual=%v", manual.calls)
+	}
+}
+
+// ids 空、超过 10 个、重复一律整批 400，一条都不跑。
+func TestBatchSignValidationRejects(t *testing.T) {
+	manual := &batchManual{}
+	engine, issued := newBatchSignRouter(t,
+		&fakeAuthorizer{scope: corescope.Master()}, manual, &batchAccess{})
+	cases := map[string][]string{
+		"空":   {},
+		"11个": {"a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "a10", "a11"},
+		"重复":  {"acc-1", "acc-2", "acc-1"},
+	}
+	for name, ids := range cases {
+		rec := callBatchSign(t, engine, issued, oapi.AccountBatchSignRequest{Ids: ids})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400: %s", name, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "validation_failed") {
+			t.Fatalf("%s: body = %s, want validation_failed", name, rec.Body.String())
+		}
+	}
+	if len(manual.calls) != 0 {
+		t.Fatalf("校验失败不得入队任何一条, manual=%v", manual.calls)
+	}
+}
+
+// 混合批次：顺序同请求；成功项带 task_id 不带 code/message；
+// 错误项带稳定 code 不带 task_id；一条失败不中断后续。
+func TestBatchSignItemsKeepOrderAndShape(t *testing.T) {
+	access := &batchAccess{
+		errs:   map[string]error{"acc-b": errs.New(errs.CodeNotFound, "account not found")},
+		status: map[string]appaccount.Status{"acc-c": appaccount.StatusPausedAdmin},
+	}
+	manual := &batchManual{errs: map[string]error{"acc-d": appworker.ErrWindowClosed}}
+	engine, issued := newBatchSignRouter(t, &fakeAuthorizer{scope: corescope.Master()}, manual, access)
+	ids := []string{"acc-a", "acc-b", "acc-c", "acc-d", "acc-e"}
+	rec := callBatchSign(t, engine, issued, oapi.AccountBatchSignRequest{Ids: ids})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	result := decodeBatchResult(t, rec)
+	if len(result.Items) != len(ids) {
+		t.Fatalf("items = %d, want %d", len(result.Items), len(ids))
+	}
+	for i, id := range ids {
+		if result.Items[i].Id != id {
+			t.Fatalf("items[%d].id = %s, want %s（顺序必须同请求）", i, result.Items[i].Id, id)
+		}
+	}
+	ok := result.Items[0]
+	if ok.Status != oapi.AccountBatchSignItemStatusOk || ok.TaskId == nil || *ok.TaskId != "task-acc-a" {
+		t.Fatalf("items[0] = %+v, want ok with task_id", ok)
+	}
+	if ok.Code != nil || ok.Message != nil {
+		t.Fatalf("成功项不得带 code/message: %+v", ok)
+	}
+	missing := result.Items[1]
+	if missing.Status != oapi.AccountBatchSignItemStatusError || missing.Code == nil || *missing.Code != oapi.NotFound {
+		t.Fatalf("items[1] = %+v, want error not_found", missing)
+	}
+	if missing.TaskId != nil {
+		t.Fatalf("错误项不得带 task_id: %+v", missing)
+	}
+	inactive := result.Items[2]
+	if inactive.Code == nil || *inactive.Code != oapi.Conflict {
+		t.Fatalf("items[2] = %+v, want error conflict", inactive)
+	}
+	closed := result.Items[3]
+	if closed.Code == nil || *closed.Code != oapi.WindowClosed {
+		t.Fatalf("items[3] = %+v, want error window_closed", closed)
+	}
+	last := result.Items[4]
+	if last.Status != oapi.AccountBatchSignItemStatusOk || last.TaskId == nil {
+		t.Fatalf("items[4] = %+v, want ok（错误不中断后续）", last)
+	}
+	// acc-b 卡在可见面、acc-c 卡在非 active 门，都不得到入队口；
+	// 其余三条照常入队。
+	want := []string{"acc-a", "acc-d", "acc-e"}
+	if strings.Join(manual.calls, ",") != strings.Join(want, ",") {
+		t.Fatalf("manual = %v, want %v", manual.calls, want)
+	}
+	if len(access.calls) != len(ids) {
+		t.Fatalf("access = %v, want 全部 %d 个 id", access.calls, len(ids))
+	}
+}
+
+// 未装配 signing 处理器：501，与单条端点同门。
+func TestBatchSignUnwired(t *testing.T) {
+	issuer := &fakeIssuer{secret: []byte("0123456789abcdef0123456789abcdef")}
+	issued, err := issuer.Issue(context.Background(), coreauth.User{
+		ID: "u1", Email: "boss@example.com", Role: coreauth.RoleMaster, Status: coreauth.StatusActive,
+	})
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	engine, err := router.New(router.Options{Sessions: issuer, InsecureCookies: true})
+	if err != nil {
+		t.Fatalf("router: %v", err)
+	}
+	rec := callBatchSign(t, engine, issued, oapi.AccountBatchSignRequest{Ids: []string{"acc-1"}})
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// 账号键限流命中：per-item rate_limited，后续 id 照常判定入队；
+// 每个 id 判一次限流，先于可见面（与单条端点同序）。
+func TestBatchSignAccountLimitHit(t *testing.T) {
+	limiter := &batchLimiter{denied: map[string]bool{"acc-b": true}}
+	manual := &batchManual{}
+	engine, issued := newBatchSignRouterLimiter(t,
+		&fakeAuthorizer{scope: corescope.Master()}, manual, &batchAccess{}, limiter)
+	rec := callBatchSign(t, engine, issued,
+		oapi.AccountBatchSignRequest{Ids: []string{"acc-a", "acc-b", "acc-c"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	result := decodeBatchResult(t, rec)
+	if len(result.Items) != 3 {
+		t.Fatalf("items = %d, want 3", len(result.Items))
+	}
+	limited := result.Items[1]
+	if limited.Status != oapi.AccountBatchSignItemStatusError ||
+		limited.Code == nil || *limited.Code != oapi.RateLimited || limited.TaskId != nil {
+		t.Fatalf("items[1] = %+v, want error rate_limited without task_id", limited)
+	}
+	if result.Items[0].TaskId == nil || *result.Items[0].TaskId != "task-acc-a" {
+		t.Fatalf("items[0] = %+v, want ok（前项不受影响）", result.Items[0])
+	}
+	if result.Items[2].TaskId == nil || *result.Items[2].TaskId != "task-acc-c" {
+		t.Fatalf("items[2] = %+v, want ok（命中项不拖垮整批）", result.Items[2])
+	}
+	if strings.Join(manual.calls, ",") != "acc-a,acc-c" {
+		t.Fatalf("manual = %v, want acc-a,acc-c", manual.calls)
+	}
+	if strings.Join(limiter.calls, ",") != "acc-a,acc-b,acc-c" {
+		t.Fatalf("limiter = %v, want 逐项判定三个 id", limiter.calls)
+	}
+}
+
+// 限流器未接线＝装配错误：500 响亮失败，契约 429 不得静默不可达。
+func TestBatchSignWithoutLimiterFailsLoud(t *testing.T) {
+	engine, issued := newBatchSignRouterLimiter(t,
+		&fakeAuthorizer{scope: corescope.Master()}, &batchManual{}, &batchAccess{}, nil)
+	rec := callBatchSign(t, engine, issued, oapi.AccountBatchSignRequest{Ids: []string{"acc-1"}})
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("未接线 status = %d, want 500: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "internal_error") {
+		t.Fatalf("body = %s, want internal_error", rec.Body.String())
+	}
+}
+
+// 限流键归一与单条端点同口径：id 先小写去首尾空白再判桶，
+// 大小写变体不得拆桶；Get 与入队仍收原样 id。
+func TestBatchSignLimitKeyNormalized(t *testing.T) {
+	limiter := &batchLimiter{denied: map[string]bool{"acc-b": true}}
+	access := &batchAccess{}
+	manual := &batchManual{}
+	engine, issued := newBatchSignRouterLimiter(t,
+		&fakeAuthorizer{scope: corescope.Master()}, manual, access, limiter)
+	rec := callBatchSign(t, engine, issued,
+		oapi.AccountBatchSignRequest{Ids: []string{"ACC-B", "ACC-A"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	result := decodeBatchResult(t, rec)
+	if result.Items[0].Code == nil || *result.Items[0].Code != oapi.RateLimited {
+		t.Fatalf("items[0] = %+v, want rate_limited（大写 id 须命中归一键）", result.Items[0])
+	}
+	if result.Items[1].TaskId == nil || *result.Items[1].TaskId != "task-ACC-A" {
+		t.Fatalf("items[1] = %+v, want ok（限流键归一不改变入队 id）", result.Items[1])
+	}
+	if strings.Join(limiter.calls, ",") != "acc-b,acc-a" {
+		t.Fatalf("limiter keys = %v, want 归一后小写键", limiter.calls)
+	}
+	// 限流只归一键：Get 与入队仍收原样 id。
+	if strings.Join(access.calls, ",") != "ACC-A" {
+		t.Fatalf("access = %v, want ACC-A（原样 id）", access.calls)
+	}
+	if strings.Join(manual.calls, ",") != "ACC-A" {
+		t.Fatalf("manual = %v, want ACC-A（原样 id）", manual.calls)
 	}
 }

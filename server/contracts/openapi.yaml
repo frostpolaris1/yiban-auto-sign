@@ -1197,6 +1197,60 @@ paths:
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
+  /api/accounts/batch/sign:
+    post:
+      tags: [accounts]
+      operationId: AccountBatchSign
+      summary: Queue manual signs for up to ten accounts.
+      description: |
+        Master and admin only; user answers 403 for the whole batch. Each of
+        the 1 to 10 ids runs through the same flow as the single-item sign:
+        a missing or out-of-scope id is a per-item not_found, a malformed
+        (non-UUID) id is a per-item validation_failed — the same answer the
+        single-item endpoint gives — an account that is not active is a
+        per-item conflict, and queueing itself reuses the worker request with
+        its stable codes: already_signed, sign_running, window_closed,
+        task_ambiguous. An ok item only queues today's task row and carries
+        its task_id; the caller does not wait for execution. Items keep the
+        request order; one failing item neither blocks the items after it nor
+        rolls back the ones already queued.
+        This endpoint requires no current_password reauthentication, matching
+        the single-item sign.
+        Rate limiting matches the single-item sign: the inbound limiter caps
+        the client IP for the whole batch, and the per-account key limit runs
+        per item before queueing, so a limited item answers rate_limited
+        while the rest of the batch still runs.
+        Deliberate difference from the old line: the old Python service
+        serialized signs behind a process-local 60-second cooldown and one
+        host-wide sign queue; those are not carried over. Here the IP and
+        per-account limits, the worker capacity and the account-level unique
+        task row own the concurrency semantics, and a batch never queues the
+        same account twice because ids are unique.
+        An empty id list, more than ten ids or duplicate ids answer 400
+        validation_failed and queue nothing. A single bad id is a per-item
+        error, never a request failure.
+      x-roles: [master, admin]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountBatchSignRequest'
+      responses:
+        '200':
+          description: Per-item outcomes in request order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountBatchSignResult'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
+        default: { $ref: '#/components/responses/DefaultError' }
   /api/accounts/{id}:
     get:
       tags: [accounts]
@@ -4545,6 +4599,53 @@ components:
           description: One entry per request id, in the request order.
           items:
             $ref: '#/components/schemas/AccountBatchItem'
+    AccountBatchSignRequest:
+      type: object
+      required: [ids]
+      properties:
+        ids:
+          type: array
+          minItems: 1
+          maxItems: 10
+          uniqueItems: true
+          items: { type: string }
+          description: |
+            One to ten distinct account ids. The answer keeps this order. A
+            missing, malformed or out-of-scope id is a per-item error, not a
+            request failure.
+    AccountBatchSignItem:
+      type: object
+      description: |
+        One id's outcome. status ok means the sign was queued with the same
+        202 semantics as the single-item sign: today's task row exists and
+        task_id is set. status error carries the same stable code the
+        single-item endpoint answers with: not_found for a missing or
+        out-of-scope id, validation_failed for a malformed (non-UUID) id,
+        conflict for a non-active account, and already_signed /
+        sign_running / window_closed / task_ambiguous from the queue itself.
+      required: [id, status]
+      properties:
+        id: { type: string }
+        status:
+          type: string
+          enum: [ok, error]
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        message:
+          type: string
+          description: User-safe error text; present only on an error item.
+        task_id:
+          type: string
+          description: The queued task row id; present only on an ok item.
+    AccountBatchSignResult:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          description: One entry per request id, in the request order.
+          items:
+            $ref: '#/components/schemas/AccountBatchSignItem'
     HealthStatus:
       type: object
       required: [status]

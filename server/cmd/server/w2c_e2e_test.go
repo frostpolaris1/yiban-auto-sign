@@ -67,6 +67,7 @@ import (
 	locationhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/location"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/oapi"
 	photoshttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/photos"
+	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/ratelimit"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/router"
 	schedulehttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/schedule"
 	schoolhttp "github.com/frostpolaris1/yiban-auto-sign/server/internal/entry/http/school"
@@ -308,8 +309,19 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 	if err != nil {
 		t.Fatalf("new time preference service: %v", err)
 	}
+	// 批量签到的账号键限流：与装配同形用真 Guard，账号桶取默认档
+	// （10/min、burst 5），IP 桶给高额不咬——IP 面由中间件门单独钉。
+	accountThrottle, err := ratelimit.NewThrottle(ratelimit.Quota{PerMinute: 10, Burst: 5})
+	if err != nil {
+		t.Fatalf("new account throttle: %v", err)
+	}
+	ipThrottle, err := ratelimit.NewThrottle(ratelimit.Quota{PerMinute: 600, Burst: 600})
+	if err != nil {
+		t.Fatalf("new ip throttle: %v", err)
+	}
 	signingHandler := signinghttp.NewHandler(accountSvc, adminSvc, e.provider).
-		WithManual(e.worker).WithAccess(accountSvc)
+		WithManual(e.worker).WithAccess(accountSvc).
+		WithAccountLimiter(&ratelimit.Guard{IP: ipThrottle, Account: accountThrottle})
 	statsSvc, err := appstats.NewService(pg.NewStatsRepo(e.db))
 	if err != nil {
 		t.Fatalf("new stats service: %v", err)

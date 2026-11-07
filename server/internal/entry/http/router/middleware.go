@@ -187,6 +187,7 @@ var rateLimitedPaths = map[string]struct{}{
 	"/api/auth/change-password": {},
 	"/api/accounts/:id/verify":  {},
 	"/api/accounts/:id/sign":    {},
+	"/api/accounts/batch/sign":  {},
 }
 
 // rateLimitInbound 在解析会话之前按客户端 IP 限流。
