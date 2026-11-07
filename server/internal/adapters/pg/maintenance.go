@@ -65,18 +65,8 @@ func (r *MaintenanceRepo) DeleteAccountsDeletedBefore(ctx context.Context, befor
 		if err != nil || len(ids) == 0 {
 			return err
 		}
-		if err := deleteSignTaskChunks(ctx, r.db, ids); err != nil {
-			return err
-		}
-		// 重验 deleted_at：批内被恢复的账号不动（活行绝不物理删除）。
-		ct, err := r.db.q(ctx).Exec(ctx, `
-			DELETE FROM accounts
-			 WHERE id = ANY($1::text[]::uuid[]) AND deleted_at < $2`, ids, before)
-		if err != nil {
-			return mapError(err)
-		}
-		deleted = ct.RowsAffected()
-		return nil
+		deleted, err = purgeAccountsByIDs(ctx, r.db, ids, &before)
+		return err
 	})
 	if err != nil {
 		return 0, err
@@ -101,46 +91,89 @@ func (r *MaintenanceRepo) DeleteUsersDeletedBefore(ctx context.Context, before t
 		if err != nil || len(ids) == 0 {
 			return err
 		}
-		accountIDs, err := selectAccountsOfUsers(ctx, r.db, ids)
-		if err != nil {
-			return err
-		}
-		// 名下账号的任务行先于账号行：sign_tasks.account_id 是 RESTRICT。
-		if err := deleteSignTaskChunks(ctx, r.db, accountIDs); err != nil {
-			return err
-		}
-		if _, err := r.db.q(ctx).Exec(ctx, `
-			DELETE FROM accounts WHERE owner_user_id = ANY($1::text[]::uuid[])`, ids); err != nil {
-			return mapError(err)
-		}
-		// 审核对是成对列：RI 只置 reviewed_by 会撞 ck_accounts_review_pair，
-		// 故先成对置空（只动还活着的别人账号；本批账号已随上行删除）。
-		if _, err := r.db.q(ctx).Exec(ctx, `
-			UPDATE accounts SET reviewed_by = NULL, reviewed_at = NULL
-			 WHERE reviewed_by = ANY($1::text[]::uuid[])`, ids); err != nil {
-			return mapError(err)
-		}
-		// 定位行的 updated_by 无 ON DELETE：引用本批用户的行置空，
-		// 行本身保留（它属于可能还活着的别人账号）。
-		if _, err := r.db.q(ctx).Exec(ctx, `
-			UPDATE account_location SET updated_by = NULL
-			 WHERE updated_by = ANY($1::text[]::uuid[])`, ids); err != nil {
-			return mapError(err)
-		}
-		// 重验 deleted_at：批内被恢复的用户不动（活行绝不物理删除）。
-		ct, err := r.db.q(ctx).Exec(ctx, `
-			DELETE FROM users
-			 WHERE id = ANY($1::text[]::uuid[]) AND deleted_at < $2`, ids, before)
-		if err != nil {
-			return mapError(err)
-		}
-		deleted = ct.RowsAffected()
-		return nil
+		deleted, err = purgeUsersByIDs(ctx, r.db, ids, &before)
+		return err
 	})
 	if err != nil {
 		return 0, err
 	}
 	return deleted, nil
+}
+
+// purgeAccountsByIDs 物理删除一批账号及其从属行，返回删掉的账号数。
+// 顺序：先分块删该批账号的 sign_tasks（RESTRICT 外键），再删账号；
+// credentials、account_egress、account_location 随外键级联。
+// deletedBefore 非 nil 时只删 deleted_at 更早的行（保留期口径，重验软删）；
+// 为 nil 时按 id 集合删除：调用方已在同一事务里锁定并校验过软删状态。
+// 调用方保证处于事务 ctx 内；保留期路径还须先用 FOR UPDATE 锁住账号行。
+func purgeAccountsByIDs(ctx context.Context, db *DB, accountIDs []string, deletedBefore *time.Time) (int64, error) {
+	if err := deleteSignTaskChunks(ctx, db, accountIDs); err != nil {
+		return 0, err
+	}
+	sqlText := `DELETE FROM accounts WHERE id = ANY($1::text[]::uuid[])`
+	args := []any{accountIDs}
+	if deletedBefore != nil {
+		// 重验 deleted_at：批内被恢复的账号不动（活行绝不物理删除）。
+		sqlText += ` AND deleted_at < $2`
+		args = append(args, *deletedBefore)
+	}
+	ct, err := db.q(ctx).Exec(ctx, sqlText, args...)
+	if err != nil {
+		return 0, mapError(err)
+	}
+	return ct.RowsAffected(), nil
+}
+
+// purgeUsersByIDs 物理删除一批用户及其名下账号与从属行，返回删掉的用户数。
+// 顺序：名下账号行锁（FOR UPDATE，与恢复互斥）→ 名下账号的任务行分块删
+// （sign_tasks.account_id 是 RESTRICT）→ 删名下账号 → 审核对成对置空 →
+// account_location.updated_by 置空 → 删用户行。
+// window_overrides.created_by 随 00027 的 SET NULL 自动置空，覆盖按日生效，
+// 不随创建者清除；sessions、time_prefs、photos、notifications 等级联。
+// 成对清 reviewed_at/reviewed_by 是为满足 ck_accounts_review_pair；
+// 审计链 append-only，review 事实仍完整保留。
+// deletedBefore 非 nil 时只删 deleted_at 更早的用户行（保留期口径，重验软删）；
+// 为 nil 时按 id 集合删除：调用方已在同一事务里锁定并校验过软删状态。
+// 调用方保证处于事务 ctx 内。
+func purgeUsersByIDs(ctx context.Context, db *DB, userIDs []string, deletedBefore *time.Time) (int64, error) {
+	accountIDs, err := selectAccountsOfUsers(ctx, db, userIDs)
+	if err != nil {
+		return 0, err
+	}
+	// 名下账号的任务行先于账号行：sign_tasks.account_id 是 RESTRICT。
+	if err := deleteSignTaskChunks(ctx, db, accountIDs); err != nil {
+		return 0, err
+	}
+	if _, err := db.q(ctx).Exec(ctx, `
+		DELETE FROM accounts WHERE owner_user_id = ANY($1::text[]::uuid[])`, userIDs); err != nil {
+		return 0, mapError(err)
+	}
+	// 审核对是成对列：RI 只置 reviewed_by 会撞 ck_accounts_review_pair，
+	// 故先成对置空（只动还活着的别人账号；本批账号已随上行删除）。
+	if _, err := db.q(ctx).Exec(ctx, `
+		UPDATE accounts SET reviewed_by = NULL, reviewed_at = NULL
+		 WHERE reviewed_by = ANY($1::text[]::uuid[])`, userIDs); err != nil {
+		return 0, mapError(err)
+	}
+	// 定位行的 updated_by 无 ON DELETE：引用本批用户的行置空，
+	// 行本身保留（它属于可能还活着的别人账号）。
+	if _, err := db.q(ctx).Exec(ctx, `
+		UPDATE account_location SET updated_by = NULL
+		 WHERE updated_by = ANY($1::text[]::uuid[])`, userIDs); err != nil {
+		return 0, mapError(err)
+	}
+	sqlText := `DELETE FROM users WHERE id = ANY($1::text[]::uuid[])`
+	args := []any{userIDs}
+	if deletedBefore != nil {
+		// 重验 deleted_at：批内被恢复的用户不动（活行绝不物理删除）。
+		sqlText += ` AND deleted_at < $2`
+		args = append(args, *deletedBefore)
+	}
+	ct, err := db.q(ctx).Exec(ctx, sqlText, args...)
+	if err != nil {
+		return 0, mapError(err)
+	}
+	return ct.RowsAffected(), nil
 }
 
 // deleteSignTaskChunks 分块删除账号集合的任务行：单语句 LIMIT 封顶，

@@ -56,6 +56,8 @@ type Service interface {
 	PasswordReset(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) (string, error)
 	Delete(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) error
 	Restore(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) (appuser.Record, error)
+	// Purge 物理删除一个已软删用户；只允许 master。
+	Purge(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) error
 	Lookup(ctx context.Context, scope corescope.Scope, query string, limit int, exact bool) ([]appuser.LookupRef, error)
 	// MailNotify 与 SetMailNotify 只作用于调用者自己的开关；
 	// 目标 id 由入口层取会话用户，不来自请求字段。
@@ -265,6 +267,28 @@ func (h *Handler) Restore(c *gin.Context, id string, _ oapi.UserRestoreParams) {
 		return
 	}
 	respond.JSON(c.Writer, http.StatusOK, userResponse(record))
+}
+
+// Purge 实现 POST /api/users/{id}/purge。
+// 物理清除不可撤销，故与软删同门槛：先验二次口令再进用例。
+// 角色门槛（master）与软删状态判定都在用例与适配器，本层不重判。
+func (h *Handler) Purge(c *gin.Context, id string, _ oapi.UserPurgeParams) {
+	scope, actor, ok := h.principal(c)
+	if !ok {
+		return
+	}
+	var body oapi.UserPurgeRequest
+	if !decode(c, &body) {
+		return
+	}
+	if !h.reauthenticate(c, actor.UserID, body.CurrentPassword) {
+		return
+	}
+	if err := h.svc.Purge(c.Request.Context(), scope, id, actor); err != nil {
+		fail(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 // Lookup 实现 GET /api/users/lookup。

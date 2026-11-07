@@ -54,6 +54,8 @@ type Service interface {
 	Pause(ctx context.Context, scope corescope.Scope, id string, paused bool, actor appaudit.Actor) (appaccount.Record, error)
 	Delete(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) error
 	Restore(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) (appaccount.Record, error)
+	// Purge 物理删除一个已软删账号；只允许 master 与 admin。
+	Purge(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) error
 	// SelfDelete 与 SelfRestore 只作用于调用者自己的账号；
 	// scope 由入口层用会话 user id 构造，不来自请求字段。
 	SelfDelete(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) error
@@ -293,6 +295,28 @@ func (h *Handler) Restore(c *gin.Context, id oapi.AccountID, _ oapi.AccountResto
 		return
 	}
 	respond.JSON(c.Writer, http.StatusOK, accountResponse(record))
+}
+
+// Purge 实现 POST /api/accounts/{id}/purge。
+// 物理清除不可撤销，故与恢复同门槛：先验二次口令再进用例。
+// 角色门槛（master/admin）与软删状态判定都在用例与适配器，本层不重判。
+func (h *Handler) Purge(c *gin.Context, id oapi.AccountID, _ oapi.AccountPurgeParams) {
+	scope, actor, ok := h.principal(c)
+	if !ok {
+		return
+	}
+	var body oapi.AccountPurgeRequest
+	if !decode(c, &body) {
+		return
+	}
+	if !h.reauthenticate(c, actor.UserID, body.CurrentPassword) {
+		return
+	}
+	if err := h.svc.Purge(c.Request.Context(), scope, id, actor); err != nil {
+		fail(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 // MyAccountDelete 实现 POST /api/me/accounts/{id}/delete。

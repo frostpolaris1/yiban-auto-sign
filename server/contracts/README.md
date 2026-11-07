@@ -102,6 +102,8 @@ either side drifts.
 | POST | `/api/users/:id/password-reset` | master | UX-1 |
 | DELETE | `/api/users/:id` | master | UX-1 |
 | POST | `/api/users/:id/restore` | master | UX-1 |
+| POST | `/api/users/:id/purge` | master | qru |
+|  |  |  | 物理删除已软删用户：名下账号、任务行、审核对与定位 actor 一并清空；`window_overrides` 保留且 `created_by` 置空；审计 `user.purge`；活用户 409。 |
 | GET | `/api/users/lookup` | master/admin | UX-1 |
 |  |  |  | `exact=true` 时 q 按完整邮箱全等匹配（至多一条）；缺省前缀查询。按 id 绑定属主的调用必须带 exact（F1）。 |
 | GET | `/api/schools` | master/admin/user | P1 |
@@ -121,6 +123,8 @@ either side drifts.
 | DELETE | `/api/accounts/:id` | master/admin/user | P1 |
 | POST | `/api/accounts/:id/device-refresh` | master/admin/user | P4 |
 | POST | `/api/accounts/:id/restore` | master/admin | P4 |
+| POST | `/api/accounts/:id/purge` | master/admin | qru |
+|  |  |  | 物理删除已软删账号：凭据、出口、定位与任务行一并清空；审计 `account.purge` 且审计行保留；活账号 409。 |
 | POST | `/api/accounts/:id/verify` | master/admin | P3 |
 | GET | `/api/schedule/windows` | master/admin | P4 |
 | GET | `/api/schedule/preview` | master/admin | P4 |

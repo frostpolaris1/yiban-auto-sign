@@ -404,6 +404,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/users/{id}/purge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Physically delete a soft-deleted user.
+         * @description Master only. The target must already be soft-deleted: a live user
+         *     answers 409 and an unknown user 404. The user row and every owned
+         *     account row are physically removed; sign tasks are deleted first
+         *     (RESTRICT) and the review pair plus the location actor of other
+         *     live accounts are cleared. Window overrides created by the user
+         *     survive with created_by cleared. Audit rows are never removed; the
+         *     user.purge audit row survives the purge. A soft-deleted user cannot
+         *     be the acting session user, so self-purge is a defensive 403.
+         *     Every request must carry current_password, the acting user's own
+         *     login password: a missing value answers 400, a wrong value 403,
+         *     and repeated failures answer 429. A rejected reauthentication
+         *     writes nothing.
+         */
+        post: operations["UserPurge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/schools": {
         parameters: {
             query?: never;
@@ -750,6 +781,36 @@ export interface paths {
          *     writes nothing.
          */
         post: operations["AccountRestore"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounts/{id}/purge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Physically delete a soft-deleted account.
+         * @description Only master and admin may purge. The account must already be
+         *     soft-deleted: a live account answers 409 and a missing or
+         *     out-of-scope account 404. The account row is physically removed
+         *     together with its credentials, egress records and location row;
+         *     sign tasks are deleted in chunks first because they restrict the
+         *     delete. Audit rows are never removed; the account.purge audit row
+         *     survives the purge and keeps the school attribution.
+         *     Every request must carry current_password, the acting user's own
+         *     login password: a missing value answers 400, a wrong value 403,
+         *     and repeated failures answer 429. A rejected reauthentication
+         *     writes nothing.
+         */
+        post: operations["AccountPurge"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2134,7 +2195,13 @@ export interface components {
         UserRestoreRequest: {
             current_password?: components["schemas"]["CurrentPassword"];
         };
+        UserPurgeRequest: {
+            current_password?: components["schemas"]["CurrentPassword"];
+        };
         AccountRestoreRequest: {
+            current_password?: components["schemas"]["CurrentPassword"];
+        };
+        AccountPurgeRequest: {
             current_password?: components["schemas"]["CurrentPassword"];
         };
         MyAccountRestoreRequest: {
@@ -3678,6 +3745,49 @@ export interface operations {
             default: components["responses"]["DefaultError"];
         };
     };
+    UserPurge: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * @description The envelope is optional in the schema for wire compatibility;
+         *     the server still requires current_password and answers 400 when
+         *     it is missing.
+         */
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["UserPurgeRequest"];
+            };
+        };
+        responses: {
+            /** @description User physically deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            409: components["responses"]["ConflictError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["TooManyRequestsError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
     SchoolList: {
         parameters: {
             query?: {
@@ -4366,6 +4476,49 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Account"];
                 };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            409: components["responses"]["ConflictError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["TooManyRequestsError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AccountPurge: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["AccountID"];
+            };
+            cookie?: never;
+        };
+        /**
+         * @description The envelope is optional in the schema for wire compatibility;
+         *     the server still requires current_password and answers 400 when
+         *     it is missing.
+         */
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AccountPurgeRequest"];
+            };
+        };
+        responses: {
+            /** @description Account physically deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             400: components["responses"]["ValidationError"];
             401: components["responses"]["UnauthorizedError"];

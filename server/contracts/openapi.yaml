@@ -665,6 +665,51 @@ paths:
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
+  /api/users/{id}/purge:
+    post:
+      tags: [users]
+      operationId: UserPurge
+      summary: Physically delete a soft-deleted user.
+      description: |
+        Master only. The target must already be soft-deleted: a live user
+        answers 409 and an unknown user 404. The user row and every owned
+        account row are physically removed; sign tasks are deleted first
+        (RESTRICT) and the review pair plus the location actor of other
+        live accounts are cleared. Window overrides created by the user
+        survive with created_by cleared. Audit rows are never removed; the
+        user.purge audit row survives the purge. A soft-deleted user cannot
+        be the acting session user, so self-purge is a defensive 403.
+        Every request must carry current_password, the acting user's own
+        login password: a missing value answers 400, a wrong value 403,
+        and repeated failures answer 429. A rejected reauthentication
+        writes nothing.
+      x-roles: [master]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        description: |
+          The envelope is optional in the schema for wire compatibility;
+          the server still requires current_password and answers 400 when
+          it is missing.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserPurgeRequest'
+      responses:
+        '204': { description: User physically deleted. }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        '409': { $ref: '#/components/responses/ConflictError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
+        default: { $ref: '#/components/responses/DefaultError' }
   /api/schools:
     get:
       tags: [schools]
@@ -1304,6 +1349,47 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Account'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '404': { $ref: '#/components/responses/NotFoundError' }
+        '409': { $ref: '#/components/responses/ConflictError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/accounts/{id}/purge:
+    post:
+      tags: [accounts]
+      operationId: AccountPurge
+      summary: Physically delete a soft-deleted account.
+      description: |
+        Only master and admin may purge. The account must already be
+        soft-deleted: a live account answers 409 and a missing or
+        out-of-scope account 404. The account row is physically removed
+        together with its credentials, egress records and location row;
+        sign tasks are deleted in chunks first because they restrict the
+        delete. Audit rows are never removed; the account.purge audit row
+        survives the purge and keeps the school attribution.
+        Every request must carry current_password, the acting user's own
+        login password: a missing value answers 400, a wrong value 403,
+        and repeated failures answer 429. A rejected reauthentication
+        writes nothing.
+      x-roles: [master, admin]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+        - $ref: '#/components/parameters/AccountID'
+      requestBody:
+        required: false
+        description: |
+          The envelope is optional in the schema for wire compatibility;
+          the server still requires current_password and answers 400 when
+          it is missing.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountPurgeRequest'
+      responses:
+        '204': { description: Account physically deleted. }
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
@@ -3341,7 +3427,17 @@ components:
       properties:
         current_password:
           $ref: '#/components/schemas/CurrentPassword'
+    UserPurgeRequest:
+      type: object
+      properties:
+        current_password:
+          $ref: '#/components/schemas/CurrentPassword'
     AccountRestoreRequest:
+      type: object
+      properties:
+        current_password:
+          $ref: '#/components/schemas/CurrentPassword'
+    AccountPurgeRequest:
       type: object
       properties:
         current_password:

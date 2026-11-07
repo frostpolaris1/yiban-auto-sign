@@ -28,6 +28,7 @@ type fakeService struct {
 	selfRestores int
 	selfScope    corescope.Scope
 	restores     int
+	purges       int
 }
 
 func (f *fakeService) List(context.Context, corescope.Scope, appaccount.ListFilter, string, int) (appaccount.Page, error) {
@@ -70,6 +71,11 @@ func (f *fakeService) DeviceRefresh(context.Context, corescope.Scope, string, ap
 }
 
 func (f *fakeService) Delete(context.Context, corescope.Scope, string, appaudit.Actor) error {
+	return nil
+}
+
+func (f *fakeService) Purge(context.Context, corescope.Scope, string, appaudit.Actor) error {
+	f.purges++
 	return nil
 }
 

@@ -35,6 +35,7 @@ type fakeUserService struct {
 	deletes  int
 	resets   int
 	restores int
+	purges   int
 	updateIn appuser.UpdateInput
 }
 
@@ -60,6 +61,11 @@ func (f *fakeUserService) PasswordReset(context.Context, corescope.Scope, string
 
 func (f *fakeUserService) Delete(context.Context, corescope.Scope, string, appaudit.Actor) error {
 	f.deletes++
+	return nil
+}
+
+func (f *fakeUserService) Purge(context.Context, corescope.Scope, string, appaudit.Actor) error {
+	f.purges++
 	return nil
 }
 
@@ -310,6 +316,58 @@ func TestUserDeleteWithoutWiredReauthFailsClosed(t *testing.T) {
 		t.Fatalf("status = %d, want 500", code)
 	}
 	if svc.deletes != 0 {
+		t.Fatal("unwired reauth must not reach the use case")
+	}
+}
+
+// 物理清除用户：缺口令 400、错口令 403、正确口令 204；失败零调用。
+func TestUserPurgeReauthGate(t *testing.T) {
+	svc := &fakeUserService{}
+	r := &recordingReauth{}
+	h := userhttp.NewHandler(svc, fakeUserAuthorizer{}).WithReauth(r)
+
+	code, _, _ := callUserHandler(t, h, http.MethodPost, "/api/users/t1/purge", `{}`,
+		func(h *userhttp.Handler, c *gin.Context) { h.Purge(c, "t1", oapi.UserPurgeParams{}) })
+	if code != http.StatusBadRequest {
+		t.Fatalf("missing password status = %d, want 400", code)
+	}
+	if svc.purges != 0 || r.calls != 0 {
+		t.Fatalf("purges=%d reauth=%d, want 0/0", svc.purges, r.calls)
+	}
+
+	r.err = errs.New(errs.CodeForbidden, "reauthentication failed")
+	code, _, _ = callUserHandler(t, h, http.MethodPost, "/api/users/t1/purge",
+		`{"current_password":"wrong"}`,
+		func(h *userhttp.Handler, c *gin.Context) { h.Purge(c, "t1", oapi.UserPurgeParams{}) })
+	if code != http.StatusForbidden {
+		t.Fatalf("wrong password status = %d, want 403", code)
+	}
+	if svc.purges != 0 {
+		t.Fatal("a rejected reauth must not reach the use case")
+	}
+
+	r.err = nil
+	code, _, _ = callUserHandler(t, h, http.MethodPost, "/api/users/t1/purge",
+		`{"current_password":"pw"}`,
+		func(h *userhttp.Handler, c *gin.Context) { h.Purge(c, "t1", oapi.UserPurgeParams{}) })
+	if code != http.StatusNoContent {
+		t.Fatalf("right password status = %d, want 204", code)
+	}
+	if svc.purges != 1 || r.calls != 2 {
+		t.Fatalf("purges=%d reauth=%d, want 1/2", svc.purges, r.calls)
+	}
+}
+
+// 物理清除用户未接线：500 失败关闭，用例不被调用。
+func TestUserPurgeWithoutWiredReauthFailsClosed(t *testing.T) {
+	svc := &fakeUserService{}
+	h := userhttp.NewHandler(svc, fakeUserAuthorizer{})
+	code, _, _ := callUserHandler(t, h, http.MethodPost, "/api/users/t1/purge", `{"current_password":"pw"}`,
+		func(h *userhttp.Handler, c *gin.Context) { h.Purge(c, "t1", oapi.UserPurgeParams{}) })
+	if code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", code)
+	}
+	if svc.purges != 0 {
 		t.Fatal("unwired reauth must not reach the use case")
 	}
 }

@@ -320,3 +320,55 @@ func TestMyAccountRestoreReauthGate(t *testing.T) {
 		t.Fatalf("selfRestores=%d scope kind=%v", svc.selfRestores, svc.selfScope.Kind())
 	}
 }
+
+// 物理清除：缺口令 400、错口令 403、正确口令 204；失败零调用。
+func TestAccountPurgeReauthGate(t *testing.T) {
+	svc := &fakeService{}
+	r := &recordingReauth{}
+	h := accounthttp.NewHandler(svc, fakeAuthorizer{}).WithReauth(r)
+
+	code := callHandler(t, h, http.MethodPost, "/api/accounts/a1/purge", `{}`,
+		func(h *accounthttp.Handler, c *gin.Context) { h.Purge(c, "a1", oapi.AccountPurgeParams{}) })
+	if code != http.StatusBadRequest {
+		t.Fatalf("missing password status = %d, want 400", code)
+	}
+	if svc.purges != 0 || r.calls != 0 {
+		t.Fatalf("purges=%d reauth=%d, want 0/0", svc.purges, r.calls)
+	}
+
+	r.err = errs.New(errs.CodeForbidden, "reauthentication failed")
+	code = callHandler(t, h, http.MethodPost, "/api/accounts/a1/purge",
+		`{"current_password":"wrong"}`,
+		func(h *accounthttp.Handler, c *gin.Context) { h.Purge(c, "a1", oapi.AccountPurgeParams{}) })
+	if code != http.StatusForbidden {
+		t.Fatalf("wrong password status = %d, want 403", code)
+	}
+	if svc.purges != 0 {
+		t.Fatal("a rejected reauth must not reach the use case")
+	}
+
+	r.err = nil
+	code = callHandler(t, h, http.MethodPost, "/api/accounts/a1/purge",
+		`{"current_password":"pw"}`,
+		func(h *accounthttp.Handler, c *gin.Context) { h.Purge(c, "a1", oapi.AccountPurgeParams{}) })
+	if code != http.StatusNoContent {
+		t.Fatalf("right password status = %d, want 204", code)
+	}
+	if svc.purges != 1 || r.calls != 2 {
+		t.Fatalf("purges=%d reauth=%d, want 1/2", svc.purges, r.calls)
+	}
+}
+
+// 物理清除未接线：500 失败关闭，用例不被调用。
+func TestAccountPurgeWithoutWiredReauthFailsClosed(t *testing.T) {
+	svc := &fakeService{}
+	h := accounthttp.NewHandler(svc, fakeAuthorizer{})
+	code := callHandler(t, h, http.MethodPost, "/api/accounts/a1/purge", `{"current_password":"pw"}`,
+		func(h *accounthttp.Handler, c *gin.Context) { h.Purge(c, "a1", oapi.AccountPurgeParams{}) })
+	if code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", code)
+	}
+	if svc.purges != 0 {
+		t.Fatal("unwired reauth must not reach the use case")
+	}
+}

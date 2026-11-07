@@ -404,6 +404,55 @@ func (r *AccountRepo) SoftDelete(ctx context.Context, s corescope.Scope, id, by 
 	return nil
 }
 
+// GetDeleted 在范围内锁定并读取一个账号行，软删与活行都返回。
+// **必须在事务内运行**：FOR UPDATE 持锁到事务结束，与恢复互斥——
+// 恢复方等锁，不会出现「校验为已删后被并发恢复仍被物理删除」。
+// 零行分类：不存在或越权行报 not_found；活行（未软删）报 conflict。
+// 物理清除用它拿审计所需的 school_id 等列，不能用排除软删行的 Get。
+func (r *AccountRepo) GetDeleted(ctx context.Context, s corescope.Scope, id string) (coreaccount.Record, error) {
+	if !r.db.hasTx(ctx) {
+		return coreaccount.Record{}, ErrNoTransaction
+	}
+	scopeSQL, scopeArgs, err := scopePredicate(s, 2, "")
+	if err != nil {
+		return coreaccount.Record{}, err
+	}
+	args := append([]any{id}, scopeArgs...)
+	row := r.db.q(ctx).QueryRow(ctx,
+		`SELECT `+accountColumns+` FROM accounts WHERE id = $1::uuid`+scopeSQL+` FOR UPDATE`, args...)
+	record, err := scanAccount(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return coreaccount.Record{}, coreerrs.ErrNotFound
+	}
+	if err != nil {
+		return coreaccount.Record{}, mapError(err)
+	}
+	if record.DeletedAt == nil {
+		return coreaccount.Record{}, conflictError("account is not deleted")
+	}
+	return record, nil
+}
+
+// Purge 物理删除一个账号及其从属行。
+// **必须在事务内运行**：调用方先用 GetDeleted 锁行并校验软删状态，
+// 本方法按 id 集合删除，不带作用域重判。顺序与保留期任务一致：
+// 先分块删 sign_tasks（RESTRICT），再删账号行；
+// credentials、account_egress、account_location 随外键级联。
+// 行已锁定仍删不到是数据事故，报 internal 而不是静默成功。
+func (r *AccountRepo) Purge(ctx context.Context, id string) error {
+	if !r.db.hasTx(ctx) {
+		return ErrNoTransaction
+	}
+	deleted, err := purgeAccountsByIDs(ctx, r.db, []string{id}, nil)
+	if err != nil {
+		return err
+	}
+	if deleted != 1 {
+		return coreerrs.New(coreerrs.CodeInternal, "purge deleted an unexpected number of accounts")
+	}
+	return nil
+}
+
 // Restore 在有空余容量时清除软删标记。
 //
 // **必须在事务内运行**。软删行不计入上限，

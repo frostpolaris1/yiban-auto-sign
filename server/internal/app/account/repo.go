@@ -85,11 +85,20 @@ type StatusCounts = coreaccount.StatusCounts
 //
 // StatusCounts 按作用域统计未软删账号的 pending 与 rejected 行数，
 // 口径与 List 缺省（不含软删）一致。
+//
+// GetDeleted 锁定并读取一个账号行（软删与活行都返回），
+// **必须在事务内运行**：FOR UPDATE 与恢复互斥。
+// 零行分类：不存在或越权行报 not_found；活行报 conflict。
+// 物理清除用它拿审计所需的 school_id，不能用排除软删行的 Get。
+//
+// Purge 物理删除一个账号及其从属行，**必须在事务内运行**；
+// 调用方先用 GetDeleted 锁行并校验软删状态。
 type Repo interface {
 	// Create 建号；limit 是全局活跃账号上限，ownerLimit 是每属主活跃账号上限。
 	Create(ctx context.Context, in New, limit, ownerLimit int) (Record, error)
 	Get(ctx context.Context, scope corescope.Scope, id string) (Record, error)
 	GetIncludingDeleted(ctx context.Context, scope corescope.Scope, id string) (Record, error)
+	GetDeleted(ctx context.Context, scope corescope.Scope, id string) (Record, error)
 	GetForUpdate(ctx context.Context, scope corescope.Scope, id string) (Record, error)
 	Touch(ctx context.Context, scope corescope.Scope, id string, at time.Time) (Record, error)
 	List(ctx context.Context, scope corescope.Scope, schoolID string, status Status, query, cursor string, limit int, includeDeleted bool) ([]Record, string, error)
@@ -100,6 +109,9 @@ type Repo interface {
 	Review(ctx context.Context, scope corescope.Scope, id string, approve bool, reason, by string, at time.Time) (Record, error)
 	SoftDelete(ctx context.Context, scope corescope.Scope, id, by string, at time.Time) error
 	Restore(ctx context.Context, scope corescope.Scope, id string, limit, ownerLimit int) (Record, error)
+	// Purge 物理删除账号行与从属行（任务行先分块删，其余级联）。
+	// 只处理已软删且已锁定的行；审计行不动。
+	Purge(ctx context.Context, id string) error
 	RestoreSelf(ctx context.Context, scope corescope.Scope, id, by string, notBefore time.Time, limit, ownerLimit int) (Record, error)
 	Credential(ctx context.Context, scope corescope.Scope, accountID string) (Credential, error)
 	// Credentials 批量读多个账号的凭据，按账号 ID 建索引。

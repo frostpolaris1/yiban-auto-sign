@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
+	coreerrs "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/errs"
 	coreuser "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/user"
 )
 
@@ -385,6 +386,52 @@ func (r *UserRepo) UpdateRole(ctx context.Context, id string, role coreauth.Role
 	}
 	if tag.RowsAffected() == 0 {
 		return coreerrNotFound()
+	}
+	return nil
+}
+
+// GetDeleted 锁定并读取一个用户行，软删与活行都返回。
+// **必须在事务内运行**：FOR UPDATE 持锁到事务结束，与恢复互斥——
+// 恢复方等锁，不会出现「校验为已删后被并发恢复仍被物理删除」。
+// 零行分类：不存在报 not_found；活行（未软删）报 conflict。
+// 物理清除用它拿审计所需的目标行，不能用排除软删行的 GetByID。
+func (r *UserRepo) GetDeleted(ctx context.Context, id string) (coreuser.Record, error) {
+	if !r.db.hasTx(ctx) {
+		return coreuser.Record{}, ErrNoTransaction
+	}
+	row := r.db.q(ctx).QueryRow(ctx,
+		`SELECT `+userColumns+` FROM users WHERE id = $1::uuid FOR UPDATE`, id)
+	record, err := scanUser(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return coreuser.Record{}, coreerrNotFound()
+	}
+	if err != nil {
+		return coreuser.Record{}, mapError(err)
+	}
+	if record.DeletedAt == nil {
+		return coreuser.Record{}, conflictError("user is not deleted")
+	}
+	return record, nil
+}
+
+// Purge 物理删除一个用户及其名下账号与从属行。
+// **必须在事务内运行**：调用方先用 GetDeleted 锁行并校验软删状态，
+// 本方法按 id 集合删除，不带重判。顺序与保留期任务一致：
+// 名下账号的 sign_tasks 先分块删（RESTRICT），再删名下账号；
+// 名下账号的删除连带 credentials、account_egress、account_location 级联；
+// 被该用户审核的他人账号成对清 reviewed_at/reviewed_by，
+// account_location.updated_by 置空；window_overrides 随 SET NULL 置空。
+// 行已锁定仍删不到是数据事故，报 internal 而不是静默成功。
+func (r *UserRepo) Purge(ctx context.Context, id string) error {
+	if !r.db.hasTx(ctx) {
+		return ErrNoTransaction
+	}
+	deleted, err := purgeUsersByIDs(ctx, r.db, []string{id}, nil)
+	if err != nil {
+		return err
+	}
+	if deleted != 1 {
+		return coreerrs.New(coreerrs.CodeInternal, "purge deleted an unexpected number of users")
 	}
 	return nil
 }
