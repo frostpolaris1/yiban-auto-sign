@@ -49,9 +49,18 @@ type New = coreuser.New
 // Lookup 按已归一邮箱前缀取未删行，按 email 升序取前 limit 条。
 // exact 置真时 query 是完整邮箱：只回全等的那一条（F1，
 // 归属选择器按 id 绑定必须用它——掩码行彼此不可分辨）。
+//
+// GetDeleted 锁定并读取一个用户行（软删与活行都返回），
+// **必须在事务内运行**：FOR UPDATE 与恢复互斥。
+// 零行分类：不存在报 not_found；活行报 conflict。
+// 物理清除用它拿目标行，不能用排除软删行的 GetByID。
+//
+// Purge 物理删除用户行与名下账号及从属行，**必须在事务内运行**；
+// 调用方先用 GetDeleted 锁行并校验软删状态。
 type Repo interface {
 	Create(ctx context.Context, in New, limit int) (Record, error)
 	GetByID(ctx context.Context, id string) (Record, error)
+	GetDeleted(ctx context.Context, id string) (Record, error)
 	GetByEmail(ctx context.Context, email string) (Record, error)
 	List(ctx context.Context, role coreauth.Role, status coreauth.Status, query string, group coreuser.Group, cursor string, limit int, includeDeleted bool) ([]Record, string, error)
 	// Counts 返回四个分组的全局计数；不随筛选或分页变化。
@@ -73,6 +82,10 @@ type Repo interface {
 	SetMailNotify(ctx context.Context, id string, enabled bool) error
 	SoftDelete(ctx context.Context, id, by string, at time.Time) error
 	Restore(ctx context.Context, id string, limit int) (Record, error)
+	// Purge 物理删除用户行与名下账号及从属行
+	// （任务行先分块删，其余随外键级联或成对置空）。
+	// 只处理已软删且已锁定的行；审计行不动。
+	Purge(ctx context.Context, id string) error
 	CountLiveMasters(ctx context.Context, excludeID string) (int, error)
 	Lookup(ctx context.Context, query string, limit int, exact bool) ([]Record, error)
 }

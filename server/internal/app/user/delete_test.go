@@ -131,6 +131,16 @@ func (f *fakeUserRepo) Restore(context.Context, string, int) (Record, error) {
 	return Record{}, errors.New("not used")
 }
 
+// GetDeleted 只为满足 Repo 接口：物理清除流不经过本替身。
+func (f *fakeUserRepo) GetDeleted(context.Context, string) (Record, error) {
+	return Record{}, errors.New("not used")
+}
+
+// Purge 只为满足 Repo 接口：物理清除流不经过本替身。
+func (f *fakeUserRepo) Purge(context.Context, string) error {
+	return errors.New("not used")
+}
+
 // CountLiveMasters 按判据 role='master' AND status='active' AND deleted_at IS NULL
 // 复算，排除 excludeID。
 func (f *fakeUserRepo) CountLiveMasters(_ context.Context, excludeID string) (int, error) {

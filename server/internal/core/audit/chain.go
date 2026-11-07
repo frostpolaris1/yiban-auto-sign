@@ -68,6 +68,9 @@ const (
 	ActionUserRoleChange    Action = "user.role_change"
 	ActionUserPasswordReset Action = "user.password_reset"
 	ActionUserRestore       Action = "user.restore"
+	// 物理清除已软删用户：detail 恒为空对象，不含邮箱。
+	// 审计行不随对象删除，purge 行在对象行消失后仍是唯一事实。
+	ActionUserPurge Action = "user.purge"
 	// 自助面（5mx）：本人签到失败邮件开关。detail 只记字段与
 	// 目标状态（on/off），**绝无邮箱或口令**。
 	ActionUserMailNotify Action = "user.mail_notify"
@@ -95,6 +98,9 @@ const (
 	ActionAccountResume       Action = "account.resume"
 	ActionAccountDelete       Action = "account.delete"
 	ActionAccountRestore      Action = "account.restore"
+	// 物理清除已软删账号：detail 恒为空对象，不含手机号。
+	// 审计行不随对象删除，purge 行在对象行消失后仍是唯一事实。
+	ActionAccountPurge Action = "account.purge"
 	// 自助面（5mx）：本人注销与撤销注销。deleted_by 记本人；
 	// detail 只记 deleted_at 字段名，不含手机号或邮箱。
 	ActionAccountSelfDelete  Action = "account.self_delete"

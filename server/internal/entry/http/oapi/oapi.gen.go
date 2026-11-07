@@ -816,6 +816,17 @@ type AccountPauseRequest struct {
 	Paused bool `json:"paused"`
 }
 
+// AccountPurgeRequest defines model for AccountPurgeRequest.
+type AccountPurgeRequest struct {
+	// CurrentPassword The acting user's own login password, used to re-authenticate a
+	// dangerous operation. It is never the signing account's platform
+	// credential, and it is never stored, logged or audited. Optional in
+	// this schema; the server requires it on the dangerous endpoints and
+	// answers 400 when it is missing, 403 when it is wrong and 429 after
+	// repeated failures.
+	CurrentPassword *CurrentPassword `json:"current_password,omitempty"`
+}
+
 // AccountRestoreRequest defines model for AccountRestoreRequest.
 type AccountRestoreRequest struct {
 	// CurrentPassword The acting user's own login password, used to re-authenticate a
@@ -1990,6 +2001,17 @@ type UserPasswordResetRequest struct {
 	CurrentPassword *CurrentPassword `json:"current_password,omitempty"`
 }
 
+// UserPurgeRequest defines model for UserPurgeRequest.
+type UserPurgeRequest struct {
+	// CurrentPassword The acting user's own login password, used to re-authenticate a
+	// dangerous operation. It is never the signing account's platform
+	// credential, and it is never stored, logged or audited. Optional in
+	// this schema; the server requires it on the dangerous endpoints and
+	// answers 400 when it is missing, 403 when it is wrong and 429 after
+	// repeated failures.
+	CurrentPassword *CurrentPassword `json:"current_password,omitempty"`
+}
+
 // UserRestoreRequest defines model for UserRestoreRequest.
 type UserRestoreRequest struct {
 	// CurrentPassword The acting user's own login password, used to re-authenticate a
@@ -2177,6 +2199,13 @@ type AccountPhotoListParams struct {
 
 	// Limit Page size, 1 to 200.
 	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// AccountPurgeParams defines parameters for AccountPurge.
+type AccountPurgeParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
 }
 
 // AccountRestoreParams defines parameters for AccountRestore.
@@ -2622,6 +2651,13 @@ type UserPasswordResetParams struct {
 	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
 }
 
+// UserPurgeParams defines parameters for UserPurge.
+type UserPurgeParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
 // UserRestoreParams defines parameters for UserRestore.
 type UserRestoreParams struct {
 	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
@@ -2646,6 +2682,9 @@ type AccountLocationSetJSONRequestBody = AccountLocationUpdate
 
 // AccountPauseJSONRequestBody defines body for AccountPause for application/json ContentType.
 type AccountPauseJSONRequestBody = AccountPauseRequest
+
+// AccountPurgeJSONRequestBody defines body for AccountPurge for application/json ContentType.
+type AccountPurgeJSONRequestBody = AccountPurgeRequest
 
 // AccountRestoreJSONRequestBody defines body for AccountRestore for application/json ContentType.
 type AccountRestoreJSONRequestBody = AccountRestoreRequest
@@ -2730,6 +2769,9 @@ type UserUpdateJSONRequestBody = UserUpdate
 
 // UserPasswordResetJSONRequestBody defines body for UserPasswordReset for application/json ContentType.
 type UserPasswordResetJSONRequestBody = UserPasswordResetRequest
+
+// UserPurgeJSONRequestBody defines body for UserPurge for application/json ContentType.
+type UserPurgeJSONRequestBody = UserPurgeRequest
 
 // UserRestoreJSONRequestBody defines body for UserRestore for application/json ContentType.
 type UserRestoreJSONRequestBody = UserRestoreRequest
@@ -2860,6 +2902,9 @@ type ServerInterface interface {
 	// AccountPhotoList List the photos of one account's owner.
 	// (GET /api/accounts/{id}/photos)
 	AccountPhotoList(c *gin.Context, id AccountID, params AccountPhotoListParams)
+	// AccountPurge Physically delete a soft-deleted account.
+	// (POST /api/accounts/{id}/purge)
+	AccountPurge(c *gin.Context, id AccountID, params AccountPurgeParams)
 	// AccountRestore Restore a soft-deleted account.
 	// (POST /api/accounts/{id}/restore)
 	AccountRestore(c *gin.Context, id AccountID, params AccountRestoreParams)
@@ -3058,6 +3103,9 @@ type ServerInterface interface {
 	// UserPasswordReset Reset a user's password to a one-time temporary password.
 	// (POST /api/users/{id}/password-reset)
 	UserPasswordReset(c *gin.Context, id string, params UserPasswordResetParams)
+	// UserPurge Physically delete a soft-deleted user.
+	// (POST /api/users/{id}/purge)
+	UserPurge(c *gin.Context, id string, params UserPurgeParams)
 	// UserRestore Restore a soft-deleted user.
 	// (POST /api/users/{id}/restore)
 	UserRestore(c *gin.Context, id string, params UserRestoreParams)
@@ -3596,6 +3644,58 @@ func (siw *ServerInterfaceWrapper) AccountPhotoList(c *gin.Context) {
 	}
 
 	siw.Handler.AccountPhotoList(c, id, params)
+}
+
+// AccountPurge operation middleware
+func (siw *ServerInterfaceWrapper) AccountPurge(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id AccountID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", c.Param("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AccountPurgeParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AccountPurge(c, id, params)
 }
 
 // AccountRestore operation middleware
@@ -6087,6 +6187,58 @@ func (siw *ServerInterfaceWrapper) UserPasswordReset(c *gin.Context) {
 	siw.Handler.UserPasswordReset(c, id, params)
 }
 
+// UserPurge operation middleware
+func (siw *ServerInterfaceWrapper) UserPurge(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", c.Param("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params UserPurgeParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UserPurge(c, id, params)
+}
+
 // UserRestore operation middleware
 func (siw *ServerInterfaceWrapper) UserRestore(c *gin.Context) {
 
@@ -6196,6 +6348,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.PATCH(options.BaseURL+"/api/users/:id", wrapper.UserUpdate)
 	router.POST(options.BaseURL+"/api/users/:id/password-reset", wrapper.UserPasswordReset)
 	router.POST(options.BaseURL+"/api/users/:id/restore", wrapper.UserRestore)
+	router.POST(options.BaseURL+"/api/users/:id/purge", wrapper.UserPurge)
 	router.GET(options.BaseURL+"/api/schools", wrapper.SchoolList)
 	router.POST(options.BaseURL+"/api/schools", wrapper.SchoolCreate)
 	router.PATCH(options.BaseURL+"/api/schools/:id", wrapper.SchoolUpdate)
@@ -6214,6 +6367,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/accounts/:id/pause", wrapper.AccountPause)
 	router.POST(options.BaseURL+"/api/accounts/:id/device-refresh", wrapper.AccountDeviceRefresh)
 	router.POST(options.BaseURL+"/api/accounts/:id/restore", wrapper.AccountRestore)
+	router.POST(options.BaseURL+"/api/accounts/:id/purge", wrapper.AccountPurge)
 	router.POST(options.BaseURL+"/api/accounts/:id/verify", wrapper.AccountVerify)
 	router.POST(options.BaseURL+"/api/accounts/:id/sign", wrapper.AccountSign)
 	router.GET(options.BaseURL+"/api/accounts/:id/location", wrapper.AccountLocationGet)

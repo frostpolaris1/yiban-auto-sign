@@ -103,6 +103,14 @@ func (f *fakeUsers) Restore(context.Context, string, int) (appuser.Record, error
 	return appuser.Record{}, errs.ErrNotFound
 }
 
+// GetDeleted 只为满足 appuser.Repo 接口：物理清除流不经过认证替身。
+func (f *fakeUsers) GetDeleted(context.Context, string) (appuser.Record, error) {
+	return appuser.Record{}, errs.ErrNotFound
+}
+
+// Purge 只为满足 appuser.Repo 接口：物理清除流不经过认证替身。
+func (f *fakeUsers) Purge(context.Context, string) error { return errs.ErrNotFound }
+
 func (f *fakeUsers) CountLiveMasters(context.Context, string) (int, error) { return 0, nil }
 
 // Counts 只为满足 appuser.Repo 接口：分组计数归列表流，认证流不读它。

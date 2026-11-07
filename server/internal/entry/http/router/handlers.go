@@ -69,6 +69,15 @@ func (s *server) UserRestore(c *gin.Context, id string, params oapi.UserRestoreP
 	s.users.Restore(c, id, params)
 }
 
+// UserPurge 委托用户处理器。未装配时仍是 501。
+func (s *server) UserPurge(c *gin.Context, id string, params oapi.UserPurgeParams) {
+	if s.users == nil {
+		notImplemented(c)
+		return
+	}
+	s.users.Purge(c, id, params)
+}
+
 // UserLookup 委托用户处理器。未装配时仍是 501。
 func (s *server) UserLookup(c *gin.Context, params oapi.UserLookupParams) {
 	if s.users == nil {
@@ -193,6 +202,15 @@ func (s *server) AccountRestore(c *gin.Context, id oapi.AccountID, params oapi.A
 		return
 	}
 	s.accounts.Restore(c, id, params)
+}
+
+// AccountPurge 委托账号处理器。未装配时仍是 501。
+func (s *server) AccountPurge(c *gin.Context, id oapi.AccountID, params oapi.AccountPurgeParams) {
+	if s.accounts == nil {
+		notImplemented(c)
+		return
+	}
+	s.accounts.Purge(c, id, params)
 }
 
 // MyAccountDelete 委托账号处理器。未装配时仍是 501。
