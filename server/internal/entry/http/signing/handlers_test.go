@@ -435,7 +435,8 @@ func TestSignConflicts(t *testing.T) {
 		{appworker.ErrAlreadySigned, "already_signed"},
 		{appworker.ErrSignRunning, "sign_running"},
 		{appworker.ErrWindowClosed, "window_closed"},
-		{appworker.ErrTaskAmbiguous, "task_ambiguous"},
+		// task_ambiguous 保留为历史错误码：多任务时随机选一个，不再返回。
+		{errs.New(errs.CodeTaskAmbiguous, "legacy"), "task_ambiguous"},
 	}
 	for _, c := range cases {
 		engine, issued := newSignRouter(t, &fakeAuthorizer{scope: corescope.Master()}, &fakeManual{err: c.err})

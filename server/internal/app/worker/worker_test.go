@@ -448,6 +448,96 @@ func newServiceLogged(t *testing.T, st *fakeStore, signer *fakeSigner, limiter f
 	return svc
 }
 
+func newServiceWithPicker(t *testing.T, st *fakeStore, signer *fakeSigner, limiter fakeLimiter, pick func([]string) string) *appworker.Service {
+	t.Helper()
+	svc, err := appworker.NewService(appworker.Deps{
+		Store: st, Creds: fakeCreds{}, Signer: signer, Egress: fakeEgress{},
+		Limiter: limiter, Clock: coreclock.Fixed{T: testNow()}, Location: loc,
+		Picker: fixedPicker(pick),
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	return svc
+}
+
+// fixedPicker 让多任务随机选点在单测里可复现。
+type fixedPicker func([]string) string
+
+func (p fixedPicker) Pick(candidates []string) string { return p(candidates) }
+
+// 任务解析：当日行优先；多候选随机选一个，不再拒绝。
+func TestRequestResolvesTaskFromTodayRows(t *testing.T) {
+	ctx := context.Background()
+	actor := appaudit.Actor{UserID: "u1"}
+	// 当日只有一个任务行，学校另有启用任务：必须签当日那一行，不另找。
+	st := newStore()
+	st.dayTasks = []string{"st-today"}
+	st.enabledTasks = []string{"st-other"}
+	st.windows["st-today|2026-10-29"] = openWindow()
+	svc := newService(t, st, defaultSigner(), fakeLimiter{allow: true})
+	if _, err := svc.Request(ctx, "acct-1", actor); err != nil {
+		t.Fatalf("当日行优先: %v", err)
+	}
+	if got := st.tasks[0].SchoolTaskID; got != "st-today" {
+		t.Fatalf("入队任务 = %q, want st-today", got)
+	}
+
+	// 当日两个任务行：随机选一个；固定下标 0 与 1 都得命中对应任务，
+	// 证明不是恒取第一条，也不报歧义。
+	for _, idx := range []int{0, 1} {
+		st = newStore()
+		st.dayTasks = []string{"st-a", "st-b"}
+		st.enabledTasks = []string{"st-a", "st-b"}
+		st.windows["st-a|2026-10-29"] = openWindow()
+		st.windows["st-b|2026-10-29"] = openWindow()
+		svc = newServiceWithPicker(t, st, defaultSigner(), fakeLimiter{allow: true},
+			func(c []string) string { return c[idx] })
+		if _, err := svc.Request(ctx, "acct-1", actor); err != nil {
+			t.Fatalf("当日多行 idx=%d: %v", idx, err)
+		}
+		want := "st-a"
+		if idx == 1 {
+			want = "st-b"
+		}
+		if got := st.tasks[0].SchoolTaskID; got != want {
+			t.Fatalf("idx=%d 入队任务 = %q, want %q", idx, got, want)
+		}
+	}
+
+	// 当日无行、学校两条启用任务：同样随机选一个。
+	for _, idx := range []int{0, 1} {
+		st = newStore()
+		st.enabledTasks = []string{"st-a", "st-b"}
+		st.windows["st-a|2026-10-29"] = openWindow()
+		st.windows["st-b|2026-10-29"] = openWindow()
+		svc = newServiceWithPicker(t, st, defaultSigner(), fakeLimiter{allow: true},
+			func(c []string) string { return c[idx] })
+		if _, err := svc.Request(ctx, "acct-1", actor); err != nil {
+			t.Fatalf("多启用任务 idx=%d: %v", idx, err)
+		}
+		want := "st-a"
+		if idx == 1 {
+			want = "st-b"
+		}
+		if got := st.tasks[0].SchoolTaskID; got != want {
+			t.Fatalf("idx=%d 入队任务 = %q, want %q", idx, got, want)
+		}
+	}
+
+	// 零候选仍是 not_found，picker 不被调用。
+	st = newStore()
+	picked := false
+	svc = newServiceWithPicker(t, st, defaultSigner(), fakeLimiter{allow: true},
+		func(c []string) string { picked = true; return c[0] })
+	if _, err := svc.Request(ctx, "acct-1", actor); coreerrs.From(err) == nil || coreerrs.From(err).Code != coreerrs.CodeNotFound {
+		t.Fatalf("零候选应 not_found, got %v", err)
+	}
+	if picked {
+		t.Fatal("零候选不应调用 picker")
+	}
+}
+
 func defaultSigner() *fakeSigner {
 	return &fakeSigner{
 		targets: []contract.Target{{ID: "pos-1", Title: "校门"}},
@@ -874,43 +964,6 @@ func TestRequestRearmsSkippedRow(t *testing.T) {
 	}
 	if st.rearmed[st.tasks[0].ID] != string(corestatus.TaskSkipped) {
 		t.Fatalf("重开审计来源 = %q, want skipped", st.rearmed[st.tasks[0].ID])
-	}
-}
-
-// 任务解析（C2）：当日行优先；候选不唯一一律 task_ambiguous。
-func TestRequestResolvesTaskFromTodayRows(t *testing.T) {
-	ctx := context.Background()
-	actor := appaudit.Actor{UserID: "u1"}
-	// 当日只有一个任务行，学校另有启用任务：必须签当日那一行，不另找。
-	st := newStore()
-	st.dayTasks = []string{"st-today"}
-	st.enabledTasks = []string{"st-other"}
-	st.windows["st-today|2026-10-29"] = openWindow()
-	svc := newService(t, st, defaultSigner(), fakeLimiter{allow: true})
-	if _, err := svc.Request(ctx, "acct-1", actor); err != nil {
-		t.Fatalf("当日行优先: %v", err)
-	}
-	if got := st.tasks[0].SchoolTaskID; got != "st-today" {
-		t.Fatalf("入队任务 = %q, want st-today", got)
-	}
-
-	// 当日两个任务行：服务端不猜。
-	st = newStore()
-	st.dayTasks = []string{"st-a", "st-b"}
-	st.enabledTasks = []string{"st-a", "st-b"}
-	st.windows["st-a|2026-10-29"] = openWindow()
-	svc = newService(t, st, defaultSigner(), fakeLimiter{allow: true})
-	if _, err := svc.Request(ctx, "acct-1", actor); !errors.Is(err, appworker.ErrTaskAmbiguous) {
-		t.Fatalf("当日多行应 ErrTaskAmbiguous, got %v", err)
-	}
-
-	// 当日无行、学校两条启用任务：同样不猜。
-	st = newStore()
-	st.enabledTasks = []string{"st-a", "st-b"}
-	st.windows["st-a|2026-10-29"] = openWindow()
-	svc = newService(t, st, defaultSigner(), fakeLimiter{allow: true})
-	if _, err := svc.Request(ctx, "acct-1", actor); !errors.Is(err, appworker.ErrTaskAmbiguous) {
-		t.Fatalf("多启用任务应 ErrTaskAmbiguous, got %v", err)
 	}
 }
 

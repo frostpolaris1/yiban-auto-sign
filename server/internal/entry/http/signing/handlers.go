@@ -116,8 +116,9 @@ func (h *Handler) WithAccountLimiter(l AccountLimiter) *Handler {
 // Sign 实现 POST /api/accounts/:id/sign。
 //
 // 成功是 202（已入队，不是已完成）。冲突由 worker 的错误码经
-// respond 映射成 409：already_signed / sign_running / window_closed /
-// task_ambiguous；非 active 账号另由本层回 409 conflict。三种角色都可发起，
+// respond 映射成 409：already_signed / sign_running / window_closed；
+// 多任务是同一打卡的多个点位，由 worker 随机选一个，不再报冲突。
+// 非 active 账号另由本层回 409 conflict。三种角色都可发起，
 // 但账号必须在其可见面内：跨校或非本人一律 404。
 func (h *Handler) Sign(c *gin.Context, id oapi.AccountID, _ oapi.AccountSignParams) {
 	scope, actor, ok := h.principal(c)
@@ -170,7 +171,8 @@ const batchSignLimit = 10
 // 账号键限流（与单条端点同口径，命中项 per-item rate_limited）→
 // 可见面（跨校/非本人 per-item not_found）→ 非 active 拒入队（per-item
 // conflict）→ 入队（worker 稳定码 already_signed / sign_running /
-// window_closed / task_ambiguous）。一条失败只写进该项，不中断批次；
+// window_closed）。多任务由 worker 随机选一个，不再报冲突。
+// 一条失败只写进该项，不中断批次；
 // 成功项只入队（202 语义），task_id 只在成功项出现，顺序与请求 ids 一致。
 // 客户端 IP 面由路由中间件对整批限流（rateLimitedPaths 白名单）。
 //

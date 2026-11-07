@@ -33,6 +33,13 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/signing/contract"
 )
 
+// TaskPicker 从当日多个等价候选任务里选一个。
+// 实现必须能返回入参里的某个成员；空切片不会被调用。
+// 生产用 crypto/rand 均匀选，测试注入固定序列。
+type TaskPicker interface {
+	Pick(candidates []string) string
+}
+
 // DayOutcomeCounts 是一个业务日的任务行汇总。
 //
 // 类型本体在 core/schedule：adapters/pg 实现 Store 端口时需要引用它，
@@ -152,6 +159,7 @@ type Alerts interface {
 // Notifier 可为 nil：缺端口就不发事件。
 // Alerts 可为 nil：缺端口就不投递通知。
 // Logger 可为 nil：用 slog.Default。结论原因进日志，见 logOutcome。
+// Picker 可为 nil：手动签到多候选时用缺省随机源；测试可注入固定序列。
 type Deps struct {
 	Store     Store
 	Creds     Credentials
@@ -164,5 +172,6 @@ type Deps struct {
 	Photos    PhotoSource
 	Notifier  Notifier
 	Alerts    Alerts
+	Picker    TaskPicker
 	Logger    *slog.Logger
 }

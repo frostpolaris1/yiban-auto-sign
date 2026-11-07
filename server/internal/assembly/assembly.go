@@ -662,6 +662,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			notifier: WorkerNotifier{Broker: broker, Clock: clk},
 			// 0v8 B 注入面：结算后的通知投递。缺端口时不投递。
 			alerts: notificationDispatcher,
+			// 手动签到多候选任务随机选点。
+			picker: appworker.NewRandomTaskPicker(),
 			// 结论原因进日志（OCR M1）。
 			logger: logger,
 		}))
@@ -982,6 +984,7 @@ type workerDeps struct {
 	photos    appworker.PhotoSource
 	notifier  appworker.Notifier
 	alerts    appworker.Alerts
+	picker    appworker.TaskPicker
 	logger    *slog.Logger
 }
 
@@ -1002,6 +1005,7 @@ func buildWorkerDeps(cfg *config.Config, d workerDeps) appworker.Deps {
 		Photos:    d.photos,
 		Notifier:  d.notifier,
 		Alerts:    d.alerts,
+		Picker:    d.picker,
 		Logger:    d.logger,
 	}
 }

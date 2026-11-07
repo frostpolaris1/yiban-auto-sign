@@ -243,6 +243,48 @@ func TestP4ManualSign(t *testing.T) {
 	}
 }
 
+// 多启用任务是同一打卡的多个点位：手动签到随机选一个入队，不再拒绝。
+func TestP4ManualSignPicksOneOfMultipleTasks(t *testing.T) {
+	e := w2cNewEnv(t)
+	loc := p4Location(t)
+	now := clock.System{}.Now()
+	day := clock.BusinessDay(now, loc)
+	master := e.user("p4-multi-master@example.com", coreauth.RoleMaster)
+	issued := e.login(master)
+	school := e.school("p4-sign-multi")
+	taskA := e.schoolTask(school.ID, "点位甲")
+	taskB := e.schoolTask(school.ID, "点位乙")
+	acct := e.account(school.ID, master.ID, "13800009001")
+	e.activateAccount(acct)
+	for _, task := range []string{taskA, taskB} {
+		if _, err := e.sched.PutWindow(e.ctx, coreschedule.WindowRecord{
+			SchoolTaskID: task, Day: day,
+			Start: now.Add(-10 * time.Minute), End: now.Add(10 * time.Minute),
+			Source: string(contract.WindowPlatform),
+		}, 0); err != nil {
+			t.Fatalf("put window %s: %v", task, err)
+		}
+	}
+
+	rec := e.do("POST", "/api/accounts/"+acct+"/sign", nil, issued)
+	if rec.Code != 202 {
+		t.Fatalf("多任务签到 status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var accepted oapi.AccountSignAccepted
+	e.decode(rec, &accepted)
+	if accepted.TaskId == "" {
+		t.Fatal("响应缺 task_id")
+	}
+	schoolTask := e.scalarString(
+		"SELECT school_task_id::text FROM sign_tasks WHERE id = $1::uuid", accepted.TaskId)
+	if schoolTask != taskA && schoolTask != taskB {
+		t.Fatalf("入队任务 = %q, want %q or %q", schoolTask, taskA, taskB)
+	}
+	if got := e.scalarInt("SELECT count(*) FROM sign_tasks WHERE account_id = $1::uuid AND day = $2::date", acct, day); got != 1 {
+		t.Fatalf("入队行数 = %d, want 1", got)
+	}
+}
+
 // 人工覆盖优先于平台窗口，并重排 pending 行。
 func TestP4OverrideRearranges(t *testing.T) {
 	e := w2cNewEnv(t)
