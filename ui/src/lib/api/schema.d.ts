@@ -635,6 +635,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/accounts/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply one action to up to ten accounts.
+         * @description Master and admin only. The same action runs against 1 to 10 accounts
+         *     given by id. Each id is processed on its own inside its own
+         *     transaction with its own audit row: one failing item neither blocks
+         *     the items after it nor rolls back the ones already applied. The
+         *     request answers 200 whenever it passes validation; every item then
+         *     carries status ok or error, and an errored item carries the same
+         *     stable code the matching single-item endpoint answers with, capacity
+         *     and status-transition errors included. The items order always
+         *     matches the request ids order. reason only applies to review_reject;
+         *     every other action ignores it.
+         *     Every request must carry current_password, the acting user's own
+         *     login password: a missing value answers 400, a wrong value 403, and
+         *     repeated failures answer 429. A rejected reauthentication writes
+         *     nothing: no account change and no audit row for any item.
+         *     An unknown action, an empty or duplicate id list, or more than ten
+         *     ids answer 400 validation_failed and run nothing. A single missing
+         *     or out-of-scope id is a per-item error, never a request failure.
+         */
+        post: operations["AccountBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/accounts/{id}": {
         parameters: {
             query?: never;
@@ -2817,6 +2853,56 @@ export interface components {
             pending: number;
             rejected: number;
         };
+        /**
+         * @description The single action applied to every id in one batch request. Each
+         *     value maps to the matching single-item flow and keeps its existing
+         *     audit, notification, capacity and status semantics.
+         * @enum {string}
+         */
+        AccountBatchAction: "review_approve" | "review_reject" | "pause" | "resume" | "delete" | "restore";
+        AccountBatchRequest: {
+            action: components["schemas"]["AccountBatchAction"];
+            /**
+             * @description One to ten distinct account ids. The answer keeps this order. A
+             *     missing or out-of-scope id is a per-item error, not a request
+             *     failure.
+             */
+            ids: string[];
+            /**
+             * @description The rejection reason for review_reject: every reject item needs
+             *     1 to 200 characters. Every other action ignores it.
+             */
+            reason?: string;
+            /**
+             * @description Required here (the shared CurrentPassword shape marks it optional;
+             *     this endpoint does not). The acting user's own login password,
+             *     used to re-authenticate the batch: a missing value answers 400,
+             *     a wrong value 403, and repeated failures answer 429. It is never
+             *     the signing account's platform credential, and it is never
+             *     stored, logged or audited.
+             */
+            current_password: string;
+        };
+        /**
+         * @description One id's outcome. status ok means the action was applied and
+         *     audited inside its own transaction. status error carries the same
+         *     stable code the matching single-item endpoint answers with:
+         *     not_found for a missing or out-of-scope id, conflict for an invalid
+         *     status transition, capacity_exceeded for a full account quota,
+         *     validation_failed for a missing rejection reason.
+         */
+        AccountBatchItem: {
+            id: string;
+            /** @enum {string} */
+            status: "ok" | "error";
+            code?: components["schemas"]["ErrorCode"];
+            /** @description User-safe error text; present only on an error item. */
+            message?: string;
+        };
+        AccountBatchResult: {
+            /** @description One entry per request id, in the request order. */
+            items: components["schemas"]["AccountBatchItem"][];
+        };
         HealthStatus: {
             /** @constant */
             status: "ok";
@@ -4209,6 +4295,42 @@ export interface operations {
             };
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AccountBatch: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccountBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Per-item outcomes in request order. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountBatchResult"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["TooManyRequestsError"];
             default: components["responses"]["DefaultError"];
         };
     };
