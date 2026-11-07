@@ -117,6 +117,7 @@
 //	already_done        不可重试
 //	pending_upstream    不可重试
 //	no_target           不可重试
+//	no_position         不可重试（Position 空：宿主按等待型重扫推进，不进业务预算）
 //	invalid_target      不可重试
 //	credential_invalid  不可重试
 //	device_unbound      不可重试

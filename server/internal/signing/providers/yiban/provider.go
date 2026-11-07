@@ -82,6 +82,8 @@ func (p *Provider) DiscoverWindow(ctx context.Context, req contract.DiscoverRequ
 
 // DiscoverTargets 读取候选签到点。
 // IsNeedPhoto 语义未定，不据此置 RequiresPhoto；原值进 Raw。
+// 点位为空返回 no_position（平台没放数据，宿主等待重扫），
+// 与 State=2 的明确结论 no_target 区分。
 // 会话失效在重登一次后仍失败时返回 transient 结论（见 discoverError）。
 func (p *Provider) DiscoverTargets(ctx context.Context, req contract.DiscoverRequest) ([]contract.Target, error) {
 	cfg, err := p.client.SignPosition(ctx, req.Account.ID, req.Credential)
@@ -93,7 +95,7 @@ func (p *Provider) DiscoverTargets(ctx context.Context, req contract.DiscoverReq
 	}
 	if len(cfg.Positions) == 0 {
 		return nil, &contract.OutcomeError{
-			Outcome: contract.OutcomeNoTarget, Message: "signPosition returned no positions"}
+			Outcome: contract.OutcomeNoPosition, Message: "signPosition returned no positions"}
 	}
 	targets := make([]contract.Target, 0, len(cfg.Positions))
 	for _, position := range cfg.Positions {
@@ -161,7 +163,7 @@ func (p *Provider) sign(ctx context.Context, req contract.SignRequest) (contract
 		return resultFor(outcome, stateMessage(cfg.State)), nil
 	}
 	if len(cfg.Positions) == 0 {
-		return resultFor(contract.OutcomeNoTarget, "signPosition returned no positions"), nil
+		return resultFor(contract.OutcomeNoPosition, "signPosition returned no positions"), nil
 	}
 
 	deviceCode := req.Credential.DeviceCode

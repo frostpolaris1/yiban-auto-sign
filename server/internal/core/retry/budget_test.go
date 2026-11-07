@@ -26,6 +26,7 @@ func TestBudgetFor(t *testing.T) {
 		{"photo_rejected", 1},
 		{"already_done", 0},
 		{"no_target", 0},
+		{"no_position", 0},
 		{"success", 0},
 		{"photo_missing", 0},
 	}

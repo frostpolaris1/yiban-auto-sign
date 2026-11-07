@@ -107,6 +107,8 @@ type WindowView struct {
 
 // TaskRow 是一行可执行的计划任务（worker 的输入形状）。
 // State 取 core/status 的五态；Attempts 是已消耗的尝试数。
+// Result 是行上最近一次写入的结论词或等待词（wait_*）：worker 靠它
+// 读取等待型重扫的计数。终态行的词是业务结论，pending 行可能是等待词。
 // OwnerUserID 是账号属主：worker 靠它从属主的图片库选图（P5-C）。
 type TaskRow struct {
 	ID           string
@@ -120,6 +122,7 @@ type TaskRow struct {
 	// ClaimSeq 是本次认领的栅栏序号。结算与重排必须原样带回。
 	ClaimSeq    int
 	OwnerUserID string
+	Result      string
 }
 
 // DayOutcomeCounts 是一个业务日的任务行汇总。

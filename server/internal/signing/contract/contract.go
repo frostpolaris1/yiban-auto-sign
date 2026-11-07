@@ -167,23 +167,27 @@ const (
 	OutcomeAlreadyDone     Outcome = "already_done"
 	OutcomePendingUpstream Outcome = "pending_upstream"
 	OutcomeNoTarget        Outcome = "no_target"
-	OutcomeInvalidTarget   Outcome = "invalid_target"
-	OutcomeCredentialBad   Outcome = "credential_invalid"
-	OutcomeDeviceUnbound   Outcome = "device_unbound"
-	OutcomeChallenge       Outcome = "challenge"
-	OutcomeBlocked         Outcome = "blocked"
-	OutcomeTransient       Outcome = "transient"
-	OutcomeRejected        Outcome = "rejected"
-	OutcomePhotoMissing    Outcome = "photo_missing"
-	OutcomePhotoRejected   Outcome = "photo_rejected"
-	OutcomeUnknown         Outcome = "unknown"
+	// OutcomeNoPosition 表示平台上没有可签点位（Position 空），与
+	// State=2 的「今日无需签到」（no_target，平台明确结论）区分：
+	// 前者是平台没放数据，宿主按等待型重扫处理，不当当日结论。
+	OutcomeNoPosition    Outcome = "no_position"
+	OutcomeInvalidTarget Outcome = "invalid_target"
+	OutcomeCredentialBad Outcome = "credential_invalid"
+	OutcomeDeviceUnbound Outcome = "device_unbound"
+	OutcomeChallenge     Outcome = "challenge"
+	OutcomeBlocked       Outcome = "blocked"
+	OutcomeTransient     Outcome = "transient"
+	OutcomeRejected      Outcome = "rejected"
+	OutcomePhotoMissing  Outcome = "photo_missing"
+	OutcomePhotoRejected Outcome = "photo_rejected"
+	OutcomeUnknown       Outcome = "unknown"
 )
 
 // Valid 报告 o 是否为已知结果。
 func (o Outcome) Valid() bool {
 	switch o {
 	case OutcomeSuccess, OutcomeAlreadyDone, OutcomePendingUpstream,
-		OutcomeNoTarget, OutcomeInvalidTarget, OutcomeCredentialBad,
+		OutcomeNoTarget, OutcomeNoPosition, OutcomeInvalidTarget, OutcomeCredentialBad,
 		OutcomeDeviceUnbound, OutcomeChallenge, OutcomeBlocked, OutcomeTransient,
 		OutcomeRejected, OutcomePhotoMissing, OutcomePhotoRejected,
 		OutcomeUnknown:

@@ -289,7 +289,8 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 		return false, s.settleOutcome(ctx, task, win, now, contract.OutcomeTransient, reason, s.deps.Clock.Now().Sub(attemptStart))
 	}
 	if len(targets) == 0 {
-		return false, s.finish(ctx, task, corestatus.TaskSkipped, string(contract.OutcomeNoTarget))
+		// Position 空是「平台没放数据」：等待型重扫，不当当日结论。
+		return false, s.waitTarget(ctx, task, win, now)
 	}
 	// 定位先于选点：固定点可能只落在部分候选围栏内。
 	location := contract.Location{Mode: contract.LocationAuto}
@@ -372,6 +373,8 @@ func (s *Service) execute(ctx context.Context, task corescheduleTask) (bool, err
 //   - 成功面：success、already_done → success；
 //   - 有结论但不该告警：no_target、invalid_target、photo_missing、
 //     challenge、device_unbound → skipped（当日不再动，且不算"失败"）；
+//   - 平台没放数据：no_position（Position 空）→ 等待型重扫，不落终态
+//     （见 wait_target.go；State 2 的明确结论 no_target 不在此列）；
 //   - 确定性失败：rejected、photo_rejected、blocked → failed；
 //   - 凭据错：credential_invalid → failed，并把账号移出排期；
 //   - 可重试面：transient、pending_upstream、unknown → 预算内退避。
@@ -379,6 +382,8 @@ func (s *Service) settleOutcome(ctx context.Context, task corescheduleTask, win 
 	switch outcome {
 	case contract.OutcomeSuccess, contract.OutcomeAlreadyDone:
 		return s.finish(ctx, task, corestatus.TaskSuccess, string(outcome))
+	case contract.OutcomeNoPosition:
+		return s.waitTarget(ctx, task, win, now)
 	case contract.OutcomeNoTarget, contract.OutcomeInvalidTarget,
 		contract.OutcomePhotoMissing, contract.OutcomeChallenge,
 		contract.OutcomeDeviceUnbound:
@@ -619,7 +624,12 @@ func pickTarget(targets []contract.Target, attempts int, loc contract.Location) 
 // 为什么不能只用 task.ID：provider 按 (账号, AttemptID) 缓存结果（含
 // transient）。若每次重试都送同一个 ID，"重试"只会读回首次结果、不发请求。带上 attempts 后，每次真实尝试都有新键；
 // 同一尝试被重复调用时仍折叠（这正是幂等缓存要防的双发）。
+// 等待型重扫行再带重扫计数：提交面 no_position 已按旧键入缓存，
+// 重扫后点位回来了，旧键只会读回那份缓存，永远签不上。
 func attemptID(task corescheduleTask) string {
+	if n := waitTargetRescanCount(task.Result); n > 0 {
+		return fmt.Sprintf("%s#%d.%d", task.ID, task.Attempts, n)
+	}
 	return fmt.Sprintf("%s#%d", task.ID, task.Attempts)
 }
 
@@ -748,6 +758,8 @@ func (s *Service) authScene(ctx context.Context, task corescheduleTask, dur time
 //   - 正在执行 → ErrSignRunning；
 //   - 当日 failed 或 skipped → 放回队列（Rearm）并写审计，这是用户
 //     "再试一次"的正当动作；
+//   - 等待型重扫行（pending + wait_target:*）→ Rearm 立即生效：
+//     退避清零、立刻重扫，并写同一份审计；
 //   - 其余（新建或已 pending）→ 返回行 ID（幂等）。
 func (s *Service) Request(ctx context.Context, accountID string, actor appaudit.Actor) (string, error) {
 	if accountID == "" {
@@ -784,6 +796,13 @@ func (s *Service) Request(ctx context.Context, accountID string, actor appaudit.
 			return "", err
 		}
 		return row.ID, nil
+	}
+	if waitTargetRescanCount(row.Result) > 0 {
+		// 等待型重扫行：手动重开立即生效——落点提到现在（退避清零），
+		// result 随重开清空（K 计数归零，新一轮等待周期）。
+		if err := s.deps.Store.Rearm(ctx, row.ID, now, actor); err != nil {
+			return "", err
+		}
 	}
 	return row.ID, nil
 }
