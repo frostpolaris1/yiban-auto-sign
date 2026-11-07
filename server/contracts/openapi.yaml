@@ -1101,6 +1101,51 @@ paths:
         '401': { $ref: '#/components/responses/UnauthorizedError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         default: { $ref: '#/components/responses/DefaultError' }
+  /api/accounts/batch:
+    post:
+      tags: [accounts]
+      operationId: AccountBatch
+      summary: Apply one action to up to ten accounts.
+      description: |
+        Master and admin only. The same action runs against 1 to 10 accounts
+        given by id. Each id is processed on its own inside its own
+        transaction with its own audit row: one failing item neither blocks
+        the items after it nor rolls back the ones already applied. The
+        request answers 200 whenever it passes validation; every item then
+        carries status ok or error, and an errored item carries the same
+        stable code the matching single-item endpoint answers with, capacity
+        and status-transition errors included. The items order always
+        matches the request ids order. reason only applies to review_reject;
+        every other action ignores it.
+        Every request must carry current_password, the acting user's own
+        login password: a missing value answers 400, a wrong value 403, and
+        repeated failures answer 429. A rejected reauthentication writes
+        nothing: no account change and no audit row for any item.
+        An unknown action, an empty or duplicate id list, or more than ten
+        ids answer 400 validation_failed and run nothing. A single missing
+        or out-of-scope id is a per-item error, never a request failure.
+      x-roles: [master, admin]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountBatchRequest'
+      responses:
+        '200':
+          description: Per-item outcomes in request order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountBatchResult'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
+        default: { $ref: '#/components/responses/DefaultError' }
   /api/accounts/{id}:
     get:
       tags: [accounts]
@@ -4300,6 +4345,80 @@ components:
       properties:
         pending: { type: integer, minimum: 0 }
         rejected: { type: integer, minimum: 0 }
+    AccountBatchAction:
+      type: string
+      description: |
+        The single action applied to every id in one batch request. Each
+        value maps to the matching single-item flow and keeps its existing
+        audit, notification, capacity and status semantics.
+      enum:
+        - review_approve
+        - review_reject
+        - pause
+        - resume
+        - delete
+        - restore
+    AccountBatchRequest:
+      type: object
+      required: [action, ids, current_password]
+      properties:
+        action:
+          $ref: '#/components/schemas/AccountBatchAction'
+        ids:
+          type: array
+          minItems: 1
+          maxItems: 10
+          uniqueItems: true
+          items: { type: string }
+          description: |
+            One to ten distinct account ids. The answer keeps this order. A
+            missing or out-of-scope id is a per-item error, not a request
+            failure.
+        reason:
+          type: string
+          maxLength: 200
+          description: |
+            The rejection reason for review_reject: every reject item needs
+            1 to 200 characters. Every other action ignores it.
+        current_password:
+          type: string
+          minLength: 1
+          description: |
+            Required here (the shared CurrentPassword shape marks it optional;
+            this endpoint does not). The acting user's own login password,
+            used to re-authenticate the batch: a missing value answers 400,
+            a wrong value 403, and repeated failures answer 429. It is never
+            the signing account's platform credential, and it is never
+            stored, logged or audited.
+    AccountBatchItem:
+      type: object
+      description: |
+        One id's outcome. status ok means the action was applied and
+        audited inside its own transaction. status error carries the same
+        stable code the matching single-item endpoint answers with:
+        not_found for a missing or out-of-scope id, conflict for an invalid
+        status transition, capacity_exceeded for a full account quota,
+        validation_failed for a missing rejection reason.
+      required: [id, status]
+      properties:
+        id: { type: string }
+        status:
+          type: string
+          enum: [ok, error]
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        message:
+          type: string
+          description: User-safe error text; present only on an error item.
+    AccountBatchResult:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          description: One entry per request id, in the request order.
+          items:
+            $ref: '#/components/schemas/AccountBatchItem'
     HealthStatus:
       type: object
       required: [status]

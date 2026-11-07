@@ -116,6 +116,8 @@ either side drifts.
 | POST | `/api/accounts` | master/admin/user | P1 |
 | GET | `/api/accounts/summary` | master/admin | N190 |
 |  |  |  | 只数未软删账号：`pending` 与 `rejected` 两计数，供看板待处理 KPI 与账号页提示条。 |
+| POST | `/api/accounts/batch` | master/admin | 870 |
+|  |  |  | 一次对 1–10 个账号执行同一动作：逐条独立事务、逐条审计、部分失败可见，`items` 与请求 `ids` 同序；`reason` 只给 `review_reject`；二次口令门形与单条端点一致，失败零写入；容量与状态错误按 per-item `code` 返回。 |
 | GET | `/api/accounts/:id` | master/admin/user | P1 |
 | PATCH | `/api/accounts/:id` | master/admin/user | P1 |
 | POST | `/api/accounts/:id/review` | master/admin | P1 |

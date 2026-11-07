@@ -14,6 +14,54 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for AccountBatchAction.
+const (
+	Delete        AccountBatchAction = "delete"
+	Pause         AccountBatchAction = "pause"
+	Restore       AccountBatchAction = "restore"
+	Resume        AccountBatchAction = "resume"
+	ReviewApprove AccountBatchAction = "review_approve"
+	ReviewReject  AccountBatchAction = "review_reject"
+)
+
+// Valid indicates whether the value is a known member of the AccountBatchAction enum.
+func (e AccountBatchAction) Valid() bool {
+	switch e {
+	case Delete:
+		return true
+	case Pause:
+		return true
+	case Restore:
+		return true
+	case Resume:
+		return true
+	case ReviewApprove:
+		return true
+	case ReviewReject:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AccountBatchItemStatus.
+const (
+	AccountBatchItemStatusError AccountBatchItemStatus = "error"
+	AccountBatchItemStatusOk    AccountBatchItemStatus = "ok"
+)
+
+// Valid indicates whether the value is a known member of the AccountBatchItemStatus enum.
+func (e AccountBatchItemStatus) Valid() bool {
+	switch e {
+	case AccountBatchItemStatusError:
+		return true
+	case AccountBatchItemStatusOk:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AccountDiagnosticsSuggestion.
 const (
 	AccountDiagnosticsSuggestionContactAdmin AccountDiagnosticsSuggestion = "contact_admin"
@@ -256,13 +304,13 @@ func (e ErrorCode) Valid() bool {
 
 // Defines values for HealthStatusStatus.
 const (
-	Ok HealthStatusStatus = "ok"
+	HealthStatusStatusOk HealthStatusStatus = "ok"
 )
 
 // Valid indicates whether the value is a known member of the HealthStatusStatus enum.
 func (e HealthStatusStatus) Valid() bool {
 	switch e {
-	case Ok:
+	case HealthStatusStatusOk:
 		return true
 	default:
 		return false
@@ -662,6 +710,61 @@ type Account struct {
 	// that recovery.
 	Status    AccountStatus `json:"status"`
 	UpdatedAt time.Time     `json:"updated_at"`
+}
+
+// AccountBatchAction The single action applied to every id in one batch request. Each
+// value maps to the matching single-item flow and keeps its existing
+// audit, notification, capacity and status semantics.
+type AccountBatchAction string
+
+// AccountBatchItem One id's outcome. status ok means the action was applied and
+// audited inside its own transaction. status error carries the same
+// stable code the matching single-item endpoint answers with:
+// not_found for a missing or out-of-scope id, conflict for an invalid
+// status transition, capacity_exceeded for a full account quota,
+// validation_failed for a missing rejection reason.
+type AccountBatchItem struct {
+	// Code Stable codes frozen in P0. New values are additive only.
+	Code *ErrorCode `json:"code,omitempty"`
+	Id   string     `json:"id"`
+
+	// Message User-safe error text; present only on an error item.
+	Message *string                `json:"message,omitempty"`
+	Status  AccountBatchItemStatus `json:"status"`
+}
+
+// AccountBatchItemStatus defines model for AccountBatchItem.Status.
+type AccountBatchItemStatus string
+
+// AccountBatchRequest defines model for AccountBatchRequest.
+type AccountBatchRequest struct {
+	// Action The single action applied to every id in one batch request. Each
+	// value maps to the matching single-item flow and keeps its existing
+	// audit, notification, capacity and status semantics.
+	Action AccountBatchAction `json:"action"`
+
+	// CurrentPassword Required here (the shared CurrentPassword shape marks it optional;
+	// this endpoint does not). The acting user's own login password,
+	// used to re-authenticate the batch: a missing value answers 400,
+	// a wrong value 403, and repeated failures answer 429. It is never
+	// the signing account's platform credential, and it is never
+	// stored, logged or audited.
+	CurrentPassword string `json:"current_password"`
+
+	// Ids One to ten distinct account ids. The answer keeps this order. A
+	// missing or out-of-scope id is a per-item error, not a request
+	// failure.
+	Ids []string `json:"ids"`
+
+	// Reason The rejection reason for review_reject: every reject item needs
+	// 1 to 200 characters. Every other action ignores it.
+	Reason *string `json:"reason,omitempty"`
+}
+
+// AccountBatchResult defines model for AccountBatchResult.
+type AccountBatchResult struct {
+	// Items One entry per request id, in the request order.
+	Items []AccountBatchItem `json:"items"`
 }
 
 // AccountCreate A user may not set device_code: the device code is the platform device
@@ -2157,6 +2260,13 @@ type AccountCreateParams struct {
 	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
 }
 
+// AccountBatchParams defines parameters for AccountBatch.
+type AccountBatchParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
 // AccountDeleteParams defines parameters for AccountDelete.
 type AccountDeleteParams struct {
 	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
@@ -2668,6 +2778,9 @@ type UserRestoreParams struct {
 // AccountCreateJSONRequestBody defines body for AccountCreate for application/json ContentType.
 type AccountCreateJSONRequestBody = AccountCreate
 
+// AccountBatchJSONRequestBody defines body for AccountBatch for application/json ContentType.
+type AccountBatchJSONRequestBody = AccountBatchRequest
+
 // AccountDeleteJSONRequestBody defines body for AccountDelete for application/json ContentType.
 type AccountDeleteJSONRequestBody = AccountDeleteRequest
 
@@ -2872,6 +2985,9 @@ type ServerInterface interface {
 	// AccountCreate Register a platform account.
 	// (POST /api/accounts)
 	AccountCreate(c *gin.Context, params AccountCreateParams)
+	// AccountBatch Apply one action to up to ten accounts.
+	// (POST /api/accounts/batch)
+	AccountBatch(c *gin.Context, params AccountBatchParams)
 	// AccountSummary Count the live accounts awaiting a review decision.
 	// (GET /api/accounts/summary)
 	AccountSummary(c *gin.Context)
@@ -3252,6 +3368,49 @@ func (siw *ServerInterfaceWrapper) AccountCreate(c *gin.Context) {
 	}
 
 	siw.Handler.AccountCreate(c, params)
+}
+
+// AccountBatch operation middleware
+func (siw *ServerInterfaceWrapper) AccountBatch(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AccountBatchParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AccountBatch(c, params)
 }
 
 // AccountSummary operation middleware
@@ -6360,6 +6519,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/accounts", wrapper.AccountList)
 	router.POST(options.BaseURL+"/api/accounts", wrapper.AccountCreate)
 	router.GET(options.BaseURL+"/api/accounts/summary", wrapper.AccountSummary)
+	router.POST(options.BaseURL+"/api/accounts/batch", wrapper.AccountBatch)
 	router.DELETE(options.BaseURL+"/api/accounts/:id", wrapper.AccountDelete)
 	router.GET(options.BaseURL+"/api/accounts/:id", wrapper.AccountGet)
 	router.PATCH(options.BaseURL+"/api/accounts/:id", wrapper.AccountUpdate)

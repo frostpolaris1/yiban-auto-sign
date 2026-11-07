@@ -177,6 +177,15 @@ func (s *server) AccountSummary(c *gin.Context) {
 	s.accounts.Summary(c)
 }
 
+// AccountBatch 委托账号处理器（静态段，紧邻 {id} 路由）。未装配时仍是 501。
+func (s *server) AccountBatch(c *gin.Context, params oapi.AccountBatchParams) {
+	if s.accounts == nil {
+		notImplemented(c)
+		return
+	}
+	s.accounts.Batch(c, params)
+}
+
 // AccountUpdate 委托账号处理器。未装配时仍是 501。
 func (s *server) AccountUpdate(c *gin.Context, id oapi.AccountID, params oapi.AccountUpdateParams) {
 	if s.accounts == nil {

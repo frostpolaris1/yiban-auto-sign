@@ -29,6 +29,7 @@ type fakeService struct {
 	selfScope    corescope.Scope
 	restores     int
 	purges       int
+	batches      int
 }
 
 func (f *fakeService) List(context.Context, corescope.Scope, appaccount.ListFilter, string, int) (appaccount.Page, error) {
@@ -77,6 +78,11 @@ func (f *fakeService) Delete(context.Context, corescope.Scope, string, appaudit.
 func (f *fakeService) Purge(context.Context, corescope.Scope, string, appaudit.Actor) error {
 	f.purges++
 	return nil
+}
+
+func (f *fakeService) Batch(context.Context, corescope.Scope, string, []string, string, appaudit.Actor) ([]appaccount.BatchItemResult, error) {
+	f.batches++
+	return nil, nil
 }
 
 func (f *fakeService) SelfDelete(_ context.Context, scope corescope.Scope, _ string, _ appaudit.Actor) error {

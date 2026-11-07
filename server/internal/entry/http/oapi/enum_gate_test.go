@@ -59,6 +59,8 @@ type contractExempt struct {
 // 差集口径：oapi.gen.go 带字符串常量的类型全集 - contractEnums。
 // 统一理由：无 pg ENUM；core 与 signing/contract 的显式类型词表必须进 contractEnums。
 var contractEnumExempt = []contractExempt{
+	{"AccountBatchAction", "纯输入动作枚举，映射既有单条用例调用；无 pg ENUM"},
+	{"AccountBatchItemStatus", "纯输出两值枚举（ok/error），无码侧词表"},
 	{"AccountDiagnosticsSuggestion", "core 词表未标注类型，扫描器不覆盖（core/diagnostic.Suggest*）"},
 	{"AccountLocationUpdateMode", "纯输入枚举，无转换写出点"},
 	{"AccountReviewRequestDecision", "无 pg ENUM"},

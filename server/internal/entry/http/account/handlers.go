@@ -1,7 +1,8 @@
 // Package account 把账号用例映射到 HTTP。
 //
 // # 功能
-// 列表、创建、读取、汇总、修改、审核、暂停、软删、恢复、设备刷新十个端点。
+// 列表、创建、读取、汇总、修改、审核、暂停、软删、恢复、设备刷新、
+// 批量动作十一个端点。
 // 本包**不**写 SQL、**不**判状态迁移、**不**加密凭据。
 //
 // # 归属
@@ -56,6 +57,9 @@ type Service interface {
 	Restore(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) (appaccount.Record, error)
 	// Purge 物理删除一个已软删账号；只允许 master 与 admin。
 	Purge(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) error
+	// Batch 对 1–10 个账号执行同一动作，逐条独立事务、逐条审计；
+	// 请求级校验失败返回错误，单条失败写入该条结果并继续。
+	Batch(ctx context.Context, scope corescope.Scope, action string, ids []string, reason string, actor appaudit.Actor) ([]appaccount.BatchItemResult, error)
 	// SelfDelete 与 SelfRestore 只作用于调用者自己的账号；
 	// scope 由入口层用会话 user id 构造，不来自请求字段。
 	SelfDelete(ctx context.Context, scope corescope.Scope, id string, actor appaudit.Actor) error
@@ -391,6 +395,46 @@ func (h *Handler) DeviceRefresh(c *gin.Context, id oapi.AccountID, _ oapi.Accoun
 		PhoneModel:       result.PhoneModel,
 		Authorized:       result.Authorized,
 	})
+}
+
+// Batch 实现 POST /api/accounts/batch。
+// 角色门槛（master/admin）与逐条作用域判定都在用例层，本层不重判。
+// 二次口令与单条危险操作同形：缺失 400、错误 403、连续失败 429；
+// 失败零写入——用例不被调用，任何一条都不落库不审计。
+// 响应 items 与请求 ids 同序；单条失败不阻断后续。
+func (h *Handler) Batch(c *gin.Context, _ oapi.AccountBatchParams) {
+	scope, actor, ok := h.principal(c)
+	if !ok {
+		return
+	}
+	var body oapi.AccountBatchRequest
+	if !decode(c, &body) {
+		return
+	}
+	if !h.reauthenticate(c, actor.UserID, &body.CurrentPassword) {
+		return
+	}
+	results, err := h.svc.Batch(c.Request.Context(), scope,
+		string(body.Action), body.Ids, stringOf(body.Reason), actor)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	items := make([]oapi.AccountBatchItem, 0, len(results))
+	for _, result := range results {
+		item := oapi.AccountBatchItem{Id: result.ID}
+		if result.OK() {
+			item.Status = oapi.AccountBatchItemStatusOk
+		} else {
+			item.Status = oapi.AccountBatchItemStatusError
+			code := oapi.ErrorCode(result.Code)
+			message := result.Message
+			item.Code = &code
+			item.Message = &message
+		}
+		items = append(items, item)
+	}
+	respond.JSON(c.Writer, http.StatusOK, oapi.AccountBatchResult{Items: items})
 }
 
 // Review 实现 POST /api/accounts/{id}/review。
