@@ -336,7 +336,7 @@ func newService(t *testing.T, store *fakeStore, blobs *fakeBlobs) (*appphotos.Se
 	svc, err := appphotos.NewService(appphotos.Deps{
 		Store: store, Blobs: blobs, Audit: audits, Tx: &fakeTx{audit: audits, store: store},
 		Clock:        coreclock.Fixed{T: fixedNow},
-		Options:      appphotos.Options{MaxPixels: 4_000_000, MaxSidePx: 4096, Rand: appRandZero},
+		Options:      appphotos.Options{MaxPixels: 4_000_000, MaxSidePx: 4096},
 		Accounts:     stubAccounts{},
 		SchoolPhotos: stubSchoolPhotos{},
 	})
@@ -417,9 +417,6 @@ func (r *appRand) IntN(int) int {
 	return v
 }
 
-// appRandZero 恒返 0：四边不裁，保持既有尺寸断言的前提。
-var appRandZero = &appRand{}
-
 // 判据 4：上传写一行 photo.upload 审计。
 // detail 只含四边比例与输出摘要（无 PII、无自由文本），
 // TargetID 是落库行 id，追加发生在事务内；审计失败则上传失败。
@@ -429,7 +426,7 @@ func TestUploadWritesAudit(t *testing.T) {
 	svc, err := appphotos.NewService(appphotos.Deps{
 		Store: store, Blobs: blobs, Audit: audits, Tx: &fakeTx{audit: audits, store: store},
 		Clock:        coreclock.Fixed{T: fixedNow},
-		Options:      appphotos.Options{MaxPixels: 4_000_000, MaxSidePx: 4096, Rand: &appRand{vals: []int{3, 7, 0, 10}}},
+		Options:      appphotos.Options{MaxPixels: 4_000_000, MaxSidePx: 4096, Crop: true, Rand: &appRand{vals: []int{3, 7, 0, 10}}},
 		Accounts:     stubAccounts{},
 		SchoolPhotos: stubSchoolPhotos{},
 	})
@@ -469,6 +466,30 @@ func TestUploadWritesAudit(t *testing.T) {
 	}
 }
 
+// 默认关闭裁切：上传成功且不缩小，审计 detail 形状不变、四边比例全 0。
+// 关闭时 detail 仍无条件含 crop_* 四键，值归零。
+func TestUploadCropDisabledAuditsZeroSides(t *testing.T) {
+	store, blobs := newFakeStore(), newFakeBlobs()
+	svc, audits := newService(t, store, blobs)
+	rec, err := svc.Upload(context.Background(), owner("u1"), actorOf("u1"), pngBytes(t, 100, 80))
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if rec.Width != 100 || rec.Height != 80 {
+		t.Fatalf("尺寸 = %dx%d, want 100x80（默认不裁）", rec.Width, rec.Height)
+	}
+	if len(audits.entries) != 1 {
+		t.Fatalf("审计行数 = %d, want 1", len(audits.entries))
+	}
+	want := map[string]any{
+		"crop_l": 0, "crop_r": 0, "crop_t": 0, "crop_b": 0,
+		"sha256": hex.EncodeToString(rec.SHA256[:]),
+	}
+	if !reflect.DeepEqual(audits.entries[0].Detail, want) {
+		t.Fatalf("Detail = %+v, want %+v", audits.entries[0].Detail, want)
+	}
+}
+
 // 审计追加失败必须让上传失败且不落行：审计是入库的一部分，不是旁路。
 func TestUploadFailsWhenAuditFails(t *testing.T) {
 	store, blobs := newFakeStore(), newFakeBlobs()
@@ -476,7 +497,7 @@ func TestUploadFailsWhenAuditFails(t *testing.T) {
 	svc, err := appphotos.NewService(appphotos.Deps{
 		Store: store, Blobs: blobs, Audit: audits, Tx: &fakeTx{audit: audits, store: store},
 		Clock:        coreclock.Fixed{T: fixedNow},
-		Options:      appphotos.Options{MaxPixels: 4_000_000, MaxSidePx: 4096, Rand: appRandZero},
+		Options:      appphotos.Options{MaxPixels: 4_000_000, MaxSidePx: 4096},
 		Accounts:     stubAccounts{},
 		SchoolPhotos: stubSchoolPhotos{},
 	})

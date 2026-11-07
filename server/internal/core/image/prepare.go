@@ -56,9 +56,8 @@ func drawCropSides(r Rand) CropSides {
 	}
 }
 
-// Options 是预处理参数。零值表示不限尺寸、保持输入格式。
-// 裁切比例是固定随机口径，不是配置项：无配置键、无环境变量、
-// 无管理员面。Rand 只服务测试注入。
+// Options 是预处理参数。零值表示不限尺寸、保持输入格式、不裁切。
+// 裁切默认关闭，由装配方按 env 决定；本包无配置键、无管理员面。
 type Options struct {
 	// MaxPixels 是像素总数上限。非正值表示不限。
 	MaxPixels int
@@ -66,7 +65,12 @@ type Options struct {
 	// MaxSidePx 是单边像素上限。非正值表示不限。
 	MaxSidePx int
 
-	// Rand 是裁切比例随机源。nil 用 systemRand。测试注入确定性源。
+	// Crop 开启随机安全裁切：四边各自独立在 [0%,10%] 均匀随机取比例。
+	// 缺省关闭：零值不裁，输出即方向归一后的原图。
+	Crop bool
+
+	// Rand 是裁切比例随机源，仅 Crop 开启时使用。
+	// nil 用 systemRand。测试注入确定性源。
 	Rand Rand
 
 	// TargetMime 是输出格式。空串表示保持输入格式。
@@ -90,17 +94,21 @@ type Output struct {
 	Crop   CropSides
 }
 
-// Prepare 解码、方向归一、随机裁切并重编码一张图片。
+// Prepare 解码、方向归一并重编码一张图片；随机裁切仅在 Options.Crop
+// 开启时发生。
 //
-// # 裁切口径（固定，不可调）
-// 四边各自独立在 [0%,10%] 均匀随机取比例，单边可为 0。
+// # 裁切口径（默认关闭，由装配方按 env 决定）
+// 开启时四边各自独立在 [0%,10%] 均匀随机取比例，单边可为 0；
 // 随机裁切破坏按像素内容复用同一张图的匹配；上限 10% 保住主体。
-// 每次调用独立抽取；同一用户重复上传同一字节会得到不同裁切，
+// 关闭时不裁：不抽随机源，Output.Crop 为零值，
+// 输出尺寸即方向归一后的输入尺寸。
+// 开启时每次调用独立抽取；同一用户重复上传同一字节会得到不同裁切，
 // 去重判据因此按预处理后字节比较（见 app/photos）。
 //
 // # 变换顺序
-// 解码即剥元数据（编码器只重写像素），随后方向归一，再裁切，
-// 最后重编码。裁切在像素域进行，输出不含 EXIF。
+// 解码即剥元数据（编码器只重写像素），随后方向归一，最后重编码；
+// 裁切步骤仅在 Crop 开启时发生，位于方向归一之后、重编码之前。
+// 裁切在像素域进行，输出不含 EXIF。
 //
 // # 取整
 // cut = 边长×比例/100，向下取整。实际裁切比例恒不超 10%；
@@ -150,12 +158,16 @@ func Prepare(ctx context.Context, input []byte, opt Options) (Output, error) {
 			img = orient(img, o)
 		}
 	}
-	rand := opt.Rand
-	if rand == nil {
-		rand = systemRand{}
+	// 裁切默认关闭：不抽随机源、不改像素，Output.Crop 保持零值。
+	var crops CropSides
+	if opt.Crop {
+		rand := opt.Rand
+		if rand == nil {
+			rand = systemRand{}
+		}
+		crops = drawCropSides(rand)
+		img = crop(img, crops)
 	}
-	crops := drawCropSides(rand)
-	img = crop(img, crops)
 
 	mime := mimePNG
 	if format == "jpeg" {

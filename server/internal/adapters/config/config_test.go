@@ -285,6 +285,27 @@ func TestScheduleConfigDefaultsAndBounds(t *testing.T) {
 	}
 }
 
+// 照片裁切缺省关闭；显式开启才生效。开启与否由装配方按该键决定。
+func TestPhotoCropDefaultsOffAndExplicitEnable(t *testing.T) {
+	cfg, err := LoadFrom(baseSource())
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if cfg.PhotoCrop {
+		t.Fatalf("PhotoCrop = true, want 缺省 false")
+	}
+
+	src := baseSource()
+	src["YIBAN_PHOTO_CROP_ENABLE"] = "1"
+	cfg, err = LoadFrom(src)
+	if err != nil {
+		t.Fatalf("LoadFrom enabled: %v", err)
+	}
+	if !cfg.PhotoCrop {
+		t.Fatalf("PhotoCrop = false, want true")
+	}
+}
+
 // TestWorkersCapMatchesCapacity 钉住配置上限与容量建议上限同值：
 // 建议值超过配置上限时不可应用，两处 64 漂移会让建议变成不可执行的数字。
 func TestWorkersCapMatchesCapacity(t *testing.T) {

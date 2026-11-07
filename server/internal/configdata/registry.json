@@ -171,6 +171,14 @@
     "sensitive": false,
     "scope": "server"
   },
+  "YIBAN_PHOTO_CROP_ENABLE": {
+    "type": "bool",
+    "default": false,
+    "group": ["图片"],
+    "doc": "开启用户照片上传前的随机安全裁切（每边 0–10%）。缺省关闭：上传不做裁切，审计四边比例记 0",
+    "sensitive": false,
+    "scope": "server"
+  },
   "YIBAN_PHOTO_DIR": {
     "type": "string",
     "default": "data/photos",

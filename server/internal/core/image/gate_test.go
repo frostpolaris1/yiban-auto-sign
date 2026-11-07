@@ -67,7 +67,7 @@ func TestPrepareWaitsForGateSlot(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := Prepare(context.Background(), pngBytes(t, whiteImage(8, 8)), Options{Rand: noCrop, Decode: gate})
+		_, err := Prepare(context.Background(), pngBytes(t, whiteImage(8, 8)), Options{Decode: gate})
 		done <- err
 	}()
 	select {

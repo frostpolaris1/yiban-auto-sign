@@ -192,6 +192,7 @@ Canonical runtime files:
 | `YIBAN_HASH_PEPPER` | **yes** | — | at least 16 characters; keys the HMAC digests of IP addresses and user agents, and derives the audit chain key. Rotating it breaks verification of the existing audit chain. |
 | `YIBAN_CREDENTIAL_KEY` | **yes** | — | base64 of exactly 32 bytes; encrypts stored credentials with AES-256-GCM. Rotating it goes through kid re-encryption (P4/P8), so old rows stay decryptable. |
 | `YIBAN_PHOTO_DIR` | no | `data/photos` | photo blob root; a relative path is resolved against the process working directory |
+| `YIBAN_PHOTO_CROP_ENABLE` | no | `false` | opt-in random safety crop of user photos before upload: each edge independently loses 0–10%. When false the upload keeps the decoded, orientation-normalized image and the audit detail records 0 for all four crop sides |
 | `YIBAN_UI_DIR` | no | empty | frontend build directory containing `index.html`; empty serves the API only |
 | `YIBAN_RESET_MAIL_ENABLE` | no | `false` | Go-side SMTP master switch (legacy name): password reset links, test mail, notification mail and daily digest mail all depend on it. A true value requires `YIBAN_PUBLIC_BASE_URL` and sender credentials; a missing or loopback base URL stops startup with the key name in the error. |
 | `YIBAN_PUBLIC_BASE_URL` | no | `http://127.0.0.1:47183` | base of the reset links and an accepted login origin, as an absolute http(s) URL without a trailing slash and without credentials. Set it to the public https origin when TLS terminates in front of the app. See the paragraph below. |

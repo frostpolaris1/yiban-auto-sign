@@ -2,9 +2,9 @@
 //
 // # 功能
 // 上传、列表、读取、软删与保留期设置；上传前完成预处理与去重。
-// 上传即随机安全裁切（每边 0–10%，固定不可调），并写 photo.upload
-// 审计（四边比例与输出摘要）。到期行清理与无引用 blob 回收由
-// RetentionLoop 每日执行。
+// 上传写 photo.upload 审计（四边裁切比例与输出摘要）；随机安全
+// 裁切（每边 0–10%）默认关闭，由装配方按 env 决定是否开启。
+// 到期行清理与无引用 blob 回收由 RetentionLoop 每日执行。
 // 处理顺序固定：预处理 → 写 blob → 事务内写记录与审计。
 // 本包**不**发 HTTP 请求、**不**写 SQL、**不**生成公开 URL。
 //
@@ -44,12 +44,15 @@ import (
 	"github.com/google/uuid"
 )
 
-// Options 是图片预处理参数。零值表示不限尺寸、保持输入格式。
-// 裁切是固定随机口径（每边 0–10%），不是配置项：无配置键、
-// 无环境变量、无管理员面。Rand 只服务测试注入。
+// Options 是图片预处理参数。零值表示不限尺寸、保持输入格式、不裁切。
+// 随机安全裁切（每边 0–10%）默认关闭，由装配方按 env 决定是否开启；
+// 本包无配置键、无管理员面。Rand 仅 Crop 开启时使用。
 type Options struct {
-	MaxPixels  int
-	MaxSidePx  int
+	MaxPixels int
+	MaxSidePx int
+	// Crop 开启随机安全裁切。缺省关闭：上传不做裁切，
+	// 审计 detail 的四边比例记 0。
+	Crop       bool
 	TargetMime string
 	Rand       image.Rand
 	// Decode 是进程级解码闸（image.NewGate）。生产必传：
@@ -123,7 +126,8 @@ func NewService(deps Deps) (*Service, error) {
 
 // Upload 预处理一张图片并入库。同一用户重复上传同一字节返回同一行。
 // 每次上传写一行 photo.upload 审计：TargetID 是落库行 id，
-// detail 只含四边裁切比例与输出摘要（无 PII，无自由文本）。
+// detail 只含四边裁切比例与输出摘要（无 PII，无自由文本）；
+// 裁切关闭时四边比例记 0。
 // 追加与落行同事务；审计失败则上传失败，不静默放行。
 func (s *Service) Upload(ctx context.Context, scope corescope.Scope, actor appaudit.Actor, raw []byte) (corephoto.Record, error) {
 	if err := requireUser(scope); err != nil {
@@ -138,6 +142,7 @@ func (s *Service) Upload(ctx context.Context, scope corescope.Scope, actor appau
 	out, err := image.Prepare(ctx, raw, image.Options{
 		MaxPixels:  s.deps.Options.MaxPixels,
 		MaxSidePx:  s.deps.Options.MaxSidePx,
+		Crop:       s.deps.Options.Crop,
 		TargetMime: s.deps.Options.TargetMime,
 		Rand:       s.deps.Options.Rand,
 		Decode:     s.deps.Options.Decode,

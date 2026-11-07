@@ -585,6 +585,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			Tx:    db,
 			Options: appphotos.Options{
 				MaxPixels: photoMaxPixels, MaxSidePx: photoMaxSidePx,
+				// 随机裁切缺省关闭，配置显式开启后才裁。
+				Crop: cfg.PhotoCrop,
 				// 解码闸按进程计：图片入口只有这一个服务。
 				Decode: coreimage.NewGate(coreimage.DecodeConcurrency),
 			},
