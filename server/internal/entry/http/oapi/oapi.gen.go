@@ -788,6 +788,8 @@ type AccountBatchAction string
 // validation_failed for a missing rejection reason.
 type AccountBatchItem struct {
 	// Code Stable codes frozen in P0. New values are additive only.
+	// task_ambiguous is retained for wire compatibility but is no longer
+	// returned: several equivalent tasks are resolved by random choice.
 	Code *ErrorCode `json:"code,omitempty"`
 	Id   string     `json:"id"`
 
@@ -836,9 +838,12 @@ type AccountBatchResult struct {
 // single-item endpoint answers with: not_found for a missing or
 // out-of-scope id, validation_failed for a malformed (non-UUID) id,
 // conflict for a non-active account, and already_signed /
-// sign_running / window_closed / task_ambiguous from the queue itself.
+// sign_running / window_closed from the queue itself. Several equivalent
+// tasks no longer produce an error: the worker picks one at random.
 type AccountBatchSignItem struct {
 	// Code Stable codes frozen in P0. New values are additive only.
+	// task_ambiguous is retained for wire compatibility but is no longer
+	// returned: several equivalent tasks are resolved by random choice.
 	Code *ErrorCode `json:"code,omitempty"`
 	Id   string     `json:"id"`
 
@@ -1382,6 +1387,8 @@ type Error struct {
 // ErrorBody defines model for ErrorBody.
 type ErrorBody struct {
 	// Code Stable codes frozen in P0. New values are additive only.
+	// task_ambiguous is retained for wire compatibility but is no longer
+	// returned: several equivalent tasks are resolved by random choice.
 	Code ErrorCode `json:"code"`
 
 	// Details Machine-readable extras; an empty object when unused.
@@ -1395,6 +1402,8 @@ type ErrorBody struct {
 }
 
 // ErrorCode Stable codes frozen in P0. New values are additive only.
+// task_ambiguous is retained for wire compatibility but is no longer
+// returned: several equivalent tasks are resolved by random choice.
 type ErrorCode string
 
 // ForgotPasswordRequest defines model for ForgotPasswordRequest.
@@ -2145,6 +2154,8 @@ type UserBatchAction string
 // clash on restore.
 type UserBatchItem struct {
 	// Code Stable codes frozen in P0. New values are additive only.
+	// task_ambiguous is retained for wire compatibility but is no longer
+	// returned: several equivalent tasks are resolved by random choice.
 	Code *ErrorCode `json:"code,omitempty"`
 	Id   string     `json:"id"`
 

@@ -35,8 +35,6 @@ var (
 	ErrAlreadySigned = coreerrs.New(coreerrs.CodeAlreadySigned, "already signed")
 	// ErrWindowClosed 表示窗口已关闭。
 	ErrWindowClosed = coreerrs.New(coreerrs.CodeWindowClosed, "window is closed")
-	// ErrTaskAmbiguous 表示当日任务不唯一：服务端不猜，由调用方选。
-	ErrTaskAmbiguous = coreerrs.New(coreerrs.CodeTaskAmbiguous, "multiple tasks apply to this account")
 )
 
 // 内部等待原因（写入 sign_tasks.result）。
@@ -99,6 +97,9 @@ func NewService(deps Deps) (*Service, error) {
 	log := deps.Logger
 	if log == nil {
 		log = slog.Default()
+	}
+	if deps.Picker == nil {
+		deps.Picker = randomTaskPicker{}
 	}
 	return &Service{deps: deps, log: log}, nil
 }
@@ -734,10 +735,12 @@ func (s *Service) authScene(ctx context.Context, task corescheduleTask, dur time
 
 // Request 是手动签到入口：解析当日的目标任务，确保任务行存在并返回行 ID。
 //
-// 任务解析（C2）先看当日 sign_tasks：计划已经把"今天该签哪些任务"定下来了，
-// 手动签到必须签同一行，而不是另找"第一个启用任务"。
-// 当日无行时退回学校启用任务；两条以上候选一律 ErrTaskAmbiguous——
-// 服务端不猜，猜错就是签错任务。
+// 任务解析先看当日 sign_tasks：计划已经把"今天该签哪些任务"定下来了。
+// 当日无行时退回学校启用任务。
+// 多候选时随机选一个：同一打卡的多个点位等价，任取其一即可（与旧线
+// signPosition 多点位随机选点同口径；自动执行 ClaimDue 也只按 run_at 取一条）。
+// 旧线在一次请求里按顺序试到成功即停；本实现每次请求只选一个点入队，
+// 失败由用户重试或下一次自动执行兜底。随机源可注入，未注入时用缺省随机源。
 //
 // 结论语义（与入口层错误码一一对应）：
 //   - 关窗 → ErrWindowClosed；
@@ -789,9 +792,9 @@ func (s *Service) Request(ctx context.Context, accountID string, actor appaudit.
 //
 // 判据顺序：
 //  1. 当日 sign_tasks 恰好一行 → 就是它（计划是当日真相）；
-//  2. 当日多行 → ErrTaskAmbiguous；
+//  2. 当日多行 → 随机选一个（多点位等价）；
 //  3. 当日无行 → 学校启用任务恰好一条 → 就是它；
-//  4. 学校启用任务多条 → ErrTaskAmbiguous；没有 → not_found。
+//  4. 学校启用任务多条 → 随机选一个；没有 → not_found。
 func (s *Service) resolveTask(ctx context.Context, accountID, day string) (string, error) {
 	dayTasks, err := s.deps.Store.DayTasks(ctx, accountID, day)
 	if err != nil {
@@ -802,7 +805,7 @@ func (s *Service) resolveTask(ctx context.Context, accountID, day string) (strin
 		return dayTasks[0], nil
 	case 0:
 	default:
-		return "", ErrTaskAmbiguous
+		return s.deps.Picker.Pick(dayTasks), nil
 	}
 	enabled, err := s.deps.Store.AccountEnabledTasks(ctx, accountID)
 	if err != nil {
@@ -815,7 +818,7 @@ func (s *Service) resolveTask(ctx context.Context, accountID, day string) (strin
 		// 账号不可用或学校没有启用任务：是资源不存在，不是参数格式错。
 		return "", coreerrs.New(coreerrs.CodeNotFound, "no enabled task for this account")
 	default:
-		return "", ErrTaskAmbiguous
+		return s.deps.Picker.Pick(enabled), nil
 	}
 }
 

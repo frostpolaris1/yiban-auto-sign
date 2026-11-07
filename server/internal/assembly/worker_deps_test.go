@@ -65,6 +65,7 @@ func TestWorkerDepsPassesEveryFieldThrough(t *testing.T) {
 		photos:    &fakePhotosSentinel{},
 		notifier:  &fakeNotifierSentinel{},
 		alerts:    &fakeAlertsSentinel{},
+		picker:    &fakePickerSentinel{},
 		logger:    logger,
 	}
 	got := buildWorkerDeps(&config.Config{}, want)
@@ -98,6 +99,9 @@ func TestWorkerDepsPassesEveryFieldThrough(t *testing.T) {
 	}
 	if got.Alerts != want.alerts {
 		t.Error("Alerts 未原样搬运")
+	}
+	if got.Picker != want.picker {
+		t.Error("Picker 未原样搬运")
 	}
 	if got.Logger != want.logger {
 		t.Error("Logger 未原样搬运")
@@ -140,6 +144,8 @@ type fakePhotosSentinel struct{ appworker.PhotoSource }
 type fakeNotifierSentinel struct{ appworker.Notifier }
 
 type fakeAlertsSentinel struct{ appworker.Alerts }
+
+type fakePickerSentinel struct{ appworker.TaskPicker }
 
 // fixedClock 是零值可比较的时钟哨兵。
 type fixedClock struct{}

@@ -730,11 +730,12 @@ export interface paths {
          *     (non-UUID) id is a per-item validation_failed — the same answer the
          *     single-item endpoint gives — an account that is not active is a
          *     per-item conflict, and queueing itself reuses the worker request with
-         *     its stable codes: already_signed, sign_running, window_closed,
-         *     task_ambiguous. An ok item only queues today's task row and carries
-         *     its task_id; the caller does not wait for execution. Items keep the
-         *     request order; one failing item neither blocks the items after it nor
-         *     rolls back the ones already queued.
+         *     its stable codes: already_signed, sign_running, window_closed. When
+         *     several tasks apply, the worker picks one at random. An ok item only
+         *     queues today's task row and carries its task_id; the caller does not
+         *     wait for execution. Items keep the request order; one failing item
+         *     neither blocks the items after it nor rolls back the ones already
+         *     queued.
          *     This endpoint requires no current_password reauthentication, matching
          *     the single-item sign.
          *     Rate limiting matches the single-item sign: the inbound limiter caps
@@ -978,10 +979,13 @@ export interface paths {
          * @description Ensures today's task row exists and returns 202 with its id.
          *     The target task is resolved from today's task rows of enabled tasks:
          *     exactly one such row selects it; no row today falls back to the
-         *     school's single enabled task. More than one candidate (two rows today,
-         *     or no row and two enabled tasks) returns 409 task_ambiguous. This
-         *     version has no task selector parameter: a school with two enabled
-         *     tasks can only sign manually after one of them is disabled.
+         *     school's enabled tasks. More than one candidate (two rows today, or no
+         *     row and two enabled tasks) is equivalent to several points of one
+         *     check-in: the server picks one at random, as the automatic executor
+         *     does, and does not ask the caller to choose. Each request resolves to
+         *     exactly one row; already_signed is answered only when the selected row
+         *     succeeded. A selected task with no discovered window answers 404 and
+         *     the caller may retry.
          *     A closed window returns 409 window_closed. A run in progress returns
          *     409 sign_running. A concluded success returns 409 already_signed.
          *     A failed or skipped row is re-armed and returns 202 again.
@@ -2188,6 +2192,8 @@ export interface components {
         };
         /**
          * @description Stable codes frozen in P0. New values are additive only.
+         *     task_ambiguous is retained for wire compatibility but is no longer
+         *     returned: several equivalent tasks are resolved by random choice.
          * @enum {string}
          */
         ErrorCode: "validation_failed" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "rate_limited" | "capacity_exceeded" | "capacity_shortfall" | "window_closed" | "already_signed" | "sign_running" | "task_ambiguous" | "photo_missing" | "photo_invalid" | "photo_rejected" | "location_out_of_range" | "upstream_unavailable" | "internal_error";
@@ -3057,7 +3063,8 @@ export interface components {
          *     single-item endpoint answers with: not_found for a missing or
          *     out-of-scope id, validation_failed for a malformed (non-UUID) id,
          *     conflict for a non-active account, and already_signed /
-         *     sign_running / window_closed / task_ambiguous from the queue itself.
+         *     sign_running / window_closed from the queue itself. Several equivalent
+         *     tasks no longer produce an error: the worker picks one at random.
          */
         AccountBatchSignItem: {
             id: string;

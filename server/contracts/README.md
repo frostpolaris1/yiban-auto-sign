@@ -121,7 +121,7 @@ either side drifts.
 | POST | `/api/accounts/batch` | master/admin | 870 |
 |  |  |  | 一次对 1–10 个账号执行同一动作：逐条独立事务、逐条审计、部分失败可见，`items` 与请求 `ids` 同序；`reason` 只给 `review_reject`；二次口令门形与单条端点一致，失败零写入；容量与状态错误按 per-item `code` 返回。 |
 | POST | `/api/accounts/batch/sign` | master/admin | 870 |
-|  |  |  | 一次对 1–10 个账号逐个入队手动签到：每条走单条同口径（不可见/跨校 per-item `not_found`、非 UUID per-item `validation_failed`、非 active per-item `conflict`、队列冲突 `already_signed`/`sign_running`/`window_closed`/`task_ambiguous`），`items` 与请求 `ids` 同序，`task_id` 只在成功项出现；不要求二次口令（与单条一致）；限流与单条同口径——IP 整批限流（入站白名单）＋账号键逐项限流（命中项 `rate_limited`，其余照常）；旧线 60 秒进程冷却与宿主级单队列不做，并发语义归限流、worker 容量与账号级唯一任务行；ids 空/超限/重复整批 400。 |
+|  |  |  | 一次对 1–10 个账号逐个入队手动签到：每条走单条同口径（不可见/跨校 per-item `not_found`、非 UUID per-item `validation_failed`、非 active per-item `conflict`、队列冲突 `already_signed`/`sign_running`/`window_closed`），`items` 与请求 `ids` 同序，`task_id` 只在成功项出现；多个启用任务是同一打卡的多个点位，服务端随机选一个入队，不要求用户选择；不要求二次口令（与单条一致）；限流与单条同口径——IP 整批限流（入站白名单）＋账号键逐项限流（命中项 `rate_limited`，其余照常）；旧线 60 秒进程冷却与宿主级单队列不做，并发语义归限流、worker 容量与账号级唯一任务行；ids 空/超限/重复整批 400。 |
 | GET | `/api/accounts/:id` | master/admin/user | P1 |
 | PATCH | `/api/accounts/:id` | master/admin/user | P1 |
 | POST | `/api/accounts/:id/review` | master/admin | P1 |
@@ -229,6 +229,6 @@ a shape failure.
 The list grows by addition only: values are never renamed or removed.
 `capacity_shortfall` is a plan-build refusal (409, details carry demand,
 capacity, shortfall, binding and, when raising concurrency within the
-64-channel cap fits the demand, suggested_workers); `task_ambiguous` means two
-enabled tasks apply to the same account and the server will not guess which one
-a manual sign means.
+64-channel cap fits the demand, suggested_workers). `task_ambiguous` is retained
+for wire compatibility but is no longer returned: when several equivalent
+tasks apply, the worker picks one at random.
