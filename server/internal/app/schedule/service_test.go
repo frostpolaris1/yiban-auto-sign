@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -354,9 +353,9 @@ func TestWindowSourcePrecedence(t *testing.T) {
 	}
 }
 
-// 容量缺口拒建：409 capacity_shortfall，计划与窗口缓存都不落库（C2 验收②）。
-// 预览仍如实上报缺口：管理员先看预览，再决定加并发还是减账号。
-func TestBuildRejectsCapacityShortfall(t *testing.T) {
+// 容量缺口自然降级：按可用容量落库，请求成功；缺口数与建议值仍如实上报。
+// 窗口缓存照常写入：worker 的窗口判据不因缺口缺席。
+func TestBuildDegradesCapacityShortfall(t *testing.T) {
 	ids := make([]string, 100)
 	for i := range ids {
 		ids[i] = "acct-" + string(rune('a'+i%26)) + string(rune('0'+i/26))
@@ -367,28 +366,50 @@ func TestBuildRejectsCapacityShortfall(t *testing.T) {
 		&fakeDiscover{window: platformWindow(6, 30, 7, 50)})
 	in := baseInput()
 	in.Workers = 1
-	in.Avg = 60 * time.Second
+	in.Avg = 60 * time.Second // 1 通道、60s/次、80 分钟窗：容量 64，需求 100
 	in.Rate = 1.0
 
-	if _, err := svc.Build(context.Background(), in); err == nil {
-		t.Fatal("缺口计划应被拒")
-	} else if code := coreerrs.From(err).Code; code != coreerrs.CodeCapacityShortfall {
-		t.Fatalf("错误码 = %q, want capacity_shortfall", code)
-	} else if details := coreerrs.From(err).Details; details["demand"] != 100 ||
-		details["capacity"] == nil || details["shortfall"] == nil {
-		t.Fatalf("details = %v, want 需求/容量/缺口三个数", details)
-	} else if details["binding"] != string(corecapacity.BindingWorkers) {
-		t.Fatalf("binding = %v, want workers", details["binding"])
-	} else if details["suggested_workers"] != 2 {
-		t.Fatalf("suggested_workers = %v, want 2", details["suggested_workers"])
-	} else if want := "容量不足：需求 100，容量 64；通道是瓶颈，建议 YIBAN_WORKERS=2"; coreerrs.From(err).Message != want {
-		t.Fatalf("message = %q, want %q", coreerrs.From(err).Message, want)
+	built, err := svc.Build(context.Background(), in)
+	if err != nil {
+		t.Fatalf("缺口计划应降级成功, err = %v（code %q）", err, coreerrs.From(err).Code)
 	}
-	if len(ps.inserted) != 0 {
-		t.Fatalf("缺口计划不得落库, inserted = %d 批", len(ps.inserted))
+	if built.Demand != 100 || built.Capacity != 64 || built.Shortfall != 36 {
+		t.Fatalf("数字 = demand %d capacity %d shortfall %d, want 100/64/36",
+			built.Demand, built.Capacity, built.Shortfall)
 	}
-	if ws.saves != 0 {
-		t.Fatalf("缺口不得写窗口缓存, saves = %d", ws.saves)
+	if built.Binding != corecapacity.BindingWorkers || built.SuggestedWorkers != 2 {
+		t.Fatalf("建议 = %s/%d, want workers/2", built.Binding, built.SuggestedWorkers)
+	}
+	// 落库行数 = 可用容量；窗口缓存写入。
+	if len(ps.inserted) != 1 || len(ps.inserted[0]) != 64 {
+		t.Fatalf("落库批次 = %+v, want 1 批 64 行（能排多少排多少）", ps.inserted)
+	}
+	if ws.saves != 1 {
+		t.Fatalf("窗口缓存写入次数 = %d, want 1", ws.saves)
+	}
+	// 响应行 = 落库行：行的落点全在窗内，直方图与行一致。
+	if len(built.Rows) != 64 {
+		t.Fatalf("响应行数 = %d, want 64", len(built.Rows))
+	}
+	sum := 0
+	for _, r := range built.Rows {
+		if r.RunAt.Before(built.WindowStart) || !r.RunAt.Before(built.WindowEnd) {
+			t.Fatalf("降级行越窗: %v", r.RunAt)
+		}
+		if built.Histogram[int(r.RunAt.Sub(built.WindowStart)/(5*time.Minute))] <= 0 {
+			t.Fatalf("直方图缺行落点: %v", r.RunAt)
+		}
+		sum++
+	}
+	if sum != 64 {
+		t.Fatalf("可数行 = %d, want 64", sum)
+	}
+	histSum := 0
+	for _, v := range built.Histogram {
+		histSum += v
+	}
+	if histSum != 64 {
+		t.Fatalf("直方图总数 = %d, want 64", histSum)
 	}
 }
 
@@ -428,13 +449,14 @@ func TestCapacityShortfallReported(t *testing.T) {
 	}
 }
 
-// 出口速率是瓶颈：不给数字建议，409 message 指向出口配置。
+// 出口速率是瓶颈：不给数字建议，降级落库按出口容量截行。
 func TestCapacityEgressShortfall(t *testing.T) {
 	ids := make([]string, 100)
 	for i := range ids {
 		ids[i] = "acct-" + string(rune('a'+i%26)) + string(rune('0'+i/26))
 	}
-	svc := newService(t, &fakeWindowStore{task: enabledTask()}, &fakePlanStore{},
+	ps := &fakePlanStore{}
+	svc := newService(t, &fakeWindowStore{task: enabledTask()}, ps,
 		fakeAccounts{ids: ids}, &fakeDiscover{window: platformWindow(6, 30, 6, 31)})
 	in := baseInput()
 	in.Workers = 4
@@ -452,23 +474,15 @@ func TestCapacityEgressShortfall(t *testing.T) {
 		t.Fatalf("出口瓶颈不应给建议, SuggestedWorkers = %d", prev.SuggestedWorkers)
 	}
 
-	_, err = svc.Build(context.Background(), in)
-	if err == nil {
-		t.Fatal("缺口计划应被拒")
+	built, err := svc.Build(context.Background(), in)
+	if err != nil {
+		t.Fatalf("缺口计划应降级成功: %v", err)
 	}
-	e := coreerrs.From(err)
-	if e.Code != coreerrs.CodeCapacityShortfall {
-		t.Fatalf("错误码 = %q, want capacity_shortfall", e.Code)
+	if built.Binding != corecapacity.BindingEgressRate || built.SuggestedWorkers != 0 {
+		t.Fatalf("建议 = %s/%d, want egress_rate/0", built.Binding, built.SuggestedWorkers)
 	}
-	if e.Details["binding"] != string(corecapacity.BindingEgressRate) {
-		t.Fatalf("binding = %v, want egress_rate", e.Details["binding"])
-	}
-	if _, ok := e.Details["suggested_workers"]; ok {
-		t.Fatalf("出口瓶颈不得给 suggested_workers: %v", e.Details)
-	}
-	want := "容量不足：需求 100，容量 24；出口速率是瓶颈，建议提高 YIBAN_EGRESS_RATE 或增加出口标识"
-	if e.Message != want {
-		t.Fatalf("message = %q, want %q", e.Message, want)
+	if len(ps.inserted) != 1 || len(ps.inserted[0]) != 24 {
+		t.Fatalf("落库行数 = %+v, want 1 批 24 行（容量 24）", ps.inserted)
 	}
 }
 
@@ -498,23 +512,14 @@ func TestCapacitySuggestionRespectsEgressCap(t *testing.T) {
 	}
 
 	_, err = svc.Build(context.Background(), in)
-	if err == nil {
-		t.Fatal("缺口计划应被拒")
+	if err != nil {
+		t.Fatalf("缺口计划应降级成功: %v", err)
 	}
-	e := coreerrs.From(err)
-	if e.Details["binding"] != string(corecapacity.BindingEgressRate) {
-		t.Fatalf("binding = %v, want egress_rate", e.Details["binding"])
+	// 降级照常落库：首次构建窗口真实变化，window.changed 先行。
+	if len(n.events) != 2 || n.events[1].kind != appevents.TypeCapacityChanged {
+		t.Fatalf("事件 = %+v, want window.changed + capacity.changed", n.events)
 	}
-	if _, ok := e.Details["suggested_workers"]; ok {
-		t.Fatalf("不可达建议不得出现在 details: %v", e.Details)
-	}
-	if strings.Contains(e.Message, "YIBAN_WORKERS") {
-		t.Fatalf("出口瓶颈不得建议加并发: %q", e.Message)
-	}
-	if len(n.events) != 1 || n.events[0].kind != appevents.TypeCapacityChanged {
-		t.Fatalf("事件 = %+v, want 仅 capacity.changed", n.events)
-	}
-	payload := n.events[0].payload
+	payload := n.events[1].payload
 	if payload["binding"] != string(corecapacity.BindingEgressRate) {
 		t.Fatalf("事件 binding = %v, want egress_rate", payload["binding"])
 	}
@@ -551,15 +556,8 @@ func TestCapacitySuggestionOverCap(t *testing.T) {
 	}
 
 	_, err = svc.Build(context.Background(), in)
-	if err == nil {
-		t.Fatal("缺口计划应被拒")
-	}
-	e := coreerrs.From(err)
-	if _, ok := e.Details["suggested_workers"]; ok {
-		t.Fatalf("超上限建议不得出现在 details: %v", e.Details)
-	}
-	if want := "容量不足：需求 1000，容量 12"; e.Message != want {
-		t.Fatalf("message = %q, want %q", e.Message, want)
+	if err != nil {
+		t.Fatalf("缺口计划应降级成功: %v", err)
 	}
 }
 

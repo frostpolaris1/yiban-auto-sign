@@ -113,7 +113,8 @@ func TestP4TwoSchoolsIndependent(t *testing.T) {
 	}
 }
 
-// 容量缺口：报告如实给出缺口数；建计划被拒（409 capacity_shortfall）且不落库。
+// 容量缺口：报告如实给出缺口数；建计划降级成功，按可用容量落库，
+// 窗口缓存照常写，管理员收到容量缺口站内信（0v8 订阅面）。
 func TestP4CapacityShortfall(t *testing.T) {
 	e := w2cNewEnv(t)
 	loc := p4Location(t)
@@ -144,24 +145,58 @@ func TestP4CapacityShortfall(t *testing.T) {
 			report.Demand, report.Capacity, report.Shortfall)
 	}
 
-	// 缺口计划被拒：409 capacity_shortfall，且一行都不落库（C2 验收②）。
+	// 缺口计划降级成功（不再 409）：落库行数 = 可用容量 64。
 	body := map[string]string{"day": day, "school_id": school.ID, "task_id": task}
 	rec = e.do("POST", "/api/schedule/plan", body, issued)
-	if rec.Code != 409 {
-		t.Fatalf("缺口计划 status = %d, want 409: %s", rec.Code, rec.Body.String())
+	if rec.Code != 200 {
+		t.Fatalf("缺口计划 status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "capacity_shortfall") {
-		t.Fatalf("body = %s, want capacity_shortfall", rec.Body.String())
+	var plan oapi.SchedulePlan
+	e.decode(rec, &plan)
+	if plan.Shortfall != 17 || plan.Demand != 81 || plan.Capacity != 64 {
+		t.Fatalf("计划数字 = demand %d capacity %d shortfall %d, want 81/64/17",
+			plan.Demand, plan.Capacity, plan.Shortfall)
+	}
+	if len(plan.Rows) != 64 {
+		t.Fatalf("计划行数 = %d, want 64（能排多少排多少）", len(plan.Rows))
+	}
+	for _, r := range plan.Rows {
+		if r.RunAt.Before(start) || !r.RunAt.Before(end) {
+			t.Fatalf("降级行越窗: %v", r.RunAt)
+		}
 	}
 	if n := e.scalarInt(
 		"SELECT count(*) FROM sign_tasks WHERE school_task_id = $1::uuid AND day = $2::date",
-		task, day); n != 0 {
-		t.Fatalf("缺口计划落库 %d 行，want 0", n)
+		task, day); n != 64 {
+		t.Fatalf("缺口计划落库 %d 行, want 64", n)
 	}
+	if src := e.scalarString(
+		"SELECT source FROM window_cache WHERE school_task_id = $1::uuid AND day = $2::date",
+		task, day); src != "platform" {
+		t.Fatalf("window_cache 来源 = %q, want platform（缺口不缺席窗口缓存）", src)
+	}
+
+	// 缺口告警落管理员站内信：默认订阅 capacity_rejected/in_app。
+	dedupe := "capacity_rejected/" + task + "/" + day
+	if n := e.scalarInt(
+		"SELECT count(*) FROM notifications WHERE user_id = $1::uuid AND dedupe_key = $2",
+		master.ID, dedupe); n != 1 {
+		t.Fatalf("容量缺口通知 = %d 行, want 1（去重键 %s）", n, dedupe)
+	}
+	noteBody := e.scalarString(
+		"SELECT body FROM notifications WHERE user_id = $1::uuid AND dedupe_key = $2",
+		master.ID, dedupe)
+	if !strings.Contains(noteBody, "缺口 17") {
+		t.Fatalf("通知正文缺缺口数: %s", noteBody)
+	}
+	if !strings.Contains(noteBody, "YIBAN_WORKERS=2") {
+		t.Fatalf("通知正文缺 Advise 建议行: %s", noteBody)
+	}
+
 	// 报告仍如实给出缺口：先看报告再调并发，不是盲建。
 	rec = e.do("GET", "/api/capacity?school_id="+school.ID+"&task_id="+task+"&day="+day, nil, issued)
 	if rec.Code != 200 {
-		t.Fatalf("capacity after reject status = %d", rec.Code)
+		t.Fatalf("capacity after degrade status = %d", rec.Code)
 	}
 	e.decode(rec, &report)
 	if report.Capacity != 64 || report.Shortfall != 17 {

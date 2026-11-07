@@ -227,8 +227,9 @@ a shape failure.
 `upstream_unavailable`, `internal_error`.
 
 The list grows by addition only: values are never renamed or removed.
-`capacity_shortfall` is a plan-build refusal (409, details carry demand,
-capacity, shortfall, binding and, when raising concurrency within the
-64-channel cap fits the demand, suggested_workers). `task_ambiguous` is retained
+`capacity_shortfall` is retained for wire compatibility but is no longer
+returned: a shortfall plan is built against the available capacity and
+succeeds; the gap is reported in the response numbers and an administrator
+capacity_rejected notification. `task_ambiguous` is retained
 for wire compatibility but is no longer returned: when several equivalent
 tasks apply, the worker picks one at random.

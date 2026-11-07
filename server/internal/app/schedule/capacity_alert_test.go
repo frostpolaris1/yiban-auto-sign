@@ -1,11 +1,12 @@
 package schedule_test
 
-// 0v8 B 接线判据：容量缺口拒建点必须把事件交给通知端口。
+// 0v8 B 接线判据：容量缺口降级落库点必须把事件交给通知端口。
 //
-// 覆盖：Shortfall>0 时 Build 发管理员事件（数字与预览同源）；
-// 无缺口与 Preview 不发；Notifier 为 nil 时通知照发（两端口各自判空）；
+// 覆盖：Shortfall>0 时 Build 降级成功且发管理员事件（数字与预览同源，
+// 建议值来自 core/capacity 的 Advise）；无缺口与 Preview 不发；
+// Notifier 为 nil 时通知照发（两端口各自判空）；
 // 重复缺口重复提交同一业务键（库层唯一键吸收）；
-// 端口失败或 panic 不改 Build 的拒建结论。
+// 端口失败或 panic 不改 Build 的降级结论。
 
 import (
 	"bytes"
@@ -57,7 +58,7 @@ func shortfallInput() appschedule.Input {
 	return in
 }
 
-// 缺口拒建：事件带业务键与预览里的数字。
+// 缺口降级落库：事件带业务键与预览里的数字；落库照常发生。
 func TestBuildDispatchesCapacityAlertOnShortfall(t *testing.T) {
 	w := &fakeWindowStore{task: enabledTask()}
 	p := &fakePlanStore{}
@@ -65,8 +66,11 @@ func TestBuildDispatchesCapacityAlertOnShortfall(t *testing.T) {
 	alerts := &recordingCapacityAlerts{}
 	svc := newCapacityAlertSchedule(t, w, p, notifyAccounts(500), d, alerts)
 
-	if _, err := svc.Build(context.Background(), shortfallInput()); err == nil {
-		t.Fatal("缺口计划应被拒")
+	if _, err := svc.Build(context.Background(), shortfallInput()); err != nil {
+		t.Fatalf("缺口计划应降级成功: %v", err)
+	}
+	if len(p.inserted) != 1 || len(p.inserted[0]) != 64 {
+		t.Fatalf("落库行数 = %+v, want 1 批 64 行", p.inserted)
 	}
 	if len(alerts.events) != 1 {
 		t.Fatalf("容量事件 = %d, want 1", len(alerts.events))
@@ -77,9 +81,33 @@ func TestBuildDispatchesCapacityAlertOnShortfall(t *testing.T) {
 		event.DedupeKey != "capacity_rejected/task-1/2026-10-29" {
 		t.Fatalf("事件 = %+v", event)
 	}
-	if event.Capacity.Demand != 500 || event.Capacity.Shortfall <= 0 ||
+	if event.Capacity.Demand != 500 || event.Capacity.Shortfall != 436 ||
 		event.Capacity.Binding != "workers" || event.Capacity.SuggestedWorkers != 8 {
 		t.Fatalf("容量数字 = %+v", event.Capacity)
+	}
+}
+
+// 出口瓶颈的建议行形状：detail 带 binding 且不给数字建议。
+func TestCapacityAlertEgressShape(t *testing.T) {
+	w := &fakeWindowStore{task: enabledTask()}
+	p := &fakePlanStore{}
+	d := &fakeDiscover{window: platformWindow(6, 30, 6, 31)}
+	alerts := &recordingCapacityAlerts{}
+	svc := newCapacityAlertSchedule(t, w, p, notifyAccounts(100), d, alerts)
+	in := baseInput()
+	in.Workers = 4
+	in.Avg = 3 * time.Second // 通道吞吐 1.33/s > 出口 0.5/s
+	in.Rate = 0.5
+
+	if _, err := svc.Build(context.Background(), in); err != nil {
+		t.Fatalf("缺口计划应降级成功: %v", err)
+	}
+	if len(alerts.events) != 1 {
+		t.Fatalf("容量事件 = %d, want 1", len(alerts.events))
+	}
+	if event := alerts.events[0]; event.Capacity.Binding != "egress_rate" ||
+		event.Capacity.SuggestedWorkers != 0 || event.Capacity.Shortfall != 76 {
+		t.Fatalf("容量数字 = %+v, want egress_rate/0/缺口 76", event.Capacity)
 	}
 }
 
@@ -90,15 +118,15 @@ func TestCapacityAlertDispatchesWithoutNotifier(t *testing.T) {
 	alerts := &recordingCapacityAlerts{}
 	svc := newCapacityAlertSchedule(t, w, &fakePlanStore{}, notifyAccounts(500), d, alerts)
 
-	if _, err := svc.Build(context.Background(), shortfallInput()); err == nil {
-		t.Fatal("缺口计划应被拒")
+	if _, err := svc.Build(context.Background(), shortfallInput()); err != nil {
+		t.Fatalf("缺口计划应降级成功: %v", err)
 	}
 	if len(alerts.events) != 1 {
 		t.Fatalf("容量事件 = %d, want 1（SSE 端口为 nil 不影响通知）", len(alerts.events))
 	}
 }
 
-// 无缺口与 Preview 都不发：只有拒建点产生事件。
+// 无缺口与 Preview 都不发：只有降级点产生事件。
 func TestCapacityAlertAbsentWithoutShortfall(t *testing.T) {
 	w := &fakeWindowStore{task: enabledTask()}
 	d := &fakeDiscover{window: platformWindow(6, 30, 7, 50)}
@@ -124,8 +152,8 @@ func TestCapacityAlertRepeatsSameDedupeKey(t *testing.T) {
 	svc := newCapacityAlertSchedule(t, w, &fakePlanStore{}, notifyAccounts(500), d, alerts)
 
 	for i := 0; i < 2; i++ {
-		if _, err := svc.Build(context.Background(), shortfallInput()); err == nil {
-			t.Fatal("缺口计划应被拒")
+		if _, err := svc.Build(context.Background(), shortfallInput()); err != nil {
+			t.Fatalf("缺口计划应降级成功: %v", err)
 		}
 	}
 	if len(alerts.events) != 2 {
@@ -136,8 +164,8 @@ func TestCapacityAlertRepeatsSameDedupeKey(t *testing.T) {
 	}
 }
 
-// 端口失败或 panic 不改拒建结论：Build 仍返回 shortfall 错误。
-func TestCapacityAlertFailureDoesNotChangeRejection(t *testing.T) {
+// 端口失败或 panic 不改降级结论：Build 照常成功且落库。
+func TestCapacityAlertFailureDoesNotChangeBuild(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		alerts *recordingCapacityAlerts
@@ -147,11 +175,15 @@ func TestCapacityAlertFailureDoesNotChangeRejection(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := &fakeWindowStore{task: enabledTask()}
+			p := &fakePlanStore{}
 			d := &fakeDiscover{window: platformWindow(6, 30, 7, 50)}
-			svc := newCapacityAlertSchedule(t, w, &fakePlanStore{}, notifyAccounts(500), d, tc.alerts)
+			svc := newCapacityAlertSchedule(t, w, p, notifyAccounts(500), d, tc.alerts)
 
-			if _, err := svc.Build(context.Background(), shortfallInput()); err == nil {
-				t.Fatal("缺口计划应被拒，投递失败不得吞掉结论")
+			if _, err := svc.Build(context.Background(), shortfallInput()); err != nil {
+				t.Fatalf("投递失败不得吞掉落库结论: %v", err)
+			}
+			if len(p.inserted) != 1 || len(p.inserted[0]) != 64 {
+				t.Fatalf("落库行数 = %+v, want 1 批 64 行", p.inserted)
 			}
 		})
 	}
@@ -172,8 +204,8 @@ func TestCapacityAlertPanicIsLogged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	if _, err := svc.Build(context.Background(), shortfallInput()); err == nil {
-		t.Fatal("缺口计划应被拒")
+	if _, err := svc.Build(context.Background(), shortfallInput()); err != nil {
+		t.Fatalf("缺口计划应降级成功: %v", err)
 	}
 	logged := logs.String()
 	if !strings.Contains(logged, "notify.dispatch_panic") {

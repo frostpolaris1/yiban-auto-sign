@@ -99,9 +99,10 @@ func TestBuildPublishesWindowChanged(t *testing.T) {
 	}
 }
 
-// 缺口拒建时仍要发 capacity.changed：拒建不是静默失败，
-// 订阅方要能实时看到缺口数（C2）。window.changed 不发——本次没有落库。
-func TestBuildShortfallRejectsAndPublishesCapacity(t *testing.T) {
+// 缺口降级落库时仍要发 capacity.changed：降级不是静默失败，
+// 订阅方要能实时看到缺口数（C2）。首次建计划窗口真实变化，
+// window.changed 一并发出。
+func TestBuildShortfallDegradesAndPublishesCapacity(t *testing.T) {
 	w := &fakeWindowStore{task: enabledTask()}
 	p := &fakePlanStore{}
 	d := &fakeDiscover{window: platformWindow(6, 30, 7, 50)}
@@ -112,22 +113,22 @@ func TestBuildShortfallRejectsAndPublishesCapacity(t *testing.T) {
 	in.Avg = 60 * time.Second
 	in.Rate = 1.0
 
-	if _, err := svc.Build(context.Background(), in); err == nil {
-		t.Fatal("缺口计划应被拒")
+	if _, err := svc.Build(context.Background(), in); err != nil {
+		t.Fatalf("缺口计划应降级成功: %v", err)
 	}
 	kinds := n.kinds()
-	if len(kinds) != 1 || kinds[0] != appevents.TypeCapacityChanged {
-		t.Fatalf("事件序 = %v, want 仅 %s", kinds, appevents.TypeCapacityChanged)
+	if len(kinds) != 2 || kinds[0] != appevents.TypeWindowChanged || kinds[1] != appevents.TypeCapacityChanged {
+		t.Fatalf("事件序 = %v, want %s + %s", kinds, appevents.TypeWindowChanged, appevents.TypeCapacityChanged)
 	}
-	if e := n.events[0]; e.payload["demand"] != 500 {
+	if e := n.events[1]; e.payload["demand"] != 500 {
 		t.Fatalf("payload = %v, want demand=500", e.payload)
 	} else if e.payload["binding"] != "workers" {
 		t.Fatalf("payload binding = %v, want workers", e.payload["binding"])
 	} else if e.payload["suggested_workers"] != 8 {
 		t.Fatalf("payload suggested_workers = %v, want 8", e.payload["suggested_workers"])
 	}
-	if len(p.inserted) != 0 {
-		t.Fatalf("缺口计划不得落库, inserted = %d 批", len(p.inserted))
+	if len(p.inserted) != 1 || len(p.inserted[0]) != 64 {
+		t.Fatalf("落库行数 = %+v, want 1 批 64 行", p.inserted)
 	}
 }
 
