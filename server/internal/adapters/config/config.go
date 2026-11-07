@@ -116,6 +116,9 @@ type Config struct {
 
 	// PhotoDir 是图片 blob 存储根目录。
 	PhotoDir string
+	// PhotoCrop 开启用户照片上传前的随机安全裁切（每边 0–10%）。
+	// 缺省关闭：上传不做裁切，审计 detail 的四边比例记 0。
+	PhotoCrop bool
 	// UIDir 是前端构建产物目录（含 index.html）。
 	// 空表示只提供 API；非空时服务端同时托管页面与深链。
 	UIDir string
@@ -303,6 +306,7 @@ var (
 	keyHTTPAddr         = stringKey{"YIBAN_HTTP_ADDR", DefaultHTTPAddr}
 	keyTimezone         = stringKey{"YIBAN_TZ", DefaultTimezone}
 	keyPhotoDir         = stringKey{"YIBAN_PHOTO_DIR", DefaultPhotoDir}
+	keyPhotoCropEnabled = boolKey{"YIBAN_PHOTO_CROP_ENABLE", false}
 	keyUIDir            = stringKey{"YIBAN_UI_DIR", ""}
 	keyDatabaseURL      = stringKey{"YIBAN_DATABASE_URL", ""}
 
@@ -342,6 +346,7 @@ func configSpecs() []keySpec {
 		keyHTTPAddr.spec(),
 		keyTimezone.spec(),
 		keyPhotoDir.spec(),
+		keyPhotoCropEnabled.spec(),
 		keyUIDir.spec(),
 		keyDatabaseURL.spec(),
 		keyResetMailEnabled.spec(),
@@ -497,6 +502,10 @@ func LoadFrom(src Source) (*Config, error) {
 	cfg.PhotoDir = strings.TrimSpace(keyPhotoDir.read(src))
 	if cfg.PhotoDir == "" {
 		return nil, errors.New("config: YIBAN_PHOTO_DIR must not be empty")
+	}
+	// 裁切缺省关闭；显式开启后上传前按每边 0–10% 随机裁切。
+	if cfg.PhotoCrop, err = keyPhotoCropEnabled.read(src); err != nil {
+		return nil, err
 	}
 	// 空表示只提供 API；非空目录的存在性由 router.New 在启动期校验。
 	cfg.UIDir = strings.TrimSpace(keyUIDir.read(src))
