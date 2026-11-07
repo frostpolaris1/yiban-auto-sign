@@ -1,7 +1,8 @@
-// Package signing 把签到凭据校验映射到 HTTP。
+// Package signing 把签到凭据校验与手动签到映射到 HTTP。
 //
 // # 功能
 // POST /api/accounts/:id/verify：读取账号凭据，调用 provider.Verify。
+// POST /api/accounts/:id/sign 与 /api/accounts/batch/sign：入队手动签到。
 // 本包**不**解密凭据、**不**发平台请求、**不**写库。
 //
 // # 归属
@@ -12,15 +13,19 @@
 //
 // # 口径
 // 校验端点只允许 master 与 admin；user 一律 403。
-// 手动签到允许三种角色，但账号必须在其可见面内，否则 404。
+// 手动签到允许三种角色，但账号必须在其可见面内，否则 404；
+// 批量签到只允许 master 与 admin，user 整批 403。
 // 平台结论回 200 {ok:false, code, message}；传输失败回 502。
 // 响应与消息不含手机号、口令、设备码。
 package signing
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -64,6 +69,13 @@ type AccountAccess interface {
 	Get(ctx context.Context, scope corescope.Scope, id string) (appaccount.Record, error)
 }
 
+// AccountLimiter 按账号键判限流（实现为 ratelimit.Guard）。
+// 批量逐项接入：每个 id 在入队前判一次，与单条端点的
+// accountLimit 同口径；命中项写 rate_limited 并继续下一项。
+type AccountLimiter interface {
+	AllowAccount(id string) (ok bool, wait time.Duration)
+}
+
 // Handler 处理账号凭据校验与手动签到。
 type Handler struct {
 	svc      Service
@@ -71,6 +83,7 @@ type Handler struct {
 	verifier Verifier
 	manual   ManualSigner
 	access   AccountAccess
+	limiter  AccountLimiter
 }
 
 // NewHandler 构造处理器。
@@ -89,6 +102,14 @@ func (h *Handler) WithManual(m ManualSigner) *Handler {
 // 不是「user 一律拒绝」——后者会掩盖漏接线。
 func (h *Handler) WithAccess(a AccountAccess) *Handler {
 	h.access = a
+	return h
+}
+
+// WithAccountLimiter 注入账号键限流（批量签到用）。
+// **不注入属装配错误**：批量端点回 500 响亮失败——契约声明的 429
+// 若运行时不可达，就是限流面静默缺失。
+func (h *Handler) WithAccountLimiter(l AccountLimiter) *Handler {
+	h.limiter = l
 	return h
 }
 
@@ -131,6 +152,131 @@ func (h *Handler) Sign(c *gin.Context, id oapi.AccountID, _ oapi.AccountSignPara
 		return
 	}
 	respond.JSON(c.Writer, http.StatusAccepted, oapi.AccountSignAccepted{TaskId: taskID})
+}
+
+// 批量项状态词表：契约枚举 AccountBatchSignItemStatus 的运行时同集。
+// 门在 oapi 包 signing_batch_status_gate_test.go，任一侧增删改值即红。
+const (
+	BatchSignItemStatusOK    = "ok"
+	BatchSignItemStatusError = "error"
+)
+
+// batchSignLimit 是一次批量签到的账号数上限。
+const batchSignLimit = 10
+
+// BatchSign 实现 POST /api/accounts/batch/sign。
+//
+// master 与 admin 可用，user 整批 403。逐条走单条签到同一条路：
+// 账号键限流（与单条端点同口径，命中项 per-item rate_limited）→
+// 可见面（跨校/非本人 per-item not_found）→ 非 active 拒入队（per-item
+// conflict）→ 入队（worker 稳定码 already_signed / sign_running /
+// window_closed / task_ambiguous）。一条失败只写进该项，不中断批次；
+// 成功项只入队（202 语义），task_id 只在成功项出现，顺序与请求 ids 一致。
+// 客户端 IP 面由路由中间件对整批限流（rateLimitedPaths 白名单）。
+//
+// 与旧线口径的偏差：没有进程级 60 秒冷却，也没有宿主级单队列——
+// 旧 Python 服务串行化在一个进程里；新线的并发语义归 IP/账号键限流、
+// worker 容量与账号级唯一任务行，ids 去重保证一批内同一账号只入队一次。
+// 不要求二次口令，与单条签到同口径。
+func (h *Handler) BatchSign(c *gin.Context, _ oapi.AccountBatchSignParams) {
+	scope, actor, ok := h.principal(c)
+	if !ok {
+		return
+	}
+	if kind := scope.Kind(); kind != corescope.KindMaster && kind != corescope.KindAdmin {
+		fail(c, errs.New(errs.CodeForbidden, "only master or admin may batch sign"))
+		return
+	}
+	// 可见面判据或限流器未接线＝装配错误，响亮失败（与 Sign 同门）。
+	if h.access == nil {
+		fail(c, errs.New(errs.CodeInternal, "account access is not wired"))
+		return
+	}
+	if h.manual == nil {
+		fail(c, errs.New(errs.CodeInternal, "manual signer is not wired"))
+		return
+	}
+	if h.limiter == nil {
+		fail(c, errs.New(errs.CodeInternal, "account limiter is not wired"))
+		return
+	}
+	var body oapi.AccountBatchSignRequest
+	if !decode(c, &body) {
+		return
+	}
+	if err := validateBatchIDs(body.Ids); err != nil {
+		fail(c, err)
+		return
+	}
+	items := make([]oapi.AccountBatchSignItem, 0, len(body.Ids))
+	for _, id := range body.Ids {
+		items = append(items, h.batchSignOne(c.Request.Context(), scope, actor, id))
+	}
+	respond.JSON(c.Writer, http.StatusOK, oapi.AccountBatchSignResult{Items: items})
+}
+
+// batchSignOne 处理单个 id：错误写进该项并继续，不中断批次。
+func (h *Handler) batchSignOne(ctx context.Context, scope corescope.Scope, actor appaudit.Actor, id string) oapi.AccountBatchSignItem {
+	item := oapi.AccountBatchSignItem{Id: id}
+	// 账号键限流先于一切判定，与单条端点同序：router 对单条在进
+	// handler 前判 accountLimit(id)，键先小写去首尾空白——UUID 大小写
+	// 不敏感，不归一就能用变体拆桶绕过。只归一限流键，Get/Request
+	// 仍收原样 id。命中只拒本项，批次继续。
+	if ok, _ := h.limiter.AllowAccount(strings.ToLower(strings.TrimSpace(id))); !ok {
+		return batchItemError(item, errs.New(errs.CodeRateLimited, "too many sign requests for this account"))
+	}
+	record, err := h.access.Get(ctx, scope, id)
+	if err != nil {
+		return batchItemError(item, err)
+	}
+	// 非 active 与单条同口径：conflict，不入队。
+	if !record.Status.Active() {
+		return batchItemError(item, errs.New(errs.CodeConflict, "account is not active"))
+	}
+	taskID, err := h.manual.Request(ctx, id, actor)
+	if err != nil {
+		return batchItemError(item, err)
+	}
+	item.Status = oapi.AccountBatchSignItemStatus(BatchSignItemStatusOK)
+	item.TaskId = &taskID
+	return item
+}
+
+// batchItemError 把稳定码写进错误项。
+func batchItemError(item oapi.AccountBatchSignItem, err error) oapi.AccountBatchSignItem {
+	e := errs.From(err)
+	item.Status = oapi.AccountBatchSignItemStatus(BatchSignItemStatusError)
+	code := oapi.ErrorCode(e.Code)
+	item.Code = &code
+	item.Message = &e.Message
+	return item
+}
+
+// validateBatchIDs 钉住整批口径：空、超限、重复一律 400，一条都不跑。
+func validateBatchIDs(ids []string) error {
+	switch {
+	case len(ids) == 0:
+		return errs.New(errs.CodeValidation, "ids must not be empty")
+	case len(ids) > batchSignLimit:
+		return errs.New(errs.CodeValidation, "ids must hold at most 10 entries")
+	}
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if _, dup := seen[id]; dup {
+			return errs.New(errs.CodeValidation, "ids must not repeat")
+		}
+		seen[id] = struct{}{}
+	}
+	return nil
+}
+
+// decode 解 JSON 请求体；绑定失败回 400 信封。
+func decode(c *gin.Context, target any) bool {
+	if err := json.NewDecoder(c.Request.Body).Decode(target); err != nil {
+		respond.BindError(c.Writer, c.Request, err)
+		return false
+	}
+	return true
 }
 
 // Verify 实现 POST /api/accounts/:id/verify。

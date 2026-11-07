@@ -306,6 +306,17 @@ func (s *server) AccountSign(c *gin.Context, id oapi.AccountID, params oapi.Acco
 	s.signing.Sign(c, id, params)
 }
 
+// AccountBatchSign 委托批量手动签到处理器（静态段，紧邻 {id} 路由）。
+// 未装配时仍是 501。IP 面走中间件白名单（rateLimitedPaths）；
+// 账号键面由 handler 逐项判定（与单条端点同口径）。
+func (s *server) AccountBatchSign(c *gin.Context, params oapi.AccountBatchSignParams) {
+	if s.signing == nil {
+		notImplemented(c)
+		return
+	}
+	s.signing.BatchSign(c, params)
+}
+
 // AccountLocationGet 委托定位策略读取处理器。未装配时仍是 501。
 func (s *server) AccountLocationGet(c *gin.Context, id oapi.AccountID) {
 	if s.locations == nil {

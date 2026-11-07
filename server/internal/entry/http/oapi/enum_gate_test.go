@@ -61,6 +61,7 @@ type contractExempt struct {
 var contractEnumExempt = []contractExempt{
 	{"AccountBatchAction", "纯输入动作枚举，映射既有单条用例调用；无 pg ENUM"},
 	{"AccountBatchItemStatus", "纯输出两值枚举（ok/error），无码侧词表"},
+	{"AccountBatchSignItemStatus", "纯输出两值枚举（ok/error），同集守卫在 signing_batch_status_gate_test.go"},
 	{"UserBatchAction", "纯输入动作枚举，映射既有单条用例调用；同集守卫在 user_batch_action_gate_test.go"},
 	{"UserBatchItemStatus", "纯输出两值枚举（ok/error），无码侧词表"},
 	{"AccountDiagnosticsSuggestion", "core 词表未标注类型，扫描器不覆盖（core/diagnostic.Suggest*）"},

@@ -679,6 +679,9 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 		// 手动签到的可见面判据：user 只能签自己的账号，
 		// admin 只能签绑定学校的账号（跨校回 404）。
 		signing.WithAccess(accountSvc)
+		// 批量签到的账号键限流：与单条端点共用同一 Guard，
+		// 逐项判定，命中项回 rate_limited 不拖垮整批。
+		signing.WithAccountLimiter(guard)
 
 		photoLib = photoshttp.NewHandler(photoSvc, adminSvc)
 		locLib = locationhttp.NewHandler(locationSvc, adminSvc)

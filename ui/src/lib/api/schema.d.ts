@@ -713,6 +713,51 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/accounts/batch/sign": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Queue manual signs for up to ten accounts.
+         * @description Master and admin only; user answers 403 for the whole batch. Each of
+         *     the 1 to 10 ids runs through the same flow as the single-item sign:
+         *     a missing or out-of-scope id is a per-item not_found, a malformed
+         *     (non-UUID) id is a per-item validation_failed — the same answer the
+         *     single-item endpoint gives — an account that is not active is a
+         *     per-item conflict, and queueing itself reuses the worker request with
+         *     its stable codes: already_signed, sign_running, window_closed,
+         *     task_ambiguous. An ok item only queues today's task row and carries
+         *     its task_id; the caller does not wait for execution. Items keep the
+         *     request order; one failing item neither blocks the items after it nor
+         *     rolls back the ones already queued.
+         *     This endpoint requires no current_password reauthentication, matching
+         *     the single-item sign.
+         *     Rate limiting matches the single-item sign: the inbound limiter caps
+         *     the client IP for the whole batch, and the per-account key limit runs
+         *     per item before queueing, so a limited item answers rate_limited
+         *     while the rest of the batch still runs.
+         *     Deliberate difference from the old line: the old Python service
+         *     serialized signs behind a process-local 60-second cooldown and one
+         *     host-wide sign queue; those are not carried over. Here the IP and
+         *     per-account limits, the worker capacity and the account-level unique
+         *     task row own the concurrency semantics, and a batch never queues the
+         *     same account twice because ids are unique.
+         *     An empty id list, more than ten ids or duplicate ids answer 400
+         *     validation_failed and queue nothing. A single bad id is a per-item
+         *     error, never a request failure.
+         */
+        post: operations["AccountBatchSign"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/accounts/{id}": {
         parameters: {
             query?: never;
@@ -2997,6 +3042,37 @@ export interface components {
             /** @description One entry per request id, in the request order. */
             items: components["schemas"]["AccountBatchItem"][];
         };
+        AccountBatchSignRequest: {
+            /**
+             * @description One to ten distinct account ids. The answer keeps this order. A
+             *     missing, malformed or out-of-scope id is a per-item error, not a
+             *     request failure.
+             */
+            ids: string[];
+        };
+        /**
+         * @description One id's outcome. status ok means the sign was queued with the same
+         *     202 semantics as the single-item sign: today's task row exists and
+         *     task_id is set. status error carries the same stable code the
+         *     single-item endpoint answers with: not_found for a missing or
+         *     out-of-scope id, validation_failed for a malformed (non-UUID) id,
+         *     conflict for a non-active account, and already_signed /
+         *     sign_running / window_closed / task_ambiguous from the queue itself.
+         */
+        AccountBatchSignItem: {
+            id: string;
+            /** @enum {string} */
+            status: "ok" | "error";
+            code?: components["schemas"]["ErrorCode"];
+            /** @description User-safe error text; present only on an error item. */
+            message?: string;
+            /** @description The queued task row id; present only on an ok item. */
+            task_id?: string;
+        };
+        AccountBatchSignResult: {
+            /** @description One entry per request id, in the request order. */
+            items: components["schemas"]["AccountBatchSignItem"][];
+        };
         HealthStatus: {
             /** @constant */
             status: "ok";
@@ -4454,6 +4530,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AccountBatchResult"];
+                };
+            };
+            400: components["responses"]["ValidationError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["PayloadTooLargeError"];
+            429: components["responses"]["TooManyRequestsError"];
+            default: components["responses"]["DefaultError"];
+        };
+    };
+    AccountBatchSign: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description CSRF token returned by GET /api/auth/me. Required on every
+                 *     state-changing request that carries a session.
+                 */
+                "X-CSRF-Token": components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccountBatchSignRequest"];
+            };
+        };
+        responses: {
+            /** @description Per-item outcomes in request order. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountBatchSignResult"];
                 };
             };
             400: components["responses"]["ValidationError"];

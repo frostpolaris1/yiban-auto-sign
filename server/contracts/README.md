@@ -120,6 +120,8 @@ either side drifts.
 |  |  |  | 只数未软删账号：`pending` 与 `rejected` 两计数，供看板待处理 KPI 与账号页提示条。 |
 | POST | `/api/accounts/batch` | master/admin | 870 |
 |  |  |  | 一次对 1–10 个账号执行同一动作：逐条独立事务、逐条审计、部分失败可见，`items` 与请求 `ids` 同序；`reason` 只给 `review_reject`；二次口令门形与单条端点一致，失败零写入；容量与状态错误按 per-item `code` 返回。 |
+| POST | `/api/accounts/batch/sign` | master/admin | 870 |
+|  |  |  | 一次对 1–10 个账号逐个入队手动签到：每条走单条同口径（不可见/跨校 per-item `not_found`、非 UUID per-item `validation_failed`、非 active per-item `conflict`、队列冲突 `already_signed`/`sign_running`/`window_closed`/`task_ambiguous`），`items` 与请求 `ids` 同序，`task_id` 只在成功项出现；不要求二次口令（与单条一致）；限流与单条同口径——IP 整批限流（入站白名单）＋账号键逐项限流（命中项 `rate_limited`，其余照常）；旧线 60 秒进程冷却与宿主级单队列不做，并发语义归限流、worker 容量与账号级唯一任务行；ids 空/超限/重复整批 400。 |
 | GET | `/api/accounts/:id` | master/admin/user | P1 |
 | PATCH | `/api/accounts/:id` | master/admin/user | P1 |
 | POST | `/api/accounts/:id/review` | master/admin | P1 |

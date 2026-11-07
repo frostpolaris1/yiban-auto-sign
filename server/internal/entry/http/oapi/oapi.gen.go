@@ -62,6 +62,24 @@ func (e AccountBatchItemStatus) Valid() bool {
 	}
 }
 
+// Defines values for AccountBatchSignItemStatus.
+const (
+	AccountBatchSignItemStatusError AccountBatchSignItemStatus = "error"
+	AccountBatchSignItemStatusOk    AccountBatchSignItemStatus = "ok"
+)
+
+// Valid indicates whether the value is a known member of the AccountBatchSignItemStatus enum.
+func (e AccountBatchSignItemStatus) Valid() bool {
+	switch e {
+	case AccountBatchSignItemStatusError:
+		return true
+	case AccountBatchSignItemStatusOk:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AccountDiagnosticsSuggestion.
 const (
 	AccountDiagnosticsSuggestionContactAdmin AccountDiagnosticsSuggestion = "contact_admin"
@@ -810,6 +828,43 @@ type AccountBatchRequest struct {
 type AccountBatchResult struct {
 	// Items One entry per request id, in the request order.
 	Items []AccountBatchItem `json:"items"`
+}
+
+// AccountBatchSignItem One id's outcome. status ok means the sign was queued with the same
+// 202 semantics as the single-item sign: today's task row exists and
+// task_id is set. status error carries the same stable code the
+// single-item endpoint answers with: not_found for a missing or
+// out-of-scope id, validation_failed for a malformed (non-UUID) id,
+// conflict for a non-active account, and already_signed /
+// sign_running / window_closed / task_ambiguous from the queue itself.
+type AccountBatchSignItem struct {
+	// Code Stable codes frozen in P0. New values are additive only.
+	Code *ErrorCode `json:"code,omitempty"`
+	Id   string     `json:"id"`
+
+	// Message User-safe error text; present only on an error item.
+	Message *string                    `json:"message,omitempty"`
+	Status  AccountBatchSignItemStatus `json:"status"`
+
+	// TaskId The queued task row id; present only on an ok item.
+	TaskId *string `json:"task_id,omitempty"`
+}
+
+// AccountBatchSignItemStatus defines model for AccountBatchSignItem.Status.
+type AccountBatchSignItemStatus string
+
+// AccountBatchSignRequest defines model for AccountBatchSignRequest.
+type AccountBatchSignRequest struct {
+	// Ids One to ten distinct account ids. The answer keeps this order. A
+	// missing, malformed or out-of-scope id is a per-item error, not a
+	// request failure.
+	Ids []string `json:"ids"`
+}
+
+// AccountBatchSignResult defines model for AccountBatchSignResult.
+type AccountBatchSignResult struct {
+	// Items One entry per request id, in the request order.
+	Items []AccountBatchSignItem `json:"items"`
 }
 
 // AccountCreate A user may not set device_code: the device code is the platform device
@@ -2370,6 +2425,13 @@ type AccountBatchParams struct {
 	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
 }
 
+// AccountBatchSignParams defines parameters for AccountBatchSign.
+type AccountBatchSignParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
 // AccountDeleteParams defines parameters for AccountDelete.
 type AccountDeleteParams struct {
 	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
@@ -2891,6 +2953,9 @@ type AccountCreateJSONRequestBody = AccountCreate
 // AccountBatchJSONRequestBody defines body for AccountBatch for application/json ContentType.
 type AccountBatchJSONRequestBody = AccountBatchRequest
 
+// AccountBatchSignJSONRequestBody defines body for AccountBatchSign for application/json ContentType.
+type AccountBatchSignJSONRequestBody = AccountBatchSignRequest
+
 // AccountDeleteJSONRequestBody defines body for AccountDelete for application/json ContentType.
 type AccountDeleteJSONRequestBody = AccountDeleteRequest
 
@@ -3101,6 +3166,9 @@ type ServerInterface interface {
 	// AccountBatch Apply one action to up to ten accounts.
 	// (POST /api/accounts/batch)
 	AccountBatch(c *gin.Context, params AccountBatchParams)
+	// AccountBatchSign Queue manual signs for up to ten accounts.
+	// (POST /api/accounts/batch/sign)
+	AccountBatchSign(c *gin.Context, params AccountBatchSignParams)
 	// AccountSummary Count the live accounts awaiting a review decision.
 	// (GET /api/accounts/summary)
 	AccountSummary(c *gin.Context)
@@ -3527,6 +3595,49 @@ func (siw *ServerInterfaceWrapper) AccountBatch(c *gin.Context) {
 	}
 
 	siw.Handler.AccountBatch(c, params)
+}
+
+// AccountBatchSign operation middleware
+func (siw *ServerInterfaceWrapper) AccountBatchSign(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AccountBatchSignParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AccountBatchSign(c, params)
 }
 
 // AccountSummary operation middleware
@@ -6680,6 +6791,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/accounts", wrapper.AccountCreate)
 	router.GET(options.BaseURL+"/api/accounts/summary", wrapper.AccountSummary)
 	router.POST(options.BaseURL+"/api/accounts/batch", wrapper.AccountBatch)
+	router.POST(options.BaseURL+"/api/accounts/batch/sign", wrapper.AccountBatchSign)
 	router.DELETE(options.BaseURL+"/api/accounts/:id", wrapper.AccountDelete)
 	router.GET(options.BaseURL+"/api/accounts/:id", wrapper.AccountGet)
 	router.PATCH(options.BaseURL+"/api/accounts/:id", wrapper.AccountUpdate)
