@@ -21,7 +21,6 @@ import (
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/mail/mailtest"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
 	appnotify "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/notify"
-	coreaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/account"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	coremail "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mail"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/core/mask"
@@ -135,21 +134,18 @@ func (e *notifyDeliveryEnv) school(code string) string {
 	return id
 }
 
-// account 建一个挂在校下的账号。
+// account 直接写一行挂在校下的账号（不经建号用例；建号行为由
+// quota e2e 与入口 e2e 覆盖）。
 func (e *notifyDeliveryEnv) account(schoolID, ownerID, phone string) string {
 	e.t.Helper()
-	var rec coreaccount.Record
-	err := e.db.InTx(e.ctx, func(ctx context.Context) error {
-		var err error
-		rec, err = e.accts.Create(ctx, coreaccount.New{
-			SchoolID: schoolID, OwnerUserID: ownerID, Phone: phone,
-		}, 10000, 10000)
-		return err
-	})
+	id, err := e.db.QueryString(e.ctx, `
+		INSERT INTO accounts (school_id, owner_user_id, phone)
+		VALUES ($1::uuid, $2::uuid, $3) RETURNING id::text`,
+		schoolID, ownerID, phone)
 	if err != nil {
 		e.t.Fatalf("create account %s: %v", phone, err)
 	}
-	return rec.ID
+	return id
 }
 
 // scalarString 读一行文本标量。

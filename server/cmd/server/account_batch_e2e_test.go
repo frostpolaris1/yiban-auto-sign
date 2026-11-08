@@ -76,11 +76,13 @@ func batchDecode(t *testing.T, payload []byte) batchResult {
 	return out
 }
 
-// batchSeedAccount 以 master 建一个 pending 账号并返回 id。
+// batchSeedAccount 以 master 代建一个 pending 账号并返回 id。
+// 一人一号：批量面一次要操作多行账号，每行各配一个新属主。
 func batchSeedAccount(t *testing.T, e *authEnv, session sessionUserBody, schoolID, phone string) string {
 	t.Helper()
+	owner := u2SeedUser(t, e, "batch-owner-"+randomHex(4)+"@example.com", "batch-pass-2", coreauth.RoleUser)
 	resp, payload := u2CreateAccount(e, e.client, session.CSRFToken, u2CreateBody{
-		SchoolID: schoolID, Phone: phone, Password: "batch-pass-2",
+		SchoolID: schoolID, Phone: phone, Password: "batch-pass-2", OwnerUserID: owner.ID,
 	})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create %s = %d, want 201; body=%q", phone, resp.StatusCode, payload)

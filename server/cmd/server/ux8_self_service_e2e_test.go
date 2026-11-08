@@ -60,19 +60,18 @@ func ux8SeedAccount(t *testing.T, e *authEnv, ownerID, phone string) appaccount.
 	if err != nil {
 		t.Fatalf("seed school: %v", err)
 	}
-	accounts := pg.NewAccountRepo(e.db)
-	var record appaccount.Record
-	err = e.db.InTx(e.ctx, func(ctx context.Context) error {
-		var err error
-		record, err = accounts.Create(ctx, appaccount.New{
-			SchoolID:    school.ID,
-			OwnerUserID: ownerID,
-			Phone:       phone,
-		}, 10000, 10000)
-		return err
-	})
+	// 直接写一行账号，不经建号用例：恢复守卫的 fixtures 需要
+	// 同一属主名下多行 live 状态；建号行为由 quota e2e 与入口 e2e 覆盖。
+	id, err := e.db.QueryString(e.ctx, `
+		INSERT INTO accounts (school_id, owner_user_id, phone)
+		VALUES ($1::uuid, $2::uuid, $3) RETURNING id::text`,
+		school.ID, ownerID, phone)
 	if err != nil {
 		t.Fatalf("seed account %s: %v", phone, err)
+	}
+	record, err := pg.NewAccountRepo(e.db).GetIncludingDeleted(e.ctx, corescope.User(ownerID), id)
+	if err != nil {
+		t.Fatalf("read back account %s: %v", phone, err)
 	}
 	return record
 }

@@ -59,11 +59,16 @@ func TestN190AccountSummary(t *testing.T) {
 	memberSession := u2LoginOn(e, memberClient, "n190-member@example.com", "member-pass")
 
 	// 校 A：pending、rejected、active、待删 pending 四行；校 B：pending 一行。
+	// 一人一号：每行账号各配一个属主；user 自建只能归属自己，
+	// 故校 B 的自建由第二位成员发起。
+	member2 := u2SeedUser(t, e, "n190-member-2@example.com", "member-2-pass", coreauth.RoleUser)
+	member2Client := u2FreshClient(t)
+	member2Session := u2LoginOn(e, member2Client, "n190-member-2@example.com", "member-2-pass")
 	created := map[string]string{}
-	makeAccount := func(client *http.Client, session sessionUserBody, schoolID, phone string) string {
+	makeAccount := func(client *http.Client, session sessionUserBody, schoolID, phone, ownerID string) string {
 		t.Helper()
 		resp, payload := u2CreateAccount(e, client, session.CSRFToken, u2CreateBody{
-			SchoolID: schoolID, Phone: phone, Password: "member-pass-2", OwnerUserID: member.ID,
+			SchoolID: schoolID, Phone: phone, Password: "member-pass-2", OwnerUserID: ownerID,
 		})
 		if resp.StatusCode != http.StatusCreated {
 			t.Fatalf("create %s = %d, want 201; body=%q", phone, resp.StatusCode, payload)
@@ -73,6 +78,10 @@ func TestN190AccountSummary(t *testing.T) {
 			t.Fatalf("decode create %s: %v; body=%q", phone, err, payload)
 		}
 		return out.ID
+	}
+	newOwner := func(tag string) string {
+		t.Helper()
+		return u2SeedUser(t, e, "n190-owner-"+tag+"-"+randomHex(4)+"@example.com", "member-pass-2", coreauth.RoleUser).ID
 	}
 	review := func(client *http.Client, session sessionUserBody, id, decision string) {
 		t.Helper()
@@ -86,13 +95,13 @@ func TestN190AccountSummary(t *testing.T) {
 		}
 	}
 
-	created["pendingA"] = makeAccount(memberClient, memberSession, schoolA, n190PhonePendingA)
-	created["rejected"] = makeAccount(adminClient, adminSession, schoolA, n190PhoneRejected)
+	created["pendingA"] = makeAccount(memberClient, memberSession, schoolA, n190PhonePendingA, member.ID)
+	created["rejected"] = makeAccount(adminClient, adminSession, schoolA, n190PhoneRejected, newOwner("rej"))
 	review(adminClient, adminSession, created["rejected"], "reject")
-	created["active"] = makeAccount(adminClient, adminSession, schoolA, n190PhoneActive)
+	created["active"] = makeAccount(adminClient, adminSession, schoolA, n190PhoneActive, newOwner("act"))
 	review(adminClient, adminSession, created["active"], "approve")
-	created["deleted"] = makeAccount(adminClient, adminSession, schoolA, n190PhoneDeleted)
-	created["pendingB"] = makeAccount(memberClient, memberSession, schoolB, n190PhonePendingB)
+	created["deleted"] = makeAccount(adminClient, adminSession, schoolA, n190PhoneDeleted, newOwner("del"))
+	created["pendingB"] = makeAccount(member2Client, member2Session, schoolB, n190PhonePendingB, member2.ID)
 
 	// 软删一行 pending：删除后不得再进任何计数。
 	delResp, delPayload := u2Do(e, adminClient, http.MethodDelete,

@@ -27,7 +27,6 @@ package main
 // 不在本文件读 time.Now（canonical 的 clock.now 判据）。
 
 import (
-	"context"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -40,7 +39,6 @@ import (
 
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/config"
 	"github.com/frostpolaris1/yiban-auto-sign/server/internal/adapters/pg"
-	appaccount "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/account"
 	appschool "github.com/frostpolaris1/yiban-auto-sign/server/internal/app/school"
 	coreauth "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/auth"
 	coreclock "github.com/frostpolaris1/yiban-auto-sign/server/internal/core/clock"
@@ -138,22 +136,15 @@ func u3SeedTask(t *testing.T, e *authEnv, schoolID, name string) string {
 	return id
 }
 
-// u3SeedAccount 建一个归属 ownerID、挂在学校下的账号，返回账号 ID。
+// u3SeedAccount 直接写一行归属 ownerID、挂在学校下的账号，返回账号 ID。
+// 不经建号用例：本文件与 ux5 的 fixtures 需要同一属主名下多行 live
+// 状态（任务列表/执行面不测建号门，建号行为由 quota e2e 与入口 e2e 覆盖）。
 func u3SeedAccount(t *testing.T, e *authEnv, ownerID, schoolID, phone string) string {
 	t.Helper()
-	var id string
-	err := e.db.InTx(e.ctx, func(ctx context.Context) error {
-		rec, err := pg.NewAccountRepo(e.db).Create(ctx, appaccount.New{
-			SchoolID:    schoolID,
-			OwnerUserID: ownerID,
-			Phone:       phone,
-		}, 10000, 10000)
-		if err != nil {
-			return err
-		}
-		id = rec.ID
-		return nil
-	})
+	id, err := e.db.QueryString(e.ctx, `
+		INSERT INTO accounts (school_id, owner_user_id, phone)
+		VALUES ($1::uuid, $2::uuid, $3) RETURNING id::text`,
+		schoolID, ownerID, phone)
 	if err != nil {
 		t.Fatalf("seed account %s: %v", phone, err)
 	}

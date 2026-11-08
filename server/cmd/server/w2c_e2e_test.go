@@ -213,16 +213,15 @@ func w2cNewEnv(t *testing.T) *w2cEnv {
 		t.Fatalf("new admin service: %v", err)
 	}
 	accountSvc, err := appaccount.NewService(appaccount.Deps{
-		Accounts:   e.accounts,
-		Schools:    e.schools,
-		Audit:      e.audits,
-		Tx:         db,
-		Clock:      clk,
-		Cipher:     cipher,
-		Owner:      e.users,
-		Device:     w2cDeviceStub{},
-		Limit:      10000,
-		OwnerLimit: 10000,
+		Accounts: e.accounts,
+		Schools:  e.schools,
+		Audit:    e.audits,
+		Tx:       db,
+		Clock:    clk,
+		Cipher:   cipher,
+		Owner:    e.users,
+		Device:   w2cDeviceStub{},
+		Limit:    10000,
 	})
 	if err != nil {
 		t.Fatalf("new account service: %v", err)
@@ -539,17 +538,14 @@ func (e *w2cEnv) school(code string) schoolRecord {
 	return schoolRecord{ID: rec.ID, Code: rec.Code}
 }
 
+// account 直接写一行账号，不经建号用例：多个 fixtures 需要同一属主
+// 名下多行 live 状态（列表/审核/签到面不测建号门，建号行为由 quota e2e
+// 与入口 e2e 覆盖）。
 func (e *w2cEnv) account(schoolID, ownerID, phone string) string {
 	e.t.Helper()
-	err := e.db.InTx(e.ctx, func(ctx context.Context) error {
-		_, err := e.accounts.Create(ctx, appaccount.New{
-			SchoolID:    schoolID,
-			OwnerUserID: ownerID,
-			Phone:       phone,
-		}, 10000, 10000)
-		return err
-	})
-	if err != nil {
+	if _, err := e.db.Exec(e.ctx, `
+		INSERT INTO accounts (school_id, owner_user_id, phone)
+		VALUES ($1::uuid, $2::uuid, $3)`, schoolID, ownerID, phone); err != nil {
 		e.t.Fatalf("create account %s: %v", phone, err)
 	}
 	return e.scalarString("SELECT id::text FROM accounts WHERE phone = $1 AND deleted_at IS NULL", phone)

@@ -133,7 +133,7 @@ func u1SeedAccount(t *testing.T, e *authEnv, ownerID, phone string) {
 			SchoolID:    school.ID,
 			OwnerUserID: ownerID,
 			Phone:       phone,
-		}, 10000, 10000)
+		}, 10000)
 		return err
 	})
 	if err != nil {

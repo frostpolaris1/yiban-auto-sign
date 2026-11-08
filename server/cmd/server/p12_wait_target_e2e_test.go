@@ -183,7 +183,7 @@ func newWtStack(t *testing.T, signer *wtSigner) *wtStack {
 		var txErr error
 		acct, txErr = accts.Create(ctx, coreaccount.New{
 			SchoolID: school.ID, OwnerUserID: owner.ID, Phone: "13800070001",
-		}, 10000, 10000)
+		}, 10000)
 		return txErr
 	}); err != nil {
 		t.Fatalf("create account: %v", err)

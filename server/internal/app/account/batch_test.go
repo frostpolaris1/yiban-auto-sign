@@ -84,7 +84,7 @@ func (f *batchRepo) SoftDelete(_ context.Context, _ corescope.Scope, id, _ strin
 	return f.failFor(id)
 }
 
-func (f *batchRepo) Restore(_ context.Context, _ corescope.Scope, id string, _, _ int) (Record, error) {
+func (f *batchRepo) Restore(_ context.Context, _ corescope.Scope, id string, _ int) (Record, error) {
 	f.restores = append(f.restores, id)
 	return Record{ID: id}, f.failFor(id)
 }
@@ -100,15 +100,14 @@ func boolText(v bool) string {
 func newBatchService(t *testing.T, repo *batchRepo, audit *recordingAuditRepo) *Service {
 	t.Helper()
 	svc, err := NewService(Deps{
-		Accounts:   repo,
-		Schools:    fakeSchoolReader{},
-		Audit:      audit,
-		Tx:         batchTxManager{},
-		Clock:      clock.Fixed{T: time.Date(2026, 11, 7, 6, 0, 0, 0, time.UTC)},
-		Owner:      fakeOwnerReader{},
-		Device:     &fakeDeviceReader{},
-		Limit:      10,
-		OwnerLimit: 10,
+		Accounts: repo,
+		Schools:  fakeSchoolReader{},
+		Audit:    audit,
+		Tx:       batchTxManager{},
+		Clock:    clock.Fixed{T: time.Date(2026, 11, 7, 6, 0, 0, 0, time.UTC)},
+		Owner:    fakeOwnerReader{},
+		Device:   &fakeDeviceReader{},
+		Limit:    10,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

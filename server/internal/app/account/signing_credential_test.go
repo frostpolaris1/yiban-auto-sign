@@ -63,16 +63,15 @@ func (f *fakeDeviceReader) DeviceState(context.Context, string, SigningCredentia
 func newCredentialService(t *testing.T, repo *fakeAccountRepo, cipher *Cipher) *Service {
 	t.Helper()
 	svc, err := NewService(Deps{
-		Accounts:   repo,
-		Schools:    fakeSchoolReader{},
-		Audit:      fakeAuditRepo{},
-		Tx:         fakeTxManager{},
-		Clock:      clock.Fixed{T: time.Date(2026, 10, 26, 6, 0, 0, 0, time.UTC)},
-		Cipher:     cipher,
-		Owner:      fakeOwnerReader{},
-		Device:     &fakeDeviceReader{},
-		Limit:      10,
-		OwnerLimit: 10,
+		Accounts: repo,
+		Schools:  fakeSchoolReader{},
+		Audit:    fakeAuditRepo{},
+		Tx:       fakeTxManager{},
+		Clock:    clock.Fixed{T: time.Date(2026, 10, 26, 6, 0, 0, 0, time.UTC)},
+		Cipher:   cipher,
+		Owner:    fakeOwnerReader{},
+		Device:   &fakeDeviceReader{},
+		Limit:    10,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

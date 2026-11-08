@@ -83,7 +83,7 @@ func (s *Service) SelfRestore(ctx context.Context, scope corescope.Scope, id str
 		now := s.deps.Clock.Now().UTC()
 		var err error
 		record, err = s.deps.Accounts.RestoreSelf(ctx, scope, id, actor.UserID,
-			now.Add(-coreaccount.SelfRestoreGrace), s.deps.Limit, s.deps.OwnerLimit)
+			now.Add(-coreaccount.SelfRestoreGrace), s.deps.Limit)
 		if err != nil {
 			return err
 		}

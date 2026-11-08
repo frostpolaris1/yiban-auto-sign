@@ -95,8 +95,6 @@ type Deps struct {
 	Device DeviceReader
 	// Limit 是活跃账号上限。
 	Limit int
-	// OwnerLimit 是每个属主的活跃账号上限。
-	OwnerLimit int
 	// ReviewAlerts 是待审核通知端口。
 	ReviewAlerts ReviewAlerts
 	Logger       *slog.Logger
@@ -177,9 +175,6 @@ func NewService(deps Deps) (*Service, error) {
 	}
 	if deps.Limit <= 0 {
 		return nil, errors.New("account: capacity limit must be positive")
-	}
-	if deps.OwnerLimit <= 0 {
-		return nil, errors.New("account: owner limit must be positive")
 	}
 	if deps.Owner == nil {
 		return nil, errors.New("account: nil owner reader")
@@ -328,6 +323,8 @@ func (s *Service) SigningCredential(ctx context.Context, scope corescope.Scope, 
 }
 
 // Create 建账号。状态固定为 pending。
+// 一人一号：属主名下已有 live 账号时报 conflict，对 user 自建与
+// master/admin 代建同样生效。
 // 账号行、凭据行与 account.create 审计同事务。
 //
 // 设备码是平台设备身份，user 不得自填，只能走 device-refresh；
@@ -374,7 +371,7 @@ func (s *Service) Create(ctx context.Context, scope corescope.Scope, in CreateIn
 			OwnerUserID: owner,
 			Phone:       in.Phone,
 			Name:        name,
-		}, s.deps.Limit, s.deps.OwnerLimit)
+		}, s.deps.Limit)
 		if err != nil {
 			return err
 		}

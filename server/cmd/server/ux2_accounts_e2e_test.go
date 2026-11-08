@@ -189,8 +189,10 @@ func TestUX2G8OwnershipPaths(t *testing.T) {
 	}
 
 	// 路径二：admin 指定活跃用户，归属该用户，进待审核。
+	// 一人一号：属主已自建一行 live，代建给第二位成员。
+	otherMember := u2SeedUser(t, e, "u2-g8-member-2@example.com", "member-2-pass", coreauth.RoleUser)
 	resp, payload = u2CreateAccount(e, adminClient, adminSession.CSRFToken, u2CreateBody{
-		SchoolID: schoolID, Phone: u2PhoneB, Password: "admin-pass-2", OwnerUserID: member.ID,
+		SchoolID: schoolID, Phone: u2PhoneB, Password: "admin-pass-2", OwnerUserID: otherMember.ID,
 	})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("admin designated create = %d, want 201; body=%q", resp.StatusCode, payload)
@@ -199,8 +201,8 @@ func TestUX2G8OwnershipPaths(t *testing.T) {
 	if err := json.Unmarshal(payload, &designated); err != nil {
 		t.Fatalf("decode designated create: %v; body=%q", err, payload)
 	}
-	if designated.OwnerUserID != member.ID {
-		t.Fatalf("designated owner = %q, want %q", designated.OwnerUserID, member.ID)
+	if designated.OwnerUserID != otherMember.ID {
+		t.Fatalf("designated owner = %q, want %q", designated.OwnerUserID, otherMember.ID)
 	}
 	if designated.Status != string(appaccount.StatusPending) {
 		t.Fatalf("designated status = %q, want pending", designated.Status)
@@ -439,16 +441,15 @@ func u2NewEnv(t *testing.T) *u2Env {
 	}
 	e.reader = &u2DeviceReader{}
 	accountSvc, err := appaccount.NewService(appaccount.Deps{
-		Accounts:   e.accounts,
-		Schools:    e.schools,
-		Audit:      audits,
-		Tx:         db,
-		Clock:      clk,
-		Cipher:     e.cipher,
-		Limit:      10000,
-		OwnerLimit: 10000,
-		Owner:      e.users,
-		Device:     e.reader,
+		Accounts: e.accounts,
+		Schools:  e.schools,
+		Audit:    audits,
+		Tx:       db,
+		Clock:    clk,
+		Cipher:   e.cipher,
+		Limit:    10000,
+		Owner:    e.users,
+		Device:   e.reader,
 	})
 	if err != nil {
 		t.Fatalf("new account service: %v", err)
@@ -563,7 +564,7 @@ func (e *u2Env) seedAccount(schoolID, ownerID, phone, deviceCode, phoneModel str
 			SchoolID:    schoolID,
 			OwnerUserID: ownerID,
 			Phone:       phone,
-		}, 10000, 10000)
+		}, 10000)
 		if err != nil {
 			return err
 		}
