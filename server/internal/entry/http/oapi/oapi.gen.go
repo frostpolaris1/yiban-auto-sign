@@ -1561,6 +1561,23 @@ type MailTestResult struct {
 	Message string `json:"message"`
 }
 
+// MeDeleteRequest defines model for MeDeleteRequest.
+type MeDeleteRequest struct {
+	// CurrentPassword The acting user's own login password, used to re-authenticate a
+	// dangerous operation. It is never the signing account's platform
+	// credential, and it is never stored, logged or audited. Optional in
+	// this schema; the server requires it on the dangerous endpoints and
+	// answers 400 when it is missing, 403 when it is wrong and 429 after
+	// repeated failures.
+	CurrentPassword CurrentPassword `json:"current_password"`
+}
+
+// MeRestoreRequest defines model for MeRestoreRequest.
+type MeRestoreRequest struct {
+	Email    openapi_types.Email `json:"email"`
+	Password string              `json:"password"`
+}
+
 // MyAccountDeleteRequest defines model for MyAccountDeleteRequest.
 type MyAccountDeleteRequest struct {
 	// CurrentPassword The acting user's own login password, used to re-authenticate a
@@ -2817,6 +2834,13 @@ type MyAccountRestoreParams struct {
 	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
 }
 
+// MeDeleteParams defines parameters for MeDelete.
+type MeDeleteParams struct {
+	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
+	// state-changing request that carries a session.
+	XCSRFToken CSRFToken `json:"X-CSRF-Token"`
+}
+
 // MailNotifySetParams defines parameters for MailNotifySet.
 type MailNotifySetParams struct {
 	// XCSRFToken CSRF token returned by GET /api/auth/me. Required on every
@@ -3172,6 +3196,9 @@ type MyAccountDeleteJSONRequestBody = MyAccountDeleteRequest
 // MyAccountRestoreJSONRequestBody defines body for MyAccountRestore for application/json ContentType.
 type MyAccountRestoreJSONRequestBody = MyAccountRestoreRequest
 
+// MeDeleteJSONRequestBody defines body for MeDelete for application/json ContentType.
+type MeDeleteJSONRequestBody = MeDeleteRequest
+
 // MailNotifySetJSONRequestBody defines body for MailNotifySet for application/json ContentType.
 type MailNotifySetJSONRequestBody = MailNotifyUpdate
 
@@ -3183,6 +3210,9 @@ type PhotoRetentionSetJSONRequestBody = PhotoRetentionUpdate
 
 // PhotoUploadMultipartRequestBody defines body for PhotoUpload for multipart/form-data ContentType.
 type PhotoUploadMultipartRequestBody = PhotoUpload
+
+// MeRestoreJSONRequestBody defines body for MeRestore for application/json ContentType.
+type MeRestoreJSONRequestBody = MeRestoreRequest
 
 // TimePrefSetJSONRequestBody defines body for TimePrefSet for application/json ContentType.
 type TimePrefSetJSONRequestBody = TimePrefUpdate
@@ -3463,6 +3493,9 @@ type ServerInterface interface {
 	// MyAccountRestore Undo the caller's own soft delete.
 	// (POST /api/me/accounts/{id}/restore)
 	MyAccountRestore(c *gin.Context, id AccountID, params MyAccountRestoreParams)
+	// MeDelete Delete the caller's own login account.
+	// (POST /api/me/delete)
+	MeDelete(c *gin.Context, params MeDeleteParams)
 	// MeDiagnostics Diagnostics for the signed-in user's own accounts.
 	// (GET /api/me/diagnostics)
 	MeDiagnostics(c *gin.Context)
@@ -3502,6 +3535,9 @@ type ServerInterface interface {
 	// PhotoGet Stream one photo.
 	// (GET /api/me/photos/{id})
 	PhotoGet(c *gin.Context, id PhotoID, params PhotoGetParams)
+	// MeRestore Restore the caller's own login account within the grace window.
+	// (POST /api/me/restore)
+	MeRestore(c *gin.Context)
 	// SignCalendarGet Daily sign outcome counts for the caller's own accounts.
 	// (GET /api/me/sign-calendar)
 	SignCalendarGet(c *gin.Context, params SignCalendarGetParams)
@@ -5411,6 +5447,49 @@ func (siw *ServerInterfaceWrapper) MyAccountRestore(c *gin.Context) {
 	siw.Handler.MyAccountRestore(c, id, params)
 }
 
+// MeDelete operation middleware
+func (siw *ServerInterfaceWrapper) MeDelete(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params MeDeleteParams
+
+	headers := c.Request.Header
+
+	// ------------- Required header parameter "X-CSRF-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-CSRF-Token")]; found {
+		var XCSRFToken CSRFToken
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandler(c, fmt.Errorf("Expected one value for X-CSRF-Token, got %d", n), http.StatusBadRequest)
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-CSRF-Token", valueList[0], &XCSRFToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter X-CSRF-Token: %w", err), http.StatusBadRequest)
+			return
+		}
+
+		params.XCSRFToken = XCSRFToken
+
+	} else {
+		siw.ErrorHandler(c, fmt.Errorf("Header parameter X-CSRF-Token is required, but not found"), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.MeDelete(c, params)
+}
+
 // MeDiagnostics operation middleware
 func (siw *ServerInterfaceWrapper) MeDiagnostics(c *gin.Context) {
 
@@ -5847,6 +5926,19 @@ func (siw *ServerInterfaceWrapper) PhotoGet(c *gin.Context) {
 	}
 
 	siw.Handler.PhotoGet(c, id, params)
+}
+
+// MeRestore operation middleware
+func (siw *ServerInterfaceWrapper) MeRestore(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.MeRestore(c)
 }
 
 // SignCalendarGet operation middleware
@@ -7111,6 +7203,8 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/auth/registration", wrapper.AuthRegistration)
 	router.PUT(options.BaseURL+"/api/auth/registration", wrapper.AuthRegistrationSet)
 	router.POST(options.BaseURL+"/api/auth/register", wrapper.AuthRegister)
+	router.POST(options.BaseURL+"/api/me/delete", wrapper.MeDelete)
+	router.POST(options.BaseURL+"/api/me/restore", wrapper.MeRestore)
 	router.GET(options.BaseURL+"/api/users", wrapper.UserList)
 	router.POST(options.BaseURL+"/api/users", wrapper.UserCreate)
 	router.POST(options.BaseURL+"/api/users/batch", wrapper.UserBatch)

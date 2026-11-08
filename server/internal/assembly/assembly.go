@@ -435,6 +435,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Stack, error) {
 			Tx:            db,
 			Clock:         clk,
 			UserLimit:     UserCapacityLimit,
+			AccountLimit:  accountCapacityLimit,
 			KDF:           kdf,
 			Mail:          mailer,
 			MailBaseURL:   cfg.PublicBaseURL,

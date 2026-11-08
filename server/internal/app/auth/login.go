@@ -51,6 +51,11 @@ type Deps struct {
 	Clock         clock.Clock
 	// UserLimit 是活跃用户上限。注册建号在锁下执行。
 	UserLimit int
+	// AccountLimit 是活跃签到账号上限。自助恢复登录账号时连带恢复
+	// 注销时刻生效的那一行账号，必须与账号用例同容量口径。
+	// 未显式配置（<=0）时回落到 UserLimit：两条线当前同为 10000，
+	// 回落只服务既有测试装配，生产由 assembly 显式注入。
+	AccountLimit int
 	// KDF 是口令哈希端口。生产必须传限并发实现（coreauth.Bounded）；
 	// 测试可传 PlainHasher 或计数器替身。nil 即构造失败。
 	KDF coreauth.Hasher
@@ -75,6 +80,7 @@ type Service struct {
 	tx            app.TxManager
 	clock         clock.Clock
 	userLimit     int
+	accountLimit  int
 	kdf           coreauth.Hasher
 	mail          coremail.Sender
 	mailBase      string
@@ -121,6 +127,10 @@ func NewService(d Deps) (*Service, error) {
 	if log == nil {
 		log = slog.Default()
 	}
+	accountLimit := d.AccountLimit
+	if accountLimit <= 0 {
+		accountLimit = d.UserLimit
+	}
 	return &Service{
 		users:         d.Users,
 		sessions:      d.Sessions,
@@ -131,6 +141,7 @@ func NewService(d Deps) (*Service, error) {
 		tx:            d.Tx,
 		clock:         d.Clock,
 		userLimit:     d.UserLimit,
+		accountLimit:  accountLimit,
 		kdf:           d.KDF,
 		mail:          d.Mail,
 		mailBase:      mailBase,

@@ -20,8 +20,9 @@ authoritative and a gate keeps both tables equal.
 - Rate limits: the inbound limiter answers **429** with `Retry-After` in
   seconds. Login, reset password, change password, verify and sign are limited
   per client IP and per account key; forgot password is limited per client IP
-  only; register is limited per client IP and per normalized email. Account
-  create and update are limited per caller. The admin test-email endpoint is
+  only; register is limited per client IP and per normalized email; account
+  restore is limited per client IP and per normalized email. Account create
+  and update are limited per caller. The admin test-email endpoint is
   limited to one attempt per master per 60 seconds (process-local; a restart
   clears it) and answers 429 with `Retry-After`. Other 429 answers
   (time-preference cooldown, capacity) omit `Retry-After`.
@@ -96,6 +97,10 @@ either side drifts.
 | GET | `/api/auth/registration` | public | S05 |
 | PUT | `/api/auth/registration` | master | S05 |
 | POST | `/api/auth/register` | public | S05 |
+| POST | `/api/me/delete` | master/admin/user | lac2 |
+|  |  |  | 本人注销登录账号：`current_password` 二次口令（缺 400/错 403/连败 429＋Retry-After）；软删 `users` 行并连带软删名下全部生效账号；注销全部会话并清 cookie；master 403；7 天宽限（`core/user.SelfRestoreGrace`）；审计 `user.self_delete`，detail 不含邮箱/手机号。 |
+| POST | `/api/me/restore` | public | lac2 |
+|  |  |  | 未登录可调：邮箱＋登录口令；仅恢复 7 天内本人软删的登录账号及注销时生效的那一行账号；口令错、账号不存在、超窗、邮箱已被活跃行占用、管理员删除一律同一条 401，不泄露存在性；容量满 429；恢复不建立会话；按客户端 IP 与归一邮箱限流，429 带 `Retry-After`；审计 `user.self_restore`，detail 不含邮箱/手机号。 |
 | GET | `/api/users` | master | P1 |
 | POST | `/api/users` | master | P1 |
 | POST | `/api/users/batch` | master | 870 |

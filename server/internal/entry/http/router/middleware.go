@@ -51,6 +51,7 @@ var publicPaths = map[string]struct{}{
 	"/api/auth/registration":    {},
 	"/api/auth/forgot-password": {},
 	"/api/auth/reset-password":  {},
+	"/api/me/restore":           {},
 }
 
 // csrfExemptPaths 要么建立会话，要么不携带会话权限。
@@ -61,6 +62,9 @@ var csrfExemptPaths = map[string]struct{}{
 	"/api/auth/register":        {},
 	"/api/auth/forgot-password": {},
 	"/api/auth/reset-password":  {},
+	// 恢复是公开端点，且不建立会话；跨站提交由 loginOriginAllowed 拒绝，
+	// 与登录同等级。
+	"/api/me/restore": {},
 }
 
 var fallbackRequestID atomic.Uint64
@@ -185,6 +189,7 @@ var rateLimitedPaths = map[string]struct{}{
 	"/api/auth/forgot-password":     {},
 	"/api/auth/reset-password":      {},
 	"/api/auth/change-password":     {},
+	"/api/me/restore":               {},
 	"/api/accounts/detect":          {},
 	"/api/accounts/:id/verify":      {},
 	"/api/accounts/:id/person-name": {},

@@ -117,6 +117,56 @@ func (r *UserRepo) GetByEmail(ctx context.Context, email string) (coreuser.Recor
 	return recordOrNotFound(scanUser(row))
 }
 
+// FindDeletedByEmail 返回该邮箱最近一条软删用户行。
+// 不加锁、不要求事务：恢复入口先读哈希做宽限判断，付 KDF 之前不持行锁。
+// 同邮箱可能同时有活跃行；调用方把活跃行占用与不存在同判统一失败。
+func (r *UserRepo) FindDeletedByEmail(ctx context.Context, email string) (coreuser.Record, error) {
+	row := r.db.q(ctx).QueryRow(ctx, `
+		SELECT `+userColumns+`
+		  FROM users
+		 WHERE email = $1 AND deleted_at IS NOT NULL
+		 ORDER BY deleted_at DESC, id DESC
+		 LIMIT 1`,
+		coreuser.NormalizeEmail(email))
+	return recordOrNotFound(scanUser(row))
+}
+
+// LockEmail 取邮箱维度的 advisory lock，**必须在事务内运行**。
+// 同邮箱的自助注销与公开注册共用这把锁：注销先提交，注册后看到
+// 软删行并回 409；注册先提交，注销随后执行也不会产生第二条活跃行。
+func (r *UserRepo) LockEmail(ctx context.Context, email string) error {
+	if !r.db.hasTx(ctx) {
+		return ErrNoTransaction
+	}
+	_, err := r.db.q(ctx).Exec(ctx,
+		`SELECT pg_advisory_xact_lock($1, hashtext($2))`,
+		UserEmailLock, coreuser.NormalizeEmail(email))
+	return mapError(err)
+}
+
+// HasSelfDeletedEmailWithin 报告该邮箱是否存在宽限内的**本人**软删行。
+// **必须在事务内运行**，且调用方先 LockEmail 再调用本方法。
+// EXISTS 扫全部同邮箱软删行：最近一条可能是管理员删除，不能只看它。
+func (r *UserRepo) HasSelfDeletedEmailWithin(ctx context.Context, email string, notBefore time.Time) (bool, error) {
+	if !r.db.hasTx(ctx) {
+		return false, ErrNoTransaction
+	}
+	var blocked bool
+	err := r.db.q(ctx).QueryRow(ctx, `
+		SELECT EXISTS (
+		  SELECT 1 FROM users
+		   WHERE email = $1
+		     AND deleted_at IS NOT NULL
+		     AND deleted_at >= $2
+		     AND deleted_by = id
+		)`,
+		coreuser.NormalizeEmail(email), notBefore).Scan(&blocked)
+	if err != nil {
+		return false, mapError(err)
+	}
+	return blocked, nil
+}
+
 // List 按可选角色、状态与邮箱前缀列用户，并用游标分页。
 // 过滤条件是**与**关系；空串表示不过滤。
 // includeDeleted 缺省滤掉软删行；置真时软删行也入选。
@@ -369,6 +419,142 @@ func (r *UserRepo) SoftDelete(ctx context.Context, id, by string, at time.Time) 
 		return coreerrNotFound()
 	}
 	return nil
+}
+
+// SoftDeleteSelf 在同一事务内软删用户与其名下全部未删账号，返回连带软删的账号数。
+// 用户行零行报 not_found。会话不在本方法内撤销：调用方在同一事务里调用会话端口。
+func (r *UserRepo) SoftDeleteSelf(ctx context.Context, id string, at time.Time) (int, error) {
+	if !r.db.hasTx(ctx) {
+		return 0, ErrNoTransaction
+	}
+	// 与公开注册共用邮箱锁：先锁邮箱再改行。注册方在锁内复核
+	// 软删行，注销未提交时它看不到本事务，故只能等本事务结束。
+	if _, err := r.db.q(ctx).Exec(ctx, `
+		SELECT pg_advisory_xact_lock($1, hashtext(email))
+		  FROM users WHERE id = $2::uuid`, UserEmailLock, id); err != nil {
+		return 0, mapError(err)
+	}
+	tag, err := r.db.q(ctx).Exec(ctx, `
+		UPDATE users
+		   SET deleted_at = $2, deleted_by = $1::uuid, updated_at = now()
+		 WHERE id = $1::uuid AND deleted_at IS NULL`, id, at)
+	if err != nil {
+		return 0, mapError(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return 0, coreerrNotFound()
+	}
+	// 与旧线一致：登录账号注销时连带软删名下仍生效的签到账号，
+	// 软删行立即退出排期与容量计数；deleted_by 记本人，故管理员删除的
+	// 行不会被自助恢复。时间戳与用户行同一个 at，恢复时按它选回这一行。
+	accounts, err := r.db.q(ctx).Exec(ctx, `
+		UPDATE accounts
+		   SET deleted_at = $2, deleted_by = $1::uuid, updated_at = now()
+		 WHERE owner_user_id = $1::uuid AND deleted_at IS NULL`, id, at)
+	if err != nil {
+		return 0, mapError(err)
+	}
+	return int(accounts.RowsAffected()), nil
+}
+
+// RestoreSelfUser 在宽限期与活跃用户容量判据下恢复一条软删用户行。
+// **必须在事务内运行**，且调用方先用 GetDeleted 锁行并复核 deleted_at。
+// 零行分类：行已恢复/不存在/超出 notBefore 报 not_found；否则容量满报 capacity。
+func (r *UserRepo) RestoreSelfUser(ctx context.Context, id string, notBefore time.Time, limit int) (coreuser.Record, error) {
+	if !r.db.hasTx(ctx) {
+		return coreuser.Record{}, ErrNoTransaction
+	}
+	if limit <= 0 {
+		return coreuser.Record{}, validationError("limit must be positive")
+	}
+	// 与 Create/Restore 同锁族：先取用户容量锁再计数，
+	// 串行化并发建号/恢复，防两者一起把活跃用户数推过上限。
+	if _, err := r.db.q(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock($1)", UserCapacityLock); err != nil {
+		return coreuser.Record{}, mapError(err)
+	}
+	row := r.db.q(ctx).QueryRow(ctx, `
+		UPDATE users
+		   SET deleted_at = NULL, deleted_by = NULL, updated_at = now()
+		 WHERE id = $1::uuid
+		   AND deleted_at IS NOT NULL
+		   AND deleted_at >= $2
+		   AND (SELECT count(*) FROM users WHERE deleted_at IS NULL) < $3
+		RETURNING `+userColumns,
+		id, notBefore, limit)
+	record, err := scanUser(row)
+	if err == nil {
+		return record, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return coreuser.Record{}, mapError(err)
+	}
+	// 零行分类：先看行是否仍软删且在窗内；否则就是容量满。
+	var deletedAt pgtype.Timestamptz
+	err = r.db.q(ctx).QueryRow(ctx,
+		`SELECT deleted_at FROM users WHERE id = $1::uuid AND deleted_at IS NOT NULL`, id).Scan(&deletedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return coreuser.Record{}, coreerrNotFound()
+	}
+	if err != nil {
+		return coreuser.Record{}, mapError(err)
+	}
+	if deletedAt.Time.Before(notBefore) {
+		return coreuser.Record{}, coreerrNotFound()
+	}
+	return coreuser.Record{}, capacityError()
+}
+
+// RestoreSelfAccount 恢复该用户注销时刻仍生效的那一行账号。
+// 只认 deleted_by=ownerID（管理员删除的行不复活）且 deleted_at 与用户行
+// 同一时刻（注销连带软删的唯一时间戳）；无候选返回 (false, nil)，
+// 候选存在但容量满返回 capacity。**必须在事务内运行**。
+func (r *UserRepo) RestoreSelfAccount(ctx context.Context, ownerID string, deletedAt time.Time, limit int) (bool, error) {
+	if !r.db.hasTx(ctx) {
+		return false, ErrNoTransaction
+	}
+	if limit <= 0 {
+		return false, validationError("limit must be positive")
+	}
+	// 与账号 Create/Restore 同锁族：容量判断与写行串行化。
+	if _, err := r.db.q(ctx).Exec(ctx, "SELECT pg_advisory_xact_lock($1)", AccountCapacityLock); err != nil {
+		return false, mapError(err)
+	}
+	var accountID string
+	err := r.db.q(ctx).QueryRow(ctx, `
+		SELECT id::text
+		  FROM accounts
+		 WHERE owner_user_id = $1::uuid
+		   AND deleted_at IS NOT NULL
+		   AND deleted_by = $1::uuid
+		   AND deleted_at = $2
+		 ORDER BY id DESC
+		 LIMIT 1
+		 FOR UPDATE`, ownerID, deletedAt).Scan(&accountID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, mapError(err)
+	}
+	var live int
+	if err := r.db.q(ctx).QueryRow(ctx,
+		`SELECT count(*) FROM accounts WHERE deleted_at IS NULL`).Scan(&live); err != nil {
+		return false, mapError(err)
+	}
+	if live >= limit {
+		return false, capacityError()
+	}
+	tag, err := r.db.q(ctx).Exec(ctx, `
+		UPDATE accounts
+		   SET deleted_at = NULL, deleted_by = NULL, updated_at = now()
+		 WHERE id = $1::uuid AND deleted_at IS NOT NULL`, accountID)
+	if err != nil {
+		return false, mapError(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return false, coreerrNotFound()
+	}
+	return true, nil
 }
 
 // UpdateRole 替换用户角色。

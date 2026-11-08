@@ -55,6 +55,34 @@ type New = coreuser.New
 // 零行分类：不存在报 not_found；活行报 conflict。
 // 物理清除用它拿目标行，不能用排除软删行的 GetByID。
 //
+// FindDeletedByEmail 返回该邮箱最近一条软删行（deleted_at DESC, id DESC），
+// 不加锁、不要求事务：恢复入口先用它取哈希与 deleted_at 做宽限判断，
+// 付 KDF 成本之前不持行锁。零行报 not_found。
+// 同邮箱可同时存在活跃行（uq_users_email_live 只约束活跃行），
+// 调用方把「活跃行占用邮箱」「不存在」「超窗」同判统一失败，不泄露存在性。
+//
+// LockEmail 取邮箱维度的 advisory lock，**必须在事务内运行**。
+// 公开注册的自助注销宽限复核与 SoftDeleteSelf 共用同一把锁，
+// 锁在事务结束才释放，故「注销未提交时注册」只能等待。
+// HasSelfDeletedEmailWithin 在锁内用 EXISTS 扫**全部**同邮箱软删行，
+// 判断是否存在 deleted_by=本人且 deleted_at >= notBefore 的行；
+// 不能只看最近一条（最近一条可能是管理员删除）。**必须在事务内运行**，
+// 且调用方先 LockEmail。
+//
+// SoftDeleteSelf 在同一事务内先取邮箱锁，再软删用户与其名下全部未删账号，
+// 返回连带软删的账号数。用户行零行报 not_found。
+// 会话不在本方法内撤销：调用方在同一事务里调用会话端口。
+//
+// RestoreSelfUser 在宽限期与活跃用户容量判据下恢复一条软删用户行。
+// **必须在事务内运行**，且调用方先用 GetDeleted 锁行并复核 deleted_at；
+// 零行（宽限期外或已恢复）报 not_found，容量满报 capacity。
+//
+// RestoreSelfAccount 恢复该用户注销时刻仍生效的那一行账号：
+// 只认 deleted_by=ownerID（管理员删除的行不复活）且 deleted_at 与用户行
+// 同一时间戳，故至多一行；并同样受活跃账号容量约束。
+// 无候选返回 (false, nil)；有候选但容量满返回 capacity。
+// **必须在事务内运行**。
+//
 // Purge 物理删除用户行与名下账号及从属行，**必须在事务内运行**；
 // 调用方先用 GetDeleted 锁行并校验软删状态。
 type Repo interface {
@@ -62,6 +90,12 @@ type Repo interface {
 	GetByID(ctx context.Context, id string) (Record, error)
 	GetDeleted(ctx context.Context, id string) (Record, error)
 	GetByEmail(ctx context.Context, email string) (Record, error)
+	FindDeletedByEmail(ctx context.Context, email string) (Record, error)
+	// LockEmail 取邮箱维度 advisory lock；**必须在事务内运行**。
+	LockEmail(ctx context.Context, email string) error
+	// HasSelfDeletedEmailWithin 在锁内扫全部同邮箱软删行；
+	// **必须在事务内运行**，调用方先 LockEmail。
+	HasSelfDeletedEmailWithin(ctx context.Context, email string, notBefore time.Time) (bool, error)
 	List(ctx context.Context, role coreauth.Role, status coreauth.Status, query string, group coreuser.Group, cursor string, limit int, includeDeleted bool) ([]Record, string, error)
 	// Counts 返回四个分组的全局计数；不随筛选或分页变化。
 	Counts(ctx context.Context) (coreuser.Counts, error)
@@ -81,6 +115,13 @@ type Repo interface {
 	MailNotify(ctx context.Context, id string) (bool, error)
 	SetMailNotify(ctx context.Context, id string, enabled bool) error
 	SoftDelete(ctx context.Context, id, by string, at time.Time) error
+	// SoftDeleteSelf 软删用户与名下全部未删账号；**必须在事务内运行**。
+	SoftDeleteSelf(ctx context.Context, id string, at time.Time) (int, error)
+	// RestoreSelfUser 在宽限与容量判据下恢复软删用户；**必须在事务内运行**。
+	RestoreSelfUser(ctx context.Context, id string, notBefore time.Time, limit int) (Record, error)
+	// RestoreSelfAccount 恢复注销时刻仍生效的那一行账号；
+	// **必须在事务内运行**。无候选返回 false。
+	RestoreSelfAccount(ctx context.Context, ownerID string, deletedAt time.Time, limit int) (bool, error)
 	Restore(ctx context.Context, id string, limit int) (Record, error)
 	// Purge 物理删除用户行与名下账号及从属行
 	// （任务行先分块删，其余随外键级联或成对置空）。

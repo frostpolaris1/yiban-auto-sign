@@ -280,7 +280,12 @@ paths:
         booleans must be true and the versions must equal the current ones;
         a stale version is 409 conflict. The password needs at least 10
         characters and two of uppercase, lowercase, digits and symbols.
-        A duplicate live email is 409 conflict. The new user has role user,
+        A duplicate live email is 409 conflict. A self-deleted login
+        account still inside its 7-day restore window also answers 409 with
+        the same message, so re-registration cannot take the original
+        owner's restore path; once the window has passed the email is
+        reusable, and an administrator-deleted row does not hold the email.
+        The new user has role user,
         status active and must_change_password false. Success sets the
         session cookie. Cross-site browser submissions are rejected like
         login. Rate limited per client IP and per normalized email; a 429
@@ -303,6 +308,84 @@ paths:
         '400': { $ref: '#/components/responses/ValidationError' }
         '403': { $ref: '#/components/responses/ForbiddenError' }
         '409': { $ref: '#/components/responses/ConflictError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/me/delete:
+    post:
+      tags: [auth]
+      operationId: MeDelete
+      summary: Delete the caller's own login account.
+      description: |
+        Signed-in only. Every role may call it, but the target is always the
+        session user: request fields never select another account. A master
+        account answers 403 because the system management role cannot be
+        removed through self-service. The login row is soft-deleted
+        (deleted_at set, deleted_by is the caller) and every live signing
+        account it owns is soft-deleted in the same transaction, matching
+        the old line: a deleted login account must stop signing immediately.
+        All sessions for the user are revoked and the response clears the
+        session cookie. The undo window is 7 days
+        (core/user.SelfRestoreGrace), shared with POST /api/me/restore.
+        Every request must carry current_password, the acting user's own
+        login password: a missing value answers 400, a wrong value 403, and
+        repeated failures answer 429 with Retry-After. A rejected
+        reauthentication writes nothing. The audit action is user.self_delete
+        and its detail never carries the email or phone.
+      x-roles: [master, admin, user]
+      parameters:
+        - $ref: '#/components/parameters/CSRFToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MeDeleteRequest'
+      responses:
+        '204': { description: Login account soft-deleted and sessions revoked. }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
+        '413': { $ref: '#/components/responses/PayloadTooLargeError' }
+        '429': { $ref: '#/components/responses/TooManyRequestsError' }
+        default: { $ref: '#/components/responses/DefaultError' }
+  /api/me/restore:
+    post:
+      tags: [auth]
+      operationId: MeRestore
+      summary: Restore the caller's own login account within the grace window.
+      description: |
+        Public, like the old line: a deleted account has no session. The
+        email and login password identify the caller; a wrong password, an
+        unknown email, an account outside the 7-day window
+        (core/user.SelfRestoreGrace) and a live account that already owns
+        the email all answer the same 401, so existence is never disclosed.
+        Only a soft-deleted login account is restored, and only when the
+        user deleted it itself: a login account an administrator deleted is
+        not revived (old-line administrator deletion was physical, so the
+        effective semantics match). The signing account
+        that was live when the user deleted the login account is restored
+        with it (at most one, because one live account per owner is
+        enforced); accounts deleted by an administrator are not revived.
+        Capacity errors answer 429 capacity_exceeded. Success does not
+        establish a session: the caller signs in with the same password
+        afterwards. Cross-site browser submissions are rejected like login.
+        Rate limited per client IP and per normalized email; a 429 carries
+        Retry-After in seconds. The audit action is user.self_restore and
+        its detail never carries the email or phone.
+      security: []
+      x-roles: [public]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MeRestoreRequest'
+      responses:
+        '204': { description: Login account and its live signing account restored. }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/UnauthorizedError' }
+        '403': { $ref: '#/components/responses/ForbiddenError' }
         '413': { $ref: '#/components/responses/PayloadTooLargeError' }
         '429': { $ref: '#/components/responses/TooManyRequestsError' }
         default: { $ref: '#/components/responses/DefaultError' }
@@ -3844,6 +3927,18 @@ components:
       properties:
         current_password:
           $ref: '#/components/schemas/CurrentPassword'
+    MeDeleteRequest:
+      type: object
+      required: [current_password]
+      properties:
+        current_password:
+          $ref: '#/components/schemas/CurrentPassword'
+    MeRestoreRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 1 }
     AccountDeviceRefreshRequest:
       type: object
       properties:
